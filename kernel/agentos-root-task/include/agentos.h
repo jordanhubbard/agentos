@@ -46,6 +46,10 @@
 #define SWAP_SLOT_BASE_CH     8   /* Channels 8-11 are swap slots */
 #define MAX_SWAP_SLOTS        4
 
+/* Worker Pool channel IDs (from controller perspective) */
+#define WORKER_POOL_BASE_CH   20  /* Channels 20-27 are worker pool */
+#define WORKER_POOL_SIZE      8
+
 /*
  * IPC Message Tags
  * Packed into the microkit_msginfo label field (bits 0-63)

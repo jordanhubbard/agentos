@@ -1,44 +1,61 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
-  agentOS v0.2.0 System Description File
+  agentOS v0.3.0 System Description File
   
   Protection Domain topology:
   
-    controller   (prio 50)   - system coordinator + capability broker
-    event_bus    (prio 200)  - passive pub/sub server (ring buffer)
-    init_agent   (prio 100)  - agent ecosystem bootstrapper
-    worker_0..7  (prio 80)   - agent pool workers (dynamic task assignment)
+    controller        (prio 50)   - system coordinator + cap broker + vibe orchestrator
+    event_bus         (prio 200)  - passive pub/sub server (ring buffer)
+    init_agent        (prio 100)  - agent ecosystem bootstrapper
+    swap_slot_0..3    (prio 90)   - hot-swap slots for vibe-coding live service replacement
+    worker_0..7       (prio 80)   - agent pool workers (dynamic task assignment)
   
-  Channel map:
-    0:  controller <-> event_bus    (controller PPCs into passive event_bus)
-    1:  controller <-> init_agent   (notify: controller starts init_agent)
-    2:  event_bus  <-> init_agent   (init_agent PPCs into event_bus to subscribe)
-    10: controller <-> worker_0     (task assignment + completion notify)
-    11: controller <-> worker_1
-    12: controller <-> worker_2
-    13: controller <-> worker_3
-    14: controller <-> worker_4
-    15: controller <-> worker_5
-    16: controller <-> worker_6
-    17: controller <-> worker_7
+  Channel map (controller perspective):
+    0:  controller <-> event_bus     (controller PPCs into passive event_bus)
+    1:  controller <-> init_agent    (notify: controller starts init_agent)
+    2:  event_bus  <-> init_agent    (init_agent PPCs into event_bus to subscribe)
     
-  Worker <-> EventBus channels (workers subscribe to events):
-    20: event_bus <-> worker_0
-    21: event_bus <-> worker_1
-    ...
-    27: event_bus <-> worker_7
+    8:  controller <-> swap_slot_0   (swap management + health checks)
+    9:  controller <-> swap_slot_1
+    10: controller <-> swap_slot_2
+    11: controller <-> swap_slot_3
+    
+    20: controller <-> worker_0      (task assignment + completion)
+    21: controller <-> worker_1
+    22: controller <-> worker_2
+    23: controller <-> worker_3
+    24: controller <-> worker_4
+    25: controller <-> worker_5
+    26: controller <-> worker_6
+    27: controller <-> worker_7
+    
+  Worker <-> EventBus channels:
+    30: event_bus <-> worker_0
+    31: event_bus <-> worker_1
+    32: event_bus <-> worker_2
+    33: event_bus <-> worker_3
+    34: event_bus <-> worker_4
+    35: event_bus <-> worker_5
+    36: event_bus <-> worker_6
+    37: event_bus <-> worker_7
+
+  Swap slot <-> EventBus channels:
+    40: event_bus <-> swap_slot_0
+    41: event_bus <-> swap_slot_1
+    42: event_bus <-> swap_slot_2
+    43: event_bus <-> swap_slot_3
 -->
 <system>
     <!-- Controller: system coordinator, low priority to PPC into passive servers -->
     <protection_domain name="controller" priority="50">
         <program_image path="controller.elf" />
-        <map mr="monitor_stack" vaddr="0x2000000" perms="rw" setvar_vaddr="monitor_stack_vaddr" />
+        <map mr="monitor_stack"    vaddr="0x2000000" perms="rw" setvar_vaddr="monitor_stack_vaddr" />
     </protection_domain>
     
     <!-- EventBus: passive pub/sub backbone -->
     <protection_domain name="event_bus" priority="200" passive="true">
         <program_image path="event_bus.elf" />
-        <map mr="eventbus_ring" vaddr="0x3000000" perms="rw" setvar_vaddr="eventbus_ring_vaddr" />
+        <map mr="eventbus_ring"    vaddr="0x3000000" perms="rw" setvar_vaddr="eventbus_ring_vaddr" />
     </protection_domain>
     
     <!-- InitAgent: bootstrap agent -->
@@ -46,7 +63,25 @@
         <program_image path="init_agent.elf" />
     </protection_domain>
     
-    <!-- Agent pool workers: static PDs, dynamic task assignment -->
+    <!-- Hot-swap slots for vibe-coding service replacement -->
+    <protection_domain name="swap_slot_0" priority="90">
+        <program_image path="swap_slot.elf" />
+        <map mr="swap_code_0" vaddr="0x2000000" perms="rwx" />
+    </protection_domain>
+    <protection_domain name="swap_slot_1" priority="90">
+        <program_image path="swap_slot.elf" />
+        <map mr="swap_code_1" vaddr="0x2000000" perms="rwx" />
+    </protection_domain>
+    <protection_domain name="swap_slot_2" priority="90">
+        <program_image path="swap_slot.elf" />
+        <map mr="swap_code_2" vaddr="0x2000000" perms="rwx" />
+    </protection_domain>
+    <protection_domain name="swap_slot_3" priority="90">
+        <program_image path="swap_slot.elf" />
+        <map mr="swap_code_3" vaddr="0x2000000" perms="rwx" />
+    </protection_domain>
+    
+    <!-- Agent pool workers -->
     <protection_domain name="worker_0" priority="80">
         <program_image path="worker.elf" />
     </protection_domain>
@@ -73,88 +108,128 @@
     </protection_domain>
     
     <!-- Memory regions -->
-    <memory_region name="monitor_stack"  size="0x10000" />
-    <memory_region name="eventbus_ring"  size="0x40000" />
+    <memory_region name="monitor_stack"  size="0x10000"  />
+    <memory_region name="eventbus_ring"  size="0x40000"  />
+    <memory_region name="swap_code_0"    size="0x400000" />
+    <memory_region name="swap_code_1"    size="0x400000" />
+    <memory_region name="swap_code_2"    size="0x400000" />
+    <memory_region name="swap_code_3"    size="0x400000" />
     
     <!-- Core service channels -->
     <channel>
-        <end pd="controller" id="0" pp="true" />
-        <end pd="event_bus"  id="0" />
+        <end pd="controller"  id="0" pp="true" />
+        <end pd="event_bus"   id="0" />
     </channel>
     <channel>
-        <end pd="controller" id="1" />
-        <end pd="init_agent" id="1" />
+        <end pd="controller"  id="1" />
+        <end pd="init_agent"  id="1" />
     </channel>
     <channel>
-        <end pd="event_bus"  id="2" />
-        <end pd="init_agent" id="2" pp="true" />
+        <end pd="event_bus"   id="2" />
+        <end pd="init_agent"  id="2" pp="true" />
     </channel>
     
-    <!-- Worker pool channels (controller <-> worker_N) -->
+    <!-- Swap slot channels -->
     <channel>
-        <end pd="controller" id="10" />
+        <end pd="controller"  id="8" />
+        <end pd="swap_slot_0" id="0" />
+    </channel>
+    <channel>
+        <end pd="controller"  id="9" />
+        <end pd="swap_slot_1" id="0" />
+    </channel>
+    <channel>
+        <end pd="controller"  id="10" />
+        <end pd="swap_slot_2" id="0" />
+    </channel>
+    <channel>
+        <end pd="controller"  id="11" />
+        <end pd="swap_slot_3" id="0" />
+    </channel>
+    
+    <!-- Worker pool channels -->
+    <channel>
+        <end pd="controller" id="20" />
         <end pd="worker_0"   id="0" />
     </channel>
     <channel>
-        <end pd="controller" id="11" />
+        <end pd="controller" id="21" />
         <end pd="worker_1"   id="0" />
     </channel>
     <channel>
-        <end pd="controller" id="12" />
+        <end pd="controller" id="22" />
         <end pd="worker_2"   id="0" />
     </channel>
     <channel>
-        <end pd="controller" id="13" />
+        <end pd="controller" id="23" />
         <end pd="worker_3"   id="0" />
     </channel>
     <channel>
-        <end pd="controller" id="14" />
+        <end pd="controller" id="24" />
         <end pd="worker_4"   id="0" />
     </channel>
     <channel>
-        <end pd="controller" id="15" />
+        <end pd="controller" id="25" />
         <end pd="worker_5"   id="0" />
     </channel>
     <channel>
-        <end pd="controller" id="16" />
+        <end pd="controller" id="26" />
         <end pd="worker_6"   id="0" />
     </channel>
     <channel>
-        <end pd="controller" id="17" />
+        <end pd="controller" id="27" />
         <end pd="worker_7"   id="0" />
     </channel>
     
-    <!-- Worker <-> EventBus channels (workers can subscribe to events) -->
+    <!-- Worker <-> EventBus -->
     <channel>
-        <end pd="event_bus" id="20" />
+        <end pd="event_bus" id="30" />
         <end pd="worker_0"  id="1" pp="true" />
     </channel>
     <channel>
-        <end pd="event_bus" id="21" />
+        <end pd="event_bus" id="31" />
         <end pd="worker_1"  id="1" pp="true" />
     </channel>
     <channel>
-        <end pd="event_bus" id="22" />
+        <end pd="event_bus" id="32" />
         <end pd="worker_2"  id="1" pp="true" />
     </channel>
     <channel>
-        <end pd="event_bus" id="23" />
+        <end pd="event_bus" id="33" />
         <end pd="worker_3"  id="1" pp="true" />
     </channel>
     <channel>
-        <end pd="event_bus" id="24" />
+        <end pd="event_bus" id="34" />
         <end pd="worker_4"  id="1" pp="true" />
     </channel>
     <channel>
-        <end pd="event_bus" id="25" />
+        <end pd="event_bus" id="35" />
         <end pd="worker_5"  id="1" pp="true" />
     </channel>
     <channel>
-        <end pd="event_bus" id="26" />
+        <end pd="event_bus" id="36" />
         <end pd="worker_6"  id="1" pp="true" />
     </channel>
     <channel>
-        <end pd="event_bus" id="27" />
+        <end pd="event_bus" id="37" />
         <end pd="worker_7"  id="1" pp="true" />
+    </channel>
+    
+    <!-- Swap slot <-> EventBus -->
+    <channel>
+        <end pd="event_bus"   id="40" />
+        <end pd="swap_slot_0" id="1" pp="true" />
+    </channel>
+    <channel>
+        <end pd="event_bus"   id="41" />
+        <end pd="swap_slot_1" id="1" pp="true" />
+    </channel>
+    <channel>
+        <end pd="event_bus"   id="42" />
+        <end pd="swap_slot_2" id="1" pp="true" />
+    </channel>
+    <channel>
+        <end pd="event_bus"   id="43" />
+        <end pd="swap_slot_3" id="1" pp="true" />
     </channel>
 </system>
