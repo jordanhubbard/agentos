@@ -25,3 +25,4 @@ settings.cmake
 # macOS
 .DS_Store
 .AppleDouble
+microkit-sdk.tar.gz
