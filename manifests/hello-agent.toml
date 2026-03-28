@@ -1,0 +1,69 @@
+# agentOS Agent Manifest — hello-agent
+#
+# This manifest declares the hello-agent's identity, resource requirements,
+# and capability grants. The init task reads this during boot to provision
+# the agent.
+#
+# Manifest format: TOML (easy for agents to read AND write)
+
+[agent]
+name = "hello-agent"
+version = "0.1.0"
+description = "The first agent on agentOS. Proves the system works."
+binary = "agentos-hello"
+trust_level = 1
+
+[agent.identity]
+# Ed25519 public key (generated at first boot, stored here after)
+# Empty means "generate a new identity on first boot"
+public_key = ""
+
+[resources]
+# Memory limits
+memory_mb = 16
+# CPU time budget (MCS scheduling — microseconds per period)
+cpu_budget_us = 10000
+cpu_period_us = 100000
+# Stack size
+stack_kb = 64
+
+[capabilities]
+# Messaging
+msg_channels = [
+    { name = "system.broadcast", rights = ["read", "write"] },
+    { name = "system.events", rights = ["read"] },
+    { name = "system.health", rights = ["read", "write"] },
+]
+
+# Tools
+tools = [
+    { name = "greet", rights = ["register", "exec"] },
+    { name = "status", rights = ["register", "exec"] },
+]
+
+# Storage
+storage = [
+    { namespace = "/agents/hello/", rights = ["read", "write"] },
+    { namespace = "/shared/", rights = ["read"] },
+]
+
+# Models
+models = [
+    { id = "default", rights = ["query"], max_tokens_per_request = 4096 },
+]
+
+# Network (none for hello-agent — it's a local test)
+network = []
+
+# Spawn (cannot create other agents)
+spawn = false
+
+# Self-modify (cannot propose service swaps)
+self_modify = false
+
+[health]
+# Heartbeat interval (ms) — if no heartbeat within 2x, considered dead
+heartbeat_interval_ms = 5000
+# Auto-restart on crash
+auto_restart = true
+max_restarts = 3

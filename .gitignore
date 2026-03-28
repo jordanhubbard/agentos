@@ -1,0 +1,27 @@
+# Build outputs
+build/
+deps/
+*.o
+*.a
+*.elf
+*.img
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+
+# Generated files
+settings.cmake
+*.generated.*
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# macOS
+.DS_Store
+.AppleDouble
