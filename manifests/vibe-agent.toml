@@ -1,0 +1,83 @@
+# agentOS Agent Manifest — vibe-agent
+#
+# This is the showcase agent: it uses ModelSvc to reason about its own
+# environment, generates new CAmkES components (vibe-codes them), and
+# proposes them as service replacements.
+#
+# This is the agent that proves agentOS is the first OS where agents
+# design their own infrastructure.
+
+[agent]
+name = "vibe-agent"
+version = "0.1.0"
+description = "An agent that vibe-codes its own system services"
+binary = "agentos-vibe"
+trust_level = 3  # Elevated trust — can propose service swaps
+
+[agent.identity]
+public_key = ""
+
+[resources]
+memory_mb = 128       # Needs more memory for code generation
+cpu_budget_us = 50000  # More CPU time for inference + compilation
+cpu_period_us = 100000
+stack_kb = 256
+
+[capabilities]
+# Full messaging access
+msg_channels = [
+    { name = "system.broadcast", rights = ["read", "write"] },
+    { name = "system.events", rights = ["read", "write"] },
+    { name = "system.health", rights = ["read", "write"] },
+    { name = "tools.registry", rights = ["read", "write"] },
+]
+
+# Can register and invoke tools
+tools = [
+    { name = "*", rights = ["register", "exec", "list"] },  # Wildcard
+]
+
+# Full storage access in its namespace + shared read
+storage = [
+    { namespace = "/agents/vibe/", rights = ["read", "write", "create", "delete"] },
+    { namespace = "/shared/", rights = ["read", "write"] },
+    { namespace = "/services/", rights = ["read"] },  # Can read service code
+]
+
+# Model access — needs this for vibe-coding
+models = [
+    { id = "default", rights = ["query"], max_tokens_per_request = 16384 },
+    { id = "code-gen", rights = ["query"], max_tokens_per_request = 32768 },
+]
+
+# Network — for fetching libraries/documentation
+network = [
+    { endpoint = "*.github.com", rights = ["connect"], protocol = "https" },
+    { endpoint = "*.sel4.systems", rights = ["connect"], protocol = "https" },
+]
+
+# Can spawn helper agents
+spawn = true
+
+# THIS IS THE KEY CAPABILITY: service modification
+self_modify = true
+service_swap = [
+    "storage.v1",      # Can propose storage service replacements
+    "msgbus.v1",       # Can propose messaging replacements
+    "tools.v1",        # Can propose tool registry replacements
+]
+
+[health]
+heartbeat_interval_ms = 10000
+auto_restart = true
+max_restarts = 5
+
+[vibe]
+# Configuration for the vibe-coding subsystem
+# What this agent is allowed to vibe-code
+target_services = ["storage", "communication", "tools"]
+# Validation requirements before swap
+require_validation = true
+# Sandbox new components before activation
+sandbox_test = true
+sandbox_duration_ms = 30000

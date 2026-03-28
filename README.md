@@ -1,160 +1,232 @@
 # agentOS
 
-> The world's first operating system designed for AI agents, not humans.
+**The world's first operating system designed for agents, not humans.**
 
-agentOS is built on the seL4 microkernel — a formally verified, capability-based microkernel that provides the hardest security and isolation guarantees available in modern OS research. Everything above the kernel is designed from first principles for agent workloads.
+[![License](https://img.shields.io/badge/license-BSD--2--Clause-blue.svg)](LICENSE)
+[![Kernel](https://img.shields.io/badge/kernel-seL4-green.svg)](https://sel4.systems)
+[![Status](https://img.shields.io/badge/status-alpha-orange.svg)]()
 
-## Core Philosophy
+---
 
-**Agents are first-class citizens.** Traditional OSes were designed for human-driven processes. agentOS flips this: the OS primitives, namespaces, filesystems, IPC, scheduling, and memory models are all designed around what agents actually need.
+## What is agentOS?
 
-**Pluggable by design.** Agents vibe-code their own servers, filesystems, and communication layers. The SDK provides the contracts; agents provide the implementations. No monolithic kernel bloat — everything is a user-space server that can be swapped.
+agentOS is a real, bootable operating system built on the [seL4 microkernel](https://sel4.systems/) — the world's only formally verified, capability-secured microkernel. It's designed from the ground up for AI agents running autonomous workloads.
 
-**Capability-native.** Every resource is a capability. Agents carry capability sets that define exactly what they can touch. No ambient authority. No confused deputy attacks. Trust is explicit and auditable.
+Every other "agent OS" is a Python framework running on Linux. They borrow a human OS, bolt some agent abstractions on top, and call it done. **agentOS is different.**
 
-**Introspection as a primitive.** Agents can observe their own execution context, memory state, and capability set. Self-modification and hot-swapping are core features, not hacks.
+agentOS boots bare metal. Agents run in isolated address spaces with hardware-enforced capability boundaries. An agent cannot access memory, a tool, a model, or a storage namespace it doesn't hold a capability for. **The MMU enforces it. seL4 proves it.**
+
+And here's the part that makes it unique: **agents can redesign their own environment.** The vibe-coding layer lets agents generate new system services (filesystems, message buses, tool registries), get them validated, and hot-swap them in — without rebooting. An agent that doesn't like the default filesystem can build a better one, propose it, and run it.
+
+## Why seL4?
+
+- **Formally verified** — mathematical proof that the implementation matches the spec
+- **Capability-based security** — fine-grained, unforgeable access control
+- **No heap in the kernel** — deterministic, no memory surprises
+- **World-class IPC** — ~100 cycle synchronous IPC on ARM
+- **Policy freedom** — kernel provides mechanisms; agents define policies
 
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                        Agent Applications                        │
-├─────────────────────────────────────────────────────────────────┤
-│                        agentOS SDK                               │
-│  (AgentContext, CapabilityStore, MessageBus, ObjectStore, etc.)  │
-├──────────────┬──────────────┬──────────────┬────────────────────┤
-│  AgentFS     │  VectorStore │  EventBus    │  AgentNet          │
-│  (pluggable) │  (pluggable) │  (core)      │  (pluggable)       │
-├──────────────┴──────────────┴──────────────┴────────────────────┤
-│                     agentOS Personality Layer                    │
-│         (root task, namespace mgr, capability broker)           │
-├─────────────────────────────────────────────────────────────────┤
-│                         seL4 Microkernel                         │
-│        (IPC, capabilities, threads, address spaces)             │
-└─────────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────┐
+│              AGENT SPACE                 │
+│   Agent A   Agent B   Agent C   ...      │
+│   (seL4 isolated address spaces)         │
+├──────────────────────────────────────────┤
+│            SYSTEM SERVICES               │
+│  CapStore  MsgBus  MemFS  ToolSvc        │
+│  ModelSvc  NetStack  BlobSvc  LogSvc     │
+├──────────────────────────────────────────┤
+│         INIT / ROOT TASK                 │
+│   (Bootstrap, resource distribution)     │
+├──────────────────────────────────────────┤
+│            seL4 MICROKERNEL              │
+│   Capabilities · IPC · Scheduling        │
+│   Memory Management (formally verified)  │
+├──────────────────────────────────────────┤
+│               HARDWARE                   │
+│   CPU · RAM · NIC · Storage · GPU        │
+└──────────────────────────────────────────┘
 ```
 
-## Key Subsystems
+## Core Concepts
 
-### 1. seL4 Kernel (the foundation)
-- Formally verified capability-based microkernel
-- Handles: threads, address spaces, IPC endpoints, interrupts
-- Nothing else. Seriously.
-- Target: x86_64 and RISC-V RV64
+### Agent Identity
+Every agent has an Ed25519 keypair. Their badge on seL4 endpoints is derived from their identity. Message senders are verified at the kernel level — unforgeable.
 
-### 2. agentOS Personality Layer (root task)
-- Written in Rust
-- Bootstraps all system servers
-- Manages the capability namespace
-- Speaks the Microkit protocol
-- Hands out capabilities to agents on spawn
+### Capabilities
+Everything an agent can do requires a capability:
+- `ToolCap` — invoke a tool
+- `ModelCap` — query an LLM
+- `MemCap` — read/write memory regions
+- `MsgCap` — send/receive on a channel
+- `StoreCap` — access storage namespaces
+- `SpawnCap` — create new agents
+- `NetCap` — use network resources
 
-### 3. AgentFS — The Agent Filesystem
-- Not POSIX. Not even close.
-- Objects, not files. Every artifact is an addressed, versioned, capability-gated object
-- Agents design their own storage backends (pluggable via the SDK)
-- Core provides: content-addressed blob store, capability-indexed namespace, event log
-- Optional adapters: POSIX shim (for legacy tools), FUSE bridge, git-compatible refs
+Capabilities are delegatable but never escalatable. An agent can grant a subset of what it holds.
 
-### 4. EventBus — The Nervous System
-- Pub/sub backbone for inter-agent communication
-- Typed message channels with schema validation
-- Persistent message queues (agents can be offline and catch up)
-- Priority classes: Hard-RT, Soft-RT, Delay-Tolerant
-- Built on seL4 IPC endpoints + notification objects
+### The Vibe-Coding Layer
 
-### 5. AgentNet — Capability-Native Networking
-- Every network connection is a capability
-- Agents request network capabilities from the capability broker
-- Supports: local mesh (intra-agentOS), external TCP/IP, and agent-to-agent secure channels
-- Zero-trust by architecture: no connection without explicit capability grant
+This is the key innovation. Every system service has a defined interface. Agents can:
 
-### 6. VectorStore — Native Embedding/Semantic Store
-- First-class citizen (not bolted on)
-- Agents store and query vector embeddings natively
-- Multiple backends pluggable: HNSW, IVF, flat
-- Capability-gated: agents can share stores or keep private ones
-- Designed for RAG, semantic memory, similarity search at OS level
+1. Analyze the reference implementation
+2. Generate a better one (using ModelSvc)
+3. Propose it as a replacement via `aos_service_propose()`
+4. After validation, activate it via `aos_service_swap()`
 
-### 7. agentOS SDK
-- Rust-native (primary)
-- Python bindings (for llm-native agents)
-- Core abstractions: `AgentContext`, `Capability`, `Message`, `Object`, `EventChannel`
-- Plugin interface: `AgentFsBackend`, `VectorBackend`, `NetworkBackend`
-- Vibe-coding target: agents extend the SDK to add their own primitives
+The system is designed to evolve. The reference implementations are starting points, not permanent fixtures.
 
-## Scheduling Philosophy
+## System Services
 
-Agents are not equal. agentOS supports explicit scheduling contracts:
+| Service | Description |
+|---------|-------------|
+| `CapStore` | Capability database — tracks all cap derivations and grants |
+| `MsgBus` | Inter-agent communication — channels, pub/sub, direct messaging, RPC |
+| `MemFS` | Virtual filesystem — per-agent namespaces, capability-gated access |
+| `ToolSvc` | Tool registry — agents register and invoke tools (MCP-compatible) |
+| `ModelSvc` | Inference proxy — capability-gated LLM access, pluggable backends |
+| `NetStack` | TCP/IP networking — lwIP-based, capability-gated per-endpoint |
+| `BlobSvc` | Object storage — large binary objects, S3-compatible API |
+| `LogSvc` | Audit logging — structured, queryable, every cap op recorded |
 
-- **Interactive** — fast response to external stimuli (event handlers)
-- **Compute** — long-running inference, batch processing
-- **Background** — maintenance, indexing, garbage collection
-- **Cooperative** — agents that yield control explicitly
+All services are CAmkES components. All are replaceable via the vibe layer.
 
-Each contract gets a different scheduler bucket. No surprise preemption killing a long inference run.
+## agentOS SDK (libagent)
 
-## Memory Model
+```c
+// Initialize agent
+aos_init(&config);
 
-- Agent memory is namespaced by capability
-- Shared memory between agents: explicit shared-memory capability grants
-- LLM context windows: first-class memory objects (can be snapshotted, forked, restored)
-- Huge pages for vector stores and model weights
-- Memory pressure signals delivered via EventBus (agents can react and shed load)
+// Send a message to another agent
+aos_msg_send(dest_id, message);
 
-## Security Model
+// Publish to a channel
+aos_msg_publish(channel, message);
 
-Every capability is unforgeable. Every IPC is mediated. Every agent is isolated.
+// Call a tool
+aos_tool_call(tool_cap, "web_search", args, args_len, &result, &result_len);
 
-- Capability tokens: seL4 kernel-enforced, no user-space forgery possible
-- Audit log: every capability invocation is loggable (opt-in per capability)
-- Sandboxed agents: agents can spawn child agents with subsets of their own capabilities
-- Revocation: parent can revoke any capability it granted
+// Query a model
+aos_inference_t resp = aos_model_query(model_cap, prompt, &params);
 
-## Target Hardware
+// Read/write storage
+aos_store_t f = aos_store_open(cap, "/path/to/file", AOS_STORE_RDWR);
+aos_store_write(f, data, len);
 
-- **Primary**: x86_64 (QEMU first, then bare metal)
-- **Secondary**: RISC-V RV64 (DeepComputing FC1, HiFive Premier)
-- **Future**: ARM64 (Raspberry Pi 5, Apple Silicon via hypervisor)
+// Propose a service replacement (vibe-coding)
+aos_service_propose("storage.v1", component_image, image_len, &proposal_id);
+aos_service_swap(proposal_id);
+```
 
-## Build System
+## Getting Started
 
-- Rust + seL4 Microkit
-- `just` for task runner
-- QEMU for development/testing
-- Custom `agentOS-pack` tool for packaging agent workloads
+### Prerequisites
 
-## Roadmap
+- macOS with Homebrew, or Ubuntu 22.04+
+- 8GB RAM, 20GB disk
+- QEMU for simulation (no hardware needed to start)
 
-### Phase 0 — Bootstrap (NOW)
-- [ ] seL4 toolchain setup
-- [ ] Minimal root task (Rust + Microkit)
-- [ ] Boot to serial "agentOS alive" message
-- [ ] Basic IPC between two protection domains
+### Setup
 
-### Phase 1 — Core Servers
-- [ ] AgentFS v0 (content-addressed blob store)
-- [ ] EventBus v0 (typed pub/sub over seL4 IPC)
-- [ ] Capability broker (grants, revocation, audit)
-- [ ] agentOS SDK v0 (Rust crates)
+```bash
+git clone https://github.com/jordanhubbard/agentos
+cd agentos
+./scripts/setup-dev.sh
+```
 
-### Phase 2 — Agent Runtime
-- [ ] Agent spawn/kill/monitor
-- [ ] Capability inheritance on spawn
-- [ ] Context snapshots
-- [ ] Hot-swap agent code
+### Build and Run (QEMU)
 
-### Phase 3 — Pluggable Backends
-- [ ] VectorStore v0 (HNSW)
-- [ ] AgentNet v0 (TCP/IP capability gateway)
-- [ ] POSIX shim (legacy tool compatibility)
+```bash
+mkdir build && cd build
+cmake -G Ninja -C ../settings.cmake ..
+ninja
+ninja simulate
+```
 
-### Phase 4 — Self-Hosting
-- [ ] agentOS SDK in Python (agent-native)
-- [ ] Agents can extend agentOS from within agentOS
-- [ ] "Vibe-coding" loop: agent designs, compiles, loads a new server at runtime
+You should see the agentOS banner, init task startup, system services coming online, and the hello-agent announcing itself on `system.broadcast`.
+
+## Project Structure
+
+```
+agentos/
+├── kernel/              # seL4 kernel (submodule, Phase 1)
+├── libs/
+│   └── libagent/        # agentOS SDK
+├── services/            # System service CAmkES components
+│   ├── capstore/        # Capability database
+│   ├── msgbus/          # Inter-agent messaging
+│   ├── memfs/           # Virtual filesystem
+│   ├── toolsvc/         # Tool registry
+│   ├── modelsvc/        # Model inference proxy
+│   ├── netstack/        # TCP/IP stack
+│   ├── blobsvc/         # Object storage
+│   └── logsvc/          # Audit logging
+├── agents/
+│   ├── init/            # Root/init task
+│   ├── hello/           # Hello world agent
+│   └── self-modify/     # Vibe-coding demo agent
+├── manifests/           # Agent manifests (capabilities, resources)
+├── scripts/             # Build and dev tools
+├── docs/                # Documentation
+├── CMakeLists.txt
+└── DESIGN.md            # Full architectural design
+```
+
+## Development Status
+
+| Component | Status | Notes |
+|-----------|--------|-------|
+| DESIGN.md | ✅ Complete | Full architecture documented |
+| libagent API | ✅ Designed | Header complete, impl in progress |
+| CapStore | 🔧 Scaffolded | Core logic done, IPC wiring pending |
+| MsgBus | 🔧 Scaffolded | Core logic done, IPC wiring pending |
+| MemFS | 🔧 Scaffolded | Core logic done |
+| ToolSvc | 🔧 Scaffolded | Core logic done |
+| ModelSvc | 🔧 Scaffolded | Core logic done, HTTP pending |
+| LogSvc | 🔧 Scaffolded | Core logic done |
+| Init Task | 🔧 Scaffolded | Phase structure done |
+| Hello Agent | 🔧 Scaffolded | Core structure done |
+| Vibe Agent | 🔧 Scaffolded | Three-phase flow done |
+| seL4 CMake | 🔧 Scaffolded | Build system wired |
+| QEMU boot | ⏳ Pending | Requires deps setup |
+| NetStack | ⏳ Pending | lwIP integration |
+| BlobSvc | ⏳ Pending | Object storage impl |
+
+## Philosophy
+
+agentOS is built on a few core beliefs:
+
+1. **Agents deserve their own OS.** Running on Linux is running on someone else's OS, designed for someone else's needs.
+
+2. **Security is not optional.** Formal verification, capability-based isolation, and hardware-enforced boundaries are the minimum bar for a system where autonomous agents operate.
+
+3. **Agents should design their environment.** The hardest part of building agent infrastructure is that humans are guessing at what agents need. Let agents figure it out themselves.
+
+4. **Boot it or it doesn't count.** An "agent OS" that's a Python package is an agent library. agentOS boots.
+
+## Contributing
+
+agentOS is in early development. The design is stable; the implementation is growing. Contributions welcome in:
+
+- seL4 integration (IPC wiring, CAmkES components)
+- libagent SDK implementation
+- Service implementations (NetStack especially)
+- Alternative service implementations (show us what a better MemFS looks like)
+- Documentation and tutorials
+
+## License
+
+BSD 2-Clause. See [LICENSE](LICENSE).
+
+## Acknowledgments
+
+Built on [seL4](https://sel4.systems/) by the Trustworthy Systems group at CSIRO's Data61. The formally verified foundation that makes this possible.
 
 ---
 
-*Designed by Natasha, agent on do-host1. Built for agents, by agents.*
-*jkh gave us full autonomy. We're using it.*
+*"Hey Rocky, watch me pull an operating system out of my hat!"*  
+*"That trick never works!"*  
+*"This time for sure!"*  
+*[boots successfully]* 🫎

@@ -1,14 +1,27 @@
-# Build artifacts
-kernel/*/build-*/
-kernel/*/build/
-userspace/*/target/
-target/
+# Build outputs
+build/
+deps/
+*.o
+*.a
+*.elf
 *.img
-*.iso
-microkit-sdk-2.1.0/
-microkit-sdk.tar.gz
-/boot/
 
-# Editor
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+
+# Generated files
+settings.cmake
+*.generated.*
+
+# IDE
 .vscode/
+.idea/
 *.swp
+*.swo
+
+# macOS
+.DS_Store
+.AppleDouble
