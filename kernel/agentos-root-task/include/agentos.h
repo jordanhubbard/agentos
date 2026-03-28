@@ -78,6 +78,12 @@ typedef enum {
     MSG_EVENT_AGENT_EXITED     = 0x0402,
     MSG_EVENT_SYSTEM_READY     = 0x0403,
 
+    /* AgentFS event types (published to EventBus) */
+    MSG_EVENT_PUBLISH          = 0x0410,  /* generic EventBus publish op */
+    EVT_OBJECT_CREATED         = 0x0411,  /* new object stored */
+    EVT_OBJECT_DELETED         = 0x0412,  /* object tombstoned */
+    EVT_OBJECT_EVICTED         = 0x0413,  /* object moved to cold tier */
+
     /* Vibe Swap (VibeEngine -> Controller -> Swap Slots) */
     MSG_VIBE_SWAP_BEGIN        = 0x0501,  /* VibeEngine -> Controller: start swap */
     MSG_VIBE_SWAP_ACTIVATE     = 0x0502,  /* Controller -> slot: go live */

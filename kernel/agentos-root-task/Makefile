@@ -44,19 +44,19 @@ LDFLAGS := -L$(BOARD_DIR)/lib
 LIBS    := -lmicrokit -Tmicrokit.ld
 
 # Protection Domain ELFs
-PD_MONITOR_SRCS   := src/monitor.c src/cap_broker.c src/agent_pool.c src/vibe_swap.c src/log.c
+PD_MONITOR_SRCS   := src/monitor.c src/cap_broker.c src/agent_pool.c src/log.c
 PD_EVENTBUS_SRCS  := src/event_bus.c src/log.c
 PD_INITAGENT_SRCS := src/init_agent.c src/log.c
 PD_WORKER_SRCS    := src/worker.c src/log.c
-PD_SWAPSLOT_SRCS  := src/swap_slot.c src/log.c
+PD_AGENTFS_SRCS   := src/agentfs.c src/log.c
 
-CONTROLLER_OBJS  := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_MONITOR_SRCS))
-EVENTBUS_OBJS    := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_EVENTBUS_SRCS))
-INITAGENT_OBJS   := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_INITAGENT_SRCS))
-WORKER_OBJS      := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_WORKER_SRCS))
-SWAPSLOT_OBJS    := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_SWAPSLOT_SRCS))
+CONTROLLER_OBJS := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_MONITOR_SRCS))
+EVENTBUS_OBJS   := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_EVENTBUS_SRCS))
+INITAGENT_OBJS  := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_INITAGENT_SRCS))
+WORKER_OBJS     := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_WORKER_SRCS))
+AGENTFS_OBJS    := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_AGENTFS_SRCS))
 
-IMAGES := controller.elf event_bus.elf init_agent.elf worker.elf swap_slot.elf
+IMAGES := controller.elf event_bus.elf init_agent.elf worker.elf agentfs.elf
 IMAGE_FILE  := $(BUILD_DIR)/agentos.img
 REPORT_FILE := $(BUILD_DIR)/agentos-report.txt
 
@@ -78,7 +78,7 @@ $(BUILD_DIR)/init_agent.elf: $(INITAGENT_OBJS)
 $(BUILD_DIR)/worker.elf: $(WORKER_OBJS)
 	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
 
-$(BUILD_DIR)/swap_slot.elf: $(SWAPSLOT_OBJS)
+$(BUILD_DIR)/agentfs.elf: $(AGENTFS_OBJS)
 	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
 
 $(IMAGE_FILE) $(REPORT_FILE): $(addprefix $(BUILD_DIR)/, $(IMAGES)) agentos.system
