@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "userspace/sdk",
+    "userspace/servers/agent-fs",
     "userspace/servers/event-bus",
     "userspace/servers/capability-broker",
     "userspace/agents/init-agent",

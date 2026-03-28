@@ -4,5 +4,9 @@ version = "0.1.0"
 edition = "2021"
 description = "AgentFS - content-addressable filesystem with semantic search for agentOS"
 
+[features]
+default = []
+std = ["agentos-sdk/std"]
+
 [dependencies]
 agentos-sdk = { path = "../../sdk" }
