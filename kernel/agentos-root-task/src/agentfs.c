@@ -94,10 +94,10 @@ typedef struct {
     /* Optional vector embedding (for semantic search) */
     uint16_t     vec_dim;     /* 0 if no vector */
     float        vec[MAX_VECTOR_DIM];
-} object_t;
+} agentfs_obj_t;
 
 /* ── In-memory hot store ────────────────────────────────────────────────── */
-static object_t  hot_index[MAX_HOT_OBJECTS];
+static agentfs_obj_t  hot_index[MAX_HOT_OBJECTS];
 static uint8_t   blob_store[BLOB_STORE_SIZE];
 static uint32_t  blob_watermark = 0;
 static uint32_t  hot_count = 0;
@@ -137,7 +137,7 @@ static void simple_hash(const uint8_t *data, uint32_t len, uint8_t out[32]) {
 }
 
 /* ── Object lookup by ID ────────────────────────────────────────────────── */
-static object_t *find_object(const object_id_t *id) {
+static agentfs_obj_t *find_object(const object_id_t *id) {
     for (uint32_t i = 0; i < hot_count; i++) {
         if (hot_index[i].state == OBJ_STATE_LIVE) {
             bool match = true;
@@ -201,7 +201,7 @@ static microkit_msginfo handle_put(microkit_msginfo msg) {
         return microkit_msginfo_new(0, 1);
     }
 
-    object_t *obj = &hot_index[hot_count++];
+    agentfs_obj_t *obj = &hot_index[hot_count++];
     obj->version     = 1;
     obj->size        = size;
     obj->cap_tag     = cap_tag;
@@ -249,7 +249,7 @@ static microkit_msginfo handle_get(microkit_msginfo msg) {
             query_id.bytes[w*4+b] = (words[w] >> (24 - b*8)) & 0xff;
 
     total_gets++;
-    object_t *obj = find_object(&query_id);
+    agentfs_obj_t *obj = find_object(&query_id);
     if (!obj) {
         microkit_mr_set(0, AFS_ERR_NOENT);
         return microkit_msginfo_new(0, 1);
@@ -284,7 +284,7 @@ static microkit_msginfo handle_vector(microkit_msginfo msg) {
 
     /* Linear scan — HNSW graph acceleration deferred to Phase 2 */
     float best_score = -1.0f;
-    object_t *best = NULL;
+    agentfs_obj_t *best = NULL;
     for (uint32_t i = 0; i < hot_count; i++) {
         if (hot_index[i].state != OBJ_STATE_LIVE) continue;
         if (hot_index[i].vec_dim == 0) continue;
@@ -346,7 +346,7 @@ static microkit_msginfo handle_delete(microkit_msginfo msg) {
         for (int b = 0; b < 4; b++)
             del_id.bytes[w*4+b] = (words[w] >> (24 - b*8)) & 0xff;
 
-    object_t *obj = find_object(&del_id);
+    agentfs_obj_t *obj = find_object(&del_id);
     if (!obj) {
         microkit_mr_set(0, AFS_ERR_NOENT);
         return microkit_msginfo_new(0, 1);

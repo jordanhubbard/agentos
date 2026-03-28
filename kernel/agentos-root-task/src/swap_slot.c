@@ -27,6 +27,7 @@
 
 #define AGENTOS_DEBUG 1
 #include "agentos.h"
+#include "wasm3_host.h"
 
 #define CH_CONTROLLER 0
 
@@ -59,6 +60,7 @@ typedef enum {
 static slot_state_t state = SLOT_IDLE;
 static uint64_t     requests_served = 0;
 static uint64_t     health_checks_passed = 0;
+static wasm3_host_t *wasm_host = NULL;  /* Active WASM runtime (if loaded) */
 
 /*
  * Check if the code region has been loaded with new code
@@ -87,26 +89,32 @@ static bool load_service(void) {
     switch (hdr->code_format) {
         case 1: /* WASM */
             microkit_dbg_puts("[swap_slot] Format: WASM module\n");
-            /* TODO: WASM interpreter/JIT
-             *
-             * This is where the real magic happens. The swap slot PD
-             * includes a minimal WASM runtime (like wasm3 or WAMR)
-             * that can execute the agent-generated service code.
-             *
-             * The WASM module must export:
-             *   - init() -> void
-             *   - handle_ppc(label, mr0, mr1, mr2, mr3) -> (label, mr0, mr1, mr2, mr3)
-             *   - health_check() -> bool
-             *
-             * And can import (from the agentOS WASM host):
-             *   - aos_log(level, msg_ptr, msg_len) -> void
-             *   - aos_time_us() -> u64
-             *   - aos_mem_read(offset, buf, len) -> i32
-             *   - aos_mem_write(offset, buf, len) -> i32
-             */
-            microkit_dbg_puts("[swap_slot] WASM runtime: not yet implemented\n");
-            microkit_dbg_puts("[swap_slot] (Scaffolded — will use wasm3 or WAMR)\n");
-            return false;  /* Can't run WASM yet */
+            
+            /* Destroy any previously loaded runtime */
+            if (wasm_host) {
+                wasm3_host_destroy(wasm_host);
+                wasm_host = NULL;
+            }
+            
+            /* The WASM binary starts after the header */
+            const uint8_t *wasm_bytes = (const uint8_t *)(CODE_REGION_BASE + hdr->code_offset);
+            uint32_t wasm_size = hdr->code_size;
+            
+            /* Initialize wasm3 runtime and load the module */
+            wasm_host = wasm3_host_init(wasm_bytes, wasm_size);
+            if (!wasm_host) {
+                microkit_dbg_puts("[swap_slot] ERROR: WASM runtime init failed\n");
+                return false;
+            }
+            
+            /* Call the module's init() export */
+            if (!wasm3_host_call_init(wasm_host)) {
+                microkit_dbg_puts("[swap_slot] WARNING: WASM init() failed or not found\n");
+                /* Non-fatal — module may not have init() */
+            }
+            
+            microkit_dbg_puts("[swap_slot] *** WASM module loaded and running ***\n");
+            return true;
             
         case 2: /* Bytecode (simple custom format for prototyping) */
             microkit_dbg_puts("[swap_slot] Format: bytecode\n");
@@ -174,12 +182,20 @@ microkit_msginfo protected(microkit_channel ch, microkit_msginfo msginfo) {
     
     switch (label) {
         case MSG_VIBE_SWAP_HEALTH:
-            /* Health check */
+            /* Health check — ask the WASM module if it's healthy */
             health_checks_passed++;
             if (state == SLOT_ACTIVE) {
-                microkit_mr_set(0, requests_served);
-                microkit_mr_set(1, health_checks_passed);
-                return microkit_msginfo_new(MSG_VIBE_SLOT_HEALTHY, 2);
+                bool healthy = true;
+                if (wasm_host) {
+                    healthy = wasm3_host_call_health_check(wasm_host);
+                }
+                if (healthy) {
+                    microkit_mr_set(0, requests_served);
+                    microkit_mr_set(1, health_checks_passed);
+                    return microkit_msginfo_new(MSG_VIBE_SLOT_HEALTHY, 2);
+                } else {
+                    return microkit_msginfo_new(MSG_VIBE_SLOT_FAILED, 0);
+                }
             } else {
                 return microkit_msginfo_new(MSG_VIBE_SLOT_FAILED, 0);
             }
@@ -193,13 +209,29 @@ microkit_msginfo protected(microkit_channel ch, microkit_msginfo msginfo) {
             
         default:
             if (state == SLOT_ACTIVE) {
-                /* This is an actual service request being proxied through us.
-                 * In the full implementation, this would be dispatched to
-                 * the loaded WASM module's handle_ppc() export.
-                 *
-                 * For now: echo back with a "service running" indicator.
-                 */
                 requests_served++;
+                
+                /* Dispatch to WASM module if loaded */
+                if (wasm_host) {
+                    uint64_t mr0 = microkit_mr_get(0);
+                    uint64_t mr1 = microkit_mr_get(1);
+                    uint64_t mr2 = microkit_mr_get(2);
+                    uint64_t mr3 = microkit_mr_get(3);
+                    
+                    wasm_ppc_result_t result;
+                    if (wasm3_host_call_ppc(wasm_host, label, mr0, mr1, mr2, mr3, &result)) {
+                        microkit_mr_set(0, result.mr0);
+                        microkit_mr_set(1, result.mr1);
+                        microkit_mr_set(2, result.mr2);
+                        microkit_mr_set(3, result.mr3);
+                        return microkit_msginfo_new(result.label, 4);
+                    }
+                    /* WASM call failed — fall through to error */
+                    microkit_dbg_puts("[swap_slot] WASM handle_ppc() failed\n");
+                    return microkit_msginfo_new(MSG_VIBE_SLOT_FAILED, 0);
+                }
+                
+                /* No WASM module — echo back (legacy behavior) */
                 microkit_mr_set(0, 0);  /* AOS_OK */
                 microkit_mr_set(1, requests_served);
                 return microkit_msginfo_new(label, 2);

@@ -32,6 +32,8 @@
 
 extern crate alloc;
 
+pub mod wasm;
+
 use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -177,6 +179,11 @@ impl ContentStore {
         self.metadata.get(hash)
     }
     
+    /// Check whether a content hash already exists in the store
+    pub fn contains(&self, hash: &ContentHash) -> bool {
+        self.objects.contains_key(hash)
+    }
+
     /// Compute SHA-256 hash of content
     /// NOTE: In production, this uses a proper SHA-256 implementation.
     /// For no_std, we'll use a minimal software SHA-256.
@@ -211,8 +218,8 @@ pub struct AgentFs {
     pub namespaces: BTreeMap<String, Namespace>,
     /// Shared namespace (readable by all agents with basic StoreCap)
     pub shared: Namespace,
-    /// WASM module store — typed, validated, cap-aware
-    pub wasm: WasmStore,
+    /// WASM module store — typed, validated, cap-aware overlay for application/wasm objects
+    pub wasm: wasm::WasmStore,
     /// Total operations processed
     pub ops_count: u64,
 }
@@ -223,7 +230,7 @@ impl AgentFs {
             store: ContentStore::new(),
             namespaces: BTreeMap::new(),
             shared: Namespace::new("shared".into(), [0u8; 32]),
-            wasm: WasmStore::new(),
+            wasm: wasm::WasmStore::new(),
             ops_count: 0,
         }
     }
@@ -274,6 +281,55 @@ impl AgentFs {
         Some(hash)
     }
     
+    /// Put a WASM module — validates, stores in WasmStore, then also stores
+    /// raw bytes in the content store so vibe-swap can fetch them by hash.
+    ///
+    /// Returns `(content_hash, wasm_meta)` on success.
+    /// Returns `Err` if WASM validation fails (bad magic, unknown imports, etc.)
+    pub fn put_wasm(
+        &mut self,
+        namespace: &str,
+        key: String,
+        content: Vec<u8>,
+        creator: [u8; 32],
+        submitted_at: u64,
+    ) -> Result<ContentHash, wasm::WasmValidationError> {
+        // 1. Validate + store in WasmStore
+        let hash = self.wasm.submit(&content, creator, submitted_at)?;
+
+        // 2. Also store raw bytes in the regular content store (so vibe-swap
+        //    can fetch them via OP_AGENTFS_GET by hash)
+        if !self.store.contains(&hash) {
+            // Create namespace if missing (first-time caller)
+            if !self.namespaces.contains_key(namespace) {
+                self.namespaces.insert(
+                    namespace.into(),
+                    Namespace::new(namespace.into(), creator),
+                );
+            }
+            let ns = self.namespaces.get_mut(namespace).unwrap();
+            let version = ns.versions.get(&key).map(|v| v.len() as u64 + 1).unwrap_or(1);
+            let meta = FsObjectMeta {
+                key: key.clone(),
+                content_type: "application/wasm".into(),
+                creator,
+                created_at: submitted_at,
+                tags: vec!["wasm".into(), "module".into()],
+                embedding: None,
+                size: content.len() as u64,
+                version,
+                custom: Vec::new(),
+            };
+            self.store.put(content, meta);
+            ns.index.insert(key.clone(), hash);
+            ns.versions.entry(key).or_insert_with(Vec::new).push(hash);
+            ns.object_count += 1;
+        }
+
+        self.ops_count += 1;
+        Ok(hash)
+    }
+
     /// Get an object by key from a namespace
     pub fn get(&self, namespace: &str, key: &str) -> Option<(&Vec<u8>, &FsObjectMeta)> {
         let ns = self.namespaces.get(namespace)?;
@@ -375,283 +431,37 @@ pub struct NamespaceCheckpoint {
 }
 
 // ============================================================================
-// WASM Module Store — typed capability-gated WASM object storage
-// ============================================================================
-
-/// WASM magic bytes: \0asm
-const WASM_MAGIC: [u8; 4] = [0x00, 0x61, 0x73, 0x6d];
-/// WASM version field (little-endian 1)
-const WASM_VERSION: [u8; 4] = [0x01, 0x00, 0x00, 0x00];
-
-/// Capability requirements extracted from a WASM module
-#[derive(Debug, Clone)]
-pub struct WasmCapRequirements {
-    /// Imported function names that signal capability needs
-    pub imports: Vec<String>,
-    /// Exported function names (entry points)
-    pub exports: Vec<String>,
-}
-
-/// Validated WASM module descriptor stored alongside the raw bytes
-#[derive(Debug, Clone)]
-pub struct WasmModuleMeta {
-    /// Content hash of the raw WASM bytes (same as AgentFS content hash)
-    pub content_hash: ContentHash,
-    /// Total byte size
-    pub size: u64,
-    /// Capability requirements inferred from imports/exports
-    pub caps: WasmCapRequirements,
-    /// Agent that submitted the module
-    pub submitter: [u8; 32],
-    /// Human-readable module name
-    pub name: String,
-    /// Semantic version string (e.g. "1.0.0")
-    pub version: String,
-}
-
-/// Validation result for a WASM module submission
-#[derive(Debug)]
-pub enum WasmValidation {
-    Ok(WasmModuleMeta),
-    InvalidMagic,
-    TooSmall,
-    ParseError(String),
-}
-
-/// WASM module store — sits on top of AgentFS ContentStore
-pub struct WasmStore {
-    /// module_name -> content hash (latest version)
-    pub index: BTreeMap<String, ContentHash>,
-    /// content_hash -> parsed descriptor
-    pub descriptors: BTreeMap<ContentHash, WasmModuleMeta>,
-}
-
-impl WasmStore {
-    pub fn new() -> Self {
-        Self {
-            index: BTreeMap::new(),
-            descriptors: BTreeMap::new(),
-        }
-    }
-
-    /// Validate raw WASM bytes and extract module metadata.
-    /// Returns WasmValidation::Ok with the descriptor on success.
-    pub fn validate(bytes: &[u8], name: &str, version: &str, submitter: [u8; 32]) -> WasmValidation {
-        if bytes.len() < 8 {
-            return WasmValidation::TooSmall;
-        }
-        if bytes[0..4] != WASM_MAGIC {
-            return WasmValidation::InvalidMagic;
-        }
-        if bytes[4..8] != WASM_VERSION {
-            return WasmValidation::ParseError("unknown WASM version".into());
-        }
-
-        // Lightweight section scanner — extract import/export names
-        // WASM binary format: 8-byte header, then sections [id:u8, size:leb128, payload...]
-        let mut imports = Vec::new();
-        let mut exports = Vec::new();
-        let mut pos = 8usize;
-
-        while pos < bytes.len() {
-            if pos + 1 > bytes.len() { break; }
-            let section_id = bytes[pos];
-            pos += 1;
-
-            // Decode LEB128 section size
-            let (section_size, leb_bytes) = decode_leb128(&bytes[pos..]);
-            pos += leb_bytes;
-
-            let section_end = pos + section_size;
-            if section_end > bytes.len() { break; }
-
-            match section_id {
-                2 => { // Import section
-                    let _ = parse_import_section(&bytes[pos..section_end], &mut imports);
-                }
-                7 => { // Export section
-                    let _ = parse_export_section(&bytes[pos..section_end], &mut exports);
-                }
-                _ => {} // Skip other sections
-            }
-
-            pos = section_end;
-        }
-
-        // Compute content hash for the raw bytes
-        let mut hash = [0u8; 32];
-        let mut h: u64 = 0xcbf29ce484222325;
-        for byte in bytes {
-            h ^= *byte as u64;
-            h = h.wrapping_mul(0x100000001b3);
-        }
-        for i in 0..4 {
-            let offset = i * 8;
-            let val = h.wrapping_add(i as u64).wrapping_mul(0x9e3779b97f4a7c15);
-            hash[offset..offset+8].copy_from_slice(&val.to_le_bytes());
-        }
-
-        WasmValidation::Ok(WasmModuleMeta {
-            content_hash: hash,
-            size: bytes.len() as u64,
-            caps: WasmCapRequirements { imports, exports },
-            submitter,
-            name: name.into(),
-            version: version.into(),
-        })
-    }
-
-    /// Register a validated module descriptor.
-    pub fn register(&mut self, meta: WasmModuleMeta) {
-        self.index.insert(meta.name.clone(), meta.content_hash);
-        self.descriptors.insert(meta.content_hash, meta);
-    }
-
-    /// Look up a module descriptor by name.
-    pub fn get_by_name(&self, name: &str) -> Option<&WasmModuleMeta> {
-        let hash = self.index.get(name)?;
-        self.descriptors.get(hash)
-    }
-
-    /// Look up a module descriptor by content hash.
-    pub fn get_by_hash(&self, hash: &ContentHash) -> Option<&WasmModuleMeta> {
-        self.descriptors.get(hash)
-    }
-
-    /// List all registered module names.
-    pub fn list(&self) -> Vec<&str> {
-        self.index.keys().map(|s| s.as_str()).collect()
-    }
-}
-
-/// Decode a single unsigned LEB128 value. Returns (value, bytes_consumed).
-fn decode_leb128(bytes: &[u8]) -> (usize, usize) {
-    let mut result = 0usize;
-    let mut shift = 0;
-    let mut consumed = 0;
-    for &b in bytes {
-        consumed += 1;
-        result |= ((b & 0x7f) as usize) << shift;
-        if b & 0x80 == 0 { break; }
-        shift += 7;
-        if shift >= 64 { break; }
-    }
-    (result, consumed)
-}
-
-/// Decode a WASM name (u32 length-prefixed UTF-8 string).
-fn decode_wasm_name(bytes: &[u8]) -> Option<(String, usize)> {
-    let (len, leb) = decode_leb128(bytes);
-    let start = leb;
-    let end = start + len;
-    if end > bytes.len() { return None; }
-    let s = core::str::from_utf8(&bytes[start..end]).ok()?;
-    Some((s.into(), end))
-}
-
-/// Parse the WASM import section, extracting import names into `out`.
-fn parse_import_section(payload: &[u8], out: &mut Vec<String>) -> Option<()> {
-    let (count, mut pos) = decode_leb128(payload);
-    for _ in 0..count {
-        // module name
-        let (_, adv) = decode_wasm_name(&payload[pos..])?;
-        pos += adv;
-        // field name
-        let (field, adv) = decode_wasm_name(&payload[pos..])?;
-        pos += adv;
-        // import kind (1 byte) + type index (LEB128)
-        if pos >= payload.len() { break; }
-        let kind = payload[pos]; pos += 1;
-        let (_, adv) = decode_leb128(&payload[pos..]);
-        pos += adv;
-        if kind == 0 { // Function import
-            out.push(field);
-        }
-    }
-    Some(())
-}
-
-/// Parse the WASM export section, extracting exported function names into `out`.
-fn parse_export_section(payload: &[u8], out: &mut Vec<String>) -> Option<()> {
-    let (count, mut pos) = decode_leb128(payload);
-    for _ in 0..count {
-        let (name, adv) = decode_wasm_name(&payload[pos..])?;
-        pos += adv;
-        if pos >= payload.len() { break; }
-        let kind = payload[pos]; pos += 1;
-        let (_, adv) = decode_leb128(&payload[pos..]);
-        pos += adv;
-        if kind == 0 { // Function export
-            out.push(name);
-        }
-    }
-    Some(())
-}
-
-// ============================================================================
-// AgentFS — WASM-typed put + vibe-swap loader bridge
+// AgentFS — vibe-swap loader bridge
 // ============================================================================
 
 impl AgentFs {
-    /// Store a WASM module: validates magic + structure, extracts cap requirements,
-    /// stores raw bytes in the content-addressable store, and registers the descriptor
-    /// in the WasmStore. Returns the module descriptor on success.
-    ///
-    /// This is the submission path for the WASM hot-swap demo:
-    /// `agent → put_wasm() → AgentFS (validated, content-addressed) → vibe-swap slot`
-    pub fn put_wasm(
-        &mut self,
-        namespace: &str,
-        name: &str,
-        version: &str,
-        wasm_bytes: Vec<u8>,
-        submitter: [u8; 32],
-    ) -> Result<WasmModuleMeta, WasmValidation> {
-        // 1. Validate the module before touching storage
-        let meta = match WasmStore::validate(&wasm_bytes, name, version, submitter) {
-            WasmValidation::Ok(m) => m,
-            err => return Err(err),
-        };
-
-        // 2. Store raw bytes in AgentFS (content-addressed, deduplicated)
-        let key = alloc::format!("wasm/{}/{}", name, version);
-        self.put(
-            namespace,
-            key,
-            wasm_bytes,
-            "application/wasm".into(),
-            alloc::vec!["wasm".into(), name.into()],
-            None,
-            submitter,
-        );
-
-        // 3. Register validated descriptor in WasmStore
-        self.wasm.register(meta.clone());
-
-        Ok(meta)
-    }
-
     /// Prepare a VibeSwapRequest for a stored WASM module.
-    /// This is the bridge to Bullwinkle's vibe-swap pipeline:
+    /// This is the bridge to vibe-swap pipeline:
     /// AgentFS descriptor → VibeSwapRequest { hash, caps, entry_fn }
+    ///
+    /// `service_slot` is the slot name the module was assigned to via
+    /// `wasm.assign_to_slot()`. Returns `None` if no module is assigned.
     pub fn make_swap_request(
         &self,
-        module_name: &str,
+        service_slot: &str,
         entry_fn: Option<String>,
     ) -> Option<VibeSwapRequest> {
-        let meta = self.wasm.get_by_name(module_name)?;
+        let meta = self.wasm.latest_for_slot(service_slot)?;
         let entry = entry_fn.unwrap_or_else(|| {
             // Default entry point: prefer "run", then "start", then "main", then first export
-            meta.caps.exports.iter()
-                .find(|e| *e == "run" || *e == "start" || *e == "main")
-                .cloned()
-                .unwrap_or_else(|| meta.caps.exports.first().cloned().unwrap_or_default())
+            meta.exports.iter()
+                .find(|e| e.name == "run" || e.name == "start" || e.name == "main")
+                .map(|e| e.name.clone())
+                .unwrap_or_else(|| meta.exports.first().map(|e| e.name.clone()).unwrap_or_default())
         });
+        // Collect capability import names for audit/gating
+        let caps_required: Vec<String> = meta.caps.imports.iter()
+            .map(|i| alloc::format!("{}::{}", i.module, i.name))
+            .collect();
         Some(VibeSwapRequest {
             content_hash: meta.content_hash,
-            module_name: meta.name.clone(),
-            version: meta.version.clone(),
-            caps_required: meta.caps.imports.clone(),
+            service_slot: service_slot.into(),
+            caps_required,
             entry_fn: entry,
         })
     }
@@ -661,13 +471,11 @@ impl AgentFs {
 /// Rocky wires this to the RCC submission endpoint; Bullwinkle's loader picks it up.
 #[derive(Debug, Clone)]
 pub struct VibeSwapRequest {
-    /// Content hash — AgentFS fetch key
-    pub content_hash: ContentHash,
-    /// Human-readable module name
-    pub module_name: String,
-    /// Module version
-    pub version: String,
-    /// Capability imports required to execute (from WASM import section)
+    /// Content hash — AgentFS fetch key (content-addressed)
+    pub content_hash: [u8; 32],
+    /// Target service slot name
+    pub service_slot: String,
+    /// Capability imports required to execute (namespace::symbol pairs)
     pub caps_required: Vec<String>,
     /// Entry function to invoke after loading
     pub entry_fn: String,
@@ -791,35 +599,29 @@ mod tests {
     }
 
     // -------------------------------------------------------------------------
-    // WASM module store tests
+    // WASM module store tests (using wasm:: module API)
     // -------------------------------------------------------------------------
 
-    /// Minimal valid WASM module: empty module (magic + version only)
+    /// Minimal valid WASM module: magic + version only (no sections)
     fn minimal_wasm() -> Vec<u8> {
         let mut v = Vec::new();
-        v.extend_from_slice(&WASM_MAGIC);
-        v.extend_from_slice(&WASM_VERSION);
+        v.extend_from_slice(&[0x00, 0x61, 0x73, 0x6d]); // \0asm
+        v.extend_from_slice(&[0x01, 0x00, 0x00, 0x00]); // version 1
         v
     }
 
-    /// WASM module with one exported function named "run"
-    /// Encoding: export section (id=7), 1 export, name="run", kind=0, index=0
+    /// WASM module with one exported function
+    /// Export section (id=7): 1 export, name=<name>, kind=0 (func), index=0
     fn wasm_with_export(name: &str) -> Vec<u8> {
         let mut payload: Vec<u8> = Vec::new();
-        // count = 1
-        payload.push(1);
-        // name length + bytes
+        payload.push(1); // export count
         payload.push(name.len() as u8);
         payload.extend_from_slice(name.as_bytes());
-        // kind = 0 (function)
-        payload.push(0);
-        // function index = 0
-        payload.push(0);
+        payload.push(0); // kind = function
+        payload.push(0); // function index
 
         let mut module = minimal_wasm();
-        // section id = 7 (export)
-        module.push(7);
-        // section size
+        module.push(7); // export section id
         module.push(payload.len() as u8);
         module.extend_from_slice(&payload);
         module
@@ -828,41 +630,43 @@ mod tests {
     #[test]
     fn test_wasm_validate_invalid_magic() {
         let bad = b"not a wasm file at all".to_vec();
-        matches!(WasmStore::validate(&bad, "bad", "1.0", [0u8; 32]), WasmValidation::InvalidMagic);
+        assert!(matches!(
+            wasm::validate_and_parse(&bad, [0u8; 32], 0, [0u8; 32]),
+            Err(wasm::WasmValidationError::BadMagic)
+        ));
     }
 
     #[test]
     fn test_wasm_validate_too_small() {
-        let tiny = b"\x00asm".to_vec();
-        matches!(WasmStore::validate(&tiny, "tiny", "1.0", [0u8; 32]), WasmValidation::TooSmall);
+        let tiny = b"\x00asm".to_vec(); // only 4 bytes, no version
+        assert!(matches!(
+            wasm::validate_and_parse(&tiny, [0u8; 32], 0, [0u8; 32]),
+            Err(wasm::WasmValidationError::TooSmall)
+        ));
     }
 
     #[test]
     fn test_wasm_validate_minimal_module() {
-        let wasm = minimal_wasm();
-        let result = WasmStore::validate(&wasm, "empty-module", "0.1.0", [0xAAu8; 32]);
-        match result {
-            WasmValidation::Ok(meta) => {
-                assert_eq!(meta.name, "empty-module");
-                assert_eq!(meta.version, "0.1.0");
-                assert_eq!(meta.size, 8);
-                assert!(meta.caps.exports.is_empty());
-            }
-            _ => panic!("expected Ok for minimal valid WASM"),
-        }
+        let bytes = minimal_wasm();
+        let hash = [0xAAu8; 32];
+        let result = wasm::validate_and_parse(&bytes, [0xAAu8; 32], 0, hash);
+        assert!(result.is_ok(), "minimal wasm should validate: {:?}", result.err());
+        let meta = result.unwrap();
+        assert_eq!(meta.size, 8);
+        assert!(meta.exports.is_empty());
     }
 
     #[test]
     fn test_wasm_validate_with_export() {
-        let wasm = wasm_with_export("run");
-        let result = WasmStore::validate(&wasm, "hello-agent", "1.0.0", [0x01u8; 32]);
-        match result {
-            WasmValidation::Ok(meta) => {
-                assert!(meta.caps.exports.contains(&"run".into()),
-                    "expected 'run' in exports, got {:?}", meta.caps.exports);
-            }
-            _ => panic!("expected Ok for WASM with export"),
-        }
+        let bytes = wasm_with_export("run");
+        let hash = [0x01u8; 32];
+        let result = wasm::validate_and_parse(&bytes, [0x01u8; 32], 0, hash);
+        assert!(result.is_ok(), "wasm with export should validate: {:?}", result.err());
+        let meta = result.unwrap();
+        assert!(
+            meta.exports.iter().any(|e| e.name == "run"),
+            "expected 'run' in exports, got {:?}", meta.exports
+        );
     }
 
     #[test]
@@ -871,17 +675,16 @@ mod tests {
         let agent = [0x01u8; 32];
         fs.create_namespace(agent, "wasm-agent".into());
 
-        let wasm = wasm_with_export("run");
-        let result = fs.put_wasm("wasm-agent", "hello-agent", "1.0.0", wasm, agent);
+        let bytes = wasm_with_export("run");
+        let result = fs.put_wasm("wasm-agent", "hello-agent".into(), bytes, agent, 1000);
 
         assert!(result.is_ok(), "put_wasm failed: {:?}", result.err());
-        let meta = result.unwrap();
-        assert_eq!(meta.name, "hello-agent");
+        let hash = result.unwrap();
 
-        // Verify it's indexed in WasmStore
-        let stored = fs.wasm.get_by_name("hello-agent");
-        assert!(stored.is_some());
-        assert_eq!(stored.unwrap().version, "1.0.0");
+        // Verify stored in WasmStore by hash
+        let stored = fs.wasm.get(&hash);
+        assert!(stored.is_some(), "module should be indexed in WasmStore");
+        assert!(stored.unwrap().exports.iter().any(|e| e.name == "run"));
     }
 
     #[test]
@@ -891,8 +694,8 @@ mod tests {
         fs.create_namespace(agent, "wasm-agent".into());
 
         let garbage = b"this is not wasm".to_vec();
-        let result = fs.put_wasm("wasm-agent", "bad-module", "1.0.0", garbage, agent);
-        assert!(result.is_err());
+        let result = fs.put_wasm("wasm-agent", "bad-module".into(), garbage, agent, 0);
+        assert!(result.is_err(), "invalid WASM should be rejected");
     }
 
     #[test]
@@ -901,13 +704,16 @@ mod tests {
         let agent = [0x03u8; 32];
         fs.create_namespace(agent, "wasm-agent".into());
 
-        let wasm = wasm_with_export("run");
-        fs.put_wasm("wasm-agent", "hello-agent", "1.0.0", wasm, agent).unwrap();
+        let bytes = wasm_with_export("run");
+        let hash = fs.put_wasm("wasm-agent", "hello-agent".into(), bytes, agent, 1000).unwrap();
+
+        // Assign to a service slot so make_swap_request can find it
+        fs.wasm.assign_to_slot(hash, "hello-agent".into());
 
         let req = fs.make_swap_request("hello-agent", None);
         assert!(req.is_some());
         let req = req.unwrap();
-        assert_eq!(req.module_name, "hello-agent");
+        assert_eq!(req.service_slot, "hello-agent");
         assert_eq!(req.entry_fn, "run"); // should auto-select "run"
     }
 
@@ -917,8 +723,9 @@ mod tests {
         let agent = [0x04u8; 32];
         fs.create_namespace(agent, "wasm-agent".into());
 
-        let wasm = wasm_with_export("custom_fn");
-        fs.put_wasm("wasm-agent", "custom-mod", "2.0.0", wasm, agent).unwrap();
+        let bytes = wasm_with_export("custom_fn");
+        let hash = fs.put_wasm("wasm-agent", "custom-mod".into(), bytes, agent, 2000).unwrap();
+        fs.wasm.assign_to_slot(hash, "custom-mod".into());
 
         let req = fs.make_swap_request("custom-mod", Some("custom_fn".into()));
         assert!(req.is_some());

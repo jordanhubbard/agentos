@@ -40,23 +40,42 @@ MICROKIT_TOOL ?= $(MICROKIT_SDK)/bin/microkit
 CFLAGS := -nostdlib -ffreestanding -g -O2 -Wall -Wextra -Wno-unused-function \
            -I$(BOARD_DIR)/include -Iinclude \
            $(CFLAGS_ARCH)
+
+# wasm3-specific flags: suppress warnings from vendored code, include bare-metal shim
+CFLAGS_WASM3 := $(CFLAGS) -Iwasm3 -include $(CURDIR)/include/m3_bare_metal.h \
+                -Wno-sign-compare -Wno-unused-parameter -Wno-missing-field-initializers \
+                -Wno-cast-align -Wno-implicit-fallthrough -Dd_m3HasWASI=0
+
+# Swap slot needs wasm3 headers + bare-metal shim (same as wasm3 sources)
+CFLAGS_SWAPSLOT := $(CFLAGS) -Iwasm3 -include $(CURDIR)/include/m3_bare_metal.h
+
 LDFLAGS := -L$(BOARD_DIR)/lib
 LIBS    := -lmicrokit -Tmicrokit.ld
 
 # Protection Domain ELFs
-PD_MONITOR_SRCS   := src/monitor.c src/cap_broker.c src/agent_pool.c src/log.c
+# monitor/controller: includes vibe_swap for the hot-swap controller-side logic
+PD_MONITOR_SRCS   := src/monitor.c src/cap_broker.c src/agent_pool.c src/vibe_swap.c src/log.c
 PD_EVENTBUS_SRCS  := src/event_bus.c src/log.c
 PD_INITAGENT_SRCS := src/init_agent.c src/log.c
 PD_WORKER_SRCS    := src/worker.c src/log.c
-PD_AGENTFS_SRCS   := src/agentfs.c src/log.c
+# agentfs needs m3_bare_metal for memset/sqrtf (no wasm3 headers needed)
+PD_AGENTFS_SRCS   := src/agentfs.c src/m3_bare_metal.c src/log.c
+PD_SWAPSLOT_SRCS  := src/swap_slot.c src/wasm3_host.c src/m3_bare_metal.c src/log.c
 
-CONTROLLER_OBJS := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_MONITOR_SRCS))
-EVENTBUS_OBJS   := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_EVENTBUS_SRCS))
-INITAGENT_OBJS  := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_INITAGENT_SRCS))
-WORKER_OBJS     := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_WORKER_SRCS))
-AGENTFS_OBJS    := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_AGENTFS_SRCS))
+# wasm3 vendored sources (core interpreter only)
+WASM3_SRCS := wasm3/m3_core.c wasm3/m3_env.c wasm3/m3_code.c wasm3/m3_compile.c \
+              wasm3/m3_exec.c wasm3/m3_bind.c wasm3/m3_parse.c wasm3/m3_module.c \
+              wasm3/m3_function.c wasm3/m3_info.c
 
-IMAGES := controller.elf event_bus.elf init_agent.elf worker.elf agentfs.elf
+CONTROLLER_OBJS  := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_MONITOR_SRCS))
+EVENTBUS_OBJS    := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_EVENTBUS_SRCS))
+INITAGENT_OBJS   := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_INITAGENT_SRCS))
+WORKER_OBJS      := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_WORKER_SRCS))
+AGENTFS_OBJS     := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_AGENTFS_SRCS))
+SWAPSLOT_OBJS    := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_SWAPSLOT_SRCS))
+WASM3_OBJS       := $(patsubst wasm3/%.c, $(BUILD_DIR)/wasm3_%.o, $(WASM3_SRCS))
+
+IMAGES := controller.elf event_bus.elf init_agent.elf worker.elf agentfs.elf swap_slot.elf
 IMAGE_FILE  := $(BUILD_DIR)/agentos.img
 REPORT_FILE := $(BUILD_DIR)/agentos-report.txt
 
@@ -65,6 +84,24 @@ all: $(IMAGE_FILE)
 $(BUILD_DIR)/%.o: src/%.c
 	@mkdir -p $(BUILD_DIR)
 	$(CC) -c $(CFLAGS) $< -o $@
+
+# Swap slot sources need wasm3 headers + bare-metal shim
+$(BUILD_DIR)/swap_slot.o: src/swap_slot.c
+	@mkdir -p $(BUILD_DIR)
+	$(CC) -c $(CFLAGS_SWAPSLOT) $< -o $@
+
+$(BUILD_DIR)/wasm3_host.o: src/wasm3_host.c
+	@mkdir -p $(BUILD_DIR)
+	$(CC) -c $(CFLAGS_SWAPSLOT) $< -o $@
+
+$(BUILD_DIR)/m3_bare_metal.o: src/m3_bare_metal.c
+	@mkdir -p $(BUILD_DIR)
+	$(CC) -c $(CFLAGS) $< -o $@
+
+# Vendored wasm3 sources — compiled with bare-metal shim
+$(BUILD_DIR)/wasm3_%.o: wasm3/%.c
+	@mkdir -p $(BUILD_DIR)
+	$(CC) -c $(CFLAGS_WASM3) $< -o $@
 
 $(BUILD_DIR)/controller.elf: $(CONTROLLER_OBJS)
 	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
@@ -79,6 +116,9 @@ $(BUILD_DIR)/worker.elf: $(WORKER_OBJS)
 	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
 
 $(BUILD_DIR)/agentfs.elf: $(AGENTFS_OBJS)
+	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
+
+$(BUILD_DIR)/swap_slot.elf: $(SWAPSLOT_OBJS) $(WASM3_OBJS)
 	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
 
 $(IMAGE_FILE) $(REPORT_FILE): $(addprefix $(BUILD_DIR)/, $(IMAGES)) agentos.system
