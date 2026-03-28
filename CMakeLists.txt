@@ -46,14 +46,7 @@ set(KernelPrinting ON CACHE BOOL "Kernel debug printing")
 
 # libagent — agentOS SDK
 add_library(libagent STATIC
-    libs/libagent/src/agent_init.c
-    libs/libagent/src/agent_msg.c
-    libs/libagent/src/agent_tool.c
-    libs/libagent/src/agent_model.c
-    libs/libagent/src/agent_store.c
-    libs/libagent/src/agent_cap.c
-    libs/libagent/src/agent_service.c
-    libs/libagent/src/agent_util.c
+    libs/libagent/libagent.c
 )
 
 target_include_directories(libagent PUBLIC
@@ -82,6 +75,7 @@ target_link_libraries(capstore libagent)
 # MsgBus — Inter-agent communication
 add_library(msgbus STATIC
     services/msgbus/msgbus.c
+    services/msgbus/msgbus_seL4.c
 )
 target_include_directories(msgbus PUBLIC services/msgbus)
 target_link_libraries(msgbus libagent)
