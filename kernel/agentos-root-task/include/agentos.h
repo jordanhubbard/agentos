@@ -39,6 +39,13 @@
 #define INITAGENT_CH_MONITOR  1
 #define INITAGENT_CH_EVENTBUS 2
 
+/* Swap Slot PD channels (from swap slot perspective) */
+#define SWAPSLOT_CH_CONTROLLER 0
+
+/* Swap Slot channel IDs (from controller perspective) */
+#define SWAP_SLOT_BASE_CH     8   /* Channels 8-11 are swap slots */
+#define MAX_SWAP_SLOTS        4
+
 /*
  * IPC Message Tags
  * Packed into the microkit_msginfo label field (bits 0-63)
@@ -66,6 +73,16 @@ typedef enum {
     MSG_EVENT_AGENT_SPAWNED    = 0x0401,
     MSG_EVENT_AGENT_EXITED     = 0x0402,
     MSG_EVENT_SYSTEM_READY     = 0x0403,
+
+    /* Vibe Swap (VibeEngine -> Controller -> Swap Slots) */
+    MSG_VIBE_SWAP_BEGIN        = 0x0501,  /* VibeEngine -> Controller: start swap */
+    MSG_VIBE_SWAP_ACTIVATE     = 0x0502,  /* Controller -> slot: go live */
+    MSG_VIBE_SWAP_ROLLBACK     = 0x0503,  /* Controller: revert to previous */
+    MSG_VIBE_SWAP_HEALTH       = 0x0504,  /* Controller -> slot: health check */
+    MSG_VIBE_SWAP_STATUS       = 0x0505,  /* Query swap status */
+    MSG_VIBE_SLOT_READY        = 0x0601,  /* Swap slot -> Controller: loaded OK */
+    MSG_VIBE_SLOT_FAILED       = 0x0602,  /* Swap slot -> Controller: load failed */
+    MSG_VIBE_SLOT_HEALTHY      = 0x0603,  /* Swap slot -> Controller: health OK */
 
 } agentos_msg_tag_t;
 
