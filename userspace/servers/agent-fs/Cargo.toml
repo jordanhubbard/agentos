@@ -1,0 +1,8 @@
+[package]
+name = "agentos-agent-fs"
+version = "0.1.0"
+edition = "2021"
+description = "AgentFS - content-addressable filesystem with semantic search for agentOS"
+
+[dependencies]
+agentos-sdk = { path = "../../sdk" }
