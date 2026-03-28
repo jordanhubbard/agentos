@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  agentOS v0.1.0 System Description File
+  
+  Channel assignments:
+    Channel 0: controller <-> event_bus  (controller PPCs into passive event_bus)
+    Channel 1: controller <-> init_agent (notify only, both active)
+    Channel 2: event_bus  <-> init_agent (init_agent PPCs into passive event_bus)
+-->
+<system>
+    <!-- controller: system coordinator, prio 50 (low so it can PPC into higher servers) -->
+    <protection_domain name="controller" priority="50">
+        <program_image path="controller.elf" />
+        <map mr="monitor_stack" vaddr="0x2000000" perms="rw" setvar_vaddr="monitor_stack_vaddr" />
+    </protection_domain>
+    
+    <!-- event_bus: passive pub/sub server, prio 200 -->
+    <protection_domain name="event_bus" priority="200" passive="true">
+        <program_image path="event_bus.elf" />
+        <map mr="eventbus_ring" vaddr="0x3000000" perms="rw" setvar_vaddr="eventbus_ring_vaddr" />
+    </protection_domain>
+    
+    <!-- init_agent: first agent, prio 100 -->
+    <protection_domain name="init_agent" priority="100">
+        <program_image path="init_agent.elf" />
+    </protection_domain>
+    
+    <!-- Shared memory regions -->
+    <memory_region name="monitor_stack" size="0x10000" />
+    <memory_region name="eventbus_ring" size="0x40000" />
+    
+    <!-- Channel 0: controller <-> event_bus; controller calls PPC into event_bus -->
+    <channel>
+        <end pd="controller" id="0" pp="true" />
+        <end pd="event_bus" id="0" />
+    </channel>
+    
+    <!-- Channel 1: controller <-> init_agent; notification only (both active) -->
+    <channel>
+        <end pd="controller" id="1" />
+        <end pd="init_agent" id="1" />
+    </channel>
+    
+    <!-- Channel 2: event_bus <-> init_agent; init_agent calls PPC into event_bus -->
+    <channel>
+        <end pd="event_bus" id="2" />
+        <end pd="init_agent" id="2" pp="true" />
+    </channel>
+</system>

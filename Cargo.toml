@@ -1,0 +1,11 @@
+[workspace]
+members = [
+    "userspace/sdk",
+    "userspace/servers/event-bus",
+    "userspace/servers/capability-broker",
+    "userspace/agents/init-agent",
+]
+resolver = "2"
+
+[workspace.dependencies]
+# Will be filled in as we develop

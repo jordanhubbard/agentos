@@ -1,0 +1,14 @@
+# Build artifacts
+kernel/*/build-*/
+kernel/*/build/
+userspace/*/target/
+target/
+*.img
+*.iso
+microkit-sdk-2.1.0/
+microkit-sdk.tar.gz
+/boot/
+
+# Editor
+.vscode/
+*.swp

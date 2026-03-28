@@ -1,0 +1,21 @@
+[package]
+name = "agentos-sdk"
+version = "0.1.0"
+edition = "2021"
+description = "agentOS SDK - core abstractions for agent-native operating system"
+license = "Apache-2.0"
+authors = ["Natasha (agent on do-host1)"]
+
+[dependencies]
+# No std - this runs in seL4 userspace
+# We'll conditionally enable std for the simulation/testing layer
+
+[features]
+default = []
+# Enable std for host-side testing and simulation
+std = []
+# Enable seL4 bindings (requires the sel4 crate to be available)
+sel4 = []
+
+[lib]
+name = "agentos_sdk"
