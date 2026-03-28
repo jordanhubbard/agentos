@@ -57,6 +57,118 @@
 			-> CSpace: 'cnode_monitor'
 			-> Scheduling Context: 'sched_context_monitor'
 
+	- TCB: 'tcb_worker_0'
+		* IP: 0x200000
+		* SP: 0x3ffffff000
+		* IPC Buffer: 0x202000
+		* Priority: 80
+		* CPU Affinity: 0
+		* Bound Objects:
+			-> CSpace: 'cnode_worker_0'
+			-> VSpace: 'pgd_worker_0'
+			-> IPC Buffer: 'frame_ipcbuf_worker_0'
+			-> Fault Endpoint: 'ep_fault_monitor'
+			-> Scheduling Context: 'sched_context_worker_0'
+			-> Notification: 'ntfn_worker_0'
+
+	- TCB: 'tcb_worker_1'
+		* IP: 0x200000
+		* SP: 0x3ffffff000
+		* IPC Buffer: 0x202000
+		* Priority: 80
+		* CPU Affinity: 0
+		* Bound Objects:
+			-> CSpace: 'cnode_worker_1'
+			-> VSpace: 'pgd_worker_1'
+			-> IPC Buffer: 'frame_ipcbuf_worker_1'
+			-> Fault Endpoint: 'ep_fault_monitor'
+			-> Scheduling Context: 'sched_context_worker_1'
+			-> Notification: 'ntfn_worker_1'
+
+	- TCB: 'tcb_worker_2'
+		* IP: 0x200000
+		* SP: 0x3ffffff000
+		* IPC Buffer: 0x202000
+		* Priority: 80
+		* CPU Affinity: 0
+		* Bound Objects:
+			-> CSpace: 'cnode_worker_2'
+			-> VSpace: 'pgd_worker_2'
+			-> IPC Buffer: 'frame_ipcbuf_worker_2'
+			-> Fault Endpoint: 'ep_fault_monitor'
+			-> Scheduling Context: 'sched_context_worker_2'
+			-> Notification: 'ntfn_worker_2'
+
+	- TCB: 'tcb_worker_3'
+		* IP: 0x200000
+		* SP: 0x3ffffff000
+		* IPC Buffer: 0x202000
+		* Priority: 80
+		* CPU Affinity: 0
+		* Bound Objects:
+			-> CSpace: 'cnode_worker_3'
+			-> VSpace: 'pgd_worker_3'
+			-> IPC Buffer: 'frame_ipcbuf_worker_3'
+			-> Fault Endpoint: 'ep_fault_monitor'
+			-> Scheduling Context: 'sched_context_worker_3'
+			-> Notification: 'ntfn_worker_3'
+
+	- TCB: 'tcb_worker_4'
+		* IP: 0x200000
+		* SP: 0x3ffffff000
+		* IPC Buffer: 0x202000
+		* Priority: 80
+		* CPU Affinity: 0
+		* Bound Objects:
+			-> CSpace: 'cnode_worker_4'
+			-> VSpace: 'pgd_worker_4'
+			-> IPC Buffer: 'frame_ipcbuf_worker_4'
+			-> Fault Endpoint: 'ep_fault_monitor'
+			-> Scheduling Context: 'sched_context_worker_4'
+			-> Notification: 'ntfn_worker_4'
+
+	- TCB: 'tcb_worker_5'
+		* IP: 0x200000
+		* SP: 0x3ffffff000
+		* IPC Buffer: 0x202000
+		* Priority: 80
+		* CPU Affinity: 0
+		* Bound Objects:
+			-> CSpace: 'cnode_worker_5'
+			-> VSpace: 'pgd_worker_5'
+			-> IPC Buffer: 'frame_ipcbuf_worker_5'
+			-> Fault Endpoint: 'ep_fault_monitor'
+			-> Scheduling Context: 'sched_context_worker_5'
+			-> Notification: 'ntfn_worker_5'
+
+	- TCB: 'tcb_worker_6'
+		* IP: 0x200000
+		* SP: 0x3ffffff000
+		* IPC Buffer: 0x202000
+		* Priority: 80
+		* CPU Affinity: 0
+		* Bound Objects:
+			-> CSpace: 'cnode_worker_6'
+			-> VSpace: 'pgd_worker_6'
+			-> IPC Buffer: 'frame_ipcbuf_worker_6'
+			-> Fault Endpoint: 'ep_fault_monitor'
+			-> Scheduling Context: 'sched_context_worker_6'
+			-> Notification: 'ntfn_worker_6'
+
+	- TCB: 'tcb_worker_7'
+		* IP: 0x200000
+		* SP: 0x3ffffff000
+		* IPC Buffer: 0x202000
+		* Priority: 80
+		* CPU Affinity: 0
+		* Bound Objects:
+			-> CSpace: 'cnode_worker_7'
+			-> VSpace: 'pgd_worker_7'
+			-> IPC Buffer: 'frame_ipcbuf_worker_7'
+			-> Fault Endpoint: 'ep_fault_monitor'
+			-> Scheduling Context: 'sched_context_worker_7'
+			-> Notification: 'ntfn_worker_7'
+
 
 # CNode Details
 	- CNode: 'cnode_controller'
@@ -80,6 +192,38 @@
 			-> Object: 'ntfn_init_agent'
 			-> Rights: Read, Write
 			-> Badge: 0x2
+		* Slot: 20
+			-> Object: 'ntfn_worker_0'
+			-> Rights: Read, Write
+			-> Badge: 0x1
+		* Slot: 21
+			-> Object: 'ntfn_worker_1'
+			-> Rights: Read, Write
+			-> Badge: 0x1
+		* Slot: 22
+			-> Object: 'ntfn_worker_2'
+			-> Rights: Read, Write
+			-> Badge: 0x1
+		* Slot: 23
+			-> Object: 'ntfn_worker_3'
+			-> Rights: Read, Write
+			-> Badge: 0x1
+		* Slot: 24
+			-> Object: 'ntfn_worker_4'
+			-> Rights: Read, Write
+			-> Badge: 0x1
+		* Slot: 25
+			-> Object: 'ntfn_worker_5'
+			-> Rights: Read, Write
+			-> Badge: 0x1
+		* Slot: 26
+			-> Object: 'ntfn_worker_6'
+			-> Rights: Read, Write
+			-> Badge: 0x1
+		* Slot: 27
+			-> Object: 'ntfn_worker_7'
+			-> Rights: Read, Write
+			-> Badge: 0x1
 		* Slot: 74
 			-> Object: 'ep_event_bus'
 			-> Rights: Read, Write, Grant
@@ -110,6 +254,38 @@
 			-> Object: 'ntfn_init_agent'
 			-> Rights: Read, Write
 			-> Badge: 0x4
+		* Slot: 30
+			-> Object: 'ntfn_worker_0'
+			-> Rights: Read, Write
+			-> Badge: 0x2
+		* Slot: 31
+			-> Object: 'ntfn_worker_1'
+			-> Rights: Read, Write
+			-> Badge: 0x2
+		* Slot: 32
+			-> Object: 'ntfn_worker_2'
+			-> Rights: Read, Write
+			-> Badge: 0x2
+		* Slot: 33
+			-> Object: 'ntfn_worker_3'
+			-> Rights: Read, Write
+			-> Badge: 0x2
+		* Slot: 34
+			-> Object: 'ntfn_worker_4'
+			-> Rights: Read, Write
+			-> Badge: 0x2
+		* Slot: 35
+			-> Object: 'ntfn_worker_5'
+			-> Rights: Read, Write
+			-> Badge: 0x2
+		* Slot: 36
+			-> Object: 'ntfn_worker_6'
+			-> Rights: Read, Write
+			-> Badge: 0x2
+		* Slot: 37
+			-> Object: 'ntfn_worker_7'
+			-> Rights: Read, Write
+			-> Badge: 0x2
 
 	- CNode: 'cnode_init_agent'
 		* Slot: 1
@@ -150,6 +326,22 @@
 			-> Object: 'tcb_event_bus'
 		* Slot: 12
 			-> Object: 'tcb_init_agent'
+		* Slot: 13
+			-> Object: 'tcb_worker_0'
+		* Slot: 14
+			-> Object: 'tcb_worker_1'
+		* Slot: 15
+			-> Object: 'tcb_worker_2'
+		* Slot: 16
+			-> Object: 'tcb_worker_3'
+		* Slot: 17
+			-> Object: 'tcb_worker_4'
+		* Slot: 18
+			-> Object: 'tcb_worker_5'
+		* Slot: 19
+			-> Object: 'tcb_worker_6'
+		* Slot: 20
+			-> Object: 'tcb_worker_7'
 		* Slot: 139
 			-> Object: 'sched_context_event_bus'
 		* Slot: 203
@@ -157,157 +349,485 @@
 			-> Rights: Read, Write
 			-> Badge: 0x0
 
+	- CNode: 'cnode_worker_0'
+		* Slot: 1
+			-> Object: 'ntfn_worker_0'
+			-> Rights: Read, Write
+			-> Badge: 0x0
+		* Slot: 2
+			-> Object: 'ep_fault_monitor'
+			-> Rights: Read, Write, Grant
+			-> Badge: 0x4
+		* Slot: 3
+			-> Object: 'pgd_worker_0'
+		* Slot: 4
+			-> Object: 'reply_worker_0'
+		* Slot: 10
+			-> Object: 'ntfn_controller'
+			-> Rights: Read, Write
+			-> Badge: 0x400
+		* Slot: 11
+			-> Object: 'ntfn_event_bus'
+			-> Rights: Read, Write
+			-> Badge: 0x100000
+		* Slot: 75
+			-> Object: 'ep_event_bus'
+			-> Rights: Read, Write, Grant
+			-> Badge: 0x8000000000000014
+
+	- CNode: 'cnode_worker_1'
+		* Slot: 1
+			-> Object: 'ntfn_worker_1'
+			-> Rights: Read, Write
+			-> Badge: 0x0
+		* Slot: 2
+			-> Object: 'ep_fault_monitor'
+			-> Rights: Read, Write, Grant
+			-> Badge: 0x5
+		* Slot: 3
+			-> Object: 'pgd_worker_1'
+		* Slot: 4
+			-> Object: 'reply_worker_1'
+		* Slot: 10
+			-> Object: 'ntfn_controller'
+			-> Rights: Read, Write
+			-> Badge: 0x800
+		* Slot: 11
+			-> Object: 'ntfn_event_bus'
+			-> Rights: Read, Write
+			-> Badge: 0x200000
+		* Slot: 75
+			-> Object: 'ep_event_bus'
+			-> Rights: Read, Write, Grant
+			-> Badge: 0x8000000000000015
+
+	- CNode: 'cnode_worker_2'
+		* Slot: 1
+			-> Object: 'ntfn_worker_2'
+			-> Rights: Read, Write
+			-> Badge: 0x0
+		* Slot: 2
+			-> Object: 'ep_fault_monitor'
+			-> Rights: Read, Write, Grant
+			-> Badge: 0x6
+		* Slot: 3
+			-> Object: 'pgd_worker_2'
+		* Slot: 4
+			-> Object: 'reply_worker_2'
+		* Slot: 10
+			-> Object: 'ntfn_controller'
+			-> Rights: Read, Write
+			-> Badge: 0x1000
+		* Slot: 11
+			-> Object: 'ntfn_event_bus'
+			-> Rights: Read, Write
+			-> Badge: 0x400000
+		* Slot: 75
+			-> Object: 'ep_event_bus'
+			-> Rights: Read, Write, Grant
+			-> Badge: 0x8000000000000016
+
+	- CNode: 'cnode_worker_3'
+		* Slot: 1
+			-> Object: 'ntfn_worker_3'
+			-> Rights: Read, Write
+			-> Badge: 0x0
+		* Slot: 2
+			-> Object: 'ep_fault_monitor'
+			-> Rights: Read, Write, Grant
+			-> Badge: 0x7
+		* Slot: 3
+			-> Object: 'pgd_worker_3'
+		* Slot: 4
+			-> Object: 'reply_worker_3'
+		* Slot: 10
+			-> Object: 'ntfn_controller'
+			-> Rights: Read, Write
+			-> Badge: 0x2000
+		* Slot: 11
+			-> Object: 'ntfn_event_bus'
+			-> Rights: Read, Write
+			-> Badge: 0x800000
+		* Slot: 75
+			-> Object: 'ep_event_bus'
+			-> Rights: Read, Write, Grant
+			-> Badge: 0x8000000000000017
+
+	- CNode: 'cnode_worker_4'
+		* Slot: 1
+			-> Object: 'ntfn_worker_4'
+			-> Rights: Read, Write
+			-> Badge: 0x0
+		* Slot: 2
+			-> Object: 'ep_fault_monitor'
+			-> Rights: Read, Write, Grant
+			-> Badge: 0x8
+		* Slot: 3
+			-> Object: 'pgd_worker_4'
+		* Slot: 4
+			-> Object: 'reply_worker_4'
+		* Slot: 10
+			-> Object: 'ntfn_controller'
+			-> Rights: Read, Write
+			-> Badge: 0x4000
+		* Slot: 11
+			-> Object: 'ntfn_event_bus'
+			-> Rights: Read, Write
+			-> Badge: 0x1000000
+		* Slot: 75
+			-> Object: 'ep_event_bus'
+			-> Rights: Read, Write, Grant
+			-> Badge: 0x8000000000000018
+
+	- CNode: 'cnode_worker_5'
+		* Slot: 1
+			-> Object: 'ntfn_worker_5'
+			-> Rights: Read, Write
+			-> Badge: 0x0
+		* Slot: 2
+			-> Object: 'ep_fault_monitor'
+			-> Rights: Read, Write, Grant
+			-> Badge: 0x9
+		* Slot: 3
+			-> Object: 'pgd_worker_5'
+		* Slot: 4
+			-> Object: 'reply_worker_5'
+		* Slot: 10
+			-> Object: 'ntfn_controller'
+			-> Rights: Read, Write
+			-> Badge: 0x8000
+		* Slot: 11
+			-> Object: 'ntfn_event_bus'
+			-> Rights: Read, Write
+			-> Badge: 0x2000000
+		* Slot: 75
+			-> Object: 'ep_event_bus'
+			-> Rights: Read, Write, Grant
+			-> Badge: 0x8000000000000019
+
+	- CNode: 'cnode_worker_6'
+		* Slot: 1
+			-> Object: 'ntfn_worker_6'
+			-> Rights: Read, Write
+			-> Badge: 0x0
+		* Slot: 2
+			-> Object: 'ep_fault_monitor'
+			-> Rights: Read, Write, Grant
+			-> Badge: 0xa
+		* Slot: 3
+			-> Object: 'pgd_worker_6'
+		* Slot: 4
+			-> Object: 'reply_worker_6'
+		* Slot: 10
+			-> Object: 'ntfn_controller'
+			-> Rights: Read, Write
+			-> Badge: 0x10000
+		* Slot: 11
+			-> Object: 'ntfn_event_bus'
+			-> Rights: Read, Write
+			-> Badge: 0x4000000
+		* Slot: 75
+			-> Object: 'ep_event_bus'
+			-> Rights: Read, Write, Grant
+			-> Badge: 0x800000000000001a
+
+	- CNode: 'cnode_worker_7'
+		* Slot: 1
+			-> Object: 'ntfn_worker_7'
+			-> Rights: Read, Write
+			-> Badge: 0x0
+		* Slot: 2
+			-> Object: 'ep_fault_monitor'
+			-> Rights: Read, Write, Grant
+			-> Badge: 0xb
+		* Slot: 3
+			-> Object: 'pgd_worker_7'
+		* Slot: 4
+			-> Object: 'reply_worker_7'
+		* Slot: 10
+			-> Object: 'ntfn_controller'
+			-> Rights: Read, Write
+			-> Badge: 0x20000
+		* Slot: 11
+			-> Object: 'ntfn_event_bus'
+			-> Rights: Read, Write
+			-> Badge: 0x8000000
+		* Slot: 75
+			-> Object: 'ep_event_bus'
+			-> Rights: Read, Write, Grant
+			-> Badge: 0x800000000000001b
+
 
 # Architecture Specific Details
 
 # Kernel Objects Details: ID, Type, Name, Physical Address
-	0 - CNode: 'cnode_controller' @ 0x00008026c000
-	1 - CNode: 'cnode_event_bus' @ 0x000080270000
-	2 - CNode: 'cnode_init_agent' @ 0x000080274000
-	3 - CNode: 'cnode_monitor' @ 0x000080278000
-	4 - Page(4 KiB): 'frame_controller_stack_000000000' @ 0x000080200000
-	5 - Page(4 KiB): 'frame_controller_stack_000000001' @ 0x000080201000
-	6 - Page(4 KiB): 'frame_elf_controller_000000000' @ 0x000080202000
-	7 - Page(4 KiB): 'frame_elf_controller_000000001' @ 0x00008026a000
-	8 - Page(4 KiB): 'frame_elf_controller_000000002' @ 0x00008026b000
-	9 - Page(4 KiB): 'frame_elf_controller_000000003' @ 0x00008027c000
-	10 - Page(4 KiB): 'frame_elf_controller_000000004' @ 0x00008027d000
-	11 - Page(4 KiB): 'frame_elf_event_bus_000000000' @ 0x00008027e000
-	12 - Page(4 KiB): 'frame_elf_event_bus_000000001' @ 0x00008027f000
-	13 - Page(4 KiB): 'frame_elf_event_bus_000000002' @ 0x000080280000
-	14 - Page(4 KiB): 'frame_elf_init_agent_000000000' @ 0x000080281000
-	15 - Page(4 KiB): 'frame_elf_init_agent_000000001' @ 0x000080282000
-	16 - Page(4 KiB): 'frame_elf_init_agent_000000002' @ 0x000080283000
-	17 - Page(4 KiB): 'frame_elf_monitor_000000000' @ 0x000080284000
-	18 - Page(4 KiB): 'frame_elf_monitor_000000001' @ 0x000080285000
-	19 - Page(4 KiB): 'frame_elf_monitor_000000002' @ 0x000080286000
-	20 - Page(4 KiB): 'frame_elf_monitor_000000003' @ 0x000080287000
-	21 - Page(4 KiB): 'frame_elf_monitor_000000004' @ 0x000080288000
-	22 - Page(4 KiB): 'frame_event_bus_stack_000000000' @ 0x000080289000
-	23 - Page(4 KiB): 'frame_event_bus_stack_000000001' @ 0x00008028a000
-	24 - Page(4 KiB): 'frame_init_agent_stack_000000000' @ 0x00008028b000
-	25 - Page(4 KiB): 'frame_init_agent_stack_000000001' @ 0x00008028c000
-	26 - Page(4 KiB): 'frame_ipcbuf_controller' @ 0x00008028d000
-	27 - Page(4 KiB): 'frame_ipcbuf_event_bus' @ 0x00008028e000
-	28 - Page(4 KiB): 'frame_ipcbuf_init_agent' @ 0x00008028f000
-	29 - Page(4 KiB): 'frame_ipcbuf_monitor' @ 0x000080290000
-	30 - Page(4 KiB): 'frame_monitor_stack' @ 0x000080291000
-	31 - Page(4 KiB): 'frame_mr_eventbus_ring_000000000' @ 0x000080292000
-	32 - Page(4 KiB): 'frame_mr_eventbus_ring_000000001' @ 0x000080293000
-	33 - Page(4 KiB): 'frame_mr_eventbus_ring_000000002' @ 0x000080294000
-	34 - Page(4 KiB): 'frame_mr_eventbus_ring_000000003' @ 0x000080295000
-	35 - Page(4 KiB): 'frame_mr_eventbus_ring_000000004' @ 0x000080296000
-	36 - Page(4 KiB): 'frame_mr_eventbus_ring_000000005' @ 0x000080297000
-	37 - Page(4 KiB): 'frame_mr_eventbus_ring_000000006' @ 0x000080298000
-	38 - Page(4 KiB): 'frame_mr_eventbus_ring_000000007' @ 0x000080299000
-	39 - Page(4 KiB): 'frame_mr_eventbus_ring_000000008' @ 0x00008029a000
-	40 - Page(4 KiB): 'frame_mr_eventbus_ring_000000009' @ 0x00008029b000
-	41 - Page(4 KiB): 'frame_mr_eventbus_ring_000000010' @ 0x00008029c000
-	42 - Page(4 KiB): 'frame_mr_eventbus_ring_000000011' @ 0x00008029d000
-	43 - Page(4 KiB): 'frame_mr_eventbus_ring_000000012' @ 0x00008029e000
-	44 - Page(4 KiB): 'frame_mr_eventbus_ring_000000013' @ 0x00008029f000
-	45 - Page(4 KiB): 'frame_mr_eventbus_ring_000000014' @ 0x0000802a0000
-	46 - Page(4 KiB): 'frame_mr_eventbus_ring_000000015' @ 0x0000802a1000
-	47 - Page(4 KiB): 'frame_mr_eventbus_ring_000000016' @ 0x0000802a2000
-	48 - Page(4 KiB): 'frame_mr_eventbus_ring_000000017' @ 0x0000802a3000
-	49 - Page(4 KiB): 'frame_mr_eventbus_ring_000000018' @ 0x0000802a4000
-	50 - Page(4 KiB): 'frame_mr_eventbus_ring_000000019' @ 0x0000802a5000
-	51 - Page(4 KiB): 'frame_mr_eventbus_ring_000000020' @ 0x0000802a6000
-	52 - Page(4 KiB): 'frame_mr_eventbus_ring_000000021' @ 0x0000802a7000
-	53 - Page(4 KiB): 'frame_mr_eventbus_ring_000000022' @ 0x0000802a8000
-	54 - Page(4 KiB): 'frame_mr_eventbus_ring_000000023' @ 0x0000802a9000
-	55 - Page(4 KiB): 'frame_mr_eventbus_ring_000000024' @ 0x0000802aa000
-	56 - Page(4 KiB): 'frame_mr_eventbus_ring_000000025' @ 0x0000802ab000
-	57 - Page(4 KiB): 'frame_mr_eventbus_ring_000000026' @ 0x0000802ac000
-	58 - Page(4 KiB): 'frame_mr_eventbus_ring_000000027' @ 0x0000802ad000
-	59 - Page(4 KiB): 'frame_mr_eventbus_ring_000000028' @ 0x0000802ae000
-	60 - Page(4 KiB): 'frame_mr_eventbus_ring_000000029' @ 0x0000802af000
-	61 - Page(4 KiB): 'frame_mr_eventbus_ring_000000030' @ 0x0000802b0000
-	62 - Page(4 KiB): 'frame_mr_eventbus_ring_000000031' @ 0x0000802b1000
-	63 - Page(4 KiB): 'frame_mr_eventbus_ring_000000032' @ 0x0000802b2000
-	64 - Page(4 KiB): 'frame_mr_eventbus_ring_000000033' @ 0x0000802b3000
-	65 - Page(4 KiB): 'frame_mr_eventbus_ring_000000034' @ 0x0000802b4000
-	66 - Page(4 KiB): 'frame_mr_eventbus_ring_000000035' @ 0x0000802b5000
-	67 - Page(4 KiB): 'frame_mr_eventbus_ring_000000036' @ 0x0000802b6000
-	68 - Page(4 KiB): 'frame_mr_eventbus_ring_000000037' @ 0x0000802b7000
-	69 - Page(4 KiB): 'frame_mr_eventbus_ring_000000038' @ 0x0000802b8000
-	70 - Page(4 KiB): 'frame_mr_eventbus_ring_000000039' @ 0x0000802b9000
-	71 - Page(4 KiB): 'frame_mr_eventbus_ring_000000040' @ 0x0000802ba000
-	72 - Page(4 KiB): 'frame_mr_eventbus_ring_000000041' @ 0x0000802bb000
-	73 - Page(4 KiB): 'frame_mr_eventbus_ring_000000042' @ 0x0000802bc000
-	74 - Page(4 KiB): 'frame_mr_eventbus_ring_000000043' @ 0x0000802bd000
-	75 - Page(4 KiB): 'frame_mr_eventbus_ring_000000044' @ 0x0000802be000
-	76 - Page(4 KiB): 'frame_mr_eventbus_ring_000000045' @ 0x0000802bf000
-	77 - Page(4 KiB): 'frame_mr_eventbus_ring_000000046' @ 0x0000802c0000
-	78 - Page(4 KiB): 'frame_mr_eventbus_ring_000000047' @ 0x0000802c1000
-	79 - Page(4 KiB): 'frame_mr_eventbus_ring_000000048' @ 0x0000802c2000
-	80 - Page(4 KiB): 'frame_mr_eventbus_ring_000000049' @ 0x0000802c3000
-	81 - Page(4 KiB): 'frame_mr_eventbus_ring_000000050' @ 0x0000802c4000
-	82 - Page(4 KiB): 'frame_mr_eventbus_ring_000000051' @ 0x0000802c5000
-	83 - Page(4 KiB): 'frame_mr_eventbus_ring_000000052' @ 0x0000802c6000
-	84 - Page(4 KiB): 'frame_mr_eventbus_ring_000000053' @ 0x0000802c7000
-	85 - Page(4 KiB): 'frame_mr_eventbus_ring_000000054' @ 0x0000802c8000
-	86 - Page(4 KiB): 'frame_mr_eventbus_ring_000000055' @ 0x0000802c9000
-	87 - Page(4 KiB): 'frame_mr_eventbus_ring_000000056' @ 0x0000802ca000
-	88 - Page(4 KiB): 'frame_mr_eventbus_ring_000000057' @ 0x0000802cb000
-	89 - Page(4 KiB): 'frame_mr_eventbus_ring_000000058' @ 0x0000802cc000
-	90 - Page(4 KiB): 'frame_mr_eventbus_ring_000000059' @ 0x0000802cd000
-	91 - Page(4 KiB): 'frame_mr_eventbus_ring_000000060' @ 0x0000802ce000
-	92 - Page(4 KiB): 'frame_mr_eventbus_ring_000000061' @ 0x0000802cf000
-	93 - Page(4 KiB): 'frame_mr_eventbus_ring_000000062' @ 0x0000802d0000
-	94 - Page(4 KiB): 'frame_mr_eventbus_ring_000000063' @ 0x0000802d1000
-	95 - Page(4 KiB): 'frame_mr_monitor_stack_000000000' @ 0x0000802d2000
-	96 - Page(4 KiB): 'frame_mr_monitor_stack_000000001' @ 0x0000802d3000
-	97 - Page(4 KiB): 'frame_mr_monitor_stack_000000002' @ 0x0000802d4000
-	98 - Page(4 KiB): 'frame_mr_monitor_stack_000000003' @ 0x0000802d5000
-	99 - Page(4 KiB): 'frame_mr_monitor_stack_000000004' @ 0x0000802d6000
-	100 - Page(4 KiB): 'frame_mr_monitor_stack_000000005' @ 0x0000802d7000
-	101 - Page(4 KiB): 'frame_mr_monitor_stack_000000006' @ 0x0000802d8000
-	102 - Page(4 KiB): 'frame_mr_monitor_stack_000000007' @ 0x0000802d9000
-	103 - Page(4 KiB): 'frame_mr_monitor_stack_000000008' @ 0x0000802da000
-	104 - Page(4 KiB): 'frame_mr_monitor_stack_000000009' @ 0x0000802db000
-	105 - Page(4 KiB): 'frame_mr_monitor_stack_000000010' @ 0x0000802dc000
-	106 - Page(4 KiB): 'frame_mr_monitor_stack_000000011' @ 0x0000802dd000
-	107 - Page(4 KiB): 'frame_mr_monitor_stack_000000012' @ 0x0000802de000
-	108 - Page(4 KiB): 'frame_mr_monitor_stack_000000013' @ 0x0000802df000
-	109 - Page(4 KiB): 'frame_mr_monitor_stack_000000014' @ 0x0000802e0000
-	110 - Page(4 KiB): 'frame_mr_monitor_stack_000000015' @ 0x0000802e1000
-	111 - PageTable: 'pgd_controller' @ 0x0000802e2000
-	112 - PageTable: 'pgd_event_bus' @ 0x0000802e3000
-	113 - PageTable: 'pgd_init_agent' @ 0x0000802e4000
-	114 - PageTable: 'pgd_monitor' @ 0x0000802e5000
-	115 - PageTable: 'pmd_controller_vaddr_0x0' @ 0x0000802e6000
-	116 - PageTable: 'pmd_controller_vaddr_0x3fc0000000' @ 0x0000802e7000
-	117 - PageTable: 'pmd_event_bus_vaddr_0x0' @ 0x0000802e8000
-	118 - PageTable: 'pmd_event_bus_vaddr_0x3fc0000000' @ 0x0000802e9000
-	119 - PageTable: 'pmd_init_agent_vaddr_0x0' @ 0x0000802ea000
-	120 - PageTable: 'pmd_init_agent_vaddr_0x3fc0000000' @ 0x0000802eb000
-	121 - PageTable: 'pmd_monitor_vaddr_0x0' @ 0x0000802ec000
-	122 - PageTable: 'pmd_monitor_vaddr_0x3fc0000000' @ 0x0000802ed000
-	123 - PageTable: 'pte_controller_vaddr_0x200000' @ 0x0000802ee000
-	124 - PageTable: 'pte_controller_vaddr_0x2000000' @ 0x0000802ef000
-	125 - PageTable: 'pte_controller_vaddr_0x3fffe00000' @ 0x0000802f0000
-	126 - PageTable: 'pte_event_bus_vaddr_0x200000' @ 0x0000802f1000
-	127 - PageTable: 'pte_event_bus_vaddr_0x3000000' @ 0x0000802f2000
-	128 - PageTable: 'pte_event_bus_vaddr_0x3fffe00000' @ 0x0000802f3000
-	129 - PageTable: 'pte_init_agent_vaddr_0x200000' @ 0x0000802f4000
-	130 - PageTable: 'pte_init_agent_vaddr_0x3fffe00000' @ 0x0000802f5000
-	131 - PageTable: 'pte_monitor_vaddr_0x200000' @ 0x0000802f6000
-	132 - PageTable: 'pte_monitor_vaddr_0x3fffe00000' @ 0x0000802f7000
-	133 - TCB: 'tcb_controller' @ 0x0000802f8000
-	134 - TCB: 'tcb_event_bus' @ 0x0000802f8800
-	135 - TCB: 'tcb_init_agent' @ 0x0000802f9000
-	136 - TCB: 'tcb_monitor' @ 0x0000802f9800
-	137 - SchedContext: 'sched_context_controller' @ 0x0000802fa000
-	138 - SchedContext: 'sched_context_event_bus' @ 0x0000802fa100
-	139 - SchedContext: 'sched_context_init_agent' @ 0x0000802fa200
-	140 - SchedContext: 'sched_context_monitor' @ 0x0000802fa300
-	141 - Notification: 'ntfn_controller' @ 0x0000802fa400
-	142 - Notification: 'ntfn_event_bus' @ 0x0000802fa440
-	143 - Notification: 'ntfn_init_agent' @ 0x0000802fa480
-	144 - Reply: 'reply_controller' @ 0x0000802fa4c0
-	145 - Reply: 'reply_event_bus' @ 0x0000802fa4e0
-	146 - Reply: 'reply_init_agent' @ 0x0000802fa500
-	147 - Reply: 'reply_monitor' @ 0x0000802fa520
-	148 - Endpoint: 'ep_event_bus' @ 0x0000802fa540
-	149 - Endpoint: 'ep_fault_monitor' @ 0x0000802fa550
+	0 - CNode: 'cnode_controller' @ 0x000080280000
+	1 - CNode: 'cnode_event_bus' @ 0x000080284000
+	2 - CNode: 'cnode_init_agent' @ 0x000080288000
+	3 - CNode: 'cnode_monitor' @ 0x00008028c000
+	4 - CNode: 'cnode_worker_0' @ 0x000080290000
+	5 - CNode: 'cnode_worker_1' @ 0x000080294000
+	6 - CNode: 'cnode_worker_2' @ 0x000080298000
+	7 - CNode: 'cnode_worker_3' @ 0x00008029c000
+	8 - CNode: 'cnode_worker_4' @ 0x0000802a0000
+	9 - CNode: 'cnode_worker_5' @ 0x0000802a4000
+	10 - CNode: 'cnode_worker_6' @ 0x0000802a8000
+	11 - CNode: 'cnode_worker_7' @ 0x0000802ac000
+	12 - Page(4 KiB): 'frame_controller_stack_000000000' @ 0x000080200000
+	13 - Page(4 KiB): 'frame_controller_stack_000000001' @ 0x000080201000
+	14 - Page(4 KiB): 'frame_elf_controller_000000000' @ 0x000080202000
+	15 - Page(4 KiB): 'frame_elf_controller_000000001' @ 0x00008027f000
+	16 - Page(4 KiB): 'frame_elf_controller_000000002' @ 0x0000802b0000
+	17 - Page(4 KiB): 'frame_elf_controller_000000003' @ 0x0000802b1000
+	18 - Page(4 KiB): 'frame_elf_controller_000000004' @ 0x0000802b2000
+	19 - Page(4 KiB): 'frame_elf_event_bus_000000000' @ 0x0000802b3000
+	20 - Page(4 KiB): 'frame_elf_event_bus_000000001' @ 0x0000802b4000
+	21 - Page(4 KiB): 'frame_elf_event_bus_000000002' @ 0x0000802b5000
+	22 - Page(4 KiB): 'frame_elf_init_agent_000000000' @ 0x0000802b6000
+	23 - Page(4 KiB): 'frame_elf_init_agent_000000001' @ 0x0000802b7000
+	24 - Page(4 KiB): 'frame_elf_init_agent_000000002' @ 0x0000802b8000
+	25 - Page(4 KiB): 'frame_elf_monitor_000000000' @ 0x0000802b9000
+	26 - Page(4 KiB): 'frame_elf_monitor_000000001' @ 0x0000802ba000
+	27 - Page(4 KiB): 'frame_elf_monitor_000000002' @ 0x0000802bb000
+	28 - Page(4 KiB): 'frame_elf_monitor_000000003' @ 0x0000802bc000
+	29 - Page(4 KiB): 'frame_elf_monitor_000000004' @ 0x0000802bd000
+	30 - Page(4 KiB): 'frame_elf_worker_0_000000000' @ 0x0000802be000
+	31 - Page(4 KiB): 'frame_elf_worker_0_000000001' @ 0x0000802bf000
+	32 - Page(4 KiB): 'frame_elf_worker_1_000000000' @ 0x0000802c0000
+	33 - Page(4 KiB): 'frame_elf_worker_1_000000001' @ 0x0000802c1000
+	34 - Page(4 KiB): 'frame_elf_worker_2_000000000' @ 0x0000802c2000
+	35 - Page(4 KiB): 'frame_elf_worker_2_000000001' @ 0x0000802c3000
+	36 - Page(4 KiB): 'frame_elf_worker_3_000000000' @ 0x0000802c4000
+	37 - Page(4 KiB): 'frame_elf_worker_3_000000001' @ 0x0000802c5000
+	38 - Page(4 KiB): 'frame_elf_worker_4_000000000' @ 0x0000802c6000
+	39 - Page(4 KiB): 'frame_elf_worker_4_000000001' @ 0x0000802c7000
+	40 - Page(4 KiB): 'frame_elf_worker_5_000000000' @ 0x0000802c8000
+	41 - Page(4 KiB): 'frame_elf_worker_5_000000001' @ 0x0000802c9000
+	42 - Page(4 KiB): 'frame_elf_worker_6_000000000' @ 0x0000802ca000
+	43 - Page(4 KiB): 'frame_elf_worker_6_000000001' @ 0x0000802cb000
+	44 - Page(4 KiB): 'frame_elf_worker_7_000000000' @ 0x0000802cc000
+	45 - Page(4 KiB): 'frame_elf_worker_7_000000001' @ 0x0000802cd000
+	46 - Page(4 KiB): 'frame_event_bus_stack_000000000' @ 0x0000802ce000
+	47 - Page(4 KiB): 'frame_event_bus_stack_000000001' @ 0x0000802cf000
+	48 - Page(4 KiB): 'frame_init_agent_stack_000000000' @ 0x0000802d0000
+	49 - Page(4 KiB): 'frame_init_agent_stack_000000001' @ 0x0000802d1000
+	50 - Page(4 KiB): 'frame_ipcbuf_controller' @ 0x0000802d2000
+	51 - Page(4 KiB): 'frame_ipcbuf_event_bus' @ 0x0000802d3000
+	52 - Page(4 KiB): 'frame_ipcbuf_init_agent' @ 0x0000802d4000
+	53 - Page(4 KiB): 'frame_ipcbuf_monitor' @ 0x0000802d5000
+	54 - Page(4 KiB): 'frame_ipcbuf_worker_0' @ 0x0000802d6000
+	55 - Page(4 KiB): 'frame_ipcbuf_worker_1' @ 0x0000802d7000
+	56 - Page(4 KiB): 'frame_ipcbuf_worker_2' @ 0x0000802d8000
+	57 - Page(4 KiB): 'frame_ipcbuf_worker_3' @ 0x0000802d9000
+	58 - Page(4 KiB): 'frame_ipcbuf_worker_4' @ 0x0000802da000
+	59 - Page(4 KiB): 'frame_ipcbuf_worker_5' @ 0x0000802db000
+	60 - Page(4 KiB): 'frame_ipcbuf_worker_6' @ 0x0000802dc000
+	61 - Page(4 KiB): 'frame_ipcbuf_worker_7' @ 0x0000802dd000
+	62 - Page(4 KiB): 'frame_monitor_stack' @ 0x0000802de000
+	63 - Page(4 KiB): 'frame_mr_eventbus_ring_000000000' @ 0x0000802df000
+	64 - Page(4 KiB): 'frame_mr_eventbus_ring_000000001' @ 0x0000802e0000
+	65 - Page(4 KiB): 'frame_mr_eventbus_ring_000000002' @ 0x0000802e1000
+	66 - Page(4 KiB): 'frame_mr_eventbus_ring_000000003' @ 0x0000802e2000
+	67 - Page(4 KiB): 'frame_mr_eventbus_ring_000000004' @ 0x0000802e3000
+	68 - Page(4 KiB): 'frame_mr_eventbus_ring_000000005' @ 0x0000802e4000
+	69 - Page(4 KiB): 'frame_mr_eventbus_ring_000000006' @ 0x0000802e5000
+	70 - Page(4 KiB): 'frame_mr_eventbus_ring_000000007' @ 0x0000802e6000
+	71 - Page(4 KiB): 'frame_mr_eventbus_ring_000000008' @ 0x0000802e7000
+	72 - Page(4 KiB): 'frame_mr_eventbus_ring_000000009' @ 0x0000802e8000
+	73 - Page(4 KiB): 'frame_mr_eventbus_ring_000000010' @ 0x0000802e9000
+	74 - Page(4 KiB): 'frame_mr_eventbus_ring_000000011' @ 0x0000802ea000
+	75 - Page(4 KiB): 'frame_mr_eventbus_ring_000000012' @ 0x0000802eb000
+	76 - Page(4 KiB): 'frame_mr_eventbus_ring_000000013' @ 0x0000802ec000
+	77 - Page(4 KiB): 'frame_mr_eventbus_ring_000000014' @ 0x0000802ed000
+	78 - Page(4 KiB): 'frame_mr_eventbus_ring_000000015' @ 0x0000802ee000
+	79 - Page(4 KiB): 'frame_mr_eventbus_ring_000000016' @ 0x0000802ef000
+	80 - Page(4 KiB): 'frame_mr_eventbus_ring_000000017' @ 0x0000802f0000
+	81 - Page(4 KiB): 'frame_mr_eventbus_ring_000000018' @ 0x0000802f1000
+	82 - Page(4 KiB): 'frame_mr_eventbus_ring_000000019' @ 0x0000802f2000
+	83 - Page(4 KiB): 'frame_mr_eventbus_ring_000000020' @ 0x0000802f3000
+	84 - Page(4 KiB): 'frame_mr_eventbus_ring_000000021' @ 0x0000802f4000
+	85 - Page(4 KiB): 'frame_mr_eventbus_ring_000000022' @ 0x0000802f5000
+	86 - Page(4 KiB): 'frame_mr_eventbus_ring_000000023' @ 0x0000802f6000
+	87 - Page(4 KiB): 'frame_mr_eventbus_ring_000000024' @ 0x0000802f7000
+	88 - Page(4 KiB): 'frame_mr_eventbus_ring_000000025' @ 0x0000802f8000
+	89 - Page(4 KiB): 'frame_mr_eventbus_ring_000000026' @ 0x0000802f9000
+	90 - Page(4 KiB): 'frame_mr_eventbus_ring_000000027' @ 0x0000802fa000
+	91 - Page(4 KiB): 'frame_mr_eventbus_ring_000000028' @ 0x0000802fb000
+	92 - Page(4 KiB): 'frame_mr_eventbus_ring_000000029' @ 0x0000802fc000
+	93 - Page(4 KiB): 'frame_mr_eventbus_ring_000000030' @ 0x0000802fd000
+	94 - Page(4 KiB): 'frame_mr_eventbus_ring_000000031' @ 0x0000802fe000
+	95 - Page(4 KiB): 'frame_mr_eventbus_ring_000000032' @ 0x0000802ff000
+	96 - Page(4 KiB): 'frame_mr_eventbus_ring_000000033' @ 0x000080300000
+	97 - Page(4 KiB): 'frame_mr_eventbus_ring_000000034' @ 0x000080301000
+	98 - Page(4 KiB): 'frame_mr_eventbus_ring_000000035' @ 0x000080302000
+	99 - Page(4 KiB): 'frame_mr_eventbus_ring_000000036' @ 0x000080303000
+	100 - Page(4 KiB): 'frame_mr_eventbus_ring_000000037' @ 0x000080304000
+	101 - Page(4 KiB): 'frame_mr_eventbus_ring_000000038' @ 0x000080305000
+	102 - Page(4 KiB): 'frame_mr_eventbus_ring_000000039' @ 0x000080306000
+	103 - Page(4 KiB): 'frame_mr_eventbus_ring_000000040' @ 0x000080307000
+	104 - Page(4 KiB): 'frame_mr_eventbus_ring_000000041' @ 0x000080308000
+	105 - Page(4 KiB): 'frame_mr_eventbus_ring_000000042' @ 0x000080309000
+	106 - Page(4 KiB): 'frame_mr_eventbus_ring_000000043' @ 0x00008030a000
+	107 - Page(4 KiB): 'frame_mr_eventbus_ring_000000044' @ 0x00008030b000
+	108 - Page(4 KiB): 'frame_mr_eventbus_ring_000000045' @ 0x00008030c000
+	109 - Page(4 KiB): 'frame_mr_eventbus_ring_000000046' @ 0x00008030d000
+	110 - Page(4 KiB): 'frame_mr_eventbus_ring_000000047' @ 0x00008030e000
+	111 - Page(4 KiB): 'frame_mr_eventbus_ring_000000048' @ 0x00008030f000
+	112 - Page(4 KiB): 'frame_mr_eventbus_ring_000000049' @ 0x000080310000
+	113 - Page(4 KiB): 'frame_mr_eventbus_ring_000000050' @ 0x000080311000
+	114 - Page(4 KiB): 'frame_mr_eventbus_ring_000000051' @ 0x000080312000
+	115 - Page(4 KiB): 'frame_mr_eventbus_ring_000000052' @ 0x000080313000
+	116 - Page(4 KiB): 'frame_mr_eventbus_ring_000000053' @ 0x000080314000
+	117 - Page(4 KiB): 'frame_mr_eventbus_ring_000000054' @ 0x000080315000
+	118 - Page(4 KiB): 'frame_mr_eventbus_ring_000000055' @ 0x000080316000
+	119 - Page(4 KiB): 'frame_mr_eventbus_ring_000000056' @ 0x000080317000
+	120 - Page(4 KiB): 'frame_mr_eventbus_ring_000000057' @ 0x000080318000
+	121 - Page(4 KiB): 'frame_mr_eventbus_ring_000000058' @ 0x000080319000
+	122 - Page(4 KiB): 'frame_mr_eventbus_ring_000000059' @ 0x00008031a000
+	123 - Page(4 KiB): 'frame_mr_eventbus_ring_000000060' @ 0x00008031b000
+	124 - Page(4 KiB): 'frame_mr_eventbus_ring_000000061' @ 0x00008031c000
+	125 - Page(4 KiB): 'frame_mr_eventbus_ring_000000062' @ 0x00008031d000
+	126 - Page(4 KiB): 'frame_mr_eventbus_ring_000000063' @ 0x00008031e000
+	127 - Page(4 KiB): 'frame_mr_monitor_stack_000000000' @ 0x00008031f000
+	128 - Page(4 KiB): 'frame_mr_monitor_stack_000000001' @ 0x000080320000
+	129 - Page(4 KiB): 'frame_mr_monitor_stack_000000002' @ 0x000080321000
+	130 - Page(4 KiB): 'frame_mr_monitor_stack_000000003' @ 0x000080322000
+	131 - Page(4 KiB): 'frame_mr_monitor_stack_000000004' @ 0x000080323000
+	132 - Page(4 KiB): 'frame_mr_monitor_stack_000000005' @ 0x000080324000
+	133 - Page(4 KiB): 'frame_mr_monitor_stack_000000006' @ 0x000080325000
+	134 - Page(4 KiB): 'frame_mr_monitor_stack_000000007' @ 0x000080326000
+	135 - Page(4 KiB): 'frame_mr_monitor_stack_000000008' @ 0x000080327000
+	136 - Page(4 KiB): 'frame_mr_monitor_stack_000000009' @ 0x000080328000
+	137 - Page(4 KiB): 'frame_mr_monitor_stack_000000010' @ 0x000080329000
+	138 - Page(4 KiB): 'frame_mr_monitor_stack_000000011' @ 0x00008032a000
+	139 - Page(4 KiB): 'frame_mr_monitor_stack_000000012' @ 0x00008032b000
+	140 - Page(4 KiB): 'frame_mr_monitor_stack_000000013' @ 0x00008032c000
+	141 - Page(4 KiB): 'frame_mr_monitor_stack_000000014' @ 0x00008032d000
+	142 - Page(4 KiB): 'frame_mr_monitor_stack_000000015' @ 0x00008032e000
+	143 - Page(4 KiB): 'frame_worker_0_stack_000000000' @ 0x00008032f000
+	144 - Page(4 KiB): 'frame_worker_0_stack_000000001' @ 0x000080330000
+	145 - Page(4 KiB): 'frame_worker_1_stack_000000000' @ 0x000080331000
+	146 - Page(4 KiB): 'frame_worker_1_stack_000000001' @ 0x000080332000
+	147 - Page(4 KiB): 'frame_worker_2_stack_000000000' @ 0x000080333000
+	148 - Page(4 KiB): 'frame_worker_2_stack_000000001' @ 0x000080334000
+	149 - Page(4 KiB): 'frame_worker_3_stack_000000000' @ 0x000080335000
+	150 - Page(4 KiB): 'frame_worker_3_stack_000000001' @ 0x000080336000
+	151 - Page(4 KiB): 'frame_worker_4_stack_000000000' @ 0x000080337000
+	152 - Page(4 KiB): 'frame_worker_4_stack_000000001' @ 0x000080338000
+	153 - Page(4 KiB): 'frame_worker_5_stack_000000000' @ 0x000080339000
+	154 - Page(4 KiB): 'frame_worker_5_stack_000000001' @ 0x00008033a000
+	155 - Page(4 KiB): 'frame_worker_6_stack_000000000' @ 0x00008033b000
+	156 - Page(4 KiB): 'frame_worker_6_stack_000000001' @ 0x00008033c000
+	157 - Page(4 KiB): 'frame_worker_7_stack_000000000' @ 0x00008033d000
+	158 - Page(4 KiB): 'frame_worker_7_stack_000000001' @ 0x00008033e000
+	159 - PageTable: 'pgd_controller' @ 0x00008033f000
+	160 - PageTable: 'pgd_event_bus' @ 0x000080340000
+	161 - PageTable: 'pgd_init_agent' @ 0x000080341000
+	162 - PageTable: 'pgd_monitor' @ 0x000080342000
+	163 - PageTable: 'pgd_worker_0' @ 0x000080343000
+	164 - PageTable: 'pgd_worker_1' @ 0x000080344000
+	165 - PageTable: 'pgd_worker_2' @ 0x000080345000
+	166 - PageTable: 'pgd_worker_3' @ 0x000080346000
+	167 - PageTable: 'pgd_worker_4' @ 0x000080347000
+	168 - PageTable: 'pgd_worker_5' @ 0x000080348000
+	169 - PageTable: 'pgd_worker_6' @ 0x000080349000
+	170 - PageTable: 'pgd_worker_7' @ 0x00008034a000
+	171 - PageTable: 'pmd_controller_vaddr_0x0' @ 0x00008034b000
+	172 - PageTable: 'pmd_controller_vaddr_0x3fc0000000' @ 0x00008034c000
+	173 - PageTable: 'pmd_event_bus_vaddr_0x0' @ 0x00008034d000
+	174 - PageTable: 'pmd_event_bus_vaddr_0x3fc0000000' @ 0x00008034e000
+	175 - PageTable: 'pmd_init_agent_vaddr_0x0' @ 0x00008034f000
+	176 - PageTable: 'pmd_init_agent_vaddr_0x3fc0000000' @ 0x000080350000
+	177 - PageTable: 'pmd_monitor_vaddr_0x0' @ 0x000080351000
+	178 - PageTable: 'pmd_monitor_vaddr_0x3fc0000000' @ 0x000080352000
+	179 - PageTable: 'pmd_worker_0_vaddr_0x0' @ 0x000080353000
+	180 - PageTable: 'pmd_worker_0_vaddr_0x3fc0000000' @ 0x000080354000
+	181 - PageTable: 'pmd_worker_1_vaddr_0x0' @ 0x000080355000
+	182 - PageTable: 'pmd_worker_1_vaddr_0x3fc0000000' @ 0x000080356000
+	183 - PageTable: 'pmd_worker_2_vaddr_0x0' @ 0x000080357000
+	184 - PageTable: 'pmd_worker_2_vaddr_0x3fc0000000' @ 0x000080358000
+	185 - PageTable: 'pmd_worker_3_vaddr_0x0' @ 0x000080359000
+	186 - PageTable: 'pmd_worker_3_vaddr_0x3fc0000000' @ 0x00008035a000
+	187 - PageTable: 'pmd_worker_4_vaddr_0x0' @ 0x00008035b000
+	188 - PageTable: 'pmd_worker_4_vaddr_0x3fc0000000' @ 0x00008035c000
+	189 - PageTable: 'pmd_worker_5_vaddr_0x0' @ 0x00008035d000
+	190 - PageTable: 'pmd_worker_5_vaddr_0x3fc0000000' @ 0x00008035e000
+	191 - PageTable: 'pmd_worker_6_vaddr_0x0' @ 0x00008035f000
+	192 - PageTable: 'pmd_worker_6_vaddr_0x3fc0000000' @ 0x000080360000
+	193 - PageTable: 'pmd_worker_7_vaddr_0x0' @ 0x000080361000
+	194 - PageTable: 'pmd_worker_7_vaddr_0x3fc0000000' @ 0x000080362000
+	195 - PageTable: 'pte_controller_vaddr_0x200000' @ 0x000080363000
+	196 - PageTable: 'pte_controller_vaddr_0x2000000' @ 0x000080364000
+	197 - PageTable: 'pte_controller_vaddr_0x3fffe00000' @ 0x000080365000
+	198 - PageTable: 'pte_event_bus_vaddr_0x200000' @ 0x000080366000
+	199 - PageTable: 'pte_event_bus_vaddr_0x3000000' @ 0x000080367000
+	200 - PageTable: 'pte_event_bus_vaddr_0x3fffe00000' @ 0x000080368000
+	201 - PageTable: 'pte_init_agent_vaddr_0x200000' @ 0x000080369000
+	202 - PageTable: 'pte_init_agent_vaddr_0x3fffe00000' @ 0x00008036a000
+	203 - PageTable: 'pte_monitor_vaddr_0x200000' @ 0x00008036b000
+	204 - PageTable: 'pte_monitor_vaddr_0x3fffe00000' @ 0x00008036c000
+	205 - PageTable: 'pte_worker_0_vaddr_0x200000' @ 0x00008036d000
+	206 - PageTable: 'pte_worker_0_vaddr_0x3fffe00000' @ 0x00008036e000
+	207 - PageTable: 'pte_worker_1_vaddr_0x200000' @ 0x00008036f000
+	208 - PageTable: 'pte_worker_1_vaddr_0x3fffe00000' @ 0x000080370000
+	209 - PageTable: 'pte_worker_2_vaddr_0x200000' @ 0x000080371000
+	210 - PageTable: 'pte_worker_2_vaddr_0x3fffe00000' @ 0x000080372000
+	211 - PageTable: 'pte_worker_3_vaddr_0x200000' @ 0x000080373000
+	212 - PageTable: 'pte_worker_3_vaddr_0x3fffe00000' @ 0x000080374000
+	213 - PageTable: 'pte_worker_4_vaddr_0x200000' @ 0x000080375000
+	214 - PageTable: 'pte_worker_4_vaddr_0x3fffe00000' @ 0x000080376000
+	215 - PageTable: 'pte_worker_5_vaddr_0x200000' @ 0x000080377000
+	216 - PageTable: 'pte_worker_5_vaddr_0x3fffe00000' @ 0x000080378000
+	217 - PageTable: 'pte_worker_6_vaddr_0x200000' @ 0x000080379000
+	218 - PageTable: 'pte_worker_6_vaddr_0x3fffe00000' @ 0x00008037a000
+	219 - PageTable: 'pte_worker_7_vaddr_0x200000' @ 0x00008037b000
+	220 - PageTable: 'pte_worker_7_vaddr_0x3fffe00000' @ 0x00008037c000
+	221 - TCB: 'tcb_controller' @ 0x00008037d000
+	222 - TCB: 'tcb_event_bus' @ 0x00008037d800
+	223 - TCB: 'tcb_init_agent' @ 0x00008037e000
+	224 - TCB: 'tcb_monitor' @ 0x00008037e800
+	225 - TCB: 'tcb_worker_0' @ 0x00008037f000
+	226 - TCB: 'tcb_worker_1' @ 0x00008037f800
+	227 - TCB: 'tcb_worker_2' @ 0x000080380000
+	228 - TCB: 'tcb_worker_3' @ 0x000080380800
+	229 - TCB: 'tcb_worker_4' @ 0x000080381000
+	230 - TCB: 'tcb_worker_5' @ 0x000080381800
+	231 - TCB: 'tcb_worker_6' @ 0x000080382000
+	232 - TCB: 'tcb_worker_7' @ 0x000080382800
+	233 - SchedContext: 'sched_context_controller' @ 0x000080383000
+	234 - SchedContext: 'sched_context_event_bus' @ 0x000080383100
+	235 - SchedContext: 'sched_context_init_agent' @ 0x000080383200
+	236 - SchedContext: 'sched_context_monitor' @ 0x000080383300
+	237 - SchedContext: 'sched_context_worker_0' @ 0x000080383400
+	238 - SchedContext: 'sched_context_worker_1' @ 0x000080383500
+	239 - SchedContext: 'sched_context_worker_2' @ 0x000080383600
+	240 - SchedContext: 'sched_context_worker_3' @ 0x000080383700
+	241 - SchedContext: 'sched_context_worker_4' @ 0x000080383800
+	242 - SchedContext: 'sched_context_worker_5' @ 0x000080383900
+	243 - SchedContext: 'sched_context_worker_6' @ 0x000080383a00
+	244 - SchedContext: 'sched_context_worker_7' @ 0x000080383b00
+	245 - Notification: 'ntfn_controller' @ 0x000080383c00
+	246 - Notification: 'ntfn_event_bus' @ 0x000080383c40
+	247 - Notification: 'ntfn_init_agent' @ 0x000080383c80
+	248 - Notification: 'ntfn_worker_0' @ 0x000080383cc0
+	249 - Notification: 'ntfn_worker_1' @ 0x000080383d00
+	250 - Notification: 'ntfn_worker_2' @ 0x000080383d40
+	251 - Notification: 'ntfn_worker_3' @ 0x000080383d80
+	252 - Notification: 'ntfn_worker_4' @ 0x000080383dc0
+	253 - Notification: 'ntfn_worker_5' @ 0x000080383e00
+	254 - Notification: 'ntfn_worker_6' @ 0x000080383e40
+	255 - Notification: 'ntfn_worker_7' @ 0x000080383e80
+	256 - Reply: 'reply_controller' @ 0x000080383ec0
+	257 - Reply: 'reply_event_bus' @ 0x000080383ee0
+	258 - Reply: 'reply_init_agent' @ 0x000080383f00
+	259 - Reply: 'reply_monitor' @ 0x000080383f20
+	260 - Reply: 'reply_worker_0' @ 0x000080383f40
+	261 - Reply: 'reply_worker_1' @ 0x000080383f60
+	262 - Reply: 'reply_worker_2' @ 0x000080383f80
+	263 - Reply: 'reply_worker_3' @ 0x000080383fa0
+	264 - Reply: 'reply_worker_4' @ 0x000080383fc0
+	265 - Reply: 'reply_worker_5' @ 0x000080383fe0
+	266 - Reply: 'reply_worker_6' @ 0x000080384000
+	267 - Reply: 'reply_worker_7' @ 0x000080384020
+	268 - Endpoint: 'ep_event_bus' @ 0x000080384040
+	269 - Endpoint: 'ep_fault_monitor' @ 0x000080384050

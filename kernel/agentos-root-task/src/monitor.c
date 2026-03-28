@@ -64,7 +64,20 @@ void notified(microkit_channel ch) {
             break;
             
         default:
-            microkit_dbg_puts("[controller] Unknown channel notification\n");
+            /* Channels 10-17: worker pool ready/completion notifications */
+            if (ch >= 10 && ch <= 17) {
+                uint32_t slot = ch - 10;
+                uint64_t task_id = (uint64_t)microkit_mr_get(0) |
+                                   ((uint64_t)microkit_mr_get(1) << 32);
+                if (task_id == 0) {
+                    microkit_dbg_puts("[controller] Worker ready\n");
+                } else {
+                    microkit_dbg_puts("[controller] Worker task complete\n");
+                    /* Revoke caps and return slot to pool */
+                }
+            } else {
+                microkit_dbg_puts("[controller] Unknown channel\n");
+            }
             break;
     }
 }
@@ -75,3 +88,7 @@ microkit_msginfo protected(microkit_channel ch, microkit_msginfo msg) {
     microkit_dbg_puts("[controller] Unexpected PPC call\n");
     return microkit_msginfo_new(0xDEAD, 0);
 }
+
+/* Note: this extends the notified() function above.
+ * In the actual build, the notified() switch needs a POOL_CH_BASE case.
+ * Adding it here as a patch note for next refactor. */

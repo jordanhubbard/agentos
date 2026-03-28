@@ -1,49 +1,160 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
-  agentOS v0.1.0 System Description File
+  agentOS v0.2.0 System Description File
   
-  Channel assignments:
-    Channel 0: controller <-> event_bus  (controller PPCs into passive event_bus)
-    Channel 1: controller <-> init_agent (notify only, both active)
-    Channel 2: event_bus  <-> init_agent (init_agent PPCs into passive event_bus)
+  Protection Domain topology:
+  
+    controller   (prio 50)   - system coordinator + capability broker
+    event_bus    (prio 200)  - passive pub/sub server (ring buffer)
+    init_agent   (prio 100)  - agent ecosystem bootstrapper
+    worker_0..7  (prio 80)   - agent pool workers (dynamic task assignment)
+  
+  Channel map:
+    0:  controller <-> event_bus    (controller PPCs into passive event_bus)
+    1:  controller <-> init_agent   (notify: controller starts init_agent)
+    2:  event_bus  <-> init_agent   (init_agent PPCs into event_bus to subscribe)
+    10: controller <-> worker_0     (task assignment + completion notify)
+    11: controller <-> worker_1
+    12: controller <-> worker_2
+    13: controller <-> worker_3
+    14: controller <-> worker_4
+    15: controller <-> worker_5
+    16: controller <-> worker_6
+    17: controller <-> worker_7
+    
+  Worker <-> EventBus channels (workers subscribe to events):
+    20: event_bus <-> worker_0
+    21: event_bus <-> worker_1
+    ...
+    27: event_bus <-> worker_7
 -->
 <system>
-    <!-- controller: system coordinator, prio 50 (low so it can PPC into higher servers) -->
+    <!-- Controller: system coordinator, low priority to PPC into passive servers -->
     <protection_domain name="controller" priority="50">
         <program_image path="controller.elf" />
         <map mr="monitor_stack" vaddr="0x2000000" perms="rw" setvar_vaddr="monitor_stack_vaddr" />
     </protection_domain>
     
-    <!-- event_bus: passive pub/sub server, prio 200 -->
+    <!-- EventBus: passive pub/sub backbone -->
     <protection_domain name="event_bus" priority="200" passive="true">
         <program_image path="event_bus.elf" />
         <map mr="eventbus_ring" vaddr="0x3000000" perms="rw" setvar_vaddr="eventbus_ring_vaddr" />
     </protection_domain>
     
-    <!-- init_agent: first agent, prio 100 -->
+    <!-- InitAgent: bootstrap agent -->
     <protection_domain name="init_agent" priority="100">
         <program_image path="init_agent.elf" />
     </protection_domain>
     
-    <!-- Shared memory regions -->
-    <memory_region name="monitor_stack" size="0x10000" />
-    <memory_region name="eventbus_ring" size="0x40000" />
+    <!-- Agent pool workers: static PDs, dynamic task assignment -->
+    <protection_domain name="worker_0" priority="80">
+        <program_image path="worker.elf" />
+    </protection_domain>
+    <protection_domain name="worker_1" priority="80">
+        <program_image path="worker.elf" />
+    </protection_domain>
+    <protection_domain name="worker_2" priority="80">
+        <program_image path="worker.elf" />
+    </protection_domain>
+    <protection_domain name="worker_3" priority="80">
+        <program_image path="worker.elf" />
+    </protection_domain>
+    <protection_domain name="worker_4" priority="80">
+        <program_image path="worker.elf" />
+    </protection_domain>
+    <protection_domain name="worker_5" priority="80">
+        <program_image path="worker.elf" />
+    </protection_domain>
+    <protection_domain name="worker_6" priority="80">
+        <program_image path="worker.elf" />
+    </protection_domain>
+    <protection_domain name="worker_7" priority="80">
+        <program_image path="worker.elf" />
+    </protection_domain>
     
-    <!-- Channel 0: controller <-> event_bus; controller calls PPC into event_bus -->
+    <!-- Memory regions -->
+    <memory_region name="monitor_stack"  size="0x10000" />
+    <memory_region name="eventbus_ring"  size="0x40000" />
+    
+    <!-- Core service channels -->
     <channel>
         <end pd="controller" id="0" pp="true" />
-        <end pd="event_bus" id="0" />
+        <end pd="event_bus"  id="0" />
     </channel>
-    
-    <!-- Channel 1: controller <-> init_agent; notification only (both active) -->
     <channel>
         <end pd="controller" id="1" />
         <end pd="init_agent" id="1" />
     </channel>
-    
-    <!-- Channel 2: event_bus <-> init_agent; init_agent calls PPC into event_bus -->
     <channel>
-        <end pd="event_bus" id="2" />
+        <end pd="event_bus"  id="2" />
         <end pd="init_agent" id="2" pp="true" />
+    </channel>
+    
+    <!-- Worker pool channels (controller <-> worker_N) -->
+    <channel>
+        <end pd="controller" id="10" />
+        <end pd="worker_0"   id="0" />
+    </channel>
+    <channel>
+        <end pd="controller" id="11" />
+        <end pd="worker_1"   id="0" />
+    </channel>
+    <channel>
+        <end pd="controller" id="12" />
+        <end pd="worker_2"   id="0" />
+    </channel>
+    <channel>
+        <end pd="controller" id="13" />
+        <end pd="worker_3"   id="0" />
+    </channel>
+    <channel>
+        <end pd="controller" id="14" />
+        <end pd="worker_4"   id="0" />
+    </channel>
+    <channel>
+        <end pd="controller" id="15" />
+        <end pd="worker_5"   id="0" />
+    </channel>
+    <channel>
+        <end pd="controller" id="16" />
+        <end pd="worker_6"   id="0" />
+    </channel>
+    <channel>
+        <end pd="controller" id="17" />
+        <end pd="worker_7"   id="0" />
+    </channel>
+    
+    <!-- Worker <-> EventBus channels (workers can subscribe to events) -->
+    <channel>
+        <end pd="event_bus" id="20" />
+        <end pd="worker_0"  id="1" pp="true" />
+    </channel>
+    <channel>
+        <end pd="event_bus" id="21" />
+        <end pd="worker_1"  id="1" pp="true" />
+    </channel>
+    <channel>
+        <end pd="event_bus" id="22" />
+        <end pd="worker_2"  id="1" pp="true" />
+    </channel>
+    <channel>
+        <end pd="event_bus" id="23" />
+        <end pd="worker_3"  id="1" pp="true" />
+    </channel>
+    <channel>
+        <end pd="event_bus" id="24" />
+        <end pd="worker_4"  id="1" pp="true" />
+    </channel>
+    <channel>
+        <end pd="event_bus" id="25" />
+        <end pd="worker_5"  id="1" pp="true" />
+    </channel>
+    <channel>
+        <end pd="event_bus" id="26" />
+        <end pd="worker_6"  id="1" pp="true" />
+    </channel>
+    <channel>
+        <end pd="event_bus" id="27" />
+        <end pd="worker_7"  id="1" pp="true" />
     </channel>
 </system>
