@@ -79,19 +79,15 @@ void *realloc(void *ptr, size_t size);
 void  free(void *ptr);
 void  abort(void) __attribute__((noreturn));
 void  exit(int status) __attribute__((noreturn));
-long               strtol(const char *nptr, char **endptr, int base);
-unsigned long      strtoul(const char *nptr, char **endptr, int base);
-long long          strtoll(const char *nptr, char **endptr, int base);
-unsigned long long strtoull(const char *nptr, char **endptr, int base);
-double             strtod(const char *nptr, char **endptr);
-float              strtof(const char *nptr, char **endptr);
+long  strtol(const char *nptr, char **endptr, int base);
+unsigned long strtoul(const char *nptr, char **endptr, int base);
 
 /* ---- assert.h replacement ---- */
 #ifdef NDEBUG
 #define assert(expr) ((void)0)
 #else
-#define assert(expr) ((expr) ? ((void)0) : __assert_fail(#expr, __FILE__, __LINE__, __func__))
-void __assert_fail(const char *expr, const char *file, int line, const char *function);
+#define assert(expr) ((expr) ? ((void)0) : __assert_fail(#expr, __FILE__, __LINE__))
+void __assert_fail(const char *expr, const char *file, int line);
 #endif
 
 /* ---- math stubs (wasm3 float support) ---- */
@@ -111,49 +107,28 @@ float  ceilf(float x);
 float  floorf(float x);
 float  truncf(float x);
 float  rintf(float x);
-double copysign(double x, double y);
-float  copysignf(float x, float y);
-
-#define isnan(x)    __builtin_isnan(x)
-#define isinf(x)    __builtin_isinf(x)
-#define isfinite(x) __builtin_isfinite(x)
-#define signbit(x)  __builtin_signbit(x)
+float  sqrtf(float x);
 
 /* Needed by some wasm3 paths */
-#ifndef UINT32_MAX
 #define UINT32_MAX  0xFFFFFFFFU
-#endif
-#ifndef INT32_MAX
 #define INT32_MAX   0x7FFFFFFF
-#endif
-#ifndef INT32_MIN
 #define INT32_MIN   (-INT32_MAX - 1)
-#endif
-#ifndef UINT64_MAX
 #define UINT64_MAX  0xFFFFFFFFFFFFFFFFULL
-#endif
-#ifndef INT64_MAX
 #define INT64_MAX   0x7FFFFFFFFFFFFFFFLL
-#endif
-#ifndef INT64_MIN
 #define INT64_MIN   (-INT64_MAX - 1LL)
-#endif
 
-/* inttypes.h format macros */
-#ifndef PRId32
-#define PRId32  "d"
-#define PRIi32  "i"
-#define PRIu32  "u"
-#define PRIx32  "x"
-#define PRIX32  "X"
-#define PRId64  "ld"
-#define PRIi64  "li"
-#define PRIu64  "lu"
-#define PRIx64  "lx"
-#define PRIX64  "lX"
-#define PRIdPTR "ld"
-#define PRIuPTR "lu"
-#define PRIxPTR "lx"
+/* PRIx format macros that wasm3 uses */
+#ifndef PRIi32
+#define PRIi32 "d"
+#endif
+#ifndef PRIi64
+#define PRIi64 "lld"
+#endif
+#ifndef PRIu32
+#define PRIu32 "u"
+#endif
+#ifndef PRIu64
+#define PRIu64 "llu"
 #endif
 
 #endif /* m3_bare_metal_h */
