@@ -1,0 +1,8 @@
+[package]
+name = "agentos-model-proxy"
+version = "0.1.0"
+edition = "2021"
+description = "Model Proxy - capability-gated LLM inference service for agentOS"
+
+[dependencies]
+agentos-sdk = { path = "../../sdk" }
