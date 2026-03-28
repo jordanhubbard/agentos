@@ -25,4 +25,19 @@ settings.cmake
 # macOS
 .DS_Store
 .AppleDouble
+
+# Microkit SDK (download separately via setup-dev.sh)
 microkit-sdk.tar.gz
+microkit-sdk-*/
+
+# Rust build artifacts
+target/
+Cargo.lock
+
+# Kernel build artifacts
+kernel/build/
+*.iso
+boot/*.iso
+
+# Build reports (generated)
+build-*/
