@@ -10,6 +10,7 @@
 use alloc::vec::Vec;
 use alloc::string::String;
 use alloc::boxed::Box;
+use alloc::format;
 
 use crate::capability::{Capability, CapabilitySet, CapabilityKind, Right};
 use crate::event::{EventChannel, Event, EventKind, Priority};

@@ -37,8 +37,8 @@ impl Embedding {
             .map(|(a, b)| a * b)
             .sum();
         
-        let norm_a: f32 = self.values.iter().map(|x| x * x).sum::<f32>().sqrt();
-        let norm_b: f32 = other.values.iter().map(|x| x * x).sum::<f32>().sqrt();
+        let norm_a: f32 = f32_sqrt(self.values.iter().map(|x| x * x).sum::<f32>());
+        let norm_b: f32 = f32_sqrt(other.values.iter().map(|x| x * x).sum::<f32>());
         
         if norm_a == 0.0 || norm_b == 0.0 {
             0.0
@@ -47,6 +47,18 @@ impl Embedding {
         }
     }
 }
+
+/// Newton-Raphson sqrt for no_std f32 (used by cosine_similarity).
+#[cfg(not(feature = "std"))]
+fn f32_sqrt(x: f32) -> f32 {
+    if x <= 0.0 { return 0.0; }
+    let mut r = x;
+    for _ in 0..24 { r = 0.5 * (r + x / r); }
+    r
+}
+
+#[cfg(feature = "std")]
+fn f32_sqrt(x: f32) -> f32 { x.sqrt() }
 
 /// A stored vector record
 #[derive(Debug, Clone)]
