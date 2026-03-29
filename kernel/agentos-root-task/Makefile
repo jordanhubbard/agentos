@@ -46,8 +46,9 @@ CFLAGS_WASM3 := $(CFLAGS) -Iwasm3 -include $(CURDIR)/include/m3_bare_metal.h \
                 -Wno-sign-compare -Wno-unused-parameter -Wno-missing-field-initializers \
                 -Wno-cast-align -Wno-implicit-fallthrough -Dd_m3HasWASI=0
 
-# Swap slot needs wasm3 headers + bare-metal shim (same as wasm3 sources)
-CFLAGS_SWAPSLOT := $(CFLAGS) -Iwasm3 -include $(CURDIR)/include/m3_bare_metal.h
+# Swap slot needs wasm3 headers but NOT the bare-metal shim pre-include
+# (the shim is only for vendored wasm3 sources that lack seL4 headers)
+CFLAGS_SWAPSLOT := $(CFLAGS) -Iwasm3
 
 LDFLAGS := -L$(BOARD_DIR)/lib
 LIBS    := -lmicrokit -Tmicrokit.ld
