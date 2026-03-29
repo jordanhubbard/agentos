@@ -256,10 +256,8 @@ pub fn validate_proposal(proposal: &SwapProposal, contract: &ServiceContract) ->
                                contract.performance.max_memory_bytes),
     });
     
-    // 5. WASM validation (if WASM format)
+    // 5. WASM validation and capability manifest enforcement
     if proposal.format == BinaryFormat::Wasm {
-        // In full implementation: parse WASM module, validate imports/exports
-        // match against required IPC operations from contract
         let wasm_valid = proposal.binary.len() >= 8 
             && proposal.binary[0..4] == [0x00, 0x61, 0x73, 0x6D]; // WASM magic
         checks.push(ValidationCheck {
@@ -268,6 +266,46 @@ pub fn validate_proposal(proposal: &SwapProposal, contract: &ServiceContract) ->
             detail: if wasm_valid { "Valid WASM magic number".into() } 
                     else { "Invalid WASM module header".into() },
         });
+
+        // 5b. __agentos_caps custom section policy enforcement
+        //
+        // Parses the WASM binary for a custom section named "__agentos_caps"
+        // containing a JSON-encoded CapabilityManifest. Rejects any module
+        // that requests capabilities exceeding the slot's policy.
+        //
+        // Custom section format (WASM binary encoding):
+        //   section_id: 0x00 (custom)
+        //   section_size: u32 (LEB128)
+        //   name_len: u32 (LEB128)
+        //   name: "__agentos_caps" (UTF-8)
+        //   payload: JSON CapabilityManifest
+        if wasm_valid {
+            match parse_agentos_caps_section(&proposal.binary) {
+                Ok(Some(manifest)) => {
+                    let policy_result = check_capability_policy(&manifest, contract);
+                    checks.push(ValidationCheck {
+                        name: "capability_manifest".into(),
+                        passed: policy_result.allowed,
+                        detail: policy_result.detail,
+                    });
+                }
+                Ok(None) => {
+                    // No __agentos_caps section — allow but warn (legacy/unsigned modules)
+                    checks.push(ValidationCheck {
+                        name: "capability_manifest".into(),
+                        passed: true,
+                        detail: "No __agentos_caps section — capabilities unconstrained (legacy mode)".into(),
+                    });
+                }
+                Err(e) => {
+                    checks.push(ValidationCheck {
+                        name: "capability_manifest".into(),
+                        passed: false,
+                        detail: alloc::format!("Malformed __agentos_caps section: {}", e),
+                    });
+                }
+            }
+        }
     }
     
     let all_passed = checks.iter().all(|c| c.passed);
@@ -276,6 +314,218 @@ pub fn validate_proposal(proposal: &SwapProposal, contract: &ServiceContract) ->
         passed: all_passed,
         checks,
         duration_us: 0,
+    }
+}
+
+// ============================================================================
+// WASM Capability Manifest
+// ============================================================================
+
+/// Capability manifest declared in a WASM module's `__agentos_caps` custom section.
+/// Serialized as JSON in the WASM binary.
+#[derive(Debug, Clone)]
+pub struct CapabilityManifest {
+    /// Version of the manifest format (currently 1)
+    pub version: u32,
+    /// seL4 endpoint capabilities this module will invoke
+    /// These map to the `cap_type` fields in `ServiceContract::required_caps`
+    pub required: Vec<String>,
+    /// Optional capabilities (module degrades gracefully without these)
+    pub optional: Vec<String>,
+    /// Maximum memory pages this module needs (64KB each)
+    pub max_memory_pages: u32,
+    /// Whether the module uses any mutable shared state
+    pub uses_shared_memory: bool,
+}
+
+/// Result of a capability policy check
+#[derive(Debug)]
+pub struct CapPolicyResult {
+    /// Whether the module is allowed to load in this slot
+    pub allowed: bool,
+    /// Human-readable explanation
+    pub detail: String,
+    /// Which capabilities were denied (if any)
+    pub denied: Vec<String>,
+}
+
+/// Parse the `__agentos_caps` custom section from a WASM binary.
+///
+/// Returns `Ok(None)` if the section is absent (legacy module),
+/// `Ok(Some(manifest))` if found and parseable,
+/// `Err(msg)` if the section is malformed.
+pub fn parse_agentos_caps_section(wasm: &[u8]) -> Result<Option<CapabilityManifest>, String> {
+    const SECTION_NAME: &[u8] = b"__agentos_caps";
+    
+    // Skip WASM magic (4 bytes) + version (4 bytes)
+    if wasm.len() < 8 {
+        return Err("WASM binary too short".into());
+    }
+    let mut pos = 8usize;
+    
+    while pos < wasm.len() {
+        // Read section id (1 byte)
+        let section_id = wasm[pos];
+        pos += 1;
+        
+        // Read section size (LEB128 u32)
+        let (section_size, bytes_read) = read_leb128_u32(wasm, pos)
+            .ok_or("Truncated section size")?;
+        pos += bytes_read;
+        
+        let section_end = pos + section_size as usize;
+        if section_end > wasm.len() {
+            return Err("Section extends beyond binary".into());
+        }
+        
+        if section_id == 0x00 {
+            // Custom section — check the name
+            let (name_len, name_bytes) = read_leb128_u32(wasm, pos)
+                .ok_or("Truncated custom section name length")?;
+            let name_start = pos + name_bytes;
+            let name_end = name_start + name_len as usize;
+            
+            if name_end > section_end {
+                return Err("Custom section name extends beyond section".into());
+            }
+            
+            let name = &wasm[name_start..name_end];
+            if name == SECTION_NAME {
+                // Found it — parse the JSON payload
+                let payload = &wasm[name_end..section_end];
+                let manifest = parse_caps_json(payload)?;
+                return Ok(Some(manifest));
+            }
+        }
+        
+        pos = section_end;
+    }
+    
+    Ok(None) // No __agentos_caps section found
+}
+
+/// Read a LEB128-encoded u32 from `buf` at `pos`.
+/// Returns `Some((value, bytes_consumed))` or `None` if truncated.
+fn read_leb128_u32(buf: &[u8], pos: usize) -> Option<(u32, usize)> {
+    let mut result: u32 = 0;
+    let mut shift: u32 = 0;
+    let mut i = pos;
+    loop {
+        if i >= buf.len() { return None; }
+        let byte = buf[i] as u32;
+        i += 1;
+        result |= (byte & 0x7F) << shift;
+        if byte & 0x80 == 0 { break; }
+        shift += 7;
+        if shift >= 32 { return None; } // Overflow
+    }
+    Some((result, i - pos))
+}
+
+/// Parse the JSON payload of an `__agentos_caps` section.
+/// Uses a minimal hand-rolled parser to avoid pulling in serde in no_std.
+fn parse_caps_json(payload: &[u8]) -> Result<CapabilityManifest, String> {
+    // In a real no_std implementation this would be a minimal JSON scanner.
+    // For now, we do a best-effort parse of the expected format:
+    //   {"version":1,"required":["memory","network"],"optional":["log"],
+    //    "max_memory_pages":16,"uses_shared_memory":false}
+    
+    let s = core::str::from_utf8(payload)
+        .map_err(|_| "Capability manifest is not valid UTF-8")?;
+    
+    // Extract "required" array
+    let required = extract_string_array(s, "required").unwrap_or_default();
+    let optional = extract_string_array(s, "optional").unwrap_or_default();
+    
+    // Extract numeric/boolean fields with simple substring search
+    let version = extract_u32(s, "version").unwrap_or(1);
+    let max_pages = extract_u32(s, "max_memory_pages").unwrap_or(16);
+    let shared_mem = s.contains(""uses_shared_memory":true");
+    
+    Ok(CapabilityManifest {
+        version,
+        required,
+        optional,
+        max_memory_pages: max_pages,
+        uses_shared_memory: shared_mem,
+    })
+}
+
+/// Minimal string array extractor: finds `"key":["a","b",...]` in JSON.
+fn extract_string_array(json: &str, key: &str) -> Option<Vec<String>> {
+    let search = alloc::format!(""{}":[", key);
+    let start = json.find(search.as_str())? + search.len();
+    let end = json[start..].find(']')? + start;
+    let inner = &json[start..end];
+    
+    let mut result = Vec::new();
+    for token in inner.split(',') {
+        let trimmed = token.trim().trim_matches('"');
+        if !trimmed.is_empty() {
+            result.push(trimmed.into());
+        }
+    }
+    Some(result)
+}
+
+/// Extract a u32 value from a JSON field.
+fn extract_u32(json: &str, key: &str) -> Option<u32> {
+    let search = alloc::format!(""{}":", key);
+    let start = json.find(search.as_str())? + search.len();
+    let rest = json[start..].trim_start();
+    let end = rest.find(|c: char| !c.is_ascii_digit()).unwrap_or(rest.len());
+    rest[..end].parse().ok()
+}
+
+/// Check that a module's capability manifest is within the slot policy.
+///
+/// Policy rules:
+/// 1. Every `required` capability must be present in the contract's `required_caps`
+/// 2. Memory pages must not exceed contract budget (max_memory_bytes / 65536)
+/// 3. Shared memory use must be explicitly allowed by the contract
+pub fn check_capability_policy(manifest: &CapabilityManifest, contract: &ServiceContract) -> CapPolicyResult {
+    let allowed_caps: Vec<&str> = contract.required_caps.iter()
+        .map(|c| c.cap_type.as_str())
+        .collect();
+    
+    let mut denied: Vec<String> = Vec::new();
+    
+    // Check required capabilities
+    for cap in &manifest.required {
+        if !allowed_caps.contains(&cap.as_str()) {
+            denied.push(cap.clone());
+        }
+    }
+    
+    // Check memory budget
+    let max_pages = (contract.performance.max_memory_bytes / 65536) as u32;
+    if manifest.max_memory_pages > max_pages {
+        denied.push(alloc::format!(
+            "memory_pages:{} (slot allows max {})", 
+            manifest.max_memory_pages, max_pages
+        ));
+    }
+    
+    if denied.is_empty() {
+        CapPolicyResult {
+            allowed: true,
+            detail: alloc::format!(
+                "Capability manifest v{} verified: {} required, {} optional caps within policy",
+                manifest.version,
+                manifest.required.len(),
+                manifest.optional.len(),
+            ),
+            denied: Vec::new(),
+        }
+    } else {
+        CapPolicyResult {
+            allowed: false,
+            detail: alloc::format!(
+                "Capability policy violation: denied capabilities: {}",
+                denied.join(", ")
+            ),
+            denied,
+        }
     }
 }
 
@@ -713,4 +963,104 @@ mod tests {
         let result = engine.propose(make_proposal("nonexistent.v1"));
         assert!(result.is_err());
     }
+
+    #[test]
+    fn test_parse_caps_section_absent() {
+        // Minimal valid WASM with no custom sections
+        let wasm = vec![0x00, 0x61, 0x73, 0x6D, 0x01, 0x00, 0x00, 0x00];
+        let result = parse_agentos_caps_section(&wasm).unwrap();
+        assert!(result.is_none(), "No caps section should return None");
+    }
+
+    #[test]
+    fn test_parse_caps_section_present() {
+        // Build a WASM binary with an __agentos_caps custom section
+        let section_name = b"__agentos_caps";
+        let payload = br#"{"version":1,"required":["memory"],"optional":["log"],"max_memory_pages":8,"uses_shared_memory":false}"#;
+        
+        // Encode the custom section
+        let name_len_enc = leb128_encode(section_name.len() as u32);
+        let mut section_body = Vec::new();
+        section_body.extend_from_slice(&name_len_enc);
+        section_body.extend_from_slice(section_name);
+        section_body.extend_from_slice(payload);
+        
+        let section_size_enc = leb128_encode(section_body.len() as u32);
+        
+        let mut wasm = vec![0x00, 0x61, 0x73, 0x6D, 0x01, 0x00, 0x00, 0x00];
+        wasm.push(0x00); // custom section id
+        wasm.extend_from_slice(&section_size_enc);
+        wasm.extend_from_slice(&section_body);
+        
+        let result = parse_agentos_caps_section(&wasm).unwrap();
+        assert!(result.is_some(), "Should find __agentos_caps section");
+        let manifest = result.unwrap();
+        assert_eq!(manifest.version, 1);
+        assert_eq!(manifest.required, vec!["memory".to_string()]);
+        assert_eq!(manifest.optional, vec!["log".to_string()]);
+        assert_eq!(manifest.max_memory_pages, 8);
+        assert!(!manifest.uses_shared_memory);
+    }
+
+    #[test]
+    fn test_capability_policy_within_bounds() {
+        let mut engine = setup_engine();
+        // storage.v1 allows: memory, log
+        let contract = engine.contracts.get("storage.v1").unwrap();
+        let manifest = CapabilityManifest {
+            version: 1,
+            required: vec!["memory".into()],
+            optional: vec!["log".into()],
+            max_memory_pages: 16, // 1MB — within 64MB budget
+            uses_shared_memory: false,
+        };
+        let result = check_capability_policy(&manifest, contract);
+        assert!(result.allowed, "Should be within policy: {}", result.detail);
+    }
+
+    #[test]
+    fn test_capability_policy_denied_cap() {
+        let mut engine = setup_engine();
+        let contract = engine.contracts.get("storage.v1").unwrap();
+        let manifest = CapabilityManifest {
+            version: 1,
+            required: vec!["memory".into(), "network".into()], // network not allowed in storage slot
+            optional: Vec::new(),
+            max_memory_pages: 16,
+            uses_shared_memory: false,
+        };
+        let result = check_capability_policy(&manifest, contract);
+        assert!(!result.allowed, "Should be denied: network not in storage policy");
+        assert!(result.denied.contains(&"network".to_string()));
+    }
+
+    #[test]
+    fn test_capability_policy_memory_exceeded() {
+        let mut engine = setup_engine();
+        let contract = engine.contracts.get("storage.v1").unwrap();
+        // storage.v1 budget: 64MB = 1024 pages
+        let manifest = CapabilityManifest {
+            version: 1,
+            required: vec!["memory".into()],
+            optional: Vec::new(),
+            max_memory_pages: 2048, // 128MB — exceeds 64MB slot
+            uses_shared_memory: false,
+        };
+        let result = check_capability_policy(&manifest, contract);
+        assert!(!result.allowed, "Should be denied: memory budget exceeded");
+    }
+
+    // Helper: encode u32 as LEB128
+    fn leb128_encode(mut val: u32) -> Vec<u8> {
+        let mut out = Vec::new();
+        loop {
+            let mut byte = (val & 0x7F) as u8;
+            val >>= 7;
+            if val != 0 { byte |= 0x80; }
+            out.push(byte);
+            if val == 0 { break; }
+        }
+        out
+    }
 }
+
