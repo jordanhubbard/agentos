@@ -9,7 +9,7 @@
 # Quick start:
 #   make deps && make demo
 
-.PHONY: all deps build demo clean help
+.PHONY: all deps build demo test clean help
 
 # Paths
 ROOT_DIR      := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
@@ -135,6 +135,17 @@ demo: build
 	@$(QEMU) $(QEMU_FLAGS)
 
 # =============================================================================
+# test: CI-friendly boot test (pass/fail, no eyeballing)
+# =============================================================================
+test: build
+	@echo ""
+	@echo "╔══════════════════════════════════════════╗"
+	@echo "║       agentOS — CI test harness          ║"
+	@echo "╚══════════════════════════════════════════╝"
+	@echo ""
+	@bash $(ROOT_DIR)scripts/ci-test.sh
+
+# =============================================================================
 # clean: remove build artifacts
 # =============================================================================
 clean:
@@ -158,6 +169,7 @@ help:
 	@echo "  make deps    Install build dependencies (brew on macOS, apt on Linux)"
 	@echo "  make build   Compile the agentOS kernel image"
 	@echo "  make demo    Build + launch in QEMU (the full experience)"
+	@echo "  make test    Build + run CI test harness (pass/fail)"
 	@echo "  make clean   Remove build artifacts"
 	@echo ""
 	@echo "Quick start:"
