@@ -79,15 +79,19 @@ void *realloc(void *ptr, size_t size);
 void  free(void *ptr);
 void  abort(void) __attribute__((noreturn));
 void  exit(int status) __attribute__((noreturn));
-long  strtol(const char *nptr, char **endptr, int base);
-unsigned long strtoul(const char *nptr, char **endptr, int base);
+long               strtol(const char *nptr, char **endptr, int base);
+unsigned long      strtoul(const char *nptr, char **endptr, int base);
+long long          strtoll(const char *nptr, char **endptr, int base);
+unsigned long long strtoull(const char *nptr, char **endptr, int base);
+double             strtod(const char *nptr, char **endptr);
+float              strtof(const char *nptr, char **endptr);
 
 /* ---- assert.h replacement ---- */
 #ifdef NDEBUG
 #define assert(expr) ((void)0)
 #else
-#define assert(expr) ((expr) ? ((void)0) : __assert_fail(#expr, __FILE__, __LINE__))
-void __assert_fail(const char *expr, const char *file, int line);
+#define assert(expr) ((expr) ? ((void)0) : __assert_fail(#expr, __FILE__, __LINE__, __func__))
+void __assert_fail(const char *expr, const char *file, int line, const char *function);
 #endif
 
 /* ---- math stubs (wasm3 float support) ---- */
@@ -107,7 +111,13 @@ float  ceilf(float x);
 float  floorf(float x);
 float  truncf(float x);
 float  rintf(float x);
-float  sqrtf(float x);
+double copysign(double x, double y);
+float  copysignf(float x, float y);
+
+#define isnan(x)    __builtin_isnan(x)
+#define isinf(x)    __builtin_isinf(x)
+#define isfinite(x) __builtin_isfinite(x)
+#define signbit(x)  __builtin_signbit(x)
 
 /* Needed by some wasm3 paths */
 #define UINT32_MAX  0xFFFFFFFFU

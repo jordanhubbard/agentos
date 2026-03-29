@@ -9,12 +9,22 @@
 #include "agentos.h"
 #include <stdint.h>
 
-/* Memory region - patched by Microkit */
+/* Memory regions - patched by Microkit setvar */
 uintptr_t monitor_stack_vaddr;
+uintptr_t swap_code_ctrl_0;
+uintptr_t swap_code_ctrl_1;
+uintptr_t swap_code_ctrl_2;
+uintptr_t swap_code_ctrl_3;
 
 /* Channel IDs (must match agentos.system id= values) */
-#define CH_EVENTBUS   0
-#define CH_INITAGENT  1
+#define CH_EVENTBUS      0
+#define CH_INITAGENT     1
+#define CH_SWAP_BASE     30   /* Channels 30-33: swap slot PDs */
+#define NUM_SWAP_SLOTS   4
+
+/* Forward declaration */
+void vibe_swap_init(void);
+int  vibe_swap_health_notify(int slot);
 
 /* Controller state */
 static struct {
@@ -45,6 +55,9 @@ void init(void) {
     microkit_dbg_puts("[controller] Notifying InitAgent to start...\n");
     microkit_notify(CH_INITAGENT);
     
+    /* Initialize vibe-swap subsystem (sets up swap slot channels + service table) */
+    vibe_swap_init();
+
     microkit_dbg_puts("[controller] *** agentOS controller boot complete ***\n");
     microkit_dbg_puts("[controller] Ready for agents.\n");
 }
@@ -66,14 +79,24 @@ void notified(microkit_channel ch) {
         default:
             /* Channels 10-17: worker pool ready/completion notifications */
             if (ch >= 10 && ch <= 17) {
-                uint32_t slot = ch - 10;
+                uint32_t pool_slot = ch - 10;
+                (void)pool_slot;
                 uint64_t task_id = (uint64_t)microkit_mr_get(0) |
                                    ((uint64_t)microkit_mr_get(1) << 32);
                 if (task_id == 0) {
                     microkit_dbg_puts("[controller] Worker ready\n");
                 } else {
                     microkit_dbg_puts("[controller] Worker task complete\n");
-                    /* Revoke caps and return slot to pool */
+                }
+            /* Channels 30-33: swap slot health-OK notifications */
+            } else if (ch >= CH_SWAP_BASE && ch < CH_SWAP_BASE + NUM_SWAP_SLOTS) {
+                int swap_slot_idx = (int)(ch - CH_SWAP_BASE);
+                uint32_t status = (uint32_t)microkit_mr_get(0);
+                if (status == 0) {
+                    microkit_dbg_puts("[controller] Swap slot health OK — activating\n");
+                    vibe_swap_health_notify(swap_slot_idx);
+                } else {
+                    microkit_dbg_puts("[controller] Swap slot health FAIL\n");
                 }
             } else {
                 microkit_dbg_puts("[controller] Unknown channel\n");

@@ -42,6 +42,9 @@
 #include <stdint.h>
 #include <stdbool.h>
 
+/* Microkit setvar_vaddr — patched by the system initializer */
+uintptr_t agentfs_store_vaddr;
+
 /* ── Channel IDs ────────────────────────────────────────────────────────── */
 #define CH_CONTROLLER  0
 #define CH_EVENTBUS    1

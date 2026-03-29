@@ -440,3 +440,78 @@ float  ceilf(float x)  { return (float)ceil((double)x); }
 float  floorf(float x) { return (float)floor((double)x); }
 float  truncf(float x) { return (float)trunc((double)x); }
 float  rintf(float x)  { return (float)rint((double)x); }
+
+/* ---- Additional math and string functions for wasm3 ---- */
+
+double copysign(double x, double y) {
+    uint64_t xi, yi;
+    __builtin_memcpy(&xi, &x, 8);
+    __builtin_memcpy(&yi, &y, 8);
+    xi = (xi & 0x7FFFFFFFFFFFFFFFULL) | (yi & 0x8000000000000000ULL);
+    double r; __builtin_memcpy(&r, &xi, 8); return r;
+}
+
+float copysignf(float x, float y) {
+    uint32_t xi, yi;
+    __builtin_memcpy(&xi, &x, 4);
+    __builtin_memcpy(&yi, &y, 4);
+    xi = (xi & 0x7FFFFFFF) | (yi & 0x80000000);
+    float r; __builtin_memcpy(&r, &xi, 4); return r;
+}
+
+double strtod(const char *str, char **endptr) {
+    while (*str == ' ' || *str == '\t') str++;
+    int neg = 0;
+    if (*str == '-') { neg = 1; str++; }
+    else if (*str == '+') str++;
+    double result = 0.0;
+    while (*str >= '0' && *str <= '9')
+        result = result * 10.0 + (*str++ - '0');
+    if (*str == '.') {
+        str++;
+        double frac = 0.1;
+        while (*str >= '0' && *str <= '9') {
+            result += (*str++ - '0') * frac;
+            frac *= 0.1;
+        }
+    }
+    if (endptr) *endptr = (char *)str;
+    return neg ? -result : result;
+}
+
+float strtof(const char *str, char **endptr) {
+    return (float)strtod(str, endptr);
+}
+
+unsigned long long strtoull(const char *str, char **endptr, int base) {
+    while (*str == ' ' || *str == '\t') str++;
+    if (base == 0) {
+        if (str[0] == '0' && (str[1] == 'x' || str[1] == 'X')) { base = 16; str += 2; }
+        else if (str[0] == '0') { base = 8; str++; }
+        else base = 10;
+    } else if (base == 16 && str[0] == '0' && (str[1] == 'x' || str[1] == 'X')) {
+        str += 2;
+    }
+    unsigned long long result = 0;
+    while (1) {
+        int digit;
+        if (*str >= '0' && *str <= '9') digit = *str - '0';
+        else if (*str >= 'a' && *str <= 'f') digit = *str - 'a' + 10;
+        else if (*str >= 'A' && *str <= 'F') digit = *str - 'A' + 10;
+        else break;
+        if (digit >= base) break;
+        result = result * (unsigned long long)base + (unsigned long long)digit;
+        str++;
+    }
+    if (endptr) *endptr = (char *)str;
+    return result;
+}
+
+long long strtoll(const char *str, char **endptr, int base) {
+    while (*str == ' ' || *str == '\t') str++;
+    int neg = 0;
+    if (*str == '-') { neg = 1; str++; }
+    else if (*str == '+') str++;
+    long long r = (long long)strtoull(str, endptr, base);
+    return neg ? -r : r;
+}

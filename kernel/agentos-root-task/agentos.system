@@ -27,12 +27,21 @@
     21: event_bus <-> worker_1
     ...
     27: event_bus <-> worker_7
+    30: controller <-> swap_slot_0  (WASM hot-swap)
+    31: controller <-> swap_slot_1
+    32: controller <-> swap_slot_2
+    33: controller <-> swap_slot_3
 -->
 <system>
     <!-- Controller: system coordinator, low priority to PPC into passive servers -->
     <protection_domain name="controller" priority="50">
         <program_image path="controller.elf" />
-        <map mr="monitor_stack" vaddr="0x2000000" perms="rw" setvar_vaddr="monitor_stack_vaddr" />
+        <map mr="monitor_stack"  vaddr="0x2000000" perms="rw" setvar_vaddr="monitor_stack_vaddr" />
+        <!-- Swap code regions: controller writes WASM images here; swap slot PDs read them -->
+        <map mr="swap_code_0" vaddr="0x6000000" perms="rw" setvar_vaddr="swap_code_ctrl_0" />
+        <map mr="swap_code_1" vaddr="0x6400000" perms="rw" setvar_vaddr="swap_code_ctrl_1" />
+        <map mr="swap_code_2" vaddr="0x6800000" perms="rw" setvar_vaddr="swap_code_ctrl_2" />
+        <map mr="swap_code_3" vaddr="0x6C00000" perms="rw" setvar_vaddr="swap_code_ctrl_3" />
     </protection_domain>
     
     <!-- EventBus: passive pub/sub backbone -->
@@ -177,5 +186,51 @@
     <channel>
         <end pd="event_bus" id="27" />
         <end pd="worker_7"  id="1" pp="true" />
+    </channel>
+
+    <!--
+      Swap slots: 4 pre-allocated PDs for live WASM hot-swap.
+      Controller maps each code region rw (writes WASM image + header).
+      Swap slot maps it r (reads and interprets via wasm3).
+      Channels: controller id=30..33 <-> swap_slot_N id=0
+    -->
+    <memory_region name="swap_code_0" size="0x400000" />
+    <memory_region name="swap_code_1" size="0x400000" />
+    <memory_region name="swap_code_2" size="0x400000" />
+    <memory_region name="swap_code_3" size="0x400000" />
+
+    <protection_domain name="swap_slot_0" priority="75">
+        <program_image path="swap_slot.elf" />
+        <map mr="swap_code_0" vaddr="0x2000000" perms="r" setvar_vaddr="swap_code_vaddr" />
+    </protection_domain>
+    <protection_domain name="swap_slot_1" priority="75">
+        <program_image path="swap_slot.elf" />
+        <map mr="swap_code_1" vaddr="0x2000000" perms="r" setvar_vaddr="swap_code_vaddr" />
+    </protection_domain>
+    <protection_domain name="swap_slot_2" priority="75">
+        <program_image path="swap_slot.elf" />
+        <map mr="swap_code_2" vaddr="0x2000000" perms="r" setvar_vaddr="swap_code_vaddr" />
+    </protection_domain>
+    <protection_domain name="swap_slot_3" priority="75">
+        <program_image path="swap_slot.elf" />
+        <map mr="swap_code_3" vaddr="0x2000000" perms="r" setvar_vaddr="swap_code_vaddr" />
+    </protection_domain>
+
+    <!-- Channels: controller <-> swap slots -->
+    <channel>
+        <end pd="controller"  id="30" />
+        <end pd="swap_slot_0" id="0" />
+    </channel>
+    <channel>
+        <end pd="controller"  id="31" />
+        <end pd="swap_slot_1" id="0" />
+    </channel>
+    <channel>
+        <end pd="controller"  id="32" />
+        <end pd="swap_slot_2" id="0" />
+    </channel>
+    <channel>
+        <end pd="controller"  id="33" />
+        <end pd="swap_slot_3" id="0" />
     </channel>
 </system>

@@ -35,7 +35,37 @@
 
 /* Swap slot configuration */
 #define MAX_SWAP_SLOTS       4
-#define SWAP_SLOT_BASE_CH    8  /* Channel IDs 8-11 are swap slots */
+#define SWAP_SLOT_BASE_CH    30  /* Channel IDs 30-33: swap slot PDs */
+
+/*
+ * Swap code regions — shared memory mapped by the controller (rw).
+ * These are patched by Microkit via setvar_vaddr in agentos.system.
+ * Each region is 4MB; the swap slot PD sees it read-only at 0x2000000.
+ *
+ * Layout per region:
+ *   [0x000] vibe_slot_header_t (64 bytes, written last to commit)
+ *   [0x040] WASM binary bytes  (up to ~4MB - 64 bytes)
+ */
+extern uintptr_t swap_code_ctrl_0;
+extern uintptr_t swap_code_ctrl_1;
+extern uintptr_t swap_code_ctrl_2;
+extern uintptr_t swap_code_ctrl_3;
+
+#define SWAP_CODE_REGION_SIZE   0x400000UL   /* 4MB per slot */
+#define SWAP_HEADER_SIZE        64           /* Cache-line aligned */
+#define SWAP_MAGIC              0x56494245   /* "VIBE" */
+
+/* Swap slot header written by controller, read by swap_slot PD */
+typedef struct __attribute__((packed)) {
+    uint32_t    magic;           /* SWAP_MAGIC — set LAST to commit write */
+    uint32_t    version;         /* Monotonic version counter */
+    uint32_t    code_format;     /* 1 = WASM */
+    uint32_t    code_offset;     /* Offset from region base to code bytes */
+    uint32_t    code_size;       /* WASM binary size in bytes */
+    uint32_t    service_id;      /* Target service ID */
+    char        service_name[32];
+    uint8_t     _pad[4];         /* Pad to 64 bytes */
+} vibe_slot_header_t;
 
 /* Service IDs (index into the service table) */
 #define SVC_EVENTBUS    0
@@ -246,10 +276,52 @@ int vibe_swap_begin(uint32_t service_id, const void *code, uint32_t code_len) {
      * This avoids the need to compile native code at runtime.
      */
     
-    (void)code;
-    (void)code_len;
-    /* TODO: memcpy code to shared memory region for slot PD */
-    
+    /* Get controller-side virtual address for this slot's code region */
+    static uintptr_t * const slot_regions[MAX_SWAP_SLOTS] = {
+        &swap_code_ctrl_0,
+        &swap_code_ctrl_1,
+        &swap_code_ctrl_2,
+        &swap_code_ctrl_3,
+    };
+    uintptr_t region_base = *slot_regions[slot];
+
+    /* Validate code fits in region */
+    if (code_len + SWAP_HEADER_SIZE > SWAP_CODE_REGION_SIZE) {
+        microkit_dbg_puts("[vibe_swap] ERROR: code too large for slot region\n");
+        slots[slot].state = SWAP_STATE_IDLE;
+        return -4;
+    }
+
+    /* Write header: clear magic first, set it last after data is written */
+    volatile vibe_slot_header_t *hdr = (volatile vibe_slot_header_t *)region_base;
+    hdr->magic       = 0;
+    hdr->version     = slots[slot].version;
+    hdr->code_format = 1;  /* WASM */
+    hdr->code_offset = SWAP_HEADER_SIZE;
+    hdr->code_size   = code_len;
+    hdr->service_id  = service_id;
+
+    /* Copy service name */
+    const char *sname = svc->name ? svc->name : "unknown";
+    int ni = 0;
+    while (sname[ni] && ni < 31) { hdr->service_name[ni] = sname[ni]; ni++; }
+    hdr->service_name[ni] = '\0';
+
+    /* Copy WASM bytes after header */
+    volatile uint8_t *dst = (volatile uint8_t *)(region_base + SWAP_HEADER_SIZE);
+    const uint8_t *src = (const uint8_t *)code;
+    for (uint32_t i = 0; i < code_len; i++) dst[i] = src[i];
+
+    /* Memory barrier: all writes visible before setting magic */
+    __asm__ volatile ("fence w,w" ::: "memory");
+
+    /* Commit: set magic to signal the swap slot that data is ready */
+    hdr->magic = SWAP_MAGIC;
+
+    __asm__ volatile ("fence w,w" ::: "memory");
+
+    microkit_dbg_puts("[vibe_swap] WASM image written, notifying slot\n");
+
     /* Notify the swap slot to initialize */
     microkit_notify(slots[slot].channel);
     
@@ -416,4 +488,18 @@ void vibe_swap_status(uint32_t service_id, uint32_t *version,
     if (version) *version = svc->version;
     if (active_channel) *active_channel = svc->active_channel;
     if (has_rollback) *has_rollback = svc->has_rollback;
+}
+
+/*
+ * Called by the controller when a swap slot sends a health-OK notification.
+ * Transitions slot from TESTING → ACTIVE and redirects the service.
+ */
+int vibe_swap_health_notify(int slot) {
+    if (slot < 0 || slot >= MAX_SWAP_SLOTS) return -1;
+    if (slots[slot].state != SWAP_STATE_TESTING) {
+        microkit_dbg_puts("[vibe_swap] health_notify: slot not in TESTING state\n");
+        return -2;
+    }
+    slots[slot].healthy = true;
+    return vibe_swap_activate(slot);
 }

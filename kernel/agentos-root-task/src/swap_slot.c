@@ -31,6 +31,10 @@
 
 #define CH_CONTROLLER 0
 
+/* Microkit setvar_vaddr: patched to the mapped virtual address of our code region.
+ * We declare it so Microkit can patch it; the actual value matches CODE_REGION_BASE. */
+uintptr_t swap_code_vaddr;
+
 /* Shared memory layout for code loading */
 #define CODE_REGION_BASE  0x2000000UL
 #define CODE_REGION_SIZE  0x400000UL   /* 4MB for service code + data */
