@@ -39,7 +39,16 @@ ifeq ($(UNAME_S),Darwin)
     SDK_PLATFORM := macos-x86-64
   endif
   # Homebrew LLVM (Xcode clang lacks RISC-V target)
-  LLVM_BIN := $(BREW_PREFIX)/opt/llvm/bin
+  # Newer Homebrew splits llvm and lld into separate formulae (llvm@N, lld@N).
+  # Probe for versioned formulae first, then fall back to opt/llvm/bin.
+  LLVM_BIN := $(shell \
+    for d in $(BREW_PREFIX)/opt/llvm/bin $(BREW_PREFIX)/opt/llvm@*/bin; do \
+      [ -x "$$d/clang" ] && echo "$$d" && break; \
+    done 2>/dev/null)
+  LLD_BIN := $(shell \
+    for d in $(LLVM_BIN) $(BREW_PREFIX)/opt/lld/bin $(BREW_PREFIX)/opt/lld@*/bin; do \
+      [ -x "$$d/ld.lld" ] && echo "$$d" && break; \
+    done 2>/dev/null)
   # Homebrew QEMU puts the RISC-V BIOS here
   BIOS := $(shell find $(BREW_PREFIX) -name "opensbi-riscv64-generic-fw_dynamic.bin" 2>/dev/null | head -1)
   ifeq ($(BIOS),)
@@ -80,6 +89,7 @@ ifeq ($(UNAME_S),Darwin)
 	@brew install --quiet \
 		qemu \
 		llvm \
+		lld \
 		cmake \
 		ninja \
 		python3 \
@@ -113,7 +123,7 @@ endif
 	@echo "  qemu-system-riscv64: $$(qemu-system-riscv64 --version 2>/dev/null | head -1 || echo 'NOT FOUND')"
 ifeq ($(UNAME_S),Darwin)
 	@echo "  clang (LLVM):        $$($(LLVM_BIN)/clang --version 2>/dev/null | head -1 || echo 'NOT FOUND')"
-	@echo "  ld.lld:              $$($(LLVM_BIN)/ld.lld --version 2>/dev/null | head -1 || echo 'NOT FOUND')"
+	@echo "  ld.lld:              $$($(LLD_BIN)/ld.lld --version 2>/dev/null | head -1 || echo 'NOT FOUND')"
 else
 	@echo "  clang:               $$(clang --version 2>/dev/null | head -1 || echo 'NOT FOUND')"
 	@echo "  ld.lld:              $$(ld.lld --version 2>/dev/null | head -1 || echo 'NOT FOUND')"
@@ -136,7 +146,7 @@ $(MICROKIT_SDK)/bin/microkit:
 # =============================================================================
 # build: compile the kernel image
 # =============================================================================
-build: deps-sdk
+build: deps-sdk deps-tools
 	@echo ""
 	@echo "╔══════════════════════════════════════════╗"
 	@echo "║         agentOS — building kernel        ║"
@@ -144,18 +154,18 @@ build: deps-sdk
 	@echo ""
 ifeq ($(UNAME_S),Darwin)
 	@test -x "$(LLVM_BIN)/clang" || \
-		(echo "ERROR: Homebrew LLVM not found. Run 'make deps' first." && exit 1)
-	@test -x "$(LLVM_BIN)/ld.lld" || \
-		(echo "ERROR: ld.lld not found. Run 'make deps' first." && exit 1)
+		(echo "ERROR: Homebrew LLVM not found even after deps install." && exit 1)
+	@test -x "$(LLD_BIN)/ld.lld" || \
+		(echo "ERROR: ld.lld not found even after deps install." && exit 1)
 else
 	@command -v clang >/dev/null 2>&1 || \
-		(echo "ERROR: clang not found. Run 'make deps' first." && exit 1)
+		(echo "ERROR: clang not found even after deps install." && exit 1)
 	@command -v ld.lld >/dev/null 2>&1 || \
-		(echo "ERROR: ld.lld not found. Run 'make deps' first." && exit 1)
+		(echo "ERROR: ld.lld not found even after deps install." && exit 1)
 endif
 	@test -d "$(MICROKIT_SDK)" || \
 		(echo "ERROR: Microkit SDK not found. Run 'make deps' first." && exit 1)
-	@PATH="$(LLVM_BIN):$$PATH" $(MAKE) -C $(KERNEL_DIR) \
+	@PATH="$(LLVM_BIN):$(LLD_BIN):$$PATH" $(MAKE) -C $(KERNEL_DIR) \
 		BUILD_DIR=build-riscv \
 		MICROKIT_SDK=$(MICROKIT_SDK) \
 		MICROKIT_BOARD=qemu_virt_riscv64 \
