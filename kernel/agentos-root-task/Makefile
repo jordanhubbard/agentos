@@ -55,7 +55,7 @@ LIBS    := -lmicrokit -Tmicrokit.ld
 
 # Protection Domain ELFs
 # monitor/controller: includes vibe_swap for the hot-swap controller-side logic
-PD_MONITOR_SRCS   := src/monitor.c src/cap_broker.c src/agent_pool.c src/vibe_swap.c src/log.c
+PD_MONITOR_SRCS   := src/monitor.c src/cap_broker.c src/agent_pool.c src/vibe_swap.c src/m3_bare_metal.c src/log.c
 PD_EVENTBUS_SRCS  := src/event_bus.c src/log.c
 PD_INITAGENT_SRCS := src/init_agent.c src/log.c
 PD_WORKER_SRCS    := src/worker.c src/log.c
