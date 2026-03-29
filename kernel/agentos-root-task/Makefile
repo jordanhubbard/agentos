@@ -65,7 +65,8 @@ PD_AGENTFS_SRCS     := src/agentfs.c src/m3_bare_metal.c src/log.c
 PD_VIBEENGINE_SRCS  := src/vibe_engine.c src/m3_bare_metal.c src/log.c
 PD_SWAPSLOT_SRCS    := src/swap_slot.c src/wasm3_host.c src/m3_bare_metal.c src/log.c
 PD_GPUSCHED_SRCS    := src/gpu_sched.c src/m3_bare_metal.c src/log.c
-PD_GPUCUDA_SRCS     := src/gpu_scheduler.c src/m3_bare_metal.c src/log.c
+PD_MESHAGENT_SRCS   := src/mesh_agent.c src/m3_bare_metal.c src/log.c
+
 
 # wasm3 vendored sources (core interpreter only)
 WASM3_SRCS := wasm3/m3_core.c wasm3/m3_env.c wasm3/m3_code.c wasm3/m3_compile.c \
@@ -80,10 +81,11 @@ AGENTFS_OBJS      := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_AGENTFS_SRCS))
 VIBEENGINE_OBJS   := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_VIBEENGINE_SRCS))
 SWAPSLOT_OBJS     := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_SWAPSLOT_SRCS))
 GPUSCHED_OBJS     := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_GPUSCHED_SRCS))
-GPUCUDA_OBJS      := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_GPUCUDA_SRCS))
+MESHAGENT_OBJS    := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_MESHAGENT_SRCS))
+
 WASM3_OBJS        := $(patsubst wasm3/%.c, $(BUILD_DIR)/wasm3_%.o, $(WASM3_SRCS))
 
-IMAGES := controller.elf event_bus.elf init_agent.elf worker.elf agentfs.elf vibe_engine.elf swap_slot.elf gpu_sched.elf gpu_scheduler.elf
+IMAGES := controller.elf event_bus.elf init_agent.elf worker.elf agentfs.elf vibe_engine.elf swap_slot.elf gpu_sched.elf mesh_agent.elf
 IMAGE_FILE  := $(BUILD_DIR)/agentos.img
 REPORT_FILE := $(BUILD_DIR)/agentos-report.txt
 
@@ -135,7 +137,7 @@ $(BUILD_DIR)/swap_slot.elf: $(SWAPSLOT_OBJS) $(WASM3_OBJS)
 $(BUILD_DIR)/gpu_sched.elf: $(GPUSCHED_OBJS)
 	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
 
-$(BUILD_DIR)/gpu_scheduler.elf: $(GPUCUDA_OBJS)
+$(BUILD_DIR)/mesh_agent.elf: $(MESHAGENT_OBJS)
 	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
 
 $(IMAGE_FILE) $(REPORT_FILE): $(addprefix $(BUILD_DIR)/, $(IMAGES)) agentos.system

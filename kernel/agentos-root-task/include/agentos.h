@@ -93,6 +93,16 @@ typedef enum {
     MSG_SPAWN_AGENT            = 0x0801,  /* Spawn a WASM agent by hash */
     MSG_SPAWN_AGENT_REPLY      = 0x0802,  /* Reply: agent_id or error */
 
+    /* Distributed Agent Mesh (mesh_agent PD) */
+    MSG_MESH_ANNOUNCE          = 0x0A01,  /* Node registration: node_id, slot_count, gpu_slots */
+    MSG_MESH_ANNOUNCE_REPLY    = 0x0A02,
+    MSG_MESH_STATUS            = 0x0A03,  /* Query: number of known peers, total slots */
+    MSG_MESH_STATUS_REPLY      = 0x0A04,
+    MSG_REMOTE_SPAWN           = 0x0A05,  /* Spawn agent on best-available peer node */
+    MSG_REMOTE_SPAWN_REPLY     = 0x0A06,  /* Reply: node_id + ticket_id, or local fallback */
+    MSG_MESH_HEARTBEAT         = 0x0A07,  /* Periodic liveness ping from peer */
+    MSG_MESH_PEER_DOWN         = 0x0A08,  /* EventBus: peer went offline */
+
     /* GPU Scheduler PD (agents -> gpu_sched) */
     MSG_GPU_SUBMIT             = 0x0901,  /* Submit GPU task: hash_lo, hash_hi, priority, flags */
     MSG_GPU_SUBMIT_REPLY       = 0x0902,  /* Reply: ticket_id or error */

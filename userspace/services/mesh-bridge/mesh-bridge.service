@@ -1,0 +1,22 @@
+[Unit]
+Description=agentOS Mesh Bridge — SquirrelBus <-> seL4 mesh_agent relay
+After=network.target
+Wants=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/mesh-bridge
+Restart=on-failure
+RestartSec=10
+Environment=AGENTOS_NODE_ID=sparky
+Environment=AGENTOS_WORKER_SLOTS=8
+Environment=AGENTOS_GPU_SLOTS=4
+# Override in /etc/agentos/mesh-bridge.env
+EnvironmentFile=-/etc/agentos/mesh-bridge.env
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=mesh-bridge
+
+[Install]
+WantedBy=multi-user.target

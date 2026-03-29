@@ -318,20 +318,26 @@
         id=0: vibe_engine notifies us (OP_GPU_SUBMIT)
         id=1: controller PPCs in to query slot status (OP_GPU_STATUS)
     -->
-    <protection_domain name="gpu_scheduler" priority="160" passive="true">
-        <program_image path="gpu_scheduler.elf" />
+
+
+
+
+    <!--
+      Distributed Agent Mesh PD - priority 110
+      Discovers peer agentOS nodes via SquirrelBus bridge.
+      Routes REMOTE_SPAWN requests to least-loaded peer with GPU-affinity.
+    -->
+    <protection_domain name="mesh_agent" priority="110">
+        <program_image path="mesh_agent.elf" />
     </protection_domain>
 
-    <!-- Channel 60: vibe_engine(id=2) -> gpu_scheduler(id=0) — CUDA PTX submit -->
     <channel>
-        <end pd="vibe_engine"    id="2" />
-        <end pd="gpu_scheduler"  id="0" />
+        <end pd="controller" id="55" />
+        <end pd="mesh_agent" id="1" />
     </channel>
 
-    <!-- Channel 61: controller(id=61) <-> gpu_scheduler(id=1) — slot status query -->
     <channel>
-        <end pd="controller"     id="61" pp="true" />
-        <end pd="gpu_scheduler"  id="1" />
+        <end pd="event_bus" id="56" />
+        <end pd="mesh_agent" id="2" pp="true" />
     </channel>
-
 </system>

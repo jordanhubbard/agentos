@@ -60,6 +60,7 @@ static const uint32_t ECHO_SERVICE_WASM_LEN = 305;
 #define NUM_SWAP_SLOTS   4
 #define CH_VIBEENGINE    40   /* Channel 40: vibe_engine notifies us when swap approved */
 #define CH_GPUSCHED      50   /* Channel 50: gpu_sched <-> controller */
+#define CH_MESHAGENT     55   /* Channel 55: mesh_agent <-> controller */
 
 /* Forward declarations */
 void vibe_swap_init(void);
@@ -533,6 +534,9 @@ void notified(microkit_channel ch) {
                     /* gpu_sched startup ready notification */
                     microkit_dbg_puts("[controller] GPU Scheduler online\n");
                 }
+            /* Channel 55: mesh_agent ready notification */
+            } else if (ch == (microkit_channel)CH_MESHAGENT) {
+                microkit_dbg_puts("[controller] Distributed mesh agent online\n");
             /* Channel 40: vibe_engine approved a swap — read staging and begin */
             } else if (ch == CH_VIBEENGINE) {
                 vibe_demo_step4_notify();
