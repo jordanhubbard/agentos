@@ -1,0 +1,55 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build-and-test:
+    name: Build & Test (RISC-V / QEMU)
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y --no-install-recommends \
+            qemu-system-misc \
+            opensbi \
+            gcc-riscv64-unknown-elf \
+            build-essential \
+            curl \
+            python3 \
+            python3-pip \
+            libxml2-utils
+
+      - name: Download Microkit SDK
+        run: |
+          MICROKIT_VERSION=2.1.0
+          MICROKIT_URL="https://github.com/seL4/microkit/releases/download/${MICROKIT_VERSION}/microkit-sdk-${MICROKIT_VERSION}-linux-x86-64.tar.gz"
+          echo "Downloading Microkit SDK ${MICROKIT_VERSION}..."
+          curl -sSL "${MICROKIT_URL}" -o microkit-sdk.tar.gz
+          tar -xzf microkit-sdk.tar.gz
+          echo "SDK downloaded and extracted."
+          ls microkit-sdk-*/
+
+      - name: Build agentOS
+        run: make build
+
+      - name: Run CI test harness
+        run: make test
+        env:
+          AGENTOS_TIMEOUT: "45"
+
+      - name: Upload serial log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: agentos-ci-log
+          path: /tmp/agentos-ci.log
+          retention-days: 7
