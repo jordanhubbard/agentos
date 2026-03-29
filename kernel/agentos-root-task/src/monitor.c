@@ -67,6 +67,9 @@ int  vibe_swap_health_notify(int slot);
 int  vibe_swap_rollback(uint32_t service_id);
 void cap_broker_init(void);
 void agent_pool_init(void);
+int  agent_pool_spawn(const char *agent_name, uint64_t task_id,
+                      const uint8_t *payload, uint32_t payload_len,
+                      uint32_t priority);
 
 /* AgentFS op codes (must match agentfs.c) */
 #define OP_AGENTFS_PUT      0x30
@@ -307,10 +310,105 @@ void notified(microkit_channel ch) {
             ctrl.eventbus_ready = true;
             break;
             
-        case CH_INITAGENT:
-            microkit_dbg_puts("[controller] InitAgent ready notification received\n");
-            ctrl.initagent_ready = true;
+        case CH_INITAGENT: {
+            /*
+             * Two sub-cases:
+             *   a) InitAgent startup ready notification (MR0 = 0 or not MSG_SPAWN_AGENT)
+             *   b) Spawn request relay from init_agent (MR0 = MSG_SPAWN_AGENT)
+             *
+             * We distinguish by reading MR0. seL4 Microkit does preserve MR values
+             * across notifications to the notified() handler.
+             */
+            uint32_t notif_tag = (uint32_t)microkit_mr_get(0);
+            if (notif_tag == (uint32_t)MSG_SPAWN_AGENT) {
+                /*
+                 * init_agent is relaying a dynamic spawn request.
+                 * MR1: wasm_hash_lo_low32   MR2: wasm_hash_lo_hi32
+                 * MR3: wasm_hash_hi_low32   MR4: spawn_id
+                 * MR5: priority
+                 */
+                uint32_t hash_lo_lo  = (uint32_t)microkit_mr_get(1);
+                uint32_t hash_lo_hi  = (uint32_t)microkit_mr_get(2);
+                uint32_t hash_hi_lo  = (uint32_t)microkit_mr_get(3);
+                uint32_t spawn_id    = (uint32_t)microkit_mr_get(4);
+                uint32_t priority    = (uint32_t)microkit_mr_get(5);
+
+                microkit_dbg_puts("[controller] SPAWN_AGENT request: spawn_id=");
+                /* print spawn_id decimal */
+                {
+                    char buf[12]; int bi = 11; buf[bi] = '\0';
+                    uint32_t v = spawn_id;
+                    if (v == 0) { buf[--bi] = '0'; }
+                    else while (v > 0 && bi > 0) { buf[--bi] = '0' + (v % 10); v /= 10; }
+                    microkit_dbg_puts(&buf[bi]);
+                }
+                microkit_dbg_puts(" hash_lo=");
+                {
+                    static const char hex[] = "0123456789abcdef";
+                    char hbuf[9]; hbuf[8] = '\0';
+                    for (int hi = 7; hi >= 0; hi--) {
+                        hbuf[hi] = hex[hash_lo_lo & 0xf]; hash_lo_lo >>= 4;
+                    }
+                    (void)hash_lo_hi; (void)hash_hi_lo;
+                    microkit_dbg_puts(hbuf);
+                }
+                microkit_dbg_puts("\n");
+
+                /*
+                 * Construct an agent name from spawn_id for pool tracking.
+                 * In production: resolve from AgentFS metadata.
+                 */
+                char agent_name[17] = "wasm-agent-00000";
+                {
+                    uint32_t sid = spawn_id;
+                    for (int ni = 15; ni >= 11; ni--) {
+                        agent_name[ni] = '0' + (sid % 10);
+                        sid /= 10;
+                    }
+                }
+
+                /*
+                 * Dispatch via agent_pool_spawn. The payload carries spawn_id
+                 * and priority so the worker knows its identity.
+                 */
+                uint8_t spawn_payload[8];
+                spawn_payload[0] = (uint8_t)(spawn_id & 0xff);
+                spawn_payload[1] = (uint8_t)((spawn_id >> 8) & 0xff);
+                spawn_payload[2] = (uint8_t)((spawn_id >> 16) & 0xff);
+                spawn_payload[3] = (uint8_t)((spawn_id >> 24) & 0xff);
+                spawn_payload[4] = (uint8_t)(priority & 0xff);
+                spawn_payload[5] = (uint8_t)((priority >> 8) & 0xff);
+                spawn_payload[6] = 0;
+                spawn_payload[7] = 0;
+
+                int slot = agent_pool_spawn(agent_name, 0,
+                                            spawn_payload, 8, priority);
+
+                /*
+                 * Notify init_agent with the result.
+                 * MR0: MSG_SPAWN_AGENT_REPLY
+                 * MR1: spawn_id
+                 * MR2: slot_id (negative = failure)
+                 */
+                microkit_mr_set(0, MSG_SPAWN_AGENT_REPLY);
+                microkit_mr_set(1, spawn_id);
+                microkit_mr_set(2, (uint32_t)(int32_t)slot);
+                microkit_notify(CH_INITAGENT);
+
+                if (slot >= 0) {
+                    microkit_dbg_puts("[controller] Agent spawned: slot=");
+                    char s[2] = { (char)('0' + (slot % 10)), '\0' };
+                    microkit_dbg_puts(s);
+                    microkit_dbg_puts("\n");
+                } else {
+                    microkit_dbg_puts("[controller] SPAWN_AGENT: pool exhausted\n");
+                }
+            } else {
+                microkit_dbg_puts("[controller] InitAgent ready notification received\n");
+                ctrl.initagent_ready = true;
+            }
             break;
+        }
             
         default:
             /* Channels 10-17: worker pool ready/completion notifications */
