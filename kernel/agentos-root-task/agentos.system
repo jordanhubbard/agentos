@@ -308,4 +308,30 @@
         <end pd="event_bus" id="51" />
         <end pd="gpu_sched" id="2"  pp="true" />
     </channel>
+
+    <!--
+      GPU Scheduler (CUDA offload): passive PD (priority 160)
+      Manages 4 static CUDA PTX compute slots for WASM modules with
+      "agentos.cuda" custom section. VibeEngine notifies on PTX submit.
+
+      Channels:
+        id=0: vibe_engine notifies us (OP_GPU_SUBMIT)
+        id=1: controller PPCs in to query slot status (OP_GPU_STATUS)
+    -->
+    <protection_domain name="gpu_scheduler" priority="160" passive="true">
+        <program_image path="gpu_scheduler.elf" />
+    </protection_domain>
+
+    <!-- Channel 60: vibe_engine(id=2) -> gpu_scheduler(id=0) — CUDA PTX submit -->
+    <channel>
+        <end pd="vibe_engine"    id="2" />
+        <end pd="gpu_scheduler"  id="0" />
+    </channel>
+
+    <!-- Channel 61: controller(id=61) <-> gpu_scheduler(id=1) — slot status query -->
+    <channel>
+        <end pd="controller"     id="61" pp="true" />
+        <end pd="gpu_scheduler"  id="1" />
+    </channel>
+
 </system>

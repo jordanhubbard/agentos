@@ -22,6 +22,7 @@ extern crate alloc;
 
 pub mod capability;
 pub mod context;
+pub mod cuda;
 pub mod event;
 pub mod fs;
 pub mod identity;
@@ -37,6 +38,7 @@ pub use context::AgentContext;
 pub use event::{EventChannel, Event, EventKind, Priority};
 pub use identity::{AgentId, AgentIdentity};
 pub use message::{Message, MessageKind};
+pub use cuda::{CudaKernel, CudaError, CUDA_SECTION_NAME};
 pub use fs::{Object, ObjectId, ObjectMeta};
 
 /// agentOS SDK version

@@ -206,6 +206,43 @@ agentOS is built on a few core beliefs:
 
 4. **Boot it or it doesn't count.** An "agent OS" that's a Python package is an agent library. agentOS boots.
 
+## CUDA Compute Offload
+
+agentOS supports GPU kernel offload via CUDA PTX embedded in WASM modules.
+
+### How it works
+
+1. **Embed PTX in WASM**: Add a custom section named `agentos.cuda` to any WASM module. The section payload is a raw PTX source file (must begin with `.version`).
+
+2. **Submit via VibeEngine**: When an agent submits a WASM module with this section, VibeEngine automatically extracts and validates the PTX during `OP_VIBE_VALIDATE`.
+
+3. **gpu_scheduler PD**: On `OP_VIBE_EXECUTE`, VibeEngine notifies the `gpu_scheduler` protection domain (priority 160, passive). The scheduler claims one of 4 static GPU slots.
+
+4. **On Sparky GB10 (Blackwell)**: The gpu_scheduler would JIT-compile the PTX via `nvrtc` and bind it to a CUDA context on the slot. On QEMU/RISC-V (no GPU), it's bookkeeping only.
+
+### Rust SDK
+
+```rust
+use agentos_sdk::cuda::CudaKernel;
+
+let ptx = b".version 7.5\n.target sm_90\n.address_size 64\n\
+            .visible .entry matmul(.param .u64 A, .param .u64 B, .param .u64 C) {\n\
+                ret;\n}\n".to_vec();
+
+let kernel = CudaKernel::new(ptx, "matmul".to_string());
+kernel.validate()?;   // Check PTX before submitting
+kernel.submit(0)?;    // Submit to GPU slot 0
+// ... kernel runs on GPU ...
+CudaKernel::complete(0)?; // Release slot
+```
+
+### Channel topology
+
+```
+vibe_engine (CH_GPU=2) ──notify──► gpu_scheduler (CH_VIBE=0)
+controller  (CH=51)    ──ppcall──► gpu_scheduler (CH_CTRL=1)
+```
+
 ## Contributing
 
 agentOS is in early development. The design is stable; the implementation is growing. Contributions welcome in:

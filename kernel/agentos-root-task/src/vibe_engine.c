@@ -60,7 +60,19 @@
 #define VIBE_ERR_NOENT      5   /* proposal not found */
 #define VIBE_ERR_STATE      6   /* proposal in wrong state */
 #define VIBE_ERR_VALFAIL    7   /* validation failed */
+#define VIBE_ERR_BADPTX     8   /* invalid CUDA PTX payload */
 #define VIBE_ERR_INTERNAL   99
+
+/* CUDA PTX custom section name embedded in WASM modules */
+#define CUDA_SECTION_NAME   "agentos.cuda"
+#define CUDA_SECTION_LEN    12   /* strlen("agentos.cuda") */
+#define MAX_PTX_SIZE        (2 * 1024 * 1024)  /* 2MB PTX max */
+
+/* gpu_scheduler IPC channel and op codes */
+#define CH_GPU              2    /* vibe_engine -> gpu_scheduler */
+#define OP_GPU_SUBMIT       0x50
+#define OP_GPU_COMPLETE     0x51
+#define OP_GPU_STATUS       0x52
 
 /* ── WASM validation ────────────────────────────────────────────────── */
 #define WASM_MAGIC_0  0x00
@@ -99,6 +111,9 @@ typedef struct {
     /* Validation results (bitmap) */
     uint32_t         val_checks;   /* bits: 0=magic, 1=size, 2=svc, 3=cap */
     bool             val_passed;
+    /* CUDA PTX offload (optional — set when WASM has agentos.cuda section) */
+    uint32_t         cuda_ptx_offset; /* byte offset of PTX payload in staging */
+    uint32_t         cuda_ptx_len;    /* length of PTX payload (0 = no CUDA) */
 } proposal_t;
 
 typedef struct {
@@ -161,6 +176,89 @@ static bool validate_wasm_header(const uint8_t *data, uint32_t size) {
             data[1] == WASM_MAGIC_1 &&
             data[2] == WASM_MAGIC_2 &&
             data[3] == WASM_MAGIC_3);
+}
+
+/*
+ * scan_cuda_section: Scan a WASM binary for a custom section named
+ * "agentos.cuda". WASM custom sections have:
+ *   - section id byte: 0x00
+ *   - LEB128 section size
+ *   - LEB128 name length
+ *   - name bytes
+ *   - payload bytes
+ *
+ * Sets *ptx_offset (byte offset from data start) and *ptx_len on success.
+ * Returns true if found, false otherwise.
+ */
+static bool scan_cuda_section(const uint8_t *data, uint32_t size,
+                               uint32_t *ptx_offset, uint32_t *ptx_len) {
+    if (size < 8) return false;
+    /* Skip 4-byte magic + 4-byte version */
+    uint32_t pos = 8;
+    while (pos + 2 < size) {
+        uint8_t section_id = data[pos++];
+        /* Decode LEB128 section size (up to 4 bytes) */
+        uint32_t sec_size = 0;
+        uint32_t shift = 0;
+        while (pos < size && shift < 28) {
+            uint8_t b = data[pos++];
+            sec_size |= (uint32_t)(b & 0x7f) << shift;
+            shift += 7;
+            if (!(b & 0x80)) break;
+        }
+        uint32_t sec_start = pos;
+        if (sec_start + sec_size > size) break;
+
+        if (section_id == 0x00 && sec_size > CUDA_SECTION_LEN + 1) {
+            /* Decode name length (LEB128) */
+            uint32_t nlen = 0;
+            uint32_t nshift = 0;
+            uint32_t npos = sec_start;
+            while (npos < sec_start + sec_size && nshift < 28) {
+                uint8_t b = data[npos++];
+                nlen |= (uint32_t)(b & 0x7f) << nshift;
+                nshift += 7;
+                if (!(b & 0x80)) break;
+            }
+            /* Check if name matches "agentos.cuda" */
+            if (nlen == CUDA_SECTION_LEN &&
+                npos + nlen <= sec_start + sec_size) {
+                bool match = true;
+                const char *needle = CUDA_SECTION_NAME;
+                for (uint32_t i = 0; i < CUDA_SECTION_LEN; i++) {
+                    if (data[npos + i] != (uint8_t)needle[i]) {
+                        match = false;
+                        break;
+                    }
+                }
+                if (match) {
+                    uint32_t payload_start = npos + nlen;
+                    uint32_t payload_len   = (sec_start + sec_size) - payload_start;
+                    *ptx_offset = payload_start;
+                    *ptx_len    = payload_len;
+                    return true;
+                }
+            }
+        }
+        pos = sec_start + sec_size;
+    }
+    return false;
+}
+
+/*
+ * vibe_validate_cuda_ptx: Basic PTX sanity check.
+ * Valid PTX starts with ".version" directive and must be non-empty.
+ * Returns VIBE_OK or VIBE_ERR_BADPTX.
+ */
+static int vibe_validate_cuda_ptx(const uint8_t *ptx, uint32_t len) {
+    if (len == 0 || len > MAX_PTX_SIZE) return VIBE_ERR_BADPTX;
+    /* PTX files start with ".version" */
+    const char *magic = ".version";
+    if (len < 8) return VIBE_ERR_BADPTX;
+    for (int i = 0; i < 8; i++) {
+        if (ptx[i] != (uint8_t)magic[i]) return VIBE_ERR_BADPTX;
+    }
+    return VIBE_OK;
 }
 
 /* ── IPC Handlers ───────────────────────────────────────────────────── */
@@ -234,15 +332,24 @@ static microkit_msginfo handle_propose(void) {
         return microkit_msginfo_new(0, 1);
     }
 
+    /* Scan for CUDA PTX custom section in staged WASM */
+    uint32_t ptx_offset = 0, ptx_len = 0;
+    bool has_cuda = scan_cuda_section(staged, wasm_size, &ptx_offset, &ptx_len);
+    if (has_cuda) {
+        microkit_dbg_puts("[vibe_engine] CUDA PTX section found (agentos.cuda)\n");
+    }
+
     /* Record the proposal */
-    proposals[slot].state       = PROP_STATE_PENDING;
-    proposals[slot].service_id  = service_id;
-    proposals[slot].wasm_offset = 0;  /* Always at start of staging for now */
-    proposals[slot].wasm_size   = wasm_size;
-    proposals[slot].cap_tag     = cap_tag;
-    proposals[slot].version     = next_proposal_id++;
-    proposals[slot].val_checks  = 0;
-    proposals[slot].val_passed  = false;
+    proposals[slot].state            = PROP_STATE_PENDING;
+    proposals[slot].service_id       = service_id;
+    proposals[slot].wasm_offset      = 0;  /* Always at start of staging for now */
+    proposals[slot].wasm_size        = wasm_size;
+    proposals[slot].cap_tag          = cap_tag;
+    proposals[slot].version          = next_proposal_id++;
+    proposals[slot].val_checks       = 0;
+    proposals[slot].val_passed       = false;
+    proposals[slot].cuda_ptx_offset  = has_cuda ? ptx_offset : 0;
+    proposals[slot].cuda_ptx_len     = has_cuda ? ptx_len    : 0;
     total_proposals++;
 
     microkit_dbg_puts("[vibe_engine] Proposal accepted: id=");
@@ -332,6 +439,21 @@ static microkit_msginfo handle_validate(void) {
     } else {
         all_pass = false;
         microkit_dbg_puts("[vibe_engine]   ✗ No capability tag\n");
+    }
+
+    /* Check 4: CUDA PTX validation (only if section present) */
+    if (proposals[slot].cuda_ptx_len > 0) {
+        const uint8_t *ptx = (const uint8_t *)(vibe_staging_vaddr +
+                                                proposals[slot].wasm_offset +
+                                                proposals[slot].cuda_ptx_offset);
+        int ptx_rc = vibe_validate_cuda_ptx(ptx, proposals[slot].cuda_ptx_len);
+        if (ptx_rc == VIBE_OK) {
+            checks |= (1 << 4);
+            microkit_dbg_puts("[vibe_engine]   ✓ CUDA PTX valid (.version header ok)\n");
+        } else {
+            all_pass = false;
+            microkit_dbg_puts("[vibe_engine]   ✗ CUDA PTX INVALID\n");
+        }
     }
 
     proposals[slot].val_checks = checks;
@@ -440,6 +562,16 @@ static microkit_msginfo handle_execute(void) {
 
     /* Notify the controller to pick up the swap request */
     microkit_notify(CH_CTRL);
+
+    /* If this module carries a CUDA PTX section, submit to gpu_scheduler */
+    if (proposals[slot].cuda_ptx_len > 0) {
+        microkit_dbg_puts("[vibe_engine] CUDA PTX detected — submitting to gpu_scheduler\n");
+        microkit_mr_set(0, OP_GPU_SUBMIT);
+        microkit_mr_set(1, (uint32_t)slot);           /* proposal slot index */
+        microkit_mr_set(2, proposals[slot].cuda_ptx_offset);
+        microkit_mr_set(3, proposals[slot].cuda_ptx_len);
+        microkit_notify(CH_GPU);
+    }
 
     total_swaps++;
     proposals[slot].state = PROP_STATE_ACTIVE;
