@@ -93,6 +93,11 @@ typedef enum {
     MSG_SPAWN_AGENT            = 0x0801,  /* Spawn a WASM agent by hash */
     MSG_SPAWN_AGENT_REPLY      = 0x0802,  /* Reply: agent_id or error */
 
+    /* VibeEngine module registry opcodes (in OP_ space, not MSG_) */
+    OP_VIBE_REPLAY             = 0x46,   /* Boot replay: seed registry from AgentFS */
+    OP_VIBE_REGISTRY_QUERY     = 0x47,   /* Query registry by hash: known? flags? */
+    OP_VIBE_REGISTRY_STATUS    = 0x48,   /* Return total registry entries + stats */
+
     /* Distributed Agent Mesh (mesh_agent PD) */
     MSG_MESH_ANNOUNCE          = 0x0A01,  /* Node registration: node_id, slot_count, gpu_slots */
     MSG_MESH_ANNOUNCE_REPLY    = 0x0A02,

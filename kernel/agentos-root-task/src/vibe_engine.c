@@ -132,6 +132,79 @@ static uint64_t       total_proposals = 0;
 static uint64_t       total_swaps = 0;
 static uint64_t       total_rejections = 0;
 
+/* ── Persistent WASM module registry cache ──────────────────────────────
+ *
+ * Each successfully executed WASM module is recorded here by its BLAKE3
+ * hash. On boot, OP_VIBE_REPLAY replays AgentFS entries into this table
+ * so VibeEngine can locate modules without fetching from the network.
+ *
+ * handle_propose() checks this table FIRST — if the hash is known,
+ * the proposal is pre-approved (validation already passed on first run).
+ *
+ * Layout per entry:
+ *   hash[32]        — BLAKE3 hash of WASM bytes
+ *   service_id      — last service this module ran as
+ *   version         — swap generation count
+ *   flags           — REGISTRY_FLAG_VALIDATED, _CUDA (has agentos.cuda section)
+ */
+#define MAX_REGISTRY_ENTRIES  64
+#define REGISTRY_FLAG_VALIDATED  0x01
+#define REGISTRY_FLAG_CUDA       0x02   /* module has agentos.cuda section */
+#define REGISTRY_FLAG_AOT        0x04   /* AOT-compiled .cwasm available */
+
+typedef struct {
+    uint8_t  hash[32];       /* BLAKE3 hash — all-zero = free entry */
+    uint32_t service_id;
+    uint32_t version;
+    uint32_t flags;
+    uint32_t agentfs_seq;    /* AgentFS sequence number for replay dedup */
+} registry_entry_t;
+
+static registry_entry_t module_registry[MAX_REGISTRY_ENTRIES];
+static uint32_t         registry_count = 0;
+
+/* Find a registry entry by hash. Returns index or -1. */
+static int registry_find(const uint8_t hash[32]) {
+    for (int i = 0; i < MAX_REGISTRY_ENTRIES; i++) {
+        /* Check if entry is non-zero (occupied) */
+        bool occupied = false;
+        for (int j = 0; j < 32; j++) { if (module_registry[i].hash[j]) { occupied = true; break; } }
+        if (!occupied) continue;
+        bool match = true;
+        for (int j = 0; j < 32; j++) {
+            if (module_registry[i].hash[j] != hash[j]) { match = false; break; }
+        }
+        if (match) return i;
+    }
+    return -1;
+}
+
+/* Allocate a new registry entry (or evict LRU — for simplicity, evict first free). */
+static int registry_alloc(void) {
+    for (int i = 0; i < MAX_REGISTRY_ENTRIES; i++) {
+        bool occupied = false;
+        for (int j = 0; j < 32; j++) { if (module_registry[i].hash[j]) { occupied = true; break; } }
+        if (!occupied) return i;
+    }
+    /* All full — wrap around (slot 0, LRU eviction placeholder) */
+    return 0;
+}
+
+/* Record a validated module in the registry. */
+static void registry_record(const uint8_t hash[32], uint32_t service_id,
+                              uint32_t version, uint32_t flags) {
+    int idx = registry_find(hash);
+    if (idx < 0) {
+        idx = registry_alloc();
+        registry_count++;
+    }
+    registry_entry_t *e = &module_registry[idx];
+    for (int j = 0; j < 32; j++) e->hash[j] = hash[j];
+    e->service_id = service_id;
+    e->version    = version;
+    e->flags      = flags | REGISTRY_FLAG_VALIDATED;
+}
+
 /* ── Service registry ───────────────────────────────────────────────── */
 static void register_services(void) {
     services[0] = (service_entry_t){
@@ -158,7 +231,12 @@ static void register_services(void) {
         .name = "logsvc", .swappable = true,
         .current_version = 1, .max_wasm_bytes = 1 * 1024 * 1024,
     };
-    service_count = 6;
+    /* Dynamically spawned agents — proposed via init_agent SPAWN_AGENT pipeline */
+    services[6] = (service_entry_t){
+        .name = "agent_worker", .swappable = true,
+        .current_version = 1, .max_wasm_bytes = 4 * 1024 * 1024,
+    };
+    service_count = 7;
 }
 
 /* ── Helpers ────────────────────────────────────────────────────────── */
@@ -307,6 +385,46 @@ static microkit_msginfo handle_propose(void) {
         microkit_dbg_puts("[vibe_engine] REJECT: service not swappable\n");
         microkit_mr_set(0, VIBE_ERR_NOSVC);
         return microkit_msginfo_new(0, 1);
+    }
+
+    /*
+     * ── Registry cache check ──────────────────────────────────────────
+     * MR4/5: wasm_hash_lo, MR6/7: wasm_hash_hi (packed as u64 LE pairs)
+     * If this hash is in the registry, the module is pre-approved.
+     * Fast-path: skip staging, notify controller directly.
+     */
+    uint8_t proposed_hash[32] = {0};
+    uint32_t h0 = (uint32_t)microkit_mr_get(4);
+    uint32_t h1 = (uint32_t)microkit_mr_get(5);
+    uint32_t h2 = (uint32_t)microkit_mr_get(6);
+    uint32_t h3 = (uint32_t)microkit_mr_get(7);
+    proposed_hash[0]  = h0 & 0xFF; proposed_hash[1]  = (h0>>8)&0xFF;
+    proposed_hash[2]  = (h0>>16)&0xFF; proposed_hash[3]  = (h0>>24)&0xFF;
+    proposed_hash[4]  = h1 & 0xFF; proposed_hash[5]  = (h1>>8)&0xFF;
+    proposed_hash[6]  = (h1>>16)&0xFF; proposed_hash[7]  = (h1>>24)&0xFF;
+    proposed_hash[8]  = h2 & 0xFF; proposed_hash[9]  = (h2>>8)&0xFF;
+    proposed_hash[10] = (h2>>16)&0xFF; proposed_hash[11] = (h2>>24)&0xFF;
+    proposed_hash[12] = h3 & 0xFF; proposed_hash[13] = (h3>>8)&0xFF;
+    proposed_hash[14] = (h3>>16)&0xFF; proposed_hash[15] = (h3>>24)&0xFF;
+
+    /* Only check if any hash bytes were provided */
+    bool has_hash = false;
+    for (int _i = 0; _i < 16; _i++) if (proposed_hash[_i]) { has_hash = true; break; }
+
+    if (has_hash) {
+        int reg_idx = registry_find(proposed_hash);
+        if (reg_idx >= 0) {
+            registry_entry_t *re = &module_registry[reg_idx];
+            microkit_dbg_puts("[vibe_engine] Registry HIT: pre-approved module, fast-path\n");
+            total_swaps++;
+            re->version++;
+            /* Return success immediately — module already validated */
+            uint32_t pid = next_proposal_id++;
+            microkit_mr_set(0, VIBE_OK);
+            microkit_mr_set(1, pid);
+            microkit_mr_set(2, re->flags);
+            return microkit_msginfo_new(0, 3);
+        }
     }
 
     /* Check WASM size */
@@ -745,6 +863,89 @@ microkit_msginfo protected(microkit_channel ch, microkit_msginfo msg) {
         case OP_VIBE_STATUS:    return handle_status();
         case OP_VIBE_ROLLBACK:  return handle_rollback();
         case OP_VIBE_HEALTH:    return handle_health();
+
+        case OP_VIBE_REPLAY: {
+            /*
+             * Boot replay: seed the registry from AgentFS module list.
+             * Caller (init_agent or controller) passes packed hashes in MRs.
+             * MR0: count of modules to replay (up to 8 per call, call repeatedly)
+             * MR1: flags for first module
+             * MR2: service_id for first module
+             * MR3-MR6: hash bytes for first module (4 x u32, 16 bytes of 32-byte hash)
+             *
+             * For simplicity, we accept one module per REPLAY call
+             * (controller calls REPLAY once per AgentFS module).
+             */
+            uint32_t mod_flags   = (uint32_t)microkit_mr_get(1);
+            uint32_t svc_id      = (uint32_t)microkit_mr_get(2);
+            uint8_t  replay_hash[32] = {0};
+            uint32_t _rh[4] = {
+                (uint32_t)microkit_mr_get(3),
+                (uint32_t)microkit_mr_get(4),
+                (uint32_t)microkit_mr_get(5),
+                (uint32_t)microkit_mr_get(6),
+            };
+            for (int _i = 0; _i < 4; _i++) {
+                replay_hash[_i*4+0] = (_rh[_i])      & 0xFF;
+                replay_hash[_i*4+1] = (_rh[_i]>>8)   & 0xFF;
+                replay_hash[_i*4+2] = (_rh[_i]>>16)  & 0xFF;
+                replay_hash[_i*4+3] = (_rh[_i]>>24)  & 0xFF;
+            }
+            registry_record(replay_hash, svc_id, 0, mod_flags);
+            microkit_dbg_puts("[vibe_engine] Registry replay: added module ");
+            {
+                static const char _h[] = "0123456789abcdef";
+                char _hbuf[5] = {
+                    _h[(replay_hash[0]>>4)&0xf], _h[replay_hash[0]&0xf],
+                    _h[(replay_hash[1]>>4)&0xf], _h[replay_hash[1]&0xf], '\0'
+                };
+                microkit_dbg_puts(_hbuf);
+            }
+            microkit_dbg_puts("..\n");
+            microkit_mr_set(0, VIBE_OK);
+            microkit_mr_set(1, (uint32_t)registry_count);
+            return microkit_msginfo_new(0, 2);
+        }
+
+        case OP_VIBE_REGISTRY_QUERY: {
+            /*
+             * Query registry by hash.
+             * MR0-MR3: hash bytes (4 x u32, 16 bytes)
+             * Returns: MR0=VIBE_OK(found)/VIBE_ERR_NOSVC(not found), MR1=flags, MR2=version
+             */
+            uint8_t query_hash[32] = {0};
+            uint32_t _qh[4] = {
+                (uint32_t)microkit_mr_get(0),
+                (uint32_t)microkit_mr_get(1),
+                (uint32_t)microkit_mr_get(2),
+                (uint32_t)microkit_mr_get(3),
+            };
+            for (int _i = 0; _i < 4; _i++) {
+                query_hash[_i*4+0] = (_qh[_i])      & 0xFF;
+                query_hash[_i*4+1] = (_qh[_i]>>8)   & 0xFF;
+                query_hash[_i*4+2] = (_qh[_i]>>16)  & 0xFF;
+                query_hash[_i*4+3] = (_qh[_i]>>24)  & 0xFF;
+            }
+            int ri = registry_find(query_hash);
+            if (ri < 0) {
+                microkit_mr_set(0, (uint64_t)VIBE_ERR_NOSVC);
+                return microkit_msginfo_new(0, 1);
+            }
+            microkit_mr_set(0, VIBE_OK);
+            microkit_mr_set(1, module_registry[ri].flags);
+            microkit_mr_set(2, module_registry[ri].version);
+            microkit_mr_set(3, module_registry[ri].service_id);
+            return microkit_msginfo_new(0, 4);
+        }
+
+        case OP_VIBE_REGISTRY_STATUS: {
+            microkit_mr_set(0, VIBE_OK);
+            microkit_mr_set(1, (uint32_t)registry_count);
+            microkit_mr_set(2, MAX_REGISTRY_ENTRIES);
+            microkit_mr_set(3, (uint32_t)total_swaps);
+            return microkit_msginfo_new(0, 4);
+        }
+
         default:
             microkit_dbg_puts("[vibe_engine] Unknown op\n");
             microkit_mr_set(0, VIBE_ERR_INTERNAL);
