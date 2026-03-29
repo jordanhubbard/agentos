@@ -55,28 +55,31 @@ LIBS    := -lmicrokit -Tmicrokit.ld
 
 # Protection Domain ELFs
 # monitor/controller: includes vibe_swap for the hot-swap controller-side logic
+# m3_bare_metal.c provides memset/memcpy/memmove needed by compiler-generated code
 PD_MONITOR_SRCS   := src/monitor.c src/cap_broker.c src/agent_pool.c src/vibe_swap.c src/m3_bare_metal.c src/log.c
-PD_EVENTBUS_SRCS  := src/event_bus.c src/log.c
-PD_INITAGENT_SRCS := src/init_agent.c src/log.c
-PD_WORKER_SRCS    := src/worker.c src/log.c
+PD_EVENTBUS_SRCS  := src/event_bus.c src/m3_bare_metal.c src/log.c
+PD_INITAGENT_SRCS := src/init_agent.c src/m3_bare_metal.c src/log.c
+PD_WORKER_SRCS    := src/worker.c src/m3_bare_metal.c src/log.c
 # agentfs needs m3_bare_metal for memset/sqrtf (no wasm3 headers needed)
-PD_AGENTFS_SRCS   := src/agentfs.c src/m3_bare_metal.c src/log.c
-PD_SWAPSLOT_SRCS  := src/swap_slot.c src/wasm3_host.c src/m3_bare_metal.c src/log.c
+PD_AGENTFS_SRCS     := src/agentfs.c src/m3_bare_metal.c src/log.c
+PD_VIBEENGINE_SRCS  := src/vibe_engine.c src/m3_bare_metal.c src/log.c
+PD_SWAPSLOT_SRCS    := src/swap_slot.c src/wasm3_host.c src/m3_bare_metal.c src/log.c
 
 # wasm3 vendored sources (core interpreter only)
 WASM3_SRCS := wasm3/m3_core.c wasm3/m3_env.c wasm3/m3_code.c wasm3/m3_compile.c \
               wasm3/m3_exec.c wasm3/m3_bind.c wasm3/m3_parse.c wasm3/m3_module.c \
               wasm3/m3_function.c wasm3/m3_info.c
 
-CONTROLLER_OBJS  := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_MONITOR_SRCS))
-EVENTBUS_OBJS    := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_EVENTBUS_SRCS))
-INITAGENT_OBJS   := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_INITAGENT_SRCS))
-WORKER_OBJS      := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_WORKER_SRCS))
-AGENTFS_OBJS     := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_AGENTFS_SRCS))
-SWAPSLOT_OBJS    := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_SWAPSLOT_SRCS))
-WASM3_OBJS       := $(patsubst wasm3/%.c, $(BUILD_DIR)/wasm3_%.o, $(WASM3_SRCS))
+CONTROLLER_OBJS   := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_MONITOR_SRCS))
+EVENTBUS_OBJS     := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_EVENTBUS_SRCS))
+INITAGENT_OBJS    := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_INITAGENT_SRCS))
+WORKER_OBJS       := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_WORKER_SRCS))
+AGENTFS_OBJS      := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_AGENTFS_SRCS))
+VIBEENGINE_OBJS   := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_VIBEENGINE_SRCS))
+SWAPSLOT_OBJS     := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_SWAPSLOT_SRCS))
+WASM3_OBJS        := $(patsubst wasm3/%.c, $(BUILD_DIR)/wasm3_%.o, $(WASM3_SRCS))
 
-IMAGES := controller.elf event_bus.elf init_agent.elf worker.elf agentfs.elf swap_slot.elf
+IMAGES := controller.elf event_bus.elf init_agent.elf worker.elf agentfs.elf vibe_engine.elf swap_slot.elf
 IMAGE_FILE  := $(BUILD_DIR)/agentos.img
 REPORT_FILE := $(BUILD_DIR)/agentos-report.txt
 
@@ -117,6 +120,9 @@ $(BUILD_DIR)/worker.elf: $(WORKER_OBJS)
 	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
 
 $(BUILD_DIR)/agentfs.elf: $(AGENTFS_OBJS)
+	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
+
+$(BUILD_DIR)/vibe_engine.elf: $(VIBEENGINE_OBJS)
 	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
 
 $(BUILD_DIR)/swap_slot.elf: $(SWAPSLOT_OBJS) $(WASM3_OBJS)

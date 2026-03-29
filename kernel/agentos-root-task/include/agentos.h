@@ -84,6 +84,11 @@ typedef enum {
     EVT_OBJECT_DELETED         = 0x0412,  /* object tombstoned */
     EVT_OBJECT_EVICTED         = 0x0413,  /* object moved to cold tier */
 
+    /* Worker <-> Controller task ops */
+    MSG_WORKER_RETRIEVE        = 0x0701,  /* Worker asks controller to GET from AgentFS */
+    MSG_WORKER_RETRIEVE_REPLY  = 0x0702,  /* Controller returns AgentFS data to worker */
+    MSG_DEMO_TASK_RETRIEVE     = 0x0710,  /* Task type: retrieve object from AgentFS */
+
     /* Vibe Swap (VibeEngine -> Controller -> Swap Slots) */
     MSG_VIBE_SWAP_BEGIN        = 0x0501,  /* VibeEngine -> Controller: start swap */
     MSG_VIBE_SWAP_ACTIVATE     = 0x0502,  /* Controller -> slot: go live */
@@ -94,7 +99,32 @@ typedef enum {
     MSG_VIBE_SLOT_FAILED       = 0x0602,  /* Swap slot -> Controller: load failed */
     MSG_VIBE_SLOT_HEALTHY      = 0x0603,  /* Swap slot -> Controller: health OK */
 
+    /* VibeEngine IPC operations (agents -> vibe_engine PD) */
+    MSG_VIBE_NOTIFY_SWAP       = 0x0700,  /* vibe_engine -> controller: swap approved */
+    MSG_VIBE_NOTIFY_ROLLBACK   = 0x0701,  /* vibe_engine -> controller: rollback */
+
 } agentos_msg_tag_t;
+
+/*
+ * VibeEngine op codes (MR0 field in PPC requests to vibe_engine PD)
+ */
+#define OP_VIBE_PROPOSE   0x40
+#define OP_VIBE_VALIDATE  0x41
+#define OP_VIBE_EXECUTE   0x42
+#define OP_VIBE_STATUS    0x43
+#define OP_VIBE_ROLLBACK  0x44
+#define OP_VIBE_HEALTH    0x45
+
+/* VibeEngine channel IDs (from controller perspective) */
+#define CH_VIBEENGINE         40  /* controller <-> vibe_engine (notify) */
+
+/* VibeEngine staging region metadata layout (last 64 bytes of 4MB staging MR) */
+#define VIBE_META_SIZE        64
+/* meta[0..3]   = service_id (LE uint32) */
+/* meta[4..7]   = wasm_offset (LE uint32, offset into staging region) */
+/* meta[8..11]  = wasm_size (LE uint32; 0xFFFFFFFF = rollback request) */
+/* meta[12..15] = proposal_id (LE uint32) */
+#define VIBE_META_MAGIC_ROLLBACK  0xFFFFFFFFU
 
 /*
  * Priority classes (mapped to seL4 MCS scheduling context budgets)

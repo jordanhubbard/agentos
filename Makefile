@@ -1,46 +1,91 @@
 # agentOS Top-Level Makefile
 #
 # Targets:
-#   make deps    — install all build dependencies (macOS: brew, Linux: apt)
-#   make build   — compile the agentOS kernel image
-#   make demo    — build + launch the QEMU demo
-#   make clean   — remove build artifacts
+#   make deps              — install all build dependencies (macOS: brew, Linux: apt)
+#   make build             — compile agentOS (default: riscv64)
+#   make build BOARD=qemu_virt_aarch64  — compile for ARM64 (Sparky)
+#   make demo              — build + launch the QEMU demo
+#   make demo BOARD=qemu_virt_aarch64   — demo on aarch64 QEMU
+#   make test              — boot in QEMU, verify output, exit 0/1 (CI)
+#   make clean             — remove build artifacts for current BOARD
+#   make clean-all         — remove all build artifacts
 #
 # Quick start:
 #   make deps && make demo
 
-.PHONY: all deps build demo test build-arm64 demo-arm64 test-arm64 clean clean-arm64 help
+.PHONY: all deps deps-tools deps-sdk build demo test clean clean-all help
 
-# Paths
+# ─── Board / arch config ──────────────────────────────────────────────────────
+BOARD         ?= qemu_virt_riscv64
+
+ifeq ($(BOARD),qemu_virt_aarch64)
+  ARCH         := aarch64
+  QEMU         := qemu-system-aarch64
+  QEMU_FLAGS    = -machine virt,virtualization=on -cpu cortex-a57 -m 2G -nographic \
+                  -kernel $(IMAGE)
+else
+  ARCH         := riscv64
+  QEMU         := qemu-system-riscv64
+  BIOS         ?= /usr/share/qemu/opensbi-riscv64-generic-fw_dynamic.bin
+  QEMU_FLAGS    = -machine virt -cpu rv64 -m 2G -nographic \
+                  -bios $(BIOS) \
+                  -kernel $(IMAGE)
+endif
+
+# ─── Paths ────────────────────────────────────────────────────────────────────
 ROOT_DIR      := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
 KERNEL_DIR    := $(ROOT_DIR)kernel/agentos-root-task
 MICROKIT_SDK  := $(ROOT_DIR)microkit-sdk-2.1.0
-BUILD_DIR     := $(KERNEL_DIR)/build-riscv
+BUILD_DIR     := $(ROOT_DIR)build/$(BOARD)
 IMAGE         := $(BUILD_DIR)/agentos.img
-BIOS          ?= /usr/share/qemu/opensbi-riscv64-generic-fw_dynamic.bin
 
-# QEMU flags
-QEMU          := qemu-system-riscv64
-QEMU_FLAGS    := -machine virt -cpu rv64 -m 2G -nographic \
-                 -bios $(BIOS) \
-                 -kernel $(IMAGE)
-
-# Detect macOS vs Linux for BIOS path
+# ─── OS / arch detection ──────────────────────────────────────────────────────
 UNAME_S := $(shell uname -s)
+UNAME_M := $(shell uname -m)
+
 ifeq ($(UNAME_S),Darwin)
-  # Homebrew QEMU puts the RISC-V BIOS here
-  BIOS := $(shell find /opt/homebrew /usr/local -name "opensbi-riscv64-generic-fw_dynamic.bin" 2>/dev/null | head -1)
+  ifeq ($(UNAME_M),arm64)
+    BREW_PREFIX  := /opt/homebrew
+    SDK_PLATFORM := macos-aarch64
+  else
+    BREW_PREFIX  := /usr/local
+    SDK_PLATFORM := macos-x86-64
+  endif
+  LLVM_BIN := $(shell \
+    for d in $(BREW_PREFIX)/opt/llvm/bin $(BREW_PREFIX)/opt/llvm@*/bin; do \
+      [ -x "$$d/clang" ] && echo "$$d" && break; \
+    done 2>/dev/null)
+  LLD_BIN := $(shell \
+    for d in $(LLVM_BIN) $(BREW_PREFIX)/opt/lld/bin $(BREW_PREFIX)/opt/lld@*/bin; do \
+      [ -x "$$d/ld.lld" ] && echo "$$d" && break; \
+    done 2>/dev/null)
+  BIOS := $(shell find $(BREW_PREFIX) -name "opensbi-riscv64-generic-fw_dynamic.bin" 2>/dev/null | head -1)
   ifeq ($(BIOS),)
-    BIOS := /usr/local/share/qemu/opensbi-riscv64-generic-fw_dynamic.bin
+    BIOS := $(BREW_PREFIX)/share/qemu/opensbi-riscv64-generic-fw_dynamic.bin
+  endif
+else ifeq ($(UNAME_S),Linux)
+  LLVM_BIN     := /usr/bin
+  LLD_BIN      := /usr/bin
+  ifeq ($(UNAME_M),aarch64)
+    SDK_PLATFORM := linux-aarch64
+  else
+    SDK_PLATFORM := linux-x86-64
   endif
 endif
+
+# SDK download URL
+SDK_URL := https://github.com/seL4/microkit/releases/download/2.1.0/microkit-sdk-2.1.0-$(SDK_PLATFORM).tar.gz
 
 all: build
 
 # =============================================================================
-# deps: install all build dependencies
+# deps
 # =============================================================================
-deps:
+deps: deps-tools deps-sdk
+	@echo ""
+	@echo "✅ All dependencies installed! Run 'make demo' to build and boot."
+
+deps-tools:
 	@echo ""
 	@echo "╔══════════════════════════════════════════╗"
 	@echo "║        agentOS — installing deps         ║"
@@ -54,21 +99,20 @@ ifeq ($(UNAME_S),Darwin)
 	@brew install --quiet \
 		qemu \
 		llvm \
+		lld \
 		cmake \
 		ninja \
 		python3 \
 		dtc \
 		coreutils \
 		2>/dev/null || true
-	@echo "[macOS] Checking for RISC-V cross-compiler..."
-	@command -v clang >/dev/null 2>&1 || \
-		(echo "ERROR: clang not found even after llvm install" && exit 1)
 	@echo "[macOS] All deps installed. ✓"
 else ifeq ($(UNAME_S),Linux)
 	@echo "[Linux] Installing dependencies via apt..."
 	@sudo apt-get update -qq
 	@sudo apt-get install -y --no-install-recommends \
 		qemu-system-misc \
+		qemu-system-arm \
 		clang \
 		lld \
 		cmake \
@@ -85,31 +129,56 @@ endif
 	@echo ""
 	@echo "Dependency check:"
 	@echo "  qemu-system-riscv64: $$(qemu-system-riscv64 --version 2>/dev/null | head -1 || echo 'NOT FOUND')"
+	@echo "  qemu-system-aarch64: $$(qemu-system-aarch64 --version 2>/dev/null | head -1 || echo 'NOT FOUND')"
+ifeq ($(UNAME_S),Darwin)
+	@echo "  clang (LLVM):        $$($(LLVM_BIN)/clang --version 2>/dev/null | head -1 || echo 'NOT FOUND')"
+	@echo "  ld.lld:              $$($(LLD_BIN)/ld.lld --version 2>/dev/null | head -1 || echo 'NOT FOUND')"
+else
 	@echo "  clang:               $$(clang --version 2>/dev/null | head -1 || echo 'NOT FOUND')"
-	@echo "  ld.lld:              $$(ld.lld --version 2>/dev/null | head -1 || echo 'NOT FOUND (try: brew install llvm)')"
+	@echo "  ld.lld:              $$(ld.lld --version 2>/dev/null | head -1 || echo 'NOT FOUND')"
+endif
+
+# Download Microkit SDK if not present
+deps-sdk: $(MICROKIT_SDK)/bin/microkit
+
+$(MICROKIT_SDK)/bin/microkit:
 	@echo ""
-	@echo "✓ Run 'make demo' to build and launch agentOS."
-	@echo ""
+	@echo "[SDK] Downloading Microkit SDK 2.1.0 for $(SDK_PLATFORM)..."
+	@mkdir -p $(dir $(MICROKIT_SDK))
+	@curl -fSL "$(SDK_URL)" -o /tmp/microkit-sdk.tar.gz
+	@echo "[SDK] Extracting..."
+	@tar xzf /tmp/microkit-sdk.tar.gz -C $(ROOT_DIR)
+	@rm /tmp/microkit-sdk.tar.gz
+	@test -x $(MICROKIT_SDK)/bin/microkit && echo "[SDK] ✓ Installed at $(MICROKIT_SDK)" || \
+		(echo "ERROR: SDK extraction failed" && exit 1)
 
 # =============================================================================
-# build: compile the kernel image
+# build
 # =============================================================================
-build:
+build: deps-sdk
 	@echo ""
 	@echo "╔══════════════════════════════════════════╗"
-	@echo "║         agentOS — building kernel        ║"
+	@echo "║   agentOS — building kernel ($(BOARD))   ║"
 	@echo "╚══════════════════════════════════════════╝"
 	@echo ""
+ifeq ($(UNAME_S),Darwin)
+	@test -x "$(LLVM_BIN)/clang" || \
+		(echo "ERROR: Homebrew LLVM not found. Run 'make deps' first." && exit 1)
+	@test -x "$(LLD_BIN)/ld.lld" || \
+		(echo "ERROR: ld.lld not found. Run 'make deps' first." && exit 1)
+else
 	@command -v clang >/dev/null 2>&1 || \
 		(echo "ERROR: clang not found. Run 'make deps' first." && exit 1)
 	@command -v ld.lld >/dev/null 2>&1 || \
-		(echo "ERROR: ld.lld not found. Run 'make deps' first (brew install llvm)." && exit 1)
+		(echo "ERROR: ld.lld not found. Run 'make deps' first." && exit 1)
+endif
 	@test -d "$(MICROKIT_SDK)" || \
-		(echo "ERROR: Microkit SDK not found at $(MICROKIT_SDK)" && exit 1)
-	@$(MAKE) -C $(KERNEL_DIR) \
-		BUILD_DIR=build-riscv \
-		MICROKIT_SDK=$(MICROKIT_SDK) \
-		MICROKIT_BOARD=qemu_virt_riscv64 \
+		(echo "ERROR: Microkit SDK not found. Run 'make deps' first." && exit 1)
+	@mkdir -p $(BUILD_DIR)
+	@PATH="$(LLVM_BIN):$(LLD_BIN):$$PATH" $(MAKE) -C $(KERNEL_DIR) \
+		BUILD_DIR=$(BUILD_DIR) \
+		MICROKIT_SDK=$(abspath $(MICROKIT_SDK)) \
+		MICROKIT_BOARD=$(BOARD) \
 		MICROKIT_CONFIG=debug
 	@echo ""
 	@echo "✓ Build complete: $(IMAGE)"
@@ -124,105 +193,35 @@ demo: build
 	@echo "║     agentOS — launching QEMU demo        ║"
 	@echo "╚══════════════════════════════════════════╝"
 	@echo ""
-	@echo "Kernel image : $(IMAGE)"
-	@echo "BIOS         : $(BIOS)"
-	@echo "QEMU         : $(shell $(QEMU) --version 2>/dev/null | head -1)"
+	@echo "Board  : $(BOARD)"
+	@echo "Image  : $(IMAGE)"
+	@echo "QEMU   : $(shell $(QEMU) --version 2>/dev/null | head -1)"
 	@echo ""
 	@echo "Starting agentOS... (Ctrl-A X to quit QEMU)"
 	@echo "──────────────────────────────────────────────"
+ifeq ($(ARCH),riscv64)
 	@test -f "$(BIOS)" || \
 		(echo "ERROR: BIOS not found at $(BIOS). Run 'make deps' first." && exit 1)
+endif
 	@$(QEMU) $(QEMU_FLAGS)
 
 # =============================================================================
-# test: CI-friendly boot test (pass/fail, no eyeballing)
+# test: CI boot test (exits 0 on success, 1 on failure)
 # =============================================================================
 test: build
-	@echo ""
-	@echo "╔══════════════════════════════════════════╗"
-	@echo "║       agentOS — CI test harness          ║"
-	@echo "╚══════════════════════════════════════════╝"
-	@echo ""
-	@bash $(ROOT_DIR)scripts/ci-test.sh
+	@BOARD=$(BOARD) bash scripts/run-tests.sh
 
 # =============================================================================
-# ARM64 / AArch64 targets (Natasha / Sparky GB10 port)
-# Board: qemu_virt_aarch64  (QEMU virt machine, well-documented, clean path to GB10 bare metal)
-# =============================================================================
-BUILD_DIR_ARM64  := $(KERNEL_DIR)/build-aarch64
-IMAGE_ARM64      := $(BUILD_DIR_ARM64)/agentos.img
-QEMU_ARM64       := qemu-system-aarch64
-# qemu-arm-virt: Cortex-A53, GIC v3, PL011 UART — matches Microkit board config
-QEMU_FLAGS_ARM64 := -machine virt,virtualization=on -cpu cortex-a57 -m 2G -nographic \
-                    -kernel $(IMAGE_ARM64)
-
-build-arm64:
-	@echo ""
-	@echo "╔══════════════════════════════════════════╗"
-	@echo "║    agentOS — building kernel (ARM64)     ║"
-	@echo "╚══════════════════════════════════════════╝"
-	@echo ""
-	@command -v clang >/dev/null 2>&1 || \
-		(echo "ERROR: clang not found. Run 'make deps' first." && exit 1)
-	@command -v ld.lld >/dev/null 2>&1 || \
-		(echo "ERROR: ld.lld not found. Run 'make deps' first." && exit 1)
-	@test -d "$(MICROKIT_SDK)" || \
-		(echo "ERROR: Microkit SDK not found at $(MICROKIT_SDK)" && exit 1)
-	@test -d "$(MICROKIT_SDK)/board/qemu_virt_aarch64" || \
-		(echo "ERROR: qemu_virt_aarch64 board not in SDK" && exit 1)
-	@$(MAKE) -C $(KERNEL_DIR) \
-		BUILD_DIR=build-aarch64 \
-		MICROKIT_SDK=$(MICROKIT_SDK) \
-		MICROKIT_BOARD=qemu_virt_aarch64 \
-		MICROKIT_CONFIG=debug
-	@echo ""
-	@echo "✓ ARM64 build complete: $(IMAGE_ARM64)"
-	@echo ""
-
-demo-arm64: build-arm64
-	@echo ""
-	@echo "╔══════════════════════════════════════════╗"
-	@echo "║  agentOS — launching QEMU demo (ARM64)   ║"
-	@echo "╚══════════════════════════════════════════╝"
-	@echo ""
-	@command -v $(QEMU_ARM64) >/dev/null 2>&1 || \
-		(echo "ERROR: $(QEMU_ARM64) not found. Install qemu-system-arm." && exit 1)
-	@echo "Kernel image : $(IMAGE_ARM64)"
-	@echo "QEMU         : $$($(QEMU_ARM64) --version 2>/dev/null | head -1)"
-	@echo ""
-	@echo "Starting agentOS (AArch64)... (Ctrl-A X to quit QEMU)"
-	@echo "──────────────────────────────────────────────"
-	@$(QEMU_ARM64) $(QEMU_FLAGS_ARM64)
-
-test-arm64: build-arm64
-	@echo ""
-	@echo "╔══════════════════════════════════════════╗"
-	@echo "║   agentOS — CI test harness (ARM64)      ║"
-	@echo "╚══════════════════════════════════════════╝"
-	@echo ""
-	@AGENTOS_ARCH=aarch64 bash $(ROOT_DIR)scripts/ci-test.sh
-
-clean-arm64:
-	@echo "Cleaning ARM64 build artifacts..."
-	@$(MAKE) -C $(KERNEL_DIR) \
-		BUILD_DIR=build-aarch64 \
-		MICROKIT_SDK=$(MICROKIT_SDK) \
-		MICROKIT_BOARD=qemu_virt_aarch64 \
-		MICROKIT_CONFIG=debug \
-		clean 2>/dev/null || true
-	@echo "✓ ARM64 clean."
-
-# =============================================================================
-# clean: remove build artifacts
+# clean
 # =============================================================================
 clean:
-	@echo "Cleaning build artifacts..."
-	@$(MAKE) -C $(KERNEL_DIR) \
-		BUILD_DIR=build-riscv \
-		MICROKIT_SDK=$(MICROKIT_SDK) \
-		MICROKIT_BOARD=qemu_virt_riscv64 \
-		MICROKIT_CONFIG=debug \
-		clean 2>/dev/null || true
+	@echo "Cleaning build artifacts for $(BOARD)..."
+	@rm -rf $(BUILD_DIR)
+	@echo "✓ Clean."
+
+clean-all:
+	@echo "Cleaning all build artifacts..."
+	@rm -rf $(ROOT_DIR)build
 	@echo "✓ Clean."
 
 # =============================================================================
@@ -233,15 +232,14 @@ help:
 	@echo "agentOS — the OS for agents, by agents"
 	@echo ""
 	@echo "Targets:"
-	@echo "  make deps         Install build dependencies (brew on macOS, apt on Linux)"
-	@echo "  make build        Compile the agentOS kernel image (RISC-V RV64)"
-	@echo "  make demo         Build + launch in QEMU (RISC-V)"
-	@echo "  make test         Build + run CI test harness (RISC-V)"
-	@echo "  make build-arm64  Compile the agentOS kernel image (AArch64)"
-	@echo "  make demo-arm64   Build + launch in QEMU (AArch64 virt)"
-	@echo "  make test-arm64   Build + run CI test harness (AArch64)"
-	@echo "  make clean        Remove RISC-V build artifacts"
-	@echo "  make clean-arm64  Remove AArch64 build artifacts"
+	@echo "  make deps                      Install build deps (brew / apt)"
+	@echo "  make build                     Build for riscv64 (default)"
+	@echo "  make build BOARD=qemu_virt_aarch64  Build for ARM64 (Sparky)"
+	@echo "  make demo                      Build + launch in QEMU"
+	@echo "  make demo  BOARD=qemu_virt_aarch64  ARM64 QEMU demo"
+	@echo "  make test                      CI boot test (exit 0/1)"
+	@echo "  make clean                     Remove build artifacts (current BOARD)"
+	@echo "  make clean-all                 Remove all build artifacts"
 	@echo ""
 	@echo "Quick start:"
 	@echo "  make deps && make demo"

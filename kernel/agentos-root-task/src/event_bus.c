@@ -107,11 +107,12 @@ void init(void) {
  * For high-priority events only.
  */
 void notified(microkit_channel ch) {
-    agentos_log_channel("event_bus", ch);
-    
-    /* Check for pending events from publishers */
-    /* In v0.1, all publishing goes through PPC - notifications are for subscribers */
-    microkit_dbg_puts("[event_bus] Spurious notification (check publisher)\n");
+    /* Channel 6: AgentFS notify on mutations (async mutation event) */
+    if (ch == 6) {
+        microkit_dbg_puts("[event_bus] AgentFS mutation notification received\n");
+    } else {
+        agentos_log_channel("event_bus", ch);
+    }
 }
 
 /*
@@ -181,14 +182,33 @@ microkit_msginfo protected(microkit_channel ch, microkit_msginfo msg) {
         }
         
         default: {
-            /* Unknown tag - check if it's a publish request */
-            /* In v0.1, publishing is done by writing to ring directly */
-            /* (publishers have write capability to the ring region) */
-            uint32_t kind       = (uint32_t)(tag & 0xFFFF);
-            uint32_t payload_len = (uint32_t)microkit_msginfo_get_count(msg);
+            /* Event publish request — the label IS the event kind */
+            uint32_t kind = (uint32_t)(tag & 0xFFFF);
             
-            /* Write event to ring */
-            eventbus_write(kind, ch, NULL, 0);
+            /* Write event to ring (source_pd from MR1 if available, else channel) */
+            uint32_t source = (uint32_t)microkit_mr_get(1);
+            if (source == 0) source = ch;
+            eventbus_write(kind, source, NULL, 0);
+            
+            microkit_dbg_puts("[event_bus] Event published: kind=0x");
+            {
+                static const char hex[] = "0123456789abcdef";
+                char buf[5];
+                buf[0] = hex[(kind >> 12) & 0xf];
+                buf[1] = hex[(kind >> 8) & 0xf];
+                buf[2] = hex[(kind >> 4) & 0xf];
+                buf[3] = hex[kind & 0xf];
+                buf[4] = '\0';
+                microkit_dbg_puts(buf);
+            }
+            microkit_dbg_puts(" seq=");
+            {
+                char buf[4];
+                buf[0] = '0' + ((event_seq - 1) % 10);
+                buf[1] = '\0';
+                microkit_dbg_puts(buf);
+            }
+            microkit_dbg_puts("\n");
             
             /* Notify subscribers */
             eventbus_notify_all();
