@@ -36,6 +36,7 @@ pub mod wasm;
 
 use alloc::collections::BTreeMap;
 use alloc::string::String;
+use alloc::vec;
 use alloc::vec::Vec;
 
 // ============================================================================
@@ -491,9 +492,16 @@ fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
         return 0.0;
     }
     
+    // no_std sqrt approximation (Newton-Raphson, sufficient for cosine similarity)
+    fn sqrt_f32(x: f32) -> f32 {
+        if x <= 0.0 { return 0.0; }
+        let mut guess = x * 0.5;
+        for _ in 0..16 { guess = 0.5 * (guess + x / guess); }
+        guess
+    }
     let dot: f32 = a.iter().zip(b.iter()).map(|(x, y)| x * y).sum();
-    let norm_a: f32 = a.iter().map(|x| x * x).sum::<f32>().sqrt();
-    let norm_b: f32 = b.iter().map(|x| x * x).sum::<f32>().sqrt();
+    let norm_a: f32 = sqrt_f32(a.iter().map(|x| x * x).sum::<f32>());
+    let norm_b: f32 = sqrt_f32(b.iter().map(|x| x * x).sum::<f32>());
     
     if norm_a == 0.0 || norm_b == 0.0 {
         0.0

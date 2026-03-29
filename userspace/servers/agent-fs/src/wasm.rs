@@ -31,7 +31,7 @@
 
 extern crate alloc;
 
-use alloc::string::String;
+use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use alloc::collections::BTreeMap;
 
@@ -182,6 +182,103 @@ pub struct WasmMeta {
     pub submitted_by: [u8; 32],
     /// Timestamp (seL4 ticks at submission)
     pub submitted_at: u64,
+    /// CUDA PTX section metadata, if `agentos.cuda` custom section is present
+    pub cuda: Option<CudaMeta>,
+}
+
+// ── CUDA PTX metadata ─────────────────────────────────────────────────────
+
+/// Metadata extracted from the `agentos.cuda` custom section.
+///
+/// Custom section format:
+///   [u8 version]           -- currently 1
+///   [u32 le ptx_len]       -- length of PTX source
+///   [ptx_len bytes]        -- PTX source (UTF-8)
+///   [u32 le kernel_count]  -- number of exported CUDA kernels
+///   [kernel_count entries]:
+///     [u8 name_len] [name bytes]   -- kernel function name
+///     [u8 arg_count]               -- number of arguments
+///
+/// Kernel names must match the __global__ function names in the PTX.
+#[derive(Debug, Clone)]
+pub struct CudaMeta {
+    /// PTX source extracted from the custom section
+    pub ptx_source: String,
+    /// Exported CUDA kernel names
+    pub kernels: Vec<CudaKernel>,
+    /// Target compute architecture (from PTX .target directive, e.g. "sm_90a" for GB10)
+    pub target_arch: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct CudaKernel {
+    pub name: String,
+    pub arg_count: u8,
+}
+
+impl CudaMeta {
+    /// Parse the `agentos.cuda` custom section payload.
+    pub fn parse(payload: &[u8]) -> Option<Self> {
+        if payload.is_empty() { return None; }
+        let version = payload[0];
+        if version != 1 { return None; }  // unsupported version
+        if payload.len() < 6 { return None; }
+        let ptx_len = u32::from_le_bytes([payload[1], payload[2], payload[3], payload[4]]) as usize;
+        if payload.len() < 5 + ptx_len + 4 { return None; }
+        let ptx_bytes = &payload[5..5 + ptx_len];
+        let ptx_source = String::from_utf8(ptx_bytes.to_vec()).ok()?;
+
+        // Extract target arch from PTX .target directive
+        let target_arch = ptx_source.lines()
+            .find(|l| l.trim_start().starts_with(".target"))
+            .and_then(|l| l.split_whitespace().nth(1))
+            .map(|s| s.trim_end_matches(',').to_string());
+
+        let kernel_count_start = 5 + ptx_len;
+        let kernel_count = u32::from_le_bytes([
+            payload[kernel_count_start],
+            payload[kernel_count_start + 1],
+            payload[kernel_count_start + 2],
+            payload[kernel_count_start + 3],
+        ]) as usize;
+
+        let mut pos = kernel_count_start + 4;
+        let mut kernels = Vec::new();
+        for _ in 0..kernel_count {
+            if pos >= payload.len() { break; }
+            let name_len = payload[pos] as usize;
+            pos += 1;
+            if pos + name_len >= payload.len() { break; }
+            let name = String::from_utf8(payload[pos..pos + name_len].to_vec()).ok()?;
+            pos += name_len;
+            let arg_count = if pos < payload.len() { payload[pos] } else { 0 };
+            pos += 1;
+            kernels.push(CudaKernel { name, arg_count });
+        }
+
+        Some(CudaMeta { ptx_source, kernels, target_arch })
+    }
+
+    /// Validate that the PTX targets a compatible Blackwell architecture.
+    /// GB10 is sm_90a (compute capability 9.0a).
+    pub fn is_compatible_with_gb10(&self) -> bool {
+        match &self.target_arch {
+            None => true,  // No target specified — let nvrtc decide
+            Some(arch) => {
+                // Accept sm_90, sm_90a, sm_89, sm_86, sm_80 and higher
+                if let Some(rest) = arch.strip_prefix("sm_") {
+                    let num: u32 = rest.chars()
+                        .take_while(|c| c.is_ascii_digit())
+                        .collect::<String>()
+                        .parse()
+                        .unwrap_or(0);
+                    num <= 90  // ≤ sm_90 is backward compatible on GB10
+                } else {
+                    false
+                }
+            }
+        }
+    }
 }
 
 // ── Minimal WASM parser ───────────────────────────────────────────────────
@@ -273,6 +370,7 @@ pub fn validate_and_parse(
 
     let mut exports = Vec::new();
     let mut caps = CapRequirements::default();
+    let mut cuda_meta: Option<CudaMeta> = None;
 
     // Parse sections
     while p.remaining() > 0 {
@@ -285,13 +383,34 @@ pub fn validate_and_parse(
             None => break,
         };
 
-        // We only parse Import and Export sections; skip the rest
+        // Parse Import and Export sections; detect agentos.cuda custom sections
+        let section_end = p.pos + section_size;
         match SectionId::from_byte(section_id_byte) {
             Some(SectionId::Import) => {
                 parse_import_section(&mut p, section_size, &mut caps)?;
             }
             Some(SectionId::Export) => {
                 parse_export_section(&mut p, section_size, &mut exports)?;
+            }
+            Some(SectionId::Custom) => {
+                // Custom sections start with a name string (u32 leb length + bytes)
+                if let Some(name_len) = p.read_u32_leb() {
+                    let name_len = name_len as usize;
+                    if p.pos + name_len <= section_end {
+                        let name_bytes = &p.data[p.pos..p.pos + name_len];
+                        p.pos += name_len;
+                        // Check for the "agentos.cuda" custom section
+                        if name_bytes == b"agentos.cuda" {
+                            let payload_len = section_end.saturating_sub(p.pos);
+                            if payload_len > 0 && p.pos + payload_len <= p.data.len() {
+                                let payload = &p.data[p.pos..p.pos + payload_len];
+                                cuda_meta = CudaMeta::parse(payload);
+                            }
+                        }
+                    }
+                }
+                // Skip to end of section
+                if p.pos < section_end { p.pos = section_end; }
             }
             _ => {
                 // Skip this section
@@ -322,6 +441,7 @@ pub fn validate_and_parse(
         target_service: None,
         submitted_by,
         submitted_at,
+        cuda: cuda_meta,
     })
 }
 
