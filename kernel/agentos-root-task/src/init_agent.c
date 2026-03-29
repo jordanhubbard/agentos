@@ -18,7 +18,8 @@ static struct {
     bool started;
     bool eventbus_subscribed;
     uint32_t event_count;
-} state = { false, false, 0 };
+    uint32_t query_count;
+} state = { false, false, 0, 0 };
 
 static void print_banner(void) {
     microkit_dbg_puts("\n");
@@ -41,6 +42,68 @@ static void print_banner(void) {
     microkit_dbg_puts("║   github.com/jordanhubbard/agentos               ║\n");
     microkit_dbg_puts("╚══════════════════════════════════════════════════╝\n");
     microkit_dbg_puts("\n");
+}
+
+/* Print a decimal number */
+static void put_dec(uint32_t v) {
+    if (v == 0) { microkit_dbg_puts("0"); return; }
+    char buf[12];
+    int i = 11;
+    buf[i] = '\0';
+    while (v > 0 && i > 0) {
+        buf[--i] = '0' + (v % 10);
+        v /= 10;
+    }
+    microkit_dbg_puts(&buf[i]);
+}
+
+/* Print a hex word */
+static void put_hex32(uint32_t v) {
+    static const char hex[] = "0123456789abcdef";
+    char buf[11] = "0x00000000";
+    for (int i = 9; i >= 2; i--) {
+        buf[i] = hex[v & 0xf];
+        v >>= 4;
+    }
+    microkit_dbg_puts(buf);
+}
+
+/*
+ * Query EventBus status via PPC and print audit summary.
+ * init_agent PPCs into the passive EventBus (higher priority)
+ * to get the current event count and subscriber count.
+ * This demonstrates real IPC between PDs for status queries.
+ */
+static void query_eventbus_status(void) {
+    state.query_count++;
+
+    microkit_dbg_puts("[init_agent] Querying EventBus status via PPC...\n");
+
+    microkit_ppcall(CH_EVENTBUS, microkit_msginfo_new(MSG_EVENTBUS_STATUS, 0));
+
+    uint64_t total_events = (uint64_t)microkit_mr_get(0);
+    uint32_t subscribers  = (uint32_t)microkit_mr_get(1);
+
+    microkit_dbg_puts("\n");
+    microkit_dbg_puts("[init_agent] ── EventBus Audit Report ───────────────────\n");
+    microkit_dbg_puts("[init_agent]   Total events published: ");
+    put_dec((uint32_t)total_events);
+    microkit_dbg_puts("\n");
+    microkit_dbg_puts("[init_agent]   Active subscribers: ");
+    put_dec(subscribers);
+    microkit_dbg_puts("\n");
+    microkit_dbg_puts("[init_agent]   Events since last query: ");
+    uint32_t new_events = (uint32_t)total_events - state.event_count;
+    put_dec(new_events);
+    microkit_dbg_puts("\n");
+
+    if (total_events > 0) {
+        microkit_dbg_puts("[init_agent]   Data flow confirmed: agents exchanging messages\n");
+    }
+
+    microkit_dbg_puts("[init_agent] ────────────────────────────────────────────\n");
+
+    state.event_count = (uint32_t)total_events;
 }
 
 static void subscribe_to_eventbus(void) {
@@ -87,14 +150,14 @@ void notified(microkit_channel ch) {
             if (!state.started) {
                 microkit_dbg_puts("[init_agent] Start signal from controller\n");
             } else {
-                microkit_dbg_puts("[init_agent] Controller notification\n");
+                microkit_dbg_puts("[init_agent] Controller notification — querying EventBus\n");
+                query_eventbus_status();
             }
             break;
             
         case CH_EVENTBUS:
-            state.event_count++;
-            microkit_dbg_puts("[init_agent] New event from EventBus\n");
-            /* TODO: read from ring buffer and process */
+            microkit_dbg_puts("[init_agent] EventBus notification\n");
+            query_eventbus_status();
             break;
             
         default:

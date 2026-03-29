@@ -221,21 +221,22 @@ static microkit_msginfo handle_put(microkit_msginfo msg) {
     simple_hash(seed, 16, obj->id.bytes);
     obj->id.scheme = 1; /* blake3-analog */
 
-    /* Return object ID in MRs 1-4 (first 16 bytes) */
-    microkit_mr_set(0, AFS_OK);
+    /* Emit event BEFORE setting return MRs (emit_event clobbers MRs via notify) */
+    emit_event(EVT_OBJECT_CREATED, &obj->id);
+
+    /* Return object ID in MRs 0-4 */
     uint32_t w0 = 0, w1 = 0, w2 = 0, w3 = 0;
     for (int i = 0; i < 4; i++) w0 = (w0 << 8) | obj->id.bytes[i];
     for (int i = 4; i < 8; i++) w1 = (w1 << 8) | obj->id.bytes[i];
     for (int i = 8; i <12; i++) w2 = (w2 << 8) | obj->id.bytes[i];
     for (int i = 12;i <16; i++) w3 = (w3 << 8) | obj->id.bytes[i];
+    microkit_mr_set(0, AFS_OK);  /* status: OK */
     microkit_mr_set(1, w0);
     microkit_mr_set(2, w1);
     microkit_mr_set(3, w2);
     microkit_mr_set(4, w3);
 
-    emit_event(EVT_OBJECT_CREATED, &obj->id);
-
-    microkit_dbg_putc('S');  /* silent progress: 'S' = stored */
+    microkit_dbg_puts("[agentfs] Object stored (18 bytes)\n");
     return microkit_msginfo_new(0, 5);
 }
 

@@ -84,6 +84,11 @@ typedef enum {
     EVT_OBJECT_DELETED         = 0x0412,  /* object tombstoned */
     EVT_OBJECT_EVICTED         = 0x0413,  /* object moved to cold tier */
 
+    /* Worker <-> Controller task ops */
+    MSG_WORKER_RETRIEVE        = 0x0701,  /* Worker asks controller to GET from AgentFS */
+    MSG_WORKER_RETRIEVE_REPLY  = 0x0702,  /* Controller returns AgentFS data to worker */
+    MSG_DEMO_TASK_RETRIEVE     = 0x0710,  /* Task type: retrieve object from AgentFS */
+
     /* Vibe Swap (VibeEngine -> Controller -> Swap Slots) */
     MSG_VIBE_SWAP_BEGIN        = 0x0501,  /* VibeEngine -> Controller: start swap */
     MSG_VIBE_SWAP_ACTIVATE     = 0x0502,  /* Controller -> slot: go live */
