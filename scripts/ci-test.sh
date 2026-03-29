@@ -19,23 +19,37 @@ set -euo pipefail
 # Config
 # ---------------------------------------------------------------------------
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-IMAGE="${AGENTOS_IMAGE:-${ROOT_DIR}/kernel/agentos-root-task/build-riscv/agentos.img}"
-TIMEOUT="${AGENTOS_TIMEOUT:-30}"
-LOG="${AGENTOS_LOG:-/tmp/agentos-ci.log}"
 
-# BIOS auto-detection
-if [[ -z "${AGENTOS_BIOS:-}" ]]; then
-    for candidate in \
-        /usr/share/qemu/opensbi-riscv64-generic-fw_dynamic.bin \
-        /usr/local/share/qemu/opensbi-riscv64-generic-fw_dynamic.bin \
-        "$(find /opt/homebrew /usr/local -name 'opensbi-riscv64-generic-fw_dynamic.bin' 2>/dev/null | head -1)"; do
-        if [[ -f "$candidate" ]]; then
-            BIOS="$candidate"
-            break
-        fi
-    done
+# Architecture: riscv64 (default) or aarch64 (set AGENTOS_ARCH=aarch64)
+ARCH="${AGENTOS_ARCH:-riscv64}"
+
+if [[ "${ARCH}" == "aarch64" ]]; then
+    IMAGE="${AGENTOS_IMAGE:-${ROOT_DIR}/kernel/agentos-root-task/build-aarch64/agentos.img}"
+    QEMU_BIN="qemu-system-aarch64"
+    # virtualization=on → EL2 (required by seL4 hypervisor config in qemu_virt_aarch64 SDK)
+    QEMU_ARGS="-machine virt,virtualization=on -cpu cortex-a57 -m 2G -nographic"
+    BIOS=""  # AArch64 virt machine has built-in firmware
+else
+    IMAGE="${AGENTOS_IMAGE:-${ROOT_DIR}/kernel/agentos-root-task/build-riscv/agentos.img}"
+    QEMU_BIN="qemu-system-riscv64"
+    # BIOS auto-detection for RISC-V
+    if [[ -z "${AGENTOS_BIOS:-}" ]]; then
+        for candidate in \
+            /usr/share/qemu/opensbi-riscv64-generic-fw_dynamic.bin \
+            /usr/local/share/qemu/opensbi-riscv64-generic-fw_dynamic.bin \
+            "$(find /opt/homebrew /usr/local -name 'opensbi-riscv64-generic-fw_dynamic.bin' 2>/dev/null | head -1)"; do
+            if [[ -f "$candidate" ]]; then
+                BIOS="$candidate"
+                break
+            fi
+        done
+    fi
+    BIOS="${AGENTOS_BIOS:-${BIOS:-/usr/share/qemu/opensbi-riscv64-generic-fw_dynamic.bin}}"
+    QEMU_ARGS="-machine virt -cpu rv64 -m 2G -nographic -bios ${BIOS}"
 fi
-BIOS="${AGENTOS_BIOS:-${BIOS:-/usr/share/qemu/opensbi-riscv64-generic-fw_dynamic.bin}}"
+
+TIMEOUT="${AGENTOS_TIMEOUT:-30}"
+LOG="${AGENTOS_LOG:-/tmp/agentos-ci-${ARCH}.log}"
 
 # ---------------------------------------------------------------------------
 # Preflight
@@ -52,8 +66,11 @@ echo "╔═══════════════════════�
 echo "║      agentOS CI Test Harness                     ║"
 echo "╚══════════════════════════════════════════════════╝"
 echo ""
+echo "  Arch   : ${ARCH}"
 echo "  Image  : ${IMAGE}"
+if [[ "${ARCH}" != "aarch64" ]]; then
 echo "  BIOS   : ${BIOS}"
+fi
 echo "  Timeout: ${TIMEOUT}s"
 echo "  Log    : ${LOG}"
 echo ""
@@ -64,14 +81,14 @@ if [[ ! -f "${IMAGE}" ]]; then
     exit 1
 fi
 
-if [[ ! -f "${BIOS}" ]]; then
+if [[ "${ARCH}" != "aarch64" && ! -f "${BIOS}" ]]; then
     echo "ERROR: OpenSBI BIOS not found: ${BIOS}"
     echo "       Run 'make deps' first."
     exit 1
 fi
 
-if ! command -v qemu-system-riscv64 &>/dev/null; then
-    echo "ERROR: qemu-system-riscv64 not found. Run 'make deps' first."
+if ! command -v "${QEMU_BIN}" &>/dev/null; then
+    echo "ERROR: ${QEMU_BIN} not found. Run 'make deps' first."
     exit 1
 fi
 
@@ -85,12 +102,8 @@ echo ""
 # -chardev + -serial stdio routes debug output to stdout.
 # timeout kills QEMU after ${TIMEOUT}s regardless of what happens.
 timeout "${TIMEOUT}" \
-    qemu-system-riscv64 \
-        -machine virt \
-        -cpu rv64 \
-        -m 2G \
-        -nographic \
-        -bios "${BIOS}" \
+    ${QEMU_BIN} \
+        ${QEMU_ARGS} \
         -kernel "${IMAGE}" \
     2>&1 | tee "${LOG}" || true
 
@@ -114,7 +127,9 @@ check() {
 }
 
 # Boot sequence
+if [[ "${ARCH}" != "aarch64" ]]; then
 check "OpenSBI firmware loaded"                  "OpenSBI"
+fi
 check "agentOS banner printed"                   "agentOS v0.1.0-alpha"
 check "Protection domains listed"                "controller"
 

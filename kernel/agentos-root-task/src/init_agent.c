@@ -28,7 +28,13 @@ static void print_banner(void) {
     microkit_dbg_puts("║   The World's First OS for AI Agents             ║\n");
     microkit_dbg_puts("║                                                  ║\n");
     microkit_dbg_puts("║   Built on: seL4 Microkernel (formally proved)   ║\n");
+#if defined(__aarch64__)
+    microkit_dbg_puts("║   Arch:     seL4 Microkit / AArch64              ║\n");
+#elif defined(__riscv)
     microkit_dbg_puts("║   Arch:     seL4 Microkit / RISC-V RV64          ║\n");
+#else
+    microkit_dbg_puts("║   Arch:     seL4 Microkit                        ║\n");
+#endif
     microkit_dbg_puts("║                                                  ║\n");
     microkit_dbg_puts("║   Protection Domains:                            ║\n");
     microkit_dbg_puts("║     [*] controller  (prio  50) - system ctrl     ║\n");

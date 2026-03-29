@@ -9,7 +9,7 @@
 # Quick start:
 #   make deps && make demo
 
-.PHONY: all deps build demo test clean help
+.PHONY: all deps build demo test build-arm64 demo-arm64 test-arm64 clean clean-arm64 help
 
 # Paths
 ROOT_DIR      := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
@@ -146,6 +146,73 @@ test: build
 	@bash $(ROOT_DIR)scripts/ci-test.sh
 
 # =============================================================================
+# ARM64 / AArch64 targets (Natasha / Sparky GB10 port)
+# Board: qemu_virt_aarch64  (QEMU virt machine, well-documented, clean path to GB10 bare metal)
+# =============================================================================
+BUILD_DIR_ARM64  := $(KERNEL_DIR)/build-aarch64
+IMAGE_ARM64      := $(BUILD_DIR_ARM64)/agentos.img
+QEMU_ARM64       := qemu-system-aarch64
+# qemu-arm-virt: Cortex-A53, GIC v3, PL011 UART — matches Microkit board config
+QEMU_FLAGS_ARM64 := -machine virt,virtualization=on -cpu cortex-a57 -m 2G -nographic \
+                    -kernel $(IMAGE_ARM64)
+
+build-arm64:
+	@echo ""
+	@echo "╔══════════════════════════════════════════╗"
+	@echo "║    agentOS — building kernel (ARM64)     ║"
+	@echo "╚══════════════════════════════════════════╝"
+	@echo ""
+	@command -v clang >/dev/null 2>&1 || \
+		(echo "ERROR: clang not found. Run 'make deps' first." && exit 1)
+	@command -v ld.lld >/dev/null 2>&1 || \
+		(echo "ERROR: ld.lld not found. Run 'make deps' first." && exit 1)
+	@test -d "$(MICROKIT_SDK)" || \
+		(echo "ERROR: Microkit SDK not found at $(MICROKIT_SDK)" && exit 1)
+	@test -d "$(MICROKIT_SDK)/board/qemu_virt_aarch64" || \
+		(echo "ERROR: qemu_virt_aarch64 board not in SDK" && exit 1)
+	@$(MAKE) -C $(KERNEL_DIR) \
+		BUILD_DIR=build-aarch64 \
+		MICROKIT_SDK=$(MICROKIT_SDK) \
+		MICROKIT_BOARD=qemu_virt_aarch64 \
+		MICROKIT_CONFIG=debug
+	@echo ""
+	@echo "✓ ARM64 build complete: $(IMAGE_ARM64)"
+	@echo ""
+
+demo-arm64: build-arm64
+	@echo ""
+	@echo "╔══════════════════════════════════════════╗"
+	@echo "║  agentOS — launching QEMU demo (ARM64)   ║"
+	@echo "╚══════════════════════════════════════════╝"
+	@echo ""
+	@command -v $(QEMU_ARM64) >/dev/null 2>&1 || \
+		(echo "ERROR: $(QEMU_ARM64) not found. Install qemu-system-arm." && exit 1)
+	@echo "Kernel image : $(IMAGE_ARM64)"
+	@echo "QEMU         : $$($(QEMU_ARM64) --version 2>/dev/null | head -1)"
+	@echo ""
+	@echo "Starting agentOS (AArch64)... (Ctrl-A X to quit QEMU)"
+	@echo "──────────────────────────────────────────────"
+	@$(QEMU_ARM64) $(QEMU_FLAGS_ARM64)
+
+test-arm64: build-arm64
+	@echo ""
+	@echo "╔══════════════════════════════════════════╗"
+	@echo "║   agentOS — CI test harness (ARM64)      ║"
+	@echo "╚══════════════════════════════════════════╝"
+	@echo ""
+	@AGENTOS_ARCH=aarch64 bash $(ROOT_DIR)scripts/ci-test.sh
+
+clean-arm64:
+	@echo "Cleaning ARM64 build artifacts..."
+	@$(MAKE) -C $(KERNEL_DIR) \
+		BUILD_DIR=build-aarch64 \
+		MICROKIT_SDK=$(MICROKIT_SDK) \
+		MICROKIT_BOARD=qemu_virt_aarch64 \
+		MICROKIT_CONFIG=debug \
+		clean 2>/dev/null || true
+	@echo "✓ ARM64 clean."
+
+# =============================================================================
 # clean: remove build artifacts
 # =============================================================================
 clean:
@@ -166,11 +233,15 @@ help:
 	@echo "agentOS — the OS for agents, by agents"
 	@echo ""
 	@echo "Targets:"
-	@echo "  make deps    Install build dependencies (brew on macOS, apt on Linux)"
-	@echo "  make build   Compile the agentOS kernel image"
-	@echo "  make demo    Build + launch in QEMU (the full experience)"
-	@echo "  make test    Build + run CI test harness (pass/fail)"
-	@echo "  make clean   Remove build artifacts"
+	@echo "  make deps         Install build dependencies (brew on macOS, apt on Linux)"
+	@echo "  make build        Compile the agentOS kernel image (RISC-V RV64)"
+	@echo "  make demo         Build + launch in QEMU (RISC-V)"
+	@echo "  make test         Build + run CI test harness (RISC-V)"
+	@echo "  make build-arm64  Compile the agentOS kernel image (AArch64)"
+	@echo "  make demo-arm64   Build + launch in QEMU (AArch64 virt)"
+	@echo "  make test-arm64   Build + run CI test harness (AArch64)"
+	@echo "  make clean        Remove RISC-V build artifacts"
+	@echo "  make clean-arm64  Remove AArch64 build artifacts"
 	@echo ""
 	@echo "Quick start:"
 	@echo "  make deps && make demo"
