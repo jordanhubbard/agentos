@@ -21,7 +21,7 @@ BIOS          ?= /usr/share/qemu/opensbi-riscv64-generic-fw_dynamic.bin
 
 # QEMU flags
 QEMU          := qemu-system-riscv64
-QEMU_FLAGS    := -machine virt -cpu rv64 -m 2G -nographic \
+QEMU_FLAGS     = -machine virt -cpu rv64 -m 2G -nographic \
                  -bios $(BIOS) \
                  -kernel $(IMAGE)
 
