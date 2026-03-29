@@ -59,6 +59,7 @@ static const uint32_t ECHO_SERVICE_WASM_LEN = 305;
 #define CH_SWAP_BASE     30   /* Channels 30-33: swap slot PDs */
 #define NUM_SWAP_SLOTS   4
 #define CH_VIBEENGINE    40   /* Channel 40: vibe_engine notifies us when swap approved */
+#define CH_GPUSCHED      50   /* Channel 50: gpu_sched <-> controller */
 
 /* Forward declarations */
 void vibe_swap_init(void);
@@ -501,6 +502,36 @@ void notified(microkit_channel ch) {
                     microkit_dbg_puts(" ready\n");
                     /* Ack the worker's ready signal */
                     microkit_notify(ch);
+                }
+            /* Channel 50: GPU scheduler ready / GPU task dispatch request */
+            } else if (ch == CH_GPUSCHED) {
+                uint32_t gpu_tag = (uint32_t)microkit_mr_get(0);
+                if (gpu_tag == (uint32_t)MSG_GPU_SUBMIT) {
+                    /*
+                     * gpu_sched is asking us to route a WASM GPU task to a worker slot.
+                     * MR1: ticket_id, MR2/3: hash_lo, MR4: hash_hi low32, MR5: slot_id
+                     * We notify the appropriate worker slot to load+execute the WASM.
+                     */
+                    uint32_t ticket  = (uint32_t)microkit_mr_get(1);
+                    uint32_t slot_id = (uint32_t)microkit_mr_get(5);
+                    (void)ticket;
+                    microkit_dbg_puts("[controller] GPU task dispatched to slot=");
+                    {
+                        char s[2] = { (char)('0' + (slot_id % 10)), '\0' };
+                        microkit_dbg_puts(s);
+                    }
+                    microkit_dbg_puts("\n");
+                    /*
+                     * Notify the target swap slot to start WASM execution.
+                     * In production: pass hash via MRs for agentfs fetch first.
+                     * For now: worker slot gets a generic compute notification.
+                     */
+                    if (slot_id < (uint32_t)NUM_SWAP_SLOTS) {
+                        microkit_notify((microkit_channel)(CH_SWAP_BASE + slot_id));
+                    }
+                } else {
+                    /* gpu_sched startup ready notification */
+                    microkit_dbg_puts("[controller] GPU Scheduler online\n");
                 }
             /* Channel 40: vibe_engine approved a swap — read staging and begin */
             } else if (ch == CH_VIBEENGINE) {

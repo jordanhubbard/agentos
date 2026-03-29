@@ -283,4 +283,29 @@
         <end pd="init_agent"   id="3" pp="true" />
         <end pd="vibe_engine"  id="0" />
     </channel>
+
+    <!--
+      GPU Scheduler PD — priority 120 (PRIO_INTERACTIVE)
+      Agents can PPC into gpu_sched to submit/cancel/query GPU tasks.
+      gpu_sched notifies controller to dispatch to swap slots.
+      gpu_sched publishes GPU_COMPLETE/GPU_FAILED events to EventBus.
+
+      Channel 50: controller(id=50) <-> gpu_sched(id=1)
+        controller notifies gpu_sched of slot completion
+      Channel 51: event_bus(id=51) <-> gpu_sched(id=2)
+        gpu_sched PPCs into event_bus to publish completion events
+    -->
+    <protection_domain name="gpu_sched" priority="120">
+        <program_image path="gpu_sched.elf" />
+    </protection_domain>
+
+    <channel>
+        <end pd="controller" id="50" />
+        <end pd="gpu_sched"  id="1" />
+    </channel>
+
+    <channel>
+        <end pd="event_bus" id="51" />
+        <end pd="gpu_sched" id="2"  pp="true" />
+    </channel>
 </system>

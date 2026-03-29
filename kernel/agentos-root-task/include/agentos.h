@@ -89,6 +89,20 @@ typedef enum {
     MSG_WORKER_RETRIEVE_REPLY  = 0x0702,  /* Controller returns AgentFS data to worker */
     MSG_DEMO_TASK_RETRIEVE     = 0x0710,  /* Task type: retrieve object from AgentFS */
 
+    /* Dynamic agent spawn (caller -> init_agent) */
+    MSG_SPAWN_AGENT            = 0x0801,  /* Spawn a WASM agent by hash */
+    MSG_SPAWN_AGENT_REPLY      = 0x0802,  /* Reply: agent_id or error */
+
+    /* GPU Scheduler PD (agents -> gpu_sched) */
+    MSG_GPU_SUBMIT             = 0x0901,  /* Submit GPU task: hash_lo, hash_hi, priority, flags */
+    MSG_GPU_SUBMIT_REPLY       = 0x0902,  /* Reply: ticket_id or error */
+    MSG_GPU_STATUS             = 0x0903,  /* Query scheduler state */
+    MSG_GPU_STATUS_REPLY       = 0x0904,  /* Reply: queue_depth, busy_slots, idle_slots */
+    MSG_GPU_CANCEL             = 0x0905,  /* Cancel pending ticket by ticket_id */
+    MSG_GPU_CANCEL_REPLY       = 0x0906,
+    MSG_GPU_COMPLETE           = 0x0910,  /* EventBus event: task completed */
+    MSG_GPU_FAILED             = 0x0911,  /* EventBus event: task failed */
+
     /* Vibe Swap (VibeEngine -> Controller -> Swap Slots) */
     MSG_VIBE_SWAP_BEGIN        = 0x0501,  /* VibeEngine -> Controller: start swap */
     MSG_VIBE_SWAP_ACTIVATE     = 0x0502,  /* Controller -> slot: go live */
