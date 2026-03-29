@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
-  agentOS v0.2.0 System Description File
+  agentOS v0.3.0 System Description File
   
   Protection Domain topology:
   
@@ -8,11 +8,14 @@
     event_bus    (prio 200)  - passive pub/sub server (ring buffer)
     init_agent   (prio 100)  - agent ecosystem bootstrapper
     worker_0..7  (prio 80)   - agent pool workers (dynamic task assignment)
+    vibe_engine  (prio 140)  - passive VibeEngine: WASM hot-swap lifecycle
   
   Channel map:
     0:  controller <-> event_bus    (controller PPCs into passive event_bus)
     1:  controller <-> init_agent   (notify: controller starts init_agent)
     2:  event_bus  <-> init_agent   (init_agent PPCs into event_bus to subscribe)
+    5:  controller <-> agentfs      (controller PPCs into passive agentfs)
+    6:  agentfs    <-> event_bus    (agentfs notifies on mutations)
     10: controller <-> worker_0     (task assignment + completion notify)
     11: controller <-> worker_1
     12: controller <-> worker_2
@@ -31,6 +34,10 @@
     31: controller <-> swap_slot_1
     32: controller <-> swap_slot_2
     33: controller <-> swap_slot_3
+
+  VibeEngine channels:
+    40: controller <-> vibe_engine  (vibe_engine notifies controller: swap approved)
+    41: init_agent <-> vibe_engine  (init_agent PPCs into vibe_engine to propose swaps)
 -->
 <system>
     <!-- Controller: system coordinator, low priority to PPC into passive servers -->
@@ -42,6 +49,8 @@
         <map mr="swap_code_1" vaddr="0x6400000" perms="rw" setvar_vaddr="swap_code_ctrl_1" />
         <map mr="swap_code_2" vaddr="0x6800000" perms="rw" setvar_vaddr="swap_code_ctrl_2" />
         <map mr="swap_code_3" vaddr="0x6C00000" perms="rw" setvar_vaddr="swap_code_ctrl_3" />
+        <!-- VibeEngine staging: controller reads WASM proposals from here (r) -->
+        <map mr="vibe_staging" vaddr="0x7000000" perms="r" setvar_vaddr="vibe_staging_ctrl_vaddr" />
     </protection_domain>
     
     <!-- EventBus: passive pub/sub backbone -->
@@ -232,5 +241,46 @@
     <channel>
         <end pd="controller"  id="33" />
         <end pd="swap_slot_3" id="0" />
+    </channel>
+
+    <!--
+      VibeEngine: passive hot-swap lifecycle server (priority 140)
+
+      Channels:
+        id=0: agents PPC in to propose/validate/execute swaps
+        id=1: vibe_engine notifies controller when a swap is approved
+
+      Shared memory:
+        vibe_staging (4MB): WASM binary staging area
+          - Agents write WASM bytes here before calling OP_VIBE_PROPOSE
+          - VibeEngine reads + validates
+          - Controller reads and feeds to vibe_swap_begin
+    -->
+    <memory_region name="vibe_staging" size="0x400000" />  <!-- 4MB staging -->
+
+    <protection_domain name="vibe_engine" priority="140" passive="true">
+        <program_image path="vibe_engine.elf" />
+        <!-- rw: vibe_engine reads staged WASM and writes metadata footer -->
+        <map mr="vibe_staging" vaddr="0x4000000" perms="rw" setvar_vaddr="vibe_staging_vaddr" />
+    </protection_domain>
+
+    <!--
+      Channel 40: controller(id=40) <-> vibe_engine(id=1)
+      vibe_engine notifies controller when a swap proposal is approved.
+      Controller wakes up, reads staging metadata, calls vibe_swap_begin.
+    -->
+    <channel>
+        <end pd="controller"   id="40" />
+        <end pd="vibe_engine"  id="1" />
+    </channel>
+
+    <!--
+      Channel 41: init_agent(id=3) <-> vibe_engine(id=0) pp=true
+      init_agent can PPC into vibe_engine to propose/validate/execute swaps.
+      Used by the demo sequence (Step 4: hot-swap toolsvc with echo_service.wasm).
+    -->
+    <channel>
+        <end pd="init_agent"   id="3" pp="true" />
+        <end pd="vibe_engine"  id="0" />
     </channel>
 </system>
