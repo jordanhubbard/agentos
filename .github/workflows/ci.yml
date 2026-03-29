@@ -1,0 +1,75 @@
+name: agentOS CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build-and-test:
+    name: Build & boot test (${{ matrix.board }})
+    runs-on: ubuntu-24.04
+
+    strategy:
+      fail-fast: false
+      matrix:
+        board:
+          - qemu_virt_riscv64
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # -----------------------------------------------------------------------
+      # Toolchain
+      # -----------------------------------------------------------------------
+      - name: Install clang / lld
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            clang lld \
+            qemu-system-misc qemu-system-arm \
+            python3 python3-pip
+
+      # -----------------------------------------------------------------------
+      # Microkit SDK
+      # -----------------------------------------------------------------------
+      - name: Cache Microkit SDK
+        id: cache-sdk
+        uses: actions/cache@v4
+        with:
+          path: microkit-sdk-2.1.0
+          key: microkit-sdk-2.1.0-linux-x86-64
+
+      - name: Download Microkit SDK
+        if: steps.cache-sdk.outputs.cache-hit != 'true'
+        run: |
+          curl -fsSL \
+            https://github.com/seL4/microkit/releases/download/2.1.0/microkit-sdk-2.1.0-linux-x86-64.tar.gz \
+            -o microkit-sdk.tar.gz
+          tar -xzf microkit-sdk.tar.gz
+          rm microkit-sdk.tar.gz
+
+      # -----------------------------------------------------------------------
+      # Build & test
+      # -----------------------------------------------------------------------
+      - name: Build agentOS
+        run: make BOARD=${{ matrix.board }}
+
+      - name: Run boot tests
+        run: |
+          chmod +x scripts/run-tests.sh
+          BOARD=${{ matrix.board }} scripts/run-tests.sh
+        timeout-minutes: 2
+
+      # -----------------------------------------------------------------------
+      # Artifacts
+      # -----------------------------------------------------------------------
+      - name: Upload image
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: agentos-${{ matrix.board }}
+          path: build/${{ matrix.board }}/agentos.img
+          if-no-files-found: ignore
