@@ -25,22 +25,48 @@ QEMU_FLAGS    := -machine virt -cpu rv64 -m 2G -nographic \
                  -bios $(BIOS) \
                  -kernel $(IMAGE)
 
-# Detect macOS vs Linux for BIOS path
+# Detect OS and architecture
 UNAME_S := $(shell uname -s)
+UNAME_M := $(shell uname -m)
+
 ifeq ($(UNAME_S),Darwin)
+  # Homebrew prefix varies: /opt/homebrew (Apple Silicon) vs /usr/local (Intel)
+  ifeq ($(UNAME_M),arm64)
+    BREW_PREFIX := /opt/homebrew
+    SDK_PLATFORM := macos-aarch64
+  else
+    BREW_PREFIX := /usr/local
+    SDK_PLATFORM := macos-x86-64
+  endif
+  # Homebrew LLVM (Xcode clang lacks RISC-V target)
+  LLVM_BIN := $(BREW_PREFIX)/opt/llvm/bin
   # Homebrew QEMU puts the RISC-V BIOS here
-  BIOS := $(shell find /opt/homebrew /usr/local -name "opensbi-riscv64-generic-fw_dynamic.bin" 2>/dev/null | head -1)
+  BIOS := $(shell find $(BREW_PREFIX) -name "opensbi-riscv64-generic-fw_dynamic.bin" 2>/dev/null | head -1)
   ifeq ($(BIOS),)
-    BIOS := /usr/local/share/qemu/opensbi-riscv64-generic-fw_dynamic.bin
+    BIOS := $(BREW_PREFIX)/share/qemu/opensbi-riscv64-generic-fw_dynamic.bin
+  endif
+else ifeq ($(UNAME_S),Linux)
+  LLVM_BIN := /usr/bin
+  ifeq ($(UNAME_M),aarch64)
+    SDK_PLATFORM := linux-aarch64
+  else
+    SDK_PLATFORM := linux-x86-64
   endif
 endif
+
+# SDK download URL
+SDK_URL := https://github.com/seL4/microkit/releases/download/2.1.0/microkit-sdk-2.1.0-$(SDK_PLATFORM).tar.gz
 
 all: build
 
 # =============================================================================
 # deps: install all build dependencies
 # =============================================================================
-deps:
+deps: deps-tools deps-sdk
+	@echo ""
+	@echo "✅ All dependencies installed! Run 'make demo' to build and boot."
+
+deps-tools:
 	@echo ""
 	@echo "╔══════════════════════════════════════════╗"
 	@echo "║        agentOS — installing deps         ║"
@@ -85,28 +111,51 @@ endif
 	@echo ""
 	@echo "Dependency check:"
 	@echo "  qemu-system-riscv64: $$(qemu-system-riscv64 --version 2>/dev/null | head -1 || echo 'NOT FOUND')"
+ifeq ($(UNAME_S),Darwin)
+	@echo "  clang (LLVM):        $$($(LLVM_BIN)/clang --version 2>/dev/null | head -1 || echo 'NOT FOUND')"
+	@echo "  ld.lld:              $$($(LLVM_BIN)/ld.lld --version 2>/dev/null | head -1 || echo 'NOT FOUND')"
+else
 	@echo "  clang:               $$(clang --version 2>/dev/null | head -1 || echo 'NOT FOUND')"
-	@echo "  ld.lld:              $$(ld.lld --version 2>/dev/null | head -1 || echo 'NOT FOUND (try: brew install llvm)')"
+	@echo "  ld.lld:              $$(ld.lld --version 2>/dev/null | head -1 || echo 'NOT FOUND')"
+endif
+
+# Download Microkit SDK if not present
+deps-sdk: $(MICROKIT_SDK)/bin/microkit
+
+$(MICROKIT_SDK)/bin/microkit:
 	@echo ""
-	@echo "✓ Run 'make demo' to build and launch agentOS."
-	@echo ""
+	@echo "[SDK] Downloading Microkit SDK 2.1.0 for $(SDK_PLATFORM)..."
+	@mkdir -p $(dir $(MICROKIT_SDK))
+	@curl -fSL "$(SDK_URL)" -o /tmp/microkit-sdk.tar.gz
+	@echo "[SDK] Extracting..."
+	@tar xzf /tmp/microkit-sdk.tar.gz -C $(ROOT_DIR)
+	@rm /tmp/microkit-sdk.tar.gz
+	@test -x $(MICROKIT_SDK)/bin/microkit && echo "[SDK] ✓ Installed at $(MICROKIT_SDK)" || \
+		(echo "ERROR: SDK extraction failed" && exit 1)
 
 # =============================================================================
 # build: compile the kernel image
 # =============================================================================
-build:
+build: deps-sdk
 	@echo ""
 	@echo "╔══════════════════════════════════════════╗"
 	@echo "║         agentOS — building kernel        ║"
 	@echo "╚══════════════════════════════════════════╝"
 	@echo ""
+ifeq ($(UNAME_S),Darwin)
+	@test -x "$(LLVM_BIN)/clang" || \
+		(echo "ERROR: Homebrew LLVM not found. Run 'make deps' first." && exit 1)
+	@test -x "$(LLVM_BIN)/ld.lld" || \
+		(echo "ERROR: ld.lld not found. Run 'make deps' first." && exit 1)
+else
 	@command -v clang >/dev/null 2>&1 || \
 		(echo "ERROR: clang not found. Run 'make deps' first." && exit 1)
 	@command -v ld.lld >/dev/null 2>&1 || \
-		(echo "ERROR: ld.lld not found. Run 'make deps' first (brew install llvm)." && exit 1)
+		(echo "ERROR: ld.lld not found. Run 'make deps' first." && exit 1)
+endif
 	@test -d "$(MICROKIT_SDK)" || \
-		(echo "ERROR: Microkit SDK not found at $(MICROKIT_SDK)" && exit 1)
-	@$(MAKE) -C $(KERNEL_DIR) \
+		(echo "ERROR: Microkit SDK not found. Run 'make deps' first." && exit 1)
+	@PATH="$(LLVM_BIN):$$PATH" $(MAKE) -C $(KERNEL_DIR) \
 		BUILD_DIR=build-riscv \
 		MICROKIT_SDK=$(MICROKIT_SDK) \
 		MICROKIT_BOARD=qemu_virt_riscv64 \
