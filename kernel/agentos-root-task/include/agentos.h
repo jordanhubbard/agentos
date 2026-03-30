@@ -147,6 +147,29 @@ typedef enum {
 /* VibeEngine channel IDs (from controller perspective) */
 #define CH_VIBEENGINE         40  /* controller <-> vibe_engine (notify) */
 
+/* Capability Audit Log channel IDs */
+#define CH_CAP_AUDIT_CTRL     57  /* controller -> cap_audit_log (PPC) */
+#define CH_CAP_AUDIT_INIT     5   /* init_agent -> cap_audit_log (PPC, from init_agent perspective) */
+
+/* Capability Audit Log opcodes */
+#define OP_CAP_LOG            0x50  /* Log grant/revoke event */
+#define OP_CAP_LOG_STATUS     0x51  /* Query ring buffer status */
+#define OP_CAP_LOG_DUMP       0x52  /* Read entries from ring */
+
+/* Capability event types */
+#define CAP_EVENT_GRANT       1
+#define CAP_EVENT_REVOKE      2
+
+/* Capability class bitmask (mirrors WASM capability manifest) */
+#define CAP_CLASS_FS          (1 << 0)
+#define CAP_CLASS_NET         (1 << 1)
+#define CAP_CLASS_GPU         (1 << 2)
+#define CAP_CLASS_IPC         (1 << 3)
+#define CAP_CLASS_TIMER       (1 << 4)
+#define CAP_CLASS_STDIO       (1 << 5)
+#define CAP_CLASS_SPAWN       (1 << 6)
+#define CAP_CLASS_SWAP        (1 << 7)
+
 /* VibeEngine staging region metadata layout (last 64 bytes of 4MB staging MR) */
 #define VIBE_META_SIZE        64
 /* meta[0..3]   = service_id (LE uint32) */

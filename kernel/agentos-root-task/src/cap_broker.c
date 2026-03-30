@@ -78,7 +78,15 @@ bool cap_broker_grant(int handle, uint32_t to_pd, uint64_t boot_seq) {
     entry->grant_time = boot_seq;
     audit_seq++;
     
-    microkit_dbg_puts("[cap_broker] Capability granted\n");
+    /* Send audit event to cap_audit_log PD */
+    microkit_mr_set(0, OP_CAP_LOG);
+    microkit_mr_set(1, CAP_EVENT_GRANT);
+    microkit_mr_set(2, to_pd);
+    microkit_mr_set(3, entry->cap.rights);  /* caps mask = rights field */
+    microkit_mr_set(4, (uint32_t)handle);   /* slot_id = handle */
+    microkit_ppcall(CH_CAP_AUDIT_CTRL, microkit_msginfo_new(0, 5));
+    
+    microkit_dbg_puts("[cap_broker] Capability granted (audited)\n");
     return true;
 }
 
@@ -104,7 +112,15 @@ bool cap_broker_revoke(int handle, uint32_t requesting_pd) {
     entry->granted_to = 0;
     audit_seq++;
     
-    microkit_dbg_puts("[cap_broker] Capability revoked\n");
+    /* Send audit event to cap_audit_log PD */
+    microkit_mr_set(0, OP_CAP_LOG);
+    microkit_mr_set(1, CAP_EVENT_REVOKE);
+    microkit_mr_set(2, requesting_pd);
+    microkit_mr_set(3, entry->cap.rights);
+    microkit_mr_set(4, (uint32_t)handle);
+    microkit_ppcall(CH_CAP_AUDIT_CTRL, microkit_msginfo_new(0, 5));
+    
+    microkit_dbg_puts("[cap_broker] Capability revoked (audited)\n");
     return true;
 }
 

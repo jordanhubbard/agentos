@@ -16,6 +16,8 @@
     2:  event_bus  <-> init_agent   (init_agent PPCs into event_bus to subscribe)
     5:  controller <-> agentfs      (controller PPCs into passive agentfs)
     6:  agentfs    <-> event_bus    (agentfs notifies on mutations)
+    57: controller  <-> cap_audit_log (controller PPCs into passive audit log)
+    58: init_agent  <-> cap_audit_log (init_agent PPCs into passive audit log)
     10: controller <-> worker_0     (task assignment + completion notify)
     11: controller <-> worker_1
     12: controller <-> worker_2
@@ -340,4 +342,37 @@
         <end pd="event_bus" id="56" />
         <end pd="mesh_agent" id="2" pp="true" />
     </channel>
+
+    <!--
+      Capability Audit Log: passive PD (priority 120)
+      Records all capability grant/revoke events in a shared-memory ring buffer.
+      
+      Operations:
+        OP_CAP_LOG (0x50)        — append grant/revoke event
+        OP_CAP_LOG_STATUS (0x51) — query ring state
+        OP_CAP_LOG_DUMP (0x52)   — read entries
+
+      Channels:
+        id=0: controller PPCs in (after cap_broker_grant/revoke)
+        id=1: init_agent PPCs in (after agent_pool_spawn)
+    -->
+    <memory_region name="cap_audit_ring" size="0x40000" />  <!-- 256KB ring buffer -->
+
+    <protection_domain name="cap_audit_log" priority="120" passive="true">
+        <program_image path="cap_audit_log.elf" />
+        <map mr="cap_audit_ring" vaddr="0x8000000" perms="rw" setvar_vaddr="cap_audit_ring_vaddr" />
+    </protection_domain>
+
+    <!-- Channel 57: controller(id=57) <-> cap_audit_log(id=0) — controller logs cap events -->
+    <channel>
+        <end pd="controller"     id="57" pp="true" />
+        <end pd="cap_audit_log"  id="0" />
+    </channel>
+
+    <!-- Channel 58: init_agent(id=5) <-> cap_audit_log(id=1) — init_agent logs spawn caps -->
+    <channel>
+        <end pd="init_agent"     id="5" pp="true" />
+        <end pd="cap_audit_log"  id="1" />
+    </channel>
+
 </system>
