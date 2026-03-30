@@ -905,8 +905,9 @@ static void sc_reduce(uint8_t r[64])
  * msg[32] = SHA-256 hash of the WASM content (the "message" being signed)
  * pk[32]  = Ed25519 public key
  */
-static int ed25519_verify(const uint8_t sig[64], const uint8_t msg[32],
-                          const uint8_t pk[32])
+/* ed25519_verify_hash: internal helper — verifies sig over a fixed 32-byte hash */
+static int ed25519_verify_hash(const uint8_t sig[64], const uint8_t msg[32],
+                               const uint8_t pk[32])
 {
     uint8_t h[64];          /* SHA-512 output */
     uint8_t hreduced[64];   /* h mod l */
@@ -942,6 +943,42 @@ static int ed25519_verify(const uint8_t sig[64], const uint8_t msg[32],
     pt_pack(t, p);
 
     /* Check t == R_bytes = sig[0..31] */
+    return (memcmp(t, sig, 32) == 0) ? 0 : -1;
+}
+
+/*
+ * ed25519_verify — public API, variable-length message.
+ * Computes the full Ed25519 verification over raw message bytes of any length.
+ * sig[64]: R || S bytes; msg + msg_len: arbitrary message; pk[32]: public key.
+ * Returns 0 on success, -1 on failure.
+ */
+int ed25519_verify(const uint8_t sig[64], const uint8_t *msg, size_t msg_len,
+                   const uint8_t pk[32])
+{
+    uint8_t h[64];
+    uint8_t hreduced[64];
+    uint8_t t[32];
+    gf p[4], q[4];
+    sha512_ctx_t ctx;
+    int i;
+
+    if (pt_unpackneg(q, pk) != 0) return -1;
+
+    /* H = SHA-512(R[32] || pk[32] || msg) */
+    sha512_init(&ctx);
+    sha512_update(&ctx, sig, 32);
+    sha512_update(&ctx, pk,  32);
+    sha512_update(&ctx, msg, msg_len);
+    sha512_final(&ctx, h);
+
+    for (i = 0; i < 64; i++) hreduced[i] = h[i];
+    sc_reduce(hreduced);
+
+    pt_scalarmult(p, q, hreduced);
+    pt_scalarbase(q, sig + 32);
+    pt_add(p, q);
+    pt_pack(t, p);
+
     return (memcmp(t, sig, 32) == 0) ? 0 : -1;
 }
 
@@ -1130,7 +1167,7 @@ bool vibe_verify_module(const uint8_t *wasm, size_t len,
      *    ed25519_verify(sig[64], msg[32], pk[32])
      *    msg = computed_sha256 (same as sec_sha256 after step 6 passes)
      */
-    ed_result = ed25519_verify(sec_sig, computed_sha256, sec_pubkey);
+    ed_result = ed25519_verify_hash(sec_sig, computed_sha256, sec_pubkey);
     if (ed_result != 0) {
         microkit_dbg_puts("[vibe_verify] ERROR: Ed25519 signature invalid\n");
 #if VIBE_VERIFY_MODE
