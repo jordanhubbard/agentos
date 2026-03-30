@@ -85,6 +85,8 @@ IMAGES := controller.elf event_bus.elf init_agent.elf worker.elf agentfs.elf vib
 ifeq ($(ARCH),aarch64)
   IMAGES += linux_vmm.elf
   SYSTEM_FILE := agentos-aarch64.system
+else ifeq ($(ARCH),x86_64)
+  SYSTEM_FILE := agentos-x86_64.system
 else
   SYSTEM_FILE := agentos.system
 endif

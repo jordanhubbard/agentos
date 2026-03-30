@@ -1,22 +1,49 @@
 # agentOS Top-Level Makefile
 #
-# Targets:
-#   make deps              — install all build dependencies (macOS: brew, Linux: apt)
-#   make build             — compile agentOS (default: riscv64)
-#   make build BOARD=qemu_virt_aarch64  — compile for ARM64 (Sparky)
-#   make demo              — build + launch the QEMU demo
-#   make demo BOARD=qemu_virt_aarch64   — demo on aarch64 QEMU
-#   make test              — boot in QEMU, verify output, exit 0/1 (CI)
-#   make clean             — remove build artifacts for current BOARD
-#   make clean-all         — remove all build artifacts
+# Architecture is driven by config.yaml (target_arch / host_arch) or overrides:
+#
+#   make demo                          — build + boot using config.yaml defaults
+#   make demo TARGET_ARCH=aarch64      — override target to ARM64
+#   make demo TARGET_ARCH=x86_64       — override target to x86_64
+#   make demo BOARD=rpi4b_4gb          — override board directly (advanced)
+#   make deps                          — install all build dependencies
+#   make test                          — CI boot test (exit 0/1)
+#   make clean                         — remove build artifacts for current target
+#   make clean-all                     — remove all build artifacts
+#
+# Config file: config.yaml (top-level)
+#   target_arch: riscv64 | aarch64 | x86_64
+#   host_arch:   auto | x86_64 | aarch64
 #
 # Quick start:
 #   make deps && make demo
 
 .PHONY: all deps deps-tools deps-sdk build demo test clean clean-all help
 
+# ─── Read config.yaml (if present) ───────────────────────────────────────────
+# Extract target_arch from config.yaml using simple grep/sed (no YAML parser needed)
+CONFIG_TARGET := $(shell grep '^target_arch:' config.yaml 2>/dev/null | sed 's/target_arch:[[:space:]]*//' | tr -d '[:space:]')
+ifeq ($(CONFIG_TARGET),)
+  CONFIG_TARGET := riscv64
+endif
+
+# Command-line TARGET_ARCH overrides config.yaml
+TARGET_ARCH ?= $(CONFIG_TARGET)
+
 # ─── Board / arch config ──────────────────────────────────────────────────────
-BOARD         ?= qemu_virt_riscv64
+# BOARD can be set directly to override the auto-mapping from TARGET_ARCH.
+# If not set, it maps:  riscv64 → qemu_virt_riscv64
+#                        aarch64 → qemu_virt_aarch64
+#                        x86_64  → x86_64_generic
+ifndef BOARD
+  ifeq ($(TARGET_ARCH),aarch64)
+    BOARD := qemu_virt_aarch64
+  else ifeq ($(TARGET_ARCH),x86_64)
+    BOARD := x86_64_generic
+  else
+    BOARD := qemu_virt_riscv64
+  endif
+endif
 
 ifeq ($(BOARD),qemu_virt_aarch64)
   ARCH         := aarch64
@@ -29,6 +56,15 @@ ifeq ($(BOARD),qemu_virt_aarch64)
                   -cpu cortex-a53 -m 2G \
                   -serial mon:stdio -nographic \
                   -device loader,file=$(IMAGE),addr=0x70000000,cpu-num=0
+else ifeq ($(BOARD),$(filter $(BOARD),x86_64_generic x86_64_generic_vtx))
+  ARCH         := x86_64
+  QEMU         := qemu-system-x86_64
+  # KVM acceleration if available (host x86_64), otherwise TCG
+  QEMU_ACCEL   := $(shell [ "$$(uname -m)" = "x86_64" ] && [ -e /dev/kvm ] && echo "-enable-kvm" || echo "")
+  QEMU_FLAGS    = -machine q35 -cpu qemu64 -m 2G -nographic \
+                  -serial mon:stdio \
+                  $(QEMU_ACCEL) \
+                  -kernel $(IMAGE)
 else
   ARCH         := riscv64
   QEMU         := qemu-system-riscv64
@@ -119,6 +155,7 @@ else ifeq ($(UNAME_S),Linux)
 	@sudo apt-get install -y --no-install-recommends \
 		qemu-system-misc \
 		qemu-system-arm \
+		qemu-system-x86 \
 		clang \
 		lld \
 		cmake \
@@ -136,6 +173,7 @@ endif
 	@echo "Dependency check:"
 	@echo "  qemu-system-riscv64: $$(qemu-system-riscv64 --version 2>/dev/null | head -1 || echo 'NOT FOUND')"
 	@echo "  qemu-system-aarch64: $$(qemu-system-aarch64 --version 2>/dev/null | head -1 || echo 'NOT FOUND')"
+	@echo "  qemu-system-x86_64:  $$(qemu-system-x86_64 --version 2>/dev/null | head -1 || echo 'NOT FOUND')"
 ifeq ($(UNAME_S),Darwin)
 	@echo "  clang (LLVM):        $$($(LLVM_BIN)/clang --version 2>/dev/null | head -1 || echo 'NOT FOUND')"
 	@echo "  ld.lld:              $$($(LLD_BIN)/ld.lld --version 2>/dev/null | head -1 || echo 'NOT FOUND')"
@@ -199,6 +237,7 @@ demo: build
 	@echo "║     agentOS — launching QEMU demo        ║"
 	@echo "╚══════════════════════════════════════════╝"
 	@echo ""
+	@echo "Target : $(TARGET_ARCH)"
 	@echo "Board  : $(BOARD)"
 	@echo "Image  : $(IMAGE)"
 	@echo "QEMU   : $(shell $(QEMU) --version 2>/dev/null | head -1)"
@@ -237,16 +276,26 @@ help:
 	@echo ""
 	@echo "agentOS — the OS for agents, by agents"
 	@echo ""
+	@echo "Config: config.yaml (target_arch: riscv64|aarch64|x86_64, host_arch: auto)"
+	@echo "Current: TARGET_ARCH=$(TARGET_ARCH) → BOARD=$(BOARD)"
+	@echo ""
 	@echo "Targets:"
-	@echo "  make deps                      Install build deps (brew / apt)"
-	@echo "  make build                     Build for riscv64 (default)"
-	@echo "  make build BOARD=qemu_virt_aarch64  Build for ARM64 (Sparky)"
-	@echo "  make demo                      Build + launch in QEMU"
-	@echo "  make demo  BOARD=qemu_virt_aarch64  ARM64 QEMU demo"
-	@echo "  make test                      CI boot test (exit 0/1)"
-	@echo "  make clean                     Remove build artifacts (current BOARD)"
-	@echo "  make clean-all                 Remove all build artifacts"
+	@echo "  make deps                         Install build deps (brew / apt)"
+	@echo "  make build                        Build for config.yaml target (default: riscv64)"
+	@echo "  make build TARGET_ARCH=aarch64    Build for ARM64"
+	@echo "  make build TARGET_ARCH=x86_64     Build for x86_64"
+	@echo "  make build BOARD=rpi4b_4gb        Build for a specific Microkit board"
+	@echo "  make demo                         Build + launch in QEMU"
+	@echo "  make demo TARGET_ARCH=aarch64     ARM64 QEMU demo (with Linux VMM)"
+	@echo "  make demo TARGET_ARCH=x86_64      x86_64 QEMU demo"
+	@echo "  make test                         CI boot test (exit 0/1)"
+	@echo "  make clean                        Remove build artifacts (current target)"
+	@echo "  make clean-all                    Remove all build artifacts"
 	@echo ""
 	@echo "Quick start:"
 	@echo "  make deps && make demo"
+	@echo ""
+	@echo "Architecture override (command line wins over config.yaml):"
+	@echo "  TARGET_ARCH=riscv64|aarch64|x86_64"
+	@echo "  HOST_ARCH=auto|x86_64|aarch64"
 	@echo ""
