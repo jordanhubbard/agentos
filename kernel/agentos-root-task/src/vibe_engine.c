@@ -38,7 +38,7 @@
 
 #define AGENTOS_DEBUG 1
 #include "agentos.h"
-#include "ed25519_verify.h"
+#include "verify.h"
 #include <stdint.h>
 #include <stdbool.h>
 
@@ -66,6 +66,7 @@
 #define VIBE_ERR_STATE      6   /* proposal in wrong state */
 #define VIBE_ERR_VALFAIL    7   /* validation failed */
 #define VIBE_ERR_BADPTX     8   /* invalid CUDA PTX payload */
+#define VIBE_ERR_BADSIG     9   /* Ed25519 signature verification failed */
 #define VIBE_ERR_INTERNAL   99
 
 /* CUDA PTX custom section name embedded in WASM modules */
@@ -591,6 +592,13 @@ static microkit_msginfo handle_propose(void) {
     if (!validate_wasm_header(staged, wasm_size)) {
         microkit_dbg_puts("[vibe_engine] REJECT: bad WASM magic\n");
         microkit_mr_set(0, VIBE_ERR_BADWASM);
+        return microkit_msginfo_new(0, 1);
+    }
+
+    /* Ed25519 signature verification — NULL trusted_pubkey = any signer allowed */
+    if (!vibe_verify_module(staged, wasm_size, NULL)) {
+        microkit_dbg_puts("[vibe_engine] REJECT: Ed25519 signature verification failed\n");
+        microkit_mr_set(0, VIBE_ERR_BADSIG);
         return microkit_msginfo_new(0, 1);
     }
 

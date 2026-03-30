@@ -1,0 +1,16 @@
+#pragma once
+#include <stddef.h>
+#include <stdint.h>
+#include <stdbool.h>
+
+/* Ed25519 + SHA-256 WASM module verifier
+ *
+ * VIBE_VERIFY_MODE compile flag:
+ *   -DVIBE_VERIFY_MODE=1  → production: reject loads with bad/missing sig (return false)
+ *   -DVIBE_VERIFY_MODE=0  → dev mode: log warning but return true
+ *   Default (undefined):  → dev mode
+ *
+ * Returns true if signature is valid (or dev mode with missing/bad sig).
+ * Returns false only in production mode with bad/missing signature.
+ */
+bool vibe_verify_module(const uint8_t *wasm, size_t len, const uint8_t *trusted_pubkey);
