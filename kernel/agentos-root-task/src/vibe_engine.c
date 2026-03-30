@@ -28,7 +28,9 @@
  *   OP_VIBE_EXECUTE  = 0x42 — approve + trigger swap via controller
  *   OP_VIBE_STATUS   = 0x43 — query proposal or engine status
  *   OP_VIBE_ROLLBACK = 0x44 — request rollback of a service
- *   OP_VIBE_HEALTH   = 0x45 — health check for VibeEngine itself
+ *   OP_VIBE_HEALTH      = 0x45 — health check for VibeEngine itself
+ *   OP_VIBE_TRUST_KEY   = 0x49 — add trusted Ed25519 signing key
+ *   OP_VIBE_SIG_ENFORCE = 0x4A — toggle signature enforcement (reject unsigned)
  *
  * Copyright (c) 2026 The agentOS Project
  * SPDX-License-Identifier: BSD-2-Clause
@@ -36,6 +38,7 @@
 
 #define AGENTOS_DEBUG 1
 #include "agentos.h"
+#include "ed25519_verify.h"
 #include <stdint.h>
 #include <stdbool.h>
 
@@ -50,6 +53,8 @@
 #define OP_VIBE_STATUS    0x43
 #define OP_VIBE_ROLLBACK  0x44
 #define OP_VIBE_HEALTH    0x45
+#define OP_VIBE_TRUST_KEY   0x49 /* Add trusted signing key: MR1=key_id, MR2-5=pubkey */
+#define OP_VIBE_SIG_ENFORCE 0x4A /* Set signature enforcement: MR1=0/1 */
 
 /* ── Result codes ───────────────────────────────────────────────────── */
 #define VIBE_OK             0
@@ -323,6 +328,153 @@ static bool scan_cuda_section(const uint8_t *data, uint32_t size,
     return false;
 }
 
+/* ── WASM module signing — custom section scanners ───────────────────────── */
+
+#define SIG_SECTION_NAME     "agentos.signature"
+#define SIG_SECTION_LEN      17  /* strlen("agentos.signature") */
+#define CAP_SECTION_NAME     "agentos.capabilities"
+#define CAP_SECTION_LEN      20  /* strlen("agentos.capabilities") */
+
+/* Signature section payload: 64 bytes (matches Ed25519 sig size) */
+#define SIG_PAYLOAD_SIZE     64
+
+/* Trusted key table: up to 8 trusted signing key IDs */
+#define MAX_TRUSTED_KEYS     8
+
+typedef struct {
+    uint8_t  key_id[8];     /* 8-byte key identifier */
+    uint8_t  pubkey[32];    /* Ed25519 public key (or zero for phase-1 hash mode) */
+    bool     active;
+} trusted_key_t;
+
+static trusted_key_t trusted_keys[MAX_TRUSTED_KEYS];
+static uint32_t      trusted_key_count = 0;
+
+/* Signature enforcement policy: if true, unsigned modules are rejected */
+static bool sig_enforcement = false;
+
+/*
+ * scan_custom_section: Generic scanner for a named WASM custom section.
+ * Returns true if section found, with *payload_offset and *payload_len set.
+ */
+static bool scan_custom_section(const uint8_t *data, uint32_t size,
+                                 const char *section_name, uint32_t name_len,
+                                 uint32_t *payload_offset, uint32_t *payload_len) {
+    if (size < 8) return false;
+    uint32_t pos = 8; /* skip WASM magic + version */
+    while (pos + 2 < size) {
+        uint8_t section_id = data[pos++];
+        uint32_t sec_size = 0, shift = 0;
+        while (pos < size && shift < 28) {
+            uint8_t b = data[pos++];
+            sec_size |= (uint32_t)(b & 0x7f) << shift;
+            shift += 7;
+            if (!(b & 0x80)) break;
+        }
+        uint32_t sec_start = pos;
+        if (sec_start + sec_size > size) break;
+
+        if (section_id == 0x00 && sec_size > name_len + 1) {
+            uint32_t nlen = 0, nshift = 0, npos = sec_start;
+            while (npos < sec_start + sec_size && nshift < 28) {
+                uint8_t b = data[npos++];
+                nlen |= (uint32_t)(b & 0x7f) << nshift;
+                nshift += 7;
+                if (!(b & 0x80)) break;
+            }
+            if (nlen == name_len && npos + nlen <= sec_start + sec_size) {
+                bool match = true;
+                for (uint32_t i = 0; i < name_len; i++) {
+                    if (data[npos + i] != (uint8_t)section_name[i]) { match = false; break; }
+                }
+                if (match) {
+                    *payload_offset = npos + nlen;
+                    *payload_len    = (sec_start + sec_size) - (npos + nlen);
+                    return true;
+                }
+            }
+        }
+        pos = sec_start + sec_size;
+    }
+    return false;
+}
+
+/*
+ * verify_wasm_signature: Check if a WASM module's agentos.signature section
+ * validates against the agentos.capabilities section using a trusted key.
+ *
+ * Returns:
+ *   0  = valid signature (or no signature + enforcement off)
+ *  -1  = missing signature (enforcement on)
+ *  -2  = bad signature format
+ *  -3  = untrusted key_id
+ *  -4  = hash mismatch (tampered)
+ */
+static int verify_wasm_signature(const uint8_t *wasm, uint32_t wasm_size) {
+    uint32_t sig_off = 0, sig_len = 0;
+    uint32_t cap_off = 0, cap_len = 0;
+
+    bool has_sig = scan_custom_section(wasm, wasm_size,
+                                        SIG_SECTION_NAME, SIG_SECTION_LEN,
+                                        &sig_off, &sig_len);
+    bool has_cap = scan_custom_section(wasm, wasm_size,
+                                        CAP_SECTION_NAME, CAP_SECTION_LEN,
+                                        &cap_off, &cap_len);
+
+    if (!has_sig) {
+        /* No signature section */
+        if (sig_enforcement) {
+            microkit_dbg_puts("[vibe_engine]   ✗ Unsigned module rejected (enforcement=on)\n");
+            return -1;
+        }
+        microkit_dbg_puts("[vibe_engine]   ⚠ No signature section (enforcement=off, allowing)\n");
+        return 0;
+    }
+
+    if (sig_len != SIG_PAYLOAD_SIZE) {
+        microkit_dbg_puts("[vibe_engine]   ✗ Bad signature section size\n");
+        return -2;
+    }
+
+    if (!has_cap || cap_len == 0) {
+        microkit_dbg_puts("[vibe_engine]   ✗ Signature present but no capabilities section\n");
+        return -2;
+    }
+
+    const uint8_t *sig_data = &wasm[sig_off];
+    const uint8_t *cap_data = &wasm[cap_off];
+
+    /* Extract key_id (first 8 bytes of signature) */
+    const uint8_t *key_id = &sig_data[0];
+
+    /* Find matching trusted key */
+    int key_idx = -1;
+    for (uint32_t i = 0; i < trusted_key_count; i++) {
+        if (!trusted_keys[i].active) continue;
+        bool match = true;
+        for (int j = 0; j < 8; j++) {
+            if (trusted_keys[i].key_id[j] != key_id[j]) { match = false; break; }
+        }
+        if (match) { key_idx = (int)i; break; }
+    }
+
+    if (key_idx < 0) {
+        microkit_dbg_puts("[vibe_engine]   ✗ Untrusted key_id\n");
+        return -3;
+    }
+
+    /* Verify signature against capabilities section payload */
+    int rc = ed25519_verify(sig_data, cap_data, cap_len,
+                            trusted_keys[key_idx].pubkey);
+    if (rc != 0) {
+        microkit_dbg_puts("[vibe_engine]   ✗ Signature verification FAILED (tampered?)\n");
+        return -4;
+    }
+
+    microkit_dbg_puts("[vibe_engine]   ✓ Signature verified (trusted key)\n");
+    return 0;
+}
+
 /*
  * vibe_validate_cuda_ptx: Basic PTX sanity check.
  * Valid PTX starts with ".version" directive and must be non-empty.
@@ -574,12 +726,24 @@ static microkit_msginfo handle_validate(void) {
         }
     }
 
+    /* Check 5: WASM module signature verification (Ed25519 / SHA-512 hash) */
+    {
+        int sig_rc = verify_wasm_signature(staged, proposals[slot].wasm_size);
+        if (sig_rc == 0) {
+            checks |= (1 << 5);
+            microkit_dbg_puts("[vibe_engine]   ✓ Signature check passed\n");
+        } else {
+            all_pass = false;
+            microkit_dbg_puts("[vibe_engine]   ✗ Signature check FAILED\n");
+        }
+    }
+
     proposals[slot].val_checks = checks;
     proposals[slot].val_passed = all_pass;
 
     if (all_pass) {
         proposals[slot].state = PROP_STATE_VALIDATED;
-        microkit_dbg_puts("[vibe_engine] Validation PASSED (all 4 checks)\n");
+        microkit_dbg_puts("[vibe_engine] Validation PASSED (all checks)\n");
     } else {
         proposals[slot].state = PROP_STATE_REJECTED;
         total_rejections++;
@@ -863,6 +1027,37 @@ microkit_msginfo protected(microkit_channel ch, microkit_msginfo msg) {
         case OP_VIBE_STATUS:    return handle_status();
         case OP_VIBE_ROLLBACK:  return handle_rollback();
         case OP_VIBE_HEALTH:    return handle_health();
+
+        case OP_VIBE_TRUST_KEY: {
+            /* Add a trusted signing key: MR1=key_id_hi, MR2=key_id_lo */
+            if (trusted_key_count >= MAX_TRUSTED_KEYS) {
+                microkit_mr_set(0, VIBE_ERR_FULL);
+                return microkit_msginfo_new(0, 1);
+            }
+            trusted_key_t *k = &trusted_keys[trusted_key_count];
+            uint64_t kid = (uint64_t)microkit_mr_get(1);
+            for (int i = 7; i >= 0; i--) { k->key_id[i] = (uint8_t)(kid & 0xFF); kid >>= 8; }
+            /* pubkey passed in MR2..5 (4 x 8 bytes = 32 bytes) */
+            for (int r = 0; r < 4; r++) {
+                uint64_t v = (uint64_t)microkit_mr_get(2 + r);
+                for (int b = 7; b >= 0; b--) { k->pubkey[r*8 + b] = (uint8_t)(v & 0xFF); v >>= 8; }
+            }
+            k->active = true;
+            trusted_key_count++;
+            microkit_dbg_puts("[vibe_engine] Trusted key added\n");
+            microkit_mr_set(0, VIBE_OK);
+            return microkit_msginfo_new(0, 1);
+        }
+
+        case OP_VIBE_SIG_ENFORCE: {
+            /* Set signature enforcement mode: MR1=0 (off) or 1 (on) */
+            sig_enforcement = (microkit_mr_get(1) != 0);
+            microkit_dbg_puts(sig_enforcement ?
+                "[vibe_engine] Signature enforcement: ON\n" :
+                "[vibe_engine] Signature enforcement: OFF\n");
+            microkit_mr_set(0, VIBE_OK);
+            return microkit_msginfo_new(0, 1);
+        }
 
         case OP_VIBE_REPLAY: {
             /*

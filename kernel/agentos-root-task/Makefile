@@ -62,7 +62,7 @@ PD_INITAGENT_SRCS := src/init_agent.c src/m3_bare_metal.c src/log.c
 PD_WORKER_SRCS    := src/worker.c src/m3_bare_metal.c src/log.c
 # agentfs needs m3_bare_metal for memset/sqrtf (no wasm3 headers needed)
 PD_AGENTFS_SRCS     := src/agentfs.c src/m3_bare_metal.c src/log.c
-PD_VIBEENGINE_SRCS  := src/vibe_engine.c src/m3_bare_metal.c src/log.c
+PD_VIBEENGINE_SRCS  := src/vibe_engine.c src/ed25519_verify.c src/m3_bare_metal.c src/log.c
 PD_SWAPSLOT_SRCS    := src/swap_slot.c src/wasm3_host.c src/m3_bare_metal.c src/log.c
 PD_GPUSCHED_SRCS    := src/gpu_sched.c src/m3_bare_metal.c src/log.c
 PD_MESHAGENT_SRCS   := src/mesh_agent.c src/m3_bare_metal.c src/log.c
