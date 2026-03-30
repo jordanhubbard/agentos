@@ -24,8 +24,10 @@ ifeq ($(BOARD),qemu_virt_aarch64)
   # virtualization=on enables ARM EL2 hypervisor extensions (required for VMM)
   # highmem=off + secure=off match libvmm's tested configuration
   # cortex-a53 is what libvmm examples are tested against
+  # -serial mon:stdio is critical: connects PL011 UART to terminal (guest serial I/O)
   QEMU_FLAGS    = -machine virt,virtualization=on,highmem=off,secure=off \
-                  -cpu cortex-a53 -m 2G -nographic \
+                  -cpu cortex-a53 -m 2G \
+                  -serial mon:stdio -nographic \
                   -device loader,file=$(IMAGE),addr=0x70000000,cpu-num=0
 else
   ARCH         := riscv64
