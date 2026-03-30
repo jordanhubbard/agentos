@@ -428,7 +428,13 @@ static microkit_msginfo handle_execute(void) {
     meta[14] = (pid >> 16) & 0xff; meta[15] = (pid >> 24) & 0xff;
 
     /* Memory barrier: metadata visible before notification */
+#if defined(__riscv)
     __asm__ volatile ("fence w,w" ::: "memory");
+#elif defined(__aarch64__)
+    __asm__ volatile ("dmb ishst" ::: "memory");
+#else
+    __asm__ volatile ("" ::: "memory");
+#endif
 
     microkit_dbg_puts("[vibe_engine] *** SWAP APPROVED — notifying controller ***\n");
 
@@ -503,7 +509,13 @@ static microkit_msginfo handle_rollback(void) {
     /* wasm_size = 0xFFFFFFFF means rollback */
     meta[8]  = 0xFF; meta[9]  = 0xFF; meta[10] = 0xFF; meta[11] = 0xFF;
 
+#if defined(__riscv)
     __asm__ volatile ("fence w,w" ::: "memory");
+#elif defined(__aarch64__)
+    __asm__ volatile ("dmb ishst" ::: "memory");
+#else
+    __asm__ volatile ("" ::: "memory");
+#endif
 
     microkit_notify(CH_CTRL);
 

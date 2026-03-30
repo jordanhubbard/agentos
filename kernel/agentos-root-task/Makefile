@@ -80,6 +80,15 @@ SWAPSLOT_OBJS     := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_SWAPSLOT_SRCS))
 WASM3_OBJS        := $(patsubst wasm3/%.c, $(BUILD_DIR)/wasm3_%.o, $(WASM3_SRCS))
 
 IMAGES := controller.elf event_bus.elf init_agent.elf worker.elf agentfs.elf vibe_engine.elf swap_slot.elf
+
+# AArch64 builds include the Linux VMM
+ifeq ($(ARCH),aarch64)
+  IMAGES += linux_vmm.elf
+  SYSTEM_FILE := agentos-aarch64.system
+else
+  SYSTEM_FILE := agentos.system
+endif
+
 IMAGE_FILE  := $(BUILD_DIR)/agentos.img
 REPORT_FILE := $(BUILD_DIR)/agentos-report.txt
 
@@ -128,8 +137,23 @@ $(BUILD_DIR)/vibe_engine.elf: $(VIBEENGINE_OBJS)
 $(BUILD_DIR)/swap_slot.elf: $(SWAPSLOT_OBJS) $(WASM3_OBJS)
 	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
 
-$(IMAGE_FILE) $(REPORT_FILE): $(addprefix $(BUILD_DIR)/, $(IMAGES)) agentos.system
-	$(MICROKIT_TOOL) agentos.system \
+# ─── Linux VMM (AArch64 only) ─────────────────────────────────────────────
+ifeq ($(ARCH),aarch64)
+$(BUILD_DIR)/linux_vmm.elf: FORCE
+	@echo ""
+	@echo "═══ Building Linux VMM (libvmm) ═══"
+	$(MAKE) -f vmm.mk \
+		BUILD_DIR=$(BUILD_DIR) \
+		MICROKIT_SDK=$(MICROKIT_SDK) \
+		MICROKIT_BOARD=$(MICROKIT_BOARD) \
+		MICROKIT_CONFIG=$(MICROKIT_CONFIG) \
+		BOARD_DIR=$(BOARD_DIR) \
+		vmm-all
+FORCE:
+endif
+
+$(IMAGE_FILE) $(REPORT_FILE): $(addprefix $(BUILD_DIR)/, $(IMAGES)) $(SYSTEM_FILE)
+	$(MICROKIT_TOOL) $(SYSTEM_FILE) \
 		--search-path $(BUILD_DIR) \
 		--board $(MICROKIT_BOARD) \
 		--config $(MICROKIT_CONFIG) \

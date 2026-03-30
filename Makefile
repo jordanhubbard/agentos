@@ -21,8 +21,12 @@ BOARD         ?= qemu_virt_riscv64
 ifeq ($(BOARD),qemu_virt_aarch64)
   ARCH         := aarch64
   QEMU         := qemu-system-aarch64
-  QEMU_FLAGS    = -machine virt -cpu cortex-a57 -m 1G -nographic \
-                  -kernel $(IMAGE)
+  # virtualization=on enables ARM EL2 hypervisor extensions (required for VMM)
+  # highmem=off + secure=off match libvmm's tested configuration
+  # cortex-a53 is what libvmm examples are tested against
+  QEMU_FLAGS    = -machine virt,virtualization=on,highmem=off,secure=off \
+                  -cpu cortex-a53 -m 2G -nographic \
+                  -device loader,file=$(IMAGE),addr=0x70000000,cpu-num=0
 else
   ARCH         := riscv64
   QEMU         := qemu-system-riscv64
