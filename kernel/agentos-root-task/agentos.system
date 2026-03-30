@@ -9,6 +9,7 @@
     init_agent   (prio 100)  - agent ecosystem bootstrapper
     worker_0..7  (prio 80)   - agent pool workers (dynamic task assignment)
     vibe_engine  (prio 140)  - passive VibeEngine: WASM hot-swap lifecycle
+    fault_handler (prio 250) - passive fault catcher: VM/cap fault → ring log + watchdog notify
   
   Channel map:
     0:  controller <-> event_bus    (controller PPCs into passive event_bus)
@@ -373,6 +374,57 @@
     <channel>
         <end pd="init_agent"     id="5" pp="true" />
         <end pd="cap_audit_log"  id="1" />
+    </channel>
+
+    <!--
+      Fault Handler: passive PD (priority 250 — highest in system)
+      Receives seL4 fault endpoint notifications for registered PDs.
+      Logs VM faults, cap violations, unknown syscalls, and user exceptions
+      to a shared-memory ring buffer. Forwards cap faults to cap_audit_log.
+      Notifies controller (watchdog) to trigger PD respawn.
+
+      IPC operations:
+        OP_FAULT_STATUS (0x60) — query ring state
+        OP_FAULT_DUMP   (0x61) — read recent fault entries
+        OP_FAULT_CLEAR  (0x62) — clear ring buffer
+
+      Channels (fault_handler perspective):
+        id=0: controller PPCs in (query)
+        id=1: init_agent PPCs in (query)
+        id=2: fault_handler PPCs out to cap_audit_log (forward cap faults)
+        id=3: fault_handler notifies controller (watchdog respawn trigger)
+        id=60+: per-PD fault endpoint channels (seL4 fault delivery)
+    -->
+    <memory_region name="fault_ring" size="0x40000" />  <!-- 256KB fault ring buffer -->
+
+    <protection_domain name="fault_handler" priority="250" passive="true">
+        <program_image path="fault_handler.elf" />
+        <map mr="fault_ring" vaddr="0x9000000" perms="rw" setvar_vaddr="fault_ring_vaddr" />
+    </protection_domain>
+
+    <!-- Channel 59: controller(id=59) <-> fault_handler(id=0) — controller queries fault log -->
+    <channel>
+        <end pd="controller"      id="59" pp="true" />
+        <end pd="fault_handler"   id="0" />
+    </channel>
+
+    <!-- Channel 60: init_agent(id=6) <-> fault_handler(id=1) — init_agent queries fault log -->
+    <channel>
+        <end pd="init_agent"      id="6" pp="true" />
+        <end pd="fault_handler"   id="1" />
+    </channel>
+
+    <!--
+      NOTE: fault_handler (prio 250) cannot PPC into cap_audit_log (prio 120)
+      due to seL4 Microkit priority rule. Cap faults are logged in the fault
+      ring and controller forwards to cap_audit_log after receiving the
+      watchdog notification.
+    -->
+
+    <!-- Channel 61: fault_handler(id=2) -> controller(id=60) — watchdog respawn notify -->
+    <channel>
+        <end pd="fault_handler"   id="2" />
+        <end pd="controller"      id="60" />
     </channel>
 
 </system>
