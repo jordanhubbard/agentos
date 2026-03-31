@@ -32,6 +32,7 @@
 
 #define AGENTOS_DEBUG 1
 #include "agentos.h"
+#include "barrier.h"
 
 /* Swap slot configuration */
 #define MAX_SWAP_SLOTS       4
@@ -313,24 +314,12 @@ int vibe_swap_begin(uint32_t service_id, const void *code, uint32_t code_len) {
     for (uint32_t i = 0; i < code_len; i++) dst[i] = src[i];
 
     /* Memory barrier: all writes visible before setting magic */
-#if defined(__riscv)
-    __asm__ volatile ("fence w,w" ::: "memory");
-#elif defined(__aarch64__)
-    __asm__ volatile ("dmb ishst" ::: "memory");
-#else
-    __asm__ volatile ("" ::: "memory");
-#endif
+    agentos_wmb();
 
     /* Commit: set magic to signal the swap slot that data is ready */
     hdr->magic = SWAP_MAGIC;
 
-#if defined(__riscv)
-    __asm__ volatile ("fence w,w" ::: "memory");
-#elif defined(__aarch64__)
-    __asm__ volatile ("dmb ishst" ::: "memory");
-#else
-    __asm__ volatile ("" ::: "memory");
-#endif
+    agentos_wmb();
 
     microkit_dbg_puts("[vibe_swap] WASM image written, notifying slot\n");
 

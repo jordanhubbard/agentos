@@ -1,51 +1,69 @@
 # agentOS Top-Level Makefile
 #
-# Targets:
-#   make deps              — install all build dependencies (macOS: brew, Linux: apt)
-#   make build             — compile agentOS (default: riscv64)
-#   make build BOARD=qemu_virt_aarch64  — compile for ARM64 (Sparky)
-#   make demo              — build + launch the QEMU demo
-#   make demo BOARD=qemu_virt_aarch64   — demo on aarch64 QEMU
-#   make test              — boot in QEMU, verify output, exit 0/1 (CI)
-#   make clean             — remove build artifacts for current BOARD
-#   make clean-all         — remove all build artifacts
+# Architecture is driven by config.yaml (target_arch / host_arch) or overrides:
+#
+#   make demo                          — build + boot using config.yaml defaults
+#   make demo TARGET_ARCH=aarch64      — override target to ARM64
+#   make demo TARGET_ARCH=x86_64       — override target to x86_64
+#   make demo BOARD=rpi4b_4gb          — override board directly (advanced)
+#   make deps                          — install all build dependencies
+#   make test                          — CI boot test (exit 0/1)
+#   make clean                         — remove build artifacts for current target
+#   make clean-all                     — remove all build artifacts
+#
+# Config file: config.yaml (top-level)
+#   target_arch: riscv64 | aarch64 | x86_64
+#   host_arch:   auto | x86_64 | aarch64
 #
 # Quick start:
 #   make deps && make demo
 
-.PHONY: all deps deps-tools deps-sdk build demo test clean clean-all help \
-        build-freebsd demo-freebsd fetch-freebsd-guest
+.PHONY: all deps deps-tools deps-sdk build demo test clean clean-all help
+
+# ─── Read config.yaml (if present) ───────────────────────────────────────────
+# Extract target_arch from config.yaml using simple grep/sed (no YAML parser needed)
+CONFIG_TARGET := $(shell grep '^target_arch:' config.yaml 2>/dev/null | sed 's/target_arch:[[:space:]]*//' | tr -d '[:space:]')
+ifeq ($(CONFIG_TARGET),)
+  CONFIG_TARGET := riscv64
+endif
+
+# Command-line TARGET_ARCH overrides config.yaml
+TARGET_ARCH ?= $(CONFIG_TARGET)
 
 # ─── Board / arch config ──────────────────────────────────────────────────────
-BOARD         ?= qemu_virt_riscv64
-
-# ─── FreeBSD VM guest paths ───────────────────────────────────────────────────
-FREEBSD_SYSTEM  := manifests/agentos-freebsd.system
-FREEBSD_VMM_DIR := kernel/freebsd-vmm
-FREEBSD_BUILD   := $(ROOT_DIR)build/freebsd-vm
-GUEST_IMAGES    := $(ROOT_DIR)guest-images
-EDK2_FD         := $(GUEST_IMAGES)/edk2-aarch64-code.fd
-EDK2_VARS       := $(GUEST_IMAGES)/edk2-aarch64-vars.fd
-FREEBSD_IMG     := $(GUEST_IMAGES)/freebsd-14.2-arm64.img
-FREEBSD_IMG_RW  := $(FREEBSD_BUILD)/freebsd-rootfs.qcow2   # copy-on-write overlay
-
-# QEMU flags for FreeBSD VM guest under agentOS
-# seL4 runs at EL2 (virtualization=on), 4GB RAM (2GB for host, 2GB for guest)
-QEMU_FREEBSD_FLAGS = \
-    -machine virt,virtualization=on,gic-version=2 \
-    -cpu cortex-a57 \
-    -m 4G \
-    -nographic \
-    -kernel $(FREEBSD_BUILD)/agentos-freebsd.img \
-    -drive if=pflash,format=raw,file=$(EDK2_FD),readonly=on \
-    -drive if=pflash,format=raw,file=$(EDK2_VARS) \
-    -drive if=virtio,format=qcow2,file=$(FREEBSD_IMG_RW) \
-    -serial mon:stdio
+# BOARD can be set directly to override the auto-mapping from TARGET_ARCH.
+# If not set, it maps:  riscv64 → qemu_virt_riscv64
+#                        aarch64 → qemu_virt_aarch64
+#                        x86_64  → x86_64_generic
+ifndef BOARD
+  ifeq ($(TARGET_ARCH),aarch64)
+    BOARD := qemu_virt_aarch64
+  else ifeq ($(TARGET_ARCH),x86_64)
+    BOARD := x86_64_generic
+  else
+    BOARD := qemu_virt_riscv64
+  endif
+endif
 
 ifeq ($(BOARD),qemu_virt_aarch64)
   ARCH         := aarch64
   QEMU         := qemu-system-aarch64
-  QEMU_FLAGS    = -machine virt,virtualization=on -cpu cortex-a57 -m 2G -nographic \
+  # virtualization=on enables ARM EL2 hypervisor extensions (required for VMM)
+  # highmem=off + secure=off match libvmm's tested configuration
+  # cortex-a53 is what libvmm examples are tested against
+  # -serial mon:stdio is critical: connects PL011 UART to terminal (guest serial I/O)
+  QEMU_FLAGS    = -machine virt,virtualization=on,highmem=off,secure=off \
+                  -cpu cortex-a53 -m 2G \
+                  -serial mon:stdio -nographic \
+                  -device loader,file=$(IMAGE),addr=0x70000000,cpu-num=0
+else ifeq ($(BOARD),$(filter $(BOARD),x86_64_generic x86_64_generic_vtx))
+  ARCH         := x86_64
+  QEMU         := qemu-system-x86_64
+  # KVM acceleration if available (host x86_64), otherwise TCG
+  QEMU_ACCEL   := $(shell [ "$$(uname -m)" = "x86_64" ] && [ -e /dev/kvm ] && echo "-enable-kvm" || echo "")
+  QEMU_FLAGS    = -machine q35 -cpu qemu64 -m 2G -nographic \
+                  -serial mon:stdio \
+                  $(QEMU_ACCEL) \
                   -kernel $(IMAGE)
 else
   ARCH         := riscv64
@@ -137,6 +155,7 @@ else ifeq ($(UNAME_S),Linux)
 	@sudo apt-get install -y --no-install-recommends \
 		qemu-system-misc \
 		qemu-system-arm \
+		qemu-system-x86 \
 		clang \
 		lld \
 		cmake \
@@ -154,6 +173,7 @@ endif
 	@echo "Dependency check:"
 	@echo "  qemu-system-riscv64: $$(qemu-system-riscv64 --version 2>/dev/null | head -1 || echo 'NOT FOUND')"
 	@echo "  qemu-system-aarch64: $$(qemu-system-aarch64 --version 2>/dev/null | head -1 || echo 'NOT FOUND')"
+	@echo "  qemu-system-x86_64:  $$(qemu-system-x86_64 --version 2>/dev/null | head -1 || echo 'NOT FOUND')"
 ifeq ($(UNAME_S),Darwin)
 	@echo "  clang (LLVM):        $$($(LLVM_BIN)/clang --version 2>/dev/null | head -1 || echo 'NOT FOUND')"
 	@echo "  ld.lld:              $$($(LLD_BIN)/ld.lld --version 2>/dev/null | head -1 || echo 'NOT FOUND')"
@@ -217,6 +237,7 @@ demo: build
 	@echo "║     agentOS — launching QEMU demo        ║"
 	@echo "╚══════════════════════════════════════════╝"
 	@echo ""
+	@echo "Target : $(TARGET_ARCH)"
 	@echo "Board  : $(BOARD)"
 	@echo "Image  : $(IMAGE)"
 	@echo "QEMU   : $(shell $(QEMU) --version 2>/dev/null | head -1)"
@@ -234,80 +255,6 @@ endif
 # =============================================================================
 test: build
 	@BOARD=$(BOARD) bash scripts/run-tests.sh
-
-# =============================================================================
-# FreeBSD VM guest: fetch images, build VMM PD, and launch
-# =============================================================================
-
-# Fetch FreeBSD AArch64 disk image and EDK2 UEFI firmware
-fetch-freebsd-guest:
-	@echo ""
-	@echo "╔══════════════════════════════════════════╗"
-	@echo "║  agentOS — fetching FreeBSD guest images ║"
-	@echo "╚══════════════════════════════════════════╝"
-	@bash scripts/fetch-freebsd-guest.sh
-
-# Build the FreeBSD VMM protection domain (AArch64 only)
-build-freebsd: deps-sdk
-	@echo ""
-	@echo "╔══════════════════════════════════════════╗"
-	@echo "║  agentOS — building FreeBSD VMM PD       ║"
-	@echo "╚══════════════════════════════════════════╝"
-	@echo ""
-	@test -d "$(ROOT_DIR)libs/libvmm" || \
-		(echo "[libvmm] Cloning au-ts/libvmm..." && \
-		 git submodule update --init libs/libvmm 2>/dev/null || \
-		 git clone https://github.com/au-ts/libvmm.git $(ROOT_DIR)libs/libvmm)
-	@echo "[libvmm] Building libvmm for qemu_virt_aarch64..."
-	@$(MAKE) -C $(ROOT_DIR)libs/libvmm \
-		BOARD=qemu_virt_aarch64 \
-		MICROKIT_SDK=$(abspath $(MICROKIT_SDK)) \
-		BUILD_DIR=$(ROOT_DIR)libs/libvmm/build/qemu_virt_aarch64
-	@echo "[dtc] Compiling FreeBSD guest DTB..."
-	@mkdir -p $(FREEBSD_BUILD)
-	@dtc -I dts -O dtb \
-		-o $(FREEBSD_BUILD)/freebsd-guest.dtb \
-		$(FREEBSD_VMM_DIR)/freebsd-vmm.dts
-	@echo "[VMM] Building freebsd_vmm.elf..."
-	@$(MAKE) -C $(FREEBSD_VMM_DIR) \
-		BUILD_DIR=$(FREEBSD_BUILD) \
-		MICROKIT_SDK=$(abspath $(MICROKIT_SDK)) \
-		LIBVMM_DIR=$(abspath $(ROOT_DIR)libs/libvmm) \
-		EDK2_FD=$(EDK2_FD) \
-		FREEBSD_DTB=$(FREEBSD_BUILD)/freebsd-guest.dtb
-	@echo "[Microkit] Packing agentOS FreeBSD image..."
-	@$(MICROKIT_SDK)/bin/microkit \
-		$(FREEBSD_SYSTEM) \
-		--search-path $(FREEBSD_BUILD) \
-		--board qemu_virt_aarch64 \
-		--config debug \
-		--output $(FREEBSD_BUILD)/agentos-freebsd.img \
-		--report $(FREEBSD_BUILD)/agentos-freebsd-report.txt
-	@echo ""
-	@echo "✓ FreeBSD VM build complete: $(FREEBSD_BUILD)/agentos-freebsd.img"
-	@echo ""
-
-# Build + launch FreeBSD as VM guest under agentOS
-demo-freebsd: build-freebsd
-	@echo ""
-	@echo "╔═══════════════════════════════════════════════════╗"
-	@echo "║  agentOS — launching FreeBSD VM guest under seL4  ║"
-	@echo "╚═══════════════════════════════════════════════════╝"
-	@echo ""
-	@test -f "$(EDK2_FD)" || \
-		(echo "ERROR: EDK2 firmware not found. Run 'make fetch-freebsd-guest' first." && exit 1)
-	@test -f "$(FREEBSD_IMG)" || \
-		(echo "ERROR: FreeBSD disk image not found. Run 'make fetch-freebsd-guest' first." && exit 1)
-	@echo "Stack:"
-	@echo "  seL4 (EL2) → freebsd_vmm PD → EDK2 UEFI → loader.efi → FreeBSD"
-	@echo ""
-	@echo "Creating copy-on-write overlay for FreeBSD disk..."
-	@qemu-img create -f qcow2 -b $(FREEBSD_IMG) -F raw $(FREEBSD_IMG_RW) 2>/dev/null || \
-		(test -f $(FREEBSD_IMG_RW) && echo "[OK] overlay exists")
-	@echo ""
-	@echo "Starting agentOS with FreeBSD VM guest... (Ctrl-A X to quit QEMU)"
-	@echo "────────────────────────────────────────────────────────────────"
-	@qemu-system-aarch64 $(QEMU_FREEBSD_FLAGS)
 
 # =============================================================================
 # clean
@@ -329,24 +276,26 @@ help:
 	@echo ""
 	@echo "agentOS — the OS for agents, by agents"
 	@echo ""
-	@echo "Targets:"
-	@echo "  make deps                      Install build deps (brew / apt)"
-	@echo "  make build                     Build for riscv64 (default)"
-	@echo "  make build BOARD=qemu_virt_aarch64  Build for ARM64 (Sparky)"
-	@echo "  make demo                      Build + launch in QEMU"
-	@echo "  make demo  BOARD=qemu_virt_aarch64  ARM64 QEMU demo"
-	@echo "  make test                      CI boot test (exit 0/1)"
-	@echo "  make clean                     Remove build artifacts (current BOARD)"
-	@echo "  make clean-all                 Remove all build artifacts"
+	@echo "Config: config.yaml (target_arch: riscv64|aarch64|x86_64, host_arch: auto)"
+	@echo "Current: TARGET_ARCH=$(TARGET_ARCH) → BOARD=$(BOARD)"
 	@echo ""
-	@echo "FreeBSD VM Guest:"
-	@echo "  make fetch-freebsd-guest       Download FreeBSD 14 AArch64 + EDK2 UEFI"
-	@echo "  make build-freebsd             Build FreeBSD VMM PD (requires libvmm)"
-	@echo "  make demo-freebsd              Build + launch FreeBSD under agentOS/seL4"
+	@echo "Targets:"
+	@echo "  make deps                         Install build deps (brew / apt)"
+	@echo "  make build                        Build for config.yaml target (default: riscv64)"
+	@echo "  make build TARGET_ARCH=aarch64    Build for ARM64"
+	@echo "  make build TARGET_ARCH=x86_64     Build for x86_64"
+	@echo "  make build BOARD=rpi4b_4gb        Build for a specific Microkit board"
+	@echo "  make demo                         Build + launch in QEMU"
+	@echo "  make demo TARGET_ARCH=aarch64     ARM64 QEMU demo (with Linux VMM)"
+	@echo "  make demo TARGET_ARCH=x86_64      x86_64 QEMU demo"
+	@echo "  make test                         CI boot test (exit 0/1)"
+	@echo "  make clean                        Remove build artifacts (current target)"
+	@echo "  make clean-all                    Remove all build artifacts"
 	@echo ""
 	@echo "Quick start:"
 	@echo "  make deps && make demo"
 	@echo ""
-	@echo "FreeBSD quick start:"
-	@echo "  make deps && make fetch-freebsd-guest && make demo-freebsd"
+	@echo "Architecture override (command line wins over config.yaml):"
+	@echo "  TARGET_ARCH=riscv64|aarch64|x86_64"
+	@echo "  HOST_ARCH=auto|x86_64|aarch64"
 	@echo ""

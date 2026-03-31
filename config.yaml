@@ -1,0 +1,41 @@
+# ──────────────────────────────────────────────────────────────────────────────
+# agentOS Build Configuration
+# ──────────────────────────────────────────────────────────────────────────────
+#
+# This file controls the target and host architectures for agentOS builds.
+# The Makefile reads these values and passes them through the build pipeline.
+#
+# Supported target architectures:
+#   riscv64   — RISC-V 64-bit (QEMU virt platform, FPGA boards)
+#   aarch64   — ARM 64-bit (QEMU virt, Raspberry Pi 4, DGX Spark, etc.)
+#   x86_64    — x86 64-bit (QEMU, generic PC, Intel/AMD servers)
+#
+# Supported host architectures (for cross-compilation):
+#   auto      — detect via `uname -m` (default)
+#   x86_64    — force x86_64 host toolchain
+#   aarch64   — force aarch64/arm64 host toolchain
+#
+# The target is what agentOS runs ON. The host is what you BUILD ON.
+# Cross-compilation is fully supported: e.g. build for riscv64 on an arm64 Mac.
+#
+# Override from command line:
+#   make demo TARGET_ARCH=aarch64
+#   make demo TARGET_ARCH=x86_64
+#   make demo HOST_ARCH=x86_64
+# ──────────────────────────────────────────────────────────────────────────────
+
+# Target architecture — the platform agentOS will execute on
+target_arch: riscv64
+
+# Host architecture — the machine building agentOS (auto = detect via uname -m)
+host_arch: auto
+
+# Linux VMM: include the libvmm Linux guest VM (aarch64 only, ignored on other targets)
+linux_vmm: true
+
+# QEMU board mappings (internal — maps target_arch to Microkit board names)
+# Override with BOARD= on the command line for non-QEMU targets (e.g. rpi4b_4gb)
+boards:
+  riscv64: qemu_virt_riscv64
+  aarch64: qemu_virt_aarch64
+  x86_64:  x86_64_generic

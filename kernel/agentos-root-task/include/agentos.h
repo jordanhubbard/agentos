@@ -258,6 +258,23 @@ typedef enum {
 #define CAP_CLASS_SPAWN       (1 << 6)
 #define CAP_CLASS_SWAP        (1 << 7)
 
+/* Console Multiplexer channel IDs (from controller perspective) */
+#ifdef BOARD_qemu_virt_aarch64
+#define CH_CONSOLEMUX         55  /* aarch64: 50 is linux_vmm */
+#else
+#define CH_CONSOLEMUX         60  /* riscv64: after mem_profiler (50-58) */
+#endif
+
+/* Console Multiplexer op codes (MR0 in PPC to console_mux) */
+#define OP_CONSOLE_ATTACH     0x80  /* MR1=pd_id: attach to PD output */
+#define OP_CONSOLE_DETACH     0x81  /* detach, revert to broadcast */
+#define OP_CONSOLE_LIST       0x82  /* list sessions, MR1=bitmask */
+#define OP_CONSOLE_MODE       0x83  /* MR1=mode: 0=single,1=broadcast,2=split */
+#define OP_CONSOLE_INJECT     0x84  /* MR1..4=chars: inject input */
+#define OP_CONSOLE_SCROLL     0x85  /* MR1=lines: scroll back */
+#define OP_CONSOLE_STATUS     0x86  /* returns: MR1=active_pd, MR2=mode, MR3=count */
+#define OP_CONSOLE_WRITE      0x87  /* PD->mux: register ring + flush */
+
 /* VibeEngine staging region metadata layout (last 64 bytes of 4MB staging MR) */
 #define VIBE_META_SIZE        64
 /* meta[0..3]   = service_id (LE uint32) */

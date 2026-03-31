@@ -1,0 +1,341 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  agentOS v0.4.0 System Description File (AArch64 + Linux VMM)
+  
+  Protection Domain topology:
+  
+    controller   (prio 50)   - system coordinator + capability broker
+    event_bus    (prio 200)  - passive pub/sub server (ring buffer)
+    init_agent   (prio 100)  - agent ecosystem bootstrapper
+    worker_0..7  (prio 80)   - agent pool workers (dynamic task assignment)
+    vibe_engine  (prio 140)  - passive VibeEngine: WASM hot-swap lifecycle
+    agentfs      (prio 150)  - passive content-addressed object store
+    swap_slot_0..3 (prio 75) - WASM hot-swap execution slots
+    linux_vmm    (prio 254)  - Linux Virtual Machine Monitor (libvmm)
+  
+  Channel map (native agentOS — same as riscv64):
+    0:  controller <-> event_bus    (controller PPCs into passive event_bus)
+    1:  controller <-> init_agent   (notify: controller starts init_agent)
+    2:  event_bus  <-> init_agent   (init_agent PPCs into event_bus to subscribe)
+    5:  controller <-> agentfs      (controller PPCs into passive agentfs)
+    6:  agentfs    <-> event_bus    (agentfs notifies on mutations)
+    10: controller <-> worker_0     (task assignment + completion notify)
+    11: controller <-> worker_1
+    12: controller <-> worker_2
+    13: controller <-> worker_3
+    14: controller <-> worker_4
+    15: controller <-> worker_5
+    16: controller <-> worker_6
+    17: controller <-> worker_7
+    20..27: event_bus <-> worker_0..7  (workers subscribe to events)
+    30..33: controller <-> swap_slot_0..3  (WASM hot-swap)
+    40: controller <-> vibe_engine  (swap approval notification)
+    41: init_agent <-> vibe_engine  (propose/validate/execute swaps)
+
+  Linux VMM channels (new):
+    50: controller <-> linux_vmm    (agent-to-linux bridge commands)
+-->
+<system>
+    <!-- ═══════════════════════════════════════════════════════════════════
+         NATIVE agentOS PROTECTION DOMAINS (identical to riscv64 build)
+         ═══════════════════════════════════════════════════════════════════ -->
+
+    <!-- Controller: system coordinator, low priority to PPC into passive servers -->
+    <protection_domain name="controller" priority="50">
+        <program_image path="controller.elf" />
+        <map mr="monitor_stack"  vaddr="0x2000000" perms="rw" setvar_vaddr="monitor_stack_vaddr" />
+        <!-- Swap code regions: controller writes WASM images here; swap slot PDs read them -->
+        <map mr="swap_code_0" vaddr="0x6000000" perms="rw" setvar_vaddr="swap_code_ctrl_0" />
+        <map mr="swap_code_1" vaddr="0x6400000" perms="rw" setvar_vaddr="swap_code_ctrl_1" />
+        <map mr="swap_code_2" vaddr="0x6800000" perms="rw" setvar_vaddr="swap_code_ctrl_2" />
+        <map mr="swap_code_3" vaddr="0x6C00000" perms="rw" setvar_vaddr="swap_code_ctrl_3" />
+        <!-- VibeEngine staging: controller reads WASM proposals from here (r) -->
+        <map mr="vibe_staging" vaddr="0x7000000" perms="r" setvar_vaddr="vibe_staging_ctrl_vaddr" />
+    </protection_domain>
+    
+    <!-- EventBus: passive pub/sub backbone -->
+    <protection_domain name="event_bus" priority="200" passive="true">
+        <program_image path="event_bus.elf" />
+        <map mr="eventbus_ring" vaddr="0x3000000" perms="rw" setvar_vaddr="eventbus_ring_vaddr" />
+    </protection_domain>
+    
+    <!-- InitAgent: bootstrap agent -->
+    <protection_domain name="init_agent" priority="100">
+        <program_image path="init_agent.elf" />
+    </protection_domain>
+    
+    <!-- Agent pool workers: static PDs, dynamic task assignment -->
+    <protection_domain name="worker_0" priority="80">
+        <program_image path="worker.elf" />
+    </protection_domain>
+    <protection_domain name="worker_1" priority="80">
+        <program_image path="worker.elf" />
+    </protection_domain>
+    <protection_domain name="worker_2" priority="80">
+        <program_image path="worker.elf" />
+    </protection_domain>
+    <protection_domain name="worker_3" priority="80">
+        <program_image path="worker.elf" />
+    </protection_domain>
+    <protection_domain name="worker_4" priority="80">
+        <program_image path="worker.elf" />
+    </protection_domain>
+    <protection_domain name="worker_5" priority="80">
+        <program_image path="worker.elf" />
+    </protection_domain>
+    <protection_domain name="worker_6" priority="80">
+        <program_image path="worker.elf" />
+    </protection_domain>
+    <protection_domain name="worker_7" priority="80">
+        <program_image path="worker.elf" />
+    </protection_domain>
+    
+    <!-- AgentFS: passive object store, priority 150 -->
+    <protection_domain name="agentfs" priority="150" passive="true">
+        <program_image path="agentfs.elf" />
+        <map mr="agentfs_store" vaddr="0x5000000" perms="rw" setvar_vaddr="agentfs_store_vaddr" />
+    </protection_domain>
+
+    <!-- VibeEngine: passive hot-swap lifecycle server -->
+    <protection_domain name="vibe_engine" priority="140" passive="true">
+        <program_image path="vibe_engine.elf" />
+        <map mr="vibe_staging" vaddr="0x4000000" perms="rw" setvar_vaddr="vibe_staging_vaddr" />
+    </protection_domain>
+
+    <!-- Swap slots: 4 pre-allocated PDs for live WASM hot-swap -->
+    <protection_domain name="swap_slot_0" priority="75">
+        <program_image path="swap_slot.elf" />
+        <map mr="swap_code_0" vaddr="0x2000000" perms="r" setvar_vaddr="swap_code_vaddr" />
+    </protection_domain>
+    <protection_domain name="swap_slot_1" priority="75">
+        <program_image path="swap_slot.elf" />
+        <map mr="swap_code_1" vaddr="0x2000000" perms="r" setvar_vaddr="swap_code_vaddr" />
+    </protection_domain>
+    <protection_domain name="swap_slot_2" priority="75">
+        <program_image path="swap_slot.elf" />
+        <map mr="swap_code_2" vaddr="0x2000000" perms="r" setvar_vaddr="swap_code_vaddr" />
+    </protection_domain>
+    <protection_domain name="swap_slot_3" priority="75">
+        <program_image path="swap_slot.elf" />
+        <map mr="swap_code_3" vaddr="0x2000000" perms="r" setvar_vaddr="swap_code_vaddr" />
+    </protection_domain>
+
+    <!-- ═══════════════════════════════════════════════════════════════════
+         MEMORY REGIONS (native agentOS)
+         ═══════════════════════════════════════════════════════════════════ -->
+    <memory_region name="monitor_stack"  size="0x10000" />
+    <memory_region name="eventbus_ring"  size="0x40000" />
+    <memory_region name="agentfs_store"  size="0x50000" />
+    <memory_region name="swap_code_0"    size="0x400000" />
+    <memory_region name="swap_code_1"    size="0x400000" />
+    <memory_region name="swap_code_2"    size="0x400000" />
+    <memory_region name="swap_code_3"    size="0x400000" />
+    <memory_region name="vibe_staging"   size="0x400000" />
+
+    <!-- ═══════════════════════════════════════════════════════════════════
+         NATIVE agentOS CHANNELS (identical to riscv64 build)
+         ═══════════════════════════════════════════════════════════════════ -->
+
+    <!-- Core service channels -->
+    <channel>
+        <end pd="controller" id="0" pp="true" />
+        <end pd="event_bus"  id="0" />
+    </channel>
+    <channel>
+        <end pd="controller" id="1" />
+        <end pd="init_agent" id="1" />
+    </channel>
+    <channel>
+        <end pd="event_bus"  id="2" />
+        <end pd="init_agent" id="2" pp="true" />
+    </channel>
+    
+    <!-- Controller <-> AgentFS -->
+    <channel>
+        <end pd="controller" id="5" pp="true" />
+        <end pd="agentfs"    id="0" />
+    </channel>
+    <!-- AgentFS -> EventBus (mutation notifications) -->
+    <channel>
+        <end pd="agentfs"   id="1" />
+        <end pd="event_bus" id="6" />
+    </channel>
+
+    <!-- Worker pool channels (controller <-> worker_N) -->
+    <channel>
+        <end pd="controller" id="10" />
+        <end pd="worker_0"   id="0" />
+    </channel>
+    <channel>
+        <end pd="controller" id="11" />
+        <end pd="worker_1"   id="0" />
+    </channel>
+    <channel>
+        <end pd="controller" id="12" />
+        <end pd="worker_2"   id="0" />
+    </channel>
+    <channel>
+        <end pd="controller" id="13" />
+        <end pd="worker_3"   id="0" />
+    </channel>
+    <channel>
+        <end pd="controller" id="14" />
+        <end pd="worker_4"   id="0" />
+    </channel>
+    <channel>
+        <end pd="controller" id="15" />
+        <end pd="worker_5"   id="0" />
+    </channel>
+    <channel>
+        <end pd="controller" id="16" />
+        <end pd="worker_6"   id="0" />
+    </channel>
+    <channel>
+        <end pd="controller" id="17" />
+        <end pd="worker_7"   id="0" />
+    </channel>
+
+    <!-- Worker <-> EventBus channels -->
+    <channel>
+        <end pd="event_bus" id="20" />
+        <end pd="worker_0"  id="1" pp="true" />
+    </channel>
+    <channel>
+        <end pd="event_bus" id="21" />
+        <end pd="worker_1"  id="1" pp="true" />
+    </channel>
+    <channel>
+        <end pd="event_bus" id="22" />
+        <end pd="worker_2"  id="1" pp="true" />
+    </channel>
+    <channel>
+        <end pd="event_bus" id="23" />
+        <end pd="worker_3"  id="1" pp="true" />
+    </channel>
+    <channel>
+        <end pd="event_bus" id="24" />
+        <end pd="worker_4"  id="1" pp="true" />
+    </channel>
+    <channel>
+        <end pd="event_bus" id="25" />
+        <end pd="worker_5"  id="1" pp="true" />
+    </channel>
+    <channel>
+        <end pd="event_bus" id="26" />
+        <end pd="worker_6"  id="1" pp="true" />
+    </channel>
+    <channel>
+        <end pd="event_bus" id="27" />
+        <end pd="worker_7"  id="1" pp="true" />
+    </channel>
+
+    <!-- Controller <-> Swap slots -->
+    <channel>
+        <end pd="controller"  id="30" />
+        <end pd="swap_slot_0" id="0" />
+    </channel>
+    <channel>
+        <end pd="controller"  id="31" />
+        <end pd="swap_slot_1" id="0" />
+    </channel>
+    <channel>
+        <end pd="controller"  id="32" />
+        <end pd="swap_slot_2" id="0" />
+    </channel>
+    <channel>
+        <end pd="controller"  id="33" />
+        <end pd="swap_slot_3" id="0" />
+    </channel>
+
+    <!-- VibeEngine channels -->
+    <channel>
+        <end pd="controller"   id="40" />
+        <end pd="vibe_engine"  id="1" />
+    </channel>
+    <channel>
+        <end pd="init_agent"   id="3" pp="true" />
+        <end pd="vibe_engine"  id="0" />
+    </channel>
+
+    <!-- ═══════════════════════════════════════════════════════════════════
+         LINUX VMM — Virtual Machine Monitor (AArch64 only)
+         
+         Uses au-ts/libvmm to boot a Linux guest inside agentOS.
+         The VMM PD manages the guest lifecycle, handles faults,
+         and bridges IPC between native agentOS agents and Linux.
+         ═══════════════════════════════════════════════════════════════════ -->
+
+    <!-- Guest RAM: 256MB with 2MB large pages for efficiency -->
+    <memory_region name="guest_ram" size="0x10_000_000" page_size="0x200_000" />
+
+    <!-- UART: PL011 serial device, passed through to guest for direct I/O -->
+    <memory_region name="serial" size="0x1_000" phys_addr="0x9000000" />
+
+    <!-- GIC vCPU interface: hardware virtualisation of interrupt controller -->
+    <memory_region name="gic_vcpu" size="0x1_000" phys_addr="0x8040000" />
+
+    <protection_domain name="linux_vmm" priority="254">
+        <program_image path="linux_vmm.elf" />
+        <!--
+            The VMM maps guest RAM at the same vaddr as the guest sees it
+            (0x40000000). This is required by libvmm's current implementation.
+        -->
+        <map mr="guest_ram" vaddr="0x40000000" perms="rw" setvar_vaddr="guest_ram_vaddr" />
+
+        <virtual_machine name="linux">
+            <vcpu id="0" />
+            <!-- Guest sees its RAM at 0x40000000 (matches DTS) -->
+            <map mr="guest_ram" vaddr="0x40000000" perms="rwx" />
+            <!-- Direct UART passthrough: guest can read/write serial without trapping -->
+            <map mr="serial" vaddr="0x9000000" perms="rw" cached="false" />
+            <!-- GIC vCPU interface mapped as if it were the real CPU interface -->
+            <map mr="gic_vcpu" vaddr="0x8010000" perms="rw" cached="false" />
+        </virtual_machine>
+
+        <!--
+            PL011 UART IRQ (SPI 1 + 32 = 33).
+            Delivered to VMM as notification on channel 1,
+            VMM injects it as virtual IRQ into the guest.
+        -->
+        <irq irq="33" id="1" />
+    </protection_domain>
+
+    <!-- Channel 50: controller <-> linux_vmm (agent-to-linux bridge) -->
+    <channel>
+        <end pd="controller" id="50" />
+        <end pd="linux_vmm"  id="2" />
+    </channel>
+
+    <!-- ═══════════════════════════════════════════════════════════════════
+         CONSOLE MULTIPLEXER — "tmux for agentOS"
+         
+         Passive PD (priority 160) that multiplexes per-PD output streams
+         onto the debug UART with attach/detach/switch/broadcast semantics.
+         ═══════════════════════════════════════════════════════════════════ -->
+
+    <!-- Console ring buffer: 16 × 4KB = 64KB shared output rings -->
+    <memory_region name="console_rings" size="0x10000" />
+
+    <protection_domain name="console_mux" priority="160" passive="true">
+        <program_image path="console_mux.elf" />
+        <map mr="console_rings" vaddr="0x8000000" perms="rw" setvar_vaddr="console_rings_vaddr" />
+    </protection_domain>
+
+    <!-- Channel 55: controller <-> console_mux (attach/detach/list/mode/status) -->
+    <channel>
+        <end pd="controller"   id="55" pp="true" />
+        <end pd="console_mux"  id="0" />
+    </channel>
+
+    <!-- Channel 56: init_agent <-> console_mux (output notifications) -->
+    <channel>
+        <end pd="init_agent"   id="4" />
+        <end pd="console_mux"  id="1" />
+    </channel>
+
+    <!-- Channel 57: event_bus <-> console_mux (event activity notifications) -->
+    <channel>
+        <end pd="event_bus"    id="55" />
+        <end pd="console_mux"  id="2" />
+    </channel>
+</system>

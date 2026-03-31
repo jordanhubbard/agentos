@@ -56,24 +56,16 @@ LIBS    := -lmicrokit -Tmicrokit.ld
 # Protection Domain ELFs
 # monitor/controller: includes vibe_swap for the hot-swap controller-side logic
 # m3_bare_metal.c provides memset/memcpy/memmove needed by compiler-generated code
-PD_MONITOR_SRCS   := src/monitor.c src/cap_broker.c src/cap_policy.c src/agent_pool.c src/vibe_swap.c src/m3_bare_metal.c src/log.c
+PD_MONITOR_SRCS   := src/monitor.c src/cap_broker.c src/agent_pool.c src/vibe_swap.c src/m3_bare_metal.c src/log.c
 PD_EVENTBUS_SRCS  := src/event_bus.c src/m3_bare_metal.c src/log.c
 PD_INITAGENT_SRCS := src/init_agent.c src/m3_bare_metal.c src/log.c
 PD_WORKER_SRCS    := src/worker.c src/m3_bare_metal.c src/log.c
 # agentfs needs m3_bare_metal for memset/sqrtf (no wasm3 headers needed)
 PD_AGENTFS_SRCS     := src/agentfs.c src/m3_bare_metal.c src/log.c
-PD_VIBEENGINE_SRCS  := src/vibe_engine.c src/verify.c src/m3_bare_metal.c src/log.c
-PD_SWAPSLOT_SRCS    := src/swap_slot.c src/wasm3_host.c src/m3_bare_metal.c src/log.c
-PD_GPUSCHED_SRCS    := src/gpu_sched.c src/m3_bare_metal.c src/log.c
-PD_MESHAGENT_SRCS   := src/mesh_agent.c src/m3_bare_metal.c src/log.c
-PD_GPUCUDA_SRCS     := src/gpu_scheduler.c src/m3_bare_metal.c src/log.c
-PD_CAPAUDIT_SRCS    := src/cap_audit_log.c src/m3_bare_metal.c src/log.c
-PD_FAULTHANDLER_SRCS := src/fault_handler.c src/m3_bare_metal.c src/log.c
-PD_DEBUGBRIDGE_SRCS  := src/debug_bridge.c src/m3_bare_metal.c src/log.c
-PD_QUOTAPD_SRCS      := src/quota_pd.c src/m3_bare_metal.c src/log.c
-PD_MEMPROFILER_SRCS  := ../../userspace/mem_profiler/mem_profiler.c src/m3_bare_metal.c src/log.c
-PD_WATCHDOG_SRCS     := ../../userspace/watchdog/watchdog.c src/m3_bare_metal.c src/log.c
-PD_TRACERECORDER_SRCS := ../../userspace/trace_recorder/trace_recorder.c src/m3_bare_metal.c src/log.c
+PD_VIBEENGINE_SRCS   := src/vibe_engine.c src/m3_bare_metal.c src/log.c
+PD_SWAPSLOT_SRCS     := src/swap_slot.c src/wasm3_host.c src/m3_bare_metal.c src/log.c
+PD_CONSOLEMUX_SRCS   := src/console_mux.c src/m3_bare_metal.c src/log.c
+PD_MEMPROFILER_SRCS  := src/mem_profiler.c src/m3_bare_metal.c src/log.c
 
 # wasm3 vendored sources (core interpreter only)
 WASM3_SRCS := wasm3/m3_core.c wasm3/m3_env.c wasm3/m3_code.c wasm3/m3_compile.c \
@@ -85,24 +77,24 @@ EVENTBUS_OBJS     := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_EVENTBUS_SRCS))
 INITAGENT_OBJS    := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_INITAGENT_SRCS))
 WORKER_OBJS       := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_WORKER_SRCS))
 AGENTFS_OBJS      := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_AGENTFS_SRCS))
-VIBEENGINE_OBJS   := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_VIBEENGINE_SRCS))
-SWAPSLOT_OBJS     := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_SWAPSLOT_SRCS))
-GPUSCHED_OBJS     := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_GPUSCHED_SRCS))
-MESHAGENT_OBJS    := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_MESHAGENT_SRCS))
-GPUCUDA_OBJS      := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_GPUCUDA_SRCS))
-CAPAUDIT_OBJS       := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_CAPAUDIT_SRCS))
-FAULTHANDLER_OBJS   := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_FAULTHANDLER_SRCS))
-DEBUGBRIDGE_OBJS    := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_DEBUGBRIDGE_SRCS))
-QUOTAPD_OBJS        := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_QUOTAPD_SRCS))
-MEMPROFILER_OBJS    := $(BUILD_DIR)/mem_profiler.o \
-                       $(patsubst src/%.c, $(BUILD_DIR)/%.o, src/m3_bare_metal.c src/log.c)
-WATCHDOG_OBJS       := $(BUILD_DIR)/watchdog.o \
-                       $(patsubst src/%.c, $(BUILD_DIR)/%.o, src/m3_bare_metal.c src/log.c)
-TRACERECORDER_OBJS  := $(BUILD_DIR)/trace_recorder.o \
-                       $(patsubst src/%.c, $(BUILD_DIR)/%.o, src/m3_bare_metal.c src/log.c)
-WASM3_OBJS        := $(patsubst wasm3/%.c, $(BUILD_DIR)/wasm3_%.o, $(WASM3_SRCS))
+VIBEENGINE_OBJS    := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_VIBEENGINE_SRCS))
+CONSOLEMUX_OBJS    := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_CONSOLEMUX_SRCS))
+SWAPSLOT_OBJS      := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_SWAPSLOT_SRCS))
+MEMPROFILER_OBJS   := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_MEMPROFILER_SRCS))
+WASM3_OBJS         := $(patsubst wasm3/%.c, $(BUILD_DIR)/wasm3_%.o, $(WASM3_SRCS))
 
-IMAGES := controller.elf event_bus.elf init_agent.elf worker.elf agentfs.elf vibe_engine.elf swap_slot.elf gpu_sched.elf gpu_scheduler.elf mesh_agent.elf cap_audit_log.elf fault_handler.elf debug_bridge.elf quota_pd.elf mem_profiler.elf watchdog.elf trace_recorder.elf
+IMAGES := controller.elf event_bus.elf init_agent.elf worker.elf agentfs.elf vibe_engine.elf console_mux.elf swap_slot.elf mem_profiler.elf
+
+# AArch64 builds include the Linux VMM
+ifeq ($(ARCH),aarch64)
+  IMAGES += linux_vmm.elf
+  SYSTEM_FILE := agentos-aarch64.system
+else ifeq ($(ARCH),x86_64)
+  SYSTEM_FILE := agentos-x86_64.system
+else
+  SYSTEM_FILE := agentos.system
+endif
+
 IMAGE_FILE  := $(BUILD_DIR)/agentos.img
 REPORT_FILE := $(BUILD_DIR)/agentos-report.txt
 
@@ -130,18 +122,6 @@ $(BUILD_DIR)/wasm3_%.o: wasm3/%.c
 	@mkdir -p $(BUILD_DIR)
 	$(CC) -c $(CFLAGS_WASM3) $< -o $@
 
-$(BUILD_DIR)/mem_profiler.o: ../../userspace/mem_profiler/mem_profiler.c
-	@mkdir -p $(BUILD_DIR)
-	$(CC) -c $(CFLAGS) $< -o $@
-
-$(BUILD_DIR)/watchdog.o: ../../userspace/watchdog/watchdog.c
-	@mkdir -p $(BUILD_DIR)
-	$(CC) -c $(CFLAGS) $< -o $@
-
-$(BUILD_DIR)/trace_recorder.o: ../../userspace/trace_recorder/trace_recorder.c
-	@mkdir -p $(BUILD_DIR)
-	$(CC) -c $(CFLAGS) $< -o $@
-
 $(BUILD_DIR)/controller.elf: $(CONTROLLER_OBJS)
 	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
 
@@ -160,41 +140,32 @@ $(BUILD_DIR)/agentfs.elf: $(AGENTFS_OBJS)
 $(BUILD_DIR)/vibe_engine.elf: $(VIBEENGINE_OBJS)
 	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
 
+$(BUILD_DIR)/console_mux.elf: $(CONSOLEMUX_OBJS)
+	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
+
 $(BUILD_DIR)/swap_slot.elf: $(SWAPSLOT_OBJS) $(WASM3_OBJS)
-	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
-
-$(BUILD_DIR)/gpu_sched.elf: $(GPUSCHED_OBJS)
-	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
-
-$(BUILD_DIR)/mesh_agent.elf: $(MESHAGENT_OBJS)
-	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
-
-$(BUILD_DIR)/cap_audit_log.elf: $(CAPAUDIT_OBJS)
-	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
-
-$(BUILD_DIR)/fault_handler.elf: $(FAULTHANDLER_OBJS)
-	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
-
-$(BUILD_DIR)/gpu_scheduler.elf: $(GPUCUDA_OBJS)
-	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
-
-$(BUILD_DIR)/debug_bridge.elf: $(DEBUGBRIDGE_OBJS)
-	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
-
-$(BUILD_DIR)/quota_pd.elf: $(QUOTAPD_OBJS)
 	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
 
 $(BUILD_DIR)/mem_profiler.elf: $(MEMPROFILER_OBJS)
 	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
 
-$(BUILD_DIR)/watchdog.elf: $(WATCHDOG_OBJS)
-	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
+# ─── Linux VMM (AArch64 only) ─────────────────────────────────────────────
+ifeq ($(ARCH),aarch64)
+$(BUILD_DIR)/linux_vmm.elf: FORCE
+	@echo ""
+	@echo "═══ Building Linux VMM (libvmm) ═══"
+	$(MAKE) -f vmm.mk \
+		BUILD_DIR=$(BUILD_DIR) \
+		MICROKIT_SDK=$(MICROKIT_SDK) \
+		MICROKIT_BOARD=$(MICROKIT_BOARD) \
+		MICROKIT_CONFIG=$(MICROKIT_CONFIG) \
+		BOARD_DIR=$(BOARD_DIR) \
+		vmm-all
+FORCE:
+endif
 
-$(BUILD_DIR)/trace_recorder.elf: $(TRACERECORDER_OBJS)
-	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
-
-$(IMAGE_FILE) $(REPORT_FILE): $(addprefix $(BUILD_DIR)/, $(IMAGES)) agentos.system
-	$(MICROKIT_TOOL) agentos.system \
+$(IMAGE_FILE) $(REPORT_FILE): $(addprefix $(BUILD_DIR)/, $(IMAGES)) $(SYSTEM_FILE)
+	$(MICROKIT_TOOL) $(SYSTEM_FILE) \
 		--search-path $(BUILD_DIR) \
 		--board $(MICROKIT_BOARD) \
 		--config $(MICROKIT_CONFIG) \

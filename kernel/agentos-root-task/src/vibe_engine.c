@@ -28,9 +28,7 @@
  *   OP_VIBE_EXECUTE  = 0x42 — approve + trigger swap via controller
  *   OP_VIBE_STATUS   = 0x43 — query proposal or engine status
  *   OP_VIBE_ROLLBACK = 0x44 — request rollback of a service
- *   OP_VIBE_HEALTH      = 0x45 — health check for VibeEngine itself
- *   OP_VIBE_TRUST_KEY   = 0x49 — add trusted Ed25519 signing key
- *   OP_VIBE_SIG_ENFORCE = 0x4A — toggle signature enforcement (reject unsigned)
+ *   OP_VIBE_HEALTH   = 0x45 — health check for VibeEngine itself
  *
  * Copyright (c) 2026 The agentOS Project
  * SPDX-License-Identifier: BSD-2-Clause
@@ -38,7 +36,7 @@
 
 #define AGENTOS_DEBUG 1
 #include "agentos.h"
-#include "verify.h"
+#include "barrier.h"
 #include <stdint.h>
 #include <stdbool.h>
 
@@ -53,12 +51,6 @@
 #define OP_VIBE_STATUS    0x43
 #define OP_VIBE_ROLLBACK  0x44
 #define OP_VIBE_HEALTH    0x45
-/* OP_VIBE_REPLAY      = 0x46 (from agentos.h enum) */
-/* OP_VIBE_HOTRELOAD   = 0x47 (from agentos.h) */
-/* OP_VIBE_REGISTRY_STATUS = 0x48 (from agentos.h enum) */
-#define OP_VIBE_TRUST_KEY   0x49 /* Add trusted signing key: MR1=key_id, MR2-5=pubkey */
-#define OP_VIBE_SIG_ENFORCE 0x4A /* Set signature enforcement: MR1=0/1 */
-/* OP_VIBE_REGISTRY_QUERY = 0x4B (from agentos.h enum, moved from 0x47) */
 
 /* ── Result codes ───────────────────────────────────────────────────── */
 #define VIBE_OK             0
@@ -69,20 +61,7 @@
 #define VIBE_ERR_NOENT      5   /* proposal not found */
 #define VIBE_ERR_STATE      6   /* proposal in wrong state */
 #define VIBE_ERR_VALFAIL    7   /* validation failed */
-#define VIBE_ERR_BADPTX     8   /* invalid CUDA PTX payload */
-#define VIBE_ERR_BADSIG     9   /* Ed25519 signature verification failed */
 #define VIBE_ERR_INTERNAL   99
-
-/* CUDA PTX custom section name embedded in WASM modules */
-#define CUDA_SECTION_NAME   "agentos.cuda"
-#define CUDA_SECTION_LEN    12   /* strlen("agentos.cuda") */
-#define MAX_PTX_SIZE        (2 * 1024 * 1024)  /* 2MB PTX max */
-
-/* gpu_scheduler IPC channel and op codes */
-#define CH_GPU              2    /* vibe_engine -> gpu_scheduler */
-#define OP_GPU_SUBMIT       0x50
-#define OP_GPU_COMPLETE     0x51
-#define OP_GPU_STATUS       0x52
 
 /* ── WASM validation ────────────────────────────────────────────────── */
 #define WASM_MAGIC_0  0x00
@@ -96,29 +75,6 @@ uintptr_t vibe_staging_vaddr;
 
 #define STAGING_SIZE      0x400000UL  /* 4MB staging region */
 #define MAX_WASM_SIZE     (STAGING_SIZE - 64)  /* leave room for metadata */
-
-/* ── Hot-reload staging layout ──────────────────────────────────────────
- * Hotreload metadata occupies staging[STAGING_SIZE-128 .. STAGING_SIZE-65]
- * (64 bytes, immediately before the existing swap metadata footer).
- * A 64KB linear-memory snapshot sits just below the metadata block.
- *
- *   [STAGING_SIZE - 128]: hotreload metadata (64B)
- *     [0..3]   magic: 0x484F5452 ("HOTR")
- *     [4..7]   slot_id
- *     [8..39]  new_module_hash[32]
- *     [40..43] flags (bit0=WD_FREEZE, bit1=SNAP_REQ)
- *     [44..47] snap_base (staging offset of snapshot buffer)
- *     [48..51] snap_size
- *   [STAGING_SIZE -  64]: swap metadata footer (existing, unchanged)
- *     wasm_size = 0xFFFFFFFE signals hotreload to controller
- */
-#define HOTR_META_OFF     (STAGING_SIZE - 128UL)  /* hotreload metadata offset */
-#define HOTR_MAGIC        0x484F5452UL             /* "HOTR" */
-#define HOTR_FLAG_WD_FREEZE  0x01U                /* bit0: request watchdog freeze */
-#define HOTR_FLAG_SNAP_REQ   0x02U                /* bit1: snapshot linear memory */
-#define SNAP_SIZE         (64UL * 1024UL)          /* 64KB memory snapshot */
-#define SNAP_BASE         (HOTR_META_OFF - SNAP_SIZE)
-#define VIBE_META_MAGIC_HOTRELOAD  0xFFFFFFFEU     /* sentinel in swap metadata wasm_size */
 
 /* ── Proposal management ────────────────────────────────────────────── */
 #define MAX_PROPOSALS     8
@@ -144,9 +100,6 @@ typedef struct {
     /* Validation results (bitmap) */
     uint32_t         val_checks;   /* bits: 0=magic, 1=size, 2=svc, 3=cap */
     bool             val_passed;
-    /* CUDA PTX offload (optional — set when WASM has agentos.cuda section) */
-    uint32_t         cuda_ptx_offset; /* byte offset of PTX payload in staging */
-    uint32_t         cuda_ptx_len;    /* length of PTX payload (0 = no CUDA) */
 } proposal_t;
 
 typedef struct {
@@ -164,79 +117,6 @@ static uint32_t       next_proposal_id = 1;  /* 0 = invalid */
 static uint64_t       total_proposals = 0;
 static uint64_t       total_swaps = 0;
 static uint64_t       total_rejections = 0;
-
-/* ── Persistent WASM module registry cache ──────────────────────────────
- *
- * Each successfully executed WASM module is recorded here by its BLAKE3
- * hash. On boot, OP_VIBE_REPLAY replays AgentFS entries into this table
- * so VibeEngine can locate modules without fetching from the network.
- *
- * handle_propose() checks this table FIRST — if the hash is known,
- * the proposal is pre-approved (validation already passed on first run).
- *
- * Layout per entry:
- *   hash[32]        — BLAKE3 hash of WASM bytes
- *   service_id      — last service this module ran as
- *   version         — swap generation count
- *   flags           — REGISTRY_FLAG_VALIDATED, _CUDA (has agentos.cuda section)
- */
-#define MAX_REGISTRY_ENTRIES  64
-#define REGISTRY_FLAG_VALIDATED  0x01
-#define REGISTRY_FLAG_CUDA       0x02   /* module has agentos.cuda section */
-#define REGISTRY_FLAG_AOT        0x04   /* AOT-compiled .cwasm available */
-
-typedef struct {
-    uint8_t  hash[32];       /* BLAKE3 hash — all-zero = free entry */
-    uint32_t service_id;
-    uint32_t version;
-    uint32_t flags;
-    uint32_t agentfs_seq;    /* AgentFS sequence number for replay dedup */
-} registry_entry_t;
-
-static registry_entry_t module_registry[MAX_REGISTRY_ENTRIES];
-static uint32_t         registry_count = 0;
-
-/* Find a registry entry by hash. Returns index or -1. */
-static int registry_find(const uint8_t hash[32]) {
-    for (int i = 0; i < MAX_REGISTRY_ENTRIES; i++) {
-        /* Check if entry is non-zero (occupied) */
-        bool occupied = false;
-        for (int j = 0; j < 32; j++) { if (module_registry[i].hash[j]) { occupied = true; break; } }
-        if (!occupied) continue;
-        bool match = true;
-        for (int j = 0; j < 32; j++) {
-            if (module_registry[i].hash[j] != hash[j]) { match = false; break; }
-        }
-        if (match) return i;
-    }
-    return -1;
-}
-
-/* Allocate a new registry entry (or evict LRU — for simplicity, evict first free). */
-static int registry_alloc(void) {
-    for (int i = 0; i < MAX_REGISTRY_ENTRIES; i++) {
-        bool occupied = false;
-        for (int j = 0; j < 32; j++) { if (module_registry[i].hash[j]) { occupied = true; break; } }
-        if (!occupied) return i;
-    }
-    /* All full — wrap around (slot 0, LRU eviction placeholder) */
-    return 0;
-}
-
-/* Record a validated module in the registry. */
-static void registry_record(const uint8_t hash[32], uint32_t service_id,
-                              uint32_t version, uint32_t flags) {
-    int idx = registry_find(hash);
-    if (idx < 0) {
-        idx = registry_alloc();
-        registry_count++;
-    }
-    registry_entry_t *e = &module_registry[idx];
-    for (int j = 0; j < 32; j++) e->hash[j] = hash[j];
-    e->service_id = service_id;
-    e->version    = version;
-    e->flags      = flags | REGISTRY_FLAG_VALIDATED;
-}
 
 /* ── Service registry ───────────────────────────────────────────────── */
 static void register_services(void) {
@@ -264,12 +144,7 @@ static void register_services(void) {
         .name = "logsvc", .swappable = true,
         .current_version = 1, .max_wasm_bytes = 1 * 1024 * 1024,
     };
-    /* Dynamically spawned agents — proposed via init_agent SPAWN_AGENT pipeline */
-    services[6] = (service_entry_t){
-        .name = "agent_worker", .swappable = true,
-        .current_version = 1, .max_wasm_bytes = 4 * 1024 * 1024,
-    };
-    service_count = 7;
+    service_count = 6;
 }
 
 /* ── Helpers ────────────────────────────────────────────────────────── */
@@ -287,236 +162,6 @@ static bool validate_wasm_header(const uint8_t *data, uint32_t size) {
             data[1] == WASM_MAGIC_1 &&
             data[2] == WASM_MAGIC_2 &&
             data[3] == WASM_MAGIC_3);
-}
-
-/*
- * scan_cuda_section: Scan a WASM binary for a custom section named
- * "agentos.cuda". WASM custom sections have:
- *   - section id byte: 0x00
- *   - LEB128 section size
- *   - LEB128 name length
- *   - name bytes
- *   - payload bytes
- *
- * Sets *ptx_offset (byte offset from data start) and *ptx_len on success.
- * Returns true if found, false otherwise.
- */
-static bool scan_cuda_section(const uint8_t *data, uint32_t size,
-                               uint32_t *ptx_offset, uint32_t *ptx_len) {
-    if (size < 8) return false;
-    /* Skip 4-byte magic + 4-byte version */
-    uint32_t pos = 8;
-    while (pos + 2 < size) {
-        uint8_t section_id = data[pos++];
-        /* Decode LEB128 section size (up to 4 bytes) */
-        uint32_t sec_size = 0;
-        uint32_t shift = 0;
-        while (pos < size && shift < 28) {
-            uint8_t b = data[pos++];
-            sec_size |= (uint32_t)(b & 0x7f) << shift;
-            shift += 7;
-            if (!(b & 0x80)) break;
-        }
-        uint32_t sec_start = pos;
-        if (sec_start + sec_size > size) break;
-
-        if (section_id == 0x00 && sec_size > CUDA_SECTION_LEN + 1) {
-            /* Decode name length (LEB128) */
-            uint32_t nlen = 0;
-            uint32_t nshift = 0;
-            uint32_t npos = sec_start;
-            while (npos < sec_start + sec_size && nshift < 28) {
-                uint8_t b = data[npos++];
-                nlen |= (uint32_t)(b & 0x7f) << nshift;
-                nshift += 7;
-                if (!(b & 0x80)) break;
-            }
-            /* Check if name matches "agentos.cuda" */
-            if (nlen == CUDA_SECTION_LEN &&
-                npos + nlen <= sec_start + sec_size) {
-                bool match = true;
-                const char *needle = CUDA_SECTION_NAME;
-                for (uint32_t i = 0; i < CUDA_SECTION_LEN; i++) {
-                    if (data[npos + i] != (uint8_t)needle[i]) {
-                        match = false;
-                        break;
-                    }
-                }
-                if (match) {
-                    uint32_t payload_start = npos + nlen;
-                    uint32_t payload_len   = (sec_start + sec_size) - payload_start;
-                    *ptx_offset = payload_start;
-                    *ptx_len    = payload_len;
-                    return true;
-                }
-            }
-        }
-        pos = sec_start + sec_size;
-    }
-    return false;
-}
-
-/* ── WASM module signing — custom section scanners ───────────────────────── */
-
-#define SIG_SECTION_NAME     "agentos.signature"
-#define SIG_SECTION_LEN      17  /* strlen("agentos.signature") */
-#define CAP_SECTION_NAME     "agentos.capabilities"
-#define CAP_SECTION_LEN      20  /* strlen("agentos.capabilities") */
-
-/* Signature section payload: 64 bytes (matches Ed25519 sig size) */
-#define SIG_PAYLOAD_SIZE     64
-
-/* Trusted key table: up to 8 trusted signing key IDs */
-#define MAX_TRUSTED_KEYS     8
-
-typedef struct {
-    uint8_t  key_id[8];     /* 8-byte key identifier */
-    uint8_t  pubkey[32];    /* Ed25519 public key (or zero for phase-1 hash mode) */
-    bool     active;
-} trusted_key_t;
-
-static trusted_key_t trusted_keys[MAX_TRUSTED_KEYS];
-static uint32_t      trusted_key_count = 0;
-
-/* Signature enforcement policy: if true, unsigned modules are rejected */
-static bool sig_enforcement = false;
-
-/*
- * scan_custom_section: Generic scanner for a named WASM custom section.
- * Returns true if section found, with *payload_offset and *payload_len set.
- */
-static bool scan_custom_section(const uint8_t *data, uint32_t size,
-                                 const char *section_name, uint32_t name_len,
-                                 uint32_t *payload_offset, uint32_t *payload_len) {
-    if (size < 8) return false;
-    uint32_t pos = 8; /* skip WASM magic + version */
-    while (pos + 2 < size) {
-        uint8_t section_id = data[pos++];
-        uint32_t sec_size = 0, shift = 0;
-        while (pos < size && shift < 28) {
-            uint8_t b = data[pos++];
-            sec_size |= (uint32_t)(b & 0x7f) << shift;
-            shift += 7;
-            if (!(b & 0x80)) break;
-        }
-        uint32_t sec_start = pos;
-        if (sec_start + sec_size > size) break;
-
-        if (section_id == 0x00 && sec_size > name_len + 1) {
-            uint32_t nlen = 0, nshift = 0, npos = sec_start;
-            while (npos < sec_start + sec_size && nshift < 28) {
-                uint8_t b = data[npos++];
-                nlen |= (uint32_t)(b & 0x7f) << nshift;
-                nshift += 7;
-                if (!(b & 0x80)) break;
-            }
-            if (nlen == name_len && npos + nlen <= sec_start + sec_size) {
-                bool match = true;
-                for (uint32_t i = 0; i < name_len; i++) {
-                    if (data[npos + i] != (uint8_t)section_name[i]) { match = false; break; }
-                }
-                if (match) {
-                    *payload_offset = npos + nlen;
-                    *payload_len    = (sec_start + sec_size) - (npos + nlen);
-                    return true;
-                }
-            }
-        }
-        pos = sec_start + sec_size;
-    }
-    return false;
-}
-
-/*
- * verify_wasm_signature: Check if a WASM module's agentos.signature section
- * validates against the agentos.capabilities section using a trusted key.
- *
- * Returns:
- *   0  = valid signature (or no signature + enforcement off)
- *  -1  = missing signature (enforcement on)
- *  -2  = bad signature format
- *  -3  = untrusted key_id
- *  -4  = hash mismatch (tampered)
- */
-static int verify_wasm_signature(const uint8_t *wasm, uint32_t wasm_size) {
-    uint32_t sig_off = 0, sig_len = 0;
-    uint32_t cap_off = 0, cap_len = 0;
-
-    bool has_sig = scan_custom_section(wasm, wasm_size,
-                                        SIG_SECTION_NAME, SIG_SECTION_LEN,
-                                        &sig_off, &sig_len);
-    bool has_cap = scan_custom_section(wasm, wasm_size,
-                                        CAP_SECTION_NAME, CAP_SECTION_LEN,
-                                        &cap_off, &cap_len);
-
-    if (!has_sig) {
-        /* No signature section */
-        if (sig_enforcement) {
-            microkit_dbg_puts("[vibe_engine]   ✗ Unsigned module rejected (enforcement=on)\n");
-            return -1;
-        }
-        microkit_dbg_puts("[vibe_engine]   ⚠ No signature section (enforcement=off, allowing)\n");
-        return 0;
-    }
-
-    if (sig_len != SIG_PAYLOAD_SIZE) {
-        microkit_dbg_puts("[vibe_engine]   ✗ Bad signature section size\n");
-        return -2;
-    }
-
-    if (!has_cap || cap_len == 0) {
-        microkit_dbg_puts("[vibe_engine]   ✗ Signature present but no capabilities section\n");
-        return -2;
-    }
-
-    const uint8_t *sig_data = &wasm[sig_off];
-    const uint8_t *cap_data = &wasm[cap_off];
-
-    /* Extract key_id (first 8 bytes of signature) */
-    const uint8_t *key_id = &sig_data[0];
-
-    /* Find matching trusted key */
-    int key_idx = -1;
-    for (uint32_t i = 0; i < trusted_key_count; i++) {
-        if (!trusted_keys[i].active) continue;
-        bool match = true;
-        for (int j = 0; j < 8; j++) {
-            if (trusted_keys[i].key_id[j] != key_id[j]) { match = false; break; }
-        }
-        if (match) { key_idx = (int)i; break; }
-    }
-
-    if (key_idx < 0) {
-        microkit_dbg_puts("[vibe_engine]   ✗ Untrusted key_id\n");
-        return -3;
-    }
-
-    /* Verify signature against capabilities section payload */
-    int rc = ed25519_verify(sig_data, cap_data, cap_len,
-                            trusted_keys[key_idx].pubkey);
-    if (rc != 0) {
-        microkit_dbg_puts("[vibe_engine]   ✗ Signature verification FAILED (tampered?)\n");
-        return -4;
-    }
-
-    microkit_dbg_puts("[vibe_engine]   ✓ Signature verified (trusted key)\n");
-    return 0;
-}
-
-/*
- * vibe_validate_cuda_ptx: Basic PTX sanity check.
- * Valid PTX starts with ".version" directive and must be non-empty.
- * Returns VIBE_OK or VIBE_ERR_BADPTX.
- */
-static int vibe_validate_cuda_ptx(const uint8_t *ptx, uint32_t len) {
-    if (len == 0 || len > MAX_PTX_SIZE) return VIBE_ERR_BADPTX;
-    /* PTX files start with ".version" */
-    const char *magic = ".version";
-    if (len < 8) return VIBE_ERR_BADPTX;
-    for (int i = 0; i < 8; i++) {
-        if (ptx[i] != (uint8_t)magic[i]) return VIBE_ERR_BADPTX;
-    }
-    return VIBE_OK;
 }
 
 /* ── IPC Handlers ───────────────────────────────────────────────────── */
@@ -567,46 +212,6 @@ static microkit_msginfo handle_propose(void) {
         return microkit_msginfo_new(0, 1);
     }
 
-    /*
-     * ── Registry cache check ──────────────────────────────────────────
-     * MR4/5: wasm_hash_lo, MR6/7: wasm_hash_hi (packed as u64 LE pairs)
-     * If this hash is in the registry, the module is pre-approved.
-     * Fast-path: skip staging, notify controller directly.
-     */
-    uint8_t proposed_hash[32] = {0};
-    uint32_t h0 = (uint32_t)microkit_mr_get(4);
-    uint32_t h1 = (uint32_t)microkit_mr_get(5);
-    uint32_t h2 = (uint32_t)microkit_mr_get(6);
-    uint32_t h3 = (uint32_t)microkit_mr_get(7);
-    proposed_hash[0]  = h0 & 0xFF; proposed_hash[1]  = (h0>>8)&0xFF;
-    proposed_hash[2]  = (h0>>16)&0xFF; proposed_hash[3]  = (h0>>24)&0xFF;
-    proposed_hash[4]  = h1 & 0xFF; proposed_hash[5]  = (h1>>8)&0xFF;
-    proposed_hash[6]  = (h1>>16)&0xFF; proposed_hash[7]  = (h1>>24)&0xFF;
-    proposed_hash[8]  = h2 & 0xFF; proposed_hash[9]  = (h2>>8)&0xFF;
-    proposed_hash[10] = (h2>>16)&0xFF; proposed_hash[11] = (h2>>24)&0xFF;
-    proposed_hash[12] = h3 & 0xFF; proposed_hash[13] = (h3>>8)&0xFF;
-    proposed_hash[14] = (h3>>16)&0xFF; proposed_hash[15] = (h3>>24)&0xFF;
-
-    /* Only check if any hash bytes were provided */
-    bool has_hash = false;
-    for (int _i = 0; _i < 16; _i++) if (proposed_hash[_i]) { has_hash = true; break; }
-
-    if (has_hash) {
-        int reg_idx = registry_find(proposed_hash);
-        if (reg_idx >= 0) {
-            registry_entry_t *re = &module_registry[reg_idx];
-            microkit_dbg_puts("[vibe_engine] Registry HIT: pre-approved module, fast-path\n");
-            total_swaps++;
-            re->version++;
-            /* Return success immediately — module already validated */
-            uint32_t pid = next_proposal_id++;
-            microkit_mr_set(0, VIBE_OK);
-            microkit_mr_set(1, pid);
-            microkit_mr_set(2, re->flags);
-            return microkit_msginfo_new(0, 3);
-        }
-    }
-
     /* Check WASM size */
     if (wasm_size > MAX_WASM_SIZE || wasm_size > services[service_id].max_wasm_bytes) {
         microkit_dbg_puts("[vibe_engine] REJECT: WASM too large\n");
@@ -622,13 +227,6 @@ static microkit_msginfo handle_propose(void) {
         return microkit_msginfo_new(0, 1);
     }
 
-    /* Ed25519 signature verification — NULL trusted_pubkey = any signer allowed */
-    if (!vibe_verify_module(staged, wasm_size, NULL)) {
-        microkit_dbg_puts("[vibe_engine] REJECT: Ed25519 signature verification failed\n");
-        microkit_mr_set(0, VIBE_ERR_BADSIG);
-        return microkit_msginfo_new(0, 1);
-    }
-
     /* Find a free proposal slot */
     int slot = find_free_proposal();
     if (slot < 0) {
@@ -637,24 +235,15 @@ static microkit_msginfo handle_propose(void) {
         return microkit_msginfo_new(0, 1);
     }
 
-    /* Scan for CUDA PTX custom section in staged WASM */
-    uint32_t ptx_offset = 0, ptx_len = 0;
-    bool has_cuda = scan_cuda_section(staged, wasm_size, &ptx_offset, &ptx_len);
-    if (has_cuda) {
-        microkit_dbg_puts("[vibe_engine] CUDA PTX section found (agentos.cuda)\n");
-    }
-
     /* Record the proposal */
-    proposals[slot].state            = PROP_STATE_PENDING;
-    proposals[slot].service_id       = service_id;
-    proposals[slot].wasm_offset      = 0;  /* Always at start of staging for now */
-    proposals[slot].wasm_size        = wasm_size;
-    proposals[slot].cap_tag          = cap_tag;
-    proposals[slot].version          = next_proposal_id++;
-    proposals[slot].val_checks       = 0;
-    proposals[slot].val_passed       = false;
-    proposals[slot].cuda_ptx_offset  = has_cuda ? ptx_offset : 0;
-    proposals[slot].cuda_ptx_len     = has_cuda ? ptx_len    : 0;
+    proposals[slot].state       = PROP_STATE_PENDING;
+    proposals[slot].service_id  = service_id;
+    proposals[slot].wasm_offset = 0;  /* Always at start of staging for now */
+    proposals[slot].wasm_size   = wasm_size;
+    proposals[slot].cap_tag     = cap_tag;
+    proposals[slot].version     = next_proposal_id++;
+    proposals[slot].val_checks  = 0;
+    proposals[slot].val_passed  = false;
     total_proposals++;
 
     microkit_dbg_puts("[vibe_engine] Proposal accepted: id=");
@@ -746,39 +335,12 @@ static microkit_msginfo handle_validate(void) {
         microkit_dbg_puts("[vibe_engine]   ✗ No capability tag\n");
     }
 
-    /* Check 4: CUDA PTX validation (only if section present) */
-    if (proposals[slot].cuda_ptx_len > 0) {
-        const uint8_t *ptx = (const uint8_t *)(vibe_staging_vaddr +
-                                                proposals[slot].wasm_offset +
-                                                proposals[slot].cuda_ptx_offset);
-        int ptx_rc = vibe_validate_cuda_ptx(ptx, proposals[slot].cuda_ptx_len);
-        if (ptx_rc == VIBE_OK) {
-            checks |= (1 << 4);
-            microkit_dbg_puts("[vibe_engine]   ✓ CUDA PTX valid (.version header ok)\n");
-        } else {
-            all_pass = false;
-            microkit_dbg_puts("[vibe_engine]   ✗ CUDA PTX INVALID\n");
-        }
-    }
-
-    /* Check 5: WASM module signature verification (Ed25519 / SHA-512 hash) */
-    {
-        int sig_rc = verify_wasm_signature(staged, proposals[slot].wasm_size);
-        if (sig_rc == 0) {
-            checks |= (1 << 5);
-            microkit_dbg_puts("[vibe_engine]   ✓ Signature check passed\n");
-        } else {
-            all_pass = false;
-            microkit_dbg_puts("[vibe_engine]   ✗ Signature check FAILED\n");
-        }
-    }
-
     proposals[slot].val_checks = checks;
     proposals[slot].val_passed = all_pass;
 
     if (all_pass) {
         proposals[slot].state = PROP_STATE_VALIDATED;
-        microkit_dbg_puts("[vibe_engine] Validation PASSED (all checks)\n");
+        microkit_dbg_puts("[vibe_engine] Validation PASSED (all 4 checks)\n");
     } else {
         proposals[slot].state = PROP_STATE_REJECTED;
         total_rejections++;
@@ -867,28 +429,12 @@ static microkit_msginfo handle_execute(void) {
     meta[14] = (pid >> 16) & 0xff; meta[15] = (pid >> 24) & 0xff;
 
     /* Memory barrier: metadata visible before notification */
-    #if defined(__riscv)
-    __asm__ volatile ("fence w,w" ::: "memory");
-#elif defined(__aarch64__)
-    __asm__ volatile ("dmb ishst" ::: "memory");
-#else
-    __asm__ volatile ("" ::: "memory");
-#endif
+    agentos_wmb();
 
     microkit_dbg_puts("[vibe_engine] *** SWAP APPROVED — notifying controller ***\n");
 
     /* Notify the controller to pick up the swap request */
     microkit_notify(CH_CTRL);
-
-    /* If this module carries a CUDA PTX section, submit to gpu_scheduler */
-    if (proposals[slot].cuda_ptx_len > 0) {
-        microkit_dbg_puts("[vibe_engine] CUDA PTX detected — submitting to gpu_scheduler\n");
-        microkit_mr_set(0, OP_GPU_SUBMIT);
-        microkit_mr_set(1, (uint32_t)slot);           /* proposal slot index */
-        microkit_mr_set(2, proposals[slot].cuda_ptx_offset);
-        microkit_mr_set(3, proposals[slot].cuda_ptx_len);
-        microkit_notify(CH_GPU);
-    }
 
     total_swaps++;
     proposals[slot].state = PROP_STATE_ACTIVE;
@@ -958,13 +504,7 @@ static microkit_msginfo handle_rollback(void) {
     /* wasm_size = 0xFFFFFFFF means rollback */
     meta[8]  = 0xFF; meta[9]  = 0xFF; meta[10] = 0xFF; meta[11] = 0xFF;
 
-    #if defined(__riscv)
-    __asm__ volatile ("fence w,w" ::: "memory");
-#elif defined(__aarch64__)
-    __asm__ volatile ("dmb ishst" ::: "memory");
-#else
-    __asm__ volatile ("" ::: "memory");
-#endif
+    agentos_wmb();
 
     microkit_notify(CH_CTRL);
 
@@ -988,207 +528,6 @@ static microkit_msginfo handle_health(void) {
     microkit_mr_set(0, VIBE_OK);
     microkit_mr_set(1, (uint32_t)total_proposals);
     microkit_mr_set(2, (uint32_t)total_swaps);
-    return microkit_msginfo_new(0, 3);
-}
-
-/* ── Hot-reload handler ─────────────────────────────────────────────── */
-
-/*
- * OP_VIBE_HOTRELOAD (0x47): zero-downtime WASM slot update.
- *
- * Input:
- *   MR0 = OP_VIBE_HOTRELOAD
- *   MR1 = slot_id           (running swap slot to update)
- *   MR2..MR9 = new_module_hash[32]  (8 x LE uint32, BLAKE3 hash of new binary)
- *
- * Output:
- *   MR0 = HOTRELOAD_OK / HOTRELOAD_FALLBACK / HOTRELOAD_ERR_CAPS
- *   MR1 = slot_id                  (on HOTRELOAD_OK)
- *   MR2 = new_module_hash[0..3]    (on HOTRELOAD_OK, first 4 bytes for confirmation)
- *
- * Steps performed here (VibeEngine side):
- *   1. Parse slot_id + new_module_hash from MRs
- *   2. Capability compatibility check via module registry
- *   3. Write hotreload metadata + watchdog-freeze flag to staging scratch
- *   4. Write sentinel (0xFFFFFFFE) into swap metadata to signal controller
- *   5. Memory barrier + notify controller via CH_CTRL
- *
- * Steps delegated to controller (via staging metadata):
- *   3. Send OP_WD_FREEZE to watchdog_pd for slot_id
- *   4. Snapshot 64KB of slot's linear memory into staging snap buffer
- *   5. Load new module into swap slot
- *   6. Restore snapshot (if memory layout compatible)
- *   7. Resume from module entry point
- *   8. Send OP_WD_RESUME to watchdog_pd with new_module_hash
- *
- * Falls back to HOTRELOAD_FALLBACK (controller uses PROPOSE path) if:
- *   - New module not in registry (unknown hash)
- *   - Service not swappable
- *   - Memory layout incompatible (detected controller-side; controller signals back)
- * Returns HOTRELOAD_ERR_CAPS if new module requests caps beyond slot grants.
- */
-static microkit_msginfo handle_hotreload(void) {
-    uint32_t slot_id = (uint32_t)microkit_mr_get(1);
-
-    /* Step 1: Parse new_module_hash from MR2..MR9 (8 x uint32 = 32 bytes) */
-    uint8_t new_hash[32];
-    for (int r = 0; r < 8; r++) {
-        uint32_t v = (uint32_t)microkit_mr_get(2 + r);
-        new_hash[r*4+0] = (uint8_t)(v & 0xFF);
-        new_hash[r*4+1] = (uint8_t)((v >> 8) & 0xFF);
-        new_hash[r*4+2] = (uint8_t)((v >> 16) & 0xFF);
-        new_hash[r*4+3] = (uint8_t)((v >> 24) & 0xFF);
-    }
-
-    microkit_dbg_puts("[vibe_engine] OP_VIBE_HOTRELOAD slot=");
-    char sb[4]; sb[0] = '0' + (slot_id % 10); sb[1] = '\0';
-    microkit_dbg_puts(sb);
-    microkit_dbg_puts(" hash=");
-    {
-        static const char _hx[] = "0123456789abcdef";
-        char hbuf[5] = {
-            _hx[(new_hash[0]>>4)&0xf], _hx[new_hash[0]&0xf],
-            _hx[(new_hash[1]>>4)&0xf], _hx[new_hash[1]&0xf], '\0'
-        };
-        microkit_dbg_puts(hbuf);
-    }
-    microkit_dbg_puts("..\n");
-
-    /* Step 2: Capability compatibility check.
-     * Look up new module in the WASM registry by hash.
-     * If unknown, fall back: caller must use OP_VIBE_PROPOSE instead. */
-    int new_idx = registry_find(new_hash);
-    if (new_idx < 0) {
-        microkit_dbg_puts("[vibe_engine] HOTRELOAD: unknown module hash → FALLBACK\n");
-        microkit_mr_set(0, HOTRELOAD_FALLBACK);
-        return microkit_msginfo_new(0, 1);
-    }
-
-    registry_entry_t *new_re = &module_registry[new_idx];
-    uint32_t active_service = new_re->service_id;
-
-    if (active_service >= service_count || !services[active_service].swappable) {
-        microkit_dbg_puts("[vibe_engine] HOTRELOAD: service not swappable → FALLBACK\n");
-        microkit_mr_set(0, HOTRELOAD_FALLBACK);
-        return microkit_msginfo_new(0, 1);
-    }
-
-    /*
-     * Cap compatibility: registry flags bits[15..8] hold the cap_class bitmask
-     * granted to the running module (set when WASM was originally validated).
-     * New module must not request additional capabilities (new ⊆ old).
-     */
-    uint32_t old_caps = 0;
-    for (int i = 0; i < MAX_REGISTRY_ENTRIES; i++) {
-        bool occupied = false;
-        for (int j = 0; j < 32; j++) {
-            if (module_registry[i].hash[j]) { occupied = true; break; }
-        }
-        if (!occupied) continue;
-        if (module_registry[i].service_id == active_service &&
-            (module_registry[i].flags & REGISTRY_FLAG_VALIDATED)) {
-            old_caps = (module_registry[i].flags >> 8) & 0xFF;
-            break;
-        }
-    }
-    uint32_t new_caps = (new_re->flags >> 8) & 0xFF;
-
-    if ((new_caps & ~old_caps) != 0) {
-        microkit_dbg_puts("[vibe_engine] HOTRELOAD: new caps exceed slot grants → ERR_CAPS\n");
-        microkit_mr_set(0, HOTRELOAD_ERR_CAPS);
-        return microkit_msginfo_new(0, 1);
-    }
-
-    /* Step 3-6: Write hotreload metadata to staging scratch area.
-     *
-     * Controller will read this block (keyed by HOTR_MAGIC) and:
-     *   - Issue OP_WD_FREEZE to watchdog_pd for slot_id
-     *   - Copy up to 64KB of slot linear memory to snap buffer
-     *   - Load new module binary (fetched by controller from swap code region)
-     *   - Restore snapshot into new module's memory region
-     *   - Resume slot from module entry point
-     *   - Issue OP_WD_RESUME to watchdog_pd
-     */
-    volatile uint8_t *hotr =
-        (volatile uint8_t *)(vibe_staging_vaddr + HOTR_META_OFF);
-
-    /* Magic "HOTR" LE */
-    hotr[0] = (uint8_t)(HOTR_MAGIC & 0xFF);
-    hotr[1] = (uint8_t)((HOTR_MAGIC >> 8) & 0xFF);
-    hotr[2] = (uint8_t)((HOTR_MAGIC >> 16) & 0xFF);
-    hotr[3] = (uint8_t)((HOTR_MAGIC >> 24) & 0xFF);
-    /* slot_id */
-    hotr[4] = (uint8_t)(slot_id & 0xFF);
-    hotr[5] = (uint8_t)((slot_id >> 8) & 0xFF);
-    hotr[6] = (uint8_t)((slot_id >> 16) & 0xFF);
-    hotr[7] = (uint8_t)((slot_id >> 24) & 0xFF);
-    /* new_module_hash[32] at byte offset 8 */
-    for (int i = 0; i < 32; i++) hotr[8 + i] = new_hash[i];
-    /* flags: WD_FREEZE + SNAP_REQ */
-    uint32_t hr_flags = HOTR_FLAG_WD_FREEZE | HOTR_FLAG_SNAP_REQ;
-    hotr[40] = (uint8_t)(hr_flags & 0xFF);
-    hotr[41] = (uint8_t)((hr_flags >> 8) & 0xFF);
-    hotr[42] = (uint8_t)((hr_flags >> 16) & 0xFF);
-    hotr[43] = (uint8_t)((hr_flags >> 24) & 0xFF);
-    /* snap buffer base offset in staging region */
-    uint32_t snap_base32 = (uint32_t)SNAP_BASE;
-    hotr[44] = (uint8_t)(snap_base32 & 0xFF);
-    hotr[45] = (uint8_t)((snap_base32 >> 8) & 0xFF);
-    hotr[46] = (uint8_t)((snap_base32 >> 16) & 0xFF);
-    hotr[47] = (uint8_t)((snap_base32 >> 24) & 0xFF);
-    /* snap size */
-    uint32_t snap_size32 = (uint32_t)SNAP_SIZE;
-    hotr[48] = (uint8_t)(snap_size32 & 0xFF);
-    hotr[49] = (uint8_t)((snap_size32 >> 8) & 0xFF);
-    hotr[50] = (uint8_t)((snap_size32 >> 16) & 0xFF);
-    hotr[51] = (uint8_t)((snap_size32 >> 24) & 0xFF);
-
-    /* Step 4: Write hotreload sentinel into swap metadata footer.
-     * Controller distinguishes hotreload from normal swap by wasm_size sentinel. */
-    volatile uint8_t *meta =
-        (volatile uint8_t *)(vibe_staging_vaddr + STAGING_SIZE - 64);
-    meta[0] = (uint8_t)(active_service & 0xFF);
-    meta[1] = (uint8_t)((active_service >> 8) & 0xFF);
-    meta[2] = (uint8_t)((active_service >> 16) & 0xFF);
-    meta[3] = (uint8_t)((active_service >> 24) & 0xFF);
-    meta[4] = 0; meta[5] = 0; meta[6] = 0; meta[7] = 0;  /* wasm_offset=0 */
-    /* Hotreload sentinel: 0xFFFFFFFE (distinct from rollback 0xFFFFFFFF) */
-    meta[8]  = (uint8_t)(VIBE_META_MAGIC_HOTRELOAD & 0xFF);
-    meta[9]  = (uint8_t)((VIBE_META_MAGIC_HOTRELOAD >> 8) & 0xFF);
-    meta[10] = (uint8_t)((VIBE_META_MAGIC_HOTRELOAD >> 16) & 0xFF);
-    meta[11] = (uint8_t)((VIBE_META_MAGIC_HOTRELOAD >> 24) & 0xFF);
-    uint32_t pid = next_proposal_id++;
-    meta[12] = (uint8_t)(pid & 0xFF);
-    meta[13] = (uint8_t)((pid >> 8) & 0xFF);
-    meta[14] = (uint8_t)((pid >> 16) & 0xFF);
-    meta[15] = (uint8_t)((pid >> 24) & 0xFF);
-
-    /* Step 5: Memory barrier — metadata visible before notification */
-#if defined(__riscv)
-    __asm__ volatile ("fence w,w" ::: "memory");
-#elif defined(__aarch64__)
-    __asm__ volatile ("dmb ishst" ::: "memory");
-#else
-    __asm__ volatile ("" ::: "memory");
-#endif
-
-    microkit_dbg_puts("[vibe_engine] HOTRELOAD: metadata committed, notifying controller\n");
-
-    /* Notify controller to execute the hotreload pipeline */
-    microkit_notify(CH_CTRL);
-
-    /* Update registry */
-    new_re->version++;
-    total_swaps++;
-
-    /* Return HOTRELOAD_OK with slot_id and hash confirmation */
-    uint32_t hash_conf = (uint32_t)new_hash[0]
-                       | ((uint32_t)new_hash[1] << 8)
-                       | ((uint32_t)new_hash[2] << 16)
-                       | ((uint32_t)new_hash[3] << 24);
-    microkit_mr_set(0, HOTRELOAD_OK);
-    microkit_mr_set(1, slot_id);
-    microkit_mr_set(2, hash_conf);
     return microkit_msginfo_new(0, 3);
 }
 
@@ -1257,127 +596,12 @@ microkit_msginfo protected(microkit_channel ch, microkit_msginfo msg) {
     uint32_t op = (uint32_t)microkit_mr_get(0);
 
     switch (op) {
-        case OP_VIBE_PROPOSE:        return handle_propose();
-        case OP_VIBE_VALIDATE:       return handle_validate();
-        case OP_VIBE_EXECUTE:        return handle_execute();
-        case OP_VIBE_STATUS:         return handle_status();
-        case OP_VIBE_ROLLBACK:       return handle_rollback();
-        case OP_VIBE_HEALTH:         return handle_health();
-        case OP_VIBE_HOTRELOAD:      return handle_hotreload();
-
-        case OP_VIBE_TRUST_KEY: {
-            /* Add a trusted signing key: MR1=key_id_hi, MR2=key_id_lo */
-            if (trusted_key_count >= MAX_TRUSTED_KEYS) {
-                microkit_mr_set(0, VIBE_ERR_FULL);
-                return microkit_msginfo_new(0, 1);
-            }
-            trusted_key_t *k = &trusted_keys[trusted_key_count];
-            uint64_t kid = (uint64_t)microkit_mr_get(1);
-            for (int i = 7; i >= 0; i--) { k->key_id[i] = (uint8_t)(kid & 0xFF); kid >>= 8; }
-            /* pubkey passed in MR2..5 (4 x 8 bytes = 32 bytes) */
-            for (int r = 0; r < 4; r++) {
-                uint64_t v = (uint64_t)microkit_mr_get(2 + r);
-                for (int b = 7; b >= 0; b--) { k->pubkey[r*8 + b] = (uint8_t)(v & 0xFF); v >>= 8; }
-            }
-            k->active = true;
-            trusted_key_count++;
-            microkit_dbg_puts("[vibe_engine] Trusted key added\n");
-            microkit_mr_set(0, VIBE_OK);
-            return microkit_msginfo_new(0, 1);
-        }
-
-        case OP_VIBE_SIG_ENFORCE: {
-            /* Set signature enforcement mode: MR1=0 (off) or 1 (on) */
-            sig_enforcement = (microkit_mr_get(1) != 0);
-            microkit_dbg_puts(sig_enforcement ?
-                "[vibe_engine] Signature enforcement: ON\n" :
-                "[vibe_engine] Signature enforcement: OFF\n");
-            microkit_mr_set(0, VIBE_OK);
-            return microkit_msginfo_new(0, 1);
-        }
-
-        case OP_VIBE_REPLAY: {
-            /*
-             * Boot replay: seed the registry from AgentFS module list.
-             * Caller (init_agent or controller) passes packed hashes in MRs.
-             * MR0: count of modules to replay (up to 8 per call, call repeatedly)
-             * MR1: flags for first module
-             * MR2: service_id for first module
-             * MR3-MR6: hash bytes for first module (4 x u32, 16 bytes of 32-byte hash)
-             *
-             * For simplicity, we accept one module per REPLAY call
-             * (controller calls REPLAY once per AgentFS module).
-             */
-            uint32_t mod_flags   = (uint32_t)microkit_mr_get(1);
-            uint32_t svc_id      = (uint32_t)microkit_mr_get(2);
-            uint8_t  replay_hash[32] = {0};
-            uint32_t _rh[4] = {
-                (uint32_t)microkit_mr_get(3),
-                (uint32_t)microkit_mr_get(4),
-                (uint32_t)microkit_mr_get(5),
-                (uint32_t)microkit_mr_get(6),
-            };
-            for (int _i = 0; _i < 4; _i++) {
-                replay_hash[_i*4+0] = (_rh[_i])      & 0xFF;
-                replay_hash[_i*4+1] = (_rh[_i]>>8)   & 0xFF;
-                replay_hash[_i*4+2] = (_rh[_i]>>16)  & 0xFF;
-                replay_hash[_i*4+3] = (_rh[_i]>>24)  & 0xFF;
-            }
-            registry_record(replay_hash, svc_id, 0, mod_flags);
-            microkit_dbg_puts("[vibe_engine] Registry replay: added module ");
-            {
-                static const char _h[] = "0123456789abcdef";
-                char _hbuf[5] = {
-                    _h[(replay_hash[0]>>4)&0xf], _h[replay_hash[0]&0xf],
-                    _h[(replay_hash[1]>>4)&0xf], _h[replay_hash[1]&0xf], '\0'
-                };
-                microkit_dbg_puts(_hbuf);
-            }
-            microkit_dbg_puts("..\n");
-            microkit_mr_set(0, VIBE_OK);
-            microkit_mr_set(1, (uint32_t)registry_count);
-            return microkit_msginfo_new(0, 2);
-        }
-
-        case OP_VIBE_REGISTRY_QUERY: {
-            /*
-             * Query registry by hash.
-             * MR0-MR3: hash bytes (4 x u32, 16 bytes)
-             * Returns: MR0=VIBE_OK(found)/VIBE_ERR_NOSVC(not found), MR1=flags, MR2=version
-             */
-            uint8_t query_hash[32] = {0};
-            uint32_t _qh[4] = {
-                (uint32_t)microkit_mr_get(0),
-                (uint32_t)microkit_mr_get(1),
-                (uint32_t)microkit_mr_get(2),
-                (uint32_t)microkit_mr_get(3),
-            };
-            for (int _i = 0; _i < 4; _i++) {
-                query_hash[_i*4+0] = (_qh[_i])      & 0xFF;
-                query_hash[_i*4+1] = (_qh[_i]>>8)   & 0xFF;
-                query_hash[_i*4+2] = (_qh[_i]>>16)  & 0xFF;
-                query_hash[_i*4+3] = (_qh[_i]>>24)  & 0xFF;
-            }
-            int ri = registry_find(query_hash);
-            if (ri < 0) {
-                microkit_mr_set(0, (uint64_t)VIBE_ERR_NOSVC);
-                return microkit_msginfo_new(0, 1);
-            }
-            microkit_mr_set(0, VIBE_OK);
-            microkit_mr_set(1, module_registry[ri].flags);
-            microkit_mr_set(2, module_registry[ri].version);
-            microkit_mr_set(3, module_registry[ri].service_id);
-            return microkit_msginfo_new(0, 4);
-        }
-
-        case OP_VIBE_REGISTRY_STATUS: {
-            microkit_mr_set(0, VIBE_OK);
-            microkit_mr_set(1, (uint32_t)registry_count);
-            microkit_mr_set(2, MAX_REGISTRY_ENTRIES);
-            microkit_mr_set(3, (uint32_t)total_swaps);
-            return microkit_msginfo_new(0, 4);
-        }
-
+        case OP_VIBE_PROPOSE:   return handle_propose();
+        case OP_VIBE_VALIDATE:  return handle_validate();
+        case OP_VIBE_EXECUTE:   return handle_execute();
+        case OP_VIBE_STATUS:    return handle_status();
+        case OP_VIBE_ROLLBACK:  return handle_rollback();
+        case OP_VIBE_HEALTH:    return handle_health();
         default:
             microkit_dbg_puts("[vibe_engine] Unknown op\n");
             microkit_mr_set(0, VIBE_ERR_INTERNAL);

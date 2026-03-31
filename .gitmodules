@@ -1,5 +1,3 @@
-
-[submodule "libs/libvmm"]
-	path = libs/libvmm
+[submodule "libvmm"]
+	path = libvmm
 	url = https://github.com/au-ts/libvmm.git
-	shallow = true

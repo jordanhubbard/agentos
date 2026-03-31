@@ -1,357 +1,365 @@
 /*
- * agentOS mem_profiler — per-slot WASM heap allocation tracking + leak detection
+ * agentOS MemProfiler Protection Domain
  *
- * Passive PD, priority 108.
+ * Passive PD at priority 108. Tracks WASM heap allocations per agent slot
+ * and alerts the watchdog (via controller) when a leak is detected.
  *
- * Protocol:
- *   OP_MEM_ALLOC  (0x60) — MR1=slot_id, MR2=size, MR3=ptr_hint: record allocation
- *   OP_MEM_FREE   (0x61) — MR1=slot_id, MR2=ptr_hint, MR3=size: record free
- *   OP_MEM_QUERY  (0x62) — MR1=slot_id → MR0=bytes_allocated, MR1=alloc_count,
- *                          MR2=peak_bytes, MR3=last_op_tick
- *   OP_MEM_ALERT  (0x63) — outbound notify (CH_ALERT): sent to controller when
- *                          slot exceeds MEM_QUOTA_BYTES (2MB) or leak detected
- *   OP_MEM_RESET  (0x64) — MR1=slot_id: clear all tracking for slot (slot reclaim)
+ * Design:
+ *   - Workers call OP_MEM_ALLOC_HOOK / OP_MEM_FREE_HOOK via PPC
+ *     whenever wasm_malloc / wasm_free are called in their sandbox.
+ *   - MemProfiler maintains a per-slot alloc table (alloc count + bytes).
+ *   - Every 30 notify ticks from the controller, it writes a snapshot
+ *     of all slot stats into a 256KB shared-memory ring (mem_ring).
+ *   - If any slot's live_alloc_count has grown monotonically for
+ *     LEAK_THRESHOLD_TICKS (100) ticks, MemProfiler notifies the
+ *     controller with OP_MEM_LEAK_ALERT so the watchdog can restart
+ *     the offending slot.
  *
- * State: table[16] of {slot_id, bytes_allocated, alloc_count, peak_bytes, last_op_tick}
+ * Channel assignments:
+ *   CH_CONTROLLER = 0  (controller notifies for tick; receives leak alert)
+ *   CH_WORKER_0..7 = 1..8  (workers PPC in for alloc/free hooks + status)
  *
- * Quota: MEM_QUOTA_BYTES = 2MB per slot.  Alert sent on first OP_MEM_ALLOC that
- *        pushes bytes_allocated over the limit; re-armed on OP_MEM_RESET.
+ * Shared memory:
+ *   mem_ring (256KB): ring buffer of per-slot heap snapshots
+ *     - Written by mem_profiler every 30 ticks
+ *     - Read by controller / external debugger
  *
- * Leak detection: if LEAK_TICK_THRESHOLD consecutive OP_MEM_ALLOC ticks occur
- *   without any intervening OP_MEM_FREE for that slot (i.e. alloc_count keeps
- *   growing with no frees), the slot is flagged leaked and OP_MEM_ALERT is sent.
+ * IPC operations (MR0 = op code):
+ *   OP_MEM_REGISTER   = 0x60 — register a slot (worker → mem_profiler)
+ *   OP_MEM_ALLOC_HOOK = 0x61 — record a malloc(size) for slot (MR1=slot, MR2=size)
+ *   OP_MEM_FREE_HOOK  = 0x62 — record a free(size) for slot  (MR1=slot, MR2=size)
+ *   OP_MEM_STATUS     = 0x63 — query live stats for a slot   (MR1=slot)
+ *   OP_MEM_SNAPSHOT   = 0x64 — force snapshot write to ring
  *
- * Channels (local IDs from mem_profiler's perspective):
- *   id=0 CH_IN:    incoming PPCs from controller / workers
- *   id=1 CH_ALERT: notify controller on quota exceeded or leak detected
+ * Controller out-of-band (notify, not PPC):
+ *   CH_CONTROLLER notify → tick counter increment + snapshot at tick%30==0
  *
- * Shared memory (256KB mem_profiler_ring):
- *   Simple header + packed slot table, readable by controller via shared MR.
+ * MemProfiler → controller PPC (leak alert):
+ *   OP_MEM_LEAK_ALERT = 0x65 — MR1=slot_id, MR2=live_allocs, MR3=live_bytes
+ *
+ * Copyright (c) 2026 The agentOS Project
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #define AGENTOS_DEBUG 1
 #include "agentos.h"
+#include <stdint.h>
+#include <stdbool.h>
 
-/* ── Opcodes (MR0 field) ───────────────────────────────────────────────────── */
-#define OP_MEM_ALLOC  0x60u  /* MR1=slot_id, MR2=size, MR3=ptr_hint */
-#define OP_MEM_FREE   0x61u  /* MR1=slot_id, MR2=ptr_hint, MR3=size */
-#define OP_MEM_QUERY  0x62u  /* MR1=slot_id → MR0=bytes_alloc, MR1=alloc_cnt, MR2=peak, MR3=tick */
-#define OP_MEM_ALERT  0x63u  /* outbound only — not handled as inbound op */
-#define OP_MEM_RESET  0x64u  /* MR1=slot_id */
+/* ── Channel IDs ────────────────────────────────────────────────────── */
+#define CH_CONTROLLER   0   /* controller notifies for tick; mem_profiler PPCs for alert */
+#define CH_WORKER_BASE  1   /* workers 0..7 occupy CH_WORKER_BASE + slot_id */
 
-/* Alert sub-types sent in MR0 on CH_ALERT */
-#define ALERT_QUOTA_EXCEEDED  0x6301u  /* MR1=slot_id, MR2=bytes_allocated (low 32) */
-#define ALERT_LEAK_DETECTED   0x6302u  /* MR1=slot_id, MR2=alloc_count */
+/* ── Op codes ───────────────────────────────────────────────────────── */
+#define OP_MEM_REGISTER    0x60
+#define OP_MEM_ALLOC_HOOK  0x61
+#define OP_MEM_FREE_HOOK   0x62
+#define OP_MEM_STATUS      0x63
+#define OP_MEM_SNAPSHOT    0x64
+#define OP_MEM_LEAK_ALERT  0x65
 
-/* ── Channel local IDs ─────────────────────────────────────────────────────── */
-#define CH_IN     0  /* PPCs from controller / workers */
-#define CH_ALERT  1  /* notify controller: quota or leak */
+/* ── Result codes ───────────────────────────────────────────────────── */
+#define MEM_OK             0
+#define MEM_ERR_BADSLOT    1
+#define MEM_ERR_UNDERFLOW  2
+#define MEM_ERR_INTERNAL   99
 
-/* ── Quota / leak thresholds ───────────────────────────────────────────────── */
-#define MEM_QUOTA_BYTES       (2u * 1024u * 1024u)  /* 2MB per slot */
-#define LEAK_TICK_THRESHOLD   200u                  /* alloc-only ticks before leak flag */
+/* ── Configuration ──────────────────────────────────────────────────── */
+#define MAX_SLOTS              8
+#define LEAK_THRESHOLD_TICKS  100   /* consecutive ticks of monotonic growth */
+#define SNAPSHOT_INTERVAL      30   /* ticks between ring writes */
 
-/* ── Slot table ────────────────────────────────────────────────────────────── */
-#define MAX_MEM_SLOTS  16
+/* ── Shared memory ring ─────────────────────────────────────────────── */
+/* Microkit setvar_vaddr: patched to the mapped virtual address */
+uintptr_t mem_ring_vaddr;
 
+#define MEM_RING_SIZE          0x40000UL   /* 256KB ring */
+#define MEM_RING_RECORD_SIZE   64          /* bytes per snapshot record */
+#define MEM_RING_CAPACITY      (MEM_RING_SIZE / MEM_RING_RECORD_SIZE)
+
+/* Snapshot record layout (64 bytes, packed) */
+typedef struct __attribute__((packed)) {
+    uint64_t  tick;                /* system tick at snapshot time */
+    uint8_t   slot_id;
+    uint8_t   _pad[3];
+    uint32_t  live_allocs;         /* current live allocation count */
+    uint64_t  live_bytes;          /* current live allocation bytes */
+    uint64_t  total_allocs;        /* lifetime allocation count */
+    uint64_t  total_frees;         /* lifetime free count */
+    uint64_t  total_alloc_bytes;   /* lifetime bytes allocated */
+    uint64_t  total_free_bytes;    /* lifetime bytes freed */
+    uint8_t   leak_suspected;      /* 1 if monotonic counter hit threshold */
+    uint8_t   _pad2[7];
+} MemSnapshot;   /* = 64 bytes */
+
+_Static_assert(sizeof(MemSnapshot) == MEM_RING_RECORD_SIZE,
+               "MemSnapshot must be exactly 64 bytes");
+
+/* ── Per-slot tracking ──────────────────────────────────────────────── */
 typedef struct {
-    uint32_t slot_id;
-    uint32_t active;           /* 1 = registered */
-    uint32_t alloc_count;      /* current live allocation count */
-    uint32_t quota_alerted;    /* 1 after quota alert sent; cleared on RESET */
-    uint32_t leak_alerted;     /* 1 after leak alert sent; cleared on RESET */
-    uint32_t dry_alloc_ticks;  /* consecutive OP_MEM_ALLOC ticks with no FREE */
-    uint32_t last_op_tick;     /* global tick of last alloc/free on this slot */
-    uint32_t _pad;
-    uint64_t bytes_allocated;  /* current live heap bytes */
-    uint64_t peak_bytes;       /* high-water mark of bytes_allocated */
-} mem_slot_t;
+    bool     registered;
+    uint32_t live_allocs;          /* currently live (not yet freed) alloc count */
+    uint64_t live_bytes;           /* currently live bytes */
+    uint64_t total_allocs;
+    uint64_t total_frees;
+    uint64_t total_alloc_bytes;
+    uint64_t total_free_bytes;
+    uint32_t prev_live_allocs;     /* live_allocs at last tick snapshot */
+    uint32_t monotonic_ticks;      /* ticks since live_allocs last decreased */
+    bool     leak_alerted;         /* have we already fired the alert? */
+} SlotState;
 
-static mem_slot_t table[MAX_MEM_SLOTS];
+/* ── Global state ───────────────────────────────────────────────────── */
+static struct {
+    SlotState slots[MAX_SLOTS];
+    uint64_t  tick;                /* total notify-tick counter */
+    uint32_t  ring_head;           /* next write index into ring */
+    bool      ring_ready;          /* ring memory is mapped */
+} mpstate;
 
-/* Global monotonic tick — incremented on every OP_MEM_ALLOC or OP_MEM_FREE */
-static uint32_t global_tick = 0;
+/* ── Helpers ────────────────────────────────────────────────────────── */
 
-/* ── Shared memory (256KB Prometheus / status ring) ─────────────────────────── */
-uintptr_t mem_profiler_ring_vaddr;
+static void put_str(const char *s) {
+    microkit_dbg_puts(s);
+}
 
-#define MP_RING_BASE  ((volatile uint8_t *)mem_profiler_ring_vaddr)
-#define MP_RING_SIZE  0x40000u  /* 256KB */
-
-/* ── Debug helpers ─────────────────────────────────────────────────────────── */
-static void put_dec(uint32_t v) {
-    if (v == 0) { microkit_dbg_puts("0"); return; }
-    char buf[12]; int i = 11;
+static void put_dec(uint64_t v) {
+    if (v == 0) { put_str("0"); return; }
+    char buf[21];
+    int i = 20;
     buf[i] = '\0';
-    while (v > 0 && i > 0) { buf[--i] = '0' + (v % 10); v /= 10; }
-    microkit_dbg_puts(&buf[i]);
-}
-
-/* ── Ring helpers ──────────────────────────────────────────────────────────── */
-static uint32_t ring_put_str(volatile uint8_t *r, uint32_t p, uint32_t lim,
-                              const char *s) {
-    while (*s && p < lim - 1) r[p++] = (uint8_t)*s++;
-    return p;
-}
-static uint32_t ring_put_u32(volatile uint8_t *r, uint32_t p, uint32_t lim,
-                              uint32_t v) {
-    char tmp[12]; int i = 11;
-    tmp[i] = '\0';
-    if (v == 0) { tmp[--i] = '0'; }
-    else { while (v > 0 && i > 0) { tmp[--i] = '0' + (v % 10); v /= 10; } }
-    for (; tmp[i] && p < lim - 1; i++) r[p++] = (uint8_t)tmp[i];
-    return p;
-}
-static uint32_t ring_put_u64(volatile uint8_t *r, uint32_t p, uint32_t lim,
-                              uint64_t v) {
-    char tmp[22]; int i = 21;
-    tmp[i] = '\0';
-    if (v == 0) { tmp[--i] = '0'; }
-    else { while (v > 0 && i > 0) { tmp[--i] = '0' + (uint8_t)(v % 10); v /= 10; } }
-    for (; tmp[i] && p < lim - 1; i++) r[p++] = (uint8_t)tmp[i];
-    return p;
-}
-
-/* ── Write Prometheus-style snapshot to ring ────────────────────────────────── */
-static void write_ring_snapshot(void) {
-    volatile uint8_t *ring = MP_RING_BASE;
-    uint32_t p = 0, lim = MP_RING_SIZE;
-
-    p = ring_put_str(ring, p, lim, "# agentOS mem_profiler snapshot\n");
-    p = ring_put_str(ring, p, lim,
-        "# HELP wasm_bytes_allocated Live heap bytes per WASM slot\n"
-        "# TYPE wasm_bytes_allocated gauge\n");
-    for (int i = 0; i < MAX_MEM_SLOTS; i++) {
-        if (!table[i].active) continue;
-        p = ring_put_str(ring, p, lim, "wasm_bytes_allocated{slot=\"");
-        p = ring_put_u32(ring, p, lim, table[i].slot_id);
-        p = ring_put_str(ring, p, lim, "\"} ");
-        p = ring_put_u64(ring, p, lim, table[i].bytes_allocated);
-        p = ring_put_str(ring, p, lim, "\n");
+    while (v > 0 && i > 0) {
+        buf[--i] = '0' + (int)(v % 10);
+        v /= 10;
     }
-    p = ring_put_str(ring, p, lim,
-        "# HELP wasm_alloc_count Live allocation count per WASM slot\n"
-        "# TYPE wasm_alloc_count gauge\n");
-    for (int i = 0; i < MAX_MEM_SLOTS; i++) {
-        if (!table[i].active) continue;
-        p = ring_put_str(ring, p, lim, "wasm_alloc_count{slot=\"");
-        p = ring_put_u32(ring, p, lim, table[i].slot_id);
-        p = ring_put_str(ring, p, lim, "\"} ");
-        p = ring_put_u32(ring, p, lim, table[i].alloc_count);
-        p = ring_put_str(ring, p, lim, "\n");
+    put_str(&buf[i]);
+}
+
+static bool valid_slot(uint32_t slot) {
+    return slot < MAX_SLOTS;
+}
+
+/* Write a snapshot record into the ring for a given slot */
+static void ring_write(uint8_t slot_id) {
+    if (!mpstate.ring_ready) return;
+    SlotState *s = &mpstate.slots[slot_id];
+
+    MemSnapshot *ring = (MemSnapshot *)(uintptr_t)mem_ring_vaddr;
+    uint32_t idx = mpstate.ring_head % MEM_RING_CAPACITY;
+    MemSnapshot *rec = &ring[idx];
+
+    rec->tick              = mpstate.tick;
+    rec->slot_id           = slot_id;
+    rec->live_allocs       = s->live_allocs;
+    rec->live_bytes        = s->live_bytes;
+    rec->total_allocs      = s->total_allocs;
+    rec->total_frees       = s->total_frees;
+    rec->total_alloc_bytes = s->total_alloc_bytes;
+    rec->total_free_bytes  = s->total_free_bytes;
+    rec->leak_suspected    = s->monotonic_ticks >= LEAK_THRESHOLD_TICKS ? 1 : 0;
+
+    /* Zero padding */
+    rec->_pad[0] = rec->_pad[1] = rec->_pad[2] = 0;
+    rec->_pad2[0] = rec->_pad2[1] = rec->_pad2[2] = rec->_pad2[3] = 0;
+    rec->_pad2[4] = rec->_pad2[5] = rec->_pad2[6] = rec->_pad2[7] = 0;
+
+    mpstate.ring_head++;
+}
+
+/* Called every SNAPSHOT_INTERVAL ticks: write all registered slots */
+static void snapshot_all(void) {
+    for (uint8_t i = 0; i < MAX_SLOTS; i++) {
+        if (mpstate.slots[i].registered) {
+            ring_write(i);
+        }
     }
-    p = ring_put_str(ring, p, lim,
-        "# HELP wasm_peak_bytes Peak heap bytes per WASM slot\n"
-        "# TYPE wasm_peak_bytes gauge\n");
-    for (int i = 0; i < MAX_MEM_SLOTS; i++) {
-        if (!table[i].active) continue;
-        p = ring_put_str(ring, p, lim, "wasm_peak_bytes{slot=\"");
-        p = ring_put_u32(ring, p, lim, table[i].slot_id);
-        p = ring_put_str(ring, p, lim, "\"} ");
-        p = ring_put_u64(ring, p, lim, table[i].peak_bytes);
-        p = ring_put_str(ring, p, lim, "\n");
+    put_str("[mem_profiler] snapshot tick=");
+    put_dec(mpstate.tick);
+    put_str("\n");
+}
+
+/* Leak detection: called each tick per registered slot */
+static void check_leak(uint8_t slot_id) {
+    SlotState *s = &mpstate.slots[slot_id];
+    if (!s->registered || s->leak_alerted) return;
+
+    if (s->live_allocs > s->prev_live_allocs) {
+        s->monotonic_ticks++;
+    } else {
+        s->monotonic_ticks = 0;
     }
-    if (p < lim) ring[p] = 0;
+    s->prev_live_allocs = s->live_allocs;
+
+    if (s->monotonic_ticks >= LEAK_THRESHOLD_TICKS) {
+        /* Fire leak alert to controller */
+        put_str("[mem_profiler] LEAK DETECTED slot=");
+        put_dec(slot_id);
+        put_str(" live_allocs=");
+        put_dec(s->live_allocs);
+        put_str(" live_bytes=");
+        put_dec(s->live_bytes);
+        put_str("\n");
+
+        /* PPC into controller with OP_MEM_LEAK_ALERT */
+        microkit_mr_set(0, OP_MEM_LEAK_ALERT);
+        microkit_mr_set(1, slot_id);
+        microkit_mr_set(2, s->live_allocs);
+        microkit_mr_set(3, (uint32_t)(s->live_bytes >> 32));
+        microkit_mr_set(4, (uint32_t)(s->live_bytes & 0xFFFFFFFF));
+        microkit_ppcall(CH_CONTROLLER, microkit_msginfo_new(0, 5));
+
+        s->leak_alerted = true;  /* suppress repeat alerts until reset */
+    }
 }
 
-/* ── Slot lookup ───────────────────────────────────────────────────────────── */
-static int find_slot(uint32_t slot_id) {
-    for (int i = 0; i < MAX_MEM_SLOTS; i++)
-        if (table[i].active && table[i].slot_id == slot_id) return i;
-    return -1;
-}
-static int find_free_slot(void) {
-    for (int i = 0; i < MAX_MEM_SLOTS; i++)
-        if (!table[i].active) return i;
-    return -1;
+/* ── Microkit entry points ──────────────────────────────────────────── */
+
+void init(void) {
+    put_str("[mem_profiler] init — priority 108, passive\n");
+
+    /* Zero all state */
+    for (int i = 0; i < MAX_SLOTS; i++) {
+        mpstate.slots[i] = (SlotState){0};
+    }
+    mpstate.tick       = 0;
+    mpstate.ring_head  = 0;
+    mpstate.ring_ready = (mem_ring_vaddr != 0);
+
+    if (mpstate.ring_ready) {
+        put_str("[mem_profiler] ring mapped, 256KB, capacity=");
+        put_dec(MEM_RING_CAPACITY);
+        put_str(" records\n");
+    } else {
+        put_str("[mem_profiler] WARNING: ring not mapped\n");
+    }
 }
 
-/* ── Alert helper ──────────────────────────────────────────────────────────── */
-static void send_alert(uint32_t alert_type, uint32_t slot_id, uint32_t val) {
-    microkit_mr_set(0, alert_type);
-    microkit_mr_set(1, slot_id);
-    microkit_mr_set(2, val);
-    microkit_notify(CH_ALERT);
-    microkit_dbg_puts("[mem_profiler] ALERT 0x");
-    /* minimal hex print */
-    uint32_t a = alert_type;
-    char hx[9]; int hi = 8; hx[hi] = '\0';
-    do { hx[--hi] = "0123456789ABCDEF"[a & 0xF]; a >>= 4; } while (a && hi > 0);
-    microkit_dbg_puts(&hx[hi]);
-    microkit_dbg_puts(" slot=");
-    put_dec(slot_id);
-    microkit_dbg_puts(" val=");
-    put_dec(val);
-    microkit_dbg_puts("\n");
+/*
+ * notified() — controller sends a tick notification (CH_CONTROLLER).
+ */
+void notified(microkit_channel ch) {
+    (void)ch;
+    mpstate.tick++;
+
+    /* Leak detection: check all registered slots */
+    for (uint8_t i = 0; i < MAX_SLOTS; i++) {
+        if (mpstate.slots[i].registered) {
+            check_leak(i);
+        }
+    }
+
+    /* Periodic snapshot */
+    if (mpstate.tick % SNAPSHOT_INTERVAL == 0) {
+        snapshot_all();
+    }
 }
 
-/* ── Handle PPC request ────────────────────────────────────────────────────── */
-static microkit_msginfo handle_request(microkit_msginfo msg) {
-    uint32_t op      = (uint32_t)microkit_mr_get(0);
-    uint32_t slot_id = (uint32_t)microkit_mr_get(1);
+/*
+ * protected() — workers PPC in for alloc/free hooks and status queries.
+ * Returns microkit_msginfo with MR0 = result code.
+ */
+microkit_msginfo protected(microkit_channel ch, microkit_msginfo msginfo) {
+    (void)ch;
+
+    uint32_t op   = (uint32_t)microkit_mr_get(0);
+    uint32_t slot = (uint32_t)microkit_mr_get(1);
 
     switch (op) {
 
-    /* ── OP_MEM_ALLOC ─────────────────────────────────────────────────────── */
-    case OP_MEM_ALLOC: {
+    /* ── OP_MEM_REGISTER ──────────────────────────────────────────── */
+    case OP_MEM_REGISTER: {
+        if (!valid_slot(slot)) {
+            microkit_mr_set(0, MEM_ERR_BADSLOT);
+            return microkit_msginfo_new(0, 1);
+        }
+        SlotState *s = &mpstate.slots[slot];
+        s->registered       = true;
+        s->live_allocs      = 0;
+        s->live_bytes       = 0;
+        s->total_allocs     = 0;
+        s->total_frees      = 0;
+        s->total_alloc_bytes = 0;
+        s->total_free_bytes  = 0;
+        s->prev_live_allocs = 0;
+        s->monotonic_ticks  = 0;
+        s->leak_alerted     = false;
+        put_str("[mem_profiler] slot=");
+        put_dec(slot);
+        put_str(" registered\n");
+        microkit_mr_set(0, MEM_OK);
+        return microkit_msginfo_new(0, 1);
+    }
+
+    /* ── OP_MEM_ALLOC_HOOK ────────────────────────────────────────── */
+    case OP_MEM_ALLOC_HOOK: {
+        if (!valid_slot(slot)) {
+            microkit_mr_set(0, MEM_ERR_BADSLOT);
+            return microkit_msginfo_new(0, 1);
+        }
         uint32_t size = (uint32_t)microkit_mr_get(2);
-        /* MR3=ptr_hint: recorded in log but not needed for byte tracking */
-
-        int idx = find_slot(slot_id);
-        if (idx < 0) {
-            /* Auto-register on first alloc for an unknown slot */
-            idx = find_free_slot();
-            if (idx < 0) {
-                microkit_dbg_puts("[mem_profiler] ERR: slot table full\n");
-                microkit_mr_set(0, 0xE1u);
-                return microkit_msginfo_new(0, 1);
-            }
-            table[idx].slot_id         = slot_id;
-            table[idx].active          = 1;
-            table[idx].alloc_count     = 0;
-            table[idx].quota_alerted   = 0;
-            table[idx].leak_alerted    = 0;
-            table[idx].dry_alloc_ticks = 0;
-            table[idx].last_op_tick    = global_tick;
-            table[idx].bytes_allocated = 0;
-            table[idx].peak_bytes      = 0;
-            microkit_dbg_puts("[mem_profiler] auto-register slot=");
-            put_dec(slot_id);
-            microkit_dbg_puts("\n");
-        }
-
-        table[idx].alloc_count++;
-        table[idx].bytes_allocated += size;
-        if (table[idx].bytes_allocated > table[idx].peak_bytes)
-            table[idx].peak_bytes = table[idx].bytes_allocated;
-        table[idx].dry_alloc_ticks++;
-        table[idx].last_op_tick = global_tick++;
-
-        /* Quota check: alert controller on first crossing */
-        if (table[idx].bytes_allocated > MEM_QUOTA_BYTES &&
-            !table[idx].quota_alerted) {
-            table[idx].quota_alerted = 1;
-            send_alert(ALERT_QUOTA_EXCEEDED, slot_id,
-                       (uint32_t)table[idx].bytes_allocated);
-        }
-
-        /* Leak check: consecutive allocs with no free */
-        if (table[idx].dry_alloc_ticks >= LEAK_TICK_THRESHOLD &&
-            !table[idx].leak_alerted) {
-            table[idx].leak_alerted = 1;
-            send_alert(ALERT_LEAK_DETECTED, slot_id, table[idx].alloc_count);
-        }
-
-        microkit_mr_set(0, 0u);
+        SlotState *s = &mpstate.slots[slot];
+        s->live_allocs++;
+        s->live_bytes       += size;
+        s->total_allocs++;
+        s->total_alloc_bytes += size;
+        microkit_mr_set(0, MEM_OK);
         return microkit_msginfo_new(0, 1);
     }
 
-    /* ── OP_MEM_FREE ──────────────────────────────────────────────────────── */
-    case OP_MEM_FREE: {
-        /* MR2=ptr_hint (informational), MR3=size (optional, 0 = unknown) */
-        uint32_t size = (uint32_t)microkit_mr_get(3);
-
-        int idx = find_slot(slot_id);
-        if (idx < 0) {
-            microkit_mr_set(0, 0xE2u);
+    /* ── OP_MEM_FREE_HOOK ─────────────────────────────────────────── */
+    case OP_MEM_FREE_HOOK: {
+        if (!valid_slot(slot)) {
+            microkit_mr_set(0, MEM_ERR_BADSLOT);
             return microkit_msginfo_new(0, 1);
         }
-
-        if (table[idx].alloc_count > 0) table[idx].alloc_count--;
-        if (size > 0) {
-            if (table[idx].bytes_allocated >= size)
-                table[idx].bytes_allocated -= size;
-            else
-                table[idx].bytes_allocated = 0;
+        uint32_t size = (uint32_t)microkit_mr_get(2);
+        SlotState *s = &mpstate.slots[slot];
+        if (s->live_allocs == 0) {
+            /* Guard against underflow from mismatched free */
+            microkit_mr_set(0, MEM_ERR_UNDERFLOW);
+            return microkit_msginfo_new(0, 1);
         }
-
-        /* Reset leak window: a free shows the slot is not stuck */
-        table[idx].dry_alloc_ticks = 0;
-        table[idx].leak_alerted    = 0;
-        table[idx].last_op_tick    = global_tick++;
-
-        /* Re-arm quota alert if bytes dropped back below threshold */
-        if (table[idx].bytes_allocated <= MEM_QUOTA_BYTES)
-            table[idx].quota_alerted = 0;
-
-        microkit_mr_set(0, 0u);
+        s->live_allocs--;
+        if (s->live_bytes >= size) s->live_bytes -= size;
+        else s->live_bytes = 0;  /* clamp on underflow */
+        s->total_frees++;
+        s->total_free_bytes += size;
+        /* Reset leak alert if pressure subsides */
+        if (s->live_allocs < s->prev_live_allocs) {
+            s->leak_alerted = false;
+        }
+        microkit_mr_set(0, MEM_OK);
         return microkit_msginfo_new(0, 1);
     }
 
-    /* ── OP_MEM_QUERY ─────────────────────────────────────────────────────── */
-    case OP_MEM_QUERY: {
-        int idx = find_slot(slot_id);
-        if (idx < 0) {
-            microkit_mr_set(0, 0xE2u);
+    /* ── OP_MEM_STATUS ────────────────────────────────────────────── */
+    case OP_MEM_STATUS: {
+        if (!valid_slot(slot)) {
+            microkit_mr_set(0, MEM_ERR_BADSLOT);
             return microkit_msginfo_new(0, 1);
         }
-
-        /* Refresh ring on every query */
-        write_ring_snapshot();
-
-        microkit_mr_set(0, (uint32_t)table[idx].bytes_allocated);
-        microkit_mr_set(1, table[idx].alloc_count);
-        microkit_mr_set(2, (uint32_t)table[idx].peak_bytes);
-        microkit_mr_set(3, table[idx].last_op_tick);
-        return microkit_msginfo_new(0, 4);
+        SlotState *s = &mpstate.slots[slot];
+        microkit_mr_set(0, MEM_OK);
+        microkit_mr_set(1, s->live_allocs);
+        microkit_mr_set(2, (uint32_t)(s->live_bytes >> 32));
+        microkit_mr_set(3, (uint32_t)(s->live_bytes & 0xFFFFFFFF));
+        microkit_mr_set(4, (uint32_t)(s->total_allocs & 0xFFFFFFFF));
+        microkit_mr_set(5, (uint32_t)(s->total_frees  & 0xFFFFFFFF));
+        microkit_mr_set(6, s->monotonic_ticks);
+        microkit_mr_set(7, s->leak_alerted ? 1 : 0);
+        return microkit_msginfo_new(0, 8);
     }
 
-    /* ── OP_MEM_RESET ─────────────────────────────────────────────────────── */
-    case OP_MEM_RESET: {
-        int idx = find_slot(slot_id);
-        if (idx < 0) {
-            microkit_mr_set(0, 0xE2u);
-            return microkit_msginfo_new(0, 1);
-        }
-
-        table[idx].alloc_count     = 0;
-        table[idx].quota_alerted   = 0;
-        table[idx].leak_alerted    = 0;
-        table[idx].dry_alloc_ticks = 0;
-        table[idx].last_op_tick    = global_tick;
-        table[idx].bytes_allocated = 0;
-        table[idx].peak_bytes      = 0;
-
-        microkit_dbg_puts("[mem_profiler] reset slot=");
-        put_dec(slot_id);
-        microkit_dbg_puts("\n");
-
-        microkit_mr_set(0, 0u);
-        return microkit_msginfo_new(0, 1);
+    /* ── OP_MEM_SNAPSHOT ──────────────────────────────────────────── */
+    case OP_MEM_SNAPSHOT: {
+        snapshot_all();
+        microkit_mr_set(0, MEM_OK);
+        microkit_mr_set(1, (uint32_t)(mpstate.ring_head & 0xFFFFFFFF));
+        return microkit_msginfo_new(0, 2);
     }
 
     default:
-        microkit_dbg_puts("[mem_profiler] WARN: unknown op\n");
-        microkit_mr_set(0, 0xFFu);
+        microkit_mr_set(0, MEM_ERR_INTERNAL);
         return microkit_msginfo_new(0, 1);
     }
-
-    (void)msg;
-}
-
-/* ── Microkit entry points ─────────────────────────────────────────────────── */
-void init(void) {
-    agentos_log_boot("mem_profiler");
-
-    for (int i = 0; i < MAX_MEM_SLOTS; i++) {
-        table[i].active = 0;
-    }
-
-    /* Seed ring with placeholder */
-    const char *hdr = "# agentOS mem_profiler: no data yet\n";
-    volatile uint8_t *ring = MP_RING_BASE;
-    for (int i = 0; hdr[i]; i++) ring[i] = (uint8_t)hdr[i];
-    ring[36] = 0;
-
-    microkit_dbg_puts("[mem_profiler] Ready — priority 108, passive, 16 slots, "
-                      "2MB quota, leak@200 ticks\n");
-}
-
-microkit_msginfo protected(microkit_channel channel, microkit_msginfo msg) {
-    (void)channel;
-    return handle_request(msg);
-}
-
-void notified(microkit_channel ch) {
-    (void)ch;
 }
