@@ -143,7 +143,7 @@ static void debug_bridge_init(void) {
         slot_state[i].hit_count = 0;
     }
 
-    microkit_dbg_puts("[debug_bridge] Ring initialized: capacity=5000+ events, 48B each\n");
+    console_log(12, 12, "[debug_bridge] Ring initialized: capacity=5000+ events, 48B each\n");
 }
 
 /* ── Append debug event to ring ───────────────────────────────────────────── */
@@ -186,13 +186,13 @@ static microkit_msginfo handle_attach(void) {
     uint32_t slot_id = (uint32_t)microkit_mr_get(1);
 
     if (slot_id >= MAX_DEBUG_SLOTS) {
-        microkit_dbg_puts("[debug_bridge] ATTACH failed: invalid slot_id\n");
+        console_log(12, 12, "[debug_bridge] ATTACH failed: invalid slot_id\n");
         microkit_mr_set(0, 0xFF); /* error: invalid slot */
         return microkit_msginfo_new(0, 1);
     }
 
     if (slot_state[slot_id].attached) {
-        microkit_dbg_puts("[debug_bridge] ATTACH: slot already attached\n");
+        console_log(12, 12, "[debug_bridge] ATTACH: slot already attached\n");
         microkit_mr_set(0, 0xFE); /* error: already attached */
         return microkit_msginfo_new(0, 1);
     }
@@ -207,12 +207,18 @@ static microkit_msginfo handle_attach(void) {
     debug_event_append(DBG_EVT_ATTACHED, slot_id, 0, 0, 0);
     notify_controller_debug_event(slot_id, DBG_EVT_ATTACHED);
 
-    microkit_dbg_puts("[debug_bridge] ATTACHED slot=");
+    console_log(12, 12, "[debug_bridge] ATTACHED slot=");
     char buf[4];
     buf[0] = '0' + (slot_id % 10);
     buf[1] = '\0';
-    microkit_dbg_puts(buf);
-    microkit_dbg_puts("\n");
+    {
+        char _cl_buf[256] = {};
+        char *_cl_p = _cl_buf;
+        for (const char *_s = buf; *_s; _s++) *_cl_p++ = *_s;
+        for (const char *_s = "\n"; *_s; _s++) *_cl_p++ = *_s;
+        *_cl_p = 0;
+        console_log(12, 12, _cl_buf);
+    }
 
     microkit_mr_set(0, 0); /* success */
     return microkit_msginfo_new(0, 1);
@@ -246,12 +252,18 @@ static microkit_msginfo handle_detach(void) {
     debug_event_append(DBG_EVT_DETACHED, slot_id, 0, 0, 0);
     notify_controller_debug_event(slot_id, DBG_EVT_DETACHED);
 
-    microkit_dbg_puts("[debug_bridge] DETACHED slot=");
+    console_log(12, 12, "[debug_bridge] DETACHED slot=");
     char buf[4];
     buf[0] = '0' + (slot_id % 10);
     buf[1] = '\0';
-    microkit_dbg_puts(buf);
-    microkit_dbg_puts("\n");
+    {
+        char _cl_buf[256] = {};
+        char *_cl_p = _cl_buf;
+        for (const char *_s = buf; *_s; _s++) *_cl_p++ = *_s;
+        for (const char *_s = "\n"; *_s; _s++) *_cl_p++ = *_s;
+        *_cl_p = 0;
+        console_log(12, 12, _cl_buf);
+    }
 
     microkit_mr_set(0, 0);
     return microkit_msginfo_new(0, 1);
@@ -284,7 +296,7 @@ static microkit_msginfo handle_breakpoint(void) {
 
         /* Add new breakpoint */
         if (s->bp_count >= MAX_BREAKPOINTS) {
-            microkit_dbg_puts("[debug_bridge] BP table full\n");
+            console_log(12, 12, "[debug_bridge] BP table full\n");
             microkit_mr_set(0, 0xFD); /* table full */
             return microkit_msginfo_new(0, 1);
         }
@@ -293,12 +305,18 @@ static microkit_msginfo handle_breakpoint(void) {
         s->breakpoints[idx].wasm_offset = wasm_offset;
         s->breakpoints[idx].enabled     = 1;
 
-        microkit_dbg_puts("[debug_bridge] BP set slot=");
+        console_log(12, 12, "[debug_bridge] BP set slot=");
         char buf[4];
         buf[0] = '0' + (slot_id % 10);
         buf[1] = '\0';
-        microkit_dbg_puts(buf);
-        microkit_dbg_puts(" offset=0x...\n");
+        {
+            char _cl_buf[256] = {};
+            char *_cl_p = _cl_buf;
+            for (const char *_s = buf; *_s; _s++) *_cl_p++ = *_s;
+            for (const char *_s = " offset=0x...\n"; *_s; _s++) *_cl_p++ = *_s;
+            *_cl_p = 0;
+            console_log(12, 12, _cl_buf);
+        }
 
         microkit_mr_set(0, 0);
         microkit_mr_set(1, idx);
@@ -343,15 +361,27 @@ static microkit_msginfo handle_step(void) {
     debug_event_append(DBG_EVT_RESUMED, slot_id,
                        slot_state[slot_id].suspend_pc, 0, step_mode);
 
-    microkit_dbg_puts("[debug_bridge] STEP slot=");
+    console_log(12, 12, "[debug_bridge] STEP slot=");
     char buf[4];
     buf[0] = '0' + (slot_id % 10);
     buf[1] = '\0';
-    microkit_dbg_puts(buf);
-    microkit_dbg_puts(" mode=");
+    {
+        char _cl_buf[256] = {};
+        char *_cl_p = _cl_buf;
+        for (const char *_s = buf; *_s; _s++) *_cl_p++ = *_s;
+        for (const char *_s = " mode="; *_s; _s++) *_cl_p++ = *_s;
+        *_cl_p = 0;
+        console_log(12, 12, _cl_buf);
+    }
     buf[0] = '0' + (step_mode % 10);
-    microkit_dbg_puts(buf);
-    microkit_dbg_puts("\n");
+    {
+        char _cl_buf[256] = {};
+        char *_cl_p = _cl_buf;
+        for (const char *_s = buf; *_s; _s++) *_cl_p++ = *_s;
+        for (const char *_s = "\n"; *_s; _s++) *_cl_p++ = *_s;
+        *_cl_p = 0;
+        console_log(12, 12, _cl_buf);
+    }
 
     /*
      * The actual stepping happens in the swap_slot PD's WASM interpreter.
@@ -398,7 +428,7 @@ static microkit_msginfo handle_status(void) {
 void init(void) {
     agentos_log_boot("debug_bridge");
     debug_bridge_init();
-    microkit_dbg_puts("[debug_bridge] Ready — passive debug channel, priority 160\n");
+    console_log(12, 12, "[debug_bridge] Ready — passive debug channel, priority 160\n");
 }
 
 /*
@@ -419,7 +449,7 @@ microkit_msginfo protected(microkit_channel ch, microkit_msginfo msginfo) {
     case OP_DBG_STEP:       return handle_step();
     case OP_DBG_STATUS:     return handle_status();
     default:
-        microkit_dbg_puts("[debug_bridge] WARN: unknown opcode\n");
+        console_log(12, 12, "[debug_bridge] WARN: unknown opcode\n");
         microkit_mr_set(0, 0xFF);
         return microkit_msginfo_new(0, 1);
     }
@@ -474,12 +504,18 @@ void notified(microkit_channel ch) {
                                wasm_pc, 0, s->step_mode);
             notify_controller_debug_event(slot_id, DBG_EVT_STEP_COMPLETE);
 
-            microkit_dbg_puts("[debug_bridge] STEP complete slot=");
+            console_log(12, 12, "[debug_bridge] STEP complete slot=");
             char buf[4];
             buf[0] = '0' + (slot_id % 10);
             buf[1] = '\0';
-            microkit_dbg_puts(buf);
-            microkit_dbg_puts("\n");
+            {
+                char _cl_buf[256] = {};
+                char *_cl_p = _cl_buf;
+                for (const char *_s = buf; *_s; _s++) *_cl_p++ = *_s;
+                for (const char *_s = "\n"; *_s; _s++) *_cl_p++ = *_s;
+                *_cl_p = 0;
+                console_log(12, 12, _cl_buf);
+            }
         } else {
             /* Breakpoint hit — check if PC matches any active breakpoint */
             uint32_t bp_idx = 0xFFFF;
@@ -499,12 +535,18 @@ void notified(microkit_channel ch) {
                                wasm_pc, bp_idx, 0);
             notify_controller_debug_event(slot_id, DBG_EVT_BREAKPOINT_HIT);
 
-            microkit_dbg_puts("[debug_bridge] BREAKPOINT HIT slot=");
+            console_log(12, 12, "[debug_bridge] BREAKPOINT HIT slot=");
             char buf[4];
             buf[0] = '0' + (slot_id % 10);
             buf[1] = '\0';
-            microkit_dbg_puts(buf);
-            microkit_dbg_puts("\n");
+            {
+                char _cl_buf[256] = {};
+                char *_cl_p = _cl_buf;
+                for (const char *_s = buf; *_s; _s++) *_cl_p++ = *_s;
+                for (const char *_s = "\n"; *_s; _s++) *_cl_p++ = *_s;
+                *_cl_p = 0;
+                console_log(12, 12, _cl_buf);
+            }
         }
     }
 }

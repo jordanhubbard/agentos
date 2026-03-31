@@ -381,3 +381,74 @@ typedef struct {
     uint32_t kind;
     uint32_t badge;
 } agentos_cap_desc_t;
+
+/* ═══════════════════════════════════════════════════════════════════════════
+ * Console Ring Buffer — per-PD output ring for console_mux
+ *
+ * Each PD gets a 4KB slot in the console_rings shared memory region.
+ * Layout: console_ring_header_t at offset 0, data bytes follow.
+ * ═══════════════════════════════════════════════════════════════════════════ */
+
+#define CONSOLE_RING_MAGIC   0xC0DE4D55
+#define CONSOLE_RING_SIZE    0x1000   /* 4KB per slot */
+#define CONSOLE_RING_HDR_SZ  16       /* sizeof(console_ring_header_t) */
+#define CONSOLE_DATA_SIZE    (CONSOLE_RING_SIZE - CONSOLE_RING_HDR_SZ)
+
+typedef struct __attribute__((packed)) {
+    uint32_t magic;
+    uint32_t pd_id;
+    uint32_t head;    /* write offset into data area (PD increments) */
+    uint32_t tail;    /* read offset into data area (console_mux increments) */
+} console_ring_header_t;
+
+/*
+ * console_rings_vaddr — seL4cp setvar, declared in each PD that maps
+ * the console_rings MR.  We extern it here so console_log() can use it.
+ */
+extern uintptr_t console_rings_vaddr;
+
+/*
+ * console_log(slot, pd_id, msg)
+ *
+ * Write msg into the per-PD ring buffer and notify console_mux to drain it.
+ * Falls back to microkit_dbg_puts if the ring base is not yet mapped
+ * (console_rings_vaddr == 0).
+ *
+ * Bare-metal: no libc.  Uses only microkit primitives.
+ */
+static inline void console_log(uint32_t slot, uint32_t pd_id, const char *msg)
+{
+    if (!console_rings_vaddr) {
+        microkit_dbg_puts(msg);
+        return;
+    }
+
+    volatile console_ring_header_t *hdr =
+        (volatile console_ring_header_t *)(console_rings_vaddr + slot * CONSOLE_RING_SIZE);
+
+    /* Initialise ring on first use */
+    if (hdr->magic != CONSOLE_RING_MAGIC) {
+        hdr->pd_id = pd_id;
+        hdr->head  = 0;
+        hdr->tail  = 0;
+        hdr->magic = CONSOLE_RING_MAGIC;
+    }
+
+    volatile uint8_t *data = (volatile uint8_t *)(hdr + 1);
+    uint32_t h = hdr->head;
+
+    for (const char *p = msg; *p; p++) {
+        uint32_t next = (h + 1) % CONSOLE_DATA_SIZE;
+        /* Drop if full — best-effort, never block */
+        if (next == hdr->tail) break;
+        data[h] = (uint8_t)*p;
+        h = next;
+    }
+    hdr->head = h;
+
+    /* Notify console_mux to drain this slot */
+    microkit_mr_set(0, OP_CONSOLE_WRITE);
+    microkit_mr_set(1, slot);
+    microkit_mr_set(2, pd_id);
+    microkit_ppcall(CH_CONSOLEMUX, microkit_msginfo_new(OP_CONSOLE_WRITE, 2));
+}

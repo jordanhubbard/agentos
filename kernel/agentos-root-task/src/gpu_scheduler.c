@@ -84,7 +84,7 @@ static microkit_msginfo handle_submit(void) {
 
     int slot = find_free_slot();
     if (slot < 0) {
-        microkit_dbg_puts("[gpu_scheduler] REJECT: all 4 GPU slots busy\n");
+        console_log(15, 15, "[gpu_scheduler] REJECT: all 4 GPU slots busy\n");
         microkit_mr_set(0, GPU_ERR_FULL);
         return microkit_msginfo_new(0, 1);
     }
@@ -96,13 +96,25 @@ static microkit_msginfo handle_submit(void) {
     gpu_slots[slot].module_id    = next_module_id++;
     total_submitted++;
 
-    microkit_dbg_puts("[gpu_scheduler] SUBMIT: slot=");
+    console_log(15, 15, "[gpu_scheduler] SUBMIT: slot=");
     char s[2] = {'0' + (char)slot, '\0'};
-    microkit_dbg_puts(s);
-    microkit_dbg_puts(" module_id=");
+    {
+        char _cl_buf[256] = {};
+        char *_cl_p = _cl_buf;
+        for (const char *_s = s; *_s; _s++) *_cl_p++ = *_s;
+        for (const char *_s = " module_id="; *_s; _s++) *_cl_p++ = *_s;
+        *_cl_p = 0;
+        console_log(15, 15, _cl_buf);
+    }
     char m[2] = {'0' + (char)((gpu_slots[slot].module_id) % 10), '\0'};
-    microkit_dbg_puts(m);
-    microkit_dbg_puts(" ptx_len=");
+    {
+        char _cl_buf[256] = {};
+        char *_cl_p = _cl_buf;
+        for (const char *_s = m; *_s; _s++) *_cl_p++ = *_s;
+        for (const char *_s = " ptx_len="; *_s; _s++) *_cl_p++ = *_s;
+        *_cl_p = 0;
+        console_log(15, 15, _cl_buf);
+    }
     /* Simple decimal print for ptx_len (up to 999999) */
     char nbuf[8];
     uint32_t n = ptx_len;
@@ -111,8 +123,14 @@ static microkit_msginfo handle_submit(void) {
     nbuf[6] = '\0';
     if (n == 0) { nbuf[ni--] = '0'; }
     while (n > 0 && ni >= 0) { nbuf[ni--] = '0' + (char)(n % 10); n /= 10; }
-    microkit_dbg_puts(&nbuf[ni + 1]);
-    microkit_dbg_puts("\n");
+    {
+        char _cl_buf[256] = {};
+        char *_cl_p = _cl_buf;
+        for (const char *_s = &nbuf[ni + 1]; *_s; _s++) *_cl_p++ = *_s;
+        for (const char *_s = "\n"; *_s; _s++) *_cl_p++ = *_s;
+        *_cl_p = 0;
+        console_log(15, 15, _cl_buf);
+    }
 
     /*
      * On Sparky GB10 with nvrtc available, this would be:
@@ -139,10 +157,16 @@ static microkit_msginfo handle_complete(void) {
         return microkit_msginfo_new(0, 1);
     }
 
-    microkit_dbg_puts("[gpu_scheduler] COMPLETE: slot=");
+    console_log(15, 15, "[gpu_scheduler] COMPLETE: slot=");
     char s[2] = {'0' + (char)slot_id, '\0'};
-    microkit_dbg_puts(s);
-    microkit_dbg_puts("\n");
+    {
+        char _cl_buf[256] = {};
+        char *_cl_p = _cl_buf;
+        for (const char *_s = s; *_s; _s++) *_cl_p++ = *_s;
+        for (const char *_s = "\n"; *_s; _s++) *_cl_p++ = *_s;
+        *_cl_p = 0;
+        console_log(15, 15, _cl_buf);
+    }
 
     gpu_slots[slot_id].busy      = false;
     gpu_slots[slot_id].module_id = 0;
@@ -163,7 +187,7 @@ static microkit_msginfo handle_status(void) {
 /* ── Microkit entrypoints ───────────────────────────────────────────── */
 
 void init(void) {
-    microkit_dbg_puts("[gpu_scheduler] init — 4 GPU slots ready\n");
+    console_log(15, 15, "[gpu_scheduler] init — 4 GPU slots ready\n");
     for (int i = 0; i < NUM_GPU_SLOTS; i++) {
         gpu_slots[i].busy      = false;
         gpu_slots[i].module_id = 0;
@@ -179,7 +203,7 @@ microkit_msginfo protected(microkit_channel ch, microkit_msginfo msginfo) {
     case OP_GPU_COMPLETE: return handle_complete();
     case OP_GPU_STATUS:   return handle_status();
     default:
-        microkit_dbg_puts("[gpu_scheduler] unknown op\n");
+        console_log(15, 15, "[gpu_scheduler] unknown op\n");
         microkit_mr_set(0, 0xFF);
         return microkit_msginfo_new(0, 1);
     }

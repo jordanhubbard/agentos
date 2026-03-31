@@ -107,38 +107,21 @@ static struct {
 /* ── Banner ───────────────────────────────────────────────────────────── */
 
 static void print_banner(void) {
-    microkit_dbg_puts("\n");
-    microkit_dbg_puts("╔══════════════════════════════════════════════════╗\n");
-    microkit_dbg_puts("║                                                  ║\n");
-    microkit_dbg_puts("║          agentOS v0.1.0-alpha                    ║\n");
-    microkit_dbg_puts("║   The World's First OS for AI Agents             ║\n");
-    microkit_dbg_puts("║                                                  ║\n");
-    microkit_dbg_puts("║   Built on: seL4 Microkernel (formally proved)   ║\n");
+    console_log(1, 1, "\n╔══════════════════════════════════════════════════╗\n║                                                  ║\n║          agentOS v0.1.0-alpha                    ║\n║   The World's First OS for AI Agents             ║\n║                                                  ║\n║   Built on: seL4 Microkernel (formally proved)   ║\n");
 #if defined(__aarch64__)
-    microkit_dbg_puts("║   Arch:     seL4 Microkit / AArch64              ║\n");
+    console_log(1, 1, "║   Arch:     seL4 Microkit / AArch64              ║\n");
 #elif defined(__riscv)
-    microkit_dbg_puts("║   Arch:     seL4 Microkit / RISC-V RV64          ║\n");
+    console_log(1, 1, "║   Arch:     seL4 Microkit / RISC-V RV64          ║\n");
 #else
-    microkit_dbg_puts("║   Arch:     seL4 Microkit                        ║\n");
+    console_log(1, 1, "║   Arch:     seL4 Microkit                        ║\n");
 #endif
-    microkit_dbg_puts("║                                                  ║\n");
-    microkit_dbg_puts("║   Protection Domains:                            ║\n");
-    microkit_dbg_puts("║     [*] controller  (prio  50) - system ctrl     ║\n");
-    microkit_dbg_puts("║     [*] event_bus   (prio 200) - pub/sub bus     ║\n");
-    microkit_dbg_puts("║     [*] init_agent  (prio 100) - bootstrapper    ║\n");
-    microkit_dbg_puts("║                                                  ║\n");
-    microkit_dbg_puts("║   Ready for agents. The future is running.       ║\n");
-    microkit_dbg_puts("║                                                  ║\n");
-    microkit_dbg_puts("║   Designed by Natasha on 2026-03-28              ║\n");
-    microkit_dbg_puts("║   github.com/jordanhubbard/agentos               ║\n");
-    microkit_dbg_puts("╚══════════════════════════════════════════════════╝\n");
-    microkit_dbg_puts("\n");
+    console_log(1, 1, "║                                                  ║\n║   Protection Domains:                            ║\n║     [*] controller  (prio  50) - system ctrl     ║\n║     [*] event_bus   (prio 200) - pub/sub bus     ║\n║     [*] init_agent  (prio 100) - bootstrapper    ║\n║                                                  ║\n║   Ready for agents. The future is running.       ║\n║                                                  ║\n║   Designed by Natasha on 2026-03-28              ║\n║   github.com/jordanhubbard/agentos               ║\n╚══════════════════════════════════════════════════╝\n\n");
 }
 
 /* ── Helpers ──────────────────────────────────────────────────────────── */
 
 static void put_dec(uint32_t v) {
-    if (v == 0) { microkit_dbg_puts("0"); return; }
+    console_log(1, 1, "0");
     char buf[12];
     int i = 11;
     buf[i] = '\0';
@@ -146,7 +129,7 @@ static void put_dec(uint32_t v) {
         buf[--i] = '0' + (v % 10);
         v /= 10;
     }
-    microkit_dbg_puts(&buf[i]);
+    console_log(1, 1, &buf[i]);
 }
 
 static void put_hex32(uint32_t v) {
@@ -156,7 +139,7 @@ static void put_hex32(uint32_t v) {
         buf[i] = hex[v & 0xf];
         v >>= 4;
     }
-    microkit_dbg_puts(buf);
+    console_log(1, 1, buf);
 }
 
 /* ── Quota ops ────────────────────────────────────────────────────────── */
@@ -176,23 +159,23 @@ static bool quota_register_agent(uint32_t agent_id, uint32_t cpu_ms, uint32_t me
     uint32_t status = (uint32_t)microkit_mr_get(1);
 
     if (status == 0 || status == 1) {
-        microkit_dbg_puts("[init_agent] Quota registered: agent=");
+        console_log(1, 1, "[init_agent] Quota registered: agent=");
         put_dec(agent_id);
-        microkit_dbg_puts(" cpu=");
+        console_log(1, 1, " cpu=");
         put_dec(cpu_ms);
-        microkit_dbg_puts("ms mem=");
+        console_log(1, 1, "ms mem=");
         put_dec(mem_kb);
-        microkit_dbg_puts("kb slot=");
+        console_log(1, 1, "kb slot=");
         put_dec(slot);
-        microkit_dbg_puts("\n");
+        console_log(1, 1, "\n");
         return true;
     }
 
-    microkit_dbg_puts("[init_agent] Quota registration failed for agent=");
+    console_log(1, 1, "[init_agent] Quota registration failed for agent=");
     put_dec(agent_id);
-    microkit_dbg_puts(" status=");
+    console_log(1, 1, " status=");
     put_dec(status);
-    microkit_dbg_puts("\n");
+    console_log(1, 1, "\n");
     return false;
 }
 
@@ -225,17 +208,23 @@ static void quota_tick_all_agents(void) {
         }
 
         if (flags & QUOTA_FLAG_REVOKED) {
-            microkit_dbg_puts("[init_agent] Quota revoked agent=");
+            console_log(1, 1, "[init_agent] Quota revoked agent=");
             put_dec(spawn_table[i].spawn_id);
-            microkit_dbg_puts(" flags=0x");
+            console_log(1, 1, " flags=0x");
             char hexbuf[9];
             for (int h = 0; h < 8; h++) {
                 uint32_t nibble = (flags >> (28 - h * 4)) & 0xF;
                 hexbuf[h] = (char)(nibble < 10 ? '0' + nibble : 'a' + nibble - 10);
             }
             hexbuf[8] = '\0';
-            microkit_dbg_puts(hexbuf);
-            microkit_dbg_puts("\n");
+            {
+                char _cl_buf[256] = {};
+                char *_cl_p = _cl_buf;
+                for (const char *_s = hexbuf; *_s; _s++) *_cl_p++ = *_s;
+                for (const char *_s = "\n"; *_s; _s++) *_cl_p++ = *_s;
+                *_cl_p = 0;
+                console_log(1, 1, _cl_buf);
+            }
             spawn_table[i].quota_registered = false;
         }
     }
@@ -250,40 +239,35 @@ static void scheduler_round_tick(void) {
 static void query_eventbus_status(void) {
     state.query_count++;
 
-    microkit_dbg_puts("[init_agent] Querying EventBus status via PPC...\n");
+    console_log(1, 1, "[init_agent] Querying EventBus status via PPC...\n");
 
     microkit_ppcall(CH_EVENTBUS, microkit_msginfo_new(MSG_EVENTBUS_STATUS, 0));
 
     uint64_t total_events = (uint64_t)microkit_mr_get(0);
     uint32_t subscribers  = (uint32_t)microkit_mr_get(1);
 
-    microkit_dbg_puts("\n");
-    microkit_dbg_puts("[init_agent] ── EventBus Audit Report ───────────────────\n");
-    microkit_dbg_puts("[init_agent]   Total events published: ");
+    console_log(1, 1, "\n[init_agent] ── EventBus Audit Report ───────────────────\n[init_agent]   Total events published: ");
     put_dec((uint32_t)total_events);
-    microkit_dbg_puts("\n");
-    microkit_dbg_puts("[init_agent]   Active subscribers: ");
+    console_log(1, 1, "\n[init_agent]   Active subscribers: ");
     put_dec(subscribers);
-    microkit_dbg_puts("\n");
-    microkit_dbg_puts("[init_agent]   Events since last query: ");
+    console_log(1, 1, "\n[init_agent]   Events since last query: ");
     uint32_t new_events = (uint32_t)total_events - state.event_count;
     put_dec(new_events);
-    microkit_dbg_puts("\n");
-    microkit_dbg_puts("[init_agent]   Agents spawned this session: ");
+    console_log(1, 1, "\n[init_agent]   Agents spawned this session: ");
     put_dec(state.spawn_count);
-    microkit_dbg_puts("\n");
+    console_log(1, 1, "\n");
 
     if (total_events > 0) {
-        microkit_dbg_puts("[init_agent]   Data flow confirmed: agents exchanging messages\n");
+        console_log(1, 1, "[init_agent]   Data flow confirmed: agents exchanging messages\n");
     }
 
-    microkit_dbg_puts("[init_agent] ────────────────────────────────────────────\n");
+    console_log(1, 1, "[init_agent] ────────────────────────────────────────────\n");
 
     state.event_count = (uint32_t)total_events;
 }
 
 static void subscribe_to_eventbus(void) {
-    microkit_dbg_puts("[init_agent] Subscribing to EventBus...\n");
+    console_log(1, 1, "[init_agent] Subscribing to EventBus...\n");
     
     microkit_mr_set(0, CH_EVENTBUS);
     microkit_mr_set(1, 0);
@@ -295,9 +279,9 @@ static void subscribe_to_eventbus(void) {
     
     if (microkit_msginfo_get_label(result) == 0) {
         state.eventbus_subscribed = true;
-        microkit_dbg_puts("[init_agent] EventBus subscription: OK\n");
+        console_log(1, 1, "[init_agent] EventBus subscription: OK\n");
     } else {
-        microkit_dbg_puts("[init_agent] EventBus subscription: FAILED\n");
+        console_log(1, 1, "[init_agent] EventBus subscription: FAILED\n");
     }
 }
 
@@ -364,16 +348,16 @@ static microkit_msginfo handle_spawn_agent(microkit_msginfo msg) {
 
     if (priority == 0) priority = PRIO_COMPUTE;  /* sensible default */
 
-    microkit_dbg_puts("[init_agent] SPAWN_AGENT request: hash_lo=");
+    console_log(1, 1, "[init_agent] SPAWN_AGENT request: hash_lo=");
     put_hex32((uint32_t)(hash_lo & 0xFFFFFFFF));
-    microkit_dbg_puts(" priority=");
+    console_log(1, 1, " priority=");
     put_dec(priority);
-    microkit_dbg_puts("\n");
+    console_log(1, 1, "\n");
 
     /* Allocate a pending entry */
     int tbl = spawn_table_alloc();
     if (tbl < 0) {
-        microkit_dbg_puts("[init_agent] SPAWN_AGENT: pending table full\n");
+        console_log(1, 1, "[init_agent] SPAWN_AGENT: pending table full\n");
         microkit_mr_set(0, 0);
         microkit_mr_set(1, 0xE1);  /* ERR_SPAWN_TABLE_FULL */
         return microkit_msginfo_new(MSG_SPAWN_AGENT_REPLY, 2);
@@ -390,9 +374,9 @@ static microkit_msginfo handle_spawn_agent(microkit_msginfo msg) {
     /* Ask the controller to actually load the WASM into a worker slot */
     request_controller_spawn(spawn_id, hash_lo, hash_hi, priority);
 
-    microkit_dbg_puts("[init_agent] SPAWN_AGENT queued, spawn_id=");
+    console_log(1, 1, "[init_agent] SPAWN_AGENT queued, spawn_id=");
     put_dec(spawn_id);
-    microkit_dbg_puts("\n");
+    console_log(1, 1, "\n");
 
     /*
      * Return provisional spawn_id with PENDING_FLAG.
@@ -416,14 +400,14 @@ static void handle_spawn_reply_from_controller(void) {
 
     if (tag != MSG_SPAWN_AGENT_REPLY) {
         /* Not a spawn reply — fall through to the regular handler */
-        microkit_dbg_puts("[init_agent] Controller notification (non-spawn)\n");
+        console_log(1, 1, "[init_agent] Controller notification (non-spawn)\n");
         query_eventbus_status();
         return;
     }
 
     int tbl = spawn_table_find(spawn_id);
     if (tbl < 0) {
-        microkit_dbg_puts("[init_agent] SPAWN_REPLY: unknown spawn_id\n");
+        console_log(1, 1, "[init_agent] SPAWN_REPLY: unknown spawn_id\n");
         return;
     }
 
@@ -432,11 +416,11 @@ static void handle_spawn_reply_from_controller(void) {
 
     if (slot_id >= 0) {
         state.spawn_count++;
-        microkit_dbg_puts("[init_agent] Agent spawned: slot=");
+        console_log(1, 1, "[init_agent] Agent spawned: slot=");
         put_dec((uint32_t)slot_id);
-        microkit_dbg_puts(" spawn_id=");
+        console_log(1, 1, " spawn_id=");
         put_dec(spawn_id);
-        microkit_dbg_puts("\n");
+        console_log(1, 1, "\n");
 
         /* Register the new agent with the quota system */
         bool quota_ok = quota_register_agent(spawn_id, DEFAULT_CPU_QUOTA_MS, DEFAULT_MEM_QUOTA_KB);
@@ -446,9 +430,9 @@ static void handle_spawn_reply_from_controller(void) {
         microkit_mr_set(0, 0xC0);  /* OP_MEM_REGISTER */
         microkit_mr_set(1, spawn_id);
         microkit_ppcall(CH_MEM_PROF, microkit_msginfo_new(0, 2));
-        microkit_dbg_puts("[init_agent] mem_profiler registered slot=");
+        console_log(1, 1, "[init_agent] mem_profiler registered slot=");
         put_dec(spawn_id);
-        microkit_dbg_puts("\n");
+        console_log(1, 1, "\n");
         spawn_table[tbl].quota_cpu_ms     = DEFAULT_CPU_QUOTA_MS;
         spawn_table[tbl].quota_mem_kb     = DEFAULT_MEM_QUOTA_KB;
 
@@ -460,7 +444,7 @@ static void handle_spawn_reply_from_controller(void) {
         /* Clear the pending entry */
         spawn_table[tbl].pending = false;
     } else {
-        microkit_dbg_puts("[init_agent] SPAWN_REPLY: controller reported failure\n");
+        console_log(1, 1, "[init_agent] SPAWN_REPLY: controller reported failure\n");
         spawn_table[tbl].pending = false;
         spawn_table[tbl].quota_registered = false;
     }
@@ -469,18 +453,18 @@ static void handle_spawn_reply_from_controller(void) {
 /* ── Microkit entry points ────────────────────────────────────────────── */
 
 void init(void) {
-    microkit_dbg_puts("[init_agent] Starting up...\n");
+    console_log(1, 1, "[init_agent] Starting up...\n");
 
     spawn_table_init();
     
     subscribe_to_eventbus();
     
-    microkit_dbg_puts("[init_agent] Notifying controller: ready\n");
+    console_log(1, 1, "[init_agent] Notifying controller: ready\n");
     microkit_notify(CH_CONTROLLER);
     
     print_banner();
     
-    microkit_dbg_puts("[init_agent] Entering event loop. agentOS is ALIVE.\n");
+    console_log(1, 1, "[init_agent] Entering event loop. agentOS is ALIVE.\n");
     state.started = true;
 }
 
@@ -492,19 +476,19 @@ void notified(microkit_channel ch) {
              * a startup trigger, or a general status ping.
              */
             if (!state.started) {
-                microkit_dbg_puts("[init_agent] Start signal from controller\n");
+                console_log(1, 1, "[init_agent] Start signal from controller\n");
             } else {
                 handle_spawn_reply_from_controller();
             }
             break;
             
         case CH_EVENTBUS:
-            microkit_dbg_puts("[init_agent] EventBus notification\n");
+            console_log(1, 1, "[init_agent] EventBus notification\n");
             query_eventbus_status();
             break;
             
         default:
-            microkit_dbg_puts("[init_agent] Unknown notification channel\n");
+            console_log(1, 1, "[init_agent] Unknown notification channel\n");
             break;
     }
 

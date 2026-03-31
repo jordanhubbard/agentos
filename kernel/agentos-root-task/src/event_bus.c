@@ -55,7 +55,7 @@ static bool eventbus_write(uint32_t kind, uint32_t source_pd,
     uint64_t next_head = (ring->head + 1) % ring->capacity;
     if (next_head == ring->tail) {
         /* Ring full - drop event (in production: apply backpressure) */
-        microkit_dbg_puts("[event_bus] WARNING: ring buffer full, dropping event\n");
+        console_log(2, 2, "[event_bus] WARNING: ring buffer full, dropping event\n");
         return false;
     }
     
@@ -90,7 +90,7 @@ static void eventbus_notify_all(void) {
  * init() - EventBus is passive but still gets init() called
  */
 void init(void) {
-    microkit_dbg_puts("[event_bus] Initializing...\n");
+    console_log(2, 2, "[event_bus] Initializing...\n");
     
     /* Clear subscriber table */
     for (int i = 0; i < MAX_SUBSCRIBERS; i++) {
@@ -98,7 +98,7 @@ void init(void) {
     }
     
     /* Wait to be initialized by the monitor via PPC */
-    microkit_dbg_puts("[event_bus] Waiting for monitor init call...\n");
+    console_log(2, 2, "[event_bus] Waiting for monitor init call...\n");
 }
 
 /*
@@ -109,7 +109,7 @@ void init(void) {
 void notified(microkit_channel ch) {
     /* Channel 6: AgentFS notify on mutations (async mutation event) */
     if (ch == 6) {
-        microkit_dbg_puts("[event_bus] AgentFS mutation notification received\n");
+        console_log(2, 2, "[event_bus] AgentFS mutation notification received\n");
     } else {
         agentos_log_channel("event_bus", ch);
     }
@@ -128,14 +128,14 @@ microkit_msginfo protected(microkit_channel ch, microkit_msginfo msg) {
     
     switch (tag) {
         case MSG_EVENTBUS_INIT: {
-            microkit_dbg_puts("[event_bus] Init from monitor\n");
+            console_log(2, 2, "[event_bus] Init from monitor\n");
             eventbus_init_ring();
-            microkit_dbg_puts("[event_bus] Ring buffer initialized\n");
+            console_log(2, 2, "[event_bus] Ring buffer initialized\n");
             
             /* Announce we're ready */
             eventbus_write(MSG_EVENT_SYSTEM_READY, 0, NULL, 0);
             
-            microkit_dbg_puts("[event_bus] READY\n");
+            console_log(2, 2, "[event_bus] READY\n");
             return microkit_msginfo_new(MSG_EVENTBUS_READY, 0);
         }
         
@@ -153,14 +153,14 @@ microkit_msginfo protected(microkit_channel ch, microkit_msginfo msg) {
                     subscribers[i].last_seq   = event_seq;
                     sub_count++;
                     
-                    microkit_dbg_puts("[event_bus] New subscriber registered\n");
+                    console_log(2, 2, "[event_bus] New subscriber registered\n");
                     microkit_mr_set(0, i); /* return subscription handle */
                     return microkit_msginfo_new(0, 1);
                 }
             }
             
             /* No free slots */
-            microkit_dbg_puts("[event_bus] ERROR: subscriber table full\n");
+            console_log(2, 2, "[event_bus] ERROR: subscriber table full\n");
             return microkit_msginfo_new(0xFFFF, 0);
         }
         
@@ -169,7 +169,7 @@ microkit_msginfo protected(microkit_channel ch, microkit_msginfo msg) {
             if (handle < MAX_SUBSCRIBERS && subscribers[handle].active) {
                 subscribers[handle].active = false;
                 sub_count--;
-                microkit_dbg_puts("[event_bus] Subscriber removed\n");
+                console_log(2, 2, "[event_bus] Subscriber removed\n");
                 return microkit_msginfo_new(0, 0);
             }
             return microkit_msginfo_new(0xFFFF, 0);
@@ -190,7 +190,7 @@ microkit_msginfo protected(microkit_channel ch, microkit_msginfo msg) {
             if (source == 0) source = ch;
             eventbus_write(kind, source, NULL, 0);
             
-            microkit_dbg_puts("[event_bus] Event published: kind=0x");
+            console_log(2, 2, "[event_bus] Event published: kind=0x");
             {
                 static const char hex[] = "0123456789abcdef";
                 char buf[5];
@@ -199,16 +199,16 @@ microkit_msginfo protected(microkit_channel ch, microkit_msginfo msg) {
                 buf[2] = hex[(kind >> 4) & 0xf];
                 buf[3] = hex[kind & 0xf];
                 buf[4] = '\0';
-                microkit_dbg_puts(buf);
+                console_log(2, 2, buf);
             }
-            microkit_dbg_puts(" seq=");
+            console_log(2, 2, " seq=");
             {
                 char buf[4];
                 buf[0] = '0' + ((event_seq - 1) % 10);
                 buf[1] = '\0';
-                microkit_dbg_puts(buf);
+                console_log(2, 2, buf);
             }
-            microkit_dbg_puts("\n");
+            console_log(2, 2, "\n");
             
             /* Notify subscribers */
             eventbus_notify_all();

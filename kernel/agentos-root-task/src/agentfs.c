@@ -236,7 +236,7 @@ static microkit_msginfo handle_put(microkit_msginfo msg) {
     microkit_mr_set(3, w2);
     microkit_mr_set(4, w3);
 
-    microkit_dbg_puts("[agentfs] Object stored (18 bytes)\n");
+    console_log(3, 3, "[agentfs] Object stored (18 bytes)\n");
     return microkit_msginfo_new(0, 5);
 }
 
@@ -365,7 +365,7 @@ static microkit_msginfo handle_delete(microkit_msginfo msg) {
 /* ── Microkit entry points ──────────────────────────────────────────────── */
 
 void init(void) {
-    microkit_dbg_puts("[agentfs] AgentFS PD starting...\n");
+    console_log(3, 3, "[agentfs] AgentFS PD starting...\n");
     for (uint32_t i = 0; i < MAX_HOT_OBJECTS; i++)
         hot_index[i].state = OBJ_STATE_TOMBSTONE;
     hot_count      = 0;
@@ -373,10 +373,9 @@ void init(void) {
     total_puts     = 0;
     total_gets     = 0;
     total_vectors  = 0;
-    microkit_dbg_puts("[agentfs] Hot store ready. "
+    console_log(3, 3, "");
                       "Capacity: " "256 objects, 256KB blob store.\n");
-    microkit_dbg_puts("[agentfs] Vector index: linear scan (HNSW in Phase 2).\n");
-    microkit_dbg_puts("[agentfs] AgentFS ALIVE.\n");
+    console_log(3, 3, "[agentfs] Vector index: linear scan (HNSW in Phase 2).\n[agentfs] AgentFS ALIVE.\n");
 }
 
 /* Passive server — no notified() needed, all traffic via PPC */
@@ -384,7 +383,7 @@ void notified(microkit_channel ch) {
     /* AgentFS is passive; the only notification we handle is a   */
     /* controller ping to check we're alive (used by vibe_swap).  */
     if (ch == CH_CONTROLLER) {
-        microkit_dbg_puts("[agentfs] ping from controller\n");
+        console_log(3, 3, "[agentfs] ping from controller\n");
     }
 }
 
@@ -402,7 +401,7 @@ microkit_msginfo protected(microkit_channel ch, microkit_msginfo msg) {
         case OP_AGENTFS_STAT:   return handle_stat(msg);
         case OP_AGENTFS_HEALTH: return handle_health();
         default:
-            microkit_dbg_puts("[agentfs] unknown op\n");
+            console_log(3, 3, "[agentfs] unknown op\n");
             microkit_mr_set(0, AFS_ERR_INTRNL);
             return microkit_msginfo_new(0, 1);
     }

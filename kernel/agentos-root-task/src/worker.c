@@ -33,11 +33,16 @@ static struct {
 } wstate = { 0, 0, false, false, 0 };
 
 void init(void) {
-    microkit_dbg_puts("[worker] Slot ");
-    /* Print slot id - microkit_dbg_puts needs a null-terminated string */
+    console_log(6, 6, "[worker] Slot ");
     char slot_str[4] = { (char)('0' + (worker_slot_id & 0xF)), ':', ' ', '\0' };
-    microkit_dbg_puts(slot_str);
-    microkit_dbg_puts("ready, notifying controller\n");
+    {
+        char _cl_buf[256] = {};
+        char *_cl_p = _cl_buf;
+        for (const char *_s = slot_str; *_s; _s++) *_cl_p++ = *_s;
+        for (const char *_s = "ready, notifying controller\n"; *_s; _s++) *_cl_p++ = *_s;
+        *_cl_p = 0;
+        console_log(6, 6, _cl_buf);
+    }
     
     /* Signal controller: we're ready for work */
     microkit_notify(CH_CONTROLLER);
@@ -57,7 +62,7 @@ void notified(microkit_channel ch) {
         if (!wstate.ready_acked) {
             /* First notification from controller = ack of our ready signal */
             wstate.ready_acked = true;
-            microkit_dbg_puts("[worker] Acknowledged by controller\n");
+            console_log(6, 6, "[worker] Acknowledged by controller\n");
             return;
         }
         
@@ -75,14 +80,14 @@ void notified(microkit_channel ch) {
             wstate.current_task_id = task_id;
             wstate.running = true;
             
-            microkit_dbg_puts("[worker] Task received — retrieve object from AgentFS\n");
+            console_log(6, 6, "[worker] Task received — retrieve object from AgentFS\n");
             
             /*
              * Demo task: PPC to controller to retrieve an object from AgentFS.
              * Workers can't access AgentFS directly (no channel), so the
              * controller acts as a proxy — real capability-mediated access.
              */
-            microkit_dbg_puts("[worker] Requesting object from controller (AgentFS proxy)...\n");
+            console_log(6, 6, "[worker] Requesting object from controller (AgentFS proxy)...\n");
             
             /* NOTE: Worker can't PPC into controller because controller is lower
              * priority (50) and not passive. In the full system, capability-
@@ -90,15 +95,13 @@ void notified(microkit_channel ch) {
              * For demo: the demo task is hardcoded (data stored by controller,
              * fetched by controller, worker logs the confirmed retrieval). */
             
-            microkit_dbg_puts("[worker] Demo task: fetching 'Hello from agentOS' object\n");
-            microkit_dbg_puts("[worker] Object content: 'Hello from agentOS' (18 bytes)\n");
-            microkit_dbg_puts("[worker] Data retrieval confirmed — capability path validated\n");
+            console_log(6, 6, "[worker] Demo task: fetching 'Hello from agentOS' object\n[worker] Object content: 'Hello from agentOS' (18 bytes)\n[worker] Data retrieval confirmed — capability path validated\n");
             
             wstate.tasks_completed++;
             wstate.running = false;
             
             /* Report completion back to controller */
-            microkit_dbg_puts("[worker] Task complete — notifying controller\n");
+            console_log(6, 6, "[worker] Task complete — notifying controller\n");
             microkit_mr_set(0, (uint32_t)(task_id & 0xFFFFFFFF));
             microkit_mr_set(1, (uint32_t)(task_id >> 32));
             microkit_mr_set(2, 0); /* status: OK */
@@ -111,7 +114,7 @@ void notified(microkit_channel ch) {
         /* EventBus event notification */
         if (wstate.running) {
             /* Forward to running task context */
-            microkit_dbg_puts("[worker] EventBus notification during task\n");
+            console_log(6, 6, "[worker] EventBus notification during task\n");
         }
     }
 }

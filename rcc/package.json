@@ -1,0 +1,13 @@
+{
+  "name": "agentos-rcc-bridge",
+  "version": "0.1.0",
+  "description": "RCC bridge utilities for agentOS — console WebSocket bridge, QEMU pipe reader",
+  "type": "module",
+  "scripts": {
+    "console": "node agentos_console.mjs",
+    "start": "node agentos_console.mjs"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  }
+}

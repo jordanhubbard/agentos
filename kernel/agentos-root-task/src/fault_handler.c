@@ -111,8 +111,7 @@ static void fault_handler_init(void) {
     hdr->count    = 0;
     hdr->drops    = 0;
 
-    microkit_dbg_puts("[fault_handler] Initialized. capacity=");
-    microkit_dbg_puts("5000+ fault entries, 48B each\n");
+    console_log(13, 13, "[fault_handler] Initialized. capacity=5000+ fault entries, 48B each\n");
 }
 
 /* ── Append fault entry to ring ───────────────────────────────────────────── */
@@ -144,7 +143,7 @@ static void fault_append(uint32_t fault_type, uint32_t pd_id,
 /* ── Log a human-readable fault message ───────────────────────────────────── */
 static void fault_log_msg(uint32_t fault_type, uint32_t pd_id,
                            uint64_t fault_addr, uint64_t fault_ip) {
-    microkit_dbg_puts("[fault_handler] FAULT pd=");
+    console_log(13, 13, "[fault_handler] FAULT pd=");
 
     /* Print pd_id as decimal (simple) */
     char buf[12];
@@ -161,17 +160,13 @@ static void fault_log_msg(uint32_t fault_type, uint32_t pd_id,
         }
     }
     buf[i] = '\0';
-    microkit_dbg_puts(buf);
+    console_log(13, 13, buf);
 
     switch (fault_type) {
-    case FAULT_VM_FAULT:    microkit_dbg_puts(" VM_FAULT");    break;
-    case FAULT_CAP_FAULT:   microkit_dbg_puts(" CAP_FAULT");   break;
-    case FAULT_UNKNOWN_SYS: microkit_dbg_puts(" UNKNOWN_SYS"); break;
-    case FAULT_USER_EXC:    microkit_dbg_puts(" USER_EXC");    break;
-    default:                microkit_dbg_puts(" UNKNOWN");     break;
+    console_log(13, 13, " VM_FAULT CAP_FAULT UNKNOWN_SYS USER_EXC UNKNOWN");
     }
 
-    microkit_dbg_puts(" addr=0x");
+    console_log(13, 13, " addr=0x");
 
     /* Print fault_addr as hex */
     char hexbuf[17];
@@ -191,9 +186,14 @@ static void fault_log_msg(uint32_t fault_type, uint32_t pd_id,
         }
     }
     hexbuf[h] = '\0';
-    microkit_dbg_puts(hexbuf);
-
-    microkit_dbg_puts(" ip=0x");
+    {
+        char _cl_buf[256] = {};
+        char *_cl_p = _cl_buf;
+        for (const char *_s = hexbuf; *_s; _s++) *_cl_p++ = *_s;
+        for (const char *_s = " ip=0x"; *_s; _s++) *_cl_p++ = *_s;
+        *_cl_p = 0;
+        console_log(13, 13, _cl_buf);
+    }
 
     /* Print fault_ip as hex */
     h = 0;
@@ -212,9 +212,14 @@ static void fault_log_msg(uint32_t fault_type, uint32_t pd_id,
         }
     }
     hexbuf[h] = '\0';
-    microkit_dbg_puts(hexbuf);
-
-    microkit_dbg_puts("\n");
+    {
+        char _cl_buf[256] = {};
+        char *_cl_p = _cl_buf;
+        for (const char *_s = hexbuf; *_s; _s++) *_cl_p++ = *_s;
+        for (const char *_s = "\n"; *_s; _s++) *_cl_p++ = *_s;
+        *_cl_p = 0;
+        console_log(13, 13, _cl_buf);
+    }
     (void)fault_ip; /* already used above */
 }
 
@@ -234,7 +239,7 @@ static void forward_cap_fault_to_audit(uint32_t pd_id, uint64_t cap_slot) {
      */
     (void)pd_id;
     (void)cap_slot;
-    microkit_dbg_puts("[fault_handler] CAP_FAULT logged in ring — controller will forward to cap_audit_log\n");
+    console_log(13, 13, "[fault_handler] CAP_FAULT logged in ring — controller will forward to cap_audit_log\n");
 }
 
 /* ── Notify watchdog (controller) to consider respawn ─────────────────────── */
@@ -338,13 +343,13 @@ static microkit_msginfo handle_query(microkit_msginfo msg) {
         hdr->head  = 0;
         hdr->count = 0;
         hdr->drops = 0;
-        microkit_dbg_puts("[fault_handler] Ring cleared by request\n");
+        console_log(13, 13, "[fault_handler] Ring cleared by request\n");
         microkit_mr_set(0, 1);
         return microkit_msginfo_new(0, 1);
     }
 
     default:
-        microkit_dbg_puts("[fault_handler] WARN: unknown query opcode\n");
+        console_log(13, 13, "[fault_handler] WARN: unknown query opcode\n");
         microkit_mr_set(0, 0xFF);
         return microkit_msginfo_new(0, 1);
     }
@@ -355,7 +360,7 @@ static microkit_msginfo handle_query(microkit_msginfo msg) {
 /* ── Microkit entry points ────────────────────────────────────────────────── */
 void init(void) {
     fault_handler_init();
-    microkit_dbg_puts("[fault_handler] Ready — priority 250, passive, monitoring all PD faults\n");
+    console_log(13, 13, "[fault_handler] Ready — priority 250, passive, monitoring all PD faults\n");
 }
 
 microkit_msginfo protected(microkit_channel channel, microkit_msginfo msg) {

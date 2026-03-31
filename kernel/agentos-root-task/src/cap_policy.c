@@ -147,42 +147,66 @@ bool cap_policy_check(const PolicyEntry *policy, uint32_t requested_caps) {
  * In the future, this would load policy/default_policy.nano.
  */
 void cap_policy_init(void) {
-    microkit_dbg_puts("[cap_policy] Policy table loaded: ");
+    console_log(11, 11, "[cap_policy] Policy table loaded: ");
     /* Print count */
     char buf[4];
     buf[0] = '0' + POLICY_TABLE_SIZE;
     buf[1] = '\0';
-    microkit_dbg_puts(buf);
-    microkit_dbg_puts(" agent classes defined\n");
+    {
+        char _cl_buf[256] = {};
+        char *_cl_p = _cl_buf;
+        for (const char *_s = buf; *_s; _s++) *_cl_p++ = *_s;
+        for (const char *_s = " agent classes defined\n"; *_s; _s++) *_cl_p++ = *_s;
+        *_cl_p = 0;
+        console_log(11, 11, _cl_buf);
+    }
 
     for (int i = 0; i < POLICY_TABLE_SIZE; i++) {
-        microkit_dbg_puts("[cap_policy]   class=");
-        microkit_dbg_puts(policy_table[i].class_name);
-        microkit_dbg_puts(" cpu=");
+        {
+            char _cl_buf[256] = {};
+            char *_cl_p = _cl_buf;
+            for (const char *_s = "[cap_policy]   class="; *_s; _s++) *_cl_p++ = *_s;
+            for (const char *_s = policy_table[i].class_name; *_s; _s++) *_cl_p++ = *_s;
+            for (const char *_s = " cpu="; *_s; _s++) *_cl_p++ = *_s;
+            *_cl_p = 0;
+            console_log(11, 11, _cl_buf);
+        }
         /* Simple decimal for quota values */
         uint32_t v = policy_table[i].cpu_quota_ms;
         if (v == 0) {
-            microkit_dbg_puts("unlimited");
+            console_log(11, 11, "unlimited");
         } else {
             char qbuf[12];
             int j = 11;
             qbuf[j] = '\0';
             while (v > 0 && j > 0) { qbuf[--j] = '0' + (v % 10); v /= 10; }
-            microkit_dbg_puts(&qbuf[j]);
-            microkit_dbg_puts("ms");
+            {
+                char _cl_buf[256] = {};
+                char *_cl_p = _cl_buf;
+                for (const char *_s = &qbuf[j]; *_s; _s++) *_cl_p++ = *_s;
+                for (const char *_s = "ms"; *_s; _s++) *_cl_p++ = *_s;
+                *_cl_p = 0;
+                console_log(11, 11, _cl_buf);
+            }
         }
-        microkit_dbg_puts(" mem=");
+        console_log(11, 11, " mem=");
         v = policy_table[i].mem_quota_kb;
         if (v == 0) {
-            microkit_dbg_puts("unlimited");
+            console_log(11, 11, "unlimited");
         } else {
             char qbuf[12];
             int j = 11;
             qbuf[j] = '\0';
             while (v > 0 && j > 0) { qbuf[--j] = '0' + (v % 10); v /= 10; }
-            microkit_dbg_puts(&qbuf[j]);
-            microkit_dbg_puts("kb");
+            {
+                char _cl_buf[256] = {};
+                char *_cl_p = _cl_buf;
+                for (const char *_s = &qbuf[j]; *_s; _s++) *_cl_p++ = *_s;
+                for (const char *_s = "kb"; *_s; _s++) *_cl_p++ = *_s;
+                *_cl_p = 0;
+                console_log(11, 11, _cl_buf);
+            }
         }
-        microkit_dbg_puts("\n");
+        console_log(11, 11, "\n");
     }
 }

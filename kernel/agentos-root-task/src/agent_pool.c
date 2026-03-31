@@ -86,11 +86,17 @@ void agent_pool_init(void) {
         pool[i].channel_id = POOL_CH_BASE + i;
         pool[i].agent_name[0] = '\0';
     }
-    microkit_dbg_puts("[pool] Agent pool initialized (");
+    console_log(6, 6, "[pool] Agent pool initialized (");
     /* print pool size */
     char n[4] = { '0' + AGENT_POOL_SIZE, ' ', 'w', '\0' };
-    microkit_dbg_puts(n);
-    microkit_dbg_puts("orkers)\n");
+    {
+        char _cl_buf[256] = {};
+        char *_cl_p = _cl_buf;
+        for (const char *_s = n; *_s; _s++) *_cl_p++ = *_s;
+        for (const char *_s = "orkers)\n"; *_s; _s++) *_cl_p++ = *_s;
+        *_cl_p = 0;
+        console_log(6, 6, _cl_buf);
+    }
 }
 
 /* Find an idle worker slot */
@@ -117,7 +123,7 @@ int agent_pool_spawn(const char *agent_name, uint64_t task_id,
                       uint32_t priority) {
     int slot = pool_find_idle();
     if (slot < 0) {
-        microkit_dbg_puts("[pool] ERROR: all workers busy\n");
+        console_log(6, 6, "[pool] ERROR: all workers busy\n");
         return -1;
     }
     
@@ -126,12 +132,18 @@ int agent_pool_spawn(const char *agent_name, uint64_t task_id,
     pool[slot].assigned_at_seq = task_seq;
     strncpy(pool[slot].agent_name, agent_name, TASK_NAME_MAX - 1);
     
-    microkit_dbg_puts("[pool] Spawning agent '");
-    microkit_dbg_puts(agent_name);
-    microkit_dbg_puts("' on worker slot ");
+    {
+        char _cl_buf[256] = {};
+        char *_cl_p = _cl_buf;
+        for (const char *_s = "[pool] Spawning agent '"; *_s; _s++) *_cl_p++ = *_s;
+        for (const char *_s = agent_name; *_s; _s++) *_cl_p++ = *_s;
+        for (const char *_s = "' on worker slot "; *_s; _s++) *_cl_p++ = *_s;
+        *_cl_p = 0;
+        console_log(6, 6, _cl_buf);
+    }
     /* print slot number */
     char s[4] = { '0' + (char)slot, '\n', '\0' };
-    microkit_dbg_puts(s);
+    console_log(6, 6, s);
     
     /*
      * Pack assignment into MRs for the notification.
@@ -156,10 +168,16 @@ int agent_pool_spawn(const char *agent_name, uint64_t task_id,
 void agent_pool_worker_done(int slot, int status) {
     if (slot < 0 || slot >= AGENT_POOL_SIZE) return;
     
-    microkit_dbg_puts("[pool] Worker ");
+    console_log(6, 6, "[pool] Worker ");
     char s[4] = { '0' + (char)slot, ' ', 'd', '\0' };
-    microkit_dbg_puts(s);
-    microkit_dbg_puts("one\n");
+    {
+        char _cl_buf[256] = {};
+        char *_cl_p = _cl_buf;
+        for (const char *_s = s; *_s; _s++) *_cl_p++ = *_s;
+        for (const char *_s = "one\n"; *_s; _s++) *_cl_p++ = *_s;
+        *_cl_p = 0;
+        console_log(6, 6, _cl_buf);
+    }
     
     /* Revoke the capabilities we delegated to this worker */
     /* In production: iterate cap_grant_log and seL4_CNode_Revoke each cap */
@@ -211,7 +229,7 @@ void worker_pd_init(void) {
     worker.my_slot = (int)worker_slot_id;
     worker.initialized = true;
     
-    microkit_dbg_puts("[worker] Slot ready, waiting for task assignment\n");
+    console_log(6, 6, "[worker] Slot ready, waiting for task assignment\n");
     
     /* Notify controller we're ready */
     microkit_notify(WORKER_CH_CONTROLLER);
@@ -234,7 +252,7 @@ void worker_pd_notified(microkit_channel ch) {
             
             worker.task_id = task_id_lo | (task_id_hi << 32);
             
-            microkit_dbg_puts("[worker] Task assigned\n");
+            console_log(6, 6, "[worker] Task assigned\n");
             
             /* 
              * Execute the task.
@@ -247,12 +265,12 @@ void worker_pd_notified(microkit_channel ch) {
              * execute it in a sandboxed interpreter (wasm3 or wamr),
              * and deliver results via EventBus.
              */
-            microkit_dbg_puts("[worker] Task running...\n");
+            console_log(6, 6, "[worker] Task running...\n");
             
             /* TODO Phase 2: WASM module execution */
             int status = 0;
             
-            microkit_dbg_puts("[worker] Task complete, notifying controller\n");
+            console_log(6, 6, "[worker] Task complete, notifying controller\n");
             
             /* Signal completion back to controller */
             microkit_mr_set(0, (uint32_t)(worker.task_id & 0xFFFFFFFF));
@@ -265,11 +283,11 @@ void worker_pd_notified(microkit_channel ch) {
         
         case WORKER_CH_EVENTBUS:
             /* EventBus notification — process incoming events if subscribed */
-            microkit_dbg_puts("[worker] EventBus notification\n");
+            console_log(6, 6, "[worker] EventBus notification\n");
             break;
             
         default:
-            microkit_dbg_puts("[worker] Unknown channel notification\n");
+            console_log(6, 6, "[worker] Unknown channel notification\n");
             break;
     }
 }

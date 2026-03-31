@@ -98,7 +98,7 @@ char *strstr(const char *haystack, const char *needle) {
 
 /* ---- Formatted output (simplified) ---- */
 /* wasm3 uses printf/snprintf for debug logging and error messages.
- * In a freestanding environment, we route everything to microkit_dbg_puts.
+ console_log(15, 15, "");
  * Format parsing is minimal — just enough for wasm3's actual usage. */
 
 /* Simple number-to-string for snprintf */
@@ -270,7 +270,7 @@ int printf(const char *fmt, ...) {
     va_start(ap, fmt);
     int ret = vsnprintf(buf, sizeof(buf), fmt, ap);
     va_end(ap);
-    microkit_dbg_puts(buf);
+    console_log(15, 15, buf);
     return ret;
 }
 
@@ -287,19 +287,25 @@ int fprintf(void *stream, const char *fmt, ...) {
     va_start(ap, fmt);
     int ret = vsnprintf(buf, sizeof(buf), fmt, ap);
     va_end(ap);
-    microkit_dbg_puts(buf);
+    console_log(15, 15, buf);
     return ret;
 }
 
 int puts(const char *s) {
-    microkit_dbg_puts(s);
-    microkit_dbg_puts("\n");
+    {
+        char _cl_buf[256] = {};
+        char *_cl_p = _cl_buf;
+        for (const char *_s = s; *_s; _s++) *_cl_p++ = *_s;
+        for (const char *_s = "\n"; *_s; _s++) *_cl_p++ = *_s;
+        *_cl_p = 0;
+        console_log(15, 15, _cl_buf);
+    }
     return 0;
 }
 
 int fputs(const char *s, void *stream) {
     (void)stream;
-    microkit_dbg_puts(s);
+    console_log(15, 15, s);
     return 0;
 }
 
@@ -309,19 +315,19 @@ int fputs(const char *s, void *stream) {
 
 void *malloc(size_t size) {
     (void)size;
-    microkit_dbg_puts("[bare_metal] WARNING: malloc called (should use fixed heap)\n");
+    console_log(15, 15, "[bare_metal] WARNING: malloc called (should use fixed heap)\n");
     return NULL;
 }
 
 void *calloc(size_t nmemb, size_t size) {
     (void)nmemb; (void)size;
-    microkit_dbg_puts("[bare_metal] WARNING: calloc called\n");
+    console_log(15, 15, "[bare_metal] WARNING: calloc called\n");
     return NULL;
 }
 
 void *realloc(void *ptr, size_t size) {
     (void)ptr; (void)size;
-    microkit_dbg_puts("[bare_metal] WARNING: realloc called\n");
+    console_log(15, 15, "[bare_metal] WARNING: realloc called\n");
     return NULL;
 }
 
@@ -331,13 +337,13 @@ void free(void *ptr) {
 }
 
 void abort(void) {
-    microkit_dbg_puts("[bare_metal] ABORT\n");
+    console_log(15, 15, "[bare_metal] ABORT\n");
     for (;;) {} /* spin forever */
 }
 
 void exit(int status) {
     (void)status;
-    microkit_dbg_puts("[bare_metal] EXIT\n");
+    console_log(15, 15, "[bare_metal] EXIT\n");
     for (;;) {}
 }
 
@@ -381,15 +387,27 @@ unsigned long strtoul(const char *nptr, char **endptr, int base) {
 __attribute__((weak))
 void __assert_fail(const char *expr, const char *file, int line, const char *function) {
     (void)function;
-    microkit_dbg_puts("[ASSERT] ");
-    microkit_dbg_puts(file);
-    microkit_dbg_puts(":");
+    {
+        char _cl_buf[256] = {};
+        char *_cl_p = _cl_buf;
+        for (const char *_s = "[ASSERT] "; *_s; _s++) *_cl_p++ = *_s;
+        for (const char *_s = file; *_s; _s++) *_cl_p++ = *_s;
+        for (const char *_s = ":"; *_s; _s++) *_cl_p++ = *_s;
+        *_cl_p = 0;
+        console_log(15, 15, _cl_buf);
+    }
     char lbuf[12];
     int_to_str(lbuf, sizeof(lbuf), line, 10, false);
-    microkit_dbg_puts(lbuf);
-    microkit_dbg_puts(": ");
-    microkit_dbg_puts(expr);
-    microkit_dbg_puts("\n");
+    {
+        char _cl_buf[256] = {};
+        char *_cl_p = _cl_buf;
+        for (const char *_s = lbuf; *_s; _s++) *_cl_p++ = *_s;
+        for (const char *_s = ": "; *_s; _s++) *_cl_p++ = *_s;
+        for (const char *_s = expr; *_s; _s++) *_cl_p++ = *_s;
+        for (const char *_s = "\n"; *_s; _s++) *_cl_p++ = *_s;
+        *_cl_p = 0;
+        console_log(15, 15, _cl_buf);
+    }
     for (;;) {} /* hang */
 }
 

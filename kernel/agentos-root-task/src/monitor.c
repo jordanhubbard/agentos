@@ -137,7 +137,7 @@ static void put_hex_byte(uint8_t b) {
     buf[0] = hex[(b >> 4) & 0xf];
     buf[1] = hex[b & 0xf];
     buf[2] = '\0';
-    microkit_dbg_puts(buf);
+    console_log(0, 0, buf);
 }
 
 /*
@@ -155,8 +155,7 @@ static void put_hex_byte(uint8_t b) {
  *   → health_check → SERVICE LIVE
  */
 static void vibe_demo_step4_notify(void) {
-    microkit_dbg_puts("[controller] Step 4: VibeEngine approved a swap!\n");
-    microkit_dbg_puts("[controller] Reading proposal from staging region...\n");
+    console_log(0, 0, "[controller] Step 4: VibeEngine approved a swap!\n[controller] Reading proposal from staging region...\n");
 
     /* Read metadata from end of staging region (last 64 bytes) */
     static const uint32_t STAGING_SIZE = 0x400000;
@@ -172,22 +171,34 @@ static void vibe_demo_step4_notify(void) {
 
     /* Check for rollback request (wasm_size == 0xFFFFFFFF) */
     if (wasm_size == 0xFFFFFFFFU) {
-        microkit_dbg_puts("[controller] Rollback requested for service ");
+        console_log(0, 0, "[controller] Rollback requested for service ");
         char sid[4];
         sid[0] = '0' + (service_id % 10);
         sid[1] = '\0';
-        microkit_dbg_puts(sid);
-        microkit_dbg_puts("\n");
+        {
+            char _cl_buf[256] = {};
+            char *_cl_p = _cl_buf;
+            for (const char *_s = sid; *_s; _s++) *_cl_p++ = *_s;
+            for (const char *_s = "\n"; *_s; _s++) *_cl_p++ = *_s;
+            *_cl_p = 0;
+            console_log(0, 0, _cl_buf);
+        }
         vibe_swap_rollback(service_id);
         return;
     }
 
-    microkit_dbg_puts("[controller] Swap proposal: service=");
+    console_log(0, 0, "[controller] Swap proposal: service=");
     char svc_str[4];
     svc_str[0] = '0' + (service_id % 10);
     svc_str[1] = '\0';
-    microkit_dbg_puts(svc_str);
-    microkit_dbg_puts(", wasm_size=");
+    {
+        char _cl_buf[256] = {};
+        char *_cl_p = _cl_buf;
+        for (const char *_s = svc_str; *_s; _s++) *_cl_p++ = *_s;
+        for (const char *_s = ", wasm_size="; *_s; _s++) *_cl_p++ = *_s;
+        *_cl_p = 0;
+        console_log(0, 0, _cl_buf);
+    }
     char sz_str[8];
     uint32_t s = wasm_size; int p = 0;
     if (s == 0) { sz_str[p++] = '0'; }
@@ -195,30 +206,42 @@ static void vibe_demo_step4_notify(void) {
            while (s > 0 && ti < 7) { t[ti++] = '0' + (s % 10); s /= 10; }
            while (ti > 0 && p < 7) sz_str[p++] = t[--ti]; }
     sz_str[p] = '\0';
-    microkit_dbg_puts(sz_str);
-    microkit_dbg_puts(" bytes\n");
+    {
+        char _cl_buf[256] = {};
+        char *_cl_p = _cl_buf;
+        for (const char *_s = sz_str; *_s; _s++) *_cl_p++ = *_s;
+        for (const char *_s = " bytes\n"; *_s; _s++) *_cl_p++ = *_s;
+        *_cl_p = 0;
+        console_log(0, 0, _cl_buf);
+    }
 
     /* The WASM binary is in the vibe_staging region at wasm_offset.
      * We need to copy it to the swap slot's code region (swap_code_ctrl_N).
      * vibe_swap_begin handles this — it takes a pointer to code bytes. */
     const void *wasm_bytes = (const void *)(vibe_staging_ctrl_vaddr + wasm_offset);
 
-    microkit_dbg_puts("[controller] Initiating kernel-side swap...\n");
+    console_log(0, 0, "[controller] Initiating kernel-side swap...\n");
     ctrl.vibe_swap_in_progress = true;
 
     int slot = vibe_swap_begin(service_id, wasm_bytes, wasm_size);
 
     if (slot < 0) {
-        microkit_dbg_puts("[controller] vibe_swap_begin FAILED\n");
+        console_log(0, 0, "[controller] vibe_swap_begin FAILED\n");
         ctrl.vibe_swap_in_progress = false;
     } else {
-        microkit_dbg_puts("[controller] vibe_swap_begin OK — swap slot ");
+        console_log(0, 0, "[controller] vibe_swap_begin OK — swap slot ");
         char sl[4];
         sl[0] = '0' + (slot % 10);
         sl[1] = '\0';
-        microkit_dbg_puts(sl);
-        microkit_dbg_puts(" loading WASM via wasm3...\n");
-        microkit_dbg_puts("[controller] Waiting for swap slot health notification...\n");
+        {
+            char _cl_buf[256] = {};
+            char *_cl_p = _cl_buf;
+            for (const char *_s = sl; *_s; _s++) *_cl_p++ = *_s;
+            for (const char *_s = " loading WASM via wasm3...\n"; *_s; _s++) *_cl_p++ = *_s;
+            for (const char *_s = "[controller] Waiting for swap slot health notification...\n"; *_s; _s++) *_cl_p++ = *_s;
+            *_cl_p = 0;
+            console_log(0, 0, _cl_buf);
+        }
     }
 }
 
@@ -229,14 +252,10 @@ static void vibe_demo_step4_notify(void) {
  * exchanging messages, storing/retrieving data, and publishing events.
  */
 static void demo_sequence(void) {
-    microkit_dbg_puts("\n");
-    microkit_dbg_puts("══════════════════════════════════════════════════════\n");
-    microkit_dbg_puts("  DEMO: Agent Data Flow — PDs exchanging real data\n");
-    microkit_dbg_puts("══════════════════════════════════════════════════════\n");
-    microkit_dbg_puts("\n");
+    console_log(0, 0, "\n══════════════════════════════════════════════════════\n  DEMO: Agent Data Flow — PDs exchanging real data\n══════════════════════════════════════════════════════\n\n");
 
     /* ── Step 1: Store an object in AgentFS ─────────────────────────── */
-    microkit_dbg_puts("[controller] Step 1: Storing object in AgentFS via PPC...\n");
+    console_log(0, 0, "[controller] Step 1: Storing object in AgentFS via PPC...\n");
 
     /* AgentFS PUT: MR0=op, MR1=size, MR2=cap_tag */
     uint32_t obj_size = 18;  /* "Hello from agentOS" = 18 bytes */
@@ -257,22 +276,21 @@ static void demo_sequence(void) {
         ctrl.demo_obj_id[3] = (uint32_t)microkit_mr_get(4);
         ctrl.demo_obj_stored = true;
 
-        microkit_dbg_puts("[controller] AgentFS PUT OK — object id: 0x");
+        console_log(0, 0, "[controller] AgentFS PUT OK — object id: 0x");
         put_hex_byte((ctrl.demo_obj_id[0] >> 24) & 0xff);
         put_hex_byte((ctrl.demo_obj_id[0] >> 16) & 0xff);
         put_hex_byte((ctrl.demo_obj_id[0] >>  8) & 0xff);
         put_hex_byte((ctrl.demo_obj_id[0]      ) & 0xff);
-        microkit_dbg_puts("...\n");
-        microkit_dbg_puts("[controller] Object payload: 'Hello from agentOS' (18 bytes)\n");
+        console_log(0, 0, "...\n[controller] Object payload: 'Hello from agentOS' (18 bytes)\n");
     } else {
-        microkit_dbg_puts("[controller] AgentFS PUT FAILED\n");
+        console_log(0, 0, "[controller] AgentFS PUT FAILED\n");
         return;
     }
 
     demo_delay();
 
     /* ── Step 2: Publish event to EventBus ──────────────────────────── */
-    microkit_dbg_puts("[controller] Step 2: Publishing OBJECT_CREATED event to EventBus...\n");
+    console_log(0, 0, "[controller] Step 2: Publishing OBJECT_CREATED event to EventBus...\n");
 
     microkit_mr_set(0, EVT_OBJECT_CREATED);  /* event kind */
     microkit_mr_set(1, ctrl.demo_obj_id[0]); /* first 4 bytes of object ID */
@@ -282,32 +300,32 @@ static void demo_sequence(void) {
                  (uint16_t)EVT_OBJECT_CREATED,
                  ctrl.demo_obj_id[0], obj_size);
     microkit_ppcall(CH_EVENTBUS, microkit_msginfo_new(EVT_OBJECT_CREATED, 3));
-    microkit_dbg_puts("[controller] Event published to ring buffer\n");
+    console_log(0, 0, "[controller] Event published to ring buffer\n");
 
     demo_delay();
 
     /* ── Step 3: Dispatch task to worker_0 ──────────────────────────── */
-    microkit_dbg_puts("[controller] Step 3: Dispatching task to worker_0 — 'retrieve object'\n");
+    console_log(0, 0, "[controller] Step 3: Dispatching task to worker_0 — 'retrieve object'\n");
 
     ctrl.worker_task_dispatched = true;
     trace_notify(TRACE_PD_CONTROLLER, TRACE_PD_WORKER_0, 0, 0, 0);
     microkit_notify(CH_WORKER_BASE);  /* notify worker_0 */
 
-    microkit_dbg_puts("[controller] Task dispatched. Waiting for worker completion...\n");
+    console_log(0, 0, "[controller] Task dispatched. Waiting for worker completion...\n");
     /* Worker will notify us back on channel 10 when done */
 }
 
 void init(void) {
     agentos_log_boot("controller");
     
-    microkit_dbg_puts("[controller] Initializing agentOS core services\n");
+    console_log(0, 0, "[controller] Initializing agentOS core services\n");
     
     /* Initialize subsystems */
     cap_broker_init();
     agent_pool_init();
     
     /* PPC into EventBus (passive, higher priority) to initialize it */
-    microkit_dbg_puts("[controller] Waking EventBus via PPC...\n");
+    console_log(0, 0, "[controller] Waking EventBus via PPC...\n");
     trace_notify(TRACE_PD_CONTROLLER, TRACE_PD_EVENT_BUS,
                  (uint16_t)MSG_EVENTBUS_INIT, 0, 0);
     microkit_msginfo result = microkit_ppcall(CH_EVENTBUS,
@@ -316,13 +334,13 @@ void init(void) {
     uint64_t resp = microkit_msginfo_get_label(result);
     if (resp == MSG_EVENTBUS_READY) {
         ctrl.eventbus_ready = true;
-        microkit_dbg_puts("[controller] EventBus: READY\n");
+        console_log(0, 0, "[controller] EventBus: READY\n");
     } else {
-        microkit_dbg_puts("[controller] EventBus: unexpected response\n");
+        console_log(0, 0, "[controller] EventBus: unexpected response\n");
     }
     
     /* Notify InitAgent to start (it's active, so we can't PPC into it) */
-    microkit_dbg_puts("[controller] Notifying InitAgent to start...\n");
+    console_log(0, 0, "[controller] Notifying InitAgent to start...\n");
     trace_notify(TRACE_PD_CONTROLLER, TRACE_PD_INIT_AGENT,
                  (uint16_t)MSG_INITAGENT_START, 0, 0);
     microkit_notify(CH_INITAGENT);
@@ -330,8 +348,7 @@ void init(void) {
     /* Initialize vibe-swap subsystem (sets up swap slot channels + service table) */
     vibe_swap_init();
 
-    microkit_dbg_puts("[controller] *** agentOS controller boot complete ***\n");
-    microkit_dbg_puts("[controller] Ready for agents.\n");
+    console_log(0, 0, "[controller] *** agentOS controller boot complete ***\n[controller] Ready for agents.\n");
     
     /* Run the interactive demo sequence */
     demo_sequence();
@@ -342,7 +359,7 @@ void notified(microkit_channel ch) {
     
     switch (ch) {
         case CH_EVENTBUS:
-            microkit_dbg_puts("[controller] EventBus notification\n");
+            console_log(0, 0, "[controller] EventBus notification\n");
             ctrl.eventbus_ready = true;
             break;
             
@@ -369,16 +386,16 @@ void notified(microkit_channel ch) {
                 uint32_t spawn_id    = (uint32_t)microkit_mr_get(4);
                 uint32_t priority    = (uint32_t)microkit_mr_get(5);
 
-                microkit_dbg_puts("[controller] SPAWN_AGENT request: spawn_id=");
+                console_log(0, 0, "[controller] SPAWN_AGENT request: spawn_id=");
                 /* print spawn_id decimal */
                 {
                     char buf[12]; int bi = 11; buf[bi] = '\0';
                     uint32_t v = spawn_id;
                     if (v == 0) { buf[--bi] = '0'; }
                     else while (v > 0 && bi > 0) { buf[--bi] = '0' + (v % 10); v /= 10; }
-                    microkit_dbg_puts(&buf[bi]);
+                    console_log(0, 0, &buf[bi]);
                 }
-                microkit_dbg_puts(" hash_lo=");
+                console_log(0, 0, " hash_lo=");
                 {
                     static const char hex[] = "0123456789abcdef";
                     char hbuf[9]; hbuf[8] = '\0';
@@ -386,9 +403,9 @@ void notified(microkit_channel ch) {
                         hbuf[hi] = hex[hash_lo_lo & 0xf]; hash_lo_lo >>= 4;
                     }
                     (void)hash_lo_hi; (void)hash_hi_lo;
-                    microkit_dbg_puts(hbuf);
+                    console_log(0, 0, hbuf);
                 }
-                microkit_dbg_puts("\n");
+                console_log(0, 0, "\n");
 
                 /*
                  * Construct an agent name from spawn_id for pool tracking.
@@ -435,15 +452,21 @@ void notified(microkit_channel ch) {
                 microkit_notify(CH_INITAGENT);
 
                 if (slot >= 0) {
-                    microkit_dbg_puts("[controller] Agent spawned: slot=");
+                    console_log(0, 0, "[controller] Agent spawned: slot=");
                     char s[2] = { (char)('0' + (slot % 10)), '\0' };
-                    microkit_dbg_puts(s);
-                    microkit_dbg_puts("\n");
+                    {
+                        char _cl_buf[256] = {};
+                        char *_cl_p = _cl_buf;
+                        for (const char *_s = s; *_s; _s++) *_cl_p++ = *_s;
+                        for (const char *_s = "\n"; *_s; _s++) *_cl_p++ = *_s;
+                        *_cl_p = 0;
+                        console_log(0, 0, _cl_buf);
+                    }
                 } else {
-                    microkit_dbg_puts("[controller] SPAWN_AGENT: pool exhausted\n");
+                    console_log(0, 0, "[controller] SPAWN_AGENT: pool exhausted\n");
                 }
             } else {
-                microkit_dbg_puts("[controller] InitAgent ready notification received\n");
+                console_log(0, 0, "[controller] InitAgent ready notification received\n");
                 ctrl.initagent_ready = true;
             }
             break;
@@ -460,10 +483,10 @@ void notified(microkit_channel ch) {
                     /* Worker_0 completed the demo task */
                     ctrl.demo_complete = true;
                     
-                    microkit_dbg_puts("[controller] Worker 0 task COMPLETE\n");
+                    console_log(0, 0, "[controller] Worker 0 task COMPLETE\n");
                     
                     /* Publish TASK_COMPLETE event to EventBus */
-                    microkit_dbg_puts("[controller] Publishing TASK_COMPLETE event to EventBus...\n");
+                    console_log(0, 0, "[controller] Publishing TASK_COMPLETE event to EventBus...\n");
                     microkit_mr_set(0, MSG_EVENT_AGENT_EXITED);
                     microkit_mr_set(1, 0);
                     microkit_mr_set(2, 1);
@@ -472,7 +495,7 @@ void notified(microkit_channel ch) {
                                  (uint16_t)MSG_EVENT_AGENT_EXITED, 0, 1);
                     microkit_ppcall(CH_EVENTBUS,
                         microkit_msginfo_new(MSG_EVENT_AGENT_EXITED, 3));
-                    microkit_dbg_puts("[controller] TASK_COMPLETE event published\n");
+                    console_log(0, 0, "[controller] TASK_COMPLETE event published\n");
                     
                     /* Notify InitAgent to query final EventBus status */
                     microkit_notify(CH_INITAGENT);
@@ -480,11 +503,7 @@ void notified(microkit_channel ch) {
                     demo_delay();
                     
                     /* Print Step 1-3 summary */
-                    microkit_dbg_puts("\n");
-                    microkit_dbg_puts("──────────────────────────────────────────────────────\n");
-                    microkit_dbg_puts("  Steps 1-3 complete: AgentFS + EventBus + Workers\n");
-                    microkit_dbg_puts("──────────────────────────────────────────────────────\n");
-                    microkit_dbg_puts("\n");
+                    console_log(0, 0, "\n──────────────────────────────────────────────────────\n  Steps 1-3 complete: AgentFS + EventBus + Workers\n──────────────────────────────────────────────────────\n\n");
 
                     /*
                      * Step 4: VibeEngine hot-swap demo.
@@ -516,30 +535,41 @@ void notified(microkit_channel ch) {
                      *   init_agent will trigger that path when it receives our
                      *   notify below.
                      */
-                    microkit_dbg_puts("[controller] Step 4: VibeEngine hot-swap demo...\n");
-                    microkit_dbg_puts("[controller] Direct path: loading echo_service.wasm into swap slot 0\n");
+                    console_log(0, 0, "[controller] Step 4: VibeEngine hot-swap demo...\n[controller] Direct path: loading echo_service.wasm into swap slot 0\n");
 
                     /* Direct vibe_swap_begin (trusted controller path) */
                     /* service 2 = toolsvc (swappable) */
                     ctrl.vibe_demo_triggered = true;
                     int vslot = vibe_swap_begin(2, ECHO_SERVICE_WASM, ECHO_SERVICE_WASM_LEN);
                     if (vslot < 0) {
-                        microkit_dbg_puts("[controller] Step 4 vibe_swap_begin FAILED\n");
+                        console_log(0, 0, "[controller] Step 4 vibe_swap_begin FAILED\n");
                         ctrl.vibe_demo_triggered = false;
                     } else {
-                        microkit_dbg_puts("[controller] Step 4: WASM loaded into swap slot ");
+                        console_log(0, 0, "[controller] Step 4: WASM loaded into swap slot ");
                         char vsl[4];
                         vsl[0] = '0' + (vslot % 10);
                         vsl[1] = '\0';
-                        microkit_dbg_puts(vsl);
-                        microkit_dbg_puts(" — waiting for wasm3 health check...\n");
+                        {
+                            char _cl_buf[256] = {};
+                            char *_cl_p = _cl_buf;
+                            for (const char *_s = vsl; *_s; _s++) *_cl_p++ = *_s;
+                            for (const char *_s = " — waiting for wasm3 health check...\n"; *_s; _s++) *_cl_p++ = *_s;
+                            *_cl_p = 0;
+                            console_log(0, 0, _cl_buf);
+                        }
                         ctrl.vibe_swap_in_progress = true;
                     }
                 } else {
-                    microkit_dbg_puts("[controller] Worker ");
+                    console_log(0, 0, "[controller] Worker ");
                     char s[2] = { (char)('0' + pool_slot), '\0' };
-                    microkit_dbg_puts(s);
-                    microkit_dbg_puts(" ready\n");
+                    {
+                        char _cl_buf[256] = {};
+                        char *_cl_p = _cl_buf;
+                        for (const char *_s = s; *_s; _s++) *_cl_p++ = *_s;
+                        for (const char *_s = " ready\n"; *_s; _s++) *_cl_p++ = *_s;
+                        *_cl_p = 0;
+                        console_log(0, 0, _cl_buf);
+                    }
                     /* Ack the worker's ready signal */
                     microkit_notify(ch);
                 }
@@ -555,12 +585,12 @@ void notified(microkit_channel ch) {
                     uint32_t ticket  = (uint32_t)microkit_mr_get(1);
                     uint32_t slot_id = (uint32_t)microkit_mr_get(5);
                     (void)ticket;
-                    microkit_dbg_puts("[controller] GPU task dispatched to slot=");
+                    console_log(0, 0, "[controller] GPU task dispatched to slot=");
                     {
                         char s[2] = { (char)('0' + (slot_id % 10)), '\0' };
-                        microkit_dbg_puts(s);
+                        console_log(0, 0, s);
                     }
-                    microkit_dbg_puts("\n");
+                    console_log(0, 0, "\n");
                     /*
                      * Notify the target swap slot to start WASM execution.
                      * In production: pass hash via MRs for agentfs fetch first.
@@ -574,17 +604,17 @@ void notified(microkit_channel ch) {
                     }
                 } else {
                     /* gpu_sched startup ready notification */
-                    microkit_dbg_puts("[controller] GPU Scheduler online\n");
+                    console_log(0, 0, "[controller] GPU Scheduler online\n");
                 }
             /* Channel 55: mesh_agent ready notification */
             } else if (ch == (microkit_channel)CH_MESHAGENT) {
-                microkit_dbg_puts("[controller] Distributed mesh agent online\n");
+                console_log(0, 0, "[controller] Distributed mesh agent online\n");
             } else if (ch == (microkit_channel)CH_QUOTA_NOTIFY) {
                 uint32_t tag = (uint32_t)microkit_mr_get(0);
                 uint32_t agent_id = (uint32_t)microkit_mr_get(1);
                 uint32_t reason   = (uint32_t)microkit_mr_get(2);
                 if (tag == (uint32_t)MSG_QUOTA_REVOKE) {
-                    microkit_dbg_puts("[controller] Quota revoke request: agent=");
+                    console_log(0, 0, "[controller] Quota revoke request: agent=");
                     char buf[12]; int bi = 11; buf[bi] = '\0';
                     uint32_t v = agent_id;
                     if (v == 0) { buf[--bi] = '0'; }
@@ -594,19 +624,31 @@ void notified(microkit_channel ch) {
                             v /= 10;
                         }
                     }
-                    microkit_dbg_puts(&buf[bi]);
-                    microkit_dbg_puts(" reason=0x");
+                    {
+                        char _cl_buf[256] = {};
+                        char *_cl_p = _cl_buf;
+                        for (const char *_s = &buf[bi]; *_s; _s++) *_cl_p++ = *_s;
+                        for (const char *_s = " reason=0x"; *_s; _s++) *_cl_p++ = *_s;
+                        *_cl_p = 0;
+                        console_log(0, 0, _cl_buf);
+                    }
                     char hex[9];
                     for (int i = 0; i < 8; i++) {
                         uint32_t nib = (reason >> (28 - i * 4)) & 0xF;
                         hex[i] = (char)(nib < 10 ? '0' + nib : 'a' + nib - 10);
                     }
                     hex[8] = '\0';
-                    microkit_dbg_puts(hex);
-                    microkit_dbg_puts("\n");
+                    {
+                        char _cl_buf[256] = {};
+                        char *_cl_p = _cl_buf;
+                        for (const char *_s = hex; *_s; _s++) *_cl_p++ = *_s;
+                        for (const char *_s = "\n"; *_s; _s++) *_cl_p++ = *_s;
+                        *_cl_p = 0;
+                        console_log(0, 0, _cl_buf);
+                    }
                     cap_broker_revoke_agent(agent_id, reason);
                 } else {
-                    microkit_dbg_puts("[controller] Unknown quota notify\n");
+                    console_log(0, 0, "[controller] Unknown quota notify\n");
                 }
             /* Channel 40: vibe_engine approved a swap — read staging and begin */
             } else if (ch == CH_VIBEENGINE) {
@@ -616,32 +658,20 @@ void notified(microkit_channel ch) {
                 int swap_slot_idx = (int)(ch - CH_SWAP_BASE);
                 uint32_t status = (uint32_t)microkit_mr_get(0);
                 if (status == 0) {
-                    microkit_dbg_puts("[controller] Swap slot health OK — activating\n");
+                    console_log(0, 0, "[controller] Swap slot health OK — activating\n");
                     vibe_swap_health_notify(swap_slot_idx);
 
                     /* If this is the vibe demo swap, print final summary */
                     if (ctrl.vibe_swap_in_progress && !ctrl.vibe_demo_complete) {
                         ctrl.vibe_swap_in_progress = false;
                         ctrl.vibe_demo_complete = true;
-                        microkit_dbg_puts("\n");
-                        microkit_dbg_puts("══════════════════════════════════════════════════════\n");
-                        microkit_dbg_puts("  DEMO COMPLETE — All 4 steps passed!\n");
-                        microkit_dbg_puts("  Step 1: AgentFS object store    — PUT/GET via IPC\n");
-                        microkit_dbg_puts("  Step 2: EventBus pub/sub        — ring buffer + notify\n");
-                        microkit_dbg_puts("  Step 3: Agent pool workers      — task dispatch + done\n");
-                        microkit_dbg_puts("  Step 4: VibeEngine hot-swap     — WASM live via wasm3\n");
-                        microkit_dbg_puts("  PDs running: 20 (+ vibe_engine) on seL4 RISC-V\n");
-                        microkit_dbg_puts("  Kernel: formally verified seL4 microkernel\n");
-                        microkit_dbg_puts("  Swap: echo_service.wasm loaded into toolsvc slot\n");
-                        microkit_dbg_puts("══════════════════════════════════════════════════════\n");
-                        microkit_dbg_puts("\n");
-                        microkit_dbg_puts("[controller] agentOS: the world's first agent-native OS. :)\n");
+                        console_log(0, 0, "\n══════════════════════════════════════════════════════\n  DEMO COMPLETE — All 4 steps passed!\n  Step 1: AgentFS object store    — PUT/GET via IPC\n  Step 2: EventBus pub/sub        — ring buffer + notify\n  Step 3: Agent pool workers      — task dispatch + done\n  Step 4: VibeEngine hot-swap     — WASM live via wasm3\n  PDs running: 20 (+ vibe_engine) on seL4 RISC-V\n  Kernel: formally verified seL4 microkernel\n  Swap: echo_service.wasm loaded into toolsvc slot\n══════════════════════════════════════════════════════\n\n[controller] agentOS: the world's first agent-native OS. :)\n");
                     }
                 } else {
-                    microkit_dbg_puts("[controller] Swap slot health FAIL\n");
+                    console_log(0, 0, "[controller] Swap slot health FAIL\n");
                 }
             } else {
-                microkit_dbg_puts("[controller] Unknown channel\n");
+                console_log(0, 0, "[controller] Unknown channel\n");
             }
             break;
     }
@@ -653,7 +683,7 @@ microkit_msginfo protected(microkit_channel ch, microkit_msginfo msg) {
     
     if (label == MSG_WORKER_RETRIEVE) {
         /* Worker requesting AgentFS object retrieval (proxy) */
-        microkit_dbg_puts("[controller] Proxying AgentFS GET for worker...\n");
+        console_log(0, 0, "[controller] Proxying AgentFS GET for worker...\n");
         
         /* Read the object ID words from MRs */
         uint32_t id0 = (uint32_t)microkit_mr_get(0);
@@ -677,20 +707,26 @@ microkit_msginfo protected(microkit_channel ch, microkit_msginfo msg) {
             uint32_t size       = (uint32_t)microkit_mr_get(2);
             uint32_t cap_tag    = (uint32_t)microkit_mr_get(3);
             
-            microkit_dbg_puts("[controller] AgentFS returned object: version=");
+            console_log(0, 0, "[controller] AgentFS returned object: version=");
             char v[2] = { (char)('0' + (version % 10)), '\0' };
-            microkit_dbg_puts(v);
-            microkit_dbg_puts(", size=");
+            {
+                char _cl_buf[256] = {};
+                char *_cl_p = _cl_buf;
+                for (const char *_s = v; *_s; _s++) *_cl_p++ = *_s;
+                for (const char *_s = ", size="; *_s; _s++) *_cl_p++ = *_s;
+                *_cl_p = 0;
+                console_log(0, 0, _cl_buf);
+            }
             /* Print size as decimal */
             if (size < 100) {
                 char tens = (char)('0' + (size / 10));
                 char ones = (char)('0' + (size % 10));
                 char sz[3] = { tens, ones, '\0' };
-                microkit_dbg_puts(sz);
+                console_log(0, 0, sz);
             } else {
-                microkit_dbg_puts("??");
+                console_log(0, 0, "??");
             }
-            microkit_dbg_puts(" bytes\n");
+            console_log(0, 0, " bytes\n");
             
             /* Pack response for worker: MR0=status, MR1=size, MR2=cap_tag, MR3=version */
             microkit_mr_set(0, 0);       /* OK */
@@ -699,13 +735,13 @@ microkit_msginfo protected(microkit_channel ch, microkit_msginfo msg) {
             microkit_mr_set(3, version);
             return microkit_msginfo_new(MSG_WORKER_RETRIEVE_REPLY, 4);
         } else {
-            microkit_dbg_puts("[controller] AgentFS GET failed\n");
+            console_log(0, 0, "[controller] AgentFS GET failed\n");
             microkit_mr_set(0, status);
             return microkit_msginfo_new(MSG_WORKER_RETRIEVE_REPLY, 1);
         }
     }
     
-    microkit_dbg_puts("[controller] Unexpected PPC call\n");
+    console_log(0, 0, "[controller] Unexpected PPC call\n");
     return microkit_msginfo_new(0xDEAD, 0);
 }
 

@@ -83,9 +83,15 @@ static m3ApiRawFunction(host_aos_log)
         }
         buf[copy_len] = '\0';
 
-        microkit_dbg_puts("[wasm] ");
-        microkit_dbg_puts(buf);
-        microkit_dbg_puts("\n");
+        {
+            char _cl_buf[256] = {};
+            char *_cl_p = _cl_buf;
+            for (const char *_s = "[wasm] "; *_s; _s++) *_cl_p++ = *_s;
+            for (const char *_s = buf; *_s; _s++) *_cl_p++ = *_s;
+            for (const char *_s = "\n"; *_s; _s++) *_cl_p++ = *_s;
+            *_cl_p = 0;
+            console_log(15, 15, _cl_buf);
+        }
     }
 
     m3ApiSuccess();
@@ -199,7 +205,7 @@ wasm3_host_t *wasm3_host_init(const uint8_t *wasm_bytes, uint32_t wasm_size) {
     wasm3_host_t *host = &host_state;
     M3Result result;
 
-    microkit_dbg_puts("[wasm3_host] Initializing WASM runtime\n");
+    console_log(15, 15, "[wasm3_host] Initializing WASM runtime\n");
 
     /* Reset state */
     host->env = NULL;
@@ -213,19 +219,19 @@ wasm3_host_t *wasm3_host_init(const uint8_t *wasm_bytes, uint32_t wasm_size) {
     /* Create environment */
     host->env = m3_NewEnvironment();
     if (!host->env) {
-        microkit_dbg_puts("[wasm3_host] ERROR: failed to create environment\n");
+        console_log(15, 15, "[wasm3_host] ERROR: failed to create environment\n");
         return NULL;
     }
 
     /* Create runtime with stack */
     host->runtime = m3_NewRuntime(host->env, WASM_STACK_SIZE, NULL);
     if (!host->runtime) {
-        microkit_dbg_puts("[wasm3_host] ERROR: failed to create runtime\n");
+        console_log(15, 15, "[wasm3_host] ERROR: failed to create runtime\n");
         return NULL;
     }
 
     /* Parse the WASM module */
-    microkit_dbg_puts("[wasm3_host] Parsing WASM module (");
+    console_log(15, 15, "[wasm3_host] Parsing WASM module (");
     /* Print size — simple decimal */
     char sizebuf[12];
     int si = 0;
@@ -236,82 +242,118 @@ wasm3_host_t *wasm3_host_init(const uint8_t *wasm_bytes, uint32_t wasm_size) {
     else { while (sz > 0) { tmp[ti++] = '0' + (sz % 10); sz /= 10; } }
     for (int j = ti - 1; j >= 0; j--) sizebuf[si++] = tmp[j];
     sizebuf[si] = '\0';
-    microkit_dbg_puts(sizebuf);
-    microkit_dbg_puts(" bytes)\n");
+    {
+        char _cl_buf[256] = {};
+        char *_cl_p = _cl_buf;
+        for (const char *_s = sizebuf; *_s; _s++) *_cl_p++ = *_s;
+        for (const char *_s = " bytes)\n"; *_s; _s++) *_cl_p++ = *_s;
+        *_cl_p = 0;
+        console_log(15, 15, _cl_buf);
+    }
 
     result = m3_ParseModule(host->env, &host->module, wasm_bytes, wasm_size);
     if (result) {
-        microkit_dbg_puts("[wasm3_host] ERROR: parse failed: ");
-        microkit_dbg_puts(result);
-        microkit_dbg_puts("\n");
+        {
+            char _cl_buf[256] = {};
+            char *_cl_p = _cl_buf;
+            for (const char *_s = "[wasm3_host] ERROR: parse failed: "; *_s; _s++) *_cl_p++ = *_s;
+            for (const char *_s = result; *_s; _s++) *_cl_p++ = *_s;
+            for (const char *_s = "\n"; *_s; _s++) *_cl_p++ = *_s;
+            *_cl_p = 0;
+            console_log(15, 15, _cl_buf);
+        }
         return NULL;
     }
 
     /* Load module into runtime */
     result = m3_LoadModule(host->runtime, host->module);
     if (result) {
-        microkit_dbg_puts("[wasm3_host] ERROR: load failed: ");
-        microkit_dbg_puts(result);
-        microkit_dbg_puts("\n");
+        {
+            char _cl_buf[256] = {};
+            char *_cl_p = _cl_buf;
+            for (const char *_s = "[wasm3_host] ERROR: load failed: "; *_s; _s++) *_cl_p++ = *_s;
+            for (const char *_s = result; *_s; _s++) *_cl_p++ = *_s;
+            for (const char *_s = "\n"; *_s; _s++) *_cl_p++ = *_s;
+            *_cl_p = 0;
+            console_log(15, 15, _cl_buf);
+        }
         return NULL;
     }
 
     /* Link host imports */
     result = link_host_imports(host->module);
     if (result) {
-        microkit_dbg_puts("[wasm3_host] ERROR: link failed: ");
-        microkit_dbg_puts(result);
-        microkit_dbg_puts("\n");
+        {
+            char _cl_buf[256] = {};
+            char *_cl_p = _cl_buf;
+            for (const char *_s = "[wasm3_host] ERROR: link failed: "; *_s; _s++) *_cl_p++ = *_s;
+            for (const char *_s = result; *_s; _s++) *_cl_p++ = *_s;
+            for (const char *_s = "\n"; *_s; _s++) *_cl_p++ = *_s;
+            *_cl_p = 0;
+            console_log(15, 15, _cl_buf);
+        }
         return NULL;
     }
 
     /* Compile all functions */
     result = m3_CompileModule(host->module);
     if (result) {
-        microkit_dbg_puts("[wasm3_host] WARNING: compile incomplete: ");
-        microkit_dbg_puts(result);
-        microkit_dbg_puts("\n");
+        {
+            char _cl_buf[256] = {};
+            char *_cl_p = _cl_buf;
+            for (const char *_s = "[wasm3_host] WARNING: compile incomplete: "; *_s; _s++) *_cl_p++ = *_s;
+            for (const char *_s = result; *_s; _s++) *_cl_p++ = *_s;
+            for (const char *_s = "\n"; *_s; _s++) *_cl_p++ = *_s;
+            *_cl_p = 0;
+            console_log(15, 15, _cl_buf);
+        }
         /* Non-fatal — some functions may still work */
     }
 
     /* Find exported functions */
     result = m3_FindFunction(&host->fn_init, host->runtime, "init");
     if (result) {
-        microkit_dbg_puts("[wasm3_host] WARNING: no init() export\n");
+        console_log(15, 15, "[wasm3_host] WARNING: no init() export\n");
         host->fn_init = NULL;
     }
 
     result = m3_FindFunction(&host->fn_handle_ppc, host->runtime, "handle_ppc");
     if (result) {
-        microkit_dbg_puts("[wasm3_host] WARNING: no handle_ppc() export\n");
+        console_log(15, 15, "[wasm3_host] WARNING: no handle_ppc() export\n");
         host->fn_handle_ppc = NULL;
     }
 
     result = m3_FindFunction(&host->fn_health_check, host->runtime, "health_check");
     if (result) {
-        microkit_dbg_puts("[wasm3_host] WARNING: no health_check() export\n");
+        console_log(15, 15, "[wasm3_host] WARNING: no health_check() export\n");
         host->fn_health_check = NULL;
     }
 
     host->initialized = true;
-    microkit_dbg_puts("[wasm3_host] WASM module loaded successfully\n");
+    console_log(15, 15, "[wasm3_host] WASM module loaded successfully\n");
     return host;
 }
 
 bool wasm3_host_call_init(wasm3_host_t *host) {
     if (!host || !host->initialized || !host->fn_init) return false;
 
-    microkit_dbg_puts("[wasm3_host] Calling WASM init()\n");
+    console_log(15, 15, "[wasm3_host] Calling WASM init()\n");
 
     M3Result result = m3_CallV(host->fn_init);
     if (result) {
-        microkit_dbg_puts("[wasm3_host] ERROR: init() failed: ");
-        microkit_dbg_puts(result);
-        microkit_dbg_puts("\n");
+        {
+            char _cl_buf[256] = {};
+            char *_cl_p = _cl_buf;
+            for (const char *_s = "[wasm3_host] ERROR: init() failed: "; *_s; _s++) *_cl_p++ = *_s;
+            for (const char *_s = result; *_s; _s++) *_cl_p++ = *_s;
+            for (const char *_s = "\n"; *_s; _s++) *_cl_p++ = *_s;
+            *_cl_p = 0;
+            console_log(15, 15, _cl_buf);
+        }
         return false;
     }
 
-    microkit_dbg_puts("[wasm3_host] init() completed\n");
+    console_log(15, 15, "[wasm3_host] init() completed\n");
     return true;
 }
 
@@ -320,7 +362,7 @@ bool wasm3_host_call_health_check(wasm3_host_t *host) {
 
     M3Result result = m3_CallV(host->fn_health_check);
     if (result) {
-        microkit_dbg_puts("[wasm3_host] ERROR: health_check() failed\n");
+        console_log(15, 15, "[wasm3_host] ERROR: health_check() failed\n");
         return false;
     }
 
@@ -358,9 +400,15 @@ bool wasm3_host_call_ppc(wasm3_host_t *host,
                                 (int64_t)label, (int64_t)mr0,
                                 (int64_t)mr1, (int64_t)mr2, (int64_t)mr3);
     if (result) {
-        microkit_dbg_puts("[wasm3_host] ERROR: handle_ppc() failed: ");
-        microkit_dbg_puts(result);
-        microkit_dbg_puts("\n");
+        {
+            char _cl_buf[256] = {};
+            char *_cl_p = _cl_buf;
+            for (const char *_s = "[wasm3_host] ERROR: handle_ppc() failed: "; *_s; _s++) *_cl_p++ = *_s;
+            for (const char *_s = result; *_s; _s++) *_cl_p++ = *_s;
+            for (const char *_s = "\n"; *_s; _s++) *_cl_p++ = *_s;
+            *_cl_p = 0;
+            console_log(15, 15, _cl_buf);
+        }
         return false;
     }
 
@@ -368,7 +416,7 @@ bool wasm3_host_call_ppc(wasm3_host_t *host,
     uint32_t mem_size = 0;
     uint8_t *mem = (uint8_t *)m3_GetMemory(host->runtime, &mem_size, 0);
     if (!mem || mem_size < PPC_RESULT_OFFSET + 40) {
-        microkit_dbg_puts("[wasm3_host] ERROR: WASM memory too small for PPC results\n");
+        console_log(15, 15, "[wasm3_host] ERROR: WASM memory too small for PPC results\n");
         return false;
     }
 
@@ -385,7 +433,7 @@ bool wasm3_host_call_ppc(wasm3_host_t *host,
 void wasm3_host_destroy(wasm3_host_t *host) {
     if (!host) return;
 
-    microkit_dbg_puts("[wasm3_host] Destroying WASM runtime\n");
+    console_log(15, 15, "[wasm3_host] Destroying WASM runtime\n");
 
     /* With fixed heap, these free calls are mostly no-ops,
      * but they reset internal state properly. */

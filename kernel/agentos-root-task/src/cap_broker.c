@@ -34,13 +34,13 @@ static uint64_t audit_seq = 0;
 
 /* Initialize the capability broker */
 void cap_broker_init(void) {
-    microkit_dbg_puts("[cap_broker] Initializing capability table\n");
+    console_log(4, 4, "[cap_broker] Initializing capability table\n");
     
     for (int i = 0; i < MAX_CAPS; i++) {
         cap_table[i].active = false;
     }
     
-    microkit_dbg_puts("[cap_broker] Ready\n");
+    console_log(4, 4, "[cap_broker] Ready\n");
 }
 
 /* Register a capability in the table */
@@ -70,7 +70,7 @@ bool cap_broker_grant(int handle, uint32_t to_pd, uint64_t boot_seq) {
     
     /* Can't grant a capability that's already granted elsewhere */
     if (entry->granted_to != 0 && entry->granted_to != to_pd) {
-        microkit_dbg_puts("[cap_broker] DENY: capability already granted to another PD\n");
+        console_log(4, 4, "[cap_broker] DENY: capability already granted to another PD\n");
         return false;
     }
     
@@ -86,7 +86,7 @@ bool cap_broker_grant(int handle, uint32_t to_pd, uint64_t boot_seq) {
     microkit_mr_set(4, (uint32_t)handle);   /* slot_id = handle */
     microkit_ppcall(CH_CAP_AUDIT_CTRL, microkit_msginfo_new(0, 5));
     
-    microkit_dbg_puts("[cap_broker] Capability granted (audited)\n");
+    console_log(4, 4, "[cap_broker] Capability granted (audited)\n");
     return true;
 }
 
@@ -100,12 +100,12 @@ bool cap_broker_revoke(int handle, uint32_t requesting_pd) {
     
     /* Only the owner can revoke */
     if (entry->owner_pd != requesting_pd) {
-        microkit_dbg_puts("[cap_broker] DENY: revocation by non-owner\n");
+        console_log(4, 4, "[cap_broker] DENY: revocation by non-owner\n");
         return false;
     }
     
     if (!entry->revokable) {
-        microkit_dbg_puts("[cap_broker] DENY: capability is not revokable\n");
+        console_log(4, 4, "[cap_broker] DENY: capability is not revokable\n");
         return false;
     }
     
@@ -120,7 +120,7 @@ bool cap_broker_revoke(int handle, uint32_t requesting_pd) {
     microkit_mr_set(4, (uint32_t)handle);
     microkit_ppcall(CH_CAP_AUDIT_CTRL, microkit_msginfo_new(0, 5));
     
-    microkit_dbg_puts("[cap_broker] Capability revoked (audited)\n");
+    console_log(4, 4, "[cap_broker] Capability revoked (audited)\n");
     return true;
 }
 
@@ -163,7 +163,7 @@ void cap_broker_revoke_agent(uint32_t agent_pd, uint32_t reason_flags) {
     }
 
     if (revoked) {
-        microkit_dbg_puts("[cap_broker] Capabilities revoked for agent ");
+        console_log(4, 4, "[cap_broker] Capabilities revoked for agent ");
         char buf[12]; int bi = 11; buf[bi] = '\0';
         uint32_t v = agent_pd;
         if (v == 0) { buf[--bi] = '0'; }
@@ -173,18 +173,30 @@ void cap_broker_revoke_agent(uint32_t agent_pd, uint32_t reason_flags) {
                 v /= 10;
             }
         }
-        microkit_dbg_puts(&buf[bi]);
-        microkit_dbg_puts(" reason=0x");
+        {
+            char _cl_buf[256] = {};
+            char *_cl_p = _cl_buf;
+            for (const char *_s = &buf[bi]; *_s; _s++) *_cl_p++ = *_s;
+            for (const char *_s = " reason=0x"; *_s; _s++) *_cl_p++ = *_s;
+            *_cl_p = 0;
+            console_log(4, 4, _cl_buf);
+        }
         char hex[9];
         for (int i = 0; i < 8; i++) {
             uint32_t nib = (reason_flags >> (28 - i * 4)) & 0xF;
             hex[i] = (char)(nib < 10 ? '0' + nib : 'a' + nib - 10);
         }
         hex[8] = '\0';
-        microkit_dbg_puts(hex);
-        microkit_dbg_puts("\n");
+        {
+            char _cl_buf[256] = {};
+            char *_cl_p = _cl_buf;
+            for (const char *_s = hex; *_s; _s++) *_cl_p++ = *_s;
+            for (const char *_s = "\n"; *_s; _s++) *_cl_p++ = *_s;
+            *_cl_p = 0;
+            console_log(4, 4, _cl_buf);
+        }
     } else {
-        microkit_dbg_puts("[cap_broker] No capabilities to revoke for agent ");
+        console_log(4, 4, "[cap_broker] No capabilities to revoke for agent ");
         char buf[12]; int bi = 11; buf[bi] = '\0';
         uint32_t v = agent_pd;
         if (v == 0) { buf[--bi] = '0'; }
@@ -194,7 +206,13 @@ void cap_broker_revoke_agent(uint32_t agent_pd, uint32_t reason_flags) {
                 v /= 10;
             }
         }
-        microkit_dbg_puts(&buf[bi]);
-        microkit_dbg_puts("\n");
+        {
+            char _cl_buf[256] = {};
+            char *_cl_p = _cl_buf;
+            for (const char *_s = &buf[bi]; *_s; _s++) *_cl_p++ = *_s;
+            for (const char *_s = "\n"; *_s; _s++) *_cl_p++ = *_s;
+            *_cl_p = 0;
+            console_log(4, 4, _cl_buf);
+        }
     }
 }

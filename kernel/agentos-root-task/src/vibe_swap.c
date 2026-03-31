@@ -119,7 +119,7 @@ static uint64_t      swap_sequence = 0;
  * Initialize the vibe swap subsystem
  */
 void vibe_swap_init(void) {
-    microkit_dbg_puts("[vibe_swap] Initializing swap slot manager\n");
+    console_log(7, 7, "[vibe_swap] Initializing swap slot manager\n");
     
     /* Initialize swap slots */
     for (int i = 0; i < MAX_SWAP_SLOTS; i++) {
@@ -181,13 +181,19 @@ void vibe_swap_init(void) {
     
     service_count = 6;
     
-    microkit_dbg_puts("[vibe_swap] Swap slots: ");
+    console_log(7, 7, "[vibe_swap] Swap slots: ");
     char buf[4];
     buf[0] = '0' + MAX_SWAP_SLOTS;
     buf[1] = '\0';
-    microkit_dbg_puts(buf);
-    microkit_dbg_puts(" available\n");
-    microkit_dbg_puts("[vibe_swap] Ready for vibe-coded service proposals\n");
+    {
+        char _cl_buf[256] = {};
+        char *_cl_p = _cl_buf;
+        for (const char *_s = buf; *_s; _s++) *_cl_p++ = *_s;
+        for (const char *_s = " available\n"; *_s; _s++) *_cl_p++ = *_s;
+        for (const char *_s = "[vibe_swap] Ready for vibe-coded service proposals\n"; *_s; _s++) *_cl_p++ = *_s;
+        *_cl_p = 0;
+        console_log(7, 7, _cl_buf);
+    }
 }
 
 /*
@@ -230,33 +236,51 @@ static int find_rollback_slot(uint32_t service_id) {
  */
 int vibe_swap_begin(uint32_t service_id, const void *code, uint32_t code_len) {
     if (service_id >= MAX_SERVICES) {
-        microkit_dbg_puts("[vibe_swap] ERROR: invalid service_id\n");
+        console_log(7, 7, "[vibe_swap] ERROR: invalid service_id\n");
         return -1;
     }
     
     service_desc_t *svc = &services[service_id];
     
     if (!svc->swappable) {
-        microkit_dbg_puts("[vibe_swap] ERROR: service '");
-        microkit_dbg_puts(svc->name);
-        microkit_dbg_puts("' is not swappable\n");
+        {
+            char _cl_buf[256] = {};
+            char *_cl_p = _cl_buf;
+            for (const char *_s = "[vibe_swap] ERROR: service '"; *_s; _s++) *_cl_p++ = *_s;
+            for (const char *_s = svc->name; *_s; _s++) *_cl_p++ = *_s;
+            for (const char *_s = "' is not swappable\n"; *_s; _s++) *_cl_p++ = *_s;
+            *_cl_p = 0;
+            console_log(7, 7, _cl_buf);
+        }
         return -2;
     }
     
     int slot = find_free_slot();
     if (slot < 0) {
-        microkit_dbg_puts("[vibe_swap] ERROR: no free swap slots\n");
+        console_log(7, 7, "[vibe_swap] ERROR: no free swap slots\n");
         return -3;
     }
     
-    microkit_dbg_puts("[vibe_swap] Beginning swap for '");
-    microkit_dbg_puts(svc->name);
-    microkit_dbg_puts("' into slot ");
+    {
+        char _cl_buf[256] = {};
+        char *_cl_p = _cl_buf;
+        for (const char *_s = "[vibe_swap] Beginning swap for '"; *_s; _s++) *_cl_p++ = *_s;
+        for (const char *_s = svc->name; *_s; _s++) *_cl_p++ = *_s;
+        for (const char *_s = "' into slot "; *_s; _s++) *_cl_p++ = *_s;
+        *_cl_p = 0;
+        console_log(7, 7, _cl_buf);
+    }
     char slot_str[4];
     slot_str[0] = '0' + slot;
     slot_str[1] = '\0';
-    microkit_dbg_puts(slot_str);
-    microkit_dbg_puts("\n");
+    {
+        char _cl_buf[256] = {};
+        char *_cl_p = _cl_buf;
+        for (const char *_s = slot_str; *_s; _s++) *_cl_p++ = *_s;
+        for (const char *_s = "\n"; *_s; _s++) *_cl_p++ = *_s;
+        *_cl_p = 0;
+        console_log(7, 7, _cl_buf);
+    }
     
     /* Mark slot as loading */
     slots[slot].state = SWAP_STATE_LOADING;
@@ -288,7 +312,7 @@ int vibe_swap_begin(uint32_t service_id, const void *code, uint32_t code_len) {
 
     /* Validate code fits in region */
     if (code_len + SWAP_HEADER_SIZE > SWAP_CODE_REGION_SIZE) {
-        microkit_dbg_puts("[vibe_swap] ERROR: code too large for slot region\n");
+        console_log(7, 7, "[vibe_swap] ERROR: code too large for slot region\n");
         slots[slot].state = SWAP_STATE_IDLE;
         return -4;
     }
@@ -321,7 +345,7 @@ int vibe_swap_begin(uint32_t service_id, const void *code, uint32_t code_len) {
 
     agentos_wmb();
 
-    microkit_dbg_puts("[vibe_swap] WASM image written, notifying slot\n");
+    console_log(7, 7, "[vibe_swap] WASM image written, notifying slot\n");
 
     /* Notify the swap slot to initialize */
     microkit_notify(slots[slot].channel);
@@ -344,14 +368,20 @@ int vibe_swap_activate(int slot) {
     uint32_t svc_id = slots[slot].service_id;
     service_desc_t *svc = &services[svc_id];
     
-    microkit_dbg_puts("[vibe_swap] Activating slot ");
+    console_log(7, 7, "[vibe_swap] Activating slot ");
     char buf[4];
     buf[0] = '0' + slot;
     buf[1] = '\0';
-    microkit_dbg_puts(buf);
-    microkit_dbg_puts(" for '");
-    microkit_dbg_puts(svc->name);
-    microkit_dbg_puts("'\n");
+    {
+        char _cl_buf[256] = {};
+        char *_cl_p = _cl_buf;
+        for (const char *_s = buf; *_s; _s++) *_cl_p++ = *_s;
+        for (const char *_s = " for '"; *_s; _s++) *_cl_p++ = *_s;
+        for (const char *_s = svc->name; *_s; _s++) *_cl_p++ = *_s;
+        for (const char *_s = "'\n"; *_s; _s++) *_cl_p++ = *_s;
+        *_cl_p = 0;
+        console_log(7, 7, _cl_buf);
+    }
     
     /*
      * The swap operation:
@@ -401,14 +431,26 @@ int vibe_swap_activate(int slot) {
     svc->active_channel = slots[slot].channel;
     svc->version = slots[slot].version;
     
-    microkit_dbg_puts("[vibe_swap] *** SERVICE SWAPPED: '");
-    microkit_dbg_puts(svc->name);
-    microkit_dbg_puts("' now at version ");
+    {
+        char _cl_buf[256] = {};
+        char *_cl_p = _cl_buf;
+        for (const char *_s = "[vibe_swap] *** SERVICE SWAPPED: '"; *_s; _s++) *_cl_p++ = *_s;
+        for (const char *_s = svc->name; *_s; _s++) *_cl_p++ = *_s;
+        for (const char *_s = "' now at version "; *_s; _s++) *_cl_p++ = *_s;
+        *_cl_p = 0;
+        console_log(7, 7, _cl_buf);
+    }
     char ver[4];
     ver[0] = '0' + (svc->version % 10);
     ver[1] = '\0';
-    microkit_dbg_puts(ver);
-    microkit_dbg_puts(" ***\n");
+    {
+        char _cl_buf[256] = {};
+        char *_cl_p = _cl_buf;
+        for (const char *_s = ver; *_s; _s++) *_cl_p++ = *_s;
+        for (const char *_s = " ***\n"; *_s; _s++) *_cl_p++ = *_s;
+        *_cl_p = 0;
+        console_log(7, 7, _cl_buf);
+    }
     
     return 0;
 }
@@ -422,17 +464,29 @@ int vibe_swap_rollback(uint32_t service_id) {
     service_desc_t *svc = &services[service_id];
     
     if (!svc->has_rollback) {
-        microkit_dbg_puts("[vibe_swap] ERROR: no rollback available for '");
-        microkit_dbg_puts(svc->name);
-        microkit_dbg_puts("'\n");
+        {
+            char _cl_buf[256] = {};
+            char *_cl_p = _cl_buf;
+            for (const char *_s = "[vibe_swap] ERROR: no rollback available for '"; *_s; _s++) *_cl_p++ = *_s;
+            for (const char *_s = svc->name; *_s; _s++) *_cl_p++ = *_s;
+            for (const char *_s = "'\n"; *_s; _s++) *_cl_p++ = *_s;
+            *_cl_p = 0;
+            console_log(7, 7, _cl_buf);
+        }
         return -2;
     }
     
     int rb_slot = svc->rollback_slot;
     
-    microkit_dbg_puts("[vibe_swap] Rolling back '");
-    microkit_dbg_puts(svc->name);
-    microkit_dbg_puts("' to previous version\n");
+    {
+        char _cl_buf[256] = {};
+        char *_cl_p = _cl_buf;
+        for (const char *_s = "[vibe_swap] Rolling back '"; *_s; _s++) *_cl_p++ = *_s;
+        for (const char *_s = svc->name; *_s; _s++) *_cl_p++ = *_s;
+        for (const char *_s = "' to previous version\n"; *_s; _s++) *_cl_p++ = *_s;
+        *_cl_p = 0;
+        console_log(7, 7, _cl_buf);
+    }
     
     /* Deactivate current slot */
     for (int i = 0; i < MAX_SWAP_SLOTS; i++) {
@@ -448,7 +502,7 @@ int vibe_swap_rollback(uint32_t service_id) {
     svc->version = slots[rb_slot].version;
     svc->has_rollback = false;
     
-    microkit_dbg_puts("[vibe_swap] Rollback complete\n");
+    console_log(7, 7, "[vibe_swap] Rollback complete\n");
     return 0;
 }
 
@@ -498,7 +552,7 @@ void vibe_swap_status(uint32_t service_id, uint32_t *version,
 int vibe_swap_health_notify(int slot) {
     if (slot < 0 || slot >= MAX_SWAP_SLOTS) return -1;
     if (slots[slot].state != SWAP_STATE_TESTING) {
-        microkit_dbg_puts("[vibe_swap] health_notify: slot not in TESTING state\n");
+        console_log(7, 7, "[vibe_swap] health_notify: slot not in TESTING state\n");
         return -2;
     }
     slots[slot].healthy = true;

@@ -2,7 +2,7 @@
  * agentOS Debug Logging
  * 
  * Simple structured logging for the kernel layer PDs.
- * Uses microkit_dbg_puts() which goes to the seL4 debug UART.
+ console_log(15, 15, "");
  */
 
 #include <microkit.h>
@@ -17,11 +17,11 @@ static void log_hex64(uint64_t v) {
         buf[i] = hex[v & 0xf];
         v >>= 4;
     }
-    microkit_dbg_puts(buf);
+    console_log(15, 15, buf);
 }
 
 static void log_u32(uint32_t v) {
-    if (v == 0) { microkit_dbg_puts("0"); return; }
+    console_log(15, 15, "0");
     char buf[12];
     int i = 11;
     buf[i] = '\0';
@@ -29,44 +29,68 @@ static void log_u32(uint32_t v) {
         buf[--i] = '0' + (v % 10);
         v /= 10;
     }
-    microkit_dbg_puts(&buf[i]);
+    console_log(15, 15, &buf[i]);
 }
 
 void agentos_log_boot(const char *pd_name) {
-    microkit_dbg_puts("\n");
-    microkit_dbg_puts("╔══════════════════════════════════════╗\n");
-    microkit_dbg_puts("║           agentOS v0.1.0             ║\n");
-    microkit_dbg_puts("║  The OS for Agents, by Agents        ║\n");
-    microkit_dbg_puts("╚══════════════════════════════════════╝\n");
-    microkit_dbg_puts("[boot] protection domain: ");
-    microkit_dbg_puts(pd_name);
-    microkit_dbg_puts(" starting\n");
+    {
+        char _cl_buf[256] = {};
+        char *_cl_p = _cl_buf;
+        for (const char *_s = "\n"; *_s; _s++) *_cl_p++ = *_s;
+        for (const char *_s = "╔══════════════════════════════════════╗\n"; *_s; _s++) *_cl_p++ = *_s;
+        for (const char *_s = "║           agentOS v0.1.0             ║\n"; *_s; _s++) *_cl_p++ = *_s;
+        for (const char *_s = "║  The OS for Agents, by Agents        ║\n"; *_s; _s++) *_cl_p++ = *_s;
+        for (const char *_s = "╚══════════════════════════════════════╝\n"; *_s; _s++) *_cl_p++ = *_s;
+        for (const char *_s = "[boot] protection domain: "; *_s; _s++) *_cl_p++ = *_s;
+        for (const char *_s = pd_name; *_s; _s++) *_cl_p++ = *_s;
+        for (const char *_s = " starting\n"; *_s; _s++) *_cl_p++ = *_s;
+        *_cl_p = 0;
+        console_log(15, 15, _cl_buf);
+    }
 }
 
 void agentos_log_info(const char *pd, const char *msg) {
-    microkit_dbg_puts("[");
-    microkit_dbg_puts(pd);
-    microkit_dbg_puts("] ");
-    microkit_dbg_puts(msg);
-    microkit_dbg_puts("\n");
+    {
+        char _cl_buf[256] = {};
+        char *_cl_p = _cl_buf;
+        for (const char *_s = "["; *_s; _s++) *_cl_p++ = *_s;
+        for (const char *_s = pd; *_s; _s++) *_cl_p++ = *_s;
+        for (const char *_s = "] "; *_s; _s++) *_cl_p++ = *_s;
+        for (const char *_s = msg; *_s; _s++) *_cl_p++ = *_s;
+        for (const char *_s = "\n"; *_s; _s++) *_cl_p++ = *_s;
+        *_cl_p = 0;
+        console_log(15, 15, _cl_buf);
+    }
 }
 
 void agentos_log_channel(const char *pd, uint32_t ch) {
-    microkit_dbg_puts("[");
-    microkit_dbg_puts(pd);
-    microkit_dbg_puts("] notified on channel ");
+    {
+        char _cl_buf[256] = {};
+        char *_cl_p = _cl_buf;
+        for (const char *_s = "["; *_s; _s++) *_cl_p++ = *_s;
+        for (const char *_s = pd; *_s; _s++) *_cl_p++ = *_s;
+        for (const char *_s = "] notified on channel "; *_s; _s++) *_cl_p++ = *_s;
+        *_cl_p = 0;
+        console_log(15, 15, _cl_buf);
+    }
     log_u32(ch);
-    microkit_dbg_puts("\n");
+    console_log(15, 15, "\n");
 }
 
 void agentos_log_fault(const char *pd, agentos_fault_t *f) {
-    microkit_dbg_puts("[FAULT] in ");
-    microkit_dbg_puts(pd);
-    microkit_dbg_puts(": kind=");
+    {
+        char _cl_buf[256] = {};
+        char *_cl_p = _cl_buf;
+        for (const char *_s = "[FAULT] in "; *_s; _s++) *_cl_p++ = *_s;
+        for (const char *_s = pd; *_s; _s++) *_cl_p++ = *_s;
+        for (const char *_s = ": kind="; *_s; _s++) *_cl_p++ = *_s;
+        *_cl_p = 0;
+        console_log(15, 15, _cl_buf);
+    }
     log_u32(f->kind);
-    microkit_dbg_puts(" addr=");
+    console_log(15, 15, " addr=");
     log_hex64(f->addr);
-    microkit_dbg_puts(" ip=");
+    console_log(15, 15, " ip=");
     log_hex64(f->ip);
-    microkit_dbg_puts("\n");
+    console_log(15, 15, "\n");
 }
