@@ -415,3 +415,10 @@ typedef struct {
 
 /* cap_broker_attest() — declared for inclusion in monitor.c */
 uint32_t cap_broker_attest(char *buf, uint32_t buf_len, uint64_t timestamp);
+
+/* ── Boot Integrity Measurement ─────────────────────────────────────────── */
+#define OP_BOOT_MEASURE  0xB0
+#define OP_BOOT_SEAL     0xB1
+#define OP_BOOT_QUOTE    0xB2
+#define OP_BOOT_VERIFY   0xB3
+#define OP_BOOT_RESET    0xB4

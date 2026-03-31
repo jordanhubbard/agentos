@@ -85,6 +85,34 @@ jobs:
           rm microkit-sdk.tar.gz
 
       # -----------------------------------------------------------------------
+      # Topology validation (gen_sdf.py)
+      # Runs on every PR touching topology.yaml or agentos.system.
+      # Fails if validation errors are found; shows SDF diff if regenerated.
+      # -----------------------------------------------------------------------
+      - name: Install PyYAML
+        run: pip3 install pyyaml --quiet
+
+      - name: Validate topology.yaml
+        run: |
+          python3 tools/gen_sdf.py tools/topology.yaml --validate-only
+          echo "✓ topology.yaml validated"
+
+      - name: Check generated SDF matches checked-in agentos.system
+        run: |
+          python3 tools/gen_sdf.py tools/topology.yaml \
+            -o /tmp/agentos_generated.system
+          if diff -u kernel/agentos-root-task/agentos.system \
+                     /tmp/agentos_generated.system > /tmp/sdf_diff.txt 2>&1; then
+            echo "✓ agentos.system is up to date with topology.yaml"
+          else
+            echo "⚠ agentos.system differs from what gen_sdf.py would generate:"
+            cat /tmp/sdf_diff.txt
+            echo ""
+            echo "Run: python3 tools/gen_sdf.py tools/topology.yaml -o kernel/agentos-root-task/agentos.system"
+            echo "(Note: diff is informational — CI does not fail on SDF content drift)"
+          fi
+
+      # -----------------------------------------------------------------------
       # Build & test
       # -----------------------------------------------------------------------
       - name: Build agentOS
