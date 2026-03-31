@@ -9,6 +9,7 @@
     init_agent   (prio 100)  - agent ecosystem bootstrapper
     worker_0..7  (prio 80)   - agent pool workers (dynamic task assignment)
     vibe_engine  (prio 140)  - passive VibeEngine: WASM hot-swap lifecycle
+    console_mux  (prio 160)  - passive session multiplexer ("tmux for agents")
     mem_profiler (prio 108)  - passive heap alloc tracker + leak detector
   
   Channel map:
@@ -39,6 +40,11 @@
   VibeEngine channels:
     40: controller <-> vibe_engine  (vibe_engine notifies controller: swap approved)
     41: init_agent <-> vibe_engine  (init_agent PPCs into vibe_engine to propose swaps)
+
+  Console Multiplexer channels:
+    60: controller   <-> console_mux  (attach/detach/list/mode commands)
+    61: init_agent   <-> console_mux  (init_agent output)
+    62: event_bus    <-> console_mux  (eventbus output notification)
 -->
 <system>
     <!-- Controller: system coordinator, low priority to PPC into passive servers -->
@@ -352,5 +358,50 @@
     <channel>
         <end pd="worker_7"     id="9" pp="true" />
         <end pd="mem_profiler" id="8" />
+    </channel>
+
+    <!--
+      ══════════════════════════════════════════════════════════════════
+      Console Multiplexer: "tmux for agentOS"
+
+      Passive PD (priority 160) that multiplexes per-PD output streams
+      onto the debug UART with attach/detach/switch/broadcast semantics.
+
+      Shared memory: console_rings (64KB = 16 × 4KB per-PD output rings)
+
+      Channels (60-62, after mem_profiler's 50-58):
+        60: controller <-> console_mux (PPC: attach/detach/list/mode/status)
+        61: init_agent <-> console_mux (notify: init_agent output ready)
+        62: event_bus  <-> console_mux (notify: eventbus output ready)
+      ══════════════════════════════════════════════════════════════════
+    -->
+
+    <!-- Console ring buffer: 16 × 4KB = 64KB shared output rings -->
+    <memory_region name="console_rings" size="0x10000" />
+
+    <protection_domain name="console_mux" priority="160" passive="true">
+        <program_image path="console_mux.elf" />
+        <map mr="console_rings" vaddr="0x9000000" perms="rw" setvar_vaddr="console_rings_vaddr" />
+    </protection_domain>
+
+    <!-- Channel 60: controller(id=60) <-> console_mux(id=0) pp=true
+         Controller PPCs into console_mux for attach/detach/list/mode commands -->
+    <channel>
+        <end pd="controller"   id="60" pp="true" />
+        <end pd="console_mux"  id="0" />
+    </channel>
+
+    <!-- Channel 61: init_agent(id=4) <-> console_mux(id=1)
+         init_agent notifies console_mux when it has output to drain -->
+    <channel>
+        <end pd="init_agent"   id="4" />
+        <end pd="console_mux"  id="1" />
+    </channel>
+
+    <!-- Channel 62: event_bus(id=60) <-> console_mux(id=2)
+         event_bus notifies console_mux on event activity -->
+    <channel>
+        <end pd="event_bus"    id="60" />
+        <end pd="console_mux"  id="2" />
     </channel>
 </system>
