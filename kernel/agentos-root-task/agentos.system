@@ -362,6 +362,73 @@
 
     <!--
       ══════════════════════════════════════════════════════════════════
+      TimePartition: seL4 MCS time-partitioning scheduler (passive, prio 250)
+
+      Highest user-space priority (250). Enforces fixed CPU budget windows
+      per agent class via seL4 SchedContext manipulation.
+
+      Defaults: gpu_worker(5ms/10ms), mesh_agent(2ms/10ms), watchdog(1ms/5ms).
+      Override via OP_TP_SET_POLICY at runtime or cap_policy DSL.
+
+      Channels (90–99):
+        90: controller(id=90, pp=true) <-> time_partition(id=0)
+        91..98: worker_0..7(id=11, pp=true) <-> time_partition(id=1..8)
+        99: init_agent(id=5, pp=true) <-> time_partition(id=9)
+      ══════════════════════════════════════════════════════════════════
+    -->
+
+    <protection_domain name="time_partition" priority="250" passive="true">
+        <program_image path="time_partition.elf" />
+    </protection_domain>
+
+    <!-- Channel 90: controller(id=90, pp=true) <-> time_partition(id=0) -->
+    <channel>
+        <end pd="controller"     id="90" pp="true" />
+        <end pd="time_partition" id="0" />
+    </channel>
+
+    <!-- Channels 91–98: worker_N(id=11, pp=true) <-> time_partition(id=1..8) -->
+    <channel>
+        <end pd="worker_0"       id="11" pp="true" />
+        <end pd="time_partition" id="1" />
+    </channel>
+    <channel>
+        <end pd="worker_1"       id="11" pp="true" />
+        <end pd="time_partition" id="2" />
+    </channel>
+    <channel>
+        <end pd="worker_2"       id="11" pp="true" />
+        <end pd="time_partition" id="3" />
+    </channel>
+    <channel>
+        <end pd="worker_3"       id="11" pp="true" />
+        <end pd="time_partition" id="4" />
+    </channel>
+    <channel>
+        <end pd="worker_4"       id="11" pp="true" />
+        <end pd="time_partition" id="5" />
+    </channel>
+    <channel>
+        <end pd="worker_5"       id="11" pp="true" />
+        <end pd="time_partition" id="6" />
+    </channel>
+    <channel>
+        <end pd="worker_6"       id="11" pp="true" />
+        <end pd="time_partition" id="7" />
+    </channel>
+    <channel>
+        <end pd="worker_7"       id="11" pp="true" />
+        <end pd="time_partition" id="8" />
+    </channel>
+
+    <!-- Channel 99: init_agent(id=5, pp=true) <-> time_partition(id=9) -->
+    <channel>
+        <end pd="init_agent"     id="5" pp="true" />
+        <end pd="time_partition" id="9" />
+    </channel>
+
+    <!--
+      ══════════════════════════════════════════════════════════════════
       PerfCounters: continuous IPC latency histograms (passive, prio 95)
 
       Every PD that makes PPC calls wraps them with OP_PERF_BEGIN/END

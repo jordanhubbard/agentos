@@ -366,3 +366,45 @@ typedef struct {
 #define PERF_PPC(perf_ch, ppc_ch, msg, caller_id, callee_id) \
     microkit_ppcall((ppc_ch), (msg))
 #endif /* PERF_COUNTERS_DISABLE */
+
+/* ── TimePartition integration ───────────────────────────────────────────── */
+
+/* Agent class IDs for OP_TP_CONFIGURE */
+#define TP_CLASS_GPU_WORKER   0
+#define TP_CLASS_MESH_AGENT   1
+#define TP_CLASS_WATCHDOG     2
+#define TP_CLASS_INIT_AGENT   3
+#define TP_CLASS_BACKGROUND   4
+
+/* Opcodes */
+#define OP_TP_CONFIGURE   0xD0
+#define OP_TP_SET_POLICY  0xD1
+#define OP_TP_GET_POLICY  0xD2
+#define OP_TP_SUSPEND     0xD3
+#define OP_TP_QUERY       0xD4
+#define OP_TP_TICK        0xD5
+#define OP_TP_RESET       0xD6
+
+/*
+ * TP_REGISTER(tp_ch, pd_id, class_id)
+ * Register this PD with the time_partition scheduler at boot.
+ * Call from init().  ch is the channel id to time_partition.
+ *
+ * Example (worker_0 registering as gpu_worker):
+ *   TP_REGISTER(CH_TIME_PARTITION, PD_ID_WORKER_BASE + 0, TP_CLASS_GPU_WORKER);
+ */
+#define TP_REGISTER(tp_ch, pd_id, class_id) do { \
+    microkit_mr_set(1, (pd_id)); \
+    microkit_mr_set(2, (class_id)); \
+    microkit_ppcall((tp_ch), microkit_msginfo_new(OP_TP_CONFIGURE, 2)); \
+} while(0)
+
+/*
+ * TP_TICK(tp_ch, quantum_us)
+ * Send a scheduler tick to time_partition.  Called by controller each
+ * scheduling quantum (typically from a hardware timer notification).
+ */
+#define TP_TICK(tp_ch, quantum_us) do { \
+    microkit_mr_set(1, (quantum_us)); \
+    microkit_ppcall((tp_ch), microkit_msginfo_new(OP_TP_TICK, 1)); \
+} while(0)
