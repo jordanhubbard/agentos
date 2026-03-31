@@ -7,9 +7,42 @@ on:
     branches: [main]
 
 jobs:
+  # ---------------------------------------------------------------------------
+  # Topology validation — fast gate, runs on all PRs touching topology or SDF
+  # ---------------------------------------------------------------------------
+  validate-topology:
+    name: Validate topology.yaml + SDF
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install gen_sdf dependencies
+        run: pip install pyyaml
+
+      - name: Validate topology.yaml
+        run: python3 tools/gen_sdf.py tools/topology.yaml --validate-only
+
+      - name: SDF diff (detect changes vs checked-in agentos.system)
+        run: |
+          python3 tools/gen_sdf.py tools/topology.yaml -o /tmp/agentos-generated.system
+          if [ -f agentos.system ]; then
+            echo "=== SDF diff (generated vs committed) ==="
+            diff agentos.system /tmp/agentos-generated.system || true
+          else
+            echo "No committed agentos.system found — skipping diff"
+          fi
+
   build-and-test:
     name: Build & boot test (${{ matrix.board }})
     runs-on: ubuntu-24.04
+    needs: validate-topology
 
     strategy:
       fail-fast: false
