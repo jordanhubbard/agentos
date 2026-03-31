@@ -55,6 +55,15 @@ bool wasm3_host_call_init(wasm3_host_t *host);
 bool wasm3_host_call_health_check(wasm3_host_t *host);
 
 /*
+ * wasm3_host_get_heap_stats() — query refcount_gc live allocations from
+ * the WASM module's __agentos_heap_stats export (if present).
+ * Returns false if the module was compiled without refcount_gc.h.
+ */
+bool wasm3_host_get_heap_stats(wasm3_host_t *host,
+                                uint32_t     *live_allocs_out,
+                                uint32_t     *live_bytes_out);
+
+/*
  * Call the WASM module's handle_ppc() export.
  * 
  * The WASM function signature is:

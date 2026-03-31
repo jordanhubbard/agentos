@@ -241,3 +241,66 @@ typedef struct {
     uint32_t kind;
     uint32_t badge;
 } agentos_cap_desc_t;
+
+/* ── PerfCounters integration macros ────────────────────────────────────── */
+/*
+ * PERF_PPC(perf_ch, ppc_ch, msg, caller_id, callee_id)
+ *
+ * Instrument a PPC call with latency measurement via the perf_counters PD.
+ * perf_ch — channel ID to perf_counters from this PD (from agentos.system)
+ * ppc_ch  — channel ID of the actual PPC target
+ * msg     — microkit_msginfo for the real PPC call
+ * caller_id / callee_id — PD ID constants (see below)
+ *
+ * The macro saves MR contents, PPCs to perf_counters for BEGIN token,
+ * restores MRs, makes the real PPC call, then PPCs perf_counters for END.
+ *
+ * Zero overhead when PERF_COUNTERS_DISABLE is defined (e.g. production builds).
+ */
+#define PD_ID_CONTROLLER    0
+#define PD_ID_EVENT_BUS     1
+#define PD_ID_INIT_AGENT    2
+#define PD_ID_WORKER_BASE   3   /* worker_N = PD_ID_WORKER_BASE + N */
+#define PD_ID_AGENTFS       11
+#define PD_ID_VIBE_ENGINE   12
+#define PD_ID_CONSOLE_MUX   13
+#define PD_ID_MEM_PROFILER  14
+#define PD_ID_PERF_COUNTERS 15
+#define PD_ID_SWAP_SLOT_0   16  /* swap_slot_N = PD_ID_SWAP_SLOT_0 + N */
+
+#define OP_PERF_BEGIN  0xC0
+#define OP_PERF_END    0xC1
+
+#ifndef PERF_COUNTERS_DISABLE
+
+#define PERF_PPC(perf_ch, ppc_ch, msg, caller_id, callee_id) \
+    (__extension__({ \
+        /* Save MR0..MR3 set by caller */ \
+        uint32_t _mr0 = (uint32_t)microkit_mr_get(0); \
+        uint32_t _mr1 = (uint32_t)microkit_mr_get(1); \
+        uint32_t _mr2 = (uint32_t)microkit_mr_get(2); \
+        uint32_t _mr3 = (uint32_t)microkit_mr_get(3); \
+        /* BEGIN: get token from perf_counters */ \
+        microkit_mr_set(0, 0); \
+        microkit_mr_set(1, (caller_id)); \
+        microkit_mr_set(2, (callee_id)); \
+        microkit_ppcall((perf_ch), microkit_msginfo_new(OP_PERF_BEGIN, 3)); \
+        uint32_t _token = (uint32_t)microkit_mr_get(0); \
+        /* Restore MRs and make the real PPC */ \
+        microkit_mr_set(0, _mr0); \
+        microkit_mr_set(1, _mr1); \
+        microkit_mr_set(2, _mr2); \
+        microkit_mr_set(3, _mr3); \
+        microkit_msginfo _reply = microkit_ppcall((ppc_ch), (msg)); \
+        /* END: report latency (don't clobber reply MRs — use saved token) */ \
+        microkit_mr_set(0, 0); \
+        microkit_mr_set(1, _token); \
+        microkit_mr_set(2, (callee_id)); \
+        microkit_ppcall((perf_ch), microkit_msginfo_new(OP_PERF_END, 3)); \
+        _reply; \
+    }))
+
+#else /* PERF_COUNTERS_DISABLE */
+#define PERF_PPC(perf_ch, ppc_ch, msg, caller_id, callee_id) \
+    microkit_ppcall((ppc_ch), (msg))
+#endif /* PERF_COUNTERS_DISABLE */

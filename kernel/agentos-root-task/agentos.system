@@ -362,6 +362,70 @@
 
     <!--
       ══════════════════════════════════════════════════════════════════
+      PerfCounters: continuous IPC latency histograms (passive, prio 95)
+
+      Every PD that makes PPC calls wraps them with OP_PERF_BEGIN/END
+      (via PERF_PPC macro in agentos.h) to record per-pair latencies.
+
+      Channels (70–78):
+        70: controller(id=70, pp=true) <-> perf_counters(id=0)
+        71..78: worker_0..7(id=10, pp=true) <-> perf_counters(id=1..8)
+
+      Shared memory:
+        perf_ring (4KB): packed 64-byte export records per PD pair.
+        Written on OP_PERF_EXPORT; read by metrics_exporter or Grafana.
+      ══════════════════════════════════════════════════════════════════
+    -->
+
+    <memory_region name="perf_ring" size="0x1000" />   <!-- 4KB: 64 × 64B records -->
+
+    <protection_domain name="perf_counters" priority="95" passive="true">
+        <program_image path="perf_counters.elf" />
+        <map mr="perf_ring" vaddr="0xA000000" perms="rw" setvar_vaddr="perf_ring_vaddr" />
+    </protection_domain>
+
+    <!-- Channel 70: controller(id=70, pp=true) <-> perf_counters(id=0) -->
+    <channel>
+        <end pd="controller"    id="70" pp="true" />
+        <end pd="perf_counters" id="0" />
+    </channel>
+
+    <!-- Channels 71–78: worker_N(id=10, pp=true) <-> perf_counters(id=1..8) -->
+    <channel>
+        <end pd="worker_0"      id="10" pp="true" />
+        <end pd="perf_counters" id="1" />
+    </channel>
+    <channel>
+        <end pd="worker_1"      id="10" pp="true" />
+        <end pd="perf_counters" id="2" />
+    </channel>
+    <channel>
+        <end pd="worker_2"      id="10" pp="true" />
+        <end pd="perf_counters" id="3" />
+    </channel>
+    <channel>
+        <end pd="worker_3"      id="10" pp="true" />
+        <end pd="perf_counters" id="4" />
+    </channel>
+    <channel>
+        <end pd="worker_4"      id="10" pp="true" />
+        <end pd="perf_counters" id="5" />
+    </channel>
+    <channel>
+        <end pd="worker_5"      id="10" pp="true" />
+        <end pd="perf_counters" id="6" />
+    </channel>
+    <channel>
+        <end pd="worker_6"      id="10" pp="true" />
+        <end pd="perf_counters" id="7" />
+    </channel>
+    <channel>
+        <end pd="worker_7"      id="10" pp="true" />
+        <end pd="perf_counters" id="8" />
+    </channel>
+
+    <!--
+      ══════════════════════════════════════════════════════════════════
       Console Multiplexer: "tmux for agentOS"
 
       Passive PD (priority 160) that multiplexes per-PD output streams
