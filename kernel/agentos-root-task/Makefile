@@ -69,6 +69,7 @@ PD_MESHAGENT_SRCS   := src/mesh_agent.c src/m3_bare_metal.c src/log.c
 PD_GPUCUDA_SRCS     := src/gpu_scheduler.c src/m3_bare_metal.c src/log.c
 PD_CAPAUDIT_SRCS    := src/cap_audit_log.c src/m3_bare_metal.c src/log.c
 PD_FAULTHANDLER_SRCS := src/fault_handler.c src/m3_bare_metal.c src/log.c
+PD_DEBUGBRIDGE_SRCS  := src/debug_bridge.c src/m3_bare_metal.c src/log.c
 
 # wasm3 vendored sources (core interpreter only)
 WASM3_SRCS := wasm3/m3_core.c wasm3/m3_env.c wasm3/m3_code.c wasm3/m3_compile.c \
@@ -87,9 +88,10 @@ MESHAGENT_OBJS    := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_MESHAGENT_SRCS))
 GPUCUDA_OBJS      := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_GPUCUDA_SRCS))
 CAPAUDIT_OBJS       := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_CAPAUDIT_SRCS))
 FAULTHANDLER_OBJS   := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_FAULTHANDLER_SRCS))
+DEBUGBRIDGE_OBJS    := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_DEBUGBRIDGE_SRCS))
 WASM3_OBJS        := $(patsubst wasm3/%.c, $(BUILD_DIR)/wasm3_%.o, $(WASM3_SRCS))
 
-IMAGES := controller.elf event_bus.elf init_agent.elf worker.elf agentfs.elf vibe_engine.elf swap_slot.elf gpu_sched.elf gpu_scheduler.elf mesh_agent.elf cap_audit_log.elf fault_handler.elf
+IMAGES := controller.elf event_bus.elf init_agent.elf worker.elf agentfs.elf vibe_engine.elf swap_slot.elf gpu_sched.elf gpu_scheduler.elf mesh_agent.elf cap_audit_log.elf fault_handler.elf debug_bridge.elf
 IMAGE_FILE  := $(BUILD_DIR)/agentos.img
 REPORT_FILE := $(BUILD_DIR)/agentos-report.txt
 
@@ -151,6 +153,9 @@ $(BUILD_DIR)/fault_handler.elf: $(FAULTHANDLER_OBJS)
 	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
 
 $(BUILD_DIR)/gpu_scheduler.elf: $(GPUCUDA_OBJS)
+	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
+
+$(BUILD_DIR)/debug_bridge.elf: $(DEBUGBRIDGE_OBJS)
 	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
 
 $(IMAGE_FILE) $(REPORT_FILE): $(addprefix $(BUILD_DIR)/, $(IMAGES)) agentos.system

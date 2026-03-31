@@ -10,6 +10,7 @@
     worker_0..7  (prio 80)   - agent pool workers (dynamic task assignment)
     vibe_engine  (prio 140)  - passive VibeEngine: WASM hot-swap lifecycle
     fault_handler (prio 250) - passive fault catcher: VM/cap fault → ring log + watchdog notify
+    debug_bridge (prio 160)  - passive debug channel: live WASM slot debugging via DAP bridge
   
   Channel map:
     0:  controller <-> event_bus    (controller PPCs into passive event_bus)
@@ -425,6 +426,49 @@
     <channel>
         <end pd="fault_handler"   id="2" />
         <end pd="controller"      id="60" />
+    </channel>
+
+    <!--
+      Debug Bridge: passive PD (priority 100)
+      Provides a debug channel for live WASM slot debugging.
+      Host-side DAP/GDB tooling attaches to WASM slots, sets breakpoints,
+      single-steps, and inspects suspended execution state.
+
+      IPC operations:
+        OP_DBG_ATTACH     (0x70) — attach debugger to a WASM slot
+        OP_DBG_DETACH     (0x71) — detach debugger from a WASM slot
+        OP_DBG_BREAKPOINT (0x72) — set/clear breakpoint at WASM byte offset
+        OP_DBG_STEP       (0x73) — single-step a suspended slot
+        OP_DBG_STATUS     (0x74) — query debug state / ring status
+
+      Channels (from debug_bridge perspective):
+        id=0: vibe_engine PPCs in (debug operations)
+        id=1: controller PPCs in (status queries)
+        id=2: debug_bridge notifies controller (debug event available)
+    -->
+    <memory_region name="debug_ring" size="0x40000" />  <!-- 256KB debug event ring -->
+
+    <protection_domain name="debug_bridge" priority="160" passive="true">
+        <program_image path="debug_bridge.elf" />
+        <map mr="debug_ring" vaddr="0xA000000" perms="rw" setvar_vaddr="debug_ring_vaddr" />
+    </protection_domain>
+
+    <!-- Channel 62: vibe_engine(id=3) <-> debug_bridge(id=0) — vibe_engine PPCs into debug_bridge -->
+    <channel>
+        <end pd="vibe_engine"    id="3" pp="true" />
+        <end pd="debug_bridge"   id="0" />
+    </channel>
+
+    <!-- Channel 63: controller(id=3) <-> debug_bridge(id=1) — controller PPCs into debug_bridge -->
+    <channel>
+        <end pd="controller"     id="3" pp="true" />
+        <end pd="debug_bridge"   id="1" />
+    </channel>
+
+    <!-- Channel 64: debug_bridge(id=2) -> controller(id=4) — debug event notification -->
+    <channel>
+        <end pd="debug_bridge"   id="2" />
+        <end pd="controller"     id="4" />
     </channel>
 
 </system>
