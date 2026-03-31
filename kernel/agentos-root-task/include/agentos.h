@@ -173,6 +173,48 @@ typedef enum {
 #define CH_WATCHDOG_CTRL       56  /* controller PPCs into watchdog_pd (register/freeze/resume) */
 #define CH_WATCHDOG_NOTIFY     54  /* watchdog_pd notifies controller on heartbeat timeout */
 
+/* trace_recorder PD opcodes (MR0) */
+#define OP_TRACE_START         0x80u  /* begin recording; reset buffer */
+#define OP_TRACE_STOP          0x81u  /* stop recording; finalize */
+#define OP_TRACE_QUERY         0x82u  /* MR0=event_count, MR1=bytes_used */
+#define OP_TRACE_DUMP          0x83u  /* serialize to JSONL in trace_out region */
+
+/* trace_recorder channel IDs (from controller perspective) */
+#define CH_TRACE_CTRL           6  /* controller PPCs into trace_recorder (START/STOP/QUERY/DUMP) */
+#define CH_TRACE_NOTIFY         7  /* controller notifies trace_recorder on each dispatch */
+
+/*
+ * Numeric PD IDs for trace_recorder src_pd / dst_pd fields.
+ * Packed into MR0 by controller before notifying CH_TRACE_NOTIFY:
+ *   MR0 = (TRACE_PD_* << 24) | (TRACE_PD_* << 16) | label[15:0]
+ */
+#define TRACE_PD_CONTROLLER    0u
+#define TRACE_PD_EVENT_BUS     1u
+#define TRACE_PD_INIT_AGENT    2u
+#define TRACE_PD_WORKER_0      3u
+#define TRACE_PD_WORKER_1      4u
+#define TRACE_PD_WORKER_2      5u
+#define TRACE_PD_WORKER_3      6u
+#define TRACE_PD_WORKER_4      7u
+#define TRACE_PD_WORKER_5      8u
+#define TRACE_PD_WORKER_6      9u
+#define TRACE_PD_WORKER_7     10u
+#define TRACE_PD_AGENTFS      11u
+#define TRACE_PD_VIBE_ENGINE  12u
+#define TRACE_PD_SWAP_SLOT_0  13u
+#define TRACE_PD_SWAP_SLOT_1  14u
+#define TRACE_PD_SWAP_SLOT_2  15u
+#define TRACE_PD_SWAP_SLOT_3  16u
+#define TRACE_PD_GPU_SCHED    17u
+#define TRACE_PD_MESH_AGENT   18u
+#define TRACE_PD_CAP_AUDIT    19u
+#define TRACE_PD_FAULT_HDL    20u
+#define TRACE_PD_DEBUG_BRIDGE 21u
+#define TRACE_PD_QUOTA_PD     22u
+#define TRACE_PD_MEM_PROFILER 23u
+#define TRACE_PD_WATCHDOG_PD  24u
+#define TRACE_PD_TRACE_REC    25u
+
 /* VibeEngine channel IDs (from controller perspective) */
 #define CH_VIBEENGINE         40  /* controller <-> vibe_engine (notify) */
 

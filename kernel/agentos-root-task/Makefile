@@ -73,6 +73,7 @@ PD_DEBUGBRIDGE_SRCS  := src/debug_bridge.c src/m3_bare_metal.c src/log.c
 PD_QUOTAPD_SRCS      := src/quota_pd.c src/m3_bare_metal.c src/log.c
 PD_MEMPROFILER_SRCS  := ../../userspace/mem_profiler/mem_profiler.c src/m3_bare_metal.c src/log.c
 PD_WATCHDOG_SRCS     := ../../userspace/watchdog/watchdog.c src/m3_bare_metal.c src/log.c
+PD_TRACERECORDER_SRCS := ../../userspace/trace_recorder/trace_recorder.c src/m3_bare_metal.c src/log.c
 
 # wasm3 vendored sources (core interpreter only)
 WASM3_SRCS := wasm3/m3_core.c wasm3/m3_env.c wasm3/m3_code.c wasm3/m3_compile.c \
@@ -97,9 +98,11 @@ MEMPROFILER_OBJS    := $(BUILD_DIR)/mem_profiler.o \
                        $(patsubst src/%.c, $(BUILD_DIR)/%.o, src/m3_bare_metal.c src/log.c)
 WATCHDOG_OBJS       := $(BUILD_DIR)/watchdog.o \
                        $(patsubst src/%.c, $(BUILD_DIR)/%.o, src/m3_bare_metal.c src/log.c)
+TRACERECORDER_OBJS  := $(BUILD_DIR)/trace_recorder.o \
+                       $(patsubst src/%.c, $(BUILD_DIR)/%.o, src/m3_bare_metal.c src/log.c)
 WASM3_OBJS        := $(patsubst wasm3/%.c, $(BUILD_DIR)/wasm3_%.o, $(WASM3_SRCS))
 
-IMAGES := controller.elf event_bus.elf init_agent.elf worker.elf agentfs.elf vibe_engine.elf swap_slot.elf gpu_sched.elf gpu_scheduler.elf mesh_agent.elf cap_audit_log.elf fault_handler.elf debug_bridge.elf quota_pd.elf mem_profiler.elf watchdog.elf
+IMAGES := controller.elf event_bus.elf init_agent.elf worker.elf agentfs.elf vibe_engine.elf swap_slot.elf gpu_sched.elf gpu_scheduler.elf mesh_agent.elf cap_audit_log.elf fault_handler.elf debug_bridge.elf quota_pd.elf mem_profiler.elf watchdog.elf trace_recorder.elf
 IMAGE_FILE  := $(BUILD_DIR)/agentos.img
 REPORT_FILE := $(BUILD_DIR)/agentos-report.txt
 
@@ -132,6 +135,10 @@ $(BUILD_DIR)/mem_profiler.o: ../../userspace/mem_profiler/mem_profiler.c
 	$(CC) -c $(CFLAGS) $< -o $@
 
 $(BUILD_DIR)/watchdog.o: ../../userspace/watchdog/watchdog.c
+	@mkdir -p $(BUILD_DIR)
+	$(CC) -c $(CFLAGS) $< -o $@
+
+$(BUILD_DIR)/trace_recorder.o: ../../userspace/trace_recorder/trace_recorder.c
 	@mkdir -p $(BUILD_DIR)
 	$(CC) -c $(CFLAGS) $< -o $@
 
@@ -181,6 +188,9 @@ $(BUILD_DIR)/mem_profiler.elf: $(MEMPROFILER_OBJS)
 	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
 
 $(BUILD_DIR)/watchdog.elf: $(WATCHDOG_OBJS)
+	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
+
+$(BUILD_DIR)/trace_recorder.elf: $(TRACERECORDER_OBJS)
 	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
 
 $(IMAGE_FILE) $(REPORT_FILE): $(addprefix $(BUILD_DIR)/, $(IMAGES)) agentos.system

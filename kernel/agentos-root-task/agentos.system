@@ -42,6 +42,8 @@
   VibeEngine channels:
     40: controller <-> vibe_engine  (vibe_engine notifies controller: swap approved)
     41: init_agent <-> vibe_engine  (init_agent PPCs into vibe_engine to propose swaps)
+    69: controller <-> trace_recorder (controller PPCs in: START/STOP/QUERY/DUMP)
+    70: controller -> trace_recorder  (trace notify bus: packed src/dst/label in MRs)
 -->
 <system>
     <!-- Controller: system coordinator, low priority to PPC into passive servers -->
@@ -594,6 +596,62 @@
     <channel>
         <end pd="watchdog_pd"  id="1" />
         <end pd="controller"   id="54" />
+    </channel>
+
+
+    <!-- ═══════════════════════════════════════════════════════════════════
+         trace_recorder PD — seL4 IPC trace capture for integration testing + QEMU replay
+         Priority: 90 (lowest of all PDs, observe-only passive recorder)
+
+         Opcodes (controller PPCs in, MR0 = op):
+           OP_TRACE_START (0x80) — begin recording; reset buffer
+           OP_TRACE_STOP  (0x81) — stop recording; finalize
+           OP_TRACE_QUERY (0x82) — MR0=event_count, MR1=bytes_used
+           OP_TRACE_DUMP  (0x83) — serialize to JSONL in trace_out region
+
+         Trace injection (controller notifies on channel 71, local id=1):
+           MR0 = src_pd[31:24] | dst_pd[23:16] | label[15:0]
+           MR1 = mr0 of the original IPC
+           MR2 = mr1 of the original IPC
+
+         TraceEvent: { uint64 tick; uint8 src_pd; uint8 dst_pd;
+                       uint16 label; uint32 mr0; uint32 mr1 } — 20 bytes packed
+         Buffer capacity: (512KB - 64) / 20 = 26,195 events
+
+         Channels:
+           Channel 69 (controller id=6 ↔ trace_recorder id=0):
+             controller PPCs in for OP_TRACE_START/STOP/QUERY/DUMP
+           Channel 70 (controller id=7 → trace_recorder id=1):
+             controller notifies trace_recorder on each inter-PD dispatch
+
+         Shared memory:
+           trace_buf (512KB): packed binary event buffer
+           trace_out (1MB):   JSONL serialization output region
+    -->
+    <memory_region name="trace_buf" size="0x80000"  />  <!-- 512KB binary event buffer -->
+    <memory_region name="trace_out" size="0x100000" />  <!-- 1MB JSONL output region -->
+
+    <protection_domain name="trace_recorder" priority="90" passive="true">
+        <program_image path="trace_recorder.elf" />
+        <map mr="trace_buf" vaddr="0x2000000" perms="rw" setvar_vaddr="trace_buf_vaddr" />
+        <map mr="trace_out" vaddr="0x2080000" perms="rw" setvar_vaddr="trace_out_vaddr" />
+    </protection_domain>
+
+    <!-- Channel 69: controller(id=6) <-> trace_recorder(id=0)
+         controller PPCs into trace_recorder for OP_TRACE_START/STOP/QUERY/DUMP.
+         Uses local id=6 on controller side (free slot). -->
+    <channel>
+        <end pd="controller"      id="6" pp="true" />
+        <end pd="trace_recorder"  id="0" />
+    </channel>
+
+    <!-- Channel 70: controller(id=7) -> trace_recorder(id=1)
+         controller notifies trace_recorder on each inter-PD dispatch,
+         with src/dst/label packed into MR0 and payload MRs in MR1/MR2.
+         Uses local id=7 on controller side (free slot). -->
+    <channel>
+        <end pd="controller"     id="7" />
+        <end pd="trace_recorder" id="1" />
     </channel>
 
 </system>

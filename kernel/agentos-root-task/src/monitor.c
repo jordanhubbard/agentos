@@ -61,6 +61,29 @@ static const uint32_t ECHO_SERVICE_WASM_LEN = 305;
 #define CH_VIBEENGINE    40   /* Channel 40: vibe_engine notifies us when swap approved */
 #define CH_GPUSCHED      50   /* Channel 50: gpu_sched <-> controller */
 #define CH_MESHAGENT     55   /* Channel 55: mesh_agent <-> controller */
+/* CH_QUOTA_NOTIFY and CH_WATCHDOG_NOTIFY come from agentos.h defines */
+
+/*
+ * trace_notify — forward an inter-PD dispatch event to trace_recorder.
+ *
+ * Packs src/dst/label into MR0 and the first two payload MRs into MR1/MR2,
+ * then notifies the trace_recorder on CH_TRACE_NOTIFY (local id=63).
+ * The trace_recorder's notified() handler reads these before any preemption
+ * because it runs as a passive PD woken by the notification.
+ *
+ * This is a best-effort, non-blocking observation point.  If the
+ * trace_recorder buffer is full it sets TRACE_FLAG_OVERFLOW and wraps.
+ */
+static void trace_notify(uint8_t src_pd, uint8_t dst_pd, uint16_t label,
+                          uint32_t mr0_val, uint32_t mr1_val) {
+    uint32_t packed = ((uint32_t)src_pd << 24)
+                    | ((uint32_t)dst_pd << 16)
+                    | (uint32_t)(label & 0xFFFF);
+    microkit_mr_set(0, packed);
+    microkit_mr_set(1, mr0_val);
+    microkit_mr_set(2, mr1_val);
+    microkit_notify(CH_TRACE_NOTIFY);
+}
 
 /* Forward declarations */
 void vibe_swap_init(void);
@@ -221,6 +244,8 @@ static void demo_sequence(void) {
     microkit_mr_set(1, obj_size);
     microkit_mr_set(2, 0x42);  /* cap_tag: badge 0x42 */
 
+    trace_notify(TRACE_PD_CONTROLLER, TRACE_PD_AGENTFS,
+                 (uint16_t)OP_AGENTFS_PUT, obj_size, 0x42);
     microkit_ppcall(CH_AGENTFS, microkit_msginfo_new(0, 3));
 
     uint32_t afs_status = (uint32_t)microkit_mr_get(0);
@@ -253,6 +278,9 @@ static void demo_sequence(void) {
     microkit_mr_set(1, ctrl.demo_obj_id[0]); /* first 4 bytes of object ID */
     microkit_mr_set(2, obj_size);             /* object size */
 
+    trace_notify(TRACE_PD_CONTROLLER, TRACE_PD_EVENT_BUS,
+                 (uint16_t)EVT_OBJECT_CREATED,
+                 ctrl.demo_obj_id[0], obj_size);
     microkit_ppcall(CH_EVENTBUS, microkit_msginfo_new(EVT_OBJECT_CREATED, 3));
     microkit_dbg_puts("[controller] Event published to ring buffer\n");
 
@@ -262,6 +290,7 @@ static void demo_sequence(void) {
     microkit_dbg_puts("[controller] Step 3: Dispatching task to worker_0 — 'retrieve object'\n");
 
     ctrl.worker_task_dispatched = true;
+    trace_notify(TRACE_PD_CONTROLLER, TRACE_PD_WORKER_0, 0, 0, 0);
     microkit_notify(CH_WORKER_BASE);  /* notify worker_0 */
 
     microkit_dbg_puts("[controller] Task dispatched. Waiting for worker completion...\n");
@@ -279,7 +308,9 @@ void init(void) {
     
     /* PPC into EventBus (passive, higher priority) to initialize it */
     microkit_dbg_puts("[controller] Waking EventBus via PPC...\n");
-    microkit_msginfo result = microkit_ppcall(CH_EVENTBUS, 
+    trace_notify(TRACE_PD_CONTROLLER, TRACE_PD_EVENT_BUS,
+                 (uint16_t)MSG_EVENTBUS_INIT, 0, 0);
+    microkit_msginfo result = microkit_ppcall(CH_EVENTBUS,
         microkit_msginfo_new(MSG_EVENTBUS_INIT, 0));
     
     uint64_t resp = microkit_msginfo_get_label(result);
@@ -292,6 +323,8 @@ void init(void) {
     
     /* Notify InitAgent to start (it's active, so we can't PPC into it) */
     microkit_dbg_puts("[controller] Notifying InitAgent to start...\n");
+    trace_notify(TRACE_PD_CONTROLLER, TRACE_PD_INIT_AGENT,
+                 (uint16_t)MSG_INITAGENT_START, 0, 0);
     microkit_notify(CH_INITAGENT);
     
     /* Initialize vibe-swap subsystem (sets up swap slot channels + service table) */
@@ -396,6 +429,9 @@ void notified(microkit_channel ch) {
                 microkit_mr_set(0, MSG_SPAWN_AGENT_REPLY);
                 microkit_mr_set(1, spawn_id);
                 microkit_mr_set(2, (uint32_t)(int32_t)slot);
+                trace_notify(TRACE_PD_CONTROLLER, TRACE_PD_INIT_AGENT,
+                             (uint16_t)MSG_SPAWN_AGENT_REPLY,
+                             spawn_id, (uint32_t)(int32_t)slot);
                 microkit_notify(CH_INITAGENT);
 
                 if (slot >= 0) {
@@ -431,7 +467,9 @@ void notified(microkit_channel ch) {
                     microkit_mr_set(0, MSG_EVENT_AGENT_EXITED);
                     microkit_mr_set(1, 0);
                     microkit_mr_set(2, 1);
-                    
+
+                    trace_notify(TRACE_PD_CONTROLLER, TRACE_PD_EVENT_BUS,
+                                 (uint16_t)MSG_EVENT_AGENT_EXITED, 0, 1);
                     microkit_ppcall(CH_EVENTBUS,
                         microkit_msginfo_new(MSG_EVENT_AGENT_EXITED, 3));
                     microkit_dbg_puts("[controller] TASK_COMPLETE event published\n");
@@ -529,6 +567,9 @@ void notified(microkit_channel ch) {
                      * For now: worker slot gets a generic compute notification.
                      */
                     if (slot_id < (uint32_t)NUM_SWAP_SLOTS) {
+                        trace_notify(TRACE_PD_CONTROLLER,
+                                     (uint8_t)(TRACE_PD_SWAP_SLOT_0 + slot_id),
+                                     (uint16_t)MSG_GPU_SUBMIT, ticket, slot_id);
                         microkit_notify((microkit_channel)(CH_SWAP_BASE + slot_id));
                     }
                 } else {
