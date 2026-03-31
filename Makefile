@@ -18,7 +18,7 @@
 # Quick start:
 #   make deps && make demo
 
-.PHONY: all deps deps-tools deps-sdk build demo test dev-shell clean clean-all help
+.PHONY: all deps deps-tools deps-sdk build demo test dev-shell test-power-mgr clean clean-all help
 
 # ─── Read config.yaml (if present) ───────────────────────────────────────────
 # Extract target_arch from config.yaml using simple grep/sed (no YAML parser needed)
@@ -287,6 +287,26 @@ dev-shell: deps-sdk
 # =============================================================================
 test: build
 	@BOARD=$(BOARD) bash scripts/run-tests.sh
+
+# =============================================================================
+# test-power-mgr: standalone unit test for the power_mgr DVFS thermal model
+#
+# Compiles test/test_power_mgr.c as a native host binary (no SDK required)
+# and runs it.  Exits 0 on success, non-zero on assertion failure.
+#
+# Usage:
+#   make test-power-mgr
+# =============================================================================
+test-power-mgr:
+	@echo ""
+	@echo "╔══════════════════════════════════════════╗"
+	@echo "║   agentOS — power_mgr unit tests         ║"
+	@echo "╚══════════════════════════════════════════╝"
+	@echo ""
+	cc test/test_power_mgr.c -o /tmp/test_power_mgr
+	@/tmp/test_power_mgr
+	@echo "✓ power_mgr tests passed"
+	@echo ""
 
 # =============================================================================
 # clean

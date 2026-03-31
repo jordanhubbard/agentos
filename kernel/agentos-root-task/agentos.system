@@ -581,4 +581,61 @@
         <end pd="dev_shell"  id="0" />
     </channel>
 
+    <!--
+      ══════════════════════════════════════════════════════════════════
+      PowerMgr: DVFS thermal manager for sparky GB10 (passive, prio 240)
+
+      Implements dynamic voltage/frequency scaling by simulating die
+      temperature based on active gpu_worker slot count.  When temp
+      exceeds 80°C, power_mgr PPCs into time_partition to double the
+      gpu_worker CPU period (halving its effective allocation).
+
+      Thermal model per controller tick:
+        sim_temp_mC += (active_slots × 1500) − 2000
+        clamped to [25 000, 95 000] mC
+        throttle threshold: 80 000 mC, hysteresis: 5 000 mC
+
+      Enable with -DAGENTOS_POWER_MGR at build time:
+        make build AGENTOS_POWER_MGR=1
+
+      Prometheus metrics (power_mgr_temp_mC, power_mgr_throttled,
+      power_mgr_freq_khz) are wired in metrics_exporter.
+
+      Channels (100–101):
+        100: controller(id=100, pp=true) <-> power_mgr(id=0)
+             controller sends OP_TP_TICK each quantum (MR1=active_slots)
+             and polls OP_PWR_STATUS every 10 ticks for Prometheus metrics.
+        101: power_mgr(id=1, pp=true) <-> time_partition(id=10)
+             power_mgr PPCs OP_TP_SET_POLICY on throttle/unthrottle events
+             to adjust gpu_worker CPU period_us.
+
+      Shared memory:
+        power_ring (4KB): 16 × 16-byte PwrSample thermal history ring
+          layout: ts_ticks(u32) | temp_mC(i32) | freq_khz(u32) | throttled(u32)
+      ══════════════════════════════════════════════════════════════════
+    -->
+
+    <!-- power_ring: 4KB thermal sample ring (16 × 16B PwrSample entries) -->
+    <memory_region name="power_ring" size="0x1000" />
+
+    <protection_domain name="power_mgr" priority="240" passive="true">
+        <program_image path="power_mgr.elf" />
+        <map mr="power_ring" vaddr="0xB000000" perms="rw"
+             setvar_vaddr="power_ring_vaddr" />
+    </protection_domain>
+
+    <!-- Channel 100: controller(id=100, pp=true) <-> power_mgr(id=0)
+         Controller drives thermal ticks and polls power status. -->
+    <channel>
+        <end pd="controller" id="100" pp="true" />
+        <end pd="power_mgr"  id="0" />
+    </channel>
+
+    <!-- Channel 101: power_mgr(id=1, pp=true) <-> time_partition(id=10)
+         power_mgr adjusts gpu_worker CPU period on throttle/unthrottle. -->
+    <channel>
+        <end pd="power_mgr"      id="1" pp="true" />
+        <end pd="time_partition" id="10" />
+    </channel>
+
 </system>

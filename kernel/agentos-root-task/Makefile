@@ -68,6 +68,7 @@ PD_CONSOLEMUX_SRCS   := src/console_mux.c src/m3_bare_metal.c src/log.c
 PD_MEMPROFILER_SRCS  := src/mem_profiler.c src/m3_bare_metal.c src/log.c
 # DevShell: compiled with -DAGENTOS_DEV_SHELL when AGENTOS_DEV_SHELL=1
 PD_DEVSHELL_SRCS     := src/dev_shell.c src/m3_bare_metal.c src/log.c
+PD_POWERMGR_SRCS     := src/power_mgr.c src/m3_bare_metal.c src/log.c
 
 # wasm3 vendored sources (core interpreter only)
 WASM3_SRCS := wasm3/m3_core.c wasm3/m3_env.c wasm3/m3_code.c wasm3/m3_compile.c \
@@ -84,15 +85,22 @@ CONSOLEMUX_OBJS    := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_CONSOLEMUX_SRCS
 SWAPSLOT_OBJS      := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_SWAPSLOT_SRCS))
 MEMPROFILER_OBJS   := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_MEMPROFILER_SRCS))
 DEVSHELL_OBJS      := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_DEVSHELL_SRCS))
+POWERMGR_OBJS      := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_POWERMGR_SRCS))
 
 # AGENTOS_DEV_SHELL flag: passes -DAGENTOS_DEV_SHELL when make AGENTOS_DEV_SHELL=1
 DEVSHELL_CFLAGS    := $(CFLAGS)
 ifeq ($(AGENTOS_DEV_SHELL),1)
   DEVSHELL_CFLAGS  += -DAGENTOS_DEV_SHELL
 endif
+
+# AGENTOS_POWER_MGR flag: passes -DAGENTOS_POWER_MGR (and _TP_WIRED) when 1
+POWERMGR_CFLAGS    := $(CFLAGS)
+ifeq ($(AGENTOS_POWER_MGR),1)
+  POWERMGR_CFLAGS  += -DAGENTOS_POWER_MGR -DAGENTOS_POWER_MGR_TP_WIRED
+endif
 WASM3_OBJS         := $(patsubst wasm3/%.c, $(BUILD_DIR)/wasm3_%.o, $(WASM3_SRCS))
 
-IMAGES := controller.elf event_bus.elf init_agent.elf worker.elf agentfs.elf vibe_engine.elf console_mux.elf swap_slot.elf mem_profiler.elf dev_shell.elf
+IMAGES := controller.elf event_bus.elf init_agent.elf worker.elf agentfs.elf vibe_engine.elf console_mux.elf swap_slot.elf mem_profiler.elf dev_shell.elf power_mgr.elf
 
 # AArch64 builds include the Linux VMM
 ifeq ($(ARCH),aarch64)
@@ -165,6 +173,16 @@ $(BUILD_DIR)/dev_shell.o: src/dev_shell.c
 	$(CC) -c $(DEVSHELL_CFLAGS) $< -o $@
 
 $(BUILD_DIR)/dev_shell.elf: $(DEVSHELL_OBJS)
+	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
+
+# power_mgr.c gets a dedicated compile rule so -DAGENTOS_POWER_MGR (and
+# -DAGENTOS_POWER_MGR_TP_WIRED) are applied only to this PD when
+# AGENTOS_POWER_MGR=1; without the flag the PD compiles as a no-op stub.
+$(BUILD_DIR)/power_mgr.o: src/power_mgr.c
+	@mkdir -p $(BUILD_DIR)
+	$(CC) -c $(POWERMGR_CFLAGS) $< -o $@
+
+$(BUILD_DIR)/power_mgr.elf: $(POWERMGR_OBJS)
 	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
 
 # ─── Linux VMM (AArch64 only) ─────────────────────────────────────────────
