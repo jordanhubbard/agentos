@@ -557,4 +557,43 @@
         <end pd="controller"   id="53" />
     </channel>
 
+
+    <!-- ═══════════════════════════════════════════════════════════════════
+         watchdog_pd — per-slot heartbeat monitoring with hot-reload freeze
+         Priority: 107 (passive, below mem_profiler at 108)
+
+         Opcodes:
+           OP_WD_REGISTER   (0x50) — MR1=slot_id, MR2=heartbeat_ticks
+           OP_WD_HEARTBEAT  (0x51) — MR1=slot_id: update heartbeat
+           OP_WD_STATUS     (0x52) — MR1=slot_id → state, ticks_remaining
+           OP_WD_UNREGISTER (0x53) — MR1=slot_id: stop monitoring
+           OP_WD_FREEZE     (0x54) — MR1=slot_id: suspend monitoring during hot-reload
+           OP_WD_RESUME     (0x55) — MR1=slot_id, MR2=new_hash_lo: resume after reload
+
+         Channels (from watchdog_pd perspective):
+           id=0 CH_IN:      controller PPCs in (register/heartbeat/freeze/resume)
+           id=1 CH_TIMEOUT: watchdog_pd notifies controller on heartbeat timeout
+
+         State: table[16] per-slot {slot_id, state, ticks_remaining, freeze_count}
+    -->
+    <protection_domain name="watchdog_pd" priority="107" passive="true">
+        <program_image path="watchdog.elf" />
+    </protection_domain>
+
+    <!-- Channel 67: controller(id=56) <-> watchdog_pd(id=0)
+         controller PPCs into watchdog_pd for slot registration, heartbeat ticks,
+         OP_WD_FREEZE before hot-reload, and OP_WD_RESUME after. -->
+    <channel>
+        <end pd="controller"   id="56" pp="true" />
+        <end pd="watchdog_pd"  id="0" />
+    </channel>
+
+    <!-- Channel 68: watchdog_pd(id=1) -> controller(id=54)
+         watchdog_pd notifies controller when a slot heartbeat times out so
+         the controller can trigger a teardown+respawn. -->
+    <channel>
+        <end pd="watchdog_pd"  id="1" />
+        <end pd="controller"   id="54" />
+    </channel>
+
 </system>

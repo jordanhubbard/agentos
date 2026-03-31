@@ -53,8 +53,12 @@
 #define OP_VIBE_STATUS    0x43
 #define OP_VIBE_ROLLBACK  0x44
 #define OP_VIBE_HEALTH    0x45
+/* OP_VIBE_REPLAY      = 0x46 (from agentos.h enum) */
+/* OP_VIBE_HOTRELOAD   = 0x47 (from agentos.h) */
+/* OP_VIBE_REGISTRY_STATUS = 0x48 (from agentos.h enum) */
 #define OP_VIBE_TRUST_KEY   0x49 /* Add trusted signing key: MR1=key_id, MR2-5=pubkey */
 #define OP_VIBE_SIG_ENFORCE 0x4A /* Set signature enforcement: MR1=0/1 */
+/* OP_VIBE_REGISTRY_QUERY = 0x4B (from agentos.h enum, moved from 0x47) */
 
 /* ── Result codes ───────────────────────────────────────────────────── */
 #define VIBE_OK             0
@@ -92,6 +96,29 @@ uintptr_t vibe_staging_vaddr;
 
 #define STAGING_SIZE      0x400000UL  /* 4MB staging region */
 #define MAX_WASM_SIZE     (STAGING_SIZE - 64)  /* leave room for metadata */
+
+/* ── Hot-reload staging layout ──────────────────────────────────────────
+ * Hotreload metadata occupies staging[STAGING_SIZE-128 .. STAGING_SIZE-65]
+ * (64 bytes, immediately before the existing swap metadata footer).
+ * A 64KB linear-memory snapshot sits just below the metadata block.
+ *
+ *   [STAGING_SIZE - 128]: hotreload metadata (64B)
+ *     [0..3]   magic: 0x484F5452 ("HOTR")
+ *     [4..7]   slot_id
+ *     [8..39]  new_module_hash[32]
+ *     [40..43] flags (bit0=WD_FREEZE, bit1=SNAP_REQ)
+ *     [44..47] snap_base (staging offset of snapshot buffer)
+ *     [48..51] snap_size
+ *   [STAGING_SIZE -  64]: swap metadata footer (existing, unchanged)
+ *     wasm_size = 0xFFFFFFFE signals hotreload to controller
+ */
+#define HOTR_META_OFF     (STAGING_SIZE - 128UL)  /* hotreload metadata offset */
+#define HOTR_MAGIC        0x484F5452UL             /* "HOTR" */
+#define HOTR_FLAG_WD_FREEZE  0x01U                /* bit0: request watchdog freeze */
+#define HOTR_FLAG_SNAP_REQ   0x02U                /* bit1: snapshot linear memory */
+#define SNAP_SIZE         (64UL * 1024UL)          /* 64KB memory snapshot */
+#define SNAP_BASE         (HOTR_META_OFF - SNAP_SIZE)
+#define VIBE_META_MAGIC_HOTRELOAD  0xFFFFFFFEU     /* sentinel in swap metadata wasm_size */
 
 /* ── Proposal management ────────────────────────────────────────────── */
 #define MAX_PROPOSALS     8
@@ -964,6 +991,207 @@ static microkit_msginfo handle_health(void) {
     return microkit_msginfo_new(0, 3);
 }
 
+/* ── Hot-reload handler ─────────────────────────────────────────────── */
+
+/*
+ * OP_VIBE_HOTRELOAD (0x47): zero-downtime WASM slot update.
+ *
+ * Input:
+ *   MR0 = OP_VIBE_HOTRELOAD
+ *   MR1 = slot_id           (running swap slot to update)
+ *   MR2..MR9 = new_module_hash[32]  (8 x LE uint32, BLAKE3 hash of new binary)
+ *
+ * Output:
+ *   MR0 = HOTRELOAD_OK / HOTRELOAD_FALLBACK / HOTRELOAD_ERR_CAPS
+ *   MR1 = slot_id                  (on HOTRELOAD_OK)
+ *   MR2 = new_module_hash[0..3]    (on HOTRELOAD_OK, first 4 bytes for confirmation)
+ *
+ * Steps performed here (VibeEngine side):
+ *   1. Parse slot_id + new_module_hash from MRs
+ *   2. Capability compatibility check via module registry
+ *   3. Write hotreload metadata + watchdog-freeze flag to staging scratch
+ *   4. Write sentinel (0xFFFFFFFE) into swap metadata to signal controller
+ *   5. Memory barrier + notify controller via CH_CTRL
+ *
+ * Steps delegated to controller (via staging metadata):
+ *   3. Send OP_WD_FREEZE to watchdog_pd for slot_id
+ *   4. Snapshot 64KB of slot's linear memory into staging snap buffer
+ *   5. Load new module into swap slot
+ *   6. Restore snapshot (if memory layout compatible)
+ *   7. Resume from module entry point
+ *   8. Send OP_WD_RESUME to watchdog_pd with new_module_hash
+ *
+ * Falls back to HOTRELOAD_FALLBACK (controller uses PROPOSE path) if:
+ *   - New module not in registry (unknown hash)
+ *   - Service not swappable
+ *   - Memory layout incompatible (detected controller-side; controller signals back)
+ * Returns HOTRELOAD_ERR_CAPS if new module requests caps beyond slot grants.
+ */
+static microkit_msginfo handle_hotreload(void) {
+    uint32_t slot_id = (uint32_t)microkit_mr_get(1);
+
+    /* Step 1: Parse new_module_hash from MR2..MR9 (8 x uint32 = 32 bytes) */
+    uint8_t new_hash[32];
+    for (int r = 0; r < 8; r++) {
+        uint32_t v = (uint32_t)microkit_mr_get(2 + r);
+        new_hash[r*4+0] = (uint8_t)(v & 0xFF);
+        new_hash[r*4+1] = (uint8_t)((v >> 8) & 0xFF);
+        new_hash[r*4+2] = (uint8_t)((v >> 16) & 0xFF);
+        new_hash[r*4+3] = (uint8_t)((v >> 24) & 0xFF);
+    }
+
+    microkit_dbg_puts("[vibe_engine] OP_VIBE_HOTRELOAD slot=");
+    char sb[4]; sb[0] = '0' + (slot_id % 10); sb[1] = '\0';
+    microkit_dbg_puts(sb);
+    microkit_dbg_puts(" hash=");
+    {
+        static const char _hx[] = "0123456789abcdef";
+        char hbuf[5] = {
+            _hx[(new_hash[0]>>4)&0xf], _hx[new_hash[0]&0xf],
+            _hx[(new_hash[1]>>4)&0xf], _hx[new_hash[1]&0xf], '\0'
+        };
+        microkit_dbg_puts(hbuf);
+    }
+    microkit_dbg_puts("..\n");
+
+    /* Step 2: Capability compatibility check.
+     * Look up new module in the WASM registry by hash.
+     * If unknown, fall back: caller must use OP_VIBE_PROPOSE instead. */
+    int new_idx = registry_find(new_hash);
+    if (new_idx < 0) {
+        microkit_dbg_puts("[vibe_engine] HOTRELOAD: unknown module hash → FALLBACK\n");
+        microkit_mr_set(0, HOTRELOAD_FALLBACK);
+        return microkit_msginfo_new(0, 1);
+    }
+
+    registry_entry_t *new_re = &module_registry[new_idx];
+    uint32_t active_service = new_re->service_id;
+
+    if (active_service >= service_count || !services[active_service].swappable) {
+        microkit_dbg_puts("[vibe_engine] HOTRELOAD: service not swappable → FALLBACK\n");
+        microkit_mr_set(0, HOTRELOAD_FALLBACK);
+        return microkit_msginfo_new(0, 1);
+    }
+
+    /*
+     * Cap compatibility: registry flags bits[15..8] hold the cap_class bitmask
+     * granted to the running module (set when WASM was originally validated).
+     * New module must not request additional capabilities (new ⊆ old).
+     */
+    uint32_t old_caps = 0;
+    for (int i = 0; i < MAX_REGISTRY_ENTRIES; i++) {
+        bool occupied = false;
+        for (int j = 0; j < 32; j++) {
+            if (module_registry[i].hash[j]) { occupied = true; break; }
+        }
+        if (!occupied) continue;
+        if (module_registry[i].service_id == active_service &&
+            (module_registry[i].flags & REGISTRY_FLAG_VALIDATED)) {
+            old_caps = (module_registry[i].flags >> 8) & 0xFF;
+            break;
+        }
+    }
+    uint32_t new_caps = (new_re->flags >> 8) & 0xFF;
+
+    if ((new_caps & ~old_caps) != 0) {
+        microkit_dbg_puts("[vibe_engine] HOTRELOAD: new caps exceed slot grants → ERR_CAPS\n");
+        microkit_mr_set(0, HOTRELOAD_ERR_CAPS);
+        return microkit_msginfo_new(0, 1);
+    }
+
+    /* Step 3-6: Write hotreload metadata to staging scratch area.
+     *
+     * Controller will read this block (keyed by HOTR_MAGIC) and:
+     *   - Issue OP_WD_FREEZE to watchdog_pd for slot_id
+     *   - Copy up to 64KB of slot linear memory to snap buffer
+     *   - Load new module binary (fetched by controller from swap code region)
+     *   - Restore snapshot into new module's memory region
+     *   - Resume slot from module entry point
+     *   - Issue OP_WD_RESUME to watchdog_pd
+     */
+    volatile uint8_t *hotr =
+        (volatile uint8_t *)(vibe_staging_vaddr + HOTR_META_OFF);
+
+    /* Magic "HOTR" LE */
+    hotr[0] = (uint8_t)(HOTR_MAGIC & 0xFF);
+    hotr[1] = (uint8_t)((HOTR_MAGIC >> 8) & 0xFF);
+    hotr[2] = (uint8_t)((HOTR_MAGIC >> 16) & 0xFF);
+    hotr[3] = (uint8_t)((HOTR_MAGIC >> 24) & 0xFF);
+    /* slot_id */
+    hotr[4] = (uint8_t)(slot_id & 0xFF);
+    hotr[5] = (uint8_t)((slot_id >> 8) & 0xFF);
+    hotr[6] = (uint8_t)((slot_id >> 16) & 0xFF);
+    hotr[7] = (uint8_t)((slot_id >> 24) & 0xFF);
+    /* new_module_hash[32] at byte offset 8 */
+    for (int i = 0; i < 32; i++) hotr[8 + i] = new_hash[i];
+    /* flags: WD_FREEZE + SNAP_REQ */
+    uint32_t hr_flags = HOTR_FLAG_WD_FREEZE | HOTR_FLAG_SNAP_REQ;
+    hotr[40] = (uint8_t)(hr_flags & 0xFF);
+    hotr[41] = (uint8_t)((hr_flags >> 8) & 0xFF);
+    hotr[42] = (uint8_t)((hr_flags >> 16) & 0xFF);
+    hotr[43] = (uint8_t)((hr_flags >> 24) & 0xFF);
+    /* snap buffer base offset in staging region */
+    uint32_t snap_base32 = (uint32_t)SNAP_BASE;
+    hotr[44] = (uint8_t)(snap_base32 & 0xFF);
+    hotr[45] = (uint8_t)((snap_base32 >> 8) & 0xFF);
+    hotr[46] = (uint8_t)((snap_base32 >> 16) & 0xFF);
+    hotr[47] = (uint8_t)((snap_base32 >> 24) & 0xFF);
+    /* snap size */
+    uint32_t snap_size32 = (uint32_t)SNAP_SIZE;
+    hotr[48] = (uint8_t)(snap_size32 & 0xFF);
+    hotr[49] = (uint8_t)((snap_size32 >> 8) & 0xFF);
+    hotr[50] = (uint8_t)((snap_size32 >> 16) & 0xFF);
+    hotr[51] = (uint8_t)((snap_size32 >> 24) & 0xFF);
+
+    /* Step 4: Write hotreload sentinel into swap metadata footer.
+     * Controller distinguishes hotreload from normal swap by wasm_size sentinel. */
+    volatile uint8_t *meta =
+        (volatile uint8_t *)(vibe_staging_vaddr + STAGING_SIZE - 64);
+    meta[0] = (uint8_t)(active_service & 0xFF);
+    meta[1] = (uint8_t)((active_service >> 8) & 0xFF);
+    meta[2] = (uint8_t)((active_service >> 16) & 0xFF);
+    meta[3] = (uint8_t)((active_service >> 24) & 0xFF);
+    meta[4] = 0; meta[5] = 0; meta[6] = 0; meta[7] = 0;  /* wasm_offset=0 */
+    /* Hotreload sentinel: 0xFFFFFFFE (distinct from rollback 0xFFFFFFFF) */
+    meta[8]  = (uint8_t)(VIBE_META_MAGIC_HOTRELOAD & 0xFF);
+    meta[9]  = (uint8_t)((VIBE_META_MAGIC_HOTRELOAD >> 8) & 0xFF);
+    meta[10] = (uint8_t)((VIBE_META_MAGIC_HOTRELOAD >> 16) & 0xFF);
+    meta[11] = (uint8_t)((VIBE_META_MAGIC_HOTRELOAD >> 24) & 0xFF);
+    uint32_t pid = next_proposal_id++;
+    meta[12] = (uint8_t)(pid & 0xFF);
+    meta[13] = (uint8_t)((pid >> 8) & 0xFF);
+    meta[14] = (uint8_t)((pid >> 16) & 0xFF);
+    meta[15] = (uint8_t)((pid >> 24) & 0xFF);
+
+    /* Step 5: Memory barrier — metadata visible before notification */
+#if defined(__riscv)
+    __asm__ volatile ("fence w,w" ::: "memory");
+#elif defined(__aarch64__)
+    __asm__ volatile ("dmb ishst" ::: "memory");
+#else
+    __asm__ volatile ("" ::: "memory");
+#endif
+
+    microkit_dbg_puts("[vibe_engine] HOTRELOAD: metadata committed, notifying controller\n");
+
+    /* Notify controller to execute the hotreload pipeline */
+    microkit_notify(CH_CTRL);
+
+    /* Update registry */
+    new_re->version++;
+    total_swaps++;
+
+    /* Return HOTRELOAD_OK with slot_id and hash confirmation */
+    uint32_t hash_conf = (uint32_t)new_hash[0]
+                       | ((uint32_t)new_hash[1] << 8)
+                       | ((uint32_t)new_hash[2] << 16)
+                       | ((uint32_t)new_hash[3] << 24);
+    microkit_mr_set(0, HOTRELOAD_OK);
+    microkit_mr_set(1, slot_id);
+    microkit_mr_set(2, hash_conf);
+    return microkit_msginfo_new(0, 3);
+}
+
 /* ── Microkit entry points ──────────────────────────────────────────── */
 
 void init(void) {
@@ -1029,12 +1257,13 @@ microkit_msginfo protected(microkit_channel ch, microkit_msginfo msg) {
     uint32_t op = (uint32_t)microkit_mr_get(0);
 
     switch (op) {
-        case OP_VIBE_PROPOSE:   return handle_propose();
-        case OP_VIBE_VALIDATE:  return handle_validate();
-        case OP_VIBE_EXECUTE:   return handle_execute();
-        case OP_VIBE_STATUS:    return handle_status();
-        case OP_VIBE_ROLLBACK:  return handle_rollback();
-        case OP_VIBE_HEALTH:    return handle_health();
+        case OP_VIBE_PROPOSE:        return handle_propose();
+        case OP_VIBE_VALIDATE:       return handle_validate();
+        case OP_VIBE_EXECUTE:        return handle_execute();
+        case OP_VIBE_STATUS:         return handle_status();
+        case OP_VIBE_ROLLBACK:       return handle_rollback();
+        case OP_VIBE_HEALTH:         return handle_health();
+        case OP_VIBE_HOTRELOAD:      return handle_hotreload();
 
         case OP_VIBE_TRUST_KEY: {
             /* Add a trusted signing key: MR1=key_id_hi, MR2=key_id_lo */

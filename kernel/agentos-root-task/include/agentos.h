@@ -95,8 +95,9 @@ typedef enum {
 
     /* VibeEngine module registry opcodes (in OP_ space, not MSG_) */
     OP_VIBE_REPLAY             = 0x46,   /* Boot replay: seed registry from AgentFS */
-    OP_VIBE_REGISTRY_QUERY     = 0x47,   /* Query registry by hash: known? flags? */
+    OP_VIBE_HOTRELOAD          = 0x47,   /* Zero-downtime slot update (was REGISTRY_QUERY) */
     OP_VIBE_REGISTRY_STATUS    = 0x48,   /* Return total registry entries + stats */
+    OP_VIBE_REGISTRY_QUERY     = 0x4B,   /* Query registry by hash: known? flags? */
 
     /* Distributed Agent Mesh (mesh_agent PD) */
     MSG_MESH_ANNOUNCE          = 0x0A01,  /* Node registration: node_id, slot_count, gpu_slots */
@@ -149,6 +150,28 @@ typedef enum {
 #define OP_VIBE_STATUS    0x43
 #define OP_VIBE_ROLLBACK  0x44
 #define OP_VIBE_HEALTH    0x45
+
+/* OP_VIBE_HOTRELOAD return codes (MR0) */
+#define HOTRELOAD_OK           0x00  /* Hot-reload succeeded */
+#define HOTRELOAD_FALLBACK     0x01  /* Layout/caps mismatch — fall back to teardown+respawn */
+#define HOTRELOAD_ERR_CAPS     0x02  /* New module requests caps not in slot's grants */
+
+/* Watchdog PD opcodes (controller PPCs into watchdog_pd) */
+#define OP_WD_REGISTER         0x50  /* MR1=slot_id, MR2=heartbeat_ticks: start monitoring */
+#define OP_WD_HEARTBEAT        0x51  /* MR1=slot_id: update heartbeat tick */
+#define OP_WD_STATUS           0x52  /* MR1=slot_id → MR0=status, MR1=ticks_remaining */
+#define OP_WD_UNREGISTER       0x53  /* MR1=slot_id: stop monitoring slot */
+#define OP_WD_FREEZE           0x54  /* MR1=slot_id: suspend monitoring (hotreload in progress) */
+#define OP_WD_RESUME           0x55  /* MR1=slot_id, MR2=new_module_hash_lo: resume + update hash */
+
+/* Watchdog status return codes */
+#define WD_OK                  0x00
+#define WD_ERR_NOENT           0x01  /* slot_id not registered */
+#define WD_ERR_FULL            0x02  /* watchdog slot table full */
+
+/* Watchdog PD channel IDs (from controller perspective) */
+#define CH_WATCHDOG_CTRL       56  /* controller PPCs into watchdog_pd (register/freeze/resume) */
+#define CH_WATCHDOG_NOTIFY     54  /* watchdog_pd notifies controller on heartbeat timeout */
 
 /* VibeEngine channel IDs (from controller perspective) */
 #define CH_VIBEENGINE         40  /* controller <-> vibe_engine (notify) */
