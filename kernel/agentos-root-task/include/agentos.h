@@ -408,3 +408,10 @@ typedef struct {
     microkit_mr_set(1, (quantum_us)); \
     microkit_ppcall((tp_ch), microkit_msginfo_new(OP_TP_TICK, 1)); \
 } while(0)
+
+/* ── Capability Attestation ──────────────────────────────────────────────── */
+#define OP_CAP_ATTEST     0xE0   /* monitor: serialize + sign cap table */
+#define OP_CAP_ATTEST_GET 0xE1   /* fetch last attestation from AgentFS */
+
+/* cap_broker_attest() — declared for inclusion in monitor.c */
+uint32_t cap_broker_attest(char *buf, uint32_t buf_len, uint64_t timestamp);

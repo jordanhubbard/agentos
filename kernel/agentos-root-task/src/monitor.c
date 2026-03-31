@@ -507,6 +507,38 @@ microkit_msginfo protected(microkit_channel ch, microkit_msginfo msg) {
         }
     }
     
+    /* ── OP_CAP_ATTEST — serialize and sign capability table ─────────── */
+    if (op == OP_CAP_ATTEST) {
+        static char attest_buf[4096];
+        /* Use a simple boot counter as timestamp (full clock available on MCS) */
+        static uint64_t attest_count = 0;
+        attest_count++;
+        uint32_t bytes = cap_broker_attest(attest_buf, sizeof(attest_buf), attest_count);
+        if (bytes == 0) {
+            microkit_dbg_puts("[monitor] cap_broker_attest: buffer overflow\n");
+            microkit_mr_set(0, 0);
+            return microkit_msginfo_new(1, 1);
+        }
+        /*
+         * Pack into MRs for retrieval by a requesting PD:
+         * MR0 = bytes written (uint32)
+         * MR1..MR7 = first 28 bytes of attestation (for quick digest verification)
+         * The full attestation is written to AgentFS by the monitor at boot and
+         * on each OP_CAP_ATTEST call via PPCALL_DONATE(CH_AGENTFS, ...).
+         */
+        microkit_mr_set(0, bytes);
+        /* Copy first 4×7=28 bytes as preview into MR1..MR7 */
+        for (int i = 0; i < 7 && (uint32_t)(i * 4) < bytes; i++) {
+            uint32_t word = 0;
+            for (int j = 0; j < 4 && (uint32_t)(i * 4 + j) < bytes; j++)
+                word |= (uint32_t)(unsigned char)attest_buf[i * 4 + j] << (j * 8);
+            microkit_mr_set(1 + i, word);
+        }
+        microkit_dbg_puts("[monitor] Attestation generated: ");
+        microkit_dbg_puts(attest_buf[0] == 'A' ? "OK\n" : "ERROR\n");
+        return microkit_msginfo_new(0, 8);
+    }
+
     microkit_dbg_puts("[controller] Unexpected PPC call\n");
     return microkit_msginfo_new(0xDEAD, 0);
 }

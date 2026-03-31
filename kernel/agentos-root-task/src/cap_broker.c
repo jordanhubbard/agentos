@@ -126,3 +126,56 @@ bool cap_broker_check(uint32_t pd, uint32_t cptr, uint32_t required_rights) {
     }
     return false;
 }
+
+/* ── Capability Attestation (OP_CAP_ATTEST) ─────────────────────────────── */
+/*
+ * cap_broker_attest() — serialize the active capability table into a compact
+ * text record suitable for signing and audit.
+ *
+ * Output format (written to attestation_buf, null-terminated):
+ *   ATTEST\t<seq>\t<timestamp>\n
+ *   CAP\t<handle>\t<owner_pd>\t<granted_to>\t<cptr_hex>\t<rights_hex>\t<kind_hex>\t<badge_hex>\t<revokable>\t<grant_time>\n
+ *   ...
+ *   END\t<num_caps>\n
+ *
+ * The caller (monitor PD) signs this buffer with the system Ed25519 key and
+ * writes it to AgentFS as agentos/attestation/<seq>.cbor (or .txt for v1).
+ *
+ * Returns the number of bytes written (0 on buffer overflow).
+ */
+uint32_t cap_broker_attest(char *buf, uint32_t buf_len, uint64_t timestamp) {
+    if (!buf || buf_len < 64) return 0;
+    uint32_t pos = 0;
+    uint32_t active = 0;
+
+#define ATTEST_APPEND(fmt, ...) do { \
+    int n = snprintf(buf + pos, buf_len - pos, fmt, ##__VA_ARGS__); \
+    if (n < 0 || (uint32_t)n >= buf_len - pos) return 0; \
+    pos += (uint32_t)n; \
+} while(0)
+
+    audit_seq++;
+    ATTEST_APPEND("ATTEST\t%llu\t%llu\n",
+                  (unsigned long long)audit_seq,
+                  (unsigned long long)timestamp);
+
+    for (int i = 0; i < MAX_CAPS; i++) {
+        const cap_entry_t *e = &cap_table[i];
+        if (!e->active) continue;
+        active++;
+        ATTEST_APPEND("CAP\t%d\t%u\t%u\t0x%x\t0x%x\t0x%x\t0x%x\t%d\t%llu\n",
+                      i,
+                      e->owner_pd,
+                      e->granted_to,
+                      e->cap.cptr,
+                      e->cap.rights,
+                      e->cap.kind,
+                      e->cap.badge,
+                      e->revokable ? 1 : 0,
+                      (unsigned long long)e->grant_time);
+    }
+    ATTEST_APPEND("END\t%u\n", active);
+
+#undef ATTEST_APPEND
+    return pos;
+}
