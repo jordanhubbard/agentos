@@ -494,9 +494,9 @@
         <map mr="quota_ring" vaddr="0xB000000" perms="rw" setvar_vaddr="quota_ring_vaddr" />
     </protection_domain>
 
-    <!-- Channel: controller(id=62) <-> quota_pd(id=0) — controller manages quotas -->
+    <!-- Channel: controller(id=52) <-> quota_pd(id=0) — controller manages quotas -->
     <channel>
-        <end pd="controller"  id="62" pp="true" />
+        <end pd="controller"  id="52" pp="true" />
         <end pd="quota_pd"    id="0" />
     </channel>
 
@@ -506,10 +506,10 @@
         <end pd="quota_pd"    id="1" />
     </channel>
 
-    <!-- Channel: quota_pd(id=2) -> controller(id=63) — quota exceeded revocation notify -->
+    <!-- Channel: quota_pd(id=2) -> controller(id=58) — quota exceeded revocation notify -->
     <channel>
         <end pd="quota_pd"    id="2" />
-        <end pd="controller"  id="63" />
+        <end pd="controller"  id="58" />
     </channel>
 
 </system>

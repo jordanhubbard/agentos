@@ -33,12 +33,6 @@
 #define OP_QUOTA_STATUS    0x62  /* Query: MR1=agent_id → MR0=cpu_used, MR1=cpu_limit, MR2=mem_used, MR3=mem_limit, MR4=flags */
 #define OP_QUOTA_SET       0x63  /* Update: MR1=agent_id, MR2=new_cpu_ms, MR3=new_mem_kb */
 
-/* ── Quota flags ──────────────────────────────────────────────────────────── */
-#define QUOTA_FLAG_ACTIVE     (1 << 0)
-#define QUOTA_FLAG_CPU_EXCEED (1 << 1)
-#define QUOTA_FLAG_MEM_EXCEED (1 << 2)
-#define QUOTA_FLAG_REVOKED    (1 << 3)
-
 /* ── Quota table ──────────────────────────────────────────────────────────── */
 #define MAX_QUOTA_SLOTS  16
 
@@ -196,14 +190,14 @@ static int find_free_slot(void) {
 static void revoke_agent_caps(uint32_t agent_id, uint32_t reason_flag) {
     /*
      * Notify controller/cap_broker channel to revoke capabilities.
-     * MR0: MSG_CAP_REVOKE tag (0x0B01 — see quota-specific tag below)
+     * MR0: MSG_QUOTA_REVOKE tag
      * MR1: agent_id
      * MR2: reason (QUOTA_FLAG_CPU_EXCEED or QUOTA_FLAG_MEM_EXCEED)
      *
      * Since quota_pd is passive (priority 115), we use notify (not PPC)
      * to the controller which then calls cap_broker_revoke() on our behalf.
      */
-    microkit_mr_set(0, 0x0B01);  /* MSG_QUOTA_REVOKE tag */
+    microkit_mr_set(0, MSG_QUOTA_REVOKE);
     microkit_mr_set(1, agent_id);
     microkit_mr_set(2, reason_flag);
     microkit_notify(QP_CH_CAP_BROKER);

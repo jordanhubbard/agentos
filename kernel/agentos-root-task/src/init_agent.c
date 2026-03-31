@@ -58,6 +58,9 @@ typedef struct {
     uint32_t priority;
     bool     pending;        /* true until controller confirms slot */
     int32_t  slot_id;        /* -1 until assigned */
+    bool     quota_registered;
+    uint32_t quota_cpu_ms;
+    uint32_t quota_mem_kb;
 } spawn_req_t;
 
 static spawn_req_t spawn_table[MAX_PENDING_SPAWNS];
@@ -68,6 +71,9 @@ static void spawn_table_init(void) {
         spawn_table[i].pending = false;
         spawn_table[i].spawn_id = 0;
         spawn_table[i].slot_id = -1;
+        spawn_table[i].quota_registered = false;
+        spawn_table[i].quota_cpu_ms = 0;
+        spawn_table[i].quota_mem_kb = 0;
     }
 }
 
@@ -158,8 +164,8 @@ static void put_hex32(uint32_t v) {
  * Register a newly spawned agent with the quota system.
  * Called after successful spawn to enforce resource limits.
  */
-static void quota_register_agent(uint32_t agent_id, uint32_t cpu_ms, uint32_t mem_kb) {
-    microkit_mr_set(0, 0x60);  /* OP_QUOTA_REGISTER */
+static bool quota_register_agent(uint32_t agent_id, uint32_t cpu_ms, uint32_t mem_kb) {
+    microkit_mr_set(0, OP_QUOTA_REGISTER);
     microkit_mr_set(1, agent_id);
     microkit_mr_set(2, cpu_ms);
     microkit_mr_set(3, mem_kb);
@@ -178,11 +184,15 @@ static void quota_register_agent(uint32_t agent_id, uint32_t cpu_ms, uint32_t me
         microkit_dbg_puts("kb slot=");
         put_dec(slot);
         microkit_dbg_puts("\n");
-    } else {
-        microkit_dbg_puts("[init_agent] Quota registration failed for agent=");
-        put_dec(agent_id);
-        microkit_dbg_puts("\n");
+        return true;
     }
+
+    microkit_dbg_puts("[init_agent] Quota registration failed for agent=");
+    put_dec(agent_id);
+    microkit_dbg_puts(" status=");
+    put_dec(status);
+    microkit_dbg_puts("\n");
+    return false;
 }
 
 /*
@@ -190,7 +200,7 @@ static void quota_register_agent(uint32_t agent_id, uint32_t cpu_ms, uint32_t me
  * Returns the agent's quota flags (check for revocation).
  */
 static uint32_t quota_tick_agent(uint32_t agent_id, uint32_t cpu_delta_ms, uint32_t mem_cur_kb) {
-    microkit_mr_set(0, 0x61);  /* OP_QUOTA_TICK */
+    microkit_mr_set(0, OP_QUOTA_TICK);
     microkit_mr_set(1, agent_id);
     microkit_mr_set(2, cpu_delta_ms);
     microkit_mr_set(3, mem_cur_kb);
@@ -200,6 +210,38 @@ static uint32_t quota_tick_agent(uint32_t agent_id, uint32_t cpu_delta_ms, uint3
     if (result != 0) return result;
 
     return (uint32_t)microkit_mr_get(1);  /* flags */
+}
+
+static void quota_tick_all_agents(void) {
+    for (int i = 0; i < MAX_PENDING_SPAWNS; i++) {
+        if (!spawn_table[i].quota_registered) continue;
+        if (spawn_table[i].pending) continue;
+
+        uint32_t flags = quota_tick_agent(spawn_table[i].spawn_id, 1, 0);
+        if (flags == 0xE2) {
+            /* Agent not found yet — likely not registered */
+            continue;
+        }
+
+        if (flags & QUOTA_FLAG_REVOKED) {
+            microkit_dbg_puts("[init_agent] Quota revoked agent=");
+            put_dec(spawn_table[i].spawn_id);
+            microkit_dbg_puts(" flags=0x");
+            char hexbuf[9];
+            for (int h = 0; h < 8; h++) {
+                uint32_t nibble = (flags >> (28 - h * 4)) & 0xF;
+                hexbuf[h] = (char)(nibble < 10 ? '0' + nibble : 'a' + nibble - 10);
+            }
+            hexbuf[8] = '\0';
+            microkit_dbg_puts(hexbuf);
+            microkit_dbg_puts("\n");
+            spawn_table[i].quota_registered = false;
+        }
+    }
+}
+
+static void scheduler_round_tick(void) {
+    quota_tick_all_agents();
 }
 
 /* ── EventBus ops ─────────────────────────────────────────────────────── */
@@ -396,7 +438,10 @@ static void handle_spawn_reply_from_controller(void) {
         microkit_dbg_puts("\n");
 
         /* Register the new agent with the quota system */
-        quota_register_agent(spawn_id, DEFAULT_CPU_QUOTA_MS, DEFAULT_MEM_QUOTA_KB);
+        bool quota_ok = quota_register_agent(spawn_id, DEFAULT_CPU_QUOTA_MS, DEFAULT_MEM_QUOTA_KB);
+        spawn_table[tbl].quota_registered = quota_ok;
+        spawn_table[tbl].quota_cpu_ms     = DEFAULT_CPU_QUOTA_MS;
+        spawn_table[tbl].quota_mem_kb     = DEFAULT_MEM_QUOTA_KB;
 
         /* Publish to EventBus so all subscribers learn about the new agent */
         publish_spawn_event(spawn_id, slot_id,
@@ -408,6 +453,7 @@ static void handle_spawn_reply_from_controller(void) {
     } else {
         microkit_dbg_puts("[init_agent] SPAWN_REPLY: controller reported failure\n");
         spawn_table[tbl].pending = false;
+        spawn_table[tbl].quota_registered = false;
     }
 }
 
@@ -452,6 +498,8 @@ void notified(microkit_channel ch) {
             microkit_dbg_puts("[init_agent] Unknown notification channel\n");
             break;
     }
+
+    scheduler_round_tick();
 }
 
 microkit_msginfo protected(microkit_channel ch, microkit_msginfo msg) {

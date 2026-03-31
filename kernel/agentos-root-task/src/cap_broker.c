@@ -142,3 +142,59 @@ bool cap_broker_check(uint32_t pd, uint32_t cptr, uint32_t required_rights) {
     }
     return false;
 }
+
+void cap_broker_revoke_agent(uint32_t agent_pd, uint32_t reason_flags) {
+    bool revoked = false;
+    for (int i = 0; i < MAX_CAPS; i++) {
+        if (!cap_table[i].active) continue;
+        if (cap_table[i].granted_to != agent_pd) continue;
+
+        cap_table[i].granted_to = 0;
+        cap_table[i].grant_time = 0;
+        audit_seq++;
+        revoked = true;
+
+        microkit_mr_set(0, OP_CAP_LOG);
+        microkit_mr_set(1, CAP_EVENT_REVOKE);
+        microkit_mr_set(2, agent_pd);
+        microkit_mr_set(3, cap_table[i].cap.rights);
+        microkit_mr_set(4, (uint32_t)i);
+        microkit_ppcall(CH_CAP_AUDIT_CTRL, microkit_msginfo_new(0, 5));
+    }
+
+    if (revoked) {
+        microkit_dbg_puts("[cap_broker] Capabilities revoked for agent ");
+        char buf[12]; int bi = 11; buf[bi] = '\0';
+        uint32_t v = agent_pd;
+        if (v == 0) { buf[--bi] = '0'; }
+        else {
+            while (v > 0 && bi > 0) {
+                buf[--bi] = (char)('0' + (v % 10));
+                v /= 10;
+            }
+        }
+        microkit_dbg_puts(&buf[bi]);
+        microkit_dbg_puts(" reason=0x");
+        char hex[9];
+        for (int i = 0; i < 8; i++) {
+            uint32_t nib = (reason_flags >> (28 - i * 4)) & 0xF;
+            hex[i] = (char)(nib < 10 ? '0' + nib : 'a' + nib - 10);
+        }
+        hex[8] = '\0';
+        microkit_dbg_puts(hex);
+        microkit_dbg_puts("\n");
+    } else {
+        microkit_dbg_puts("[cap_broker] No capabilities to revoke for agent ");
+        char buf[12]; int bi = 11; buf[bi] = '\0';
+        uint32_t v = agent_pd;
+        if (v == 0) { buf[--bi] = '0'; }
+        else {
+            while (v > 0 && bi > 0) {
+                buf[--bi] = (char)('0' + (v % 10));
+                v /= 10;
+            }
+        }
+        microkit_dbg_puts(&buf[bi]);
+        microkit_dbg_puts("\n");
+    }
+}

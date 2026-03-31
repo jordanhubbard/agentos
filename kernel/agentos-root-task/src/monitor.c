@@ -68,6 +68,7 @@ int  vibe_swap_begin(uint32_t service_id, const void *code, uint32_t code_len);
 int  vibe_swap_health_notify(int slot);
 int  vibe_swap_rollback(uint32_t service_id);
 void cap_broker_init(void);
+void cap_broker_revoke_agent(uint32_t agent_pd, uint32_t reason_flags);
 void agent_pool_init(void);
 int  agent_pool_spawn(const char *agent_name, uint64_t task_id,
                       const uint8_t *payload, uint32_t payload_len,
@@ -537,6 +538,35 @@ void notified(microkit_channel ch) {
             /* Channel 55: mesh_agent ready notification */
             } else if (ch == (microkit_channel)CH_MESHAGENT) {
                 microkit_dbg_puts("[controller] Distributed mesh agent online\n");
+            } else if (ch == (microkit_channel)CH_QUOTA_NOTIFY) {
+                uint32_t tag = (uint32_t)microkit_mr_get(0);
+                uint32_t agent_id = (uint32_t)microkit_mr_get(1);
+                uint32_t reason   = (uint32_t)microkit_mr_get(2);
+                if (tag == (uint32_t)MSG_QUOTA_REVOKE) {
+                    microkit_dbg_puts("[controller] Quota revoke request: agent=");
+                    char buf[12]; int bi = 11; buf[bi] = '\0';
+                    uint32_t v = agent_id;
+                    if (v == 0) { buf[--bi] = '0'; }
+                    else {
+                        while (v > 0 && bi > 0) {
+                            buf[--bi] = (char)('0' + (v % 10));
+                            v /= 10;
+                        }
+                    }
+                    microkit_dbg_puts(&buf[bi]);
+                    microkit_dbg_puts(" reason=0x");
+                    char hex[9];
+                    for (int i = 0; i < 8; i++) {
+                        uint32_t nib = (reason >> (28 - i * 4)) & 0xF;
+                        hex[i] = (char)(nib < 10 ? '0' + nib : 'a' + nib - 10);
+                    }
+                    hex[8] = '\0';
+                    microkit_dbg_puts(hex);
+                    microkit_dbg_puts("\n");
+                    cap_broker_revoke_agent(agent_id, reason);
+                } else {
+                    microkit_dbg_puts("[controller] Unknown quota notify\n");
+                }
             /* Channel 40: vibe_engine approved a swap — read staging and begin */
             } else if (ch == CH_VIBEENGINE) {
                 vibe_demo_step4_notify();

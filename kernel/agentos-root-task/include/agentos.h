@@ -155,8 +155,9 @@ typedef enum {
 #define CH_CAP_AUDIT_INIT     5   /* init_agent -> cap_audit_log (PPC, from init_agent perspective) */
 
 /* Quota PD channel IDs */
-#define CH_QUOTA_CTRL         64  /* controller -> quota_pd (PPC) */
+#define CH_QUOTA_CTRL         52  /* controller -> quota_pd (PPC) */
 #define CH_QUOTA_INIT         7   /* init_agent -> quota_pd (PPC, from init_agent perspective) */
+#define CH_QUOTA_NOTIFY       58  /* controller receives quota revoke notifications */
 
 /* Capability Audit Log opcodes */
 #define OP_CAP_LOG            0x50  /* Log grant/revoke event */
@@ -168,6 +169,12 @@ typedef enum {
 #define OP_QUOTA_TICK         0x61  /* Tick agent cpu/mem usage */
 #define OP_QUOTA_STATUS       0x62  /* Query agent quota state */
 #define OP_QUOTA_SET          0x63  /* Update agent quota limits */
+
+/* Quota flags */
+#define QUOTA_FLAG_ACTIVE     (1u << 0)
+#define QUOTA_FLAG_CPU_EXCEED (1u << 1)
+#define QUOTA_FLAG_MEM_EXCEED (1u << 2)
+#define QUOTA_FLAG_REVOKED    (1u << 3)
 
 /* Capability event types */
 #define CAP_EVENT_GRANT       1
