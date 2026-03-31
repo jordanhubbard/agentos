@@ -231,6 +231,7 @@ typedef enum {
 #define OP_CAP_LOG            0x50  /* Log grant/revoke event */
 #define OP_CAP_LOG_STATUS     0x51  /* Query ring buffer status */
 #define OP_CAP_LOG_DUMP       0x52  /* Read entries from ring */
+#define OP_CAP_ATTEST         0x53  /* Generate signed capability attestation report */
 
 /* Quota PD opcodes */
 #define OP_QUOTA_REGISTER     0x60  /* Register agent with cpu/mem limits */

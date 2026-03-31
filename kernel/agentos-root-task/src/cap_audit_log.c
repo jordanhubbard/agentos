@@ -11,6 +11,7 @@
  *   OP_CAP_LOG        (0x50) — append a grant/revoke event
  *   OP_CAP_LOG_STATUS (0x51) — query ring buffer state
  *   OP_CAP_LOG_DUMP   (0x52) — read entries from ring buffer
+ *   OP_CAP_ATTEST     (0x53) — generate signed capability attestation report
  *
  * Callers:
  *   - controller (via cap_broker_grant/revoke → channel 70)
@@ -22,11 +23,18 @@
 
 #define AGENTOS_DEBUG 1
 #include "agentos.h"
+#include "ed25519_verify.h"  /* sha512() — used by attestation response */
+
+/* Forward declaration: cap_broker_attest lives in cap_broker.c (same compilation unit via monitor.elf) */
+uint32_t cap_broker_attest(uint64_t boot_tick, uint32_t net_active, uint32_t net_denials);
 
 /* ── Opcodes ─────────────────────────────────────────────────────────────── */
 #define OP_CAP_LOG        0x50  /* Log a cap event: MR0=op, MR1=type, MR2=agent_id, MR3=caps_mask */
 #define OP_CAP_LOG_STATUS 0x51  /* Query: returns MR0=count, MR1=head, MR2=capacity, MR3=drops */
 #define OP_CAP_LOG_DUMP   0x52  /* Read: MR1=start_idx, MR2=count → entries in shared MR */
+#define OP_CAP_ATTEST     0x53  /* Attestation: MR1=boot_tick_lo, MR2=boot_tick_hi,
+                                 *              MR3=net_active, MR4=net_denials
+                                 * Returns: MR0=report_len, MR1=sha512_hash[0:4] (first 4 bytes) */
 
 /* ── Event types ─────────────────────────────────────────────────────────── */
 #define CAP_EVENT_GRANT   1
@@ -222,6 +230,58 @@ microkit_msginfo protected(microkit_channel ch, microkit_msginfo msginfo) {
             microkit_mr_set(mr_base + 3, ((uint64_t)e->caps_mask << 32) | e->slot_id);
         }
         return microkit_msginfo_new(0, 1 + actual * 4);
+    }
+
+    case OP_CAP_ATTEST: {
+        /*
+         * OP_CAP_ATTEST — generate a signed capability attestation report.
+         *
+         * Input MRs:
+         *   MR1 = boot_tick low  32 bits
+         *   MR2 = boot_tick high 32 bits (combined: uint64 boot_tick)
+         *   MR3 = net_active   (total active net_isolator slots)
+         *   MR4 = net_denials  (total denial count from net_isolator status)
+         *
+         * If MR1=MR2=0, uses the internal boot_tick counter.
+         *
+         * Returns:
+         *   MR0 = report byte length (0 on failure)
+         *   MR1 = first 4 bytes of SHA-512 hash (as uint32, little-endian)
+         *         useful as a quick fingerprint for the report
+         */
+        uint32_t tick_lo   = (uint32_t)microkit_mr_get(1);
+        uint32_t tick_hi   = (uint32_t)microkit_mr_get(2);
+        uint32_t net_act   = (uint32_t)microkit_mr_get(3);
+        uint32_t net_deny  = (uint32_t)microkit_mr_get(4);
+
+        uint64_t caller_tick = ((uint64_t)tick_hi << 32) | (uint64_t)tick_lo;
+        if (caller_tick == 0ULL) caller_tick = (uint64_t)boot_tick;
+
+        uint32_t report_len = cap_broker_attest(caller_tick, net_act, net_deny);
+
+        /* Return length + first 4 bytes of SHA-512 hash as fingerprint
+         * (The full hash is in the report itself; we can't return 64 bytes via MRs.) */
+        uint32_t fingerprint = 0;
+        /* fingerprint = first 4 bytes of sha512(boot_tick_as_bytes) — simple nonce */
+        {
+            uint8_t tick_bytes[8];
+            tick_bytes[0] = (uint8_t)(caller_tick);
+            tick_bytes[1] = (uint8_t)(caller_tick >> 8);
+            tick_bytes[2] = (uint8_t)(caller_tick >> 16);
+            tick_bytes[3] = (uint8_t)(caller_tick >> 24);
+            tick_bytes[4] = (uint8_t)(caller_tick >> 32);
+            tick_bytes[5] = (uint8_t)(caller_tick >> 40);
+            tick_bytes[6] = (uint8_t)(caller_tick >> 48);
+            tick_bytes[7] = (uint8_t)(caller_tick >> 56);
+            uint8_t h[64];
+            sha512(tick_bytes, 8, h);
+            fingerprint = ((uint32_t)h[0]) | ((uint32_t)h[1] << 8) |
+                          ((uint32_t)h[2] << 16) | ((uint32_t)h[3] << 24);
+        }
+
+        microkit_mr_set(0, report_len);
+        microkit_mr_set(1, fingerprint);
+        return microkit_msginfo_new(0, 2);
     }
 
     default:

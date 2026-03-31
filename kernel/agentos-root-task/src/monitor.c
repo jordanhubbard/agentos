@@ -92,6 +92,7 @@ int  vibe_swap_health_notify(int slot);
 int  vibe_swap_rollback(uint32_t service_id);
 void cap_broker_init(void);
 void cap_broker_revoke_agent(uint32_t agent_pd, uint32_t reason_flags);
+uint32_t cap_broker_attest(uint64_t boot_tick, uint32_t net_active, uint32_t net_denials);
 void agent_pool_init(void);
 int  agent_pool_spawn(const char *agent_name, uint64_t task_id,
                       const uint8_t *payload, uint32_t payload_len,
