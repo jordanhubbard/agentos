@@ -21,6 +21,11 @@ memory_regions:
     size: 0x200000      # 2MB: AgentFS persistent module store
     page_size: 0x1000
 
+  # Developer shell command/output ring (QEMU/dev builds only)
+  - name: dev_shell_ring
+    size: 0x1000        # 4KB: cmd ring + output ring
+    page_size: 0x1000
+
   # GPU zero-copy tensor exchange buffer (seL4 ↔ Linux VMM ↔ CUDA)
   # Mapped into linux_vmm (rw) and controller (rw) for zero-copy tensor IPC.
   # Physical layout: [0..4KB] ring header, [4KB..64MB] tensor payload area.
@@ -205,6 +210,32 @@ pds:
         vaddr: 0x5000000
         perms: rw
         setvar_vaddr: store_vaddr
+
+  # Developer shell (passive, QEMU/dev builds only — tag: dev-only)
+  # Exposes a REPL via dev_shell_ring MR for interactive debugging.
+  # Not included in production builds (gen_sdf.py skips dev-only PDs by default).
+  - name: dev_shell
+    priority: 70
+    passive: true
+    program_image: dev_shell.elf
+    tags: [dev-only]
+    maps:
+      - mr: dev_shell_ring
+        vaddr: 0x7000000
+        perms: rw
+        setvar_vaddr: dev_shell_ring_vaddr
+      - mr: perf_ring
+        vaddr: 0x8000000
+        perms: r
+        setvar_vaddr: perf_ring_vaddr
+      - mr: vibe_code
+        vaddr: 0x2000000
+        perms: r
+        setvar_vaddr: vibe_code_vaddr
+      - mr: vibe_state
+        vaddr: 0x3000000
+        perms: r
+        setvar_vaddr: vibe_state_vaddr
 
   # Console mux (passive)
   - name: console_mux
@@ -659,3 +690,20 @@ channels:
     id_a: 4
     pd_b: controller
     id_b: 62
+
+  # dev_shell channels (dev-only)
+  # host (controller) notifies dev_shell of new commands
+  - name: ctrl_devshell
+    pd_a: controller
+    id_a: 2
+    pd_b: dev_shell
+    id_b: 0
+    tags: [dev-only]
+
+  # dev_shell → controller pass-through for ipc send command
+  - name: devshell_ctrl
+    pd_a: dev_shell
+    id_a: 1
+    pd_b: controller
+    id_b: 3
+    tags: [dev-only]
