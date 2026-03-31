@@ -163,7 +163,7 @@ uint32_t cap_broker_attest(char *buf, uint32_t buf_len, uint64_t timestamp) {
         const cap_entry_t *e = &cap_table[i];
         if (!e->active) continue;
         active++;
-        ATTEST_APPEND("CAP\t%d\t%u\t%u\t0x%x\t0x%x\t0x%x\t0x%x\t%d\t%llu\n",
+        ATTEST_APPEND("CAP\t%d\t%u\t%u\t0x%x\t0x%x\t0x%x\t0x%x\t%d\t%llu\t%d\n",
                       i,
                       e->owner_pd,
                       e->granted_to,
@@ -172,7 +172,8 @@ uint32_t cap_broker_attest(char *buf, uint32_t buf_len, uint64_t timestamp) {
                       e->cap.kind,
                       e->cap.badge,
                       e->revokable ? 1 : 0,
-                      (unsigned long long)e->grant_time);
+                      (unsigned long long)e->grant_time,
+                      e->parent_handle);   /* -1 = root cap, >=0 = attenuated from */
     }
     ATTEST_APPEND("END\t%u\n", active);
 

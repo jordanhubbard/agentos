@@ -422,3 +422,38 @@ uint32_t cap_broker_attest(char *buf, uint32_t buf_len, uint64_t timestamp);
 #define OP_BOOT_QUOTE    0xB2
 #define OP_BOOT_VERIFY   0xB3
 #define OP_BOOT_RESET    0xB4
+
+/* ── Capability Attenuation ──────────────────────────────────────────────── */
+#define OP_CAP_ATTENUATE  0x14   /* derive cap with rights ⊆ parent rights */
+
+/*
+ * CAP_ATTENUATE(cap_ch, src_handle, new_rights, grantee_pd, revokable)
+ *
+ * Derive a new capability with reduced rights from an existing cap.
+ * Returns the new handle in MR0 (0 on failure).
+ *
+ * Rights bits (from cap_broker.c):
+ *   CAP_RIGHT_READ  = 0x01
+ *   CAP_RIGHT_WRITE = 0x02
+ *   CAP_RIGHT_GRANT = 0x04
+ *   CAP_RIGHT_EXEC  = 0x08
+ */
+#define CAP_ATTENUATE(cap_ch, src_handle, new_rights, grantee_pd, revokable) \
+    (__extension__({ \
+        microkit_mr_set(1, (src_handle)); \
+        microkit_mr_set(2, (new_rights)); \
+        microkit_mr_set(3, (grantee_pd)); \
+        microkit_mr_set(4, (revokable) ? 1 : 0); \
+        microkit_msginfo _r = PPCALL_DONATE((cap_ch), \
+            microkit_msginfo_new(OP_CAP_ATTENUATE, 4), \
+            PRIO_CONTROLLER, PRIO_MONITOR); \
+        (uint32_t)microkit_mr_get(0); \
+    }))
+
+/* Revoke a cap and all its derived (attenuated) children */
+#define CAP_REVOKE_TREE(cap_ch, handle) do { \
+    microkit_mr_set(1, (handle)); \
+    microkit_mr_set(2, 1);  /* cascade=true */ \
+    PPCALL_DONATE((cap_ch), microkit_msginfo_new(OP_CAP_REVOKE, 2), \
+        PRIO_CONTROLLER, PRIO_MONITOR); \
+} while(0)
