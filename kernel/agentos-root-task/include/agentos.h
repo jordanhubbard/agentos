@@ -457,3 +457,13 @@ uint32_t cap_broker_attest(char *buf, uint32_t buf_len, uint64_t timestamp);
     PPCALL_DONATE((cap_ch), microkit_msginfo_new(OP_CAP_REVOKE, 2), \
         PRIO_CONTROLLER, PRIO_MONITOR); \
 } while(0)
+
+/* ── Watchdog escalation support ─────────────────────────────────────────── */
+/* Additional agent_pool API for mutable access */
+agent_entry_t *agent_pool_get_mut(int idx);
+
+/* Map slot index to its IPC channel id (implementation in monitor.c) */
+microkit_channel slot_channel(uint32_t slot);
+
+/* Event type for watchdog escalation */
+#define MSG_EVENT_WATCHDOG_ESCALATION  0x30
