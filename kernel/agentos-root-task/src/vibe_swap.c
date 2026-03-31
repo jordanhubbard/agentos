@@ -33,6 +33,7 @@
 #define AGENTOS_DEBUG 1
 #include "agentos.h"
 #include "barrier.h"
+#include "prio_inherit.h"
 
 /* Swap slot configuration */
 #define MAX_SWAP_SLOTS       4
@@ -462,9 +463,10 @@ bool vibe_swap_health_check(int slot) {
     
     /* PPC to the swap slot's PD with a health check request */
     microkit_mr_set(0, 0x4E41);  /* Health check magic ("NA" in hex) */
-    microkit_msginfo result = microkit_ppcall(
+    microkit_msginfo result = PPCALL_DONATE(
         slots[slot].channel,
-        microkit_msginfo_new(0x0004, 1)  /* MSG_EVENTBUS_STATUS equivalent */
+        microkit_msginfo_new(0x0004, 1),  /* MSG_EVENTBUS_STATUS equivalent */
+        PRIO_CONTROLLER, PRIO_SWAP_SLOT
     );
     
     uint64_t resp = microkit_msginfo_get_label(result);

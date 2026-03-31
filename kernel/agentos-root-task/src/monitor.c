@@ -7,6 +7,7 @@
 
 #define AGENTOS_DEBUG 1
 #include "agentos.h"
+#include "prio_inherit.h"
 #include <stdint.h>
 
 /* Memory regions - patched by Microkit setvar */
@@ -215,7 +216,8 @@ static void demo_sequence(void) {
     microkit_mr_set(1, obj_size);
     microkit_mr_set(2, 0x42);  /* cap_tag: badge 0x42 */
 
-    microkit_ppcall(CH_AGENTFS, microkit_msginfo_new(0, 3));
+    PPCALL_DONATE(CH_AGENTFS, microkit_msginfo_new(0, 3),
+                  PRIO_CONTROLLER, PRIO_AGENTFS);
 
     uint32_t afs_status = (uint32_t)microkit_mr_get(0);
     if (afs_status == 0) {
@@ -247,7 +249,8 @@ static void demo_sequence(void) {
     microkit_mr_set(1, ctrl.demo_obj_id[0]); /* first 4 bytes of object ID */
     microkit_mr_set(2, obj_size);             /* object size */
 
-    microkit_ppcall(CH_EVENTBUS, microkit_msginfo_new(EVT_OBJECT_CREATED, 3));
+    PPCALL_DONATE(CH_EVENTBUS, microkit_msginfo_new(EVT_OBJECT_CREATED, 3),
+                  PRIO_CONTROLLER, PRIO_EVENTBUS);
     microkit_dbg_puts("[controller] Event published to ring buffer\n");
 
     demo_delay();
@@ -273,8 +276,9 @@ void init(void) {
     
     /* PPC into EventBus (passive, higher priority) to initialize it */
     microkit_dbg_puts("[controller] Waking EventBus via PPC...\n");
-    microkit_msginfo result = microkit_ppcall(CH_EVENTBUS, 
-        microkit_msginfo_new(MSG_EVENTBUS_INIT, 0));
+    microkit_msginfo result = PPCALL_DONATE(CH_EVENTBUS,
+        microkit_msginfo_new(MSG_EVENTBUS_INIT, 0),
+        PRIO_CONTROLLER, PRIO_EVENTBUS);
     
     uint64_t resp = microkit_msginfo_get_label(result);
     if (resp == MSG_EVENTBUS_READY) {
@@ -331,8 +335,9 @@ void notified(microkit_channel ch) {
                     microkit_mr_set(1, 0);
                     microkit_mr_set(2, 1);
                     
-                    microkit_ppcall(CH_EVENTBUS,
-                        microkit_msginfo_new(MSG_EVENT_AGENT_EXITED, 3));
+                    PPCALL_DONATE(CH_EVENTBUS,
+                        microkit_msginfo_new(MSG_EVENT_AGENT_EXITED, 3),
+                        PRIO_CONTROLLER, PRIO_EVENTBUS);
                     microkit_dbg_puts("[controller] TASK_COMPLETE event published\n");
                     
                     /* Notify InitAgent to query final EventBus status */
@@ -464,7 +469,8 @@ microkit_msginfo protected(microkit_channel ch, microkit_msginfo msg) {
         microkit_mr_set(3, id2);
         microkit_mr_set(4, id3);
         
-        microkit_ppcall(CH_AGENTFS, microkit_msginfo_new(0, 5));
+        PPCALL_DONATE(CH_AGENTFS, microkit_msginfo_new(0, 5),
+                      PRIO_CONTROLLER, PRIO_AGENTFS);
         
         uint32_t status = (uint32_t)microkit_mr_get(0);
         if (status == 0) {

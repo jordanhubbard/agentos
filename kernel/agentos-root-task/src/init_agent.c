@@ -8,6 +8,7 @@
 
 #define AGENTOS_DEBUG 1
 #include "agentos.h"
+#include "prio_inherit.h"
 #include <stdint.h>
 
 /* Channel IDs (from init_agent's perspective, matching agentos.system) */
@@ -79,7 +80,8 @@ static void query_eventbus_status(void) {
 
     microkit_dbg_puts("[init_agent] Querying EventBus status via PPC...\n");
 
-    microkit_ppcall(CH_EVENTBUS, microkit_msginfo_new(MSG_EVENTBUS_STATUS, 0));
+    PPCALL_DONATE(CH_EVENTBUS, microkit_msginfo_new(MSG_EVENTBUS_STATUS, 0),
+                  PRIO_INIT_AGENT, PRIO_EVENTBUS);
 
     uint64_t total_events = (uint64_t)microkit_mr_get(0);
     uint32_t subscribers  = (uint32_t)microkit_mr_get(1);
@@ -113,9 +115,10 @@ static void subscribe_to_eventbus(void) {
     microkit_mr_set(0, CH_EVENTBUS);  /* notify me on this channel */
     microkit_mr_set(1, 0);             /* topic_mask=0: all events */
     
-    microkit_msginfo result = microkit_ppcall(
+    microkit_msginfo result = PPCALL_DONATE(
         CH_EVENTBUS,
-        microkit_msginfo_new(MSG_EVENTBUS_SUBSCRIBE, 2)
+        microkit_msginfo_new(MSG_EVENTBUS_SUBSCRIBE, 2),
+        PRIO_INIT_AGENT, PRIO_EVENTBUS
     );
     
     if (microkit_msginfo_get_label(result) == 0) {

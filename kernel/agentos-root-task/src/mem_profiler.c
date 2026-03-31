@@ -43,6 +43,7 @@
 
 #define AGENTOS_DEBUG 1
 #include "agentos.h"
+#include "prio_inherit.h"
 #include <stdint.h>
 #include <stdbool.h>
 
@@ -206,7 +207,10 @@ static void check_leak(uint8_t slot_id) {
         microkit_mr_set(2, s->live_allocs);
         microkit_mr_set(3, (uint32_t)(s->live_bytes >> 32));
         microkit_mr_set(4, (uint32_t)(s->live_bytes & 0xFFFFFFFF));
-        microkit_ppcall(CH_CONTROLLER, microkit_msginfo_new(0, 5));
+        /* mem_profiler (prio 108) PPC-ing controller (prio 50) — no inversion possible
+         * (we're higher prio), but use PPCALL_DONATE for uniform API consistency. */
+        PPCALL_DONATE(CH_CONTROLLER, microkit_msginfo_new(0, 5),
+                      PRIO_MEM_PROFILER, PRIO_CONTROLLER);
 
         s->leak_alerted = true;  /* suppress repeat alerts until reset */
     }
