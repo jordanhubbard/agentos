@@ -425,3 +425,33 @@ agentOS is different because:
 *"Hey Rocky, watch me pull an operating system out of my hat!"*
 *"Again? That trick never works!"*
 *"This time for sure!"* 🫎
+
+## GPU Shared Memory Channel (gpu_shmem)
+
+### Overview
+`gpu_tensor_buf` is a 64MB seL4 Memory Region mapped into both the
+`controller` PD (producer) and `linux_vmm` PD (consumer).  It provides a
+zero-copy path for tensor exchange between agentOS WASM agents and
+CUDA/PyTorch workloads running in the Linux guest on sparky's GB10 GPU.
+
+### Physical layout
+```
+[0x000000..0x000FFF]  gpu_shmem_ring_t  (4KB ring header + 64 descriptors)
+[0x001000..0x3FFFFF]  tensor payload area  (64MB - 4KB)
+```
+
+### Protocol
+1. agentOS agent calls `gpu_shmem_enqueue(&desc)` with tensor offset+size.
+2. `microkit_notify(ctrl_gpu_notify)` wakes `linux_vmm`.
+3. `linux_vmm` drains the ring; injects a virtual IRQ into Linux guest.
+4. Linux `gpu_shmem_linux` daemon reads descriptors, dispatches CUDA ops.
+5. Linux daemon writes result descriptor into result ring.
+6. `linux_vmm` notifies `controller` via `vmm_gpu_result` channel.
+7. Agent polls `gpu_shmem_dequeue_result()` for the result.
+
+### Files
+- `kernel/agentos-root-task/src/gpu_shmem.c` — seL4 ring implementation
+- `kernel/agentos-root-task/include/gpu_shmem.h` — API header
+- `kernel/agentos-root-task/src/linux_vmm.c` — VMM notification handler
+- `userspace/gpu_shmem_linux/gpu_shmem_linux.c` — Linux side daemon
+- `tools/topology.yaml` — MR, PD, and channel definitions
