@@ -9,6 +9,7 @@
     init_agent   (prio 100)  - agent ecosystem bootstrapper
     worker_0..7  (prio 80)   - agent pool workers (dynamic task assignment)
     vibe_engine  (prio 140)  - passive VibeEngine: WASM hot-swap lifecycle
+    mem_profiler (prio 108)  - passive heap alloc tracker + leak detector
   
   Channel map:
     0:  controller <-> event_bus    (controller PPCs into passive event_bus)
@@ -282,5 +283,74 @@
     <channel>
         <end pd="init_agent"   id="3" pp="true" />
         <end pd="vibe_engine"  id="0" />
+    </channel>
+
+    <!--
+      MemProfiler: passive WASM heap allocation tracker (priority 108)
+
+      Tracks per-slot live alloc count + bytes. Workers call
+      OP_MEM_ALLOC_HOOK / OP_MEM_FREE_HOOK via PPC. Controller sends
+      tick notifications every scheduling quantum; mem_profiler writes
+      heap snapshots into the 256KB mem_ring every 30 ticks and fires
+      OP_MEM_LEAK_ALERT to the controller if a slot shows 100 consecutive
+      ticks of monotonically growing live allocation count.
+
+      Channels:
+        id=0: controller <-> mem_profiler
+              - controller notifies (tick); mem_profiler PPCs (leak alert)
+        id=1..8: worker_0..7 <-> mem_profiler (pp=true: workers PPC in)
+
+      Shared memory:
+        mem_ring (256KB): ring buffer of 64-byte per-slot heap snapshots
+    -->
+
+    <memory_region name="mem_ring" size="0x40000" />   <!-- 256KB snapshot ring -->
+
+    <protection_domain name="mem_profiler" priority="108" passive="true">
+        <program_image path="mem_profiler.elf" />
+        <map mr="mem_ring" vaddr="0x8000000" perms="rw" setvar_vaddr="mem_ring_vaddr" />
+    </protection_domain>
+
+    <!-- Channel 50: controller(id=50) <-> mem_profiler(id=0)
+         Controller notifies mem_profiler for each tick.
+         mem_profiler PPCs controller for leak alerts. -->
+    <channel>
+        <end pd="controller"    id="50" />
+        <end pd="mem_profiler"  id="0" />
+    </channel>
+
+    <!-- Channels 51–58: worker_N(id=9) <-> mem_profiler(id=1..8) pp=true
+         Workers PPC into mem_profiler for alloc/free hook recording. -->
+    <channel>
+        <end pd="worker_0"     id="9" pp="true" />
+        <end pd="mem_profiler" id="1" />
+    </channel>
+    <channel>
+        <end pd="worker_1"     id="9" pp="true" />
+        <end pd="mem_profiler" id="2" />
+    </channel>
+    <channel>
+        <end pd="worker_2"     id="9" pp="true" />
+        <end pd="mem_profiler" id="3" />
+    </channel>
+    <channel>
+        <end pd="worker_3"     id="9" pp="true" />
+        <end pd="mem_profiler" id="4" />
+    </channel>
+    <channel>
+        <end pd="worker_4"     id="9" pp="true" />
+        <end pd="mem_profiler" id="5" />
+    </channel>
+    <channel>
+        <end pd="worker_5"     id="9" pp="true" />
+        <end pd="mem_profiler" id="6" />
+    </channel>
+    <channel>
+        <end pd="worker_6"     id="9" pp="true" />
+        <end pd="mem_profiler" id="7" />
+    </channel>
+    <channel>
+        <end pd="worker_7"     id="9" pp="true" />
+        <end pd="mem_profiler" id="8" />
     </channel>
 </system>
