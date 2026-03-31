@@ -45,7 +45,7 @@ LDFLAGS := \
 
 LIBS := -lmicrokit -lvmm
 
-SRCS := vmm.c
+SRCS := vmm.c vmm_mux.c
 
 OBJS := $(addprefix $(BUILD_DIR)/, $(SRCS:.c=.o))
 

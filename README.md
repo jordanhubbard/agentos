@@ -193,6 +193,8 @@ agentos/
 | QEMU boot | ⏳ Pending | Requires deps setup |
 | NetStack | ⏳ Pending | lwIP integration |
 | BlobSvc | ⏳ Pending | Object storage impl |
+| FreeBSD VM guest | 🔧 Phase 1 | VMM PD + UEFI + multiplexer scaffolded |
+| VM multiplexer | 🔧 Phase 1 | create/destroy/switch 4 VM slots |
 
 ## Philosophy
 
@@ -242,6 +244,106 @@ CudaKernel::complete(0)?; // Release slot
 vibe_engine (CH_GPU=2) ──notify──► gpu_scheduler (CH_VIBE=0)
 controller  (CH=51)    ──ppcall──► gpu_scheduler (CH_CTRL=1)
 ```
+
+---
+
+## FreeBSD VM Guest
+
+agentOS can run **FreeBSD 14 AArch64 as a virtual machine guest** under the seL4 hypervisor, using the [au-ts/libvmm](https://github.com/au-ts/libvmm) Microkit VMM library.
+
+seL4 runs at **EL2** (ARM hypervisor mode) — it IS the hypervisor. No separate hypervisor layer needed.
+
+### Boot sequence
+
+```
+seL4 (EL2)
+  └─► freebsd_vmm PD (libvmm)
+        └─► EDK2 UEFI firmware @ guest phys 0x00000000
+              └─► bootaa64.efi → loader.efi
+                    └─► FreeBSD kernel (EL1)
+```
+
+### VM Multiplexer
+
+The `freebsd_vmm` Protection Domain is a **VM multiplexer** — it manages up to 4 independent FreeBSD instances simultaneously. The controller can create, destroy, and switch between them via IPC:
+
+| Opcode | Operation | Args | Returns |
+|--------|-----------|------|---------|
+| `0x10` | `OP_VM_CREATE` | — | `slot_id` (0–3) or `0xFF` |
+| `0x11` | `OP_VM_DESTROY` | `mr[0]=slot_id` | `0` ok / `1` error |
+| `0x12` | `OP_VM_SWITCH` | `mr[0]=slot_id` | `0` ok / `1` error |
+| `0x13` | `OP_VM_STATUS` | — | `mr[0..3]` = state per slot |
+| `0x14` | `OP_VM_LIST` | — | count + `(slot_id<<8\|state)` per slot |
+
+**Slot states:** `FREE(0)` → `BOOTING(1)` → `RUNNING(2)` ↔ `SUSPENDED(3)` → `HALTED(4)` / `ERROR(5)`
+
+Console focus follows the active slot. When you switch, the inactive slot is suspended at the seL4 vCPU level (zero scheduling overhead).
+
+### Quick start
+
+```bash
+# Install build deps
+make deps
+
+# Download FreeBSD 14 AArch64 disk image + EDK2 UEFI firmware
+make fetch-freebsd-guest
+
+# Build the VMM PD, compile DTB, pack Microkit image
+make build-freebsd
+
+# Launch: seL4 → EDK2 → FreeBSD shell under agentOS
+make demo-freebsd
+```
+
+### Creating additional VM instances
+
+Once the first FreeBSD is running, create a second from the agentOS controller:
+
+```c
+// From controller PD: create a new FreeBSD VM
+microkit_mr_set(0, 0);
+microkit_msginfo reply = microkit_ppcall(CH_FREEBSD_VMM,
+    microkit_msginfo_new(OP_VM_CREATE, 1));
+uint8_t slot = (uint8_t)microkit_mr_get(0);   // e.g. slot = 1
+
+// Switch console to the new VM
+microkit_mr_set(0, slot);
+microkit_ppcall(CH_FREEBSD_VMM, microkit_msginfo_new(OP_VM_SWITCH, 1));
+
+// Destroy VM slot 0
+microkit_mr_set(0, 0);
+microkit_ppcall(CH_FREEBSD_VMM, microkit_msginfo_new(OP_VM_DESTROY, 1));
+```
+
+### Memory layout
+
+Each VM slot gets 512MB of isolated guest RAM:
+
+```
+Guest physical address space (all slots):
+  0x00000000 - 0x03FFFFFF   UEFI flash (EDK2, shared read-only)
+  0x08010000                GIC CPU interface (vGIC emulation)
+  0x09000000                PL011 UART (console passthrough)
+  0x0a003000+               VirtIO MMIO (block device, per slot)
+
+Per-slot RAM:
+  Slot 0: 0x40000000 - 0x5FFFFFFF  (512MB)
+  Slot 1: 0x60000000 - 0x7FFFFFFF  (512MB)
+  Slot 2: 0x80000000 - 0x9FFFFFFF  (512MB)
+  Slot 3: 0xa0000000 - 0xBFFFFFFF  (512MB)
+```
+
+### Why FreeBSD?
+
+- BSD license aligns with seL4's formal verification story
+- **Jails** map naturally to seL4 capability domains (Phase 3 roadmap)
+- `pf` firewall ruleset = capability policy layer
+- ZFS + GEOM: a principled storage stack for agentOS's BlobSvc
+- bhyve inside FreeBSD = agents can *nest* hypervisors within agentOS
+
+See [`docs/freebsd-vm-guest.md`](docs/freebsd-vm-guest.md) for the full design doc.
+
+---
 
 ## Contributing
 
