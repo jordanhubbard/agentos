@@ -512,4 +512,39 @@
         <end pd="controller"  id="58" />
     </channel>
 
+
+    <!-- ═══════════════════════════════════════════════════════════════════
+         mem_profiler PD — WASM heap allocation tracking + leak detection
+         Priority: 108 (passive, below quota_pd at 115, above bulk workers)
+         Channels (from mem_profiler perspective):
+           id=0: controller PPCs in (register/status/snapshot)
+           id=1: init_agent PPCs in (register on spawn)
+           id=2: wasm_host PPCs in  (alloc/free intercepts) [reserved]
+           id=3: mem_profiler → controller (notify: MSG_MEM_LEAK_ALERT on leak)
+    -->
+    <memory_region name="mem_profiler_ring" size="0x40000" />  <!-- 256KB slot table + snapshot log -->
+
+    <protection_domain name="mem_profiler" priority="108" passive="true">
+        <program_image path="mem_profiler.elf" />
+        <map mr="mem_profiler_ring" vaddr="0xC000000" perms="rw" setvar_vaddr="mem_profiler_ring_vaddr" />
+    </protection_domain>
+
+    <!-- Channel: controller(id=61) <-> mem_profiler(id=0) — controller queries/manages profiler -->
+    <channel>
+        <end pd="controller"    id="61" pp="true" />
+        <end pd="mem_profiler"  id="0" />
+    </channel>
+
+    <!-- Channel: init_agent(id=8) <-> mem_profiler(id=1) — init_agent registers WASM slots -->
+    <channel>
+        <end pd="init_agent"    id="8" pp="true" />
+        <end pd="mem_profiler"  id="1" />
+    </channel>
+
+    <!-- Channel: mem_profiler(id=3) -> controller(id=62) — leak alert notify -->
+    <channel>
+        <end pd="mem_profiler"  id="3" />
+        <end pd="controller"    id="62" />
+    </channel>
+
 </system>

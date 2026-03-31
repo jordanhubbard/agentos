@@ -18,6 +18,7 @@
 #define CH_CONTROLLER 1   /* id="1" in controller<->initagent channel, init_agent end */
 #define CH_EVENTBUS   2   /* id="2" in eventbus<->initagent channel, init_agent end */
 #define CH_QUOTA      7   /* id="7" in initagent<->quota_pd channel, init_agent end */
+#define CH_MEM_PROF   8   /* id="8" in initagent<->mem_profiler channel, init_agent end */
 
 /* Default quota limits for spawned agents */
 #define DEFAULT_CPU_QUOTA_MS   5000   /* 5 seconds CPU time */
@@ -440,6 +441,14 @@ static void handle_spawn_reply_from_controller(void) {
         /* Register the new agent with the quota system */
         bool quota_ok = quota_register_agent(spawn_id, DEFAULT_CPU_QUOTA_MS, DEFAULT_MEM_QUOTA_KB);
         spawn_table[tbl].quota_registered = quota_ok;
+
+        /* Register the new agent with the memory profiler */
+        microkit_mr_set(0, 0xC0);  /* OP_MEM_REGISTER */
+        microkit_mr_set(1, spawn_id);
+        microkit_ppcall(CH_MEM_PROF, microkit_msginfo_new(0, 2));
+        microkit_dbg_puts("[init_agent] mem_profiler registered slot=");
+        put_dec(spawn_id);
+        microkit_dbg_puts("\n");
         spawn_table[tbl].quota_cpu_ms     = DEFAULT_CPU_QUOTA_MS;
         spawn_table[tbl].quota_mem_kb     = DEFAULT_MEM_QUOTA_KB;
 

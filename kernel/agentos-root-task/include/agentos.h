@@ -121,6 +121,9 @@ typedef enum {
     /* Quota PD (per-agent resource quota enforcement) */
     MSG_QUOTA_REVOKE           = 0x0B01,  /* quota_pd -> controller: revoke agent caps */
 
+    /* mem_profiler messages (0x0C00–0x0CFF) */
+    MSG_MEM_LEAK_ALERT         = 0x0C01,  /* mem_profiler -> watchdog: slot leak detected */
+
     /* Vibe Swap (VibeEngine -> Controller -> Swap Slots) */
     MSG_VIBE_SWAP_BEGIN        = 0x0501,  /* VibeEngine -> Controller: start swap */
     MSG_VIBE_SWAP_ACTIVATE     = 0x0502,  /* Controller -> slot: go live */
