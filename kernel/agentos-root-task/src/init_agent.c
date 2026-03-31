@@ -17,6 +17,11 @@
 /* Channel IDs (from init_agent's perspective, matching agentos.system) */
 #define CH_CONTROLLER 1   /* id="1" in controller<->initagent channel, init_agent end */
 #define CH_EVENTBUS   2   /* id="2" in eventbus<->initagent channel, init_agent end */
+#define CH_QUOTA      7   /* id="7" in initagent<->quota_pd channel, init_agent end */
+
+/* Default quota limits for spawned agents */
+#define DEFAULT_CPU_QUOTA_MS   5000   /* 5 seconds CPU time */
+#define DEFAULT_MEM_QUOTA_KB   4096   /* 4MB memory */
 
 /* ── Spawn broker ─────────────────────────────────────────────────────────
  *
@@ -145,6 +150,56 @@ static void put_hex32(uint32_t v) {
         v >>= 4;
     }
     microkit_dbg_puts(buf);
+}
+
+/* ── Quota ops ────────────────────────────────────────────────────────── */
+
+/*
+ * Register a newly spawned agent with the quota system.
+ * Called after successful spawn to enforce resource limits.
+ */
+static void quota_register_agent(uint32_t agent_id, uint32_t cpu_ms, uint32_t mem_kb) {
+    microkit_mr_set(0, 0x60);  /* OP_QUOTA_REGISTER */
+    microkit_mr_set(1, agent_id);
+    microkit_mr_set(2, cpu_ms);
+    microkit_mr_set(3, mem_kb);
+    microkit_ppcall(CH_QUOTA, microkit_msginfo_new(0, 4));
+
+    uint32_t slot   = (uint32_t)microkit_mr_get(0);
+    uint32_t status = (uint32_t)microkit_mr_get(1);
+
+    if (status == 0 || status == 1) {
+        microkit_dbg_puts("[init_agent] Quota registered: agent=");
+        put_dec(agent_id);
+        microkit_dbg_puts(" cpu=");
+        put_dec(cpu_ms);
+        microkit_dbg_puts("ms mem=");
+        put_dec(mem_kb);
+        microkit_dbg_puts("kb slot=");
+        put_dec(slot);
+        microkit_dbg_puts("\n");
+    } else {
+        microkit_dbg_puts("[init_agent] Quota registration failed for agent=");
+        put_dec(agent_id);
+        microkit_dbg_puts("\n");
+    }
+}
+
+/*
+ * Tick an agent's quota usage. Called per scheduler round.
+ * Returns the agent's quota flags (check for revocation).
+ */
+static uint32_t quota_tick_agent(uint32_t agent_id, uint32_t cpu_delta_ms, uint32_t mem_cur_kb) {
+    microkit_mr_set(0, 0x61);  /* OP_QUOTA_TICK */
+    microkit_mr_set(1, agent_id);
+    microkit_mr_set(2, cpu_delta_ms);
+    microkit_mr_set(3, mem_cur_kb);
+    microkit_ppcall(CH_QUOTA, microkit_msginfo_new(0, 4));
+
+    uint32_t result = (uint32_t)microkit_mr_get(0);
+    if (result != 0) return result;
+
+    return (uint32_t)microkit_mr_get(1);  /* flags */
 }
 
 /* ── EventBus ops ─────────────────────────────────────────────────────── */
@@ -339,6 +394,9 @@ static void handle_spawn_reply_from_controller(void) {
         microkit_dbg_puts(" spawn_id=");
         put_dec(spawn_id);
         microkit_dbg_puts("\n");
+
+        /* Register the new agent with the quota system */
+        quota_register_agent(spawn_id, DEFAULT_CPU_QUOTA_MS, DEFAULT_MEM_QUOTA_KB);
 
         /* Publish to EventBus so all subscribers learn about the new agent */
         publish_spawn_event(spawn_id, slot_id,

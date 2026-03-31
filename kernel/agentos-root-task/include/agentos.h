@@ -118,6 +118,9 @@ typedef enum {
     MSG_GPU_COMPLETE           = 0x0910,  /* EventBus event: task completed */
     MSG_GPU_FAILED             = 0x0911,  /* EventBus event: task failed */
 
+    /* Quota PD (per-agent resource quota enforcement) */
+    MSG_QUOTA_REVOKE           = 0x0B01,  /* quota_pd -> controller: revoke agent caps */
+
     /* Vibe Swap (VibeEngine -> Controller -> Swap Slots) */
     MSG_VIBE_SWAP_BEGIN        = 0x0501,  /* VibeEngine -> Controller: start swap */
     MSG_VIBE_SWAP_ACTIVATE     = 0x0502,  /* Controller -> slot: go live */
@@ -151,10 +154,20 @@ typedef enum {
 #define CH_CAP_AUDIT_CTRL     57  /* controller -> cap_audit_log (PPC) */
 #define CH_CAP_AUDIT_INIT     5   /* init_agent -> cap_audit_log (PPC, from init_agent perspective) */
 
+/* Quota PD channel IDs */
+#define CH_QUOTA_CTRL         64  /* controller -> quota_pd (PPC) */
+#define CH_QUOTA_INIT         7   /* init_agent -> quota_pd (PPC, from init_agent perspective) */
+
 /* Capability Audit Log opcodes */
 #define OP_CAP_LOG            0x50  /* Log grant/revoke event */
 #define OP_CAP_LOG_STATUS     0x51  /* Query ring buffer status */
 #define OP_CAP_LOG_DUMP       0x52  /* Read entries from ring */
+
+/* Quota PD opcodes */
+#define OP_QUOTA_REGISTER     0x60  /* Register agent with cpu/mem limits */
+#define OP_QUOTA_TICK         0x61  /* Tick agent cpu/mem usage */
+#define OP_QUOTA_STATUS       0x62  /* Query agent quota state */
+#define OP_QUOTA_SET          0x63  /* Update agent quota limits */
 
 /* Capability event types */
 #define CAP_EVENT_GRANT       1

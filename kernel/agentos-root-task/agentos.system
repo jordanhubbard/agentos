@@ -471,4 +471,45 @@
         <end pd="controller"     id="4" />
     </channel>
 
+    <!--
+      Quota PD: passive PD (priority 115)
+      Enforces per-agent CPU time and memory usage quotas.
+      On quota exceeded: notifies controller to revoke caps via cap_broker.
+
+      Operations:
+        OP_QUOTA_REGISTER (0x60) — register agent with cpu/mem limits
+        OP_QUOTA_TICK     (0x61) — accumulate cpu/mem usage per sched round
+        OP_QUOTA_STATUS   (0x62) — query agent quota state
+        OP_QUOTA_SET      (0x63) — update quota limits
+
+      Channels (from quota_pd perspective):
+        id=0: controller PPCs in (register/tick/status/set)
+        id=1: init_agent PPCs in (register on spawn, tick per round)
+        id=2: quota_pd -> controller (notify: MSG_QUOTA_REVOKE on exceeded)
+    -->
+    <memory_region name="quota_ring" size="0x40000" />  <!-- 256KB quota table + event log -->
+
+    <protection_domain name="quota_pd" priority="115" passive="true">
+        <program_image path="quota_pd.elf" />
+        <map mr="quota_ring" vaddr="0xB000000" perms="rw" setvar_vaddr="quota_ring_vaddr" />
+    </protection_domain>
+
+    <!-- Channel: controller(id=62) <-> quota_pd(id=0) — controller manages quotas -->
+    <channel>
+        <end pd="controller"  id="62" pp="true" />
+        <end pd="quota_pd"    id="0" />
+    </channel>
+
+    <!-- Channel: init_agent(id=7) <-> quota_pd(id=1) — init_agent registers/ticks quotas -->
+    <channel>
+        <end pd="init_agent"  id="7" pp="true" />
+        <end pd="quota_pd"    id="1" />
+    </channel>
+
+    <!-- Channel: quota_pd(id=2) -> controller(id=63) — quota exceeded revocation notify -->
+    <channel>
+        <end pd="quota_pd"    id="2" />
+        <end pd="controller"  id="63" />
+    </channel>
+
 </system>
