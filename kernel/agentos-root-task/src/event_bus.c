@@ -40,7 +40,9 @@ static void eventbus_init_ring(void) {
     volatile agentos_ring_header_t *ring = EVENTBUS_RING;
     ring->magic    = AGENTOS_RING_MAGIC;
     ring->version  = 1;
-    ring->capacity = (0x40000 - sizeof(agentos_ring_header_t)) / sizeof(agentos_event_t);
+    /* Reserve the last 768 bytes as batch staging; see EVENTBUS_BATCH_STAGING_OFFSET */
+    ring->capacity = (EVENTBUS_BATCH_STAGING_OFFSET - sizeof(agentos_ring_header_t))
+                     / sizeof(agentos_event_t);
     ring->head     = 0;
     ring->tail     = 0;
 }
@@ -180,7 +182,58 @@ microkit_msginfo protected(microkit_channel ch, microkit_msginfo msg) {
             microkit_mr_set(1, sub_count);
             return microkit_msginfo_new(0, 2);
         }
-        
+
+        case MSG_EVENTBUS_PUBLISH_BATCH: {
+            /*
+             * Batch publish: caller pre-filled the batch staging area in the
+             * shared ring region and passes the count in MR[1].
+             *
+             * MR[0] — reserved (0)
+             * MR[1] — batch_count (1..EVENTBUS_BATCH_MAX)
+             *
+             * We read each compact agentos_batch_event_t from the staging
+             * window, call eventbus_write() per entry, then notify once.
+             */
+            uint32_t batch_count = (uint32_t)microkit_mr_get(1);
+            if (batch_count == 0 || batch_count > EVENTBUS_BATCH_MAX) {
+                microkit_dbg_puts("[event_bus] BATCH: invalid count\n");
+                return microkit_msginfo_new(MSG_EVENTBUS_ERROR, 0);
+            }
+
+            volatile agentos_batch_event_t *staging =
+                (volatile agentos_batch_event_t *)
+                ((uint8_t *)EVENTBUS_RING + EVENTBUS_BATCH_STAGING_OFFSET);
+
+            uint32_t written = 0;
+            for (uint32_t i = 0; i < batch_count; i++) {
+                volatile agentos_batch_event_t *e = &staging[i];
+                uint32_t plen = e->payload_len < 36u ? e->payload_len : 36u;
+                if (eventbus_write(e->kind, e->source_pd,
+                                   (const uint8_t *)e->payload, plen)) {
+                    written++;
+                }
+            }
+
+            /* Single notify pass for the entire batch */
+            if (written > 0) {
+                eventbus_notify_all();
+            }
+
+            microkit_dbg_puts("[event_bus] BATCH: published ");
+            {
+                static const char hex[] = "0123456789abcdef";
+                char buf[3];
+                buf[0] = hex[(written >> 4) & 0xf];
+                buf[1] = hex[written & 0xf];
+                buf[2] = '\0';
+                microkit_dbg_puts(buf);
+            }
+            microkit_dbg_puts(" events in one pass\n");
+
+            microkit_mr_set(0, written);
+            return microkit_msginfo_new(0, 1);
+        }
+
         default: {
             /* Event publish request — the label IS the event kind */
             uint32_t kind = (uint32_t)(tag & 0xFFFF);

@@ -78,6 +78,9 @@ typedef enum {
     MSG_EVENT_AGENT_EXITED     = 0x0402,
     MSG_EVENT_SYSTEM_READY     = 0x0403,
 
+    /* EventBus batch publish */
+    MSG_EVENTBUS_PUBLISH_BATCH = 0x0005,  /* publish up to 16 events in one PPC */
+
     /* AgentFS event types (published to EventBus) */
     MSG_EVENT_PUBLISH          = 0x0410,  /* generic EventBus publish op */
     EVT_OBJECT_CREATED         = 0x0411,  /* new object stored */
@@ -224,6 +227,65 @@ typedef struct __attribute__((packed)) {
 } agentos_ring_header_t;
 
 #define AGENTOS_RING_MAGIC 0xA6E70B05
+
+/*
+ * Batch publish support (OP_PUBLISH_BATCH / MSG_EVENTBUS_PUBLISH_BATCH)
+ *
+ * Callers fill up to EVENTBUS_BATCH_MAX compact event descriptors into the
+ * batch staging area — a fixed window at the end of the shared 256 KB ring
+ * region — then invoke a single PPC with the event count in MR[1].  The
+ * EventBus PD copies all entries into the main ring and calls
+ * eventbus_notify_all() exactly once, amortising the notify cost.
+ *
+ * Layout of the 256 KB eventbus_ring region (0x40000 bytes):
+ *   [0 .. EVENTBUS_BATCH_STAGING_OFFSET)  — ring header + event slots
+ *   [EVENTBUS_BATCH_STAGING_OFFSET .. 0x40000) — batch staging (768 bytes)
+ */
+#define EVENTBUS_BATCH_MAX          16U
+#define EVENTBUS_BATCH_EVENT_SIZE   48U   /* sizeof(agentos_batch_event_t) */
+#define EVENTBUS_BATCH_STAGING_OFFSET \
+    (0x40000U - EVENTBUS_BATCH_MAX * EVENTBUS_BATCH_EVENT_SIZE)
+
+/*
+ * Compact event descriptor used only in the batch staging area.
+ * Payload is truncated to 36 bytes; richer payloads must use single publishes.
+ */
+typedef struct __attribute__((packed)) {
+    uint32_t kind;
+    uint32_t source_pd;
+    uint32_t payload_len;   /* 0..36; clamped on write */
+    uint8_t  payload[36];
+} agentos_batch_event_t;
+
+/*
+ * MSGBUS_BATCH_PUSH(buf, idx, kind, source, payload, plen)
+ *
+ * Append one event to a batch staging buffer.
+ *   buf    — volatile agentos_batch_event_t * pointing at the staging area
+ *            (ring_vaddr + EVENTBUS_BATCH_STAGING_OFFSET)
+ *   idx    — uint32_t counter; must be 0 on first call, incremented by macro
+ *   kind   — event kind (uint32_t)
+ *   source — source PD id (uint32_t)
+ *   payload— const uint8_t * or NULL
+ *   plen   — payload byte length (clamped to 36)
+ *
+ * When idx reaches EVENTBUS_BATCH_MAX the macro is a no-op (silent drop).
+ * Flush with a PPC: MR[1]=idx, label=MSG_EVENTBUS_PUBLISH_BATCH.
+ */
+#define MSGBUS_BATCH_PUSH(buf, idx, _kind, _src, _payload, _plen)           \
+    do {                                                                      \
+        if ((idx) < EVENTBUS_BATCH_MAX) {                                    \
+            volatile agentos_batch_event_t *_s = &(buf)[(idx)];             \
+            _s->kind        = (uint32_t)(_kind);                             \
+            _s->source_pd   = (uint32_t)(_src);                              \
+            uint32_t _l = (uint32_t)(_plen) < 36u ? (uint32_t)(_plen) : 36u;\
+            _s->payload_len = _l;                                             \
+            const uint8_t *_pp = (const uint8_t *)(_payload);               \
+            for (uint32_t _bi = 0; _bi < _l; _bi++)                         \
+                _s->payload[_bi] = _pp ? _pp[_bi] : 0u;                     \
+            (idx)++;                                                          \
+        }                                                                     \
+    } while (0)
 
 /* Log function declarations */
 void agentos_log_boot(const char *pd_name);
