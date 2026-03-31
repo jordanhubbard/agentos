@@ -467,3 +467,28 @@ microkit_channel slot_channel(uint32_t slot);
 
 /* Event type for watchdog escalation */
 #define MSG_EVENT_WATCHDOG_ESCALATION  0x30
+
+/* ── Fault injection PD ─────────────────────────────────────────────────── */
+#define CH_FAULT_INJECT          70   /* monitor <-> fault_inject channel     */
+#define OP_FAULT_INJECT          0xF0
+#define OP_FAULT_STATUS          0xF1
+#define OP_FAULT_RESET           0xF2
+#define FAULT_NULL_DEREF         0x01
+#define FAULT_STACK_OVF          0x02
+#define FAULT_QUOTA_EXCEEDED     0x03
+#define FAULT_IPC_TIMEOUT        0x04
+#define FAULT_UNALIGNED_MEM      0x05
+#define FAULT_FLAG_VERIFY_RECOVERY  0x01
+#define FAULT_FLAG_EXPECT_NO_CRASH  0x02
+#define FAULT_RESULT_OK          0x00
+#define FAULT_RESULT_ERROR       0x01
+#define FAULT_RESULT_TIMEOUT     0x02
+#define FAULT_RESULT_NO_CRASH    0x03
+#define TRACE_EVENT_FAULT_INJECT    0x20
+#define TRACE_EVENT_FAULT_RECOVERY  0x21
+
+/* ── Slot status query (used by fault_inject recovery verification) ─────── */
+#define MSG_SLOT_STATUS_QUERY    0x50
+#define SLOT_STATE_RUNNING       0x01
+#define SLOT_STATE_CRASHED       0x02
+#define SLOT_STATE_RESTARTING    0x03
