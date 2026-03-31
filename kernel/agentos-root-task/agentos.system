@@ -535,4 +535,50 @@
         <end pd="event_bus"    id="60" />
         <end pd="console_mux"  id="2" />
     </channel>
+
+    <!--
+      ══════════════════════════════════════════════════════════════════
+      DevShell: interactive debug REPL (QEMU-only, priority 70)
+
+      Active PD that processes commands from a shared ring buffer and
+      writes responses back for the controller to forward to UART.
+
+      Enable with -DAGENTOS_DEV_SHELL at build time (make dev-shell).
+      Without the flag, dev_shell.elf is a no-op stub that still links.
+
+      Shared memory (dev_shell_ring, 4KB):
+        [0..7]     magic (0xDE55E11) + version (1)
+        [8..11]    cmd_head — host writes commands here
+        [12..15]   cmd_tail — dev_shell reads from here
+        [16..2047] cmd_buf  — 2032B circular command ring (newline-terminated)
+        [2048..2051] out_head — dev_shell writes output here
+        [2052..2055] out_tail — host reads from here
+        [2056..4095] out_buf  — 2040B circular output ring
+
+      Channel 80:
+        controller(id=80) <-> dev_shell(id=0)
+        controller writes to cmd ring, sets cmd_head, notifies dev_shell;
+        controller polls out ring by comparing out_tail to out_head.
+
+      RCC integration: see services/dev-shell/README.md
+        GET  /api/agentos/shell     — SSE stream of dev_shell output
+        POST /api/agentos/shell/cmd — send command to dev_shell
+      ══════════════════════════════════════════════════════════════════
+    -->
+
+    <!-- dev_shell_ring: 4KB circular command + output ring buffer -->
+    <memory_region name="dev_shell_ring" size="0x1000" />
+
+    <protection_domain name="dev_shell" priority="70">
+        <program_image path="dev_shell.elf" />
+        <map mr="dev_shell_ring" vaddr="0xC000000" perms="rw"
+             setvar_vaddr="dev_shell_ring_vaddr" />
+    </protection_domain>
+
+    <!-- Channel 80: controller(id=80) <-> dev_shell(id=0) -->
+    <channel>
+        <end pd="controller" id="80" />
+        <end pd="dev_shell"  id="0" />
+    </channel>
+
 </system>

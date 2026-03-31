@@ -18,7 +18,7 @@
 # Quick start:
 #   make deps && make demo
 
-.PHONY: all deps deps-tools deps-sdk build demo test clean clean-all help
+.PHONY: all deps deps-tools deps-sdk build demo test dev-shell clean clean-all help
 
 # ─── Read config.yaml (if present) ───────────────────────────────────────────
 # Extract target_arch from config.yaml using simple grep/sed (no YAML parser needed)
@@ -251,6 +251,38 @@ endif
 	@$(QEMU) $(QEMU_FLAGS)
 
 # =============================================================================
+# dev-shell: build with AGENTOS_DEV_SHELL enabled (QEMU-only interactive REPL)
+#
+# Compiles dev_shell.c with -DAGENTOS_DEV_SHELL, activating the full debug
+# REPL logic.  Without this flag the PD is a no-op stub included in every
+# build so the system image remains valid.
+#
+# Usage:
+#   make dev-shell                       # build for config.yaml target
+#   make dev-shell TARGET_ARCH=aarch64   # ARM64 QEMU
+#
+# The resulting image can be launched with the standard 'make demo' afterwards:
+#   make dev-shell && make demo          # build dev-shell image, then launch
+# =============================================================================
+dev-shell: deps-sdk
+	@echo ""
+	@echo "╔══════════════════════════════════════════╗"
+	@echo "║  agentOS — building with dev_shell REPL  ║"
+	@echo "╚══════════════════════════════════════════╝"
+	@echo ""
+	@mkdir -p $(BUILD_DIR)
+	@PATH="$(LLVM_BIN):$(LLD_BIN):$$PATH" $(MAKE) -C $(KERNEL_DIR) \
+		BUILD_DIR=$(BUILD_DIR) \
+		MICROKIT_SDK=$(abspath $(MICROKIT_SDK)) \
+		MICROKIT_BOARD=$(BOARD) \
+		MICROKIT_CONFIG=debug \
+		AGENTOS_DEV_SHELL=1
+	@echo ""
+	@echo "✓ dev-shell build complete: $(IMAGE)"
+	@echo "  Run 'make demo' to launch.  Type 'help' in the shell to see commands."
+	@echo ""
+
+# =============================================================================
 # test: CI boot test (exits 0 on success, 1 on failure)
 # =============================================================================
 test: build
@@ -288,6 +320,7 @@ help:
 	@echo "  make demo                         Build + launch in QEMU"
 	@echo "  make demo TARGET_ARCH=aarch64     ARM64 QEMU demo (with Linux VMM)"
 	@echo "  make demo TARGET_ARCH=x86_64      x86_64 QEMU demo"
+	@echo "  make dev-shell                    Build with interactive debug REPL (QEMU-only)"
 	@echo "  make test                         CI boot test (exit 0/1)"
 	@echo "  make clean                        Remove build artifacts (current target)"
 	@echo "  make clean-all                    Remove all build artifacts"

@@ -66,6 +66,8 @@ PD_VIBEENGINE_SRCS   := src/vibe_engine.c src/m3_bare_metal.c src/log.c
 PD_SWAPSLOT_SRCS     := src/swap_slot.c src/wasm3_host.c src/m3_bare_metal.c src/log.c
 PD_CONSOLEMUX_SRCS   := src/console_mux.c src/m3_bare_metal.c src/log.c
 PD_MEMPROFILER_SRCS  := src/mem_profiler.c src/m3_bare_metal.c src/log.c
+# DevShell: compiled with -DAGENTOS_DEV_SHELL when AGENTOS_DEV_SHELL=1
+PD_DEVSHELL_SRCS     := src/dev_shell.c src/m3_bare_metal.c src/log.c
 
 # wasm3 vendored sources (core interpreter only)
 WASM3_SRCS := wasm3/m3_core.c wasm3/m3_env.c wasm3/m3_code.c wasm3/m3_compile.c \
@@ -81,9 +83,16 @@ VIBEENGINE_OBJS    := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_VIBEENGINE_SRCS
 CONSOLEMUX_OBJS    := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_CONSOLEMUX_SRCS))
 SWAPSLOT_OBJS      := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_SWAPSLOT_SRCS))
 MEMPROFILER_OBJS   := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_MEMPROFILER_SRCS))
+DEVSHELL_OBJS      := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_DEVSHELL_SRCS))
+
+# AGENTOS_DEV_SHELL flag: passes -DAGENTOS_DEV_SHELL when make AGENTOS_DEV_SHELL=1
+DEVSHELL_CFLAGS    := $(CFLAGS)
+ifeq ($(AGENTOS_DEV_SHELL),1)
+  DEVSHELL_CFLAGS  += -DAGENTOS_DEV_SHELL
+endif
 WASM3_OBJS         := $(patsubst wasm3/%.c, $(BUILD_DIR)/wasm3_%.o, $(WASM3_SRCS))
 
-IMAGES := controller.elf event_bus.elf init_agent.elf worker.elf agentfs.elf vibe_engine.elf console_mux.elf swap_slot.elf mem_profiler.elf
+IMAGES := controller.elf event_bus.elf init_agent.elf worker.elf agentfs.elf vibe_engine.elf console_mux.elf swap_slot.elf mem_profiler.elf dev_shell.elf
 
 # AArch64 builds include the Linux VMM
 ifeq ($(ARCH),aarch64)
@@ -147,6 +156,15 @@ $(BUILD_DIR)/swap_slot.elf: $(SWAPSLOT_OBJS) $(WASM3_OBJS)
 	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
 
 $(BUILD_DIR)/mem_profiler.elf: $(MEMPROFILER_OBJS)
+	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
+
+# dev_shell.c gets a dedicated compile rule so -DAGENTOS_DEV_SHELL is applied
+# only to this PD when AGENTOS_DEV_SHELL=1; other PDs are unaffected.
+$(BUILD_DIR)/dev_shell.o: src/dev_shell.c
+	@mkdir -p $(BUILD_DIR)
+	$(CC) -c $(DEVSHELL_CFLAGS) $< -o $@
+
+$(BUILD_DIR)/dev_shell.elf: $(DEVSHELL_OBJS)
 	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
 
 # ─── Linux VMM (AArch64 only) ─────────────────────────────────────────────
