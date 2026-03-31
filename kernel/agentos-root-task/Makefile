@@ -71,7 +71,7 @@ PD_CAPAUDIT_SRCS    := src/cap_audit_log.c src/m3_bare_metal.c src/log.c
 PD_FAULTHANDLER_SRCS := src/fault_handler.c src/m3_bare_metal.c src/log.c
 PD_DEBUGBRIDGE_SRCS  := src/debug_bridge.c src/m3_bare_metal.c src/log.c
 PD_QUOTAPD_SRCS      := src/quota_pd.c src/m3_bare_metal.c src/log.c
-PD_MEMPROFILER_SRCS  := src/mem_profiler.c src/m3_bare_metal.c src/log.c
+PD_MEMPROFILER_SRCS  := ../../userspace/mem_profiler/mem_profiler.c src/m3_bare_metal.c src/log.c
 
 # wasm3 vendored sources (core interpreter only)
 WASM3_SRCS := wasm3/m3_core.c wasm3/m3_env.c wasm3/m3_code.c wasm3/m3_compile.c \
@@ -92,7 +92,8 @@ CAPAUDIT_OBJS       := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_CAPAUDIT_SRCS)
 FAULTHANDLER_OBJS   := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_FAULTHANDLER_SRCS))
 DEBUGBRIDGE_OBJS    := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_DEBUGBRIDGE_SRCS))
 QUOTAPD_OBJS        := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_QUOTAPD_SRCS))
-MEMPROFILER_OBJS    := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_MEMPROFILER_SRCS))
+MEMPROFILER_OBJS    := $(BUILD_DIR)/mem_profiler.o \
+                       $(patsubst src/%.c, $(BUILD_DIR)/%.o, src/m3_bare_metal.c src/log.c)
 WASM3_OBJS        := $(patsubst wasm3/%.c, $(BUILD_DIR)/wasm3_%.o, $(WASM3_SRCS))
 
 IMAGES := controller.elf event_bus.elf init_agent.elf worker.elf agentfs.elf vibe_engine.elf swap_slot.elf gpu_sched.elf gpu_scheduler.elf mesh_agent.elf cap_audit_log.elf fault_handler.elf debug_bridge.elf quota_pd.elf mem_profiler.elf
@@ -122,6 +123,10 @@ $(BUILD_DIR)/m3_bare_metal.o: src/m3_bare_metal.c
 $(BUILD_DIR)/wasm3_%.o: wasm3/%.c
 	@mkdir -p $(BUILD_DIR)
 	$(CC) -c $(CFLAGS_WASM3) $< -o $@
+
+$(BUILD_DIR)/mem_profiler.o: ../../userspace/mem_profiler/mem_profiler.c
+	@mkdir -p $(BUILD_DIR)
+	$(CC) -c $(CFLAGS) $< -o $@
 
 $(BUILD_DIR)/controller.elf: $(CONTROLLER_OBJS)
 	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@

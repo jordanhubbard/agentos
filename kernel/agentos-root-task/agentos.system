@@ -514,37 +514,43 @@
 
 
     <!-- ═══════════════════════════════════════════════════════════════════
-         mem_profiler PD — WASM heap allocation tracking + leak detection
+         mem_profiler PD — per-slot WASM heap tracking + leak heuristic
          Priority: 108 (passive, below quota_pd at 115, above bulk workers)
+
+         Opcodes: OP_MP_ALLOC/FREE/SNAPSHOT/RESET (0x80–0x83)
          Channels (from mem_profiler perspective):
-           id=0: controller PPCs in (register/status/snapshot)
-           id=1: init_agent PPCs in (register on spawn)
-           id=2: wasm_host PPCs in  (alloc/free intercepts) [reserved]
-           id=3: mem_profiler → controller (notify: MSG_MEM_LEAK_ALERT on leak)
+           id=0 CH_IN:  controller / init_agent PPCs in (alloc/free/snapshot/reset)
+           id=1 CH_OUT: notify watchdog (fault_handler id=4) on leak detection
+           id=2 CH_WD:  PPC to watchdog for OP_WD_STATUS (reserved; shares CH_OUT
+                        until a dedicated watchdog PD is added)
+
+         Shared memory: 256KB Prometheus-style text ring at 0x80000 in PD vspace.
+         Leak heuristic: 100 consecutive OP_MP_ALLOC ticks with
+           live_bytes > last_snapshot_bytes → MSG_MEM_LEAK_ALERT to CH_OUT.
     -->
-    <memory_region name="mem_profiler_ring" size="0x40000" />  <!-- 256KB slot table + snapshot log -->
+    <memory_region name="mem_profiler_ring" size="0x40000" />  <!-- 256KB Prometheus ring -->
 
     <protection_domain name="mem_profiler" priority="108" passive="true">
         <program_image path="mem_profiler.elf" />
-        <map mr="mem_profiler_ring" vaddr="0xC000000" perms="rw" setvar_vaddr="mem_profiler_ring_vaddr" />
+        <map mr="mem_profiler_ring" vaddr="0x80000" perms="rw" setvar_vaddr="mem_profiler_ring_vaddr" />
     </protection_domain>
 
-    <!-- Channel: controller(id=61) <-> mem_profiler(id=0) — controller queries/manages profiler -->
+    <!-- Channel 65 (logical) / controller id=61: controller <-> mem_profiler(id=0)
+         controller (and init_agent via controller relay) PPCs into mem_profiler
+         for OP_MP_ALLOC/FREE/SNAPSHOT/RESET operations.
+         Note: Microkit caps endpoint ids at 61; logical channel 65 maps here. -->
     <channel>
-        <end pd="controller"    id="61" pp="true" />
-        <end pd="mem_profiler"  id="0" />
+        <end pd="controller"   id="61" pp="true" />
+        <end pd="mem_profiler" id="0" />
     </channel>
 
-    <!-- Channel: init_agent(id=8) <-> mem_profiler(id=1) — init_agent registers WASM slots -->
+    <!-- Channel 66: mem_profiler(id=1) -> fault_handler(id=4)
+         mem_profiler notifies watchdog (fault_handler) when a slot's heap has
+         grown monotonically for LEAK_TICK_THRESHOLD consecutive alloc ticks.
+         fault_handler adds local id=4 as its new endpoint for this channel. -->
     <channel>
-        <end pd="init_agent"    id="8" pp="true" />
         <end pd="mem_profiler"  id="1" />
-    </channel>
-
-    <!-- Channel: mem_profiler(id=3) -> controller(id=62) — leak alert notify -->
-    <channel>
-        <end pd="mem_profiler"  id="3" />
-        <end pd="controller"    id="62" />
+        <end pd="fault_handler" id="4" />
     </channel>
 
 </system>
