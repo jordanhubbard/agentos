@@ -68,14 +68,7 @@
 #define MODE_BROADCAST  1   /* Show all PDs, tagged with source */
 #define MODE_SPLIT      2   /* Show up to 4 PDs, labeled */
 
-/* ─── Ring buffer header (per-PD, in shared memory) ───────────────────── */
-
-typedef struct __attribute__((packed)) {
-    uint32_t magic;
-    uint32_t pd_id;
-    uint32_t head;    /* write offset (PD increments) */
-    uint32_t tail;    /* read offset (console_mux increments) */
-} console_ring_header_t;
+/* console_ring_header_t is defined in agentos.h */
 
 /* ─── Scrollback line buffer ──────────────────────────────────────────── */
 

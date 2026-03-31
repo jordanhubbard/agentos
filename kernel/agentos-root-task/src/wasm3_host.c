@@ -22,6 +22,7 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include "agentos.h"
 #include <microkit.h>
 #include "wasm3_host.h"
 

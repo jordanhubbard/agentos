@@ -16,6 +16,7 @@
  *   clang -target riscv64-unknown-elf -nostdlib -ffreestanding -std=c11 -Iinclude verify.c
  */
 
+#include "agentos.h"
 #include <stdint.h>
 #include <stdbool.h>
 #include "string_bare.h"

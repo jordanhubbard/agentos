@@ -9,6 +9,13 @@
 #include <stdint.h>
 #include "agentos.h"
 
+/*
+ * Weak fallback: PDs that don't map the console_rings MR get value 0,
+ * causing console_log() to fall back to microkit_dbg_puts.
+ * console_mux.c provides the strong definition (with setvar_vaddr).
+ */
+__attribute__((weak)) uintptr_t console_rings_vaddr = 0;
+
 /* Ultra-minimal hex output (no libc) */
 static void log_hex64(uint64_t v) {
     static const char hex[] = "0123456789abcdef";

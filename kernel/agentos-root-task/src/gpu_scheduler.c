@@ -23,6 +23,7 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include "agentos.h"
 #include <microkit.h>
 #include <stdint.h>
 #include <stdbool.h>

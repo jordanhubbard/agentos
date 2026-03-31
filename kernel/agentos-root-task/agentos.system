@@ -437,10 +437,10 @@
         <map mr="net_isolator_ring" vaddr="0xA000000" perms="rw" setvar_vaddr="net_isolator_ring_vaddr" />
     </protection_domain>
 
-    <!-- Channel 63: controller(id=63) <-> net_isolator(id=0) pp=true
+    <!-- Channel 61: controller(id=61) <-> net_isolator(id=0) pp=true
          Controller and workers PPC into net_isolator for CONNECT/STATUS checks -->
     <channel>
-        <end pd="controller"    id="63" pp="true" />
+        <end pd="controller"    id="61" pp="true" />
         <end pd="net_isolator"  id="0" />
     </channel>
 

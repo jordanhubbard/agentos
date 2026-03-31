@@ -373,8 +373,7 @@ void init(void) {
     total_puts     = 0;
     total_gets     = 0;
     total_vectors  = 0;
-    console_log(3, 3, "");
-                      "Capacity: " "256 objects, 256KB blob store.\n");
+    console_log(3, 3, "Capacity: 256 objects, 256KB blob store.\n");
     console_log(3, 3, "[agentfs] Vector index: linear scan (HNSW in Phase 2).\n[agentfs] AgentFS ALIVE.\n");
 }
 
