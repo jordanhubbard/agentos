@@ -365,6 +365,42 @@ typedef struct __attribute__((packed)) {
 
 #define AGENTOS_RING_MAGIC 0xA6E70B05
 
+/*
+ * OP_PUBLISH_BATCH: coalesce up to 16 MsgBus events in a single seL4_Call.
+ *
+ * Caller writes packed batch_event_t entries into shared memory starting at
+ * byte offset MR1 from the eventbus ring base, then calls with:
+ *   label = OP_PUBLISH_BATCH (0x25)
+ *   MR0   = event count (1-16)
+ *   MR1   = byte offset into shared mem where entries start
+ *
+ * event_bus iterates all entries, writes each to the ring, notifies all
+ * subscribed channels once after the full pass.
+ *
+ * Returns: MR0 = events_dispatched, MR1 = events_dropped (ring full)
+ */
+#define OP_PUBLISH_BATCH       0x25u
+#define PUBLISH_BATCH_MAX      16u
+
+/*
+ * Batch event entry layout (variable-length, 4-byte aligned records).
+ * data[] holds: topic_len bytes of topic, then payload_len bytes of payload.
+ * The event kind written to the ring is the first ≤4 bytes of topic[]
+ * interpreted as a little-endian uint32_t.
+ */
+typedef struct __attribute__((packed)) {
+    uint16_t topic_len;     /* byte length of topic string in data[] */
+    uint16_t payload_len;   /* byte length of payload in data[] after topic */
+    char     data[];        /* topic bytes followed by payload bytes */
+} batch_event_t;
+
+/*
+ * Stride to the next batch_event_t entry (4-byte aligned).
+ * Caller advances pointer by this many bytes after processing each entry.
+ */
+#define BATCH_ENTRY_STRIDE(e) \
+    (((uint32_t)(sizeof(batch_event_t) + (e)->topic_len + (e)->payload_len) + 3u) & ~3u)
+
 /* Log function declarations */
 void agentos_log_boot(const char *pd_name);
 void agentos_log_info(const char *pd, const char *msg);

@@ -181,15 +181,81 @@ microkit_msginfo protected(microkit_channel ch, microkit_msginfo msg) {
             return microkit_msginfo_new(0, 2);
         }
         
+        case OP_PUBLISH_BATCH: {
+            /*
+             * Batch publish: caller has pre-written up to PUBLISH_BATCH_MAX
+             * packed batch_event_t records into shared memory at:
+             *   eventbus_ring_vaddr + MR1 (byte offset)
+             * MR0 = number of events (1-16).
+             *
+             * We iterate all entries in one pass, write each to the ring,
+             * then notify all subscribers exactly once — avoiding N-1 extra
+             * kernel crossings vs. individual OP_PUBLISH calls.
+             */
+            uint32_t count  = (uint32_t)microkit_mr_get(0);
+            uint32_t offset = (uint32_t)microkit_mr_get(1);
+
+            if (count == 0 || count > PUBLISH_BATCH_MAX) {
+                microkit_dbg_puts("[event_bus] BATCH: bad count\n");
+                microkit_mr_set(0, 0);
+                microkit_mr_set(1, 0);
+                return microkit_msginfo_new(0xFFFF, 2);
+            }
+
+            /* Batch entries live in shared mem after the ring data region.
+             * Caller controls offset; verify it stays within the 256KB region. */
+            if (offset >= 0x40000u) {
+                microkit_dbg_puts("[event_bus] BATCH: offset out of range\n");
+                microkit_mr_set(0, 0);
+                microkit_mr_set(1, 0);
+                return microkit_msginfo_new(0xFFFF, 2);
+            }
+
+            const uint8_t *ptr = (const uint8_t *)eventbus_ring_vaddr + offset;
+            uint32_t dispatched = 0;
+            uint32_t dropped    = 0;
+
+            for (uint32_t i = 0; i < count; i++) {
+                const batch_event_t *entry = (const batch_event_t *)ptr;
+
+                /* Derive event kind from the first ≤4 topic bytes (little-endian uint32). */
+                uint32_t kind = 0;
+                uint32_t tlen = entry->topic_len < 4u ? entry->topic_len : 4u;
+                for (uint32_t b = 0; b < tlen; b++) {
+                    kind |= ((uint32_t)(uint8_t)entry->data[b]) << (b * 8u);
+                }
+
+                const uint8_t *payload = (const uint8_t *)entry->data + entry->topic_len;
+                uint32_t       plen    = entry->payload_len;
+
+                if (eventbus_write(kind, (uint32_t)ch, payload, plen)) {
+                    dispatched++;
+                } else {
+                    dropped++;
+                }
+
+                ptr += BATCH_ENTRY_STRIDE(entry);
+            }
+
+            /* Single subscriber notification pass for the entire batch. */
+            if (dispatched > 0) {
+                eventbus_notify_all();
+            }
+
+            microkit_mr_set(0, dispatched);
+            microkit_mr_set(1, dropped);
+            return microkit_msginfo_new(0, 2);
+        }
+
         default: {
             /* Event publish request — the label IS the event kind */
             uint32_t kind = (uint32_t)(tag & 0xFFFF);
-            
+
             /* Write event to ring (source_pd from MR1 if available, else channel) */
             uint32_t source = (uint32_t)microkit_mr_get(1);
             if (source == 0) source = ch;
             eventbus_write(kind, source, NULL, 0);
-            
+
             console_log(2, 2, "[event_bus] Event published: kind=0x");
             {
                 static const char hex[] = "0123456789abcdef";
@@ -209,11 +275,30 @@ microkit_msginfo protected(microkit_channel ch, microkit_msginfo msg) {
                 console_log(2, 2, buf);
             }
             console_log(2, 2, "\n");
-            
+
             /* Notify subscribers */
             eventbus_notify_all();
-            
+
             return microkit_msginfo_new(0, 0);
         }
     }
 }
+
+/*
+ * IPC batching performance notes — OP_PUBLISH_BATCH vs OP_PUBLISH
+ *
+ * Before (OP_PUBLISH, one event per call):
+ *   N events = N seL4_Call round-trips = N * ~200 ns kernel crossings
+ *   At N=16: ~3200 ns in kernel crossing overhead alone
+ *
+ * After (OP_PUBLISH_BATCH, up to 16 events per call):
+ *   N events = 1 seL4_Call = ~200 ns regardless of N (up to 16)
+ *   At N=16: ~200 ns — ~16x reduction in kernel crossing overhead
+ *
+ * Break-even: any N ≥ 2 already wins; the full 16x gain is at N=16.
+ * Overhead added per batch: one pointer walk over ≤16 entries in shared mem
+ * (cache-warm, no syscall), negligible vs. a single kernel crossing.
+ *
+ * Recommended usage: accumulate events in a caller-side ring slot, flush
+ * with OP_PUBLISH_BATCH when the slot is full (16) or a flush timer fires.
+ */
