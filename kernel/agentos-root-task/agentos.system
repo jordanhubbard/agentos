@@ -11,6 +11,7 @@
     vibe_engine  (prio 140)  - passive VibeEngine: WASM hot-swap lifecycle
     console_mux  (prio 160)  - passive session multiplexer ("tmux for agents")
     mem_profiler (prio 108)  - passive heap alloc tracker + leak detector
+    net_isolator (prio 160)  - passive per-agent outbound network firewall
   
   Channel map:
     0:  controller <-> event_bus    (controller PPCs into passive event_bus)
@@ -45,6 +46,11 @@
     60: controller   <-> console_mux  (attach/detach/list/mode commands)
     61: init_agent   <-> console_mux  (init_agent output)
     62: event_bus    <-> console_mux  (eventbus output notification)
+
+  Network Isolator channels:
+    63: controller   <-> net_isolator  (pp=true: CONNECT check, STATUS query)
+    64: init_agent   <-> net_isolator  (pp=true: ACL_SET on spawn, ACL_CLEAR on teardown)
+    65: net_isolator <-> event_bus     (deny event notifications)
 -->
 <system>
     <!-- Controller: system coordinator, low priority to PPC into passive servers -->
@@ -403,5 +409,53 @@
     <channel>
         <end pd="event_bus"    id="60" />
         <end pd="console_mux"  id="2" />
+    </channel>
+
+    <!--
+      ══════════════════════════════════════════════════════════════════
+      Network Isolator: per-agent outbound firewall
+
+      Passive PD (priority 160) that intercepts agent outbound connection
+      requests and validates them against per-slot ACL tables.
+      Each slot has up to 16 allow rules (hostname:port patterns).
+      Denied connections are logged to cap_audit_log.
+
+      Shared memory: net_isolator_ring (256KB): ACL table mirror + stats.
+
+      Channels (63-65):
+        63: controller   <-> net_isolator  (pp=true: workers + controller PPC in)
+        64: init_agent   <-> net_isolator  (init_agent sets ACLs on spawn)
+        65: net_isolator <-> event_bus     (deny events published to bus)
+      ══════════════════════════════════════════════════════════════════
+    -->
+
+    <!-- net_isolator ring: 256KB ACL + stats shared memory -->
+    <memory_region name="net_isolator_ring" size="0x40000" />
+
+    <protection_domain name="net_isolator" priority="160" passive="true">
+        <program_image path="net_isolator.elf" />
+        <map mr="net_isolator_ring" vaddr="0xA000000" perms="rw" setvar_vaddr="net_isolator_ring_vaddr" />
+    </protection_domain>
+
+    <!-- Channel 63: controller(id=63) <-> net_isolator(id=0) pp=true
+         Controller and workers PPC into net_isolator for CONNECT/STATUS checks -->
+    <channel>
+        <end pd="controller"    id="63" pp="true" />
+        <end pd="net_isolator"  id="0" />
+    </channel>
+
+    <!-- Channel 64: init_agent(id=5) <-> net_isolator(id=1)
+         init_agent PPCs into net_isolator to configure per-slot ACLs on spawn
+         and clear ACLs on teardown -->
+    <channel>
+        <end pd="init_agent"    id="5" pp="true" />
+        <end pd="net_isolator"  id="1" />
+    </channel>
+
+    <!-- Channel 65: net_isolator(id=2) <-> event_bus(id=61)
+         net_isolator notifies event_bus on deny events (audit trail) -->
+    <channel>
+        <end pd="net_isolator"  id="2" />
+        <end pd="event_bus"     id="61" />
     </channel>
 </system>

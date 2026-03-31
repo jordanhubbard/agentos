@@ -19,6 +19,10 @@
 #define CH_EVENTBUS   2   /* id="2" in eventbus<->initagent channel, init_agent end */
 #define CH_QUOTA      7   /* id="7" in initagent<->quota_pd channel, init_agent end */
 #define CH_MEM_PROF   8   /* id="8" in initagent<->mem_profiler channel, init_agent end */
+#define CH_NET_ISO    5   /* id="5" in initagent<->net_isolator channel, init_agent end */
+
+/* Net isolator opcodes */
+#define OP_NET_ACL_CLEAR 0x73u  /* clear ACL for a slot on teardown */
 
 /* Default quota limits for spawned agents */
 #define DEFAULT_CPU_QUOTA_MS   5000   /* 5 seconds CPU time */
@@ -226,6 +230,11 @@ static void quota_tick_all_agents(void) {
                 console_log(1, 1, _cl_buf);
             }
             spawn_table[i].quota_registered = false;
+
+            /* Clear net_isolator ACL for this agent slot on quota revocation */
+            microkit_mr_set(0, OP_NET_ACL_CLEAR);
+            microkit_mr_set(1, spawn_table[i].spawn_id);
+            microkit_ppcall(CH_NET_ISO, microkit_msginfo_new(0, 2));
         }
     }
 }
@@ -431,6 +440,18 @@ static void handle_spawn_reply_from_controller(void) {
         microkit_mr_set(1, spawn_id);
         microkit_ppcall(CH_MEM_PROF, microkit_msginfo_new(0, 2));
         console_log(1, 1, "[init_agent] mem_profiler registered slot=");
+        put_dec(spawn_id);
+        console_log(1, 1, "\n");
+
+        /*
+         * Apply default net_isolator ACL: clear any stale rules for this slot.
+         * Callers that need specific net access must call OP_NET_ACL_SET directly.
+         * Default policy: deny all (no rules = deny all outbound connections).
+         */
+        microkit_mr_set(0, OP_NET_ACL_CLEAR);
+        microkit_mr_set(1, spawn_id);
+        microkit_ppcall(CH_NET_ISO, microkit_msginfo_new(0, 2));
+        console_log(1, 1, "[init_agent] net_isolator ACL initialised (deny-all) slot=");
         put_dec(spawn_id);
         console_log(1, 1, "\n");
         spawn_table[tbl].quota_cpu_ms     = DEFAULT_CPU_QUOTA_MS;
