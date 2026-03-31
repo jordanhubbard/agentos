@@ -1,0 +1,102 @@
+/*
+ * Device Tree Source for FreeBSD guest on agentOS/seL4
+ * QEMU virt AArch64 machine
+ *
+ * This DTB is embedded into the VMM ELF and placed at guest physical
+ * address 0x03f00000 (near end of UEFI flash). EDK2 discovers it and
+ * passes the FDT pointer to FreeBSD loader.efi.
+ *
+ * Compile: dtc -I dts -O dtb -o freebsd-guest.dtb freebsd-vmm.dts
+ */
+
+/dts-v1/;
+
+/ {
+    model = "agentOS FreeBSD VM Guest (QEMU virt AArch64)";
+    compatible = "linux,dummy-virt";
+    interrupt-parent = <&gic>;
+    #address-cells = <2>;
+    #size-cells = <2>;
+
+    chosen {
+        bootargs = "verbose";
+        stdout-path = "serial0:115200n8";
+    };
+
+    /* 2GB RAM at 0x40000000 */
+    memory@40000000 {
+        device_type = "memory";
+        reg = <0x00 0x40000000 0x00 0x80000000>;
+    };
+
+    cpus {
+        #address-cells = <1>;
+        #size-cells = <0>;
+
+        cpu@0 {
+            device_type = "cpu";
+            compatible = "arm,cortex-a57";
+            reg = <0>;
+            enable-method = "psci";
+        };
+    };
+
+    psci {
+        compatible = "arm,psci-0.2";
+        method = "hvc";
+        cpu_on = <0xc4000003>;
+        cpu_off = <0x84000002>;
+        cpu_suspend = <0xc4000001>;
+    };
+
+    /* GICv2 — QEMU virt layout */
+    gic: interrupt-controller@8000000 {
+        compatible = "arm,cortex-a15-gic";
+        #interrupt-cells = <3>;
+        interrupt-controller;
+        reg = <0x00 0x08000000 0x00 0x10000>,   /* distributor */
+              <0x00 0x08010000 0x00 0x10000>,    /* CPU interface (vCPU i/f mapped here) */
+              <0x00 0x08030000 0x00 0x10000>,    /* vCPU interface */
+              <0x00 0x08040000 0x00 0x10000>;    /* vCPU control */
+        interrupts = <1 9 0xf04>;
+    };
+
+    /* PL011 UART — console */
+    serial0: pl011@9000000 {
+        compatible = "arm,pl011", "arm,primecell";
+        reg = <0x00 0x09000000 0x00 0x1000>;
+        interrupts = <0 1 4>;
+        clocks = <&apb_pclk>;
+        clock-names = "uartclk", "apb_pclk";
+    };
+
+    /* VirtIO block device — FreeBSD root filesystem */
+    virtio_blk@a003000 {
+        compatible = "virtio,mmio";
+        reg = <0x00 0x0a003000 0x00 0x1000>;
+        interrupts = <0 6 4>;
+    };
+
+    /* VirtIO console — serial output */
+    virtio_con@a004000 {
+        compatible = "virtio,mmio";
+        reg = <0x00 0x0a004000 0x00 0x1000>;
+        interrupts = <0 7 4>;
+    };
+
+    apb_pclk: clk0 {
+        compatible = "fixed-clock";
+        clock-frequency = <24000000>;
+        clock-output-names = "clk24mhz";
+        #clock-cells = <0>;
+    };
+
+    timer {
+        compatible = "arm,armv8-timer";
+        always-on;
+        interrupts = <1 13 0xff01>,
+                     <1 14 0xff01>,
+                     <1 11 0xff01>,
+                     <1 10 0xff01>;
+    };
+};

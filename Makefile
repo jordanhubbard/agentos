@@ -13,10 +13,34 @@
 # Quick start:
 #   make deps && make demo
 
-.PHONY: all deps deps-tools deps-sdk build demo test clean clean-all help
+.PHONY: all deps deps-tools deps-sdk build demo test clean clean-all help \
+        build-freebsd demo-freebsd fetch-freebsd-guest
 
 # ─── Board / arch config ──────────────────────────────────────────────────────
 BOARD         ?= qemu_virt_riscv64
+
+# ─── FreeBSD VM guest paths ───────────────────────────────────────────────────
+FREEBSD_SYSTEM  := manifests/agentos-freebsd.system
+FREEBSD_VMM_DIR := kernel/freebsd-vmm
+FREEBSD_BUILD   := $(ROOT_DIR)build/freebsd-vm
+GUEST_IMAGES    := $(ROOT_DIR)guest-images
+EDK2_FD         := $(GUEST_IMAGES)/edk2-aarch64-code.fd
+EDK2_VARS       := $(GUEST_IMAGES)/edk2-aarch64-vars.fd
+FREEBSD_IMG     := $(GUEST_IMAGES)/freebsd-14.2-arm64.img
+FREEBSD_IMG_RW  := $(FREEBSD_BUILD)/freebsd-rootfs.qcow2   # copy-on-write overlay
+
+# QEMU flags for FreeBSD VM guest under agentOS
+# seL4 runs at EL2 (virtualization=on), 4GB RAM (2GB for host, 2GB for guest)
+QEMU_FREEBSD_FLAGS = \
+    -machine virt,virtualization=on,gic-version=2 \
+    -cpu cortex-a57 \
+    -m 4G \
+    -nographic \
+    -kernel $(FREEBSD_BUILD)/agentos-freebsd.img \
+    -drive if=pflash,format=raw,file=$(EDK2_FD),readonly=on \
+    -drive if=pflash,format=raw,file=$(EDK2_VARS) \
+    -drive if=virtio,format=qcow2,file=$(FREEBSD_IMG_RW) \
+    -serial mon:stdio
 
 ifeq ($(BOARD),qemu_virt_aarch64)
   ARCH         := aarch64
@@ -212,6 +236,80 @@ test: build
 	@BOARD=$(BOARD) bash scripts/run-tests.sh
 
 # =============================================================================
+# FreeBSD VM guest: fetch images, build VMM PD, and launch
+# =============================================================================
+
+# Fetch FreeBSD AArch64 disk image and EDK2 UEFI firmware
+fetch-freebsd-guest:
+	@echo ""
+	@echo "╔══════════════════════════════════════════╗"
+	@echo "║  agentOS — fetching FreeBSD guest images ║"
+	@echo "╚══════════════════════════════════════════╝"
+	@bash scripts/fetch-freebsd-guest.sh
+
+# Build the FreeBSD VMM protection domain (AArch64 only)
+build-freebsd: deps-sdk
+	@echo ""
+	@echo "╔══════════════════════════════════════════╗"
+	@echo "║  agentOS — building FreeBSD VMM PD       ║"
+	@echo "╚══════════════════════════════════════════╝"
+	@echo ""
+	@test -d "$(ROOT_DIR)libs/libvmm" || \
+		(echo "[libvmm] Cloning au-ts/libvmm..." && \
+		 git submodule update --init libs/libvmm 2>/dev/null || \
+		 git clone https://github.com/au-ts/libvmm.git $(ROOT_DIR)libs/libvmm)
+	@echo "[libvmm] Building libvmm for qemu_virt_aarch64..."
+	@$(MAKE) -C $(ROOT_DIR)libs/libvmm \
+		BOARD=qemu_virt_aarch64 \
+		MICROKIT_SDK=$(abspath $(MICROKIT_SDK)) \
+		BUILD_DIR=$(ROOT_DIR)libs/libvmm/build/qemu_virt_aarch64
+	@echo "[dtc] Compiling FreeBSD guest DTB..."
+	@mkdir -p $(FREEBSD_BUILD)
+	@dtc -I dts -O dtb \
+		-o $(FREEBSD_BUILD)/freebsd-guest.dtb \
+		$(FREEBSD_VMM_DIR)/freebsd-vmm.dts
+	@echo "[VMM] Building freebsd_vmm.elf..."
+	@$(MAKE) -C $(FREEBSD_VMM_DIR) \
+		BUILD_DIR=$(FREEBSD_BUILD) \
+		MICROKIT_SDK=$(abspath $(MICROKIT_SDK)) \
+		LIBVMM_DIR=$(abspath $(ROOT_DIR)libs/libvmm) \
+		EDK2_FD=$(EDK2_FD) \
+		FREEBSD_DTB=$(FREEBSD_BUILD)/freebsd-guest.dtb
+	@echo "[Microkit] Packing agentOS FreeBSD image..."
+	@$(MICROKIT_SDK)/bin/microkit \
+		$(FREEBSD_SYSTEM) \
+		--search-path $(FREEBSD_BUILD) \
+		--board qemu_virt_aarch64 \
+		--config debug \
+		--output $(FREEBSD_BUILD)/agentos-freebsd.img \
+		--report $(FREEBSD_BUILD)/agentos-freebsd-report.txt
+	@echo ""
+	@echo "✓ FreeBSD VM build complete: $(FREEBSD_BUILD)/agentos-freebsd.img"
+	@echo ""
+
+# Build + launch FreeBSD as VM guest under agentOS
+demo-freebsd: build-freebsd
+	@echo ""
+	@echo "╔═══════════════════════════════════════════════════╗"
+	@echo "║  agentOS — launching FreeBSD VM guest under seL4  ║"
+	@echo "╚═══════════════════════════════════════════════════╝"
+	@echo ""
+	@test -f "$(EDK2_FD)" || \
+		(echo "ERROR: EDK2 firmware not found. Run 'make fetch-freebsd-guest' first." && exit 1)
+	@test -f "$(FREEBSD_IMG)" || \
+		(echo "ERROR: FreeBSD disk image not found. Run 'make fetch-freebsd-guest' first." && exit 1)
+	@echo "Stack:"
+	@echo "  seL4 (EL2) → freebsd_vmm PD → EDK2 UEFI → loader.efi → FreeBSD"
+	@echo ""
+	@echo "Creating copy-on-write overlay for FreeBSD disk..."
+	@qemu-img create -f qcow2 -b $(FREEBSD_IMG) -F raw $(FREEBSD_IMG_RW) 2>/dev/null || \
+		(test -f $(FREEBSD_IMG_RW) && echo "[OK] overlay exists")
+	@echo ""
+	@echo "Starting agentOS with FreeBSD VM guest... (Ctrl-A X to quit QEMU)"
+	@echo "────────────────────────────────────────────────────────────────"
+	@qemu-system-aarch64 $(QEMU_FREEBSD_FLAGS)
+
+# =============================================================================
 # clean
 # =============================================================================
 clean:
@@ -241,6 +339,14 @@ help:
 	@echo "  make clean                     Remove build artifacts (current BOARD)"
 	@echo "  make clean-all                 Remove all build artifacts"
 	@echo ""
+	@echo "FreeBSD VM Guest:"
+	@echo "  make fetch-freebsd-guest       Download FreeBSD 14 AArch64 + EDK2 UEFI"
+	@echo "  make build-freebsd             Build FreeBSD VMM PD (requires libvmm)"
+	@echo "  make demo-freebsd              Build + launch FreeBSD under agentOS/seL4"
+	@echo ""
 	@echo "Quick start:"
 	@echo "  make deps && make demo"
+	@echo ""
+	@echo "FreeBSD quick start:"
+	@echo "  make deps && make fetch-freebsd-guest && make demo-freebsd"
 	@echo ""

@@ -1,0 +1,171 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  agentOS FreeBSD VM Guest System Description
+  
+  Boots FreeBSD 14 AArch64 as a virtual machine guest under seL4.
+  
+  Protection Domain topology:
+  
+    freebsd_vmm  (prio 200) - VMM: manages FreeBSD guest vCPU, GIC, VirtIO
+    controller   (prio 50)  - agentOS system coordinator (controls VMM)
+    event_bus    (prio 200) - passive pub/sub (VMM publishes guest lifecycle events)
+  
+  Guest memory layout (guest physical addresses):
+    0x00000000 - 0x03FFFFFF  : UEFI flash (64MB) — EDK2 firmware
+    0x08000000 - 0x0800FFFF  : GIC distributor
+    0x08010000 - 0x0801FFFF  : GIC CPU interface (vCPU i/f mapped here)
+    0x08040000 - 0x08040FFF  : GIC vCPU interface (passthrough)
+    0x09000000 - 0x09000FFF  : PL011 UART (console, passthrough)
+    0x0a003000 - 0x0a003FFF  : VirtIO block (FreeBSD rootfs)
+    0x0a004000 - 0x0a004FFF  : VirtIO console
+    0x40000000 - 0xBFFFFFFF  : Guest RAM (2GB)
+  
+  Channel map:
+    70: controller(id=70) <-> freebsd_vmm(id=0)  — lifecycle control + status
+    71: event_bus(id=71)  <- freebsd_vmm(id=1)   — guest lifecycle events
+  
+  Boot sequence:
+    seL4 @ EL2 → freebsd_vmm PD starts → loads EDK2 into flash region
+    → sets vCPU PC = 0x00000000 → seL4_ARM_VCPU_Run
+    → EDK2 UEFI firmware initialises → scans VirtIO block device
+    → finds EFI System Partition → loads bootaa64.efi → loader.efi
+    → loader.efi locates /boot/kernel/kernel → passes UEFI sys table ptr
+    → FreeBSD kernel boots in guest (EL1), agentOS continues at EL2
+-->
+
+<system>
+
+    <!-- ═══════════════════════════════════════════════════
+         MEMORY REGIONS
+         ═══════════════════════════════════════════════════ -->
+
+    <!-- Guest RAM: 2GB, guest physical 0x40000000 -->
+    <memory_region name="freebsd_ram" size="0x80000000" />
+
+    <!-- UEFI flash: 64MB, EDK2 firmware, guest physical 0x00000000 -->
+    <memory_region name="freebsd_flash" size="0x4000000" />
+
+    <!-- PL011 UART: passthrough to guest, 4KB -->
+    <memory_region name="uart" size="0x1000" phys_addr="0x9000000" />
+
+    <!-- GIC vCPU interface: passthrough (mapped as CPU interface in guest) -->
+    <memory_region name="gic_vcpu" size="0x1000" phys_addr="0x8040000" />
+
+    <!-- Shared memory for VMM ↔ agentOS event_bus -->
+    <memory_region name="vmm_event_ring" size="0x10000" />
+
+    <!-- ═══════════════════════════════════════════════════
+         PROTECTION DOMAINS
+         ═══════════════════════════════════════════════════ -->
+
+    <!--
+      FreeBSD VMM PD
+      
+      Priority 200: higher than controller (50) so it can be PPC'd into;
+      lower than kernel prio ceiling.
+      
+      Contains a <virtual_machine> element — tells Microkit to create a
+      seL4 vCPU and grant the VMM PD the seL4_ARM_VCPU capability.
+      
+      Memory mappings:
+        - freebsd_ram → VMM vaddr (rw): VMM copies kernel/initrd here
+        - freebsd_ram → VM vaddr (rwx): guest executes from here
+        - freebsd_flash → VMM vaddr (rw): VMM copies EDK2 firmware here
+        - freebsd_flash → VM vaddr (rw): guest firmware reads/writes self
+        - uart → passthrough (rw): guest UART accesses go direct to HW
+        - gic_vcpu → passthrough (rw): guest sees vCPU interface as CPU i/f
+    -->
+    <protection_domain name="freebsd_vmm" priority="200">
+        <program_image path="freebsd_vmm.elf" />
+
+        <!-- VMM access to guest RAM and flash (for loading firmware/kernel) -->
+        <map mr="freebsd_ram"
+             vaddr="0x40000000"
+             perms="rw"
+             setvar_vaddr="guest_ram_vaddr" />
+
+        <map mr="freebsd_flash"
+             vaddr="0x60000000"
+             perms="rw"
+             setvar_vaddr="guest_flash_vaddr" />
+
+        <!-- VMM ↔ event_bus shared ring -->
+        <map mr="vmm_event_ring"
+             vaddr="0x70000000"
+             perms="rw"
+             setvar_vaddr="vmm_event_ring_vaddr" />
+
+        <!--
+          Virtual Machine configuration.
+          
+          The guest's physical address space is separate from the VMM's
+          virtual address space. Microkit wires up the Stage-2 page tables
+          so the guest sees these physical addresses.
+          
+          freebsd_flash at guest phys 0x00000000: EDK2 reset vector
+          freebsd_ram   at guest phys 0x40000000: 2GB RAM
+          uart          at guest phys 0x09000000: console (passthrough)
+          gic_vcpu      at guest phys 0x08010000: GIC CPU interface
+        -->
+        <virtual_machine name="freebsd" id="0">
+            <!-- Guest RAM: rwx — guest code runs here -->
+            <map mr="freebsd_ram"
+                 vaddr="0x40000000"
+                 perms="rwx" />
+
+            <!-- UEFI flash at PA 0: EDK2 sees itself at reset vector -->
+            <map mr="freebsd_flash"
+                 vaddr="0x00000000"
+                 perms="rw" />
+
+            <!-- UART passthrough -->
+            <map mr="uart"
+                 vaddr="0x9000000"
+                 perms="rw" />
+
+            <!-- GIC vCPU interface mapped at guest CPU interface address -->
+            <map mr="gic_vcpu"
+                 vaddr="0x8010000"
+                 perms="rw" />
+        </virtual_machine>
+    </protection_domain>
+
+    <!--
+      System controller PD (minimal config for standalone FreeBSD demo)
+      
+      In the full agentOS image (agentos.system), the controller coordinates
+      all PDs. Here we include a stub to handle VMM lifecycle events.
+    -->
+    <protection_domain name="controller" priority="50">
+        <program_image path="controller.elf" />
+        <map mr="vmm_event_ring"
+             vaddr="0x8000000"
+             perms="r"
+             setvar_vaddr="vmm_event_ring_vaddr" />
+    </protection_domain>
+
+    <!-- ═══════════════════════════════════════════════════
+         CHANNELS
+         ═══════════════════════════════════════════════════ -->
+
+    <!--
+      Channel 70: controller ↔ freebsd_vmm
+      controller can PPC into freebsd_vmm to query status or send
+      lifecycle commands (pause/resume/reset guest).
+    -->
+    <channel>
+        <end pd="controller"   id="70" pp="true" />
+        <end pd="freebsd_vmm" id="0" />
+    </channel>
+
+    <!--
+      Channel 71: freebsd_vmm → controller
+      VMM notifies controller on guest lifecycle events
+      (booted, panicked, shut down).
+    -->
+    <channel>
+        <end pd="freebsd_vmm" id="1" />
+        <end pd="controller"   id="71" />
+    </channel>
+
+</system>
