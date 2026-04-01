@@ -43,6 +43,13 @@
 #define OOM_CH_GPU_SCHED      2
 #define OOM_CH_AGENTFS        3
 
+#ifdef AGENTOS_SNAPSHOT_SCHED
+/* Channel to snapshot_sched — force a full KV snapshot before eviction. */
+#define OOM_CH_SNAPSHOT_SCHED 4
+/* OP_SS_FORCE_SNAPSHOT (0xA3) from snapshot_sched.c */
+#define OP_SS_FORCE_SNAPSHOT  0xA3
+#endif
+
 /* ── Op codes ─────────────────────────────────────────────────────── */
 
 #define OP_SLOT_EVICT         0xE0   /* MR0=op, MR1=slot_id */
@@ -213,7 +220,16 @@ static void evict_one(bool hard) {
             (int)hard);
 
     if (!hard) {
-        /* Soft eviction: snapshot to AgentFS first */
+#ifdef AGENTOS_SNAPSHOT_SCHED
+        /*
+         * KV-level snapshot via snapshot_sched before eviction.
+         * snapshot_sched writes the full KV store to AgentFS so the slot
+         * can be restored after the eviction pressure subsides.
+         */
+        microkit_mr_set(0, OP_SS_FORCE_SNAPSHOT);
+        microkit_ppcall(OOM_CH_SNAPSHOT_SCHED, microkit_msginfo_new(0, 1));
+#endif
+        /* Block-level snapshot to AgentFS (legacy — complements KV snapshot) */
         microkit_mr_set(0, OP_SNAPSHOT_SLOT);
         microkit_mr_set(1, victim_slot);
         microkit_ppcall(OOM_CH_AGENTFS, microkit_msginfo_new(0, 2));
