@@ -241,6 +241,15 @@ typedef enum {
 #define OP_QUOTA_TICK         0x61  /* Tick agent cpu/mem usage */
 #define OP_QUOTA_STATUS       0x62  /* Query agent quota state */
 
+/* cap_policy hot-reload opcodes */
+#define OP_CAP_POLICY_RELOAD   0xC0u  /* fetch+parse+validate new policy from AgentFS */
+#define OP_CAP_POLICY_STATUS   0xC1u  /* → MR0=loaded, MR1=version, MR2=count, MR3=hash */
+#define OP_CAP_POLICY_RESET    0xC2u  /* revert to static compile-time policy */
+#define OP_CAP_POLICY_DIFF     0xC3u  /* → MR0=revoked, MR1=classes, MR2=version */
+
+/* cap_policy hot-reload event bus IDs */
+#define EVENT_POLICY_RELOADED  0x30u  /* MR2=classes_loaded, MR3=grants_revoked, MR4=version */
+
 /* snapshot_sched PD opcodes (priority 180, passive) */
 #define OP_SNAP_STATUS        0xB0u  /* → MR1=rounds, MR2=total_snapped, MR3=tick, MR4=slot_count */
 #define OP_SNAP_SET_POLICY    0xB1u  /* MR1=interval_ticks, MR2=min_delta_kb */
