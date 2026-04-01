@@ -30,7 +30,28 @@ target_arch: riscv64
 # Host architecture — the machine building agentOS (auto = detect via uname -m)
 host_arch: auto
 
-# Linux VMM: include the libvmm Linux guest VM (aarch64 only, ignored on other targets)
+# Guest OS: selects the VMM guest bundled into the agentOS image.
+#
+#   none    — native agentOS protection domains only (default)
+#             controller, event_bus, init_agent, workers, vibe_engine,
+#             agentfs, console_mux, net_isolator
+#
+#   linux   — include Linux VMM (aarch64 only)
+#             Boots a Linux guest via au-ts/libvmm at seL4 EL2.
+#             Requires aarch64 target. linux_vmm.elf built via vmm.mk.
+#
+#   freebsd — include FreeBSD VMM (aarch64 only)
+#             Boots FreeBSD 14 AArch64 via EDK2 UEFI + libvmm.
+#             Run `make fetch-freebsd-guest` first to download images.
+#             Requires aarch64 target. freebsd_vmm.elf built via kernel/freebsd-vmm/.
+#
+# Override from command line: make demo GUEST_OS=linux
+#                              make demo GUEST_OS=freebsd
+#                              make demo-freebsd
+guest_os: none
+
+# Linux VMM: legacy key — superseded by guest_os above.
+# Kept for backwards compatibility; guest_os takes precedence if set.
 linux_vmm: true
 
 # QEMU board mappings (internal — maps target_arch to Microkit board names)

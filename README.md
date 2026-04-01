@@ -127,25 +127,84 @@ aos_service_swap(proposal_id);
 - macOS with Homebrew, or Ubuntu 22.04+
 - 8GB RAM, 20GB disk
 - QEMU for simulation (no hardware needed to start)
+- **FreeBSD hosts**: cross-compile from Linux/macOS (Microkit SDK is Linux/macOS only)
 
-### Setup
+### Quick start — TUI launcher (recommended)
+
+The `agentctl` ncurses TUI detects available QEMU binaries and guides you
+through architecture, board, guest OS, and option selection interactively:
 
 ```bash
 git clone https://github.com/jordanhubbard/agentos
 cd agentos
-./scripts/setup-dev.sh
+
+# Install build dependencies (brew on macOS, apt on Linux)
+make deps
+
+# Build the interactive launcher
+make agentctl
+
+# Launch the pre-boot menu
+./tools/agentctl/agentctl
 ```
 
-### Build and Run (QEMU)
+The menu shows only architectures with installed QEMU binaries.
+After selection it `exec()`s the appropriate `qemu-system-*` command directly.
+
+### Quick start — classic make targets
 
 ```bash
-mkdir build && cd build
-cmake -G Ninja -C ../settings.cmake ..
-ninja
-ninja simulate
+make deps && make demo                        # default arch (riscv64)
+make demo TARGET_ARCH=aarch64                 # ARM64 (with Linux VMM)
+make demo TARGET_ARCH=x86_64                  # x86_64
+make demo GUEST_OS=freebsd                    # AArch64 + FreeBSD VMM
+make demo-freebsd                             # shortcut for above
 ```
 
-You should see the agentOS banner, init task startup, system services coming online, and the hello-agent announcing itself on `system.broadcast`.
+### FreeBSD VMM
+
+```bash
+# Download FreeBSD 14 AArch64 disk image + EDK2 UEFI firmware
+make fetch-freebsd-guest
+
+# Build the FreeBSD VMM PD, compile DTB, pack Microkit image
+make build TARGET_ARCH=aarch64 GUEST_OS=freebsd
+
+# Launch: seL4 → EDK2 → FreeBSD shell under agentOS
+make demo-freebsd
+```
+
+### x86_64
+
+```bash
+make demo TARGET_ARCH=x86_64
+```
+
+The Linux VMM is a stub on x86_64 (libvmm x86 support in progress).
+Native agentOS protection domains run fully on all architectures.
+
+### FreeBSD host
+
+```bash
+# Install build tools (LLVM, dtc, python3, etc.)
+make deps-tools
+
+# Note: Microkit SDK does not ship a FreeBSD host toolchain.
+# Cross-compile from Linux or macOS, or use a Linux VM.
+# See: https://github.com/seL4/microkit/releases
+```
+
+### Post-boot session manager
+
+Once agentOS is running in QEMU, use `agentctl -s` to manage console sessions:
+
+```bash
+./tools/agentctl/agentctl -s
+./tools/agentctl/agentctl --sessions
+```
+
+Navigate active PD console sessions, attach/detach, scroll output.
+See `tools/agentctl/README.md` for full details.
 
 ## Project Structure
 
