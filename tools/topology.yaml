@@ -259,6 +259,16 @@ pds:
         perms: r
         setvar_vaddr: mem_ring_vaddr
 
+  # Snapshot Scheduler (passive, priority 180).
+  # Fires on each controller tick; writes WASM slot KV snapshots to AgentFS.
+  # Enables crash recovery losing at most ~5 s of state (500-tick interval).
+  # Built only when AGENTOS_SNAPSHOT_SCHED=1.
+  - name: snapshot_sched
+    priority: 180
+    passive: true
+    program_image: snapshot_sched.elf
+    tags: [optional-snapshot-sched]
+
   # EventBus (passive)
   - name: event_bus
     priority: 200
@@ -733,3 +743,31 @@ channels:
     id_a: 2
     pd_b: controller
     id_b: 6
+
+  # Snapshot Scheduler channels (AGENTOS_SNAPSHOT_SCHED=1)
+  # controller → snapshot_sched: tick / configure / status PPCs
+  - name: ctrl_snapshots
+    pd_a: controller
+    id_a: 57
+    pp_a: true
+    pd_b: snapshot_sched
+    id_b: 0
+    tags: [optional-snapshot-sched]
+
+  # snapshot_sched → agentfs: write snapshot blobs
+  - name: snapshots_agentfs
+    pd_a: snapshot_sched
+    id_a: 1
+    pp_a: true
+    pd_b: agentfs
+    id_b: 2
+    tags: [optional-snapshot-sched]
+
+  # oom_killer → snapshot_sched: force full KV snapshot before slot eviction
+  - name: oom_snapshots
+    pd_a: oom_killer
+    id_a: 4
+    pp_a: true
+    pd_b: snapshot_sched
+    id_b: 2
+    tags: [optional-snapshot-sched]

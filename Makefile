@@ -30,7 +30,7 @@
 # Quick start:
 #   make deps && make demo
 
-.PHONY: all deps deps-tools deps-sdk build demo demo-freebsd fetch-freebsd-guest agentctl test clean clean-all help
+.PHONY: all deps deps-tools deps-sdk build demo demo-freebsd fetch-freebsd-guest agentctl test test-snapshot-sched clean clean-all help
 
 # ─── Read config.yaml (if present) ───────────────────────────────────────────
 # Extract target_arch from config.yaml using simple grep/sed (no YAML parser needed)
@@ -333,6 +333,26 @@ agentctl:
 # =============================================================================
 test: build
 	@BOARD=$(BOARD) bash scripts/run-tests.sh
+
+# =============================================================================
+# test-snapshot-sched: standalone unit test for the snapshot_sched PD
+#
+# Compiles test/test_snapshot_sched.c as a native host binary (no SDK needed)
+# and runs it.  Exits 0 on success, non-zero on assertion failure.
+#
+# Usage:
+#   make test-snapshot-sched
+# =============================================================================
+test-snapshot-sched:
+	@echo ""
+	@echo "╔══════════════════════════════════════════╗"
+	@echo "║   agentOS — snapshot_sched unit tests    ║"
+	@echo "╚══════════════════════════════════════════╝"
+	@echo ""
+	cc test/test_snapshot_sched.c -o /tmp/test_snapshot_sched -DAGENTOS_SNAPSHOT_SCHED
+	@/tmp/test_snapshot_sched
+	@echo "✓ snapshot_sched tests passed"
+	@echo ""
 
 # =============================================================================
 # test-power-mgr: standalone unit test for the power_mgr DVFS thermal model

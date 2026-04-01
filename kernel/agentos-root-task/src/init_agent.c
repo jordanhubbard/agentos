@@ -434,6 +434,20 @@ static void handle_spawn_reply_from_controller(void) {
         put_dec(spawn_id);
         console_log(1, 1, "\n");
 
+        /*
+         * Watchdog recovery hook (AGENTOS_SNAPSHOT_SCHED):
+         * Before registering quotas, check AgentFS for a recent snapshot:
+         *   key: agentos/snapshots/slot_<slot_id>_latest.snap
+         * If present and written within the last 60 s, call
+         *   OP_SS_RESTORE (0xA4) on snapshot_sched (CH_SNAPSHOT_SCHED) to
+         *   restore the KV state into the new slot before it starts running.
+         * This ensures crash recovery loses at most one snapshot interval
+         * (~5 s at the default 500-tick interval).
+         *
+         * TODO: add CH_SNAPSHOT_SCHED channel and implement the PPC here
+         *       once snapshot_sched is wired into this PD's topology entry.
+         */
+
         /* Register the new agent with the quota system */
         bool quota_ok = quota_register_agent(spawn_id, DEFAULT_CPU_QUOTA_MS, DEFAULT_MEM_QUOTA_KB);
         spawn_table[tbl].quota_registered = quota_ok;
