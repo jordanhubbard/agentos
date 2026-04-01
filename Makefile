@@ -131,6 +131,12 @@ else ifeq ($(UNAME_S),Linux)
   else
     SDK_PLATFORM := linux-x86-64
   endif
+else ifeq ($(UNAME_S),FreeBSD)
+  # FreeBSD: LLVM installed via pkg (e.g. /usr/local/bin/clang)
+  LLVM_BIN     := /usr/local/bin
+  LLD_BIN      := /usr/local/bin
+  # Microkit SDK has no FreeBSD host toolchain — deps-sdk and build will error
+  SDK_PLATFORM := unsupported-freebsd
 endif
 
 # SDK download URL
@@ -183,6 +189,21 @@ else ifeq ($(UNAME_S),Linux)
 		device-tree-compiler \
 		2>/dev/null || true
 	@echo "[Linux] All deps installed. ✓"
+else ifeq ($(UNAME_S),FreeBSD)
+	@echo "[FreeBSD] Installing dependencies via pkg..."
+	@sudo pkg install -y \
+		llvm \
+		dtc \
+		dtc-devel \
+		gmake \
+		python3 \
+		curl \
+		wget \
+		2>/dev/null || true
+	@echo "[FreeBSD] All deps installed. ✓"
+	@echo ""
+	@echo "NOTE: FreeBSD host — cross-compilation only."
+	@echo "  QEMU must be installed separately: sudo pkg install qemu"
 else
 	@echo "ERROR: Unsupported OS: $(UNAME_S)"
 	@exit 1
@@ -201,7 +222,17 @@ else
 endif
 
 # Download Microkit SDK if not present
+# FreeBSD cannot host the Microkit SDK — cross-compile from Linux or macOS.
+ifeq ($(UNAME_S),FreeBSD)
+deps-sdk:
+	@echo ""
+	@echo "ERROR: Microkit SDK does not ship a FreeBSD host toolchain."
+	@echo "  Cross-compile from a Linux or macOS host, or use a Linux VM."
+	@echo "  See: https://github.com/seL4/microkit/releases"
+	@false
+else
 deps-sdk: $(MICROKIT_SDK)/bin/microkit
+endif
 
 $(MICROKIT_SDK)/bin/microkit:
 	@echo ""
@@ -223,7 +254,11 @@ build: deps-sdk
 	@echo "║   agentOS — building kernel ($(BOARD))   ║"
 	@echo "╚══════════════════════════════════════════╝"
 	@echo ""
-ifeq ($(UNAME_S),Darwin)
+ifeq ($(UNAME_S),FreeBSD)
+	@echo "ERROR: Microkit SDK does not ship a FreeBSD host toolchain."
+	@echo "  Cross-compile from a Linux or macOS host, or use a Linux VM."
+	@false
+else ifeq ($(UNAME_S),Darwin)
 	@test -x "$(LLVM_BIN)/clang" || \
 		(echo "ERROR: Homebrew LLVM not found. Run 'make deps' first." && exit 1)
 	@test -x "$(LLD_BIN)/ld.lld" || \
