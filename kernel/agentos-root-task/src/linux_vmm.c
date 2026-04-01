@@ -65,6 +65,7 @@ seL4_Bool fault(microkit_child child, microkit_msginfo msginfo,
 #ifdef ARCH_AARCH64
 
 #include <libvmm/libvmm.h>
+#include "gpu_shmem.h"
 
 /* ─── Guest Configuration ─────────────────────────────────────────────── */
 
@@ -99,7 +100,8 @@ uintptr_t guest_ram_vaddr;
 
 /* ─── State ──────────────────────────────────────────────────────────── */
 
-static bool guest_started = false;
+static bool guest_started   = false;
+static bool gpu_shmem_ready = false;
 
 /* ─── IRQ Handling ───────────────────────────────────────────────────── */
 
@@ -164,6 +166,19 @@ void init(void)
 
     LOG_VMM("  Linux guest started successfully\n");
 
+    /* Initialise GPU shared memory channel (consumer role — receives from seL4 PDs) */
+    if (gpu_tensor_buf_vaddr) {
+        gpu_shmem_init(gpu_tensor_buf_vaddr, GPU_SHMEM_BUF_SIZE,
+                       GPU_SHMEM_ROLE_CONSUMER);
+        if (gpu_shmem_valid()) {
+            gpu_shmem_ready = true;
+            LOG_VMM("  GPU shmem ring initialised (64MB, depth=%d)\n",
+                    GPU_SHMEM_RING_DEPTH);
+        } else {
+            LOG_VMM_ERR("GPU shmem ring validation failed\n");
+        }
+    }
+
     /* Notify controller that VMM is ready */
     microkit_notify(CONTROLLER_CH);
 }
@@ -189,7 +204,61 @@ void notified(microkit_channel ch)
          * from shared memory and forward to the guest via virtIO console.
          */
         LOG_VMM("Received notification from controller (agent bridge)\n");
-        /* TODO: Read command from shared memory region, execute in guest */
+        break;
+    }
+
+    case GPU_SHMEM_NOTIFY_IN_CH: {
+        /*
+         * A seL4 PD (controller, worker, swap_slot) has enqueued a tensor
+         * descriptor in the GPU shared memory ring.  Drain all pending
+         * descriptors and forward each to the Linux guest via a virtIO
+         * console write.  The Linux gpu_shmem kernel module on the guest
+         * side reads these notifications and dispatches CUDA/PyTorch ops.
+         *
+         * In this VMM implementation we relay notifications using the
+         * guest's virtIO console injection path.  A production system
+         * would use a dedicated virtIO device or MMIO doorbell.
+         */
+        if (!gpu_shmem_ready) {
+            LOG_VMM_ERR("GPU shmem notify received but ring not ready\n");
+            break;
+        }
+
+        gpu_tensor_desc_t desc;
+        int dispatched = 0;
+        while (gpu_shmem_dequeue(&desc)) {
+            LOG_VMM("GPU tensor ready: op=%d dtype=%d seq=%u\n",
+                    (int)desc.op, (int)desc.dtype, (unsigned)desc.seq);
+            /*
+             * In a full implementation this would write a descriptor
+             * notification into the guest's virtIO console or a dedicated
+             * virtIO GPU device.  For this prototype we log the event;
+             * the Linux gpu_shmem_linux kernel module polls the shared MR
+             * directly via /dev/gpu_shmem after receiving a Linux IRQ
+             * injected via virq_inject() (see DESIGN.md §GPU-shmem).
+             */
+            dispatched++;
+        }
+
+        if (dispatched > 0) {
+            LOG_VMM("GPU shmem: dequeued %d tensor descriptor(s)\n",
+                    dispatched);
+            /* Inject a virtual IRQ into the guest to wake the driver */
+            virq_inject(SERIAL_IRQ); /* TODO: dedicate a GPU shmem IRQ */
+        }
+        break;
+    }
+
+    case GPU_SHMEM_NOTIFY_OUT_CH: {
+        /*
+         * Linux guest has completed a GPU operation and written a result
+         * descriptor back into the result ring.  Notify the originating
+         * seL4 PD (controller) so it can dequeue the result.
+         */
+        if (gpu_shmem_ready) {
+            LOG_VMM("GPU shmem: result ready — notifying controller\n");
+            microkit_notify(CONTROLLER_CH);
+        }
         break;
     }
 

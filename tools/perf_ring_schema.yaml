@@ -1,0 +1,18 @@
+ring_name: PerfRing
+entry_type: PerfRecord
+capacity: 64
+mr_vaddr_var: perf_ring_vaddr
+includes:
+  - <stdint.h>
+fields:
+  - name: ts_ns
+    type: uint64_t
+  - name: pd_id
+    type: uint8_t
+  - name: channel_id
+    type: uint8_t
+  - name: latency_ns
+    type: uint64_t
+  - name: _pad
+    type: uint8_t
+    count: 6

@@ -1,0 +1,709 @@
+# agentOS topology spec — machine-readable SDF source
+# Maintained here; run gen_sdf.py to regenerate agentos.system
+#
+# Edit this file to add/remove PDs or channels.
+# Run: python3 tools/gen_sdf.py tools/topology.yaml -o kernel/agentos-root-task/agentos.system
+
+version: "0.3"
+
+# ── Memory regions ─────────────────────────────────────────────────────── #
+
+memory_regions:
+  - name: vibe_code
+    size: 0x400000      # 4MB: WASM binary + linear memory
+    page_size: 0x1000
+
+  - name: vibe_state
+    size: 0x10000       # 64KB: swap slot shared state ring
+    page_size: 0x1000
+
+  - name: agentfs_store
+    size: 0x200000      # 2MB: AgentFS persistent module store
+    page_size: 0x1000
+
+  # Developer shell command/output ring (QEMU/dev builds only)
+  - name: dev_shell_ring
+    size: 0x1000        # 4KB: cmd ring + output ring
+    page_size: 0x1000
+
+  # GPU zero-copy tensor exchange buffer (seL4 ↔ Linux VMM ↔ CUDA)
+  # Mapped into linux_vmm (rw) and controller (rw) for zero-copy tensor IPC.
+  # Physical layout: [0..4KB] ring header, [4KB..64MB] tensor payload area.
+  - name: gpu_tensor_buf
+    size: 0x4000000     # 64MB: tensor payload + ring header
+    page_size: 0x200000 # 2MB pages for GPU DMA alignment
+
+  - name: console_ring
+    size: 0x4000        # 16KB: console mux ring buffer
+    page_size: 0x1000
+
+  - name: perf_ring
+    size: 0x1000        # 4KB: perf_counters export ring (64 × 64B records)
+    page_size: 0x1000
+
+  - name: audit_log
+    size: 0x8000        # 32KB: cap_audit_log ring
+    page_size: 0x1000
+
+  - name: migrate_buf
+    size: 0x40000       # 256KB: live-migration snapshot buffer
+    page_size: 0x1000
+
+# ── Protection Domains ─────────────────────────────────────────────────── #
+
+pds:
+  # System coordinator — lowest priority, PPCs into passive servers
+  - name: controller
+    priority: 50
+    passive: false
+    program_image: controller.elf
+    maps:
+      - mr: vibe_code
+        vaddr: 0x2000000
+        perms: r
+        setvar_vaddr: vibe_code_vaddr
+      - mr: vibe_state
+        vaddr: 0x3000000
+        perms: rw
+        setvar_vaddr: vibe_state_vaddr
+      # GPU zero-copy tensor buffer (producer side)
+      - mr: gpu_tensor_buf
+        vaddr: 0x60000000
+        perms: rw
+        setvar_vaddr: gpu_tensor_buf_vaddr
+
+  # Swap slots — WASM execution sandboxes
+  - name: swap_slot_0
+    priority: 75
+    passive: false
+    program_image: swap_slot.elf
+    maps:
+      - mr: vibe_code
+        vaddr: 0x2000000
+        perms: rwx
+        setvar_vaddr: code_region_vaddr
+      - mr: vibe_state
+        vaddr: 0x3000000
+        perms: rw
+        setvar_vaddr: state_region_vaddr
+
+  - name: swap_slot_1
+    priority: 75
+    passive: false
+    program_image: swap_slot.elf
+    maps:
+      - mr: vibe_code
+        vaddr: 0x2000000
+        perms: rwx
+        setvar_vaddr: code_region_vaddr
+      - mr: vibe_state
+        vaddr: 0x3000000
+        perms: rw
+        setvar_vaddr: state_region_vaddr
+
+  - name: swap_slot_2
+    priority: 75
+    passive: false
+    program_image: swap_slot.elf
+    maps:
+      - mr: vibe_code
+        vaddr: 0x2000000
+        perms: rwx
+        setvar_vaddr: code_region_vaddr
+      - mr: vibe_state
+        vaddr: 0x3000000
+        perms: rw
+        setvar_vaddr: state_region_vaddr
+
+  - name: swap_slot_3
+    priority: 75
+    passive: false
+    program_image: swap_slot.elf
+    maps:
+      - mr: vibe_code
+        vaddr: 0x2000000
+        perms: rwx
+        setvar_vaddr: code_region_vaddr
+      - mr: vibe_state
+        vaddr: 0x3000000
+        perms: rw
+        setvar_vaddr: state_region_vaddr
+
+  # Worker pool
+  - name: worker_0
+    priority: 80
+    passive: false
+    program_image: worker.elf
+
+  - name: worker_1
+    priority: 80
+    passive: false
+    program_image: worker.elf
+
+  - name: worker_2
+    priority: 80
+    passive: false
+    program_image: worker.elf
+
+  - name: worker_3
+    priority: 80
+    passive: false
+    program_image: worker.elf
+
+  - name: worker_4
+    priority: 80
+    passive: false
+    program_image: worker.elf
+
+  - name: worker_5
+    priority: 80
+    passive: false
+    program_image: worker.elf
+
+  - name: worker_6
+    priority: 80
+    passive: false
+    program_image: worker.elf
+
+  - name: worker_7
+    priority: 80
+    passive: false
+    program_image: worker.elf
+
+  # Init agent — bootstrapper
+  - name: init_agent
+    priority: 100
+    passive: false
+    program_image: init_agent.elf
+
+  # Memory profiler (passive)
+  - name: mem_profiler
+    priority: 108
+    passive: true
+    program_image: mem_profiler.elf
+
+  # VibeEngine (passive)
+  - name: vibe_engine
+    priority: 140
+    passive: true
+    program_image: vibe_engine.elf
+
+  # Linux VMM — boots Linux guest for CUDA/PyTorch GPU workloads
+  # Mapped to both guest_ram and gpu_tensor_buf for zero-copy tensor exchange.
+  - name: linux_vmm
+    priority: 100
+    passive: false
+    program_image: linux_vmm.elf
+    maps:
+      - mr: gpu_tensor_buf
+        vaddr: 0x60000000
+        perms: rw
+        setvar_vaddr: gpu_tensor_buf_vaddr
+
+  # AgentFS (passive)
+  - name: agentfs
+    priority: 150
+    passive: true
+    program_image: agentfs.elf
+    maps:
+      - mr: agentfs_store
+        vaddr: 0x5000000
+        perms: rw
+        setvar_vaddr: store_vaddr
+
+  # Developer shell (passive, QEMU/dev builds only — tag: dev-only)
+  # Exposes a REPL via dev_shell_ring MR for interactive debugging.
+  # Not included in production builds (gen_sdf.py skips dev-only PDs by default).
+  - name: dev_shell
+    priority: 70
+    passive: true
+    program_image: dev_shell.elf
+    tags: [dev-only]
+    maps:
+      - mr: dev_shell_ring
+        vaddr: 0x7000000
+        perms: rw
+        setvar_vaddr: dev_shell_ring_vaddr
+      - mr: perf_ring
+        vaddr: 0x8000000
+        perms: r
+        setvar_vaddr: perf_ring_vaddr
+      - mr: vibe_code
+        vaddr: 0x2000000
+        perms: r
+        setvar_vaddr: vibe_code_vaddr
+      - mr: vibe_state
+        vaddr: 0x3000000
+        perms: r
+        setvar_vaddr: vibe_state_vaddr
+
+  # Console mux (passive)
+  - name: console_mux
+    priority: 160
+    passive: true
+    program_image: console_mux.elf
+    maps:
+      - mr: console_ring
+        vaddr: 0x6000000
+        perms: rw
+        setvar_vaddr: console_ring_vaddr
+
+  # EventBus (passive)
+  - name: event_bus
+    priority: 200
+    passive: true
+    program_image: event_bus.elf
+
+  # TimePartition (passive, highest user-space priority)
+  - name: time_partition
+    priority: 250
+    passive: true
+    program_image: time_partition.elf
+
+  # PerfCounters (passive)
+  - name: perf_counters
+    priority: 95
+    passive: true
+    program_image: perf_counters.elf
+    maps:
+      - mr: perf_ring
+        vaddr: 0xA000000
+        perms: rw
+        setvar_vaddr: perf_ring_vaddr
+
+  # Monitor (active, highest priority)
+  - name: monitor
+    priority: 254
+    passive: false
+    program_image: monitor.elf
+
+# ── Channels ─────────────────────────────────────────────────────────────── #
+
+channels:
+  # Core: controller <-> event_bus
+  - name: ctrl_eventbus
+    pd_a: controller
+    id_a: 0
+    pp_a: true
+    pd_b: event_bus
+    id_b: 0
+
+  # controller <-> init_agent
+  - name: ctrl_init
+    pd_a: controller
+    id_a: 1
+    pd_b: init_agent
+    id_b: 0
+
+  # event_bus <-> init_agent
+  - name: eb_init
+    pd_a: event_bus
+    id_a: 1
+    pd_b: init_agent
+    id_b: 1
+    pp_b: true
+
+  # controller <-> agentfs
+  - name: ctrl_agentfs
+    pd_a: controller
+    id_a: 5
+    pp_a: true
+    pd_b: agentfs
+    id_b: 0
+
+  # agentfs <-> event_bus
+  - name: agentfs_eb
+    pd_a: agentfs
+    id_a: 1
+    pd_b: event_bus
+    id_b: 2
+
+  # controller <-> workers (task assignment)
+  - name: ctrl_worker_0
+    pd_a: controller
+    id_a: 10
+    pd_b: worker_0
+    id_b: 0
+
+  - name: ctrl_worker_1
+    pd_a: controller
+    id_a: 11
+    pd_b: worker_1
+    id_b: 0
+
+  - name: ctrl_worker_2
+    pd_a: controller
+    id_a: 12
+    pd_b: worker_2
+    id_b: 0
+
+  - name: ctrl_worker_3
+    pd_a: controller
+    id_a: 13
+    pd_b: worker_3
+    id_b: 0
+
+  - name: ctrl_worker_4
+    pd_a: controller
+    id_a: 14
+    pd_b: worker_4
+    id_b: 0
+
+  - name: ctrl_worker_5
+    pd_a: controller
+    id_a: 15
+    pd_b: worker_5
+    id_b: 0
+
+  - name: ctrl_worker_6
+    pd_a: controller
+    id_a: 16
+    pd_b: worker_6
+    id_b: 0
+
+  - name: ctrl_worker_7
+    pd_a: controller
+    id_a: 17
+    pd_b: worker_7
+    id_b: 0
+
+  # event_bus <-> workers (event subscription)
+  - name: eb_worker_0
+    pd_a: event_bus
+    id_a: 3
+    pd_b: worker_0
+    id_b: 1
+
+  - name: eb_worker_1
+    pd_a: event_bus
+    id_a: 4
+    pd_b: worker_1
+    id_b: 1
+
+  - name: eb_worker_2
+    pd_a: event_bus
+    id_a: 5
+    pd_b: worker_2
+    id_b: 1
+
+  - name: eb_worker_3
+    pd_a: event_bus
+    id_a: 6
+    pd_b: worker_3
+    id_b: 1
+
+  - name: eb_worker_4
+    pd_a: event_bus
+    id_a: 7
+    pd_b: worker_4
+    id_b: 1
+
+  - name: eb_worker_5
+    pd_a: event_bus
+    id_a: 8
+    pd_b: worker_5
+    id_b: 1
+
+  - name: eb_worker_6
+    pd_a: event_bus
+    id_a: 9
+    pd_b: worker_6
+    id_b: 1
+
+  - name: eb_worker_7
+    pd_a: event_bus
+    id_a: 10
+    pd_b: worker_7
+    id_b: 1
+
+  # controller <-> swap_slots
+  - name: ctrl_swap_0
+    pd_a: controller
+    id_a: 30
+    pd_b: swap_slot_0
+    id_b: 0
+
+  - name: ctrl_swap_1
+    pd_a: controller
+    id_a: 31
+    pd_b: swap_slot_1
+    id_b: 0
+
+  - name: ctrl_swap_2
+    pd_a: controller
+    id_a: 32
+    pd_b: swap_slot_2
+    id_b: 0
+
+  - name: ctrl_swap_3
+    pd_a: controller
+    id_a: 33
+    pd_b: swap_slot_3
+    id_b: 0
+
+  # controller <-> vibe_engine
+  - name: ctrl_vibe
+    pd_a: controller
+    id_a: 40
+    pd_b: vibe_engine
+    id_b: 0
+
+  # init_agent <-> vibe_engine
+  - name: init_vibe
+    pd_a: init_agent
+    id_a: 2
+    pp_a: true
+    pd_b: vibe_engine
+    id_b: 1
+
+  # worker_N <-> mem_profiler
+  - name: worker0_memprof
+    pd_a: worker_0
+    id_a: 9
+    pp_a: true
+    pd_b: mem_profiler
+    id_b: 1
+
+  - name: worker1_memprof
+    pd_a: worker_1
+    id_a: 9
+    pp_a: true
+    pd_b: mem_profiler
+    id_b: 2
+
+  - name: worker2_memprof
+    pd_a: worker_2
+    id_a: 9
+    pp_a: true
+    pd_b: mem_profiler
+    id_b: 3
+
+  - name: worker3_memprof
+    pd_a: worker_3
+    id_a: 9
+    pp_a: true
+    pd_b: mem_profiler
+    id_b: 4
+
+  - name: worker4_memprof
+    pd_a: worker_4
+    id_a: 9
+    pp_a: true
+    pd_b: mem_profiler
+    id_b: 5
+
+  - name: worker5_memprof
+    pd_a: worker_5
+    id_a: 9
+    pp_a: true
+    pd_b: mem_profiler
+    id_b: 6
+
+  - name: worker6_memprof
+    pd_a: worker_6
+    id_a: 9
+    pp_a: true
+    pd_b: mem_profiler
+    id_b: 7
+
+  - name: worker7_memprof
+    pd_a: worker_7
+    id_a: 9
+    pp_a: true
+    pd_b: mem_profiler
+    id_b: 8
+
+  # mem_profiler <-> controller (leak alerts)
+  - name: memprof_ctrl
+    pd_a: mem_profiler
+    id_a: 0
+    pd_b: controller
+    id_b: 50
+
+  # Console mux
+  - name: ctrl_console
+    pd_a: controller
+    id_a: 60
+    pp_a: true
+    pd_b: console_mux
+    id_b: 0
+
+  - name: init_console
+    pd_a: init_agent
+    id_a: 3
+    pp_a: true
+    pd_b: console_mux
+    id_b: 1
+
+  - name: eb_console
+    pd_a: event_bus
+    id_a: 11
+    pd_b: console_mux
+    id_b: 2
+
+  # PerfCounters
+  - name: ctrl_perf
+    pd_a: controller
+    id_a: 55
+    pp_a: true
+    pd_b: perf_counters
+    id_b: 0
+
+  - name: worker0_perf
+    pd_a: worker_0
+    id_a: 10
+    pp_a: true
+    pd_b: perf_counters
+    id_b: 1
+
+  - name: worker1_perf
+    pd_a: worker_1
+    id_a: 10
+    pp_a: true
+    pd_b: perf_counters
+    id_b: 2
+
+  - name: worker2_perf
+    pd_a: worker_2
+    id_a: 10
+    pp_a: true
+    pd_b: perf_counters
+    id_b: 3
+
+  - name: worker3_perf
+    pd_a: worker_3
+    id_a: 10
+    pp_a: true
+    pd_b: perf_counters
+    id_b: 4
+
+  - name: worker4_perf
+    pd_a: worker_4
+    id_a: 10
+    pp_a: true
+    pd_b: perf_counters
+    id_b: 5
+
+  - name: worker5_perf
+    pd_a: worker_5
+    id_a: 10
+    pp_a: true
+    pd_b: perf_counters
+    id_b: 6
+
+  - name: worker6_perf
+    pd_a: worker_6
+    id_a: 10
+    pp_a: true
+    pd_b: perf_counters
+    id_b: 7
+
+  - name: worker7_perf
+    pd_a: worker_7
+    id_a: 10
+    pp_a: true
+    pd_b: perf_counters
+    id_b: 8
+
+  # TimePartition
+  - name: ctrl_tp
+    pd_a: controller
+    id_a: 56
+    pp_a: true
+    pd_b: time_partition
+    id_b: 0
+
+  - name: worker0_tp
+    pd_a: worker_0
+    id_a: 11
+    pp_a: true
+    pd_b: time_partition
+    id_b: 1
+
+  - name: worker1_tp
+    pd_a: worker_1
+    id_a: 11
+    pp_a: true
+    pd_b: time_partition
+    id_b: 2
+
+  - name: worker2_tp
+    pd_a: worker_2
+    id_a: 11
+    pp_a: true
+    pd_b: time_partition
+    id_b: 3
+
+  - name: worker3_tp
+    pd_a: worker_3
+    id_a: 11
+    pp_a: true
+    pd_b: time_partition
+    id_b: 4
+
+  - name: worker4_tp
+    pd_a: worker_4
+    id_a: 11
+    pp_a: true
+    pd_b: time_partition
+    id_b: 5
+
+  - name: worker5_tp
+    pd_a: worker_5
+    id_a: 11
+    pp_a: true
+    pd_b: time_partition
+    id_b: 6
+
+  - name: worker6_tp
+    pd_a: worker_6
+    id_a: 11
+    pp_a: true
+    pd_b: time_partition
+    id_b: 7
+
+  - name: worker7_tp
+    pd_a: worker_7
+    id_a: 11
+    pp_a: true
+    pd_b: time_partition
+    id_b: 8
+
+  - name: init_tp
+    pd_a: init_agent
+    id_a: 5
+    pp_a: true
+    pd_b: time_partition
+    id_b: 9
+
+  # GPU shared memory channels — seL4 ↔ linux_vmm
+  # controller notifies linux_vmm when a tensor is ready in the ring
+  - name: ctrl_gpu_notify
+    pd_a: controller
+    id_a: 61
+    pd_b: linux_vmm
+    id_b: 3
+
+  # linux_vmm notifies controller when a GPU result is ready
+  - name: vmm_gpu_result
+    pd_a: linux_vmm
+    id_a: 4
+    pd_b: controller
+    id_b: 62
+
+  # dev_shell channels (dev-only)
+  # host (controller) notifies dev_shell of new commands
+  - name: ctrl_devshell
+    pd_a: controller
+    id_a: 2
+    pd_b: dev_shell
+    id_b: 0
+    tags: [dev-only]
+
+  # dev_shell → controller pass-through for ipc send command
+  - name: devshell_ctrl
+    pd_a: dev_shell
+    id_a: 1
+    pd_b: controller
+    id_b: 3
+    tags: [dev-only]

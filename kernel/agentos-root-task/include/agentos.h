@@ -78,6 +78,9 @@ typedef enum {
     MSG_EVENT_AGENT_EXITED     = 0x0402,
     MSG_EVENT_SYSTEM_READY     = 0x0403,
 
+    /* EventBus batch publish */
+    MSG_EVENTBUS_PUBLISH_BATCH = 0x0005,  /* publish up to 16 events in one PPC */
+
     /* AgentFS event types (published to EventBus) */
     MSG_EVENT_PUBLISH          = 0x0410,  /* generic EventBus publish op */
     EVT_OBJECT_CREATED         = 0x0411,  /* new object stored */

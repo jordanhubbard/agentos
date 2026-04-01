@@ -7,6 +7,8 @@
 
 #define AGENTOS_DEBUG 1
 #include "agentos.h"
+#include "prio_inherit.h"
+#include "boot_integrity.h"
 #include <stdint.h>
 
 /* Memory regions - patched by Microkit setvar */
@@ -324,6 +326,7 @@ void init(void) {
     /* Initialize subsystems */
     cap_broker_init();
     agent_pool_init();
+    boot_integrity_init();
     
     /* PPC into EventBus (passive, higher priority) to initialize it */
     console_log(0, 0, "[controller] Waking EventBus via PPC...\n");
@@ -699,7 +702,8 @@ microkit_msginfo protected(microkit_channel ch, microkit_msginfo msg) {
         microkit_mr_set(3, id2);
         microkit_mr_set(4, id3);
         
-        microkit_ppcall(CH_AGENTFS, microkit_msginfo_new(0, 5));
+        PPCALL_DONATE(CH_AGENTFS, microkit_msginfo_new(0, 5),
+                      PRIO_CONTROLLER, PRIO_AGENTFS);
         
         uint32_t status = (uint32_t)microkit_mr_get(0);
         if (status == 0) {

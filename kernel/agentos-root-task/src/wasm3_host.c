@@ -47,6 +47,7 @@ struct wasm3_host {
     IM3Function     fn_init;
     IM3Function     fn_handle_ppc;
     IM3Function     fn_health_check;
+    IM3Function     fn_heap_stats;   /* optional: __agentos_heap_stats(i32*, i32*) */
     bool            initialized;
 };
 
@@ -330,6 +331,14 @@ wasm3_host_t *wasm3_host_init(const uint8_t *wasm_bytes, uint32_t wasm_size) {
         host->fn_health_check = NULL;
     }
 
+    /* Optional: __agentos_heap_stats(live_allocs_ptr: i32, live_bytes_ptr: i32)
+     * Exported by nanolang WASM modules compiled with refcount_gc.h.
+     * If not present, mem_profiler falls back to wasm3 linear-memory scan. */
+    result = m3_FindFunction(&host->fn_heap_stats, host->runtime, "__agentos_heap_stats");
+    if (result) {
+        host->fn_heap_stats = NULL;  /* Optional — no warning */
+    }
+
     host->initialized = true;
     console_log(15, 15, "[wasm3_host] WASM module loaded successfully\n");
     return host;
@@ -428,6 +437,45 @@ bool wasm3_host_call_ppc(wasm3_host_t *host,
     out->mr2   = results[3];
     out->mr3   = results[4];
 
+    return true;
+}
+
+/*
+ * wasm3_host_get_heap_stats() — query live alloc count and live bytes from the
+ * WASM module's refcount_gc heap via the __agentos_heap_stats export.
+ *
+ * This is called by mem_profiler via the worker PPC hook to populate leak
+ * detection counters without scanning linear memory directly.
+ *
+ * Returns false if the module does not export __agentos_heap_stats (old modules
+ * compiled without refcount_gc.h).  In that case mem_profiler uses a fallback.
+ */
+bool wasm3_host_get_heap_stats(wasm3_host_t *host,
+                                uint32_t     *live_allocs_out,
+                                uint32_t     *live_bytes_out) {
+    if (!host || !host->initialized || !host->fn_heap_stats) return false;
+
+    /* The WASM function signature: (i32 live_allocs_ptr, i32 live_bytes_ptr) -> void
+     * We pass linear-memory addresses for two uint32_t slots in the WASM heap.
+     * Since we're the host, we use a scratch region in the PPC result buffer. */
+
+    /* Use the last 8 bytes of the PPC result buffer as scratch (safe: not in use
+     * during heap stats query which happens outside PPC handling). */
+    uintptr_t base = CODE_REGION_BASE + PPC_RESULT_OFFSET;
+    uint32_t alloc_wasm_ptr = (uint32_t)(base + 0);   /* wasm linear-mem offset */
+    uint32_t bytes_wasm_ptr = (uint32_t)(base + 4);
+
+    /* Zero the scratch area */
+    *((volatile uint32_t *)(uintptr_t)alloc_wasm_ptr) = 0;
+    *((volatile uint32_t *)(uintptr_t)bytes_wasm_ptr) = 0;
+
+    M3Result result = m3_CallV(host->fn_heap_stats,
+                               (uint32_t)alloc_wasm_ptr,
+                               (uint32_t)bytes_wasm_ptr);
+    if (result) return false;
+
+    if (live_allocs_out) *live_allocs_out = *((uint32_t *)(uintptr_t)alloc_wasm_ptr);
+    if (live_bytes_out)  *live_bytes_out  = *((uint32_t *)(uintptr_t)bytes_wasm_ptr);
     return true;
 }
 

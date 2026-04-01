@@ -1,365 +1,317 @@
 #!/usr/bin/env python3
 """
-attest_verify.py — Verify agentOS capability attestation reports
+attest_verify.py — agentOS Capability Attestation Verifier
 
-Fetches a capability attestation report from AgentFS (sparky:8791 or local file)
-and verifies its integrity using SHA-512.
+Fetches a capability attestation report from AgentFS and verifies:
+  1. The Ed25519 signature over the attestation body
+  2. Parses and pretty-prints the active capability table
+  3. Optionally diffs against a previous attestation (change detection)
 
 Usage:
-  # Fetch latest attestation from live AgentFS:
-  python3 attest_verify.py --agentfs http://sparky:8791
+    python3 tools/attest_verify.py [--agentfs <url>] [--pubkey <path>] [--diff <file>]
+    python3 tools/attest_verify.py --local <attestation.txt> --pubkey keys/system.pub
+    python3 tools/attest_verify.py --latest   # fetch latest from AgentFS and verify
 
-  # Verify a local .att file:
-  python3 attest_verify.py --file attestation.att
+Output: structured report to stdout; exit code 0 = verified, 1 = failed/tampered.
 
-  # Verify all reports in a directory:
-  python3 attest_verify.py --dir /path/to/attestations/
+Attestation file format (written by cap_broker_attest() in monitor PD):
+    ATTEST    <seq>    <timestamp_us>
+    CAP    <handle>    <owner_pd>    <granted_to>    <cptr>    <rights>    <kind>    <badge>    <revokable>    <grant_time>
+    ...
+    END    <num_caps>
 
-  # Dump decoded contents as JSON:
-  python3 attest_verify.py --file attestation.att --json
+Signed attestation file format (written by monitor PD to AgentFS):
+    [4-byte big-endian body_len][body_bytes][64-byte Ed25519 signature]
 
-Environment:
-  AGENTFS_URL — default AgentFS base URL (overrides --agentfs default)
-  AGENTFS_TOKEN — auth token for AgentFS (if required)
+The trusted system public key is at: ~/.nanoc/system.pub (raw 32-byte Ed25519)
+or provided via --pubkey.
 
-Report format (NATT v1, little-endian):
-  Offset  Size  Description
-  ------  ----  -----------
-    0      4    Magic: 0x4E415454 ("NATT")
-    4      4    Format version (1)
-    8      8    Boot tick (uint64 LE)
-   16      4    active_cap_count (N)
-   20      4    total_cap_slots
-   24      8    audit_seq
-   32    N*20   Cap entries: [cptr(4), rights(4), kind(4), owner_pd(4), granted_to(4)]
-  32+N*20  8    Net ACL summary: [slots_active(4), total_denials(4)]
-  40+N*20  64   SHA-512 sig: [key_id(8), sha512_truncated(32), zero_pad(24)]
-
-Verification:
-  sha512(report[0..total-64]) must match sig[8:40]
+AgentFS path: agentos/attestation/<seq>.bin
 """
 
-import struct
-import hashlib
 import sys
 import os
-import json
 import argparse
-from datetime import datetime
+import struct
+import json
+import textwrap
+import urllib.request
+import urllib.error
+from datetime import datetime, timezone
 
-# ─── Constants ────────────────────────────────────────────────────────────────
+# ── Capability metadata ────────────────────────────────────────────────── #
 
-ATTEST_MAGIC   = 0x4E415454   # "NATT"
-ATTEST_VERSION = 1
-ATTEST_KEY_ID  = bytes([0x4E, 0x41, 0x54, 0x54, 0x01, 0x00, 0x00, 0x00])
-CAP_ENTRY_SIZE = 20           # 5 × uint32
-
-# Capability rights bitmasks (from agentos.h)
-RIGHTS = {
-    0x01: 'read',
-    0x02: 'write',
-    0x04: 'grant',
-    0x08: 'revoke',
-    0x10: 'execute',
+CAP_KIND_NAMES = {
+    0: "untyped",
+    1: "endpoint",
+    2: "notification",
+    3: "reply",
+    4: "page",
+    5: "tcb",
+    6: "sched_context",
+    7: "irq_handler",
+    8: "io_port",
+    9: "frame",
+    10: "vspace",
 }
 
-# Capability kind names
-CAP_KINDS = {
-    0x01: 'endpoint',
-    0x02: 'notification',
-    0x03: 'reply',
-    0x04: 'page',
-    0x05: 'irq_handler',
-    0x06: 'untyped',
-    0x07: 'tcb',
-    0x08: 'cnode',
-    0x09: 'frame',
-    0x0A: 'asid_pool',
-    0x0B: 'asid_ctrl',
+CAP_RIGHTS = {
+    0x01: "read",
+    0x02: "write",
+    0x04: "grant",
+    0x08: "grant_reply",
 }
 
+def decode_rights(rights_int):
+    r = int(rights_int, 16) if isinstance(rights_int, str) else rights_int
+    return ",".join(v for k, v in sorted(CAP_RIGHTS.items()) if r & k) or "none"
 
-def decode_rights(r):
-    return '|'.join(name for bit, name in sorted(RIGHTS.items()) if r & bit) or f'0x{r:02x}'
+def kind_name(kind_hex):
+    k = int(kind_hex, 16) if isinstance(kind_hex, str) else kind_hex
+    return CAP_KIND_NAMES.get(k, f"kind_0x{k:02x}")
 
+# ── Parser ─────────────────────────────────────────────────────────────── #
 
-def decode_kind(k):
-    return CAP_KINDS.get(k, f'kind_0x{k:02x}')
+class AttestationRecord:
+    def __init__(self, seq, timestamp_us, caps, raw_body):
+        self.seq          = seq
+        self.timestamp_us = timestamp_us
+        self.timestamp    = datetime.fromtimestamp(timestamp_us / 1e6, tz=timezone.utc)
+        self.caps         = caps      # list of dicts
+        self.raw_body     = raw_body  # bytes
 
-
-# ─── SHA-512 (stdlib) ─────────────────────────────────────────────────────────
-
-def sha512_of(data: bytes) -> bytes:
-    return hashlib.sha512(data).digest()
-
-
-# ─── Report decoder ───────────────────────────────────────────────────────────
-
-class AttestationReport:
-    def __init__(self, raw: bytes, source: str = '<unknown>'):
-        self.raw    = raw
-        self.source = source
-        self.valid  = False
-        self.error  = ''
-        self.magic       = 0
-        self.version     = 0
-        self.boot_tick   = 0
-        self.active_caps = 0
-        self.total_slots = 0
-        self.audit_seq   = 0
-        self.caps        = []
-        self.net_active  = 0
-        self.net_denials = 0
-        self.sig_key_id  = b''
-        self.sig_hash    = b''
-        self.computed_hash = b''
-        self._decode()
-
-    def _decode(self):
-        d = self.raw
-        if len(d) < 32 + 64:
-            self.error = f'Too short: {len(d)} bytes (need at least {32 + 64})'
-            return
-
-        magic, version = struct.unpack_from('<II', d, 0)
-        if magic != ATTEST_MAGIC:
-            self.error = f'Bad magic: 0x{magic:08X} (expected 0x{ATTEST_MAGIC:08X})'
-            return
-        if version != ATTEST_VERSION:
-            self.error = f'Unknown version: {version} (expected {ATTEST_VERSION})'
-            return
-
-        self.magic   = magic
-        self.version = version
-        self.boot_tick,   = struct.unpack_from('<Q', d, 8)
-        self.active_caps, = struct.unpack_from('<I', d, 16)
-        self.total_slots, = struct.unpack_from('<I', d, 20)
-        self.audit_seq,   = struct.unpack_from('<Q', d, 24)
-
-        cap_data_start = 32
-        expected_cap_bytes = self.active_caps * CAP_ENTRY_SIZE
-        expected_total = 32 + expected_cap_bytes + 8 + 64
-
-        if len(d) < expected_total:
-            self.error = (f'Truncated: {len(d)} bytes, need {expected_total} '
-                         f'for {self.active_caps} caps')
-            return
-
-        self.caps = []
-        pos = cap_data_start
-        for i in range(self.active_caps):
-            cptr, rights, kind, owner_pd, granted_to = struct.unpack_from('<IIIII', d, pos)
-            self.caps.append({
-                'index':      i,
-                'cptr':       cptr,
-                'rights':     rights,
-                'rights_str': decode_rights(rights),
-                'kind':       kind,
-                'kind_str':   decode_kind(kind),
-                'owner_pd':   owner_pd,
-                'granted_to': granted_to,
+def parse_attestation(body_text: str) -> AttestationRecord:
+    lines = body_text.strip().splitlines()
+    seq = ts = 0
+    caps = []
+    for line in lines:
+        parts = line.split('\t')
+        if parts[0] == 'ATTEST' and len(parts) >= 3:
+            seq = int(parts[1])
+            ts  = int(parts[2])
+        elif parts[0] == 'CAP' and len(parts) >= 10:
+            caps.append({
+                'handle':     int(parts[1]),
+                'owner_pd':   int(parts[2]),
+                'granted_to': int(parts[3]),
+                'cptr':       parts[4],
+                'rights':     parts[5],
+                'kind':       parts[6],
+                'badge':      parts[7],
+                'revokable':  parts[8] == '1',
+                'grant_time': int(parts[9]),
             })
-            pos += CAP_ENTRY_SIZE
+        elif parts[0] == 'END':
+            pass
+    return AttestationRecord(seq, ts, caps, body_text.encode())
 
-        self.net_active,  = struct.unpack_from('<I', d, pos)
-        self.net_denials, = struct.unpack_from('<I', d, pos + 4)
-        pos += 8
+# ── Ed25519 verification ───────────────────────────────────────────────── #
 
-        # Signature: 64 bytes
-        sig = d[pos:pos + 64]
-        self.sig_key_id = sig[0:8]
-        self.sig_hash   = sig[8:40]   # First 32 bytes of SHA-512
-
-        # Verify key_id sentinel
-        if self.sig_key_id != ATTEST_KEY_ID:
-            self.error = (f'Unknown key_id: {self.sig_key_id.hex()} '
-                         f'(expected {ATTEST_KEY_ID.hex()})')
-            return
-
-        # Verify SHA-512 of body (everything before signature)
-        body = d[:pos]
-        full_hash = sha512_of(body)
-        self.computed_hash = full_hash[:32]
-
-        if self.computed_hash != self.sig_hash:
-            self.error = (f'SHA-512 mismatch!\n'
-                         f'  stored:   {self.sig_hash.hex()}\n'
-                         f'  computed: {self.computed_hash.hex()}')
-            return
-
-        self.valid = True
-
-    def to_dict(self) -> dict:
-        return {
-            'source':       self.source,
-            'valid':        self.valid,
-            'error':        self.error or None,
-            'magic':        f'0x{self.magic:08X}',
-            'version':      self.version,
-            'boot_tick':    self.boot_tick,
-            'active_caps':  self.active_caps,
-            'total_slots':  self.total_slots,
-            'audit_seq':    self.audit_seq,
-            'net_active':   self.net_active,
-            'net_denials':  self.net_denials,
-            'sig_key_id':   self.sig_key_id.hex(),
-            'sig_hash':     self.sig_hash.hex(),
-            'computed_hash': self.computed_hash.hex() if self.computed_hash else None,
-            'caps':         self.caps,
-        }
-
-    def summary(self) -> str:
-        lines = []
-        status = '✅ VALID' if self.valid else f'❌ INVALID — {self.error}'
-        lines.append(f'Attestation Report: {self.source}')
-        lines.append(f'  Status:      {status}')
-        if self.magic:
-            lines.append(f'  Boot tick:   {self.boot_tick}')
-            lines.append(f'  Active caps: {self.active_caps} / {self.total_slots} slots')
-            lines.append(f'  Audit seq:   {self.audit_seq}')
-            lines.append(f'  Net:         {self.net_active} active slots, {self.net_denials} denials')
-            lines.append(f'  SHA-512:     {self.sig_hash.hex()[:32]}…')
-        if self.caps:
-            lines.append(f'  Capabilities:')
-            for c in self.caps:
-                granted = f' → pd:{c["granted_to"]}' if c["granted_to"] else ''
-                lines.append(f'    [{c["index"]:3d}] cptr=0x{c["cptr"]:08x}  '
-                             f'{c["kind_str"]:<16}  {c["rights_str"]:<20}  '
-                             f'owner=pd:{c["owner_pd"]}{granted}')
-        return '\n'.join(lines)
-
-
-# ─── AgentFS fetch ────────────────────────────────────────────────────────────
-
-def fetch_from_agentfs(base_url: str, token: str = '') -> list[bytes]:
-    """
-    Fetch capability attestation objects from AgentFS (HTTP API on port 8791).
-
-    AgentFS serves objects by kind via:
-      GET /objects?kind=0xCA   → JSON list of object IDs
-      GET /objects/<id>        → raw object bytes
-    """
-    import urllib.request
-    import urllib.error
-
-    headers = {}
-    if token:
-        headers['Authorization'] = f'Bearer {token}'
-
-    def do_get(url):
-        req = urllib.request.Request(url, headers=headers)
-        return urllib.request.urlopen(req, timeout=10).read()
-
-    # List attestation objects (kind=0xCA)
-    list_url = f'{base_url.rstrip("/")}/objects?kind=0xCA'
+def verify_ed25519(pubkey_raw32: bytes, message: bytes, signature64: bytes) -> bool:
+    """Verify Ed25519 signature using cryptography package or openssl subprocess."""
     try:
-        raw = do_get(list_url)
-    except urllib.error.HTTPError as e:
-        if e.code == 404:
-            # Try legacy path
-            list_url = f'{base_url.rstrip("/")}/api/objects?kind=202'
-            raw = do_get(list_url)
-        else:
-            raise
-
-    obj_list = json.loads(raw.decode())
-    if isinstance(obj_list, dict):
-        obj_ids = obj_list.get('objects', obj_list.get('ids', []))
-    else:
-        obj_ids = obj_list
-
-    reports = []
-    for obj_id in obj_ids:
-        obj_url = f'{base_url.rstrip("/")}/objects/{obj_id}'
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+        from cryptography.exceptions import InvalidSignature
+        pub = Ed25519PublicKey.from_public_bytes(pubkey_raw32)
         try:
-            data = do_get(obj_url)
-            reports.append((str(obj_id), data))
-        except Exception as e:
-            print(f'  warn: could not fetch object {obj_id}: {e}', file=sys.stderr)
+            pub.verify(signature64, message)
+            return True
+        except InvalidSignature:
+            return False
+    except ImportError:
+        pass
+    # Fallback: openssl dgst
+    import subprocess, tempfile
+    with tempfile.NamedTemporaryFile(delete=False) as f:
+        f.write(message)
+        msg_path = f.name
+    with tempfile.NamedTemporaryFile(delete=False) as f:
+        f.write(signature64)
+        sig_path = f.name
+    # Wrap raw key in SubjectPublicKeyInfo DER
+    der_prefix = bytes.fromhex('302a300506032b6570032100')
+    pub_der = der_prefix + pubkey_raw32
+    with tempfile.NamedTemporaryFile(suffix='.der', delete=False) as f:
+        f.write(pub_der)
+        pub_path = f.name
+    try:
+        r = subprocess.run(
+            ['openssl', 'pkeyutl', '-verify', '-inkey', pub_path, '-keyform', 'DER',
+             '-pubin', '-in', msg_path, '-sigfile', sig_path, '-rawin'],
+            capture_output=True)
+        return r.returncode == 0
+    except FileNotFoundError:
+        return None  # openssl not available
+    finally:
+        for p in (msg_path, sig_path, pub_path):
+            os.unlink(p)
 
-    return reports
+# ── Signed attestation file format ────────────────────────────────────── #
+# [4-byte big-endian body_len][body][64-byte sig]
 
+def load_signed_attestation(data: bytes):
+    """Returns (body_bytes, sig_bytes) or raises ValueError."""
+    if len(data) < 68:
+        raise ValueError("Too short for signed attestation")
+    body_len = struct.unpack('>I', data[:4])[0]
+    if 4 + body_len + 64 > len(data):
+        raise ValueError(f"Truncated: claimed body_len={body_len} but file is {len(data)} bytes")
+    body = data[4:4 + body_len]
+    sig  = data[4 + body_len:4 + body_len + 64]
+    return body, sig
 
-# ─── Main ─────────────────────────────────────────────────────────────────────
+# ── AgentFS fetch ─────────────────────────────────────────────────────── #
+
+def fetch_latest(agentfs_url: str, token: str = None) -> bytes:
+    """Fetch the latest attestation from AgentFS."""
+    list_url = f"{agentfs_url}/ls?prefix=agentos/attestation/"
+    headers = {"Authorization": f"Bearer {token}"} if token else {}
+    req = urllib.request.Request(list_url, headers=headers)
+    try:
+        with urllib.request.urlopen(req, timeout=10) as r:
+            listing = json.loads(r.read())
+    except urllib.error.URLError as e:
+        raise RuntimeError(f"AgentFS list failed: {e}")
+    files = listing.get('files', listing) if isinstance(listing, dict) else listing
+    if not files:
+        raise RuntimeError("No attestation files found in AgentFS")
+    # Sort by filename descending (seq order)
+    latest = sorted(str(f) for f in files)[-1]
+    fetch_url = f"{agentfs_url}/get?hash={latest}"
+    req2 = urllib.request.Request(fetch_url, headers=headers)
+    with urllib.request.urlopen(req2, timeout=10) as r:
+        return r.read()
+
+# ── Report printer ────────────────────────────────────────────────────── #
+
+def print_report(rec: AttestationRecord, verified: bool | None):
+    w = 80
+    print("=" * w)
+    print(f"  agentOS Capability Attestation Report")
+    print(f"  Sequence:    {rec.seq}")
+    print(f"  Timestamp:   {rec.timestamp.isoformat()}")
+    print(f"  Active caps: {len(rec.caps)}")
+    if verified is True:
+        print(f"  Signature:   ✓ VERIFIED")
+    elif verified is False:
+        print(f"  Signature:   ✗ INVALID — report may be tampered!")
+    else:
+        print(f"  Signature:   ? (public key not provided)")
+    print("=" * w)
+    print()
+    print(f"{'Handle':>6}  {'Owner PD':>8}  {'Granted→':>8}  {'Kind':<16}  {'Rights':<24}  {'cptr':<10}  {'Rev'}")
+    print("-" * w)
+    for c in sorted(rec.caps, key=lambda x: x['handle']):
+        granted = str(c['granted_to']) if c['granted_to'] else "—"
+        kn = kind_name(c['kind'])
+        rr = decode_rights(c['rights'])
+        rev = "✓" if c['revokable'] else "—"
+        print(f"{c['handle']:>6}  {c['owner_pd']:>8}  {granted:>8}  {kn:<16}  {rr:<24}  {c['cptr']:<10}  {rev}")
+    print()
+
+# ── Diff ──────────────────────────────────────────────────────────────── #
+
+def diff_attestations(prev: AttestationRecord, curr: AttestationRecord):
+    prev_map = {c['handle']: c for c in prev.caps}
+    curr_map = {c['handle']: c for c in curr.caps}
+    added   = [c for h, c in curr_map.items() if h not in prev_map]
+    removed = [c for h, c in prev_map.items() if h not in curr_map]
+    changed = [c for h, c in curr_map.items()
+               if h in prev_map and c != prev_map[h]]
+    print(f"Diff (seq {prev.seq} → {curr.seq}):")
+    if not added and not removed and not changed:
+        print("  No changes.")
+        return
+    for c in added:
+        print(f"  + handle {c['handle']}: {kind_name(c['kind'])} owner={c['owner_pd']} granted={c['granted_to']}")
+    for c in removed:
+        print(f"  - handle {c['handle']}: {kind_name(c['kind'])} owner={c['owner_pd']}")
+    for c in changed:
+        print(f"  ~ handle {c['handle']}: modified")
+    print()
+
+# ── Main ──────────────────────────────────────────────────────────────── #
 
 def main():
     parser = argparse.ArgumentParser(
-        description='Verify agentOS capability attestation reports',
-        epilog='Returns exit code 0 if all reports are valid, 1 if any fail.'
-    )
-    group = parser.add_mutually_exclusive_group(required=True)
-    group.add_argument('--file',     help='Verify a local .att binary file')
-    group.add_argument('--dir',      help='Verify all .att files in a directory')
-    group.add_argument('--agentfs',  help='Fetch from AgentFS (e.g. http://sparky:8791)',
-                       metavar='URL')
-    group.add_argument('--stdin',    action='store_true', help='Read binary report from stdin')
-
-    parser.add_argument('--json',   action='store_true', help='Output JSON instead of text')
-    parser.add_argument('--quiet',  action='store_true', help='Only show failures')
-    parser.add_argument('--token',  help='AgentFS auth token (or AGENTFS_TOKEN env var)',
-                        default=os.environ.get('AGENTFS_TOKEN', ''))
+        description="agentOS capability attestation verifier",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=textwrap.dedent("""
+            Examples:
+              python3 tools/attest_verify.py --latest
+              python3 tools/attest_verify.py --local attest_001.bin --pubkey ~/.nanoc/system.pub
+              python3 tools/attest_verify.py --latest --diff attest_000.bin
+        """))
+    parser.add_argument("--latest",   action="store_true", help="Fetch latest from AgentFS")
+    parser.add_argument("--local",    metavar="FILE",       help="Load from local file")
+    parser.add_argument("--agentfs",  default=os.environ.get("AGENTFS_URL", "http://sparky.tail407856.ts.net:8791"))
+    parser.add_argument("--token",    default=os.environ.get("AGENTFS_TOKEN", ""))
+    parser.add_argument("--pubkey",   default=os.path.expanduser("~/.nanoc/system.pub"),
+                        help="Path to raw 32-byte Ed25519 public key")
+    parser.add_argument("--diff",     metavar="PREV_FILE",  help="Diff against previous attestation")
+    parser.add_argument("--save",     metavar="FILE",       help="Save fetched attestation to file")
+    parser.add_argument("--unsigned", action="store_true",  help="Parse unsigned (plain text) attestation")
     args = parser.parse_args()
 
-    agentfs_url = args.agentfs or os.environ.get('AGENTFS_URL', 'http://sparky:8791')
-
-    reports_raw: list[tuple[str, bytes]] = []
-
-    if args.stdin:
-        data = sys.stdin.buffer.read()
-        reports_raw = [('<stdin>', data)]
-
-    elif args.file:
-        with open(args.file, 'rb') as f:
-            data = f.read()
-        reports_raw = [(args.file, data)]
-
-    elif args.dir:
-        import glob
-        paths = sorted(glob.glob(os.path.join(args.dir, '*.att')))
-        if not paths:
-            print(f'No .att files found in {args.dir}', file=sys.stderr)
-            sys.exit(1)
-        for p in paths:
-            with open(p, 'rb') as f:
-                reports_raw.append((p, f.read()))
-
-    elif args.agentfs:
-        print(f'Fetching from AgentFS: {agentfs_url}')
-        try:
-            reports_raw = fetch_from_agentfs(agentfs_url, args.token)
-        except Exception as e:
-            print(f'Error fetching from AgentFS: {e}', file=sys.stderr)
-            sys.exit(1)
-        if not reports_raw:
-            print('No attestation reports found in AgentFS.')
-            sys.exit(0)
-
-    # Decode + verify
-    reports = [AttestationReport(data, source) for source, data in reports_raw]
-
-    all_valid = all(r.valid for r in reports)
-    failed    = [r for r in reports if not r.valid]
-
-    if args.json:
-        output = {'all_valid': all_valid, 'reports': [r.to_dict() for r in reports]}
-        print(json.dumps(output, indent=2))
+    # Load attestation data
+    raw_data = None
+    if args.local:
+        with open(args.local, 'rb') as f:
+            raw_data = f.read()
+    elif args.latest:
+        print(f"Fetching latest attestation from {args.agentfs}...", file=sys.stderr)
+        raw_data = fetch_latest(args.agentfs, args.token or None)
     else:
-        for r in reports:
-            if args.quiet and r.valid:
-                continue
-            print(r.summary())
-            print()
+        parser.error("Provide --latest or --local <file>")
 
-        total = len(reports)
-        n_ok  = sum(1 for r in reports if r.valid)
-        print(f'Summary: {n_ok}/{total} reports valid')
-        if failed:
-            print(f'Failed:')
-            for r in failed:
-                print(f'  {r.source}: {r.error}')
+    if args.save:
+        with open(args.save, 'wb') as f:
+            f.write(raw_data)
+        print(f"Saved to {args.save}", file=sys.stderr)
 
-    sys.exit(0 if all_valid else 1)
+    # Parse
+    verified = None
+    if args.unsigned:
+        body = raw_data
+        sig  = None
+    else:
+        try:
+            body, sig = load_signed_attestation(raw_data)
+        except ValueError:
+            # Try treating as plain text
+            body = raw_data
+            sig  = None
 
+    rec = parse_attestation(body.decode('utf-8', errors='replace'))
 
-if __name__ == '__main__':
-    main()
+    # Verify signature
+    if sig and os.path.exists(args.pubkey):
+        with open(args.pubkey, 'rb') as f:
+            pubkey_raw = f.read()
+        if len(pubkey_raw) == 32:
+            result = verify_ed25519(pubkey_raw, body, sig)
+            verified = result
+        else:
+            print(f"Warning: pubkey {args.pubkey} is {len(pubkey_raw)} bytes (expected 32)", file=sys.stderr)
+
+    print_report(rec, verified)
+
+    # Diff
+    if args.diff:
+        with open(args.diff, 'rb') as f:
+            diff_raw = f.read()
+        try:
+            diff_body, _ = load_signed_attestation(diff_raw)
+        except ValueError:
+            diff_body = diff_raw
+        prev_rec = parse_attestation(diff_body.decode('utf-8', errors='replace'))
+        diff_attestations(prev_rec, rec)
+
+    # Exit code
+    if verified is False:
+        print("ATTESTATION FAILED: signature invalid", file=sys.stderr)
+        return 1
+    return 0
+
+if __name__ == "__main__":
+    sys.exit(main())

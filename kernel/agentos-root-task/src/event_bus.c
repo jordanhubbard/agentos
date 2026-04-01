@@ -40,7 +40,9 @@ static void eventbus_init_ring(void) {
     volatile agentos_ring_header_t *ring = EVENTBUS_RING;
     ring->magic    = AGENTOS_RING_MAGIC;
     ring->version  = 1;
-    ring->capacity = (0x40000 - sizeof(agentos_ring_header_t)) / sizeof(agentos_event_t);
+    /* Reserve the last 768 bytes as batch staging; see EVENTBUS_BATCH_STAGING_OFFSET */
+    ring->capacity = (EVENTBUS_BATCH_STAGING_OFFSET - sizeof(agentos_ring_header_t))
+                     / sizeof(agentos_event_t);
     ring->head     = 0;
     ring->tail     = 0;
 }
