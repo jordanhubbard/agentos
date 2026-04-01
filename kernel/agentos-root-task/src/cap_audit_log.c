@@ -176,13 +176,20 @@ microkit_msginfo protected(microkit_channel ch, microkit_msginfo msginfo) {
         uint32_t caps_mask  = (uint32_t)microkit_mr_get(3);
         uint32_t slot_id    = (uint32_t)microkit_mr_get(4);
 
-        if (event_type != CAP_EVENT_GRANT && event_type != CAP_EVENT_REVOKE) {
+        if (event_type != CAP_EVENT_GRANT &&
+            event_type != CAP_EVENT_REVOKE &&
+            event_type != CAP_AUDIT_POLICY_RELOAD) {
             console_log(5, 5, "[cap_audit_log] WARN: invalid event_type\n");
             microkit_mr_set(0, 1);  /* error */
             return microkit_msginfo_new(0, 1);
         }
 
         cap_audit_append(event_type, agent_id, caps_mask, slot_id);
+
+        if (event_type == CAP_AUDIT_POLICY_RELOAD) {
+            console_log(5, 5, "[cap_audit_log] POLICY_RELOAD logged\n");
+        }
+
         microkit_mr_set(0, 0);  /* success */
         return microkit_msginfo_new(0, 1);
     }

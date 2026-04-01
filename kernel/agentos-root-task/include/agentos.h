@@ -272,8 +272,13 @@ typedef enum {
 #define QUOTA_FLAG_REVOKED    (1u << 3)
 
 /* Capability event types */
-#define CAP_EVENT_GRANT       1
-#define CAP_EVENT_REVOKE      2
+#define CAP_EVENT_GRANT            1
+#define CAP_EVENT_REVOKE           2
+#define CAP_AUDIT_POLICY_RELOAD    8u  /* policy hot-reload; agent_id=checked, caps_mask=revoked, slot_id=version */
+
+/* Capability Broker opcodes (MR0 for PPCs into monitor / cap_broker dispatch) */
+#define OP_CAP_POLICY_RELOAD  0x15u  /* hot-reload policy blob; revoke violating grants atomically */
+#define OP_CAP_STATUS         0x16u  /* query: MR0=cap_count, MR1=policy_version, MR2=active_grants */
 
 /* Capability class bitmask (mirrors WASM capability manifest) */
 #define CAP_CLASS_FS          (1 << 0)
