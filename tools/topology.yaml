@@ -259,6 +259,17 @@ pds:
         perms: r
         setvar_vaddr: mem_ring_vaddr
 
+  # SnapshotSched (passive) — periodic WASM slot checkpointer
+  - name: snapshot_sched
+    priority: 180
+    passive: true
+    program_image: snapshot_sched.elf
+    maps:
+      - mr: agentfs_store
+        vaddr: 0x9000000
+        perms: rw
+        setvar_vaddr: snap_staging_vaddr
+
   # EventBus (passive)
   - name: event_bus
     priority: 200
@@ -733,3 +744,39 @@ channels:
     id_a: 2
     pd_b: controller
     id_b: 6
+
+  # snapshot_sched channels
+  # timer → snapshot_sched: periodic tick notification
+  - name: timer_snap_tick
+    pd_a: timer
+    id_a: 10
+    pd_b: snapshot_sched
+    id_b: 0
+
+  # snapshot_sched → controller: query running slot list
+  - name: snap_ctrl_query
+    pd_a: snapshot_sched
+    id_a: 1
+    pd_b: controller
+    id_b: 7
+
+  # snapshot_sched → agentfs: write slot snapshots
+  - name: snap_agentfs_write
+    pd_a: snapshot_sched
+    id_a: 2
+    pd_b: agentfs
+    id_b: 5
+
+  # snapshot_sched → event_bus: publish SNAP_SCHED_DONE events
+  - name: snap_event_publish
+    pd_a: snapshot_sched
+    id_a: 3
+    pd_b: event_bus
+    id_b: 8
+
+  # controller → snapshot_sched: set policy / force snapshot
+  - name: ctrl_snap_policy
+    pd_a: controller
+    id_a: 8
+    pd_b: snapshot_sched
+    id_b: 4

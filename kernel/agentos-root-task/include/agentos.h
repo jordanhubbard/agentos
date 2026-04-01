@@ -240,6 +240,20 @@ typedef enum {
 #define OP_QUOTA_REGISTER     0x60  /* Register agent with cpu/mem limits */
 #define OP_QUOTA_TICK         0x61  /* Tick agent cpu/mem usage */
 #define OP_QUOTA_STATUS       0x62  /* Query agent quota state */
+
+/* snapshot_sched PD opcodes (priority 180, passive) */
+#define OP_SNAP_STATUS        0xB0u  /* → MR1=rounds, MR2=total_snapped, MR3=tick, MR4=slot_count */
+#define OP_SNAP_SET_POLICY    0xB1u  /* MR1=interval_ticks, MR2=min_delta_kb */
+#define OP_SNAP_FORCE         0xB2u  /* Force immediate round → MR0=ok, MR1=round# */
+#define OP_SNAP_GET_HISTORY   0xB3u  /* → MR1..MR8 = last 4 round summaries */
+
+/* snapshot_sched event bus IDs */
+#define EVENT_SNAP_SCHED_DONE 0x20u  /* MR2=slots_checked, MR3=slots_snapped, MR4=tick */
+
+/* snapshot_sched configuration defaults */
+#define SNAP_INTERVAL_TICKS_DEFAULT  500u  /* ticks between rounds (~5s @ 100Hz) */
+#define SNAP_MIN_DELTA_DEFAULT        64u  /* min heap-KB change to force snap */
+#define SNAP_MAX_SLOTS                 8u  /* max simultaneously tracked slots */
 #define OP_QUOTA_SET          0x63  /* Update agent quota limits */
 
 /* Quota flags */
