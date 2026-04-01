@@ -18,7 +18,7 @@
 # Quick start:
 #   make deps && make demo
 
-.PHONY: all deps deps-tools deps-sdk build demo test clean clean-all help
+.PHONY: all deps deps-tools deps-sdk build demo agentctl test clean clean-all help
 
 # ─── Read config.yaml (if present) ───────────────────────────────────────────
 # Extract target_arch from config.yaml using simple grep/sed (no YAML parser needed)
@@ -251,6 +251,18 @@ endif
 	@$(QEMU) $(QEMU_FLAGS)
 
 # =============================================================================
+# agentctl: build the interactive ncurses TUI launcher
+# =============================================================================
+agentctl:
+	@echo ""
+	@echo "Building agentctl TUI launcher..."
+	@$(MAKE) -C tools/agentctl
+	@echo ""
+	@echo "✓ agentctl built: tools/agentctl/agentctl"
+	@echo "  Run: ./tools/agentctl/agentctl"
+	@echo ""
+
+# =============================================================================
 # test: CI boot test (exits 0 on success, 1 on failure)
 # =============================================================================
 test: build
@@ -288,11 +300,15 @@ help:
 	@echo "  make demo                         Build + launch in QEMU"
 	@echo "  make demo TARGET_ARCH=aarch64     ARM64 QEMU demo (with Linux VMM)"
 	@echo "  make demo TARGET_ARCH=x86_64      x86_64 QEMU demo"
+	@echo "  make agentctl                     Build the interactive TUI launcher"
 	@echo "  make test                         CI boot test (exit 0/1)"
 	@echo "  make clean                        Remove build artifacts (current target)"
 	@echo "  make clean-all                    Remove all build artifacts"
 	@echo ""
-	@echo "Quick start:"
+	@echo "Quick start (TUI launcher — recommended):"
+	@echo "  make deps && make agentctl && ./tools/agentctl/agentctl"
+	@echo ""
+	@echo "Quick start (classic):"
 	@echo "  make deps && make demo"
 	@echo ""
 	@echo "Architecture override (command line wins over config.yaml):"
