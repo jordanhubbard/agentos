@@ -32,6 +32,7 @@ VMM_CFLAGS := \
     -ffreestanding \
     -g3 -O3 -Wall \
     -Wno-unused-function \
+    -DARCH_AARCH64 \
     -DMICROKIT_CONFIG_$(MICROKIT_CONFIG) \
     -DBOARD_qemu_virt_aarch64 \
     -I$(BOARD_DIR)/include \

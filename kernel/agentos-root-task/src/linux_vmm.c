@@ -8,6 +8,10 @@
  *
  * Based on au-ts/libvmm examples/simple, extended with agentOS IPC.
  *
+ * Architecture support:
+ *   ARCH_AARCH64 — full libvmm implementation (EL2 hypervisor, vGIC, UART)
+ *   ARCH_X86_64  — stub: libvmm x86_64 support not yet available
+ *
  * Copyright 2026 agentOS Project (BSD-2-Clause)
  */
 
@@ -15,9 +19,54 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <microkit.h>
+
+/* ─── x86_64 stub ──────────────────────────────────────────────────────────
+ *
+ * libvmm does not yet provide x86_64 VMM support. This stub satisfies the
+ * linker so linux_vmm.elf can be included in x86_64 images. The PD starts,
+ * logs that VMM is not available, then loops passively.
+ *
+ * Set LINUX_VMM_X86_STUB=1 so downstream code can detect the stub at
+ * compile time.
+ */
+#ifdef ARCH_X86_64
+
+#define LINUX_VMM_X86_STUB 1
+
+void init(void)
+{
+    microkit_dbg_puts("[linux_vmm] x86_64: libvmm VMM support not yet implemented.\n");
+    microkit_dbg_puts("[linux_vmm] x86_64: PD running as passive stub.\n");
+}
+
+void notified(microkit_channel ch)
+{
+    (void)ch;
+    microkit_dbg_puts("[linux_vmm] x86_64 stub: unexpected notification\n");
+}
+
+seL4_Bool fault(microkit_child child, microkit_msginfo msginfo,
+                microkit_msginfo *reply_msginfo)
+{
+    (void)child;
+    (void)msginfo;
+    microkit_dbg_puts("[linux_vmm] x86_64 stub: unexpected fault\n");
+    *reply_msginfo = microkit_msginfo_new(0, 0);
+    return seL4_False;
+}
+
+#endif /* ARCH_X86_64 */
+
+/* ─── AArch64 full implementation ──────────────────────────────────────────
+ *
+ * Uses au-ts/libvmm to boot a Linux guest at EL1 under seL4 EL2.
+ * Compiled by vmm.mk which passes -DARCH_AARCH64 and links libvmm.a.
+ */
+#ifdef ARCH_AARCH64
+
 #include <libvmm/libvmm.h>
 
-/* ─── Guest Configuration ──────────────────────────────────────────────── */
+/* ─── Guest Configuration ─────────────────────────────────────────────── */
 
 /* 256MB guest RAM — plenty for Buildroot + basic agent workloads */
 #define GUEST_RAM_SIZE          0x10000000
@@ -26,7 +75,7 @@
 #define GUEST_DTB_VADDR         0x4f000000
 #define GUEST_INIT_RAM_DISK_VADDR 0x4d000000
 
-/* ─── Channel IDs ──────────────────────────────────────────────────────── */
+/* ─── Channel IDs ────────────────────────────────────────────────────── */
 
 /* IRQ channel: PL011 UART interrupt (SPI 1 → IRQ 33) */
 #define SERIAL_IRQ_CH           1
@@ -35,7 +84,7 @@
 /* IPC channel: controller <-> linux_vmm (agent-to-linux bridge) */
 #define CONTROLLER_CH           2
 
-/* ─── Guest Image Symbols ──────────────────────────────────────────────── */
+/* ─── Guest Image Symbols ────────────────────────────────────────────── */
 /* These are linked in by package_guest_images.S */
 
 extern char _guest_kernel_image[];
@@ -48,18 +97,19 @@ extern char _guest_initrd_image_end[];
 /* Microkit sets this to the start of guest_ram MR (0x40000000) */
 uintptr_t guest_ram_vaddr;
 
-/* ─── State ────────────────────────────────────────────────────────────── */
+/* ─── State ──────────────────────────────────────────────────────────── */
 
 static bool guest_started = false;
 
-/* ─── IRQ Handling ─────────────────────────────────────────────────────── */
+/* ─── IRQ Handling ───────────────────────────────────────────────────── */
 
 static void serial_ack(size_t vcpu_id, int irq, void *cookie)
 {
+    (void)vcpu_id; (void)irq; (void)cookie;
     microkit_irq_ack(SERIAL_IRQ_CH);
 }
 
-/* ─── Init ─────────────────────────────────────────────────────────────── */
+/* ─── Init ───────────────────────────────────────────────────────────── */
 
 void init(void)
 {
@@ -118,7 +168,7 @@ void init(void)
     microkit_notify(CONTROLLER_CH);
 }
 
-/* ─── Notification Handler ─────────────────────────────────────────────── */
+/* ─── Notification Handler ───────────────────────────────────────────── */
 
 void notified(microkit_channel ch)
 {
@@ -149,7 +199,7 @@ void notified(microkit_channel ch)
     }
 }
 
-/* ─── Fault Handler ────────────────────────────────────────────────────── */
+/* ─── Fault Handler ──────────────────────────────────────────────────── */
 
 /*
  * After init, the VMM's main job is fault handling. When the guest causes
@@ -168,3 +218,5 @@ seL4_Bool fault(microkit_child child, microkit_msginfo msginfo,
     LOG_VMM_ERR("Unhandled fault from child %d\n", child);
     return seL4_False;
 }
+
+#endif /* ARCH_AARCH64 */

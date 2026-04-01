@@ -101,7 +101,9 @@ ifeq ($(ARCH),aarch64)
     SYSTEM_FILE := agentos-aarch64.system
   endif
 else ifeq ($(ARCH),x86_64)
-  SYSTEM_FILE := agentos-x86_64.system
+  # Include linux_vmm stub so the system description can reference it
+  IMAGES      += linux_vmm.elf
+  SYSTEM_FILE := ../../manifests/agentos-linux-x86.system
 else
   SYSTEM_FILE := agentos.system
 endif
@@ -194,6 +196,18 @@ $(BUILD_DIR)/freebsd_vmm.elf: FORCE
 		all
 	@echo "═══ freebsd_vmm.elf ✓ ═══"
 endif
+endif
+
+# ─── Linux VMM stub (x86_64) ──────────────────────────────────────────────
+# Compiled directly from linux_vmm.c with -DARCH_X86_64.
+# No libvmm dependency — stub implementation only.
+ifeq ($(ARCH),x86_64)
+$(BUILD_DIR)/linux_vmm.o: src/linux_vmm.c
+	@mkdir -p $(BUILD_DIR)
+	$(CC) -c $(CFLAGS) -DARCH_X86_64 -DLINUX_VMM_X86_STUB=1 $< -o $@
+
+$(BUILD_DIR)/linux_vmm.elf: $(BUILD_DIR)/linux_vmm.o
+	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
 endif
 
 $(IMAGE_FILE) $(REPORT_FILE): $(addprefix $(BUILD_DIR)/, $(IMAGES)) $(SYSTEM_FILE)
