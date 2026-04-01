@@ -248,6 +248,17 @@ pds:
         perms: rw
         setvar_vaddr: console_ring_vaddr
 
+  # OOM Killer (passive, priority 245 — acts fast under memory pressure)
+  - name: oom_killer
+    priority: 245
+    passive: true
+    program_image: oom_killer.elf
+    maps:
+      - mr: perf_ring
+        vaddr: 0x8100000
+        perms: r
+        setvar_vaddr: mem_ring_vaddr
+
   # EventBus (passive)
   - name: event_bus
     priority: 200
@@ -707,3 +718,18 @@ channels:
     pd_b: controller
     id_b: 3
     tags: [dev-only]
+
+  # OOM Killer channels
+  # mem_profiler → oom_killer: pressure alert (using id 5 for mem_profiler)
+  - name: mem_oom_pressure
+    pd_a: mem_profiler
+    id_a: 9
+    pd_b: oom_killer
+    id_b: 0
+
+  # oom_killer → controller: slot eviction command (using id 6 for controller)
+  - name: oom_evict
+    pd_a: oom_killer
+    id_a: 2
+    pd_b: controller
+    id_b: 6
