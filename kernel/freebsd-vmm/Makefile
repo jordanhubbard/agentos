@@ -8,7 +8,7 @@
 #   - LIBVMM_DIR pointing to libs/libvmm checkout
 #   - EDK2_FD pointing to the edk2-aarch64-code.fd firmware image
 #   - FREEBSD_DTB pointing to the compiled freebsd-guest.dtb (optional)
-#   - aarch64-linux-gnu-gcc (cross compiler)
+#   - clang + ld.lld + llvm-objcopy (LLVM cross toolchain)
 
 BOARD        ?= qemu_virt_aarch64
 MICROKIT_SDK ?= ../../microkit-sdk-2.1.0
@@ -22,12 +22,11 @@ MICROKIT_LIB     := $(MICROKIT_SDK)/board/$(BOARD)/lib
 LIBVMM_INCLUDE   := $(LIBVMM_DIR)/include
 LIBVMM_SRC       := $(LIBVMM_DIR)/src
 
-CC      := aarch64-linux-gnu-gcc
-LD      := aarch64-linux-gnu-ld
-OBJCOPY := aarch64-linux-gnu-objcopy
+CC      := clang --target=aarch64-none-elf
+LD      := ld.lld
+OBJCOPY := llvm-objcopy
 
 CFLAGS := \
-    -target aarch64-none-elf \
     -mstrict-align \
     -ffreestanding \
     -nostdlib \
@@ -53,9 +52,20 @@ OBJS := $(addprefix $(BUILD_DIR)/, $(SRCS:.c=.o))
 EDK2_OBJ    := $(BUILD_DIR)/edk2_aarch64.o
 DTB_OBJ     := $(BUILD_DIR)/freebsd_dtb.o
 
-.PHONY: all clean dtb
+.PHONY: all clean dtb fetch-guest
+
+# fetch-guest: download FreeBSD 14 AArch64 disk image + EDK2 UEFI firmware
+fetch-guest:
+	@echo "[freebsd-vmm] Fetching FreeBSD guest images..."
+	@../../scripts/fetch-freebsd-guest.sh
 
 all: $(BUILD_DIR)/freebsd_vmm.elf
+
+# Provide a helpful error when EDK2 firmware is missing
+$(EDK2_FD):
+	@echo "[freebsd-vmm] EDK2 firmware not found at $(EDK2_FD)."
+	@echo "[freebsd-vmm] Run: make -C kernel/freebsd-vmm fetch-guest"
+	@exit 1
 
 # Compile VMM source
 $(BUILD_DIR)/%.o: %.c | $(BUILD_DIR)

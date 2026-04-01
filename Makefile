@@ -6,6 +6,7 @@
 #   make demo TARGET_ARCH=aarch64      — override target to ARM64
 #   make demo TARGET_ARCH=x86_64       — override target to x86_64
 #   make demo BOARD=rpi4b_4gb          — override board directly (advanced)
+#   make demo-freebsd                  — build + boot AArch64 with FreeBSD VMM guest
 #   make deps                          — install all build dependencies
 #   make test                          — CI boot test (exit 0/1)
 #   make clean                         — remove build artifacts for current target
@@ -14,11 +15,22 @@
 # Config file: config.yaml (top-level)
 #   target_arch: riscv64 | aarch64 | x86_64
 #   host_arch:   auto | x86_64 | aarch64
+#   guest_os:    none | linux | freebsd
+#
+# GUEST_OS variable (command line or config.yaml guest_os):
+#   none    — native agentOS PDs only (default)
+#   linux   — include Linux VMM (aarch64 only, uses libvmm)
+#   freebsd — include FreeBSD VMM (aarch64 only, uses libvmm + EDK2)
+#
+# FreeBSD VMM cross-compilation note:
+#   Requires LLVM toolchain (clang, ld.lld, llvm-objcopy).
+#   The Microkit SDK does not ship a FreeBSD host toolchain — cross-compile
+#   from Linux or macOS. See: make deps-tools
 #
 # Quick start:
 #   make deps && make demo
 
-.PHONY: all deps deps-tools deps-sdk build demo agentctl test clean clean-all help
+.PHONY: all deps deps-tools deps-sdk build demo demo-freebsd fetch-freebsd-guest agentctl test clean clean-all help
 
 # ─── Read config.yaml (if present) ───────────────────────────────────────────
 # Extract target_arch from config.yaml using simple grep/sed (no YAML parser needed)
@@ -29,6 +41,12 @@ endif
 
 # Command-line TARGET_ARCH overrides config.yaml
 TARGET_ARCH ?= $(CONFIG_TARGET)
+
+# ─── Guest OS ─────────────────────────────────────────────────────────────────
+# GUEST_OS selects the VMM guest bundled into the image.
+# Values: none (default) | linux | freebsd
+# linux and freebsd require TARGET_ARCH=aarch64.
+GUEST_OS ?= none
 
 # ─── Board / arch config ──────────────────────────────────────────────────────
 # BOARD can be set directly to override the auto-mapping from TARGET_ARCH.
@@ -223,7 +241,8 @@ endif
 		BUILD_DIR=$(BUILD_DIR) \
 		MICROKIT_SDK=$(abspath $(MICROKIT_SDK)) \
 		MICROKIT_BOARD=$(BOARD) \
-		MICROKIT_CONFIG=debug
+		MICROKIT_CONFIG=debug \
+		GUEST_OS=$(GUEST_OS)
 	@echo ""
 	@echo "✓ Build complete: $(IMAGE)"
 	@echo ""
@@ -249,6 +268,18 @@ ifeq ($(ARCH),riscv64)
 		(echo "ERROR: BIOS not found at $(BIOS). Run 'make deps' first." && exit 1)
 endif
 	@$(QEMU) $(QEMU_FLAGS)
+
+# =============================================================================
+# fetch-freebsd-guest: download FreeBSD 14 AArch64 disk image + EDK2 firmware
+# =============================================================================
+fetch-freebsd-guest:
+	@bash scripts/fetch-freebsd-guest.sh
+
+# =============================================================================
+# demo-freebsd: build aarch64 + FreeBSD VMM guest, then launch in QEMU
+# =============================================================================
+demo-freebsd:
+	@$(MAKE) demo TARGET_ARCH=aarch64 GUEST_OS=freebsd
 
 # =============================================================================
 # agentctl: build the interactive ncurses TUI launcher
@@ -300,6 +331,9 @@ help:
 	@echo "  make demo                         Build + launch in QEMU"
 	@echo "  make demo TARGET_ARCH=aarch64     ARM64 QEMU demo (with Linux VMM)"
 	@echo "  make demo TARGET_ARCH=x86_64      x86_64 QEMU demo"
+	@echo "  make demo GUEST_OS=linux          AArch64 + Linux VMM guest"
+	@echo "  make demo GUEST_OS=freebsd        AArch64 + FreeBSD VMM guest"
+	@echo "  make demo-freebsd                 Shortcut: aarch64 + FreeBSD VMM"
 	@echo "  make agentctl                     Build the interactive TUI launcher"
 	@echo "  make test                         CI boot test (exit 0/1)"
 	@echo "  make clean                        Remove build artifacts (current target)"

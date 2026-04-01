@@ -87,10 +87,19 @@ WASM3_OBJS         := $(patsubst wasm3/%.c, $(BUILD_DIR)/wasm3_%.o, $(WASM3_SRCS
 
 IMAGES := controller.elf event_bus.elf init_agent.elf worker.elf agentfs.elf vibe_engine.elf console_mux.elf swap_slot.elf mem_profiler.elf net_isolator.elf
 
-# AArch64 builds include the Linux VMM
+# Guest OS selection: none (default) | linux | freebsd
+GUEST_OS ?= none
+
+# AArch64: include VMM based on GUEST_OS
 ifeq ($(ARCH),aarch64)
-  IMAGES += linux_vmm.elf
-  SYSTEM_FILE := agentos-aarch64.system
+  ifeq ($(GUEST_OS),freebsd)
+    IMAGES      += freebsd_vmm.elf
+    SYSTEM_FILE := ../../manifests/agentos-freebsd.system
+  else
+    # Default aarch64: include Linux VMM (stub or full)
+    IMAGES      += linux_vmm.elf
+    SYSTEM_FILE := agentos-aarch64.system
+  endif
 else ifeq ($(ARCH),x86_64)
   SYSTEM_FILE := agentos-x86_64.system
 else
@@ -156,6 +165,7 @@ $(BUILD_DIR)/net_isolator.elf: $(NETISOLATOR_OBJS)
 
 # ─── Linux VMM (AArch64 only) ─────────────────────────────────────────────
 ifeq ($(ARCH),aarch64)
+ifneq ($(GUEST_OS),freebsd)
 $(BUILD_DIR)/linux_vmm.elf: FORCE
 	@echo ""
 	@echo "═══ Building Linux VMM (libvmm) ═══"
@@ -166,7 +176,24 @@ $(BUILD_DIR)/linux_vmm.elf: FORCE
 		MICROKIT_CONFIG=$(MICROKIT_CONFIG) \
 		BOARD_DIR=$(BOARD_DIR) \
 		vmm-all
-FORCE:
+endif
+endif
+
+# ─── FreeBSD VMM (AArch64 + GUEST_OS=freebsd) ─────────────────────────────
+ifeq ($(ARCH),aarch64)
+ifeq ($(GUEST_OS),freebsd)
+FREEBSD_VMM_DIR := $(abspath $(CURDIR)/../freebsd-vmm)
+
+$(BUILD_DIR)/freebsd_vmm.elf: FORCE
+	@echo ""
+	@echo "═══ Building FreeBSD VMM (libvmm + EDK2) ═══"
+	$(MAKE) -C $(FREEBSD_VMM_DIR) \
+		BUILD_DIR=$(BUILD_DIR) \
+		MICROKIT_SDK=$(MICROKIT_SDK) \
+		BOARD=$(MICROKIT_BOARD) \
+		all
+	@echo "═══ freebsd_vmm.elf ✓ ═══"
+endif
 endif
 
 $(IMAGE_FILE) $(REPORT_FILE): $(addprefix $(BUILD_DIR)/, $(IMAGES)) $(SYSTEM_FILE)
@@ -180,4 +207,4 @@ $(IMAGE_FILE) $(REPORT_FILE): $(addprefix $(BUILD_DIR)/, $(IMAGES)) $(SYSTEM_FIL
 clean:
 	rm -rf $(BUILD_DIR)
 
-.PHONY: all clean
+.PHONY: all clean FORCE
