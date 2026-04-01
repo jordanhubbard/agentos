@@ -23,6 +23,11 @@
 
 import { WebSocketServer } from 'ws';
 import http from 'http';
+import fs from 'fs';
+import { fileURLToPath } from 'url';
+import nodePath from 'path';
+
+const __dirname = nodePath.dirname(fileURLToPath(import.meta.url));
 
 const WS_PORT    = 8795;
 const POLL_MS    = 100;
@@ -36,6 +41,55 @@ const SLOT_NAMES = [
   'mem_profiler', 'watchdog', 'trace_recorder', 'cap_policy',
   'debug_bridge', 'fault_handler', 'quota_pd', 'misc',
 ];
+
+// ─── Profiler mock data ──────────────────────────────────────────────────────
+
+function generateProfilerSnapshot() {
+  const j = (base, range = 200) =>
+    Math.max(0, base + Math.floor((Math.random() - 0.5) * range));
+
+  return {
+    ts: Date.now(),
+    slots: [
+      {
+        id: 0, name: 'inference_worker',
+        cpu_pct: Math.min(99, Math.max(1, 42 + Math.floor(Math.random() * 10 - 5))),
+        mem_kb:  j(8192, 512),
+        ticks:   j(12450),
+        frames: [
+          { fn: 'matmul_f32',   ticks: j(5200), depth: 0 },
+          { fn: 'softmax',      ticks: j(2100), depth: 1 },
+          { fn: 'embed_lookup', ticks: j(1800), depth: 1 },
+          { fn: 'layer_norm',   ticks: j(900),  depth: 2 },
+          { fn: 'rms_norm',     ticks: j(620),  depth: 2 },
+          { fn: 'rope_enc',     ticks: j(480),  depth: 3 },
+        ],
+      },
+      {
+        id: 1, name: 'event_handler',
+        cpu_pct: Math.min(99, Math.max(1, 8 + Math.floor(Math.random() * 4 - 2))),
+        mem_kb:  j(512, 64),
+        ticks:   j(2340, 150),
+        frames: [
+          { fn: 'dispatch_event', ticks: j(1200, 100), depth: 0 },
+          { fn: 'cap_check',      ticks: j(600,  80),  depth: 1 },
+          { fn: 'ring_enqueue',   ticks: j(340,  60),  depth: 2 },
+        ],
+      },
+      {
+        id: 2, name: 'vibe_validator',
+        cpu_pct: Math.min(99, Math.max(1, 15 + Math.floor(Math.random() * 6 - 3))),
+        mem_kb:  j(2048, 256),
+        ticks:   j(4110, 300),
+        frames: [
+          { fn: 'wasm_validate', ticks: j(2800, 200), depth: 0 },
+          { fn: 'section_parse', ticks: j(1100, 100), depth: 1 },
+          { fn: 'type_check',    ticks: j(540,  80),  depth: 2 },
+        ],
+      },
+    ],
+  };
+}
 
 // ─── State ──────────────────────────────────────────────────────────────────
 
@@ -122,9 +176,22 @@ function maybeStopPolling(slot) {
 
 // ─── WebSocket server ────────────────────────────────────────────────────────
 
-const server = http.createServer((req, res) => {
-  // Simple health check at /health
-  if (req.url === '/health') {
+const server = http.createServer(async (req, res) => {
+  const pathname = (req.url ?? '/').split('?')[0];
+
+  // ── Dashboard HTML ────────────────────────────────────────────────
+  if (pathname === '/' || pathname === '/dashboard') {
+    try {
+      const html = fs.readFileSync(nodePath.join(__dirname, 'dashboard.html'), 'utf-8');
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+      res.end(html);
+    } catch {
+      res.writeHead(500, { 'Content-Type': 'text/plain' });
+      res.end('dashboard.html not found');
+    }
+
+  // ── Health ────────────────────────────────────────────────────────
+  } else if (pathname === '/health') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({
       ok: true,
@@ -133,6 +200,24 @@ const server = http.createServer((req, res) => {
         [...subscribers.entries()].map(([k, v]) => [k, v.size])
       ),
     }));
+
+  // ── Profiler snapshot ─────────────────────────────────────────────
+  } else if (pathname === '/api/agentos/profiler/snapshot') {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(generateProfilerSnapshot()));
+
+  // ── Slot list (proxy RCC or fall back to mock) ────────────────────
+  } else if (pathname === '/api/agentos/slots') {
+    try {
+      const data = await rccGet('/api/agentos/slots');
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(data));
+    } catch {
+      const mock = { slots: SLOT_NAMES.map((name, id) => ({ id, name, active: id < 12 })) };
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(mock));
+    }
+
   } else {
     res.writeHead(404);
     res.end();
@@ -219,8 +304,10 @@ wss.on('connection', (ws, req) => {
 
 server.listen(WS_PORT, () => {
   console.log(`[console-ws] agentOS console bridge listening on ws://0.0.0.0:${WS_PORT}`);
-  console.log(`[console-ws] health: http://127.0.0.1:${WS_PORT}/health`);
-  console.log(`[console-ws] RCC: ${RCC_BASE}`);
+  console.log(`[console-ws] dashboard: http://127.0.0.1:${WS_PORT}/`);
+  console.log(`[console-ws] health:    http://127.0.0.1:${WS_PORT}/health`);
+  console.log(`[console-ws] profiler:  http://127.0.0.1:${WS_PORT}/api/agentos/profiler/snapshot`);
+  console.log(`[console-ws] RCC:       ${RCC_BASE}`);
 });
 
 process.on('SIGTERM', () => { server.close(); process.exit(0); });
