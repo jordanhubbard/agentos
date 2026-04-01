@@ -1,0 +1,722 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>agentOS RCC Dashboard</title>
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --bg:       #0d1117;
+  --surface:  #161b22;
+  --surface2: #21262d;
+  --border:   #30363d;
+  --text:     #c9d1d9;
+  --muted:    #8b949e;
+  --accent:   #58a6ff;
+  --green:    #3fb950;
+  --yellow:   #d29922;
+  --red:      #f85149;
+  --mono:     'Consolas', 'Monaco', 'Courier New', monospace;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  font-size: 13px;
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* ─── Header ─────────────────────────────────────────────────────── */
+header {
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  padding: 9px 16px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-shrink: 0;
+}
+
+header h1 {
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.2px;
+}
+
+.ws-status {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.ws-dot {
+  width: 7px; height: 7px;
+  border-radius: 50%;
+  background: var(--muted);
+  transition: background 0.3s;
+}
+.ws-dot.connected   { background: var(--green); }
+.ws-dot.error       { background: var(--red); }
+
+/* ─── Tab strip ──────────────────────────────────────────────────── */
+.tab-strip {
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  padding: 0 8px;
+  flex-shrink: 0;
+}
+
+.tab-btn {
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 13px;
+  padding: 8px 14px;
+  margin-bottom: -1px;
+  transition: color 0.12s;
+}
+.tab-btn:hover { color: var(--text); }
+.tab-btn.active { color: var(--accent); border-bottom-color: var(--accent); }
+
+/* ─── Panels ─────────────────────────────────────────────────────── */
+.main-content { flex: 1; overflow: hidden; position: relative; }
+
+.tab-panel {
+  display: none;
+  height: 100%;
+  overflow: auto;
+  padding: 14px 16px;
+  flex-direction: column;
+  gap: 10px;
+}
+.tab-panel.active { display: flex; }
+
+.panel-label {
+  font-size: 11px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.7px;
+  font-weight: 600;
+  flex-shrink: 0;
+}
+
+/* ─── Log view (Audit / Timeline / Metrics) ──────────────────────── */
+.log-area {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px 12px;
+  font-family: var(--mono);
+  font-size: 11.5px;
+  flex: 1;
+  overflow-y: auto;
+  min-height: 100px;
+}
+
+.log-line {
+  line-height: 1.55;
+  white-space: pre-wrap;
+  word-break: break-all;
+  border-bottom: 1px solid rgba(48,54,61,0.45);
+  padding: 1px 0;
+}
+.log-line .ts  { color: var(--muted); margin-right: 8px; }
+.log-line .val { color: var(--text); }
+
+/* ─── Profiler toolbar ───────────────────────────────────────────── */
+.profiler-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-shrink: 0;
+}
+
+.btn {
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  cursor: pointer;
+  font-size: 12px;
+  padding: 5px 11px;
+  transition: background 0.12s;
+}
+.btn:hover { background: var(--border); }
+.btn.primary {
+  background: #1f6feb;
+  border-color: #388bfd;
+  color: #fff;
+}
+.btn.primary:hover { background: #388bfd; }
+
+.toggle-label {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 12px;
+  user-select: none;
+}
+.toggle-label input { accent-color: var(--accent); cursor: pointer; }
+
+.profiler-ts {
+  color: var(--muted);
+  font-size: 11px;
+  font-family: var(--mono);
+  margin-left: auto;
+}
+
+/* ─── Slot summary table ─────────────────────────────────────────── */
+.table-wrapper {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow: hidden;
+  flex-shrink: 0;
+}
+
+.slot-table { border-collapse: collapse; width: 100%; }
+
+.slot-table th {
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  color: var(--muted);
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  padding: 6px 12px;
+  text-align: left;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.slot-table td {
+  border: 1px solid var(--border);
+  padding: 6px 12px;
+  font-family: var(--mono);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.slot-table tr:nth-child(even) td { background: rgba(22,27,34,0.5); }
+
+.cpu-bar { display: flex; align-items: center; gap: 7px; }
+.cpu-bar-track {
+  background: var(--surface2);
+  border-radius: 2px;
+  height: 6px;
+  width: 70px;
+  overflow: hidden;
+}
+.cpu-bar-fill {
+  background: var(--accent);
+  border-radius: 2px;
+  height: 100%;
+  transition: width 0.3s;
+}
+.cpu-bar-fill.hot      { background: var(--yellow); }
+.cpu-bar-fill.critical { background: var(--red); }
+
+/* ─── Flame graph sections ───────────────────────────────────────── */
+.section-title {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.7px;
+  flex-shrink: 0;
+}
+
+.flame-graphs-container {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.flame-section {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.flame-header {
+  background: var(--surface2);
+  border-bottom: 1px solid var(--border);
+  padding: 7px 12px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.flame-header .slot-name { font-weight: 600; font-size: 12px; }
+.flame-header .slot-meta { color: var(--muted); font-size: 11px; font-family: var(--mono); }
+
+.flame-body {
+  padding: 10px 12px;
+  overflow-x: auto;
+}
+
+/* ─── Flame graph SVG ────────────────────────────────────────────── */
+.flame-graph { display: block; }
+.flame-graph rect { cursor: pointer; }
+
+/* ─── Tooltip ────────────────────────────────────────────────────── */
+#fg-tooltip {
+  background: rgba(13,17,23,0.96);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  display: none;
+  font-family: var(--mono);
+  font-size: 11.5px;
+  line-height: 1.6;
+  padding: 7px 11px;
+  pointer-events: none;
+  position: fixed;
+  white-space: pre;
+  z-index: 999;
+  box-shadow: 0 4px 12px rgba(0,0,0,.5);
+}
+</style>
+</head>
+<body>
+
+<header>
+  <svg width="15" height="15" viewBox="0 0 15 15" fill="none" style="flex-shrink:0">
+    <circle cx="7.5" cy="7.5" r="6.5" stroke="#58a6ff" stroke-width="1.4"/>
+    <path d="M4.5 7.5l2 2 4-4" stroke="#3fb950" stroke-width="1.4"
+          stroke-linecap="round" stroke-linejoin="round"/>
+  </svg>
+  <h1>agentOS RCC Dashboard</h1>
+  <div class="ws-status">
+    <div class="ws-dot" id="ws-dot"></div>
+    <span id="ws-label">connecting…</span>
+  </div>
+</header>
+
+<nav class="tab-strip">
+  <button class="tab-btn active" data-tab="audit">Audit</button>
+  <button class="tab-btn" data-tab="timeline">Timeline</button>
+  <button class="tab-btn" data-tab="metrics">Metrics</button>
+  <button class="tab-btn" data-tab="profiler">Profiler</button>
+</nav>
+
+<div class="main-content">
+
+  <!-- ── Audit ─────────────────────────────────────────────────────── -->
+  <div id="tab-audit" class="tab-panel active">
+    <div class="panel-label">Capability Audit Log — slot 5 (cap_audit_log)</div>
+    <div class="log-area" id="audit-log">
+      <div class="log-line"><span class="ts">—</span><span class="val" style="color:var(--muted)">Waiting for cap_audit_log stream…</span></div>
+    </div>
+  </div>
+
+  <!-- ── Timeline ──────────────────────────────────────────────────── -->
+  <div id="tab-timeline" class="tab-panel">
+    <div class="panel-label">IPC Trace Events — slot 10 (trace_recorder)</div>
+    <div class="log-area" id="timeline-log">
+      <div class="log-line"><span class="ts">—</span><span class="val" style="color:var(--muted)">Waiting for trace_recorder stream…</span></div>
+    </div>
+  </div>
+
+  <!-- ── Metrics ───────────────────────────────────────────────────── -->
+  <div id="tab-metrics" class="tab-panel">
+    <div class="panel-label">Performance Counters — slot 8 (mem_profiler)</div>
+    <div class="log-area" id="metrics-log">
+      <div class="log-line"><span class="ts">—</span><span class="val" style="color:var(--muted)">Waiting for mem_profiler stream…</span></div>
+    </div>
+  </div>
+
+  <!-- ── Profiler ───────────────────────────────────────────────────── -->
+  <div id="tab-profiler" class="tab-panel">
+
+    <div class="profiler-toolbar">
+      <button class="btn primary" id="btn-snapshot">&#x21BB; Snapshot</button>
+      <label class="toggle-label">
+        <input type="checkbox" id="auto-refresh-toggle"> Auto-refresh (5s)
+      </label>
+      <span class="profiler-ts" id="profiler-ts">—</span>
+    </div>
+
+    <div class="table-wrapper">
+      <table class="slot-table">
+        <thead>
+          <tr>
+            <th>Slot</th>
+            <th>PD Name</th>
+            <th>CPU %</th>
+            <th>Mem (KB)</th>
+            <th>Ticks</th>
+            <th>Top Function</th>
+          </tr>
+        </thead>
+        <tbody id="slot-table-body">
+          <tr><td colspan="6" style="color:var(--muted);text-align:center;padding:18px;font-family:inherit">
+            Click "Snapshot" to load profiler data
+          </td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="section-title">Flame Graphs</div>
+    <div class="flame-graphs-container" id="flame-graphs">
+      <div style="color:var(--muted);font-style:italic;padding:12px 4px;font-size:12px">
+        No profiler data yet.
+      </div>
+    </div>
+
+  </div><!-- /tab-profiler -->
+
+</div><!-- /main-content -->
+
+<div id="fg-tooltip"></div>
+
+<script>
+'use strict';
+
+// ─── Constants ────────────────────────────────────────────────────────────────
+const WS_SLOT = { audit: 5, timeline: 10, metrics: 8 };
+const LOG_EL  = { audit: 'audit-log', timeline: 'timeline-log', metrics: 'metrics-log' };
+const LOG_CLR = { 5: '#e3b341', 10: '#a5d6ff', 8: '#7ee787' };
+
+// ─── Tab switching ────────────────────────────────────────────────────────────
+let currentTab = 'audit';
+
+document.querySelectorAll('.tab-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    if (btn.dataset.tab === currentTab) return;
+    document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+    document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+    btn.classList.add('active');
+    document.getElementById('tab-' + btn.dataset.tab).classList.add('active');
+    currentTab = btn.dataset.tab;
+    if (currentTab !== 'profiler') wsSubscribeTo(currentTab);
+  });
+});
+
+// ─── WebSocket ────────────────────────────────────────────────────────────────
+let ws = null;
+let activeSlot = null;
+
+function wsConnect() {
+  if (ws) return;
+  const url = `ws://${location.host}`;
+  ws = new WebSocket(url);
+
+  ws.onopen = () => {
+    setWsDot('connected', 'WS connected');
+    wsSubscribeTo(currentTab);
+  };
+
+  ws.onmessage = ev => {
+    let msg;
+    try { msg = JSON.parse(ev.data); } catch { return; }
+    if (msg.slot !== undefined && msg.line !== undefined) {
+      appendLog(msg.slot, msg.line);
+    }
+  };
+
+  ws.onclose = () => {
+    ws = null;
+    activeSlot = null;
+    setWsDot('', 'WS disconnected — reconnecting…');
+    setTimeout(wsConnect, 3000);
+  };
+
+  ws.onerror = () => { setWsDot('error', 'WS error'); ws.close(); };
+}
+
+function wsSend(obj) {
+  if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(obj));
+}
+
+function wsSubscribeTo(tab) {
+  const slot = WS_SLOT[tab];
+  if (slot === undefined) return;
+  if (activeSlot !== null && activeSlot !== slot) {
+    wsSend({ action: 'unsubscribe', slot: activeSlot });
+  }
+  if (slot !== activeSlot) {
+    wsSend({ action: 'subscribe', slot });
+    activeSlot = slot;
+  }
+}
+
+function setWsDot(cls, label) {
+  const dot = document.getElementById('ws-dot');
+  dot.className = 'ws-dot' + (cls ? ' ' + cls : '');
+  document.getElementById('ws-label').textContent = label;
+}
+
+// ─── Log rendering ────────────────────────────────────────────────────────────
+function appendLog(slot, line) {
+  const elId = { 5: 'audit-log', 10: 'timeline-log', 8: 'metrics-log' }[slot];
+  if (!elId) return;
+  const el = document.getElementById(elId);
+
+  // Remove placeholder on first real line
+  const first = el.querySelector('[data-placeholder]');
+  if (first) first.remove();
+
+  const div = document.createElement('div');
+  div.className = 'log-line';
+  const ts = new Date().toISOString().slice(11, 23);
+  const color = LOG_CLR[slot] ?? 'var(--text)';
+  div.innerHTML = `<span class="ts">${ts}</span>`
+    + `<span class="val" style="color:${color}">${esc(line.trimEnd())}</span>`;
+  el.appendChild(div);
+  while (el.children.length > 600) el.removeChild(el.firstChild);
+  el.scrollTop = el.scrollHeight;
+}
+
+// ─── Profiler ─────────────────────────────────────────────────────────────────
+let autoRefreshTimer = null;
+
+document.getElementById('btn-snapshot').addEventListener('click', fetchSnapshot);
+
+document.getElementById('auto-refresh-toggle').addEventListener('change', ev => {
+  clearInterval(autoRefreshTimer);
+  autoRefreshTimer = null;
+  if (ev.target.checked) {
+    autoRefreshTimer = setInterval(fetchSnapshot, 5000);
+    fetchSnapshot();
+  }
+});
+
+async function fetchSnapshot() {
+  const btn = document.getElementById('btn-snapshot');
+  btn.disabled = true;
+  try {
+    const res = await fetch('/api/agentos/profiler/snapshot');
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    renderProfiler(data);
+  } catch (e) {
+    document.getElementById('profiler-ts').textContent = `Error: ${e.message}`;
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+function renderProfiler(data) {
+  const ts = new Date(data.ts).toISOString().replace('T', ' ').slice(0, 23) + ' UTC';
+  document.getElementById('profiler-ts').textContent = `snapshot @ ${ts}`;
+  renderSlotTable(data.slots);
+  renderFlameGraphs(data.slots);
+}
+
+function renderSlotTable(slots) {
+  const tbody = document.getElementById('slot-table-body');
+  tbody.innerHTML = '';
+  for (const s of slots) {
+    const top = (s.frames ?? []).reduce((a, b) => a.ticks > b.ticks ? a : b, s.frames?.[0] ?? { fn: '—', ticks: 0 });
+    const cpu = Math.min(100, Math.max(0, s.cpu_pct));
+    const barCls = cpu >= 80 ? 'critical' : cpu >= 50 ? 'hot' : '';
+    const tr = document.createElement('tr');
+    tr.innerHTML =
+      `<td>${s.id}</td>`
+      + `<td><strong>${esc(s.name)}</strong></td>`
+      + `<td><div class="cpu-bar">`
+      +   `<div class="cpu-bar-track"><div class="cpu-bar-fill ${barCls}" style="width:${cpu}%"></div></div>`
+      +   `${cpu}%</div></td>`
+      + `<td>${s.mem_kb.toLocaleString()}</td>`
+      + `<td>${s.ticks.toLocaleString()}</td>`
+      + `<td>${esc(top.fn)}</td>`;
+    tbody.appendChild(tr);
+  }
+}
+
+// ─── Flame graph ──────────────────────────────────────────────────────────────
+const ROW_H  = 22;
+const SVG_W  = 740;
+const LPAD   = 22;  // left padding for depth labels
+const TTIP   = document.getElementById('fg-tooltip');
+
+function fnColor(name, lightness = 42) {
+  // FNV-1a hash → hue
+  let h = 0x811c9dc5 >>> 0;
+  for (let i = 0; i < name.length; i++) {
+    h ^= name.charCodeAt(i);
+    h = Math.imul(h, 0x01000193) >>> 0;
+  }
+  return `hsl(${h % 360},55%,${lightness}%)`;
+}
+
+function renderFlameGraphs(slots) {
+  const container = document.getElementById('flame-graphs');
+  container.innerHTML = '';
+
+  if (!slots || slots.length === 0) {
+    container.innerHTML = '<div style="color:var(--muted);font-style:italic;padding:12px 4px;font-size:12px">No slots in snapshot.</div>';
+    return;
+  }
+
+  for (const slot of slots) {
+    const frames = slot.frames ?? [];
+    const section = document.createElement('div');
+    section.className = 'flame-section';
+
+    // Header
+    const top = frames.reduce((a, b) => a.ticks > b.ticks ? a : b, frames[0] ?? { fn: '—' });
+    const hdr = document.createElement('div');
+    hdr.className = 'flame-header';
+    hdr.innerHTML =
+      `<span class="slot-name">Slot ${slot.id}: ${esc(slot.name)}</span>`
+      + `<span class="slot-meta">cpu ${slot.cpu_pct}% &nbsp;·&nbsp; `
+      + `${slot.mem_kb.toLocaleString()} KB &nbsp;·&nbsp; `
+      + `${slot.ticks.toLocaleString()} ticks &nbsp;·&nbsp; `
+      + `hot: <strong>${esc(top?.fn ?? '—')}</strong></span>`;
+
+    // Flame SVG
+    const body = document.createElement('div');
+    body.className = 'flame-body';
+    if (frames.length === 0) {
+      body.innerHTML = '<span style="color:var(--muted);font-style:italic;font-size:12px">No frame data.</span>';
+    } else {
+      body.appendChild(buildFlameGraph(slot));
+    }
+
+    section.appendChild(hdr);
+    section.appendChild(body);
+    container.appendChild(section);
+  }
+}
+
+function buildFlameGraph(slot) {
+  const totalTicks = slot.ticks;
+  const frames = slot.frames;
+
+  // Group by depth
+  const byDepth = new Map();
+  let maxDepth = 0;
+  for (const f of frames) {
+    if (!byDepth.has(f.depth)) byDepth.set(f.depth, []);
+    byDepth.get(f.depth).push(f);
+    if (f.depth > maxDepth) maxDepth = f.depth;
+  }
+
+  const svgH = (maxDepth + 1) * ROW_H + 4;
+  const effW = SVG_W - LPAD;
+
+  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  svg.setAttribute('width', SVG_W);
+  svg.setAttribute('height', svgH);
+  svg.setAttribute('viewBox', `0 0 ${SVG_W} ${svgH}`);
+  svg.classList.add('flame-graph');
+
+  // Depth labels (d0 at bottom)
+  for (let d = 0; d <= maxDepth; d++) {
+    const labelY = (maxDepth - d) * ROW_H + ROW_H - 6;
+    const lbl = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+    lbl.setAttribute('x', 1);
+    lbl.setAttribute('y', labelY);
+    lbl.setAttribute('font-size', '9');
+    lbl.setAttribute('fill', 'rgba(139,148,158,0.55)');
+    lbl.setAttribute('font-family', 'monospace');
+    lbl.textContent = `d${d}`;
+    svg.appendChild(lbl);
+  }
+
+  // Clip paths group (prepended so rects draw over them)
+  const defs = document.createElementNS('http://www.w3.org/2000/svg', 'defs');
+  svg.appendChild(defs);
+
+  let clipSeq = 0;
+
+  for (const [depth, dframes] of byDepth.entries()) {
+    let x = LPAD;
+    const rowY = (maxDepth - depth) * ROW_H + 1;
+
+    for (const f of dframes) {
+      const w  = Math.max(1, (f.ticks / totalTicks) * effW);
+      const rx = x.toFixed(1);
+      const rw = Math.max(0, w - 1).toFixed(1);
+      const color = fnColor(f.fn);
+      const pct   = ((f.ticks / totalTicks) * 100).toFixed(1);
+
+      const rect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+      rect.setAttribute('x', rx);
+      rect.setAttribute('y', rowY);
+      rect.setAttribute('width', rw);
+      rect.setAttribute('height', ROW_H - 2);
+      rect.setAttribute('fill', color);
+      rect.setAttribute('rx', 2);
+
+      // Tooltip interaction
+      rect.addEventListener('mouseenter', ev => {
+        TTIP.style.display = 'block';
+        TTIP.textContent =
+          `${f.fn}\nticks: ${f.ticks.toLocaleString()}  (${pct}%)\ndepth: ${depth}`;
+        rect.setAttribute('fill', fnColor(f.fn, 58));
+      });
+      rect.addEventListener('mousemove', ev => {
+        TTIP.style.left = (ev.clientX + 14) + 'px';
+        TTIP.style.top  = (ev.clientY - 34) + 'px';
+      });
+      rect.addEventListener('mouseleave', () => {
+        TTIP.style.display = 'none';
+        rect.setAttribute('fill', color);
+      });
+
+      svg.appendChild(rect);
+
+      // Text label — only when wide enough to be readable
+      if (w > 38) {
+        const clipId = `c${slot.id}-${depth}-${clipSeq++}`;
+        const clip = document.createElementNS('http://www.w3.org/2000/svg', 'clipPath');
+        clip.setAttribute('id', clipId);
+        const cr = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+        cr.setAttribute('x', rx);
+        cr.setAttribute('y', rowY);
+        cr.setAttribute('width', Math.max(0, w - 3).toFixed(1));
+        cr.setAttribute('height', ROW_H - 2);
+        clip.appendChild(cr);
+        defs.appendChild(clip);
+
+        const txt = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+        txt.setAttribute('x', (x + 4).toFixed(1));
+        txt.setAttribute('y', (rowY + ROW_H - 7).toFixed(1));
+        txt.setAttribute('font-size', '10.5');
+        txt.setAttribute('font-family', 'Consolas,Monaco,monospace');
+        txt.setAttribute('fill', 'rgba(255,255,255,0.92)');
+        txt.setAttribute('clip-path', `url(#${clipId})`);
+        txt.setAttribute('style', 'pointer-events:none');
+        txt.textContent = f.fn;
+        svg.appendChild(txt);
+      }
+
+      x += w;
+    }
+  }
+
+  return svg;
+}
+
+// ─── Utility ──────────────────────────────────────────────────────────────────
+function esc(s) {
+  return String(s)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+// ─── Boot ─────────────────────────────────────────────────────────────────────
+wsConnect();
+</script>
+</body>
+</html>
