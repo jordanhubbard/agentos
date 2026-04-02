@@ -64,6 +64,8 @@
         <map mr="swap_code_3" vaddr="0x6C00000" perms="rw" setvar_vaddr="swap_code_ctrl_3" />
         <!-- VibeEngine staging: controller reads WASM proposals from here (r) -->
         <map mr="vibe_staging" vaddr="0x7000000" perms="r" setvar_vaddr="vibe_staging_ctrl_vaddr" />
+        <!-- cap_policy hot-reload: caller writes policy blob here before PPC -->
+        <map mr="cap_policy_shmem" vaddr="0x7400000" perms="rw" setvar_vaddr="cap_policy_shmem_vaddr" />
     </protection_domain>
     
     <!-- EventBus: passive pub/sub backbone -->
@@ -104,8 +106,9 @@
     </protection_domain>
     
     <!-- Memory regions -->
-    <memory_region name="monitor_stack"  size="0x10000" />
-    <memory_region name="eventbus_ring"  size="0x40000" />
+    <memory_region name="monitor_stack"   size="0x10000" />
+    <memory_region name="eventbus_ring"   size="0x40000" />
+    <memory_region name="cap_policy_shmem" size="0x1000" />
     
     <!-- Core service channels -->
     <channel>
@@ -387,9 +390,9 @@
         <program_image path="time_partition.elf" />
     </protection_domain>
 
-    <!-- Channel 90: controller(id=90, pp=true) <-> time_partition(id=0) -->
+    <!-- Channel 41: controller(id=41, pp=true) <-> time_partition(id=0) -->
     <channel>
-        <end pd="controller"     id="90" pp="true" />
+        <end pd="controller"     id="41" pp="true" />
         <end pd="time_partition" id="0" />
     </channel>
 
@@ -457,9 +460,9 @@
         <map mr="perf_ring" vaddr="0xA000000" perms="rw" setvar_vaddr="perf_ring_vaddr" />
     </protection_domain>
 
-    <!-- Channel 70: controller(id=70, pp=true) <-> perf_counters(id=0) -->
+    <!-- Channel 42: controller(id=42, pp=true) <-> perf_counters(id=0) -->
     <channel>
-        <end pd="controller"    id="70" pp="true" />
+        <end pd="controller"    id="42" pp="true" />
         <end pd="perf_counters" id="0" />
     </channel>
 
@@ -575,11 +578,11 @@
         <end pd="net_isolator"  id="0" />
     </channel>
 
-    <!-- Channel 64: init_agent(id=5) <-> net_isolator(id=1)
+    <!-- Channel 64: init_agent(id=6) <-> net_isolator(id=1)
          init_agent PPCs into net_isolator to configure per-slot ACLs on spawn
          and clear ACLs on teardown -->
     <channel>
-        <end pd="init_agent"    id="5" pp="true" />
+        <end pd="init_agent"    id="6" pp="true" />
         <end pd="net_isolator"  id="1" />
     </channel>
 

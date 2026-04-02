@@ -51,8 +51,10 @@
         <map mr="swap_code_3" vaddr="0x6C00000" perms="rw" setvar_vaddr="swap_code_ctrl_3" />
         <!-- VibeEngine staging: controller reads WASM proposals from here (r) -->
         <map mr="vibe_staging" vaddr="0x7000000" perms="r" setvar_vaddr="vibe_staging_ctrl_vaddr" />
+        <!-- cap_policy hot-reload: caller writes policy blob here before PPC -->
+        <map mr="cap_policy_shmem" vaddr="0x7100000" perms="rw" setvar_vaddr="cap_policy_shmem_vaddr" />
     </protection_domain>
-    
+
     <!-- EventBus: passive pub/sub backbone -->
     <protection_domain name="event_bus" priority="200" passive="true">
         <program_image path="event_bus.elf" />
@@ -123,9 +125,10 @@
     <!-- ═══════════════════════════════════════════════════════════════════
          MEMORY REGIONS (native agentOS)
          ═══════════════════════════════════════════════════════════════════ -->
-    <memory_region name="monitor_stack"  size="0x10000" />
-    <memory_region name="eventbus_ring"  size="0x40000" />
-    <memory_region name="agentfs_store"  size="0x50000" />
+    <memory_region name="monitor_stack"    size="0x10000" />
+    <memory_region name="eventbus_ring"    size="0x40000" />
+    <memory_region name="cap_policy_shmem" size="0x1000" />
+    <memory_region name="agentfs_store"    size="0x50000" />
     <memory_region name="swap_code_0"    size="0x400000" />
     <memory_region name="swap_code_1"    size="0x400000" />
     <memory_region name="swap_code_2"    size="0x400000" />

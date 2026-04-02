@@ -56,7 +56,7 @@ LIBS    := -lmicrokit -Tmicrokit.ld
 # Protection Domain ELFs
 # monitor/controller: includes vibe_swap for the hot-swap controller-side logic
 # m3_bare_metal.c provides memset/memcpy/memmove needed by compiler-generated code
-PD_MONITOR_SRCS   := src/monitor.c src/cap_broker.c src/agent_pool.c src/vibe_swap.c src/m3_bare_metal.c src/log.c
+PD_MONITOR_SRCS   := src/monitor.c src/cap_broker.c src/agent_pool.c src/vibe_swap.c src/m3_bare_metal.c src/log.c src/boot_integrity.c src/ed25519_verify.c
 PD_EVENTBUS_SRCS  := src/event_bus.c src/m3_bare_metal.c src/log.c
 PD_INITAGENT_SRCS := src/init_agent.c src/m3_bare_metal.c src/log.c
 PD_WORKER_SRCS    := src/worker.c src/m3_bare_metal.c src/log.c
@@ -68,6 +68,8 @@ PD_CONSOLEMUX_SRCS   := src/console_mux.c src/m3_bare_metal.c src/log.c
 PD_MEMPROFILER_SRCS  := src/mem_profiler.c src/m3_bare_metal.c src/log.c
 PD_NETISOLATOR_SRCS      := src/net_isolator.c src/m3_bare_metal.c src/log.c
 PD_SNAPSHOTSCHED_SRCS    := src/snapshot_sched.c src/m3_bare_metal.c src/log.c
+PD_PERFCOUNTERS_SRCS     := src/perf_counters.c src/m3_bare_metal.c src/log.c
+PD_TIMEPARTITION_SRCS    := src/time_partition.c src/m3_bare_metal.c src/log.c
 
 # wasm3 vendored sources (core interpreter only)
 WASM3_SRCS := wasm3/m3_core.c wasm3/m3_env.c wasm3/m3_code.c wasm3/m3_compile.c \
@@ -85,9 +87,11 @@ SWAPSLOT_OBJS      := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_SWAPSLOT_SRCS))
 MEMPROFILER_OBJS   := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_MEMPROFILER_SRCS))
 NETISOLATOR_OBJS      := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_NETISOLATOR_SRCS))
 SNAPSHOTSCHED_OBJS    := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_SNAPSHOTSCHED_SRCS))
+PERFCOUNTERS_OBJS     := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_PERFCOUNTERS_SRCS))
+TIMEPARTITION_OBJS    := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_TIMEPARTITION_SRCS))
 WASM3_OBJS         := $(patsubst wasm3/%.c, $(BUILD_DIR)/wasm3_%.o, $(WASM3_SRCS))
 
-IMAGES := controller.elf event_bus.elf init_agent.elf worker.elf agentfs.elf vibe_engine.elf console_mux.elf swap_slot.elf mem_profiler.elf net_isolator.elf
+IMAGES := controller.elf event_bus.elf init_agent.elf worker.elf agentfs.elf vibe_engine.elf console_mux.elf swap_slot.elf mem_profiler.elf net_isolator.elf perf_counters.elf time_partition.elf
 
 # Optional: periodic WASM slot snapshot scheduler
 ifdef AGENTOS_SNAPSHOT_SCHED
@@ -174,6 +178,12 @@ $(BUILD_DIR)/net_isolator.elf: $(NETISOLATOR_OBJS)
 	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
 
 $(BUILD_DIR)/snapshot_sched.elf: $(SNAPSHOTSCHED_OBJS)
+	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
+
+$(BUILD_DIR)/perf_counters.elf: $(PERFCOUNTERS_OBJS)
+	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
+
+$(BUILD_DIR)/time_partition.elf: $(TIMEPARTITION_OBJS)
 	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
 
 # ─── Linux VMM (AArch64 only) ─────────────────────────────────────────────

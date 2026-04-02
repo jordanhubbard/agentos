@@ -19,6 +19,8 @@ uintptr_t swap_code_ctrl_2;
 uintptr_t swap_code_ctrl_3;
 /* VibeEngine staging region: controller reads WASM proposals here (mapped r) */
 uintptr_t vibe_staging_ctrl_vaddr;
+/* cap_policy hot-reload shmem: caller writes policy blob here before PPC */
+uintptr_t cap_policy_shmem_vaddr;
 
 /*
  * Echo service WASM binary (embedded for demo Step 4)

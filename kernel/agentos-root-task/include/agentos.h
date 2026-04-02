@@ -397,6 +397,11 @@ typedef struct __attribute__((packed)) {
 
 #define AGENTOS_RING_MAGIC 0xA6E70B05
 
+/* Eventbus ring memory layout (must match memory_region size in *.system files) */
+#define EVENTBUS_RING_SIZE            0x40000u  /* 256 KB — matches agentos*.system */
+#define EVENTBUS_BATCH_STAGING_SIZE   768u      /* bytes reserved at end for batch publish */
+#define EVENTBUS_BATCH_STAGING_OFFSET (EVENTBUS_RING_SIZE - EVENTBUS_BATCH_STAGING_SIZE)
+
 /*
  * OP_PUBLISH_BATCH: coalesce up to 16 MsgBus events in a single seL4_Call.
  *
