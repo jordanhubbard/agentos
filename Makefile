@@ -1,58 +1,28 @@
 # agentOS Top-Level Makefile
 #
-# Architecture is driven by config.yaml (target_arch / host_arch) or overrides:
-#
-#   make demo                          — build + boot using config.yaml defaults
-#   make demo TARGET_ARCH=aarch64      — override target to ARM64
-#   make demo TARGET_ARCH=x86_64       — override target to x86_64
-#   make demo BOARD=rpi4b_4gb          — override board directly (advanced)
-#   make demo-freebsd                  — build + boot AArch64 with FreeBSD VMM guest
-#   make deps                          — install all build dependencies
-#   make test                          — CI boot test (exit 0/1)
-#   make clean                         — remove build artifacts for current target
-#   make clean-all                     — remove all build artifacts
-#
-# Config file: config.yaml (top-level)
-#   target_arch: riscv64 | aarch64 | x86_64
-#   host_arch:   auto | x86_64 | aarch64
-#   guest_os:    none | linux | freebsd
-#
-# GUEST_OS variable (command line or config.yaml guest_os):
-#   none    — native agentOS PDs only (default)
-#   linux   — include Linux VMM (aarch64 only, uses libvmm)
-#   freebsd — include FreeBSD VMM (aarch64 only, uses libvmm + EDK2)
-#
-# FreeBSD VMM cross-compilation note:
-#   Requires LLVM toolchain (clang, ld.lld, llvm-objcopy).
-#   The Microkit SDK does not ship a FreeBSD host toolchain — cross-compile
-#   from Linux or macOS. See: make deps-tools
-#
 # Quick start:
-#   make deps && make demo
+#   make deps && make
+#
+# Targets:
+#   make              — build (native arch) + QEMU (HW-accel) + RCC dashboard
+#   make rcc          — start RCC dashboard only (agentOS already running on hardware)
+#   make deps         — install all build dependencies
+#   make test         — CI boot test (exit 0/1)
+#   make clean        — remove build artifacts for current target
+#   make clean-all    — remove all build artifacts
 
-.PHONY: all deps deps-tools deps-sdk build demo demo-freebsd fetch-freebsd-guest agentctl test test-snapshot-sched clean clean-all help
+.PHONY: all deps deps-tools deps-sdk console rcc test test-snapshot-sched test-power-mgr clean clean-all help
 
 # ─── Read config.yaml (if present) ───────────────────────────────────────────
-# Extract target_arch from config.yaml using simple grep/sed (no YAML parser needed)
 CONFIG_TARGET := $(shell grep '^target_arch:' config.yaml 2>/dev/null | sed 's/target_arch:[[:space:]]*//' | tr -d '[:space:]')
 ifeq ($(CONFIG_TARGET),)
   CONFIG_TARGET := riscv64
 endif
 
-# Command-line TARGET_ARCH overrides config.yaml
 TARGET_ARCH ?= $(CONFIG_TARGET)
+GUEST_OS    ?= none
 
-# ─── Guest OS ─────────────────────────────────────────────────────────────────
-# GUEST_OS selects the VMM guest bundled into the image.
-# Values: none (default) | linux | freebsd
-# linux and freebsd require TARGET_ARCH=aarch64.
-GUEST_OS ?= none
-
-# ─── Board / arch config ──────────────────────────────────────────────────────
-# BOARD can be set directly to override the auto-mapping from TARGET_ARCH.
-# If not set, it maps:  riscv64 → qemu_virt_riscv64
-#                        aarch64 → qemu_virt_aarch64
-#                        x86_64  → x86_64_generic
+# ─── Board / arch config (used by internal build + test targets) ──────────────
 ifndef BOARD
   ifeq ($(TARGET_ARCH),aarch64)
     BOARD := qemu_virt_aarch64
@@ -64,40 +34,21 @@ ifndef BOARD
 endif
 
 ifeq ($(BOARD),qemu_virt_aarch64)
-  ARCH         := aarch64
-  QEMU         := qemu-system-aarch64
-  # virtualization=on enables ARM EL2 hypervisor extensions (required for VMM)
-  # highmem=off + secure=off match libvmm's tested configuration
-  # cortex-a53 is what libvmm examples are tested against
-  # -serial mon:stdio is critical: connects PL011 UART to terminal (guest serial I/O)
-  QEMU_FLAGS    = -machine virt,virtualization=on,highmem=off,secure=off \
-                  -cpu cortex-a53 -m 2G \
-                  -serial mon:stdio -nographic \
-                  -device loader,file=$(IMAGE),addr=0x70000000,cpu-num=0
+  ARCH := aarch64
 else ifeq ($(BOARD),$(filter $(BOARD),x86_64_generic x86_64_generic_vtx))
-  ARCH         := x86_64
-  QEMU         := qemu-system-x86_64
-  # KVM acceleration if available (host x86_64), otherwise TCG
-  QEMU_ACCEL   := $(shell [ "$$(uname -m)" = "x86_64" ] && [ -e /dev/kvm ] && echo "-enable-kvm" || echo "")
-  QEMU_FLAGS    = -machine q35 -cpu qemu64 -m 2G -nographic \
-                  -serial mon:stdio \
-                  $(QEMU_ACCEL) \
-                  -kernel $(IMAGE)
+  ARCH := x86_64
 else
-  ARCH         := riscv64
-  QEMU         := qemu-system-riscv64
-  BIOS         ?= /usr/share/qemu/opensbi-riscv64-generic-fw_dynamic.bin
-  QEMU_FLAGS    = -machine virt -cpu rv64 -m 2G -nographic \
-                  -bios $(BIOS) \
-                  -kernel $(IMAGE)
+  ARCH := riscv64
+  BIOS ?= /usr/share/qemu/opensbi-riscv64-generic-fw_dynamic.bin
 endif
 
 # ─── Paths ────────────────────────────────────────────────────────────────────
-ROOT_DIR      := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
-KERNEL_DIR    := $(ROOT_DIR)kernel/agentos-root-task
-MICROKIT_SDK  := $(ROOT_DIR)microkit-sdk-2.1.0
-BUILD_DIR     := $(ROOT_DIR)build/$(BOARD)
-IMAGE         := $(BUILD_DIR)/agentos.img
+ROOT_DIR     := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
+KERNEL_DIR   := $(ROOT_DIR)kernel/agentos-root-task
+MICROKIT_SDK := $(ROOT_DIR)microkit-sdk-2.1.0
+BUILD_DIR    := $(ROOT_DIR)build/$(BOARD)
+IMAGE        := $(BUILD_DIR)/agentos.img
+RCC_DIR      := $(ROOT_DIR)rcc
 
 # ─── OS / arch detection ──────────────────────────────────────────────────────
 UNAME_S := $(shell uname -s)
@@ -132,24 +83,57 @@ else ifeq ($(UNAME_S),Linux)
     SDK_PLATFORM := linux-x86-64
   endif
 else ifeq ($(UNAME_S),FreeBSD)
-  # FreeBSD: LLVM installed via pkg (e.g. /usr/local/bin/clang)
   LLVM_BIN     := /usr/local/bin
   LLD_BIN      := /usr/local/bin
-  # Microkit SDK has no FreeBSD host toolchain — deps-sdk and build will error
   SDK_PLATFORM := unsupported-freebsd
 endif
 
-# SDK download URL
 SDK_URL := https://github.com/seL4/microkit/releases/download/2.1.0/microkit-sdk-2.1.0-$(SDK_PLATFORM).tar.gz
 
-all: build
+# ─── Native arch / HW-accelerated console ────────────────────────────────────
+# Normalise uname -m: macOS Apple Silicon reports "arm64", seL4 uses "aarch64"
+NATIVE_ARCH := $(shell uname -m | sed 's/arm64/aarch64/')
+
+ifeq ($(UNAME_S),Darwin)
+  QEMU_ACCEL_NATIVE := -accel hvf
+else ifeq ($(UNAME_S),Linux)
+  QEMU_ACCEL_NATIVE := $(shell [ -e /dev/kvm ] && echo "-enable-kvm" || echo "")
+else
+  QEMU_ACCEL_NATIVE :=
+endif
+
+ifeq ($(NATIVE_ARCH),aarch64)
+  NATIVE_BOARD      := qemu_virt_aarch64
+  NATIVE_QEMU       := qemu-system-aarch64
+  NATIVE_QEMU_FLAGS  = -machine virt,virtualization=on,highmem=off,secure=off \
+                        -cpu host -m 2G \
+                        -display none -monitor none -serial null \
+                        $(QEMU_ACCEL_NATIVE) \
+                        -netdev user,id=net0,hostfwd=tcp:127.0.0.1:8789-:8789 \
+                        -device virtio-net-device,netdev=net0 \
+                        -device loader,file=$(NATIVE_IMAGE),addr=0x70000000,cpu-num=0
+else
+  NATIVE_BOARD      := x86_64_generic
+  NATIVE_QEMU       := qemu-system-x86_64
+  NATIVE_QEMU_FLAGS  = -machine q35 -cpu host -m 2G \
+                        -display none -monitor none -serial null \
+                        $(QEMU_ACCEL_NATIVE) \
+                        -netdev user,id=net0,hostfwd=tcp:127.0.0.1:8789-:8789 \
+                        -device e1000,netdev=net0 \
+                        -kernel $(NATIVE_IMAGE)
+endif
+
+NATIVE_BUILD_DIR := $(ROOT_DIR)build/$(NATIVE_BOARD)
+NATIVE_IMAGE     := $(NATIVE_BUILD_DIR)/agentos.img
+
+all: console
 
 # =============================================================================
 # deps
 # =============================================================================
 deps: deps-tools deps-sdk
 	@echo ""
-	@echo "✅ All dependencies installed! Run 'make demo' to build and boot."
+	@echo "✅ All dependencies installed! Run 'make' to launch the console."
 
 deps-tools:
 	@echo ""
@@ -221,8 +205,6 @@ else
 	@echo "  ld.lld:              $$(ld.lld --version 2>/dev/null | head -1 || echo 'NOT FOUND')"
 endif
 
-# Download Microkit SDK if not present
-# FreeBSD cannot host the Microkit SDK — cross-compile from Linux or macOS.
 ifeq ($(UNAME_S),FreeBSD)
 deps-sdk:
 	@echo ""
@@ -246,7 +228,7 @@ $(MICROKIT_SDK)/bin/microkit:
 		(echo "ERROR: SDK extraction failed" && exit 1)
 
 # =============================================================================
-# build
+# build (internal — used by console and test)
 # =============================================================================
 build: deps-sdk
 	@echo ""
@@ -282,51 +264,52 @@ endif
 	@echo "✓ Build complete: $(IMAGE)"
 	@echo ""
 
+# internal sentinel: npm install for RCC bridge
+$(RCC_DIR)/node_modules: $(RCC_DIR)/package.json
+	@echo "Installing RCC npm dependencies..."
+	@cd $(RCC_DIR) && npm install --silent
+	@echo "✓ RCC deps installed"
+
 # =============================================================================
-# demo: build + launch in QEMU
+# rcc: start the RCC dashboard bridge (agentOS already running on hardware)
 # =============================================================================
-demo: build
+rcc: $(RCC_DIR)/node_modules
+	@echo ""
+	@echo "agentOS RCC dashboard → http://localhost:8795"
+	@echo "Connects to agentOS at http://127.0.0.1:8789"
+	@echo "Press Ctrl-C to stop."
+	@echo ""
+	@cd $(RCC_DIR) && node agentos_console.mjs
+
+# =============================================================================
+# console (default): build native → QEMU (HW-accel) + RCC dashboard
+#
+# Builds agentOS for the host's native CPU, launches it headlessly in QEMU
+# with hardware acceleration (HVF on macOS, KVM on Linux), starts the RCC
+# WebSocket bridge, and opens the dashboard in the default browser.
+# Ctrl-C shuts down both the bridge and QEMU cleanly.
+# =============================================================================
+console: $(RCC_DIR)/node_modules
+	@$(MAKE) build BOARD=$(NATIVE_BOARD) TARGET_ARCH=$(NATIVE_ARCH)
 	@echo ""
 	@echo "╔══════════════════════════════════════════╗"
-	@echo "║     agentOS — launching QEMU demo        ║"
+	@echo "║  agentOS — console (native, HW-accel)    ║"
 	@echo "╚══════════════════════════════════════════╝"
 	@echo ""
-	@echo "Target : $(TARGET_ARCH)"
-	@echo "Board  : $(BOARD)"
-	@echo "Image  : $(IMAGE)"
-	@echo "QEMU   : $(shell $(QEMU) --version 2>/dev/null | head -1)"
+	@echo "Arch  : $(NATIVE_ARCH)"
+	@echo "Board : $(NATIVE_BOARD)"
+	@echo "Accel : $(if $(QEMU_ACCEL_NATIVE),$(QEMU_ACCEL_NATIVE),none (TCG fallback))"
+	@echo "Image : $(NATIVE_IMAGE)"
 	@echo ""
-	@echo "Starting agentOS... (Ctrl-A X to quit QEMU)"
+	@echo "Dashboard: http://localhost:8795  (opening in browser...)"
 	@echo "──────────────────────────────────────────────"
-ifeq ($(ARCH),riscv64)
-	@test -f "$(BIOS)" || \
-		(echo "ERROR: BIOS not found at $(BIOS). Run 'make deps' first." && exit 1)
-endif
-	@$(QEMU) $(QEMU_FLAGS)
-
-# =============================================================================
-# fetch-freebsd-guest: download FreeBSD 14 AArch64 disk image + EDK2 firmware
-# =============================================================================
-fetch-freebsd-guest:
-	@bash scripts/fetch-freebsd-guest.sh
-
-# =============================================================================
-# demo-freebsd: build aarch64 + FreeBSD VMM guest, then launch in QEMU
-# =============================================================================
-demo-freebsd:
-	@$(MAKE) demo TARGET_ARCH=aarch64 GUEST_OS=freebsd
-
-# =============================================================================
-# agentctl: build the interactive ncurses TUI launcher
-# =============================================================================
-agentctl:
-	@echo ""
-	@echo "Building agentctl TUI launcher..."
-	@$(MAKE) -C tools/agentctl
-	@echo ""
-	@echo "✓ agentctl built: tools/agentctl/agentctl"
-	@echo "  Run: ./tools/agentctl/agentctl"
-	@echo ""
+	@trap 'kill "$$QEMU_PID" 2>/dev/null; exit' INT TERM; \
+	 $(NATIVE_QEMU) $(NATIVE_QEMU_FLAGS) & QEMU_PID=$$!; \
+	 sleep 0.5; \
+	 command -v open     >/dev/null 2>&1 && open     http://localhost:8795 || \
+	 command -v xdg-open >/dev/null 2>&1 && xdg-open http://localhost:8795 || true; \
+	 cd $(RCC_DIR) && node agentos_console.mjs; \
+	 kill "$$QEMU_PID" 2>/dev/null || true
 
 # =============================================================================
 # test: CI boot test (exits 0 on success, 1 on failure)
@@ -336,12 +319,6 @@ test: build
 
 # =============================================================================
 # test-snapshot-sched: standalone unit test for the snapshot_sched PD
-#
-# Compiles test/test_snapshot_sched.c as a native host binary (no SDK needed)
-# and runs it.  Exits 0 on success, non-zero on assertion failure.
-#
-# Usage:
-#   make test-snapshot-sched
 # =============================================================================
 test-snapshot-sched:
 	@echo ""
@@ -356,12 +333,6 @@ test-snapshot-sched:
 
 # =============================================================================
 # test-power-mgr: standalone unit test for the power_mgr DVFS thermal model
-#
-# Compiles test/test_power_mgr.c as a native host binary (no SDK required)
-# and runs it.  Exits 0 on success, non-zero on assertion failure.
-#
-# Usage:
-#   make test-power-mgr
 # =============================================================================
 test-power-mgr:
 	@echo ""
@@ -394,33 +365,16 @@ help:
 	@echo ""
 	@echo "agentOS — the OS for agents, by agents"
 	@echo ""
-	@echo "Config: config.yaml (target_arch: riscv64|aarch64|x86_64, host_arch: auto)"
-	@echo "Current: TARGET_ARCH=$(TARGET_ARCH) → BOARD=$(BOARD)"
-	@echo ""
 	@echo "Targets:"
-	@echo "  make deps                         Install build deps (brew / apt)"
-	@echo "  make build                        Build for config.yaml target (default: riscv64)"
-	@echo "  make build TARGET_ARCH=aarch64    Build for ARM64"
-	@echo "  make build TARGET_ARCH=x86_64     Build for x86_64"
-	@echo "  make build BOARD=rpi4b_4gb        Build for a specific Microkit board"
-	@echo "  make demo                         Build + launch in QEMU"
-	@echo "  make demo TARGET_ARCH=aarch64     ARM64 QEMU demo (with Linux VMM)"
-	@echo "  make demo TARGET_ARCH=x86_64      x86_64 QEMU demo"
-	@echo "  make demo GUEST_OS=linux          AArch64 + Linux VMM guest"
-	@echo "  make demo GUEST_OS=freebsd        AArch64 + FreeBSD VMM guest"
-	@echo "  make demo-freebsd                 Shortcut: aarch64 + FreeBSD VMM"
-	@echo "  make agentctl                     Build the interactive TUI launcher"
-	@echo "  make test                         CI boot test (exit 0/1)"
-	@echo "  make clean                        Remove build artifacts (current target)"
-	@echo "  make clean-all                    Remove all build artifacts"
+	@echo "  make                  Build (native arch) + QEMU (HW-accel) + RCC dashboard"
+	@echo "  make rcc              Start RCC dashboard only (agentOS running on hardware)"
+	@echo "  make deps             Install build deps (brew / apt)"
+	@echo "  make test             CI boot test (exit 0/1)"
+	@echo "  make test-snapshot-sched"
+	@echo "  make test-power-mgr"
+	@echo "  make clean            Remove build artifacts"
+	@echo "  make clean-all        Remove all build artifacts"
 	@echo ""
-	@echo "Quick start (TUI launcher — recommended):"
-	@echo "  make deps && make agentctl && ./tools/agentctl/agentctl"
-	@echo ""
-	@echo "Quick start (classic):"
-	@echo "  make deps && make demo"
-	@echo ""
-	@echo "Architecture override (command line wins over config.yaml):"
-	@echo "  TARGET_ARCH=riscv64|aarch64|x86_64"
-	@echo "  HOST_ARCH=auto|x86_64|aarch64"
+	@echo "Quick start:"
+	@echo "  make deps && make"
 	@echo ""
