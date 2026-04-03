@@ -11,7 +11,7 @@
 #   make clean        — remove build artifacts for current target
 #   make clean-all    — remove all build artifacts
 
-.PHONY: all deps deps-tools deps-sdk console dashboard test test-snapshot-sched test-power-mgr clean clean-all help release release-minor release-major
+.PHONY: all deps deps-tools deps-sdk submodules console dashboard test test-snapshot-sched test-power-mgr clean clean-all help release release-minor release-major
 
 # ─── Read config.yaml (if present) ───────────────────────────────────────────
 CONFIG_TARGET := $(shell grep '^target_arch:' config.yaml 2>/dev/null | sed 's/target_arch:[[:space:]]*//' | tr -d '[:space:]')
@@ -228,9 +228,19 @@ $(MICROKIT_SDK)/bin/microkit:
 		(echo "ERROR: SDK extraction failed" && exit 1)
 
 # =============================================================================
+# submodules: initialise any uninitialised git submodules
+# =============================================================================
+submodules:
+	@if git submodule status 2>/dev/null | grep -q '^-'; then \
+		echo "[submodules] Uninitialised submodule(s) detected — running git submodule update --init --recursive..."; \
+		git submodule update --init --recursive; \
+		echo "[submodules] ✓ Submodules ready."; \
+	fi
+
+# =============================================================================
 # build (internal — used by console and test)
 # =============================================================================
-build: deps-sdk
+build: submodules deps-sdk
 	@echo ""
 	@echo "╔══════════════════════════════════════════╗"
 	@echo "║   agentOS — building kernel ($(BOARD))   ║"
