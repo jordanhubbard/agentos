@@ -11,7 +11,7 @@
 #   make clean        — remove build artifacts for current target
 #   make clean-all    — remove all build artifacts
 
-.PHONY: all deps deps-tools deps-sdk console dashboard test test-snapshot-sched test-power-mgr clean clean-all help
+.PHONY: all deps deps-tools deps-sdk console dashboard test test-snapshot-sched test-power-mgr clean clean-all help release release-minor release-major
 
 # ─── Read config.yaml (if present) ───────────────────────────────────────────
 CONFIG_TARGET := $(shell grep '^target_arch:' config.yaml 2>/dev/null | sed 's/target_arch:[[:space:]]*//' | tr -d '[:space:]')
@@ -359,6 +359,18 @@ clean-all:
 	@echo "✓ Clean."
 
 # =============================================================================
+# release: tag + GitHub release (requires gh CLI and clean working tree)
+# =============================================================================
+release:
+	@bash scripts/release.sh patch
+
+release-minor:
+	@bash scripts/release.sh minor
+
+release-major:
+	@bash scripts/release.sh major
+
+# =============================================================================
 # help
 # =============================================================================
 help:
@@ -374,6 +386,9 @@ help:
 	@echo "  make test-power-mgr"
 	@echo "  make clean            Remove build artifacts"
 	@echo "  make clean-all        Remove all build artifacts"
+	@echo "  make release          Cut a patch release (tag + GitHub release)"
+	@echo "  make release-minor    Cut a minor release"
+	@echo "  make release-major    Cut a major release"
 	@echo ""
 	@echo "Quick start:"
 	@echo "  make deps && make"
