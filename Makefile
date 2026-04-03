@@ -4,14 +4,14 @@
 #   make deps && make
 #
 # Targets:
-#   make              — build (native arch) + QEMU (HW-accel) + agentOS console
+#   make              — build (native arch) + QEMU (HW-accel) + agentOS console (http://localhost:8080)
 #   make dashboard    — start agentOS console only (agentOS already running on hardware)
 #   make deps         — install all build dependencies
 #   make test         — CI boot test (exit 0/1)
 #   make clean        — remove build artifacts for current target
 #   make clean-all    — remove all build artifacts
 
-.PHONY: all deps deps-tools deps-sdk submodules console dashboard test test-snapshot-sched test-power-mgr clean clean-all help release release-minor release-major
+.PHONY: all deps deps-tools deps-sdk submodules console dashboard webmux-build test test-snapshot-sched test-power-mgr clean clean-all help release release-minor release-major
 
 # ─── Read config.yaml (if present) ───────────────────────────────────────────
 CONFIG_TARGET := $(shell grep '^target_arch:' config.yaml 2>/dev/null | sed 's/target_arch:[[:space:]]*//' | tr -d '[:space:]')
@@ -49,6 +49,7 @@ MICROKIT_SDK := $(ROOT_DIR)microkit-sdk-2.1.0
 BUILD_DIR    := $(ROOT_DIR)build/$(BOARD)
 IMAGE        := $(BUILD_DIR)/agentos.img
 CONSOLE_DIR  := $(ROOT_DIR)console
+WEBMUX_DIR   ?= $(HOME)/Src/webmux/webmux
 
 # ─── OS / arch detection ──────────────────────────────────────────────────────
 UNAME_S := $(shell uname -s)
@@ -281,25 +282,35 @@ $(CONSOLE_DIR)/node_modules: $(CONSOLE_DIR)/package.json
 	@echo "✓ console deps installed"
 
 # =============================================================================
-# dashboard: start the agentOS console bridge (agentOS already running on hardware)
+# webmux-build: build webmux (run once, or when webmux sources change)
 # =============================================================================
-dashboard: $(CONSOLE_DIR)/node_modules
+webmux-build:
+	@echo "Building webmux..."
+	@cd $(WEBMUX_DIR) && npm install --silent && npm run build
+	@echo "✓ webmux built"
+
+# =============================================================================
+# dashboard: start the agentOS console (agentOS already running on hardware)
+# =============================================================================
+dashboard: webmux-build
 	@echo ""
-	@echo "agentOS console → http://localhost:8795"
+	@echo "agentOS console (webmux) → http://localhost:8080"
 	@echo "Connects to agentOS at http://127.0.0.1:8789"
 	@echo "Press Ctrl-C to stop."
 	@echo ""
-	@cd $(CONSOLE_DIR) && node agentos_console.mjs
+	@cd $(WEBMUX_DIR) && \
+	  WEBMUX_EXEC_COMMAND="$(CONSOLE_DIR)/agentos-attach {host} {port}" \
+	  npm start
 
 # =============================================================================
 # console (default): build native → QEMU (HW-accel) + agentOS console
 #
 # Builds agentOS for the host's native CPU, launches it headlessly in QEMU
 # with hardware acceleration (HVF on macOS, KVM on Linux), starts the
-# WebSocket console bridge, and opens the dashboard in the default browser.
-# Ctrl-C shuts down both the bridge and QEMU cleanly.
+# webmux console, and opens it in the default browser.
+# Ctrl-C shuts down both webmux and QEMU cleanly.
 # =============================================================================
-console: $(CONSOLE_DIR)/node_modules
+console: webmux-build
 	@$(MAKE) build BOARD=$(NATIVE_BOARD) TARGET_ARCH=$(NATIVE_ARCH)
 	@echo ""
 	@echo "╔══════════════════════════════════════════╗"
@@ -311,14 +322,16 @@ console: $(CONSOLE_DIR)/node_modules
 	@echo "Accel : $(if $(QEMU_ACCEL_NATIVE),$(QEMU_ACCEL_NATIVE),none (TCG fallback))"
 	@echo "Image : $(NATIVE_IMAGE)"
 	@echo ""
-	@echo "Dashboard: http://localhost:8795  (opening in browser...)"
+	@echo "Console: http://localhost:8080  (opening in browser...)"
 	@echo "──────────────────────────────────────────────"
 	@trap 'kill "$$QEMU_PID" 2>/dev/null; exit' INT TERM; \
 	 $(NATIVE_QEMU) $(NATIVE_QEMU_FLAGS) & QEMU_PID=$$!; \
 	 sleep 0.5; \
-	 command -v open     >/dev/null 2>&1 && open     http://localhost:8795 || \
-	 command -v xdg-open >/dev/null 2>&1 && xdg-open http://localhost:8795 || true; \
-	 cd $(CONSOLE_DIR) && node agentos_console.mjs; \
+	 command -v open     >/dev/null 2>&1 && open     http://localhost:8080 || \
+	 command -v xdg-open >/dev/null 2>&1 && xdg-open http://localhost:8080 || true; \
+	 cd $(WEBMUX_DIR) && \
+	   WEBMUX_EXEC_COMMAND="$(CONSOLE_DIR)/agentos-attach {host} {port}" \
+	   npm start; \
 	 kill "$$QEMU_PID" 2>/dev/null || true
 
 # =============================================================================

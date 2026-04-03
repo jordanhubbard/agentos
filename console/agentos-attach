@@ -1,0 +1,123 @@
+#!/usr/bin/env node
+// agentos-attach <host> <slot>
+//
+// Connects stdio bidirectionally to an agentOS console slot via the HTTP API.
+// Intended for use as the exec transport command in webmux:
+//
+//   WEBMUX_EXEC_COMMAND="agentos-attach {host} {port}"
+//
+// where {host} is the agentOS API host (e.g. 127.0.0.1) and {port} is the
+// slot number (0-15).  The API port defaults to 8789 but can be overridden
+// with AGENTOS_API_PORT.
+//
+// Requires Node 18+ for built-in fetch.
+
+'use strict';
+
+const [,, host = '127.0.0.1', slotArg = '0'] = process.argv;
+
+const slot = parseInt(slotArg, 10);
+if (isNaN(slot) || slot < 0 || slot > 15) {
+  process.stderr.write(`agentos-attach: invalid slot number: ${slotArg}\n`);
+  process.exit(1);
+}
+
+const API_PORT = process.env.AGENTOS_API_PORT || '8789';
+const BASE     = `http://${host}:${API_PORT}`;
+const TOKEN    = process.env.AGENTOS_TOKEN || 'agentos-console-20maaghccmbmnby63so';
+const POLL_MS  = 50;
+
+const authHeaders = {
+  Authorization: `Bearer ${TOKEN}`,
+  'Content-Type': 'application/json',
+};
+
+let cursor = 0;
+let polling = true;
+
+async function attach() {
+  try {
+    const res = await fetch(`${BASE}/api/agentos/console/attach/${slot}`, {
+      method: 'POST',
+      headers: authHeaders,
+    });
+    if (!res.ok) {
+      process.stderr.write(`\r\n[agentos-attach: attach returned ${res.status}]\r\n`);
+    }
+  } catch (err) {
+    process.stderr.write(`\r\n[agentos-attach: attach failed: ${err.message}]\r\n`);
+  }
+}
+
+async function pollOutput() {
+  try {
+    const res = await fetch(`${BASE}/api/agentos/console/${slot}?cursor=${cursor}`, {
+      headers: authHeaders,
+    });
+    if (res.ok) {
+      const data = await res.json();
+      const lines = data.lines || [];
+      if (lines.length > 0) {
+        process.stdout.write(lines.join('\r\n') + '\r\n');
+        cursor += lines.length;
+      }
+    }
+  } catch {
+    // Transient network error — keep polling.
+  }
+}
+
+async function sendInput(data) {
+  try {
+    await fetch(`${BASE}/api/agentos/console/inject/${slot}`, {
+      method: 'POST',
+      headers: authHeaders,
+      body: JSON.stringify({ data }),
+    });
+  } catch {
+    // inject endpoint may not be implemented yet — silently ignore.
+  }
+}
+
+function shutdown() {
+  polling = false;
+  if (process.stdin.isTTY) {
+    try { process.stdin.setRawMode(false); } catch { /* ignore */ }
+  }
+  process.exit(0);
+}
+
+async function main() {
+  if (process.stdin.isTTY) {
+    process.stdin.setRawMode(true);
+  }
+  process.stdin.resume();
+  process.stdin.setEncoding('utf8');
+
+  await attach();
+  process.stderr.write(`\r\n[agentOS slot ${slot} @ ${BASE}]\r\n`);
+
+  // Poll for output on a tight interval.
+  const poller = setInterval(async () => {
+    if (!polling) { clearInterval(poller); return; }
+    await pollOutput();
+  }, POLL_MS);
+
+  // Forward stdin to the inject endpoint.
+  process.stdin.on('data', async (chunk) => {
+    if (chunk === '\x03') { // Ctrl-C
+      clearInterval(poller);
+      shutdown();
+      return;
+    }
+    await sendInput(chunk);
+  });
+
+  process.once('SIGTERM', () => { clearInterval(poller); shutdown(); });
+  process.once('SIGINT',  () => { clearInterval(poller); shutdown(); });
+}
+
+main().catch(err => {
+  process.stderr.write(`agentos-attach: fatal: ${err.message}\n`);
+  process.exit(1);
+});
