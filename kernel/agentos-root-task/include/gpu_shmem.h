@@ -70,11 +70,11 @@ typedef enum {
 
 typedef struct __attribute__((packed, aligned(64))) {
     uint32_t   magic;          /* GPU_SHMEM_MAGIC for validity check */
-    gpu_op_t   op;             /* Operation to perform */
-    gpu_dtype_t dtype;         /* Element data type */
-    uint8_t    ndim;           /* Number of dimensions (≤ 8) */
+    uint8_t    op;             /* gpu_op_t — operation to perform */
+    uint8_t    dtype;          /* gpu_dtype_t — element data type */
+    uint8_t    ndim;           /* Number of dimensions (≤ 4) */
     uint8_t    _pad0;
-    uint32_t   shape[8];       /* Dimension sizes (unused dims = 0) */
+    uint32_t   shape[4];       /* Dimension sizes (unused dims = 0) */
     uint64_t   offset;         /* Byte offset into payload area */
     uint64_t   size;           /* Byte size of tensor data */
     uint64_t   result_offset;  /* Byte offset for result (GPU_OP_INFER) */

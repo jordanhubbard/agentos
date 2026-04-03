@@ -1,11 +1,11 @@
-# dev-shell RCC service
+# dev-shell agentOS console service
 
-RCC (Remote Control Console) integration for the agentOS `dev_shell` PD.
+agentOS console integration for the agentOS `dev_shell` PD.
 
 ## Overview
 
-The `dev_shell` PD exposes an interactive debug REPL accessible from the RCC
-dashboard over UART / serial ring buffer.  This service bridges the RCC HTTP
+The `dev_shell` PD exposes an interactive debug REPL accessible from the agentOS console
+dashboard over UART / serial ring buffer.  This service bridges the agentOS console HTTP
 API to the dev_shell shared memory ring buffer inside QEMU.
 
 Enable dev_shell at build time:
@@ -36,11 +36,11 @@ The `dev_shell_rings` memory region (4KB, mapped at `0xC000000` in the PD):
 2. Copy `out_buf`, print via `printf` / UART
 3. Clear `out_ready = 0`
 
-## RCC API endpoints (stub — not yet implemented)
+## agentOS console API endpoints (stub — not yet implemented)
 
 ### `GET /api/agentos/shell`
 
-Server-Sent Events stream.  The RCC backend polls `out_ready` every 50 ms;
+Server-Sent Events stream.  The agentOS console backend polls `out_ready` every 50 ms;
 when set, it reads `out_buf`, emits a `data:` SSE event, and clears the flag.
 
 ```
@@ -85,7 +85,7 @@ The backend writes `cmd` to `in_buf`, sets `in_ready = 1`, and sends a
 
 ## Implementation notes
 
-- Full RCC backend integration requires a QEMU QMP / monitor socket bridge to
+- Full agentOS console backend integration requires a QEMU QMP / monitor socket bridge to
   write shared memory and trigger notifications.
 - For local QEMU testing, the controller PD can be patched to read commands
   from its debug UART input and forward them via the ring buffer.

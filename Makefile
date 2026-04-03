@@ -4,14 +4,14 @@
 #   make deps && make
 #
 # Targets:
-#   make              — build (native arch) + QEMU (HW-accel) + RCC dashboard
-#   make rcc          — start RCC dashboard only (agentOS already running on hardware)
+#   make              — build (native arch) + QEMU (HW-accel) + agentOS console
+#   make dashboard    — start agentOS console only (agentOS already running on hardware)
 #   make deps         — install all build dependencies
 #   make test         — CI boot test (exit 0/1)
 #   make clean        — remove build artifacts for current target
 #   make clean-all    — remove all build artifacts
 
-.PHONY: all deps deps-tools deps-sdk console rcc test test-snapshot-sched test-power-mgr clean clean-all help
+.PHONY: all deps deps-tools deps-sdk console dashboard test test-snapshot-sched test-power-mgr clean clean-all help
 
 # ─── Read config.yaml (if present) ───────────────────────────────────────────
 CONFIG_TARGET := $(shell grep '^target_arch:' config.yaml 2>/dev/null | sed 's/target_arch:[[:space:]]*//' | tr -d '[:space:]')
@@ -48,7 +48,7 @@ KERNEL_DIR   := $(ROOT_DIR)kernel/agentos-root-task
 MICROKIT_SDK := $(ROOT_DIR)microkit-sdk-2.1.0
 BUILD_DIR    := $(ROOT_DIR)build/$(BOARD)
 IMAGE        := $(BUILD_DIR)/agentos.img
-RCC_DIR      := $(ROOT_DIR)rcc
+CONSOLE_DIR  := $(ROOT_DIR)console
 
 # ─── OS / arch detection ──────────────────────────────────────────────────────
 UNAME_S := $(shell uname -s)
@@ -264,32 +264,32 @@ endif
 	@echo "✓ Build complete: $(IMAGE)"
 	@echo ""
 
-# internal sentinel: npm install for RCC bridge
-$(RCC_DIR)/node_modules: $(RCC_DIR)/package.json
-	@echo "Installing RCC npm dependencies..."
-	@cd $(RCC_DIR) && npm install --silent
-	@echo "✓ RCC deps installed"
+# internal sentinel: npm install for agentOS console bridge
+$(CONSOLE_DIR)/node_modules: $(CONSOLE_DIR)/package.json
+	@echo "Installing agentOS console npm dependencies..."
+	@cd $(CONSOLE_DIR) && npm install --silent
+	@echo "✓ console deps installed"
 
 # =============================================================================
-# rcc: start the RCC dashboard bridge (agentOS already running on hardware)
+# dashboard: start the agentOS console bridge (agentOS already running on hardware)
 # =============================================================================
-rcc: $(RCC_DIR)/node_modules
+dashboard: $(CONSOLE_DIR)/node_modules
 	@echo ""
-	@echo "agentOS RCC dashboard → http://localhost:8795"
+	@echo "agentOS console → http://localhost:8795"
 	@echo "Connects to agentOS at http://127.0.0.1:8789"
 	@echo "Press Ctrl-C to stop."
 	@echo ""
-	@cd $(RCC_DIR) && node agentos_console.mjs
+	@cd $(CONSOLE_DIR) && node agentos_console.mjs
 
 # =============================================================================
-# console (default): build native → QEMU (HW-accel) + RCC dashboard
+# console (default): build native → QEMU (HW-accel) + agentOS console
 #
 # Builds agentOS for the host's native CPU, launches it headlessly in QEMU
-# with hardware acceleration (HVF on macOS, KVM on Linux), starts the RCC
-# WebSocket bridge, and opens the dashboard in the default browser.
+# with hardware acceleration (HVF on macOS, KVM on Linux), starts the
+# WebSocket console bridge, and opens the dashboard in the default browser.
 # Ctrl-C shuts down both the bridge and QEMU cleanly.
 # =============================================================================
-console: $(RCC_DIR)/node_modules
+console: $(CONSOLE_DIR)/node_modules
 	@$(MAKE) build BOARD=$(NATIVE_BOARD) TARGET_ARCH=$(NATIVE_ARCH)
 	@echo ""
 	@echo "╔══════════════════════════════════════════╗"
@@ -308,7 +308,7 @@ console: $(RCC_DIR)/node_modules
 	 sleep 0.5; \
 	 command -v open     >/dev/null 2>&1 && open     http://localhost:8795 || \
 	 command -v xdg-open >/dev/null 2>&1 && xdg-open http://localhost:8795 || true; \
-	 cd $(RCC_DIR) && node agentos_console.mjs; \
+	 cd $(CONSOLE_DIR) && node agentos_console.mjs; \
 	 kill "$$QEMU_PID" 2>/dev/null || true
 
 # =============================================================================
@@ -366,8 +366,8 @@ help:
 	@echo "agentOS — the OS for agents, by agents"
 	@echo ""
 	@echo "Targets:"
-	@echo "  make                  Build (native arch) + QEMU (HW-accel) + RCC dashboard"
-	@echo "  make rcc              Start RCC dashboard only (agentOS running on hardware)"
+	@echo "  make                  Build (native arch) + QEMU (HW-accel) + agentOS console"
+	@echo "  make dashboard        Start agentOS console only (agentOS running on hardware)"
 	@echo "  make deps             Install build deps (brew / apt)"
 	@echo "  make test             CI boot test (exit 0/1)"
 	@echo "  make test-snapshot-sched"

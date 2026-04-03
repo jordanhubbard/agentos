@@ -1,7 +1,7 @@
 {
-  "name": "agentos-rcc-bridge",
+  "name": "agentos-console",
   "version": "0.1.0",
-  "description": "RCC bridge utilities for agentOS — console WebSocket bridge, QEMU pipe reader",
+  "description": "agentOS console bridge — WebSocket server that streams live PD output to the browser dashboard",
   "type": "module",
   "scripts": {
     "console": "node agentos_console.mjs",

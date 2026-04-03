@@ -2,7 +2,7 @@
  * mesh_raft.c — Raft integration for agentOS mesh_agent
  *
  * Wires raft.c into the mesh agent loop:
- *   - Sends/receives RaftMsg via RCC SquirrelBus (POST /api/squirrelbus/raft)
+ *   - Sends/receives RaftMsg via agentOS SquirrelBus (POST /api/squirrelbus/raft)
  *   - Calls raft_tick() every ~10ms from the agent heartbeat
  *   - On commit: updates the in-memory GPU task queue
  *   - Exposes mesh_raft_is_leader() for the GPU scheduler guard
@@ -52,7 +52,7 @@ static void on_commit(void *ud, const RaftLogEntry *e) {
     printf("[mesh_raft] committed GPU task seq=%llu\n", (unsigned long long)e->index);
 }
 
-/* ── Send callback: POST to RCC SquirrelBus ────────────────────────────── */
+/* ── Send callback: POST to agentOS SquirrelBus ─────────────────────────── */
 
 static void raft_send(void *ud, uint8_t to_node, const RaftMsg *msg) {
     (void)ud;

@@ -8,7 +8,7 @@
  * Protocol (client → server):
  *   {"action":"subscribe","slot":2}    — start receiving lines from slot 2
  *   {"action":"unsubscribe","slot":2}  — stop
- *   {"action":"attach","slot":2}       — also POST attach to RCC
+ *   {"action":"attach","slot":2}       — also POST attach to agentOS
  *   {"action":"list"}                  — get all slots with activity counts
  *
  * Protocol (server → client):
@@ -18,7 +18,7 @@
  *   {"event":"error","msg":"..."}
  *
  * Listens on WS port 8795.
- * Polls RCC GET /api/agentos/console/:slot every 100ms per subscribed slot.
+ * Polls agentOS GET /api/agentos/console/:slot every 100ms per subscribed slot.
  */
 
 import { WebSocketServer } from 'ws';
@@ -29,11 +29,11 @@ import nodePath from 'path';
 
 const __dirname = nodePath.dirname(fileURLToPath(import.meta.url));
 
-const WS_PORT    = 8795;
-const POLL_MS    = 100;
-const RCC_BASE   = 'http://127.0.0.1:8789';
-const RCC_TOKEN  = 'rcc-agent-rocky-20maaghccmbmnby63so';
-const MAX_SLOTS  = 16;
+const WS_PORT       = 8795;
+const POLL_MS       = 100;
+const AGENTOS_BASE  = 'http://127.0.0.1:8789';
+const AGENTOS_TOKEN = 'agentos-console-20maaghccmbmnby63so';
+const MAX_SLOTS     = 16;
 
 const SLOT_NAMES = [
   'monitor', 'init_agent', 'event_bus', 'agentfs',
@@ -106,26 +106,26 @@ const activeSlots = new Set();
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
-async function rccGet(path) {
-  const url = `${RCC_BASE}${path}`;
+async function agentosGet(path) {
+  const url = `${AGENTOS_BASE}${path}`;
   const res = await fetch(url, {
-    headers: { Authorization: `Bearer ${RCC_TOKEN}` },
+    headers: { Authorization: `Bearer ${AGENTOS_TOKEN}` },
   });
-  if (!res.ok) throw new Error(`RCC ${path} → ${res.status}`);
+  if (!res.ok) throw new Error(`agentOS ${path} → ${res.status}`);
   return res.json();
 }
 
-async function rccPost(path, body = {}) {
-  const url = `${RCC_BASE}${path}`;
+async function agentosPost(path, body = {}) {
+  const url = `${AGENTOS_BASE}${path}`;
   const res = await fetch(url, {
     method: 'POST',
     headers: {
-      Authorization: `Bearer ${RCC_TOKEN}`,
+      Authorization: `Bearer ${AGENTOS_TOKEN}`,
       'Content-Type': 'application/json',
     },
     body: JSON.stringify(body),
   });
-  if (!res.ok) throw new Error(`RCC POST ${path} → ${res.status}`);
+  if (!res.ok) throw new Error(`agentOS POST ${path} → ${res.status}`);
   return res.json();
 }
 
@@ -141,7 +141,7 @@ function broadcast(slot, msg) {
 async function pollSlot(slot) {
   if (!activeSlots.has(slot)) return;
   try {
-    const data = await rccGet(`/api/agentos/console/${slot}`);
+    const data = await agentosGet(`/api/agentos/console/${slot}`);
     const lines = data.lines ?? [];
     const cursor = slotCursor.get(slot) ?? 0;
     if (lines.length > cursor) {
@@ -152,7 +152,7 @@ async function pollSlot(slot) {
       }
     }
   } catch (e) {
-    // RCC unreachable — retry next tick
+    // agentOS unreachable — retry next tick
   }
   if (activeSlots.has(slot)) {
     setTimeout(() => pollSlot(slot), POLL_MS);
@@ -206,10 +206,10 @@ const server = http.createServer(async (req, res) => {
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify(generateProfilerSnapshot()));
 
-  // ── Slot list (proxy RCC or fall back to mock) ────────────────────
+  // ── Slot list (proxy agentOS or fall back to mock) ───────────────────
   } else if (pathname === '/api/agentos/slots') {
     try {
-      const data = await rccGet('/api/agentos/slots');
+      const data = await agentosGet('/api/agentos/slots');
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify(data));
     } catch {
@@ -261,7 +261,7 @@ wss.on('connection', (ws, req) => {
         return;
       }
       try {
-        await rccPost(`/api/agentos/console/attach/${slot}`);
+        await agentosPost(`/api/agentos/console/attach/${slot}`);
         ws.send(JSON.stringify({ event: 'attached', slot }));
       } catch (e) {
         ws.send(JSON.stringify({ event: 'error', msg: `attach failed: ${e.message}` }));
@@ -307,7 +307,7 @@ server.listen(WS_PORT, () => {
   console.log(`[console-ws] dashboard: http://127.0.0.1:${WS_PORT}/`);
   console.log(`[console-ws] health:    http://127.0.0.1:${WS_PORT}/health`);
   console.log(`[console-ws] profiler:  http://127.0.0.1:${WS_PORT}/api/agentos/profiler/snapshot`);
-  console.log(`[console-ws] RCC:       ${RCC_BASE}`);
+  console.log(`[console-ws] agentOS:   ${AGENTOS_BASE}`);
 });
 
 process.on('SIGTERM', () => { server.close(); process.exit(0); });

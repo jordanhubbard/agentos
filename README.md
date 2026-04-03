@@ -142,7 +142,7 @@ cd agentos
 make deps
 
 # Build the interactive launcher
-make agentctl
+make -C tools/agentctl
 
 # Launch the pre-boot menu
 ./tools/agentctl/agentctl
@@ -154,11 +154,10 @@ After selection it `exec()`s the appropriate `qemu-system-*` command directly.
 ### Quick start — classic make targets
 
 ```bash
-make deps && make demo                        # default arch (riscv64)
-make demo TARGET_ARCH=aarch64                 # ARM64 (with Linux VMM)
-make demo TARGET_ARCH=x86_64                  # x86_64
-make demo GUEST_OS=freebsd                    # AArch64 + FreeBSD VMM
-make demo-freebsd                             # shortcut for above
+make deps && make                             # build + QEMU (native arch) + console
+make build TARGET_ARCH=aarch64                # ARM64 (with Linux VMM)
+make build TARGET_ARCH=x86_64                 # x86_64
+make build TARGET_ARCH=aarch64 GUEST_OS=freebsd  # AArch64 + FreeBSD VMM
 ```
 
 ### FreeBSD VMM
@@ -169,15 +168,12 @@ make fetch-freebsd-guest
 
 # Build the FreeBSD VMM PD, compile DTB, pack Microkit image
 make build TARGET_ARCH=aarch64 GUEST_OS=freebsd
-
-# Launch: seL4 → EDK2 → FreeBSD shell under agentOS
-make demo-freebsd
 ```
 
 ### x86_64
 
 ```bash
-make demo TARGET_ARCH=x86_64
+make build TARGET_ARCH=x86_64
 ```
 
 The Linux VMM is a stub on x86_64 (libvmm x86 support in progress).
@@ -348,10 +344,7 @@ make deps
 make fetch-freebsd-guest
 
 # Build the VMM PD, compile DTB, pack Microkit image
-make build-freebsd
-
-# Launch: seL4 → EDK2 → FreeBSD shell under agentOS
-make demo-freebsd
+make build TARGET_ARCH=aarch64 GUEST_OS=freebsd
 ```
 
 ### Creating additional VM instances

@@ -16,7 +16,7 @@
  *     [2052..2055] out_tail (host reads from here)
  *     [2056..4095] output ring (2040B circular)
  *
- *   The RCC dashboard (or test harness) writes commands to the cmd ring
+ *   The agentOS console (or test harness) writes commands to the cmd ring
  *   and reads output from the out ring.  A Microkit notification wakes the
  *   dev_shell PD to process pending commands.
  *
@@ -44,7 +44,7 @@
  * (pass -DAGENTOS_DEV_SHELL or use `make dev-shell`); otherwise a no-op stub
  * keeps the system image valid in every build.
  *
- * RCC integration: see services/dev-shell/README.md
+ * agentOS console integration: see services/dev-shell/README.md
  *   GET  /api/agentos/shell     — SSE stream of dev_shell output ring
  *   POST /api/agentos/shell/cmd — write command to cmd ring, notify dev_shell
  */

@@ -85,6 +85,10 @@ seL4_Bool fault(microkit_child child, microkit_msginfo msginfo,
 /* IPC channel: controller <-> linux_vmm (agent-to-linux bridge) */
 #define CONTROLLER_CH           2
 
+/* GPU shared memory notification channels (assigned when MR is mapped) */
+#define GPU_SHMEM_NOTIFY_IN_CH  3   /* seL4 PD → linux_vmm: tensor ready */
+#define GPU_SHMEM_NOTIFY_OUT_CH 4   /* linux_vmm → seL4 PD: result ready */
+
 /* ─── Guest Image Symbols ────────────────────────────────────────────── */
 /* These are linked in by package_guest_images.S */
 
@@ -97,6 +101,13 @@ extern char _guest_initrd_image_end[];
 
 /* Microkit sets this to the start of guest_ram MR (0x40000000) */
 uintptr_t guest_ram_vaddr;
+
+/* ─── GPU shared memory vaddr (set by Microkit when MR is mapped) ────── */
+
+/* Declared weak so it defaults to 0 when the gpu_tensor_buf MR is not
+ * mapped into this PD. The init() function guards on this being non-zero
+ * before calling gpu_shmem_init(). */
+uintptr_t gpu_tensor_buf_vaddr __attribute__((weak));
 
 /* ─── State ──────────────────────────────────────────────────────────── */
 

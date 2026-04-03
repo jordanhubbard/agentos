@@ -52,7 +52,7 @@
         <!-- VibeEngine staging: controller reads WASM proposals from here (r) -->
         <map mr="vibe_staging" vaddr="0x7000000" perms="r" setvar_vaddr="vibe_staging_ctrl_vaddr" />
         <!-- cap_policy hot-reload: caller writes policy blob here before PPC -->
-        <map mr="cap_policy_shmem" vaddr="0x7100000" perms="rw" setvar_vaddr="cap_policy_shmem_vaddr" />
+        <map mr="cap_policy_shmem" vaddr="0x7400000" perms="rw" setvar_vaddr="cap_policy_shmem_vaddr" />
     </protection_domain>
 
     <!-- EventBus: passive pub/sub backbone -->

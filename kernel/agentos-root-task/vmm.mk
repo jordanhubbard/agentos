@@ -108,20 +108,26 @@ $(BUILD_DIR)/images.o: $(PKG_IMG) \
 		-target aarch64-none-elf \
 		$(PKG_IMG) -o $@
 
-# ─── Compile linux_vmm.c ─────────────────────────────────────────────────
+# ─── Compile linux_vmm.c + gpu_shmem.c ──────────────────────────────────
 $(BUILD_DIR)/linux_vmm.o: $(KERNEL_SRC_DIR)/src/linux_vmm.c
 	@mkdir -p $(BUILD_DIR)
 	@echo "[VMM] Compiling linux_vmm.c..."
 	clang $(VMM_CFLAGS) -c -o $@ $<
 
+$(BUILD_DIR)/gpu_shmem.o: $(KERNEL_SRC_DIR)/src/gpu_shmem.c
+	@mkdir -p $(BUILD_DIR)
+	@echo "[VMM] Compiling gpu_shmem.c..."
+	clang $(VMM_CFLAGS) -c -o $@ $<
+
 # ─── Link linux_vmm.elf ──────────────────────────────────────────────────
 $(BUILD_DIR)/linux_vmm.elf: $(BUILD_DIR)/linux_vmm.o \
+                             $(BUILD_DIR)/gpu_shmem.o \
                              $(BUILD_DIR)/images.o \
                              $(BUILD_DIR)/libvmm.a \
                              $(BUILD_DIR)/libsddf_util_debug.a
 	@echo "[VMM] Linking linux_vmm.elf..."
 	ld.lld -L$(BOARD_DIR)/lib \
-		$(BUILD_DIR)/linux_vmm.o $(BUILD_DIR)/images.o \
+		$(BUILD_DIR)/linux_vmm.o $(BUILD_DIR)/gpu_shmem.o $(BUILD_DIR)/images.o \
 		--start-group -lmicrokit -Tmicrokit.ld \
 		$(BUILD_DIR)/libvmm.a $(BUILD_DIR)/libsddf_util_debug.a \
 		--end-group \
@@ -129,7 +135,7 @@ $(BUILD_DIR)/linux_vmm.elf: $(BUILD_DIR)/linux_vmm.o \
 	@echo "[VMM] linux_vmm.elf ✓"
 
 vmm-clean:
-	rm -f $(BUILD_DIR)/linux_vmm.o $(BUILD_DIR)/linux_vmm.elf
+	rm -f $(BUILD_DIR)/linux_vmm.o $(BUILD_DIR)/gpu_shmem.o $(BUILD_DIR)/linux_vmm.elf
 	rm -f $(BUILD_DIR)/images.o $(BUILD_DIR)/vm.dts $(BUILD_DIR)/vm.dtb
 	rm -f $(BUILD_DIR)/libvmm.a $(BUILD_DIR)/libsddf_util_debug.a
 	rm -f $(BUILD_DIR)/vmm_wrapper.mk

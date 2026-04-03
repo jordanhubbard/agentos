@@ -8,7 +8,7 @@
  * Scope: leader election + log replication for GPU scheduler queue state.
  *        Non-GPU queue state remains eventually consistent (no Raft).
  *
- * Transport: messages are exchanged via the RCC SquirrelBus
+ * Transport: messages are exchanged via the agentOS SquirrelBus
  *   (POST /api/squirrelbus/raft) or directly via TCP (port 8790).
  *   Agents call raft_tick() periodically from their heartbeat loop.
  *
