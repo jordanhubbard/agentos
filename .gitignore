@@ -41,3 +41,7 @@ boot/*.iso
 
 # Build reports (generated)
 build-*/
+
+# Node.js
+node_modules/
+console/package-lock.json
