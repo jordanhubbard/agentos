@@ -95,7 +95,14 @@ SDK_URL := https://github.com/seL4/microkit/releases/download/2.1.0/microkit-sdk
 NATIVE_ARCH := $(shell uname -m | sed 's/arm64/aarch64/')
 
 ifeq ($(UNAME_S),Darwin)
-  QEMU_ACCEL_NATIVE := -accel hvf
+  ifeq ($(NATIVE_ARCH),aarch64)
+    # HVF on Apple Silicon has irrecoverable assertion failures with seL4's
+    # aarch64 memory access patterns (hvf_vcpu_exec isv assertion, hvf.c).
+    # Use TCG (software emulation) until this is resolved upstream in QEMU.
+    QEMU_ACCEL_NATIVE :=
+  else
+    QEMU_ACCEL_NATIVE := -accel hvf
+  endif
 else ifeq ($(UNAME_S),Linux)
   QEMU_ACCEL_NATIVE := $(shell [ -e /dev/kvm ] && echo "-enable-kvm" || echo "")
 else
@@ -105,10 +112,7 @@ endif
 ifeq ($(NATIVE_ARCH),aarch64)
   NATIVE_BOARD      := qemu_virt_aarch64
   NATIVE_QEMU       := qemu-system-aarch64
-  # HVF on Apple Silicon occupies EL2 itself, so the guest cannot use EL2
-  # virtualization extensions — drop virtualization=on when using HVF.
-  _VIRT_FLAG        := $(if $(filter -accel hvf,$(QEMU_ACCEL_NATIVE)),off,on)
-  NATIVE_QEMU_FLAGS  = -machine virt,virtualization=$(_VIRT_FLAG),highmem=off,secure=off \
+  NATIVE_QEMU_FLAGS  = -machine virt,virtualization=on,highmem=off,secure=off \
                         -cpu host -m 2G \
                         -display none -monitor none -serial null \
                         $(QEMU_ACCEL_NATIVE) \
