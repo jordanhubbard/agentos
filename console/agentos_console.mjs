@@ -368,7 +368,6 @@ const server = http.createServer(async (req, res) => {
         .map(f => ({ name: f, size: fs.statSync(nodePath.join(guestDir, f)).size }));
     } catch {}
     const vmRunning = (slotHistory.get(15)?.length ?? 0) > 0;
-    res.writeHead(200, { 'Content-Type': 'application/json' });
     // Annotate available images with known OS names and fetch status
     const KNOWN = {
       freebsd: { label: 'FreeBSD 14.4 AArch64', img: 'freebsd-14.4-aarch64.img' },
