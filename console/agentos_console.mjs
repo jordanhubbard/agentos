@@ -30,6 +30,7 @@ import http from 'http';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
 import nodePath from 'path';
+import { spawn } from 'child_process';
 
 const __dirname = nodePath.dirname(fileURLToPath(import.meta.url));
 
@@ -240,6 +241,52 @@ async function agentosPost(path, body = {}) {
   return res.json();
 }
 
+// ─── Guest OS fetch ───────────────────────────────────────────────────────────
+// Track in-progress fetch jobs: os → { proc, log[] }
+const fetchJobs = new Map();
+const REPO_ROOT = nodePath.join(__dirname, '..');
+
+const FETCH_SCRIPTS = {
+  freebsd: nodePath.join(REPO_ROOT, 'scripts', 'fetch-freebsd-guest.sh'),
+  ubuntu:  nodePath.join(REPO_ROOT, 'scripts', 'fetch-ubuntu-guest.sh'),
+};
+
+function startFetch(os) {
+  if (fetchJobs.has(os)) return { status: 'already-running' };
+  const script = FETCH_SCRIPTS[os];
+  if (!script) return { status: 'error', msg: `Unknown OS: ${os}` };
+
+  const log = [];
+  const proc = spawn('bash', [script], { cwd: REPO_ROOT });
+  fetchJobs.set(os, { proc, log, done: false, exitCode: null });
+
+  const onLine = (line) => {
+    log.push(line);
+    // Broadcast as a system event to all connected clients
+    broadcastAll({ event: 'fetch-progress', os, line });
+  };
+
+  proc.stdout.on('data', d => d.toString().split('\n').filter(Boolean).forEach(onLine));
+  proc.stderr.on('data', d => d.toString().split('\n').filter(Boolean).forEach(onLine));
+  proc.on('close', (code) => {
+    const job = fetchJobs.get(os);
+    if (job) { job.done = true; job.exitCode = code; }
+    broadcastAll({ event: 'fetch-done', os, exitCode: code });
+    console.log(`[console-ws] fetch ${os} exited ${code}`);
+  });
+
+  return { status: 'started' };
+}
+
+function broadcastAll(msg) {
+  const str = JSON.stringify(msg);
+  for (const [, subs] of subscribers) {
+    for (const ws of subs) {
+      if (ws.readyState === 1) ws.send(str);
+    }
+  }
+}
+
 // ─── Broadcast ───────────────────────────────────────────────────────────────
 
 function broadcast(slot, msg) {
@@ -315,11 +362,48 @@ const server = http.createServer(async (req, res) => {
     } catch {}
     const vmRunning = (slotHistory.get(15)?.length ?? 0) > 0;
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({
-      running: vmRunning ? [{ name: 'Buildroot Linux 5.18', slot: 15 }] : [],
-      available,
-      fetchScript: 'scripts/fetch-freebsd-guest.sh',
-    }));
+    // Annotate available images with known OS names and fetch status
+    const KNOWN = {
+      freebsd: { label: 'FreeBSD 14.4 AArch64', img: 'freebsd-14.4-aarch64.img' },
+      ubuntu:  { label: 'Ubuntu 24.04 LTS AArch64', img: 'ubuntu-24.04-aarch64.img' },
+    };
+    const guests = Object.entries(KNOWN).map(([os, { label, img }]) => {
+      const imgPath = nodePath.join(guestDir, img);
+      const present = fs.existsSync(imgPath);
+      const job = fetchJobs.get(os);
+      return {
+        os, label, img, present,
+        fetching: job ? !job.done : false,
+        fetchLog: job?.log ?? [],
+      };
+    });
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ running: vmRunning ? [{ name: 'Linux VM', slot: 15 }] : [], guests }));
+
+  // ── Guest OS fetch (POST) ────────────────────────────────────────────
+  } else if (pathname === '/api/vm/fetch' && req.method === 'POST') {
+    let body = '';
+    req.on('data', d => { body += d; });
+    req.on('end', () => {
+      let os;
+      try { os = JSON.parse(body).os; } catch {}
+      if (!os || !FETCH_SCRIPTS[os]) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: `Unknown OS: ${os}. Use 'freebsd' or 'ubuntu'.` }));
+        return;
+      }
+      const result = startFetch(os);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(result));
+    });
+
+  // ── Fetch status ──────────────────────────────────────────────────────
+  } else if (pathname.startsWith('/api/vm/fetch/')) {
+    const os = pathname.split('/').pop();
+    const job = fetchJobs.get(os);
+    if (!job) { res.writeHead(404); res.end(); return; }
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ os, done: job.done, exitCode: job.exitCode, log: job.log }));
 
   } else {
     res.writeHead(404);

@@ -402,6 +402,8 @@ function connectWS() {
     if (msg.event === 'slots') {
       allSlots = msg.data.map(s => ({ id: s.slot, name: s.name, active: s.active }));
       populateSlotPicker();
+    } else if (msg.event === 'fetch-progress' || msg.event === 'fetch-done') {
+      handleFetchEvent(msg);
     }
   });
 
@@ -601,7 +603,7 @@ async function loadVMs() {
   try {
     const data = await fetch('/api/vm/images').then(r => r.json());
     renderRunningVMs(data.running || []);
-    renderAvailableImages(data.available || []);
+    renderGuestCards(data.guests || []);
   } catch {
     document.getElementById('running-vms').innerHTML =
       '<div style="color:#555;font-size:12px;">Could not load VM info</div>';
@@ -611,7 +613,7 @@ async function loadVMs() {
 function renderRunningVMs(running) {
   const el = document.getElementById('running-vms');
   if (running.length === 0) {
-    el.innerHTML = '<div style="color:#555;font-size:12px;">No VMs running</div>';
+    el.innerHTML = '<div style="color:#555;font-size:12px;">No VMs currently running</div>';
     return;
   }
   el.innerHTML = '';
@@ -621,48 +623,69 @@ function renderRunningVMs(running) {
     card.innerHTML = `
       <div class="vm-card-name">${escHtml(vm.name)}</div>
       <div class="vm-card-status running">● running · slot ${vm.slot}</div>
-      <button class="vm-card-btn primary" onclick="openVMPane(${vm.slot}, '${escHtml(vm.name)}')">Open Console</button>`;
+      <button class="vm-card-btn primary" onclick="openVMPane(${vm.slot},'${escHtml(vm.name)}')">Open Console</button>`;
     el.appendChild(card);
   }
 }
 
-function renderAvailableImages(images) {
+function renderGuestCards(guests) {
   const el = document.getElementById('available-vms');
   el.innerHTML = '';
-  // Always show FreeBSD as a card
-  const fbsdImg = images.find(i => i.name.toLowerCase().includes('freebsd'));
-  if (fbsdImg) {
+  for (const g of guests) {
     const card = document.createElement('div');
-    card.className = 'vm-card';
+    card.className = 'vm-card' + (g.present ? '' : '');
+    card.id = `vm-card-${g.os}`;
+    let status, btn;
+    if (g.fetching) {
+      status = `<div class="vm-card-status" style="color:#ccaa44">⟳ downloading…</div>`;
+      btn = `<div id="vm-log-${g.os}" style="font-size:9px;color:#666;max-height:60px;overflow:auto;font-family:monospace;margin-top:4px"></div>`;
+    } else if (g.present) {
+      status = `<div class="vm-card-status available">● image ready</div>
+                <div style="font-size:10px;color:#666">Run: make GUEST_OS=${g.os}</div>`;
+      btn = ``;
+    } else {
+      status = `<div class="vm-card-status fetch">○ not downloaded</div>`;
+      btn = `<button class="vm-card-btn primary" onclick="fetchGuest('${g.os}')">⬇ Download &amp; prepare</button>`;
+    }
     card.innerHTML = `
-      <div class="vm-card-name">FreeBSD 14 AArch64</div>
-      <div class="vm-card-status available">● image available (${(fbsdImg.size/1024/1024).toFixed(0)} MB)</div>
-      <div style="font-size:10px;color:#666;">Rebuild with GUEST_OS=freebsd to boot</div>`;
-    el.appendChild(card);
-  } else {
-    const card = document.createElement('div');
-    card.className = 'vm-card';
-    card.innerHTML = `
-      <div class="vm-card-name">FreeBSD 14 AArch64</div>
-      <div class="vm-card-status fetch">○ not downloaded</div>
-      <div style="font-size:10px;color:#666;">Run: bash scripts/fetch-freebsd-guest.sh</div>`;
+      <div class="vm-card-name">${escHtml(g.label)}</div>
+      ${status}${btn}`;
     el.appendChild(card);
   }
-  if (images.length > 1) {
-    for (const img of images.filter(i => !i.name.toLowerCase().includes('freebsd'))) {
-      const card = document.createElement('div');
-      card.className = 'vm-card';
-      card.innerHTML = `
-        <div class="vm-card-name">${escHtml(img.name)}</div>
-        <div class="vm-card-status available">● available (${(img.size/1024/1024).toFixed(0)} MB)</div>`;
-      el.appendChild(card);
+}
+
+async function fetchGuest(os) {
+  // Kick off fetch on the server; progress comes back via WebSocket
+  try {
+    await fetch('/api/vm/fetch', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ os }),
+    });
+    // Refresh the panel to show "downloading" state
+    loadVMs();
+  } catch (e) {
+    alert(`Failed to start download: ${e.message}`);
+  }
+}
+
+// Handle fetch-progress and fetch-done events from WebSocket
+function handleFetchEvent(msg) {
+  if (msg.event === 'fetch-progress') {
+    const logEl = document.getElementById(`vm-log-${msg.os}`);
+    if (logEl) {
+      logEl.textContent += msg.line + '\n';
+      logEl.scrollTop = logEl.scrollHeight;
     }
+  } else if (msg.event === 'fetch-done') {
+    // Refresh the panel — image is now present (or failed)
+    if (document.getElementById('vm-panel').classList.contains('visible')) loadVMs();
   }
 }
 
 function openVMPane(slot, name) {
   openPane(slot, name);
-  togglePanel('vm-panel', document.getElementById('vms-btn')); // close panel
+  togglePanel('vm-panel', document.getElementById('vms-btn'));
 }
 
 // ── Metrics / Flame graph ─────────────────────────────────────────────────────

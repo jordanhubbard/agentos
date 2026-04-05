@@ -11,7 +11,7 @@
 #   make clean        — remove build artifacts for current target
 #   make clean-all    — remove all build artifacts
 
-.PHONY: all deps deps-tools deps-sdk submodules console dashboard test test-snapshot-sched test-power-mgr clean clean-all help release release-minor release-major
+.PHONY: all deps deps-tools deps-sdk submodules console dashboard test test-snapshot-sched test-power-mgr clean clean-all clean-images help release release-minor release-major fetch-guest
 
 # ─── Read config.yaml (if present) ───────────────────────────────────────────
 CONFIG_TARGET := $(shell grep '^target_arch:' config.yaml 2>/dev/null | sed 's/target_arch:[[:space:]]*//' | tr -d '[:space:]')
@@ -247,9 +247,19 @@ submodules:
 	fi
 
 # =============================================================================
+# fetch-guest: download the guest OS image for GUEST_OS (idempotent)
+# =============================================================================
+fetch-guest:
+ifeq ($(GUEST_OS),freebsd)
+	@bash $(ROOT_DIR)scripts/fetch-freebsd-guest.sh
+else ifeq ($(GUEST_OS),ubuntu)
+	@bash $(ROOT_DIR)scripts/fetch-ubuntu-guest.sh
+endif
+
+# =============================================================================
 # build (internal — used by console and test)
 # =============================================================================
-build: submodules deps-sdk
+build: fetch-guest submodules deps-sdk
 	@echo ""
 	@echo "╔══════════════════════════════════════════╗"
 	@echo "║   agentOS — building kernel ($(BOARD))   ║"
@@ -377,6 +387,15 @@ clean-all:
 	@echo "Cleaning all build artifacts..."
 	@rm -rf $(ROOT_DIR)build
 	@echo "✓ Clean."
+
+clean-images:
+	@echo "Removing cached guest OS images..."
+	@rm -f $(ROOT_DIR)guest-images/*.img \
+	       $(ROOT_DIR)guest-images/*.qcow2 \
+	       $(ROOT_DIR)guest-images/*.raw \
+	       $(ROOT_DIR)guest-images/*.fd \
+	       $(ROOT_DIR)guest-images/*.xz
+	@echo "✓ Guest images removed. Next 'make GUEST_OS=...' will re-download."
 
 # =============================================================================
 # release: tag + GitHub release (requires gh CLI and clean working tree)
