@@ -45,8 +45,50 @@ const SLOT_NAMES = [
   'monitor', 'init_agent', 'event_bus', 'agentfs',
   'cap_broker', 'cap_audit_log', 'agent_pool/worker', 'vibe_engine',
   'mem_profiler', 'watchdog', 'trace_recorder', 'cap_policy',
-  'debug_bridge', 'fault_handler', 'quota_pd', 'misc',
+  'debug_bridge', 'fault_handler', 'quota_pd', 'linux_vm',
 ];
+
+// ─── Mock profiler data ──────────────────────────────────────────────────────
+
+function generateProfilerSnapshot() {
+  const j = (base, range = 200) =>
+    Math.max(0, base + Math.floor((Math.random() - 0.5) * range));
+  return {
+    ts: Date.now(),
+    slots: [
+      { id: 0, name: 'inference_worker',
+        cpu_pct: Math.min(99, Math.max(1, 42 + Math.floor(Math.random() * 10 - 5))),
+        mem_kb: j(8192, 512), ticks: j(12450),
+        frames: [
+          { fn: 'matmul_f32',   ticks: j(5200), depth: 0 },
+          { fn: 'softmax',      ticks: j(2100), depth: 1 },
+          { fn: 'embed_lookup', ticks: j(1800), depth: 1 },
+          { fn: 'layer_norm',   ticks: j(900),  depth: 2 },
+          { fn: 'rms_norm',     ticks: j(620),  depth: 2 },
+          { fn: 'rope_enc',     ticks: j(480),  depth: 3 },
+        ],
+      },
+      { id: 1, name: 'event_handler',
+        cpu_pct: Math.min(99, Math.max(1, 8 + Math.floor(Math.random() * 4 - 2))),
+        mem_kb: j(512, 64), ticks: j(2340, 150),
+        frames: [
+          { fn: 'dispatch_event', ticks: j(1200, 100), depth: 0 },
+          { fn: 'cap_check',      ticks: j(600,  80),  depth: 1 },
+          { fn: 'ring_enqueue',   ticks: j(340,  60),  depth: 2 },
+        ],
+      },
+      { id: 2, name: 'vibe_validator',
+        cpu_pct: Math.min(99, Math.max(1, 15 + Math.floor(Math.random() * 6 - 3))),
+        mem_kb: j(2048, 256), ticks: j(4110, 300),
+        frames: [
+          { fn: 'wasm_validate', ticks: j(2800, 200), depth: 0 },
+          { fn: 'section_parse', ticks: j(1100, 100), depth: 1 },
+          { fn: 'type_check',    ticks: j(540,  80),  depth: 2 },
+        ],
+      },
+    ],
+  };
+}
 
 // ─── Serial → slot routing ───────────────────────────────────────────────────
 // Order matters: first match wins.
@@ -70,16 +112,18 @@ const SERIAL_ROUTES = [
                           '[boot_integrity]', '[time_partition]', '[core_affinity]',
                           '[power_mgr]', '[perf_counters]', '[console_mux]',
                           'Bootstrapping kernel', 'INFO  [sel4_', 'MICROKIT|'] },
-  // Linux VMM and kernel boot → slot 15 (misc)
-  { slot: 15, prefixes: ['linux_vmm|', '[    ', 'Starting ', 'Welcome to',
+  // Linux VMM and kernel boot → slot 15 (linux_vm)
+  // Use line.startsWith() only — no broad substring matches like 'OK' or 'Starting '
+  { slot: 15, prefixes: ['linux_vmm|', '[    ', 'Welcome to Buildroot',
                           'buildroot login', 'Starting syslogd', 'Starting klogd',
-                          'Running sysctl', 'Saving random seed', 'OK'] },
+                          'Starting network', 'Running sysctl', 'Saving random seed',
+                          'Booting all finished'] },
 ];
 
 function lineToSlot(line) {
   for (const { slot, prefixes } of SERIAL_ROUTES) {
     for (const pfx of prefixes) {
-      if (line.startsWith(pfx) || line.includes(pfx)) return slot;
+      if (line.startsWith(pfx)) return slot;
     }
   }
   return 0; // default to monitor
@@ -139,6 +183,34 @@ function parseSerialLog() {
 }
 
 setInterval(parseSerialLog, SERIAL_POLL_MS);
+
+// Flush partial lines (e.g. "buildroot login: " has no trailing \n).
+// If serialBuffer has content but no newline and hasn't grown for 1 s, emit it.
+let lastFlushBuf = '';
+let lastFlushTs  = 0;
+setInterval(() => {
+  if (!serialBuffer) return;
+  const now = Date.now();
+  if (serialBuffer === lastFlushBuf) {
+    // Buffer hasn't changed — if it's been > 1 s, flush as a partial line
+    if (now - lastFlushTs > 1000) {
+      const partial = serialBuffer.trimEnd();
+      if (partial) {
+        const slot = lineToSlot(partial);
+        const hist = slotHistory.get(slot);
+        hist.push(partial);
+        if (hist.length > MAX_HISTORY) hist.shift();
+        activeSlots.add(slot);
+        broadcast(slot, { slot, line: partial });
+      }
+      serialBuffer = '';
+      lastFlushBuf = '';
+    }
+  } else {
+    lastFlushBuf = serialBuffer;
+    lastFlushTs  = now;
+  }
+}, 300);
 
 // ─── Optional agentOS HTTP API polling (for when the API is implemented) ─────
 
@@ -227,6 +299,26 @@ const server = http.createServer(async (req, res) => {
     if (slot < 0 || slot >= MAX_SLOTS) { res.writeHead(400); res.end(); return; }
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ lines: slotHistory.get(slot) ?? [] }));
+
+  } else if (pathname === '/api/agentos/profiler/snapshot') {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(generateProfilerSnapshot()));
+
+  } else if (pathname === '/api/vm/images') {
+    const guestDir = nodePath.join(__dirname, '..', 'guest-images');
+    let available = [];
+    try {
+      available = fs.readdirSync(guestDir)
+        .filter(f => /\.(img|qcow2|raw|fd)$/.test(f))
+        .map(f => ({ name: f, size: fs.statSync(nodePath.join(guestDir, f)).size }));
+    } catch {}
+    const vmRunning = (slotHistory.get(15)?.length ?? 0) > 0;
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      running: vmRunning ? [{ name: 'Buildroot Linux 5.18', slot: 15 }] : [],
+      available,
+      fetchScript: 'scripts/fetch-freebsd-guest.sh',
+    }));
 
   } else {
     res.writeHead(404);

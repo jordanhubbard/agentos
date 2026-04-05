@@ -48,7 +48,6 @@
     #status.ok  { background: #1a2a1a; color: #80cc80; border-color: #2a6a2a; }
 
     #slot-picker {
-      margin-left: auto;
       display: flex;
       align-items: center;
       gap: 8px;
@@ -76,11 +75,112 @@
     }
     #add-btn:hover { background: #3a3a6a; }
 
+    .panel-toggle-btn {
+      background: #2a2a4a;
+      border: 1px solid #3a3a6a;
+      border-radius: 4px;
+      color: #c0c0ff;
+      font-size: 12px;
+      padding: 3px 10px;
+      cursor: pointer;
+    }
+    .panel-toggle-btn:hover { background: #3a3a6a; }
+    .panel-toggle-btn.active { background: #4a3a8a; border-color: #7c6af7; color: #e0e0ff; }
+
+    /* ── Slide-down overlay panels ────────────────────────────────────────── */
+    .overlay-panel {
+      position: absolute;
+      top: 0; left: 0; right: 0;
+      background: #0d0d1a;
+      border-bottom: 2px solid #7c6af7;
+      z-index: 100;
+      overflow: auto;
+      max-height: 50vh;
+      display: none;
+      flex-direction: column;
+      padding: 12px 16px;
+      gap: 12px;
+    }
+    .overlay-panel.visible { display: flex; }
+
+    .panel-section-title {
+      font-size: 11px;
+      font-weight: 700;
+      color: #7c6af7;
+      text-transform: uppercase;
+      letter-spacing: 0.8px;
+      margin-bottom: 4px;
+    }
+
+    /* ── VM cards ─────────────────────────────────────────────────────────── */
+    .vm-card-grid { display: flex; flex-wrap: wrap; gap: 10px; }
+    .vm-card {
+      background: #1a1a2e;
+      border: 1px solid #2a2a4a;
+      border-radius: 6px;
+      padding: 10px 14px;
+      min-width: 180px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+    .vm-card.running { border-color: #2a6a2a; }
+    .vm-card-name { font-size: 13px; font-weight: 600; color: #e0e0e0; }
+    .vm-card-status { font-size: 11px; }
+    .vm-card-status.running { color: #80cc80; }
+    .vm-card-status.available { color: #8080cc; }
+    .vm-card-status.fetch { color: #888; }
+    .vm-card-btn {
+      background: #2a2a4a;
+      border: 1px solid #3a3a6a;
+      border-radius: 4px;
+      color: #c0c0ff;
+      font-size: 11px;
+      padding: 3px 8px;
+      cursor: pointer;
+      align-self: flex-start;
+    }
+    .vm-card-btn.primary { background: #4a3a8a; border-color: #7c6af7; color: #fff; }
+    .vm-card-btn:hover { background: #3a3a6a; }
+    .vm-how-to {
+      font-size: 11px;
+      color: #666;
+      background: #0a0a18;
+      border: 1px solid #2a2a3a;
+      border-radius: 4px;
+      padding: 8px 10px;
+      font-family: monospace;
+      line-height: 1.6;
+    }
+
+    /* ── Metrics ──────────────────────────────────────────────────────────── */
+    .metrics-row { display: flex; gap: 16px; align-items: flex-start; flex-wrap: wrap; }
+    .metrics-col { display: flex; flex-direction: column; gap: 8px; min-width: 200px; }
+    .metric-bar-row { display: flex; align-items: center; gap: 8px; }
+    .metric-bar-label { font-size: 11px; color: #aaa; width: 120px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .metric-bar-track { flex: 1; height: 10px; background: #1a1a2e; border-radius: 3px; overflow: hidden; }
+    .metric-bar-fill  { height: 100%; border-radius: 3px; background: #7c6af7; transition: width 0.4s; }
+    .metric-bar-pct   { font-size: 10px; color: #888; width: 32px; text-align: right; }
+    #flame-canvas { width: 100%; cursor: pointer; }
+    .flame-tooltip {
+      position: fixed;
+      background: #1a1a2e;
+      border: 1px solid #3a3a6a;
+      border-radius: 4px;
+      padding: 4px 8px;
+      font-size: 11px;
+      color: #e0e0e0;
+      pointer-events: none;
+      display: none;
+      z-index: 200;
+    }
+
     /* ── Grid ───────────────────────────────────────────────────── */
     #layout {
       display: flex;
       flex-direction: column;
       height: calc(100vh - 40px);
+      position: relative;
     }
 
     #grid {
@@ -183,6 +283,10 @@
 <div id="topbar">
   <h1>agentOS Console</h1>
   <span id="status">disconnected</span>
+  <div id="panel-btns" style="display:flex;gap:6px;margin-left:auto;margin-right:8px;">
+    <button id="vms-btn"     class="panel-toggle-btn">🖥 VMs</button>
+    <button id="metrics-btn" class="panel-toggle-btn">📊 Metrics</button>
+  </div>
   <div id="slot-picker">
     <label for="slot-select">Add slot</label>
     <select id="slot-select"></select>
@@ -191,12 +295,54 @@
 </div>
 
 <div id="layout">
+  <!-- VM Management Panel -->
+  <div id="vm-panel" class="overlay-panel">
+    <div>
+      <div class="panel-section-title">Running VMs</div>
+      <div id="running-vms" class="vm-card-grid">
+        <div class="vm-card" style="color:#555;font-size:12px;">Loading…</div>
+      </div>
+    </div>
+    <div>
+      <div class="panel-section-title">Available Guest Images</div>
+      <div id="available-vms" class="vm-card-grid"></div>
+    </div>
+    <div>
+      <div class="panel-section-title">Add a Guest OS</div>
+      <div class="vm-how-to"
+>To boot FreeBSD 14 (AArch64):
+  1. Run:  bash scripts/fetch-freebsd-guest.sh
+  2. Rebuild:  make GUEST_OS=freebsd
+  3. The FreeBSD console will appear as a new VM slot above.
+
+To boot a custom Linux:
+  Place your kernel + initrd in guest-images/
+  Edit kernel/agentos-root-task/vmm.mk to point at them
+  Rebuild:  make</div>
+    </div>
+  </div>
+
+  <!-- Metrics / Profiler Panel -->
+  <div id="metrics-panel" class="overlay-panel">
+    <div class="panel-section-title">Protection Domain CPU &amp; Memory</div>
+    <div class="metrics-row">
+      <div class="metrics-col" id="cpu-bars" style="flex:1;min-width:250px;"></div>
+      <div style="flex:2;min-width:300px;display:flex;flex-direction:column;gap:4px;">
+        <div class="panel-section-title">Flame Graph — Sampled Call Stacks</div>
+        <canvas id="flame-canvas" height="140"></canvas>
+        <div style="font-size:10px;color:#555;">Mock profiler data · updates every 2 s</div>
+      </div>
+    </div>
+  </div>
+
   <div id="grid"></div>
   <div id="empty">
     <div class="icon">⬛</div>
     <p>No terminal panes open — select a slot above and click Add.</p>
   </div>
 </div>
+
+<div id="flame-tooltip" class="flame-tooltip"></div>
 
 <script>
 'use strict';
@@ -426,6 +572,239 @@ function escHtml(s) {
 // ── Boot ──────────────────────────────────────────────────────────────────────
 updateEmpty();
 connectWS();
+
+// ── Panel toggles ─────────────────────────────────────────────────────────────
+function togglePanel(id, btn) {
+  const panel = document.getElementById(id);
+  const isVisible = panel.classList.contains('visible');
+  // Close all panels first
+  document.querySelectorAll('.overlay-panel').forEach(p => p.classList.remove('visible'));
+  document.querySelectorAll('.panel-toggle-btn').forEach(b => b.classList.remove('active'));
+  if (!isVisible) {
+    panel.classList.add('visible');
+    btn.classList.add('active');
+  }
+}
+
+document.getElementById('vms-btn').addEventListener('click', function() {
+  togglePanel('vm-panel', this);
+  if (document.getElementById('vm-panel').classList.contains('visible')) loadVMs();
+});
+
+document.getElementById('metrics-btn').addEventListener('click', function() {
+  togglePanel('metrics-panel', this);
+  if (document.getElementById('metrics-panel').classList.contains('visible')) startMetrics();
+});
+
+// ── VM panel ──────────────────────────────────────────────────────────────────
+async function loadVMs() {
+  try {
+    const data = await fetch('/api/vm/images').then(r => r.json());
+    renderRunningVMs(data.running || []);
+    renderAvailableImages(data.available || []);
+  } catch {
+    document.getElementById('running-vms').innerHTML =
+      '<div style="color:#555;font-size:12px;">Could not load VM info</div>';
+  }
+}
+
+function renderRunningVMs(running) {
+  const el = document.getElementById('running-vms');
+  if (running.length === 0) {
+    el.innerHTML = '<div style="color:#555;font-size:12px;">No VMs running</div>';
+    return;
+  }
+  el.innerHTML = '';
+  for (const vm of running) {
+    const card = document.createElement('div');
+    card.className = 'vm-card running';
+    card.innerHTML = `
+      <div class="vm-card-name">${escHtml(vm.name)}</div>
+      <div class="vm-card-status running">● running · slot ${vm.slot}</div>
+      <button class="vm-card-btn primary" onclick="openVMPane(${vm.slot}, '${escHtml(vm.name)}')">Open Console</button>`;
+    el.appendChild(card);
+  }
+}
+
+function renderAvailableImages(images) {
+  const el = document.getElementById('available-vms');
+  el.innerHTML = '';
+  // Always show FreeBSD as a card
+  const fbsdImg = images.find(i => i.name.toLowerCase().includes('freebsd'));
+  if (fbsdImg) {
+    const card = document.createElement('div');
+    card.className = 'vm-card';
+    card.innerHTML = `
+      <div class="vm-card-name">FreeBSD 14 AArch64</div>
+      <div class="vm-card-status available">● image available (${(fbsdImg.size/1024/1024).toFixed(0)} MB)</div>
+      <div style="font-size:10px;color:#666;">Rebuild with GUEST_OS=freebsd to boot</div>`;
+    el.appendChild(card);
+  } else {
+    const card = document.createElement('div');
+    card.className = 'vm-card';
+    card.innerHTML = `
+      <div class="vm-card-name">FreeBSD 14 AArch64</div>
+      <div class="vm-card-status fetch">○ not downloaded</div>
+      <div style="font-size:10px;color:#666;">Run: bash scripts/fetch-freebsd-guest.sh</div>`;
+    el.appendChild(card);
+  }
+  if (images.length > 1) {
+    for (const img of images.filter(i => !i.name.toLowerCase().includes('freebsd'))) {
+      const card = document.createElement('div');
+      card.className = 'vm-card';
+      card.innerHTML = `
+        <div class="vm-card-name">${escHtml(img.name)}</div>
+        <div class="vm-card-status available">● available (${(img.size/1024/1024).toFixed(0)} MB)</div>`;
+      el.appendChild(card);
+    }
+  }
+}
+
+function openVMPane(slot, name) {
+  openPane(slot, name);
+  togglePanel('vm-panel', document.getElementById('vms-btn')); // close panel
+}
+
+// ── Metrics / Flame graph ─────────────────────────────────────────────────────
+let metricsTimer = null;
+
+function startMetrics() {
+  if (metricsTimer) return;
+  updateMetrics();
+  metricsTimer = setInterval(updateMetrics, 2000);
+}
+
+function stopMetrics() {
+  if (metricsTimer) { clearInterval(metricsTimer); metricsTimer = null; }
+}
+
+async function updateMetrics() {
+  if (!document.getElementById('metrics-panel').classList.contains('visible')) {
+    stopMetrics(); return;
+  }
+  try {
+    const data = await fetch('/api/agentos/profiler/snapshot').then(r => r.json());
+    renderCPUBars(data.slots || []);
+    renderFlameGraph(data.slots || []);
+  } catch {}
+}
+
+function renderCPUBars(slots) {
+  const el = document.getElementById('cpu-bars');
+  el.innerHTML = '';
+  for (const s of slots) {
+    const row = document.createElement('div');
+    row.className = 'metric-bar-row';
+    row.innerHTML = `
+      <div class="metric-bar-label" title="${escHtml(s.name)}">${escHtml(s.name)}</div>
+      <div class="metric-bar-track">
+        <div class="metric-bar-fill" style="width:${s.cpu_pct}%;background:${cpuColor(s.cpu_pct)}"></div>
+      </div>
+      <div class="metric-bar-pct">${s.cpu_pct}%</div>`;
+    el.appendChild(row);
+    // Memory sub-row
+    const memRow = document.createElement('div');
+    memRow.className = 'metric-bar-row';
+    memRow.innerHTML = `
+      <div class="metric-bar-label" style="color:#666">  mem</div>
+      <div class="metric-bar-track">
+        <div class="metric-bar-fill" style="width:${Math.min(100,(s.mem_kb/16384)*100)}%;background:#3a7a6a"></div>
+      </div>
+      <div class="metric-bar-pct" style="color:#666">${(s.mem_kb/1024).toFixed(1)}M</div>`;
+    el.appendChild(memRow);
+  }
+}
+
+function cpuColor(pct) {
+  if (pct < 30) return '#3a7a4a';
+  if (pct < 60) return '#7a7a3a';
+  if (pct < 80) return '#7a5a2a';
+  return '#8a2a2a';
+}
+
+// Flame graph renderer
+const FLAME_COLORS = [
+  '#7c4af7','#4a7cf7','#4af7c0','#f7c04a','#f74a7c','#c0f74a',
+  '#4af77c','#f74ac0','#7cf74a','#4ac0f7',
+];
+
+function fnColor(name) {
+  let h = 0;
+  for (let i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) & 0xffffffff;
+  return FLAME_COLORS[Math.abs(h) % FLAME_COLORS.length];
+}
+
+function renderFlameGraph(slots) {
+  const canvas = document.getElementById('flame-canvas');
+  if (!canvas) return;
+  canvas.width = canvas.offsetWidth || 600;
+  const ctx = canvas.getContext('2d');
+  const W = canvas.width, H = canvas.height;
+  ctx.clearRect(0, 0, W, H);
+
+  const rowH = 22;
+  const maxDepth = 4;
+  const padding = 4;
+
+  // Gather all frames across slots, lay them out by slot width share
+  const totalTicks = slots.reduce((s, sl) => s + (sl.ticks || 1), 0);
+  let xOff = 0;
+
+  for (const slot of slots) {
+    const slotW = Math.floor((slot.ticks / totalTicks) * (W - padding));
+
+    // Group frames by depth
+    const byDepth = {};
+    for (const f of (slot.frames || [])) {
+      if (!byDepth[f.depth]) byDepth[f.depth] = [];
+      byDepth[f.depth].push(f);
+    }
+
+    // Slot label row
+    ctx.fillStyle = '#2a2a4a';
+    ctx.fillRect(xOff, 0, slotW - 2, rowH - 2);
+    ctx.fillStyle = '#a0a0d0';
+    ctx.font = '10px monospace';
+    ctx.fillText(slot.name, xOff + 4, rowH - 7);
+
+    // Frame rows
+    for (let depth = 0; depth <= maxDepth; depth++) {
+      const frames = byDepth[depth] || [];
+      if (frames.length === 0) continue;
+      const totalFrameTicks = frames.reduce((s, f) => s + f.ticks, 0);
+      let fx = xOff;
+      for (const f of frames) {
+        const fw = Math.max(1, Math.floor((f.ticks / totalFrameTicks) * (slotW - 2)));
+        const fy = (depth + 1) * rowH;
+        ctx.fillStyle = fnColor(f.fn);
+        ctx.fillRect(fx, fy, fw - 1, rowH - 2);
+        if (fw > 30) {
+          ctx.fillStyle = '#000';
+          ctx.font = '9px monospace';
+          ctx.fillText(f.fn.slice(0, Math.floor(fw / 6)), fx + 2, fy + rowH - 6);
+        }
+        fx += fw;
+      }
+    }
+
+    xOff += slotW + padding;
+  }
+}
+
+// Flame tooltip
+document.getElementById('flame-canvas')?.addEventListener('mousemove', (e) => {
+  const tip = document.getElementById('flame-tooltip');
+  tip.style.left = (e.clientX + 12) + 'px';
+  tip.style.top  = (e.clientY + 12) + 'px';
+  tip.style.display = 'block';
+  const rowH = 22;
+  const y = e.offsetY;
+  const depth = Math.floor(y / rowH);
+  tip.textContent = depth === 0 ? 'PD root' : `stack depth ${depth}`;
+});
+document.getElementById('flame-canvas')?.addEventListener('mouseleave', () => {
+  document.getElementById('flame-tooltip').style.display = 'none';
+});
 </script>
 </body>
 </html>
