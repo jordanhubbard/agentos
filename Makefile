@@ -11,7 +11,7 @@
 #   make clean        — remove build artifacts for current target
 #   make clean-all    — remove all build artifacts
 
-.PHONY: all deps deps-tools deps-sdk submodules console dashboard webmux-build test test-snapshot-sched test-power-mgr clean clean-all help release release-minor release-major
+.PHONY: all deps deps-tools deps-sdk submodules console dashboard test test-snapshot-sched test-power-mgr clean clean-all help release release-minor release-major
 
 # ─── Read config.yaml (if present) ───────────────────────────────────────────
 CONFIG_TARGET := $(shell grep '^target_arch:' config.yaml 2>/dev/null | sed 's/target_arch:[[:space:]]*//' | tr -d '[:space:]')
@@ -49,7 +49,6 @@ MICROKIT_SDK := $(ROOT_DIR)microkit-sdk-2.1.0
 BUILD_DIR    := $(ROOT_DIR)build/$(BOARD)
 IMAGE        := $(BUILD_DIR)/agentos.img
 CONSOLE_DIR  := $(ROOT_DIR)console
-WEBMUX_DIR   ?= $(HOME)/Src/webmux/webmux
 
 # ─── OS / arch detection ──────────────────────────────────────────────────────
 UNAME_S := $(shell uname -s)
@@ -280,14 +279,6 @@ $(CONSOLE_DIR)/node_modules: $(CONSOLE_DIR)/package.json
 	@echo "Installing agentOS console npm dependencies..."
 	@cd $(CONSOLE_DIR) && npm install --silent
 	@echo "✓ console deps installed"
-
-# =============================================================================
-# webmux-build: build webmux standalone (optional utility, not used by console)
-# =============================================================================
-webmux-build:
-	@echo "Building webmux..."
-	@cd $(WEBMUX_DIR) && npm install --silent && npm run build
-	@echo "✓ webmux built"
 
 # =============================================================================
 # dashboard: start the agentOS console (agentOS already running on hardware)
