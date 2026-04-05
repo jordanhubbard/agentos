@@ -105,7 +105,10 @@ endif
 ifeq ($(NATIVE_ARCH),aarch64)
   NATIVE_BOARD      := qemu_virt_aarch64
   NATIVE_QEMU       := qemu-system-aarch64
-  NATIVE_QEMU_FLAGS  = -machine virt,virtualization=on,highmem=off,secure=off \
+  # HVF on Apple Silicon occupies EL2 itself, so the guest cannot use EL2
+  # virtualization extensions — drop virtualization=on when using HVF.
+  _VIRT_FLAG        := $(if $(filter -accel hvf,$(QEMU_ACCEL_NATIVE)),off,on)
+  NATIVE_QEMU_FLAGS  = -machine virt,virtualization=$(_VIRT_FLAG),highmem=off,secure=off \
                         -cpu host -m 2G \
                         -display none -monitor none -serial null \
                         $(QEMU_ACCEL_NATIVE) \
