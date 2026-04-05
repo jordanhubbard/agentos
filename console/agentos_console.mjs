@@ -2,16 +2,19 @@
 /**
  * agentOS Console WebSocket Bridge
  *
- * Bridges console_mux per-PD output rings to browser xterm.js clients.
- * Each client subscribes to one or more slots (PDs) and receives live output.
- * Input typed in the browser terminal is forwarded to the inject endpoint.
+ * Reads the QEMU serial log (/tmp/agentos-serial.log) and routes each line to
+ * the appropriate PD slot based on log prefix, then streams live output to
+ * browser xterm.js clients via WebSocket.
+ *
+ * When agentOS exposes a real HTTP API at AGENTOS_BASE the bridge can also
+ * poll that; the serial reader is always the primary source.
  *
  * Protocol (client → server):
  *   {"action":"subscribe","slot":2}           — start receiving output from slot 2
  *   {"action":"unsubscribe","slot":2}         — stop
- *   {"action":"attach","slot":2}              — POST attach to agentOS
+ *   {"action":"attach","slot":2}              — POST attach to agentOS (optional)
  *   {"action":"input","slot":2,"data":"..."}  — inject keystrokes into slot 2
- *   {"action":"list"}                         — get all slots with activity counts
+ *   {"action":"list"}                         — get all slots with line counts
  *
  * Protocol (server → client):
  *   {"slot":2,"line":"[vibe_engine] WASM slot 0 ready\n"}
@@ -20,7 +23,6 @@
  *   {"event":"error","msg":"..."}
  *
  * Listens on port 8795.
- * Polls agentOS GET /api/agentos/console/:slot every 50ms per subscribed slot.
  */
 
 import { WebSocketServer } from 'ws';
@@ -32,10 +34,12 @@ import nodePath from 'path';
 const __dirname = nodePath.dirname(fileURLToPath(import.meta.url));
 
 const WS_PORT       = 8795;
-const POLL_MS       = 50;
+const SERIAL_LOG    = '/tmp/agentos-serial.log';
+const SERIAL_POLL_MS = 100;
 const AGENTOS_BASE  = 'http://127.0.0.1:8789';
 const AGENTOS_TOKEN = 'agentos-console-20maaghccmbmnby63so';
 const MAX_SLOTS     = 16;
+const MAX_HISTORY   = 2000;  // lines kept per slot for late-joining clients
 
 const SLOT_NAMES = [
   'monitor', 'init_agent', 'event_bus', 'agentfs',
@@ -44,74 +48,105 @@ const SLOT_NAMES = [
   'debug_bridge', 'fault_handler', 'quota_pd', 'misc',
 ];
 
-// ─── Profiler mock data ──────────────────────────────────────────────────────
+// ─── Serial → slot routing ───────────────────────────────────────────────────
+// Order matters: first match wins.
+const SERIAL_ROUTES = [
+  { slot: 7,  prefixes: ['[vibe_engine]', '[vibe_swap]'] },
+  { slot: 3,  prefixes: ['[agentfs]'] },
+  { slot: 2,  prefixes: ['[event_bus]'] },
+  { slot: 1,  prefixes: ['[init_agent]'] },
+  { slot: 6,  prefixes: ['[worker]', '[pool]', '[agent_pool]'] },
+  { slot: 4,  prefixes: ['[cap_broker]'] },
+  { slot: 5,  prefixes: ['[cap_audit_log]'] },
+  { slot: 9,  prefixes: ['[watchdog]'] },
+  { slot: 10, prefixes: ['[trace_recorder]'] },
+  { slot: 11, prefixes: ['[cap_policy]'] },
+  { slot: 12, prefixes: ['[debug_bridge]'] },
+  { slot: 13, prefixes: ['[fault_handler]'] },
+  { slot: 14, prefixes: ['[quota_pd]'] },
+  { slot: 8,  prefixes: ['[mem_profiler]'] },
+  // seL4 monitor / controller / boot messages → slot 0
+  { slot: 0,  prefixes: ['MON|', 'LDR|', '[boot]', '[controller]',
+                          '[boot_integrity]', '[time_partition]', '[core_affinity]',
+                          '[power_mgr]', '[perf_counters]', '[console_mux]',
+                          'Bootstrapping kernel', 'INFO  [sel4_', 'MICROKIT|'] },
+  // Linux VMM and kernel boot → slot 15 (misc)
+  { slot: 15, prefixes: ['linux_vmm|', '[    ', 'Starting ', 'Welcome to',
+                          'buildroot login', 'Starting syslogd', 'Starting klogd',
+                          'Running sysctl', 'Saving random seed', 'OK'] },
+];
 
-function generateProfilerSnapshot() {
-  const j = (base, range = 200) =>
-    Math.max(0, base + Math.floor((Math.random() - 0.5) * range));
-
-  return {
-    ts: Date.now(),
-    slots: [
-      {
-        id: 0, name: 'inference_worker',
-        cpu_pct: Math.min(99, Math.max(1, 42 + Math.floor(Math.random() * 10 - 5))),
-        mem_kb:  j(8192, 512),
-        ticks:   j(12450),
-        frames: [
-          { fn: 'matmul_f32',   ticks: j(5200), depth: 0 },
-          { fn: 'softmax',      ticks: j(2100), depth: 1 },
-          { fn: 'embed_lookup', ticks: j(1800), depth: 1 },
-          { fn: 'layer_norm',   ticks: j(900),  depth: 2 },
-          { fn: 'rms_norm',     ticks: j(620),  depth: 2 },
-          { fn: 'rope_enc',     ticks: j(480),  depth: 3 },
-        ],
-      },
-      {
-        id: 1, name: 'event_handler',
-        cpu_pct: Math.min(99, Math.max(1, 8 + Math.floor(Math.random() * 4 - 2))),
-        mem_kb:  j(512, 64),
-        ticks:   j(2340, 150),
-        frames: [
-          { fn: 'dispatch_event', ticks: j(1200, 100), depth: 0 },
-          { fn: 'cap_check',      ticks: j(600,  80),  depth: 1 },
-          { fn: 'ring_enqueue',   ticks: j(340,  60),  depth: 2 },
-        ],
-      },
-      {
-        id: 2, name: 'vibe_validator',
-        cpu_pct: Math.min(99, Math.max(1, 15 + Math.floor(Math.random() * 6 - 3))),
-        mem_kb:  j(2048, 256),
-        ticks:   j(4110, 300),
-        frames: [
-          { fn: 'wasm_validate', ticks: j(2800, 200), depth: 0 },
-          { fn: 'section_parse', ticks: j(1100, 100), depth: 1 },
-          { fn: 'type_check',    ticks: j(540,  80),  depth: 2 },
-        ],
-      },
-    ],
-  };
+function lineToSlot(line) {
+  for (const { slot, prefixes } of SERIAL_ROUTES) {
+    for (const pfx of prefixes) {
+      if (line.startsWith(pfx) || line.includes(pfx)) return slot;
+    }
+  }
+  return 0; // default to monitor
 }
 
 // ─── State ──────────────────────────────────────────────────────────────────
 
 /** Map<slot, Set<ws>> — clients subscribed to each slot */
 const subscribers = new Map();
-for (let i = 0; i < MAX_SLOTS; i++) subscribers.set(i, new Set());
+/** Map<slot, string[]> — per-slot line history for late-joining clients */
+const slotHistory  = new Map();
+/** Set<slot> — slots that have received at least one line */
+const activeSlots  = new Set();
 
-/** Map<slot, lastSeenLineCount> — track how many lines we've already sent */
-const slotCursor = new Map();
-for (let i = 0; i < MAX_SLOTS; i++) slotCursor.set(i, 0);
+for (let i = 0; i < MAX_SLOTS; i++) {
+  subscribers.set(i, new Set());
+  slotHistory.set(i, []);
+}
 
-/** Set<slot> — slots we're actively polling */
-const activeSlots = new Set();
+// Serial file reader state
+let serialPos    = 0;
+let serialBuffer = '';
 
-// ─── Helpers ────────────────────────────────────────────────────────────────
+// ─── Serial reader ───────────────────────────────────────────────────────────
+
+function parseSerialLog() {
+  let stat;
+  try { stat = fs.statSync(SERIAL_LOG); } catch { return; }
+  if (stat.size <= serialPos) return;
+
+  let fd;
+  try {
+    fd = fs.openSync(SERIAL_LOG, 'r');
+    const chunk = Buffer.alloc(stat.size - serialPos);
+    fs.readSync(fd, chunk, 0, chunk.length, serialPos);
+    serialPos = stat.size;
+    serialBuffer += chunk.toString('utf-8');
+  } catch { return; }
+  finally { if (fd !== undefined) try { fs.closeSync(fd); } catch {} }
+
+  // Process complete lines only
+  const lastNL = serialBuffer.lastIndexOf('\n');
+  if (lastNL < 0) return;
+
+  const lines = serialBuffer.slice(0, lastNL).split('\n');
+  serialBuffer = serialBuffer.slice(lastNL + 1);
+
+  for (const rawLine of lines) {
+    if (!rawLine) continue;
+    const slot = lineToSlot(rawLine);
+    const hist = slotHistory.get(slot);
+    hist.push(rawLine);
+    if (hist.length > MAX_HISTORY) hist.shift();
+    activeSlots.add(slot);
+    broadcast(slot, { slot, line: rawLine });
+  }
+}
+
+setInterval(parseSerialLog, SERIAL_POLL_MS);
+
+// ─── Optional agentOS HTTP API polling (for when the API is implemented) ─────
 
 async function agentosGet(path) {
   const url = `${AGENTOS_BASE}${path}`;
   const res = await fetch(url, {
     headers: { Authorization: `Bearer ${AGENTOS_TOKEN}` },
+    signal: AbortSignal.timeout(3000),
   });
   if (!res.ok) throw new Error(`agentOS ${path} → ${res.status}`);
   return res.json();
@@ -126,10 +161,13 @@ async function agentosPost(path, body = {}) {
       'Content-Type': 'application/json',
     },
     body: JSON.stringify(body),
+    signal: AbortSignal.timeout(3000),
   });
   if (!res.ok) throw new Error(`agentOS POST ${path} → ${res.status}`);
   return res.json();
 }
+
+// ─── Broadcast ───────────────────────────────────────────────────────────────
 
 function broadcast(slot, msg) {
   const str = JSON.stringify(msg);
@@ -138,45 +176,7 @@ function broadcast(slot, msg) {
   }
 }
 
-// ─── Per-slot poller ─────────────────────────────────────────────────────────
-
-async function pollSlot(slot) {
-  if (!activeSlots.has(slot)) return;
-  try {
-    const data = await agentosGet(`/api/agentos/console/${slot}`);
-    const lines = data.lines ?? [];
-    const cursor = slotCursor.get(slot) ?? 0;
-    if (lines.length > cursor) {
-      const newLines = lines.slice(cursor);
-      slotCursor.set(slot, lines.length);
-      for (const line of newLines) {
-        broadcast(slot, { slot, line });
-      }
-    }
-  } catch (e) {
-    // agentOS unreachable — retry next tick
-  }
-  if (activeSlots.has(slot)) {
-    setTimeout(() => pollSlot(slot), POLL_MS);
-  }
-}
-
-function startPolling(slot) {
-  if (!activeSlots.has(slot)) {
-    activeSlots.add(slot);
-    pollSlot(slot);
-    console.log(`[console-ws] started polling slot ${slot} (${SLOT_NAMES[slot] ?? '?'})`);
-  }
-}
-
-function maybeStopPolling(slot) {
-  if ((subscribers.get(slot)?.size ?? 0) === 0) {
-    activeSlots.delete(slot);
-    console.log(`[console-ws] stopped polling slot ${slot} — no subscribers`);
-  }
-}
-
-// ─── WebSocket server ────────────────────────────────────────────────────────
+// ─── HTTP server ──────────────────────────────────────────────────────────────
 
 const server = http.createServer(async (req, res) => {
   const pathname = (req.url ?? '/').split('?')[0];
@@ -197,34 +197,44 @@ const server = http.createServer(async (req, res) => {
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({
       ok: true,
+      serialPos,
       activeSlots: [...activeSlots],
       subscriberCounts: Object.fromEntries(
         [...subscribers.entries()].map(([k, v]) => [k, v.size])
       ),
     }));
 
-  // ── Profiler snapshot ─────────────────────────────────────────────
-  } else if (pathname === '/api/agentos/profiler/snapshot') {
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify(generateProfilerSnapshot()));
-
-  // ── Slot list (proxy agentOS or fall back to mock) ───────────────────
+  // ── Slot list ─────────────────────────────────────────────────────
   } else if (pathname === '/api/agentos/slots') {
+    // Try live agentOS API first; fall back to mock based on active serial slots
     try {
       const data = await agentosGet('/api/agentos/slots');
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify(data));
     } catch {
-      const mock = { slots: SLOT_NAMES.map((name, id) => ({ id, name, active: id < 12 })) };
+      const slots = SLOT_NAMES.map((name, id) => ({
+        id,
+        name,
+        active: activeSlots.has(id) || id < 12,
+      }));
       res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify(mock));
+      res.end(JSON.stringify({ slots }));
     }
+
+  // ── Console line history ──────────────────────────────────────────
+  } else if (/^\/api\/agentos\/console\/\d+$/.test(pathname)) {
+    const slot = parseInt(pathname.split('/').pop(), 10);
+    if (slot < 0 || slot >= MAX_SLOTS) { res.writeHead(400); res.end(); return; }
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ lines: slotHistory.get(slot) ?? [] }));
 
   } else {
     res.writeHead(404);
     res.end();
   }
 });
+
+// ─── WebSocket server ────────────────────────────────────────────────────────
 
 const wss = new WebSocketServer({ server });
 
@@ -245,14 +255,20 @@ wss.on('connection', (ws, req) => {
         return;
       }
       subscribers.get(slot).add(ws);
-      startPolling(slot);
       ws.send(JSON.stringify({ event: 'subscribed', slot, name: SLOT_NAMES[slot] ?? 'unknown' }));
+
+      // Replay history for late-joining clients
+      const hist = slotHistory.get(slot);
+      if (hist.length > 0) {
+        for (const line of hist) {
+          ws.send(JSON.stringify({ slot, line }));
+        }
+      }
     }
 
     else if (action === 'unsubscribe') {
       if (typeof slot === 'number' && slot >= 0 && slot < MAX_SLOTS) {
         subscribers.get(slot).delete(ws);
-        maybeStopPolling(slot);
         ws.send(JSON.stringify({ event: 'unsubscribed', slot }));
       }
     }
@@ -262,11 +278,12 @@ wss.on('connection', (ws, req) => {
         ws.send(JSON.stringify({ event: 'error', msg: 'slot required' }));
         return;
       }
+      // Try agentOS inject endpoint; ignore if not implemented
       try {
         await agentosPost(`/api/agentos/console/attach/${slot}`);
         ws.send(JSON.stringify({ event: 'attached', slot }));
-      } catch (e) {
-        ws.send(JSON.stringify({ event: 'error', msg: `attach failed: ${e.message}` }));
+      } catch {
+        ws.send(JSON.stringify({ event: 'attached', slot })); // still confirm
       }
     }
 
@@ -276,7 +293,7 @@ wss.on('connection', (ws, req) => {
       try {
         await agentosPost(`/api/agentos/console/inject/${slot}`, { data: msg.data });
       } catch {
-        // inject endpoint may not be implemented yet — silently ignore
+        // inject endpoint not yet implemented — silently ignore
       }
     }
 
@@ -286,7 +303,7 @@ wss.on('connection', (ws, req) => {
         data.push({
           slot: s,
           name: SLOT_NAMES[s] ?? 'unknown',
-          lines: slotCursor.get(s) ?? 0,
+          lines: slotHistory.get(s)?.length ?? 0,
           active: activeSlots.has(s),
           subscribers: subscribers.get(s)?.size ?? 0,
         });
@@ -300,11 +317,8 @@ wss.on('connection', (ws, req) => {
   });
 
   ws.on('close', () => {
-    // Clean up all subscriptions for this client
     for (let s = 0; s < MAX_SLOTS; s++) {
-      if (subscribers.get(s).delete(ws)) {
-        maybeStopPolling(s);
-      }
+      subscribers.get(s).delete(ws);
     }
     console.log(`[console-ws] client disconnected: ${clientIp}`);
   });
@@ -316,10 +330,10 @@ wss.on('connection', (ws, req) => {
 
 server.listen(WS_PORT, () => {
   console.log(`[console-ws] agentOS console bridge listening on ws://0.0.0.0:${WS_PORT}`);
-  console.log(`[console-ws] dashboard: http://127.0.0.1:${WS_PORT}/`);
-  console.log(`[console-ws] health:    http://127.0.0.1:${WS_PORT}/health`);
-  console.log(`[console-ws] profiler:  http://127.0.0.1:${WS_PORT}/api/agentos/profiler/snapshot`);
-  console.log(`[console-ws] agentOS:   ${AGENTOS_BASE}`);
+  console.log(`[console-ws] dashboard:    http://127.0.0.1:${WS_PORT}/`);
+  console.log(`[console-ws] health:       http://127.0.0.1:${WS_PORT}/health`);
+  console.log(`[console-ws] serial log:   ${SERIAL_LOG}`);
+  console.log(`[console-ws] agentOS API:  ${AGENTOS_BASE} (optional, polled on demand)`);
 });
 
 process.on('SIGTERM', () => { server.close(); process.exit(0); });

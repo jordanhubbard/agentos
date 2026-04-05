@@ -41,7 +41,7 @@ static void log_u32(uint32_t v) {
 
 void agentos_log_boot(const char *pd_name) {
     {
-        char _cl_buf[256] = {};
+        char _cl_buf[512] = {};
         char *_cl_p = _cl_buf;
         for (const char *_s = "\n"; *_s; _s++) *_cl_p++ = *_s;
         for (const char *_s = "╔══════════════════════════════════════╗\n"; *_s; _s++) *_cl_p++ = *_s;
