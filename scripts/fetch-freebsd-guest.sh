@@ -16,10 +16,12 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 OUTPUT_DIR="${1:-$REPO_ROOT/guest-images}"
 
-FREEBSD_VERSION="14.2"
-FREEBSD_ARCH="arm64-aarch64"
-FREEBSD_BASE_URL="https://download.freebsd.org/releases/VM-IMAGES/${FREEBSD_VERSION}-RELEASE/${FREEBSD_ARCH}/Latest"
-FREEBSD_IMAGE="FreeBSD-${FREEBSD_VERSION}-RELEASE-${FREEBSD_ARCH}.qcow2.xz"
+FREEBSD_VERSION="14.4"
+# URL path uses plain "aarch64"; filename uses "arm64-aarch64-ufs" (FreeBSD convention)
+FREEBSD_URL_ARCH="aarch64"
+FREEBSD_FILE_ARCH="arm64-aarch64"
+FREEBSD_BASE_URL="https://download.freebsd.org/releases/VM-IMAGES/${FREEBSD_VERSION}-RELEASE/${FREEBSD_URL_ARCH}/Latest"
+FREEBSD_IMAGE="FreeBSD-${FREEBSD_VERSION}-RELEASE-${FREEBSD_FILE_ARCH}-ufs.qcow2.xz"
 
 # EDK2 — use Ubuntu/Debian package (pre-built, well-tested)
 EDK2_DEB_URL="http://archive.ubuntu.com/ubuntu/pool/main/e/edk2/ovmf_2024.02-2_all.deb"
@@ -35,7 +37,7 @@ mkdir -p "$OUTPUT_DIR"
 cd "$OUTPUT_DIR"
 
 # ─── FreeBSD disk image ───────────────────────────────────────────────────────
-FREEBSD_RAW="freebsd-${FREEBSD_VERSION}-arm64.img"
+FREEBSD_RAW="freebsd-${FREEBSD_VERSION}-aarch64.img"
 
 if [[ -f "$FREEBSD_RAW" ]]; then
     info "FreeBSD image already present: $FREEBSD_RAW"
@@ -44,6 +46,13 @@ else
     curl -L --progress-bar -o "$FREEBSD_IMAGE" \
         "${FREEBSD_BASE_URL}/${FREEBSD_IMAGE}" \
         || die "Failed to download FreeBSD image"
+
+    # Sanity-check: a real image is hundreds of MB; an error page is tiny
+    local_size=$(wc -c < "$FREEBSD_IMAGE")
+    if [[ "$local_size" -lt 1048576 ]]; then
+        rm -f "$FREEBSD_IMAGE"
+        die "Download looks wrong (only ${local_size} bytes). Check the URL: ${FREEBSD_BASE_URL}/${FREEBSD_IMAGE}"
+    fi
 
     info "Decompressing FreeBSD image..."
     xz -d "$FREEBSD_IMAGE"
