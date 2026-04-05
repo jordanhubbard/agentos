@@ -112,8 +112,10 @@ endif
 ifeq ($(NATIVE_ARCH),aarch64)
   NATIVE_BOARD      := qemu_virt_aarch64
   NATIVE_QEMU       := qemu-system-aarch64
+  # -cpu host requires KVM/HVF; use cortex-a72 for TCG
+  _NATIVE_CPU       := $(if $(QEMU_ACCEL_NATIVE),host,cortex-a72)
   NATIVE_QEMU_FLAGS  = -machine virt,virtualization=on,highmem=off,secure=off \
-                        -cpu host -m 2G \
+                        -cpu $(_NATIVE_CPU) -m 2G \
                         -display none -monitor none -serial null \
                         $(QEMU_ACCEL_NATIVE) \
                         -netdev user,id=net0,hostfwd=tcp:127.0.0.1:8789-:8789 \
