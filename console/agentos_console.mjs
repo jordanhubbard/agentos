@@ -2,14 +2,16 @@
 /**
  * agentOS Console WebSocket Bridge
  *
- * Bridges console_mux per-PD output rings to browser WebSocket clients.
- * Each client subscribes to a slot (PD) and receives live log lines.
+ * Bridges console_mux per-PD output rings to browser xterm.js clients.
+ * Each client subscribes to one or more slots (PDs) and receives live output.
+ * Input typed in the browser terminal is forwarded to the inject endpoint.
  *
  * Protocol (client → server):
- *   {"action":"subscribe","slot":2}    — start receiving lines from slot 2
- *   {"action":"unsubscribe","slot":2}  — stop
- *   {"action":"attach","slot":2}       — also POST attach to agentOS
- *   {"action":"list"}                  — get all slots with activity counts
+ *   {"action":"subscribe","slot":2}           — start receiving output from slot 2
+ *   {"action":"unsubscribe","slot":2}         — stop
+ *   {"action":"attach","slot":2}              — POST attach to agentOS
+ *   {"action":"input","slot":2,"data":"..."}  — inject keystrokes into slot 2
+ *   {"action":"list"}                         — get all slots with activity counts
  *
  * Protocol (server → client):
  *   {"slot":2,"line":"[vibe_engine] WASM slot 0 ready\n"}
@@ -17,8 +19,8 @@
  *   {"event":"slots","data":[{"slot":0,"lines":42},…]}
  *   {"event":"error","msg":"..."}
  *
- * Listens on WS port 8795.
- * Polls agentOS GET /api/agentos/console/:slot every 100ms per subscribed slot.
+ * Listens on port 8795.
+ * Polls agentOS GET /api/agentos/console/:slot every 50ms per subscribed slot.
  */
 
 import { WebSocketServer } from 'ws';
@@ -30,7 +32,7 @@ import nodePath from 'path';
 const __dirname = nodePath.dirname(fileURLToPath(import.meta.url));
 
 const WS_PORT       = 8795;
-const POLL_MS       = 100;
+const POLL_MS       = 50;
 const AGENTOS_BASE  = 'http://127.0.0.1:8789';
 const AGENTOS_TOKEN = 'agentos-console-20maaghccmbmnby63so';
 const MAX_SLOTS     = 16;
@@ -179,15 +181,15 @@ function maybeStopPolling(slot) {
 const server = http.createServer(async (req, res) => {
   const pathname = (req.url ?? '/').split('?')[0];
 
-  // ── Dashboard HTML ────────────────────────────────────────────────
+  // ── Console HTML ──────────────────────────────────────────────────
   if (pathname === '/' || pathname === '/dashboard') {
     try {
-      const html = fs.readFileSync(nodePath.join(__dirname, 'dashboard.html'), 'utf-8');
+      const html = fs.readFileSync(nodePath.join(__dirname, 'index.html'), 'utf-8');
       res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
       res.end(html);
     } catch {
       res.writeHead(500, { 'Content-Type': 'text/plain' });
-      res.end('dashboard.html not found');
+      res.end('index.html not found');
     }
 
   // ── Health ────────────────────────────────────────────────────────
@@ -265,6 +267,16 @@ wss.on('connection', (ws, req) => {
         ws.send(JSON.stringify({ event: 'attached', slot }));
       } catch (e) {
         ws.send(JSON.stringify({ event: 'error', msg: `attach failed: ${e.message}` }));
+      }
+    }
+
+    else if (action === 'input') {
+      if (typeof slot !== 'number' || slot < 0 || slot >= MAX_SLOTS) return;
+      if (typeof msg.data !== 'string') return;
+      try {
+        await agentosPost(`/api/agentos/console/inject/${slot}`, { data: msg.data });
+      } catch {
+        // inject endpoint may not be implemented yet — silently ignore
       }
     }
 

@@ -1,0 +1,431 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>agentOS Console</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/css/xterm.css" />
+  <script src="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/lib/xterm.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.10.0/lib/addon-fit.js"></script>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    html, body {
+      height: 100%;
+      background: #0d0d1a;
+      color: #c0c0e0;
+      font-family: system-ui, sans-serif;
+      overflow: hidden;
+    }
+
+    /* ── Top bar ─────────────────────────────────────────────────── */
+    #topbar {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 0 16px;
+      height: 40px;
+      background: #1a1a2e;
+      border-bottom: 1px solid #2a2a4a;
+      flex-shrink: 0;
+    }
+
+    #topbar h1 {
+      font-size: 14px;
+      font-weight: 700;
+      color: #e0e0f0;
+      letter-spacing: 0.5px;
+    }
+
+    #status {
+      font-size: 11px;
+      padding: 2px 8px;
+      border-radius: 10px;
+      background: #2a1a1a;
+      color: #ff8080;
+      border: 1px solid #6a2a2a;
+    }
+    #status.ok  { background: #1a2a1a; color: #80cc80; border-color: #2a6a2a; }
+
+    #slot-picker {
+      margin-left: auto;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    #slot-picker label { font-size: 11px; color: #888; }
+
+    #slot-select {
+      background: #0d0d1a;
+      border: 1px solid #2a2a4a;
+      border-radius: 4px;
+      color: #c0c0e0;
+      font-size: 12px;
+      padding: 3px 6px;
+    }
+
+    #add-btn {
+      background: #2a2a4a;
+      border: 1px solid #3a3a6a;
+      border-radius: 4px;
+      color: #c0c0ff;
+      font-size: 12px;
+      padding: 3px 10px;
+      cursor: pointer;
+    }
+    #add-btn:hover { background: #3a3a6a; }
+
+    /* ── Grid ───────────────────────────────────────────────────── */
+    #layout {
+      display: flex;
+      flex-direction: column;
+      height: calc(100vh - 40px);
+    }
+
+    #grid {
+      flex: 1;
+      overflow: auto;
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 6px;
+      padding: 6px;
+      align-content: start;
+    }
+
+    /* ── Pane ───────────────────────────────────────────────────── */
+    .pane {
+      background: #0a0a18;
+      border: 1px solid #2a2a4a;
+      border-radius: 6px;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+      min-height: 0;
+    }
+
+    .pane.focused { border-color: #7c6af7; }
+
+    .pane-header {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 5px 10px;
+      background: #141428;
+      border-bottom: 1px solid #2a2a4a;
+      flex-shrink: 0;
+      user-select: none;
+    }
+
+    .pane-dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: #3a3a5a;
+      flex-shrink: 0;
+    }
+    .pane.focused .pane-dot { background: #7c6af7; }
+
+    .pane-title {
+      font-size: 11px;
+      font-weight: 600;
+      color: #aaa;
+      letter-spacing: 0.3px;
+      flex: 1;
+    }
+    .pane.focused .pane-title { color: #c0c0ff; }
+
+    .pane-slot {
+      font-size: 10px;
+      color: #555;
+      font-family: monospace;
+    }
+
+    .pane-close {
+      background: none;
+      border: none;
+      color: #444;
+      font-size: 11px;
+      cursor: pointer;
+      padding: 0 2px;
+      line-height: 1;
+    }
+    .pane-close:hover { color: #cc6666; }
+
+    .pane-body {
+      flex: 1;
+      min-height: 0;
+      padding: 4px 2px 2px 4px;
+      overflow: hidden;
+    }
+
+    /* xterm.js container must fill the pane body */
+    .pane-body .xterm { height: 100%; }
+    .pane-body .xterm-viewport { overflow-y: auto !important; }
+
+    /* ── Empty state ───────────────────────────────────────────── */
+    #empty {
+      display: none;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      height: 100%;
+      gap: 12px;
+      color: #3a3a5a;
+    }
+    #empty.visible { display: flex; }
+    #empty .icon { font-size: 48px; opacity: 0.4; }
+    #empty p { font-size: 13px; }
+  </style>
+</head>
+<body>
+
+<div id="topbar">
+  <h1>agentOS Console</h1>
+  <span id="status">disconnected</span>
+  <div id="slot-picker">
+    <label for="slot-select">Add slot</label>
+    <select id="slot-select"></select>
+    <button id="add-btn">+ Add</button>
+  </div>
+</div>
+
+<div id="layout">
+  <div id="grid"></div>
+  <div id="empty">
+    <div class="icon">⬛</div>
+    <p>No terminal panes open — select a slot above and click Add.</p>
+  </div>
+</div>
+
+<script>
+'use strict';
+
+// ── Config ────────────────────────────────────────────────────────────────────
+const TERM_COLS    = 100;
+const TERM_ROWS    = 24;
+const TERM_THEME   = {
+  background:    '#0a0a18',
+  foreground:    '#c0c0e0',
+  cursor:        '#7c6af7',
+  cursorAccent:  '#0a0a18',
+  selectionBackground: 'rgba(124,106,247,0.3)',
+  black:   '#1a1a2e', red:     '#cc4444', green:  '#44cc44', yellow: '#ccaa44',
+  blue:    '#5577cc', magenta: '#9955cc', cyan:   '#44aacc', white:  '#c0c0e0',
+  brightBlack:   '#3a3a5a', brightRed:    '#ff6666', brightGreen:  '#66ff66',
+  brightYellow:  '#ffdd66', brightBlue:   '#7799ff', brightMagenta:'#cc77ff',
+  brightCyan:    '#66ccff', brightWhite:  '#ffffff',
+};
+
+// ── State ─────────────────────────────────────────────────────────────────────
+let ws            = null;
+let wsReady       = false;
+const terminals   = new Map();   // slotId → { term, fitAddon }
+const openSlots   = new Set();   // currently open slot IDs
+let allSlots      = [];          // { id, name, active } from API
+let focusedSlot   = null;
+
+// ── WebSocket ─────────────────────────────────────────────────────────────────
+function connectWS() {
+  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  ws = new WebSocket(`${proto}//${location.host}/`);
+
+  ws.addEventListener('open', () => {
+    wsReady = true;
+    setStatus(true);
+    // Re-subscribe any already-open panes (reconnect case)
+    for (const slot of openSlots) {
+      wsSend({ action: 'subscribe', slot });
+      wsSend({ action: 'attach',    slot });
+    }
+    // Refresh slot list
+    loadSlots();
+  });
+
+  ws.addEventListener('message', (e) => {
+    let msg;
+    try { msg = JSON.parse(e.data); } catch { return; }
+
+    // Output line for a slot
+    if (msg.slot !== undefined && msg.line !== undefined) {
+      const t = terminals.get(msg.slot);
+      if (t) t.term.write(msg.line + '\r\n');
+      return;
+    }
+
+    if (msg.event === 'slots') {
+      allSlots = msg.data.map(s => ({ id: s.slot, name: s.name, active: s.active }));
+      populateSlotPicker();
+    }
+  });
+
+  ws.addEventListener('close', () => {
+    wsReady = false;
+    setStatus(false);
+    setTimeout(connectWS, 2000);
+  });
+
+  ws.addEventListener('error', () => ws.close());
+}
+
+function wsSend(msg) {
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify(msg));
+  }
+}
+
+// ── API ───────────────────────────────────────────────────────────────────────
+async function loadSlots() {
+  try {
+    const data = await fetch('/api/agentos/slots').then(r => r.json());
+    allSlots = (data.slots || []).map(s => ({ id: s.id, name: s.name, active: s.active }));
+    populateSlotPicker();
+    // Auto-open active slots if grid is empty
+    if (openSlots.size === 0) {
+      for (const s of allSlots.filter(s => s.active).slice(0, 4)) {
+        openPane(s.id, s.name);
+      }
+    }
+  } catch {
+    // agentOS unreachable — slot picker stays empty until reconnect
+  }
+}
+
+// ── Slot picker ───────────────────────────────────────────────────────────────
+function populateSlotPicker() {
+  const sel = document.getElementById('slot-select');
+  sel.innerHTML = '';
+  for (const s of allSlots) {
+    if (openSlots.has(s.id)) continue;
+    const opt = document.createElement('option');
+    opt.value  = s.id;
+    opt.text   = `${s.id}: ${s.name}`;
+    sel.appendChild(opt);
+  }
+  updateEmpty();
+}
+
+document.getElementById('add-btn').addEventListener('click', () => {
+  const sel   = document.getElementById('slot-select');
+  const slotId = parseInt(sel.value, 10);
+  if (isNaN(slotId)) return;
+  const slot  = allSlots.find(s => s.id === slotId);
+  openPane(slotId, slot?.name ?? `slot-${slotId}`);
+});
+
+// ── Panes ─────────────────────────────────────────────────────────────────────
+function openPane(slotId, slotName) {
+  if (openSlots.has(slotId)) return;
+  openSlots.add(slotId);
+
+  // DOM
+  const pane = document.createElement('div');
+  pane.className = 'pane';
+  pane.dataset.slot = slotId;
+  pane.innerHTML = `
+    <div class="pane-header">
+      <div class="pane-dot"></div>
+      <span class="pane-title">${escHtml(slotName)}</span>
+      <span class="pane-slot">slot ${slotId}</span>
+      <button class="pane-close" title="Close pane">\u2715</button>
+    </div>
+    <div class="pane-body"></div>`;
+  document.getElementById('grid').appendChild(pane);
+
+  pane.querySelector('.pane-close').addEventListener('click', (e) => {
+    e.stopPropagation();
+    closePane(slotId);
+  });
+
+  pane.addEventListener('mousedown', () => focusPane(slotId));
+
+  // xterm.js
+  const term = new Terminal({
+    cols:        TERM_COLS,
+    rows:        TERM_ROWS,
+    theme:       TERM_THEME,
+    fontSize:    13,
+    fontFamily:  '"Cascadia Code","JetBrains Mono","Fira Code",Consolas,monospace',
+    scrollback:  2000,
+    cursorBlink: true,
+    allowProposedApi: true,
+  });
+
+  const fitAddon = new FitAddon.FitAddon();
+  term.loadAddon(fitAddon);
+  term.open(pane.querySelector('.pane-body'));
+
+  // Fit once layout is painted
+  requestAnimationFrame(() => {
+    fitAddon.fit();
+  });
+
+  term.onData(data => {
+    wsSend({ action: 'input', slot: slotId, data });
+  });
+
+  terminals.set(slotId, { term, fitAddon });
+
+  // Subscribe
+  wsSend({ action: 'subscribe', slot: slotId });
+  wsSend({ action: 'attach',    slot: slotId });
+
+  focusPane(slotId);
+  updateEmpty();
+  populateSlotPicker();
+}
+
+function closePane(slotId) {
+  wsSend({ action: 'unsubscribe', slot: slotId });
+  const t = terminals.get(slotId);
+  if (t) { t.term.dispose(); terminals.delete(slotId); }
+  openSlots.delete(slotId);
+  const pane = document.querySelector(`.pane[data-slot="${slotId}"]`);
+  if (pane) pane.remove();
+  if (focusedSlot === slotId) {
+    focusedSlot = null;
+    const next = openSlots.values().next().value;
+    if (next !== undefined) focusPane(next);
+  }
+  updateEmpty();
+  populateSlotPicker();
+}
+
+function focusPane(slotId) {
+  focusedSlot = slotId;
+  document.querySelectorAll('.pane').forEach(p => {
+    p.classList.toggle('focused', parseInt(p.dataset.slot, 10) === slotId);
+  });
+  terminals.get(slotId)?.term.focus();
+}
+
+// ── Resize handling ───────────────────────────────────────────────────────────
+const resizeObserver = new ResizeObserver(() => {
+  for (const [, { fitAddon }] of terminals) {
+    fitAddon.fit();
+  }
+});
+resizeObserver.observe(document.getElementById('grid'));
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+function setStatus(ok) {
+  const el = document.getElementById('status');
+  el.textContent = ok ? 'connected' : 'disconnected';
+  el.className   = ok ? 'ok' : '';
+}
+
+function updateEmpty() {
+  document.getElementById('empty').classList.toggle('visible', openSlots.size === 0);
+  document.getElementById('grid').style.display = openSlots.size === 0 ? 'none' : 'grid';
+}
+
+function escHtml(s) {
+  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+// ── Boot ──────────────────────────────────────────────────────────────────────
+updateEmpty();
+connectWS();
+</script>
+</body>
+</html>
