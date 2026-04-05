@@ -27,6 +27,7 @@
 
 import { WebSocketServer } from 'ws';
 import http from 'http';
+import net from 'net';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
 import nodePath from 'path';
@@ -35,8 +36,7 @@ import { spawn } from 'child_process';
 const __dirname = nodePath.dirname(fileURLToPath(import.meta.url));
 
 const WS_PORT       = 8795;
-const SERIAL_LOG    = '/tmp/agentos-serial.log';
-const SERIAL_POLL_MS = 100;
+const SERIAL_SOCK   = '/tmp/agentos-serial.sock';
 const AGENTOS_BASE  = 'http://127.0.0.1:8789';
 const AGENTOS_TOKEN = 'agentos-console-20maaghccmbmnby63so';
 const MAX_SLOTS     = 16;
@@ -144,67 +144,51 @@ for (let i = 0; i < MAX_SLOTS; i++) {
   slotHistory.set(i, []);
 }
 
-// Serial file reader state
-let serialPos    = 0;
-let serialBuffer = '';
+// ─── Bidirectional serial socket ─────────────────────────────────────────────
+// QEMU is launched with -serial unix:/tmp/agentos-serial.sock,server,nowait
+// (QEMU creates the socket; we connect as client).  All serial output is parsed
+// and routed to slots; all keyboard input is written back to the socket.
 
-// ─── Serial reader ───────────────────────────────────────────────────────────
+let serialSocket  = null;   // active net.Socket, or null
+let serialBuffer  = '';     // incomplete line accumulator
+let lastFlushBuf  = '';
+let lastFlushTs   = 0;
 
-function parseSerialLog() {
-  let stat;
-  try { stat = fs.statSync(SERIAL_LOG); } catch { return; }
-  if (stat.size <= serialPos) return;
+function onSerialData(chunk) {
+  serialBuffer += chunk.toString('utf-8');
 
-  let fd;
-  try {
-    fd = fs.openSync(SERIAL_LOG, 'r');
-    const chunk = Buffer.alloc(stat.size - serialPos);
-    fs.readSync(fd, chunk, 0, chunk.length, serialPos);
-    serialPos = stat.size;
-    serialBuffer += chunk.toString('utf-8');
-  } catch { return; }
-  finally { if (fd !== undefined) try { fs.closeSync(fd); } catch {} }
-
-  // Process complete lines only
+  // Emit complete lines
   const lastNL = serialBuffer.lastIndexOf('\n');
-  if (lastNL < 0) return;
-
-  const lines = serialBuffer.slice(0, lastNL).split('\n');
-  serialBuffer = serialBuffer.slice(lastNL + 1);
-
-  for (const rawLine of lines) {
-    const line = rawLine.replace(/\r/g, '');
-    if (!line) continue;
-    const slot = lineToSlot(line);
-    const hist = slotHistory.get(slot);
-    hist.push(line);
-    if (hist.length > MAX_HISTORY) hist.shift();
-    activeSlots.add(slot);
-    broadcast(slot, { slot, line });
+  if (lastNL >= 0) {
+    const lines = serialBuffer.slice(0, lastNL).split('\n');
+    serialBuffer = serialBuffer.slice(lastNL + 1);
+    for (const rawLine of lines) {
+      const line = rawLine.replace(/\r/g, '');
+      if (!line) continue;
+      emitSerialLine(line);
+    }
+    lastFlushBuf = '';
+    lastFlushTs  = Date.now();
   }
 }
 
-setInterval(parseSerialLog, SERIAL_POLL_MS);
+function emitSerialLine(line) {
+  const slot = lineToSlot(line);
+  const hist  = slotHistory.get(slot);
+  hist.push(line);
+  if (hist.length > MAX_HISTORY) hist.shift();
+  activeSlots.add(slot);
+  broadcast(slot, { slot, line });
+}
 
-// Flush partial lines (e.g. "buildroot login: " has no trailing \n).
-// If serialBuffer has content but no newline and hasn't grown for 1 s, emit it.
-let lastFlushBuf = '';
-let lastFlushTs  = 0;
+// Flush partial lines (e.g. "buildroot login: " — no trailing \n).
 setInterval(() => {
   if (!serialBuffer) return;
   const now = Date.now();
   if (serialBuffer === lastFlushBuf) {
-    // Buffer hasn't changed — if it's been > 1 s, flush as a partial line
     if (now - lastFlushTs > 1000) {
       const partial = serialBuffer.replace(/\r/g, '').trimEnd();
-      if (partial) {
-        const slot = lineToSlot(partial);
-        const hist = slotHistory.get(slot);
-        hist.push(partial);
-        if (hist.length > MAX_HISTORY) hist.shift();
-        activeSlots.add(slot);
-        broadcast(slot, { slot, line: partial });
-      }
+      if (partial) emitSerialLine(partial);
       serialBuffer = '';
       lastFlushBuf = '';
     }
@@ -213,6 +197,33 @@ setInterval(() => {
     lastFlushTs  = now;
   }
 }, 300);
+
+function serialWrite(data) {
+  if (serialSocket && !serialSocket.destroyed) {
+    serialSocket.write(data);
+  }
+}
+
+function connectSerial() {
+  const sock = net.createConnection(SERIAL_SOCK);
+
+  sock.on('connect', () => {
+    console.log('[console-ws] serial socket connected');
+    serialSocket = sock;
+  });
+
+  sock.on('data', onSerialData);
+
+  sock.on('close', () => {
+    serialSocket = null;
+    console.log('[console-ws] serial socket closed — retry in 1 s');
+    setTimeout(connectSerial, 1000);
+  });
+
+  sock.on('error', () => { /* 'close' fires next, handles retry */ });
+}
+
+connectSerial();
 
 // ─── Optional agentOS HTTP API polling (for when the API is implemented) ─────
 
@@ -317,7 +328,7 @@ const server = http.createServer(async (req, res) => {
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({
       ok: true,
-      serialPos,
+      serialConnected: serialSocket !== null && !serialSocket.destroyed,
       activeSlots: [...activeSlots],
       subscriberCounts: Object.fromEntries(
         [...subscribers.entries()].map(([k, v]) => [k, v.size])
@@ -467,11 +478,9 @@ wss.on('connection', (ws, req) => {
     else if (action === 'input') {
       if (typeof slot !== 'number' || slot < 0 || slot >= MAX_SLOTS) return;
       if (typeof msg.data !== 'string') return;
-      try {
-        await agentosPost(`/api/agentos/console/inject/${slot}`, { data: msg.data });
-      } catch {
-        // inject endpoint not yet implemented — silently ignore
-      }
+      // Write directly to QEMU serial socket — goes to whichever PD/VM has the
+      // active console (typically the Linux VM at the buildroot login prompt).
+      serialWrite(msg.data);
     }
 
     else if (action === 'list') {
@@ -509,7 +518,7 @@ server.listen(WS_PORT, () => {
   console.log(`[console-ws] agentOS console bridge listening on ws://0.0.0.0:${WS_PORT}`);
   console.log(`[console-ws] dashboard:    http://127.0.0.1:${WS_PORT}/`);
   console.log(`[console-ws] health:       http://127.0.0.1:${WS_PORT}/health`);
-  console.log(`[console-ws] serial log:   ${SERIAL_LOG}`);
+  console.log(`[console-ws] serial sock:  ${SERIAL_SOCK} (bidirectional, retry on disconnect)`);
   console.log(`[console-ws] agentOS API:  ${AGENTOS_BASE} (optional, polled on demand)`);
 });
 

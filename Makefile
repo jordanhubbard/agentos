@@ -116,7 +116,7 @@ ifeq ($(NATIVE_ARCH),aarch64)
   _NATIVE_CPU       := $(if $(QEMU_ACCEL_NATIVE),host,cortex-a53)
   NATIVE_QEMU_FLAGS  = -machine virt,virtualization=on,highmem=off,secure=off \
                         -cpu $(_NATIVE_CPU) -m 2G \
-                        -display none -monitor none -serial file:/tmp/agentos-serial.log \
+                        -display none -monitor none -serial unix:/tmp/agentos-serial.sock,server,nowait \
                         $(QEMU_ACCEL_NATIVE) \
                         -netdev user,id=net0,hostfwd=tcp:127.0.0.1:8789-:8789 \
                         -device virtio-net-device,netdev=net0 \
@@ -125,7 +125,7 @@ else
   NATIVE_BOARD      := x86_64_generic
   NATIVE_QEMU       := qemu-system-x86_64
   NATIVE_QEMU_FLAGS  = -machine q35 -cpu host -m 2G \
-                        -display none -monitor none -serial file:/tmp/agentos-serial.log \
+                        -display none -monitor none -serial unix:/tmp/agentos-serial.sock,server,nowait \
                         $(QEMU_ACCEL_NATIVE) \
                         -netdev user,id=net0,hostfwd=tcp:127.0.0.1:8789-:8789 \
                         -device e1000,netdev=net0 \
@@ -332,7 +332,7 @@ console: $(CONSOLE_DIR)/node_modules
 	@echo ""
 	@echo "Console: http://localhost:8795  (opening in browser...)"
 	@echo "──────────────────────────────────────────────"
-	@rm -f /tmp/agentos-serial.log
+	@rm -f /tmp/agentos-serial.sock
 	@trap 'kill "$$QEMU_PID" 2>/dev/null; exit' INT TERM; \
 	 $(NATIVE_QEMU) $(NATIVE_QEMU_FLAGS) & QEMU_PID=$$!; \
 	 sleep 0.5; \
@@ -394,7 +394,8 @@ clean-images:
 	       $(ROOT_DIR)guest-images/*.qcow2 \
 	       $(ROOT_DIR)guest-images/*.raw \
 	       $(ROOT_DIR)guest-images/*.fd \
-	       $(ROOT_DIR)guest-images/*.xz
+	       $(ROOT_DIR)guest-images/*.xz \
+	       /tmp/agentos-serial.sock
 	@echo "✓ Guest images removed. Next 'make GUEST_OS=...' will re-download."
 
 # =============================================================================
