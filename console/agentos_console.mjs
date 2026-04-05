@@ -172,13 +172,14 @@ function parseSerialLog() {
   serialBuffer = serialBuffer.slice(lastNL + 1);
 
   for (const rawLine of lines) {
-    if (!rawLine) continue;
-    const slot = lineToSlot(rawLine);
+    const line = rawLine.replace(/\r/g, '');
+    if (!line) continue;
+    const slot = lineToSlot(line);
     const hist = slotHistory.get(slot);
-    hist.push(rawLine);
+    hist.push(line);
     if (hist.length > MAX_HISTORY) hist.shift();
     activeSlots.add(slot);
-    broadcast(slot, { slot, line: rawLine });
+    broadcast(slot, { slot, line });
   }
 }
 
@@ -194,7 +195,7 @@ setInterval(() => {
   if (serialBuffer === lastFlushBuf) {
     // Buffer hasn't changed — if it's been > 1 s, flush as a partial line
     if (now - lastFlushTs > 1000) {
-      const partial = serialBuffer.trimEnd();
+      const partial = serialBuffer.replace(/\r/g, '').trimEnd();
       if (partial) {
         const slot = lineToSlot(partial);
         const hist = slotHistory.get(slot);
