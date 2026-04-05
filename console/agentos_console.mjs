@@ -204,26 +204,22 @@ function serialWrite(data) {
   }
 }
 
-function connectSerial() {
-  const sock = net.createConnection(SERIAL_SOCK);
-
-  sock.on('connect', () => {
-    console.log('[console-ws] serial socket connected');
-    serialSocket = sock;
-  });
-
+// Bridge acts as the Unix socket server; QEMU connects as client.
+// This ensures the socket exists before QEMU starts, so no boot output is lost.
+fs.rmSync(SERIAL_SOCK, { force: true });
+const serialServer = net.createServer((sock) => {
+  console.log('[console-ws] QEMU serial connected');
+  serialSocket = sock;
   sock.on('data', onSerialData);
-
   sock.on('close', () => {
     serialSocket = null;
-    console.log('[console-ws] serial socket closed — retry in 1 s');
-    setTimeout(connectSerial, 1000);
+    console.log('[console-ws] QEMU serial disconnected');
   });
-
-  sock.on('error', () => { /* 'close' fires next, handles retry */ });
-}
-
-connectSerial();
+  sock.on('error', () => {});
+});
+serialServer.listen(SERIAL_SOCK, () => {
+  console.log(`[console-ws] serial socket ready: ${SERIAL_SOCK}`);
+});
 
 // ─── Optional agentOS HTTP API polling (for when the API is implemented) ─────
 

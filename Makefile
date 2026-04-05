@@ -116,7 +116,7 @@ ifeq ($(NATIVE_ARCH),aarch64)
   _NATIVE_CPU       := $(if $(QEMU_ACCEL_NATIVE),host,cortex-a53)
   NATIVE_QEMU_FLAGS  = -machine virt,virtualization=on,highmem=off,secure=off \
                         -cpu $(_NATIVE_CPU) -m 2G \
-                        -display none -monitor none -serial unix:/tmp/agentos-serial.sock,server,nowait \
+                        -display none -monitor none -serial unix:/tmp/agentos-serial.sock \
                         $(QEMU_ACCEL_NATIVE) \
                         -netdev user,id=net0,hostfwd=tcp:127.0.0.1:8789-:8789 \
                         -device virtio-net-device,netdev=net0 \
@@ -125,7 +125,7 @@ else
   NATIVE_BOARD      := x86_64_generic
   NATIVE_QEMU       := qemu-system-x86_64
   NATIVE_QEMU_FLAGS  = -machine q35 -cpu host -m 2G \
-                        -display none -monitor none -serial unix:/tmp/agentos-serial.sock,server,nowait \
+                        -display none -monitor none -serial unix:/tmp/agentos-serial.sock \
                         $(QEMU_ACCEL_NATIVE) \
                         -netdev user,id=net0,hostfwd=tcp:127.0.0.1:8789-:8789 \
                         -device e1000,netdev=net0 \
@@ -333,12 +333,14 @@ console: $(CONSOLE_DIR)/node_modules
 	@echo "Console: http://localhost:8795  (opening in browser...)"
 	@echo "──────────────────────────────────────────────"
 	@rm -f /tmp/agentos-serial.sock
-	@trap 'kill "$$QEMU_PID" 2>/dev/null; exit' INT TERM; \
+	@trap 'kill "$$QEMU_PID" 2>/dev/null; wait "$$BRIDGE_PID" 2>/dev/null; exit' INT TERM; \
+	 cd $(CONSOLE_DIR) && node agentos_console.mjs & BRIDGE_PID=$$!; \
+	 for _i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do \
+	   [ -S /tmp/agentos-serial.sock ] && break; sleep 0.1; done; \
 	 $(NATIVE_QEMU) $(NATIVE_QEMU_FLAGS) & QEMU_PID=$$!; \
-	 sleep 0.5; \
 	 command -v open     >/dev/null 2>&1 && open     http://localhost:8795 || \
 	 command -v xdg-open >/dev/null 2>&1 && xdg-open http://localhost:8795 || true; \
-	 cd $(CONSOLE_DIR) && node agentos_console.mjs; \
+	 wait "$$BRIDGE_PID"; \
 	 kill "$$QEMU_PID" 2>/dev/null || true
 
 # =============================================================================
