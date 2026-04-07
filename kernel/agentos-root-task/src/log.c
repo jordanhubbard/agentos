@@ -41,6 +41,9 @@ static void log_u32(uint32_t v) {
 
 void agentos_log_boot(const char *pd_name) {
     {
+        /* Buffer must hold UTF-8 box-drawing strings: ═ is 3 bytes × 38 = 114 bytes per line.
+         * Two border lines (121 bytes each) + two body lines (~45 bytes each) + footer = ~379 bytes.
+         * 512 bytes is the minimum safe size. */
         char _cl_buf[512] = {};
         char *_cl_p = _cl_buf;
         for (const char *_s = "\n"; *_s; _s++) *_cl_p++ = *_s;

@@ -341,4 +341,22 @@
         <end pd="event_bus"    id="55" />
         <end pd="console_mux"  id="2" />
     </channel>
+
+    <!-- Trace Recorder: passive stub, priority 128
+         Channels 6-7 from controller's perspective:
+           6: controller <-> trace_recorder (pp=true: START/STOP/QUERY/DUMP)
+           7: controller -> trace_recorder  (notify on each inter-PD dispatch) -->
+    <protection_domain name="trace_recorder" priority="128" passive="true">
+        <program_image path="trace_recorder.elf" />
+    </protection_domain>
+
+    <channel>
+        <end pd="controller"     id="6" pp="true" />
+        <end pd="trace_recorder" id="0" />
+    </channel>
+
+    <channel>
+        <end pd="controller"     id="7" />
+        <end pd="trace_recorder" id="1" />
+    </channel>
 </system>

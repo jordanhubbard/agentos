@@ -500,15 +500,20 @@ static void handle_scroll(uint32_t lines) {
 /* ─── Microkit Entry Points ───────────────────────────────────────────── */
 
 void init(void) {
-    agentos_log_info("console_mux", "starting — agentOS session multiplexer");
-    
+    /* Use uart_puts directly — console_mux must NOT call console_log() on itself,
+     * because console_log() PPCs on CH_CONSOLEMUX which is a channel FROM other PDs
+     * INTO console_mux, not a channel that console_mux holds for outbound calls.
+     * Calling console_log() here would trigger "invalid channel" and corrupt the
+     * caller's IPC state. */
+    uart_puts("[console_mux] starting — agentOS session multiplexer\n");
+
     init_rings();
-    
+
     /* Start in broadcast mode — show all PDs */
     display_mode = MODE_BROADCAST;
     has_active = false;
     session_count = 0;
-    
+
     uart_puts("\n");
     uart_puts("\033[1;35m╔══════════════════════════════════════╗\n");
     uart_puts("║     agentOS Console Multiplexer      ║\n");
@@ -517,8 +522,8 @@ void init(void) {
     uart_puts("      ║\n");
     uart_puts("║  mode: broadcast | sessions: 0       ║\n");
     uart_puts("╚══════════════════════════════════════╝\033[0m\n\n");
-    
-    agentos_log_info("console_mux", "ready — broadcast mode, waiting for PD connections");
+
+    uart_puts("[console_mux] ready — broadcast mode, waiting for PD connections\n");
 }
 
 void notified(microkit_channel ch) {

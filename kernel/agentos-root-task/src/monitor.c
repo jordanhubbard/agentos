@@ -80,6 +80,14 @@ static const uint32_t ECHO_SERVICE_WASM_LEN = 305;
  */
 static void trace_notify(uint8_t src_pd, uint8_t dst_pd, uint16_t label,
                           uint32_t mr0_val, uint32_t mr1_val) {
+    /* Save caller's MRs — microkit_notify is fire-and-forget but seL4 leaves
+     * registers as-set, so without save/restore the next microkit_ppcall would
+     * receive the trace header in MR0 instead of the intended op code.
+     * This was the root cause of [controller] AgentFS PUT FAILED. */
+    seL4_Word saved0 = microkit_mr_get(0);
+    seL4_Word saved1 = microkit_mr_get(1);
+    seL4_Word saved2 = microkit_mr_get(2);
+
     uint32_t packed = ((uint32_t)src_pd << 24)
                     | ((uint32_t)dst_pd << 16)
                     | (uint32_t)(label & 0xFFFF);
@@ -87,6 +95,11 @@ static void trace_notify(uint8_t src_pd, uint8_t dst_pd, uint16_t label,
     microkit_mr_set(1, mr0_val);
     microkit_mr_set(2, mr1_val);
     microkit_notify(CH_TRACE_NOTIFY);
+
+    /* Restore so the caller's subsequent microkit_ppcall sees the right MRs */
+    microkit_mr_set(0, saved0);
+    microkit_mr_set(1, saved1);
+    microkit_mr_set(2, saved2);
 }
 
 /* Forward declarations */

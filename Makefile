@@ -4,7 +4,7 @@
 #   make deps && make
 #
 # Targets:
-#   make              — build (native arch) + QEMU (HW-accel) + agentOS console (http://localhost:8795)
+#   make              — build (native arch) + QEMU (HW-accel) + agentOS console (http://localhost:8080)
 #   make dashboard    — start agentOS console only (agentOS already running on hardware)
 #   make deps         — install all build dependencies
 #   make test         — CI boot test (exit 0/1)
@@ -116,7 +116,9 @@ ifeq ($(NATIVE_ARCH),aarch64)
   _NATIVE_CPU       := $(if $(QEMU_ACCEL_NATIVE),host,cortex-a53)
   NATIVE_QEMU_FLAGS  = -machine virt,virtualization=on,highmem=off,secure=off \
                         -cpu $(_NATIVE_CPU) -m 2G \
-                        -display none -monitor none -serial unix:/tmp/agentos-serial.sock \
+                        -display none -monitor none \
+                        -chardev socket,id=char0,path=/tmp/agentos-serial.sock,server=on,wait=off \
+                        -serial chardev:char0 \
                         $(QEMU_ACCEL_NATIVE) \
                         -netdev user,id=net0,hostfwd=tcp:127.0.0.1:8789-:8789 \
                         -device virtio-net-device,netdev=net0 \
@@ -304,7 +306,7 @@ $(CONSOLE_DIR)/node_modules: $(CONSOLE_DIR)/package.json
 # =============================================================================
 dashboard: $(CONSOLE_DIR)/node_modules
 	@echo ""
-	@echo "agentOS console → http://localhost:8795"
+	@echo "agentOS console → http://localhost:8080"
 	@echo "Connects to agentOS at http://127.0.0.1:8789"
 	@echo "Press Ctrl-C to stop."
 	@echo ""
@@ -315,8 +317,8 @@ dashboard: $(CONSOLE_DIR)/node_modules
 #
 # Builds agentOS for the host's native CPU, launches it headlessly in QEMU
 # with hardware acceleration (HVF on macOS, KVM on Linux), starts the
-# agentOS console, and opens it in the default browser.
-# Ctrl-C shuts down both the console and QEMU cleanly.
+# agentOS console server, and opens it in the default browser.
+# Ctrl-C shuts down both the console server and QEMU cleanly.
 # =============================================================================
 console: $(CONSOLE_DIR)/node_modules
 	@$(MAKE) build BOARD=$(NATIVE_BOARD) TARGET_ARCH=$(NATIVE_ARCH)
@@ -330,7 +332,7 @@ console: $(CONSOLE_DIR)/node_modules
 	@echo "Accel : $(if $(QEMU_ACCEL_NATIVE),$(QEMU_ACCEL_NATIVE),none (TCG fallback))"
 	@echo "Image : $(NATIVE_IMAGE)"
 	@echo ""
-	@echo "Console: http://localhost:8795  (opening in browser...)"
+	@echo "Console: http://localhost:8080  (opening in browser...)"
 	@echo "──────────────────────────────────────────────"
 	@rm -f /tmp/agentos-serial.sock
 	@trap 'kill "$$QEMU_PID" 2>/dev/null; wait "$$BRIDGE_PID" 2>/dev/null; exit' INT TERM; \
@@ -338,8 +340,8 @@ console: $(CONSOLE_DIR)/node_modules
 	 for _i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do \
 	   [ -S /tmp/agentos-serial.sock ] && break; sleep 0.1; done; \
 	 $(NATIVE_QEMU) $(NATIVE_QEMU_FLAGS) & QEMU_PID=$$!; \
-	 command -v open     >/dev/null 2>&1 && open     http://localhost:8795 || \
-	 command -v xdg-open >/dev/null 2>&1 && xdg-open http://localhost:8795 || true; \
+	 command -v open     >/dev/null 2>&1 && open     http://localhost:8080 || \
+	 command -v xdg-open >/dev/null 2>&1 && xdg-open http://localhost:8080 || true; \
 	 wait "$$BRIDGE_PID"; \
 	 kill "$$QEMU_PID" 2>/dev/null || true
 

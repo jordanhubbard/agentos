@@ -10,6 +10,7 @@
     worker_0..7  (prio 80)   - agent pool workers (dynamic task assignment)
     vibe_engine  (prio 140)  - passive VibeEngine: WASM hot-swap lifecycle
     console_mux  (prio 160)  - passive session multiplexer ("tmux for agents")
+    trace_recorder (prio 128) - passive inter-PD dispatch event logger (stub)
     mem_profiler (prio 108)  - passive heap alloc tracker + leak detector
     net_isolator (prio 160)  - passive per-agent outbound network firewall
   
@@ -17,8 +18,9 @@
     0:  controller <-> event_bus    (controller PPCs into passive event_bus)
     1:  controller <-> init_agent   (notify: controller starts init_agent)
     2:  event_bus  <-> init_agent   (init_agent PPCs into event_bus to subscribe)
-    5:  controller <-> agentfs      (controller PPCs into passive agentfs)
-    6:  agentfs    <-> event_bus    (agentfs notifies on mutations)
+    5:  controller <-> agentfs        (controller PPCs into passive agentfs)
+    6:  controller <-> trace_recorder (PPC: START/STOP/QUERY/DUMP)
+    7:  controller -> trace_recorder  (notify on each inter-PD dispatch)
     10: controller <-> worker_0     (task assignment + completion notify)
     11: controller <-> worker_1
     12: controller <-> worker_2
@@ -543,6 +545,41 @@
     <channel>
         <end pd="event_bus"    id="60" />
         <end pd="console_mux"  id="2" />
+    </channel>
+
+    <!--
+      ══════════════════════════════════════════════════════════════════
+      Trace Recorder: inter-PD dispatch event logger
+
+      Passive PD (priority 128) that receives best-effort notifications
+      from the controller on every inter-PD dispatch (microkit_notify,
+      microkit_ppcall).  Useful for debugging sequencing and liveness.
+
+      No shared memory in this stub — a full implementation would map a
+      ring buffer here for post-mortem trace dumps.
+
+      Channels (6-7, from controller's perspective):
+        6: controller <-> trace_recorder  (pp=true: START/STOP/QUERY/DUMP)
+        7: controller -> trace_recorder   (notify on each dispatch event)
+      ══════════════════════════════════════════════════════════════════
+    -->
+
+    <protection_domain name="trace_recorder" priority="128" passive="true">
+        <program_image path="trace_recorder.elf" />
+    </protection_domain>
+
+    <!-- Channel 6: controller(id=6) <-> trace_recorder(id=0) pp=true
+         Controller PPCs into trace_recorder for START/STOP/QUERY/DUMP -->
+    <channel>
+        <end pd="controller"       id="6" pp="true" />
+        <end pd="trace_recorder"   id="0" />
+    </channel>
+
+    <!-- Channel 7: controller(id=7) -> trace_recorder(id=1)
+         Controller notifies trace_recorder on each inter-PD dispatch -->
+    <channel>
+        <end pd="controller"       id="7" />
+        <end pd="trace_recorder"   id="1" />
     </channel>
 
     <!--

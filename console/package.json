@@ -5,7 +5,9 @@
   "type": "module",
   "scripts": {
     "console": "node agentos_console.mjs",
-    "start": "node agentos_console.mjs"
+    "start": "node agentos_console.mjs",
+    "test": "node --test console/test/api.test.mjs",
+    "test:watch": "node --test --watch console/test/api.test.mjs"
   },
   "dependencies": {
     "ws": "^8.18.0"
