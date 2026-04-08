@@ -4,14 +4,11 @@ members = [
     "userspace/sdk",
     "userspace/agents/init-agent",
     # Userspace servers
-    "userspace/servers/agent-fs",
     "userspace/servers/event-bus",
     "userspace/servers/capability-broker",
     "userspace/servers/model-proxy",
     "userspace/servers/tool-registry",
     "userspace/servers/vibe-engine",
-    # Userspace services
-    "userspace/services/mesh-bridge",
     # Build + codegen tools
     "tools/gen-sdf",
     "tools/gen-ringbuf",

@@ -10,7 +10,6 @@
 
 use alloc::string::String;
 use alloc::vec::Vec;
-use crate::fs::ObjectId;
 
 /// A vector embedding
 #[derive(Debug, Clone)]
@@ -67,10 +66,8 @@ pub struct VectorRecord {
     pub id: VectorId,
     /// The embedding
     pub embedding: Embedding,
-    /// Optional payload (text, object reference, etc.)
+    /// Optional payload (text, metadata, etc.)
     pub payload: VectorPayload,
-    /// Link to an AgentFS object (if this embedding represents an object)
-    pub object_ref: Option<ObjectId>,
     /// Insertion timestamp
     pub created_at_ns: u64,
 }
@@ -139,8 +136,6 @@ impl SearchQuery {
 pub struct VectorFilter {
     /// Only return vectors created after this timestamp
     pub after_ns: Option<u64>,
-    /// Only return vectors with object refs
-    pub has_object_ref: Option<bool>,
 }
 
 /// A VectorStore partition
@@ -184,7 +179,6 @@ impl VectorPartition {
             id: id.clone(),
             embedding,
             payload,
-            object_ref: None,
             created_at_ns: now_ns,
         });
         
