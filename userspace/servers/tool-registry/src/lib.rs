@@ -184,17 +184,14 @@ impl ToolRegistry {
     pub fn invoke(&mut self, call: &ToolCall) -> ToolResult {
         self.total_invocations += 1;
         
-        // Find the tool
-        let tool = match self.tools.get_mut(&call.tool_name) {
-            Some(t) => t,
-            None => return ToolResult {
+        // Check existence and access before taking mutable borrow
+        if !self.tools.contains_key(&call.tool_name) {
+            return ToolResult {
                 status: ToolStatus::NotFound,
                 output: Vec::new(),
                 exec_time_us: 0,
-            },
-        };
-        
-        // Check access
+            };
+        }
         if !self.check_access(call.caller_badge, &call.tool_name) {
             return ToolResult {
                 status: ToolStatus::AccessDenied,
@@ -202,6 +199,9 @@ impl ToolRegistry {
                 exec_time_us: 0,
             };
         }
+
+        // Now take the mutable borrow
+        let tool = self.tools.get_mut(&call.tool_name).unwrap();
         
         // Check availability
         if !tool.available {
@@ -289,7 +289,8 @@ pub struct RegistryStats {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+    use alloc::{format, vec};
+
     fn make_tool(name: &str, provider: [u8; 32]) -> ToolDef {
         ToolDef {
             name: name.into(),

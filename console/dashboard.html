@@ -734,27 +734,22 @@ header h1 {
 'use strict';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
-const WS_SLOT = { audit: 5, timeline: 10, metrics: 8 };
-const LOG_EL  = { audit: 'audit-log', timeline: 'timeline-log', metrics: 'metrics-log' };
 
-const DISPLAY_NAMES = {
-  controller: 'controller (seL4 root task)',
-  event_bus:  'event_bus',
-  init_agent: 'init_agent',
-  agentfs:    'agentfs',
-  vibe_engine:'vibe_engine',
-  worker_0:   'WASM Worker 0', worker_1: 'WASM Worker 1',
-  worker_2:   'WASM Worker 2', worker_3: 'WASM Worker 3',
-  worker_4:   'WASM Worker 4', worker_5: 'WASM Worker 5',
-  worker_6:   'WASM Worker 6', worker_7: 'WASM Worker 7',
-  swap_slot_0:'WASM Swap 0',   swap_slot_1:'WASM Swap 1',
-  swap_slot_2:'WASM Swap 2',   swap_slot_3:'WASM Swap 3',
-  console_mux:'console_mux',
-  linux_vmm:  'Linux VM (Buildroot)',
-  fault_hndlr:'fault_hndlr',
-  trace_recorder: 'trace_recorder',
+// Single source of truth for tab→slot bindings (populated from /api/pd-slots)
+const TAB_SLOTS = {
+  audit:    { slot: 5,  el: 'audit-log',    color: '#e3b341' },
+  timeline: { slot: 10, el: 'timeline-log', color: '#a5d6ff' },
+  metrics:  { slot: 8,  el: 'metrics-log',  color: '#7ee787' },
 };
-const LOG_CLR = { 5: '#e3b341', 10: '#a5d6ff', 8: '#7ee787' };
+
+const SCROLLBACK_LIMIT = 600;
+
+/** slot → display label — populated at boot from GET /api/pd-slots */
+let displayNames = {};
+fetch('/api/pd-slots')
+  .then(r => r.json())
+  .then(slots => { slots.forEach(s => { displayNames[s.name] = s.display; }); })
+  .catch(() => { /* fall back to raw name */ });
 
 // ─── Tab switching ────────────────────────────────────────────────────────────
 let currentTab = 'console';
@@ -778,6 +773,9 @@ document.querySelectorAll('.tab-btn').forEach(btn => {
 // ─── WebSocket ────────────────────────────────────────────────────────────────
 let ws = null;
 let activeSlot = null;
+let wsRetries = 0;
+const WS_MAX_RETRIES = 10;
+const WS_BASE_DELAY  = 1000; // ms
 
 function wsConnect() {
   if (ws) return;
@@ -785,6 +783,7 @@ function wsConnect() {
   ws = new WebSocket(url);
 
   ws.onopen = () => {
+    wsRetries = 0;
     setWsDot('connected', 'WS connected');
     wsSubscribeTo(currentTab);
   };
@@ -800,8 +799,14 @@ function wsConnect() {
   ws.onclose = () => {
     ws = null;
     activeSlot = null;
-    setWsDot('', 'WS disconnected — reconnecting…');
-    setTimeout(wsConnect, 3000);
+    if (wsRetries >= WS_MAX_RETRIES) {
+      setWsDot('error', 'WS failed — reload to retry');
+      return;
+    }
+    const delay = Math.min(30000, WS_BASE_DELAY * Math.pow(2, wsRetries));
+    wsRetries++;
+    setWsDot('', `WS disconnected — retry ${wsRetries}/${WS_MAX_RETRIES} in ${(delay/1000).toFixed(1)}s…`);
+    setTimeout(wsConnect, delay);
   };
 
   ws.onerror = () => { setWsDot('error', 'WS error'); ws.close(); };
@@ -812,8 +817,9 @@ function wsSend(obj) {
 }
 
 function wsSubscribeTo(tab) {
-  const slot = WS_SLOT[tab];
-  if (slot === undefined) return;
+  const cfg = TAB_SLOTS[tab];
+  if (!cfg) return;
+  const { slot } = cfg;
   if (activeSlot !== null && activeSlot !== slot) {
     wsSend({ action: 'unsubscribe', slot: activeSlot });
   }
@@ -830,10 +836,13 @@ function setWsDot(cls, label) {
 }
 
 // ─── Log rendering ────────────────────────────────────────────────────────────
+const _slotToCfg = Object.fromEntries(Object.values(TAB_SLOTS).map(c => [c.slot, c]));
+
 function appendLog(slot, line) {
-  const elId = { 5: 'audit-log', 10: 'timeline-log', 8: 'metrics-log' }[slot];
-  if (!elId) return;
-  const el = document.getElementById(elId);
+  const cfg = _slotToCfg[slot];
+  if (!cfg) return;
+  const el = document.getElementById(cfg.el);
+  if (!el) return;
 
   // Remove placeholder on first real line
   const first = el.querySelector('[data-placeholder]');
@@ -842,11 +851,10 @@ function appendLog(slot, line) {
   const div = document.createElement('div');
   div.className = 'log-line';
   const ts = new Date().toISOString().slice(11, 23);
-  const color = LOG_CLR[slot] ?? 'var(--text)';
   div.innerHTML = `<span class="ts">${ts}</span>`
-    + `<span class="val" style="color:${color}">${esc(line.trimEnd())}</span>`;
+    + `<span class="val" style="color:${cfg.color}">${esc(line.trimEnd())}</span>`;
   el.appendChild(div);
-  while (el.children.length > 600) el.removeChild(el.firstChild);
+  while (el.children.length > SCROLLBACK_LIMIT) el.removeChild(el.firstChild);
   el.scrollTop = el.scrollHeight;
 }
 
@@ -1031,8 +1039,12 @@ function buildFlameGraph(slot) {
         rect.setAttribute('fill', fnColor(f.fn, 58));
       });
       rect.addEventListener('mousemove', ev => {
-        TTIP.style.left = (ev.clientX + 14) + 'px';
-        TTIP.style.top  = (ev.clientY - 34) + 'px';
+        const tw = TTIP.offsetWidth  || 180;
+        const th = TTIP.offsetHeight || 54;
+        const x  = Math.min(ev.clientX + 14, window.innerWidth  - tw - 8);
+        const y  = Math.max(8, ev.clientY - th - 8);
+        TTIP.style.left = x + 'px';
+        TTIP.style.top  = y + 'px';
       });
       rect.addEventListener('mouseleave', () => {
         TTIP.style.display = 'none';
@@ -1156,7 +1168,7 @@ function createConsoleTile(slot, name) {
 
   const titleEl = document.createElement('span');
   titleEl.className = 'console-tile-title';
-  titleEl.textContent = `${DISPLAY_NAMES[name] ?? name}  (slot ${slot})`;
+  titleEl.textContent = `${displayNames[name] ?? name}  (slot ${slot})`;
 
   const closeBtn = document.createElement('button');
   closeBtn.className = 'console-tile-close';
@@ -1205,7 +1217,7 @@ function connectConsoleTile(tile) {
     const data = typeof ev.data === 'string' ? ev.data : new Uint8Array(ev.data);
     tile.term.write(data);
     tile.linesRecv += (typeof ev.data === 'string' ? ev.data.split('\n').length - 1 : 1);
-    if (tile.titleEl) tile.titleEl.textContent = `${DISPLAY_NAMES[tile.name] ?? tile.name}  (slot ${tile.slot})  · ${tile.linesRecv} lines`;
+    if (tile.titleEl) tile.titleEl.textContent = `${displayNames[tile.name] ?? tile.name}  (slot ${tile.slot})  · ${tile.linesRecv} lines`;
   };
   ws.onclose = () => {
     if (!tile.removed) {
@@ -1262,7 +1274,7 @@ document.getElementById('console-add-tile').addEventListener('click', async () =
   available.forEach(s => {
     const btn = document.createElement('button');
     btn.className = 'slot-picker-btn';
-    btn.textContent = `${DISPLAY_NAMES[s.name] ?? s.name}  (slot ${s.id})`;
+    btn.textContent = `${displayNames[s.name] ?? s.name}  (slot ${s.id})`;
     btn.addEventListener('click', () => {
       overlay.remove();
       createConsoleTile(s.id, s.name);
@@ -1325,8 +1337,19 @@ setInterval(pollApiStatus, 5000);
 
 // ── Agents tab ────────────────────────────────────────────────────────────────
 
-const BADGE_CLASS = { running:'badge-running', booting:'badge-booting', failed:'badge-failed', idle:'badge-idle', empty:'badge-empty', ready:'badge-running', not_prepared:'badge-idle', preparing:'badge-booting', downloading:'badge-booting', building:'badge-booting', error:'badge-failed' };
-const CARD_CLASS  = { running:'status-running', booting:'status-booting', failed:'status-failed', idle:'status-idle', empty:'status-empty', ready:'status-running', not_prepared:'status-empty', preparing:'status-booting', downloading:'status-booting', building:'status-booting', error:'status-failed' };
+const STATUS_SCHEMA = {
+  running:      { badge: 'badge-running',  card: 'status-running'  },
+  booting:      { badge: 'badge-booting',  card: 'status-booting'  },
+  failed:       { badge: 'badge-failed',   card: 'status-failed'   },
+  idle:         { badge: 'badge-idle',     card: 'status-idle'     },
+  empty:        { badge: 'badge-empty',    card: 'status-empty'    },
+  ready:        { badge: 'badge-running',  card: 'status-running'  },
+  not_prepared: { badge: 'badge-idle',     card: 'status-empty'    },
+  preparing:    { badge: 'badge-booting',  card: 'status-booting'  },
+  downloading:  { badge: 'badge-booting',  card: 'status-booting'  },
+  building:     { badge: 'badge-booting',  card: 'status-booting'  },
+  error:        { badge: 'badge-failed',   card: 'status-failed'   },
+};
 const TYPE_LABEL  = { linux_vm:'Linux VM', freebsd_vm:'FreeBSD VM', wasm:'WASM' };
 
 async function fetchAgents() {
@@ -1348,16 +1371,17 @@ function renderAgents(agents) {
   }
   el.innerHTML = '';
   agents.forEach(a => {
+    const schema = STATUS_SCHEMA[a.status] ?? { badge: 'badge-idle', card: '' };
     const card = document.createElement('div');
-    card.className = `agent-card ${CARD_CLASS[a.status] ?? ''}`;
+    card.className = `agent-card ${schema.card}`;
 
     const info = document.createElement('div');
-    info.innerHTML = `<div class="agent-name">${a.name}</div>
-      <div class="agent-meta">Type: ${TYPE_LABEL[a.type] ?? a.type} &nbsp;·&nbsp; Slot ${a.slot} &nbsp;·&nbsp; ${a.lines} lines</div>`;
+    info.innerHTML = `<div class="agent-name">${esc(a.name)}</div>
+      <div class="agent-meta">Type: ${esc(TYPE_LABEL[a.type] ?? a.type)} &nbsp;·&nbsp; Slot ${Number(a.slot)} &nbsp;·&nbsp; ${Number(a.lines)} lines</div>`;
     card.appendChild(info);
 
     const badge = document.createElement('span');
-    badge.className = `agent-badge ${BADGE_CLASS[a.status] ?? 'badge-idle'}`;
+    badge.className = `agent-badge ${schema.badge}`;
     badge.textContent = a.status;
     card.appendChild(badge);
 

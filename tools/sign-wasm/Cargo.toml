@@ -1,0 +1,14 @@
+[package]
+name = "sign-wasm"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "sign-wasm"
+path = "src/main.rs"
+
+[dependencies]
+clap   = { version = "4", features = ["derive"] }
+sha2   = "0.10"
+anyhow = "1"
+hex    = "0.4"

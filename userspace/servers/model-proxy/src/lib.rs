@@ -324,15 +324,12 @@ impl TokenBudget {
 pub struct ModelRouter {
     /// Registered model endpoints
     endpoints: BTreeMap<ModelId, ModelEndpoint>,
-    /// Routing preferences by task type
-    task_preferences: BTreeMap<u8, Vec<ModelId>>, // task_type ordinal -> preferred models
 }
 
 impl ModelRouter {
     pub fn new() -> Self {
         Self {
             endpoints: BTreeMap::new(),
-            task_preferences: BTreeMap::new(),
         }
     }
     
@@ -432,11 +429,10 @@ pub struct PromptCache {
 }
 
 #[derive(Debug, Clone)]
-struct CachedResponse {
+pub struct CachedResponse {
     content: String,
     model_used: ModelId,
     tokens_out: TokenCount,
-    cached_at: u64,
 }
 
 impl PromptCache {
@@ -480,7 +476,6 @@ impl PromptCache {
             content: response.content.clone(),
             model_used: response.model_used.clone(),
             tokens_out: response.tokens_out,
-            cached_at: 0, // TODO: system time
         });
     }
     
@@ -723,7 +718,7 @@ mod tests {
         proxy.register_model(make_endpoint("test-model", 1));
         
         let mut budget = make_budget(42);
-        budget.tokens_per_period = 100; // Very small budget
+        budget.tokens_per_period = 10_000; // Small but sufficient for one 4096-token request
         proxy.set_budget(budget);
         
         // First request should work

@@ -1,12 +1,38 @@
 [workspace]
 members = [
+    # Userspace SDK + agents
     "userspace/sdk",
+    "userspace/agents/init-agent",
+    # Userspace servers
     "userspace/servers/agent-fs",
     "userspace/servers/event-bus",
     "userspace/servers/capability-broker",
-    "userspace/agents/init-agent",
+    "userspace/servers/model-proxy",
+    "userspace/servers/tool-registry",
+    "userspace/servers/vibe-engine",
+    # Userspace services
+    "userspace/services/mesh-bridge",
+    # Build + codegen tools
+    "tools/gen-sdf",
+    "tools/gen-ringbuf",
+    "tools/sign-wasm",
+    "tools/attest-verify",
+    "tools/make-swap-image",
+    "tools/trace-replay",
+    # Console
+    "console/pd-slots",
+    "console/agentos-console",
+    # WASM dashboard (build with --target wasm32-unknown-unknown -p dashboard)
+    "console/dashboard",
+    # Workspace task runner
+    "xtask",
 ]
 resolver = "2"
 
 [workspace.dependencies]
-# Will be filled in as we develop
+serde       = { version = "1",      features = ["derive"] }
+serde_json  = "1"
+tokio       = { version = "1",      features = ["full"] }
+clap        = { version = "4",      features = ["derive"] }
+anyhow      = "1"
+thiserror   = "1"

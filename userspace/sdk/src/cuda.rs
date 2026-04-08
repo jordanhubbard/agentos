@@ -5,12 +5,12 @@
 //! and validates the PTX; the gpu_scheduler PD binds it to a GPU slot.
 //!
 //! # Example
-//! ```rust
+//! ```no_run
 //! use agentos_sdk::cuda::CudaKernel;
 //!
-//! let ptx = include_bytes!("kernels/matmul.ptx");
+//! let ptx = b".version 7.0\n.target sm_80\n.address_size 64\n";
 //! let kernel = CudaKernel::new(ptx.to_vec(), "matmul_kernel".to_string());
-//! kernel.submit(0)?;  // Submit to GPU slot 0
+//! // kernel.submit(0).unwrap(); // Submit to GPU slot 0
 //! ```
 
 use alloc::string::String;

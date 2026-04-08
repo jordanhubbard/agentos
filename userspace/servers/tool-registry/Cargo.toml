@@ -4,5 +4,8 @@ version = "0.1.0"
 edition = "2021"
 description = "Tool Registry - capability-gated tool registration and dispatch for agentOS"
 
+[features]
+std = []
+
 [dependencies]
 agentos-sdk = { path = "../../sdk" }

@@ -11,7 +11,7 @@
 #   make clean        — remove build artifacts for current target
 #   make clean-all    — remove all build artifacts
 
-.PHONY: all deps deps-tools deps-sdk submodules console dashboard test test-snapshot-sched test-power-mgr clean clean-all clean-images help release release-minor release-major fetch-guest
+.PHONY: all deps deps-tools deps-sdk submodules console dashboard test test-snapshot-sched test-power-mgr clean clean-all clean-images help release release-minor release-major fetch-guest build-tools
 
 # ─── Read config.yaml (if present) ───────────────────────────────────────────
 CONFIG_TARGET := $(shell grep '^target_arch:' config.yaml 2>/dev/null | sed 's/target_arch:[[:space:]]*//' | tr -d '[:space:]')
@@ -167,6 +167,11 @@ ifeq ($(UNAME_S),Darwin)
 		dtc \
 		coreutils \
 		2>/dev/null || true
+	@command -v cargo >/dev/null 2>&1 || \
+		(echo "[macOS] Installing Rust toolchain..." && \
+		 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --no-modify-path && \
+		 echo "[macOS] Rust installed. ✓")
+	@rustup target add wasm32-unknown-unknown 2>/dev/null || true
 	@echo "[macOS] All deps installed. ✓"
 else ifeq ($(UNAME_S),Linux)
 	@echo "[Linux] Installing dependencies via apt..."
@@ -180,9 +185,13 @@ else ifeq ($(UNAME_S),Linux)
 		cmake \
 		ninja-build \
 		python3 \
-		python3-pip \
 		device-tree-compiler \
+		curl \
+		xz-utils \
 		2>/dev/null || true
+	@command -v cargo >/dev/null 2>&1 || \
+		(curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --no-modify-path)
+	@rustup target add wasm32-unknown-unknown 2>/dev/null || true
 	@echo "[Linux] All deps installed. ✓"
 else ifeq ($(UNAME_S),FreeBSD)
 	@echo "[FreeBSD] Installing dependencies via pkg..."
@@ -194,7 +203,9 @@ else ifeq ($(UNAME_S),FreeBSD)
 		python3 \
 		curl \
 		wget \
+		rust \
 		2>/dev/null || true
+	@rustup target add wasm32-unknown-unknown 2>/dev/null || true
 	@echo "[FreeBSD] All deps installed. ✓"
 	@echo ""
 	@echo "NOTE: FreeBSD host — cross-compilation only."
@@ -249,13 +260,23 @@ submodules:
 	fi
 
 # =============================================================================
+# build-tools: compile all Rust tool binaries in release mode
+# =============================================================================
+build-tools:
+	@echo "Building agentOS Rust tools..."
+	@cargo build --release \
+		-p gen-sdf -p gen-ringbuf -p sign-wasm -p attest-verify \
+		-p make-swap-image -p trace-replay -p agentos-console -p xtask
+	@echo "✓ Tools built → target/release/"
+
+# =============================================================================
 # fetch-guest: download the guest OS image for GUEST_OS (idempotent)
 # =============================================================================
 fetch-guest:
 ifeq ($(GUEST_OS),freebsd)
-	@bash $(ROOT_DIR)scripts/fetch-freebsd-guest.sh
+	@cargo xtask fetch-guest --os freebsd
 else ifeq ($(GUEST_OS),ubuntu)
-	@bash $(ROOT_DIR)scripts/fetch-ubuntu-guest.sh
+	@cargo xtask fetch-guest --os ubuntu
 endif
 
 # =============================================================================
@@ -295,22 +316,16 @@ endif
 	@echo "✓ Build complete: $(IMAGE)"
 	@echo ""
 
-# internal sentinel: npm install for agentOS console bridge
-$(CONSOLE_DIR)/node_modules: $(CONSOLE_DIR)/package.json
-	@echo "Installing agentOS console npm dependencies..."
-	@cd $(CONSOLE_DIR) && npm install --silent
-	@echo "✓ console deps installed"
-
 # =============================================================================
 # dashboard: start the agentOS console (agentOS already running on hardware)
 # =============================================================================
-dashboard: $(CONSOLE_DIR)/node_modules
+dashboard:
 	@echo ""
 	@echo "agentOS console → http://localhost:8080"
 	@echo "Connects to agentOS at http://127.0.0.1:8789"
 	@echo "Press Ctrl-C to stop."
 	@echo ""
-	@cd $(CONSOLE_DIR) && node agentos_console.mjs
+	@cargo run -p agentos-console --release
 
 # =============================================================================
 # console (default): build native → QEMU (HW-accel) + agentOS console
@@ -320,7 +335,7 @@ dashboard: $(CONSOLE_DIR)/node_modules
 # agentOS console server, and opens it in the default browser.
 # Ctrl-C shuts down both the console server and QEMU cleanly.
 # =============================================================================
-console: $(CONSOLE_DIR)/node_modules
+console:
 	@$(MAKE) build BOARD=$(NATIVE_BOARD) TARGET_ARCH=$(NATIVE_ARCH)
 	@echo ""
 	@echo "╔══════════════════════════════════════════╗"
@@ -336,7 +351,7 @@ console: $(CONSOLE_DIR)/node_modules
 	@echo "──────────────────────────────────────────────"
 	@rm -f /tmp/agentos-serial.sock
 	@trap 'kill "$$QEMU_PID" 2>/dev/null; wait "$$BRIDGE_PID" 2>/dev/null; exit' INT TERM; \
-	 cd $(CONSOLE_DIR) && node agentos_console.mjs & BRIDGE_PID=$$!; \
+	 cargo run -p agentos-console --release & BRIDGE_PID=$$!; \
 	 for _i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do \
 	   [ -S /tmp/agentos-serial.sock ] && break; sleep 0.1; done; \
 	 $(NATIVE_QEMU) $(NATIVE_QEMU_FLAGS) & QEMU_PID=$$!; \
@@ -349,7 +364,7 @@ console: $(CONSOLE_DIR)/node_modules
 # test: CI boot test (exits 0 on success, 1 on failure)
 # =============================================================================
 test: build
-	@BOARD=$(BOARD) bash scripts/run-tests.sh
+	@cargo xtask test --board $(BOARD) --guest-os $(GUEST_OS)
 
 # =============================================================================
 # test-snapshot-sched: standalone unit test for the snapshot_sched PD
@@ -406,13 +421,13 @@ clean-images:
 # release: tag + GitHub release (requires gh CLI and clean working tree)
 # =============================================================================
 release:
-	@bash scripts/release.sh patch
+	@cargo xtask release --bump patch
 
 release-minor:
-	@bash scripts/release.sh minor
+	@cargo xtask release --bump minor
 
 release-major:
-	@bash scripts/release.sh major
+	@cargo xtask release --bump major
 
 # =============================================================================
 # help
@@ -430,10 +445,17 @@ help:
 	@echo "  make test-power-mgr"
 	@echo "  make clean            Remove build artifacts"
 	@echo "  make clean-all        Remove all build artifacts"
+	@echo "  make build-tools      Build all Rust tool binaries (release mode)"
 	@echo "  make release          Cut a patch release (tag + GitHub release)"
 	@echo "  make release-minor    Cut a minor release"
 	@echo "  make release-major    Cut a major release"
 	@echo ""
 	@echo "Quick start:"
 	@echo "  make deps && make"
+	@echo ""
+	@echo "Language breakdown:"
+	@echo "  Kernel/firmware    → C"
+	@echo "  Arch-specific      → Assembly"
+	@echo "  Userspace/tooling  → Rust"
+	@echo "  Dashboard UI       → Rust/WASM (trunk build)"
 	@echo ""

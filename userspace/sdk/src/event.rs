@@ -17,7 +17,6 @@
 
 use alloc::string::String;
 use alloc::vec::Vec;
-use alloc::boxed::Box;
 
 use crate::identity::AgentId;
 use crate::capability::Capability;

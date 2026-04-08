@@ -21,10 +21,9 @@
  *   mr  = message registers [MR0..MR7]
  */
 
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader};
 use std::net::TcpListener;
-use std::sync::{Arc, Mutex};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 // ── Config ────────────────────────────────────────────────────────────────────
 

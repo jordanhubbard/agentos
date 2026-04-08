@@ -9,13 +9,11 @@
 
 use alloc::vec::Vec;
 use alloc::string::String;
-use alloc::boxed::Box;
 use alloc::format;
 
 use crate::capability::{Capability, CapabilitySet, CapabilityKind, Right};
 use crate::event::{EventChannel, Event, EventKind, Priority};
 use crate::identity::{AgentId, AgentIdentity, AgentClass};
-use crate::fs::{Object, ObjectId};
 
 /// An agent's complete runtime context
 ///
@@ -100,7 +98,7 @@ impl AgentContext {
     pub fn spawn_agent(
         &mut self,
         name: impl Into<String>,
-        class: AgentClass,
+        _: AgentClass,
         granted_caps: Vec<Capability>,
     ) -> Result<AgentId, ContextError> {
         // Check we have the AgentSpawn capability
@@ -135,11 +133,11 @@ impl AgentContext {
     }
 
     /// Debug log (seL4_DebugPutChar in production)
-    pub fn log(&self, msg: &str) {
-        // In production: microkit_dbg_puts() 
+    pub fn log(&self, _msg: &str) {
+        // In production: microkit_dbg_puts()
         // In simulation: print to stdout
         #[cfg(feature = "std")]
-        println!("[{}] {}", self.identity.id, msg);
+        println!("[{}] {}", self.identity.id, _msg);
     }
 }
 

@@ -9,11 +9,17 @@ authors = ["Natasha (agent on do-host1)"]
 [dependencies]
 # No std - this runs in seL4 userspace
 # We'll conditionally enable std for the simulation/testing layer
+serde      = { version = "1", features = ["derive"], optional = true }
+serde_json = { version = "1", optional = true }
+tokio      = { version = "1", features = ["net", "io-util", "sync", "rt", "macros"], optional = true }
+uuid       = { version = "1", features = ["v4"], optional = true }
 
 [features]
 default = []
 # Enable std for host-side testing and simulation
 std = []
+# Enable the async AgentContext (Unix socket RPC, requires std + tokio)
+async-context = ["std", "dep:serde", "dep:serde_json", "dep:tokio", "dep:uuid"]
 # Enable seL4 bindings (requires the sel4 crate to be available)
 sel4 = []
 

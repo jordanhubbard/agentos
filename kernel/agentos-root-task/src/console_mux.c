@@ -87,6 +87,8 @@ typedef struct {
     uint64_t bytes_total;  /* total bytes received from this PD */
     uint64_t lines_total;  /* total lines received */
     scrollback_t scrollback;
+    char     line_buf[MAX_LINE_LEN];
+    uint32_t line_pos;
 } console_session_t;
 
 /* ─── State ───────────────────────────────────────────────────────────── */
@@ -162,7 +164,9 @@ static console_session_t *get_or_create_session(uint32_t pd_id) {
     s->lines_total = 0;
     s->scrollback.line_head = 0;
     s->scrollback.line_count = 0;
-    
+    s->line_buf[0] = '\0';
+    s->line_pos = 0;
+
     /* Copy name */
     const char *name = pd_name_for(pd_id);
     uint32_t i;
@@ -276,36 +280,32 @@ static uint32_t drain_ring(uint32_t slot, console_session_t *session, bool show)
     uint32_t tail = hdr->tail;
     uint32_t drained = 0;
     
-    /* Line accumulator */
-    static char line_buf[MAX_LINE_LEN];
-    static uint32_t line_pos = 0;
-    
     while (tail != head) {
         char c = buf[tail % RING_BUF_SIZE];
         tail = (tail + 1) % RING_BUF_SIZE;
         drained++;
-        
-        if (c == '\n' || line_pos >= MAX_LINE_LEN - 1) {
-            line_buf[line_pos] = '\0';
-            
+
+        if (c == '\n' || session->line_pos >= MAX_LINE_LEN - 1) {
+            session->line_buf[session->line_pos] = '\0';
+
             /* Add to scrollback */
-            scrollback_add_line(&session->scrollback, line_buf, line_pos);
+            scrollback_add_line(&session->scrollback, session->line_buf, session->line_pos);
             session->lines_total++;
-            
+
             /* Output if this session should be shown */
             if (show) {
                 if (display_mode == MODE_BROADCAST || display_mode == MODE_SPLIT) {
-                    uart_tagged_line(session->name, line_buf);
+                    uart_tagged_line(session->name, session->line_buf);
                 } else {
                     /* Single mode: raw output */
-                    uart_puts(line_buf);
+                    uart_puts(session->line_buf);
                     uart_puts("\n");
                 }
             }
-            
-            line_pos = 0;
+
+            session->line_pos = 0;
         } else {
-            line_buf[line_pos++] = c;
+            session->line_buf[session->line_pos++] = c;
         }
     }
     

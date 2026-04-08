@@ -256,8 +256,6 @@ impl AgentFs {
             .map(|v| v.len() as u64 + 1)
             .unwrap_or(1);
         
-        let parent_hash = ns.index.get(&key).copied();
-        
         let meta = FsObjectMeta {
             key: key.clone(),
             content_type,

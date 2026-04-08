@@ -11,7 +11,7 @@
 //!
 //! ## Namespace Structure
 //!
-//! ```
+//! ```text
 //! /agents/<agent-id>/          - agent's private namespace
 //! /agents/<agent-id>/context   - serialized agent context (checkpoint)
 //! /agents/<agent-id>/logs/     - agent's structured log
@@ -26,10 +26,6 @@
 //! - **BlobStore**: content-addressed, immutable objects (the default)
 //! - **MutableStore**: mutable objects with conflict-free versioning
 //! - **EphemeralStore**: RAM-backed, cleared on reboot
-//! - **External**: agent-provided backend (vibe-coded!)
-//!
-//! Agents register backends by implementing the `AgentFsBackend` trait
-//! and calling `AgentFs::register_backend()`.
 
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -214,65 +210,42 @@ pub enum ObjectData {
 /// The AgentFS interface - how agents interact with the filesystem
 pub struct AgentFs {
     backend: FsBackend,
-    namespace: String,
 }
 
 impl AgentFs {
-    pub fn new(namespace: impl Into<String>) -> Self {
+    pub fn new() -> Self {
         Self {
             backend: FsBackend::Ephemeral(EphemeralStore::new()),
-            namespace: namespace.into(),
         }
     }
     
     /// Store an object, return its ID
     pub fn put(&mut self, obj: Object) -> Result<ObjectId, FsError> {
-        match &mut self.backend {
-            FsBackend::Ephemeral(store) => store.put(obj),
-            FsBackend::External(_) => Err(FsError::Unimplemented),
-        }
+        let FsBackend::Ephemeral(store) = &mut self.backend;
+        store.put(obj)
     }
-    
+
     /// Retrieve an object by ID
     pub fn get(&self, id: &ObjectId) -> Result<Object, FsError> {
-        match &self.backend {
-            FsBackend::Ephemeral(store) => store.get(id),
-            FsBackend::External(_) => Err(FsError::Unimplemented),
-        }
+        let FsBackend::Ephemeral(store) = &self.backend;
+        store.get(id)
     }
-    
+
     /// List objects in this namespace
     pub fn list(&self) -> Result<Vec<ObjectId>, FsError> {
-        match &self.backend {
-            FsBackend::Ephemeral(store) => Ok(store.list()),
-            FsBackend::External(_) => Err(FsError::Unimplemented),
-        }
+        let FsBackend::Ephemeral(store) = &self.backend;
+        Ok(store.list())
     }
-    
+
     /// Delete an object
     pub fn delete(&mut self, id: &ObjectId) -> Result<(), FsError> {
-        match &mut self.backend {
-            FsBackend::Ephemeral(store) => store.delete(id),
-            FsBackend::External(_) => Err(FsError::Unimplemented),
-        }
+        let FsBackend::Ephemeral(store) = &mut self.backend;
+        store.delete(id)
     }
-}
-
-/// The trait for pluggable AgentFS backends
-///
-/// Agents implement this to provide their own storage backend.
-/// Register via AgentFs::register_backend().
-pub trait AgentFsBackend: Send + Sync {
-    fn put(&mut self, obj: Object) -> Result<ObjectId, FsError>;
-    fn get(&self, id: &ObjectId) -> Result<Object, FsError>;
-    fn list(&self) -> Vec<ObjectId>;
-    fn delete(&mut self, id: &ObjectId) -> Result<(), FsError>;
-    fn flush(&mut self) -> Result<(), FsError>;
 }
 
 enum FsBackend {
     Ephemeral(EphemeralStore),
-    External(alloc::boxed::Box<dyn AgentFsBackend>),
 }
 
 /// In-memory ephemeral store (clears on reboot)

@@ -4,5 +4,8 @@ version = "0.1.0"
 edition = "2021"
 description = "Vibe Engine - service hot-swap protocol for agentOS vibe-coding"
 
+[features]
+std = []
+
 [dependencies]
 agentos-sdk = { path = "../../sdk" }

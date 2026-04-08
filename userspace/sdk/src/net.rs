@@ -4,7 +4,6 @@
 //! No ambient network access. Zero-trust by architecture.
 
 use alloc::string::String;
-use alloc::vec::Vec;
 
 /// A network endpoint
 #[derive(Debug, Clone)]

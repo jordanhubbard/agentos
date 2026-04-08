@@ -4,5 +4,8 @@ version = "0.1.0"
 edition = "2021"
 description = "Model Proxy - capability-gated LLM inference service for agentOS"
 
+[features]
+std = []
+
 [dependencies]
 agentos-sdk = { path = "../../sdk" }

@@ -1,0 +1,17 @@
+[package]
+name = "gen-sdf"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "gen-sdf"
+path = "src/main.rs"
+
+[dependencies]
+clap    = { version = "4", features = ["derive"] }
+serde   = { version = "1", features = ["derive"] }
+serde_yaml = "0.9"
+anyhow  = "1"
+
+[dev-dependencies]
+pretty_assertions = "1"

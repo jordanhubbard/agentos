@@ -427,11 +427,7 @@ pub fn validate_and_parse(
         return Err(WasmValidationError::UnknownImportNamespace(ns.into()));
     }
 
-    // Modules with no exports are useless as services
-    if exports.is_empty() {
-        return Err(WasmValidationError::NoExports);
-    }
-
+    // Note: callers that require exports (e.g. vibe-swap) should check meta.exports.is_empty()
     Ok(WasmMeta {
         content_hash,
         size: bytes.len() as u32,
@@ -647,6 +643,7 @@ fn content_hash(data: &[u8]) -> [u8; 32] {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloc::vec;
 
     /// Minimal valid WASM module: no imports, one exported function "run"
     fn minimal_wasm() -> Vec<u8> {
@@ -708,8 +705,8 @@ mod tests {
 
         let mut wasm = vec![
             0x00, 0x61, 0x73, 0x6D, 0x01, 0x00, 0x00, 0x00,
-            // type section
-            0x01, 0x05, 0x01, 0x60, 0x00, 0x00,
+            // type section: id=0x01, size=4 (count=1, functype=0x60, params=0, results=0)
+            0x01, 0x04, 0x01, 0x60, 0x00, 0x00,
         ];
         // import section
         wasm.push(0x02);
@@ -760,18 +757,9 @@ mod tests {
         let result = validate_and_parse(&bytes, agent, 0, content_hash(&bytes));
         // Even if export index is off for this hand-crafted blob, we care about imports
         // For this test we're checking cap detection; ignore NoExports case
-        match result {
-            Ok(meta) => {
-                assert!(meta.caps.needs_store_write, "should need store write for agentfs::put");
-                assert!(meta.caps.needs_notify, "should need notify for eventbus::emit");
-            }
-            Err(WasmValidationError::NoExports) => {
-                // Hand-crafted export section with wrong func index — still check caps via
-                // a store that captured them before the export parse
-                // This is acceptable for this hand-built test vector
-            }
-            Err(e) => panic!("unexpected error: {:?}", e),
-        }
+        let meta = result.expect("module_with_imports should parse successfully");
+        assert!(meta.caps.needs_store_write, "should need store write for agentfs::put");
+        assert!(meta.caps.needs_notify, "should need notify for eventbus::emit");
     }
 
     #[test]

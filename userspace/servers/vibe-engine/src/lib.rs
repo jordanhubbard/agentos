@@ -51,8 +51,11 @@
 
 extern crate alloc;
 
+pub mod wasm_validator;
+
 use alloc::collections::BTreeMap;
 use alloc::string::String;
+use alloc::vec;
 use alloc::vec::Vec;
 
 // ============================================================================
@@ -440,7 +443,7 @@ fn parse_caps_json(payload: &[u8]) -> Result<CapabilityManifest, String> {
     // Extract numeric/boolean fields with simple substring search
     let version = extract_u32(s, "version").unwrap_or(1);
     let max_pages = extract_u32(s, "max_memory_pages").unwrap_or(16);
-    let shared_mem = s.contains(""uses_shared_memory":true");
+    let shared_mem = s.contains("\"uses_shared_memory\":true");
     
     Ok(CapabilityManifest {
         version,
@@ -453,7 +456,7 @@ fn parse_caps_json(payload: &[u8]) -> Result<CapabilityManifest, String> {
 
 /// Minimal string array extractor: finds `"key":["a","b",...]` in JSON.
 fn extract_string_array(json: &str, key: &str) -> Option<Vec<String>> {
-    let search = alloc::format!(""{}":[", key);
+    let search = alloc::format!("\"{}\":[", key);
     let start = json.find(search.as_str())? + search.len();
     let end = json[start..].find(']')? + start;
     let inner = &json[start..end];
@@ -470,7 +473,7 @@ fn extract_string_array(json: &str, key: &str) -> Option<Vec<String>> {
 
 /// Extract a u32 value from a JSON field.
 fn extract_u32(json: &str, key: &str) -> Option<u32> {
-    let search = alloc::format!(""{}":", key);
+    let search = alloc::format!("\"{}\":", key);
     let start = json.find(search.as_str())? + search.len();
     let rest = json[start..].trim_start();
     let end = rest.find(|c: char| !c.is_ascii_digit()).unwrap_or(rest.len());
@@ -864,7 +867,8 @@ pub fn register_default_contracts(engine: &mut VibeEngine) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+    use alloc::{string::ToString, vec};
+
     fn setup_engine() -> VibeEngine {
         let mut engine = VibeEngine::new();
         register_default_contracts(&mut engine);

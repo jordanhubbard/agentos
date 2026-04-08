@@ -20,6 +20,7 @@
 
 extern crate alloc;
 
+pub mod agent_context;
 pub mod capability;
 pub mod context;
 pub mod cuda;
