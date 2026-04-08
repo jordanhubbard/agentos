@@ -90,6 +90,9 @@ endif
 
 SDK_URL := https://github.com/seL4/microkit/releases/download/2.1.0/microkit-sdk-2.1.0-$(SDK_PLATFORM).tar.gz
 
+# ─── Rust toolchain ──────────────────────────────────────────────────────────
+export PATH := $(HOME)/.cargo/bin:$(PATH)
+
 # ─── Native arch / HW-accelerated console ────────────────────────────────────
 # Normalise uname -m: macOS Apple Silicon reports "arm64", seL4 uses "aarch64"
 NATIVE_ARCH := $(shell uname -m | sed 's/arm64/aarch64/')
@@ -350,13 +353,14 @@ console:
 	@echo "Console: http://localhost:8080  (opening in browser...)"
 	@echo "──────────────────────────────────────────────"
 	@rm -f /tmp/agentos-serial.sock
+	@lsof -ti:8789 2>/dev/null | xargs kill 2>/dev/null || true
 	@trap 'kill "$$QEMU_PID" 2>/dev/null; wait "$$BRIDGE_PID" 2>/dev/null; exit' INT TERM; \
 	 cargo run -p agentos-console --release & BRIDGE_PID=$$!; \
 	 for _i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do \
 	   [ -S /tmp/agentos-serial.sock ] && break; sleep 0.1; done; \
 	 $(NATIVE_QEMU) $(NATIVE_QEMU_FLAGS) & QEMU_PID=$$!; \
-	 command -v open     >/dev/null 2>&1 && open     http://localhost:8080 || \
-	 command -v xdg-open >/dev/null 2>&1 && xdg-open http://localhost:8080 || true; \
+	 (command -v open     >/dev/null 2>&1 && open     http://localhost:8080) || \
+	 (command -v xdg-open >/dev/null 2>&1 && xdg-open http://localhost:8080) || true; \
 	 wait "$$BRIDGE_PID"; \
 	 kill "$$QEMU_PID" 2>/dev/null || true
 
