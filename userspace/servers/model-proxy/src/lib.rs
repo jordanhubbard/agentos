@@ -45,6 +45,7 @@ extern crate alloc;
 use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::vec::Vec;
+use sha2::{Sha256, Digest};
 
 // ============================================================================
 // Types
@@ -479,33 +480,20 @@ impl PromptCache {
         });
     }
     
-    /// Generate cache key from request
+    /// Generate a SHA-256 cache key from the request parameters
     fn cache_key(&self, request: &InferenceRequest) -> [u8; 32] {
-        // Simple FNV hash of system + prompt + temperature
-        // TODO: Replace with proper SHA-256
-        let mut h: u64 = 0xcbf29ce484222325;
-        
+        let mut hasher = Sha256::new();
         if let Some(ref sys) = request.system {
-            for b in sys.bytes() {
-                h ^= b as u64;
-                h = h.wrapping_mul(0x100000001b3);
-            }
+            hasher.update(sys.as_bytes());
+            hasher.update(b"\x00"); // field separator
         }
-        for b in request.prompt.bytes() {
-            h ^= b as u64;
-            h = h.wrapping_mul(0x100000001b3);
-        }
-        // Include temperature (rounded to 2 decimals)
-        let temp_bits = (request.params.temperature * 100.0) as u64;
-        h ^= temp_bits;
-        h = h.wrapping_mul(0x100000001b3);
-        
-        let mut key = [0u8; 32];
-        for i in 0..4 {
-            let val = h.wrapping_add(i).wrapping_mul(0x9e3779b97f4a7c15);
-            key[i as usize * 8..(i as usize + 1) * 8].copy_from_slice(&val.to_le_bytes());
-        }
-        key
+        hasher.update(request.prompt.as_bytes());
+        hasher.update(b"\x00");
+        // Include temperature rounded to 2 decimal places so floating-point
+        // representation differences don't produce spurious cache misses
+        let temp_cents = (request.params.temperature * 100.0) as u32;
+        hasher.update(&temp_cents.to_le_bytes());
+        hasher.finalize().into()
     }
 }
 

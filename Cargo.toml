@@ -1,4 +1,5 @@
 [workspace]
+resolver = "2"
 members = [
     # Userspace SDK + agents
     "userspace/sdk",
@@ -24,7 +25,12 @@ members = [
     # Workspace task runner
     "xtask",
 ]
-resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+repository = "https://github.com/agentOS/agentos"
 
 [workspace.dependencies]
 serde       = { version = "1",      features = ["derive"] }

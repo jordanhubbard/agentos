@@ -9,3 +9,4 @@ std = []
 
 [dependencies]
 agentos-sdk = { path = "../../sdk" }
+sha2 = { version = "0.10", default-features = false }

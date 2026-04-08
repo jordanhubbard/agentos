@@ -1,6 +1,15 @@
 [package]
 name = "agentos-init-agent"
 version = "0.1.0"
-edition = "2024"
+edition = "2021"
+
+[features]
+std = ["alloc"]
+alloc = []
+
+[[bin]]
+name = "agentos-init-agent"
+path = "src/main.rs"
+required-features = ["std"]
 
 [dependencies]

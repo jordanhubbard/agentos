@@ -15,6 +15,15 @@ use crate::capability::{Capability, CapabilitySet, CapabilityKind, Right};
 use crate::event::{EventChannel, Event, EventKind, Priority};
 use crate::identity::{AgentId, AgentIdentity, AgentClass};
 
+/// Base seL4 cap slot used in simulation mode for event channels.
+/// In production the monitor assigns real slots; this value is never used
+/// on hardware.
+const SIM_CAP_BASE: u64 = 0x0001_0000_0000;
+
+/// XOR nonce used in simulation mode to give child agents a pseudo-unique ID.
+/// In production the monitor seeds this from the hardware TRNG.
+const SIM_NONCE_XOR: u64 = 0x5A5A_5A5A_5A5A_5A5A;
+
 /// An agent's complete runtime context
 ///
 /// This is the root of everything an agent has access to.
@@ -61,10 +70,10 @@ impl AgentContext {
         
         // Check we have an endpoint capability for the EventBus
         // (simplified check - production would verify the EventBus endpoint cap)
-        
+
         let cap = Capability::new(
-            CapabilityKind::Endpoint, 
-            0xDEAD_CAFE_0000 + self.channels.len() as u64,
+            CapabilityKind::Endpoint,
+            SIM_CAP_BASE + self.channels.len() as u64,
             crate::capability::Rights::READ_WRITE,
         );
         
@@ -116,7 +125,7 @@ impl AgentContext {
             self.identity.id.namespace.clone(),
             name.into(),
             self.now_ns,
-            self.now_ns ^ 0xDEAD_BEEF, // production: random from TRNG
+            self.now_ns ^ SIM_NONCE_XOR, // production: random from TRNG
         );
         
         Ok(child_id)

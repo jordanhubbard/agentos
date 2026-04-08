@@ -163,7 +163,7 @@ pub fn print_report(rec: &AttestationRecord, verified: Option<bool>) {
             ((rec.timestamp_us % 1_000_000) * 1_000) as u32,
         )
         .single()
-        .unwrap_or_else(|| Utc.timestamp_opt(0, 0).unwrap());
+        .unwrap_or(DateTime::UNIX_EPOCH);
     println!("  Timestamp:   {}", ts.to_rfc3339());
     println!("  Active caps: {}", rec.caps.len());
     match verified {
@@ -241,7 +241,7 @@ fn fetch_latest(agentfs_url: &str, token: Option<&str>) -> Result<Vec<u8>> {
         req = req.header("Authorization", format!("Bearer {}", tok));
     }
     let resp = req.send().with_context(|| format!("GET {}", list_url))?;
-    let listing: serde_json::Value = resp.json().context("parsing AgentFS listing")?;
+    let listing: serde_json::Value = resp.json().context("parsing attestation listing")?;
 
     let files: Vec<String> = match &listing {
         serde_json::Value::Array(arr) => arr.iter().map(|v| v.to_string()).collect(),
@@ -249,16 +249,17 @@ fn fetch_latest(agentfs_url: &str, token: Option<&str>) -> Result<Vec<u8>> {
             if let Some(serde_json::Value::Array(arr)) = obj.get("files") {
                 arr.iter().map(|v| v.to_string()).collect()
             } else {
-                bail!("unexpected AgentFS listing format");
+                bail!("unexpected attestation listing format: missing 'files' key");
             }
         }
-        _ => bail!("unexpected AgentFS listing format"),
+        _ => bail!("unexpected attestation listing format: expected array or object"),
     };
 
     if files.is_empty() {
-        bail!("no attestation files found in AgentFS");
+        bail!("no attestation files found");
     }
-    let latest = files.iter().max().unwrap();
+    let latest = files.iter().max()
+        .expect("non-empty vec always has a max — checked above");
     let fetch_url = format!("{}/get?hash={}", agentfs_url, latest);
 
     let mut req2 = client.get(&fetch_url);
@@ -430,7 +431,8 @@ END\t2\n";
         data.extend_from_slice(body);
         data.extend_from_slice(&sig);
 
-        let (parsed_body, parsed_sig) = load_signed_attestation(&data).unwrap();
+        let (parsed_body, parsed_sig) = load_signed_attestation(&data)
+            .expect("well-formed attestation payload should parse");
         assert_eq!(parsed_body, body);
         assert_eq!(parsed_sig, sig);
     }
