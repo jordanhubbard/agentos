@@ -160,6 +160,7 @@ header h1 {
 
 #console-grid {
   display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(420px, 1fr));
   gap: 8px;
   padding: 8px;
   flex: 1;
@@ -218,9 +219,22 @@ header h1 {
 .console-tile-term {
   flex: 1;
   overflow: hidden;
-  padding: 4px 6px;
-  min-height: 0;
+  padding: 0;
+  min-height: 300px;
   background: #050607;
+  position: relative;
+}
+
+/* ── xterm.js overrides ──────────────────────────────────────────── */
+.console-tile-term .xterm {
+  height: 100%;
+  padding: 4px 6px;
+}
+.console-tile-term .xterm-viewport {
+  overflow-y: scroll !important;
+}
+.console-tile-term .xterm-screen {
+  height: 100% !important;
 }
 
 .console-add-tile {
@@ -649,4 +663,477 @@ header h1 {
   font-style: italic;
   font-size: 12px;
   padding: 8px 0;
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   Multi-pane workspace layout
+   ═══════════════════════════════════════════════════════════════════ */
+
+/* ─── Workspace (sidebar + panel area) ───────────────────────────── */
+.workspace {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* ─── Sidebar ─────────────────────────────────────────────────────── */
+.sidebar {
+  display: flex;
+  flex-direction: column;
+  width: 48px;
+  min-width: 48px;
+  background: var(--panel);
+  border-right: 1px solid var(--border-sub);
+  overflow: hidden;
+  flex-shrink: 0;
+  transition: width 0.2s ease, min-width 0.2s ease;
+}
+
+.sidebar.open {
+  width: 220px;
+  min-width: 220px;
+}
+
+.sidebar-toggle {
+  background: none;
+  border: none;
+  color: var(--dim);
+  cursor: pointer;
+  font-size: 14px;
+  padding: 0 8px;
+  margin-left: auto;
+  flex-shrink: 0;
+  transition: color 0.12s;
+  line-height: 1;
+}
+.sidebar-toggle:hover { color: var(--text-2); }
+
+/* ─── Mini topology in sidebar ────────────────────────────────────── */
+.topo-mini {
+  flex-shrink: 0;
+  padding: 8px 6px 4px;
+  border-bottom: 1px solid var(--border-sub);
+  overflow: hidden;
+}
+
+/* ─── Sidebar nav ──────────────────────────────────────────────────── */
+.sidebar-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px 4px;
+  flex: 1;
+  overflow-y: auto;
+}
+
+.sidebar-nav-btn {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: none;
+  border: none;
+  border-radius: 6px;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 510;
+  font-family: inherit;
+  font-feature-settings: 'cv01', 'ss03';
+  padding: 7px 8px;
+  text-align: left;
+  transition: background 0.12s, color 0.12s;
+  white-space: nowrap;
+  width: 100%;
+}
+.sidebar-nav-btn:hover {
+  background: rgba(255,255,255,0.05);
+  color: var(--text-2);
+}
+.sidebar-nav-btn.active {
+  background: rgba(113,112,255,0.12);
+  color: var(--accent);
+}
+
+.nav-icon {
+  font-size: 15px;
+  flex-shrink: 0;
+  width: 20px;
+  text-align: center;
+}
+
+.nav-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ─── Sidebar stats chips ──────────────────────────────────────────── */
+.sidebar-stats {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 6px 8px 10px;
+  border-top: 1px solid var(--border-sub);
+  flex-shrink: 0;
+}
+
+.sidebar-stat {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background: rgba(255,255,255,0.02);
+  border: 1px solid var(--border-sub);
+  border-radius: 5px;
+  padding: 5px 8px;
+  gap: 6px;
+}
+
+.sidebar-stat-label {
+  font-size: 10px;
+  color: var(--dim);
+  font-weight: 510;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.sidebar-stat-value {
+  font-size: 12px;
+  font-weight: 590;
+  font-family: var(--mono);
+  color: var(--text);
+}
+
+/* ─── Panel area ───────────────────────────────────────────────────── */
+.panel-area {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+/* panel heading shared */
+.panel-heading {
+  font-size: 14px;
+  font-weight: 590;
+  letter-spacing: -0.14px;
+  color: var(--text);
+}
+
+/* ─── Topology panel ───────────────────────────────────────────────── */
+.topo-panel {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  overflow: hidden;
+}
+
+.topo-legend {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 8px 14px;
+  border-bottom: 1px solid var(--border-sub);
+  flex-shrink: 0;
+  background: var(--panel);
+}
+
+.legend-item {
+  font-size: 11px;
+  font-weight: 510;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--muted);
+}
+.legend-item::before {
+  content: '';
+  display: inline-block;
+  width: 20px;
+  height: 2px;
+  border-radius: 1px;
+}
+.legend-item.ipc::before      { background: rgba(255,255,255,0.35); }
+.legend-item.shmem::before    { background: rgba(232,169,79,0.6); border-top: 2px dashed rgba(232,169,79,0.6); height: 0; }
+.legend-item.eventbus::before { background: rgba(113,112,255,0.7); }
+.legend-item.network::before  { background: rgba(16,185,129,0.6); border-top: 2px dotted rgba(16,185,129,0.6); height: 0; }
+
+.legend-hint {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--dim);
+  font-style: italic;
+}
+
+.topo-scroll {
+  flex: 1;
+  overflow: auto;
+  padding: 12px;
+  background: var(--bg);
+}
+
+/* ─── Topology SVG elements ────────────────────────────────────────── */
+.topo-svg {
+  display: block;
+}
+
+.topo-node-bg {
+  fill: var(--surface);
+  stroke: var(--border);
+  stroke-width: 1;
+  transition: fill 0.2s, stroke 0.2s;
+}
+
+.topo-node.status-ready    .topo-node-bg { stroke: rgba(39,166,68,0.5); }
+.topo-node.status-degraded .topo-node-bg { stroke: rgba(232,169,79,0.6); }
+.topo-node.status-offline  .topo-node-bg { stroke: rgba(229,77,77,0.5); }
+.topo-node:hover           .topo-node-bg { fill: var(--surface2); stroke: var(--accent); }
+
+.topo-label {
+  fill: var(--text-2);
+  font-size: 10px;
+  font-family: var(--mono);
+  pointer-events: none;
+  font-weight: 510;
+}
+
+.topo-meta {
+  fill: var(--dim);
+  font-size: 8px;
+  font-family: var(--mono);
+  pointer-events: none;
+}
+
+.topo-cpu-track {
+  fill: rgba(255,255,255,0.06);
+  pointer-events: none;
+}
+
+.topo-cpu-fill {
+  fill: var(--accent);
+  pointer-events: none;
+  transition: width 0.5s ease;
+}
+
+.topo-status-dot {
+  fill: var(--dim);
+  transition: fill 0.3s;
+}
+.topo-node.status-ready    .topo-status-dot { fill: var(--green-2); }
+.topo-node.status-degraded .topo-status-dot { fill: var(--yellow); }
+.topo-node.status-offline  .topo-status-dot { fill: var(--red); }
+
+.topo-edge {
+  transition: stroke 0.2s, stroke-width 0.2s;
+}
+
+.topo-edge.active {
+  animation: topo-pulse 0.5s ease-out;
+}
+
+@keyframes topo-pulse {
+  0%   { stroke-opacity: 1; }
+  100% { stroke-opacity: 0.3; }
+}
+
+/* ─── Images panel ─────────────────────────────────────────────────── */
+.images-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px;
+  height: 100%;
+  overflow: auto;
+}
+
+.images-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-shrink: 0;
+}
+
+.images-table-wrap {
+  background: rgba(255,255,255,0.02);
+  border: 1px solid var(--border-sub);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.images-table {
+  border-collapse: collapse;
+  width: 100%;
+}
+
+.images-table th {
+  background: rgba(255,255,255,0.02);
+  border-bottom: 1px solid var(--border-sub);
+  color: var(--dim);
+  font-size: 11px;
+  font-weight: 510;
+  letter-spacing: 0.5px;
+  padding: 8px 14px;
+  text-align: left;
+  text-transform: uppercase;
+}
+
+.images-table td {
+  border-bottom: 1px solid rgba(255,255,255,0.04);
+  padding: 8px 14px;
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--text-2);
+}
+.images-table tr:last-child td { border-bottom: none; }
+.images-table tr:hover td { background: rgba(255,255,255,0.02); }
+
+.image-name { color: var(--text); font-weight: 510; }
+.image-size { color: var(--dim); }
+
+.image-status {
+  font-size: 10px;
+  font-weight: 510;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  padding: 2px 8px;
+  border-radius: 9999px;
+  border: 1px solid rgba(255,255,255,0.08);
+}
+.status-cached      { background: rgba(16,185,129,0.15); color: var(--green-2); }
+.status-downloading { background: rgba(232,169,79,0.15); color: var(--yellow); }
+.status-missing     { background: rgba(229,77,77,0.12); color: var(--red); }
+
+.error-banner {
+  background: rgba(229,77,77,0.1);
+  border: 1px solid rgba(229,77,77,0.3);
+  border-radius: 6px;
+  color: var(--red);
+  font-size: 12px;
+  padding: 8px 12px;
+  flex-shrink: 0;
+}
+
+/* ─── Docs panel ───────────────────────────────────────────────────── */
+.docs-panel {
+  display: flex;
+  height: 100%;
+  overflow: hidden;
+}
+
+.docs-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 12px 8px;
+  width: 180px;
+  min-width: 180px;
+  border-right: 1px solid var(--border-sub);
+  background: var(--panel);
+  overflow-y: auto;
+  flex-shrink: 0;
+}
+
+.docs-nav-btn {
+  background: none;
+  border: none;
+  border-radius: 6px;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 510;
+  font-family: inherit;
+  font-feature-settings: 'cv01', 'ss03';
+  padding: 7px 10px;
+  text-align: left;
+  transition: background 0.12s, color 0.12s;
+}
+.docs-nav-btn:hover  { background: rgba(255,255,255,0.04); color: var(--text-2); }
+.docs-nav-btn.active { background: rgba(113,112,255,0.12); color: var(--accent); }
+
+.docs-content {
+  flex: 1;
+  overflow: auto;
+  padding: 20px 24px;
+}
+
+.docs-body {
+  color: var(--text-2);
+  line-height: 1.7;
+  max-width: 720px;
+}
+
+.docs-body h3 {
+  font-size: 16px;
+  font-weight: 590;
+  color: var(--text);
+  margin: 0 0 12px;
+  letter-spacing: -0.16px;
+}
+
+.docs-body h4 {
+  font-size: 13px;
+  font-weight: 590;
+  color: var(--text);
+  margin: 20px 0 6px;
+  letter-spacing: -0.13px;
+}
+
+.docs-body p  { margin: 0 0 10px; }
+.docs-body ul,
+.docs-body ol { margin: 0 0 10px; padding-left: 20px; }
+.docs-body li { margin-bottom: 4px; }
+
+.docs-body strong { color: var(--text); font-weight: 590; }
+
+.docs-body pre {
+  background: rgba(255,255,255,0.03);
+  border: 1px solid var(--border-sub);
+  border-radius: 6px;
+  font-family: var(--mono);
+  font-size: 11.5px;
+  line-height: 1.6;
+  margin: 8px 0 12px;
+  overflow-x: auto;
+  padding: 10px 14px;
+  white-space: pre;
+}
+
+.docs-body code {
+  background: rgba(255,255,255,0.05);
+  border-radius: 3px;
+  font-family: var(--mono);
+  font-size: 11.5px;
+  padding: 1px 5px;
+}
+
+.docs-body table {
+  border-collapse: collapse;
+  margin: 8px 0 12px;
+  width: 100%;
+}
+.docs-body th {
+  background: rgba(255,255,255,0.03);
+  border-bottom: 1px solid var(--border-sub);
+  color: var(--dim);
+  font-size: 11px;
+  font-weight: 510;
+  letter-spacing: 0.4px;
+  padding: 6px 12px;
+  text-align: left;
+  text-transform: uppercase;
+}
+.docs-body td {
+  border-bottom: 1px solid rgba(255,255,255,0.04);
+  font-family: var(--mono);
+  font-size: 12px;
+  padding: 6px 12px;
+}
+.docs-body tr:last-child td { border-bottom: none; }
+
+/* ─── Console panel wrapper ────────────────────────────────────────── */
+.console-panel {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  overflow: hidden;
 }

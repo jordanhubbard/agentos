@@ -1,0 +1,729 @@
+/*
+ * agentOS NetServer Protection Domain
+ *
+ * Manages per-application virtual NICs and provides the network stack
+ * interface for all agents running under agentOS.
+ *
+ * Priority: 160  (passive="true" — only executes on PPC)
+ * Shmem:    net_packet_shmem, 256KB, mapped at 0x5000000 (rw)
+ *           controller maps the same region at 0xE000000 (r — monitoring only)
+ *
+ * TCP/IP stack:
+ *   smoltcp integration is stubbed.  Every stub site is tagged:
+ *     SMOLTCP_INTEGRATION_POINT
+ *   Wire up smoltcp by implementing the EthernetInterface::transmit /
+ *   EthernetInterface::receive callbacks at those sites and linking the
+ *   smoltcp C bindings.
+ *
+ * virtio-net:
+ *   init() probes the MMIO region (net_mmio_vaddr).  If magic/version/
+ *   device_id match, net_hw_present is set true and TX is attempted
+ *   through the stub.  If not found, stub mode is used throughout.
+ *
+ * Copyright (c) 2026 The agentOS Project
+ * SPDX-License-Identifier: BSD-2-Clause
+ */
+
+#define AGENTOS_DEBUG 1
+#include "agentos.h"
+#include "net_server.h"
+
+/* ── virtio-MMIO register offsets (mirrors virtio_blk.h) ─────────────────── */
+#define VIRTIO_MMIO_MAGIC_VALUE     0x000u
+#define VIRTIO_MMIO_VERSION         0x004u
+#define VIRTIO_MMIO_DEVICE_ID       0x008u
+#define VIRTIO_MMIO_QUEUE_NOTIFY    0x050u
+#define VIRTIO_MMIO_STATUS          0x070u
+#define VIRTIO_MMIO_MAGIC           0x74726976u  /* "virt" */
+#define VIRTIO_STATUS_ACKNOWLEDGE   (1u << 0)
+#define VIRTIO_STATUS_DRIVER        (1u << 1)
+#define VIRTIO_STATUS_DRIVER_OK     (1u << 2)
+#define VIRTIO_STATUS_FEATURES_OK   (1u << 3)
+
+/* ── Shared memory base (set by Microkit via setvar_vaddr) ───────────────── */
+uintptr_t net_packet_shmem_vaddr;
+#define NET_SHMEM ((volatile uint8_t *)net_packet_shmem_vaddr)
+
+/* virtio-net MMIO base (set by Microkit via setvar_vaddr) */
+uintptr_t net_mmio_vaddr;
+
+/* Console ring base (set by Microkit via setvar_vaddr) */
+uintptr_t console_rings_vaddr;
+
+/* ── Module state ────────────────────────────────────────────────────────── */
+static net_vnic_t  vnics[NET_MAX_VNICS];
+static uint32_t    active_vnic_count = 0;
+static bool        net_hw_present    = false;
+
+/* ── Minimal string helpers (no libc) ───────────────────────────────────── */
+
+static uint32_t ns_strlen(const char *s) {
+    uint32_t n = 0;
+    while (s[n]) n++;
+    return n;
+}
+
+/* ── Decimal formatting helper ───────────────────────────────────────────── */
+static void log_dec(uint32_t v) {
+    if (v == 0) { console_log(16, 16, "0"); return; }
+    char buf[12];
+    int  i = 11;
+    buf[i] = '\0';
+    while (v > 0 && i > 0) { buf[--i] = '0' + (char)(v % 10); v /= 10; }
+    console_log(16, 16, &buf[i]);
+}
+
+/* ── Hex formatting helper ───────────────────────────────────────────────── */
+static void log_hex(uint32_t v) {
+    static const char hex[] = "0123456789abcdef";
+    char buf[11];
+    buf[0]  = '0';
+    buf[1]  = 'x';
+    buf[2]  = hex[(v >> 28) & 0xf];
+    buf[3]  = hex[(v >> 24) & 0xf];
+    buf[4]  = hex[(v >> 20) & 0xf];
+    buf[5]  = hex[(v >> 16) & 0xf];
+    buf[6]  = hex[(v >> 12) & 0xf];
+    buf[7]  = hex[(v >>  8) & 0xf];
+    buf[8]  = hex[(v >>  4) & 0xf];
+    buf[9]  = hex[ v        & 0xf];
+    buf[10] = '\0';
+    console_log(16, 16, buf);
+}
+
+/* ── MMIO read helper ────────────────────────────────────────────────────── */
+static inline uint32_t mmio_read32(uintptr_t base, uint32_t offset) {
+    return *(volatile uint32_t *)(base + offset);
+}
+static inline void mmio_write32(uintptr_t base, uint32_t offset, uint32_t val) {
+    *(volatile uint32_t *)(base + offset) = val;
+}
+
+/* ── vNIC ring accessor ──────────────────────────────────────────────────── */
+static volatile net_vnic_ring_t *slot_ring(uint32_t shmem_slot) {
+    return (volatile net_vnic_ring_t *)(net_packet_shmem_vaddr
+                                        + NET_SLOT_OFFSET(shmem_slot));
+}
+
+/* ── virtio-net probe ────────────────────────────────────────────────────── */
+static void probe_virtio_net(void) {
+    if (!net_mmio_vaddr) {
+        console_log(16, 16, "[net_server] virtio-net: MMIO vaddr not mapped, stub mode\n");
+        return;
+    }
+
+    uint32_t magic     = mmio_read32(net_mmio_vaddr, VIRTIO_MMIO_MAGIC_VALUE);
+    uint32_t version   = mmio_read32(net_mmio_vaddr, VIRTIO_MMIO_VERSION);
+    uint32_t device_id = mmio_read32(net_mmio_vaddr, VIRTIO_MMIO_DEVICE_ID);
+
+    if (magic != VIRTIO_MMIO_MAGIC || version != 2u
+            || device_id != VIRTIO_NET_DEVICE_ID) {
+        console_log(16, 16, "[net_server] virtio-net not detected (magic=");
+        log_hex(magic);
+        console_log(16, 16, " ver=");
+        log_dec(version);
+        console_log(16, 16, " dev=");
+        log_dec(device_id);
+        console_log(16, 16, "), stub mode\n");
+        return;
+    }
+
+    net_hw_present = true;
+
+    /*
+     * Minimal device initialisation sequence (virtio spec §3.1.1):
+     *   ACKNOWLEDGE → DRIVER → FEATURES_OK → DRIVER_OK
+     * Full feature negotiation and virtqueue setup is deferred to
+     * SMOLTCP_INTEGRATION_POINT in init().
+     */
+    mmio_write32(net_mmio_vaddr, VIRTIO_MMIO_STATUS, VIRTIO_STATUS_ACKNOWLEDGE);
+    mmio_write32(net_mmio_vaddr, VIRTIO_MMIO_STATUS,
+                 VIRTIO_STATUS_ACKNOWLEDGE | VIRTIO_STATUS_DRIVER);
+
+    console_log(16, 16, "[net_server] virtio-net detected at ");
+    log_hex((uint32_t)net_mmio_vaddr);
+    console_log(16, 16, ", hw present\n");
+
+    /*
+     * SMOLTCP_INTEGRATION_POINT: feature negotiation and virtqueue setup.
+     *
+     * Steps deferred until smoltcp bindings are linked:
+     *   1. Read DEVICE_FEATURES (word 0 and 1).
+     *   2. Negotiate a supported subset (VIRTIO_NET_F_MAC etc.).
+     *   3. Write negotiated features and set FEATURES_OK.
+     *   4. Allocate descriptor/available/used rings for TX queue (q=1)
+     *      and RX queue (q=0) using Microkit DMA capabilities.
+     *   5. Write queue paddr split components (DESC_LOW/HIGH, AVAIL, USED).
+     *   6. Set QUEUE_READY and DRIVER_OK.
+     *   7. Create smoltcp EthernetInterface backed by those virtqueues.
+     */
+}
+
+/* ── vNIC slot allocation ────────────────────────────────────────────────── */
+
+/*
+ * Returns a free vNIC table index and its shmem slot index, or -1 if full.
+ * The shmem slot index equals the vNIC table index (1:1 mapping).
+ */
+static int alloc_vnic_slot(void) {
+    for (int i = 0; i < (int)NET_MAX_VNICS; i++) {
+        if (!vnics[i].active)
+            return i;
+    }
+    return -1;
+}
+
+/* Find a vNIC by id. Returns pointer or NULL. */
+static net_vnic_t *find_vnic(uint32_t vnic_id) {
+    for (int i = 0; i < (int)NET_MAX_VNICS; i++) {
+        if (vnics[i].active && vnics[i].vnic_id == vnic_id)
+            return &vnics[i];
+    }
+    return NULL;
+}
+
+/* ── shmem ring initialisation ───────────────────────────────────────────── */
+static void init_vnic_ring(uint32_t shmem_slot, uint32_t vnic_id) {
+    volatile net_vnic_ring_t *r = slot_ring(shmem_slot);
+    r->magic    = NET_VNIC_MAGIC;
+    r->vnic_id  = vnic_id;
+    r->tx_head  = 0;
+    r->tx_tail  = 0;
+    r->rx_head  = 0;
+    r->rx_tail  = 0;
+    r->tx_drops = 0;
+    r->rx_drops = 0;
+    /* Memory barrier: ensure ring is visible before we announce the slot */
+    __asm__ volatile("" ::: "memory");
+}
+
+static void clear_vnic_ring(uint32_t shmem_slot) {
+    volatile net_vnic_ring_t *r = slot_ring(shmem_slot);
+    r->magic = 0;
+    __asm__ volatile("" ::: "memory");
+}
+
+/* ── ACL enforcement ─────────────────────────────────────────────────────── */
+static bool acl_outbound_allowed(const net_vnic_t *v) {
+    return (v->acl_flags & NET_ACL_ALLOW_OUTBOUND) != 0;
+}
+
+/* ── OP_NET_VNIC_CREATE ───────────────────────────────────────────────────── */
+static microkit_msginfo handle_vnic_create(void) {
+    uint32_t requested_id = (uint32_t)microkit_mr_get(1);
+    uint32_t cap_classes  = (uint32_t)microkit_mr_get(2);
+    uint32_t caller_pd    = (uint32_t)microkit_mr_get(3);
+
+    /* CAP_CLASS_NET is mandatory */
+    if (!(cap_classes & CAP_CLASS_NET)) {
+        console_log(16, 16, "[net_server] VNIC_CREATE denied: missing CAP_CLASS_NET "
+                    "pd=");
+        log_dec(caller_pd);
+        console_log(16, 16, "\n");
+        microkit_mr_set(0, NET_ERR_PERM);
+        return microkit_msginfo_new(0, 1);
+    }
+
+    int slot = alloc_vnic_slot();
+    if (slot < 0) {
+        console_log(16, 16, "[net_server] VNIC_CREATE failed: table full\n");
+        microkit_mr_set(0, NET_ERR_NO_VNICS);
+        return microkit_msginfo_new(0, 1);
+    }
+
+    /*
+     * Assign vnic_id: use requested_id if valid and not in use,
+     * otherwise auto-assign (slot index as id when 0xFF requested).
+     */
+    uint32_t vnic_id;
+    if (requested_id == 0xFFu || requested_id >= NET_MAX_VNICS
+            || find_vnic(requested_id) != NULL) {
+        vnic_id = (uint32_t)slot;
+    } else {
+        vnic_id = requested_id;
+    }
+
+    net_vnic_t *v    = &vnics[slot];
+    v->active        = true;
+    v->vnic_id       = vnic_id;
+    v->owner_pd      = caller_pd;
+    v->cap_classes   = cap_classes;
+    /* Default ACL: allow outbound only; internet requires explicit grant */
+    v->acl_flags     = NET_ACL_ALLOW_OUTBOUND;
+    v->port_count    = 0;
+    v->shmem_slot    = (uint32_t)slot;
+    v->rx_packets    = 0;
+    v->tx_packets    = 0;
+
+    /* Locally-administered MAC: 02:00:00:00:00:NN */
+    v->mac[0] = 0x02;
+    v->mac[1] = 0x00;
+    v->mac[2] = 0x00;
+    v->mac[3] = 0x00;
+    v->mac[4] = 0x00;
+    v->mac[5] = (uint8_t)(vnic_id & 0xFFu);
+
+    for (uint32_t i = 0; i < NET_MAX_BOUND_PORTS; i++)
+        v->bound_ports[i] = 0;
+
+    init_vnic_ring((uint32_t)slot, vnic_id);
+    active_vnic_count++;
+
+    uint32_t slot_offset = NET_SLOT_OFFSET((uint32_t)slot);
+
+    console_log(16, 16, "[net_server] VNIC created: id=");
+    log_dec(vnic_id);
+    console_log(16, 16, " pd=");
+    log_dec(caller_pd);
+    console_log(16, 16, " slot=");
+    log_dec((uint32_t)slot);
+    console_log(16, 16, " mac=02:00:00:00:00:");
+    {
+        static const char hex[] = "0123456789abcdef";
+        char buf[3];
+        buf[0] = hex[(vnic_id >> 4) & 0xf];
+        buf[1] = hex[ vnic_id       & 0xf];
+        buf[2] = '\0';
+        console_log(16, 16, buf);
+    }
+    console_log(16, 16, "\n");
+
+    microkit_mr_set(0, NET_OK);
+    microkit_mr_set(1, vnic_id);
+    microkit_mr_set(2, slot_offset);
+    return microkit_msginfo_new(0, 3);
+}
+
+/* ── OP_NET_VNIC_DESTROY ──────────────────────────────────────────────────── */
+static microkit_msginfo handle_vnic_destroy(void) {
+    uint32_t vnic_id = (uint32_t)microkit_mr_get(1);
+
+    net_vnic_t *v = find_vnic(vnic_id);
+    if (!v) {
+        console_log(16, 16, "[net_server] VNIC_DESTROY: not found id=");
+        log_dec(vnic_id);
+        console_log(16, 16, "\n");
+        microkit_mr_set(0, NET_ERR_NOT_FOUND);
+        return microkit_msginfo_new(0, 1);
+    }
+
+    console_log(16, 16, "[net_server] VNIC destroyed: id=");
+    log_dec(vnic_id);
+    console_log(16, 16, " pd=");
+    log_dec(v->owner_pd);
+    console_log(16, 16, "\n");
+
+    clear_vnic_ring(v->shmem_slot);
+    v->active = false;
+    if (active_vnic_count > 0)
+        active_vnic_count--;
+
+    microkit_mr_set(0, NET_OK);
+    return microkit_msginfo_new(0, 1);
+}
+
+/* ── OP_NET_VNIC_SEND ─────────────────────────────────────────────────────── */
+static microkit_msginfo handle_vnic_send(void) {
+    uint32_t vnic_id      = (uint32_t)microkit_mr_get(1);
+    uint32_t pkt_offset   = (uint32_t)microkit_mr_get(2);
+    uint32_t pkt_len      = (uint32_t)microkit_mr_get(3);
+
+    net_vnic_t *v = find_vnic(vnic_id);
+    if (!v) {
+        microkit_mr_set(0, NET_ERR_NOT_FOUND);
+        microkit_mr_set(1, 0);
+        return microkit_msginfo_new(0, 2);
+    }
+
+    /* ACL: outbound must be permitted */
+    if (!acl_outbound_allowed(v)) {
+        console_log(16, 16, "[net_server] SEND denied by ACL: vnic=");
+        log_dec(vnic_id);
+        console_log(16, 16, " pd=");
+        log_dec(v->owner_pd);
+        console_log(16, 16, "\n");
+        microkit_mr_set(0, NET_ERR_PERM);
+        microkit_mr_set(1, 0);
+        return microkit_msginfo_new(0, 2);
+    }
+
+    /* Validate shmem bounds */
+    if (pkt_offset >= NET_SHMEM_TOTAL || pkt_len == 0
+            || pkt_offset + pkt_len > NET_SHMEM_TOTAL) {
+        microkit_mr_set(0, NET_ERR_INVAL);
+        microkit_mr_set(1, 0);
+        return microkit_msginfo_new(0, 2);
+    }
+
+    /*
+     * Peek at destination IP to decide routing.
+     * A minimal Ethernet frame starts with 6-byte dst MAC, 6-byte src MAC,
+     * 2-byte EtherType (0x0800 = IPv4), then the IPv4 header.
+     * IPv4 dst address is at byte offset 16 within the IP header (ETH=14 + IP_DST=16).
+     * Total offset from frame start: 14 + 16 = 30 bytes.
+     */
+    uint32_t dest_ip = 0;
+    const uint8_t *pkt_base = (const uint8_t *)(net_packet_shmem_vaddr + pkt_offset);
+
+    if (pkt_len >= 34u) {
+        /* Parse EtherType (bytes 12-13) — only proceed if IPv4 */
+        uint16_t ethertype = ((uint16_t)pkt_base[12] << 8) | pkt_base[13];
+        if (ethertype == 0x0800u) {
+            dest_ip = ((uint32_t)pkt_base[30] << 24)
+                    | ((uint32_t)pkt_base[31] << 16)
+                    | ((uint32_t)pkt_base[32] <<  8)
+                    |  (uint32_t)pkt_base[33];
+        }
+    }
+
+    if (NET_IP_IS_LOOPBACK(dest_ip)) {
+        /*
+         * Loopback routing: find the vNIC whose shmem RX ring we should
+         * deliver to.  For MVP we search for any active vNIC other than
+         * the sender; a production implementation would match bound ports.
+         */
+        bool delivered = false;
+        for (int i = 0; i < (int)NET_MAX_VNICS && !delivered; i++) {
+            net_vnic_t *dst = &vnics[i];
+            if (!dst->active || dst->vnic_id == vnic_id)
+                continue;
+
+            volatile net_vnic_ring_t *dst_ring = slot_ring(dst->shmem_slot);
+            uint32_t next_rx_head = (dst_ring->rx_head + 1) % NET_SHMEM_DATA_SIZE;
+            if (next_rx_head == dst_ring->rx_tail) {
+                /* RX ring full — drop */
+                dst_ring->rx_drops++;
+            } else {
+                /*
+                 * SMOLTCP_INTEGRATION_POINT: instead of direct shmem copy,
+                 * inject the packet into the smoltcp loopback interface so
+                 * that TCP/UDP demuxing can occur correctly.
+                 *
+                 * For MVP: record that a loopback packet was routed; the data
+                 * already lives in the sender's shmem region at pkt_offset.
+                 * The destination app polls OP_NET_VNIC_RECV to read it.
+                 * (Full copy implementation requires agreeing on the RX data
+                 * ring format, which is deferred to the smoltcp integration.)
+                 */
+                dst->rx_packets++;
+                delivered = true;
+                console_log(16, 16, "[net_server] loopback routed: src_vnic=");
+                log_dec(vnic_id);
+                console_log(16, 16, " dst_vnic=");
+                log_dec(dst->vnic_id);
+                console_log(16, 16, "\n");
+            }
+        }
+    } else {
+        /* Non-loopback: hand off to virtio-net or stub */
+        if (net_hw_present) {
+            /*
+             * SMOLTCP_INTEGRATION_POINT: feed packet to smoltcp interface.
+             *
+             * Steps (deferred until smoltcp is linked):
+             *   1. Acquire a free TX descriptor from the virtio-net TX virtqueue.
+             *   2. Write pkt_base / pkt_len into the descriptor's buffer region.
+             *   3. Advance the available ring idx and kick the device via
+             *      mmio_write32(net_mmio_vaddr, VIRTIO_MMIO_QUEUE_NOTIFY, 1 [TXQ]).
+             *   4. Optionally poll used ring for completion (synchronous MVP).
+             *
+             * For now: log intent and count the packet.
+             */
+            console_log(16, 16, "[net_server] TX stub (hw present): vnic=");
+            log_dec(vnic_id);
+            console_log(16, 16, " len=");
+            log_dec(pkt_len);
+            console_log(16, 16, "\n");
+        } else {
+            /* No hardware — drop with a log */
+            console_log(16, 16, "[net_server] TX dropped (no hw): vnic=");
+            log_dec(vnic_id);
+            console_log(16, 16, " len=");
+            log_dec(pkt_len);
+            console_log(16, 16, "\n");
+        }
+    }
+
+    v->tx_packets++;
+
+    microkit_mr_set(0, NET_OK);
+    microkit_mr_set(1, pkt_len);
+    return microkit_msginfo_new(0, 2);
+}
+
+/* ── OP_NET_VNIC_RECV ─────────────────────────────────────────────────────── */
+static microkit_msginfo handle_vnic_recv(void) {
+    uint32_t vnic_id = (uint32_t)microkit_mr_get(1);
+    /* buf_offset and buf_len are present but unused in MVP */
+
+    net_vnic_t *v = find_vnic(vnic_id);
+    if (!v) {
+        microkit_mr_set(0, NET_ERR_NOT_FOUND);
+        microkit_mr_set(1, 0);
+        return microkit_msginfo_new(0, 2);
+    }
+
+    /*
+     * SMOLTCP_INTEGRATION_POINT: poll smoltcp for received packets.
+     *
+     * Steps (deferred until smoltcp is linked):
+     *   1. Call smoltcp_iface_poll(iface, timestamp_ms).
+     *   2. If a packet is available for vnic_id (matched by IP/port binding),
+     *      copy it into the shmem region at buf_offset, up to buf_len bytes.
+     *   3. Return actual bytes copied in MR1.
+     *   4. Increment v->rx_packets.
+     *
+     * For MVP: no real RX — return 0 bytes received.
+     */
+    microkit_mr_set(0, NET_OK);
+    microkit_mr_set(1, 0);  /* 0 bytes received — RX not yet implemented */
+    return microkit_msginfo_new(0, 2);
+}
+
+/* ── OP_NET_BIND ──────────────────────────────────────────────────────────── */
+static microkit_msginfo handle_net_bind(void) {
+    uint32_t vnic_id  = (uint32_t)microkit_mr_get(1);
+    uint32_t port     = (uint32_t)microkit_mr_get(2);
+    uint32_t protocol = (uint32_t)microkit_mr_get(3);
+
+    (void)protocol;  /* stored for future smoltcp socket creation */
+
+    if (port == 0 || port > 65535u) {
+        microkit_mr_set(0, NET_ERR_INVAL);
+        return microkit_msginfo_new(0, 1);
+    }
+
+    net_vnic_t *v = find_vnic(vnic_id);
+    if (!v) {
+        microkit_mr_set(0, NET_ERR_NOT_FOUND);
+        return microkit_msginfo_new(0, 1);
+    }
+
+    if (v->port_count >= NET_MAX_BOUND_PORTS) {
+        microkit_mr_set(0, NET_ERR_NO_VNICS);  /* reuse: means "table full" */
+        return microkit_msginfo_new(0, 1);
+    }
+
+    v->bound_ports[v->port_count++] = port;
+
+    console_log(16, 16, "[net_server] BIND vnic=");
+    log_dec(vnic_id);
+    console_log(16, 16, " port=");
+    log_dec(port);
+    console_log(16, 16, " proto=");
+    log_dec(protocol);
+    console_log(16, 16, "\n");
+
+    microkit_mr_set(0, NET_OK);
+    return microkit_msginfo_new(0, 1);
+}
+
+/* ── OP_NET_CONNECT ───────────────────────────────────────────────────────── */
+static microkit_msginfo handle_net_connect(void) {
+    uint32_t vnic_id   = (uint32_t)microkit_mr_get(1);
+    uint32_t dest_ip   = (uint32_t)microkit_mr_get(2);
+    uint32_t dest_port = (uint32_t)microkit_mr_get(3);
+    uint32_t protocol  = (uint32_t)microkit_mr_get(4);
+
+    net_vnic_t *v = find_vnic(vnic_id);
+    if (!v) {
+        microkit_mr_set(0, NET_ERR_NOT_FOUND);
+        microkit_mr_set(1, 0);
+        return microkit_msginfo_new(0, 2);
+    }
+
+    /*
+     * SMOLTCP_INTEGRATION_POINT: open a smoltcp TCP or UDP socket.
+     *
+     * Steps (deferred until smoltcp is linked):
+     *   1. Allocate a smoltcp socket (tcp::Socket or udp::Socket).
+     *   2. Bind to vnic_id's local IP (derived from MAC/DHCP in full impl).
+     *   3. Call socket.connect(dest_ip, dest_port) for TCP, or
+     *      set remote endpoint for UDP.
+     *   4. Register socket handle in the vNIC's connection table.
+     *   5. Return a conn_id to the caller.
+     *
+     * For MVP: record connection intent and return NET_ERR_STUB.
+     */
+    console_log(16, 16, "[net_server] CONNECT stub: vnic=");
+    log_dec(vnic_id);
+    console_log(16, 16, " dst_ip=");
+    log_hex(dest_ip);
+    console_log(16, 16, " dst_port=");
+    log_dec(dest_port);
+    console_log(16, 16, " proto=");
+    log_dec(protocol);
+    console_log(16, 16, " (NET_ERR_STUB — smoltcp not yet integrated)\n");
+
+    microkit_mr_set(0, NET_ERR_STUB);
+    microkit_mr_set(1, 0);
+    return microkit_msginfo_new(0, 2);
+}
+
+/* ── OP_NET_STATUS ────────────────────────────────────────────────────────── */
+static microkit_msginfo handle_net_status(void) {
+    uint32_t vnic_id = (uint32_t)microkit_mr_get(1);
+
+    if (vnic_id == 0xFFFFFFFFu) {
+        /* Global status */
+        uint64_t total_rx = 0, total_tx = 0;
+        for (int i = 0; i < (int)NET_MAX_VNICS; i++) {
+            if (vnics[i].active) {
+                total_rx += vnics[i].rx_packets;
+                total_tx += vnics[i].tx_packets;
+            }
+        }
+        microkit_mr_set(0, NET_OK);
+        microkit_mr_set(1, active_vnic_count);
+        microkit_mr_set(2, (uint32_t)(total_rx & 0xFFFFFFFFu));
+        microkit_mr_set(3, (uint32_t)(total_tx & 0xFFFFFFFFu));
+        return microkit_msginfo_new(0, 4);
+    }
+
+    net_vnic_t *v = find_vnic(vnic_id);
+    if (!v) {
+        microkit_mr_set(0, NET_ERR_NOT_FOUND);
+        return microkit_msginfo_new(0, 1);
+    }
+
+    microkit_mr_set(0, NET_OK);
+    microkit_mr_set(1, active_vnic_count);
+    microkit_mr_set(2, (uint32_t)(v->rx_packets & 0xFFFFFFFFu));
+    microkit_mr_set(3, (uint32_t)(v->tx_packets & 0xFFFFFFFFu));
+    return microkit_msginfo_new(0, 4);
+}
+
+/* ── OP_NET_SET_ACL ───────────────────────────────────────────────────────── */
+static microkit_msginfo handle_net_set_acl(void) {
+    uint32_t vnic_id   = (uint32_t)microkit_mr_get(1);
+    uint32_t acl_flags = (uint32_t)microkit_mr_get(2);
+
+    net_vnic_t *v = find_vnic(vnic_id);
+    if (!v) {
+        microkit_mr_set(0, NET_ERR_NOT_FOUND);
+        return microkit_msginfo_new(0, 1);
+    }
+
+    uint32_t old_flags = v->acl_flags;
+    v->acl_flags = acl_flags;
+
+    console_log(16, 16, "[net_server] SET_ACL vnic=");
+    log_dec(vnic_id);
+    console_log(16, 16, " old_flags=");
+    log_hex(old_flags);
+    console_log(16, 16, " new_flags=");
+    log_hex(acl_flags);
+    console_log(16, 16, "\n");
+
+    microkit_mr_set(0, NET_OK);
+    return microkit_msginfo_new(0, 1);
+}
+
+/* ── OP_NET_HEALTH ────────────────────────────────────────────────────────── */
+static microkit_msginfo handle_net_health(void) {
+    microkit_mr_set(0, NET_OK);
+    microkit_mr_set(1, active_vnic_count);
+    microkit_mr_set(2, NET_VERSION);
+    return microkit_msginfo_new(0, 3);
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+ * Microkit entry points
+ * ══════════════════════════════════════════════════════════════════════════ */
+
+/*
+ * init() — called once at boot before any PPCs arrive.
+ */
+void init(void) {
+    agentos_log_boot("net_server");
+    console_log(16, 16, "[net_server] Initialising NetServer PD (priority 160, passive)\n");
+
+    /* Clear vNIC table */
+    for (int i = 0; i < (int)NET_MAX_VNICS; i++) {
+        vnics[i].active     = false;
+        vnics[i].vnic_id    = 0;
+        vnics[i].owner_pd   = 0;
+        vnics[i].cap_classes = 0;
+        vnics[i].acl_flags  = 0;
+        vnics[i].port_count = 0;
+        vnics[i].shmem_slot = 0;
+        vnics[i].rx_packets = 0;
+        vnics[i].tx_packets = 0;
+        for (int j = 0; j < (int)NET_MAX_BOUND_PORTS; j++)
+            vnics[i].bound_ports[j] = 0;
+        vnics[i].mac[0] = 0;
+        vnics[i].mac[1] = 0;
+        vnics[i].mac[2] = 0;
+        vnics[i].mac[3] = 0;
+        vnics[i].mac[4] = 0;
+        vnics[i].mac[5] = 0;
+    }
+    active_vnic_count = 0;
+
+    /* Probe virtio-net hardware */
+    probe_virtio_net();
+
+    console_log(16, 16, "[net_server] READY — max_vnics=");
+    log_dec(NET_MAX_VNICS);
+    console_log(16, 16, " shmem_slots=");
+    log_dec(NET_MAX_VNICS);
+    console_log(16, 16, " hw=");
+    console_log(16, 16, net_hw_present ? "1" : "0");
+    console_log(16, 16, "\n");
+}
+
+/*
+ * notified() — called when NetServer receives a notification (not a PPC).
+ *
+ * In the current design NetServer is purely passive (all callers use PPC).
+ * This handler is reserved for future use:
+ *   - A virtio-net RX interrupt would arrive here when the device places
+ *     packets onto the used ring.
+ *   - SMOLTCP_INTEGRATION_POINT: call smoltcp_iface_poll() and dispatch
+ *     any received packets to the appropriate vNIC's RX ring.
+ */
+void notified(microkit_channel ch) {
+    if (ch == NET_CH_CONTROLLER) {
+        /*
+         * SMOLTCP_INTEGRATION_POINT: virtio-net RX interrupt from controller.
+         * Poll smoltcp's EthernetInterface here when wired up.
+         */
+        console_log(16, 16, "[net_server] notify: virtio-net RX interrupt (stub)\n");
+    } else {
+        console_log(16, 16, "[net_server] unexpected notify ch=");
+        log_dec((uint32_t)ch);
+        console_log(16, 16, "\n");
+    }
+}
+
+/*
+ * protected() — PPC handler; dispatches all NetServer IPC operations.
+ *
+ * Callers: controller (CH0), init_agent (CH1), workers CH2..CH9, app_manager (CH10).
+ * The label field of msginfo carries the opcode (OP_NET_*).
+ */
+microkit_msginfo protected(microkit_channel ch, microkit_msginfo msginfo) {
+    (void)ch;   /* all channels share the same dispatch table for now */
+
+    uint64_t op = microkit_msginfo_get_label(msginfo);
+
+    switch (op) {
+    case OP_NET_VNIC_CREATE:  return handle_vnic_create();
+    case OP_NET_VNIC_DESTROY: return handle_vnic_destroy();
+    case OP_NET_VNIC_SEND:    return handle_vnic_send();
+    case OP_NET_VNIC_RECV:    return handle_vnic_recv();
+    case OP_NET_BIND:         return handle_net_bind();
+    case OP_NET_CONNECT:      return handle_net_connect();
+    case OP_NET_STATUS:       return handle_net_status();
+    case OP_NET_SET_ACL:      return handle_net_set_acl();
+    case OP_NET_HEALTH:       return handle_net_health();
+    default:
+        console_log(16, 16, "[net_server] unknown op=");
+        log_hex((uint32_t)(op & 0xFFFFFFFFu));
+        console_log(16, 16, " ch=");
+        log_dec((uint32_t)ch);
+        console_log(16, 16, "\n");
+        microkit_mr_set(0, NET_ERR_INVAL);
+        return microkit_msginfo_new(0, 1);
+    }
+}

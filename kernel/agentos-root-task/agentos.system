@@ -68,6 +68,20 @@
         <map mr="vibe_staging" vaddr="0x7000000" perms="r" setvar_vaddr="vibe_staging_ctrl_vaddr" />
         <!-- cap_policy hot-reload: caller writes policy blob here before PPC -->
         <map mr="cap_policy_shmem" vaddr="0x7400000" perms="rw" setvar_vaddr="cap_policy_shmem_vaddr" />
+        <!-- NameServer registry dump: controller reads after OP_NS_LIST call -->
+        <map mr="ns_registry_shmem" vaddr="0xB000000" perms="r" setvar_vaddr="ns_registry_shmem_ctrl_vaddr" />
+        <!-- VFS I/O shmem: request descriptor + path/data buffers -->
+        <map mr="vfs_io_shmem"       vaddr="0xC000000"  perms="rw" setvar_vaddr="vfs_io_shmem_ctrl_vaddr" />
+        <!-- SpawnServer ELF staging area -->
+        <map mr="spawn_elf_shmem"    vaddr="0xD000000"  perms="rw" setvar_vaddr="spawn_elf_shmem_ctrl_vaddr" />
+        <!-- Spawn config shmem: app name/path/list -->
+        <map mr="spawn_config_shmem" vaddr="0xD100000"  perms="rw" setvar_vaddr="spawn_config_shmem_ctrl_vaddr" />
+        <!-- Network packet shmem: vNIC ring headers + packet data -->
+        <map mr="net_packet_shmem"   vaddr="0xE000000"  perms="r"  setvar_vaddr="net_packet_shmem_ctrl_vaddr" />
+        <!-- HTTP request shmem: request header + body (observe only) -->
+        <map mr="http_req_shmem"     vaddr="0xF000000"  perms="r"  setvar_vaddr="http_req_shmem_ctrl_vaddr" />
+        <!-- App manifest shmem: controller writes manifests for AppManager -->
+        <map mr="app_manifest_shmem" vaddr="0x10000000" perms="rw" setvar_vaddr="app_manifest_shmem_ctrl_vaddr" />
     </protection_domain>
     
     <!-- EventBus: passive pub/sub backbone -->
@@ -628,5 +642,423 @@
     <channel>
         <end pd="net_isolator"  id="2" />
         <end pd="event_bus"     id="61" />
+    </channel>
+
+    <!--
+      ══════════════════════════════════════════════════════════════════
+      NameServer: runtime service discovery registry (passive, prio 170)
+
+      Replaces hardcoded channel-constant wiring with a named registry.
+      Callers PPC in to register, look up, or query service metadata.
+      Controller pre-registers all static services at boot.
+      SpawnServer (future) will query NameServer when minting capability
+      bundles for newly spawned application PDs.
+
+      Channel map (from NameServer's perspective):
+        id=0:  controller (pp=true: register + admin)
+        id=1:  init_agent (pp=true: lookup during bootstrap)
+        id=2:  worker_0   (pp=true: lookup)
+        id=3:  worker_1
+        id=4:  worker_2
+        id=5:  worker_3
+        id=6:  worker_4
+        id=7:  worker_5
+        id=8:  worker_6
+        id=9:  worker_7
+
+      Shared memory:
+        ns_registry_shmem (8KB): OP_NS_LIST dump buffer
+          NameServer writes ns_list_header_t + entries here.
+          Controller maps rw (reads after OP_NS_LIST call).
+      ══════════════════════════════════════════════════════════════════
+    -->
+
+    <memory_region name="ns_registry_shmem" size="0x2000" />  <!-- 8KB list dump -->
+
+    <protection_domain name="nameserver" priority="170" passive="true">
+        <program_image path="nameserver.elf" />
+        <map mr="ns_registry_shmem" vaddr="0xB000000" perms="rw"
+             setvar_vaddr="ns_registry_shmem_vaddr" />
+    </protection_domain>
+
+    <!-- Channel 80: controller(id=80, pp=true) <-> nameserver(id=0)
+         Controller PPCs into nameserver to register services + admin ops -->
+    <channel>
+        <end pd="controller"  id="18" pp="true" />
+        <end pd="nameserver"  id="0" />
+    </channel>
+
+    <!-- Channel 81: init_agent(id=7, pp=true) <-> nameserver(id=1)
+         init_agent queries nameserver during agent bootstrap sequence -->
+    <channel>
+        <end pd="init_agent"  id="7" pp="true" />
+        <end pd="nameserver"  id="1" />
+    </channel>
+
+    <!-- Channels 82–89: worker_N(id=12, pp=true) <-> nameserver(id=2..9)
+         Workers look up services when dispatching agent tasks -->
+    <channel>
+        <end pd="worker_0"   id="12" pp="true" />
+        <end pd="nameserver" id="2" />
+    </channel>
+    <channel>
+        <end pd="worker_1"   id="12" pp="true" />
+        <end pd="nameserver" id="3" />
+    </channel>
+    <channel>
+        <end pd="worker_2"   id="12" pp="true" />
+        <end pd="nameserver" id="4" />
+    </channel>
+    <channel>
+        <end pd="worker_3"   id="12" pp="true" />
+        <end pd="nameserver" id="5" />
+    </channel>
+    <channel>
+        <end pd="worker_4"   id="12" pp="true" />
+        <end pd="nameserver" id="6" />
+    </channel>
+    <channel>
+        <end pd="worker_5"   id="12" pp="true" />
+        <end pd="nameserver" id="7" />
+    </channel>
+    <channel>
+        <end pd="worker_6"   id="12" pp="true" />
+        <end pd="nameserver" id="8" />
+    </channel>
+    <channel>
+        <end pd="worker_7"   id="12" pp="true" />
+        <end pd="nameserver" id="9" />
+    </channel>
+
+    <!--
+      ══════════════════════════════════════════════════════════════════
+      SERVICE LAYER: VFS, virtio-blk, SpawnServer, app slots,
+                     NetServer, AppManager, HTTP service
+      ══════════════════════════════════════════════════════════════════
+    -->
+
+    <!-- ── Shared memory regions ──────────────────────────────────────── -->
+
+    <!-- VFS I/O: 128KB — request descriptor + path buffer + data buffer -->
+    <memory_region name="vfs_io_shmem"       size="0x20000" />
+    <!-- Block DMA: 32KB — DMA buffer shared between vfs_server and virtio_blk -->
+    <memory_region name="blk_dma_shmem"      size="0x8000"  />
+    <!-- QEMU virt MMIO: virtio-net bus.0 (riscv64: 0x10001000, size 4KB, IRQ 1) -->
+    <memory_region name="virtio_net_mmio"    size="0x1000"  phys_addr="0x10001000" />
+    <!-- QEMU virt MMIO: virtio-blk bus.1 (riscv64: 0x10002000, size 4KB, IRQ 2) -->
+    <memory_region name="virtio_blk_mmio"    size="0x1000"  phys_addr="0x10002000" />
+    <!-- ELF staging: 512KB — SpawnServer stages ELF images here -->
+    <memory_region name="spawn_elf_shmem"    size="0x80000" />
+    <!-- Spawn config: 4KB — app name/path/list area -->
+    <memory_region name="spawn_config_shmem" size="0x1000"  />
+    <!-- Network packet: 256KB — 16 × 16KB vNIC slots -->
+    <memory_region name="net_packet_shmem"   size="0x40000" />
+    <!-- App manifest: 16KB — key=value manifests for AppManager -->
+    <memory_region name="app_manifest_shmem" size="0x4000"  />
+    <!-- HTTP request: 64KB — request header + body for http_svc -->
+    <memory_region name="http_req_shmem"     size="0x10000" />
+
+    <!--
+      ── virtio-blk: block device driver (passive, prio 175) ──
+
+      Probes QEMU virtio-MMIO at init; returns BLK_ERR_NODEV gracefully
+      if no device is present.
+
+      Channels:
+        id=0: controller  (pp=true)
+        id=1: vfs_server  (pp=true — block I/O requests)
+    -->
+    <protection_domain name="virtio_blk" priority="175" passive="true">
+        <program_image path="virtio_blk.elf" />
+        <map mr="blk_dma_shmem"   vaddr="0x5000000" perms="rw"
+             setvar_vaddr="blk_dma_shmem_vaddr" />
+        <map mr="virtio_blk_mmio" vaddr="0x6000000" perms="rw" cached="false"
+             setvar_vaddr="blk_mmio_vaddr" />
+    </protection_domain>
+
+    <channel>
+        <end pd="controller"  id="22" pp="true" />
+        <end pd="virtio_blk"  id="0" />
+    </channel>
+
+    <!--
+      ── VFS Server: POSIX-flavoured filesystem (passive, prio 155) ──
+
+      MemBackend always available.  BlkBackend wired to virtio_blk via ch 12.
+
+      Channels:
+        id=0:  controller      (pp=true)
+        id=1:  init_agent      (pp=true)
+        id=2..9: worker_0..7   (pp=true)
+        id=10: spawn_server    (pp=true — ELF reads)
+        id=11: app_manager     (pp=true — manifest reads)
+        id=12: virtio_blk      (pp=true OUT — block I/O)
+    -->
+    <protection_domain name="vfs_server" priority="155" passive="true">
+        <program_image path="vfs_server.elf" />
+        <map mr="vfs_io_shmem"    vaddr="0x5000000" perms="rw"
+             setvar_vaddr="vfs_io_shmem_vaddr" />
+        <map mr="blk_dma_shmem"   vaddr="0x6000000" perms="rw"
+             setvar_vaddr="blk_dma_shmem_vaddr" />
+        <map mr="spawn_elf_shmem" vaddr="0x7000000" perms="rw"
+             setvar_vaddr="spawn_elf_shmem_vfs_vaddr" />
+    </protection_domain>
+
+    <channel>
+        <end pd="controller" id="19" pp="true" />
+        <end pd="vfs_server" id="0" />
+    </channel>
+    <channel>
+        <end pd="init_agent"  id="8" pp="true" />
+        <end pd="vfs_server"  id="1" />
+    </channel>
+    <channel>
+        <end pd="worker_0"   id="13" pp="true" />
+        <end pd="vfs_server" id="2" />
+    </channel>
+    <channel>
+        <end pd="worker_1"   id="13" pp="true" />
+        <end pd="vfs_server" id="3" />
+    </channel>
+    <channel>
+        <end pd="worker_2"   id="13" pp="true" />
+        <end pd="vfs_server" id="4" />
+    </channel>
+    <channel>
+        <end pd="worker_3"   id="13" pp="true" />
+        <end pd="vfs_server" id="5" />
+    </channel>
+    <channel>
+        <end pd="worker_4"   id="13" pp="true" />
+        <end pd="vfs_server" id="6" />
+    </channel>
+    <channel>
+        <end pd="worker_5"   id="13" pp="true" />
+        <end pd="vfs_server" id="7" />
+    </channel>
+    <channel>
+        <end pd="worker_6"   id="13" pp="true" />
+        <end pd="vfs_server" id="8" />
+    </channel>
+    <channel>
+        <end pd="worker_7"   id="13" pp="true" />
+        <end pd="vfs_server" id="9" />
+    </channel>
+    <!-- vfs_server PPCs OUT into virtio_blk for block I/O -->
+    <channel>
+        <end pd="vfs_server" id="12" pp="true" />
+        <end pd="virtio_blk" id="1" />
+    </channel>
+
+    <!--
+      ── SpawnServer: dynamic application launcher (active, prio 120) ──
+
+      Manages 4 pre-allocated app_slot PDs.  Reads ELF via VFS,
+      stages it with a spawn_header_t in spawn_elf_shmem, notifies slot.
+
+      Channels:
+        id=0: controller    (pp=true)
+        id=1: init_agent    (pp=true)
+        id=2: app_manager   (pp=true)
+        id=3: vfs_server    (pp=true OUT — ELF reads)
+        id=4..7: app_slot_0..3 (notify both ways)
+    -->
+    <protection_domain name="spawn_server" priority="145">
+        <program_image path="spawn_server.elf" />
+        <map mr="spawn_elf_shmem"    vaddr="0x5000000" perms="rw"
+             setvar_vaddr="spawn_elf_shmem_vaddr" />
+        <map mr="spawn_config_shmem" vaddr="0x6000000" perms="rw"
+             setvar_vaddr="spawn_config_shmem_vaddr" />
+        <map mr="vfs_io_shmem"       vaddr="0x7000000" perms="rw"
+             setvar_vaddr="vfs_io_shmem_vaddr" />
+    </protection_domain>
+
+    <channel>
+        <end pd="controller"   id="20" pp="true" />
+        <end pd="spawn_server" id="0" />
+    </channel>
+    <channel>
+        <end pd="init_agent"   id="9" pp="true" />
+        <end pd="spawn_server" id="1" />
+    </channel>
+    <!-- spawn_server PPCs OUT into vfs_server to read ELF files -->
+    <channel>
+        <end pd="spawn_server" id="3" pp="true" />
+        <end pd="vfs_server"   id="10" />
+    </channel>
+
+    <!--
+      ── App Slots: 4 pre-allocated application PDs (active, prio 70) ──
+
+      All slots share app_slot.elf.  SpawnServer stages an ELF in
+      spawn_elf_shmem, writes a spawn_header_t at offset 0, and notifies
+      the appropriate slot.  MVP: slot acknowledges immediately.
+    -->
+    <protection_domain name="app_slot_0" priority="70">
+        <program_image path="app_slot.elf" />
+        <map mr="spawn_elf_shmem" vaddr="0x5000000" perms="r"
+             setvar_vaddr="spawn_elf_shmem_vaddr" />
+    </protection_domain>
+    <protection_domain name="app_slot_1" priority="70">
+        <program_image path="app_slot.elf" />
+        <map mr="spawn_elf_shmem" vaddr="0x5000000" perms="r"
+             setvar_vaddr="spawn_elf_shmem_vaddr" />
+    </protection_domain>
+    <protection_domain name="app_slot_2" priority="70">
+        <program_image path="app_slot.elf" />
+        <map mr="spawn_elf_shmem" vaddr="0x5000000" perms="r"
+             setvar_vaddr="spawn_elf_shmem_vaddr" />
+    </protection_domain>
+    <protection_domain name="app_slot_3" priority="70">
+        <program_image path="app_slot.elf" />
+        <map mr="spawn_elf_shmem" vaddr="0x5000000" perms="r"
+             setvar_vaddr="spawn_elf_shmem_vaddr" />
+    </protection_domain>
+
+    <channel>
+        <end pd="spawn_server" id="4" />
+        <end pd="app_slot_0"   id="0" />
+    </channel>
+    <channel>
+        <end pd="spawn_server" id="5" />
+        <end pd="app_slot_1"   id="0" />
+    </channel>
+    <channel>
+        <end pd="spawn_server" id="6" />
+        <end pd="app_slot_2"   id="0" />
+    </channel>
+    <channel>
+        <end pd="spawn_server" id="7" />
+        <end pd="app_slot_3"   id="0" />
+    </channel>
+
+    <!--
+      ── NetServer: virtual NIC manager + ACL enforcer (passive, prio 160) ──
+
+      Manages 16 vNICs, virtio-net detection, packet routing.
+      smoltcp TCP/IP integration points marked in net_server.c.
+
+      Channels:
+        id=0:  controller      (pp=true)
+        id=1:  init_agent      (pp=true)
+        id=2..9: worker_0..7   (pp=true)
+        id=10: app_manager     (pp=true)
+    -->
+    <protection_domain name="net_server" priority="160" passive="true">
+        <program_image path="net_server.elf" />
+        <map mr="net_packet_shmem"  vaddr="0x5000000" perms="rw"
+             setvar_vaddr="net_packet_shmem_vaddr" />
+        <map mr="virtio_net_mmio"   vaddr="0x6000000" perms="rw" cached="false"
+             setvar_vaddr="net_mmio_vaddr" />
+    </protection_domain>
+
+    <channel>
+        <end pd="controller" id="21" pp="true" />
+        <end pd="net_server" id="0" />
+    </channel>
+    <channel>
+        <end pd="init_agent"  id="10" pp="true" />
+        <end pd="net_server"  id="1" />
+    </channel>
+    <channel>
+        <end pd="worker_0"   id="14" pp="true" />
+        <end pd="net_server" id="2" />
+    </channel>
+    <channel>
+        <end pd="worker_1"   id="14" pp="true" />
+        <end pd="net_server" id="3" />
+    </channel>
+    <channel>
+        <end pd="worker_2"   id="14" pp="true" />
+        <end pd="net_server" id="4" />
+    </channel>
+    <channel>
+        <end pd="worker_3"   id="14" pp="true" />
+        <end pd="net_server" id="5" />
+    </channel>
+    <channel>
+        <end pd="worker_4"   id="14" pp="true" />
+        <end pd="net_server" id="6" />
+    </channel>
+    <channel>
+        <end pd="worker_5"   id="14" pp="true" />
+        <end pd="net_server" id="7" />
+    </channel>
+    <channel>
+        <end pd="worker_6"   id="14" pp="true" />
+        <end pd="net_server" id="8" />
+    </channel>
+    <channel>
+        <end pd="worker_7"   id="14" pp="true" />
+        <end pd="net_server" id="9" />
+    </channel>
+
+    <!--
+      ── AppManager: full-stack app orchestrator (active, prio 130) ──
+
+      Parses manifests, creates vNICs, launches ELFs, registers HTTP routes.
+
+      Channels:
+        id=0: controller    (pp=true)
+        id=1: spawn_server  (OUT — OP_SPAWN_LAUNCH)
+        id=2: vfs_server    (OUT — future manifest/config reads)
+        id=3: net_server    (OUT — OP_NET_VNIC_CREATE/DESTROY)
+        id=4: http_svc      (OUT — OP_HTTP_REGISTER/UNREGISTER)
+    -->
+    <protection_domain name="app_manager" priority="130">
+        <program_image path="app_manager.elf" />
+        <map mr="app_manifest_shmem"  vaddr="0x5000000" perms="rw"
+             setvar_vaddr="app_manifest_shmem_vaddr" />
+        <map mr="spawn_config_shmem"  vaddr="0x8000000" perms="rw"
+             setvar_vaddr="spawn_config_shmem_appmgr_vaddr" />
+        <map mr="vfs_io_shmem"        vaddr="0x9000000" perms="rw"
+             setvar_vaddr="vfs_io_shmem_appmgr_vaddr" />
+    </protection_domain>
+
+    <channel>
+        <end pd="controller"  id="23" pp="true" />
+        <end pd="app_manager" id="0" />
+    </channel>
+    <!-- app_manager PPCs OUT into spawn_server -->
+    <channel>
+        <end pd="app_manager"  id="1" pp="true" />
+        <end pd="spawn_server" id="2" />
+    </channel>
+    <!-- app_manager PPCs OUT into vfs_server -->
+    <channel>
+        <end pd="app_manager" id="2" pp="true" />
+        <end pd="vfs_server"  id="11" />
+    </channel>
+    <!-- app_manager PPCs OUT into net_server -->
+    <channel>
+        <end pd="app_manager" id="3" pp="true" />
+        <end pd="net_server"  id="10" />
+    </channel>
+
+    <!--
+      ── HTTP Service: route registry + dispatcher (active, prio 140) ──
+
+      Longest-prefix-match handler table.  URL prefixes passed inline in MRs.
+      The Rust http-gateway (userspace/servers/http-gateway) calls
+      OP_HTTP_DISPATCH to resolve incoming requests.
+
+      Channels:
+        id=0: controller   (pp=true — admin + health)
+        id=1: app_manager  (pp=true — route register/unregister)
+    -->
+    <protection_domain name="http_svc" priority="140">
+        <program_image path="http_svc.elf" />
+        <map mr="http_req_shmem" vaddr="0x5000000" perms="rw"
+             setvar_vaddr="http_req_shmem_vaddr" />
+    </protection_domain>
+
+    <channel>
+        <end pd="controller" id="24" pp="true" />
+        <end pd="http_svc"   id="0" />
+    </channel>
+    <!-- app_manager PPCs OUT into http_svc for route registration -->
+    <channel>
+        <end pd="app_manager" id="4" pp="true" />
+        <end pd="http_svc"    id="1" />
     </channel>
 </system>

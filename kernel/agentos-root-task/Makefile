@@ -39,7 +39,8 @@ MICROKIT_TOOL ?= $(MICROKIT_SDK)/bin/microkit
 
 CFLAGS := -nostdlib -ffreestanding -g -O2 -Wall -Wextra -Wno-unused-function \
            -I$(BOARD_DIR)/include -Iinclude \
-           $(CFLAGS_ARCH)
+           $(CFLAGS_ARCH) \
+           -MMD -MP
 
 # wasm3-specific flags: suppress warnings from vendored code, include bare-metal shim
 CFLAGS_WASM3 := $(CFLAGS) -Iwasm3 -include $(CURDIR)/include/m3_bare_metal.h \
@@ -71,6 +72,14 @@ PD_SNAPSHOTSCHED_SRCS    := src/snapshot_sched.c src/m3_bare_metal.c src/log.c
 PD_PERFCOUNTERS_SRCS     := src/perf_counters.c src/m3_bare_metal.c src/log.c
 PD_TIMEPARTITION_SRCS    := src/time_partition.c src/m3_bare_metal.c src/log.c
 PD_TRACERECORDER_SRCS    := src/trace_recorder.c src/m3_bare_metal.c src/log.c
+PD_NAMESERVER_SRCS       := src/nameserver.c src/m3_bare_metal.c src/log.c
+PD_VIRTIO_BLK_SRCS       := src/virtio_blk.c src/m3_bare_metal.c src/log.c
+PD_VFS_SERVER_SRCS       := src/vfs_server.c src/m3_bare_metal.c src/log.c
+PD_SPAWN_SERVER_SRCS     := src/spawn_server.c src/m3_bare_metal.c src/log.c
+PD_APP_SLOT_SRCS         := src/app_slot.c src/m3_bare_metal.c src/log.c
+PD_NET_SERVER_SRCS       := src/net_server.c src/m3_bare_metal.c src/log.c
+PD_APP_MANAGER_SRCS      := src/app_manager.c src/m3_bare_metal.c src/log.c
+PD_HTTP_SVC_SRCS         := src/http_svc.c src/m3_bare_metal.c src/log.c
 
 # wasm3 vendored sources (core interpreter only)
 WASM3_SRCS := wasm3/m3_core.c wasm3/m3_env.c wasm3/m3_code.c wasm3/m3_compile.c \
@@ -91,9 +100,17 @@ SNAPSHOTSCHED_OBJS    := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_SNAPSHOTSCHE
 PERFCOUNTERS_OBJS     := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_PERFCOUNTERS_SRCS))
 TIMEPARTITION_OBJS    := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_TIMEPARTITION_SRCS))
 TRACERECORDER_OBJS    := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_TRACERECORDER_SRCS))
+NAMESERVER_OBJS       := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_NAMESERVER_SRCS))
+VIRTIO_BLK_OBJS       := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_VIRTIO_BLK_SRCS))
+VFS_SERVER_OBJS       := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_VFS_SERVER_SRCS))
+SPAWN_SERVER_OBJS     := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_SPAWN_SERVER_SRCS))
+APP_SLOT_OBJS         := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_APP_SLOT_SRCS))
+NET_SERVER_OBJS       := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_NET_SERVER_SRCS))
+APP_MANAGER_OBJS      := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_APP_MANAGER_SRCS))
+HTTP_SVC_OBJS         := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_HTTP_SVC_SRCS))
 WASM3_OBJS         := $(patsubst wasm3/%.c, $(BUILD_DIR)/wasm3_%.o, $(WASM3_SRCS))
 
-IMAGES := controller.elf event_bus.elf init_agent.elf worker.elf agentfs.elf vibe_engine.elf console_mux.elf swap_slot.elf mem_profiler.elf net_isolator.elf perf_counters.elf time_partition.elf trace_recorder.elf
+IMAGES := controller.elf event_bus.elf init_agent.elf worker.elf agentfs.elf vibe_engine.elf console_mux.elf swap_slot.elf mem_profiler.elf net_isolator.elf perf_counters.elf time_partition.elf trace_recorder.elf nameserver.elf virtio_blk.elf vfs_server.elf spawn_server.elf app_slot.elf net_server.elf app_manager.elf http_svc.elf
 
 # Optional: periodic WASM slot snapshot scheduler
 ifdef AGENTOS_SNAPSHOT_SCHED
@@ -191,6 +208,30 @@ $(BUILD_DIR)/time_partition.elf: $(TIMEPARTITION_OBJS)
 $(BUILD_DIR)/trace_recorder.elf: $(TRACERECORDER_OBJS)
 	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
 
+$(BUILD_DIR)/nameserver.elf: $(NAMESERVER_OBJS)
+	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
+
+$(BUILD_DIR)/virtio_blk.elf: $(VIRTIO_BLK_OBJS)
+	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
+
+$(BUILD_DIR)/vfs_server.elf: $(VFS_SERVER_OBJS)
+	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
+
+$(BUILD_DIR)/spawn_server.elf: $(SPAWN_SERVER_OBJS)
+	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
+
+$(BUILD_DIR)/app_slot.elf: $(APP_SLOT_OBJS)
+	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
+
+$(BUILD_DIR)/net_server.elf: $(NET_SERVER_OBJS)
+	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
+
+$(BUILD_DIR)/app_manager.elf: $(APP_MANAGER_OBJS)
+	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
+
+$(BUILD_DIR)/http_svc.elf: $(HTTP_SVC_OBJS)
+	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
+
 # ─── Linux VMM (AArch64 only) ─────────────────────────────────────────────
 ifeq ($(ARCH),aarch64)
 ifneq ($(GUEST_OS),freebsd)
@@ -248,3 +289,8 @@ clean:
 	rm -rf $(BUILD_DIR)
 
 .PHONY: all clean FORCE
+
+# ─── Auto-generated header dependency files ───────────────────────────────────
+# -MMD -MP in CFLAGS causes clang to emit a .d file alongside each .o.
+# Including them here makes 'make' recompile any .o whose headers changed.
+-include $(wildcard $(BUILD_DIR)/*.d)

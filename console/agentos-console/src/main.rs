@@ -35,6 +35,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::UnixStream;
 use tokio::time::interval;
 use tower_http::cors::CorsLayer;
+use tower_http::services::ServeDir;
 use tracing::info;
 
 use crate::bridge::{BridgeState, SharedSerial};
@@ -89,12 +90,26 @@ async fn main() -> anyhow::Result<()> {
     let serial_cache: SharedSerial = Arc::new(Mutex::new(SerialCache::new()));
     let freebsd_state = new_shared();
 
-    // Dashboard HTML — read once at startup, cache in Arc
-    let dashboard_path = {
-        let exe_dir = std::env::current_exe()
-            .ok()
-            .and_then(|p| p.parent().map(|d| d.to_path_buf()));
+    // Resolve the Trunk-built dist/ directory (used both for index.html and ServeDir).
+    let exe_dir = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|d| d.to_path_buf()));
+
+    let dist_dir: Option<std::path::PathBuf> = {
         let candidates: [Option<std::path::PathBuf>; 3] = [
+            exe_dir.as_deref()
+                .map(|d| d.join("../../../console/dashboard/dist"))
+                .and_then(|p| p.canonicalize().ok()),
+            Some(std::path::PathBuf::from("console/dashboard/dist")),
+            Some(std::path::PathBuf::from("dashboard/dist")),
+        ];
+        candidates.into_iter().flatten().find(|p| p.is_dir())
+    };
+
+    // Dashboard HTML — prefer dist/index.html (Trunk output), fall back to legacy file.
+    let dashboard_html: Arc<String> = Arc::new({
+        let candidates: [Option<std::path::PathBuf>; 4] = [
+            dist_dir.as_deref().map(|d| d.join("index.html")),
             exe_dir.as_deref()
                 .map(|d| d.join("../../../console/dashboard.html"))
                 .and_then(|p| p.canonicalize().ok()),
@@ -104,13 +119,10 @@ async fn main() -> anyhow::Result<()> {
         candidates.into_iter()
             .flatten()
             .find(|p| p.exists())
-    };
-
-    let dashboard_html: Arc<String> = Arc::new(match &dashboard_path {
-        Some(p) => std::fs::read_to_string(p).unwrap_or_else(|_| {
-            "<html><body>dashboard.html not found</body></html>".to_string()
-        }),
-        None => "<html><body>dashboard.html not found</body></html>".to_string(),
+            .and_then(|p| std::fs::read_to_string(&p).ok())
+            .unwrap_or_else(|| {
+                "<html><body>dashboard not found — run <code>trunk build</code> in console/dashboard/</body></html>".to_string()
+            })
     });
 
     // ── Serial socket inject channel ─────────────────────────────────────────
@@ -230,12 +242,24 @@ async fn main() -> anyhow::Result<()> {
     }
 
     // ── Main HTTP router ──────────────────────────────────────────────────────
+    // Share the same guest_img_dir path with AppState
+    let guest_img_dir_for_state = {
+        let exe = std::env::current_exe()
+            .ok()
+            .and_then(|p| p.parent().map(|d| d.to_path_buf()));
+        exe.map(|d| d.join("../../..").join("guest-images"))
+            .and_then(|p| p.canonicalize().ok())
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "guest-images".to_string())
+    };
+
     let app_state = routes::AppState {
         serial:         serial_cache.clone(),
         dashboard_html: dashboard_html.clone(),
         serial_path:    serial_log.clone(),
         agentos_base:   agentos_base.clone(),
         agentos_token:  agentos_token.clone(),
+        guest_img_dir:  guest_img_dir_for_state,
         parse_tx:       parse_tx.clone(),
     };
 
@@ -272,6 +296,9 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/agentos/slots",         get(routes::get_agentos_slots))
         .route("/api/agentos/agents",        get(routes::get_agentos_agents))
         .route("/api/agentos/agents/spawn",  post(routes::post_spawn_agent))
+        // Images + topology
+        .route("/api/images",   get(routes::get_images))
+        .route("/api/topology", get(routes::get_topology))
         // Debug
         .route("/api/debug",        get(routes::get_debug))
         .route("/api/debug/serial", get(routes::get_debug_serial))
@@ -301,6 +328,16 @@ async fn main() -> anyhow::Result<()> {
         }))
         .layer(CorsLayer::permissive())
         .with_state(app_state);
+
+    // Serve Trunk-compiled WASM assets as a fallback (wasm, js glue, css hashes).
+    // Explicit API/WS routes above always take priority.
+    let app = if let Some(ref dist) = dist_dir {
+        info!("[console] serving WASM bundle from {}", dist.display());
+        app.fallback_service(ServeDir::new(dist))
+    } else {
+        info!("[console] no dist/ found — run `trunk build` in console/dashboard/");
+        app
+    };
 
     // ── Bridge HTTP router ────────────────────────────────────────────────────
     let guest_img_dir = {

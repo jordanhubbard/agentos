@@ -18,13 +18,14 @@ use crate::serial::SerialCache;
 
 #[derive(Clone)]
 pub struct AppState {
-    pub serial:        Arc<Mutex<SerialCache>>,
+    pub serial:         Arc<Mutex<SerialCache>>,
     pub dashboard_html: Arc<String>,
-    pub serial_path:   String,
-    pub agentos_base:  String,
-    pub agentos_token: String,
+    pub serial_path:    String,
+    pub agentos_base:   String,
+    pub agentos_token:  String,
+    pub guest_img_dir:  String,
     /// Watch channel to request a re-parse
-    pub parse_tx:      tokio::sync::watch::Sender<()>,
+    pub parse_tx:       tokio::sync::watch::Sender<()>,
 }
 
 // ─── GET / ───────────────────────────────────────────────────────────────────
@@ -163,6 +164,61 @@ pub async fn post_spawn_agent(
         Ok(val)  => (StatusCode::ACCEPTED, Json(val)),
         Err(e)   => (StatusCode::BAD_GATEWAY, Json(json!({ "error": e }))),
     }
+}
+
+// ─── GET /api/images ─────────────────────────────────────────────────────────
+
+pub async fn get_images(State(s): State<AppState>) -> impl IntoResponse {
+    let dir = &s.guest_img_dir;
+    let images: Vec<Value> = match std::fs::read_dir(dir) {
+        Ok(entries) => entries
+            .filter_map(|e| e.ok())
+            .filter(|e| {
+                e.path().extension()
+                    .and_then(|x| x.to_str())
+                    .map(|x| matches!(x, "img" | "qcow2" | "iso" | "raw"))
+                    .unwrap_or(false)
+            })
+            .map(|e| {
+                let meta = e.metadata().ok();
+                let size_bytes = meta.map(|m| m.len()).unwrap_or(0);
+                let name = e.file_name().to_string_lossy().into_owned();
+                json!({ "name": name, "size_bytes": size_bytes, "status": "cached" })
+            })
+            .collect(),
+        Err(_) => vec![],
+    };
+    Json(json!({ "images": images }))
+}
+
+// ─── GET /api/topology ───────────────────────────────────────────────────────
+
+pub async fn get_topology() -> impl IntoResponse {
+    use pd_slots::PD_SLOTS;
+
+    // Static edge list (mirrors topology.rs in the dashboard)
+    let edges: Vec<Value> = [
+        (0u8, 16u8, 18u16, "ipc"),   (0, 15, 200, "ipc"),   (0,  1,  0, "ipc"),
+        (0,   2,   1, "ipc"),         (0, 23,  50, "ipc"),   (0,  3,  5, "ipc"),
+        (0,   4,  40, "ipc"),         (0, 17,  19, "ipc"),   (0, 18, 20, "ipc"),
+        (0,  19,  21, "ipc"),         (0, 20,  22, "ipc"),   (0, 21, 23, "ipc"),
+        (0,  22,  24, "ipc"),         (0, 13,  55, "ipc"),   (0, 14, 60, "network"),
+        (21, 18,  20, "ipc"),         (21, 19, 21, "ipc"),   (21, 22, 24, "ipc"),
+        (18, 17,   0, "shmem"),       (19, 20,  0, "shmem"), (3,  17,  0, "shmem"),
+        (1,   5,  30, "eventbus"),    (1,   6,  31, "eventbus"), (1,  7, 32, "eventbus"),
+        (1,   8,  33, "eventbus"),    (4,   9,  30, "ipc"),   (4, 10, 31, "ipc"),
+        (4,  11,  32, "ipc"),         (4,  12,  33, "ipc"),   (2,  1,  0, "eventbus"),
+    ].iter().map(|(from, to, ch, kind)| {
+        json!({ "from": from, "to": to, "channel": ch, "kind": kind })
+    }).collect();
+
+    let nodes: Vec<Value> = PD_SLOTS.iter().map(|pd| {
+        json!({ "id": pd.id, "name": pd.name, "display": pd.display })
+    }).collect();
+
+    let metrics = serde_json::to_value(generate_profiler_snapshot()).unwrap_or_default();
+
+    Json(json!({ "nodes": nodes, "edges": edges, "metrics": metrics }))
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────

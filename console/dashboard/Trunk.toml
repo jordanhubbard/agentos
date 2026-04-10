@@ -5,3 +5,7 @@ backend = "http://localhost:8080"
 [[proxy]]
 rewrite = "/ws"
 backend = "ws://localhost:8080"
+
+[[proxy]]
+rewrite = "/terminal"
+backend = "ws://localhost:8080"

@@ -9,6 +9,8 @@
 #include "agentos.h"
 #include "prio_inherit.h"
 #include "boot_integrity.h"
+#include "nameserver.h"
+#include "app_manager.h"
 #include <stdint.h>
 
 /* Memory regions - patched by Microkit setvar */
@@ -21,6 +23,20 @@ uintptr_t swap_code_ctrl_3;
 uintptr_t vibe_staging_ctrl_vaddr;
 /* cap_policy hot-reload shmem: caller writes policy blob here before PPC */
 uintptr_t cap_policy_shmem_vaddr;
+/* NameServer registry dump shmem: read after OP_NS_LIST call (mapped r) */
+uintptr_t ns_registry_shmem_ctrl_vaddr;
+/* VFS I/O shmem: request descriptor + path/data buffers (mapped rw) */
+uintptr_t vfs_io_shmem_ctrl_vaddr;
+/* SpawnServer ELF staging area (mapped rw) */
+uintptr_t spawn_elf_shmem_ctrl_vaddr;
+/* Spawn config shmem: app name/path/list area (mapped rw) */
+uintptr_t spawn_config_shmem_ctrl_vaddr;
+/* Network packet shmem: 16 vNIC slots (mapped r) */
+uintptr_t net_packet_shmem_ctrl_vaddr;
+/* HTTP request shmem: request header + body (mapped r) */
+uintptr_t http_req_shmem_ctrl_vaddr;
+/* App manifest shmem: key=value manifests written by controller (mapped rw) */
+uintptr_t app_manifest_shmem_ctrl_vaddr;
 
 /*
  * Echo service WASM binary (embedded for demo Step 4)
@@ -333,9 +349,105 @@ static void demo_sequence(void) {
     /* Worker will notify us back on channel 10 when done */
 }
 
+/*
+ * ns_register_service — register one service with the NameServer.
+ * Uses the controller's CH_NAMESERVER (id=80) channel.
+ */
+static void ns_register_service(uint32_t channel_id, uint32_t pd_id,
+                                 uint32_t cap_classes, const char *name)
+{
+    microkit_mr_set(0, OP_NS_REGISTER);
+    microkit_mr_set(1, channel_id);
+    microkit_mr_set(2, pd_id);
+    microkit_mr_set(3, cap_classes);
+    microkit_mr_set(4, 1u);  /* version */
+    ns_pack_name(name, 5);
+    /* MR0..MR4 + 4 name MRs = 9 total */
+    microkit_ppcall(CH_NAMESERVER, microkit_msginfo_new(OP_NS_REGISTER, 9));
+    uint32_t rc = (uint32_t)microkit_mr_get(0);
+    if (rc != NS_OK) {
+        console_log(0, 0, "[controller] NS_REGISTER failed for: ");
+        console_log(0, 0, name);
+        console_log(0, 0, "\n");
+    }
+}
+
+/*
+ * microservice_demo — Step 5: launch a demo app via AppManager.
+ *
+ * Writes a minimal key=value manifest into app_manifest_shmem and
+ * calls OP_APP_LAUNCH.  The app is named "echo-app" with HTTP prefix "/echo".
+ */
+static void microservice_demo(void)
+{
+    console_log(0, 0, "\n══════════════════════════════════════════════════════\n"
+                      "  DEMO Step 5: AppManager — full-stack app launch\n"
+                      "══════════════════════════════════════════════════════\n\n");
+
+    if (!app_manifest_shmem_ctrl_vaddr) {
+        console_log(0, 0, "[controller] app_manifest_shmem not mapped — skipping step 5\n");
+        return;
+    }
+
+    /* Write manifest text: key=value, newline-separated */
+    static const char DEMO_MANIFEST[] =
+        "name=echo-app\n"
+        "elf=/apps/echo.elf\n"
+        "http_prefix=/echo\n"
+        "caps=35\n";  /* CAP_CLASS_FS|NET|IPC|STDIO = 1|2|8|32-1 = 35 */
+    static const uint32_t DEMO_MANIFEST_LEN =
+        sizeof(DEMO_MANIFEST) - 1u;  /* exclude null terminator */
+
+    volatile uint8_t *dst = (volatile uint8_t *)app_manifest_shmem_ctrl_vaddr;
+    for (uint32_t i = 0; i < DEMO_MANIFEST_LEN; i++)
+        dst[i] = (uint8_t)DEMO_MANIFEST[i];
+
+    console_log(0, 0, "[controller] Manifest written — calling OP_APP_LAUNCH...\n");
+
+    microkit_mr_set(0, OP_APP_LAUNCH);
+    microkit_mr_set(1, DEMO_MANIFEST_LEN);
+    microkit_ppcall((microkit_channel)CH_APP_MANAGER,
+                    microkit_msginfo_new(OP_APP_LAUNCH, 2));
+
+    uint32_t rc     = (uint32_t)microkit_mr_get(0);
+    uint32_t app_id = (uint32_t)microkit_mr_get(1);
+    uint32_t vnic   = (uint32_t)microkit_mr_get(2);
+
+    if (rc == APP_OK) {
+        console_log(0, 0, "[controller] APP_LAUNCH OK — app_id=");
+        char buf[12]; int bi = 11; buf[bi] = '\0';
+        uint32_t v = app_id;
+        if (v == 0) { buf[--bi] = '0'; }
+        else while (v > 0 && bi > 0) { buf[--bi] = (char)('0' + (v % 10)); v /= 10; }
+        console_log(0, 0, &buf[bi]);
+        console_log(0, 0, " vnic=");
+        v = vnic; bi = 11; buf[bi] = '\0';
+        if (v == 0xFFFFFFFFu) {
+            buf[--bi] = 'e'; buf[--bi] = 'n'; buf[--bi] = 'o'; buf[--bi] = 'n';
+        } else {
+            if (v == 0) { buf[--bi] = '0'; }
+            else while (v > 0 && bi > 0) { buf[--bi] = (char)('0' + (v % 10)); v /= 10; }
+        }
+        console_log(0, 0, &buf[bi]);
+        console_log(0, 0, "\n[controller] echo-app registered at HTTP prefix /echo\n");
+        console_log(0, 0,
+            "\n══════════════════════════════════════════════════════\n"
+            "  DEMO COMPLETE — All 5 steps passed!\n"
+            "  Step 1: AgentFS object store    — PUT/GET via IPC\n"
+            "  Step 2: EventBus pub/sub        — ring buffer + notify\n"
+            "  Step 3: Agent pool workers      — task dispatch + done\n"
+            "  Step 4: VibeEngine hot-swap     — WASM live via wasm3\n"
+            "  Step 5: AppManager launch       — echo-app at /echo\n"
+            "  PDs: 34 on seL4 (RISC-V / AArch64)\n"
+            "══════════════════════════════════════════════════════\n\n");
+    } else {
+        console_log(0, 0, "[controller] APP_LAUNCH failed (services may be stubs)\n");
+    }
+}
+
 void init(void) {
     agentos_log_boot("controller");
-    
+
     console_log(0, 0, "[controller] Initializing agentOS core services\n");
     
     /* Initialize subsystems */
@@ -368,8 +480,26 @@ void init(void) {
     vibe_swap_init();
 
     console_log(0, 0, "[controller] *** agentOS controller boot complete ***\n[controller] Ready for agents.\n");
-    
-    /* Run the interactive demo sequence */
+
+    /* ── Register new microkernel services with NameServer ───────────────── */
+    console_log(0, 0, "[controller] Registering services with NameServer...\n");
+
+    ns_register_service(CH_VFS_SERVER,   TRACE_PD_VFS_SERVER,
+                        CAP_CLASS_FS,                       NS_SVC_VFS);
+    ns_register_service(CH_SPAWN_SERVER, TRACE_PD_SPAWN_SERVER,
+                        CAP_CLASS_SPAWN,                    NS_SVC_SPAWN);
+    ns_register_service(CH_NET_SERVER,   TRACE_PD_NET_SERVER,
+                        CAP_CLASS_NET,                      NS_SVC_NET);
+    ns_register_service(CH_VIRTIO_BLK,   TRACE_PD_VIRTIO_BLK,
+                        CAP_CLASS_FS,                       "virtio_blk");
+    ns_register_service(CH_APP_MANAGER,  TRACE_PD_APP_MANAGER,
+                        CAP_CLASS_SPAWN | CAP_CLASS_NET,    NS_SVC_APPMANAGER);
+    ns_register_service(CH_HTTP_SVC,     TRACE_PD_HTTP_SVC,
+                        CAP_CLASS_NET,                      NS_SVC_HTTP);
+
+    console_log(0, 0, "[controller] 6 microkernel services registered\n");
+
+    /* ── Run legacy data-flow demo (Steps 1-4) ───────────────────────────── */
     demo_sequence();
 }
 
@@ -684,7 +814,10 @@ void notified(microkit_channel ch) {
                     if (ctrl.vibe_swap_in_progress && !ctrl.vibe_demo_complete) {
                         ctrl.vibe_swap_in_progress = false;
                         ctrl.vibe_demo_complete = true;
-                        console_log(0, 0, "\n══════════════════════════════════════════════════════\n  DEMO COMPLETE — All 4 steps passed!\n  Step 1: AgentFS object store    — PUT/GET via IPC\n  Step 2: EventBus pub/sub        — ring buffer + notify\n  Step 3: Agent pool workers      — task dispatch + done\n  Step 4: VibeEngine hot-swap     — WASM live via wasm3\n  PDs running: 20 (+ vibe_engine) on seL4 RISC-V\n  Kernel: formally verified seL4 microkernel\n  Swap: echo_service.wasm loaded into toolsvc slot\n══════════════════════════════════════════════════════\n\n[controller] agentOS: the world's first agent-native OS. :)\n");
+                        console_log(0, 0, "\n──────────────────────────────────────────────────────\n"
+                            "  Steps 1-4 complete — launching microservice demo...\n"
+                            "──────────────────────────────────────────────────────\n\n");
+                        microservice_demo();
                     }
                 } else {
                     console_log(0, 0, "[controller] Swap slot health FAIL\n");

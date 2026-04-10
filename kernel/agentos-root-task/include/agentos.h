@@ -217,6 +217,14 @@ typedef enum {
 #define TRACE_PD_MEM_PROFILER 23u
 #define TRACE_PD_WATCHDOG_PD  24u
 #define TRACE_PD_TRACE_REC    25u
+#define TRACE_PD_NAMESERVER   26u
+#define TRACE_PD_VFS_SERVER   27u
+#define TRACE_PD_VIRTIO_BLK   28u
+#define TRACE_PD_SPAWN_SERVER 29u
+#define TRACE_PD_NET_SERVER   30u
+#define TRACE_PD_APP_MANAGER  31u
+#define TRACE_PD_HTTP_SVC     32u
+#define TRACE_PD_APP_SLOT     33u
 
 /* VibeEngine channel IDs (from controller perspective) */
 #define CH_VIBEENGINE         40  /* controller <-> vibe_engine (notify) */
@@ -289,6 +297,18 @@ typedef enum {
 #define CAP_CLASS_STDIO       (1 << 5)
 #define CAP_CLASS_SPAWN       (1 << 6)
 #define CAP_CLASS_SWAP        (1 << 7)
+
+/* NameServer channel IDs (from controller perspective)
+ * IDs 18-24 reserved for microkernel service layer (Microkit limit: id < 62) */
+#define CH_NAMESERVER         18  /* controller -> nameserver (PPC) */
+
+/* Service layer channel IDs (from controller perspective) */
+#define CH_VFS_SERVER         19   /* controller -> vfs_server (PPC) */
+#define CH_SPAWN_SERVER       20   /* controller -> spawn_server (PPC) */
+#define CH_NET_SERVER         21   /* controller -> net_server (PPC) */
+#define CH_VIRTIO_BLK         22   /* controller -> virtio_blk (PPC) */
+#define CH_APP_MANAGER        23   /* controller -> app_manager (PPC) */
+#define CH_HTTP_SVC           24   /* controller -> http_svc (PPC) */
 
 /* Console Multiplexer channel IDs (from controller perspective) */
 #ifdef BOARD_qemu_virt_aarch64
