@@ -1,0 +1,18 @@
+[package]
+name = "run-agent"
+version = "0.1.0"
+edition = "2021"
+description = "agentOS CLI — load and run a signed .wasm agent on the host using the sim layer"
+license = "Apache-2.0"
+
+[[bin]]
+name = "run-agent"
+path = "src/main.rs"
+
+[dependencies]
+agentos-sim  = { path = "../../userspace/sim" }
+clap         = { workspace = true }
+anyhow       = { workspace = true }
+serde_json   = { workspace = true }
+tracing      = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }

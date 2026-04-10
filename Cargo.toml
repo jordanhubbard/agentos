@@ -10,7 +10,10 @@ members = [
     "userspace/servers/model-proxy",
     "userspace/servers/tool-registry",
     "userspace/servers/vibe-engine",
+    # WASM agent simulator
+    "userspace/sim",
     # Build + codegen tools
+    "tools/run-agent",
     "tools/gen-sdf",
     "tools/gen-ringbuf",
     "tools/sign-wasm",

@@ -1,0 +1,18 @@
+[package]
+name = "agentos-sim"
+version = "0.1.0"
+edition = "2021"
+description = "agentOS WASM agent simulator — runs signed .wasm agents on the host with mock seL4 Microkit IPC"
+license = "Apache-2.0"
+
+[dependencies]
+wasmi        = "0.31"
+agentos-sdk  = { path = "../sdk", features = ["std"] }
+serde        = { workspace = true }
+serde_json   = { workspace = true }
+anyhow       = { workspace = true }
+thiserror    = { workspace = true }
+tracing      = "0.1"
+
+[lib]
+name = "agentos_sim"
