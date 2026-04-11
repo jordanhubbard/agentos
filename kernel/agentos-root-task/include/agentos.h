@@ -488,6 +488,19 @@ typedef struct __attribute__((packed)) {
 #define BATCH_ENTRY_STRIDE(e) \
     (((uint32_t)(sizeof(batch_event_t) + (e)->topic_len + (e)->payload_len) + 3u) & ~3u)
 
+/* ── auth_server opcodes ─────────────────────────────────────────────── */
+#define OP_AUTH_LOGIN    0xF0u  /* MR1=uid → MR0=ok, MR1=token_id */
+#define OP_AUTH_VERIFY   0xF1u  /* MR1=token_id → MR0=ok, MR1=uid, MR2=cap_mask */
+#define OP_AUTH_REVOKE   0xF2u  /* MR1=token_id → MR0=ok */
+#define OP_AUTH_ADDUSER  0xF3u  /* MR1=uid, MR2=cap_mask → MR0=ok */
+#define OP_AUTH_STATUS   0xF4u  /* → MR0=ok, MR1=active_tokens, MR2=active_users */
+
+/* Channel ID for auth_server (from controller perspective) */
+#define CH_AUTH_SERVER   29u
+
+/* Trace PD ID for auth_server */
+#define TRACE_PD_AUTH_SERVER 34u
+
 /* Log function declarations */
 void agentos_log_boot(const char *pd_name);
 void agentos_log_info(const char *pd, const char *msg);
