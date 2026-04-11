@@ -1441,4 +1441,72 @@
         <end pd="controller"     id="26" pp="true" />
         <end pd="pflocal_server" id="0" />
     </channel>
+
+    <!--
+      ══════════════════════════════════════════════════════════════════
+      ExecServer: ELF execution dispatcher (passive, prio 150)
+      Track H — HURD-parity exec server
+
+      Receives OP_EXEC_LAUNCH requests from the controller, validates
+      auth tokens, and dispatches ELF binaries to free app_slot PDs.
+      Tracks up to 8 concurrent exec tasks.
+
+      Channel map (from exec_server's perspective):
+        id=0:   controller (pp=true) — all exec_server operations
+        id=34:  app_slot_0 (bidirectional notify)
+        id=35:  app_slot_1 (bidirectional notify)
+        id=36:  app_slot_2 (bidirectional notify)
+        id=37:  app_slot_3 (bidirectional notify)
+
+      Shared memory:
+        exec_shmem (64KB): caller writes null-terminated ELF path at offset 0
+                            before OP_EXEC_LAUNCH PPC.
+      ══════════════════════════════════════════════════════════════════
+    -->
+
+    <!-- exec_shmem: 64KB shared memory for ELF path staging on OP_EXEC_LAUNCH.
+         Write access: controller only (writes null-terminated path before PPC).
+         Read access:  exec_server (reads path string during LAUNCH handler).
+         Cap class:    AGENTOS_CAP_SPAWN (exec launch requires spawn capability).
+         Threat:       rogue PD injecting crafted paths to execute arbitrary ELFs;
+                       mitigated by controller-only write mapping + PPC gate. -->
+    <memory_region name="exec_shmem" size="0x10000" />
+
+    <protection_domain name="exec_server" priority="150" passive="true">
+        <program_image path="exec_server.elf" />
+        <map mr="exec_shmem" vaddr="0x3500000" perms="rw" cached="true"
+             setvar_vaddr="exec_shmem_vaddr" />
+    </protection_domain>
+
+    <!-- Channel 28: controller(id=28, pp=true) → exec_server(id=0)
+         Controller PPCs into exec_server for all ELF launch/status operations. -->
+    <channel>
+        <end pd="controller"  id="28" pp="true" />
+        <end pd="exec_server" id="0" />
+    </channel>
+
+    <!-- Channels 34-37: exec_server ↔ app_slot_0..3 (bidirectional notify).
+         exec_server notifies slot to begin loading; slot notifies back when done.
+         exec_server sees these as ids 34-37 (CH_APP_SLOT_0 + slot_id).
+         app_slot sees exec_server as id=1 (CH_EXEC). -->
+    <channel>
+        <end pd="exec_server" id="34" />
+        <end pd="app_slot_0"  id="1" />
+    </channel>
+    <channel>
+        <end pd="exec_server" id="35" />
+        <end pd="app_slot_1"  id="1" />
+    </channel>
+    <channel>
+        <end pd="exec_server" id="36" />
+        <end pd="app_slot_2"  id="1" />
+    </channel>
+    <channel>
+        <end pd="exec_server" id="37" />
+        <end pd="app_slot_3"  id="1" />
+    </channel>
+
+    <!-- controller maps exec_shmem rw to stage ELF paths for OP_EXEC_LAUNCH -->
+    <map pd="controller" mr="exec_shmem" vaddr="0x3500000" perms="rw" cached="true"
+         setvar_vaddr="exec_shmem_ctrl_vaddr" />
 </system>

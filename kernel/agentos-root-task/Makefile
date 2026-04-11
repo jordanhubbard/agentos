@@ -88,6 +88,7 @@ PD_AUTH_SERVER_SRCS      := src/auth_server.c src/m3_bare_metal.c src/log.c
 PD_VM_SNAPSHOT_SRCS      := src/vm_snapshot.c src/m3_bare_metal.c src/log.c
 PD_PROC_SERVER_SRCS      := src/proc_server.c src/m3_bare_metal.c src/log.c
 PD_PFLOCAL_SRCS          := src/pflocal_server.c src/m3_bare_metal.c src/log.c
+PD_EXEC_SERVER_SRCS      := src/exec_server.c src/m3_bare_metal.c src/log.c
 
 # wasm3 vendored sources (core interpreter only)
 WASM3_SRCS := wasm3/m3_core.c wasm3/m3_env.c wasm3/m3_code.c wasm3/m3_compile.c \
@@ -121,9 +122,10 @@ AUTH_SERVER_OBJS      := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_AUTH_SERVER_
 VM_SNAPSHOT_OBJS      := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_VM_SNAPSHOT_SRCS))
 PROC_SERVER_OBJS      := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_PROC_SERVER_SRCS))
 PFLOCAL_OBJS          := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_PFLOCAL_SRCS))
+EXEC_SERVER_OBJS      := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_EXEC_SERVER_SRCS))
 WASM3_OBJS         := $(patsubst wasm3/%.c, $(BUILD_DIR)/wasm3_%.o, $(WASM3_SRCS))
 
-IMAGES := controller.elf event_bus.elf init_agent.elf worker.elf agentfs.elf vibe_engine.elf console_mux.elf swap_slot.elf mem_profiler.elf net_isolator.elf perf_counters.elf time_partition.elf trace_recorder.elf nameserver.elf virtio_blk.elf vfs_server.elf spawn_server.elf app_slot.elf net_server.elf app_manager.elf http_svc.elf vm_manager.elf auth_server.elf vm_snapshot.elf proc_server.elf pflocal_server.elf
+IMAGES := controller.elf event_bus.elf init_agent.elf worker.elf agentfs.elf vibe_engine.elf console_mux.elf swap_slot.elf mem_profiler.elf net_isolator.elf perf_counters.elf time_partition.elf trace_recorder.elf nameserver.elf virtio_blk.elf vfs_server.elf spawn_server.elf app_slot.elf net_server.elf app_manager.elf http_svc.elf vm_manager.elf auth_server.elf vm_snapshot.elf proc_server.elf pflocal_server.elf exec_server.elf
 
 # Optional: periodic WASM slot snapshot scheduler
 ifdef AGENTOS_SNAPSHOT_SCHED
@@ -277,6 +279,9 @@ $(BUILD_DIR)/proc_server.elf: $(PROC_SERVER_OBJS)
 	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
 
 $(BUILD_DIR)/pflocal_server.elf: $(PFLOCAL_OBJS)
+	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
+
+$(BUILD_DIR)/exec_server.elf: $(EXEC_SERVER_OBJS)
 	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
 
 # ─── Linux VMM (AArch64 only) ─────────────────────────────────────────────
