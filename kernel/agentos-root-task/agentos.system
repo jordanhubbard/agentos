@@ -1231,4 +1231,52 @@
         <end pd="app_manager" id="4" pp="true" />
         <end pd="http_svc"    id="1" />
     </channel>
+
+    <!--
+      ══════════════════════════════════════════════════════════════════
+      vm_manager: Multi-VM lifecycle manager (passive, prio 145)
+      Track D — HURD-parity plan
+
+      Manages up to 4 simultaneous AArch64 guest VMs via the vmm_mux
+      multiplexer.  Controller PPCs in on CH_VM_MANAGER (id=45) to
+      create, destroy, pause, resume, switch console, query, and list
+      running VMs.
+
+      Shared memory:
+        vm_list_shmem (4KB): OP_VM_LIST output region
+          vm_manager writes vm_list_entry_t[] here.
+          Controller maps r-only to read VM inventory after OP_VM_LIST.
+
+      Channel map:
+        id=45: controller(pp=true) → vm_manager(id=0)
+               controller PPCs into vm_manager for all VM lifecycle ops
+      ══════════════════════════════════════════════════════════════════
+    -->
+
+    <!-- vm_list_shmem: 4KB output region for OP_VM_LIST.
+         Write access: vm_manager (writes vm_list_entry_t[] on OP_VM_LIST).
+         Read access:  controller (r-only introspection after OP_VM_LIST call).
+         Cap class:    N/A (VM inventory read; not gated by agent cap system).
+         Threat:       rogue PD forging VM list to mislead controller;
+                       mitigated by vm_manager-only write mapping. -->
+    <memory_region name="vm_list_shmem" size="0x1000" />
+
+    <protection_domain name="vm_manager" priority="145" passive="true">
+        <program_image path="vm_manager.elf" />
+        <!-- rw: vm_manager writes vm_list_entry_t[] on OP_VM_LIST -->
+        <map mr="vm_list_shmem" vaddr="0x3100000" perms="rw" cached="true"
+             setvar_vaddr="vm_list_vaddr" />
+    </protection_domain>
+
+    <!-- Channel 45: controller(id=45, pp=true) → vm_manager(id=0)
+         Controller PPCs into vm_manager for VM lifecycle operations. -->
+    <channel>
+        <end pd="controller"  id="45" pp="true" />
+        <end pd="vm_manager"  id="0" />
+    </channel>
+
+    <!-- controller maps vm_list_shmem r-only for OP_VM_LIST introspection -->
+    <map pd="controller" mr="vm_list_shmem" vaddr="0x3100000" perms="r" cached="true"
+         setvar_vaddr="vm_list_shmem_ctrl_vaddr" />
+
 </system>

@@ -152,6 +152,32 @@ uint8_t vmm_mux_create(vm_mux_t *mux, const char *label);
 int vmm_mux_destroy(vm_mux_t *mux, uint8_t slot_id);
 
 /**
+ * vmm_mux_pause — suspend a running VM slot
+ *
+ * Suspends the vCPU for slot_id and marks it VM_SLOT_SUSPENDED.
+ * If slot_id is the active slot, console focus is NOT transferred
+ * (use vmm_mux_switch() to redirect console before pausing).
+ *
+ * @param mux       multiplexer state
+ * @param slot_id   slot to pause (must be RUNNING or BOOTING)
+ * @returns 0 on success, -1 if slot_id invalid, FREE, or already paused
+ */
+int vmm_mux_pause(vm_mux_t *mux, uint8_t slot_id);
+
+/**
+ * vmm_mux_resume — resume a suspended VM slot
+ *
+ * Resumes the vCPU for slot_id and marks it VM_SLOT_RUNNING.
+ * Does NOT update the active console slot — use vmm_mux_switch()
+ * to redirect console I/O to the resumed slot.
+ *
+ * @param mux       multiplexer state
+ * @param slot_id   slot to resume (must be SUSPENDED or HALTED)
+ * @returns 0 on success, -1 if slot_id invalid, FREE, or already running
+ */
+int vmm_mux_resume(vm_mux_t *mux, uint8_t slot_id);
+
+/**
  * vmm_mux_switch — switch active console to a different slot
  *
  * Suspends the current active slot (if different), resumes the target.
