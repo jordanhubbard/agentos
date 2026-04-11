@@ -39,11 +39,26 @@ use tower_http::cors::CorsLayer;
 use tower_http::services::ServeDir;
 use tracing::info;
 
+use anyhow::Context as _;
+
 use crate::bridge::{BridgeState, SharedSerial};
 use crate::freebsd::new_shared;
 use crate::serial::{SerialCache, parse_serial_log};
 use crate::ws_log::{LogBroadcast, LogBroadcastTx, WsLogState};
 use crate::ws_terminal::WsTerminalState;
+
+// ─── Socket helpers ──────────────────────────────────────────────────────────
+
+fn reuse_listener(addr: SocketAddr) -> anyhow::Result<tokio::net::TcpListener> {
+    let socket = if addr.is_ipv6() {
+        tokio::net::TcpSocket::new_v6()?
+    } else {
+        tokio::net::TcpSocket::new_v4()?
+    };
+    socket.set_reuseaddr(true)?;
+    socket.bind(addr)?;
+    Ok(socket.listen(1024)?)
+}
 
 // ─── Config ──────────────────────────────────────────────────────────────────
 
@@ -376,8 +391,10 @@ async fn main() -> anyhow::Result<()> {
     let console_addr: SocketAddr = format!("0.0.0.0:{}", console_port).parse()?;
     let bridge_addr:  SocketAddr = format!("127.0.0.1:{}", bridge_port).parse()?;
 
-    let console_listener = tokio::net::TcpListener::bind(console_addr).await?;
-    let bridge_listener  = tokio::net::TcpListener::bind(bridge_addr).await?;
+    let console_listener = reuse_listener(console_addr)
+        .with_context(|| format!("cannot bind console port {} — kill the old agentos-console first (lsof -ti :{} | xargs kill)", console_port, console_port))?;
+    let bridge_listener = reuse_listener(bridge_addr)
+        .with_context(|| format!("cannot bind bridge port {} — kill the old agentos-console first (lsof -ti :{} | xargs kill)", bridge_port, bridge_port))?;
 
     info!("[console] agentOS console listening on http://0.0.0.0:{}", console_port);
     info!("[console] dashboard: http://127.0.0.1:{}/", console_port);
