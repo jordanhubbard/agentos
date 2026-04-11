@@ -34,6 +34,9 @@ pub struct FaultInjectArgs {
 pub struct SetupArgs {
     #[arg(long)]
     pub sdk_only: bool,
+    /// Install missing tools automatically (macOS: brew, Linux: apt-get)
+    #[arg(long)]
+    pub install: bool,
 }
 
 #[derive(clap::Args)]
@@ -71,4 +74,10 @@ pub struct CiMatrixArgs {
     pub list_only: bool,
     #[arg(long)]
     pub filter: Option<String>,
+    /// Only run test cases for this board (e.g. qemu_virt_aarch64)
+    #[arg(long, default_value = "")]
+    pub board: String,
+    /// Skip the build step and use whatever image is already present
+    #[arg(long)]
+    pub no_build: bool,
 }

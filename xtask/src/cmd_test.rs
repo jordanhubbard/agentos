@@ -54,7 +54,7 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
         }
         Err(e) => {
             println!("FAIL [board={}]: {}", args.board, e);
-            std::process::exit(1);
+            anyhow::bail!("test failed for board {}: {}", args.board, e);
         }
     }
 }
