@@ -80,6 +80,7 @@ PD_APP_SLOT_SRCS         := src/app_slot.c src/m3_bare_metal.c src/log.c
 PD_NET_SERVER_SRCS       := src/net_server.c src/m3_bare_metal.c src/log.c
 PD_APP_MANAGER_SRCS      := src/app_manager.c src/m3_bare_metal.c src/log.c
 PD_HTTP_SVC_SRCS         := src/http_svc.c src/m3_bare_metal.c src/log.c
+PD_VM_MANAGER_SRCS       := src/vm_manager.c src/m3_bare_metal.c src/log.c
 
 # wasm3 vendored sources (core interpreter only)
 WASM3_SRCS := wasm3/m3_core.c wasm3/m3_env.c wasm3/m3_code.c wasm3/m3_compile.c \
@@ -108,9 +109,10 @@ APP_SLOT_OBJS         := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_APP_SLOT_SRC
 NET_SERVER_OBJS       := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_NET_SERVER_SRCS))
 APP_MANAGER_OBJS      := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_APP_MANAGER_SRCS))
 HTTP_SVC_OBJS         := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_HTTP_SVC_SRCS))
+VM_MANAGER_OBJS       := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_VM_MANAGER_SRCS))
 WASM3_OBJS         := $(patsubst wasm3/%.c, $(BUILD_DIR)/wasm3_%.o, $(WASM3_SRCS))
 
-IMAGES := controller.elf event_bus.elf init_agent.elf worker.elf agentfs.elf vibe_engine.elf console_mux.elf swap_slot.elf mem_profiler.elf net_isolator.elf perf_counters.elf time_partition.elf trace_recorder.elf nameserver.elf virtio_blk.elf vfs_server.elf spawn_server.elf app_slot.elf net_server.elf app_manager.elf http_svc.elf
+IMAGES := controller.elf event_bus.elf init_agent.elf worker.elf agentfs.elf vibe_engine.elf console_mux.elf swap_slot.elf mem_profiler.elf net_isolator.elf perf_counters.elf time_partition.elf trace_recorder.elf nameserver.elf virtio_blk.elf vfs_server.elf spawn_server.elf app_slot.elf net_server.elf app_manager.elf http_svc.elf vm_manager.elf
 
 # Optional: periodic WASM slot snapshot scheduler
 ifdef AGENTOS_SNAPSHOT_SCHED
@@ -230,6 +232,15 @@ $(BUILD_DIR)/app_manager.elf: $(APP_MANAGER_OBJS)
 	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
 
 $(BUILD_DIR)/http_svc.elf: $(HTTP_SVC_OBJS)
+	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
+
+# vm_manager: multi-VM lifecycle manager (wraps vmm_mux; AArch64 libvmm optional)
+# Compiled with -I../../freebsd-vmm so vmm_mux.h (and transitively vmm.h) resolve.
+$(BUILD_DIR)/vm_manager.o: src/vm_manager.c
+	@mkdir -p $(BUILD_DIR)
+	$(CC) -c $(CFLAGS) -I../../freebsd-vmm $< -o $@
+
+$(BUILD_DIR)/vm_manager.elf: $(VM_MANAGER_OBJS)
 	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
 
 # ─── Linux VMM (AArch64 only) ─────────────────────────────────────────────

@@ -265,6 +265,44 @@ int vmm_mux_destroy(vm_mux_t *mux, uint8_t slot_id)
     return 0;
 }
 
+/* ─── vmm_mux_pause ─────────────────────────────────────────────────────── */
+
+int vmm_mux_pause(vm_mux_t *mux, uint8_t slot_id)
+{
+    if (slot_id >= VM_MAX_SLOTS) return -1;
+    vm_slot_t *slot = &mux->slots[slot_id];
+
+    if (slot->state == VM_SLOT_FREE || slot->state == VM_SLOT_ERROR) return -1;
+    if (slot->state == VM_SLOT_SUSPENDED || slot->state == VM_SLOT_HALTED) return -1;
+
+    microkit_dbg_puts("vmm_mux: pausing slot ");
+    dbg_uint8(slot_id);
+    microkit_dbg_puts("\n");
+
+    vm_suspend(&slot->vm);
+    slot->state = VM_SLOT_SUSPENDED;
+    return 0;
+}
+
+/* ─── vmm_mux_resume ─────────────────────────────────────────────────────── */
+
+int vmm_mux_resume(vm_mux_t *mux, uint8_t slot_id)
+{
+    if (slot_id >= VM_MAX_SLOTS) return -1;
+    vm_slot_t *slot = &mux->slots[slot_id];
+
+    if (slot->state == VM_SLOT_FREE || slot->state == VM_SLOT_ERROR) return -1;
+    if (slot->state == VM_SLOT_RUNNING || slot->state == VM_SLOT_BOOTING) return -1;
+
+    microkit_dbg_puts("vmm_mux: resuming slot ");
+    dbg_uint8(slot_id);
+    microkit_dbg_puts("\n");
+
+    vm_resume(&slot->vm);
+    slot->state = VM_SLOT_RUNNING;
+    return 0;
+}
+
 /* ─── vmm_mux_switch ─────────────────────────────────────────────────────── */
 
 int vmm_mux_switch(vm_mux_t *mux, uint8_t slot_id)
