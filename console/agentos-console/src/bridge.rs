@@ -67,10 +67,13 @@ async fn get_agents(State(s): State<BridgeState>) -> impl IntoResponse {
     let fb_state = s.freebsd.lock().unwrap().clone();
 
     let freebsd_status = match &fb_state.phase {
-        FreeBsdPhase::Idle => "not_prepared".to_string(),
+        FreeBsdPhase::Idle      => "not_prepared".to_string(),
+        FreeBsdPhase::Running   => "running".to_string(),
         other => format!("{:?}", other).to_lowercase(),
     };
-    let freebsd_note: Value = if fb_ready {
+    let freebsd_note: Value = if fb_state.phase == FreeBsdPhase::Running {
+        json!("FreeBSD VM is running")
+    } else if fb_ready {
         json!("Assets ready — boot FreeBSD from the spawn dialog")
     } else if fb_state.phase == FreeBsdPhase::Error {
         json!(format!("Error: {}", fb_state.error.as_deref().unwrap_or("")))
@@ -158,6 +161,7 @@ async fn get_freebsd_status(State(s): State<BridgeState>) -> impl IntoResponse {
         "progress":    fb.progress,
         "error":       fb.error,
         "assetsReady": ready,
+        "qemuPid":     fb.qemu_pid,
     }))
 }
 
@@ -176,24 +180,138 @@ async fn post_spawn(
     let agent_type = body.agent_type.as_deref().unwrap_or("");
     if agent_type == "freebsd_vm" {
         let ready = assets_ready(&s.guest_img_dir, &s.freebsd_ver);
-        if ready {
+        let phase  = s.freebsd.lock().unwrap().phase.clone();
+
+        // Already running — nothing to do.
+        if ready && phase == FreeBsdPhase::Running {
             return (StatusCode::OK, Json(json!({
                 "ok": true,
-                "message": "FreeBSD assets ready. Restart console with GUEST_OS=freebsd to boot."
+                "message": "FreeBSD VM is already running."
             })));
-        } else {
-            let mut fb = s.freebsd.lock().unwrap();
-            if fb.phase == FreeBsdPhase::Idle {
-                fb.phase = FreeBsdPhase::Preparing;
-                fb.step  = "Asset preparation queued (Rust stub)".into();
+        }
+
+        // Assets on disk and QEMU not yet running — launch it.
+        if ready && phase != FreeBsdPhase::Running {
+            {
+                let mut fb = s.freebsd.lock().unwrap();
+                fb.phase    = FreeBsdPhase::Running;
+                fb.step     = "Launching QEMU…".into();
+                fb.progress = 0;
+                fb.error    = None;
             }
+
+            let freebsd_state = Arc::clone(&s.freebsd);
+            let guest_img_dir = s.guest_img_dir.clone();
+            let freebsd_ver   = s.freebsd_ver.clone();
+
+            tokio::task::spawn_blocking(move || {
+                let bios_path  = format!("{}/edk2-aarch64-code.fd", guest_img_dir);
+                let drive_path = format!("{}/freebsd-{}-aarch64.img", guest_img_dir, freebsd_ver);
+
+                let mut child = match std::process::Command::new("qemu-system-aarch64")
+                    .args([
+                        "-machine", "virt,virtualization=on",
+                        "-cpu",     "cortex-a57",
+                        "-m",       "2G",
+                        "-nographic",
+                        "-bios",    &bios_path,
+                        "-drive",   &format!("file={},format=raw,if=virtio", drive_path),
+                        "-serial",  "unix:/tmp/agentos-serial.sock,server=on,wait=off",
+                    ])
+                    .spawn()
+                {
+                    Ok(c) => c,
+                    Err(e) => {
+                        let mut fb = freebsd_state.lock().unwrap();
+                        fb.phase    = FreeBsdPhase::Error;
+                        fb.error    = Some(format!("Failed to launch qemu-system-aarch64: {}", e));
+                        fb.qemu_pid = None;
+                        return;
+                    }
+                };
+
+                let pid = child.id();
+                {
+                    let mut fb = freebsd_state.lock().unwrap();
+                    fb.qemu_pid  = Some(pid);
+                    fb.step      = "QEMU running".into();
+                    fb.progress  = 100;
+                }
+
+                // Wait for QEMU to exit.
+                let _ = child.wait();
+
+                let mut fb = freebsd_state.lock().unwrap();
+                fb.phase    = FreeBsdPhase::Idle;
+                fb.step     = String::new();
+                fb.progress = 0;
+                fb.qemu_pid = None;
+            });
+
             return (StatusCode::ACCEPTED, Json(json!({
                 "ok": true,
                 "queued": true,
-                "message": "FreeBSD asset preparation started. Poll /api/agentos/agents/freebsd/status for progress."
+                "message": "FreeBSD VM launch initiated. Poll /api/agentos/agents/freebsd/status for status."
             })));
         }
+
+        // Assets not ready — kick off a download if we aren't already downloading.
+        if phase != FreeBsdPhase::Preparing && phase != FreeBsdPhase::Running {
+            {
+                let mut fb = s.freebsd.lock().unwrap();
+                fb.phase    = FreeBsdPhase::Preparing;
+                fb.step     = "Downloading FreeBSD assets...".into();
+                fb.progress = 50;
+                fb.error    = None;
+            }
+
+            let freebsd_state = Arc::clone(&s.freebsd);
+            let guest_img_dir = s.guest_img_dir.clone();
+
+            tokio::task::spawn_blocking(move || {
+                let result = std::process::Command::new("cargo")
+                    .args(["xtask", "fetch-guest", "freebsd",
+                           "--output-dir", &guest_img_dir])
+                    .status();
+
+                match result {
+                    Ok(status) if status.success() => {
+                        let mut fb = freebsd_state.lock().unwrap();
+                        fb.phase    = FreeBsdPhase::Idle;
+                        fb.step     = String::new();
+                        fb.progress = 100;
+                        fb.error    = None;
+                    }
+                    Ok(status) => {
+                        let mut fb = freebsd_state.lock().unwrap();
+                        fb.phase = FreeBsdPhase::Error;
+                        fb.error = Some(format!(
+                            "cargo xtask fetch-guest exited with status {}", status
+                        ));
+                    }
+                    Err(e) => {
+                        let mut fb = freebsd_state.lock().unwrap();
+                        fb.phase = FreeBsdPhase::Error;
+                        fb.error = Some(format!("Failed to run cargo xtask: {}", e));
+                    }
+                }
+            });
+
+            return (StatusCode::ACCEPTED, Json(json!({
+                "ok": true,
+                "queued": true,
+                "message": "FreeBSD asset download started. Poll /api/agentos/agents/freebsd/status for progress."
+            })));
+        }
+
+        // Already preparing or running.
+        return (StatusCode::ACCEPTED, Json(json!({
+            "ok": true,
+            "queued": true,
+            "message": "FreeBSD asset preparation already in progress."
+        })));
     }
+
     (StatusCode::ACCEPTED, Json(json!({
         "ok": true,
         "queued": true,

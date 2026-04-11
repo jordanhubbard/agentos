@@ -11,6 +11,7 @@ use std::sync::{Arc, Mutex};
 pub enum FreeBsdPhase {
     Idle,
     Preparing,
+    Running,
     Error,
 }
 
@@ -20,6 +21,7 @@ pub struct FreeBsdState {
     pub step:     String,
     pub progress: u8,   // 0–100
     pub error:    Option<String>,
+    pub qemu_pid: Option<u32>,
 }
 
 impl Default for FreeBsdState {
@@ -29,6 +31,7 @@ impl Default for FreeBsdState {
             step:     String::new(),
             progress: 0,
             error:    None,
+            qemu_pid: None,
         }
     }
 }
@@ -42,10 +45,7 @@ pub fn new_shared() -> SharedFreeBsdState {
 /// Check whether the required FreeBSD assets are present on disk.
 pub fn assets_ready(guest_img_dir: &str, freebsd_ver: &str) -> bool {
     let edk2_dst  = format!("{}/edk2-aarch64-code.fd", guest_img_dir);
-    let fbsd_img  = format!(
-        "{}/FreeBSD-{}-RELEASE-arm64-aarch64-ufs.raw",
-        guest_img_dir, freebsd_ver
-    );
+    let fbsd_img  = format!("{}/freebsd-{}-aarch64.img", guest_img_dir, freebsd_ver);
     std::path::Path::new(&edk2_dst).exists()
         && std::path::Path::new(&fbsd_img).exists()
 }

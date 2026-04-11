@@ -379,7 +379,7 @@ async fn main() -> anyhow::Result<()> {
         freebsd:       freebsd_state.clone(),
         _serial_path:  serial_log.clone(),
         guest_img_dir,
-        freebsd_ver:   "14.3".to_string(),
+        freebsd_ver:   "14.4".to_string(),
         parse_tx:      parse_tx.clone(),
         inject_tx:     inject_tx_shared.clone(),
     };
