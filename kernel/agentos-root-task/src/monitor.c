@@ -13,7 +13,9 @@
 #include "nameserver.h"
 #include "app_manager.h"
 #include "verify.h"
+#include "monocypher.h"
 #include <stdint.h>
+#include <stdbool.h>
 
 /* Memory regions - patched by Microkit setvar */
 uintptr_t monitor_stack_vaddr;
@@ -537,7 +539,24 @@ void init(void) {
     cap_broker_init();
     agent_pool_init();
     boot_integrity_init();
-    
+
+    /* ── Ed25519 selftest (RFC 8037 test vector 1) ───────────────────────── */
+    {
+        static const uint8_t test_sk[32] = {
+            0x9d, 0x61, 0xb1, 0x9d, 0xef, 0xfd, 0x5a, 0x60,
+            0xba, 0x84, 0x4a, 0xf4, 0x92, 0xec, 0x2c, 0x44,
+            0xda, 0x4d, 0xa0, 0x5d, 0xe7, 0xe8, 0xc8, 0x6b,
+            0xef, 0x64, 0x77, 0x64, 0xb4, 0x24, 0x09, 0x57
+        };
+        static const uint8_t test_msg[1] = {0}; /* zero-length message workaround */
+        uint8_t pk[32], sig[64];
+        crypto_ed25519_public_key(pk, test_sk);
+        crypto_ed25519_sign(sig, test_sk, pk, test_msg, 0);
+        bool ok = crypto_ed25519_check(sig, test_msg, 0, pk) == 0;
+        microkit_dbg_puts(ok ? "[verify] Ed25519 selftest PASS\n"
+                             : "[verify] Ed25519 selftest FAIL\n");
+    }
+
     /* PPC into EventBus (passive, higher priority) to initialize it */
     console_log(0, 0, "[controller] Waking EventBus via PPC...\n");
     trace_notify(TRACE_PD_CONTROLLER, TRACE_PD_EVENT_BUS,

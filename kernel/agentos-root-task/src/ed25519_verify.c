@@ -1,33 +1,27 @@
 /*
- * ed25519_verify.c — SHA-512 + Ed25519 verify stub for agentOS
+ * ed25519_verify.c — Ed25519 / SHA-512 signature verification for agentOS
  *
- * Full Ed25519 field arithmetic is complex (~800 lines). For the initial
- * agentOS implementation we implement:
- *   1. Full SHA-512 (needed for integrity hash of WASM capabilities section)
- *   2. Ed25519 verify placeholder that validates the SHA-512 hash matches
- *      the signed digest embedded in the signature metadata
+ * Phase 1 (hash-only) stub replaced by real Ed25519 verification via
+ * monocypher.c (Track C).
  *
- * The actual Ed25519 curve operations will be added in a follow-up when
- * we integrate a proven implementation (e.g., HACL*, monocypher, or ref10).
- * The API is stable — callers won't need to change.
+ * The public API (ed25519_verify, sha512) is unchanged so callers in
+ * monitor.c / cap_broker.c do not need to be updated.
  *
- * For now, the "signature" section format is:
- *   [8 bytes: key_id] [32 bytes: SHA-512 truncated hash of capabilities section]
- *   [24 bytes: reserved/zero]
- * Total: 64 bytes (same size as a real Ed25519 sig for format compatibility)
- *
- * This gives us:
- *   - Tamper detection (SHA-512 integrity of capabilities section)
- *   - Key binding (key_id associates with trusted key table)
- *   - Drop-in replacement path to real Ed25519 without format change
+ * SHA-512 is still exported directly because boot_integrity.c and the
+ * WASM capability hash path depend on it directly.
  */
 
 #include "ed25519_verify.h"
+#include "monocypher.h"
 #include <stdint.h>
 
-/* ── SHA-512 ────────────────────────────────────────────────────────────── */
+/* ── SHA-512 ─────────────────────────────────────────────────────────────── */
+/*
+ * Full SHA-512 retained here for the exported sha512() symbol that other
+ * translation units reference via ed25519_verify.h.  The monocypher.c
+ * implementation uses its own internal copy to remain self-contained.
+ */
 
-/* SHA-512 constants */
 static const uint64_t K512[80] = {
     0x428a2f98d728ae22ULL, 0x7137449123ef65cdULL, 0xb5c0fbcfec4d3b2fULL,
     0xe9b5dba58189dbbcULL, 0x3956c25bf348b538ULL, 0x59f111f1b605d019ULL,
@@ -59,7 +53,7 @@ static const uint64_t K512[80] = {
 };
 
 static inline uint64_t rotr64(uint64_t x, int n) { return (x >> n) | (x << (64 - n)); }
-static inline uint64_t Ch(uint64_t x, uint64_t y, uint64_t z) { return (x & y) ^ (~x & z); }
+static inline uint64_t Ch(uint64_t x, uint64_t y, uint64_t z)  { return (x & y) ^ (~x & z); }
 static inline uint64_t Maj(uint64_t x, uint64_t y, uint64_t z) { return (x & y) ^ (x & z) ^ (y & z); }
 static inline uint64_t Sigma0(uint64_t x) { return rotr64(x,28) ^ rotr64(x,34) ^ rotr64(x,39); }
 static inline uint64_t Sigma1(uint64_t x) { return rotr64(x,14) ^ rotr64(x,18) ^ rotr64(x,41); }
@@ -88,13 +82,7 @@ void sha512(const uint8_t *msg, uint32_t len, uint8_t hash[64]) {
         0x1f83d9abfb41bd6bULL, 0x5be0cd19137e2179ULL
     };
 
-    /* Pad message: append 0x80, zeros, then 128-bit length in bits (big-endian) */
-    /* We process in 128-byte blocks */
     uint32_t total = len;
-    uint32_t pad_len = 128 - ((len + 17) % 128);
-    if (pad_len == 128) pad_len = 0;
-
-    /* Process full blocks from message */
     uint32_t full_blocks = len / 128;
     uint32_t pos = 0;
 
@@ -115,31 +103,21 @@ void sha512(const uint8_t *msg, uint32_t len, uint8_t hash[64]) {
         pos += 128;
     }
 
-    /* Final block(s) with padding */
-    uint8_t final_block[256]; /* at most 2 blocks for the tail + padding */
+    uint8_t final_block[256];
     uint32_t remaining = len - pos;
     uint32_t fb_len = 0;
 
-    /* Copy remaining bytes */
     for (uint32_t i = 0; i < remaining; i++)
         final_block[fb_len++] = msg[pos + i];
-
-    /* Append 0x80 */
     final_block[fb_len++] = 0x80;
-
-    /* Pad to next 128-byte boundary, leaving 16 bytes for length */
     while ((fb_len % 128) != 112)
         final_block[fb_len++] = 0x00;
-
-    /* Append message length in bits as 128-bit big-endian */
-    /* High 64 bits are 0 for messages < 2^32 bytes */
     for (int i = 0; i < 8; i++)
         final_block[fb_len++] = 0;
     uint64_t bit_len = (uint64_t)total * 8;
     store_be64(&final_block[fb_len], bit_len);
     fb_len += 8;
 
-    /* Process final block(s) */
     for (uint32_t off = 0; off < fb_len; off += 128) {
         uint64_t W[80];
         for (int t = 0; t < 16; t++)
@@ -160,39 +138,11 @@ void sha512(const uint8_t *msg, uint32_t len, uint8_t hash[64]) {
         store_be64(&hash[i * 8], H[i]);
 }
 
-/* ── Ed25519 verify (phase 1: SHA-512 hash-based integrity) ─────────────── */
-/*
- * Initial implementation: verify that the first 32 bytes of `sig` match
- * the SHA-512 truncated hash of `msg`. The 8-byte key_id prefix identifies
- * which trusted key was used.
- *
- * Format of sig[64]:
- *   sig[0..7]   = key_id (8 bytes)
- *   sig[8..39]  = SHA-512(msg) truncated to 32 bytes
- *   sig[40..63] = reserved (must be zero for future Ed25519 upgrade)
- *
- * When real Ed25519 is added, the full 64-byte signature replaces this
- * layout and key_id moves to a separate field in the WASM section.
- */
+/* ── Ed25519 verify — delegates to monocypher.c ─────────────────────────── */
+
 int ed25519_verify(const uint8_t sig[64],
                    const uint8_t *msg, uint32_t msg_len,
-                   const uint8_t pubkey[32]) {
-    (void)pubkey; /* Not used in phase-1 hash-only mode */
-
-    /* Compute SHA-512 of the message */
-    uint8_t hash[64];
-    sha512(msg, msg_len, hash);
-
-    /* Compare truncated hash (bytes 8..39 of sig) with computed hash (first 32 bytes) */
-    int diff = 0;
-    for (int i = 0; i < 32; i++) {
-        diff |= sig[8 + i] ^ hash[i];
-    }
-
-    /* Check reserved bytes are zero (forward compat) */
-    for (int i = 40; i < 64; i++) {
-        diff |= sig[i];
-    }
-
-    return diff; /* 0 = valid, non-zero = tampered */
+                   const uint8_t pubkey[32])
+{
+    return crypto_ed25519_check(sig, msg, (size_t)msg_len, pubkey) == 0 ? 0 : 1;
 }
