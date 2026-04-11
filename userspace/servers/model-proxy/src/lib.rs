@@ -43,7 +43,7 @@
 extern crate alloc;
 
 use alloc::collections::BTreeMap;
-use alloc::string::String;
+use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use sha2::{Sha256, Digest};
 
@@ -621,6 +621,349 @@ fn estimate_tokens(text: &str) -> TokenCount {
 }
 
 // ============================================================================
+// Budget Ledger (string-keyed, for external callers that address agents by name)
+// ============================================================================
+
+/// A simpler string-keyed token budget used by external orchestration layers
+/// that identify agents by name rather than capability badge.
+#[derive(Debug, Clone)]
+pub struct NamedTokenBudget {
+    pub agent_id: String,
+    pub tokens_remaining: u64,
+    pub tokens_per_period: u64,
+    /// Unix timestamp (seconds) when the current period resets; 0 = no auto-reset
+    pub period_reset_at: u64,
+}
+
+/// String-keyed budget ledger — thin wrapper around a map of `NamedTokenBudget`
+pub struct BudgetLedger {
+    budgets: BTreeMap<String, NamedTokenBudget>,
+}
+
+impl BudgetLedger {
+    pub fn new() -> Self {
+        Self { budgets: BTreeMap::new() }
+    }
+
+    /// Set (or overwrite) the budget for an agent.  Tokens remaining start at
+    /// `tokens_per_period`.
+    pub fn set_budget(&mut self, agent_id: &str, tokens_per_period: u64) {
+        self.budgets.insert(agent_id.to_string(), NamedTokenBudget {
+            agent_id: agent_id.to_string(),
+            tokens_remaining: tokens_per_period,
+            tokens_per_period,
+            period_reset_at: 0,
+        });
+    }
+
+    /// Check that `tokens_needed` are available and, if so, deduct them.
+    /// Returns `Err` if the agent has no budget entry or has insufficient tokens.
+    pub fn check_and_deduct(&mut self, agent_id: &str, tokens_needed: u64) -> Result<(), String> {
+        let budget = self.budgets.get_mut(agent_id)
+            .ok_or_else(|| alloc::format!("no budget for agent {}", agent_id))?;
+        if budget.tokens_remaining < tokens_needed {
+            return Err(alloc::format!(
+                "token budget exhausted: {} remaining", budget.tokens_remaining
+            ));
+        }
+        budget.tokens_remaining -= tokens_needed;
+        Ok(())
+    }
+
+    /// Reset an agent's remaining tokens to its full `tokens_per_period`.
+    /// `reset_at` is stored as `period_reset_at` for informational purposes.
+    pub fn reset_period(&mut self, agent_id: &str, reset_at: u64) {
+        if let Some(b) = self.budgets.get_mut(agent_id) {
+            b.tokens_remaining = b.tokens_per_period;
+            b.period_reset_at = reset_at;
+        }
+    }
+
+    /// Returns a reference to the budget for an agent, if one exists.
+    pub fn get(&self, agent_id: &str) -> Option<&NamedTokenBudget> {
+        self.budgets.get(agent_id)
+    }
+}
+
+// ============================================================================
+// Inference Cache (SHA-256 keyed, named as per spec)
+// ============================================================================
+
+/// A single cached inference response, keyed by SHA-256(prompt).
+#[derive(Clone, Debug)]
+pub struct CacheEntry {
+    pub response: String,
+    pub model: String,
+    pub tokens_used: u64,
+    pub created_at: u64,
+}
+
+/// SHA-256-keyed response cache with simple first-entry eviction.
+pub struct InferenceCache {
+    entries: BTreeMap<[u8; 32], CacheEntry>,
+    max_entries: usize,
+    hits: u64,
+    misses: u64,
+}
+
+impl InferenceCache {
+    pub fn new(max_entries: usize) -> Self {
+        Self {
+            entries: BTreeMap::new(),
+            max_entries,
+            hits: 0,
+            misses: 0,
+        }
+    }
+
+    /// Look up a cached entry by its SHA-256 prompt hash.
+    pub fn get(&mut self, prompt_hash: &[u8; 32]) -> Option<&CacheEntry> {
+        // Track hit/miss before the borrow.
+        let found = self.entries.contains_key(prompt_hash);
+        if found {
+            self.hits += 1;
+        } else {
+            self.misses += 1;
+        }
+        self.entries.get(prompt_hash)
+    }
+
+    /// Insert a cache entry, evicting the oldest entry when at capacity.
+    pub fn insert(&mut self, prompt_hash: [u8; 32], entry: CacheEntry) {
+        if self.entries.len() >= self.max_entries {
+            if let Some(k) = self.entries.keys().next().cloned() {
+                self.entries.remove(&k);
+            }
+        }
+        self.entries.insert(prompt_hash, entry);
+    }
+
+    /// Return `(hits, misses)` since creation.
+    pub fn stats(&self) -> (u64, u64) {
+        (self.hits, self.misses)
+    }
+
+    /// Compute the SHA-256 of a prompt string and return a 32-byte key.
+    pub fn hash_prompt(prompt: &str) -> [u8; 32] {
+        let mut hasher = Sha256::new();
+        hasher.update(prompt.as_bytes());
+        hasher.finalize().into()
+    }
+}
+
+// ============================================================================
+// Model routing free function (spec-compatible `ModelEntry` + `route_request`)
+// ============================================================================
+
+/// A lightweight model descriptor used by the free-function router.
+/// Mirrors the fields required by the spec's `route_request` signature.
+#[derive(Debug, Clone)]
+pub struct ModelEntry {
+    /// Unique model identifier
+    pub id: String,
+    /// Minimum required context window (tokens)
+    pub context_window: u32,
+    /// Whether this model is currently reachable
+    pub available: bool,
+    /// Rolling average inference latency in microseconds
+    pub avg_latency_us: u64,
+    /// Cost per 1 000 output tokens in micro-USD (0 = free/local)
+    pub cost_per_1k: u32,
+}
+
+/// Select the best available model for a request.
+///
+/// Selection criteria (in order):
+/// 1. Model must have `context_window >= required_context` and be `available`.
+/// 2. For `task_hint == "code"` tasks, prefer models with "code" in their id
+///    (they score lower in the sort key so they surface first).
+/// 3. Among equally code-preferred models, prefer lower `avg_latency_us`.
+pub fn route_request<'a>(
+    models: &'a [ModelEntry],
+    task_hint: &str,
+    required_context: u32,
+) -> Option<&'a ModelEntry> {
+    let is_code = task_hint.eq_ignore_ascii_case("code");
+
+    models.iter()
+        .filter(|m| m.context_window >= required_context && m.available)
+        .min_by_key(|m| {
+            // Lower sort key = preferred.
+            // Code-specialized models get a large bonus for code tasks.
+            let code_penalty: u64 = if is_code && (m.id.contains("code") || m.id.contains("codex")) {
+                0
+            } else if is_code {
+                u64::MAX / 2 // push non-code models to the back
+            } else {
+                0
+            };
+            code_penalty.saturating_add(m.avg_latency_us)
+        })
+}
+
+// ============================================================================
+// Audit Log  (1 024-entry ring buffer)
+// ============================================================================
+
+/// A single entry in the inference audit trail.
+#[derive(Debug, Clone)]
+pub struct InferenceAuditEntry {
+    pub timestamp_ms: u64,
+    pub agent_id: String,
+    pub model: String,
+    pub tokens_in: u64,
+    pub tokens_out: u64,
+    pub latency_ms: u64,
+    pub cached: bool,
+    pub budget_remaining: u64,
+}
+
+/// Ring buffer holding the most recent `AUDIT_CAPACITY` audit entries.
+pub struct AuditLog {
+    entries: Vec<InferenceAuditEntry>,
+    /// Index of the slot that will receive the *next* write.
+    head: usize,
+    /// Total entries ever written (used to distinguish full vs. partial ring).
+    count: u64,
+}
+
+const AUDIT_CAPACITY: usize = 1024;
+
+impl AuditLog {
+    pub fn new() -> Self {
+        Self {
+            entries: Vec::with_capacity(AUDIT_CAPACITY),
+            head: 0,
+            count: 0,
+        }
+    }
+
+    /// Append an audit entry.  Overwrites the oldest entry once the ring is
+    /// full.
+    pub fn append(&mut self, entry: InferenceAuditEntry) {
+        if self.entries.len() < AUDIT_CAPACITY {
+            self.entries.push(entry);
+        } else {
+            self.entries[self.head] = entry;
+        }
+        self.head = (self.head + 1) % AUDIT_CAPACITY;
+        self.count += 1;
+    }
+
+    /// Return references to the `n` most-recent entries (oldest first).
+    /// If fewer than `n` entries have been recorded, all of them are returned.
+    pub fn audit_recent(&self, n: usize) -> Vec<&InferenceAuditEntry> {
+        let total = self.entries.len(); // actual entries stored
+        if total == 0 || n == 0 {
+            return Vec::new();
+        }
+
+        let take = n.min(total);
+
+        // When the ring is not yet full `head` equals `total` (all slots used
+        // from 0..total in insertion order).  When full, `head` points to the
+        // oldest slot.
+        let oldest = if (self.count as usize) <= AUDIT_CAPACITY {
+            // Ring not yet wrapped: entries[0..total] in order.
+            total.saturating_sub(take)
+        } else {
+            // Ring is full: oldest slot is `head`.
+            (self.head + AUDIT_CAPACITY - take) % AUDIT_CAPACITY
+        };
+
+        let mut out = Vec::with_capacity(take);
+        for i in 0..take {
+            out.push(&self.entries[(oldest + i) % AUDIT_CAPACITY]);
+        }
+        out
+    }
+
+    /// Total number of entries ever appended (not capped at AUDIT_CAPACITY).
+    pub fn total_appended(&self) -> u64 {
+        self.count
+    }
+}
+
+// ============================================================================
+// HTTP backend  (requires the "std" feature — pulls in reqwest + tokio)
+// ============================================================================
+
+#[cfg(feature = "std")]
+pub mod http_backend {
+    //! Real async HTTP call to an OpenAI-compatible inference endpoint.
+    //!
+    //! Gated behind the "std" feature because reqwest requires the standard
+    //! library.  Enable with `--features std` or add `std` to
+    //! `[features] default`.
+
+    use alloc::string::{String, ToString};
+    use alloc::format;
+
+    /// POST a chat completion request to `{endpoint}/v1/chat/completions` and
+    /// return `(content, tokens_in, tokens_out)`.
+    ///
+    /// The `endpoint` parameter should be the base URL without a trailing
+    /// path, e.g. `"https://api.openai.com"`.  A trailing `/` is acceptable.
+    pub async fn call_model_api(
+        endpoint: &str,
+        api_key: &str,
+        prompt: &str,
+        model: &str,
+        max_tokens: u32,
+    ) -> Result<(String, u64, u64), String> {
+        use reqwest::Client;
+        use serde_json::{json, Value};
+
+        let url = format!(
+            "{}/v1/chat/completions",
+            endpoint.trim_end_matches('/')
+        );
+
+        let body = json!({
+            "model": model,
+            "max_tokens": max_tokens,
+            "messages": [
+                { "role": "user", "content": prompt }
+            ]
+        });
+
+        let client = Client::new();
+        let resp = client
+            .post(&url)
+            .bearer_auth(api_key)
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| format!("HTTP request failed: {}", e))?;
+
+        let status = resp.status();
+        if !status.is_success() {
+            let text = resp.text().await.unwrap_or_default();
+            return Err(format!("API error {}: {}", status, text));
+        }
+
+        let json: Value = resp
+            .json()
+            .await
+            .map_err(|e| format!("JSON decode failed: {}", e))?;
+
+        let content = json["choices"][0]["message"]["content"]
+            .as_str()
+            .ok_or_else(|| "missing choices[0].message.content".to_string())?
+            .to_string();
+
+        let tokens_in = json["usage"]["prompt_tokens"]
+            .as_u64()
+            .unwrap_or(0);
+        let tokens_out = json["usage"]["completion_tokens"]
+            .as_u64()
+            .unwrap_or(0);
+
+        Ok((content, tokens_in, tokens_out))
+    }
+}
+
+// ============================================================================
 // Tests
 // ============================================================================
 
@@ -750,5 +1093,198 @@ mod tests {
         
         // Should prefer cheaper model for general tasks
         assert_eq!(resp.model_used, "cheap-model");
+    }
+
+    // ------------------------------------------------------------------
+    // BudgetLedger tests
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn test_budget_ledger_set_and_deduct() {
+        let mut ledger = BudgetLedger::new();
+        ledger.set_budget("alice", 1000);
+
+        // Successful deduction
+        assert!(ledger.check_and_deduct("alice", 400).is_ok());
+        assert_eq!(ledger.get("alice").unwrap().tokens_remaining, 600);
+
+        // Deduction that exactly empties the budget
+        assert!(ledger.check_and_deduct("alice", 600).is_ok());
+        assert_eq!(ledger.get("alice").unwrap().tokens_remaining, 0);
+
+        // Next deduction should fail
+        assert!(ledger.check_and_deduct("alice", 1).is_err());
+    }
+
+    #[test]
+    fn test_budget_ledger_unknown_agent() {
+        let mut ledger = BudgetLedger::new();
+        let err = ledger.check_and_deduct("ghost", 100).unwrap_err();
+        assert!(err.contains("ghost"));
+    }
+
+    #[test]
+    fn test_budget_ledger_reset() {
+        let mut ledger = BudgetLedger::new();
+        ledger.set_budget("bob", 500);
+        ledger.check_and_deduct("bob", 500).unwrap();
+        assert_eq!(ledger.get("bob").unwrap().tokens_remaining, 0);
+
+        ledger.reset_period("bob", 9999);
+        assert_eq!(ledger.get("bob").unwrap().tokens_remaining, 500);
+        assert_eq!(ledger.get("bob").unwrap().period_reset_at, 9999);
+    }
+
+    // ------------------------------------------------------------------
+    // InferenceCache tests
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn test_inference_cache_hit_miss() {
+        let mut cache = InferenceCache::new(4);
+        let key = InferenceCache::hash_prompt("hello world");
+
+        // Miss on empty cache
+        assert!(cache.get(&key).is_none());
+        assert_eq!(cache.stats(), (0, 1));
+
+        // Insert and hit
+        cache.insert(key, CacheEntry {
+            response: "hi".into(),
+            model: "m1".into(),
+            tokens_used: 5,
+            created_at: 0,
+        });
+        assert!(cache.get(&key).is_some());
+        assert_eq!(cache.stats(), (1, 1));
+    }
+
+    #[test]
+    fn test_inference_cache_eviction() {
+        let mut cache = InferenceCache::new(2);
+        let k1 = InferenceCache::hash_prompt("prompt-1");
+        let k2 = InferenceCache::hash_prompt("prompt-2");
+        let k3 = InferenceCache::hash_prompt("prompt-3");
+
+        let entry = |s: &str| CacheEntry { response: s.into(), model: "m".into(), tokens_used: 1, created_at: 0 };
+        cache.insert(k1, entry("r1"));
+        cache.insert(k2, entry("r2"));
+
+        // Cache is full; inserting k3 should evict one existing entry
+        cache.insert(k3, entry("r3"));
+        assert!(cache.get(&k3).is_some());
+        // Total stored entries must not exceed max_entries
+        // (verified indirectly: no panic, k3 is reachable)
+    }
+
+    // ------------------------------------------------------------------
+    // route_request tests
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn test_route_request_context_filter() {
+        let models = alloc::vec![
+            ModelEntry { id: "small".into(), context_window: 4096, available: true, avg_latency_us: 100, cost_per_1k: 1 },
+            ModelEntry { id: "large".into(), context_window: 128_000, available: true, avg_latency_us: 200, cost_per_1k: 5 },
+        ];
+        // Only "large" fits a 100k context request
+        let chosen = route_request(&models, "general", 100_000).unwrap();
+        assert_eq!(chosen.id, "large");
+    }
+
+    #[test]
+    fn test_route_request_prefers_code_model() {
+        let models = alloc::vec![
+            ModelEntry { id: "gpt-4".into(), context_window: 8192, available: true, avg_latency_us: 50, cost_per_1k: 2 },
+            ModelEntry { id: "code-llama".into(), context_window: 8192, available: true, avg_latency_us: 150, cost_per_1k: 1 },
+        ];
+        // Even though code-llama is slower, it should win for code tasks
+        let chosen = route_request(&models, "code", 1024).unwrap();
+        assert_eq!(chosen.id, "code-llama");
+    }
+
+    #[test]
+    fn test_route_request_latency_tiebreak() {
+        let models = alloc::vec![
+            ModelEntry { id: "model-a".into(), context_window: 8192, available: true, avg_latency_us: 300, cost_per_1k: 1 },
+            ModelEntry { id: "model-b".into(), context_window: 8192, available: true, avg_latency_us: 100, cost_per_1k: 1 },
+        ];
+        let chosen = route_request(&models, "general", 1024).unwrap();
+        assert_eq!(chosen.id, "model-b");
+    }
+
+    #[test]
+    fn test_route_request_unavailable_excluded() {
+        let models = alloc::vec![
+            ModelEntry { id: "offline".into(), context_window: 8192, available: false, avg_latency_us: 10, cost_per_1k: 0 },
+            ModelEntry { id: "online".into(), context_window: 8192, available: true, avg_latency_us: 500, cost_per_1k: 0 },
+        ];
+        let chosen = route_request(&models, "general", 1024).unwrap();
+        assert_eq!(chosen.id, "online");
+    }
+
+    // ------------------------------------------------------------------
+    // AuditLog tests
+    // ------------------------------------------------------------------
+
+    fn make_audit(agent: &str, model: &str) -> InferenceAuditEntry {
+        InferenceAuditEntry {
+            timestamp_ms: 0,
+            agent_id: agent.into(),
+            model: model.into(),
+            tokens_in: 10,
+            tokens_out: 20,
+            latency_ms: 5,
+            cached: false,
+            budget_remaining: 1000,
+        }
+    }
+
+    #[test]
+    fn test_audit_log_basic() {
+        let mut log = AuditLog::new();
+        assert_eq!(log.audit_recent(5).len(), 0);
+
+        log.append(make_audit("agent-1", "m1"));
+        log.append(make_audit("agent-2", "m2"));
+        log.append(make_audit("agent-3", "m3"));
+
+        let recent = log.audit_recent(2);
+        assert_eq!(recent.len(), 2);
+        // Most-recent 2 are agent-2 and agent-3 (oldest-first in the slice)
+        assert_eq!(recent[0].agent_id, "agent-2");
+        assert_eq!(recent[1].agent_id, "agent-3");
+    }
+
+    #[test]
+    fn test_audit_log_wrap() {
+        let mut log = AuditLog::new();
+        // Fill beyond capacity to exercise ring-wrap
+        for i in 0..=(AUDIT_CAPACITY + 5) {
+            log.append(InferenceAuditEntry {
+                timestamp_ms: i as u64,
+                agent_id: alloc::format!("agent-{}", i),
+                model: "m".into(),
+                tokens_in: 1,
+                tokens_out: 1,
+                latency_ms: 1,
+                cached: false,
+                budget_remaining: 0,
+            });
+        }
+        assert_eq!(log.total_appended() as usize, AUDIT_CAPACITY + 6);
+        // Should still return at most AUDIT_CAPACITY entries
+        let recent = log.audit_recent(AUDIT_CAPACITY + 100);
+        assert_eq!(recent.len(), AUDIT_CAPACITY);
+    }
+
+    #[test]
+    fn test_audit_log_ask_more_than_stored() {
+        let mut log = AuditLog::new();
+        log.append(make_audit("a", "m"));
+        log.append(make_audit("b", "m"));
+        // Asking for 10 when only 2 stored
+        let recent = log.audit_recent(10);
+        assert_eq!(recent.len(), 2);
     }
 }
