@@ -1316,4 +1316,43 @@
         <end pd="controller"  id="29" pp="true" />
         <end pd="auth_server" id="0" />
     </channel>
+
+    <!--
+      ══════════════════════════════════════════════════════════════════
+      vm_snapshot: VM state save/restore to AgentFS (Track J)
+
+      HURD-equivalent: checkpoint server (VM-level)
+      Saves and restores VM vCPU register state + guest RAM to AgentFS.
+      Snapshot format: VMSN header (296 bytes) + vCPU regs + guest RAM.
+
+      Channel map (from vm_snapshot's perspective):
+        id=0: controller (pp=true) — receives OP_VM_SNAPSHOT / OP_VM_RESTORE
+
+      Shared memory:
+        vm_state_shmem (256MB): snapshot buffer.
+          vm_snapshot writes snapshot data on OP_VM_SNAPSHOT;
+          controller reads it back for OP_VM_RESTORE staging.
+      ══════════════════════════════════════════════════════════════════
+    -->
+
+    <!-- vm_state_shmem: 256MB snapshot buffer shared between controller and vm_snapshot.
+         vm_snapshot writes snapshot data here on OP_VM_SNAPSHOT;
+         controller reads it back for OP_VM_RESTORE staging.
+         Cap class:  N/A (VM checkpoint; not gated by agent cap system).
+         Threat:     rogue PD overwriting snapshot data to corrupt restore;
+                     mitigated by vm_snapshot-only write mapping. -->
+    <memory_region name="vm_state_shmem" size="0x4000000" />
+
+    <protection_domain name="vm_snapshot" priority="130" passive="true">
+        <program_image path="vm_snapshot.elf" />
+        <map mr="vm_state_shmem" vaddr="0x40000000" perms="rw" cached="true"
+             setvar_vaddr="vm_state_vaddr" />
+    </protection_domain>
+
+    <!-- Channel 46: controller(id=46, pp=true) → vm_snapshot(id=0)
+         Controller PPCs into vm_snapshot for snapshot/restore operations. -->
+    <channel>
+        <end pd="controller"   id="46" pp="true" />
+        <end pd="vm_snapshot"  id="0" />
+    </channel>
 </system>

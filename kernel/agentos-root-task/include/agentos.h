@@ -520,6 +520,9 @@ typedef struct __attribute__((packed)) {
 /* Trace PD ID for auth_server */
 #define TRACE_PD_AUTH_SERVER 34u
 
+/* Trace PD ID and channel ID for vm_snapshot (Track J) */
+#define TRACE_PD_VM_SNAPSHOT  37u
+
 /* Log function declarations */
 void agentos_log_boot(const char *pd_name);
 void agentos_log_info(const char *pd, const char *msg);
