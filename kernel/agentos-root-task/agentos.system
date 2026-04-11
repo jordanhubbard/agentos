@@ -1279,4 +1279,41 @@
     <map pd="controller" mr="vm_list_shmem" vaddr="0x3100000" perms="r" cached="true"
          setvar_vaddr="vm_list_shmem_ctrl_vaddr" />
 
+    <!--
+      ══════════════════════════════════════════════════════════════════
+      AuthServer: user/group capability token service (passive, prio 170)
+
+      HURD-equivalent: auth server.
+      Maps uid→cap_mask identity records to short-lived capability tokens.
+      Pre-creates root (uid=0, cap_mask=0xFF) and admin (uid=1, cap_mask=0x3F)
+      at init.  Controller PPCs in to LOGIN/VERIFY/REVOKE/ADDUSER/STATUS.
+
+      Channel map (from auth_server's perspective):
+        id=0: controller (pp=true)
+
+      Shared memory:
+        auth_shmem (4KB): caller writes null-terminated user name here
+                          before OP_AUTH_ADDUSER PPC.
+      ══════════════════════════════════════════════════════════════════
+    -->
+
+    <!-- auth_shmem: 4KB shared memory for user name staging on OP_AUTH_ADDUSER.
+         Write access: controller only (writes name before PPC).
+         Read access:  auth_server (reads name during ADDUSER handler).
+         Cap class:    AGENTOS_CAP_AUDIT (identity management is audit-class).
+         Threat:       rogue PD injecting crafted names to create privileged users;
+                       mitigated by controller-only write mapping + PPC gate. -->
+    <memory_region name="auth_shmem" size="0x1000" />
+
+    <protection_domain name="auth_server" priority="170" passive="true">
+        <program_image path="auth_server.elf" />
+        <map mr="auth_shmem" vaddr="0x3200000" perms="rw" cached="true"
+             setvar_vaddr="auth_shmem_vaddr" />
+    </protection_domain>
+
+    <!-- Controller PPCs into auth_server -->
+    <channel>
+        <end pd="controller"  id="29" pp="true" />
+        <end pd="auth_server" id="0" />
+    </channel>
 </system>
