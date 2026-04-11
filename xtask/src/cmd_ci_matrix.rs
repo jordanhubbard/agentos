@@ -32,7 +32,7 @@ pub fn run(args: &CiMatrixArgs) -> anyhow::Result<()> {
         println!("{:<25} {:<20} {:<15}", "NAME", "BOARD", "GUEST_OS");
         println!("{}", "-".repeat(65));
         for tc in TEST_MATRIX {
-            if matches_filter(tc, &args.filter) {
+            if matches_case(tc, &args.filter, &args.board) {
                 println!("{:<25} {:<20} {:<15}", tc.name, tc.board, tc.guest_os);
             }
         }
@@ -45,7 +45,7 @@ pub fn run(args: &CiMatrixArgs) -> anyhow::Result<()> {
     let mut failures: Vec<String> = Vec::new();
 
     for tc in TEST_MATRIX {
-        if !matches_filter(tc, &args.filter) {
+        if !matches_case(tc, &args.filter, &args.board) {
             continue;
         }
 
@@ -55,20 +55,24 @@ pub fn run(args: &CiMatrixArgs) -> anyhow::Result<()> {
             tc.board, tc.guest_os, tc.success_marker
         );
 
-        // Build — collect owned strings first so &str slices remain valid
-        let board_arg = format!("BOARD={}", tc.board);
-        let guest_arg = format!("GUEST_OS={}", tc.guest_os);
-        let mut make_args_owned: Vec<String> =
-            vec!["build".to_string(), board_arg, guest_arg];
-        for &extra in tc.extra_make_args {
-            make_args_owned.push(extra.to_string());
-        }
-        let make_args_refs: Vec<&str> = make_args_owned.iter().map(|s| s.as_str()).collect();
-        if let Err(e) = crate::cmd_test::run_make(&make_args_refs, &repo_root) {
-            println!("[ci-matrix] FAIL ({}): build error: {}", tc.name, e);
-            fail += 1;
-            failures.push(format!("{}: build failed: {}", tc.name, e));
-            continue;
+        if args.no_build {
+            println!("[ci-matrix]   (--no-build: skipping build step)");
+        } else {
+            // Build — collect owned strings first so &str slices remain valid
+            let board_arg = format!("BOARD={}", tc.board);
+            let guest_arg = format!("GUEST_OS={}", tc.guest_os);
+            let mut make_args_owned: Vec<String> =
+                vec!["build".to_string(), board_arg, guest_arg];
+            for &extra in tc.extra_make_args {
+                make_args_owned.push(extra.to_string());
+            }
+            let make_args_refs: Vec<&str> = make_args_owned.iter().map(|s| s.as_str()).collect();
+            if let Err(e) = crate::cmd_test::run_make(&make_args_refs, &repo_root) {
+                println!("[ci-matrix] FAIL ({}): build error: {}", tc.name, e);
+                fail += 1;
+                failures.push(format!("{}: build failed: {}", tc.name, e));
+                continue;
+            }
         }
 
         // Spawn QEMU and check for success marker
@@ -128,11 +132,14 @@ pub fn run(args: &CiMatrixArgs) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn matches_filter(tc: &TestCase, filter: &Option<String>) -> bool {
-    match filter {
+/// Returns true if the test case passes both the name filter and the board filter.
+fn matches_case(tc: &TestCase, filter: &Option<String>, board: &str) -> bool {
+    let name_ok = match filter {
         None => true,
         Some(f) => tc.name.contains(f.as_str()),
-    }
+    };
+    let board_ok = board.is_empty() || tc.board == board;
+    name_ok && board_ok
 }
 
 fn repo_root() -> anyhow::Result<std::path::PathBuf> {
