@@ -256,7 +256,7 @@ fn schedule_reconnect(
 
 #[component]
 pub fn App() -> impl IntoView {
-    let (current_panel, set_panel) = create_signal(String::from("topology"));
+    let (current_panel, set_panel) = create_signal(String::from("console"));
     let (ws_status,  set_ws_status) = create_signal(WsStatus::Connecting);
     let (ws_label,   set_ws_label)  = create_signal(String::from("connecting…"));
     // Initialise sidebar state from localStorage (default true if absent/unparseable)
@@ -426,7 +426,7 @@ pub fn App() -> impl IntoView {
                         />
                     </Show>
                     <Show when=move || current_panel.get() == "console">
-                        <ConsoleTab tiles=tiles set_tiles=set_tiles highlighted_tile=highlighted_tile />
+                        <ConsoleTab tiles=tiles set_tiles=set_tiles highlighted_tile=highlighted_tile ws_status=ws_status />
                     </Show>
                     <Show when=move || current_panel.get() == "profiler">
                         <ProfilerTab />
@@ -479,12 +479,19 @@ fn AppHeader(
                 <h1>"agentOS Console"</h1>
             </div>
             <div class="ws-status">
-                <div class=move || match ws_status.get() {
-                    WsStatus::Connected => "ws-dot connected",
-                    WsStatus::Error     => "ws-dot error",
-                    _                   => "ws-dot",
-                } />
-                <span id="ws-label">{ws_label}</span>
+                <div
+                    class=move || match ws_status.get() {
+                        WsStatus::Connected => "ws-dot connected",
+                        WsStatus::Error     => "ws-dot error",
+                        _                   => "ws-dot",
+                    }
+                    title="Connection to QEMU serial port for live logs"
+                />
+                <span class="ws-label-prefix">"Serial Console: "</span>
+                <span id="ws-label">{move || match ws_status.get() {
+                    WsStatus::Connected => "Live".to_string(),
+                    _                   => "Offline".to_string(),
+                }}</span>
             </div>
         </header>
     }
@@ -535,7 +542,12 @@ fn ConsoleTab(
     tiles:            ReadSignal<Vec<(usize, String)>>,
     set_tiles:        WriteSignal<Vec<(usize, String)>>,
     highlighted_tile: RwSignal<Option<usize>>,
+    ws_status:        ReadSignal<WsStatus>,
 ) -> impl IntoView {
+    let show_welcome = create_memo(move |_| {
+        ws_status.get() != WsStatus::Connected
+    });
+
     let (picker_open, set_picker_open) = create_signal(false);
     let (log_tab, set_log_tab) = create_signal("audit");
 
@@ -564,6 +576,15 @@ fn ConsoleTab(
 
     view! {
         <div class="console-panel">
+            {move || show_welcome.get().then(|| view! {
+                <div class="welcome-banner">
+                    <span class="welcome-step">"1. Start QEMU"</span>
+                    <span class="welcome-arrow">"→"</span>
+                    <span class="welcome-step">"2. Monitor in Topology"</span>
+                    <span class="welcome-arrow">"→"</span>
+                    <span class="welcome-step">"3. Spawn Agents"</span>
+                </div>
+            })}
             // Terminal grid
             <div id="console-grid" class="console-grid">
                 <For
@@ -884,6 +905,9 @@ fn FlameGraph(frames: Vec<Frame>) -> impl IntoView {
 fn AgentsTab() -> impl IntoView {
     let (agents,  set_agents)  = create_signal(Vec::<Agent>::new());
     let (loading, set_loading) = create_signal(false);
+    let spawn_modal_open: RwSignal<bool> = create_rw_signal(false);
+    let (spawn_name,  set_spawn_name)  = create_signal(String::new());
+    let (spawn_slot,  set_spawn_slot)  = create_signal(9usize); // default swap_slot_0
 
     let fetch = move || {
         set_loading.set(true);
@@ -897,13 +921,68 @@ fn AgentsTab() -> impl IntoView {
 
     create_effect(move |_| { fetch(); });
 
+    let do_spawn = move |_| {
+        let name = spawn_name.get();
+        let slot = spawn_slot.get();
+        if name.is_empty() { return; }
+        spawn_modal_open.set(false);
+        wasm_bindgen_futures::spawn_local(async move {
+            let body = serde_json::json!({ "name": name, "slot": slot });
+            let _ = gloo_net::http::Request::post("/api/agentos/agents/spawn")
+                .header("Content-Type", "application/json")
+                .body(body.to_string())
+                .unwrap()
+                .send()
+                .await;
+        });
+    };
+
     view! {
         <div class="tab-panel active">
             <div class="agents-toolbar">
                 <button class="btn primary" on:click=move |_| fetch()>
                     {move || if loading.get() { "Loading…" } else { "↻ Refresh" }}
                 </button>
+                <button class="btn btn-primary" on:click=move |_| spawn_modal_open.set(true)>
+                    "＋ Spawn Agent"
+                </button>
             </div>
+
+            // Spawn Agent modal
+            <Show when=move || spawn_modal_open.get()>
+                <div class="modal-backdrop" on:click=move |_| spawn_modal_open.set(false)>
+                    <div class="modal-box" on:click=|e| e.stop_propagation()>
+                        <h3>"Spawn Agent"</h3>
+                        <p class="modal-hint">"A WASM agent runs in an isolated swap slot and handles tasks."</p>
+                        <label>"Agent name"</label>
+                        <input
+                            type="text"
+                            placeholder="my-agent"
+                            prop:value=move || spawn_name.get()
+                            on:input=move |e| set_spawn_name.set(event_target_value(&e))
+                        />
+                        <label>"Target slot"</label>
+                        <select on:change=move |e| {
+                            if let Ok(v) = event_target_value(&e).parse::<usize>() {
+                                set_spawn_slot.set(v);
+                            }
+                        }>
+                            {[
+                                (9usize,  "swap_slot_0"),
+                                (10usize, "swap_slot_1"),
+                                (11usize, "swap_slot_2"),
+                                (12usize, "swap_slot_3"),
+                            ].iter().map(|&(id, name)| view! {
+                                <option value=id.to_string()>{format!("{} — {}", id, name)}</option>
+                            }).collect_view()}
+                        </select>
+                        <div class="modal-actions">
+                            <button class="btn" on:click=move |_| spawn_modal_open.set(false)>"Cancel"</button>
+                            <button class="btn btn-primary" on:click=do_spawn>"Spawn"</button>
+                        </div>
+                    </div>
+                </div>
+            </Show>
             <div id="agents-list">
                 <Show
                     when=move || !agents.get().is_empty()
