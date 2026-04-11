@@ -1,6 +1,7 @@
 use crate::TestArgs;
 use anyhow::Context;
 use std::io::{Read, Seek, SeekFrom};
+use std::os::unix::process::CommandExt;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
@@ -136,8 +137,10 @@ fn spawn_qemu(
     let child = cmd
         .stdout(log_file.try_clone()?)
         .stderr(log_file)
+        .process_group(0)
         .spawn()
         .context("failed to spawn QEMU")?;
+    println!("[xtask:test] QEMU pid={}", child.id());
     Ok(child)
 }
 
