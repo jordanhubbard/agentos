@@ -5,7 +5,9 @@ edition = "2021"
 description = "Vibe Engine - service hot-swap protocol for agentOS vibe-coding"
 
 [features]
-std = []
+std = ["agentos-sim", "tracing"]
 
 [dependencies]
 agentos-sdk = { path = "../../sdk" }
+agentos-sim = { path = "../../sim", optional = true }
+tracing     = { version = "0.1", optional = true }

@@ -51,6 +51,9 @@
 
 extern crate alloc;
 
+#[cfg(feature = "std")]
+extern crate agentos_sim;
+
 pub mod wasm_validator;
 
 use alloc::collections::BTreeMap;
@@ -551,6 +554,169 @@ pub struct SandboxResult {
     pub errors: Vec<String>,
     /// Sandbox duration (microseconds)
     pub duration_us: u64,
+    /// Did health_check() return 0?
+    pub health_ok: bool,
+    /// Log lines captured from the sandboxed init() call
+    pub init_log: Vec<String>,
+    /// Did handle_ppc() respond to a synthetic call without trapping?
+    pub ppc_responded: bool,
+}
+
+// ============================================================================
+// Vibe Engine
+// ============================================================================
+
+// ============================================================================
+// Sandbox execution helpers
+// ============================================================================
+
+/// Run a sandboxed trial of `wasm_bytes` under the service slot `target_service`.
+///
+/// With the `std` feature, this drives a real `agentos_sim::SimEngine`:
+///   1. Compile and instantiate the WASM module.
+///   2. Call `init()`.
+///   3. Call `health_check()` — 0 means healthy.
+///   4. Send one synthetic PPC to verify the service responds.
+///
+/// Without `std` (bare-metal builds) the step auto-approves.
+fn run_sandbox(target_service: &str, wasm_bytes: &[u8]) -> SandboxResult {
+    #[cfg(feature = "std")]
+    {
+        run_sandbox_std(target_service, wasm_bytes)
+    }
+    #[cfg(not(feature = "std"))]
+    {
+        let _ = (target_service, wasm_bytes);
+        SandboxResult {
+            stable: true,
+            performance_ok: true,
+            latency_samples: Vec::new(),
+            ops_completed: 0,
+            errors: Vec::new(),
+            duration_us: 0,
+            health_ok: true,
+            init_log: Vec::new(),
+            ppc_responded: true,
+        }
+    }
+}
+
+#[cfg(feature = "std")]
+fn run_sandbox_std(target_service: &str, wasm_bytes: &[u8]) -> SandboxResult {
+    let engine = agentos_sim::SimEngine::new();
+    engine.caps_mut().grant_defaults(target_service);
+
+    let mut runner = match engine.spawn_agent(target_service, wasm_bytes) {
+        Ok(r) => r,
+        Err(e) => {
+            return SandboxResult {
+                stable: false,
+                performance_ok: false,
+                latency_samples: Vec::new(),
+                ops_completed: 0,
+                errors: alloc::vec![alloc::format!("sandbox load failed: {}", e)],
+                duration_us: 0,
+                health_ok: false,
+                init_log: Vec::new(),
+                ppc_responded: false,
+            };
+        }
+    };
+
+    let mut errors = Vec::new();
+
+    // Step 1: init()
+    if let Err(e) = runner.init() {
+        errors.push(alloc::format!("sandbox init() failed: {}", e));
+    }
+
+    let init_log = runner.state().log_lines.clone();
+
+    // Step 2: health_check()
+    let health = runner.health_check().unwrap_or(1);
+    let health_ok = health == 0;
+
+    // Step 3: synthetic PPC — label 0x01, all MRs zero
+    let ppc_result = runner.handle_ppc(0x01, 0, 0, 0, 0);
+    let ppc_responded = ppc_result.is_ok();
+    if let Err(ref e) = ppc_result {
+        errors.push(alloc::format!("synthetic PPC trapped: {}", e));
+    }
+
+    let stable = errors.is_empty() || (health_ok && ppc_responded);
+
+    SandboxResult {
+        stable,
+        performance_ok: true, // latency not measured in sim
+        latency_samples: Vec::new(),
+        ops_completed: if ppc_responded { 1 } else { 0 },
+        errors,
+        duration_us: 0,
+        health_ok,
+        init_log,
+        ppc_responded,
+    }
+}
+
+/// Spawn a background thread that polls the live service's health for
+/// `rollback_window_secs` seconds after a swap.
+///
+/// In production the loop would call `health_check()` on the live seL4 slot
+/// via IPC and trigger a rollback through a shared atomic flag.  For now it
+/// simply runs for the window duration and exits.
+///
+/// This function is a no-op on `no_std` targets (bare-metal builds lack threads).
+#[allow(unused_variables)]
+fn start_rollback_monitor(proposal_id: u64, wasm_bytes: Vec<u8>, rollback_window_secs: u64) {
+    #[cfg(feature = "std")]
+    {
+        std::thread::spawn(move || {
+            let deadline = std::time::Instant::now()
+                + std::time::Duration::from_secs(rollback_window_secs);
+
+            while std::time::Instant::now() < deadline {
+                std::thread::sleep(std::time::Duration::from_millis(500));
+
+                // Production: call health_check() on the live slot via IPC.
+                // Sim stand-in: re-instantiate and check health.
+                let engine = agentos_sim::SimEngine::new();
+                engine.caps_mut().grant_defaults("rollback-monitor");
+                if let Ok(mut runner) = engine.spawn_agent("rollback-monitor", &wasm_bytes) {
+                    let health = runner.health_check().unwrap_or(1);
+                    if health != 0 {
+                        // In production: signal the controller to roll back.
+                        // Here we just log and stop monitoring.
+                        tracing::warn!(
+                            proposal_id,
+                            "health_check() returned {} during rollback window — \
+                             production system would trigger rollback",
+                            health
+                        );
+                        break;
+                    }
+                }
+            }
+        });
+    }
+}
+
+// ============================================================================
+// Metrics
+// ============================================================================
+
+/// Cumulative counters for vibe-engine operations.
+#[derive(Debug, Clone, Default)]
+pub struct VibeEngineMetrics {
+    /// Total proposals submitted (all outcomes).
+    pub proposals_total: u64,
+    /// Proposals that passed validation and sandbox and were approved.
+    pub approved: u64,
+    /// Proposals rejected at validation or sandbox.
+    pub rejected: u64,
+    /// Successful atomic service swaps.
+    pub swaps_ok: u64,
+    /// Automatic rollbacks triggered by the health-monitor.
+    pub rollbacks: u64,
 }
 
 // ============================================================================
@@ -569,6 +735,8 @@ pub struct VibeEngine {
     swap_history: Vec<SwapRecord>,
     /// Active rollback window (service_id -> previous binary)
     rollback_state: BTreeMap<String, Vec<u8>>,
+    /// Cumulative metrics
+    metrics: VibeEngineMetrics,
 }
 
 /// Record of a service swap
@@ -590,6 +758,7 @@ impl VibeEngine {
             next_proposal_id: 1,
             swap_history: Vec::new(),
             rollback_state: BTreeMap::new(),
+            metrics: VibeEngineMetrics::default(),
         }
     }
     
@@ -612,7 +781,8 @@ impl VibeEngine {
         self.next_proposal_id += 1;
         proposal.id = id;
         proposal.state = ProposalState::Pending;
-        
+        self.metrics.proposals_total += 1;
+
         self.proposals.insert(id, proposal);
         Ok(id)
     }
@@ -635,51 +805,47 @@ impl VibeEngine {
         let passed = result.passed;
         
         proposal.validation = Some(result);
-        proposal.state = if passed {
-            ProposalState::Validated
+        if passed {
+            proposal.state = ProposalState::Validated;
         } else {
-            ProposalState::Rejected("Validation failed".into())
-        };
-        
+            proposal.state = ProposalState::Rejected("Validation failed".into());
+            self.metrics.rejected += 1;
+        }
+
         Ok(passed)
     }
     
-    /// Run sandbox test on a validated proposal
+    /// Run sandbox test on a validated proposal.
+    ///
+    /// When the `std` feature is enabled this drives a real `SimEngine`
+    /// instance: init → health_check → synthetic PPC.  Without `std` (bare-
+    /// metal builds) the step auto-approves so the rest of the pipeline stays
+    /// exercisable.
     pub fn sandbox_test(&mut self, proposal_id: u64) -> Result<bool, String> {
         let proposal = self.proposals.get_mut(&proposal_id)
             .ok_or("Proposal not found")?;
-        
+
         if proposal.state != ProposalState::Validated {
             return Err("Proposal must be validated before sandboxing".into());
         }
-        
+
         proposal.state = ProposalState::Sandboxing;
-        
-        // In full implementation:
-        // 1. Create an isolated PD for the sandbox
-        // 2. Load the new service binary
-        // 3. Run synthetic workload against it
-        // 4. Measure latency, stability, correctness
-        // 5. Compare against contract baselines
-        
-        // Placeholder: assume sandbox passes
-        let result = SandboxResult {
-            stable: true,
-            performance_ok: true,
-            latency_samples: Vec::new(),
-            ops_completed: 0,
-            errors: Vec::new(),
-            duration_us: 0,
-        };
-        
-        let passed = result.stable && result.performance_ok;
+
+        let wasm_bytes = proposal.binary.clone();
+        let target_service = proposal.target_service.clone();
+
+        let result = run_sandbox(&target_service, &wasm_bytes);
+
+        let passed = result.stable && result.performance_ok && result.health_ok;
         proposal.sandbox_result = Some(result);
-        proposal.state = if passed {
-            ProposalState::Approved
+        if passed {
+            proposal.state = ProposalState::Approved;
+            self.metrics.approved += 1;
         } else {
-            ProposalState::Rejected("Sandbox test failed".into())
-        };
-        
+            proposal.state = ProposalState::Rejected("Sandbox test failed".into());
+            self.metrics.rejected += 1;
+        }
+
         Ok(passed)
     }
     
@@ -714,7 +880,14 @@ impl VibeEngine {
         });
         
         proposal.state = ProposalState::Active;
-        
+        self.metrics.swaps_ok += 1;
+
+        // Start background health monitor with a 30-second rollback window.
+        // In production this would call health_check() on the live slot via
+        // IPC.  For now it uses the sim runner as a stand-in.
+        let wasm_bytes = proposal.binary.clone();
+        start_rollback_monitor(proposal_id, wasm_bytes, 30);
+
         // In full implementation:
         // 1. Stop accepting new requests to old PD
         // 2. Drain in-flight requests
@@ -729,7 +902,7 @@ impl VibeEngine {
         // a) Pre-allocated "swap slots" in the system description
         // b) A Microkit extension for dynamic PD management
         // c) Restart with new system description (less elegant)
-        
+
         Ok(())
     }
     
@@ -738,10 +911,10 @@ impl VibeEngine {
         if !self.rollback_state.contains_key(service_id) {
             return Err("No rollback state available".into());
         }
-        
+
         // In full implementation: reverse the swap
         self.rollback_state.remove(service_id);
-        
+
         // Mark the last swap as rolled back
         for record in self.swap_history.iter_mut().rev() {
             if record.service_id == service_id && !record.rolled_back {
@@ -749,7 +922,9 @@ impl VibeEngine {
                 break;
             }
         }
-        
+
+        self.metrics.rollbacks += 1;
+
         Ok(())
     }
     
@@ -766,6 +941,11 @@ impl VibeEngine {
     /// Get swap history
     pub fn history(&self) -> &[SwapRecord] {
         &self.swap_history
+    }
+
+    /// Return a snapshot of cumulative metrics.
+    pub fn metrics(&self) -> &VibeEngineMetrics {
+        &self.metrics
     }
 }
 
@@ -1008,7 +1188,7 @@ mod tests {
 
     #[test]
     fn test_capability_policy_within_bounds() {
-        let mut engine = setup_engine();
+        let engine = setup_engine();
         // storage.v1 allows: memory, log
         let contract = engine.contracts.get("storage.v1").unwrap();
         let manifest = CapabilityManifest {
@@ -1024,7 +1204,7 @@ mod tests {
 
     #[test]
     fn test_capability_policy_denied_cap() {
-        let mut engine = setup_engine();
+        let engine = setup_engine();
         let contract = engine.contracts.get("storage.v1").unwrap();
         let manifest = CapabilityManifest {
             version: 1,
@@ -1040,7 +1220,7 @@ mod tests {
 
     #[test]
     fn test_capability_policy_memory_exceeded() {
-        let mut engine = setup_engine();
+        let engine = setup_engine();
         let contract = engine.contracts.get("storage.v1").unwrap();
         // storage.v1 budget: 64MB = 1024 pages
         let manifest = CapabilityManifest {

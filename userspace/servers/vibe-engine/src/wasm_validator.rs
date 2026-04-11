@@ -13,11 +13,16 @@ const WASM_MAGIC: &[u8; 4] = b"\x00asm";
 const WASM_VERSION: &[u8; 4] = &[0x01, 0x00, 0x00, 0x00];
 const MAX_WASM_SIZE: usize = 1 * 1024 * 1024; // 1 MB
 
-const REQUIRED_EXPORTS: &[&str] = &["init", "handle_ppc", "health_check", "memory"];
+const REQUIRED_EXPORTS: &[&str] = &["init", "handle_ppc", "health_check", "notified", "memory"];
 
 // WASM section IDs
 const SECTION_IMPORT: u8 = 2;
 const SECTION_EXPORT: u8 = 7;
+const SECTION_MEMORY: u8 = 5;
+const SECTION_CUSTOM: u8 = 0;
+
+/// Name of the required agentOS capabilities custom section.
+const AGENTOS_CAPS_SECTION: &str = "agentos.capabilities";
 
 // WASM external kind names
 const KIND_NAMES: &[&str] = &["function", "table", "memory", "global"];
@@ -30,6 +35,18 @@ pub struct ValidationResult {
     pub warnings: Vec<String>,
     pub exports: Vec<String>, // "name:kind"
     pub imports: Vec<String>, // "module.name:kind"
+}
+
+/// Focused validation report returned by `validate_wasm_report`.
+/// Callers that only need pass/fail + specific gaps can use this
+/// instead of the full `ValidationResult`.
+pub struct ValidationReport {
+    /// Whether the binary is considered valid for hot-swap.
+    pub valid: bool,
+    /// Names of required exports that are absent.
+    pub missing_exports: Vec<String>,
+    /// Non-fatal advisory messages.
+    pub warnings: Vec<String>,
 }
 
 // ── LEB128 helper ─────────────────────────────────────────────────────────────
@@ -237,6 +254,59 @@ fn parse_imports(wasm: &[u8]) -> Vec<String> {
     result
 }
 
+// ── Memory section check ──────────────────────────────────────────────────────
+
+/// Return `true` if the binary contains a WASM linear memory section (id 5).
+pub fn has_memory_section(wasm: &[u8]) -> bool {
+    find_section(wasm, SECTION_MEMORY).is_some()
+}
+
+// ── Custom section scanner ────────────────────────────────────────────────────
+
+/// Find a WASM custom section (id 0) with a given name.
+///
+/// Returns `Some(payload_bytes)` where the payload starts after the name
+/// inside the section body.  Returns `None` if not found or malformed.
+pub fn find_wasm_custom_section<'a>(wasm: &'a [u8], name: &str) -> Option<&'a [u8]> {
+    if wasm.len() < 8 {
+        return None;
+    }
+    let mut pos = 8usize; // skip magic + version
+
+    while pos < wasm.len() {
+        let section_id = *wasm.get(pos)?;
+        pos += 1;
+
+        let (section_size, size_bytes) = read_leb128(wasm, pos)?;
+        pos += size_bytes;
+
+        let section_end = pos.checked_add(section_size as usize)?;
+        if section_end > wasm.len() {
+            return None;
+        }
+
+        if section_id == SECTION_CUSTOM {
+            // Parse the name prefix inside the section body
+            let body = &wasm[pos..section_end];
+            let (name_len, name_leb) = read_leb128(body, 0)?;
+            let name_start = name_leb;
+            let name_end_idx = name_start.checked_add(name_len as usize)?;
+            if name_end_idx > body.len() {
+                pos = section_end;
+                continue;
+            }
+            let section_name = core::str::from_utf8(&body[name_start..name_end_idx]).ok()?;
+            if section_name == name {
+                return Some(&body[name_end_idx..]);
+            }
+        }
+
+        pos = section_end;
+    }
+
+    None
+}
+
 // ── Public API ────────────────────────────────────────────────────────────────
 
 /// Check whether `bytes` starts with the WASM magic bytes.
@@ -317,13 +387,26 @@ pub fn validate_wasm(bytes: &[u8]) -> ValidationResult {
         }
     }
 
-    // 7. Check for "aos" module imports
+    // 7. Check that a linear memory section is declared
+    if !has_memory_section(bytes) {
+        errors.push("No WASM memory section found; linear memory is required for agentOS services".to_string());
+    }
+
+    // 8. Check for the agentos.capabilities custom section
+    if find_wasm_custom_section(bytes, AGENTOS_CAPS_SECTION).is_none() {
+        warnings.push(format!(
+            "Missing custom section \"{}\"; service will run without a declared capability manifest (legacy mode)",
+            AGENTOS_CAPS_SECTION
+        ));
+    }
+
+    // 9. Check for "aos" module imports
     let has_aos_import = imports.iter().any(|i| i.starts_with("aos."));
     if !has_aos_import {
         warnings.push("No imports from \"aos\" module; service may not integrate with agentOS".to_string());
     }
 
-    // 8. Warn on unknown import modules (not "aos" or "env")
+    // 10. Warn on unknown import modules (not "aos" or "env")
     for import in &imports {
         let module = import.split('.').next().unwrap_or("");
         if module != "aos" && module != "env" {
@@ -338,6 +421,34 @@ pub fn validate_wasm(bytes: &[u8]) -> ValidationResult {
         warnings,
         exports,
         imports,
+    }
+}
+
+/// Validate a WASM binary and return a focused `ValidationReport`.
+///
+/// This is the preferred entry point for the hot-swap pipeline — it surfaces
+/// `missing_exports` explicitly so callers can give agents actionable feedback.
+pub fn validate_wasm_report(bytes: &[u8]) -> ValidationReport {
+    let result = validate_wasm(bytes);
+
+    // Extract missing export names from error strings for structured access.
+    let missing_exports: Vec<String> = result
+        .errors
+        .iter()
+        .filter_map(|e| {
+            let prefix = "Missing required export: \"";
+            if e.starts_with(prefix) {
+                e[prefix.len()..].strip_suffix('"').map(|s| s.to_string())
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    ValidationReport {
+        valid: result.valid,
+        missing_exports,
+        warnings: result.warnings,
     }
 }
 
