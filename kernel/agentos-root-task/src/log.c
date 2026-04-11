@@ -19,7 +19,7 @@ __attribute__((weak)) uintptr_t console_rings_vaddr = 0;
 /* Ultra-minimal hex output (no libc) */
 static void log_hex64(uint64_t v) {
     static const char hex[] = "0123456789abcdef";
-    char buf[18] = "0x0000000000000000";
+    char buf[19] = "0x0000000000000000";
     for (int i = 17; i >= 2; i--) {
         buf[i] = hex[v & 0xf];
         v >>= 4;

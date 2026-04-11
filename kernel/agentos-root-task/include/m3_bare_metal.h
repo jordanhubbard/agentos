@@ -120,12 +120,24 @@ float  copysignf(float x, float y);
 #define signbit(x)  __builtin_signbit(x)
 
 /* Needed by some wasm3 paths */
+#ifndef UINT32_MAX
 #define UINT32_MAX  0xFFFFFFFFU
+#endif
+#ifndef INT32_MAX
 #define INT32_MAX   0x7FFFFFFF
+#endif
+#ifndef INT32_MIN
 #define INT32_MIN   (-INT32_MAX - 1)
+#endif
+#ifndef UINT64_MAX
 #define UINT64_MAX  0xFFFFFFFFFFFFFFFFULL
+#endif
+#ifndef INT64_MAX
 #define INT64_MAX   0x7FFFFFFFFFFFFFFFLL
+#endif
+#ifndef INT64_MIN
 #define INT64_MIN   (-INT64_MAX - 1LL)
+#endif
 
 /* PRIx format macros that wasm3 uses */
 #ifndef PRIi32

@@ -16,7 +16,9 @@ int fprintf(void *stream, const char *fmt, ...) __attribute__((format(printf, 2,
 
 /* EOF / NULL stream */
 #define EOF  (-1)
+#ifndef NULL
 #define NULL ((void *)0)
+#endif
 
 typedef struct _FILE FILE;
 extern FILE *stderr;
