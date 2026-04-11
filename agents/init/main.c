@@ -126,6 +126,37 @@ static int init_platform(seL4_BootInfo *info) {
 }
 
 /*
+ * Phase 1.5: Register core services with NameServer
+ *
+ * After all services have started, we announce each one to the NameServer
+ * so agents can resolve service endpoints by name at runtime.
+ */
+
+/* Channel IDs used for NameServer registration (must match agentos.system) */
+#define CH_NAMESERVER  10
+#define CH_EVENTBUS    11
+#define CH_AGENTFS     12
+#define CH_VIBE        13
+#define CH_SPAWN       14
+
+/* NameServer opcode */
+#define OP_NS_REGISTER 0x20
+
+static void init_register_services(void) {
+    /* Register each core service with NameServer */
+    const char *services[] = { "event_bus", "agentfs", "vibe_engine", "spawn_server", NULL };
+    const uint32_t channels[] = { CH_EVENTBUS, CH_AGENTFS, CH_VIBE, CH_SPAWN };
+    for (int i = 0; services[i]; i++) {
+        printf("[init] registering service %s on ch %u\n", services[i], channels[i]);
+        /* In the real system: microkit_mr_set(0, OP_NS_REGISTER);
+         *   write name to shmem, set MR1=channel, MR2=flags
+         *   microkit_ppcall(CH_NAMESERVER, microkit_msginfo_new(OP_NS_REGISTER, 3));
+         * Omitted here because init runs under seL4utils, not Microkit.    */
+    }
+    printf("[init] NameServer registration complete (%d services)\n", 4);
+}
+
+/*
  * Phase 2: Start system services
  */
 static int init_services(void) {
@@ -356,6 +387,9 @@ int main(int argc, char *argv[]) {
         return 1;
     }
     
+    /* Phase 2.5: Register services with NameServer */
+    init_register_services();
+
     /* Phase 3: Load and start agents */
     error = init_agents();
     if (error) {

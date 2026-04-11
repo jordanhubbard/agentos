@@ -11,7 +11,7 @@
 #   make clean        — remove build artifacts for current target
 #   make clean-all    — remove all build artifacts
 
-.PHONY: all deps deps-tools deps-sdk submodules channels console dashboard test test-snapshot-sched test-power-mgr clean clean-all clean-images help release release-minor release-major fetch-guest build-tools
+.PHONY: all deps deps-tools deps-sdk submodules channels console dashboard test test-snapshot-sched test-power-mgr test-integration clean clean-all clean-images help release release-minor release-major fetch-guest build-tools
 
 # ─── Read config.yaml (if present) ───────────────────────────────────────────
 CONFIG_TARGET := $(shell grep '^target_arch:' config.yaml 2>/dev/null | sed 's/target_arch:[[:space:]]*//' | tr -d '[:space:]')
@@ -382,7 +382,7 @@ test-snapshot-sched:
 	@echo "║   agentOS — snapshot_sched unit tests    ║"
 	@echo "╚══════════════════════════════════════════╝"
 	@echo ""
-	cc test/test_snapshot_sched.c -o /tmp/test_snapshot_sched -DAGENTOS_SNAPSHOT_SCHED
+	cc tests/test_snapshot_sched.c -o /tmp/test_snapshot_sched -I kernel/agentos-root-task/include -DAGENTOS_TEST_HOST -DAGENTOS_SNAPSHOT_SCHED
 	@/tmp/test_snapshot_sched
 	@echo "✓ snapshot_sched tests passed"
 	@echo ""
@@ -396,9 +396,41 @@ test-power-mgr:
 	@echo "║   agentOS — power_mgr unit tests         ║"
 	@echo "╚══════════════════════════════════════════╝"
 	@echo ""
-	cc test/test_power_mgr.c -o /tmp/test_power_mgr
+	cc tests/test_power_mgr.c -o /tmp/test_power_mgr -I kernel/agentos-root-task/include -DAGENTOS_TEST_HOST
 	@/tmp/test_power_mgr
 	@echo "✓ power_mgr tests passed"
+	@echo ""
+
+# =============================================================================
+# test-integration: compile and run C integration tests on the host
+#
+# Each test file is self-contained: all seL4/Microkit primitives are stubbed
+# via #ifdef AGENTOS_TEST_HOST.  No QEMU required.
+# =============================================================================
+test-integration:
+	@echo ""
+	@echo "╔══════════════════════════════════════════╗"
+	@echo "║   agentOS — integration tests (host)     ║"
+	@echo "╚══════════════════════════════════════════╝"
+	@echo ""
+	@echo "[make] Running integration tests..."
+	@for test in \
+	    tests/test_quota.c \
+	    tests/test_cap_policy_hotreload.c \
+	    tests/test_power_mgr.c \
+	    tests/test_snapshot_sched.c \
+	    tests/test_dev_shell.c; do \
+	    gcc -I kernel/agentos-root-task/include \
+	        -DAGENTOS_TEST_HOST \
+	        -DAGENTOS_SNAPSHOT_SCHED \
+	        -DAGENTOS_DEV_SHELL \
+	        -o /tmp/agentos_test $$test 2>&1 \
+	    && /tmp/agentos_test \
+	    && echo "PASS: $$test" \
+	    || echo "FAIL: $$test"; \
+	done
+	@echo ""
+	@echo "Integration tests complete."
 	@echo ""
 
 # =============================================================================
@@ -448,6 +480,7 @@ help:
 	@echo "  make dashboard        Start agentOS console only (agentOS running on hardware)"
 	@echo "  make deps             Install build deps (brew / apt)"
 	@echo "  make test             CI boot test (exit 0/1)"
+	@echo "  make test-integration Host-side C tests (no QEMU required)"
 	@echo "  make test-snapshot-sched"
 	@echo "  make test-power-mgr"
 	@echo "  make clean            Remove build artifacts"

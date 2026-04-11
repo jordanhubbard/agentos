@@ -101,6 +101,39 @@ static uint64_t bench_batch(void) {
     return bench_cycles() - t0;
 }
 
+/* ── Summary printer ────────────────────────────────────────────────────── */
+
+static void print_bench_summary(uint64_t single_cycles, uint64_t batch_cycles,
+                                 uint32_t msg_count) {
+    microkit_dbg_puts("[bench] === Benchmark Results ===\n");
+    microkit_dbg_puts("[bench]   Messages:         ");
+    bench_print_u64(msg_count);
+    microkit_dbg_puts("\n");
+
+    microkit_dbg_puts("[bench]   Single publish:   ");
+    bench_print_u64(single_cycles);
+    microkit_dbg_puts(" cycles total, ");
+    bench_print_u64(msg_count > 0 ? single_cycles / msg_count : 0);
+    microkit_dbg_puts(" cycles/msg\n");
+
+    microkit_dbg_puts("[bench]   Batch publish:    ");
+    bench_print_u64(batch_cycles);
+    microkit_dbg_puts(" cycles total, ");
+    bench_print_u64(msg_count > 0 ? batch_cycles / msg_count : 0);
+    microkit_dbg_puts(" cycles/msg\n");
+
+    /* Integer approximation of speedup ratio × 100 for one decimal digit. */
+    microkit_dbg_puts("[bench]   Batch speedup:    ~");
+    if (batch_cycles > 0) {
+        bench_print_u64(single_cycles / batch_cycles);
+        microkit_dbg_puts(".");
+        bench_print_u64(((single_cycles * 10) / batch_cycles) % 10);
+        microkit_dbg_puts("x\n");
+    } else {
+        microkit_dbg_puts("N/A\n");
+    }
+}
+
 /* ── Microkit entry points ──────────────────────────────────────────────── */
 
 void init(void) {
@@ -137,6 +170,9 @@ void init(void) {
     } else {
         microkit_dbg_puts("N/A\n");
     }
+
+    /* --- structured summary --- */
+    print_bench_summary(single_cycles, batch_cycles, BENCH_MSG_COUNT);
 
     microkit_dbg_puts("[bench] DONE\n");
 }
