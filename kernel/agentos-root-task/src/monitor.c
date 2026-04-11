@@ -157,7 +157,12 @@ static struct {
     bool     vibe_demo_triggered;     /* true after we wrote WASM to staging */
     bool     vibe_swap_in_progress;   /* true while waiting for swap slot health */
     bool     vibe_demo_complete;      /* true after vibe-swap demo finishes */
-} ctrl = { false, false, 0, {0}, false, false, false, false, false, false };
+    /* lwIP timer tick counter: notify net_server every NET_TICK_INTERVAL notifications */
+    uint32_t net_tick_counter;
+} ctrl = { false, false, 0, {0}, false, false, false, false, false, false, 0 };
+
+/* Send a 10ms timer tick to net_server every NET_TICK_INTERVAL controller notifications */
+#define NET_TICK_INTERVAL 10u
 
 /* Simple busy-wait delay for demo sequencing (no timers on bare metal) */
 static void demo_delay(void) {
@@ -583,7 +588,16 @@ void init(void) {
 
 void notified(microkit_channel ch) {
     ctrl.notification_count++;
-    
+
+    /* Periodic lwIP timer tick: notify net_server every NET_TICK_INTERVAL
+     * notifications so that sys_check_timeouts() drives TCP retransmits,
+     * ARP aging, etc. (~10ms per tick at typical notification rates). */
+    ctrl.net_tick_counter++;
+    if (ctrl.net_tick_counter >= NET_TICK_INTERVAL) {
+        ctrl.net_tick_counter = 0;
+        microkit_notify((microkit_channel)CH_NET_TIMER);
+    }
+
     switch (ch) {
         case CH_EVENTBUS:
             console_log(0, 0, "[controller] EventBus notification\n");

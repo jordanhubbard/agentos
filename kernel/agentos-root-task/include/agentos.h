@@ -357,6 +357,15 @@ typedef enum {
 #define CH_VIRTIO_BLK         22   /* controller -> virtio_blk (PPC) */
 #define CH_APP_MANAGER        23   /* controller -> app_manager (PPC) */
 #define CH_HTTP_SVC           24   /* controller -> http_svc (PPC) */
+#define CH_NET_TIMER          25   /* controller -> net_server (10ms lwIP tick notify) */
+
+/* net_server lwIP timer channel (from net_server's own perspective) */
+#define NET_CH_TIMER          11u  /* receives 10ms tick notification from controller */
+
+/* net_server TCP lifecycle opcodes (new in Track A) */
+#define OP_NET_TCP_ACCEPT     0xB9u  /* accept inbound connection (future) */
+#define OP_NET_TCP_CLOSE      0xBAu  /* MR1=vnic_id: close TCP connection */
+#define OP_NET_CONN_STATE     0xBBu  /* MR1=vnic_id → MR1=state (0=free 1=conn 2=ok 3=err) */
 
 /* Console Multiplexer channel IDs (from controller perspective) */
 #ifdef BOARD_qemu_virt_aarch64
