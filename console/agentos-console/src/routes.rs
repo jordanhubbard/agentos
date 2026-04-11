@@ -26,6 +26,7 @@ pub struct AppState {
     pub guest_img_dir:  String,
     /// Watch channel to request a re-parse
     pub parse_tx:       tokio::sync::watch::Sender<()>,
+    pub sim_engine:     std::sync::Arc<tokio::sync::Mutex<agentos_sim::SimEngine>>,
 }
 
 // ─── GET / ───────────────────────────────────────────────────────────────────
@@ -158,12 +159,45 @@ pub async fn post_spawn_agent(
     State(s): State<AppState>,
     body: axum::body::Bytes,
 ) -> impl IntoResponse {
-    let url = format!("{}/api/agentos/agents/spawn", s.agentos_base);
     let body_str = String::from_utf8_lossy(&body).into_owned();
-    match quick_post(&url, &s.agentos_token, &body_str).await {
-        Ok(val)  => (StatusCode::ACCEPTED, Json(val)),
-        Err(e)   => (StatusCode::BAD_GATEWAY, Json(json!({ "error": e }))),
+
+    // Try bridge proxy first (only when agentos_base is configured).
+    if !s.agentos_base.is_empty() {
+        let url = format!("{}/api/agentos/agents/spawn", s.agentos_base);
+        if let Ok(val) = quick_post(&url, &s.agentos_token, &body_str).await {
+            return (StatusCode::ACCEPTED, Json(val));
+        }
     }
+
+    // Fallback: run locally via SimEngine.
+    let parsed_body: Value = serde_json::from_str(&body_str).unwrap_or_default();
+    let wasm_path = std::path::Path::new(&s.guest_img_dir)
+        .join(format!("{}.wasm", parsed_body.get("name").and_then(|v| v.as_str()).unwrap_or("agent")));
+
+    if wasm_path.exists() {
+        let wasm_bytes = std::fs::read(&wasm_path).unwrap_or_default();
+        if !wasm_bytes.is_empty() {
+            let engine = s.sim_engine.lock().await;
+            engine.caps_mut().grant_defaults("spawned-agent");
+            match engine.spawn_agent("spawned-agent", &wasm_bytes) {
+                Ok(mut runner) => {
+                    let _ = runner.init();
+                    let health = runner.health_check().unwrap_or(1);
+                    let log_lines = runner.state().log_lines.clone();
+                    return (StatusCode::ACCEPTED, Json(json!({
+                        "status": "simulated",
+                        "health": health,
+                        "log_lines": log_lines,
+                    })));
+                }
+                Err(e) => {
+                    return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": format!("sim: {}", e)})));
+                }
+            }
+        }
+    }
+
+    (StatusCode::ACCEPTED, Json(json!({"status": "queued", "note": "bridge unavailable, no WASM found locally"})))
 }
 
 // ─── GET /api/images ─────────────────────────────────────────────────────────
@@ -189,6 +223,66 @@ pub async fn get_images(State(s): State<AppState>) -> impl IntoResponse {
         Err(_) => vec![],
     };
     Json(json!({ "images": images }))
+}
+
+// ─── POST /api/images/import ─────────────────────────────────────────────────
+
+#[derive(serde::Deserialize)]
+pub struct ImportImageQuery {
+    pub name: Option<String>,
+}
+
+pub async fn post_import_image(
+    State(s): State<AppState>,
+    axum::extract::Query(q): axum::extract::Query<ImportImageQuery>,
+    body: axum::body::Bytes,
+) -> impl axum::response::IntoResponse {
+    if body.is_empty() {
+        return axum::Json(serde_json::json!({"error": "empty body"}));
+    }
+    let name = q.name.unwrap_or_else(|| "imported.img".to_string());
+    // Sanitize: strip directory components
+    let filename = std::path::Path::new(&name)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("imported.img")
+        .to_string();
+    let dest = std::path::Path::new(&s.guest_img_dir).join(&filename);
+    match std::fs::write(&dest, &body) {
+        Ok(_) => axum::Json(serde_json::json!({
+            "status": "ok",
+            "name": filename,
+            "size_bytes": body.len()
+        })),
+        Err(e) => axum::Json(serde_json::json!({"error": e.to_string()})),
+    }
+}
+
+// ─── GET /api/images/download-buildroot ──────────────────────────────────────
+
+pub async fn get_download_buildroot(
+    State(s): State<AppState>,
+) -> impl axum::response::IntoResponse {
+    // Check if buildroot image already exists
+    let dest_name = "buildroot-aarch64.img";
+    let dest = std::path::Path::new(&s.guest_img_dir).join(dest_name);
+    if dest.exists() {
+        return axum::Json(serde_json::json!({
+            "status": "already_present",
+            "name": dest_name,
+            "path": dest.display().to_string()
+        }));
+    }
+    // Create the guest-images dir if needed
+    if let Err(e) = std::fs::create_dir_all(&s.guest_img_dir) {
+        return axum::Json(serde_json::json!({"error": e.to_string()}));
+    }
+    // Return a "use xtask fetch-guest" instruction (actual download is done via xtask)
+    axum::Json(serde_json::json!({
+        "status": "not_present",
+        "message": "Run: cargo xtask fetch-guest --os buildroot",
+        "dest": dest.display().to_string()
+    }))
 }
 
 // ─── GET /api/topology ───────────────────────────────────────────────────────

@@ -9,6 +9,7 @@ path = "src/main.rs"
 
 [dependencies]
 pd-slots     = { path = "../pd-slots" }
+agentos-sim  = { path = "../../userspace/sim" }
 axum         = { version = "0.7", features = ["ws"] }
 tokio        = { version = "1", features = ["full"] }
 tokio-util   = { version = "0.7" }
