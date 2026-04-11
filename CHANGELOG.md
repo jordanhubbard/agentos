@@ -4,3 +4,114 @@ All notable changes to agentOS are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
+
+### Security
+- EventBus topic ownership prevents PD squatting (publish_as + Unauthorized error)
+- EventBus per-subscriber queue cap (256 events) for backpressure
+- CapabilitySet delegation chain recorded with SHA-256 attestation hash
+- WASM linear memory bounds capped at 4MB; host import bounds checked
+- SpawnServer ELF images hashed (SHA-256) and verified by app_slot on load
+- NameServer gated lookup (OP_NS_LOOKUP_GATED) with badge authorization
+- VFS path normalization: `..` resolution and inode cycle detection
+- WASM capability manifest SHA-256 verification before cap grants
+- Capability class annotations on all shared memory regions
+- ChaCha20-Poly1305 encrypted IPC between mesh PDs (`2adbe15`)
+- Ed25519 WASM module verification before slot allocation (`ec58583`, `f3f327e`)
+- cap_audit_log PD: seL4 capability grant/revoke audit trail (`1cfffeb`)
+- Boot integrity measurement chain wired into SDF CI gate (`4ae5153`)
+- net_isolator PD: per-agent outbound network firewall via seL4 capability model (`2489ef3`)
+- Priority inheritance for passive PD PPC calls to prevent inversion (`f91f026`)
+- Watchdog hardening with 4-tier escalation and restart throttling (`732c2ff`)
+- Capability attenuation: OP_CAP_ATTENUATE for sub-delegation (`f3bb3f3`)
+
+### Features
+- Multi-pane dashboard: Topology, Console, Profiler, Agents, Images, Docs panels (`270a825`)
+- Collapsible sidebar with mini topology SVG + system stat chips
+- Full SVG topology graph with live CPU/mem overlays and edge animation
+- WASM agent simulation layer (wasmi 0.31): SimEngine, SimCapStore, SimEventBus (`e74d6c1`)
+- run-agent CLI: load and execute signed WASM agents on the host
+- WASM agent signature verification (agentos.signature section, SHA-512)
+- Multi-agent orchestration via SimOrchestrator with channel routing
+- Console tab: default landing panel; Getting Started banner when offline
+- Agents panel: Spawn Agent modal with name + swap-slot selection
+- Topology: per-node title tooltips + status dot legend (`6680b7a`, `3e475f8`)
+- Sidebar nav: text labels always visible
+- Images panel: Import Image button + Download Buildroot shortcut
+- Profiler: CPU threshold legend (0-60% normal, 60-90% hot, 90%+ critical) (`63dc89e`)
+- Slot picker: grouped by category + View in Topology link
+- trace_recorder PD: full 512-entry circular ring with START/STOP/QUERY/DUMP (`81d2c36`)
+- Runtime capability policy loading from binary blob (cap_policy.bin)
+- Per-agent fault restart policy (max_restarts, escalation threshold) (`755ff96`)
+- tools/gen-channels: auto-generate typed channel enums from agentos.system
+- tools/gen-policy: compile policy.txt to binary cap_policy.bin
+- GitHub Actions CI: cargo test, trunk build, WASM examples, QEMU boot test (`4732120`)
+- WASM examples: health-monitor and log-aggregator agents
+- docs/ui-audit.md: expert UX evaluation against virt-manager/VMware Fusion (`bfda2ec`)
+- Fault injection framework + CI adversarial test suite (`8696592`)
+- Seeded ring buffer library with typed shared-memory channels (`814fdb9`)
+- seL4 secure inter-VM GPU zero-copy shared memory channel (`8434b1a`)
+- Capability attestation: cap_broker_attest() with SHA-256 signed snapshot (`cacf418`, `927564a`)
+- CAmkES-style SDF generator: gen_sdf.py + topology.yaml (`e9df40b`)
+- topology.yaml validation gate in GitHub Actions CI (`498b332`)
+- seL4 time-partitioning scheduler PD: fixed CPU budget per agent class (`8f581a0`)
+- OP_PUBLISH_BATCH: coalesce up to 16 MsgBus events per seL4_Call (`7d91ef4`, `f5f48dd`)
+- console_mux PD: session multiplexer ('tmux for agentOS') (`844d37c`)
+- VibeEngine hot-reload: zero-downtime WASM slot update (OP_VIBE_HOTRELOAD 0x47) (`6d33f96`)
+- VM multiplexer: create/destroy/switch 4 FreeBSD instances under seL4 (`5cf9a1d`)
+- mem_profiler PD: per-slot WASM heap tracking, leak detection, quota alerts (`3298a02`)
+- OOM killer PD: score-based WASM slot eviction under memory pressure (`6056ffa`)
+- snapshot_sched PD: periodic WASM slot checkpointing to AgentFS (`45aa96b`, `f93913d`)
+- cap_policy hot-reload: OP_CAP_POLICY_RELOAD updates grants without reboot (`fc75085`, `f5f3392`)
+- core_affinity PD: CPU affinity scheduling for WASM slots (`d9faecd`)
+- agentctl ncurses TUI for pre-boot menu and console session manager (`1b2918c`)
+- x86_64 Linux VMM stub and system manifest (`31226a7`)
+- FreeBSD VMM: boot FreeBSD AArch64 as VM guest under seL4 (`a7aaf13`)
+- power_mgr PD: DVFS thermal management for sparky GB10 (`1011c1e`)
+- dev_shell PD: interactive seL4 debug REPL for QEMU (`4b15330`, `3d4f2b7`)
+- Raft consensus for distributed agent mesh (`2adbe15`)
+- GPU scheduler PD for CUDA workload routing on Sparky (`0fe9d12`, `b1a5d3e`)
+- CUDA PTX compute offload via WASM custom sections (agentos.cuda) (`bfe77c0`)
+- Distributed agent mesh PD + SquirrelBus bridge (`e3518e5`)
+- WASM module registry cache + boot replay (`e683af6`)
+- Linux VMM integration via libvmm (AArch64) (`895f2fe`)
+- ARM64 (AArch64) port: builds and boots on QEMU virt (`90d0b5d`)
+- VibeEngine PD: WASM hot-swap pipeline (`fc4329f`)
+- quota_pd: per-agent CPU/memory quota enforcement with seL4 cap revocation (`18f8799`, `6a3ee67`)
+- debug_bridge_pd: seL4 debug channel for live WASM slot debugging (`93e59dc`)
+- IPC perf counters PD + wasm3 heap_stats hook (`de1fdb4`)
+- Multi-arch build system: riscv64, aarch64, x86_64 (`08d84fb`)
+- Profiler tab: live WASM slot flame graph on dashboard (`63dc89e`)
+- agentOS Python SDK (agentos_sdk) (`a1a7b9c`)
+- Release automation via `make release` (cargo xtask) (`26d72ac`)
+- Full-duplex console, trace_recorder PD, FreeBSD lazy loader, API tests (`7ef82d3`)
+- Idempotent guest OS fetch wired into make + GUI download buttons (`b23597d`)
+- xterm.js terminal console dashboard (`b472afb`)
+- Rust migration: all userspace and build tooling from Python/JS to Rust (`bd589c4`)
+- agentOS v0.1.0-alpha: first boot (`8650b14`)
+
+### Build
+- Kernel builds cleanly for riscv64 and aarch64 targets (`806be81`, `f319000`)
+- Fixed: duplicate opcode OP_CAP_POLICY_RELOAD in agentos.h (`806be81`)
+- Fixed: SWAP_SLOT_BASE_CH was 8, corrected to 30
+- Fixed: off-by-one in log.c hex buffer (buf[18]→buf[19]) (`fab13bb`)
+- Fixed: NULL and integer limit macro redefinition guards
+- Fixed: QEMU TCG flags on Apple Silicon (aarch64 cortex-a53, no HVF) (`fab13bb`)
+- Fixed: WASM bounds checking and priority inversion (`33c1531`, `08e512c`)
+- Fixed: ring buffer overflow signal (`33c1531`)
+- Fixed: five major OS security findings addressed in two passes (`c8dd3ea`, `0c5dbdd`)
+- Fixed: critical OS security findings from design review (`ec868f8`, `8e98874`)
+- channels_generated.h auto-generated from agentos.system XML
+- Fixed: console_log migration build breaks — missing includes, redef, invalid channel id (`1f1fb41`)
+- Fixed: controller PD crash and serial output wiring to console panes (`dc2fbda`)
+- Fixed: bridge-as-server socket so QEMU connects as client (`94c6af7`)
+- Fixed: duplicate res.writeHead() in /api/vm/images handler (`72ec0ba`)
+- Fixed: cortex-a72 CPU for TCG (host CPU requires KVM/HVF) (`d1b2d6e`)
+- Fixed: m3_bare_metal.c missing from PD_MONITOR_SRCS on ARM64 (`9f7224a`)
+- Fixed: Homebrew split llvm/lld formulae on macOS (`9133e82`)
+- Fixed: Microkit SDK download + Homebrew LLVM PATH for macOS (`c8f243e`)
+- Fixed: stale microkit-sdk symlink removed (`1415452`)
+- Fixed: git submodule auto-initialisation when missing (`08dca11`)
+- Fixed: RCC renamed to agentOS console with build error fixes (`c2da13e`)
+- Fixed: controller links, system file validity (`9fd898f`)
+- scripts/boot-test.sh: reusable QEMU serial banner verification with configurable timeout
+- .github/workflows/ci.yml: dedicated boot-test job (riscv64 + QEMU serial banner check)

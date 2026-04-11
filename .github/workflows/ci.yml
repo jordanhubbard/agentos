@@ -191,6 +191,38 @@ jobs:
           if-no-files-found: ignore
 
   # ---------------------------------------------------------------------------
+  # Dedicated QEMU boot test — riscv64 serial banner check
+  # ---------------------------------------------------------------------------
+  boot-test:
+    name: QEMU boot test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y qemu-system-misc qemu-system-riscv gcc-riscv64-linux-gnu \
+            clang lld python3 device-tree-compiler
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Cache Microkit SDK
+        id: cache-sdk-bt
+        uses: actions/cache@v4
+        with:
+          path: microkit-sdk-2.1.0
+          key: microkit-sdk-2.1.0-linux-x86-64
+      - name: Download Microkit SDK
+        if: steps.cache-sdk-bt.outputs.cache-hit != 'true'
+        run: make deps-sdk
+      - name: Build kernel image
+        run: make TARGET_ARCH=riscv64 BOARD=qemu_virt_riscv64 build
+      - name: Boot test
+        timeout-minutes: 2
+        run: |
+          chmod +x scripts/boot-test.sh
+          scripts/boot-test.sh build/qemu_virt_riscv64/agentos.img "agentOS v0.1.0"
+
+  # ---------------------------------------------------------------------------
   # Fault injection CI scenario
   # Exercises watchdog + fault_handler recovery paths adversarially.
   # ---------------------------------------------------------------------------
