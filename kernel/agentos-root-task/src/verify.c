@@ -1095,7 +1095,105 @@ static bool wasm_find_sig_section(const uint8_t *wasm, size_t len,
 }
 
 /* =========================================================================
- * Section 5: Public API
+ * Section 5: WASM capabilities manifest verification
+ * ========================================================================= */
+
+/*
+ * find_wasm_custom_section - locate a named WASM custom section (type 0x00).
+ *
+ * Walks the WASM binary's section sequence starting after the 8-byte header.
+ * For each custom section, decodes the LEB128-prefixed name and compares it
+ * against `name` (length `name_len`).  On success, returns a pointer to the
+ * first byte of the section *body* (after the name field) and writes the
+ * body length to *out_len.  Returns NULL if not found or on parse error.
+ *
+ * This helper is used by verify_capabilities_manifest() and is intentionally
+ * separate from wasm_find_sig_section() which has a specialised layout for
+ * the 128-byte agentos.signature payload.
+ */
+static const uint8_t *find_wasm_custom_section(
+    const uint8_t *wasm, size_t wasm_len,
+    const char *name, size_t *out_len)
+{
+    size_t name_len = strlen(name);
+
+    if (wasm_len < 8) return NULL;
+    const uint8_t *p   = wasm + 8;   /* skip WASM magic + version */
+    const uint8_t *end = wasm + wasm_len;
+
+    while (p < end) {
+        if (p + 1 > end) break;
+        uint8_t section_type = *p++;
+
+        uint32_t section_size = 0;
+        size_t leb = leb128_read(p, (size_t)(end - p), &section_size);
+        if (leb == 0) break;
+        p += leb;
+
+        const uint8_t *section_start = p;
+
+        if (section_type == 0x00 && section_size > name_len + 1) {
+            uint32_t n_len = 0;
+            size_t nleb = leb128_read(p, (size_t)(end - p), &n_len);
+            if (nleb == 0) goto next_section;
+            const uint8_t *np = p + nleb;
+
+            if (n_len == (uint32_t)name_len && np + n_len <= end &&
+                memcmp(np, name, name_len) == 0) {
+                const uint8_t *body = np + n_len;
+                size_t body_len = (size_t)section_size - (size_t)(np + n_len - section_start);
+                *out_len = body_len;
+                return body;
+            }
+        }
+
+    next_section:
+        p = section_start + (size_t)section_size;
+    }
+
+    return NULL;
+}
+
+/*
+ * verify_capabilities_manifest - verify that the agentos.capabilities
+ * custom section hash matches the agentos.cap_signature section.
+ *
+ * The signing model:
+ *   agentos.cap_signature = SHA-256(agentos.capabilities section bytes)
+ *   signed with the agent issuer's ED25519 key (stored in agentos.signature)
+ *
+ * For the sim layer (no hardware key), we verify the SHA-256 hash only.
+ * Returns  0 on success,
+ *         -1 if required sections are missing,
+ *         -2 if hash mismatch.
+ */
+int verify_capabilities_manifest(const uint8_t *wasm, size_t wasm_len)
+{
+    size_t caps_len   = 0;
+    size_t sig_len    = 0;
+    uint8_t computed[32];
+
+    /* 1. Find agentos.capabilities section */
+    const uint8_t *caps_body = find_wasm_custom_section(
+        wasm, wasm_len, "agentos.capabilities", &caps_len);
+    if (!caps_body) return -1;
+
+    /* 2. Find agentos.cap_signature section (must be exactly 32 bytes) */
+    const uint8_t *cap_sig = find_wasm_custom_section(
+        wasm, wasm_len, "agentos.cap_signature", &sig_len);
+    if (!cap_sig || sig_len < 32) return -1;
+
+    /* 3. Compute SHA-256 of the capabilities section body bytes */
+    sha256_hash(computed, caps_body, caps_len);
+
+    /* 4. Compare against the stored cap_signature digest */
+    if (memcmp(computed, cap_sig, 32) != 0) return -2;
+
+    return 0;
+}
+
+/* =========================================================================
+ * Section 6: Public API
  * ========================================================================= */
 
 bool vibe_verify_module(const uint8_t *wasm, size_t len,

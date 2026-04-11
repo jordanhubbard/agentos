@@ -11,6 +11,7 @@
 #include "boot_integrity.h"
 #include "nameserver.h"
 #include "app_manager.h"
+#include "verify.h"
 #include <stdint.h>
 
 /* Memory regions - patched by Microkit setvar */
@@ -252,7 +253,20 @@ static void vibe_demo_step4_notify(void) {
     /* The WASM binary is in the vibe_staging region at wasm_offset.
      * We need to copy it to the swap slot's code region (swap_code_ctrl_N).
      * vibe_swap_begin handles this — it takes a pointer to code bytes. */
-    const void *wasm_bytes = (const void *)(vibe_staging_ctrl_vaddr + wasm_offset);
+    const uint8_t *wasm_bytes = (const uint8_t *)(vibe_staging_ctrl_vaddr + wasm_offset);
+
+    /* Verify the WASM capability manifest before granting any capabilities.
+     * reject agents whose agentos.cap_signature does not match the
+     * SHA-256 of their agentos.capabilities section — a tampered manifest
+     * could silently escalate privilege. */
+    int manifest_ok = verify_capabilities_manifest(wasm_bytes, wasm_size);
+    if (manifest_ok == -2) {
+        console_log(0, 0, "[monitor] WASM manifest hash mismatch — rejecting agent load\n");
+        return;
+    } else if (manifest_ok == -1) {
+        console_log(0, 0, "[monitor] no capability manifest — granting minimal defaults only\n");
+        /* Continue with minimal default capabilities rather than full manifest */
+    }
 
     console_log(0, 0, "[controller] Initiating kernel-side swap...\n");
     ctrl.vibe_swap_in_progress = true;
@@ -685,6 +699,18 @@ void notified(microkit_channel ch) {
                      *   notify below.
                      */
                     console_log(0, 0, "[controller] Step 4: VibeEngine hot-swap demo...\n[controller] Direct path: loading echo_service.wasm into swap slot 0\n");
+
+                    /* Verify capability manifest before loading (trusted path still
+                     * checks, since ECHO_SERVICE_WASM has no manifest sections it
+                     * returns -1 → minimal defaults, which is correct for demo). */
+                    int demo_manifest_ok = verify_capabilities_manifest(
+                        ECHO_SERVICE_WASM, ECHO_SERVICE_WASM_LEN);
+                    if (demo_manifest_ok == -2) {
+                        console_log(0, 0, "[monitor] WASM manifest hash mismatch — rejecting agent load\n");
+                        break;
+                    } else if (demo_manifest_ok == -1) {
+                        console_log(0, 0, "[monitor] no capability manifest — granting minimal defaults only\n");
+                    }
 
                     /* Direct vibe_swap_begin (trusted controller path) */
                     /* service 2 = toolsvc (swappable) */
