@@ -1,5 +1,6 @@
 use leptos::*;
 use serde::Deserialize;
+use wasm_bindgen::JsCast;
 
 #[derive(Clone, Deserialize)]
 pub struct ImageEntry {
@@ -10,9 +11,10 @@ pub struct ImageEntry {
 
 #[component]
 pub fn ImagesPanel() -> impl IntoView {
-    let (images,  set_images)  = create_signal(Vec::<ImageEntry>::new());
-    let (loading, set_loading) = create_signal(false);
-    let (error,   set_error)   = create_signal(Option::<String>::None);
+    let (images,       set_images)       = create_signal(Vec::<ImageEntry>::new());
+    let (loading,      set_loading)      = create_signal(false);
+    let (error,        set_error)        = create_signal(Option::<String>::None);
+    let (dl_status,    set_dl_status)    = create_signal(Option::<String>::None);
 
     let fetch = move || {
         set_loading.set(true);
@@ -36,24 +38,83 @@ pub fn ImagesPanel() -> impl IntoView {
     // Fetch on mount
     create_effect(move |_| { fetch(); });
 
+    // Import: trigger a hidden file input click (plain fn ptr — no captures, Copy-able)
+    fn trigger_import(_: web_sys::MouseEvent) {
+        if let Some(window) = web_sys::window() {
+            if let Some(document) = window.document() {
+                if let Ok(Some(el)) = document.query_selector("#images-file-input") {
+                    if let Ok(input) = el.dyn_into::<web_sys::HtmlInputElement>() {
+                        input.click();
+                    }
+                }
+            }
+        }
+    }
+
+    // Download Buildroot: call API endpoint
+    let on_download = move |_| {
+        set_dl_status.set(Some("Requesting Buildroot download…".to_string()));
+        let sds = set_dl_status;
+        wasm_bindgen_futures::spawn_local(async move {
+            match gloo_net::http::Request::get("/api/images/download-buildroot")
+                .send().await
+            {
+                Ok(resp) if resp.ok() =>
+                    sds.set(Some("Buildroot download started.".to_string())),
+                Ok(resp) =>
+                    sds.set(Some(format!("Error: HTTP {}", resp.status()))),
+                Err(e) =>
+                    sds.set(Some(format!("Error: {}", e))),
+            }
+        });
+    };
+
+    // File-input change handler: show drop-box hint
+    let on_file_selected = move |_: web_sys::Event| {
+        if let Some(w) = web_sys::window() {
+            let _ = w.alert_with_message(
+                "Import: copy the selected file to the guest-images/ directory to register it."
+            );
+        }
+    };
+
     view! {
+        // Hidden file input for import
+        <input
+            id="images-file-input"
+            type="file"
+            accept=".img,.qcow2,.iso,.raw"
+            style="display:none"
+            on:change=on_file_selected
+        />
         <div class="images-panel">
             <div class="images-toolbar">
                 <h2 class="panel-heading">"OS Images"</h2>
                 <button class="btn" on:click=move |_| fetch()>
                     {move || if loading.get() { "Loading…" } else { "↻ Refresh" }}
                 </button>
+                <button class="btn btn-primary" on:click=trigger_import>"＋ Import Image"</button>
             </div>
 
             {move || error.get().map(|e| view! {
                 <div class="error-banner">{"Error: "}{e}</div>
             })}
 
+            {move || dl_status.get().map(|s| view! {
+                <div class="info-banner">{s}</div>
+            })}
+
             <div class="images-table-wrap">
                 <Show
                     when=move || !images.get().is_empty()
-                    fallback=|| view! {
-                        <div class="empty-state">"No images found. Place .img files in the guest-images/ directory."</div>
+                    fallback=move || view! {
+                        <div class="images-empty">
+                            <p>"No images found in guest-images/"</p>
+                            <div class="images-empty-actions">
+                                <button class="btn btn-primary" on:click=trigger_import>"＋ Import Image"</button>
+                                <button class="btn" on:click=on_download>"⬇ Download Buildroot"</button>
+                            </div>
+                        </div>
                     }
                 >
                     <table class="images-table">

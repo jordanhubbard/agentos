@@ -402,9 +402,7 @@ pub fn App() -> impl IntoView {
                                     on:click=move |_| sp2.set(id_str.to_string())
                                 >
                                     <span class="nav-icon">{icon_str}</span>
-                                    <Show when=move || sidebar_open.get()>
-                                        <span class="nav-label">{label_str}</span>
-                                    </Show>
+                                    <span class="nav-label">{label_str}</span>
                                 </button>
                             }
                         }).collect_view()}
@@ -426,10 +424,10 @@ pub fn App() -> impl IntoView {
                         />
                     </Show>
                     <Show when=move || current_panel.get() == "console">
-                        <ConsoleTab tiles=tiles set_tiles=set_tiles highlighted_tile=highlighted_tile ws_status=ws_status />
+                        <ConsoleTab tiles=tiles set_tiles=set_tiles highlighted_tile=highlighted_tile ws_status=ws_status set_panel=sp />
                     </Show>
                     <Show when=move || current_panel.get() == "profiler">
-                        <ProfilerTab />
+                        <ProfilerTab set_panel=sp />
                     </Show>
                     <Show when=move || current_panel.get() == "agents">
                         <AgentsTab />
@@ -543,6 +541,7 @@ fn ConsoleTab(
     set_tiles:        WriteSignal<Vec<(usize, String)>>,
     highlighted_tile: RwSignal<Option<usize>>,
     ws_status:        ReadSignal<WsStatus>,
+    set_panel:        WriteSignal<String>,
 ) -> impl IntoView {
     let show_welcome = create_memo(move |_| {
         ws_status.get() != WsStatus::Connected
@@ -638,24 +637,48 @@ fn ConsoleTab(
                 <div id="slot-picker-overlay" on:click=move |_| set_picker_open.set(false)>
                     <div class="slot-picker-dialog" on:click=|e| e.stop_propagation()>
                         <h3>"Select a PD Slot"</h3>
-                        {PD_SLOTS.iter().map(|slot| {
-                            let slot_id  = slot.id;
-                            let display  = slot.display.to_string();
-                            let display2 = display.clone();
-                            view! {
-                                <button
-                                    class="slot-picker-btn"
-                                    on:click=move |_| {
-                                        set_tiles.update(|v| {
-                                            if !v.iter().any(|(id, _)| *id == slot_id) {
-                                                v.push((slot_id, display2.clone()));
+                        {[
+                            ("Core",       0usize..5usize),
+                            ("Workers",    5..9),
+                            ("Swap Slots", 9..13),
+                            ("System",     13..16),
+                        ].iter().map(|(group_label, range)| {
+                            let slots_in_group: Vec<_> = PD_SLOTS.iter()
+                                .filter(|s| range.contains(&s.id))
+                                .collect();
+                            let group_label = *group_label;
+                            let rows = slots_in_group.iter().map(|slot| {
+                                let slot_id  = slot.id;
+                                let display  = slot.display.to_string();
+                                let display2 = display.clone();
+                                let sp = set_panel;
+                                view! {
+                                    <div class="slot-picker-row">
+                                        <button
+                                            class="slot-picker-btn"
+                                            on:click=move |_| {
+                                                set_tiles.update(|v| {
+                                                    if !v.iter().any(|(id, _)| *id == slot_id) {
+                                                        v.push((slot_id, display2.clone()));
+                                                    }
+                                                });
+                                                set_picker_open.set(false);
                                             }
-                                        });
-                                        set_picker_open.set(false);
-                                    }
-                                >
-                                    {format!("{} — {}", slot_id, display)}
-                                </button>
+                                        >
+                                            {format!("{} — {}", slot_id, display)}
+                                        </button>
+                                        <button class="slot-topo-link" on:click=move |_| {
+                                            sp.set("topology".to_string());
+                                            set_picker_open.set(false);
+                                        }>"View in Topology →"</button>
+                                    </div>
+                                }
+                            }).collect_view();
+                            view! {
+                                <div class="slot-group">
+                                    <div class="slot-group-header">{group_label}</div>
+                                    {rows}
+                                </div>
                             }
                         }).collect_view()}
                         <button class="slot-picker-cancel" on:click=move |_| set_picker_open.set(false)>
@@ -786,7 +809,7 @@ fn LogPanel(lines: RwSignal<Vec<String>>, color: &'static str, placeholder: &'st
 // ── ProfilerTab ───────────────────────────────────────────────────────────────
 
 #[component]
-fn ProfilerTab() -> impl IntoView {
+fn ProfilerTab(set_panel: WriteSignal<String>) -> impl IntoView {
     let (snapshot,  set_snapshot) = create_signal(Option::<ProfilerSnapshot>::None);
     let (loading,   set_loading)  = create_signal(false);
 
@@ -802,6 +825,15 @@ fn ProfilerTab() -> impl IntoView {
 
     view! {
         <div class="tab-panel active">
+            <div class="profiler-legend">
+                <span class="threshold-normal">"● 0–60% normal"</span>
+                <span class="threshold-hot">"● 60–90% hot"</span>
+                <span class="threshold-critical">"● 90%+ critical"</span>
+                <a class="help-link" href="#" on:click=move |e| {
+                    e.prevent_default();
+                    set_panel.set("docs".to_string());
+                }>"? Docs"</a>
+            </div>
             <div class="profiler-header">
                 <button class="btn primary" on:click=fetch_snapshot>
                     {move || if loading.get() { "Loading…" } else { "Snapshot" }}
