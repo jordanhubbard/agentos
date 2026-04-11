@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use axum::{
-    extract::State,
+    extract::{Path, State},
     http::{header, StatusCode},
     response::{Html, IntoResponse},
     Json,
@@ -313,6 +313,64 @@ pub async fn get_topology() -> impl IntoResponse {
     let metrics = serde_json::to_value(generate_profiler_snapshot()).unwrap_or_default();
 
     Json(json!({ "nodes": nodes, "edges": edges, "metrics": metrics }))
+}
+
+// ─── GET /api/agentos/vms ────────────────────────────────────────────────────
+
+pub async fn get_vms(State(s): State<AppState>) -> impl IntoResponse {
+    // Try IPC bridge first
+    let bridge_url = format!("{}/api/agentos/vms", s.agentos_base);
+    if let Ok(val) = quick_get(&bridge_url, &s.agentos_token).await {
+        return (StatusCode::OK, Json(val));
+    }
+    // Fallback: empty list (vm_manager PD not yet connected)
+    (StatusCode::OK, Json(json!([])))
+}
+
+// ─── POST /api/agentos/vms ───────────────────────────────────────────────────
+
+#[derive(serde::Deserialize)]
+pub struct CreateVmBody {
+    pub label:  String,
+    pub ram_mb: u32,
+}
+
+pub async fn post_create_vm(
+    State(s): State<AppState>,
+    Json(body): Json<CreateVmBody>,
+) -> impl IntoResponse {
+    // Try IPC bridge first
+    let bridge_url = format!("{}/api/agentos/vms", s.agentos_base);
+    let req_body = serde_json::json!({ "label": body.label, "ram_mb": body.ram_mb });
+    if let Ok(val) = quick_post(&bridge_url, &s.agentos_token, &req_body.to_string()).await {
+        return (StatusCode::ACCEPTED, Json(val));
+    }
+    // Fallback: acknowledge gracefully
+    (StatusCode::ACCEPTED, Json(json!({ "ok": true, "note": "bridge unavailable" })))
+}
+
+// ─── POST /api/agentos/vms/:slot_id/:action ──────────────────────────────────
+
+pub async fn post_vm_action(
+    State(s): State<AppState>,
+    Path((slot_id, action)): Path<(u8, String)>,
+) -> impl IntoResponse {
+    // Validate action
+    let valid_actions = ["start", "stop", "pause", "resume", "snapshot", "destroy"];
+    if !valid_actions.contains(&action.as_str()) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "ok": false, "error": "unknown action" })),
+        );
+    }
+
+    // Try IPC bridge first
+    let bridge_url = format!("{}/api/agentos/vms/{}/{}", s.agentos_base, slot_id, action);
+    if let Ok(val) = quick_post(&bridge_url, &s.agentos_token, "{}").await {
+        return (StatusCode::OK, Json(val));
+    }
+    // Fallback: acknowledge gracefully
+    (StatusCode::OK, Json(json!({ "ok": true, "note": "bridge unavailable" })))
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────

@@ -1,6 +1,7 @@
 mod docs;
 mod images;
 mod topology;
+mod vm_panel;
 mod xterm_bindings;
 
 use std::rc::Rc;
@@ -16,6 +17,7 @@ use topology::{
 };
 use images::ImagesPanel;
 use docs::DocsPanel;
+use vm_panel::VmPanel;
 
 // ── PD slot definitions ───────────────────────────────────────────────────────
 
@@ -384,6 +386,7 @@ pub fn App() -> impl IntoView {
                             ("console",  "⬜", "Console"),
                             ("profiler", "◎", "Profiler"),
                             ("agents",   "◈", "Agents"),
+                            ("vms",      "▣", "VMs"),
                             ("images",   "⬇", "Images"),
                             ("docs",     "⁇", "Docs"),
                         ].iter().map(|(id, icon, label)| {
@@ -431,6 +434,9 @@ pub fn App() -> impl IntoView {
                     </Show>
                     <Show when=move || current_panel.get() == "agents">
                         <AgentsTab />
+                    </Show>
+                    <Show when=move || current_panel.get() == "vms">
+                        <VmPanel set_panel=sp />
                     </Show>
                     <Show when=move || current_panel.get() == "images">
                         <ImagesPanel />

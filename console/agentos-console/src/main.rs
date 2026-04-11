@@ -298,6 +298,10 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/agentos/slots",         get(routes::get_agentos_slots))
         .route("/api/agentos/agents",        get(routes::get_agentos_agents))
         .route("/api/agentos/agents/spawn",  post(routes::post_spawn_agent))
+        // VMs
+        .route("/api/agentos/vms",                    get(routes::get_vms))
+        .route("/api/agentos/vms",                    post(routes::post_create_vm))
+        .route("/api/agentos/vms/:slot_id/:action",   post(routes::post_vm_action))
         // Images + topology
         .route("/api/images",                    get(routes::get_images))
         .route("/api/images/import",             post(routes::post_import_image))
