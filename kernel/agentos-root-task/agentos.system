@@ -122,9 +122,54 @@
         <program_image path="worker.elf" />
     </protection_domain>
     
+    <!--
+      ══════════════════════════════════════════════════════════════════
+      Capability Class Reference (AGENTOS_CAP_* in agentos.h)
+
+      The following constants gate access to shared memory regions in a
+      full capability system.  They are enforced at runtime by cap_broker
+      and checked at WASM load time by verify_capabilities_manifest().
+
+        AGENTOS_CAP_COMPUTE     0x01  CPU time budget
+        AGENTOS_CAP_MEMORY      0x02  heap allocation
+        AGENTOS_CAP_OBJECTSTORE 0x04  AgentFS (hot store + VFS reads)
+        AGENTOS_CAP_NETWORK     0x08  outbound network endpoints
+        AGENTOS_CAP_SPAWN       0x10  spawn child agents
+        AGENTOS_CAP_AUDIT       0x20  read cap_audit_log
+        AGENTOS_CAP_SWAP_WRITE  0x40  write WASM binary to a swap region
+        AGENTOS_CAP_SWAP_READ   0x80  read/execute WASM from a swap region
+
+      Each <memory_region> annotation below lists:
+        Write access  — which PD(s) may write and why
+        Read access   — which PD(s) may read and why
+        Cap class     — the AGENTOS_CAP_* constant that would gate it
+        Threat        — the attack mitigated by the cap gate
+      ══════════════════════════════════════════════════════════════════
+    -->
+
     <!-- Memory regions -->
+
+    <!-- monitor_stack: private stack for the controller PD.
+         Write access: controller only (seL4 stack frame writes).
+         Read access:  controller only.
+         Cap class:    N/A (private PD region, not shared).
+         Threat:       stack smashing; mitigated by seL4 address-space isolation. -->
     <memory_region name="monitor_stack"   size="0x10000" />
+
+    <!-- eventbus_ring: 256KB publish/subscribe ring buffer.
+         Write access: event_bus PD only (ring head + event slots).
+         Read access:  event_bus (admin), init_agent, worker_0..7 (tail reads).
+         Cap class:    AGENTOS_CAP_NETWORK (IPC-like pub/sub backbone).
+         Threat:       rogue PD injecting fake events; mitigated by passive-PD
+                       write-gate — only event_bus holds the rw mapping. -->
     <memory_region name="eventbus_ring"   size="0x40000" />
+
+    <!-- cap_policy_shmem: 4KB hot-reload policy blob staging.
+         Write access: controller only (writes new policy before OP_CAP_POLICY_RELOAD PPC).
+         Read access:  cap_policy PD (parses blob on reload).
+         Cap class:    AGENTOS_CAP_AUDIT (policy admin requires audit access).
+         Threat:       unauthorized policy injection escalating agent caps;
+                       mitigated by controller-only write mapping + PPC gate. -->
     <memory_region name="cap_policy_shmem" size="0x1000" />
     
     <!-- Core service channels -->
@@ -182,7 +227,12 @@
         <map mr="agentfs_store" vaddr="0x5000000" perms="rw" setvar_vaddr="agentfs_store_vaddr" />
     </protection_domain>
 
-    <!-- Shared memory for AgentFS hot store -->
+    <!-- agentfs_store: 320KB AgentFS hot store (index + blob data).
+         Write access: agentfs PD only (manages index + blob pool).
+         Read access:  agentfs PD only (all access is mediated via PPC).
+         Cap class:    AGENTOS_CAP_OBJECTSTORE (object storage backend).
+         Threat:       direct memory read bypassing AgentFS ACLs;
+                       mitigated by agentfs-only mapping — callers must PPC. -->
     <memory_region name="agentfs_store" size="0x50000" />  <!-- 320KB: index + blobs -->
 
     <!-- Channel 5: controller <-> agentfs (controller PPCs into passive agentfs) -->
@@ -236,9 +286,35 @@
       Swap slot maps it r (reads and interprets via wasm3).
       Channels: controller id=30..33 <-> swap_slot_N id=0
     -->
+
+    <!-- swap_code_0: WASM hot-swap staging for slot 0.
+         Write access: controller only (writes WASM binary + swap_slot_header_t).
+         Read access:  swap_slot_0 (interprets WASM via wasm3).
+         Cap class:    AGENTOS_CAP_SWAP_WRITE (controller) / AGENTOS_CAP_SWAP_READ (slot).
+         Threat:       unauthorized write could inject malicious WASM;
+                       mitigated by controller-only rw mapping + ELF SHA-256 check
+                       in verify_capabilities_manifest(). -->
     <memory_region name="swap_code_0" size="0x400000" />
+
+    <!-- swap_code_1: WASM hot-swap staging for slot 1.
+         Write access: controller only (writes WASM binary + swap_slot_header_t).
+         Read access:  swap_slot_1 (interprets WASM via wasm3).
+         Cap class:    AGENTOS_CAP_SWAP_WRITE (controller) / AGENTOS_CAP_SWAP_READ (slot).
+         Threat:       same as swap_code_0. -->
     <memory_region name="swap_code_1" size="0x400000" />
+
+    <!-- swap_code_2: WASM hot-swap staging for slot 2.
+         Write access: controller only (writes WASM binary + swap_slot_header_t).
+         Read access:  swap_slot_2 (interprets WASM via wasm3).
+         Cap class:    AGENTOS_CAP_SWAP_WRITE (controller) / AGENTOS_CAP_SWAP_READ (slot).
+         Threat:       same as swap_code_0. -->
     <memory_region name="swap_code_2" size="0x400000" />
+
+    <!-- swap_code_3: WASM hot-swap staging for slot 3.
+         Write access: controller only (writes WASM binary + swap_slot_header_t).
+         Read access:  swap_slot_3 (interprets WASM via wasm3).
+         Cap class:    AGENTOS_CAP_SWAP_WRITE (controller) / AGENTOS_CAP_SWAP_READ (slot).
+         Threat:       same as swap_code_0. -->
     <memory_region name="swap_code_3" size="0x400000" />
 
     <protection_domain name="swap_slot_0" priority="75">
@@ -289,6 +365,13 @@
           - VibeEngine reads + validates
           - Controller reads and feeds to vibe_swap_begin
     -->
+    <!-- vibe_staging: 4MB WASM proposal staging area for VibeEngine.
+         Write access: vibe_engine PD only (validates WASM + writes 64-byte metadata footer).
+         Read access:  controller (reads proposal metadata + WASM pointer after approval),
+                       init_agent (submits WASM bytes via OP_VIBE_PROPOSE PPC).
+         Cap class:    AGENTOS_CAP_SWAP_WRITE (vibe_engine / proposing agent).
+         Threat:       agent writing oversized or malformed WASM to escalate to swap;
+                       mitigated by vibe_engine validation pass + controller manifest check. -->
     <memory_region name="vibe_staging" size="0x400000" />  <!-- 4MB staging -->
 
     <protection_domain name="vibe_engine" priority="140" passive="true">
@@ -336,6 +419,12 @@
         mem_ring (256KB): ring buffer of 64-byte per-slot heap snapshots
     -->
 
+    <!-- mem_ring: 256KB heap snapshot ring for mem_profiler.
+         Write access: mem_profiler only (writes per-slot allocation snapshots).
+         Read access:  mem_profiler (admin); controller (future: leak report export).
+         Cap class:    AGENTOS_CAP_AUDIT (profiling data is audit-class telemetry).
+         Threat:       rogue PD forging allocation records to suppress leak alerts;
+                       mitigated by mem_profiler-only rw mapping. -->
     <memory_region name="mem_ring" size="0x40000" />   <!-- 256KB snapshot ring -->
 
     <protection_domain name="mem_profiler" priority="108" passive="true">
@@ -470,6 +559,12 @@
       ══════════════════════════════════════════════════════════════════
     -->
 
+    <!-- perf_ring: 4KB IPC latency histogram export records (64 × 64B).
+         Write access: perf_counters PD only (writes histogram on OP_PERF_EXPORT).
+         Read access:  perf_counters (admin); future: metrics_exporter (r-only).
+         Cap class:    AGENTOS_CAP_AUDIT (performance telemetry is audit-class data).
+         Threat:       rogue PD injecting fake latency data to mask real anomalies;
+                       mitigated by perf_counters-only write mapping. -->
     <memory_region name="perf_ring" size="0x1000" />   <!-- 4KB: 64 × 64B records -->
 
     <protection_domain name="perf_counters" priority="95" passive="true">
@@ -533,6 +628,12 @@
       ══════════════════════════════════════════════════════════════════
     -->
 
+    <!-- console_rings: 64KB per-PD output ring buffer (16 × 4KB slots).
+         Write access: each PD writes into its own 4KB slot (head pointer only).
+         Read access:  console_mux (drains all slots); PDs (own slot head writes).
+         Cap class:    N/A (debug I/O; not gated by agent capability system).
+         Threat:       PD overwriting another PD's output slot to corrupt console output;
+                       mitigated by per-PD slot assignment enforced by console_mux. -->
     <!-- Console ring buffer: 16 × 4KB = 64KB shared output rings -->
     <memory_region name="console_rings" size="0x10000" />
 
@@ -615,6 +716,13 @@
       ══════════════════════════════════════════════════════════════════
     -->
 
+    <!-- net_isolator_ring: 256KB per-slot ACL table mirror + deny statistics.
+         Write access: net_isolator PD only (updates ACL entries + deny counters).
+         Read access:  net_isolator (admin); init_agent (sets ACLs via PPC, not direct).
+         Cap class:    AGENTOS_CAP_NETWORK (ACL configuration gates network access).
+         Threat:       rogue PD clearing its own ACL entry to bypass outbound firewall;
+                       mitigated by net_isolator-only write mapping — ACL changes
+                       must go through the PPC gate. -->
     <!-- net_isolator ring: 256KB ACL + stats shared memory -->
     <memory_region name="net_isolator_ring" size="0x40000" />
 
@@ -674,6 +782,12 @@
       ══════════════════════════════════════════════════════════════════
     -->
 
+    <!-- ns_registry_shmem: 8KB NameServer service registry dump buffer.
+         Write access: nameserver PD only (writes ns_list_header_t + entries on OP_NS_LIST).
+         Read access:  controller (r-only, reads after OP_NS_LIST PPC call).
+         Cap class:    AGENTOS_CAP_SPAWN (service discovery is prerequisite for spawn).
+         Threat:       rogue PD injecting fake service registrations to redirect IPC;
+                       mitigated by nameserver-only write mapping. -->
     <memory_region name="ns_registry_shmem" size="0x2000" />  <!-- 8KB list dump -->
 
     <protection_domain name="nameserver" priority="170" passive="true">
@@ -740,23 +854,78 @@
 
     <!-- ── Shared memory regions ──────────────────────────────────────── -->
 
-    <!-- VFS I/O: 128KB — request descriptor + path buffer + data buffer -->
+    <!-- vfs_io_shmem: 128KB VFS request descriptor + path buffer + data buffer.
+         Write access: controller, workers, spawn_server, app_manager (request side);
+                       vfs_server (response side).
+         Read access:  vfs_server (reads requests); callers (read responses).
+         Cap class:    AGENTOS_CAP_OBJECTSTORE (filesystem access).
+         Threat:       agent injecting crafted VFS paths to read out-of-bounds data;
+                       mitigated by vfs_server path validation + caller capability check. -->
     <memory_region name="vfs_io_shmem"       size="0x20000" />
-    <!-- Block DMA: 32KB — DMA buffer shared between vfs_server and virtio_blk -->
+
+    <!-- blk_dma_shmem: 32KB DMA buffer shared between vfs_server and virtio_blk.
+         Write access: vfs_server (writes block I/O requests); virtio_blk (DMA fills).
+         Read access:  vfs_server (reads DMA results); virtio_blk (reads request headers).
+         Cap class:    AGENTOS_CAP_OBJECTSTORE (block device is a storage backend).
+         Threat:       rogue PD corrupting DMA buffer to inject block data;
+                       mitigated by restricted mapping — only vfs_server and virtio_blk hold rw. -->
     <memory_region name="blk_dma_shmem"      size="0x8000"  />
-    <!-- QEMU virt MMIO: virtio-net bus.0 (riscv64: 0x10001000, size 4KB, IRQ 1) -->
+
+    <!-- virtio_net_mmio: 4KB MMIO for virtio-net (riscv64: 0x10001000, IRQ 1).
+         Write access: net_server only (device configuration + queue doorbell).
+         Read access:  net_server only.
+         Cap class:    AGENTOS_CAP_NETWORK (network device control).
+         Threat:       MMIO register manipulation to redirect network traffic;
+                       mitigated by net_server-only mapping. -->
     <memory_region name="virtio_net_mmio"    size="0x1000"  phys_addr="0x10001000" />
-    <!-- QEMU virt MMIO: virtio-blk bus.1 (riscv64: 0x10002000, size 4KB, IRQ 2) -->
+
+    <!-- virtio_blk_mmio: 4KB MMIO for virtio-blk (riscv64: 0x10002000, IRQ 2).
+         Write access: virtio_blk PD only (device configuration + queue doorbell).
+         Read access:  virtio_blk PD only.
+         Cap class:    AGENTOS_CAP_OBJECTSTORE (block device control).
+         Threat:       MMIO register manipulation to corrupt disk I/O;
+                       mitigated by virtio_blk-only mapping. -->
     <memory_region name="virtio_blk_mmio"    size="0x1000"  phys_addr="0x10002000" />
-    <!-- ELF staging: 512KB — SpawnServer stages ELF images here -->
+
+    <!-- spawn_elf_shmem: 512KB ELF staging area for SpawnServer.
+         Write access: spawn_server (stages ELF image + spawn_header_t);
+                       vfs_server (writes ELF bytes via block read path).
+         Read access:  app_slot_0..3 (interprets spawn_header_t + ELF image).
+         Cap class:    AGENTOS_CAP_SPAWN (launching new application PDs).
+         Threat:       agent staging a malicious ELF to hijack an app slot;
+                       mitigated by spawn_server ELF validation + cap gate. -->
     <memory_region name="spawn_elf_shmem"    size="0x80000" />
-    <!-- Spawn config: 4KB — app name/path/list area -->
+
+    <!-- spawn_config_shmem: 4KB app name/path/list staging.
+         Write access: controller (writes config for AppManager); spawn_server / app_manager.
+         Read access:  spawn_server, app_manager (reads launch config).
+         Cap class:    AGENTOS_CAP_SPAWN (required to configure application launch).
+         Threat:       injecting crafted launch config to spawn unintended binaries;
+                       mitigated by controller-only write path + app_manager validation. -->
     <memory_region name="spawn_config_shmem" size="0x1000"  />
-    <!-- Network packet: 256KB — 16 × 16KB vNIC slots -->
+
+    <!-- net_packet_shmem: 256KB vNIC ring — 16 × 16KB per-vNIC packet slots.
+         Write access: net_server (receives from virtio-net, writes to slots).
+         Read access:  controller (observes stats, r-only); workers (r-only, vNIC consumers).
+         Cap class:    AGENTOS_CAP_NETWORK (outbound network access).
+         Threat:       agent reading other agents' raw packet data (cross-slot snooping);
+                       mitigated by per-vNIC slot assignment gated by net_server. -->
     <memory_region name="net_packet_shmem"   size="0x40000" />
-    <!-- App manifest: 16KB — key=value manifests for AppManager -->
+
+    <!-- app_manifest_shmem: 16KB key=value application manifests.
+         Write access: controller (writes manifests before OP_APP_LAUNCH PPC).
+         Read access:  app_manager (parses manifest on launch request).
+         Cap class:    AGENTOS_CAP_SPAWN (app launch config requires spawn capability).
+         Threat:       rogue PD submitting a crafted manifest to escalate app capabilities;
+                       mitigated by controller-only write mapping + app_manager validation. -->
     <memory_region name="app_manifest_shmem" size="0x4000"  />
-    <!-- HTTP request: 64KB — request header + body for http_svc -->
+
+    <!-- http_req_shmem: 64KB HTTP request header + body staging.
+         Write access: http_svc (writes parsed request for handler dispatch).
+         Read access:  controller (r-only, observes request metadata); app slots (future).
+         Cap class:    AGENTOS_CAP_NETWORK (HTTP I/O is network-derived).
+         Threat:       agent reading another agent's HTTP request body (data exfiltration);
+                       mitigated by http_svc-only write path + r-only controller mapping. -->
     <memory_region name="http_req_shmem"     size="0x10000" />
 
     <!--

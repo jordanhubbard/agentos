@@ -21,3 +21,14 @@ bool vibe_verify_module(const uint8_t *wasm, size_t len, const uint8_t *trusted_
  */
 int ed25519_verify(const uint8_t sig[64], const uint8_t *msg, size_t msg_len,
                    const uint8_t pk[32]);
+
+/*
+ * verify_capabilities_manifest - check that the agentos.cap_signature section
+ * (SHA-256 digest, 32 bytes) matches a fresh SHA-256 of the agentos.capabilities
+ * section bytes.
+ *
+ * Returns  0  success — manifest is authentic.
+ *         -1  required sections missing (no capabilities manifest present).
+ *         -2  hash mismatch — manifest has been tampered.
+ */
+int verify_capabilities_manifest(const uint8_t *wasm, size_t wasm_len);

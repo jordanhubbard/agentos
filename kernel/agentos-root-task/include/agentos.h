@@ -311,6 +311,22 @@ typedef enum {
 #define CAP_CLASS_SPAWN       (1 << 6)
 #define CAP_CLASS_SWAP        (1 << 7)
 
+/*
+ * Fine-grained AGENTOS_CAP_* capability constants.
+ * These are the authoritative bitmask values used by cap_broker, cap_policy,
+ * and the WASM manifest verification path (verify_capabilities_manifest).
+ * They appear as cap_class fields in agentos.system annotations and are
+ * the values agents declare in their agentos.capabilities custom section.
+ */
+#define AGENTOS_CAP_COMPUTE      0x01u  /* CPU time budget */
+#define AGENTOS_CAP_MEMORY       0x02u  /* heap allocation */
+#define AGENTOS_CAP_OBJECTSTORE  0x04u  /* AgentFS access */
+#define AGENTOS_CAP_NETWORK      0x08u  /* network endpoints */
+#define AGENTOS_CAP_SPAWN        0x10u  /* spawn child agents */
+#define AGENTOS_CAP_AUDIT        0x20u  /* read audit log */
+#define AGENTOS_CAP_SWAP_WRITE   0x40u  /* write WASM to swap region (controller only) */
+#define AGENTOS_CAP_SWAP_READ    0x80u  /* read/execute WASM from swap region (swap slots) */
+
 /* NameServer channel IDs (from controller perspective)
  * IDs 18-24 reserved for microkernel service layer (Microkit limit: id < 62) */
 #define CH_NAMESERVER         18  /* controller -> nameserver (PPC) */

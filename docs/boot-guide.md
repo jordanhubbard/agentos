@@ -244,3 +244,46 @@ domains:
   via `libvmm`. `make GUEST_OS=freebsd` builds the FreeBSD VMM. Run
   `make fetch-guest GUEST_OS=linux` or `make fetch-guest GUEST_OS=freebsd`
   first to download the guest images.
+
+## Agent Signing
+
+agentOS verifies the capability manifest of every WASM agent before granting
+capabilities.  The verification path is implemented in
+`kernel/agentos-root-task/src/verify.c` (`verify_capabilities_manifest`) and
+called from `monitor.c` before each `vibe_swap_begin` invocation.
+
+### WASM binary layout
+
+A deployable WASM agent must contain three custom sections (WASM section
+type `0x00`):
+
+| Section name              | Size     | Content |
+|---------------------------|----------|---------|
+| `agentos.capabilities`    | variable | Declared capability bitmask and metadata (agent-defined) |
+| `agentos.cap_signature`   | 32 bytes | SHA-256 digest of the `agentos.capabilities` section body |
+| `agentos.signature`       | 128 bytes | Ed25519 pubkey (32B) + signature (64B) + SHA-256 of WASM body (32B) |
+
+### Signing flow
+
+1. Compile your WASM agent normally.
+2. Append an `agentos.capabilities` custom section declaring the required
+   capability bitmask (see `AGENTOS_CAP_*` constants in `agentos.h`).
+3. Compute `SHA-256(agentos.capabilities section bytes)` and embed the
+   32-byte digest as the `agentos.cap_signature` custom section.
+4. Sign the WASM body (excluding the `agentos.signature` section itself)
+   with your Ed25519 issuer key and embed the 128-byte payload as the
+   `agentos.signature` custom section.
+
+Steps 2-4 will be automated by a `sign-agent` tool (planned for a future
+release).  Until then, the reference implementation in `verify.c` documents
+the exact byte layout expected by the kernel verifier.
+
+### Verification modes
+
+| `VIBE_VERIFY_MODE` | Missing manifest | Hash mismatch |
+|--------------------|-----------------|---------------|
+| `0` (dev, default) | warn, load with minimal defaults | warn, allow load |
+| `1` (production)   | reject load     | reject load   |
+
+Set `-DVIBE_VERIFY_MODE=1` in the kernel build flags for production
+deployments.
