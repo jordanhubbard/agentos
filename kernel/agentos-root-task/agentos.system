@@ -1240,7 +1240,6 @@
 
     <!--
       ══════════════════════════════════════════════════════════════════
-<<<<<<< HEAD
       vm_manager: Multi-VM lifecycle manager (passive, prio 145)
       Track D — HURD-parity plan
 
@@ -1361,7 +1360,10 @@
     <channel>
         <end pd="controller"   id="46" pp="true" />
         <end pd="vm_snapshot"  id="0" />
-=======
+    </channel>
+
+    <!--
+      ══════════════════════════════════════════════════════════════════
       ProcServer: process table and signal delivery (passive, prio 160)
       Track F — HURD-parity proc server
 
@@ -1397,6 +1399,46 @@
     <channel>
         <end pd="controller"  id="27" pp="true" />
         <end pd="proc_server" id="0" />
->>>>>>> worktree-agent-a22bebd5
+    </channel>
+
+    <!--
+      ══════════════════════════════════════════════════════════════════
+      pflocal_server: AF_UNIX-equivalent local socket server (passive, prio 155)
+      Track G — HURD-parity pflocal server
+
+      Provides AF_UNIX-like local sockets via shared memory rings.
+      Each socket gets a 4KB slot in pflocal_shmem (16 slots × 4KB = 64KB).
+      Supports: socket, bind, listen, connect, accept, send, recv, close, status.
+
+      Channel:
+        id=0: controller (pp=true) — all pflocal_server operations
+
+      Shared memory:
+        pflocal_shmem (64KB): socket ring buffers + path staging area
+          pflocal_server owns all ring buffer writes.
+          Callers write data before OP_PFLOCAL_SEND; read after OP_PFLOCAL_RECV.
+      ══════════════════════════════════════════════════════════════════
+    -->
+
+    <!-- pflocal_shmem: 64KB shmem region for local socket ring buffers.
+         16 slots × 4KB; slot layout: ring_header_t (16 bytes) + 4080 bytes ring data.
+         Callers write into their allocated slot before OP_PFLOCAL_SEND;
+         pflocal_server manages head/tail pointers inside each ring.
+         Cap class:    AGENTOS_CAP_IPC (local socket access requires IPC cap).
+         Threat:       rogue PD corrupting peer ring data;
+                       mitigated by pflocal_server-mediated head/tail management. -->
+    <memory_region name="pflocal_shmem" size="0x10000" />
+
+    <protection_domain name="pflocal_server" priority="155" passive="true">
+        <program_image path="pflocal_server.elf" />
+        <map mr="pflocal_shmem" vaddr="0x3300000" perms="rw" cached="true"
+             setvar_vaddr="pflocal_shmem_vaddr" />
+    </protection_domain>
+
+    <!-- Channel 26: controller(id=26, pp=true) <-> pflocal_server(id=0)
+         Controller PPCs into pflocal_server for all local socket operations -->
+    <channel>
+        <end pd="controller"     id="26" pp="true" />
+        <end pd="pflocal_server" id="0" />
     </channel>
 </system>

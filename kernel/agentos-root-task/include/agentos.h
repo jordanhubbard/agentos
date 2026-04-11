@@ -310,6 +310,45 @@ typedef enum {
 /* Trace PD ID for proc_server */
 #define TRACE_PD_PROC_SERVER 35u
 
+/* ── pflocal_server opcodes (0xE1–0xE9) ─────────────────────────────────────
+ * AF_UNIX socket emulation via shared memory rings.
+ * Opcodes begin at 0xE1 to avoid collision with OP_FAULT_POLICY_SET (0xE0).
+ */
+#define OP_PFLOCAL_SOCKET   0xE1u  /* → MR0=ok, MR1=sock_id, MR2=slot_offset */
+#define OP_PFLOCAL_BIND     0xE2u  /* MR1=sock_id, path in pflocal_shmem[0] → MR0=ok */
+#define OP_PFLOCAL_LISTEN   0xE3u  /* MR1=sock_id → MR0=ok */
+#define OP_PFLOCAL_CONNECT  0xE4u  /* MR1=sock_id, path in pflocal_shmem[0] → MR0=ok */
+#define OP_PFLOCAL_ACCEPT   0xE5u  /* MR1=sock_id → MR0=ok, MR1=new_sock_id, MR2=peer_slot */
+#define OP_PFLOCAL_SEND     0xE6u  /* MR1=sock_id, MR2=offset, MR3=len → MR0=ok, MR1=sent */
+#define OP_PFLOCAL_RECV     0xE7u  /* MR1=sock_id, MR2=offset, MR3=max → MR0=ok, MR1=recv */
+#define OP_PFLOCAL_CLOSE    0xE8u  /* MR1=sock_id → MR0=ok */
+#define OP_PFLOCAL_STATUS   0xE9u  /* MR1=sock_id → MR0=ok, MR1=state, MR2=peer_sock_id */
+
+/* Channel ID: controller → pflocal_server (from controller perspective) */
+#define CH_PFLOCAL_SERVER   26u
+
+/* Trace PD ID for pflocal_server */
+#define TRACE_PD_PFLOCAL    36u
+
+/* ── exec_server opcodes (per-PD namespace; dispatched only by exec_server) ─
+ * NOTE: 0xE0 is also used by OP_FAULT_POLICY_SET in fault_handler — no
+ *       conflict because each PD has its own opcode dispatch table.
+ */
+#define OP_EXEC_LAUNCH   0xE0u  /* path in shmem, MR1=auth_token, MR2=cap_mask → MR0=ok, MR1=exec_id */
+#define OP_EXEC_STATUS   0xE1u  /* MR1=exec_id → MR0=ok, MR1=state, MR2=pid */
+#define OP_EXEC_WAIT     0xE2u  /* MR1=exec_id → MR0=ok, MR1=pid (returns when RUNNING) */
+#define OP_EXEC_KILL     0xE3u  /* MR1=exec_id → MR0=ok */
+
+/* Channel ID: controller → exec_server (from controller perspective) */
+#define CH_EXEC_SERVER   28u
+
+/* Channel IDs: exec_server → app_slot_0..3 (from exec_server perspective).
+ * CH_APP_SLOT_0 = SWAP_SLOT_BASE_CH + 4 = 34; each subsequent slot +1. */
+#define CH_APP_SLOT_0    (SWAP_SLOT_BASE_CH + 4u)
+
+/* Trace PD ID for exec_server */
+#define TRACE_PD_EXEC        39u
+
 /* Fault handler restart policy constants */
 #define FAULT_POLICY_MAX_RESTARTS_DEFAULT  3u
 #define FAULT_POLICY_RESTART_DELAY_MS      100u
