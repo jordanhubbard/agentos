@@ -783,13 +783,15 @@ header h1 {
 .sidebar-nav-btn:active { transform: translateY(1px); }
 
 .nav-icon {
-  font-size: 15px;
+  font-size: 14px;
   flex-shrink: 0;
   width: 20px;
   text-align: center;
 }
 
 .nav-label {
+  font-size: 10px;
+  font-weight: 600;
   overflow: hidden;
   text-overflow: ellipsis;
 }
@@ -1246,3 +1248,111 @@ header h1 {
 .dot.status-degraded { background: #f59e0b; }
 .dot.status-offline { background: #ef4444; }
 .dot.status-unknown { background: #6b7280; }
+
+/* ─── Images empty state ─────────────────────────────────────────── */
+.images-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 16px;
+  padding: 40px 24px;
+  color: var(--dim);
+  font-size: var(--text-base);
+}
+.images-empty p { margin: 0; }
+.images-empty-actions {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  justify-content: center;
+}
+
+/* Info banner (download status) */
+.info-banner {
+  background: rgba(113,112,255,0.08);
+  border: 1px solid rgba(113,112,255,0.25);
+  border-left: 3px solid var(--accent);
+  border-radius: 6px;
+  color: var(--accent);
+  font-size: var(--text-sm);
+  padding: 8px 12px;
+  flex-shrink: 0;
+}
+
+/* ─── Slot picker grouping + topology link ───────────────────────── */
+.slot-group {
+  margin-bottom: 10px;
+}
+
+.slot-group-header {
+  font-size: var(--text-xs);
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  color: var(--dim);
+  padding: 4px 2px 6px;
+}
+
+.slot-picker-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 4px;
+}
+
+.slot-picker-row .slot-picker-btn {
+  flex: 1;
+  margin-bottom: 0;
+}
+
+.slot-topo-link {
+  background: none;
+  border: 1px solid var(--border-sub);
+  border-radius: 5px;
+  color: var(--accent);
+  cursor: pointer;
+  font-size: 10px;
+  font-family: inherit;
+  font-feature-settings: 'cv01', 'ss03';
+  padding: 5px 8px;
+  white-space: nowrap;
+  transition: background 0.12s, color 0.12s;
+  flex-shrink: 0;
+}
+.slot-topo-link:hover {
+  background: rgba(113,112,255,0.1);
+  color: var(--accent-hover);
+}
+
+/* ─── Sidebar nav — labels always visible ────────────────────────── */
+/* (base .nav-icon and .nav-label rules are near the sidebar section above) */
+
+/* Collapsed sidebar: center icons only; hide labels */
+.sidebar:not(.open) .sidebar-nav-btn {
+  justify-content: center;
+  padding: 8px 0;
+}
+.sidebar:not(.open) .nav-label {
+  display: none;
+}
+
+/* ─── Profiler legend bar ────────────────────────────────────────── */
+.profiler-legend {
+  display: flex;
+  gap: 16px;
+  padding: 6px 12px;
+  font-size: var(--text-xs, 10px);
+  border-bottom: 1px solid var(--border);
+  align-items: center;
+  flex-shrink: 0;
+}
+.threshold-normal   { color: #22c55e; }
+.threshold-hot      { color: #f59e0b; }
+.threshold-critical { color: #ef4444; }
+.help-link {
+  margin-left: auto;
+  color: var(--accent);
+  text-decoration: none;
+  font-size: var(--text-xs, 10px);
+}
+.help-link:hover { text-decoration: underline; }
