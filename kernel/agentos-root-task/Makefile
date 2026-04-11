@@ -38,12 +38,9 @@ endif
 MICROKIT_TOOL ?= $(MICROKIT_SDK)/bin/microkit
 
 CFLAGS := -nostdlib -ffreestanding -g -O2 -Wall -Wextra -Wno-unused-function \
-           -I$(BOARD_DIR)/include -Iinclude -Ilwip/include \
+           -I$(BOARD_DIR)/include -Iinclude \
            $(CFLAGS_ARCH) \
            -MMD -MP
-
-# net_server-specific flags: suppress warnings from lwIP shim headers
-CFLAGS_NET_SERVER := $(CFLAGS) -Wno-cast-align -Wno-missing-field-initializers
 
 # wasm3-specific flags: suppress warnings from vendored code, include bare-metal shim
 CFLAGS_WASM3 := $(CFLAGS) -Iwasm3 -include $(CURDIR)/include/m3_bare_metal.h \
@@ -60,7 +57,7 @@ LIBS    := -lmicrokit -Tmicrokit.ld
 # Protection Domain ELFs
 # monitor/controller: includes vibe_swap for the hot-swap controller-side logic
 # m3_bare_metal.c provides memset/memcpy/memmove needed by compiler-generated code
-PD_MONITOR_SRCS   := src/monitor.c src/cap_broker.c src/agent_pool.c src/vibe_swap.c src/m3_bare_metal.c src/log.c src/boot_integrity.c src/ed25519_verify.c src/monocypher.c
+PD_MONITOR_SRCS   := src/monitor.c src/cap_broker.c src/agent_pool.c src/vibe_swap.c src/m3_bare_metal.c src/log.c src/boot_integrity.c src/ed25519_verify.c
 PD_EVENTBUS_SRCS  := src/event_bus.c src/m3_bare_metal.c src/log.c
 PD_INITAGENT_SRCS := src/init_agent.c src/m3_bare_metal.c src/log.c
 PD_WORKER_SRCS    := src/worker.c src/m3_bare_metal.c src/log.c
@@ -80,16 +77,12 @@ PD_VIRTIO_BLK_SRCS       := src/virtio_blk.c src/m3_bare_metal.c src/log.c
 PD_VFS_SERVER_SRCS       := src/vfs_server.c src/m3_bare_metal.c src/log.c
 PD_SPAWN_SERVER_SRCS     := src/spawn_server.c src/m3_bare_metal.c src/log.c
 PD_APP_SLOT_SRCS         := src/app_slot.c src/m3_bare_metal.c src/log.c
-PD_NET_SERVER_SRCS       := src/net_server.c src/lwip_sys.c src/lwip_shim.c src/m3_bare_metal.c src/log.c
+PD_NET_SERVER_SRCS       := src/net_server.c src/m3_bare_metal.c src/log.c
 PD_APP_MANAGER_SRCS      := src/app_manager.c src/m3_bare_metal.c src/log.c
 PD_HTTP_SVC_SRCS         := src/http_svc.c src/m3_bare_metal.c src/log.c
-<<<<<<< HEAD
 PD_VM_MANAGER_SRCS       := src/vm_manager.c src/m3_bare_metal.c src/log.c
 PD_AUTH_SERVER_SRCS      := src/auth_server.c src/m3_bare_metal.c src/log.c
-PD_VM_SNAPSHOT_SRCS      := src/vm_snapshot.c src/m3_bare_metal.c src/log.c
-=======
-PD_PROC_SERVER_SRCS      := src/proc_server.c src/m3_bare_metal.c src/log.c
->>>>>>> worktree-agent-a22bebd5
+PD_EXT2FS_SRCS           := src/ext2fs.c src/m3_bare_metal.c src/log.c
 
 # wasm3 vendored sources (core interpreter only)
 WASM3_SRCS := wasm3/m3_core.c wasm3/m3_env.c wasm3/m3_code.c wasm3/m3_compile.c \
@@ -118,19 +111,12 @@ APP_SLOT_OBJS         := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_APP_SLOT_SRC
 NET_SERVER_OBJS       := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_NET_SERVER_SRCS))
 APP_MANAGER_OBJS      := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_APP_MANAGER_SRCS))
 HTTP_SVC_OBJS         := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_HTTP_SVC_SRCS))
-<<<<<<< HEAD
 VM_MANAGER_OBJS       := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_VM_MANAGER_SRCS))
 AUTH_SERVER_OBJS      := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_AUTH_SERVER_SRCS))
-VM_SNAPSHOT_OBJS      := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_VM_SNAPSHOT_SRCS))
+EXT2FS_OBJS           := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_EXT2FS_SRCS))
 WASM3_OBJS         := $(patsubst wasm3/%.c, $(BUILD_DIR)/wasm3_%.o, $(WASM3_SRCS))
 
-IMAGES := controller.elf event_bus.elf init_agent.elf worker.elf agentfs.elf vibe_engine.elf console_mux.elf swap_slot.elf mem_profiler.elf net_isolator.elf perf_counters.elf time_partition.elf trace_recorder.elf nameserver.elf virtio_blk.elf vfs_server.elf spawn_server.elf app_slot.elf net_server.elf app_manager.elf http_svc.elf vm_manager.elf auth_server.elf vm_snapshot.elf
-=======
-PROC_SERVER_OBJS      := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_PROC_SERVER_SRCS))
-WASM3_OBJS         := $(patsubst wasm3/%.c, $(BUILD_DIR)/wasm3_%.o, $(WASM3_SRCS))
-
-IMAGES := controller.elf event_bus.elf init_agent.elf worker.elf agentfs.elf vibe_engine.elf console_mux.elf swap_slot.elf mem_profiler.elf net_isolator.elf perf_counters.elf time_partition.elf trace_recorder.elf nameserver.elf virtio_blk.elf vfs_server.elf spawn_server.elf app_slot.elf net_server.elf app_manager.elf http_svc.elf proc_server.elf
->>>>>>> worktree-agent-a22bebd5
+IMAGES := controller.elf event_bus.elf init_agent.elf worker.elf agentfs.elf vibe_engine.elf console_mux.elf swap_slot.elf mem_profiler.elf net_isolator.elf perf_counters.elf time_partition.elf trace_recorder.elf nameserver.elf virtio_blk.elf vfs_server.elf spawn_server.elf app_slot.elf net_server.elf app_manager.elf http_svc.elf vm_manager.elf auth_server.elf ext2fs.elf
 
 # Optional: periodic WASM slot snapshot scheduler
 ifdef AGENTOS_SNAPSHOT_SCHED
@@ -243,19 +229,6 @@ $(BUILD_DIR)/spawn_server.elf: $(SPAWN_SERVER_OBJS)
 $(BUILD_DIR)/app_slot.elf: $(APP_SLOT_OBJS)
 	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
 
-# lwIP shim sources use net_server-specific flags
-$(BUILD_DIR)/lwip_sys.o: src/lwip_sys.c
-	@mkdir -p $(BUILD_DIR)
-	$(CC) -c $(CFLAGS_NET_SERVER) $< -o $@
-
-$(BUILD_DIR)/lwip_shim.o: src/lwip_shim.c
-	@mkdir -p $(BUILD_DIR)
-	$(CC) -c $(CFLAGS_NET_SERVER) $< -o $@
-
-$(BUILD_DIR)/net_server.o: src/net_server.c
-	@mkdir -p $(BUILD_DIR)
-	$(CC) -c $(CFLAGS_NET_SERVER) $< -o $@
-
 $(BUILD_DIR)/net_server.elf: $(NET_SERVER_OBJS)
 	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
 
@@ -265,7 +238,6 @@ $(BUILD_DIR)/app_manager.elf: $(APP_MANAGER_OBJS)
 $(BUILD_DIR)/http_svc.elf: $(HTTP_SVC_OBJS)
 	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
 
-<<<<<<< HEAD
 # vm_manager: multi-VM lifecycle manager (wraps vmm_mux; AArch64 libvmm optional)
 # Compiled with -I../../freebsd-vmm so vmm_mux.h (and transitively vmm.h) resolve.
 $(BUILD_DIR)/vm_manager.o: src/vm_manager.c
@@ -278,10 +250,7 @@ $(BUILD_DIR)/vm_manager.elf: $(VM_MANAGER_OBJS)
 $(BUILD_DIR)/auth_server.elf: $(AUTH_SERVER_OBJS)
 	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
 
-$(BUILD_DIR)/vm_snapshot.elf: $(VM_SNAPSHOT_OBJS)
-=======
-$(BUILD_DIR)/proc_server.elf: $(PROC_SERVER_OBJS)
->>>>>>> worktree-agent-a22bebd5
+$(BUILD_DIR)/ext2fs.elf: $(EXT2FS_OBJS)
 	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
 
 # ─── Linux VMM (AArch64 only) ─────────────────────────────────────────────

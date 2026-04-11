@@ -1205,12 +1205,6 @@
         <end pd="net_server"  id="10" />
     </channel>
 
-    <!-- 10ms lwIP timer tick: controller notifies net_server -->
-    <channel>
-        <end pd="controller" id="25" />
-        <end pd="net_server" id="11" />
-    </channel>
-
     <!--
       ── HTTP Service: route registry + dispatcher (active, prio 140) ──
 
@@ -1240,7 +1234,6 @@
 
     <!--
       ══════════════════════════════════════════════════════════════════
-<<<<<<< HEAD
       vm_manager: Multi-VM lifecycle manager (passive, prio 145)
       Track D — HURD-parity plan
 
@@ -1326,77 +1319,62 @@
 
     <!--
       ══════════════════════════════════════════════════════════════════
-      vm_snapshot: VM state save/restore to AgentFS (Track J)
+      ext2fs: persistent ext2 filesystem over virtio_blk (passive, prio 140)
 
-      HURD-equivalent: checkpoint server (VM-level)
-      Saves and restores VM vCPU register state + guest RAM to AgentFS.
-      Snapshot format: VMSN header (296 bytes) + vCPU regs + guest RAM.
+      HURD-equivalent: ext2fs translator.
+      Reads/writes blocks via OP_BLK_READ/OP_BLK_WRITE to virtio_blk.
+      Exposes OP_EXT2_{MOUNT,STAT,READ,WRITE,READDIR,STATUS} to controller.
+      Phase 1: read-only (OP_EXT2_WRITE returns EXT2_ERR_READONLY).
 
-      Channel map (from vm_snapshot's perspective):
-        id=0: controller (pp=true) — receives OP_VM_SNAPSHOT / OP_VM_RESTORE
+      Channel map (from ext2fs's perspective):
+        id=0: controller   (pp=true — receives OP_EXT2_* PPCs)
+        id=1: virtio_blk   (pp=true OUT — block I/O)
 
       Shared memory:
-        vm_state_shmem (256MB): snapshot buffer.
-          vm_snapshot writes snapshot data on OP_VM_SNAPSHOT;
-          controller reads it back for OP_VM_RESTORE staging.
+        ext2_shmem (64KB):         I/O buffer for paths, read data, readdir results.
+                                   Mapped rw into ext2fs; r into controller.
+        ext2_blk_dma_shmem (32KB): DMA buffer shared between ext2fs and virtio_blk.
+                                   Mapped rw into both PDs; virtio_blk uses it for
+                                   block DMA on channel id=2.
       ══════════════════════════════════════════════════════════════════
     -->
 
-    <!-- vm_state_shmem: 256MB snapshot buffer shared between controller and vm_snapshot.
-         vm_snapshot writes snapshot data here on OP_VM_SNAPSHOT;
-         controller reads it back for OP_VM_RESTORE staging.
-         Cap class:  N/A (VM checkpoint; not gated by agent cap system).
-         Threat:     rogue PD overwriting snapshot data to corrupt restore;
-                     mitigated by vm_snapshot-only write mapping. -->
-    <memory_region name="vm_state_shmem" size="0x4000000" />
+    <!-- ext2_shmem: 64KB path/data I/O buffer.
+         Write access: ext2fs (writes readdir/read results); controller (writes paths).
+         Read access:  both.
+         Threat:       rogue PD injecting crafted paths to traverse filesystem;
+                       mitigated by ext2fs path validation + controller-only write mapping
+                       for the path half. -->
+    <memory_region name="ext2_shmem" size="0x10000" />
 
-    <protection_domain name="vm_snapshot" priority="130" passive="true">
-        <program_image path="vm_snapshot.elf" />
-        <map mr="vm_state_shmem" vaddr="0x40000000" perms="rw" cached="true"
-             setvar_vaddr="vm_state_vaddr" />
+    <protection_domain name="ext2fs" priority="140" passive="true">
+        <program_image path="ext2fs.elf" />
+        <!-- ext2_shmem: rw — ext2fs writes results here and reads paths here -->
+        <map mr="ext2_shmem"    vaddr="0x3400000" perms="rw" cached="true"
+             setvar_vaddr="ext2_shmem_vaddr" />
+        <!-- blk_dma_shmem: rw — shared DMA region with virtio_blk (same physical
+             memory as vfs_server; safe because all three PDs are passive and
+             the seL4 scheduler serialises their execution). -->
+        <map mr="blk_dma_shmem" vaddr="0x4000000" perms="rw" cached="true"
+             setvar_vaddr="ext2_blk_dma_shmem_vaddr" />
     </protection_domain>
 
-    <!-- Channel 46: controller(id=46, pp=true) → vm_snapshot(id=0)
-         Controller PPCs into vm_snapshot for snapshot/restore operations. -->
+    <!-- Channel 47: controller(id=47, pp=true) → ext2fs(id=0)
+         Controller PPCs into ext2fs for filesystem operations. -->
     <channel>
-        <end pd="controller"   id="46" pp="true" />
-        <end pd="vm_snapshot"  id="0" />
-=======
-      ProcServer: process table and signal delivery (passive, prio 160)
-      Track F — HURD-parity proc server
-
-      Maintains a process table of up to 32 entries.
-      Pre-creates pid=0 "kernel" process at boot.
-      Supports: spawn, exit, wait, status, list, kill, setcap.
-
-      Channel:
-        id=0: controller (pp=true) — all proc_server operations
-
-      Shared memory:
-        proc_shmem (8KB): proc_info_t[] output for OP_PROC_LIST
-          proc_server writes entries here; controller reads after call.
-      ══════════════════════════════════════════════════════════════════
-    -->
-
-    <!-- proc_shmem: 8KB process info dump buffer for OP_PROC_LIST.
-         Write access: proc_server only (writes proc_info_t[] on OP_PROC_LIST).
-         Read access:  controller (r-only, reads after OP_PROC_LIST PPC call).
-         Cap class:    AGENTOS_CAP_SPAWN (process table access requires spawn cap).
-         Threat:       rogue PD injecting fake process records to spoof process state;
-                       mitigated by proc_server-only write mapping. -->
-    <memory_region name="proc_shmem" size="0x2000" />  <!-- 8KB: proc_info_t[] -->
-
-    <protection_domain name="proc_server" priority="160" passive="true">
-        <program_image path="proc_server.elf" />
-        <map mr="proc_shmem" vaddr="0x3300000" perms="rw" cached="true"
-             setvar_vaddr="proc_shmem_vaddr" />
-    </protection_domain>
-
-    <!-- Channel 27: controller(id=27, pp=true) <-> proc_server(id=0)
-         Controller PPCs into proc_server for all process management operations -->
-    <channel>
-        <end pd="controller"  id="27" pp="true" />
-        <end pd="proc_server" id="0" />
->>>>>>> worktree-agent-a22bebd5
+        <end pd="controller" id="47" pp="true" />
+        <end pd="ext2fs"     id="0" />
     </channel>
+
+    <!-- Channel: ext2fs(id=1, pp=true) → virtio_blk(id=2)
+         ext2fs PPCs out to virtio_blk for raw block I/O. -->
+    <channel>
+        <end pd="ext2fs"     id="1" pp="true" />
+        <end pd="virtio_blk" id="2" />
+    </channel>
+
+    <!-- controller maps ext2_shmem r-only for reading stat/readdir results -->
+    <map pd="controller" mr="ext2_shmem" vaddr="0x3400000" perms="r" cached="true"
+         setvar_vaddr="ext2_shmem_ctrl_vaddr" />
+
 </system>

@@ -41,6 +41,8 @@ uintptr_t net_packet_shmem_ctrl_vaddr;
 uintptr_t http_req_shmem_ctrl_vaddr;
 /* App manifest shmem: key=value manifests written by controller (mapped rw) */
 uintptr_t app_manifest_shmem_ctrl_vaddr;
+/* ext2fs I/O shmem: controller reads stat/readdir results here (mapped r) */
+uintptr_t ext2_shmem_ctrl_vaddr;
 
 /*
  * Echo service WASM binary (embedded for demo Step 4)
