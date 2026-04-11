@@ -160,6 +160,117 @@ static int vibe_generate_agentstore(void) {
 }
 
 /*
+ * ── Microkit-layer phase implementations ────────────────────────────────────
+ *
+ * These functions implement the four swap phases directly via Microkit IPC
+ * (microkit_mr_set / microkit_ppcall) for use when running as a Microkit PD
+ * rather than through the agentOS high-level SDK above.
+ *
+ * Channel and opcode assignments (must match agentos.system):
+ *   CH_MEMSVC  — vibe-agent's PPC channel to MemFS
+ *   CH_VIBE    — vibe-agent's PPC channel to VibeEngine
+ *
+ * Opcodes:
+ *   OP_MEMFS_STAT    — query MemFS stats (file_count, total_bytes)
+ *   OP_VIBE_PROPOSE  — submit a swap proposal to VibeEngine
+ *   OP_VIBE_STATUS   — query VibeEngine proposal state
+ *   OP_VIBE_EXECUTE  — activate an approved proposal
+ *   VIBE_STATE_APPROVED — VibeEngine state code: proposal passed validation
+ *   SERVICE_MEMFS    — service identifier for the MemFS slot
+ */
+#ifndef CH_MEMSVC
+#define CH_MEMSVC           4u   /* PPC channel to MemFS (must match .system) */
+#endif
+#ifndef CH_VIBE
+#define CH_VIBE             5u   /* PPC channel to VibeEngine (must match .system) */
+#endif
+#define OP_MEMFS_STAT       0x20u
+#ifndef OP_VIBE_PROPOSE
+#define OP_VIBE_PROPOSE     0x40u
+#endif
+#ifndef OP_VIBE_STATUS
+#define OP_VIBE_STATUS      0x43u
+#endif
+#ifndef OP_VIBE_EXECUTE
+#define OP_VIBE_EXECUTE     0x42u
+#endif
+#define VIBE_STATE_APPROVED 2u
+#define SERVICE_MEMFS       1u
+
+/* Minimal LOG shim for freestanding builds */
+#ifndef LOG
+#ifdef AGENTOS_DEBUG
+#define LOG(fmt, ...) microkit_dbg_puts("[vibe-agent] " fmt)
+#else
+#define LOG(fmt, ...) ((void)0)
+#endif
+#endif
+
+/*
+ * Phase 1 (microkit): Inspect current MemFS via PPC to get live stats.
+ */
+static void phase1_inspect_memfs(void) {
+    /* PPC to MemFS to get current stats */
+    microkit_mr_set(0, OP_MEMFS_STAT);
+    microkit_msginfo reply = microkit_ppcall(CH_MEMSVC, microkit_msginfo_new(0, 1));
+    uint32_t file_count  = (uint32_t)microkit_mr_get(1);
+    uint32_t total_bytes = (uint32_t)microkit_mr_get(2);
+    (void)reply;
+    aos_log(AOS_LOG_INFO, "vibe-agent: MemFS has %u files, %u bytes",
+            file_count, total_bytes);
+}
+
+/*
+ * Phase 2 (microkit): Request ModelSvc to generate a replacement service.
+ * In the demo we simulate the generation delay with a busy-wait counter.
+ */
+static void phase2_generate_service(void) {
+    /* In production: PPC to ModelSvc to generate WASM from a prompt */
+    /* For the demo: use a pre-baked WASM binary from the vibe_staging region */
+    aos_log(AOS_LOG_INFO,
+            "vibe-agent: requesting ModelSvc to generate optimized MemFS...");
+    /* Simulate a 500ms generation delay by spinning on a counter */
+    volatile uint64_t t = 0;
+    for (uint64_t i = 0; i < 1000000ULL; i++) t++;
+    (void)t;
+    aos_log(AOS_LOG_INFO, "vibe-agent: generation complete (simulated)");
+}
+
+/*
+ * Phase 3 (microkit): Propose the new service to VibeEngine for validation.
+ */
+static void phase3_propose_swap(void) {
+    microkit_mr_set(0, OP_VIBE_PROPOSE);
+    microkit_mr_set(1, SERVICE_MEMFS);   /* target service ID */
+    microkit_mr_set(2, 0);               /* wasm already in staging region */
+    microkit_msginfo reply = microkit_ppcall(CH_VIBE, microkit_msginfo_new(0, 3));
+    uint32_t status = (uint32_t)microkit_mr_get(0);
+    (void)reply;
+    aos_log(AOS_LOG_INFO, "vibe-agent: proposal status = %u", status);
+}
+
+/*
+ * Phase 4 (microkit): Poll VibeEngine until the proposal is approved, then
+ * activate the swap.
+ */
+static void phase4_wait_and_activate(void) {
+    /* Poll VibeEngine status (in real life we'd get a notification) */
+    for (int i = 0; i < 10; i++) {
+        microkit_mr_set(0, OP_VIBE_STATUS);
+        microkit_ppcall(CH_VIBE, microkit_msginfo_new(0, 1));
+        uint32_t state = (uint32_t)microkit_mr_get(0);
+        if (state == VIBE_STATE_APPROVED) {
+            microkit_mr_set(0, OP_VIBE_EXECUTE);
+            microkit_ppcall(CH_VIBE, microkit_msginfo_new(0, 1));
+            aos_log(AOS_LOG_INFO, "vibe-agent: swap activated!");
+            return;
+        }
+        /* spin wait — real impl would yield */
+    }
+    aos_log(AOS_LOG_WARN, "vibe-agent: swap timed out waiting for approval");
+}
+
+/*
  * Phase 3: Propose the service swap
  *
  * We propose AgentStore as a replacement for the reference MemFS.
@@ -255,10 +366,22 @@ int main(int argc, char *argv[]) {
         aos_msg_free(hello);
     }
     
-    /* The three-phase vibe-coding workflow */
+    /* The three-phase vibe-coding workflow (AOS high-level API) */
     vibe_analyze_current_fs();
     vibe_generate_agentstore();
     vibe_propose_swap();
+
+    /*
+     * Microkit-layer four-phase swap (used when running as a bare Microkit PD
+     * rather than through the agentOS AOS SDK).  These run after the AOS-API
+     * phases above so the full demo path is exercised in either environment.
+     */
+#ifdef __MICROKIT__
+    phase1_inspect_memfs();
+    phase2_generate_service();
+    phase3_propose_swap();
+    phase4_wait_and_activate();
+#endif
     
     /* After the vibe work, settle into a monitoring role */
     aos_log(AOS_LOG_INFO, 
