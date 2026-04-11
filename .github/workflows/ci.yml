@@ -6,7 +6,61 @@ on:
   pull_request:
     branches: [main, master]
 
+env:
+  CARGO_TERM_COLOR: always
+
 jobs:
+  # ---------------------------------------------------------------------------
+  # Rust workspace tests (excludes WASM-only crates)
+  # ---------------------------------------------------------------------------
+  test:
+    name: Cargo test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Run tests
+        run: cargo test --workspace --exclude health-monitor --exclude log-aggregator
+
+  # ---------------------------------------------------------------------------
+  # Leptos/Trunk dashboard build
+  # ---------------------------------------------------------------------------
+  build-dashboard:
+    name: Build dashboard (trunk)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+      - name: Install trunk
+        run: cargo install trunk --locked
+      - name: Build dashboard
+        working-directory: console/dashboard
+        run: trunk build --release
+
+  # ---------------------------------------------------------------------------
+  # WASM agent example builds
+  # ---------------------------------------------------------------------------
+  build-examples:
+    name: Build WASM examples
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-wasip1
+      - uses: Swatinem/rust-cache@v2
+      - name: Build health-monitor
+        working-directory: examples/health-monitor
+        run: cargo build --release
+      - name: Build log-aggregator
+        working-directory: examples/log-aggregator
+        run: cargo build --release
+
+
   # ---------------------------------------------------------------------------
   # Topology validation — fast gate, runs on all PRs touching topology or SDF
   # ---------------------------------------------------------------------------
