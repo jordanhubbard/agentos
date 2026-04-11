@@ -37,6 +37,7 @@
 #include "agentos.h"
 #include "spawn.h"
 #include "vfs.h"
+#include "sha256_mini.h"
 
 /* ── Shared memory base addresses (set by Microkit setvar_vaddr) ─────────── */
 uintptr_t spawn_elf_shmem_vaddr;          /* 512 KB staging: SpawnServer at 0x5000000 */
@@ -333,7 +334,11 @@ static microkit_msginfo handle_launch(void) {
     slots[si].slot_ch     = (microkit_channel)(SPAWN_CH_APP_SLOT_0 + si);
     spawn_strlcpy(slots[si].name, name, 32);
 
-    /* Write spawn_header_t at spawn_elf_shmem[0..63] */
+    /* Compute SHA-256 of the loaded ELF image */
+    uint8_t elf_hash[32];
+    sha256_mini(elf_dst, elf_size, elf_hash);
+
+    /* Write spawn_header_t at spawn_elf_shmem[0..95] */
     volatile spawn_header_t *hdr = (volatile spawn_header_t *)spawn_elf_shmem_vaddr;
     hdr->magic       = SPAWN_MAGIC;
     hdr->elf_size    = elf_size;
@@ -344,7 +349,9 @@ static microkit_msginfo handle_launch(void) {
     for (uint32_t i = 0; i < 32; i++) {
         hdr->name[i] = (uint8_t)(i < 31 ? name[i] : 0);
     }
-    for (uint32_t i = 0; i < 4; i++) hdr->_pad[i] = 0;
+    for (uint32_t i = 0; i < 32; i++) {
+        hdr->elf_sha256[i] = elf_hash[i];
+    }
 
     /* Memory barrier: header and ELF data must be visible before notify */
     __asm__ volatile("" ::: "memory");

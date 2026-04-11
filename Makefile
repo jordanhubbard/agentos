@@ -11,7 +11,7 @@
 #   make clean        — remove build artifacts for current target
 #   make clean-all    — remove all build artifacts
 
-.PHONY: all deps deps-tools deps-sdk submodules console dashboard test test-snapshot-sched test-power-mgr clean clean-all clean-images help release release-minor release-major fetch-guest build-tools
+.PHONY: all deps deps-tools deps-sdk submodules channels console dashboard test test-snapshot-sched test-power-mgr clean clean-all clean-images help release release-minor release-major fetch-guest build-tools
 
 # ─── Read config.yaml (if present) ───────────────────────────────────────────
 CONFIG_TARGET := $(shell grep '^target_arch:' config.yaml 2>/dev/null | sed 's/target_arch:[[:space:]]*//' | tr -d '[:space:]')
@@ -139,6 +139,9 @@ endif
 
 NATIVE_BUILD_DIR := $(ROOT_DIR)build/$(NATIVE_BOARD)
 NATIVE_IMAGE     := $(NATIVE_BUILD_DIR)/agentos.img
+
+channels:
+	python3 tools/gen-channels/gen_channels.py
 
 all: console
 

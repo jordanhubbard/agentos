@@ -25,6 +25,7 @@
 #include <stddef.h>
 #include <stdbool.h>
 #include "spawn.h"
+#include "sha256_mini.h"
 
 /* Microkit fills this from the system description <map> element */
 uintptr_t spawn_elf_shmem_vaddr;
@@ -34,6 +35,10 @@ uintptr_t console_rings_vaddr;
 
 /* Channel: channel 0 is spawn_server (notify both ways) */
 #define CH_SPAWN  0
+
+/* Slot failure: if ELF hash verification fails we enter this state
+ * and do NOT notify SpawnServer — the slot stalls until recycled. */
+static bool slot_failed = false;
 
 /* ── minimal debug output ────────────────────────────────────────────────── */
 static void dbg(const char *s) { microkit_dbg_puts(s); }
@@ -99,6 +104,7 @@ void notified(microkit_channel ch)
 
     if (hdr->elf_size == 0 || hdr->elf_size > SPAWN_MAX_ELF_SIZE) {
         dbg("[app_slot] error: invalid elf_size in spawn header\n");
+        slot_failed = true;
         return;
     }
 
@@ -106,7 +112,34 @@ void notified(microkit_channel ch)
     log_launch((const spawn_header_t *)hdr);
 
     /*
-     * MVP: notify SpawnServer immediately — we are "running".
+     * ELF hash verification: compute SHA-256 of the ELF image bytes and
+     * compare against the hash written by SpawnServer into the header.
+     * If the hashes differ the image has been tampered with or corrupted;
+     * enter SLOT_FAILED state and do NOT notify SpawnServer.
+     */
+    const uint8_t *elf_bytes =
+        (const uint8_t *)(spawn_elf_shmem_vaddr + SPAWN_HEADER_SIZE);
+    uint8_t computed[32];
+    sha256_mini(elf_bytes, hdr->elf_size, computed);
+
+    bool hash_ok = true;
+    for (int i = 0; i < 32; i++) {
+        if (computed[i] != hdr->elf_sha256[i]) {
+            hash_ok = false;
+            break;
+        }
+    }
+
+    if (!hash_ok) {
+        dbg("[app_slot] SECURITY: ELF SHA-256 mismatch — aborting load\n");
+        slot_failed = true;
+        return;
+    }
+
+    slot_failed = false;
+
+    /*
+     * MVP: notify SpawnServer — we are "running".
      * A real implementation would parse the ELF, set up an execution
      * environment, and only notify after the entry point is reached.
      */

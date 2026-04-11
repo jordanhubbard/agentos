@@ -99,6 +99,9 @@ pub struct Capability {
     pub badge: Option<u64>,
     /// Whether this capability can be delegated to child agents
     pub delegatable: bool,
+    /// Human-readable context hint (e.g. namespace path, partition name).
+    /// Not security-enforced — for logging and introspection only.
+    pub kind_hint: String,
 }
 
 impl Capability {
@@ -111,7 +114,15 @@ impl Capability {
             rights,
             badge: None,
             delegatable: false,
+            kind_hint: String::new(),
         }
+    }
+
+    /// Attach a human-readable hint (namespace, partition name, etc.).
+    /// The hint is not security-enforced and is stripped on `restrict`.
+    pub fn with_hint(mut self, hint: impl Into<String>) -> Self {
+        self.kind_hint = hint.into();
+        self
     }
 
     /// Create a delegatable capability
@@ -131,8 +142,9 @@ impl Capability {
         self.rights.has(right)
     }
 
-    /// Create a restricted version of this capability (subset of rights only)
-    /// Returns None if the requested rights exceed what this cap grants
+    /// Create a restricted version of this capability (subset of rights only).
+    /// Returns None if the requested rights exceed what this cap grants.
+    /// The `kind_hint` is preserved so audit logs remain readable.
     pub fn restrict(&self, rights: Rights) -> Option<Capability> {
         if self.rights.is_superset_of(&rights) {
             let mut restricted = self.clone();
@@ -145,7 +157,12 @@ impl Capability {
     }
 }
 
-/// The kinds of capabilities in agentOS
+/// The kinds of capabilities in agentOS.
+///
+/// Associated data (namespace, partition, protocol, etc.) has been moved to
+/// `Capability::kind_hint` (a plain `String`).  This makes `CapabilityKind`
+/// `Copy`-friendly, removes the `Hash` concern over heap strings, and prevents
+/// accidental security decisions based on unverified hint values.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum CapabilityKind {
     // seL4 native capabilities
@@ -155,22 +172,22 @@ pub enum CapabilityKind {
     AddressSpace,
     CNode,
     Untyped,
-    
+
     // agentOS extension capabilities
-    /// Access to an AgentFS namespace (path prefix)
-    ObjectStore { namespace: String },
-    /// Access to a VectorStore partition
-    VectorStore { partition: String },
-    /// Network endpoint capability
-    Network { protocol: NetworkProtocol, scope: NetworkScope },
-    /// Spawn agents with bounded capability sets
-    AgentSpawn { max_children: u32 },
+    /// Access to an AgentFS namespace (path prefix stored in kind_hint)
+    ObjectStore,
+    /// Access to a VectorStore partition (partition name in kind_hint)
+    VectorStore,
+    /// Network endpoint capability (protocol/scope in kind_hint)
+    Network,
+    /// Spawn agents with bounded capability sets (limit in kind_hint)
+    AgentSpawn,
     /// Read the capability audit log
     Audit,
-    /// Compute resources (CPU time budget)
-    Compute { budget_ms: u64 },
-    /// Memory allocation from a specific pool
-    Memory { pool: MemoryPool, limit_bytes: u64 },
+    /// Compute resources (CPU time budget stored in kind_hint)
+    Compute,
+    /// Memory allocation from a specific pool (pool/limit in kind_hint)
+    Memory,
 }
 
 /// Access rights on a capability
