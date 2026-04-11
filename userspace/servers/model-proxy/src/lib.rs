@@ -584,16 +584,14 @@ impl ModelProxy {
         };
         
         // 4. Execute inference (backend-specific)
-        // In the real implementation, this dispatches to the backend:
         // - HttpApi: Make HTTP request via NetStack PD
         // - LocalGpu: PPC to GPU PD with model weights reference
         // - PeerNode: IPC to network PD for remote inference
         // - CacheOnly: Already handled above
-        
-        // Placeholder response for scaffolding
+
         let response = InferenceResponse {
             status: InferenceStatus::Ok,
-            content: String::from("[ModelProxy: backend dispatch pending — IPC to NetStack/GPU PD not yet wired]"),
+            content: String::from("[ModelProxy: non-HTTP backend dispatch pending — IPC to NetStack/GPU PD not yet wired]"),
             model_used: model_id,
             from_cache: false,
             tokens_in: estimate_tokens(&request.prompt),
@@ -618,6 +616,163 @@ impl ModelProxy {
 /// Rough token count estimate (1 token ≈ 4 chars for English)
 fn estimate_tokens(text: &str) -> TokenCount {
     (text.len() as u64 + 3) / 4
+}
+
+// ============================================================================
+// ModelProxy — async HTTP dispatch  (requires the "std" feature)
+// ============================================================================
+
+#[cfg(feature = "std")]
+impl ModelProxy {
+    /// Async variant of `infer` that performs real HTTP calls for `HttpApi`
+    /// backends using the OpenAI-compatible `/v1/chat/completions` endpoint.
+    ///
+    /// Falls back to the synchronous stub for non-HTTP backends (LocalGpu,
+    /// PeerNode, CacheOnly) until those dispatch paths are wired.
+    pub async fn infer_async(&mut self, request: &InferenceRequest) -> InferenceResponse {
+        use alloc::format;
+
+        self.total_requests += 1;
+
+        // 1. Check budget
+        let budget = match self.budgets.get(&request.cap_badge) {
+            Some(b) => b,
+            None => return InferenceResponse {
+                status: InferenceStatus::AccessDenied,
+                content: String::new(),
+                model_used: String::new(),
+                from_cache: false,
+                tokens_in: 0,
+                tokens_out: 0,
+                latency_us: 0,
+                request_id: request.metadata.request_id,
+            },
+        };
+
+        // 2. Check cache
+        if let Some(cached) = self.cache.get(request) {
+            return InferenceResponse {
+                status: InferenceStatus::Ok,
+                content: cached.content.clone(),
+                model_used: cached.model_used.clone(),
+                from_cache: true,
+                tokens_in: 0,
+                tokens_out: cached.tokens_out,
+                latency_us: 0,
+                request_id: request.metadata.request_id,
+            };
+        }
+
+        // 3. Route to best model
+        let model_id = match self.router.route(request, budget) {
+            Some(id) => id,
+            None => return InferenceResponse {
+                status: InferenceStatus::BudgetExhausted,
+                content: String::new(),
+                model_used: String::new(),
+                from_cache: false,
+                tokens_in: 0,
+                tokens_out: 0,
+                latency_us: 0,
+                request_id: request.metadata.request_id,
+            },
+        };
+
+        // 4. Dispatch to backend
+        let endpoint_info = self.router.endpoints.get(&model_id).cloned();
+        let response = match endpoint_info {
+            Some(ref ep) => match &ep.backend {
+                BackendType::HttpApi { endpoint_url, api_key_env, model_name } => {
+                    // Resolve the API key from the environment variable named by
+                    // `api_key_env`; fall back to empty string (works for local
+                    // Ollama which ignores the Authorization header).
+                    let api_key = std::env::var(api_key_env).unwrap_or_default();
+
+                    // Build the messages array: optional system message followed
+                    // by the request messages and finally the user prompt.
+                    let mut messages: alloc::vec::Vec<serde_json::Value> = alloc::vec![];
+                    if let Some(ref sys) = request.system {
+                        messages.push(serde_json::json!({"role": "system", "content": sys}));
+                    }
+                    for msg in &request.messages {
+                        let role = match msg.role {
+                            MessageRole::System    => "system",
+                            MessageRole::User      => "user",
+                            MessageRole::Assistant => "assistant",
+                            MessageRole::Tool      => "tool",
+                        };
+                        messages.push(serde_json::json!({"role": role, "content": msg.content}));
+                    }
+                    messages.push(serde_json::json!({"role": "user", "content": request.prompt}));
+
+                    match http_backend::call_model_api(
+                        endpoint_url,
+                        &api_key,
+                        &messages,
+                        model_name,
+                        request.params.max_tokens as u32,
+                    ).await {
+                        Ok((content, tokens_in, tokens_out)) => InferenceResponse {
+                            status: InferenceStatus::Ok,
+                            content,
+                            model_used: model_id.clone(),
+                            from_cache: false,
+                            tokens_in,
+                            tokens_out,
+                            latency_us: 0,
+                            request_id: request.metadata.request_id,
+                        },
+                        Err(e) => InferenceResponse {
+                            status: InferenceStatus::Error(format!("HTTP backend error: {}", e)),
+                            content: String::new(),
+                            model_used: model_id.clone(),
+                            from_cache: false,
+                            tokens_in: 0,
+                            tokens_out: 0,
+                            latency_us: 0,
+                            request_id: request.metadata.request_id,
+                        },
+                    }
+                }
+                _ => {
+                    // Non-HTTP backends not yet wired for async dispatch
+                    InferenceResponse {
+                        status: InferenceStatus::Ok,
+                        content: String::from("[ModelProxy: non-HTTP backend dispatch pending]"),
+                        model_used: model_id.clone(),
+                        from_cache: false,
+                        tokens_in: estimate_tokens(&request.prompt),
+                        tokens_out: 20,
+                        latency_us: 0,
+                        request_id: request.metadata.request_id,
+                    }
+                }
+            },
+            None => InferenceResponse {
+                status: InferenceStatus::AllBackendsFailed,
+                content: String::new(),
+                model_used: model_id.clone(),
+                from_cache: false,
+                tokens_in: 0,
+                tokens_out: 0,
+                latency_us: 0,
+                request_id: request.metadata.request_id,
+            },
+        };
+
+        // 5. Update budget
+        if let Some(budget) = self.budgets.get_mut(&request.cap_badge) {
+            budget.consume(response.tokens_in + response.tokens_out);
+        }
+        self.total_tokens += response.tokens_in + response.tokens_out;
+
+        // 6. Cache successful responses
+        if response.status == InferenceStatus::Ok {
+            self.cache.put(request, &response);
+        }
+
+        response
+    }
 }
 
 // ============================================================================
@@ -902,12 +1057,19 @@ pub mod http_backend {
     /// POST a chat completion request to `{endpoint}/v1/chat/completions` and
     /// return `(content, tokens_in, tokens_out)`.
     ///
-    /// The `endpoint` parameter should be the base URL without a trailing
-    /// path, e.g. `"https://api.openai.com"`.  A trailing `/` is acceptable.
+    /// * `endpoint` — base URL without trailing path, e.g.
+    ///   `"http://localhost:11434"` for Ollama or `"https://api.openai.com"`.
+    ///   A trailing `/` is acceptable.
+    /// * `api_key`  — Bearer token; pass `""` for local endpoints that ignore it.
+    /// * `messages` — Fully-formed chat messages array (each element must have
+    ///   `"role"` and `"content"` keys).  Build this before calling so the
+    ///   caller controls system / history messages.
+    /// * `model`    — Model identifier string recognised by the endpoint.
+    /// * `max_tokens` — Maximum number of output tokens to generate.
     pub async fn call_model_api(
         endpoint: &str,
         api_key: &str,
-        prompt: &str,
+        messages: &[serde_json::Value],
         model: &str,
         max_tokens: u32,
     ) -> Result<(String, u64, u64), String> {
@@ -921,17 +1083,23 @@ pub mod http_backend {
 
         let body = json!({
             "model": model,
+            "messages": messages,
             "max_tokens": max_tokens,
-            "messages": [
-                { "role": "user", "content": prompt }
-            ]
+            "stream": false,
         });
 
-        let client = Client::new();
-        let resp = client
+        let mut builder = Client::new()
             .post(&url)
-            .bearer_auth(api_key)
-            .json(&body)
+            .json(&body);
+
+        // Only set the Authorization header when a non-empty key is supplied.
+        // Local Ollama instances reject requests that carry an unexpected header
+        // on some configurations, so we omit it rather than sending a blank token.
+        if !api_key.is_empty() {
+            builder = builder.bearer_auth(api_key);
+        }
+
+        let resp = builder
             .send()
             .await
             .map_err(|e| format!("HTTP request failed: {}", e))?;
