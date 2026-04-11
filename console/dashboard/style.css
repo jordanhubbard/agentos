@@ -1216,3 +1216,33 @@ header h1 {
   0%, 100% { box-shadow: 0 0 0 2px transparent; }
   50%       { box-shadow: 0 0 0 2px var(--accent), 0 0 12px rgba(113,112,255,0.3); }
 }
+
+/* Welcome banner */
+.welcome-banner { display: flex; align-items: center; gap: 12px; padding: 10px 16px;
+  background: rgba(99,102,241,0.12); border: 1px solid rgba(99,102,241,0.3);
+  border-radius: 6px; margin-bottom: 12px; font-size: var(--text-sm, 12px); }
+.welcome-step { font-weight: 600; color: var(--accent, #6366f1); }
+.welcome-arrow { color: var(--muted, #888); }
+
+/* Spawn modal */
+.modal-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,0.6); z-index: 200;
+  display: flex; align-items: center; justify-content: center; }
+.modal-box { background: var(--surface2, #28282c); border: 1px solid var(--border, #3a3a3f);
+  border-radius: 8px; padding: 24px; width: 360px; display: flex; flex-direction: column; gap: 12px; }
+.modal-box h3 { margin: 0; font-size: var(--text-base, 13px); font-weight: 700; }
+.modal-hint { margin: 0; font-size: var(--text-xs, 10px); color: var(--muted, #888); }
+.modal-box label { font-size: var(--text-xs, 10px); font-weight: 600; color: var(--muted, #888); }
+.modal-box input, .modal-box select { width: 100%; padding: 6px 8px; background: var(--surface, #1e1e22);
+  border: 1px solid var(--border, #3a3a3f); border-radius: 4px; color: var(--text, #e8e8ea);
+  font-size: var(--text-sm, 12px); box-sizing: border-box; }
+.modal-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 4px; }
+
+/* Topology legend — status dots */
+.topo-legend { display: flex; gap: 16px; padding: 6px 12px; background: var(--surface2, #28282c);
+  border-bottom: 1px solid var(--border, #3a3a3f); font-size: var(--text-xs, 10px); align-items: center; }
+.legend-item { display: flex; align-items: center; gap: 5px; }
+.legend-item .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+.dot.status-ready { background: #22c55e; }
+.dot.status-degraded { background: #f59e0b; }
+.dot.status-offline { background: #ef4444; }
+.dot.status-unknown { background: #6b7280; }

@@ -183,6 +183,12 @@ pub fn TopologyPanel(
             <div class="topo-scroll">
                 {topo_svg(metrics, active_edges, set_panel, set_tiles, false)}
             </div>
+            <div class="topo-legend">
+                <span class="legend-item"><span class="dot status-ready"/>"Ready"</span>
+                <span class="legend-item"><span class="dot status-degraded"/>"Degraded"</span>
+                <span class="legend-item"><span class="dot status-offline"/>"Offline"</span>
+                <span class="legend-item"><span class="dot status-unknown"/>"Unknown"</span>
+            </div>
         </div>
     }
 }
@@ -282,6 +288,7 @@ fn topo_svg(
                 let st = set_tiles;
                 let slot_name = node.name;
 
+                let desc = node_description(node.name);
                 view! {
                     <g
                         class=status_cls
@@ -296,6 +303,7 @@ fn topo_svg(
                             });
                         }
                     >
+                        <title>{desc}</title>
                         <rect width="128" height="38" rx="5" class="topo-node-bg" />
                         // CPU bar
                         <rect
@@ -325,6 +333,29 @@ fn topo_svg(
                 }
             }).collect_view()}
         </svg>
+    }
+}
+
+/// Return a plain-English description for a topology node by name.
+fn node_description(name: &str) -> &'static str {
+    match name {
+        "controller"  => "Root protection domain — coordinates all other PDs",
+        "event_bus"   => "Event Bus — routes publish/subscribe events between PDs",
+        "init_agent"  => "Init Agent — bootstraps the system and starts services",
+        "agentfs"     => "AgentFS — virtual filesystem for agent data",
+        "vibe_engine" => "Vibe Engine — hot-swaps WASM agents into swap slots",
+        "worker_0"    => "WASM Worker 0 — executes WASM agents",
+        "worker_1"    => "WASM Worker 1 — executes WASM agents",
+        "worker_2"    => "WASM Worker 2 — executes WASM agents",
+        "worker_3"    => "WASM Worker 3 — executes WASM agents",
+        "swap_slot_0" => "WASM Swap Slot 0 — hot-swap target for agent upgrades",
+        "swap_slot_1" => "WASM Swap Slot 1 — hot-swap target for agent upgrades",
+        "swap_slot_2" => "WASM Swap Slot 2 — hot-swap target for agent upgrades",
+        "swap_slot_3" => "WASM Swap Slot 3 — hot-swap target for agent upgrades",
+        "console_mux" => "Console Mux — multiplexes serial console streams",
+        "linux_vmm"   => "Linux VM — runs Buildroot Linux guest",
+        "fault_hndlr" => "Fault Handler — catches and reports PD faults",
+        _             => "Protection Domain — isolated security boundary",
     }
 }
 
