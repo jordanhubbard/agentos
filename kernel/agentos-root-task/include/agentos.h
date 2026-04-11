@@ -295,6 +295,21 @@ typedef enum {
 #define SNAP_MAX_SLOTS                 8u  /* max simultaneously tracked slots */
 #define OP_QUOTA_SET          0x63  /* Update agent quota limits */
 
+/* ── proc_server opcodes (0xD0–0xD6) ────────────────────────────────────── */
+#define OP_PROC_SPAWN   0xD0u  /* MR1=parent_pid, MR2=auth_token, MR3=cap_mask → MR0=ok, MR1=pid */
+#define OP_PROC_EXIT    0xD1u  /* MR1=pid, MR2=exit_code → MR0=ok */
+#define OP_PROC_WAIT    0xD2u  /* MR1=pid → MR0=ok, MR1=exit_code, MR2=state */
+#define OP_PROC_STATUS  0xD3u  /* MR1=pid → MR0=ok, MR1=state, MR2=cap_mask */
+#define OP_PROC_LIST    0xD4u  /* → MR0=ok, MR1=count; proc_shmem has proc_info_t[] */
+#define OP_PROC_KILL    0xD5u  /* MR1=pid, MR2=signal → MR0=ok */
+#define OP_PROC_SETCAP  0xD6u  /* MR1=pid, MR2=cap_mask → MR0=ok */
+
+/* Channel ID: controller → proc_server (from controller perspective) */
+#define CH_PROC_SERVER  27u
+
+/* Trace PD ID for proc_server */
+#define TRACE_PD_PROC_SERVER 35u
+
 /* Fault handler restart policy constants */
 #define FAULT_POLICY_MAX_RESTARTS_DEFAULT  3u
 #define FAULT_POLICY_RESTART_DELAY_MS      100u
@@ -357,6 +372,15 @@ typedef enum {
 #define CH_VIRTIO_BLK         22   /* controller -> virtio_blk (PPC) */
 #define CH_APP_MANAGER        23   /* controller -> app_manager (PPC) */
 #define CH_HTTP_SVC           24   /* controller -> http_svc (PPC) */
+#define CH_NET_TIMER          25   /* controller -> net_server (10ms lwIP tick notify) */
+
+/* net_server lwIP timer channel (from net_server's own perspective) */
+#define NET_CH_TIMER          11u  /* receives 10ms tick notification from controller */
+
+/* net_server TCP lifecycle opcodes (new in Track A) */
+#define OP_NET_TCP_ACCEPT     0xB9u  /* accept inbound connection (future) */
+#define OP_NET_TCP_CLOSE      0xBAu  /* MR1=vnic_id: close TCP connection */
+#define OP_NET_CONN_STATE     0xBBu  /* MR1=vnic_id → MR1=state (0=free 1=conn 2=ok 3=err) */
 
 /* Console Multiplexer channel IDs (from controller perspective) */
 #ifdef BOARD_qemu_virt_aarch64
@@ -519,6 +543,9 @@ typedef struct __attribute__((packed)) {
 
 /* Trace PD ID for auth_server */
 #define TRACE_PD_AUTH_SERVER 34u
+
+/* Trace PD ID and channel ID for vm_snapshot (Track J) */
+#define TRACE_PD_VM_SNAPSHOT  37u
 
 /* Log function declarations */
 void agentos_log_boot(const char *pd_name);
