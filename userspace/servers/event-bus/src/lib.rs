@@ -30,10 +30,14 @@ pub struct RawEvent {
     pub timestamp_ns: u64,
 }
 
-/// Per-topic subscriber list
+/// Per-topic subscriber list with ownership tracking
 #[derive(Debug, Default)]
 struct TopicEntry {
     subscribers: Vec<SubscriberId>,
+    /// The protection-domain ID that owns this topic.
+    /// None means the topic is unowned (created before ownership was introduced).
+    /// Owner 0 is the kernel / privileged layer.
+    owner_pd: Option<u32>,
 }
 
 /// The event bus
@@ -55,6 +59,10 @@ pub enum BusError {
     UnknownSubscriber,
     /// Payload exceeds the maximum allowed size
     PayloadTooLarge,
+    /// Publisher is not the owner of the topic
+    Unauthorized,
+    /// Subscriber queue is full — publisher must back off
+    QueueFull,
 }
 
 impl core::fmt::Display for BusError {
@@ -63,6 +71,8 @@ impl core::fmt::Display for BusError {
             BusError::UnknownTopic => write!(f, "unknown topic"),
             BusError::UnknownSubscriber => write!(f, "unknown subscriber"),
             BusError::PayloadTooLarge => write!(f, "payload too large"),
+            BusError::Unauthorized => write!(f, "publisher is not the topic owner"),
+            BusError::QueueFull => write!(f, "subscriber queue full — publisher must back off"),
         }
     }
 }
@@ -70,14 +80,26 @@ impl core::fmt::Display for BusError {
 /// Maximum event payload in bytes (matches seL4 IPC message register budget)
 pub const MAX_PAYLOAD_BYTES: usize = 512;
 
+/// Maximum number of pending events per subscriber before backpressure kicks in
+pub const MAX_PENDING_PER_SUBSCRIBER: usize = 256;
+
 impl EventBus {
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// Create a topic.  Idempotent.
+    /// Create a topic owned by the kernel (owner PD = 0).  Idempotent.
     pub fn create_topic(&mut self, topic: impl Into<Topic>) {
-        self.topics.entry(topic.into()).or_default();
+        self.create_topic_owned(0, topic);
+    }
+
+    /// Create a topic owned by `owner_pd`.  Idempotent — if the topic already
+    /// exists the call is a no-op (first creator wins).
+    pub fn create_topic_owned(&mut self, owner_pd: u32, topic: impl Into<Topic>) {
+        self.topics.entry(topic.into()).or_insert_with(|| TopicEntry {
+            subscribers: Vec::new(),
+            owner_pd: Some(owner_pd),
+        });
     }
 
     /// Subscribe to a topic.  Returns a fresh SubscriberId.
@@ -98,7 +120,7 @@ impl EventBus {
         self.pending.remove(&id);
     }
 
-    /// Publish an event to all subscribers of a topic.
+    /// Publish an event as the kernel (publisher PD = 0).
     ///
     /// In production this would signal seL4 Notification caps.
     /// Here events are queued and retrieved via `drain`.
@@ -108,14 +130,40 @@ impl EventBus {
         payload: Vec<u8>,
         timestamp_ns: u64,
     ) -> Result<usize, BusError> {
+        self.publish_as(0, topic, payload, timestamp_ns)
+    }
+
+    /// Publish an event as a specific protection domain.
+    ///
+    /// Returns `BusError::Unauthorized` if `publisher_pd` does not own the topic.
+    /// Returns `BusError::QueueFull` if any subscriber's pending queue has reached
+    /// `MAX_PENDING_PER_SUBSCRIBER`.
+    pub fn publish_as(
+        &mut self,
+        publisher_pd: u32,
+        topic: impl Into<Topic>,
+        payload: Vec<u8>,
+        timestamp_ns: u64,
+    ) -> Result<usize, BusError> {
         if payload.len() > MAX_PAYLOAD_BYTES {
             return Err(BusError::PayloadTooLarge);
         }
         let topic = topic.into();
-        let subs = self.topics.get(&topic)
-            .ok_or(BusError::UnknownTopic)?
-            .subscribers
-            .clone();
+        let entry = self.topics.get(&topic).ok_or(BusError::UnknownTopic)?;
+
+        // Ownership check: an owned topic may only be published to by its owner.
+        if entry.owner_pd.map_or(false, |o| o != publisher_pd) {
+            return Err(BusError::Unauthorized);
+        }
+
+        let subs = entry.subscribers.clone();
+
+        // Backpressure check: fail fast if any subscriber queue is at capacity.
+        for sub in &subs {
+            if self.pending.get(sub).map_or(0, |v| v.len()) >= MAX_PENDING_PER_SUBSCRIBER {
+                return Err(BusError::QueueFull);
+            }
+        }
 
         let event = RawEvent { topic, payload, timestamp_ns };
         for sub in &subs {
@@ -208,5 +256,55 @@ mod tests {
         assert_eq!(n, 2);
         assert_eq!(bus.drain(s1).unwrap().len(), 1);
         assert_eq!(bus.drain(s2).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn test_topic_ownership_prevents_squatting() {
+        let mut bus = EventBus::new();
+        // PD 42 creates and owns "secure.topic"
+        bus.create_topic_owned(42, "secure.topic");
+        let sub = bus.subscribe("secure.topic").unwrap();
+
+        // Owner can publish successfully
+        let n = bus.publish_as(42, "secure.topic", b"from owner".to_vec(), 1).unwrap();
+        assert_eq!(n, 1);
+        let events = bus.drain(sub).unwrap();
+        assert_eq!(events[0].payload, b"from owner");
+
+        // Another PD (99) attempting to publish is rejected
+        let sub2 = bus.subscribe("secure.topic").unwrap();
+        let err = bus.publish_as(99, "secure.topic", b"squatter".to_vec(), 2).unwrap_err();
+        assert_eq!(err, BusError::Unauthorized);
+
+        // Drain should be empty (nothing was delivered from the squatter)
+        let nothing = bus.drain(sub2).unwrap();
+        assert!(nothing.is_empty());
+    }
+
+    #[test]
+    fn test_queue_full_backpressure() {
+        let mut bus = EventBus::new();
+        bus.create_topic("flood");
+        let sub = bus.subscribe("flood").unwrap();
+
+        // Fill up to the limit
+        for i in 0..MAX_PENDING_PER_SUBSCRIBER {
+            bus.publish("flood", alloc::format!("msg {}", i).into_bytes(), i as u64)
+                .expect("should succeed before queue full");
+        }
+
+        // The next publish should fail with QueueFull
+        let err = bus
+            .publish("flood", b"overflow".to_vec(), MAX_PENDING_PER_SUBSCRIBER as u64)
+            .unwrap_err();
+        assert_eq!(err, BusError::QueueFull);
+
+        // After draining, publishing works again
+        let drained = bus.drain(sub).unwrap();
+        assert_eq!(drained.len(), MAX_PENDING_PER_SUBSCRIBER);
+
+        let sub2 = bus.subscribe("flood").unwrap();
+        bus.publish("flood", b"after drain".to_vec(), 0).unwrap();
+        assert_eq!(bus.drain(sub2).unwrap().len(), 1);
     }
 }

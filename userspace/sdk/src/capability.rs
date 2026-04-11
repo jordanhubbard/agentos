@@ -20,6 +20,68 @@
 use alloc::vec::Vec;
 use alloc::string::String;
 
+/// A recorded delegation event — provides an immutable audit trail of every
+/// capability grant made through `derive_for_child`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DelegationRecord {
+    /// CPtr of the capability in the parent's CSpace
+    pub parent_cptr: u64,
+    /// CPtr assigned to the capability in the child's CSpace
+    pub child_cptr: u64,
+    /// Rights granted to the child
+    pub rights: Rights,
+    /// Monotonic timestamp (nanoseconds) at delegation time
+    pub timestamp_ns: u64,
+    /// Attestation hash: SHA-256 (or XOR-tag fallback) of
+    /// `parent_cptr || child_cptr || rights.0 as u64 || timestamp_ns`
+    /// all encoded as little-endian bytes.
+    pub chain_hash: [u8; 32],
+}
+
+/// Compute the attestation hash for a delegation record.
+///
+/// When the `sha2` cargo feature is enabled the hash is a proper SHA-256
+/// digest.  Otherwise a simple position-tagged XOR construction is used so
+/// that the no-std / no-external-dep path always produces a *distinct*
+/// 32-byte value for distinct inputs (good enough for the simulation layer).
+fn compute_chain_hash(parent_cptr: u64, child_cptr: u64, rights_bits: u64, timestamp_ns: u64) -> [u8; 32] {
+    // Concatenate the four 8-byte little-endian fields into a 32-byte message.
+    let mut msg = [0u8; 32];
+    msg[0..8].copy_from_slice(&parent_cptr.to_le_bytes());
+    msg[8..16].copy_from_slice(&child_cptr.to_le_bytes());
+    msg[16..24].copy_from_slice(&rights_bits.to_le_bytes());
+    msg[24..32].copy_from_slice(&timestamp_ns.to_le_bytes());
+
+    // XOR-tag hash: each output byte is the XOR of the corresponding input
+    // byte with a position-dependent constant derived from a simple LFSR
+    // sequence.  This ensures output != input and that flipping any input bit
+    // flips at least one output bit (weak, but sufficient for the sim layer).
+    #[cfg(not(feature = "sha2"))]
+    {
+        let mut hash = [0u8; 32];
+        let mut state: u32 = 0xABCD_1234;
+        for (i, &byte) in msg.iter().enumerate() {
+            // Advance LFSR (Galois form, polynomial 0x80200003)
+            let lsb = state & 1;
+            state >>= 1;
+            if lsb != 0 {
+                state ^= 0x8020_0003;
+            }
+            hash[i] = byte ^ (state as u8) ^ (i as u8).wrapping_mul(0x6B);
+        }
+        hash
+    }
+
+    #[cfg(feature = "sha2")]
+    {
+        use sha2::{Digest, Sha256};
+        let digest = Sha256::digest(&msg);
+        let mut hash = [0u8; 32];
+        hash.copy_from_slice(&digest);
+        hash
+    }
+}
+
 /// A capability - an unforgeable reference to a kernel object or agentOS resource.
 ///
 /// In the seL4 layer, this maps to a CPtr (capability pointer) in the thread's CSpace.
@@ -161,11 +223,13 @@ impl core::ops::BitOr for Rights {
 #[derive(Debug, Default)]
 pub struct CapabilitySet {
     caps: Vec<Capability>,
+    /// Immutable log of every capability delegation made from this set
+    delegation_log: Vec<DelegationRecord>,
 }
 
 impl CapabilitySet {
     pub fn new() -> Self {
-        Self { caps: Vec::new() }
+        Self { caps: Vec::new(), delegation_log: Vec::new() }
     }
 
     pub fn add(&mut self, cap: Capability) {
@@ -185,16 +249,45 @@ impl CapabilitySet {
             .any(|c| &c.kind == kind && c.has_right(right))
     }
 
-    /// Derive a child capability set (subset only, non-delegatable)
-    pub fn derive_for_child(&self, granted: &[Capability]) -> Result<CapabilitySet, CapError> {
+    /// Derive a child capability set (subset only, non-delegatable).
+    ///
+    /// For each capability granted a `DelegationRecord` is appended to
+    /// `self.delegation_log`.  The child cap receives a new `cptr` that is
+    /// distinct from the parent's cptr so the simulation layer can tell them
+    /// apart: `child_cptr = parent_cptr ^ 0xDEAD_0000_0000_0000 ^ index`.
+    pub fn derive_for_child(&mut self, granted: &[Capability]) -> Result<CapabilitySet, CapError> {
+        // Use a fixed timestamp placeholder in no-std (0); callers with std can
+        // pass a real timestamp by building a DelegationRecord directly.
+        let timestamp_ns: u64 = 0;
+
         let mut child_set = CapabilitySet::new();
-        for cap in granted {
+        for (index, cap) in granted.iter().enumerate() {
             // Verify we own (and can delegate) each capability being granted
             let owned = self.caps.iter().find(|c| c.cptr == cap.cptr);
             match owned {
                 Some(owned_cap) if owned_cap.delegatable => {
-                    // Grant a restricted copy
-                    if let Some(restricted) = owned_cap.restrict(cap.rights.clone()) {
+                    // Compute the child cptr — distinguishable from the parent.
+                    let child_cptr = cap.cptr ^ 0xDEAD_0000_0000_0000u64 ^ index as u64;
+
+                    // Grant a restricted copy with the new child cptr.
+                    if let Some(mut restricted) = owned_cap.restrict(cap.rights.clone()) {
+                        restricted.cptr = child_cptr;
+
+                        // Record the delegation before moving `restricted` into child_set.
+                        let record = DelegationRecord {
+                            parent_cptr: cap.cptr,
+                            child_cptr,
+                            rights: restricted.rights.clone(),
+                            timestamp_ns,
+                            chain_hash: compute_chain_hash(
+                                cap.cptr,
+                                child_cptr,
+                                restricted.rights.0 as u64,
+                                timestamp_ns,
+                            ),
+                        };
+                        self.delegation_log.push(record);
+
                         child_set.add(restricted);
                     } else {
                         return Err(CapError::RightsExceeded);
@@ -205,6 +298,11 @@ impl CapabilitySet {
             }
         }
         Ok(child_set)
+    }
+
+    /// Read-only view of the delegation audit log.
+    pub fn delegation_log(&self) -> &[DelegationRecord] {
+        &self.delegation_log
     }
 
     pub fn len(&self) -> usize {
