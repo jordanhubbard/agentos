@@ -1377,4 +1377,41 @@
     <map pd="controller" mr="ext2_shmem" vaddr="0x3400000" perms="r" cached="true"
          setvar_vaddr="ext2_shmem_ctrl_vaddr" />
 
+
+    <!--
+      ══════════════════════════════════════════════════════════════════
+      proc_server: HURD proc server — process table and signals (passive, prio 160)
+      ══════════════════════════════════════════════════════════════════
+    -->
+    <memory_region name="proc_shmem" size="0x2000" />
+
+    <protection_domain name="proc_server" priority="160" passive="true">
+        <program_image path="proc_server.elf" />
+        <map mr="proc_shmem" vaddr="0x3600000" perms="rw" cached="true"
+             setvar_vaddr="proc_shmem_vaddr" />
+    </protection_domain>
+
+    <channel>
+        <end pd="controller"   id="27" pp="true" />
+        <end pd="proc_server"  id="0" />
+    </channel>
+
+    <!--
+      ══════════════════════════════════════════════════════════════════
+      vm_snapshot: VM state snapshot/restore to AgentFS (passive, prio 130)
+      ══════════════════════════════════════════════════════════════════
+    -->
+    <memory_region name="vm_state_shmem" size="0x4000000" />
+
+    <protection_domain name="vm_snapshot" priority="130" passive="true">
+        <program_image path="vm_snapshot.elf" />
+        <map mr="vm_state_shmem" vaddr="0x40000000" perms="rw" cached="true"
+             setvar_vaddr="vm_state_vaddr" />
+    </protection_domain>
+
+    <channel>
+        <end pd="controller"   id="46" pp="true" />
+        <end pd="vm_snapshot"  id="0" />
+    </channel>
+
 </system>
