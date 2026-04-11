@@ -276,6 +276,14 @@ typedef enum {
 #define SNAP_MAX_SLOTS                 8u  /* max simultaneously tracked slots */
 #define OP_QUOTA_SET          0x63  /* Update agent quota limits */
 
+/* Fault handler restart policy constants */
+#define FAULT_POLICY_MAX_RESTARTS_DEFAULT  3u
+#define FAULT_POLICY_RESTART_DELAY_MS      100u
+#define FAULT_POLICY_ESCALATE_AFTER        5u
+
+/* fault_handler extended opcodes */
+#define OP_FAULT_POLICY_SET   0xE0  /* MR1=slot, MR2=max_restarts, MR3=escalate_after */
+
 /* Quota flags */
 #define QUOTA_FLAG_ACTIVE     (1u << 0)
 #define QUOTA_FLAG_CPU_EXCEED (1u << 1)

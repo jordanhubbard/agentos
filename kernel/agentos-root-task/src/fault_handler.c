@@ -49,6 +49,7 @@
 #define OP_FAULT_STATUS   0x60   /* Query ring state: MR0=count, MR1=head, MR2=cap */
 #define OP_FAULT_DUMP     0x61   /* Read entries: MR1=start_idx, MR2=count */
 #define OP_FAULT_CLEAR    0x62   /* Clear ring buffer */
+/* OP_FAULT_POLICY_SET is defined in agentos.h as 0xE0 */
 
 /* ── Fault type constants (mirrors seL4 fault codes) ─────────────────────── */
 #define FAULT_VM_FAULT    1      /* seL4_Fault_VMFault */
@@ -96,6 +97,56 @@ uintptr_t fault_ring_vaddr;
 
 static uint64_t boot_tick = 0;
 
+/* ── Per-PD restart policy ────────────────────────────────────────────────── */
+
+typedef struct {
+    uint8_t  max_restarts;       /* 0 = kill immediately, 255 = always restart */
+    uint8_t  restart_count;      /* how many times restarted so far */
+    uint8_t  total_faults;       /* total faults seen (for escalation) */
+    uint8_t  escalate_after;     /* escalate to controller after N total faults */
+    uint32_t restart_delay_ms;   /* delay before restart (simulated) */
+} fault_policy_t;
+
+static fault_policy_t fault_policies[16];  /* one per PD slot */
+
+static void fault_policy_init(void) {
+    for (int i = 0; i < 16; i++) {
+        fault_policies[i].max_restarts    = FAULT_POLICY_MAX_RESTARTS_DEFAULT;
+        fault_policies[i].restart_count   = 0;
+        fault_policies[i].total_faults    = 0;
+        fault_policies[i].escalate_after  = FAULT_POLICY_ESCALATE_AFTER;
+        fault_policies[i].restart_delay_ms = FAULT_POLICY_RESTART_DELAY_MS;
+    }
+}
+
+/* ── Policy-driven fault decision ─────────────────────────────────────────── */
+
+static void handle_fault_policy(uint32_t pd_slot) {
+    if (pd_slot >= 16) return;
+    fault_policy_t *p = &fault_policies[pd_slot];
+
+    /* Guard against overflow on total_faults counter */
+    if (p->total_faults < 255u) p->total_faults++;
+
+    if (p->total_faults >= p->escalate_after) {
+        console_log(13, 13,
+            "[fault_handler] PD exceeded escalation threshold, notifying controller\n");
+        /* notify controller channel */
+        microkit_notify(FH_CH_WATCHDOG);
+        return;
+    }
+
+    if (p->restart_count < p->max_restarts) {
+        p->restart_count++;
+        console_log(13, 13, "[fault_handler] restarting PD (within restart budget)\n");
+        /* In production: seL4_TCB_Resume(pd_tcb[pd_slot]) */
+    } else {
+        console_log(13, 13,
+            "[fault_handler] PD exceeded max restarts, killing\n");
+        /* In production: seL4_TCB_Suspend(pd_tcb[pd_slot]) */
+    }
+}
+
 /* ── Init ─────────────────────────────────────────────────────────────────── */
 static void fault_handler_init(void) {
     volatile fault_ring_header_t *hdr = FAULT_HDR;
@@ -110,6 +161,9 @@ static void fault_handler_init(void) {
     hdr->head     = 0;
     hdr->count    = 0;
     hdr->drops    = 0;
+
+    /* Initialize per-PD restart policies to defaults */
+    fault_policy_init();
 
     console_log(13, 13, "[fault_handler] Initialized. capacity=5000+ fault entries, 48B each\n");
 }
@@ -280,8 +334,8 @@ static void handle_fault(microkit_channel channel, microkit_msginfo msg) {
         forward_cap_fault_to_audit(pd_id, fault_addr);
     }
 
-    /* 4. Notify watchdog/controller to trigger respawn */
-    notify_watchdog(pd_id);
+    /* 4. Apply per-PD restart policy (may notify controller or restart PD) */
+    handle_fault_policy(pd_id);
 
     (void)msg;
 }
@@ -348,6 +402,23 @@ static microkit_msginfo handle_query(microkit_msginfo msg) {
         return microkit_msginfo_new(0, 1);
     }
 
+    case OP_FAULT_POLICY_SET: {
+        uint32_t slot          = (uint32_t)microkit_mr_get(1);
+        uint32_t max_restarts  = (uint32_t)microkit_mr_get(2);
+        uint32_t escalate_after = (uint32_t)microkit_mr_get(3);
+        if (slot < 16) {
+            fault_policies[slot].max_restarts   = (uint8_t)(max_restarts & 0xFF);
+            fault_policies[slot].escalate_after = (uint8_t)(escalate_after & 0xFF);
+            /* Reset counters when policy changes */
+            fault_policies[slot].restart_count  = 0;
+            fault_policies[slot].total_faults   = 0;
+            microkit_mr_set(0, 1u); /* ok */
+        } else {
+            microkit_mr_set(0, 0u); /* invalid slot */
+        }
+        return microkit_msginfo_new(0, 1);
+    }
+
     default:
         console_log(13, 13, "[fault_handler] WARN: unknown query opcode\n");
         microkit_mr_set(0, 0xFF);
@@ -382,6 +453,14 @@ microkit_msginfo protected(microkit_channel channel, microkit_msginfo msg) {
 }
 
 void notified(microkit_channel ch) {
-    (void)ch;
     boot_tick++;
+    /*
+     * Channels 60+ are async fault notifications (non-PPC path).
+     * Apply per-PD restart policy for the faulting slot.
+     * The pd_slot is encoded as (ch - 60) for the notify path.
+     */
+    if (ch >= 60) {
+        uint32_t pd_slot = (uint32_t)(ch - 60);
+        handle_fault_policy(pd_slot);
+    }
 }

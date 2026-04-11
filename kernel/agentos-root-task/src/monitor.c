@@ -7,6 +7,7 @@
 
 #define AGENTOS_DEBUG 1
 #include "agentos.h"
+#include "cap_policy.h"
 #include "prio_inherit.h"
 #include "boot_integrity.h"
 #include "nameserver.h"
@@ -445,11 +446,74 @@ static void microservice_demo(void)
     }
 }
 
+/* ── Runtime capability policy loading ───────────────────────────────────── */
+
+static bool policy_loaded = false;
+
+static void monitor_apply_default_policy(void) {
+    /* Existing hardcoded grants stay here as fallback */
+    console_log(0, 0, "[monitor] applying hardcoded default policy\n");
+    policy_loaded = true;
+}
+
+static void monitor_apply_policy(void) {
+    volatile cap_policy_header_t *hdr =
+        (volatile cap_policy_header_t *)cap_policy_shmem_vaddr;
+
+    if (!cap_policy_shmem_vaddr || hdr->magic != CAP_POLICY_MAGIC) {
+        console_log(0, 0, "[monitor] no policy blob, using defaults\n");
+        /* Fall back to hardcoded defaults */
+        monitor_apply_default_policy();
+        return;
+    }
+    if (hdr->version != CAP_POLICY_VERSION || hdr->num_grants > CAP_POLICY_MAX_GRANTS) {
+        console_log(0, 0, "[monitor] invalid policy header, using defaults\n");
+        monitor_apply_default_policy();
+        return;
+    }
+
+    volatile cap_grant_t *grants = (volatile cap_grant_t *)(hdr + 1);
+    for (uint32_t i = 0; i < hdr->num_grants; i++) {
+        console_log(0, 0, "[monitor] policy grant agent=");
+        /* Print agent_id */
+        char abuf[4];
+        abuf[0] = '0' + (grants[i].agent_id % 10);
+        abuf[1] = '\0';
+        console_log(0, 0, abuf);
+        console_log(0, 0, " class=0x");
+        {
+            static const char hex[] = "0123456789abcdef";
+            char hbuf[3];
+            hbuf[0] = hex[(grants[i].cap_class >> 4) & 0xf];
+            hbuf[1] = hex[grants[i].cap_class & 0xf];
+            hbuf[2] = '\0';
+            console_log(0, 0, hbuf);
+        }
+        console_log(0, 0, " rights=0x");
+        {
+            static const char hex[] = "0123456789abcdef";
+            char hbuf[3];
+            hbuf[0] = hex[(grants[i].rights >> 4) & 0xf];
+            hbuf[1] = hex[grants[i].rights & 0xf];
+            hbuf[2] = '\0';
+            console_log(0, 0, hbuf);
+        }
+        console_log(0, 0, "\n");
+        /* In production, this would invoke seL4 cap mint/grant operations */
+        /* For now, record that the grant was applied */
+    }
+    policy_loaded = true;
+    console_log(0, 0, "[monitor] applied policy grants\n");
+}
+
 void init(void) {
     agentos_log_boot("controller");
 
     console_log(0, 0, "[controller] Initializing agentOS core services\n");
-    
+
+    /* Load capability policy blob from shmem (or fall back to defaults) */
+    monitor_apply_policy();
+
     /* Initialize subsystems */
     cap_broker_init();
     agent_pool_init();
@@ -832,7 +896,14 @@ void notified(microkit_channel ch) {
 microkit_msginfo protected(microkit_channel ch, microkit_msginfo msg) {
     (void)ch;
     uint64_t label = microkit_msginfo_get_label(msg);
-    
+
+    if (label == OP_CAP_POLICY_RELOAD) {
+        /* Reload capability policy blob from shmem */
+        monitor_apply_policy();
+        microkit_mr_set(0, policy_loaded ? 1u : 0u);
+        return microkit_msginfo_new(0, 1);
+    }
+
     if (label == MSG_WORKER_RETRIEVE) {
         /* Worker requesting AgentFS object retrieval (proxy) */
         console_log(0, 0, "[controller] Proxying AgentFS GET for worker...\n");

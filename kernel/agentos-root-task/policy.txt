@@ -1,0 +1,9 @@
+# agentOS default capability policy
+# agent=<pd_id> class=<cap_class_hex> rights=<rights_hex> flags=<flags_hex>
+# agent 0 = controller, 1 = event_bus, 2 = init_agent, etc.
+agent=2 class=0x01 rights=0x07 flags=0x01 resource=0   # init_agent: compute
+agent=2 class=0x04 rights=0x03 flags=0x00 resource=0   # init_agent: objectstore r/w
+agent=5 class=0x01 rights=0x05 flags=0x00 resource=0   # worker_0: compute+exec
+agent=6 class=0x01 rights=0x05 flags=0x00 resource=0   # worker_1: compute+exec
+agent=7 class=0x01 rights=0x05 flags=0x00 resource=0   # worker_2: compute+exec
+agent=8 class=0x01 rights=0x05 flags=0x00 resource=0   # worker_3: compute+exec
