@@ -31,6 +31,7 @@ use axum::{
     routing::{get, post},
     Router,
 };
+use agentos_sim::SimEngine;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::UnixStream;
 use tokio::time::interval;
@@ -261,6 +262,7 @@ async fn main() -> anyhow::Result<()> {
         agentos_token:  agentos_token.clone(),
         guest_img_dir:  guest_img_dir_for_state,
         parse_tx:       parse_tx.clone(),
+        sim_engine:     std::sync::Arc::new(tokio::sync::Mutex::new(SimEngine::new())),
     };
 
     let ws_log_state = WsLogState {
@@ -297,7 +299,9 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/agentos/agents",        get(routes::get_agentos_agents))
         .route("/api/agentos/agents/spawn",  post(routes::post_spawn_agent))
         // Images + topology
-        .route("/api/images",   get(routes::get_images))
+        .route("/api/images",                    get(routes::get_images))
+        .route("/api/images/import",             post(routes::post_import_image))
+        .route("/api/images/download-buildroot", get(routes::get_download_buildroot))
         .route("/api/topology", get(routes::get_topology))
         // Debug
         .route("/api/debug",        get(routes::get_debug))
