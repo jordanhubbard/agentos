@@ -57,9 +57,17 @@ pub async fn handle_terminal_ws(socket: WebSocket, state: WsTerminalState, slot:
     // Internal channel to pass outgoing messages from poller → sink
     let (out_tx, mut out_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
 
+    // Warn if QEMU serial socket is not connected
+    if state.inject_tx.lock().unwrap().is_none() {
+        let notice = "\r\x1b[33m[console] waiting for QEMU serial socket — start the VM to connect\x1b[0m\r\n".to_string();
+        if sink.send(Message::Text(notice.into())).await.is_err() {
+            return;
+        }
+    }
+
     // Poller task: every POLL_MS, try bridge API then fall back to serial cache
     let state_poll = state.clone();
-    let out_tx_poll = out_tx;
+    let out_tx_poll = out_tx.clone();
     tokio::spawn(async move {
         let mut ticker = interval(Duration::from_millis(POLL_MS));
         let mut api_cursor: usize = 0;
@@ -125,7 +133,7 @@ pub async fn handle_terminal_ws(socket: WebSocket, state: WsTerminalState, slot:
                         if let Some(tx) = state.inject_tx.lock().unwrap().as_ref() {
                             let _ = tx.send(data.as_bytes().to_vec());
                         } else {
-                            // Fire-and-forget POST to bridge inject
+                            // Try HTTP inject (best-effort, serial socket not available)
                             let url = format!(
                                 "{}/api/agentos/console/inject/{}",
                                 state.agentos_base, slot
@@ -134,6 +142,8 @@ pub async fn handle_terminal_ws(socket: WebSocket, state: WsTerminalState, slot:
                             tokio::spawn(async move {
                                 let _ = try_post_inject(&url, &token, &data).await;
                             });
+                            // Notify the client that the serial socket is disconnected
+                            let _ = out_tx.send("\r\n\x1b[33m[console] serial socket disconnected — input not delivered\x1b[0m\r\n".to_string());
                         }
                     }
                     Some(Ok(Message::Binary(b))) => {
