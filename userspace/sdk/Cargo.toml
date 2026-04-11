@@ -13,6 +13,7 @@ serde      = { version = "1", features = ["derive"], optional = true }
 serde_json = { version = "1", optional = true }
 tokio      = { version = "1", features = ["net", "io-util", "sync", "rt", "macros"], optional = true }
 uuid       = { version = "1", features = ["v4"], optional = true }
+sha2       = { version = "0.10", default-features = false, optional = true }
 
 [features]
 default = []
@@ -22,6 +23,9 @@ std = []
 async-context = ["std", "dep:serde", "dep:serde_json", "dep:tokio", "dep:uuid"]
 # Enable seL4 bindings (requires the sel4 crate to be available)
 sel4 = []
+# Enable SHA-256 attestation hashes in DelegationRecord (requires sha2 crate).
+# Without this feature a position-tagged XOR hash is used instead.
+sha2 = ["dep:sha2"]
 
 [lib]
 name = "agentos_sdk"
