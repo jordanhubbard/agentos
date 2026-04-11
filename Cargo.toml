@@ -5,6 +5,7 @@ members = [
     "userspace/sdk",
     "userspace/agents/init-agent",
     # Userspace servers
+    "userspace/servers/http-gateway",
     "userspace/servers/event-bus",
     "userspace/servers/capability-broker",
     "userspace/servers/model-proxy",
