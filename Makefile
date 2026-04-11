@@ -11,7 +11,7 @@
 #   make clean        — remove build artifacts for current target
 #   make clean-all    — remove all build artifacts
 
-.PHONY: all deps deps-tools deps-sdk submodules channels console dashboard test test-snapshot-sched test-power-mgr test-integration clean clean-all clean-images help release release-minor release-major fetch-guest build-tools
+.PHONY: all deps deps-tools deps-sdk submodules channels console dashboard test test-snapshot-sched test-power-mgr test-proc-server test-integration clean clean-all clean-images help release release-minor release-major fetch-guest build-tools
 
 # ─── Read config.yaml (if present) ───────────────────────────────────────────
 CONFIG_TARGET := $(shell grep '^target_arch:' config.yaml 2>/dev/null | sed 's/target_arch:[[:space:]]*//' | tr -d '[:space:]')
@@ -402,6 +402,20 @@ test-power-mgr:
 	@echo ""
 
 # =============================================================================
+# test-proc-server: standalone unit test for the proc_server PD (Track F)
+# =============================================================================
+test-proc-server:
+	@echo ""
+	@echo "╔══════════════════════════════════════════╗"
+	@echo "║   agentOS — proc_server unit tests       ║"
+	@echo "╚══════════════════════════════════════════╝"
+	@echo ""
+	cc tests/test_proc_server.c -o /tmp/test_proc_server -I kernel/agentos-root-task/include -DAGENTOS_TEST_HOST
+	@/tmp/test_proc_server
+	@echo "✓ proc_server tests passed"
+	@echo ""
+
+# =============================================================================
 # test-integration: compile and run C integration tests on the host
 #
 # Each test file is self-contained: all seL4/Microkit primitives are stubbed
@@ -419,7 +433,8 @@ test-integration:
 	    tests/test_cap_policy_hotreload.c \
 	    tests/test_power_mgr.c \
 	    tests/test_snapshot_sched.c \
-	    tests/test_dev_shell.c; do \
+	    tests/test_dev_shell.c \
+	    tests/test_proc_server.c; do \
 	    gcc -I kernel/agentos-root-task/include \
 	        -DAGENTOS_TEST_HOST \
 	        -DAGENTOS_SNAPSHOT_SCHED \

@@ -1240,6 +1240,7 @@
 
     <!--
       ══════════════════════════════════════════════════════════════════
+<<<<<<< HEAD
       vm_manager: Multi-VM lifecycle manager (passive, prio 145)
       Track D — HURD-parity plan
 
@@ -1360,5 +1361,42 @@
     <channel>
         <end pd="controller"   id="46" pp="true" />
         <end pd="vm_snapshot"  id="0" />
+=======
+      ProcServer: process table and signal delivery (passive, prio 160)
+      Track F — HURD-parity proc server
+
+      Maintains a process table of up to 32 entries.
+      Pre-creates pid=0 "kernel" process at boot.
+      Supports: spawn, exit, wait, status, list, kill, setcap.
+
+      Channel:
+        id=0: controller (pp=true) — all proc_server operations
+
+      Shared memory:
+        proc_shmem (8KB): proc_info_t[] output for OP_PROC_LIST
+          proc_server writes entries here; controller reads after call.
+      ══════════════════════════════════════════════════════════════════
+    -->
+
+    <!-- proc_shmem: 8KB process info dump buffer for OP_PROC_LIST.
+         Write access: proc_server only (writes proc_info_t[] on OP_PROC_LIST).
+         Read access:  controller (r-only, reads after OP_PROC_LIST PPC call).
+         Cap class:    AGENTOS_CAP_SPAWN (process table access requires spawn cap).
+         Threat:       rogue PD injecting fake process records to spoof process state;
+                       mitigated by proc_server-only write mapping. -->
+    <memory_region name="proc_shmem" size="0x2000" />  <!-- 8KB: proc_info_t[] -->
+
+    <protection_domain name="proc_server" priority="160" passive="true">
+        <program_image path="proc_server.elf" />
+        <map mr="proc_shmem" vaddr="0x3300000" perms="rw" cached="true"
+             setvar_vaddr="proc_shmem_vaddr" />
+    </protection_domain>
+
+    <!-- Channel 27: controller(id=27, pp=true) <-> proc_server(id=0)
+         Controller PPCs into proc_server for all process management operations -->
+    <channel>
+        <end pd="controller"  id="27" pp="true" />
+        <end pd="proc_server" id="0" />
+>>>>>>> worktree-agent-a22bebd5
     </channel>
 </system>
