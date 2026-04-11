@@ -35,6 +35,9 @@
 #define EVENTBUS_CH_MONITOR   1
 #define EVENTBUS_CH_INITAGENT 2
 
+/* EventBus error codes (returned via msginfo label on error replies) */
+#define EVENTBUS_ERR_OVERFLOW  3  /* ring buffer full — event dropped, overflow_count incremented */
+
 /* InitAgent PD channels */
 #define INITAGENT_CH_MONITOR  1
 #define INITAGENT_CH_EVENTBUS 2
@@ -407,12 +410,13 @@ typedef struct __attribute__((packed)) {
 
 /* EventBus ring buffer header (at start of shared memory region) */
 typedef struct __attribute__((packed)) {
-    uint32_t magic;       /* 0xA6E7_0B05 = "AGENTOS" */
+    uint32_t magic;          /* 0xA6E7_0B05 = "AGENTOS" */
     uint32_t version;
-    uint64_t capacity;    /* number of event slots */
-    uint64_t head;        /* write index */
-    uint64_t tail;        /* read index */
-    uint8_t  _pad[40];   /* pad to 64 bytes */
+    uint64_t capacity;       /* number of event slots */
+    uint64_t head;           /* write index */
+    uint64_t tail;           /* read index */
+    uint32_t overflow_count; /* incremented each time a publish is dropped (ring full) */
+    uint8_t  _pad[36];       /* pad to maintain total struct size */
 } agentos_ring_header_t;
 
 #define AGENTOS_RING_MAGIC 0xA6E70B05

@@ -39,6 +39,45 @@
 /* WASM stack size for the interpreter */
 #define WASM_STACK_SIZE     (64 * 1024)
 
+/* ---- Linear memory guard ---- */
+#define WASM_LINEAR_MEM_MAX   (4UL * 1024 * 1024)  /* 4MB hard cap per slot */
+
+/**
+ * wasm3_host_validate_memory - verify linear memory stays within bounds.
+ * Called once after module load and before init().
+ * Returns true if the module's declared memory fits within WASM_LINEAR_MEM_MAX.
+ */
+static bool wasm3_host_validate_memory(IM3Runtime runtime) {
+    uint32_t mem_size = 0;
+    uint8_t *mem_ptr  = m3_GetMemory(runtime, &mem_size, 0);
+    if (!mem_ptr) {
+        console_log(15, 15, "[wasm3_host] wasm3_host: no linear memory segment\n");
+        return true;   /* no memory declared — still valid */
+    }
+    if ((uintptr_t)mem_size > WASM_LINEAR_MEM_MAX) {
+        console_log(15, 15, "[wasm3_host] wasm3_host: linear memory exceeds cap\n");
+        return false;
+    }
+    console_log(15, 15, "[wasm3_host] wasm3_host: linear memory OK\n");
+    return true;
+}
+
+/**
+ * wasm3_host_check_mem_access - validate a WASM linear-memory pointer+len.
+ * Returns true if [wasm_offset, wasm_offset+len) is within the module's memory.
+ */
+static bool wasm3_host_check_mem_access(IM3Runtime runtime,
+                                         uint32_t wasm_offset, uint32_t len) {
+    uint32_t mem_size = 0;
+    (void)m3_GetMemory(runtime, &mem_size, 0);
+    if (mem_size == 0) return false;
+    if ((uint64_t)wasm_offset + len > (uint64_t)mem_size) {
+        console_log(15, 15, "[wasm3_host] wasm3_host: OOB access detected\n");
+        return false;
+    }
+    return true;
+}
+
 /* Host state — lives in BSS (one per swap slot PD) */
 struct wasm3_host {
     IM3Environment  env;
@@ -131,7 +170,10 @@ static m3ApiRawFunction(host_aos_mem_read)
 
     uint32_t mem_size = 0;
     uint8_t *mem = (uint8_t *)m3_GetMemory(runtime, &mem_size, 0);
-    if (!mem || (uint32_t)(buf_ptr + len) > mem_size) {
+    if (!mem) {
+        m3ApiReturn(-1)
+    }
+    if (!wasm3_host_check_mem_access(runtime, (uint32_t)buf_ptr, (uint32_t)len)) {
         m3ApiReturn(-1)
     }
 
@@ -163,7 +205,10 @@ static m3ApiRawFunction(host_aos_mem_write)
 
     uint32_t mem_size = 0;
     uint8_t *mem = (uint8_t *)m3_GetMemory(runtime, &mem_size, 0);
-    if (!mem || (uint32_t)(buf_ptr + len) > mem_size) {
+    if (!mem) {
+        m3ApiReturn(-1)
+    }
+    if (!wasm3_host_check_mem_access(runtime, (uint32_t)buf_ptr, (uint32_t)len)) {
         m3ApiReturn(-1)
     }
 
@@ -337,6 +382,14 @@ wasm3_host_t *wasm3_host_init(const uint8_t *wasm_bytes, uint32_t wasm_size) {
     result = m3_FindFunction(&host->fn_heap_stats, host->runtime, "__agentos_heap_stats");
     if (result) {
         host->fn_heap_stats = NULL;  /* Optional — no warning */
+    }
+
+    /* Validate linear memory before calling init() — reject modules that
+     * declare more than WASM_LINEAR_MEM_MAX bytes to prevent OOB into
+     * adjacent PD memory regions. */
+    if (!wasm3_host_validate_memory(host->runtime)) {
+        console_log(15, 15, "[wasm3_host] ERROR: linear memory exceeds hard cap, rejecting module\n");
+        return NULL;
     }
 
     host->initialized = true;

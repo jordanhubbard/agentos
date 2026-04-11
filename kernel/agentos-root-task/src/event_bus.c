@@ -38,27 +38,30 @@ static uint64_t event_seq = 0;
 /* Initialize the ring buffer */
 static void eventbus_init_ring(void) {
     volatile agentos_ring_header_t *ring = EVENTBUS_RING;
-    ring->magic    = AGENTOS_RING_MAGIC;
-    ring->version  = 1;
+    ring->magic          = AGENTOS_RING_MAGIC;
+    ring->version        = 1;
     /* Reserve the last 768 bytes as batch staging; see EVENTBUS_BATCH_STAGING_OFFSET */
-    ring->capacity = (EVENTBUS_BATCH_STAGING_OFFSET - sizeof(agentos_ring_header_t))
-                     / sizeof(agentos_event_t);
-    ring->head     = 0;
-    ring->tail     = 0;
+    ring->capacity       = (EVENTBUS_BATCH_STAGING_OFFSET - sizeof(agentos_ring_header_t))
+                           / sizeof(agentos_event_t);
+    ring->head           = 0;
+    ring->tail           = 0;
+    ring->overflow_count = 0;
 }
 
-/* Write an event to the ring */
-static bool eventbus_write(uint32_t kind, uint32_t source_pd, 
-                            const uint8_t *payload, uint32_t payload_len) {
+/* Write an event to the ring.
+ * Returns 0 on success, EVENTBUS_ERR_OVERFLOW if the ring is full. */
+static int eventbus_write(uint32_t kind, uint32_t source_pd,
+                           const uint8_t *payload, uint32_t payload_len) {
     volatile agentos_ring_header_t *ring = EVENTBUS_RING;
     volatile agentos_event_t *events = (volatile agentos_event_t *)
         ((uint8_t *)EVENTBUS_RING + sizeof(agentos_ring_header_t));
-    
+
     uint64_t next_head = (ring->head + 1) % ring->capacity;
     if (next_head == ring->tail) {
-        /* Ring full - drop event (in production: apply backpressure) */
+        /* Ring full — increment overflow counter and signal the caller */
+        ring->overflow_count++;
         console_log(2, 2, "[event_bus] WARNING: ring buffer full, dropping event\n");
-        return false;
+        return EVENTBUS_ERR_OVERFLOW;
     }
     
     volatile agentos_event_t *slot = &events[ring->head];
@@ -75,8 +78,8 @@ static bool eventbus_write(uint32_t kind, uint32_t source_pd,
     /* Memory barrier before updating head */
     __asm__ volatile("" ::: "memory");
     ring->head = next_head;
-    
-    return true;
+
+    return 0;
 }
 
 /* Notify all active subscribers */
@@ -178,9 +181,13 @@ microkit_msginfo protected(microkit_channel ch, microkit_msginfo msg) {
         }
         
         case MSG_EVENTBUS_STATUS: {
-            microkit_mr_set(0, event_seq);
-            microkit_mr_set(1, sub_count);
-            return microkit_msginfo_new(0, 2);
+            volatile agentos_ring_header_t *ring = EVENTBUS_RING;
+            /* MR0 = head, MR1 = tail, MR2 = capacity, MR3 = overflow_count */
+            microkit_mr_set(0, (uint64_t)ring->head);
+            microkit_mr_set(1, (uint64_t)ring->tail);
+            microkit_mr_set(2, (uint64_t)ring->capacity);
+            microkit_mr_set(3, (uint64_t)ring->overflow_count);
+            return microkit_msginfo_new(0, 4);
         }
         
         case OP_PUBLISH_BATCH: {
@@ -230,7 +237,7 @@ microkit_msginfo protected(microkit_channel ch, microkit_msginfo msg) {
                 const uint8_t *payload = (const uint8_t *)entry->data + entry->topic_len;
                 uint32_t       plen    = entry->payload_len;
 
-                if (eventbus_write(kind, (uint32_t)ch, payload, plen)) {
+                if (eventbus_write(kind, (uint32_t)ch, payload, plen) == 0) {
                     dispatched++;
                 } else {
                     dropped++;

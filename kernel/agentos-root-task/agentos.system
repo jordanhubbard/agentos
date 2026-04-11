@@ -4,7 +4,7 @@
   
   Protection Domain topology:
   
-    controller   (prio 50)   - system coordinator + capability broker
+    controller   (prio 201)  - raised above passive servers to prevent priority inversion
     event_bus    (prio 200)  - passive pub/sub server (ring buffer)
     init_agent   (prio 100)  - agent ecosystem bootstrapper
     worker_0..7  (prio 80)   - agent pool workers (dynamic task assignment)
@@ -55,8 +55,9 @@
     65: net_isolator <-> event_bus     (deny event notifications)
 -->
 <system>
-    <!-- Controller: system coordinator, low priority to PPC into passive servers -->
-    <protection_domain name="controller" priority="50">
+    <!-- Controller: system coordinator, priority raised above passive servers to prevent
+         priority inversion when PPCing into event_bus (prio 200) and other passive PDs -->
+    <protection_domain name="controller" priority="201">
         <program_image path="controller.elf" />
         <map mr="monitor_stack"  vaddr="0x2000000" perms="rw" setvar_vaddr="monitor_stack_vaddr" />
         <!-- Swap code regions: controller writes WASM images here; swap slot PDs read them -->
