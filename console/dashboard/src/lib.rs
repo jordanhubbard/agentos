@@ -78,6 +78,14 @@ struct Frame {
     ticks: u32, depth: u32,
 }
 
+// ── Slots API types ───────────────────────────────────────────────────────────
+
+#[derive(serde::Deserialize)]
+struct SlotStatus { id: usize, active: bool }
+
+#[derive(serde::Deserialize)]
+struct SlotsResponse { slots: Vec<SlotStatus> }
+
 // ── Agent type ────────────────────────────────────────────────────────────────
 
 #[derive(Clone, serde::Deserialize)]
@@ -251,7 +259,16 @@ pub fn App() -> impl IntoView {
     let (current_panel, set_panel) = create_signal(String::from("topology"));
     let (ws_status,  set_ws_status) = create_signal(WsStatus::Connecting);
     let (ws_label,   set_ws_label)  = create_signal(String::from("connecting…"));
-    let (sidebar_open, set_sidebar) = create_signal(true);
+    // Initialise sidebar state from localStorage (default true if absent/unparseable)
+    let sidebar_init = web_sys::window()
+        .unwrap()
+        .local_storage()
+        .ok()
+        .flatten()
+        .and_then(|ls| ls.get_item("sidebar_open").ok().flatten())
+        .map(|v| v != "0")
+        .unwrap_or(true);
+    let (sidebar_open, set_sidebar) = create_signal(sidebar_init);
 
     let audit_lines    = create_rw_signal(Vec::<String>::new());
     let timeline_lines = create_rw_signal(Vec::<String>::new());
@@ -265,6 +282,7 @@ pub fn App() -> impl IntoView {
 
     // Console tile state — lifted to App so topology clicks can open terminals
     let (tiles, set_tiles) = create_signal(Vec::<(usize, String)>::new());
+    let highlighted_tile: RwSignal<Option<usize>> = create_rw_signal(None);
 
     connect_ws(
         set_ws_status, set_ws_label,
@@ -289,6 +307,47 @@ pub fn App() -> impl IntoView {
                                     v[s.id].mem_kb  = s.mem_kb as u64;
                                     if v[s.id].status == NodeStatus::Unknown {
                                         v[s.id].status = NodeStatus::Ready;
+                                    }
+                                }
+                            }
+                        });
+                    }
+                }
+            });
+        });
+        interval.forget();
+    }
+
+    // Persist sidebar open/close state to localStorage whenever it changes
+    create_effect(move |_| {
+        let open = sidebar_open.get();
+        if let Some(ls) = web_sys::window()
+            .unwrap()
+            .local_storage()
+            .ok()
+            .flatten()
+        {
+            let _ = ls.set_item("sidebar_open", if open { "1" } else { "0" });
+        }
+    });
+
+    // Periodic slots fetch → update topo_metrics status
+    {
+        let tm = topo_metrics;
+        let interval = gloo_timers::callback::Interval::new(5_000, move || {
+            let tm2 = tm;
+            wasm_bindgen_futures::spawn_local(async move {
+                if let Ok(resp) = gloo_net::http::Request::get("/api/agentos/slots")
+                    .send().await
+                {
+                    if let Ok(data) = resp.json::<SlotsResponse>().await {
+                        tm2.update(|v| {
+                            for s in &data.slots {
+                                if s.id < v.len() {
+                                    if s.active && v[s.id].status == NodeStatus::Unknown {
+                                        v[s.id].status = NodeStatus::Ready;
+                                    } else if !s.active && v[s.id].status == NodeStatus::Ready {
+                                        v[s.id].status = NodeStatus::Offline;
                                     }
                                 }
                             }
@@ -367,7 +426,7 @@ pub fn App() -> impl IntoView {
                         />
                     </Show>
                     <Show when=move || current_panel.get() == "console">
-                        <ConsoleTab tiles=tiles set_tiles=set_tiles />
+                        <ConsoleTab tiles=tiles set_tiles=set_tiles highlighted_tile=highlighted_tile />
                     </Show>
                     <Show when=move || current_panel.get() == "profiler">
                         <ProfilerTab />
@@ -473,8 +532,9 @@ fn SidebarStats(
 
 #[component]
 fn ConsoleTab(
-    tiles:     ReadSignal<Vec<(usize, String)>>,
-    set_tiles: WriteSignal<Vec<(usize, String)>>,
+    tiles:            ReadSignal<Vec<(usize, String)>>,
+    set_tiles:        WriteSignal<Vec<(usize, String)>>,
+    highlighted_tile: RwSignal<Option<usize>>,
 ) -> impl IntoView {
     let (picker_open, set_picker_open) = create_signal(false);
     let (log_tab, set_log_tab) = create_signal("audit");
@@ -482,6 +542,22 @@ fn ConsoleTab(
     let audit_lines    = create_rw_signal(Vec::<String>::new());
     let timeline_lines = create_rw_signal(Vec::<String>::new());
     let metrics_lines  = create_rw_signal(Vec::<String>::new());
+
+    // Highlight newly-added tile for 1500ms
+    create_effect(move |prev_len: Option<usize>| {
+        let current = tiles.get();
+        let cur_len = current.len();
+        if let Some(prev) = prev_len {
+            if cur_len > prev {
+                if let Some(&(slot_id, _)) = current.last() {
+                    highlighted_tile.set(Some(slot_id));
+                    let ht = highlighted_tile;
+                    gloo_timers::callback::Timeout::new(1500, move || ht.set(None)).forget();
+                }
+            }
+        }
+        cur_len
+    });
 
     let tiles_each  = move || tiles.get();
     let open_picker = move |_| set_picker_open.set(true);
@@ -495,10 +571,12 @@ fn ConsoleTab(
                     key=|(slot_id, _)| *slot_id
                     children=move |(slot_id, name): (usize, String)| {
                         let st = set_tiles;
+                        let ht = highlighted_tile;
                         view! {
                             <TerminalTile
                                 slot_id=slot_id
                                 name=name.clone()
+                                highlighted=ht
                                 on_close=Callback::new(move |_: ()| {
                                     st.update(|v| v.retain(|(id, _)| *id != slot_id));
                                 })
@@ -572,7 +650,7 @@ fn ConsoleTab(
 // ── TerminalTile ──────────────────────────────────────────────────────────────
 
 #[component]
-fn TerminalTile(slot_id: usize, name: String, on_close: Callback<()>) -> impl IntoView {
+fn TerminalTile(slot_id: usize, name: String, highlighted: RwSignal<Option<usize>>, on_close: Callback<()>) -> impl IntoView {
     let term_ref  = create_node_ref::<leptos::html::Div>();
     let term_cell: Rc<RefCell<Option<xterm_bindings::XTerminal>>> = Rc::new(RefCell::new(None));
     let term_cell_cleanup = term_cell.clone();
@@ -636,7 +714,7 @@ fn TerminalTile(slot_id: usize, name: String, on_close: Callback<()>) -> impl In
     });
 
     view! {
-        <div class="console-tile">
+        <div class=move || if highlighted.get() == Some(slot_id) { "console-tile highlighted" } else { "console-tile" }>
             <div class="console-tile-chrome">
                 <span class="console-tile-title">{format!("slot {} \u{2014} {}", slot_id, name)}</span>
                 <button class="console-tile-close" on:click=move |_| on_close.call(())>"×"</button>

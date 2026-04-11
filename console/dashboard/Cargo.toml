@@ -15,6 +15,7 @@ web-sys                  = { version = "0.3", features = [
     "console", "Location", "Performance",
     "SvgsvgElement", "SvgElement", "SvgRectElement", "SvgTextElement",
     "EventTarget", "MouseEvent",
+    "Storage",
 ] }
 js-sys                   = "0.3"
 serde                    = { version = "1", features = ["derive"] }

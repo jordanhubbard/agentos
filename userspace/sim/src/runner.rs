@@ -11,13 +11,180 @@
 
 use std::sync::{Arc, Mutex};
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, anyhow, bail};
+use sha2::{Digest, Sha512};
 use wasmi::{Engine, Linker, Module, Store, Caller, TypedFunc, AsContext};
 use tracing::{info, warn};
 
 use crate::microkit::MicrokitShim;
 use crate::eventbus::SimEventBus;
 use crate::caps::SimCapStore;
+
+// ── Signature verification ────────────────────────────────────────────────────
+
+/// Controls how `AgentRunner` handles WASM signature verification.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VerifyMode {
+    /// Fail if a signature is present but invalid; warn if capabilities section
+    /// is present but no signature exists.
+    Strict,
+    /// Never fail due to signature issues — only emit warnings.
+    WarnOnly,
+    /// Skip all signature checks entirely.
+    Skip,
+}
+
+impl Default for VerifyMode {
+    fn default() -> Self {
+        VerifyMode::WarnOnly
+    }
+}
+
+/// Parse a WASM binary and locate a custom section by name.
+///
+/// WASM format:
+/// - Magic:   `\0asm` (4 bytes)
+/// - Version: `\x01\x00\x00\x00` (4 bytes)
+/// - Sections: `[id: u8] [size: leb128u] [content]`
+///
+/// Custom section (id = 0) content layout:
+/// - name length: leb128u
+/// - name bytes:  UTF-8
+/// - data bytes:  remainder of section content
+///
+/// Returns a slice of the data bytes that follow the name prefix, or `None` if
+/// the named section is not found or the binary is malformed.
+fn find_custom_section<'a>(wasm: &'a [u8], name: &str) -> Option<&'a [u8]> {
+    const MAGIC: &[u8] = b"\0asm";
+    const VERSION: &[u8] = &[0x01, 0x00, 0x00, 0x00];
+
+    if wasm.len() < 8 {
+        return None;
+    }
+    if &wasm[..4] != MAGIC || &wasm[4..8] != VERSION {
+        return None;
+    }
+
+    let mut pos = 8usize;
+
+    while pos < wasm.len() {
+        // Read section id
+        let id = *wasm.get(pos)?;
+        pos += 1;
+
+        // Read section size as unsigned LEB128
+        let (sec_size, leb_bytes) = read_leb128_u32(wasm.get(pos..)?)?;
+        pos += leb_bytes;
+
+        let sec_start = pos;
+        let sec_end = sec_start.checked_add(sec_size as usize)?;
+        if sec_end > wasm.len() {
+            return None;
+        }
+
+        if id == 0 {
+            // Custom section — read the name
+            let sec_content = &wasm[sec_start..sec_end];
+            let (name_len, name_leb_bytes) = read_leb128_u32(sec_content)?;
+            let name_start = name_leb_bytes;
+            let name_end = name_start.checked_add(name_len as usize)?;
+            if name_end > sec_content.len() {
+                pos = sec_end;
+                continue;
+            }
+            let section_name = std::str::from_utf8(&sec_content[name_start..name_end]).ok()?;
+            if section_name == name {
+                return Some(&sec_content[name_end..]);
+            }
+        }
+
+        pos = sec_end;
+    }
+
+    None
+}
+
+/// Decode a single unsigned LEB128 value from the start of `bytes`.
+///
+/// Returns `(value, bytes_consumed)` or `None` on truncation.
+fn read_leb128_u32(bytes: &[u8]) -> Option<(u32, usize)> {
+    let mut result: u32 = 0;
+    let mut shift = 0u32;
+    for (i, &byte) in bytes.iter().enumerate() {
+        result |= ((byte & 0x7f) as u32) << shift;
+        if byte & 0x80 == 0 {
+            return Some((result, i + 1));
+        }
+        shift += 7;
+        if shift >= 35 {
+            return None; // overflow
+        }
+    }
+    None // ran out of bytes
+}
+
+/// Verify the `agentos.capabilities` signature embedded in a WASM binary.
+///
+/// Behaviour is controlled by `mode`:
+/// - `Skip`     — returns `Ok(())` immediately.
+/// - `WarnOnly` — warns on any anomaly but always returns `Ok(())`.
+/// - `Strict`   — returns `Err` if a bad signature is found.
+fn verify_wasm_signature(wasm: &[u8], mode: VerifyMode) -> Result<()> {
+    if mode == VerifyMode::Skip {
+        return Ok(());
+    }
+
+    let caps_data = find_custom_section(wasm, "agentos.capabilities");
+    let sig_data  = find_custom_section(wasm, "agentos.signature");
+
+    match (caps_data, sig_data) {
+        (None, None) => {
+            warn!("WASM module has no agentos.capabilities or agentos.signature sections (unsigned agent)");
+            Ok(())
+        }
+        (Some(_), None) => {
+            warn!("WASM module has agentos.capabilities but no agentos.signature (development mode — running unsigned)");
+            Ok(())
+        }
+        (None, Some(_)) => {
+            warn!("WASM module has agentos.signature but no agentos.capabilities section — skipping verification");
+            Ok(())
+        }
+        (Some(caps), Some(sig)) => {
+            if sig.len() != 64 {
+                let msg = format!(
+                    "agentos.signature section has {} bytes; expected 64 (SHA-512)",
+                    sig.len()
+                );
+                return if mode == VerifyMode::Strict {
+                    Err(anyhow!("signature verification failed: {}", msg))
+                } else {
+                    warn!("{}", msg);
+                    Ok(())
+                };
+            }
+
+            let mut hasher = Sha512::new();
+            hasher.update(caps);
+            let digest = hasher.finalize();
+
+            if digest.as_slice() != sig {
+                let msg = "agentos.capabilities SHA-512 digest does not match agentos.signature";
+                return if mode == VerifyMode::Strict {
+                    Err(anyhow!("signature verification failed: {}", msg))
+                } else {
+                    warn!("{}", msg);
+                    Ok(())
+                };
+            }
+
+            info!("WASM signature verified OK");
+            Ok(())
+        }
+    }
+}
+
+// ── AgentState ────────────────────────────────────────────────────────────────
 
 /// State threaded through all wasmi host calls.
 pub struct AgentState {
@@ -51,6 +218,8 @@ impl AgentState {
     }
 }
 
+// ── AgentRunner ───────────────────────────────────────────────────────────────
+
 /// A running WASM agent instance.
 pub struct AgentRunner {
     store:    Store<AgentState>,
@@ -62,10 +231,29 @@ pub struct AgentRunner {
 
 impl AgentRunner {
     /// Compile and instantiate a WASM module from raw bytes.
+    ///
+    /// Uses [`VerifyMode::WarnOnly`] — signature problems are logged but do
+    /// not prevent the agent from loading.  Existing callers are unaffected.
     pub fn new(
         wasm_bytes: &[u8],
         state: AgentState,
     ) -> Result<Self> {
+        Self::new_verified(wasm_bytes, state, VerifyMode::WarnOnly)
+    }
+
+    /// Compile and instantiate a WASM module with explicit signature-check
+    /// semantics.
+    ///
+    /// # Errors
+    /// Returns an error if `mode` is [`VerifyMode::Strict`] and the embedded
+    /// signature does not match the `agentos.capabilities` section.
+    pub fn new_verified(
+        wasm_bytes: &[u8],
+        state: AgentState,
+        mode: VerifyMode,
+    ) -> Result<Self> {
+        verify_wasm_signature(wasm_bytes, mode)?;
+
         let engine = Engine::default();
         let module = Module::new(&engine, wasm_bytes)
             .context("failed to compile WASM module")?;
@@ -171,6 +359,19 @@ impl AgentRunner {
         if health_fn.is_none() { warn!("WASM module has no exported 'health_check' function"); }
 
         Ok(Self { store, init_fn, ppc_fn, health_fn, notif_fn })
+    }
+
+    /// Builder: re-instantiate from the same bytes with a different verify mode.
+    ///
+    /// This is a convenience for callers that already have an `AgentRunner`
+    /// builder pattern in mind.  More commonly you will pass `mode` directly
+    /// to [`AgentRunner::new_verified`].
+    pub fn with_verify_mode(
+        wasm_bytes: &[u8],
+        state: AgentState,
+        mode: VerifyMode,
+    ) -> Result<Self> {
+        Self::new_verified(wasm_bytes, state, mode)
     }
 
     /// Call `init()` — the agent's one-time boot hook.

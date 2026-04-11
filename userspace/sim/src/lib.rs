@@ -29,6 +29,7 @@
 pub mod caps;
 pub mod eventbus;
 pub mod microkit;
+pub mod orchestrator;
 pub mod runner;
 
 use std::sync::{Arc, Mutex};
@@ -37,7 +38,8 @@ use anyhow::Result;
 pub use caps::SimCapStore;
 pub use eventbus::SimEventBus;
 pub use microkit::{MicrokitShim, MsgInfo, CapturedCall, PpcResult};
-pub use runner::{AgentRunner, AgentState};
+pub use orchestrator::SimOrchestrator;
+pub use runner::{AgentRunner, AgentState, VerifyMode};
 
 /// Top-level simulation engine.  Owns shared state (caps + eventbus) and
 /// spawns agents that all share the same event fabric.
@@ -66,11 +68,22 @@ impl SimEngine {
 
     /// Compile and instantiate a WASM agent.
     ///
-    /// The agent's `AgentState` is pre-populated with default capabilities
-    /// unless you call [`caps_mut().grant_defaults`] beforehand.
+    /// Uses [`VerifyMode::WarnOnly`] — signature anomalies are logged but do
+    /// not prevent the agent from loading.
     pub fn spawn_agent(&self, name: &str, wasm_bytes: &[u8]) -> Result<AgentRunner> {
         let state = AgentState::new(name, self.eventbus.clone(), self.caps.clone());
         AgentRunner::new(wasm_bytes, state)
+    }
+
+    /// Like [`spawn_agent`] but with explicit signature-verification semantics.
+    pub fn spawn_agent_verified(
+        &self,
+        name: &str,
+        wasm_bytes: &[u8],
+        mode: VerifyMode,
+    ) -> Result<AgentRunner> {
+        let state = AgentState::new(name, self.eventbus.clone(), self.caps.clone());
+        AgentRunner::new_verified(wasm_bytes, state, mode)
     }
 
     /// Arc clone of the eventbus (for injecting events from test code).

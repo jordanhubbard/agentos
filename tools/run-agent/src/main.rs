@@ -11,7 +11,7 @@
 use std::path::PathBuf;
 use anyhow::{Context, Result};
 use clap::{Parser, ArgAction};
-use agentos_sim::SimEngine;
+use agentos_sim::{SimEngine, VerifyMode};
 
 #[derive(Parser, Debug)]
 #[command(
@@ -47,6 +47,10 @@ struct Cli {
     /// Verbose tracing output
     #[arg(short, long)]
     verbose: bool,
+
+    /// Require a valid agentos.signature section; fail if absent or mismatched
+    #[arg(long)]
+    strict_verify: bool,
 }
 
 fn main() -> Result<()> {
@@ -82,7 +86,12 @@ fn main() -> Result<()> {
     });
 
     // Spawn agent
-    let mut runner = engine.spawn_agent(&cli.name, &wasm_bytes)
+    let verify_mode = if cli.strict_verify {
+        VerifyMode::Strict
+    } else {
+        VerifyMode::WarnOnly
+    };
+    let mut runner = engine.spawn_agent_verified(&cli.name, &wasm_bytes, verify_mode)
         .context("failed to instantiate WASM agent")?;
 
     println!("[run-agent] calling init()");
