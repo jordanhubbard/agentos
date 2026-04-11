@@ -43,7 +43,7 @@
 #define SWAPSLOT_CH_CONTROLLER 0
 
 /* Swap Slot channel IDs (from controller perspective) */
-#define SWAP_SLOT_BASE_CH     8   /* Channels 8-11 are swap slots */
+#define SWAP_SLOT_BASE_CH     30  /* Channels 30-33 are swap slots (matches agentos.system) */
 #define MAX_SWAP_SLOTS        4
 
 /* Worker Pool channel IDs (from controller perspective) */
@@ -285,7 +285,9 @@ typedef enum {
 #define CAP_AUDIT_POLICY_RELOAD    8u  /* policy hot-reload; agent_id=checked, caps_mask=revoked, slot_id=version */
 
 /* Capability Broker opcodes (MR0 for PPCs into monitor / cap_broker dispatch) */
-#define OP_CAP_POLICY_RELOAD  0x15u  /* hot-reload policy blob; revoke violating grants atomically */
+/* NOTE: OP_CAP_BROKER_RELOAD (0x15) is the cap_broker PPC opcode.
+ *       OP_CAP_POLICY_RELOAD (0xC0) is the cap_policy PD's own opcode — distinct. */
+#define OP_CAP_BROKER_RELOAD  0x15u  /* hot-reload policy blob; revoke violating grants atomically */
 #define OP_CAP_STATUS         0x16u  /* query: MR0=cap_count, MR1=policy_version, MR2=active_grants */
 
 /* Capability class bitmask (mirrors WASM capability manifest) */

@@ -408,7 +408,7 @@ uint32_t cap_broker_attest(uint64_t boot_tick, uint32_t net_active, uint32_t net
     return total_len;
 }
 
-/* ── Capability Policy Hot-Reload (OP_CAP_POLICY_RELOAD = 0x15) ──────────── *
+/* ── Capability Policy Hot-Reload (OP_CAP_BROKER_RELOAD = 0x15) ─────────── *
  *
  * v1 binary blob format (all fields little-endian):
  *
@@ -606,7 +606,7 @@ void cap_broker_status(uint32_t *out_cap_count, uint32_t *out_policy_version,
 /*
  * cap_broker_handle_policy_reload_ppc — PPC dispatch wrapper for monitor.c.
  *
- * Call from monitor's protected() when MR0 == OP_CAP_POLICY_RELOAD:
+ * Call from monitor's protected() when MR0 == OP_CAP_BROKER_RELOAD:
  *   MR1 = policy blob byte length (≤ CAP_POLICY_BLOB_MAX)
  *
  * The caller must have written the policy blob to cap_policy_shmem_vaddr
