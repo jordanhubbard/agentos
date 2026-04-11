@@ -515,10 +515,20 @@ typedef struct __attribute__((packed)) {
 #define OP_AUTH_STATUS   0xF4u  /* → MR0=ok, MR1=active_tokens, MR2=active_users */
 
 /* Channel ID for auth_server (from controller perspective) */
-#define CH_AUTH_SERVER   29u
+#define CH_AUTH_SERVER      29u
+#define CH_PROC_SERVER      27u   /* controller PPCs into proc_server */
+#define CH_PFLOCAL_SERVER   26u   /* controller PPCs into pflocal_server */
+#define CH_EXEC_SERVER      28u   /* controller PPCs into exec_server */
+#define CH_TERM_SERVER      43u   /* controller PPCs into term_server */
 
-/* Trace PD ID for auth_server */
-#define TRACE_PD_AUTH_SERVER 34u
+/* Trace PD IDs for HURD-parity PDs */
+#define TRACE_PD_AUTH_SERVER   34u
+#define TRACE_PD_PROC_SERVER   35u
+#define TRACE_PD_PFLOCAL       36u
+#define TRACE_PD_VM_SNAPSHOT   37u
+#define TRACE_PD_EXT2FS_ALT    38u   /* see also TRACE_PD_EXT2FS below */
+#define TRACE_PD_EXEC_SERVER   39u
+#define TRACE_PD_TERM_SERVER   40u
 
 /* ─── ext2fs Protection Domain ────────────────────────────────────────────
  * Track N: persistent ext2 filesystem over virtio_blk.
@@ -631,3 +641,56 @@ static inline void console_log(uint32_t slot, uint32_t pd_id, const char *msg)
     microkit_mr_set(2, pd_id);
     microkit_ppcall(CH_CONSOLEMUX, microkit_msginfo_new(OP_CONSOLE_WRITE, 2));
 }
+
+/* ─── proc_server Protection Domain ───────────────────────────────────────
+ * Track F: HURD proc server — process table, signals, and lifecycle.
+ * Channel CH_PROC_SERVER (27): controller PPCs into proc_server.
+ */
+#define OP_PROC_SPAWN    0xC0u  /* MR1=parent_pid MR2=auth_token MR3=cap_mask → ok+pid */
+#define OP_PROC_EXIT     0xC1u  /* MR1=pid MR2=exit_code → ok */
+#define OP_PROC_WAIT     0xC2u  /* MR1=pid → ok+exit_code+state */
+#define OP_PROC_STATUS   0xC3u  /* MR1=pid → ok+state+cap_mask */
+#define OP_PROC_LIST     0xC4u  /* → ok+count; proc_shmem has proc_info_t[] */
+#define OP_PROC_KILL     0xC5u  /* MR1=pid MR2=signal → ok */
+#define OP_PROC_SETCAP   0xC6u  /* MR1=pid MR2=cap_mask → ok */
+
+/* ─── vm_snapshot Protection Domain ───────────────────────────────────────
+ * Track J: VM state save/restore to AgentFS.
+ * Channel CH_VM_SNAPSHOT (46): controller PPCs into vm_snapshot.
+ * (OP_VM_SNAPSHOT=0x19 and OP_VM_RESTORE=0x1A are in the vm_manager section above)
+ */
+
+/* ─── pflocal_server Protection Domain ────────────────────────────────────
+ * Track G: AF_UNIX socket emulation via shared memory rings.
+ * Channel CH_PFLOCAL_SERVER (26): controller PPCs into pflocal_server.
+ */
+#define OP_PFLOCAL_SOCKET    0xD0u  /* → ok+sock_id+slot_offset */
+#define OP_PFLOCAL_BIND      0xD1u  /* MR1=sock_id, path in shmem → ok */
+#define OP_PFLOCAL_LISTEN    0xD2u  /* MR1=sock_id → ok */
+#define OP_PFLOCAL_CONNECT   0xD3u  /* MR1=sock_id, path in shmem → ok */
+#define OP_PFLOCAL_ACCEPT    0xD4u  /* MR1=sock_id → ok+new_sock_id+peer_slot */
+#define OP_PFLOCAL_SEND      0xD5u  /* MR1=sock_id MR2=offset MR3=len → ok+sent */
+#define OP_PFLOCAL_RECV      0xD6u  /* MR1=sock_id MR2=offset MR3=max → ok+recv */
+#define OP_PFLOCAL_CLOSE     0xD7u  /* MR1=sock_id → ok */
+#define OP_PFLOCAL_STATUS    0xD8u  /* MR1=sock_id → ok+state+peer_id */
+
+/* ─── exec_server Protection Domain ───────────────────────────────────────
+ * Track H: HURD exec server — ELF binary dispatch to app_slot PDs.
+ * Channel CH_EXEC_SERVER (28): controller PPCs into exec_server.
+ */
+#define OP_EXEC_LAUNCH   0xE0u  /* path in shmem, MR1=auth_token MR2=cap_mask → ok+exec_id */
+#define OP_EXEC_STATUS   0xE1u  /* MR1=exec_id → ok+state+pid */
+#define OP_EXEC_WAIT     0xE2u  /* MR1=exec_id → ok+pid */
+#define OP_EXEC_KILL     0xE3u  /* MR1=exec_id → ok */
+
+/* ─── term_server Protection Domain ───────────────────────────────────────
+ * Track I: PTY multiplexer with line discipline.
+ * Channel CH_TERM_SERVER (43): controller PPCs into term_server.
+ */
+#define OP_TERM_OPENPTY    0xA0u  /* → ok+pty_id+master_slot+slave_slot */
+#define OP_TERM_RESIZE     0xA1u  /* MR1=pty_id MR2=rows MR3=cols → ok */
+#define OP_TERM_WRITE      0xA2u  /* MR1=pty_id MR2=offset MR3=len → ok */
+#define OP_TERM_READ       0xA3u  /* MR1=pty_id MR2=offset MR3=max → ok+len */
+#define OP_TERM_CLOSEPTY   0xA4u  /* MR1=pty_id → ok */
+#define OP_TERM_STATUS     0xA5u  /* → ok+active_ptys */
+
