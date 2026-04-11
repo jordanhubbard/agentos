@@ -54,11 +54,30 @@
 
 /* ── Opcodes (MR0 in PPC calls to NameServer) ────────────────────────────── */
 #define OP_NS_REGISTER       0xD0u  /* register a service */
-#define OP_NS_LOOKUP         0xD1u  /* look up service by name */
+/* DEPRECATED: use OP_NS_LOOKUP_GATED — no authorization check */
+#define OP_NS_LOOKUP         0xD1u  /* look up service by name (no auth) */
 #define OP_NS_UPDATE_STATUS  0xD2u  /* update liveness status */
 #define OP_NS_LIST           0xD3u  /* dump all entries to shmem */
 #define OP_NS_DEREGISTER     0xD4u  /* remove a service registration */
 #define OP_NS_HEALTH         0xD5u  /* NameServer health check */
+/*
+ * OP_NS_LOOKUP_GATED — authorized lookup using badge-encoded policy.
+ *
+ * The badge of the incoming PPC encodes:
+ *   high 16 bits = allowed_cats  : CAP_CLASS_* bitmask the caller is
+ *                                  permitted to reach (set by init_agent
+ *                                  at bootstrap for each registered PD).
+ *   low  16 bits = requester_pd  : TRACE_PD_* of the calling PD.
+ *
+ * If the target entry's cap_classes do not overlap with allowed_cats
+ * the server returns NS_ERR_FORBIDDEN instead of the channel_id.
+ * This prevents a compromised worker from reaching services it was never
+ * granted access to at spawn time.
+ *
+ * Call layout identical to OP_NS_LOOKUP (MR1..MR4 = packed name).
+ * Reply adds no extra MRs beyond the standard NS_OK reply.
+ */
+#define OP_NS_LOOKUP_GATED   0xD6u  /* authorized lookup via badge policy */
 
 /* ── Return codes (MR0 in replies) ──────────────────────────────────────── */
 #define NS_OK               0u
@@ -67,6 +86,7 @@
 #define NS_ERR_DUPLICATE    3u  /* name already registered */
 #define NS_ERR_UNKNOWN_OP   4u  /* unknown opcode */
 #define NS_ERR_BAD_ARGS     5u  /* invalid or empty name */
+#define NS_ERR_FORBIDDEN    6u  /* caller's allowed_cats do not match service's cap_classes */
 
 /* ── OP_NS_REGISTER call layout ──────────────────────────────────────────
  *   MR0 = OP_NS_REGISTER

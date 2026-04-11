@@ -81,23 +81,24 @@
 #define SPAWN_CONFIG_NAME_MAX   32u
 #define SPAWN_CONFIG_PATH_MAX   128u
 
-/* ── Launch header — first 64 bytes of spawn_elf_shmem ──────────────────── */
+/* ── Launch header — first 96 bytes of spawn_elf_shmem ──────────────────── */
 #define SPAWN_MAGIC  0x5350574Eu  /* "SPWN" little-endian */
-#define SPAWN_HEADER_SIZE  64u    /* ELF image follows at byte 64 */
+#define SPAWN_HEADER_SIZE  96u    /* ELF image follows at byte 96 */
 
 /* Maximum ELF size that fits in the staging window after the header */
 #define SPAWN_MAX_ELF_SIZE  (SPAWN_ELF_SHMEM_SIZE - SPAWN_HEADER_SIZE)
 
 typedef struct __attribute__((packed)) {
-    uint32_t magic;         /* SPAWN_MAGIC = 0x5350574E */
-    uint32_t elf_size;      /* bytes of ELF image following this header */
-    uint32_t cap_classes;   /* capability bundle granted to this app */
-    uint32_t app_id;        /* assigned app ID */
-    uint32_t vfs_handle;    /* handle to app's VFS namespace (future) */
-    uint32_t net_vnic_id;   /* assigned vNIC (future) */
-    uint8_t  name[32];      /* app name (null-terminated) */
-    uint8_t  _pad[4];
-} spawn_header_t;           /* exactly 64 bytes */
+    uint32_t magic;           /* SPAWN_MAGIC = 0x5350574E */
+    uint32_t elf_size;        /* bytes of ELF image following this header */
+    uint32_t cap_classes;     /* capability bundle granted to this app */
+    uint32_t app_id;          /* assigned app ID */
+    uint32_t vfs_handle;      /* handle to app's VFS namespace (future) */
+    uint32_t net_vnic_id;     /* assigned vNIC (future) */
+    uint8_t  name[32];        /* app name (null-terminated) */
+    uint8_t  elf_sha256[32];  /* SHA-256 of ELF image bytes (written by SpawnServer,
+                                *  verified by app_slot before executing) */
+} spawn_header_t;             /* exactly 96 bytes */
 
 /* ── Slot info entry written into spawn_config_shmem for OP_SPAWN_LIST ──── */
 typedef struct __attribute__((packed)) {

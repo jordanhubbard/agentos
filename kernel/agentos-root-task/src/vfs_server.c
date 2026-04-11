@@ -82,14 +82,100 @@ static const char *vfs_basename(const char *path) {
 }
 
 /*
- * Find the inode for an exact path.  We do a simple linear scan: for each
- * inode that is active we reconstruct its full path by walking up via
- * parent_ino.  To keep it O(depth) per lookup we match from the bottom up:
- * compare basename against the last component, then verify the parent chain.
+ * vfs_normalize_path — resolve ".." components, collapse multiple slashes.
  *
- * Returns inode index, or VFS_MEM_MAX_INODES if not found.
+ * Walks the input path segment-by-segment using a segment stack.  A ".."
+ * pops the top segment; a "." is skipped.  The result is written into
+ * out[0..out_sz-1] with a leading '/' and null terminator.
+ *
+ * Returns false if the result would escape the root (more ".." than path
+ * segments) or if out_sz is too small.  Callers must treat a false return
+ * as an error and not attempt the path lookup.
+ */
+static bool vfs_normalize_path(const char *in, char *out, uint32_t out_sz)
+{
+    /* Segment stack: each entry is the start offset of a segment in `out`.
+     * Maximum path depth matches the parent-walk limit below (16 levels). */
+#define VFS_MAX_DEPTH 16
+    uint32_t seg_start[VFS_MAX_DEPTH];
+    int      depth = 0;
+
+    if (!in || in[0] != '/') return false;
+    if (out_sz < 2) return false;
+
+    uint32_t pos = 0;
+    out[pos++] = '/';   /* always start with root slash */
+
+    const char *p = in + 1;   /* skip leading '/' */
+
+    while (*p) {
+        /* Skip extra slashes */
+        if (*p == '/') { p++; continue; }
+
+        /* Find end of this segment */
+        const char *seg_end = p;
+        while (*seg_end && *seg_end != '/') seg_end++;
+        uint32_t seg_len = (uint32_t)(seg_end - p);
+
+        if (seg_len == 1 && p[0] == '.') {
+            /* "." — stay in current directory */
+            p = seg_end;
+            continue;
+        }
+
+        if (seg_len == 2 && p[0] == '.' && p[1] == '.') {
+            /* ".." — go up one level */
+            if (depth == 0) {
+                /* Already at root — would escape, reject */
+                return false;
+            }
+            depth--;
+            /* Rewind pos to the start of the popped segment */
+            pos = seg_start[depth];
+            p = seg_end;
+            continue;
+        }
+
+        /* Normal segment — check stack space and output buffer space */
+        if (depth >= VFS_MAX_DEPTH) return false;
+        if (pos + seg_len + 2 > out_sz) return false;  /* +2: '/' + NUL */
+
+        /* Record where this segment starts in out */
+        seg_start[depth] = pos;
+        depth++;
+
+        /* Append separator (not before root or first segment) */
+        if (pos > 1) out[pos++] = '/';
+
+        for (uint32_t k = 0; k < seg_len; k++)
+            out[pos++] = p[k];
+
+        p = seg_end;
+    }
+
+    out[pos] = '\0';
+    return true;
+#undef VFS_MAX_DEPTH
+}
+
+/*
+ * Find the inode for an exact path.  We normalise the path first to
+ * resolve ".." and collapse slashes; then do a simple linear scan
+ * reconstructing each inode's full path by walking parent_ino.
+ *
+ * The parent-inode walk includes cycle detection to guard against
+ * corrupted inode tables (a cycle would otherwise cause an infinite loop).
+ *
+ * Returns inode index, or VFS_MEM_MAX_INODES if not found or on error.
  */
 static uint32_t mem_find_inode(const char *path) {
+    /* Normalise the incoming path */
+    char norm[256];
+    if (!vfs_normalize_path(path, norm, sizeof(norm))) {
+        return VFS_MEM_MAX_INODES;
+    }
+    path = norm;
+
     /* Root directory is always inode 0 */
     if (path[0] == '/' && path[1] == '\0') return 0;
 
@@ -97,16 +183,30 @@ static uint32_t mem_find_inode(const char *path) {
         if (!mem_inodes[i].active) continue;
         if (i == 0) continue; /* root handled above */
 
-        /* Build the full path of inode i by walking parent chain */
-        char   full[256];
+        /* Build the full path of inode i by walking parent chain.
+         * Cycle detection: track visited inodes in a bool array. */
+        char     full[256];
         uint32_t segments[16];   /* inode indices from root to i */
         uint32_t depth = 0;
         uint32_t cur   = i;
 
+        bool visited[VFS_MEM_MAX_INODES];
+        for (uint32_t v = 0; v < VFS_MEM_MAX_INODES; v++) visited[v] = false;
+
         while (cur != 0 && depth < 16) {
+            if (visited[cur]) {
+                /* Cycle detected in parent-inode chain — skip this inode */
+                console_log(VFS_CONSOLE_SLOT, VFS_PD_ID,
+                            "[vfs] cycle detected in inode parent chain\n");
+                depth = 0;  /* signal invalid chain */
+                break;
+            }
+            visited[cur] = true;
             segments[depth++] = cur;
             cur = mem_inodes[cur].parent_ino;
         }
+
+        if (depth == 0) continue;  /* cycle or empty chain */
 
         /* Reconstruct path string */
         uint32_t pos = 0;

@@ -5,7 +5,7 @@
 //! calling agent's capability set before proceeding.
 
 use std::collections::HashMap;
-use agentos_sdk::capability::{Capability, CapabilityKind, CapabilitySet, Right};
+use agentos_sdk::capability::{Capability, CapabilityKind, CapabilitySet, Right, Rights};
 
 /// Errors raised by capability checks.
 #[derive(Debug, thiserror::Error)]
@@ -52,32 +52,15 @@ impl SimCapStore {
 
     /// Convenience: grant all default capabilities needed by a generic agent.
     pub fn grant_defaults(&mut self, agent: &str) {
-        use agentos_sdk::capability::{Rights, CapabilityKind, MemoryPool};
 
         let caps = [
-            Capability::new(
-                CapabilityKind::Compute { budget_ms: 1_000 },
-                self.alloc_cptr(),
-                Rights::ALL,
-            ),
-            Capability::new(
-                CapabilityKind::Memory {
-                    pool: MemoryPool::Standard,
-                    limit_bytes: 4 * 1024 * 1024,
-                },
-                self.alloc_cptr(),
-                Rights::ALL,
-            ),
-            Capability::new(
-                CapabilityKind::ObjectStore { namespace: "/".to_string() },
-                self.alloc_cptr(),
-                Rights::READ_WRITE,
-            ),
-            Capability::new(
-                CapabilityKind::Audit,
-                self.alloc_cptr(),
-                Rights::READ,
-            ),
+            Capability::new(CapabilityKind::Compute, self.alloc_cptr(), Rights::ALL)
+                .with_hint("budget_ms=1000"),
+            Capability::new(CapabilityKind::Memory, self.alloc_cptr(), Rights::ALL)
+                .with_hint("pool=standard,limit_bytes=4194304"),
+            Capability::new(CapabilityKind::ObjectStore, self.alloc_cptr(), Rights::READ_WRITE)
+                .with_hint("namespace=/"),
+            Capability::new(CapabilityKind::Audit, self.alloc_cptr(), Rights::READ),
         ];
         for cap in caps {
             self.grant(agent, cap);

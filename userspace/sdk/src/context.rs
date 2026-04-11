@@ -111,7 +111,7 @@ impl AgentContext {
         granted_caps: Vec<Capability>,
     ) -> Result<AgentId, ContextError> {
         // Check we have the AgentSpawn capability
-        if !self.caps.can(&CapabilityKind::AgentSpawn { max_children: u32::MAX }, Right::Execute) {
+        if !self.caps.can(&CapabilityKind::AgentSpawn, Right::Execute) {
             return Err(ContextError::CapabilityDenied);
         }
         

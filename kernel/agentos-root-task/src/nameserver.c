@@ -330,20 +330,87 @@ void notified(microkit_channel ch)
                 "[ns] unexpected notification (check .system channel pp flags)\n");
 }
 
+/*
+ * OP_NS_LOOKUP_GATED
+ *   MR1..MR4 = name (NS_NAME_MAX bytes, packed — same as OP_NS_LOOKUP)
+ *
+ * The badge carried on the incoming PPC encodes the caller's authorisation:
+ *   bits 31:16 = allowed_cats  — CAP_CLASS_* bitmask set by init_agent at
+ *                                bootstrap for this PD.  init_agent knows
+ *                                which capability classes each spawned PD is
+ *                                allowed to discover and encodes that policy
+ *                                into the badge it uses when registering the
+ *                                PD's channel with NameServer.
+ *   bits 15:0  = requester_pd  — TRACE_PD_* of the calling protection domain.
+ *
+ * If (entry->cap_classes & allowed_cats) == 0 the target service is in a
+ * capability class the caller was never authorised to reach; return
+ * NS_ERR_FORBIDDEN.  Otherwise reply identically to OP_NS_LOOKUP.
+ *
+ * OP_NS_LOOKUP remains available for backwards compatibility but its use
+ * in new code is DEPRECATED — it performs no authorization check.
+ */
+static microkit_msginfo handle_lookup_gated(microkit_channel ch, microkit_msginfo msginfo)
+{
+    /* Extract badge from the msginfo label field.
+     * Microkit conveys the badge of the endpoint cap used by the caller
+     * in the label field of the msginfo for PPC calls. */
+    uint32_t badge        = (uint32_t)microkit_msginfo_get_label(msginfo);
+    uint16_t requester_pd = (uint16_t)(badge & 0xFFFFu);
+    uint16_t allowed_cats = (uint16_t)(badge >> 16);
+
+    (void)ch;
+    (void)requester_pd;  /* available for future per-PD audit logging */
+
+    char name[NS_NAME_MAX];
+    ns_unpack_name(name, 1);
+
+    if (ns_strlen(name) == 0) {
+        microkit_mr_set(0, NS_ERR_BAD_ARGS);
+        return microkit_msginfo_new(0, 1);
+    }
+
+    int slot = registry_find_by_name(name);
+    if (slot < 0) {
+        microkit_mr_set(0, NS_ERR_NOT_FOUND);
+        return microkit_msginfo_new(0, 1);
+    }
+
+    ns_entry_t *e = &registry[slot];
+
+    /* Authorization check: at least one cap class must be in the allowed set.
+     * If allowed_cats == 0 (badge not set by init_agent) we treat it as
+     * "no access" rather than "unrestricted" — fail safe. */
+    if (allowed_cats == 0 || (e->cap_classes & (uint32_t)allowed_cats) == 0) {
+        console_log(NS_LOG_SLOT, NS_LOG_PD_ID, "[ns] gated lookup FORBIDDEN: ");
+        console_log(NS_LOG_SLOT, NS_LOG_PD_ID, e->name);
+        console_log(NS_LOG_SLOT, NS_LOG_PD_ID, "\n");
+        microkit_mr_set(0, NS_ERR_FORBIDDEN);
+        return microkit_msginfo_new(0, 1);
+    }
+
+    microkit_mr_set(0, NS_OK);
+    microkit_mr_set(1, e->channel_id);
+    microkit_mr_set(2, e->pd_id);
+    microkit_mr_set(3, e->status);
+    microkit_mr_set(4, e->cap_classes);
+    microkit_mr_set(5, e->version);
+    return microkit_msginfo_new(0, 6);
+}
+
 microkit_msginfo protected(microkit_channel ch, microkit_msginfo msginfo)
 {
-    (void)ch;       /* all channels treated identically */
-    (void)msginfo;  /* label not used; opcode is in MR0 */
-
     uint32_t op = (uint32_t)microkit_mr_get(0);
 
     switch (op) {
     case OP_NS_REGISTER:      return handle_register();
+    /* DEPRECATED: use OP_NS_LOOKUP_GATED — no authorization check */
     case OP_NS_LOOKUP:        return handle_lookup();
     case OP_NS_UPDATE_STATUS: return handle_update_status();
     case OP_NS_LIST:          return handle_list();
     case OP_NS_DEREGISTER:    return handle_deregister();
     case OP_NS_HEALTH:        return handle_health();
+    case OP_NS_LOOKUP_GATED:  return handle_lookup_gated(ch, msginfo);
     default:
         console_log(NS_LOG_SLOT, NS_LOG_PD_ID, "[ns] unknown opcode\n");
         microkit_mr_set(0, NS_ERR_UNKNOWN_OP);
