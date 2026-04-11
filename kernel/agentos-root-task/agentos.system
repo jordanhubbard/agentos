@@ -1205,6 +1205,12 @@
         <end pd="net_server"  id="10" />
     </channel>
 
+    <!-- 10ms lwIP timer tick: controller notifies net_server -->
+    <channel>
+        <end pd="controller" id="25" />
+        <end pd="net_server" id="11" />
+    </channel>
+
     <!--
       ── HTTP Service: route registry + dispatcher (active, prio 140) ──
 

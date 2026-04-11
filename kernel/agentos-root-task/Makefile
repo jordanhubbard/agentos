@@ -38,9 +38,12 @@ endif
 MICROKIT_TOOL ?= $(MICROKIT_SDK)/bin/microkit
 
 CFLAGS := -nostdlib -ffreestanding -g -O2 -Wall -Wextra -Wno-unused-function \
-           -I$(BOARD_DIR)/include -Iinclude \
+           -I$(BOARD_DIR)/include -Iinclude -Ilwip/include \
            $(CFLAGS_ARCH) \
            -MMD -MP
+
+# net_server-specific flags: suppress warnings from lwIP shim headers
+CFLAGS_NET_SERVER := $(CFLAGS) -Wno-cast-align -Wno-missing-field-initializers
 
 # wasm3-specific flags: suppress warnings from vendored code, include bare-metal shim
 CFLAGS_WASM3 := $(CFLAGS) -Iwasm3 -include $(CURDIR)/include/m3_bare_metal.h \
@@ -77,7 +80,7 @@ PD_VIRTIO_BLK_SRCS       := src/virtio_blk.c src/m3_bare_metal.c src/log.c
 PD_VFS_SERVER_SRCS       := src/vfs_server.c src/m3_bare_metal.c src/log.c
 PD_SPAWN_SERVER_SRCS     := src/spawn_server.c src/m3_bare_metal.c src/log.c
 PD_APP_SLOT_SRCS         := src/app_slot.c src/m3_bare_metal.c src/log.c
-PD_NET_SERVER_SRCS       := src/net_server.c src/m3_bare_metal.c src/log.c
+PD_NET_SERVER_SRCS       := src/net_server.c src/lwip_sys.c src/lwip_shim.c src/m3_bare_metal.c src/log.c
 PD_APP_MANAGER_SRCS      := src/app_manager.c src/m3_bare_metal.c src/log.c
 PD_HTTP_SVC_SRCS         := src/http_svc.c src/m3_bare_metal.c src/log.c
 
@@ -222,6 +225,19 @@ $(BUILD_DIR)/spawn_server.elf: $(SPAWN_SERVER_OBJS)
 
 $(BUILD_DIR)/app_slot.elf: $(APP_SLOT_OBJS)
 	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
+
+# lwIP shim sources use net_server-specific flags
+$(BUILD_DIR)/lwip_sys.o: src/lwip_sys.c
+	@mkdir -p $(BUILD_DIR)
+	$(CC) -c $(CFLAGS_NET_SERVER) $< -o $@
+
+$(BUILD_DIR)/lwip_shim.o: src/lwip_shim.c
+	@mkdir -p $(BUILD_DIR)
+	$(CC) -c $(CFLAGS_NET_SERVER) $< -o $@
+
+$(BUILD_DIR)/net_server.o: src/net_server.c
+	@mkdir -p $(BUILD_DIR)
+	$(CC) -c $(CFLAGS_NET_SERVER) $< -o $@
 
 $(BUILD_DIR)/net_server.elf: $(NET_SERVER_OBJS)
 	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@

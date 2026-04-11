@@ -27,6 +27,9 @@
 #define AGENTOS_DEBUG 1
 #include "agentos.h"
 #include "net_server.h"
+#include "lwip_sys.h"
+#include "lwip/pbuf.h"
+#include "lwip/tcp.h"
 
 /* ── virtio-MMIO register offsets (mirrors virtio_blk.h) ─────────────────── */
 #define VIRTIO_MMIO_MAGIC_VALUE     0x000u
@@ -144,19 +147,11 @@ static void probe_virtio_net(void) {
     log_hex((uint32_t)net_mmio_vaddr);
     console_log(16, 16, ", hw present\n");
 
-    /*
-     * SMOLTCP_INTEGRATION_POINT: feature negotiation and virtqueue setup.
-     *
-     * Steps deferred until smoltcp bindings are linked:
-     *   1. Read DEVICE_FEATURES (word 0 and 1).
-     *   2. Negotiate a supported subset (VIRTIO_NET_F_MAC etc.).
-     *   3. Write negotiated features and set FEATURES_OK.
-     *   4. Allocate descriptor/available/used rings for TX queue (q=1)
-     *      and RX queue (q=0) using Microkit DMA capabilities.
-     *   5. Write queue paddr split components (DESC_LOW/HIGH, AVAIL, USED).
-     *   6. Set QUEUE_READY and DRIVER_OK.
-     *   7. Create smoltcp EthernetInterface backed by those virtqueues.
-     */
+    /* Initialize lwIP with the virtio-net MMIO address.
+     * Virtqueue descriptor tables are not yet allocated in Phase 1;
+     * pass 0 for rx_desc/tx_desc — lwip_sys.c handles missing queues
+     * gracefully by skipping the virtqueue kick path. */
+    net_server_lwip_init(net_mmio_vaddr, 0u, 0u);
 }
 
 /* ── vNIC slot allocation ────────────────────────────────────────────────── */
@@ -417,23 +412,17 @@ static microkit_msginfo handle_vnic_send(void) {
     } else {
         /* Non-loopback: hand off to virtio-net or stub */
         if (net_hw_present) {
-            /*
-             * SMOLTCP_INTEGRATION_POINT: feed packet to smoltcp interface.
-             *
-             * Steps (deferred until smoltcp is linked):
-             *   1. Acquire a free TX descriptor from the virtio-net TX virtqueue.
-             *   2. Write pkt_base / pkt_len into the descriptor's buffer region.
-             *   3. Advance the available ring idx and kick the device via
-             *      mmio_write32(net_mmio_vaddr, VIRTIO_MMIO_QUEUE_NOTIFY, 1 [TXQ]).
-             *   4. Optionally poll used ring for completion (synchronous MVP).
-             *
-             * For now: log intent and count the packet.
-             */
-            console_log(16, 16, "[net_server] TX stub (hw present): vnic=");
-            log_dec(vnic_id);
-            console_log(16, 16, " len=");
-            log_dec(pkt_len);
-            console_log(16, 16, "\n");
+            /* Feed packet to lwIP for transmission via virtio-net */
+            const uint8_t *pkt = (const uint8_t *)(net_packet_shmem_vaddr
+                                                    + pkt_offset);
+            struct pbuf *p = pbuf_alloc(PBUF_LINK, (u16_t)pkt_len, PBUF_RAM);
+            if (p) {
+                uint8_t *dst = (uint8_t *)p->payload;
+                for (uint16_t i = 0; i < (uint16_t)pkt_len; i++)
+                    dst[i] = pkt[i];
+                g_netif.linkoutput(&g_netif, p);
+                pbuf_free(p);
+            }
         } else {
             /* No hardware — drop with a log */
             console_log(16, 16, "[net_server] TX dropped (no hw): vnic=");
@@ -453,8 +442,9 @@ static microkit_msginfo handle_vnic_send(void) {
 
 /* ── OP_NET_VNIC_RECV ─────────────────────────────────────────────────────── */
 static microkit_msginfo handle_vnic_recv(void) {
-    uint32_t vnic_id = (uint32_t)microkit_mr_get(1);
-    /* buf_offset and buf_len are present but unused in MVP */
+    uint32_t vnic_id    = (uint32_t)microkit_mr_get(1);
+    uint32_t buf_offset = (uint32_t)microkit_mr_get(2);
+    uint32_t max_len    = (uint32_t)microkit_mr_get(3);
 
     net_vnic_t *v = find_vnic(vnic_id);
     if (!v) {
@@ -463,20 +453,21 @@ static microkit_msginfo handle_vnic_recv(void) {
         return microkit_msginfo_new(0, 2);
     }
 
-    /*
-     * SMOLTCP_INTEGRATION_POINT: poll smoltcp for received packets.
-     *
-     * Steps (deferred until smoltcp is linked):
-     *   1. Call smoltcp_iface_poll(iface, timestamp_ms).
-     *   2. If a packet is available for vnic_id (matched by IP/port binding),
-     *      copy it into the shmem region at buf_offset, up to buf_len bytes.
-     *   3. Return actual bytes copied in MR1.
-     *   4. Increment v->rx_packets.
-     *
-     * For MVP: no real RX — return 0 bytes received.
-     */
+    /* Validate shmem bounds */
+    if (buf_offset >= NET_SHMEM_TOTAL
+            || (max_len > 0 && buf_offset + max_len > NET_SHMEM_TOTAL)) {
+        microkit_mr_set(0, NET_ERR_INVAL);
+        microkit_mr_set(1, 0);
+        return microkit_msginfo_new(0, 2);
+    }
+
+    /* Poll lwIP for received data on this vnic's TCP connection */
+    int n = lwip_net_recv((uint8_t)(vnic_id & 0xFFu),
+                          (uint8_t *)(net_packet_shmem_vaddr + buf_offset),
+                          max_len > 1500u ? 1500u : (uint16_t)max_len);
+    v->rx_packets += (n > 0) ? 1u : 0u;
     microkit_mr_set(0, NET_OK);
-    microkit_mr_set(1, 0);  /* 0 bytes received — RX not yet implemented */
+    microkit_mr_set(1, (uint32_t)n);
     return microkit_msginfo_new(0, 2);
 }
 
@@ -532,20 +523,7 @@ static microkit_msginfo handle_net_connect(void) {
         return microkit_msginfo_new(0, 2);
     }
 
-    /*
-     * SMOLTCP_INTEGRATION_POINT: open a smoltcp TCP or UDP socket.
-     *
-     * Steps (deferred until smoltcp is linked):
-     *   1. Allocate a smoltcp socket (tcp::Socket or udp::Socket).
-     *   2. Bind to vnic_id's local IP (derived from MAC/DHCP in full impl).
-     *   3. Call socket.connect(dest_ip, dest_port) for TCP, or
-     *      set remote endpoint for UDP.
-     *   4. Register socket handle in the vNIC's connection table.
-     *   5. Return a conn_id to the caller.
-     *
-     * For MVP: record connection intent and return NET_ERR_STUB.
-     */
-    console_log(16, 16, "[net_server] CONNECT stub: vnic=");
+    console_log(16, 16, "[net_server] CONNECT: vnic=");
     log_dec(vnic_id);
     console_log(16, 16, " dst_ip=");
     log_hex(dest_ip);
@@ -553,10 +531,13 @@ static microkit_msginfo handle_net_connect(void) {
     log_dec(dest_port);
     console_log(16, 16, " proto=");
     log_dec(protocol);
-    console_log(16, 16, " (NET_ERR_STUB — smoltcp not yet integrated)\n");
+    console_log(16, 16, "\n");
 
-    microkit_mr_set(0, NET_ERR_STUB);
-    microkit_mr_set(1, 0);
+    /* Open a lwIP TCP connection for this vNIC slot (TCP only in Phase 1) */
+    int err = lwip_net_connect((uint8_t)(vnic_id & 0xFFu),
+                                dest_ip, (uint16_t)dest_port);
+    microkit_mr_set(0, err == 0 ? NET_OK : NET_ERR_STUB);
+    microkit_mr_set(1, vnic_id);
     return microkit_msginfo_new(0, 2);
 }
 
@@ -683,16 +664,22 @@ void init(void) {
  *     any received packets to the appropriate vNIC's RX ring.
  */
 void notified(microkit_channel ch) {
-    if (ch == NET_CH_CONTROLLER) {
-        /*
-         * SMOLTCP_INTEGRATION_POINT: virtio-net RX interrupt from controller.
-         * Poll smoltcp's EthernetInterface here when wired up.
-         */
-        console_log(16, 16, "[net_server] notify: virtio-net RX interrupt (stub)\n");
-    } else {
+    switch (ch) {
+    case NET_CH_CONTROLLER:
+        /* virtio-net RX interrupt from controller — poll virtqueue */
+        lwip_virtio_rx_poll();
+        break;
+    case NET_CH_TIMER:
+        /* 10ms periodic tick from controller: drive lwIP timers + RX poll */
+        lwip_tick();
+        lwip_virtio_rx_poll();
+        sys_check_timeouts();
+        break;
+    default:
         console_log(16, 16, "[net_server] unexpected notify ch=");
         log_dec((uint32_t)ch);
         console_log(16, 16, "\n");
+        break;
     }
 }
 
@@ -717,6 +704,22 @@ microkit_msginfo protected(microkit_channel ch, microkit_msginfo msginfo) {
     case OP_NET_STATUS:       return handle_net_status();
     case OP_NET_SET_ACL:      return handle_net_set_acl();
     case OP_NET_HEALTH:       return handle_net_health();
+    case OP_NET_CONN_STATE: {
+        uint8_t vid = (uint8_t)microkit_mr_get(1);
+        microkit_mr_set(0, NET_OK);
+        microkit_mr_set(1, (uint32_t)lwip_conn_state(vid));
+        return microkit_msginfo_new(0, 2);
+    }
+    case OP_NET_TCP_CLOSE: {
+        uint8_t vid = (uint8_t)microkit_mr_get(1);
+        if (vid < NET_MAX_VNICS && g_conns[vid].tcp) {
+            tcp_close(g_conns[vid].tcp);
+            g_conns[vid].tcp   = NULL;
+            g_conns[vid].state = 0u;
+        }
+        microkit_mr_set(0, NET_OK);
+        return microkit_msginfo_new(0, 1);
+    }
     default:
         console_log(16, 16, "[net_server] unknown op=");
         log_hex((uint32_t)(op & 0xFFFFFFFFu));
