@@ -276,6 +276,21 @@ typedef enum {
 #define SNAP_MAX_SLOTS                 8u  /* max simultaneously tracked slots */
 #define OP_QUOTA_SET          0x63  /* Update agent quota limits */
 
+/* ── proc_server opcodes (0xD0–0xD6) ────────────────────────────────────── */
+#define OP_PROC_SPAWN   0xD0u  /* MR1=parent_pid, MR2=auth_token, MR3=cap_mask → MR0=ok, MR1=pid */
+#define OP_PROC_EXIT    0xD1u  /* MR1=pid, MR2=exit_code → MR0=ok */
+#define OP_PROC_WAIT    0xD2u  /* MR1=pid → MR0=ok, MR1=exit_code, MR2=state */
+#define OP_PROC_STATUS  0xD3u  /* MR1=pid → MR0=ok, MR1=state, MR2=cap_mask */
+#define OP_PROC_LIST    0xD4u  /* → MR0=ok, MR1=count; proc_shmem has proc_info_t[] */
+#define OP_PROC_KILL    0xD5u  /* MR1=pid, MR2=signal → MR0=ok */
+#define OP_PROC_SETCAP  0xD6u  /* MR1=pid, MR2=cap_mask → MR0=ok */
+
+/* Channel ID: controller → proc_server (from controller perspective) */
+#define CH_PROC_SERVER  27u
+
+/* Trace PD ID for proc_server */
+#define TRACE_PD_PROC_SERVER 35u
+
 /* Fault handler restart policy constants */
 #define FAULT_POLICY_MAX_RESTARTS_DEFAULT  3u
 #define FAULT_POLICY_RESTART_DELAY_MS      100u
