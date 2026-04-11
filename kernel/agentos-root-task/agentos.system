@@ -1414,4 +1414,61 @@
         <end pd="vm_snapshot"  id="0" />
     </channel>
 
+    <!--
+      ══════════════════════════════════════════════════════════════════
+      pflocal_server: AF-UNIX domain socket emulation (passive, prio 155)
+      HURD-equivalent: pflocal translator
+      ══════════════════════════════════════════════════════════════════
+    -->
+    <memory_region name="pflocal_shmem" size="0x10000" />
+
+    <protection_domain name="pflocal_server" priority="155" passive="true">
+        <program_image path="pflocal_server.elf" />
+        <map mr="pflocal_shmem" vaddr="0x3700000" perms="rw" cached="true"
+             setvar_vaddr="pflocal_shmem_vaddr" />
+    </protection_domain>
+
+    <channel>
+        <end pd="controller"      id="26" pp="true" />
+        <end pd="pflocal_server"  id="0" />
+    </channel>
+
+    <!--
+      ══════════════════════════════════════════════════════════════════
+      exec_server: ELF/WASM loader and execution dispatcher (passive, prio 150)
+      HURD-equivalent: exec server
+      ══════════════════════════════════════════════════════════════════
+    -->
+    <memory_region name="exec_shmem" size="0x1000" />
+
+    <protection_domain name="exec_server" priority="150" passive="true">
+        <program_image path="exec_server.elf" />
+        <map mr="exec_shmem" vaddr="0x3800000" perms="rw" cached="true"
+             setvar_vaddr="exec_shmem_vaddr" />
+    </protection_domain>
+
+    <channel>
+        <end pd="controller"   id="28" pp="true" />
+        <end pd="exec_server"  id="0" />
+    </channel>
+
+    <!--
+      ══════════════════════════════════════════════════════════════════
+      term_server: PTY multiplexer and line discipline (passive, prio 150)
+      HURD-equivalent: term translator
+      ══════════════════════════════════════════════════════════════════
+    -->
+    <memory_region name="term_shmem" size="0x4000" />
+
+    <protection_domain name="term_server" priority="150" passive="true">
+        <program_image path="term_server.elf" />
+        <map mr="term_shmem" vaddr="0x3900000" perms="rw" cached="true"
+             setvar_vaddr="term_shmem_vaddr" />
+    </protection_domain>
+
+    <channel>
+        <end pd="controller"  id="43" pp="true" />
+        <end pd="term_server" id="0" />
+    </channel>
+
 </system>

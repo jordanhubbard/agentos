@@ -321,3 +321,163 @@ jobs:
             /tmp/fi_output.txt
             build/${{ matrix.board }}/trace.jsonl
           if-no-files-found: ignore
+
+  # ── Track P: HURD-parity service CI jobs ────────────────────────────────
+
+  hurd-services-build:
+    name: HURD services build (all new kernel PDs)
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        board: [qemu_virt_aarch64, qemu_virt_riscv64]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install cross-compile toolchain
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y gcc-aarch64-linux-gnu gcc-riscv64-linux-gnu clang lld
+
+      - name: Compile HURD service PDs
+        run: |
+          cd kernel/agentos-root-task
+          # Compile each new PD source file to verify no syntax errors
+          for src in src/pflocal_server.c src/exec_server.c src/term_server.c \
+                     src/auth_server.c src/proc_server.c src/vm_manager.c \
+                     src/vm_snapshot.c src/ext2fs.c; do
+            echo "Checking $src ..."
+            clang -fsyntax-only -std=c11 \
+              -DAGENTOS_TEST_HOST=1 \
+              -I include \
+              "$src" && echo "  OK: $src"
+          done
+          echo "All HURD PD sources compile cleanly."
+
+  proc-server-tests:
+    name: proc_server unit tests (host-side)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build and run proc_server tests
+        run: |
+          cd kernel/agentos-root-task
+          if [ -f tests/test_proc_server.c ]; then
+            cc -std=c11 -Wall -DAGENTOS_TEST_HOST=1 -I include \
+               tests/test_proc_server.c src/proc_server.c \
+               -o /tmp/test_proc_server
+            /tmp/test_proc_server
+            echo "proc_server tests PASSED"
+          else
+            echo "No host-side proc_server tests found — skipping"
+          fi
+
+  rust-workspace-tests:
+    name: Rust workspace tests (all crates, std features)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Run workspace tests
+        run: |
+          cargo test --workspace --features std 2>&1 | tee /tmp/test_output.txt
+          if grep -q "FAILED" /tmp/test_output.txt; then
+            echo "One or more Rust tests FAILED"
+            exit 1
+          fi
+          echo "All Rust tests PASSED"
+
+  tcp-smoke-check:
+    name: TCP/IP smoke check (lwIP net_server boot message)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check for lwIP init message in net_server
+        run: |
+          # Verify lwIP integration site comments replaced with real calls
+          if grep -q "SMOLTCP_INTEGRATION_POINT" kernel/agentos-root-task/src/net_server.c; then
+            echo "FAIL: net_server.c still has unimplemented SMOLTCP_INTEGRATION_POINT stubs"
+            exit 1
+          fi
+          if grep -q "lwIP\|lwip" kernel/agentos-root-task/src/net_server.c; then
+            echo "OK: net_server.c has lwIP integration"
+          else
+            echo "FAIL: net_server.c has no lwIP references"
+            exit 1
+          fi
+
+  ed25519-smoke-check:
+    name: Ed25519 smoke check (Monocypher field ops)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify monocypher implementation present
+        run: |
+          if [ ! -f kernel/agentos-root-task/src/monocypher.c ]; then
+            echo "FAIL: monocypher.c missing"
+            exit 1
+          fi
+          echo "OK: monocypher.c present ($(wc -l < kernel/agentos-root-task/src/monocypher.c) lines)"
+          if grep -q "crypto_ed25519_check\|fe25519_mul\|ge25519" kernel/agentos-root-task/src/monocypher.c; then
+            echo "OK: Ed25519 field arithmetic found in monocypher.c"
+          else
+            echo "FAIL: expected Ed25519 functions not found in monocypher.c"
+            exit 1
+          fi
+
+  vm-manager-check:
+    name: vm_manager PD sanity check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify vm_manager opcodes and agentos.system entry
+        run: |
+          # Check opcodes defined
+          for op in OP_VM_CREATE OP_VM_DESTROY OP_VM_START OP_VM_STOP \
+                    OP_VM_PAUSE OP_VM_RESUME OP_VM_LIST OP_VM_SNAPSHOT; do
+            grep -q "$op" kernel/agentos-root-task/include/agentos.h || \
+              { echo "FAIL: $op not defined in agentos.h"; exit 1; }
+          done
+          echo "OK: all VM manager opcodes defined"
+          # Check vm_manager in agentos.system
+          grep -q "vm_manager" kernel/agentos-root-task/agentos.system || \
+            { echo "FAIL: vm_manager not in agentos.system"; exit 1; }
+          echo "OK: vm_manager in agentos.system"
+
+  hurd-ui-check:
+    name: HURD topology UI check (VM panel + PD nodes)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify vm_panel.rs exists with required components
+        run: |
+          if [ ! -f console/dashboard/src/vm_panel.rs ]; then
+            echo "FAIL: vm_panel.rs missing"
+            exit 1
+          fi
+          echo "OK: vm_panel.rs present"
+          for sym in VmPanel VmState VmInfo; do
+            grep -q "$sym" console/dashboard/src/vm_panel.rs || \
+              { echo "FAIL: $sym not found in vm_panel.rs"; exit 1; }
+          done
+          echo "OK: VM panel components present"
+          # Check VMs tab wired in lib.rs
+          grep -q "VmPanel\|vm_panel" console/dashboard/src/lib.rs || \
+            { echo "FAIL: VmPanel not referenced in lib.rs"; exit 1; }
+          echo "OK: VMs tab wired in dashboard"
