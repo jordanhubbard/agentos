@@ -2,20 +2,24 @@
 //!
 //! A Tokio/hyper HTTP/1.1 server that acts as the public-facing HTTP entry
 //! point for agentOS full-stack applications.  Each incoming request is
-//! dispatched to the appropriate application by querying the http_svc PD
-//! (kernel/agentos-root-task/src/http_svc.c) via the agentOS SDK IPC layer.
+//! dispatched to the appropriate application by querying the IPC bridge
+//! (GATEWAY_IPC) via HTTP POST, with a static per-app env-var route table as
+//! fallback.
 //!
 //! Architecture:
-//!   Internet → [http-gateway] → IPC: OP_HTTP_DISPATCH → [http_svc PD]
-//!                                                        → matched app_id
+//!   Internet → [http-gateway] → POST /dispatch → [IPC bridge]
+//!                                                 → {"addr": "127.0.0.1:PORT"}
 //!   [http-gateway] → proxy request to app's local socket
 //!
+//!   Fallback: GATEWAY_ROUTE_<APPNAME>=host:port env vars
+//!
 //! Configuration (environment variables):
-//!   GATEWAY_LISTEN  — bind address (default: "0.0.0.0:8080")
-//!   GATEWAY_IPC     — path to agentOS IPC socket (default: "/run/agentos.sock")
-//!   GATEWAY_ROUTES  — comma-separated prefix=upstream pairs
-//!                     e.g. "/api=127.0.0.1:9090,/app=127.0.0.1:9091"
-//!   RUST_LOG        — tracing filter (default: "info")
+//!   GATEWAY_LISTEN        — bind address (default: "0.0.0.0:8080")
+//!   GATEWAY_IPC           — IPC bridge address (default: "127.0.0.1:9090")
+//!   GATEWAY_ROUTES        — comma-separated prefix=upstream pairs
+//!                           e.g. "/api=127.0.0.1:9090,/app=127.0.0.1:9091"
+//!   GATEWAY_ROUTE_<NAME>  — per-app static override, e.g. GATEWAY_ROUTE_FOO=127.0.0.1:9200
+//!   RUST_LOG              — tracing filter (default: "info")
 
 use std::collections::HashMap;
 use std::convert::Infallible;
@@ -71,7 +75,7 @@ fn init_route_table() -> HashMap<String, String> {
     map
 }
 
-/// Find the longest prefix match for `path` in the route table.
+/// Find the longest prefix match for `path` in the static GATEWAY_ROUTES table.
 fn route_lookup(path: &str) -> Option<String> {
     let table = ROUTE_TABLE.get().expect("route table not initialised");
     let mut best: Option<(&str, &str)> = None;
@@ -86,24 +90,71 @@ fn route_lookup(path: &str) -> Option<String> {
     best.map(|(_, upstream)| upstream.to_string())
 }
 
-// ── Dispatch result returned by the (stubbed) http_svc query ────────────────
-#[derive(Debug)]
-struct DispatchResult {
-    app_id:     u32,
-    vnic_id:    u32,
-    handler_id: u32,
+/// Per-app static route from `GATEWAY_ROUTE_<APPNAME>` env vars.
+///
+/// For a path like `/app/foo/bar` the app name is `foo` and the env var is
+/// `GATEWAY_ROUTE_FOO`.  Returns `None` if the env var is absent or the value
+/// cannot be parsed as a `SocketAddr`.
+fn static_route(path: &str) -> Option<SocketAddr> {
+    let app = path.split('/').nth(2)?;
+    let key = format!("GATEWAY_ROUTE_{}", app.to_uppercase());
+    let addr_str = std::env::var(&key).ok()?;
+    addr_str.parse().ok()
 }
 
-/// Query the http_svc PD for which app handles the given URL path.
+/// Query the IPC bridge for which socket address handles `path`.
 ///
-/// MVP stub: always returns "no match" since the seL4 IPC bridge is not yet
-/// wired.  Replace the body of this function with real IPC once the bridge
-/// is available.
-async fn dispatch_via_http_svc(path: &str) -> Option<DispatchResult> {
-    // TODO: encode path into 8 × u64 MRs and call OP_HTTP_DISPATCH over the
-    //       agentOS IPC socket.  For now return None (no match).
-    let _ = (path, OP_HTTP_DISPATCH, HTTP_OK, HTTP_APP_ID_NONE);
-    None
+/// POSTs `{"path": path}` to `http://{GATEWAY_IPC}/dispatch` and expects a
+/// JSON response of the form `{"app_id": N, "addr": "127.0.0.1:PORT"}`.
+/// Returns `None` on any network or parse failure, or when the bridge signals
+/// no route (`{"error": "..."}`).
+async fn dispatch_via_http_svc(path: &str) -> Option<SocketAddr> {
+    // Keep the legacy constants referenced so they remain reachable.
+    let _ = (OP_HTTP_DISPATCH, HTTP_OK, HTTP_APP_ID_NONE);
+
+    let bridge_addr = std::env::var("GATEWAY_IPC")
+        .unwrap_or_else(|_| "127.0.0.1:9090".to_string());
+
+    let url = format!("http://{}/dispatch", bridge_addr);
+
+    let client = reqwest::Client::new();
+    let resp = match client
+        .post(&url)
+        .json(&json!({ "path": path }))
+        .send()
+        .await
+    {
+        Ok(r) => r,
+        Err(e) => {
+            debug!("dispatch_via_http_svc: POST {} failed: {}", url, e);
+            return None;
+        }
+    };
+
+    if !resp.status().is_success() {
+        debug!(
+            "dispatch_via_http_svc: bridge returned HTTP {}",
+            resp.status()
+        );
+        return None;
+    }
+
+    let body: serde_json::Value = match resp.json().await {
+        Ok(v) => v,
+        Err(e) => {
+            debug!("dispatch_via_http_svc: failed to decode JSON: {}", e);
+            return None;
+        }
+    };
+
+    if let Some(err_msg) = body.get("error").and_then(|v| v.as_str()) {
+        debug!("dispatch_via_http_svc: bridge error: {}", err_msg);
+        return None;
+    }
+
+    let addr_str = body.get("addr")?.as_str()?;
+    let addr: SocketAddr = addr_str.parse().ok()?;
+    Some(addr)
 }
 
 // ── Response helpers ─────────────────────────────────────────────────────────
@@ -212,10 +263,38 @@ async fn handle_request(
         return Ok(json_response(StatusCode::OK, json!({ "routes": routes })));
     }
 
-    // ── Route table lookup (in-process proxy) ────────────────────────────────
-    if let Some(upstream) = route_lookup(&path) {
-        debug!("[req-{}] route match: {} → {}", req_id, path, upstream);
+    // ── IPC dispatch via http_svc bridge (primary) ───────────────────────────
+    let upstream: Option<String> = if let Some(addr) = dispatch_via_http_svc(&path).await {
+        info!(
+            "[req-{}] ipc-dispatch: {} → {} ({}ms)",
+            req_id, path, addr, start.elapsed().as_millis()
+        );
+        Some(addr.to_string())
+    } else {
+        debug!("[req-{}] ipc-dispatch: no route for {}", req_id, path);
 
+        // ── Fallback 1: GATEWAY_ROUTE_<APPNAME> per-app env vars ────────────
+        if let Some(addr) = static_route(&path) {
+            info!(
+                "[req-{}] static-route (env): {} → {} ({}ms)",
+                req_id, path, addr, start.elapsed().as_millis()
+            );
+            Some(addr.to_string())
+        } else {
+            // ── Fallback 2: GATEWAY_ROUTES prefix table ──────────────────────
+            if let Some(up) = route_lookup(&path) {
+                info!(
+                    "[req-{}] static-route (prefix): {} → {} ({}ms)",
+                    req_id, path, up, start.elapsed().as_millis()
+                );
+                Some(up)
+            } else {
+                None
+            }
+        }
+    };
+
+    if let Some(upstream_addr) = upstream {
         // Re-attach X-Request-Id header before forwarding.
         let (mut parts, body) = req.into_parts();
         parts.headers.insert(
@@ -224,14 +303,13 @@ async fn handle_request(
         );
         let req = Request::from_parts(parts, body);
 
-        match proxy_request(&upstream, req).await {
+        match proxy_request(&upstream_addr, req).await {
             Ok(upstream_resp) => {
                 let status = upstream_resp.status();
                 info!(
                     "[req-{}] {} {} → {} via {} ({}ms)",
-                    req_id, method, path, status, upstream, start.elapsed().as_millis()
+                    req_id, method, path, status, upstream_addr, start.elapsed().as_millis()
                 );
-                // Re-box with Infallible error type
                 let (parts, body) = upstream_resp.into_parts();
                 let infallible_body = body.map_err(|_| -> Infallible { unreachable!() }).boxed();
                 return Ok(Response::from_parts(parts, infallible_body));
@@ -248,44 +326,22 @@ async fn handle_request(
         }
     }
 
-    // ── IPC dispatch via http_svc (stubbed) ──────────────────────────────────
-    match dispatch_via_http_svc(&path).await {
-        Some(result) => {
-            info!(
-                "[req-{}] {} {} → app_id={} ({}ms)",
-                req_id, method, path, result.app_id, start.elapsed().as_millis()
-            );
-            Ok(json_response(
-                StatusCode::OK,
-                json!({
-                    "dispatched": true,
-                    "app_id": result.app_id,
-                    "vnic_id": result.vnic_id,
-                    "handler_id": result.handler_id,
-                    "path": path,
-                    "method": method.as_str(),
-                    "note": "proxy stub — upstream forwarding not yet implemented"
-                }),
-            ))
-        }
-        None => {
-            if path != "/favicon.ico" {
-                warn!("[req-{}] no handler for {} {}", req_id, method, path);
-            }
-            info!(
-                "[req-{}] {} {} → 404 ({}ms)",
-                req_id, method, path, start.elapsed().as_millis()
-            );
-            Ok(json_response(
-                StatusCode::NOT_FOUND,
-                json!({
-                    "error": "no_handler",
-                    "path": path,
-                    "hint": "register an app via OP_APP_LAUNCH with an http_prefix or set GATEWAY_ROUTES"
-                }),
-            ))
-        }
+    // ── No route found ───────────────────────────────────────────────────────
+    if path != "/favicon.ico" {
+        warn!("[req-{}] no handler for {} {}", req_id, method, path);
     }
+    info!(
+        "[req-{}] {} {} → 404 ({}ms)",
+        req_id, method, path, start.elapsed().as_millis()
+    );
+    Ok(json_response(
+        StatusCode::NOT_FOUND,
+        json!({
+            "error": "no_handler",
+            "path": path,
+            "hint": "register an app via OP_APP_LAUNCH with an http_prefix, set GATEWAY_IPC, or set GATEWAY_ROUTES / GATEWAY_ROUTE_<APPNAME>"
+        }),
+    ))
 }
 
 // ── Main ─────────────────────────────────────────────────────────────────────
@@ -308,12 +364,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .parse()
         .expect("GATEWAY_LISTEN must be a valid socket address");
 
-    let ipc_path = std::env::var("GATEWAY_IPC")
-        .unwrap_or_else(|_| "/run/agentos.sock".to_string());
+    let ipc_addr = std::env::var("GATEWAY_IPC")
+        .unwrap_or_else(|_| "127.0.0.1:9090".to_string());
 
     let route_count = ROUTE_TABLE.get().map(|t| t.len()).unwrap_or(0);
     info!("agentOS HTTP gateway starting on {}", listen_addr);
-    info!("IPC socket: {} (stub — not yet connected)", ipc_path);
+    info!("IPC bridge: http://{}/dispatch", ipc_addr);
     info!("route table: {} entries", route_count);
 
     let listener = TcpListener::bind(listen_addr).await?;
