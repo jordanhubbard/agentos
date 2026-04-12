@@ -354,6 +354,7 @@ typedef enum {
 #define CH_VFS_SERVER         19   /* controller -> vfs_server (PPC) */
 #define CH_SPAWN_SERVER       20   /* controller -> spawn_server (PPC) */
 #define CH_NET_SERVER         21   /* controller -> net_server (PPC) */
+#define CH_NET_TIMER          59   /* controller -> net_server (lwIP 10ms tick notify) */
 #define CH_VIRTIO_BLK         22   /* controller -> virtio_blk (PPC) */
 #define CH_APP_MANAGER        23   /* controller -> app_manager (PPC) */
 #define CH_HTTP_SVC           24   /* controller -> http_svc (PPC) */

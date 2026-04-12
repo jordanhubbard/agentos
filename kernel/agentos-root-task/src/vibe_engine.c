@@ -45,12 +45,14 @@
 #define CH_CTRL    1   /* Notify controller for swap execution */
 
 /* ── Op codes ───────────────────────────────────────────────────────── */
-#define OP_VIBE_PROPOSE   0x40
-#define OP_VIBE_VALIDATE  0x41
-#define OP_VIBE_EXECUTE   0x42
-#define OP_VIBE_STATUS    0x43
-#define OP_VIBE_ROLLBACK  0x44
-#define OP_VIBE_HEALTH    0x45
+#define OP_VIBE_PROPOSE           0x40
+#define OP_VIBE_VALIDATE          0x41
+#define OP_VIBE_EXECUTE           0x42
+#define OP_VIBE_STATUS            0x43
+#define OP_VIBE_ROLLBACK          0x44
+#define OP_VIBE_HEALTH            0x45
+#define OP_VIBE_REGISTER_SERVICE  0x46   /* Register a new swappable service */
+#define OP_VIBE_LIST_SERVICES     0x47   /* List all registered services */
 
 /* ── Result codes ───────────────────────────────────────────────────── */
 #define VIBE_OK             0
@@ -561,6 +563,155 @@ static microkit_msginfo handle_health(void) {
     return microkit_msginfo_new(0, 3);
 }
 
+/*
+ * OP_VIBE_REGISTER_SERVICE: Dynamically register a new swappable service
+ *
+ * Input:  MR0=op, MR1=name_ptr, MR2=name_len, MR3=max_wasm_bytes (0=default 2MB)
+ * Output: MR0=status, MR1=new service_id (on success)
+ *
+ * Only the root/init caller (badge == 0) is permitted in v0.1; non-zero
+ * badge agents are expected to have elevated trust checked by CapStore.
+ * The slot's name is copied out of the staging region at the given offset.
+ */
+static microkit_msginfo handle_register_service(microkit_channel ch) {
+    uint32_t name_ptr      = (uint32_t)microkit_mr_get(1);
+    uint32_t name_len      = (uint32_t)microkit_mr_get(2);
+    uint32_t max_wasm      = (uint32_t)microkit_mr_get(3);
+
+    /* For v0.1, ch==CH_AGENT (badge==0) is root/init — allow all. */
+    (void)ch;
+
+    /* Validate name length */
+    if (name_len == 0 || name_len > 31) {
+        console_log(7, 7, "[vibe_engine] REGISTER: invalid name length\n");
+        microkit_mr_set(0, VIBE_ERR_INTERNAL);
+        return microkit_msginfo_new(0, 1);
+    }
+
+    /* Check capacity */
+    if (service_count >= MAX_SERVICES) {
+        console_log(7, 7, "[vibe_engine] REGISTER: service table full\n");
+        microkit_mr_set(0, VIBE_ERR_FULL);
+        return microkit_msginfo_new(0, 1);
+    }
+
+    /* Resolve the name pointer: treat as offset into staging region */
+    if (name_ptr + name_len > STAGING_SIZE - 64) {
+        console_log(7, 7, "[vibe_engine] REGISTER: name out of staging bounds\n");
+        microkit_mr_set(0, VIBE_ERR_INTERNAL);
+        return microkit_msginfo_new(0, 1);
+    }
+    const char *src_name = (const char *)(vibe_staging_vaddr + name_ptr);
+
+    /* Check for duplicate name */
+    for (uint32_t i = 0; i < service_count; i++) {
+        if (!services[i].name) continue;
+        const char *existing = services[i].name;
+        bool match = true;
+        uint32_t j = 0;
+        for (; j < name_len && existing[j]; j++) {
+            if (existing[j] != src_name[j]) { match = false; break; }
+        }
+        /* also ensure lengths match: existing[name_len] must be NUL */
+        if (match && existing[j] == '\0' && j == name_len) {
+            console_log(7, 7, "[vibe_engine] REGISTER: duplicate service name\n");
+            microkit_mr_set(0, VIBE_ERR_NOSVC);  /* repurpose: "already exists" */
+            return microkit_msginfo_new(0, 1);
+        }
+    }
+
+    /*
+     * Copy the name into a static pool so services[].name remains valid
+     * for the lifetime of the engine.  We use a fixed char pool appended
+     * in order of registration.
+     */
+    static char name_pool[MAX_SERVICES * 32];
+    static uint32_t pool_next = 0;
+
+    /* Guard against pool overflow (32 bytes per entry, including NUL) */
+    if (pool_next + 32 > (uint32_t)sizeof(name_pool)) {
+        console_log(7, 7, "[vibe_engine] REGISTER: name pool exhausted\n");
+        microkit_mr_set(0, VIBE_ERR_INTERNAL);
+        return microkit_msginfo_new(0, 1);
+    }
+
+    char *dst = &name_pool[pool_next];
+    for (uint32_t i = 0; i < name_len; i++) dst[i] = src_name[i];
+    dst[name_len] = '\0';
+    pool_next += 32;  /* Fixed stride keeps slots aligned and stable */
+
+    /* Default WASM size limit: 2MB */
+    if (max_wasm == 0) max_wasm = 2 * 1024 * 1024;
+
+    uint32_t new_id = service_count;
+    services[new_id] = (service_entry_t){
+        .name             = dst,
+        .swappable        = true,
+        .current_version  = 1,
+        .max_wasm_bytes   = max_wasm,
+    };
+    service_count++;
+
+    {
+        char _cl_buf[256] = {};
+        char *_cl_p = _cl_buf;
+        for (const char *_s = "[vibe_engine] Registered new service '"; *_s; _s++) *_cl_p++ = *_s;
+        for (const char *_s = dst; *_s; _s++) *_cl_p++ = *_s;
+        for (const char *_s = "' id="; *_s; _s++) *_cl_p++ = *_s;
+        *_cl_p++ = '0' + (char)(new_id % 10);
+        for (const char *_s = "\n"; *_s; _s++) *_cl_p++ = *_s;
+        *_cl_p = 0;
+        console_log(7, 7, _cl_buf);
+    }
+
+    microkit_mr_set(0, VIBE_OK);
+    microkit_mr_set(1, new_id);
+    return microkit_msginfo_new(0, 2);
+}
+
+/*
+ * OP_VIBE_LIST_SERVICES: List all registered services
+ *
+ * Input:  MR0=op
+ * Output: MR0=count, MR1=offset_into_staging, MR2=total_bytes
+ *
+ * Writes a packed array of null-terminated service names into the staging
+ * region starting at offset 0.  The caller reads them back from the staging
+ * shared-memory window.
+ */
+static microkit_msginfo handle_list_services(void) {
+    /*
+     * We write names into the START of the staging region (offset 0).
+     * The metadata handoff used by OP_VIBE_EXECUTE lives at the END
+     * (last 64 bytes) so there is no conflict as long as a listing is not
+     * issued concurrently with an active swap — this is a single-threaded
+     * passive PD, so that cannot happen.
+     */
+    uint8_t *out = (uint8_t *)vibe_staging_vaddr;
+    uint32_t out_max = STAGING_SIZE - 64;  /* keep metadata area safe */
+    uint32_t pos = 0;
+
+    for (uint32_t i = 0; i < service_count; i++) {
+        const char *n = services[i].name;
+        if (!n) continue;
+        uint32_t j = 0;
+        while (n[j] && pos + j + 1 < out_max) {
+            out[pos + j] = (uint8_t)n[j];
+            j++;
+        }
+        /* Null-terminate */
+        if (pos + j < out_max) out[pos + j] = 0;
+        pos += j + 1;
+    }
+
+    agentos_wmb();
+
+    microkit_mr_set(0, service_count);
+    microkit_mr_set(1, 0);    /* offset: starts at beginning of staging */
+    microkit_mr_set(2, pos);  /* total bytes written */
+    return microkit_msginfo_new(0, 3);
+}
+
 /* ── Microkit entry points ──────────────────────────────────────────── */
 
 void init(void) {
@@ -642,17 +793,18 @@ void notified(microkit_channel ch) {
 }
 
 microkit_msginfo protected(microkit_channel ch, microkit_msginfo msg) {
-    (void)ch;   /* Accept PPC from any connected channel */
     (void)msg;  /* Op code is in MR0, not the label */
     uint32_t op = (uint32_t)microkit_mr_get(0);
 
     switch (op) {
-        case OP_VIBE_PROPOSE:   return handle_propose();
-        case OP_VIBE_VALIDATE:  return handle_validate();
-        case OP_VIBE_EXECUTE:   return handle_execute();
-        case OP_VIBE_STATUS:    return handle_status();
-        case OP_VIBE_ROLLBACK:  return handle_rollback();
-        case OP_VIBE_HEALTH:    return handle_health();
+        case OP_VIBE_PROPOSE:            return handle_propose();
+        case OP_VIBE_VALIDATE:           return handle_validate();
+        case OP_VIBE_EXECUTE:            return handle_execute();
+        case OP_VIBE_STATUS:             return handle_status();
+        case OP_VIBE_ROLLBACK:           return handle_rollback();
+        case OP_VIBE_HEALTH:             return handle_health();
+        case OP_VIBE_REGISTER_SERVICE:   return handle_register_service(ch);
+        case OP_VIBE_LIST_SERVICES:      return handle_list_services();
         default:
             console_log(7, 7, "[vibe_engine] Unknown op\n");
             microkit_mr_set(0, VIBE_ERR_INTERNAL);

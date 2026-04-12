@@ -57,7 +57,7 @@
 <system>
     <!-- Controller: system coordinator, priority raised above passive servers to prevent
          priority inversion when PPCing into event_bus (prio 200) and other passive PDs -->
-    <protection_domain name="controller" priority="201">
+    <protection_domain name="controller" priority="50">
         <program_image path="controller.elf" />
         <map mr="monitor_stack"  vaddr="0x2000000" perms="rw" setvar_vaddr="monitor_stack_vaddr" />
         <!-- Swap code regions: controller writes WASM images here; swap slot PDs read them -->
@@ -83,6 +83,12 @@
         <map mr="http_req_shmem"     vaddr="0xF000000"  perms="r"  setvar_vaddr="http_req_shmem_ctrl_vaddr" />
         <!-- App manifest shmem: controller writes manifests for AppManager -->
         <map mr="app_manifest_shmem" vaddr="0x10000000" perms="rw" setvar_vaddr="app_manifest_shmem_ctrl_vaddr" />
+        <!-- vm_list_shmem r-only: controller reads OP_VM_LIST results from vm_manager -->
+        <map mr="vm_list_shmem" vaddr="0x3100000" perms="r" cached="true"
+             setvar_vaddr="vm_list_shmem_ctrl_vaddr" />
+        <!-- ext2_shmem r-only: controller reads stat/readdir results from ext2fs -->
+        <map mr="ext2_shmem" vaddr="0x3400000" perms="r" cached="true"
+             setvar_vaddr="ext2_shmem_ctrl_vaddr" />
     </protection_domain>
     
     <!-- EventBus: passive pub/sub backbone -->
@@ -1275,10 +1281,6 @@
         <end pd="vm_manager"  id="0" />
     </channel>
 
-    <!-- controller maps vm_list_shmem r-only for OP_VM_LIST introspection -->
-    <map pd="controller" mr="vm_list_shmem" vaddr="0x3100000" perms="r" cached="true"
-         setvar_vaddr="vm_list_shmem_ctrl_vaddr" />
-
     <!--
       ══════════════════════════════════════════════════════════════════
       AuthServer: user/group capability token service (passive, prio 170)
@@ -1372,11 +1374,6 @@
         <end pd="ext2fs"     id="1" pp="true" />
         <end pd="virtio_blk" id="2" />
     </channel>
-
-    <!-- controller maps ext2_shmem r-only for reading stat/readdir results -->
-    <map pd="controller" mr="ext2_shmem" vaddr="0x3400000" perms="r" cached="true"
-         setvar_vaddr="ext2_shmem_ctrl_vaddr" />
-
 
     <!--
       ══════════════════════════════════════════════════════════════════

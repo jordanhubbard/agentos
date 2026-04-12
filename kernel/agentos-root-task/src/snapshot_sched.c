@@ -195,10 +195,13 @@ static void run_snapshot_round(uint32_t running_mask) {
         SlotSnapState *s = get_or_create_slot(slot_id);
         if (!s) { failed++; continue; }
 
-        /* Delta check: skip if last snap was recent enough */
+        /* Delta check: skip if last snap was recent enough.
+         * g_min_delta acts as the minimum snap count before interval gating
+         * kicks in — the first g_min_delta snaps are always taken so the
+         * heap baseline is established (heap-KB delta tracking requires
+         * mem_profiler integration, deferred to Phase 2). */
         uint32_t tick_delta = g_tick_counter - s->last_snap_tick;
-        if (tick_delta < g_interval_ticks && s->snap_count > 0) {
-            /* Only the first snap per slot is unconditional */
+        if (tick_delta < g_interval_ticks && s->snap_count >= g_min_delta) {
             skipped++;
             continue;
         }
@@ -250,6 +253,7 @@ void notified(microkit_channel ch) {
 microkit_msginfo_t protected(microkit_channel ch, microkit_msginfo_t msginfo) {
     uint32_t op = (uint32_t)microkit_mr_get(0);
     (void)ch;
+    (void)msginfo;
 
     switch (op) {
 

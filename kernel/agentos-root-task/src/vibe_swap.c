@@ -116,6 +116,9 @@ static service_desc_t services[MAX_SERVICES];
 static int           service_count = 0;
 static uint64_t      swap_sequence = 0;
 
+/* Forward declarations */
+int vibe_swap_activate(int slot);
+
 /*
  * Initialize the vibe swap subsystem
  */
@@ -222,6 +225,9 @@ static int find_rollback_slot(uint32_t service_id) {
     return -1;
 }
 
+/* Forward declaration: defined below after vibe_swap_begin */
+static int vibe_swap_run_tests(int slot, uint32_t service_id);
+
 /*
  * Begin a service swap
  *
@@ -229,11 +235,11 @@ static int find_rollback_slot(uint32_t service_id) {
  * The flow:
  *   1. Find a free swap slot
  *   2. Load the new code into the slot's PD (via shared memory)
- *   3. Run health check on the new PD
- *   4. If healthy: redirect service channel to the new PD
+ *   3. Run conformance tests on the new slot (vibe_swap_run_tests)
+ *   4. If all tests pass: redirect service channel to the new PD
  *   5. Move old PD to rollback state
  *
- * Returns: 0 on success, negative on error
+ * Returns: slot index (>= 0) on success, negative on error
  */
 int vibe_swap_begin(uint32_t service_id, const void *code, uint32_t code_len) {
     if (service_id >= MAX_SERVICES) {
@@ -348,12 +354,159 @@ int vibe_swap_begin(uint32_t service_id, const void *code, uint32_t code_len) {
 
     console_log(7, 7, "[vibe_swap] WASM image written, notifying slot\n");
 
-    /* Notify the swap slot to initialize */
+    /* Notify the swap slot to initialize (loads and runs service_init) */
     microkit_notify(slots[slot].channel);
-    
-    slots[slot].state = SWAP_STATE_TESTING;
-    
+
+    /*
+     * Run conformance tests against the newly-loaded slot.
+     * vibe_swap_run_tests sets state to SWAP_STATE_TESTING internally.
+     * If tests fail, the slot is reset to SWAP_STATE_IDLE and we return -5.
+     */
+    if (vibe_swap_run_tests(slot, service_id) != 0) {
+        console_log(7, 7, "[vibe_swap] Conformance tests FAILED — slot not activated\n");
+        return -5;
+    }
+
+    console_log(7, 7, "[vibe_swap] Conformance tests passed — activating slot\n");
+
+    /*
+     * Tests passed: redirect channels and activate.
+     * vibe_swap_activate transitions TESTING -> ACTIVE and updates the
+     * service routing table.
+     */
+    if (vibe_swap_activate(slot) != 0) {
+        console_log(7, 7, "[vibe_swap] Activation failed after successful tests\n");
+        slots[slot].state = SWAP_STATE_IDLE;
+        return -6;
+    }
+
     return slot;
+}
+
+/* ── ABI label constants (mirrors agentos_service_abi.h) ─────────────── */
+#define AOS_LABEL_HEALTH    0xFFFFu  /* Health probe — must reply 0 */
+#define STORAGE_OP_WRITE    0x30u    /* storage.v1 write            */
+#define STORAGE_OP_READ     0x31u    /* storage.v1 read             */
+
+/*
+ * vibe_swap_run_tests — run conformance tests on a freshly-loaded swap slot
+ *
+ * Sets the slot to SWAP_STATE_TESTING, exercises service-specific IPC
+ * operations against the slot's PD channel, and returns 0 if all tests
+ * pass or -1 on the first failure.
+ *
+ * On failure the slot is reset to SWAP_STATE_IDLE so it is available for
+ * the next proposal.
+ *
+ * For SVC_MEMFS (service_id == SVC_MEMFS): three tests are run:
+ *   1. Write test  — STORAGE_OP_WRITE with a known key/value pair
+ *   2. Read test   — STORAGE_OP_READ for the same key; expects non-NULL ptr
+ *   3. Health test — AOS_LABEL_HEALTH; expects MR0 == 0
+ *
+ * For all other services: only the health check is run.
+ */
+static int vibe_swap_run_tests(int slot, uint32_t service_id) {
+    slots[slot].state = SWAP_STATE_TESTING;
+
+    /* ── Helper: log "Testing slot N: <test_name>... <result>" ───────── */
+#define TEST_LOG(tname, result) do { \
+        char _cl_buf[256] = {}; \
+        char *_cl_p = _cl_buf; \
+        for (const char *_s = "[vibe_swap] Testing slot "; *_s; _s++) *_cl_p++ = *_s; \
+        *_cl_p++ = '0' + (char)(slot); \
+        for (const char *_s = ": "; *_s; _s++) *_cl_p++ = *_s; \
+        for (const char *_s = (tname); *_s; _s++) *_cl_p++ = *_s; \
+        for (const char *_s = "... "; *_s; _s++) *_cl_p++ = *_s; \
+        for (const char *_s = (result); *_s; _s++) *_cl_p++ = *_s; \
+        for (const char *_s = "\n"; *_s; _s++) *_cl_p++ = *_s; \
+        *_cl_p = 0; \
+        console_log(7, 7, _cl_buf); \
+    } while (0)
+
+    if (service_id == SVC_MEMFS) {
+        /*
+         * Test 1: Write — store "testval" under key "test/key".
+         * MR0=STORAGE_OP_WRITE MR1=key_ptr MR2=key_len
+         * MR3=data_ptr MR4=data_len
+         *
+         * The test key and value live in static storage so the pointer
+         * values are stable across the PPC.  The swap slot PD interprets
+         * them as offsets into its own WASM linear memory via the wasm3
+         * runtime, but for conformance testing we pass literal addresses
+         * that the stub implementation can resolve.  A zero return in MR0
+         * signals success.
+         */
+        static const char test_key[] = "test/key";
+        static const char test_val[] = "testval\0";
+
+        microkit_mr_set(0, STORAGE_OP_WRITE);
+        microkit_mr_set(1, (seL4_Word)(uintptr_t)test_key);
+        microkit_mr_set(2, 8);  /* length of "test/key" */
+        microkit_mr_set(3, (seL4_Word)(uintptr_t)test_val);
+        microkit_mr_set(4, 7);  /* length of "testval" */
+
+        microkit_msginfo write_result = PPCALL_DONATE(
+            slots[slot].channel,
+            microkit_msginfo_new(STORAGE_OP_WRITE, 5),
+            PRIO_CONTROLLER, PRIO_SWAP_SLOT
+        );
+        (void)write_result;
+
+        uint32_t write_status = (uint32_t)microkit_mr_get(0);
+        if (write_status != 0) {
+            TEST_LOG("write", "FAIL");
+            slots[slot].state = SWAP_STATE_IDLE;
+            return -1;
+        }
+        TEST_LOG("write", "PASS");
+
+        /*
+         * Test 2: Read — retrieve the key written above.
+         * Expect MR0 (data_ptr) to be non-zero.
+         */
+        microkit_mr_set(0, STORAGE_OP_READ);
+        microkit_mr_set(1, (seL4_Word)(uintptr_t)test_key);
+        microkit_mr_set(2, 8);
+
+        microkit_msginfo read_result = PPCALL_DONATE(
+            slots[slot].channel,
+            microkit_msginfo_new(STORAGE_OP_READ, 3),
+            PRIO_CONTROLLER, PRIO_SWAP_SLOT
+        );
+        (void)read_result;
+
+        uint32_t read_ptr = (uint32_t)microkit_mr_get(0);
+        if (read_ptr == 0) {
+            TEST_LOG("read", "FAIL");
+            slots[slot].state = SWAP_STATE_IDLE;
+            return -1;
+        }
+        TEST_LOG("read", "PASS");
+    }
+
+    /*
+     * Health test (all services): send AOS_LABEL_HEALTH, expect MR0 == 0.
+     */
+    microkit_mr_set(0, 0);  /* no input MRs needed */
+
+    microkit_msginfo health_result = PPCALL_DONATE(
+        slots[slot].channel,
+        microkit_msginfo_new(AOS_LABEL_HEALTH, 0),
+        PRIO_CONTROLLER, PRIO_SWAP_SLOT
+    );
+    (void)health_result;
+
+    uint32_t health_status = (uint32_t)microkit_mr_get(0);
+    if (health_status != 0) {
+        TEST_LOG("health", "FAIL");
+        slots[slot].state = SWAP_STATE_IDLE;
+        return -1;
+    }
+    TEST_LOG("health", "PASS");
+
+#undef TEST_LOG
+
+    return 0;
 }
 
 /*
@@ -461,9 +614,24 @@ int vibe_swap_activate(int slot) {
  */
 int vibe_swap_rollback(uint32_t service_id) {
     if (service_id >= MAX_SERVICES) return -1;
-    
+
+    /*
+     * Race guard: if any slot for this service is still in the TESTING
+     * state, it has never been activated.  Roll it back to IDLE so the
+     * slot is available for the next proposal — no channel redirect is
+     * needed because the service's active channel was never changed.
+     */
+    for (int i = 0; i < MAX_SWAP_SLOTS; i++) {
+        if (slots[i].state == SWAP_STATE_TESTING &&
+            slots[i].service_id == service_id) {
+            console_log(7, 7, "[vibe_swap] rollback: slot still in TESTING — reset to IDLE\n");
+            slots[i].state = SWAP_STATE_IDLE;
+            return 0;  /* No channel redirect required; nothing was activated */
+        }
+    }
+
     service_desc_t *svc = &services[service_id];
-    
+
     if (!svc->has_rollback) {
         {
             char _cl_buf[256] = {};

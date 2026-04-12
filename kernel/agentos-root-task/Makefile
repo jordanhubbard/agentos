@@ -37,8 +37,8 @@ endif
 
 MICROKIT_TOOL ?= $(MICROKIT_SDK)/bin/microkit
 
-CFLAGS := -nostdlib -ffreestanding -g -O2 -Wall -Wextra -Wno-unused-function \
-           -I$(BOARD_DIR)/include -Iinclude \
+CFLAGS := -nostdlib -ffreestanding -g -O2 -Wall -Wextra -Werror -Wno-unused-function -Wno-unused-parameter -Wno-unused-variable \
+           -I$(BOARD_DIR)/include -Iinclude -Ilwip/include \
            $(CFLAGS_ARCH) \
            -MMD -MP
 
@@ -57,7 +57,7 @@ LIBS    := -lmicrokit -Tmicrokit.ld
 # Protection Domain ELFs
 # monitor/controller: includes vibe_swap for the hot-swap controller-side logic
 # m3_bare_metal.c provides memset/memcpy/memmove needed by compiler-generated code
-PD_MONITOR_SRCS   := src/monitor.c src/cap_broker.c src/agent_pool.c src/vibe_swap.c src/m3_bare_metal.c src/log.c src/boot_integrity.c src/ed25519_verify.c
+PD_MONITOR_SRCS   := src/monitor.c src/cap_broker.c src/agent_pool.c src/vibe_swap.c src/m3_bare_metal.c src/log.c src/boot_integrity.c src/ed25519_verify.c src/monocypher.c src/cap_policy.c src/verify.c
 PD_EVENTBUS_SRCS  := src/event_bus.c src/m3_bare_metal.c src/log.c
 PD_INITAGENT_SRCS := src/init_agent.c src/m3_bare_metal.c src/log.c
 PD_WORKER_SRCS    := src/worker.c src/m3_bare_metal.c src/log.c
@@ -75,12 +75,15 @@ PD_TRACERECORDER_SRCS    := src/trace_recorder.c src/m3_bare_metal.c src/log.c
 PD_NAMESERVER_SRCS       := src/nameserver.c src/m3_bare_metal.c src/log.c
 PD_VIRTIO_BLK_SRCS       := src/virtio_blk.c src/m3_bare_metal.c src/log.c
 PD_VFS_SERVER_SRCS       := src/vfs_server.c src/m3_bare_metal.c src/log.c
-PD_SPAWN_SERVER_SRCS     := src/spawn_server.c src/m3_bare_metal.c src/log.c
-PD_APP_SLOT_SRCS         := src/app_slot.c src/m3_bare_metal.c src/log.c
-PD_NET_SERVER_SRCS       := src/net_server.c src/m3_bare_metal.c src/log.c
+PD_SPAWN_SERVER_SRCS     := src/spawn_server.c src/sha256_mini.c src/m3_bare_metal.c src/log.c
+PD_APP_SLOT_SRCS         := src/app_slot.c src/sha256_mini.c src/m3_bare_metal.c src/log.c
+PD_NET_SERVER_SRCS       := src/net_server.c src/lwip_sys.c src/lwip_shim.c src/m3_bare_metal.c src/log.c
+PD_JS_RUNTIME_SRCS       := src/js_runtime.c src/m3_bare_metal.c src/log.c
+PD_JS_RUNTIME_VENDOR_SRCS := vendor/quickjs/quickjs_stub.c
+PD_WG_NET_SRCS           := src/wg_net.c src/monocypher.c src/m3_bare_metal.c src/log.c
 PD_APP_MANAGER_SRCS      := src/app_manager.c src/m3_bare_metal.c src/log.c
 PD_HTTP_SVC_SRCS         := src/http_svc.c src/m3_bare_metal.c src/log.c
-PD_VM_MANAGER_SRCS       := src/vm_manager.c src/m3_bare_metal.c src/log.c
+PD_VM_MANAGER_SRCS       := src/vm_manager.c src/vmm_mux_stub.c src/m3_bare_metal.c src/log.c
 PD_AUTH_SERVER_SRCS      := src/auth_server.c src/m3_bare_metal.c src/log.c
 PD_EXT2FS_SRCS           := src/ext2fs.c src/m3_bare_metal.c src/log.c
 PD_PROC_SERVER_SRCS      := src/proc_server.c src/m3_bare_metal.c src/log.c
@@ -114,6 +117,9 @@ VFS_SERVER_OBJS       := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_VFS_SERVER_S
 SPAWN_SERVER_OBJS     := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_SPAWN_SERVER_SRCS))
 APP_SLOT_OBJS         := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_APP_SLOT_SRCS))
 NET_SERVER_OBJS       := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_NET_SERVER_SRCS))
+JS_RUNTIME_OBJS       := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_JS_RUNTIME_SRCS)) \
+                         $(patsubst vendor/%.c, $(BUILD_DIR)/vendor_%.o, $(PD_JS_RUNTIME_VENDOR_SRCS))
+WG_NET_OBJS           := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_WG_NET_SRCS))
 APP_MANAGER_OBJS      := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_APP_MANAGER_SRCS))
 HTTP_SVC_OBJS         := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_HTTP_SVC_SRCS))
 VM_MANAGER_OBJS       := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_VM_MANAGER_SRCS))
@@ -126,7 +132,7 @@ EXEC_SERVER_OBJS      := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_EXEC_SERVER_
 TERM_SERVER_OBJS      := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_TERM_SERVER_SRCS))
 WASM3_OBJS         := $(patsubst wasm3/%.c, $(BUILD_DIR)/wasm3_%.o, $(WASM3_SRCS))
 
-IMAGES := controller.elf event_bus.elf init_agent.elf worker.elf agentfs.elf vibe_engine.elf console_mux.elf swap_slot.elf mem_profiler.elf net_isolator.elf perf_counters.elf time_partition.elf trace_recorder.elf nameserver.elf virtio_blk.elf vfs_server.elf spawn_server.elf app_slot.elf net_server.elf app_manager.elf http_svc.elf vm_manager.elf auth_server.elf ext2fs.elf proc_server.elf vm_snapshot.elf pflocal_server.elf exec_server.elf term_server.elf
+IMAGES := controller.elf event_bus.elf init_agent.elf worker.elf agentfs.elf vibe_engine.elf console_mux.elf swap_slot.elf mem_profiler.elf net_isolator.elf perf_counters.elf time_partition.elf trace_recorder.elf nameserver.elf virtio_blk.elf vfs_server.elf spawn_server.elf app_slot.elf net_server.elf js_runtime.elf wg_net.elf app_manager.elf http_svc.elf vm_manager.elf auth_server.elf ext2fs.elf proc_server.elf vm_snapshot.elf pflocal_server.elf exec_server.elf term_server.elf
 
 # Optional: periodic WASM slot snapshot scheduler
 ifdef AGENTOS_SNAPSHOT_SCHED
@@ -158,7 +164,7 @@ endif
 IMAGE_FILE  := $(BUILD_DIR)/agentos.img
 REPORT_FILE := $(BUILD_DIR)/agentos-report.txt
 
-all: $(IMAGE_FILE)
+build: $(IMAGE_FILE)
 
 $(BUILD_DIR)/%.o: src/%.c
 	@mkdir -p $(BUILD_DIR)
@@ -181,6 +187,11 @@ $(BUILD_DIR)/m3_bare_metal.o: src/m3_bare_metal.c
 $(BUILD_DIR)/wasm3_%.o: wasm3/%.c
 	@mkdir -p $(BUILD_DIR)
 	$(CC) -c $(CFLAGS_WASM3) $< -o $@
+
+# Vendored QuickJS stub
+$(BUILD_DIR)/vendor_quickjs/%.o: vendor/quickjs/%.c
+	@mkdir -p $(BUILD_DIR)/vendor_quickjs
+	$(CC) -c $(CFLAGS) $< -o $@
 
 $(BUILD_DIR)/controller.elf: $(CONTROLLER_OBJS)
 	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
@@ -242,6 +253,12 @@ $(BUILD_DIR)/app_slot.elf: $(APP_SLOT_OBJS)
 $(BUILD_DIR)/net_server.elf: $(NET_SERVER_OBJS)
 	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
 
+$(BUILD_DIR)/js_runtime.elf: $(JS_RUNTIME_OBJS)
+	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
+
+$(BUILD_DIR)/wg_net.elf: $(WG_NET_OBJS)
+	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
+
 $(BUILD_DIR)/app_manager.elf: $(APP_MANAGER_OBJS)
 	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
 
@@ -249,10 +266,16 @@ $(BUILD_DIR)/http_svc.elf: $(HTTP_SVC_OBJS)
 	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
 
 # vm_manager: multi-VM lifecycle manager (wraps vmm_mux; AArch64 libvmm optional)
-# Compiled with -I../../freebsd-vmm so vmm_mux.h (and transitively vmm.h) resolve.
+# Compiled with -I../freebsd-vmm so vmm_mux.h resolves, and -I../../libvmm/include
+# so the transitive <libvmm/guest.h> include resolves on AArch64 builds.
 $(BUILD_DIR)/vm_manager.o: src/vm_manager.c
 	@mkdir -p $(BUILD_DIR)
-	$(CC) -c $(CFLAGS) -I../../freebsd-vmm $< -o $@
+	$(CC) -c $(CFLAGS) -I../freebsd-vmm -I../../libvmm/include $< -o $@
+
+# vmm_mux_stub also needs both paths for the same reason
+$(BUILD_DIR)/vmm_mux_stub.o: src/vmm_mux_stub.c
+	@mkdir -p $(BUILD_DIR)
+	$(CC) -c $(CFLAGS) -I../freebsd-vmm -I../../libvmm/include $< -o $@
 
 $(BUILD_DIR)/vm_manager.elf: $(VM_MANAGER_OBJS)
 	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
@@ -334,7 +357,7 @@ $(IMAGE_FILE) $(REPORT_FILE): $(addprefix $(BUILD_DIR)/, $(IMAGES)) $(SYSTEM_FIL
 clean:
 	rm -rf $(BUILD_DIR)
 
-.PHONY: all clean FORCE
+.PHONY: build clean FORCE
 
 # ─── Auto-generated header dependency files ───────────────────────────────────
 # -MMD -MP in CFLAGS causes clang to emit a .d file alongside each .o.

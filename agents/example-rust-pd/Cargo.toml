@@ -1,0 +1,19 @@
+[package]
+name = "example-rust-pd"
+version = "0.1.0"
+edition = "2021"
+description = "Example agentOS Rust Protection Domain — health-check responder"
+license = "Apache-2.0"
+
+# This PD is a staticlib that Microkit links into the final image.
+[[bin]]
+name = "example-rust-pd"
+path = "src/main.rs"
+
+[dependencies]
+agentos-pd = { path = "../../libs/rust-pd" }
+
+[profile.release]
+panic = "abort"
+opt-level = "s"
+lto = true

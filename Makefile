@@ -1,17 +1,16 @@
 # agentOS Top-Level Makefile
 #
 # Quick start:
-#   make deps && make
+#   make install && make run
 #
 # Targets:
-#   make              — build (native arch) + QEMU (HW-accel) + agentOS console (http://localhost:8080)
-#   make dashboard    — start agentOS console only (agentOS already running on hardware)
-#   make deps         — install all build dependencies
+#   make install      — install all build dependencies
+#   make build        — build the kernel image for BOARD/TARGET_ARCH
+#   make run          — build (native arch) + QEMU (HW-accel) + agentOS console (http://localhost:8080)
 #   make test         — CI boot test (exit 0/1)
 #   make clean        — remove build artifacts for current target
-#   make clean-all    — remove all build artifacts
 
-.PHONY: all deps deps-tools deps-sdk submodules channels console dashboard test test-snapshot-sched test-power-mgr test-proc-server test-integration clean clean-all clean-images help release release-minor release-major fetch-guest build-tools
+.PHONY: all install deps-tools deps-sdk submodules channels run dashboard test test-snapshot-sched test-power-mgr test-proc-server test-integration clean clean-all clean-images help release release-minor release-major fetch-guest build-tools
 
 # ─── Read config.yaml (if present) ───────────────────────────────────────────
 CONFIG_TARGET := $(shell grep '^target_arch:' config.yaml 2>/dev/null | sed 's/target_arch:[[:space:]]*//' | tr -d '[:space:]')
@@ -143,14 +142,14 @@ NATIVE_IMAGE     := $(NATIVE_BUILD_DIR)/agentos.img
 channels:
 	python3 tools/gen-channels/gen_channels.py
 
-all: console
+all: run
 
 # =============================================================================
-# deps
+# install: set up build dependencies (alias: deps)
 # =============================================================================
-deps: deps-tools deps-sdk
+install: deps-tools deps-sdk
 	@echo ""
-	@echo "✅ All dependencies installed! Run 'make' to launch the console."
+	@echo "✅ All dependencies installed! Run 'make run' to launch the console."
 
 deps-tools:
 	@echo ""
@@ -334,14 +333,14 @@ dashboard:
 	@cargo run -p agentos-console --release
 
 # =============================================================================
-# console (default): build native → QEMU (HW-accel) + agentOS console
+# run (default): build native → QEMU (HW-accel) + agentOS console
 #
 # Builds agentOS for the host's native CPU, launches it headlessly in QEMU
 # with hardware acceleration (HVF on macOS, KVM on Linux), starts the
 # agentOS console server, and opens it in the default browser.
 # Ctrl-C shuts down both the console server and QEMU cleanly.
 # =============================================================================
-console:
+run:
 	@$(MAKE) build BOARD=$(NATIVE_BOARD) TARGET_ARCH=$(NATIVE_ARCH)
 	@echo ""
 	@echo "╔══════════════════════════════════════════╗"
@@ -355,7 +354,8 @@ console:
 	@echo ""
 	@echo "Console: http://localhost:8080  (opening in browser...)"
 	@echo "──────────────────────────────────────────────"
-	@rm -f /tmp/agentos-serial.sock
+	@rm -f /tmp/agentos-serial.sock /tmp/freebsd-serial.sock /tmp/linux-serial.sock
+	@lsof -ti:8080 2>/dev/null | xargs kill 2>/dev/null || true
 	@lsof -ti:8789 2>/dev/null | xargs kill 2>/dev/null || true
 	@trap 'kill "$$QEMU_PID" 2>/dev/null; wait "$$BRIDGE_PID" 2>/dev/null; exit' INT TERM; \
 	 cargo run -p agentos-console --release & BRIDGE_PID=$$!; \
@@ -491,22 +491,14 @@ help:
 	@echo "agentOS — the OS for agents, by agents"
 	@echo ""
 	@echo "Targets:"
-	@echo "  make                  Build (native arch) + QEMU (HW-accel) + agentOS console"
-	@echo "  make dashboard        Start agentOS console only (agentOS running on hardware)"
-	@echo "  make deps             Install build deps (brew / apt)"
+	@echo "  make install          Install build deps (brew / apt)"
+	@echo "  make build            Build kernel image for BOARD/TARGET_ARCH"
+	@echo "  make run              Build (native arch) + QEMU (HW-accel) + agentOS console"
 	@echo "  make test             CI boot test (exit 0/1)"
-	@echo "  make test-integration Host-side C tests (no QEMU required)"
-	@echo "  make test-snapshot-sched"
-	@echo "  make test-power-mgr"
-	@echo "  make clean            Remove build artifacts"
-	@echo "  make clean-all        Remove all build artifacts"
-	@echo "  make build-tools      Build all Rust tool binaries (release mode)"
-	@echo "  make release          Cut a patch release (tag + GitHub release)"
-	@echo "  make release-minor    Cut a minor release"
-	@echo "  make release-major    Cut a major release"
+	@echo "  make clean            Remove build artifacts for current board"
 	@echo ""
 	@echo "Quick start:"
-	@echo "  make deps && make"
+	@echo "  make install && make run"
 	@echo ""
 	@echo "Language breakdown:"
 	@echo "  Kernel/firmware    → C"

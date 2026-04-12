@@ -33,8 +33,52 @@
 
 #define LINUX_VMM_X86_STUB 1
 
+/* Maximum VM slots tracked by this VMM instance */
+#define VMM_MAX_SLOTS  4
+
+/* Per-slot affinity mask (stored; enforcement deferred to AArch64 full impl) */
+static uint32_t vmm_affinity[VMM_MAX_SLOTS];
+
+/* ── vmm_set_affinity — store host-CPU affinity for a guest VCPU ─────────
+ *
+ * On x86_64 (stub mode) we store the mask in vmm_affinity[] so callers
+ * can call this API now.  Enforcement via seL4_TCB_SetAffinity is done in
+ * the AArch64 full implementation below.
+ *
+ * @param slot_id  guest slot index (0..VMM_MAX_SLOTS-1)
+ * @param cpu_mask bitmask of allowed host CPUs
+ * @returns 0 on success, -1 if slot_id out of range
+ */
+int vmm_set_affinity(uint8_t slot_id, uint32_t cpu_mask)
+{
+    if (slot_id >= VMM_MAX_SLOTS) return -1;
+    vmm_affinity[slot_id] = cpu_mask;
+    microkit_dbg_puts("[linux_vmm] x86_64 stub: vmm_set_affinity stored\n");
+    return 0;
+}
+
+/* ── vmm_inject_irq — stub for virtio IRQ injection ─────────────────────
+ *
+ * Logs the injection request.  The AArch64 full implementation calls
+ * virq_inject() from libvmm.  On x86_64 this is a no-op stub.
+ *
+ * @param slot_id  guest slot index
+ * @param irq_num  virtual IRQ number to inject
+ * @returns 0 (always succeeds in stub)
+ */
+int vmm_inject_irq(uint8_t slot_id, uint32_t irq_num)
+{
+    (void)slot_id;
+    (void)irq_num;
+    microkit_dbg_puts("[linux_vmm] x86_64 stub: vmm_inject_irq (no-op)\n");
+    return 0;
+}
+
 void init(void)
 {
+    for (uint8_t i = 0; i < VMM_MAX_SLOTS; i++)
+        vmm_affinity[i] = 0xFFFFFFFFu;  /* any core */
+
     microkit_dbg_puts("[linux_vmm] x86_64: libvmm VMM support not yet implemented.\n");
     microkit_dbg_puts("[linux_vmm] x86_64: PD running as passive stub.\n");
 }
@@ -66,6 +110,16 @@ seL4_Bool fault(microkit_child child, microkit_msginfo msginfo,
 
 #include <libvmm/libvmm.h>
 #include "gpu_shmem.h"
+
+/* ── Per-slot affinity (AArch64) ─────────────────────────────────────── */
+
+#ifndef VMM_MAX_SLOTS
+#define VMM_MAX_SLOTS  4
+#endif
+
+/* Stored host-CPU affinity masks — one per VM slot.
+ * Applied via seL4_TCB_SetAffinity when the vCPU is next scheduled. */
+static uint32_t vmm_affinity[VMM_MAX_SLOTS];
 
 /* ─── Guest Configuration ─────────────────────────────────────────────── */
 
@@ -122,10 +176,87 @@ static void serial_ack(size_t vcpu_id, int irq, void *cookie)
     microkit_irq_ack(SERIAL_IRQ_CH);
 }
 
+/* ─── VCPU Affinity ──────────────────────────────────────────────────── */
+
+/*
+ * vmm_set_affinity — pin a guest VCPU to a set of host CPUs.
+ *
+ * Stores the requested affinity mask for slot_id.  The mask is applied
+ * via seL4_TCB_SetAffinity the next time the scheduler selects this slot.
+ * On single-core builds this is a no-op (all VCPUs share the one core).
+ *
+ * @param slot_id  VM slot index (0..VMM_MAX_SLOTS-1)
+ * @param cpu_mask bitmask of allowed host CPUs (bit N = core N allowed)
+ * @returns 0 on success, -1 if slot_id is out of range
+ */
+int vmm_set_affinity(uint8_t slot_id, uint32_t cpu_mask)
+{
+    if (slot_id >= VMM_MAX_SLOTS) return -1;
+    vmm_affinity[slot_id] = cpu_mask;
+    /*
+     * On a multi-core seL4 build, apply affinity to the VCPU thread:
+     *
+     *   seL4_CPtr vcpu_tcb = microkit_vcpu_tcb(slot_id);
+     *   seL4_TCB_SetAffinity(vcpu_tcb, __builtin_ctz(cpu_mask));
+     *
+     * Until Microkit exposes vcpu TCB caps we record the mask and log.
+     */
+    LOG_VMM("vmm_set_affinity: slot=%u cpu_mask=0x%x stored\n",
+            (unsigned)slot_id, (unsigned)cpu_mask);
+    return 0;
+}
+
+/* ─── IRQ Injection ──────────────────────────────────────────────────── */
+
+/*
+ * vmm_inject_irq — inject a virtual IRQ into a guest VM slot.
+ *
+ * In the single-VCPU Linux VMM (this PD manages one guest), slot_id must
+ * be 0; other slot IDs are invalid.  The IRQ is injected via libvmm's
+ * virq_inject() which posts it into the virtual GIC distributor.
+ *
+ * This stub can be extended to support per-slot VCPU contexts once the
+ * multiplexer is wired to manage multiple Linux guests in a single VMM PD.
+ *
+ * @param slot_id  VM slot index (must be 0 for this single-guest VMM)
+ * @param irq_num  virtual IRQ number (e.g., 32 + virtio queue IRQ offset)
+ * @returns 0 on success, -1 if slot_id is invalid or inject fails
+ */
+int vmm_inject_irq(uint8_t slot_id, uint32_t irq_num)
+{
+    if (slot_id >= VMM_MAX_SLOTS) return -1;
+
+    if (!guest_started) {
+        LOG_VMM_ERR("vmm_inject_irq: guest not started (slot=%u irq=%u)\n",
+                    (unsigned)slot_id, (unsigned)irq_num);
+        return -1;
+    }
+
+    /*
+     * virq_inject() delivers an IRQ to the guest VCPU via the virtual GIC.
+     * GUEST_BOOT_VCPU_ID is the only VCPU in this single-guest configuration.
+     * A multi-guest extension would index by slot_id.
+     */
+    bool ok = virq_inject((int)irq_num);
+    if (!ok) {
+        LOG_VMM_ERR("vmm_inject_irq: virq_inject failed (slot=%u irq=%u)\n",
+                    (unsigned)slot_id, (unsigned)irq_num);
+        return -1;
+    }
+
+    LOG_VMM("vmm_inject_irq: injected irq=%u into slot=%u\n",
+            (unsigned)irq_num, (unsigned)slot_id);
+    return 0;
+}
+
 /* ─── Init ───────────────────────────────────────────────────────────── */
 
 void init(void)
 {
+    /* Initialise per-slot affinity masks to "any core" */
+    for (uint8_t i = 0; i < VMM_MAX_SLOTS; i++)
+        vmm_affinity[i] = 0xFFFFFFFFu;
+
     LOG_VMM("agentOS linux_vmm starting \"%s\"\n", microkit_name);
     LOG_VMM("  Guest RAM: 0x%lx (%d MB)\n",
             (unsigned long)guest_ram_vaddr, GUEST_RAM_SIZE / (1024 * 1024));

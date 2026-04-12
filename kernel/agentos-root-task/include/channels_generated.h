@@ -39,6 +39,11 @@ typedef enum {
     CH_APP_SLOT_3_SPAWN_SERVER                   = 0,
 } app_slot_3_channel_t;
 
+/* Channel IDs from auth_server perspective */
+typedef enum {
+    CH_AUTH_SERVER_CONTROLLER                    = 0,
+} auth_server_channel_t;
+
 /* Channel IDs from console_mux perspective */
 typedef enum {
     CH_CONSOLE_MUX_CONTROLLER                    = 0,
@@ -68,6 +73,10 @@ typedef enum {
     CH_CONTROLLER_VIRTIO_BLK                     = 22,
     CH_CONTROLLER_APP_MANAGER                    = 23,
     CH_CONTROLLER_HTTP_SVC                       = 24,
+    CH_CONTROLLER_PFLOCAL_SERVER                 = 26,
+    CH_CONTROLLER_PROC_SERVER                    = 27,
+    CH_CONTROLLER_EXEC_SERVER                    = 28,
+    CH_CONTROLLER_AUTH_SERVER                    = 29,
     CH_CONTROLLER_SWAP_SLOT_0                    = 30,
     CH_CONTROLLER_SWAP_SLOT_1                    = 31,
     CH_CONTROLLER_SWAP_SLOT_2                    = 32,
@@ -75,6 +84,10 @@ typedef enum {
     CH_CONTROLLER_VIBE_ENGINE                    = 40,
     CH_CONTROLLER_TIME_PARTITION                 = 41,
     CH_CONTROLLER_PERF_COUNTERS                  = 42,
+    CH_CONTROLLER_TERM_SERVER                    = 43,
+    CH_CONTROLLER_VM_MANAGER                     = 45,
+    CH_CONTROLLER_VM_SNAPSHOT                    = 46,
+    CH_CONTROLLER_EXT2FS                         = 47,
     CH_CONTROLLER_MEM_PROFILER                   = 50,
     CH_CONTROLLER_CONSOLE_MUX                    = 60,
     CH_CONTROLLER_NET_ISOLATOR                   = 61,
@@ -96,6 +109,17 @@ typedef enum {
     CH_EVENT_BUS_CONSOLE_MUX                     = 60,
     CH_EVENT_BUS_NET_ISOLATOR                    = 61,
 } event_bus_channel_t;
+
+/* Channel IDs from exec_server perspective */
+typedef enum {
+    CH_EXEC_SERVER_CONTROLLER                    = 0,
+} exec_server_channel_t;
+
+/* Channel IDs from ext2fs perspective */
+typedef enum {
+    CH_EXT2FS_CONTROLLER                         = 0,
+    CH_EXT2FS_VIRTIO_BLK                         = 1,
+} ext2fs_channel_t;
 
 /* Channel IDs from http_svc perspective */
 typedef enum {
@@ -179,6 +203,16 @@ typedef enum {
     CH_PERF_COUNTERS_WORKER_7                    = 8,
 } perf_counters_channel_t;
 
+/* Channel IDs from pflocal_server perspective */
+typedef enum {
+    CH_PFLOCAL_SERVER_CONTROLLER                 = 0,
+} pflocal_server_channel_t;
+
+/* Channel IDs from proc_server perspective */
+typedef enum {
+    CH_PROC_SERVER_CONTROLLER                    = 0,
+} proc_server_channel_t;
+
 /* Channel IDs from spawn_server perspective */
 typedef enum {
     CH_SPAWN_SERVER_CONTROLLER                   = 0,
@@ -210,6 +244,11 @@ typedef enum {
 typedef enum {
     CH_SWAP_SLOT_3_CONTROLLER                    = 0,
 } swap_slot_3_channel_t;
+
+/* Channel IDs from term_server perspective */
+typedef enum {
+    CH_TERM_SERVER_CONTROLLER                    = 0,
+} term_server_channel_t;
 
 /* Channel IDs from time_partition perspective */
 typedef enum {
@@ -258,7 +297,18 @@ typedef enum {
 typedef enum {
     CH_VIRTIO_BLK_CONTROLLER                     = 0,
     CH_VIRTIO_BLK_VFS_SERVER                     = 1,
+    CH_VIRTIO_BLK_EXT2FS                         = 2,
 } virtio_blk_channel_t;
+
+/* Channel IDs from vm_manager perspective */
+typedef enum {
+    CH_VM_MANAGER_CONTROLLER                     = 0,
+} vm_manager_channel_t;
+
+/* Channel IDs from vm_snapshot perspective */
+typedef enum {
+    CH_VM_SNAPSHOT_CONTROLLER                    = 0,
+} vm_snapshot_channel_t;
 
 /* Channel IDs from worker_0 perspective */
 typedef enum {

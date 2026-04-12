@@ -63,7 +63,14 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <microkit.h>
+#ifdef __aarch64__
 #include <libvmm/guest.h>
+#endif
+/* libvmm does not expose a vm_t struct; provide an opaque placeholder so
+ * vm_slot_t compiles on all architectures.  The vm_t field is never
+ * dereferenced by the multiplexer itself — per-slot guest state is managed
+ * through the guest_start/stop/restart API. */
+typedef struct { uint32_t _opaque; } vm_t;
 
 /* Maximum number of concurrent VM instances */
 #define VM_MAX_SLOTS        4
@@ -78,12 +85,22 @@
 #define VM_FLASH_PADDR      0x00000000UL
 #define VM_FLASH_SIZE       0x04000000UL   /* 64MB */
 
-/* VMM IPC opcodes */
+/* VMM IPC opcodes — agentos.h is authoritative; guard against redefinition */
+#ifndef OP_VM_CREATE
 #define OP_VM_CREATE        0x10
+#endif
+#ifndef OP_VM_DESTROY
 #define OP_VM_DESTROY       0x11
+#endif
+#ifndef OP_VM_SWITCH
 #define OP_VM_SWITCH        0x12
+#endif
+#ifndef OP_VM_STATUS
 #define OP_VM_STATUS        0x13
+#endif
+#ifndef OP_VM_LIST
 #define OP_VM_LIST          0x14
+#endif
 
 /* Slot states */
 typedef enum {

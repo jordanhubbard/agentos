@@ -1,2 +1,20 @@
 [alias]
 xtask = "run --package xtask --"
+
+[build]
+# Default target for native host builds (keep host toolchain for console, tools, etc.)
+# Kernel PDs use --target aarch64-unknown-none explicitly
+
+# agentOS kernel PDs compile for bare-metal AArch64 (seL4 Microkit target)
+[target.aarch64-unknown-none]
+rustflags = [
+    "-C", "link-arg=-nostdlib",
+    "-C", "link-arg=-static",
+    "-C", "target-cpu=cortex-a55",
+]
+
+# RISC-V 64 fallback
+[target.riscv64gc-unknown-none-elf]
+rustflags = [
+    "-C", "link-arg=-nostdlib",
+]

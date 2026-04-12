@@ -141,6 +141,7 @@ void notified(microkit_channel ch)
 microkit_msginfo protected(microkit_channel ch, microkit_msginfo msg)
 {
     (void)ch;
+    (void)msg;
     uint32_t op = (uint32_t)microkit_mr_get(0);
 
     switch (op) {
@@ -213,6 +214,4 @@ microkit_msginfo protected(microkit_channel ch, microkit_msginfo msg)
         microkit_mr_set(0, 0xFFu);
         return microkit_msginfo_new(0, 1);
     }
-
-    (void)msg;
 }

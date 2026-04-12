@@ -234,7 +234,7 @@ uint32_t boot_integrity_measure(uint32_t pd_id,
  * OP_BOOT_* opcodes forwarded from init_agent / workers.
  */
 microkit_msginfo boot_integrity_handle_ppc(uint32_t op,
-                                            microkit_msginfo msginfo) {
+                                            microkit_msginfo msginfo __attribute__((unused))) {
     switch (op) {
         case OP_BOOT_MEASURE: {
             /* MR1=pd_id, MR2..MR9 = sha256 as 8×u32 (big-endian order) */

@@ -103,6 +103,10 @@ pub enum BackendType {
     },
     /// Cache-only (serves from AgentFS cache, no actual inference)
     CacheOnly,
+    /// CLI-based coding assistant (claude, codex, cursor, etc.)
+    CodingCli {
+        cli_path: String,
+    },
 }
 
 /// Model statistics
@@ -1128,6 +1132,317 @@ pub mod http_backend {
             .unwrap_or(0);
 
         Ok((content, tokens_in, tokens_out))
+    }
+}
+
+// ============================================================================
+// Codegen backend helpers  (requires the "std" feature)
+// ============================================================================
+
+#[cfg(feature = "std")]
+pub mod codegen {
+    //! Free-function helpers for code-generation backends used by the bridge's
+    //! `/api/agentos/vibe/*` routes.
+    //!
+    //! All functions are gated behind the `std` feature because they depend on
+    //! `reqwest`, environment variables, and process spawning — none of which
+    //! are available in the no_std seL4 target.
+
+    use alloc::string::{String, ToString};
+    use alloc::format;
+
+    use crate::BackendType;
+    use crate::TokenCount;
+
+    // ── Token estimation ────────────────────────────────────────────────────
+
+    /// Rough token count: 1 token ≈ 4 UTF-8 characters (English / code).
+    pub fn estimate_tokens(text: &str) -> TokenCount {
+        (text.len() as u64 + 3) / 4
+    }
+
+    // ── HTTP backend ────────────────────────────────────────────────────────
+
+    /// POST a code-generation request to an OpenAI-compatible
+    /// `/v1/chat/completions` endpoint.
+    ///
+    /// Returns `(generated_content, tokens_in, tokens_out)`.
+    pub async fn execute_http_backend(
+        endpoint_url: &str,
+        api_key: &str,
+        model_name: &str,
+        system_prompt: &str,
+        user_prompt: &str,
+    ) -> Result<(String, TokenCount, TokenCount), String> {
+        use reqwest::Client;
+        use serde_json::{json, Value};
+
+        let url = format!(
+            "{}/v1/chat/completions",
+            endpoint_url.trim_end_matches('/')
+        );
+
+        let messages = json!([
+            { "role": "system", "content": system_prompt },
+            { "role": "user",   "content": user_prompt   },
+        ]);
+
+        let body = json!({
+            "model":      model_name,
+            "messages":   messages,
+            "max_tokens": 4096u32,
+            "stream":     false,
+        });
+
+        let mut builder = Client::new().post(&url).json(&body);
+        if !api_key.is_empty() {
+            builder = builder.bearer_auth(api_key);
+        }
+
+        let resp = builder
+            .send()
+            .await
+            .map_err(|e| format!("HTTP request failed: {}", e))?;
+
+        let status = resp.status();
+        if !status.is_success() {
+            let text = resp.text().await.unwrap_or_default();
+            return Err(format!("API error {}: {}", status, text));
+        }
+
+        let json: Value = resp
+            .json()
+            .await
+            .map_err(|e| format!("JSON decode failed: {}", e))?;
+
+        let content = json["choices"][0]["message"]["content"]
+            .as_str()
+            .ok_or_else(|| "missing choices[0].message.content".to_string())?
+            .to_string();
+
+        let tokens_in  = json["usage"]["prompt_tokens"].as_u64().unwrap_or_else(|| estimate_tokens(user_prompt));
+        let tokens_out = json["usage"]["completion_tokens"].as_u64().unwrap_or_else(|| estimate_tokens(&content));
+
+        Ok((content, tokens_in, tokens_out))
+    }
+
+    // ── CLI backend ─────────────────────────────────────────────────────────
+
+    /// Invoke a local coding CLI (claude, codex, cursor, …) synchronously and
+    /// return `(generated_content, tokens_in, tokens_out)`.
+    ///
+    /// Token counts are estimated from character length when the CLI does not
+    /// report them.
+    pub fn execute_cli_backend(
+        cli_path: &str,
+        system_prompt: &str,
+        user_prompt: &str,
+    ) -> Result<(String, TokenCount, TokenCount), String> {
+        use std::process::{Command, Stdio};
+        use std::io::Write;
+
+        // Build the full prompt: prepend system context then user request.
+        let full_prompt = if system_prompt.is_empty() {
+            user_prompt.to_string()
+        } else {
+            format!("{}\n\n{}", system_prompt, user_prompt)
+        };
+
+        // Detect which CLI we're dealing with and choose arguments accordingly.
+        let cli_name = std::path::Path::new(cli_path)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or(cli_path);
+
+        let mut cmd = if cli_name == "claude" {
+            // Anthropic Claude CLI: `claude -p "<prompt>"`
+            let mut c = Command::new(cli_path);
+            c.arg("-p").arg(&full_prompt);
+            c
+        } else if cli_name == "codex" || cli_name == "openai" {
+            // OpenAI Codex / codex CLI: `codex "<prompt>"`
+            let mut c = Command::new(cli_path);
+            c.arg(&full_prompt);
+            c
+        } else {
+            // Unknown CLI: pass prompt as a positional argument; also pipe to
+            // stdin in case the tool reads from there.
+            let mut c = Command::new(cli_path);
+            c.arg(&full_prompt);
+            c
+        };
+
+        cmd.stdin(Stdio::piped())
+           .stdout(Stdio::piped())
+           .stderr(Stdio::piped());
+
+        let mut child = cmd.spawn()
+            .map_err(|e| format!("failed to spawn '{}': {}", cli_path, e))?;
+
+        // Write prompt to stdin (some CLIs read from stdin instead of args).
+        if let Some(mut stdin) = child.stdin.take() {
+            let _ = stdin.write_all(full_prompt.as_bytes());
+            // stdin is dropped here, closing the pipe
+        }
+
+        let output = child.wait_with_output()
+            .map_err(|e| format!("CLI wait failed: {}", e))?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+            return Err(format!("CLI exited with {}: {}", output.status, stderr));
+        }
+
+        let content = String::from_utf8_lossy(&output.stdout).to_string();
+        let tokens_in  = estimate_tokens(&full_prompt);
+        let tokens_out = estimate_tokens(&content);
+
+        Ok((content, tokens_in, tokens_out))
+    }
+
+    // ── Backend detection ───────────────────────────────────────────────────
+
+    /// Detect which codegen backend is available on this host.
+    ///
+    /// Checks (in order):
+    /// 1. `AGENTOS_CODEGEN_BACKEND` env var — if `"http"`, builds an
+    ///    `HttpApi` backend from `OPENAI_API_KEY` / `OPENAI_BASE_URL` /
+    ///    `OPENAI_MODEL` (or `ANTHROPIC_API_KEY` for Anthropic).
+    /// 2. PATH scan for `claude`, `codex`, `cursor` — first found becomes a
+    ///    `CodingCli` backend.
+    ///
+    /// Returns `None` when no usable backend is detected.
+    pub fn detect_codegen_backend() -> Option<BackendType> {
+        // 1. Explicit backend selection via environment variable.
+        if let Ok(backend_val) = std::env::var("AGENTOS_CODEGEN_BACKEND") {
+            if backend_val.eq_ignore_ascii_case("http") {
+                // Try OpenAI-compatible HTTP first.
+                if let Ok(api_key) = std::env::var("OPENAI_API_KEY") {
+                    if !api_key.is_empty() {
+                        let base_url = std::env::var("OPENAI_BASE_URL")
+                            .unwrap_or_else(|_| "https://api.openai.com".to_string());
+                        let model = std::env::var("OPENAI_MODEL")
+                            .unwrap_or_else(|_| "gpt-4o".to_string());
+                        return Some(BackendType::HttpApi {
+                            endpoint_url: base_url,
+                            api_key_env:  "OPENAI_API_KEY".to_string(),
+                            model_name:   model,
+                        });
+                    }
+                }
+                // Fall back to Anthropic.
+                if let Ok(api_key) = std::env::var("ANTHROPIC_API_KEY") {
+                    if !api_key.is_empty() {
+                        let base_url = std::env::var("ANTHROPIC_BASE_URL")
+                            .unwrap_or_else(|_| "https://api.anthropic.com".to_string());
+                        let model = std::env::var("ANTHROPIC_MODEL")
+                            .unwrap_or_else(|_| "claude-sonnet-4-5".to_string());
+                        return Some(BackendType::HttpApi {
+                            endpoint_url: base_url,
+                            api_key_env:  "ANTHROPIC_API_KEY".to_string(),
+                            model_name:   model,
+                        });
+                    }
+                }
+                // "http" was requested but no key found — fall through to CLI scan.
+            }
+        }
+
+        // If no explicit backend directive, also try implicit HTTP via env keys.
+        if let Ok(api_key) = std::env::var("OPENAI_API_KEY") {
+            if !api_key.is_empty() {
+                let base_url = std::env::var("OPENAI_BASE_URL")
+                    .unwrap_or_else(|_| "https://api.openai.com".to_string());
+                let model = std::env::var("OPENAI_MODEL")
+                    .unwrap_or_else(|_| "gpt-4o".to_string());
+                return Some(BackendType::HttpApi {
+                    endpoint_url: base_url,
+                    api_key_env:  "OPENAI_API_KEY".to_string(),
+                    model_name:   model,
+                });
+            }
+        }
+        if let Ok(api_key) = std::env::var("ANTHROPIC_API_KEY") {
+            if !api_key.is_empty() {
+                let base_url = std::env::var("ANTHROPIC_BASE_URL")
+                    .unwrap_or_else(|_| "https://api.anthropic.com".to_string());
+                let model = std::env::var("ANTHROPIC_MODEL")
+                    .unwrap_or_else(|_| "claude-sonnet-4-5".to_string());
+                return Some(BackendType::HttpApi {
+                    endpoint_url: base_url,
+                    api_key_env:  "ANTHROPIC_API_KEY".to_string(),
+                    model_name:   model,
+                });
+            }
+        }
+
+        // 2. PATH scan for well-known coding CLI tools.
+        let candidates: &[&str] = &["claude", "codex", "cursor"];
+        for name in candidates {
+            if let Ok(path) = which_cli(name) {
+                return Some(BackendType::CodingCli { cli_path: path });
+            }
+        }
+
+        None
+    }
+
+    /// Locate a binary by name in `PATH`.  Returns `Ok(absolute_path)` or `Err`.
+    fn which_cli(name: &str) -> Result<String, ()> {
+        let path_var = std::env::var("PATH").unwrap_or_default();
+        for dir in path_var.split(':') {
+            let candidate = std::path::Path::new(dir).join(name);
+            if candidate.is_file() {
+                return Ok(candidate.to_string_lossy().to_string());
+            }
+        }
+        Err(())
+    }
+
+    // ── Unified dispatch ────────────────────────────────────────────────────
+
+    /// Dispatch a code-generation request to whatever backend `detect_codegen_backend`
+    /// finds.  Returns `(content, tokens_used, backend_label)`.
+    ///
+    /// This is the single entry-point used by the bridge vibe handlers.
+    pub async fn run_codegen(
+        system_prompt: &str,
+        user_prompt: &str,
+    ) -> Result<(String, TokenCount, String), String> {
+        match detect_codegen_backend() {
+            None => Err(
+                "No codegen backend available. \
+                 Set OPENAI_API_KEY or ANTHROPIC_API_KEY, or install claude/codex."
+                .to_string()
+            ),
+            Some(BackendType::HttpApi { endpoint_url, api_key_env, model_name }) => {
+                let api_key = std::env::var(&api_key_env).unwrap_or_default();
+                let (content, tok_in, tok_out) = execute_http_backend(
+                    &endpoint_url, &api_key, &model_name, system_prompt, user_prompt,
+                ).await?;
+                let label = if api_key_env.contains("ANTHROPIC") { "anthropic-api" } else { "http-api" };
+                Ok((content, tok_in + tok_out, label.to_string()))
+            }
+            Some(BackendType::CodingCli { cli_path }) => {
+                let cli_name = std::path::Path::new(&cli_path)
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("cli")
+                    .to_string();
+                let label = format!("{}-cli", cli_name);
+                // Spawn blocking because execute_cli_backend uses std::process::Command.
+                let sp = system_prompt.to_string();
+                let up = user_prompt.to_string();
+                let cp = cli_path.clone();
+                let (content, tok_in, tok_out) = tokio::task::spawn_blocking(move || {
+                    execute_cli_backend(&cp, &sp, &up)
+                })
+                .await
+                .map_err(|e| format!("CLI task panicked: {}", e))??;
+                Ok((content, tok_in + tok_out, label))
+            }
+            Some(_) => Err("Unsupported backend type for codegen".to_string()),
+        }
     }
 }
 

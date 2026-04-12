@@ -7,17 +7,23 @@
  * Controller PPCs in via CH_VM_MANAGER (id=45).
  *
  * Opcodes (in MR0):
- *   OP_VM_CREATE  0x10  MR1=label_vaddr MR2=ram_mb → MR0=ok MR1=slot_id
- *   OP_VM_DESTROY 0x11  MR1=slot_id → MR0=ok
- *   OP_VM_START   0x12  MR1=slot_id → MR0=ok
- *   OP_VM_STOP    0x13  MR1=slot_id → MR0=ok
- *   OP_VM_PAUSE   0x14  MR1=slot_id → MR0=ok
- *   OP_VM_RESUME  0x15  MR1=slot_id → MR0=ok
- *   OP_VM_CONSOLE 0x16  MR1=slot_id → MR0=ok
- *   OP_VM_INFO    0x17  MR1=slot_id → MR0=ok MR1=state MR2=ram_vaddr
- *   OP_VM_LIST    0x18  → MR0=ok MR1=count; vm_list_shmem has vm_list_entry_t[]
- *   OP_VM_SNAPSHOT 0x19 MR1=slot_id → MR0=ok MR1=snap_hash_lo MR2=snap_hash_hi
- *   OP_VM_RESTORE  0x1A MR1=slot_id MR2=snap_lo MR3=snap_hi → MR0=ok
+ *   OP_VM_CREATE    0x10  MR1=label_vaddr MR2=ram_mb → MR0=ok MR1=slot_id
+ *   OP_VM_DESTROY   0x11  MR1=slot_id → MR0=ok
+ *   OP_VM_START     0x12  MR1=slot_id → MR0=ok
+ *   OP_VM_STOP      0x13  MR1=slot_id → MR0=ok
+ *   OP_VM_PAUSE     0x14  MR1=slot_id → MR0=ok
+ *   OP_VM_RESUME    0x15  MR1=slot_id → MR0=ok
+ *   OP_VM_CONSOLE   0x16  MR1=slot_id → MR0=ok
+ *   OP_VM_INFO      0x17  MR1=slot_id → MR0=ok MR1=state MR2=ram_vaddr
+ *   OP_VM_LIST      0x18  → MR0=ok MR1=count; vm_list_shmem has vm_list_entry_t[]
+ *   OP_VM_SNAPSHOT  0x19  MR1=slot_id → MR0=ok MR1=snap_hash_lo MR2=snap_hash_hi
+ *   OP_VM_RESTORE   0x1A  MR1=slot_id MR2=snap_lo MR3=snap_hi → MR0=ok
+ *   OP_VM_SET_QUOTA 0x1B  MR1=slot_id MR2=cpu_pct → MR0=ok
+ *   OP_VM_GET_STATS 0x1C  MR1=slot_id → MR0=ok MR1=state MR2=max_cpu_pct
+ *                         MR3=run_ticks_lo MR4=run_ticks_hi
+ *                         MR5=preempt_count_lo MR6=preempt_count_hi
+ *   OP_VM_SET_AFFINITY 0x1D MR1=slot_id MR2=cpu_mask → MR0=ok
+ *   OP_VM_INJECT_IRQ   0x1E MR1=slot_id MR2=irq_num  → MR0=ok
  *
  * This PD wraps the vmm_mux multi-slot multiplexer (kernel/freebsd-vmm/vmm_mux.c)
  * and exposes a clean IPC API to the controller.
@@ -30,7 +36,8 @@
 
 #define AGENTOS_DEBUG 1
 #include "agentos.h"
-#include "../../freebsd-vmm/vmm_mux.h"
+/* vm_manager.h includes vmm_mux.h (found via -I../../freebsd-vmm in Makefile) */
+#include "vm_manager.h"
 
 /* ── Shared memory output region ─────────────────────────────────────────
  * vm_list_shmem (4KB) is mapped rw into this PD and r into controller.
@@ -54,12 +61,33 @@ typedef struct __attribute__((packed)) {
  */
 static vm_mux_t g_mux;
 
+/* ── Additional IPC opcodes (extend vmm_mux.h's OP_VM_* set) ────────────── */
+#define OP_VM_SET_QUOTA    0x1Bu  /* MR1=slot_id MR2=cpu_pct → MR0=ok        */
+#define OP_VM_GET_STATS    0x1Cu  /* MR1=slot_id → MR0=ok + stats in MR1..6  */
+#define OP_VM_SET_AFFINITY 0x1Du  /* MR1=slot_id MR2=cpu_mask → MR0=ok       */
+#define OP_VM_INJECT_IRQ   0x1Eu  /* MR1=slot_id MR2=irq_num  → MR0=ok       */
+
 /* ── Result codes ────────────────────────────────────────────────────────
  * Returned in MR0 for all operations.
  */
-#define VM_OK      0u
-#define VM_ERR     1u
+#define VM_OK       0u
+#define VM_ERR      1u
 #define VM_NOT_IMPL 0xFEu
+
+/* ── Per-slot CPU quota and scheduler state ───────────────────────────────
+ * Parallel array to g_mux.slots[].  Tracks credit counters, run statistics,
+ * and the configured CPU share for each slot.  Default quota is 25% per slot
+ * (100% / VM_MAX_SLOTS) so that all equal-priority guests share fairly.
+ */
+static vm_slot_quota_t g_quotas[VM_MAX_SLOTS];
+
+/* Index of the slot that was running when the last sched tick fired.
+ * Initialised to 0; updated by vm_sched_tick(). */
+static uint8_t g_sched_current = 0;
+
+/* Per-slot CPU affinity mask (bit N = allowed on core N).
+ * 0xFFFFFFFF means "any core" (default). */
+static uint32_t g_affinity[VM_MAX_SLOTS];
 
 /* ── Helper: print a small decimal number without libc ──────────────────*/
 static void dbg_u8(uint8_t v)
@@ -84,7 +112,207 @@ static void dbg_u8(uint8_t v)
 void init(void)
 {
     vmm_mux_init(&g_mux);
+
+    /* Initialise scheduler quota state */
+    for (uint8_t i = 0; i < VM_MAX_SLOTS; i++) {
+        /* Equal default quota: 25% each (100 / VM_MAX_SLOTS) */
+        g_quotas[i].max_cpu_pct  = (uint8_t)(100u / VM_MAX_SLOTS);
+        g_quotas[i].credits      = 0;
+        g_quotas[i].run_ticks    = 0;
+        g_quotas[i].preempt_count = 0;
+        g_affinity[i]            = 0xFFFFFFFFu; /* any core */
+    }
+    g_sched_current = 0;
+
     microkit_dbg_puts("[vm_manager] init: 4-slot VM multiplexer ready\n");
+    microkit_dbg_puts("[vm_manager] scheduler: round-robin, 25% quota/slot\n");
+}
+
+/* ── vm_sched_tick — round-robin scheduler ──────────────────────────────
+ *
+ * Called from notified() on each timer tick.  Implements a simple credit-
+ * based round-robin across RUNNING/BOOTING slots:
+ *
+ *   1. Deduct SCHED_CREDIT_QUANTUM from the current slot's credits.
+ *   2. If credits > 0, keep the current slot running; return.
+ *   3. If credits <= 0, find the next eligible slot (wrapping around).
+ *   4. Suspend the exhausted slot, resume the new one, recharge credits.
+ *
+ * Slots with max_cpu_pct == 0 are ineligible (permanently paused by policy).
+ * If no other eligible slot exists the current slot keeps running until
+ * its credits are recharged on the next replenishment pass.
+ */
+void vm_sched_tick(vm_mux_t *mux)
+{
+    uint8_t cur = g_sched_current;
+
+    /* Replenish credits for all slots at the start of each tick to keep
+     * per-slot accounting monotonically increasing.  A slot whose credits
+     * are already positive is not preempted this tick. */
+    for (uint8_t i = 0; i < VM_MAX_SLOTS; i++) {
+        vm_slot_state_t st = mux->slots[i].state;
+        if (st == VM_SLOT_RUNNING || st == VM_SLOT_BOOTING) {
+            g_quotas[i].run_ticks++;
+        }
+    }
+
+    /* Guard: if the current slot is no longer runnable, pick any runnable */
+    vm_slot_state_t cur_state = mux->slots[cur].state;
+    bool cur_runnable = (cur_state == VM_SLOT_RUNNING ||
+                         cur_state == VM_SLOT_BOOTING) &&
+                        g_quotas[cur].max_cpu_pct > 0;
+
+    if (!cur_runnable) {
+        /* Find any runnable slot to become current */
+        bool found = false;
+        for (uint8_t i = 0; i < VM_MAX_SLOTS; i++) {
+            vm_slot_state_t s = mux->slots[i].state;
+            if ((s == VM_SLOT_RUNNING || s == VM_SLOT_BOOTING) &&
+                g_quotas[i].max_cpu_pct > 0) {
+                g_sched_current = i;
+                /* Recharge credits for the newly selected slot */
+                g_quotas[i].credits =
+                    (int32_t)((uint32_t)g_quotas[i].max_cpu_pct *
+                              SCHED_CREDITS_PER_PCT);
+                found = true;
+                break;
+            }
+        }
+        (void)found; /* no runnable slot: idle */
+        return;
+    }
+
+    /* Deduct one quantum from the current slot */
+    g_quotas[cur].credits -= (int32_t)SCHED_CREDIT_QUANTUM;
+
+    if (g_quotas[cur].credits > 0) {
+        /* Slot still has budget — continue running */
+        return;
+    }
+
+    /* Current slot exhausted: find next eligible slot in round-robin order */
+    uint8_t next = cur;
+    bool switched = false;
+    for (uint8_t step = 1; step <= VM_MAX_SLOTS; step++) {
+        uint8_t candidate = (uint8_t)((cur + step) % VM_MAX_SLOTS);
+        vm_slot_state_t s = mux->slots[candidate].state;
+        if ((s == VM_SLOT_RUNNING || s == VM_SLOT_BOOTING) &&
+            g_quotas[candidate].max_cpu_pct > 0 &&
+            candidate != cur) {
+            next = candidate;
+            switched = true;
+            break;
+        }
+    }
+
+    if (!switched) {
+        /* Only one runnable slot: recharge and keep it running */
+        g_quotas[cur].credits =
+            (int32_t)((uint32_t)g_quotas[cur].max_cpu_pct *
+                      SCHED_CREDITS_PER_PCT);
+        return;
+    }
+
+    /* Suspend the exhausted slot, resume the next */
+    g_quotas[cur].preempt_count++;
+    vmm_mux_pause(mux, cur);
+
+    /* Recharge credits for the incoming slot */
+    g_quotas[next].credits =
+        (int32_t)((uint32_t)g_quotas[next].max_cpu_pct *
+                  SCHED_CREDITS_PER_PCT);
+    vmm_mux_resume(mux, next);
+
+    g_sched_current = next;
+
+    microkit_dbg_puts("[vm_manager] sched: preempted slot ");
+    dbg_u8(cur);
+    microkit_dbg_puts(" -> slot ");
+    dbg_u8(next);
+    microkit_dbg_puts("\n");
+}
+
+/* ── vm_set_quota — configure per-slot CPU share ────────────────────────*/
+
+int vm_set_quota(vm_mux_t *mux, uint8_t slot_id, uint8_t cpu_pct)
+{
+    (void)mux;
+    if (slot_id >= VM_MAX_SLOTS) return -1;
+    /* Clamp to 100 */
+    if (cpu_pct > 100u) cpu_pct = 100u;
+    g_quotas[slot_id].max_cpu_pct = cpu_pct;
+    /* Reset credits so the new quota takes effect immediately */
+    g_quotas[slot_id].credits =
+        (int32_t)((uint32_t)cpu_pct * SCHED_CREDITS_PER_PCT);
+    return 0;
+}
+
+/* ── vm_get_stats — fill stats for one slot ──────────────────────────────*/
+
+int vm_get_stats(const vm_mux_t *mux, uint8_t slot_id, vm_stats_t *out)
+{
+    if (slot_id >= VM_MAX_SLOTS || !out) return -1;
+
+    const vm_slot_t       *s = &mux->slots[slot_id];
+    const vm_slot_quota_t *q = &g_quotas[slot_id];
+
+    out->slot_id       = slot_id;
+    out->state         = (uint8_t)s->state;
+    out->max_cpu_pct   = q->max_cpu_pct;
+    out->_pad          = 0;
+    out->ram_mb        = (uint32_t)(s->ram_size >> 20);
+    out->run_ticks     = q->run_ticks;
+    out->preempt_count = q->preempt_count;
+
+    /* Copy label */
+    for (int i = 0; i < 15; i++) {
+        out->label[i] = s->label[i];
+        if (!s->label[i]) break;
+    }
+    out->label[15] = '\0';
+
+    return 0;
+}
+
+/* ── vmm_set_affinity — store per-slot host CPU affinity mask ────────────
+ *
+ * The affinity mask is persisted in g_affinity[].  On platforms with
+ * multi-core seL4 support it would be applied via seL4_TCB_SetAffinity
+ * on the vCPU thread; this stub stores it for future enforcement.
+ */
+int vmm_set_affinity(uint8_t slot_id, uint32_t cpu_mask)
+{
+    if (slot_id >= VM_MAX_SLOTS) return -1;
+    g_affinity[slot_id] = cpu_mask;
+    microkit_dbg_puts("[vm_manager] affinity: slot ");
+    dbg_u8(slot_id);
+    microkit_dbg_puts(" cpu_mask set\n");
+    /*
+     * TODO: call seL4_TCB_SetAffinity(vcpu_tcb_cap, cpu_mask) when
+     * Microkit exposes TCB caps for virtual machine threads.
+     */
+    return 0;
+}
+
+/* ── vmm_inject_irq — stub for virtio IRQ injection ──────────────────────
+ *
+ * Logs the injection request.  A full implementation would call
+ * virq_inject() from libvmm with the correct slot's vCPU context.
+ */
+int vmm_inject_irq(uint8_t slot_id, uint32_t irq_num)
+{
+    if (slot_id >= VM_MAX_SLOTS) return -1;
+    microkit_dbg_puts("[vm_manager] inject_irq: slot ");
+    dbg_u8(slot_id);
+    microkit_dbg_puts(" irq=");
+    dbg_u8((uint8_t)(irq_num & 0xFF));
+    microkit_dbg_puts(" (stub)\n");
+    /*
+     * TODO: resolve the vCPU for slot_id, then call:
+     *   virq_inject(slot_vcpu_id, irq_num);
+     * This requires libvmm being linked and the slot's vCPU initialised.
+     */
+    return 0;
 }
 
 /* ── protected — handles controller PPCs on CH_VM_MANAGER ───────────────*/
@@ -250,6 +478,61 @@ microkit_msginfo protected(microkit_channel ch, microkit_msginfo msg)
         microkit_mr_set(0, VM_NOT_IMPL);
         return microkit_msginfo_new(0, 1);
 
+    /* ── OP_VM_SET_QUOTA ──────────────────────────────────────────────── */
+    case OP_VM_SET_QUOTA: {
+        uint8_t slot_id = (uint8_t)microkit_mr_get(1);
+        uint8_t cpu_pct = (uint8_t)microkit_mr_get(2);
+        int r = vm_set_quota(&g_mux, slot_id, cpu_pct);
+        if (r == 0) {
+            microkit_dbg_puts("[vm_manager] SET_QUOTA slot=");
+            dbg_u8(slot_id);
+            microkit_dbg_puts(" pct=");
+            dbg_u8(cpu_pct);
+            microkit_dbg_puts("\n");
+        }
+        microkit_mr_set(0, r == 0 ? VM_OK : VM_ERR);
+        return microkit_msginfo_new(0, 1);
+    }
+
+    /* ── OP_VM_GET_STATS ──────────────────────────────────────────────── */
+    case OP_VM_GET_STATS: {
+        uint8_t slot_id = (uint8_t)microkit_mr_get(1);
+        vm_stats_t stats;
+        int r = vm_get_stats(&g_mux, slot_id, &stats);
+        if (r != 0) {
+            microkit_mr_set(0, VM_ERR);
+            return microkit_msginfo_new(0, 1);
+        }
+        microkit_mr_set(0, VM_OK);
+        microkit_mr_set(1, (uint32_t)stats.state);
+        microkit_mr_set(2, (uint32_t)stats.max_cpu_pct);
+        /* run_ticks as two 32-bit halves */
+        microkit_mr_set(3, (uint32_t)(stats.run_ticks & 0xFFFFFFFFu));
+        microkit_mr_set(4, (uint32_t)(stats.run_ticks >> 32));
+        /* preempt_count as two 32-bit halves */
+        microkit_mr_set(5, (uint32_t)(stats.preempt_count & 0xFFFFFFFFu));
+        microkit_mr_set(6, (uint32_t)(stats.preempt_count >> 32));
+        return microkit_msginfo_new(0, 7);
+    }
+
+    /* ── OP_VM_SET_AFFINITY ───────────────────────────────────────────── */
+    case OP_VM_SET_AFFINITY: {
+        uint8_t  slot_id  = (uint8_t)microkit_mr_get(1);
+        uint32_t cpu_mask = (uint32_t)microkit_mr_get(2);
+        int r = vmm_set_affinity(slot_id, cpu_mask);
+        microkit_mr_set(0, r == 0 ? VM_OK : VM_ERR);
+        return microkit_msginfo_new(0, 1);
+    }
+
+    /* ── OP_VM_INJECT_IRQ ─────────────────────────────────────────────── */
+    case OP_VM_INJECT_IRQ: {
+        uint8_t  slot_id = (uint8_t)microkit_mr_get(1);
+        uint32_t irq_num = (uint32_t)microkit_mr_get(2);
+        int r = vmm_inject_irq(slot_id, irq_num);
+        microkit_mr_set(0, r == 0 ? VM_OK : VM_ERR);
+        return microkit_msginfo_new(0, 1);
+    }
+
     default:
         microkit_dbg_puts("[vm_manager] unknown opcode\n");
         microkit_mr_set(0, VM_ERR);
@@ -257,10 +540,21 @@ microkit_msginfo protected(microkit_channel ch, microkit_msginfo msg)
     }
 }
 
-/* ── notified — no async notifications expected ──────────────────────────*/
+/* ── notified — timer tick drives the scheduler ──────────────────────────
+ *
+ * Channel 0 (CH_SCHED_TICK): periodic timer notification from the system
+ * timer PD.  Each notification is one scheduling quantum.  Any other channel
+ * is logged and ignored.
+ */
+#define CH_SCHED_TICK  0u
 
 void notified(microkit_channel ch)
 {
-    (void)ch;
-    microkit_dbg_puts("[vm_manager] unexpected notification\n");
+    if (ch == CH_SCHED_TICK) {
+        vm_sched_tick(&g_mux);
+    } else {
+        microkit_dbg_puts("[vm_manager] unexpected notification ch=");
+        dbg_u8((uint8_t)ch);
+        microkit_dbg_puts("\n");
+    }
 }

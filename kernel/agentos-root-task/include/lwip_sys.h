@@ -55,7 +55,7 @@ int lwip_net_send(uint8_t vnic_id, const uint8_t *data, uint16_t len);
  * Copy up to max bytes of received data for vnic_id into dst.
  * Returns actual bytes copied (0 if nothing available).
  */
-int lwip_net_recv(uint8_t vnic_id, uint8_t *dst, uint16_t max);
+int lwip_net_recv(uint8_t vnic_id, uint8_t *dst, uint32_t max);
 
 /*
  * Returns the connection state for vnic_id:
@@ -72,9 +72,13 @@ extern struct netif g_netif;
 /* Connection table (accessed by net_server.c for OP_NET_TCP_CLOSE) */
 typedef struct {
     struct tcp_pcb *tcp;
-    uint8_t  state;
-    uint8_t  rx_buf[1500];
-    uint16_t rx_buf_len;
+    uint8_t  state;      /* 0=free 1=connecting 2=connected 3=closed */
+    /* rx_buf is 65536 bytes — large enough for full code-gen HTTP responses.
+     * The OP_NET_HTTP_POST handler uses the last conn slot (HTTP_CONN_ID) and
+     * depends on this buffer being able to hold a complete HTTP response body
+     * (generated C source can be 40–64 KB). */
+    uint8_t  rx_buf[65536];
+    uint32_t rx_buf_len;  /* uint32 to hold up to 64 KB */
 } vnic_conn_t;
 
 extern vnic_conn_t g_conns[];

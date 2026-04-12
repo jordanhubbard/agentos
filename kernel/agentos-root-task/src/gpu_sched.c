@@ -22,8 +22,101 @@
  */
 
 #include "agentos.h"
+#include "gpu_sched.h"
 #include <stdint.h>
 #include <string.h>
+
+/* ── virtio-gpu MMIO ─────────────────────────────────────────────────────── */
+
+/*
+ * VIRTIO_GPU_DEVICE_ID is defined in gpu_sched.h (value: 16).
+ * virtio-MMIO register offsets are also declared there; the common
+ * VIRTIO_MMIO_* macros come in via the gpu_sched.h include guard chain.
+ */
+
+/* virtio-gpu MMIO base (set by Microkit via setvar_vaddr) */
+uintptr_t virtio_gpu_mmio_vaddr;
+
+/* true once probe_virtio_gpu() detects a live virtio-gpu device */
+static bool gpu_hw_present = false;
+
+/* Monotonic fence counter for OP_GPU_SUBMIT_CMD replies */
+static uint32_t gpu_fence_seq = 0;
+
+/* ── MMIO helpers (mirrors net_server.c) ────────────────────────────────── */
+
+static inline uint32_t gpu_mmio_read32(uintptr_t base, uint32_t off) {
+    return *(volatile uint32_t *)(base + off);
+}
+static inline void gpu_mmio_write32(uintptr_t base, uint32_t off, uint32_t val) {
+    *(volatile uint32_t *)(base + off) = val;
+}
+
+/* ── gpu_virtio_kick ─────────────────────────────────────────────────────── */
+
+/*
+ * gpu_virtio_kick — notify the virtio-gpu device that a queue has new work.
+ *
+ * Writes queue_id to VIRTIO_MMIO_QUEUE_NOTIFY (offset 0x50), which causes
+ * the QEMU/KVM virtio-gpu backend to process any descriptors we have placed
+ * in the virtqueue.
+ */
+static void gpu_virtio_kick(uint32_t queue_id) {
+    if (!virtio_gpu_mmio_vaddr)
+        return;
+    gpu_mmio_write32(virtio_gpu_mmio_vaddr, VIRTIO_MMIO_QUEUE_NOTIFY, queue_id);
+}
+
+/* ── probe_virtio_gpu ────────────────────────────────────────────────────── */
+
+/*
+ * probe_virtio_gpu — probe MMIO for a virtio-gpu device.
+ * Pattern identical to probe_virtio_net() in net_server.c.
+ * Called from init() below.
+ */
+void probe_virtio_gpu(void) {
+    if (!virtio_gpu_mmio_vaddr) {
+        console_log(15, 15, "[gpu_sched] virtio-gpu: MMIO vaddr not mapped, stub mode\n");
+        return;
+    }
+
+    uint32_t magic     = gpu_mmio_read32(virtio_gpu_mmio_vaddr, VIRTIO_MMIO_MAGIC_VALUE);
+    uint32_t version   = gpu_mmio_read32(virtio_gpu_mmio_vaddr, VIRTIO_MMIO_VERSION);
+    uint32_t device_id = gpu_mmio_read32(virtio_gpu_mmio_vaddr, VIRTIO_MMIO_DEVICE_ID);
+
+    if (magic != VIRTIO_MMIO_MAGIC || version != 2u
+            || device_id != VIRTIO_GPU_DEVICE_ID) {
+        console_log(15, 15, "[gpu_sched] virtio-gpu not detected (magic/ver/dev mismatch), stub mode\n");
+        return;
+    }
+
+    gpu_hw_present = true;
+
+    /*
+     * Minimal device initialisation (virtio spec §3.1.1):
+     *   ACKNOWLEDGE → DRIVER → (feature negotiation deferred)
+     * Full virtqueue setup (descriptor table allocation, QUEUE_READY) is
+     * deferred to the gpu_shmem integration phase.
+     */
+    gpu_mmio_write32(virtio_gpu_mmio_vaddr, VIRTIO_MMIO_STATUS,
+                     VIRTIO_STATUS_ACKNOWLEDGE);
+    gpu_mmio_write32(virtio_gpu_mmio_vaddr, VIRTIO_MMIO_STATUS,
+                     VIRTIO_STATUS_ACKNOWLEDGE | VIRTIO_STATUS_DRIVER);
+
+    console_log(15, 15, "[gpu_sched] virtio-gpu detected: hw present, MMIO at ");
+    {
+        /* Inline hex log — no libc */
+        static const char h[] = "0123456789abcdef";
+        char buf[11];
+        uint32_t v = (uint32_t)virtio_gpu_mmio_vaddr;
+        buf[0]='0'; buf[1]='x';
+        for (int k = 0; k < 8; k++)
+            buf[2+k] = h[(v >> (28 - k*4)) & 0xf];
+        buf[10] = '\0';
+        console_log(15, 15, buf);
+    }
+    console_log(15, 15, "\n");
+}
 
 /* ── Channel IDs (from gpu_sched's perspective in agentos.system) ──────────── */
 #define CH_CONTROLLER   1   /* controller <-> gpu_sched */
@@ -288,6 +381,79 @@ microkit_msginfo protected(microkit_channel ch, microkit_msginfo msg) {
         return microkit_msginfo_new(MSG_GPU_CANCEL_REPLY, 1);
     }
 
+    case OP_GPU_SUBMIT_CMD: {
+        /*
+         * OP_GPU_SUBMIT_CMD (0xE4) — submit a virtio-gpu command buffer.
+         *
+         * MR1 = slot_id    (gpu_shmem slot)
+         * MR2 = cmd_offset (byte offset into gpu_shmem payload area)
+         * MR3 = cmd_len    (command buffer length in bytes)
+         *
+         * Reply:
+         * MR0 = GPU_ERR_OK or GPU_ERR_INVALID
+         * MR1 = fence_id (monotonic; 0 in stub mode)
+         */
+        uint32_t slot_id    = (uint32_t)microkit_mr_get(1);
+        uint32_t cmd_offset = (uint32_t)microkit_mr_get(2);
+        uint32_t cmd_len    = (uint32_t)microkit_mr_get(3);
+
+        if (slot_id >= GPU_SLOT_COUNT || cmd_len == 0) {
+            console_log(15, 15, "[gpu_sched] SUBMIT_CMD: invalid args\n");
+            microkit_mr_set(0, GPU_ERR_INVALID);
+            microkit_mr_set(1, 0);
+            return microkit_msginfo_new(OP_GPU_SUBMIT_CMD, 2);
+        }
+
+        uint32_t fence = ++gpu_fence_seq;
+
+        if (gpu_hw_present) {
+            /*
+             * Forward command buffer to virtio-gpu virtqueue (queue 0 =
+             * controlq).  A production implementation would:
+             *   1. Acquire a free descriptor from the descriptor table.
+             *   2. Write desc.addr  = physical address of gpu_shmem + cmd_offset
+             *      desc.len   = cmd_len
+             *      desc.flags = 0 (device-readable)
+             *   3. Update the available ring: avail->ring[avail->idx] = desc_idx
+             *      avail->idx++
+             *   4. Memory barrier to ensure writes are visible.
+             *   5. Kick the queue.
+             *
+             * For now the descriptor table is not yet allocated (deferred to
+             * gpu_shmem integration); we kick the queue to signal readiness
+             * and log the submission.
+             */
+            console_log(15, 15, "[gpu_sched] SUBMIT_CMD: hw path slot=");
+            put_dec(slot_id);
+            console_log(15, 15, " off=");
+            put_dec(cmd_offset);
+            console_log(15, 15, " len=");
+            put_dec(cmd_len);
+            console_log(15, 15, " fence=");
+            put_dec(fence);
+            console_log(15, 15, "\n");
+
+            /* Memory barrier before kicking queue */
+            __asm__ volatile("" ::: "memory");
+            gpu_virtio_kick(0u);   /* kick controlq (queue 0) */
+        } else {
+            /* Stub mode: log and return success with a fake fence */
+            console_log(15, 15, "[gpu_sched] SUBMIT_CMD (stub): slot=");
+            put_dec(slot_id);
+            console_log(15, 15, " off=");
+            put_dec(cmd_offset);
+            console_log(15, 15, " len=");
+            put_dec(cmd_len);
+            console_log(15, 15, " fence=");
+            put_dec(fence);
+            console_log(15, 15, "\n");
+        }
+
+        microkit_mr_set(0, GPU_ERR_OK);
+        microkit_mr_set(1, fence);
+        return microkit_msginfo_new(OP_GPU_SUBMIT_CMD, 2);
+    }
+
     default:
         microkit_mr_set(0, 0xFFFF);
         return microkit_msginfo_new(0xFFFF, 1);
@@ -403,6 +569,9 @@ void init(void) {
     sched.eventbus_ready   = false;
 
     console_log(15, 15, "[gpu_sched] GPU Scheduler PD online\n[gpu_sched]   queue_depth=16, slots=4, arch=GB10-Blackwell\n");
+
+    /* Probe for a virtio-gpu device at the MMIO region */
+    probe_virtio_gpu();
 
     /* Signal controller: GPU scheduler ready */
     microkit_notify(CH_CONTROLLER);

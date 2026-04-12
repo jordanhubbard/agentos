@@ -1016,3 +1016,489 @@ int crypto_ed25519_check(const uint8_t *sig,
     pt_pack(rcheck, p);
     return (mc_memcmp(rcheck, sig, 32) == 0) ? 0 : -1;
 }
+
+/* ── Curve25519 ECDH ─────────────────────────────────────────────────────── */
+
+/*
+ * crypto_x25519 — Montgomery ladder scalar multiplication on Curve25519.
+ *
+ * Implements RFC 7748 §5 using the Montgomery ladder with differential
+ * addition (xADD) and doubling (xDBL) in projective coordinates.
+ * The scalar is clamped per the RFC before use.
+ *
+ * Field arithmetic reuses the GF(2^255-19) routines (gf_mul, gf_sq, etc.)
+ * already present in this file.
+ */
+void crypto_x25519(uint8_t       raw_shared[32],
+                   const uint8_t your_secret_key[32],
+                   const uint8_t their_public_key[32])
+{
+    /* Clamp the scalar (RFC 7748 §5) */
+    uint8_t e[32];
+    mc_memcpy(e, your_secret_key, 32);
+    e[0]  &= 248u;
+    e[31] &= 127u;
+    e[31] |= 64u;
+
+    /* Load the u-coordinate of the peer's point */
+    gf u;
+    gf_unpack(u, their_public_key);
+
+    /*
+     * Montgomery ladder in projective coordinates (X:Z).
+     * Invariant: x1 = u (the input point), x2:z2 = 2k*u, x3:z3 = (2k+1)*u
+     * We start with (x2,z2)=(1,0) i.e. point at infinity, (x3,z3)=(u,1).
+     */
+    gf x1, x2, z2, x3, z3, tmp0, tmp1;
+
+    gf_cpy(x1, u);
+    gf_cpy(x2, gf1);      /* X2 = 1 */
+    gf_cpy(z2, gf0);      /* Z2 = 0 */
+    gf_cpy(x3, u);        /* X3 = u */
+    gf_cpy(z3, gf1);      /* Z3 = 1 */
+
+    /* A24 = 121665  (= (486662-2)/4 for Curve25519) */
+    static const gf A24 = {121665};
+
+    int swap = 0;
+    for (int i = 254; i >= 0; i--) {
+        int bit = (int)((e[i >> 3] >> (i & 7)) & 1);
+        swap ^= bit;
+        gf_sel(x2, x3, swap);
+        gf_sel(z2, z3, swap);
+        swap = bit;
+
+        /* xADD / xDBL combined step (RFC 7748 §5 ladder) */
+        gf A, AA, B, BB, E, C, D, DA, CB;
+
+        gf_add(A, x2, z2);     gf_sq(AA, A);
+        gf_sub(B, x2, z2);     gf_sq(BB, B);
+        gf_sub(E, AA, BB);
+        gf_add(C, x3, z3);
+        gf_sub(D, x3, z3);
+        gf_mul(DA, D, A);
+        gf_mul(CB, C, B);
+
+        gf_add(x3, DA, CB);    gf_sq(x3, x3);
+        gf_sub(z3, DA, CB);    gf_sq(z3, z3);   gf_mul(z3, z3, x1);
+        gf_mul(x2, AA, BB);
+        gf_mul(tmp0, A24, E);  gf_add(tmp1, AA, tmp0);
+        gf_mul(z2, E, tmp1);
+    }
+
+    /* Final conditional swap */
+    gf_sel(x2, x3, swap);
+    gf_sel(z2, z3, swap);
+
+    /* Recover affine u = X2 * Z2^(p-2) */
+    gf z2inv, result;
+    gf_invert(z2inv, z2);
+    gf_mul(result, x2, z2inv);
+    gf_pack(raw_shared, result);
+}
+
+/* ── ChaCha20-Poly1305 AEAD (XChaCha20 nonce, 24 bytes) ─────────────────── */
+
+/*
+ * ChaCha20 quarter-round (operates on uint32_t words).
+ */
+#define CHACHA_QR(a, b, c, d)           \
+    (a) += (b); (d) ^= (a); (d) = ((d) << 16) | ((d) >> 16); \
+    (c) += (d); (b) ^= (c); (b) = ((b) << 12) | ((b) >> 20); \
+    (a) += (b); (d) ^= (a); (d) = ((d) <<  8) | ((d) >> 24); \
+    (c) += (d); (b) ^= (c); (b) = ((b) <<  7) | ((b) >> 25)
+
+static void chacha20_block(uint32_t out[16], const uint32_t in[16])
+{
+    uint32_t x[16];
+    for (int i = 0; i < 16; i++) x[i] = in[i];
+    for (int i = 0; i < 10; i++) {
+        /* Column rounds */
+        CHACHA_QR(x[0], x[4], x[ 8], x[12]);
+        CHACHA_QR(x[1], x[5], x[ 9], x[13]);
+        CHACHA_QR(x[2], x[6], x[10], x[14]);
+        CHACHA_QR(x[3], x[7], x[11], x[15]);
+        /* Diagonal rounds */
+        CHACHA_QR(x[0], x[5], x[10], x[15]);
+        CHACHA_QR(x[1], x[6], x[11], x[12]);
+        CHACHA_QR(x[2], x[7], x[ 8], x[13]);
+        CHACHA_QR(x[3], x[4], x[ 9], x[14]);
+    }
+    for (int i = 0; i < 16; i++) out[i] = x[i] + in[i];
+}
+
+/* Little-endian 32-bit load/store helpers */
+static uint32_t load32_le(const uint8_t *p)
+{
+    return (uint32_t)p[0]
+         | ((uint32_t)p[1] <<  8)
+         | ((uint32_t)p[2] << 16)
+         | ((uint32_t)p[3] << 24);
+}
+static void store32_le(uint8_t *p, uint32_t v)
+{
+    p[0] = (uint8_t)(v      );
+    p[1] = (uint8_t)(v >>  8);
+    p[2] = (uint8_t)(v >> 16);
+    p[3] = (uint8_t)(v >> 24);
+}
+
+/* ChaCha20 magic constant words ("expand 32-byte k") */
+static const uint32_t chacha20_magic[4] = {
+    0x61707865u, 0x3320646eu, 0x79622d32u, 0x6b206574u
+};
+
+/*
+ * HChaCha20: derive a 32-byte subkey from key[32] and the first 16 bytes
+ * of a 24-byte XChaCha20 nonce.  Outputs the first and last 4 words of the
+ * ChaCha20 block (without the add-back step).
+ */
+static void hchacha20(uint8_t out[32],
+                      const uint8_t key[32],
+                      const uint8_t nonce16[16])
+{
+    uint32_t x[16];
+    x[0]  = chacha20_magic[0];
+    x[1]  = chacha20_magic[1];
+    x[2]  = chacha20_magic[2];
+    x[3]  = chacha20_magic[3];
+    x[4]  = load32_le(key     );
+    x[5]  = load32_le(key +  4);
+    x[6]  = load32_le(key +  8);
+    x[7]  = load32_le(key + 12);
+    x[8]  = load32_le(key + 16);
+    x[9]  = load32_le(key + 20);
+    x[10] = load32_le(key + 24);
+    x[11] = load32_le(key + 28);
+    x[12] = load32_le(nonce16     );
+    x[13] = load32_le(nonce16 +  4);
+    x[14] = load32_le(nonce16 +  8);
+    x[15] = load32_le(nonce16 + 12);
+
+    for (int i = 0; i < 10; i++) {
+        CHACHA_QR(x[0], x[4], x[ 8], x[12]);
+        CHACHA_QR(x[1], x[5], x[ 9], x[13]);
+        CHACHA_QR(x[2], x[6], x[10], x[14]);
+        CHACHA_QR(x[3], x[7], x[11], x[15]);
+        CHACHA_QR(x[0], x[5], x[10], x[15]);
+        CHACHA_QR(x[1], x[6], x[11], x[12]);
+        CHACHA_QR(x[2], x[7], x[ 8], x[13]);
+        CHACHA_QR(x[3], x[4], x[ 9], x[14]);
+    }
+    /* Output first 4 and last 4 words (no addition of input) */
+    store32_le(out,      x[0]);  store32_le(out +  4, x[1]);
+    store32_le(out +  8, x[2]);  store32_le(out + 12, x[3]);
+    store32_le(out + 16, x[12]); store32_le(out + 20, x[13]);
+    store32_le(out + 24, x[14]); store32_le(out + 28, x[15]);
+}
+
+/*
+ * XChaCha20 keystream generation: encrypts (XORs) `len` bytes of data
+ * starting at ChaCha20 block counter `ctr`.
+ * subkey[32] + nonce8[8] are the reduced key and nonce after HChaCha20.
+ */
+static void xchacha20_xor(uint8_t *dst, const uint8_t *src, size_t len,
+                           const uint8_t subkey[32], const uint8_t nonce8[8],
+                           uint32_t ctr)
+{
+    uint32_t state[16];
+    state[0]  = chacha20_magic[0];
+    state[1]  = chacha20_magic[1];
+    state[2]  = chacha20_magic[2];
+    state[3]  = chacha20_magic[3];
+    state[4]  = load32_le(subkey     );
+    state[5]  = load32_le(subkey +  4);
+    state[6]  = load32_le(subkey +  8);
+    state[7]  = load32_le(subkey + 12);
+    state[8]  = load32_le(subkey + 16);
+    state[9]  = load32_le(subkey + 20);
+    state[10] = load32_le(subkey + 24);
+    state[11] = load32_le(subkey + 28);
+    state[12] = ctr;
+    state[13] = 0u;
+    state[14] = load32_le(nonce8    );
+    state[15] = load32_le(nonce8 + 4);
+
+    size_t off = 0;
+    while (off < len) {
+        uint32_t block[16];
+        chacha20_block(block, state);
+
+        /* Advance counter */
+        state[12]++;
+        if (state[12] == 0u) state[13]++;
+
+        uint8_t keystream[64];
+        for (int i = 0; i < 16; i++) store32_le(keystream + i*4, block[i]);
+
+        size_t chunk = len - off;
+        if (chunk > 64u) chunk = 64u;
+        for (size_t i = 0; i < chunk; i++)
+            dst[off + i] = (src ? src[off + i] : 0u) ^ keystream[i];
+        off += chunk;
+    }
+}
+
+/* ── Poly1305 MAC ────────────────────────────────────────────────────────── */
+
+typedef struct {
+    uint32_t r[5];   /* key r (clamped) */
+    uint32_t h[5];   /* accumulator */
+    uint32_t pad[4]; /* key s */
+    size_t   buf_len;
+    uint8_t  buf[16];
+    int      final;
+} poly1305_ctx;
+
+static void poly1305_init(poly1305_ctx *ctx, const uint8_t key[32])
+{
+    /* r = key[0..15] clamped */
+    ctx->r[0] = ( load32_le(key     )      ) & 0x3ffffffu;
+    ctx->r[1] = ( load32_le(key +  3) >> 2 ) & 0x3ffff03u;
+    ctx->r[2] = ( load32_le(key +  6) >> 4 ) & 0x3ffc0ffu;
+    ctx->r[3] = ( load32_le(key +  9) >> 6 ) & 0x3f03fffu;
+    ctx->r[4] = ( load32_le(key + 12) >> 8 ) & 0x00fffffu;
+
+    ctx->h[0] = 0; ctx->h[1] = 0; ctx->h[2] = 0;
+    ctx->h[3] = 0; ctx->h[4] = 0;
+
+    ctx->pad[0] = load32_le(key + 16);
+    ctx->pad[1] = load32_le(key + 20);
+    ctx->pad[2] = load32_le(key + 24);
+    ctx->pad[3] = load32_le(key + 28);
+
+    ctx->buf_len = 0;
+    ctx->final   = 0;
+}
+
+static void poly1305_block(poly1305_ctx *ctx, const uint8_t *m, uint32_t hibit)
+{
+    uint32_t r0 = ctx->r[0], r1 = ctx->r[1], r2 = ctx->r[2],
+             r3 = ctx->r[3], r4 = ctx->r[4];
+    uint32_t h0 = ctx->h[0], h1 = ctx->h[1], h2 = ctx->h[2],
+             h3 = ctx->h[3], h4 = ctx->h[4];
+
+    /* h += m (with high bit) */
+    h0 += ( load32_le(m     )      ) & 0x3ffffffu;
+    h1 += ( load32_le(m +  3) >> 2 ) & 0x3ffffffu;
+    h2 += ( load32_le(m +  6) >> 4 ) & 0x3ffffffu;
+    h3 += ( load32_le(m +  9) >> 6 ) & 0x3ffffffu;
+    h4 += ( load32_le(m + 12) >> 8 ) | hibit;
+
+    /* h *= r (mod 2^130-5) using 64-bit intermediates */
+    uint64_t d0, d1, d2, d3, d4;
+    uint32_t s1 = r1 * 5u, s2 = r2 * 5u, s3 = r3 * 5u, s4 = r4 * 5u;
+
+    d0 = (uint64_t)h0*r0 + (uint64_t)h1*s4 + (uint64_t)h2*s3
+       + (uint64_t)h3*s2 + (uint64_t)h4*s1;
+    d1 = (uint64_t)h0*r1 + (uint64_t)h1*r0 + (uint64_t)h2*s4
+       + (uint64_t)h3*s3 + (uint64_t)h4*s2;
+    d2 = (uint64_t)h0*r2 + (uint64_t)h1*r1 + (uint64_t)h2*r0
+       + (uint64_t)h3*s4 + (uint64_t)h4*s3;
+    d3 = (uint64_t)h0*r3 + (uint64_t)h1*r2 + (uint64_t)h2*r1
+       + (uint64_t)h3*r0 + (uint64_t)h4*s4;
+    d4 = (uint64_t)h0*r4 + (uint64_t)h1*r3 + (uint64_t)h2*r2
+       + (uint64_t)h3*r1 + (uint64_t)h4*r0;
+
+    /* Reduce mod 2^130-5 */
+    uint32_t c;
+    c = (uint32_t)(d0 >> 26); h0 = (uint32_t)(d0) & 0x3ffffffu;
+    d1 += c;
+    c = (uint32_t)(d1 >> 26); h1 = (uint32_t)(d1) & 0x3ffffffu;
+    d2 += c;
+    c = (uint32_t)(d2 >> 26); h2 = (uint32_t)(d2) & 0x3ffffffu;
+    d3 += c;
+    c = (uint32_t)(d3 >> 26); h3 = (uint32_t)(d3) & 0x3ffffffu;
+    d4 += c;
+    c = (uint32_t)(d4 >> 26); h4 = (uint32_t)(d4) & 0x3ffffffu;
+    h0 += c * 5u;
+    c = h0 >> 26; h0 &= 0x3ffffffu;
+    h1 += c;
+
+    ctx->h[0] = h0; ctx->h[1] = h1; ctx->h[2] = h2;
+    ctx->h[3] = h3; ctx->h[4] = h4;
+}
+
+static void poly1305_update(poly1305_ctx *ctx, const uint8_t *m, size_t len)
+{
+    /* Fill partial buffer first */
+    if (ctx->buf_len) {
+        size_t space = 16u - ctx->buf_len;
+        size_t take  = len < space ? len : space;
+        mc_memcpy(ctx->buf + ctx->buf_len, m, take);
+        ctx->buf_len += take;
+        m   += take;
+        len -= take;
+        if (ctx->buf_len == 16u) {
+            poly1305_block(ctx, ctx->buf, 1u << 24);
+            ctx->buf_len = 0;
+        }
+    }
+    /* Process full 16-byte blocks */
+    while (len >= 16u) {
+        poly1305_block(ctx, m, 1u << 24);
+        m   += 16u;
+        len -= 16u;
+    }
+    /* Buffer remaining bytes */
+    if (len) {
+        mc_memcpy(ctx->buf, m, len);
+        ctx->buf_len = len;
+    }
+}
+
+static void poly1305_final(poly1305_ctx *ctx, uint8_t mac[16])
+{
+    if (ctx->buf_len) {
+        ctx->buf[ctx->buf_len++] = 1u;
+        while (ctx->buf_len < 16u) ctx->buf[ctx->buf_len++] = 0u;
+        poly1305_block(ctx, ctx->buf, 0u);
+    }
+
+    uint32_t h0 = ctx->h[0], h1 = ctx->h[1], h2 = ctx->h[2],
+             h3 = ctx->h[3], h4 = ctx->h[4];
+
+    /* Fully reduce h mod 2^130-5 */
+    uint32_t c = h1 >> 26; h1 &= 0x3ffffffu;
+    h2 += c; c = h2 >> 26; h2 &= 0x3ffffffu;
+    h3 += c; c = h3 >> 26; h3 &= 0x3ffffffu;
+    h4 += c; c = h4 >> 26; h4 &= 0x3ffffffu;
+    h0 += c * 5u; c = h0 >> 26; h0 &= 0x3ffffffu;
+    h1 += c;
+
+    /* Compute h + -p where p = 2^130-5 */
+    uint32_t g0 = h0 + 5u; c = g0 >> 26; g0 &= 0x3ffffffu;
+    uint32_t g1 = h1 + c;  c = g1 >> 26; g1 &= 0x3ffffffu;
+    uint32_t g2 = h2 + c;  c = g2 >> 26; g2 &= 0x3ffffffu;
+    uint32_t g3 = h3 + c;  c = g3 >> 26; g3 &= 0x3ffffffu;
+    uint32_t g4 = h4 + c - (1u << 26);
+
+    /* Select h if h < p, else g */
+    uint32_t mask = (g4 >> (sizeof(uint32_t)*8u - 1u)) - 1u;
+    g0 &= mask; g1 &= mask; g2 &= mask; g3 &= mask; g4 &= mask;
+    mask = ~mask;
+    h0 = (h0 & mask) | g0;
+    h1 = (h1 & mask) | g1;
+    h2 = (h2 & mask) | g2;
+    h3 = (h3 & mask) | g3;
+    h4 = (h4 & mask) | g4;
+
+    /* Convert from 26-bit limbs to 32-bit words */
+    uint64_t f0 = ((uint64_t)h0 | ((uint64_t)h1 << 26)) + ctx->pad[0];
+    uint64_t f1 = ((uint64_t)(h1 >>  6) | ((uint64_t)h2 << 20)) + ctx->pad[1] + (f0 >> 32);
+    uint64_t f2 = ((uint64_t)(h2 >> 12) | ((uint64_t)h3 << 14)) + ctx->pad[2] + (f1 >> 32);
+    uint64_t f3 = ((uint64_t)(h3 >> 18) | ((uint64_t)h4 <<  8)) + ctx->pad[3] + (f2 >> 32);
+
+    store32_le(mac,      (uint32_t)f0);
+    store32_le(mac +  4, (uint32_t)f1);
+    store32_le(mac +  8, (uint32_t)f2);
+    store32_le(mac + 12, (uint32_t)f3);
+
+    mc_memset(ctx, 0, sizeof(*ctx));
+}
+
+/*
+ * poly1305_mac_aead — compute Poly1305 MAC over (ad || pad || cipher || pad || lengths)
+ * per RFC 8439 §2.8.
+ */
+static void poly1305_mac_aead(uint8_t mac[16],
+                               const uint8_t poly_key[32],
+                               const uint8_t *ad,     size_t ad_len,
+                               const uint8_t *cipher, size_t cipher_len)
+{
+    static const uint8_t zero16[16] = {0};
+    poly1305_ctx ctx;
+    poly1305_init(&ctx, poly_key);
+
+    if (ad && ad_len) {
+        poly1305_update(&ctx, ad, ad_len);
+        if (ad_len & 15u)
+            poly1305_update(&ctx, zero16, 16u - (ad_len & 15u));
+    }
+    if (cipher && cipher_len) {
+        poly1305_update(&ctx, cipher, cipher_len);
+        if (cipher_len & 15u)
+            poly1305_update(&ctx, zero16, 16u - (cipher_len & 15u));
+    }
+
+    /* 16-byte little-endian length fields */
+    uint8_t lengths[16];
+    store32_le(lengths,     (uint32_t)(ad_len         ));
+    store32_le(lengths + 4, (uint32_t)(ad_len     >> 32 > 0 ? ad_len >> 32 : 0));
+    store32_le(lengths + 8, (uint32_t)(cipher_len      ));
+    store32_le(lengths + 12,(uint32_t)(cipher_len >> 32 > 0 ? cipher_len >> 32 : 0));
+    poly1305_update(&ctx, lengths, 16u);
+
+    poly1305_final(&ctx, mac);
+}
+
+/* ── Public AEAD API ─────────────────────────────────────────────────────── */
+
+void crypto_aead_lock(uint8_t       *cipher_text,
+                      uint8_t        mac[16],
+                      const uint8_t  key[32],
+                      const uint8_t  nonce[24],
+                      const uint8_t *ad,         size_t ad_size,
+                      const uint8_t *plain_text,  size_t plain_size)
+{
+    /* Derive subkey via HChaCha20 using first 16 bytes of nonce */
+    uint8_t subkey[32];
+    hchacha20(subkey, key, nonce);
+
+    /* Remaining 8 bytes of nonce used as ChaCha20 nonce (bytes 16..23) */
+    const uint8_t *nonce8 = nonce + 16;
+
+    /* Generate Poly1305 one-time key: first 32 bytes of keystream block 0 */
+    uint8_t poly_key[32];
+    xchacha20_xor(poly_key, NULL, 32u, subkey, nonce8, 0u);
+
+    /* Encrypt plaintext starting at block counter 1 */
+    xchacha20_xor(cipher_text, plain_text, plain_size, subkey, nonce8, 1u);
+
+    /* Compute MAC over AD and ciphertext */
+    poly1305_mac_aead(mac, poly_key, ad, ad_size, cipher_text, plain_size);
+
+    mc_memset(subkey,   0, sizeof(subkey));
+    mc_memset(poly_key, 0, sizeof(poly_key));
+}
+
+int crypto_aead_unlock(uint8_t       *plain_text,
+                       const uint8_t  mac[16],
+                       const uint8_t  key[32],
+                       const uint8_t  nonce[24],
+                       const uint8_t *ad,          size_t ad_size,
+                       const uint8_t *cipher_text,  size_t cipher_size)
+{
+    /* Derive subkey */
+    uint8_t subkey[32];
+    hchacha20(subkey, key, nonce);
+    const uint8_t *nonce8 = nonce + 16;
+
+    /* Poly1305 one-time key */
+    uint8_t poly_key[32];
+    xchacha20_xor(poly_key, NULL, 32u, subkey, nonce8, 0u);
+
+    /* Verify MAC before decrypting (authenticate-then-decrypt) */
+    uint8_t computed_mac[16];
+    poly1305_mac_aead(computed_mac, poly_key, ad, ad_size,
+                      cipher_text, cipher_size);
+
+    /* Constant-time comparison */
+    uint8_t diff = 0;
+    for (int i = 0; i < 16; i++) diff |= computed_mac[i] ^ mac[i];
+
+    if (diff != 0) {
+        /* Authentication failed — wipe output and return error */
+        mc_memset(plain_text, 0, cipher_size);
+        mc_memset(subkey,     0, sizeof(subkey));
+        mc_memset(poly_key,   0, sizeof(poly_key));
+        return -1;
+    }
+
+    /* Decrypt */
+    xchacha20_xor(plain_text, cipher_text, cipher_size, subkey, nonce8, 1u);
+
+    mc_memset(subkey,   0, sizeof(subkey));
+    mc_memset(poly_key, 0, sizeof(poly_key));
+    return 0;
+}

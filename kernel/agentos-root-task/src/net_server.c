@@ -53,6 +53,12 @@ uintptr_t net_mmio_vaddr;
 /* Console ring base (set by Microkit via setvar_vaddr) */
 uintptr_t console_rings_vaddr;
 
+/* Vibe staging region (set by Microkit via setvar_vaddr).
+ * Shared with agent PDs; net_server uses offset 0x200000–0x3FFFFF for HTTP I/O.
+ * Layout mirrors the agent-side STAGING_HTTP_URL_OFFSET / STAGING_HTTP_OFFSET
+ * constants defined in libagent.c. */
+uintptr_t vibe_staging_vaddr;
+
 /* ── Module state ────────────────────────────────────────────────────────── */
 static net_vnic_t  vnics[NET_MAX_VNICS];
 static uint32_t    active_vnic_count = 0;
@@ -464,7 +470,7 @@ static microkit_msginfo handle_vnic_recv(void) {
     /* Poll lwIP for received data on this vnic's TCP connection */
     int n = lwip_net_recv((uint8_t)(vnic_id & 0xFFu),
                           (uint8_t *)(net_packet_shmem_vaddr + buf_offset),
-                          max_len > 1500u ? 1500u : (uint16_t)max_len);
+                          max_len > 65536u ? 65536u : max_len);
     v->rx_packets += (n > 0) ? 1u : 0u;
     microkit_mr_set(0, NET_OK);
     microkit_mr_set(1, (uint32_t)n);
@@ -600,6 +606,216 @@ static microkit_msginfo handle_net_set_acl(void) {
     return microkit_msginfo_new(0, 1);
 }
 
+/* ── OP_NET_HTTP_POST ─────────────────────────────────────────────────────── */
+
+/*
+ * Reserved lwIP connection slot for HTTP proxy.  Slot 15 (NET_MAX_VNICS - 1)
+ * is never allocated as a vNIC; it exists solely for net_server's own use.
+ */
+#define HTTP_CONN_ID  ((uint8_t)(NET_MAX_VNICS - 1u))
+
+/* QEMU user-networking host: 10.0.2.2, big-endian */
+#define BRIDGE_IP_BE  0x0A000202u
+#define BRIDGE_PORT   8790u
+
+/* Staging sub-regions (must match libagent.c) */
+#define STAGING_HTTP_URL_OFFSET  0x1FF000UL   /* 4 KB before body region */
+#define STAGING_HTTP_OFFSET      0x200000UL   /* request body / response body */
+
+/* Append n bytes of src into dst[pos], capped at cap. Returns new pos. */
+static uint16_t buf_append(uint8_t *dst, uint16_t pos, uint16_t cap,
+                            const char *src, uint16_t n)
+{
+    for (uint16_t i = 0; i < n && pos < cap; i++)
+        dst[pos++] = (uint8_t)src[i];
+    return pos;
+}
+
+/* Append decimal string of v. */
+static uint16_t buf_append_dec(uint8_t *dst, uint16_t pos, uint16_t cap, uint32_t v)
+{
+    char tmp[12];
+    int  i = 11;
+    tmp[i] = '\0';
+    if (v == 0) { tmp[--i] = '0'; }
+    else { while (v > 0 && i > 0) { tmp[--i] = (char)('0' + (int)(v % 10u)); v /= 10u; } }
+    return buf_append(dst, pos, cap, &tmp[i], (uint16_t)(11 - i));
+}
+
+static microkit_msginfo handle_net_http_post(void)
+{
+    uint32_t url_offset  = (uint32_t)microkit_mr_get(1);
+    uint32_t url_len     = (uint32_t)microkit_mr_get(2);
+    uint32_t body_offset = (uint32_t)microkit_mr_get(3);
+    uint32_t body_len    = (uint32_t)microkit_mr_get(4);
+
+    if (!vibe_staging_vaddr) {
+        console_log(16, 16, "[net_server] HTTP_POST: staging not mapped\n");
+        microkit_mr_set(0, 0u);
+        microkit_mr_set(1, 0u);
+        microkit_mr_set(2, 0u);
+        return microkit_msginfo_new(0, 3);
+    }
+
+    const char *url  = (const char *)(vibe_staging_vaddr + url_offset);
+    const char *body = (const char *)(vibe_staging_vaddr + body_offset);
+
+    /* Extract path: skip "http://host:port" prefix */
+    const char *path = "/";
+    if (url_len >= 8u) {
+        const char *p = url + 7u;  /* skip "http://" */
+        while ((uint32_t)(p - url) < url_len && *p && *p != '/') p++;
+        if ((uint32_t)(p - url) < url_len && *p == '/') path = p;
+    }
+    /* Measure path length (up to end of url_len) */
+    uint32_t path_len = 0;
+    while (path_len + (uint32_t)(path - url) < url_len &&
+           path[path_len] && path[path_len] != ' ') path_len++;
+
+    /* Build HTTP/1.1 POST header in a static buffer */
+    static uint8_t http_hdr[512];
+    uint16_t hlen = 0;
+    const uint16_t hcap = (uint16_t)sizeof(http_hdr);
+
+#define HL(s)  hlen = buf_append(http_hdr, hlen, hcap, (s), (uint16_t)(sizeof(s)-1u))
+#define HS(s,n) hlen = buf_append(http_hdr, hlen, hcap, (s), (uint16_t)(n))
+#define HD(v)  hlen = buf_append_dec(http_hdr, hlen, hcap, (v))
+
+    HL("POST ");
+    HS(path, path_len);
+    HL(" HTTP/1.1\r\n");
+    HL("Host: 10.0.2.2:8790\r\n");
+    HL("Content-Type: application/json\r\n");
+    HL("Content-Length: ");
+    HD(body_len);
+    HL("\r\nConnection: close\r\n\r\n");
+
+#undef HL
+#undef HS
+#undef HD
+
+    /* Reset dedicated HTTP connection slot */
+    if (g_conns[HTTP_CONN_ID].tcp) {
+        tcp_close(g_conns[HTTP_CONN_ID].tcp);
+        g_conns[HTTP_CONN_ID].tcp = NULL;
+    }
+    g_conns[HTTP_CONN_ID].state      = 0u;
+    g_conns[HTTP_CONN_ID].rx_buf_len = 0u;
+
+    /* Connect to bridge at 10.0.2.2:8790 */
+    int err = lwip_net_connect(HTTP_CONN_ID, BRIDGE_IP_BE, BRIDGE_PORT);
+    if (err != 0) {
+        console_log(16, 16, "[net_server] HTTP_POST: connect error=");
+        log_dec((uint32_t)(uint32_t)(-err));
+        console_log(16, 16, "\n");
+        microkit_mr_set(0, 0u);
+        microkit_mr_set(1, 0u);
+        microkit_mr_set(2, 0u);
+        return microkit_msginfo_new(0, 3);
+    }
+
+    /* Poll until TCP connected (state 2) or failed (state 3), ~5 s at 10 ms/tick */
+    for (uint32_t i = 0; i < 500u; i++) {
+        lwip_tick();
+        sys_check_timeouts();
+        lwip_virtio_rx_poll();
+        if (g_conns[HTTP_CONN_ID].state == 2u) break;
+        if (g_conns[HTTP_CONN_ID].state == 3u) break;
+    }
+
+    if (g_conns[HTTP_CONN_ID].state != 2u) {
+        console_log(16, 16, "[net_server] HTTP_POST: connect timeout\n");
+        microkit_mr_set(0, 0u);
+        microkit_mr_set(1, 0u);
+        microkit_mr_set(2, 0u);
+        return microkit_msginfo_new(0, 3);
+    }
+
+    /* Send request header */
+    if (lwip_net_send(HTTP_CONN_ID, http_hdr, hlen) < 0) {
+        console_log(16, 16, "[net_server] HTTP_POST: header send failed\n");
+        microkit_mr_set(0, 0u);
+        microkit_mr_set(1, 0u);
+        microkit_mr_set(2, 0u);
+        return microkit_msginfo_new(0, 3);
+    }
+
+    /* Send body (up to 65535 bytes fit in uint16_t) */
+    if (body_len > 0u) {
+        uint16_t blen16 = (body_len > 65535u) ? 65535u : (uint16_t)body_len;
+        if (lwip_net_send(HTTP_CONN_ID, (const uint8_t *)body, blen16) < 0) {
+            console_log(16, 16, "[net_server] HTTP_POST: body send failed\n");
+            microkit_mr_set(0, 0u);
+            microkit_mr_set(1, 0u);
+            microkit_mr_set(2, 0u);
+            return microkit_msginfo_new(0, 3);
+        }
+    }
+
+    /* Poll until response received or connection closed, ~30 s at 10 ms/tick */
+    for (uint32_t i = 0; i < 3000u; i++) {
+        lwip_tick();
+        sys_check_timeouts();
+        lwip_virtio_rx_poll();
+        if (g_conns[HTTP_CONN_ID].rx_buf_len > 0u) break;
+        if (g_conns[HTTP_CONN_ID].state == 3u) break;
+    }
+
+    uint32_t rx_len = g_conns[HTTP_CONN_ID].rx_buf_len;
+    if (rx_len == 0u) {
+        console_log(16, 16, "[net_server] HTTP_POST: no response received\n");
+        microkit_mr_set(0, 0u);
+        microkit_mr_set(1, 0u);
+        microkit_mr_set(2, 0u);
+        return microkit_msginfo_new(0, 3);
+    }
+
+    /* Parse HTTP status code from first response line: "HTTP/1.1 NNN ..." */
+    uint32_t http_status = 0u;
+    const char *resp = (const char *)g_conns[HTTP_CONN_ID].rx_buf;
+    if (rx_len > 9u && resp[0] == 'H' && resp[1] == 'T' && resp[2] == 'T') {
+        const char *p = resp;
+        while ((uint32_t)(p - resp) < rx_len && *p != ' ') p++;
+        if (*p == ' ') {
+            p++;
+            while ((uint32_t)(p - resp) < rx_len && *p >= '0' && *p <= '9') {
+                http_status = http_status * 10u + (uint32_t)(*p - '0');
+                p++;
+            }
+        }
+    }
+
+    /* Locate end of HTTP headers (\r\n\r\n) */
+    uint32_t hdr_end = 0u;
+    for (uint32_t i = 0u; i + 3u < rx_len; i++) {
+        if (resp[i]   == '\r' && resp[i+1u] == '\n' &&
+            resp[i+2u] == '\r' && resp[i+3u] == '\n') {
+            hdr_end = i + 4u;
+            break;
+        }
+    }
+
+    uint32_t resp_body_len = (hdr_end < rx_len) ? (rx_len - hdr_end) : 0u;
+
+    /* Copy response body into staging at body_offset (safe: request already sent) */
+    if (resp_body_len > 0u) {
+        uint8_t       *dst = (uint8_t *)(vibe_staging_vaddr + body_offset);
+        const uint8_t *src = (const uint8_t *)(resp + hdr_end);
+        for (uint32_t i = 0u; i < resp_body_len; i++) dst[i] = src[i];
+    }
+
+    console_log(16, 16, "[net_server] HTTP_POST: status=");
+    log_dec(http_status);
+    console_log(16, 16, " body_len=");
+    log_dec(resp_body_len);
+    console_log(16, 16, "\n");
+
+    microkit_mr_set(0, http_status);
+    microkit_mr_set(1, body_offset);   /* response body written at same staging offset */
+    microkit_mr_set(2, resp_body_len);
+    return microkit_msginfo_new(0, 3);
+}
+
 /* ── OP_NET_HEALTH ────────────────────────────────────────────────────────── */
 static microkit_msginfo handle_net_health(void) {
     microkit_mr_set(0, NET_OK);
@@ -704,6 +920,7 @@ microkit_msginfo protected(microkit_channel ch, microkit_msginfo msginfo) {
     case OP_NET_STATUS:       return handle_net_status();
     case OP_NET_SET_ACL:      return handle_net_set_acl();
     case OP_NET_HEALTH:       return handle_net_health();
+    case OP_NET_HTTP_POST:    return handle_net_http_post();
     case OP_NET_CONN_STATE: {
         uint8_t vid = (uint8_t)microkit_mr_get(1);
         microkit_mr_set(0, NET_OK);

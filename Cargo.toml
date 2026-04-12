@@ -1,6 +1,8 @@
 [workspace]
 resolver = "2"
 members = [
+    # Kernel-side Rust PD runtime library
+    "libs/rust-pd",
     # Userspace SDK + agents
     "userspace/sdk",
     "userspace/agents/init-agent",
@@ -35,6 +37,14 @@ version = "0.1.0"
 edition = "2021"
 license = "Apache-2.0"
 repository = "https://github.com/agentOS/agentos"
+
+# agentos-pd is no_std + staticlib; needs abort panic in all profiles.
+# abort is safe for all other workspace members too (no unwinding in kernel code).
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"
 
 [workspace.dependencies]
 serde       = { version = "1",      features = ["derive"] }

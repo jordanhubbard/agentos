@@ -17,6 +17,7 @@
 
 mod bridge;
 mod freebsd;
+mod linux_vm;
 mod profiler;
 mod routes;
 mod serial;
@@ -102,9 +103,17 @@ async fn main() -> anyhow::Result<()> {
         eprintln!("[console] WARNING: AGENTOS_TOKEN not set — agentOS API auth will be rejected");
     }
 
+    // --mock-codegen: return a pre-baked service from /api/agentos/vibe/generate
+    // without calling any LLM backend.  Also activated by AGENTOS_CODEGEN_BACKEND=mock.
+    let mock_codegen = std::env::args().any(|a| a == "--mock-codegen")
+        || std::env::var("AGENTOS_CODEGEN_BACKEND")
+            .map(|v| v == "mock")
+            .unwrap_or(false);
+
     // ── Shared state ─────────────────────────────────────────────────────────
     let serial_cache: SharedSerial = Arc::new(Mutex::new(SerialCache::new()));
-    let freebsd_state = new_shared();
+    let freebsd_state  = new_shared();
+    let linux_vm_state = linux_vm::new_shared();
 
     // Resolve the Trunk-built dist/ directory (used both for index.html and ServeDir).
     let exe_dir = std::env::current_exe()
@@ -377,12 +386,18 @@ async fn main() -> anyhow::Result<()> {
     let bridge_state = BridgeState {
         serial:        serial_cache.clone(),
         freebsd:       freebsd_state.clone(),
+        linux:         linux_vm_state.clone(),
         _serial_path:  serial_log.clone(),
         guest_img_dir,
         freebsd_ver:   "14.4".to_string(),
         parse_tx:      parse_tx.clone(),
         inject_tx:     inject_tx_shared.clone(),
+        mock_codegen,
     };
+
+    if mock_codegen {
+        info!("[console] mock-codegen mode enabled — /api/agentos/vibe/generate returns pre-baked service");
+    }
 
     let bridge_router = bridge::build_router(bridge_state)
         .layer(CorsLayer::permissive());

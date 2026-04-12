@@ -82,12 +82,30 @@ typedef struct {
 #define NET_CH_WORKER_6         8u
 #define NET_CH_WORKER_7         9u
 #define NET_CH_APP_MANAGER      10u  /* pp=true inbound — creates vNICs */
+#define NET_CH_TIMER            12u  /* 10ms periodic tick from controller (ch 11 used by wg_net) */
 
 /* Channel IDs reaching NetServer from other PDs' perspectives */
 #define NET_CH_FROM_CONTROLLER  110u
 #define NET_CH_FROM_INIT_AGENT  10u
 #define NET_CH_FROM_WORKER      14u
 #define NET_CH_FROM_APP_MANAGER 3u
+
+/*
+ * OP_NET_CONN_STATE (0xB9) — query lwIP connection state for a vNIC slot
+ *   MR1 = vnic_id
+ *   Reply:
+ *   MR0 = result
+ *   MR1 = state  (0=free, 1=connecting, 2=connected, 3=closed)
+ */
+#define OP_NET_CONN_STATE       0xB9u
+
+/*
+ * OP_NET_TCP_CLOSE (0xBA) — close the lwIP TCP connection for a vNIC slot
+ *   MR1 = vnic_id
+ *   Reply:
+ *   MR0 = result
+ */
+#define OP_NET_TCP_CLOSE        0xBAu
 
 /* ── IPC Opcodes ─────────────────────────────────────────────────────────── */
 
@@ -192,6 +210,33 @@ typedef struct {
  *   MR2 = NET_VERSION
  */
 #define OP_NET_HEALTH           0xB8u
+
+/*
+ * OP_NET_HTTP_POST (0x500) — high-level HTTP POST proxy to the agentOS bridge.
+ *
+ * Used by libagent's aos_http_post() to reach the host-side bridge
+ * at 10.0.2.2:8790 (QEMU user-networking host address) without
+ * requiring agents to manage raw TCP sockets themselves.
+ *
+ * Inputs (MRs set by caller):
+ *   MR1 = staging offset of the URL string       (relative to vibe_staging base)
+ *   MR2 = URL length (bytes, not including NUL)
+ *   MR3 = staging offset of the request body     (relative to vibe_staging base)
+ *   MR4 = body length (bytes)
+ *
+ * The URL and body must be placed in the vibe_staging shared region before
+ * calling. net_server maps vibe_staging via setvar_vaddr (same physical pages
+ * as the VibeEngine's vibe_staging_vaddr).
+ *
+ * Outputs (MRs written by net_server):
+ *   MR0 = HTTP status code (e.g. 200, 422, 503), or 0 on TCP error
+ *   MR1 = staging offset of the response body
+ *   MR2 = response body length
+ *
+ * Note: only one HTTP proxy connection at a time (uses reserved conn slot
+ * HTTP_CONN_ID = NET_MAX_VNICS - 1 in g_conns[]).
+ */
+#define OP_NET_HTTP_POST        0x500u
 
 /* ── Result codes (MR0 in replies) ──────────────────────────────────────── */
 #define NET_OK                  0u   /* success */

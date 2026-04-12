@@ -468,6 +468,7 @@ void notified(microkit_channel ch)
  */
 microkit_msginfo protected(microkit_channel ch, microkit_msginfo msginfo)
 {
+    (void)ch;   /* channel not used in dispatch; all ops share one table */
     uint64_t op = microkit_msginfo_get_label(msginfo);
 
     switch (op) {

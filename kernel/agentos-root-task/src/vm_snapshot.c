@@ -40,7 +40,7 @@ typedef struct __attribute__((packed)) {
     /* RAM data follows inline */
 } vm_snapshot_header_t;
 
-_Static_assert(sizeof(vm_snapshot_header_t) == 296, "snapshot header size mismatch");
+_Static_assert(sizeof(vm_snapshot_header_t) == 164, "snapshot header size mismatch");
 
 /* ── Monotonic tick counter ───────────────────────────────────────────── */
 /*

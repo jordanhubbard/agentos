@@ -24,6 +24,7 @@
 
 #define AGENTOS_DEBUG 1
 #include "agentos.h"
+#include "virtio_blk.h"
 #include <stdbool.h>
 #include <stdint.h>
 

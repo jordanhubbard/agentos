@@ -113,6 +113,7 @@ fn spawn_qemu(
             c
         }
         "qemu_virt_riscv64" => {
+            let bios = find_opensbi_bios();
             let mut c = std::process::Command::new("qemu-system-riscv64");
             c.args([
                 "-machine",
@@ -123,7 +124,7 @@ fn spawn_qemu(
                 "2G",
                 "-nographic",
                 "-bios",
-                "/usr/share/qemu/opensbi-riscv64-generic-fw_dynamic.bin",
+                &bios,
                 "-kernel",
                 build_image.to_str().unwrap_or("build/qemu_virt_riscv64/agentos.img"),
             ]);
@@ -144,6 +145,38 @@ fn spawn_qemu(
     Ok(child)
 }
 
+/// Locate the OpenSBI RISCV64 firmware binary, searching common locations.
+fn find_opensbi_bios() -> String {
+    let candidates = [
+        // macOS Homebrew (both Intel and Apple Silicon)
+        "/opt/homebrew/share/qemu/opensbi-riscv64-generic-fw_dynamic.bin",
+        "/usr/local/share/qemu/opensbi-riscv64-generic-fw_dynamic.bin",
+        // Linux system package
+        "/usr/share/qemu/opensbi-riscv64-generic-fw_dynamic.bin",
+        // Debian/Ubuntu alternate path
+        "/usr/lib/riscv64-linux-gnu/opensbi/generic/fw_dynamic.bin",
+    ];
+    for path in candidates {
+        if std::path::Path::new(path).exists() {
+            return path.to_string();
+        }
+    }
+    // Also check via `brew --prefix` at runtime for non-standard Homebrew roots
+    if let Ok(output) = std::process::Command::new("brew").args(["--prefix"]).output() {
+        if let Ok(prefix) = std::str::from_utf8(&output.stdout) {
+            let p = format!(
+                "{}/share/qemu/opensbi-riscv64-generic-fw_dynamic.bin",
+                prefix.trim()
+            );
+            if std::path::Path::new(&p).exists() {
+                return p;
+            }
+        }
+    }
+    // Fall back to the Linux path and let QEMU report a clear error
+    "/usr/share/qemu/opensbi-riscv64-generic-fw_dynamic.bin".to_string()
+}
+
 /// Poll the log file until one of `markers` appears or `timeout` elapses.
 /// Returns the matched marker string on success.
 pub fn wait_for_markers(
@@ -162,11 +195,13 @@ pub fn wait_for_markers(
         }
 
         file.seek(SeekFrom::Start(offset))?;
-        let mut chunk = String::new();
-        let bytes_read = file.read_to_string(&mut chunk)?;
+        let mut raw = Vec::new();
+        let bytes_read = file.read_to_end(&mut raw)?;
         if bytes_read > 0 {
             offset += bytes_read as u64;
-            accumulated.push_str(&chunk);
+            // QEMU may emit non-UTF-8 bytes (e.g. from OpenSBI/seL4 early boot);
+            // replace invalid sequences rather than failing.
+            accumulated.push_str(&String::from_utf8_lossy(&raw));
 
             for &marker in markers {
                 if accumulated.contains(marker) {

@@ -264,6 +264,7 @@ void notified(microkit_channel ch) {
  */
 microkit_msginfo protected(microkit_channel ch, microkit_msginfo msginfo) {
     (void)ch;
+    (void)msginfo;
 
     uint32_t op   = (uint32_t)microkit_mr_get(0);
     uint32_t slot = (uint32_t)microkit_mr_get(1);

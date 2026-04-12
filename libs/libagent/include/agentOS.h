@@ -14,6 +14,13 @@
 #include <stdint.h>
 #include <stddef.h>
 
+/* ssize_t — signed size type. Defined here for freestanding/seL4 builds
+ * where <sys/types.h> may not be available. */
+#ifndef __ssize_t_defined
+typedef long ssize_t;
+#define __ssize_t_defined
+#endif
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -305,6 +312,117 @@ aos_status_t aos_service_swap(uint32_t proposal_id);
 /* Query current service implementation info */
 aos_status_t aos_service_info(const char *service_id,
                                aos_service_iface_t *info);
+
+/* ── HTTP / Bridge communication ─────────────────────────────────────────── */
+
+/**
+ * aos_http_post — HTTP POST to a URL, using the bridge as proxy.
+ * The bridge is reachable at 10.0.2.2:8790 from within the QEMU guest.
+ */
+aos_status_t aos_http_post(const char *url, const char *body_json,
+                            char *resp_buf, size_t resp_buf_len,
+                            size_t *resp_len);
+
+/* ── JS Runtime (QuickJS) ────────────────────────────────────────────────── */
+
+/**
+ * aos_js_eval — evaluate a JavaScript string in a QuickJS context.
+ *
+ * @param context_id  Existing context to use; pass 0xFF to auto-create one.
+ * @param script      NUL-terminated JavaScript source to evaluate.
+ * @param out_buf     Caller-supplied buffer for the JSON-stringified result.
+ * @param out_buf_len Size of out_buf in bytes.
+ * @param out_len     Set to the number of bytes written to out_buf on success,
+ *                    or to the error string length on failure.
+ * @return AOS_OK on success, AOS_ERR_IO on JS error or staging not mapped,
+ *         AOS_ERR_INVALID on bad arguments.
+ */
+aos_status_t aos_js_eval(uint32_t context_id,
+                          const char *script,
+                          char *out_buf, size_t out_buf_len,
+                          size_t *out_len);
+
+/**
+ * aos_js_call — call a named JavaScript function in an existing context.
+ *
+ * @param context_id  Active JS context that contains the function.
+ * @param func_name   NUL-terminated name of the global function to call.
+ * @param args_json   JSON array string of arguments (NULL or "" for no args).
+ * @param out_buf     Caller-supplied buffer for the JSON-encoded return value.
+ * @param out_buf_len Size of out_buf in bytes.
+ * @param out_len     Set to the number of bytes written on success.
+ * @return AOS_OK on success, AOS_ERR_IO on JS error or staging not mapped.
+ */
+aos_status_t aos_js_call(uint32_t context_id,
+                          const char *func_name,
+                          const char *args_json,
+                          char *out_buf, size_t out_buf_len,
+                          size_t *out_len);
+
+/* ── WireGuard Overlay Network ───────────────────────────────────────────── */
+
+/**
+ * aos_wg_add_peer — register a WireGuard peer with the wg_net PD.
+ *
+ * @param peer_id        Peer slot index (0..WG_MAX_PEERS-1).
+ * @param pubkey         Curve25519 public key of the peer (32 bytes).
+ * @param endpoint_ip_be IPv4 endpoint address in network byte order.
+ * @param endpoint_port  UDP endpoint port in host byte order.
+ * @param allowed_ip_be  Allowed-IP network address in network byte order.
+ * @param allowed_mask   Subnet mask in host byte order (e.g. 0xFFFFFF00 = /24).
+ * @return AOS_OK on success, AOS_ERR_IO on wg_net error or staging not mapped.
+ */
+aos_status_t aos_wg_add_peer(uint8_t peer_id,
+                              const uint8_t pubkey[32],
+                              uint32_t endpoint_ip_be,
+                              uint16_t endpoint_port,
+                              uint32_t allowed_ip_be,
+                              uint32_t allowed_mask);
+
+/**
+ * aos_wg_send — encrypt and transmit data to a WireGuard peer.
+ *
+ * @param peer_id  Peer slot index identifying which session keys to use.
+ * @param data     Plaintext payload to encrypt and send.
+ * @param len      Length of data in bytes (max 65535).
+ * @return AOS_OK on success, AOS_ERR_IO on wg_net error or staging not mapped,
+ *         AOS_ERR_INVALID if len is 0 or exceeds the maximum.
+ */
+aos_status_t aos_wg_send(uint8_t peer_id,
+                          const uint8_t *data, uint32_t len);
+
+/**
+ * aos_wg_recv — poll for a decrypted packet from a WireGuard peer.
+ *
+ * Non-blocking: returns AOS_OK with *recv_len == 0 if no packet is pending.
+ *
+ * @param peer_id   Peer to receive from; 0xFF to accept from any peer.
+ * @param buf       Caller-supplied buffer for the decrypted payload.
+ * @param max_len   Size of buf in bytes.
+ * @param recv_len  Set to the number of bytes received (0 = no packet ready).
+ * @return AOS_OK on success (even if no data), AOS_ERR_IO on wg_net error.
+ */
+aos_status_t aos_wg_recv(uint8_t peer_id,
+                          uint8_t *buf, uint32_t max_len,
+                          uint32_t *recv_len);
+
+/* ── Vibe-coding: generation and compilation ─────────────────────────────── */
+
+/**
+ * aos_vibe_generate — ask the bridge to generate C service code via LLM.
+ * On success, out_code contains null-terminated C source.
+ */
+aos_status_t aos_vibe_generate(const char *prompt, const char *service_id,
+                                char *out_code, size_t out_code_len,
+                                size_t *actual_len);
+
+/**
+ * aos_vibe_compile — ask the bridge to compile C source to WASM.
+ * On success, the WASM binary is in the vibe staging region at offset 0,
+ * and *wasm_size_out is set to its size in bytes.
+ */
+aos_status_t aos_vibe_compile(const char *source_c, const char *service_id,
+                               uint32_t *wasm_size_out);
 
 /*
  * =============================================================================

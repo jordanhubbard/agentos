@@ -1,0 +1,28 @@
+[package]
+name = "agentos-pd"
+version = "0.1.0"
+edition = "2021"
+description = "Rust Protection Domain runtime for seL4 Microkit on agentOS"
+license = "Apache-2.0"
+authors = ["The agentOS Project"]
+
+[lib]
+crate-type = ["staticlib", "rlib"]
+
+[features]
+default = []
+# Enable std (for host-side unit testing; never enabled in real PD builds)
+std = []
+
+# Integration test that exercises MsgInfo, MR accessors, and the health-check
+# opcode path without needing a real seL4 kernel.  The source lives in the
+# workspace tests/ directory so it is easy to find alongside other test scripts.
+[[test]]
+name = "rust_pd_unit_test"
+path = "../../tests/rust_pd_unit_test.rs"
+required-features = ["std"]
+
+[profile.release]
+panic = "abort"
+opt-level = "s"
+lto = true

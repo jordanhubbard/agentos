@@ -296,6 +296,7 @@ void init(void)
 microkit_msginfo protected(microkit_channel ch, microkit_msginfo msg)
 {
     (void)ch;
+    (void)msg;
     uint32_t op = (uint32_t)microkit_mr_get(0);
 
     switch (op) {

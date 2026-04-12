@@ -17,6 +17,8 @@
  *   OP_DBG_BREAKPOINT (0x72) — set/clear breakpoint at WASM byte offset
  *   OP_DBG_STEP       (0x73) — single-step a suspended slot
  *   OP_DBG_STATUS     (0x74) — query debug state for a slot or the ring
+ *   OP_DEBUG_IPC_SEND (0x62) — enqueue a command into the seL4→Linux ring
+ *   OP_DEBUG_IPC_POLL (0x63) — poll the Linux→seL4 ring for a response
  *
  * On breakpoint hit (signaled by swap_slot via notify):
  *   1. Writes a debug_event to debug_ring
@@ -27,13 +29,18 @@
  *   id=0: vibe_engine PPCs in (breakpoint/step/attach/detach)
  *   id=1: controller PPCs in (status queries, resume commands)
  *   id=2: debug_bridge notifies controller (debug event available)
+ *   id=7: IPC shmem notification (Linux→seL4 response ring has data)
  *
  * Memory:
- *   debug_ring (256KB shared MR): ring buffer for debug events
+ *   debug_ring    (256KB shared MR): ring buffer for debug events
+ *   IPC shmem MR  (mapped at IPC_SHMEM_BASE): command + response rings
+ *                 seL4→Linux cmd  ring at IPC_SHMEM_BASE + IPC_CMD_RING_OFFSET
+ *                 Linux→seL4 resp ring at IPC_SHMEM_BASE + IPC_RESP_RING_OFFSET
  */
 
 #define AGENTOS_DEBUG 1
 #include "agentos.h"
+#include "ipc_bridge.h"
 
 /* ── Opcodes ──────────────────────────────────────────────────────────────── */
 #define OP_DBG_ATTACH      0x70  /* Attach debugger: MR1=slot_id */
@@ -41,6 +48,29 @@
 #define OP_DBG_BREAKPOINT  0x72  /* Set/clear BP: MR1=slot_id, MR2=wasm_offset, MR3=enable(1)/disable(0) */
 #define OP_DBG_STEP        0x73  /* Single-step: MR1=slot_id, MR2=step_mode (1=into,2=over,3=out) */
 #define OP_DBG_STATUS      0x74  /* Query: MR1=slot_id (0xFF=ring status) */
+
+/*
+ * IPC bridge opcodes (seL4 ↔ Linux VM command/response rings).
+ * These share the debug_bridge dispatch table; the IPC bridge state lives
+ * in BSS and is initialised alongside the debug ring.
+ *
+ *   OP_DEBUG_IPC_SEND (0x62)
+ *     MR1 = IPC_OP_* operation code
+ *     MR2 = vm_slot (0–3)
+ *     MR3 = payload offset within the shared MR (Linux reads payload here)
+ *     MR4 = payload_len (bytes, ≤ IPC_PAYLOAD_LEN)
+ *     Reply: MR0=0 (ok) or 0xFF (ring full/error), MR1=seq
+ *
+ *   OP_DEBUG_IPC_POLL (0x63)
+ *     MR1 = seq (from a prior OP_DEBUG_IPC_SEND)
+ *     Reply: MR0=status (0=found,1=pending,0xFF=error),
+ *            MR1=resp.status, MR2=resp.payload_offset, MR3=resp.payload_len
+ */
+#define OP_DEBUG_IPC_SEND  0x62
+#define OP_DEBUG_IPC_POLL  0x63
+
+/* Channel on which the Linux VM notifies us that the response ring has data */
+#define DBG_CH_IPC_NOTIFY  7
 
 /* ── Debug event types (written to ring) ──────────────────────────────────── */
 #define DBG_EVT_BREAKPOINT_HIT  1  /* WASM execution hit a breakpoint */
@@ -118,6 +148,350 @@ uintptr_t debug_ring_vaddr;
 static slot_debug_state_t slot_state[MAX_DEBUG_SLOTS];
 static uint64_t boot_tick = 0;
 
+/* ═══════════════════════════════════════════════════════════════════════════
+ * IPC Bridge — seL4 ↔ Linux VM shared-memory command/response rings
+ * ═══════════════════════════════════════════════════════════════════════════ */
+
+/* ── IPC bridge BSS state ─────────────────────────────────────────────────── */
+
+/* Virtual address of the IPC shmem MR base (set by ipc_bridge_init). */
+static uintptr_t ipc_shmem_vaddr;
+
+/* Monotonically increasing sequence counter for outgoing commands. */
+static uint32_t ipc_seq_next;
+
+/* Optional per-response callback registered via ipc_bridge_set_resp_cb(). */
+static ipc_resp_cb_t ipc_resp_cb;
+static void         *ipc_resp_cb_cookie;
+
+/* Convenience accessors — never called before ipc_bridge_init(). */
+#define IPC_CMD_RING  ((volatile ipc_cmd_ring_t *) \
+    (ipc_shmem_vaddr + IPC_CMD_RING_OFFSET))
+#define IPC_RESP_RING ((volatile ipc_resp_ring_t *) \
+    (ipc_shmem_vaddr + IPC_RESP_RING_OFFSET))
+
+/* ── Minimal memcpy (no libc) ─────────────────────────────────────────────── */
+static void ipc_memcpy(void *dst, const void *src, uint32_t n)
+{
+    uint8_t       *d = (uint8_t *)dst;
+    const uint8_t *s = (const uint8_t *)src;
+    for (uint32_t i = 0; i < n; i++) d[i] = s[i];
+}
+
+/* ── ipc_bridge_init ──────────────────────────────────────────────────────── */
+void ipc_bridge_init(uintptr_t shmem_vaddr)
+{
+    ipc_shmem_vaddr     = shmem_vaddr;
+    ipc_seq_next        = 1;
+    ipc_resp_cb         = (ipc_resp_cb_t)0;
+    ipc_resp_cb_cookie  = (void *)0;
+
+    /* Initialise the seL4→Linux command ring. */
+    volatile ipc_cmd_ring_t *cr = IPC_CMD_RING;
+    cr->head  = 0;
+    cr->tail  = 0;
+    cr->_pad  = 0;
+    /* Zero all command slots. */
+    for (uint32_t i = 0; i < IPC_RING_DEPTH; i++) {
+        volatile ipc_cmd_t *c = &cr->cmds[i];
+        c->seq         = 0;
+        c->op          = 0;
+        c->vm_slot     = 0;
+        c->payload_len = 0;
+        for (uint32_t j = 0; j < IPC_PAYLOAD_LEN; j++) c->payload[j] = 0;
+    }
+    /* Write magic last so the Linux side sees a consistent ring. */
+    __asm__ volatile("" ::: "memory");
+    cr->magic = IPC_CMD_MAGIC;
+
+    /* Initialise the Linux→seL4 response ring. */
+    volatile ipc_resp_ring_t *rr = IPC_RESP_RING;
+    rr->head  = 0;
+    rr->tail  = 0;
+    rr->_pad  = 0;
+    for (uint32_t i = 0; i < IPC_RING_DEPTH; i++) {
+        volatile ipc_resp_t *r = &rr->resps[i];
+        r->seq         = 0;
+        r->status      = 0;
+        r->payload_len = 0;
+        r->_pad        = 0;
+        for (uint32_t j = 0; j < IPC_PAYLOAD_LEN; j++) r->payload[j] = 0;
+    }
+    __asm__ volatile("" ::: "memory");
+    rr->magic = IPC_RESP_MAGIC;
+
+    console_log(12, 12, "[ipc_bridge] Rings initialised: cmd@0x1000 resp@0x2000, depth=64\n");
+}
+
+/* ── ipc_bridge_send_cmd ──────────────────────────────────────────────────── */
+int ipc_bridge_send_cmd(uint32_t op, uint32_t vm_slot,
+                        const void *payload, uint32_t payload_len,
+                        uint32_t *out_seq)
+{
+    if (!ipc_shmem_vaddr) return -1;
+
+    volatile ipc_cmd_ring_t *cr = IPC_CMD_RING;
+
+    /* Verify the ring was properly initialised. */
+    if (cr->magic != IPC_CMD_MAGIC) {
+        console_log(12, 12, "[ipc_bridge] WARN: cmd ring magic mismatch\n");
+        return -1;
+    }
+
+    uint32_t head = cr->head;
+    uint32_t tail = cr->tail;
+
+    /* Ring full check: head - tail == IPC_RING_DEPTH */
+    if ((head - tail) >= IPC_RING_DEPTH) {
+        console_log(12, 12, "[ipc_bridge] WARN: cmd ring full\n");
+        return -1;
+    }
+
+    uint32_t idx = head % IPC_RING_DEPTH;
+    volatile ipc_cmd_t *slot = &cr->cmds[idx];
+
+    uint32_t seq = ipc_seq_next++;
+    slot->seq     = seq;
+    slot->op      = op;
+    slot->vm_slot = vm_slot;
+
+    /* Clamp payload length and copy inline payload. */
+    if (payload_len > IPC_PAYLOAD_LEN) payload_len = IPC_PAYLOAD_LEN;
+    slot->payload_len = payload_len;
+
+    if (payload && payload_len) {
+        ipc_memcpy((void *)slot->payload, payload, payload_len);
+    }
+
+    /* Memory barrier then advance head so the Linux reader sees a complete entry. */
+    __asm__ volatile("" ::: "memory");
+    cr->head = head + 1;
+
+    if (out_seq) *out_seq = seq;
+    return 0;
+}
+
+/* ── ipc_bridge_poll_resp ─────────────────────────────────────────────────── */
+int ipc_bridge_poll_resp(uint32_t seq, ipc_resp_t *out_resp)
+{
+    if (!ipc_shmem_vaddr || !out_resp) return -1;
+
+    volatile ipc_resp_ring_t *rr = IPC_RESP_RING;
+
+    if (rr->magic != IPC_RESP_MAGIC) {
+        console_log(12, 12, "[ipc_bridge] WARN: resp ring magic mismatch\n");
+        return -1;
+    }
+
+    uint32_t tail = rr->tail;
+    uint32_t head = rr->head;
+
+    /* Scan all unconsumed response slots for a matching seq. */
+    for (uint32_t i = tail; i != head; i++) {
+        uint32_t idx = i % IPC_RING_DEPTH;
+        volatile ipc_resp_t *r = &rr->resps[idx];
+
+        if (r->seq != seq) continue;
+
+        /* Found — copy response out. */
+        out_resp->seq         = r->seq;
+        out_resp->status      = r->status;
+        out_resp->payload_len = r->payload_len;
+        out_resp->_pad        = 0;
+
+        uint32_t plen = r->payload_len;
+        if (plen > IPC_PAYLOAD_LEN) plen = IPC_PAYLOAD_LEN;
+        ipc_memcpy(out_resp->payload, (const void *)r->payload, plen);
+
+        /*
+         * Consume: only advance tail when this entry is the oldest one.
+         * If it is not (i > tail), leave tail alone — a future drain in
+         * ipc_bridge_notified() will advance tail past all consumed slots.
+         * Mark the slot seq=0 so notified() knows it has been taken.
+         */
+        r->seq = 0;
+        __asm__ volatile("" ::: "memory");
+        if (i == tail) {
+            /* Advance tail over any already-consumed (seq==0) entries. */
+            while (rr->tail != rr->head && rr->resps[rr->tail % IPC_RING_DEPTH].seq == 0)
+                rr->tail++;
+        }
+
+        return 1;
+    }
+
+    return 0; /* still pending */
+}
+
+/* ── ipc_bridge_set_resp_cb ───────────────────────────────────────────────── */
+void ipc_bridge_set_resp_cb(ipc_resp_cb_t cb, void *cookie)
+{
+    ipc_resp_cb        = cb;
+    ipc_resp_cb_cookie = cookie;
+}
+
+/* ── ipc_bridge_notified ──────────────────────────────────────────────────── */
+void ipc_bridge_notified(void)
+{
+    if (!ipc_shmem_vaddr) return;
+
+    volatile ipc_resp_ring_t *rr = IPC_RESP_RING;
+
+    if (rr->magic != IPC_RESP_MAGIC) {
+        console_log(12, 12, "[ipc_bridge] WARN: notified but resp magic bad\n");
+        return;
+    }
+
+    uint32_t drained = 0;
+
+    /* Drain all pending responses in arrival order. */
+    while (rr->tail != rr->head) {
+        uint32_t idx = rr->tail % IPC_RING_DEPTH;
+        volatile ipc_resp_t *r = &rr->resps[idx];
+
+        /* Skip slots already consumed by ipc_bridge_poll_resp(). */
+        if (r->seq == 0) {
+            rr->tail++;
+            continue;
+        }
+
+        if (ipc_resp_cb) {
+            /* Build a non-volatile local copy for the callback. */
+            ipc_resp_t local;
+            local.seq         = r->seq;
+            local.status      = r->status;
+            local.payload_len = r->payload_len;
+            local._pad        = 0;
+            uint32_t plen = r->payload_len;
+            if (plen > IPC_PAYLOAD_LEN) plen = IPC_PAYLOAD_LEN;
+            ipc_memcpy(local.payload, (const void *)r->payload, plen);
+            ipc_resp_cb(&local, ipc_resp_cb_cookie);
+        }
+
+        r->seq = 0; /* mark consumed */
+        __asm__ volatile("" ::: "memory");
+        rr->tail++;
+        drained++;
+    }
+
+    if (drained) {
+        console_log(12, 12, "[ipc_bridge] notified: drained resp(s) from Linux\n");
+    }
+}
+
+/* ── Handle: OP_DEBUG_IPC_SEND ───────────────────────────────────────────── */
+/*
+ * MR1 = IPC_OP_* op code
+ * MR2 = vm_slot
+ * MR3 = payload_offset (caller's offset into the shared MR; we read from there)
+ * MR4 = payload_len
+ *
+ * Reply: MR0=0 (ok)/0xFF (error), MR1=seq
+ */
+static microkit_msginfo handle_ipc_send(void)
+{
+    uint32_t op             = (uint32_t)microkit_mr_get(1);
+    uint32_t vm_slot        = (uint32_t)microkit_mr_get(2);
+    uint32_t payload_offset = (uint32_t)microkit_mr_get(3);
+    uint32_t payload_len    = (uint32_t)microkit_mr_get(4);
+
+    /* Validate op code. */
+    if (op < IPC_OP_EXEC || op > IPC_OP_SIGNAL) {
+        console_log(12, 12, "[ipc_bridge] IPC_SEND: invalid op\n");
+        microkit_mr_set(0, 0xFF);
+        microkit_mr_set(1, 0);
+        return microkit_msginfo_new(0, 2);
+    }
+
+    /* Validate vm_slot. */
+    if (vm_slot >= 4) {
+        console_log(12, 12, "[ipc_bridge] IPC_SEND: invalid vm_slot\n");
+        microkit_mr_set(0, 0xFF);
+        microkit_mr_set(1, 0);
+        return microkit_msginfo_new(0, 2);
+    }
+
+    /* Resolve the payload pointer from the shared MR. */
+    const void *payload = (void *)0;
+    if (payload_len > 0 && ipc_shmem_vaddr) {
+        payload = (const void *)(ipc_shmem_vaddr + payload_offset);
+    }
+
+    uint32_t seq = 0;
+    int rc = ipc_bridge_send_cmd(op, vm_slot, payload, payload_len, &seq);
+    if (rc < 0) {
+        microkit_mr_set(0, 0xFF);
+        microkit_mr_set(1, 0);
+        return microkit_msginfo_new(0, 2);
+    }
+
+    console_log(12, 12, "[ipc_bridge] IPC_SEND: enqueued cmd op=");
+    /* Log op code (single hex digit for common ops 1-6). */
+    {
+        char _cl_buf[64] = {};
+        char *p = _cl_buf;
+        *p++ = '0' + (char)(op & 0xF);
+        *p++ = ' ';
+        *p++ = 's';
+        *p++ = 'l';
+        *p++ = 'o';
+        *p++ = 't';
+        *p++ = '=';
+        *p++ = '0' + (char)(vm_slot & 0xF);
+        *p++ = '\n';
+        *p   = '\0';
+        console_log(12, 12, _cl_buf);
+    }
+
+    microkit_mr_set(0, 0);
+    microkit_mr_set(1, seq);
+    return microkit_msginfo_new(0, 2);
+}
+
+/* ── Handle: OP_DEBUG_IPC_POLL ───────────────────────────────────────────── */
+/*
+ * MR1 = seq (from a prior OP_DEBUG_IPC_SEND)
+ *
+ * Reply:
+ *   MR0 = 0 (response found), 1 (still pending), 0xFF (error)
+ *   MR1 = resp.status     (valid when MR0==0)
+ *   MR2 = resp.payload_offset — not meaningful here; we report 0
+ *   MR3 = resp.payload_len
+ */
+static microkit_msginfo handle_ipc_poll(void)
+{
+    uint32_t seq = (uint32_t)microkit_mr_get(1);
+
+    ipc_resp_t resp;
+    int rc = ipc_bridge_poll_resp(seq, &resp);
+
+    if (rc < 0) {
+        /* Bridge not initialised or bad pointer. */
+        microkit_mr_set(0, 0xFF);
+        microkit_mr_set(1, 0);
+        microkit_mr_set(2, 0);
+        microkit_mr_set(3, 0);
+        return microkit_msginfo_new(0, 4);
+    }
+
+    if (rc == 0) {
+        /* Still pending — no response yet. */
+        microkit_mr_set(0, 1);
+        microkit_mr_set(1, 0);
+        microkit_mr_set(2, 0);
+        microkit_mr_set(3, 0);
+        return microkit_msginfo_new(0, 4);
+    }
+
+    /* rc == 1: response found. */
+    console_log(12, 12, "[ipc_bridge] IPC_POLL: response received\n");
+    microkit_mr_set(0, 0);
+    microkit_mr_set(1, resp.status);
+    microkit_mr_set(2, 0);            /* payload_offset — inline only */
+    microkit_mr_set(3, resp.payload_len);
+    return microkit_msginfo_new(0, 4);
+}
+
 /* ── Init ─────────────────────────────────────────────────────────────────── */
 static void debug_bridge_init(void) {
     volatile debug_ring_header_t *hdr = DBG_HDR;
@@ -144,6 +518,9 @@ static void debug_bridge_init(void) {
     }
 
     console_log(12, 12, "[debug_bridge] Ring initialized: capacity=5000+ events, 48B each\n");
+
+    /* Initialise the IPC bridge rings in the shared MR. */
+    ipc_bridge_init(IPC_SHMEM_BASE);
 }
 
 /* ── Append debug event to ring ───────────────────────────────────────────── */
@@ -443,11 +820,13 @@ microkit_msginfo protected(microkit_channel ch, microkit_msginfo msginfo) {
     boot_tick++;
 
     switch (op) {
-    case OP_DBG_ATTACH:     return handle_attach();
-    case OP_DBG_DETACH:     return handle_detach();
-    case OP_DBG_BREAKPOINT: return handle_breakpoint();
-    case OP_DBG_STEP:       return handle_step();
-    case OP_DBG_STATUS:     return handle_status();
+    case OP_DBG_ATTACH:      return handle_attach();
+    case OP_DBG_DETACH:      return handle_detach();
+    case OP_DBG_BREAKPOINT:  return handle_breakpoint();
+    case OP_DBG_STEP:        return handle_step();
+    case OP_DBG_STATUS:      return handle_status();
+    case OP_DEBUG_IPC_SEND:  return handle_ipc_send();
+    case OP_DEBUG_IPC_POLL:  return handle_ipc_poll();
     default:
         console_log(12, 12, "[debug_bridge] WARN: unknown opcode\n");
         microkit_mr_set(0, 0xFF);
@@ -475,6 +854,12 @@ microkit_msginfo protected(microkit_channel ch, microkit_msginfo msginfo) {
  */
 void notified(microkit_channel ch) {
     boot_tick++;
+
+    /* IPC shmem notification: Linux→seL4 response ring has data (channel 7). */
+    if (ch == DBG_CH_IPC_NOTIFY) {
+        ipc_bridge_notified();
+        return;
+    }
 
     /*
      * Channels 3..6 map to swap_slot_0..3 debug notifications.

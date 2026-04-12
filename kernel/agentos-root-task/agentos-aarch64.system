@@ -78,6 +78,8 @@
     <!-- InitAgent: bootstrap agent -->
     <protection_domain name="init_agent" priority="100">
         <program_image path="init_agent.elf" />
+        <!-- js_staging: shared with js_runtime for script source/result exchange -->
+        <map mr="js_staging" vaddr="0x7000000" perms="rw" />
     </protection_domain>
     
     <!-- Agent pool workers: static PDs, dynamic task assignment -->
@@ -578,6 +580,9 @@
              setvar_vaddr="net_packet_shmem_vaddr" />
         <map mr="virtio_net_mmio"   vaddr="0x6000000" perms="rw" cached="false"
              setvar_vaddr="net_mmio_vaddr" />
+        <!-- Staging region: shared with vibe_engine for HTTP POST request/response bodies -->
+        <map mr="vibe_staging" vaddr="0x9000000" perms="rw"
+             setvar_vaddr="vibe_staging_vaddr" />
     </protection_domain>
 
     <channel>
@@ -661,5 +666,71 @@
     <channel>
         <end pd="app_manager" id="4" pp="true" />
         <end pd="http_svc"    id="1" />
+    </channel>
+
+    <!-- ═══════════════════════════════════════════════════════════════════
+         JS RUNTIME — JavaScript execution sandbox (passive, prio 120)
+
+         Passive PD that provides a sandboxed JavaScript runtime for
+         agent scripts. Shares a 4MB staging buffer with init_agent
+         for script source and result exchange.
+         ═══════════════════════════════════════════════════════════════════ -->
+
+    <memory_region name="js_staging" size="0x400000" />
+
+    <protection_domain name="js_runtime" priority="120" passive="true">
+        <program_image path="js_runtime.elf" />
+        <map mr="js_staging" vaddr="0x7000000" perms="rw"
+             setvar_vaddr="js_staging_vaddr" />
+    </protection_domain>
+
+    <!-- Channel 60: controller <-> js_runtime (ch 0 on js_runtime side) -->
+    <channel>
+        <end pd="controller"  id="60" pp="true" />
+        <end pd="js_runtime"  id="0" />
+    </channel>
+
+    <!-- Channel 61: init_agent <-> js_runtime (ch 1 on js_runtime side) -->
+    <channel>
+        <end pd="init_agent"  id="11" pp="true" />
+        <end pd="js_runtime"  id="1" />
+    </channel>
+
+    <!-- js_staging mapped into init_agent for script source/result exchange -->
+    <!-- init_agent maps js_staging at 0x7000000 (rw) via setvar_vaddr js_staging_vaddr -->
+    <!-- Note: init_agent maps js_staging at the same vaddr as js_runtime sees it -->
+
+    <!-- ═══════════════════════════════════════════════════════════════════
+         WG_NET — WireGuard network tunnel PD (passive, prio 140)
+
+         Passive PD that implements WireGuard tunnel management.
+         Bridges controller commands to net_server for encrypted
+         peer-to-peer networking.
+         ═══════════════════════════════════════════════════════════════════ -->
+
+    <memory_region name="wg_staging" size="0x100000" />
+
+    <protection_domain name="wg_net" priority="140" passive="true">
+        <program_image path="wg_net.elf" />
+        <map mr="wg_staging" vaddr="0x8000000" perms="rw"
+             setvar_vaddr="wg_staging_vaddr" />
+    </protection_domain>
+
+    <!-- Channel 62: controller <-> wg_net (ch 0 on wg_net side) -->
+    <channel>
+        <end pd="controller" id="61" pp="true" />
+        <end pd="wg_net"     id="0" />
+    </channel>
+
+    <!-- Channel 63: wg_net <-> net_server (ch 1 on wg_net side) -->
+    <channel>
+        <end pd="wg_net"     id="1" pp="true" />
+        <end pd="net_server" id="11" />
+    </channel>
+
+    <!-- controller lwIP timer tick -> net_server (NET_CH_TIMER=12) -->
+    <channel>
+        <end pd="controller"  id="59" />
+        <end pd="net_server"  id="12" />
     </channel>
 </system>

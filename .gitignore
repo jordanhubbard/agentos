@@ -45,3 +45,4 @@ build-*/
 # Node.js
 node_modules/
 console/package-lock.json
+.claude/

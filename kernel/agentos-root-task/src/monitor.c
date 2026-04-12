@@ -43,6 +43,8 @@ uintptr_t http_req_shmem_ctrl_vaddr;
 uintptr_t app_manifest_shmem_ctrl_vaddr;
 /* ext2fs I/O shmem: controller reads stat/readdir results here (mapped r) */
 uintptr_t ext2_shmem_ctrl_vaddr;
+/* vm_list shmem: controller reads OP_VM_LIST results from vm_manager (mapped r) */
+uintptr_t vm_list_shmem_ctrl_vaddr;
 
 /*
  * Echo service WASM binary (embedded for demo Step 4)
@@ -584,6 +586,8 @@ void init(void) {
     vibe_swap_init();
 
     console_log(0, 0, "[controller] *** agentOS controller boot complete ***\n[controller] Ready for agents.\n");
+    /* Canonical boot-complete marker — must match xtask/cmd_test.rs and end_to_end_boot_test.sh */
+    console_log(0, 0, "agentOS boot complete\n");
 
     /* ── Register new microkernel services with NameServer ───────────────── */
     console_log(0, 0, "[controller] Registering services with NameServer...\n");

@@ -52,8 +52,12 @@ struct netif g_netif;
 typedef struct {
     struct tcp_pcb *tcp;
     uint8_t  state;      /* 0=free 1=connecting 2=connected 3=closed */
-    uint8_t  rx_buf[1500];
-    uint16_t rx_buf_len;
+    /* rx_buf is 65536 bytes — large enough for full code-gen HTTP responses.
+     * The OP_NET_HTTP_POST handler uses the last conn slot (HTTP_CONN_ID) and
+     * depends on this buffer being able to hold a complete HTTP response body
+     * (generated C source can be 40–64 KB). */
+    uint8_t  rx_buf[65536];
+    uint32_t rx_buf_len;  /* uint32 to hold up to 64 KB */
 } vnic_conn_t;
 
 vnic_conn_t g_conns[NET_MAX_VNICS];
@@ -62,6 +66,12 @@ vnic_conn_t g_conns[NET_MAX_VNICS];
 uintptr_t net_mmio_vaddr_for_lwip;   /* set externally by net_server */
 uintptr_t net_rx_desc_vaddr;         /* RX virtqueue descriptor table */
 uintptr_t net_tx_desc_vaddr;         /* TX virtqueue descriptor table */
+
+/* ── VirtIO split virtqueue constants for RX ─────────────────────────── */
+#define VIRTQ_NUM_RX  16u   /* number of RX descriptors */
+
+/* RX used-ring consumption index (persists across poll calls) */
+static uint16_t rx_last_used_idx = 0;
 
 /* ── lwIP → virtio-net TX ────────────────────────────────────────────── */
 static err_t lwip_virtio_output(struct netif *netif, struct pbuf *p)
@@ -149,11 +159,66 @@ void net_server_lwip_init(uintptr_t mmio_vaddr, uintptr_t rx_desc,
 void lwip_virtio_rx_poll(void)
 {
     if (!net_rx_desc_vaddr) return;
-    /*
-     * Phase 1: In a real virtqueue we'd check the used ring for completed
-     * RX descriptors.  Here we do a simplified check — if no frame is
-     * waiting this is a no-op.
+
+    /* VirtIO split virtqueue layout (QEMU standard):
+     *   Descriptor table: net_rx_desc_vaddr + 0 (16 bytes * VIRTQ_NUM_RX)
+     *   Used ring:        net_rx_desc_vaddr + 0x1000 (page-aligned)
+     *     used ring header: flags(2) + idx(2)
+     *     used ring elements: id(4) + len(4) each, starting at offset 4
      */
+    typedef struct {
+        uint64_t addr;
+        uint32_t len;
+        uint16_t flags;
+        uint16_t next;
+    } virtq_desc_t;
+
+    typedef struct {
+        uint32_t id;
+        uint32_t len;
+    } virtq_used_elem_t;
+
+    typedef struct {
+        uint16_t flags;
+        uint16_t idx;
+    } virtq_used_hdr_t;
+
+    volatile virtq_used_hdr_t *used_hdr =
+        (volatile virtq_used_hdr_t *)(net_rx_desc_vaddr + 0x1000u);
+    volatile virtq_used_elem_t *used_ring =
+        (volatile virtq_used_elem_t *)(net_rx_desc_vaddr + 0x1000u + 4u);
+    volatile virtq_desc_t *desc_table =
+        (volatile virtq_desc_t *)net_rx_desc_vaddr;
+
+    while (rx_last_used_idx != used_hdr->idx) {
+        uint16_t slot = rx_last_used_idx % VIRTQ_NUM_RX;
+
+        uint32_t desc_id  = used_ring[slot].id;
+        uint32_t buf_len  = used_ring[slot].len;
+
+        /* Sanity: must have at least virtio-net 10-byte header + 1 byte payload */
+        if (desc_id < VIRTQ_NUM_RX && buf_len > 10u) {
+            uint32_t eth_len = buf_len - 10u;  /* strip virtio-net header */
+
+            struct pbuf *p = pbuf_alloc(PBUF_RAW, (u16_t)eth_len, PBUF_RAM);
+            if (p != NULL) {
+                /* Buffer virtual address is stored in the descriptor addr field */
+                const uint8_t *src =
+                    (const uint8_t *)(uintptr_t)(desc_table[desc_id].addr + 10u);
+                uint8_t *dst = (uint8_t *)p->payload;
+                for (uint32_t i = 0; i < eth_len; i++)
+                    dst[i] = src[i];
+
+                if (g_netif.input(p, &g_netif) != ERR_OK)
+                    pbuf_free(p);
+            }
+        }
+
+        rx_last_used_idx++;
+    }
+
+    /* Memory barrier: ensure all reads above are visible before next poll */
+    __asm__ volatile("" ::: "memory");
 }
 
 /* TCP receive callback — stores data in vnic_conn rx_buf */
@@ -166,10 +231,9 @@ static err_t lwip_tcp_recv_cb(void *arg, struct tcp_pcb *pcb,
         return ERR_OK;
     }
     vnic_conn_t *c = &g_conns[vnic_id & 7u];
-    uint16_t n = p->tot_len < (uint16_t)sizeof(c->rx_buf)
-                 ? (uint16_t)p->tot_len
-                 : (uint16_t)sizeof(c->rx_buf);
-    pbuf_copy_partial(p, c->rx_buf, n, 0);
+    /* p->tot_len is u16_t (max 65535); rx_buf is 65536 bytes — always fits */
+    uint32_t n = (uint32_t)p->tot_len;
+    pbuf_copy_partial(p, c->rx_buf, (u16_t)n, 0);
     c->rx_buf_len = n;
     tcp_recved(pcb, p->tot_len);
     pbuf_free(p);
@@ -223,12 +287,12 @@ int lwip_net_send(uint8_t vnic_id, const uint8_t *data, uint16_t len)
 }
 
 /* Recv: copies up to max bytes to dst, returns actual bytes */
-int lwip_net_recv(uint8_t vnic_id, uint8_t *dst, uint16_t max)
+int lwip_net_recv(uint8_t vnic_id, uint8_t *dst, uint32_t max)
 {
     if (vnic_id >= NET_MAX_VNICS) return 0;
     vnic_conn_t *c = &g_conns[vnic_id];
-    uint16_t n = (c->rx_buf_len < max) ? c->rx_buf_len : max;
-    for (uint16_t i = 0; i < n; i++) dst[i] = c->rx_buf[i];
+    uint32_t n = (c->rx_buf_len < max) ? c->rx_buf_len : max;
+    for (uint32_t i = 0; i < n; i++) dst[i] = c->rx_buf[i];
     c->rx_buf_len = 0;
     return (int)n;
 }

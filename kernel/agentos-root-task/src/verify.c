@@ -22,10 +22,7 @@
 #include "string_bare.h"
 #include "verify.h"
 
-/* Forward declaration — implemented in the Microkit runtime library.
- * Declared here rather than via <microkit.h> to avoid pulling in seL4
- * assembly headers that are incompatible with strict -std=c11. */
-console_log(15, 15, const char *s);
+/* console_log is declared in agentos.h (included above). */
 
 /* =========================================================================
  * VIBE_VERIFY_MODE
@@ -947,41 +944,9 @@ static int ed25519_verify_hash(const uint8_t sig[64], const uint8_t msg[32],
     return (memcmp(t, sig, 32) == 0) ? 0 : -1;
 }
 
-/*
- * ed25519_verify — public API, variable-length message.
- * Computes the full Ed25519 verification over raw message bytes of any length.
- * sig[64]: R || S bytes; msg + msg_len: arbitrary message; pk[32]: public key.
- * Returns 0 on success, -1 on failure.
- */
-int ed25519_verify(const uint8_t sig[64], const uint8_t *msg, size_t msg_len,
-                   const uint8_t pk[32])
-{
-    uint8_t h[64];
-    uint8_t hreduced[64];
-    uint8_t t[32];
-    gf p[4], q[4];
-    sha512_ctx_t ctx;
-    int i;
-
-    if (pt_unpackneg(q, pk) != 0) return -1;
-
-    /* H = SHA-512(R[32] || pk[32] || msg) */
-    sha512_init(&ctx);
-    sha512_update(&ctx, sig, 32);
-    sha512_update(&ctx, pk,  32);
-    sha512_update(&ctx, msg, msg_len);
-    sha512_final(&ctx, h);
-
-    for (i = 0; i < 64; i++) hreduced[i] = h[i];
-    sc_reduce(hreduced);
-
-    pt_scalarmult(p, q, hreduced);
-    pt_scalarbase(q, sig + 32);
-    pt_add(p, q);
-    pt_pack(t, p);
-
-    return (memcmp(t, sig, 32) == 0) ? 0 : -1;
-}
+/* ed25519_verify — the exported symbol is provided by ed25519_verify.c.
+ * Internal code uses ed25519_verify_hash (static, above) directly.
+ * Declaration removed to avoid duplicate-symbol conflict with ed25519_verify.c. */
 
 /* =========================================================================
  * Section 4: WASM custom section scanner

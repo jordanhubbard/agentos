@@ -126,36 +126,64 @@ static const char AGENTSTORE_CAMKES_COMPONENT[] =
     "}\n";
 
 static int vibe_generate_agentstore(void) {
-    aos_log(AOS_LOG_INFO, "Phase 2: Generating AgentStore component");
-    
-    /*
-     * In a full implementation, we'd use ModelSvc to generate this code.
-     * For the proof-of-concept, we use the pre-designed reference.
-     *
-     * The real flow would be:
-     *  1. Ask model to generate CAmkES .camkes interface file
-     *  2. Ask model to generate C implementation
-     *  3. Compile the C code to a WASM module (sandboxable)
-     *  4. Package as a component image
-     *  5. Propose to supervisor
-     */
-    
-    /* Save the CAmkES component definition */
-    aos_store_t store = aos_store_open(
-        AOS_CAP_NULL,
-        "/agents/vibe/generated/AgentStore.camkes",
-        AOS_STORE_WRONLY | AOS_STORE_CREATE
-    );
-    
-    if (store != AOS_CAP_NULL) {
-        aos_store_write(store, AGENTSTORE_CAMKES_COMPONENT, 
-                        strlen(AGENTSTORE_CAMKES_COMPONENT));
-        aos_store_close(store);
-        aos_log(AOS_LOG_INFO, 
-                "Generated AgentStore.camkes (%zu bytes)",
-                strlen(AGENTSTORE_CAMKES_COMPONENT));
+    aos_log(AOS_LOG_INFO, "Phase 2: Generating AgentStore via ModelSvc+Bridge");
+
+    const char *prompt =
+        "Generate a replacement for the agentOS MemFS storage service. "
+        "The replacement must implement all STORAGE_OP_* operations "
+        "(WRITE=0x30, READ=0x31, DELETE=0x32, STAT=0x33, LIST=0x34) "
+        "and the STAT_SVC operation (0x20, returns file_count in MR1 and total_bytes in MR2). "
+        "Implement content-addressable storage with SHA-256 deduplication. "
+        "Use a flat hash table for O(1) lookups. "
+        "Maximum 256 files, 64KB each, all in-memory. "
+        "This is a demo implementation — optimize for correctness over performance.";
+
+    static char generated_code[65536];  /* 64KB code buffer */
+    size_t code_len = 0;
+
+    int err = aos_vibe_generate(prompt, "storage.v1",
+                                generated_code, sizeof(generated_code),
+                                &code_len);
+    if (err != AOS_OK) {
+        aos_log(AOS_LOG_WARN,
+                "Generation failed (err=%d) — using built-in fallback design", err);
+        goto use_fallback;
     }
-    
+
+    aos_log(AOS_LOG_INFO, "Generated %zu bytes of C source", code_len);
+
+    /* Compile to WASM */
+    {
+        uint32_t wasm_size = 0;
+        err = aos_vibe_compile(generated_code, "storage.v1", &wasm_size);
+        if (err != AOS_OK) {
+            aos_log(AOS_LOG_WARN,
+                    "Compilation failed (err=%d) — using built-in fallback", err);
+            goto use_fallback;
+        }
+        aos_log(AOS_LOG_INFO, "Compiled to %u bytes of WASM", wasm_size);
+    }
+
+    return 0;
+
+use_fallback:
+    /* Fall back to the pre-defined CAmkES template stored to MemFS */
+    aos_log(AOS_LOG_INFO, "Using pre-defined fallback AgentStore design");
+    {
+        aos_store_t store = aos_store_open(
+            AOS_CAP_NULL,
+            "/agents/vibe/generated/AgentStore.camkes",
+            AOS_STORE_WRONLY | AOS_STORE_CREATE
+        );
+        if (store != AOS_CAP_NULL) {
+            aos_store_write(store, AGENTSTORE_CAMKES_COMPONENT,
+                            strlen(AGENTSTORE_CAMKES_COMPONENT));
+            aos_store_close(store);
+            aos_log(AOS_LOG_INFO,
+                    "Generated AgentStore.camkes (%zu bytes)",
+                    strlen(AGENTSTORE_CAMKES_COMPONENT));
+        }
+    }
     return 0;
 }
 
@@ -207,6 +235,13 @@ static int vibe_generate_agentstore(void) {
 #endif
 
 /*
+ * File-scope WASM size: set by phase2_generate_service() after a successful
+ * compile, consumed by phase3_propose_swap() so the correct byte count is
+ * passed to VibeEngine in OP_VIBE_PROPOSE MR2.
+ */
+static uint32_t g_compiled_wasm_size = 0;
+
+/*
  * Phase 1 (microkit): Inspect current MemFS via PPC to get live stats.
  */
 static void phase1_inspect_memfs(void) {
@@ -221,28 +256,61 @@ static void phase1_inspect_memfs(void) {
 }
 
 /*
- * Phase 2 (microkit): Request ModelSvc to generate a replacement service.
- * In the demo we simulate the generation delay with a busy-wait counter.
+ * Phase 2 (microkit): Request code generation and compilation via the bridge.
+ *
+ * Calls aos_vibe_generate() to get C source from the LLM, then
+ * aos_vibe_compile() to turn it into a WASM binary placed in the vibe
+ * staging region at offset 0.  On success, g_compiled_wasm_size is set
+ * so phase3_propose_swap() can pass the correct size to VibeEngine.
+ *
+ * If either step fails (NetStack not yet up, bridge unreachable, compile
+ * error) we fall through gracefully: g_compiled_wasm_size stays 0, and
+ * phase3 will tell VibeEngine to use whatever pre-baked binary is already
+ * in the staging region.
  */
 static void phase2_generate_service(void) {
-    /* In production: PPC to ModelSvc to generate WASM from a prompt */
-    /* For the demo: use a pre-baked WASM binary from the vibe_staging region */
-    aos_log(AOS_LOG_INFO,
-            "vibe-agent: requesting ModelSvc to generate optimized MemFS...");
-    /* Simulate a 500ms generation delay by spinning on a counter */
-    volatile uint64_t t = 0;
-    for (uint64_t i = 0; i < 1000000ULL; i++) t++;
-    (void)t;
-    aos_log(AOS_LOG_INFO, "vibe-agent: generation complete (simulated)");
+    aos_log(AOS_LOG_INFO, "vibe-agent: requesting code generation via bridge...");
+
+    const char *prompt =
+        "Generate a minimal replacement for the agentOS storage.v1 service. "
+        "Implement STORAGE_OP_WRITE (0x30), STORAGE_OP_READ (0x31), "
+        "STORAGE_OP_STAT_SVC (0x20). Use a flat array of 64 entries max.";
+
+    static char code_buf[65536];
+    size_t code_len = 0;
+
+    aos_status_t err = aos_vibe_generate(prompt, "storage.v1",
+                                          code_buf, sizeof(code_buf), &code_len);
+    if (err == AOS_OK && code_len > 0) {
+        aos_log(AOS_LOG_INFO, "vibe-agent: generation complete (%zu bytes)", code_len);
+
+        uint32_t wasm_size = 0;
+        err = aos_vibe_compile(code_buf, "storage.v1", &wasm_size);
+        if (err == AOS_OK) {
+            g_compiled_wasm_size = wasm_size;
+            aos_log(AOS_LOG_INFO, "vibe-agent: compiled to %u bytes WASM", wasm_size);
+        } else {
+            aos_log(AOS_LOG_WARN, "vibe-agent: compile failed, using pre-baked WASM");
+        }
+    } else {
+        aos_log(AOS_LOG_WARN,
+                "vibe-agent: generation unavailable (NetStack not ready?), "
+                "using pre-baked WASM in staging region");
+    }
 }
 
 /*
  * Phase 3 (microkit): Propose the new service to VibeEngine for validation.
+ *
+ * MR2 carries the WASM binary size so VibeEngine knows how many bytes to
+ * read from the staging region at offset 0.  If phase2 compiled a fresh
+ * binary, g_compiled_wasm_size is non-zero; otherwise 0 tells VibeEngine
+ * to use the pre-baked image it already knows about.
  */
 static void phase3_propose_swap(void) {
     microkit_mr_set(0, OP_VIBE_PROPOSE);
-    microkit_mr_set(1, SERVICE_MEMFS);   /* target service ID */
-    microkit_mr_set(2, 0);               /* wasm already in staging region */
+    microkit_mr_set(1, SERVICE_MEMFS);           /* target service ID */
+    microkit_mr_set(2, g_compiled_wasm_size);    /* WASM size (0 = use pre-baked) */
     microkit_msginfo reply = microkit_ppcall(CH_VIBE, microkit_msginfo_new(0, 3));
     uint32_t status = (uint32_t)microkit_mr_get(0);
     (void)reply;

@@ -387,6 +387,7 @@ void notified(microkit_channel ch) {
 }
 
 microkit_msginfo protected(microkit_channel ch, microkit_msginfo msg) {
+    (void)ch;
     uint32_t op = (uint32_t)microkit_mr_get(0);
 
     switch (op) {
