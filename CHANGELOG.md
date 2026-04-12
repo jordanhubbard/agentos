@@ -111,7 +111,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Fixed: Microkit SDK download + Homebrew LLVM PATH for macOS (`c8f243e`)
 - Fixed: stale microkit-sdk symlink removed (`1415452`)
 - Fixed: git submodule auto-initialisation when missing (`08dca11`)
-- Fixed: RCC renamed to agentOS console with build error fixes (`c2da13e`)
+- Fixed: console renamed to agentOS console with build error fixes (`c2da13e`)
 - Fixed: controller links, system file validity (`9fd898f`)
 - scripts/boot-test.sh: reusable QEMU serial banner verification with configurable timeout
 - .github/workflows/ci.yml: dedicated boot-test job (riscv64 + QEMU serial banner check)

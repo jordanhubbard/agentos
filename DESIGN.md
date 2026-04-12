@@ -1,7 +1,7 @@
 # agentOS — Design Document
 
 **Version:** 0.1.0-draft
-**Author:** Bullwinkle J. Moose 🫎
+**Author:** Jordan Hubbard
 **Date:** 2026-03-28
 **Status:** DESIGN PHASE
 

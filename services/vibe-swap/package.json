@@ -9,6 +9,6 @@
     "test": "node --test test/*.test.mjs",
     "demo": "node src/demo.mjs"
   },
-  "author": "Bullwinkle J. Moose 🫎",
+  "author": "Jordan Hubbard",
   "license": "BSD-2-Clause"
 }
