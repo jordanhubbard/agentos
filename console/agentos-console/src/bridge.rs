@@ -4,28 +4,36 @@
 //! Runs as a separate axum Router on a separate TcpListener, but in the
 //! same process.
 
+use std::collections::HashMap;
+use std::convert::Infallible;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use axum::{
     extract::{Path, Query, State},
     http::StatusCode,
-    response::{IntoResponse, Response},
-    routing::{get, post},
+    response::{sse::{Event, KeepAlive, Sse}, IntoResponse, Response},
+    routing::{delete, get, post},
     Json, Router,
 };
 use base64::Engine as _;
+use futures::{stream, StreamExt as _};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
 use pd_slots::{MAX_SLOTS, SLOT_NAMES};
 
-use crate::freebsd::{assets_ready, FreeBsdPhase, SharedFreeBsdState};
+use crate::freebsd::{assets_ready, FreeBsdPhase, SharedFreeBsdState, VmExtraDevice};
 use crate::linux_vm::{ubuntu_assets_ready, create_seed_disk, LinuxVmPhase, SharedLinuxVmState};
 use crate::serial::SerialCache;
+use crate::ws_log::{LogBroadcast, LogBroadcastTx};
 
-pub type SharedSerial = Arc<Mutex<SerialCache>>;
-pub type SharedInjectTx = Arc<Mutex<Option<tokio::sync::mpsc::UnboundedSender<Vec<u8>>>>>;
+pub type SharedSerial     = Arc<Mutex<SerialCache>>;
+pub type SharedInjectTx   = Arc<Mutex<Option<tokio::sync::mpsc::UnboundedSender<Vec<u8>>>>>;
+/// seL4 VM state registry: vm_id → "running" | "stopped"
+/// Populated by parsing \x01VM:start/stop:id escape sequences from console_shell.
+pub type SeL4VmRegistry   = Arc<Mutex<HashMap<String, String>>>;
 
 #[derive(Clone)]
 pub struct BridgeState {
@@ -39,6 +47,10 @@ pub struct BridgeState {
     pub parse_tx:      tokio::sync::watch::Sender<()>,
     /// Channel to inject bytes into QEMU serial socket
     pub inject_tx:     SharedInjectTx,
+    /// Broadcast channel for live serial log lines (shared with ws_log)
+    pub log_tx:        LogBroadcastTx,
+    /// seL4-managed VM lifecycle state (updated from \x01VM: serial escapes)
+    pub sel4_vms:      SeL4VmRegistry,
     /// When true, vibe/generate returns a pre-baked mock response without
     /// calling any LLM backend.  Enabled by --mock-codegen CLI flag or
     /// AGENTOS_CODEGEN_BACKEND=mock env var.
@@ -47,16 +59,25 @@ pub struct BridgeState {
 
 pub fn build_router(state: BridgeState) -> Router {
     Router::new()
-        .route("/api/agentos/agents",                 get(get_agents))
-        .route("/api/agentos/agents/freebsd/status",  get(get_freebsd_status))
-        .route("/api/agentos/agents/spawn",            post(post_spawn))
-        .route("/api/agentos/slots",                   get(get_slots))
-        .route("/api/agentos/console/status",          get(get_console_status))
-        .route("/api/agentos/console/attach/:slot",    post(post_attach))
-        .route("/api/agentos/console/inject/:slot",    post(post_inject))
-        .route("/api/agentos/console/:slot",           get(get_console_slot))
-        .route("/api/agentos/vibe/generate",           post(post_vibe_generate))
-        .route("/api/agentos/vibe/compile",            post(post_vibe_compile))
+        .route("/api/agentos/agents",                     get(get_agents))
+        .route("/api/agentos/agents/freebsd/status",      get(get_freebsd_status))
+        .route("/api/agentos/agents/spawn",                post(post_spawn))
+        .route("/api/agentos/slots",                       get(get_slots))
+        // Static console routes before :slot wildcard
+        .route("/api/agentos/console/status",              get(get_console_status))
+        .route("/api/agentos/console/stream",              get(get_console_stream))
+        .route("/api/agentos/console/cmd",                 post(post_console_cmd))
+        .route("/api/agentos/console/vms",                 get(get_sel4_vms))
+        .route("/api/agentos/console/attach/:slot",        post(post_attach))
+        .route("/api/agentos/console/inject/:slot",        post(post_inject))
+        .route("/api/agentos/console/:slot",               get(get_console_slot))
+        .route("/api/agentos/vibe/generate",               post(post_vibe_generate))
+        .route("/api/agentos/vibe/compile",                post(post_vibe_compile))
+        // VM management
+        .route("/api/agentos/vms",                         get(get_vms))
+        .route("/api/agentos/vms/:vm_id/devices",          get(get_vm_devices))
+        .route("/api/agentos/vms/:vm_id/devices",          post(post_vm_device))
+        .route("/api/agentos/vms/:vm_id/devices/:dev_id",  delete(delete_vm_device))
         .fallback(fallback_404)
         .with_state(state)
 }
@@ -272,6 +293,340 @@ async fn get_freebsd_status(State(s): State<BridgeState>) -> impl IntoResponse {
     }))
 }
 
+// ─── VM management API ────────────────────────────────────────────────────────
+
+/// Send a single QMP command to a running QEMU instance and return the reply.
+/// Performs the QMP capability negotiation handshake on first contact.
+/// Returns `None` if the socket is unavailable or the command fails.
+fn qmp_exec(sock_path: &str, cmd: &str) -> Option<String> {
+    use std::io::{BufRead, BufReader, Write};
+    use std::os::unix::net::UnixStream;
+    use std::time::Duration;
+
+    let mut stream = UnixStream::connect(sock_path).ok()?;
+    stream.set_read_timeout(Some(Duration::from_secs(5))).ok();
+    stream.set_write_timeout(Some(Duration::from_secs(5))).ok();
+
+    let mut reader = BufReader::new(stream.try_clone().ok()?);
+
+    // Read the QMP greeting line.
+    let mut greeting = String::new();
+    reader.read_line(&mut greeting).ok()?;
+
+    // Send capability negotiation.
+    stream.write_all(b"{\"execute\":\"qmp_capabilities\"}\n").ok()?;
+
+    // Read the {"return":{}} ack.
+    let mut ack = String::new();
+    reader.read_line(&mut ack).ok()?;
+
+    // Send the actual command.
+    stream.write_all(cmd.as_bytes()).ok()?;
+    stream.write_all(b"\n").ok()?;
+
+    // Read the reply.
+    let mut reply = String::new();
+    reader.read_line(&mut reply).ok()?;
+    Some(reply)
+}
+
+/// Attempt to hotplug a disk into a running QEMU VM via QMP.
+/// Returns true if the command was accepted.
+fn qmp_hotplug_disk(sock_path: &str, dev_id: &str, img_path: &str) -> bool {
+    // Step 1: add the block device backend.
+    let blockdev = format!(
+        "{{\"execute\":\"blockdev-add\",\"arguments\":{{\"driver\":\"raw\",\"node-name\":\"{id}\",\"file\":{{\"driver\":\"file\",\"filename\":\"{path}\"}}}}}}",
+        id = dev_id, path = img_path
+    );
+    if qmp_exec(sock_path, &blockdev).is_none() { return false; }
+
+    // Step 2: attach the virtio-blk device.
+    let devaddr = format!(
+        "{{\"execute\":\"device_add\",\"arguments\":{{\"driver\":\"virtio-blk-device\",\"drive\":\"{id}\",\"id\":\"{id}\"}}}}",
+        id = dev_id
+    );
+    qmp_exec(sock_path, &devaddr).is_some()
+}
+
+/// Attempt to hotplug a NIC into a running QEMU VM via QMP.
+fn qmp_hotplug_nic(sock_path: &str, dev_id: &str, host_port: u16) -> bool {
+    let netdev = format!(
+        "{{\"execute\":\"netdev_add\",\"arguments\":{{\"type\":\"user\",\"id\":\"{id}\",\"hostfwd\":\"tcp:127.0.0.1:{port}-:22\"}}}}",
+        id = dev_id, port = host_port
+    );
+    if qmp_exec(sock_path, &netdev).is_none() { return false; }
+
+    let devaddr = format!(
+        "{{\"execute\":\"device_add\",\"arguments\":{{\"driver\":\"virtio-net-device\",\"netdev\":\"{id}\",\"id\":\"{id}\"}}}}",
+        id = dev_id
+    );
+    qmp_exec(sock_path, &devaddr).is_some()
+}
+
+/// Build the JSON representation of a VM for the /api/agentos/vms response.
+fn vm_json(
+    id: &str,
+    name: &str,
+    state: &str,
+    ram_mb: u32,
+    ssh_port: u16,
+    ssh_user: &str,
+    extra_devices: &[VmExtraDevice],
+    boot_disk: &str,
+) -> Value {
+    // Built-in devices always present.
+    let mut devices: Vec<Value> = vec![
+        json!({
+            "id":   "boot",
+            "type": "disk",
+            "label": "Boot disk",
+            "path": boot_disk,
+            "live": true,
+        }),
+        json!({
+            "id":   "net0",
+            "type": "nic",
+            "label": format!("Primary NIC (SSH port {})", ssh_port),
+            "port": ssh_port,
+            "live": true,
+        }),
+    ];
+    for d in extra_devices {
+        devices.push(serde_json::to_value(d).unwrap_or(Value::Null));
+    }
+
+    json!({
+        "id":           id,
+        "name":         name,
+        "state":        state,
+        "ram_mb":       ram_mb,
+        "ssh_port":     ssh_port,
+        "ssh_user":     ssh_user,
+        "ssh_password": "agentos",
+        "ssh_note":     format!("ssh -p {} {}@localhost  (password: agentos)", ssh_port, ssh_user),
+        "devices":      devices,
+    })
+}
+
+async fn get_vms(State(s): State<BridgeState>) -> impl IntoResponse {
+    let fb      = s.freebsd.lock().unwrap().clone();
+    let lx      = s.linux.lock().unwrap().clone();
+    let fb_disk = format!("{}/freebsd-{}-aarch64.img", s.guest_img_dir, s.freebsd_ver);
+    let lx_disk = format!("{}/ubuntu-24.04-aarch64.img", s.guest_img_dir);
+
+    let fb_state = match fb.phase {
+        FreeBsdPhase::Running   => "running",
+        FreeBsdPhase::Preparing => "preparing",
+        FreeBsdPhase::Error     => "error",
+        FreeBsdPhase::Idle      => "stopped",
+    };
+    let lx_state = match lx.phase {
+        LinuxVmPhase::Running   => "running",
+        LinuxVmPhase::Preparing => "preparing",
+        LinuxVmPhase::Error     => "error",
+        LinuxVmPhase::Idle      => "stopped",
+    };
+
+    Json(json!([
+        vm_json("freebsd", "FreeBSD 14.4 (aarch64)", fb_state,
+                2048, 2222, "root", &fb.devices, &fb_disk),
+        vm_json("ubuntu",  "Ubuntu 24.04 LTS (aarch64)", lx_state,
+                2048, 2223, "ubuntu", &lx.devices, &lx_disk),
+    ]))
+}
+
+async fn get_vm_devices(
+    State(s): State<BridgeState>,
+    Path(vm_id): Path<String>,
+) -> impl IntoResponse {
+    match vm_id.as_str() {
+        "freebsd" => {
+            let fb = s.freebsd.lock().unwrap();
+            Json(json!({ "vm": "freebsd", "devices": fb.devices })).into_response()
+        }
+        "ubuntu" => {
+            let lx = s.linux.lock().unwrap();
+            Json(json!({ "vm": "ubuntu", "devices": lx.devices })).into_response()
+        }
+        _ => (StatusCode::NOT_FOUND, Json(json!({ "error": "unknown VM id" }))).into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+struct AddDeviceBody {
+    #[serde(rename = "type")]
+    kind:  String,
+    label: Option<String>,
+    /// For disk: path to existing image, or create a new one if size_gb is given.
+    path:  Option<String>,
+    /// For disk: size in GB for a new image to be created.
+    size_gb: Option<u32>,
+    /// For NIC: host-side TCP port (auto-assigned if omitted).
+    port: Option<u16>,
+}
+
+async fn post_vm_device(
+    State(s): State<BridgeState>,
+    Path(vm_id): Path<String>,
+    Json(body): Json<AddDeviceBody>,
+) -> impl IntoResponse {
+    let kind = body.kind.trim().to_lowercase();
+    if kind != "disk" && kind != "nic" {
+        return (StatusCode::BAD_REQUEST,
+                Json(json!({ "error": "type must be 'disk' or 'nic'" }))).into_response();
+    }
+
+    // Build the device entry.
+    let dev_id = format!("{}-{}", kind, uuid_short());
+    let label  = body.label.unwrap_or_else(|| format!("Extra {}", kind));
+
+    let (disk_path, nic_port, qmp_sock): (Option<String>, Option<u16>, Option<String>) =
+        match vm_id.as_str() {
+            "freebsd" => {
+                let fb = s.freebsd.lock().unwrap();
+                let p = if kind == "disk" {
+                    resolve_disk_path(&body.path, body.size_gb, &dev_id, &s.guest_img_dir)
+                } else { None };
+                let port = if kind == "nic" {
+                    Some(body.port.unwrap_or_else(|| next_free_port_freebsd(&fb.devices)))
+                } else { None };
+                (p, port, fb.qmp_sock.clone())
+            }
+            "ubuntu" => {
+                let lx = s.linux.lock().unwrap();
+                let p = if kind == "disk" {
+                    resolve_disk_path(&body.path, body.size_gb, &dev_id, &s.guest_img_dir)
+                } else { None };
+                let port = if kind == "nic" {
+                    Some(body.port.unwrap_or_else(|| next_free_port_linux(&lx.devices)))
+                } else { None };
+                (p, port, lx.qmp_sock.clone())
+            }
+            _ => return (StatusCode::NOT_FOUND,
+                         Json(json!({ "error": "unknown VM id" }))).into_response(),
+        };
+
+    // If disk: create image file if size_gb was specified and path doesn't exist.
+    if let Some(ref p) = disk_path {
+        if !std::path::Path::new(p).exists() {
+            let size_gb = body.size_gb.unwrap_or(10);
+            match std::process::Command::new("qemu-img")
+                .args(["create", "-f", "raw", p, &format!("{}G", size_gb)])
+                .status()
+            {
+                Ok(st) if st.success() => {}
+                Ok(st) => return (StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({ "error": format!("qemu-img create failed: {}", st) }))).into_response(),
+                Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({ "error": format!("qemu-img not found: {}", e) }))).into_response(),
+            }
+        }
+    }
+
+    let mut live = false;
+
+    // Attempt QMP hotplug if the VM is currently running.
+    if let Some(ref sock) = qmp_sock {
+        if std::path::Path::new(sock).exists() {
+            live = if kind == "disk" {
+                qmp_hotplug_disk(sock, &dev_id, disk_path.as_deref().unwrap_or(""))
+            } else {
+                qmp_hotplug_nic(sock, &dev_id, nic_port.unwrap_or(0))
+            };
+        }
+    }
+
+    let device = VmExtraDevice {
+        id:    dev_id.clone(),
+        kind:  kind.clone(),
+        label: label.clone(),
+        path:  disk_path,
+        port:  nic_port,
+        live,
+    };
+
+    // Add to state.
+    match vm_id.as_str() {
+        "freebsd" => s.freebsd.lock().unwrap().devices.push(device.clone()),
+        "ubuntu"  => s.linux.lock().unwrap().devices.push(device.clone()),
+        _ => {}
+    }
+
+    let note = if live {
+        "Device hotplugged into running VM".to_string()
+    } else {
+        "Device queued — will be attached at next VM start".to_string()
+    };
+
+    (StatusCode::CREATED, Json(json!({
+        "ok":     true,
+        "device": device,
+        "note":   note,
+    }))).into_response()
+}
+
+async fn delete_vm_device(
+    State(s): State<BridgeState>,
+    Path((vm_id, dev_id)): Path<(String, String)>,
+) -> impl IntoResponse {
+    let removed = match vm_id.as_str() {
+        "freebsd" => {
+            let mut fb = s.freebsd.lock().unwrap();
+            let before = fb.devices.len();
+            fb.devices.retain(|d| d.id != dev_id);
+            fb.devices.len() < before
+        }
+        "ubuntu" => {
+            let mut lx = s.linux.lock().unwrap();
+            let before = lx.devices.len();
+            lx.devices.retain(|d| d.id != dev_id);
+            lx.devices.len() < before
+        }
+        _ => return (StatusCode::NOT_FOUND,
+                     Json(json!({ "error": "unknown VM id" }))).into_response(),
+    };
+
+    if removed {
+        Json(json!({ "ok": true, "note": "Device removed (takes effect at next VM start if live-attached)" })).into_response()
+    } else {
+        (StatusCode::NOT_FOUND, Json(json!({ "error": "device not found" }))).into_response()
+    }
+}
+
+// ─── Device helpers ───────────────────────────────────────────────────────────
+
+fn uuid_short() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let t = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default();
+    format!("{:x}", t.subsec_nanos() ^ (t.as_secs() as u32))
+}
+
+fn resolve_disk_path(path: &Option<String>, size_gb: Option<u32>, dev_id: &str, img_dir: &str) -> Option<String> {
+    if let Some(p) = path.as_ref().filter(|p| !p.trim().is_empty()) {
+        return Some(p.clone());
+    }
+    if size_gb.is_some() {
+        return Some(format!("{}/{}.img", img_dir, dev_id));
+    }
+    None
+}
+
+fn next_free_port_freebsd(devices: &[VmExtraDevice]) -> u16 {
+    let used: std::collections::HashSet<u16> = devices.iter()
+        .filter(|d| d.kind == "nic")
+        .filter_map(|d| d.port)
+        .collect();
+    (2230u16..).find(|p| !used.contains(p)).unwrap_or(2230)
+}
+
+fn next_free_port_linux(devices: &[VmExtraDevice]) -> u16 {
+    let used: std::collections::HashSet<u16> = devices.iter()
+        .filter(|d| d.kind == "nic")
+        .filter_map(|d| d.port)
+        .collect();
+    (2240u16..).find(|p| !used.contains(p)).unwrap_or(2240)
+}
+
 #[derive(Deserialize)]
 struct SpawnBody {
     #[serde(rename = "type")]
@@ -314,23 +669,67 @@ async fn post_spawn(
             tokio::task::spawn_blocking(move || {
                 let bios_path  = format!("{}/edk2-aarch64-code.fd", guest_img_dir);
                 let drive_path = format!("{}/freebsd-{}-aarch64.img", guest_img_dir, freebsd_ver);
+                let qmp_sock   = "/tmp/freebsd-qmp.sock".to_string();
 
-                // Remove stale socket so QEMU can create it fresh.
+                // Remove stale sockets so QEMU can create them fresh.
                 let _ = std::fs::remove_file("/tmp/freebsd-serial.sock");
+                let _ = std::fs::remove_file(&qmp_sock);
+
+                // Collect extra drives from the device list.
+                let extra_drives: Vec<(String, String)> = {
+                    let fb = freebsd_state.lock().unwrap();
+                    fb.devices.iter()
+                        .filter(|d| d.kind == "disk")
+                        .enumerate()
+                        .map(|(i, d)| {
+                            let path = d.path.clone().unwrap_or_default();
+                            let id   = format!("extra{}", i + 1);
+                            (id, path)
+                        })
+                        .collect()
+                };
+                let extra_nics: Vec<(String, u16)> = {
+                    let fb = freebsd_state.lock().unwrap();
+                    fb.devices.iter()
+                        .filter(|d| d.kind == "nic")
+                        .enumerate()
+                        .map(|(i, d)| (format!("netx{}", i + 1), d.port.unwrap_or(2230 + i as u16)))
+                        .collect()
+                };
+
+                let mut args: Vec<String> = vec![
+                    "-machine".into(), "virt,virtualization=on".into(),
+                    "-cpu".into(),     "cortex-a57".into(),
+                    "-m".into(),       "2G".into(),
+                    "-nographic".into(),
+                    "-bios".into(),    bios_path.clone(),
+                    "-drive".into(),   format!("file={},format=raw,if=virtio", drive_path),
+                    "-netdev".into(),  "user,id=net0,hostfwd=tcp:127.0.0.1:2222-:22".into(),
+                    "-device".into(),  "virtio-net-device,netdev=net0".into(),
+                    "-device".into(),  "virtio-rng-device".into(),
+                    "-serial".into(),  "unix:/tmp/freebsd-serial.sock,server=on,wait=off".into(),
+                    "-qmp".into(),     format!("unix:{},server=on,wait=off", qmp_sock),
+                ];
+                for (id, path) in &extra_drives {
+                    args.push("-drive".into());
+                    args.push(format!("file={},format=raw,if=none,id={}", path, id));
+                    args.push("-device".into());
+                    args.push(format!("virtio-blk-device,drive={},id={}", id, id));
+                }
+                for (id, port) in &extra_nics {
+                    args.push("-netdev".into());
+                    args.push(format!("user,id={},hostfwd=tcp:127.0.0.1:{}-:22", id, port));
+                    args.push("-device".into());
+                    args.push(format!("virtio-net-device,netdev={},id={}", id, id));
+                }
+
+                {
+                    let mut fb = freebsd_state.lock().unwrap();
+                    fb.qmp_sock = Some(qmp_sock.clone());
+                }
 
                 let mut child = match std::process::Command::new("qemu-system-aarch64")
-                    .args([
-                        "-machine", "virt,virtualization=on",
-                        "-cpu",     "cortex-a57",
-                        "-m",       "2G",
-                        "-nographic",
-                        "-bios",    &bios_path,
-                        "-drive",   &format!("file={},format=raw,if=virtio", drive_path),
-                        "-netdev",  "user,id=net0,hostfwd=tcp:127.0.0.1:2222-:22",
-                        "-device",  "virtio-net-device,netdev=net0",
-                        "-device",  "virtio-rng-device",
-                        "-serial",  "unix:/tmp/freebsd-serial.sock,server=on,wait=off",
-                    ])
+                    .args(&args)
                     .spawn()
                 {
                     Ok(c) => c,
@@ -362,6 +761,7 @@ async fn post_spawn(
                 fb.step     = String::new();
                 fb.progress = 0;
                 fb.qemu_pid = None;
+                fb.qmp_sock = None;
             });
 
             return (StatusCode::ACCEPTED, Json(json!({
@@ -458,23 +858,67 @@ async fn post_spawn(
                 let ubuntu_path = format!("{}/ubuntu-24.04-aarch64.img",  guest_img_dir);
                 let seed_path   = format!("{}/linux-seed.img",            guest_img_dir);
 
-                // Remove stale socket so QEMU can create it fresh.
+                let qmp_sock = "/tmp/linux-qmp.sock".to_string();
+
+                // Remove stale sockets so QEMU can create them fresh.
                 let _ = std::fs::remove_file("/tmp/linux-serial.sock");
+                let _ = std::fs::remove_file(&qmp_sock);
+
+                // Collect extra drives/NICs from the device list.
+                let extra_drives: Vec<(String, String)> = {
+                    let lx = linux_state.lock().unwrap();
+                    lx.devices.iter()
+                        .filter(|d| d.kind == "disk")
+                        .enumerate()
+                        .map(|(i, d)| {
+                            let path = d.path.clone().unwrap_or_default();
+                            (format!("extra{}", i + 1), path)
+                        })
+                        .collect()
+                };
+                let extra_nics: Vec<(String, u16)> = {
+                    let lx = linux_state.lock().unwrap();
+                    lx.devices.iter()
+                        .filter(|d| d.kind == "nic")
+                        .enumerate()
+                        .map(|(i, d)| (format!("netx{}", i + 1), d.port.unwrap_or(2240 + i as u16)))
+                        .collect()
+                };
+
+                let mut args: Vec<String> = vec![
+                    "-machine".into(), "virt,virtualization=on".into(),
+                    "-cpu".into(),     "cortex-a57".into(),
+                    "-m".into(),       "2G".into(),
+                    "-nographic".into(),
+                    "-bios".into(),    bios_path.clone(),
+                    "-drive".into(),   format!("file={},format=raw,if=virtio", ubuntu_path),
+                    "-drive".into(),   format!("file={},format=raw,if=virtio", seed_path),
+                    "-netdev".into(),  "user,id=net0,hostfwd=tcp:127.0.0.1:2223-:22".into(),
+                    "-device".into(),  "virtio-net-device,netdev=net0".into(),
+                    "-device".into(),  "virtio-rng-device".into(),
+                    "-serial".into(),  "unix:/tmp/linux-serial.sock,server=on,wait=off".into(),
+                    "-qmp".into(),     format!("unix:{},server=on,wait=off", qmp_sock),
+                ];
+                for (id, path) in &extra_drives {
+                    args.push("-drive".into());
+                    args.push(format!("file={},format=raw,if=none,id={}", path, id));
+                    args.push("-device".into());
+                    args.push(format!("virtio-blk-device,drive={},id={}", id, id));
+                }
+                for (id, port) in &extra_nics {
+                    args.push("-netdev".into());
+                    args.push(format!("user,id={},hostfwd=tcp:127.0.0.1:{}-:22", id, port));
+                    args.push("-device".into());
+                    args.push(format!("virtio-net-device,netdev={},id={}", id, id));
+                }
+
+                {
+                    let mut lx = linux_state.lock().unwrap();
+                    lx.qmp_sock = Some(qmp_sock.clone());
+                }
 
                 let mut child = match std::process::Command::new("qemu-system-aarch64")
-                    .args([
-                        "-machine", "virt,virtualization=on",
-                        "-cpu",     "cortex-a57",
-                        "-m",       "2G",
-                        "-nographic",
-                        "-bios",    &bios_path,
-                        "-drive",   &format!("file={},format=raw,if=virtio", ubuntu_path),
-                        "-drive",   &format!("file={},format=raw,if=virtio", seed_path),
-                        "-netdev",  "user,id=net0,hostfwd=tcp:127.0.0.1:2223-:22",
-                        "-device",  "virtio-net-device,netdev=net0",
-                        "-device",  "virtio-rng-device",
-                        "-serial",  "unix:/tmp/linux-serial.sock,server=on,wait=off",
-                    ])
+                    .args(&args)
                     .spawn()
                 {
                     Ok(c) => c,
@@ -483,6 +927,7 @@ async fn post_spawn(
                         lx.phase    = LinuxVmPhase::Error;
                         lx.error    = Some(format!("Failed to launch qemu-system-aarch64: {}", e));
                         lx.qemu_pid = None;
+                        lx.qmp_sock = None;
                         return;
                     }
                 };
@@ -502,6 +947,7 @@ async fn post_spawn(
                 lx.step     = String::new();
                 lx.progress = 0;
                 lx.qemu_pid = None;
+                lx.qmp_sock = None;
             });
 
             return (StatusCode::ACCEPTED, Json(json!({
@@ -597,6 +1043,125 @@ async fn post_spawn(
         "name": body.name,
     })))
 }
+
+// ─── Console SSE stream ───────────────────────────────────────────────────────
+
+/// Optional slot filter for the SSE stream.
+#[derive(Deserialize)]
+struct StreamQuery {
+    /// If given, only emit lines from this slot.  Omit for all slots.
+    slot: Option<usize>,
+}
+
+/// GET /api/agentos/console/stream
+///
+/// Server-Sent Events stream of serial log lines.  Each event is a JSON object:
+///   data: {"slot": N, "line": "...", "cached": true}   ← historical replay
+///   data: {"slot": N, "line": "..."}                   ← live
+///   event: lag / data: {"lag": N}                      ← broadcast overrun
+///
+/// Optionally filter to one slot with ?slot=N.
+async fn get_console_stream(
+    State(s): State<BridgeState>,
+    Query(q): Query<StreamQuery>,
+) -> Sse<impl stream::Stream<Item = Result<Event, Infallible>>> {
+    let filter_slot = q.slot;
+
+    // Replay cached lines for the requested slot (or nothing for all-slots mode).
+    let initial: Vec<Result<Event, Infallible>> = if let Some(slot) = filter_slot {
+        if slot < MAX_SLOTS {
+            let serial = s.serial.lock().unwrap();
+            serial.lines[slot]
+                .iter()
+                .map(|line| {
+                    let data = json!({ "slot": slot, "line": line, "cached": true }).to_string();
+                    Ok(Event::default().data(data))
+                })
+                .collect()
+        } else {
+            vec![]
+        }
+    } else {
+        vec![]
+    };
+
+    let rx = s.log_tx.subscribe();
+
+    // Live stream: receives from broadcast, skips lines that don't match the filter.
+    let live = stream::unfold(rx, move |mut rx| async move {
+        loop {
+            match rx.recv().await {
+                Ok(LogBroadcast { slot, line }) => {
+                    if filter_slot.map_or(false, |f| slot != f) {
+                        continue;
+                    }
+                    let data = json!({ "slot": slot, "line": line }).to_string();
+                    return Some((Ok::<Event, Infallible>(Event::default().data(data)), rx));
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                    let data = json!({ "lag": n }).to_string();
+                    return Some((Ok(Event::default().event("lag").data(data)), rx));
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => return None,
+            }
+        }
+    });
+
+    let combined = stream::iter(initial).chain(live);
+    Sse::new(combined).keep_alive(KeepAlive::new().interval(Duration::from_secs(15)))
+}
+
+// ─── Console command injection ────────────────────────────────────────────────
+
+#[derive(Deserialize)]
+struct ConsoleCmdBody {
+    /// Command string to send to console_shell (newline appended automatically).
+    cmd: String,
+}
+
+/// POST /api/agentos/console/cmd
+///
+/// Injects a command into the seL4 console_shell PD by writing it to the
+/// QEMU serial socket.  The console_shell PD reads the line and dispatches it.
+///
+/// Example body: {"cmd": "vm list"}
+async fn post_console_cmd(
+    State(s): State<BridgeState>,
+    Json(body): Json<ConsoleCmdBody>,
+) -> impl IntoResponse {
+    let cmd = body.cmd.trim().to_string();
+    if cmd.is_empty() {
+        return Json(json!({ "ok": false, "error": "empty cmd" }));
+    }
+    let mut payload = cmd.clone();
+    payload.push('\n');
+
+    let guard = s.inject_tx.lock().unwrap();
+    if let Some(tx) = guard.as_ref() {
+        let _ = tx.send(payload.as_bytes().to_vec());
+        Json(json!({ "ok": true, "cmd": cmd, "source": "socket" }))
+    } else {
+        Json(json!({ "ok": false, "cmd": cmd, "error": "serial socket not connected", "source": "no_socket" }))
+    }
+}
+
+// ─── seL4 VM registry ─────────────────────────────────────────────────────────
+
+/// GET /api/agentos/console/vms
+///
+/// Returns the lifecycle state of seL4-managed VMs as parsed from
+/// \x01VM:start/stop:id escape sequences emitted by the console_shell PD.
+/// These are distinct from the QEMU-hosted FreeBSD/Ubuntu VMs.
+async fn get_sel4_vms(State(s): State<BridgeState>) -> impl IntoResponse {
+    let vms = s.sel4_vms.lock().unwrap();
+    let list: Vec<Value> = vms
+        .iter()
+        .map(|(id, state)| json!({ "id": id, "state": state }))
+        .collect();
+    Json(json!({ "vms": list, "source": "sel4_console" }))
+}
+
+// ─── Slots / console ─────────────────────────────────────────────────────────
 
 async fn get_slots(State(s): State<BridgeState>) -> impl IntoResponse {
     let _ = s.parse_tx.send(());

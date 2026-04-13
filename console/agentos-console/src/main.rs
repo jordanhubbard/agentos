@@ -42,7 +42,7 @@ use tracing::info;
 
 use anyhow::Context as _;
 
-use crate::bridge::{BridgeState, SharedSerial};
+use crate::bridge::{BridgeState, SeL4VmRegistry, SharedSerial};
 use crate::freebsd::new_shared;
 use crate::serial::{SerialCache, parse_serial_log};
 use crate::ws_log::{LogBroadcast, LogBroadcastTx, WsLogState};
@@ -114,6 +114,7 @@ async fn main() -> anyhow::Result<()> {
     let serial_cache: SharedSerial = Arc::new(Mutex::new(SerialCache::new()));
     let freebsd_state  = new_shared();
     let linux_vm_state = linux_vm::new_shared();
+    let sel4_vms: SeL4VmRegistry   = Arc::new(Mutex::new(std::collections::HashMap::new()));
 
     // Resolve the Trunk-built dist/ directory (used both for index.html and ServeDir).
     let exe_dir = std::env::current_exe()
@@ -193,6 +194,7 @@ async fn main() -> anyhow::Result<()> {
         let inject_tx_sock    = inject_tx_shared.clone();
         let serial_sock_path  = serial_sock.clone();
         let serial_log_path   = serial_log.clone();
+        let sel4_vms_sock     = sel4_vms.clone();
         tokio::spawn(async move {
             loop {
                 match UnixStream::connect(&serial_sock_path).await {
@@ -237,6 +239,31 @@ async fn main() -> anyhow::Result<()> {
                                     while let Some(nl_pos) = line_buf.find('\n') {
                                         let raw_line = line_buf[..nl_pos].to_string();
                                         line_buf = line_buf[nl_pos + 1..].to_string();
+
+                                        // Intercept \x01VM:start/stop:id control sequences
+                                        // emitted by the console_shell PD.  These are not
+                                        // user-visible lines; update the seL4 VM registry.
+                                        if raw_line.starts_with('\x01') {
+                                            if let Some(rest) = raw_line.strip_prefix("\x01VM:") {
+                                                let mut parts = rest.splitn(2, ':');
+                                                if let (Some(action), Some(vm_id)) =
+                                                    (parts.next(), parts.next())
+                                                {
+                                                    let vm_id = vm_id.trim().to_string();
+                                                    let state_str = match action {
+                                                        "start" => Some("running"),
+                                                        "stop"  => Some("stopped"),
+                                                        _       => None,
+                                                    };
+                                                    if let Some(s) = state_str {
+                                                        sel4_vms_sock.lock().unwrap()
+                                                            .insert(vm_id.clone(), s.to_string());
+                                                        info!("[console] seL4 VM '{}' {}", vm_id, s);
+                                                    }
+                                                }
+                                            }
+                                            continue; // never route control sequences to cache
+                                        }
 
                                         if let Some(routed) = serial::route_log_line(&raw_line, seen_pd) {
                                             seen_pd = routed.seen_pd;
@@ -392,6 +419,8 @@ async fn main() -> anyhow::Result<()> {
         freebsd_ver:   "14.4".to_string(),
         parse_tx:      parse_tx.clone(),
         inject_tx:     inject_tx_shared.clone(),
+        log_tx:        log_tx.clone(),
+        sel4_vms:      sel4_vms.clone(),
         mock_codegen,
     };
 

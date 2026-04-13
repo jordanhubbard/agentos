@@ -54,6 +54,32 @@ CFLAGS_SWAPSLOT := $(CFLAGS) -Iwasm3
 LDFLAGS := -L$(BOARD_DIR)/lib
 LIBS    := -lmicrokit -Tmicrokit.ld
 
+# ─── Board-specific UART config for console_shell ────────────────────────────
+# Passed down from the top-level Makefile via boards/<BOARD_NAME>/board.mk.
+# Defaults are empty (ring-buffer-only mode for QEMU builds).
+BOARD_NAME      ?=
+BOARD_NATIVE    ?= 0
+BOARD_UART_PHYS ?=
+BOARD_UART_SIZE ?=
+BOARD_UART_TYPE ?=
+BOARD_UART_IRQ  ?=
+
+CFLAGS_CONSOLESHELL := $(CFLAGS)
+ifeq ($(BOARD_UART_TYPE),pl011)
+  CFLAGS_CONSOLESHELL += -DBOARD_UART_PL011=1
+else ifeq ($(BOARD_UART_TYPE),ns16550)
+  CFLAGS_CONSOLESHELL += -DBOARD_UART_NS16550=1
+endif
+ifneq ($(BOARD_UART_PHYS),)
+  CFLAGS_CONSOLESHELL += \
+    -DBOARD_UART_PHYS=$(BOARD_UART_PHYS) \
+    -DBOARD_UART_SIZE=$(BOARD_UART_SIZE) \
+    -DBOARD_UART_IRQ=$(BOARD_UART_IRQ)
+endif
+ifeq ($(BOARD_NATIVE),1)
+  CFLAGS_CONSOLESHELL += -DBOARD_NATIVE=1
+endif
+
 # Protection Domain ELFs
 # monitor/controller: includes vibe_swap for the hot-swap controller-side logic
 # m3_bare_metal.c provides memset/memcpy/memmove needed by compiler-generated code
@@ -91,6 +117,7 @@ PD_VM_SNAPSHOT_SRCS      := src/vm_snapshot.c src/m3_bare_metal.c src/log.c
 PD_PFLOCAL_SERVER_SRCS   := src/pflocal_server.c src/m3_bare_metal.c src/log.c
 PD_EXEC_SERVER_SRCS      := src/exec_server.c src/m3_bare_metal.c src/log.c
 PD_TERM_SERVER_SRCS      := src/term_server.c src/m3_bare_metal.c src/log.c
+PD_CONSOLESHELL_SRCS     := src/console_shell.c src/m3_bare_metal.c src/log.c
 
 # wasm3 vendored sources (core interpreter only)
 WASM3_SRCS := wasm3/m3_core.c wasm3/m3_env.c wasm3/m3_code.c wasm3/m3_compile.c \
@@ -130,9 +157,10 @@ VM_SNAPSHOT_OBJS      := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_VM_SNAPSHOT_
 PFLOCAL_SERVER_OBJS   := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_PFLOCAL_SERVER_SRCS))
 EXEC_SERVER_OBJS      := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_EXEC_SERVER_SRCS))
 TERM_SERVER_OBJS      := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_TERM_SERVER_SRCS))
-WASM3_OBJS         := $(patsubst wasm3/%.c, $(BUILD_DIR)/wasm3_%.o, $(WASM3_SRCS))
+WASM3_OBJS            := $(patsubst wasm3/%.c, $(BUILD_DIR)/wasm3_%.o, $(WASM3_SRCS))
+CONSOLESHELL_OBJS     := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_CONSOLESHELL_SRCS))
 
-IMAGES := controller.elf event_bus.elf init_agent.elf worker.elf agentfs.elf vibe_engine.elf console_mux.elf swap_slot.elf mem_profiler.elf net_isolator.elf perf_counters.elf time_partition.elf trace_recorder.elf nameserver.elf virtio_blk.elf vfs_server.elf spawn_server.elf app_slot.elf net_server.elf js_runtime.elf wg_net.elf app_manager.elf http_svc.elf vm_manager.elf auth_server.elf ext2fs.elf proc_server.elf vm_snapshot.elf pflocal_server.elf exec_server.elf term_server.elf
+IMAGES := controller.elf event_bus.elf init_agent.elf worker.elf agentfs.elf vibe_engine.elf console_mux.elf swap_slot.elf mem_profiler.elf net_isolator.elf perf_counters.elf time_partition.elf trace_recorder.elf nameserver.elf virtio_blk.elf vfs_server.elf spawn_server.elf app_slot.elf net_server.elf js_runtime.elf wg_net.elf app_manager.elf http_svc.elf vm_manager.elf auth_server.elf ext2fs.elf proc_server.elf vm_snapshot.elf pflocal_server.elf exec_server.elf term_server.elf console_shell.elf
 
 # Optional: periodic WASM slot snapshot scheduler
 ifdef AGENTOS_SNAPSHOT_SCHED
@@ -159,6 +187,15 @@ else ifeq ($(ARCH),x86_64)
   SYSTEM_FILE := ../../manifests/agentos-linux-x86.system
 else
   SYSTEM_FILE := agentos.system
+endif
+
+# Board-specific system file override: native hardware targets supply their own
+# agentos.system in boards/<BOARD_NAME>/agentos.system (repo root).
+ifneq ($(BOARD_NAME),)
+  _BOARD_SYSTEM := ../../boards/$(BOARD_NAME)/agentos.system
+  ifneq ($(wildcard $(_BOARD_SYSTEM)),)
+    SYSTEM_FILE := $(_BOARD_SYSTEM)
+  endif
 endif
 
 IMAGE_FILE  := $(BUILD_DIR)/agentos.img
@@ -301,9 +338,28 @@ $(BUILD_DIR)/exec_server.elf: $(EXEC_SERVER_OBJS)
 $(BUILD_DIR)/term_server.elf: $(TERM_SERVER_OBJS)
 	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
 
+# console_shell uses board-specific UART CFLAGS
+$(BUILD_DIR)/console_shell.o: src/console_shell.c
+	@mkdir -p $(BUILD_DIR)
+	$(CC) -c $(CFLAGS_CONSOLESHELL) $< -o $@
+
+$(BUILD_DIR)/console_shell.elf: $(CONSOLESHELL_OBJS)
+	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
+
 # ─── Linux VMM (AArch64 only) ─────────────────────────────────────────────
 ifeq ($(ARCH),aarch64)
 ifneq ($(GUEST_OS),freebsd)
+ifeq ($(BOARD_NATIVE),1)
+# Native AArch64 board (e.g., RPi5): libvmm has QEMU-specific GIC addresses;
+# use a stub instead until board-specific VMM support is added.
+$(BUILD_DIR)/linux_vmm.o: src/linux_vmm.c
+	@mkdir -p $(BUILD_DIR)
+	$(CC) -c $(CFLAGS) -DLINUX_VMM_NATIVE_STUB=1 $< -o $@
+
+$(BUILD_DIR)/linux_vmm.elf: $(BUILD_DIR)/linux_vmm.o
+	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
+else
+# QEMU AArch64: use libvmm for full Linux VM support
 $(BUILD_DIR)/linux_vmm.elf: FORCE
 	@echo ""
 	@echo "═══ Building Linux VMM (libvmm) ═══"
@@ -314,6 +370,7 @@ $(BUILD_DIR)/linux_vmm.elf: FORCE
 		MICROKIT_CONFIG=$(MICROKIT_CONFIG) \
 		BOARD_DIR=$(BOARD_DIR) \
 		vmm-all
+endif
 endif
 endif
 

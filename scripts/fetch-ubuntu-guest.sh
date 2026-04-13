@@ -54,6 +54,10 @@ info "Converting qcow2 → raw disk image..."
 qemu-img convert -f qcow2 -O raw "$UBUNTU_CLOUD_IMG" "$UBUNTU_RAW"
 rm -f "$UBUNTU_CLOUD_IMG"
 
+info "Expanding image to 40GB..."
+qemu-img resize "$UBUNTU_RAW" 40G \
+    || die "Failed to resize Ubuntu image to 40GB"
+
 info "Ubuntu raw image: $OUTPUT_DIR/$UBUNTU_RAW"
 info ""
 info "Now build the VMM:"

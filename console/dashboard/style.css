@@ -1388,3 +1388,39 @@ header h1 {
 .btn-primary { padding: 6px 16px; background: #4a9eff; color: #fff; border: none; border-radius: 4px; cursor: pointer; }
 .btn-primary:hover { background: #2a7eff; }
 .btn-cancel { padding: 6px 16px; background: transparent; color: #aaa; border: 1px solid #444; border-radius: 4px; cursor: pointer; }
+
+/* VM info / SSH note */
+.vm-info { display: flex; flex-direction: column; gap: 3px; flex: 1; min-width: 0; }
+.vm-ssh-note { font-size: 0.72rem; color: #6af; font-family: monospace; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* Device manager button */
+.btn-devices { font-size: 0.72rem; padding: 3px 8px; border-radius: 4px; border: 1px solid #555; background: #1e2a3a; color: #8bc; cursor: pointer; }
+.btn-devices:hover { background: #243444; border-color: #6af; }
+
+/* Device manager modal */
+.vm-modal-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,0.65); z-index: 300; display: flex; align-items: center; justify-content: center; }
+.vm-device-modal { background: #16161e; border: 1px solid #3a3a55; border-radius: 10px; padding: 24px; min-width: 420px; max-width: 580px; width: 90%; max-height: 80vh; display: flex; flex-direction: column; gap: 16px; box-shadow: 0 8px 32px rgba(0,0,0,0.6); }
+.vm-modal-header { display: flex; justify-content: space-between; align-items: center; }
+.vm-modal-header h3 { margin: 0; font-size: 0.95rem; font-weight: 600; color: #e0e0e0; }
+.btn-close { background: none; border: none; color: #888; font-size: 1rem; cursor: pointer; padding: 2px 6px; border-radius: 4px; }
+.btn-close:hover { background: #2a2a3a; color: #eee; }
+
+/* Device list */
+.device-list { display: flex; flex-direction: column; gap: 6px; overflow-y: auto; max-height: 220px; }
+.device-row { display: flex; align-items: center; gap: 8px; padding: 7px 10px; background: #1a1a28; border-radius: 5px; border: 1px solid #2e2e45; font-size: 0.8rem; }
+.device-type-badge { background: #2a3a4a; color: #8bc; padding: 2px 7px; border-radius: 8px; font-size: 0.7rem; font-weight: 600; text-transform: uppercase; min-width: 32px; text-align: center; }
+.device-label { flex: 1; color: #d0d0e0; font-weight: 500; }
+.device-detail { color: #668; font-size: 0.72rem; font-family: monospace; max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.device-live { font-size: 0.75rem; color: #4caf50; min-width: 14px; }
+.device-live[title="queued"] { color: #888; }
+.btn-remove { font-size: 0.7rem; padding: 2px 8px; border-radius: 4px; border: 1px solid #553; background: #2a1a1a; color: #f88; cursor: pointer; margin-left: auto; }
+.btn-remove:hover { background: #3a2020; border-color: #a55; }
+
+/* Add device form */
+.device-add-form { border-top: 1px solid #2e2e45; padding-top: 14px; display: flex; flex-direction: column; gap: 10px; }
+.device-add-form h4 { margin: 0; font-size: 0.85rem; color: #aaa; font-weight: 600; }
+.device-form-row { display: flex; gap: 10px; flex-wrap: wrap; }
+.device-form-row label { font-size: 0.8rem; color: #888; display: flex; flex-direction: column; gap: 4px; flex: 1; min-width: 120px; }
+.device-form-row input, .device-form-row select { padding: 5px 8px; background: #0d0d1a; border: 1px solid #444; border-radius: 4px; color: #e0e0e0; font-size: 0.82rem; }
+.device-form-actions { display: flex; gap: 8px; justify-content: flex-end; }
+.error-msg { color: #f88; font-size: 0.78rem; }

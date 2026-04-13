@@ -99,11 +99,35 @@ static bool load_service(void) {
                 wasm3_host_destroy(wasm_host);
                 wasm_host = NULL;
             }
-            
+
+            /* Reset the wasm3 fixed-heap bump allocator.  The PD may have
+             * been restarted by the seL4 fault handler (which does NOT re-zero
+             * BSS), so the heap pointer could be anywhere from the previous
+             * failed attempt.  Resetting here guarantees a clean slate. */
+            wasm3_heap_reset();
+
             /* The WASM binary starts after the header */
             const uint8_t *wasm_bytes = (const uint8_t *)(CODE_REGION_BASE + hdr->code_offset);
             uint32_t wasm_size = hdr->code_size;
-            
+
+            /* Quick sanity-check: log first 4 bytes so we can see whether the
+             * region contains a real WASM module ("\0asm") or garbage/zeros. */
+            {
+                char _cl_buf[80] = {};
+                char *_cl_p = _cl_buf;
+                for (const char *_s = "[swap_slot] WASM header bytes: "; *_s; _s++) *_cl_p++ = *_s;
+                const char hex[] = "0123456789abcdef";
+                uint32_t n = (wasm_size < 8) ? wasm_size : 8;
+                for (uint32_t i = 0; i < n; i++) {
+                    *_cl_p++ = hex[(wasm_bytes[i] >> 4) & 0xf];
+                    *_cl_p++ = hex[wasm_bytes[i] & 0xf];
+                    *_cl_p++ = ' ';
+                }
+                for (const char *_s = "\n"; *_s; _s++) *_cl_p++ = *_s;
+                *_cl_p = 0;
+                console_log(15, 15, _cl_buf);
+            }
+
             /* Initialize wasm3 runtime and load the module */
             wasm_host = wasm3_host_init(wasm_bytes, wasm_size);
             if (!wasm_host) {

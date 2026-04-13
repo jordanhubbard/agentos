@@ -55,6 +55,16 @@ static u8* fixedHeapPtr = fixedHeap;
 static u8* const fixedHeapEnd = fixedHeap + d_m3FixedHeap;
 static u8* fixedHeapLast = NULL;
 
+/* Reset the bump allocator so the heap can be reused after a failed init.
+ * Called by wasm3_host_init() at the start of each load attempt so that
+ * a PD restart (seL4 fault → init() re-entry) begins with a clean heap. */
+void m3_FixedHeapReset (void)
+{
+    fixedHeapPtr  = fixedHeap;
+    fixedHeapLast = NULL;
+    memset (fixedHeap, 0, d_m3FixedHeap);
+}
+
 #if d_m3FixedHeapAlign > 1
 #   define HEAP_ALIGN_PTR(P) P = (u8*)(((size_t)(P)+(d_m3FixedHeapAlign-1)) & ~ (d_m3FixedHeapAlign-1));
 #else

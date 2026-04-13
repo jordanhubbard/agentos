@@ -6,6 +6,8 @@
 use serde::Serialize;
 use std::sync::{Arc, Mutex};
 
+use crate::freebsd::VmExtraDevice;
+
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum LinuxVmPhase {
@@ -22,6 +24,10 @@ pub struct LinuxVmState {
     pub progress: u8,   // 0–100
     pub error:    Option<String>,
     pub qemu_pid: Option<u32>,
+    /// Extra devices beyond the boot disk, seed disk, and primary NIC.
+    pub devices:  Vec<VmExtraDevice>,
+    /// Path to the QEMU QMP socket (set while QEMU is running).
+    pub qmp_sock: Option<String>,
 }
 
 impl Default for LinuxVmState {
@@ -32,6 +38,8 @@ impl Default for LinuxVmState {
             progress: 0,
             error:    None,
             qemu_pid: None,
+            devices:  Vec::new(),
+            qmp_sock: None,
         }
     }
 }

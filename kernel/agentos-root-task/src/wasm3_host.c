@@ -30,6 +30,21 @@
 #include "wasm3.h"
 #include "m3_env.h"
 
+/* Forward declaration: fixed-heap reset from m3_core.c */
+void m3_FixedHeapReset(void);
+
+/*
+ * wasm3_heap_reset — public wrapper for the fixed-heap reset.
+ * Called by swap_slot.c before each load attempt so that a PD restart
+ * (seL4 fault → init() re-entry) starts with a clean bump allocator.
+ */
+void wasm3_heap_reset(void) {
+#if d_m3FixedHeap
+    m3_FixedHeapReset();
+    console_log(15, 15, "[wasm3_host] Fixed heap reset\n");
+#endif
+}
+
 /* Code region layout constants */
 #define CODE_REGION_BASE    0x2000000UL
 #define PPC_RESULT_OFFSET   0x200000UL  /* Offset within WASM linear memory */
@@ -251,6 +266,36 @@ static M3Result link_host_imports(IM3Module module) {
 wasm3_host_t *wasm3_host_init(const uint8_t *wasm_bytes, uint32_t wasm_size) {
     wasm3_host_t *host = &host_state;
     M3Result result;
+
+    /* Reset the fixed heap so a PD restart (seL4 fault → re-entry) gets a
+     * clean allocator rather than one left mid-way by the previous attempt. */
+    wasm3_heap_reset();
+
+    /* Validate WASM magic bytes ("\0asm\x01") before handing off to wasm3.
+     * An invalid binary here means the controller wrote bad data; fail fast
+     * with a clear message instead of letting wasm3 fault inside the parser. */
+    if (wasm_size < 8 ||
+        wasm_bytes[0] != 0x00 || wasm_bytes[1] != 0x61 ||
+        wasm_bytes[2] != 0x73 || wasm_bytes[3] != 0x6D ||
+        wasm_bytes[4] != 0x01) {
+        {
+            char _cl_buf[128] = {};
+            char *_cl_p = _cl_buf;
+            for (const char *_s = "[wasm3_host] ERROR: bad WASM magic (got "; *_s; _s++) *_cl_p++ = *_s;
+            /* Print first 5 bytes as hex */
+            const char hex[] = "0123456789abcdef";
+            uint32_t n = wasm_size < 5 ? wasm_size : 5;
+            for (uint32_t i = 0; i < n; i++) {
+                *_cl_p++ = hex[(wasm_bytes[i] >> 4) & 0xf];
+                *_cl_p++ = hex[wasm_bytes[i] & 0xf];
+                *_cl_p++ = ' ';
+            }
+            for (const char *_s = ")\n"; *_s; _s++) *_cl_p++ = *_s;
+            *_cl_p = 0;
+            console_log(15, 15, _cl_buf);
+        }
+        return NULL;
+    }
 
     console_log(15, 15, "[wasm3_host] Initializing WASM runtime\n");
 

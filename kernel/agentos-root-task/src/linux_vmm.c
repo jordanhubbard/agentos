@@ -101,12 +101,46 @@ seL4_Bool fault(microkit_child child, microkit_msginfo msginfo,
 
 #endif /* ARCH_X86_64 */
 
+/* ─── AArch64 native hardware stub ─────────────────────────────────────────
+ *
+ * Used when BOARD_NATIVE=1 on AArch64 (e.g., Raspberry Pi 5).  libvmm
+ * is not used here because it hard-codes QEMU virt GIC addresses that are
+ * incompatible with real hardware.  This stub allows the native board
+ * system file to reference linux_vmm.elf while VM management is in early
+ * bring-up.  A production implementation would configure libvmm with the
+ * board's actual GIC/UART addresses.
+ */
+#ifdef LINUX_VMM_NATIVE_STUB
+
+void init(void)
+{
+    microkit_dbg_puts("[linux_vmm] native AArch64 stub: VMM not yet configured for real hardware.\n");
+    microkit_dbg_puts("[linux_vmm] native stub: Use console_shell to manage VMs via controller.\n");
+}
+
+void notified(microkit_channel ch)
+{
+    (void)ch;
+}
+
+seL4_Bool fault(microkit_child child, microkit_msginfo msginfo,
+                microkit_msginfo *reply_msginfo)
+{
+    (void)child;
+    (void)msginfo;
+    microkit_dbg_puts("[linux_vmm] native stub: unexpected fault\n");
+    *reply_msginfo = microkit_msginfo_new(0, 0);
+    return seL4_False;
+}
+
+#endif /* LINUX_VMM_NATIVE_STUB */
+
 /* ─── AArch64 full implementation ──────────────────────────────────────────
  *
  * Uses au-ts/libvmm to boot a Linux guest at EL1 under seL4 EL2.
  * Compiled by vmm.mk which passes -DARCH_AARCH64 and links libvmm.a.
  */
-#ifdef ARCH_AARCH64
+#if defined(ARCH_AARCH64) && !defined(LINUX_VMM_NATIVE_STUB)
 
 #include <libvmm/libvmm.h>
 #include "gpu_shmem.h"
@@ -430,4 +464,4 @@ seL4_Bool fault(microkit_child child, microkit_msginfo msginfo,
     return seL4_False;
 }
 
-#endif /* ARCH_AARCH64 */
+#endif /* ARCH_AARCH64 && !LINUX_VMM_NATIVE_STUB */

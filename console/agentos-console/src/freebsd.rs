@@ -3,7 +3,7 @@
 //! Tracks the phase of any in-progress FreeBSD asset preparation so that
 //! the bridge API can report status.
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::sync::{Arc, Mutex};
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -15,6 +15,24 @@ pub enum FreeBsdPhase {
     Error,
 }
 
+/// An extra device attached to the VM (beyond the boot disk and primary NIC).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VmExtraDevice {
+    /// Unique id within this VM (e.g. "disk1", "nic1").
+    pub id:      String,
+    /// "disk" or "nic"
+    #[serde(rename = "type")]
+    pub kind:    String,
+    /// Human-readable label.
+    pub label:   String,
+    /// Path to disk image (disks only).
+    pub path:    Option<String>,
+    /// Host port for NIC hostfwd (NICs only, e.g. 2224).
+    pub port:    Option<u16>,
+    /// Whether the device is live-attached (true) or queued for next boot.
+    pub live:    bool,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct FreeBsdState {
     pub phase:    FreeBsdPhase,
@@ -22,6 +40,10 @@ pub struct FreeBsdState {
     pub progress: u8,   // 0–100
     pub error:    Option<String>,
     pub qemu_pid: Option<u32>,
+    /// Extra devices beyond the boot disk and primary NIC.
+    pub devices:  Vec<VmExtraDevice>,
+    /// Path to the QEMU QMP socket (set while QEMU is running).
+    pub qmp_sock: Option<String>,
 }
 
 impl Default for FreeBsdState {
@@ -32,6 +54,8 @@ impl Default for FreeBsdState {
             progress: 0,
             error:    None,
             qemu_pid: None,
+            devices:  Vec::new(),
+            qmp_sock: None,
         }
     }
 }

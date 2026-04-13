@@ -1,6 +1,6 @@
 [package]
 name = "agentos-pd"
-version = "0.1.2"
+version = "0.1.3"
 edition = "2021"
 description = "Rust Protection Domain runtime for seL4 Microkit on agentOS"
 license = "Apache-2.0"

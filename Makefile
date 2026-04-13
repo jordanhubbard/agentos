@@ -21,6 +21,41 @@ endif
 TARGET_ARCH ?= $(CONFIG_TARGET)
 GUEST_OS    ?= none
 
+# ─── Paths (computed FIRST, before any -include changes MAKEFILE_LIST) ───────
+# ROOT_DIR must be set before board.mk is included; otherwise
+# $(lastword $(MAKEFILE_LIST)) resolves to the board.mk path, not the
+# repo root.
+ROOT_DIR     := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
+KERNEL_DIR   := $(ROOT_DIR)kernel/agentos-root-task
+MICROKIT_SDK := $(ROOT_DIR)microkit-sdk-2.1.0
+CONSOLE_DIR  := $(ROOT_DIR)console
+
+# ─── BOARD_NAME: selects a boards/<name>/board.mk configuration ──────────────
+# Derive from TARGET_ARCH when not explicitly provided.  Override with
+#   make BOARD_NAME=intel-nuc build
+#   make BOARD_NAME=rpi5 build
+ifndef BOARD_NAME
+  ifeq ($(TARGET_ARCH),aarch64)
+    BOARD_NAME := qemu-aarch64
+  else ifeq ($(TARGET_ARCH),x86_64)
+    BOARD_NAME := qemu-x86_64
+  else
+    BOARD_NAME := qemu-riscv64
+  endif
+endif
+
+# Include per-board configuration.  Sets MICROKIT_BOARD, BOARD_ARCH,
+# BOARD_NATIVE, BOARD_UART_*, and optional QEMU_* flags.
+-include boards/$(BOARD_NAME)/board.mk
+
+# Let board.mk override the Microkit board and arch when present.
+ifneq ($(MICROKIT_BOARD),)
+  BOARD := $(MICROKIT_BOARD)
+endif
+ifneq ($(BOARD_ARCH),)
+  TARGET_ARCH := $(BOARD_ARCH)
+endif
+
 # ─── Board / arch config (used by internal build + test targets) ──────────────
 ifndef BOARD
   ifeq ($(TARGET_ARCH),aarch64)
@@ -41,13 +76,9 @@ else
   BIOS ?= /usr/share/qemu/opensbi-riscv64-generic-fw_dynamic.bin
 endif
 
-# ─── Paths ────────────────────────────────────────────────────────────────────
-ROOT_DIR     := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
-KERNEL_DIR   := $(ROOT_DIR)kernel/agentos-root-task
-MICROKIT_SDK := $(ROOT_DIR)microkit-sdk-2.1.0
+# BUILD_DIR and IMAGE depend on BOARD (resolved after board.mk override above)
 BUILD_DIR    := $(ROOT_DIR)build/$(BOARD)
 IMAGE        := $(BUILD_DIR)/agentos.img
-CONSOLE_DIR  := $(ROOT_DIR)console
 
 # ─── OS / arch detection ──────────────────────────────────────────────────────
 UNAME_S := $(shell uname -s)
@@ -316,7 +347,13 @@ endif
 		MICROKIT_SDK=$(abspath $(MICROKIT_SDK)) \
 		MICROKIT_BOARD=$(BOARD) \
 		MICROKIT_CONFIG=debug \
-		GUEST_OS=$(GUEST_OS)
+		GUEST_OS=$(GUEST_OS) \
+		BOARD_NAME=$(BOARD_NAME) \
+		BOARD_NATIVE=$(BOARD_NATIVE) \
+		BOARD_UART_PHYS=$(BOARD_UART_PHYS) \
+		BOARD_UART_SIZE=$(BOARD_UART_SIZE) \
+		BOARD_UART_TYPE=$(BOARD_UART_TYPE) \
+		BOARD_UART_IRQ=$(BOARD_UART_IRQ)
 	@echo ""
 	@echo "✓ Build complete: $(IMAGE)"
 	@echo ""

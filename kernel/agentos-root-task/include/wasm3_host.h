@@ -94,4 +94,13 @@ bool wasm3_host_call_ppc(wasm3_host_t *host,
  */
 void wasm3_host_destroy(wasm3_host_t *host);
 
+/*
+ * Reset the wasm3 fixed-heap bump allocator back to its initial state.
+ * Must be called before wasm3_host_init() when a swap slot PD has been
+ * restarted by the seL4 fault handler — the fault clears no BSS, so the
+ * heap pointer stays wherever the previous (failed) run left it.
+ * Safe to call even on the very first load attempt.
+ */
+void wasm3_heap_reset(void);
+
 #endif /* wasm3_host_h */

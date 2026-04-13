@@ -25,6 +25,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Capability attenuation: OP_CAP_ATTENUATE for sub-delegation (`f3bb3f3`)
 
 ### Features
+- Board abstraction system: `BOARD_NAME` variable selects `boards/<name>/board.mk`; auto-derived from `TARGET_ARCH` for QEMU dev builds (`make build BOARD_NAME=rpi5`, `make build BOARD_NAME=intel-nuc`)
+- boards/rpi5: full AArch64 system manifest with PL011 UART, GIC IRQ, linux_vmm native stub
+- boards/intel-nuc: x86_64 system manifest with NS16550 UART at MMIO 0xFE034000; console_shell ring-buffer RX path (Microkit 2.1.0 lacks x86_64 IRQ support)
+- linux_vmm native stub (`LINUX_VMM_NATIVE_STUB`): bare-metal AArch64 boards compile linux_vmm as a no-op PD without libvmm's QEMU-specific GIC addresses
+- console_shell PD added to aarch64 QEMU, rpi5, and intel-nuc system manifests (priority 49, channels 41/42)
+- Bridge: `GET /api/agentos/console/stream` SSE endpoint — streams serial log lines live with optional `?slot=N` filter and historical replay on connect
+- Bridge: `POST /api/agentos/console/cmd` — injects commands to seL4 console_shell via QEMU serial socket
+- Bridge: `GET /api/agentos/console/vms` — seL4 VM lifecycle registry distinct from QEMU-hosted VMs
+- Bridge serial reader: intercepts `\x01VM:start/stop:id` escape sequences from console_shell PD to track seL4 VM state
 - Multi-pane dashboard: Topology, Console, Profiler, Agents, Images, Docs panels (`270a825`)
 - Collapsible sidebar with mini topology SVG + system stat chips
 - Full SVG topology graph with live CPU/mem overlays and edge animation

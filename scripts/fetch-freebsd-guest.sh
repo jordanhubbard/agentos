@@ -61,6 +61,10 @@ else
     info "Converting qcow2 → raw..."
     qemu-img convert -f qcow2 -O raw "$FREEBSD_QCOW2" "$FREEBSD_RAW"
     rm -f "$FREEBSD_QCOW2"
+
+    info "Expanding image to 40GB..."
+    qemu-img resize "$FREEBSD_RAW" 40G \
+        || die "Failed to resize FreeBSD image to 40GB"
     info "FreeBSD raw image: $OUTPUT_DIR/$FREEBSD_RAW"
 fi
 

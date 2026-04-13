@@ -1,88 +1,91 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
-  agentOS v0.4.0 System Description File (AArch64 + Linux VMM)
-  
-  Protection Domain topology:
-  
-    controller   (prio 50)   - system coordinator + capability broker
-    event_bus    (prio 200)  - passive pub/sub server (ring buffer)
-    init_agent   (prio 100)  - agent ecosystem bootstrapper
-    worker_0..7  (prio 80)   - agent pool workers (dynamic task assignment)
-    vibe_engine  (prio 140)  - passive VibeEngine: WASM hot-swap lifecycle
-    agentfs      (prio 150)  - passive content-addressed object store
-    swap_slot_0..3 (prio 75) - WASM hot-swap execution slots
-    linux_vmm    (prio 254)  - Linux Virtual Machine Monitor (libvmm)
-  
-  Channel map (native agentOS — same as riscv64):
-    0:  controller <-> event_bus    (controller PPCs into passive event_bus)
-    1:  controller <-> init_agent   (notify: controller starts init_agent)
-    2:  event_bus  <-> init_agent   (init_agent PPCs into event_bus to subscribe)
-    5:  controller <-> agentfs      (controller PPCs into passive agentfs)
-    6:  agentfs    <-> event_bus    (agentfs notifies on mutations)
-    10: controller <-> worker_0     (task assignment + completion notify)
-    11: controller <-> worker_1
-    12: controller <-> worker_2
-    13: controller <-> worker_3
-    14: controller <-> worker_4
-    15: controller <-> worker_5
-    16: controller <-> worker_6
-    17: controller <-> worker_7
-    20..27: event_bus <-> worker_0..7  (workers subscribe to events)
-    30..33: controller <-> swap_slot_0..3  (WASM hot-swap)
-    40: controller <-> vibe_engine  (swap approval notification)
-    41: init_agent <-> vibe_engine  (propose/validate/execute swaps)
+  agentOS System Description — Raspberry Pi 5 (AArch64, native hardware)
 
-  Linux VMM channels (new):
-    50: controller <-> linux_vmm    (agent-to-linux bridge commands)
+  Derived from agentos-aarch64.system with two key changes for native RPi5:
+
+  1. linux_vmm does NOT passthrough the physical UART.  On native hardware
+     the physical PL011 UART0 (0xFE201000, BCM2711 placeholder for BCM2712)
+     belongs exclusively to console_shell.  The Linux guest should use
+     virtio-console (hvc0) or a second UART for its own serial output.
+
+  2. console_shell owns the PL011 UART at 0xFE201000, IRQ 57 (GIC SPI 57
+     = UART0 on BCM2711; update to 0x107D001000 / correct IRQ once the
+     Microkit SDK ships a dedicated rpi5 board definition).
+
+  SDK NOTE: Microkit SDK 2.1.0 uses the rpi4b_4gb board definition as a
+  placeholder for RPi5.  All physical addresses in this file use BCM2711
+  (RPi4) values.  Update when SDK adds native rpi5 support.
+
+  Boot path:
+    SD card FAT32 partition → RPi firmware (start4.elf) → agentos.img
+    See boards/rpi5/flash-sd.sh to prepare the SD card.
+
+  UART: PL011 at 0xFE201000 (BCM2711 UART0), IRQ 57, 115200 8N1
+        Enable with: dtoverlay=disable-bt  (frees PL011 from Bluetooth)
+  Network: BCM2712 built-in Ethernet (SDDF driver required — see board.mk)
+
+  Protection Domain topology:
+    controller      (prio 50)   - system coordinator + capability broker
+    event_bus       (prio 200)  - passive pub/sub server (ring buffer)
+    init_agent      (prio 100)  - agent ecosystem bootstrapper
+    worker_0..7     (prio 80)   - agent pool workers
+    agentfs         (prio 150)  - passive content-addressed object store
+    vibe_engine     (prio 140)  - passive WASM hot-swap lifecycle
+    swap_slot_0..3  (prio 75)   - WASM hot-swap execution slots
+    linux_vmm       (prio 254)  - Linux VMM (no physical UART passthrough)
+    console_mux     (prio 160)  - passive console multiplexer
+    trace_recorder  (prio 128)  - passive trace stub
+    nameserver      (prio 170)  - runtime service discovery
+    virtio_blk      (prio 175)  - virtio block device driver
+    vfs_server      (prio 155)  - virtual file system server
+    spawn_server    (prio 145)  - application spawner
+    app_slot_0..3   (prio 70)   - application execution slots
+    net_server      (prio 160)  - lwIP TCP/IP stack (virtio-net)
+    app_manager     (prio 130)  - application lifecycle manager
+    http_svc        (prio 140)  - HTTP request handler
+    js_runtime      (prio 120)  - passive JavaScript sandbox
+    wg_net          (prio 140)  - passive WireGuard tunnel
+    console_shell   (prio 80)   - hardware serial console mini-CLI
+
+  Channel map additions over agentos-aarch64.system:
+    41: controller -> console_shell (VM state notifications)
+    42: console_shell -> controller (VM create/destroy PPCs)
+    (console_shell channel 3: UART IRQ 57, wired directly as <irq>)
 -->
 <system>
     <!-- ═══════════════════════════════════════════════════════════════════
-         NATIVE agentOS PROTECTION DOMAINS (identical to riscv64 build)
+         NATIVE agentOS PROTECTION DOMAINS
          ═══════════════════════════════════════════════════════════════════ -->
 
-    <!-- Controller: system coordinator, low priority to PPC into passive servers -->
     <protection_domain name="controller" priority="50">
         <program_image path="controller.elf" />
-        <map mr="monitor_stack"  vaddr="0x2000000" perms="rw" setvar_vaddr="monitor_stack_vaddr" />
-        <!-- Swap code regions: controller writes WASM images here; swap slot PDs read them -->
-        <map mr="swap_code_0" vaddr="0x6000000" perms="rw" setvar_vaddr="swap_code_ctrl_0" />
-        <map mr="swap_code_1" vaddr="0x6400000" perms="rw" setvar_vaddr="swap_code_ctrl_1" />
-        <map mr="swap_code_2" vaddr="0x6800000" perms="rw" setvar_vaddr="swap_code_ctrl_2" />
-        <map mr="swap_code_3" vaddr="0x6C00000" perms="rw" setvar_vaddr="swap_code_ctrl_3" />
-        <!-- VibeEngine staging: controller reads WASM proposals from here (r) -->
-        <map mr="vibe_staging" vaddr="0x7000000" perms="r" setvar_vaddr="vibe_staging_ctrl_vaddr" />
-        <!-- cap_policy hot-reload: caller writes policy blob here before PPC -->
-        <map mr="cap_policy_shmem" vaddr="0x7400000" perms="rw" setvar_vaddr="cap_policy_shmem_vaddr" />
-        <!-- NameServer registry dump shmem: read after OP_NS_LIST call -->
-        <map mr="ns_registry_shmem" vaddr="0xB000000" perms="r" setvar_vaddr="ns_registry_shmem_ctrl_vaddr" />
-        <!-- VFS I/O shmem: request descriptor + path/data buffers -->
-        <map mr="vfs_io_shmem"       vaddr="0xC000000"  perms="rw" setvar_vaddr="vfs_io_shmem_ctrl_vaddr" />
-        <!-- SpawnServer ELF staging area -->
-        <map mr="spawn_elf_shmem"    vaddr="0xD000000"  perms="rw" setvar_vaddr="spawn_elf_shmem_ctrl_vaddr" />
-        <!-- Spawn config shmem: app name/path/list -->
-        <map mr="spawn_config_shmem" vaddr="0xD100000"  perms="rw" setvar_vaddr="spawn_config_shmem_ctrl_vaddr" />
-        <!-- Network packet shmem: vNIC ring headers + packet data -->
-        <map mr="net_packet_shmem"   vaddr="0xE000000"  perms="r"  setvar_vaddr="net_packet_shmem_ctrl_vaddr" />
-        <!-- HTTP request shmem: request header + body (observe only) -->
-        <map mr="http_req_shmem"     vaddr="0xF000000"  perms="r"  setvar_vaddr="http_req_shmem_ctrl_vaddr" />
-        <!-- App manifest shmem: controller writes manifests for AppManager -->
-        <map mr="app_manifest_shmem" vaddr="0x10000000" perms="rw" setvar_vaddr="app_manifest_shmem_ctrl_vaddr" />
+        <map mr="monitor_stack"       vaddr="0x2000000"  perms="rw" setvar_vaddr="monitor_stack_vaddr" />
+        <map mr="swap_code_0"         vaddr="0x6000000"  perms="rw" setvar_vaddr="swap_code_ctrl_0" />
+        <map mr="swap_code_1"         vaddr="0x6400000"  perms="rw" setvar_vaddr="swap_code_ctrl_1" />
+        <map mr="swap_code_2"         vaddr="0x6800000"  perms="rw" setvar_vaddr="swap_code_ctrl_2" />
+        <map mr="swap_code_3"         vaddr="0x6C00000"  perms="rw" setvar_vaddr="swap_code_ctrl_3" />
+        <map mr="vibe_staging"        vaddr="0x7000000"  perms="r"  setvar_vaddr="vibe_staging_ctrl_vaddr" />
+        <map mr="cap_policy_shmem"    vaddr="0x7400000"  perms="rw" setvar_vaddr="cap_policy_shmem_vaddr" />
+        <map mr="ns_registry_shmem"   vaddr="0xB000000"  perms="r"  setvar_vaddr="ns_registry_shmem_ctrl_vaddr" />
+        <map mr="vfs_io_shmem"        vaddr="0xC000000"  perms="rw" setvar_vaddr="vfs_io_shmem_ctrl_vaddr" />
+        <map mr="spawn_elf_shmem"     vaddr="0xD000000"  perms="rw" setvar_vaddr="spawn_elf_shmem_ctrl_vaddr" />
+        <map mr="spawn_config_shmem"  vaddr="0xD100000"  perms="rw" setvar_vaddr="spawn_config_shmem_ctrl_vaddr" />
+        <map mr="net_packet_shmem"    vaddr="0xE000000"  perms="r"  setvar_vaddr="net_packet_shmem_ctrl_vaddr" />
+        <map mr="http_req_shmem"      vaddr="0xF000000"  perms="r"  setvar_vaddr="http_req_shmem_ctrl_vaddr" />
+        <map mr="app_manifest_shmem"  vaddr="0x10000000" perms="rw" setvar_vaddr="app_manifest_shmem_ctrl_vaddr" />
     </protection_domain>
 
-    <!-- EventBus: passive pub/sub backbone -->
     <protection_domain name="event_bus" priority="200" passive="true">
         <program_image path="event_bus.elf" />
         <map mr="eventbus_ring" vaddr="0x3000000" perms="rw" setvar_vaddr="eventbus_ring_vaddr" />
     </protection_domain>
-    
-    <!-- InitAgent: bootstrap agent -->
+
     <protection_domain name="init_agent" priority="100">
         <program_image path="init_agent.elf" />
-        <!-- js_staging: shared with js_runtime for script source/result exchange -->
         <map mr="js_staging" vaddr="0x7000000" perms="rw" />
     </protection_domain>
-    
-    <!-- Agent pool workers: static PDs, dynamic task assignment -->
+
     <protection_domain name="worker_0" priority="80">
         <program_image path="worker.elf" />
     </protection_domain>
@@ -107,20 +110,17 @@
     <protection_domain name="worker_7" priority="80">
         <program_image path="worker.elf" />
     </protection_domain>
-    
-    <!-- AgentFS: passive object store, priority 150 -->
+
     <protection_domain name="agentfs" priority="150" passive="true">
         <program_image path="agentfs.elf" />
         <map mr="agentfs_store" vaddr="0x5000000" perms="rw" setvar_vaddr="agentfs_store_vaddr" />
     </protection_domain>
 
-    <!-- VibeEngine: passive hot-swap lifecycle server -->
     <protection_domain name="vibe_engine" priority="140" passive="true">
         <program_image path="vibe_engine.elf" />
         <map mr="vibe_staging" vaddr="0x4000000" perms="rw" setvar_vaddr="vibe_staging_vaddr" />
     </protection_domain>
 
-    <!-- Swap slots: 4 pre-allocated PDs for live WASM hot-swap -->
     <protection_domain name="swap_slot_0" priority="75">
         <program_image path="swap_slot.elf" />
         <map mr="swap_code_0" vaddr="0x2000000" perms="r" setvar_vaddr="swap_code_vaddr" />
@@ -139,6 +139,35 @@
     </protection_domain>
 
     <!-- ═══════════════════════════════════════════════════════════════════
+         LINUX VMM — AArch64 (no physical UART passthrough on native RPi5)
+
+         On native hardware console_shell owns the primary PL011 UART.
+         The Linux guest uses virtio-console (hvc0) for its own serial
+         output — configure the Linux kernel with CONFIG_VIRTIO_CONSOLE
+         and set "console=hvc0" in the kernel command line.
+
+         Guest RAM at 0x40000000 (256MB, 2MB large pages) — matches the
+         same layout as the QEMU build for now.  Adjust if the RPi5 BSP
+         requires a different guest RAM base address.
+         ═══════════════════════════════════════════════════════════════════ -->
+
+    <!-- linux_vmm native stub: no guest RAM or virtual_machine element.
+         The native stub does not run a VM — it just logs that the VMM is not
+         yet configured for real hardware.  A full RPi5 VMM implementation
+         would need to define GIC, UART, and guest RAM addresses for BCM2712.
+         See boards/rpi5/board.mk for BCM2712 device addresses. -->
+    <protection_domain name="linux_vmm" priority="254">
+        <program_image path="linux_vmm.elf" />
+        <!-- No maps or virtual_machine needed for the native stub -->
+    </protection_domain>
+
+    <!-- Channel 50: controller <-> linux_vmm (agent-to-linux bridge) -->
+    <channel>
+        <end pd="controller" id="50" />
+        <end pd="linux_vmm"  id="2" />
+    </channel>
+
+    <!-- ═══════════════════════════════════════════════════════════════════
          MEMORY REGIONS (native agentOS)
          ═══════════════════════════════════════════════════════════════════ -->
     <memory_region name="monitor_stack"    size="0x10000" />
@@ -152,10 +181,9 @@
     <memory_region name="vibe_staging"   size="0x400000" />
 
     <!-- ═══════════════════════════════════════════════════════════════════
-         NATIVE agentOS CHANNELS (identical to riscv64 build)
+         NATIVE agentOS CHANNELS
          ═══════════════════════════════════════════════════════════════════ -->
 
-    <!-- Core service channels -->
     <channel>
         <end pd="controller" id="0" pp="true" />
         <end pd="event_bus"  id="0" />
@@ -168,19 +196,16 @@
         <end pd="event_bus"  id="2" />
         <end pd="init_agent" id="2" pp="true" />
     </channel>
-    
-    <!-- Controller <-> AgentFS -->
+
     <channel>
         <end pd="controller" id="5" pp="true" />
         <end pd="agentfs"    id="0" />
     </channel>
-    <!-- AgentFS -> EventBus (mutation notifications) -->
     <channel>
         <end pd="agentfs"   id="1" />
         <end pd="event_bus" id="6" />
     </channel>
 
-    <!-- Worker pool channels (controller <-> worker_N) -->
     <channel>
         <end pd="controller" id="10" />
         <end pd="worker_0"   id="0" />
@@ -214,7 +239,6 @@
         <end pd="worker_7"   id="0" />
     </channel>
 
-    <!-- Worker <-> EventBus channels -->
     <channel>
         <end pd="event_bus" id="20" />
         <end pd="worker_0"  id="1" pp="true" />
@@ -248,7 +272,6 @@
         <end pd="worker_7"  id="1" pp="true" />
     </channel>
 
-    <!-- Controller <-> Swap slots -->
     <channel>
         <end pd="controller"  id="30" />
         <end pd="swap_slot_0" id="0" />
@@ -266,7 +289,6 @@
         <end pd="swap_slot_3" id="0" />
     </channel>
 
-    <!-- VibeEngine channels -->
     <channel>
         <end pd="controller"   id="40" />
         <end pd="vibe_engine"  id="1" />
@@ -277,62 +299,9 @@
     </channel>
 
     <!-- ═══════════════════════════════════════════════════════════════════
-         LINUX VMM — Virtual Machine Monitor (AArch64 only)
-         
-         Uses au-ts/libvmm to boot a Linux guest inside agentOS.
-         The VMM PD manages the guest lifecycle, handles faults,
-         and bridges IPC between native agentOS agents and Linux.
+         CONSOLE MULTIPLEXER
          ═══════════════════════════════════════════════════════════════════ -->
 
-    <!-- Guest RAM: 256MB with 2MB large pages for efficiency -->
-    <memory_region name="guest_ram" size="0x10_000_000" page_size="0x200_000" />
-
-    <!-- UART: PL011 serial device, passed through to guest for direct I/O -->
-    <memory_region name="serial" size="0x1_000" phys_addr="0x9000000" />
-
-    <!-- GIC vCPU interface: hardware virtualisation of interrupt controller -->
-    <memory_region name="gic_vcpu" size="0x1_000" phys_addr="0x8040000" />
-
-    <protection_domain name="linux_vmm" priority="254">
-        <program_image path="linux_vmm.elf" />
-        <!--
-            The VMM maps guest RAM at the same vaddr as the guest sees it
-            (0x40000000). This is required by libvmm's current implementation.
-        -->
-        <map mr="guest_ram" vaddr="0x40000000" perms="rw" setvar_vaddr="guest_ram_vaddr" />
-
-        <virtual_machine name="linux">
-            <vcpu id="0" />
-            <!-- Guest sees its RAM at 0x40000000 (matches DTS) -->
-            <map mr="guest_ram" vaddr="0x40000000" perms="rwx" />
-            <!-- Direct UART passthrough: guest can read/write serial without trapping -->
-            <map mr="serial" vaddr="0x9000000" perms="rw" cached="false" />
-            <!-- GIC vCPU interface mapped as if it were the real CPU interface -->
-            <map mr="gic_vcpu" vaddr="0x8010000" perms="rw" cached="false" />
-        </virtual_machine>
-
-        <!--
-            PL011 UART IRQ (SPI 1 + 32 = 33).
-            Delivered to VMM as notification on channel 1,
-            VMM injects it as virtual IRQ into the guest.
-        -->
-        <irq irq="33" id="1" />
-    </protection_domain>
-
-    <!-- Channel 50: controller <-> linux_vmm (agent-to-linux bridge) -->
-    <channel>
-        <end pd="controller" id="50" />
-        <end pd="linux_vmm"  id="2" />
-    </channel>
-
-    <!-- ═══════════════════════════════════════════════════════════════════
-         CONSOLE MULTIPLEXER — "tmux for agentOS"
-         
-         Passive PD (priority 160) that multiplexes per-PD output streams
-         onto the debug UART with attach/detach/switch/broadcast semantics.
-         ═══════════════════════════════════════════════════════════════════ -->
-
-    <!-- Console ring buffer: 16 × 4KB = 64KB shared output rings -->
     <memory_region name="console_rings" size="0x10000" />
 
     <protection_domain name="console_mux" priority="160" passive="true">
@@ -340,28 +309,23 @@
         <map mr="console_rings" vaddr="0x8000000" perms="rw" setvar_vaddr="console_rings_vaddr" />
     </protection_domain>
 
-    <!-- Channel 55: controller <-> console_mux (attach/detach/list/mode/status) -->
     <channel>
         <end pd="controller"   id="55" pp="true" />
         <end pd="console_mux"  id="0" />
     </channel>
-
-    <!-- Channel 56: init_agent <-> console_mux (output notifications) -->
     <channel>
         <end pd="init_agent"   id="4" />
         <end pd="console_mux"  id="1" />
     </channel>
-
-    <!-- Channel 57: event_bus <-> console_mux (event activity notifications) -->
     <channel>
         <end pd="event_bus"    id="55" />
         <end pd="console_mux"  id="2" />
     </channel>
 
-    <!-- Trace Recorder: passive stub, priority 128
-         Channels 6-7 from controller's perspective:
-           6: controller <-> trace_recorder (pp=true: START/STOP/QUERY/DUMP)
-           7: controller -> trace_recorder  (notify on each inter-PD dispatch) -->
+    <!-- ═══════════════════════════════════════════════════════════════════
+         TRACE RECORDER
+         ═══════════════════════════════════════════════════════════════════ -->
+
     <protection_domain name="trace_recorder" priority="128" passive="true">
         <program_image path="trace_recorder.elf" />
     </protection_domain>
@@ -370,13 +334,15 @@
         <end pd="controller"     id="6" pp="true" />
         <end pd="trace_recorder" id="0" />
     </channel>
-
     <channel>
         <end pd="controller"     id="7" />
         <end pd="trace_recorder" id="1" />
     </channel>
 
-    <!-- NameServer: runtime service discovery (passive, prio 170) -->
+    <!-- ═══════════════════════════════════════════════════════════════════
+         NAMESERVER
+         ═══════════════════════════════════════════════════════════════════ -->
+
     <memory_region name="ns_registry_shmem" size="0x2000" />
 
     <protection_domain name="nameserver" priority="170" passive="true">
@@ -426,19 +392,15 @@
         <end pd="nameserver" id="9" />
     </channel>
 
-    <!--
-      ══════════════════════════════════════════════════════════════════
-      SERVICE LAYER: VFS, virtio-blk, SpawnServer, app slots,
-                     NetServer, AppManager, HTTP service
-      (Identical to riscv64 agentos.system)
-      ══════════════════════════════════════════════════════════════════
-    -->
+    <!-- ═══════════════════════════════════════════════════════════════════
+         SERVICE LAYER: VFS, virtio-blk, SpawnServer, app slots,
+                        NetServer, AppManager, HTTP service
+         ═══════════════════════════════════════════════════════════════════ -->
 
     <memory_region name="vfs_io_shmem"       size="0x20000" />
     <memory_region name="blk_dma_shmem"      size="0x8000"  />
-    <!-- QEMU virt MMIO: virtio-net bus.0 (aarch64: 0xa000000, 4KB page-aligned)
-         Note: virtio-blk bus.1 is at 0xa000200 (same page) — cannot be mapped
-         separately with page granularity; virtio_blk PD returns BLK_ERR_NODEV. -->
+    <!-- BCM2711/RPi4 virtio-net MMIO: update for BCM2712/RPi5 actual address -->
+    <!-- On QEMU virt: 0xa000000; on RPi5 native this depends on the VM config -->
     <memory_region name="virtio_net_mmio"    size="0x1000"  phys_addr="0xa000000" />
     <memory_region name="spawn_elf_shmem"    size="0x80000" />
     <memory_region name="spawn_config_shmem" size="0x1000"  />
@@ -450,7 +412,6 @@
         <program_image path="virtio_blk.elf" />
         <map mr="blk_dma_shmem" vaddr="0x5000000" perms="rw"
              setvar_vaddr="blk_dma_shmem_vaddr" />
-        <!-- blk_mmio_vaddr not mapped on aarch64: same page as net, returns BLK_ERR_NODEV -->
     </protection_domain>
 
     <channel>
@@ -580,7 +541,6 @@
              setvar_vaddr="net_packet_shmem_vaddr" />
         <map mr="virtio_net_mmio"   vaddr="0x6000000" perms="rw" cached="false"
              setvar_vaddr="net_mmio_vaddr" />
-        <!-- Staging region: shared with vibe_engine for HTTP POST request/response bodies -->
         <map mr="vibe_staging" vaddr="0x9000000" perms="rw"
              setvar_vaddr="vibe_staging_vaddr" />
     </protection_domain>
@@ -669,11 +629,7 @@
     </channel>
 
     <!-- ═══════════════════════════════════════════════════════════════════
-         JS RUNTIME — JavaScript execution sandbox (passive, prio 120)
-
-         Passive PD that provides a sandboxed JavaScript runtime for
-         agent scripts. Shares a 4MB staging buffer with init_agent
-         for script source and result exchange.
+         JS RUNTIME
          ═══════════════════════════════════════════════════════════════════ -->
 
     <memory_region name="js_staging" size="0x400000" />
@@ -684,28 +640,17 @@
              setvar_vaddr="js_staging_vaddr" />
     </protection_domain>
 
-    <!-- Channel 60: controller <-> js_runtime (ch 0 on js_runtime side) -->
     <channel>
         <end pd="controller"  id="60" pp="true" />
         <end pd="js_runtime"  id="0" />
     </channel>
-
-    <!-- Channel 61: init_agent <-> js_runtime (ch 1 on js_runtime side) -->
     <channel>
         <end pd="init_agent"  id="11" pp="true" />
         <end pd="js_runtime"  id="1" />
     </channel>
 
-    <!-- js_staging mapped into init_agent for script source/result exchange -->
-    <!-- init_agent maps js_staging at 0x7000000 (rw) via setvar_vaddr js_staging_vaddr -->
-    <!-- Note: init_agent maps js_staging at the same vaddr as js_runtime sees it -->
-
     <!-- ═══════════════════════════════════════════════════════════════════
-         WG_NET — WireGuard network tunnel PD (passive, prio 140)
-
-         Passive PD that implements WireGuard tunnel management.
-         Bridges controller commands to net_server for encrypted
-         peer-to-peer networking.
+         WG_NET — WireGuard tunnel
          ═══════════════════════════════════════════════════════════════════ -->
 
     <memory_region name="wg_staging" size="0x100000" />
@@ -716,46 +661,52 @@
              setvar_vaddr="wg_staging_vaddr" />
     </protection_domain>
 
-    <!-- Channel 62: controller <-> wg_net (ch 0 on wg_net side) -->
     <channel>
         <end pd="controller" id="61" pp="true" />
         <end pd="wg_net"     id="0" />
     </channel>
-
-    <!-- Channel 63: wg_net <-> net_server (ch 1 on wg_net side) -->
     <channel>
         <end pd="wg_net"     id="1" pp="true" />
         <end pd="net_server" id="11" />
     </channel>
 
-    <!-- controller lwIP timer tick -> net_server (NET_CH_TIMER=12) -->
+    <!-- controller lwIP timer tick -> net_server -->
     <channel>
         <end pd="controller"  id="59" />
         <end pd="net_server"  id="12" />
     </channel>
 
     <!-- ═══════════════════════════════════════════════════════════════════
-         CONSOLE SHELL — interactive management console (priority 80)
+         CONSOLE SHELL — hardware PL011 UART mini-CLI (native RPi5 mode)
 
-         On QEMU dev mode: reads commands from console_shell_ring (4KB
-         shared memory with bridge.rs); emits VM start/stop escape
-         sequences to the debug serial port.  The PL011 IRQ (33) is
-         owned by linux_vmm for guest passthrough so console_shell runs
-         in ring-buffer mode only on QEMU aarch64 — no UART MR or IRQ
-         is registered here.
+         console_shell exclusively owns UART0 (PL011 at 0xFE201000, the
+         BCM2711/rpi4b_4gb placeholder address).  IRQ 57 (GIC SPI 57 =
+         UART0 on BCM2711) is wired to channel 3 (CH_UART_IRQ).
 
-         On native RPi5/NUC hardware a separate board-specific system
-         file (boards/<board>/agentos.system) maps the physical UART MR
-         and wires CH_UART_IRQ (channel 3) to the correct GIC line.
+         Compile with: -DBOARD_UART_PL011=1 -DBOARD_UART_PHYS=0xFE201000
+                       -DBOARD_UART_IRQ=57  -DBOARD_NATIVE=1
+         (These flags are set automatically by boards/rpi5/board.mk.)
+
+         IMPORTANT: Remove dtoverlay=disable-bt from config.txt if you
+         want Bluetooth; otherwise enable it to free PL011 for console_shell.
          ═══════════════════════════════════════════════════════════════════ -->
 
+    <!-- PL011 UART0 MMIO: BCM2711 (rpi4b_4gb board definition) -->
+    <memory_region name="console_uart" size="0x1000" phys_addr="0xFE201000" />
+
+    <!-- Ring buffer shared with bridge.rs for remote console access -->
     <memory_region name="console_shell_ring" size="0x1000" />
 
     <protection_domain name="console_shell" priority="49">
         <program_image path="console_shell.elf" />
-        <!-- Ring buffer shared with bridge.rs for dev-mode IPC -->
+        <!-- PL011 UART MMIO — uncached for device I/O -->
+        <map mr="console_uart"       vaddr="0x5000000" perms="rw" cached="false"
+             setvar_vaddr="console_uart_vaddr" />
+        <!-- Ring buffer for optional bridge.rs remote access -->
         <map mr="console_shell_ring" vaddr="0x5100000" perms="rw"
              setvar_vaddr="console_shell_ring_vaddr" />
+        <!-- PL011 UART0 IRQ: GIC SPI 57 on BCM2711/RPi4 → channel 3 (CH_UART_IRQ) -->
+        <irq irq="57" id="3" />
     </protection_domain>
 
     <!-- controller notifies console_shell of VM state changes -->
@@ -763,7 +714,7 @@
         <end pd="controller"    id="41" />
         <end pd="console_shell" id="0" />
     </channel>
-    <!-- console_shell PPCs controller for VM management (native HW path) -->
+    <!-- console_shell PPCs controller for VM create/destroy -->
     <channel>
         <end pd="console_shell" id="1" pp="true" />
         <end pd="controller"    id="42" />

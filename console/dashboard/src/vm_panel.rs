@@ -1,78 +1,55 @@
-//! VMware Fusion-style VM management panel for agentOS dashboard.
+//! VM management panel for agentOS dashboard.
 //!
 //! Communicates with the backend via:
-//!   GET  /api/agentos/vms                  → list all VMs
-//!   POST /api/agentos/vms                  → create a new VM
-//!   POST /api/agentos/vms/:slot_id/:action → perform action on a VM
+//!   GET  /api/agentos/vms                            → list all VMs
+//!   GET  /api/agentos/vms/:id/devices                → list devices for a VM
+//!   POST /api/agentos/vms/:id/devices                → attach a new device
+//!   DEL  /api/agentos/vms/:id/devices/:dev_id        → remove a device
 
 use leptos::*;
 use serde::{Deserialize, Serialize};
 
-// ── VM state ──────────────────────────────────────────────────────────────────
+// ── Device info ───────────────────────────────────────────────────────────────
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
-pub enum VmState {
-    Free,
-    Booting,
-    Running,
-    Paused,
-    Halted,
-    Error,
+pub struct VmDevice {
+    pub id:    String,
+    #[serde(rename = "type")]
+    pub kind:  String,
+    pub label: String,
+    pub path:  Option<String>,
+    pub port:  Option<u16>,
+    pub live:  bool,
 }
 
-impl VmState {
-    pub fn label(&self) -> &'static str {
-        match self {
-            VmState::Free    => "Free",
-            VmState::Booting => "Booting",
-            VmState::Running => "Running",
-            VmState::Paused  => "Paused",
-            VmState::Halted  => "Halted",
-            VmState::Error   => "Error",
-        }
-    }
-
-    pub fn dot_class(&self) -> &'static str {
-        match self {
-            VmState::Running                  => "vm-dot running",
-            VmState::Paused                   => "vm-dot paused",
-            VmState::Booting                  => "vm-dot booting",
-            VmState::Halted | VmState::Free   => "vm-dot stopped",
-            VmState::Error                    => "vm-dot error",
-        }
-    }
-}
-
-// ── VmInfo ────────────────────────────────────────────────────────────────────
+// ── VM info ───────────────────────────────────────────────────────────────────
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct VmInfo {
-    pub slot_id: u8,
-    pub label:   String,
-    pub state:   VmState,
-    pub ram_mb:  u32,
-}
-
-// ── RAM label helper ──────────────────────────────────────────────────────────
-
-fn ram_label(mb: u32) -> String {
-    if mb >= 1024 && mb % 1024 == 0 {
-        format!("{}GB", mb / 1024)
-    } else {
-        format!("{}MB", mb)
-    }
+    pub id:           String,
+    pub name:         String,
+    pub state:        String,   // "running" | "stopped" | "preparing" | "error"
+    pub ram_mb:       u32,
+    pub ssh_port:     u16,
+    pub ssh_user:     String,
+    pub ssh_password: String,
+    pub ssh_note:     String,
+    pub devices:      Vec<VmDevice>,
 }
 
 // ── VmPanel component ─────────────────────────────────────────────────────────
 
 #[component]
 pub fn VmPanel(set_panel: WriteSignal<String>) -> impl IntoView {
-    let (vms,          set_vms)          = create_signal(Vec::<VmInfo>::new());
-    let (selected,     set_selected)     = create_signal(Option::<u8>::None);
-    let (show_create,  set_show_create)  = create_signal(false);
-    let (new_vm_name,  set_new_vm_name)  = create_signal(String::new());
-    let (new_vm_ram,   set_new_vm_ram)   = create_signal(512u32);
-    let (create_error, set_create_error) = create_signal(Option::<String>::None);
+    let (vms,           set_vms)           = create_signal(Vec::<VmInfo>::new());
+    let (selected,      set_selected)      = create_signal(Option::<String>::None);
+    // Device manager state
+    let (show_dev_mgr,  set_show_dev_mgr)  = create_signal(false);
+    let (dev_mgr_vm,    set_dev_mgr_vm)    = create_signal(String::new());
+    let (new_dev_type,  set_new_dev_type)  = create_signal("disk".to_string());
+    let (new_dev_label, set_new_dev_label) = create_signal(String::new());
+    let (new_dev_size,  set_new_dev_size)  = create_signal(10u32);
+    let (dev_error,     set_dev_error)     = create_signal(Option::<String>::None);
 
     // ── Fetch helper ──────────────────────────────────────────────────────────
 
@@ -92,54 +69,95 @@ pub fn VmPanel(set_panel: WriteSignal<String>) -> impl IntoView {
     // Fetch on mount
     create_effect(move |_| { fetch_vms(); });
 
-    // Poll every 2 seconds
+    // Poll every 3 seconds
     {
-        let interval = gloo_timers::callback::Interval::new(2_000, move || {
+        let interval = gloo_timers::callback::Interval::new(3_000, move || {
             fetch_vms();
         });
         interval.forget();
     }
 
-    // ── Action helper ─────────────────────────────────────────────────────────
+    // ── Device manager handlers ───────────────────────────────────────────────
 
-    let do_action = move |slot_id: u8, action: &'static str| {
-        let fv = move || fetch_vms();
-        wasm_bindgen_futures::spawn_local(async move {
-            let url = format!("/api/agentos/vms/{}/{}", slot_id, action);
-            let _ = gloo_net::http::Request::post(&url).send().await;
-            fv();
-        });
+    let open_dev_mgr = move |vm_id: String| {
+        set_dev_mgr_vm.set(vm_id);
+        set_show_dev_mgr.set(true);
+        set_dev_error.set(None);
     };
 
-    // ── Create VM handler ─────────────────────────────────────────────────────
+    let close_dev_mgr = move |_| {
+        set_show_dev_mgr.set(false);
+        set_dev_error.set(None);
+    };
 
-    let on_create = move |_| {
-        let name = new_vm_name.get_untracked();
-        let ram  = new_vm_ram.get_untracked();
-        if name.trim().is_empty() {
-            set_create_error.set(Some("Name is required.".to_string()));
-            return;
-        }
-        set_create_error.set(None);
-        let ssc = set_show_create;
-        let snm = set_new_vm_name;
+    let add_device = move |_| {
+        let vm_id = dev_mgr_vm.get_untracked();
+        let kind  = new_dev_type.get_untracked();
+        let label = new_dev_label.get_untracked();
+        let size  = new_dev_size.get_untracked();
+        let sdm   = set_show_dev_mgr;
+        let sde   = set_dev_error;
         wasm_bindgen_futures::spawn_local(async move {
-            let body = serde_json::json!({ "label": name.trim(), "ram_mb": ram });
-            let _ = gloo_net::http::Request::post("/api/agentos/vms")
+            let body = if kind == "disk" {
+                serde_json::json!({
+                    "type": "disk",
+                    "label": if label.trim().is_empty() { format!("Disk {}GB", size) } else { label },
+                    "size_gb": size,
+                })
+            } else {
+                serde_json::json!({
+                    "type": "nic",
+                    "label": if label.trim().is_empty() { "Extra NIC".to_string() } else { label },
+                })
+            };
+            let url  = format!("/api/agentos/vms/{}/devices", vm_id);
+            let resp = gloo_net::http::Request::post(&url)
                 .header("Content-Type", "application/json")
                 .body(body.to_string())
                 .expect("body")
                 .send().await;
-            ssc.set(false);
-            snm.set(String::new());
+            match resp {
+                Ok(r) if r.status() == 201 => {
+                    sdm.set(false);
+                    fetch_vms();
+                }
+                Ok(r) => {
+                    let txt = r.text().await.unwrap_or_default();
+                    sde.set(Some(format!("Failed: {}", txt)));
+                }
+                Err(e) => {
+                    sde.set(Some(format!("Request error: {}", e)));
+                }
+            }
+        });
+    };
+
+    let remove_device = move |vm_id: String, dev_id: String| {
+        wasm_bindgen_futures::spawn_local(async move {
+            let url = format!("/api/agentos/vms/{}/devices/{}", vm_id, dev_id);
+            let _ = gloo_net::http::Request::delete(&url).send().await;
             fetch_vms();
         });
     };
 
-    let on_cancel = move |_| {
-        set_show_create.set(false);
-        set_new_vm_name.set(String::new());
-        set_create_error.set(None);
+    // ── State color helper ────────────────────────────────────────────────────
+
+    let state_dot = |state: &str| -> &'static str {
+        match state {
+            "running"   => "vm-dot running",
+            "preparing" => "vm-dot booting",
+            "error"     => "vm-dot error",
+            _           => "vm-dot stopped",
+        }
+    };
+
+    let state_label = |state: &str| -> &'static str {
+        match state {
+            "running"   => "Running",
+            "preparing" => "Preparing",
+            "error"     => "Error",
+            _           => "Stopped",
+        }
     };
 
     // ── View ──────────────────────────────────────────────────────────────────
@@ -149,12 +167,6 @@ pub fn VmPanel(set_panel: WriteSignal<String>) -> impl IntoView {
             // Header
             <div class="vm-panel-header">
                 <span class="vm-panel-title">"Virtual Machines"</span>
-                <button
-                    class="btn-primary"
-                    on:click=move |_| set_show_create.set(true)
-                >
-                    "+ New VM"
-                </button>
             </div>
 
             // VM list
@@ -164,68 +176,101 @@ pub fn VmPanel(set_panel: WriteSignal<String>) -> impl IntoView {
                     if list.is_empty() {
                         view! {
                             <div class="vm-empty">
-                                "No VMs running. Click + New VM to create one."
+                                "Loading VMs…"
                             </div>
                         }.into_view()
                     } else {
                         list.into_iter().map(|vm| {
-                            let slot_id   = vm.slot_id;
-                            let dot_class = vm.state.dot_class().to_string();
-                            let state_lbl = vm.state.label().to_string();
-                            let ram_str   = ram_label(vm.ram_mb);
-                            let label     = vm.label.clone();
-                            let is_sel    = move || selected.get() == Some(slot_id);
-                            let vm_state  = vm.state.clone();
+                            let vm_id      = vm.id.clone();
+                            let vm_id2     = vm.id.clone();
+                            let vm_id3     = vm.id.clone();
+                            let dot_class  = state_dot(&vm.state).to_string();
+                            let state_lbl  = state_label(&vm.state).to_string();
+                            let name       = vm.name.clone();
+                            let ssh_note   = vm.ssh_note.clone();
+                            let is_running = vm.state == "running";
+                            let is_sel     = {
+                                let id = vm.id.clone();
+                                move || selected.get().as_deref() == Some(&id)
+                            };
+                            let device_count = vm.devices.len();
+                            let sp = set_panel;
 
                             view! {
                                 <div
                                     class=move || if is_sel() { "vm-row selected" } else { "vm-row" }
-                                    on:click=move |_| set_selected.set(Some(slot_id))
+                                    on:click={
+                                        let id = vm_id3.clone();
+                                        move |_| set_selected.set(Some(id.clone()))
+                                    }
                                 >
                                     <span class=dot_class.clone() />
-                                    <span class="vm-label">{label.clone()}</span>
-                                    <span class="vm-state-badge">{state_lbl.clone()}</span>
-                                    <span class="vm-ram">{ram_str.clone()}</span>
+                                    <div class="vm-info">
+                                        <span class="vm-label">{name.clone()}</span>
+                                        <span class="vm-state-badge">{state_lbl.clone()}</span>
+                                        // SSH connection info
+                                        {if is_running {
+                                            view! {
+                                                <span class="vm-ssh-note">{ssh_note.clone()}</span>
+                                            }.into_view()
+                                        } else {
+                                            view! { <></> }.into_view()
+                                        }}
+                                    </div>
                                     <div class="vm-actions">
-                                        {match vm_state {
-                                            VmState::Halted => view! {
-                                                <button on:click=move |_| do_action(slot_id, "start")>
-                                                    "Start"
-                                                </button>
-                                            }.into_view(),
-                                            VmState::Running => view! {
+                                        // Device manager button
+                                        <button
+                                            class="btn-devices"
+                                            title=format!("{} device(s) attached", device_count)
+                                            on:click={
+                                                let id = vm_id.clone();
+                                                move |ev| {
+                                                    ev.stop_propagation();
+                                                    open_dev_mgr(id.clone());
+                                                }
+                                            }
+                                        >
+                                            {format!("Devices ({})", device_count)}
+                                        </button>
+                                        {if is_running {
+                                            view! {
                                                 <>
-                                                    <button on:click=move |_| do_action(slot_id, "stop")>
-                                                        "Stop"
-                                                    </button>
-                                                    <button on:click=move |_| do_action(slot_id, "pause")>
-                                                        "Pause"
-                                                    </button>
-                                                    <button on:click=move |_| do_action(slot_id, "snapshot")>
-                                                        "Snapshot"
-                                                    </button>
                                                     <button on:click={
-                                                        let sp = set_panel;
-                                                        move |_| sp.set("console".to_string())
-                                                    }>
-                                                        "Console"
-                                                    </button>
+                                                        move |ev| {
+                                                            ev.stop_propagation();
+                                                            sp.set("console".to_string());
+                                                        }
+                                                    }>"Console"</button>
                                                 </>
-                                            }.into_view(),
-                                            VmState::Paused => view! {
-                                                <>
-                                                    <button on:click=move |_| do_action(slot_id, "resume")>
-                                                        "Resume"
-                                                    </button>
-                                                    <button on:click=move |_| do_action(slot_id, "stop")>
-                                                        "Stop"
-                                                    </button>
-                                                </>
-                                            }.into_view(),
-                                            VmState::Booting => view! {
-                                                <button disabled=true>"Booting…"</button>
-                                            }.into_view(),
-                                            _ => view! { <></> }.into_view(),
+                                            }.into_view()
+                                        } else {
+                                            // Spawn button for stopped VMs
+                                            view! {
+                                                <button on:click={
+                                                    let id = vm_id2.clone();
+                                                    move |ev| {
+                                                        ev.stop_propagation();
+                                                        let agent_type = match id.as_str() {
+                                                            "freebsd" => "freebsd_vm",
+                                                            "ubuntu"  => "linux_vm",
+                                                            other     => other,
+                                                        }.to_string();
+                                                        wasm_bindgen_futures::spawn_local(async move {
+                                                            let body = serde_json::json!({
+                                                                "type": agent_type
+                                                            });
+                                                            let _ = gloo_net::http::Request::post(
+                                                                "/api/agentos/agents/spawn"
+                                                            )
+                                                            .header("Content-Type", "application/json")
+                                                            .body(body.to_string())
+                                                            .expect("body")
+                                                            .send().await;
+                                                            fetch_vms();
+                                                        });
+                                                    }
+                                                }>"Start"</button>
+                                            }.into_view()
                                         }}
                                     </div>
                                 </div>
@@ -235,46 +280,111 @@ pub fn VmPanel(set_panel: WriteSignal<String>) -> impl IntoView {
                 }}
             </div>
 
-            // Create modal
-            <Show when=move || show_create.get()>
-                <div class="vm-create-modal">
-                    <h3>"New Virtual Machine"</h3>
-                    <div class="vm-create-form">
-                        <label>
-                            "Name"
-                            <input
-                                type="text"
-                                placeholder="e.g. dev-vm-1"
-                                prop:value=move || new_vm_name.get()
-                                on:input=move |ev| {
-                                    set_new_vm_name.set(
-                                        event_target_value(&ev)
-                                    );
+            // ── Device Manager Modal ──────────────────────────────────────────
+            <Show when=move || show_dev_mgr.get()>
+                <div class="vm-modal-backdrop">
+                    <div class="vm-device-modal">
+                        <div class="vm-modal-header">
+                            <h3>"Device Manager — "
+                                {move || dev_mgr_vm.get()}
+                            </h3>
+                            <button class="btn-close" on:click=close_dev_mgr>"✕"</button>
+                        </div>
+
+                        // Existing devices
+                        <div class="device-list">
+                            {move || {
+                                let vm_id = dev_mgr_vm.get();
+                                let list  = vms.get();
+                                let vm = list.iter().find(|v| v.id == vm_id).cloned();
+                                match vm {
+                                    None => view! { <div>"VM not found"</div> }.into_view(),
+                                    Some(vm) => vm.devices.into_iter().map(|dev| {
+                                        let dev_id  = dev.id.clone();
+                                        let vm_id2  = vm.id.clone();
+                                        let is_boot = dev_id == "boot" || dev_id == "net0";
+                                        let detail  = match dev.kind.as_str() {
+                                            "disk" => dev.path.as_deref().unwrap_or("").to_string(),
+                                            "nic"  => format!("port {}", dev.port.unwrap_or(0)),
+                                            other  => other.to_string(),
+                                        };
+                                        let live_badge = if dev.live { " ●" } else { " ○" };
+                                        view! {
+                                            <div class="device-row">
+                                                <span class="device-type-badge">{dev.kind.clone()}</span>
+                                                <span class="device-label">{dev.label.clone()}</span>
+                                                <span class="device-detail">{detail}</span>
+                                                <span class="device-live" title=if dev.live { "live" } else { "queued" }>
+                                                    {live_badge}
+                                                </span>
+                                                {if !is_boot {
+                                                    let dv  = dev_id.clone();
+                                                    let vid = vm_id2.clone();
+                                                    let rd  = remove_device.clone();
+                                                    view! {
+                                                        <button
+                                                            class="btn-remove"
+                                                            on:click=move |_| rd(vid.clone(), dv.clone())
+                                                        >"Remove"</button>
+                                                    }.into_view()
+                                                } else {
+                                                    view! { <></> }.into_view()
+                                                }}
+                                            </div>
+                                        }
+                                    }).collect_view(),
                                 }
-                            />
-                        </label>
-                        <label>
-                            "RAM"
-                            <select
-                                on:change=move |ev| {
-                                    if let Ok(mb) = event_target_value(&ev).parse::<u32>() {
-                                        set_new_vm_ram.set(mb);
-                                    }
-                                }
-                            >
-                                <option value="256"  selected=move || new_vm_ram.get() == 256>"256 MB"</option>
-                                <option value="512"  selected=move || new_vm_ram.get() == 512>"512 MB"</option>
-                                <option value="1024" selected=move || new_vm_ram.get() == 1024>"1 GB"</option>
-                                <option value="2048" selected=move || new_vm_ram.get() == 2048>"2 GB"</option>
-                                <option value="4096" selected=move || new_vm_ram.get() == 4096>"4 GB"</option>
-                            </select>
-                        </label>
-                        {move || create_error.get().map(|e| view! {
-                            <span style="color:#f44336;font-size:0.8rem;">{e}</span>
-                        })}
-                        <div class="vm-create-actions">
-                            <button class="btn-cancel" on:click=on_cancel>"Cancel"</button>
-                            <button class="btn-primary" on:click=on_create>"Create"</button>
+                            }}
+                        </div>
+
+                        // Add new device form
+                        <div class="device-add-form">
+                            <h4>"Add Device"</h4>
+                            <div class="device-form-row">
+                                <label>
+                                    "Type"
+                                    <select on:change=move |ev| set_new_dev_type.set(event_target_value(&ev))>
+                                        <option value="disk" selected=move || new_dev_type.get() == "disk">"Virtual Disk"</option>
+                                        <option value="nic"  selected=move || new_dev_type.get() == "nic">"Network Interface"</option>
+                                    </select>
+                                </label>
+                                <label>
+                                    "Label (optional)"
+                                    <input
+                                        type="text"
+                                        placeholder="e.g. Data disk"
+                                        prop:value=move || new_dev_label.get()
+                                        on:input=move |ev| set_new_dev_label.set(event_target_value(&ev))
+                                    />
+                                </label>
+                                {move || if new_dev_type.get() == "disk" {
+                                    view! {
+                                        <label>
+                                            "Size"
+                                            <select on:change=move |ev| {
+                                                if let Ok(v) = event_target_value(&ev).parse::<u32>() {
+                                                    set_new_dev_size.set(v);
+                                                }
+                                            }>
+                                                <option value="10"  selected=move || new_dev_size.get() == 10>"10 GB"</option>
+                                                <option value="20"  selected=move || new_dev_size.get() == 20>"20 GB"</option>
+                                                <option value="40"  selected=move || new_dev_size.get() == 40>"40 GB"</option>
+                                                <option value="80"  selected=move || new_dev_size.get() == 80>"80 GB"</option>
+                                                <option value="100" selected=move || new_dev_size.get() == 100>"100 GB"</option>
+                                            </select>
+                                        </label>
+                                    }.into_view()
+                                } else {
+                                    view! { <></> }.into_view()
+                                }}
+                            </div>
+                            {move || dev_error.get().map(|e| view! {
+                                <span class="error-msg">{e}</span>
+                            })}
+                            <div class="device-form-actions">
+                                <button class="btn-cancel" on:click=close_dev_mgr>"Cancel"</button>
+                                <button class="btn-primary" on:click=add_device>"Add Device"</button>
+                            </div>
                         </div>
                     </div>
                 </div>
