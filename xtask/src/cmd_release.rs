@@ -50,7 +50,25 @@ pub fn run(args: &ReleaseArgs) -> anyhow::Result<()> {
         "[xtask:release] Release v{} committed and tagged as {}.",
         next, tag
     );
-    println!("  To push: git push && git push --tags");
+
+    // Push commits
+    println!("[xtask:release] Pushing to origin...");
+    let status = std::process::Command::new("git")
+        .args(["push", "origin", "main"])
+        .current_dir(&repo_root)
+        .status()
+        .context("git push failed")?;
+    anyhow::ensure!(status.success(), "git push origin main failed");
+
+    // Push tag
+    let status = std::process::Command::new("git")
+        .args(["push", "origin", &tag])
+        .current_dir(&repo_root)
+        .status()
+        .context("git push tag failed")?;
+    anyhow::ensure!(status.success(), "git push origin {} failed", tag);
+
+    println!("[xtask:release] Pushed v{} to origin.", next);
 
     Ok(())
 }
