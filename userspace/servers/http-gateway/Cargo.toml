@@ -1,6 +1,6 @@
 [package]
 name = "agentos-http-gateway"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 description = "HTTP Gateway — hyper-based HTTP/1.1 server that dispatches requests to agentOS apps via http_svc"
 

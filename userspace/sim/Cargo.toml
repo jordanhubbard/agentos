@@ -1,6 +1,6 @@
 [package]
 name = "agentos-sim"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 description = "agentOS WASM agent simulator — runs signed .wasm agents on the host with mock seL4 Microkit IPC"
 license = "Apache-2.0"
