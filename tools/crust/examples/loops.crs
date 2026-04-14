@@ -1,0 +1,44 @@
+fn main() {
+    // while loop
+    let mut n = 1;
+    while n <= 5 {
+        println!("n = {}", n);
+        n = n + 1;
+    }
+
+    // for with range
+    for i in 0..5 {
+        println!("i = {}", i);
+    }
+
+    // loop with break
+    let mut count = 0;
+    loop {
+        count = count + 1;
+        if count >= 3 {
+            break;
+        }
+    }
+    println!("loop ran {} times", count);
+
+    // for over vec
+    let fruits = vec!["apple", "banana", "cherry"];
+    for fruit in fruits {
+        println!("fruit: {}", fruit);
+    }
+
+    // nested loops with continue
+    let mut i = 0;
+    while i < 3 {
+        let mut j = 0;
+        while j < 3 {
+            if j == 1 {
+                j = j + 1;
+                continue;
+            }
+            println!("({}, {})", i, j);
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+}
