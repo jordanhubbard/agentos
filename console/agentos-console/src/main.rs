@@ -23,6 +23,7 @@ mod routes;
 mod serial;
 mod ws_log;
 mod ws_terminal;
+mod ws_vm_serial;
 
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
@@ -385,6 +386,16 @@ async fn main() -> anyhow::Result<()> {
                 }
             }
         }))
+        // WebSocket — VM serial console (FreeBSD / Ubuntu Linux)
+        .route("/ws/vm/:vm_id", get(
+            |ws: axum::extract::WebSocketUpgrade,
+             path: axum::extract::Path<String>| async move {
+                let vm_id = path.0;
+                ws.on_upgrade(move |socket| {
+                    ws_vm_serial::handle_vm_serial_ws(socket, vm_id)
+                })
+            }
+        ))
         .layer(CorsLayer::permissive())
         .with_state(app_state);
 

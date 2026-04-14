@@ -6,8 +6,15 @@
 //!   POST /api/agentos/vms/:id/devices                → attach a new device
 //!   DEL  /api/agentos/vms/:id/devices/:dev_id        → remove a device
 
+use std::rc::Rc;
+use std::cell::RefCell;
+
 use leptos::*;
 use serde::{Deserialize, Serialize};
+use wasm_bindgen::prelude::*;
+use wasm_bindgen::JsCast as _;
+
+use crate::xterm_bindings::XTerminal;
 
 // ── Device info ───────────────────────────────────────────────────────────────
 
@@ -43,6 +50,8 @@ pub struct VmInfo {
 pub fn VmPanel(set_panel: WriteSignal<String>) -> impl IntoView {
     let (vms,           set_vms)           = create_signal(Vec::<VmInfo>::new());
     let (selected,      set_selected)      = create_signal(Option::<String>::None);
+    // Serial console state: holds the vm_id of the VM whose console is open
+    let console_vm: RwSignal<Option<String>> = create_rw_signal(None);
     // Device manager state
     let (show_dev_mgr,  set_show_dev_mgr)  = create_signal(false);
     let (dev_mgr_vm,    set_dev_mgr_vm)    = create_signal(String::new());
@@ -194,7 +203,7 @@ pub fn VmPanel(set_panel: WriteSignal<String>) -> impl IntoView {
                                 move || selected.get().as_deref() == Some(&id)
                             };
                             let device_count = vm.devices.len();
-                            let sp = set_panel;
+                            let _ = set_panel; // retained for future use
 
                             view! {
                                 <div
@@ -233,12 +242,14 @@ pub fn VmPanel(set_panel: WriteSignal<String>) -> impl IntoView {
                                             {format!("Devices ({})", device_count)}
                                         </button>
                                         {if is_running {
+                                            let cvm = console_vm;
+                                            let id_for_console = vm_id2.clone();
                                             view! {
                                                 <>
                                                     <button on:click={
                                                         move |ev| {
                                                             ev.stop_propagation();
-                                                            sp.set("console".to_string());
+                                                            cvm.set(Some(id_for_console.clone()));
                                                         }
                                                     }>"Console"</button>
                                                 </>
@@ -389,6 +400,107 @@ pub fn VmPanel(set_panel: WriteSignal<String>) -> impl IntoView {
                     </div>
                 </div>
             </Show>
+
+            // ── VM Serial Console Modal ───────────────────────────────────────
+            <Show when=move || console_vm.get().is_some()>
+                <VmConsoleModal
+                    vm_id=move || console_vm.get().unwrap_or_default()
+                    on_close=move || console_vm.set(None)
+                />
+            </Show>
+        </div>
+    }
+}
+
+// ── VmConsoleModal ─────────────────────────────────────────────────────────────
+//
+// Opens a modal with an xterm.js terminal connected to the VM's dedicated
+// serial socket via ws://.../ws/vm/{vm_id}.
+
+#[component]
+fn VmConsoleModal(
+    vm_id:    impl Fn() -> String + 'static,
+    on_close: impl Fn() + Clone + 'static,
+) -> impl IntoView {
+    let id       = vm_id();          // evaluate once; vm_id won't change while modal is open
+    let id_label = id.clone();       // copy for the view header
+
+    let term_ref  = create_node_ref::<leptos::html::Div>();
+    let term_cell: Rc<RefCell<Option<XTerminal>>> = Rc::new(RefCell::new(None));
+    let term_cleanup = term_cell.clone();
+
+    create_effect(move |initialized: Option<bool>| -> bool {
+        if initialized.unwrap_or(false) { return true; }
+        let container = match term_ref.get() { Some(c) => c, None => return false };
+
+        let opts = js_sys::Object::new();
+        let _ = js_sys::Reflect::set(&opts, &JsValue::from("fontSize"),    &JsValue::from_f64(12.0));
+        let _ = js_sys::Reflect::set(&opts, &JsValue::from("fontFamily"),  &JsValue::from("'Berkeley Mono','Fira Code',monospace"));
+        let _ = js_sys::Reflect::set(&opts, &JsValue::from("cursorBlink"), &JsValue::TRUE);
+        let _ = js_sys::Reflect::set(&opts, &JsValue::from("scrollback"),  &JsValue::from_f64(2000.0));
+        let theme = js_sys::Object::new();
+        let _ = js_sys::Reflect::set(&theme, &JsValue::from("background"), &JsValue::from("#050607"));
+        let _ = js_sys::Reflect::set(&theme, &JsValue::from("foreground"), &JsValue::from("#f7f8f8"));
+        let _ = js_sys::Reflect::set(&theme, &JsValue::from("cursor"),     &JsValue::from("#7170ff"));
+        let _ = js_sys::Reflect::set(&opts,  &JsValue::from("theme"),      &theme.into());
+
+        let term = XTerminal::new(&opts.into());
+        term.open(container.as_ref());
+
+        let (tx, mut rx) = futures::channel::mpsc::unbounded::<String>();
+        let tx2 = tx.clone();
+        let on_data_cb = Closure::wrap(Box::new(move |data: String| {
+            let _ = tx2.unbounded_send(data);
+        }) as Box<dyn Fn(String)>);
+        term.on_data(on_data_cb.as_ref().unchecked_ref::<JsValue>());
+        on_data_cb.forget();
+        *term_cell.borrow_mut() = Some(term);
+
+        let host = web_sys::window()
+            .unwrap()
+            .location()
+            .host()
+            .unwrap_or_else(|_| "localhost:8080".to_string());
+        let ws_url = format!("ws://{}/ws/vm/{}", host, id);
+
+        use gloo_net::websocket::futures::WebSocket;
+        use futures::StreamExt as _;
+        if let Ok(ws) = WebSocket::open(&ws_url) {
+            let (mut write, mut read) = ws.split();
+            wasm_bindgen_futures::spawn_local(async move {
+                use futures::SinkExt as _;
+                while let Some(msg) = rx.next().await {
+                    if write.send(gloo_net::websocket::Message::Text(msg)).await.is_err() {
+                        break;
+                    }
+                }
+            });
+            let tc = term_cell.clone();
+            wasm_bindgen_futures::spawn_local(async move {
+                while let Some(Ok(gloo_net::websocket::Message::Text(text))) = read.next().await {
+                    if let Some(t) = tc.borrow().as_ref() { t.write(&text); }
+                }
+            });
+        } else if let Some(t) = term_cell.borrow().as_ref() {
+            t.write("\r\n\x1b[31m[terminal] WebSocket connection failed\x1b[0m\r\n");
+        }
+        true
+    });
+
+    on_cleanup(move || {
+        if let Some(t) = term_cleanup.borrow_mut().take() { t.dispose(); }
+    });
+
+    let oc = on_close.clone();
+    view! {
+        <div class="vm-modal-backdrop" on:click=move |_| oc()>
+            <div class="vm-console-modal" on:click=|e| e.stop_propagation()>
+                <div class="vm-modal-header">
+                    <h3>"Serial Console — " {id_label}</h3>
+                    <button class="btn-close" on:click=move |_| on_close()>"✕"</button>
+                </div>
+                <div class="vm-console-term" node_ref=term_ref />
+            </div>
         </div>
     }
 }
