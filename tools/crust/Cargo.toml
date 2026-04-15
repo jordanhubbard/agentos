@@ -2,15 +2,4 @@
 name = "crust"
 version = "0.1.0"
 edition = "2021"
-description = "A gradual-strictness Rust interpreter"
-
-[[bin]]
-name = "crust"
-path = "src/main.rs"
-
-[workspace]
-
-[dependencies]
-rustyline = "14.0"
-
-[dev-dependencies]
+description = "crust — interpreted Rust for agents who don't have time for borrow checkers"
