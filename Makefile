@@ -6,11 +6,11 @@
 # Targets:
 #   make install      — install all build dependencies
 #   make build        — build the kernel image for BOARD/TARGET_ARCH
-#   make run          — build (native arch) + QEMU (HW-accel) + agentOS console (http://localhost:8080)
+#   make run          — build (native arch) + QEMU (HW-accel)
 #   make test         — CI boot test (exit 0/1)
 #   make clean        — remove build artifacts for current target
 
-.PHONY: all install deps-tools deps-sdk submodules channels run dashboard test test-snapshot-sched test-power-mgr test-proc-server test-integration clean clean-all clean-images help release release-minor release-major fetch-guest build-tools
+.PHONY: all install deps-tools deps-sdk submodules channels run test test-snapshot-sched test-power-mgr test-proc-server test-integration clean clean-all clean-images help release release-minor release-major fetch-guest build-tools
 
 # ─── Read config.yaml (if present) ───────────────────────────────────────────
 CONFIG_TARGET := $(shell grep '^target_arch:' config.yaml 2>/dev/null | sed 's/target_arch:[[:space:]]*//' | tr -d '[:space:]')
@@ -28,7 +28,7 @@ GUEST_OS    ?= none
 ROOT_DIR     := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
 KERNEL_DIR   := $(ROOT_DIR)kernel/agentos-root-task
 MICROKIT_SDK := $(ROOT_DIR)microkit-sdk-2.1.0
-CONSOLE_DIR  := $(ROOT_DIR)console
+
 
 # ─── BOARD_NAME: selects a boards/<name>/board.mk configuration ──────────────
 # Derive from TARGET_ARCH when not explicitly provided.  Override with
@@ -123,7 +123,7 @@ SDK_URL := https://github.com/seL4/microkit/releases/download/2.1.0/microkit-sdk
 # ─── Rust toolchain ──────────────────────────────────────────────────────────
 export PATH := $(HOME)/.cargo/bin:$(PATH)
 
-# ─── Native arch / HW-accelerated console ────────────────────────────────────
+# ─── Native arch / HW-accelerated QEMU ────────────────────────────────────
 # Normalise uname -m: macOS Apple Silicon reports "arm64", seL4 uses "aarch64"
 NATIVE_ARCH := $(shell uname -m | sed 's/arm64/aarch64/')
 
@@ -180,7 +180,7 @@ all: run
 # =============================================================================
 install: deps-tools deps-sdk
 	@echo ""
-	@echo "✅ All dependencies installed! Run 'make run' to launch the console."
+	@echo "✅ All dependencies installed! Run 'make run' to start."
 
 deps-tools:
 	@echo ""
@@ -302,7 +302,7 @@ build-tools:
 	@echo "Building agentOS Rust tools..."
 	@cargo build --release \
 		-p gen-sdf -p gen-ringbuf -p sign-wasm -p attest-verify \
-		-p make-swap-image -p trace-replay -p agentos-console -p xtask
+		-p make-swap-image -p trace-replay -p xtask
 	@echo "✓ Tools built → target/release/"
 
 # =============================================================================
@@ -316,7 +316,7 @@ else ifeq ($(GUEST_OS),ubuntu)
 endif
 
 # =============================================================================
-# build (internal — used by console and test)
+# build (internal — used by test)
 # =============================================================================
 build: fetch-guest submodules deps-sdk
 	@echo ""
@@ -359,29 +359,17 @@ endif
 	@echo ""
 
 # =============================================================================
-# dashboard: start the agentOS console (agentOS already running on hardware)
-# =============================================================================
-dashboard:
-	@echo ""
-	@echo "agentOS console → http://localhost:8080"
-	@echo "Connects to agentOS at http://127.0.0.1:8789"
-	@echo "Press Ctrl-C to stop."
-	@echo ""
-	@cargo run -p agentos-console --release
-
-# =============================================================================
-# run (default): build native → QEMU (HW-accel) + agentOS console
+# run (default): build native → QEMU (HW-accel)
 #
 # Builds agentOS for the host's native CPU, launches it headlessly in QEMU
-# with hardware acceleration (HVF on macOS, KVM on Linux), starts the
-# agentOS console server, and opens it in the default browser.
-# Ctrl-C shuts down both the console server and QEMU cleanly.
+# with hardware acceleration (HVF on macOS, KVM on Linux).
+# Ctrl-C shuts down QEMU cleanly.
 # =============================================================================
 run:
 	@$(MAKE) build BOARD=$(NATIVE_BOARD) TARGET_ARCH=$(NATIVE_ARCH)
 	@echo ""
 	@echo "╔══════════════════════════════════════════╗"
-	@echo "║  agentOS — console (native, HW-accel)    ║"
+	@echo "║  agentOS — QEMU (native, HW-accel)      ║"
 	@echo "╚══════════════════════════════════════════╝"
 	@echo ""
 	@echo "Arch  : $(NATIVE_ARCH)"
@@ -389,20 +377,12 @@ run:
 	@echo "Accel : $(if $(QEMU_ACCEL_NATIVE),$(QEMU_ACCEL_NATIVE),none (TCG fallback))"
 	@echo "Image : $(NATIVE_IMAGE)"
 	@echo ""
-	@echo "Console: http://localhost:8080  (opening in browser...)"
+	@echo "Serial: /tmp/agentos-serial.sock"
 	@echo "──────────────────────────────────────────────"
 	@rm -f /tmp/agentos-serial.sock /tmp/freebsd-serial.sock /tmp/linux-serial.sock
-	@lsof -ti:8080 2>/dev/null | xargs kill 2>/dev/null || true
-	@lsof -ti:8789 2>/dev/null | xargs kill 2>/dev/null || true
-	@trap 'kill "$$QEMU_PID" 2>/dev/null; wait "$$BRIDGE_PID" 2>/dev/null; exit' INT TERM; \
-	 cargo run -p agentos-console --release & BRIDGE_PID=$$!; \
-	 for _i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do \
-	   [ -S /tmp/agentos-serial.sock ] && break; sleep 0.1; done; \
+	@trap 'kill "$$QEMU_PID" 2>/dev/null; exit' INT TERM; \
 	 $(NATIVE_QEMU) $(NATIVE_QEMU_FLAGS) & QEMU_PID=$$!; \
-	 (command -v open     >/dev/null 2>&1 && open     http://localhost:8080) || \
-	 (command -v xdg-open >/dev/null 2>&1 && xdg-open http://localhost:8080) || true; \
-	 wait "$$BRIDGE_PID"; \
-	 kill "$$QEMU_PID" 2>/dev/null || true
+	 wait "$$QEMU_PID"
 
 # =============================================================================
 # test: CI boot test (exits 0 on success, 1 on failure)
@@ -530,7 +510,7 @@ help:
 	@echo "Targets:"
 	@echo "  make install          Install build deps (brew / apt)"
 	@echo "  make build            Build kernel image for BOARD/TARGET_ARCH"
-	@echo "  make run              Build (native arch) + QEMU (HW-accel) + agentOS console"
+	@echo "  make run              Build (native arch) + QEMU (HW-accel)"
 	@echo "  make test             CI boot test (exit 0/1)"
 	@echo "  make clean            Remove build artifacts for current board"
 	@echo ""
@@ -541,5 +521,4 @@ help:
 	@echo "  Kernel/firmware    → C"
 	@echo "  Arch-specific      → Assembly"
 	@echo "  Userspace/tooling  → Rust"
-	@echo "  Dashboard UI       → Rust/WASM (trunk build)"
 	@echo ""
