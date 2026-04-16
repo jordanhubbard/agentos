@@ -24,11 +24,6 @@ members = [
     "tools/make-swap-image",
     "tools/trace-replay",
     "tools/crust",
-    # Console
-    "console/pd-slots",
-    "console/agentos-console",
-    # WASM dashboard (build with --target wasm32-unknown-unknown -p dashboard)
-    "console/dashboard",
     # Workspace task runner
     "xtask",
 ]
