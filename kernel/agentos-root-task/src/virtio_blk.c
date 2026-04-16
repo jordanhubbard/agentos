@@ -43,8 +43,8 @@ uintptr_t blk_mmio_vaddr;
 /* Virtual (== physical due to fixed_mr) address of the 32 KB DMA shmem */
 uintptr_t blk_dma_shmem_vaddr;
 
-/* console_rings_vaddr required by console_log() in agentos.h */
-uintptr_t console_rings_vaddr;
+/* log_drain_rings_vaddr required by log_drain_write() in agentos.h */
+uintptr_t log_drain_rings_vaddr;
 
 /* ─────────────────────────────────────────────────────────────────────────────
  * Convenience MMIO read/write helpers
@@ -266,7 +266,7 @@ static uint32_t virtio_blk_do_io(uint32_t type, uint64_t sector, uint32_t count)
         /* Read barrier: ensure we see the device's update */
         ARCH_MB();
         if (++iters >= VIRTIO_BLK_POLL_ITERS) {
-            console_log(17, 17, "[virtio_blk] ERROR: I/O timeout\n");
+            log_drain_write(17, 17, "[virtio_blk] ERROR: I/O timeout\n");
             dev.error_count++;
             return BLK_ERR_IO;
         }
@@ -278,7 +278,7 @@ static uint32_t virtio_blk_do_io(uint32_t type, uint64_t sector, uint32_t count)
     /* ── Step 6: Check device status ── */
     uint8_t status = DMA_BASE[status_off];
     if (status != VIRTIO_BLK_S_OK) {
-        console_log(17, 17, "[virtio_blk] ERROR: device returned non-OK status\n");
+        log_drain_write(17, 17, "[virtio_blk] ERROR: device returned non-OK status\n");
         dev.error_count++;
         return BLK_ERR_IO;
     }
@@ -296,7 +296,7 @@ static void virtio_blk_device_init(void)
 
     /* Obtain MMIO base from setvar_vaddr */
     if (blk_mmio_vaddr == 0) {
-        console_log(17, 17, "[virtio_blk] ERROR: blk_mmio_vaddr not set\n");
+        log_drain_write(17, 17, "[virtio_blk] ERROR: blk_mmio_vaddr not set\n");
         return;
     }
     dev.mmio = (volatile uint32_t *)blk_mmio_vaddr;
@@ -307,15 +307,15 @@ static void virtio_blk_device_init(void)
     uint32_t devid    = mmio_read(dev.mmio, VIRTIO_MMIO_DEVICE_ID);
 
     if (magic != VIRTIO_MMIO_MAGIC) {
-        console_log(17, 17, "[virtio_blk] ERROR: bad magic value (not a virtio device)\n");
+        log_drain_write(17, 17, "[virtio_blk] ERROR: bad magic value (not a virtio device)\n");
         return;
     }
     if (version != 2) {
-        console_log(17, 17, "[virtio_blk] ERROR: unsupported virtio-MMIO version (need v2)\n");
+        log_drain_write(17, 17, "[virtio_blk] ERROR: unsupported virtio-MMIO version (need v2)\n");
         return;
     }
     if (devid != 2) {
-        console_log(17, 17, "[virtio_blk] ERROR: device ID is not 2 (not a block device)\n");
+        log_drain_write(17, 17, "[virtio_blk] ERROR: device ID is not 2 (not a block device)\n");
         return;
     }
 
@@ -351,7 +351,7 @@ static void virtio_blk_device_init(void)
 
     uint32_t confirmed = mmio_read(dev.mmio, VIRTIO_MMIO_STATUS);
     if (!(confirmed & VIRTIO_STATUS_FEATURES_OK)) {
-        console_log(17, 17, "[virtio_blk] ERROR: device rejected feature set\n");
+        log_drain_write(17, 17, "[virtio_blk] ERROR: device rejected feature set\n");
         mmio_write(dev.mmio, VIRTIO_MMIO_STATUS,
                    mmio_read(dev.mmio, VIRTIO_MMIO_STATUS) | VIRTIO_STATUS_FAILED);
         return;
@@ -365,7 +365,7 @@ static void virtio_blk_device_init(void)
     /* Check the max queue size the device supports */
     uint32_t qnum_max = mmio_read(dev.mmio, VIRTIO_MMIO_QUEUE_NUM_MAX);
     if (qnum_max == 0) {
-        console_log(17, 17, "[virtio_blk] ERROR: device reports queue 0 not available\n");
+        log_drain_write(17, 17, "[virtio_blk] ERROR: device reports queue 0 not available\n");
         mmio_write(dev.mmio, VIRTIO_MMIO_STATUS,
                    mmio_read(dev.mmio, VIRTIO_MMIO_STATUS) | VIRTIO_STATUS_FAILED);
         return;
@@ -421,7 +421,7 @@ static void virtio_blk_device_init(void)
     }
 
     dev.initialized = true;
-    console_log(17, 17, "[virtio_blk] device initialised OK\n");
+    log_drain_write(17, 17, "[virtio_blk] device initialised OK\n");
 }
 
 /* ─────────────────────────────────────────────────────────────────────────────
@@ -435,14 +435,14 @@ static void virtio_blk_device_init(void)
 void init(void)
 {
     agentos_log_boot("virtio_blk");
-    console_log(17, 17, "[virtio_blk] Initializing virtio-blk driver...\n");
+    log_drain_write(17, 17, "[virtio_blk] Initializing virtio-blk driver...\n");
 
     virtio_blk_device_init();
 
     if (dev.initialized) {
-        console_log(17, 17, "[virtio_blk] READY\n");
+        log_drain_write(17, 17, "[virtio_blk] READY\n");
     } else {
-        console_log(17, 17, "[virtio_blk] WARNING: device absent, all ops return BLK_ERR_NODEV\n");
+        log_drain_write(17, 17, "[virtio_blk] WARNING: device absent, all ops return BLK_ERR_NODEV\n");
     }
 }
 
@@ -571,7 +571,7 @@ microkit_msginfo protected(microkit_channel ch, microkit_msginfo msginfo)
 
     /* ── Unknown opcode ─────────────────────────────────────────────────── */
     default: {
-        console_log(17, 17, "[virtio_blk] WARNING: unknown opcode received\n");
+        log_drain_write(17, 17, "[virtio_blk] WARNING: unknown opcode received\n");
         microkit_mr_set(0, BLK_ERR_IO);
         return microkit_msginfo_new(0xFFFF, 1);
     }

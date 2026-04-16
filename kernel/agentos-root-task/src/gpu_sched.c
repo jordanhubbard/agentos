@@ -76,7 +76,7 @@ static void gpu_virtio_kick(uint32_t queue_id) {
  */
 void probe_virtio_gpu(void) {
     if (!virtio_gpu_mmio_vaddr) {
-        console_log(15, 15, "[gpu_sched] virtio-gpu: MMIO vaddr not mapped, stub mode\n");
+        log_drain_write(15, 15, "[gpu_sched] virtio-gpu: MMIO vaddr not mapped, stub mode\n");
         return;
     }
 
@@ -86,7 +86,7 @@ void probe_virtio_gpu(void) {
 
     if (magic != VIRTIO_MMIO_MAGIC || version != 2u
             || device_id != VIRTIO_GPU_DEVICE_ID) {
-        console_log(15, 15, "[gpu_sched] virtio-gpu not detected (magic/ver/dev mismatch), stub mode\n");
+        log_drain_write(15, 15, "[gpu_sched] virtio-gpu not detected (magic/ver/dev mismatch), stub mode\n");
         return;
     }
 
@@ -103,7 +103,7 @@ void probe_virtio_gpu(void) {
     gpu_mmio_write32(virtio_gpu_mmio_vaddr, VIRTIO_MMIO_STATUS,
                      VIRTIO_STATUS_ACKNOWLEDGE | VIRTIO_STATUS_DRIVER);
 
-    console_log(15, 15, "[gpu_sched] virtio-gpu detected: hw present, MMIO at ");
+    log_drain_write(15, 15, "[gpu_sched] virtio-gpu detected: hw present, MMIO at ");
     {
         /* Inline hex log — no libc */
         static const char h[] = "0123456789abcdef";
@@ -113,9 +113,9 @@ void probe_virtio_gpu(void) {
         for (int k = 0; k < 8; k++)
             buf[2+k] = h[(v >> (28 - k*4)) & 0xf];
         buf[10] = '\0';
-        console_log(15, 15, buf);
+        log_drain_write(15, 15, buf);
     }
-    console_log(15, 15, "\n");
+    log_drain_write(15, 15, "\n");
 }
 
 /* ── Channel IDs (from gpu_sched's perspective in agentos.system) ──────────── */
@@ -179,10 +179,10 @@ static struct {
 /* ── Helpers ──────────────────────────────────────────────────────────────── */
 
 static void put_dec(uint32_t v) {
-    console_log(15, 15, "0");
+    log_drain_write(15, 15, "0");
     char buf[12]; int i = 11; buf[i] = '\0';
     while (v > 0 && i > 0) { buf[--i] = '0' + (v % 10); v /= 10; }
-    console_log(15, 15, &buf[i]);
+    log_drain_write(15, 15, &buf[i]);
 }
 
 /* Find a free queue slot */
@@ -245,13 +245,13 @@ static void dispatch_pending(void) {
         sched.slots[slot].busy      = true;
         sched.slots[slot].ticket_id = t->ticket_id;
 
-        console_log(15, 15, "[gpu_sched] Dispatching ticket=");
+        log_drain_write(15, 15, "[gpu_sched] Dispatching ticket=");
         put_dec(t->ticket_id);
-        console_log(15, 15, " to slot=");
+        log_drain_write(15, 15, " to slot=");
         put_dec((uint32_t)slot);
-        console_log(15, 15, " prio=");
+        log_drain_write(15, 15, " prio=");
         put_dec(t->priority);
-        console_log(15, 15, "\n");
+        log_drain_write(15, 15, "\n");
 
         /*
          * Notify controller to route this WASM hash to the appropriate
@@ -307,7 +307,7 @@ microkit_msginfo protected(microkit_channel ch, microkit_msginfo msg) {
 
         int qi = queue_alloc();
         if (qi < 0) {
-            console_log(15, 15, "[gpu_sched] SUBMIT: queue full\n");
+            log_drain_write(15, 15, "[gpu_sched] SUBMIT: queue full\n");
             microkit_mr_set(0, 0);
             microkit_mr_set(1, GPU_ERR_QUEUE_FULL);
             return microkit_msginfo_new(MSG_GPU_SUBMIT_REPLY, 2);
@@ -325,11 +325,11 @@ microkit_msginfo protected(microkit_channel ch, microkit_msginfo msg) {
         t->submitter   = (uint32_t)ch;
         sched.tasks_submitted++;
 
-        console_log(15, 15, "[gpu_sched] SUBMIT: ticket=");
+        log_drain_write(15, 15, "[gpu_sched] SUBMIT: ticket=");
         put_dec(ticket);
-        console_log(15, 15, " prio=");
+        log_drain_write(15, 15, " prio=");
         put_dec(priority);
-        console_log(15, 15, " queued\n");
+        log_drain_write(15, 15, " queued\n");
 
         /* Try to dispatch immediately if a slot is free */
         dispatch_pending();
@@ -371,9 +371,9 @@ microkit_msginfo protected(microkit_channel ch, microkit_msginfo msg) {
         if (sched.queue[qi].state == TASK_QUEUED) {
             sched.queue[qi].state = TASK_FREE;
             sched.queue[qi].ticket_id = 0;
-            console_log(15, 15, "[gpu_sched] CANCEL: ticket=");
+            log_drain_write(15, 15, "[gpu_sched] CANCEL: ticket=");
             put_dec(ticket);
-            console_log(15, 15, " removed from queue\n");
+            log_drain_write(15, 15, " removed from queue\n");
             microkit_mr_set(0, 1);  /* cancelled */
         } else {
             microkit_mr_set(0, 0);  /* running or done, can't cancel */
@@ -398,7 +398,7 @@ microkit_msginfo protected(microkit_channel ch, microkit_msginfo msg) {
         uint32_t cmd_len    = (uint32_t)microkit_mr_get(3);
 
         if (slot_id >= GPU_SLOT_COUNT || cmd_len == 0) {
-            console_log(15, 15, "[gpu_sched] SUBMIT_CMD: invalid args\n");
+            log_drain_write(15, 15, "[gpu_sched] SUBMIT_CMD: invalid args\n");
             microkit_mr_set(0, GPU_ERR_INVALID);
             microkit_mr_set(1, 0);
             return microkit_msginfo_new(OP_GPU_SUBMIT_CMD, 2);
@@ -423,30 +423,30 @@ microkit_msginfo protected(microkit_channel ch, microkit_msginfo msg) {
              * gpu_shmem integration); we kick the queue to signal readiness
              * and log the submission.
              */
-            console_log(15, 15, "[gpu_sched] SUBMIT_CMD: hw path slot=");
+            log_drain_write(15, 15, "[gpu_sched] SUBMIT_CMD: hw path slot=");
             put_dec(slot_id);
-            console_log(15, 15, " off=");
+            log_drain_write(15, 15, " off=");
             put_dec(cmd_offset);
-            console_log(15, 15, " len=");
+            log_drain_write(15, 15, " len=");
             put_dec(cmd_len);
-            console_log(15, 15, " fence=");
+            log_drain_write(15, 15, " fence=");
             put_dec(fence);
-            console_log(15, 15, "\n");
+            log_drain_write(15, 15, "\n");
 
             /* Memory barrier before kicking queue */
             __asm__ volatile("" ::: "memory");
             gpu_virtio_kick(0u);   /* kick controlq (queue 0) */
         } else {
             /* Stub mode: log and return success with a fake fence */
-            console_log(15, 15, "[gpu_sched] SUBMIT_CMD (stub): slot=");
+            log_drain_write(15, 15, "[gpu_sched] SUBMIT_CMD (stub): slot=");
             put_dec(slot_id);
-            console_log(15, 15, " off=");
+            log_drain_write(15, 15, " off=");
             put_dec(cmd_offset);
-            console_log(15, 15, " len=");
+            log_drain_write(15, 15, " len=");
             put_dec(cmd_len);
-            console_log(15, 15, " fence=");
+            log_drain_write(15, 15, " fence=");
             put_dec(fence);
-            console_log(15, 15, "\n");
+            log_drain_write(15, 15, "\n");
         }
 
         microkit_mr_set(0, GPU_ERR_OK);
@@ -491,13 +491,13 @@ void notified(microkit_channel ch) {
 
             if (success) {
                 sched.tasks_completed++;
-                console_log(15, 15, "[gpu_sched] COMPLETE: ticket=");
+                log_drain_write(15, 15, "[gpu_sched] COMPLETE: ticket=");
             } else {
                 sched.tasks_failed++;
-                console_log(15, 15, "[gpu_sched] FAILED: ticket=");
+                log_drain_write(15, 15, "[gpu_sched] FAILED: ticket=");
             }
             put_dec(ticket);
-            console_log(15, 15, "\n");
+            log_drain_write(15, 15, "\n");
 
             /* Publish to EventBus */
             if (sched.eventbus_ready) {
@@ -515,11 +515,11 @@ void notified(microkit_channel ch) {
         int slot = (int)(ch - CH_SLOT_BASE);
         uint32_t ticket = sched.slots[slot].ticket_id;
 
-        console_log(15, 15, "[gpu_sched] Slot ");
+        log_drain_write(15, 15, "[gpu_sched] Slot ");
         put_dec((uint32_t)slot);
-        console_log(15, 15, " done, ticket=");
+        log_drain_write(15, 15, " done, ticket=");
         put_dec(ticket);
-        console_log(15, 15, "\n");
+        log_drain_write(15, 15, "\n");
 
         int qi = queue_find(ticket);
         if (qi >= 0) {
@@ -540,7 +540,7 @@ void notified(microkit_channel ch) {
 
     if (ch == CH_EVENTBUS) {
         sched.eventbus_ready = true;
-        console_log(15, 15, "[gpu_sched] EventBus ready\n");
+        log_drain_write(15, 15, "[gpu_sched] EventBus ready\n");
 
         /* Subscribe to EventBus */
         microkit_mr_set(0, (uint64_t)CH_EVENTBUS);
@@ -568,7 +568,7 @@ void init(void) {
     sched.tasks_failed     = 0;
     sched.eventbus_ready   = false;
 
-    console_log(15, 15, "[gpu_sched] GPU Scheduler PD online\n[gpu_sched]   queue_depth=16, slots=4, arch=GB10-Blackwell\n");
+    log_drain_write(15, 15, "[gpu_sched] GPU Scheduler PD online\n[gpu_sched]   queue_depth=16, slots=4, arch=GB10-Blackwell\n");
 
     /* Probe for a virtio-gpu device at the MMIO region */
     probe_virtio_gpu();

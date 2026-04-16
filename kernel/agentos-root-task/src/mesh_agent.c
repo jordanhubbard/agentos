@@ -93,14 +93,14 @@ static struct {
 /* ── Helpers ───────────────────────────────────────────────────────────────── */
 
 static void put_dec(uint32_t v) {
-    console_log(15, 15, "0");
+    log_drain_write(15, 15, "0");
     char buf[12]; int i = 11; buf[i] = '\0';
     while (v > 0 && i > 0) { buf[--i] = '0' + (v % 10); v /= 10; }
-    console_log(15, 15, &buf[i]);
+    log_drain_write(15, 15, &buf[i]);
 }
 
 static void puts_safe(const char *s) {
-    console_log(15, 15, s);
+    log_drain_write(15, 15, s);
 }
 
 /* Find a peer by node_id string */
@@ -155,7 +155,7 @@ static void mesh_announce_self(uint32_t worker_total, uint32_t worker_free,
     microkit_mr_set(6, nid_hi);
     microkit_notify(CH_SQUIRRELBUS_TX);
 
-    console_log(15, 15, "[mesh_agent] Announced self to SquirrelBus mesh channel\n");
+    log_drain_write(15, 15, "[mesh_agent] Announced self to SquirrelBus mesh channel\n");
 }
 
 /* ── Peer selection ────────────────────────────────────────────────────────── */
@@ -205,9 +205,9 @@ static void sweep_stale_peers(void) {
         peer_entry_t *p = &mesh.peers[i];
         if (!p->online) continue;
         if (mesh.tick > p->last_heartbeat + PEER_TIMEOUT_TICKS) {
-            console_log(15, 15, "[mesh_agent] Peer offline (timeout): ");
+            log_drain_write(15, 15, "[mesh_agent] Peer offline (timeout): ");
             puts_safe(p->node_id);
-            console_log(15, 15, "\n");
+            log_drain_write(15, 15, "\n");
             publish_peer_down(p->node_id);
             p->online = false;
             if (mesh.peer_count > 0) mesh.peer_count--;
@@ -246,7 +246,7 @@ microkit_msginfo protected(microkit_channel ch, microkit_msginfo msg) {
         if (pi < 0) {
             pi = peer_alloc();
             if (pi < 0) {
-                console_log(15, 15, "[mesh_agent] ANNOUNCE: peer table full\n");
+                log_drain_write(15, 15, "[mesh_agent] ANNOUNCE: peer table full\n");
                 microkit_mr_set(0, 0xE1);
                 return microkit_msginfo_new(MSG_MESH_ANNOUNCE_REPLY, 1);
             }
@@ -262,17 +262,17 @@ microkit_msginfo protected(microkit_channel ch, microkit_msginfo msg) {
         p->last_heartbeat     = mesh.tick;
         p->online             = true;
 
-        console_log(15, 15, "[mesh_agent] Peer registered: ");
+        log_drain_write(15, 15, "[mesh_agent] Peer registered: ");
         puts_safe(node_id);
-        console_log(15, 15, " workers=");
+        log_drain_write(15, 15, " workers=");
         put_dec(w_free);
-        console_log(15, 15, "/");
+        log_drain_write(15, 15, "/");
         put_dec(w_total);
-        console_log(15, 15, " gpu=");
+        log_drain_write(15, 15, " gpu=");
         put_dec(g_free);
-        console_log(15, 15, "/");
+        log_drain_write(15, 15, "/");
         put_dec(g_total);
-        console_log(15, 15, "\n");
+        log_drain_write(15, 15, "\n");
 
         microkit_mr_set(0, 0);  /* ok */
         return microkit_msginfo_new(MSG_MESH_ANNOUNCE_REPLY, 1);
@@ -322,7 +322,7 @@ microkit_msginfo protected(microkit_channel ch, microkit_msginfo msg) {
                 return microkit_msginfo_new(MSG_REMOTE_SPAWN_REPLY, 2);
             }
             /* Fallback: route to local init_agent (MSG_SPAWN_AGENT) */
-            console_log(15, 15, "[mesh_agent] REMOTE_SPAWN: no peer available, routing locally\n");
+            log_drain_write(15, 15, "[mesh_agent] REMOTE_SPAWN: no peer available, routing locally\n");
             mesh.spawns_local++;
             microkit_mr_set(0, 0);        /* node_id = 0 (local) */
             microkit_mr_set(1, 0);        /* ticket = pending from local pool */
@@ -331,9 +331,9 @@ microkit_msginfo protected(microkit_channel ch, microkit_msginfo msg) {
         }
 
         peer_entry_t *p = &mesh.peers[peer];
-        console_log(15, 15, "[mesh_agent] REMOTE_SPAWN → peer: ");
+        log_drain_write(15, 15, "[mesh_agent] REMOTE_SPAWN → peer: ");
         puts_safe(p->node_id);
-        console_log(15, 15, "\n");
+        log_drain_write(15, 15, "\n");
 
         /* Forward via SquirrelBus bridge */
         if (mesh.squirrelbus_ready) {
@@ -381,7 +381,7 @@ void notified(microkit_channel ch) {
     switch (ch) {
     case CH_CONTROLLER:
         /* Controller signals mesh_agent ready */
-        console_log(15, 15, "[mesh_agent] Ready — entering mesh mode\n");
+        log_drain_write(15, 15, "[mesh_agent] Ready — entering mesh mode\n");
         /* Announce self to the mesh */
         /* worker_total=8 (AGENT_POOL_SIZE), gpu_total=4 (GPU_SLOT_COUNT from gpu_sched.h) */
         mesh_announce_self(8, 8, 4, 4);
@@ -425,7 +425,7 @@ void notified(microkit_channel ch) {
                     for (const char *_s = node_id; *_s; _s++) *_cl_p++ = *_s;
                     for (const char *_s = "\n"; *_s; _s++) *_cl_p++ = *_s;
                     *_cl_p = 0;
-                    console_log(15, 15, _cl_buf);
+                    log_drain_write(15, 15, _cl_buf);
                 }
             }
             break;
@@ -481,7 +481,7 @@ void init(void) {
     mesh.eventbus_ready = false;
     mesh.squirrelbus_ready = true;  /* bridge assumed ready at boot */
 
-    console_log(15, 15, "[mesh_agent] Distributed Agent Mesh PD online\n[mesh_agent]   node_id=" AGENTOS_NODE_ID "\n[mesh_agent]   max_peers=8, timeout=30 ticks\n[mesh_agent]   spawn_policy=least-loaded, GPU-affinity\n");
+    log_drain_write(15, 15, "[mesh_agent] Distributed Agent Mesh PD online\n[mesh_agent]   node_id=" AGENTOS_NODE_ID "\n[mesh_agent]   max_peers=8, timeout=30 ticks\n[mesh_agent]   spawn_policy=least-loaded, GPU-affinity\n");
 
     /* Signal controller: mesh_agent ready */
     microkit_notify(CH_CONTROLLER);

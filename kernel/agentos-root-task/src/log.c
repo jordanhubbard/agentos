@@ -2,7 +2,7 @@
  * agentOS Debug Logging
  * 
  * Simple structured logging for the kernel layer PDs.
- console_log(15, 15, "");
+ log_drain_write(15, 15, "");
  */
 
 #include <microkit.h>
@@ -11,10 +11,10 @@
 
 /*
  * Weak fallback: PDs that don't map the console_rings MR get value 0,
- * causing console_log() to fall back to microkit_dbg_puts.
- * console_mux.c provides the strong definition (with setvar_vaddr).
+ * causing log_drain_write() to fall back to microkit_dbg_puts.
+ * log_drain.c provides the strong definition (with setvar_vaddr).
  */
-__attribute__((weak)) uintptr_t console_rings_vaddr = 0;
+__attribute__((weak)) uintptr_t log_drain_rings_vaddr = 0;
 
 /* Ultra-minimal hex output (no libc) */
 static void log_hex64(uint64_t v) {
@@ -24,11 +24,11 @@ static void log_hex64(uint64_t v) {
         buf[i] = hex[v & 0xf];
         v >>= 4;
     }
-    console_log(15, 15, buf);
+    log_drain_write(15, 15, buf);
 }
 
 static void log_u32(uint32_t v) {
-    console_log(15, 15, "0");
+    log_drain_write(15, 15, "0");
     char buf[12];
     int i = 11;
     buf[i] = '\0';
@@ -36,7 +36,7 @@ static void log_u32(uint32_t v) {
         buf[--i] = '0' + (v % 10);
         v /= 10;
     }
-    console_log(15, 15, &buf[i]);
+    log_drain_write(15, 15, &buf[i]);
 }
 
 void agentos_log_boot(const char *pd_name) {
@@ -55,7 +55,7 @@ void agentos_log_boot(const char *pd_name) {
         for (const char *_s = pd_name; *_s; _s++) *_cl_p++ = *_s;
         for (const char *_s = " starting\n"; *_s; _s++) *_cl_p++ = *_s;
         *_cl_p = 0;
-        console_log(15, 15, _cl_buf);
+        log_drain_write(15, 15, _cl_buf);
     }
 }
 
@@ -69,7 +69,7 @@ void agentos_log_info(const char *pd, const char *msg) {
         for (const char *_s = msg; *_s; _s++) *_cl_p++ = *_s;
         for (const char *_s = "\n"; *_s; _s++) *_cl_p++ = *_s;
         *_cl_p = 0;
-        console_log(15, 15, _cl_buf);
+        log_drain_write(15, 15, _cl_buf);
     }
 }
 
@@ -81,10 +81,10 @@ void agentos_log_channel(const char *pd, uint32_t ch) {
         for (const char *_s = pd; *_s; _s++) *_cl_p++ = *_s;
         for (const char *_s = "] notified on channel "; *_s; _s++) *_cl_p++ = *_s;
         *_cl_p = 0;
-        console_log(15, 15, _cl_buf);
+        log_drain_write(15, 15, _cl_buf);
     }
     log_u32(ch);
-    console_log(15, 15, "\n");
+    log_drain_write(15, 15, "\n");
 }
 
 void agentos_log_fault(const char *pd, agentos_fault_t *f) {
@@ -95,12 +95,12 @@ void agentos_log_fault(const char *pd, agentos_fault_t *f) {
         for (const char *_s = pd; *_s; _s++) *_cl_p++ = *_s;
         for (const char *_s = ": kind="; *_s; _s++) *_cl_p++ = *_s;
         *_cl_p = 0;
-        console_log(15, 15, _cl_buf);
+        log_drain_write(15, 15, _cl_buf);
     }
     log_u32(f->kind);
-    console_log(15, 15, " addr=");
+    log_drain_write(15, 15, " addr=");
     log_hex64(f->addr);
-    console_log(15, 15, " ip=");
+    log_drain_write(15, 15, " ip=");
     log_hex64(f->ip);
-    console_log(15, 15, "\n");
+    log_drain_write(15, 15, "\n");
 }

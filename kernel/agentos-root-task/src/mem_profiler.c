@@ -121,7 +121,7 @@ static struct {
 /* ── Helpers ────────────────────────────────────────────────────────── */
 
 static void put_str(const char *s) {
-    console_log(8, 8, s);
+    log_drain_write(8, 8, s);
 }
 
 static void put_dec(uint64_t v) {

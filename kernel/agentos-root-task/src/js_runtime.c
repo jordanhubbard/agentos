@@ -59,12 +59,12 @@ static void js_strcpy(char *dst, const char *src, uint32_t max) {
 /* ── Decimal / hex logging helpers ──────────────────────────────────────── */
 
 static void log_dec(uint32_t v) {
-    if (v == 0) { console_log(16, 16, "0"); return; }
+    if (v == 0) { log_drain_write(16, 16, "0"); return; }
     char buf[12];
     int  i = 11;
     buf[i] = '\0';
     while (v > 0 && i > 0) { buf[--i] = '0' + (char)(v % 10); v /= 10; }
-    console_log(16, 16, &buf[i]);
+    log_drain_write(16, 16, &buf[i]);
 }
 
 static void log_hex(uint32_t v) {
@@ -76,7 +76,7 @@ static void log_hex(uint32_t v) {
     buf[6]  = hex[(v >> 12) & 0xf]; buf[7]  = hex[(v >>  8) & 0xf];
     buf[8]  = hex[(v >>  4) & 0xf]; buf[9]  = hex[ v        & 0xf];
     buf[10] = '\0';
-    console_log(16, 16, buf);
+    log_drain_write(16, 16, buf);
 }
 
 /* ── Context table helpers ───────────────────────────────────────────────── */
@@ -122,11 +122,11 @@ static js_context_t *create_context(uint32_t caller_pd) {
 
     active_context_count++;
 
-    console_log(16, 16, "[js_runtime] context created: id=");
+    log_drain_write(16, 16, "[js_runtime] context created: id=");
     log_dec(ctx->context_id);
-    console_log(16, 16, " pd=");
+    log_drain_write(16, 16, " pd=");
     log_dec(caller_pd);
-    console_log(16, 16, "\n");
+    log_drain_write(16, 16, "\n");
 
     return ctx;
 }
@@ -135,11 +135,11 @@ static js_context_t *create_context(uint32_t caller_pd) {
  * Free a context slot and its underlying QuickJS resources.
  */
 static void free_context(js_context_t *ctx) {
-    console_log(16, 16, "[js_runtime] context destroyed: id=");
+    log_drain_write(16, 16, "[js_runtime] context destroyed: id=");
     log_dec(ctx->context_id);
-    console_log(16, 16, " evals=");
+    log_drain_write(16, 16, " evals=");
     log_dec((uint32_t)ctx->eval_count);
-    console_log(16, 16, "\n");
+    log_drain_write(16, 16, "\n");
 
     /* QUICKJS_INTEGRATION_POINT — release QuickJS context + runtime */
     JS_FreeContext(context_js_ctx[ctx->context_id]);
@@ -193,7 +193,7 @@ static microkit_msginfo handle_js_eval(void) {
 
     /* Validate staging bounds */
     if (!staging_range_valid(script_off, script_len)) {
-        console_log(16, 16, "[js_runtime] EVAL: script out of staging bounds\n");
+        log_drain_write(16, 16, "[js_runtime] EVAL: script out of staging bounds\n");
         uint32_t eoff = 0, elen = 0;
         write_error_to_staging("script offset/len out of staging bounds", &eoff, &elen);
         microkit_mr_set(0, JS_ERR_RUNTIME);
@@ -208,7 +208,7 @@ static microkit_msginfo handle_js_eval(void) {
     if (req_ctx_id == 0xFFu) {
         ctx = create_context(0u /* anonymous caller */);
         if (!ctx) {
-            console_log(16, 16, "[js_runtime] EVAL: context table full\n");
+            log_drain_write(16, 16, "[js_runtime] EVAL: context table full\n");
             uint32_t eoff = 0, elen = 0;
             write_error_to_staging("context table full", &eoff, &elen);
             microkit_mr_set(0, JS_ERR_NOMEM);
@@ -220,9 +220,9 @@ static microkit_msginfo handle_js_eval(void) {
     } else {
         ctx = find_context(req_ctx_id);
         if (!ctx) {
-            console_log(16, 16, "[js_runtime] EVAL: context not found id=");
+            log_drain_write(16, 16, "[js_runtime] EVAL: context not found id=");
             log_dec(req_ctx_id);
-            console_log(16, 16, "\n");
+            log_drain_write(16, 16, "\n");
             uint32_t eoff = 0, elen = 0;
             write_error_to_staging("context not found", &eoff, &elen);
             microkit_mr_set(0, JS_ERR_NOTFOUND);
@@ -237,11 +237,11 @@ static microkit_msginfo handle_js_eval(void) {
     uint32_t out_offset = JS_STAGING_OUTPUT_BASE;
     uint32_t out_len    = 0;
 
-    console_log(16, 16, "[js_runtime] EVAL: ctx=");
+    log_drain_write(16, 16, "[js_runtime] EVAL: ctx=");
     log_dec(ctx->context_id);
-    console_log(16, 16, " script_len=");
+    log_drain_write(16, 16, " script_len=");
     log_dec(script_len);
-    console_log(16, 16, "\n");
+    log_drain_write(16, 16, "\n");
 
     /* QUICKJS_INTEGRATION_POINT — evaluate script with QuickJS */
     {
@@ -295,9 +295,9 @@ static microkit_msginfo handle_js_call(void) {
 
     js_context_t *ctx = find_context(ctx_id);
     if (!ctx) {
-        console_log(16, 16, "[js_runtime] CALL: context not found id=");
+        log_drain_write(16, 16, "[js_runtime] CALL: context not found id=");
         log_dec(ctx_id);
-        console_log(16, 16, "\n");
+        log_drain_write(16, 16, "\n");
         uint32_t eoff = 0, elen = 0;
         write_error_to_staging("context not found", &eoff, &elen);
         microkit_mr_set(0, JS_ERR_NOTFOUND);
@@ -308,7 +308,7 @@ static microkit_msginfo handle_js_call(void) {
 
     /* Validate function name bounds */
     if (!staging_range_valid(fname_off, fname_len)) {
-        console_log(16, 16, "[js_runtime] CALL: func_name out of staging bounds\n");
+        log_drain_write(16, 16, "[js_runtime] CALL: func_name out of staging bounds\n");
         uint32_t eoff = 0, elen = 0;
         write_error_to_staging("func_name offset/len out of staging bounds", &eoff, &elen);
         microkit_mr_set(0, JS_ERR_RUNTIME);
@@ -319,7 +319,7 @@ static microkit_msginfo handle_js_call(void) {
 
     /* Validate args bounds (args_len==0 is permitted: no arguments) */
     if (args_len > 0 && !staging_range_valid(args_off, args_len)) {
-        console_log(16, 16, "[js_runtime] CALL: args out of staging bounds\n");
+        log_drain_write(16, 16, "[js_runtime] CALL: args out of staging bounds\n");
         uint32_t eoff = 0, elen = 0;
         write_error_to_staging("args offset/len out of staging bounds", &eoff, &elen);
         microkit_mr_set(0, JS_ERR_RUNTIME);
@@ -334,13 +334,13 @@ static microkit_msginfo handle_js_call(void) {
                         ? (const char *)(js_staging_vaddr + args_off)
                         : NULL;
 
-    console_log(16, 16, "[js_runtime] CALL: ctx=");
+    log_drain_write(16, 16, "[js_runtime] CALL: ctx=");
     log_dec(ctx_id);
-    console_log(16, 16, " func_len=");
+    log_drain_write(16, 16, " func_len=");
     log_dec(fname_len);
-    console_log(16, 16, " args_len=");
+    log_drain_write(16, 16, " args_len=");
     log_dec(args_len);
-    console_log(16, 16, "\n");
+    log_drain_write(16, 16, "\n");
 
     uint32_t out_offset = JS_STAGING_OUTPUT_BASE;
     uint32_t out_len    = 0;
@@ -404,7 +404,7 @@ static microkit_msginfo handle_js_load_module(void) {
     /* Validate staging bounds */
     if (!staging_range_valid(src_off, src_len)
             || !staging_range_valid(name_off, name_len)) {
-        console_log(16, 16, "[js_runtime] LOAD_MODULE: invalid staging offsets\n");
+        log_drain_write(16, 16, "[js_runtime] LOAD_MODULE: invalid staging offsets\n");
         microkit_mr_set(0, JS_ERR_RUNTIME);
         microkit_mr_set(1, 0xFFFFFFFFu);
         return microkit_msginfo_new(0, 2);
@@ -415,7 +415,7 @@ static microkit_msginfo handle_js_load_module(void) {
     if (req_ctx_id == 0xFFu) {
         ctx = create_context(0u);
         if (!ctx) {
-            console_log(16, 16, "[js_runtime] LOAD_MODULE: context table full\n");
+            log_drain_write(16, 16, "[js_runtime] LOAD_MODULE: context table full\n");
             microkit_mr_set(0, JS_ERR_NOMEM);
             microkit_mr_set(1, 0xFFFFFFFFu);
             return microkit_msginfo_new(0, 2);
@@ -423,9 +423,9 @@ static microkit_msginfo handle_js_load_module(void) {
     } else {
         ctx = find_context(req_ctx_id);
         if (!ctx) {
-            console_log(16, 16, "[js_runtime] LOAD_MODULE: context not found id=");
+            log_drain_write(16, 16, "[js_runtime] LOAD_MODULE: context not found id=");
             log_dec(req_ctx_id);
-            console_log(16, 16, "\n");
+            log_drain_write(16, 16, "\n");
             microkit_mr_set(0, JS_ERR_NOTFOUND);
             microkit_mr_set(1, 0xFFFFFFFFu);
             return microkit_msginfo_new(0, 2);
@@ -435,13 +435,13 @@ static microkit_msginfo handle_js_load_module(void) {
     const char *src  = (const char *)(js_staging_vaddr + src_off);
     const char *name = (const char *)(js_staging_vaddr + name_off);
 
-    console_log(16, 16, "[js_runtime] LOAD_MODULE: ctx=");
+    log_drain_write(16, 16, "[js_runtime] LOAD_MODULE: ctx=");
     log_dec(ctx->context_id);
-    console_log(16, 16, " src_len=");
+    log_drain_write(16, 16, " src_len=");
     log_dec(src_len);
-    console_log(16, 16, " name_len=");
+    log_drain_write(16, 16, " name_len=");
     log_dec(name_len);
-    console_log(16, 16, "\n");
+    log_drain_write(16, 16, "\n");
 
     /* QUICKJS_INTEGRATION_POINT — register ES module with QuickJS */
     {
@@ -477,9 +477,9 @@ static microkit_msginfo handle_js_destroy(void) {
 
     js_context_t *ctx = find_context(ctx_id);
     if (!ctx) {
-        console_log(16, 16, "[js_runtime] DESTROY: context not found id=");
+        log_drain_write(16, 16, "[js_runtime] DESTROY: context not found id=");
         log_dec(ctx_id);
-        console_log(16, 16, "\n");
+        log_drain_write(16, 16, "\n");
         microkit_mr_set(0, JS_ERR_NOTFOUND);
         return microkit_msginfo_new(0, 1);
     }
@@ -512,7 +512,7 @@ static microkit_msginfo handle_js_health(void) {
  */
 void init(void) {
     agentos_log_boot("js_runtime");
-    console_log(16, 16, "[js_runtime] Initialising JS Runtime PD (priority 150, passive)\n");
+    log_drain_write(16, 16, "[js_runtime] Initialising JS Runtime PD (priority 150, passive)\n");
 
     /* Zero context table */
     for (int i = 0; i < (int)JS_MAX_CONTEXTS; i++) {
@@ -526,19 +526,19 @@ void init(void) {
     }
     active_context_count = 0;
 
-    console_log(16, 16, "[js_runtime] context table cleared: max_contexts=");
+    log_drain_write(16, 16, "[js_runtime] context table cleared: max_contexts=");
     log_dec(JS_MAX_CONTEXTS);
-    console_log(16, 16, "\n");
+    log_drain_write(16, 16, "\n");
 
-    console_log(16, 16, "[js_runtime] staging region: 4MB at ");
+    log_drain_write(16, 16, "[js_runtime] staging region: 4MB at ");
     log_hex((uint32_t)js_staging_vaddr);
-    console_log(16, 16, "\n");
+    log_drain_write(16, 16, "\n");
 
-    console_log(16, 16, "[js_runtime] QuickJS version: ");
+    log_drain_write(16, 16, "[js_runtime] QuickJS version: ");
     log_hex(JS_QUICKJS_VERSION);
-    console_log(16, 16, " (stub — replace vendor/quickjs/quickjs_stub.c for production)\n");
+    log_drain_write(16, 16, " (stub — replace vendor/quickjs/quickjs_stub.c for production)\n");
 
-    console_log(16, 16, "[js_runtime] READY — accepting JS eval/call requests\n");
+    log_drain_write(16, 16, "[js_runtime] READY — accepting JS eval/call requests\n");
 }
 
 /*
@@ -562,9 +562,9 @@ void notified(microkit_channel ch) {
         }
         break;
     default:
-        console_log(16, 16, "[js_runtime] unexpected notify ch=");
+        log_drain_write(16, 16, "[js_runtime] unexpected notify ch=");
         log_dec((uint32_t)ch);
-        console_log(16, 16, "\n");
+        log_drain_write(16, 16, "\n");
         break;
     }
 }
@@ -589,11 +589,11 @@ microkit_msginfo protected(microkit_channel ch, microkit_msginfo msginfo) {
     case OP_JS_DESTROY:     return handle_js_destroy();
     case OP_JS_HEALTH:      return handle_js_health();
     default:
-        console_log(16, 16, "[js_runtime] unknown op=");
+        log_drain_write(16, 16, "[js_runtime] unknown op=");
         log_hex(op);
-        console_log(16, 16, " ch=");
+        log_drain_write(16, 16, " ch=");
         log_dec((uint32_t)ch);
-        console_log(16, 16, "\n");
+        log_drain_write(16, 16, "\n");
         microkit_mr_set(0, JS_ERR_RUNTIME);
         return microkit_msginfo_new(0, 1);
     }

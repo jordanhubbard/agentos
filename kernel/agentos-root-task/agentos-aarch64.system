@@ -328,34 +328,33 @@
     <!-- ═══════════════════════════════════════════════════════════════════
          CONSOLE MULTIPLEXER — "tmux for agentOS"
          
-         Passive PD (priority 160) that multiplexes per-PD output streams
-         onto the debug UART with attach/detach/switch/broadcast semantics.
+         Passive PD (priority 160) that drains per-PD output rings to the debug UART.
          ═══════════════════════════════════════════════════════════════════ -->
 
-    <!-- Console ring buffer: 16 × 4KB = 64KB shared output rings -->
-    <memory_region name="console_rings" size="0x10000" />
+    <!-- Log drain ring buffer: 16 × 4KB = 64KB shared output rings -->
+    <memory_region name="log_drain_rings" size="0x10000" />
 
-    <protection_domain name="console_mux" priority="160" passive="true">
-        <program_image path="console_mux.elf" />
-        <map mr="console_rings" vaddr="0x8000000" perms="rw" setvar_vaddr="console_rings_vaddr" />
+    <protection_domain name="log_drain" priority="160" passive="true">
+        <program_image path="log_drain.elf" />
+        <map mr="log_drain_rings" vaddr="0x8000000" perms="rw" setvar_vaddr="log_drain_rings_vaddr" />
     </protection_domain>
 
-    <!-- Channel 55: controller <-> console_mux (attach/detach/list/mode/status) -->
+    <!-- Channel 55: controller <-> log_drain (status queries) -->
     <channel>
-        <end pd="controller"   id="55" pp="true" />
-        <end pd="console_mux"  id="0" />
+        <end pd="controller"  id="55" pp="true" />
+        <end pd="log_drain"   id="0" />
     </channel>
 
-    <!-- Channel 56: init_agent <-> console_mux (output notifications) -->
+    <!-- Channel 56: init_agent <-> log_drain (output notifications) -->
     <channel>
-        <end pd="init_agent"   id="4" />
-        <end pd="console_mux"  id="1" />
+        <end pd="init_agent"  id="4" />
+        <end pd="log_drain"   id="1" />
     </channel>
 
-    <!-- Channel 57: event_bus <-> console_mux (event activity notifications) -->
+    <!-- Channel 57: event_bus <-> log_drain (event activity notifications) -->
     <channel>
-        <end pd="event_bus"    id="55" />
-        <end pd="console_mux"  id="2" />
+        <end pd="event_bus"   id="55" />
+        <end pd="log_drain"   id="2" />
     </channel>
 
     <!-- Trace Recorder: passive stub, priority 128

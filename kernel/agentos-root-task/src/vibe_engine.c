@@ -181,13 +181,13 @@ static microkit_msginfo handle_propose(void) {
     uint32_t wasm_size  = (uint32_t)microkit_mr_get(2);
     uint32_t cap_tag    = (uint32_t)microkit_mr_get(3);
 
-    console_log(7, 7, "[vibe_engine] Proposal received: service=");
+    log_drain_write(7, 7, "[vibe_engine] Proposal received: service=");
     if (service_id < service_count && services[service_id].name) {
-        console_log(7, 7, services[service_id].name);
+        log_drain_write(7, 7, services[service_id].name);
     } else {
-        console_log(7, 7, "?");
+        log_drain_write(7, 7, "?");
     }
-    console_log(7, 7, ", wasm_size=");
+    log_drain_write(7, 7, ", wasm_size=");
     /* Print size as rough decimal */
     char sz_buf[8];
     uint32_t s = wasm_size;
@@ -205,24 +205,24 @@ static microkit_msginfo handle_propose(void) {
         for (const char *_s = sz_buf; *_s; _s++) *_cl_p++ = *_s;
         for (const char *_s = " bytes\n"; *_s; _s++) *_cl_p++ = *_s;
         *_cl_p = 0;
-        console_log(7, 7, _cl_buf);
+        log_drain_write(7, 7, _cl_buf);
     }
 
     /* Check service exists and is swappable */
     if (service_id >= service_count) {
-        console_log(7, 7, "[vibe_engine] REJECT: unknown service\n");
+        log_drain_write(7, 7, "[vibe_engine] REJECT: unknown service\n");
         microkit_mr_set(0, VIBE_ERR_NOSVC);
         return microkit_msginfo_new(0, 1);
     }
     if (!services[service_id].swappable) {
-        console_log(7, 7, "[vibe_engine] REJECT: service not swappable\n");
+        log_drain_write(7, 7, "[vibe_engine] REJECT: service not swappable\n");
         microkit_mr_set(0, VIBE_ERR_NOSVC);
         return microkit_msginfo_new(0, 1);
     }
 
     /* Check WASM size */
     if (wasm_size > MAX_WASM_SIZE || wasm_size > services[service_id].max_wasm_bytes) {
-        console_log(7, 7, "[vibe_engine] REJECT: WASM too large\n");
+        log_drain_write(7, 7, "[vibe_engine] REJECT: WASM too large\n");
         microkit_mr_set(0, VIBE_ERR_TOOBIG);
         return microkit_msginfo_new(0, 1);
     }
@@ -230,7 +230,7 @@ static microkit_msginfo handle_propose(void) {
     /* Validate WASM magic header from staging region */
     const uint8_t *staged = (const uint8_t *)vibe_staging_vaddr;
     if (!validate_wasm_header(staged, wasm_size)) {
-        console_log(7, 7, "[vibe_engine] REJECT: bad WASM magic\n");
+        log_drain_write(7, 7, "[vibe_engine] REJECT: bad WASM magic\n");
         microkit_mr_set(0, VIBE_ERR_BADWASM);
         return microkit_msginfo_new(0, 1);
     }
@@ -238,7 +238,7 @@ static microkit_msginfo handle_propose(void) {
     /* Find a free proposal slot */
     int slot = find_free_proposal();
     if (slot < 0) {
-        console_log(7, 7, "[vibe_engine] REJECT: proposal table full\n");
+        log_drain_write(7, 7, "[vibe_engine] REJECT: proposal table full\n");
         microkit_mr_set(0, VIBE_ERR_FULL);
         return microkit_msginfo_new(0, 1);
     }
@@ -254,7 +254,7 @@ static microkit_msginfo handle_propose(void) {
     proposals[slot].val_passed  = false;
     total_proposals++;
 
-    console_log(7, 7, "[vibe_engine] Proposal accepted: id=");
+    log_drain_write(7, 7, "[vibe_engine] Proposal accepted: id=");
     char id_buf[4];
     id_buf[0] = '0' + (proposals[slot].version % 10);
     id_buf[1] = '\0';
@@ -264,7 +264,7 @@ static microkit_msginfo handle_propose(void) {
         for (const char *_s = id_buf; *_s; _s++) *_cl_p++ = *_s;
         for (const char *_s = "\n"; *_s; _s++) *_cl_p++ = *_s;
         *_cl_p = 0;
-        console_log(7, 7, _cl_buf);
+        log_drain_write(7, 7, _cl_buf);
     }
 
     microkit_mr_set(0, VIBE_OK);
@@ -301,7 +301,7 @@ static microkit_msginfo handle_validate(void) {
         return microkit_msginfo_new(0, 1);
     }
 
-    console_log(7, 7, "[vibe_engine] Validating proposal ");
+    log_drain_write(7, 7, "[vibe_engine] Validating proposal ");
     char id_buf[4];
     id_buf[0] = '0' + (proposal_id % 10);
     id_buf[1] = '\0';
@@ -311,7 +311,7 @@ static microkit_msginfo handle_validate(void) {
         for (const char *_s = id_buf; *_s; _s++) *_cl_p++ = *_s;
         for (const char *_s = "...\n"; *_s; _s++) *_cl_p++ = *_s;
         *_cl_p = 0;
-        console_log(7, 7, _cl_buf);
+        log_drain_write(7, 7, _cl_buf);
     }
 
     uint32_t checks = 0;
@@ -321,38 +321,38 @@ static microkit_msginfo handle_validate(void) {
     const uint8_t *staged = (const uint8_t *)(vibe_staging_vaddr + proposals[slot].wasm_offset);
     if (validate_wasm_header(staged, proposals[slot].wasm_size)) {
         checks |= (1 << 0);
-        console_log(7, 7, "[vibe_engine]   ✓ WASM magic valid\n");
+        log_drain_write(7, 7, "[vibe_engine]   ✓ WASM magic valid\n");
     } else {
         all_pass = false;
-        console_log(7, 7, "[vibe_engine]   ✗ WASM magic INVALID\n");
+        log_drain_write(7, 7, "[vibe_engine]   ✗ WASM magic INVALID\n");
     }
 
     /* Check 1: Size within service limits */
     uint32_t svc_id = proposals[slot].service_id;
     if (proposals[slot].wasm_size <= services[svc_id].max_wasm_bytes) {
         checks |= (1 << 1);
-        console_log(7, 7, "[vibe_engine]   ✓ Size within limits\n");
+        log_drain_write(7, 7, "[vibe_engine]   ✓ Size within limits\n");
     } else {
         all_pass = false;
-        console_log(7, 7, "[vibe_engine]   ✗ Size exceeds limit\n");
+        log_drain_write(7, 7, "[vibe_engine]   ✗ Size exceeds limit\n");
     }
 
     /* Check 2: Service is swappable */
     if (services[svc_id].swappable) {
         checks |= (1 << 2);
-        console_log(7, 7, "[vibe_engine]   ✓ Service is swappable\n");
+        log_drain_write(7, 7, "[vibe_engine]   ✓ Service is swappable\n");
     } else {
         all_pass = false;
-        console_log(7, 7, "[vibe_engine]   ✗ Service NOT swappable\n");
+        log_drain_write(7, 7, "[vibe_engine]   ✗ Service NOT swappable\n");
     }
 
     /* Check 3: Capability tag is non-zero (basic auth) */
     if (proposals[slot].cap_tag != 0) {
         checks |= (1 << 3);
-        console_log(7, 7, "[vibe_engine]   ✓ Capability tag present\n");
+        log_drain_write(7, 7, "[vibe_engine]   ✓ Capability tag present\n");
     } else {
         all_pass = false;
-        console_log(7, 7, "[vibe_engine]   ✗ No capability tag\n");
+        log_drain_write(7, 7, "[vibe_engine]   ✗ No capability tag\n");
     }
 
     proposals[slot].val_checks = checks;
@@ -360,11 +360,11 @@ static microkit_msginfo handle_validate(void) {
 
     if (all_pass) {
         proposals[slot].state = PROP_STATE_VALIDATED;
-        console_log(7, 7, "[vibe_engine] Validation PASSED (all 4 checks)\n");
+        log_drain_write(7, 7, "[vibe_engine] Validation PASSED (all 4 checks)\n");
     } else {
         proposals[slot].state = PROP_STATE_REJECTED;
         total_rejections++;
-        console_log(7, 7, "[vibe_engine] Validation FAILED\n");
+        log_drain_write(7, 7, "[vibe_engine] Validation FAILED\n");
     }
 
     microkit_mr_set(0, all_pass ? VIBE_OK : VIBE_ERR_VALFAIL);
@@ -405,7 +405,7 @@ static microkit_msginfo handle_execute(void) {
         return microkit_msginfo_new(0, 1);
     }
 
-    console_log(7, 7, "[vibe_engine] Executing swap for proposal ");
+    log_drain_write(7, 7, "[vibe_engine] Executing swap for proposal ");
     char id_buf[4];
     id_buf[0] = '0' + (proposal_id % 10);
     id_buf[1] = '\0';
@@ -417,7 +417,7 @@ static microkit_msginfo handle_execute(void) {
         for (const char *_s = services[proposals[slot].service_id].name; *_s; _s++) *_cl_p++ = *_s;
         for (const char *_s = "'\n"; *_s; _s++) *_cl_p++ = *_s;
         *_cl_p = 0;
-        console_log(7, 7, _cl_buf);
+        log_drain_write(7, 7, _cl_buf);
     }
 
     proposals[slot].state = PROP_STATE_APPROVED;
@@ -457,7 +457,7 @@ static microkit_msginfo handle_execute(void) {
     /* Memory barrier: metadata visible before notification */
     agentos_wmb();
 
-    console_log(7, 7, "[vibe_engine] *** SWAP APPROVED — notifying controller ***\n");
+    log_drain_write(7, 7, "[vibe_engine] *** SWAP APPROVED — notifying controller ***\n");
 
     /* Notify the controller to pick up the swap request */
     microkit_notify(CH_CTRL);
@@ -523,7 +523,7 @@ static microkit_msginfo handle_rollback(void) {
         for (const char *_s = services[service_id].name; *_s; _s++) *_cl_p++ = *_s;
         for (const char *_s = "'\n"; *_s; _s++) *_cl_p++ = *_s;
         *_cl_p = 0;
-        console_log(7, 7, _cl_buf);
+        log_drain_write(7, 7, _cl_buf);
     }
 
     /* Write rollback command to staging metadata
@@ -583,21 +583,21 @@ static microkit_msginfo handle_register_service(microkit_channel ch) {
 
     /* Validate name length */
     if (name_len == 0 || name_len > 31) {
-        console_log(7, 7, "[vibe_engine] REGISTER: invalid name length\n");
+        log_drain_write(7, 7, "[vibe_engine] REGISTER: invalid name length\n");
         microkit_mr_set(0, VIBE_ERR_INTERNAL);
         return microkit_msginfo_new(0, 1);
     }
 
     /* Check capacity */
     if (service_count >= MAX_SERVICES) {
-        console_log(7, 7, "[vibe_engine] REGISTER: service table full\n");
+        log_drain_write(7, 7, "[vibe_engine] REGISTER: service table full\n");
         microkit_mr_set(0, VIBE_ERR_FULL);
         return microkit_msginfo_new(0, 1);
     }
 
     /* Resolve the name pointer: treat as offset into staging region */
     if (name_ptr + name_len > STAGING_SIZE - 64) {
-        console_log(7, 7, "[vibe_engine] REGISTER: name out of staging bounds\n");
+        log_drain_write(7, 7, "[vibe_engine] REGISTER: name out of staging bounds\n");
         microkit_mr_set(0, VIBE_ERR_INTERNAL);
         return microkit_msginfo_new(0, 1);
     }
@@ -614,7 +614,7 @@ static microkit_msginfo handle_register_service(microkit_channel ch) {
         }
         /* also ensure lengths match: existing[name_len] must be NUL */
         if (match && existing[j] == '\0' && j == name_len) {
-            console_log(7, 7, "[vibe_engine] REGISTER: duplicate service name\n");
+            log_drain_write(7, 7, "[vibe_engine] REGISTER: duplicate service name\n");
             microkit_mr_set(0, VIBE_ERR_NOSVC);  /* repurpose: "already exists" */
             return microkit_msginfo_new(0, 1);
         }
@@ -630,7 +630,7 @@ static microkit_msginfo handle_register_service(microkit_channel ch) {
 
     /* Guard against pool overflow (32 bytes per entry, including NUL) */
     if (pool_next + 32 > (uint32_t)sizeof(name_pool)) {
-        console_log(7, 7, "[vibe_engine] REGISTER: name pool exhausted\n");
+        log_drain_write(7, 7, "[vibe_engine] REGISTER: name pool exhausted\n");
         microkit_mr_set(0, VIBE_ERR_INTERNAL);
         return microkit_msginfo_new(0, 1);
     }
@@ -661,7 +661,7 @@ static microkit_msginfo handle_register_service(microkit_channel ch) {
         *_cl_p++ = '0' + (char)(new_id % 10);
         for (const char *_s = "\n"; *_s; _s++) *_cl_p++ = *_s;
         *_cl_p = 0;
-        console_log(7, 7, _cl_buf);
+        log_drain_write(7, 7, _cl_buf);
     }
 
     microkit_mr_set(0, VIBE_OK);
@@ -715,7 +715,7 @@ static microkit_msginfo handle_list_services(void) {
 /* ── Microkit entry points ──────────────────────────────────────────── */
 
 void init(void) {
-    console_log(7, 7, "[vibe_engine] VibeEngine PD starting...\n");
+    log_drain_write(7, 7, "[vibe_engine] VibeEngine PD starting...\n");
 
     /* Initialize proposal table */
     for (int i = 0; i < MAX_PROPOSALS; i++) {
@@ -725,7 +725,7 @@ void init(void) {
     /* Register known services */
     register_services();
 
-    console_log(7, 7, "[vibe_engine] Services registered: ");
+    log_drain_write(7, 7, "[vibe_engine] Services registered: ");
     char cnt[4];
     cnt[0] = '0' + service_count;
     cnt[1] = '\0';
@@ -735,7 +735,7 @@ void init(void) {
         for (const char *_s = cnt; *_s; _s++) *_cl_p++ = *_s;
         for (const char *_s = " ("; *_s; _s++) *_cl_p++ = *_s;
         *_cl_p = 0;
-        console_log(7, 7, _cl_buf);
+        log_drain_write(7, 7, _cl_buf);
     }
     int swappable = 0;
     for (uint32_t i = 0; i < service_count; i++) {
@@ -751,7 +751,7 @@ void init(void) {
         for (const char *_s = " swappable)\n"; *_s; _s++) *_cl_p++ = *_s;
         for (const char *_s = "[vibe_engine] Proposal table: "; *_s; _s++) *_cl_p++ = *_s;
         *_cl_p = 0;
-        console_log(7, 7, _cl_buf);
+        log_drain_write(7, 7, _cl_buf);
     }
     char mx[4];
     mx[0] = '0' + MAX_PROPOSALS;
@@ -763,7 +763,7 @@ void init(void) {
         for (const char *_s = " slots\n"; *_s; _s++) *_cl_p++ = *_s;
         for (const char *_s = "[vibe_engine] Staging region: 4MB at 0x"; *_s; _s++) *_cl_p++ = *_s;
         *_cl_p = 0;
-        console_log(7, 7, _cl_buf);
+        log_drain_write(7, 7, _cl_buf);
     }
     /* Print vaddr as hex */
     uintptr_t va = vibe_staging_vaddr;
@@ -781,14 +781,14 @@ void init(void) {
         for (const char *_s = "\n"; *_s; _s++) *_cl_p++ = *_s;
         for (const char *_s = "[vibe_engine] *** VibeEngine ALIVE — accepting proposals ***\n"; *_s; _s++) *_cl_p++ = *_s;
         *_cl_p = 0;
-        console_log(7, 7, _cl_buf);
+        log_drain_write(7, 7, _cl_buf);
     }
 }
 
 /* Passive PD — only woken by PPC or notification */
 void notified(microkit_channel ch) {
     if (ch == CH_CTRL) {
-        console_log(7, 7, "[vibe_engine] Controller ack received\n");
+        log_drain_write(7, 7, "[vibe_engine] Controller ack received\n");
     }
 }
 
@@ -806,7 +806,7 @@ microkit_msginfo protected(microkit_channel ch, microkit_msginfo msg) {
         case OP_VIBE_REGISTER_SERVICE:   return handle_register_service(ch);
         case OP_VIBE_LIST_SERVICES:      return handle_list_services();
         default:
-            console_log(7, 7, "[vibe_engine] Unknown op\n");
+            log_drain_write(7, 7, "[vibe_engine] Unknown op\n");
             microkit_mr_set(0, VIBE_ERR_INTERNAL);
             return microkit_msginfo_new(0, 1);
     }
