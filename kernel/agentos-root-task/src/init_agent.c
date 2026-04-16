@@ -112,21 +112,21 @@ static struct {
 /* ── Banner ───────────────────────────────────────────────────────────── */
 
 static void print_banner(void) {
-    console_log(1, 1, "\n╔══════════════════════════════════════════════════╗\n║                                                  ║\n║          agentOS v0.1.0-alpha                    ║\n║   The World's First OS for AI Agents             ║\n║                                                  ║\n║   Built on: seL4 Microkernel (formally proved)   ║\n");
+    log_drain_write(1, 1, "\n╔══════════════════════════════════════════════════╗\n║                                                  ║\n║          agentOS v0.1.0-alpha                    ║\n║   The World's First OS for AI Agents             ║\n║                                                  ║\n║   Built on: seL4 Microkernel (formally proved)   ║\n");
 #if defined(__aarch64__)
-    console_log(1, 1, "║   Arch:     seL4 Microkit / AArch64              ║\n");
+    log_drain_write(1, 1, "║   Arch:     seL4 Microkit / AArch64              ║\n");
 #elif defined(__riscv)
-    console_log(1, 1, "║   Arch:     seL4 Microkit / RISC-V RV64          ║\n");
+    log_drain_write(1, 1, "║   Arch:     seL4 Microkit / RISC-V RV64          ║\n");
 #else
-    console_log(1, 1, "║   Arch:     seL4 Microkit                        ║\n");
+    log_drain_write(1, 1, "║   Arch:     seL4 Microkit                        ║\n");
 #endif
-    console_log(1, 1, "║                                                  ║\n║   Protection Domains:                            ║\n║     [*] controller  (prio  50) - system ctrl     ║\n║     [*] event_bus   (prio 200) - pub/sub bus     ║\n║     [*] init_agent  (prio 100) - bootstrapper    ║\n║                                                  ║\n║   Ready for agents. The future is running.       ║\n║                                                  ║\n║   Designed by Natasha on 2026-03-28              ║\n║   github.com/jordanhubbard/agentos               ║\n╚══════════════════════════════════════════════════╝\n\n");
+    log_drain_write(1, 1, "║                                                  ║\n║   Protection Domains:                            ║\n║     [*] controller  (prio  50) - system ctrl     ║\n║     [*] event_bus   (prio 200) - pub/sub bus     ║\n║     [*] init_agent  (prio 100) - bootstrapper    ║\n║                                                  ║\n║   Ready for agents. The future is running.       ║\n║                                                  ║\n║   Designed by Natasha on 2026-03-28              ║\n║   github.com/jordanhubbard/agentos               ║\n╚══════════════════════════════════════════════════╝\n\n");
 }
 
 /* ── Helpers ──────────────────────────────────────────────────────────── */
 
 static void put_dec(uint32_t v) {
-    console_log(1, 1, "0");
+    log_drain_write(1, 1, "0");
     char buf[12];
     int i = 11;
     buf[i] = '\0';
@@ -134,7 +134,7 @@ static void put_dec(uint32_t v) {
         buf[--i] = '0' + (v % 10);
         v /= 10;
     }
-    console_log(1, 1, &buf[i]);
+    log_drain_write(1, 1, &buf[i]);
 }
 
 static void put_hex32(uint32_t v) {
@@ -144,7 +144,7 @@ static void put_hex32(uint32_t v) {
         buf[i] = hex[v & 0xf];
         v >>= 4;
     }
-    console_log(1, 1, buf);
+    log_drain_write(1, 1, buf);
 }
 
 /* ── Quota ops ────────────────────────────────────────────────────────── */
@@ -164,23 +164,23 @@ static bool quota_register_agent(uint32_t agent_id, uint32_t cpu_ms, uint32_t me
     uint32_t status = (uint32_t)microkit_mr_get(1);
 
     if (status == 0 || status == 1) {
-        console_log(1, 1, "[init_agent] Quota registered: agent=");
+        log_drain_write(1, 1, "[init_agent] Quota registered: agent=");
         put_dec(agent_id);
-        console_log(1, 1, " cpu=");
+        log_drain_write(1, 1, " cpu=");
         put_dec(cpu_ms);
-        console_log(1, 1, "ms mem=");
+        log_drain_write(1, 1, "ms mem=");
         put_dec(mem_kb);
-        console_log(1, 1, "kb slot=");
+        log_drain_write(1, 1, "kb slot=");
         put_dec(slot);
-        console_log(1, 1, "\n");
+        log_drain_write(1, 1, "\n");
         return true;
     }
 
-    console_log(1, 1, "[init_agent] Quota registration failed for agent=");
+    log_drain_write(1, 1, "[init_agent] Quota registration failed for agent=");
     put_dec(agent_id);
-    console_log(1, 1, " status=");
+    log_drain_write(1, 1, " status=");
     put_dec(status);
-    console_log(1, 1, "\n");
+    log_drain_write(1, 1, "\n");
     return false;
 }
 
@@ -213,9 +213,9 @@ static void quota_tick_all_agents(void) {
         }
 
         if (flags & QUOTA_FLAG_REVOKED) {
-            console_log(1, 1, "[init_agent] Quota revoked agent=");
+            log_drain_write(1, 1, "[init_agent] Quota revoked agent=");
             put_dec(spawn_table[i].spawn_id);
-            console_log(1, 1, " flags=0x");
+            log_drain_write(1, 1, " flags=0x");
             char hexbuf[9];
             for (int h = 0; h < 8; h++) {
                 uint32_t nibble = (flags >> (28 - h * 4)) & 0xF;
@@ -228,7 +228,7 @@ static void quota_tick_all_agents(void) {
                 for (const char *_s = hexbuf; *_s; _s++) *_cl_p++ = *_s;
                 for (const char *_s = "\n"; *_s; _s++) *_cl_p++ = *_s;
                 *_cl_p = 0;
-                console_log(1, 1, _cl_buf);
+                log_drain_write(1, 1, _cl_buf);
             }
             spawn_table[i].quota_registered = false;
 
@@ -249,7 +249,7 @@ static void scheduler_round_tick(void) {
 static void query_eventbus_status(void) {
     state.query_count++;
 
-    console_log(1, 1, "[init_agent] Querying EventBus status via PPC...\n");
+    log_drain_write(1, 1, "[init_agent] Querying EventBus status via PPC...\n");
 
     PPCALL_DONATE(CH_EVENTBUS, microkit_msginfo_new(MSG_EVENTBUS_STATUS, 0),
                   PRIO_INIT_AGENT, PRIO_EVENTBUS);
@@ -257,28 +257,28 @@ static void query_eventbus_status(void) {
     uint64_t total_events = (uint64_t)microkit_mr_get(0);
     uint32_t subscribers  = (uint32_t)microkit_mr_get(1);
 
-    console_log(1, 1, "\n[init_agent] ── EventBus Audit Report ───────────────────\n[init_agent]   Total events published: ");
+    log_drain_write(1, 1, "\n[init_agent] ── EventBus Audit Report ───────────────────\n[init_agent]   Total events published: ");
     put_dec((uint32_t)total_events);
-    console_log(1, 1, "\n[init_agent]   Active subscribers: ");
+    log_drain_write(1, 1, "\n[init_agent]   Active subscribers: ");
     put_dec(subscribers);
-    console_log(1, 1, "\n[init_agent]   Events since last query: ");
+    log_drain_write(1, 1, "\n[init_agent]   Events since last query: ");
     uint32_t new_events = (uint32_t)total_events - state.event_count;
     put_dec(new_events);
-    console_log(1, 1, "\n[init_agent]   Agents spawned this session: ");
+    log_drain_write(1, 1, "\n[init_agent]   Agents spawned this session: ");
     put_dec(state.spawn_count);
-    console_log(1, 1, "\n");
+    log_drain_write(1, 1, "\n");
 
     if (total_events > 0) {
-        console_log(1, 1, "[init_agent]   Data flow confirmed: agents exchanging messages\n");
+        log_drain_write(1, 1, "[init_agent]   Data flow confirmed: agents exchanging messages\n");
     }
 
-    console_log(1, 1, "[init_agent] ────────────────────────────────────────────\n");
+    log_drain_write(1, 1, "[init_agent] ────────────────────────────────────────────\n");
 
     state.event_count = (uint32_t)total_events;
 }
 
 static void subscribe_to_eventbus(void) {
-    console_log(1, 1, "[init_agent] Subscribing to EventBus...\n");
+    log_drain_write(1, 1, "[init_agent] Subscribing to EventBus...\n");
     
     microkit_mr_set(0, CH_EVENTBUS);
     microkit_mr_set(1, 0);
@@ -291,9 +291,9 @@ static void subscribe_to_eventbus(void) {
     
     if (microkit_msginfo_get_label(result) == 0) {
         state.eventbus_subscribed = true;
-        console_log(1, 1, "[init_agent] EventBus subscription: OK\n");
+        log_drain_write(1, 1, "[init_agent] EventBus subscription: OK\n");
     } else {
-        console_log(1, 1, "[init_agent] EventBus subscription: FAILED\n");
+        log_drain_write(1, 1, "[init_agent] EventBus subscription: FAILED\n");
     }
 }
 
@@ -360,16 +360,16 @@ static microkit_msginfo handle_spawn_agent(microkit_msginfo msg) {
 
     if (priority == 0) priority = PRIO_COMPUTE;  /* sensible default */
 
-    console_log(1, 1, "[init_agent] SPAWN_AGENT request: hash_lo=");
+    log_drain_write(1, 1, "[init_agent] SPAWN_AGENT request: hash_lo=");
     put_hex32((uint32_t)(hash_lo & 0xFFFFFFFF));
-    console_log(1, 1, " priority=");
+    log_drain_write(1, 1, " priority=");
     put_dec(priority);
-    console_log(1, 1, "\n");
+    log_drain_write(1, 1, "\n");
 
     /* Allocate a pending entry */
     int tbl = spawn_table_alloc();
     if (tbl < 0) {
-        console_log(1, 1, "[init_agent] SPAWN_AGENT: pending table full\n");
+        log_drain_write(1, 1, "[init_agent] SPAWN_AGENT: pending table full\n");
         microkit_mr_set(0, 0);
         microkit_mr_set(1, 0xE1);  /* ERR_SPAWN_TABLE_FULL */
         return microkit_msginfo_new(MSG_SPAWN_AGENT_REPLY, 2);
@@ -386,9 +386,9 @@ static microkit_msginfo handle_spawn_agent(microkit_msginfo msg) {
     /* Ask the controller to actually load the WASM into a worker slot */
     request_controller_spawn(spawn_id, hash_lo, hash_hi, priority);
 
-    console_log(1, 1, "[init_agent] SPAWN_AGENT queued, spawn_id=");
+    log_drain_write(1, 1, "[init_agent] SPAWN_AGENT queued, spawn_id=");
     put_dec(spawn_id);
-    console_log(1, 1, "\n");
+    log_drain_write(1, 1, "\n");
 
     /*
      * Return provisional spawn_id with PENDING_FLAG.
@@ -412,14 +412,14 @@ static void handle_spawn_reply_from_controller(void) {
 
     if (tag != MSG_SPAWN_AGENT_REPLY) {
         /* Not a spawn reply — fall through to the regular handler */
-        console_log(1, 1, "[init_agent] Controller notification (non-spawn)\n");
+        log_drain_write(1, 1, "[init_agent] Controller notification (non-spawn)\n");
         query_eventbus_status();
         return;
     }
 
     int tbl = spawn_table_find(spawn_id);
     if (tbl < 0) {
-        console_log(1, 1, "[init_agent] SPAWN_REPLY: unknown spawn_id\n");
+        log_drain_write(1, 1, "[init_agent] SPAWN_REPLY: unknown spawn_id\n");
         return;
     }
 
@@ -428,11 +428,11 @@ static void handle_spawn_reply_from_controller(void) {
 
     if (slot_id >= 0) {
         state.spawn_count++;
-        console_log(1, 1, "[init_agent] Agent spawned: slot=");
+        log_drain_write(1, 1, "[init_agent] Agent spawned: slot=");
         put_dec((uint32_t)slot_id);
-        console_log(1, 1, " spawn_id=");
+        log_drain_write(1, 1, " spawn_id=");
         put_dec(spawn_id);
-        console_log(1, 1, "\n");
+        log_drain_write(1, 1, "\n");
 
         /*
          * Watchdog recovery hook (AGENTOS_SNAPSHOT_SCHED):
@@ -456,9 +456,9 @@ static void handle_spawn_reply_from_controller(void) {
         microkit_mr_set(0, 0xC0);  /* OP_MEM_REGISTER */
         microkit_mr_set(1, spawn_id);
         microkit_ppcall(CH_MEM_PROF, microkit_msginfo_new(0, 2));
-        console_log(1, 1, "[init_agent] mem_profiler registered slot=");
+        log_drain_write(1, 1, "[init_agent] mem_profiler registered slot=");
         put_dec(spawn_id);
-        console_log(1, 1, "\n");
+        log_drain_write(1, 1, "\n");
 
         /*
          * Apply default net_isolator ACL: clear any stale rules for this slot.
@@ -468,9 +468,9 @@ static void handle_spawn_reply_from_controller(void) {
         microkit_mr_set(0, OP_NET_ACL_CLEAR);
         microkit_mr_set(1, spawn_id);
         microkit_ppcall(CH_NET_ISO, microkit_msginfo_new(0, 2));
-        console_log(1, 1, "[init_agent] net_isolator ACL initialised (deny-all) slot=");
+        log_drain_write(1, 1, "[init_agent] net_isolator ACL initialised (deny-all) slot=");
         put_dec(spawn_id);
-        console_log(1, 1, "\n");
+        log_drain_write(1, 1, "\n");
         spawn_table[tbl].quota_cpu_ms     = DEFAULT_CPU_QUOTA_MS;
         spawn_table[tbl].quota_mem_kb     = DEFAULT_MEM_QUOTA_KB;
 
@@ -482,7 +482,7 @@ static void handle_spawn_reply_from_controller(void) {
         /* Clear the pending entry */
         spawn_table[tbl].pending = false;
     } else {
-        console_log(1, 1, "[init_agent] SPAWN_REPLY: controller reported failure\n");
+        log_drain_write(1, 1, "[init_agent] SPAWN_REPLY: controller reported failure\n");
         spawn_table[tbl].pending = false;
         spawn_table[tbl].quota_registered = false;
     }
@@ -491,18 +491,18 @@ static void handle_spawn_reply_from_controller(void) {
 /* ── Microkit entry points ────────────────────────────────────────────── */
 
 void init(void) {
-    console_log(1, 1, "[init_agent] Starting up...\n");
+    log_drain_write(1, 1, "[init_agent] Starting up...\n");
 
     spawn_table_init();
     
     subscribe_to_eventbus();
     
-    console_log(1, 1, "[init_agent] Notifying controller: ready\n");
+    log_drain_write(1, 1, "[init_agent] Notifying controller: ready\n");
     microkit_notify(CH_CONTROLLER);
     
     print_banner();
     
-    console_log(1, 1, "[init_agent] Entering event loop. agentOS is ALIVE.\n");
+    log_drain_write(1, 1, "[init_agent] Entering event loop. agentOS is ALIVE.\n");
     state.started = true;
 }
 
@@ -514,19 +514,19 @@ void notified(microkit_channel ch) {
              * a startup trigger, or a general status ping.
              */
             if (!state.started) {
-                console_log(1, 1, "[init_agent] Start signal from controller\n");
+                log_drain_write(1, 1, "[init_agent] Start signal from controller\n");
             } else {
                 handle_spawn_reply_from_controller();
             }
             break;
             
         case CH_EVENTBUS:
-            console_log(1, 1, "[init_agent] EventBus notification\n");
+            log_drain_write(1, 1, "[init_agent] EventBus notification\n");
             query_eventbus_status();
             break;
             
         default:
-            console_log(1, 1, "[init_agent] Unknown notification channel\n");
+            log_drain_write(1, 1, "[init_agent] Unknown notification channel\n");
             break;
     }
 

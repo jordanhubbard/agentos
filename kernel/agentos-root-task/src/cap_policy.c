@@ -147,7 +147,7 @@ bool cap_policy_check(const PolicyEntry *policy, uint32_t requested_caps) {
  * In the future, this would load policy/default_policy.nano.
  */
 void cap_policy_init(void) {
-    console_log(11, 11, "[cap_policy] Policy table loaded: ");
+    log_drain_write(11, 11, "[cap_policy] Policy table loaded: ");
     /* Print count */
     char buf[4];
     buf[0] = '0' + POLICY_TABLE_SIZE;
@@ -158,7 +158,7 @@ void cap_policy_init(void) {
         for (const char *_s = buf; *_s; _s++) *_cl_p++ = *_s;
         for (const char *_s = " agent classes defined\n"; *_s; _s++) *_cl_p++ = *_s;
         *_cl_p = 0;
-        console_log(11, 11, _cl_buf);
+        log_drain_write(11, 11, _cl_buf);
     }
 
     for (int i = 0; i < POLICY_TABLE_SIZE; i++) {
@@ -169,12 +169,12 @@ void cap_policy_init(void) {
             for (const char *_s = policy_table[i].class_name; *_s; _s++) *_cl_p++ = *_s;
             for (const char *_s = " cpu="; *_s; _s++) *_cl_p++ = *_s;
             *_cl_p = 0;
-            console_log(11, 11, _cl_buf);
+            log_drain_write(11, 11, _cl_buf);
         }
         /* Simple decimal for quota values */
         uint32_t v = policy_table[i].cpu_quota_ms;
         if (v == 0) {
-            console_log(11, 11, "unlimited");
+            log_drain_write(11, 11, "unlimited");
         } else {
             char qbuf[12];
             int j = 11;
@@ -186,13 +186,13 @@ void cap_policy_init(void) {
                 for (const char *_s = &qbuf[j]; *_s; _s++) *_cl_p++ = *_s;
                 for (const char *_s = "ms"; *_s; _s++) *_cl_p++ = *_s;
                 *_cl_p = 0;
-                console_log(11, 11, _cl_buf);
+                log_drain_write(11, 11, _cl_buf);
             }
         }
-        console_log(11, 11, " mem=");
+        log_drain_write(11, 11, " mem=");
         v = policy_table[i].mem_quota_kb;
         if (v == 0) {
-            console_log(11, 11, "unlimited");
+            log_drain_write(11, 11, "unlimited");
         } else {
             char qbuf[12];
             int j = 11;
@@ -204,9 +204,9 @@ void cap_policy_init(void) {
                 for (const char *_s = &qbuf[j]; *_s; _s++) *_cl_p++ = *_s;
                 for (const char *_s = "kb"; *_s; _s++) *_cl_p++ = *_s;
                 *_cl_p = 0;
-                console_log(11, 11, _cl_buf);
+                log_drain_write(11, 11, _cl_buf);
             }
         }
-        console_log(11, 11, "\n");
+        log_drain_write(11, 11, "\n");
     }
 }

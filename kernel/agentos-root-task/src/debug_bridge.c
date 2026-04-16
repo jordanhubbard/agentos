@@ -220,7 +220,7 @@ void ipc_bridge_init(uintptr_t shmem_vaddr)
     __asm__ volatile("" ::: "memory");
     rr->magic = IPC_RESP_MAGIC;
 
-    console_log(12, 12, "[ipc_bridge] Rings initialised: cmd@0x1000 resp@0x2000, depth=64\n");
+    log_drain_write(12, 12, "[ipc_bridge] Rings initialised: cmd@0x1000 resp@0x2000, depth=64\n");
 }
 
 /* ── ipc_bridge_send_cmd ──────────────────────────────────────────────────── */
@@ -234,7 +234,7 @@ int ipc_bridge_send_cmd(uint32_t op, uint32_t vm_slot,
 
     /* Verify the ring was properly initialised. */
     if (cr->magic != IPC_CMD_MAGIC) {
-        console_log(12, 12, "[ipc_bridge] WARN: cmd ring magic mismatch\n");
+        log_drain_write(12, 12, "[ipc_bridge] WARN: cmd ring magic mismatch\n");
         return -1;
     }
 
@@ -243,7 +243,7 @@ int ipc_bridge_send_cmd(uint32_t op, uint32_t vm_slot,
 
     /* Ring full check: head - tail == IPC_RING_DEPTH */
     if ((head - tail) >= IPC_RING_DEPTH) {
-        console_log(12, 12, "[ipc_bridge] WARN: cmd ring full\n");
+        log_drain_write(12, 12, "[ipc_bridge] WARN: cmd ring full\n");
         return -1;
     }
 
@@ -279,7 +279,7 @@ int ipc_bridge_poll_resp(uint32_t seq, ipc_resp_t *out_resp)
     volatile ipc_resp_ring_t *rr = IPC_RESP_RING;
 
     if (rr->magic != IPC_RESP_MAGIC) {
-        console_log(12, 12, "[ipc_bridge] WARN: resp ring magic mismatch\n");
+        log_drain_write(12, 12, "[ipc_bridge] WARN: resp ring magic mismatch\n");
         return -1;
     }
 
@@ -338,7 +338,7 @@ void ipc_bridge_notified(void)
     volatile ipc_resp_ring_t *rr = IPC_RESP_RING;
 
     if (rr->magic != IPC_RESP_MAGIC) {
-        console_log(12, 12, "[ipc_bridge] WARN: notified but resp magic bad\n");
+        log_drain_write(12, 12, "[ipc_bridge] WARN: notified but resp magic bad\n");
         return;
     }
 
@@ -375,7 +375,7 @@ void ipc_bridge_notified(void)
     }
 
     if (drained) {
-        console_log(12, 12, "[ipc_bridge] notified: drained resp(s) from Linux\n");
+        log_drain_write(12, 12, "[ipc_bridge] notified: drained resp(s) from Linux\n");
     }
 }
 
@@ -397,7 +397,7 @@ static microkit_msginfo handle_ipc_send(void)
 
     /* Validate op code. */
     if (op < IPC_OP_EXEC || op > IPC_OP_SIGNAL) {
-        console_log(12, 12, "[ipc_bridge] IPC_SEND: invalid op\n");
+        log_drain_write(12, 12, "[ipc_bridge] IPC_SEND: invalid op\n");
         microkit_mr_set(0, 0xFF);
         microkit_mr_set(1, 0);
         return microkit_msginfo_new(0, 2);
@@ -405,7 +405,7 @@ static microkit_msginfo handle_ipc_send(void)
 
     /* Validate vm_slot. */
     if (vm_slot >= 4) {
-        console_log(12, 12, "[ipc_bridge] IPC_SEND: invalid vm_slot\n");
+        log_drain_write(12, 12, "[ipc_bridge] IPC_SEND: invalid vm_slot\n");
         microkit_mr_set(0, 0xFF);
         microkit_mr_set(1, 0);
         return microkit_msginfo_new(0, 2);
@@ -425,7 +425,7 @@ static microkit_msginfo handle_ipc_send(void)
         return microkit_msginfo_new(0, 2);
     }
 
-    console_log(12, 12, "[ipc_bridge] IPC_SEND: enqueued cmd op=");
+    log_drain_write(12, 12, "[ipc_bridge] IPC_SEND: enqueued cmd op=");
     /* Log op code (single hex digit for common ops 1-6). */
     {
         char _cl_buf[64] = {};
@@ -440,7 +440,7 @@ static microkit_msginfo handle_ipc_send(void)
         *p++ = '0' + (char)(vm_slot & 0xF);
         *p++ = '\n';
         *p   = '\0';
-        console_log(12, 12, _cl_buf);
+        log_drain_write(12, 12, _cl_buf);
     }
 
     microkit_mr_set(0, 0);
@@ -484,7 +484,7 @@ static microkit_msginfo handle_ipc_poll(void)
     }
 
     /* rc == 1: response found. */
-    console_log(12, 12, "[ipc_bridge] IPC_POLL: response received\n");
+    log_drain_write(12, 12, "[ipc_bridge] IPC_POLL: response received\n");
     microkit_mr_set(0, 0);
     microkit_mr_set(1, resp.status);
     microkit_mr_set(2, 0);            /* payload_offset — inline only */
@@ -517,7 +517,7 @@ static void debug_bridge_init(void) {
         slot_state[i].hit_count = 0;
     }
 
-    console_log(12, 12, "[debug_bridge] Ring initialized: capacity=5000+ events, 48B each\n");
+    log_drain_write(12, 12, "[debug_bridge] Ring initialized: capacity=5000+ events, 48B each\n");
 
     /* Initialise the IPC bridge rings in the shared MR. */
     ipc_bridge_init(IPC_SHMEM_BASE);
@@ -563,13 +563,13 @@ static microkit_msginfo handle_attach(void) {
     uint32_t slot_id = (uint32_t)microkit_mr_get(1);
 
     if (slot_id >= MAX_DEBUG_SLOTS) {
-        console_log(12, 12, "[debug_bridge] ATTACH failed: invalid slot_id\n");
+        log_drain_write(12, 12, "[debug_bridge] ATTACH failed: invalid slot_id\n");
         microkit_mr_set(0, 0xFF); /* error: invalid slot */
         return microkit_msginfo_new(0, 1);
     }
 
     if (slot_state[slot_id].attached) {
-        console_log(12, 12, "[debug_bridge] ATTACH: slot already attached\n");
+        log_drain_write(12, 12, "[debug_bridge] ATTACH: slot already attached\n");
         microkit_mr_set(0, 0xFE); /* error: already attached */
         return microkit_msginfo_new(0, 1);
     }
@@ -584,7 +584,7 @@ static microkit_msginfo handle_attach(void) {
     debug_event_append(DBG_EVT_ATTACHED, slot_id, 0, 0, 0);
     notify_controller_debug_event(slot_id, DBG_EVT_ATTACHED);
 
-    console_log(12, 12, "[debug_bridge] ATTACHED slot=");
+    log_drain_write(12, 12, "[debug_bridge] ATTACHED slot=");
     char buf[4];
     buf[0] = '0' + (slot_id % 10);
     buf[1] = '\0';
@@ -594,7 +594,7 @@ static microkit_msginfo handle_attach(void) {
         for (const char *_s = buf; *_s; _s++) *_cl_p++ = *_s;
         for (const char *_s = "\n"; *_s; _s++) *_cl_p++ = *_s;
         *_cl_p = 0;
-        console_log(12, 12, _cl_buf);
+        log_drain_write(12, 12, _cl_buf);
     }
 
     microkit_mr_set(0, 0); /* success */
@@ -629,7 +629,7 @@ static microkit_msginfo handle_detach(void) {
     debug_event_append(DBG_EVT_DETACHED, slot_id, 0, 0, 0);
     notify_controller_debug_event(slot_id, DBG_EVT_DETACHED);
 
-    console_log(12, 12, "[debug_bridge] DETACHED slot=");
+    log_drain_write(12, 12, "[debug_bridge] DETACHED slot=");
     char buf[4];
     buf[0] = '0' + (slot_id % 10);
     buf[1] = '\0';
@@ -639,7 +639,7 @@ static microkit_msginfo handle_detach(void) {
         for (const char *_s = buf; *_s; _s++) *_cl_p++ = *_s;
         for (const char *_s = "\n"; *_s; _s++) *_cl_p++ = *_s;
         *_cl_p = 0;
-        console_log(12, 12, _cl_buf);
+        log_drain_write(12, 12, _cl_buf);
     }
 
     microkit_mr_set(0, 0);
@@ -673,7 +673,7 @@ static microkit_msginfo handle_breakpoint(void) {
 
         /* Add new breakpoint */
         if (s->bp_count >= MAX_BREAKPOINTS) {
-            console_log(12, 12, "[debug_bridge] BP table full\n");
+            log_drain_write(12, 12, "[debug_bridge] BP table full\n");
             microkit_mr_set(0, 0xFD); /* table full */
             return microkit_msginfo_new(0, 1);
         }
@@ -682,7 +682,7 @@ static microkit_msginfo handle_breakpoint(void) {
         s->breakpoints[idx].wasm_offset = wasm_offset;
         s->breakpoints[idx].enabled     = 1;
 
-        console_log(12, 12, "[debug_bridge] BP set slot=");
+        log_drain_write(12, 12, "[debug_bridge] BP set slot=");
         char buf[4];
         buf[0] = '0' + (slot_id % 10);
         buf[1] = '\0';
@@ -692,7 +692,7 @@ static microkit_msginfo handle_breakpoint(void) {
             for (const char *_s = buf; *_s; _s++) *_cl_p++ = *_s;
             for (const char *_s = " offset=0x...\n"; *_s; _s++) *_cl_p++ = *_s;
             *_cl_p = 0;
-            console_log(12, 12, _cl_buf);
+            log_drain_write(12, 12, _cl_buf);
         }
 
         microkit_mr_set(0, 0);
@@ -738,7 +738,7 @@ static microkit_msginfo handle_step(void) {
     debug_event_append(DBG_EVT_RESUMED, slot_id,
                        slot_state[slot_id].suspend_pc, 0, step_mode);
 
-    console_log(12, 12, "[debug_bridge] STEP slot=");
+    log_drain_write(12, 12, "[debug_bridge] STEP slot=");
     char buf[4];
     buf[0] = '0' + (slot_id % 10);
     buf[1] = '\0';
@@ -748,7 +748,7 @@ static microkit_msginfo handle_step(void) {
         for (const char *_s = buf; *_s; _s++) *_cl_p++ = *_s;
         for (const char *_s = " mode="; *_s; _s++) *_cl_p++ = *_s;
         *_cl_p = 0;
-        console_log(12, 12, _cl_buf);
+        log_drain_write(12, 12, _cl_buf);
     }
     buf[0] = '0' + (step_mode % 10);
     {
@@ -757,7 +757,7 @@ static microkit_msginfo handle_step(void) {
         for (const char *_s = buf; *_s; _s++) *_cl_p++ = *_s;
         for (const char *_s = "\n"; *_s; _s++) *_cl_p++ = *_s;
         *_cl_p = 0;
-        console_log(12, 12, _cl_buf);
+        log_drain_write(12, 12, _cl_buf);
     }
 
     /*
@@ -805,7 +805,7 @@ static microkit_msginfo handle_status(void) {
 void init(void) {
     agentos_log_boot("debug_bridge");
     debug_bridge_init();
-    console_log(12, 12, "[debug_bridge] Ready — passive debug channel, priority 160\n");
+    log_drain_write(12, 12, "[debug_bridge] Ready — passive debug channel, priority 160\n");
 }
 
 /*
@@ -828,7 +828,7 @@ microkit_msginfo protected(microkit_channel ch, microkit_msginfo msginfo) {
     case OP_DEBUG_IPC_SEND:  return handle_ipc_send();
     case OP_DEBUG_IPC_POLL:  return handle_ipc_poll();
     default:
-        console_log(12, 12, "[debug_bridge] WARN: unknown opcode\n");
+        log_drain_write(12, 12, "[debug_bridge] WARN: unknown opcode\n");
         microkit_mr_set(0, 0xFF);
         return microkit_msginfo_new(0, 1);
     }
@@ -889,7 +889,7 @@ void notified(microkit_channel ch) {
                                wasm_pc, 0, s->step_mode);
             notify_controller_debug_event(slot_id, DBG_EVT_STEP_COMPLETE);
 
-            console_log(12, 12, "[debug_bridge] STEP complete slot=");
+            log_drain_write(12, 12, "[debug_bridge] STEP complete slot=");
             char buf[4];
             buf[0] = '0' + (slot_id % 10);
             buf[1] = '\0';
@@ -899,7 +899,7 @@ void notified(microkit_channel ch) {
                 for (const char *_s = buf; *_s; _s++) *_cl_p++ = *_s;
                 for (const char *_s = "\n"; *_s; _s++) *_cl_p++ = *_s;
                 *_cl_p = 0;
-                console_log(12, 12, _cl_buf);
+                log_drain_write(12, 12, _cl_buf);
             }
         } else {
             /* Breakpoint hit — check if PC matches any active breakpoint */
@@ -920,7 +920,7 @@ void notified(microkit_channel ch) {
                                wasm_pc, bp_idx, 0);
             notify_controller_debug_event(slot_id, DBG_EVT_BREAKPOINT_HIT);
 
-            console_log(12, 12, "[debug_bridge] BREAKPOINT HIT slot=");
+            log_drain_write(12, 12, "[debug_bridge] BREAKPOINT HIT slot=");
             char buf[4];
             buf[0] = '0' + (slot_id % 10);
             buf[1] = '\0';
@@ -930,7 +930,7 @@ void notified(microkit_channel ch) {
                 for (const char *_s = buf; *_s; _s++) *_cl_p++ = *_s;
                 for (const char *_s = "\n"; *_s; _s++) *_cl_p++ = *_s;
                 *_cl_p = 0;
-                console_log(12, 12, _cl_buf);
+                log_drain_write(12, 12, _cl_buf);
             }
         }
     }

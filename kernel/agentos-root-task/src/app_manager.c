@@ -37,10 +37,10 @@ uintptr_t spawn_config_shmem_appmgr_vaddr;
 uintptr_t vfs_io_shmem_appmgr_vaddr;   /* reserved for future VFS reads */
 
 /* Weak console_rings fallback — log.c provides __attribute__((weak)) */
-uintptr_t console_rings_vaddr;
+uintptr_t log_drain_rings_vaddr;
 
 /* ── Simple debug logging ────────────────────────────────────────────────── */
-#define LOG(msg)  console_log(APP_MANAGER_CONSOLE_SLOT, APP_MANAGER_PD_ID, \
+#define LOG(msg)  log_drain_write(APP_MANAGER_CONSOLE_SLOT, APP_MANAGER_PD_ID, \
                               "[app_manager] " msg "\n")
 
 /* ── Application tracking table ──────────────────────────────────────────── */

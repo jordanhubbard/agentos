@@ -123,7 +123,7 @@ int vibe_swap_activate(int slot);
  * Initialize the vibe swap subsystem
  */
 void vibe_swap_init(void) {
-    console_log(7, 7, "[vibe_swap] Initializing swap slot manager\n");
+    log_drain_write(7, 7, "[vibe_swap] Initializing swap slot manager\n");
     
     /* Initialize swap slots */
     for (int i = 0; i < MAX_SWAP_SLOTS; i++) {
@@ -185,7 +185,7 @@ void vibe_swap_init(void) {
     
     service_count = 6;
     
-    console_log(7, 7, "[vibe_swap] Swap slots: ");
+    log_drain_write(7, 7, "[vibe_swap] Swap slots: ");
     char buf[4];
     buf[0] = '0' + MAX_SWAP_SLOTS;
     buf[1] = '\0';
@@ -196,7 +196,7 @@ void vibe_swap_init(void) {
         for (const char *_s = " available\n"; *_s; _s++) *_cl_p++ = *_s;
         for (const char *_s = "[vibe_swap] Ready for vibe-coded service proposals\n"; *_s; _s++) *_cl_p++ = *_s;
         *_cl_p = 0;
-        console_log(7, 7, _cl_buf);
+        log_drain_write(7, 7, _cl_buf);
     }
 }
 
@@ -243,7 +243,7 @@ static int vibe_swap_run_tests(int slot, uint32_t service_id);
  */
 int vibe_swap_begin(uint32_t service_id, const void *code, uint32_t code_len) {
     if (service_id >= MAX_SERVICES) {
-        console_log(7, 7, "[vibe_swap] ERROR: invalid service_id\n");
+        log_drain_write(7, 7, "[vibe_swap] ERROR: invalid service_id\n");
         return -1;
     }
     
@@ -257,14 +257,14 @@ int vibe_swap_begin(uint32_t service_id, const void *code, uint32_t code_len) {
             for (const char *_s = svc->name; *_s; _s++) *_cl_p++ = *_s;
             for (const char *_s = "' is not swappable\n"; *_s; _s++) *_cl_p++ = *_s;
             *_cl_p = 0;
-            console_log(7, 7, _cl_buf);
+            log_drain_write(7, 7, _cl_buf);
         }
         return -2;
     }
     
     int slot = find_free_slot();
     if (slot < 0) {
-        console_log(7, 7, "[vibe_swap] ERROR: no free swap slots\n");
+        log_drain_write(7, 7, "[vibe_swap] ERROR: no free swap slots\n");
         return -3;
     }
     
@@ -275,7 +275,7 @@ int vibe_swap_begin(uint32_t service_id, const void *code, uint32_t code_len) {
         for (const char *_s = svc->name; *_s; _s++) *_cl_p++ = *_s;
         for (const char *_s = "' into slot "; *_s; _s++) *_cl_p++ = *_s;
         *_cl_p = 0;
-        console_log(7, 7, _cl_buf);
+        log_drain_write(7, 7, _cl_buf);
     }
     char slot_str[4];
     slot_str[0] = '0' + slot;
@@ -286,7 +286,7 @@ int vibe_swap_begin(uint32_t service_id, const void *code, uint32_t code_len) {
         for (const char *_s = slot_str; *_s; _s++) *_cl_p++ = *_s;
         for (const char *_s = "\n"; *_s; _s++) *_cl_p++ = *_s;
         *_cl_p = 0;
-        console_log(7, 7, _cl_buf);
+        log_drain_write(7, 7, _cl_buf);
     }
     
     /* Mark slot as loading */
@@ -319,7 +319,7 @@ int vibe_swap_begin(uint32_t service_id, const void *code, uint32_t code_len) {
 
     /* Validate code fits in region */
     if (code_len + SWAP_HEADER_SIZE > SWAP_CODE_REGION_SIZE) {
-        console_log(7, 7, "[vibe_swap] ERROR: code too large for slot region\n");
+        log_drain_write(7, 7, "[vibe_swap] ERROR: code too large for slot region\n");
         slots[slot].state = SWAP_STATE_IDLE;
         return -4;
     }
@@ -352,7 +352,7 @@ int vibe_swap_begin(uint32_t service_id, const void *code, uint32_t code_len) {
 
     agentos_wmb();
 
-    console_log(7, 7, "[vibe_swap] WASM image written, notifying slot\n");
+    log_drain_write(7, 7, "[vibe_swap] WASM image written, notifying slot\n");
 
     /* Notify the swap slot to initialize (loads and runs service_init) */
     microkit_notify(slots[slot].channel);
@@ -363,11 +363,11 @@ int vibe_swap_begin(uint32_t service_id, const void *code, uint32_t code_len) {
      * If tests fail, the slot is reset to SWAP_STATE_IDLE and we return -5.
      */
     if (vibe_swap_run_tests(slot, service_id) != 0) {
-        console_log(7, 7, "[vibe_swap] Conformance tests FAILED — slot not activated\n");
+        log_drain_write(7, 7, "[vibe_swap] Conformance tests FAILED — slot not activated\n");
         return -5;
     }
 
-    console_log(7, 7, "[vibe_swap] Conformance tests passed — activating slot\n");
+    log_drain_write(7, 7, "[vibe_swap] Conformance tests passed — activating slot\n");
 
     /*
      * Tests passed: redirect channels and activate.
@@ -375,7 +375,7 @@ int vibe_swap_begin(uint32_t service_id, const void *code, uint32_t code_len) {
      * service routing table.
      */
     if (vibe_swap_activate(slot) != 0) {
-        console_log(7, 7, "[vibe_swap] Activation failed after successful tests\n");
+        log_drain_write(7, 7, "[vibe_swap] Activation failed after successful tests\n");
         slots[slot].state = SWAP_STATE_IDLE;
         return -6;
     }
@@ -420,7 +420,7 @@ static int vibe_swap_run_tests(int slot, uint32_t service_id) {
         for (const char *_s = (result); *_s; _s++) *_cl_p++ = *_s; \
         for (const char *_s = "\n"; *_s; _s++) *_cl_p++ = *_s; \
         *_cl_p = 0; \
-        console_log(7, 7, _cl_buf); \
+        log_drain_write(7, 7, _cl_buf); \
     } while (0)
 
     if (service_id == SVC_MEMFS) {
@@ -522,7 +522,7 @@ int vibe_swap_activate(int slot) {
     uint32_t svc_id = slots[slot].service_id;
     service_desc_t *svc = &services[svc_id];
     
-    console_log(7, 7, "[vibe_swap] Activating slot ");
+    log_drain_write(7, 7, "[vibe_swap] Activating slot ");
     char buf[4];
     buf[0] = '0' + slot;
     buf[1] = '\0';
@@ -534,7 +534,7 @@ int vibe_swap_activate(int slot) {
         for (const char *_s = svc->name; *_s; _s++) *_cl_p++ = *_s;
         for (const char *_s = "'\n"; *_s; _s++) *_cl_p++ = *_s;
         *_cl_p = 0;
-        console_log(7, 7, _cl_buf);
+        log_drain_write(7, 7, _cl_buf);
     }
     
     /*
@@ -592,7 +592,7 @@ int vibe_swap_activate(int slot) {
         for (const char *_s = svc->name; *_s; _s++) *_cl_p++ = *_s;
         for (const char *_s = "' now at version "; *_s; _s++) *_cl_p++ = *_s;
         *_cl_p = 0;
-        console_log(7, 7, _cl_buf);
+        log_drain_write(7, 7, _cl_buf);
     }
     char ver[4];
     ver[0] = '0' + (svc->version % 10);
@@ -603,7 +603,7 @@ int vibe_swap_activate(int slot) {
         for (const char *_s = ver; *_s; _s++) *_cl_p++ = *_s;
         for (const char *_s = " ***\n"; *_s; _s++) *_cl_p++ = *_s;
         *_cl_p = 0;
-        console_log(7, 7, _cl_buf);
+        log_drain_write(7, 7, _cl_buf);
     }
     
     return 0;
@@ -624,7 +624,7 @@ int vibe_swap_rollback(uint32_t service_id) {
     for (int i = 0; i < MAX_SWAP_SLOTS; i++) {
         if (slots[i].state == SWAP_STATE_TESTING &&
             slots[i].service_id == service_id) {
-            console_log(7, 7, "[vibe_swap] rollback: slot still in TESTING — reset to IDLE\n");
+            log_drain_write(7, 7, "[vibe_swap] rollback: slot still in TESTING — reset to IDLE\n");
             slots[i].state = SWAP_STATE_IDLE;
             return 0;  /* No channel redirect required; nothing was activated */
         }
@@ -640,7 +640,7 @@ int vibe_swap_rollback(uint32_t service_id) {
             for (const char *_s = svc->name; *_s; _s++) *_cl_p++ = *_s;
             for (const char *_s = "'\n"; *_s; _s++) *_cl_p++ = *_s;
             *_cl_p = 0;
-            console_log(7, 7, _cl_buf);
+            log_drain_write(7, 7, _cl_buf);
         }
         return -2;
     }
@@ -654,7 +654,7 @@ int vibe_swap_rollback(uint32_t service_id) {
         for (const char *_s = svc->name; *_s; _s++) *_cl_p++ = *_s;
         for (const char *_s = "' to previous version\n"; *_s; _s++) *_cl_p++ = *_s;
         *_cl_p = 0;
-        console_log(7, 7, _cl_buf);
+        log_drain_write(7, 7, _cl_buf);
     }
     
     /* Deactivate current slot */
@@ -671,7 +671,7 @@ int vibe_swap_rollback(uint32_t service_id) {
     svc->version = slots[rb_slot].version;
     svc->has_rollback = false;
     
-    console_log(7, 7, "[vibe_swap] Rollback complete\n");
+    log_drain_write(7, 7, "[vibe_swap] Rollback complete\n");
     return 0;
 }
 
@@ -722,7 +722,7 @@ void vibe_swap_status(uint32_t service_id, uint32_t *version,
 int vibe_swap_health_notify(int slot) {
     if (slot < 0 || slot >= MAX_SWAP_SLOTS) return -1;
     if (slots[slot].state != SWAP_STATE_TESTING) {
-        console_log(7, 7, "[vibe_swap] health_notify: slot not in TESTING state\n");
+        log_drain_write(7, 7, "[vibe_swap] health_notify: slot not in TESTING state\n");
         return -2;
     }
     slots[slot].healthy = true;
