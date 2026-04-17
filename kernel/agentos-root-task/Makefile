@@ -104,6 +104,7 @@ PD_VFS_SERVER_SRCS       := src/vfs_server.c src/m3_bare_metal.c src/log.c
 PD_SPAWN_SERVER_SRCS     := src/spawn_server.c src/sha256_mini.c src/m3_bare_metal.c src/log.c
 PD_APP_SLOT_SRCS         := src/app_slot.c src/sha256_mini.c src/m3_bare_metal.c src/log.c
 PD_NET_SERVER_SRCS       := src/net_server.c src/lwip_sys.c src/lwip_shim.c src/m3_bare_metal.c src/log.c
+PD_NET_PD_SRCS           := src/net_pd.c src/lwip_sys.c src/lwip_shim.c src/m3_bare_metal.c src/log.c
 PD_JS_RUNTIME_SRCS       := src/js_runtime.c src/m3_bare_metal.c src/log.c
 PD_JS_RUNTIME_VENDOR_SRCS := vendor/quickjs/quickjs_stub.c
 PD_WG_NET_SRCS           := src/wg_net.c src/monocypher.c src/m3_bare_metal.c src/log.c
@@ -144,6 +145,7 @@ VFS_SERVER_OBJS       := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_VFS_SERVER_S
 SPAWN_SERVER_OBJS     := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_SPAWN_SERVER_SRCS))
 APP_SLOT_OBJS         := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_APP_SLOT_SRCS))
 NET_SERVER_OBJS       := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_NET_SERVER_SRCS))
+NET_PD_OBJS           := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_NET_PD_SRCS))
 JS_RUNTIME_OBJS       := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_JS_RUNTIME_SRCS)) \
                          $(patsubst vendor/%.c, $(BUILD_DIR)/vendor_%.o, $(PD_JS_RUNTIME_VENDOR_SRCS))
 WG_NET_OBJS           := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_WG_NET_SRCS))
@@ -160,7 +162,7 @@ TERM_SERVER_OBJS      := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_TERM_SERVER_
 WASM3_OBJS            := $(patsubst wasm3/%.c, $(BUILD_DIR)/wasm3_%.o, $(WASM3_SRCS))
 CONSOLESHELL_OBJS     := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_CONSOLESHELL_SRCS))
 
-IMAGES := controller.elf event_bus.elf init_agent.elf worker.elf agentfs.elf vibe_engine.elf log_drain.elf swap_slot.elf mem_profiler.elf net_isolator.elf perf_counters.elf time_partition.elf trace_recorder.elf nameserver.elf virtio_blk.elf vfs_server.elf spawn_server.elf app_slot.elf net_server.elf js_runtime.elf wg_net.elf app_manager.elf http_svc.elf vm_manager.elf auth_server.elf ext2fs.elf proc_server.elf vm_snapshot.elf pflocal_server.elf exec_server.elf term_server.elf console_shell.elf
+IMAGES := controller.elf event_bus.elf init_agent.elf worker.elf agentfs.elf vibe_engine.elf log_drain.elf swap_slot.elf mem_profiler.elf net_isolator.elf perf_counters.elf time_partition.elf trace_recorder.elf nameserver.elf virtio_blk.elf vfs_server.elf spawn_server.elf app_slot.elf net_server.elf net_pd.elf js_runtime.elf wg_net.elf app_manager.elf http_svc.elf vm_manager.elf auth_server.elf ext2fs.elf proc_server.elf vm_snapshot.elf pflocal_server.elf exec_server.elf term_server.elf console_shell.elf
 
 # Optional: periodic WASM slot snapshot scheduler
 ifdef AGENTOS_SNAPSHOT_SCHED
@@ -288,6 +290,9 @@ $(BUILD_DIR)/app_slot.elf: $(APP_SLOT_OBJS)
 	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
 
 $(BUILD_DIR)/net_server.elf: $(NET_SERVER_OBJS)
+	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
+
+$(BUILD_DIR)/net_pd.elf: $(NET_PD_OBJS)
 	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
 
 $(BUILD_DIR)/js_runtime.elf: $(JS_RUNTIME_OBJS)

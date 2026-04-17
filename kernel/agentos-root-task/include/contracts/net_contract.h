@@ -31,6 +31,10 @@
 #define NET_MAX_CLIENTS       16u
 #define NET_MAX_FILTERS       32u
 
+/* ─── Protocol identifiers (MSG_NET_SOCKET_OPEN / MSG_NET_SOCKET_CONNECT) ── */
+#define NET_PROTO_TCP         0u
+#define NET_PROTO_UDP         1u
+
 /* ─── Request structs ────────────────────────────────────────────────────── */
 
 struct net_req_open {
@@ -132,4 +136,100 @@ enum net_error {
     NET_ERR_FRAME_TOO_LARGE = 5,
     NET_ERR_FILTER_FULL     = 6,
     NET_ERR_BAD_FILTER_ID   = 7,
+};
+
+/* ─── Socket-level extension (MSG_NET_SOCKET_* opcodes 0x2109–0x210F) ─────
+ *
+ * These extend net_pd beyond raw Ethernet frame I/O with a BSD socket-like
+ * API backed by the internal lwIP TCP/IP stack.  Guest OSes and agents use
+ * these operations to obtain TCP/UDP connections without touching lwIP directly.
+ *
+ * All socket opcodes are dispatched by net_pd on channel CH_NET_PD (68).
+ * Opcode values are defined in agentos.h (MSG_NET_SOCKET_* range 0x2109–0x210F).
+ * ────────────────────────────────────────────────────────────────────────── */
+
+/* Socket option IDs (MSG_NET_SOCKET_SET_OPT) */
+#define NET_SOCKOPT_REUSEADDR  0u   /* SO_REUSEADDR */
+#define NET_SOCKOPT_NODELAY    1u   /* TCP_NODELAY */
+#define NET_SOCKOPT_KEEPALIVE  2u   /* SO_KEEPALIVE */
+
+/* Socket states (returned in replies — for informational use) */
+#define NET_SOCK_FREE       0u
+#define NET_SOCK_BOUND      1u
+#define NET_SOCK_CONNECTING 2u
+#define NET_SOCK_CONNECTED  3u
+#define NET_SOCK_LISTENING  4u
+#define NET_SOCK_CLOSED     5u
+
+/* ── MSG_NET_SOCKET_OPEN (0x2109) — open a TCP or UDP socket ────────────── */
+struct net_req_socket_open {
+    uint32_t proto;             /* NET_PROTO_TCP=0, NET_PROTO_UDP=1 */
+};
+
+struct net_reply_socket_open {
+    uint32_t ok;
+    uint32_t sock_handle;       /* opaque handle for subsequent calls */
+    uint32_t shmem_slot_offset; /* byte offset into net_pd_shmem for data I/O */
+};
+
+/* ── MSG_NET_SOCKET_CLOSE (0x210A) — close a socket ─────────────────────── */
+struct net_req_socket_close {
+    uint32_t sock_handle;
+};
+
+struct net_reply_socket_close {
+    uint32_t ok;
+};
+
+/* ── MSG_NET_SOCKET_CONNECT (0x210B) — initiate a TCP connection ─────────── */
+struct net_req_socket_connect {
+    uint32_t sock_handle;
+    uint32_t dest_ip;           /* IPv4 destination, big-endian */
+    uint32_t dest_port;         /* destination TCP port (1–65535) */
+};
+
+struct net_reply_socket_connect {
+    uint32_t ok;                /* NET_OK = connection initiated (async) */
+};
+
+/* ── MSG_NET_SOCKET_BIND (0x210C) — bind to a local port ────────────────── */
+struct net_req_socket_bind {
+    uint32_t sock_handle;
+    uint32_t local_port;        /* 1–65535 */
+};
+
+struct net_reply_socket_bind {
+    uint32_t ok;
+};
+
+/* ── MSG_NET_SOCKET_LISTEN (0x210D) — listen for incoming connections ────── */
+struct net_req_socket_listen {
+    uint32_t sock_handle;       /* must be bound (MSG_NET_SOCKET_BIND first) */
+};
+
+struct net_reply_socket_listen {
+    uint32_t ok;
+};
+
+/* ── MSG_NET_SOCKET_ACCEPT (0x210E) — accept a pending connection ─────────── */
+struct net_req_socket_accept {
+    uint32_t sock_handle;       /* the listening socket handle */
+};
+
+struct net_reply_socket_accept {
+    uint32_t ok;
+    uint32_t new_sock_handle;   /* 0 = no connection pending */
+    uint32_t peer_ip;           /* remote IPv4, big-endian */
+    uint32_t peer_port;
+};
+
+/* ── MSG_NET_SOCKET_SET_OPT (0x210F) — set a socket option ──────────────── */
+struct net_req_socket_set_opt {
+    uint32_t sock_handle;
+    uint32_t option;            /* NET_SOCKOPT_* */
+    uint32_t value;             /* 0 = disable, 1 = enable */
+};
+
+struct net_reply_socket_set_opt {
+    uint32_t ok;
 };

@@ -915,6 +915,14 @@
                        mitigated by per-vNIC slot assignment gated by net_server. -->
     <memory_region name="net_packet_shmem"   size="0x40000" />
 
+    <!-- net_pd_shmem: 256KB net_pd packet I/O and socket data area.
+         16 × 16KB handle slots; layout matches net_server shmem geometry.
+         Write access: net_pd (ring head writes, inbound frame delivery).
+         Read access:  net_pd clients via handle-gated slot assignment.
+         Cap class:    AGENTOS_CAP_NETWORK.
+         Threat:       cross-handle snooping; mitigated by per-handle slot assignment. -->
+    <memory_region name="net_pd_shmem"       size="0x40000" />
+
     <!-- app_manifest_shmem: 16KB key=value application manifests.
          Write access: controller (writes manifests before OP_APP_LAUNCH PPC).
          Read access:  app_manager (parses manifest on launch request).
@@ -1164,6 +1172,46 @@
     <channel>
         <end pd="worker_7"   id="14" pp="true" />
         <end pd="net_server" id="9" />
+    </channel>
+
+    <!--
+      ── net_pd: OS-neutral network device PD (passive, prio 160) ──────────────
+
+      Owns virtio-net hardware via seL4 device frame caps and moves lwIP behind
+      a proper PD boundary.  Guest OSes and agents obtain network handles via
+      MSG_NET_OPEN (raw Ethernet frames) or MSG_NET_SOCKET_OPEN (TCP/UDP sockets).
+      WireGuard overlay integration is marked WG_INTEGRATION_POINT in net_pd.c.
+
+      Multiple virtual NICs per guest slot are supported via the 16-entry handle
+      table.  lwIP drives all TCP/IP processing internally.
+
+      Channel:
+        id=0: controller (CH_NET_PD=68, pp=true) — all client requests routed in
+        id=1: timer notify (10ms lwIP tick from controller, CH_NET_TIMER=59 equiv)
+
+      Shared memory:
+        net_pd_shmem (256KB at 0x5000000, rw): 16 × 16KB handle slots
+        virtio_net_mmio (0x6000000, rw, cached=false): hardware registers
+
+      Note: net_server and net_pd both map virtio_net_mmio for the QEMU prototype.
+      In production, net_pd holds exclusive hardware ownership; net_server would
+      route through net_pd for packet I/O (future migration).
+    -->
+    <protection_domain name="net_pd" priority="160" passive="true">
+        <program_image path="net_pd.elf" />
+        <map mr="net_pd_shmem"      vaddr="0x5000000" perms="rw"
+             setvar_vaddr="net_pd_shmem_vaddr" />
+        <map mr="virtio_net_mmio"   vaddr="0x6000000" perms="rw" cached="false"
+             setvar_vaddr="net_pd_mmio_vaddr" />
+        <map mr="log_drain_rings"   vaddr="0x7000000" perms="rw"
+             setvar_vaddr="log_drain_rings_vaddr" />
+    </protection_domain>
+
+    <!-- Channel 68: controller(id=68, pp=true) → net_pd(id=0)
+         Controller and any authorised client PPC into net_pd for network I/O. -->
+    <channel>
+        <end pd="controller" id="68" pp="true" />
+        <end pd="net_pd"     id="0" />
     </channel>
 
     <!--

@@ -809,6 +809,19 @@ static inline void log_drain_write(uint32_t slot, uint32_t pd_id, const char *ms
 #define MSG_NET_FILTER_ADD              0x2107  /* MR1=handle; filter in shmem → MR0=filter_id */
 #define MSG_NET_FILTER_REMOVE           0x2108  /* MR1=handle MR2=filter_id → MR0=ok */
 
+/* ─── Net PD socket-level opcodes (0x2109–0x210F) ────────────────────────
+ * Socket API backed by lwIP inside net_pd.  Guest OSes and agents use these
+ * to establish TCP/UDP connections without direct lwIP access.
+ * All dispatched by net_pd on CH_NET_PD (68).
+ * ─────────────────────────────────────────────────────────────────────── */
+#define MSG_NET_SOCKET_OPEN             0x2109  /* MR1=proto → MR0=ok MR1=sock_handle MR2=shmem_off */
+#define MSG_NET_SOCKET_CLOSE            0x210A  /* MR1=sock_handle → MR0=ok */
+#define MSG_NET_SOCKET_CONNECT          0x210B  /* MR1=sock_handle MR2=dest_ip MR3=port → MR0=ok */
+#define MSG_NET_SOCKET_BIND             0x210C  /* MR1=sock_handle MR2=port → MR0=ok */
+#define MSG_NET_SOCKET_LISTEN           0x210D  /* MR1=sock_handle → MR0=ok */
+#define MSG_NET_SOCKET_ACCEPT           0x210E  /* MR1=sock_handle → MR0=ok MR1=new_h MR2=ip MR3=port */
+#define MSG_NET_SOCKET_SET_OPT          0x210F  /* MR1=sock_handle MR2=opt MR3=val → MR0=ok */
+
 /* ─── Block device PD opcodes (0x2200) ──────────────────────────────────── */
 #define MSG_BLOCK_OPEN                  0x2201  /* MR1=dev_id MR2=part → MR0=ok MR1=handle */
 #define MSG_BLOCK_CLOSE                 0x2202  /* MR1=handle → MR0=ok */
