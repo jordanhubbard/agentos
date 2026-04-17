@@ -677,6 +677,47 @@
     </channel>
 
     <!-- ═══════════════════════════════════════════════════════════════════
+         USB HOST CONTROLLER PD — RPi5 DWC3 / PCIe XHCI
+
+         RPi5 USB hardware (RP1 chip via PCIe):
+           - DWC3 USB 3.0 OTG core at 0x7e980000 (BCM2711 placeholder)
+           - PCIe XHCI host at 0x7e900000 (BCM2711 placeholder)
+         IMPORTANT: Update phys_addr values once Microkit SDK ships native
+         RPi5 (BCM2712) board support.  The BCM2712 RP1 USB addresses are
+         in the PCIe BAR range (0xfd00000000+) and will differ from BCM2711.
+
+         Build with: make build AGENTOS_USB_PD=1 ARCH_AARCH64=1 BOARD_RPI5=1
+
+         usb_pd exposes MSG_USB_ENUMERATE/LIST/OPEN/CLOSE/CONTROL/BULK_IN/
+         BULK_OUT/STATUS on channel 70 (CH_USB_PD from controller perspective).
+         ═══════════════════════════════════════════════════════════════════ -->
+
+    <!-- BCM2711 DWC3 USB3 OTG: 0x7e980000 (placeholder for BCM2712/RPi5).
+         The DWC3 GSNPSID register at offset 0xC120 identifies the Synopsys
+         USB3 core.  usb_pd probes DWC3 first, then falls back to XHCI probe.
+         Update phys_addr for actual BCM2712 RP1 PCIe BAR address. -->
+    <memory_region name="usb_xhci_mmio" size="0x10000" phys_addr="0x7e980000" />
+
+    <!-- Shared data region: device list + transfer buffers (64KB) -->
+    <memory_region name="usb_shmem" size="0x10000" />
+
+    <protection_domain name="usb_pd" priority="175" passive="true">
+        <program_image path="usb_pd.elf" />
+        <!-- DWC3/XHCI MMIO window — uncached, 64KB for register space -->
+        <map mr="usb_xhci_mmio" vaddr="0x14000000" perms="rw" cached="false"
+             setvar_vaddr="usb_mmio_vaddr" />
+        <!-- Shared shmem: device list + transfer data -->
+        <map mr="usb_shmem" vaddr="0x14100000" perms="rw"
+             setvar_vaddr="usb_shmem_vaddr" />
+    </protection_domain>
+
+    <!-- CH_USB_PD = 70: controller PPCs into usb_pd -->
+    <channel>
+        <end pd="controller" id="70" pp="true" />
+        <end pd="usb_pd"     id="0" />
+    </channel>
+
+    <!-- ═══════════════════════════════════════════════════════════════════
          CONSOLE SHELL — hardware PL011 UART mini-CLI (native RPi5 mode)
 
          console_shell exclusively owns UART0 (PL011 at 0xFE201000, the

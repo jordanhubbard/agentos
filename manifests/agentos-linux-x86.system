@@ -272,4 +272,52 @@
         <end pd="linux_vmm"  id="2" />
     </channel>
 
+    <!-- ═══════════════════════════════════════════════════════════════════
+         USB HOST CONTROLLER PD — QEMU Q35 xhci-pci emulation
+
+         QEMU Q35 xhci-pci device: add -device qemu-xhci,id=usb,addr=0x03
+         to the QEMU command line.  BAR0 is at 0xfe900000 on the Q35 PCIe
+         bus when slot 3 is used.
+
+         Build with: make build AGENTOS_USB_PD=1 ARCH_X86_64=1
+
+         usb_pd exposes MSG_USB_ENUMERATE/LIST/OPEN/CLOSE/CONTROL/BULK_IN/
+         BULK_OUT/STATUS on channel 70 (CH_USB_PD from controller perspective).
+
+         Device class filtering policy is passed as MR2 on MSG_USB_OPEN:
+           USB_POLICY_HID     (1<<0) — keyboard/mouse passthrough
+           USB_POLICY_STORAGE (1<<1) — mass storage passthrough
+         ═══════════════════════════════════════════════════════════════════ -->
+
+    <!-- QEMU Q35 xhci-pci BAR0: 0xfe900000 (Q35 PCIe slot 3, QEMU default).
+         Update phys_addr if your QEMU command line places XHCI at a different
+         BAR address.  Use `info pci` in the QEMU monitor to confirm. -->
+    <memory_region name="usb_xhci_mmio" size="0x1000" phys_addr="0xfe900000" />
+
+    <!-- Shared data region: usb_dev_info_t[] device list + transfer buffers.
+         64KB accommodates USB_MAX_DEVICES (32) usb_dev_info_t entries plus
+         transfer staging area for bulk/control data. -->
+    <memory_region name="usb_shmem" size="0x10000" />
+
+    <protection_domain name="usb_pd" priority="175" passive="true">
+        <program_image path="usb_pd.elf" />
+        <!-- XHCI MMIO window — uncached, device I/O -->
+        <map mr="usb_xhci_mmio" vaddr="0x12000000" perms="rw" cached="false"
+             setvar_vaddr="usb_mmio_vaddr" />
+        <!-- Shared shmem: device list + transfer data (rw for usb_pd) -->
+        <map mr="usb_shmem" vaddr="0x12100000" perms="rw"
+             setvar_vaddr="usb_shmem_vaddr" />
+    </protection_domain>
+
+    <!-- Controller maps usb_shmem read-only for device list inspection -->
+    <!-- To enable: add to controller PD:
+         <map mr="usb_shmem" vaddr="0x13000000" perms="r"
+              setvar_vaddr="usb_shmem_ctrl_vaddr" /> -->
+
+    <!-- CH_USB_PD = 70: controller PPCs into usb_pd -->
+    <channel>
+        <end pd="controller" id="70" pp="true" />
+        <end pd="usb_pd"     id="0" />
+    </channel>
+
 </system>
