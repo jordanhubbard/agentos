@@ -61,8 +61,11 @@
     <memory_region name="freebsd_ram_2"  size="0x20000000" />
     <memory_region name="freebsd_ram_3"  size="0x20000000" />
 
-    <!-- PL011 UART passthrough -->
+    <!-- PL011 UART — owned exclusively by serial_pd -->
     <memory_region name="uart"           size="0x1000"  phys_addr="0x9000000" />
+
+    <!-- Shared data buffer: serial_pd ↔ log_drain (256 bytes, one per caller) -->
+    <memory_region name="serial_shmem"   size="0x1000" />
 
     <!-- GIC vCPU interface passthrough (mapped as CPU interface in guest) -->
     <memory_region name="gic_vcpu"       size="0x1000"  phys_addr="0x8040000" />
@@ -72,17 +75,57 @@
          ═══════════════════════════════════════════════════ -->
 
     <!--
+      serial_pd — generic serial I/O PD.
+
+      Owns the physical PL011 UART exclusively.  All other PDs reach serial
+      I/O via MSG_SERIAL_* IPC calls.  Guest VMMs must proxy UART MMIO faults
+      from their guests to serial_pd rather than passing through the physical
+      device frame.  Priority 180 (above workers; below event_bus).
+    -->
+    <protection_domain name="serial_pd" priority="180" passive="true">
+        <program_image path="serial_pd.elf" />
+        <!-- Physical UART MMIO — serial_pd is the sole owner -->
+        <map mr="uart"
+             vaddr="0x9000000"
+             perms="rw"
+             setvar_vaddr="uart_mmio_vaddr" />
+        <!-- Shared data buffer with log_drain -->
+        <map mr="serial_shmem"
+             vaddr="0xB000000"
+             perms="rw"
+             setvar_vaddr="serial_shmem_vaddr" />
+    </protection_domain>
+
+    <!--
+      log_drain — per-PD log ring buffer drain.
+
+      Drains PD log rings to serial_pd via IPC.  Falls back to
+      microkit_dbg_puts if serial_pd is not yet initialized.
+      Priority 160 (below serial_pd; above workers).
+    -->
+    <protection_domain name="log_drain" priority="160" passive="true">
+        <program_image path="log_drain.elf" />
+        <map mr="serial_shmem"
+             vaddr="0xB000000"
+             perms="rw"
+             setvar_vaddr="serial_shmem_vaddr" />
+    </protection_domain>
+
+    <!--
       FreeBSD VM Multiplexer PD.
-      
+
       Manages 4 independent FreeBSD guests. Each guest has its own:
         - seL4 vCPU (via <virtual_machine> elements below)
         - 512MB RAM region (separate guest physical address space)
         - VirtIO block device backing (for FreeBSD rootfs)
-      
+
       All guests share:
         - UEFI flash (read-only — EDK2 firmware)
-        - Physical UART (console muxed with banner: [VM0] / [VM1] / ...)
         - GIC vCPU interface (vGIC distributes IRQs per-slot)
+
+      NOTE: Physical UART is no longer passed through to guests.
+      freebsd_vmm must emulate UART MMIO faults and proxy via serial_pd IPC.
+      (Implementation tracked in Phase 3 guest binding work.)
     -->
     <protection_domain name="freebsd_vmm" priority="200">
         <program_image path="freebsd_vmm.elf" />
@@ -119,8 +162,8 @@
             <map mr="freebsd_flash"  vaddr="0x00000000"  perms="rw" />
             <!-- 512MB RAM at PA 0x40000000 -->
             <map mr="freebsd_ram_0"  vaddr="0x40000000"  perms="rwx" />
-            <!-- UART passthrough -->
-            <map mr="uart"           vaddr="0x9000000"   perms="rw" />
+            <!-- NOTE: uart removed — serial_pd owns UART exclusively.
+                 freebsd_vmm must emulate UART MMIO and proxy via serial_pd. -->
             <!-- GIC CPU interface (vCPU i/f mapped here) -->
             <map mr="gic_vcpu"       vaddr="0x8010000"   perms="rw" />
         </virtual_machine>
@@ -131,7 +174,6 @@
         <virtual_machine name="freebsd-1" id="1">
             <map mr="freebsd_flash"  vaddr="0x00000000"  perms="rw" />
             <map mr="freebsd_ram_1"  vaddr="0x40000000"  perms="rwx" />
-            <map mr="uart"           vaddr="0x9000000"   perms="rw" />
             <map mr="gic_vcpu"       vaddr="0x8010000"   perms="rw" />
         </virtual_machine>
 
@@ -141,7 +183,6 @@
         <virtual_machine name="freebsd-2" id="2">
             <map mr="freebsd_flash"  vaddr="0x00000000"  perms="rw" />
             <map mr="freebsd_ram_2"  vaddr="0x40000000"  perms="rwx" />
-            <map mr="uart"           vaddr="0x9000000"   perms="rw" />
             <map mr="gic_vcpu"       vaddr="0x8010000"   perms="rw" />
         </virtual_machine>
 
@@ -151,7 +192,6 @@
         <virtual_machine name="freebsd-3" id="3">
             <map mr="freebsd_flash"  vaddr="0x00000000"  perms="rw" />
             <map mr="freebsd_ram_3"  vaddr="0x40000000"  perms="rwx" />
-            <map mr="uart"           vaddr="0x9000000"   perms="rw" />
             <map mr="gic_vcpu"       vaddr="0x8010000"   perms="rw" />
         </virtual_machine>
 
@@ -201,6 +241,25 @@
     <channel>
         <end pd="freebsd_vmm" id="1" />
         <end pd="controller"   id="71" />
+    </channel>
+
+    <!--
+      Channel 67: controller → serial_pd  (CH_SERIAL_PD)
+      Controller PPCs serial_pd to open/write/read serial ports.
+    -->
+    <channel>
+        <end pd="controller" id="67" pp="true" />
+        <end pd="serial_pd"  id="0" />
+    </channel>
+
+    <!--
+      Channel: log_drain → serial_pd
+      log_drain PPCs serial_pd to write drained log lines.
+      Channel 1 on the log_drain side (CH_SERIAL_OUT in log_drain.c).
+    -->
+    <channel>
+        <end pd="log_drain"  id="1" pp="true" />
+        <end pd="serial_pd"  id="2" />
     </channel>
 
 </system>

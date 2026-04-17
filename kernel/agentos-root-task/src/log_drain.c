@@ -23,6 +23,12 @@
 
 #define AGENTOS_DEBUG 1
 #include "agentos.h"
+#include "contracts/serial_contract.h"
+
+/* ─── serial_pd output channel ───────────────────────────────────────── */
+
+/* Channel 1 on the log_drain side connects to serial_pd (see manifest). */
+#define CH_SERIAL_OUT  1u
 
 /* ─── Configuration ───────────────────────────────────────────────────── */
 
@@ -43,9 +49,16 @@ typedef struct {
 
 uintptr_t log_drain_rings_vaddr;
 
+/* Microkit setvar_vaddr — shared with serial_pd for IPC data transfer */
+uintptr_t serial_shmem_vaddr;
+
 static log_ring_state_t ring_states[MAX_LOG_RINGS];
 static uint32_t         ring_count = 0;
 static uint64_t         total_bytes = 0;
+
+/* serial_pd output state — lazily initialized on first write */
+static uint32_t serial_slot  = (uint32_t)-1;
+static bool     serial_ready = false;
 
 /* PD name table — maps pd_id to friendly name */
 static const struct { uint32_t id; const char *name; } pd_names[] = {
@@ -110,8 +123,60 @@ static log_ring_state_t *get_or_create_ring_state(uint32_t pd_id) {
 
 /* ─── UART Output ─────────────────────────────────────────────────────── */
 
-static void uart_puts(const char *s) {
-    microkit_dbg_puts(s);
+/*
+ * Try to open a serial_pd slot on first use.  Falls back to microkit_dbg_puts
+ * if serial_pd is not yet reachable (early boot or missing channel).
+ * serial_shmem_vaddr must be mapped before this succeeds.
+ */
+static void try_serial_init(void)
+{
+    if (serial_ready || !serial_shmem_vaddr) return;
+
+    microkit_mr_set(0, MSG_SERIAL_OPEN);
+    microkit_mr_set(1, 0);   /* port_id 0 — raw output */
+    microkit_msginfo reply = microkit_ppcall(CH_SERIAL_OUT,
+                                              microkit_msginfo_new(0, 2));
+    (void)reply;
+
+    uint32_t ok   = (uint32_t)microkit_mr_get(0);
+    uint32_t slot = (uint32_t)microkit_mr_get(1);
+
+    if (ok == SERIAL_OK) {
+        serial_slot  = slot;
+        serial_ready = true;
+    }
+}
+
+/*
+ * Write a NUL-terminated string to the serial output.
+ * Uses serial_pd IPC when available; falls back to microkit_dbg_puts
+ * causing log_drain to fall back to microkit_dbg_puts.
+ */
+static void uart_puts(const char *s)
+{
+    if (!serial_ready) try_serial_init();
+
+    if (!serial_ready) {
+        microkit_dbg_puts(s);
+        return;
+    }
+
+    /* Copy up to SERIAL_MAX_WRITE_BYTES per call — loop for longer strings */
+    uint8_t *shmem = (uint8_t *)serial_shmem_vaddr;
+    while (*s) {
+        uint32_t n = 0;
+        while (n < SERIAL_MAX_WRITE_BYTES && s[n]) n++;
+
+        for (uint32_t i = 0; i < n; i++)
+            shmem[i] = (uint8_t)s[i];
+
+        microkit_mr_set(0, MSG_SERIAL_WRITE);
+        microkit_mr_set(1, serial_slot);
+        microkit_mr_set(2, n);
+        microkit_ppcall(CH_SERIAL_OUT, microkit_msginfo_new(0, 3));
+
+        s += n;
+    }
 }
 
 static void uart_tagged_line(const char *pd_name, const char *line) {

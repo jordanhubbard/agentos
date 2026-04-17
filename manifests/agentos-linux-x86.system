@@ -115,6 +115,37 @@
         <map mr="swap_code_3" vaddr="0x2000000" perms="r" setvar_vaddr="swap_code_vaddr" />
     </protection_domain>
 
+    <!--
+      serial_pd — generic serial I/O PD.
+
+      On x86_64 the physical UART uses I/O ports (COM1 = 0x3F8), not MMIO.
+      uart_mmio_vaddr is not set on this platform; serial_pd operates in
+      poll-free / dbg_puts fallback mode.  When x86 MMIO UART support is
+      added, map the appropriate physical region and set uart_mmio_vaddr.
+    -->
+    <protection_domain name="serial_pd" priority="180" passive="true">
+        <program_image path="serial_pd.elf" />
+        <!-- No uart MMIO on x86 — uart_mmio_vaddr stays 0 -->
+        <map mr="serial_shmem"
+             vaddr="0xB000000"
+             perms="rw"
+             setvar_vaddr="serial_shmem_vaddr" />
+    </protection_domain>
+
+    <!--
+      log_drain — per-PD log ring buffer drain.
+
+      Drains PD log rings to serial_pd via IPC.  Falls back to
+      microkit_dbg_puts if serial_pd is not yet initialized.
+    -->
+    <protection_domain name="log_drain" priority="160" passive="true">
+        <program_image path="log_drain.elf" />
+        <map mr="serial_shmem"
+             vaddr="0xB000000"
+             perms="rw"
+             setvar_vaddr="serial_shmem_vaddr" />
+    </protection_domain>
+
     <!-- ═══════════════════════════════════════════════════════════════════
          LINUX VMM STUB — x86_64
 
@@ -138,6 +169,8 @@
     <memory_region name="swap_code_2"    size="0x400000" />
     <memory_region name="swap_code_3"    size="0x400000" />
     <memory_region name="vibe_staging"   size="0x400000" />
+    <!-- Shared data buffer: serial_pd ↔ log_drain (256-byte I/O window) -->
+    <memory_region name="serial_shmem"   size="0x1000" />
 
     <!-- ═══════════════════════════════════════════════════════════════════
          CHANNELS
@@ -318,6 +351,25 @@
     <channel>
         <end pd="controller" id="70" pp="true" />
         <end pd="usb_pd"     id="0" />
+    </channel>
+
+    <!--
+      Channel 67: controller → serial_pd  (CH_SERIAL_PD)
+      Controller PPCs serial_pd to open/write/read serial ports.
+    -->
+    <channel>
+        <end pd="controller" id="67" pp="true" />
+        <end pd="serial_pd"  id="0" />
+    </channel>
+
+    <!--
+      Channel: log_drain → serial_pd
+      log_drain PPCs serial_pd to write drained log lines.
+      Channel 1 on the log_drain side (CH_SERIAL_OUT in log_drain.c).
+    -->
+    <channel>
+        <end pd="log_drain"  id="1" pp="true" />
+        <end pd="serial_pd"  id="2" />
     </channel>
 
 </system>
