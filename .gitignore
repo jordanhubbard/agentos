@@ -46,3 +46,6 @@ build-*/
 node_modules/
 console/package-lock.json
 .claude/
+
+# Gas Town runtime artifacts (polecat context, not part of project)
+CLAUDE.md
