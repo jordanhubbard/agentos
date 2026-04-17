@@ -67,6 +67,10 @@
         <map mr="http_req_shmem"     vaddr="0xF000000"  perms="r"  setvar_vaddr="http_req_shmem_ctrl_vaddr" />
         <!-- App manifest shmem: controller writes manifests for AppManager -->
         <map mr="app_manifest_shmem" vaddr="0x10000000" perms="rw" setvar_vaddr="app_manifest_shmem_ctrl_vaddr" />
+        <!-- block_shmem rw: controller writes data before MSG_BLOCK_WRITE,
+             reads data after MSG_BLOCK_READ -->
+        <map mr="block_shmem" vaddr="0x3500000" perms="rw" cached="true"
+             setvar_vaddr="block_shmem_ctrl_vaddr" />
     </protection_domain>
 
     <!-- EventBus: passive pub/sub backbone -->
@@ -435,6 +439,7 @@
 
     <memory_region name="vfs_io_shmem"       size="0x20000" />
     <memory_region name="blk_dma_shmem"      size="0x8000"  />
+    <memory_region name="block_shmem"        size="0x10000" />
     <!-- QEMU virt MMIO: virtio-net bus.0 (aarch64: 0xa000000, 4KB page-aligned)
          Note: virtio-blk bus.1 is at 0xa000200 (same page) — cannot be mapped
          separately with page granularity; virtio_blk PD returns BLK_ERR_NODEV. -->
@@ -766,6 +771,32 @@
     <channel>
         <end pd="console_shell" id="1" pp="true" />
         <end pd="controller"    id="42" />
+    </channel>
+
+    <!--
+      block_pd: OS-neutral block device service PD (passive, prio 165)
+      Channels:
+        id=0: callers PPC in (MSG_BLOCK_*)
+        id=1: block_pd PPCs out to virtio_blk (OP_BLK_*)
+    -->
+    <protection_domain name="block_pd" priority="165" passive="true">
+        <program_image path="block_pd.elf" />
+        <map mr="block_shmem"  vaddr="0x5000000" perms="rw" cached="true"
+             setvar_vaddr="block_shmem_vaddr" />
+        <map mr="blk_dma_shmem" vaddr="0x6000000" perms="rw" cached="false"
+             setvar_vaddr="blk_dma_shmem_vaddr" />
+    </protection_domain>
+
+    <!-- Channel CH_BLOCK_PD (69): controller → block_pd -->
+    <channel>
+        <end pd="controller" id="69" pp="true" />
+        <end pd="block_pd"   id="0" />
+    </channel>
+
+    <!-- Channel: block_pd → virtio_blk (block_pd forwards I/O via OP_BLK_*) -->
+    <channel>
+        <end pd="block_pd"   id="1" pp="true" />
+        <end pd="virtio_blk" id="3" />
     </channel>
 
 </system>

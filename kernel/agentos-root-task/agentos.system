@@ -89,6 +89,10 @@
         <!-- ext2_shmem r-only: controller reads stat/readdir results from ext2fs -->
         <map mr="ext2_shmem" vaddr="0x3400000" perms="r" cached="true"
              setvar_vaddr="ext2_shmem_ctrl_vaddr" />
+        <!-- block_shmem rw: controller writes data before MSG_BLOCK_WRITE,
+             reads data after MSG_BLOCK_READ -->
+        <map mr="block_shmem" vaddr="0x3500000" perms="rw" cached="true"
+             setvar_vaddr="block_shmem_ctrl_vaddr" />
     </protection_domain>
     
     <!-- EventBus: passive pub/sub backbone -->
@@ -866,13 +870,27 @@
                        mitigated by vfs_server path validation + caller capability check. -->
     <memory_region name="vfs_io_shmem"       size="0x20000" />
 
-    <!-- blk_dma_shmem: 32KB DMA buffer shared between vfs_server and virtio_blk.
-         Write access: vfs_server (writes block I/O requests); virtio_blk (DMA fills).
-         Read access:  vfs_server (reads DMA results); virtio_blk (reads request headers).
+    <!-- blk_dma_shmem: 32KB DMA buffer shared between vfs_server, block_pd, and virtio_blk.
+         Write access: vfs_server (writes block I/O requests); virtio_blk (DMA fills);
+                       block_pd (stages data for forwarded I/O).
+         Read access:  vfs_server (reads DMA results); virtio_blk (reads request headers);
+                       block_pd (reads DMA results from virtio_blk).
          Cap class:    AGENTOS_CAP_OBJECTSTORE (block device is a storage backend).
          Threat:       rogue PD corrupting DMA buffer to inject block data;
-                       mitigated by restricted mapping — only vfs_server and virtio_blk hold rw. -->
+                       mitigated by restricted mapping — only vfs_server, block_pd,
+                       and virtio_blk hold rw mappings.
+         Safety note:  all three PDs are passive; seL4 scheduler serialises execution
+                       so concurrent DMA access is impossible. -->
     <memory_region name="blk_dma_shmem"      size="0x8000"  />
+
+    <!-- block_shmem: 64KB data buffer shared between block_pd and its callers.
+         Write access: callers write sector data here before MSG_BLOCK_WRITE;
+                       block_pd writes sector data here after MSG_BLOCK_READ.
+         Read access:  callers read sector data here after MSG_BLOCK_READ.
+         Cap class:    AGENTOS_CAP_OBJECTSTORE (block I/O requires storage capability).
+         Threat:       cross-guest data exfiltration via shared buffer; mitigated by
+                       block_pd handle ownership enforcement (per-channel validation). -->
+    <memory_region name="block_shmem"        size="0x10000" />
 
     <!-- virtio_net_mmio: 4KB MMIO for virtio-net (riscv64: 0x10001000, IRQ 1).
          Write access: net_server only (device configuration + queue doorbell).
@@ -1511,6 +1529,56 @@
     <channel>
         <end pd="controller"  id="43" pp="true" />
         <end pd="term_server" id="0" />
+    </channel>
+
+    <!--
+      ══════════════════════════════════════════════════════════════════
+      block_pd: OS-neutral block device service PD (passive, prio 165)
+
+      Abstracts virtio_blk behind a PD boundary.  Exposes a partition-level
+      block I/O service (MSG_BLOCK_*) to guest OSes and other consumers.
+      VirtIO transport is an internal implementation detail.
+
+      Per-guest capability enforcement: each MSG_BLOCK_OPEN allocates a
+      handle bound to the calling channel.  Handles are not transferable;
+      a guest PD cannot access another guest's handle.
+
+      Channel map (from block_pd's perspective):
+        id=0: callers PPC in  (MSG_BLOCK_* requests)
+        id=1: block_pd PPCs out to virtio_blk (OP_BLK_*)
+
+      Shared memory:
+        block_shmem (64KB): data exchange with callers
+          block_pd writes read results here; callers write write data here.
+        blk_dma_shmem (32KB): DMA staging for virtio_blk
+          Shared physical region — safe because all PDs are passive.
+      ══════════════════════════════════════════════════════════════════
+    -->
+
+    <protection_domain name="block_pd" priority="165" passive="true">
+        <program_image path="block_pd.elf" />
+        <!-- block_shmem rw: read/write sector data on behalf of callers -->
+        <map mr="block_shmem"  vaddr="0x5000000" perms="rw" cached="true"
+             setvar_vaddr="block_shmem_vaddr" />
+        <!-- blk_dma_shmem rw: DMA staging region shared with virtio_blk
+             fixed_mr constraint: vaddr must equal paddr for virtio DMA correctness;
+             same physical region as vfs_server and ext2fs mappings. -->
+        <map mr="blk_dma_shmem" vaddr="0x6000000" perms="rw" cached="false"
+             setvar_vaddr="blk_dma_shmem_vaddr" />
+    </protection_domain>
+
+    <!-- Channel CH_BLOCK_PD (69): controller(id=69, pp=true) → block_pd(id=0)
+         Controller PPCs into block_pd for MSG_BLOCK_* operations. -->
+    <channel>
+        <end pd="controller" id="69" pp="true" />
+        <end pd="block_pd"   id="0" />
+    </channel>
+
+    <!-- Channel: block_pd(id=1, pp=true) → virtio_blk(id=3)
+         block_pd PPCs into virtio_blk to forward block I/O (OP_BLK_*). -->
+    <channel>
+        <end pd="block_pd"   id="1" pp="true" />
+        <end pd="virtio_blk" id="3" />
     </channel>
 
 </system>
