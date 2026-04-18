@@ -1,8 +1,12 @@
-# agentctl — agentOS Interactive Launcher
+# agentctl — agentOS Interactive Launcher & CC Client
 
 `agentctl` replaces the manual `make demo TARGET_ARCH=... BOARD=... GUEST_OS=...`
 workflow with an interactive ncurses TUI that guides you from QEMU selection to
 boot in a few keystrokes.
+
+**Phase 5b:** The post-boot mode (`-s`) is now a full reference consumer of the
+`cc_contract.h` API.  All post-boot operations route exclusively through `cc_pd`
+via `MSG_CC_*` opcodes — no direct calls to service PDs.
 
 ## Quick start
 
@@ -68,31 +72,43 @@ Toggle **GDB stub** to append `-s -S` to the QEMU command. QEMU will:
 
 Connect with: `gdb-multiarch` or `lldb` → `gdbremote connect :1234`
 
-## Post-boot session manager
+## Post-boot CC client
 
 ```bash
 ./tools/agentctl/agentctl -s
 ./tools/agentctl/agentctl --sessions
 ```
 
-Connects to the QEMU monitor socket at `build/qemu_monitor.sock` and provides
-an interface to manage agentOS console sessions via the `console_mux` PD.
+Connects to the CC PD bridge socket at `build/cc_bridge.sock` and provides a
+full management interface using `cc_contract.h` MSG_CC_* opcodes exclusively.
+`cc_pd` relays every call to the appropriate service PD internally.
 
-**Note:** The full IPC bridge requires the controller serial port to be
-forwarded. If the socket is not found, agentctl shows instructions for
-starting agentOS first.
+### CC client screens
 
-### Controller commands (over 2nd serial port)
+| Screen | Opcodes exercised |
+|--------|------------------|
+| **Guests** | `MSG_CC_LIST_GUESTS`, `MSG_CC_GUEST_STATUS` |
+| **Guest detail** | `MSG_CC_SNAPSHOT`, `MSG_CC_RESTORE`, `MSG_CC_ATTACH_FRAMEBUFFER`, `MSG_CC_SEND_INPUT` |
+| **Devices** | `MSG_CC_LIST_DEVICES`, `MSG_CC_DEVICE_STATUS` |
+| **Framebuffer** | `MSG_CC_ATTACH_FRAMEBUFFER` + `EVENT_FB_FRAME_READY` events |
+| **Log Stream** | `MSG_CC_LOG_STREAM` (live drain of all log ring slots) |
+| **Polecats** | `MSG_CC_LIST_POLECATS` (agent pool status) |
+| **Sessions** | `MSG_CC_LIST`, `MSG_CC_STATUS` |
 
-| Command | Effect |
-|---------|--------|
-| `list` | List active console sessions (OP_CONSOLE_LIST) |
-| `attach <pd_id>` | Attach to PD console (OP_CONSOLE_ATTACH) |
-| `detach` | Detach current session (OP_CONSOLE_DETACH) |
-| `mode <0\|1\|2>` | Set console mode (OP_CONSOLE_MODE) |
-| `scroll <n>` | Scroll n lines (OP_CONSOLE_SCROLL) |
-| `status` | Show console_mux status (OP_CONSOLE_STATUS) |
-| `broadcast <msg>` | Send message to all sessions |
+Session lifecycle: `MSG_CC_CONNECT` on entry, `MSG_CC_DISCONNECT` on exit.
+
+### Wire protocol
+
+Binary framing over Unix socket (`build/cc_bridge.sock`):
+
+```
+Request:  magic(u32) opcode(u32) mr[3](u32) shmem_len(u32) [shmem_data]
+Response: magic(u32) mr[4](u32) shmem_len(u32) [shmem_data]
+Event:    magic_event(u32) event_type(u32) data[32]
+```
+
+Maps directly to the seL4 Microkit MR layout used by `cc_pd`.
+Server-pushed framebuffer frame-ready events use `CC_WIRE_EVENT_MAGIC` framing.
 
 ## Building
 
@@ -125,6 +141,15 @@ beyond ncurses. It uses:
 - `initscr()` / `endwin()` for ncurses lifecycle
 - `execvp()` to replace itself with the QEMU process (no fork needed)
 - `stat()` to check for QEMU binaries, `/dev/kvm`, and guest ELFs
+- `poll()` for non-blocking event receipt (framebuffer frame-ready events)
 
 The pre-boot menu is a simple state machine over `SCREEN_ARCH → SCREEN_BOARD →
 SCREEN_GUEST → SCREEN_OPTIONS → SCREEN_CONFIRM → launch`.
+
+The post-boot CC client is a `cc_client_t` over a Unix socket that sends
+`cc_wire_req_t` frames and receives `cc_wire_resp_t` / `cc_wire_event_t` frames,
+mapping directly to the `cc_contract.h` MR layout.
+
+All CC contract types (`cc_guest_info_t`, `cc_input_event_t`, etc.) and opcodes
+(`MSG_CC_*`) are defined inline in `agentctl.c` — `cc_contract.h` depends on
+seL4-specific headers unavailable on the host build.
