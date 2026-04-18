@@ -33,7 +33,6 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <string.h>
-#include <assert.h>
 
 /* ─── Host stubs ─────────────────────────────────────────────────────────── */
 
@@ -152,11 +151,6 @@ static int cap_policy_register_ring0_service(uint32_t fc, uint32_t pd, uint32_t 
     g_ring0_registry[fc].registered = true;
     return 0;
 }
-static void cap_policy_unregister_ring0_service(uint32_t fc) {
-    if (fc < 1 || fc > CAP_POLICY_FUNC_CLASS_MAX) return;
-    g_ring0_registry[fc] = (ring0_svc_entry_t){0};
-}
-
 /* ─── VibeOS context table (mirrors vibe_engine.c) ───────────────────────── */
 
 #define MAX_VIBEOS_INSTANCES  4
@@ -678,13 +672,10 @@ static void test_non_escalation_normal_handle_allowed(void)
 static void test_non_escalation_all_known_ring0_channels(void)
 {
     TEST("non_escalation: all known ring-0 channel IDs are rejected");
-    reset_state();
-
-    uint32_t h = do_create(VIBEOS_TYPE_LINUX, VIBEOS_ARCH_X86_64, 128);
 
     for (uint32_t i = 0; i < RING0_CH_N; i++) {
         reset_state();
-        h = do_create(VIBEOS_TYPE_LINUX, VIBEOS_ARCH_X86_64, 128);
+        uint32_t h = do_create(VIBEOS_TYPE_LINUX, VIBEOS_ARCH_X86_64, 128);
 
         microkit_mr_set(1, h);
         microkit_mr_set(2, 0);                   /* dev_type SERIAL */
