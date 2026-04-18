@@ -873,7 +873,16 @@ static inline void log_drain_write(uint32_t slot, uint32_t pd_id, const char *ms
 #define MSG_CC_RECV                     0x2604  /* MR1=session_id MR2=max; data in shmem → MR0=len */
 #define MSG_CC_STATUS                   0x2605  /* MR1=session_id → MR0=state MR1=pending */
 #define MSG_CC_LIST                     0x2606  /* → MR0=count; session_info_t[] in shmem */
-#define MSG_CC_ATTACH_FRAMEBUFFER       0x2607  /* MR1=fb_handle → MR0=ok; subscribe to FRAME_READY */
+#define MSG_CC_LIST_GUESTS              0x2607  /* → MR0=count; cc_guest_info_t[] in shmem */
+#define MSG_CC_LIST_DEVICES             0x2608  /* MR1=dev_type → MR0=count; cc_device_info_t[] in shmem */
+#define MSG_CC_LIST_POLECATS            0x2609  /* → MR0=total MR1=busy MR2=idle */
+#define MSG_CC_GUEST_STATUS             0x260A  /* MR1=guest_handle → MR0=ok; cc_guest_status_t in shmem */
+#define MSG_CC_DEVICE_STATUS            0x260B  /* MR1=dev_type MR2=dev_handle → MR0=ok; status in shmem */
+#define MSG_CC_ATTACH_FRAMEBUFFER       0x260C  /* MR1=guest_handle MR2=fb_handle → MR0=ok */
+#define MSG_CC_SEND_INPUT               0x260D  /* MR1=guest_handle; cc_input_event_t in shmem → MR0=ok */
+#define MSG_CC_SNAPSHOT                 0x260E  /* MR1=guest_handle → MR0=ok MR1=snap_lo MR2=snap_hi */
+#define MSG_CC_RESTORE                  0x260F  /* MR1=guest_handle MR2=snap_lo MR3=snap_hi → MR0=ok */
+#define MSG_CC_LOG_STREAM               0x2610  /* MR1=slot MR2=pd_id → MR0=ok MR1=bytes_drained */
 
 /* ─── Guest OS lifecycle opcodes (0x2A00) ───────────────────────────────── */
 #define MSG_GUEST_CREATE                0x2A01  /* guest_create_req in shmem → MR0=ok MR1=guest_id */
@@ -883,6 +892,7 @@ static inline void log_drain_write(uint32_t slot, uint32_t pd_id, const char *ms
 #define MSG_GUEST_SUSPEND               0x2A05  /* MR1=guest_id → MR0=ok */
 #define MSG_GUEST_RESUME                0x2A06  /* MR1=guest_id → MR0=ok */
 #define MSG_GUEST_DESTROY               0x2A07  /* MR1=guest_id → MR0=ok */
+#define MSG_GUEST_SEND_INPUT            0x2A08  /* MR1=guest_id; cc_input_event_t in shmem → MR0=ok */
 
 /* ─── VMM-to-root-task internal protocol (0x2B00) ───────────────────────── */
 #define MSG_VMM_REGISTER                0x2B01  /* vmm_register_req in shmem → MR0=ok MR1=vmm_token */

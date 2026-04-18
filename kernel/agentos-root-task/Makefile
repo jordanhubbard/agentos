@@ -121,6 +121,8 @@ PD_EXEC_SERVER_SRCS      := src/exec_server.c src/m3_bare_metal.c src/log.c
 PD_TERM_SERVER_SRCS      := src/term_server.c src/m3_bare_metal.c src/log.c
 PD_CONSOLESHELL_SRCS     := src/console_shell.c src/m3_bare_metal.c src/log.c
 PD_BLOCK_PD_SRCS         := src/block_pd.c src/m3_bare_metal.c src/log.c
+PD_FB_PD_SRCS            := src/framebuffer_pd.c src/m3_bare_metal.c src/log.c
+PD_CC_PD_SRCS            := src/cc_pd.c src/m3_bare_metal.c src/log.c
 
 # wasm3 vendored sources (core interpreter only)
 WASM3_SRCS := wasm3/m3_core.c wasm3/m3_env.c wasm3/m3_code.c wasm3/m3_compile.c \
@@ -165,8 +167,10 @@ TERM_SERVER_OBJS      := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_TERM_SERVER_
 WASM3_OBJS            := $(patsubst wasm3/%.c, $(BUILD_DIR)/wasm3_%.o, $(WASM3_SRCS))
 CONSOLESHELL_OBJS     := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_CONSOLESHELL_SRCS))
 BLOCK_PD_OBJS         := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_BLOCK_PD_SRCS))
+FB_PD_OBJS            := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_FB_PD_SRCS))
+CC_PD_OBJS            := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_CC_PD_SRCS))
 
-IMAGES := controller.elf event_bus.elf init_agent.elf worker.elf agentfs.elf vibe_engine.elf log_drain.elf serial_pd.elf swap_slot.elf mem_profiler.elf net_isolator.elf perf_counters.elf time_partition.elf trace_recorder.elf nameserver.elf virtio_blk.elf vfs_server.elf spawn_server.elf app_slot.elf net_server.elf net_pd.elf js_runtime.elf wg_net.elf app_manager.elf http_svc.elf vm_manager.elf auth_server.elf ext2fs.elf proc_server.elf vm_snapshot.elf pflocal_server.elf exec_server.elf term_server.elf console_shell.elf block_pd.elf
+IMAGES := controller.elf event_bus.elf init_agent.elf worker.elf agentfs.elf vibe_engine.elf log_drain.elf serial_pd.elf swap_slot.elf mem_profiler.elf net_isolator.elf perf_counters.elf time_partition.elf trace_recorder.elf nameserver.elf virtio_blk.elf vfs_server.elf spawn_server.elf app_slot.elf net_server.elf net_pd.elf js_runtime.elf wg_net.elf app_manager.elf http_svc.elf vm_manager.elf auth_server.elf ext2fs.elf proc_server.elf vm_snapshot.elf pflocal_server.elf exec_server.elf term_server.elf console_shell.elf block_pd.elf framebuffer_pd.elf cc_pd.elf
 
 # Optional: periodic WASM slot snapshot scheduler
 ifdef AGENTOS_SNAPSHOT_SCHED
@@ -359,6 +363,12 @@ $(BUILD_DIR)/console_shell.elf: $(CONSOLESHELL_OBJS)
 	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
 
 $(BUILD_DIR)/block_pd.elf: $(BLOCK_PD_OBJS)
+	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
+
+$(BUILD_DIR)/framebuffer_pd.elf: $(FB_PD_OBJS)
+	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
+
+$(BUILD_DIR)/cc_pd.elf: $(CC_PD_OBJS)
 	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
 
 # ─── Linux VMM (AArch64 only) ─────────────────────────────────────────────
