@@ -147,12 +147,29 @@
     </protection_domain>
 
     <!-- ═══════════════════════════════════════════════════════════════════
-         LINUX VMM STUB — x86_64
+         LINUX VMM — x86_64 compliance skeleton (guest_contract.h Phase 3d)
 
-         Priority 254 (highest) to match aarch64 linux_vmm placement.
-         Stub logs "x86_64 not yet supported by libvmm" and loops passively.
-         No virtual_machine or IRQ elements — stub does not run a guest.
-         Channel 50 is reserved for future use when libvmm gains x86 support.
+         Priority 254 to match AArch64 linux_vmm placement.
+         On x86_64, libvmm does not yet provide VMX hypervisor support.
+         The PD starts, logs "x86_64 not yet supported", and loops passively.
+
+         guest_contract.h compliance skeleton is present in linux_vmm.c:
+           - linux_vmm_contract.h included (vmm_contract.h + guest_contract.h)
+           - Binding protocol stubs for MSG_VMM_REGISTER, MSG_SERIAL_OPEN,
+             MSG_GUEST_BIND_DEVICE, and EVENT_GUEST_READY are in place.
+
+         CPL3 Enforcement Requirement (x86_64):
+           When x86_64 VMM support is added, Linux guest vCPUs MUST operate in
+           VMX non-root mode with EPT (Extended Page Tables) active.  The guest
+           kernel runs at guest CPL 0 (non-root) — it MUST NOT access host CPL 0.
+           VMEXITs must be handled for: CPUID, MSR read/write, I/O port access,
+           EPT violations, and all hardware MMIO accesses.  Physical devices
+           (UART, NIC, disk) must be accessed via service PDs through
+           MSG_GUEST_BIND_DEVICE — never via direct MMIO passthrough to the guest.
+
+         Channel 50: controller bridge (active when VMM is implemented).
+         Channel 51: reserved for linux_vmm → serial_pd UART proxy.
+                     Wire to serial_pd when x86_64 VMM support is added.
          ═══════════════════════════════════════════════════════════════════ -->
     <protection_domain name="linux_vmm" priority="254">
         <program_image path="linux_vmm.elf" />
@@ -297,8 +314,9 @@
     </channel>
 
     <!--
-      Channel 50: controller <-> linux_vmm (reserved for future x86 VMM).
-      Stub PD does not process messages on this channel.
+      Channel 50: controller <-> linux_vmm (bridge; stub does not process messages).
+      Channel 51 (future): linux_vmm → serial_pd UART proxy — wire when x86_64
+                           VMM support is added to libvmm (CPL3 enforcement required).
     -->
     <channel>
         <end pd="controller" id="50" />

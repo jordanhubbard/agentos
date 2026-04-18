@@ -32,8 +32,9 @@
     40: controller <-> vibe_engine  (swap approval notification)
     41: init_agent <-> vibe_engine  (propose/validate/execute swaps)
 
-  Linux VMM channels (new):
+  Linux VMM channels:
     50: controller <-> linux_vmm    (agent-to-linux bridge commands)
+    51: linux_vmm  -> serial_pd     (UART proxy; guest_contract.h compliance)
 -->
 <system>
     <!-- ═══════════════════════════════════════════════════════════════════
@@ -291,11 +292,43 @@
     <!-- Guest RAM: 256MB with 2MB large pages for efficiency -->
     <memory_region name="guest_ram" size="0x10_000_000" page_size="0x200_000" />
 
-    <!-- UART: PL011 serial device, passed through to guest for direct I/O -->
-    <memory_region name="serial" size="0x1_000" phys_addr="0x9000000" />
+    <!--
+      PL011 UART — owned exclusively by serial_pd (guest_contract.h compliance).
+      The Linux guest NO LONGER maps this region directly.  Guest UART MMIO
+      accesses fault into linux_vmm, which proxies them via serial_pd IPC.
+    -->
+    <memory_region name="serial"       size="0x1_000" phys_addr="0x9000000" />
+
+    <!-- Shared data: serial_pd ↔ linux_vmm (UART proxy buffer) -->
+    <memory_region name="serial_shmem" size="0x1_000" />
 
     <!-- GIC vCPU interface: hardware virtualisation of interrupt controller -->
     <memory_region name="gic_vcpu" size="0x1_000" phys_addr="0x8040000" />
+
+    <!--
+      serial_pd — generic serial I/O PD (guest_contract.h Phase 3d).
+
+      Owns PL011 UART exclusively; all other PDs reach serial I/O via IPC.
+      Takes over IRQ 33 from linux_vmm.  linux_vmm proxies guest UART MMIO
+      faults through MSG_SERIAL_WRITE/READ on SERIAL_PD_CH (channel 51).
+    -->
+    <protection_domain name="serial_pd" priority="180" passive="true">
+        <program_image path="serial_pd.elf" />
+        <!-- Physical UART MMIO — serial_pd is the sole owner -->
+        <map mr="serial"       vaddr="0x9000000" perms="rw"
+             setvar_vaddr="uart_mmio_vaddr" />
+        <!-- Shared data buffer with linux_vmm UART proxy -->
+        <map mr="serial_shmem" vaddr="0xB000000" perms="rw"
+             setvar_vaddr="serial_shmem_vaddr" />
+        <!-- PL011 UART IRQ (SPI 1 + 32 = 33) — moved from linux_vmm -->
+        <irq irq="33" id="1" />
+    </protection_domain>
+
+    <!-- Channel 67: controller → serial_pd (CH_SERIAL_PD) -->
+    <channel>
+        <end pd="controller" id="67" pp="true" />
+        <end pd="serial_pd"  id="0" />
+    </channel>
 
     <protection_domain name="linux_vmm" priority="254">
         <program_image path="linux_vmm.elf" />
@@ -304,29 +337,48 @@
             (0x40000000). This is required by libvmm's current implementation.
         -->
         <map mr="guest_ram" vaddr="0x40000000" perms="rw" setvar_vaddr="guest_ram_vaddr" />
+        <!--
+            serial_shmem mapped for UART proxy (guest_contract.h §3.1).
+            linux_vmm writes guest TX bytes here; serial_pd drains to hardware.
+            Mapped at a different vaddr from serial_pd to avoid conflicts.
+        -->
+        <!-- vaddr must not overlap serial_pd's 0xB000000 mapping (4KB region) -->
+        <map mr="serial_shmem" vaddr="0xB100000" perms="rw"
+             setvar_vaddr="serial_shmem_linux_vaddr" />
 
         <virtual_machine name="linux">
             <vcpu id="0" />
             <!-- Guest sees its RAM at 0x40000000 (matches DTS) -->
             <map mr="guest_ram" vaddr="0x40000000" perms="rwx" />
-            <!-- Direct UART passthrough: guest can read/write serial without trapping -->
-            <map mr="serial" vaddr="0x9000000" perms="rw" cached="false" />
+            <!--
+                UART removed — serial_pd owns PL011 exclusively (guest_contract.h).
+                Guest UART MMIO accesses at 0x9000000 trap to linux_vmm.fault()
+                which proxies data to serial_pd via MSG_SERIAL_WRITE/READ.
+            -->
             <!-- GIC vCPU interface mapped as if it were the real CPU interface -->
             <map mr="gic_vcpu" vaddr="0x8010000" perms="rw" cached="false" />
         </virtual_machine>
-
         <!--
-            PL011 UART IRQ (SPI 1 + 32 = 33).
-            Delivered to VMM as notification on channel 1,
-            VMM injects it as virtual IRQ into the guest.
+            UART IRQ removed — serial_pd owns IRQ 33.  linux_vmm no longer
+            receives hardware UART notifications; serial_pd delivers data
+            to guests via the serial_shmem proxy buffer (SERIAL_PD_CH=1).
         -->
-        <irq irq="33" id="1" />
     </protection_domain>
 
     <!-- Channel 50: controller <-> linux_vmm (agent-to-linux bridge) -->
     <channel>
         <end pd="controller" id="50" />
         <end pd="linux_vmm"  id="2" />
+    </channel>
+
+    <!--
+      Channel 51: linux_vmm → serial_pd (UART proxy; guest_contract.h compliance).
+      linux_vmm sends MSG_SERIAL_OPEN at init, then MSG_SERIAL_WRITE/READ to
+      proxy guest UART MMIO accesses through serial_pd.
+    -->
+    <channel>
+        <end pd="linux_vmm"  id="1" pp="true" />
+        <end pd="serial_pd"  id="3" />
     </channel>
 
     <!-- ═══════════════════════════════════════════════════════════════════
