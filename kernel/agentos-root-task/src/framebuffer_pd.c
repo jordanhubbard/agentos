@@ -309,12 +309,6 @@ static fb_error_t remote_stub_resize(uint32_t slot, uint32_t w, uint32_t h)
 
 static void stub_destroy(uint32_t slot) { (void)slot; }
 
-static const fb_backend_ops_t hw_direct_ops = {
-    .on_write   = stub_write,
-    .on_flip    = stub_flip,
-    .on_resize  = stub_resize,
-    .on_destroy = stub_destroy,
-};
 
 /* ─── REMOTE_API backend (Phase 4a-remote, ag-tz2) ──────────────────────── */
 

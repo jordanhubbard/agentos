@@ -89,7 +89,7 @@ PD_INITAGENT_SRCS := src/init_agent.c src/m3_bare_metal.c src/log.c
 PD_WORKER_SRCS    := src/worker.c src/m3_bare_metal.c src/log.c
 # agentfs needs m3_bare_metal for memset/sqrtf (no wasm3 headers needed)
 PD_AGENTFS_SRCS     := src/agentfs.c src/m3_bare_metal.c src/log.c
-PD_VIBEENGINE_SRCS   := src/vibe_engine.c src/m3_bare_metal.c src/log.c
+PD_VIBEENGINE_SRCS   := src/vibe_engine.c src/cap_policy.c src/m3_bare_metal.c src/log.c
 PD_SWAPSLOT_SRCS     := src/swap_slot.c src/wasm3_host.c src/m3_bare_metal.c src/log.c
 PD_LOG_DRAIN_SRCS    := src/log_drain.c src/m3_bare_metal.c src/log.c
 PD_SERIAL_PD_SRCS    := src/serial_pd.c src/m3_bare_metal.c src/log.c
@@ -123,6 +123,7 @@ PD_CONSOLESHELL_SRCS     := src/console_shell.c src/m3_bare_metal.c src/log.c
 PD_BLOCK_PD_SRCS         := src/block_pd.c src/m3_bare_metal.c src/log.c
 PD_FB_PD_SRCS            := src/framebuffer_pd.c src/m3_bare_metal.c src/log.c
 PD_CC_PD_SRCS            := src/cc_pd.c src/m3_bare_metal.c src/log.c
+PD_GPU_SCHED_SRCS        := src/gpu_sched.c src/gpu_shmem.c src/m3_bare_metal.c src/log.c
 
 # wasm3 vendored sources (core interpreter only)
 WASM3_SRCS := wasm3/m3_core.c wasm3/m3_env.c wasm3/m3_code.c wasm3/m3_compile.c \
@@ -169,8 +170,9 @@ CONSOLESHELL_OBJS     := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_CONSOLESHELL
 BLOCK_PD_OBJS         := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_BLOCK_PD_SRCS))
 FB_PD_OBJS            := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_FB_PD_SRCS))
 CC_PD_OBJS            := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_CC_PD_SRCS))
+GPU_SCHED_OBJS        := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_GPU_SCHED_SRCS))
 
-IMAGES := controller.elf event_bus.elf init_agent.elf worker.elf agentfs.elf vibe_engine.elf log_drain.elf serial_pd.elf swap_slot.elf mem_profiler.elf net_isolator.elf perf_counters.elf time_partition.elf trace_recorder.elf nameserver.elf virtio_blk.elf vfs_server.elf spawn_server.elf app_slot.elf net_server.elf net_pd.elf js_runtime.elf wg_net.elf app_manager.elf http_svc.elf vm_manager.elf auth_server.elf ext2fs.elf proc_server.elf vm_snapshot.elf pflocal_server.elf exec_server.elf term_server.elf console_shell.elf block_pd.elf framebuffer_pd.elf cc_pd.elf
+IMAGES := controller.elf event_bus.elf init_agent.elf worker.elf agentfs.elf vibe_engine.elf log_drain.elf serial_pd.elf swap_slot.elf mem_profiler.elf net_isolator.elf perf_counters.elf time_partition.elf trace_recorder.elf nameserver.elf virtio_blk.elf vfs_server.elf spawn_server.elf app_slot.elf net_server.elf net_pd.elf js_runtime.elf wg_net.elf app_manager.elf http_svc.elf vm_manager.elf auth_server.elf ext2fs.elf proc_server.elf vm_snapshot.elf pflocal_server.elf exec_server.elf term_server.elf console_shell.elf block_pd.elf framebuffer_pd.elf cc_pd.elf gpu_sched.elf
 
 # Optional: periodic WASM slot snapshot scheduler
 ifdef AGENTOS_SNAPSHOT_SCHED
@@ -369,6 +371,9 @@ $(BUILD_DIR)/framebuffer_pd.elf: $(FB_PD_OBJS)
 	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
 
 $(BUILD_DIR)/cc_pd.elf: $(CC_PD_OBJS)
+	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
+
+$(BUILD_DIR)/gpu_sched.elf: $(GPU_SCHED_OBJS)
 	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
 
 # ─── Linux VMM (AArch64 only) ─────────────────────────────────────────────

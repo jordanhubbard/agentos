@@ -42,6 +42,9 @@
 #include <stdint.h>
 #include <stdbool.h>
 
+/* Forward declaration */
+static bool validate_wasm_header(const uint8_t *data, uint32_t size);
+
 /* ── Channel IDs (must match agentos.system) ────────────────────────── */
 #define CH_AGENT   0   /* Agents PPC in here */
 #define CH_CTRL    1   /* Notify controller for swap execution */

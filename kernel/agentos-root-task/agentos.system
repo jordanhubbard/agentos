@@ -1225,10 +1225,10 @@
              setvar_vaddr="log_drain_rings_vaddr" />
     </protection_domain>
 
-    <!-- Channel 68: controller(id=68, pp=true) → net_pd(id=0)
+    <!-- Channel 48: controller(id=48, pp=true) → net_pd(id=0)
          Controller and any authorised client PPC into net_pd for network I/O. -->
     <channel>
-        <end pd="controller" id="68" pp="true" />
+        <end pd="controller" id="48" pp="true" />
         <end pd="net_pd"     id="0" />
     </channel>
 
@@ -1567,10 +1567,10 @@
              setvar_vaddr="blk_dma_shmem_vaddr" />
     </protection_domain>
 
-    <!-- Channel CH_BLOCK_PD (69): controller(id=69, pp=true) → block_pd(id=0)
+    <!-- Channel CH_BLOCK_PD (49): controller(id=49, pp=true) → block_pd(id=0)
          Controller PPCs into block_pd for MSG_BLOCK_* operations. -->
     <channel>
-        <end pd="controller" id="69" pp="true" />
+        <end pd="controller" id="49" pp="true" />
         <end pd="block_pd"   id="0" />
     </channel>
 
@@ -1600,7 +1600,7 @@
       and handles real Blackwell GB10 compute routing via its own path.
       ══════════════════════════════════════════════════════════════════
     -->
-    <protection_domain name="gpu_sched" priority="120" passive="true">
+    <protection_domain name="gpu_sched" priority="180" passive="true">
         <program_image path="gpu_sched.elf" />
         <!-- log_drain_rings: optional; gpu_sched falls back to microkit_dbg_puts if unmapped -->
         <map mr="log_drain_rings" vaddr="0x9000000" perms="rw"
@@ -1669,10 +1669,10 @@
              setvar_vaddr="log_drain_rings_vaddr" />
     </protection_domain>
 
-    <!-- Channel CH_FB_PD (71): controller(id=71, pp=true) → framebuffer_pd(id=0)
+    <!-- Channel CH_FB_PD (51): controller(id=51, pp=true) → framebuffer_pd(id=0)
          All MSG_FB_* client requests are routed through the controller. -->
     <channel>
-        <end pd="controller"     id="71" pp="true" />
+        <end pd="controller"     id="51" pp="true" />
         <end pd="framebuffer_pd" id="0" />
     </channel>
 

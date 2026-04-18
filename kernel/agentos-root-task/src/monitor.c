@@ -48,6 +48,8 @@ uintptr_t ext2_shmem_ctrl_vaddr;
 uintptr_t vm_list_shmem_ctrl_vaddr;
 /* vmm vCPU regs shmem: VMM PD writes vcpu_regs_t here before MSG_VMM_VCPU_SET_REGS */
 uintptr_t vmm_vcpu_regs_vaddr;
+/* block_shmem: controller writes data before MSG_BLOCK_WRITE, reads after MSG_BLOCK_READ */
+uintptr_t block_shmem_ctrl_vaddr;
 
 /*
  * Echo service WASM binary (embedded for demo Step 4)

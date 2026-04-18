@@ -151,13 +151,13 @@ bool cap_policy_check(const PolicyEntry *policy, uint32_t requested_caps) {
  * the two VMM protocol channels.  Every other channel is ring-0 for guests.
  */
 static const uint32_t g_guest_allowed_ch[] = {
-    67u,  /* CH_SERIAL_PD  — serial device PD */
-    68u,  /* CH_NET_PD     — network device PD */
-    69u,  /* CH_BLOCK_PD   — block device PD */
-    70u,  /* CH_USB_PD     — USB device PD */
-    71u,  /* CH_FB_PD      — framebuffer device PD */
-    75u,  /* CH_GUEST_PD   — guest lifecycle management */
-    76u,  /* CH_VMM_KERNEL — VMM-to-root-task internal protocol */
+    44u,  /* CH_SERIAL_PD  — serial device PD */
+    48u,  /* CH_NET_PD     — network device PD */
+    49u,  /* CH_BLOCK_PD   — block device PD */
+    50u,  /* CH_USB_PD     — USB device PD */
+    51u,  /* CH_FB_PD      — framebuffer device PD */
+    52u,  /* CH_GUEST_PD   — guest lifecycle management */
+    53u,  /* CH_VMM_KERNEL — VMM-to-root-task internal protocol */
 };
 
 #define GUEST_ALLOWED_CH_N \

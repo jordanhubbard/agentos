@@ -72,7 +72,7 @@ static bpd_handle_t handles[BLOCK_MAX_CLIENTS];
 
 static int alloc_handle(void)
 {
-    for (int i = 0; i < BLOCK_MAX_CLIENTS; i++) {
+    for (uint32_t i = 0; i < BLOCK_MAX_CLIENTS; i++) {
         if (!handles[i].active)
             return i;
     }
@@ -457,7 +457,7 @@ void init(void)
 {
     agentos_log_boot("block_pd");
 
-    for (int i = 0; i < BLOCK_MAX_CLIENTS; i++)
+    for (uint32_t i = 0; i < BLOCK_MAX_CLIENTS; i++)
         handles[i].active = false;
 
     log_drain_write(18, 18, "[block_pd] Ready — passive prio 165, "

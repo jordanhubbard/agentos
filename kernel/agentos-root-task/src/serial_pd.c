@@ -159,7 +159,7 @@ static void pl011_put_banner(uint32_t port_id)
 {
     if (port_id == 0) return;
 
-    char buf[] = "[port0] ";
+    char buf[11] = "[port00] ";
     uint32_t n = port_id;
     if (n > 9) {
         buf[5] = (char)('0' + (n / 10) % 10);

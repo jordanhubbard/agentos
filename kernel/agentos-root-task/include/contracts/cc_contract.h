@@ -141,27 +141,6 @@ typedef struct __attribute__((packed)) {
     uint32_t ticks_since_active;
 } cc_session_info_t;
 
-/* ─── MSG_CC_ATTACH_FRAMEBUFFER ──────────────────────────────────────────── */
-
-/*
- * Subscribe the calling channel to framebuffer FRAME_READY notifications.
- * Sent to framebuffer_pd (not cc_pd) by external subscribers (agentctl,
- * remote desktop sessions).  After attaching, the subscriber's notified()
- * is called on every MSG_FB_FLIP for the specified framebuffer handle.
- * The subscriber reads pixel data from the shared fb_shmem region.
- *
- * MR1 = fb_handle (returned by MSG_FB_CREATE)
- * Returns: MR0 = FB_OK on success, FB_ERR_* on failure
- */
-struct cc_req_attach_framebuffer {
-    uint32_t fb_handle;     /* framebuffer handle from MSG_FB_CREATE */
-    uint32_t _reserved[3];
-};
-
-struct cc_reply_attach_framebuffer {
-    uint32_t ok;            /* FB_OK on success */
-};
-
 /* ─── Error codes ────────────────────────────────────────────────────────── */
 
 enum cc_error {

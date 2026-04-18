@@ -19,7 +19,7 @@
  *   - Guest OSes get a handle via device binding, not direct lwIP access.
  *   - Multiple virtual NICs per guest slot are supported via the handle table.
  *
- * Channel: CH_NET_PD (68) — controller PPCs in
+ * Channel: CH_NET_PD (48) — controller PPCs in
  * Priority: 160 (passive)
  * Shmem: net_pd_shmem (256KB at 0x5000000, rw)
  * MMIO: virtio_net_mmio (0x6000000, rw, uncached)

@@ -36,6 +36,8 @@
 
 /* virtio-gpu MMIO base (set by Microkit via setvar_vaddr) */
 uintptr_t virtio_gpu_mmio_vaddr;
+/* log_drain_rings shmem (set by Microkit via setvar_vaddr) */
+uintptr_t log_drain_rings_vaddr;
 
 /* true once probe_virtio_gpu() detects a live virtio-gpu device */
 static bool gpu_hw_present = false;
