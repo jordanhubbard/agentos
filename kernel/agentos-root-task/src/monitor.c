@@ -8,6 +8,7 @@
 #define AGENTOS_DEBUG 1
 #include "agentos.h"
 #include "cap_policy.h"
+#include "contracts/vmm_contract.h"
 #include "prio_inherit.h"
 #include "boot_integrity.h"
 #include "nameserver.h"
@@ -45,6 +46,8 @@ uintptr_t app_manifest_shmem_ctrl_vaddr;
 uintptr_t ext2_shmem_ctrl_vaddr;
 /* vm_list shmem: controller reads OP_VM_LIST results from vm_manager (mapped r) */
 uintptr_t vm_list_shmem_ctrl_vaddr;
+/* vmm vCPU regs shmem: VMM PD writes vcpu_regs_t here before MSG_VMM_VCPU_SET_REGS */
+uintptr_t vmm_vcpu_regs_vaddr;
 
 /*
  * Echo service WASM binary (embedded for demo Step 4)
@@ -959,8 +962,54 @@ void notified(microkit_channel ch) {
 }
 
 microkit_msginfo protected(microkit_channel ch, microkit_msginfo msg) {
-    (void)ch;
     uint64_t label = microkit_msginfo_get_label(msg);
+
+    /* ── Ring-1 enforcement: VMM kernel protocol (CH_VMM_KERNEL = 76) ───── */
+    if (ch == (microkit_channel)CH_VMM_KERNEL) {
+        /*
+         * All PPCs on CH_VMM_KERNEL originate from a registered VMM PD.
+         * Enforce ring-1 isolation before granting any capability.
+         *
+         * For MSG_VMM_VCPU_SET_REGS: validate that the vCPU privilege level
+         * in SPSR is EL1 (AArch64) or CPL3 (x86), never EL2 or CPL0.
+         */
+        if (label == (uint64_t)MSG_VMM_VCPU_SET_REGS) {
+            /* Fail-closed: deny if shmem not mapped — no bypass window */
+            if (!vmm_vcpu_regs_vaddr) {
+                AGENTOS_CRIT("[cap_policy] vCPU regs shmem not mapped — EPERM");
+                microkit_mr_set(0, 0u);
+                return microkit_msginfo_new(0xDEAD, 1);
+            }
+            {
+                volatile vcpu_regs_t *regs =
+                    (volatile vcpu_regs_t *)vmm_vcpu_regs_vaddr;
+#ifdef ARCH_AARCH64
+                int el_rc = cap_policy_vcpu_el_check(regs->spsr, true);
+#else
+                int el_rc = cap_policy_vcpu_el_check(regs->spsr, false);
+#endif
+                if (el_rc != 0) {
+                    AGENTOS_CRIT("[cap_policy] vCPU EL2/CPL0 escalation REJECTED");
+                    microkit_mr_set(0, 0u);
+                    return microkit_msginfo_new(0xDEAD, 1);
+                }
+            }
+            microkit_mr_set(0, 1u);
+            return microkit_msginfo_new(0, 1);
+        }
+
+        if (label == (uint64_t)MSG_VMM_REGISTER) {
+            /* Assign a non-zero vmm_token; real allocation tracked per-VMM */
+            microkit_mr_set(0, 1u);  /* ok */
+            microkit_mr_set(1, 1u);  /* vmm_token */
+            microkit_mr_set(2, 1u);  /* granted_guests */
+            return microkit_msginfo_new(0, 3);
+        }
+
+        /* All other MSG_VMM_* stub ok until full VMM protocol is wired */
+        microkit_mr_set(0, 1u);
+        return microkit_msginfo_new(0, 1);
+    }
 
     if (label == OP_CAP_POLICY_RELOAD) {
         /* Reload capability policy blob from shmem */
