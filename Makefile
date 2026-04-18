@@ -10,7 +10,7 @@
 #   make test         — CI boot test (exit 0/1)
 #   make clean        — remove build artifacts for current target
 
-.PHONY: all install deps-tools deps-sdk submodules channels run test test-snapshot-sched test-power-mgr test-proc-server test-vibeos-contract test-integration clean clean-all clean-images help release release-minor release-major fetch-guest build-tools
+.PHONY: all install deps-tools deps-sdk submodules channels run test test-snapshot-sched test-power-mgr test-proc-server test-vibeos-contract test-integration e2e e2e-guest e2e-contract clean clean-all clean-images help release release-minor release-major fetch-guest build-tools
 
 # ─── Read config.yaml (if present) ───────────────────────────────────────────
 CONFIG_TARGET := $(shell grep '^target_arch:' config.yaml 2>/dev/null | sed 's/target_arch:[[:space:]]*//' | tr -d '[:space:]')
@@ -482,6 +482,23 @@ test-integration:
 	@echo ""
 	@echo "Integration tests complete."
 	@echo ""
+
+# =============================================================================
+# e2e: End-to-end integration test suite (QEMU + guest VMs + SSH)
+# =============================================================================
+# Requires: make build BOARD=$(BOARD) && make fetch-guest
+# Exit code 2 = SKIP (prerequisites not met — QEMU or images missing)
+e2e: build
+	@chmod +x tests/e2e/run_e2e.sh tests/e2e/*.sh
+	@bash tests/e2e/run_e2e.sh
+
+e2e-guest:
+	@chmod +x tests/e2e/suite_common.sh
+	@bash tests/e2e/suite_common.sh
+
+e2e-contract:
+	@chmod +x tests/e2e/test_cc_contract.sh
+	@BRIDGE_AVAILABLE=1 bash tests/e2e/test_cc_contract.sh
 
 # =============================================================================
 # clean
