@@ -10,39 +10,56 @@
     - OP_VM_STATUS  (0x13): query all slot states
     - OP_VM_LIST    (0x14): enumerate running instances
   
-  Protection Domain topology:
-  
-    freebsd_vmm  (prio 200) — VM multiplexer (manages 0..4 guests)
-    controller   (prio 50)  — agentOS system coordinator
-  
-  Memory layout:
-  
-    Shared (read-only in all guests):
-      freebsd_flash   0x00000000 - 0x03FFFFFF  64MB  UEFI firmware (EDK2)
-  
-    Per-slot RAM (each guest sees only its own region):
-      freebsd_ram_0   0x40000000 - 0x5FFFFFFF  512MB  VM slot 0
-      freebsd_ram_1   0x60000000 - 0x7FFFFFFF  512MB  VM slot 1
-      freebsd_ram_2   0x80000000 - 0x9FFFFFFF  512MB  VM slot 2
-      freebsd_ram_3   0xa0000000 - 0xBFFFFFFF  512MB  VM slot 3
-  
-    Passthrough MMIO (shared, all guests see the same physical devices):
-      uart            0x09000000               4KB    PL011 UART (console)
-      gic_vcpu        0x08040000               4KB    GIC vCPU interface
-  
-    Note: VirtIO block devices are per-slot (different MMIO addresses per VM).
-    In this static description, we configure 4 VirtIO MMIO slots:
-      0x0a003000  VM 0 root disk
-      0x0a004000  VM 1 root disk
-      0x0a005000  VM 2 root disk
-      0x0a006000  VM 3 root disk
-  
-  Channel map:
-    70: controller(id=70) ↔ freebsd_vmm(id=0)  lifecycle IPC (pp=true)
-    71: freebsd_vmm(id=1) → controller(id=71)  guest events (notify)
-  
+  Protection Domain topology (Phase 3c — ring-1 consumer model):
+
+    freebsd_vmm  (prio 200) — VM multiplexer; pure ring-1 consumer
+    serial_pd    (prio 180) — owns PL011 UART; handles MSG_SERIAL_*
+    block_pd     (prio 180) — owns block backend; handles MSG_BLOCK_*
+    net_pd       (prio 180) — owns NIC/lwIP; handles MSG_NET_*
+    log_drain    (prio 160) — drains PD logs to serial_pd
+    controller   (prio  50) — agentOS system coordinator
+
+  freebsd_vmm holds NO direct hardware capabilities after init.
+  UART/VirtIO MMIO faults from guests are intercepted and forwarded
+  to the appropriate ring-0 service PD via IPC+shmem.
+
+  Memory layout (freebsd_vmm virtual address space):
+
+    0x0C000000   vmm_serial_shmem   1KB   IPC DMA: freebsd_vmm ↔ serial_pd
+    0x0D000000   vmm_block_shmem   64KB   IPC DMA: freebsd_vmm ↔ block_pd
+    0x0E000000   vmm_net_shmem     64KB   IPC DMA: freebsd_vmm ↔ net_pd
+    0x10000000   guest_flash_vaddr 64MB   UEFI firmware (EDK2) — init copy
+    0x40000000   guest_ram_vaddr_0 512MB  VM slot 0 RAM
+    0x60000000   guest_ram_vaddr_1 512MB  VM slot 1 RAM
+    0x80000000   guest_ram_vaddr_2 512MB  VM slot 2 RAM
+    0xA0000000   guest_ram_vaddr_3 512MB  VM slot 3 RAM
+
+  Guest IPA layout (each VM sees identical IPA space):
+
+    0x00000000   freebsd_flash  64MB  UEFI firmware (read-only)
+    0x08000000   GIC distributor 64KB (vGIC — libvmm managed)
+    0x08010000   GIC CPU i/f     4KB  (vCPU interface passthrough)
+    0x09000000   PL011 UART      4KB  emulated → serial_pd IPC
+    0x0A000000   VirtIO blk[0]   4KB  emulated → block_pd IPC (slot 0)
+    0x0A001000   VirtIO blk[1]   4KB  (slot 1)
+    0x0A002000   VirtIO blk[2]   4KB  (slot 2)
+    0x0A003000   VirtIO blk[3]   4KB  (slot 3)
+    0x0A004000   VirtIO net[0]   4KB  emulated → net_pd IPC (slot 0)
+    0x0A005000   VirtIO net[1]   4KB  (slot 1)
+    0x0A006000   VirtIO net[2]   4KB  (slot 2)
+    0x0A007000   VirtIO net[3]   4KB  (slot 3)
+    0x40000000   guest RAM      512MB
+
+  Channel map (freebsd_vmm local IDs):
+    id=0  CH_VMM_CONTROLLER_PPC — controller → freebsd_vmm  lifecycle IPC
+    id=1  CH_VMM_CONTROLLER_EVT — freebsd_vmm → controller  guest events
+    id=2  CH_VMM_SERIAL         — freebsd_vmm → serial_pd   UART proxy
+    id=3  CH_VMM_NET            — freebsd_vmm → net_pd      VirtIO net
+    id=4  CH_VMM_BLOCK          — freebsd_vmm → block_pd    VirtIO blk
+    id=5  CH_VMM_KERNEL_LOCAL   — freebsd_vmm → root-task   MSG_VMM_*
+
   Boot:
-    freebsd_vmm auto-creates slot 0 on init.
+    freebsd_vmm auto-creates slot 0 on init (vmm_mux_create → MSG_GUEST_BIND_DEVICE).
     Slots 1-3 created on demand via controller OP_VM_CREATE IPC.
 -->
 
@@ -70,6 +87,15 @@
     <!-- GIC vCPU interface passthrough (mapped as CPU interface in guest) -->
     <memory_region name="gic_vcpu"       size="0x1000"  phys_addr="0x8040000" />
 
+    <!-- IPC shared memory: freebsd_vmm ↔ serial_pd (1KB: short command/response) -->
+    <memory_region name="vmm_serial_shmem"  size="0x1000" />
+
+    <!-- IPC shared memory: freebsd_vmm ↔ block_pd (64KB: disk sector DMA) -->
+    <memory_region name="vmm_block_shmem"   size="0x10000" />
+
+    <!-- IPC shared memory: freebsd_vmm ↔ net_pd (64KB: Ethernet frame DMA) -->
+    <memory_region name="vmm_net_shmem"     size="0x10000" />
+
     <!-- ═══════════════════════════════════════════════════
          PROTECTION DOMAIN: freebsd_vmm
          ═══════════════════════════════════════════════════ -->
@@ -94,6 +120,45 @@
              vaddr="0xB000000"
              perms="rw"
              setvar_vaddr="serial_shmem_vaddr" />
+        <!-- IPC DMA buffer shared with freebsd_vmm (ring-1 consumer) -->
+        <map mr="vmm_serial_shmem"
+             vaddr="0xC000000"
+             perms="rw"
+             setvar_vaddr="vmm_serial_shmem_vaddr" />
+    </protection_domain>
+
+    <!--
+      block_pd — OS-neutral block device service PD.
+
+      Owns VirtIO block backend (or host file/device) exclusively.
+      Guest VMMs submit MSG_BLOCK_READ / MSG_BLOCK_WRITE via IPC, with
+      sector data transferred through vmm_block_shmem.
+      Priority 180 (same tier as serial_pd and net_pd).
+    -->
+    <protection_domain name="block_pd" priority="180" passive="true">
+        <program_image path="block_pd.elf" />
+        <!-- DMA buffer shared with freebsd_vmm -->
+        <map mr="vmm_block_shmem"
+             vaddr="0xC000000"
+             perms="rw"
+             setvar_vaddr="block_shmem_vaddr" />
+    </protection_domain>
+
+    <!--
+      net_pd — OS-neutral network service PD (lwIP backend).
+
+      Owns the physical NIC (or virtio-net) exclusively.
+      Guest VMMs submit MSG_NET_SEND / MSG_NET_RECV via IPC, with
+      Ethernet frames transferred through vmm_net_shmem.
+      Priority 180.
+    -->
+    <protection_domain name="net_pd" priority="180" passive="true">
+        <program_image path="net_pd.elf" />
+        <!-- DMA buffer shared with freebsd_vmm -->
+        <map mr="vmm_net_shmem"
+             vaddr="0xC000000"
+             perms="rw"
+             setvar_vaddr="net_shmem_vaddr" />
     </protection_domain>
 
     <!--
@@ -135,6 +200,20 @@
              vaddr="0x10000000"
              perms="rw"
              setvar_vaddr="guest_flash_vaddr" />
+
+        <!-- IPC DMA buffers for ring-0 service PD communication -->
+        <map mr="vmm_serial_shmem"
+             vaddr="0x0C000000"
+             perms="rw"
+             setvar_vaddr="vmm_serial_shmem_vaddr" />
+        <map mr="vmm_block_shmem"
+             vaddr="0x0D000000"
+             perms="rw"
+             setvar_vaddr="vmm_block_shmem_vaddr" />
+        <map mr="vmm_net_shmem"
+             vaddr="0x0E000000"
+             perms="rw"
+             setvar_vaddr="vmm_net_shmem_vaddr" />
 
         <!-- VMM r/w access to each slot's RAM (to initialise guest state) -->
         <map mr="freebsd_ram_0"
@@ -261,5 +340,54 @@
         <end pd="log_drain"  id="1" pp="true" />
         <end pd="serial_pd"  id="2" />
     </channel>
+
+    <!--
+      Channel: freebsd_vmm(id=2) ↔ serial_pd(id=3)  [CH_VMM_SERIAL]
+      VMM proxies guest PL011 UART MMIO faults to serial_pd via:
+        MSG_SERIAL_OPEN  (0x2001) — open a serial slot for this VM
+        MSG_SERIAL_WRITE (0x2002) — forward guest TX byte(s)
+        MSG_SERIAL_READ  (0x2003) — poll for pending RX byte(s)
+      serial_pd is the callee (pp=true).
+    -->
+    <channel>
+        <end pd="freebsd_vmm" id="2" />
+        <end pd="serial_pd"   id="3" pp="true" />
+    </channel>
+
+    <!--
+      Channel: freebsd_vmm(id=3) ↔ net_pd(id=0)  [CH_VMM_NET]
+      VMM proxies guest VirtIO-net MMIO queue notifies to net_pd via:
+        MSG_NET_OPEN   (0x3001) — open a net handle for this VM
+        MSG_NET_SEND   (0x3002) — submit outbound Ethernet frame via shmem
+        MSG_NET_RECV   (0x3003) — poll for inbound Ethernet frame via shmem
+      net_pd is the callee (pp=true).
+    -->
+    <channel>
+        <end pd="freebsd_vmm" id="3" />
+        <end pd="net_pd"      id="0" pp="true" />
+    </channel>
+
+    <!--
+      Channel: freebsd_vmm(id=4) ↔ block_pd(id=0)  [CH_VMM_BLOCK]
+      VMM proxies guest VirtIO-blk MMIO queue notifies to block_pd via:
+        MSG_BLOCK_OPEN  (0x4001) — open a block handle for this VM
+        MSG_BLOCK_READ  (0x4002) — read N sectors into shmem
+        MSG_BLOCK_WRITE (0x4003) — write N sectors from shmem
+        MSG_BLOCK_FLUSH (0x4004) — flush write cache
+      block_pd is the callee (pp=true).
+    -->
+    <channel>
+        <end pd="freebsd_vmm" id="4" />
+        <end pd="block_pd"    id="0" pp="true" />
+    </channel>
+
+    <!--
+      CH_VMM_KERNEL_LOCAL (freebsd_vmm id=5) — root-task channel.
+      Used for MSG_VMM_REGISTER and MSG_GUEST_BIND_DEVICE calls that
+      require root-task (monitor) participation for capability delegation.
+      The Microkit monitor does not appear as a named PD in this file;
+      in the real build, id=5 is wired to the monitor's receive slot via
+      the platform's channel allocation table.
+    -->
 
 </system>
