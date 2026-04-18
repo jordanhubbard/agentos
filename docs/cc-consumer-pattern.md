@@ -74,14 +74,19 @@ Microkit PPCs pass arguments in Message Registers (MR0–MR3):
 is not visible to external consumers — the agentctl bridge or mesh runtime
 handles it transparently.  What matters to you:
 
-- **Before calling MSG_CC_SEND**: write your command payload into `cc_shmem`,
-  starting at offset 0.  Maximum size: **4096 bytes** (`CC_MAX_CMD_BYTES`).
-- **After calling MSG_CC_RECV**: read the response from `cc_shmem` offset 0.
-  Maximum size: **4096 bytes** (`CC_MAX_RESP_BYTES`).
+- **Before calling MSG_CC_SEND_INPUT**: write the `cc_input_event_t` into
+  `cc_shmem` offset 0 before issuing the PPC.
 - **After calling MSG_CC_LIST_GUESTS / LIST_DEVICES / LIST**: the response
-  array is in `cc_shmem` immediately — no RECV step needed.
+  array is in `cc_shmem` immediately — no secondary receive step needed.
 - **After calling MSG_CC_GUEST_STATUS / DEVICE_STATUS**: the status struct is
   in `cc_shmem` immediately.
+- Maximum payload size in either direction: **4096 bytes** (`CC_MAX_CMD_BYTES`
+  / `CC_MAX_RESP_BYTES`).
+
+> **Note:** `MSG_CC_SEND` (0x2603) and `MSG_CC_RECV` (0x2604) are defined in
+> `agentos.h` for future generic command streaming.  They are not used by the
+> direct relay API documented here and should not be called by consumers in
+> the current release.
 
 ---
 
@@ -112,9 +117,7 @@ Sessions isolate callers and carry inactivity timers.
 Opcode:  0x2601  (MSG_CC_CONNECT)
 MR0 in:  MSG_CC_CONNECT
 MR1 in:  client_badge   — caller's seL4 badge / capability identifier
-         flags           — CC_CONNECT_FLAG_JSON (1<<0) or CC_CONNECT_FLAG_BINARY (1<<1)
-                           (pack badge in low 16 bits, flags in high 16 bits, or use
-                            cc_req_connect struct layout: badge first, flags second)
+MR2 in:  flags          — CC_CONNECT_FLAG_JSON (1<<0) or CC_CONNECT_FLAG_BINARY (1<<1)
 
 MR0 out: CC_OK (0) on success; CC_ERR_NO_SESSIONS (1) if limit reached
 MR1 out: session_id (0–7) on success
@@ -495,7 +498,10 @@ assert reply.MR0 == CC_OK
 status = read_shmem_struct(cc_guest_status_t)    # cc_guest_status_t from shmem
 assert status.device_flags & VIBEOS_DEV_FB, "guest has no framebuffer"
 
-fb_handle = status.fb_handle    # (sourced from guest status or higher-level API)
+# fb_handle is not returned by MSG_CC_GUEST_STATUS.
+# Obtain it via the agentctl bridge: `agentctl fb list <guest_handle>`
+# or from the higher-level API that provisioned the guest.
+fb_handle = agentctl_fb_list(target.guest_handle)[0].fb_handle
 
 reply = ppc(conn, MSG_CC_ATTACH_FRAMEBUFFER,
             guest_handle=target.guest_handle, fb_handle=fb_handle)
