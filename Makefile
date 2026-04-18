@@ -452,8 +452,10 @@ test-integration:
 	    tests/test_snapshot_sched.c \
 	    tests/test_dev_shell.c \
 	    tests/test_proc_server.c \
-	    tests/test_serial_pd.c; do \
-	    gcc -I kernel/agentos-root-task/include \
+	    tests/test_serial_pd.c \
+	    tests/test_guest_contract.c; do \
+	    gcc -I tests \
+	        -I kernel/agentos-root-task/include \
 	        -DAGENTOS_TEST_HOST \
 	        -DAGENTOS_SNAPSHOT_SCHED \
 	        -DAGENTOS_DEV_SHELL \

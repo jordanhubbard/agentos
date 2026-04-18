@@ -869,6 +869,24 @@ static inline void log_drain_write(uint32_t slot, uint32_t pd_id, const char *ms
 #define MSG_CC_STATUS                   0x2605  /* MR1=session_id → MR0=state MR1=pending */
 #define MSG_CC_LIST                     0x2606  /* → MR0=count; session_info_t[] in shmem */
 
+/* ─── Guest OS lifecycle opcodes (0x2A00) ───────────────────────────────── */
+#define MSG_GUEST_CREATE                0x2A01  /* guest_create_req in shmem → MR0=ok MR1=guest_id */
+#define MSG_GUEST_BIND_DEVICE           0x2A02  /* MR1=guest_id; guest_bind_device_req in shmem → MR0=ok MR1=cap_token */
+#define MSG_GUEST_SET_MEMORY            0x2A03  /* MR1=guest_id; guest_set_memory_req in shmem → MR0=ok */
+#define MSG_GUEST_BOOT                  0x2A04  /* MR1=guest_id → MR0=ok */
+#define MSG_GUEST_SUSPEND               0x2A05  /* MR1=guest_id → MR0=ok */
+#define MSG_GUEST_RESUME                0x2A06  /* MR1=guest_id → MR0=ok */
+#define MSG_GUEST_DESTROY               0x2A07  /* MR1=guest_id → MR0=ok */
+
+/* ─── VMM-to-root-task internal protocol (0x2B00) ───────────────────────── */
+#define MSG_VMM_REGISTER                0x2B01  /* vmm_register_req in shmem → MR0=ok MR1=vmm_token */
+#define MSG_VMM_ALLOC_GUEST_MEM         0x2B02  /* MR1=vmm_token MR2=mb → MR0=ok MR1=mem_cap_lo MR2=mem_cap_hi */
+#define MSG_VMM_VCPU_CREATE             0x2B03  /* MR1=vmm_token MR2=guest_id → MR0=ok MR1=vcpu_cap */
+#define MSG_VMM_VCPU_DESTROY            0x2B04  /* MR1=vmm_token MR2=vcpu_cap → MR0=ok */
+#define MSG_VMM_VCPU_SET_REGS           0x2B05  /* MR1=vcpu_cap; vcpu_regs_t in shmem → MR0=ok */
+#define MSG_VMM_VCPU_GET_REGS           0x2B06  /* MR1=vcpu_cap → MR0=ok; vcpu_regs_t in shmem */
+#define MSG_VMM_INJECT_IRQ              0x2B07  /* MR1=vmm_token MR2=guest_id MR3=irq_num → MR0=ok */
+
 /* ─── Channel IDs for new Phase 1 PDs ───────────────────────────────────── */
 #define CH_GPU_SHMEM          61u   /* controller -> gpu_shmem (PPC) */
 #define CH_DEBUG_BRIDGE       62u   /* controller -> debug_bridge (PPC) */
@@ -884,4 +902,6 @@ static inline void log_drain_write(uint32_t slot, uint32_t pd_id, const char *ms
 #define CH_CC_PD              72u   /* controller -> cc_pd (PPC) */
 #define CH_NET_ISOLATOR       73u   /* controller -> net_isolator (PPC) */
 #define CH_IPC_HARNESS        74u   /* controller -> ipc_harness (PPC, test builds only) */
+#define CH_GUEST_PD           75u   /* controller -> guest_pd (PPC) */
+#define CH_VMM_KERNEL         76u   /* vmm_pd -> root-task internal protocol (PPC) */
 
