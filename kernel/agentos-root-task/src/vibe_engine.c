@@ -37,12 +37,15 @@
 #define AGENTOS_DEBUG 1
 #include "agentos.h"
 #include "barrier.h"
+#include "cap_policy.h"
+#include "contracts/vibeos_contract.h"
 #include <stdint.h>
 #include <stdbool.h>
 
 /* ── Channel IDs (must match agentos.system) ────────────────────────── */
 #define CH_AGENT   0   /* Agents PPC in here */
 #define CH_CTRL    1   /* Notify controller for swap execution */
+#define CH_VIBEOS  2   /* VibeOS lifecycle management (controller/callers) */
 
 /* ── Op codes ───────────────────────────────────────────────────────── */
 #define OP_VIBE_PROPOSE           0x40
@@ -119,6 +122,307 @@ static uint32_t       next_proposal_id = 1;  /* 0 = invalid */
 static uint64_t       total_proposals = 0;
 static uint64_t       total_swaps = 0;
 static uint64_t       total_rejections = 0;
+
+/* ── VibeOS lifecycle context ───────────────────────────────────────── */
+
+#define MAX_VIBEOS_INSTANCES  4
+#define VIBEOS_DEV_COUNT      5   /* serial, net, block, usb, fb */
+
+typedef struct {
+    uint32_t handle;              /* 0 = slot free */
+    uint32_t os_type;             /* VIBEOS_TYPE_* */
+    uint32_t arch;                /* VIBEOS_ARCH_* */
+    uint32_t state;               /* VIBEOS_STATE_* */
+    uint32_t ram_mb;
+    uint32_t cpu_budget_us;
+    uint32_t cpu_period_us;
+    uint32_t device_flags;        /* VIBEOS_DEV_* bitmask — bits set when bound */
+    uint32_t dev_handles[VIBEOS_DEV_COUNT];   /* PD handle per dev bit-position */
+    uint32_t dev_channels[VIBEOS_DEV_COUNT];  /* channel_id per dev bit-position */
+    uint32_t uptime_ticks;
+} vibeos_ctx_t;
+
+static vibeos_ctx_t g_vibeos[MAX_VIBEOS_INSTANCES];
+static uint32_t     g_next_vibeos_handle = 1;  /* 0 reserved/invalid */
+
+static vibeos_ctx_t *vibeos_find(uint32_t handle)
+{
+    for (int i = 0; i < MAX_VIBEOS_INSTANCES; i++) {
+        if (g_vibeos[i].handle == handle)
+            return &g_vibeos[i];
+    }
+    return (vibeos_ctx_t *)0;
+}
+
+static vibeos_ctx_t *vibeos_alloc(void)
+{
+    for (int i = 0; i < MAX_VIBEOS_INSTANCES; i++) {
+        if (g_vibeos[i].handle == 0)
+            return &g_vibeos[i];
+    }
+    return (vibeos_ctx_t *)0;
+}
+
+/* Map dev_type (bit-position 0..4) to func_class (1..5) */
+static uint32_t dev_type_to_func_class(uint32_t dev_type)
+{
+    return dev_type + 1;
+}
+
+/* ── VibeOS IPC Handlers ────────────────────────────────────────────── */
+
+/*
+ * MSG_VIBEOS_CREATE: Allocate a new VibeOS context
+ *
+ * Input:  MR0=opcode; vibeos_create_req in shmem (vibe_staging_vaddr)
+ * Output: MR0=ok MR1=handle (0 on error)
+ */
+static microkit_msginfo handle_vibeos_create(void)
+{
+    const struct vibeos_create_req *req =
+        (const struct vibeos_create_req *)vibe_staging_vaddr;
+
+    vibeos_ctx_t *ctx = vibeos_alloc();
+    if (!ctx) {
+        log_drain_write(7, 7, "[vibe_engine] VIBEOS_CREATE: no free slots\n");
+        microkit_mr_set(0, VIBEOS_ERR_NO_SLOTS);
+        microkit_mr_set(1, 0);
+        return microkit_msginfo_new(0, 2);
+    }
+
+    if (req->os_type != VIBEOS_TYPE_LINUX && req->os_type != VIBEOS_TYPE_FREEBSD) {
+        log_drain_write(7, 7, "[vibe_engine] VIBEOS_CREATE: bad os_type\n");
+        microkit_mr_set(0, VIBEOS_ERR_BAD_OS_TYPE);
+        microkit_mr_set(1, 0);
+        return microkit_msginfo_new(0, 2);
+    }
+
+    uint32_t h = g_next_vibeos_handle++;
+    if (g_next_vibeos_handle == 0)
+        g_next_vibeos_handle = 1;  /* skip reserved 0 on wrap */
+
+    ctx->handle        = h;
+    ctx->os_type       = req->os_type;
+    ctx->arch          = req->arch;
+    ctx->state         = VIBEOS_STATE_CREATING;
+    ctx->ram_mb        = req->ram_mb;
+    ctx->cpu_budget_us = req->cpu_budget_us;
+    ctx->cpu_period_us = req->cpu_period_us;
+    ctx->device_flags  = 0;
+    ctx->uptime_ticks  = 0;
+    for (int i = 0; i < VIBEOS_DEV_COUNT; i++) {
+        ctx->dev_handles[i]  = 0;
+        ctx->dev_channels[i] = 0;
+    }
+
+    log_drain_write(7, 7, "[vibe_engine] VIBEOS_CREATE: allocated handle\n");
+
+    microkit_mr_set(0, VIBEOS_OK);
+    microkit_mr_set(1, h);
+    return microkit_msginfo_new(0, 2);
+}
+
+/*
+ * MSG_VIBEOS_BIND_DEVICE: Attach a ring-0 device PD to a VibeOS context.
+ *
+ * Non-reinvention enforcement: cap_policy is queried first.  If a PD already
+ * serves this function class, its handle is returned and binding is forced to
+ * use it — a second ring-0 service for the same class cannot be instantiated.
+ *
+ * Input:  MR0=opcode MR1=handle MR2=dev_type MR3=dev_handle
+ * Output: MR0=ok MR1=effective_handle MR2=preexisting
+ */
+static microkit_msginfo handle_vibeos_bind_device(void)
+{
+    uint32_t handle     = (uint32_t)microkit_mr_get(1);
+    uint32_t dev_type   = (uint32_t)microkit_mr_get(2);
+    uint32_t dev_handle = (uint32_t)microkit_mr_get(3);
+
+    vibeos_ctx_t *ctx = vibeos_find(handle);
+    if (!ctx) {
+        log_drain_write(7, 7, "[vibe_engine] VIBEOS_BIND_DEVICE: bad handle\n");
+        microkit_mr_set(0, VIBEOS_ERR_BAD_HANDLE);
+        microkit_mr_set(1, 0);
+        microkit_mr_set(2, 0);
+        return microkit_msginfo_new(0, 3);
+    }
+
+    if (dev_type >= VIBEOS_DEV_COUNT) {
+        log_drain_write(7, 7, "[vibe_engine] VIBEOS_BIND_DEVICE: bad dev_type\n");
+        microkit_mr_set(0, VIBEOS_ERR_DEVICE_UNAVAILABLE);
+        microkit_mr_set(1, 0);
+        microkit_mr_set(2, 0);
+        return microkit_msginfo_new(0, 3);
+    }
+
+    uint32_t func_class = dev_type_to_func_class(dev_type);
+    uint32_t existing_pd  = 0;
+    uint32_t existing_ch  = 0;
+    uint32_t preexisting  = 0;
+    uint32_t effective_h  = dev_handle;
+
+    /* Non-reinvention: check cap_policy for an existing ring-0 service */
+    if (cap_policy_find_ring0_service(func_class, &existing_pd, &existing_ch)) {
+        /* Existing service found — force reuse, reject the new handle */
+        log_drain_write(7, 7, "[vibe_engine] VIBEOS_BIND_DEVICE: reusing existing ring-0 service\n");
+        effective_h = existing_pd;
+        preexisting = 1;
+
+        /* Bind the existing service handle into this context */
+        ctx->dev_handles[dev_type]  = existing_pd;
+        ctx->dev_channels[dev_type] = existing_ch;
+        ctx->device_flags |= (1u << dev_type);
+    } else {
+        /* No existing service — register the new one and bind it */
+        cap_policy_register_ring0_service(func_class, dev_handle, 0);
+        ctx->dev_handles[dev_type]  = dev_handle;
+        ctx->dev_channels[dev_type] = 0;
+        ctx->device_flags |= (1u << dev_type);
+        preexisting = 0;
+    }
+
+    microkit_mr_set(0, VIBEOS_OK);
+    microkit_mr_set(1, effective_h);
+    microkit_mr_set(2, preexisting);
+    return microkit_msginfo_new(0, 3);
+}
+
+/*
+ * MSG_VIBEOS_BOOT: Transition a VibeOS context from CREATING → BOOTING.
+ *
+ * Input:  MR0=opcode MR1=handle
+ * Output: MR0=ok
+ */
+static microkit_msginfo handle_vibeos_boot(void)
+{
+    uint32_t handle = (uint32_t)microkit_mr_get(1);
+
+    vibeos_ctx_t *ctx = vibeos_find(handle);
+    if (!ctx) {
+        log_drain_write(7, 7, "[vibe_engine] VIBEOS_BOOT: bad handle\n");
+        microkit_mr_set(0, VIBEOS_ERR_BAD_HANDLE);
+        return microkit_msginfo_new(0, 1);
+    }
+
+    if (ctx->state != VIBEOS_STATE_CREATING) {
+        log_drain_write(7, 7, "[vibe_engine] VIBEOS_BOOT: wrong state\n");
+        microkit_mr_set(0, VIBEOS_ERR_BAD_STATE);
+        return microkit_msginfo_new(0, 1);
+    }
+
+    ctx->state = VIBEOS_STATE_BOOTING;
+    log_drain_write(7, 7, "[vibe_engine] VIBEOS_BOOT: context → BOOTING\n");
+
+    microkit_mr_set(0, VIBEOS_OK);
+    return microkit_msginfo_new(0, 1);
+}
+
+/*
+ * MSG_VIBEOS_LOAD_MODULE: Install a WASM or ELF component into a VibeOS
+ * context via the vibe_swap.c hot-swap pipeline.
+ *
+ * The caller pre-writes the module binary into the staging region and passes
+ * its size and SHA-256 hash.  vibe_engine writes the vibe_slot_header and
+ * notifies the controller, which drives the swap slot load.
+ *
+ * Input:  MR0=opcode MR1=handle MR2=module_type MR3=module_size
+ *         vibeos_load_module_req (incl. module_hash) in staging region header
+ * Output: MR0=ok MR1=swap_id
+ */
+static microkit_msginfo handle_vibeos_load_module(void)
+{
+    uint32_t handle      = (uint32_t)microkit_mr_get(1);
+    uint32_t module_type = (uint32_t)microkit_mr_get(2);
+    uint32_t module_size = (uint32_t)microkit_mr_get(3);
+
+    vibeos_ctx_t *ctx = vibeos_find(handle);
+    if (!ctx) {
+        log_drain_write(7, 7, "[vibe_engine] VIBEOS_LOAD_MODULE: bad handle\n");
+        microkit_mr_set(0, VIBEOS_ERR_BAD_HANDLE);
+        microkit_mr_set(1, 0);
+        return microkit_msginfo_new(0, 2);
+    }
+
+    if (module_type != VIBEOS_MODULE_TYPE_WASM && module_type != VIBEOS_MODULE_TYPE_ELF) {
+        log_drain_write(7, 7, "[vibe_engine] VIBEOS_LOAD_MODULE: bad module_type\n");
+        microkit_mr_set(0, VIBEOS_ERR_BAD_MODULE_TYPE);
+        microkit_mr_set(1, 0);
+        return microkit_msginfo_new(0, 2);
+    }
+
+    if (module_type == VIBEOS_MODULE_TYPE_WASM) {
+        /* Validate WASM magic header */
+        const uint8_t *staged = (const uint8_t *)vibe_staging_vaddr;
+        if (!validate_wasm_header(staged, module_size)) {
+            log_drain_write(7, 7, "[vibe_engine] VIBEOS_LOAD_MODULE: bad WASM magic\n");
+            microkit_mr_set(0, VIBEOS_ERR_WASM_LOAD_FAIL);
+            microkit_mr_set(1, 0);
+            return microkit_msginfo_new(0, 2);
+        }
+    }
+
+    /*
+     * Write swap metadata to the staging region tail (last 64 bytes).
+     * Layout (LE uint32): service_id, wasm_offset, wasm_size, swap_id.
+     * This matches the format consumed by the controller in handle_execute().
+     */
+    uint32_t swap_id = next_proposal_id++;
+    volatile uint8_t *meta = (volatile uint8_t *)(vibe_staging_vaddr + STAGING_SIZE - 64);
+
+    uint32_t svc = (uint32_t)handle;  /* use vibeos handle as service id for swap */
+    uint32_t off = 0;
+    uint32_t sz  = module_size;
+    uint32_t pid = swap_id;
+
+    meta[0]  = svc & 0xff; meta[1]  = (svc >> 8) & 0xff;
+    meta[2]  = (svc >> 16) & 0xff; meta[3]  = (svc >> 24) & 0xff;
+    meta[4]  = off & 0xff; meta[5]  = (off >> 8) & 0xff;
+    meta[6]  = (off >> 16) & 0xff; meta[7]  = (off >> 24) & 0xff;
+    meta[8]  = sz & 0xff;  meta[9]  = (sz >> 8) & 0xff;
+    meta[10] = (sz >> 16) & 0xff;  meta[11] = (sz >> 24) & 0xff;
+    meta[12] = pid & 0xff; meta[13] = (pid >> 8) & 0xff;
+    meta[14] = (pid >> 16) & 0xff; meta[15] = (pid >> 24) & 0xff;
+
+    agentos_wmb();
+
+    log_drain_write(7, 7, "[vibe_engine] VIBEOS_LOAD_MODULE: notifying controller\n");
+    microkit_notify(CH_CTRL);
+
+    microkit_mr_set(0, VIBEOS_OK);
+    microkit_mr_set(1, swap_id);
+    return microkit_msginfo_new(0, 2);
+}
+
+/*
+ * MSG_VIBEOS_CHECK_SERVICE_EXISTS: Query cap_policy for an existing ring-0
+ * service PD for a given function class.
+ *
+ * Input:  MR0=opcode MR1=func_class
+ * Output: MR0=ok MR1=exists MR2=pd_handle MR3=channel_id
+ */
+static microkit_msginfo handle_vibeos_check_service_exists(void)
+{
+    uint32_t func_class = (uint32_t)microkit_mr_get(1);
+
+    if (func_class < 1 || func_class > CAP_POLICY_FUNC_CLASS_MAX) {
+        log_drain_write(7, 7, "[vibe_engine] CHECK_SERVICE_EXISTS: bad func_class\n");
+        microkit_mr_set(0, VIBEOS_ERR_BAD_FUNC_CLASS);
+        microkit_mr_set(1, 0);
+        microkit_mr_set(2, 0);
+        microkit_mr_set(3, 0);
+        return microkit_msginfo_new(0, 4);
+    }
+
+    uint32_t pd_handle  = 0;
+    uint32_t channel_id = 0;
+    uint32_t exists = (uint32_t)cap_policy_find_ring0_service(func_class, &pd_handle, &channel_id);
+
+    microkit_mr_set(0, VIBEOS_OK);
+    microkit_mr_set(1, exists);
+    microkit_mr_set(2, pd_handle);
+    microkit_mr_set(3, channel_id);
+    return microkit_msginfo_new(0, 4);
+}
 
 /* ── Service registry ───────────────────────────────────────────────── */
 static void register_services(void) {
@@ -722,6 +1026,11 @@ void init(void) {
         proposals[i].state = PROP_STATE_FREE;
     }
 
+    /* Initialize VibeOS context table */
+    for (int i = 0; i < MAX_VIBEOS_INSTANCES; i++) {
+        g_vibeos[i].handle = 0;
+    }
+
     /* Register known services */
     register_services();
 
@@ -797,6 +1106,7 @@ microkit_msginfo protected(microkit_channel ch, microkit_msginfo msg) {
     uint32_t op = (uint32_t)microkit_mr_get(0);
 
     switch (op) {
+        /* ── Hot-swap proposal lifecycle ─────────────────────────────── */
         case OP_VIBE_PROPOSE:            return handle_propose();
         case OP_VIBE_VALIDATE:           return handle_validate();
         case OP_VIBE_EXECUTE:            return handle_execute();
@@ -805,6 +1115,14 @@ microkit_msginfo protected(microkit_channel ch, microkit_msginfo msg) {
         case OP_VIBE_HEALTH:             return handle_health();
         case OP_VIBE_REGISTER_SERVICE:   return handle_register_service(ch);
         case OP_VIBE_LIST_SERVICES:      return handle_list_services();
+
+        /* ── VibeOS OS lifecycle ──────────────────────────────────────── */
+        case MSG_VIBEOS_CREATE:                 return handle_vibeos_create();
+        case MSG_VIBEOS_BIND_DEVICE:            return handle_vibeos_bind_device();
+        case MSG_VIBEOS_BOOT:                   return handle_vibeos_boot();
+        case MSG_VIBEOS_LOAD_MODULE:            return handle_vibeos_load_module();
+        case MSG_VIBEOS_CHECK_SERVICE_EXISTS:   return handle_vibeos_check_service_exists();
+
         default:
             log_drain_write(7, 7, "[vibe_engine] Unknown op\n");
             microkit_mr_set(0, VIBE_ERR_INTERNAL);

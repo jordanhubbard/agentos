@@ -44,6 +44,21 @@
 #define VIBEOS_DEV_USB     (1u << 3)
 #define VIBEOS_DEV_FB      (1u << 4)
 
+/* ─── Function class identifiers (mirrors cap_policy.h) ─────────────────── */
+/* Used with MSG_VIBEOS_CHECK_SERVICE_EXISTS and non-reinvention enforcement. */
+/* dev_type 0..4 (bit positions of VIBEOS_DEV_*) maps to func_class = dev_type+1. */
+
+#define VIBEOS_FUNC_CLASS_SERIAL  0x01u   /* dev_type 0 */
+#define VIBEOS_FUNC_CLASS_NET     0x02u   /* dev_type 1 */
+#define VIBEOS_FUNC_CLASS_BLOCK   0x03u   /* dev_type 2 */
+#define VIBEOS_FUNC_CLASS_USB     0x04u   /* dev_type 3 */
+#define VIBEOS_FUNC_CLASS_FB      0x05u   /* dev_type 4 */
+
+/* ─── Module type ────────────────────────────────────────────────────────── */
+
+#define VIBEOS_MODULE_TYPE_WASM  1u
+#define VIBEOS_MODULE_TYPE_ELF   2u
+
 /* ─── VibeOS state ───────────────────────────────────────────────────────── */
 
 #define VIBEOS_STATE_CREATING   0
@@ -104,6 +119,21 @@ struct vibeos_migrate_req {
     uint32_t target_node;       /* mesh node_id of destination */
 };
 
+struct vibeos_boot_req {
+    uint32_t handle;
+};
+
+struct vibeos_load_module_req {
+    uint32_t handle;
+    uint32_t module_type;       /* VIBEOS_MODULE_TYPE_* */
+    uint32_t module_size;       /* bytes pre-written to staging region */
+    uint8_t  module_hash[32];   /* SHA-256 of module binary */
+};
+
+struct vibeos_check_service_req {
+    uint32_t func_class;        /* VIBEOS_FUNC_CLASS_* */
+};
+
 /* ─── Reply structs ──────────────────────────────────────────────────────── */
 
 struct vibeos_create_reply {
@@ -130,6 +160,8 @@ struct vibeos_list_reply {
 
 struct vibeos_device_bind_reply {
     uint32_t ok;
+    uint32_t effective_handle;  /* handle to use — may differ from requested if non-reinvention forced reuse */
+    uint32_t preexisting;       /* 1 = existing service found and reused, 0 = new registration */
 };
 
 struct vibeos_device_unbind_reply {
@@ -149,6 +181,22 @@ struct vibeos_restore_reply {
 struct vibeos_migrate_reply {
     uint32_t ok;
     uint32_t new_node;          /* node where OS is now running */
+};
+
+struct vibeos_boot_reply {
+    uint32_t ok;
+};
+
+struct vibeos_load_module_reply {
+    uint32_t ok;
+    uint32_t swap_id;           /* vibe_swap handle on success */
+};
+
+struct vibeos_check_service_reply {
+    uint32_t ok;
+    uint32_t exists;            /* 1 if a ring-0 service is registered for func_class */
+    uint32_t pd_handle;         /* existing PD handle (valid when exists=1) */
+    uint32_t channel_id;        /* channel for existing PD (valid when exists=1) */
 };
 
 /* ─── Shmem layout: VibeOS list entry ───────────────────────────────────── */
@@ -174,4 +222,7 @@ enum vibeos_error {
     VIBEOS_ERR_WASM_LOAD_FAIL     = 6,
     VIBEOS_ERR_MIGRATE_FAIL       = 7,
     VIBEOS_ERR_DEAD               = 8,
+    VIBEOS_ERR_BAD_MODULE_TYPE    = 9,   /* MSG_VIBEOS_LOAD_MODULE: unknown module_type */
+    VIBEOS_ERR_BAD_STATE          = 10,  /* operation not valid for current OS state */
+    VIBEOS_ERR_BAD_FUNC_CLASS     = 11,  /* MSG_VIBEOS_CHECK_SERVICE_EXISTS: invalid func_class */
 };

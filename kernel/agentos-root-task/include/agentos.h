@@ -851,6 +851,9 @@ static inline void log_drain_write(uint32_t slot, uint32_t pd_id, const char *ms
 #define MSG_VIBEOS_SNAPSHOT             0x2407  /* MR1=handle → MR0=ok MR1=snap_lo MR2=snap_hi */
 #define MSG_VIBEOS_RESTORE              0x2408  /* MR1=handle MR2=snap_lo MR3=snap_hi → MR0=ok */
 #define MSG_VIBEOS_MIGRATE              0x2409  /* MR1=handle MR2=target_node → MR0=ok */
+#define MSG_VIBEOS_BOOT                 0x240A  /* MR1=handle → MR0=ok */
+#define MSG_VIBEOS_LOAD_MODULE          0x240B  /* MR1=handle MR2=module_type MR3=module_size → MR0=ok MR1=swap_id */
+#define MSG_VIBEOS_CHECK_SERVICE_EXISTS 0x240C  /* MR1=func_class → MR0=ok MR1=exists MR2=pd_handle MR3=channel_id */
 
 /* ─── Framebuffer device PD opcodes (0x2500) ────────────────────────────── */
 #define MSG_FB_CREATE                   0x2501  /* fb_create_req in shmem → MR0=ok MR1=handle */

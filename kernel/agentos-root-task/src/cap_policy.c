@@ -11,6 +11,7 @@
 
 #define AGENTOS_DEBUG 1
 #include "agentos.h"
+#include "cap_policy.h"
 
 /* ── Policy Entry ─────────────────────────────────────────────────────────── */
 
@@ -202,6 +203,49 @@ int cap_policy_vcpu_el_check(uint64_t spsr, bool is_aarch64)
     }
     /* x86: CS.RPL must be exactly CPL3 (user); CPL0/1/2 are all forbidden */
     return ((spsr & X86_CPL_MASK) != X86_CPL3) ? -1 : 0;
+}
+
+/* ── Ring-0 service non-reinvention registry ─────────────────────────────── */
+
+typedef struct {
+    uint32_t pd_handle;
+    uint32_t channel_id;
+    bool     registered;
+} ring0_svc_entry_t;
+
+/* Index 0 unused; valid func_class values are 1..CAP_POLICY_FUNC_CLASS_MAX */
+static ring0_svc_entry_t g_ring0_registry[CAP_POLICY_FUNC_CLASS_MAX + 1];
+
+int cap_policy_register_ring0_service(uint32_t func_class, uint32_t pd_handle, uint32_t channel_id)
+{
+    if (func_class < 1 || func_class > CAP_POLICY_FUNC_CLASS_MAX)
+        return -1;
+    if (g_ring0_registry[func_class].registered)
+        return -1;
+    g_ring0_registry[func_class].pd_handle  = pd_handle;
+    g_ring0_registry[func_class].channel_id = channel_id;
+    g_ring0_registry[func_class].registered = true;
+    return 0;
+}
+
+int cap_policy_find_ring0_service(uint32_t func_class, uint32_t *out_pd_handle, uint32_t *out_channel_id)
+{
+    if (func_class < 1 || func_class > CAP_POLICY_FUNC_CLASS_MAX)
+        return 0;
+    if (!g_ring0_registry[func_class].registered)
+        return 0;
+    if (out_pd_handle)  *out_pd_handle  = g_ring0_registry[func_class].pd_handle;
+    if (out_channel_id) *out_channel_id = g_ring0_registry[func_class].channel_id;
+    return 1;
+}
+
+void cap_policy_unregister_ring0_service(uint32_t func_class)
+{
+    if (func_class < 1 || func_class > CAP_POLICY_FUNC_CLASS_MAX)
+        return;
+    g_ring0_registry[func_class].pd_handle  = 0;
+    g_ring0_registry[func_class].channel_id = 0;
+    g_ring0_registry[func_class].registered = false;
 }
 
 /*

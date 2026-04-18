@@ -76,3 +76,41 @@ int cap_policy_guest_ipc_check(uint32_t caller_pd_id, uint32_t target_channel);
  * Returns 0 if valid, -1 (EPERM) if privilege escalation detected.
  */
 int cap_policy_vcpu_el_check(uint64_t spsr, bool is_aarch64);
+
+/* ─── Ring-0 service non-reinvention registry ────────────────────────────── */
+
+/*
+ * Function class identifiers for ring-0 service PDs.
+ * A VibeOS instance may bind at most one PD per function class.
+ * If a PD is already registered for a class, BIND_DEVICE must reuse it.
+ */
+#define CAP_POLICY_FUNC_CLASS_SERIAL   0x01u
+#define CAP_POLICY_FUNC_CLASS_NET      0x02u
+#define CAP_POLICY_FUNC_CLASS_BLOCK    0x03u
+#define CAP_POLICY_FUNC_CLASS_USB      0x04u
+#define CAP_POLICY_FUNC_CLASS_FB       0x05u
+#define CAP_POLICY_FUNC_CLASS_MAX      0x05u
+
+/*
+ * cap_policy_register_ring0_service(func_class, pd_handle, channel_id)
+ *
+ * Register a ring-0 service PD as the canonical handler for func_class.
+ * Returns 0 on success, -1 if func_class is out of range or already occupied.
+ */
+int cap_policy_register_ring0_service(uint32_t func_class, uint32_t pd_handle, uint32_t channel_id);
+
+/*
+ * cap_policy_find_ring0_service(func_class, out_pd_handle, out_channel_id)
+ *
+ * Query whether an existing ring-0 service covers func_class.
+ * Returns 1 if found (populates *out_pd_handle, *out_channel_id), 0 if none.
+ * NULL output pointers are tolerated.
+ */
+int cap_policy_find_ring0_service(uint32_t func_class, uint32_t *out_pd_handle, uint32_t *out_channel_id);
+
+/*
+ * cap_policy_unregister_ring0_service(func_class)
+ *
+ * Remove a ring-0 service entry.  Safe to call when not registered.
+ */
+void cap_policy_unregister_ring0_service(uint32_t func_class);
