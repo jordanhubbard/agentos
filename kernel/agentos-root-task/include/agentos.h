@@ -873,6 +873,7 @@ static inline void log_drain_write(uint32_t slot, uint32_t pd_id, const char *ms
 #define MSG_CC_RECV                     0x2604  /* MR1=session_id MR2=max; data in shmem → MR0=len */
 #define MSG_CC_STATUS                   0x2605  /* MR1=session_id → MR0=state MR1=pending */
 #define MSG_CC_LIST                     0x2606  /* → MR0=count; session_info_t[] in shmem */
+#define MSG_CC_ATTACH_FRAMEBUFFER       0x2607  /* MR1=fb_handle → MR0=ok; subscribe to FRAME_READY */
 
 /* ─── Guest OS lifecycle opcodes (0x2A00) ───────────────────────────────── */
 #define MSG_GUEST_CREATE                0x2A01  /* guest_create_req in shmem → MR0=ok MR1=guest_id */

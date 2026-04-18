@@ -12,12 +12,13 @@
   
   Protection Domain topology (Phase 3c — ring-1 consumer model):
 
-    freebsd_vmm  (prio 200) — VM multiplexer; pure ring-1 consumer
-    serial_pd    (prio 180) — owns PL011 UART; handles MSG_SERIAL_*
-    block_pd     (prio 180) — owns block backend; handles MSG_BLOCK_*
-    net_pd       (prio 180) — owns NIC/lwIP; handles MSG_NET_*
-    log_drain    (prio 160) — drains PD logs to serial_pd
-    controller   (prio  50) — agentOS system coordinator
+    freebsd_vmm    (prio 200) — VM multiplexer; pure ring-1 consumer
+    serial_pd      (prio 180) — owns PL011 UART; handles MSG_SERIAL_*
+    block_pd       (prio 180) — owns block backend; handles MSG_BLOCK_*
+    net_pd         (prio 180) — owns NIC/lwIP; handles MSG_NET_*
+    framebuffer_pd (prio 175) — virtual framebuffer; REMOTE_API backend (optional)
+    log_drain      (prio 160) — drains PD logs to serial_pd
+    controller     (prio  50) — agentOS system coordinator
 
   freebsd_vmm holds NO direct hardware capabilities after init.
   UART/VirtIO MMIO faults from guests are intercepted and forwarded
@@ -58,6 +59,12 @@
     id=4  CH_VMM_BLOCK          — freebsd_vmm → block_pd    VirtIO blk
     id=5  CH_VMM_KERNEL_LOCAL   — freebsd_vmm → root-task   MSG_VMM_*
 
+  Additional channels (framebuffer_pd):
+    controller id=72 ↔ framebuffer_pd id=0   — MSG_FB_* + MSG_GUEST_BIND_DEVICE(GUEST_DEV_FB)
+    Note: id=72 (not CH_FB_PD=71) — controller id=71 is already the VMM event notification.
+    CH_FB_EVENTBUS (framebuffer_pd id=1) is NOT wired: no EventBus in this manifest.
+    fb_eventbus_wired_flag stays 0 (BSS default); EventBus publishing disabled.
+
   Boot:
     freebsd_vmm auto-creates slot 0 on init (vmm_mux_create → MSG_GUEST_BIND_DEVICE).
     Slots 1-3 created on demand via controller OP_VM_CREATE IPC.
@@ -95,6 +102,9 @@
 
     <!-- IPC shared memory: freebsd_vmm ↔ net_pd (64KB: Ethernet frame DMA) -->
     <memory_region name="vmm_net_shmem"     size="0x10000" />
+
+    <!-- Framebuffer shared memory: 8MB — holds one full-HD (1920×1080×4B) frame -->
+    <memory_region name="fb_shmem"          size="0x800000" />
 
     <!-- ═══════════════════════════════════════════════════
          PROTECTION DOMAIN: freebsd_vmm
@@ -277,6 +287,36 @@
     </protection_domain>
 
     <!-- ═══════════════════════════════════════════════════
+         PROTECTION DOMAIN: framebuffer_pd
+         ═══════════════════════════════════════════════════ -->
+
+    <!--
+      framebuffer_pd — virtual framebuffer service (Phase 4a-remote).
+
+      Provides virtual framebuffer creation and REMOTE_API display relay
+      for FreeBSD guests.  Guests allocate a framebuffer via MSG_FB_CREATE
+      and bind it via MSG_GUEST_BIND_DEVICE(GUEST_DEV_FB).
+
+      EventBus channel (CH_FB_EVENTBUS) is NOT wired in this manifest —
+      this system has no EventBus PD.  fb_eventbus_wired_flag stays 0
+      (BSS default), so EventBus publishing is disabled at runtime.
+
+      Remote subscribers (agentctl, remote desktop) attach via
+      MSG_CC_ATTACH_FRAMEBUFFER and are notified via microkit_notify()
+      on each MSG_FB_FLIP.  Subscriber channels wired when cc_pd added.
+
+      Priority: 175 (below serial_pd; above log_drain).
+    -->
+    <protection_domain name="framebuffer_pd" priority="175" passive="true">
+        <program_image path="framebuffer_pd.elf" />
+        <!-- Shared pixel data region: callers write frames here before MSG_FB_WRITE -->
+        <map mr="fb_shmem"
+             vaddr="0xF000000"
+             perms="rw"
+             setvar_vaddr="fb_shmem_vaddr" />
+    </protection_domain>
+
+    <!-- ═══════════════════════════════════════════════════
          PROTECTION DOMAIN: controller
          ═══════════════════════════════════════════════════ -->
 
@@ -389,5 +429,21 @@
       in the real build, id=5 is wired to the monitor's receive slot via
       the platform's channel allocation table.
     -->
+
+    <!--
+      Channel 72: controller(id=72) ↔ framebuffer_pd(id=0)  [CH_FB_PD in freebsd context]
+      Controller PPCs framebuffer_pd to:
+        MSG_FB_CREATE  (0x2501) — allocate virtual framebuffer for a guest
+        MSG_FB_*       (0x250x) — write/flip/resize/destroy
+        MSG_CC_ATTACH_FRAMEBUFFER (0x2607) — register remote subscriber
+      Also used by the root-task to validate FB handles for
+      MSG_GUEST_BIND_DEVICE(GUEST_DEV_FB) capability delegation.
+      Note: id=72 (not 71) because controller id=71 is the freebsd_vmm→controller
+      guest event notification channel in this manifest.
+    -->
+    <channel>
+        <end pd="controller"     id="72" pp="true" />
+        <end pd="framebuffer_pd" id="0" />
+    </channel>
 
 </system>

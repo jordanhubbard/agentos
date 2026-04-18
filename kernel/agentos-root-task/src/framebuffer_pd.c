@@ -4,19 +4,29 @@
  * Manages virtual framebuffers for guest OSes via a backend dispatch model.
  * Each guest selects a backend at MSG_FB_CREATE time:
  *
- *   FB_BACKEND_NULL       — frames discarded; for headless guests (this file)
+ *   FB_BACKEND_NULL       — frames discarded; for headless guests
  *   FB_BACKEND_HW_DIRECT  — virtio-gpu / gpu_sched (Phase 4a-hw, ag-1es)
  *   FB_BACKEND_REMOTE_API — display server relay (Phase 4a-remote, ag-tz2)
  *
  * IPC protocol (opcode in MR0):
- *   MSG_FB_CREATE   fb_create_req in shmem → MR0=ok MR1=handle
- *   MSG_FB_WRITE    MR1=handle; fb_write_req in shmem → MR0=ok
- *   MSG_FB_FLIP     MR1=handle → MR0=ok MR1=frame_seq
- *   MSG_FB_RESIZE   MR1=handle; fb_resize_req in shmem → MR0=ok
- *   MSG_FB_DESTROY  MR1=handle → MR0=ok
+ *   MSG_FB_CREATE              fb_create_req in shmem → MR0=ok MR1=handle
+ *   MSG_FB_WRITE               MR1=handle; fb_write_req in shmem → MR0=ok
+ *   MSG_FB_FLIP                MR1=handle → MR0=ok MR1=frame_seq
+ *   MSG_FB_RESIZE              MR1=handle; fb_resize_req in shmem → MR0=ok
+ *   MSG_FB_DESTROY             MR1=handle → MR0=ok
+ *   MSG_CC_ATTACH_FRAMEBUFFER  MR1=handle → MR0=ok; register caller as subscriber
  *
- * On MSG_FB_FLIP the NULL backend discards the frame, increments frame_seq,
- * and publishes EVENT_FB_FRAME_READY to EventBus (channel CH_FB_EVENTBUS).
+ * REMOTE_API backend (Phase 4a-remote):
+ *   On MSG_FB_FLIP the REMOTE_API backend forwards the committed frame to
+ *   external subscribers via microkit_notify().  Subscribers registered via
+ *   MSG_CC_ATTACH_FRAMEBUFFER have their notified() called; they then read
+ *   pixel data directly from the shared fb_shmem region.  Up to
+ *   FB_MAX_REMOTE_SUBS concurrent subscribers per system are supported.
+ *
+ * EventBus integration:
+ *   Every successful FLIP (any backend) publishes EVENT_FB_FRAME_READY to
+ *   EventBus on CH_FB_EVENTBUS, provided the channel is wired in the
+ *   system manifest (fb_eventbus_wired_flag != 0).
  *
  * Guest binding:
  *   MSG_GUEST_BIND_DEVICE(GUEST_DEV_FB) carries the handle from MSG_FB_CREATE
@@ -27,8 +37,9 @@
  *   Callers write request structs and pixel data here before calling MSG_FB_*.
  *   The region is large enough for one full-HD frame (≥ 1920×1080×4 bytes).
  *
- * Channel: CH_FB_PD (see agentos.h) — inbound PPC from callers
- * Optional channel 1: CH_FB_EVENTBUS — outbound to EventBus for FRAME_READY
+ * Channel: CH_FB_PD (see agentos.h) — inbound PPC from callers (local id=0)
+ * Channel 1: CH_FB_EVENTBUS — outbound to EventBus for FRAME_READY (optional)
+ * Channels 2..5: remote subscriber notification channels (optional)
  * Priority: 175  (below serial; above idle workers)
  * Mode: passive  (woken by PPC from callers)
  */
@@ -36,18 +47,28 @@
 #define AGENTOS_DEBUG 1
 #include "agentos.h"
 #include "contracts/framebuffer_contract.h"
+#include "contracts/cc_contract.h"
 
 /* ─── Channel assignments ────────────────────────────────────────────────── */
 
-#define CH_FB_EVENTBUS  1u   /* optional: framebuffer_pd → EventBus (PPC) */
+#define CH_FB_EVENTBUS      1u   /* optional: framebuffer_pd → EventBus (PPC) */
+#define CH_FB_REMOTE_BASE   2u   /* remote subscriber channels: 2..5 */
 
 /* ─── Limits ─────────────────────────────────────────────────────────────── */
 
-#define FB_MAX_CLIENTS  8u
+#define FB_MAX_CLIENTS      8u
+#define FB_MAX_REMOTE_SUBS  4u
 
-/* ─── Shmem (Microkit setvar_vaddr) ─────────────────────────────────────── */
+/* ─── Shmem / setvar (Microkit setvar_vaddr) ─────────────────────────────── */
 
 uintptr_t fb_shmem_vaddr;
+
+/*
+ * Set to non-zero by Microkit setvar_vaddr="fb_eventbus_wired_flag" in system
+ * manifests that wire the EventBus channel (CH_FB_EVENTBUS).  Defaults to 0
+ * (BSS) in manifests that do not include EventBus (e.g. agentos-freebsd.system).
+ */
+uintptr_t fb_eventbus_wired_flag;
 
 /* Declared for log_drain_write(); falls back to microkit_dbg_puts if unmapped */
 uintptr_t log_drain_rings_vaddr;
@@ -66,6 +87,16 @@ typedef struct {
 
 static fb_slot_t   slots[FB_MAX_CLIENTS];
 static bool        eventbus_connected = false;
+
+/* ─── Remote subscriber table ────────────────────────────────────────────── */
+
+typedef struct {
+    bool             active;
+    microkit_channel ch;      /* calling channel that registered this subscriber */
+    uint32_t         handle;  /* framebuffer handle the subscriber is attached to */
+} fb_remote_sub_t;
+
+static fb_remote_sub_t remote_subs[FB_MAX_REMOTE_SUBS];
 
 /* ─── Backend dispatch table ─────────────────────────────────────────────── */
 
@@ -137,13 +168,55 @@ static const fb_backend_ops_t hw_direct_ops = {
     .on_destroy = stub_destroy,
 };
 
-/* ─── REMOTE_API stub (Phase 4a-remote, ag-tz2) ─────────────────────────── */
+/* ─── REMOTE_API backend (Phase 4a-remote, ag-tz2) ──────────────────────── */
+
+/*
+ * Write: pixel data is already in fb_shmem (written by the caller before
+ * MSG_FB_WRITE).  No copy needed — subscribers read directly from shmem.
+ */
+static fb_error_t remote_write(uint32_t slot, const struct fb_write_req *req)
+{
+    (void)slot; (void)req;
+    return FB_OK;
+}
+
+/*
+ * Flip: commit the frame.  Notify all registered subscribers for this
+ * framebuffer handle via microkit_notify(); they read from fb_shmem.
+ */
+static fb_error_t remote_flip(uint32_t slot, uint32_t *frame_seq_out)
+{
+    slots[slot].frame_seq++;
+    *frame_seq_out = slots[slot].frame_seq;
+
+    for (uint32_t i = 0; i < FB_MAX_REMOTE_SUBS; i++) {
+        if (remote_subs[i].active && remote_subs[i].handle == slot)
+            microkit_notify(remote_subs[i].ch);
+    }
+    return FB_OK;
+}
+
+static fb_error_t remote_resize(uint32_t slot, uint32_t new_w, uint32_t new_h)
+{
+    slots[slot].width  = new_w;
+    slots[slot].height = new_h;
+    return FB_OK;
+}
+
+/* On destroy, detach all subscribers for this framebuffer. */
+static void remote_destroy(uint32_t slot)
+{
+    for (uint32_t i = 0; i < FB_MAX_REMOTE_SUBS; i++) {
+        if (remote_subs[i].active && remote_subs[i].handle == slot)
+            remote_subs[i].active = false;
+    }
+}
 
 static const fb_backend_ops_t remote_api_ops = {
-    .on_write   = stub_write,
-    .on_flip    = stub_flip,
-    .on_resize  = stub_resize,
-    .on_destroy = stub_destroy,
+    .on_write   = remote_write,
+    .on_flip    = remote_flip,
+    .on_resize  = remote_resize,
+    .on_destroy = remote_destroy,
 };
 
 /* ─── Dispatch table indexed by FB_BACKEND_* ─────────────────────────────── */
@@ -201,6 +274,33 @@ static bool slot_owned(uint32_t handle, microkit_channel ch)
 }
 
 /* ─── IPC handlers ───────────────────────────────────────────────────────── */
+
+static void handle_remote_attach(microkit_channel ch)
+{
+    uint32_t handle = (uint32_t)microkit_mr_get(1);
+
+    if (handle >= FB_MAX_CLIENTS || !slots[handle].active) {
+        microkit_mr_set(0, FB_ERR_BAD_HANDLE);
+        return;
+    }
+    if (slots[handle].backend != FB_BACKEND_REMOTE_API) {
+        microkit_mr_set(0, FB_ERR_BAD_BACKEND);
+        return;
+    }
+
+    /* Find a free subscriber slot. */
+    for (uint32_t i = 0; i < FB_MAX_REMOTE_SUBS; i++) {
+        if (!remote_subs[i].active) {
+            remote_subs[i].active = true;
+            remote_subs[i].ch     = ch;
+            remote_subs[i].handle = handle;
+            microkit_mr_set(0, FB_OK);
+            return;
+        }
+    }
+
+    microkit_mr_set(0, FB_ERR_NO_SLOTS);
+}
 
 static void handle_create(microkit_channel ch)
 {
@@ -337,16 +437,21 @@ void init(void)
     for (uint32_t i = 0; i < FB_MAX_CLIENTS; i++)
         slots[i].active = false;
 
-    /*
-     * EventBus publishing is disabled until Phase 4a-remote (ag-tz2) adds
-     * the system manifest channel wiring for CH_FB_EVENTBUS.  Calling
-     * microkit_ppcall on an unwired channel faults, so we cannot probe it
-     * safely here.  The Phase 4a-remote bead sets eventbus_connected = true
-     * after confirming the channel is wired in the manifest.
-     */
-    eventbus_connected = false;
+    for (uint32_t i = 0; i < FB_MAX_REMOTE_SUBS; i++)
+        remote_subs[i].active = false;
 
-    microkit_dbg_puts("[framebuffer_pd] ready (NULL backend active; EventBus pending manifest wiring)\n");
+    /*
+     * EventBus publishing is enabled only when the system manifest wires
+     * CH_FB_EVENTBUS.  The manifest sets fb_eventbus_wired_flag via
+     * setvar_vaddr to a non-zero address; otherwise the BSS default of 0
+     * keeps publishing disabled (prevents ppcall faults on unwired channels).
+     */
+    eventbus_connected = (fb_eventbus_wired_flag != 0);
+
+    if (eventbus_connected)
+        microkit_dbg_puts("[framebuffer_pd] ready (REMOTE_API active; EventBus wired)\n");
+    else
+        microkit_dbg_puts("[framebuffer_pd] ready (REMOTE_API active; EventBus not wired)\n");
 }
 
 void notified(microkit_channel ch)
@@ -361,11 +466,12 @@ microkit_msginfo protected(microkit_channel ch, microkit_msginfo msginfo)
     uint32_t op = (uint32_t)microkit_mr_get(0);
 
     switch (op) {
-    case MSG_FB_CREATE:  handle_create(ch);  break;
-    case MSG_FB_WRITE:   handle_write(ch);   break;
-    case MSG_FB_FLIP:    handle_flip(ch);    break;
-    case MSG_FB_RESIZE:  handle_resize(ch);  break;
-    case MSG_FB_DESTROY: handle_destroy(ch); break;
+    case MSG_FB_CREATE:             handle_create(ch);        break;
+    case MSG_FB_WRITE:              handle_write(ch);         break;
+    case MSG_FB_FLIP:               handle_flip(ch);          break;
+    case MSG_FB_RESIZE:             handle_resize(ch);        break;
+    case MSG_FB_DESTROY:            handle_destroy(ch);       break;
+    case MSG_CC_ATTACH_FRAMEBUFFER: handle_remote_attach(ch); break;
     default:
         microkit_dbg_puts("[framebuffer_pd] unknown opcode\n");
         microkit_mr_set(0, FB_ERR_BAD_HANDLE);

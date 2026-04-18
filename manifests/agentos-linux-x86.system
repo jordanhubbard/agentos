@@ -11,14 +11,15 @@
 
   Protection Domain topology:
 
-    controller   (prio 50)   - system coordinator + capability broker
-    event_bus    (prio 200)  - passive pub/sub server (ring buffer)
-    init_agent   (prio 100)  - agent ecosystem bootstrapper
-    worker_0..7  (prio 80)   - agent pool workers (dynamic task assignment)
-    vibe_engine  (prio 140)  - passive VibeEngine: WASM hot-swap lifecycle
-    agentfs      (prio 150)  - passive content-addressed object store
-    swap_slot_0..3 (prio 75) - WASM hot-swap execution slots
-    linux_vmm    (prio 254)  - Linux VMM stub (x86_64 — passive, no-op)
+    controller     (prio 50)   - system coordinator + capability broker
+    event_bus      (prio 200)  - passive pub/sub server (ring buffer)
+    init_agent     (prio 100)  - agent ecosystem bootstrapper
+    worker_0..7    (prio 80)   - agent pool workers (dynamic task assignment)
+    vibe_engine    (prio 140)  - passive VibeEngine: WASM hot-swap lifecycle
+    agentfs        (prio 150)  - passive content-addressed object store
+    swap_slot_0..3 (prio 75)   - WASM hot-swap execution slots
+    framebuffer_pd (prio 175)  - virtual framebuffer; REMOTE_API backend (Phase 4a-remote)
+    linux_vmm      (prio 254)  - Linux VMM stub (x86_64 — passive, no-op)
 
   Channel map (native agentOS — same as agentos-x86_64.system):
     0:  controller <-> event_bus    (controller PPCs into passive event_bus)
@@ -34,6 +35,10 @@
 
   Linux VMM stub channel:
     50: controller <-> linux_vmm  (reserved; stub does not process commands)
+
+  Framebuffer channels (Phase 4a-remote):
+    71: controller(id=71) <-> framebuffer_pd(id=0)  [CH_FB_PD]
+    28: event_bus(id=28)  <-> framebuffer_pd(id=1)  [CH_FB_EVENTBUS]
 
   x86_64 memory layout (QEMU q35):
     Guest RAM would be at 0x100000000 (4GB) if VMM were implemented.
@@ -116,6 +121,41 @@
     </protection_domain>
 
     <!--
+      framebuffer_pd — virtual framebuffer service (Phase 4a-remote).
+
+      Provides virtual framebuffer creation and REMOTE_API display relay.
+      Guests allocate a framebuffer via MSG_FB_CREATE and bind it via
+      MSG_GUEST_BIND_DEVICE(GUEST_DEV_FB).
+
+      CH_FB_EVENTBUS (id=1) is wired to event_bus in this manifest.
+      fb_eventbus_wired_flag is set via setvar_vaddr to enable EventBus
+      publishing of EVENT_FB_FRAME_READY on every MSG_FB_FLIP.
+
+      Remote subscribers (agentctl, remote desktop) attach via
+      MSG_CC_ATTACH_FRAMEBUFFER and are notified via microkit_notify()
+      on each MSG_FB_FLIP with REMOTE_API backend.
+
+      Priority: 175 (below serial_pd; above log_drain).
+    -->
+    <protection_domain name="framebuffer_pd" priority="175" passive="true">
+        <program_image path="framebuffer_pd.elf" />
+        <!-- Shared pixel data region: callers write frames here before MSG_FB_WRITE -->
+        <map mr="fb_shmem"
+             vaddr="0xF000000"
+             perms="rw"
+             setvar_vaddr="fb_shmem_vaddr" />
+        <!--
+          Sentinel region: non-zero vaddr signals CH_FB_EVENTBUS is wired.
+          framebuffer_pd checks fb_eventbus_wired_flag in init() to enable
+          EventBus publishing without risking ppcall on an unwired channel.
+        -->
+        <map mr="fb_eventbus_wired"
+             vaddr="0xF800000"
+             perms="r"
+             setvar_vaddr="fb_eventbus_wired_flag" />
+    </protection_domain>
+
+    <!--
       serial_pd — generic serial I/O PD.
 
       On x86_64 the physical UART uses I/O ports (COM1 = 0x3F8), not MMIO.
@@ -188,6 +228,16 @@
     <memory_region name="vibe_staging"   size="0x400000" />
     <!-- Shared data buffer: serial_pd ↔ log_drain (256-byte I/O window) -->
     <memory_region name="serial_shmem"   size="0x1000" />
+
+    <!-- Framebuffer shared memory: 8MB — holds one full-HD (1920×1080×4B) frame -->
+    <memory_region name="fb_shmem"             size="0x800000" />
+
+    <!--
+      fb_eventbus_wired: 1-page sentinel region.  Mapped to framebuffer_pd with
+      setvar_vaddr="fb_eventbus_wired_flag".  Non-zero vaddr signals that
+      CH_FB_EVENTBUS is wired in this manifest, enabling EventBus publishing.
+    -->
+    <memory_region name="fb_eventbus_wired"    size="0x1000" />
 
     <!-- ═══════════════════════════════════════════════════════════════════
          CHANNELS
@@ -321,6 +371,29 @@
     <channel>
         <end pd="controller" id="50" />
         <end pd="linux_vmm"  id="2" />
+    </channel>
+
+    <!--
+      Channel 71: controller(id=71) ↔ framebuffer_pd(id=0)  [CH_FB_PD]
+      Controller PPCs framebuffer_pd for MSG_FB_* guest display operations
+      and MSG_GUEST_BIND_DEVICE(GUEST_DEV_FB) capability delegation.
+      framebuffer_pd is passive (woken by PPC).
+    -->
+    <channel>
+        <end pd="controller"     id="71" pp="true" />
+        <end pd="framebuffer_pd" id="0" />
+    </channel>
+
+    <!--
+      CH_FB_EVENTBUS: event_bus(id=28) ↔ framebuffer_pd(id=1)
+      framebuffer_pd PPCs event_bus to publish EVENT_FB_FRAME_READY (0x40)
+      after every successful MSG_FB_FLIP.  Subscribers (workers, agents)
+      receive the event via their EventBus subscription.
+      event_bus is passive (pp=true on event_bus side via existing convention).
+    -->
+    <channel>
+        <end pd="event_bus"      id="28" />
+        <end pd="framebuffer_pd" id="1" pp="true" />
     </channel>
 
     <!-- ═══════════════════════════════════════════════════════════════════
