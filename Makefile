@@ -10,7 +10,7 @@
 #   make test         — CI boot test (exit 0/1)
 #   make clean        — remove build artifacts for current target
 
-.PHONY: all install deps-tools deps-sdk submodules channels run test test-snapshot-sched test-power-mgr test-proc-server test-integration clean clean-all clean-images help release release-minor release-major fetch-guest build-tools
+.PHONY: all install deps-tools deps-sdk submodules channels run test test-snapshot-sched test-power-mgr test-proc-server test-vibeos-contract test-integration clean clean-all clean-images help release release-minor release-major fetch-guest build-tools
 
 # ─── Read config.yaml (if present) ───────────────────────────────────────────
 CONFIG_TARGET := $(shell grep '^target_arch:' config.yaml 2>/dev/null | sed 's/target_arch:[[:space:]]*//' | tr -d '[:space:]')
@@ -433,6 +433,20 @@ test-proc-server:
 	@echo ""
 
 # =============================================================================
+# test-vibeos-contract: standalone contract tests for the VibeOS lifecycle API
+# =============================================================================
+test-vibeos-contract:
+	@echo ""
+	@echo "╔══════════════════════════════════════════╗"
+	@echo "║   agentOS — VibeOS contract tests        ║"
+	@echo "╚══════════════════════════════════════════╝"
+	@echo ""
+	cc tests/vibe/test_vibeos_contract.c -o /tmp/test_vibeos_contract -I tests -I kernel/agentos-root-task/include -DAGENTOS_TEST_HOST
+	@/tmp/test_vibeos_contract
+	@echo "✓ vibeos contract tests passed"
+	@echo ""
+
+# =============================================================================
 # test-integration: compile and run C integration tests on the host
 #
 # Each test file is self-contained: all seL4/Microkit primitives are stubbed
@@ -453,7 +467,8 @@ test-integration:
 	    tests/test_dev_shell.c \
 	    tests/test_proc_server.c \
 	    tests/test_serial_pd.c \
-	    tests/test_guest_contract.c; do \
+	    tests/test_guest_contract.c \
+	    tests/vibe/test_vibeos_contract.c; do \
 	    gcc -I tests \
 	        -I kernel/agentos-root-task/include \
 	        -DAGENTOS_TEST_HOST \
