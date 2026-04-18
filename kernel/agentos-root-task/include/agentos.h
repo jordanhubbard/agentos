@@ -853,13 +853,15 @@ static inline void log_drain_write(uint32_t slot, uint32_t pd_id, const char *ms
 #define MSG_VIBEOS_MIGRATE              0x2409  /* MR1=handle MR2=target_node → MR0=ok */
 
 /* ─── Framebuffer device PD opcodes (0x2500) ────────────────────────────── */
-#define MSG_FB_OPEN                     0x2501  /* MR1=disp_id → MR0=ok MR1=handle */
-#define MSG_FB_CLOSE                    0x2502  /* MR1=handle → MR0=ok */
-#define MSG_FB_MAP                      0x2503  /* MR1=handle → MR0=ok; fb_info_t in shmem */
-#define MSG_FB_UNMAP                    0x2504  /* MR1=handle → MR0=ok */
-#define MSG_FB_FLIP                     0x2505  /* MR1=handle MR2=buf_idx → MR0=ok (page flip) */
-#define MSG_FB_STATUS                   0x2506  /* MR1=handle → MR0=width MR1=height MR2=format */
-#define MSG_FB_CONFIGURE                0x2507  /* MR1=handle; fb_config_t in shmem → MR0=ok */
+#define MSG_FB_CREATE                   0x2501  /* fb_create_req in shmem → MR0=ok MR1=handle */
+#define MSG_FB_WRITE                    0x2502  /* MR1=handle; fb_write_req in shmem → MR0=ok */
+#define MSG_FB_FLIP                     0x2503  /* MR1=handle → MR0=ok MR1=frame_seq */
+#define MSG_FB_RESIZE                   0x2504  /* MR1=handle; fb_resize_req in shmem → MR0=ok */
+#define MSG_FB_DESTROY                  0x2505  /* MR1=handle → MR0=ok */
+#define MSG_FB_FRAME_READY              0x2506  /* EventBus event kind: fb_frame_ready_event_t */
+
+/* framebuffer EventBus event ID */
+#define EVENT_FB_FRAME_READY            0x40u   /* MR1=handle, MR2=frame_seq */
 
 /* ─── Command-and-Control PD opcodes (0x2600) ───────────────────────────── */
 #define MSG_CC_CONNECT                  0x2601  /* MR1=client_badge → MR0=ok MR1=session_id */

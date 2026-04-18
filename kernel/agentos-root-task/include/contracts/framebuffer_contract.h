@@ -1,126 +1,176 @@
 /*
- * Framebuffer Device PD IPC Contract
+ * Framebuffer PD IPC Contract — Phase 4a-core
  *
- * The framebuffer_pd owns the display controller hardware via seL4 device
- * frame capabilities.  It exposes a simple linear framebuffer API for
- * guest OSes and the VibeOS virtual framebuffer concept.
+ * Defines the virtual framebuffer protocol between guest OSes (via their VMM
+ * PDs) and framebuffer_pd.  Each guest that wants display output calls
+ * MSG_FB_CREATE to allocate a virtual framebuffer; guests that do not call
+ * MSG_FB_CREATE receive no framebuffer capability.
+ *
+ * Backend dispatch (selected at CREATE time):
+ *   FB_BACKEND_NULL       — frames discarded; for headless guests
+ *   FB_BACKEND_HW_DIRECT  — virtio-gpu / gpu_sched (Phase 4a-hw, ag-1es)
+ *   FB_BACKEND_REMOTE_API — display server relay (Phase 4a-remote, ag-tz2)
+ *
+ * Protocol:
+ *   MSG_FB_CREATE   allocate virtual framebuffer (width, height, format)
+ *   MSG_FB_WRITE    blit pixels from shmem into the virtual framebuffer
+ *   MSG_FB_FLIP     commit the current frame → triggers backend dispatch
+ *   MSG_FB_RESIZE   resize virtual framebuffer dimensions
+ *   MSG_FB_DESTROY  release virtual framebuffer and cap token
+ *
+ *   MSG_FB_FRAME_READY is not a request; it is an EventBus event kind
+ *   published by framebuffer_pd after every successful FLIP.
+ *   Subscribers receive EVENT_FB_FRAME_READY (0x40) notifications.
+ *
+ * Guest binding:
+ *   MSG_GUEST_BIND_DEVICE(GUEST_DEV_FB) carries the handle returned by
+ *   MSG_FB_CREATE as dev_handle.  The root-task validates the handle and
+ *   returns a cap_token stored in guest_capabilities_t.fb_token.
  *
  * Channel: CH_FB_PD (see agentos.h)
  * Opcodes: MSG_FB_* (see agentos.h)
  *
  * Invariants:
- *   - MSG_FB_OPEN returns a handle; MSG_FB_MAP returns display geometry.
- *   - The framebuffer is double-buffered: two backing buffers (0 and 1);
- *     MSG_FB_FLIP performs atomic page flip between them.
- *   - The caller writes pixel data directly into the mapped framebuffer region
- *     (obtained via MSG_FB_MAP); seL4 shared memory mapping.
- *   - MSG_FB_CONFIGURE allows resolution and pixel format changes.
- *   - Only one client may hold a handle per display at a time.
- *   - This PD supports the "graphics as core virtual device metaphor" (Phase 4).
+ *   - MSG_FB_CREATE returns a handle; all subsequent calls reference it.
+ *   - Handle ownership is scoped to the calling channel (microkit_channel).
+ *   - MSG_FB_WRITE does not commit the frame; only MSG_FB_FLIP dispatches.
+ *   - MSG_FB_FLIP on the NULL backend increments frame_seq and returns ok.
+ *   - MSG_FB_DESTROY revokes the cap_token (if bound via guest_contract).
  */
 
 #pragma once
 #include "../agentos.h"
 
-/* ─── Channel IDs ────────────────────────────────────────────────────────── */
+/* ─── Channel reference ──────────────────────────────────────────────────── */
+
 #define FB_PD_CH_CONTROLLER  CH_FB_PD
+
+/* ─── Backend selection constants ────────────────────────────────────────── */
+
+#define FB_BACKEND_NULL        0u  /* headless — frames discarded */
+#define FB_BACKEND_HW_DIRECT   1u  /* virtio-gpu / gpu_sched (Phase 4a-hw) */
+#define FB_BACKEND_REMOTE_API  2u  /* display relay (Phase 4a-remote) */
 
 /* ─── Pixel format constants ─────────────────────────────────────────────── */
 
-#define FB_FMT_XRGB8888   0x00u
-#define FB_FMT_ARGB8888   0x01u
-#define FB_FMT_RGB565     0x02u
+#define FB_FMT_XRGB8888  0x00u
+#define FB_FMT_ARGB8888  0x01u
+#define FB_FMT_RGB565    0x02u
 
-/* ─── Request structs ────────────────────────────────────────────────────── */
+/* ─── MSG_FB_CREATE ──────────────────────────────────────────────────────── */
 
-struct fb_req_open {
-    uint32_t disp_id;           /* 0 = primary display */
+/*
+ * Allocate a virtual framebuffer.  Pixel data is later delivered via
+ * MSG_FB_WRITE into the shared fb_shmem region, then committed by
+ * MSG_FB_FLIP.  Returns an opaque handle used in all subsequent calls.
+ */
+
+struct fb_create_req {
+    uint32_t width;          /* framebuffer width in pixels */
+    uint32_t height;         /* framebuffer height in pixels */
+    uint32_t format;         /* FB_FMT_* */
+    uint32_t backend;        /* FB_BACKEND_* */
+    uint32_t _reserved[4];
 };
 
-struct fb_req_close {
-    uint32_t handle;
+struct fb_create_reply {
+    uint32_t ok;             /* FB_OK on success */
+    uint32_t handle;         /* opaque handle; 0xFFFFFFFF = error */
 };
 
-struct fb_req_map {
-    uint32_t handle;
-    /* reply contains geometry; caller uses seL4 shmem mapping to access pixels */
+/* ─── MSG_FB_WRITE ───────────────────────────────────────────────────────── */
+
+/*
+ * Blit pixel data from the shared fb_shmem region into the virtual
+ * framebuffer.  The caller writes pixel data to fb_shmem_vaddr before
+ * calling MSG_FB_WRITE.  shmem_offset is the byte offset within fb_shmem.
+ * The dirty rectangle (x, y, w, h) describes which portion of the
+ * framebuffer the pixel data covers; framebuffer_pd validates the bounds.
+ */
+
+struct fb_write_req {
+    uint32_t x;              /* left edge of dirty rect (pixels) */
+    uint32_t y;              /* top edge of dirty rect (pixels) */
+    uint32_t w;              /* width of dirty rect (pixels) */
+    uint32_t h;              /* height of dirty rect (pixels) */
+    uint32_t shmem_offset;   /* byte offset into fb_shmem of pixel data */
+    uint32_t stride;         /* bytes per row in the source pixel data */
+    uint32_t _reserved[2];
 };
 
-struct fb_req_unmap {
-    uint32_t handle;
+struct fb_write_reply {
+    uint32_t ok;             /* FB_OK on success */
 };
 
-struct fb_req_flip {
-    uint32_t handle;
-    uint32_t buf_idx;           /* 0 or 1 — which buffer to make visible */
+/* ─── MSG_FB_FLIP ────────────────────────────────────────────────────────── */
+
+/*
+ * Commit the current frame and dispatch to the selected backend.
+ * On success, frame_seq is a monotonically increasing counter that
+ * identifies this frame to EventBus subscribers via EVENT_FB_FRAME_READY.
+ *
+ * NULL backend: frame is discarded; frame_seq is still incremented and
+ * EVENT_FB_FRAME_READY is published so headless consumers remain unblocked.
+ */
+
+struct fb_flip_reply {
+    uint32_t ok;             /* FB_OK on success */
+    uint32_t frame_seq;      /* frame sequence number */
 };
 
-struct fb_req_status {
-    uint32_t handle;
+/* ─── MSG_FB_RESIZE ──────────────────────────────────────────────────────── */
+
+/*
+ * Resize the virtual framebuffer.  Any pixel data written before RESIZE
+ * is discarded.  The next MSG_FB_WRITE must target the new dimensions.
+ */
+
+struct fb_resize_req {
+    uint32_t new_width;      /* new framebuffer width (pixels) */
+    uint32_t new_height;     /* new framebuffer height (pixels) */
+    uint32_t _reserved[2];
 };
 
-struct fb_req_configure {
-    uint32_t handle;
-    uint32_t width;             /* 0 = keep current */
-    uint32_t height;
-    uint32_t format;            /* FB_FMT_* */
-    uint32_t refresh_hz;        /* 0 = keep current */
+struct fb_resize_reply {
+    uint32_t ok;             /* FB_OK on success */
 };
 
-/* ─── Reply structs ──────────────────────────────────────────────────────── */
+/* ─── MSG_FB_DESTROY ─────────────────────────────────────────────────────── */
 
-struct fb_reply_open {
-    uint32_t ok;
-    uint32_t handle;
+/*
+ * Release the virtual framebuffer.  Any guest cap_token bound to this
+ * handle (via MSG_GUEST_BIND_DEVICE) is revoked.  The handle is invalid
+ * after this call.
+ */
+
+struct fb_destroy_reply {
+    uint32_t ok;             /* FB_OK on success */
 };
 
-struct fb_reply_close {
-    uint32_t ok;
-};
+/* ─── MSG_FB_FRAME_READY (EventBus event) ────────────────────────────────── */
 
-struct fb_reply_map {
-    uint32_t ok;
-    uint32_t width;
-    uint32_t height;
-    uint32_t format;            /* FB_FMT_* */
-    uint32_t stride;            /* bytes per row */
-    uint64_t fb_phys;           /* physical base address of framebuffer region */
-    uint32_t buf_size;          /* size of one backing buffer in bytes */
-};
+/*
+ * Published to EventBus by framebuffer_pd after every successful MSG_FB_FLIP.
+ * Event kind = EVENT_FB_FRAME_READY (0x40).
+ * Subscribers read this from the EventBus ring; it is NOT an IPC request.
+ */
 
-struct fb_reply_unmap {
-    uint32_t ok;
-};
-
-struct fb_reply_flip {
-    uint32_t ok;
-    uint32_t vblank_count;      /* vertical blank count at time of flip */
-};
-
-struct fb_reply_status {
-    uint32_t ok;
-    uint32_t width;
-    uint32_t height;
-    uint32_t format;
-    uint32_t refresh_hz;
-    uint32_t mapped;            /* 1 = framebuffer currently mapped */
-};
-
-struct fb_reply_configure {
-    uint32_t ok;
-    uint32_t width;             /* actual width after configure */
-    uint32_t height;
-};
+typedef struct __attribute__((packed)) {
+    uint32_t handle;         /* framebuffer handle that was flipped */
+    uint32_t frame_seq;      /* frame sequence number */
+    uint32_t backend;        /* FB_BACKEND_* that processed the flip */
+    uint32_t _reserved;
+} fb_frame_ready_event_t;
 
 /* ─── Error codes ────────────────────────────────────────────────────────── */
 
-enum framebuffer_error {
-    FB_OK                   = 0,
-    FB_ERR_BAD_HANDLE       = 1,
-    FB_ERR_BAD_DISP         = 2,
-    FB_ERR_ALREADY_OPEN     = 3,  /* display already has a client */
-    FB_ERR_NOT_MAPPED       = 4,
-    FB_ERR_BAD_BUF_IDX      = 5,
-    FB_ERR_BAD_FORMAT       = 6,
-    FB_ERR_NO_HW            = 7,  /* no display hardware present */
-};
+typedef enum {
+    FB_OK                 = 0,
+    FB_ERR_BAD_HANDLE     = 1,   /* handle unknown or not owned by caller */
+    FB_ERR_NO_SLOTS       = 2,   /* all virtual framebuffer slots occupied */
+    FB_ERR_BAD_GEOMETRY   = 3,   /* width or height is zero */
+    FB_ERR_BAD_FORMAT     = 4,   /* format not one of FB_FMT_* */
+    FB_ERR_BAD_BACKEND    = 5,   /* backend not one of FB_BACKEND_* */
+    FB_ERR_OUT_OF_BOUNDS  = 6,   /* write rect exceeds framebuffer dimensions */
+    FB_ERR_BACKEND_UNAVAIL = 7,  /* HW_DIRECT / REMOTE_API not yet implemented */
+} fb_error_t;
