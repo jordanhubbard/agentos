@@ -353,4 +353,55 @@
         <end pd="controller"    id="42" />
     </channel>
 
+    <!--
+      ══════════════════════════════════════════════════════════════════
+      GPU Scheduler: CUDA workload router (passive, prio 120)
+
+      On Intel NUC: routes display frames via OP_GPU_SUBMIT_CMD to the
+      real GPU (no virtio-gpu MMIO on native hardware).
+      ══════════════════════════════════════════════════════════════════
+    -->
+    <protection_domain name="gpu_sched" priority="120" passive="true">
+        <program_image path="gpu_sched.elf" />
+        <!-- log_drain_rings not mapped: falls back to microkit_dbg_puts -->
+    </protection_domain>
+
+    <channel>
+        <end pd="controller" id="25" />
+        <end pd="gpu_sched"  id="1" />
+    </channel>
+
+    <!--
+      ══════════════════════════════════════════════════════════════════
+      framebuffer_pd: virtual framebuffer service (passive, prio 175)
+
+      On Intel NUC: no virtio-gpu MMIO — probe_hw_direct selects
+      HW_MODE_GPU_SCHED and routes all FLIP operations via gpu_sched
+      OP_GPU_SUBMIT_CMD.  fb_shmem holds pixel data for the GPU blit.
+      ══════════════════════════════════════════════════════════════════
+    -->
+    <memory_region name="fb_shmem" size="0x800000" />
+
+    <protection_domain name="framebuffer_pd" priority="175" passive="true">
+        <program_image path="framebuffer_pd.elf" />
+        <!-- fb_shmem rw: pixel data from callers -->
+        <map mr="fb_shmem" vaddr="0x5000000" perms="rw" cached="true"
+             setvar_vaddr="fb_shmem_vaddr" />
+        <!-- virtio_gpu_mmio NOT mapped: NUC has real GPU, not virtio-gpu.
+             probe_hw_direct detects vaddr==0 and selects HW_MODE_GPU_SCHED. -->
+        <!-- log_drain_rings not mapped: falls back to microkit_dbg_puts -->
+    </protection_domain>
+
+    <!-- Channel CH_FB_PD (71): controller → framebuffer_pd -->
+    <channel>
+        <end pd="controller"     id="71" pp="true" />
+        <end pd="framebuffer_pd" id="0" />
+    </channel>
+
+    <!-- Channel: framebuffer_pd → gpu_sched (OP_GPU_SUBMIT_CMD for NUC GPU path) -->
+    <channel>
+        <end pd="framebuffer_pd" id="2" pp="true" />
+        <end pd="gpu_sched"      id="7" />
+    </channel>
+
 </system>

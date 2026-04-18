@@ -851,4 +851,68 @@
         <end pd="virtio_blk" id="3" />
     </channel>
 
+    <!--
+      ══════════════════════════════════════════════════════════════════
+      GPU Scheduler: CUDA workload router (passive, prio 120)
+
+      Sparky GB10 / NUC real-GPU integration point for framebuffer_pd's
+      HW_DIRECT backend.  See agentos.system for full description.
+
+      Note: virtio_gpu_mmio is NOT mapped here — framebuffer_pd owns it.
+      ══════════════════════════════════════════════════════════════════
+    -->
+    <protection_domain name="gpu_sched" priority="120" passive="true">
+        <program_image path="gpu_sched.elf" />
+        <map mr="log_drain_rings" vaddr="0x9000000" perms="rw"
+             setvar_vaddr="log_drain_rings_vaddr" />
+    </protection_domain>
+
+    <!-- Channel: controller(id=25) ↔ gpu_sched(id=1, CH_CONTROLLER) -->
+    <channel>
+        <end pd="controller" id="25" />
+        <end pd="gpu_sched"  id="1" />
+    </channel>
+
+    <!--
+      ══════════════════════════════════════════════════════════════════
+      framebuffer_pd: virtual framebuffer service (passive, prio 175)
+
+      See agentos.system for full description.
+
+      AArch64 note:
+        virtio_gpu_mmio phys_addr = 0xa003e00
+        QEMU virt AArch64 virtio-MMIO devices are at 0xa000000 + n*0x200.
+        The GPU device index depends on QEMU CLI device ordering; adjust
+        phys_addr here to match your target configuration.  The probe
+        logic gracefully falls back to the gpu_sched path if magic != ok.
+      ══════════════════════════════════════════════════════════════════
+    -->
+    <memory_region name="fb_shmem" size="0x800000" />
+
+    <!-- virtio_gpu_mmio: AArch64 virt QEMU — virtio device slot (phys 0xa003e00).
+         Adjust phys_addr to match actual QEMU device ordering for your platform. -->
+    <memory_region name="virtio_gpu_mmio" size="0x1000" phys_addr="0xa003e00" />
+
+    <protection_domain name="framebuffer_pd" priority="175" passive="true">
+        <program_image path="framebuffer_pd.elf" />
+        <map mr="fb_shmem"        vaddr="0x5000000" perms="rw" cached="true"
+             setvar_vaddr="fb_shmem_vaddr" />
+        <map mr="virtio_gpu_mmio" vaddr="0x6000000" perms="rw" cached="false"
+             setvar_vaddr="virtio_gpu_mmio_vaddr" />
+        <map mr="log_drain_rings" vaddr="0x7000000" perms="rw"
+             setvar_vaddr="log_drain_rings_vaddr" />
+    </protection_domain>
+
+    <!-- Channel CH_FB_PD (71): controller(id=71, pp=true) → framebuffer_pd(id=0) -->
+    <channel>
+        <end pd="controller"     id="71" pp="true" />
+        <end pd="framebuffer_pd" id="0" />
+    </channel>
+
+    <!-- Channel: framebuffer_pd(id=2, pp=true) → gpu_sched(id=7) -->
+    <channel>
+        <end pd="framebuffer_pd" id="2" pp="true" />
+        <end pd="gpu_sched"      id="7" />
+    </channel>
+
 </system>

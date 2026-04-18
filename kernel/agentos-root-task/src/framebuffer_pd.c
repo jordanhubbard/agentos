@@ -48,10 +48,12 @@
 #include "agentos.h"
 #include "contracts/framebuffer_contract.h"
 #include "contracts/cc_contract.h"
+#include "gpu_sched.h"
 
 /* ─── Channel assignments ────────────────────────────────────────────────── */
 
 #define CH_FB_EVENTBUS      1u   /* optional: framebuffer_pd → EventBus (PPC) */
+#define CH_FB_GPU_SCHED     2u   /* framebuffer_pd → gpu_sched (Sparky real-GPU path) */
 #define CH_FB_REMOTE_BASE   2u   /* remote subscriber channels: 2..5 */
 
 /* ─── Limits ─────────────────────────────────────────────────────────────── */
@@ -70,8 +72,33 @@ uintptr_t fb_shmem_vaddr;
  */
 uintptr_t fb_eventbus_wired_flag;
 
+/* virtio-gpu MMIO base: set by Microkit setvar_vaddr (QEMU HW_DIRECT path) */
+uintptr_t virtio_gpu_mmio_vaddr;
+
 /* Declared for log_drain_write(); falls back to microkit_dbg_puts if unmapped */
 uintptr_t log_drain_rings_vaddr;
+
+/* ─── HW_DIRECT mode selection ───────────────────────────────────────────── */
+
+typedef enum {
+    HW_MODE_NONE       = 0,  /* no hardware; HW_DIRECT behaves as stub */
+    HW_MODE_VIRTIO_GPU = 1,  /* QEMU: framebuffer_pd owns virtio-gpu MMIO directly */
+    HW_MODE_GPU_SCHED  = 2,  /* Sparky GB10 / NUC: IPC via gpu_sched OP_GPU_SUBMIT_CMD */
+} hw_direct_mode_t;
+
+static hw_direct_mode_t hw_mode = HW_MODE_NONE;
+
+/* ─── virtio-gpu MMIO helpers ────────────────────────────────────────────── */
+
+static inline uint32_t fb_mmio_read32(uintptr_t base, uint32_t off)
+{
+    return *(volatile uint32_t *)(base + off);
+}
+
+static inline void fb_mmio_write32(uintptr_t base, uint32_t off, uint32_t val)
+{
+    *(volatile uint32_t *)(base + off) = val;
+}
 
 /* ─── Virtual framebuffer slot ───────────────────────────────────────────── */
 
@@ -139,21 +166,142 @@ static const fb_backend_ops_t null_backend_ops = {
     .on_destroy = null_destroy,
 };
 
-/* ─── HW_DIRECT stub (Phase 4a-hw, ag-1es) ──────────────────────────────── */
+/* ─── HW_DIRECT backend (Phase 4a-hw, ag-1es) ───────────────────────────── */
 
-static fb_error_t stub_write(uint32_t slot, const struct fb_write_req *req)
+/*
+ * probe_hw_direct — detect available display hardware at init time.
+ *
+ * Checks virtio-gpu MMIO (QEMU path) first.  If the device is not present,
+ * falls back to the Sparky GB10 / NUC path via gpu_sched IPC.
+ * Sets hw_mode accordingly; HW_DIRECT operations dispatch on hw_mode.
+ */
+static void probe_hw_direct(void)
+{
+    if (virtio_gpu_mmio_vaddr) {
+        uint32_t magic  = fb_mmio_read32(virtio_gpu_mmio_vaddr, VIRTIO_MMIO_MAGIC_VALUE);
+        uint32_t ver    = fb_mmio_read32(virtio_gpu_mmio_vaddr, VIRTIO_MMIO_VERSION);
+        uint32_t dev_id = fb_mmio_read32(virtio_gpu_mmio_vaddr, VIRTIO_MMIO_DEVICE_ID);
+
+        if (magic == VIRTIO_MMIO_MAGIC && ver == 2u
+                && dev_id == VIRTIO_GPU_DEVICE_ID) {
+            /* Minimal virtio initialisation: ACKNOWLEDGE → DRIVER */
+            fb_mmio_write32(virtio_gpu_mmio_vaddr, VIRTIO_MMIO_STATUS,
+                            VIRTIO_STATUS_ACKNOWLEDGE);
+            fb_mmio_write32(virtio_gpu_mmio_vaddr, VIRTIO_MMIO_STATUS,
+                            VIRTIO_STATUS_ACKNOWLEDGE | VIRTIO_STATUS_DRIVER);
+            hw_mode = HW_MODE_VIRTIO_GPU;
+            microkit_dbg_puts("[framebuffer_pd] HW_DIRECT: virtio-gpu detected (QEMU path)\n");
+            return;
+        }
+        microkit_dbg_puts("[framebuffer_pd] HW_DIRECT: virtio-gpu not at MMIO, trying gpu_sched\n");
+    }
+
+    /* No virtio-gpu detected — assume real GPU via gpu_sched (Sparky GB10/NUC) */
+    hw_mode = HW_MODE_GPU_SCHED;
+    microkit_dbg_puts("[framebuffer_pd] HW_DIRECT: gpu_sched path active (Sparky/NUC)\n");
+}
+
+static fb_error_t hw_direct_write(uint32_t slot, const struct fb_write_req *req)
+{
+    (void)slot;
+    (void)req;
+    /* Pixel data is already in fb_shmem written by the caller.
+     * No staging needed: the full frame is submitted on FLIP. */
+    return FB_OK;
+}
+
+static fb_error_t hw_direct_flip(uint32_t slot, uint32_t *frame_seq_out)
+{
+    fb_slot_t *s = &slots[slot];
+
+    if (hw_mode == HW_MODE_VIRTIO_GPU) {
+        /*
+         * QEMU path: DMA fb_shmem region to the virtio-gpu controlq (queue 0).
+         *
+         * A full production pass will allocate a virtio descriptor table and
+         * populate desc.addr = phys(fb_shmem), desc.len = frame_bytes, then
+         * update the available ring and kick the queue.  The descriptor table
+         * allocation is deferred to the gpu_shmem integration phase (the same
+         * deferral pattern used in gpu_sched.c OP_GPU_SUBMIT_CMD).
+         *
+         * We issue the memory barrier and queue kick now so the QEMU backend
+         * processes any descriptors that a future integration pass has placed.
+         */
+        __asm__ volatile("" ::: "memory");  /* ensure fb_shmem writes visible */
+        fb_mmio_write32(virtio_gpu_mmio_vaddr, VIRTIO_MMIO_QUEUE_NOTIFY, 0u);
+
+        s->frame_seq++;
+        *frame_seq_out = s->frame_seq;
+        return FB_OK;
+    }
+
+    if (hw_mode == HW_MODE_GPU_SCHED) {
+        /*
+         * Sparky GB10 / NUC path: submit the frame as a GPU blit job via
+         * gpu_sched's OP_GPU_SUBMIT_CMD IPC.
+         *
+         * GPU_INTEGRATION_POINT: when gpu_shmem is fully wired, replace the
+         * cmd_offset / cmd_len pair with the appropriate gpu_shmem slot
+         * coordinates for a virtio-gpu RESOURCE_FLUSH blit command.
+         *
+         * For now cmd_offset=0 (start of fb_shmem) and cmd_len = full frame.
+         */
+        uint32_t frame_bytes = s->width * s->height * 4u; /* XRGB8888 / ARGB8888 */
+        microkit_mr_set(1, 0u);           /* gpu_shmem slot 0: display output plane */
+        microkit_mr_set(2, 0u);           /* cmd_offset: start of fb_shmem */
+        microkit_mr_set(3, frame_bytes);  /* cmd_len: one full frame */
+        microkit_ppcall(CH_FB_GPU_SCHED,
+                        microkit_msginfo_new(OP_GPU_SUBMIT_CMD, 4));
+
+        if (microkit_mr_get(0) != 0u) {
+            microkit_dbg_puts("[framebuffer_pd] HW_DIRECT flip: gpu_sched error\n");
+            return FB_ERR_BACKEND_UNAVAIL;
+        }
+
+        s->frame_seq++;
+        *frame_seq_out = s->frame_seq;
+        return FB_OK;
+    }
+
+    return FB_ERR_BACKEND_UNAVAIL;
+}
+
+static fb_error_t hw_direct_resize(uint32_t slot, uint32_t new_w, uint32_t new_h)
+{
+    /* Update dimensions; the next FLIP will use the new frame size. */
+    slots[slot].width  = new_w;
+    slots[slot].height = new_h;
+    return FB_OK;
+}
+
+static void hw_direct_destroy(uint32_t slot)
+{
+    (void)slot;
+    /* GPU_INTEGRATION_POINT: release gpu_shmem slot and virtio-gpu resource. */
+}
+
+static const fb_backend_ops_t hw_direct_ops = {
+    .on_write   = hw_direct_write,
+    .on_flip    = hw_direct_flip,
+    .on_resize  = hw_direct_resize,
+    .on_destroy = hw_direct_destroy,
+};
+
+/* ─── REMOTE_API stub (Phase 4a-remote, ag-tz2) ─────────────────────────── */
+
+static fb_error_t remote_stub_write(uint32_t slot, const struct fb_write_req *req)
 {
     (void)slot; (void)req;
     return FB_ERR_BACKEND_UNAVAIL;
 }
 
-static fb_error_t stub_flip(uint32_t slot, uint32_t *out)
+static fb_error_t remote_stub_flip(uint32_t slot, uint32_t *out)
 {
     (void)slot; (void)out;
     return FB_ERR_BACKEND_UNAVAIL;
 }
 
-static fb_error_t stub_resize(uint32_t slot, uint32_t w, uint32_t h)
+static fb_error_t remote_stub_resize(uint32_t slot, uint32_t w, uint32_t h)
 {
     (void)slot; (void)w; (void)h;
     return FB_ERR_BACKEND_UNAVAIL;
@@ -440,6 +588,9 @@ void init(void)
     for (uint32_t i = 0; i < FB_MAX_REMOTE_SUBS; i++)
         remote_subs[i].active = false;
 
+    /* Detect HW_DIRECT backend: virtio-gpu (QEMU) or gpu_sched (Sparky/NUC) */
+    probe_hw_direct();
+
     /*
      * EventBus publishing is enabled only when the system manifest wires
      * CH_FB_EVENTBUS.  The manifest sets fb_eventbus_wired_flag via
@@ -449,9 +600,9 @@ void init(void)
     eventbus_connected = (fb_eventbus_wired_flag != 0);
 
     if (eventbus_connected)
-        microkit_dbg_puts("[framebuffer_pd] ready (REMOTE_API active; EventBus wired)\n");
+        microkit_dbg_puts("[framebuffer_pd] ready (EventBus wired)\n");
     else
-        microkit_dbg_puts("[framebuffer_pd] ready (REMOTE_API active; EventBus not wired)\n");
+        microkit_dbg_puts("[framebuffer_pd] ready\n");
 }
 
 void notified(microkit_channel ch)

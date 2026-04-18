@@ -1581,4 +1581,106 @@
         <end pd="virtio_blk" id="3" />
     </channel>
 
+    <!--
+      ══════════════════════════════════════════════════════════════════
+      GPU Scheduler: CUDA workload router (passive, prio 120)
+
+      Routes agent compute jobs to WASM slots via OP_GPU_SUBMIT and
+      dispatches virtio-gpu command buffers via OP_GPU_SUBMIT_CMD.
+      Also serves as the Sparky GB10 / NUC real-GPU integration point
+      for framebuffer_pd's HW_DIRECT backend.
+
+      Channel map (from gpu_sched's perspective):
+        id=1: controller (CH_CONTROLLER) — dispatch + completion notify
+        id=7: framebuffer_pd (pp=true) — OP_GPU_SUBMIT_CMD from fb PD
+
+      Note: virtio_gpu_mmio is NOT mapped here — framebuffer_pd owns the
+      virtio-gpu device for display output (Phase 4a-hw requirement).
+      gpu_sched operates in stub mode for its internal virtio-gpu probe
+      and handles real Blackwell GB10 compute routing via its own path.
+      ══════════════════════════════════════════════════════════════════
+    -->
+    <protection_domain name="gpu_sched" priority="120" passive="true">
+        <program_image path="gpu_sched.elf" />
+        <!-- log_drain_rings: optional; gpu_sched falls back to microkit_dbg_puts if unmapped -->
+        <map mr="log_drain_rings" vaddr="0x9000000" perms="rw"
+             setvar_vaddr="log_drain_rings_vaddr" />
+    </protection_domain>
+
+    <!-- Channel: controller(id=25) ↔ gpu_sched(id=1, CH_CONTROLLER)
+         gpu_sched notifies controller at init and on task dispatch.
+         Controller notifies gpu_sched on slot-complete events. -->
+    <channel>
+        <end pd="controller" id="25" />
+        <end pd="gpu_sched"  id="1" />
+    </channel>
+
+    <!--
+      ══════════════════════════════════════════════════════════════════
+      framebuffer_pd: virtual framebuffer service (passive, prio 175)
+
+      Manages up to 8 virtual framebuffers for guest OSes.
+      Backend dispatch (selected at MSG_FB_CREATE time):
+        FB_BACKEND_NULL       — headless; frames discarded
+        FB_BACKEND_HW_DIRECT  — QEMU: virtio-gpu MMIO; Sparky: gpu_sched IPC
+        FB_BACKEND_REMOTE_API — display server relay (Phase 4a-remote, ag-tz2)
+
+      Channel map (from framebuffer_pd's perspective):
+        id=0: callers PPC in  (MSG_FB_* requests; CH_FB_PD=71 on controller)
+        id=1: framebuffer_pd → EventBus (pending; Phase 4a-remote wires this)
+        id=2: framebuffer_pd → gpu_sched (Sparky HW_DIRECT path)
+
+      Shared memory:
+        fb_shmem (8MB): pixel data exchange — callers write frames here
+        virtio_gpu_mmio (4KB, uncached): virtio-gpu MMIO registers
+          Mapped ONLY to framebuffer_pd; no other PD holds this capability.
+
+      Physical address note:
+        RISC-V virt (QEMU): virtio-gpu MMIO at 0x10003000
+        For AArch64 virt, see agentos-aarch64.system (address differs).
+      ══════════════════════════════════════════════════════════════════
+    -->
+
+    <!-- fb_shmem: 8MB pixel data buffer (≥ 1920×1080×4 bytes for full-HD).
+         Write access: callers (write pixel data before MSG_FB_WRITE / MSG_FB_FLIP).
+         Read access:  framebuffer_pd (reads on FLIP for backend dispatch).
+         Cap class:    N/A (display output; not gated by agent capability system).
+         Threat:       guest pixel data is display-only; no secret data in this path. -->
+    <memory_region name="fb_shmem" size="0x800000" />
+
+    <!-- virtio_gpu_mmio: 4KB MMIO for virtio-gpu (RISC-V virt: 0x10003000).
+         Write access: framebuffer_pd ONLY (device init + queue doorbell).
+         Read access:  framebuffer_pd ONLY (device probe).
+         Cap class:    N/A (display hardware; exclusive to framebuffer_pd).
+         Threat:       MMIO register manipulation to corrupt display output;
+                       mitigated by framebuffer_pd-only mapping. -->
+    <memory_region name="virtio_gpu_mmio" size="0x1000" phys_addr="0x10003000" />
+
+    <protection_domain name="framebuffer_pd" priority="175" passive="true">
+        <program_image path="framebuffer_pd.elf" />
+        <!-- fb_shmem rw: framebuffer_pd reads pixel data from callers on FLIP -->
+        <map mr="fb_shmem"        vaddr="0x5000000" perms="rw" cached="true"
+             setvar_vaddr="fb_shmem_vaddr" />
+        <!-- virtio_gpu_mmio: exclusive MMIO capability for QEMU HW_DIRECT path -->
+        <map mr="virtio_gpu_mmio" vaddr="0x6000000" perms="rw" cached="false"
+             setvar_vaddr="virtio_gpu_mmio_vaddr" />
+        <!-- log_drain_rings: optional debug output -->
+        <map mr="log_drain_rings" vaddr="0x7000000" perms="rw"
+             setvar_vaddr="log_drain_rings_vaddr" />
+    </protection_domain>
+
+    <!-- Channel CH_FB_PD (71): controller(id=71, pp=true) → framebuffer_pd(id=0)
+         All MSG_FB_* client requests are routed through the controller. -->
+    <channel>
+        <end pd="controller"     id="71" pp="true" />
+        <end pd="framebuffer_pd" id="0" />
+    </channel>
+
+    <!-- Channel: framebuffer_pd(id=2, pp=true) → gpu_sched(id=7)
+         framebuffer_pd PPCs into gpu_sched for OP_GPU_SUBMIT_CMD on Sparky path. -->
+    <channel>
+        <end pd="framebuffer_pd" id="2" pp="true" />
+        <end pd="gpu_sched"      id="7" />
+    </channel>
+
 </system>
