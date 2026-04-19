@@ -1,0 +1,4 @@
+[submodule "sddf"]
+	path = dep/sddf
+	url = https://github.com/au-ts/sddf
+	branch = main

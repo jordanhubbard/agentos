@@ -1,0 +1,20 @@
+# Copyright 2024, UNSW
+#
+# SPDX-License-Identifier: BSD-2-Clause
+
+[package]
+name = "vmm"
+version = "0.1.0"
+edition = "2021"
+authors = ["Ivan Velickovic <i.velickovic@unsw.edu.au>"]
+license = "BSD-2-Clause"
+
+[[bin]]
+name = "vmm"
+path = "src/vmm.rs"
+
+[dependencies.sel4-microkit]
+# Temporarily use fork of rust-seL4 until all the changes
+# we need are upstreamed
+git = "https://github.com/Ivan-Velickovic/rust-seL4"
+branch = "dev"
