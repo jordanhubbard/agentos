@@ -145,6 +145,61 @@ typedef enum {
     MSG_VIBE_NOTIFY_SWAP       = 0x0700,  /* vibe_engine -> controller: swap approved */
     MSG_VIBE_NOTIFY_ROLLBACK   = 0x0701,  /* vibe_engine -> controller: rollback */
 
+    /* Generic Serial PD (0x1000–0x100F) */
+    MSG_SERIAL_OPEN       = 0x1000,  /* claim serial port → MR1=client_slot */
+    MSG_SERIAL_CLOSE      = 0x1001,  /* release slot */
+    MSG_SERIAL_WRITE      = 0x1002,  /* MR1=slot MR2=offset MR3=len → MR1=written */
+    MSG_SERIAL_READ       = 0x1003,  /* MR1=slot MR2=max → MR1=avail */
+    MSG_SERIAL_STATUS     = 0x1004,  /* MR1=slot → MR1=baud MR2=rx_count MR3=tx_count */
+    MSG_SERIAL_CONFIGURE  = 0x1005,  /* MR1=slot MR2=baud MR3=flags → ok */
+
+    /* Generic Network PD (0x1010–0x101F) */
+    MSG_NET_OPEN          = 0x1010,  /* claim interface → MR1=handle */
+    MSG_NET_CLOSE         = 0x1011,  /* release handle */
+    MSG_NET_SEND          = 0x1012,  /* MR1=handle MR2=offset MR3=len → ok */
+    MSG_NET_RECV          = 0x1013,  /* MR1=handle → MR1=len (zero-copy) */
+    MSG_NET_STATUS        = 0x1014,  /* MR1=handle → MR1=link MR2=rx MR3=tx */
+    MSG_NET_CONFIGURE     = 0x1015,  /* MR1=handle MR2=flags MR3=mtu → ok */
+    MSG_NET_FILTER_ADD    = 0x1016,  /* MR1=handle MR2=rule_id → ok */
+    MSG_NET_FILTER_REMOVE = 0x1017,  /* MR1=handle MR2=rule_id → ok */
+
+    /* Generic Block PD (0x1020–0x102F) */
+    MSG_BLOCK_OPEN        = 0x1020,  /* claim partition → MR1=handle */
+    MSG_BLOCK_CLOSE       = 0x1021,  /* release handle */
+    MSG_BLOCK_READ        = 0x1022,  /* MR1=handle MR2=lba_lo MR3=lba_hi MR4=sectors → data in shmem */
+    MSG_BLOCK_WRITE       = 0x1023,  /* MR1=handle MR2=lba_lo MR3=lba_hi MR4=sectors → ok */
+    MSG_BLOCK_FLUSH       = 0x1024,  /* MR1=handle → ok */
+    MSG_BLOCK_STATUS      = 0x1025,  /* MR1=handle → MR1=sector_count MR2=sector_sz MR3=ro */
+    MSG_BLOCK_TRIM        = 0x1026,  /* MR1=handle MR2=lba_lo MR3=lba_hi MR4=sectors → ok */
+
+    /* Generic USB PD (0x1030–0x103F) */
+    MSG_USB_ENUMERATE     = 0x1030,  /* trigger enumeration → MR1=device_count */
+    MSG_USB_LIST          = 0x1031,  /* → device list in shmem, MR1=count */
+    MSG_USB_OPEN          = 0x1032,  /* MR1=dev_index → MR1=handle */
+    MSG_USB_CLOSE         = 0x1033,  /* MR1=handle → ok */
+    MSG_USB_CONTROL       = 0x1034,  /* MR1=handle setup in shmem → ok */
+    MSG_USB_BULK_IN       = 0x1035,  /* MR1=handle MR2=ep MR3=max → data in shmem, MR1=actual */
+    MSG_USB_BULK_OUT      = 0x1036,  /* MR1=handle MR2=ep MR3=len data in shmem → ok */
+    MSG_USB_STATUS        = 0x1037,  /* MR1=handle → MR1=state MR2=err */
+
+    /* Generic Timer PD (0x1040–0x104F) */
+    MSG_TIMER_CREATE      = 0x1040,  /* MR1=period_us MR2=flags → MR1=timer_id */
+    MSG_TIMER_DESTROY     = 0x1041,  /* MR1=timer_id → ok */
+    MSG_TIMER_START       = 0x1042,  /* MR1=timer_id → ok */
+    MSG_TIMER_STOP        = 0x1043,  /* MR1=timer_id → ok */
+    MSG_TIMER_STATUS      = 0x1044,  /* MR1=timer_id → MR1=running MR2=elapsed_us */
+    MSG_TIMER_CONFIGURE   = 0x1045,  /* MR1=timer_id MR2=period_us → ok */
+    MSG_TIMER_SET_RTC     = 0x1046,  /* MR1=unix_ts_lo MR2=unix_ts_hi → ok */
+    MSG_TIMER_GET_RTC     = 0x1047,  /* → MR1=unix_ts_lo MR2=unix_ts_hi */
+
+    /* Generic IRQ PD (0x1050–0x105F) */
+    MSG_IRQ_REGISTER      = 0x1050,  /* MR1=irq_num MR2=notify_ch → ok */
+    MSG_IRQ_UNREGISTER    = 0x1051,  /* MR1=irq_num → ok */
+    MSG_IRQ_ACKNOWLEDGE   = 0x1052,  /* MR1=irq_num → ok */
+    MSG_IRQ_MASK          = 0x1053,  /* MR1=irq_num → ok */
+    MSG_IRQ_UNMASK        = 0x1054,  /* MR1=irq_num → ok */
+    MSG_IRQ_STATUS        = 0x1055,  /* MR1=irq_num → MR1=masked MR2=pending MR3=count */
+
 } agentos_msg_tag_t;
 
 /*
@@ -355,6 +410,15 @@ typedef enum {
 #define CH_SPAWN_SERVER       20   /* controller -> spawn_server (PPC) */
 #define CH_NET_SERVER         21   /* controller -> net_server (PPC) */
 #define CH_NET_TIMER          59   /* controller -> net_server (lwIP 10ms tick notify) */
+
+/* Generic Device PD channel IDs (from controller perspective) */
+#define CH_SERIAL_PD    61u  /* controller <-> serial_pd */
+#define CH_NET_PD       62u  /* controller <-> net_pd */
+#define CH_BLOCK_PD     63u  /* controller <-> block_pd */
+#define CH_USB_PD       64u  /* controller <-> usb_pd */
+#define CH_TIMER_PD     65u  /* controller <-> timer_pd */
+#define CH_IRQ_PD       66u  /* controller <-> irq_pd */
+
 #define CH_VIRTIO_BLK         22   /* controller -> virtio_blk (PPC) */
 #define CH_APP_MANAGER        23   /* controller -> app_manager (PPC) */
 #define CH_HTTP_SVC           24   /* controller -> http_svc (PPC) */
