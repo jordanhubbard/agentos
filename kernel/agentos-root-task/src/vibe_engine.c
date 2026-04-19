@@ -37,12 +37,14 @@
 #define AGENTOS_DEBUG 1
 #include "agentos.h"
 #include "barrier.h"
+#include "contracts/vibeos_contract.h"
 #include <stdint.h>
 #include <stdbool.h>
 
 /* ── Channel IDs (must match agentos.system) ────────────────────────── */
-#define CH_AGENT   0   /* Agents PPC in here */
-#define CH_CTRL    1   /* Notify controller for swap execution */
+#define CH_AGENT   0   /* Agents PPC in here (init_agent / workers) */
+#define CH_CTRL    1   /* Notify controller for vibe-swap execution */
+#define CH_VMM     2   /* PPC to vm_manager — vibeOS lifecycle (pp=true this end) */
 
 /* ── Op codes ───────────────────────────────────────────────────────── */
 #define OP_VIBE_PROPOSE           0x40
@@ -712,15 +714,357 @@ static microkit_msginfo handle_list_services(void) {
     return microkit_msginfo_new(0, 3);
 }
 
+/* ═══════════════════════════════════════════════════════════════════════
+ * VibeOS Lifecycle API — VIBEOS_OP_CREATE through VIBEOS_OP_MIGRATE
+ *
+ * Wire format: MR0 = opcode (0xB001..0xB009), remaining MRs per op.
+ * All handlers return MR0=vibeos_error_t, additional MRs on success.
+ *
+ * Shared memory:
+ *   vm_list_ro_vaddr — read-only view of vm_manager's vm_list_shmem.
+ *     vm_manager writes vm_list_entry_t[] there on OP_VM_LIST; we read it.
+ * ═══════════════════════════════════════════════════════════════════════ */
+
+/* vm_list_shmem (r) set by Microkit linker */
+uintptr_t vm_list_ro_vaddr;
+
+/* ── VOS instance table ─────────────────────────────────────────────── */
+#define MAX_VOS_INSTANCES  4
+
+typedef struct {
+    bool     active;
+    uint32_t handle;     /* opaque handle returned to caller; never reused */
+    uint32_t vm_slot;    /* slot_id returned by OP_VM_CREATE */
+    uint8_t  os_type;    /* 0=linux, 1=freebsd */
+    uint8_t  state;      /* vibeos_state_t */
+    uint32_t ram_mb;
+    uint32_t dev_mask;   /* GUEST_DEV_* bitmask of bound devices */
+} vos_instance_t;
+
+static vos_instance_t s_vos[MAX_VOS_INSTANCES];
+static uint32_t       s_next_handle = 1;  /* 0 is the null/invalid handle */
+
+static int vos_find(uint32_t handle)
+{
+    for (int i = 0; i < MAX_VOS_INSTANCES; i++)
+        if (s_vos[i].active && s_vos[i].handle == handle) return i;
+    return -1;
+}
+
+static int vos_alloc(void)
+{
+    for (int i = 0; i < MAX_VOS_INSTANCES; i++)
+        if (!s_vos[i].active) return i;
+    return -1;
+}
+
+/* ── VIBEOS_OP_CREATE ──────────────────────────────────────────────────
+ *
+ * Input:  MR0=VIBEOS_OP_CREATE  MR1=os_type  MR2=ram_mb  MR3=dev_flags
+ * Output: MR0=vibeos_error_t    MR1=handle (on VIBEOS_OK)
+ *
+ * Sequence:
+ *   1. Validate inputs.
+ *   2. Allocate VOS instance slot.
+ *   3. PPC to vm_manager: OP_VM_CREATE → vm_slot.
+ *   4. PPC to vm_manager: OP_VM_START  → transitions guest to BOOTING.
+ *   5. Record instance; return handle.
+ *
+ * Guest reaches VIBEOS_STATE_RUNNING asynchronously when linux_vmm fires
+ * EVENT_GUEST_READY on the EventBus.  The caller must poll STATUS or
+ * subscribe to that event to detect readiness.
+ * ─────────────────────────────────────────────────────────────────────── */
+static microkit_msginfo handle_vos_create(void)
+{
+    uint32_t os_type   = (uint32_t)microkit_mr_get(1);
+    uint32_t ram_mb    = (uint32_t)microkit_mr_get(2);
+    uint32_t dev_flags = (uint32_t)microkit_mr_get(3);
+
+    if (os_type > 1) {
+        microkit_mr_set(0, VIBEOS_ERR_BAD_TYPE);
+        return microkit_msginfo_new(0, 1);
+    }
+    if (ram_mb == 0 || ram_mb > 8192) {
+        microkit_mr_set(0, VIBEOS_ERR_OOM);
+        return microkit_msginfo_new(0, 1);
+    }
+
+    int slot = vos_alloc();
+    if (slot < 0) {
+        microkit_mr_set(0, VIBEOS_ERR_OOM);
+        return microkit_msginfo_new(0, 1);
+    }
+
+    /* ── PPC to vm_manager: create VM slot ──────────────────────────── */
+    microkit_mr_set(0, OP_VM_CREATE);
+    microkit_mr_set(1, 0);       /* label_vaddr: unnamed at creation time */
+    microkit_mr_set(2, ram_mb);
+    microkit_msginfo vm_r = microkit_ppcall(CH_VMM,
+                                microkit_msginfo_new(OP_VM_CREATE, 3));
+    (void)vm_r;
+    uint32_t vm_ok   = (uint32_t)microkit_mr_get(0);
+    uint32_t vm_slot = (uint32_t)microkit_mr_get(1);
+
+    if (vm_ok != 0) {
+        log_drain_write(7, 7, "[vibe_engine] VOS_CREATE: vm_manager rejected CREATE\n");
+        microkit_mr_set(0, VIBEOS_ERR_OOM);
+        return microkit_msginfo_new(0, 1);
+    }
+
+    /* ── PPC to vm_manager: start the VM ────────────────────────────── */
+    microkit_mr_set(0, OP_VM_START);
+    microkit_mr_set(1, vm_slot);
+    (void)microkit_ppcall(CH_VMM, microkit_msginfo_new(OP_VM_START, 2));
+
+    /* ── Record instance ─────────────────────────────────────────────── */
+    uint32_t handle = s_next_handle++;
+    s_vos[slot].active   = true;
+    s_vos[slot].handle   = handle;
+    s_vos[slot].vm_slot  = vm_slot;
+    s_vos[slot].os_type  = (uint8_t)os_type;
+    s_vos[slot].state    = (uint8_t)VIBEOS_STATE_BOOTING;
+    s_vos[slot].ram_mb   = ram_mb;
+    s_vos[slot].dev_mask = dev_flags;
+
+    log_drain_write(7, 7, "[vibe_engine] VOS_CREATE: ok\n");
+
+    microkit_mr_set(0, VIBEOS_OK);
+    microkit_mr_set(1, handle);
+    return microkit_msginfo_new(0, 2);
+}
+
+/* ── VIBEOS_OP_DESTROY ─────────────────────────────────────────────────
+ *
+ * Input:  MR0=VIBEOS_OP_DESTROY  MR1=handle
+ * Output: MR0=vibeos_error_t
+ * ─────────────────────────────────────────────────────────────────────── */
+static microkit_msginfo handle_vos_destroy(void)
+{
+    uint32_t handle = (uint32_t)microkit_mr_get(1);
+    int slot = vos_find(handle);
+    if (slot < 0) {
+        microkit_mr_set(0, VIBEOS_ERR_NO_HANDLE);
+        return microkit_msginfo_new(0, 1);
+    }
+
+    uint32_t vm_slot = s_vos[slot].vm_slot;
+
+    /* Stop then destroy in vm_manager */
+    microkit_mr_set(0, OP_VM_STOP);
+    microkit_mr_set(1, vm_slot);
+    (void)microkit_ppcall(CH_VMM, microkit_msginfo_new(OP_VM_STOP, 2));
+
+    microkit_mr_set(0, OP_VM_DESTROY);
+    microkit_mr_set(1, vm_slot);
+    (void)microkit_ppcall(CH_VMM, microkit_msginfo_new(OP_VM_DESTROY, 2));
+
+    s_vos[slot].active = false;
+    s_vos[slot].state  = (uint8_t)VIBEOS_STATE_DEAD;
+
+    log_drain_write(7, 7, "[vibe_engine] VOS_DESTROY: ok\n");
+
+    microkit_mr_set(0, VIBEOS_OK);
+    return microkit_msginfo_new(0, 1);
+}
+
+/* ── VIBEOS_OP_STATUS ──────────────────────────────────────────────────
+ *
+ * Input:  MR0=VIBEOS_OP_STATUS  MR1=handle
+ * Output: MR0=result  MR1=handle  MR2=state  MR3=os_type
+ *         MR4=ram_mb  MR5=dev_mask
+ *
+ * Also queries vm_manager (OP_VM_INFO) to get fresh vm_state in MR1;
+ * if the VM reports running we promote the local state to RUNNING.
+ * ─────────────────────────────────────────────────────────────────────── */
+static microkit_msginfo handle_vos_status(void)
+{
+    uint32_t handle = (uint32_t)microkit_mr_get(1);
+    int slot = vos_find(handle);
+    if (slot < 0) {
+        microkit_mr_set(0, VIBEOS_ERR_NO_HANDLE);
+        return microkit_msginfo_new(0, 1);
+    }
+
+    /* Refresh state from vm_manager */
+    microkit_mr_set(0, OP_VM_INFO);
+    microkit_mr_set(1, s_vos[slot].vm_slot);
+    (void)microkit_ppcall(CH_VMM, microkit_msginfo_new(OP_VM_INFO, 2));
+    uint32_t vm_ok    = (uint32_t)microkit_mr_get(0);
+    uint32_t vm_state = (uint32_t)microkit_mr_get(1);
+
+    /* VM_SLOT_RUNNING (3 in vmm_mux) → VIBEOS_STATE_RUNNING */
+    if (vm_ok == 0 && vm_state == 3 &&
+        s_vos[slot].state == (uint8_t)VIBEOS_STATE_BOOTING) {
+        s_vos[slot].state = (uint8_t)VIBEOS_STATE_RUNNING;
+    }
+
+    microkit_mr_set(0, VIBEOS_OK);
+    microkit_mr_set(1, handle);
+    microkit_mr_set(2, s_vos[slot].state);
+    microkit_mr_set(3, s_vos[slot].os_type);
+    microkit_mr_set(4, s_vos[slot].ram_mb);
+    microkit_mr_set(5, s_vos[slot].dev_mask);
+    return microkit_msginfo_new(0, 6);
+}
+
+/* ── VIBEOS_OP_LIST ────────────────────────────────────────────────────
+ *
+ * Input:  MR0=VIBEOS_OP_LIST  MR1=offset
+ * Output: MR0=result  MR1=count  MR2..MR(1+count)=handles[]
+ *
+ * Returns up to 16 active handles per call starting at offset.
+ * ─────────────────────────────────────────────────────────────────────── */
+static microkit_msginfo handle_vos_list(void)
+{
+    uint32_t offset = (uint32_t)microkit_mr_get(1);
+    uint32_t count  = 0;
+    uint32_t seen   = 0;
+
+    for (int i = 0; i < MAX_VOS_INSTANCES && count < 16; i++) {
+        if (!s_vos[i].active) continue;
+        if (seen < offset) { seen++; continue; }
+        microkit_mr_set(2 + count, s_vos[i].handle);
+        count++;
+        seen++;
+    }
+
+    microkit_mr_set(0, VIBEOS_OK);
+    microkit_mr_set(1, count);
+    return microkit_msginfo_new(0, 2 + count);
+}
+
+/* ── VIBEOS_OP_BIND_DEVICE / VIBEOS_OP_UNBIND_DEVICE ──────────────────
+ *
+ * Input:  MR0=op  MR1=handle  MR2=dev_type (exactly one GUEST_DEV_* bit)
+ * Output: MR0=vibeos_error_t
+ * ─────────────────────────────────────────────────────────────────────── */
+static microkit_msginfo handle_vos_device(uint32_t op)
+{
+    uint32_t handle   = (uint32_t)microkit_mr_get(1);
+    uint32_t dev_type = (uint32_t)microkit_mr_get(2);
+
+    int slot = vos_find(handle);
+    if (slot < 0) {
+        microkit_mr_set(0, VIBEOS_ERR_NO_HANDLE);
+        return microkit_msginfo_new(0, 1);
+    }
+    /* dev_type must be exactly one bit */
+    if (dev_type == 0 || (dev_type & (dev_type - 1)) != 0) {
+        microkit_mr_set(0, VIBEOS_ERR_BAD_TYPE);
+        return microkit_msginfo_new(0, 1);
+    }
+    if (s_vos[slot].state == (uint8_t)VIBEOS_STATE_DEAD ||
+        s_vos[slot].state == (uint8_t)VIBEOS_STATE_CREATING) {
+        microkit_mr_set(0, VIBEOS_ERR_WRONG_STATE);
+        return microkit_msginfo_new(0, 1);
+    }
+
+    if (op == VIBEOS_OP_BIND_DEVICE)
+        s_vos[slot].dev_mask |= dev_type;
+    else
+        s_vos[slot].dev_mask &= ~dev_type;
+
+    microkit_mr_set(0, VIBEOS_OK);
+    return microkit_msginfo_new(0, 1);
+}
+
+/* ── VIBEOS_OP_SNAPSHOT ────────────────────────────────────────────────
+ *
+ * Input:  MR0=VIBEOS_OP_SNAPSHOT  MR1=handle
+ * Output: MR0=result  MR1=handle  MR2=snap_hash_lo  MR3=snap_hash_hi
+ *
+ * Forwards to vm_manager OP_VM_SNAPSHOT.
+ * ─────────────────────────────────────────────────────────────────────── */
+static microkit_msginfo handle_vos_snapshot(void)
+{
+    uint32_t handle = (uint32_t)microkit_mr_get(1);
+    int slot = vos_find(handle);
+    if (slot < 0) {
+        microkit_mr_set(0, VIBEOS_ERR_NO_HANDLE);
+        return microkit_msginfo_new(0, 1);
+    }
+    if (s_vos[slot].state != (uint8_t)VIBEOS_STATE_RUNNING &&
+        s_vos[slot].state != (uint8_t)VIBEOS_STATE_PAUSED) {
+        microkit_mr_set(0, VIBEOS_ERR_WRONG_STATE);
+        return microkit_msginfo_new(0, 1);
+    }
+
+    s_vos[slot].state = (uint8_t)VIBEOS_STATE_SNAPSHOT;
+
+    microkit_mr_set(0, OP_VM_SNAPSHOT);
+    microkit_mr_set(1, s_vos[slot].vm_slot);
+    (void)microkit_ppcall(CH_VMM, microkit_msginfo_new(OP_VM_SNAPSHOT, 2));
+    uint32_t ok   = (uint32_t)microkit_mr_get(0);
+    uint32_t h_lo = (uint32_t)microkit_mr_get(1);
+    uint32_t h_hi = (uint32_t)microkit_mr_get(2);
+
+    s_vos[slot].state = (uint8_t)VIBEOS_STATE_RUNNING;
+
+    if (ok != 0) {
+        microkit_mr_set(0, VIBEOS_ERR_NOT_IMPL);
+        return microkit_msginfo_new(0, 1);
+    }
+
+    microkit_mr_set(0, VIBEOS_OK);
+    microkit_mr_set(1, handle);
+    microkit_mr_set(2, h_lo);
+    microkit_mr_set(3, h_hi);
+    return microkit_msginfo_new(0, 4);
+}
+
+/* ── VIBEOS_OP_RESTORE ─────────────────────────────────────────────────
+ *
+ * Input:  MR0=VIBEOS_OP_RESTORE  MR1=handle  MR2=snap_lo  MR3=snap_hi
+ * Output: MR0=vibeos_error_t
+ * ─────────────────────────────────────────────────────────────────────── */
+static microkit_msginfo handle_vos_restore(void)
+{
+    uint32_t handle  = (uint32_t)microkit_mr_get(1);
+    uint32_t snap_lo = (uint32_t)microkit_mr_get(2);
+    uint32_t snap_hi = (uint32_t)microkit_mr_get(3);
+
+    int slot = vos_find(handle);
+    if (slot < 0) {
+        microkit_mr_set(0, VIBEOS_ERR_NO_HANDLE);
+        return microkit_msginfo_new(0, 1);
+    }
+
+    microkit_mr_set(0, OP_VM_RESTORE);
+    microkit_mr_set(1, s_vos[slot].vm_slot);
+    microkit_mr_set(2, snap_lo);
+    microkit_mr_set(3, snap_hi);
+    (void)microkit_ppcall(CH_VMM, microkit_msginfo_new(OP_VM_RESTORE, 4));
+    uint32_t ok = (uint32_t)microkit_mr_get(0);
+
+    if (ok != 0) {
+        microkit_mr_set(0, VIBEOS_ERR_NOT_IMPL);
+        return microkit_msginfo_new(0, 1);
+    }
+
+    s_vos[slot].state = (uint8_t)VIBEOS_STATE_BOOTING;
+    microkit_mr_set(0, VIBEOS_OK);
+    return microkit_msginfo_new(0, 1);
+}
+
+/* ── VIBEOS_OP_MIGRATE — Phase 4+ placeholder ──────────────────────── */
+static microkit_msginfo handle_vos_migrate(void)
+{
+    microkit_mr_set(0, VIBEOS_ERR_NOT_IMPL);
+    return microkit_msginfo_new(0, 1);
+}
+
 /* ── Microkit entry points ──────────────────────────────────────────── */
 
 void init(void) {
     log_drain_write(7, 7, "[vibe_engine] VibeEngine PD starting...\n");
 
     /* Initialize proposal table */
-    for (int i = 0; i < MAX_PROPOSALS; i++) {
+    for (int i = 0; i < MAX_PROPOSALS; i++)
         proposals[i].state = PROP_STATE_FREE;
-    }
+
+    /* Initialize VOS instance table */
+    for (int i = 0; i < MAX_VOS_INSTANCES; i++)
+        s_vos[i].active = false;
 
     /* Register known services */
     register_services();
@@ -797,6 +1141,7 @@ microkit_msginfo protected(microkit_channel ch, microkit_msginfo msg) {
     uint32_t op = (uint32_t)microkit_mr_get(0);
 
     switch (op) {
+        /* ── Vibe-engine hot-swap ops (0x40–0x47) ── */
         case OP_VIBE_PROPOSE:            return handle_propose();
         case OP_VIBE_VALIDATE:           return handle_validate();
         case OP_VIBE_EXECUTE:            return handle_execute();
@@ -805,6 +1150,18 @@ microkit_msginfo protected(microkit_channel ch, microkit_msginfo msg) {
         case OP_VIBE_HEALTH:             return handle_health();
         case OP_VIBE_REGISTER_SERVICE:   return handle_register_service(ch);
         case OP_VIBE_LIST_SERVICES:      return handle_list_services();
+
+        /* ── VibeOS lifecycle ops (0xB001–0xB009) ── */
+        case VIBEOS_OP_CREATE:           return handle_vos_create();
+        case VIBEOS_OP_DESTROY:          return handle_vos_destroy();
+        case VIBEOS_OP_STATUS:           return handle_vos_status();
+        case VIBEOS_OP_LIST:             return handle_vos_list();
+        case VIBEOS_OP_BIND_DEVICE:      return handle_vos_device(VIBEOS_OP_BIND_DEVICE);
+        case VIBEOS_OP_UNBIND_DEVICE:    return handle_vos_device(VIBEOS_OP_UNBIND_DEVICE);
+        case VIBEOS_OP_SNAPSHOT:         return handle_vos_snapshot();
+        case VIBEOS_OP_RESTORE:          return handle_vos_restore();
+        case VIBEOS_OP_MIGRATE:          return handle_vos_migrate();
+
         default:
             log_drain_write(7, 7, "[vibe_engine] Unknown op\n");
             microkit_mr_set(0, VIBE_ERR_INTERNAL);

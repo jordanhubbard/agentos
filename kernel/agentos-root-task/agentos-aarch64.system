@@ -112,10 +112,12 @@
         <map mr="agentfs_store" vaddr="0x5000000" perms="rw" setvar_vaddr="agentfs_store_vaddr" />
     </protection_domain>
 
-    <!-- VibeEngine: passive hot-swap lifecycle server -->
+    <!-- VibeEngine: passive hot-swap lifecycle server + vibeOS lifecycle API -->
     <protection_domain name="vibe_engine" priority="140" passive="true">
         <program_image path="vibe_engine.elf" />
-        <map mr="vibe_staging" vaddr="0x4000000" perms="rw" setvar_vaddr="vibe_staging_vaddr" />
+        <map mr="vibe_staging"  vaddr="0x4000000" perms="rw" setvar_vaddr="vibe_staging_vaddr" />
+        <!-- vm_list_shmem (r): read vm_list_entry_t[] for VOS_STATUS / VOS_LIST -->
+        <map mr="vm_list_shmem" vaddr="0x6100000" perms="r"  setvar_vaddr="vm_list_ro_vaddr" />
     </protection_domain>
 
     <!-- Swap slots: 4 pre-allocated PDs for live WASM hot-swap -->
@@ -722,6 +724,40 @@
         <end pd="controller"  id="59" />
         <end pd="net_server"  id="12" />
     </channel>
+
+    <!-- ═══════════════════════════════════════════════════════════════════
+         VM_MANAGER — multi-VM lifecycle manager (wraps vmm_mux)
+         Passive PD at priority 145.  Receives OP_VM_CREATE/START/STOP/…
+         from vibe_engine (vibeOS lifecycle) and controller.
+
+         Channels (vm_manager perspective):
+           id=0 — vibe_engine → vm_manager (pp=true on vibe_engine end)
+           id=1 — controller  → vm_manager (pp=true on controller end)
+
+         vm_list_shmem (4KB) is mapped rw into vm_manager and r into
+         vibe_engine so STATUS/LIST replies can pass vm_list_entry_t arrays.
+         ═══════════════════════════════════════════════════════════════════ -->
+
+    <memory_region name="vm_list_shmem" size="0x1000" />
+
+    <protection_domain name="vm_manager" priority="145" passive="true">
+        <program_image path="vm_manager.elf" />
+        <map mr="vm_list_shmem" vaddr="0x6000000" perms="rw"
+             setvar_vaddr="vm_list_vaddr" />
+    </protection_domain>
+
+    <!-- vibe_engine (id=2, pp) → vm_manager (id=0) — vibeOS lifecycle PPCs -->
+    <channel>
+        <end pd="vibe_engine" id="2" pp="true" />
+        <end pd="vm_manager"  id="0" />
+    </channel>
+
+    <!-- controller (id=45, pp) → vm_manager (id=1) — direct management PPCs -->
+    <channel>
+        <end pd="controller"  id="45" pp="true" />
+        <end pd="vm_manager"  id="1" />
+    </channel>
+
 
 
 </system>
