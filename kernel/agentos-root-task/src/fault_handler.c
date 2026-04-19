@@ -129,7 +129,7 @@ static void handle_fault_policy(uint32_t pd_slot) {
     if (p->total_faults < 255u) p->total_faults++;
 
     if (p->total_faults >= p->escalate_after) {
-        console_log(13, 13,
+        log_drain_write(13, 13,
             "[fault_handler] PD exceeded escalation threshold, notifying controller\n");
         /* notify controller channel */
         microkit_notify(FH_CH_WATCHDOG);
@@ -138,10 +138,10 @@ static void handle_fault_policy(uint32_t pd_slot) {
 
     if (p->restart_count < p->max_restarts) {
         p->restart_count++;
-        console_log(13, 13, "[fault_handler] restarting PD (within restart budget)\n");
+        log_drain_write(13, 13, "[fault_handler] restarting PD (within restart budget)\n");
         /* In production: seL4_TCB_Resume(pd_tcb[pd_slot]) */
     } else {
-        console_log(13, 13,
+        log_drain_write(13, 13,
             "[fault_handler] PD exceeded max restarts, killing\n");
         /* In production: seL4_TCB_Suspend(pd_tcb[pd_slot]) */
     }
@@ -165,7 +165,7 @@ static void fault_handler_init(void) {
     /* Initialize per-PD restart policies to defaults */
     fault_policy_init();
 
-    console_log(13, 13, "[fault_handler] Initialized. capacity=5000+ fault entries, 48B each\n");
+    log_drain_write(13, 13, "[fault_handler] Initialized. capacity=5000+ fault entries, 48B each\n");
 }
 
 /* ── Append fault entry to ring ───────────────────────────────────────────── */
@@ -197,7 +197,7 @@ static void fault_append(uint32_t fault_type, uint32_t pd_id,
 /* ── Log a human-readable fault message ───────────────────────────────────── */
 static void fault_log_msg(uint32_t fault_type, uint32_t pd_id,
                            uint64_t fault_addr, uint64_t fault_ip) {
-    console_log(13, 13, "[fault_handler] FAULT pd=");
+    log_drain_write(13, 13, "[fault_handler] FAULT pd=");
 
     /* Print pd_id as decimal (simple) */
     char buf[12];
@@ -214,13 +214,13 @@ static void fault_log_msg(uint32_t fault_type, uint32_t pd_id,
         }
     }
     buf[i] = '\0';
-    console_log(13, 13, buf);
+    log_drain_write(13, 13, buf);
 
     switch (fault_type) {
-    console_log(13, 13, " VM_FAULT CAP_FAULT UNKNOWN_SYS USER_EXC UNKNOWN");
+    log_drain_write(13, 13, " VM_FAULT CAP_FAULT UNKNOWN_SYS USER_EXC UNKNOWN");
     }
 
-    console_log(13, 13, " addr=0x");
+    log_drain_write(13, 13, " addr=0x");
 
     /* Print fault_addr as hex */
     char hexbuf[17];
@@ -246,7 +246,7 @@ static void fault_log_msg(uint32_t fault_type, uint32_t pd_id,
         for (const char *_s = hexbuf; *_s; _s++) *_cl_p++ = *_s;
         for (const char *_s = " ip=0x"; *_s; _s++) *_cl_p++ = *_s;
         *_cl_p = 0;
-        console_log(13, 13, _cl_buf);
+        log_drain_write(13, 13, _cl_buf);
     }
 
     /* Print fault_ip as hex */
@@ -272,7 +272,7 @@ static void fault_log_msg(uint32_t fault_type, uint32_t pd_id,
         for (const char *_s = hexbuf; *_s; _s++) *_cl_p++ = *_s;
         for (const char *_s = "\n"; *_s; _s++) *_cl_p++ = *_s;
         *_cl_p = 0;
-        console_log(13, 13, _cl_buf);
+        log_drain_write(13, 13, _cl_buf);
     }
     (void)fault_ip; /* already used above */
 }
@@ -293,7 +293,7 @@ static void forward_cap_fault_to_audit(uint32_t pd_id, uint64_t cap_slot) {
      */
     (void)pd_id;
     (void)cap_slot;
-    console_log(13, 13, "[fault_handler] CAP_FAULT logged in ring — controller will forward to cap_audit_log\n");
+    log_drain_write(13, 13, "[fault_handler] CAP_FAULT logged in ring — controller will forward to cap_audit_log\n");
 }
 
 /* ── Notify watchdog (controller) to consider respawn ─────────────────────── */
@@ -397,7 +397,7 @@ static microkit_msginfo handle_query(microkit_msginfo msg) {
         hdr->head  = 0;
         hdr->count = 0;
         hdr->drops = 0;
-        console_log(13, 13, "[fault_handler] Ring cleared by request\n");
+        log_drain_write(13, 13, "[fault_handler] Ring cleared by request\n");
         microkit_mr_set(0, 1);
         return microkit_msginfo_new(0, 1);
     }
@@ -420,7 +420,7 @@ static microkit_msginfo handle_query(microkit_msginfo msg) {
     }
 
     default:
-        console_log(13, 13, "[fault_handler] WARN: unknown query opcode\n");
+        log_drain_write(13, 13, "[fault_handler] WARN: unknown query opcode\n");
         microkit_mr_set(0, 0xFF);
         return microkit_msginfo_new(0, 1);
     }
@@ -431,7 +431,7 @@ static microkit_msginfo handle_query(microkit_msginfo msg) {
 /* ── Microkit entry points ────────────────────────────────────────────────── */
 void init(void) {
     fault_handler_init();
-    console_log(13, 13, "[fault_handler] Ready — priority 250, passive, monitoring all PD faults\n");
+    log_drain_write(13, 13, "[fault_handler] Ready — priority 250, passive, monitoring all PD faults\n");
 }
 
 microkit_msginfo protected(microkit_channel channel, microkit_msginfo msg) {

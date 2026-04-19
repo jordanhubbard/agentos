@@ -6,7 +6,7 @@
  *
  * We do NOT include agentos.h here because it transitively pulls in
  * <microkit.h> → <sel4/arch/syscalls.h>, which uses GNU asm register syntax
- console_log(15, 15, "");
+ log_drain_write(15, 15, "");
  * we forward-declare it directly — it is a plain external C function.
  *
  * SHA-256 and SHA-512 implemented from scratch.
@@ -1175,7 +1175,7 @@ bool vibe_verify_module(const uint8_t *wasm, size_t len,
 
     /* 1. Locate signature section */
     if (!wasm_find_sig_section(wasm, len, &sig_off, &sig_sec_total, &payload)) {
-        console_log(15, 15, "[vibe_verify] WARNING: no agentos.signature section found\n");
+        log_drain_write(15, 15, "[vibe_verify] WARNING: no agentos.signature section found\n");
 #if VIBE_VERIFY_MODE
         return false;
 #else
@@ -1191,11 +1191,11 @@ bool vibe_verify_module(const uint8_t *wasm, size_t len,
     /* 4. Check trusted_pubkey matches section pubkey (if caller provides one) */
     if (trusted_pubkey != NULL) {
         if (memcmp(trusted_pubkey, sec_pubkey, 32) != 0) {
-            console_log(15, 15, "[vibe_verify] ERROR: pubkey mismatch (untrusted module)\n");
+            log_drain_write(15, 15, "[vibe_verify] ERROR: pubkey mismatch (untrusted module)\n");
 #if VIBE_VERIFY_MODE
             return false;
 #else
-            console_log(15, 15, "[vibe_verify] WARNING: pubkey mismatch — dev mode, allowing\n");
+            log_drain_write(15, 15, "[vibe_verify] WARNING: pubkey mismatch — dev mode, allowing\n");
             return true;
 #endif
         }
@@ -1218,11 +1218,11 @@ bool vibe_verify_module(const uint8_t *wasm, size_t len,
 
     /* 6. Compare stored SHA-256 vs computed */
     if (memcmp(sec_sha256, computed_sha256, 32) != 0) {
-        console_log(15, 15, "[vibe_verify] ERROR: WASM content hash mismatch\n");
+        log_drain_write(15, 15, "[vibe_verify] ERROR: WASM content hash mismatch\n");
 #if VIBE_VERIFY_MODE
         return false;
 #else
-        console_log(15, 15, "[vibe_verify] WARNING: hash mismatch — dev mode, allowing\n");
+        log_drain_write(15, 15, "[vibe_verify] WARNING: hash mismatch — dev mode, allowing\n");
         return true;
 #endif
     }
@@ -1233,16 +1233,16 @@ bool vibe_verify_module(const uint8_t *wasm, size_t len,
      */
     ed_result = ed25519_verify_hash(sec_sig, computed_sha256, sec_pubkey);
     if (ed_result != 0) {
-        console_log(15, 15, "[vibe_verify] ERROR: Ed25519 signature invalid\n");
+        log_drain_write(15, 15, "[vibe_verify] ERROR: Ed25519 signature invalid\n");
 #if VIBE_VERIFY_MODE
         return false;
 #else
-        console_log(15, 15, "[vibe_verify] WARNING: bad Ed25519 sig — dev mode, allowing\n");
+        log_drain_write(15, 15, "[vibe_verify] WARNING: bad Ed25519 sig — dev mode, allowing\n");
         return true;
 #endif
     }
 
     /* 8. All checks passed */
-    console_log(15, 15, "[vibe_verify] OK: module signature verified\n");
+    log_drain_write(15, 15, "[vibe_verify] OK: module signature verified\n");
     return true;
 }

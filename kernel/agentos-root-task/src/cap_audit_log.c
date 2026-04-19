@@ -97,9 +97,9 @@ static void cap_audit_init(void) {
     hdr->count    = 0;
     hdr->drops    = 0;
 
-    console_log(5, 5, "[cap_audit_log] Ring initialized: ");
+    log_drain_write(5, 5, "[cap_audit_log] Ring initialized: ");
     /* Can't printf in Microkit, just log the fact */
-    console_log(5, 5, "capacity=8000+ entries, 32B each\n");
+    log_drain_write(5, 5, "capacity=8000+ entries, 32B each\n");
 }
 
 /* ── Append an audit entry ───────────────────────────────────────────────── */
@@ -125,9 +125,9 @@ static void cap_audit_append(uint32_t event_type, uint32_t agent_id,
     hdr->count++;
 
     if (event_type == CAP_EVENT_GRANT) {
-        console_log(5, 5, "[cap_audit_log] GRANT logged\n");
+        log_drain_write(5, 5, "[cap_audit_log] GRANT logged\n");
     } else {
-        console_log(5, 5, "[cap_audit_log] REVOKE logged\n");
+        log_drain_write(5, 5, "[cap_audit_log] REVOKE logged\n");
     }
 }
 
@@ -136,7 +136,7 @@ static void cap_audit_append(uint32_t event_type, uint32_t agent_id,
 void init(void) {
     agentos_log_boot("cap_audit_log");
     cap_audit_init();
-    console_log(5, 5, "[cap_audit_log] Ready — passive audit trail\n");
+    log_drain_write(5, 5, "[cap_audit_log] Ready — passive audit trail\n");
 }
 
 /*
@@ -179,7 +179,7 @@ microkit_msginfo protected(microkit_channel ch, microkit_msginfo msginfo) {
         if (event_type != CAP_EVENT_GRANT &&
             event_type != CAP_EVENT_REVOKE &&
             event_type != CAP_AUDIT_POLICY_RELOAD) {
-            console_log(5, 5, "[cap_audit_log] WARN: invalid event_type\n");
+            log_drain_write(5, 5, "[cap_audit_log] WARN: invalid event_type\n");
             microkit_mr_set(0, 1);  /* error */
             return microkit_msginfo_new(0, 1);
         }
@@ -187,7 +187,7 @@ microkit_msginfo protected(microkit_channel ch, microkit_msginfo msginfo) {
         cap_audit_append(event_type, agent_id, caps_mask, slot_id);
 
         if (event_type == CAP_AUDIT_POLICY_RELOAD) {
-            console_log(5, 5, "[cap_audit_log] POLICY_RELOAD logged\n");
+            log_drain_write(5, 5, "[cap_audit_log] POLICY_RELOAD logged\n");
         }
 
         microkit_mr_set(0, 0);  /* success */
@@ -292,7 +292,7 @@ microkit_msginfo protected(microkit_channel ch, microkit_msginfo msginfo) {
     }
 
     default:
-        console_log(5, 5, "[cap_audit_log] WARN: unknown opcode\n");
+        log_drain_write(5, 5, "[cap_audit_log] WARN: unknown opcode\n");
         microkit_mr_set(0, 0xFF);
         return microkit_msginfo_new(0, 1);
     }

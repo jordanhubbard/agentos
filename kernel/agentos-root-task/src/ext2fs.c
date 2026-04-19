@@ -31,7 +31,7 @@
 /* ── Microkit setvars (filled by linker) ─────────────────────────────────── */
 uintptr_t ext2_shmem_vaddr;          /* 64 KB I/O shmem, 0x3400000         */
 uintptr_t ext2_blk_dma_shmem_vaddr;  /* 32 KB DMA shmem shared w/ virtio_blk */
-uintptr_t console_rings_vaddr;       /* console ring region (agentos.h)    */
+uintptr_t log_drain_rings_vaddr;       /* console ring region (agentos.h)    */
 
 /* ── Channel IDs (local to ext2fs) ─────────────────────────────────────── */
 #define EXT2_CH_CTRL        0   /* controller PPCs in  */

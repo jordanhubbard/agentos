@@ -346,36 +346,36 @@
     </channel>
 
     <!-- ═══════════════════════════════════════════════════════════════════
-         CONSOLE MULTIPLEXER — "tmux for agentOS"
-         
-         Passive PD (priority 160) that multiplexes per-PD output streams
-         onto the debug UART with attach/detach/switch/broadcast semantics.
+         LOG DRAIN — structured ring-buffer drain (priority 160, passive)
+
+         Accepts OP_LOG_WRITE PPC calls from any PD, drains per-PD output
+         rings to the debug UART. No sessions, modes, or interactive semantics.
          ═══════════════════════════════════════════════════════════════════ -->
 
-    <!-- Console ring buffer: 16 × 4KB = 64KB shared output rings -->
-    <memory_region name="console_rings" size="0x10000" />
+    <!-- Log drain rings: 16 × 4KB = 64KB shared output rings -->
+    <memory_region name="log_drain_rings" size="0x10000" />
 
-    <protection_domain name="console_mux" priority="160" passive="true">
-        <program_image path="console_mux.elf" />
-        <map mr="console_rings" vaddr="0x8000000" perms="rw" setvar_vaddr="console_rings_vaddr" />
+    <protection_domain name="log_drain" priority="160" passive="true">
+        <program_image path="log_drain.elf" />
+        <map mr="log_drain_rings" vaddr="0x8000000" perms="rw" setvar_vaddr="log_drain_rings_vaddr" />
     </protection_domain>
 
-    <!-- Channel 55: controller <-> console_mux (attach/detach/list/mode/status) -->
+    <!-- Channel 55: controller <-> log_drain (OP_LOG_WRITE / OP_LOG_STATUS) -->
     <channel>
-        <end pd="controller"   id="55" pp="true" />
-        <end pd="console_mux"  id="0" />
+        <end pd="controller"  id="55" pp="true" />
+        <end pd="log_drain"   id="0" />
     </channel>
 
-    <!-- Channel 56: init_agent <-> console_mux (output notifications) -->
+    <!-- Channel 56: init_agent -> log_drain (output notifications) -->
     <channel>
-        <end pd="init_agent"   id="4" />
-        <end pd="console_mux"  id="1" />
+        <end pd="init_agent"  id="4" />
+        <end pd="log_drain"   id="1" />
     </channel>
 
-    <!-- Channel 57: event_bus <-> console_mux (event activity notifications) -->
+    <!-- Channel 57: event_bus -> log_drain (event activity notifications) -->
     <channel>
-        <end pd="event_bus"    id="55" />
-        <end pd="console_mux"  id="2" />
+        <end pd="event_bus"   id="55" />
+        <end pd="log_drain"   id="2" />
     </channel>
 
     <!-- Trace Recorder: passive stub, priority 128
@@ -723,39 +723,5 @@
         <end pd="net_server"  id="12" />
     </channel>
 
-    <!-- ═══════════════════════════════════════════════════════════════════
-         CONSOLE SHELL — interactive management console (priority 80)
-
-         On QEMU dev mode: reads commands from console_shell_ring (4KB
-         shared memory with bridge.rs); emits VM start/stop escape
-         sequences to the debug serial port.  The PL011 IRQ (33) is
-         owned by linux_vmm for guest passthrough so console_shell runs
-         in ring-buffer mode only on QEMU aarch64 — no UART MR or IRQ
-         is registered here.
-
-         On native RPi5/NUC hardware a separate board-specific system
-         file (boards/<board>/agentos.system) maps the physical UART MR
-         and wires CH_UART_IRQ (channel 3) to the correct GIC line.
-         ═══════════════════════════════════════════════════════════════════ -->
-
-    <memory_region name="console_shell_ring" size="0x1000" />
-
-    <protection_domain name="console_shell" priority="49">
-        <program_image path="console_shell.elf" />
-        <!-- Ring buffer shared with bridge.rs for dev-mode IPC -->
-        <map mr="console_shell_ring" vaddr="0x5100000" perms="rw"
-             setvar_vaddr="console_shell_ring_vaddr" />
-    </protection_domain>
-
-    <!-- controller notifies console_shell of VM state changes -->
-    <channel>
-        <end pd="controller"    id="41" />
-        <end pd="console_shell" id="0" />
-    </channel>
-    <!-- console_shell PPCs controller for VM management (native HW path) -->
-    <channel>
-        <end pd="console_shell" id="1" pp="true" />
-        <end pd="controller"    id="42" />
-    </channel>
 
 </system>

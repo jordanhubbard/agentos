@@ -41,7 +41,7 @@ void m3_FixedHeapReset(void);
 void wasm3_heap_reset(void) {
 #if d_m3FixedHeap
     m3_FixedHeapReset();
-    console_log(15, 15, "[wasm3_host] Fixed heap reset\n");
+    log_drain_write(15, 15, "[wasm3_host] Fixed heap reset\n");
 #endif
 }
 
@@ -66,14 +66,14 @@ static bool wasm3_host_validate_memory(IM3Runtime runtime) {
     uint32_t mem_size = 0;
     uint8_t *mem_ptr  = m3_GetMemory(runtime, &mem_size, 0);
     if (!mem_ptr) {
-        console_log(15, 15, "[wasm3_host] wasm3_host: no linear memory segment\n");
+        log_drain_write(15, 15, "[wasm3_host] wasm3_host: no linear memory segment\n");
         return true;   /* no memory declared — still valid */
     }
     if ((uintptr_t)mem_size > WASM_LINEAR_MEM_MAX) {
-        console_log(15, 15, "[wasm3_host] wasm3_host: linear memory exceeds cap\n");
+        log_drain_write(15, 15, "[wasm3_host] wasm3_host: linear memory exceeds cap\n");
         return false;
     }
-    console_log(15, 15, "[wasm3_host] wasm3_host: linear memory OK\n");
+    log_drain_write(15, 15, "[wasm3_host] wasm3_host: linear memory OK\n");
     return true;
 }
 
@@ -87,7 +87,7 @@ static bool wasm3_host_check_mem_access(IM3Runtime runtime,
     (void)m3_GetMemory(runtime, &mem_size, 0);
     if (mem_size == 0) return false;
     if ((uint64_t)wasm_offset + len > (uint64_t)mem_size) {
-        console_log(15, 15, "[wasm3_host] wasm3_host: OOB access detected\n");
+        log_drain_write(15, 15, "[wasm3_host] wasm3_host: OOB access detected\n");
         return false;
     }
     return true;
@@ -146,7 +146,7 @@ static m3ApiRawFunction(host_aos_log)
             for (const char *_s = buf; *_s; _s++) *_cl_p++ = *_s;
             for (const char *_s = "\n"; *_s; _s++) *_cl_p++ = *_s;
             *_cl_p = 0;
-            console_log(15, 15, _cl_buf);
+            log_drain_write(15, 15, _cl_buf);
         }
     }
 
@@ -292,12 +292,12 @@ wasm3_host_t *wasm3_host_init(const uint8_t *wasm_bytes, uint32_t wasm_size) {
             }
             for (const char *_s = ")\n"; *_s; _s++) *_cl_p++ = *_s;
             *_cl_p = 0;
-            console_log(15, 15, _cl_buf);
+            log_drain_write(15, 15, _cl_buf);
         }
         return NULL;
     }
 
-    console_log(15, 15, "[wasm3_host] Initializing WASM runtime\n");
+    log_drain_write(15, 15, "[wasm3_host] Initializing WASM runtime\n");
 
     /* Reset state */
     host->env = NULL;
@@ -311,19 +311,19 @@ wasm3_host_t *wasm3_host_init(const uint8_t *wasm_bytes, uint32_t wasm_size) {
     /* Create environment */
     host->env = m3_NewEnvironment();
     if (!host->env) {
-        console_log(15, 15, "[wasm3_host] ERROR: failed to create environment\n");
+        log_drain_write(15, 15, "[wasm3_host] ERROR: failed to create environment\n");
         return NULL;
     }
 
     /* Create runtime with stack */
     host->runtime = m3_NewRuntime(host->env, WASM_STACK_SIZE, NULL);
     if (!host->runtime) {
-        console_log(15, 15, "[wasm3_host] ERROR: failed to create runtime\n");
+        log_drain_write(15, 15, "[wasm3_host] ERROR: failed to create runtime\n");
         return NULL;
     }
 
     /* Parse the WASM module */
-    console_log(15, 15, "[wasm3_host] Parsing WASM module (");
+    log_drain_write(15, 15, "[wasm3_host] Parsing WASM module (");
     /* Print size — simple decimal */
     char sizebuf[12];
     int si = 0;
@@ -340,7 +340,7 @@ wasm3_host_t *wasm3_host_init(const uint8_t *wasm_bytes, uint32_t wasm_size) {
         for (const char *_s = sizebuf; *_s; _s++) *_cl_p++ = *_s;
         for (const char *_s = " bytes)\n"; *_s; _s++) *_cl_p++ = *_s;
         *_cl_p = 0;
-        console_log(15, 15, _cl_buf);
+        log_drain_write(15, 15, _cl_buf);
     }
 
     result = m3_ParseModule(host->env, &host->module, wasm_bytes, wasm_size);
@@ -352,7 +352,7 @@ wasm3_host_t *wasm3_host_init(const uint8_t *wasm_bytes, uint32_t wasm_size) {
             for (const char *_s = result; *_s; _s++) *_cl_p++ = *_s;
             for (const char *_s = "\n"; *_s; _s++) *_cl_p++ = *_s;
             *_cl_p = 0;
-            console_log(15, 15, _cl_buf);
+            log_drain_write(15, 15, _cl_buf);
         }
         return NULL;
     }
@@ -367,7 +367,7 @@ wasm3_host_t *wasm3_host_init(const uint8_t *wasm_bytes, uint32_t wasm_size) {
             for (const char *_s = result; *_s; _s++) *_cl_p++ = *_s;
             for (const char *_s = "\n"; *_s; _s++) *_cl_p++ = *_s;
             *_cl_p = 0;
-            console_log(15, 15, _cl_buf);
+            log_drain_write(15, 15, _cl_buf);
         }
         return NULL;
     }
@@ -382,7 +382,7 @@ wasm3_host_t *wasm3_host_init(const uint8_t *wasm_bytes, uint32_t wasm_size) {
             for (const char *_s = result; *_s; _s++) *_cl_p++ = *_s;
             for (const char *_s = "\n"; *_s; _s++) *_cl_p++ = *_s;
             *_cl_p = 0;
-            console_log(15, 15, _cl_buf);
+            log_drain_write(15, 15, _cl_buf);
         }
         return NULL;
     }
@@ -397,7 +397,7 @@ wasm3_host_t *wasm3_host_init(const uint8_t *wasm_bytes, uint32_t wasm_size) {
             for (const char *_s = result; *_s; _s++) *_cl_p++ = *_s;
             for (const char *_s = "\n"; *_s; _s++) *_cl_p++ = *_s;
             *_cl_p = 0;
-            console_log(15, 15, _cl_buf);
+            log_drain_write(15, 15, _cl_buf);
         }
         /* Non-fatal — some functions may still work */
     }
@@ -405,19 +405,19 @@ wasm3_host_t *wasm3_host_init(const uint8_t *wasm_bytes, uint32_t wasm_size) {
     /* Find exported functions */
     result = m3_FindFunction(&host->fn_init, host->runtime, "init");
     if (result) {
-        console_log(15, 15, "[wasm3_host] WARNING: no init() export\n");
+        log_drain_write(15, 15, "[wasm3_host] WARNING: no init() export\n");
         host->fn_init = NULL;
     }
 
     result = m3_FindFunction(&host->fn_handle_ppc, host->runtime, "handle_ppc");
     if (result) {
-        console_log(15, 15, "[wasm3_host] WARNING: no handle_ppc() export\n");
+        log_drain_write(15, 15, "[wasm3_host] WARNING: no handle_ppc() export\n");
         host->fn_handle_ppc = NULL;
     }
 
     result = m3_FindFunction(&host->fn_health_check, host->runtime, "health_check");
     if (result) {
-        console_log(15, 15, "[wasm3_host] WARNING: no health_check() export\n");
+        log_drain_write(15, 15, "[wasm3_host] WARNING: no health_check() export\n");
         host->fn_health_check = NULL;
     }
 
@@ -433,19 +433,19 @@ wasm3_host_t *wasm3_host_init(const uint8_t *wasm_bytes, uint32_t wasm_size) {
      * declare more than WASM_LINEAR_MEM_MAX bytes to prevent OOB into
      * adjacent PD memory regions. */
     if (!wasm3_host_validate_memory(host->runtime)) {
-        console_log(15, 15, "[wasm3_host] ERROR: linear memory exceeds hard cap, rejecting module\n");
+        log_drain_write(15, 15, "[wasm3_host] ERROR: linear memory exceeds hard cap, rejecting module\n");
         return NULL;
     }
 
     host->initialized = true;
-    console_log(15, 15, "[wasm3_host] WASM module loaded successfully\n");
+    log_drain_write(15, 15, "[wasm3_host] WASM module loaded successfully\n");
     return host;
 }
 
 bool wasm3_host_call_init(wasm3_host_t *host) {
     if (!host || !host->initialized || !host->fn_init) return false;
 
-    console_log(15, 15, "[wasm3_host] Calling WASM init()\n");
+    log_drain_write(15, 15, "[wasm3_host] Calling WASM init()\n");
 
     M3Result result = m3_CallV(host->fn_init);
     if (result) {
@@ -456,12 +456,12 @@ bool wasm3_host_call_init(wasm3_host_t *host) {
             for (const char *_s = result; *_s; _s++) *_cl_p++ = *_s;
             for (const char *_s = "\n"; *_s; _s++) *_cl_p++ = *_s;
             *_cl_p = 0;
-            console_log(15, 15, _cl_buf);
+            log_drain_write(15, 15, _cl_buf);
         }
         return false;
     }
 
-    console_log(15, 15, "[wasm3_host] init() completed\n");
+    log_drain_write(15, 15, "[wasm3_host] init() completed\n");
     return true;
 }
 
@@ -470,7 +470,7 @@ bool wasm3_host_call_health_check(wasm3_host_t *host) {
 
     M3Result result = m3_CallV(host->fn_health_check);
     if (result) {
-        console_log(15, 15, "[wasm3_host] ERROR: health_check() failed\n");
+        log_drain_write(15, 15, "[wasm3_host] ERROR: health_check() failed\n");
         return false;
     }
 
@@ -515,7 +515,7 @@ bool wasm3_host_call_ppc(wasm3_host_t *host,
             for (const char *_s = result; *_s; _s++) *_cl_p++ = *_s;
             for (const char *_s = "\n"; *_s; _s++) *_cl_p++ = *_s;
             *_cl_p = 0;
-            console_log(15, 15, _cl_buf);
+            log_drain_write(15, 15, _cl_buf);
         }
         return false;
     }
@@ -524,7 +524,7 @@ bool wasm3_host_call_ppc(wasm3_host_t *host,
     uint32_t mem_size = 0;
     uint8_t *mem = (uint8_t *)m3_GetMemory(host->runtime, &mem_size, 0);
     if (!mem || mem_size < PPC_RESULT_OFFSET + 40) {
-        console_log(15, 15, "[wasm3_host] ERROR: WASM memory too small for PPC results\n");
+        log_drain_write(15, 15, "[wasm3_host] ERROR: WASM memory too small for PPC results\n");
         return false;
     }
 
@@ -580,7 +580,7 @@ bool wasm3_host_get_heap_stats(wasm3_host_t *host,
 void wasm3_host_destroy(wasm3_host_t *host) {
     if (!host) return;
 
-    console_log(15, 15, "[wasm3_host] Destroying WASM runtime\n");
+    log_drain_write(15, 15, "[wasm3_host] Destroying WASM runtime\n");
 
     /* With fixed heap, these free calls are mostly no-ops,
      * but they reset internal state properly. */

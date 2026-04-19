@@ -21,7 +21,7 @@
 uintptr_t vfs_io_shmem_vaddr;             /* 128 KB rw, mapped at 0x5000000 */
 uintptr_t blk_dma_shmem_vaddr;           /* virtio-blk DMA region, 0x6000000 */
 uintptr_t spawn_elf_shmem_vfs_vaddr;     /* 512 KB ELF staging, 0x7000000 */
-uintptr_t console_rings_vaddr;           /* console ring region (required by agentos.h) */
+uintptr_t log_drain_rings_vaddr;           /* console ring region (required by agentos.h) */
 
 /* ── Shmem access helpers ─────────────────────────────────────────────────── */
 #define SHMEM_PATH()    ((char *)(vfs_io_shmem_vaddr + VFS_SHMEM_PATH_OFF))
@@ -196,7 +196,7 @@ static uint32_t mem_find_inode(const char *path) {
         while (cur != 0 && depth < 16) {
             if (visited[cur]) {
                 /* Cycle detected in parent-inode chain — skip this inode */
-                console_log(VFS_CONSOLE_SLOT, VFS_PD_ID,
+                log_drain_write(VFS_CONSOLE_SLOT, VFS_PD_ID,
                             "[vfs] cycle detected in inode parent chain\n");
                 depth = 0;  /* signal invalid chain */
                 break;
@@ -367,7 +367,7 @@ static uint32_t mem_open(const char *path, uint32_t flags) {
             return VFS_ERR_NO_SPACE;
         }
 
-        console_log(VFS_CONSOLE_SLOT, VFS_PD_ID, "[vfs] created inode\n");
+        log_drain_write(VFS_CONSOLE_SLOT, VFS_PD_ID, "[vfs] created inode\n");
     } else {
         /* Exists — check dir/file consistency */
         if ((flags & VFS_O_DIR) && !mem_inodes[ino].is_dir)
@@ -520,7 +520,7 @@ static uint32_t mem_mkdir(const char *path) {
         return VFS_ERR_NO_SPACE;
     }
 
-    console_log(VFS_CONSOLE_SLOT, VFS_PD_ID, "[vfs] mkdir ok\n");
+    log_drain_write(VFS_CONSOLE_SLOT, VFS_PD_ID, "[vfs] mkdir ok\n");
     microkit_mr_set(0, VFS_OK);
     return VFS_OK;
 }
@@ -791,7 +791,7 @@ static uint32_t vfs_mount(const char *prefix, uint8_t backend_type) {
             mounts[i].active       = true;
             mounts[i].backend_type = backend_type;
             vfs_strncpy(mounts[i].prefix, prefix, VFS_MEM_NAME_MAX);
-            console_log(VFS_CONSOLE_SLOT, VFS_PD_ID, "[vfs] mount ok\n");
+            log_drain_write(VFS_CONSOLE_SLOT, VFS_PD_ID, "[vfs] mount ok\n");
             microkit_mr_set(0, VFS_OK);
             return VFS_OK;
         }
@@ -806,7 +806,7 @@ static uint32_t vfs_mount(const char *prefix, uint8_t backend_type) {
 
 void init(void) {
     agentos_log_boot("vfs_server");
-    console_log(VFS_CONSOLE_SLOT, VFS_PD_ID, "[vfs_server] init\n");
+    log_drain_write(VFS_CONSOLE_SLOT, VFS_PD_ID, "[vfs_server] init\n");
 
     /* ── Clear handle table ── */
     for (uint32_t i = 0; i < VFS_MAX_HANDLES; i++) {
@@ -880,13 +880,13 @@ void init(void) {
         mem_inodes[1].name[3]    = '\0';
         mem_dir_add_child(0, "blk");
 
-        console_log(VFS_CONSOLE_SLOT, VFS_PD_ID, "[vfs_server] virtio-blk present, /blk mounted\n");
+        log_drain_write(VFS_CONSOLE_SLOT, VFS_PD_ID, "[vfs_server] virtio-blk present, /blk mounted\n");
     } else {
         blk_present = false;
-        console_log(VFS_CONSOLE_SLOT, VFS_PD_ID, "[vfs_server] virtio-blk absent, /blk stubbed\n");
+        log_drain_write(VFS_CONSOLE_SLOT, VFS_PD_ID, "[vfs_server] virtio-blk absent, /blk stubbed\n");
     }
 
-    console_log(VFS_CONSOLE_SLOT, VFS_PD_ID, "[vfs_server] ALIVE\n");
+    log_drain_write(VFS_CONSOLE_SLOT, VFS_PD_ID, "[vfs_server] ALIVE\n");
 }
 
 /*
@@ -895,7 +895,7 @@ void init(void) {
  */
 void notified(microkit_channel ch) {
     (void)ch;
-    console_log(VFS_CONSOLE_SLOT, VFS_PD_ID, "[vfs_server] unexpected notify\n");
+    log_drain_write(VFS_CONSOLE_SLOT, VFS_PD_ID, "[vfs_server] unexpected notify\n");
 }
 
 /*
@@ -928,9 +928,9 @@ microkit_msginfo protected(microkit_channel ch, microkit_msginfo msginfo) {
         if (rc != VFS_OK) {
             microkit_mr_set(0, rc);
             microkit_mr_set(1, 0);
-            console_log(VFS_CONSOLE_SLOT, VFS_PD_ID, "[vfs] open error\n");
+            log_drain_write(VFS_CONSOLE_SLOT, VFS_PD_ID, "[vfs] open error\n");
         } else {
-            console_log(VFS_CONSOLE_SLOT, VFS_PD_ID, "[vfs] open ok\n");
+            log_drain_write(VFS_CONSOLE_SLOT, VFS_PD_ID, "[vfs] open ok\n");
         }
         return microkit_msginfo_new(0, 2);
     }
@@ -947,9 +947,9 @@ microkit_msginfo protected(microkit_channel ch, microkit_msginfo msginfo) {
 
         if (rc != VFS_OK) {
             microkit_mr_set(0, rc);
-            console_log(VFS_CONSOLE_SLOT, VFS_PD_ID, "[vfs] close error\n");
+            log_drain_write(VFS_CONSOLE_SLOT, VFS_PD_ID, "[vfs] close error\n");
         } else {
-            console_log(VFS_CONSOLE_SLOT, VFS_PD_ID, "[vfs] close ok\n");
+            log_drain_write(VFS_CONSOLE_SLOT, VFS_PD_ID, "[vfs] close ok\n");
         }
         return microkit_msginfo_new(0, 1);
     }
@@ -1028,7 +1028,7 @@ microkit_msginfo protected(microkit_channel ch, microkit_msginfo msginfo) {
 
         if (rc != VFS_OK) {
             microkit_mr_set(0, rc);
-            console_log(VFS_CONSOLE_SLOT, VFS_PD_ID, "[vfs] unlink error\n");
+            log_drain_write(VFS_CONSOLE_SLOT, VFS_PD_ID, "[vfs] unlink error\n");
         }
         return microkit_msginfo_new(0, 1);
     }
@@ -1044,7 +1044,7 @@ microkit_msginfo protected(microkit_channel ch, microkit_msginfo msginfo) {
 
         if (rc != VFS_OK) {
             microkit_mr_set(0, rc);
-            console_log(VFS_CONSOLE_SLOT, VFS_PD_ID, "[vfs] mkdir error\n");
+            log_drain_write(VFS_CONSOLE_SLOT, VFS_PD_ID, "[vfs] mkdir error\n");
         }
         return microkit_msginfo_new(0, 1);
     }
@@ -1116,7 +1116,7 @@ microkit_msginfo protected(microkit_channel ch, microkit_msginfo msginfo) {
 
     /* ── Unknown opcode ─────────────────────────────────────────────────── */
     default:
-        console_log(VFS_CONSOLE_SLOT, VFS_PD_ID, "[vfs_server] unknown op\n");
+        log_drain_write(VFS_CONSOLE_SLOT, VFS_PD_ID, "[vfs_server] unknown op\n");
         microkit_mr_set(0, VFS_ERR_INVAL);
         return microkit_msginfo_new(0, 1);
     }

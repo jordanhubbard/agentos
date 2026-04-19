@@ -359,22 +359,16 @@ typedef enum {
 #define CH_APP_MANAGER        23   /* controller -> app_manager (PPC) */
 #define CH_HTTP_SVC           24   /* controller -> http_svc (PPC) */
 
-/* Console Multiplexer channel IDs (from controller perspective) */
+/* Log Drain channel IDs (from controller perspective) */
 #ifdef BOARD_qemu_virt_aarch64
-#define CH_CONSOLEMUX         55  /* aarch64: 50 is linux_vmm */
+#define CH_LOG_DRAIN          55
 #else
-#define CH_CONSOLEMUX         60  /* riscv64: after mem_profiler (50-58) */
+#define CH_LOG_DRAIN          60
 #endif
 
-/* Console Multiplexer op codes (MR0 in PPC to console_mux) */
-#define OP_CONSOLE_ATTACH     0x80  /* MR1=pd_id: attach to PD output */
-#define OP_CONSOLE_DETACH     0x81  /* detach, revert to broadcast */
-#define OP_CONSOLE_LIST       0x82  /* list sessions, MR1=bitmask */
-#define OP_CONSOLE_MODE       0x83  /* MR1=mode: 0=single,1=broadcast,2=split */
-#define OP_CONSOLE_INJECT     0x84  /* MR1..4=chars: inject input */
-#define OP_CONSOLE_SCROLL     0x85  /* MR1=lines: scroll back */
-#define OP_CONSOLE_STATUS     0x86  /* returns: MR1=active_pd, MR2=mode, MR3=count */
-#define OP_CONSOLE_WRITE      0x87  /* PD->mux: register ring + flush */
+/* Log Drain op codes (MR0 in PPC to log_drain) */
+#define OP_LOG_WRITE          0x01  /* PD -> log_drain: register ring slot + flush */
+#define OP_LOG_STATUS         0x02  /* returns: MR1=slot_count, MR2=bytes_drained */
 
 /* VibeEngine staging region metadata layout (last 64 bytes of 4MB staging MR) */
 #define VIBE_META_SIZE        64
@@ -573,74 +567,59 @@ typedef struct {
 } agentos_cap_desc_t;
 
 /* ═══════════════════════════════════════════════════════════════════════════
- * Console Ring Buffer — per-PD output ring for console_mux
+ * Log Drain Ring Buffer — per-PD structured output ring for log_drain
  *
- * Each PD gets a 4KB slot in the console_rings shared memory region.
- * Layout: console_ring_header_t at offset 0, data bytes follow.
+ * Each PD gets a 4KB slot in the log_drain_rings shared memory region.
+ * Layout: log_drain_ring_t at offset 0, data bytes follow.
+ * Wire format is unchanged from the prior console_mux ring (magic 0xC0DE4D55).
  * ═══════════════════════════════════════════════════════════════════════════ */
 
-#define CONSOLE_RING_MAGIC   0xC0DE4D55
-#define CONSOLE_RING_SIZE    0x1000   /* 4KB per slot */
-#define CONSOLE_RING_HDR_SZ  16       /* sizeof(console_ring_header_t) */
-#define CONSOLE_DATA_SIZE    (CONSOLE_RING_SIZE - CONSOLE_RING_HDR_SZ)
+#define LOG_DRAIN_RING_MAGIC  0xC0DE4D55
+#define LOG_DRAIN_RING_SIZE   0x1000
+#define LOG_DRAIN_RING_HDR_SZ 16
+#define LOG_DRAIN_DATA_SIZE   (LOG_DRAIN_RING_SIZE - LOG_DRAIN_RING_HDR_SZ)
 
 typedef struct __attribute__((packed)) {
     uint32_t magic;
     uint32_t pd_id;
     uint32_t head;    /* write offset into data area (PD increments) */
-    uint32_t tail;    /* read offset into data area (console_mux increments) */
-} console_ring_header_t;
+    uint32_t tail;    /* read offset into data area (log_drain increments) */
+} log_drain_ring_t;
 
-/*
- * console_rings_vaddr — seL4cp setvar, declared in each PD that maps
- * the console_rings MR.  We extern it here so console_log() can use it.
- */
-extern uintptr_t console_rings_vaddr;
+extern uintptr_t log_drain_rings_vaddr;
 
-/*
- * console_log(slot, pd_id, msg)
- *
- * Write msg into the per-PD ring buffer and notify console_mux to drain it.
- * Falls back to microkit_dbg_puts if the ring base is not yet mapped
- * (console_rings_vaddr == 0).
- *
- * Bare-metal: no libc.  Uses only microkit primitives.
- */
-static inline void console_log(uint32_t slot, uint32_t pd_id, const char *msg)
+static inline void log_drain_write(uint32_t slot, uint32_t pd_id, const char *msg)
 {
-    if (!console_rings_vaddr) {
+    if (!log_drain_rings_vaddr) {
         microkit_dbg_puts(msg);
         return;
     }
 
-    volatile console_ring_header_t *hdr =
-        (volatile console_ring_header_t *)(console_rings_vaddr + slot * CONSOLE_RING_SIZE);
+    volatile log_drain_ring_t *hdr =
+        (volatile log_drain_ring_t *)(log_drain_rings_vaddr + slot * LOG_DRAIN_RING_SIZE);
 
-    /* Initialise ring on first use */
-    if (hdr->magic != CONSOLE_RING_MAGIC) {
+    if (hdr->magic != LOG_DRAIN_RING_MAGIC) {
         hdr->pd_id = pd_id;
         hdr->head  = 0;
         hdr->tail  = 0;
-        hdr->magic = CONSOLE_RING_MAGIC;
+        hdr->magic = LOG_DRAIN_RING_MAGIC;
     }
 
     volatile uint8_t *data = (volatile uint8_t *)(hdr + 1);
     uint32_t h = hdr->head;
 
     for (const char *p = msg; *p; p++) {
-        uint32_t next = (h + 1) % CONSOLE_DATA_SIZE;
-        /* Drop if full — best-effort, never block */
+        uint32_t next = (h + 1) % LOG_DRAIN_DATA_SIZE;
         if (next == hdr->tail) break;
         data[h] = (uint8_t)*p;
         h = next;
     }
     hdr->head = h;
 
-    /* Notify console_mux to drain this slot */
-    microkit_mr_set(0, OP_CONSOLE_WRITE);
+    microkit_mr_set(0, OP_LOG_WRITE);
     microkit_mr_set(1, slot);
     microkit_mr_set(2, pd_id);
-    microkit_ppcall(CH_CONSOLEMUX, microkit_msginfo_new(OP_CONSOLE_WRITE, 2));
+    microkit_ppcall(CH_LOG_DRAIN, microkit_msginfo_new(OP_LOG_WRITE, 2));
 }
 
 /* ─── proc_server Protection Domain ───────────────────────────────────────
