@@ -44,8 +44,9 @@ pub struct SetupArgs {
 pub struct FetchGuestArgs {
     #[arg(long, value_enum, default_value_t = GuestOs::Ubuntu)]
     pub os: GuestOs,
-    #[arg(long, default_value = "guest-images")]
-    pub output_dir: String,
+    /// Destination directory; defaults to ~/.local/agentos-images
+    #[arg(long)]
+    pub output_dir: Option<String>,
 }
 
 #[derive(clap::ValueEnum, Clone)]

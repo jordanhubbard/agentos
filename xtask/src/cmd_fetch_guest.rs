@@ -15,8 +15,16 @@ const FREEBSD_BASE_URL: &str =
 const FREEBSD_IMAGE_XZ: &str = "FreeBSD-14.4-RELEASE-arm64-aarch64-ufs.qcow2.xz";
 const FREEBSD_RAW_NAME: &str = "freebsd-14.4-aarch64.img";
 
+fn default_image_dir() -> anyhow::Result<PathBuf> {
+    let home = std::env::var("HOME").context("HOME environment variable not set")?;
+    Ok(PathBuf::from(home).join(".local/agentos-images"))
+}
+
 pub fn run(args: &FetchGuestArgs) -> anyhow::Result<()> {
-    let output_dir = PathBuf::from(&args.output_dir);
+    let output_dir = match &args.output_dir {
+        Some(d) => PathBuf::from(d),
+        None => default_image_dir()?,
+    };
     std::fs::create_dir_all(&output_dir)
         .with_context(|| format!("failed to create output dir: {}", output_dir.display()))?;
 

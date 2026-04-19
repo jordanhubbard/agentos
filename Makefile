@@ -309,9 +309,9 @@ build-tools:
 # =============================================================================
 fetch-guest:
 ifeq ($(GUEST_OS),freebsd)
-	@cargo xtask fetch-guest --os freebsd
+	@cargo xtask fetch-guest --os freebsd --output-dir $(AGENTOS_IMAGES)
 else ifeq ($(GUEST_OS),ubuntu)
-	@cargo xtask fetch-guest --os ubuntu
+	@cargo xtask fetch-guest --os ubuntu --output-dir $(AGENTOS_IMAGES)
 endif
 
 # =============================================================================
@@ -372,10 +372,13 @@ dashboard:
 # The agentOS net-server listens on port 8789 and forwards to connected guests.
 # Ports 2222/2223/2224 are forwarded for Ubuntu/FreeBSD/NixOS respectively.
 _RUN_CPU := $(if $(filter aarch64,$(NATIVE_ARCH)),cortex-a53,qemu64)
-GUEST_IMAGES := $(ROOT_DIR)guest-images
+# Images live in the user's home directory, not in the source tree.
+# Create with: make fetch-guest GUEST_OS=ubuntu|freebsd
+# Delete with: make clean-images
+AGENTOS_IMAGES := $(HOME)/.local/agentos-images
 # virtio-blk: attach Ubuntu disk image at slot 1 when GUEST_OS=ubuntu.
 # The Ubuntu kernel finds its root via PARTUUID in the GPT header of the raw image.
-_UBUNTU_BLK = -drive file=$(GUEST_IMAGES)/ubuntu-24.04-arm64.raw,format=raw,if=none,id=hd0 \
+_UBUNTU_BLK = -drive file=$(AGENTOS_IMAGES)/ubuntu-24.04-arm64.raw,format=raw,if=none,id=hd0 \
               -device virtio-blk-device,drive=hd0,bus=virtio-mmio-bus.1
 _QEMU_BLK_FLAGS = $(if $(filter ubuntu,$(GUEST_OS)),$(_UBUNTU_BLK),)
 QEMU_RUN_FLAGS = -machine virt,virtualization=on,highmem=off,secure=off \
@@ -510,14 +513,9 @@ clean-all:
 	@echo "✓ Clean."
 
 clean-images:
-	@echo "Removing cached guest OS images..."
-	@rm -f $(ROOT_DIR)guest-images/*.img \
-	       $(ROOT_DIR)guest-images/*.qcow2 \
-	       $(ROOT_DIR)guest-images/*.raw \
-	       $(ROOT_DIR)guest-images/*.fd \
-	       $(ROOT_DIR)guest-images/*.xz \
-	       /tmp/agentos-serial.sock
-	@echo "✓ Guest images removed. Next 'make GUEST_OS=...' will re-download."
+	@echo "Removing guest OS image cache: $(AGENTOS_IMAGES)"
+	@rm -rf $(AGENTOS_IMAGES)
+	@echo "✓ Done. Re-fetch with: make fetch-guest GUEST_OS=ubuntu|freebsd"
 
 # =============================================================================
 # release: tag + GitHub release (requires gh CLI and clean working tree)
