@@ -173,6 +173,14 @@ static uint32_t vmm_affinity[VMM_MAX_SLOTS];
 /* IPC channel: controller <-> linux_vmm (agent-to-linux bridge) */
 #define CONTROLLER_CH           2
 
+/* IRQ channel: virtio-net (slot 0, bus=virtio-mmio-bus.0 → SPI 16 → INTID 48) */
+#define VIRTIO_NET_IRQ_CH       5
+#define VIRTIO_NET_IRQ          48
+
+/* IRQ channel: virtio-blk (slot 1, bus=virtio-mmio-bus.1 → SPI 17 → INTID 49) */
+#define VIRTIO_BLK_IRQ_CH       6
+#define VIRTIO_BLK_IRQ          49
+
 /* GPU shared memory notification channels (assigned when MR is mapped) */
 #define GPU_SHMEM_NOTIFY_IN_CH  3   /* seL4 PD → linux_vmm: tensor ready */
 #define GPU_SHMEM_NOTIFY_OUT_CH 4   /* linux_vmm → seL4 PD: result ready */
@@ -208,6 +216,18 @@ static void serial_ack(size_t vcpu_id, int irq, void *cookie)
 {
     (void)vcpu_id; (void)irq; (void)cookie;
     microkit_irq_ack(SERIAL_IRQ_CH);
+}
+
+static void virtio_net_ack(size_t vcpu_id, int irq, void *cookie)
+{
+    (void)vcpu_id; (void)irq; (void)cookie;
+    microkit_irq_ack(VIRTIO_NET_IRQ_CH);
+}
+
+static void virtio_blk_ack(size_t vcpu_id, int irq, void *cookie)
+{
+    (void)vcpu_id; (void)irq; (void)cookie;
+    microkit_irq_ack(VIRTIO_BLK_IRQ_CH);
 }
 
 /* ─── VCPU Affinity ──────────────────────────────────────────────────── */
@@ -331,9 +351,23 @@ void init(void)
         LOG_VMM_ERR("Failed to register serial IRQ\n");
         return;
     }
-
-    /* Ack any pending IRQ */
     microkit_irq_ack(SERIAL_IRQ_CH);
+
+    /* Register virtio-net IRQ passthrough (slot 0, SPI 16 → INTID 48) */
+    success = virq_register(GUEST_BOOT_VCPU_ID, VIRTIO_NET_IRQ, &virtio_net_ack, NULL);
+    if (!success) {
+        LOG_VMM_ERR("Failed to register virtio-net IRQ\n");
+        return;
+    }
+    microkit_irq_ack(VIRTIO_NET_IRQ_CH);
+
+    /* Register virtio-blk IRQ passthrough (slot 1, SPI 17 → INTID 49) */
+    success = virq_register(GUEST_BOOT_VCPU_ID, VIRTIO_BLK_IRQ, &virtio_blk_ack, NULL);
+    if (!success) {
+        LOG_VMM_ERR("Failed to register virtio-blk IRQ\n");
+        return;
+    }
+    microkit_irq_ack(VIRTIO_BLK_IRQ_CH);
 
     /* Start the guest! */
     LOG_VMM("  Starting Linux guest...\n");
@@ -369,6 +403,24 @@ void notified(microkit_channel ch)
         bool success = virq_inject(SERIAL_IRQ);
         if (!success) {
             LOG_VMM_ERR("IRQ %d dropped on inject\n", SERIAL_IRQ);
+        }
+        break;
+    }
+
+    case VIRTIO_NET_IRQ_CH: {
+        /* virtio-net interrupt from hardware → inject into guest */
+        bool success = virq_inject(VIRTIO_NET_IRQ);
+        if (!success) {
+            LOG_VMM_ERR("virtio-net IRQ %d dropped on inject\n", VIRTIO_NET_IRQ);
+        }
+        break;
+    }
+
+    case VIRTIO_BLK_IRQ_CH: {
+        /* virtio-blk interrupt from hardware → inject into guest */
+        bool success = virq_inject(VIRTIO_BLK_IRQ);
+        if (!success) {
+            LOG_VMM_ERR("virtio-blk IRQ %d dropped on inject\n", VIRTIO_BLK_IRQ);
         }
         break;
     }

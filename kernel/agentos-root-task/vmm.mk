@@ -16,10 +16,27 @@ LIBVMM_ABS     := $(AGENTOS_ROOT)/libvmm
 SDDF_ABS       := $(LIBVMM_ABS)/dep/sddf
 DTC            := dtc
 
-# Guest image identifiers (from libvmm examples/simple/simple.mk)
-LINUX_IMAGE  := 85000f3f42a882e4476e57003d53f2bbec8262b0-linux
-INITRD_IMAGE := 6dcd1debf64e6d69b178cd0f46b8c4ae7cebe2a5-rootfs.cpio.gz
-IMAGES_URL   := https://trustworthy.systems/Downloads/libvmm/images
+# Guest OS selection: buildroot (default) or ubuntu
+GUEST_OS ?= buildroot
+
+# Buildroot guest: download libvmm example images (kernel + initrd)
+BUILDROOT_LINUX_IMAGE  := 85000f3f42a882e4476e57003d53f2bbec8262b0-linux
+BUILDROOT_INITRD_IMAGE := 6dcd1debf64e6d69b178cd0f46b8c4ae7cebe2a5-rootfs.cpio.gz
+IMAGES_URL             := https://trustworthy.systems/Downloads/libvmm/images
+
+# Ubuntu guest: pre-extracted kernel from ubuntu-24.04-arm64.raw
+UBUNTU_KERNEL := $(AGENTOS_ROOT)/guest-images/ubuntu-kernel-6.8.0-Image
+UBUNTU_EMPTY_INITRD := $(BUILD_DIR)/ubuntu-empty-initrd.cpio.gz
+
+ifeq ($(GUEST_OS),ubuntu)
+LINUX_IMAGE  := $(UBUNTU_KERNEL)
+INITRD_IMAGE := $(UBUNTU_EMPTY_INITRD)
+DTS_OVERLAY  := ubuntu-overlay.dts
+else
+LINUX_IMAGE  := $(BUILD_DIR)/$(BUILDROOT_LINUX_IMAGE)
+INITRD_IMAGE := $(BUILD_DIR)/$(BUILDROOT_INITRD_IMAGE)
+DTS_OVERLAY  := overlay.dts
+endif
 
 # DTS + tools
 DTS_DIR := $(LIBVMM_ABS)/examples/simple/board/qemu_virt_aarch64
@@ -48,27 +65,38 @@ VMM_CFLAGS := \
 
 vmm-all: $(BUILD_DIR)/linux_vmm.elf
 
-# ─── Download guest images ────────────────────────────────────────────────
-$(BUILD_DIR)/$(LINUX_IMAGE):
+# ─── Download buildroot guest images ─────────────────────────────────────
+ifneq ($(GUEST_OS),ubuntu)
+$(BUILD_DIR)/$(BUILDROOT_LINUX_IMAGE):
 	@echo "[VMM] Downloading Linux kernel image..."
 	@mkdir -p $(BUILD_DIR)
-	curl -fSL $(IMAGES_URL)/$(LINUX_IMAGE).tar.gz -o $(BUILD_DIR)/$(LINUX_IMAGE).tar.gz
+	curl -fSL $(IMAGES_URL)/$(BUILDROOT_LINUX_IMAGE).tar.gz -o $(BUILD_DIR)/$(BUILDROOT_LINUX_IMAGE).tar.gz
 	mkdir -p $(BUILD_DIR)/linux_dl
-	tar -xf $(BUILD_DIR)/$(LINUX_IMAGE).tar.gz -C $(BUILD_DIR)/linux_dl
-	cp $(BUILD_DIR)/linux_dl/$(LINUX_IMAGE)/linux $(BUILD_DIR)/$(LINUX_IMAGE)
-	rm -rf $(BUILD_DIR)/linux_dl $(BUILD_DIR)/$(LINUX_IMAGE).tar.gz
+	tar -xf $(BUILD_DIR)/$(BUILDROOT_LINUX_IMAGE).tar.gz -C $(BUILD_DIR)/linux_dl
+	cp $(BUILD_DIR)/linux_dl/$(BUILDROOT_LINUX_IMAGE)/linux $(BUILD_DIR)/$(BUILDROOT_LINUX_IMAGE)
+	rm -rf $(BUILD_DIR)/linux_dl $(BUILD_DIR)/$(BUILDROOT_LINUX_IMAGE).tar.gz
 
-$(BUILD_DIR)/$(INITRD_IMAGE):
+$(BUILD_DIR)/$(BUILDROOT_INITRD_IMAGE):
 	@echo "[VMM] Downloading initrd..."
 	@mkdir -p $(BUILD_DIR)
-	curl -fSL $(IMAGES_URL)/$(INITRD_IMAGE).tar.gz -o $(BUILD_DIR)/$(INITRD_IMAGE).tar.gz
+	curl -fSL $(IMAGES_URL)/$(BUILDROOT_INITRD_IMAGE).tar.gz -o $(BUILD_DIR)/$(BUILDROOT_INITRD_IMAGE).tar.gz
 	mkdir -p $(BUILD_DIR)/initrd_dl
-	tar -xf $(BUILD_DIR)/$(INITRD_IMAGE).tar.gz -C $(BUILD_DIR)/initrd_dl
-	cp $(BUILD_DIR)/initrd_dl/$(INITRD_IMAGE)/rootfs.cpio.gz $(BUILD_DIR)/$(INITRD_IMAGE)
-	rm -rf $(BUILD_DIR)/initrd_dl $(BUILD_DIR)/$(INITRD_IMAGE).tar.gz
+	tar -xf $(BUILD_DIR)/$(BUILDROOT_INITRD_IMAGE).tar.gz -C $(BUILD_DIR)/initrd_dl
+	cp $(BUILD_DIR)/initrd_dl/$(BUILDROOT_INITRD_IMAGE)/rootfs.cpio.gz $(BUILD_DIR)/$(BUILDROOT_INITRD_IMAGE)
+	rm -rf $(BUILD_DIR)/initrd_dl $(BUILD_DIR)/$(BUILDROOT_INITRD_IMAGE).tar.gz
+endif
+
+# ─── Ubuntu guest: empty initrd (Ubuntu uses initrdless boot via PARTUUID) ─
+# A zero-byte gzip stream satisfies package_guest_images.S (non-empty file
+# required) but is ignored by the Ubuntu kernel since ubuntu-overlay.dts
+# has no linux,initrd-start / linux,initrd-end entries in /chosen.
+$(UBUNTU_EMPTY_INITRD):
+	@echo "[VMM] Creating empty initrd for Ubuntu initrdless boot..."
+	@mkdir -p $(BUILD_DIR)
+	printf '' | gzip > $@
 
 # ─── Device tree ──────────────────────────────────────────────────────────
-$(BUILD_DIR)/vm.dts: $(DTS_DIR)/linux.dts $(DTS_DIR)/overlay.dts
+$(BUILD_DIR)/vm.dts: $(DTS_DIR)/linux.dts $(DTS_DIR)/$(DTS_OVERLAY)
 	@mkdir -p $(BUILD_DIR)
 	$(DTSCAT) $^ > $@
 
@@ -97,14 +125,14 @@ $(BUILD_DIR)/libvmm.a $(BUILD_DIR)/libsddf_util_debug.a: $(BUILD_DIR)/vmm_wrappe
 
 # ─── Package guest images ─────────────────────────────────────────────────
 $(BUILD_DIR)/images.o: $(PKG_IMG) \
-                       $(BUILD_DIR)/$(LINUX_IMAGE) \
-                       $(BUILD_DIR)/$(INITRD_IMAGE) \
+                       $(LINUX_IMAGE) \
+                       $(INITRD_IMAGE) \
                        $(BUILD_DIR)/vm.dtb
-	@echo "[VMM] Packaging guest images..."
+	@echo "[VMM] Packaging guest images (GUEST_OS=$(GUEST_OS))..."
 	clang -c -g3 -x assembler-with-cpp \
-		-DGUEST_KERNEL_IMAGE_PATH=\"$(BUILD_DIR)/$(LINUX_IMAGE)\" \
+		-DGUEST_KERNEL_IMAGE_PATH=\"$(LINUX_IMAGE)\" \
 		-DGUEST_DTB_IMAGE_PATH=\"$(BUILD_DIR)/vm.dtb\" \
-		-DGUEST_INITRD_IMAGE_PATH=\"$(BUILD_DIR)/$(INITRD_IMAGE)\" \
+		-DGUEST_INITRD_IMAGE_PATH=\"$(INITRD_IMAGE)\" \
 		-target aarch64-none-elf \
 		$(PKG_IMG) -o $@
 

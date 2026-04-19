@@ -157,3 +157,151 @@ impl core::fmt::Display for IdentityError {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloc::string::ToString;
+
+    // ── AgentId construction ──────────────────────────────────────────────────
+
+    #[test]
+    fn agent_id_new_stores_fields() {
+        let id = AgentId::new("core", "event-bus", 1, 0xDEADBEEF);
+        assert_eq!(id.namespace, "core");
+        assert_eq!(id.name, "event-bus");
+        assert_eq!(id.epoch, 1);
+        assert_eq!(id.random, 0xDEADBEEF);
+    }
+
+    // ── AgentId Display ───────────────────────────────────────────────────────
+
+    #[test]
+    fn agent_id_display_format() {
+        let id = AgentId::new("core", "event-bus", 1, 0x4a7f3bc2);
+        let s = id.to_string();
+        assert_eq!(s, "core/event-bus@1:000000004a7f3bc2");
+    }
+
+    // ── AgentId parse ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn agent_id_parse_valid() {
+        let id = AgentId::parse("core/event-bus@1:4a7f3bc2").unwrap();
+        assert_eq!(id.namespace, "core");
+        assert_eq!(id.name, "event-bus");
+        assert_eq!(id.epoch, 1);
+        assert_eq!(id.random, 0x4a7f3bc2);
+    }
+
+    #[test]
+    fn agent_id_parse_round_trip() {
+        let original = AgentId::new("sys", "monitor", 42, 0xCAFE0000BEEF);
+        let s = original.to_string();
+        let parsed = AgentId::parse(&s).unwrap();
+        assert_eq!(parsed, original);
+    }
+
+    #[test]
+    fn agent_id_parse_missing_slash_fails() {
+        let err = AgentId::parse("core-event-bus@1:abc").unwrap_err();
+        assert_eq!(err, IdentityError::InvalidFormat);
+    }
+
+    #[test]
+    fn agent_id_parse_missing_at_fails() {
+        let err = AgentId::parse("core/event-bus-1:abc").unwrap_err();
+        assert_eq!(err, IdentityError::InvalidFormat);
+    }
+
+    #[test]
+    fn agent_id_parse_missing_colon_fails() {
+        let err = AgentId::parse("core/event-bus@1-abc").unwrap_err();
+        assert_eq!(err, IdentityError::InvalidFormat);
+    }
+
+    #[test]
+    fn agent_id_parse_non_numeric_epoch_fails() {
+        let err = AgentId::parse("core/event-bus@xyz:abc").unwrap_err();
+        assert_eq!(err, IdentityError::InvalidFormat);
+    }
+
+    #[test]
+    fn agent_id_parse_non_hex_random_fails() {
+        let err = AgentId::parse("core/event-bus@1:zzzz").unwrap_err();
+        assert_eq!(err, IdentityError::InvalidFormat);
+    }
+
+    // ── AgentIdentity ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn agent_identity_new_defaults() {
+        let id = AgentId::new("core", "test", 0, 0);
+        let ident = AgentIdentity::new(id.clone(), "Test Agent", None, 1000, AgentClass::Persistent);
+        assert_eq!(ident.id, id);
+        assert_eq!(ident.display_name, "Test Agent");
+        assert!(ident.parent_id.is_none());
+        assert_eq!(ident.spawned_at_ns, 1000);
+        assert_eq!(ident.attestation, [0u8; 32]);
+        assert!(ident.tags.is_empty());
+    }
+
+    #[test]
+    fn agent_identity_with_tag() {
+        let id = AgentId::new("core", "test", 0, 0);
+        let ident = AgentIdentity::new(id, "Test", None, 0, AgentClass::Batch)
+            .with_tag("env", "prod")
+            .with_tag("version", "1.2.3");
+        assert_eq!(ident.tags.len(), 2);
+        assert_eq!(ident.tags[0], ("env".into(), "prod".into()));
+        assert_eq!(ident.tags[1], ("version".into(), "1.2.3".into()));
+    }
+
+    #[test]
+    fn agent_identity_with_attestation() {
+        let id = AgentId::new("core", "test", 0, 0);
+        let attest = [0xABu8; 32];
+        let ident = AgentIdentity::new(id, "Test", None, 0, AgentClass::Interactive)
+            .with_attestation(attest);
+        assert_eq!(ident.attestation, attest);
+    }
+
+    #[test]
+    fn agent_identity_with_parent() {
+        let parent_id = AgentId::new("core", "init", 0, 0);
+        let child_id = AgentId::new("user", "worker", 1, 42);
+        let ident = AgentIdentity::new(child_id, "Worker", Some(parent_id.clone()), 500, AgentClass::TaskAgent { deadline_ns: Some(1_000_000) });
+        assert_eq!(ident.parent_id, Some(parent_id));
+    }
+
+    // ── AgentClass variants ───────────────────────────────────────────────────
+
+    #[test]
+    fn agent_class_task_agent_has_deadline() {
+        let class = AgentClass::TaskAgent { deadline_ns: Some(1_000_000_000) };
+        if let AgentClass::TaskAgent { deadline_ns } = class {
+            assert_eq!(deadline_ns, Some(1_000_000_000));
+        } else {
+            panic!("wrong variant");
+        }
+    }
+
+    #[test]
+    fn agent_class_inference_has_model_size() {
+        let class = AgentClass::Inference { model_size_bytes: 7_000_000_000 };
+        if let AgentClass::Inference { model_size_bytes } = class {
+            assert_eq!(model_size_bytes, 7_000_000_000);
+        } else {
+            panic!("wrong variant");
+        }
+    }
+
+    // ── IdentityError Display ─────────────────────────────────────────────────
+
+    #[test]
+    fn identity_error_display() {
+        assert_eq!(IdentityError::InvalidFormat.to_string(), "invalid agent ID format");
+        assert_eq!(IdentityError::DuplicateId.to_string(), "agent ID already exists");
+        assert_eq!(IdentityError::InvalidNamespace.to_string(), "invalid namespace");
+    }
+}

@@ -101,19 +101,10 @@ add_library(modelsvc STATIC
 target_include_directories(modelsvc PUBLIC services/modelsvc)
 target_link_libraries(modelsvc libagent)
 
-# NetStack — TCP/IP networking
-add_library(netstack STATIC
-    services/netstack/netstack.c
-)
-target_include_directories(netstack PUBLIC services/netstack)
-target_link_libraries(netstack libagent)
-
-# BlobSvc — Object storage
-add_library(blobsvc STATIC
-    services/blobsvc/blobsvc.c
-)
-target_include_directories(blobsvc PUBLIC services/blobsvc)
-target_link_libraries(blobsvc libagent)
+# NetStack and BlobSvc are NOT present as services/ C prototypes.
+# Real network is handled by the net_server.c Microkit PD.
+# Block storage is handled by virtio_blk.c Microkit PD.
+# These targets have been removed to fix the broken build.
 
 # LogSvc — Audit and logging
 add_library(logsvc STATIC
@@ -139,8 +130,6 @@ target_link_libraries(agentos-init
     memfs
     toolsvc
     modelsvc
-    netstack
-    blobsvc
     logsvc
     sel4
     muslc
@@ -149,6 +138,9 @@ target_link_libraries(agentos-init
     sel4platsupport
     sel4simple-default
     sel4allocman
+    # NOTE: netstack and blobsvc removed — source files do not exist.
+    # Real networking: net_server.c Microkit PD.
+    # Real block storage: virtio_blk.c Microkit PD.
 )
 
 # =============================================================================

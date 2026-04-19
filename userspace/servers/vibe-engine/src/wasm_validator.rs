@@ -497,4 +497,140 @@ mod tests {
             result.errors
         );
     }
+
+    // ── Additional coverage ───────────────────────────────────────────────────
+
+    #[test]
+    fn test_is_wasm_empty_slice() {
+        assert!(!is_wasm(&[]));
+        assert!(!is_wasm(&[0x00]));
+        assert!(!is_wasm(&[0x00, 0x61, 0x73])); // only 3 bytes
+    }
+
+    #[test]
+    fn test_invalid_magic_bytes() {
+        // Wrong magic — should fail with bad-magic error
+        let bad: &[u8] = &[
+            0xFF, 0xFF, 0xFF, 0xFF, // not \0asm
+            0x01, 0x00, 0x00, 0x00,
+        ];
+        let result = validate_wasm(bad);
+        assert!(!result.valid);
+        assert!(
+            result.errors.iter().any(|e| e.to_lowercase().contains("magic")),
+            "expected magic error, got: {:?}", result.errors
+        );
+    }
+
+    #[test]
+    fn test_invalid_version() {
+        // Valid magic, wrong version (version 2)
+        let wasm: &[u8] = &[
+            0x00, 0x61, 0x73, 0x6D, // magic: \0asm
+            0x02, 0x00, 0x00, 0x00, // version: 2 (invalid)
+        ];
+        let result = validate_wasm(wasm);
+        // Version error present
+        assert!(
+            result.errors.iter().any(|e| e.contains("version") || e.contains("Version")),
+            "expected version error, got: {:?}", result.errors
+        );
+    }
+
+    #[test]
+    fn test_too_large_binary() {
+        // Build a buffer just over MAX_WASM_SIZE
+        let mut big = alloc::vec![0u8; MAX_WASM_SIZE + 1];
+        // Write valid magic so we pass the magic check and hit the size check
+        big[0] = 0x00; big[1] = 0x61; big[2] = 0x73; big[3] = 0x6D;
+        big[4] = 0x01; big[5] = 0x00; big[6] = 0x00; big[7] = 0x00;
+        let result = validate_wasm(&big);
+        assert!(
+            result.errors.iter().any(|e| e.to_lowercase().contains("large")),
+            "expected too-large error, got: {:?}", result.errors
+        );
+    }
+
+    #[test]
+    fn test_has_memory_section_on_minimal_binary() {
+        // 8-byte binary with no sections → no memory section
+        let minimal: &[u8] = &[
+            0x00, 0x61, 0x73, 0x6D,
+            0x01, 0x00, 0x00, 0x00,
+        ];
+        assert!(!has_memory_section(minimal));
+    }
+
+    #[test]
+    fn test_has_memory_section_too_small_binary() {
+        let short = b"\x00asm";
+        assert!(!has_memory_section(short));
+    }
+
+    #[test]
+    fn test_find_wasm_custom_section_not_found() {
+        let minimal: &[u8] = &[
+            0x00, 0x61, 0x73, 0x6D,
+            0x01, 0x00, 0x00, 0x00,
+        ];
+        assert!(find_wasm_custom_section(minimal, "agentos.capabilities").is_none());
+    }
+
+    #[test]
+    fn test_find_wasm_custom_section_too_short() {
+        assert!(find_wasm_custom_section(b"\x00asm", "anything").is_none());
+        assert!(find_wasm_custom_section(&[], "anything").is_none());
+    }
+
+    #[test]
+    fn test_validate_wasm_report_missing_exports_list() {
+        // Minimal binary: magic + version, no exports
+        let wasm: &[u8] = &[
+            0x00, 0x61, 0x73, 0x6D,
+            0x01, 0x00, 0x00, 0x00,
+        ];
+        let report = validate_wasm_report(wasm);
+        assert!(!report.valid);
+        // All required function exports (except "memory") should be listed
+        for export in &["init", "handle_ppc", "health_check", "notified"] {
+            assert!(
+                report.missing_exports.iter().any(|e| e == export),
+                "expected '{}' in missing_exports: {:?}", export, report.missing_exports
+            );
+        }
+    }
+
+    #[test]
+    fn test_validate_wasm_report_memory_goes_to_warnings_not_missing() {
+        let wasm: &[u8] = &[
+            0x00, 0x61, 0x73, 0x6D,
+            0x01, 0x00, 0x00, 0x00,
+        ];
+        let report = validate_wasm_report(wasm);
+        // "memory" is a warning, not a missing export
+        assert!(
+            !report.missing_exports.iter().any(|e| e == "memory"),
+            "\"memory\" should not be in missing_exports (it's a warning)"
+        );
+    }
+
+    #[test]
+    fn test_validate_wasm_warnings_for_minimal_binary() {
+        // A valid-magic binary with no imports/exports/custom sections
+        let wasm: &[u8] = &[
+            0x00, 0x61, 0x73, 0x6D,
+            0x01, 0x00, 0x00, 0x00,
+        ];
+        let result = validate_wasm(wasm);
+        // Should warn about missing "agentos.capabilities" custom section
+        assert!(
+            result.warnings.iter().any(|w| w.contains("agentos.capabilities")),
+            "expected capabilities section warning, got: {:?}", result.warnings
+        );
+        // Should warn about missing "aos" imports
+        assert!(
+            result.warnings.iter().any(|w| w.contains("aos")),
+            "expected aos import warning, got: {:?}", result.warnings
+        );
+    }
 }

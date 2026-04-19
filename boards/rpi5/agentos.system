@@ -44,7 +44,6 @@
     net_server      (prio 160)  - lwIP TCP/IP stack (virtio-net)
     app_manager     (prio 130)  - application lifecycle manager
     http_svc        (prio 140)  - HTTP request handler
-    js_runtime      (prio 120)  - passive JavaScript sandbox
     wg_net          (prio 140)  - passive WireGuard tunnel
     console_shell   (prio 80)   - hardware serial console mini-CLI
 
@@ -83,7 +82,6 @@
 
     <protection_domain name="init_agent" priority="100">
         <program_image path="init_agent.elf" />
-        <map mr="js_staging" vaddr="0x7000000" perms="rw" />
     </protection_domain>
 
     <protection_domain name="worker_0" priority="80">
@@ -626,27 +624,6 @@
     <channel>
         <end pd="app_manager" id="4" pp="true" />
         <end pd="http_svc"    id="1" />
-    </channel>
-
-    <!-- ═══════════════════════════════════════════════════════════════════
-         JS RUNTIME
-         ═══════════════════════════════════════════════════════════════════ -->
-
-    <memory_region name="js_staging" size="0x400000" />
-
-    <protection_domain name="js_runtime" priority="120" passive="true">
-        <program_image path="js_runtime.elf" />
-        <map mr="js_staging" vaddr="0x7000000" perms="rw"
-             setvar_vaddr="js_staging_vaddr" />
-    </protection_domain>
-
-    <channel>
-        <end pd="controller"  id="60" pp="true" />
-        <end pd="js_runtime"  id="0" />
-    </channel>
-    <channel>
-        <end pd="init_agent"  id="11" pp="true" />
-        <end pd="js_runtime"  id="1" />
     </channel>
 
     <!-- ═══════════════════════════════════════════════════════════════════

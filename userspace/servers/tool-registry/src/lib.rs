@@ -660,4 +660,138 @@ mod tests {
         assert_eq!(s.total_invocations,   2);
         assert_eq!(s.unique_providers,    2);
     }
+
+    // ── Additional coverage ───────────────────────────────────────────────────
+
+    #[test]
+    fn test_register_assigns_unique_badges() {
+        let mut reg = ToolRegistry::new();
+        let agent   = [0x01u8; 32];
+        let badge_a = reg.register(make_tool("tool-a", agent)).unwrap();
+        let badge_b = reg.register(make_tool("tool-b", agent)).unwrap();
+        assert_ne!(badge_a, badge_b);
+    }
+
+    #[test]
+    fn test_register_different_providers_same_name_allowed() {
+        let mut reg     = ToolRegistry::new();
+        let provider_a  = [0x01u8; 32];
+        let provider_b  = [0x02u8; 32];
+        // First registration from A
+        reg.register(make_tool("shared-name", provider_a)).unwrap();
+        // Second registration from B — different provider, so allowed
+        // (overrides the tool entry with B's registration)
+        let result = reg.register(make_tool("shared-name", provider_b));
+        assert!(result.is_ok(), "expected Ok for different provider, got {:?}", result);
+    }
+
+    #[test]
+    fn test_search_by_tag_matches() {
+        let mut reg = ToolRegistry::new();
+        let agent   = [0x01u8; 32];
+
+        let mut t = make_tool("embed", agent);
+        t.tags = vec!["ml".into(), "embeddings".into()];
+        t.description = "Generate embeddings".into();
+        reg.register(t).unwrap();
+
+        let results = reg.search("embeddings", 0);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].name, "embed");
+    }
+
+    #[test]
+    fn test_search_case_insensitive() {
+        let mut reg = ToolRegistry::new();
+        let agent   = [0x01u8; 32];
+        let mut t = make_tool("WeatherTool", agent);
+        t.description = "Fetches WEATHER data".into();
+        reg.register(t).unwrap();
+
+        assert_eq!(reg.search("weather", 0).len(), 1);
+        assert_eq!(reg.search("WEATHER", 0).len(), 1);
+        assert_eq!(reg.search("Weather", 0).len(), 1);
+    }
+
+    #[test]
+    fn test_search_no_match_returns_empty() {
+        let mut reg = ToolRegistry::new();
+        let agent   = [0x01u8; 32];
+        reg.register(make_tool("greet", agent)).unwrap();
+        assert!(reg.search("zzz-no-match", 0).is_empty());
+    }
+
+    #[test]
+    fn test_list_excludes_unavailable_tools() {
+        let mut reg  = ToolRegistry::new();
+        let agent    = [0x01u8; 32];
+        reg.register(make_tool("available", agent)).unwrap();
+        reg.register(make_tool("disabled",  agent)).unwrap();
+        reg.tools.get_mut("disabled").unwrap().available = false;
+
+        let visible = reg.list(0);
+        assert_eq!(visible.len(), 1);
+        assert_eq!(visible[0].name, "available");
+    }
+
+    #[test]
+    fn test_list_hides_tools_from_unauthorized_caller() {
+        let mut reg = ToolRegistry::new();
+        let agent   = [0x01u8; 32];
+        reg.register(make_tool("private", agent)).unwrap();
+        // Badge 77 has no grants — cannot see the tool
+        let visible = reg.list(77);
+        assert!(visible.is_empty());
+    }
+
+    #[test]
+    fn test_unregister_alias_works() {
+        let mut reg = ToolRegistry::new();
+        let agent   = [0x01u8; 32];
+        reg.register(make_tool("my-tool", agent)).unwrap();
+        assert!(reg.unregister("my-tool", &agent).is_ok());
+        assert!(reg.list(0).is_empty());
+    }
+
+    #[test]
+    fn test_call_count_increments_on_each_invoke() {
+        let mut reg = ToolRegistry::new();
+        let agent   = [0x01u8; 32];
+        reg.register(make_tool("counter", agent)).unwrap();
+
+        reg.invoke(&sys_call("counter"), 0);
+        reg.invoke(&sys_call("counter"), 1);
+        reg.invoke(&sys_call("counter"), 2);
+
+        let tool = reg.tools.get("counter").unwrap();
+        assert_eq!(tool.call_count, 3);
+    }
+
+    #[test]
+    fn test_total_registered_counts_all_registrations() {
+        let mut reg = ToolRegistry::new();
+        let agent   = [0x01u8; 32];
+        reg.register(make_tool("t1", agent)).unwrap();
+        reg.register(make_tool("t2", agent)).unwrap();
+        // total_registered tracks how many register() calls succeeded
+        assert_eq!(reg.total_registered, 2);
+    }
+
+    #[test]
+    fn test_stats_single_provider_unique_count() {
+        let mut reg = ToolRegistry::new();
+        let agent   = [0x01u8; 32];
+        reg.register(make_tool("a", agent)).unwrap();
+        reg.register(make_tool("b", agent)).unwrap();
+        // Both tools from same provider
+        assert_eq!(reg.stats().unique_providers, 1);
+    }
+
+    #[test]
+    fn test_tool_status_not_eq_variants() {
+        // ToolStatus variants with different data should not be equal
+        let e1 = ToolStatus::ProviderError("a".into());
+        let e2 = ToolStatus::ProviderError("b".into());
+        assert_ne!(e1, e2);
+    }
 }

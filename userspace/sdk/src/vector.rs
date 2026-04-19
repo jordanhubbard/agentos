@@ -253,3 +253,175 @@ impl core::fmt::Display for VectorError {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloc::string::ToString;
+
+    // ── Embedding ─────────────────────────────────────────────────────────────
+
+    #[test]
+    fn embedding_new_sets_dims() {
+        let e = Embedding::new(alloc::vec![1.0, 2.0, 3.0]);
+        assert_eq!(e.dims, 3);
+        assert_eq!(e.values.len(), 3);
+    }
+
+    #[test]
+    fn cosine_similarity_identical_vectors_is_one() {
+        let a = Embedding::new(alloc::vec![1.0, 0.0, 0.0]);
+        let b = Embedding::new(alloc::vec![1.0, 0.0, 0.0]);
+        let sim = a.cosine_similarity(&b);
+        assert!((sim - 1.0).abs() < 1e-5, "expected ~1.0, got {}", sim);
+    }
+
+    #[test]
+    fn cosine_similarity_opposite_vectors_is_negative_one() {
+        let a = Embedding::new(alloc::vec![1.0, 0.0]);
+        let b = Embedding::new(alloc::vec![-1.0, 0.0]);
+        let sim = a.cosine_similarity(&b);
+        assert!((sim - (-1.0)).abs() < 1e-5, "expected ~-1.0, got {}", sim);
+    }
+
+    #[test]
+    fn cosine_similarity_orthogonal_vectors_is_zero() {
+        let a = Embedding::new(alloc::vec![1.0, 0.0]);
+        let b = Embedding::new(alloc::vec![0.0, 1.0]);
+        let sim = a.cosine_similarity(&b);
+        assert!(sim.abs() < 1e-5, "expected ~0.0, got {}", sim);
+    }
+
+    #[test]
+    fn cosine_similarity_dimension_mismatch_returns_zero() {
+        let a = Embedding::new(alloc::vec![1.0, 2.0]);
+        let b = Embedding::new(alloc::vec![1.0, 2.0, 3.0]);
+        assert_eq!(a.cosine_similarity(&b), 0.0);
+    }
+
+    #[test]
+    fn cosine_similarity_zero_vector_returns_zero() {
+        let a = Embedding::new(alloc::vec![0.0, 0.0]);
+        let b = Embedding::new(alloc::vec![1.0, 0.0]);
+        assert_eq!(a.cosine_similarity(&b), 0.0);
+    }
+
+    #[test]
+    fn cosine_similarity_scaled_vectors_is_one() {
+        // Scaling should not affect cosine similarity
+        let a = Embedding::new(alloc::vec![2.0, 4.0]);
+        let b = Embedding::new(alloc::vec![1.0, 2.0]);
+        let sim = a.cosine_similarity(&b);
+        assert!((sim - 1.0).abs() < 1e-5, "expected ~1.0, got {}", sim);
+    }
+
+    // ── VectorId ──────────────────────────────────────────────────────────────
+
+    #[test]
+    fn vector_id_display() {
+        let id = VectorId::new(0xABCDEF);
+        let s = id.to_string();
+        assert!(s.starts_with("vec:"), "expected vec: prefix, got {}", s);
+        assert!(s.contains("abcdef"), "expected hex digits in {}", s);
+    }
+
+    // ── VectorPartition ───────────────────────────────────────────────────────
+
+    #[test]
+    fn partition_starts_empty() {
+        let p = VectorPartition::new("test", 3, IndexKind::Flat);
+        assert!(p.is_empty());
+        assert_eq!(p.len(), 0);
+    }
+
+    #[test]
+    fn partition_insert_returns_sequential_ids() {
+        let mut p = VectorPartition::new("test", 2, IndexKind::Flat);
+        let id0 = p.insert(Embedding::new(alloc::vec![1.0, 0.0]), VectorPayload::Empty, 0).unwrap();
+        let id1 = p.insert(Embedding::new(alloc::vec![0.0, 1.0]), VectorPayload::Empty, 1).unwrap();
+        assert_eq!(id0, VectorId::new(0));
+        assert_eq!(id1, VectorId::new(1));
+        assert_eq!(p.len(), 2);
+    }
+
+    #[test]
+    fn partition_insert_dimension_mismatch_fails() {
+        let mut p = VectorPartition::new("test", 3, IndexKind::Flat);
+        let e = Embedding::new(alloc::vec![1.0, 2.0]); // 2D into 3D partition
+        let err = p.insert(e, VectorPayload::Empty, 0).unwrap_err();
+        assert!(matches!(err, VectorError::DimensionMismatch { expected: 3, got: 2 }));
+    }
+
+    #[test]
+    fn partition_search_returns_correct_top_k() {
+        let mut p = VectorPartition::new("test", 2, IndexKind::Flat);
+        p.insert(Embedding::new(alloc::vec![1.0, 0.0]), VectorPayload::Text("a".into()), 0).unwrap();
+        p.insert(Embedding::new(alloc::vec![0.0, 1.0]), VectorPayload::Text("b".into()), 1).unwrap();
+        p.insert(Embedding::new(alloc::vec![-1.0, 0.0]), VectorPayload::Text("c".into()), 2).unwrap();
+
+        let query = SearchQuery::new(Embedding::new(alloc::vec![1.0, 0.0]), 2);
+        let results = p.search(&query).unwrap();
+        assert_eq!(results.len(), 2);
+        // Most similar to [1,0] should be [1,0] itself
+        assert!((results[0].score - 1.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn partition_search_min_score_filters_results() {
+        let mut p = VectorPartition::new("test", 2, IndexKind::Flat);
+        p.insert(Embedding::new(alloc::vec![1.0, 0.0]), VectorPayload::Empty, 0).unwrap();
+        p.insert(Embedding::new(alloc::vec![-1.0, 0.0]), VectorPayload::Empty, 1).unwrap(); // sim = -1.0
+
+        let query = SearchQuery::new(Embedding::new(alloc::vec![1.0, 0.0]), 10)
+            .with_min_score(0.5);
+        let results = p.search(&query).unwrap();
+        assert_eq!(results.len(), 1);
+        assert!((results[0].score - 1.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn partition_search_dimension_mismatch_fails() {
+        let p = VectorPartition::new("test", 3, IndexKind::Flat);
+        let query = SearchQuery::new(Embedding::new(alloc::vec![1.0, 0.0]), 5);
+        let err = p.search(&query).unwrap_err();
+        assert!(matches!(err, VectorError::DimensionMismatch { expected: 3, got: 2 }));
+    }
+
+    #[test]
+    fn partition_search_results_sorted_by_score_descending() {
+        let mut p = VectorPartition::new("test", 2, IndexKind::Flat);
+        p.insert(Embedding::new(alloc::vec![0.0, 1.0]), VectorPayload::Empty, 0).unwrap();  // sim ~0
+        p.insert(Embedding::new(alloc::vec![1.0, 0.0]), VectorPayload::Empty, 1).unwrap();  // sim  1
+        p.insert(Embedding::new(alloc::vec![-1.0, 0.0]), VectorPayload::Empty, 2).unwrap(); // sim -1
+
+        let query = SearchQuery::new(Embedding::new(alloc::vec![1.0, 0.0]), 3);
+        let results = p.search(&query).unwrap();
+        // Scores should be descending
+        for w in results.windows(2) {
+            assert!(w[0].score >= w[1].score);
+        }
+    }
+
+    #[test]
+    fn search_result_distance_is_one_minus_score() {
+        let mut p = VectorPartition::new("test", 2, IndexKind::Flat);
+        p.insert(Embedding::new(alloc::vec![1.0, 0.0]), VectorPayload::Empty, 0).unwrap();
+
+        let query = SearchQuery::new(Embedding::new(alloc::vec![1.0, 0.0]), 1);
+        let results = p.search(&query).unwrap();
+        let r = &results[0];
+        assert!((r.distance - (1.0 - r.score)).abs() < 1e-5);
+    }
+
+    // ── VectorError Display ───────────────────────────────────────────────────
+
+    #[test]
+    fn vector_error_display() {
+        assert!(VectorError::DimensionMismatch { expected: 3, got: 2 }
+            .to_string().contains("3"));
+        assert!(VectorError::NotFound.to_string().contains("not found"));
+        assert!(VectorError::PartitionFull.to_string().contains("full"));
+        assert!(VectorError::CapabilityDenied.to_string().contains("denied"));
+        assert!(VectorError::IndexError("oops".into()).to_string().contains("oops"));
+    }
+}

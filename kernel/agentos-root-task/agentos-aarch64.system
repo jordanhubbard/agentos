@@ -41,7 +41,7 @@
          ═══════════════════════════════════════════════════════════════════ -->
 
     <!-- Controller: system coordinator, low priority to PPC into passive servers -->
-    <protection_domain name="controller" priority="50">
+    <protection_domain name="controller" priority="50" stack_size="0x10000">
         <program_image path="controller.elf" />
         <map mr="monitor_stack"  vaddr="0x2000000" perms="rw" setvar_vaddr="monitor_stack_vaddr" />
         <!-- Swap code regions: controller writes WASM images here; swap slot PDs read them -->
@@ -78,8 +78,6 @@
     <!-- InitAgent: bootstrap agent -->
     <protection_domain name="init_agent" priority="100">
         <program_image path="init_agent.elf" />
-        <!-- js_staging: shared with js_runtime for script source/result exchange -->
-        <map mr="js_staging" vaddr="0x7000000" perms="rw" />
     </protection_domain>
     
     <!-- Agent pool workers: static PDs, dynamic task assignment -->
@@ -284,8 +282,12 @@
          and bridges IPC between native agentOS agents and Linux.
          ═══════════════════════════════════════════════════════════════════ -->
 
-    <!-- Guest RAM: 256MB with 2MB large pages for efficiency -->
-    <memory_region name="guest_ram" size="0x10_000_000" page_size="0x200_000" />
+    <!-- Guest RAM: 256MB with 2MB large pages, pinned at physical 0x40000000.
+         phys_addr must equal the guest IPA (0x40000000) so that QEMU's virtio
+         DMA (which uses the IPA as a machine-physical address) reads/writes the
+         correct pages.  Without this, DMA addresses are mismatched and the RX
+         path is silently broken. -->
+    <memory_region name="guest_ram" size="0x10_000_000" page_size="0x200_000" phys_addr="0x40000000" />
 
     <!-- UART: PL011 serial device, passed through to guest for direct I/O -->
     <memory_region name="serial" size="0x1_000" phys_addr="0x9000000" />
@@ -309,6 +311,9 @@
             <map mr="serial" vaddr="0x9000000" perms="rw" cached="false" />
             <!-- GIC vCPU interface mapped as if it were the real CPU interface -->
             <map mr="gic_vcpu" vaddr="0x8010000" perms="rw" cached="false" />
+            <!-- virtio-net passthrough: slot 0 at 0xa000000 (bus=virtio-mmio-bus.0).
+                 Guest DTS node at 0xa000000 (virtio_mmio@a000000 in overlay.dts). -->
+            <map mr="virtio_net_mmio" vaddr="0xa000000" perms="rw" cached="false" />
         </virtual_machine>
 
         <!--
@@ -317,6 +322,21 @@
             VMM injects it as virtual IRQ into the guest.
         -->
         <irq irq="33" id="1" />
+        <!--
+            virtio-net IRQ (slot 0: SPI 16, INTID 48).
+            QEMU assigns SPI (16 + slot) for each virtio-mmio transport:
+            slot 0 → SPI 16 → INTID 16+32=48.
+            Delivered to VMM as notification on channel 5,
+            VMM injects it as virtual IRQ 48 into the guest.
+        -->
+        <irq irq="48" id="5" />
+        <!--
+            virtio-blk IRQ (slot 1: SPI 17, INTID 49).
+            slot 1 → SPI 17 → INTID 17+32=49.
+            Delivered to VMM as notification on channel 6,
+            VMM injects it as virtual IRQ 49 into the guest.
+        -->
+        <irq irq="49" id="6" />
     </protection_domain>
 
     <!-- Channel 50: controller <-> linux_vmm (agent-to-linux bridge) -->
@@ -436,9 +456,10 @@
 
     <memory_region name="vfs_io_shmem"       size="0x20000" />
     <memory_region name="blk_dma_shmem"      size="0x8000"  />
-    <!-- QEMU virt MMIO: virtio-net bus.0 (aarch64: 0xa000000, 4KB page-aligned)
-         Note: virtio-blk bus.1 is at 0xa000200 (same page) — cannot be mapped
-         separately with page granularity; virtio_blk PD returns BLK_ERR_NODEV. -->
+    <!-- QEMU virt MMIO: virtio-net pinned to slot 0 (bus=virtio-mmio-bus.0).
+         Slot 0 is at base 0xa000000, size 0x200.  We map one full 4KB page
+         at 0xa000000 (guest IPA = host PA).  IRQ: SPI 16, GIC INTID 48.
+         Guest Linux drives it via the virtio-mmio DTS node in overlay.dts. -->
     <memory_region name="virtio_net_mmio"    size="0x1000"  phys_addr="0xa000000" />
     <memory_region name="spawn_elf_shmem"    size="0x80000" />
     <memory_region name="spawn_config_shmem" size="0x1000"  />
@@ -578,8 +599,8 @@
         <program_image path="net_server.elf" />
         <map mr="net_packet_shmem"  vaddr="0x5000000" perms="rw"
              setvar_vaddr="net_packet_shmem_vaddr" />
-        <map mr="virtio_net_mmio"   vaddr="0x6000000" perms="rw" cached="false"
-             setvar_vaddr="net_mmio_vaddr" />
+        <!-- virtio_net_mmio removed: device is passed through to linux_vmm VM.
+             net_mmio_vaddr=0 → probe_virtio_net() selects stub mode. -->
         <!-- Staging region: shared with vibe_engine for HTTP POST request/response bodies -->
         <map mr="vibe_staging" vaddr="0x9000000" perms="rw"
              setvar_vaddr="vibe_staging_vaddr" />
@@ -667,38 +688,6 @@
         <end pd="app_manager" id="4" pp="true" />
         <end pd="http_svc"    id="1" />
     </channel>
-
-    <!-- ═══════════════════════════════════════════════════════════════════
-         JS RUNTIME — JavaScript execution sandbox (passive, prio 120)
-
-         Passive PD that provides a sandboxed JavaScript runtime for
-         agent scripts. Shares a 4MB staging buffer with init_agent
-         for script source and result exchange.
-         ═══════════════════════════════════════════════════════════════════ -->
-
-    <memory_region name="js_staging" size="0x400000" />
-
-    <protection_domain name="js_runtime" priority="120" passive="true">
-        <program_image path="js_runtime.elf" />
-        <map mr="js_staging" vaddr="0x7000000" perms="rw"
-             setvar_vaddr="js_staging_vaddr" />
-    </protection_domain>
-
-    <!-- Channel 60: controller <-> js_runtime (ch 0 on js_runtime side) -->
-    <channel>
-        <end pd="controller"  id="60" pp="true" />
-        <end pd="js_runtime"  id="0" />
-    </channel>
-
-    <!-- Channel 61: init_agent <-> js_runtime (ch 1 on js_runtime side) -->
-    <channel>
-        <end pd="init_agent"  id="11" pp="true" />
-        <end pd="js_runtime"  id="1" />
-    </channel>
-
-    <!-- js_staging mapped into init_agent for script source/result exchange -->
-    <!-- init_agent maps js_staging at 0x7000000 (rw) via setvar_vaddr js_staging_vaddr -->
-    <!-- Note: init_agent maps js_staging at the same vaddr as js_runtime sees it -->
 
     <!-- ═══════════════════════════════════════════════════════════════════
          WG_NET — WireGuard network tunnel PD (passive, prio 140)

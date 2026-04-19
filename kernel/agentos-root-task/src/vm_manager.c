@@ -345,6 +345,54 @@ microkit_msginfo protected(microkit_channel ch, microkit_msginfo msg)
             microkit_mr_set(0, VM_ERR);
             return microkit_msginfo_new(0, 1);
         }
+
+        /*
+         * TODO (Phase 2 — OS-neutral capability grant for generic services):
+         *
+         * This is where vm_manager must grant the new VM's PD a capability to
+         * each generic device service it is permitted to use, based on a
+         * vm_spec/vm_flags bitmask that the controller passes in MR3 (to be
+         * defined).  See docs/device-audit.md §5 for the full rationale.
+         *
+         * The enforcement rule: a VMM must use a generic service rather than
+         * implementing its own device.  The binding happens here, once, at VM
+         * creation, and is revoked when the slot is destroyed.
+         *
+         * Required channel additions to the .system file (Phase 2):
+         *   CH_VM_MGR_TO_NET     — vm_manager -> net_server     (pp=true)
+         *   CH_VM_MGR_TO_CONSOLE — vm_manager -> console_mux    (pp=true)
+         *   CH_VM_MGR_TO_BLK     — vm_manager -> virtio_blk     (pp=true)
+         *
+         * Pseudocode for Phase 2 grant sequence (no code change yet):
+         *
+         *   uint32_t vm_flags = (uint32_t)microkit_mr_get(3);
+         *
+         *   if (vm_flags & VM_FLAG_NETWORK) {
+         *       // PPC to net_server: OP_NET_VNIC_CREATE(slot_id, CAP_CLASS_NET)
+         *       // On success: store assigned vnic_id in g_quotas[slot_id].
+         *       // The vNIC is destroyed in the OP_VM_DESTROY handler.
+         *   }
+         *
+         *   if (vm_flags & VM_FLAG_CONSOLE) {
+         *       // PPC to console_mux: OP_CONSOLE_VM_REGISTER(slot_id)
+         *       // console_mux allocates a session slot for this VM and returns
+         *       // the ring index.  On OP_VM_CONSOLE, vm_manager also sends
+         *       // OP_CONSOLE_ATTACH(slot_id) to console_mux so the session
+         *       // multiplexer tracks which VM has active console focus.
+         *   }
+         *
+         *   if (vm_flags & VM_FLAG_BLOCK) {
+         *       // PPC to virtio_blk: OP_BLK_HEALTH to verify device is ready.
+         *       // Store block channel ID in g_quotas[slot_id] so the VMM's
+         *       // MMIO fault handler can route VirtIO block MMIO writes to the
+         *       // correct PD via PPC rather than emulating locally.
+         *   }
+         *
+         * Note: GPU shmem (gpu_tensor_buf MR) is approved as a custom channel
+         * per docs/defects/DEFECT-001-gpu-shmem.md and does not go through this
+         * generic grant path.  It is statically mapped in the .system file.
+         */
+
         microkit_dbg_puts("[vm_manager] CREATE slot=");
         dbg_u8(slot_id);
         microkit_dbg_puts("\n");

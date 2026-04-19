@@ -28,7 +28,6 @@ GUEST_OS    ?= none
 ROOT_DIR     := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
 KERNEL_DIR   := $(ROOT_DIR)kernel/agentos-root-task
 MICROKIT_SDK := $(ROOT_DIR)microkit-sdk-2.1.0
-CONSOLE_DIR  := $(ROOT_DIR)console
 
 # ─── BOARD_NAME: selects a boards/<name>/board.mk configuration ──────────────
 # Derive from TARGET_ARCH when not explicitly provided.  Override with
@@ -302,7 +301,7 @@ build-tools:
 	@echo "Building agentOS Rust tools..."
 	@cargo build --release \
 		-p gen-sdf -p gen-ringbuf -p sign-wasm -p attest-verify \
-		-p make-swap-image -p trace-replay -p agentos-console -p xtask
+		-p make-swap-image -p trace-replay -p xtask
 	@echo "✓ Tools built → target/release/"
 
 # =============================================================================
@@ -359,50 +358,62 @@ endif
 	@echo ""
 
 # =============================================================================
-# dashboard: start the agentOS console (agentOS already running on hardware)
+# dashboard: removed — agentOS has no built-in UI.
+# Consumers connect to the agentOS API via the contracts/ interface contracts.
 # =============================================================================
 dashboard:
-	@echo ""
-	@echo "agentOS console → http://localhost:8080"
-	@echo "Connects to agentOS at http://127.0.0.1:8789"
-	@echo "Press Ctrl-C to stop."
-	@echo ""
-	@cargo run -p agentos-console --release
+	@echo "ERROR: The agentOS web console has been removed."
+	@echo "Connect to agentOS services via the API contracts in contracts/."
+	@echo "See contracts/vibeos/README.md for the OS lifecycle API."
+	@exit 1
+
+# QEMU flags for interactive run: serial → stdio, SSH port forwarding per guest.
+# Guest SSH is NAT'd through the agentOS net-server virtio-net to QEMU user-net.
+# The agentOS net-server listens on port 8789 and forwards to connected guests.
+# Ports 2222/2223/2224 are forwarded for Ubuntu/FreeBSD/NixOS respectively.
+_RUN_CPU := $(if $(filter aarch64,$(NATIVE_ARCH)),cortex-a53,qemu64)
+GUEST_IMAGES := $(ROOT_DIR)guest-images
+# virtio-blk: attach Ubuntu disk image at slot 1 when GUEST_OS=ubuntu.
+# The Ubuntu kernel finds its root via PARTUUID in the GPT header of the raw image.
+_UBUNTU_BLK = -drive file=$(GUEST_IMAGES)/ubuntu-24.04-arm64.raw,format=raw,if=none,id=hd0 \
+              -device virtio-blk-device,drive=hd0,bus=virtio-mmio-bus.1
+_QEMU_BLK_FLAGS = $(if $(filter ubuntu,$(GUEST_OS)),$(_UBUNTU_BLK),)
+QEMU_RUN_FLAGS = -machine virt,virtualization=on,highmem=off,secure=off \
+                 -cpu $(_RUN_CPU) -m 2G \
+                 -display none -monitor none \
+                 -nographic \
+                 -netdev user,id=net0,hostfwd=tcp:127.0.0.1:8789-:8789,hostfwd=tcp:127.0.0.1:2222-10.0.2.15:22,hostfwd=tcp:127.0.0.1:2223-10.0.2.15:2223,hostfwd=tcp:127.0.0.1:2224-10.0.2.15:2224 \
+                 -device virtio-net-device,netdev=net0,bus=virtio-mmio-bus.0,ctrl_vq=off,ctrl_rx=off,ctrl_vlan=off,guest_announce=off,mq=off,ctrl_mac_addr=off,ctrl_guest_offloads=off \
+                 $(_QEMU_BLK_FLAGS) \
+                 -device loader,file=$(NATIVE_IMAGE),addr=0x70000000,cpu-num=0
 
 # =============================================================================
-# run (default): build native → QEMU (HW-accel) + agentOS console
+# run (default): build native → QEMU with serial on stdout
 #
-# Builds agentOS for the host's native CPU, launches it headlessly in QEMU
-# with hardware acceleration (HVF on macOS, KVM on Linux), starts the
-# agentOS console server, and opens it in the default browser.
-# Ctrl-C shuts down both the console server and QEMU cleanly.
+# No web console. Connect to guest VMs via SSH:
+#   ssh -p 2222 ubuntu@localhost   # Ubuntu guest
+#   ssh -p 2223 root@localhost     # FreeBSD guest
+#   ssh -p 2224 root@localhost     # NixOS guest
+# Use Ctrl-A X to exit QEMU.
 # =============================================================================
 run:
 	@$(MAKE) build BOARD=$(NATIVE_BOARD) TARGET_ARCH=$(NATIVE_ARCH)
 	@echo ""
 	@echo "╔══════════════════════════════════════════╗"
-	@echo "║  agentOS — console (native, HW-accel)    ║"
+	@echo "║  agentOS — QEMU ($(NATIVE_ARCH))         ║"
 	@echo "╚══════════════════════════════════════════╝"
 	@echo ""
-	@echo "Arch  : $(NATIVE_ARCH)"
-	@echo "Board : $(NATIVE_BOARD)"
-	@echo "Accel : $(if $(QEMU_ACCEL_NATIVE),$(QEMU_ACCEL_NATIVE),none (TCG fallback))"
-	@echo "Image : $(NATIVE_IMAGE)"
+	@echo "Arch   : $(NATIVE_ARCH)"
+	@echo "Board  : $(NATIVE_BOARD)"
+	@echo "Accel  : $(if $(QEMU_ACCEL_NATIVE),$(QEMU_ACCEL_NATIVE),none (TCG))"
+	@echo "Image  : $(NATIVE_IMAGE)"
 	@echo ""
-	@echo "Console: http://localhost:8080  (opening in browser...)"
+	@echo "Guest SSH: ssh -p 2222 ubuntu@localhost    (Ubuntu)"
+	@echo "           ssh -p 2223 root@localhost      (FreeBSD)"
+	@echo "           ssh -p 2224 root@localhost      (NixOS)"
+	@echo "Exit QEMU: Ctrl-A X"
 	@echo "──────────────────────────────────────────────"
-	@rm -f /tmp/agentos-serial.sock /tmp/freebsd-serial.sock /tmp/linux-serial.sock
-	@lsof -ti:8080 2>/dev/null | xargs kill 2>/dev/null || true
-	@lsof -ti:8789 2>/dev/null | xargs kill 2>/dev/null || true
-	@trap 'kill "$$QEMU_PID" 2>/dev/null; wait "$$BRIDGE_PID" 2>/dev/null; exit' INT TERM; \
-	 cargo run -p agentos-console --release & BRIDGE_PID=$$!; \
-	 for _i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do \
-	   [ -S /tmp/agentos-serial.sock ] && break; sleep 0.1; done; \
-	 $(NATIVE_QEMU) $(NATIVE_QEMU_FLAGS) & QEMU_PID=$$!; \
-	 (command -v open     >/dev/null 2>&1 && open     http://localhost:8080) || \
-	 (command -v xdg-open >/dev/null 2>&1 && xdg-open http://localhost:8080) || true; \
-	 wait "$$BRIDGE_PID"; \
-	 kill "$$QEMU_PID" 2>/dev/null || true
+	@$(NATIVE_QEMU) $(QEMU_RUN_FLAGS)
 
 # =============================================================================
 # test: CI boot test (exits 0 on success, 1 on failure)
@@ -541,5 +552,4 @@ help:
 	@echo "  Kernel/firmware    → C"
 	@echo "  Arch-specific      → Assembly"
 	@echo "  Userspace/tooling  → Rust"
-	@echo "  Dashboard UI       → Rust/WASM (trunk build)"
 	@echo ""
