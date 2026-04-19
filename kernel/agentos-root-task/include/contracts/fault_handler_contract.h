@@ -1,127 +1,97 @@
-#pragma once
-/* FAULT_HANDLER contract — version 1
- * PD: fault_handler | Source: src/fault_handler.c | Channel: (receives fault IPCs from seL4 kernel)
+/*
+ * FaultHandler IPC Contract
+ *
+ * The FaultHandler PD receives seL4 fault notifications for all PDs and
+ * applies configured restart policies.  It tracks fault history per PD.
+ *
+ * Channel: (controller → fault_handler; fault_handler → controller on escalation)
+ * Opcodes: MSG_FAULT_NOTIFY, MSG_FAULT_QUERY, MSG_FAULT_HISTORY, OP_FAULT_POLICY_SET
+ *
+ * Invariants:
+ *   - MSG_FAULT_NOTIFY is sent by the monitor to fault_handler on every fault.
+ *   - The reply to NOTIFY contains the policy decision (restart, escalate, etc.).
+ *   - After FAULT_POLICY_ESCALATE_AFTER restarts, the fault is escalated to
+ *     the Witness via EventBus.
+ *   - FAULT_QUERY is read-only; it returns the fault history summary.
+ *   - FAULT_HISTORY copies the full history to shared memory.
+ *   - OP_FAULT_POLICY_SET updates the per-slot policy; takes effect immediately.
  */
-#include <stdint.h>
-#include <stdbool.h>
 
-#define FAULT_HANDLER_CONTRACT_VERSION 1
+#pragma once
+#include "../agentos.h"
 
-/* ── Opcodes ── */
-#define FAULT_HANDLER_OP_NOTIFY        0xE0u  /* seL4 fault notification delivered to handler */
-#define FAULT_HANDLER_OP_QUERY         0xE1u  /* query fault record for a slot */
-#define FAULT_HANDLER_OP_HISTORY       0xE2u  /* retrieve fault history for a slot */
-#define FAULT_HANDLER_OP_POLICY_SET    0xE3u  /* set restart policy for a slot */
-#define FAULT_HANDLER_OP_CLEAR         0xE4u  /* clear fault record and restart counter */
+/* ─── Request structs ────────────────────────────────────────────────────── */
 
-/* ── Fault kinds ── */
-#define FAULT_KIND_VM_FAULT            0u  /* page fault / access violation */
-#define FAULT_KIND_CAP_FAULT           1u  /* invalid capability access */
-#define FAULT_KIND_UNKNOWN_SYSCALL     2u  /* unrecognized system call */
-#define FAULT_KIND_WASM_TRAP           3u  /* WASM execution trap */
-#define FAULT_KIND_STACK_OVERFLOW      4u  /* guard page hit */
-#define FAULT_KIND_TIMEOUT             5u  /* scheduling timeout fault */
+struct fault_handler_req_notify {
+    uint32_t pd_id;
+    uint32_t fault_kind;        /* FAULT_KIND_* */
+    uint64_t addr;              /* faulting address (if applicable) */
+    uint64_t ip;                /* instruction pointer at fault */
+};
 
-/* ── Restart policy flags ── */
-#define FAULT_POLICY_RESTART           (1u << 0)  /* restart slot on fault */
-#define FAULT_POLICY_ESCALATE          (1u << 1)  /* escalate to controller after max_restarts */
-#define FAULT_POLICY_COREDUMP          (1u << 2)  /* write core dump to AgentFS on fault */
+#define FAULT_KIND_VM_FAULT      0   /* page fault */
+#define FAULT_KIND_CAP_FAULT     1   /* capability access fault */
+#define FAULT_KIND_UNKNOWN       2
 
-/* ── Default policy constants (cross-ref: agentos.h) ── */
-#define FAULT_POLICY_MAX_RESTARTS_DEFAULT   3u
-#define FAULT_POLICY_RESTART_DELAY_MS     100u
-#define FAULT_POLICY_ESCALATE_AFTER         5u
+struct fault_handler_req_query {
+    uint32_t pd_id;
+};
 
-/* ── Request / Reply structs ── */
+struct fault_handler_req_history {
+    uint32_t pd_id;
+    uint32_t max_entries;       /* max entries to copy to shmem */
+};
 
-typedef struct __attribute__((packed)) {
-    uint32_t opcode;          /* FAULT_HANDLER_OP_NOTIFY */
-    uint32_t slot_id;         /* faulting PD slot */
-    uint32_t fault_kind;      /* FAULT_KIND_* */
-    uint64_t fault_addr;      /* faulting virtual address (if applicable) */
-    uint64_t fault_ip;        /* instruction pointer at fault */
-    uint32_t fault_info;      /* architecture-specific fault status word */
-} fault_handler_req_notify_t;
-
-typedef struct __attribute__((packed)) {
-    uint32_t status;          /* 0 = ok (handler took action) */
-    uint32_t action;          /* FAULT_ACTION_* taken */
-} fault_handler_reply_notify_t;
-
-#define FAULT_ACTION_RESTARTED         0u  /* slot was restarted */
-#define FAULT_ACTION_ESCALATED         1u  /* escalated to controller */
-#define FAULT_ACTION_KILLED            2u  /* slot was terminated */
-#define FAULT_ACTION_IGNORED           3u  /* fault logged but no action */
-
-typedef struct __attribute__((packed)) {
-    uint32_t opcode;          /* FAULT_HANDLER_OP_QUERY */
+struct fault_handler_req_policy_set {
     uint32_t slot_id;
-} fault_handler_req_query_t;
+    uint32_t max_restarts;
+    uint32_t escalate_after;    /* escalate after this many restarts */
+};
 
-typedef struct __attribute__((packed)) {
-    uint32_t status;          /* 0 = ok */
-    uint32_t fault_count;     /* total faults since last CLEAR */
-    uint32_t restart_count;   /* number of restarts performed */
-    uint32_t last_fault_kind; /* FAULT_KIND_* of most recent fault */
-    uint64_t last_fault_addr;
+/* ─── Reply structs ──────────────────────────────────────────────────────── */
+
+struct fault_handler_reply_notify {
+    uint32_t ok;
+    uint32_t action;            /* FAULT_ACTION_* */
+};
+
+#define FAULT_ACTION_RESTART    0
+#define FAULT_ACTION_ESCALATE   1
+#define FAULT_ACTION_IGNORE     2
+#define FAULT_ACTION_KILL       3
+
+struct fault_handler_reply_query {
+    uint32_t ok;
+    uint32_t restart_count;     /* total restarts for this PD */
+    uint32_t last_fault_kind;
     uint64_t last_fault_ip;
-    uint64_t last_fault_ns;   /* timestamp of most recent fault */
-} fault_handler_reply_query_t;
+};
 
-typedef struct __attribute__((packed)) {
-    uint32_t opcode;          /* FAULT_HANDLER_OP_HISTORY */
-    uint32_t slot_id;
-    uint32_t shmem_offset;    /* byte offset for history output */
-    uint32_t max_entries;     /* max fault_handler_entry_t to write */
-} fault_handler_req_history_t;
+struct fault_handler_reply_history {
+    uint32_t ok;
+    uint32_t count;             /* entries written to shmem */
+};
 
-typedef struct __attribute__((packed)) {
-    uint32_t status;          /* 0 = ok */
-    uint32_t entry_count;
-} fault_handler_reply_history_t;
+struct fault_handler_reply_policy_set {
+    uint32_t ok;
+};
+
+/* ─── Shmem layout: fault history entry ─────────────────────────────────── */
 
 typedef struct __attribute__((packed)) {
     uint64_t timestamp_ns;
+    uint32_t pd_id;
     uint32_t fault_kind;
-    uint32_t action;
-    uint64_t fault_addr;
-    uint64_t fault_ip;
-} fault_handler_entry_t;
+    uint64_t addr;
+    uint64_t ip;
+    uint32_t restart_num;       /* which restart this was (0-indexed) */
+} fault_history_entry_t;
 
-typedef struct __attribute__((packed)) {
-    uint32_t opcode;          /* FAULT_HANDLER_OP_POLICY_SET */
-    uint32_t slot_id;
-    uint32_t max_restarts;    /* max restarts before escalation */
-    uint32_t escalate_after;  /* total faults (across restarts) before escalation */
-    uint32_t policy_flags;    /* FAULT_POLICY_* bitmask */
-    uint32_t restart_delay_ms;
-} fault_handler_req_policy_set_t;
+/* ─── Error codes ────────────────────────────────────────────────────────── */
 
-typedef struct __attribute__((packed)) {
-    uint32_t status;          /* 0 = ok */
-} fault_handler_reply_policy_set_t;
-
-typedef struct __attribute__((packed)) {
-    uint32_t opcode;          /* FAULT_HANDLER_OP_CLEAR */
-    uint32_t slot_id;
-} fault_handler_req_clear_t;
-
-typedef struct __attribute__((packed)) {
-    uint32_t status;          /* 0 = ok */
-} fault_handler_reply_clear_t;
-
-/* ── Error codes ── */
-typedef enum {
-    FAULT_HANDLER_OK          = 0,
-    FAULT_HANDLER_ERR_BAD_SLOT = 1, /* slot_id not tracked */
-    FAULT_HANDLER_ERR_NO_SHMEM = 2, /* shared memory not mapped for history */
-    FAULT_HANDLER_ERR_NO_CAP  = 3,  /* caller lacks privilege */
-} fault_handler_error_t;
-
-/* ── Invariants ──
- * - NOTIFY is delivered by seL4 on PD fault; the handler must reply to unblock the kernel.
- * - Restart delay is enforced by scheduling the restart via the timer service.
- * - After max_restarts, the slot is killed and ESCALATED action is reported.
- * - COREDUMP writes a snapshot of the faulting PD state to AgentFS.
- * - Policy defaults apply if POLICY_SET has not been called for a slot.
- */
+enum fault_handler_error {
+    FAULT_HANDLER_OK            = 0,
+    FAULT_HANDLER_ERR_BAD_PD    = 1,
+    FAULT_HANDLER_ERR_NO_POLICY = 2,
+    FAULT_HANDLER_ERR_BAD_SLOT  = 3,
+};

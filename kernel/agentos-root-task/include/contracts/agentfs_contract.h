@@ -1,129 +1,119 @@
+/*
+ * AgentFS IPC Contract
+ *
+ * AgentFS is the distributed object store and service registry for agentOS.
+ * It stores WASM modules, configuration blobs, and ephemeral agent state.
+ * It also serves as the /devices namespace for guest OS device discovery.
+ *
+ * Channel: CH_VFS_SERVER (reused for AgentFS in current build)
+ * Opcodes: MSG_AGENTFS_* (see agentos.h)
+ *
+ * Invariants:
+ *   - All path arguments are NUL-terminated strings placed in the shared
+ *     agentfs_shmem region before the IPC call.
+ *   - READ/WRITE data is also transferred via agentfs_shmem.
+ *   - SEARCH queries use a prefix-match on the path component.
+ *   - A successful WRITE publishes EVT_OBJECT_CREATED to the EventBus.
+ *   - DELETE tombstones the object; EVT_OBJECT_DELETED is published.
+ *   - STAT on a non-existent path returns AGENTFS_ERR_NOT_FOUND.
+ */
+
 #pragma once
-/* AGENTFS contract — version 1
- * PD: agentfs | Source: src/agentfs.c | Channel: CH_CONTROLLER_AGENTFS=5 (from controller)
- */
-#include <stdint.h>
-#include <stdbool.h>
+#include "../agentos.h"
 
-#define AGENTFS_CONTRACT_VERSION 1
+/* ─── Channel IDs ────────────────────────────────────────────────────────── */
+#define AGENTFS_CH_CONTROLLER   CH_VFS_SERVER   /* controller → agentfs */
 
-/* ── Channel IDs (controller perspective) ── */
-#define CH_AGENTFS             5   /* controller -> agentfs (from controller: CH_CONTROLLER_AGENTFS) */
+/* ─── Request structs ────────────────────────────────────────────────────── */
 
-/* ── Opcodes (0xAF00 range) ── */
-#define AGENTFS_OP_READ        0xAF01u  /* read object by hash into shared region */
-#define AGENTFS_OP_WRITE       0xAF02u  /* write object from shared region; returns hash */
-#define AGENTFS_OP_STAT        0xAF03u  /* stat object: size, timestamp, flags */
-#define AGENTFS_OP_LIST        0xAF04u  /* list objects (paginated) into shared region */
-#define AGENTFS_OP_DELETE      0xAF05u  /* tombstone an object by hash */
-#define AGENTFS_OP_SEARCH      0xAF06u  /* search objects by metadata tag */
+struct agentfs_req_read {
+    uint32_t inode;             /* inode from a prior STAT call */
+    uint32_t offset;            /* byte offset into object */
+    uint32_t len;               /* bytes to read */
+};
 
-/* ── Object flags ── */
-#define AGENTFS_FLAG_COLD      (1u << 0)  /* object has been evicted to cold tier */
-#define AGENTFS_FLAG_PINNED    (1u << 1)  /* object must not be evicted */
-#define AGENTFS_FLAG_READONLY  (1u << 2)  /* object is immutable after write */
+struct agentfs_req_write {
+    uint32_t inode;             /* 0 = create new object at path in shmem */
+    uint32_t offset;
+    uint32_t len;
+};
 
-/* ── Request / Reply structs ── */
+struct agentfs_req_stat {
+    /* NUL-terminated path string placed in shmem before call */
+    uint32_t path_len;          /* byte length of path (including NUL) */
+};
+
+struct agentfs_req_list {
+    uint32_t path_len;          /* directory path in shmem */
+    uint32_t max_entries;       /* max entries to return */
+};
+
+struct agentfs_req_delete {
+    uint32_t path_len;
+};
+
+struct agentfs_req_search {
+    uint32_t query_len;         /* prefix query string in shmem */
+    uint32_t max_results;
+};
+
+/* ─── Reply structs ──────────────────────────────────────────────────────── */
+
+struct agentfs_reply_read {
+    uint32_t ok;
+    uint32_t actual;            /* bytes actually read */
+};
+
+struct agentfs_reply_write {
+    uint32_t ok;
+    uint32_t inode;             /* inode of written object */
+    uint32_t written;           /* bytes written */
+};
+
+struct agentfs_reply_stat {
+    uint32_t ok;
+    uint32_t inode;
+    uint32_t size_lo;           /* object size (low 32 bits) */
+    uint32_t size_hi;
+    uint32_t flags;             /* AGENTFS_FLAG_* */
+};
+
+#define AGENTFS_FLAG_DIR      (1u << 0)
+#define AGENTFS_FLAG_WASM     (1u << 1)
+#define AGENTFS_FLAG_READONLY (1u << 2)
+#define AGENTFS_FLAG_EVICTED  (1u << 3)  /* in cold tier */
+
+struct agentfs_reply_list {
+    uint32_t ok;
+    uint32_t count;             /* entries written to shmem */
+};
+
+struct agentfs_reply_delete {
+    uint32_t ok;
+};
+
+struct agentfs_reply_search {
+    uint32_t ok;
+    uint32_t count;             /* results written to shmem */
+};
+
+/* ─── Shmem layout: directory listing entry ──────────────────────────────── */
 
 typedef struct __attribute__((packed)) {
-    uint32_t opcode;          /* AGENTFS_OP_READ */
-    uint64_t hash_lo;         /* lower 64 bits of content-addressed hash */
-    uint64_t hash_hi;         /* upper 64 bits of content-addressed hash */
-    uint32_t shmem_offset;    /* byte offset in shared region to write data */
-    uint32_t max_size;        /* maximum bytes to read */
-} agentfs_req_read_t;
-
-typedef struct __attribute__((packed)) {
-    uint32_t status;          /* 0 = ok, else agentfs_error_t */
-    uint32_t bytes_read;      /* actual bytes written to shmem */
-} agentfs_reply_read_t;
-
-typedef struct __attribute__((packed)) {
-    uint32_t opcode;          /* AGENTFS_OP_WRITE */
-    uint32_t shmem_offset;    /* byte offset in shared region containing data */
-    uint32_t data_size;       /* byte size of data to store */
-    uint32_t flags;           /* AGENTFS_FLAG_* bitmask */
-} agentfs_req_write_t;
-
-typedef struct __attribute__((packed)) {
-    uint32_t status;          /* 0 = ok */
-    uint64_t hash_lo;         /* content hash of stored object */
-    uint64_t hash_hi;
-} agentfs_reply_write_t;
-
-typedef struct __attribute__((packed)) {
-    uint32_t opcode;          /* AGENTFS_OP_STAT */
-    uint64_t hash_lo;
-    uint64_t hash_hi;
-} agentfs_req_stat_t;
-
-typedef struct __attribute__((packed)) {
-    uint32_t status;          /* 0 = ok */
-    uint32_t size;            /* object size in bytes */
-    uint64_t created_ns;      /* creation timestamp (nanoseconds) */
-    uint32_t flags;           /* AGENTFS_FLAG_* bitmask */
-    uint32_t ref_count;       /* number of current references */
-} agentfs_reply_stat_t;
-
-typedef struct __attribute__((packed)) {
-    uint32_t opcode;          /* AGENTFS_OP_LIST */
-    uint32_t start_idx;       /* pagination start index */
-    uint32_t max_entries;     /* max entries to return in shmem */
-    uint32_t shmem_offset;    /* byte offset in shared region for output */
-} agentfs_req_list_t;
-
-typedef struct __attribute__((packed)) {
-    uint32_t status;          /* 0 = ok */
-    uint32_t entry_count;     /* number of agentfs_list_entry_t written to shmem */
-    uint32_t total_objects;   /* total objects in store (for pagination) */
-} agentfs_reply_list_t;
-
-/* Entry written into shmem for AGENTFS_OP_LIST results */
-typedef struct __attribute__((packed)) {
-    uint64_t hash_lo;
-    uint64_t hash_hi;
-    uint32_t size;
+    uint32_t inode;
+    uint32_t size_lo;
     uint32_t flags;
-} agentfs_list_entry_t;
+    uint8_t  name[64];          /* NUL-terminated object name */
+} agentfs_dirent_t;
 
-typedef struct __attribute__((packed)) {
-    uint32_t opcode;          /* AGENTFS_OP_DELETE */
-    uint64_t hash_lo;
-    uint64_t hash_hi;
-} agentfs_req_delete_t;
+/* ─── Error codes ────────────────────────────────────────────────────────── */
 
-typedef struct __attribute__((packed)) {
-    uint32_t status;          /* 0 = ok */
-} agentfs_reply_delete_t;
-
-typedef struct __attribute__((packed)) {
-    uint32_t opcode;          /* AGENTFS_OP_SEARCH */
-    uint32_t tag;             /* metadata tag to search (EVT_OBJECT_* constants) */
-    uint32_t shmem_offset;    /* byte offset for result list */
-    uint32_t max_entries;
-} agentfs_req_search_t;
-
-typedef struct __attribute__((packed)) {
-    uint32_t status;          /* 0 = ok */
-    uint32_t entry_count;     /* agentfs_list_entry_t entries written */
-} agentfs_reply_search_t;
-
-/* ── Error codes ── */
-typedef enum {
-    AGENTFS_OK                = 0,
-    AGENTFS_ERR_NOT_FOUND     = 1,  /* hash not in store */
-    AGENTFS_ERR_NO_SPACE      = 2,  /* store is full */
-    AGENTFS_ERR_BAD_OFFSET    = 3,  /* shmem_offset out of mapped region */
-    AGENTFS_ERR_TOO_LARGE     = 4,  /* data_size exceeds store maximum */
-    AGENTFS_ERR_COLD          = 5,  /* object in cold tier; must be recalled first */
-    AGENTFS_ERR_PINNED        = 6,  /* delete rejected: object is pinned */
-    AGENTFS_ERR_BAD_HASH      = 7,  /* hash mismatch on write verification */
-} agentfs_error_t;
-
-/* ── Invariants ──
- * - Objects are addressed by content hash (SHA-256); collisions are treated as errors.
- * - Shared memory region must be mapped before any READ, WRITE, LIST, or SEARCH call.
- * - AGENTFS_FLAG_READONLY objects cannot be deleted (only tombstoned after all refs gone).
- * - LIST and SEARCH results are agentfs_list_entry_t arrays in the shared region.
- * - EVT_OBJECT_CREATED / EVT_OBJECT_DELETED / EVT_OBJECT_EVICTED are published to EventBus.
- */
+enum agentfs_error {
+    AGENTFS_OK              = 0,
+    AGENTFS_ERR_NOT_FOUND   = 1,
+    AGENTFS_ERR_NO_SPACE    = 2,
+    AGENTFS_ERR_BAD_PATH    = 3,
+    AGENTFS_ERR_READONLY    = 4,
+    AGENTFS_ERR_TOO_LARGE   = 5,
+    AGENTFS_ERR_BAD_INODE   = 6,
+};

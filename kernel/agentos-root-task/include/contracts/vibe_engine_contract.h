@@ -1,140 +1,118 @@
+/*
+ * VibeEngine IPC Contract
+ *
+ * The VibeEngine PD manages the hot-swap registry: loading, validating,
+ * proposing, committing, and rolling back WASM service modules.
+ *
+ * Channel: CH_VIBEENGINE (see agentos.h)
+ * Opcodes: OP_VIBE_* / MSG_VIBE_* (see agentos.h)
+ *
+ * Invariants:
+ *   - VALIDATE must succeed before PROPOSE is called for a module.
+ *   - PROPOSE returns a proposal_id; COMMIT or ROLLBACK_REQ must follow.
+ *   - At most one proposal per swap slot may be in-flight at a time.
+ *   - HOTRELOAD is a fast-path commit when layout/caps are compatible;
+ *     on mismatch, it returns HOTRELOAD_FALLBACK (caller tears down slot).
+ *   - REGISTRY_STATUS and REGISTRY_QUERY are read-only; they never mutate state.
+ */
+
 #pragma once
-/* VIBE_ENGINE contract — version 1
- * PD: vibe_engine | Source: src/vibe_engine.c | Channel: CH_VIBEENGINE=40 (from controller)
- */
-#include <stdint.h>
-#include <stdbool.h>
+#include "../agentos.h"
 
-#define VIBE_ENGINE_CONTRACT_VERSION 1
+/* ─── Channel IDs ────────────────────────────────────────────────────────── */
+#define VIBEENGINE_CH_CONTROLLER  CH_VIBEENGINE  /* controller ↔ vibe_engine */
 
-/* ── Channel IDs (controller perspective) ── */
-#define CH_VIBEENGINE              40   /* controller <-> vibe_engine; cross-ref: agentos.h */
+/* ─── Request structs ────────────────────────────────────────────────────── */
 
-/* ── Opcodes ── */
-#define VIBE_ENGINE_OP_PROPOSE          0x40u  /* propose a new WASM module for a service slot */
-#define VIBE_ENGINE_OP_VALIDATE         0x41u  /* validate WASM module in staging region */
-#define VIBE_ENGINE_OP_EXECUTE          0x42u  /* commit validated module to active slot */
-#define VIBE_ENGINE_OP_STATUS           0x43u  /* query engine state and active slot info */
-#define VIBE_ENGINE_OP_ROLLBACK         0x44u  /* revert active slot to previous module */
-#define VIBE_ENGINE_OP_HEALTH           0x45u  /* query health of a running slot */
-#define VIBE_ENGINE_OP_REPLAY           0x46u  /* boot replay: seed registry from AgentFS */
-#define VIBE_ENGINE_OP_HOTRELOAD        0x47u  /* zero-downtime slot update */
-#define VIBE_ENGINE_OP_REGISTRY_STATUS  0x48u  /* return total registry entries + stats */
-#define VIBE_ENGINE_OP_REGISTRY_QUERY   0x4Bu  /* query registry by hash: known? flags? */
+struct vibe_engine_req_validate {
+    uint64_t module_hash_lo;    /* low 64 bits of module SHA-256 */
+    uint64_t module_hash_hi;    /* high 64 bits of module SHA-256 */
+};
 
-/* ── Hot-reload return codes (MR0) ── */
-#define VIBE_HOTRELOAD_OK           0x00u  /* hot-reload succeeded */
-#define VIBE_HOTRELOAD_FALLBACK     0x01u  /* layout/caps mismatch — fall back to teardown+respawn */
-#define VIBE_HOTRELOAD_ERR_CAPS     0x02u  /* new module requests caps not in slot's grants */
+struct vibe_engine_req_propose {
+    uint32_t service_id;        /* which service slot to update */
+    uint32_t flags;             /* PROPOSE_FLAG_* */
+};
 
-/* ── Request / Reply structs ── */
+#define PROPOSE_FLAG_HOTRELOAD  (1u << 0)  /* attempt hot-reload path first */
 
-typedef struct __attribute__((packed)) {
-    uint32_t opcode;          /* VIBE_ENGINE_OP_PROPOSE */
-    uint32_t service_id;      /* target service slot ID */
-    uint32_t proposal_id;     /* caller-assigned monotonic ID */
-    uint32_t wasm_offset;     /* byte offset into staging region */
-    uint32_t wasm_size;       /* byte size of WASM module */
-    uint64_t wasm_hash_lo;    /* lower 64 bits of expected content hash */
-    uint64_t wasm_hash_hi;    /* upper 64 bits of expected content hash */
-} vibe_engine_req_propose_t;
+struct vibe_engine_req_commit {
+    uint32_t proposal_id;
+};
 
-typedef struct __attribute__((packed)) {
-    uint32_t status;          /* 0 = ok, else vibe_engine_error_t */
-    uint32_t proposal_id;     /* echoed back */
-} vibe_engine_reply_propose_t;
+struct vibe_engine_req_rollback {
+    uint32_t proposal_id;
+};
 
-typedef struct __attribute__((packed)) {
-    uint32_t opcode;          /* VIBE_ENGINE_OP_VALIDATE */
-    uint32_t proposal_id;     /* proposal to validate */
-} vibe_engine_req_validate_t;
+struct vibe_engine_req_replay {
+    uint32_t flags;             /* REPLAY_FLAG_* */
+};
 
-typedef struct __attribute__((packed)) {
-    uint32_t status;          /* 0 = ok, else vibe_engine_error_t */
-    uint32_t cap_mask;        /* capability mask declared by module */
-    uint32_t section_count;   /* number of WASM sections parsed */
-} vibe_engine_reply_validate_t;
+#define REPLAY_FLAG_RESET_FIRST (1u << 0)  /* clear registry before replay */
 
-typedef struct __attribute__((packed)) {
-    uint32_t opcode;          /* VIBE_ENGINE_OP_EXECUTE */
-    uint32_t proposal_id;     /* validated proposal to commit */
-    uint32_t flags;           /* VIBE_EXEC_FLAG_* bitmask */
-} vibe_engine_req_execute_t;
+struct vibe_engine_req_hotreload {
+    uint32_t service_id;
+    uint64_t new_hash_lo;
+    uint64_t new_hash_hi;
+};
 
-#define VIBE_EXEC_FLAG_HOTRELOAD   (1u << 0)  /* attempt in-place hot-reload first */
-#define VIBE_EXEC_FLAG_FORCE       (1u << 1)  /* force teardown+respawn even if hotreload possible */
+struct vibe_engine_req_registry_status {
+    /* no fields */
+};
 
-typedef struct __attribute__((packed)) {
-    uint32_t status;          /* 0 = ok */
-    uint32_t slot_id;         /* slot now running new module */
-    uint32_t hotreload_result;/* VIBE_HOTRELOAD_* code */
-} vibe_engine_reply_execute_t;
+struct vibe_engine_req_registry_query {
+    uint64_t module_hash_lo;
+    uint64_t module_hash_hi;
+};
 
-typedef struct __attribute__((packed)) {
-    uint32_t opcode;          /* VIBE_ENGINE_OP_STATUS */
-    uint32_t slot_id;         /* 0xFFFFFFFF = query engine global state */
-} vibe_engine_req_status_t;
+/* ─── Reply structs ──────────────────────────────────────────────────────── */
 
-typedef struct __attribute__((packed)) {
-    uint32_t status;          /* 0 = ok */
-    uint32_t active_slots;    /* number of currently active swap slots */
-    uint32_t pending_proposals; /* proposals awaiting validation */
-    uint32_t registry_entries;  /* modules in registry */
-    uint64_t current_hash_lo; /* hash of module in queried slot (0 if global) */
-    uint64_t current_hash_hi;
-} vibe_engine_reply_status_t;
+struct vibe_engine_reply_validate {
+    uint32_t ok;                /* 0 = valid */
+    uint32_t flags;             /* capability requirements bitmask */
+};
 
-typedef struct __attribute__((packed)) {
-    uint32_t opcode;          /* VIBE_ENGINE_OP_ROLLBACK */
-    uint32_t slot_id;         /* slot to roll back */
-} vibe_engine_req_rollback_t;
+struct vibe_engine_reply_propose {
+    uint32_t ok;
+    uint32_t proposal_id;
+};
 
-typedef struct __attribute__((packed)) {
-    uint32_t status;          /* 0 = ok */
-    uint64_t restored_hash_lo;
-    uint64_t restored_hash_hi;
-} vibe_engine_reply_rollback_t;
+struct vibe_engine_reply_commit {
+    uint32_t ok;
+};
 
-typedef struct __attribute__((packed)) {
-    uint32_t opcode;          /* VIBE_ENGINE_OP_HEALTH */
-    uint32_t slot_id;
-} vibe_engine_req_health_t;
+struct vibe_engine_reply_rollback {
+    uint32_t ok;
+};
 
-typedef struct __attribute__((packed)) {
-    uint32_t status;          /* 0 = ok */
-    uint32_t health;          /* 0 = healthy, else vibe_engine_error_t */
-    uint32_t heartbeat_ticks; /* ticks since last slot heartbeat */
-} vibe_engine_reply_health_t;
+struct vibe_engine_reply_replay {
+    uint32_t ok;
+    uint32_t entries_loaded;
+};
 
-typedef struct __attribute__((packed)) {
-    uint32_t opcode;          /* VIBE_ENGINE_OP_REGISTRY_QUERY */
-    uint64_t wasm_hash_lo;
-    uint64_t wasm_hash_hi;
-} vibe_engine_req_registry_query_t;
+struct vibe_engine_reply_hotreload {
+    uint32_t result;            /* HOTRELOAD_OK / HOTRELOAD_FALLBACK / HOTRELOAD_ERR_CAPS */
+};
 
-typedef struct __attribute__((packed)) {
-    uint32_t status;          /* 0 = found, VIBE_ENGINE_ERR_NOT_FOUND = unknown */
-    uint32_t flags;           /* registry flags: validated, trusted, etc. */
-    uint32_t slot_id;         /* slot currently running this module (0xFF = none) */
-} vibe_engine_reply_registry_query_t;
+struct vibe_engine_reply_registry_status {
+    uint32_t total_entries;
+    uint32_t active_slots;
+    uint64_t bytes_used;
+};
 
-/* ── Error codes ── */
-typedef enum {
-    VIBE_ENGINE_OK                = 0,
-    VIBE_ENGINE_ERR_BAD_WASM      = 1,  /* module failed WASM validation */
-    VIBE_ENGINE_ERR_BAD_CAPS      = 2,  /* module requests disallowed capabilities */
-    VIBE_ENGINE_ERR_NO_SLOT       = 3,  /* no free swap slot available */
-    VIBE_ENGINE_ERR_NOT_FOUND     = 4,  /* proposal_id or hash not in registry */
-    VIBE_ENGINE_ERR_BUSY          = 5,  /* slot currently in transition */
-    VIBE_ENGINE_ERR_STAGING       = 6,  /* staging region not mapped or corrupt */
-    VIBE_ENGINE_ERR_HASH_MISMATCH = 7,  /* content hash does not match header */
-    VIBE_ENGINE_ERR_NO_PREVIOUS   = 8,  /* rollback requested but no previous module */
-} vibe_engine_error_t;
+struct vibe_engine_reply_registry_query {
+    uint32_t known;             /* 1 = in registry */
+    uint32_t flags;             /* cap flags for this module */
+    uint32_t use_count;
+};
 
-/* ── Invariants ──
- * - OP_PROPOSE must precede OP_VALIDATE which must precede OP_EXECUTE.
- * - Staging region (4MB MR, last 64 bytes = VIBE_META) must be mapped before PROPOSE.
- * - Only one proposal per service_id may be in-flight at a time.
- * - ROLLBACK is only valid if a previous module snapshot exists in the registry.
- * - Registry is seeded at boot via OP_REPLAY before any agent proposes modules.
- */
+/* ─── Error codes ────────────────────────────────────────────────────────── */
+
+enum vibe_engine_error {
+    VIBEENGINE_OK                = 0,
+    VIBEENGINE_ERR_INVALID_HASH  = 1,  /* module hash unknown or corrupt */
+    VIBEENGINE_ERR_CAP_DENIED    = 2,  /* module requests caps not granted */
+    VIBEENGINE_ERR_SLOT_BUSY     = 3,  /* proposal already in-flight for slot */
+    VIBEENGINE_ERR_BAD_PROPOSAL  = 4,  /* proposal_id not found */
+    VIBEENGINE_ERR_ROLLBACK_FAIL = 5,  /* rollback could not restore prior state */
+};

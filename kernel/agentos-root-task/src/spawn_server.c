@@ -43,7 +43,7 @@
 uintptr_t spawn_elf_shmem_vaddr;          /* 512 KB staging: SpawnServer at 0x5000000 */
 uintptr_t spawn_config_shmem_vaddr;       /* 4 KB config:    SpawnServer at 0x6000000 */
 uintptr_t vfs_io_shmem_vaddr; /* VFS shmem:      SpawnServer at 0x7000000 */
-uintptr_t log_drain_rings_vaddr;      /* console_mux ring (required by console_log) */
+uintptr_t log_drain_rings_vaddr;      /* log_drain ring (required by log_drain_write) */
 
 /* ── Slot table ──────────────────────────────────────────────────────────── */
 typedef struct {

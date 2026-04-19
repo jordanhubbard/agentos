@@ -6,11 +6,11 @@
 # Targets:
 #   make install      — install all build dependencies
 #   make build        — build the kernel image for BOARD/TARGET_ARCH
-#   make run          — build (native arch) + QEMU (HW-accel) + agentOS console (http://localhost:8080)
+#   make run          — build (native arch) + QEMU (HW-accel)
 #   make test         — CI boot test (exit 0/1)
 #   make clean        — remove build artifacts for current target
 
-.PHONY: all install deps-tools deps-sdk submodules channels run dashboard test test-snapshot-sched test-power-mgr test-proc-server test-integration clean clean-all clean-images help release release-minor release-major fetch-guest build-tools
+.PHONY: all install deps-tools deps-sdk submodules channels run test test-snapshot-sched test-power-mgr test-proc-server test-vibeos-contract test-integration e2e e2e-guest e2e-contract clean clean-all clean-images help release release-minor release-major fetch-guest build-tools
 
 # ─── Read config.yaml (if present) ───────────────────────────────────────────
 CONFIG_TARGET := $(shell grep '^target_arch:' config.yaml 2>/dev/null | sed 's/target_arch:[[:space:]]*//' | tr -d '[:space:]')
@@ -122,7 +122,7 @@ SDK_URL := https://github.com/seL4/microkit/releases/download/2.1.0/microkit-sdk
 # ─── Rust toolchain ──────────────────────────────────────────────────────────
 export PATH := $(HOME)/.cargo/bin:$(PATH)
 
-# ─── Native arch / HW-accelerated console ────────────────────────────────────
+# ─── Native arch / HW-accelerated QEMU ────────────────────────────────────
 # Normalise uname -m: macOS Apple Silicon reports "arm64", seL4 uses "aarch64"
 NATIVE_ARCH := $(shell uname -m | sed 's/arm64/aarch64/')
 
@@ -179,7 +179,7 @@ all: run
 # =============================================================================
 install: deps-tools deps-sdk
 	@echo ""
-	@echo "✅ All dependencies installed! Run 'make run' to launch the console."
+	@echo "✅ All dependencies installed! Run 'make run' to start."
 
 deps-tools:
 	@echo ""
@@ -315,7 +315,7 @@ else ifeq ($(GUEST_OS),ubuntu)
 endif
 
 # =============================================================================
-# build (internal — used by console and test)
+# build (internal — used by test)
 # =============================================================================
 build: fetch-guest submodules deps-sdk
 	@echo ""
@@ -368,16 +368,8 @@ dashboard:
 	@exit 1
 
 # QEMU flags for interactive run: serial → stdio, SSH port forwarding per guest.
-# Guest SSH is NAT'd through the agentOS net-server virtio-net to QEMU user-net.
-# The agentOS net-server listens on port 8789 and forwards to connected guests.
-# Ports 2222/2223/2224 are forwarded for Ubuntu/FreeBSD/NixOS respectively.
 _RUN_CPU := $(if $(filter aarch64,$(NATIVE_ARCH)),cortex-a53,qemu64)
-# Images live in the user's home directory, not in the source tree.
-# Create with: make fetch-guest GUEST_OS=ubuntu|freebsd
-# Delete with: make clean-images
 AGENTOS_IMAGES := $(HOME)/.local/agentos-images
-# virtio-blk: attach Ubuntu disk image at slot 1 when GUEST_OS=ubuntu.
-# The Ubuntu kernel finds its root via PARTUUID in the GPT header of the raw image.
 _UBUNTU_BLK = -drive file=$(AGENTOS_IMAGES)/ubuntu-24.04-arm64.raw,format=raw,if=none,id=hd0 \
               -device virtio-blk-device,drive=hd0,bus=virtio-mmio-bus.1
 _QEMU_BLK_FLAGS = $(if $(filter ubuntu,$(GUEST_OS)),$(_UBUNTU_BLK),)
@@ -390,14 +382,7 @@ QEMU_RUN_FLAGS = -machine virt,virtualization=on,highmem=off,secure=off \
                  $(_QEMU_BLK_FLAGS) \
                  -device loader,file=$(NATIVE_IMAGE),addr=0x70000000,cpu-num=0
 
-# =============================================================================
 # run (default): build native → QEMU with serial on stdout
-#
-# No web console. Connect to guest VMs via SSH:
-#   ssh -p 2222 ubuntu@localhost   # Ubuntu guest
-#   ssh -p 2223 root@localhost     # FreeBSD guest
-#   ssh -p 2224 root@localhost     # NixOS guest
-# Use Ctrl-A X to exit QEMU.
 # =============================================================================
 run:
 	@$(MAKE) build BOARD=$(NATIVE_BOARD) TARGET_ARCH=$(NATIVE_ARCH)
@@ -467,6 +452,20 @@ test-proc-server:
 	@echo ""
 
 # =============================================================================
+# test-vibeos-contract: standalone contract tests for the VibeOS lifecycle API
+# =============================================================================
+test-vibeos-contract:
+	@echo ""
+	@echo "╔══════════════════════════════════════════╗"
+	@echo "║   agentOS — VibeOS contract tests        ║"
+	@echo "╚══════════════════════════════════════════╝"
+	@echo ""
+	cc tests/vibe/test_vibeos_contract.c -o /tmp/test_vibeos_contract -I tests -I kernel/agentos-root-task/include -DAGENTOS_TEST_HOST
+	@/tmp/test_vibeos_contract
+	@echo "✓ vibeos contract tests passed"
+	@echo ""
+
+# =============================================================================
 # test-integration: compile and run C integration tests on the host
 #
 # Each test file is self-contained: all seL4/Microkit primitives are stubbed
@@ -485,8 +484,12 @@ test-integration:
 	    tests/test_power_mgr.c \
 	    tests/test_snapshot_sched.c \
 	    tests/test_dev_shell.c \
-	    tests/test_proc_server.c; do \
-	    gcc -I kernel/agentos-root-task/include \
+	    tests/test_proc_server.c \
+	    tests/test_serial_pd.c \
+	    tests/test_guest_contract.c \
+	    tests/vibe/test_vibeos_contract.c; do \
+	    gcc -I tests \
+	        -I kernel/agentos-root-task/include \
 	        -DAGENTOS_TEST_HOST \
 	        -DAGENTOS_SNAPSHOT_SCHED \
 	        -DAGENTOS_DEV_SHELL \
@@ -498,6 +501,23 @@ test-integration:
 	@echo ""
 	@echo "Integration tests complete."
 	@echo ""
+
+# =============================================================================
+# e2e: End-to-end integration test suite (QEMU + guest VMs + SSH)
+# =============================================================================
+# Requires: make build BOARD=$(BOARD) && make fetch-guest
+# Exit code 2 = SKIP (prerequisites not met — QEMU or images missing)
+e2e: build
+	@chmod +x tests/e2e/run_e2e.sh tests/e2e/*.sh
+	@bash tests/e2e/run_e2e.sh
+
+e2e-guest:
+	@chmod +x tests/e2e/suite_common.sh
+	@bash tests/e2e/suite_common.sh
+
+e2e-contract:
+	@chmod +x tests/e2e/test_cc_contract.sh
+	@BRIDGE_AVAILABLE=1 bash tests/e2e/test_cc_contract.sh
 
 # =============================================================================
 # clean
@@ -539,7 +559,7 @@ help:
 	@echo "Targets:"
 	@echo "  make install          Install build deps (brew / apt)"
 	@echo "  make build            Build kernel image for BOARD/TARGET_ARCH"
-	@echo "  make run              Build (native arch) + QEMU (HW-accel) + agentOS console"
+	@echo "  make run              Build (native arch) + QEMU (HW-accel)"
 	@echo "  make test             CI boot test (exit 0/1)"
 	@echo "  make clean            Remove build artifacts for current board"
 	@echo ""

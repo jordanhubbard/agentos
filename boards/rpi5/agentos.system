@@ -34,7 +34,7 @@
     vibe_engine     (prio 140)  - passive WASM hot-swap lifecycle
     swap_slot_0..3  (prio 75)   - WASM hot-swap execution slots
     linux_vmm       (prio 254)  - Linux VMM (no physical UART passthrough)
-    console_mux     (prio 160)  - passive console multiplexer
+    log_drain       (prio 160)  - passive log drain (ring buffer -> UART)
     trace_recorder  (prio 128)  - passive trace stub
     nameserver      (prio 170)  - runtime service discovery
     virtio_blk      (prio 175)  - virtio block device driver
@@ -73,6 +73,8 @@
         <map mr="net_packet_shmem"    vaddr="0xE000000"  perms="r"  setvar_vaddr="net_packet_shmem_ctrl_vaddr" />
         <map mr="http_req_shmem"      vaddr="0xF000000"  perms="r"  setvar_vaddr="http_req_shmem_ctrl_vaddr" />
         <map mr="app_manifest_shmem"  vaddr="0x10000000" perms="rw" setvar_vaddr="app_manifest_shmem_ctrl_vaddr" />
+        <map mr="block_shmem"         vaddr="0x3500000"  perms="rw" cached="true"
+             setvar_vaddr="block_shmem_ctrl_vaddr" />
     </protection_domain>
 
     <protection_domain name="event_bus" priority="200" passive="true">
@@ -297,27 +299,27 @@
     </channel>
 
     <!-- ═══════════════════════════════════════════════════════════════════
-         CONSOLE MULTIPLEXER
+         LOG DRAIN
          ═══════════════════════════════════════════════════════════════════ -->
 
-    <memory_region name="console_rings" size="0x10000" />
+    <memory_region name="log_drain_rings" size="0x10000" />
 
-    <protection_domain name="console_mux" priority="160" passive="true">
-        <program_image path="console_mux.elf" />
-        <map mr="console_rings" vaddr="0x8000000" perms="rw" setvar_vaddr="console_rings_vaddr" />
+    <protection_domain name="log_drain" priority="160" passive="true">
+        <program_image path="log_drain.elf" />
+        <map mr="log_drain_rings" vaddr="0x8000000" perms="rw" setvar_vaddr="log_drain_rings_vaddr" />
     </protection_domain>
 
     <channel>
-        <end pd="controller"   id="55" pp="true" />
-        <end pd="console_mux"  id="0" />
+        <end pd="controller"  id="55" pp="true" />
+        <end pd="log_drain"   id="0" />
     </channel>
     <channel>
-        <end pd="init_agent"   id="4" />
-        <end pd="console_mux"  id="1" />
+        <end pd="init_agent"  id="4" />
+        <end pd="log_drain"   id="1" />
     </channel>
     <channel>
-        <end pd="event_bus"    id="55" />
-        <end pd="console_mux"  id="2" />
+        <end pd="event_bus"   id="55" />
+        <end pd="log_drain"   id="2" />
     </channel>
 
     <!-- ═══════════════════════════════════════════════════════════════════
@@ -397,6 +399,7 @@
 
     <memory_region name="vfs_io_shmem"       size="0x20000" />
     <memory_region name="blk_dma_shmem"      size="0x8000"  />
+    <memory_region name="block_shmem"        size="0x10000" />
     <!-- BCM2711/RPi4 virtio-net MMIO: update for BCM2712/RPi5 actual address -->
     <!-- On QEMU virt: 0xa000000; on RPi5 native this depends on the VM config -->
     <memory_region name="virtio_net_mmio"    size="0x1000"  phys_addr="0xa000000" />
@@ -654,6 +657,47 @@
     </channel>
 
     <!-- ═══════════════════════════════════════════════════════════════════
+         USB HOST CONTROLLER PD — RPi5 DWC3 / PCIe XHCI
+
+         RPi5 USB hardware (RP1 chip via PCIe):
+           - DWC3 USB 3.0 OTG core at 0x7e980000 (BCM2711 placeholder)
+           - PCIe XHCI host at 0x7e900000 (BCM2711 placeholder)
+         IMPORTANT: Update phys_addr values once Microkit SDK ships native
+         RPi5 (BCM2712) board support.  The BCM2712 RP1 USB addresses are
+         in the PCIe BAR range (0xfd00000000+) and will differ from BCM2711.
+
+         Build with: make build AGENTOS_USB_PD=1 ARCH_AARCH64=1 BOARD_RPI5=1
+
+         usb_pd exposes MSG_USB_ENUMERATE/LIST/OPEN/CLOSE/CONTROL/BULK_IN/
+         BULK_OUT/STATUS on channel 70 (CH_USB_PD from controller perspective).
+         ═══════════════════════════════════════════════════════════════════ -->
+
+    <!-- BCM2711 DWC3 USB3 OTG: 0x7e980000 (placeholder for BCM2712/RPi5).
+         The DWC3 GSNPSID register at offset 0xC120 identifies the Synopsys
+         USB3 core.  usb_pd probes DWC3 first, then falls back to XHCI probe.
+         Update phys_addr for actual BCM2712 RP1 PCIe BAR address. -->
+    <memory_region name="usb_xhci_mmio" size="0x10000" phys_addr="0x7e980000" />
+
+    <!-- Shared data region: device list + transfer buffers (64KB) -->
+    <memory_region name="usb_shmem" size="0x10000" />
+
+    <protection_domain name="usb_pd" priority="175" passive="true">
+        <program_image path="usb_pd.elf" />
+        <!-- DWC3/XHCI MMIO window — uncached, 64KB for register space -->
+        <map mr="usb_xhci_mmio" vaddr="0x14000000" perms="rw" cached="false"
+             setvar_vaddr="usb_mmio_vaddr" />
+        <!-- Shared shmem: device list + transfer data -->
+        <map mr="usb_shmem" vaddr="0x14100000" perms="rw"
+             setvar_vaddr="usb_shmem_vaddr" />
+    </protection_domain>
+
+    <!-- CH_USB_PD = 70: controller PPCs into usb_pd -->
+    <channel>
+        <end pd="controller" id="70" pp="true" />
+        <end pd="usb_pd"     id="0" />
+    </channel>
+
+    <!-- ═══════════════════════════════════════════════════════════════════
          CONSOLE SHELL — hardware PL011 UART mini-CLI (native RPi5 mode)
 
          console_shell exclusively owns UART0 (PL011 at 0xFE201000, the
@@ -695,6 +739,83 @@
     <channel>
         <end pd="console_shell" id="1" pp="true" />
         <end pd="controller"    id="42" />
+    </channel>
+
+    <!--
+      block_pd: OS-neutral block device service PD (passive, prio 165)
+      Channels:
+        id=0: callers PPC in (MSG_BLOCK_*)
+        id=1: block_pd PPCs out to virtio_blk (OP_BLK_*)
+    -->
+    <protection_domain name="block_pd" priority="165" passive="true">
+        <program_image path="block_pd.elf" />
+        <map mr="block_shmem"   vaddr="0x5000000" perms="rw" cached="true"
+             setvar_vaddr="block_shmem_vaddr" />
+        <map mr="blk_dma_shmem" vaddr="0x6000000" perms="rw" cached="false"
+             setvar_vaddr="blk_dma_shmem_vaddr" />
+    </protection_domain>
+
+    <!-- Channel CH_BLOCK_PD (69): controller → block_pd -->
+    <channel>
+        <end pd="controller" id="69" pp="true" />
+        <end pd="block_pd"   id="0" />
+    </channel>
+
+    <!-- Channel: block_pd → virtio_blk -->
+    <channel>
+        <end pd="block_pd"   id="1" pp="true" />
+        <end pd="virtio_blk" id="3" />
+    </channel>
+
+    <!--
+      ══════════════════════════════════════════════════════════════════
+      GPU Scheduler: CUDA workload router (passive, prio 120)
+
+      On RPi5: native display (VideoCore VII); no virtio-gpu MMIO.
+      Routes display frames via OP_GPU_SUBMIT_CMD to the real GPU.
+      ══════════════════════════════════════════════════════════════════
+    -->
+    <protection_domain name="gpu_sched" priority="120" passive="true">
+        <program_image path="gpu_sched.elf" />
+        <map mr="log_drain_rings" vaddr="0x9000000" perms="rw"
+             setvar_vaddr="log_drain_rings_vaddr" />
+    </protection_domain>
+
+    <channel>
+        <end pd="controller" id="25" />
+        <end pd="gpu_sched"  id="1" />
+    </channel>
+
+    <!--
+      ══════════════════════════════════════════════════════════════════
+      framebuffer_pd: virtual framebuffer service (passive, prio 175)
+
+      On RPi5: no virtio-gpu MMIO — probe_hw_direct selects
+      HW_MODE_GPU_SCHED.  All FLIP operations route via gpu_sched.
+      ══════════════════════════════════════════════════════════════════
+    -->
+    <memory_region name="fb_shmem" size="0x800000" />
+
+    <protection_domain name="framebuffer_pd" priority="175" passive="true">
+        <program_image path="framebuffer_pd.elf" />
+        <map mr="fb_shmem"        vaddr="0x5000000" perms="rw" cached="true"
+             setvar_vaddr="fb_shmem_vaddr" />
+        <!-- virtio_gpu_mmio NOT mapped: RPi5 uses native VideoCore VII display.
+             probe_hw_direct detects vaddr==0 and selects HW_MODE_GPU_SCHED. -->
+        <map mr="log_drain_rings" vaddr="0x7000000" perms="rw"
+             setvar_vaddr="log_drain_rings_vaddr" />
+    </protection_domain>
+
+    <!-- Channel CH_FB_PD (71): controller → framebuffer_pd -->
+    <channel>
+        <end pd="controller"     id="71" pp="true" />
+        <end pd="framebuffer_pd" id="0" />
+    </channel>
+
+    <!-- Channel: framebuffer_pd → gpu_sched (OP_GPU_SUBMIT_CMD for RPi5 GPU path) -->
+    <channel>
+        <end pd="framebuffer_pd" id="2" pp="true" />
+        <end pd="gpu_sched"      id="7" />
     </channel>
 
 </system>

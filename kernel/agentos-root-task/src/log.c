@@ -12,7 +12,7 @@
 /*
  * Weak fallback: PDs that don't map the console_rings MR get value 0,
  * causing log_drain_write() to fall back to microkit_dbg_puts.
- * console_mux.c provides the strong definition (with setvar_vaddr).
+ * log_drain.c provides the strong definition (with setvar_vaddr).
  */
 __attribute__((weak)) uintptr_t log_drain_rings_vaddr = 0;
 

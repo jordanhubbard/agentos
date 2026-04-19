@@ -22,7 +22,7 @@
 #include "string_bare.h"
 #include "verify.h"
 
-/* console_log is declared in agentos.h (included above). */
+/* log_drain_write is declared in agentos.h (included above). */
 
 /* =========================================================================
  * VIBE_VERIFY_MODE

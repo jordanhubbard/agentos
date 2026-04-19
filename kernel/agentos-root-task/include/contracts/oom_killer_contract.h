@@ -1,102 +1,61 @@
+/*
+ * OOMKiller IPC Contract
+ *
+ * The OOMKiller PD monitors system memory pressure and terminates agents
+ * when free memory falls below a configured threshold.
+ *
+ * Channel: CH_OOM_KILLER (see agentos.h)
+ * Opcodes: MSG_OOM_STATUS, MSG_OOM_POLICY_SET, MSG_OOM_NOTIFY
+ *
+ * Invariants:
+ *   - MSG_OOM_STATUS is read-only; it returns current memory pressure and
+ *     the number of candidate PDs ordered by memory usage (highest first).
+ *   - MSG_OOM_POLICY_SET updates the kill threshold; takes effect immediately.
+ *   - MSG_OOM_NOTIFY is an EventBus notification (not a PPC reply) sent after
+ *     each kill action; it carries the killed PD and bytes reclaimed.
+ *   - The default policy is OOM_POLICY_KILL_LARGEST.
+ *   - threshold_kb == 0 disables OOM killing.
+ */
+
 #pragma once
-/* OOM_KILLER contract — version 1
- * PD: oom_killer | Source: src/oom_killer.c | Channel: (triggered by kernel OOM notification)
- */
-#include <stdint.h>
-#include <stdbool.h>
+#include "../agentos.h"
 
-#define OOM_KILLER_CONTRACT_VERSION 1
+/* ─── Channel IDs ────────────────────────────────────────────────────────── */
+#define OOM_KILLER_CH_CONTROLLER  CH_OOM_KILLER
 
-/* ── Opcodes ── */
-#define OOM_KILLER_OP_STATUS       0xF100u  /* query OOM killer state and victim statistics */
-#define OOM_KILLER_OP_POLICY_SET   0xF101u  /* set OOM selection and recovery policy */
-#define OOM_KILLER_OP_NOTIFY       0xF102u  /* OOM event notification (kernel -> oom_killer) */
-#define OOM_KILLER_OP_EXEMPT       0xF103u  /* mark a slot as exempt from OOM killing */
-#define OOM_KILLER_OP_SCORE        0xF104u  /* query OOM score for a specific slot */
+/* ─── Request structs ────────────────────────────────────────────────────── */
 
-/* ── OOM selection policy ── */
-#define OOM_POLICY_LOWEST_PRIORITY  0u  /* kill lowest-priority slot first */
-#define OOM_POLICY_LARGEST_MEM      1u  /* kill largest memory consumer first */
-#define OOM_POLICY_OLDEST_IDLE      2u  /* kill oldest idle slot first */
-#define OOM_POLICY_MANUAL           3u  /* controller must select victim explicitly */
+struct oom_req_status {
+    /* no fields */
+};
 
-/* ── Request / Reply structs ── */
+struct oom_req_policy_set {
+    uint32_t threshold_kb;      /* free memory threshold; kill if below */
+    uint32_t policy;            /* OOM_POLICY_* */
+};
 
-typedef struct __attribute__((packed)) {
-    uint32_t opcode;          /* OOM_KILLER_OP_STATUS */
-} oom_killer_req_status_t;
+#define OOM_POLICY_KILL_LARGEST  0  /* kill PD with highest memory usage */
+#define OOM_POLICY_KILL_LOWEST   1  /* kill PD with lowest priority */
+#define OOM_POLICY_NONE          2  /* log alert only; do not kill */
 
-typedef struct __attribute__((packed)) {
-    uint32_t status;          /* 0 = ok */
-    uint32_t oom_events;      /* total OOM events handled since boot */
-    uint32_t slots_killed;    /* total slots terminated by OOM killer */
-    uint32_t free_pages;      /* current free physical pages */
-    uint32_t total_pages;     /* total physical pages in system */
-    uint32_t policy;          /* OOM_POLICY_* currently active */
-} oom_killer_reply_status_t;
+/* ─── Reply structs ──────────────────────────────────────────────────────── */
 
-typedef struct __attribute__((packed)) {
-    uint32_t opcode;          /* OOM_KILLER_OP_POLICY_SET */
-    uint32_t policy;          /* OOM_POLICY_* */
-    uint32_t low_watermark_pages;   /* pages below which OOM is triggered */
-    uint32_t high_watermark_pages;  /* pages above which system is considered healthy */
-    uint32_t min_exempt_pages;      /* pages to leave free even when killing */
-} oom_killer_req_policy_set_t;
+struct oom_reply_status {
+    uint32_t ok;
+    uint32_t pressure_kb;       /* current free memory (KB) */
+    uint32_t candidates;        /* PDs eligible for kill */
+    uint32_t killed_total;      /* total PDs killed since boot */
+    uint32_t threshold_kb;      /* current threshold */
+    uint32_t policy;
+};
 
-typedef struct __attribute__((packed)) {
-    uint32_t status;          /* 0 = ok, else oom_killer_error_t */
-} oom_killer_reply_policy_set_t;
+struct oom_reply_policy_set {
+    uint32_t ok;
+};
 
-typedef struct __attribute__((packed)) {
-    uint32_t opcode;          /* OOM_KILLER_OP_NOTIFY */
-    uint32_t free_pages;      /* pages available at time of OOM notification */
-    uint32_t requesting_slot; /* slot that triggered OOM (0 = system-wide) */
-    uint32_t requested_pages; /* pages the requesting slot needs */
-} oom_killer_req_notify_t;
+/* ─── Error codes ────────────────────────────────────────────────────────── */
 
-typedef struct __attribute__((packed)) {
-    uint32_t status;          /* 0 = victim selected and kill initiated */
-    uint32_t victim_slot_id;  /* slot selected for termination */
-    uint32_t freed_estimate;  /* estimated pages to be freed */
-} oom_killer_reply_notify_t;
-
-typedef struct __attribute__((packed)) {
-    uint32_t opcode;          /* OOM_KILLER_OP_EXEMPT */
-    uint32_t slot_id;
-    uint32_t exempt;          /* 1 = add exemption, 0 = remove exemption */
-} oom_killer_req_exempt_t;
-
-typedef struct __attribute__((packed)) {
-    uint32_t status;          /* 0 = ok */
-} oom_killer_reply_exempt_t;
-
-typedef struct __attribute__((packed)) {
-    uint32_t opcode;          /* OOM_KILLER_OP_SCORE */
-    uint32_t slot_id;
-} oom_killer_req_score_t;
-
-typedef struct __attribute__((packed)) {
-    uint32_t status;          /* 0 = ok */
-    uint32_t oom_score;       /* computed OOM score (higher = more likely to be killed) */
-    uint32_t pages_used;      /* physical pages used by this slot */
-    uint32_t priority;        /* slot scheduling priority */
-    uint32_t exempt;          /* 1 if slot is OOM-exempt */
-} oom_killer_reply_score_t;
-
-/* ── Error codes ── */
-typedef enum {
-    OOM_KILLER_OK             = 0,
-    OOM_KILLER_ERR_NO_VICTIM  = 1,  /* no killable slot found (all exempt or empty) */
-    OOM_KILLER_ERR_BAD_SLOT   = 2,  /* slot_id not valid */
-    OOM_KILLER_ERR_BAD_POLICY = 3,  /* invalid policy or watermark configuration */
-    OOM_KILLER_ERR_NO_CAP     = 4,  /* caller lacks privilege */
-} oom_killer_error_t;
-
-/* ── Invariants ──
- * - System-critical PDs (controller, event_bus, fault_handler) are permanently exempt.
- * - OOM_POLICY_MANUAL requires the controller to provide a victim_slot_id in the reply.
- * - low_watermark_pages must be less than high_watermark_pages.
- * - min_exempt_pages guarantees the OOM killer never exhausts all free pages.
- * - After killing a victim, oom_killer notifies the controller via EventBus.
- * - OOM scoring factors: memory use, priority, idle time, and explicit oom_score_adj.
- */
+enum oom_killer_error {
+    OOM_OK                  = 0,
+    OOM_ERR_BAD_POLICY      = 1,
+};

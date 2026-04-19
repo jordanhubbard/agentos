@@ -1,86 +1,77 @@
+/*
+ * GPUSched IPC Contract
+ *
+ * The GPU Scheduler PD arbitrates access to GPU compute resources.
+ * Agents submit tasks by hash; the scheduler queues them and dispatches
+ * to available GPU slots.  Completion and failure are reported via EventBus.
+ *
+ * Channel: varies (from agent perspective; controller routes to gpu_sched)
+ * Opcodes: MSG_GPU_* (see agentos.h)
+ *
+ * Invariants:
+ *   - MSG_GPU_SUBMIT is non-blocking: the task is enqueued and a ticket_id
+ *     is returned immediately.
+ *   - MSG_GPU_COMPLETE and MSG_GPU_FAILED are EventBus events, not replies.
+ *   - MSG_GPU_CANCEL removes a pending ticket; if dispatch has already begun,
+ *     the cancel is a no-op and CANCEL_ERR_RUNNING is returned.
+ *   - ticket_id 0 is reserved; a valid ticket always has ticket_id > 0.
+ *   - Priority 0 = lowest, 255 = highest (mapped to MCS budget).
+ */
+
 #pragma once
-/* GPU_SCHED contract — version 1
- * PD: gpu_sched | Source: src/gpu_sched.c | Channel: (no fixed controller channel — agents call directly)
- */
-#include <stdint.h>
-#include <stdbool.h>
+#include "../agentos.h"
 
-#define GPU_SCHED_CONTRACT_VERSION 1
+/* ─── Request structs ────────────────────────────────────────────────────── */
 
-/* ── Opcodes ── */
-#define GPU_SCHED_OP_SUBMIT         0x0901u  /* submit GPU task: hash_lo, hash_hi, priority, flags */
-#define GPU_SCHED_OP_SUBMIT_REPLY   0x0902u  /* reply: ticket_id or error */
-#define GPU_SCHED_OP_STATUS         0x0903u  /* query scheduler state */
-#define GPU_SCHED_OP_STATUS_REPLY   0x0904u  /* reply: queue_depth, busy_slots, idle_slots */
-#define GPU_SCHED_OP_CANCEL         0x0905u  /* cancel pending ticket by ticket_id */
-#define GPU_SCHED_OP_CANCEL_REPLY   0x0906u  /* reply: ok or not-found */
-#define GPU_SCHED_OP_COMPLETE       0x0910u  /* EventBus event: task completed */
-#define GPU_SCHED_OP_FAILED         0x0911u  /* EventBus event: task failed */
+struct gpu_sched_req_submit {
+    uint64_t hash_lo;           /* task WASM hash low */
+    uint64_t hash_hi;           /* task WASM hash high */
+    uint8_t  priority;          /* 0-255 */
+    uint8_t  flags;             /* GPU_SUBMIT_FLAG_* */
+    uint16_t _pad;
+};
 
-/* ── GPU task flags ── */
-#define GPU_FLAG_PREEMPTIBLE        (1u << 0)  /* task may be preempted */
-#define GPU_FLAG_EXCLUSIVE          (1u << 1)  /* requires dedicated GPU slot */
-#define GPU_FLAG_REALTIME           (1u << 2)  /* hard-deadline scheduling */
+#define GPU_SUBMIT_FLAG_URGENT  (1u << 0)  /* jump queue head */
+#define GPU_SUBMIT_FLAG_RETRY   (1u << 1)  /* auto-retry on transient failure */
 
-/* ── Request / Reply structs ── */
+struct gpu_sched_req_status {
+    /* no fields */
+};
 
-typedef struct __attribute__((packed)) {
-    uint32_t opcode;          /* GPU_SCHED_OP_SUBMIT */
-    uint64_t wasm_hash_lo;    /* WASM compute kernel hash */
-    uint64_t wasm_hash_hi;
-    uint32_t priority;        /* 0 = lowest, 255 = highest */
-    uint32_t flags;           /* GPU_FLAG_* bitmask */
-    uint32_t timeout_ms;      /* max execution time; 0 = no limit */
-} gpu_sched_req_submit_t;
-
-typedef struct __attribute__((packed)) {
-    uint32_t status;          /* 0 = ok, else gpu_sched_error_t */
-    uint32_t ticket_id;       /* opaque handle for cancel/status */
-} gpu_sched_reply_submit_t;
-
-typedef struct __attribute__((packed)) {
-    uint32_t opcode;          /* GPU_SCHED_OP_STATUS */
-} gpu_sched_req_status_t;
-
-typedef struct __attribute__((packed)) {
-    uint32_t status;          /* 0 = ok */
-    uint32_t queue_depth;     /* tasks waiting in queue */
-    uint32_t busy_slots;      /* GPU execution slots currently active */
-    uint32_t idle_slots;      /* GPU execution slots available */
-    uint64_t tasks_completed; /* lifetime completed count */
-    uint64_t tasks_failed;    /* lifetime failed count */
-} gpu_sched_reply_status_t;
-
-typedef struct __attribute__((packed)) {
-    uint32_t opcode;          /* GPU_SCHED_OP_CANCEL */
+struct gpu_sched_req_cancel {
     uint32_t ticket_id;
-} gpu_sched_req_cancel_t;
+};
 
-typedef struct __attribute__((packed)) {
-    uint32_t status;          /* 0 = ok, GPU_SCHED_ERR_NOT_FOUND if ticket unknown */
-} gpu_sched_reply_cancel_t;
+/* ─── Reply structs ──────────────────────────────────────────────────────── */
 
-/* EventBus payload for GPU_SCHED_OP_COMPLETE / GPU_SCHED_OP_FAILED */
-typedef struct __attribute__((packed)) {
-    uint32_t ticket_id;
-    uint32_t result_code;     /* 0 = success, else gpu_sched_error_t */
-    uint64_t exec_ns;         /* measured execution time in nanoseconds */
-} gpu_sched_event_t;
+struct gpu_sched_reply_submit {
+    uint32_t ok;
+    uint32_t ticket_id;         /* 0 = rejected (queue full) */
+};
 
-/* ── Error codes ── */
-typedef enum {
+struct gpu_sched_reply_status {
+    uint32_t queue_depth;
+    uint32_t busy_slots;
+    uint32_t idle_slots;
+    uint32_t total_submitted;   /* since boot */
+    uint32_t total_completed;
+    uint32_t total_failed;
+};
+
+struct gpu_sched_reply_cancel {
+    uint32_t ok;
+    uint32_t result;            /* GPU_CANCEL_OK / GPU_CANCEL_ERR_* */
+};
+
+#define GPU_CANCEL_OK           0
+#define GPU_CANCEL_ERR_NOTFOUND 1
+#define GPU_CANCEL_ERR_RUNNING  2  /* already dispatched; cancel is a no-op */
+
+/* ─── Error codes ────────────────────────────────────────────────────────── */
+
+enum gpu_sched_error {
     GPU_SCHED_OK              = 0,
-    GPU_SCHED_ERR_FULL        = 1,  /* queue is full */
-    GPU_SCHED_ERR_NOT_FOUND   = 2,  /* ticket_id unknown */
-    GPU_SCHED_ERR_BAD_HASH    = 3,  /* kernel WASM hash not in AgentFS */
-    GPU_SCHED_ERR_TIMEOUT     = 4,  /* task exceeded timeout_ms */
-    GPU_SCHED_ERR_EXEC_FAULT  = 5,  /* GPU kernel trapped */
-    GPU_SCHED_ERR_NO_CAP      = 6,  /* caller lacks AGENTOS_CAP_GPU */
-} gpu_sched_error_t;
-
-/* ── Invariants ──
- * - Callers must hold AGENTOS_CAP_GPU to submit tasks.
- * - ticket_id is unique per scheduler instance; never reused within a session.
- * - Completion and failure are published to EventBus (not replied inline).
- * - GPU_FLAG_EXCLUSIVE tasks wait until all slots are idle before running.
- */
+    GPU_SCHED_ERR_QUEUE_FULL  = 1,
+    GPU_SCHED_ERR_BAD_TICKET  = 2,
+    GPU_SCHED_ERR_NO_GPU      = 3,  /* no GPU hardware present */
+};

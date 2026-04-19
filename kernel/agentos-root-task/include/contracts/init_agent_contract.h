@@ -1,93 +1,93 @@
+/*
+ * InitAgent IPC Contract
+ *
+ * The InitAgent PD orchestrates the agentOS boot sequence and manages
+ * the top-level agent lifecycle.
+ *
+ * Channel: INITAGENT_CH_* (see agentos.h)
+ * Opcodes: MSG_INITAGENT_* (see agentos.h)
+ *
+ * Invariants:
+ *   - MSG_INITAGENT_START is sent exactly once by monitor at boot.
+ *   - MSG_INITAGENT_READY is sent exactly once by init_agent to monitor.
+ *   - MSG_INITAGENT_AGENT_LIST returns data in the shared shmem region;
+ *     the caller must hold a mapping to that region.
+ *   - SHUTDOWN triggers graceful teardown; all agents are notified before
+ *     the reply is sent.
+ */
+
 #pragma once
-/* INIT_AGENT contract — version 1
- * PD: init_agent | Source: src/init_agent.c | Channel: INITAGENT_CH_MONITOR=1, INITAGENT_CH_EVENTBUS=2 (from controller)
- */
-#include <stdint.h>
-#include <stdbool.h>
+#include "../agentos.h"
 
-#define INIT_AGENT_CONTRACT_VERSION 1
+/* ─── Channel IDs (InitAgent perspective) ────────────────────────────────── */
+#define INITAGENT_CH_MONITOR   1  /* monitor → init_agent */
+#define INITAGENT_CH_EVENTBUS  2  /* init_agent → eventbus */
 
-/* ── Channel IDs (controller perspective) ── */
-#define CH_INIT_AGENT              1   /* controller -> init_agent (from controller: CH_CONTROLLER_INIT_AGENT) */
-#define INITAGENT_CH_MONITOR       1   /* cross-ref: agentos.h */
-#define INITAGENT_CH_EVENTBUS      2   /* cross-ref: agentos.h */
+/* ─── Request structs ────────────────────────────────────────────────────── */
 
-/* ── Opcodes ── */
-#define INITAGENT_OP_START         0x0201u  /* controller -> init_agent: begin startup sequence */
-#define INITAGENT_OP_SHUTDOWN      0x0202u  /* controller -> init_agent: begin orderly shutdown */
-#define INITAGENT_OP_READY         0x0301u  /* init_agent -> controller: startup complete */
-#define INITAGENT_OP_STATUS        0x0302u  /* init_agent -> controller: status report */
-#define INITAGENT_OP_SPAWN_AGENT   0x0801u  /* caller -> init_agent: spawn WASM agent by hash */
-#define INITAGENT_OP_SPAWN_REPLY   0x0802u  /* init_agent -> caller: agent_id or error */
+struct initagent_req_start {
+    uint32_t boot_flags;        /* BOOT_FLAG_* bitmask */
+};
 
-/* ── Request / Reply structs ── */
+#define BOOT_FLAG_RECOVERY  (1u << 0)  /* boot into recovery mode */
+#define BOOT_FLAG_VERBOSE   (1u << 1)  /* enable verbose boot logging */
+
+struct initagent_req_shutdown {
+    uint32_t reason;            /* SHUTDOWN_REASON_* */
+    uint32_t timeout_ms;        /* max ms to wait for agent teardown */
+};
+
+#define SHUTDOWN_REASON_HALT    0
+#define SHUTDOWN_REASON_REBOOT  1
+#define SHUTDOWN_REASON_PANIC   2
+
+struct initagent_req_status {
+    /* no fields */
+};
+
+struct initagent_req_agent_list {
+    /* no fields — results in shmem */
+};
+
+/* ─── Reply structs ──────────────────────────────────────────────────────── */
+
+struct initagent_reply_start {
+    uint32_t ok;
+};
+
+struct initagent_reply_shutdown {
+    uint32_t ok;
+    uint32_t agents_stopped;
+};
+
+struct initagent_reply_status {
+    uint32_t state;             /* INITAGENT_STATE_* */
+    uint32_t agent_count;       /* active agents */
+    uint32_t uptime_ticks;
+};
+
+#define INITAGENT_STATE_BOOTING   0
+#define INITAGENT_STATE_RUNNING   1
+#define INITAGENT_STATE_STOPPING  2
+
+struct initagent_reply_agent_list {
+    uint32_t count;             /* entries written to shmem */
+};
+
+/* ─── Shmem layout: agent_list entry ────────────────────────────────────── */
 
 typedef struct __attribute__((packed)) {
-    uint32_t opcode;          /* INITAGENT_OP_START */
-    uint32_t flags;           /* reserved, must be 0 */
-} init_agent_req_start_t;
+    uint32_t agent_id;
+    uint32_t pd_id;
+    uint32_t state;             /* 0=idle 1=running 2=faulted */
+    uint32_t cap_mask;
+} agent_list_entry_t;
 
-typedef struct __attribute__((packed)) {
-    uint32_t status;          /* 0 = ok */
-} init_agent_reply_start_t;
+/* ─── Error codes ────────────────────────────────────────────────────────── */
 
-typedef struct __attribute__((packed)) {
-    uint32_t opcode;          /* INITAGENT_OP_SHUTDOWN */
-    uint32_t grace_ms;        /* milliseconds to allow for orderly teardown */
-} init_agent_req_shutdown_t;
-
-typedef struct __attribute__((packed)) {
-    uint32_t status;          /* 0 = ok */
-} init_agent_reply_shutdown_t;
-
-typedef struct __attribute__((packed)) {
-    uint32_t opcode;          /* INITAGENT_OP_STATUS */
-} init_agent_req_status_t;
-
-typedef struct __attribute__((packed)) {
-    uint32_t status;          /* 0 = ok */
-    uint32_t state;           /* init_agent_state_t value */
-    uint32_t agents_running;  /* number of active agent slots */
-    uint32_t uptime_ticks;    /* ticks since init_agent started */
-} init_agent_reply_status_t;
-
-typedef struct __attribute__((packed)) {
-    uint32_t opcode;          /* INITAGENT_OP_SPAWN_AGENT */
-    uint64_t wasm_hash_lo;    /* lower 64 bits of WASM module content hash */
-    uint64_t wasm_hash_hi;    /* upper 64 bits of WASM module content hash */
-    uint32_t cap_mask;        /* requested AGENTOS_CAP_* bitmask */
-    uint32_t priority;        /* scheduling priority (agentos_priority_t) */
-} init_agent_req_spawn_t;
-
-typedef struct __attribute__((packed)) {
-    uint32_t status;          /* 0 = ok, else init_agent_error_t */
-    uint64_t agent_id_hi;     /* upper 64 bits of assigned agent ID */
-    uint64_t agent_id_lo;     /* lower 64 bits of assigned agent ID */
-    uint32_t slot_id;         /* worker slot assigned to this agent */
-} init_agent_reply_spawn_t;
-
-/* ── Agent lifecycle states ── */
-typedef enum {
-    INITAGENT_STATE_INIT       = 0,  /* pre-start */
-    INITAGENT_STATE_RUNNING    = 1,  /* active, accepting spawn requests */
-    INITAGENT_STATE_SHUTDOWN   = 2,  /* draining, no new spawns */
-    INITAGENT_STATE_STOPPED    = 3,  /* fully stopped */
-} init_agent_state_t;
-
-/* ── Error codes ── */
-typedef enum {
-    INIT_AGENT_OK              = 0,
-    INIT_AGENT_ERR_NOT_READY   = 1,  /* called before START completed */
-    INIT_AGENT_ERR_SHUTDOWN    = 2,  /* system is shutting down */
-    INIT_AGENT_ERR_NO_SLOT     = 3,  /* no free worker slot available */
-    INIT_AGENT_ERR_BAD_HASH    = 4,  /* WASM hash not found in AgentFS */
-    INIT_AGENT_ERR_BAD_CAPS    = 5,  /* requested capabilities not permitted */
-    INIT_AGENT_ERR_LOAD_FAIL   = 6,  /* WASM load/validation failed */
-} init_agent_error_t;
-
-/* ── Invariants ──
- * - INITAGENT_OP_START must be called exactly once before any other operation.
- * - Spawn requests are rejected once INITAGENT_OP_SHUTDOWN has been issued.
- * - cap_mask must be a subset of the caps granted to init_agent by the root task.
- * - wasm_hash must identify a module already stored in AgentFS.
- */
+enum initagent_error {
+    INITAGENT_OK              = 0,
+    INITAGENT_ERR_ALREADY_STARTED = 1,
+    INITAGENT_ERR_NOT_STARTED = 2,
+    INITAGENT_ERR_SHUTDOWN_TIMEOUT = 3,
+};

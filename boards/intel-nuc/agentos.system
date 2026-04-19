@@ -274,6 +274,48 @@
     </channel>
 
     <!-- ═══════════════════════════════════════════════════════════════════
+         USB HOST CONTROLLER PD — Intel NUC PCH xHCI
+
+         Intel NUC 12/13 (Alder/Raptor Lake): PCH xHCI at PCI 00:14.0.
+         BAR0 is a 64-bit MMIO register; on NUC 12 the firmware maps it to
+         0xa4500000 (64KB).  Confirm with `lspci -vvv -s 00:14.0` on Linux.
+         Update phys_addr if your NUC BIOS maps the BAR differently.
+
+         Build with: make build AGENTOS_USB_PD=1 ARCH_X86_64=1 BOARD_NUC_XHCI=1
+
+         usb_pd exposes MSG_USB_ENUMERATE/LIST/OPEN/CLOSE/CONTROL/BULK_IN/
+         BULK_OUT/STATUS on channel 70 (CH_USB_PD from controller perspective).
+
+         Device class filtering policy is passed as MR2 on MSG_USB_OPEN:
+           USB_POLICY_HID     (1<<0) — keyboard/mouse passthrough
+           USB_POLICY_STORAGE (1<<1) — mass storage passthrough
+         ═══════════════════════════════════════════════════════════════════ -->
+
+    <!-- Intel NUC 12/13 PCH xHCI BAR0: 0xa4500000 (Alder Lake default).
+         This is a 64KB region covering the full XHCI register space.
+         The XHCI CAPLENGTH register at offset 0 reports 0x80 on Intel PCH. -->
+    <memory_region name="usb_xhci_mmio" size="0x10000" phys_addr="0xa4500000" />
+
+    <!-- Shared data region: device list + transfer buffers (64KB) -->
+    <memory_region name="usb_shmem" size="0x10000" />
+
+    <protection_domain name="usb_pd" priority="175" passive="true">
+        <program_image path="usb_pd.elf" />
+        <!-- Intel PCH xHCI MMIO window — uncached, 64KB -->
+        <map mr="usb_xhci_mmio" vaddr="0x12000000" perms="rw" cached="false"
+             setvar_vaddr="usb_mmio_vaddr" />
+        <!-- Shared shmem: device list + transfer data -->
+        <map mr="usb_shmem" vaddr="0x12100000" perms="rw"
+             setvar_vaddr="usb_shmem_vaddr" />
+    </protection_domain>
+
+    <!-- CH_USB_PD = 70: controller PPCs into usb_pd -->
+    <channel>
+        <end pd="controller" id="70" pp="true" />
+        <end pd="usb_pd"     id="0" />
+    </channel>
+
+    <!-- ═══════════════════════════════════════════════════════════════════
          CONSOLE SHELL — hardware serial mini-CLI (native hardware mode)
 
          On Intel NUC: reads/writes the physical NS16550 UART at MMIO
@@ -309,6 +351,57 @@
     <channel>
         <end pd="console_shell" id="1" pp="true" />
         <end pd="controller"    id="42" />
+    </channel>
+
+    <!--
+      ══════════════════════════════════════════════════════════════════
+      GPU Scheduler: CUDA workload router (passive, prio 120)
+
+      On Intel NUC: routes display frames via OP_GPU_SUBMIT_CMD to the
+      real GPU (no virtio-gpu MMIO on native hardware).
+      ══════════════════════════════════════════════════════════════════
+    -->
+    <protection_domain name="gpu_sched" priority="120" passive="true">
+        <program_image path="gpu_sched.elf" />
+        <!-- log_drain_rings not mapped: falls back to microkit_dbg_puts -->
+    </protection_domain>
+
+    <channel>
+        <end pd="controller" id="25" />
+        <end pd="gpu_sched"  id="1" />
+    </channel>
+
+    <!--
+      ══════════════════════════════════════════════════════════════════
+      framebuffer_pd: virtual framebuffer service (passive, prio 175)
+
+      On Intel NUC: no virtio-gpu MMIO — probe_hw_direct selects
+      HW_MODE_GPU_SCHED and routes all FLIP operations via gpu_sched
+      OP_GPU_SUBMIT_CMD.  fb_shmem holds pixel data for the GPU blit.
+      ══════════════════════════════════════════════════════════════════
+    -->
+    <memory_region name="fb_shmem" size="0x800000" />
+
+    <protection_domain name="framebuffer_pd" priority="175" passive="true">
+        <program_image path="framebuffer_pd.elf" />
+        <!-- fb_shmem rw: pixel data from callers -->
+        <map mr="fb_shmem" vaddr="0x5000000" perms="rw" cached="true"
+             setvar_vaddr="fb_shmem_vaddr" />
+        <!-- virtio_gpu_mmio NOT mapped: NUC has real GPU, not virtio-gpu.
+             probe_hw_direct detects vaddr==0 and selects HW_MODE_GPU_SCHED. -->
+        <!-- log_drain_rings not mapped: falls back to microkit_dbg_puts -->
+    </protection_domain>
+
+    <!-- Channel CH_FB_PD (71): controller → framebuffer_pd -->
+    <channel>
+        <end pd="controller"     id="71" pp="true" />
+        <end pd="framebuffer_pd" id="0" />
+    </channel>
+
+    <!-- Channel: framebuffer_pd → gpu_sched (OP_GPU_SUBMIT_CMD for NUC GPU path) -->
+    <channel>
+        <end pd="framebuffer_pd" id="2" pp="true" />
+        <end pd="gpu_sched"      id="7" />
     </channel>
 
 </system>

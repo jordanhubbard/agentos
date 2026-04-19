@@ -9,7 +9,7 @@
     init_agent   (prio 100)  - agent ecosystem bootstrapper
     worker_0..7  (prio 80)   - agent pool workers (dynamic task assignment)
     vibe_engine  (prio 140)  - passive VibeEngine: WASM hot-swap lifecycle
-    log_drain  (prio 160)  - passive session multiplexer ("tmux for agents")
+    log_drain    (prio 160)  - passive log drain (ring buffer -> UART)
     trace_recorder (prio 128) - passive inter-PD dispatch event logger (stub)
     mem_profiler (prio 108)  - passive heap alloc tracker + leak detector
     net_isolator (prio 160)  - passive per-agent outbound network firewall
@@ -45,7 +45,7 @@
     41: init_agent <-> vibe_engine  (init_agent PPCs into vibe_engine to propose swaps)
 
   Console Multiplexer channels:
-    60: controller   <-> log_drain  (attach/detach/list/mode commands)
+    60: controller   <-> log_drain  (log status queries)
     61: init_agent   <-> log_drain  (init_agent output)
     62: event_bus    <-> log_drain  (eventbus output notification)
 
@@ -89,6 +89,10 @@
         <!-- ext2_shmem r-only: controller reads stat/readdir results from ext2fs -->
         <map mr="ext2_shmem" vaddr="0x3400000" perms="r" cached="true"
              setvar_vaddr="ext2_shmem_ctrl_vaddr" />
+        <!-- block_shmem rw: controller writes data before MSG_BLOCK_WRITE,
+             reads data after MSG_BLOCK_READ -->
+        <map mr="block_shmem" vaddr="0x3500000" perms="rw" cached="true"
+             setvar_vaddr="block_shmem_ctrl_vaddr" />
     </protection_domain>
     
     <!-- EventBus: passive pub/sub backbone -->
@@ -622,13 +626,12 @@
       ══════════════════════════════════════════════════════════════════
       Console Multiplexer: "tmux for agentOS"
 
-      Passive PD (priority 160) that multiplexes per-PD output streams
-      onto the debug UART with attach/detach/switch/broadcast semantics.
+      Passive PD (priority 160) that drains per-PD output rings to the debug UART.
 
       Shared memory: log_drain_rings (64KB = 16 × 4KB per-PD output rings)
 
       Channels (60-62, after mem_profiler's 50-58):
-        60: controller <-> log_drain (PPC: attach/detach/list/mode/status)
+        60: controller <-> log_drain (PPC: status queries)
         61: init_agent <-> log_drain (notify: init_agent output ready)
         62: event_bus  <-> log_drain (notify: eventbus output ready)
       ══════════════════════════════════════════════════════════════════
@@ -637,10 +640,8 @@
     <!-- log_drain_rings: 64KB per-PD output ring buffer (16 × 4KB slots).
          Write access: each PD writes into its own 4KB slot (head pointer only).
          Read access:  log_drain (drains all slots); PDs (own slot head writes).
-         Cap class:    N/A (debug I/O; not gated by agent capability system).
-         Threat:       PD overwriting another PD's output slot to corrupt console output;
-                       mitigated by per-PD slot assignment enforced by log_drain. -->
-    <!-- Console ring buffer: 16 × 4KB = 64KB shared output rings -->
+         Cap class:    N/A (debug I/O; not gated by agent capability system). -->
+    <!-- Log drain ring buffer: 16 × 4KB = 64KB shared output rings -->
     <memory_region name="log_drain_rings" size="0x10000" />
 
     <protection_domain name="log_drain" priority="160" passive="true">
@@ -649,24 +650,24 @@
     </protection_domain>
 
     <!-- Channel 60: controller(id=60) <-> log_drain(id=0) pp=true
-         Controller PPCs into log_drain for attach/detach/list/mode commands -->
+         Controller PPCs into log_drain for status queries -->
     <channel>
-        <end pd="controller"   id="60" pp="true" />
-        <end pd="log_drain"  id="0" />
+        <end pd="controller"  id="60" pp="true" />
+        <end pd="log_drain"   id="0" />
     </channel>
 
     <!-- Channel 61: init_agent(id=4) <-> log_drain(id=1)
          init_agent notifies log_drain when it has output to drain -->
     <channel>
-        <end pd="init_agent"   id="4" />
-        <end pd="log_drain"  id="1" />
+        <end pd="init_agent"  id="4" />
+        <end pd="log_drain"   id="1" />
     </channel>
 
     <!-- Channel 62: event_bus(id=60) <-> log_drain(id=2)
          event_bus notifies log_drain on event activity -->
     <channel>
-        <end pd="event_bus"    id="60" />
-        <end pd="log_drain"  id="2" />
+        <end pd="event_bus"   id="60" />
+        <end pd="log_drain"   id="2" />
     </channel>
 
     <!--
@@ -869,13 +870,27 @@
                        mitigated by vfs_server path validation + caller capability check. -->
     <memory_region name="vfs_io_shmem"       size="0x20000" />
 
-    <!-- blk_dma_shmem: 32KB DMA buffer shared between vfs_server and virtio_blk.
-         Write access: vfs_server (writes block I/O requests); virtio_blk (DMA fills).
-         Read access:  vfs_server (reads DMA results); virtio_blk (reads request headers).
+    <!-- blk_dma_shmem: 32KB DMA buffer shared between vfs_server, block_pd, and virtio_blk.
+         Write access: vfs_server (writes block I/O requests); virtio_blk (DMA fills);
+                       block_pd (stages data for forwarded I/O).
+         Read access:  vfs_server (reads DMA results); virtio_blk (reads request headers);
+                       block_pd (reads DMA results from virtio_blk).
          Cap class:    AGENTOS_CAP_OBJECTSTORE (block device is a storage backend).
          Threat:       rogue PD corrupting DMA buffer to inject block data;
-                       mitigated by restricted mapping — only vfs_server and virtio_blk hold rw. -->
+                       mitigated by restricted mapping — only vfs_server, block_pd,
+                       and virtio_blk hold rw mappings.
+         Safety note:  all three PDs are passive; seL4 scheduler serialises execution
+                       so concurrent DMA access is impossible. -->
     <memory_region name="blk_dma_shmem"      size="0x8000"  />
+
+    <!-- block_shmem: 64KB data buffer shared between block_pd and its callers.
+         Write access: callers write sector data here before MSG_BLOCK_WRITE;
+                       block_pd writes sector data here after MSG_BLOCK_READ.
+         Read access:  callers read sector data here after MSG_BLOCK_READ.
+         Cap class:    AGENTOS_CAP_OBJECTSTORE (block I/O requires storage capability).
+         Threat:       cross-guest data exfiltration via shared buffer; mitigated by
+                       block_pd handle ownership enforcement (per-channel validation). -->
+    <memory_region name="block_shmem"        size="0x10000" />
 
     <!-- virtio_net_mmio: 4KB MMIO for virtio-net (riscv64: 0x10001000, IRQ 1).
          Write access: net_server only (device configuration + queue doorbell).
@@ -917,6 +932,14 @@
          Threat:       agent reading other agents' raw packet data (cross-slot snooping);
                        mitigated by per-vNIC slot assignment gated by net_server. -->
     <memory_region name="net_packet_shmem"   size="0x40000" />
+
+    <!-- net_pd_shmem: 256KB net_pd packet I/O and socket data area.
+         16 × 16KB handle slots; layout matches net_server shmem geometry.
+         Write access: net_pd (ring head writes, inbound frame delivery).
+         Read access:  net_pd clients via handle-gated slot assignment.
+         Cap class:    AGENTOS_CAP_NETWORK.
+         Threat:       cross-handle snooping; mitigated by per-handle slot assignment. -->
+    <memory_region name="net_pd_shmem"       size="0x40000" />
 
     <!-- app_manifest_shmem: 16KB key=value application manifests.
          Write access: controller (writes manifests before OP_APP_LAUNCH PPC).
@@ -1167,6 +1190,46 @@
     <channel>
         <end pd="worker_7"   id="14" pp="true" />
         <end pd="net_server" id="9" />
+    </channel>
+
+    <!--
+      ── net_pd: OS-neutral network device PD (passive, prio 160) ──────────────
+
+      Owns virtio-net hardware via seL4 device frame caps and moves lwIP behind
+      a proper PD boundary.  Guest OSes and agents obtain network handles via
+      MSG_NET_OPEN (raw Ethernet frames) or MSG_NET_SOCKET_OPEN (TCP/UDP sockets).
+      WireGuard overlay integration is marked WG_INTEGRATION_POINT in net_pd.c.
+
+      Multiple virtual NICs per guest slot are supported via the 16-entry handle
+      table.  lwIP drives all TCP/IP processing internally.
+
+      Channel:
+        id=0: controller (CH_NET_PD=68, pp=true) — all client requests routed in
+        id=1: timer notify (10ms lwIP tick from controller, CH_NET_TIMER=59 equiv)
+
+      Shared memory:
+        net_pd_shmem (256KB at 0x5000000, rw): 16 × 16KB handle slots
+        virtio_net_mmio (0x6000000, rw, cached=false): hardware registers
+
+      Note: net_server and net_pd both map virtio_net_mmio for the QEMU prototype.
+      In production, net_pd holds exclusive hardware ownership; net_server would
+      route through net_pd for packet I/O (future migration).
+    -->
+    <protection_domain name="net_pd" priority="160" passive="true">
+        <program_image path="net_pd.elf" />
+        <map mr="net_pd_shmem"      vaddr="0x5000000" perms="rw"
+             setvar_vaddr="net_pd_shmem_vaddr" />
+        <map mr="virtio_net_mmio"   vaddr="0x6000000" perms="rw" cached="false"
+             setvar_vaddr="net_pd_mmio_vaddr" />
+        <map mr="log_drain_rings"   vaddr="0x7000000" perms="rw"
+             setvar_vaddr="log_drain_rings_vaddr" />
+    </protection_domain>
+
+    <!-- Channel 48: controller(id=48, pp=true) → net_pd(id=0)
+         Controller and any authorised client PPC into net_pd for network I/O. -->
+    <channel>
+        <end pd="controller" id="48" pp="true" />
+        <end pd="net_pd"     id="0" />
     </channel>
 
     <!--
@@ -1466,6 +1529,158 @@
     <channel>
         <end pd="controller"  id="43" pp="true" />
         <end pd="term_server" id="0" />
+    </channel>
+
+    <!--
+      ══════════════════════════════════════════════════════════════════
+      block_pd: OS-neutral block device service PD (passive, prio 165)
+
+      Abstracts virtio_blk behind a PD boundary.  Exposes a partition-level
+      block I/O service (MSG_BLOCK_*) to guest OSes and other consumers.
+      VirtIO transport is an internal implementation detail.
+
+      Per-guest capability enforcement: each MSG_BLOCK_OPEN allocates a
+      handle bound to the calling channel.  Handles are not transferable;
+      a guest PD cannot access another guest's handle.
+
+      Channel map (from block_pd's perspective):
+        id=0: callers PPC in  (MSG_BLOCK_* requests)
+        id=1: block_pd PPCs out to virtio_blk (OP_BLK_*)
+
+      Shared memory:
+        block_shmem (64KB): data exchange with callers
+          block_pd writes read results here; callers write write data here.
+        blk_dma_shmem (32KB): DMA staging for virtio_blk
+          Shared physical region — safe because all PDs are passive.
+      ══════════════════════════════════════════════════════════════════
+    -->
+
+    <protection_domain name="block_pd" priority="165" passive="true">
+        <program_image path="block_pd.elf" />
+        <!-- block_shmem rw: read/write sector data on behalf of callers -->
+        <map mr="block_shmem"  vaddr="0x5000000" perms="rw" cached="true"
+             setvar_vaddr="block_shmem_vaddr" />
+        <!-- blk_dma_shmem rw: DMA staging region shared with virtio_blk
+             fixed_mr constraint: vaddr must equal paddr for virtio DMA correctness;
+             same physical region as vfs_server and ext2fs mappings. -->
+        <map mr="blk_dma_shmem" vaddr="0x6000000" perms="rw" cached="false"
+             setvar_vaddr="blk_dma_shmem_vaddr" />
+    </protection_domain>
+
+    <!-- Channel CH_BLOCK_PD (49): controller(id=49, pp=true) → block_pd(id=0)
+         Controller PPCs into block_pd for MSG_BLOCK_* operations. -->
+    <channel>
+        <end pd="controller" id="49" pp="true" />
+        <end pd="block_pd"   id="0" />
+    </channel>
+
+    <!-- Channel: block_pd(id=1, pp=true) → virtio_blk(id=3)
+         block_pd PPCs into virtio_blk to forward block I/O (OP_BLK_*). -->
+    <channel>
+        <end pd="block_pd"   id="1" pp="true" />
+        <end pd="virtio_blk" id="3" />
+    </channel>
+
+    <!--
+      ══════════════════════════════════════════════════════════════════
+      GPU Scheduler: CUDA workload router (passive, prio 120)
+
+      Routes agent compute jobs to WASM slots via OP_GPU_SUBMIT and
+      dispatches virtio-gpu command buffers via OP_GPU_SUBMIT_CMD.
+      Also serves as the Sparky GB10 / NUC real-GPU integration point
+      for framebuffer_pd's HW_DIRECT backend.
+
+      Channel map (from gpu_sched's perspective):
+        id=1: controller (CH_CONTROLLER) — dispatch + completion notify
+        id=7: framebuffer_pd (pp=true) — OP_GPU_SUBMIT_CMD from fb PD
+
+      Note: virtio_gpu_mmio is NOT mapped here — framebuffer_pd owns the
+      virtio-gpu device for display output (Phase 4a-hw requirement).
+      gpu_sched operates in stub mode for its internal virtio-gpu probe
+      and handles real Blackwell GB10 compute routing via its own path.
+      ══════════════════════════════════════════════════════════════════
+    -->
+    <protection_domain name="gpu_sched" priority="180" passive="true">
+        <program_image path="gpu_sched.elf" />
+        <!-- log_drain_rings: optional; gpu_sched falls back to microkit_dbg_puts if unmapped -->
+        <map mr="log_drain_rings" vaddr="0x9000000" perms="rw"
+             setvar_vaddr="log_drain_rings_vaddr" />
+    </protection_domain>
+
+    <!-- Channel: controller(id=25) ↔ gpu_sched(id=1, CH_CONTROLLER)
+         gpu_sched notifies controller at init and on task dispatch.
+         Controller notifies gpu_sched on slot-complete events. -->
+    <channel>
+        <end pd="controller" id="25" />
+        <end pd="gpu_sched"  id="1" />
+    </channel>
+
+    <!--
+      ══════════════════════════════════════════════════════════════════
+      framebuffer_pd: virtual framebuffer service (passive, prio 175)
+
+      Manages up to 8 virtual framebuffers for guest OSes.
+      Backend dispatch (selected at MSG_FB_CREATE time):
+        FB_BACKEND_NULL       — headless; frames discarded
+        FB_BACKEND_HW_DIRECT  — QEMU: virtio-gpu MMIO; Sparky: gpu_sched IPC
+        FB_BACKEND_REMOTE_API — display server relay (Phase 4a-remote, ag-tz2)
+
+      Channel map (from framebuffer_pd's perspective):
+        id=0: callers PPC in  (MSG_FB_* requests; CH_FB_PD=71 on controller)
+        id=1: framebuffer_pd → EventBus (pending; Phase 4a-remote wires this)
+        id=2: framebuffer_pd → gpu_sched (Sparky HW_DIRECT path)
+
+      Shared memory:
+        fb_shmem (8MB): pixel data exchange — callers write frames here
+        virtio_gpu_mmio (4KB, uncached): virtio-gpu MMIO registers
+          Mapped ONLY to framebuffer_pd; no other PD holds this capability.
+
+      Physical address note:
+        RISC-V virt (QEMU): virtio-gpu MMIO at 0x10003000
+        For AArch64 virt, see agentos-aarch64.system (address differs).
+      ══════════════════════════════════════════════════════════════════
+    -->
+
+    <!-- fb_shmem: 8MB pixel data buffer (≥ 1920×1080×4 bytes for full-HD).
+         Write access: callers (write pixel data before MSG_FB_WRITE / MSG_FB_FLIP).
+         Read access:  framebuffer_pd (reads on FLIP for backend dispatch).
+         Cap class:    N/A (display output; not gated by agent capability system).
+         Threat:       guest pixel data is display-only; no secret data in this path. -->
+    <memory_region name="fb_shmem" size="0x800000" />
+
+    <!-- virtio_gpu_mmio: 4KB MMIO for virtio-gpu (RISC-V virt: 0x10003000).
+         Write access: framebuffer_pd ONLY (device init + queue doorbell).
+         Read access:  framebuffer_pd ONLY (device probe).
+         Cap class:    N/A (display hardware; exclusive to framebuffer_pd).
+         Threat:       MMIO register manipulation to corrupt display output;
+                       mitigated by framebuffer_pd-only mapping. -->
+    <memory_region name="virtio_gpu_mmio" size="0x1000" phys_addr="0x10003000" />
+
+    <protection_domain name="framebuffer_pd" priority="175" passive="true">
+        <program_image path="framebuffer_pd.elf" />
+        <!-- fb_shmem rw: framebuffer_pd reads pixel data from callers on FLIP -->
+        <map mr="fb_shmem"        vaddr="0x5000000" perms="rw" cached="true"
+             setvar_vaddr="fb_shmem_vaddr" />
+        <!-- virtio_gpu_mmio: exclusive MMIO capability for QEMU HW_DIRECT path -->
+        <map mr="virtio_gpu_mmio" vaddr="0x6000000" perms="rw" cached="false"
+             setvar_vaddr="virtio_gpu_mmio_vaddr" />
+        <!-- log_drain_rings: optional debug output -->
+        <map mr="log_drain_rings" vaddr="0x7000000" perms="rw"
+             setvar_vaddr="log_drain_rings_vaddr" />
+    </protection_domain>
+
+    <!-- Channel CH_FB_PD (51): controller(id=51, pp=true) → framebuffer_pd(id=0)
+         All MSG_FB_* client requests are routed through the controller. -->
+    <channel>
+        <end pd="controller"     id="51" pp="true" />
+        <end pd="framebuffer_pd" id="0" />
+    </channel>
+
+    <!-- Channel: framebuffer_pd(id=2, pp=true) → gpu_sched(id=7)
+         framebuffer_pd PPCs into gpu_sched for OP_GPU_SUBMIT_CMD on Sparky path. -->
+    <channel>
+        <end pd="framebuffer_pd" id="2" pp="true" />
+        <end pd="gpu_sched"      id="7" />
     </channel>
 
 </system>

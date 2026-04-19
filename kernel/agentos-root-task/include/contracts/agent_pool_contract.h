@@ -1,76 +1,65 @@
+/*
+ * AgentPool IPC Contract
+ *
+ * AgentPool manages the pool of Worker PDs.  Callers allocate a worker slot,
+ * assign a task, and free the slot when done.
+ *
+ * Channel: CH_AGENT_POOL (see agentos.h)
+ * Opcodes: MSG_AGENTPOOL_* (see agentos.h)
+ *
+ * Invariants:
+ *   - ALLOC_WORKER returns a slot only if a worker is idle.
+ *   - A caller that holds a slot must eventually call FREE_WORKER.
+ *   - STATUS is read-only and does not affect allocation state.
+ *   - cap_mask limits what the allocated worker can do; it cannot exceed
+ *     the cap_mask granted to the caller at spawn time.
+ */
+
 #pragma once
-/* AGENT_POOL contract — version 1
- * PD: agent_pool | Source: src/agent_pool.c | Channel: WORKER_POOL_BASE_CH=20 (from controller)
- */
-#include <stdint.h>
-#include <stdbool.h>
+#include "../agentos.h"
 
-#define AGENT_POOL_CONTRACT_VERSION 1
+/* ─── Channel IDs ────────────────────────────────────────────────────────── */
+#define AGENTPOOL_CH_CONTROLLER  CH_AGENT_POOL
 
-/* ── Channel IDs (controller perspective) ── */
-/* Worker pool occupies channels 20-27 (WORKER_POOL_BASE_CH + index) */
-#define CH_AGENT_POOL_BASE     20   /* first channel of 8-slot worker pool; cross-ref: agentos.h */
-#define AGENT_POOL_SIZE         8   /* maximum concurrent workers */
+/* ─── Request structs ────────────────────────────────────────────────────── */
 
-/* ── Opcodes (0xAA00 range) ── */
-#define AGENT_POOL_OP_ALLOC_WORKER  0xAA01u  /* allocate a worker slot from the pool */
-#define AGENT_POOL_OP_FREE_WORKER   0xAA02u  /* return a worker slot to the pool */
-#define AGENT_POOL_OP_STATUS        0xAA03u  /* query pool occupancy and slot states */
+struct agentpool_req_alloc_worker {
+    uint32_t cap_mask;          /* AGENTOS_CAP_* bitmask for this worker */
+    uint32_t priority;          /* agentos_priority_t hint */
+};
 
-/* ── Worker slot states ── */
-#define AGENT_POOL_SLOT_FREE        0u  /* slot available for allocation */
-#define AGENT_POOL_SLOT_BUSY        1u  /* slot running an agent */
-#define AGENT_POOL_SLOT_DRAINING    2u  /* slot completing work, will free */
+struct agentpool_req_free_worker {
+    uint32_t worker_slot;       /* slot returned by ALLOC_WORKER */
+};
 
-/* ── Request / Reply structs ── */
+struct agentpool_req_status {
+    /* no fields */
+};
 
-typedef struct __attribute__((packed)) {
-    uint32_t opcode;          /* AGENT_POOL_OP_ALLOC_WORKER */
-    uint32_t priority;        /* requested scheduling priority (agentos_priority_t) */
-    uint32_t cap_mask;        /* AGENTOS_CAP_* mask for the new worker */
-    uint64_t agent_id_hi;     /* agent ID to associate with this slot */
-    uint64_t agent_id_lo;
-} agent_pool_req_alloc_t;
+/* ─── Reply structs ──────────────────────────────────────────────────────── */
 
-typedef struct __attribute__((packed)) {
-    uint32_t status;          /* 0 = ok, else agent_pool_error_t */
-    uint32_t slot_id;         /* 0-7: allocated worker slot index */
-    uint32_t channel_id;      /* seL4 channel for this slot (WORKER_POOL_BASE_CH + slot_id) */
-} agent_pool_reply_alloc_t;
+struct agentpool_reply_alloc_worker {
+    uint32_t ok;
+    uint32_t worker_slot;       /* WORKER_POOL_BASE_CH offset for this slot */
+};
 
-typedef struct __attribute__((packed)) {
-    uint32_t opcode;          /* AGENT_POOL_OP_FREE_WORKER */
-    uint32_t slot_id;         /* slot to release */
-} agent_pool_req_free_t;
+struct agentpool_reply_free_worker {
+    uint32_t ok;
+};
 
-typedef struct __attribute__((packed)) {
-    uint32_t status;          /* 0 = ok */
-} agent_pool_reply_free_t;
+struct agentpool_reply_status {
+    uint32_t total;             /* WORKER_POOL_SIZE */
+    uint32_t busy;
+    uint32_t idle;
+    uint32_t faulted;
+};
 
-typedef struct __attribute__((packed)) {
-    uint32_t opcode;          /* AGENT_POOL_OP_STATUS */
-} agent_pool_req_status_t;
+/* ─── Error codes ────────────────────────────────────────────────────────── */
 
-typedef struct __attribute__((packed)) {
-    uint32_t status;          /* 0 = ok */
-    uint32_t free_slots;      /* number of unoccupied slots */
-    uint32_t busy_slots;      /* number of slots running agents */
-    uint8_t  slot_states[8];  /* per-slot state: AGENT_POOL_SLOT_* */
-} agent_pool_reply_status_t;
-
-/* ── Error codes ── */
-typedef enum {
-    AGENT_POOL_OK             = 0,
-    AGENT_POOL_ERR_FULL       = 1,  /* all 8 worker slots occupied */
-    AGENT_POOL_ERR_BAD_SLOT   = 2,  /* slot_id out of range or not allocated */
-    AGENT_POOL_ERR_NOT_FREE   = 3,  /* free called on slot not in BUSY state */
-    AGENT_POOL_ERR_BAD_CAPS   = 4,  /* requested cap_mask not permitted */
-} agent_pool_error_t;
-
-/* ── Invariants ──
- * - Exactly AGENT_POOL_SIZE (8) worker slots exist; indices are 0-7.
- * - Each allocated slot maps to seL4 channel (WORKER_POOL_BASE_CH + slot_id).
- * - cap_mask must be a subset of caps granted to the agent pool by the root task.
- * - FREE must be called before a slot can be reallocated.
- * - agent_id must be unique among currently allocated slots.
- */
+enum agentpool_error {
+    AGENTPOOL_OK              = 0,
+    AGENTPOOL_ERR_EXHAUSTED   = 1,  /* no idle workers available */
+    AGENTPOOL_ERR_BAD_SLOT    = 2,  /* worker_slot out of range */
+    AGENTPOOL_ERR_CAP_EXCEED  = 3,  /* requested cap_mask > caller's cap_mask */
+    AGENTPOOL_ERR_NOT_OWNED   = 4,  /* caller does not own this slot */
+};

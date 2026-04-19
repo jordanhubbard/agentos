@@ -1,185 +1,290 @@
-/* SPDX-License-Identifier: GPL-2.0-only */
-/* contracts/vmm_contract.h — Phase 3: Generic VM lifecycle contract
+/*
+ * VMM (Virtual Machine Monitor) IPC Contract
  *
- * Defines the shared IPC opcode table and message structs used by ALL
- * VMM protection domains (linux_vmm.c, freebsd_vmm.c, and future VMMs).
+ * Two sections:
  *
- * Each VMM PD exposes a single seL4 endpoint.  The caller places the
- * opcode in MR0 (message register 0) and the typed request struct in
- * MR1..MRn via seL4_SetMR().  The VMM PD replies with the typed reply
- * struct beginning at MR0.
+ * Section A — External management API (MSG_VM_*, used by callers with SpawnCap):
+ *   MSG_VM_CREATE   — create a new guest OS slot (returns vm_id)
+ *   MSG_VM_DESTROY  — destroy guest OS slot and release all resources
+ *   MSG_VM_SWITCH   — set active console output to this guest
+ *   MSG_VM_STATUS   — query guest state (CREATING, BOOTING, RUNNING, etc.)
+ *   MSG_VM_LIST     — enumerate all guest slots
  *
- * Opcodes are numerically identical to the OP_VM_* constants previously
- * scattered across vm_manager.c and individual VMM sources; this header
- * is the single authoritative definition.
+ * Section B — VMM-to-root-task internal protocol (MSG_VMM_*, used by VMM PDs):
+ *   MSG_VMM_REGISTER        — register this PD as a VMM, receive vmm_token
+ *   MSG_VMM_ALLOC_GUEST_MEM — allocate seL4 Untyped frames for guest RAM
+ *   MSG_VMM_VCPU_CREATE     — create a vCPU capability for a guest slot
+ *   MSG_VMM_VCPU_DESTROY    — destroy a vCPU capability
+ *   MSG_VMM_VCPU_SET_REGS   — write guest register state
+ *   MSG_VMM_VCPU_GET_REGS   — read guest register state
+ *   MSG_VMM_INJECT_IRQ      — inject a virtual IRQ into a guest
  *
- * Version history:
- *   1  —  initial definition (Phase 3), consolidating per-VMM opcodes
+ * Channel (Section A): CH_GUEST_PD via vmm dispatcher
+ * Channel (Section B): CH_VMM_KERNEL (vmm_pd → root-task, PPC)
+ * Opcodes: MSG_VM_* and MSG_VMM_* (see agentos.h)
+ *
+ * Invariants (Section A):
+ *   - MSG_VM_CREATE returns a vm_id; all subsequent calls reference it.
+ *   - MSG_VM_DESTROY releases ALL device handles held by the guest.
+ *   - A guest in DEAD state may not be restarted; destroy and recreate.
+ *   - MSG_VM_SWITCH only affects log drain output routing, not IPC routing.
+ *   - MSG_VM_LIST results are placed in vmm_shmem region.
+ *
+ * Invariants (Section B):
+ *   - MSG_VMM_REGISTER must succeed before any other MSG_VMM_* call.
+ *   - vmm_token is PD-scoped; each VMM PD gets its own token.
+ *   - MSG_VMM_ALLOC_GUEST_MEM returns seL4 capability indices, not VA.
+ *   - vCPU caps are valid until MSG_VMM_VCPU_DESTROY or VMM deregisters.
+ *   - MSG_VMM_VCPU_SET_REGS / GET_REGS use vcpu_regs_t in shmem.
  */
 
 #pragma once
-#include <stdint.h>
-#include <stdbool.h>
-#include "guest_contract.h"
+#include "../agentos.h"
 
-#define VMM_CONTRACT_VERSION 1
+/* ─── VM state constants ─────────────────────────────────────────────────── */
 
-/* -------------------------------------------------------------------------
- * Generic VM lifecycle opcodes — MR0 value in every VMM PD endpoint call
- * ---------------------------------------------------------------------- */
-#define VMM_OP_CREATE   0x10u  /* allocate a new VM slot and begin setup */
-#define VMM_OP_DESTROY  0x11u  /* tear down a VM and reclaim all resources */
-#define VMM_OP_START    0x12u  /* begin execution of a created-but-idle VM */
-#define VMM_OP_STOP     0x13u  /* halt a running VM (state preserved) */
-#define VMM_OP_PAUSE    0x14u  /* suspend vCPU scheduling; memory intact */
-#define VMM_OP_RESUME   0x15u  /* resume a paused VM */
-/* 0x16 reserved for future VMM_OP_RESET */
-#define VMM_OP_INFO     0x17u  /* query state and attributes of one VM slot */
-#define VMM_OP_LIST     0x18u  /* enumerate active VM slots (up to 8 per call) */
-#define VMM_OP_SNAPSHOT 0x19u  /* checkpoint VM state to block storage */
-#define VMM_OP_RESTORE  0x1Au  /* restore VM from a prior snapshot */
+#define VM_STATE_CREATING  0
+#define VM_STATE_BOOTING   1
+#define VM_STATE_RUNNING   2
+#define VM_STATE_PAUSED    3
+#define VM_STATE_DEAD      4
 
-/* -------------------------------------------------------------------------
- * VM state — reported in vmm_reply_info_t.state
- * ---------------------------------------------------------------------- */
-typedef enum {
-    VM_STATE_EMPTY    = 0,  /* slot is free */
-    VM_STATE_CREATING = 1,  /* slot allocated; guest binding in progress */
-    VM_STATE_RUNNING  = 2,  /* vCPU is executing guest code */
-    VM_STATE_PAUSED   = 3,  /* vCPU scheduling suspended; memory intact */
-    VM_STATE_DEAD     = 4,  /* terminated; slot will be reclaimed */
-} vm_state_t;
+/* ─── OS type constants ──────────────────────────────────────────────────── */
 
-/* -------------------------------------------------------------------------
- * VMM_OP_CREATE
- * ---------------------------------------------------------------------- */
-typedef struct __attribute__((packed)) {
-    uint32_t opcode;        /* VMM_OP_CREATE */
-    uint8_t  guest_type;    /* guest_type_t cast to uint8_t */
-    uint8_t  _pad[3];
-    uint32_t ram_mb;        /* physical RAM to allocate in MiB */
-    uint32_t cpu_budget_us; /* seL4 MCS scheduling budget in microseconds */
-    uint32_t cpu_period_us; /* seL4 MCS scheduling period in microseconds */
-    uint32_t dev_mask;      /* GUEST_DEV_* bitmask: which device PDs to bind */
-    uint8_t  label[32];     /* human-readable instance name, null-terminated */
-} vmm_req_create_t;
+#define VMM_OS_TYPE_LINUX    0x01u
+#define VMM_OS_TYPE_FREEBSD  0x02u
 
-typedef struct __attribute__((packed)) {
-    uint32_t result;   /* 0 on success; vmm_error_t on failure */
-    uint32_t slot_id;  /* opaque slot identifier, valid until DESTROY succeeds */
-} vmm_reply_create_t;
+/* ─── VMM flags ──────────────────────────────────────────────────────────── */
 
-/* -------------------------------------------------------------------------
- * VMM_OP_DESTROY
- * ---------------------------------------------------------------------- */
-typedef struct __attribute__((packed)) {
-    uint32_t opcode;   /* VMM_OP_DESTROY */
-    uint32_t slot_id;
-} vmm_req_destroy_t;
+#define VMM_FLAG_SMP         (1u << 0)  /* VMM supports SMP guests */
+#define VMM_FLAG_NESTED      (1u << 1)  /* VMM supports nested virtualisation */
+#define VMM_FLAG_IOMMU       (1u << 2)  /* VMM has IOMMU pass-through capability */
 
-typedef struct __attribute__((packed)) {
-    uint32_t result;   /* 0 on success; vmm_error_t on failure */
-} vmm_reply_destroy_t;
+/* ═══════════════════════════════════════════════════════════════════════════
+ * Section A — External management API (MSG_VM_*)
+ * ═══════════════════════════════════════════════════════════════════════════ */
 
-/* -------------------------------------------------------------------------
- * VMM_OP_START / STOP / PAUSE / RESUME — share the same minimal request
- * ---------------------------------------------------------------------- */
-typedef struct __attribute__((packed)) {
-    uint32_t opcode;   /* VMM_OP_START | STOP | PAUSE | RESUME */
-    uint32_t slot_id;
-} vmm_req_control_t;
+/* ─── Request structs ────────────────────────────────────────────────────── */
 
-typedef struct __attribute__((packed)) {
-    uint32_t result;   /* 0 on success; vmm_error_t on failure */
-} vmm_reply_control_t;
-
-/* -------------------------------------------------------------------------
- * VMM_OP_INFO
- * ---------------------------------------------------------------------- */
-typedef struct __attribute__((packed)) {
-    uint32_t opcode;   /* VMM_OP_INFO */
-    uint32_t slot_id;
-} vmm_req_info_t;
-
-typedef struct __attribute__((packed)) {
-    uint32_t result;
-    uint8_t  state;      /* vm_state_t cast to uint8_t */
-    uint8_t  guest_type; /* guest_type_t cast to uint8_t */
-    uint8_t  _pad[2];
+struct vmm_req_create {
+    uint32_t os_type;           /* VMM_OS_TYPE_* */
     uint32_t ram_mb;
-    uint32_t dev_mask;   /* GUEST_DEV_* bitmask of currently bound devices */
-    uint8_t  label[32];
-} vmm_reply_info_t;
+    uint32_t device_flags;      /* GUEST_DEV_FLAG_* (see guest_contract.h) */
+    uint8_t  os_params[128];    /* OS-specific params (cast to *_create_params_t) */
+};
 
-/* -------------------------------------------------------------------------
- * VMM_OP_LIST — returns up to 8 active slot IDs per call.
- * To page through more than 8 slots, re-issue with offset incremented.
- * ---------------------------------------------------------------------- */
+struct vmm_req_destroy {
+    uint32_t vm_id;
+};
+
+struct vmm_req_switch {
+    uint32_t vm_id;
+};
+
+struct vmm_req_status {
+    uint32_t vm_id;
+};
+
+struct vmm_req_list {
+    uint32_t max_entries;
+};
+
+/* ─── Reply structs ──────────────────────────────────────────────────────── */
+
+struct vmm_reply_create {
+    uint32_t ok;
+    uint32_t vm_id;             /* 0xFFFFFFFF = invalid / error */
+};
+
+struct vmm_reply_destroy {
+    uint32_t ok;
+};
+
+struct vmm_reply_switch {
+    uint32_t ok;
+};
+
+struct vmm_reply_status {
+    uint32_t ok;
+    uint32_t state;             /* VM_STATE_* */
+    uint32_t ram_used_mb;
+    uint32_t uptime_ticks;
+};
+
+struct vmm_reply_list {
+    uint32_t ok;
+    uint32_t count;             /* entries written to vmm_shmem */
+};
+
+/* ─── Shmem layout: VM list entry ────────────────────────────────────────── */
+
 typedef struct __attribute__((packed)) {
-    uint32_t opcode;   /* VMM_OP_LIST */
-    uint32_t offset;   /* index of first slot to return; 0 for initial call */
-} vmm_req_list_t;
+    uint32_t vm_id;
+    uint32_t os_type;
+    uint32_t state;
+    uint32_t ram_mb;
+    uint32_t ram_used_mb;
+    uint32_t uptime_ticks;
+} vm_list_entry_t;
+
+/* ═══════════════════════════════════════════════════════════════════════════
+ * Section B — VMM-to-root-task internal protocol (MSG_VMM_*)
+ * ═══════════════════════════════════════════════════════════════════════════ */
+
+/* ─── Channel reference ──────────────────────────────────────────────────── */
+
+#define VMM_KERNEL_CH  CH_VMM_KERNEL
+
+/* ─── MSG_VMM_REGISTER ───────────────────────────────────────────────────── */
+
+/*
+ * A VMM PD calls this at init to register with the root-task.  On success
+ * the root-task assigns a vmm_token scoped to this PD.  All subsequent
+ * MSG_VMM_* calls must carry the vmm_token in MR1.
+ */
+
+struct vmm_register_req {
+    uint32_t os_type;           /* VMM_OS_TYPE_* this VMM will host */
+    uint32_t flags;             /* VMM_FLAG_* capabilities this VMM provides */
+    uint32_t max_guests;        /* max concurrent guest slots requested */
+    uint8_t  name[16];          /* human-readable VMM name */
+};
+
+struct vmm_register_reply {
+    uint32_t ok;
+    uint32_t vmm_token;         /* opaque PD-scoped token; 0 = error */
+    uint32_t granted_guests;    /* actual guest slots granted (may be < max_guests) */
+};
+
+/* ─── MSG_VMM_ALLOC_GUEST_MEM ────────────────────────────────────────────── */
+
+/*
+ * Request seL4 Untyped memory frames for guest RAM.  The root-task carves out
+ * the requested size from the system's free untyped pool and returns the
+ * capability index range [cap_lo, cap_lo + cap_count).  The VMM maps these
+ * frames into the guest's IPA space using seL4_ARM_Page_Map (or arch equiv).
+ */
+
+struct vmm_alloc_guest_mem_req {
+    uint32_t vmm_token;
+    uint32_t guest_id;          /* guest slot that will own this memory */
+    uint32_t size_mb;           /* requested RAM size in MiB */
+    uint32_t align_bits;        /* minimum alignment (e.g. 21 = 2 MiB huge pages) */
+};
+
+struct vmm_alloc_guest_mem_reply {
+    uint32_t ok;
+    uint32_t cap_lo;            /* first seL4 cap index in the allocation */
+    uint32_t cap_count;         /* number of contiguous caps */
+    uint32_t actual_size_mb;    /* actual size granted */
+};
+
+/* ─── MSG_VMM_VCPU_CREATE ────────────────────────────────────────────────── */
+
+/*
+ * Create a vCPU seL4 capability for the given guest slot.  Returns vcpu_cap,
+ * an opaque index used in subsequent VCPU operations.  Each guest slot may
+ * hold up to VMM_MAX_VCPUS vCPUs; the first one is the bootstrap vCPU.
+ */
+
+#define VMM_MAX_VCPUS  4u
+
+struct vmm_vcpu_create_req {
+    uint32_t vmm_token;
+    uint32_t guest_id;
+};
+
+struct vmm_vcpu_create_reply {
+    uint32_t ok;
+    uint32_t vcpu_cap;          /* opaque vCPU cap index; 0xFFFFFFFF = error */
+    uint32_t vcpu_index;        /* 0 = bootstrap vCPU */
+};
+
+/* ─── MSG_VMM_VCPU_DESTROY ───────────────────────────────────────────────── */
+
+struct vmm_vcpu_destroy_req {
+    uint32_t vmm_token;
+    uint32_t vcpu_cap;
+};
+
+struct vmm_vcpu_destroy_reply {
+    uint32_t ok;
+};
+
+/* ─── MSG_VMM_VCPU_SET_REGS / GET_REGS ──────────────────────────────────── */
+
+/*
+ * vcpu_regs_t is placed in shmem before MSG_VMM_VCPU_SET_REGS, and populated
+ * in shmem by MSG_VMM_VCPU_GET_REGS.  Field names follow AArch64 EL1 naming;
+ * on RISC-V the same layout maps to equivalent supervisor CSRs.
+ */
 
 typedef struct __attribute__((packed)) {
-    uint32_t result;
-    uint32_t count;        /* number of valid entries in slot_ids[] */
-    uint32_t slot_ids[8];
-} vmm_reply_list_t;
+    uint64_t pc;                /* program counter / sepc */
+    uint64_t sp;                /* stack pointer / sp */
+    uint64_t x[31];             /* general-purpose registers x1..x31 */
+    uint64_t spsr;              /* saved program status / sstatus */
+    uint64_t elr;               /* exception link register / sepc alias */
+    uint64_t ttbr0;             /* translation table base / satp */
+    uint64_t ttbr1;             /* second-stage (VTCR_EL2) / not used on RV */
+    uint64_t vbar;              /* vector base / stvec */
+    uint32_t _reserved[4];
+} vcpu_regs_t;
 
-/* -------------------------------------------------------------------------
- * VMM_OP_SNAPSHOT / RESTORE
- * ---------------------------------------------------------------------- */
-typedef struct __attribute__((packed)) {
-    uint32_t opcode;   /* VMM_OP_SNAPSHOT */
-    uint32_t slot_id;
-} vmm_req_snapshot_t;
+struct vmm_vcpu_set_regs_req {
+    uint32_t vmm_token;
+    uint32_t vcpu_cap;
+    /* vcpu_regs_t is in shmem */
+};
 
-typedef struct __attribute__((packed)) {
-    uint32_t result;
-    uint32_t slot_id;
-    uint8_t  snap_hash[32]; /* SHA-256 of snapshot blob written to block storage */
-} vmm_reply_snapshot_t;
+struct vmm_vcpu_set_regs_reply {
+    uint32_t ok;
+};
 
-typedef struct __attribute__((packed)) {
-    uint32_t opcode;        /* VMM_OP_RESTORE */
-    uint32_t slot_id;
-    uint8_t  snap_hash[32];
-} vmm_req_restore_t;
+struct vmm_vcpu_get_regs_req {
+    uint32_t vmm_token;
+    uint32_t vcpu_cap;
+};
 
-typedef struct __attribute__((packed)) {
-    uint32_t result;
-} vmm_reply_restore_t;
+struct vmm_vcpu_get_regs_reply {
+    uint32_t ok;
+    /* vcpu_regs_t written to shmem on success */
+};
 
-/* -------------------------------------------------------------------------
- * Error codes returned in result fields
- * ---------------------------------------------------------------------- */
-typedef enum {
-    VMM_OK              = 0,
-    VMM_ERR_NO_SLOT     = 1,  /* all VMM slots in use */
-    VMM_ERR_BAD_SLOT    = 2,  /* slot_id does not refer to an active slot */
-    VMM_ERR_WRONG_STATE = 3,  /* operation not valid in the slot's current state */
-    VMM_ERR_OOM         = 4,  /* insufficient memory to satisfy the request */
-} vmm_error_t;
+/* ─── MSG_VMM_INJECT_IRQ ─────────────────────────────────────────────────── */
 
-/* -------------------------------------------------------------------------
- * Invariants (enforced by each VMM PD implementation):
- *
- *  I1. All VMM PD source files (linux_vmm.c, freebsd_vmm.c, …) must
- *      include this header and use the opcode constants defined here.
- *      Per-VMM opcode definitions are forbidden.
- *
- *  I2. A VMM PD must complete the full guest binding protocol defined in
- *      guest_contract.h — including publishing EVENT_GUEST_READY — before
- *      transitioning a slot to VM_STATE_RUNNING.
- *
- *  I3. No VMM PD may access hardware directly.  All device I/O must go
- *      through the generic device PD handles recorded in guest_capabilities_t.
- *
- *  I4. slot_id values are assigned by the VMM PD and are unique within that
- *      PD.  They are not globally unique across PDs; callers must track which
- *      VMM PD owns a given slot_id.
- *
- *  I5. VMM_OP_SNAPSHOT blocks until the snapshot is durably written.  The
- *      snap_hash in vmm_reply_snapshot_t is the only durable identifier for
- *      a snapshot; callers are responsible for storing it.
- * ---------------------------------------------------------------------- */
+/*
+ * Inject a virtual IRQ into a guest vCPU.  Used by device PDs to deliver
+ * virtio interrupt notifications without polling.  irq_num is the guest-side
+ * virtual interrupt number (e.g. GIC INTID or RISC-V PLIC source).
+ */
+
+struct vmm_inject_irq_req {
+    uint32_t vmm_token;
+    uint32_t guest_id;
+    uint32_t vcpu_cap;          /* target vCPU; 0 = bootstrap vCPU */
+    uint32_t irq_num;           /* virtual interrupt number */
+    uint32_t level;             /* 1 = assert, 0 = deassert */
+};
+
+struct vmm_inject_irq_reply {
+    uint32_t ok;
+};
+
+/* ─── Error codes ────────────────────────────────────────────────────────── */
+
+enum vmm_error {
+    VMM_OK                   = 0,
+    VMM_ERR_NO_SLOTS         = 1,   /* all VM slots occupied */
+    VMM_ERR_BAD_VM_ID        = 2,
+    VMM_ERR_BAD_OS_TYPE      = 3,
+    VMM_ERR_DEAD             = 4,   /* operation on DEAD guest */
+    VMM_ERR_BIND_FAIL        = 5,   /* guest binding protocol failed */
+    VMM_ERR_NOT_REGISTERED   = 6,   /* MSG_VMM_* without prior REGISTER */
+    VMM_ERR_BAD_TOKEN        = 7,   /* vmm_token unknown or revoked */
+    VMM_ERR_NO_MEM           = 8,   /* insufficient free untyped memory */
+    VMM_ERR_MAX_VCPUS        = 9,   /* VMM_MAX_VCPUS already created */
+    VMM_ERR_BAD_VCPU_CAP     = 10,  /* vcpu_cap unknown or already destroyed */
+    VMM_ERR_BAD_ALIGN        = 11,  /* align_bits not a valid page order */
+    VMM_ERR_IRQ_RANGE        = 12,  /* irq_num out of range for this guest */
+};

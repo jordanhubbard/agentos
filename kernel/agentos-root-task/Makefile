@@ -54,8 +54,31 @@ CFLAGS_SWAPSLOT := $(CFLAGS) -Iwasm3
 LDFLAGS := -L$(BOARD_DIR)/lib
 LIBS    := -lmicrokit -Tmicrokit.ld
 
-BOARD_NAME   ?=
-BOARD_NATIVE ?= 0
+# ─── Board-specific UART config for console_shell ────────────────────────────
+# Passed down from the top-level Makefile via boards/<BOARD_NAME>/board.mk.
+# Defaults are empty (ring-buffer-only mode for QEMU builds).
+BOARD_NAME      ?=
+BOARD_NATIVE    ?= 0
+BOARD_UART_PHYS ?=
+BOARD_UART_SIZE ?=
+BOARD_UART_TYPE ?=
+BOARD_UART_IRQ  ?=
+
+CFLAGS_CONSOLESHELL := $(CFLAGS)
+ifeq ($(BOARD_UART_TYPE),pl011)
+  CFLAGS_CONSOLESHELL += -DBOARD_UART_PL011=1
+else ifeq ($(BOARD_UART_TYPE),ns16550)
+  CFLAGS_CONSOLESHELL += -DBOARD_UART_NS16550=1
+endif
+ifneq ($(BOARD_UART_PHYS),)
+  CFLAGS_CONSOLESHELL += \
+    -DBOARD_UART_PHYS=$(BOARD_UART_PHYS) \
+    -DBOARD_UART_SIZE=$(BOARD_UART_SIZE) \
+    -DBOARD_UART_IRQ=$(BOARD_UART_IRQ)
+endif
+ifeq ($(BOARD_NATIVE),1)
+  CFLAGS_CONSOLESHELL += -DBOARD_NATIVE=1
+endif
 
 # Protection Domain ELFs
 # monitor/controller: includes vibe_swap for the hot-swap controller-side logic
@@ -66,9 +89,10 @@ PD_INITAGENT_SRCS := src/init_agent.c src/m3_bare_metal.c src/log.c
 PD_WORKER_SRCS    := src/worker.c src/m3_bare_metal.c src/log.c
 # agentfs needs m3_bare_metal for memset/sqrtf (no wasm3 headers needed)
 PD_AGENTFS_SRCS     := src/agentfs.c src/m3_bare_metal.c src/log.c
-PD_VIBEENGINE_SRCS   := src/vibe_engine.c src/m3_bare_metal.c src/log.c
+PD_VIBEENGINE_SRCS   := src/vibe_engine.c src/cap_policy.c src/m3_bare_metal.c src/log.c
 PD_SWAPSLOT_SRCS     := src/swap_slot.c src/wasm3_host.c src/m3_bare_metal.c src/log.c
-PD_LOGDRAIN_SRCS     := src/log_drain.c src/m3_bare_metal.c src/log.c
+PD_LOG_DRAIN_SRCS    := src/log_drain.c src/m3_bare_metal.c src/log.c
+PD_SERIAL_PD_SRCS    := src/serial_pd.c src/m3_bare_metal.c src/log.c
 PD_MEMPROFILER_SRCS  := src/mem_profiler.c src/m3_bare_metal.c src/log.c
 PD_NETISOLATOR_SRCS      := src/net_isolator.c src/m3_bare_metal.c src/log.c
 PD_SNAPSHOTSCHED_SRCS    := src/snapshot_sched.c src/m3_bare_metal.c src/log.c
@@ -81,6 +105,7 @@ PD_VFS_SERVER_SRCS       := src/vfs_server.c src/m3_bare_metal.c src/log.c
 PD_SPAWN_SERVER_SRCS     := src/spawn_server.c src/sha256_mini.c src/m3_bare_metal.c src/log.c
 PD_APP_SLOT_SRCS         := src/app_slot.c src/sha256_mini.c src/m3_bare_metal.c src/log.c
 PD_NET_SERVER_SRCS       := src/net_server.c src/lwip_sys.c src/lwip_shim.c src/m3_bare_metal.c src/log.c
+PD_NET_PD_SRCS           := src/net_pd.c src/lwip_sys.c src/lwip_shim.c src/m3_bare_metal.c src/log.c
 PD_WG_NET_SRCS           := src/wg_net.c src/monocypher.c src/m3_bare_metal.c src/log.c
 PD_APP_MANAGER_SRCS      := src/app_manager.c src/m3_bare_metal.c src/log.c
 PD_HTTP_SVC_SRCS         := src/http_svc.c src/m3_bare_metal.c src/log.c
@@ -92,6 +117,11 @@ PD_VM_SNAPSHOT_SRCS      := src/vm_snapshot.c src/m3_bare_metal.c src/log.c
 PD_PFLOCAL_SERVER_SRCS   := src/pflocal_server.c src/m3_bare_metal.c src/log.c
 PD_EXEC_SERVER_SRCS      := src/exec_server.c src/m3_bare_metal.c src/log.c
 PD_TERM_SERVER_SRCS      := src/term_server.c src/m3_bare_metal.c src/log.c
+PD_CONSOLESHELL_SRCS     := src/console_shell.c src/m3_bare_metal.c src/log.c
+PD_BLOCK_PD_SRCS         := src/block_pd.c src/m3_bare_metal.c src/log.c
+PD_FB_PD_SRCS            := src/framebuffer_pd.c src/m3_bare_metal.c src/log.c
+PD_CC_PD_SRCS            := src/cc_pd.c src/m3_bare_metal.c src/log.c
+PD_GPU_SCHED_SRCS        := src/gpu_sched.c src/gpu_shmem.c src/m3_bare_metal.c src/log.c
 
 # wasm3 vendored sources (core interpreter only)
 WASM3_SRCS := wasm3/m3_core.c wasm3/m3_env.c wasm3/m3_code.c wasm3/m3_compile.c \
@@ -104,7 +134,8 @@ INITAGENT_OBJS    := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_INITAGENT_SRCS))
 WORKER_OBJS       := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_WORKER_SRCS))
 AGENTFS_OBJS      := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_AGENTFS_SRCS))
 VIBEENGINE_OBJS    := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_VIBEENGINE_SRCS))
-LOGDRAIN_OBJS      := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_LOGDRAIN_SRCS))
+LOG_DRAIN_OBJS     := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_LOG_DRAIN_SRCS))
+SERIAL_PD_OBJS     := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_SERIAL_PD_SRCS))
 SWAPSLOT_OBJS      := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_SWAPSLOT_SRCS))
 MEMPROFILER_OBJS   := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_MEMPROFILER_SRCS))
 NETISOLATOR_OBJS      := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_NETISOLATOR_SRCS))
@@ -118,6 +149,7 @@ VFS_SERVER_OBJS       := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_VFS_SERVER_S
 SPAWN_SERVER_OBJS     := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_SPAWN_SERVER_SRCS))
 APP_SLOT_OBJS         := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_APP_SLOT_SRCS))
 NET_SERVER_OBJS       := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_NET_SERVER_SRCS))
+NET_PD_OBJS           := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_NET_PD_SRCS))
 WG_NET_OBJS           := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_WG_NET_SRCS))
 APP_MANAGER_OBJS      := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_APP_MANAGER_SRCS))
 HTTP_SVC_OBJS         := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_HTTP_SVC_SRCS))
@@ -130,8 +162,13 @@ PFLOCAL_SERVER_OBJS   := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_PFLOCAL_SERV
 EXEC_SERVER_OBJS      := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_EXEC_SERVER_SRCS))
 TERM_SERVER_OBJS      := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_TERM_SERVER_SRCS))
 WASM3_OBJS            := $(patsubst wasm3/%.c, $(BUILD_DIR)/wasm3_%.o, $(WASM3_SRCS))
+CONSOLESHELL_OBJS     := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_CONSOLESHELL_SRCS))
+BLOCK_PD_OBJS         := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_BLOCK_PD_SRCS))
+FB_PD_OBJS            := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_FB_PD_SRCS))
+CC_PD_OBJS            := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_CC_PD_SRCS))
+GPU_SCHED_OBJS        := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_GPU_SCHED_SRCS))
 
-IMAGES := controller.elf event_bus.elf init_agent.elf worker.elf agentfs.elf vibe_engine.elf log_drain.elf swap_slot.elf mem_profiler.elf net_isolator.elf perf_counters.elf time_partition.elf trace_recorder.elf nameserver.elf virtio_blk.elf vfs_server.elf spawn_server.elf app_slot.elf net_server.elf wg_net.elf app_manager.elf http_svc.elf vm_manager.elf auth_server.elf ext2fs.elf proc_server.elf vm_snapshot.elf pflocal_server.elf exec_server.elf term_server.elf
+IMAGES := controller.elf event_bus.elf init_agent.elf worker.elf agentfs.elf vibe_engine.elf log_drain.elf serial_pd.elf swap_slot.elf mem_profiler.elf net_isolator.elf perf_counters.elf time_partition.elf trace_recorder.elf nameserver.elf virtio_blk.elf vfs_server.elf spawn_server.elf app_slot.elf net_server.elf net_pd.elf wg_net.elf app_manager.elf http_svc.elf vm_manager.elf auth_server.elf ext2fs.elf proc_server.elf vm_snapshot.elf pflocal_server.elf exec_server.elf term_server.elf console_shell.elf block_pd.elf framebuffer_pd.elf cc_pd.elf gpu_sched.elf
 
 # Optional: periodic WASM slot snapshot scheduler
 ifdef AGENTOS_SNAPSHOT_SCHED
@@ -214,7 +251,10 @@ $(BUILD_DIR)/agentfs.elf: $(AGENTFS_OBJS)
 $(BUILD_DIR)/vibe_engine.elf: $(VIBEENGINE_OBJS)
 	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
 
-$(BUILD_DIR)/log_drain.elf: $(LOGDRAIN_OBJS)
+$(BUILD_DIR)/log_drain.elf: $(LOG_DRAIN_OBJS)
+	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
+
+$(BUILD_DIR)/serial_pd.elf: $(SERIAL_PD_OBJS)
 	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
 
 $(BUILD_DIR)/swap_slot.elf: $(SWAPSLOT_OBJS) $(WASM3_OBJS)
@@ -254,6 +294,9 @@ $(BUILD_DIR)/app_slot.elf: $(APP_SLOT_OBJS)
 	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
 
 $(BUILD_DIR)/net_server.elf: $(NET_SERVER_OBJS)
+	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
+
+$(BUILD_DIR)/net_pd.elf: $(NET_PD_OBJS)
 	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
 
 $(BUILD_DIR)/wg_net.elf: $(WG_NET_OBJS)
@@ -301,6 +344,26 @@ $(BUILD_DIR)/exec_server.elf: $(EXEC_SERVER_OBJS)
 $(BUILD_DIR)/term_server.elf: $(TERM_SERVER_OBJS)
 	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
 
+# console_shell uses board-specific UART CFLAGS
+$(BUILD_DIR)/console_shell.o: src/console_shell.c
+	@mkdir -p $(BUILD_DIR)
+	$(CC) -c $(CFLAGS_CONSOLESHELL) $< -o $@
+
+$(BUILD_DIR)/console_shell.elf: $(CONSOLESHELL_OBJS)
+	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
+
+$(BUILD_DIR)/block_pd.elf: $(BLOCK_PD_OBJS)
+	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
+
+$(BUILD_DIR)/framebuffer_pd.elf: $(FB_PD_OBJS)
+	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
+
+$(BUILD_DIR)/cc_pd.elf: $(CC_PD_OBJS)
+	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
+
+$(BUILD_DIR)/gpu_sched.elf: $(GPU_SCHED_OBJS)
+	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
+
 # ─── Linux VMM (AArch64 only) ─────────────────────────────────────────────
 ifeq ($(ARCH),aarch64)
 ifneq ($(GUEST_OS),freebsd)
@@ -324,7 +387,6 @@ $(BUILD_DIR)/linux_vmm.elf: FORCE
 		MICROKIT_BOARD=$(MICROKIT_BOARD) \
 		MICROKIT_CONFIG=$(MICROKIT_CONFIG) \
 		BOARD_DIR=$(BOARD_DIR) \
-		GUEST_OS=$(GUEST_OS) \
 		vmm-all
 endif
 endif

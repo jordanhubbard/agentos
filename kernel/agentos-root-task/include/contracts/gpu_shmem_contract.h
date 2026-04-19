@@ -1,91 +1,78 @@
+/*
+ * GPUShmem IPC Contract
+ *
+ * GPUShmem manages shared memory regions between host PDs and GPU hardware.
+ * Callers map a region, use it for DMA, and then unmap it.  A FENCE ensures
+ * coherence between host and device before the caller reads results.
+ *
+ * Channel: CH_GPU_SHMEM (see agentos.h)
+ * Opcodes: MSG_GPUSHMEM_* (see agentos.h)
+ *
+ * Invariants:
+ *   - MAP returns a slot; the caller must present the slot to UNMAP and FENCE.
+ *   - FENCE blocks until outstanding DMA for the slot completes (host-side wait).
+ *   - A slot not unmapped before the calling PD exits is leaked — the GPU
+ *     hardware retains DMA access until the next system reset.
+ *   - STATUS is read-only.
+ */
+
 #pragma once
-/* GPU_SHMEM contract — version 1
- * PD: gpu_shmem | Source: src/gpu_shmem.c | Channel: (mapped via root task grant; no fixed PPC channel)
- */
-#include <stdint.h>
-#include <stdbool.h>
+#include "../agentos.h"
 
-#define GPU_SHMEM_CONTRACT_VERSION 1
+/* ─── Channel IDs ────────────────────────────────────────────────────────── */
+#define GPUSHMEM_CH_CONTROLLER  CH_GPU_SHMEM
 
-/* ── Opcodes (0xB500 range) ── */
-#define GPU_SHMEM_OP_MAP        0xB501u  /* map a GPU shared memory region to a caller */
-#define GPU_SHMEM_OP_UNMAP      0xB502u  /* release a previously mapped region */
-#define GPU_SHMEM_OP_FENCE      0xB503u  /* insert a memory fence / sync point */
-#define GPU_SHMEM_OP_STATUS     0xB504u  /* query mapped regions and fence state */
+/* ─── Request structs ────────────────────────────────────────────────────── */
 
-/* ── Region flags ── */
-#define GPU_SHMEM_FLAG_READ     (1u << 0)  /* region is readable by caller */
-#define GPU_SHMEM_FLAG_WRITE    (1u << 1)  /* region is writable by caller */
-#define GPU_SHMEM_FLAG_COHERENT (1u << 2)  /* cache-coherent with GPU */
-#define GPU_SHMEM_FLAG_UNCACHED (1u << 3)  /* bypass CPU cache (device memory) */
+struct gpushmem_req_map {
+    uint32_t size_pages;        /* number of 4KB pages to map */
+    uint32_t flags;             /* GPUSHMEM_FLAG_* */
+};
 
-/* ── Request / Reply structs ── */
+#define GPUSHMEM_FLAG_WRITE_COMBINE (1u << 0)  /* WC mapping (GPU write, host read) */
+#define GPUSHMEM_FLAG_DEVICE_LOCAL  (1u << 1)  /* prefer device-local memory */
 
-typedef struct __attribute__((packed)) {
-    uint32_t opcode;          /* GPU_SHMEM_OP_MAP */
-    uint32_t size_pages;      /* region size in 4KB pages */
-    uint32_t flags;           /* GPU_SHMEM_FLAG_* bitmask */
-    uint32_t align_log2;      /* alignment requirement (e.g. 21 = 2MB) */
-} gpu_shmem_req_map_t;
+struct gpushmem_req_unmap {
+    uint32_t slot;
+};
 
-typedef struct __attribute__((packed)) {
-    uint32_t status;          /* 0 = ok, else gpu_shmem_error_t */
-    uint32_t region_id;       /* opaque handle for unmap/fence */
-    uint64_t vaddr;           /* virtual address of mapped region in caller's space */
-    uint32_t actual_pages;    /* pages actually mapped (>= size_pages, aligned) */
-} gpu_shmem_reply_map_t;
+struct gpushmem_req_fence {
+    uint32_t slot;
+};
 
-typedef struct __attribute__((packed)) {
-    uint32_t opcode;          /* GPU_SHMEM_OP_UNMAP */
-    uint32_t region_id;
-} gpu_shmem_req_unmap_t;
+struct gpushmem_req_status {
+    /* no fields */
+};
 
-typedef struct __attribute__((packed)) {
-    uint32_t status;          /* 0 = ok */
-} gpu_shmem_reply_unmap_t;
+/* ─── Reply structs ──────────────────────────────────────────────────────── */
 
-typedef struct __attribute__((packed)) {
-    uint32_t opcode;          /* GPU_SHMEM_OP_FENCE */
-    uint32_t region_id;
-    uint32_t fence_type;      /* GPU_SHMEM_FENCE_* */
-} gpu_shmem_req_fence_t;
+struct gpushmem_reply_map {
+    uint32_t ok;
+    uint32_t slot;              /* opaque slot identifier */
+    uint64_t phys_base;         /* DMA-mapped physical base address */
+    uint32_t size_pages;        /* actual pages mapped (may be > requested) */
+};
 
-#define GPU_SHMEM_FENCE_READ    0u  /* ensure prior writes visible to GPU reads */
-#define GPU_SHMEM_FENCE_WRITE   1u  /* ensure GPU writes visible to CPU reads */
-#define GPU_SHMEM_FENCE_FULL    2u  /* full bidirectional fence */
+struct gpushmem_reply_unmap {
+    uint32_t ok;
+};
 
-typedef struct __attribute__((packed)) {
-    uint32_t status;          /* 0 = ok */
-    uint64_t fence_seq;       /* monotonic fence sequence number */
-} gpu_shmem_reply_fence_t;
+struct gpushmem_reply_fence {
+    uint32_t ok;                /* 0 = fence complete (DMA done) */
+};
 
-typedef struct __attribute__((packed)) {
-    uint32_t opcode;          /* GPU_SHMEM_OP_STATUS */
-} gpu_shmem_req_status_t;
+struct gpushmem_reply_status {
+    uint32_t total_slots;       /* maximum simultaneous mappings */
+    uint32_t used_slots;
+    uint64_t bytes_mapped;
+};
 
-typedef struct __attribute__((packed)) {
-    uint32_t status;          /* 0 = ok */
-    uint32_t mapped_regions;  /* number of currently mapped regions */
-    uint32_t total_pages;     /* total pages in use */
-    uint32_t free_pages;      /* pages available for mapping */
-    uint64_t fence_seq;       /* last completed fence sequence number */
-} gpu_shmem_reply_status_t;
+/* ─── Error codes ────────────────────────────────────────────────────────── */
 
-/* ── Error codes ── */
-typedef enum {
-    GPU_SHMEM_OK              = 0,
-    GPU_SHMEM_ERR_NO_MEM      = 1,  /* insufficient GPU memory pages */
-    GPU_SHMEM_ERR_BAD_REGION  = 2,  /* region_id invalid or already unmapped */
-    GPU_SHMEM_ERR_BAD_FLAGS   = 3,  /* conflicting or unsupported flags */
-    GPU_SHMEM_ERR_NO_CAP      = 4,  /* caller lacks AGENTOS_CAP_GPU */
-    GPU_SHMEM_ERR_ALIGN       = 5,  /* requested alignment unsupported */
-    GPU_SHMEM_ERR_FENCE_BUSY  = 6,  /* previous fence not yet retired */
-} gpu_shmem_error_t;
-
-/* ── Invariants ──
- * - Callers must hold AGENTOS_CAP_GPU.
- * - GPU_SHMEM_FLAG_UNCACHED and GPU_SHMEM_FLAG_COHERENT are mutually exclusive.
- * - UNMAP is idempotent only for regions in the caller's own set.
- * - Fence operations are ordered: fence_seq is monotonically increasing.
- * - All regions are automatically unmapped when the caller PD is destroyed.
- */
+enum gpushmem_error {
+    GPUSHMEM_OK               = 0,
+    GPUSHMEM_ERR_NO_SLOTS     = 1,  /* slot table full */
+    GPUSHMEM_ERR_NO_MEM       = 2,  /* insufficient device memory */
+    GPUSHMEM_ERR_BAD_SLOT     = 3,
+    GPUSHMEM_ERR_FENCE_TIMEOUT = 4,
+};

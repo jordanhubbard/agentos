@@ -11,6 +11,7 @@
 
 #define AGENTOS_DEBUG 1
 #include "agentos.h"
+#include "cap_policy.h"
 
 /* ── Policy Entry ─────────────────────────────────────────────────────────── */
 
@@ -140,6 +141,111 @@ const PolicyEntry *cap_policy_default(void) {
 bool cap_policy_check(const PolicyEntry *policy, uint32_t requested_caps) {
     if (!policy) return false;
     return (policy->caps_mask & requested_caps) == requested_caps;
+}
+
+/* ── Ring-1: guest IPC enforcement ───────────────────────────────────────── */
+
+/*
+ * Channels that guest VMM PDs (linux_vmm, freebsd_vmm) are permitted to use.
+ * These are the generic OS-neutral device PDs defined in guest_contract.h plus
+ * the two VMM protocol channels.  Every other channel is ring-0 for guests.
+ */
+static const uint32_t g_guest_allowed_ch[] = {
+    44u,  /* CH_SERIAL_PD  — serial device PD */
+    48u,  /* CH_NET_PD     — network device PD */
+    49u,  /* CH_BLOCK_PD   — block device PD */
+    50u,  /* CH_USB_PD     — USB device PD */
+    51u,  /* CH_FB_PD      — framebuffer device PD */
+    52u,  /* CH_GUEST_PD   — guest lifecycle management */
+    53u,  /* CH_VMM_KERNEL — VMM-to-root-task internal protocol */
+};
+
+#define GUEST_ALLOWED_CH_N \
+    ((uint32_t)(sizeof(g_guest_allowed_ch) / sizeof(g_guest_allowed_ch[0])))
+
+int cap_policy_is_ring0_channel(uint32_t channel_id)
+{
+    for (uint32_t i = 0; i < GUEST_ALLOWED_CH_N; i++) {
+        if (g_guest_allowed_ch[i] == channel_id)
+            return 0;
+    }
+    return 1;
+}
+
+static int is_vmm_pd(uint32_t pd_id)
+{
+    return pd_id == TRACE_PD_LINUX_VMM || pd_id == TRACE_PD_FREEBSD_VMM;
+}
+
+int cap_policy_guest_ipc_check(uint32_t caller_pd_id, uint32_t target_channel)
+{
+    if (!is_vmm_pd(caller_pd_id))
+        return 0;
+    if (cap_policy_is_ring0_channel(target_channel))
+        return -1;
+    return 0;
+}
+
+/* AArch64 SPSR.M[3:0] EL encoding */
+#define SPSR_M_MASK   0xFu
+#define SPSR_EL2t     0x8u   /* EL2 with SP_EL0 — forbidden for guests */
+#define SPSR_EL2h     0x9u   /* EL2 with SP_EL2 — forbidden for guests */
+
+/* x86 CS.RPL lives in bits[1:0] of the CS descriptor */
+#define X86_CPL_MASK  0x3u
+#define X86_CPL3      0x3u   /* user mode — only permitted value for guest vCPUs */
+
+int cap_policy_vcpu_el_check(uint64_t spsr, bool is_aarch64)
+{
+    if (is_aarch64) {
+        uint32_t m = (uint32_t)(spsr & SPSR_M_MASK);
+        return (m == SPSR_EL2t || m == SPSR_EL2h) ? -1 : 0;
+    }
+    /* x86: CS.RPL must be exactly CPL3 (user); CPL0/1/2 are all forbidden */
+    return ((spsr & X86_CPL_MASK) != X86_CPL3) ? -1 : 0;
+}
+
+/* ── Ring-0 service non-reinvention registry ─────────────────────────────── */
+
+typedef struct {
+    uint32_t pd_handle;
+    uint32_t channel_id;
+    bool     registered;
+} ring0_svc_entry_t;
+
+/* Index 0 unused; valid func_class values are 1..CAP_POLICY_FUNC_CLASS_MAX */
+static ring0_svc_entry_t g_ring0_registry[CAP_POLICY_FUNC_CLASS_MAX + 1];
+
+int cap_policy_register_ring0_service(uint32_t func_class, uint32_t pd_handle, uint32_t channel_id)
+{
+    if (func_class < 1 || func_class > CAP_POLICY_FUNC_CLASS_MAX)
+        return -1;
+    if (g_ring0_registry[func_class].registered)
+        return -1;
+    g_ring0_registry[func_class].pd_handle  = pd_handle;
+    g_ring0_registry[func_class].channel_id = channel_id;
+    g_ring0_registry[func_class].registered = true;
+    return 0;
+}
+
+int cap_policy_find_ring0_service(uint32_t func_class, uint32_t *out_pd_handle, uint32_t *out_channel_id)
+{
+    if (func_class < 1 || func_class > CAP_POLICY_FUNC_CLASS_MAX)
+        return 0;
+    if (!g_ring0_registry[func_class].registered)
+        return 0;
+    if (out_pd_handle)  *out_pd_handle  = g_ring0_registry[func_class].pd_handle;
+    if (out_channel_id) *out_channel_id = g_ring0_registry[func_class].channel_id;
+    return 1;
+}
+
+void cap_policy_unregister_ring0_service(uint32_t func_class)
+{
+    if (func_class < 1 || func_class > CAP_POLICY_FUNC_CLASS_MAX)
+        return;
+    g_ring0_registry[func_class].pd_handle  = 0;
+    g_ring0_registry[func_class].channel_id = 0;
+    g_ring0_registry[func_class].registered = false;
 }
 
 /*

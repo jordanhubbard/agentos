@@ -145,61 +145,6 @@ typedef enum {
     MSG_VIBE_NOTIFY_SWAP       = 0x0700,  /* vibe_engine -> controller: swap approved */
     MSG_VIBE_NOTIFY_ROLLBACK   = 0x0701,  /* vibe_engine -> controller: rollback */
 
-    /* Generic Serial PD (0x1000–0x100F) */
-    MSG_SERIAL_OPEN       = 0x1000,  /* claim serial port → MR1=client_slot */
-    MSG_SERIAL_CLOSE      = 0x1001,  /* release slot */
-    MSG_SERIAL_WRITE      = 0x1002,  /* MR1=slot MR2=offset MR3=len → MR1=written */
-    MSG_SERIAL_READ       = 0x1003,  /* MR1=slot MR2=max → MR1=avail */
-    MSG_SERIAL_STATUS     = 0x1004,  /* MR1=slot → MR1=baud MR2=rx_count MR3=tx_count */
-    MSG_SERIAL_CONFIGURE  = 0x1005,  /* MR1=slot MR2=baud MR3=flags → ok */
-
-    /* Generic Network PD (0x1010–0x101F) */
-    MSG_NET_OPEN          = 0x1010,  /* claim interface → MR1=handle */
-    MSG_NET_CLOSE         = 0x1011,  /* release handle */
-    MSG_NET_SEND          = 0x1012,  /* MR1=handle MR2=offset MR3=len → ok */
-    MSG_NET_RECV          = 0x1013,  /* MR1=handle → MR1=len (zero-copy) */
-    MSG_NET_STATUS        = 0x1014,  /* MR1=handle → MR1=link MR2=rx MR3=tx */
-    MSG_NET_CONFIGURE     = 0x1015,  /* MR1=handle MR2=flags MR3=mtu → ok */
-    MSG_NET_FILTER_ADD    = 0x1016,  /* MR1=handle MR2=rule_id → ok */
-    MSG_NET_FILTER_REMOVE = 0x1017,  /* MR1=handle MR2=rule_id → ok */
-
-    /* Generic Block PD (0x1020–0x102F) */
-    MSG_BLOCK_OPEN        = 0x1020,  /* claim partition → MR1=handle */
-    MSG_BLOCK_CLOSE       = 0x1021,  /* release handle */
-    MSG_BLOCK_READ        = 0x1022,  /* MR1=handle MR2=lba_lo MR3=lba_hi MR4=sectors → data in shmem */
-    MSG_BLOCK_WRITE       = 0x1023,  /* MR1=handle MR2=lba_lo MR3=lba_hi MR4=sectors → ok */
-    MSG_BLOCK_FLUSH       = 0x1024,  /* MR1=handle → ok */
-    MSG_BLOCK_STATUS      = 0x1025,  /* MR1=handle → MR1=sector_count MR2=sector_sz MR3=ro */
-    MSG_BLOCK_TRIM        = 0x1026,  /* MR1=handle MR2=lba_lo MR3=lba_hi MR4=sectors → ok */
-
-    /* Generic USB PD (0x1030–0x103F) */
-    MSG_USB_ENUMERATE     = 0x1030,  /* trigger enumeration → MR1=device_count */
-    MSG_USB_LIST          = 0x1031,  /* → device list in shmem, MR1=count */
-    MSG_USB_OPEN          = 0x1032,  /* MR1=dev_index → MR1=handle */
-    MSG_USB_CLOSE         = 0x1033,  /* MR1=handle → ok */
-    MSG_USB_CONTROL       = 0x1034,  /* MR1=handle setup in shmem → ok */
-    MSG_USB_BULK_IN       = 0x1035,  /* MR1=handle MR2=ep MR3=max → data in shmem, MR1=actual */
-    MSG_USB_BULK_OUT      = 0x1036,  /* MR1=handle MR2=ep MR3=len data in shmem → ok */
-    MSG_USB_STATUS        = 0x1037,  /* MR1=handle → MR1=state MR2=err */
-
-    /* Generic Timer PD (0x1040–0x104F) */
-    MSG_TIMER_CREATE      = 0x1040,  /* MR1=period_us MR2=flags → MR1=timer_id */
-    MSG_TIMER_DESTROY     = 0x1041,  /* MR1=timer_id → ok */
-    MSG_TIMER_START       = 0x1042,  /* MR1=timer_id → ok */
-    MSG_TIMER_STOP        = 0x1043,  /* MR1=timer_id → ok */
-    MSG_TIMER_STATUS      = 0x1044,  /* MR1=timer_id → MR1=running MR2=elapsed_us */
-    MSG_TIMER_CONFIGURE   = 0x1045,  /* MR1=timer_id MR2=period_us → ok */
-    MSG_TIMER_SET_RTC     = 0x1046,  /* MR1=unix_ts_lo MR2=unix_ts_hi → ok */
-    MSG_TIMER_GET_RTC     = 0x1047,  /* → MR1=unix_ts_lo MR2=unix_ts_hi */
-
-    /* Generic IRQ PD (0x1050–0x105F) */
-    MSG_IRQ_REGISTER      = 0x1050,  /* MR1=irq_num MR2=notify_ch → ok */
-    MSG_IRQ_UNREGISTER    = 0x1051,  /* MR1=irq_num → ok */
-    MSG_IRQ_ACKNOWLEDGE   = 0x1052,  /* MR1=irq_num → ok */
-    MSG_IRQ_MASK          = 0x1053,  /* MR1=irq_num → ok */
-    MSG_IRQ_UNMASK        = 0x1054,  /* MR1=irq_num → ok */
-    MSG_IRQ_STATUS        = 0x1055,  /* MR1=irq_num → MR1=masked MR2=pending MR3=count */
-
 } agentos_msg_tag_t;
 
 /*
@@ -410,29 +355,20 @@ typedef enum {
 #define CH_SPAWN_SERVER       20   /* controller -> spawn_server (PPC) */
 #define CH_NET_SERVER         21   /* controller -> net_server (PPC) */
 #define CH_NET_TIMER          59   /* controller -> net_server (lwIP 10ms tick notify) */
-
-/* Generic Device PD channel IDs (from controller perspective) */
-#define CH_SERIAL_PD    61u  /* controller <-> serial_pd */
-#define CH_NET_PD       62u  /* controller <-> net_pd */
-#define CH_BLOCK_PD     63u  /* controller <-> block_pd */
-#define CH_USB_PD       64u  /* controller <-> usb_pd */
-#define CH_TIMER_PD     65u  /* controller <-> timer_pd */
-#define CH_IRQ_PD       66u  /* controller <-> irq_pd */
-
 #define CH_VIRTIO_BLK         22   /* controller -> virtio_blk (PPC) */
 #define CH_APP_MANAGER        23   /* controller -> app_manager (PPC) */
 #define CH_HTTP_SVC           24   /* controller -> http_svc (PPC) */
 
 /* Log Drain channel IDs (from controller perspective) */
 #ifdef BOARD_qemu_virt_aarch64
-#define CH_LOG_DRAIN          55
+#define CH_LOG_DRAIN          55  /* aarch64: 50 is linux_vmm */
 #else
-#define CH_LOG_DRAIN          60
+#define CH_LOG_DRAIN          60  /* riscv64: after mem_profiler (50-58) */
 #endif
 
 /* Log Drain op codes (MR0 in PPC to log_drain) */
-#define OP_LOG_WRITE          0x01  /* PD -> log_drain: register ring slot + flush */
-#define OP_LOG_STATUS         0x02  /* returns: MR1=slot_count, MR2=bytes_drained */
+#define OP_LOG_STATUS         0x86  /* returns: MR1=ring_count, MR2=bytes_lo, MR3=bytes_hi */
+#define OP_LOG_WRITE          0x87  /* PD->log_drain: register ring + flush */
 
 /* VibeEngine staging region metadata layout (last 64 bytes of 4MB staging MR) */
 #define VIBE_META_SIZE        64
@@ -631,27 +567,39 @@ typedef struct {
 } agentos_cap_desc_t;
 
 /* ═══════════════════════════════════════════════════════════════════════════
- * Log Drain Ring Buffer — per-PD structured output ring for log_drain
+ * Log Drain Ring Buffer — per-PD output ring for log_drain
  *
  * Each PD gets a 4KB slot in the log_drain_rings shared memory region.
- * Layout: log_drain_ring_t at offset 0, data bytes follow.
- * Wire format is unchanged from the prior console_mux ring (magic 0xC0DE4D55).
+ * Layout: log_ring_header_t at offset 0, data bytes follow.
  * ═══════════════════════════════════════════════════════════════════════════ */
 
-#define LOG_DRAIN_RING_MAGIC  0xC0DE4D55
-#define LOG_DRAIN_RING_SIZE   0x1000
-#define LOG_DRAIN_RING_HDR_SZ 16
-#define LOG_DRAIN_DATA_SIZE   (LOG_DRAIN_RING_SIZE - LOG_DRAIN_RING_HDR_SZ)
+#define LOG_RING_MAGIC   0xC0DE4D55
+#define LOG_RING_SIZE    0x1000   /* 4KB per slot */
+#define LOG_RING_HDR_SZ  16       /* sizeof(log_ring_header_t) */
+#define LOG_DATA_SIZE    (LOG_RING_SIZE - LOG_RING_HDR_SZ)
 
 typedef struct __attribute__((packed)) {
     uint32_t magic;
     uint32_t pd_id;
     uint32_t head;    /* write offset into data area (PD increments) */
     uint32_t tail;    /* read offset into data area (log_drain increments) */
-} log_drain_ring_t;
+} log_ring_header_t;
 
+/*
+ * log_drain_rings_vaddr — seL4cp setvar, declared in each PD that maps
+ * the log_drain_rings MR.  We extern it here so log_drain_write() can use it.
+ */
 extern uintptr_t log_drain_rings_vaddr;
 
+/*
+ * log_drain_write(slot, pd_id, msg)
+ *
+ * Write msg into the per-PD ring buffer and notify log_drain to drain it.
+ * Falls back to microkit_dbg_puts if the ring base is not yet mapped
+ * (log_drain_rings_vaddr == 0).
+ *
+ * Bare-metal: no libc.  Uses only microkit primitives.
+ */
 static inline void log_drain_write(uint32_t slot, uint32_t pd_id, const char *msg)
 {
     if (!log_drain_rings_vaddr) {
@@ -659,27 +607,30 @@ static inline void log_drain_write(uint32_t slot, uint32_t pd_id, const char *ms
         return;
     }
 
-    volatile log_drain_ring_t *hdr =
-        (volatile log_drain_ring_t *)(log_drain_rings_vaddr + slot * LOG_DRAIN_RING_SIZE);
+    volatile log_ring_header_t *hdr =
+        (volatile log_ring_header_t *)(log_drain_rings_vaddr + slot * LOG_RING_SIZE);
 
-    if (hdr->magic != LOG_DRAIN_RING_MAGIC) {
+    /* Initialise ring on first use */
+    if (hdr->magic != LOG_RING_MAGIC) {
         hdr->pd_id = pd_id;
         hdr->head  = 0;
         hdr->tail  = 0;
-        hdr->magic = LOG_DRAIN_RING_MAGIC;
+        hdr->magic = LOG_RING_MAGIC;
     }
 
     volatile uint8_t *data = (volatile uint8_t *)(hdr + 1);
     uint32_t h = hdr->head;
 
     for (const char *p = msg; *p; p++) {
-        uint32_t next = (h + 1) % LOG_DRAIN_DATA_SIZE;
+        uint32_t next = (h + 1) % LOG_DATA_SIZE;
+        /* Drop if full — best-effort, never block */
         if (next == hdr->tail) break;
         data[h] = (uint8_t)*p;
         h = next;
     }
     hdr->head = h;
 
+    /* Notify log_drain to drain this slot */
     microkit_mr_set(0, OP_LOG_WRITE);
     microkit_mr_set(1, slot);
     microkit_mr_set(2, pd_id);
@@ -737,4 +688,236 @@ static inline void log_drain_write(uint32_t slot, uint32_t pd_id, const char *ms
 #define OP_TERM_READ       0xA3u  /* MR1=pty_id MR2=offset MR3=max → ok+len */
 #define OP_TERM_CLOSEPTY   0xA4u  /* MR1=pty_id → ok */
 #define OP_TERM_STATUS     0xA5u  /* → ok+active_ptys */
+
+/* ═══════════════════════════════════════════════════════════════════════════
+ * Phase 1 API Contract Opcodes
+ * All opcodes added as part of the API-first refactoring (PLAN.md Phase 1).
+ * Ranges: 0x1000-0x2FFF for new MSG_ space; existing OP_ space extended below.
+ * ═══════════════════════════════════════════════════════════════════════════ */
+
+/* ─── EventBus extensions (0x2700) ───────────────────────────────────────── */
+#define MSG_EVENTBUS_QUERY_SUBSCRIBERS  0x2701  /* → MR0=count, subs in shmem */
+
+/* ─── InitAgent extensions (0x2800) ─────────────────────────────────────── */
+#define MSG_INITAGENT_AGENT_LIST        0x2801  /* → MR0=count; agents in shmem */
+
+/* ─── VibeEngine contract opcodes (0x2900) ───────────────────────────────── */
+#define MSG_VIBE_VALIDATE               0x2901  /* MR1=module_hash_lo MR2=hash_hi → MR0=ok */
+#define MSG_VIBE_PROPOSE                0x2902  /* MR1=service_id → MR0=proposal_id */
+#define MSG_VIBE_COMMIT                 0x2903  /* MR1=proposal_id → MR0=ok */
+#define MSG_VIBE_ROLLBACK_REQ           0x2904  /* MR1=proposal_id → MR0=ok */
+
+/* ─── AgentFS contract opcodes (0x1000) ─────────────────────────────────── */
+#define MSG_AGENTFS_READ                0x1001  /* MR1=inode MR2=offset MR3=len → actual in shmem */
+#define MSG_AGENTFS_WRITE               0x1002  /* MR1=inode MR2=offset MR3=len; data in shmem */
+#define MSG_AGENTFS_STAT                0x1003  /* path in shmem → MR1=inode MR2=size_lo MR3=flags */
+#define MSG_AGENTFS_LIST                0x1004  /* path in shmem → MR0=count; entries in shmem */
+#define MSG_AGENTFS_DELETE              0x1005  /* path in shmem → MR0=ok */
+#define MSG_AGENTFS_SEARCH              0x1006  /* query in shmem → MR0=count; results in shmem */
+
+/* ─── AgentPool contract opcodes (0x1100) ───────────────────────────────── */
+#define MSG_AGENTPOOL_ALLOC_WORKER      0x1101  /* MR1=cap_mask → MR0=ok MR1=worker_slot */
+#define MSG_AGENTPOOL_FREE_WORKER       0x1102  /* MR1=worker_slot → MR0=ok */
+#define MSG_AGENTPOOL_STATUS            0x1103  /* → MR0=total MR1=busy MR2=idle */
+
+/* ─── Worker extensions (0x1200) ────────────────────────────────────────── */
+#define MSG_WORKER_ASSIGN               0x1201  /* MR1=task_id MR2=cap_mask → MR0=ok */
+#define MSG_WORKER_REVOKE               0x1202  /* MR1=task_id → MR0=ok */
+#define MSG_WORKER_STATUS               0x1203  /* → MR0=state MR1=task_id MR2=progress */
+
+/* ─── GPUShmem contract opcodes (0x1300) ────────────────────────────────── */
+#define MSG_GPUSHMEM_MAP                0x1301  /* MR1=size_pages MR2=flags → MR0=ok MR1=slot */
+#define MSG_GPUSHMEM_UNMAP              0x1302  /* MR1=slot → MR0=ok */
+#define MSG_GPUSHMEM_FENCE              0x1303  /* MR1=slot → MR0=ok (sync host/device) */
+#define MSG_GPUSHMEM_STATUS             0x1304  /* → MR0=total_slots MR1=used MR2=bytes_mapped */
+
+/* ─── LinuxVMM / generic VMM opcodes (0x1400) ───────────────────────────── */
+#define MSG_VM_CREATE                   0x1401  /* MR1=os_type MR2=ram_mb → MR0=ok MR1=vm_id */
+#define MSG_VM_DESTROY                  0x1402  /* MR1=vm_id → MR0=ok */
+#define MSG_VM_SWITCH                   0x1403  /* MR1=vm_id → MR0=ok (set active console) */
+#define MSG_VM_STATUS                   0x1404  /* MR1=vm_id → MR0=state MR1=ram_used */
+#define MSG_VM_LIST                     0x1405  /* → MR0=count; vm_list in shmem */
+
+/* ─── DebugBridge contract opcodes (0x1500) ─────────────────────────────── */
+#define MSG_DBG_ATTACH                  0x1501  /* MR1=target_pd → MR0=ok MR1=session_id */
+#define MSG_DBG_DETACH                  0x1502  /* MR1=session_id → MR0=ok */
+#define MSG_DBG_BREAKPOINT              0x1503  /* MR1=session_id MR2=addr_lo MR3=addr_hi → MR0=ok */
+#define MSG_DBG_STEP                    0x1504  /* MR1=session_id → MR0=ok MR1=pc_lo MR2=pc_hi */
+#define MSG_DBG_READ_MEM                0x1505  /* MR1=session_id MR2=addr MR3=len → data in shmem */
+
+/* ─── FaultHandler contract opcodes (0x1600) ────────────────────────────── */
+#define MSG_FAULT_NOTIFY                0x1601  /* MR1=pd_id MR2=fault_kind MR3=addr → MR0=policy */
+#define MSG_FAULT_QUERY                 0x1602  /* MR1=pd_id → MR0=restart_count MR1=last_kind */
+#define MSG_FAULT_HISTORY               0x1603  /* MR1=pd_id → MR0=count; history in shmem */
+
+/* ─── MemProfiler contract opcodes (0x1700) ─────────────────────────────── */
+#define MSG_MEMPROF_STATUS              0x1701  /* MR1=slot → MR0=heap_kb MR1=peak_kb MR2=flags */
+#define MSG_MEMPROF_DUMP                0x1702  /* MR1=slot → MR0=count; alloc records in shmem */
+
+/* ─── PerfCounters contract opcodes (0x1800) ────────────────────────────── */
+#define MSG_PERF_STATUS                 0x1801  /* MR1=pd_id → MR0=ok; counters in shmem */
+#define MSG_PERF_RESET                  0x1802  /* MR1=pd_id → MR0=ok */
+#define MSG_PERF_DUMP                   0x1803  /* MR1=pd_id → MR0=count; samples in shmem */
+
+/* ─── NetIsolator contract opcodes (0x1900) ─────────────────────────────── */
+#define MSG_NET_ALLOW                   0x1901  /* MR1=pd_id MR2=proto MR3=port → MR0=ok */
+#define MSG_NET_DENY                    0x1902  /* MR1=pd_id MR2=proto MR3=port → MR0=ok */
+#define MSG_NET_ISO_STATUS              0x1903  /* MR1=pd_id → MR0=allow_count MR1=deny_count */
+#define MSG_NET_ACL_DUMP                0x1904  /* MR1=pd_id → MR0=count; ACL entries in shmem */
+
+/* ─── CapBroker contract opcodes (0x1A00) ───────────────────────────────── */
+#define MSG_CAP_GRANT                   0x1A01  /* MR1=target_pd MR2=cap_class MR3=rights → MR0=ok */
+#define MSG_CAP_REVOKE_GRANT            0x1A02  /* MR1=target_pd MR2=cap_class → MR0=ok */
+#define MSG_CAP_GRANT_STATUS            0x1A03  /* MR1=target_pd → MR0=cap_mask MR1=version */
+#define MSG_CAP_LIST                    0x1A04  /* → MR0=count; cap_entry_t[] in shmem */
+
+/* ─── OOMKiller contract opcodes (0x1B00) ───────────────────────────────── */
+#define MSG_OOM_STATUS                  0x1B01  /* → MR0=pressure MR1=candidates MR2=killed */
+#define MSG_OOM_POLICY_SET              0x1B02  /* MR1=threshold_kb MR2=policy → MR0=ok */
+#define MSG_OOM_NOTIFY                  0x1B03  /* (EventBus): MR1=killed_pd MR2=reclaimed_kb */
+
+/* ─── TimePart contract opcodes (0x1C00) ────────────────────────────────── */
+#define MSG_TPART_ALLOC                 0x1C01  /* MR1=budget_us MR2=period_us → MR0=ok MR1=sched_ctx */
+#define MSG_TPART_FREE                  0x1C02  /* MR1=sched_ctx → MR0=ok */
+#define MSG_TPART_STATUS                0x1C03  /* MR1=sched_ctx → MR0=state MR1=remaining_us */
+
+/* ─── PowerMgr contract opcodes (0x1D00) ────────────────────────────────── */
+#define MSG_PWR_STATUS                  0x1D01  /* → MR0=state MR1=cur_freq_mhz MR2=voltage_mv */
+#define MSG_PWR_DVFS_SET                0x1D02  /* MR1=freq_mhz MR2=voltage_mv → MR0=ok */
+#define MSG_PWR_SLEEP                   0x1D03  /* MR1=level → MR0=ok (0=idle 1=suspend 2=off) */
+
+/* ─── IPCHarness test opcodes (0x1E00) ──────────────────────────────────── */
+#define MSG_TEST_RUN                    0x1E01  /* MR1=suite_id → MR0=ok */
+#define MSG_TEST_STATUS                 0x1E02  /* → MR0=pass MR1=fail MR2=skip */
+#define MSG_TEST_RESULT                 0x1E03  /* MR1=test_id → MR0=result; name in shmem */
+
+/* ─── Serial device PD opcodes (0x2000) ─────────────────────────────────── */
+#define MSG_SERIAL_OPEN                 0x2001  /* MR1=port_id → MR0=ok MR1=client_slot */
+#define MSG_SERIAL_CLOSE                0x2002  /* MR1=client_slot → MR0=ok */
+#define MSG_SERIAL_WRITE                0x2003  /* MR1=client_slot MR2=len; data in shmem → MR0=written */
+#define MSG_SERIAL_READ                 0x2004  /* MR1=client_slot MR2=max; data in shmem → MR0=count */
+#define MSG_SERIAL_STATUS               0x2005  /* MR1=client_slot → MR0=baud MR1=rx_count MR2=errs */
+#define MSG_SERIAL_CONFIGURE            0x2006  /* MR1=client_slot MR2=baud MR3=flags → MR0=ok */
+
+/* ─── Net device PD opcodes (0x2100) ────────────────────────────────────── */
+#define MSG_NET_OPEN                    0x2101  /* MR1=iface_id → MR0=ok MR1=handle */
+#define MSG_NET_CLOSE                   0x2102  /* MR1=handle → MR0=ok */
+#define MSG_NET_SEND                    0x2103  /* MR1=handle MR2=len; frame in shmem → MR0=ok */
+#define MSG_NET_RECV                    0x2104  /* MR1=handle MR2=max; frame in shmem → MR0=len */
+#define MSG_NET_DEV_STATUS              0x2105  /* MR1=handle → MR0=link MR1=rx_pkts MR2=tx_pkts */
+#define MSG_NET_CONFIGURE               0x2106  /* MR1=handle MR2=mtu MR3=flags → MR0=ok */
+#define MSG_NET_FILTER_ADD              0x2107  /* MR1=handle; filter in shmem → MR0=filter_id */
+#define MSG_NET_FILTER_REMOVE           0x2108  /* MR1=handle MR2=filter_id → MR0=ok */
+
+/* ─── Net PD socket-level opcodes (0x2109–0x210F) ────────────────────────
+ * Socket API backed by lwIP inside net_pd.  Guest OSes and agents use these
+ * to establish TCP/UDP connections without direct lwIP access.
+ * All dispatched by net_pd on CH_NET_PD (68).
+ * ─────────────────────────────────────────────────────────────────────── */
+#define MSG_NET_SOCKET_OPEN             0x2109  /* MR1=proto → MR0=ok MR1=sock_handle MR2=shmem_off */
+#define MSG_NET_SOCKET_CLOSE            0x210A  /* MR1=sock_handle → MR0=ok */
+#define MSG_NET_SOCKET_CONNECT          0x210B  /* MR1=sock_handle MR2=dest_ip MR3=port → MR0=ok */
+#define MSG_NET_SOCKET_BIND             0x210C  /* MR1=sock_handle MR2=port → MR0=ok */
+#define MSG_NET_SOCKET_LISTEN           0x210D  /* MR1=sock_handle → MR0=ok */
+#define MSG_NET_SOCKET_ACCEPT           0x210E  /* MR1=sock_handle → MR0=ok MR1=new_h MR2=ip MR3=port */
+#define MSG_NET_SOCKET_SET_OPT          0x210F  /* MR1=sock_handle MR2=opt MR3=val → MR0=ok */
+
+/* ─── Block device PD opcodes (0x2200) ──────────────────────────────────── */
+#define MSG_BLOCK_OPEN                  0x2201  /* MR1=dev_id MR2=part → MR0=ok MR1=handle */
+#define MSG_BLOCK_CLOSE                 0x2202  /* MR1=handle → MR0=ok */
+#define MSG_BLOCK_READ                  0x2203  /* MR1=handle MR2=lba_lo MR3=sectors; buf in shmem */
+#define MSG_BLOCK_WRITE                 0x2204  /* MR1=handle MR2=lba_lo MR3=sectors; buf in shmem */
+#define MSG_BLOCK_FLUSH                 0x2205  /* MR1=handle → MR0=ok */
+#define MSG_BLOCK_STATUS                0x2206  /* MR1=handle → MR0=sectors MR1=sector_sz MR2=flags */
+#define MSG_BLOCK_TRIM                  0x2207  /* MR1=handle MR2=lba_lo MR3=sectors → MR0=ok */
+
+/* ─── USB device PD opcodes (0x2300) ────────────────────────────────────── */
+#define MSG_USB_ENUMERATE               0x2301  /* → MR0=ok (trigger enumeration) */
+#define MSG_USB_LIST                    0x2302  /* → MR0=count; usb_dev_info_t[] in shmem */
+#define MSG_USB_OPEN                    0x2303  /* MR1=dev_index → MR0=ok MR1=handle */
+#define MSG_USB_CLOSE                   0x2304  /* MR1=handle → MR0=ok */
+#define MSG_USB_CONTROL                 0x2305  /* MR1=handle; setup in shmem → MR0=ok MR1=len */
+#define MSG_USB_BULK_IN                 0x2306  /* MR1=handle MR2=ep MR3=max; data in shmem → MR0=len */
+#define MSG_USB_BULK_OUT                0x2307  /* MR1=handle MR2=ep MR3=len; data in shmem → MR0=ok */
+#define MSG_USB_STATUS                  0x2308  /* MR1=handle → MR0=state MR1=err MR2=speed */
+
+/* ─── VibeOS lifecycle opcodes (0x2400) ─────────────────────────────────── */
+#define MSG_VIBEOS_CREATE               0x2401  /* vibeos_create_req in shmem → MR0=ok MR1=handle */
+#define MSG_VIBEOS_DESTROY              0x2402  /* MR1=handle → MR0=ok */
+#define MSG_VIBEOS_STATUS               0x2403  /* MR1=handle → MR0=state; vibeos_status in shmem */
+#define MSG_VIBEOS_LIST                 0x2404  /* → MR0=count; vibeos_info_t[] in shmem */
+#define MSG_VIBEOS_BIND_DEVICE          0x2405  /* MR1=handle MR2=dev_type MR3=dev_handle → MR0=ok */
+#define MSG_VIBEOS_UNBIND_DEVICE        0x2406  /* MR1=handle MR2=dev_type → MR0=ok */
+#define MSG_VIBEOS_SNAPSHOT             0x2407  /* MR1=handle → MR0=ok MR1=snap_lo MR2=snap_hi */
+#define MSG_VIBEOS_RESTORE              0x2408  /* MR1=handle MR2=snap_lo MR3=snap_hi → MR0=ok */
+#define MSG_VIBEOS_MIGRATE              0x2409  /* MR1=handle MR2=target_node → MR0=ok */
+#define MSG_VIBEOS_BOOT                 0x240A  /* MR1=handle → MR0=ok */
+#define MSG_VIBEOS_LOAD_MODULE          0x240B  /* MR1=handle MR2=module_type MR3=module_size → MR0=ok MR1=swap_id */
+#define MSG_VIBEOS_CHECK_SERVICE_EXISTS 0x240C  /* MR1=func_class → MR0=ok MR1=exists MR2=pd_handle MR3=channel_id */
+
+/* ─── Framebuffer device PD opcodes (0x2500) ────────────────────────────── */
+#define MSG_FB_CREATE                   0x2501  /* fb_create_req in shmem → MR0=ok MR1=handle */
+#define MSG_FB_WRITE                    0x2502  /* MR1=handle; fb_write_req in shmem → MR0=ok */
+#define MSG_FB_FLIP                     0x2503  /* MR1=handle → MR0=ok MR1=frame_seq */
+#define MSG_FB_RESIZE                   0x2504  /* MR1=handle; fb_resize_req in shmem → MR0=ok */
+#define MSG_FB_DESTROY                  0x2505  /* MR1=handle → MR0=ok */
+#define MSG_FB_FRAME_READY              0x2506  /* EventBus event kind: fb_frame_ready_event_t */
+
+/* framebuffer EventBus event ID */
+#define EVENT_FB_FRAME_READY            0x40u   /* MR1=handle, MR2=frame_seq */
+
+/* ─── Command-and-Control PD opcodes (0x2600) ───────────────────────────── */
+#define MSG_CC_CONNECT                  0x2601  /* MR1=client_badge → MR0=ok MR1=session_id */
+#define MSG_CC_DISCONNECT               0x2602  /* MR1=session_id → MR0=ok */
+#define MSG_CC_SEND                     0x2603  /* MR1=session_id MR2=len; cmd in shmem → MR0=ok */
+#define MSG_CC_RECV                     0x2604  /* MR1=session_id MR2=max; data in shmem → MR0=len */
+#define MSG_CC_STATUS                   0x2605  /* MR1=session_id → MR0=state MR1=pending */
+#define MSG_CC_LIST                     0x2606  /* → MR0=count; session_info_t[] in shmem */
+#define MSG_CC_LIST_GUESTS              0x2607  /* → MR0=count; cc_guest_info_t[] in shmem */
+#define MSG_CC_LIST_DEVICES             0x2608  /* MR1=dev_type → MR0=count; cc_device_info_t[] in shmem */
+#define MSG_CC_LIST_POLECATS            0x2609  /* → MR0=total MR1=busy MR2=idle */
+#define MSG_CC_GUEST_STATUS             0x260A  /* MR1=guest_handle → MR0=ok; cc_guest_status_t in shmem */
+#define MSG_CC_DEVICE_STATUS            0x260B  /* MR1=dev_type MR2=dev_handle → MR0=ok; status in shmem */
+#define MSG_CC_ATTACH_FRAMEBUFFER       0x260C  /* MR1=guest_handle MR2=fb_handle → MR0=ok */
+#define MSG_CC_SEND_INPUT               0x260D  /* MR1=guest_handle; cc_input_event_t in shmem → MR0=ok */
+#define MSG_CC_SNAPSHOT                 0x260E  /* MR1=guest_handle → MR0=ok MR1=snap_lo MR2=snap_hi */
+#define MSG_CC_RESTORE                  0x260F  /* MR1=guest_handle MR2=snap_lo MR3=snap_hi → MR0=ok */
+#define MSG_CC_LOG_STREAM               0x2610  /* MR1=slot MR2=pd_id → MR0=ok MR1=bytes_drained */
+
+/* ─── Guest OS lifecycle opcodes (0x2A00) ───────────────────────────────── */
+#define MSG_GUEST_CREATE                0x2A01  /* guest_create_req in shmem → MR0=ok MR1=guest_id */
+#define MSG_GUEST_BIND_DEVICE           0x2A02  /* MR1=guest_id; guest_bind_device_req in shmem → MR0=ok MR1=cap_token */
+#define MSG_GUEST_SET_MEMORY            0x2A03  /* MR1=guest_id; guest_set_memory_req in shmem → MR0=ok */
+#define MSG_GUEST_BOOT                  0x2A04  /* MR1=guest_id → MR0=ok */
+#define MSG_GUEST_SUSPEND               0x2A05  /* MR1=guest_id → MR0=ok */
+#define MSG_GUEST_RESUME                0x2A06  /* MR1=guest_id → MR0=ok */
+#define MSG_GUEST_DESTROY               0x2A07  /* MR1=guest_id → MR0=ok */
+#define MSG_GUEST_SEND_INPUT            0x2A08  /* MR1=guest_id; cc_input_event_t in shmem → MR0=ok */
+
+/* ─── VMM-to-root-task internal protocol (0x2B00) ───────────────────────── */
+#define MSG_VMM_REGISTER                0x2B01  /* vmm_register_req in shmem → MR0=ok MR1=vmm_token */
+#define MSG_VMM_ALLOC_GUEST_MEM         0x2B02  /* MR1=vmm_token MR2=mb → MR0=ok MR1=mem_cap_lo MR2=mem_cap_hi */
+#define MSG_VMM_VCPU_CREATE             0x2B03  /* MR1=vmm_token MR2=guest_id → MR0=ok MR1=vcpu_cap */
+#define MSG_VMM_VCPU_DESTROY            0x2B04  /* MR1=vmm_token MR2=vcpu_cap → MR0=ok */
+#define MSG_VMM_VCPU_SET_REGS           0x2B05  /* MR1=vcpu_cap; vcpu_regs_t in shmem → MR0=ok */
+#define MSG_VMM_VCPU_GET_REGS           0x2B06  /* MR1=vcpu_cap → MR0=ok; vcpu_regs_t in shmem */
+#define MSG_VMM_INJECT_IRQ              0x2B07  /* MR1=vmm_token MR2=guest_id MR3=irq_num → MR0=ok */
+
+/* ─── Channel IDs for new Phase 1 PDs ───────────────────────────────────── */
+#define CH_GPU_SHMEM          61u   /* controller -> gpu_shmem (PPC) */
+#define CH_DEBUG_BRIDGE       62u   /* controller -> debug_bridge (PPC) */
+#define CH_AGENT_POOL         63u   /* controller -> agent_pool (PPC) */
+#define CH_OOM_KILLER         64u   /* controller -> oom_killer (PPC) */
+#define CH_TIME_PART          65u   /* controller -> time_partition (PPC) */
+#define CH_POWER_MGR          66u   /* controller -> power_mgr (PPC) */
+#define CH_SERIAL_PD          67u   /* controller -> serial_pd (PPC) */
+#define CH_NET_PD             68u   /* controller -> net_pd (PPC) */
+#define CH_BLOCK_PD           69u   /* controller -> block_pd (PPC) */
+#define CH_USB_PD             70u   /* controller -> usb_pd (PPC) */
+#define CH_FB_PD              71u   /* controller -> framebuffer_pd (PPC) */
+#define CH_CC_PD              72u   /* controller -> cc_pd (PPC) */
+#define CH_NET_ISOLATOR       73u   /* controller -> net_isolator (PPC) */
+#define CH_IPC_HARNESS        74u   /* controller -> ipc_harness (PPC, test builds only) */
+#define CH_GUEST_PD           75u   /* controller -> guest_pd (PPC) */
+#define CH_VMM_KERNEL         76u   /* vmm_pd -> root-task internal protocol (PPC) */
 

@@ -1,229 +1,228 @@
-/* SPDX-License-Identifier: GPL-2.0-only */
-/* contracts/vibeos_contract.h — Phase 4: VibeOS top-level OS lifecycle API
+/*
+ * VibeOS Lifecycle IPC Contract
  *
- * VibeOS is the primary external interface to agentOS.  It composes the
- * guest binding protocol (guest_contract.h) and the generic VMM lifecycle
- * (vmm_contract.h) into a single, stable API callable by any protection
- * domain that holds the vibeOS endpoint capability.
+ * VibeOS is the top-level OS management API.  It composes device PDs (Phase 2),
+ * the guest binding protocol (Phase 3), and the VibeEngine hot-swap mechanism.
+ * A caller with the SpawnCap capability can create, manage, and destroy entire
+ * OS stacks using only IPC messages.
  *
- * Wire format: the caller places the opcode in MR0, fills the typed request
- * struct into MR1..MRn via seL4_SetMR(), calls seL4_Call(), and reads the
- * typed reply struct from MR0..MRn via seL4_GetMR().  All structs are
- * __attribute__((packed)); no implicit padding.
+ * Channel: CH_VIBEENGINE (vibe_engine PD handles VibeOS ops in current build)
+ * Opcodes: MSG_VIBEOS_* (see agentos.h)
  *
- * Version history:
- *   1  —  initial definition (Phase 4)
- *          VOS_MIGRATE present in opcode table but returns VIBEOS_ERR_NOT_IMPL
+ * OS creation sequence (MSG_VIBEOS_CREATE):
+ *   1. Allocate a swap slot from the swap slot pool.
+ *   2. Configure the slot's VMM PD with requested arch/RAM.
+ *   3. Wire device PD handles based on device_flags.
+ *   4. Execute the guest OS binding protocol (guest_contract.h §3.1).
+ *   5. If wasm_hash != 0, hot-load the WASM service via vibe-swap.
+ *   6. Publish EVENT_VIBEOS_READY to EventBus.
+ *   7. Return vibeos_handle to caller.
+ *
+ * Invariants:
+ *   - vibeos_handle 0 is reserved / invalid.
+ *   - MSG_VIBEOS_DESTROY releases ALL resources: VMM PD, device handles, swap slot.
+ *   - MSG_VIBEOS_MIGRATE is a live migration; the OS continues running during transfer.
+ *   - MSG_VIBEOS_SNAPSHOT and MSG_VIBEOS_RESTORE use AgentFS for checkpoint storage.
  */
 
 #pragma once
-#include <stdint.h>
-#include <stdbool.h>
-#include "guest_contract.h"
+#include "../agentos.h"
 
-#define VIBEOS_CONTRACT_VERSION 1
+/* ─── OS type and architecture constants ─────────────────────────────────── */
 
-/* -------------------------------------------------------------------------
- * VibeOS lifecycle opcodes — MR0 value in every vibeOS endpoint call
- * ---------------------------------------------------------------------- */
-#define VIBEOS_OP_CREATE        0xB001u  /* instantiate a new guest OS */
-#define VIBEOS_OP_DESTROY       0xB002u  /* tear down and reclaim all caps */
-#define VIBEOS_OP_STATUS        0xB003u  /* query state and resource usage */
-#define VIBEOS_OP_LIST          0xB004u  /* enumerate active vibeOS handles */
-#define VIBEOS_OP_BIND_DEVICE   0xB005u  /* attach an additional device PD */
-#define VIBEOS_OP_UNBIND_DEVICE 0xB006u  /* detach a device PD at runtime */
-#define VIBEOS_OP_SNAPSHOT      0xB007u  /* checkpoint OS state to storage */
-#define VIBEOS_OP_RESTORE       0xB008u  /* restore from a prior snapshot */
-#define VIBEOS_OP_MIGRATE       0xB009u  /* move instance between cap domains (Phase 4+) */
+#define VIBEOS_TYPE_FREEBSD   0x02u
+#define VIBEOS_TYPE_LINUX     0x01u
 
-/* -------------------------------------------------------------------------
- * VibeOS instance state — reported in vos_status_reply_t.state
- * ---------------------------------------------------------------------- */
-typedef enum {
-    VIBEOS_STATE_CREATING  = 0,  /* vos_create_req_t accepted; VMM PD being set up */
-    VIBEOS_STATE_BOOTING   = 1,  /* VMM PD running; guest OS not yet ready */
-    VIBEOS_STATE_RUNNING   = 2,  /* EVENT_GUEST_READY received; guest OS is live */
-    VIBEOS_STATE_PAUSED    = 3,  /* vCPU scheduling suspended */
-    VIBEOS_STATE_DEAD      = 4,  /* terminated; handle is invalid */
-    VIBEOS_STATE_MIGRATING = 5,  /* live migration in progress (Phase 4+) */
-    VIBEOS_STATE_SNAPSHOT  = 6,  /* snapshot I/O in progress; other ops may block */
-} vibeos_state_t;
+#define VIBEOS_ARCH_AARCH64   0x01u
+#define VIBEOS_ARCH_X86_64    0x02u
 
-/* -------------------------------------------------------------------------
- * VIBEOS_OP_CREATE
- *
- * Allocates a vibeOS handle, runs the full guest binding protocol, and
- * (if wasm_hash is non-zero) triggers a vibe-engine hot-load after the
- * guest OS reaches VIBEOS_STATE_RUNNING.
- * ---------------------------------------------------------------------- */
-typedef struct __attribute__((packed)) {
-    uint32_t opcode;           /* VIBEOS_OP_CREATE */
-    uint8_t  os_type;          /* guest_type_t cast to uint8_t */
-    uint8_t  arch;             /* 0 = aarch64, 1 = x86_64 */
-    uint8_t  _pad[2];
-    uint32_t ram_mb;           /* physical RAM in MiB */
-    uint32_t cpu_budget_us;    /* seL4 MCS scheduling budget in microseconds */
-    uint32_t cpu_period_us;    /* seL4 MCS scheduling period in microseconds */
-    uint32_t device_flags;     /* GUEST_DEV_* bitmask of devices to bind at create */
-    uint8_t  wasm_hash[32];    /* SHA-256 of WASM component to hot-load post-boot;
-                                * all-zeros means no initial hot-load */
-    uint8_t  label[32];        /* human-readable name, null-terminated */
-} vos_create_req_t;
+/* ─── Device flags ───────────────────────────────────────────────────────── */
 
-typedef struct __attribute__((packed)) {
-    uint32_t result;  /* 0 on success; vibeos_error_t on failure */
-    uint32_t handle;  /* opaque 32-bit vibeOS instance ID, valid until DESTROY */
-} vos_create_reply_t;
+#define VIBEOS_DEV_SERIAL  (1u << 0)
+#define VIBEOS_DEV_NET     (1u << 1)
+#define VIBEOS_DEV_BLOCK   (1u << 2)
+#define VIBEOS_DEV_USB     (1u << 3)
+#define VIBEOS_DEV_FB      (1u << 4)
 
-/* -------------------------------------------------------------------------
- * VIBEOS_OP_DESTROY
- * ---------------------------------------------------------------------- */
-typedef struct __attribute__((packed)) {
-    uint32_t opcode;  /* VIBEOS_OP_DESTROY */
-    uint32_t handle;
-} vos_destroy_req_t;
+/* ─── Function class identifiers (mirrors cap_policy.h) ─────────────────── */
+/* Used with MSG_VIBEOS_CHECK_SERVICE_EXISTS and non-reinvention enforcement. */
+/* dev_type 0..4 (bit positions of VIBEOS_DEV_*) maps to func_class = dev_type+1. */
 
-typedef struct __attribute__((packed)) {
-    uint32_t result;
-} vos_destroy_reply_t;
+#define VIBEOS_FUNC_CLASS_SERIAL  0x01u   /* dev_type 0 */
+#define VIBEOS_FUNC_CLASS_NET     0x02u   /* dev_type 1 */
+#define VIBEOS_FUNC_CLASS_BLOCK   0x03u   /* dev_type 2 */
+#define VIBEOS_FUNC_CLASS_USB     0x04u   /* dev_type 3 */
+#define VIBEOS_FUNC_CLASS_FB      0x05u   /* dev_type 4 */
 
-/* -------------------------------------------------------------------------
- * VIBEOS_OP_STATUS
- * ---------------------------------------------------------------------- */
-typedef struct __attribute__((packed)) {
-    uint32_t opcode;  /* VIBEOS_OP_STATUS */
-    uint32_t handle;
-} vos_status_req_t;
+/* ─── Module type ────────────────────────────────────────────────────────── */
 
-typedef struct __attribute__((packed)) {
-    uint32_t result;
-    uint32_t handle;
-    uint8_t  state;     /* vibeos_state_t cast to uint8_t */
-    uint8_t  os_type;   /* guest_type_t cast to uint8_t */
+#define VIBEOS_MODULE_TYPE_WASM  1u
+#define VIBEOS_MODULE_TYPE_ELF   2u
+
+/* ─── VibeOS state ───────────────────────────────────────────────────────── */
+
+#define VIBEOS_STATE_CREATING   0
+#define VIBEOS_STATE_BOOTING    1
+#define VIBEOS_STATE_RUNNING    2
+#define VIBEOS_STATE_PAUSED     3
+#define VIBEOS_STATE_DEAD       4
+#define VIBEOS_STATE_MIGRATING  5
+
+/* ─── Request structs ────────────────────────────────────────────────────── */
+
+struct vibeos_create_req {
+    uint8_t  os_type;           /* VIBEOS_TYPE_* */
+    uint8_t  arch;              /* VIBEOS_ARCH_* */
     uint8_t  _pad[2];
     uint32_t ram_mb;
-    uint32_t dev_mask;  /* GUEST_DEV_* bitmask of currently bound devices */
-    uint64_t uptime_ms; /* milliseconds since VIBEOS_STATE_RUNNING first entered */
-} vos_status_reply_t;
+    uint32_t cpu_budget_us;     /* MCS scheduling budget per period */
+    uint32_t cpu_period_us;
+    uint32_t device_flags;      /* VIBEOS_DEV_* bitmask */
+    uint8_t  wasm_hash[32];     /* SHA-256 of initial WASM service (0 = none) */
+};
 
-/* -------------------------------------------------------------------------
- * VIBEOS_OP_LIST — returns up to 16 active handles per call.
- * Re-issue with offset incremented to page through more than 16 instances.
- * ---------------------------------------------------------------------- */
-typedef struct __attribute__((packed)) {
-    uint32_t opcode;  /* VIBEOS_OP_LIST */
-    uint32_t offset;  /* index of first handle to return; 0 for initial call */
-} vos_list_req_t;
-
-typedef struct __attribute__((packed)) {
-    uint32_t result;
-    uint32_t count;        /* number of valid entries in handles[] */
-    uint32_t handles[16];
-} vos_list_reply_t;
-
-/* -------------------------------------------------------------------------
- * VIBEOS_OP_BIND_DEVICE / VIBEOS_OP_UNBIND_DEVICE
- *
- * Attaches or detaches a single generic device PD to/from a running
- * vibeOS instance.  The dev_type field must contain exactly one GUEST_DEV_*
- * bit; passing multiple bits or zero is an error.
- * ---------------------------------------------------------------------- */
-typedef struct __attribute__((packed)) {
-    uint32_t opcode;    /* VIBEOS_OP_BIND_DEVICE or VIBEOS_OP_UNBIND_DEVICE */
+struct vibeos_destroy_req {
     uint32_t handle;
-    uint32_t dev_type;  /* exactly one GUEST_DEV_* bit */
-} vos_device_req_t;
+};
 
-typedef struct __attribute__((packed)) {
-    uint32_t result;
-} vos_device_reply_t;
-
-/* -------------------------------------------------------------------------
- * VIBEOS_OP_SNAPSHOT
- * ---------------------------------------------------------------------- */
-typedef struct __attribute__((packed)) {
-    uint32_t opcode;  /* VIBEOS_OP_SNAPSHOT */
+struct vibeos_status_req {
     uint32_t handle;
-} vos_snapshot_req_t;
+};
 
-typedef struct __attribute__((packed)) {
-    uint32_t result;
+struct vibeos_list_req {
+    uint32_t max_entries;
+};
+
+struct vibeos_device_bind_req {
     uint32_t handle;
-    uint8_t  snap_hash[32]; /* SHA-256 identifier for the written snapshot blob */
-} vos_snapshot_reply_t;
+    uint32_t dev_type;          /* VIBEOS_DEV_* bit position */
+    uint32_t dev_handle;        /* handle from device PD open call */
+};
 
-/* -------------------------------------------------------------------------
- * VIBEOS_OP_RESTORE
- * ---------------------------------------------------------------------- */
-typedef struct __attribute__((packed)) {
-    uint32_t opcode;        /* VIBEOS_OP_RESTORE */
+struct vibeos_device_unbind_req {
     uint32_t handle;
-    uint8_t  snap_hash[32];
-} vos_restore_req_t;
+    uint32_t dev_type;
+};
 
-typedef struct __attribute__((packed)) {
-    uint32_t result;
-} vos_restore_reply_t;
-
-/* -------------------------------------------------------------------------
- * VIBEOS_OP_MIGRATE — Phase 4+ placeholder
- *
- * Currently returns VIBEOS_ERR_NOT_IMPL.  Request and reply structs are
- * defined here so callers can be written to the final interface now.
- * ---------------------------------------------------------------------- */
-typedef struct __attribute__((packed)) {
-    uint32_t opcode;          /* VIBEOS_OP_MIGRATE */
+struct vibeos_snapshot_req {
     uint32_t handle;
-    uint32_t target_domain;   /* destination capability domain ID */
-} vos_migrate_req_t;
+};
+
+struct vibeos_restore_req {
+    uint32_t handle;
+    uint32_t snap_lo;           /* snapshot AgentFS inode (low) */
+    uint32_t snap_hi;
+};
+
+struct vibeos_migrate_req {
+    uint32_t handle;
+    uint32_t target_node;       /* mesh node_id of destination */
+};
+
+struct vibeos_boot_req {
+    uint32_t handle;
+};
+
+struct vibeos_load_module_req {
+    uint32_t handle;
+    uint32_t module_type;       /* VIBEOS_MODULE_TYPE_* */
+    uint32_t module_size;       /* bytes pre-written to staging region */
+    uint8_t  module_hash[32];   /* SHA-256 of module binary */
+};
+
+struct vibeos_check_service_req {
+    uint32_t func_class;        /* VIBEOS_FUNC_CLASS_* */
+};
+
+/* ─── Reply structs ──────────────────────────────────────────────────────── */
+
+struct vibeos_create_reply {
+    uint32_t ok;
+    uint32_t handle;            /* 0 = error */
+};
+
+struct vibeos_destroy_reply {
+    uint32_t ok;
+};
+
+struct vibeos_status_reply {
+    uint32_t ok;
+    uint32_t state;             /* VIBEOS_STATE_* */
+    uint32_t os_type;
+    uint32_t ram_mb;
+    uint32_t uptime_ticks;
+};
+
+struct vibeos_list_reply {
+    uint32_t ok;
+    uint32_t count;             /* entries written to shmem */
+};
+
+struct vibeos_device_bind_reply {
+    uint32_t ok;
+    uint32_t effective_handle;  /* handle to use — may differ from requested if non-reinvention forced reuse */
+    uint32_t preexisting;       /* 1 = existing service found and reused, 0 = new registration */
+};
+
+struct vibeos_device_unbind_reply {
+    uint32_t ok;
+};
+
+struct vibeos_snapshot_reply {
+    uint32_t ok;
+    uint32_t snap_lo;           /* AgentFS inode of checkpoint (low) */
+    uint32_t snap_hi;
+};
+
+struct vibeos_restore_reply {
+    uint32_t ok;
+};
+
+struct vibeos_migrate_reply {
+    uint32_t ok;
+    uint32_t new_node;          /* node where OS is now running */
+};
+
+struct vibeos_boot_reply {
+    uint32_t ok;
+};
+
+struct vibeos_load_module_reply {
+    uint32_t ok;
+    uint32_t swap_id;           /* vibe_swap handle on success */
+};
+
+struct vibeos_check_service_reply {
+    uint32_t ok;
+    uint32_t exists;            /* 1 if a ring-0 service is registered for func_class */
+    uint32_t pd_handle;         /* existing PD handle (valid when exists=1) */
+    uint32_t channel_id;        /* channel for existing PD (valid when exists=1) */
+};
+
+/* ─── Shmem layout: VibeOS list entry ───────────────────────────────────── */
 
 typedef struct __attribute__((packed)) {
-    uint32_t result;
-    uint32_t new_handle;      /* handle in the target domain after migration */
-} vos_migrate_reply_t;
+    uint32_t handle;
+    uint32_t os_type;
+    uint32_t state;
+    uint32_t ram_mb;
+    uint32_t uptime_ticks;
+    uint32_t node_id;           /* mesh node (0 = local) */
+} vibeos_info_t;
 
-/* -------------------------------------------------------------------------
- * EventBus events published by the vibeOS service
- * ---------------------------------------------------------------------- */
-#define EVENT_VIBEOS_READY 0x5001u  /* instance reached VIBEOS_STATE_RUNNING */
-#define EVENT_VIBEOS_DEAD  0x5002u  /* instance terminated; handle is invalid */
+/* ─── Error codes ────────────────────────────────────────────────────────── */
 
-/* -------------------------------------------------------------------------
- * Error codes returned in result fields
- * ---------------------------------------------------------------------- */
-typedef enum {
-    VIBEOS_OK              = 0,
-    VIBEOS_ERR_NO_HANDLE   = 1,  /* handle does not refer to a live instance */
-    VIBEOS_ERR_BAD_TYPE    = 2,  /* os_type or arch value is unrecognised */
-    VIBEOS_ERR_OOM         = 3,  /* insufficient memory or VMM slots */
-    VIBEOS_ERR_DEV_UNAVAIL = 4,  /* requested device PD is not ready */
-    VIBEOS_ERR_NOT_IMPL    = 5,  /* operation defined but not yet implemented */
-    VIBEOS_ERR_WRONG_STATE = 6,  /* operation not valid in instance's current state */
-} vibeos_error_t;
-
-/* -------------------------------------------------------------------------
- * Invariants (enforced by the vibeOS service implementation):
- *
- *  I1. handle values are assigned by the vibeOS service and are never reused
- *      within a boot session.  A handle returned by VIBEOS_OP_CREATE remains
- *      valid until VIBEOS_OP_DESTROY returns VIBEOS_OK for that handle.
- *
- *  I2. A caller may not issue any opcode other than VIBEOS_OP_STATUS or
- *      VIBEOS_OP_DESTROY against an instance in VIBEOS_STATE_CREATING or
- *      VIBEOS_STATE_BOOTING.
- *
- *  I3. VIBEOS_OP_MIGRATE returns VIBEOS_ERR_NOT_IMPL until Phase 4 migration
- *      support is implemented and the contract version is bumped to 2.
- *
- *  I4. If wasm_hash in vos_create_req_t is non-zero, the vibeOS service
- *      forwards it to the vibe-engine (contracts/vibe-engine/) after the
- *      instance reaches VIBEOS_STATE_RUNNING.  Failure of the hot-load does
- *      not destroy the instance; it is reported via the EventBus.
- *
- *  I5. VIBEOS_OP_SNAPSHOT transitions the instance to VIBEOS_STATE_SNAPSHOT
- *      for the duration of the I/O.  Other mutating operations issued during
- *      this window return VIBEOS_ERR_WRONG_STATE.
- *
- *  I6. vos_device_req_t.dev_type must contain exactly one GUEST_DEV_* bit.
- *      Zero or multiple bits set returns VIBEOS_ERR_BAD_TYPE.
- * ---------------------------------------------------------------------- */
+enum vibeos_error {
+    VIBEOS_OK                     = 0,
+    VIBEOS_ERR_NO_SLOTS           = 1,
+    VIBEOS_ERR_BAD_HANDLE         = 2,
+    VIBEOS_ERR_BAD_OS_TYPE        = 3,
+    VIBEOS_ERR_DEVICE_UNAVAILABLE = 4,
+    VIBEOS_ERR_BIND_FAIL          = 5,
+    VIBEOS_ERR_WASM_LOAD_FAIL     = 6,
+    VIBEOS_ERR_MIGRATE_FAIL       = 7,
+    VIBEOS_ERR_DEAD               = 8,
+    VIBEOS_ERR_BAD_MODULE_TYPE    = 9,   /* MSG_VIBEOS_LOAD_MODULE: unknown module_type */
+    VIBEOS_ERR_BAD_STATE          = 10,  /* operation not valid for current OS state */
+    VIBEOS_ERR_BAD_FUNC_CLASS     = 11,  /* MSG_VIBEOS_CHECK_SERVICE_EXISTS: invalid func_class */
+};

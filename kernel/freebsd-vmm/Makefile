@@ -26,6 +26,8 @@ CC      := clang --target=aarch64-none-elf
 LD      := ld.lld
 OBJCOPY := llvm-objcopy
 
+AGENTOS_INCLUDE := ../agentos-root-task/include
+
 CFLAGS := \
     -mstrict-align \
     -ffreestanding \
@@ -34,6 +36,7 @@ CFLAGS := \
     -Wall -Wextra \
     -I$(MICROKIT_INCLUDE) \
     -I$(LIBVMM_INCLUDE) \
+    -I$(AGENTOS_INCLUDE) \
     -I.
 
 LDFLAGS := \

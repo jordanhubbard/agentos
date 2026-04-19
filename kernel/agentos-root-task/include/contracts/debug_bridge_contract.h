@@ -1,119 +1,94 @@
+/*
+ * DebugBridge IPC Contract
+ *
+ * The DebugBridge PD provides a seL4-aware debug interface for inspecting
+ * and controlling running Protection Domains.  Only available in debug builds.
+ *
+ * Channel: CH_DEBUG_BRIDGE (see agentos.h)
+ * Opcodes: MSG_DBG_* (see agentos.h)
+ *
+ * Invariants:
+ *   - ATTACH returns a session_id; all subsequent operations require it.
+ *   - Only one session per target PD may be active at a time.
+ *   - BREAKPOINT sets a hardware breakpoint via seL4 debug capabilities.
+ *   - STEP single-steps the target; the reply returns the new PC.
+ *   - READ_MEM reads from the target's address space via seL4 cap inspection.
+ *   - DETACH releases the session; the target PD resumes normal scheduling.
+ *   - DebugBridge is excluded from production builds (CONFIG_DEBUG_BRIDGE=0).
+ */
+
 #pragma once
-/* DEBUG_BRIDGE contract — version 1
- * PD: debug_bridge | Source: src/debug_bridge.c | Channel: (privileged; controller-only access)
- */
-#include <stdint.h>
-#include <stdbool.h>
+#include "../agentos.h"
 
-#define DEBUG_BRIDGE_CONTRACT_VERSION 1
+/* ─── Channel IDs ────────────────────────────────────────────────────────── */
+#define DEBUG_BRIDGE_CH_CONTROLLER  CH_DEBUG_BRIDGE
 
-/* ── Opcodes ── */
-#define DEBUG_BRIDGE_OP_ATTACH        0xD0u  /* attach debugger to a PD */
-#define DEBUG_BRIDGE_OP_DETACH        0xD1u  /* detach debugger from PD */
-#define DEBUG_BRIDGE_OP_BREAKPOINT    0xD2u  /* set or clear a breakpoint */
-#define DEBUG_BRIDGE_OP_STEP          0xD3u  /* single-step vCPU or PD thread */
-#define DEBUG_BRIDGE_OP_READ_MEM      0xD4u  /* read guest or PD memory */
-#define DEBUG_BRIDGE_OP_WRITE_MEM     0xD5u  /* write guest or PD memory */
-#define DEBUG_BRIDGE_OP_READ_REGS     0xD6u  /* read PD/vCPU register set */
-#define DEBUG_BRIDGE_OP_STATUS        0xD7u  /* query debug session state */
+/* ─── Request structs ────────────────────────────────────────────────────── */
 
-/* ── Breakpoint types ── */
-#define DEBUG_BP_SW                   0u  /* software breakpoint (INT3 / BRK) */
-#define DEBUG_BP_HW_EXEC              1u  /* hardware execution watchpoint */
-#define DEBUG_BP_HW_READ              2u  /* hardware read watchpoint */
-#define DEBUG_BP_HW_WRITE             3u  /* hardware write watchpoint */
-#define DEBUG_BP_HW_RW                4u  /* hardware read/write watchpoint */
+struct dbg_req_attach {
+    uint32_t target_pd;         /* seL4 PD badge / slot ID of target */
+};
 
-/* ── Request / Reply structs ── */
-
-typedef struct __attribute__((packed)) {
-    uint32_t opcode;          /* DEBUG_BRIDGE_OP_ATTACH */
-    uint32_t target_pd_id;    /* TRACE_PD_* or slot_id of target */
-    uint32_t flags;           /* DEBUG_ATTACH_FLAG_* */
-} debug_bridge_req_attach_t;
-
-#define DEBUG_ATTACH_FLAG_HALT_ON_ATTACH  (1u << 0)  /* halt target immediately */
-#define DEBUG_ATTACH_FLAG_VM_GUEST        (1u << 1)  /* target is inside a VM */
-
-typedef struct __attribute__((packed)) {
-    uint32_t status;          /* 0 = ok, else debug_bridge_error_t */
-    uint32_t session_id;      /* opaque debug session handle */
-} debug_bridge_reply_attach_t;
-
-typedef struct __attribute__((packed)) {
-    uint32_t opcode;          /* DEBUG_BRIDGE_OP_DETACH */
+struct dbg_req_detach {
     uint32_t session_id;
-} debug_bridge_req_detach_t;
+};
 
-typedef struct __attribute__((packed)) {
-    uint32_t status;          /* 0 = ok */
-} debug_bridge_reply_detach_t;
-
-typedef struct __attribute__((packed)) {
-    uint32_t opcode;          /* DEBUG_BRIDGE_OP_BREAKPOINT */
+struct dbg_req_breakpoint {
     uint32_t session_id;
-    uint64_t addr;            /* virtual address for breakpoint */
-    uint32_t bp_type;         /* DEBUG_BP_* */
-    uint32_t set;             /* 1 = set, 0 = clear */
-} debug_bridge_req_breakpoint_t;
+    uint32_t bp_type;           /* DBG_BP_* */
+    uint64_t addr;              /* virtual address in target PD */
+};
 
-typedef struct __attribute__((packed)) {
-    uint32_t status;          /* 0 = ok */
-    uint32_t bp_id;           /* breakpoint handle (for clear) */
-} debug_bridge_reply_breakpoint_t;
+#define DBG_BP_EXECUTE  0  /* break on instruction fetch */
+#define DBG_BP_READ     1  /* break on data read */
+#define DBG_BP_WRITE    2  /* break on data write */
+#define DBG_BP_ACCESS   3  /* break on read or write */
 
-typedef struct __attribute__((packed)) {
-    uint32_t opcode;          /* DEBUG_BRIDGE_OP_STEP */
+struct dbg_req_step {
     uint32_t session_id;
-    uint32_t step_count;      /* number of instructions to step (1 = single) */
-} debug_bridge_req_step_t;
+    uint32_t steps;             /* number of instructions to step (1 = single) */
+};
 
-typedef struct __attribute__((packed)) {
-    uint32_t status;          /* 0 = ok */
-    uint64_t pc;              /* program counter after step */
-} debug_bridge_reply_step_t;
-
-typedef struct __attribute__((packed)) {
-    uint32_t opcode;          /* DEBUG_BRIDGE_OP_READ_MEM */
+struct dbg_req_read_mem {
     uint32_t session_id;
-    uint64_t vaddr;           /* virtual address to read from */
-    uint32_t size;            /* bytes to read (max 4096) */
-    uint32_t shmem_offset;    /* offset in shared region for output */
-} debug_bridge_req_read_mem_t;
+    uint64_t addr;              /* virtual address in target PD */
+    uint32_t len;               /* bytes to read (max: debug_shmem size) */
+};
 
-typedef struct __attribute__((packed)) {
-    uint32_t status;          /* 0 = ok */
-    uint32_t bytes_read;
-} debug_bridge_reply_read_mem_t;
+/* ─── Reply structs ──────────────────────────────────────────────────────── */
 
-typedef struct __attribute__((packed)) {
-    uint32_t opcode;          /* DEBUG_BRIDGE_OP_STATUS */
+struct dbg_reply_attach {
+    uint32_t ok;
     uint32_t session_id;
-} debug_bridge_req_status_t;
+};
 
-typedef struct __attribute__((packed)) {
-    uint32_t status;          /* 0 = ok */
-    uint32_t target_pd_id;
-    uint32_t halted;          /* 1 if target is halted at breakpoint or after step */
-    uint32_t breakpoint_count;
-    uint64_t halt_pc;         /* PC if halted */
-} debug_bridge_reply_status_t;
+struct dbg_reply_detach {
+    uint32_t ok;
+};
 
-/* ── Error codes ── */
-typedef enum {
-    DEBUG_BRIDGE_OK               = 0,
-    DEBUG_BRIDGE_ERR_NO_SESSION   = 1,  /* session_id invalid */
-    DEBUG_BRIDGE_ERR_ALREADY_ATT  = 2,  /* target already has a debug session */
-    DEBUG_BRIDGE_ERR_NO_CAP       = 3,  /* caller lacks debug privilege */
-    DEBUG_BRIDGE_ERR_BAD_ADDR     = 4,  /* vaddr not mapped in target */
-    DEBUG_BRIDGE_ERR_HW_LIMIT     = 5,  /* hardware watchpoint slots exhausted */
-    DEBUG_BRIDGE_ERR_NOT_HALTED   = 6,  /* step/reg-read requires halted target */
-} debug_bridge_error_t;
+struct dbg_reply_breakpoint {
+    uint32_t ok;
+    uint32_t bp_id;             /* hardware breakpoint index */
+};
 
-/* ── Invariants ──
- * - debug_bridge is accessible only to the controller (Ring 1); no agent may call it directly.
- * - At most one debug session may be attached to a given PD at a time.
- * - Hardware breakpoints are limited by the architecture (ARM: 6 BP + 4 WP).
- * - Memory reads of more than 4096 bytes must be split across multiple calls.
- * - DETACH automatically clears all breakpoints and resumes the target.
- */
+struct dbg_reply_step {
+    uint32_t ok;
+    uint64_t pc;                /* instruction pointer after step */
+};
+
+struct dbg_reply_read_mem {
+    uint32_t ok;
+    uint32_t actual;            /* bytes read (placed in debug_shmem) */
+};
+
+/* ─── Error codes ────────────────────────────────────────────────────────── */
+
+enum debug_bridge_error {
+    DBG_OK                  = 0,
+    DBG_ERR_NOT_FOUND       = 1,  /* target PD does not exist */
+    DBG_ERR_ALREADY_ATTACHED = 2,
+    DBG_ERR_BAD_SESSION     = 3,
+    DBG_ERR_NO_CAP          = 4,  /* no seL4 debug cap for target */
+    DBG_ERR_BAD_ADDR        = 5,  /* address not mapped in target */
+    DBG_ERR_NO_HW_BP        = 6,  /* hardware breakpoint registers exhausted */
+};

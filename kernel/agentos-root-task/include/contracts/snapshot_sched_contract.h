@@ -1,103 +1,75 @@
+/*
+ * SnapshotSched IPC Contract
+ *
+ * The SnapshotSched PD periodically checkpoints live swap slot state to
+ * AgentFS.  Snapshots are triggered by a configurable tick interval or
+ * by a heap-delta threshold.
+ *
+ * Channel: (controller → snapshot_sched; assigned in agentos.system)
+ * Opcodes: OP_SNAP_STATUS, OP_SNAP_SET_POLICY, OP_SNAP_FORCE, OP_SNAP_GET_HISTORY
+ *
+ * Invariants:
+ *   - OP_SNAP_STATUS is read-only; it never triggers a snapshot.
+ *   - OP_SNAP_FORCE runs a snapshot round immediately regardless of policy.
+ *   - OP_SNAP_SET_POLICY updates the tick interval and delta threshold;
+ *     takes effect on the next scheduled round.
+ *   - OP_SNAP_GET_HISTORY returns the last 4 round summaries in MR1..MR8.
+ *   - EVENT_SNAP_SCHED_DONE is published to EventBus after each round.
+ */
+
 #pragma once
-/* SNAPSHOT_SCHED contract — version 1
- * PD: snapshot_sched | Source: src/snapshot_sched.c | Channel: (passive PD; no fixed controller channel)
- */
-#include <stdint.h>
-#include <stdbool.h>
+#include "../agentos.h"
 
-#define SNAPSHOT_SCHED_CONTRACT_VERSION 1
+/* ─── Request structs ────────────────────────────────────────────────────── */
 
-/* ── Opcodes ── */
-#define SNAPSHOT_SCHED_OP_STATUS       0xB0u  /* query: rounds, total_snapped, tick, slot_count */
-#define SNAPSHOT_SCHED_OP_SET_POLICY   0xB1u  /* set interval_ticks and min_delta_kb */
-#define SNAPSHOT_SCHED_OP_FORCE        0xB2u  /* force immediate snapshot round */
-#define SNAPSHOT_SCHED_OP_GET_HISTORY  0xB3u  /* retrieve last 4 round summaries */
+struct snap_sched_req_status {
+    /* no fields */
+};
 
-/* ── EventBus event ── */
-#define EVENT_SNAP_SCHED_DONE          0x20u  /* emitted after each completed round */
+struct snap_sched_req_set_policy {
+    uint32_t interval_ticks;    /* ticks between rounds (SNAP_INTERVAL_TICKS_DEFAULT) */
+    uint32_t min_delta_kb;      /* min heap-KB change to force snap (SNAP_MIN_DELTA_DEFAULT) */
+};
 
-/* ── Configuration defaults (cross-ref: agentos.h) ── */
-#define SNAP_INTERVAL_TICKS_DEFAULT    500u   /* ticks between rounds (~5s @ 100Hz) */
-#define SNAP_MIN_DELTA_DEFAULT          64u   /* min heap-KB change to force snap */
-#define SNAP_MAX_SLOTS                   8u   /* max simultaneously tracked slots */
+struct snap_sched_req_force {
+    uint32_t flags;             /* SNAP_FORCE_FLAG_* */
+};
 
-/* ── Request / Reply structs ── */
+#define SNAP_FORCE_FLAG_ALL_SLOTS (1u << 0)  /* snapshot all slots, ignore delta */
 
-typedef struct __attribute__((packed)) {
-    uint32_t opcode;          /* SNAPSHOT_SCHED_OP_STATUS */
-} snapshot_sched_req_status_t;
+struct snap_sched_req_get_history {
+    /* no fields — last 4 rounds returned in MRs */
+};
 
-typedef struct __attribute__((packed)) {
-    uint32_t status;          /* 0 = ok */
-    uint32_t rounds;          /* total rounds completed since boot */
-    uint32_t total_snapped;   /* total slots snapshotted across all rounds */
-    uint32_t tick;            /* current scheduler tick */
-    uint32_t slot_count;      /* number of slots currently tracked */
-    uint32_t interval_ticks;  /* current interval setting */
-    uint32_t min_delta_kb;    /* current delta threshold */
-} snapshot_sched_reply_status_t;
+/* ─── Reply structs ──────────────────────────────────────────────────────── */
 
-typedef struct __attribute__((packed)) {
-    uint32_t opcode;          /* SNAPSHOT_SCHED_OP_SET_POLICY */
-    uint32_t interval_ticks;  /* ticks between snapshot rounds (0 = disable) */
-    uint32_t min_delta_kb;    /* minimum heap change in KB to trigger snapshot */
-} snapshot_sched_req_set_policy_t;
+struct snap_sched_reply_status {
+    uint32_t ok;
+    uint32_t rounds;            /* total rounds since boot */
+    uint32_t total_snapped;     /* total slots snapshotted since boot */
+    uint32_t tick;              /* current scheduler tick */
+    uint32_t slot_count;        /* slots currently tracked */
+};
 
-typedef struct __attribute__((packed)) {
-    uint32_t status;          /* 0 = ok */
-    uint32_t effective_interval; /* actual interval applied (may be clamped) */
-} snapshot_sched_reply_set_policy_t;
+struct snap_sched_reply_set_policy {
+    uint32_t ok;
+};
 
-typedef struct __attribute__((packed)) {
-    uint32_t opcode;          /* SNAPSHOT_SCHED_OP_FORCE */
-} snapshot_sched_req_force_t;
+struct snap_sched_reply_force {
+    uint32_t ok;
+    uint32_t round_number;      /* round index of the forced snapshot */
+};
 
-typedef struct __attribute__((packed)) {
-    uint32_t status;          /* 0 = ok */
-    uint32_t round_number;    /* round number assigned to forced round */
-    uint32_t slots_checked;   /* slots examined in this round */
-    uint32_t slots_snapped;   /* slots where snapshot was triggered */
-} snapshot_sched_reply_force_t;
+struct snap_sched_reply_get_history {
+    uint32_t ok;
+    /* Round summaries packed into MRs: MR1..MR2 = round0 (round#, snapped),
+     * MR3..MR4 = round1, MR5..MR6 = round2, MR7..MR8 = round3 */
+};
 
-typedef struct __attribute__((packed)) {
-    uint32_t opcode;          /* SNAPSHOT_SCHED_OP_GET_HISTORY */
-} snapshot_sched_req_history_t;
+/* ─── Error codes ────────────────────────────────────────────────────────── */
 
-/* One summary entry for a completed round */
-typedef struct __attribute__((packed)) {
-    uint32_t round_number;
-    uint32_t tick;
-    uint32_t slots_checked;
-    uint32_t slots_snapped;
-} snapshot_sched_round_summary_t;
-
-typedef struct __attribute__((packed)) {
-    uint32_t status;          /* 0 = ok */
-    uint32_t entry_count;     /* number of valid summaries (up to 4) */
-    snapshot_sched_round_summary_t summaries[4];
-} snapshot_sched_reply_history_t;
-
-/* EventBus payload for EVENT_SNAP_SCHED_DONE */
-typedef struct __attribute__((packed)) {
-    uint32_t round_number;
-    uint32_t slots_checked;
-    uint32_t slots_snapped;
-    uint32_t tick;
-} snapshot_sched_event_done_t;
-
-/* ── Error codes ── */
-typedef enum {
-    SNAPSHOT_SCHED_OK         = 0,
-    SNAPSHOT_SCHED_ERR_BUSY   = 1,  /* force requested while round already in progress */
-    SNAPSHOT_SCHED_ERR_NO_SLOTS = 2, /* no slots registered for tracking */
-    SNAPSHOT_SCHED_ERR_BAD_POLICY = 3, /* invalid interval or delta value */
-} snapshot_sched_error_t;
-
-/* ── Invariants ──
- * - snapshot_sched is a passive PD: it runs only when triggered by timer notification.
- * - SET_POLICY with interval_ticks=0 disables automatic rounds (FORCE still works).
- * - A forced round counts toward the round_number sequence.
- * - min_delta_kb of 0 means every slot is snapshotted every round (expensive).
- * - At most SNAP_MAX_SLOTS (8) slots can be tracked simultaneously.
- * - EVENT_SNAP_SCHED_DONE is published to EventBus after every completed round.
- */
+enum snap_sched_error {
+    SNAP_SCHED_OK             = 0,
+    SNAP_SCHED_ERR_BAD_POLICY = 1,  /* interval_ticks == 0 */
+    SNAP_SCHED_ERR_BUSY       = 2,  /* forced snapshot while round in progress */
+};

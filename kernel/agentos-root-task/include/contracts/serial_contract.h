@@ -1,99 +1,115 @@
+/*
+ * Serial Device PD IPC Contract
+ *
+ * The serial_pd owns the UART hardware exclusively via a seL4 device frame
+ * capability.  Callers open a port, perform I/O, and close it.
+ *
+ * Channel: CH_SERIAL_PD (see agentos.h)
+ * Opcodes: MSG_SERIAL_* (see agentos.h)
+ *
+ * Invariants:
+ *   - MSG_SERIAL_OPEN returns a client_slot; all subsequent calls use it.
+ *   - Only one client may hold the same port_id at a time.
+ *   - MSG_SERIAL_WRITE data must be placed in serial_shmem before the call.
+ *     Up to 256 bytes may be written per call.
+ *   - MSG_SERIAL_READ returns available byte count; data placed in serial_shmem.
+ *   - MSG_SERIAL_CONFIGURE is valid only on an open client_slot.
+ *   - dbg_puts() is only used before serial_pd is initialized (early boot).
+ *     After MSG_SERIAL_STATUS reports port as ready, all output goes via IPC.
+ */
+
 #pragma once
-/* SERIAL_PD contract — version 1
- * PD: serial_pd | Source: src/serial_pd.c | Channel: CH_SERIAL_PD (61) from controller
- * Provides OS-neutral IPC serial port access. Replaces direct dbg_puts after boot.
- */
-#include <stdint.h>
-#include <stdbool.h>
+#include "../agentos.h"
 
-#define SERIAL_PD_CONTRACT_VERSION 1
+/* ─── Channel IDs ────────────────────────────────────────────────────────── */
+#define SERIAL_PD_CH_CONTROLLER  CH_SERIAL_PD
 
-/* ── Channel ─────────────────────────────────────────────────────────────── */
-#define CH_SERIAL_PD  61u
+/* ─── Configuration ──────────────────────────────────────────────────────── */
+#define SERIAL_MAX_WRITE_BYTES  256u
+#define SERIAL_MAX_CLIENTS      8u
 
-/* ── Opcodes (from agentos_msg_tag_t) ───────────────────────────────────── */
-#define SERIAL_OP_OPEN       0x1000u
-#define SERIAL_OP_CLOSE      0x1001u
-#define SERIAL_OP_WRITE      0x1002u
-#define SERIAL_OP_READ       0x1003u
-#define SERIAL_OP_STATUS     0x1004u
-#define SERIAL_OP_CONFIGURE  0x1005u
+/* ─── Request structs ────────────────────────────────────────────────────── */
 
-#define SERIAL_MAX_CLIENTS   8u
-#define SERIAL_WRITE_MAX     256u
+struct serial_req_open {
+    uint32_t port_id;           /* 0 = first/only UART */
+};
 
-/* ── Request structs ─────────────────────────────────────────────────────── */
-typedef struct __attribute__((packed)) {
-    uint32_t op;          /* SERIAL_OP_OPEN */
-} serial_req_open_t;
-
-typedef struct __attribute__((packed)) {
-    uint32_t op;          /* SERIAL_OP_CLOSE */
+struct serial_req_close {
     uint32_t client_slot;
-} serial_req_close_t;
+};
 
-typedef struct __attribute__((packed)) {
-    uint32_t op;           /* SERIAL_OP_WRITE */
+struct serial_req_write {
     uint32_t client_slot;
-    uint32_t shmem_offset; /* offset into serial_shmem */
-    uint32_t len;          /* byte count, max SERIAL_WRITE_MAX */
-} serial_req_write_t;
+    uint32_t len;               /* bytes in serial_shmem (max SERIAL_MAX_WRITE_BYTES) */
+};
 
-typedef struct __attribute__((packed)) {
-    uint32_t op;           /* SERIAL_OP_READ */
+struct serial_req_read {
     uint32_t client_slot;
-    uint32_t shmem_offset;
-    uint32_t max_len;
-} serial_req_read_t;
+    uint32_t max;               /* max bytes to place in serial_shmem */
+};
 
-typedef struct __attribute__((packed)) {
-    uint32_t op;           /* SERIAL_OP_STATUS */
+struct serial_req_status {
     uint32_t client_slot;
-} serial_req_status_t;
+};
 
-typedef struct __attribute__((packed)) {
-    uint32_t op;           /* SERIAL_OP_CONFIGURE */
+struct serial_req_configure {
     uint32_t client_slot;
-    uint32_t baud_rate;
-    uint32_t flags;        /* parity, stop bits, flow control bitmask */
-} serial_req_configure_t;
+    uint32_t baud;              /* e.g. 115200 */
+    uint32_t flags;             /* SERIAL_FLAG_* */
+};
 
-/* ── Reply structs ───────────────────────────────────────────────────────── */
-typedef struct __attribute__((packed)) {
-    uint32_t result;       /* 0 = ok, non-zero = error */
-    uint32_t client_slot;  /* assigned slot */
-} serial_reply_open_t;
+#define SERIAL_FLAG_PARITY_NONE  0x00u
+#define SERIAL_FLAG_PARITY_EVEN  0x01u
+#define SERIAL_FLAG_PARITY_ODD   0x02u
+#define SERIAL_FLAG_STOP_1       0x00u
+#define SERIAL_FLAG_STOP_2       0x10u
+#define SERIAL_FLAG_FLOW_NONE    0x00u
+#define SERIAL_FLAG_FLOW_RTS_CTS 0x20u
 
-typedef struct __attribute__((packed)) {
-    uint32_t result;
-    uint32_t bytes_written;
-} serial_reply_write_t;
+/* ─── Reply structs ──────────────────────────────────────────────────────── */
 
-typedef struct __attribute__((packed)) {
-    uint32_t result;
-    uint32_t bytes_read;
-} serial_reply_read_t;
+struct serial_reply_open {
+    uint32_t ok;
+    uint32_t client_slot;
+};
 
-typedef struct __attribute__((packed)) {
-    uint32_t result;
-    uint32_t baud_rate;
-    uint32_t rx_count;
-    uint32_t tx_count;
-    uint32_t error_flags;
-} serial_reply_status_t;
+struct serial_reply_close {
+    uint32_t ok;
+};
 
-/* ── Error codes ─────────────────────────────────────────────────────────── */
-typedef enum {
-    SERIAL_OK             = 0,
-    SERIAL_ERR_NO_SLOT    = 1,  /* no free client slots */
-    SERIAL_ERR_BAD_SLOT   = 2,  /* invalid slot */
-    SERIAL_ERR_BAD_LEN    = 3,  /* len > SERIAL_WRITE_MAX */
-    SERIAL_ERR_HW         = 4,  /* hardware error */
-    SERIAL_ERR_NOT_IMPL   = 5,  /* operation not yet implemented */
-} serial_error_t;
+struct serial_reply_write {
+    uint32_t ok;
+    uint32_t written;
+};
 
-/* ── Invariants ──────────────────────────────────────────────────────────
- * - After MSG_TYPE_SYSTEM_READY on EventBus, all serial output must go through IPC.
- * - dbg_puts is only valid before serial_pd reports ready.
- * - SERIAL_WRITE_MAX enforced; larger writes must be split.
- */
+struct serial_reply_read {
+    uint32_t ok;
+    uint32_t count;             /* bytes placed in serial_shmem */
+};
+
+struct serial_reply_status {
+    uint32_t ok;
+    uint32_t baud;
+    uint32_t rx_count;          /* bytes received since open */
+    uint32_t tx_count;          /* bytes transmitted since open */
+    uint32_t error_flags;       /* SERIAL_ERR_* bitmask */
+};
+
+#define SERIAL_ERR_OVERRUN  (1u << 0)
+#define SERIAL_ERR_FRAMING  (1u << 1)
+#define SERIAL_ERR_PARITY   (1u << 2)
+
+struct serial_reply_configure {
+    uint32_t ok;
+};
+
+/* ─── Error codes ────────────────────────────────────────────────────────── */
+
+enum serial_error {
+    SERIAL_OK               = 0,
+    SERIAL_ERR_NO_SLOTS     = 1,  /* SERIAL_MAX_CLIENTS reached */
+    SERIAL_ERR_BAD_PORT     = 2,
+    SERIAL_ERR_BAD_SLOT     = 3,
+    SERIAL_ERR_BAD_BAUD     = 4,
+    SERIAL_ERR_NOT_OPEN     = 5,
+};

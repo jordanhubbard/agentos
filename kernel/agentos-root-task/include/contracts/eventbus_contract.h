@@ -1,97 +1,95 @@
+/*
+ * EventBus IPC Contract
+ *
+ * The EventBus is the publish-subscribe backbone of agentOS.
+ * All PDs that need to exchange asynchronous events go through EventBus.
+ *
+ * Channel: EVENTBUS_CH_* (see agentos.h)
+ * Opcodes: MSG_EVENTBUS_* (see agentos.h)
+ *
+ * Invariants:
+ *   - Subscribers read the ring directly (zero-copy); EventBus only writes.
+ *   - PUBLISH_BATCH is atomic: all events in a batch are written before any
+ *     subscriber is notified.
+ *   - A subscriber that falls behind loses events (overflow_count incremented).
+ *   - MSG_EVENTBUS_QUERY_SUBSCRIBERS is read-only; it does not modify state.
+ *   - Ordering: INIT must be the first message sent to EventBus at boot.
+ */
+
 #pragma once
-/* EVENTBUS contract — version 1
- * PD: event_bus | Source: src/event_bus.c | Channel: EVENTBUS_CH_MONITOR=1, EVENTBUS_CH_INITAGENT=2 (from controller)
- */
-#include <stdint.h>
-#include <stdbool.h>
+#include "../agentos.h"
 
-#define EVENTBUS_CONTRACT_VERSION 1
+/* ─── Channel IDs (EventBus perspective) ─────────────────────────────────── */
+#define EVENTBUS_CH_MONITOR    1  /* monitor → eventbus */
+#define EVENTBUS_CH_INITAGENT  2  /* init_agent → eventbus */
 
-/* ── Channel IDs (controller perspective) ── */
-#define CH_EVENTBUS            0   /* controller -> event_bus (from controller enum: CH_CONTROLLER_EVENT_BUS) */
-#define EVENTBUS_CH_MONITOR    1   /* cross-ref: agentos.h */
-#define EVENTBUS_CH_INITAGENT  2   /* cross-ref: agentos.h */
+/* ─── Request structs ────────────────────────────────────────────────────── */
 
-/* ── Opcodes ── */
-#define EVENTBUS_OP_INIT            0x0001u  /* initialize event bus ring buffer */
-#define EVENTBUS_OP_SUBSCRIBE       0x0002u  /* subscribe a channel to a topic mask */
-#define EVENTBUS_OP_UNSUBSCRIBE     0x0003u  /* remove subscription */
-#define EVENTBUS_OP_STATUS          0x0004u  /* query ring buffer statistics */
-#define EVENTBUS_OP_PUBLISH_BATCH   0x0005u  /* publish up to 16 events in one PPC */
-#define EVENTBUS_OP_READY           0x0101u  /* event_bus -> controller: init complete */
-#define EVENTBUS_OP_ERROR           0x0102u  /* event_bus -> controller: fatal error */
+struct eventbus_req_init {
+    uint32_t version;           /* caller's agentos version */
+};
 
-/* ── Request / Reply structs ── */
+struct eventbus_req_subscribe {
+    uint32_t notify_ch;         /* channel to signal on new events */
+    uint32_t topic_mask;        /* event kind bitmask; 0 = all events */
+};
 
-typedef struct __attribute__((packed)) {
-    uint32_t opcode;          /* EVENTBUS_OP_INIT */
-    uint32_t ring_capacity;   /* number of event slots to initialize */
-} eventbus_req_init_t;
+struct eventbus_req_unsubscribe {
+    uint32_t notify_ch;         /* channel to remove */
+};
 
-typedef struct __attribute__((packed)) {
-    uint32_t status;          /* 0 = ok */
-    uint32_t ring_capacity;   /* actual capacity initialized */
-} eventbus_reply_init_t;
+struct eventbus_req_publish_batch {
+    uint32_t count;             /* number of batch_event_t entries */
+    uint32_t offset;            /* byte offset into shared eventbus ring region */
+};
 
-typedef struct __attribute__((packed)) {
-    uint32_t opcode;          /* EVENTBUS_OP_SUBSCRIBE */
-    uint32_t channel_id;      /* seL4 channel to notify on matching event */
-    uint32_t topic_mask;      /* bitmask of event kinds to receive */
-} eventbus_req_subscribe_t;
+struct eventbus_req_status {
+    /* no fields — query-only */
+};
 
-typedef struct __attribute__((packed)) {
-    uint32_t status;          /* 0 = ok, else eventbus_error_t */
-    uint32_t sub_id;          /* subscription handle */
-} eventbus_reply_subscribe_t;
+struct eventbus_req_query_subscribers {
+    /* no fields — returns count + subscriber list in shmem */
+};
 
-typedef struct __attribute__((packed)) {
-    uint32_t opcode;          /* EVENTBUS_OP_UNSUBSCRIBE */
-    uint32_t sub_id;          /* subscription handle from subscribe reply */
-} eventbus_req_unsubscribe_t;
+/* ─── Reply structs ──────────────────────────────────────────────────────── */
 
-typedef struct __attribute__((packed)) {
-    uint32_t status;          /* 0 = ok */
-} eventbus_reply_unsubscribe_t;
+struct eventbus_reply_init {
+    uint32_t ok;                /* 0 = success */
+    uint32_t capacity;          /* ring capacity in event slots */
+};
 
-typedef struct __attribute__((packed)) {
-    uint32_t opcode;          /* EVENTBUS_OP_STATUS */
-} eventbus_req_status_t;
+struct eventbus_reply_subscribe {
+    uint32_t ok;                /* 0 = success */
+    uint32_t subscriber_id;     /* assigned subscriber index */
+};
 
-typedef struct __attribute__((packed)) {
-    uint32_t status;          /* 0 = ok */
-    uint64_t head;            /* current write index */
-    uint64_t tail;            /* current read index */
-    uint32_t overflow_count;  /* events dropped due to full ring */
-    uint32_t subscriber_count;
-} eventbus_reply_status_t;
+struct eventbus_reply_unsubscribe {
+    uint32_t ok;
+};
 
-typedef struct __attribute__((packed)) {
-    uint32_t opcode;          /* EVENTBUS_OP_PUBLISH_BATCH */
-    uint32_t event_count;     /* number of events (1-16) */
-    uint32_t shmem_offset;    /* byte offset into shared ring region for batch entries */
-} eventbus_req_publish_batch_t;
+struct eventbus_reply_publish_batch {
+    uint32_t dispatched;        /* events written to ring */
+    uint32_t dropped;           /* events dropped (ring full) */
+};
 
-typedef struct __attribute__((packed)) {
-    uint32_t status;          /* 0 = ok */
-    uint32_t dispatched;      /* events written to ring */
-    uint32_t dropped;         /* events dropped (ring full) */
-} eventbus_reply_publish_batch_t;
+struct eventbus_reply_status {
+    uint32_t head;              /* ring write index */
+    uint32_t tail;              /* ring read index (min across subscribers) */
+    uint32_t overflow_count;    /* total events dropped since boot */
+    uint32_t subscriber_count;  /* active subscriber count */
+};
 
-/* ── Error codes ── */
-typedef enum {
+struct eventbus_reply_query_subscribers {
+    uint32_t count;             /* subscriber entries written to shmem */
+};
+
+/* ─── Error codes ────────────────────────────────────────────────────────── */
+
+enum eventbus_error {
     EVENTBUS_OK               = 0,
-    EVENTBUS_ERR_OVERFLOW     = 1,  /* ring buffer full; event dropped */
-    EVENTBUS_ERR_NO_SUBS      = 2,  /* no subscribers for topic */
-    EVENTBUS_ERR_BAD_SUB      = 3,  /* invalid subscription handle */
-    EVENTBUS_ERR_FULL_SUBS    = 4,  /* subscription table full */
-    EVENTBUS_ERR_NOT_INIT     = 5,  /* ring not initialized */
-    EVENTBUS_ERR_BAD_COUNT    = 6,  /* batch count out of range (0 or >16) */
-} eventbus_error_t;
-
-/* ── Invariants ──
- * - Ring capacity must be a power of two.
- * - Overflow increments overflow_count atomically; callers must tolerate gaps.
- * - Subscribers must read faster than producers write or events will be dropped.
- * - EVENTBUS_OP_PUBLISH_BATCH requires shared ring memory mapped before call.
- * - Maximum 16 events per PUBLISH_BATCH call (PUBLISH_BATCH_MAX in agentos.h).
- */
+    EVENTBUS_ERR_NOT_INIT     = 1,  /* INIT not yet received */
+    EVENTBUS_ERR_FULL         = 2,  /* subscriber table full (MAX_SUBSCRIBERS) */
+    EVENTBUS_ERR_NOT_FOUND    = 3,  /* unsubscribe: channel not registered */
+    EVENTBUS_ERR_BAD_OFFSET   = 4,  /* batch offset outside staging region */
+    EVENTBUS_ERR_BAD_COUNT    = 5,  /* batch count > PUBLISH_BATCH_MAX */
+};

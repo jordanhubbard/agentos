@@ -8,13 +8,17 @@
  * dispatches vCPU faults and IRQ notifications to the correct slot.
  *
  * Boot flow (first VM auto-created at init):
- *   vmm_init() → vmm_mux_init() → vmm_mux_create("freebsd-0")
+ *   vmm_init() → vmm_register() → vmm_mux_init() → vmm_mux_create("freebsd-0")
  *   → EDK2 UEFI → bootaa64.efi → loader.efi → FreeBSD kernel
  *
  * Subsequent VMs are created on demand via controller IPC:
  *   controller PPCs OP_VM_CREATE → second FreeBSD instance boots in slot 1
  *   controller PPCs OP_VM_SWITCH 1 → console switches to slot 1
  *   controller PPCs OP_VM_DESTROY 0 → slot 0 halted and freed
+ *
+ * Ring-1 consumer model (Phase 3c):
+ *   All device I/O is mediated through ring-0 service PDs.
+ *   freebsd_vmm holds no direct hardware capabilities after init.
  */
 
 #include <microkit.h>
@@ -32,15 +36,62 @@
 #include "vmm.h"
 #include "vmm_mux.h"
 
+/* ─── Shared memory symbols (set by Microkit linker) ────────────────────── */
+uintptr_t vmm_serial_shmem_vaddr;
+uintptr_t vmm_block_shmem_vaddr;
+uintptr_t vmm_net_shmem_vaddr;
+
 /* ─── Global multiplexer state ───────────────────────────────────────────── */
 static vm_mux_t g_mux;
+
+/* ─── VMM registration ───────────────────────────────────────────────────── */
+
+/*
+ * vmm_register — register this PD as a VMM with the root-task.
+ *
+ * Sends MSG_VMM_REGISTER on CH_VMM_KERNEL_LOCAL and stores the returned
+ * vmm_token in g_mux.vmm_token.  All subsequent MSG_VMM_* calls must
+ * include this token.
+ *
+ * Returns true on success.
+ */
+static bool vmm_register(void)
+{
+    struct vmm_register_req req = {
+        .os_type    = VMM_OS_TYPE_FREEBSD,
+        .flags      = VMM_FLAG_SMP,
+        .max_guests = VM_MAX_SLOTS,
+        .name       = "freebsd_vmm",
+    };
+    (void)req;  /* req would be passed via shmem in a full implementation */
+
+    microkit_mr_set(0, VMM_OS_TYPE_FREEBSD);
+    microkit_mr_set(1, VMM_FLAG_SMP);
+    microkit_mr_set(2, VM_MAX_SLOTS);
+
+    microkit_msginfo reply = microkit_ppcall(
+        CH_VMM_KERNEL_LOCAL,
+        microkit_msginfo_new(MSG_VMM_REGISTER, 3));
+
+    uint32_t ok = (uint32_t)microkit_mr_get(0);
+    if (!ok) {
+        microkit_dbg_puts("vmm_register: root-task rejected VMM registration\n");
+        return false;
+    }
+
+    g_mux.vmm_token = (uint32_t)microkit_mr_get(1);
+    microkit_dbg_puts("vmm_register: registered, token acquired\n");
+    (void)reply;
+    return true;
+}
 
 /* ─── Microkit entry points ─────────────────────────────────────────────── */
 
 /**
  * vmm_init — called once at PD startup by Microkit
  *
- * Initialises the VM multiplexer and boots the first FreeBSD instance.
+ * Registers the VMM with the root-task, initialises the VM multiplexer,
+ * and boots the first FreeBSD instance.
  */
 void vmm_init(void)
 {
@@ -51,12 +102,26 @@ void vmm_init(void)
     microkit_dbg_puts("╚══════════════════════════════════════════╝\n");
     microkit_dbg_puts("\n");
 
-    /* Initialise the multiplexer (loads UEFI firmware, zeros all slots) */
+    /*
+     * Step 1: Register with the root-task as a VMM.
+     * This grants us a vmm_token required for all subsequent MSG_VMM_*
+     * calls and validates that we hold no direct hardware capabilities.
+     */
+    if (!vmm_register()) {
+        microkit_dbg_puts("vmm_init: FATAL — VMM registration failed\n");
+        return;
+    }
+
+    /* Step 2: Initialise the multiplexer (loads UEFI firmware, zeros slots) */
     vmm_mux_init(&g_mux);
 
     /*
-     * Auto-create the first VM instance.
+     * Step 3: Auto-create the first VM instance.
      * Controller can create additional instances via OP_VM_CREATE.
+     * vmm_mux_create() performs the full guest binding protocol:
+     *   MSG_SERIAL_OPEN → MSG_NET_OPEN → MSG_BLOCK_OPEN
+     *   → MSG_GUEST_BIND_DEVICE (×3) → MSG_GUEST_SET_MEMORY
+     *   → register MMIO fault handlers → vm_run()
      */
     uint8_t slot = vmm_mux_create(&g_mux, "freebsd-0");
     if (slot == 0xFF) {
@@ -65,7 +130,6 @@ void vmm_init(void)
     }
 
     microkit_dbg_puts("vmm_init: FreeBSD VM slot ");
-    /* print slot id */
     char c[2] = {'0' + slot, '\0'};
     microkit_dbg_puts(c);
     microkit_dbg_puts(" booting...\n");
