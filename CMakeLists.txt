@@ -87,24 +87,11 @@ add_library(memfs STATIC
 target_include_directories(memfs PUBLIC services/memfs)
 target_link_libraries(memfs libagent)
 
-# ToolSvc — Tool registry and dispatch
-add_library(toolsvc STATIC
-    services/toolsvc/toolsvc.c
-)
-target_include_directories(toolsvc PUBLIC services/toolsvc)
-target_link_libraries(toolsvc libagent)
-
-# ModelSvc — Model inference proxy
-add_library(modelsvc STATIC
-    services/modelsvc/modelsvc.c
-)
-target_include_directories(modelsvc PUBLIC services/modelsvc)
-target_link_libraries(modelsvc libagent)
-
 # NetStack and BlobSvc are NOT present as services/ C prototypes.
 # Real network is handled by the net_server.c Microkit PD.
 # Block storage is handled by virtio_blk.c Microkit PD.
-# These targets have been removed to fix the broken build.
+# toolsvc deleted — list_json() ported to userspace/servers/tool-registry/src/lib.rs.
+# modelsvc deleted — default endpoints ported to userspace/servers/model-proxy/src/lib.rs.
 
 # LogSvc — Audit and logging
 add_library(logsvc STATIC
@@ -128,8 +115,6 @@ target_link_libraries(agentos-init
     capstore
     msgbus
     memfs
-    toolsvc
-    modelsvc
     logsvc
     sel4
     muslc

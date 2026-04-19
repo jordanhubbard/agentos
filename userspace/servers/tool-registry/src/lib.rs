@@ -349,6 +349,24 @@ impl ToolRegistry {
         self.list(caller_badge)
     }
 
+    /// MCP-compatible JSON listing of tools visible to `caller_badge`.
+    /// Format: {"tools":[{"name":"...","description":"...","inputSchema":{...},"calls":N},...]}
+    #[cfg(feature = "std")]
+    pub fn list_json(&self, caller_badge: u64) -> String {
+        let tools = self.list(caller_badge);
+        let mut out = String::from("{\"tools\":[");
+        for (i, t) in tools.iter().enumerate() {
+            if i > 0 { out.push(','); }
+            let schema = if t.input_schema.is_empty() { "{}" } else { &t.input_schema };
+            out.push_str(&alloc::format!(
+                "{{\"name\":\"{}\",\"description\":\"{}\",\"inputSchema\":{},\"calls\":{}}}",
+                t.name, t.description, schema, t.call_count
+            ));
+        }
+        out.push_str("]}");
+        out
+    }
+
     /// Search tools by keyword in name, description, or tags
     pub fn search(&self, query: &str, caller_badge: u64) -> Vec<&ToolDef> {
         let query_lower = query.to_lowercase();

@@ -337,7 +337,41 @@ impl ModelRouter {
             endpoints: BTreeMap::new(),
         }
     }
-    
+
+    /// Register the default well-known model endpoints.
+    ///
+    /// Extracted from legacy `services/modelsvc/modelsvc.c::modelsvc_register_defaults()`:
+    ///
+    /// | model_id  | endpoint                                                 | api_key_env     | ctx_window | max_tokens |
+    /// |-----------|----------------------------------------------------------|-----------------|------------|------------|
+    /// | default   | <https://inference-api.nvidia.com/v1/chat/completions>   | NVIDIA_API_KEY  | 128000     | 4096       |
+    /// | code-gen  | <https://inference-api.nvidia.com/v1/chat/completions>   | NVIDIA_API_KEY  | 128000     | 32768      |
+    /// | fast      | <https://api.openai.com/v1/chat/completions>             | OPENAI_API_KEY  | 16000      | 4096       |
+    pub fn register_defaults(&mut self) {
+        for (id, url, key_env, ctx, max_tok) in &[
+            ("default",  "https://inference-api.nvidia.com/v1/chat/completions", "NVIDIA_API_KEY", 128_000u64, 4_096u64),
+            ("code-gen", "https://inference-api.nvidia.com/v1/chat/completions", "NVIDIA_API_KEY", 128_000,   32_768),
+            ("fast",     "https://api.openai.com/v1/chat/completions",           "OPENAI_API_KEY",  16_000,    4_096),
+        ] {
+            self.register_endpoint(ModelEndpoint {
+                model_id:          ModelId::from(*id),
+                backend:           BackendType::HttpApi {
+                    endpoint_url: alloc::format!("{}", url),
+                    api_key_env:  alloc::format!("{}", key_env),
+                    model_name:   alloc::format!("{}", id),
+                },
+                context_window:    *ctx,
+                max_output_tokens: *max_tok,
+                structured_output: false,
+                tool_use:          false,
+                vision:            false,
+                cost_tier:         1,
+                available:         true,
+                stats:             ModelStats::default(),
+            });
+        }
+    }
+
     /// Register a model endpoint
     pub fn register_endpoint(&mut self, endpoint: ModelEndpoint) {
         self.endpoints.insert(endpoint.model_id.clone(), endpoint);
