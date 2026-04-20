@@ -15,6 +15,7 @@
 
 #define AGENTOS_DEBUG 1
 #include "agentos.h"
+#include "contracts/cap_broker_contract.h"
 
 #define MAX_CAPS 256
 

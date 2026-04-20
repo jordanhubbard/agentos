@@ -24,6 +24,7 @@
 
 #define AGENTOS_DEBUG 1
 #include "agentos.h"
+#include "contracts/trace_recorder_contract.h"
 
 /* ── Channel IDs (trace_recorder's local view) ───────────────────────────── */
 #define CH_CTRL_PPC    0   /* controller PPCs in for START/STOP/QUERY/DUMP */

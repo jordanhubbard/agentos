@@ -19,6 +19,7 @@
 
 #define AGENTOS_DEBUG 1
 #include "agentos.h"
+#include "contracts/ipc_harness_contract.h"
 #include <stdint.h>
 #include <stdbool.h>
 

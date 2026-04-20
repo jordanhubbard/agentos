@@ -32,6 +32,7 @@
 
 #define AGENTOS_DEBUG 1
 #include "agentos.h"
+#include "contracts/wg_net_contract.h"
 #include "wg_net.h"
 #include "net_server.h"
 #include "monocypher.h"

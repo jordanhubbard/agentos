@@ -40,6 +40,7 @@
 
 #define AGENTOS_DEBUG 1
 #include "agentos.h"
+#include "contracts/debug_bridge_contract.h"
 #include "ipc_bridge.h"
 
 /* ── Opcodes ──────────────────────────────────────────────────────────────── */

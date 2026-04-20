@@ -32,6 +32,7 @@
 
 #define AGENTOS_DEBUG 1
 #include "agentos.h"
+#include "contracts/vibe_swap_contract.h"
 #include "barrier.h"
 #include "prio_inherit.h"
 

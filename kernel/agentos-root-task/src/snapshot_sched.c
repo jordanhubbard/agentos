@@ -55,6 +55,7 @@
  */
 
 #include <microkit.h>
+#include "contracts/snapshot_sched_contract.h"
 #include <stdint.h>
 #include <stdbool.h>
 #include <string.h>

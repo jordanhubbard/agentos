@@ -27,6 +27,7 @@
 
 #define AGENTOS_DEBUG 1
 #include "agentos.h"
+#include "contracts/swap_slot_contract.h"
 #include "wasm3_host.h"
 
 #define CH_CONTROLLER 0

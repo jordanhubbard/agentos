@@ -13,6 +13,7 @@
 
 #define AGENTOS_DEBUG 1
 #include "agentos.h"
+#include "contracts/worker_contract.h"
 #include <stdint.h>
 #include "string_bare.h"
 

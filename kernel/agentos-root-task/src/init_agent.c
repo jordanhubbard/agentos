@@ -12,6 +12,7 @@
 
 #define AGENTOS_DEBUG 1
 #include "agentos.h"
+#include "contracts/init_agent_contract.h"
 #include "prio_inherit.h"
 #include <stdint.h>
 

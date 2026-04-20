@@ -31,6 +31,7 @@
 
 #define AGENTOS_DEBUG 1
 #include "agentos.h"
+#include "contracts/oom_killer_contract.h"
 #include <stdint.h>
 #include <string.h>
 #include <stdbool.h>

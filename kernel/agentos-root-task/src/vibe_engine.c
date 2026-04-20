@@ -38,6 +38,7 @@
 #include "agentos.h"
 #include "barrier.h"
 #include "cap_policy.h"
+#include "contracts/vibe_engine_contract.h"
 #include "contracts/vibeos_contract.h"
 #include <stdint.h>
 #include <stdbool.h>

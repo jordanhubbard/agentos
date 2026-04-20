@@ -37,6 +37,7 @@
 
 #define AGENTOS_DEBUG 1
 #include "agentos.h"
+#include "contracts/net_isolator_contract.h"
 
 /* ── Opcodes ─────────────────────────────────────────────────────────────── */
 #define OP_NET_CONNECT   0x70u

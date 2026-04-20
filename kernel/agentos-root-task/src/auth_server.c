@@ -20,6 +20,7 @@
 
 #define AGENTOS_DEBUG 1
 #include "agentos.h"
+#include "contracts/auth_server_contract.h"
 #include <stdbool.h>
 
 /* ── Configuration ─────────────────────────────────────────────────────── */

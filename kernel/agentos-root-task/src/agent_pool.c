@@ -24,6 +24,7 @@
 
 #define AGENTOS_DEBUG 1
 #include "agentos.h"
+#include "contracts/agent_pool_contract.h"
 #include "string_bare.h"
 #include <stdint.h>
 

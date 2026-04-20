@@ -35,6 +35,7 @@
 
 #define AGENTOS_DEBUG 1
 #include "agentos.h"
+#include "contracts/spawn_server_contract.h"
 #include "spawn.h"
 #include "vfs.h"
 #include "sha256_mini.h"

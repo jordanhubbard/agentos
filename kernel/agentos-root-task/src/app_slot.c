@@ -26,6 +26,7 @@
 #include <stdbool.h>
 #include "spawn.h"
 #include "sha256_mini.h"
+#include "contracts/app_slot_contract.h"
 
 /* Microkit fills this from the system description <map> element */
 uintptr_t spawn_elf_shmem_vaddr;

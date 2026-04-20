@@ -41,6 +41,7 @@
  */
 
 #include "agentos.h"
+#include "contracts/mesh_agent_contract.h"
 #include <stdint.h>
 #include <string.h>
 #include <stdbool.h>

@@ -30,6 +30,7 @@
 
 #define AGENTOS_DEBUG 1
 #include "agentos.h"
+#include "contracts/virtio_blk_contract.h"
 #include "virtio_blk.h"
 #include "arch_barrier.h"
 

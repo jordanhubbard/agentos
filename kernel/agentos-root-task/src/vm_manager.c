@@ -36,6 +36,7 @@
 
 #define AGENTOS_DEBUG 1
 #include "agentos.h"
+#include "contracts/vm_manager_contract.h"
 /* vm_manager.h includes vmm_mux.h (found via -I../../freebsd-vmm in Makefile) */
 #include "vm_manager.h"
 

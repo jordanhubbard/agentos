@@ -27,6 +27,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <microkit.h>
+#include "contracts/linux_vmm_contract.h"
 
 /* ─── x86_64 stub ──────────────────────────────────────────────────────────
  *

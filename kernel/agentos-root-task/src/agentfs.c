@@ -39,6 +39,7 @@
 
 #define AGENTOS_DEBUG 1
 #include "agentos.h"
+#include "contracts/agentfs_contract.h"
 #include <stdint.h>
 #include <stdbool.h>
 

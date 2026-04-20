@@ -23,6 +23,7 @@
 
 #define AGENTOS_DEBUG 1
 #include "agentos.h"
+#include "contracts/cap_audit_log_contract.h"
 #include "ed25519_verify.h"  /* sha512() — used by attestation response */
 
 /* Forward declaration: cap_broker_attest lives in cap_broker.c (same compilation unit via monitor.elf) */

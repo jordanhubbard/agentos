@@ -44,6 +44,7 @@
 
 #define AGENTOS_DEBUG 1
 #include "agentos.h"
+#include "contracts/fault_handler_contract.h"
 
 /* ── Opcodes ──────────────────────────────────────────────────────────────── */
 #define OP_FAULT_STATUS   0x60   /* Query ring state: MR0=count, MR1=head, MR2=cap */

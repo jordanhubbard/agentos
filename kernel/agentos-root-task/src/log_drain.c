@@ -23,6 +23,7 @@
 
 #define AGENTOS_DEBUG 1
 #include "agentos.h"
+#include "contracts/log_drain_contract.h"
 #include "contracts/serial_contract.h"
 
 /* ─── serial_pd output channel ───────────────────────────────────────── */

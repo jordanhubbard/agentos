@@ -26,6 +26,7 @@
 
 #define AGENTOS_DEBUG 1
 #include "agentos.h"
+#include "contracts/quota_pd_contract.h"
 
 /* ── Opcodes ──────────────────────────────────────────────────────────────── */
 #define OP_QUOTA_REGISTER  0x60  /* Register agent: MR1=agent_id, MR2=cpu_ms, MR3=mem_kb */
