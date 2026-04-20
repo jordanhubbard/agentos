@@ -9,11 +9,8 @@
  *           controller maps the same region at 0xE000000 (r — monitoring only)
  *
  * TCP/IP stack:
- *   smoltcp integration is stubbed.  Every stub site is tagged:
- *     SMOLTCP_INTEGRATION_POINT
- *   Wire up smoltcp by implementing the EthernetInterface::transmit /
- *   EthernetInterface::receive callbacks at those sites and linking the
- *   smoltcp C bindings.
+ *   lwIP integration via lwip_sys.c.  net_server_lwip_init() sets up the
+ *   netif and DHCP client.  Packet Rx/Tx is handled by lwIP pbuf chains.
  *
  * virtio-net:
  *   init() probes the MMIO region (net_mmio_vaddr).  If magic/version/
@@ -143,7 +140,7 @@ static void probe_virtio_net(void) {
      * Minimal device initialisation sequence (virtio spec §3.1.1):
      *   ACKNOWLEDGE → DRIVER → FEATURES_OK → DRIVER_OK
      * Full feature negotiation and virtqueue setup is deferred to
-     * SMOLTCP_INTEGRATION_POINT in init().
+     * lwIP_INTEGRATION_NOTE in init().
      */
     mmio_write32(net_mmio_vaddr, VIRTIO_MMIO_STATUS, VIRTIO_STATUS_ACKNOWLEDGE);
     mmio_write32(net_mmio_vaddr, VIRTIO_MMIO_STATUS,
@@ -396,7 +393,7 @@ static microkit_msginfo handle_vnic_send(void) {
                 dst_ring->rx_drops++;
             } else {
                 /*
-                 * SMOLTCP_INTEGRATION_POINT: instead of direct shmem copy,
+                 * lwIP_INTEGRATION_NOTE: instead of direct shmem copy,
                  * inject the packet into the smoltcp loopback interface so
                  * that TCP/UDP demuxing can occur correctly.
                  *
@@ -876,7 +873,7 @@ void init(void) {
  * This handler is reserved for future use:
  *   - A virtio-net RX interrupt would arrive here when the device places
  *     packets onto the used ring.
- *   - SMOLTCP_INTEGRATION_POINT: call smoltcp_iface_poll() and dispatch
+ *   - lwIP_INTEGRATION_NOTE: call smoltcp_iface_poll() and dispatch
  *     any received packets to the appropriate vNIC's RX ring.
  */
 void notified(microkit_channel ch) {

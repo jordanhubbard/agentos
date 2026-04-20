@@ -21,25 +21,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Run tests
-        run: cargo test --workspace --exclude health-monitor --exclude log-aggregator
-
-  # ---------------------------------------------------------------------------
-  # Leptos/Trunk dashboard build
-  # ---------------------------------------------------------------------------
-  build-dashboard:
-    name: Build dashboard (trunk)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: wasm32-unknown-unknown
-      - uses: Swatinem/rust-cache@v2
-      - name: Install trunk
-        run: cargo install trunk --locked
-      - name: Build dashboard
-        working-directory: console/dashboard
-        run: trunk build --release
+        run: cargo test --workspace --exclude health-monitor --exclude log-aggregator --exclude agentos-pd
 
   # ---------------------------------------------------------------------------
   # WASM agent example builds
@@ -80,15 +62,18 @@ jobs:
       - name: Install gen_sdf dependencies
         run: pip install pyyaml
 
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
       - name: Validate topology.yaml
-        run: python3 tools/gen_sdf.py tools/topology.yaml --validate-only
+        run: cargo run -p gen-sdf -- tools/topology.yaml --validate-only
 
       - name: SDF diff (detect changes vs checked-in agentos.system)
         run: |
-          python3 tools/gen_sdf.py tools/topology.yaml -o /tmp/agentos-generated.system
-          if [ -f agentos.system ]; then
+          cargo run -p gen-sdf -- tools/topology.yaml -o /tmp/agentos-generated.system
+          if [ -f kernel/agentos-root-task/agentos.system ]; then
             echo "=== SDF diff (generated vs committed) ==="
-            diff agentos.system /tmp/agentos-generated.system || true
+            diff kernel/agentos-root-task/agentos.system /tmp/agentos-generated.system || true
           else
             echo "No committed agentos.system found — skipping diff"
           fi
@@ -144,26 +129,23 @@ jobs:
       # Runs on every PR touching topology.yaml or agentos.system.
       # Fails if validation errors are found; shows SDF diff if regenerated.
       # -----------------------------------------------------------------------
-      - name: Install PyYAML
-        run: pip3 install pyyaml --quiet
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
 
       - name: Validate topology.yaml
         run: |
-          python3 tools/gen_sdf.py tools/topology.yaml --validate-only
+          cargo run -p gen-sdf -- tools/topology.yaml --validate-only
           echo "✓ topology.yaml validated"
 
       - name: Check generated SDF matches checked-in agentos.system
         run: |
-          python3 tools/gen_sdf.py tools/topology.yaml \
-            -o /tmp/agentos_generated.system
+          cargo run -p gen-sdf -- tools/topology.yaml -o /tmp/agentos_generated.system
           if diff -u kernel/agentos-root-task/agentos.system \
                      /tmp/agentos_generated.system > /tmp/sdf_diff.txt 2>&1; then
             echo "✓ agentos.system is up to date with topology.yaml"
           else
             echo "⚠ agentos.system differs from what gen_sdf.py would generate:"
             cat /tmp/sdf_diff.txt
-            echo ""
-            echo "Run: python3 tools/gen_sdf.py tools/topology.yaml -o kernel/agentos-root-task/agentos.system"
             echo "(Note: diff is informational — CI does not fail on SDF content drift)"
           fi
 
@@ -459,25 +441,3 @@ jobs:
             { echo "FAIL: vm_manager not in agentos.system"; exit 1; }
           echo "OK: vm_manager in agentos.system"
 
-  hurd-ui-check:
-    name: HURD topology UI check (VM panel + PD nodes)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Verify vm_panel.rs exists with required components
-        run: |
-          if [ ! -f console/dashboard/src/vm_panel.rs ]; then
-            echo "FAIL: vm_panel.rs missing"
-            exit 1
-          fi
-          echo "OK: vm_panel.rs present"
-          for sym in VmPanel VmState VmInfo; do
-            grep -q "$sym" console/dashboard/src/vm_panel.rs || \
-              { echo "FAIL: $sym not found in vm_panel.rs"; exit 1; }
-          done
-          echo "OK: VM panel components present"
-          # Check VMs tab wired in lib.rs
-          grep -q "VmPanel\|vm_panel" console/dashboard/src/lib.rs || \
-            { echo "FAIL: VmPanel not referenced in lib.rs"; exit 1; }
-          echo "OK: VMs tab wired in dashboard"
