@@ -1,7 +1,4 @@
-#![no_std]
-extern crate alloc;
-
-use alloc::string::String;
+use std::string::String;
 
 extern "C" {
     fn aos_log(ptr: *const u8, len: usize);
@@ -90,9 +87,3 @@ pub extern "C" fn notified(_channels: u32) {
     log_str(&msg);
 }
 
-// Minimal panic handler required by no_std.
-#[cfg(not(test))]
-#[panic_handler]
-fn panic(_info: &core::panic::PanicInfo) -> ! {
-    loop {}
-}

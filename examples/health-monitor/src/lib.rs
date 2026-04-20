@@ -1,6 +1,3 @@
-#![no_std]
-extern crate alloc;
-
 extern "C" {
     fn aos_log(ptr: *const u8, len: usize);
     fn aos_event_publish(
@@ -69,9 +66,3 @@ pub extern "C" fn notified(_channels: u32) {
     log_str("health-monitor: notification received");
 }
 
-// Minimal panic handler required by no_std.
-#[cfg(not(test))]
-#[panic_handler]
-fn panic(_info: &core::panic::PanicInfo) -> ! {
-    loop {}
-}
