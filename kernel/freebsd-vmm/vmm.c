@@ -36,6 +36,9 @@
 #include "vmm.h"
 #include "vmm_mux.h"
 
+/* Phase 3 — guest OS binding contract (guest_contract.h §3.1 compliance) */
+#include "../../kernel/agentos-root-task/include/contracts/freebsd_vmm_contract.h"
+
 /* ─── Shared memory symbols (set by Microkit linker) ────────────────────── */
 uintptr_t vmm_serial_shmem_vaddr;
 uintptr_t vmm_block_shmem_vaddr;
@@ -85,6 +88,40 @@ static bool vmm_register(void)
     return true;
 }
 
+/* ─── Guest Binding Protocol (guest_contract.h §3.1) ────────────────────── */
+
+/*
+ * freebsd_vmm_binding_init — announce this VMM to the system before boot.
+ *
+ * Mirrors linux_vmm_binding_init().  Steps 2-4 are deferred until the
+ * relevant channels (CH_SERIAL_PD, CH_EVENTBUS_VMM, CH_QUOTA_CTRL) are
+ * wired in the freebsd .system manifest.  vmm_mux_create() opens the
+ * device handles per-slot when those channels are available.
+ *
+ * Step 1: Register with root-task (MSG_VMM_REGISTER) — done by vmm_register().
+ * Step 2: Open serial/net/block handles — done in vmm_mux_create() per slot.
+ * Step 3: Bind devices to guest_id — done in vmm_mux_create() per slot.
+ * Step 4: Register resource quota — TODO: wire CH_QUOTA_CTRL in manifest.
+ * Step 5: Publish EVENT_GUEST_READY — TODO: wire CH_EVENTBUS_VMM in manifest.
+ */
+static void freebsd_vmm_binding_init(void)
+{
+    /* Step 1 already complete — vmm_register() was called before this. */
+    microkit_dbg_puts("freebsd_vmm: binding protocol — "
+                      "device opens handled per-slot in vmm_mux_create()\n");
+
+    /* Step 4: MSG_QUOTA_REGISTER — deferred (CH_QUOTA_CTRL not yet wired) */
+    /* struct vmm_quota_req qr = {                                          */
+    /*     .pd_id      = FREEBSD_VMM_OS_TYPE,                               */
+    /*     .cpu_budget = 0,   \/\* unlimited — MCS scheduler enforces \*\/  */
+    /*     .mem_kb     = 0,   \/\* unlimited — seL4 UTs manage this \*\/    */
+    /* };                                                                    */
+
+    /* Step 5: MSG_EVENTBUS_PUBLISH_BATCH EVENT_GUEST_READY — deferred */
+    microkit_dbg_puts("freebsd_vmm: EVENT_GUEST_READY deferred "
+                      "(CH_EVENTBUS_VMM not yet wired)\n");
+}
+
 /* ─── Microkit entry points ─────────────────────────────────────────────── */
 
 /**
@@ -111,6 +148,9 @@ void vmm_init(void)
         microkit_dbg_puts("vmm_init: FATAL — VMM registration failed\n");
         return;
     }
+
+    /* Phase 3 — complete guest binding protocol announcement */
+    freebsd_vmm_binding_init();
 
     /* Step 2: Initialise the multiplexer (loads UEFI firmware, zeros slots) */
     vmm_mux_init(&g_mux);
