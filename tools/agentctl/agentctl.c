@@ -2293,6 +2293,237 @@ static int run_session_manager(void)
     return 0;
 }
 
+/* ─── VibeOS subcommands ─────────────────────────────────────────────────── */
+/*
+ * vibeos subcommands communicate through the CC bridge socket using the
+ * cc_transact() helper (cc_contract.h wire protocol).  MSG_VIBEOS_* opcodes
+ * are sent directly; the bridge routes them to vibe_engine.
+ *
+ * All output is tab-separated to stdout for easy parsing by scripts.
+ * Exit 0 on success, 1 on error.
+ */
+
+/* MSG_VIBEOS_* opcodes (subset; full list in agentos.h) */
+#define AGENTCTL_MSG_VIBEOS_CREATE   0x2401u
+#define AGENTCTL_MSG_VIBEOS_DESTROY  0x2402u
+#define AGENTCTL_MSG_VIBEOS_STATUS   0x2403u
+#define AGENTCTL_MSG_VIBEOS_LIST     0x2404u
+
+static int vibeos_open(cc_client_t *cc)
+{
+    memset(cc, 0, sizeof(*cc));
+    cc->fd = cc_open_sock(CC_BRIDGE_SOCK);
+    if (cc->fd < 0) return -1;
+    return cc_do_connect(cc);
+}
+
+static void vibeos_close(cc_client_t *cc)
+{
+    cc_do_disconnect(cc);
+    close(cc->fd);
+}
+
+static int cmd_vibeos_create(int argc, char *argv[])
+{
+    uint32_t os_type = VIBEOS_TYPE_LINUX;
+    uint32_t ram_mb  = 256;
+
+    for (int i = 0; i < argc; i++) {
+        if (strcmp(argv[i], "--type") == 0 && i + 1 < argc) {
+            i++;
+            if (strcmp(argv[i], "freebsd") == 0)
+                os_type = VIBEOS_TYPE_FREEBSD;
+            else if (strcmp(argv[i], "linux") == 0)
+                os_type = VIBEOS_TYPE_LINUX;
+            else {
+                fprintf(stderr, "vibeos create: unknown --type %s "
+                        "(expected linux or freebsd)\n", argv[i]);
+                return 1;
+            }
+        } else if (strcmp(argv[i], "--arch") == 0 && i + 1 < argc) {
+            i++;
+            /* arch is informational for now; vibe_engine infers from os_type */
+        } else if (strcmp(argv[i], "--ram") == 0 && i + 1 < argc) {
+            i++;
+            ram_mb = (uint32_t)atoi(argv[i]);
+            if (ram_mb == 0) {
+                fprintf(stderr, "vibeos create: --ram must be a positive integer\n");
+                return 1;
+            }
+        }
+    }
+
+    cc_client_t cc;
+    if (vibeos_open(&cc) < 0) {
+        fprintf(stderr, "vibeos create: cannot connect to %s: %s\n",
+                CC_BRIDGE_SOCK, strerror(errno));
+        return 1;
+    }
+
+    cc_wire_resp_t r;
+    if (cc_transact(&cc, AGENTCTL_MSG_VIBEOS_CREATE,
+                    os_type, ram_mb, 0,
+                    NULL, 0, &r) < 0) {
+        vibeos_close(&cc);
+        fprintf(stderr, "vibeos create: transact failed\n");
+        return 1;
+    }
+    vibeos_close(&cc);
+
+    if (r.mr[0] != 0) {
+        fprintf(stderr, "vibeos create: error 0x%x\n", r.mr[0]);
+        return 1;
+    }
+
+    /* tab-separated: handle\tos_type_name\tram_mb */
+    printf("%u\t%s\t%u\n", r.mr[1],
+           os_type == VIBEOS_TYPE_FREEBSD ? "freebsd" : "linux",
+           ram_mb);
+    return 0;
+}
+
+static int cmd_vibeos_list(void)
+{
+    cc_client_t cc;
+    if (vibeos_open(&cc) < 0) {
+        fprintf(stderr, "vibeos list: cannot connect to %s: %s\n",
+                CC_BRIDGE_SOCK, strerror(errno));
+        return 1;
+    }
+
+    cc_wire_resp_t r;
+    if (cc_transact(&cc, AGENTCTL_MSG_VIBEOS_LIST,
+                    0, 0, 0,
+                    NULL, 0, &r) < 0) {
+        vibeos_close(&cc);
+        fprintf(stderr, "vibeos list: transact failed\n");
+        return 1;
+    }
+    vibeos_close(&cc);
+
+    if (r.mr[0] != 0) {
+        fprintf(stderr, "vibeos list: error 0x%x\n", r.mr[0]);
+        return 1;
+    }
+
+    /* MR1=count; handles packed in MR2, MR3 (up to 2 in the wire frame) */
+    uint32_t count = r.mr[1];
+    printf("count\t%u\n", count);
+    if (count >= 1) printf("handle\t%u\n", r.mr[2]);
+    if (count >= 2) printf("handle\t%u\n", r.mr[3]);
+    return 0;
+}
+
+static int cmd_vibeos_status(uint32_t handle)
+{
+    cc_client_t cc;
+    if (vibeos_open(&cc) < 0) {
+        fprintf(stderr, "vibeos status: cannot connect to %s: %s\n",
+                CC_BRIDGE_SOCK, strerror(errno));
+        return 1;
+    }
+
+    cc_wire_resp_t r;
+    if (cc_transact(&cc, AGENTCTL_MSG_VIBEOS_STATUS,
+                    handle, 0, 0,
+                    NULL, 0, &r) < 0) {
+        vibeos_close(&cc);
+        fprintf(stderr, "vibeos status: transact failed\n");
+        return 1;
+    }
+    vibeos_close(&cc);
+
+    if (r.mr[0] != 0) {
+        fprintf(stderr, "vibeos status: error 0x%x\n", r.mr[0]);
+        return 1;
+    }
+
+    static const char *state_names[] = {
+        "creating", "booting", "running", "paused", "dead", "migrating", "snapshot"
+    };
+    /* vos_status reply: MR0=ok MR1=handle MR2=state MR3=os_type */
+    uint32_t vstate  = r.mr[2];
+    uint32_t os_type = r.mr[3];
+
+    /* tab-separated: handle\tstate\tos_type */
+    printf("%u\t%s\t%s\n",
+           handle,
+           vstate < 7 ? state_names[vstate] : "unknown",
+           os_type == VIBEOS_TYPE_FREEBSD ? "freebsd" : "linux");
+    return 0;
+}
+
+static int cmd_vibeos_destroy(uint32_t handle)
+{
+    cc_client_t cc;
+    if (vibeos_open(&cc) < 0) {
+        fprintf(stderr, "vibeos destroy: cannot connect to %s: %s\n",
+                CC_BRIDGE_SOCK, strerror(errno));
+        return 1;
+    }
+
+    cc_wire_resp_t r;
+    if (cc_transact(&cc, AGENTCTL_MSG_VIBEOS_DESTROY,
+                    handle, 0, 0,
+                    NULL, 0, &r) < 0) {
+        vibeos_close(&cc);
+        fprintf(stderr, "vibeos destroy: transact failed\n");
+        return 1;
+    }
+    vibeos_close(&cc);
+
+    if (r.mr[0] != 0) {
+        fprintf(stderr, "vibeos destroy: error 0x%x\n", r.mr[0]);
+        return 1;
+    }
+
+    printf("destroyed\t%u\n", handle);
+    return 0;
+}
+
+static void usage_vibeos(void)
+{
+    fprintf(stderr,
+            "Usage:\n"
+            "  agentctl vibeos create --type <linux|freebsd> [--arch aarch64] [--ram <mb>]\n"
+            "  agentctl vibeos list\n"
+            "  agentctl vibeos status <handle>\n"
+            "  agentctl vibeos destroy <handle>\n"
+            "\n"
+            "Output is tab-separated.  Requires a running agentOS with cc_pd bridge at:\n"
+            "  %s\n",
+            CC_BRIDGE_SOCK);
+}
+
+static int cmd_vibeos(int argc, char *argv[])
+{
+    if (argc < 1) {
+        usage_vibeos();
+        return 1;
+    }
+    const char *sub = argv[0];
+    if (strcmp(sub, "create") == 0) {
+        return cmd_vibeos_create(argc - 1, argv + 1);
+    } else if (strcmp(sub, "list") == 0) {
+        return cmd_vibeos_list();
+    } else if (strcmp(sub, "status") == 0) {
+        if (argc < 2) {
+            fprintf(stderr, "vibeos status: expected <handle>\n");
+            return 1;
+        }
+        return cmd_vibeos_status((uint32_t)atoi(argv[1]));
+    } else if (strcmp(sub, "destroy") == 0) {
+        if (argc < 2) {
+            fprintf(stderr, "vibeos destroy: expected <handle>\n");
+            return 1;
+        }
+        return cmd_vibeos_destroy((uint32_t)atoi(argv[1]));
+    }
+    fprintf(stderr, "vibeos: unknown subcommand '%s'\n", sub);
+    usage_vibeos();
+    return 1;
+}
+
 /* ─── Usage ──────────────────────────────────────────────────────────────── */
 
 static void usage(const char *prog)
@@ -2304,6 +2535,7 @@ static void usage(const char *prog)
             "  %s              Pre-boot menu: select arch/board/guest, launch QEMU\n"
             "  %s -s           Post-boot CC client (connect to cc_pd bridge)\n"
             "  %s --sessions   Same as -s\n"
+            "  %s vibeos <sub> VibeOS lifecycle (requires running cc_pd bridge)\n"
             "  %s --help       Show this help\n"
             "\n"
             "Run from the agentOS project root directory.\n"
@@ -2318,6 +2550,12 @@ static void usage(const char *prog)
             "  Exercises the full API: guests, devices, framebuffer, log stream,\n"
             "  input injection, snapshot/restore, agent pool, session management.\n"
             "\n"
+            "VibeOS subcommands (vibeos):\n"
+            "  vibeos create --type <linux|freebsd> [--arch aarch64] [--ram <mb>]\n"
+            "  vibeos list\n"
+            "  vibeos status <handle>\n"
+            "  vibeos destroy <handle>\n"
+            "\n"
             "CC wire protocol:\n"
             "  Binary framing over Unix socket (see cc_wire_req_t / cc_wire_resp_t).\n"
             "  Maps directly to seL4 Microkit MR layout used by cc_pd.\n"
@@ -2326,14 +2564,20 @@ static void usage(const char *prog)
             "Example:\n"
             "  make deps && make build TARGET_ARCH=aarch64\n"
             "  ./tools/agentctl/agentctl          # pre-boot\n"
-            "  ./tools/agentctl/agentctl -s       # post-boot CC client\n",
-            AGENTCTL_VERSION, prog, prog, prog, prog, CC_BRIDGE_SOCK);
+            "  ./tools/agentctl/agentctl -s       # post-boot CC client\n"
+            "  ./tools/agentctl/agentctl vibeos create --type linux --ram 256\n"
+            "  ./tools/agentctl/agentctl vibeos list\n",
+            AGENTCTL_VERSION, prog, prog, prog, prog, prog, CC_BRIDGE_SOCK);
 }
 
 /* ─── main ───────────────────────────────────────────────────────────────── */
 
 int main(int argc, char *argv[])
 {
+    /* vibeos subcommand — non-interactive, no ncurses */
+    if (argc >= 2 && strcmp(argv[1], "vibeos") == 0)
+        return cmd_vibeos(argc - 2, argv + 2);
+
     bool sessions_mode = false;
 
     for (int i = 1; i < argc; i++) {

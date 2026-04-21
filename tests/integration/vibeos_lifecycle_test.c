@@ -1,20 +1,18 @@
 /*
  * vibeos_lifecycle_test.c — integration test for the vibeOS OS lifecycle API
  *
- * Tests the full vibeOS OS lifecycle over the vibe_engine channel:
- *   1. VOS_CREATE — instantiate a new OS instance via MSG_VIBEOS_CREATE
- *   2. VOS_LIST   — enumerate active instances via MSG_VIBEOS_LIST
- *   3. VOS_STATUS — query the created instance's state
- *   4. VOS_DESTROY — tear down the instance
+ * Tests the full vibeOS OS lifecycle via MSG_VIBEOS_* opcodes on CH_VIBEOS_ENGINE:
+ *   1. MSG_VIBEOS_CREATE  — instantiate a new OS instance
+ *   2. MSG_VIBEOS_LIST    — enumerate active instances, verify count increases
+ *   3. MSG_VIBEOS_STATUS  — query the created instance's state
+ *   4. MSG_VIBEOS_DESTROY — tear down the instance
+ *   5. MSG_VIBEOS_LIST    — verify count returns to baseline
  *
- * vibeOS opcodes are in the 0xB000 range (see agentos.h convention and
- * contracts/vibeos/interface.h which uses VOS_OP_BASE = 0x5600).  The
- * integration test exercises both the legacy MSG_VIBEOS_* labels (as
- * described in the Phase 5 spec) and accepts AOS_ERR_UNIMPL for any
- * operation not yet fully wired.
+ * Channel: CH_VIBEOS_ENGINE (== CH_VIBEENGINE, 40) — the vibe_engine PD
+ *          serves both hot-swap and vibeOS lifecycle RPCs in this topology.
  *
- * Channel: CH_VIBEENGINE (40) — the vibe_engine PD serves both the hot-swap
- *          protocol and the vibeOS lifecycle RPCs in the current topology.
+ * AOS_ERR_NOSYS / VIBEOS_ERR_NOT_IMPL are accepted as graceful TODO-skips
+ * when the vm_manager is not wired in the simulator topology.
  *
  * Copyright (c) 2026 The agentOS Project
  * SPDX-License-Identifier: BSD-2-Clause
@@ -22,136 +20,139 @@
 
 #include "../harness/test_framework.h"
 #include "../../kernel/agentos-root-task/include/agentos.h"
-
-/*
- * vibeOS lifecycle opcodes sent to CH_VIBEENGINE.
- * These are in the 0xB000 range as described in the Phase 5 spec.
- * They are distinct from the vibe-engine hot-swap opcodes (0x40–0x4B).
- *
- * TODO: replace with #include "../../contracts/vibeos/interface.h"
- *       once VOS_OP_* constants are finalised at 0x5600.
- */
-#define MSG_VIBEOS_CREATE   0xB001u  /* create OS instance; MR1=os_type MR2=ram_mb */
-#define MSG_VIBEOS_DESTROY  0xB002u  /* destroy instance; MR1=handle */
-#define MSG_VIBEOS_STATUS   0xB003u  /* query state; MR1=handle */
-#define MSG_VIBEOS_LIST     0xB004u  /* list instances; → MR1=count */
-#define MSG_VIBEOS_ATTACH   0xB005u  /* attach service; MR1=handle MR2=svc_type */
-#define MSG_VIBEOS_DETACH   0xB006u  /* detach service; MR1=handle MR2=svc_type */
-
-/* OS type codes matching VOS_OS_* in contracts/vibeos/interface.h */
-#define VIBEOS_OS_LINUX   0u
-#define VIBEOS_OS_FREEBSD 1u
+#include "../../kernel/agentos-root-task/include/contracts/vibeos_contract.h"
 
 void run_vibeos_lifecycle_tests(void)
 {
     TEST_SECTION("vibeos_lifecycle");
 
-    const microkit_channel ch = (microkit_channel)CH_VIBEENGINE;
+    const microkit_channel ch = (microkit_channel)CH_VIBEOS_ENGINE;
+
+    /* ── Baseline: query list count before any creates ────────────────── */
+
+    microkit_mr_set(0, (uint64_t)MSG_VIBEOS_LIST);
+    microkit_mr_set(1, 0);  /* offset */
+    (void)microkit_ppcall(ch, microkit_msginfo_new(MSG_VIBEOS_LIST, 2));
+    uint64_t list_rc_before = microkit_mr_get(0);
+    uint64_t count_before   = microkit_mr_get(1);
+    {
+        if (list_rc_before == VIBEOS_OK) {
+            _tf_ok("vibeos_lifecycle: MSG_VIBEOS_LIST baseline returns VIBEOS_OK");
+        } else {
+            _tf_fail_point("vibeos_lifecycle: MSG_VIBEOS_LIST baseline returns VIBEOS_OK",
+                           "unexpected error code");
+        }
+    }
 
     /* ── Step 1: CREATE ───────────────────────────────────────────────── */
 
     microkit_mr_set(0, (uint64_t)MSG_VIBEOS_CREATE);
-    microkit_mr_set(1, (uint64_t)VIBEOS_OS_LINUX);  /* os_type */
-    microkit_mr_set(2, 128);                         /* ram_mb */
-    microkit_mr_set(3, 1);                           /* vcpus */
+    microkit_mr_set(1, (uint64_t)VIBEOS_TYPE_LINUX);  /* os_type */
+    microkit_mr_set(2, 128);                           /* ram_mb */
+    microkit_mr_set(3, VIBEOS_DEV_SERIAL);             /* dev_flags */
     (void)microkit_ppcall(ch, microkit_msginfo_new(MSG_VIBEOS_CREATE, 4));
     uint64_t create_rc = microkit_mr_get(0);
     uint64_t handle    = microkit_mr_get(1);
     {
-        if (create_rc == AOS_OK || create_rc == AOS_ERR_UNIMPL ||
-            create_rc == AOS_ERR_NOSPC || create_rc == AOS_ERR_INVAL) {
-            _tf_ok("vibeos_lifecycle: VOS_CREATE returns ok or structured error");
+        if (create_rc == VIBEOS_OK || create_rc == VIBEOS_ERR_OOM ||
+            create_rc == (uint64_t)AOS_ERR_UNIMPL) {
+            _tf_ok("vibeos_lifecycle: MSG_VIBEOS_CREATE returns ok or structured error");
         } else {
-            _tf_fail_point("vibeos_lifecycle: VOS_CREATE returns ok or structured error",
+            _tf_fail_point("vibeos_lifecycle: MSG_VIBEOS_CREATE returns ok or structured error",
                            "unexpected error code");
         }
     }
 
-    /* ── Step 2: LIST ─────────────────────────────────────────────────── */
+    if (create_rc != VIBEOS_OK) {
+        _tf_puts("# vibeos_lifecycle: CREATE did not succeed; "
+                 "skipping dependent checks\n");
+
+        /* Emit TODO-skip points for the dependent steps */
+        _tf_total++; _tf_pass++;
+        _tf_puts("ok "); _tf_put_uint((uint64_t)_tf_total);
+        _tf_puts(" - vibeos_lifecycle: MSG_VIBEOS_LIST count after create # TODO needs hardware\n");
+
+        _tf_total++; _tf_pass++;
+        _tf_puts("ok "); _tf_put_uint((uint64_t)_tf_total);
+        _tf_puts(" - vibeos_lifecycle: MSG_VIBEOS_STATUS after create # TODO needs hardware\n");
+
+        _tf_total++; _tf_pass++;
+        _tf_puts("ok "); _tf_put_uint((uint64_t)_tf_total);
+        _tf_puts(" - vibeos_lifecycle: MSG_VIBEOS_DESTROY returns ok # TODO needs hardware\n");
+
+        _tf_total++; _tf_pass++;
+        _tf_puts("ok "); _tf_put_uint((uint64_t)_tf_total);
+        _tf_puts(" - vibeos_lifecycle: MSG_VIBEOS_LIST count restored # TODO needs hardware\n");
+        return;
+    }
+
+    /* ── Step 2: LIST — verify count increased ───────────────────────── */
 
     microkit_mr_set(0, (uint64_t)MSG_VIBEOS_LIST);
-    (void)microkit_ppcall(ch, microkit_msginfo_new(MSG_VIBEOS_LIST, 1));
+    microkit_mr_set(1, 0);
+    (void)microkit_ppcall(ch, microkit_msginfo_new(MSG_VIBEOS_LIST, 2));
+    {
+        uint64_t rc    = microkit_mr_get(0);
+        uint64_t count = microkit_mr_get(1);
+        if (rc == VIBEOS_OK && count == count_before + 1) {
+            _tf_ok("vibeos_lifecycle: MSG_VIBEOS_LIST count increased by 1 after create");
+        } else if (rc == VIBEOS_OK) {
+            _tf_fail_point("vibeos_lifecycle: MSG_VIBEOS_LIST count increased by 1 after create",
+                           "count did not increase by exactly 1");
+        } else {
+            _tf_fail_point("vibeos_lifecycle: MSG_VIBEOS_LIST count increased by 1 after create",
+                           "MSG_VIBEOS_LIST returned error");
+        }
+        (void)count;
+    }
+
+    /* ── Step 3: STATUS — verify handle is known ────────────────────── */
+
+    microkit_mr_set(0, (uint64_t)MSG_VIBEOS_STATUS);
+    microkit_mr_set(1, handle);
+    (void)microkit_ppcall(ch, microkit_msginfo_new(MSG_VIBEOS_STATUS, 2));
     {
         uint64_t rc = microkit_mr_get(0);
-        if (rc == AOS_OK || rc == AOS_ERR_UNIMPL) {
-            _tf_ok("vibeos_lifecycle: VOS_LIST returns ok or unimpl");
+        if (rc == VIBEOS_OK) {
+            _tf_ok("vibeos_lifecycle: MSG_VIBEOS_STATUS after create returns VIBEOS_OK");
         } else {
-            _tf_fail_point("vibeos_lifecycle: VOS_LIST returns ok or unimpl",
+            _tf_fail_point("vibeos_lifecycle: MSG_VIBEOS_STATUS after create returns VIBEOS_OK",
                            "unexpected error code");
         }
     }
 
-    /* ── Step 3: STATUS (only if CREATE succeeded) ───────────────────── */
+    /* ── Step 4: DESTROY ────────────────────────────────────────────── */
 
-    if (create_rc == AOS_OK) {
-        microkit_mr_set(0, (uint64_t)MSG_VIBEOS_STATUS);
-        microkit_mr_set(1, handle);
-        (void)microkit_ppcall(ch, microkit_msginfo_new(MSG_VIBEOS_STATUS, 2));
+    microkit_mr_set(0, (uint64_t)MSG_VIBEOS_DESTROY);
+    microkit_mr_set(1, handle);
+    (void)microkit_ppcall(ch, microkit_msginfo_new(MSG_VIBEOS_DESTROY, 2));
+    {
         uint64_t rc = microkit_mr_get(0);
-        if (rc == AOS_OK || rc == AOS_ERR_NOT_FOUND) {
-            _tf_ok("vibeos_lifecycle: VOS_STATUS after create returns ok or not-found");
+        if (rc == VIBEOS_OK) {
+            _tf_ok("vibeos_lifecycle: MSG_VIBEOS_DESTROY returns VIBEOS_OK");
         } else {
-            _tf_fail_point(
-                "vibeos_lifecycle: VOS_STATUS after create returns ok or not-found",
-                "unexpected error code");
-        }
-    } else {
-        _tf_total++; _tf_pass++;
-        _tf_puts("ok "); _tf_put_uint((uint64_t)_tf_total);
-        _tf_puts(" - vibeos_lifecycle: VOS_STATUS (skipped, CREATE unimpl) # TODO\n");
-    }
-
-    /* ── Step 4: ATTACH a serial service ────────────────────────────── */
-
-    if (create_rc == AOS_OK) {
-        microkit_mr_set(0, (uint64_t)MSG_VIBEOS_ATTACH);
-        microkit_mr_set(1, handle);
-        microkit_mr_set(2, 1u);  /* VOS_SVC_SERIAL = bit 0 */
-        (void)microkit_ppcall(ch, microkit_msginfo_new(MSG_VIBEOS_ATTACH, 3));
-        uint64_t rc = microkit_mr_get(0);
-        if (rc == AOS_OK || rc == AOS_ERR_UNIMPL || rc == AOS_ERR_NOT_FOUND) {
-            _tf_ok("vibeos_lifecycle: VOS_ATTACH serial returns ok, unimpl, or not-found");
-        } else {
-            _tf_fail_point(
-                "vibeos_lifecycle: VOS_ATTACH serial returns ok, unimpl, or not-found",
-                "unexpected error code");
-        }
-    } else {
-        _tf_total++; _tf_pass++;
-        _tf_puts("ok "); _tf_put_uint((uint64_t)_tf_total);
-        _tf_puts(" - vibeos_lifecycle: VOS_ATTACH (skipped, CREATE unimpl) # TODO\n");
-    }
-
-    /* ── Step 5: DESTROY ─────────────────────────────────────────────── */
-
-    if (create_rc == AOS_OK) {
-        microkit_mr_set(0, (uint64_t)MSG_VIBEOS_DESTROY);
-        microkit_mr_set(1, handle);
-        (void)microkit_ppcall(ch, microkit_msginfo_new(MSG_VIBEOS_DESTROY, 2));
-        uint64_t rc = microkit_mr_get(0);
-        if (rc == AOS_OK || rc == AOS_ERR_NOT_FOUND || rc == AOS_ERR_UNIMPL) {
-            _tf_ok("vibeos_lifecycle: VOS_DESTROY returns ok, not-found, or unimpl");
-        } else {
-            _tf_fail_point("vibeos_lifecycle: VOS_DESTROY returns ok, not-found, or unimpl",
+            _tf_fail_point("vibeos_lifecycle: MSG_VIBEOS_DESTROY returns VIBEOS_OK",
                            "unexpected error code");
         }
-    } else {
-        _tf_total++; _tf_pass++;
-        _tf_puts("ok "); _tf_put_uint((uint64_t)_tf_total);
-        _tf_puts(" - vibeos_lifecycle: VOS_DESTROY (skipped, CREATE unimpl) # TODO\n");
     }
 
-    /* ── Step 6: LIST after DESTROY — count must not increase ─────────── */
+    /* ── Step 5: LIST after DESTROY — count must return to baseline ── */
 
     microkit_mr_set(0, (uint64_t)MSG_VIBEOS_LIST);
-    (void)microkit_ppcall(ch, microkit_msginfo_new(MSG_VIBEOS_LIST, 1));
+    microkit_mr_set(1, 0);
+    (void)microkit_ppcall(ch, microkit_msginfo_new(MSG_VIBEOS_LIST, 2));
     {
-        uint64_t rc = microkit_mr_get(0);
-        if (rc == AOS_OK || rc == AOS_ERR_UNIMPL) {
-            _tf_ok("vibeos_lifecycle: VOS_LIST after destroy returns ok or unimpl");
+        uint64_t rc    = microkit_mr_get(0);
+        uint64_t count = microkit_mr_get(1);
+        if (rc == VIBEOS_OK && count == count_before) {
+            _tf_ok("vibeos_lifecycle: MSG_VIBEOS_LIST count restored after destroy");
+        } else if (rc == VIBEOS_OK) {
+            _tf_fail_point("vibeos_lifecycle: MSG_VIBEOS_LIST count restored after destroy",
+                           "count did not return to baseline");
         } else {
-            _tf_fail_point("vibeos_lifecycle: VOS_LIST after destroy returns ok or unimpl",
-                           "unexpected error code");
+            _tf_fail_point("vibeos_lifecycle: MSG_VIBEOS_LIST count restored after destroy",
+                           "MSG_VIBEOS_LIST returned error after destroy");
         }
+        (void)count;
     }
 }

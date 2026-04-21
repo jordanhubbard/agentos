@@ -210,6 +210,42 @@ typedef struct __attribute__((packed)) {
     uint32_t node_id;           /* mesh node (0 = local) */
 } vibeos_info_t;
 
+/* ─── Additional state constants ─────────────────────────────────────────── */
+
+/* VIBEOS_STATE_SNAPSHOT: transient state during snapshot capture */
+#define VIBEOS_STATE_SNAPSHOT   6
+
+/* ─── Opcode aliases (VIBEOS_OP_* → MSG_VIBEOS_*) ───────────────────────── */
+/*
+ * The vos_instance table path (handle_vos_* family) dispatches via
+ * VIBEOS_OP_* constants.  They map 1:1 to the MSG_VIBEOS_* wire opcodes
+ * defined in agentos.h so callers need only one set of constants.
+ */
+#define VIBEOS_OP_CREATE         MSG_VIBEOS_CREATE
+#define VIBEOS_OP_DESTROY        MSG_VIBEOS_DESTROY
+#define VIBEOS_OP_STATUS         MSG_VIBEOS_STATUS
+#define VIBEOS_OP_LIST           MSG_VIBEOS_LIST
+#define VIBEOS_OP_BIND_DEVICE    MSG_VIBEOS_BIND_DEVICE
+#define VIBEOS_OP_UNBIND_DEVICE  MSG_VIBEOS_UNBIND_DEVICE
+#define VIBEOS_OP_SNAPSHOT       MSG_VIBEOS_SNAPSHOT
+#define VIBEOS_OP_RESTORE        MSG_VIBEOS_RESTORE
+#define VIBEOS_OP_MIGRATE        MSG_VIBEOS_MIGRATE
+#define VIBEOS_OP_BOOT           MSG_VIBEOS_BOOT
+#define VIBEOS_OP_LOAD_MODULE    MSG_VIBEOS_LOAD_MODULE
+#define VIBEOS_OP_CHECK_SERVICE  MSG_VIBEOS_CHECK_SERVICE_EXISTS
+
+/* ─── Channel aliases ────────────────────────────────────────────────────── */
+
+/* CH_VIBEOS_ENGINE: authoritative alias for CH_VIBEENGINE (agentos.h) */
+#define CH_VIBEOS_ENGINE         CH_VIBEENGINE
+
+/*
+ * CH_VMM: the channel from vibe_engine's perspective to the vm_manager PD.
+ * vibe_engine.c calls OP_VM_CREATE/DESTROY/START/STOP/INFO/SNAPSHOT/RESTORE
+ * via this channel.  Matches CH_VM_MANAGER in agentos.h.
+ */
+#define CH_VMM                   CH_VM_MANAGER
+
 /* ─── Error codes ────────────────────────────────────────────────────────── */
 
 enum vibeos_error {
@@ -225,4 +261,11 @@ enum vibeos_error {
     VIBEOS_ERR_BAD_MODULE_TYPE    = 9,   /* MSG_VIBEOS_LOAD_MODULE: unknown module_type */
     VIBEOS_ERR_BAD_STATE          = 10,  /* operation not valid for current OS state */
     VIBEOS_ERR_BAD_FUNC_CLASS     = 11,  /* MSG_VIBEOS_CHECK_SERVICE_EXISTS: invalid func_class */
+
+    /* vos_instance path error codes */
+    VIBEOS_ERR_BAD_TYPE           = 12,  /* invalid os_type or dev_type bitmask */
+    VIBEOS_ERR_OOM                = 13,  /* no free slot or vm_manager refused alloc */
+    VIBEOS_ERR_NO_HANDLE          = 14,  /* handle not found in vos_instance table */
+    VIBEOS_ERR_WRONG_STATE        = 15,  /* operation invalid for current vos state */
+    VIBEOS_ERR_NOT_IMPL           = 16,  /* operation exists in wire format but not yet implemented */
 };
