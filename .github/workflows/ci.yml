@@ -173,6 +173,63 @@ jobs:
           if-no-files-found: ignore
 
   # ---------------------------------------------------------------------------
+  # Phase 5 contract tests — run all PD contract test suites via xtask
+  # Mirrors the build-and-test job structure; runs on qemu_virt_aarch64 only.
+  # ---------------------------------------------------------------------------
+  contract-tests:
+    name: Phase 5 contract tests (qemu_virt_aarch64)
+    runs-on: ubuntu-24.04
+    needs: validate-topology
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install clang / lld / QEMU
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            clang lld \
+            qemu-system-arm \
+            python3
+
+      - name: Cache Microkit SDK
+        id: cache-sdk-ct
+        uses: actions/cache@v4
+        with:
+          path: microkit-sdk-2.1.0
+          key: microkit-sdk-2.1.0-linux-x86-64
+
+      - name: Download Microkit SDK
+        if: steps.cache-sdk-ct.outputs.cache-hit != 'true'
+        run: |
+          curl -fsSL \
+            https://github.com/seL4/microkit/releases/download/2.1.0/microkit-sdk-2.1.0-linux-x86-64.tar.gz \
+            -o microkit-sdk.tar.gz
+          tar -xzf microkit-sdk.tar.gz
+          rm microkit-sdk.tar.gz
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build agentOS with IPC harness (CONFIG_IPC_HARNESS=1)
+        run: |
+          make BOARD=qemu_virt_aarch64 CONFIG_IPC_HARNESS=1
+
+      - name: Run contract tests
+        run: |
+          make test BOARD=qemu_virt_aarch64
+        timeout-minutes: 5
+
+      - name: Upload contract test artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: contract-tests-qemu_virt_aarch64
+          path: build/qemu_virt_aarch64/agentos.img
+          if-no-files-found: ignore
+
+  # ---------------------------------------------------------------------------
   # Dedicated QEMU boot test — riscv64 serial banner check
   # ---------------------------------------------------------------------------
   boot-test:

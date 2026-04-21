@@ -51,6 +51,9 @@ void run_trace_recorder_tests(microkit_channel ch);
 void run_oom_killer_tests(microkit_channel ch);
 void run_time_partition_tests(microkit_channel ch);
 void run_vm_manager_tests(microkit_channel ch);
+void run_serial_pd_tests(microkit_channel ch);
+void run_net_pd_tests(microkit_channel ch);
+void run_block_pd_tests(microkit_channel ch);
 
 /* ── Forward declarations for integration test suites ────────────────────── */
 
@@ -89,6 +92,9 @@ void init(void)
     run_oom_killer_tests(0);         /* placeholder: oom_killer channel TBD */
     run_time_partition_tests(0);     /* placeholder: time_partition channel TBD */
     run_vm_manager_tests((microkit_channel)CH_VM_MANAGER);
+    run_serial_pd_tests((microkit_channel)CH_SERIAL_PD);
+    run_net_pd_tests((microkit_channel)CH_NET_PD);
+    run_block_pd_tests((microkit_channel)CH_BLOCK_PD);
 
     /* ── Integration tests ───────────────────────────────────────────────── */
     run_guest_binding_tests();
