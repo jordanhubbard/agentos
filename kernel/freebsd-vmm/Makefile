@@ -14,7 +14,7 @@ BOARD        ?= qemu_virt_aarch64
 MICROKIT_SDK ?= ../../microkit-sdk-2.1.0
 LIBVMM_DIR   ?= ../../libs/libvmm
 BUILD_DIR    ?= build
-EDK2_FD      ?= ../../guest-images/edk2-aarch64-code.fd
+EDK2_FD      ?= $(HOME)/.local/agentos-images/edk2-aarch64-code.fd
 FREEBSD_DTB  ?= $(BUILD_DIR)/freebsd-guest.dtb
 
 MICROKIT_INCLUDE := $(MICROKIT_SDK)/board/$(BOARD)/include
@@ -26,6 +26,8 @@ CC      := clang --target=aarch64-none-elf
 LD      := ld.lld
 OBJCOPY := llvm-objcopy
 
+AGENTOS_INCLUDE := ../agentos-root-task/include
+
 CFLAGS := \
     -mstrict-align \
     -ffreestanding \
@@ -34,6 +36,7 @@ CFLAGS := \
     -Wall -Wextra \
     -I$(MICROKIT_INCLUDE) \
     -I$(LIBVMM_INCLUDE) \
+    -I$(AGENTOS_INCLUDE) \
     -I.
 
 LDFLAGS := \

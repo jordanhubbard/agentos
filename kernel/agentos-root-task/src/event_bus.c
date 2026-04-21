@@ -16,6 +16,7 @@
 
 #define AGENTOS_DEBUG 1
 #include "agentos.h"
+#include "contracts/eventbus_contract.h"
 
 /* The ring buffer lives in shared memory - Microkit sets this via setvar_vaddr */
 uintptr_t eventbus_ring_vaddr;
@@ -60,7 +61,7 @@ static int eventbus_write(uint32_t kind, uint32_t source_pd,
     if (next_head == ring->tail) {
         /* Ring full — increment overflow counter and signal the caller */
         ring->overflow_count++;
-        console_log(2, 2, "[event_bus] WARNING: ring buffer full, dropping event\n");
+        log_drain_write(2, 2, "[event_bus] WARNING: ring buffer full, dropping event\n");
         return EVENTBUS_ERR_OVERFLOW;
     }
     
@@ -95,7 +96,7 @@ static void eventbus_notify_all(void) {
  * init() - EventBus is passive but still gets init() called
  */
 void init(void) {
-    console_log(2, 2, "[event_bus] Initializing...\n");
+    log_drain_write(2, 2, "[event_bus] Initializing...\n");
     
     /* Clear subscriber table */
     for (int i = 0; i < MAX_SUBSCRIBERS; i++) {
@@ -103,7 +104,7 @@ void init(void) {
     }
     
     /* Wait to be initialized by the monitor via PPC */
-    console_log(2, 2, "[event_bus] Waiting for monitor init call...\n");
+    log_drain_write(2, 2, "[event_bus] Waiting for monitor init call...\n");
 }
 
 /*
@@ -114,7 +115,7 @@ void init(void) {
 void notified(microkit_channel ch) {
     /* Channel 6: AgentFS notify on mutations (async mutation event) */
     if (ch == 6) {
-        console_log(2, 2, "[event_bus] AgentFS mutation notification received\n");
+        log_drain_write(2, 2, "[event_bus] AgentFS mutation notification received\n");
     } else {
         agentos_log_channel("event_bus", ch);
     }
@@ -133,14 +134,14 @@ microkit_msginfo protected(microkit_channel ch, microkit_msginfo msg) {
     
     switch (tag) {
         case MSG_EVENTBUS_INIT: {
-            console_log(2, 2, "[event_bus] Init from monitor\n");
+            log_drain_write(2, 2, "[event_bus] Init from monitor\n");
             eventbus_init_ring();
-            console_log(2, 2, "[event_bus] Ring buffer initialized\n");
+            log_drain_write(2, 2, "[event_bus] Ring buffer initialized\n");
             
             /* Announce we're ready */
             eventbus_write(MSG_EVENT_SYSTEM_READY, 0, NULL, 0);
             
-            console_log(2, 2, "[event_bus] READY\n");
+            log_drain_write(2, 2, "[event_bus] READY\n");
             return microkit_msginfo_new(MSG_EVENTBUS_READY, 0);
         }
         
@@ -158,14 +159,14 @@ microkit_msginfo protected(microkit_channel ch, microkit_msginfo msg) {
                     subscribers[i].last_seq   = event_seq;
                     sub_count++;
                     
-                    console_log(2, 2, "[event_bus] New subscriber registered\n");
+                    log_drain_write(2, 2, "[event_bus] New subscriber registered\n");
                     microkit_mr_set(0, i); /* return subscription handle */
                     return microkit_msginfo_new(0, 1);
                 }
             }
             
             /* No free slots */
-            console_log(2, 2, "[event_bus] ERROR: subscriber table full\n");
+            log_drain_write(2, 2, "[event_bus] ERROR: subscriber table full\n");
             return microkit_msginfo_new(0xFFFF, 0);
         }
         
@@ -174,7 +175,7 @@ microkit_msginfo protected(microkit_channel ch, microkit_msginfo msg) {
             if (handle < MAX_SUBSCRIBERS && subscribers[handle].active) {
                 subscribers[handle].active = false;
                 sub_count--;
-                console_log(2, 2, "[event_bus] Subscriber removed\n");
+                log_drain_write(2, 2, "[event_bus] Subscriber removed\n");
                 return microkit_msginfo_new(0, 0);
             }
             return microkit_msginfo_new(0xFFFF, 0);
@@ -265,7 +266,7 @@ microkit_msginfo protected(microkit_channel ch, microkit_msginfo msg) {
             if (source == 0) source = ch;
             eventbus_write(kind, source, NULL, 0);
 
-            console_log(2, 2, "[event_bus] Event published: kind=0x");
+            log_drain_write(2, 2, "[event_bus] Event published: kind=0x");
             {
                 static const char hex[] = "0123456789abcdef";
                 char buf[5];
@@ -274,16 +275,16 @@ microkit_msginfo protected(microkit_channel ch, microkit_msginfo msg) {
                 buf[2] = hex[(kind >> 4) & 0xf];
                 buf[3] = hex[kind & 0xf];
                 buf[4] = '\0';
-                console_log(2, 2, buf);
+                log_drain_write(2, 2, buf);
             }
-            console_log(2, 2, " seq=");
+            log_drain_write(2, 2, " seq=");
             {
                 char buf[4];
                 buf[0] = '0' + ((event_seq - 1) % 10);
                 buf[1] = '\0';
-                console_log(2, 2, buf);
+                log_drain_write(2, 2, buf);
             }
-            console_log(2, 2, "\n");
+            log_drain_write(2, 2, "\n");
 
             /* Notify subscribers */
             eventbus_notify_all();

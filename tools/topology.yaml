@@ -746,12 +746,7 @@ channels:
     id_b: 6
 
   # snapshot_sched channels
-  # timer → snapshot_sched: periodic tick notification
-  - name: timer_snap_tick
-    pd_a: timer
-    id_a: 10
-    pd_b: snapshot_sched
-    id_b: 0
+  # (snapshot_sched uses seL4 timer API directly for periodic ticks)
 
   # snapshot_sched → controller: query running slot list
   - name: snap_ctrl_query
@@ -772,7 +767,7 @@ channels:
     pd_a: snapshot_sched
     id_a: 3
     pd_b: event_bus
-    id_b: 8
+    id_b: 12
 
   # controller → snapshot_sched: set policy / force snapshot
   - name: ctrl_snap_policy

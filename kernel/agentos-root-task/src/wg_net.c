@@ -32,6 +32,7 @@
 
 #define AGENTOS_DEBUG 1
 #include "agentos.h"
+#include "contracts/wg_net_contract.h"
 #include "wg_net.h"
 #include "net_server.h"
 #include "monocypher.h"
@@ -89,7 +90,7 @@ static void wg_log_dec(uint32_t v) {
     buf[i] = '\0';
     if (v == 0) { buf[--i] = '0'; }
     else { while (v > 0 && i > 0) { buf[--i] = '0' + (char)(v % 10); v /= 10; } }
-    console_log(16, 16, &buf[i]);
+    log_drain_write(16, 16, &buf[i]);
 }
 
 static void wg_log_hex(uint32_t v) {
@@ -101,7 +102,7 @@ static void wg_log_hex(uint32_t v) {
     buf[6]  = hex[(v >> 12) & 0xf]; buf[7]  = hex[(v >>  8) & 0xf];
     buf[8]  = hex[(v >>  4) & 0xf]; buf[9]  = hex[ v        & 0xf];
     buf[10] = '\0';
-    console_log(16, 16, buf);
+    log_drain_write(16, 16, buf);
 }
 
 /* Copy n bytes from volatile src to non-volatile dst */
@@ -266,7 +267,7 @@ static void send_keepalives(void) {
          *   [16..]   encrypted payload (0 bytes plaintext + 16-byte tag)
          */
         if (!wg_staging_vaddr) {
-            console_log(16, 16, "[wg_net] keepalive: staging not mapped\n");
+            log_drain_write(16, 16, "[wg_net] keepalive: staging not mapped\n");
             return;
         }
 
@@ -305,13 +306,13 @@ static void send_keepalives(void) {
 
         p->tx_bytes += pkt_len;
 
-        console_log(16, 16, "[wg_net] keepalive -> peer=");
+        log_drain_write(16, 16, "[wg_net] keepalive -> peer=");
         wg_log_dec(p->peer_id);
-        console_log(16, 16, " ep=");
+        log_drain_write(16, 16, " ep=");
         wg_log_hex(p->endpoint_ip);
-        console_log(16, 16, ":");
+        log_drain_write(16, 16, ":");
         wg_log_dec(p->endpoint_port);
-        console_log(16, 16, "\n");
+        log_drain_write(16, 16, "\n");
     }
 }
 
@@ -326,15 +327,15 @@ static microkit_msginfo handle_add_peer(void) {
     uint32_t allowed_mask = (uint32_t)microkit_mr_get(6);
 
     if (peer_id >= WG_MAX_PEERS) {
-        console_log(16, 16, "[wg_net] ADD_PEER: invalid peer_id=");
+        log_drain_write(16, 16, "[wg_net] ADD_PEER: invalid peer_id=");
         wg_log_dec(peer_id);
-        console_log(16, 16, "\n");
+        log_drain_write(16, 16, "\n");
         microkit_mr_set(0, WG_ERR_NOPEER);
         return microkit_msginfo_new(0, 1);
     }
 
     if (active_peer_count >= WG_MAX_PEERS && find_peer((uint8_t)peer_id) == NULL) {
-        console_log(16, 16, "[wg_net] ADD_PEER: peer table full\n");
+        log_drain_write(16, 16, "[wg_net] ADD_PEER: peer table full\n");
         microkit_mr_set(0, WG_ERR_FULL);
         return microkit_msginfo_new(0, 1);
     }
@@ -342,7 +343,7 @@ static microkit_msginfo handle_add_peer(void) {
     /* Validate staging bounds for pubkey */
     if (!wg_staging_vaddr
             || pubkey_off + WG_KEY_LEN > 0x20000u) {
-        console_log(16, 16, "[wg_net] ADD_PEER: staging not mapped or bad offset\n");
+        log_drain_write(16, 16, "[wg_net] ADD_PEER: staging not mapped or bad offset\n");
         microkit_mr_set(0, WG_ERR_CRYPTO);
         return microkit_msginfo_new(0, 1);
     }
@@ -376,17 +377,17 @@ static microkit_msginfo handle_add_peer(void) {
                           WG_STAGING + pubkey_off,
                           WG_KEY_LEN);
 
-    console_log(16, 16, "[wg_net] ADD_PEER: id=");
+    log_drain_write(16, 16, "[wg_net] ADD_PEER: id=");
     wg_log_dec(peer_id);
-    console_log(16, 16, " ep=");
+    log_drain_write(16, 16, " ep=");
     wg_log_hex(endpoint_ip);
-    console_log(16, 16, ":");
+    log_drain_write(16, 16, ":");
     wg_log_dec(endpoint_port);
-    console_log(16, 16, " allowed=");
+    log_drain_write(16, 16, " allowed=");
     wg_log_hex(allowed_ip);
-    console_log(16, 16, "/");
+    log_drain_write(16, 16, "/");
     wg_log_hex(allowed_mask);
-    console_log(16, 16, "\n");
+    log_drain_write(16, 16, "\n");
 
     microkit_mr_set(0, WG_OK);
     return microkit_msginfo_new(0, 1);
@@ -399,20 +400,20 @@ static microkit_msginfo handle_remove_peer(void) {
 
     wg_peer_t *p = find_peer((uint8_t)peer_id);
     if (!p) {
-        console_log(16, 16, "[wg_net] REMOVE_PEER: not found id=");
+        log_drain_write(16, 16, "[wg_net] REMOVE_PEER: not found id=");
         wg_log_dec(peer_id);
-        console_log(16, 16, "\n");
+        log_drain_write(16, 16, "\n");
         microkit_mr_set(0, WG_ERR_NOPEER);
         return microkit_msginfo_new(0, 1);
     }
 
-    console_log(16, 16, "[wg_net] REMOVE_PEER: id=");
+    log_drain_write(16, 16, "[wg_net] REMOVE_PEER: id=");
     wg_log_dec(peer_id);
-    console_log(16, 16, " tx_bytes=");
+    log_drain_write(16, 16, " tx_bytes=");
     wg_log_dec((uint32_t)(p->tx_bytes & 0xFFFFFFFFu));
-    console_log(16, 16, " rx_bytes=");
+    log_drain_write(16, 16, " rx_bytes=");
     wg_log_dec((uint32_t)(p->rx_bytes & 0xFFFFFFFFu));
-    console_log(16, 16, "\n");
+    log_drain_write(16, 16, "\n");
 
     /* Securely zero key material before deactivating */
     wg_zero(p->pubkey, WG_KEY_LEN);
@@ -435,7 +436,7 @@ static microkit_msginfo handle_send(void) {
     uint32_t data_len   = (uint32_t)microkit_mr_get(3);
 
     if (!wg_privkey_set) {
-        console_log(16, 16, "[wg_net] SEND: no private key set\n");
+        log_drain_write(16, 16, "[wg_net] SEND: no private key set\n");
         microkit_mr_set(0, WG_ERR_NOKEY);
         microkit_mr_set(1, 0);
         return microkit_msginfo_new(0, 2);
@@ -443,9 +444,9 @@ static microkit_msginfo handle_send(void) {
 
     wg_peer_t *p = find_peer((uint8_t)peer_id);
     if (!p) {
-        console_log(16, 16, "[wg_net] SEND: peer not found id=");
+        log_drain_write(16, 16, "[wg_net] SEND: peer not found id=");
         wg_log_dec(peer_id);
-        console_log(16, 16, "\n");
+        log_drain_write(16, 16, "\n");
         microkit_mr_set(0, WG_ERR_NOPEER);
         microkit_mr_set(1, 0);
         return microkit_msginfo_new(0, 2);
@@ -501,9 +502,9 @@ static microkit_msginfo handle_send(void) {
     int rc = wg_encrypt(session_key, nonce, plain, data_len,
                          cipher_dst, &cipher_len);
     if (rc != 0) {
-        console_log(16, 16, "[wg_net] SEND: encrypt failed for peer=");
+        log_drain_write(16, 16, "[wg_net] SEND: encrypt failed for peer=");
         wg_log_dec(peer_id);
-        console_log(16, 16, "\n");
+        log_drain_write(16, 16, "\n");
         microkit_mr_set(0, WG_ERR_CRYPTO);
         microkit_mr_set(1, 0);
         return microkit_msginfo_new(0, 2);
@@ -520,13 +521,13 @@ static microkit_msginfo handle_send(void) {
 
     p->tx_bytes += pkt_len;
 
-    console_log(16, 16, "[wg_net] SEND: peer=");
+    log_drain_write(16, 16, "[wg_net] SEND: peer=");
     wg_log_dec(peer_id);
-    console_log(16, 16, " plain_len=");
+    log_drain_write(16, 16, " plain_len=");
     wg_log_dec(data_len);
-    console_log(16, 16, " cipher_len=");
+    log_drain_write(16, 16, " cipher_len=");
     wg_log_dec(cipher_len);
-    console_log(16, 16, "\n");
+    log_drain_write(16, 16, "\n");
 
     microkit_mr_set(0, WG_OK);
     microkit_mr_set(1, cipher_len);
@@ -563,11 +564,11 @@ static microkit_msginfo handle_recv(void) {
     rx_data_len = 0;
     rx_peer_id  = 0;
 
-    console_log(16, 16, "[wg_net] RECV: peer=");
+    log_drain_write(16, 16, "[wg_net] RECV: peer=");
     wg_log_dec(peer_out);
-    console_log(16, 16, " len=");
+    log_drain_write(16, 16, " len=");
     wg_log_dec(len_out);
-    console_log(16, 16, "\n");
+    log_drain_write(16, 16, "\n");
 
     microkit_mr_set(0, WG_OK);
     microkit_mr_set(1, peer_out);
@@ -605,7 +606,7 @@ static microkit_msginfo handle_set_privkey(void) {
     uint32_t key_off = (uint32_t)microkit_mr_get(1);
 
     if (!wg_staging_vaddr || key_off + WG_KEY_LEN > 0x20000u) {
-        console_log(16, 16, "[wg_net] SET_PRIVKEY: staging not mapped or bad offset\n");
+        log_drain_write(16, 16, "[wg_net] SET_PRIVKEY: staging not mapped or bad offset\n");
         microkit_mr_set(0, WG_ERR_CRYPTO);
         return microkit_msginfo_new(0, 1);
     }
@@ -628,12 +629,12 @@ static microkit_msginfo handle_set_privkey(void) {
 
     wg_privkey_set = true;
 
-    console_log(16, 16, "[wg_net] SET_PRIVKEY: key loaded, pubkey[0..3]=");
+    log_drain_write(16, 16, "[wg_net] SET_PRIVKEY: key loaded, pubkey[0..3]=");
     wg_log_hex((uint32_t)(wg_pubkey[0])
                 | ((uint32_t)wg_pubkey[1] << 8)
                 | ((uint32_t)wg_pubkey[2] << 16)
                 | ((uint32_t)wg_pubkey[3] << 24));
-    console_log(16, 16, "\n");
+    log_drain_write(16, 16, "\n");
 
     microkit_mr_set(0, WG_OK);
     return microkit_msginfo_new(0, 1);
@@ -664,9 +665,9 @@ microkit_msginfo protected(microkit_channel ch, microkit_msginfo msg) {
     case OP_WG_HEALTH:      return handle_health();
 
     default:
-        console_log(16, 16, "[wg_net] unknown opcode=");
+        log_drain_write(16, 16, "[wg_net] unknown opcode=");
         wg_log_hex((uint32_t)opcode);
-        console_log(16, 16, "\n");
+        log_drain_write(16, 16, "\n");
         microkit_mr_set(0, 0xFFFFu);
         return microkit_msginfo_new(0xFFFF, 1);
     }
@@ -748,7 +749,7 @@ void notified(microkit_channel ch) {
         int rc = wg_decrypt(session_key, nonce, cipher, cipher_len,
                              plain_dst, &plain_len);
         if (rc != 0) {
-            console_log(16, 16, "[wg_net] RECV: decrypt failed, dropping\n");
+            log_drain_write(16, 16, "[wg_net] RECV: decrypt failed, dropping\n");
             return;
         }
 
@@ -757,11 +758,11 @@ void notified(microkit_channel ch) {
         rx_data_len      = plain_len;
         rx_pending       = true;
 
-        console_log(16, 16, "[wg_net] notified: inbound packet from peer=");
+        log_drain_write(16, 16, "[wg_net] notified: inbound packet from peer=");
         wg_log_dec(recv_idx);
-        console_log(16, 16, " plain_len=");
+        log_drain_write(16, 16, " plain_len=");
         wg_log_dec(plain_len);
-        console_log(16, 16, "\n");
+        log_drain_write(16, 16, "\n");
         return;
     }
 
@@ -807,10 +808,10 @@ void init(void) {
             s[i] = 0;
     }
 
-    console_log(16, 16, "[wg_net] WireGuard overlay PD online\n");
-    console_log(16, 16, "[wg_net]   max_peers=16, keepalive=25s, "
+    log_drain_write(16, 16, "[wg_net] WireGuard overlay PD online\n");
+    log_drain_write(16, 16, "[wg_net]   max_peers=16, keepalive=25s, "
                 "crypto=stub(CRYPTO_INTEGRATION_POINT)\n");
-    console_log(16, 16, "[wg_net]   call OP_WG_SET_PRIVKEY before OP_WG_SEND\n");
+    log_drain_write(16, 16, "[wg_net]   call OP_WG_SET_PRIVKEY before OP_WG_SEND\n");
 
     /* Notify controller that wg_net is ready */
     microkit_notify(CH_CONTROLLER);

@@ -3,18 +3,20 @@
 # Downloads FreeBSD 14 AArch64 VM images and EDK2 UEFI firmware
 # for use as agentOS VM guest binaries.
 #
-# Usage: ./scripts/fetch-freebsd-guest.sh [--output-dir DIR]
+# Usage: ./scripts/fetch-freebsd-guest.sh [OUTPUT_DIR]
 #
-# Produces in guest-images/:
+# Produces in ~/.local/agentos-images/ (or OUTPUT_DIR if specified):
 #   freebsd-14-arm64.img  — raw disk image (UFS, bootable with EFI)
 #   edk2-aarch64-code.fd  — EDK2 AArch64 UEFI firmware (read-only flash)
 #   edk2-aarch64-vars.fd  — EDK2 UEFI variable store (read-write flash)
+#
+# Images are never stored in the source tree. Delete with: make clean-images
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-OUTPUT_DIR="${1:-$REPO_ROOT/guest-images}"
+OUTPUT_DIR="${1:-${HOME}/.local/agentos-images}"
 
 FREEBSD_VERSION="14.4"
 # URL path uses plain "aarch64"; filename uses "arm64-aarch64-ufs" (FreeBSD convention)

@@ -23,15 +23,16 @@
 #include <stddef.h>
 #include <stdbool.h>
 #include "agentos.h"
+#include "contracts/http_svc_contract.h"
 #include "http_svc.h"
 
 /* ── Shared memory globals (set by Microkit via setvar_vaddr) ────────────── */
 uintptr_t http_req_shmem_vaddr;
 
 /* Weak console_rings fallback */
-uintptr_t console_rings_vaddr;
+uintptr_t log_drain_rings_vaddr;
 
-#define LOG(msg) console_log(HTTP_SVC_CONSOLE_SLOT, HTTP_SVC_PD_ID, \
+#define LOG(msg) log_drain_write(HTTP_SVC_CONSOLE_SLOT, HTTP_SVC_PD_ID, \
                              "[http_svc] " msg "\n")
 
 /* ── Handler table ───────────────────────────────────────────────────────── */

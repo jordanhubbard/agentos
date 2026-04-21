@@ -1,0 +1,15 @@
+# Copyright 2024, UNSW
+# SPDX-License-Identifier: BSD-2-Clause
+
+build/
+ci_build/
+ci_logs/
+zig-out/
+.zig-cache/
+*.pdf
+*.dtb
+rust/target/
+.cache
+compile_commands.json
+*.orig
+__pycache__/

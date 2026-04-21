@@ -6,11 +6,11 @@
 # Targets:
 #   make install      — install all build dependencies
 #   make build        — build the kernel image for BOARD/TARGET_ARCH
-#   make run          — build (native arch) + QEMU (HW-accel) + agentOS console (http://localhost:8080)
+#   make run          — build (native arch) + QEMU (HW-accel)
 #   make test         — CI boot test (exit 0/1)
 #   make clean        — remove build artifacts for current target
 
-.PHONY: all install deps-tools deps-sdk submodules channels run dashboard test test-snapshot-sched test-power-mgr test-proc-server test-integration clean clean-all clean-images help release release-minor release-major fetch-guest build-tools
+.PHONY: all install deps-tools deps-sdk submodules channels run test test-snapshot-sched test-power-mgr test-proc-server test-vibeos-contract test-integration e2e e2e-guest e2e-contract clean clean-all clean-images help release release-minor release-major fetch-guest build-tools
 
 # ─── Read config.yaml (if present) ───────────────────────────────────────────
 CONFIG_TARGET := $(shell grep '^target_arch:' config.yaml 2>/dev/null | sed 's/target_arch:[[:space:]]*//' | tr -d '[:space:]')
@@ -28,7 +28,6 @@ GUEST_OS    ?= none
 ROOT_DIR     := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
 KERNEL_DIR   := $(ROOT_DIR)kernel/agentos-root-task
 MICROKIT_SDK := $(ROOT_DIR)microkit-sdk-2.1.0
-CONSOLE_DIR  := $(ROOT_DIR)console
 
 # ─── BOARD_NAME: selects a boards/<name>/board.mk configuration ──────────────
 # Derive from TARGET_ARCH when not explicitly provided.  Override with
@@ -123,7 +122,7 @@ SDK_URL := https://github.com/seL4/microkit/releases/download/2.1.0/microkit-sdk
 # ─── Rust toolchain ──────────────────────────────────────────────────────────
 export PATH := $(HOME)/.cargo/bin:$(PATH)
 
-# ─── Native arch / HW-accelerated console ────────────────────────────────────
+# ─── Native arch / HW-accelerated QEMU ────────────────────────────────────
 # Normalise uname -m: macOS Apple Silicon reports "arm64", seL4 uses "aarch64"
 NATIVE_ARCH := $(shell uname -m | sed 's/arm64/aarch64/')
 
@@ -180,7 +179,7 @@ all: run
 # =============================================================================
 install: deps-tools deps-sdk
 	@echo ""
-	@echo "✅ All dependencies installed! Run 'make run' to launch the console."
+	@echo "✅ All dependencies installed! Run 'make run' to start."
 
 deps-tools:
 	@echo ""
@@ -302,7 +301,7 @@ build-tools:
 	@echo "Building agentOS Rust tools..."
 	@cargo build --release \
 		-p gen-sdf -p gen-ringbuf -p sign-wasm -p attest-verify \
-		-p make-swap-image -p trace-replay -p agentos-console -p xtask
+		-p make-swap-image -p trace-replay -p xtask
 	@echo "✓ Tools built → target/release/"
 
 # =============================================================================
@@ -310,13 +309,13 @@ build-tools:
 # =============================================================================
 fetch-guest:
 ifeq ($(GUEST_OS),freebsd)
-	@cargo xtask fetch-guest --os freebsd
+	@cargo xtask fetch-guest --os freebsd --output-dir $(AGENTOS_IMAGES)
 else ifeq ($(GUEST_OS),ubuntu)
-	@cargo xtask fetch-guest --os ubuntu
+	@cargo xtask fetch-guest --os ubuntu --output-dir $(AGENTOS_IMAGES)
 endif
 
 # =============================================================================
-# build (internal — used by console and test)
+# build (internal — used by test)
 # =============================================================================
 build: fetch-guest submodules deps-sdk
 	@echo ""
@@ -359,50 +358,50 @@ endif
 	@echo ""
 
 # =============================================================================
-# dashboard: start the agentOS console (agentOS already running on hardware)
+# dashboard: removed — agentOS has no built-in UI.
+# Consumers connect to the agentOS API via the contracts/ interface contracts.
 # =============================================================================
 dashboard:
-	@echo ""
-	@echo "agentOS console → http://localhost:8080"
-	@echo "Connects to agentOS at http://127.0.0.1:8789"
-	@echo "Press Ctrl-C to stop."
-	@echo ""
-	@cargo run -p agentos-console --release
+	@echo "ERROR: The agentOS web console has been removed."
+	@echo "Connect to agentOS services via the API contracts in contracts/."
+	@echo "See contracts/vibeos/README.md for the OS lifecycle API."
+	@exit 1
 
-# =============================================================================
-# run (default): build native → QEMU (HW-accel) + agentOS console
-#
-# Builds agentOS for the host's native CPU, launches it headlessly in QEMU
-# with hardware acceleration (HVF on macOS, KVM on Linux), starts the
-# agentOS console server, and opens it in the default browser.
-# Ctrl-C shuts down both the console server and QEMU cleanly.
+# QEMU flags for interactive run: serial → stdio, SSH port forwarding per guest.
+_RUN_CPU := $(if $(filter aarch64,$(NATIVE_ARCH)),cortex-a53,qemu64)
+AGENTOS_IMAGES := $(HOME)/.local/agentos-images
+_UBUNTU_BLK = -drive file=$(AGENTOS_IMAGES)/ubuntu-24.04-arm64.raw,format=raw,if=none,id=hd0 \
+              -device virtio-blk-device,drive=hd0,bus=virtio-mmio-bus.1
+_QEMU_BLK_FLAGS = $(if $(filter ubuntu,$(GUEST_OS)),$(_UBUNTU_BLK),)
+QEMU_RUN_FLAGS = -machine virt,virtualization=on,highmem=off,secure=off \
+                 -cpu $(_RUN_CPU) -m 2G \
+                 -display none -monitor none \
+                 -nographic \
+                 -netdev user,id=net0,hostfwd=tcp:127.0.0.1:8789-:8789,hostfwd=tcp:127.0.0.1:2222-10.0.2.15:22,hostfwd=tcp:127.0.0.1:2223-10.0.2.15:2223,hostfwd=tcp:127.0.0.1:2224-10.0.2.15:2224 \
+                 -device virtio-net-device,netdev=net0,bus=virtio-mmio-bus.0,ctrl_vq=off,ctrl_rx=off,ctrl_vlan=off,guest_announce=off,mq=off,ctrl_mac_addr=off,ctrl_guest_offloads=off \
+                 $(_QEMU_BLK_FLAGS) \
+                 -device loader,file=$(NATIVE_IMAGE),addr=0x70000000,cpu-num=0
+
+# run (default): build native → QEMU with serial on stdout
 # =============================================================================
 run:
 	@$(MAKE) build BOARD=$(NATIVE_BOARD) TARGET_ARCH=$(NATIVE_ARCH)
 	@echo ""
 	@echo "╔══════════════════════════════════════════╗"
-	@echo "║  agentOS — console (native, HW-accel)    ║"
+	@echo "║  agentOS — QEMU ($(NATIVE_ARCH))         ║"
 	@echo "╚══════════════════════════════════════════╝"
 	@echo ""
-	@echo "Arch  : $(NATIVE_ARCH)"
-	@echo "Board : $(NATIVE_BOARD)"
-	@echo "Accel : $(if $(QEMU_ACCEL_NATIVE),$(QEMU_ACCEL_NATIVE),none (TCG fallback))"
-	@echo "Image : $(NATIVE_IMAGE)"
+	@echo "Arch   : $(NATIVE_ARCH)"
+	@echo "Board  : $(NATIVE_BOARD)"
+	@echo "Accel  : $(if $(QEMU_ACCEL_NATIVE),$(QEMU_ACCEL_NATIVE),none (TCG))"
+	@echo "Image  : $(NATIVE_IMAGE)"
 	@echo ""
-	@echo "Console: http://localhost:8080  (opening in browser...)"
+	@echo "Guest SSH: ssh -p 2222 ubuntu@localhost    (Ubuntu)"
+	@echo "           ssh -p 2223 root@localhost      (FreeBSD)"
+	@echo "           ssh -p 2224 root@localhost      (NixOS)"
+	@echo "Exit QEMU: Ctrl-A X"
 	@echo "──────────────────────────────────────────────"
-	@rm -f /tmp/agentos-serial.sock /tmp/freebsd-serial.sock /tmp/linux-serial.sock
-	@lsof -ti:8080 2>/dev/null | xargs kill 2>/dev/null || true
-	@lsof -ti:8789 2>/dev/null | xargs kill 2>/dev/null || true
-	@trap 'kill "$$QEMU_PID" 2>/dev/null; wait "$$BRIDGE_PID" 2>/dev/null; exit' INT TERM; \
-	 cargo run -p agentos-console --release & BRIDGE_PID=$$!; \
-	 for _i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do \
-	   [ -S /tmp/agentos-serial.sock ] && break; sleep 0.1; done; \
-	 $(NATIVE_QEMU) $(NATIVE_QEMU_FLAGS) & QEMU_PID=$$!; \
-	 (command -v open     >/dev/null 2>&1 && open     http://localhost:8080) || \
-	 (command -v xdg-open >/dev/null 2>&1 && xdg-open http://localhost:8080) || true; \
-	 wait "$$BRIDGE_PID"; \
-	 kill "$$QEMU_PID" 2>/dev/null || true
+	@$(NATIVE_QEMU) $(QEMU_RUN_FLAGS)
 
 # =============================================================================
 # test: CI boot test (exits 0 on success, 1 on failure)
@@ -453,6 +452,20 @@ test-proc-server:
 	@echo ""
 
 # =============================================================================
+# test-vibeos-contract: standalone contract tests for the VibeOS lifecycle API
+# =============================================================================
+test-vibeos-contract:
+	@echo ""
+	@echo "╔══════════════════════════════════════════╗"
+	@echo "║   agentOS — VibeOS contract tests        ║"
+	@echo "╚══════════════════════════════════════════╝"
+	@echo ""
+	cc tests/vibe/test_vibeos_contract.c -o /tmp/test_vibeos_contract -I tests -I kernel/agentos-root-task/include -DAGENTOS_TEST_HOST
+	@/tmp/test_vibeos_contract
+	@echo "✓ vibeos contract tests passed"
+	@echo ""
+
+# =============================================================================
 # test-integration: compile and run C integration tests on the host
 #
 # Each test file is self-contained: all seL4/Microkit primitives are stubbed
@@ -471,8 +484,12 @@ test-integration:
 	    tests/test_power_mgr.c \
 	    tests/test_snapshot_sched.c \
 	    tests/test_dev_shell.c \
-	    tests/test_proc_server.c; do \
-	    gcc -I kernel/agentos-root-task/include \
+	    tests/test_proc_server.c \
+	    tests/test_serial_pd.c \
+	    tests/test_guest_contract.c \
+	    tests/vibe/test_vibeos_contract.c; do \
+	    gcc -I tests \
+	        -I kernel/agentos-root-task/include \
 	        -DAGENTOS_TEST_HOST \
 	        -DAGENTOS_SNAPSHOT_SCHED \
 	        -DAGENTOS_DEV_SHELL \
@@ -484,6 +501,23 @@ test-integration:
 	@echo ""
 	@echo "Integration tests complete."
 	@echo ""
+
+# =============================================================================
+# e2e: End-to-end integration test suite (QEMU + guest VMs + SSH)
+# =============================================================================
+# Requires: make build BOARD=$(BOARD) && make fetch-guest
+# Exit code 2 = SKIP (prerequisites not met — QEMU or images missing)
+e2e: build
+	@chmod +x tests/e2e/run_e2e.sh tests/e2e/*.sh
+	@bash tests/e2e/run_e2e.sh
+
+e2e-guest:
+	@chmod +x tests/e2e/suite_common.sh
+	@bash tests/e2e/suite_common.sh
+
+e2e-contract:
+	@chmod +x tests/e2e/test_cc_contract.sh
+	@BRIDGE_AVAILABLE=1 bash tests/e2e/test_cc_contract.sh
 
 # =============================================================================
 # clean
@@ -499,14 +533,9 @@ clean-all:
 	@echo "✓ Clean."
 
 clean-images:
-	@echo "Removing cached guest OS images..."
-	@rm -f $(ROOT_DIR)guest-images/*.img \
-	       $(ROOT_DIR)guest-images/*.qcow2 \
-	       $(ROOT_DIR)guest-images/*.raw \
-	       $(ROOT_DIR)guest-images/*.fd \
-	       $(ROOT_DIR)guest-images/*.xz \
-	       /tmp/agentos-serial.sock
-	@echo "✓ Guest images removed. Next 'make GUEST_OS=...' will re-download."
+	@echo "Removing guest OS image cache: $(AGENTOS_IMAGES)"
+	@rm -rf $(AGENTOS_IMAGES)
+	@echo "✓ Done. Re-fetch with: make fetch-guest GUEST_OS=ubuntu|freebsd"
 
 # =============================================================================
 # release: tag + GitHub release (requires gh CLI and clean working tree)
@@ -530,7 +559,7 @@ help:
 	@echo "Targets:"
 	@echo "  make install          Install build deps (brew / apt)"
 	@echo "  make build            Build kernel image for BOARD/TARGET_ARCH"
-	@echo "  make run              Build (native arch) + QEMU (HW-accel) + agentOS console"
+	@echo "  make run              Build (native arch) + QEMU (HW-accel)"
 	@echo "  make test             CI boot test (exit 0/1)"
 	@echo "  make clean            Remove build artifacts for current board"
 	@echo ""
@@ -541,5 +570,4 @@ help:
 	@echo "  Kernel/firmware    → C"
 	@echo "  Arch-specific      → Assembly"
 	@echo "  Userspace/tooling  → Rust"
-	@echo "  Dashboard UI       → Rust/WASM (trunk build)"
 	@echo ""

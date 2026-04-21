@@ -24,6 +24,7 @@
 
 #define AGENTOS_DEBUG 1
 #include "agentos.h"
+#include "contracts/agent_pool_contract.h"
 #include "string_bare.h"
 #include <stdint.h>
 
@@ -86,7 +87,7 @@ void agent_pool_init(void) {
         pool[i].channel_id = POOL_CH_BASE + i;
         pool[i].agent_name[0] = '\0';
     }
-    console_log(6, 6, "[pool] Agent pool initialized (");
+    log_drain_write(6, 6, "[pool] Agent pool initialized (");
     /* print pool size */
     char n[4] = { '0' + AGENT_POOL_SIZE, ' ', 'w', '\0' };
     {
@@ -95,7 +96,7 @@ void agent_pool_init(void) {
         for (const char *_s = n; *_s; _s++) *_cl_p++ = *_s;
         for (const char *_s = "orkers)\n"; *_s; _s++) *_cl_p++ = *_s;
         *_cl_p = 0;
-        console_log(6, 6, _cl_buf);
+        log_drain_write(6, 6, _cl_buf);
     }
 }
 
@@ -123,7 +124,7 @@ int agent_pool_spawn(const char *agent_name, uint64_t task_id,
                       uint32_t priority) {
     int slot = pool_find_idle();
     if (slot < 0) {
-        console_log(6, 6, "[pool] ERROR: all workers busy\n");
+        log_drain_write(6, 6, "[pool] ERROR: all workers busy\n");
         return -1;
     }
     
@@ -139,11 +140,11 @@ int agent_pool_spawn(const char *agent_name, uint64_t task_id,
         for (const char *_s = agent_name; *_s; _s++) *_cl_p++ = *_s;
         for (const char *_s = "' on worker slot "; *_s; _s++) *_cl_p++ = *_s;
         *_cl_p = 0;
-        console_log(6, 6, _cl_buf);
+        log_drain_write(6, 6, _cl_buf);
     }
     /* print slot number */
     char s[4] = { '0' + (char)slot, '\n', '\0' };
-    console_log(6, 6, s);
+    log_drain_write(6, 6, s);
     
     /*
      * Pack assignment into MRs for the notification.
@@ -168,7 +169,7 @@ int agent_pool_spawn(const char *agent_name, uint64_t task_id,
 void agent_pool_worker_done(int slot, int status) {
     if (slot < 0 || slot >= AGENT_POOL_SIZE) return;
     
-    console_log(6, 6, "[pool] Worker ");
+    log_drain_write(6, 6, "[pool] Worker ");
     char s[4] = { '0' + (char)slot, ' ', 'd', '\0' };
     {
         char _cl_buf[256] = {};
@@ -176,7 +177,7 @@ void agent_pool_worker_done(int slot, int status) {
         for (const char *_s = s; *_s; _s++) *_cl_p++ = *_s;
         for (const char *_s = "one\n"; *_s; _s++) *_cl_p++ = *_s;
         *_cl_p = 0;
-        console_log(6, 6, _cl_buf);
+        log_drain_write(6, 6, _cl_buf);
     }
     
     /* Revoke the capabilities we delegated to this worker */
@@ -229,7 +230,7 @@ void worker_pd_init(void) {
     worker.my_slot = (int)worker_slot_id;
     worker.initialized = true;
     
-    console_log(6, 6, "[worker] Slot ready, waiting for task assignment\n");
+    log_drain_write(6, 6, "[worker] Slot ready, waiting for task assignment\n");
     
     /* Notify controller we're ready */
     microkit_notify(WORKER_CH_CONTROLLER);
@@ -252,7 +253,7 @@ void worker_pd_notified(microkit_channel ch) {
             
             worker.task_id = task_id_lo | (task_id_hi << 32);
             
-            console_log(6, 6, "[worker] Task assigned\n");
+            log_drain_write(6, 6, "[worker] Task assigned\n");
             
             /* 
              * Execute the task.
@@ -265,12 +266,12 @@ void worker_pd_notified(microkit_channel ch) {
              * execute it in a sandboxed interpreter (wasm3 or wamr),
              * and deliver results via EventBus.
              */
-            console_log(6, 6, "[worker] Task running...\n");
+            log_drain_write(6, 6, "[worker] Task running...\n");
             
             /* TODO Phase 2: WASM module execution */
             int status = 0;
             
-            console_log(6, 6, "[worker] Task complete, notifying controller\n");
+            log_drain_write(6, 6, "[worker] Task complete, notifying controller\n");
             
             /* Signal completion back to controller */
             microkit_mr_set(0, (uint32_t)(worker.task_id & 0xFFFFFFFF));
@@ -283,11 +284,11 @@ void worker_pd_notified(microkit_channel ch) {
         
         case WORKER_CH_EVENTBUS:
             /* EventBus notification — process incoming events if subscribed */
-            console_log(6, 6, "[worker] EventBus notification\n");
+            log_drain_write(6, 6, "[worker] EventBus notification\n");
             break;
             
         default:
-            console_log(6, 6, "[worker] Unknown channel notification\n");
+            log_drain_write(6, 6, "[worker] Unknown channel notification\n");
             break;
     }
 }

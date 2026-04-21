@@ -35,6 +35,7 @@
 
 #define AGENTOS_DEBUG 1
 #include "agentos.h"
+#include "contracts/spawn_server_contract.h"
 #include "spawn.h"
 #include "vfs.h"
 #include "sha256_mini.h"
@@ -43,7 +44,7 @@
 uintptr_t spawn_elf_shmem_vaddr;          /* 512 KB staging: SpawnServer at 0x5000000 */
 uintptr_t spawn_config_shmem_vaddr;       /* 4 KB config:    SpawnServer at 0x6000000 */
 uintptr_t vfs_io_shmem_vaddr; /* VFS shmem:      SpawnServer at 0x7000000 */
-uintptr_t console_rings_vaddr;      /* console_mux ring (required by console_log) */
+uintptr_t log_drain_rings_vaddr;      /* log_drain ring (required by log_drain_write) */
 
 /* ── Slot table ──────────────────────────────────────────────────────────── */
 typedef struct {
@@ -256,7 +257,7 @@ static microkit_msginfo handle_launch(void) {
 
     /* Validate inputs */
     if (name[0] == '\0' || elf_path[0] == '\0') {
-        console_log(SPAWN_CONSOLE_SLOT, SPAWN_PD_ID,
+        log_drain_write(SPAWN_CONSOLE_SLOT, SPAWN_PD_ID,
                     "[spawn_server] LAUNCH REJECT: empty name or path\n");
         microkit_mr_set(0, SPAWN_ERR_INVAL);
         return microkit_msginfo_new(0, 1);
@@ -265,23 +266,23 @@ static microkit_msginfo handle_launch(void) {
     /* Find a free slot */
     int si = find_free_slot();
     if (si < 0) {
-        console_log(SPAWN_CONSOLE_SLOT, SPAWN_PD_ID,
+        log_drain_write(SPAWN_CONSOLE_SLOT, SPAWN_PD_ID,
                     "[spawn_server] LAUNCH REJECT: no free slots\n");
         microkit_mr_set(0, SPAWN_ERR_NO_SLOTS);
         return microkit_msginfo_new(0, 1);
     }
 
     /* Log the launch attempt */
-    console_log(SPAWN_CONSOLE_SLOT, SPAWN_PD_ID, "[spawn_server] LAUNCH '");
-    console_log(SPAWN_CONSOLE_SLOT, SPAWN_PD_ID, name);
-    console_log(SPAWN_CONSOLE_SLOT, SPAWN_PD_ID, "' from '");
-    console_log(SPAWN_CONSOLE_SLOT, SPAWN_PD_ID, elf_path);
-    console_log(SPAWN_CONSOLE_SLOT, SPAWN_PD_ID, "'\n");
+    log_drain_write(SPAWN_CONSOLE_SLOT, SPAWN_PD_ID, "[spawn_server] LAUNCH '");
+    log_drain_write(SPAWN_CONSOLE_SLOT, SPAWN_PD_ID, name);
+    log_drain_write(SPAWN_CONSOLE_SLOT, SPAWN_PD_ID, "' from '");
+    log_drain_write(SPAWN_CONSOLE_SLOT, SPAWN_PD_ID, elf_path);
+    log_drain_write(SPAWN_CONSOLE_SLOT, SPAWN_PD_ID, "'\n");
 
     /* Open ELF via VFS */
     uint32_t vfs_handle = vfs_open(elf_path);
     if (vfs_handle == 0xFFFFFFFFu) {
-        console_log(SPAWN_CONSOLE_SLOT, SPAWN_PD_ID,
+        log_drain_write(SPAWN_CONSOLE_SLOT, SPAWN_PD_ID,
                     "[spawn_server] LAUNCH FAIL: VFS open failed\n");
         microkit_mr_set(0, SPAWN_ERR_VFS);
         return microkit_msginfo_new(0, 1);
@@ -290,7 +291,7 @@ static microkit_msginfo handle_launch(void) {
     /* Stat to get ELF size */
     uint32_t elf_size = vfs_stat(vfs_handle);
     if (elf_size == 0xFFFFFFFFu) {
-        console_log(SPAWN_CONSOLE_SLOT, SPAWN_PD_ID,
+        log_drain_write(SPAWN_CONSOLE_SLOT, SPAWN_PD_ID,
                     "[spawn_server] LAUNCH FAIL: VFS stat failed\n");
         vfs_close(vfs_handle);
         microkit_mr_set(0, SPAWN_ERR_VFS);
@@ -301,10 +302,10 @@ static microkit_msginfo handle_launch(void) {
     if (elf_size == 0 || elf_size > SPAWN_MAX_ELF_SIZE) {
         char dbuf[12];
         u32_to_dec(elf_size, dbuf);
-        console_log(SPAWN_CONSOLE_SLOT, SPAWN_PD_ID,
+        log_drain_write(SPAWN_CONSOLE_SLOT, SPAWN_PD_ID,
                     "[spawn_server] LAUNCH FAIL: ELF too large (");
-        console_log(SPAWN_CONSOLE_SLOT, SPAWN_PD_ID, dbuf);
-        console_log(SPAWN_CONSOLE_SLOT, SPAWN_PD_ID, " bytes)\n");
+        log_drain_write(SPAWN_CONSOLE_SLOT, SPAWN_PD_ID, dbuf);
+        log_drain_write(SPAWN_CONSOLE_SLOT, SPAWN_PD_ID, " bytes)\n");
         vfs_close(vfs_handle);
         microkit_mr_set(0, SPAWN_ERR_TOO_LARGE);
         return microkit_msginfo_new(0, 1);
@@ -316,7 +317,7 @@ static microkit_msginfo handle_launch(void) {
     vfs_close(vfs_handle);
 
     if (bytes_read != elf_size) {
-        console_log(SPAWN_CONSOLE_SLOT, SPAWN_PD_ID,
+        log_drain_write(SPAWN_CONSOLE_SLOT, SPAWN_PD_ID,
                     "[spawn_server] LAUNCH FAIL: VFS read incomplete\n");
         microkit_mr_set(0, SPAWN_ERR_VFS);
         return microkit_msginfo_new(0, 1);
@@ -367,14 +368,14 @@ static microkit_msginfo handle_launch(void) {
         u32_to_dec((uint32_t)si, sibuf);
         char szbuf[12];
         u32_to_dec(elf_size, szbuf);
-        console_log(SPAWN_CONSOLE_SLOT, SPAWN_PD_ID,
+        log_drain_write(SPAWN_CONSOLE_SLOT, SPAWN_PD_ID,
                     "[spawn_server] LAUNCHED app_id=");
-        console_log(SPAWN_CONSOLE_SLOT, SPAWN_PD_ID, idbuf);
-        console_log(SPAWN_CONSOLE_SLOT, SPAWN_PD_ID, " slot=");
-        console_log(SPAWN_CONSOLE_SLOT, SPAWN_PD_ID, sibuf);
-        console_log(SPAWN_CONSOLE_SLOT, SPAWN_PD_ID, " elf_size=");
-        console_log(SPAWN_CONSOLE_SLOT, SPAWN_PD_ID, szbuf);
-        console_log(SPAWN_CONSOLE_SLOT, SPAWN_PD_ID, "\n");
+        log_drain_write(SPAWN_CONSOLE_SLOT, SPAWN_PD_ID, idbuf);
+        log_drain_write(SPAWN_CONSOLE_SLOT, SPAWN_PD_ID, " slot=");
+        log_drain_write(SPAWN_CONSOLE_SLOT, SPAWN_PD_ID, sibuf);
+        log_drain_write(SPAWN_CONSOLE_SLOT, SPAWN_PD_ID, " elf_size=");
+        log_drain_write(SPAWN_CONSOLE_SLOT, SPAWN_PD_ID, szbuf);
+        log_drain_write(SPAWN_CONSOLE_SLOT, SPAWN_PD_ID, "\n");
     }
 
     microkit_mr_set(0, SPAWN_OK);
@@ -390,7 +391,7 @@ static microkit_msginfo handle_kill(void) {
 
     int si = find_slot_by_app_id(app_id);
     if (si < 0) {
-        console_log(SPAWN_CONSOLE_SLOT, SPAWN_PD_ID,
+        log_drain_write(SPAWN_CONSOLE_SLOT, SPAWN_PD_ID,
                     "[spawn_server] KILL: app_id not found\n");
         microkit_mr_set(0, SPAWN_ERR_NOT_FOUND);
         return microkit_msginfo_new(0, 1);
@@ -402,12 +403,12 @@ static microkit_msginfo handle_kill(void) {
         u32_to_dec(app_id, idbuf);
         char sibuf[4];
         u32_to_dec((uint32_t)si, sibuf);
-        console_log(SPAWN_CONSOLE_SLOT, SPAWN_PD_ID,
+        log_drain_write(SPAWN_CONSOLE_SLOT, SPAWN_PD_ID,
                     "[spawn_server] KILL app_id=");
-        console_log(SPAWN_CONSOLE_SLOT, SPAWN_PD_ID, idbuf);
-        console_log(SPAWN_CONSOLE_SLOT, SPAWN_PD_ID, " slot=");
-        console_log(SPAWN_CONSOLE_SLOT, SPAWN_PD_ID, sibuf);
-        console_log(SPAWN_CONSOLE_SLOT, SPAWN_PD_ID, "\n");
+        log_drain_write(SPAWN_CONSOLE_SLOT, SPAWN_PD_ID, idbuf);
+        log_drain_write(SPAWN_CONSOLE_SLOT, SPAWN_PD_ID, " slot=");
+        log_drain_write(SPAWN_CONSOLE_SLOT, SPAWN_PD_ID, sibuf);
+        log_drain_write(SPAWN_CONSOLE_SLOT, SPAWN_PD_ID, "\n");
     }
 
     slots[si].state = SPAWN_SLOT_KILLED;
@@ -496,7 +497,7 @@ static microkit_msginfo handle_health(void) {
 
 void init(void) {
     agentos_log_boot("spawn_server");
-    console_log(SPAWN_CONSOLE_SLOT, SPAWN_PD_ID,
+    log_drain_write(SPAWN_CONSOLE_SLOT, SPAWN_PD_ID,
                 "[spawn_server] SpawnServer PD starting...\n");
 
     /* Initialise slot table */
@@ -517,13 +518,13 @@ void init(void) {
     {
         char fbuf[4];
         u32_to_dec(SPAWN_MAX_SLOTS, fbuf);
-        console_log(SPAWN_CONSOLE_SLOT, SPAWN_PD_ID,
+        log_drain_write(SPAWN_CONSOLE_SLOT, SPAWN_PD_ID,
                     "[spawn_server] App slots available: ");
-        console_log(SPAWN_CONSOLE_SLOT, SPAWN_PD_ID, fbuf);
-        console_log(SPAWN_CONSOLE_SLOT, SPAWN_PD_ID, "\n");
+        log_drain_write(SPAWN_CONSOLE_SLOT, SPAWN_PD_ID, fbuf);
+        log_drain_write(SPAWN_CONSOLE_SLOT, SPAWN_PD_ID, "\n");
     }
 
-    console_log(SPAWN_CONSOLE_SLOT, SPAWN_PD_ID,
+    log_drain_write(SPAWN_CONSOLE_SLOT, SPAWN_PD_ID,
                 "[spawn_server] *** SpawnServer ALIVE — accepting launch requests ***\n");
 }
 
@@ -546,13 +547,13 @@ void notified(microkit_channel ch) {
                 u32_to_dec(slots[si].app_id, idbuf);
                 char sibuf[4];
                 u32_to_dec((uint32_t)si, sibuf);
-                console_log(SPAWN_CONSOLE_SLOT, SPAWN_PD_ID,
+                log_drain_write(SPAWN_CONSOLE_SLOT, SPAWN_PD_ID,
                             "[spawn_server] Slot ");
-                console_log(SPAWN_CONSOLE_SLOT, SPAWN_PD_ID, sibuf);
-                console_log(SPAWN_CONSOLE_SLOT, SPAWN_PD_ID,
+                log_drain_write(SPAWN_CONSOLE_SLOT, SPAWN_PD_ID, sibuf);
+                log_drain_write(SPAWN_CONSOLE_SLOT, SPAWN_PD_ID,
                             " load complete — app_id=");
-                console_log(SPAWN_CONSOLE_SLOT, SPAWN_PD_ID, idbuf);
-                console_log(SPAWN_CONSOLE_SLOT, SPAWN_PD_ID, " RUNNING\n");
+                log_drain_write(SPAWN_CONSOLE_SLOT, SPAWN_PD_ID, idbuf);
+                log_drain_write(SPAWN_CONSOLE_SLOT, SPAWN_PD_ID, " RUNNING\n");
             }
         }
         return;
@@ -581,14 +582,14 @@ microkit_msginfo protected(microkit_channel ch, microkit_msginfo msginfo) {
         case OP_SPAWN_HEALTH:  return handle_health();
 
         default:
-            console_log(SPAWN_CONSOLE_SLOT, SPAWN_PD_ID,
+            log_drain_write(SPAWN_CONSOLE_SLOT, SPAWN_PD_ID,
                         "[spawn_server] Unknown op on ch=");
             {
                 char chbuf[4];
                 u32_to_dec((uint32_t)ch, chbuf);
-                console_log(SPAWN_CONSOLE_SLOT, SPAWN_PD_ID, chbuf);
+                log_drain_write(SPAWN_CONSOLE_SLOT, SPAWN_PD_ID, chbuf);
             }
-            console_log(SPAWN_CONSOLE_SLOT, SPAWN_PD_ID, "\n");
+            log_drain_write(SPAWN_CONSOLE_SLOT, SPAWN_PD_ID, "\n");
             microkit_mr_set(0, SPAWN_ERR_INVAL);
             return microkit_msginfo_new(0, 1);
     }

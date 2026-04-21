@@ -99,7 +99,7 @@ char *strstr(const char *haystack, const char *needle) {
 
 /* ---- Formatted output (simplified) ---- */
 /* wasm3 uses printf/snprintf for debug logging and error messages.
- console_log(15, 15, "");
+ log_drain_write(15, 15, "");
  * Format parsing is minimal — just enough for wasm3's actual usage. */
 
 /* Simple number-to-string for snprintf */
@@ -271,7 +271,7 @@ int printf(const char *fmt, ...) {
     va_start(ap, fmt);
     int ret = vsnprintf(buf, sizeof(buf), fmt, ap);
     va_end(ap);
-    console_log(15, 15, buf);
+    log_drain_write(15, 15, buf);
     return ret;
 }
 
@@ -288,7 +288,7 @@ int fprintf(void *stream, const char *fmt, ...) {
     va_start(ap, fmt);
     int ret = vsnprintf(buf, sizeof(buf), fmt, ap);
     va_end(ap);
-    console_log(15, 15, buf);
+    log_drain_write(15, 15, buf);
     return ret;
 }
 
@@ -299,14 +299,14 @@ int puts(const char *s) {
         for (const char *_s = s; *_s; _s++) *_cl_p++ = *_s;
         for (const char *_s = "\n"; *_s; _s++) *_cl_p++ = *_s;
         *_cl_p = 0;
-        console_log(15, 15, _cl_buf);
+        log_drain_write(15, 15, _cl_buf);
     }
     return 0;
 }
 
 int fputs(const char *s, void *stream) {
     (void)stream;
-    console_log(15, 15, s);
+    log_drain_write(15, 15, s);
     return 0;
 }
 
@@ -316,19 +316,19 @@ int fputs(const char *s, void *stream) {
 
 void *malloc(size_t size) {
     (void)size;
-    console_log(15, 15, "[bare_metal] WARNING: malloc called (should use fixed heap)\n");
+    log_drain_write(15, 15, "[bare_metal] WARNING: malloc called (should use fixed heap)\n");
     return NULL;
 }
 
 void *calloc(size_t nmemb, size_t size) {
     (void)nmemb; (void)size;
-    console_log(15, 15, "[bare_metal] WARNING: calloc called\n");
+    log_drain_write(15, 15, "[bare_metal] WARNING: calloc called\n");
     return NULL;
 }
 
 void *realloc(void *ptr, size_t size) {
     (void)ptr; (void)size;
-    console_log(15, 15, "[bare_metal] WARNING: realloc called\n");
+    log_drain_write(15, 15, "[bare_metal] WARNING: realloc called\n");
     return NULL;
 }
 
@@ -338,13 +338,13 @@ void free(void *ptr) {
 }
 
 void abort(void) {
-    console_log(15, 15, "[bare_metal] ABORT\n");
+    log_drain_write(15, 15, "[bare_metal] ABORT\n");
     for (;;) {} /* spin forever */
 }
 
 void exit(int status) {
     (void)status;
-    console_log(15, 15, "[bare_metal] EXIT\n");
+    log_drain_write(15, 15, "[bare_metal] EXIT\n");
     for (;;) {}
 }
 
@@ -395,7 +395,7 @@ void __assert_fail(const char *expr, const char *file, int line, const char *fun
         for (const char *_s = file; *_s; _s++) *_cl_p++ = *_s;
         for (const char *_s = ":"; *_s; _s++) *_cl_p++ = *_s;
         *_cl_p = 0;
-        console_log(15, 15, _cl_buf);
+        log_drain_write(15, 15, _cl_buf);
     }
     char lbuf[12];
     int_to_str(lbuf, sizeof(lbuf), line, 10, false);
@@ -407,7 +407,7 @@ void __assert_fail(const char *expr, const char *file, int line, const char *fun
         for (const char *_s = expr; *_s; _s++) *_cl_p++ = *_s;
         for (const char *_s = "\n"; *_s; _s++) *_cl_p++ = *_s;
         *_cl_p = 0;
-        console_log(15, 15, _cl_buf);
+        log_drain_write(15, 15, _cl_buf);
     }
     for (;;) {} /* hang */
 }

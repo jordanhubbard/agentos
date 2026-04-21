@@ -26,12 +26,13 @@
 #include <stdbool.h>
 #include "spawn.h"
 #include "sha256_mini.h"
+#include "contracts/app_slot_contract.h"
 
 /* Microkit fills this from the system description <map> element */
 uintptr_t spawn_elf_shmem_vaddr;
 
-/* console_rings_vaddr — weak fallback so log.c compiles without mapping */
-uintptr_t console_rings_vaddr;
+/* log_drain_rings_vaddr — weak fallback so log.c compiles without mapping */
+uintptr_t log_drain_rings_vaddr;
 
 /* Channel: channel 0 is spawn_server (notify both ways) */
 #define CH_SPAWN  0

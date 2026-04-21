@@ -66,3 +66,65 @@ pub enum SchedulingClass {
     /// Background maintenance
     Background,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── SchedulingContract constructors ───────────────────────────────────────
+
+    #[test]
+    fn interactive_contract_class_and_priority() {
+        let sc = SchedulingContract::interactive();
+        assert_eq!(sc.class, SchedulingClass::Interactive);
+        assert_eq!(sc.priority, 128);
+        assert!(sc.cpu_budget_us.is_none());
+        assert!(sc.period_us.is_none());
+        assert!(sc.deadline_ns.is_none());
+    }
+
+    #[test]
+    fn compute_contract_stores_priority() {
+        let sc = SchedulingContract::compute(64);
+        assert_eq!(sc.class, SchedulingClass::Compute);
+        assert_eq!(sc.priority, 64);
+        assert!(sc.cpu_budget_us.is_none());
+    }
+
+    #[test]
+    fn realtime_contract_stores_budget_and_period() {
+        let sc = SchedulingContract::realtime(500, 1000);
+        assert_eq!(sc.class, SchedulingClass::RealTime);
+        assert_eq!(sc.priority, 255);
+        assert_eq!(sc.cpu_budget_us, Some(500));
+        assert_eq!(sc.period_us, Some(1000));
+        assert!(sc.deadline_ns.is_none());
+    }
+
+    #[test]
+    fn realtime_utilization_within_bounds() {
+        // Budget must be <= period for a valid sporadic server
+        let sc = SchedulingContract::realtime(200, 1000);
+        let budget = sc.cpu_budget_us.unwrap();
+        let period = sc.period_us.unwrap();
+        assert!(budget <= period, "budget {budget} must not exceed period {period}");
+    }
+
+    #[test]
+    fn background_contract_lowest_priority() {
+        let sc = SchedulingContract::background();
+        assert_eq!(sc.class, SchedulingClass::Background);
+        assert_eq!(sc.priority, 0);
+        assert!(sc.cpu_budget_us.is_none());
+        assert!(sc.period_us.is_none());
+    }
+
+    // ── SchedulingClass ordering / distinctness ───────────────────────────────
+
+    #[test]
+    fn scheduling_classes_are_distinct() {
+        assert_ne!(SchedulingClass::RealTime, SchedulingClass::Interactive);
+        assert_ne!(SchedulingClass::Interactive, SchedulingClass::Compute);
+        assert_ne!(SchedulingClass::Compute, SchedulingClass::Background);
+    }
+}

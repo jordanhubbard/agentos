@@ -43,6 +43,7 @@
 
 #define AGENTOS_DEBUG 1
 #include "agentos.h"
+#include "contracts/mem_profiler_contract.h"
 #include "prio_inherit.h"
 #include <stdint.h>
 #include <stdbool.h>
@@ -121,7 +122,7 @@ static struct {
 /* ── Helpers ────────────────────────────────────────────────────────── */
 
 static void put_str(const char *s) {
-    console_log(8, 8, s);
+    log_drain_write(8, 8, s);
 }
 
 static void put_dec(uint64_t v) {

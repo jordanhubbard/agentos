@@ -378,3 +378,293 @@ impl core::fmt::Display for CapError {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloc::string::ToString;
+
+    // ── Rights ────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn rights_has_returns_correct_bit() {
+        let r = Rights::READ_WRITE;
+        assert!(r.has(Right::Read));
+        assert!(r.has(Right::Write));
+        assert!(!r.has(Right::Execute));
+        assert!(!r.has(Right::Grant));
+    }
+
+    #[test]
+    fn rights_none_has_nothing() {
+        assert!(!Rights::NONE.has(Right::Read));
+        assert!(!Rights::NONE.has(Right::Write));
+        assert!(!Rights::NONE.has(Right::Execute));
+    }
+
+    #[test]
+    fn rights_all_has_everything() {
+        assert!(Rights::ALL.has(Right::Read));
+        assert!(Rights::ALL.has(Right::Write));
+        assert!(Rights::ALL.has(Right::Execute));
+        assert!(Rights::ALL.has(Right::Grant));
+        assert!(Rights::ALL.has(Right::Revoke));
+    }
+
+    #[test]
+    fn rights_is_superset_of() {
+        assert!(Rights::ALL.is_superset_of(&Rights::READ));
+        assert!(Rights::READ_WRITE.is_superset_of(&Rights::READ));
+        assert!(!Rights::READ.is_superset_of(&Rights::READ_WRITE));
+        assert!(Rights::NONE.is_superset_of(&Rights::NONE));
+    }
+
+    #[test]
+    fn rights_add_and_remove() {
+        let r = Rights::NONE.add(Right::Read).add(Right::Write);
+        assert_eq!(r, Rights::READ_WRITE);
+        let r2 = r.remove(Right::Write);
+        assert_eq!(r2, Rights::READ);
+        assert!(!r2.has(Right::Write));
+    }
+
+    #[test]
+    fn rights_bitor() {
+        let r = Rights::READ | Rights::WRITE;
+        assert!(r.has(Right::Read));
+        assert!(r.has(Right::Write));
+        assert!(!r.has(Right::Execute));
+    }
+
+    // ── Capability construction ───────────────────────────────────────────────
+
+    #[test]
+    fn capability_new_defaults() {
+        let cap = Capability::new(CapabilityKind::Endpoint, 42, Rights::READ);
+        assert_eq!(cap.kind, CapabilityKind::Endpoint);
+        assert_eq!(cap.cptr, 42);
+        assert_eq!(cap.rights, Rights::READ);
+        assert!(cap.badge.is_none());
+        assert!(!cap.delegatable);
+        assert!(cap.kind_hint.is_empty());
+    }
+
+    #[test]
+    fn capability_builder_chain() {
+        let cap = Capability::new(CapabilityKind::Network, 10, Rights::ALL)
+            .with_hint("tcp://localhost")
+            .with_delegation()
+            .with_badge(0xBEEF);
+        assert_eq!(cap.kind_hint, "tcp://localhost");
+        assert!(cap.delegatable);
+        assert_eq!(cap.badge, Some(0xBEEF));
+    }
+
+    #[test]
+    fn capability_has_right() {
+        let cap = Capability::new(CapabilityKind::Thread, 1, Rights::READ_WRITE);
+        assert!(cap.has_right(Right::Read));
+        assert!(cap.has_right(Right::Write));
+        assert!(!cap.has_right(Right::Grant));
+    }
+
+    #[test]
+    fn capability_restrict_subset_succeeds() {
+        let cap = Capability::new(CapabilityKind::ObjectStore, 5, Rights::ALL)
+            .with_delegation();
+        let restricted = cap.restrict(Rights::READ).unwrap();
+        assert_eq!(restricted.rights, Rights::READ);
+        assert!(!restricted.delegatable);  // restricted caps are not delegatable
+    }
+
+    #[test]
+    fn capability_restrict_superset_fails() {
+        let cap = Capability::new(CapabilityKind::ObjectStore, 5, Rights::READ);
+        let result = cap.restrict(Rights::READ_WRITE);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn capability_restrict_equal_succeeds() {
+        let cap = Capability::new(CapabilityKind::Endpoint, 7, Rights::READ_WRITE);
+        let restricted = cap.restrict(Rights::READ_WRITE).unwrap();
+        assert_eq!(restricted.rights, Rights::READ_WRITE);
+    }
+
+    // ── CapabilitySet ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn capability_set_empty_by_default() {
+        let cs = CapabilitySet::new();
+        assert!(cs.is_empty());
+        assert_eq!(cs.len(), 0);
+    }
+
+    #[test]
+    fn capability_set_add_and_len() {
+        let mut cs = CapabilitySet::new();
+        cs.add(Capability::new(CapabilityKind::Thread, 1, Rights::ALL));
+        cs.add(Capability::new(CapabilityKind::Endpoint, 2, Rights::READ));
+        assert_eq!(cs.len(), 2);
+        assert!(!cs.is_empty());
+    }
+
+    #[test]
+    fn capability_set_find_by_kind() {
+        let mut cs = CapabilitySet::new();
+        cs.add(Capability::new(CapabilityKind::Thread, 1, Rights::ALL));
+        cs.add(Capability::new(CapabilityKind::Endpoint, 2, Rights::READ));
+        cs.add(Capability::new(CapabilityKind::Endpoint, 3, Rights::WRITE));
+
+        let threads = cs.find(&CapabilityKind::Thread);
+        assert_eq!(threads.len(), 1);
+        assert_eq!(threads[0].cptr, 1);
+
+        let endpoints = cs.find(&CapabilityKind::Endpoint);
+        assert_eq!(endpoints.len(), 2);
+    }
+
+    #[test]
+    fn capability_set_find_absent_kind_returns_empty() {
+        let cs = CapabilitySet::new();
+        assert!(cs.find(&CapabilityKind::Network).is_empty());
+    }
+
+    #[test]
+    fn capability_set_can() {
+        let mut cs = CapabilitySet::new();
+        cs.add(Capability::new(CapabilityKind::VectorStore, 9, Rights::READ_WRITE));
+        assert!(cs.can(&CapabilityKind::VectorStore, Right::Read));
+        assert!(cs.can(&CapabilityKind::VectorStore, Right::Write));
+        assert!(!cs.can(&CapabilityKind::VectorStore, Right::Execute));
+        assert!(!cs.can(&CapabilityKind::Thread, Right::Read));
+    }
+
+    // ── derive_for_child ──────────────────────────────────────────────────────
+
+    fn make_delegatable(cptr: u64, kind: CapabilityKind, rights: Rights) -> Capability {
+        Capability::new(kind, cptr, rights).with_delegation()
+    }
+
+    #[test]
+    fn derive_for_child_success() {
+        let mut parent = CapabilitySet::new();
+        parent.add(make_delegatable(100, CapabilityKind::Endpoint, Rights::ALL));
+
+        let granted = alloc::vec![
+            Capability::new(CapabilityKind::Endpoint, 100, Rights::READ),
+        ];
+        let child = parent.derive_for_child(&granted).unwrap();
+        assert_eq!(child.len(), 1);
+        assert!(child.can(&CapabilityKind::Endpoint, Right::Read));
+        assert!(!child.can(&CapabilityKind::Endpoint, Right::Write));
+    }
+
+    #[test]
+    fn derive_for_child_records_delegation_log() {
+        let mut parent = CapabilitySet::new();
+        parent.add(make_delegatable(200, CapabilityKind::Thread, Rights::ALL));
+
+        let granted = alloc::vec![
+            Capability::new(CapabilityKind::Thread, 200, Rights::READ),
+        ];
+        parent.derive_for_child(&granted).unwrap();
+
+        let log = parent.delegation_log();
+        assert_eq!(log.len(), 1);
+        assert_eq!(log[0].parent_cptr, 200);
+    }
+
+    #[test]
+    fn derive_for_child_child_cptr_differs_from_parent() {
+        let mut parent = CapabilitySet::new();
+        parent.add(make_delegatable(300, CapabilityKind::Memory, Rights::ALL));
+
+        let granted = alloc::vec![
+            Capability::new(CapabilityKind::Memory, 300, Rights::READ),
+        ];
+        let child = parent.derive_for_child(&granted).unwrap();
+        let child_caps = child.find(&CapabilityKind::Memory);
+        assert_ne!(child_caps[0].cptr, 300);
+    }
+
+    #[test]
+    fn derive_for_child_not_owned_returns_error() {
+        let mut parent = CapabilitySet::new();
+        // cptr 999 is not in parent set
+        let granted = alloc::vec![
+            Capability::new(CapabilityKind::Endpoint, 999, Rights::READ),
+        ];
+        let err = parent.derive_for_child(&granted).unwrap_err();
+        assert_eq!(err, CapError::NotOwned);
+    }
+
+    #[test]
+    fn derive_for_child_not_delegatable_returns_error() {
+        let mut parent = CapabilitySet::new();
+        // Capability without .with_delegation()
+        parent.add(Capability::new(CapabilityKind::Endpoint, 50, Rights::ALL));
+
+        let granted = alloc::vec![
+            Capability::new(CapabilityKind::Endpoint, 50, Rights::READ),
+        ];
+        let err = parent.derive_for_child(&granted).unwrap_err();
+        assert_eq!(err, CapError::NotDelegatable);
+    }
+
+    #[test]
+    fn derive_for_child_rights_exceeded_returns_error() {
+        let mut parent = CapabilitySet::new();
+        parent.add(make_delegatable(60, CapabilityKind::ObjectStore, Rights::READ));
+
+        // Request WRITE which parent doesn't have
+        let granted = alloc::vec![
+            Capability::new(CapabilityKind::ObjectStore, 60, Rights::READ_WRITE),
+        ];
+        let err = parent.derive_for_child(&granted).unwrap_err();
+        assert_eq!(err, CapError::RightsExceeded);
+    }
+
+    // ── DelegationRecord chain hash ───────────────────────────────────────────
+
+    #[test]
+    fn delegation_chain_hash_nonzero_for_nonzero_inputs() {
+        let mut parent = CapabilitySet::new();
+        parent.add(make_delegatable(0xABCD, CapabilityKind::Endpoint, Rights::ALL));
+
+        let granted = alloc::vec![
+            Capability::new(CapabilityKind::Endpoint, 0xABCD, Rights::READ),
+        ];
+        parent.derive_for_child(&granted).unwrap();
+        let hash = parent.delegation_log()[0].chain_hash;
+        // Hash should not be all zeros (extremely unlikely collision)
+        assert_ne!(hash, [0u8; 32]);
+    }
+
+    #[test]
+    fn delegation_chain_hash_distinct_for_distinct_cptrss() {
+        let mut parent = CapabilitySet::new();
+        parent.add(make_delegatable(111, CapabilityKind::Thread, Rights::ALL));
+        parent.add(make_delegatable(222, CapabilityKind::Thread, Rights::ALL));
+
+        let g1 = alloc::vec![Capability::new(CapabilityKind::Thread, 111, Rights::READ)];
+        let g2 = alloc::vec![Capability::new(CapabilityKind::Thread, 222, Rights::READ)];
+
+        parent.derive_for_child(&g1).unwrap();
+        parent.derive_for_child(&g2).unwrap();
+
+        let log = parent.delegation_log();
+        assert_ne!(log[0].chain_hash, log[1].chain_hash);
+    }
+
+    // ── CapError Display ──────────────────────────────────────────────────────
+
+    #[test]
+    fn cap_error_display() {
+        assert_eq!(CapError::NotOwned.to_string(), "capability not owned by this agent");
+        assert_eq!(CapError::NotDelegatable.to_string(), "capability is not delegatable");
+        assert_eq!(CapError::RightsExceeded.to_string(), "requested rights exceed owned rights");
+        assert_eq!(CapError::Revoked.to_string(), "capability has been revoked");
+        assert_eq!(CapError::InvalidKind.to_string(), "invalid capability kind for this operation");
+    }
+}

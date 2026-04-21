@@ -26,6 +26,7 @@
 
 #define AGENTOS_DEBUG 1
 #include "agentos.h"
+#include "contracts/quota_pd_contract.h"
 
 /* ── Opcodes ──────────────────────────────────────────────────────────────── */
 #define OP_QUOTA_REGISTER  0x60  /* Register agent: MR1=agent_id, MR2=cpu_ms, MR3=mem_kb */
@@ -96,7 +97,7 @@ static uint64_t boot_tick = 0;
 
 /* ── Helper: decimal print ────────────────────────────────────────────────── */
 static void put_dec(uint32_t v) {
-    console_log(14, 14, "0");
+    log_drain_write(14, 14, "0");
     char buf[12];
     int i = 11;
     buf[i] = '\0';
@@ -104,7 +105,7 @@ static void put_dec(uint32_t v) {
         buf[--i] = '0' + (v % 10);
         v /= 10;
     }
-    console_log(14, 14, &buf[i]);
+    log_drain_write(14, 14, &buf[i]);
 }
 
 /* ── Init ─────────────────────────────────────────────────────────────────── */
@@ -137,11 +138,11 @@ static void quota_pd_init(void) {
         table[i].exceed_tick  = 0;
     }
 
-    console_log(14, 14, "[quota_pd] Initialized: ");
+    log_drain_write(14, 14, "[quota_pd] Initialized: ");
     put_dec(MAX_QUOTA_SLOTS);
-    console_log(14, 14, " slots, ");
+    log_drain_write(14, 14, " slots, ");
     put_dec((uint32_t)event_cap);
-    console_log(14, 14, " event entries\n");
+    log_drain_write(14, 14, " event entries\n");
 }
 
 /* ── Append event to log ──────────────────────────────────────────────────── */
@@ -202,11 +203,11 @@ static void revoke_agent_caps(uint32_t agent_id, uint32_t reason_flag) {
     microkit_mr_set(2, reason_flag);
     microkit_notify(QP_CH_CAP_BROKER);
 
-    console_log(14, 14, "[quota_pd] REVOKE agent=");
+    log_drain_write(14, 14, "[quota_pd] REVOKE agent=");
     put_dec(agent_id);
-    console_log(14, 14, " reason=");
+    log_drain_write(14, 14, " reason=");
     put_dec(reason_flag);
-    console_log(14, 14, "\n");
+    log_drain_write(14, 14, "\n");
 }
 
 /* ── Check quota and enforce ──────────────────────────────────────────────── */
@@ -224,13 +225,13 @@ static void check_and_enforce(int slot_idx) {
             entry->flags |= QUOTA_FLAG_CPU_EXCEED;
             exceeded = true;
             quota_log_event(entry->agent_id, 2, entry->cpu_used_ms, entry->cpu_limit_ms);
-            console_log(14, 14, "[quota_pd] CPU quota exceeded: agent=");
+            log_drain_write(14, 14, "[quota_pd] CPU quota exceeded: agent=");
             put_dec(entry->agent_id);
-            console_log(14, 14, " used=");
+            log_drain_write(14, 14, " used=");
             put_dec(entry->cpu_used_ms);
-            console_log(14, 14, "ms limit=");
+            log_drain_write(14, 14, "ms limit=");
             put_dec(entry->cpu_limit_ms);
-            console_log(14, 14, "ms\n");
+            log_drain_write(14, 14, "ms\n");
         }
     }
 
@@ -240,13 +241,13 @@ static void check_and_enforce(int slot_idx) {
             entry->flags |= QUOTA_FLAG_MEM_EXCEED;
             exceeded = true;
             quota_log_event(entry->agent_id, 3, entry->mem_used_kb, entry->mem_limit_kb);
-            console_log(14, 14, "[quota_pd] MEM quota exceeded: agent=");
+            log_drain_write(14, 14, "[quota_pd] MEM quota exceeded: agent=");
             put_dec(entry->agent_id);
-            console_log(14, 14, " used=");
+            log_drain_write(14, 14, " used=");
             put_dec(entry->mem_used_kb);
-            console_log(14, 14, "kb limit=");
+            log_drain_write(14, 14, "kb limit=");
             put_dec(entry->mem_limit_kb);
-            console_log(14, 14, "kb\n");
+            log_drain_write(14, 14, "kb\n");
         }
     }
 
@@ -276,9 +277,9 @@ static microkit_msginfo handle_request(microkit_msginfo msg) {
         /* Check if already registered */
         int existing = find_slot(agent_id);
         if (existing >= 0) {
-            console_log(14, 14, "[quota_pd] WARN: agent already registered, slot=");
+            log_drain_write(14, 14, "[quota_pd] WARN: agent already registered, slot=");
             put_dec((uint32_t)existing);
-            console_log(14, 14, "\n");
+            log_drain_write(14, 14, "\n");
             microkit_mr_set(0, (uint32_t)existing);
             microkit_mr_set(1, 1);  /* already exists */
             return microkit_msginfo_new(0, 2);
@@ -286,7 +287,7 @@ static microkit_msginfo handle_request(microkit_msginfo msg) {
 
         int slot = find_free_slot();
         if (slot < 0) {
-            console_log(14, 14, "[quota_pd] ERROR: quota table full\n");
+            log_drain_write(14, 14, "[quota_pd] ERROR: quota table full\n");
             microkit_mr_set(0, 0xFFFFFFFF);
             microkit_mr_set(1, 0xE1);  /* ERR_TABLE_FULL */
             return microkit_msginfo_new(0, 2);
@@ -306,15 +307,15 @@ static microkit_msginfo handle_request(microkit_msginfo msg) {
 
         quota_log_event(agent_id, 1, cpu_limit, mem_limit);
 
-        console_log(14, 14, "[quota_pd] Registered agent=");
+        log_drain_write(14, 14, "[quota_pd] Registered agent=");
         put_dec(agent_id);
-        console_log(14, 14, " cpu=");
+        log_drain_write(14, 14, " cpu=");
         put_dec(cpu_limit);
-        console_log(14, 14, "ms mem=");
+        log_drain_write(14, 14, "ms mem=");
         put_dec(mem_limit);
-        console_log(14, 14, "kb slot=");
+        log_drain_write(14, 14, "kb slot=");
         put_dec((uint32_t)slot);
-        console_log(14, 14, "\n");
+        log_drain_write(14, 14, "\n");
 
         microkit_mr_set(0, (uint32_t)slot);
         microkit_mr_set(1, 0);  /* success */
@@ -392,13 +393,13 @@ static microkit_msginfo handle_request(microkit_msginfo msg) {
 
         quota_log_event(agent_id, 5, new_cpu_ms, new_mem_kb);
 
-        console_log(14, 14, "[quota_pd] Updated agent=");
+        log_drain_write(14, 14, "[quota_pd] Updated agent=");
         put_dec(agent_id);
-        console_log(14, 14, " cpu=");
+        log_drain_write(14, 14, " cpu=");
         put_dec(new_cpu_ms);
-        console_log(14, 14, "ms mem=");
+        log_drain_write(14, 14, "ms mem=");
         put_dec(new_mem_kb);
-        console_log(14, 14, "kb\n");
+        log_drain_write(14, 14, "kb\n");
 
         microkit_mr_set(0, 0);  /* success */
         microkit_mr_set(1, entry->flags);
@@ -406,7 +407,7 @@ static microkit_msginfo handle_request(microkit_msginfo msg) {
     }
 
     default:
-        console_log(14, 14, "[quota_pd] WARN: unknown opcode\n");
+        log_drain_write(14, 14, "[quota_pd] WARN: unknown opcode\n");
         microkit_mr_set(0, 0xFF);
         return microkit_msginfo_new(0, 1);
     }
@@ -418,9 +419,9 @@ static microkit_msginfo handle_request(microkit_msginfo msg) {
 void init(void) {
     agentos_log_boot("quota_pd");
     quota_pd_init();
-    console_log(14, 14, "[quota_pd] Ready — priority 115, passive, ");
+    log_drain_write(14, 14, "[quota_pd] Ready — priority 115, passive, ");
     put_dec(MAX_QUOTA_SLOTS);
-    console_log(14, 14, " agent quota slots\n");
+    log_drain_write(14, 14, " agent quota slots\n");
 }
 
 microkit_msginfo protected(microkit_channel channel, microkit_msginfo msg) {

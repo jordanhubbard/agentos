@@ -1,0 +1,22 @@
+CompileFlags:
+  Add:
+    # agentOS kernel root task include path (agentos.h, contracts/)
+    - -Ikernel/agentos-root-task/include
+    # Microkit SDK headers — debug profile, qemu_virt_aarch64 (matches CI default)
+    - -Imicrokit-sdk-2.1.0/board/qemu_virt_aarch64/debug/include
+    # seL4 / Microkit type stubs (uint32_t etc. come from the SDK's sel4/types.h)
+    - -D__GNUC__=12
+    - -D__aarch64__=1
+    - -std=c11
+  # Suppress warnings that are unavoidable in a cross-compile LSP context
+  Remove:
+    - -march=*
+    - -mcpu=*
+    - -mfloat-abi=*
+    - -mfpu=*
+
+Diagnostics:
+  # Suppress cascade errors from missing SDK headers in LSP context.
+  # Real build errors surface via `make`; the LSP is for navigation only.
+  Suppress:
+    - pp_file_not_found

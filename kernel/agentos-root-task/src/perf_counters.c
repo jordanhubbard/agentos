@@ -57,6 +57,7 @@
 
 #define AGENTOS_DEBUG 1
 #include "agentos.h"
+#include "contracts/perf_counters_contract.h"
 #include "prio_inherit.h"
 #include <stdint.h>
 #include <stdbool.h>

@@ -54,6 +54,7 @@
 
 #define AGENTOS_DEBUG 1
 #include "agentos.h"
+#include "contracts/time_partition_contract.h"
 #include "prio_inherit.h"
 #include <stdint.h>
 #include <stdbool.h>

@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+ Copyright 2022, UNSW (ABN 57 195 873 179)
+
+ SPDX-License-Identifier: BSD-2-Clause
+-->
+
+<!--
+ To see a detailed explanation of the system description and why each part is
+ necessary, read the project's manual or see the system description for the
+ simple example.
+-->
+<system>
+    <memory_region name="guest_ram" size="0x10_000_000" page_size="0x200_000" />
+    <memory_region name="serial" size="0x1_000" phys_addr="0x9000000" />
+    <memory_region name="gic_vcpu" size="0x1_000" phys_addr="0x8040000" />
+
+    <protection_domain name="VMM" priority="254">
+        <program_image path="vmm.elf" />
+        <map mr="guest_ram" vaddr="0x40000000" perms="rw" />
+
+        <virtual_machine name="linux">
+            <vcpu id="0" />
+            <map mr="guest_ram" vaddr="0x40000000" perms="rwx" />
+            <map mr="serial" vaddr="0x9000000" perms="rw" cached="false" />
+            <map mr="gic_vcpu" vaddr="0x8010000" perms="rw" cached="false" />
+        </virtual_machine>
+
+        <irq irq="33" id="1" />
+    </protection_domain>
+</system>

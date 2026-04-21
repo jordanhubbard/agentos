@@ -27,6 +27,7 @@
 
 #define AGENTOS_DEBUG 1
 #include "agentos.h"
+#include "contracts/swap_slot_contract.h"
 #include "wasm3_host.h"
 
 #define CH_CONTROLLER 0
@@ -81,18 +82,18 @@ static bool load_service(void) {
     volatile swap_slot_header_t *hdr = (volatile swap_slot_header_t *)CODE_REGION_BASE;
     
     if (hdr->magic != SWAP_MAGIC) {
-        console_log(15, 15, "[swap_slot] ERROR: bad magic in code region\n");
+        log_drain_write(15, 15, "[swap_slot] ERROR: bad magic in code region\n");
         return false;
     }
     
-    console_log(15, 15, "[swap_slot] Loading service: ");
+    log_drain_write(15, 15, "[swap_slot] Loading service: ");
     /* Can't use hdr->service_name directly with dbg_puts (volatile) */
     /* TODO: Copy to local buffer and print */
-    console_log(15, 15, "(service)\n");
+    log_drain_write(15, 15, "(service)\n");
     
     switch (hdr->code_format) {
         case 1: /* WASM */
-            console_log(15, 15, "[swap_slot] Format: WASM module\n");
+            log_drain_write(15, 15, "[swap_slot] Format: WASM module\n");
             
             /* Destroy any previously loaded runtime */
             if (wasm_host) {
@@ -125,38 +126,38 @@ static bool load_service(void) {
                 }
                 for (const char *_s = "\n"; *_s; _s++) *_cl_p++ = *_s;
                 *_cl_p = 0;
-                console_log(15, 15, _cl_buf);
+                log_drain_write(15, 15, _cl_buf);
             }
 
             /* Initialize wasm3 runtime and load the module */
             wasm_host = wasm3_host_init(wasm_bytes, wasm_size);
             if (!wasm_host) {
-                console_log(15, 15, "[swap_slot] ERROR: WASM runtime init failed\n");
+                log_drain_write(15, 15, "[swap_slot] ERROR: WASM runtime init failed\n");
                 return false;
             }
             
             /* Call the module's init() export */
             if (!wasm3_host_call_init(wasm_host)) {
-                console_log(15, 15, "[swap_slot] WARNING: WASM init() failed or not found\n");
+                log_drain_write(15, 15, "[swap_slot] WARNING: WASM init() failed or not found\n");
                 /* Non-fatal — module may not have init() */
             }
             
-            console_log(15, 15, "[swap_slot] *** WASM module loaded and running ***\n");
+            log_drain_write(15, 15, "[swap_slot] *** WASM module loaded and running ***\n");
             return true;
             
         case 2: /* Bytecode (simple custom format for prototyping) */
-            console_log(15, 15, "[swap_slot] Format: bytecode\n");
+            log_drain_write(15, 15, "[swap_slot] Format: bytecode\n");
             /* Simple stack-based bytecode for early prototyping */
             return false;  /* Not yet implemented */
             
         default:
-            console_log(15, 15, "[swap_slot] ERROR: unknown code format\n");
+            log_drain_write(15, 15, "[swap_slot] ERROR: unknown code format\n");
             return false;
     }
 }
 
 void init(void) {
-    console_log(15, 15, "[swap_slot] Swap slot PD initialized (idle)\n");
+    log_drain_write(15, 15, "[swap_slot] Swap slot PD initialized (idle)\n");
     state = SLOT_IDLE;
 }
 
@@ -166,29 +167,29 @@ void notified(microkit_channel ch) {
     switch (state) {
         case SLOT_IDLE:
             /* Controller is telling us to load new code */
-            console_log(15, 15, "[swap_slot] Received load notification\n");
+            log_drain_write(15, 15, "[swap_slot] Received load notification\n");
             state = SLOT_LOADING;
             
             if (check_code_region()) {
                 if (load_service()) {
                     state = SLOT_READY;
-                    console_log(15, 15, "[swap_slot] Service loaded successfully\n");
+                    log_drain_write(15, 15, "[swap_slot] Service loaded successfully\n");
                     /* Notify controller we're ready */
                     microkit_notify(CH_CONTROLLER);
                 } else {
                     state = SLOT_FAILED;
-                    console_log(15, 15, "[swap_slot] Service load FAILED\n");
+                    log_drain_write(15, 15, "[swap_slot] Service load FAILED\n");
                     microkit_notify(CH_CONTROLLER);
                 }
             } else {
-                console_log(15, 15, "[swap_slot] No code in region yet\n");
+                log_drain_write(15, 15, "[swap_slot] No code in region yet\n");
                 state = SLOT_IDLE;
             }
             break;
             
         case SLOT_READY:
             /* Controller is activating us */
-            console_log(15, 15, "[swap_slot] Activated as live service\n");
+            log_drain_write(15, 15, "[swap_slot] Activated as live service\n");
             state = SLOT_ACTIVE;
             break;
             
@@ -255,7 +256,7 @@ microkit_msginfo protected(microkit_channel ch, microkit_msginfo msginfo) {
                         return microkit_msginfo_new(result.label, 4);
                     }
                     /* WASM call failed — fall through to error */
-                    console_log(15, 15, "[swap_slot] WASM handle_ppc() failed\n");
+                    log_drain_write(15, 15, "[swap_slot] WASM handle_ppc() failed\n");
                     return microkit_msginfo_new(MSG_VIBE_SLOT_FAILED, 0);
                 }
                 

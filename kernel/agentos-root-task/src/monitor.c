@@ -8,6 +8,7 @@
 #define AGENTOS_DEBUG 1
 #include "agentos.h"
 #include "cap_policy.h"
+#include "contracts/vmm_contract.h"
 #include "prio_inherit.h"
 #include "boot_integrity.h"
 #include "nameserver.h"
@@ -45,6 +46,10 @@ uintptr_t app_manifest_shmem_ctrl_vaddr;
 uintptr_t ext2_shmem_ctrl_vaddr;
 /* vm_list shmem: controller reads OP_VM_LIST results from vm_manager (mapped r) */
 uintptr_t vm_list_shmem_ctrl_vaddr;
+/* vmm vCPU regs shmem: VMM PD writes vcpu_regs_t here before MSG_VMM_VCPU_SET_REGS */
+uintptr_t vmm_vcpu_regs_vaddr;
+/* block_shmem: controller writes data before MSG_BLOCK_WRITE, reads after MSG_BLOCK_READ */
+uintptr_t block_shmem_ctrl_vaddr;
 
 /*
  * Echo service WASM binary (embedded for demo Step 4)
@@ -184,7 +189,7 @@ static void put_hex_byte(uint8_t b) {
     buf[0] = hex[(b >> 4) & 0xf];
     buf[1] = hex[b & 0xf];
     buf[2] = '\0';
-    console_log(0, 0, buf);
+    log_drain_write(0, 0, buf);
 }
 
 /*
@@ -202,7 +207,7 @@ static void put_hex_byte(uint8_t b) {
  *   → health_check → SERVICE LIVE
  */
 static void vibe_demo_step4_notify(void) {
-    console_log(0, 0, "[controller] Step 4: VibeEngine approved a swap!\n[controller] Reading proposal from staging region...\n");
+    log_drain_write(0, 0, "[controller] Step 4: VibeEngine approved a swap!\n[controller] Reading proposal from staging region...\n");
 
     /* Read metadata from end of staging region (last 64 bytes) */
     static const uint32_t STAGING_SIZE = 0x400000;
@@ -218,7 +223,7 @@ static void vibe_demo_step4_notify(void) {
 
     /* Check for rollback request (wasm_size == 0xFFFFFFFF) */
     if (wasm_size == 0xFFFFFFFFU) {
-        console_log(0, 0, "[controller] Rollback requested for service ");
+        log_drain_write(0, 0, "[controller] Rollback requested for service ");
         char sid[4];
         sid[0] = '0' + (service_id % 10);
         sid[1] = '\0';
@@ -228,13 +233,13 @@ static void vibe_demo_step4_notify(void) {
             for (const char *_s = sid; *_s; _s++) *_cl_p++ = *_s;
             for (const char *_s = "\n"; *_s; _s++) *_cl_p++ = *_s;
             *_cl_p = 0;
-            console_log(0, 0, _cl_buf);
+            log_drain_write(0, 0, _cl_buf);
         }
         vibe_swap_rollback(service_id);
         return;
     }
 
-    console_log(0, 0, "[controller] Swap proposal: service=");
+    log_drain_write(0, 0, "[controller] Swap proposal: service=");
     char svc_str[4];
     svc_str[0] = '0' + (service_id % 10);
     svc_str[1] = '\0';
@@ -244,7 +249,7 @@ static void vibe_demo_step4_notify(void) {
         for (const char *_s = svc_str; *_s; _s++) *_cl_p++ = *_s;
         for (const char *_s = ", wasm_size="; *_s; _s++) *_cl_p++ = *_s;
         *_cl_p = 0;
-        console_log(0, 0, _cl_buf);
+        log_drain_write(0, 0, _cl_buf);
     }
     char sz_str[8];
     uint32_t s = wasm_size; int p = 0;
@@ -259,7 +264,7 @@ static void vibe_demo_step4_notify(void) {
         for (const char *_s = sz_str; *_s; _s++) *_cl_p++ = *_s;
         for (const char *_s = " bytes\n"; *_s; _s++) *_cl_p++ = *_s;
         *_cl_p = 0;
-        console_log(0, 0, _cl_buf);
+        log_drain_write(0, 0, _cl_buf);
     }
 
     /* The WASM binary is in the vibe_staging region at wasm_offset.
@@ -273,23 +278,23 @@ static void vibe_demo_step4_notify(void) {
      * could silently escalate privilege. */
     int manifest_ok = verify_capabilities_manifest(wasm_bytes, wasm_size);
     if (manifest_ok == -2) {
-        console_log(0, 0, "[monitor] WASM manifest hash mismatch — rejecting agent load\n");
+        log_drain_write(0, 0, "[monitor] WASM manifest hash mismatch — rejecting agent load\n");
         return;
     } else if (manifest_ok == -1) {
-        console_log(0, 0, "[monitor] no capability manifest — granting minimal defaults only\n");
+        log_drain_write(0, 0, "[monitor] no capability manifest — granting minimal defaults only\n");
         /* Continue with minimal default capabilities rather than full manifest */
     }
 
-    console_log(0, 0, "[controller] Initiating kernel-side swap...\n");
+    log_drain_write(0, 0, "[controller] Initiating kernel-side swap...\n");
     ctrl.vibe_swap_in_progress = true;
 
     int slot = vibe_swap_begin(service_id, wasm_bytes, wasm_size);
 
     if (slot < 0) {
-        console_log(0, 0, "[controller] vibe_swap_begin FAILED\n");
+        log_drain_write(0, 0, "[controller] vibe_swap_begin FAILED\n");
         ctrl.vibe_swap_in_progress = false;
     } else {
-        console_log(0, 0, "[controller] vibe_swap_begin OK — swap slot ");
+        log_drain_write(0, 0, "[controller] vibe_swap_begin OK — swap slot ");
         char sl[4];
         sl[0] = '0' + (slot % 10);
         sl[1] = '\0';
@@ -300,7 +305,7 @@ static void vibe_demo_step4_notify(void) {
             for (const char *_s = " loading WASM via wasm3...\n"; *_s; _s++) *_cl_p++ = *_s;
             for (const char *_s = "[controller] Waiting for swap slot health notification...\n"; *_s; _s++) *_cl_p++ = *_s;
             *_cl_p = 0;
-            console_log(0, 0, _cl_buf);
+            log_drain_write(0, 0, _cl_buf);
         }
     }
 }
@@ -312,10 +317,10 @@ static void vibe_demo_step4_notify(void) {
  * exchanging messages, storing/retrieving data, and publishing events.
  */
 static void demo_sequence(void) {
-    console_log(0, 0, "\n══════════════════════════════════════════════════════\n  DEMO: Agent Data Flow — PDs exchanging real data\n══════════════════════════════════════════════════════\n\n");
+    log_drain_write(0, 0, "\n══════════════════════════════════════════════════════\n  DEMO: Agent Data Flow — PDs exchanging real data\n══════════════════════════════════════════════════════\n\n");
 
     /* ── Step 1: Store an object in AgentFS ─────────────────────────── */
-    console_log(0, 0, "[controller] Step 1: Storing object in AgentFS via PPC...\n");
+    log_drain_write(0, 0, "[controller] Step 1: Storing object in AgentFS via PPC...\n");
 
     /* AgentFS PUT: MR0=op, MR1=size, MR2=cap_tag */
     uint32_t obj_size = 18;  /* "Hello from agentOS" = 18 bytes */
@@ -336,21 +341,21 @@ static void demo_sequence(void) {
         ctrl.demo_obj_id[3] = (uint32_t)microkit_mr_get(4);
         ctrl.demo_obj_stored = true;
 
-        console_log(0, 0, "[controller] AgentFS PUT OK — object id: 0x");
+        log_drain_write(0, 0, "[controller] AgentFS PUT OK — object id: 0x");
         put_hex_byte((ctrl.demo_obj_id[0] >> 24) & 0xff);
         put_hex_byte((ctrl.demo_obj_id[0] >> 16) & 0xff);
         put_hex_byte((ctrl.demo_obj_id[0] >>  8) & 0xff);
         put_hex_byte((ctrl.demo_obj_id[0]      ) & 0xff);
-        console_log(0, 0, "...\n[controller] Object payload: 'Hello from agentOS' (18 bytes)\n");
+        log_drain_write(0, 0, "...\n[controller] Object payload: 'Hello from agentOS' (18 bytes)\n");
     } else {
-        console_log(0, 0, "[controller] AgentFS PUT FAILED\n");
+        log_drain_write(0, 0, "[controller] AgentFS PUT FAILED\n");
         return;
     }
 
     demo_delay();
 
     /* ── Step 2: Publish event to EventBus ──────────────────────────── */
-    console_log(0, 0, "[controller] Step 2: Publishing OBJECT_CREATED event to EventBus...\n");
+    log_drain_write(0, 0, "[controller] Step 2: Publishing OBJECT_CREATED event to EventBus...\n");
 
     microkit_mr_set(0, EVT_OBJECT_CREATED);  /* event kind */
     microkit_mr_set(1, ctrl.demo_obj_id[0]); /* first 4 bytes of object ID */
@@ -360,18 +365,18 @@ static void demo_sequence(void) {
                  (uint16_t)EVT_OBJECT_CREATED,
                  ctrl.demo_obj_id[0], obj_size);
     microkit_ppcall(CH_EVENTBUS, microkit_msginfo_new(EVT_OBJECT_CREATED, 3));
-    console_log(0, 0, "[controller] Event published to ring buffer\n");
+    log_drain_write(0, 0, "[controller] Event published to ring buffer\n");
 
     demo_delay();
 
     /* ── Step 3: Dispatch task to worker_0 ──────────────────────────── */
-    console_log(0, 0, "[controller] Step 3: Dispatching task to worker_0 — 'retrieve object'\n");
+    log_drain_write(0, 0, "[controller] Step 3: Dispatching task to worker_0 — 'retrieve object'\n");
 
     ctrl.worker_task_dispatched = true;
     trace_notify(TRACE_PD_CONTROLLER, TRACE_PD_WORKER_0, 0, 0, 0);
     microkit_notify(CH_WORKER_BASE);  /* notify worker_0 */
 
-    console_log(0, 0, "[controller] Task dispatched. Waiting for worker completion...\n");
+    log_drain_write(0, 0, "[controller] Task dispatched. Waiting for worker completion...\n");
     /* Worker will notify us back on channel 10 when done */
 }
 
@@ -392,9 +397,9 @@ static void ns_register_service(uint32_t channel_id, uint32_t pd_id,
     microkit_ppcall(CH_NAMESERVER, microkit_msginfo_new(OP_NS_REGISTER, 9));
     uint32_t rc = (uint32_t)microkit_mr_get(0);
     if (rc != NS_OK) {
-        console_log(0, 0, "[controller] NS_REGISTER failed for: ");
-        console_log(0, 0, name);
-        console_log(0, 0, "\n");
+        log_drain_write(0, 0, "[controller] NS_REGISTER failed for: ");
+        log_drain_write(0, 0, name);
+        log_drain_write(0, 0, "\n");
     }
 }
 
@@ -406,12 +411,12 @@ static void ns_register_service(uint32_t channel_id, uint32_t pd_id,
  */
 static void microservice_demo(void)
 {
-    console_log(0, 0, "\n══════════════════════════════════════════════════════\n"
+    log_drain_write(0, 0, "\n══════════════════════════════════════════════════════\n"
                       "  DEMO Step 5: AppManager — full-stack app launch\n"
                       "══════════════════════════════════════════════════════\n\n");
 
     if (!app_manifest_shmem_ctrl_vaddr) {
-        console_log(0, 0, "[controller] app_manifest_shmem not mapped — skipping step 5\n");
+        log_drain_write(0, 0, "[controller] app_manifest_shmem not mapped — skipping step 5\n");
         return;
     }
 
@@ -428,7 +433,7 @@ static void microservice_demo(void)
     for (uint32_t i = 0; i < DEMO_MANIFEST_LEN; i++)
         dst[i] = (uint8_t)DEMO_MANIFEST[i];
 
-    console_log(0, 0, "[controller] Manifest written — calling OP_APP_LAUNCH...\n");
+    log_drain_write(0, 0, "[controller] Manifest written — calling OP_APP_LAUNCH...\n");
 
     microkit_mr_set(0, OP_APP_LAUNCH);
     microkit_mr_set(1, DEMO_MANIFEST_LEN);
@@ -440,13 +445,13 @@ static void microservice_demo(void)
     uint32_t vnic   = (uint32_t)microkit_mr_get(2);
 
     if (rc == APP_OK) {
-        console_log(0, 0, "[controller] APP_LAUNCH OK — app_id=");
+        log_drain_write(0, 0, "[controller] APP_LAUNCH OK — app_id=");
         char buf[12]; int bi = 11; buf[bi] = '\0';
         uint32_t v = app_id;
         if (v == 0) { buf[--bi] = '0'; }
         else while (v > 0 && bi > 0) { buf[--bi] = (char)('0' + (v % 10)); v /= 10; }
-        console_log(0, 0, &buf[bi]);
-        console_log(0, 0, " vnic=");
+        log_drain_write(0, 0, &buf[bi]);
+        log_drain_write(0, 0, " vnic=");
         v = vnic; bi = 11; buf[bi] = '\0';
         if (v == 0xFFFFFFFFu) {
             buf[--bi] = 'e'; buf[--bi] = 'n'; buf[--bi] = 'o'; buf[--bi] = 'n';
@@ -454,9 +459,9 @@ static void microservice_demo(void)
             if (v == 0) { buf[--bi] = '0'; }
             else while (v > 0 && bi > 0) { buf[--bi] = (char)('0' + (v % 10)); v /= 10; }
         }
-        console_log(0, 0, &buf[bi]);
-        console_log(0, 0, "\n[controller] echo-app registered at HTTP prefix /echo\n");
-        console_log(0, 0,
+        log_drain_write(0, 0, &buf[bi]);
+        log_drain_write(0, 0, "\n[controller] echo-app registered at HTTP prefix /echo\n");
+        log_drain_write(0, 0,
             "\n══════════════════════════════════════════════════════\n"
             "  DEMO COMPLETE — All 5 steps passed!\n"
             "  Step 1: AgentFS object store    — PUT/GET via IPC\n"
@@ -467,7 +472,7 @@ static void microservice_demo(void)
             "  PDs: 34 on seL4 (RISC-V / AArch64)\n"
             "══════════════════════════════════════════════════════\n\n");
     } else {
-        console_log(0, 0, "[controller] APP_LAUNCH failed (services may be stubs)\n");
+        log_drain_write(0, 0, "[controller] APP_LAUNCH failed (services may be stubs)\n");
     }
 }
 
@@ -477,7 +482,7 @@ static bool policy_loaded = false;
 
 static void monitor_apply_default_policy(void) {
     /* Existing hardcoded grants stay here as fallback */
-    console_log(0, 0, "[monitor] applying hardcoded default policy\n");
+    log_drain_write(0, 0, "[monitor] applying hardcoded default policy\n");
     policy_loaded = true;
 }
 
@@ -486,55 +491,55 @@ static void monitor_apply_policy(void) {
         (volatile cap_policy_header_t *)cap_policy_shmem_vaddr;
 
     if (!cap_policy_shmem_vaddr || hdr->magic != CAP_POLICY_MAGIC) {
-        console_log(0, 0, "[monitor] no policy blob, using defaults\n");
+        log_drain_write(0, 0, "[monitor] no policy blob, using defaults\n");
         /* Fall back to hardcoded defaults */
         monitor_apply_default_policy();
         return;
     }
     if (hdr->version != CAP_POLICY_VERSION || hdr->num_grants > CAP_POLICY_MAX_GRANTS) {
-        console_log(0, 0, "[monitor] invalid policy header, using defaults\n");
+        log_drain_write(0, 0, "[monitor] invalid policy header, using defaults\n");
         monitor_apply_default_policy();
         return;
     }
 
     volatile cap_grant_t *grants = (volatile cap_grant_t *)(hdr + 1);
     for (uint32_t i = 0; i < hdr->num_grants; i++) {
-        console_log(0, 0, "[monitor] policy grant agent=");
+        log_drain_write(0, 0, "[monitor] policy grant agent=");
         /* Print agent_id */
         char abuf[4];
         abuf[0] = '0' + (grants[i].agent_id % 10);
         abuf[1] = '\0';
-        console_log(0, 0, abuf);
-        console_log(0, 0, " class=0x");
+        log_drain_write(0, 0, abuf);
+        log_drain_write(0, 0, " class=0x");
         {
             static const char hex[] = "0123456789abcdef";
             char hbuf[3];
             hbuf[0] = hex[(grants[i].cap_class >> 4) & 0xf];
             hbuf[1] = hex[grants[i].cap_class & 0xf];
             hbuf[2] = '\0';
-            console_log(0, 0, hbuf);
+            log_drain_write(0, 0, hbuf);
         }
-        console_log(0, 0, " rights=0x");
+        log_drain_write(0, 0, " rights=0x");
         {
             static const char hex[] = "0123456789abcdef";
             char hbuf[3];
             hbuf[0] = hex[(grants[i].rights >> 4) & 0xf];
             hbuf[1] = hex[grants[i].rights & 0xf];
             hbuf[2] = '\0';
-            console_log(0, 0, hbuf);
+            log_drain_write(0, 0, hbuf);
         }
-        console_log(0, 0, "\n");
+        log_drain_write(0, 0, "\n");
         /* In production, this would invoke seL4 cap mint/grant operations */
         /* For now, record that the grant was applied */
     }
     policy_loaded = true;
-    console_log(0, 0, "[monitor] applied policy grants\n");
+    log_drain_write(0, 0, "[monitor] applied policy grants\n");
 }
 
 void init(void) {
     agentos_log_boot("controller");
 
-    console_log(0, 0, "[controller] Initializing agentOS core services\n");
+    log_drain_write(0, 0, "[controller] Initializing agentOS core services\n");
 
     /* Load capability policy blob from shmem (or fall back to defaults) */
     monitor_apply_policy();
@@ -562,7 +567,7 @@ void init(void) {
     }
 
     /* PPC into EventBus (passive, higher priority) to initialize it */
-    console_log(0, 0, "[controller] Waking EventBus via PPC...\n");
+    log_drain_write(0, 0, "[controller] Waking EventBus via PPC...\n");
     trace_notify(TRACE_PD_CONTROLLER, TRACE_PD_EVENT_BUS,
                  (uint16_t)MSG_EVENTBUS_INIT, 0, 0);
     microkit_msginfo result = microkit_ppcall(CH_EVENTBUS,
@@ -571,13 +576,13 @@ void init(void) {
     uint64_t resp = microkit_msginfo_get_label(result);
     if (resp == MSG_EVENTBUS_READY) {
         ctrl.eventbus_ready = true;
-        console_log(0, 0, "[controller] EventBus: READY\n");
+        log_drain_write(0, 0, "[controller] EventBus: READY\n");
     } else {
-        console_log(0, 0, "[controller] EventBus: unexpected response\n");
+        log_drain_write(0, 0, "[controller] EventBus: unexpected response\n");
     }
     
     /* Notify InitAgent to start (it's active, so we can't PPC into it) */
-    console_log(0, 0, "[controller] Notifying InitAgent to start...\n");
+    log_drain_write(0, 0, "[controller] Notifying InitAgent to start...\n");
     trace_notify(TRACE_PD_CONTROLLER, TRACE_PD_INIT_AGENT,
                  (uint16_t)MSG_INITAGENT_START, 0, 0);
     microkit_notify(CH_INITAGENT);
@@ -585,12 +590,12 @@ void init(void) {
     /* Initialize vibe-swap subsystem (sets up swap slot channels + service table) */
     vibe_swap_init();
 
-    console_log(0, 0, "[controller] *** agentOS controller boot complete ***\n[controller] Ready for agents.\n");
+    log_drain_write(0, 0, "[controller] *** agentOS controller boot complete ***\n[controller] Ready for agents.\n");
     /* Canonical boot-complete marker — must match xtask/cmd_test.rs and end_to_end_boot_test.sh */
-    console_log(0, 0, "agentOS boot complete\n");
+    log_drain_write(0, 0, "agentOS boot complete\n");
 
     /* ── Register new microkernel services with NameServer ───────────────── */
-    console_log(0, 0, "[controller] Registering services with NameServer...\n");
+    log_drain_write(0, 0, "[controller] Registering services with NameServer...\n");
 
     ns_register_service(CH_VFS_SERVER,   TRACE_PD_VFS_SERVER,
                         CAP_CLASS_FS,                       NS_SVC_VFS);
@@ -605,7 +610,7 @@ void init(void) {
     ns_register_service(CH_HTTP_SVC,     TRACE_PD_HTTP_SVC,
                         CAP_CLASS_NET,                      NS_SVC_HTTP);
 
-    console_log(0, 0, "[controller] 6 microkernel services registered\n");
+    log_drain_write(0, 0, "[controller] 6 microkernel services registered\n");
 
     /* ── Run legacy data-flow demo (Steps 1-4) ───────────────────────────── */
     demo_sequence();
@@ -625,7 +630,7 @@ void notified(microkit_channel ch) {
 
     switch (ch) {
         case CH_EVENTBUS:
-            console_log(0, 0, "[controller] EventBus notification\n");
+            log_drain_write(0, 0, "[controller] EventBus notification\n");
             ctrl.eventbus_ready = true;
             break;
             
@@ -652,16 +657,16 @@ void notified(microkit_channel ch) {
                 uint32_t spawn_id    = (uint32_t)microkit_mr_get(4);
                 uint32_t priority    = (uint32_t)microkit_mr_get(5);
 
-                console_log(0, 0, "[controller] SPAWN_AGENT request: spawn_id=");
+                log_drain_write(0, 0, "[controller] SPAWN_AGENT request: spawn_id=");
                 /* print spawn_id decimal */
                 {
                     char buf[12]; int bi = 11; buf[bi] = '\0';
                     uint32_t v = spawn_id;
                     if (v == 0) { buf[--bi] = '0'; }
                     else while (v > 0 && bi > 0) { buf[--bi] = '0' + (v % 10); v /= 10; }
-                    console_log(0, 0, &buf[bi]);
+                    log_drain_write(0, 0, &buf[bi]);
                 }
-                console_log(0, 0, " hash_lo=");
+                log_drain_write(0, 0, " hash_lo=");
                 {
                     static const char hex[] = "0123456789abcdef";
                     char hbuf[9]; hbuf[8] = '\0';
@@ -669,9 +674,9 @@ void notified(microkit_channel ch) {
                         hbuf[hi] = hex[hash_lo_lo & 0xf]; hash_lo_lo >>= 4;
                     }
                     (void)hash_lo_hi; (void)hash_hi_lo;
-                    console_log(0, 0, hbuf);
+                    log_drain_write(0, 0, hbuf);
                 }
-                console_log(0, 0, "\n");
+                log_drain_write(0, 0, "\n");
 
                 /*
                  * Construct an agent name from spawn_id for pool tracking.
@@ -718,7 +723,7 @@ void notified(microkit_channel ch) {
                 microkit_notify(CH_INITAGENT);
 
                 if (slot >= 0) {
-                    console_log(0, 0, "[controller] Agent spawned: slot=");
+                    log_drain_write(0, 0, "[controller] Agent spawned: slot=");
                     char s[2] = { (char)('0' + (slot % 10)), '\0' };
                     {
                         char _cl_buf[256] = {};
@@ -726,13 +731,13 @@ void notified(microkit_channel ch) {
                         for (const char *_s = s; *_s; _s++) *_cl_p++ = *_s;
                         for (const char *_s = "\n"; *_s; _s++) *_cl_p++ = *_s;
                         *_cl_p = 0;
-                        console_log(0, 0, _cl_buf);
+                        log_drain_write(0, 0, _cl_buf);
                     }
                 } else {
-                    console_log(0, 0, "[controller] SPAWN_AGENT: pool exhausted\n");
+                    log_drain_write(0, 0, "[controller] SPAWN_AGENT: pool exhausted\n");
                 }
             } else {
-                console_log(0, 0, "[controller] InitAgent ready notification received\n");
+                log_drain_write(0, 0, "[controller] InitAgent ready notification received\n");
                 ctrl.initagent_ready = true;
             }
             break;
@@ -749,10 +754,10 @@ void notified(microkit_channel ch) {
                     /* Worker_0 completed the demo task */
                     ctrl.demo_complete = true;
                     
-                    console_log(0, 0, "[controller] Worker 0 task COMPLETE\n");
+                    log_drain_write(0, 0, "[controller] Worker 0 task COMPLETE\n");
                     
                     /* Publish TASK_COMPLETE event to EventBus */
-                    console_log(0, 0, "[controller] Publishing TASK_COMPLETE event to EventBus...\n");
+                    log_drain_write(0, 0, "[controller] Publishing TASK_COMPLETE event to EventBus...\n");
                     microkit_mr_set(0, MSG_EVENT_AGENT_EXITED);
                     microkit_mr_set(1, 0);
                     microkit_mr_set(2, 1);
@@ -761,7 +766,7 @@ void notified(microkit_channel ch) {
                                  (uint16_t)MSG_EVENT_AGENT_EXITED, 0, 1);
                     microkit_ppcall(CH_EVENTBUS,
                         microkit_msginfo_new(MSG_EVENT_AGENT_EXITED, 3));
-                    console_log(0, 0, "[controller] TASK_COMPLETE event published\n");
+                    log_drain_write(0, 0, "[controller] TASK_COMPLETE event published\n");
                     
                     /* Notify InitAgent to query final EventBus status */
                     microkit_notify(CH_INITAGENT);
@@ -769,7 +774,7 @@ void notified(microkit_channel ch) {
                     demo_delay();
                     
                     /* Print Step 1-3 summary */
-                    console_log(0, 0, "\n──────────────────────────────────────────────────────\n  Steps 1-3 complete: AgentFS + EventBus + Workers\n──────────────────────────────────────────────────────\n\n");
+                    log_drain_write(0, 0, "\n──────────────────────────────────────────────────────\n  Steps 1-3 complete: AgentFS + EventBus + Workers\n──────────────────────────────────────────────────────\n\n");
 
                     /*
                      * Step 4: VibeEngine hot-swap demo.
@@ -801,7 +806,7 @@ void notified(microkit_channel ch) {
                      *   init_agent will trigger that path when it receives our
                      *   notify below.
                      */
-                    console_log(0, 0, "[controller] Step 4: VibeEngine hot-swap demo...\n[controller] Direct path: loading echo_service.wasm into swap slot 0\n");
+                    log_drain_write(0, 0, "[controller] Step 4: VibeEngine hot-swap demo...\n[controller] Direct path: loading echo_service.wasm into swap slot 0\n");
 
                     /* Verify capability manifest before loading (trusted path still
                      * checks, since ECHO_SERVICE_WASM has no manifest sections it
@@ -809,10 +814,10 @@ void notified(microkit_channel ch) {
                     int demo_manifest_ok = verify_capabilities_manifest(
                         ECHO_SERVICE_WASM, ECHO_SERVICE_WASM_LEN);
                     if (demo_manifest_ok == -2) {
-                        console_log(0, 0, "[monitor] WASM manifest hash mismatch — rejecting agent load\n");
+                        log_drain_write(0, 0, "[monitor] WASM manifest hash mismatch — rejecting agent load\n");
                         break;
                     } else if (demo_manifest_ok == -1) {
-                        console_log(0, 0, "[monitor] no capability manifest — granting minimal defaults only\n");
+                        log_drain_write(0, 0, "[monitor] no capability manifest — granting minimal defaults only\n");
                     }
 
                     /* Direct vibe_swap_begin (trusted controller path) */
@@ -820,10 +825,10 @@ void notified(microkit_channel ch) {
                     ctrl.vibe_demo_triggered = true;
                     int vslot = vibe_swap_begin(2, ECHO_SERVICE_WASM, ECHO_SERVICE_WASM_LEN);
                     if (vslot < 0) {
-                        console_log(0, 0, "[controller] Step 4 vibe_swap_begin FAILED\n");
+                        log_drain_write(0, 0, "[controller] Step 4 vibe_swap_begin FAILED\n");
                         ctrl.vibe_demo_triggered = false;
                     } else {
-                        console_log(0, 0, "[controller] Step 4: WASM loaded into swap slot ");
+                        log_drain_write(0, 0, "[controller] Step 4: WASM loaded into swap slot ");
                         char vsl[4];
                         vsl[0] = '0' + (vslot % 10);
                         vsl[1] = '\0';
@@ -833,12 +838,12 @@ void notified(microkit_channel ch) {
                             for (const char *_s = vsl; *_s; _s++) *_cl_p++ = *_s;
                             for (const char *_s = " — waiting for wasm3 health check...\n"; *_s; _s++) *_cl_p++ = *_s;
                             *_cl_p = 0;
-                            console_log(0, 0, _cl_buf);
+                            log_drain_write(0, 0, _cl_buf);
                         }
                         ctrl.vibe_swap_in_progress = true;
                     }
                 } else {
-                    console_log(0, 0, "[controller] Worker ");
+                    log_drain_write(0, 0, "[controller] Worker ");
                     char s[2] = { (char)('0' + pool_slot), '\0' };
                     {
                         char _cl_buf[256] = {};
@@ -846,7 +851,7 @@ void notified(microkit_channel ch) {
                         for (const char *_s = s; *_s; _s++) *_cl_p++ = *_s;
                         for (const char *_s = " ready\n"; *_s; _s++) *_cl_p++ = *_s;
                         *_cl_p = 0;
-                        console_log(0, 0, _cl_buf);
+                        log_drain_write(0, 0, _cl_buf);
                     }
                     /* Ack the worker's ready signal */
                     microkit_notify(ch);
@@ -863,12 +868,12 @@ void notified(microkit_channel ch) {
                     uint32_t ticket  = (uint32_t)microkit_mr_get(1);
                     uint32_t slot_id = (uint32_t)microkit_mr_get(5);
                     (void)ticket;
-                    console_log(0, 0, "[controller] GPU task dispatched to slot=");
+                    log_drain_write(0, 0, "[controller] GPU task dispatched to slot=");
                     {
                         char s[2] = { (char)('0' + (slot_id % 10)), '\0' };
-                        console_log(0, 0, s);
+                        log_drain_write(0, 0, s);
                     }
-                    console_log(0, 0, "\n");
+                    log_drain_write(0, 0, "\n");
                     /*
                      * Notify the target swap slot to start WASM execution.
                      * In production: pass hash via MRs for agentfs fetch first.
@@ -882,17 +887,17 @@ void notified(microkit_channel ch) {
                     }
                 } else {
                     /* gpu_sched startup ready notification */
-                    console_log(0, 0, "[controller] GPU Scheduler online\n");
+                    log_drain_write(0, 0, "[controller] GPU Scheduler online\n");
                 }
             /* Channel 55: mesh_agent ready notification */
             } else if (ch == (microkit_channel)CH_MESHAGENT) {
-                console_log(0, 0, "[controller] Distributed mesh agent online\n");
+                log_drain_write(0, 0, "[controller] Distributed mesh agent online\n");
             } else if (ch == (microkit_channel)CH_QUOTA_NOTIFY) {
                 uint32_t tag = (uint32_t)microkit_mr_get(0);
                 uint32_t agent_id = (uint32_t)microkit_mr_get(1);
                 uint32_t reason   = (uint32_t)microkit_mr_get(2);
                 if (tag == (uint32_t)MSG_QUOTA_REVOKE) {
-                    console_log(0, 0, "[controller] Quota revoke request: agent=");
+                    log_drain_write(0, 0, "[controller] Quota revoke request: agent=");
                     char buf[12]; int bi = 11; buf[bi] = '\0';
                     uint32_t v = agent_id;
                     if (v == 0) { buf[--bi] = '0'; }
@@ -908,7 +913,7 @@ void notified(microkit_channel ch) {
                         for (const char *_s = &buf[bi]; *_s; _s++) *_cl_p++ = *_s;
                         for (const char *_s = " reason=0x"; *_s; _s++) *_cl_p++ = *_s;
                         *_cl_p = 0;
-                        console_log(0, 0, _cl_buf);
+                        log_drain_write(0, 0, _cl_buf);
                     }
                     char hex[9];
                     for (int i = 0; i < 8; i++) {
@@ -922,11 +927,11 @@ void notified(microkit_channel ch) {
                         for (const char *_s = hex; *_s; _s++) *_cl_p++ = *_s;
                         for (const char *_s = "\n"; *_s; _s++) *_cl_p++ = *_s;
                         *_cl_p = 0;
-                        console_log(0, 0, _cl_buf);
+                        log_drain_write(0, 0, _cl_buf);
                     }
                     cap_broker_revoke_agent(agent_id, reason);
                 } else {
-                    console_log(0, 0, "[controller] Unknown quota notify\n");
+                    log_drain_write(0, 0, "[controller] Unknown quota notify\n");
                 }
             /* Channel 40: vibe_engine approved a swap — read staging and begin */
             } else if (ch == CH_VIBEENGINE) {
@@ -936,31 +941,77 @@ void notified(microkit_channel ch) {
                 int swap_slot_idx = (int)(ch - CH_SWAP_BASE);
                 uint32_t status = (uint32_t)microkit_mr_get(0);
                 if (status == 0) {
-                    console_log(0, 0, "[controller] Swap slot health OK — activating\n");
+                    log_drain_write(0, 0, "[controller] Swap slot health OK — activating\n");
                     vibe_swap_health_notify(swap_slot_idx);
 
                     /* If this is the vibe demo swap, print final summary */
                     if (ctrl.vibe_swap_in_progress && !ctrl.vibe_demo_complete) {
                         ctrl.vibe_swap_in_progress = false;
                         ctrl.vibe_demo_complete = true;
-                        console_log(0, 0, "\n──────────────────────────────────────────────────────\n"
+                        log_drain_write(0, 0, "\n──────────────────────────────────────────────────────\n"
                             "  Steps 1-4 complete — launching microservice demo...\n"
                             "──────────────────────────────────────────────────────\n\n");
                         microservice_demo();
                     }
                 } else {
-                    console_log(0, 0, "[controller] Swap slot health FAIL\n");
+                    log_drain_write(0, 0, "[controller] Swap slot health FAIL\n");
                 }
             } else {
-                console_log(0, 0, "[controller] Unknown channel\n");
+                log_drain_write(0, 0, "[controller] Unknown channel\n");
             }
             break;
     }
 }
 
 microkit_msginfo protected(microkit_channel ch, microkit_msginfo msg) {
-    (void)ch;
     uint64_t label = microkit_msginfo_get_label(msg);
+
+    /* ── Ring-1 enforcement: VMM kernel protocol (CH_VMM_KERNEL = 76) ───── */
+    if (ch == (microkit_channel)CH_VMM_KERNEL) {
+        /*
+         * All PPCs on CH_VMM_KERNEL originate from a registered VMM PD.
+         * Enforce ring-1 isolation before granting any capability.
+         *
+         * For MSG_VMM_VCPU_SET_REGS: validate that the vCPU privilege level
+         * in SPSR is EL1 (AArch64) or CPL3 (x86), never EL2 or CPL0.
+         */
+        if (label == (uint64_t)MSG_VMM_VCPU_SET_REGS) {
+            /* Fail-closed: deny if shmem not mapped — no bypass window */
+            if (!vmm_vcpu_regs_vaddr) {
+                AGENTOS_CRIT("[cap_policy] vCPU regs shmem not mapped — EPERM");
+                microkit_mr_set(0, 0u);
+                return microkit_msginfo_new(0xDEAD, 1);
+            }
+            {
+                volatile vcpu_regs_t *regs =
+                    (volatile vcpu_regs_t *)vmm_vcpu_regs_vaddr;
+#ifdef ARCH_AARCH64
+                int el_rc = cap_policy_vcpu_el_check(regs->spsr, true);
+#else
+                int el_rc = cap_policy_vcpu_el_check(regs->spsr, false);
+#endif
+                if (el_rc != 0) {
+                    AGENTOS_CRIT("[cap_policy] vCPU EL2/CPL0 escalation REJECTED");
+                    microkit_mr_set(0, 0u);
+                    return microkit_msginfo_new(0xDEAD, 1);
+                }
+            }
+            microkit_mr_set(0, 1u);
+            return microkit_msginfo_new(0, 1);
+        }
+
+        if (label == (uint64_t)MSG_VMM_REGISTER) {
+            /* Assign a non-zero vmm_token; real allocation tracked per-VMM */
+            microkit_mr_set(0, 1u);  /* ok */
+            microkit_mr_set(1, 1u);  /* vmm_token */
+            microkit_mr_set(2, 1u);  /* granted_guests */
+            return microkit_msginfo_new(0, 3);
+        }
+
+        /* All other MSG_VMM_* stub ok until full VMM protocol is wired */
+        microkit_mr_set(0, 1u);
+        return microkit_msginfo_new(0, 1);
+    }
 
     if (label == OP_CAP_POLICY_RELOAD) {
         /* Reload capability policy blob from shmem */
@@ -971,7 +1022,7 @@ microkit_msginfo protected(microkit_channel ch, microkit_msginfo msg) {
 
     if (label == MSG_WORKER_RETRIEVE) {
         /* Worker requesting AgentFS object retrieval (proxy) */
-        console_log(0, 0, "[controller] Proxying AgentFS GET for worker...\n");
+        log_drain_write(0, 0, "[controller] Proxying AgentFS GET for worker...\n");
         
         /* Read the object ID words from MRs */
         uint32_t id0 = (uint32_t)microkit_mr_get(0);
@@ -996,7 +1047,7 @@ microkit_msginfo protected(microkit_channel ch, microkit_msginfo msg) {
             uint32_t size       = (uint32_t)microkit_mr_get(2);
             uint32_t cap_tag    = (uint32_t)microkit_mr_get(3);
             
-            console_log(0, 0, "[controller] AgentFS returned object: version=");
+            log_drain_write(0, 0, "[controller] AgentFS returned object: version=");
             char v[2] = { (char)('0' + (version % 10)), '\0' };
             {
                 char _cl_buf[256] = {};
@@ -1004,18 +1055,18 @@ microkit_msginfo protected(microkit_channel ch, microkit_msginfo msg) {
                 for (const char *_s = v; *_s; _s++) *_cl_p++ = *_s;
                 for (const char *_s = ", size="; *_s; _s++) *_cl_p++ = *_s;
                 *_cl_p = 0;
-                console_log(0, 0, _cl_buf);
+                log_drain_write(0, 0, _cl_buf);
             }
             /* Print size as decimal */
             if (size < 100) {
                 char tens = (char)('0' + (size / 10));
                 char ones = (char)('0' + (size % 10));
                 char sz[3] = { tens, ones, '\0' };
-                console_log(0, 0, sz);
+                log_drain_write(0, 0, sz);
             } else {
-                console_log(0, 0, "??");
+                log_drain_write(0, 0, "??");
             }
-            console_log(0, 0, " bytes\n");
+            log_drain_write(0, 0, " bytes\n");
             
             /* Pack response for worker: MR0=status, MR1=size, MR2=cap_tag, MR3=version */
             microkit_mr_set(0, 0);       /* OK */
@@ -1024,13 +1075,13 @@ microkit_msginfo protected(microkit_channel ch, microkit_msginfo msg) {
             microkit_mr_set(3, version);
             return microkit_msginfo_new(MSG_WORKER_RETRIEVE_REPLY, 4);
         } else {
-            console_log(0, 0, "[controller] AgentFS GET failed\n");
+            log_drain_write(0, 0, "[controller] AgentFS GET failed\n");
             microkit_mr_set(0, status);
             return microkit_msginfo_new(MSG_WORKER_RETRIEVE_REPLY, 1);
         }
     }
     
-    console_log(0, 0, "[controller] Unexpected PPC call\n");
+    log_drain_write(0, 0, "[controller] Unexpected PPC call\n");
     return microkit_msginfo_new(0xDEAD, 0);
 }
 

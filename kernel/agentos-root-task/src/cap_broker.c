@@ -15,6 +15,7 @@
 
 #define AGENTOS_DEBUG 1
 #include "agentos.h"
+#include "contracts/cap_broker_contract.h"
 
 #define MAX_CAPS 256
 
@@ -65,7 +66,7 @@ static uint32_t     policy_version = 1u;  /* increments on each successful reloa
 
 /* Initialize the capability broker */
 void cap_broker_init(void) {
-    console_log(4, 4, "[cap_broker] Initializing capability table\n");
+    log_drain_write(4, 4, "[cap_broker] Initializing capability table\n");
 
     for (int i = 0; i < MAX_CAPS; i++) {
         cap_table[i].active = false;
@@ -75,7 +76,7 @@ void cap_broker_init(void) {
     staging_policy.n_rules = 0;
     policy_version         = 1u;
 
-    console_log(4, 4, "[cap_broker] Ready\n");
+    log_drain_write(4, 4, "[cap_broker] Ready\n");
 }
 
 /* Register a capability in the table */
@@ -105,7 +106,7 @@ bool cap_broker_grant(int handle, uint32_t to_pd, uint64_t boot_seq) {
     
     /* Can't grant a capability that's already granted elsewhere */
     if (entry->granted_to != 0 && entry->granted_to != to_pd) {
-        console_log(4, 4, "[cap_broker] DENY: capability already granted to another PD\n");
+        log_drain_write(4, 4, "[cap_broker] DENY: capability already granted to another PD\n");
         return false;
     }
     
@@ -121,7 +122,7 @@ bool cap_broker_grant(int handle, uint32_t to_pd, uint64_t boot_seq) {
     microkit_mr_set(4, (uint32_t)handle);   /* slot_id = handle */
     microkit_ppcall(CH_CAP_AUDIT_CTRL, microkit_msginfo_new(0, 5));
     
-    console_log(4, 4, "[cap_broker] Capability granted (audited)\n");
+    log_drain_write(4, 4, "[cap_broker] Capability granted (audited)\n");
     return true;
 }
 
@@ -135,12 +136,12 @@ bool cap_broker_revoke(int handle, uint32_t requesting_pd) {
     
     /* Only the owner can revoke */
     if (entry->owner_pd != requesting_pd) {
-        console_log(4, 4, "[cap_broker] DENY: revocation by non-owner\n");
+        log_drain_write(4, 4, "[cap_broker] DENY: revocation by non-owner\n");
         return false;
     }
     
     if (!entry->revokable) {
-        console_log(4, 4, "[cap_broker] DENY: capability is not revokable\n");
+        log_drain_write(4, 4, "[cap_broker] DENY: capability is not revokable\n");
         return false;
     }
     
@@ -155,7 +156,7 @@ bool cap_broker_revoke(int handle, uint32_t requesting_pd) {
     microkit_mr_set(4, (uint32_t)handle);
     microkit_ppcall(CH_CAP_AUDIT_CTRL, microkit_msginfo_new(0, 5));
     
-    console_log(4, 4, "[cap_broker] Capability revoked (audited)\n");
+    log_drain_write(4, 4, "[cap_broker] Capability revoked (audited)\n");
     return true;
 }
 
@@ -198,7 +199,7 @@ void cap_broker_revoke_agent(uint32_t agent_pd, uint32_t reason_flags) {
     }
 
     if (revoked) {
-        console_log(4, 4, "[cap_broker] Capabilities revoked for agent ");
+        log_drain_write(4, 4, "[cap_broker] Capabilities revoked for agent ");
         char buf[12]; int bi = 11; buf[bi] = '\0';
         uint32_t v = agent_pd;
         if (v == 0) { buf[--bi] = '0'; }
@@ -214,7 +215,7 @@ void cap_broker_revoke_agent(uint32_t agent_pd, uint32_t reason_flags) {
             for (const char *_s = &buf[bi]; *_s; _s++) *_cl_p++ = *_s;
             for (const char *_s = " reason=0x"; *_s; _s++) *_cl_p++ = *_s;
             *_cl_p = 0;
-            console_log(4, 4, _cl_buf);
+            log_drain_write(4, 4, _cl_buf);
         }
         char hex[9];
         for (int i = 0; i < 8; i++) {
@@ -228,10 +229,10 @@ void cap_broker_revoke_agent(uint32_t agent_pd, uint32_t reason_flags) {
             for (const char *_s = hex; *_s; _s++) *_cl_p++ = *_s;
             for (const char *_s = "\n"; *_s; _s++) *_cl_p++ = *_s;
             *_cl_p = 0;
-            console_log(4, 4, _cl_buf);
+            log_drain_write(4, 4, _cl_buf);
         }
     } else {
-        console_log(4, 4, "[cap_broker] No capabilities to revoke for agent ");
+        log_drain_write(4, 4, "[cap_broker] No capabilities to revoke for agent ");
         char buf[12]; int bi = 11; buf[bi] = '\0';
         uint32_t v = agent_pd;
         if (v == 0) { buf[--bi] = '0'; }
@@ -247,7 +248,7 @@ void cap_broker_revoke_agent(uint32_t agent_pd, uint32_t reason_flags) {
             for (const char *_s = &buf[bi]; *_s; _s++) *_cl_p++ = *_s;
             for (const char *_s = "\n"; *_s; _s++) *_cl_p++ = *_s;
             *_cl_p = 0;
-            console_log(4, 4, _cl_buf);
+            log_drain_write(4, 4, _cl_buf);
         }
     }
 }
@@ -388,7 +389,7 @@ uint32_t cap_broker_attest(uint64_t boot_tick, uint32_t net_active, uint32_t net
     for (int i = 0; i < 64; i++) *p++ = sig_slot[i];
     uint32_t total_len = (uint32_t)(p - report);
 
-    console_log(4, 4, "[cap_broker] Attestation report generated, storing to AgentFS\n");
+    log_drain_write(4, 4, "[cap_broker] Attestation report generated, storing to AgentFS\n");
 
     /* ── Store to AgentFS ────────────────────────────────────────────────── */
     /* MR0: opcode, MR1: object kind (0xCA=attest), MR2: tick lo32, MR3: len */
@@ -400,9 +401,9 @@ uint32_t cap_broker_attest(uint64_t boot_tick, uint32_t net_active, uint32_t net
 
     uint32_t agentfs_result = (uint32_t)microkit_mr_get(0);
     if (agentfs_result == 0) {
-        console_log(4, 4, "[cap_broker] Attestation stored in AgentFS\n");
+        log_drain_write(4, 4, "[cap_broker] Attestation stored in AgentFS\n");
     } else {
-        console_log(4, 4, "[cap_broker] AgentFS store returned non-zero (large report: ring path needed)\n");
+        log_drain_write(4, 4, "[cap_broker] AgentFS store returned non-zero (large report: ring path needed)\n");
     }
 
     return total_len;
@@ -534,7 +535,7 @@ int cap_broker_policy_reload(const uint8_t *blob, uint32_t size,
 
     /* Phase 1: parse new policy into staging buffer; bail on any error. */
     if (cap_policy_parse(blob, size, &staging_policy) != 0) {
-        console_log(4, 4, "[cap_broker] policy_reload: parse failed, policy unchanged\n");
+        log_drain_write(4, 4, "[cap_broker] policy_reload: parse failed, policy unchanged\n");
         return -1;
     }
 
@@ -577,7 +578,7 @@ int cap_broker_policy_reload(const uint8_t *blob, uint32_t size,
     microkit_mr_set(4, policy_version);
     microkit_ppcall(CH_CAP_AUDIT_CTRL, microkit_msginfo_new(0, 5));
 
-    console_log(4, 4, "[cap_broker] policy_reload: complete\n");
+    log_drain_write(4, 4, "[cap_broker] policy_reload: complete\n");
 
     if (out_checked) *out_checked = checked;
     if (out_revoked) *out_revoked = revoked;

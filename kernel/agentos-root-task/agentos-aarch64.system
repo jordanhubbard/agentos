@@ -32,8 +32,9 @@
     40: controller <-> vibe_engine  (swap approval notification)
     41: init_agent <-> vibe_engine  (propose/validate/execute swaps)
 
-  Linux VMM channels (new):
+  Linux VMM channels:
     50: controller <-> linux_vmm    (agent-to-linux bridge commands)
+    51: linux_vmm  -> serial_pd     (UART proxy; guest_contract.h compliance)
 -->
 <system>
     <!-- ═══════════════════════════════════════════════════════════════════
@@ -41,7 +42,7 @@
          ═══════════════════════════════════════════════════════════════════ -->
 
     <!-- Controller: system coordinator, low priority to PPC into passive servers -->
-    <protection_domain name="controller" priority="50">
+    <protection_domain name="controller" priority="50" stack_size="0x10000">
         <program_image path="controller.elf" />
         <map mr="monitor_stack"  vaddr="0x2000000" perms="rw" setvar_vaddr="monitor_stack_vaddr" />
         <!-- Swap code regions: controller writes WASM images here; swap slot PDs read them -->
@@ -67,6 +68,10 @@
         <map mr="http_req_shmem"     vaddr="0xF000000"  perms="r"  setvar_vaddr="http_req_shmem_ctrl_vaddr" />
         <!-- App manifest shmem: controller writes manifests for AppManager -->
         <map mr="app_manifest_shmem" vaddr="0x10000000" perms="rw" setvar_vaddr="app_manifest_shmem_ctrl_vaddr" />
+        <!-- block_shmem rw: controller writes data before MSG_BLOCK_WRITE,
+             reads data after MSG_BLOCK_READ -->
+        <map mr="block_shmem" vaddr="0x3500000" perms="rw" cached="true"
+             setvar_vaddr="block_shmem_ctrl_vaddr" />
     </protection_domain>
 
     <!-- EventBus: passive pub/sub backbone -->
@@ -78,8 +83,6 @@
     <!-- InitAgent: bootstrap agent -->
     <protection_domain name="init_agent" priority="100">
         <program_image path="init_agent.elf" />
-        <!-- js_staging: shared with js_runtime for script source/result exchange -->
-        <map mr="js_staging" vaddr="0x7000000" perms="rw" />
     </protection_domain>
     
     <!-- Agent pool workers: static PDs, dynamic task assignment -->
@@ -114,10 +117,12 @@
         <map mr="agentfs_store" vaddr="0x5000000" perms="rw" setvar_vaddr="agentfs_store_vaddr" />
     </protection_domain>
 
-    <!-- VibeEngine: passive hot-swap lifecycle server -->
+    <!-- VibeEngine: passive hot-swap lifecycle server + vibeOS lifecycle API -->
     <protection_domain name="vibe_engine" priority="140" passive="true">
         <program_image path="vibe_engine.elf" />
-        <map mr="vibe_staging" vaddr="0x4000000" perms="rw" setvar_vaddr="vibe_staging_vaddr" />
+        <map mr="vibe_staging"  vaddr="0x4000000" perms="rw" setvar_vaddr="vibe_staging_vaddr" />
+        <!-- vm_list_shmem (r): read vm_list_entry_t[] for VOS_STATUS / VOS_LIST -->
+        <map mr="vm_list_shmem" vaddr="0x6100000" perms="r"  setvar_vaddr="vm_list_ro_vaddr" />
     </protection_domain>
 
     <!-- Swap slots: 4 pre-allocated PDs for live WASM hot-swap -->
@@ -284,14 +289,50 @@
          and bridges IPC between native agentOS agents and Linux.
          ═══════════════════════════════════════════════════════════════════ -->
 
-    <!-- Guest RAM: 256MB with 2MB large pages for efficiency -->
-    <memory_region name="guest_ram" size="0x10_000_000" page_size="0x200_000" />
+    <!-- Guest RAM: 256MB with 2MB large pages, pinned at physical 0x40000000.
+         phys_addr must equal the guest IPA (0x40000000) so that QEMU's virtio
+         DMA (which uses the IPA as a machine-physical address) reads/writes the
+         correct pages.  Without this, DMA addresses are mismatched and the RX
+         path is silently broken. -->
+    <memory_region name="guest_ram" size="0x10_000_000" page_size="0x200_000" phys_addr="0x40000000" />
 
-    <!-- UART: PL011 serial device, passed through to guest for direct I/O -->
-    <memory_region name="serial" size="0x1_000" phys_addr="0x9000000" />
+    <!--
+      PL011 UART — owned exclusively by serial_pd (guest_contract.h compliance).
+      The Linux guest NO LONGER maps this region directly.  Guest UART MMIO
+      accesses fault into linux_vmm, which proxies them via serial_pd IPC.
+    -->
+    <memory_region name="serial"       size="0x1_000" phys_addr="0x9000000" />
+
+    <!-- Shared data: serial_pd ↔ linux_vmm (UART proxy buffer) -->
+    <memory_region name="serial_shmem" size="0x1_000" />
 
     <!-- GIC vCPU interface: hardware virtualisation of interrupt controller -->
     <memory_region name="gic_vcpu" size="0x1_000" phys_addr="0x8040000" />
+
+    <!--
+      serial_pd — generic serial I/O PD (guest_contract.h Phase 3d).
+
+      Owns PL011 UART exclusively; all other PDs reach serial I/O via IPC.
+      Takes over IRQ 33 from linux_vmm.  linux_vmm proxies guest UART MMIO
+      faults through MSG_SERIAL_WRITE/READ on SERIAL_PD_CH (channel 51).
+    -->
+    <protection_domain name="serial_pd" priority="180" passive="true">
+        <program_image path="serial_pd.elf" />
+        <!-- Physical UART MMIO — serial_pd is the sole owner -->
+        <map mr="serial"       vaddr="0x9000000" perms="rw"
+             setvar_vaddr="uart_mmio_vaddr" />
+        <!-- Shared data buffer with linux_vmm UART proxy -->
+        <map mr="serial_shmem" vaddr="0xB000000" perms="rw"
+             setvar_vaddr="serial_shmem_vaddr" />
+        <!-- PL011 UART IRQ (SPI 1 + 32 = 33) — moved from linux_vmm -->
+        <irq irq="33" id="1" />
+    </protection_domain>
+
+    <!-- Channel 67: controller → serial_pd (CH_SERIAL_PD) -->
+    <channel>
+        <end pd="controller" id="67" pp="true" />
+        <end pd="serial_pd"  id="0" />
+    </channel>
 
     <protection_domain name="linux_vmm" priority="254">
         <program_image path="linux_vmm.elf" />
@@ -300,23 +341,35 @@
             (0x40000000). This is required by libvmm's current implementation.
         -->
         <map mr="guest_ram" vaddr="0x40000000" perms="rw" setvar_vaddr="guest_ram_vaddr" />
+        <!--
+            serial_shmem mapped for UART proxy (guest_contract.h §3.1).
+            linux_vmm writes guest TX bytes here; serial_pd drains to hardware.
+            Mapped at a different vaddr from serial_pd to avoid conflicts.
+        -->
+        <!-- vaddr must not overlap serial_pd's 0xB000000 mapping (4KB region) -->
+        <map mr="serial_shmem" vaddr="0xB100000" perms="rw"
+             setvar_vaddr="serial_shmem_linux_vaddr" />
 
         <virtual_machine name="linux">
             <vcpu id="0" />
             <!-- Guest sees its RAM at 0x40000000 (matches DTS) -->
             <map mr="guest_ram" vaddr="0x40000000" perms="rwx" />
-            <!-- Direct UART passthrough: guest can read/write serial without trapping -->
-            <map mr="serial" vaddr="0x9000000" perms="rw" cached="false" />
+            <!--
+                UART removed — serial_pd owns PL011 exclusively (guest_contract.h).
+                Guest UART MMIO accesses at 0x9000000 trap to linux_vmm.fault()
+                which proxies data to serial_pd via MSG_SERIAL_WRITE/READ.
+            -->
             <!-- GIC vCPU interface mapped as if it were the real CPU interface -->
             <map mr="gic_vcpu" vaddr="0x8010000" perms="rw" cached="false" />
+            <!-- virtio-net passthrough: slot 0 at 0xa000000 (bus=virtio-mmio-bus.0).
+                 Guest DTS node at 0xa000000 (virtio_mmio@a000000 in overlay.dts). -->
+            <map mr="virtio_net_mmio" vaddr="0xa000000" perms="rw" cached="false" />
         </virtual_machine>
-
         <!--
-            PL011 UART IRQ (SPI 1 + 32 = 33).
-            Delivered to VMM as notification on channel 1,
-            VMM injects it as virtual IRQ into the guest.
+            UART IRQ removed — serial_pd owns IRQ 33.  linux_vmm no longer
+            receives hardware UART notifications; serial_pd delivers data
+            to guests via the serial_shmem proxy buffer (SERIAL_PD_CH=1).
         -->
-        <irq irq="33" id="1" />
     </protection_domain>
 
     <!-- Channel 50: controller <-> linux_vmm (agent-to-linux bridge) -->
@@ -325,37 +378,44 @@
         <end pd="linux_vmm"  id="2" />
     </channel>
 
+    <!--
+      Channel 51: linux_vmm → serial_pd (UART proxy; guest_contract.h compliance).
+      linux_vmm sends MSG_SERIAL_OPEN at init, then MSG_SERIAL_WRITE/READ to
+      proxy guest UART MMIO accesses through serial_pd.
+    -->
+    <channel>
+        <end pd="linux_vmm"  id="1" pp="true" />
+        <end pd="serial_pd"  id="3" />
+    </channel>
+
     <!-- ═══════════════════════════════════════════════════════════════════
-         CONSOLE MULTIPLEXER — "tmux for agentOS"
-         
-         Passive PD (priority 160) that multiplexes per-PD output streams
-         onto the debug UART with attach/detach/switch/broadcast semantics.
+         LOG DRAIN — structured ring-buffer drain (priority 160, passive)
          ═══════════════════════════════════════════════════════════════════ -->
 
-    <!-- Console ring buffer: 16 × 4KB = 64KB shared output rings -->
-    <memory_region name="console_rings" size="0x10000" />
+    <!-- Log drain rings: 16 × 4KB = 64KB shared output rings -->
+    <memory_region name="log_drain_rings" size="0x10000" />
 
-    <protection_domain name="console_mux" priority="160" passive="true">
-        <program_image path="console_mux.elf" />
-        <map mr="console_rings" vaddr="0x8000000" perms="rw" setvar_vaddr="console_rings_vaddr" />
+    <protection_domain name="log_drain" priority="160" passive="true">
+        <program_image path="log_drain.elf" />
+        <map mr="log_drain_rings" vaddr="0x8000000" perms="rw" setvar_vaddr="log_drain_rings_vaddr" />
     </protection_domain>
 
-    <!-- Channel 55: controller <-> console_mux (attach/detach/list/mode/status) -->
+    <!-- Channel 55: controller <-> log_drain (OP_LOG_WRITE / OP_LOG_STATUS) -->
     <channel>
-        <end pd="controller"   id="55" pp="true" />
-        <end pd="console_mux"  id="0" />
+        <end pd="controller"  id="55" pp="true" />
+        <end pd="log_drain"   id="0" />
     </channel>
 
-    <!-- Channel 56: init_agent <-> console_mux (output notifications) -->
+    <!-- Channel 56: init_agent -> log_drain (output notifications) -->
     <channel>
-        <end pd="init_agent"   id="4" />
-        <end pd="console_mux"  id="1" />
+        <end pd="init_agent"  id="4" />
+        <end pd="log_drain"   id="1" />
     </channel>
 
-    <!-- Channel 57: event_bus <-> console_mux (event activity notifications) -->
+    <!-- Channel 57: event_bus -> log_drain (event activity notifications) -->
     <channel>
-        <end pd="event_bus"    id="55" />
-        <end pd="console_mux"  id="2" />
+        <end pd="event_bus"   id="55" />
+        <end pd="log_drain"   id="2" />
     </channel>
 
     <!-- Trace Recorder: passive stub, priority 128
@@ -436,9 +496,8 @@
 
     <memory_region name="vfs_io_shmem"       size="0x20000" />
     <memory_region name="blk_dma_shmem"      size="0x8000"  />
-    <!-- QEMU virt MMIO: virtio-net bus.0 (aarch64: 0xa000000, 4KB page-aligned)
-         Note: virtio-blk bus.1 is at 0xa000200 (same page) — cannot be mapped
-         separately with page granularity; virtio_blk PD returns BLK_ERR_NODEV. -->
+    <memory_region name="block_shmem"        size="0x10000" />
+    <!-- QEMU virt MMIO: virtio-net pinned to slot 0 (bus=virtio-mmio-bus.0) -->
     <memory_region name="virtio_net_mmio"    size="0x1000"  phys_addr="0xa000000" />
     <memory_region name="spawn_elf_shmem"    size="0x80000" />
     <memory_region name="spawn_config_shmem" size="0x1000"  />
@@ -578,8 +637,8 @@
         <program_image path="net_server.elf" />
         <map mr="net_packet_shmem"  vaddr="0x5000000" perms="rw"
              setvar_vaddr="net_packet_shmem_vaddr" />
-        <map mr="virtio_net_mmio"   vaddr="0x6000000" perms="rw" cached="false"
-             setvar_vaddr="net_mmio_vaddr" />
+        <!-- virtio_net_mmio removed: device is passed through to linux_vmm VM.
+             net_mmio_vaddr=0 → probe_virtio_net() selects stub mode. -->
         <!-- Staging region: shared with vibe_engine for HTTP POST request/response bodies -->
         <map mr="vibe_staging" vaddr="0x9000000" perms="rw"
              setvar_vaddr="vibe_staging_vaddr" />
@@ -669,38 +728,6 @@
     </channel>
 
     <!-- ═══════════════════════════════════════════════════════════════════
-         JS RUNTIME — JavaScript execution sandbox (passive, prio 120)
-
-         Passive PD that provides a sandboxed JavaScript runtime for
-         agent scripts. Shares a 4MB staging buffer with init_agent
-         for script source and result exchange.
-         ═══════════════════════════════════════════════════════════════════ -->
-
-    <memory_region name="js_staging" size="0x400000" />
-
-    <protection_domain name="js_runtime" priority="120" passive="true">
-        <program_image path="js_runtime.elf" />
-        <map mr="js_staging" vaddr="0x7000000" perms="rw"
-             setvar_vaddr="js_staging_vaddr" />
-    </protection_domain>
-
-    <!-- Channel 60: controller <-> js_runtime (ch 0 on js_runtime side) -->
-    <channel>
-        <end pd="controller"  id="60" pp="true" />
-        <end pd="js_runtime"  id="0" />
-    </channel>
-
-    <!-- Channel 61: init_agent <-> js_runtime (ch 1 on js_runtime side) -->
-    <channel>
-        <end pd="init_agent"  id="11" pp="true" />
-        <end pd="js_runtime"  id="1" />
-    </channel>
-
-    <!-- js_staging mapped into init_agent for script source/result exchange -->
-    <!-- init_agent maps js_staging at 0x7000000 (rw) via setvar_vaddr js_staging_vaddr -->
-    <!-- Note: init_agent maps js_staging at the same vaddr as js_runtime sees it -->
-
-    <!-- ═══════════════════════════════════════════════════════════════════
          WG_NET — WireGuard network tunnel PD (passive, prio 140)
 
          Passive PD that implements WireGuard tunnel management.
@@ -735,38 +762,126 @@
     </channel>
 
     <!-- ═══════════════════════════════════════════════════════════════════
-         CONSOLE SHELL — interactive management console (priority 80)
+         VM_MANAGER — multi-VM lifecycle manager (wraps vmm_mux)
+         Passive PD at priority 145.  Receives OP_VM_CREATE/START/STOP/…
+         from vibe_engine (vibeOS lifecycle) and controller.
 
-         On QEMU dev mode: reads commands from console_shell_ring (4KB
-         shared memory with bridge.rs); emits VM start/stop escape
-         sequences to the debug serial port.  The PL011 IRQ (33) is
-         owned by linux_vmm for guest passthrough so console_shell runs
-         in ring-buffer mode only on QEMU aarch64 — no UART MR or IRQ
-         is registered here.
+         Channels (vm_manager perspective):
+           id=0 — vibe_engine → vm_manager (pp=true on vibe_engine end)
+           id=1 — controller  → vm_manager (pp=true on controller end)
 
-         On native RPi5/NUC hardware a separate board-specific system
-         file (boards/<board>/agentos.system) maps the physical UART MR
-         and wires CH_UART_IRQ (channel 3) to the correct GIC line.
+         vm_list_shmem (4KB) is mapped rw into vm_manager and r into
+         vibe_engine so STATUS/LIST replies can pass vm_list_entry_t arrays.
          ═══════════════════════════════════════════════════════════════════ -->
 
-    <memory_region name="console_shell_ring" size="0x1000" />
+    <memory_region name="vm_list_shmem" size="0x1000" />
 
-    <protection_domain name="console_shell" priority="49">
-        <program_image path="console_shell.elf" />
-        <!-- Ring buffer shared with bridge.rs for dev-mode IPC -->
-        <map mr="console_shell_ring" vaddr="0x5100000" perms="rw"
-             setvar_vaddr="console_shell_ring_vaddr" />
+    <protection_domain name="vm_manager" priority="145" passive="true">
+        <program_image path="vm_manager.elf" />
+        <map mr="vm_list_shmem" vaddr="0x6000000" perms="rw"
+             setvar_vaddr="vm_list_vaddr" />
     </protection_domain>
 
-    <!-- controller notifies console_shell of VM state changes -->
+    <!-- vibe_engine (id=2, pp) → vm_manager (id=0) — vibeOS lifecycle PPCs -->
     <channel>
-        <end pd="controller"    id="41" />
-        <end pd="console_shell" id="0" />
+        <end pd="vibe_engine" id="2" pp="true" />
+        <end pd="vm_manager"  id="0" />
     </channel>
-    <!-- console_shell PPCs controller for VM management (native HW path) -->
+
+    <!-- controller (id=45, pp) → vm_manager (id=1) — direct management PPCs -->
     <channel>
-        <end pd="console_shell" id="1" pp="true" />
-        <end pd="controller"    id="42" />
+        <end pd="controller"  id="45" pp="true" />
+        <end pd="vm_manager"  id="1" />
+    </channel>
+
+    <!--
+      block_pd: OS-neutral block device service PD (passive, prio 165)
+      Channels:
+        id=0: callers PPC in (MSG_BLOCK_*)
+        id=1: block_pd PPCs out to virtio_blk (OP_BLK_*)
+    -->
+    <protection_domain name="block_pd" priority="165" passive="true">
+        <program_image path="block_pd.elf" />
+        <map mr="block_shmem"  vaddr="0x5000000" perms="rw" cached="true"
+             setvar_vaddr="block_shmem_vaddr" />
+        <map mr="blk_dma_shmem" vaddr="0x6000000" perms="rw" cached="false"
+             setvar_vaddr="blk_dma_shmem_vaddr" />
+    </protection_domain>
+
+    <!-- Channel CH_BLOCK_PD (69): controller → block_pd -->
+    <channel>
+        <end pd="controller" id="69" pp="true" />
+        <end pd="block_pd"   id="0" />
+    </channel>
+
+    <!-- Channel: block_pd → virtio_blk (block_pd forwards I/O via OP_BLK_*) -->
+    <channel>
+        <end pd="block_pd"   id="1" pp="true" />
+        <end pd="virtio_blk" id="3" />
+    </channel>
+
+    <!--
+      ══════════════════════════════════════════════════════════════════
+      GPU Scheduler: CUDA workload router (passive, prio 120)
+
+      Sparky GB10 / NUC real-GPU integration point for framebuffer_pd's
+      HW_DIRECT backend.  See agentos.system for full description.
+
+      Note: virtio_gpu_mmio is NOT mapped here — framebuffer_pd owns it.
+      ══════════════════════════════════════════════════════════════════
+    -->
+    <protection_domain name="gpu_sched" priority="120" passive="true">
+        <program_image path="gpu_sched.elf" />
+        <map mr="log_drain_rings" vaddr="0x9000000" perms="rw"
+             setvar_vaddr="log_drain_rings_vaddr" />
+    </protection_domain>
+
+    <!-- Channel: controller(id=25) ↔ gpu_sched(id=1, CH_CONTROLLER) -->
+    <channel>
+        <end pd="controller" id="25" />
+        <end pd="gpu_sched"  id="1" />
+    </channel>
+
+    <!--
+      ══════════════════════════════════════════════════════════════════
+      framebuffer_pd: virtual framebuffer service (passive, prio 175)
+
+      See agentos.system for full description.
+
+      AArch64 note:
+        virtio_gpu_mmio phys_addr = 0xa003e00
+        QEMU virt AArch64 virtio-MMIO devices are at 0xa000000 + n*0x200.
+        The GPU device index depends on QEMU CLI device ordering; adjust
+        phys_addr here to match your target configuration.  The probe
+        logic gracefully falls back to the gpu_sched path if magic != ok.
+      ══════════════════════════════════════════════════════════════════
+    -->
+    <memory_region name="fb_shmem" size="0x800000" />
+
+    <!-- virtio_gpu_mmio: AArch64 virt QEMU — virtio device slot (phys 0xa003e00).
+         Adjust phys_addr to match actual QEMU device ordering for your platform. -->
+    <memory_region name="virtio_gpu_mmio" size="0x1000" phys_addr="0xa003e00" />
+
+    <protection_domain name="framebuffer_pd" priority="175" passive="true">
+        <program_image path="framebuffer_pd.elf" />
+        <map mr="fb_shmem"        vaddr="0x5000000" perms="rw" cached="true"
+             setvar_vaddr="fb_shmem_vaddr" />
+        <map mr="virtio_gpu_mmio" vaddr="0x6000000" perms="rw" cached="false"
+             setvar_vaddr="virtio_gpu_mmio_vaddr" />
+        <map mr="log_drain_rings" vaddr="0x7000000" perms="rw"
+             setvar_vaddr="log_drain_rings_vaddr" />
+    </protection_domain>
+
+    <!-- Channel CH_FB_PD (71): controller(id=71, pp=true) → framebuffer_pd(id=0) -->
+    <channel>
+        <end pd="controller"     id="71" pp="true" />
+        <end pd="framebuffer_pd" id="0" />
+    </channel>
+
+    <!-- Channel: framebuffer_pd(id=2, pp=true) → gpu_sched(id=7) -->
+    <channel>
+        <end pd="framebuffer_pd" id="2" pp="true" />
+        <end pd="gpu_sched"      id="7" />
     </channel>
 
 </system>

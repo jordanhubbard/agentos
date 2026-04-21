@@ -152,7 +152,7 @@ void net_server_lwip_init(uintptr_t mmio_vaddr, uintptr_t rx_desc,
     netif_set_default(&g_netif);
     netif_set_up(&g_netif);
 
-    console_log(30, 10, "[net_server] lwIP netif up ip=10.0.2.15\n");
+    log_drain_write(30, 10, "[net_server] lwIP netif up ip=10.0.2.15\n");
 }
 
 /* Poll RX virtqueue for received packets — call from notified() timer */

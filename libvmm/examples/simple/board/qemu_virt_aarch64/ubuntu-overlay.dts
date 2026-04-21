@@ -1,0 +1,60 @@
+/*
+ * agentOS Ubuntu guest overlay DTS — QEMU virt AArch64
+ *
+ * SPDX-License-Identifier: BSD-2-Clause
+ *
+ * Merged with linux.dts by dtscat to produce vm.dtb.
+ * Differences from buildroot overlay:
+ *   - No initrd (Ubuntu 24.04 minimal uses GRUB_FORCE_PARTUUID initrdless boot)
+ *   - Root via virtio-blk disk: root=PARTUUID=6cb74abd-5e56-4fc1-a7be-4ad74dbbe860
+ *   - Adds virtio_mmio@a000200 for virtio-blk (slot 1, SPI 17 → INTID 49)
+ */
+/ {
+    /* 256MB guest RAM — matches guest_ram MR in agentos-aarch64.system */
+    memory@40000000 {
+        device_type = "memory";
+        reg = <0x00 0x40000000 0x00 0x10000000>;
+    };
+
+    flash@0 {
+        status = "disabled";
+    };
+
+    chosen {
+        stdout-path = "/pl011@9000000";
+        /* Ubuntu 24.04 minimal: initrdless boot via PARTUUID.
+         * root=PARTUUID matches the rootfs partition UUID in ubuntu-24.04-arm64.raw.
+         * earlycon/console direct serial output through PL011 at 0x9000000. */
+        bootargs = "earlycon=pl011,0x9000000 console=ttyAMA0,115200 root=PARTUUID=6cb74abd-5e56-4fc1-a7be-4ad74dbbe860 ro";
+        linux,stdout-path = "/pl011@9000000";
+    };
+
+    /*
+     * virtio-net passthrough: QEMU virt virtio-mmio slot 0.
+     * Physical address: 0xa000000 + 0*0x200 = 0xa000000.
+     * IRQ: SPI 16 (INTID 48) — QEMU assigns SPI (16+slot) per transport.
+     * Slot 0 is chosen explicitly: QEMU command uses bus=virtio-mmio-bus.0.
+     * interrupt-parent 0x8001 = intc@8000000 (GIC) phandle in linux.dts.
+     * trigger 0x01 = edge-rising (matches QEMU's virt machine DT for slot 0).
+     */
+    virtio_mmio@a000000 {
+        compatible = "virtio,mmio";
+        reg = <0x00 0xa000000 0x00 0x200>;
+        interrupt-parent = <0x8001>;
+        interrupts = <0x00 0x10 0x01>;
+    };
+
+    /*
+     * virtio-blk passthrough: QEMU virt virtio-mmio slot 1.
+     * Physical address: 0xa000000 + 1*0x200 = 0xa000200.
+     * IRQ: SPI 17 (INTID 49) — QEMU assigns SPI (16+slot) per transport.
+     * Slot 1: QEMU command uses bus=virtio-mmio-bus.1.
+     * trigger 0x01 = edge-rising.
+     */
+    virtio_mmio@a000200 {
+        compatible = "virtio,mmio";
+        reg = <0x00 0xa000200 0x00 0x200>;
+        interrupt-parent = <0x8001>;
+        interrupts = <0x00 0x11 0x01>;
+    };
+};

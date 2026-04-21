@@ -7,6 +7,7 @@ pub mod cmd_fetch_guest;
 pub mod cmd_release;
 pub mod cmd_setup;
 pub mod cmd_test;
+pub mod cmd_test_api;
 
 // ── Subcommand arg structs ──────────────────────────────────────────────────
 
@@ -43,8 +44,9 @@ pub struct SetupArgs {
 pub struct FetchGuestArgs {
     #[arg(long, value_enum, default_value_t = GuestOs::Ubuntu)]
     pub os: GuestOs,
-    #[arg(long, default_value = "guest-images")]
-    pub output_dir: String,
+    /// Destination directory; defaults to ~/.local/agentos-images
+    #[arg(long)]
+    pub output_dir: Option<String>,
 }
 
 #[derive(clap::ValueEnum, Clone)]
@@ -80,4 +82,14 @@ pub struct CiMatrixArgs {
     /// Skip the build step and use whatever image is already present
     #[arg(long)]
     pub no_build: bool,
+}
+
+#[derive(clap::Args)]
+pub struct TestApiArgs {
+    /// Print every TAP line even for passing suites
+    #[arg(long, short = 'v')]
+    pub verbose: bool,
+    /// C compiler to use (overrides CC env var)
+    #[arg(long, env = "CC")]
+    pub cc: Option<String>,
 }

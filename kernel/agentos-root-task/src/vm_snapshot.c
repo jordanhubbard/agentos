@@ -20,6 +20,7 @@
 
 #define AGENTOS_DEBUG 1
 #include "agentos.h"
+#include "contracts/vm_snapshot_contract.h"
 
 /* ── Output shared memory region (mapped by Microkit linker) ─────────── */
 uintptr_t vm_state_vaddr;   /* 256MB max snapshot buffer */

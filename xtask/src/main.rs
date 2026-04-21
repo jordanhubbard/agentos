@@ -1,7 +1,8 @@
 use clap::{Parser, Subcommand};
 use xtask::{
     cmd_ci_matrix, cmd_fault_inject, cmd_fetch_guest, cmd_release, cmd_setup, cmd_test,
-    CiMatrixArgs, FaultInjectArgs, FetchGuestArgs, ReleaseArgs, SetupArgs, TestArgs,
+    cmd_test_api,
+    CiMatrixArgs, FaultInjectArgs, FetchGuestArgs, ReleaseArgs, SetupArgs, TestApiArgs, TestArgs,
 };
 
 #[derive(Parser)]
@@ -25,6 +26,8 @@ enum Cmd {
     Release(ReleaseArgs),
     /// Run the libvmm CI test matrix
     CiMatrix(CiMatrixArgs),
+    /// Compile and run the API test suite (TAP output)
+    TestApi(TestApiArgs),
 }
 
 fn main() -> anyhow::Result<()> {
@@ -36,5 +39,6 @@ fn main() -> anyhow::Result<()> {
         Cmd::FetchGuest(a) => cmd_fetch_guest::run(&a),
         Cmd::Release(a) => cmd_release::run(&a),
         Cmd::CiMatrix(a) => cmd_ci_matrix::run(&a),
+        Cmd::TestApi(a) => cmd_test_api::run(&a),
     }
 }

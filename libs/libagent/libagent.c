@@ -28,7 +28,6 @@
 #include <stdarg.h>
 #include <stdbool.h>
 #include "agentOS.h"
-#include "js_runtime.h"
 #include "wg_net.h"
 
 /*
@@ -650,7 +649,6 @@ aos_status_t aos_service_info(const char *service_id,
  * bridge running on the host at 10.0.2.2:8790.
  */
 #define SLOT_NETSTK           8    /* NetStack service endpoint */
-#define SLOT_JS_RUNTIME       9    /* JS/QuickJS runtime service endpoint */
 #define SLOT_WG_NET           10   /* WireGuard network service endpoint */
 #define NETSTK_OP_HTTP_POST   0x500
 
@@ -1070,198 +1068,49 @@ aos_status_t aos_vibe_compile(const char *source_c, const char *service_id,
 }
 
 /* =========================================================================
- * JS Runtime — QuickJS evaluation and function calls
+ * JS Runtime — REMOVED (constitutional violation: JS in kernel PD)
+ *
+ * TODO(js_runtime_removal): aos_js_eval and aos_js_call previously sent
+ * OP_JS_EVAL (0xC0) and OP_JS_CALL (0xC1) to a js_runtime passive PD that
+ * embedded QuickJS inside a seL4 protection domain.  This violates the
+ * agentOS project constitution (pure C/Rust/Assembly only; no JavaScript in
+ * kernel space).  The js_runtime PD, its header, its QuickJS stubs, all
+ * .system entries, and the Makefile entries have been deleted.
+ *
+ * Replacement approach (see docs/defects/DEFECT-002-js-runtime-removal.md):
+ *   - Script execution belongs in the vibe-engine via WASM hot-swap, or in
+ *     a Rust userspace tool linked against a WASM-compiled JS interpreter.
+ *   - Any caller that genuinely needs dynamic script evaluation should
+ *     submit a WASM binary to vibe_engine (OP_VIBE_HOTSWAP) rather than
+ *     using raw JS eval in kernel space.
  * =========================================================================*/
 
-/*
- * JS staging region: a separate 4MB shared region (js_staging) mapped at
- * js_staging_vaddr.  Sub-region layout mirrors js_runtime.h:
- *   [0x000000 .. 0x1FFFFF]  script / module source input (2MB)
- *   [0x200000 .. 0x3FFFFF]  evaluation output / return values (2MB)
- *
- * For OP_JS_CALL, function name and args share the input region:
- *   func_name at offset 0x000000
- *   args JSON  at offset 0x001000 (4KB past func_name)
- */
-extern uintptr_t js_staging_vaddr;
-
-#define JS_STAGING_BASE         0x400000UL   /* total JS staging size (4MB) */
-#define JS_INPUT_OFFSET         0x000000UL   /* script/func-name input base */
-#define JS_OUTPUT_OFFSET        0x200000UL   /* evaluation/call output base */
-#define JS_ARGS_OFFSET          0x001000UL   /* args JSON: 4KB into input region */
-
-/* -------------------------------------------------------------------------
- * aos_js_eval — evaluate a JavaScript string in a QuickJS context.
- *
- * Writes the script source into js_staging at JS_INPUT_OFFSET, then sends
- * OP_JS_EVAL to SLOT_JS_RUNTIME.  The result text (JSON-stringified) is
- * copied from js_staging at the output_offset reported in the reply.
- * ------------------------------------------------------------------------- */
 aos_status_t aos_js_eval(uint32_t context_id,
                           const char *script,
                           char *out_buf, size_t out_buf_len,
                           size_t *out_len)
 {
-    if (!script || !out_buf || !out_len)
-        return AOS_ERR_INVALID;
-
-    if (js_staging_vaddr == 0)
-        return AOS_ERR_IO;
-
-    size_t script_len = strlen(script);
-    if (script_len >= JS_STAGING_BASE / 2)
-        return AOS_ERR_INVALID; /* script too large for input region */
-
-    /* Copy script into js_staging at the input offset */
-    char *staging_input = (char *)(js_staging_vaddr + JS_INPUT_OFFSET);
-    memcpy(staging_input, script, script_len); /* no NUL required by protocol */
-
-    /*
-     * PPC to JS runtime:
-     *   MR0 = OP_JS_EVAL  (label field carries opcode redundantly)
-     *   MR1 = context_id  (0xFF = auto-create)
-     *   MR2 = script_offset (JS_INPUT_OFFSET into js_staging)
-     *   MR3 = script_len
-     */
-    seL4_SetMR(0, (seL4_Word)OP_JS_EVAL);
-    seL4_SetMR(1, (seL4_Word)context_id);
-    seL4_SetMR(2, (seL4_Word)JS_INPUT_OFFSET);
-    seL4_SetMR(3, (seL4_Word)script_len);
-
-    seL4_MessageInfo_t reply = seL4_Call(
-        SLOT_JS_RUNTIME,
-        seL4_MessageInfo_new(OP_JS_EVAL, 0, 0, 4)
-    );
-
-    /*
-     * Reply layout:
-     *   MR0 = result  (JS_OK or JS_ERR_*)
-     *   MR1 = context_id  (assigned or echoed)
-     *   MR2 = output_offset (byte offset into js_staging)
-     *   MR3 = output_len
-     */
-    uint64_t js_result     = seL4_GetMR(0);
-    /* MR1 (context_id echo) intentionally not stored — caller can re-use input */
-    uint64_t output_offset = seL4_GetMR(2);
-    uint64_t output_len    = seL4_GetMR(3);
-    (void)reply;
-
-    if (js_result != JS_OK) {
-        /* On error MR2/MR3 describe the error string in staging — copy it too */
-        if (output_len > 0 && out_buf_len > 0) {
-            size_t copy = (output_len < out_buf_len - 1)
-                          ? (size_t)output_len : out_buf_len - 1;
-            memcpy(out_buf, (char *)(js_staging_vaddr + output_offset), copy);
-            out_buf[copy] = '\0';
-            *out_len = copy;
-        } else {
-            *out_len = 0;
-        }
-        return AOS_ERR_IO;
-    }
-
-    /* Copy output from staging into caller's buffer */
-    if (output_len >= out_buf_len)
-        output_len = out_buf_len - 1; /* truncate to fit */
-
-    memcpy(out_buf, (char *)(js_staging_vaddr + output_offset),
-           (size_t)output_len);
-    out_buf[output_len] = '\0';
-    *out_len = (size_t)output_len;
-
-    return AOS_OK;
+    /* TODO(js_runtime_removal): this called OP_JS_EVAL — replace with
+     * vibe_engine WASM hot-swap (OP_VIBE_HOTSWAP) or a Rust-side tool.
+     * See docs/defects/DEFECT-002-js-runtime-removal.md */
+    (void)context_id; (void)script; (void)out_buf; (void)out_buf_len;
+    if (out_len) *out_len = 0;
+    return AOS_ERR_IO;
 }
 
-/* -------------------------------------------------------------------------
- * aos_js_call — call a named JavaScript function in an existing context.
- *
- * Writes func_name at JS_INPUT_OFFSET and args_json at JS_ARGS_OFFSET
- * within js_staging, then sends OP_JS_CALL to SLOT_JS_RUNTIME.
- * ------------------------------------------------------------------------- */
 aos_status_t aos_js_call(uint32_t context_id,
                           const char *func_name,
                           const char *args_json,
                           char *out_buf, size_t out_buf_len,
                           size_t *out_len)
 {
-    if (!func_name || !out_buf || !out_len)
-        return AOS_ERR_INVALID;
-
-    if (js_staging_vaddr == 0)
-        return AOS_ERR_IO;
-
-    size_t fname_len = strlen(func_name);
-    size_t args_len  = args_json ? strlen(args_json) : 0;
-
-    /* func_name must fit in the 4KB slot before JS_ARGS_OFFSET */
-    if (fname_len >= JS_ARGS_OFFSET)
-        return AOS_ERR_INVALID;
-
-    /* Copy func_name into staging at input offset */
-    char *staging_fname = (char *)(js_staging_vaddr + JS_INPUT_OFFSET);
-    memcpy(staging_fname, func_name, fname_len);
-
-    /* Copy args JSON into staging at args offset (within input region) */
-    if (args_len > 0) {
-        char *staging_args = (char *)(js_staging_vaddr + JS_INPUT_OFFSET
-                                      + JS_ARGS_OFFSET);
-        memcpy(staging_args, args_json, args_len);
-    }
-
-    /*
-     * PPC to JS runtime:
-     *   MR0 = OP_JS_CALL
-     *   MR1 = context_id
-     *   MR2 = func_name_offset (JS_INPUT_OFFSET into js_staging)
-     *   MR3 = func_name_len
-     *   MR4 = args_offset      (JS_INPUT_OFFSET + JS_ARGS_OFFSET)
-     *   MR5 = args_len         (0 = no args / empty array)
-     */
-    seL4_SetMR(0, (seL4_Word)OP_JS_CALL);
-    seL4_SetMR(1, (seL4_Word)context_id);
-    seL4_SetMR(2, (seL4_Word)JS_INPUT_OFFSET);
-    seL4_SetMR(3, (seL4_Word)fname_len);
-    seL4_SetMR(4, (seL4_Word)(JS_INPUT_OFFSET + JS_ARGS_OFFSET));
-    seL4_SetMR(5, (seL4_Word)args_len);
-
-    seL4_MessageInfo_t reply = seL4_Call(
-        SLOT_JS_RUNTIME,
-        seL4_MessageInfo_new(OP_JS_CALL, 0, 0, 6)
-    );
-
-    /*
-     * Reply layout:
-     *   MR0 = result (JS_OK or JS_ERR_*)
-     *   MR1 = output_offset (byte offset into js_staging)
-     *   MR2 = output_len
-     */
-    uint64_t js_result     = seL4_GetMR(0);
-    uint64_t output_offset = seL4_GetMR(1);
-    uint64_t output_len    = seL4_GetMR(2);
-    (void)reply;
-
-    if (js_result != JS_OK) {
-        if (output_len > 0 && out_buf_len > 0) {
-            size_t copy = (output_len < out_buf_len - 1)
-                          ? (size_t)output_len : out_buf_len - 1;
-            memcpy(out_buf, (char *)(js_staging_vaddr + output_offset), copy);
-            out_buf[copy] = '\0';
-            *out_len = copy;
-        } else {
-            *out_len = 0;
-        }
-        return AOS_ERR_IO;
-    }
-
-    if (output_len >= out_buf_len)
-        output_len = out_buf_len - 1;
-
-    memcpy(out_buf, (char *)(js_staging_vaddr + output_offset),
-           (size_t)output_len);
-    out_buf[output_len] = '\0';
-    *out_len = (size_t)output_len;
-
-    return AOS_OK;
+    /* TODO(js_runtime_removal): this called OP_JS_CALL — replace with
+     * vibe_engine WASM hot-swap (OP_VIBE_HOTSWAP) or a Rust-side tool.
+     * See docs/defects/DEFECT-002-js-runtime-removal.md */
+    (void)context_id; (void)func_name; (void)args_json;
+    (void)out_buf; (void)out_buf_len;
+    if (out_len) *out_len = 0;
+    return AOS_ERR_IO;
 }
 
 /* =========================================================================

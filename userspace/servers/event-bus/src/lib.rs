@@ -307,4 +307,111 @@ mod tests {
         bus.publish("flood", b"after drain".to_vec(), 0).unwrap();
         assert_eq!(bus.drain(sub2).unwrap().len(), 1);
     }
+
+    #[test]
+    fn test_create_topic_owned_idempotent_first_creator_wins() {
+        let mut bus = EventBus::new();
+        bus.create_topic_owned(10, "owned.topic");
+        // Second call with different owner — should be a no-op (first wins)
+        bus.create_topic_owned(20, "owned.topic");
+        assert_eq!(bus.topic_count(), 1);
+
+        // PD 10 can still publish (it was the original owner)
+        let sub = bus.subscribe("owned.topic").unwrap();
+        let n = bus.publish_as(10, "owned.topic", b"ok".to_vec(), 0).unwrap();
+        assert_eq!(n, 1);
+        let events = bus.drain(sub).unwrap();
+        assert_eq!(events[0].payload, b"ok");
+
+        // PD 20 cannot publish (it lost the ownership race)
+        let err = bus.publish_as(20, "owned.topic", b"no".to_vec(), 1).unwrap_err();
+        assert_eq!(err, BusError::Unauthorized);
+    }
+
+    #[test]
+    fn test_topic_count_reflects_creates() {
+        let mut bus = EventBus::new();
+        assert_eq!(bus.topic_count(), 0);
+        bus.create_topic("a");
+        bus.create_topic("b");
+        bus.create_topic("c");
+        assert_eq!(bus.topic_count(), 3);
+    }
+
+    #[test]
+    fn test_drain_empty_pending_returns_empty_vec() {
+        let mut bus = EventBus::new();
+        bus.create_topic("t");
+        let sub = bus.subscribe("t").unwrap();
+        // No events published — drain should succeed with empty vec
+        let events = bus.drain(sub).unwrap();
+        assert!(events.is_empty());
+    }
+
+    #[test]
+    fn test_drain_unknown_subscriber_fails() {
+        let mut bus = EventBus::new();
+        // Subscriber ID that was never issued
+        let err = bus.drain(SubscriberId(9999)).unwrap_err();
+        assert_eq!(err, BusError::UnknownSubscriber);
+    }
+
+    #[test]
+    fn test_unsubscribe_from_one_topic_leaves_other_active() {
+        let mut bus = EventBus::new();
+        bus.create_topic("a");
+        bus.create_topic("b");
+        let sub_a = bus.subscribe("a").unwrap();
+        let sub_b = bus.subscribe("b").unwrap();
+
+        // Unsubscribe sub_a from "a"
+        bus.unsubscribe(sub_a);
+
+        // sub_b still active on "b"
+        bus.publish("b", b"hello".to_vec(), 0).unwrap();
+        let events = bus.drain(sub_b).unwrap();
+        assert_eq!(events.len(), 1);
+    }
+
+    #[test]
+    fn test_kernel_pd_publishes_to_kernel_owned_topic() {
+        let mut bus = EventBus::new();
+        // create_topic uses owner_pd = 0 (kernel)
+        bus.create_topic("kernel.topic");
+        let sub = bus.subscribe("kernel.topic").unwrap();
+        // publish() uses publisher_pd = 0 — should succeed
+        let n = bus.publish("kernel.topic", b"kernel-event".to_vec(), 0).unwrap();
+        assert_eq!(n, 1);
+        let events = bus.drain(sub).unwrap();
+        assert_eq!(events[0].payload, b"kernel-event");
+    }
+
+    #[test]
+    fn test_event_timestamp_preserved() {
+        let mut bus = EventBus::new();
+        bus.create_topic("t");
+        let sub = bus.subscribe("t").unwrap();
+        bus.publish("t", b"x".to_vec(), 0xDEAD_BEEF).unwrap();
+        let events = bus.drain(sub).unwrap();
+        assert_eq!(events[0].timestamp_ns, 0xDEAD_BEEF);
+    }
+
+    #[test]
+    fn test_subscriber_ids_are_unique() {
+        let mut bus = EventBus::new();
+        bus.create_topic("t");
+        let s1 = bus.subscribe("t").unwrap();
+        let s2 = bus.subscribe("t").unwrap();
+        assert_ne!(s1, s2);
+    }
+
+    #[test]
+    fn test_bus_error_display() {
+        use alloc::string::ToString;
+        assert!(BusError::UnknownTopic.to_string().contains("unknown topic"));
+        assert!(BusError::UnknownSubscriber.to_string().contains("unknown subscriber"));
+        assert!(BusError::PayloadTooLarge.to_string().contains("too large"));
+        assert!(BusError::Unauthorized.to_string().contains("owner"));
+        assert!(BusError::QueueFull.to_string().contains("full"));
+    }
 }

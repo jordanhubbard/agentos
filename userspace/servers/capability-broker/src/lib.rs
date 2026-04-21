@@ -594,4 +594,99 @@ mod tests {
         // Audit ring should be capped at MAX_AUDIT_ENTRIES
         assert_eq!(b.audit_len(), MAX_AUDIT_ENTRIES);
     }
+
+    // ── Additional coverage ───────────────────────────────────────────────────
+
+    #[test]
+    fn test_delegate_rights_are_intersection() {
+        // Parent holds READ | WRITE; delegating requesting READ | GRANT
+        // Derived rights should be READ only (intersection)
+        let mut b = broker_with_policy();
+        b.allow("monitor", CapKind::Notification);
+        let parent = b.issue("monitor", "agent-a", CapKind::Notification, Rights::ALL, true).unwrap();
+        // Requesting READ | GRANT (0x05)
+        let child = b.delegate(&parent, "agent-a", "agent-b", Rights(Rights::READ.0 | Rights::GRANT.0)).unwrap();
+        let grant = b.validate(&child, "agent-b", Rights::READ).unwrap();
+        // Derived rights should include READ
+        assert!(grant.rights.contains(Rights::READ));
+        // The derived grant is always non-delegatable
+        assert!(!grant.delegatable);
+    }
+
+    #[test]
+    fn test_expired_grants_not_visible_after_next_grant() {
+        let mut b = CapabilityBroker::new();
+        // Grant expiring at t=50
+        b.grant("agent-x", CapKind::Memory, Rights::READ, 50, 0).unwrap();
+        // Valid at t=30
+        assert!(b.check("agent-x", &CapKind::Memory, Rights::READ, 30));
+        // Expired at t=100; trigger pruning via a new grant at now_ms=100
+        b.grant("agent-y", CapKind::Endpoint, Rights::READ, u64::MAX, 100).unwrap();
+        // The expired grant should no longer match (it was pruned)
+        assert!(!b.check("agent-x", &CapKind::Memory, Rights::READ, 100));
+    }
+
+    #[test]
+    fn test_check_audited_denied_result() {
+        let mut b = CapabilityBroker::new();
+        // No grants at all
+        let allowed = b.check_audited("nobody", &CapKind::Memory, Rights::READ, 0);
+        assert!(!allowed);
+        let entries = b.audit_recent(1);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].result, AuditResult::Denied);
+    }
+
+    #[test]
+    fn test_custom_cap_kind_grant_and_check() {
+        let mut b = CapabilityBroker::new();
+        let custom = CapKind::Custom("my.resource".into());
+        b.grant("agent-x", custom.clone(), Rights::ALL, u64::MAX, 0).unwrap();
+        assert!(b.check("agent-x", &custom, Rights::ALL, 1));
+        assert!(!b.check("agent-x", &CapKind::Memory, Rights::ALL, 1));
+    }
+
+    #[test]
+    fn test_revoke_by_agent_cap_not_found_is_logged() {
+        let mut b = CapabilityBroker::new();
+        // Revoke something that was never granted
+        b.revoke_by_agent_cap("ghost", &CapKind::Memory, 0);
+        let entries = b.audit_recent(1);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].op, AuditOp::Revoke);
+        assert_eq!(entries[0].result, AuditResult::NotFound);
+    }
+
+    #[test]
+    fn test_grant_count_increases_and_revoke_decreases() {
+        let mut b = broker_with_policy();
+        assert_eq!(b.grant_count(), 0);
+        let t1 = b.issue("monitor", "agent-a", CapKind::Memory, Rights::READ, false).unwrap();
+        let t2 = b.issue("monitor", "agent-a", CapKind::Endpoint, Rights::READ, false).unwrap();
+        assert_eq!(b.grant_count(), 2);
+        b.revoke(&t1).unwrap();
+        assert_eq!(b.grant_count(), 1);
+        b.revoke(&t2).unwrap();
+        assert_eq!(b.grant_count(), 0);
+    }
+
+    #[test]
+    fn test_validate_insufficient_rights_fails() {
+        let mut b = broker_with_policy();
+        // Issue with READ only
+        let tok = b.issue("monitor", "agent-a", CapKind::Memory, Rights::READ, false).unwrap();
+        // Validate requiring WRITE — should fail
+        let err = b.validate(&tok, "agent-a", Rights::WRITE).unwrap_err();
+        assert_eq!(err, BrokerError::InsufficientRights);
+    }
+
+    #[test]
+    fn test_broker_error_display() {
+        use alloc::string::ToString;
+        assert!(BrokerError::UnknownToken.to_string().contains("unknown"));
+        assert!(BrokerError::InsufficientRights.to_string().contains("insufficient"));
+        assert!(BrokerError::PolicyDenied.to_string().contains("policy"));
+        assert!(BrokerError::NotDelegatable.to_string().contains("delegatable"));
+        assert!(BrokerError::TableFull.to_string().contains("full"));
+    }
 }

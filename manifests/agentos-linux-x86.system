@@ -11,14 +11,15 @@
 
   Protection Domain topology:
 
-    controller   (prio 50)   - system coordinator + capability broker
-    event_bus    (prio 200)  - passive pub/sub server (ring buffer)
-    init_agent   (prio 100)  - agent ecosystem bootstrapper
-    worker_0..7  (prio 80)   - agent pool workers (dynamic task assignment)
-    vibe_engine  (prio 140)  - passive VibeEngine: WASM hot-swap lifecycle
-    agentfs      (prio 150)  - passive content-addressed object store
-    swap_slot_0..3 (prio 75) - WASM hot-swap execution slots
-    linux_vmm    (prio 254)  - Linux VMM stub (x86_64 — passive, no-op)
+    controller     (prio 50)   - system coordinator + capability broker
+    event_bus      (prio 200)  - passive pub/sub server (ring buffer)
+    init_agent     (prio 100)  - agent ecosystem bootstrapper
+    worker_0..7    (prio 80)   - agent pool workers (dynamic task assignment)
+    vibe_engine    (prio 140)  - passive VibeEngine: WASM hot-swap lifecycle
+    agentfs        (prio 150)  - passive content-addressed object store
+    swap_slot_0..3 (prio 75)   - WASM hot-swap execution slots
+    framebuffer_pd (prio 175)  - virtual framebuffer; REMOTE_API backend (Phase 4a-remote)
+    linux_vmm      (prio 254)  - Linux VMM stub (x86_64 — passive, no-op)
 
   Channel map (native agentOS — same as agentos-x86_64.system):
     0:  controller <-> event_bus    (controller PPCs into passive event_bus)
@@ -34,6 +35,10 @@
 
   Linux VMM stub channel:
     50: controller <-> linux_vmm  (reserved; stub does not process commands)
+
+  Framebuffer channels (Phase 4a-remote):
+    71: controller(id=71) <-> framebuffer_pd(id=0)  [CH_FB_PD]
+    28: event_bus(id=28)  <-> framebuffer_pd(id=1)  [CH_FB_EVENTBUS]
 
   x86_64 memory layout (QEMU q35):
     Guest RAM would be at 0x100000000 (4GB) if VMM were implemented.
@@ -115,13 +120,96 @@
         <map mr="swap_code_3" vaddr="0x2000000" perms="r" setvar_vaddr="swap_code_vaddr" />
     </protection_domain>
 
-    <!-- ═══════════════════════════════════════════════════════════════════
-         LINUX VMM STUB — x86_64
+    <!--
+      framebuffer_pd — virtual framebuffer service (Phase 4a-remote).
 
-         Priority 254 (highest) to match aarch64 linux_vmm placement.
-         Stub logs "x86_64 not yet supported by libvmm" and loops passively.
-         No virtual_machine or IRQ elements — stub does not run a guest.
-         Channel 50 is reserved for future use when libvmm gains x86 support.
+      Provides virtual framebuffer creation and REMOTE_API display relay.
+      Guests allocate a framebuffer via MSG_FB_CREATE and bind it via
+      MSG_GUEST_BIND_DEVICE(GUEST_DEV_FB).
+
+      CH_FB_EVENTBUS (id=1) is wired to event_bus in this manifest.
+      fb_eventbus_wired_flag is set via setvar_vaddr to enable EventBus
+      publishing of EVENT_FB_FRAME_READY on every MSG_FB_FLIP.
+
+      Remote subscribers (agentctl, remote desktop) attach via
+      MSG_CC_ATTACH_FRAMEBUFFER and are notified via microkit_notify()
+      on each MSG_FB_FLIP with REMOTE_API backend.
+
+      Priority: 175 (below serial_pd; above log_drain).
+    -->
+    <protection_domain name="framebuffer_pd" priority="175" passive="true">
+        <program_image path="framebuffer_pd.elf" />
+        <!-- Shared pixel data region: callers write frames here before MSG_FB_WRITE -->
+        <map mr="fb_shmem"
+             vaddr="0xF000000"
+             perms="rw"
+             setvar_vaddr="fb_shmem_vaddr" />
+        <!--
+          Sentinel region: non-zero vaddr signals CH_FB_EVENTBUS is wired.
+          framebuffer_pd checks fb_eventbus_wired_flag in init() to enable
+          EventBus publishing without risking ppcall on an unwired channel.
+        -->
+        <map mr="fb_eventbus_wired"
+             vaddr="0xF800000"
+             perms="r"
+             setvar_vaddr="fb_eventbus_wired_flag" />
+    </protection_domain>
+
+    <!--
+      serial_pd — generic serial I/O PD.
+
+      On x86_64 the physical UART uses I/O ports (COM1 = 0x3F8), not MMIO.
+      uart_mmio_vaddr is not set on this platform; serial_pd operates in
+      poll-free / dbg_puts fallback mode.  When x86 MMIO UART support is
+      added, map the appropriate physical region and set uart_mmio_vaddr.
+    -->
+    <protection_domain name="serial_pd" priority="180" passive="true">
+        <program_image path="serial_pd.elf" />
+        <!-- No uart MMIO on x86 — uart_mmio_vaddr stays 0 -->
+        <map mr="serial_shmem"
+             vaddr="0xB000000"
+             perms="rw"
+             setvar_vaddr="serial_shmem_vaddr" />
+    </protection_domain>
+
+    <!--
+      log_drain — per-PD log ring buffer drain.
+
+      Drains PD log rings to serial_pd via IPC.  Falls back to
+      microkit_dbg_puts if serial_pd is not yet initialized.
+    -->
+    <protection_domain name="log_drain" priority="160" passive="true">
+        <program_image path="log_drain.elf" />
+        <map mr="serial_shmem"
+             vaddr="0xB000000"
+             perms="rw"
+             setvar_vaddr="serial_shmem_vaddr" />
+    </protection_domain>
+
+    <!-- ═══════════════════════════════════════════════════════════════════
+         LINUX VMM — x86_64 compliance skeleton (guest_contract.h Phase 3d)
+
+         Priority 254 to match AArch64 linux_vmm placement.
+         On x86_64, libvmm does not yet provide VMX hypervisor support.
+         The PD starts, logs "x86_64 not yet supported", and loops passively.
+
+         guest_contract.h compliance skeleton is present in linux_vmm.c:
+           - linux_vmm_contract.h included (vmm_contract.h + guest_contract.h)
+           - Binding protocol stubs for MSG_VMM_REGISTER, MSG_SERIAL_OPEN,
+             MSG_GUEST_BIND_DEVICE, and EVENT_GUEST_READY are in place.
+
+         CPL3 Enforcement Requirement (x86_64):
+           When x86_64 VMM support is added, Linux guest vCPUs MUST operate in
+           VMX non-root mode with EPT (Extended Page Tables) active.  The guest
+           kernel runs at guest CPL 0 (non-root) — it MUST NOT access host CPL 0.
+           VMEXITs must be handled for: CPUID, MSR read/write, I/O port access,
+           EPT violations, and all hardware MMIO accesses.  Physical devices
+           (UART, NIC, disk) must be accessed via service PDs through
+           MSG_GUEST_BIND_DEVICE — never via direct MMIO passthrough to the guest.
+
+         Channel 50: controller bridge (active when VMM is implemented).
+         Channel 51: reserved for linux_vmm → serial_pd UART proxy.
+                     Wire to serial_pd when x86_64 VMM support is added.
          ═══════════════════════════════════════════════════════════════════ -->
     <protection_domain name="linux_vmm" priority="254">
         <program_image path="linux_vmm.elf" />
@@ -138,6 +226,18 @@
     <memory_region name="swap_code_2"    size="0x400000" />
     <memory_region name="swap_code_3"    size="0x400000" />
     <memory_region name="vibe_staging"   size="0x400000" />
+    <!-- Shared data buffer: serial_pd ↔ log_drain (256-byte I/O window) -->
+    <memory_region name="serial_shmem"   size="0x1000" />
+
+    <!-- Framebuffer shared memory: 8MB — holds one full-HD (1920×1080×4B) frame -->
+    <memory_region name="fb_shmem"             size="0x800000" />
+
+    <!--
+      fb_eventbus_wired: 1-page sentinel region.  Mapped to framebuffer_pd with
+      setvar_vaddr="fb_eventbus_wired_flag".  Non-zero vaddr signals that
+      CH_FB_EVENTBUS is wired in this manifest, enabling EventBus publishing.
+    -->
+    <memory_region name="fb_eventbus_wired"    size="0x1000" />
 
     <!-- ═══════════════════════════════════════════════════════════════════
          CHANNELS
@@ -264,12 +364,103 @@
     </channel>
 
     <!--
-      Channel 50: controller <-> linux_vmm (reserved for future x86 VMM).
-      Stub PD does not process messages on this channel.
+      Channel 50: controller <-> linux_vmm (bridge; stub does not process messages).
+      Channel 51 (future): linux_vmm → serial_pd UART proxy — wire when x86_64
+                           VMM support is added to libvmm (CPL3 enforcement required).
     -->
     <channel>
         <end pd="controller" id="50" />
         <end pd="linux_vmm"  id="2" />
+    </channel>
+
+    <!--
+      Channel 71: controller(id=71) ↔ framebuffer_pd(id=0)  [CH_FB_PD]
+      Controller PPCs framebuffer_pd for MSG_FB_* guest display operations
+      and MSG_GUEST_BIND_DEVICE(GUEST_DEV_FB) capability delegation.
+      framebuffer_pd is passive (woken by PPC).
+    -->
+    <channel>
+        <end pd="controller"     id="71" pp="true" />
+        <end pd="framebuffer_pd" id="0" />
+    </channel>
+
+    <!--
+      CH_FB_EVENTBUS: event_bus(id=28) ↔ framebuffer_pd(id=1)
+      framebuffer_pd PPCs event_bus to publish EVENT_FB_FRAME_READY (0x40)
+      after every successful MSG_FB_FLIP.  Subscribers (workers, agents)
+      receive the event via their EventBus subscription.
+      event_bus is passive (pp=true on event_bus side via existing convention).
+    -->
+    <channel>
+        <end pd="event_bus"      id="28" />
+        <end pd="framebuffer_pd" id="1" pp="true" />
+    </channel>
+
+    <!-- ═══════════════════════════════════════════════════════════════════
+         USB HOST CONTROLLER PD — QEMU Q35 xhci-pci emulation
+
+         QEMU Q35 xhci-pci device: add -device qemu-xhci,id=usb,addr=0x03
+         to the QEMU command line.  BAR0 is at 0xfe900000 on the Q35 PCIe
+         bus when slot 3 is used.
+
+         Build with: make build AGENTOS_USB_PD=1 ARCH_X86_64=1
+
+         usb_pd exposes MSG_USB_ENUMERATE/LIST/OPEN/CLOSE/CONTROL/BULK_IN/
+         BULK_OUT/STATUS on channel 70 (CH_USB_PD from controller perspective).
+
+         Device class filtering policy is passed as MR2 on MSG_USB_OPEN:
+           USB_POLICY_HID     (1<<0) — keyboard/mouse passthrough
+           USB_POLICY_STORAGE (1<<1) — mass storage passthrough
+         ═══════════════════════════════════════════════════════════════════ -->
+
+    <!-- QEMU Q35 xhci-pci BAR0: 0xfe900000 (Q35 PCIe slot 3, QEMU default).
+         Update phys_addr if your QEMU command line places XHCI at a different
+         BAR address.  Use `info pci` in the QEMU monitor to confirm. -->
+    <memory_region name="usb_xhci_mmio" size="0x1000" phys_addr="0xfe900000" />
+
+    <!-- Shared data region: usb_dev_info_t[] device list + transfer buffers.
+         64KB accommodates USB_MAX_DEVICES (32) usb_dev_info_t entries plus
+         transfer staging area for bulk/control data. -->
+    <memory_region name="usb_shmem" size="0x10000" />
+
+    <protection_domain name="usb_pd" priority="175" passive="true">
+        <program_image path="usb_pd.elf" />
+        <!-- XHCI MMIO window — uncached, device I/O -->
+        <map mr="usb_xhci_mmio" vaddr="0x12000000" perms="rw" cached="false"
+             setvar_vaddr="usb_mmio_vaddr" />
+        <!-- Shared shmem: device list + transfer data (rw for usb_pd) -->
+        <map mr="usb_shmem" vaddr="0x12100000" perms="rw"
+             setvar_vaddr="usb_shmem_vaddr" />
+    </protection_domain>
+
+    <!-- Controller maps usb_shmem read-only for device list inspection -->
+    <!-- To enable: add to controller PD:
+         <map mr="usb_shmem" vaddr="0x13000000" perms="r"
+              setvar_vaddr="usb_shmem_ctrl_vaddr" /> -->
+
+    <!-- CH_USB_PD = 70: controller PPCs into usb_pd -->
+    <channel>
+        <end pd="controller" id="70" pp="true" />
+        <end pd="usb_pd"     id="0" />
+    </channel>
+
+    <!--
+      Channel 67: controller → serial_pd  (CH_SERIAL_PD)
+      Controller PPCs serial_pd to open/write/read serial ports.
+    -->
+    <channel>
+        <end pd="controller" id="67" pp="true" />
+        <end pd="serial_pd"  id="0" />
+    </channel>
+
+    <!--
+      Channel: log_drain → serial_pd
+      log_drain PPCs serial_pd to write drained log lines.
+      Channel 1 on the log_drain side (CH_SERIAL_OUT in log_drain.c).
+    -->
+    <channel>
+        <end pd="log_drain"  id="1" pp="true" />
+        <end pd="serial_pd"  id="2" />
     </channel>
 
 </system>

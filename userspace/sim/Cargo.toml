@@ -15,5 +15,8 @@ thiserror    = { workspace = true }
 tracing      = "0.1"
 sha2         = "0.10"
 
+[dev-dependencies]
+wat = "1"
+
 [lib]
 name = "agentos_sim"

@@ -102,6 +102,34 @@ typedef struct { uint32_t _opaque; } vm_t;
 #define OP_VM_LIST          0x14
 #endif
 
+/* ─── Per-slot VirtIO MMIO emulation state ──────────────────────────────── */
+
+/*
+ * Tracks the VirtIO MMIO register state for one emulated device (block or
+ * net) per VM slot.  The VMM intercepts guest MMIO faults and uses this
+ * structure to respond to VirtIO register reads and process queue notifies.
+ */
+typedef struct {
+    /* VirtIO spec registers */
+    uint32_t DeviceID;          /* VIRTIO_DEVICE_ID_BLOCK or _NET */
+    uint32_t Status;            /* driver-written status word */
+    uint32_t DeviceFeaturesSel;
+    uint32_t DriverFeaturesSel;
+    uint32_t DriverFeatures;
+    uint32_t QueueSel;
+    uint32_t QueueNum;
+    uint32_t InterruptStatus;
+    uint32_t ConfigGeneration;
+
+    /* Virtqueue 0 */
+    uint32_t QueueNumMax;
+    bool     QueueReady;
+    uint64_t QueueDescAddr;     /* guest-physical address of descriptor table */
+    uint64_t QueueAvailAddr;    /* guest-physical address of available ring */
+    uint64_t QueueUsedAddr;     /* guest-physical address of used ring */
+    uint16_t last_avail_idx;    /* last avail_idx processed */
+} vmm_virtio_state_t;
+
 /* Slot states */
 typedef enum {
     VM_SLOT_FREE      = 0,   /* not allocated */
@@ -122,6 +150,16 @@ typedef struct {
     uintptr_t        ram_paddr;   /* guest physical base address */
     uint32_t         vcpu_id;     /* seL4 vCPU ID within Microkit */
     char             label[16];   /* human-readable label e.g. "freebsd-0" */
+
+    /* ── Ring-0 service PD device handles (Phase 3c) ──────────────────── */
+    uint32_t         guest_id;    /* guest_id from MSG_GUEST_CREATE */
+    uint32_t         serial_slot; /* client_slot from MSG_SERIAL_OPEN */
+    uint32_t         net_handle;  /* handle from MSG_NET_OPEN */
+    uint32_t         block_handle;/* handle from MSG_BLOCK_OPEN */
+
+    /* ── VirtIO MMIO emulation state (one per emulated device) ─────────── */
+    vmm_virtio_state_t vblk;      /* emulated VirtIO block registers */
+    vmm_virtio_state_t vnet;      /* emulated VirtIO net registers */
 } vm_slot_t;
 
 /* Multiplexer state */
@@ -129,6 +167,7 @@ typedef struct {
     vm_slot_t   slots[VM_MAX_SLOTS];
     uint8_t     active_slot;      /* which slot has console focus */
     uint8_t     slot_count;       /* number of allocated (non-FREE) slots */
+    uint32_t    vmm_token;        /* token from MSG_VMM_REGISTER */
 } vm_mux_t;
 
 /* Microkit symbols set by linker for each slot's RAM region */

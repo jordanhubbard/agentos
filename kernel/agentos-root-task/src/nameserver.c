@@ -36,6 +36,7 @@
 
 #define AGENTOS_DEBUG 1
 #include "agentos.h"
+#include "contracts/nameserver_contract.h"
 #include "nameserver.h"
 
 /* ── Console ring slot for this PD ──────────────────────────────────────── */
@@ -160,9 +161,9 @@ static microkit_msginfo handle_register(void)
 
     reg_count++;
 
-    console_log(NS_LOG_SLOT, NS_LOG_PD_ID, "[ns] registered: ");
-    console_log(NS_LOG_SLOT, NS_LOG_PD_ID, e->name);
-    console_log(NS_LOG_SLOT, NS_LOG_PD_ID, "\n");
+    log_drain_write(NS_LOG_SLOT, NS_LOG_PD_ID, "[ns] registered: ");
+    log_drain_write(NS_LOG_SLOT, NS_LOG_PD_ID, e->name);
+    log_drain_write(NS_LOG_SLOT, NS_LOG_PD_ID, "\n");
 
     microkit_mr_set(0, NS_OK);
     return microkit_msginfo_new(0, 1);
@@ -282,9 +283,9 @@ static microkit_msginfo handle_deregister(void)
         return microkit_msginfo_new(0, 1);
     }
 
-    console_log(NS_LOG_SLOT, NS_LOG_PD_ID, "[ns] deregistered: ");
-    console_log(NS_LOG_SLOT, NS_LOG_PD_ID, registry[slot].name);
-    console_log(NS_LOG_SLOT, NS_LOG_PD_ID, "\n");
+    log_drain_write(NS_LOG_SLOT, NS_LOG_PD_ID, "[ns] deregistered: ");
+    log_drain_write(NS_LOG_SLOT, NS_LOG_PD_ID, registry[slot].name);
+    log_drain_write(NS_LOG_SLOT, NS_LOG_PD_ID, "\n");
 
     registry[slot].active = false;
     reg_count--;
@@ -316,7 +317,7 @@ void init(void)
     boot_tick = 0;
 
     agentos_log_boot("nameserver");
-    console_log(NS_LOG_SLOT, NS_LOG_PD_ID,
+    log_drain_write(NS_LOG_SLOT, NS_LOG_PD_ID,
                 "[nameserver] ready — service discovery active\n");
 }
 
@@ -326,7 +327,7 @@ void notified(microkit_channel ch)
      * only reached if something misconfigures a channel as non-pp.
      * Log and ignore. */
     (void)ch;
-    console_log(NS_LOG_SLOT, NS_LOG_PD_ID,
+    log_drain_write(NS_LOG_SLOT, NS_LOG_PD_ID,
                 "[ns] unexpected notification (check .system channel pp flags)\n");
 }
 
@@ -382,9 +383,9 @@ static microkit_msginfo handle_lookup_gated(microkit_channel ch, microkit_msginf
      * If allowed_cats == 0 (badge not set by init_agent) we treat it as
      * "no access" rather than "unrestricted" — fail safe. */
     if (allowed_cats == 0 || (e->cap_classes & (uint32_t)allowed_cats) == 0) {
-        console_log(NS_LOG_SLOT, NS_LOG_PD_ID, "[ns] gated lookup FORBIDDEN: ");
-        console_log(NS_LOG_SLOT, NS_LOG_PD_ID, e->name);
-        console_log(NS_LOG_SLOT, NS_LOG_PD_ID, "\n");
+        log_drain_write(NS_LOG_SLOT, NS_LOG_PD_ID, "[ns] gated lookup FORBIDDEN: ");
+        log_drain_write(NS_LOG_SLOT, NS_LOG_PD_ID, e->name);
+        log_drain_write(NS_LOG_SLOT, NS_LOG_PD_ID, "\n");
         microkit_mr_set(0, NS_ERR_FORBIDDEN);
         return microkit_msginfo_new(0, 1);
     }
@@ -412,7 +413,7 @@ microkit_msginfo protected(microkit_channel ch, microkit_msginfo msginfo)
     case OP_NS_HEALTH:        return handle_health();
     case OP_NS_LOOKUP_GATED:  return handle_lookup_gated(ch, msginfo);
     default:
-        console_log(NS_LOG_SLOT, NS_LOG_PD_ID, "[ns] unknown opcode\n");
+        log_drain_write(NS_LOG_SLOT, NS_LOG_PD_ID, "[ns] unknown opcode\n");
         microkit_mr_set(0, NS_ERR_UNKNOWN_OP);
         return microkit_msginfo_new(0, 1);
     }

@@ -9,11 +9,8 @@
  *           controller maps the same region at 0xE000000 (r — monitoring only)
  *
  * TCP/IP stack:
- *   smoltcp integration is stubbed.  Every stub site is tagged:
- *     SMOLTCP_INTEGRATION_POINT
- *   Wire up smoltcp by implementing the EthernetInterface::transmit /
- *   EthernetInterface::receive callbacks at those sites and linking the
- *   smoltcp C bindings.
+ *   lwIP integration via lwip_sys.c.  net_server_lwip_init() sets up the
+ *   netif and DHCP client.  Packet Rx/Tx is handled by lwIP pbuf chains.
  *
  * virtio-net:
  *   init() probes the MMIO region (net_mmio_vaddr).  If magic/version/
@@ -51,7 +48,7 @@ uintptr_t net_packet_shmem_vaddr;
 uintptr_t net_mmio_vaddr;
 
 /* Console ring base (set by Microkit via setvar_vaddr) */
-uintptr_t console_rings_vaddr;
+uintptr_t log_drain_rings_vaddr;
 
 /* Vibe staging region (set by Microkit via setvar_vaddr).
  * Shared with agent PDs; net_server uses offset 0x200000–0x3FFFFF for HTTP I/O.
@@ -74,12 +71,12 @@ static uint32_t ns_strlen(const char *s) {
 
 /* ── Decimal formatting helper ───────────────────────────────────────────── */
 static void log_dec(uint32_t v) {
-    if (v == 0) { console_log(16, 16, "0"); return; }
+    if (v == 0) { log_drain_write(16, 16, "0"); return; }
     char buf[12];
     int  i = 11;
     buf[i] = '\0';
     while (v > 0 && i > 0) { buf[--i] = '0' + (char)(v % 10); v /= 10; }
-    console_log(16, 16, &buf[i]);
+    log_drain_write(16, 16, &buf[i]);
 }
 
 /* ── Hex formatting helper ───────────────────────────────────────────────── */
@@ -97,7 +94,7 @@ static void log_hex(uint32_t v) {
     buf[8]  = hex[(v >>  4) & 0xf];
     buf[9]  = hex[ v        & 0xf];
     buf[10] = '\0';
-    console_log(16, 16, buf);
+    log_drain_write(16, 16, buf);
 }
 
 /* ── MMIO read helper ────────────────────────────────────────────────────── */
@@ -117,7 +114,7 @@ static volatile net_vnic_ring_t *slot_ring(uint32_t shmem_slot) {
 /* ── virtio-net probe ────────────────────────────────────────────────────── */
 static void probe_virtio_net(void) {
     if (!net_mmio_vaddr) {
-        console_log(16, 16, "[net_server] virtio-net: MMIO vaddr not mapped, stub mode\n");
+        log_drain_write(16, 16, "[net_server] virtio-net: MMIO vaddr not mapped, stub mode\n");
         return;
     }
 
@@ -127,13 +124,13 @@ static void probe_virtio_net(void) {
 
     if (magic != VIRTIO_MMIO_MAGIC || version != 2u
             || device_id != VIRTIO_NET_DEVICE_ID) {
-        console_log(16, 16, "[net_server] virtio-net not detected (magic=");
+        log_drain_write(16, 16, "[net_server] virtio-net not detected (magic=");
         log_hex(magic);
-        console_log(16, 16, " ver=");
+        log_drain_write(16, 16, " ver=");
         log_dec(version);
-        console_log(16, 16, " dev=");
+        log_drain_write(16, 16, " dev=");
         log_dec(device_id);
-        console_log(16, 16, "), stub mode\n");
+        log_drain_write(16, 16, "), stub mode\n");
         return;
     }
 
@@ -143,15 +140,15 @@ static void probe_virtio_net(void) {
      * Minimal device initialisation sequence (virtio spec §3.1.1):
      *   ACKNOWLEDGE → DRIVER → FEATURES_OK → DRIVER_OK
      * Full feature negotiation and virtqueue setup is deferred to
-     * SMOLTCP_INTEGRATION_POINT in init().
+     * lwIP_INTEGRATION_NOTE in init().
      */
     mmio_write32(net_mmio_vaddr, VIRTIO_MMIO_STATUS, VIRTIO_STATUS_ACKNOWLEDGE);
     mmio_write32(net_mmio_vaddr, VIRTIO_MMIO_STATUS,
                  VIRTIO_STATUS_ACKNOWLEDGE | VIRTIO_STATUS_DRIVER);
 
-    console_log(16, 16, "[net_server] virtio-net detected at ");
+    log_drain_write(16, 16, "[net_server] virtio-net detected at ");
     log_hex((uint32_t)net_mmio_vaddr);
-    console_log(16, 16, ", hw present\n");
+    log_drain_write(16, 16, ", hw present\n");
 
     /* Initialize lwIP with the virtio-net MMIO address.
      * Virtqueue descriptor tables are not yet allocated in Phase 1;
@@ -217,17 +214,17 @@ static microkit_msginfo handle_vnic_create(void) {
 
     /* CAP_CLASS_NET is mandatory */
     if (!(cap_classes & CAP_CLASS_NET)) {
-        console_log(16, 16, "[net_server] VNIC_CREATE denied: missing CAP_CLASS_NET "
+        log_drain_write(16, 16, "[net_server] VNIC_CREATE denied: missing CAP_CLASS_NET "
                     "pd=");
         log_dec(caller_pd);
-        console_log(16, 16, "\n");
+        log_drain_write(16, 16, "\n");
         microkit_mr_set(0, NET_ERR_PERM);
         return microkit_msginfo_new(0, 1);
     }
 
     int slot = alloc_vnic_slot();
     if (slot < 0) {
-        console_log(16, 16, "[net_server] VNIC_CREATE failed: table full\n");
+        log_drain_write(16, 16, "[net_server] VNIC_CREATE failed: table full\n");
         microkit_mr_set(0, NET_ERR_NO_VNICS);
         return microkit_msginfo_new(0, 1);
     }
@@ -272,22 +269,22 @@ static microkit_msginfo handle_vnic_create(void) {
 
     uint32_t slot_offset = NET_SLOT_OFFSET((uint32_t)slot);
 
-    console_log(16, 16, "[net_server] VNIC created: id=");
+    log_drain_write(16, 16, "[net_server] VNIC created: id=");
     log_dec(vnic_id);
-    console_log(16, 16, " pd=");
+    log_drain_write(16, 16, " pd=");
     log_dec(caller_pd);
-    console_log(16, 16, " slot=");
+    log_drain_write(16, 16, " slot=");
     log_dec((uint32_t)slot);
-    console_log(16, 16, " mac=02:00:00:00:00:");
+    log_drain_write(16, 16, " mac=02:00:00:00:00:");
     {
         static const char hex[] = "0123456789abcdef";
         char buf[3];
         buf[0] = hex[(vnic_id >> 4) & 0xf];
         buf[1] = hex[ vnic_id       & 0xf];
         buf[2] = '\0';
-        console_log(16, 16, buf);
+        log_drain_write(16, 16, buf);
     }
-    console_log(16, 16, "\n");
+    log_drain_write(16, 16, "\n");
 
     microkit_mr_set(0, NET_OK);
     microkit_mr_set(1, vnic_id);
@@ -301,18 +298,18 @@ static microkit_msginfo handle_vnic_destroy(void) {
 
     net_vnic_t *v = find_vnic(vnic_id);
     if (!v) {
-        console_log(16, 16, "[net_server] VNIC_DESTROY: not found id=");
+        log_drain_write(16, 16, "[net_server] VNIC_DESTROY: not found id=");
         log_dec(vnic_id);
-        console_log(16, 16, "\n");
+        log_drain_write(16, 16, "\n");
         microkit_mr_set(0, NET_ERR_NOT_FOUND);
         return microkit_msginfo_new(0, 1);
     }
 
-    console_log(16, 16, "[net_server] VNIC destroyed: id=");
+    log_drain_write(16, 16, "[net_server] VNIC destroyed: id=");
     log_dec(vnic_id);
-    console_log(16, 16, " pd=");
+    log_drain_write(16, 16, " pd=");
     log_dec(v->owner_pd);
-    console_log(16, 16, "\n");
+    log_drain_write(16, 16, "\n");
 
     clear_vnic_ring(v->shmem_slot);
     v->active = false;
@@ -338,11 +335,11 @@ static microkit_msginfo handle_vnic_send(void) {
 
     /* ACL: outbound must be permitted */
     if (!acl_outbound_allowed(v)) {
-        console_log(16, 16, "[net_server] SEND denied by ACL: vnic=");
+        log_drain_write(16, 16, "[net_server] SEND denied by ACL: vnic=");
         log_dec(vnic_id);
-        console_log(16, 16, " pd=");
+        log_drain_write(16, 16, " pd=");
         log_dec(v->owner_pd);
-        console_log(16, 16, "\n");
+        log_drain_write(16, 16, "\n");
         microkit_mr_set(0, NET_ERR_PERM);
         microkit_mr_set(1, 0);
         return microkit_msginfo_new(0, 2);
@@ -396,7 +393,7 @@ static microkit_msginfo handle_vnic_send(void) {
                 dst_ring->rx_drops++;
             } else {
                 /*
-                 * SMOLTCP_INTEGRATION_POINT: instead of direct shmem copy,
+                 * lwIP_INTEGRATION_NOTE: instead of direct shmem copy,
                  * inject the packet into the smoltcp loopback interface so
                  * that TCP/UDP demuxing can occur correctly.
                  *
@@ -408,11 +405,11 @@ static microkit_msginfo handle_vnic_send(void) {
                  */
                 dst->rx_packets++;
                 delivered = true;
-                console_log(16, 16, "[net_server] loopback routed: src_vnic=");
+                log_drain_write(16, 16, "[net_server] loopback routed: src_vnic=");
                 log_dec(vnic_id);
-                console_log(16, 16, " dst_vnic=");
+                log_drain_write(16, 16, " dst_vnic=");
                 log_dec(dst->vnic_id);
-                console_log(16, 16, "\n");
+                log_drain_write(16, 16, "\n");
             }
         }
     } else {
@@ -431,11 +428,11 @@ static microkit_msginfo handle_vnic_send(void) {
             }
         } else {
             /* No hardware — drop with a log */
-            console_log(16, 16, "[net_server] TX dropped (no hw): vnic=");
+            log_drain_write(16, 16, "[net_server] TX dropped (no hw): vnic=");
             log_dec(vnic_id);
-            console_log(16, 16, " len=");
+            log_drain_write(16, 16, " len=");
             log_dec(pkt_len);
-            console_log(16, 16, "\n");
+            log_drain_write(16, 16, "\n");
         }
     }
 
@@ -503,13 +500,13 @@ static microkit_msginfo handle_net_bind(void) {
 
     v->bound_ports[v->port_count++] = port;
 
-    console_log(16, 16, "[net_server] BIND vnic=");
+    log_drain_write(16, 16, "[net_server] BIND vnic=");
     log_dec(vnic_id);
-    console_log(16, 16, " port=");
+    log_drain_write(16, 16, " port=");
     log_dec(port);
-    console_log(16, 16, " proto=");
+    log_drain_write(16, 16, " proto=");
     log_dec(protocol);
-    console_log(16, 16, "\n");
+    log_drain_write(16, 16, "\n");
 
     microkit_mr_set(0, NET_OK);
     return microkit_msginfo_new(0, 1);
@@ -529,15 +526,15 @@ static microkit_msginfo handle_net_connect(void) {
         return microkit_msginfo_new(0, 2);
     }
 
-    console_log(16, 16, "[net_server] CONNECT: vnic=");
+    log_drain_write(16, 16, "[net_server] CONNECT: vnic=");
     log_dec(vnic_id);
-    console_log(16, 16, " dst_ip=");
+    log_drain_write(16, 16, " dst_ip=");
     log_hex(dest_ip);
-    console_log(16, 16, " dst_port=");
+    log_drain_write(16, 16, " dst_port=");
     log_dec(dest_port);
-    console_log(16, 16, " proto=");
+    log_drain_write(16, 16, " proto=");
     log_dec(protocol);
-    console_log(16, 16, "\n");
+    log_drain_write(16, 16, "\n");
 
     /* Open a lwIP TCP connection for this vNIC slot (TCP only in Phase 1) */
     int err = lwip_net_connect((uint8_t)(vnic_id & 0xFFu),
@@ -594,13 +591,13 @@ static microkit_msginfo handle_net_set_acl(void) {
     uint32_t old_flags = v->acl_flags;
     v->acl_flags = acl_flags;
 
-    console_log(16, 16, "[net_server] SET_ACL vnic=");
+    log_drain_write(16, 16, "[net_server] SET_ACL vnic=");
     log_dec(vnic_id);
-    console_log(16, 16, " old_flags=");
+    log_drain_write(16, 16, " old_flags=");
     log_hex(old_flags);
-    console_log(16, 16, " new_flags=");
+    log_drain_write(16, 16, " new_flags=");
     log_hex(acl_flags);
-    console_log(16, 16, "\n");
+    log_drain_write(16, 16, "\n");
 
     microkit_mr_set(0, NET_OK);
     return microkit_msginfo_new(0, 1);
@@ -650,7 +647,7 @@ static microkit_msginfo handle_net_http_post(void)
     uint32_t body_len    = (uint32_t)microkit_mr_get(4);
 
     if (!vibe_staging_vaddr) {
-        console_log(16, 16, "[net_server] HTTP_POST: staging not mapped\n");
+        log_drain_write(16, 16, "[net_server] HTTP_POST: staging not mapped\n");
         microkit_mr_set(0, 0u);
         microkit_mr_set(1, 0u);
         microkit_mr_set(2, 0u);
@@ -705,9 +702,9 @@ static microkit_msginfo handle_net_http_post(void)
     /* Connect to bridge at 10.0.2.2:8790 */
     int err = lwip_net_connect(HTTP_CONN_ID, BRIDGE_IP_BE, BRIDGE_PORT);
     if (err != 0) {
-        console_log(16, 16, "[net_server] HTTP_POST: connect error=");
+        log_drain_write(16, 16, "[net_server] HTTP_POST: connect error=");
         log_dec((uint32_t)(uint32_t)(-err));
-        console_log(16, 16, "\n");
+        log_drain_write(16, 16, "\n");
         microkit_mr_set(0, 0u);
         microkit_mr_set(1, 0u);
         microkit_mr_set(2, 0u);
@@ -724,7 +721,7 @@ static microkit_msginfo handle_net_http_post(void)
     }
 
     if (g_conns[HTTP_CONN_ID].state != 2u) {
-        console_log(16, 16, "[net_server] HTTP_POST: connect timeout\n");
+        log_drain_write(16, 16, "[net_server] HTTP_POST: connect timeout\n");
         microkit_mr_set(0, 0u);
         microkit_mr_set(1, 0u);
         microkit_mr_set(2, 0u);
@@ -733,7 +730,7 @@ static microkit_msginfo handle_net_http_post(void)
 
     /* Send request header */
     if (lwip_net_send(HTTP_CONN_ID, http_hdr, hlen) < 0) {
-        console_log(16, 16, "[net_server] HTTP_POST: header send failed\n");
+        log_drain_write(16, 16, "[net_server] HTTP_POST: header send failed\n");
         microkit_mr_set(0, 0u);
         microkit_mr_set(1, 0u);
         microkit_mr_set(2, 0u);
@@ -744,7 +741,7 @@ static microkit_msginfo handle_net_http_post(void)
     if (body_len > 0u) {
         uint16_t blen16 = (body_len > 65535u) ? 65535u : (uint16_t)body_len;
         if (lwip_net_send(HTTP_CONN_ID, (const uint8_t *)body, blen16) < 0) {
-            console_log(16, 16, "[net_server] HTTP_POST: body send failed\n");
+            log_drain_write(16, 16, "[net_server] HTTP_POST: body send failed\n");
             microkit_mr_set(0, 0u);
             microkit_mr_set(1, 0u);
             microkit_mr_set(2, 0u);
@@ -763,7 +760,7 @@ static microkit_msginfo handle_net_http_post(void)
 
     uint32_t rx_len = g_conns[HTTP_CONN_ID].rx_buf_len;
     if (rx_len == 0u) {
-        console_log(16, 16, "[net_server] HTTP_POST: no response received\n");
+        log_drain_write(16, 16, "[net_server] HTTP_POST: no response received\n");
         microkit_mr_set(0, 0u);
         microkit_mr_set(1, 0u);
         microkit_mr_set(2, 0u);
@@ -804,11 +801,11 @@ static microkit_msginfo handle_net_http_post(void)
         for (uint32_t i = 0u; i < resp_body_len; i++) dst[i] = src[i];
     }
 
-    console_log(16, 16, "[net_server] HTTP_POST: status=");
+    log_drain_write(16, 16, "[net_server] HTTP_POST: status=");
     log_dec(http_status);
-    console_log(16, 16, " body_len=");
+    log_drain_write(16, 16, " body_len=");
     log_dec(resp_body_len);
-    console_log(16, 16, "\n");
+    log_drain_write(16, 16, "\n");
 
     microkit_mr_set(0, http_status);
     microkit_mr_set(1, body_offset);   /* response body written at same staging offset */
@@ -833,7 +830,7 @@ static microkit_msginfo handle_net_health(void) {
  */
 void init(void) {
     agentos_log_boot("net_server");
-    console_log(16, 16, "[net_server] Initialising NetServer PD (priority 160, passive)\n");
+    log_drain_write(16, 16, "[net_server] Initialising NetServer PD (priority 160, passive)\n");
 
     /* Clear vNIC table */
     for (int i = 0; i < (int)NET_MAX_VNICS; i++) {
@@ -860,13 +857,13 @@ void init(void) {
     /* Probe virtio-net hardware */
     probe_virtio_net();
 
-    console_log(16, 16, "[net_server] READY — max_vnics=");
+    log_drain_write(16, 16, "[net_server] READY — max_vnics=");
     log_dec(NET_MAX_VNICS);
-    console_log(16, 16, " shmem_slots=");
+    log_drain_write(16, 16, " shmem_slots=");
     log_dec(NET_MAX_VNICS);
-    console_log(16, 16, " hw=");
-    console_log(16, 16, net_hw_present ? "1" : "0");
-    console_log(16, 16, "\n");
+    log_drain_write(16, 16, " hw=");
+    log_drain_write(16, 16, net_hw_present ? "1" : "0");
+    log_drain_write(16, 16, "\n");
 }
 
 /*
@@ -876,7 +873,7 @@ void init(void) {
  * This handler is reserved for future use:
  *   - A virtio-net RX interrupt would arrive here when the device places
  *     packets onto the used ring.
- *   - SMOLTCP_INTEGRATION_POINT: call smoltcp_iface_poll() and dispatch
+ *   - lwIP_INTEGRATION_NOTE: call smoltcp_iface_poll() and dispatch
  *     any received packets to the appropriate vNIC's RX ring.
  */
 void notified(microkit_channel ch) {
@@ -892,9 +889,9 @@ void notified(microkit_channel ch) {
         sys_check_timeouts();
         break;
     default:
-        console_log(16, 16, "[net_server] unexpected notify ch=");
+        log_drain_write(16, 16, "[net_server] unexpected notify ch=");
         log_dec((uint32_t)ch);
-        console_log(16, 16, "\n");
+        log_drain_write(16, 16, "\n");
         break;
     }
 }
@@ -938,11 +935,11 @@ microkit_msginfo protected(microkit_channel ch, microkit_msginfo msginfo) {
         return microkit_msginfo_new(0, 1);
     }
     default:
-        console_log(16, 16, "[net_server] unknown op=");
+        log_drain_write(16, 16, "[net_server] unknown op=");
         log_hex((uint32_t)(op & 0xFFFFFFFFu));
-        console_log(16, 16, " ch=");
+        log_drain_write(16, 16, " ch=");
         log_dec((uint32_t)ch);
-        console_log(16, 16, "\n");
+        log_drain_write(16, 16, "\n");
         microkit_mr_set(0, NET_ERR_INVAL);
         return microkit_msginfo_new(0, 1);
     }

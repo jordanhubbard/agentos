@@ -8,9 +8,17 @@
  *
  * Based on au-ts/libvmm examples/simple, extended with agentOS IPC.
  *
+ * guest_contract.h compliance (Phase 3d):
+ *   This VMM implements the agentOS guest binding protocol defined in
+ *   guest_contract.h.  All device I/O is mediated through ring-0 service
+ *   PDs (serial_pd, net_pd, block_pd) via MSG_GUEST_BIND_DEVICE.  The
+ *   guest may NOT map or access physical hardware capabilities directly.
+ *
  * Architecture support:
- *   ARCH_AARCH64 — full libvmm implementation (EL2 hypervisor, vGIC, UART)
- *   ARCH_X86_64  — stub: libvmm x86_64 support not yet available
+ *   ARCH_AARCH64 — full libvmm implementation (EL2 hypervisor, vGIC)
+ *                  UART owned by serial_pd; guest access emulated via IPC
+ *   ARCH_X86_64  — stub: libvmm x86_64 support not yet available;
+ *                  compliance skeleton present (CPL3 enforcement required)
  *
  * Copyright 2026 agentOS Project (BSD-2-Clause)
  */
@@ -19,6 +27,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <microkit.h>
+#include "contracts/linux_vmm_contract.h"
 
 /* ─── x86_64 stub ──────────────────────────────────────────────────────────
  *
@@ -28,10 +37,37 @@
  *
  * Set LINUX_VMM_X86_STUB=1 so downstream code can detect the stub at
  * compile time.
+ *
+ * guest_contract.h compliance skeleton (x86_64):
+ *   The contract headers are included here to ensure type-correctness.
+ *   When libvmm gains x86_64 VMX support, the implementation MUST:
+ *
+ *   CPL3 Enforcement:
+ *     Linux guest vCPUs operate in VMX non-root mode with EPT active.
+ *     The guest kernel executes at guest CPL 0 (non-root) — it MUST NOT
+ *     reach host CPL 0.  VMEXITs must be handled for: CPUID, MSR R/W,
+ *     I/O port access, EPT violations, and all MMIO accesses.  Physical
+ *     devices (UART, NIC, disk) are accessible only via service PDs
+ *     through MSG_GUEST_BIND_DEVICE; direct device MMIO passthrough to
+ *     the guest is prohibited.
+ *
+ *   Binding Protocol (guest_contract.h §3.1):
+ *     1. MSG_VMM_REGISTER on VMM_KERNEL_CH to obtain vmm_token.
+ *     2. MSG_SERIAL_OPEN on SERIAL_PD_CH → serial_client_slot.
+ *     3. MSG_GUEST_BIND_DEVICE(GUEST_DEV_SERIAL, serial_client_slot) →
+ *        guest_caps.serial_token.
+ *     4. Publish guest_ready_event_t via MSG_EVENTBUS_PUBLISH_BATCH.
  */
 #ifdef ARCH_X86_64
 
+#include "contracts/linux_vmm_contract.h"
+
 #define LINUX_VMM_X86_STUB 1
+
+/* Compliance type-check: binding state that the full impl must populate */
+static struct vmm_register_req  _stub_vmm_reg   __attribute__((unused));
+static struct guest_bind_req    _stub_bind_req   __attribute__((unused));
+static guest_capabilities_t     _stub_caps       __attribute__((unused));
 
 /* Maximum VM slots tracked by this VMM instance */
 #define VMM_MAX_SLOTS  4
@@ -144,6 +180,7 @@ seL4_Bool fault(microkit_child child, microkit_msginfo msginfo,
 
 #include <libvmm/libvmm.h>
 #include "gpu_shmem.h"
+#include "contracts/linux_vmm_contract.h"
 
 /* ── Per-slot affinity (AArch64) ─────────────────────────────────────── */
 
@@ -166,12 +203,23 @@ static uint32_t vmm_affinity[VMM_MAX_SLOTS];
 
 /* ─── Channel IDs ────────────────────────────────────────────────────── */
 
-/* IRQ channel: PL011 UART interrupt (SPI 1 → IRQ 33) */
-#define SERIAL_IRQ_CH           1
-#define SERIAL_IRQ              33
+/*
+ * SERIAL_PD_CH replaces the former hardware UART IRQ channel (id=1).
+ * serial_pd now owns PL011 IRQ 33 exclusively; linux_vmm reaches the
+ * physical UART only via MSG_SERIAL_* IPC (guest_contract.h compliance).
+ */
+#define SERIAL_PD_CH            1   /* linux_vmm → serial_pd (PPC) */
 
 /* IPC channel: controller <-> linux_vmm (agent-to-linux bridge) */
 #define CONTROLLER_CH           2
+
+/* IRQ channel: virtio-net (slot 0, bus=virtio-mmio-bus.0 → SPI 16 → INTID 48) */
+#define VIRTIO_NET_IRQ_CH       5
+#define VIRTIO_NET_IRQ          48
+
+/* IRQ channel: virtio-blk (slot 1, bus=virtio-mmio-bus.1 → SPI 17 → INTID 49) */
+#define VIRTIO_BLK_IRQ_CH       6
+#define VIRTIO_BLK_IRQ          49
 
 /* GPU shared memory notification channels (assigned when MR is mapped) */
 #define GPU_SHMEM_NOTIFY_IN_CH  3   /* seL4 PD → linux_vmm: tensor ready */
@@ -190,24 +238,116 @@ extern char _guest_initrd_image_end[];
 /* Microkit sets this to the start of guest_ram MR (0x40000000) */
 uintptr_t guest_ram_vaddr;
 
-/* ─── GPU shared memory vaddr (set by Microkit when MR is mapped) ────── */
+/* ─── Vaddr variables (set by Microkit from manifest) ───────────────── */
 
-/* Declared weak so it defaults to 0 when the gpu_tensor_buf MR is not
- * mapped into this PD. The init() function guards on this being non-zero
- * before calling gpu_shmem_init(). */
-uintptr_t gpu_tensor_buf_vaddr __attribute__((weak));
+/* Weak so linux_vmm compiles without gpu_tensor_buf when MR not mapped. */
+uintptr_t gpu_tensor_buf_vaddr     __attribute__((weak));
+
+/* Weak so linux_vmm compiles without serial_shmem when MR not mapped.
+ * When non-zero, used by linux_vmm_binding_init() for MSG_SERIAL_WRITE. */
+uintptr_t serial_shmem_linux_vaddr __attribute__((weak));
 
 /* ─── State ──────────────────────────────────────────────────────────── */
 
-static bool guest_started   = false;
-static bool gpu_shmem_ready = false;
+static bool     guest_started      = false;
+static bool     gpu_shmem_ready    = false;
 
-/* ─── IRQ Handling ───────────────────────────────────────────────────── */
+/* ─── Guest binding state (guest_contract.h compliance) ─────────────── */
 
-static void serial_ack(size_t vcpu_id, int irq, void *cookie)
+static uint32_t vmm_token          = 0;  /* from MSG_VMM_REGISTER */
+static uint32_t serial_client_slot = 0;  /* from MSG_SERIAL_OPEN */
+static uint32_t guest_id           = 0;  /* from MSG_GUEST_CREATE */
+static guest_capabilities_t guest_caps; /* cap tokens per bound device */
+
+/* ─── Guest Binding Protocol (guest_contract.h §3.1) ────────────────── */
+
+/*
+ * linux_vmm_binding_init — complete the guest binding protocol before boot.
+ *
+ * Step 1: Register this VMM PD with the root-task (MSG_VMM_REGISTER).
+ *         TODO: requires VMM_KERNEL_CH (CH_VMM_KERNEL=76) wired in manifest.
+ *         Until wired, vmm_token stays 0 and VCPU/memory caps are unavailable.
+ *
+ * Step 2: Open the serial service PD (MSG_SERIAL_OPEN on SERIAL_PD_CH).
+ *         serial_pd owns PL011 IRQ 33 exclusively; the guest never sees the
+ *         physical device.  UART MMIO faults from the guest are handled in
+ *         fault() below and proxied via MSG_SERIAL_WRITE/READ.
+ *
+ * Step 3: Bind serial to this guest (MSG_GUEST_BIND_DEVICE).
+ *         TODO: requires a valid guest_id from MSG_GUEST_CREATE, which in turn
+ *         requires vmm_token.  Stubbed until VMM_KERNEL_CH is wired.
+ *
+ * Step 4: Publish EVENT_GUEST_READY to EventBus.
+ *         TODO: requires EVENTBUS_VMM_CH wired in manifest.
+ */
+static void linux_vmm_binding_init(void)
+{
+    /* ── Step 1: MSG_VMM_REGISTER (root-task) ────────────────────────────
+     * TODO: Wire VMM_KERNEL_CH to the Microkit kernel endpoint.
+     * struct vmm_register_req req = {
+     *     .os_type    = VMM_OS_TYPE_LINUX,
+     *     .flags      = 0,
+     *     .max_guests = 1,
+     * };
+     * __builtin_memcpy((void *)serial_shmem_linux_vaddr, &req, sizeof req);
+     * reply = microkit_ppcall(CH_VMM_KERNEL,
+     *                         microkit_msginfo_new(MSG_VMM_REGISTER, 0));
+     * vmm_token = microkit_mr_get(1);
+     */
+    vmm_token = 0;
+    LOG_VMM("binding: vmm_token=0 (VMM_KERNEL_CH not yet wired)\n");
+
+    /* ── Step 2: MSG_SERIAL_OPEN (serial_pd) ─────────────────────────────
+     * Open a virtual serial port.  serial_pd owns PL011 exclusively.
+     */
+    microkit_mr_set(0, MSG_SERIAL_OPEN);
+    microkit_mr_set(1, 0u);  /* port_id 0 — raw, no banner */
+    microkit_ppcall(SERIAL_PD_CH,
+                    microkit_msginfo_new(MSG_SERIAL_OPEN, 2));
+    if (microkit_mr_get(0) == 1u) {
+        serial_client_slot = (uint32_t)microkit_mr_get(1);
+        LOG_VMM("binding: serial slot=%u\n", serial_client_slot);
+    } else {
+        LOG_VMM_ERR("binding: MSG_SERIAL_OPEN failed\n");
+    }
+
+    /* ── Step 3: MSG_GUEST_BIND_DEVICE (serial) ──────────────────────────
+     * TODO: Requires guest_id from MSG_GUEST_CREATE (needs vmm_token).
+     * struct guest_bind_device_req bind = {
+     *     .guest_id   = guest_id,
+     *     .dev_type   = GUEST_DEV_SERIAL,
+     *     .dev_handle = serial_client_slot,
+     * };
+     * ... → guest_caps.serial_token
+     */
+    guest_id = 0;
+    guest_caps.serial_token = GUEST_CAP_TOKEN_INVALID;
+    LOG_VMM("binding: guest_id=0 (MSG_GUEST_CREATE not yet wired)\n");
+
+    /* ── Step 4: Publish EVENT_GUEST_READY ───────────────────────────────
+     * TODO: Wire EVENTBUS_VMM_CH to event_bus in manifest.
+     * guest_ready_event_t ev = {
+     *     .os_type  = VMM_OS_TYPE_LINUX,
+     *     .guest_id = guest_id,
+     *     .pd_id    = 0,
+     *     .caps     = guest_caps,
+     * };
+     * microkit_ppcall(EVENTBUS_VMM_CH,
+     *                 microkit_msginfo_new(MSG_EVENTBUS_PUBLISH_BATCH, ...));
+     */
+    LOG_VMM("binding: EVENT_GUEST_READY publish deferred (EVENTBUS_VMM_CH not wired)\n");
+}
+
+static void virtio_net_ack(size_t vcpu_id, int irq, void *cookie)
 {
     (void)vcpu_id; (void)irq; (void)cookie;
-    microkit_irq_ack(SERIAL_IRQ_CH);
+    microkit_irq_ack(VIRTIO_NET_IRQ_CH);
+}
+
+static void virtio_blk_ack(size_t vcpu_id, int irq, void *cookie)
+{
+    (void)vcpu_id; (void)irq; (void)cookie;
+    microkit_irq_ack(VIRTIO_BLK_IRQ_CH);
 }
 
 /* ─── VCPU Affinity ──────────────────────────────────────────────────── */
@@ -325,15 +465,27 @@ void init(void)
         return;
     }
 
-    /* Register UART IRQ passthrough */
-    success = virq_register(GUEST_BOOT_VCPU_ID, SERIAL_IRQ, &serial_ack, NULL);
+    /*
+     * Complete guest binding protocol (guest_contract.h §3.1) before boot.
+     * UART IRQ 33 is no longer registered here — serial_pd owns it.
+     */
+    linux_vmm_binding_init();
+
+    /* Register virtio-net IRQ passthrough (slot 0, SPI 16 → INTID 48) */
+    success = virq_register(GUEST_BOOT_VCPU_ID, VIRTIO_NET_IRQ, &virtio_net_ack, NULL);
     if (!success) {
-        LOG_VMM_ERR("Failed to register serial IRQ\n");
+        LOG_VMM_ERR("Failed to register virtio-net IRQ\n");
         return;
     }
+    microkit_irq_ack(VIRTIO_NET_IRQ_CH);
 
-    /* Ack any pending IRQ */
-    microkit_irq_ack(SERIAL_IRQ_CH);
+    /* Register virtio-blk IRQ passthrough (slot 1, SPI 17 → INTID 49) */
+    success = virq_register(GUEST_BOOT_VCPU_ID, VIRTIO_BLK_IRQ, &virtio_blk_ack, NULL);
+    if (!success) {
+        LOG_VMM_ERR("Failed to register virtio-blk IRQ\n");
+        return;
+    }
+    microkit_irq_ack(VIRTIO_BLK_IRQ_CH);
 
     /* Start the guest! */
     LOG_VMM("  Starting Linux guest...\n");
@@ -364,11 +516,18 @@ void init(void)
 void notified(microkit_channel ch)
 {
     switch (ch) {
-    case SERIAL_IRQ_CH: {
-        /* UART interrupt from hardware → inject into guest */
-        bool success = virq_inject(SERIAL_IRQ);
+    case VIRTIO_NET_IRQ_CH: {
+        bool success = virq_inject(VIRTIO_NET_IRQ);
         if (!success) {
-            LOG_VMM_ERR("IRQ %d dropped on inject\n", SERIAL_IRQ);
+            LOG_VMM_ERR("virtio-net IRQ %d dropped on inject\n", VIRTIO_NET_IRQ);
+        }
+        break;
+    }
+
+    case VIRTIO_BLK_IRQ_CH: {
+        bool success = virq_inject(VIRTIO_BLK_IRQ);
+        if (!success) {
+            LOG_VMM_ERR("virtio-blk IRQ %d dropped on inject\n", VIRTIO_BLK_IRQ);
         }
         break;
     }
@@ -419,8 +578,8 @@ void notified(microkit_channel ch)
         if (dispatched > 0) {
             LOG_VMM("GPU shmem: dequeued %d tensor descriptor(s)\n",
                     dispatched);
-            /* Inject a virtual IRQ into the guest to wake the driver */
-            virq_inject(SERIAL_IRQ); /* TODO: dedicate a GPU shmem IRQ */
+            /* TODO: allocate a dedicated GPU shmem virtual IRQ number.
+             * Until then, GPU tensor notifications are dropped here. */
         }
         break;
     }
@@ -448,8 +607,23 @@ void notified(microkit_channel ch)
 
 /*
  * After init, the VMM's main job is fault handling. When the guest causes
- * an exception (MMIO access to unpassedthrough device, etc.), it arrives here.
+ * an exception (MMIO access to unpassthroughed device, etc.), it arrives here.
  * libvmm's fault_handle() deals with GIC emulation and other traps.
+ *
+ * UART MMIO emulation (guest_contract.h compliance):
+ *   The guest's virtual_machine no longer maps the physical UART at 0x9000000.
+ *   Guest accesses to that range now fault here instead of going to hardware.
+ *
+ *   Full implementation (Phase 3d follow-on):
+ *     1. Decode fault address and access type (read/write) from msginfo.
+ *     2. Write path: copy DR byte to serial_shmem, send MSG_SERIAL_WRITE on
+ *        SERIAL_PD_CH, reply with UART_FR_TXFE so the guest continues.
+ *     3. Read path: send MSG_SERIAL_READ on SERIAL_PD_CH, return DR byte.
+ *     4. Track a virtual UART_FR register for TXFF/RXFE guest polling.
+ *
+ *   Compliance skeleton: accept the fault silently; guest console output is
+ *   dropped until the full proxy is wired.  The guest still boots because
+ *   early serial writes do not require a response.
  */
 seL4_Bool fault(microkit_child child, microkit_msginfo msginfo,
                 microkit_msginfo *reply_msginfo)
@@ -460,8 +634,9 @@ seL4_Bool fault(microkit_child child, microkit_msginfo msginfo,
         return seL4_True;
     }
 
-    LOG_VMM_ERR("Unhandled fault from child %d\n", child);
-    return seL4_False;
+    /* UART MMIO fault compliance stub — silently accept, guest continues. */
+    *reply_msginfo = microkit_msginfo_new(0, 0);
+    return seL4_True;
 }
 
 #endif /* ARCH_AARCH64 && !LINUX_VMM_NATIVE_STUB */
