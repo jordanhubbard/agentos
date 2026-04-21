@@ -1,5 +1,0 @@
-[package]
-name = "crust"
-version = "0.1.0"
-edition = "2021"
-description = "crust — interpreted Rust for agents who don't have time for borrow checkers"
