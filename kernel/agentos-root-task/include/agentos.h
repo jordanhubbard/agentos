@@ -859,6 +859,11 @@ static inline void log_drain_write(uint32_t slot, uint32_t pd_id, const char *ms
 /* CH_VIBEOS_ENGINE: canonical alias for CH_VIBEENGINE; use in new code */
 #define CH_VIBEOS_ENGINE                CH_VIBEENGINE
 
+/* VibeOS lifecycle event IDs (published via MSG_EVENTBUS_PUBLISH_BATCH) */
+#define EVENT_VIBEOS_READY   0x50u  /* MR2=handle MR3=os_type MR4=vm_slot */
+#define EVENT_VIBEOS_DEAD    0x51u  /* MR2=handle MR3=reason */
+#define EVENT_GUEST_READY    0x52u  /* MR2=guest_id MR3=os_type (from VMM PDs) */
+
 /* ─── Framebuffer device PD opcodes (0x2500) ────────────────────────────── */
 #define MSG_FB_CREATE                   0x2501  /* fb_create_req in shmem → MR0=ok MR1=handle */
 #define MSG_FB_WRITE                    0x2502  /* MR1=handle; fb_write_req in shmem → MR0=ok */

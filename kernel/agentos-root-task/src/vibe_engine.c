@@ -127,289 +127,6 @@ static uint64_t       total_proposals = 0;
 static uint64_t       total_swaps = 0;
 static uint64_t       total_rejections = 0;
 
-/* ── VibeOS lifecycle context ───────────────────────────────────────── */
-
-#define MAX_VIBEOS_INSTANCES  4
-#define VIBEOS_DEV_COUNT      5   /* serial, net, block, usb, fb */
-
-typedef struct {
-    uint32_t handle;              /* 0 = slot free */
-    uint32_t os_type;             /* VIBEOS_TYPE_* */
-    uint32_t arch;                /* VIBEOS_ARCH_* */
-    uint32_t state;               /* VIBEOS_STATE_* */
-    uint32_t ram_mb;
-    uint32_t cpu_budget_us;
-    uint32_t cpu_period_us;
-    uint32_t device_flags;        /* VIBEOS_DEV_* bitmask — bits set when bound */
-    uint32_t dev_handles[VIBEOS_DEV_COUNT];   /* PD handle per dev bit-position */
-    uint32_t dev_channels[VIBEOS_DEV_COUNT];  /* channel_id per dev bit-position */
-    uint32_t uptime_ticks;
-    uint32_t swap_id;             /* last vibe_swap slot id from LOAD_MODULE (0=none) */
-    uint8_t  module_hash[32];     /* SHA-256 of loaded module; zeros if none */
-} vibeos_ctx_t;
-
-static vibeos_ctx_t g_vibeos[MAX_VIBEOS_INSTANCES];
-static uint32_t     g_next_vibeos_handle = 1;  /* 0 reserved/invalid */
-
-static vibeos_ctx_t *vibeos_find(uint32_t handle)
-{
-    for (int i = 0; i < MAX_VIBEOS_INSTANCES; i++) {
-        if (g_vibeos[i].handle == handle)
-            return &g_vibeos[i];
-    }
-    return (vibeos_ctx_t *)0;
-}
-
-static vibeos_ctx_t *vibeos_alloc(void)
-{
-    for (int i = 0; i < MAX_VIBEOS_INSTANCES; i++) {
-        if (g_vibeos[i].handle == 0)
-            return &g_vibeos[i];
-    }
-    return (vibeos_ctx_t *)0;
-}
-
-/* Map dev_type (bit-position 0..4) to func_class (1..5) */
-static uint32_t dev_type_to_func_class(uint32_t dev_type)
-{
-    return dev_type + 1;
-}
-
-/* ── Snapshot store ─────────────────────────────────────────────────── */
-
-/*
- * Versioned snapshot format.  Version field allows future fields to be appended
- * without breaking existing snapshots: a reader checks version before accessing
- * fields beyond the v1 base set.  The _reserved array is zeroed on write and
- * ignored on read when version == VIBEOS_SNAP_VERSION, leaving room for v2+.
- */
-#define VIBEOS_SNAP_MAGIC    0x534E4150u  /* "SNAP" */
-#define VIBEOS_SNAP_VERSION  1u
-
-typedef struct __attribute__((packed)) {
-    uint32_t magic;
-    uint32_t version;
-    uint32_t os_type;
-    uint32_t arch;
-    uint32_t ram_mb;
-    uint32_t cpu_budget_us;
-    uint32_t cpu_period_us;
-    uint32_t device_flags;
-    uint32_t dev_handles[VIBEOS_DEV_COUNT];   /* 5 entries */
-    uint32_t dev_channels[VIBEOS_DEV_COUNT];  /* 5 entries */
-    uint32_t state;
-    uint32_t uptime_ticks;
-    uint32_t swap_id;
-    uint8_t  module_hash[32];
-    uint8_t  _reserved[12];  /* pad to 128 bytes; available for v2+ fields */
-} vibeos_snapshot_t;
-
-#define MAX_SNAPSHOTS  4
-
-typedef struct {
-    bool              valid;
-    uint32_t          inode;   /* synthetic AgentFS inode */
-    vibeos_snapshot_t data;
-} snap_entry_t;
-
-static snap_entry_t g_snaps[MAX_SNAPSHOTS];
-static uint32_t     g_next_inode = 1;  /* 0 reserved/invalid */
-
-static snap_entry_t *snap_alloc(void)
-{
-    for (int i = 0; i < MAX_SNAPSHOTS; i++) {
-        if (!g_snaps[i].valid) return &g_snaps[i];
-    }
-    return (snap_entry_t *)0;
-}
-
-static snap_entry_t *snap_find(uint32_t inode)
-{
-    for (int i = 0; i < MAX_SNAPSHOTS; i++) {
-        if (g_snaps[i].valid && g_snaps[i].inode == inode) return &g_snaps[i];
-    }
-    return (snap_entry_t *)0;
-}
-
-/* Serialize ctx into snap and write the blob to the staging region tail so the
- * controller can persist it to AgentFS on the next CH_CTRL notification. */
-static void snap_serialize(vibeos_snapshot_t *snap, const vibeos_ctx_t *ctx)
-{
-    snap->magic         = VIBEOS_SNAP_MAGIC;
-    snap->version       = VIBEOS_SNAP_VERSION;
-    snap->os_type       = ctx->os_type;
-    snap->arch          = ctx->arch;
-    snap->ram_mb        = ctx->ram_mb;
-    snap->cpu_budget_us = ctx->cpu_budget_us;
-    snap->cpu_period_us = ctx->cpu_period_us;
-    snap->device_flags  = ctx->device_flags;
-    for (int i = 0; i < VIBEOS_DEV_COUNT; i++) {
-        snap->dev_handles[i]  = ctx->dev_handles[i];
-        snap->dev_channels[i] = ctx->dev_channels[i];
-    }
-    snap->state        = ctx->state;
-    snap->uptime_ticks = ctx->uptime_ticks;
-    snap->swap_id      = ctx->swap_id;
-    for (int i = 0; i < 32; i++) snap->module_hash[i] = ctx->module_hash[i];
-    for (int i = 0; i < 12; i++) snap->_reserved[i]   = 0;
-
-    /* Copy blob to staging[0..sizeof-1] so the controller can write to AgentFS */
-    volatile uint8_t *dst = (volatile uint8_t *)vibe_staging_vaddr;
-    const uint8_t *src = (const uint8_t *)snap;
-    for (uint32_t i = 0; i < sizeof(vibeos_snapshot_t); i++) dst[i] = src[i];
-    agentos_wmb();
-}
-
-/* ── VibeOS IPC Handlers ────────────────────────────────────────────── */
-
-/*
- * MSG_VIBEOS_CREATE: Allocate a new VibeOS context
- *
- * Input:  MR0=opcode; vibeos_create_req in shmem (vibe_staging_vaddr)
- * Output: MR0=ok MR1=handle (0 on error)
- */
-static microkit_msginfo handle_vibeos_create(void)
-{
-    const struct vibeos_create_req *req =
-        (const struct vibeos_create_req *)vibe_staging_vaddr;
-
-    vibeos_ctx_t *ctx = vibeos_alloc();
-    if (!ctx) {
-        log_drain_write(7, 7, "[vibe_engine] VIBEOS_CREATE: no free slots\n");
-        microkit_mr_set(0, VIBEOS_ERR_NO_SLOTS);
-        microkit_mr_set(1, 0);
-        return microkit_msginfo_new(0, 2);
-    }
-
-    if (req->os_type != VIBEOS_TYPE_LINUX && req->os_type != VIBEOS_TYPE_FREEBSD) {
-        log_drain_write(7, 7, "[vibe_engine] VIBEOS_CREATE: bad os_type\n");
-        microkit_mr_set(0, VIBEOS_ERR_BAD_OS_TYPE);
-        microkit_mr_set(1, 0);
-        return microkit_msginfo_new(0, 2);
-    }
-
-    uint32_t h = g_next_vibeos_handle++;
-    if (g_next_vibeos_handle == 0)
-        g_next_vibeos_handle = 1;  /* skip reserved 0 on wrap */
-
-    ctx->handle        = h;
-    ctx->os_type       = req->os_type;
-    ctx->arch          = req->arch;
-    ctx->state         = VIBEOS_STATE_CREATING;
-    ctx->ram_mb        = req->ram_mb;
-    ctx->cpu_budget_us = req->cpu_budget_us;
-    ctx->cpu_period_us = req->cpu_period_us;
-    ctx->device_flags  = 0;
-    ctx->uptime_ticks  = 0;
-    ctx->swap_id       = 0;
-    for (int i = 0; i < 32; i++) ctx->module_hash[i] = 0;
-    for (int i = 0; i < VIBEOS_DEV_COUNT; i++) {
-        ctx->dev_handles[i]  = 0;
-        ctx->dev_channels[i] = 0;
-    }
-
-    log_drain_write(7, 7, "[vibe_engine] VIBEOS_CREATE: allocated handle\n");
-
-    microkit_mr_set(0, VIBEOS_OK);
-    microkit_mr_set(1, h);
-    return microkit_msginfo_new(0, 2);
-}
-
-/*
- * MSG_VIBEOS_BIND_DEVICE: Attach a ring-0 device PD to a VibeOS context.
- *
- * Non-reinvention enforcement: cap_policy is queried first.  If a PD already
- * serves this function class, its handle is returned and binding is forced to
- * use it — a second ring-0 service for the same class cannot be instantiated.
- *
- * Input:  MR0=opcode MR1=handle MR2=dev_type MR3=dev_handle
- * Output: MR0=ok MR1=effective_handle MR2=preexisting
- */
-static microkit_msginfo handle_vibeos_bind_device(void)
-{
-    uint32_t handle     = (uint32_t)microkit_mr_get(1);
-    uint32_t dev_type   = (uint32_t)microkit_mr_get(2);
-    uint32_t dev_handle = (uint32_t)microkit_mr_get(3);
-
-    vibeos_ctx_t *ctx = vibeos_find(handle);
-    if (!ctx) {
-        log_drain_write(7, 7, "[vibe_engine] VIBEOS_BIND_DEVICE: bad handle\n");
-        microkit_mr_set(0, VIBEOS_ERR_BAD_HANDLE);
-        microkit_mr_set(1, 0);
-        microkit_mr_set(2, 0);
-        return microkit_msginfo_new(0, 3);
-    }
-
-    if (dev_type >= VIBEOS_DEV_COUNT) {
-        log_drain_write(7, 7, "[vibe_engine] VIBEOS_BIND_DEVICE: bad dev_type\n");
-        microkit_mr_set(0, VIBEOS_ERR_DEVICE_UNAVAILABLE);
-        microkit_mr_set(1, 0);
-        microkit_mr_set(2, 0);
-        return microkit_msginfo_new(0, 3);
-    }
-
-    uint32_t func_class = dev_type_to_func_class(dev_type);
-    uint32_t existing_pd  = 0;
-    uint32_t existing_ch  = 0;
-    uint32_t preexisting  = 0;
-    uint32_t effective_h  = dev_handle;
-
-    /* Non-reinvention: check cap_policy for an existing ring-0 service */
-    if (cap_policy_find_ring0_service(func_class, &existing_pd, &existing_ch)) {
-        /* Existing service found — force reuse, reject the new handle */
-        log_drain_write(7, 7, "[vibe_engine] VIBEOS_BIND_DEVICE: reusing existing ring-0 service\n");
-        effective_h = existing_pd;
-        preexisting = 1;
-
-        /* Bind the existing service handle into this context */
-        ctx->dev_handles[dev_type]  = existing_pd;
-        ctx->dev_channels[dev_type] = existing_ch;
-        ctx->device_flags |= (1u << dev_type);
-    } else {
-        /* No existing service — register the new one and bind it */
-        cap_policy_register_ring0_service(func_class, dev_handle, 0);
-        ctx->dev_handles[dev_type]  = dev_handle;
-        ctx->dev_channels[dev_type] = 0;
-        ctx->device_flags |= (1u << dev_type);
-        preexisting = 0;
-    }
-
-    microkit_mr_set(0, VIBEOS_OK);
-    microkit_mr_set(1, effective_h);
-    microkit_mr_set(2, preexisting);
-    return microkit_msginfo_new(0, 3);
-}
-
-/*
- * MSG_VIBEOS_BOOT: Transition a VibeOS context from CREATING → BOOTING.
- *
- * Input:  MR0=opcode MR1=handle
- * Output: MR0=ok
- */
-static microkit_msginfo handle_vibeos_boot(void)
-{
-    uint32_t handle = (uint32_t)microkit_mr_get(1);
-
-    vibeos_ctx_t *ctx = vibeos_find(handle);
-    if (!ctx) {
-        log_drain_write(7, 7, "[vibe_engine] VIBEOS_BOOT: bad handle\n");
-        microkit_mr_set(0, VIBEOS_ERR_BAD_HANDLE);
-        return microkit_msginfo_new(0, 1);
-    }
-
-    if (ctx->state != VIBEOS_STATE_CREATING) {
-        log_drain_write(7, 7, "[vibe_engine] VIBEOS_BOOT: wrong state\n");
-        microkit_mr_set(0, VIBEOS_ERR_BAD_STATE);
-        return microkit_msginfo_new(0, 1);
-    }
-
-    ctx->state = VIBEOS_STATE_BOOTING;
-    log_drain_write(7, 7, "[vibe_engine] VIBEOS_BOOT: context → BOOTING\n");
-
-    microkit_mr_set(0, VIBEOS_OK);
-    return microkit_msginfo_new(0, 1);
-}
-
 /*
  * MSG_VIBEOS_LOAD_MODULE: Install a WASM or ELF component into a VibeOS
  * context via the vibe_swap.c hot-swap pipeline.
@@ -428,8 +145,8 @@ static microkit_msginfo handle_vibeos_load_module(void)
     uint32_t module_type = (uint32_t)microkit_mr_get(2);
     uint32_t module_size = (uint32_t)microkit_mr_get(3);
 
-    vibeos_ctx_t *ctx = vibeos_find(handle);
-    if (!ctx) {
+    int vslot = vos_find(handle);
+    if (vslot < 0) {
         log_drain_write(7, 7, "[vibe_engine] VIBEOS_LOAD_MODULE: bad handle\n");
         microkit_mr_set(0, VIBEOS_ERR_BAD_HANDLE);
         microkit_mr_set(1, 0);
@@ -460,12 +177,11 @@ static microkit_msginfo handle_vibeos_load_module(void)
      * This matches the format consumed by the controller in handle_execute().
      */
     uint32_t swap_id = next_proposal_id++;
-    ctx->swap_id = swap_id;
-    /* Capture the module hash from the load request struct in staging */
+    s_vos[vslot].swap_id = swap_id;
     {
         const struct vibeos_load_module_req *lmreq =
             (const struct vibeos_load_module_req *)vibe_staging_vaddr;
-        for (int i = 0; i < 32; i++) ctx->module_hash[i] = lmreq->module_hash[i];
+        for (int i = 0; i < 32; i++) s_vos[vslot].module_hash[i] = lmreq->module_hash[i];
     }
     volatile uint8_t *meta = (volatile uint8_t *)(vibe_staging_vaddr + STAGING_SIZE - 64);
 
@@ -522,395 +238,6 @@ static microkit_msginfo handle_vibeos_check_service_exists(void)
     microkit_mr_set(2, pd_handle);
     microkit_mr_set(3, channel_id);
     return microkit_msginfo_new(0, 4);
-}
-
-/*
- * MSG_VIBEOS_DESTROY: Free a VibeOS context and release its resources.
- *
- * Input:  MR0=opcode MR1=handle
- * Output: MR0=ok
- */
-static microkit_msginfo handle_vibeos_destroy(void)
-{
-    uint32_t handle = (uint32_t)microkit_mr_get(1);
-
-    vibeos_ctx_t *ctx = vibeos_find(handle);
-    if (!ctx) {
-        log_drain_write(7, 7, "[vibe_engine] VIBEOS_DESTROY: bad handle\n");
-        microkit_mr_set(0, VIBEOS_ERR_BAD_HANDLE);
-        return microkit_msginfo_new(0, 1);
-    }
-
-    ctx->state  = VIBEOS_STATE_DEAD;
-    ctx->handle = 0;  /* free the slot */
-    ctx->device_flags = 0;
-    for (int i = 0; i < VIBEOS_DEV_COUNT; i++) {
-        ctx->dev_handles[i]  = 0;
-        ctx->dev_channels[i] = 0;
-    }
-    ctx->swap_id = 0;
-
-    log_drain_write(7, 7, "[vibe_engine] VIBEOS_DESTROY: context freed\n");
-    microkit_mr_set(0, VIBEOS_OK);
-    return microkit_msginfo_new(0, 1);
-}
-
-/*
- * MSG_VIBEOS_STATUS: Query state of a VibeOS context.
- * Input:  MR0=opcode MR1=handle
- * Output: MR0=ok MR1=state MR2=os_type MR3=ram_mb MR4=uptime_ticks
- */
-static microkit_msginfo handle_vibeos_status(void)
-{
-    uint32_t handle = (uint32_t)microkit_mr_get(1);
-    vibeos_ctx_t *ctx = vibeos_find(handle);
-    if (!ctx) {
-        microkit_mr_set(0, VIBEOS_ERR_BAD_HANDLE);
-        return microkit_msginfo_new(0, 1);
-    }
-    microkit_mr_set(0, VIBEOS_OK);
-    microkit_mr_set(1, ctx->state);
-    microkit_mr_set(2, ctx->os_type);
-    microkit_mr_set(3, ctx->ram_mb);
-    microkit_mr_set(4, ctx->uptime_ticks);
-    return microkit_msginfo_new(0, 5);
-}
-
-/*
- * MSG_VIBEOS_LIST: Enumerate active VibeOS instances.
- * Input:  MR0=opcode
- * Output: MR0=ok MR1=count; vibeos_info_t[] written to staging region
- */
-static microkit_msginfo handle_vibeos_list(void)
-{
-    uint32_t count = 0;
-    vibeos_info_t *out = (vibeos_info_t *)vibe_staging_vaddr;
-    for (int i = 0; i < MAX_VIBEOS_INSTANCES; i++) {
-        if (g_vibeos[i].handle == 0) continue;
-        out[count].handle       = g_vibeos[i].handle;
-        out[count].os_type      = g_vibeos[i].os_type;
-        out[count].state        = g_vibeos[i].state;
-        out[count].ram_mb       = g_vibeos[i].ram_mb;
-        out[count].uptime_ticks = g_vibeos[i].uptime_ticks;
-        out[count].node_id      = 0;
-        count++;
-    }
-    microkit_mr_set(0, VIBEOS_OK);
-    microkit_mr_set(1, count);
-    return microkit_msginfo_new(0, 2);
-}
-
-/*
- * MSG_VIBEOS_UNBIND_DEVICE: Detach a device PD from a VibeOS context.
- * Input:  MR0=opcode MR1=handle MR2=dev_type
- * Output: MR0=ok
- */
-static microkit_msginfo handle_vibeos_unbind_device(void)
-{
-    uint32_t handle   = (uint32_t)microkit_mr_get(1);
-    uint32_t dev_type = (uint32_t)microkit_mr_get(2);
-
-    vibeos_ctx_t *ctx = vibeos_find(handle);
-    if (!ctx) {
-        microkit_mr_set(0, VIBEOS_ERR_BAD_HANDLE);
-        return microkit_msginfo_new(0, 1);
-    }
-    if (dev_type >= (uint32_t)VIBEOS_DEV_COUNT) {
-        microkit_mr_set(0, VIBEOS_ERR_DEVICE_UNAVAILABLE);
-        return microkit_msginfo_new(0, 1);
-    }
-    ctx->dev_handles[dev_type]  = 0;
-    ctx->dev_channels[dev_type] = 0;
-    ctx->device_flags &= ~(1u << dev_type);
-    microkit_mr_set(0, VIBEOS_OK);
-    return microkit_msginfo_new(0, 1);
-}
-
-/*
- * MSG_VIBEOS_SNAPSHOT: Capture OS context into a versioned snapshot blob.
- *
- * Suspend sequence mirrors seL4_TCB_Suspend on the guest vCPU TCB: the
- * context is momentarily frozen (state→PAUSED) while the blob is serialized,
- * then the prior state is restored so the OS keeps running.  The blob is
- * written to the staging region for the controller to persist via AgentFS;
- * the returned inode identifies the checkpoint in the snapshot store.
- *
- * Input:  MR0=opcode MR1=handle
- * Output: MR0=ok MR1=snap_lo MR2=snap_hi
- */
-static microkit_msginfo handle_vibeos_snapshot(void)
-{
-    uint32_t handle = (uint32_t)microkit_mr_get(1);
-
-    vibeos_ctx_t *ctx = vibeos_find(handle);
-    if (!ctx) {
-        log_drain_write(7, 7, "[vibe_engine] SNAPSHOT: bad handle\n");
-        microkit_mr_set(0, VIBEOS_ERR_BAD_HANDLE);
-        microkit_mr_set(1, 0);
-        microkit_mr_set(2, 0);
-        return microkit_msginfo_new(0, 3);
-    }
-
-    if (ctx->state == VIBEOS_STATE_DEAD    ||
-        ctx->state == VIBEOS_STATE_CREATING) {
-        log_drain_write(7, 7, "[vibe_engine] SNAPSHOT: bad state\n");
-        microkit_mr_set(0, VIBEOS_ERR_BAD_STATE);
-        microkit_mr_set(1, 0);
-        microkit_mr_set(2, 0);
-        return microkit_msginfo_new(0, 3);
-    }
-
-    snap_entry_t *entry = snap_alloc();
-    if (!entry) {
-        log_drain_write(7, 7, "[vibe_engine] SNAPSHOT: no free snapshot slots\n");
-        microkit_mr_set(0, VIBEOS_ERR_NO_SLOTS);
-        microkit_mr_set(1, 0);
-        microkit_mr_set(2, 0);
-        return microkit_msginfo_new(0, 3);
-    }
-
-    /* seL4_TCB_Suspend equivalent: freeze guest vCPU state before capture */
-    uint32_t prior_state = ctx->state;
-    ctx->state = VIBEOS_STATE_PAUSED;
-    log_drain_write(7, 7, "[vibe_engine] SNAPSHOT: seL4_TCB_Suspend → PAUSED\n");
-
-    snap_serialize(&entry->data, ctx);
-
-    uint32_t snap_inode = g_next_inode++;
-    if (g_next_inode == 0) g_next_inode = 1;
-    entry->valid = true;
-    entry->inode = snap_inode;
-
-    /*
-     * Signal the controller to persist the blob to AgentFS.  The staging
-     * region already holds the serialized snapshot (written by snap_serialize).
-     * The metadata tail carries the "SNAP" command tag and inode so the
-     * controller can associate the write with this snapshot.
-     */
-    volatile uint8_t *meta = (volatile uint8_t *)(vibe_staging_vaddr + STAGING_SIZE - 64);
-    /* "SNAP" tag at bytes 0-3 */
-    meta[0] = 0x53; meta[1] = 0x4E; meta[2] = 0x41; meta[3] = 0x50;
-    meta[4]  = snap_inode & 0xff;
-    meta[5]  = (snap_inode >>  8) & 0xff;
-    meta[6]  = (snap_inode >> 16) & 0xff;
-    meta[7]  = (snap_inode >> 24) & 0xff;
-    uint32_t sz = (uint32_t)sizeof(vibeos_snapshot_t);
-    meta[8]  = sz & 0xff;
-    meta[9]  = (sz >>  8) & 0xff;
-    meta[10] = (sz >> 16) & 0xff;
-    meta[11] = (sz >> 24) & 0xff;
-    agentos_wmb();
-    microkit_notify(CH_CTRL);
-
-    /* seL4_TCB_Resume equivalent: restore prior running state */
-    ctx->state = prior_state;
-    log_drain_write(7, 7, "[vibe_engine] SNAPSHOT: seL4_TCB_Resume → RUNNING\n");
-    log_drain_write(7, 7, "[vibe_engine] SNAPSHOT: complete\n");
-
-    microkit_mr_set(0, VIBEOS_OK);
-    microkit_mr_set(1, snap_inode);  /* snap_lo */
-    microkit_mr_set(2, 0);           /* snap_hi: reserved */
-    return microkit_msginfo_new(0, 3);
-}
-
-/*
- * MSG_VIBEOS_RESTORE: Reload a snapshot blob into an existing VibeOS context.
- *
- * Device handles from the snapshot are re-validated through cap_policy before
- * being reconnected.  If a handle is no longer registered (device was removed
- * or restarted), that device slot is left unbound and a log entry is emitted.
- * The context transitions to RUNNING on success.
- *
- * Input:  MR0=opcode MR1=handle MR2=snap_lo MR3=snap_hi
- * Output: MR0=ok
- */
-static microkit_msginfo handle_vibeos_restore(void)
-{
-    uint32_t handle  = (uint32_t)microkit_mr_get(1);
-    uint32_t snap_lo = (uint32_t)microkit_mr_get(2);
-    /* snap_hi (MR3) is reserved for 64-bit inode expansion; ignored for now */
-
-    vibeos_ctx_t *ctx = vibeos_find(handle);
-    if (!ctx) {
-        log_drain_write(7, 7, "[vibe_engine] RESTORE: bad handle\n");
-        microkit_mr_set(0, VIBEOS_ERR_BAD_HANDLE);
-        return microkit_msginfo_new(0, 1);
-    }
-
-    snap_entry_t *entry = snap_find(snap_lo);
-    if (!entry) {
-        log_drain_write(7, 7, "[vibe_engine] RESTORE: snapshot not found\n");
-        microkit_mr_set(0, VIBEOS_ERR_MIGRATE_FAIL);
-        return microkit_msginfo_new(0, 1);
-    }
-
-    const vibeos_snapshot_t *snap = &entry->data;
-
-    if (snap->magic != VIBEOS_SNAP_MAGIC || snap->version != VIBEOS_SNAP_VERSION) {
-        log_drain_write(7, 7, "[vibe_engine] RESTORE: invalid snapshot version\n");
-        microkit_mr_set(0, VIBEOS_ERR_MIGRATE_FAIL);
-        return microkit_msginfo_new(0, 1);
-    }
-
-    ctx->os_type       = snap->os_type;
-    ctx->arch          = snap->arch;
-    ctx->ram_mb        = snap->ram_mb;
-    ctx->cpu_budget_us = snap->cpu_budget_us;
-    ctx->cpu_period_us = snap->cpu_period_us;
-    ctx->uptime_ticks  = snap->uptime_ticks;
-    ctx->swap_id       = snap->swap_id;
-    for (int i = 0; i < 32; i++) ctx->module_hash[i] = snap->module_hash[i];
-    ctx->device_flags = 0;
-    for (int i = 0; i < VIBEOS_DEV_COUNT; i++) {
-        ctx->dev_handles[i]  = 0;
-        ctx->dev_channels[i] = 0;
-    }
-
-    /* Reconnect device handles — verify each via cap_policy */
-    for (int i = 0; i < VIBEOS_DEV_COUNT; i++) {
-        if (!(snap->device_flags & (1u << i))) continue;
-
-        uint32_t func_class = dev_type_to_func_class((uint32_t)i);
-        uint32_t live_pd = 0, live_ch = 0;
-
-        if (cap_policy_find_ring0_service(func_class, &live_pd, &live_ch)) {
-            ctx->dev_handles[i]  = live_pd;
-            ctx->dev_channels[i] = live_ch;
-            ctx->device_flags   |= (1u << i);
-        } else {
-            log_drain_write(7, 7, "[vibe_engine] RESTORE: device handle invalid, skipping\n");
-        }
-    }
-
-    ctx->state = VIBEOS_STATE_RUNNING;
-    log_drain_write(7, 7, "[vibe_engine] RESTORE: context restored\n");
-
-    microkit_mr_set(0, VIBEOS_OK);
-    return microkit_msginfo_new(0, 1);
-}
-
-/*
- * MSG_VIBEOS_MIGRATE: Live-migrate a VibeOS context to another slot/node.
- *
- * The sequence is: snapshot → destroy source → allocate destination →
- * restore into destination.  The source OS is suspended for the duration so
- * state is consistent throughout.  Device handles are re-validated via
- * cap_policy after restore, matching the RESTORE semantics.
- *
- * Input:  MR0=opcode MR1=handle MR2=target_node
- * Output: MR0=ok MR1=new_node
- */
-static microkit_msginfo handle_vibeos_migrate(void)
-{
-    uint32_t handle      = (uint32_t)microkit_mr_get(1);
-    uint32_t target_node = (uint32_t)microkit_mr_get(2);
-
-    vibeos_ctx_t *src = vibeos_find(handle);
-    if (!src) {
-        log_drain_write(7, 7, "[vibe_engine] MIGRATE: bad handle\n");
-        microkit_mr_set(0, VIBEOS_ERR_BAD_HANDLE);
-        microkit_mr_set(1, 0);
-        return microkit_msginfo_new(0, 2);
-    }
-
-    if (src->state != VIBEOS_STATE_RUNNING &&
-        src->state != VIBEOS_STATE_PAUSED) {
-        log_drain_write(7, 7, "[vibe_engine] MIGRATE: bad state\n");
-        microkit_mr_set(0, VIBEOS_ERR_BAD_STATE);
-        microkit_mr_set(1, 0);
-        return microkit_msginfo_new(0, 2);
-    }
-
-    snap_entry_t *entry = snap_alloc();
-    if (!entry) {
-        log_drain_write(7, 7, "[vibe_engine] MIGRATE: no free snapshot slots\n");
-        microkit_mr_set(0, VIBEOS_ERR_MIGRATE_FAIL);
-        microkit_mr_set(1, 0);
-        return microkit_msginfo_new(0, 2);
-    }
-
-    /* Suspend source: seL4_TCB_Suspend on the guest vCPU TCB */
-    src->state = VIBEOS_STATE_MIGRATING;
-    log_drain_write(7, 7, "[vibe_engine] MIGRATE: seL4_TCB_Suspend → MIGRATING\n");
-
-    /* Step 1: snapshot */
-    snap_serialize(&entry->data, src);
-    /* Overwrite snapshot state field: record as RUNNING so restore boots correctly */
-    entry->data.state = VIBEOS_STATE_RUNNING;
-
-    uint32_t snap_inode = g_next_inode++;
-    if (g_next_inode == 0) g_next_inode = 1;
-    entry->valid = true;
-    entry->inode = snap_inode;
-    log_drain_write(7, 7, "[vibe_engine] MIGRATE: snapshot captured\n");
-
-    /* Step 2: destroy source (preserve a local copy of config before zeroing) */
-    uint32_t os_type       = src->os_type;
-    uint32_t arch          = src->arch;
-    uint32_t ram_mb        = src->ram_mb;
-    uint32_t cpu_budget_us = src->cpu_budget_us;
-    uint32_t cpu_period_us = src->cpu_period_us;
-    src->handle = 0;  /* free the slot */
-    src->state  = VIBEOS_STATE_DEAD;
-    src = (vibeos_ctx_t *)0;
-    log_drain_write(7, 7, "[vibe_engine] MIGRATE: source destroyed\n");
-
-    /* Step 3: allocate destination slot */
-    vibeos_ctx_t *dst = vibeos_alloc();
-    if (!dst) {
-        log_drain_write(7, 7, "[vibe_engine] MIGRATE: no free destination slot\n");
-        microkit_mr_set(0, VIBEOS_ERR_MIGRATE_FAIL);
-        microkit_mr_set(1, 0);
-        return microkit_msginfo_new(0, 2);
-    }
-
-    uint32_t new_h = g_next_vibeos_handle++;
-    if (g_next_vibeos_handle == 0) g_next_vibeos_handle = 1;
-
-    dst->handle        = new_h;
-    dst->os_type       = os_type;
-    dst->arch          = arch;
-    dst->state         = VIBEOS_STATE_CREATING;
-    dst->ram_mb        = ram_mb;
-    dst->cpu_budget_us = cpu_budget_us;
-    dst->cpu_period_us = cpu_period_us;
-    dst->device_flags  = 0;
-    dst->uptime_ticks  = entry->data.uptime_ticks;
-    dst->swap_id       = entry->data.swap_id;
-    for (int i = 0; i < 32; i++) dst->module_hash[i] = entry->data.module_hash[i];
-    for (int i = 0; i < VIBEOS_DEV_COUNT; i++) {
-        dst->dev_handles[i]  = 0;
-        dst->dev_channels[i] = 0;
-    }
-
-    /* Step 4: restore — reconnect device handles via cap_policy */
-    const vibeos_snapshot_t *snap = &entry->data;
-    for (int i = 0; i < VIBEOS_DEV_COUNT; i++) {
-        if (!(snap->device_flags & (1u << i))) continue;
-
-        uint32_t func_class = dev_type_to_func_class((uint32_t)i);
-        uint32_t live_pd = 0, live_ch = 0;
-
-        if (cap_policy_find_ring0_service(func_class, &live_pd, &live_ch)) {
-            dst->dev_handles[i]  = live_pd;
-            dst->dev_channels[i] = live_ch;
-            dst->device_flags   |= (1u << i);
-        } else {
-            log_drain_write(7, 7, "[vibe_engine] MIGRATE: device handle invalid, skipping\n");
-        }
-    }
-
-    dst->state = VIBEOS_STATE_RUNNING;
-
-    /* Release snapshot slot — no longer needed after migrate */
-    entry->valid = false;
-    entry->inode = 0;
-
-    log_drain_write(7, 7, "[vibe_engine] MIGRATE: OS live at new slot\n");
-
-    microkit_mr_set(0, VIBEOS_OK);
-    microkit_mr_set(1, target_node);
-    return microkit_msginfo_new(0, 2);
 }
 
 /* ── Service registry ───────────────────────────────────────────────── */
@@ -1524,12 +851,15 @@ uintptr_t vm_list_ro_vaddr;
 
 typedef struct {
     bool     active;
-    uint32_t handle;     /* opaque handle returned to caller; never reused */
-    uint32_t vm_slot;    /* slot_id returned by OP_VM_CREATE */
-    uint8_t  os_type;    /* 0=linux, 1=freebsd */
-    uint8_t  state;      /* vibeos_state_t */
+    uint32_t handle;              /* opaque handle returned to caller; never reused */
+    uint32_t vm_slot;             /* slot_id returned by OP_VM_CREATE */
+    uint8_t  os_type;             /* VIBEOS_TYPE_LINUX / VIBEOS_TYPE_FREEBSD */
+    uint8_t  state;               /* VIBEOS_STATE_* */
     uint32_t ram_mb;
-    uint32_t dev_mask;   /* GUEST_DEV_* bitmask of bound devices */
+    uint32_t dev_mask;            /* VIBEOS_DEV_* bitmask of bound devices */
+    uint32_t dev_handles[5];      /* handle from MSG_{SERIAL,NET,BLOCK,USB,FB}_OPEN; 0=not open */
+    uint8_t  module_hash[32];     /* SHA-256 of last loaded WASM/ELF module; 0=none */
+    uint32_t swap_id;             /* vibe-swap pipeline ID for the loaded module */
 } vos_instance_t;
 
 static vos_instance_t s_vos[MAX_VOS_INSTANCES];
@@ -1615,9 +945,53 @@ static microkit_msginfo handle_vos_create(void)
     s_vos[slot].os_type  = (uint8_t)os_type;
     s_vos[slot].state    = (uint8_t)VIBEOS_STATE_BOOTING;
     s_vos[slot].ram_mb   = ram_mb;
-    s_vos[slot].dev_mask = dev_flags;
+    s_vos[slot].dev_mask = 0;
+    s_vos[slot].swap_id  = 0;
+    for (int i = 0; i < 5; i++)  s_vos[slot].dev_handles[i] = 0;
+    for (int i = 0; i < 32; i++) s_vos[slot].module_hash[i] = 0;
+
+    /* ── Open device handles (guest binding protocol §3.1 step 2) ────── */
+    if (dev_flags & VIBEOS_DEV_SERIAL) {
+        microkit_mr_set(0, 0);  /* port_id */
+        (void)microkit_ppcall((microkit_channel)CH_SERIAL_PD,
+                              microkit_msginfo_new(MSG_SERIAL_OPEN, 1));
+        if ((uint32_t)microkit_mr_get(0) == AOS_OK) {
+            s_vos[slot].dev_handles[0] = (uint32_t)microkit_mr_get(1);
+            s_vos[slot].dev_mask |= VIBEOS_DEV_SERIAL;
+        }
+    }
+    if (dev_flags & VIBEOS_DEV_NET) {
+        microkit_mr_set(0, 0);  /* iface_id */
+        (void)microkit_ppcall((microkit_channel)CH_NET_PD,
+                              microkit_msginfo_new(MSG_NET_OPEN, 1));
+        if ((uint32_t)microkit_mr_get(0) == AOS_OK) {
+            s_vos[slot].dev_handles[1] = (uint32_t)microkit_mr_get(1);
+            s_vos[slot].dev_mask |= VIBEOS_DEV_NET;
+        }
+    }
+    if (dev_flags & VIBEOS_DEV_BLOCK) {
+        microkit_mr_set(0, 0);  /* dev_id */
+        microkit_mr_set(1, 0);  /* partition */
+        (void)microkit_ppcall((microkit_channel)CH_BLOCK_PD,
+                              microkit_msginfo_new(MSG_BLOCK_OPEN, 2));
+        if ((uint32_t)microkit_mr_get(0) == AOS_OK) {
+            s_vos[slot].dev_handles[2] = (uint32_t)microkit_mr_get(1);
+            s_vos[slot].dev_mask |= VIBEOS_DEV_BLOCK;
+        }
+    }
 
     log_drain_write(7, 7, "[vibe_engine] VOS_CREATE: ok\n");
+
+    /* ── Publish EVENT_VIBEOS_READY (deferred if CH_VIBE_EVENTBUS unwired) */
+#ifdef CH_VIBE_EVENTBUS
+    microkit_mr_set(0, MSG_EVENTBUS_PUBLISH_BATCH);
+    microkit_mr_set(1, EVENT_VIBEOS_READY);
+    microkit_mr_set(2, handle);
+    microkit_mr_set(3, (uint64_t)os_type);
+    microkit_mr_set(4, vm_slot);
+    (void)microkit_ppcall((microkit_channel)CH_VIBE_EVENTBUS,
+                          microkit_msginfo_new(MSG_EVENTBUS_PUBLISH_BATCH, 5));
+#endif
 
     microkit_mr_set(0, VIBEOS_OK);
     microkit_mr_set(1, handle);
@@ -1844,6 +1218,37 @@ static microkit_msginfo handle_vos_migrate(void)
     return microkit_msginfo_new(0, 1);
 }
 
+/* ── VIBEOS_OP_BOOT ─────────────────────────────────────────────────────
+ *
+ * Explicit CREATING→BOOTING transition for callers that pre-configure a
+ * slot before starting the VM.  Most callers use MSG_VIBEOS_CREATE which
+ * starts the VM directly; this op exists for two-phase create workflows.
+ *
+ * Input:  MR0=MSG_VIBEOS_BOOT  MR1=handle
+ * Output: MR0=vibeos_error_t
+ * ─────────────────────────────────────────────────────────────────────── */
+static microkit_msginfo handle_vos_boot(void)
+{
+    uint32_t handle = (uint32_t)microkit_mr_get(1);
+    int slot = vos_find(handle);
+    if (slot < 0) {
+        microkit_mr_set(0, VIBEOS_ERR_NO_HANDLE);
+        return microkit_msginfo_new(0, 1);
+    }
+    if (s_vos[slot].state != (uint8_t)VIBEOS_STATE_CREATING) {
+        microkit_mr_set(0, VIBEOS_ERR_WRONG_STATE);
+        return microkit_msginfo_new(0, 1);
+    }
+
+    microkit_mr_set(0, OP_VM_START);
+    microkit_mr_set(1, s_vos[slot].vm_slot);
+    (void)microkit_ppcall(CH_VMM, microkit_msginfo_new(OP_VM_START, 2));
+
+    s_vos[slot].state = (uint8_t)VIBEOS_STATE_BOOTING;
+    microkit_mr_set(0, VIBEOS_OK);
+    return microkit_msginfo_new(0, 1);
+}
+
 /* ── Microkit entry points ──────────────────────────────────────────── */
 
 void init(void) {
@@ -1856,19 +1261,6 @@ void init(void) {
     /* Initialize VOS instance table */
     for (int i = 0; i < MAX_VOS_INSTANCES; i++)
         s_vos[i].active = false;
-
-    /* Initialize VibeOS context table */
-    for (int i = 0; i < MAX_VIBEOS_INSTANCES; i++) {
-        g_vibeos[i].handle  = 0;
-        g_vibeos[i].swap_id = 0;
-        for (int j = 0; j < 32; j++) g_vibeos[i].module_hash[j] = 0;
-    }
-
-    /* Initialize snapshot store */
-    for (int i = 0; i < MAX_SNAPSHOTS; i++) {
-        g_snaps[i].valid = false;
-        g_snaps[i].inode = 0;
-    }
 
     /* Register known services */
     register_services();
@@ -1955,19 +1347,19 @@ microkit_msginfo protected(microkit_channel ch, microkit_msginfo msg) {
         case OP_VIBE_REGISTER_SERVICE:   return handle_register_service(ch);
         case OP_VIBE_LIST_SERVICES:      return handle_list_services();
 
-        /* ── VibeOS OS lifecycle ──────────────────────────────────────── */
-        case MSG_VIBEOS_CREATE:                 return handle_vibeos_create();
-        case MSG_VIBEOS_DESTROY:                return handle_vibeos_destroy();
-        case MSG_VIBEOS_STATUS:                 return handle_vibeos_status();
-        case MSG_VIBEOS_LIST:                   return handle_vibeos_list();
-        case MSG_VIBEOS_BIND_DEVICE:            return handle_vibeos_bind_device();
-        case MSG_VIBEOS_UNBIND_DEVICE:          return handle_vibeos_unbind_device();
-        case MSG_VIBEOS_BOOT:                   return handle_vibeos_boot();
+        /* ── VibeOS OS lifecycle (all routed through vos_ handlers) ─────── */
+        case MSG_VIBEOS_CREATE:                 return handle_vos_create();
+        case MSG_VIBEOS_DESTROY:                return handle_vos_destroy();
+        case MSG_VIBEOS_STATUS:                 return handle_vos_status();
+        case MSG_VIBEOS_LIST:                   return handle_vos_list();
+        case MSG_VIBEOS_BIND_DEVICE:            return handle_vos_device(MSG_VIBEOS_BIND_DEVICE);
+        case MSG_VIBEOS_UNBIND_DEVICE:          return handle_vos_device(MSG_VIBEOS_UNBIND_DEVICE);
+        case MSG_VIBEOS_BOOT:                   return handle_vos_boot();
         case MSG_VIBEOS_LOAD_MODULE:            return handle_vibeos_load_module();
         case MSG_VIBEOS_CHECK_SERVICE_EXISTS:   return handle_vibeos_check_service_exists();
-        case MSG_VIBEOS_SNAPSHOT:               return handle_vibeos_snapshot();
-        case MSG_VIBEOS_RESTORE:                return handle_vibeos_restore();
-        case MSG_VIBEOS_MIGRATE:                return handle_vibeos_migrate();
+        case MSG_VIBEOS_SNAPSHOT:               return handle_vos_snapshot();
+        case MSG_VIBEOS_RESTORE:                return handle_vos_restore();
+        case MSG_VIBEOS_MIGRATE:                return handle_vos_migrate();
 
         default:
             log_drain_write(7, 7, "[vibe_engine] Unknown op\n");
