@@ -1253,6 +1253,49 @@ static microkit_msginfo handle_vos_boot(void)
     return microkit_msginfo_new(0, 1);
 }
 
+/* ── VIBEOS_OP_CONFIGURE ───────────────────────────────────────────────
+ *
+ * Modify OS parameters without destroying/recreating the VM.
+ *
+ * Input:  MR0=MSG_VIBEOS_CONFIGURE  MR1=handle
+ *         MR2=ram_mb (0=no change)  MR3=cpu_budget_us (0=no change)
+ *         MR4=cpu_period_us (0=no change)
+ * Output: MR0=result
+ *
+ * Valid in any state except VIBEOS_STATE_DEAD.  Updates local s_vos[]
+ * and forwards non-zero fields to vm_manager via OP_VM_CONFIGURE.
+ * ─────────────────────────────────────────────────────────────────────── */
+static microkit_msginfo handle_vos_configure(void)
+{
+    uint32_t handle        = (uint32_t)microkit_mr_get(1);
+    uint32_t new_ram       = (uint32_t)microkit_mr_get(2);
+    uint32_t new_budget_us = (uint32_t)microkit_mr_get(3);
+    uint32_t new_period_us = (uint32_t)microkit_mr_get(4);
+
+    int slot = vos_find(handle);
+    if (slot < 0) {
+        microkit_mr_set(0, VIBEOS_ERR_NO_HANDLE);
+        return microkit_msginfo_new(0, 1);
+    }
+    if (s_vos[slot].state == (uint8_t)VIBEOS_STATE_DEAD) {
+        microkit_mr_set(0, VIBEOS_ERR_WRONG_STATE);
+        return microkit_msginfo_new(0, 1);
+    }
+
+    if (new_ram)       s_vos[slot].ram_mb = new_ram;
+
+    microkit_mr_set(0, OP_VM_CONFIGURE);
+    microkit_mr_set(1, s_vos[slot].vm_slot);
+    microkit_mr_set(2, new_ram);
+    microkit_mr_set(3, new_budget_us);
+    microkit_mr_set(4, new_period_us);
+    (void)microkit_ppcall(CH_VMM, microkit_msginfo_new(OP_VM_CONFIGURE, 5));
+
+    log_drain_write(7, 7, "[vibe_engine] VOS_CONFIGURE: ok\n");
+    microkit_mr_set(0, VIBEOS_OK);
+    return microkit_msginfo_new(0, 1);
+}
+
 /* ── Microkit entry points ──────────────────────────────────────────── */
 
 void init(void) {
@@ -1364,6 +1407,7 @@ microkit_msginfo protected(microkit_channel ch, microkit_msginfo msg) {
         case MSG_VIBEOS_SNAPSHOT:               return handle_vos_snapshot();
         case MSG_VIBEOS_RESTORE:                return handle_vos_restore();
         case MSG_VIBEOS_MIGRATE:                return handle_vos_migrate();
+        case MSG_VIBEOS_CONFIGURE:              return handle_vos_configure();
 
         default:
             log_drain_write(7, 7, "[vibe_engine] Unknown op\n");

@@ -30,8 +30,9 @@
 #define OP_VOS_DESTROY  0x51u
 #define OP_VOS_STATUS   0x52u
 #define OP_VOS_LIST     0x53u
-#define OP_VOS_ATTACH   0x54u
-#define OP_VOS_DETACH   0x55u
+#define OP_VOS_ATTACH     0x54u
+#define OP_VOS_DETACH     0x55u
+#define OP_VOS_CONFIGURE  0x56u
 
 /* ── OS instance states ───────────────────────────────────────────────────── */
 #define VOS_STATE_STOPPED   0u
@@ -68,6 +69,8 @@ typedef struct {
     char         name[MOCK_NAME_LEN];
     uint32_t     mem_mb;      /* requested memory in MiB */
     uint32_t     vcpus;
+    uint32_t     cpu_budget_us;
+    uint32_t     cpu_period_us;
     MockAttachment devs[MOCK_MAX_DEVICES];
     uint32_t     active;
 } MockInstance;
@@ -246,6 +249,21 @@ static void vos_dispatch(microkit_channel ch, microkit_msginfo info) {
             }
         }
         _mrs[0] = found ? AOS_OK : AOS_ERR_NOT_FOUND;
+        break;
+    }
+
+    /* ── CONFIGURE ─────────────────────────────────────────────────────── */
+    case OP_VOS_CONFIGURE: {
+        uint32_t id            = (uint32_t)_mrs[1];
+        uint32_t new_mem       = (uint32_t)_mrs[2];
+        uint32_t new_budget_us = (uint32_t)_mrs[3];
+        uint32_t new_period_us = (uint32_t)_mrs[4];
+        int slot = vos_find(id);
+        if (slot < 0) { _mrs[0] = AOS_ERR_NOT_FOUND; break; }
+        if (new_mem)       g_instances[slot].mem_mb        = new_mem;
+        if (new_budget_us) g_instances[slot].cpu_budget_us = new_budget_us;
+        if (new_period_us) g_instances[slot].cpu_period_us = new_period_us;
+        _mrs[0] = AOS_OK;
         break;
     }
 
@@ -522,6 +540,43 @@ static void test_detach_unknown_instance(void) {
               "VOS_DETACH: unknown instance returns AOS_ERR_NOT_FOUND");
 }
 
+static void test_configure_mem_ok(void) {
+    vos_reset();
+    uint32_t id = do_create("cfg", VOS_IMAGE_LINUX, 256, 2);
+    mock_mr_clear();
+    _mrs[0] = OP_VOS_CONFIGURE; _mrs[1] = id;
+    _mrs[2] = 512; _mrs[3] = 0; _mrs[4] = 0;  /* update mem_mb to 512 */
+    vos_dispatch(0, 0);
+    ASSERT_EQ(_mrs[0], AOS_OK, "VOS_CONFIGURE: returns AOS_OK");
+    /* verify via STATUS */
+    mock_mr_clear(); _mrs[0] = OP_VOS_STATUS; _mrs[1] = id;
+    vos_dispatch(0, 0);
+    ASSERT_EQ(_mrs[2], 512u, "VOS_CONFIGURE: mem_mb updated");
+}
+
+static void test_configure_bad_id(void) {
+    vos_reset();
+    mock_mr_clear();
+    _mrs[0] = OP_VOS_CONFIGURE; _mrs[1] = 9999u;
+    _mrs[2] = 512; _mrs[3] = 0; _mrs[4] = 0;
+    vos_dispatch(0, 0);
+    ASSERT_EQ(_mrs[0], AOS_ERR_NOT_FOUND,
+              "VOS_CONFIGURE: unknown id returns AOS_ERR_NOT_FOUND");
+}
+
+static void test_configure_noop_ok(void) {
+    vos_reset();
+    uint32_t id = do_create("noop", VOS_IMAGE_FREEBSD, 128, 1);
+    mock_mr_clear();
+    _mrs[0] = OP_VOS_CONFIGURE; _mrs[1] = id;
+    _mrs[2] = 0; _mrs[3] = 0; _mrs[4] = 0;  /* all-zero = no change */
+    vos_dispatch(0, 0);
+    ASSERT_EQ(_mrs[0], AOS_OK, "VOS_CONFIGURE: all-zero params returns AOS_OK");
+    mock_mr_clear(); _mrs[0] = OP_VOS_STATUS; _mrs[1] = id;
+    vos_dispatch(0, 0);
+    ASSERT_EQ(_mrs[2], 128u, "VOS_CONFIGURE: noop preserves mem_mb");
+}
+
 static void test_unknown_opcode(void) {
     vos_reset();
     mock_mr_clear();
@@ -533,7 +588,7 @@ static void test_unknown_opcode(void) {
 /* ── main ─────────────────────────────────────────────────────────────────── */
 
 int main(void) {
-    TAP_PLAN(38);
+    TAP_PLAN(43);
 
     test_create_linux_ok();
     test_create_freebsd_ok();
@@ -564,6 +619,10 @@ int main(void) {
     test_detach_ok();
     test_detach_not_attached();
     test_detach_unknown_instance();
+
+    test_configure_mem_ok();
+    test_configure_bad_id();
+    test_configure_noop_ok();
 
     test_unknown_opcode();
 

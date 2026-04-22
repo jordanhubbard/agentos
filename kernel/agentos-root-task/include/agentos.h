@@ -242,7 +242,8 @@ typedef enum {
 #define OP_VM_INFO      0x17u  /* MR1=slot_id → MR0=ok MR1=state MR2=ram_vaddr */
 #define OP_VM_LIST      0x18u  /* → MR0=ok MR1=count; vm_list_shmem has vm_list_entry_t[] */
 #define OP_VM_SNAPSHOT  0x19u  /* MR1=slot_id → MR0=ok MR1=snap_hash_lo MR2=snap_hash_hi */
-#define OP_VM_RESTORE   0x1Au  /* MR1=slot_id MR2=snap_lo MR3=snap_hi → MR0=ok */
+#define OP_VM_RESTORE    0x1Au  /* MR1=slot_id MR2=snap_lo MR3=snap_hi → MR0=ok */
+#define OP_VM_CONFIGURE  0x1Bu  /* MR1=slot_id MR2=ram_mb MR3=cpu_budget_us MR4=cpu_period_us → MR0=ok */
 
 /* Channel IDs for HURD-parity VM management PDs */
 #define CH_VM_MANAGER   45u   /* controller PPCs into vm_manager */
