@@ -31,7 +31,6 @@
  */
 
 #include "agentos.h"
-#include "contracts/pflocal_server_contract.h"
 #include <stdbool.h>
 #include <stdint.h>
 #include <stddef.h>

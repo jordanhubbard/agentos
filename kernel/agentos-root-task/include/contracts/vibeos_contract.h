@@ -237,7 +237,9 @@ typedef struct __attribute__((packed)) {
 /* ─── Channel aliases ────────────────────────────────────────────────────── */
 
 /* CH_VIBEOS_ENGINE: authoritative alias for CH_VIBEENGINE (agentos.h) */
+#ifndef CH_VIBEOS_ENGINE
 #define CH_VIBEOS_ENGINE         CH_VIBEENGINE
+#endif
 
 /*
  * CH_VMM: the channel from vibe_engine's perspective to the vm_manager PD.

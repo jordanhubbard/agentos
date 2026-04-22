@@ -15,7 +15,6 @@
 
 #define AGENTOS_DEBUG 1
 #include "agentos.h"
-#include "contracts/vfs_server_contract.h"
 #include "vfs.h"
 
 /* ── Microkit setvar_vaddr — filled in by the system initialiser ─────────── */

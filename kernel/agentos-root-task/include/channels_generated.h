@@ -44,12 +44,11 @@ typedef enum {
     CH_AUTH_SERVER_CONTROLLER                    = 0,
 } auth_server_channel_t;
 
-/* Channel IDs from console_mux perspective */
+/* Channel IDs from block_pd perspective */
 typedef enum {
-    CH_CONSOLE_MUX_CONTROLLER                    = 0,
-    CH_CONSOLE_MUX_INIT_AGENT                    = 1,
-    CH_CONSOLE_MUX_EVENT_BUS                     = 2,
-} console_mux_channel_t;
+    CH_BLOCK_PD_CONTROLLER                       = 0,
+    CH_BLOCK_PD_VIRTIO_BLK                       = 1,
+} block_pd_channel_t;
 
 /* Channel IDs from controller perspective */
 typedef enum {
@@ -73,6 +72,7 @@ typedef enum {
     CH_CONTROLLER_VIRTIO_BLK                     = 22,
     CH_CONTROLLER_APP_MANAGER                    = 23,
     CH_CONTROLLER_HTTP_SVC                       = 24,
+    CH_CONTROLLER_GPU_SCHED                      = 25,
     CH_CONTROLLER_PFLOCAL_SERVER                 = 26,
     CH_CONTROLLER_PROC_SERVER                    = 27,
     CH_CONTROLLER_EXEC_SERVER                    = 28,
@@ -88,8 +88,11 @@ typedef enum {
     CH_CONTROLLER_VM_MANAGER                     = 45,
     CH_CONTROLLER_VM_SNAPSHOT                    = 46,
     CH_CONTROLLER_EXT2FS                         = 47,
+    CH_CONTROLLER_NET_PD                         = 48,
+    CH_CONTROLLER_BLOCK_PD                       = 49,
     CH_CONTROLLER_MEM_PROFILER                   = 50,
-    CH_CONTROLLER_CONSOLE_MUX                    = 60,
+    CH_CONTROLLER_FRAMEBUFFER_PD                 = 51,
+    CH_CONTROLLER_LOG_DRAIN                      = 60,
     CH_CONTROLLER_NET_ISOLATOR                   = 61,
 } controller_channel_t;
 
@@ -106,7 +109,7 @@ typedef enum {
     CH_EVENT_BUS_WORKER_5                        = 25,
     CH_EVENT_BUS_WORKER_6                        = 26,
     CH_EVENT_BUS_WORKER_7                        = 27,
-    CH_EVENT_BUS_CONSOLE_MUX                     = 60,
+    CH_EVENT_BUS_LOG_DRAIN                       = 60,
     CH_EVENT_BUS_NET_ISOLATOR                    = 61,
 } event_bus_channel_t;
 
@@ -121,6 +124,18 @@ typedef enum {
     CH_EXT2FS_VIRTIO_BLK                         = 1,
 } ext2fs_channel_t;
 
+/* Channel IDs from framebuffer_pd perspective */
+typedef enum {
+    CH_FRAMEBUFFER_PD_CONTROLLER                 = 0,
+    CH_FRAMEBUFFER_PD_GPU_SCHED                  = 2,
+} framebuffer_pd_channel_t;
+
+/* Channel IDs from gpu_sched perspective */
+typedef enum {
+    CH_GPU_SCHED_CONTROLLER                      = 1,
+    CH_GPU_SCHED_FRAMEBUFFER_PD                  = 7,
+} gpu_sched_channel_t;
+
 /* Channel IDs from http_svc perspective */
 typedef enum {
     CH_HTTP_SVC_CONTROLLER                       = 0,
@@ -132,7 +147,7 @@ typedef enum {
     CH_INIT_AGENT_CONTROLLER                     = 1,
     CH_INIT_AGENT_EVENT_BUS                      = 2,
     CH_INIT_AGENT_VIBE_ENGINE                    = 3,
-    CH_INIT_AGENT_CONSOLE_MUX                    = 4,
+    CH_INIT_AGENT_LOG_DRAIN                      = 4,
     CH_INIT_AGENT_TIME_PARTITION                 = 5,
     CH_INIT_AGENT_NET_ISOLATOR                   = 6,
     CH_INIT_AGENT_NAMESERVER                     = 7,
@@ -140,6 +155,13 @@ typedef enum {
     CH_INIT_AGENT_SPAWN_SERVER                   = 9,
     CH_INIT_AGENT_NET_SERVER                     = 10,
 } init_agent_channel_t;
+
+/* Channel IDs from log_drain perspective */
+typedef enum {
+    CH_LOG_DRAIN_CONTROLLER                      = 0,
+    CH_LOG_DRAIN_INIT_AGENT                      = 1,
+    CH_LOG_DRAIN_EVENT_BUS                       = 2,
+} log_drain_channel_t;
 
 /* Channel IDs from mem_profiler perspective */
 typedef enum {
@@ -174,6 +196,11 @@ typedef enum {
     CH_NET_ISOLATOR_INIT_AGENT                   = 1,
     CH_NET_ISOLATOR_EVENT_BUS                    = 2,
 } net_isolator_channel_t;
+
+/* Channel IDs from net_pd perspective */
+typedef enum {
+    CH_NET_PD_CONTROLLER                         = 0,
+} net_pd_channel_t;
 
 /* Channel IDs from net_server perspective */
 typedef enum {
@@ -298,6 +325,7 @@ typedef enum {
     CH_VIRTIO_BLK_CONTROLLER                     = 0,
     CH_VIRTIO_BLK_VFS_SERVER                     = 1,
     CH_VIRTIO_BLK_EXT2FS                         = 2,
+    CH_VIRTIO_BLK_BLOCK_PD                       = 3,
 } virtio_blk_channel_t;
 
 /* Channel IDs from vm_manager perspective */

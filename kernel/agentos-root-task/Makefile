@@ -54,31 +54,13 @@ CFLAGS_SWAPSLOT := $(CFLAGS) -Iwasm3
 LDFLAGS := -L$(BOARD_DIR)/lib
 LIBS    := -lmicrokit -Tmicrokit.ld
 
-# ─── Board-specific UART config for console_shell ────────────────────────────
-# Passed down from the top-level Makefile via boards/<BOARD_NAME>/board.mk.
-# Defaults are empty (ring-buffer-only mode for QEMU builds).
+# ─── Board identification (passed from top-level Makefile) ───────────────────
 BOARD_NAME      ?=
 BOARD_NATIVE    ?= 0
 BOARD_UART_PHYS ?=
 BOARD_UART_SIZE ?=
 BOARD_UART_TYPE ?=
 BOARD_UART_IRQ  ?=
-
-CFLAGS_CONSOLESHELL := $(CFLAGS)
-ifeq ($(BOARD_UART_TYPE),pl011)
-  CFLAGS_CONSOLESHELL += -DBOARD_UART_PL011=1
-else ifeq ($(BOARD_UART_TYPE),ns16550)
-  CFLAGS_CONSOLESHELL += -DBOARD_UART_NS16550=1
-endif
-ifneq ($(BOARD_UART_PHYS),)
-  CFLAGS_CONSOLESHELL += \
-    -DBOARD_UART_PHYS=$(BOARD_UART_PHYS) \
-    -DBOARD_UART_SIZE=$(BOARD_UART_SIZE) \
-    -DBOARD_UART_IRQ=$(BOARD_UART_IRQ)
-endif
-ifeq ($(BOARD_NATIVE),1)
-  CFLAGS_CONSOLESHELL += -DBOARD_NATIVE=1
-endif
 
 # Protection Domain ELFs
 # monitor/controller: includes vibe_swap for the hot-swap controller-side logic
@@ -117,7 +99,6 @@ PD_VM_SNAPSHOT_SRCS      := src/vm_snapshot.c src/m3_bare_metal.c src/log.c
 PD_PFLOCAL_SERVER_SRCS   := src/pflocal_server.c src/m3_bare_metal.c src/log.c
 PD_EXEC_SERVER_SRCS      := src/exec_server.c src/m3_bare_metal.c src/log.c
 PD_TERM_SERVER_SRCS      := src/term_server.c src/m3_bare_metal.c src/log.c
-PD_CONSOLESHELL_SRCS     := src/console_shell.c src/m3_bare_metal.c src/log.c
 PD_BLOCK_PD_SRCS         := src/block_pd.c src/m3_bare_metal.c src/log.c
 PD_FB_PD_SRCS            := src/framebuffer_pd.c src/m3_bare_metal.c src/log.c
 PD_CC_PD_SRCS            := src/cc_pd.c src/m3_bare_metal.c src/log.c
@@ -162,13 +143,12 @@ PFLOCAL_SERVER_OBJS   := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_PFLOCAL_SERV
 EXEC_SERVER_OBJS      := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_EXEC_SERVER_SRCS))
 TERM_SERVER_OBJS      := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_TERM_SERVER_SRCS))
 WASM3_OBJS            := $(patsubst wasm3/%.c, $(BUILD_DIR)/wasm3_%.o, $(WASM3_SRCS))
-CONSOLESHELL_OBJS     := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_CONSOLESHELL_SRCS))
 BLOCK_PD_OBJS         := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_BLOCK_PD_SRCS))
 FB_PD_OBJS            := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_FB_PD_SRCS))
 CC_PD_OBJS            := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_CC_PD_SRCS))
 GPU_SCHED_OBJS        := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_GPU_SCHED_SRCS))
 
-IMAGES := controller.elf event_bus.elf init_agent.elf worker.elf agentfs.elf vibe_engine.elf log_drain.elf serial_pd.elf swap_slot.elf mem_profiler.elf net_isolator.elf perf_counters.elf time_partition.elf trace_recorder.elf nameserver.elf virtio_blk.elf vfs_server.elf spawn_server.elf app_slot.elf net_server.elf net_pd.elf wg_net.elf app_manager.elf http_svc.elf vm_manager.elf auth_server.elf ext2fs.elf proc_server.elf vm_snapshot.elf pflocal_server.elf exec_server.elf term_server.elf console_shell.elf block_pd.elf framebuffer_pd.elf cc_pd.elf gpu_sched.elf
+IMAGES := controller.elf event_bus.elf init_agent.elf worker.elf agentfs.elf vibe_engine.elf log_drain.elf serial_pd.elf swap_slot.elf mem_profiler.elf net_isolator.elf perf_counters.elf time_partition.elf trace_recorder.elf nameserver.elf virtio_blk.elf vfs_server.elf spawn_server.elf app_slot.elf net_server.elf net_pd.elf wg_net.elf app_manager.elf http_svc.elf vm_manager.elf auth_server.elf ext2fs.elf proc_server.elf vm_snapshot.elf pflocal_server.elf exec_server.elf term_server.elf block_pd.elf framebuffer_pd.elf cc_pd.elf gpu_sched.elf
 
 # Optional: periodic WASM slot snapshot scheduler
 ifdef AGENTOS_SNAPSHOT_SCHED
@@ -344,13 +324,6 @@ $(BUILD_DIR)/exec_server.elf: $(EXEC_SERVER_OBJS)
 $(BUILD_DIR)/term_server.elf: $(TERM_SERVER_OBJS)
 	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
 
-# console_shell uses board-specific UART CFLAGS
-$(BUILD_DIR)/console_shell.o: src/console_shell.c
-	@mkdir -p $(BUILD_DIR)
-	$(CC) -c $(CFLAGS_CONSOLESHELL) $< -o $@
-
-$(BUILD_DIR)/console_shell.elf: $(CONSOLESHELL_OBJS)
-	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
 
 $(BUILD_DIR)/block_pd.elf: $(BLOCK_PD_OBJS)
 	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@

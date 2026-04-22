@@ -22,7 +22,6 @@
  */
 
 #include "agentos.h"
-#include "contracts/gpu_sched_contract.h"
 #include "gpu_sched.h"
 #include <stdint.h>
 #include <string.h>

@@ -26,7 +26,6 @@
 #include <stddef.h>
 #include <stdbool.h>
 #include "agentos.h"
-#include "contracts/app_manager_contract.h"
 #include "app_manager.h"
 #include "spawn.h"
 #include "net_server.h"

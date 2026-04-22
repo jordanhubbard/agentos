@@ -36,7 +36,6 @@
 
 #define AGENTOS_DEBUG 1
 #include "agentos.h"
-#include "contracts/nameserver_contract.h"
 #include "nameserver.h"
 
 /* ── Console ring slot for this PD ──────────────────────────────────────── */

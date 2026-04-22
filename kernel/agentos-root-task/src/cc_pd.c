@@ -47,8 +47,8 @@
 
 #define AGENTOS_DEBUG 1
 #include "agentos.h"
-#include "contracts/cc_contract.h"
 #include "contracts/vibeos_contract.h"
+#include "contracts/cc_contract.h"
 #include "contracts/guest_contract.h"
 #include "contracts/framebuffer_contract.h"
 #include "contracts/log_drain_contract.h"

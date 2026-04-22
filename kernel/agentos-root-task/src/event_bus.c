@@ -16,7 +16,6 @@
 
 #define AGENTOS_DEBUG 1
 #include "agentos.h"
-#include "contracts/eventbus_contract.h"
 
 /* The ring buffer lives in shared memory - Microkit sets this via setvar_vaddr */
 uintptr_t eventbus_ring_vaddr;

@@ -127,6 +127,26 @@ static uint64_t       total_proposals = 0;
 static uint64_t       total_swaps = 0;
 static uint64_t       total_rejections = 0;
 
+/* ── VOS instance table (forward declarations) ───────────────────────
+ * Full definition lives below the VM manager section; these forward
+ * declarations allow handlers earlier in the file to reference them. */
+#define MAX_VOS_INSTANCES  4
+typedef struct {
+    bool     active;
+    uint32_t handle;
+    uint32_t vm_slot;
+    uint8_t  os_type;
+    uint8_t  state;
+    uint32_t ram_mb;
+    uint32_t dev_mask;
+    uint32_t dev_handles[5];
+    uint8_t  module_hash[32];
+    uint32_t swap_id;
+} vos_instance_t;
+static vos_instance_t s_vos[MAX_VOS_INSTANCES];
+static uint32_t       s_next_handle = 1;
+static int vos_find(uint32_t handle);
+
 /*
  * MSG_VIBEOS_LOAD_MODULE: Install a WASM or ELF component into a VibeOS
  * context via the vibe_swap.c hot-swap pipeline.
@@ -847,23 +867,7 @@ static microkit_msginfo handle_list_services(void) {
 uintptr_t vm_list_ro_vaddr;
 
 /* ── VOS instance table ─────────────────────────────────────────────── */
-#define MAX_VOS_INSTANCES  4
-
-typedef struct {
-    bool     active;
-    uint32_t handle;              /* opaque handle returned to caller; never reused */
-    uint32_t vm_slot;             /* slot_id returned by OP_VM_CREATE */
-    uint8_t  os_type;             /* VIBEOS_TYPE_LINUX / VIBEOS_TYPE_FREEBSD */
-    uint8_t  state;               /* VIBEOS_STATE_* */
-    uint32_t ram_mb;
-    uint32_t dev_mask;            /* VIBEOS_DEV_* bitmask of bound devices */
-    uint32_t dev_handles[5];      /* handle from MSG_{SERIAL,NET,BLOCK,USB,FB}_OPEN; 0=not open */
-    uint8_t  module_hash[32];     /* SHA-256 of last loaded WASM/ELF module; 0=none */
-    uint32_t swap_id;             /* vibe-swap pipeline ID for the loaded module */
-} vos_instance_t;
-
-static vos_instance_t s_vos[MAX_VOS_INSTANCES];
-static uint32_t       s_next_handle = 1;  /* 0 is the null/invalid handle */
+/* (typedef, s_vos, s_next_handle declared earlier; vos_find defined below) */
 
 static int vos_find(uint32_t handle)
 {
@@ -955,7 +959,7 @@ static microkit_msginfo handle_vos_create(void)
         microkit_mr_set(0, 0);  /* port_id */
         (void)microkit_ppcall((microkit_channel)CH_SERIAL_PD,
                               microkit_msginfo_new(MSG_SERIAL_OPEN, 1));
-        if ((uint32_t)microkit_mr_get(0) == AOS_OK) {
+        if ((uint32_t)microkit_mr_get(0) == 0) {
             s_vos[slot].dev_handles[0] = (uint32_t)microkit_mr_get(1);
             s_vos[slot].dev_mask |= VIBEOS_DEV_SERIAL;
         }
@@ -964,7 +968,7 @@ static microkit_msginfo handle_vos_create(void)
         microkit_mr_set(0, 0);  /* iface_id */
         (void)microkit_ppcall((microkit_channel)CH_NET_PD,
                               microkit_msginfo_new(MSG_NET_OPEN, 1));
-        if ((uint32_t)microkit_mr_get(0) == AOS_OK) {
+        if ((uint32_t)microkit_mr_get(0) == 0) {
             s_vos[slot].dev_handles[1] = (uint32_t)microkit_mr_get(1);
             s_vos[slot].dev_mask |= VIBEOS_DEV_NET;
         }
@@ -974,7 +978,7 @@ static microkit_msginfo handle_vos_create(void)
         microkit_mr_set(1, 0);  /* partition */
         (void)microkit_ppcall((microkit_channel)CH_BLOCK_PD,
                               microkit_msginfo_new(MSG_BLOCK_OPEN, 2));
-        if ((uint32_t)microkit_mr_get(0) == AOS_OK) {
+        if ((uint32_t)microkit_mr_get(0) == 0) {
             s_vos[slot].dev_handles[2] = (uint32_t)microkit_mr_get(1);
             s_vos[slot].dev_mask |= VIBEOS_DEV_BLOCK;
         }

@@ -21,7 +21,6 @@
 #define AGENTOS_DEBUG 1
 #include "agentos.h"
 #endif
-#include "contracts/proc_server_contract.h"
 
 #include <stdbool.h>
 #include <stdint.h>

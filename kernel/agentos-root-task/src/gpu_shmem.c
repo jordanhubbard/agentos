@@ -8,7 +8,6 @@
  */
 
 #include "gpu_shmem.h"
-#include "contracts/gpu_shmem_contract.h"
 #include <stddef.h>
 #include <string.h>
 

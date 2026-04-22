@@ -25,7 +25,6 @@
  */
 
 #include "agentos.h"
-#include "contracts/exec_server_contract.h"
 #include <stdbool.h>
 #include <stdint.h>
 #include <stddef.h>

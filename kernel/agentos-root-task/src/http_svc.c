@@ -23,7 +23,6 @@
 #include <stddef.h>
 #include <stdbool.h>
 #include "agentos.h"
-#include "contracts/http_svc_contract.h"
 #include "http_svc.h"
 
 /* ── Shared memory globals (set by Microkit via setvar_vaddr) ────────────── */
