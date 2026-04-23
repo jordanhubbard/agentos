@@ -131,7 +131,7 @@ aos_service_swap(proposal_id);
 
 ### Quick start — TUI launcher (recommended)
 
-The `agentctl` ncurses TUI detects available QEMU binaries and guides you
+The `qemu-launch` ncurses TUI detects available QEMU binaries and guides you
 through architecture, board, guest OS, and option selection interactively:
 
 ```bash
@@ -142,10 +142,10 @@ cd agentos
 make deps
 
 # Build the interactive launcher
-make -C tools/agentctl
+make -C tools/qemu-launch
 
 # Launch the pre-boot menu
-./tools/agentctl/agentctl
+./tools/qemu-launch/qemu-launch
 ```
 
 The menu shows only architectures with installed QEMU binaries.
@@ -190,17 +190,25 @@ make deps-tools
 # See: https://github.com/seL4/microkit/releases
 ```
 
-### Post-boot session manager
+### Post-boot CC-PD client
 
-Once agentOS is running in QEMU, use `agentctl -s` to manage console sessions:
+Once agentOS is running in QEMU, use `agentctl` to inspect and control guests
+via the CC-PD socket:
 
 ```bash
-./tools/agentctl/agentctl -s
-./tools/agentctl/agentctl --sessions
+make -C tools/agentctl
+
+# List running guest OS instances
+./tools/agentctl/agentctl --batch list-guests
+
+# Query a specific guest
+./tools/agentctl/agentctl --batch guest-status <handle>
+
+# Snapshot a guest
+./tools/agentctl/agentctl --batch snapshot <handle>
 ```
 
-Navigate active PD console sessions, attach/detach, scroll output.
-See `tools/agentctl/README.md` for full details.
+Run `./tools/agentctl/agentctl --help` for the full command reference.
 
 ## Project Structure
 

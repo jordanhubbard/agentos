@@ -81,6 +81,13 @@ static inline void agentos_wmb(void) {}
 #define MSG_VIBEOS_LOAD_MODULE          0x240B
 #define MSG_VIBEOS_CHECK_SERVICE_EXISTS 0x240C
 #define CAP_POLICY_FUNC_CLASS_MAX       0x05u
+
+/* Additional states and errors for the handlers added below */
+#define VIBEOS_STATE_PAUSED     3
+#define VIBEOS_ERR_NO_HANDLE    14
+#define VIBEOS_ERR_WRONG_STATE  15
+#define VIBEOS_ERR_NOT_IMPL     16
+#define VIBEOS_ERR_BAD_TYPE     12
 #define STAGING_SIZE                    0x400000UL
 
 struct vibeos_create_req {
@@ -240,6 +247,111 @@ static microkit_msginfo handle_vibeos_check_service_exists(void) {
     microkit_mr_set(0, VIBEOS_OK); microkit_mr_set(1, exists);
     microkit_mr_set(2, pd); microkit_mr_set(3, ch);
     return microkit_msginfo_new(0,4);
+}
+
+/* ── Inline handler stubs for DESTROY, STATUS, LIST, UNBIND,
+ *    SNAPSHOT, RESTORE, MIGRATE — mirror production logic using the
+ *    test file's vibeos_ctx_t / g_vibeos[] / vibeos_find() types.
+ *    microkit_ppcall() (VMM calls) are omitted; stubs return success.
+ * ─────────────────────────────────────────────────────────────────── */
+
+static microkit_msginfo handle_vos_destroy(void) {
+    uint32_t handle = (uint32_t)microkit_mr_get(1);
+    vibeos_ctx_t *ctx = vibeos_find(handle);
+    if (!ctx) {
+        microkit_mr_set(0, VIBEOS_ERR_NO_HANDLE);
+        return microkit_msginfo_new(0, 1);
+    }
+    ctx->handle = 0;
+    ctx->state  = VIBEOS_STATE_DEAD;
+    microkit_mr_set(0, VIBEOS_OK);
+    return microkit_msginfo_new(0, 1);
+}
+
+static microkit_msginfo handle_vos_status(void) {
+    uint32_t handle = (uint32_t)microkit_mr_get(1);
+    vibeos_ctx_t *ctx = vibeos_find(handle);
+    if (!ctx) {
+        microkit_mr_set(0, VIBEOS_ERR_NO_HANDLE);
+        return microkit_msginfo_new(0, 1);
+    }
+    microkit_mr_set(0, VIBEOS_OK);
+    microkit_mr_set(1, handle);
+    microkit_mr_set(2, ctx->state);
+    microkit_mr_set(3, ctx->os_type);
+    microkit_mr_set(4, ctx->ram_mb);
+    microkit_mr_set(5, ctx->device_flags);
+    return microkit_msginfo_new(0, 6);
+}
+
+static microkit_msginfo handle_vos_list(void) {
+    uint32_t offset = (uint32_t)microkit_mr_get(1);
+    uint32_t count = 0, seen = 0;
+    for (int i = 0; i < MAX_VIBEOS_INSTANCES && count < 16; i++) {
+        if (g_vibeos[i].handle == 0) continue;
+        if (seen < offset) { seen++; continue; }
+        microkit_mr_set(2 + count, g_vibeos[i].handle);
+        count++;
+        seen++;
+    }
+    microkit_mr_set(0, VIBEOS_OK);
+    microkit_mr_set(1, count);
+    return microkit_msginfo_new(0, 2 + count);
+}
+
+static microkit_msginfo handle_vos_unbind_device(void) {
+    uint32_t handle   = (uint32_t)microkit_mr_get(1);
+    uint32_t dev_type = (uint32_t)microkit_mr_get(2);
+    vibeos_ctx_t *ctx = vibeos_find(handle);
+    if (!ctx) {
+        microkit_mr_set(0, VIBEOS_ERR_NO_HANDLE);
+        return microkit_msginfo_new(0, 1);
+    }
+    if (dev_type >= VIBEOS_DEV_COUNT) {
+        microkit_mr_set(0, VIBEOS_ERR_BAD_TYPE);
+        return microkit_msginfo_new(0, 1);
+    }
+    ctx->device_flags &= ~(1u << dev_type);
+    microkit_mr_set(0, VIBEOS_OK);
+    return microkit_msginfo_new(0, 1);
+}
+
+static microkit_msginfo handle_vos_snapshot(void) {
+    uint32_t handle = (uint32_t)microkit_mr_get(1);
+    vibeos_ctx_t *ctx = vibeos_find(handle);
+    if (!ctx) {
+        microkit_mr_set(0, VIBEOS_ERR_NO_HANDLE);
+        return microkit_msginfo_new(0, 1);
+    }
+    if (ctx->state != VIBEOS_STATE_RUNNING && ctx->state != VIBEOS_STATE_PAUSED) {
+        microkit_mr_set(0, VIBEOS_ERR_WRONG_STATE);
+        return microkit_msginfo_new(0, 1);
+    }
+    microkit_mr_set(0, VIBEOS_OK);
+    microkit_mr_set(1, handle);
+    microkit_mr_set(2, 0);
+    microkit_mr_set(3, 0);
+    return microkit_msginfo_new(0, 4);
+}
+
+static microkit_msginfo handle_vos_restore(void) {
+    uint32_t handle  = (uint32_t)microkit_mr_get(1);
+    uint32_t snap_lo = (uint32_t)microkit_mr_get(2);
+    uint32_t snap_hi = (uint32_t)microkit_mr_get(3);
+    (void)snap_lo; (void)snap_hi;
+    vibeos_ctx_t *ctx = vibeos_find(handle);
+    if (!ctx) {
+        microkit_mr_set(0, VIBEOS_ERR_NO_HANDLE);
+        return microkit_msginfo_new(0, 1);
+    }
+    ctx->state = VIBEOS_STATE_BOOTING;
+    microkit_mr_set(0, VIBEOS_OK);
+    return microkit_msginfo_new(0, 1);
+}
+
+static microkit_msginfo handle_vos_migrate(void) {
+    microkit_mr_set(0, VIBEOS_ERR_NOT_IMPL);
+    return microkit_msginfo_new(0, 1);
 }
 
 /* ── Helpers for tests ──────────────────────────────────────────────── */
@@ -549,6 +661,195 @@ static void test_check_service_bad_func_class(void) {
 }
 
 /* ══════════════════════════════════════════════════════════════════════════
+ * Tests: MSG_VIBEOS_DESTROY
+ * ══════════════════════════════════════════════════════════════════════════ */
+
+static void test_destroy_valid(void) {
+    TEST("vibeos_destroy_valid");
+    reset_state();
+    uint32_t h = do_create(VIBEOS_TYPE_LINUX, VIBEOS_ARCH_AARCH64, 512);
+    ASSERT_NE(h, 0, "create succeeded");
+    microkit_mr_set(1, h);
+    handle_vos_destroy();
+    ASSERT_EQ(_stub_mrs[0], VIBEOS_OK, "DESTROY: ok");
+    ASSERT_EQ(vibeos_find(h) == (void*)0, 1, "handle no longer findable");
+}
+
+static void test_destroy_bad_handle(void) {
+    TEST("vibeos_destroy_bad_handle");
+    reset_state();
+    microkit_mr_set(1, 0xDEADBEEFu);
+    handle_vos_destroy();
+    ASSERT_EQ(_stub_mrs[0], VIBEOS_ERR_NO_HANDLE, "DESTROY: bad handle");
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+ * Tests: MSG_VIBEOS_STATUS
+ * ══════════════════════════════════════════════════════════════════════════ */
+
+static void test_status_valid(void) {
+    TEST("vibeos_status_valid");
+    reset_state();
+    uint32_t h = do_create(VIBEOS_TYPE_FREEBSD, VIBEOS_ARCH_AARCH64, 256);
+    ASSERT_NE(h, 0, "create succeeded");
+    microkit_mr_set(1, h);
+    handle_vos_status();
+    ASSERT_EQ(_stub_mrs[0], VIBEOS_OK, "STATUS: ok");
+    ASSERT_EQ(_stub_mrs[1], h, "STATUS: handle matches");
+    ASSERT_EQ(_stub_mrs[2], VIBEOS_STATE_CREATING, "STATUS: state CREATING");
+    ASSERT_EQ(_stub_mrs[3], VIBEOS_TYPE_FREEBSD, "STATUS: os_type FreeBSD");
+    ASSERT_EQ(_stub_mrs[4], 256, "STATUS: ram_mb");
+}
+
+static void test_status_bad_handle(void) {
+    TEST("vibeos_status_bad_handle");
+    reset_state();
+    microkit_mr_set(1, 0xDEADBEEFu);
+    handle_vos_status();
+    ASSERT_EQ(_stub_mrs[0], VIBEOS_ERR_NO_HANDLE, "STATUS: bad handle");
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+ * Tests: MSG_VIBEOS_LIST
+ * ══════════════════════════════════════════════════════════════════════════ */
+
+static void test_list_empty(void) {
+    TEST("vibeos_list_empty");
+    reset_state();
+    microkit_mr_set(1, 0);
+    handle_vos_list();
+    ASSERT_EQ(_stub_mrs[0], VIBEOS_OK, "LIST: ok");
+    ASSERT_EQ(_stub_mrs[1], 0, "LIST: count=0 when empty");
+}
+
+static void test_list_two_instances(void) {
+    TEST("vibeos_list_two_instances");
+    reset_state();
+    uint32_t h1 = do_create(VIBEOS_TYPE_LINUX, VIBEOS_ARCH_AARCH64, 256);
+    uint32_t h2 = do_create(VIBEOS_TYPE_FREEBSD, VIBEOS_ARCH_AARCH64, 512);
+    ASSERT_NE(h1, 0, "create h1");
+    ASSERT_NE(h2, 0, "create h2");
+    microkit_mr_set(1, 0);
+    handle_vos_list();
+    ASSERT_EQ(_stub_mrs[0], VIBEOS_OK, "LIST: ok");
+    ASSERT_EQ(_stub_mrs[1], 2, "LIST: count=2");
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+ * Tests: MSG_VIBEOS_UNBIND_DEVICE
+ * ══════════════════════════════════════════════════════════════════════════ */
+
+static void test_unbind_device_valid(void) {
+    TEST("vibeos_unbind_device_valid");
+    reset_state();
+    uint32_t h = do_create(VIBEOS_TYPE_LINUX, VIBEOS_ARCH_AARCH64, 512);
+    /* Bind serial (dev_type index 0) first */
+    microkit_mr_set(1, h);
+    microkit_mr_set(2, 0);
+    microkit_mr_set(3, 99);
+    handle_vibeos_bind_device();
+    vibeos_ctx_t *ctx = vibeos_find(h);
+    ASSERT_NE((int)(ctx->device_flags & VIBEOS_DEV_SERIAL), 0,
+              "BIND: serial bit set");
+    /* Now unbind */
+    microkit_mr_set(1, h);
+    microkit_mr_set(2, 0);
+    handle_vos_unbind_device();
+    ASSERT_EQ(_stub_mrs[0], VIBEOS_OK, "UNBIND: ok");
+    ASSERT_EQ(ctx->device_flags & VIBEOS_DEV_SERIAL, 0u,
+              "UNBIND: serial bit cleared");
+}
+
+static void test_unbind_device_bad_handle(void) {
+    TEST("vibeos_unbind_device_bad_handle");
+    reset_state();
+    microkit_mr_set(1, 0xDEADBEEFu);
+    microkit_mr_set(2, 0);
+    handle_vos_unbind_device();
+    ASSERT_EQ(_stub_mrs[0], VIBEOS_ERR_NO_HANDLE, "UNBIND: bad handle");
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+ * Tests: MSG_VIBEOS_SNAPSHOT
+ * ══════════════════════════════════════════════════════════════════════════ */
+
+static void test_snapshot_wrong_state(void) {
+    TEST("vibeos_snapshot_wrong_state");
+    reset_state();
+    uint32_t h = do_create(VIBEOS_TYPE_LINUX, VIBEOS_ARCH_AARCH64, 512);
+    /* Default state is CREATING — snapshot should reject */
+    microkit_mr_set(1, h);
+    handle_vos_snapshot();
+    ASSERT_EQ(_stub_mrs[0], VIBEOS_ERR_WRONG_STATE,
+              "SNAPSHOT: rejects CREATING state");
+}
+
+static void test_snapshot_from_running(void) {
+    TEST("vibeos_snapshot_from_running");
+    reset_state();
+    uint32_t h = do_create(VIBEOS_TYPE_LINUX, VIBEOS_ARCH_AARCH64, 512);
+    vibeos_ctx_t *ctx = vibeos_find(h);
+    ctx->state = VIBEOS_STATE_RUNNING;
+    microkit_mr_set(1, h);
+    handle_vos_snapshot();
+    ASSERT_EQ(_stub_mrs[0], VIBEOS_OK, "SNAPSHOT: ok from RUNNING");
+    ASSERT_EQ(_stub_mrs[1], h, "SNAPSHOT: handle in reply");
+}
+
+static void test_snapshot_from_paused(void) {
+    TEST("vibeos_snapshot_from_paused");
+    reset_state();
+    uint32_t h = do_create(VIBEOS_TYPE_LINUX, VIBEOS_ARCH_AARCH64, 512);
+    vibeos_ctx_t *ctx = vibeos_find(h);
+    ctx->state = VIBEOS_STATE_PAUSED;
+    microkit_mr_set(1, h);
+    handle_vos_snapshot();
+    ASSERT_EQ(_stub_mrs[0], VIBEOS_OK, "SNAPSHOT: ok from PAUSED");
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+ * Tests: MSG_VIBEOS_RESTORE
+ * ══════════════════════════════════════════════════════════════════════════ */
+
+static void test_restore_valid(void) {
+    TEST("vibeos_restore_valid");
+    reset_state();
+    uint32_t h = do_create(VIBEOS_TYPE_LINUX, VIBEOS_ARCH_AARCH64, 512);
+    microkit_mr_set(1, h);
+    microkit_mr_set(2, 0xABCD1234u);
+    microkit_mr_set(3, 0x00000001u);
+    handle_vos_restore();
+    ASSERT_EQ(_stub_mrs[0], VIBEOS_OK, "RESTORE: ok");
+    vibeos_ctx_t *ctx = vibeos_find(h);
+    ASSERT_EQ(ctx->state, VIBEOS_STATE_BOOTING, "RESTORE: state → BOOTING");
+}
+
+static void test_restore_bad_handle(void) {
+    TEST("vibeos_restore_bad_handle");
+    reset_state();
+    microkit_mr_set(1, 0xDEADBEEFu);
+    microkit_mr_set(2, 0);
+    microkit_mr_set(3, 0);
+    handle_vos_restore();
+    ASSERT_EQ(_stub_mrs[0], VIBEOS_ERR_NO_HANDLE, "RESTORE: bad handle");
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+ * Tests: MSG_VIBEOS_MIGRATE
+ * ══════════════════════════════════════════════════════════════════════════ */
+
+static void test_migrate_not_impl(void) {
+    TEST("vibeos_migrate_not_impl");
+    reset_state();
+    uint32_t h = do_create(VIBEOS_TYPE_LINUX, VIBEOS_ARCH_AARCH64, 512);
+    microkit_mr_set(1, h);
+    microkit_mr_set(2, 1);
+    handle_vos_migrate();
+    ASSERT_EQ(_stub_mrs[0], VIBEOS_ERR_NOT_IMPL,
+              "MIGRATE: returns ERR_NOT_IMPL (Phase 4+ placeholder)");
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
  * Main
  * ══════════════════════════════════════════════════════════════════════════ */
 
@@ -580,6 +881,27 @@ int main(void)
     test_check_service_not_registered();
     test_check_service_registered();
     test_check_service_bad_func_class();
+
+    test_destroy_valid();
+    test_destroy_bad_handle();
+
+    test_status_valid();
+    test_status_bad_handle();
+
+    test_list_empty();
+    test_list_two_instances();
+
+    test_unbind_device_valid();
+    test_unbind_device_bad_handle();
+
+    test_snapshot_wrong_state();
+    test_snapshot_from_running();
+    test_snapshot_from_paused();
+
+    test_restore_valid();
+    test_restore_bad_handle();
+
+    test_migrate_not_impl();
 
     printf("\n══════════════════════════════════════════════════════════\n");
     printf("Results: %d passed, %d failed\n", tests_passed, tests_failed);
