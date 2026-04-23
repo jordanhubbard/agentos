@@ -1476,6 +1476,13 @@
 
     <!--
       ══════════════════════════════════════════════════════════════════
+      ProcServer: process table and signal delivery (passive, prio 160)
+      Track F — HURD-parity proc server
+      ══════════════════════════════════════════════════════════════════
+    -->
+
+    <!--
+      ══════════════════════════════════════════════════════════════════
       pflocal_server: AF-UNIX domain socket emulation (passive, prio 155)
       HURD-equivalent: pflocal translator
       ══════════════════════════════════════════════════════════════════
@@ -1581,6 +1588,13 @@
         <end pd="virtio_blk" id="3" />
     </channel>
 
+    <!-- Channel: controller(id=27, pp=true) → proc_server(id=0)
+         Controller PPCs into proc_server for all process lifecycle operations. -->
+    <channel>
+        <end pd="controller"  id="27" pp="true" />
+        <end pd="proc_server" id="0" />
+    </channel>
+
     <!--
       ══════════════════════════════════════════════════════════════════
       GPU Scheduler: CUDA workload router (passive, prio 120)
@@ -1683,4 +1697,68 @@
         <end pd="gpu_sched"      id="7" />
     </channel>
 
+    <!--
+      ══════════════════════════════════════════════════════════════════
+      pflocal_server: AF_UNIX-equivalent local socket server (passive, prio 155)
+      Track G — HURD-parity pflocal server
+
+      Provides AF_UNIX-like local sockets via shared memory rings.
+      Each socket gets a 4KB slot in pflocal_shmem (16 slots × 4KB = 64KB).
+      Supports: socket, bind, listen, connect, accept, send, recv, close, status.
+
+      Channel:
+        id=0: controller (pp=true) — all pflocal_server operations
+
+      Shared memory:
+        pflocal_shmem (64KB): socket ring buffers + path staging area
+          pflocal_server owns all ring buffer writes.
+          Callers write data before OP_PFLOCAL_SEND; read after OP_PFLOCAL_RECV.
+      ══════════════════════════════════════════════════════════════════
+    -->
+
+    <!-- exec_shmem: 64KB shared memory for ELF path staging on OP_EXEC_LAUNCH.
+         Write access: controller only (writes null-terminated path before PPC).
+         Read access:  exec_server (reads path string during LAUNCH handler).
+         Cap class:    AGENTOS_CAP_SPAWN (exec launch requires spawn capability).
+         Threat:       rogue PD injecting crafted paths to execute arbitrary ELFs;
+                       mitigated by controller-only write mapping + PPC gate. -->
+    <memory_region name="exec_shmem" size="0x10000" />
+
+    <protection_domain name="exec_server" priority="150" passive="true">
+        <program_image path="exec_server.elf" />
+        <map mr="exec_shmem" vaddr="0x3500000" perms="rw" cached="true"
+             setvar_vaddr="exec_shmem_vaddr" />
+    </protection_domain>
+
+    <!-- Channel 28: controller(id=28, pp=true) → exec_server(id=0)
+         Controller PPCs into exec_server for all ELF launch/status operations. -->
+    <channel>
+        <end pd="controller"  id="28" pp="true" />
+        <end pd="exec_server" id="0" />
+    </channel>
+
+    <!-- Channels 34-37: exec_server ↔ app_slot_0..3 (bidirectional notify).
+         exec_server notifies slot to begin loading; slot notifies back when done.
+         exec_server sees these as ids 34-37 (CH_APP_SLOT_0 + slot_id).
+         app_slot sees exec_server as id=1 (CH_EXEC). -->
+    <channel>
+        <end pd="exec_server" id="34" />
+        <end pd="app_slot_0"  id="1" />
+    </channel>
+    <channel>
+        <end pd="exec_server" id="35" />
+        <end pd="app_slot_1"  id="1" />
+    </channel>
+    <channel>
+        <end pd="exec_server" id="36" />
+        <end pd="app_slot_2"  id="1" />
+    </channel>
+    <channel>
+        <end pd="exec_server" id="37" />
+        <end pd="app_slot_3"  id="1" />
+    </channel>
+
+    <!-- controller maps exec_shmem rw to stage ELF paths for OP_EXEC_LAUNCH -->
+    <map pd="controller" mr="exec_shmem" vaddr="0x3500000" perms="rw" cached="true"
+         setvar_vaddr="exec_shmem_ctrl_vaddr" />
 </system>

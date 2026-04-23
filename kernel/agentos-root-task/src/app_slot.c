@@ -36,6 +36,8 @@ uintptr_t log_drain_rings_vaddr;
 
 /* Channel: channel 0 is spawn_server (notify both ways) */
 #define CH_SPAWN  0
+/* Channel: channel 1 is exec_server (notify: exec_server signals slot to load) */
+#define CH_EXEC   1
 
 /* Slot failure: if ELF hash verification fails we enter this state
  * and do NOT notify SpawnServer — the slot stalls until recycled. */
@@ -88,6 +90,28 @@ void init(void)
 
 void notified(microkit_channel ch)
 {
+    /*
+     * exec_server fires CH_EXEC (id=1) to signal that an ELF has been
+     * staged in exec_shmem.  Validate the ELF magic and transition the
+     * slot to RUNNING.  In production, seL4_TCB_WriteRegisters + Resume
+     * would follow the magic check.
+     */
+    if (ch == CH_EXEC) {
+        if (spawn_elf_shmem_vaddr) {
+            uint8_t *elf = (uint8_t *)spawn_elf_shmem_vaddr;
+            if (elf[0] == 0x7Fu && elf[1] == 'E' && elf[2] == 'L' && elf[3] == 'F') {
+                /* Valid ELF: set slot state to RUNNING */
+                microkit_dbg_puts("[app_slot] ELF magic validated — slot running\n");
+                /* Notify exec_server that we're ready */
+                /* In production: seL4_TCB_WriteRegisters + Resume here */
+                microkit_notify(CH_EXEC);
+            } else {
+                microkit_dbg_puts("[app_slot] not an ELF — ignored\n");
+            }
+        }
+        return;
+    }
+
     if (ch != CH_SPAWN) return;
 
     if (!spawn_elf_shmem_vaddr) {

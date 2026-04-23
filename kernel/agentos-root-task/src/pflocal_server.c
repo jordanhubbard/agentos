@@ -7,19 +7,25 @@
  * Provides POSIX-style Unix domain sockets over shmem ring buffers.
  * Supports up to PFLOCAL_MAX_SOCKS sockets with 4KB I/O slots each.
  *
+ * Socket lifecycle:
+ *   SOCKET → BOUND → LISTENING → ACCEPTING
+ *   SOCKET → CONNECTING → CONNECTED
+ *   Any state → CLOSED
+ *
  * Channel assignments:
  *   id=0: receives PPC from controller (CH_PFLOCAL_SERVER = 26)
  *
  * Shared memory layout (pflocal_shmem, 64KB total):
  *   Slot N (N=0..15):
- *     [0x000..0x00F]  ring_hdr_t  (head=4, tail=4, cap=4, magic=4)
- *     [0x010..0xFFF]  4080 bytes ring data
+ *     [0x000..0x00F]  ring_header_t  (magic=4, head=2, tail=2, capacity=2, pad=6)
+ *     [0x010..0xFFF]  ring data
+ *   pflocal_shmem[0..63] — path staging area (null-terminated string)
  *
  * Opcodes (all in agentos.h):
  *   OP_PFLOCAL_SOCKET  0xD0  → ok + sock_id + slot_offset
- *   OP_PFLOCAL_BIND    0xD1  MR1=sock_id  path in shmem slot 0..7 bytes
+ *   OP_PFLOCAL_BIND    0xD1  MR1=sock_id  path in pflocal_shmem[0]
  *   OP_PFLOCAL_LISTEN  0xD2  MR1=sock_id
- *   OP_PFLOCAL_CONNECT 0xD3  MR1=sock_id  path in shmem slot 0..7 bytes
+ *   OP_PFLOCAL_CONNECT 0xD3  MR1=sock_id  path in pflocal_shmem[0]
  *   OP_PFLOCAL_ACCEPT  0xD4  MR1=sock_id → ok + new_sock_id + peer_slot
  *   OP_PFLOCAL_SEND    0xD5  MR1=sock_id MR2=shmem_offset MR3=len → ok+sent
  *   OP_PFLOCAL_RECV    0xD6  MR1=sock_id MR2=shmem_offset MR3=max → ok+recv
@@ -30,415 +36,348 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#define AGENTOS_DEBUG 1
 #include "agentos.h"
-#include <stdbool.h>
-#include <stdint.h>
-#include <stddef.h>
-#include <string.h>
 
-/* ── Configuration ─────────────────────────────────────────────────────── */
-#define PFLOCAL_MAX_SOCKS  16u
-#define PFLOCAL_SLOT_SIZE  0x1000u   /* 4KB per socket slot */
-#define RING_HDR_SIZE      16u
-#define RING_DATA_SIZE     (PFLOCAL_SLOT_SIZE - RING_HDR_SIZE)  /* 4080 bytes */
-#define RING_MAGIC         0x5246494eu  /* "NIFR" */
-#define PFLOCAL_PATH_MAX   64u
+/* ── Shared memory ─────────────────────────────────────────────────────────── */
+uintptr_t pflocal_shmem_vaddr;
+#define PFLOCAL_SHMEM_SIZE   0x10000u  /* 64KB = 16 slots × 4KB */
+#define PFLOCAL_SLOT_SIZE    0x1000u   /* 4KB per slot */
+#define PFLOCAL_MAX_SOCKS    16u
+#define PFLOCAL_PATH_MAX     64u
+
+/* Ring header at start of each slot */
+typedef struct __attribute__((packed)) {
+    uint32_t magic;    /* 0xAF4E4958 = "UNIX" */
+    uint16_t head;     /* write head (producer) */
+    uint16_t tail;     /* read tail (consumer) */
+    uint16_t capacity; /* usable bytes = PFLOCAL_SLOT_SIZE - sizeof(ring_header_t) */
+    uint16_t _pad;
+    uint32_t _reserved;
+} ring_header_t;
+
+#define RING_MAGIC      0xAF4E4958u
+#define RING_DATA_SIZE  (PFLOCAL_SLOT_SIZE - (uint32_t)sizeof(ring_header_t))
 
 /* Socket states */
-#define SOCK_FREE      0u
-#define SOCK_CREATED   1u
-#define SOCK_BOUND     2u
-#define SOCK_LISTENING 3u
-#define SOCK_CONNECTED 4u
-#define SOCK_ACCEPTED  5u
+#define SOCK_FREE        0u
+#define SOCK_CREATED     1u
+#define SOCK_BOUND       2u
+#define SOCK_LISTENING   3u
+#define SOCK_CONNECTING  4u
+#define SOCK_CONNECTED   5u
+#define SOCK_ACCEPTED    5u   /* alias: accepted sockets also use CONNECTED state */
+#define SOCK_CLOSED      6u
 
-/* ── Shared memory ─────────────────────────────────────────────────────── */
-uintptr_t pflocal_shmem_vaddr;   /* set by Microkit linker */
-
-/* ── Ring buffer header (at start of each 4KB slot) ───────────────────── */
-typedef struct {
-    uint32_t head;
-    uint32_t tail;
-    uint32_t cap;
-    uint32_t magic;
-} ring_hdr_t;
-
-/* ── Socket entry ─────────────────────────────────────────────────────── */
 typedef struct {
     uint8_t  state;
-    uint8_t  slot_id;          /* which 4KB slot owns the ring buffer */
-    uint8_t  _pad[2];
-    uint32_t peer_sock_id;     /* linked socket (after ACCEPT) */
-    uint32_t backlog_sock_id;  /* pending accept queue (single entry) */
-    char     path[PFLOCAL_PATH_MAX];
+    uint8_t  slot_id;      /* which shmem slot this socket owns */
+    uint8_t  peer_sock_id; /* connected peer socket ID (0xFF = none) */
+    uint8_t  _pad;
+    char     path[PFLOCAL_PATH_MAX]; /* bind path (empty if not bound) */
 } pflocal_sock_t;
 
 static pflocal_sock_t socks[PFLOCAL_MAX_SOCKS];
-static uint32_t       next_sock_id = 1;
 
-/* ── Helpers ──────────────────────────────────────────────────────────── */
-static inline ring_hdr_t *slot_hdr(uint8_t slot_id)
+/* ── Helpers ───────────────────────────────────────────────────────────────── */
+
+static ring_header_t *slot_ring(uint8_t slot_id)
 {
-    return (ring_hdr_t *)(pflocal_shmem_vaddr + (uintptr_t)slot_id * PFLOCAL_SLOT_SIZE);
+    return (ring_header_t *)(pflocal_shmem_vaddr +
+                             (uintptr_t)slot_id * PFLOCAL_SLOT_SIZE);
 }
 
-static inline uint8_t *slot_data(uint8_t slot_id)
+static uint8_t *slot_data(uint8_t slot_id)
 {
-    return (uint8_t *)(pflocal_shmem_vaddr + (uintptr_t)slot_id * PFLOCAL_SLOT_SIZE
-                       + RING_HDR_SIZE);
+    return (uint8_t *)(pflocal_shmem_vaddr +
+                       (uintptr_t)slot_id * PFLOCAL_SLOT_SIZE +
+                       sizeof(ring_header_t));
 }
 
 static void ring_init(uint8_t slot_id)
 {
-    ring_hdr_t *h = slot_hdr(slot_id);
-    h->head  = 0;
-    h->tail  = 0;
-    h->cap   = RING_DATA_SIZE;
-    h->magic = RING_MAGIC;
+    ring_header_t *r = slot_ring(slot_id);
+    r->head     = 0;
+    r->tail     = 0;
+    r->capacity = (uint16_t)RING_DATA_SIZE;
+    r->_pad     = 0;
+    r->_reserved = 0;
+    r->magic    = RING_MAGIC;
 }
 
-static uint32_t ring_write(uint8_t slot_id, const uint8_t *src, uint32_t len)
+/* Simple string equality — no libc */
+static int str_eq(const char *a, const char *b)
 {
-    ring_hdr_t *h    = slot_hdr(slot_id);
-    uint8_t    *data = slot_data(slot_id);
-    uint32_t    free_space;
-
-    if (h->magic != RING_MAGIC) return 0;
-    if (h->tail >= h->head)
-        free_space = h->cap - (h->tail - h->head);
-    else
-        free_space = h->head - h->tail;
-    if (free_space == 0) return 0;
-    if (len > free_space) len = free_space;
-
-    for (uint32_t i = 0; i < len; i++) {
-        data[h->tail % h->cap] = src[i];
-        h->tail++;
+    while (*a && *b) {
+        if (*a != *b) return 0;
+        a++; b++;
     }
-    return len;
+    return (*a == '\0' && *b == '\0');
 }
 
-static uint32_t ring_read(uint8_t slot_id, uint8_t *dst, uint32_t max)
+/* Copy at most n-1 bytes from src to dst, always null-terminate */
+static void str_ncopy(char *dst, const char *src, uint32_t n)
 {
-    ring_hdr_t *h    = slot_hdr(slot_id);
-    uint8_t    *data = slot_data(slot_id);
-    uint32_t    avail;
-
-    if (h->magic != RING_MAGIC) return 0;
-    avail = h->tail - h->head;
-    if (avail == 0) return 0;
-    if (max > avail) max = avail;
-
-    for (uint32_t i = 0; i < max; i++) {
-        dst[i] = data[h->head % h->cap];
-        h->head++;
-    }
-    return max;
+    uint32_t i;
+    for (i = 0; i < n - 1u && src[i]; i++)
+        dst[i] = src[i];
+    dst[i] = '\0';
 }
 
-static pflocal_sock_t *find_sock(uint32_t sock_id)
+/*
+ * find_bound_sock — scan for a SOCK_LISTENING socket with matching path.
+ * Returns sock_id [0..PFLOCAL_MAX_SOCKS-1] or -1 if not found.
+ */
+static int find_bound_sock(const char *path)
 {
     for (uint32_t i = 0; i < PFLOCAL_MAX_SOCKS; i++) {
-        if (socks[i].state != SOCK_FREE && (i + 1u) == sock_id)
-            return &socks[i];
+        if (socks[i].state == SOCK_LISTENING && str_eq(socks[i].path, path))
+            return (int)i;
     }
-    return NULL;
+    return -1;
 }
 
-static pflocal_sock_t *find_by_path(const char *path)
-{
-    for (uint32_t i = 0; i < PFLOCAL_MAX_SOCKS; i++) {
-        if (socks[i].state >= SOCK_BOUND) {
-            /* strncmp without libc */
-            const char *a = socks[i].path, *b = path;
-            bool match = true;
-            for (uint32_t j = 0; j < PFLOCAL_PATH_MAX; j++) {
-                if (a[j] != b[j]) { match = false; break; }
-                if (a[j] == '\0') break;
-            }
-            if (match) return &socks[i];
-        }
-    }
-    return NULL;
-}
+/* ── Microkit entry points ─────────────────────────────────────────────────── */
 
-static uint8_t find_free_slot(void)
-{
-    for (uint8_t i = 0; i < PFLOCAL_MAX_SOCKS; i++) {
-        ring_hdr_t *h = slot_hdr(i);
-        if (h->magic != RING_MAGIC) return i;
-    }
-    return 0xFF;
-}
-
-/* ── IPC dispatch ─────────────────────────────────────────────────────── */
-static microkit_msginfo handle_socket(void)
-{
-    /* find free sock entry */
-    uint32_t idx = PFLOCAL_MAX_SOCKS;
-    for (uint32_t i = 0; i < PFLOCAL_MAX_SOCKS; i++) {
-        if (socks[i].state == SOCK_FREE) { idx = i; break; }
-    }
-    if (idx == PFLOCAL_MAX_SOCKS) {
-        microkit_mr_set(0, 0);
-        return microkit_msginfo_new(0, 1);
-    }
-
-    uint8_t slot = find_free_slot();
-    if (slot == 0xFF) {
-        microkit_mr_set(0, 0);
-        return microkit_msginfo_new(0, 1);
-    }
-
-    ring_init(slot);
-    socks[idx].state        = SOCK_CREATED;
-    socks[idx].slot_id      = slot;
-    socks[idx].peer_sock_id = 0;
-    socks[idx].backlog_sock_id = 0;
-    socks[idx].path[0]      = '\0';
-
-    uint32_t sock_id = idx + 1u;
-    uint32_t offset  = (uint32_t)(idx * PFLOCAL_SLOT_SIZE);
-
-    microkit_mr_set(0, 1);
-    microkit_mr_set(1, sock_id);
-    microkit_mr_set(2, offset);
-    return microkit_msginfo_new(0, 3);
-}
-
-static microkit_msginfo handle_bind(void)
-{
-    uint32_t sock_id = (uint32_t)microkit_mr_get(1);
-    pflocal_sock_t *s = find_sock(sock_id);
-    if (!s || s->state != SOCK_CREATED) {
-        microkit_mr_set(0, 0);
-        return microkit_msginfo_new(0, 1);
-    }
-
-    /* path is in shmem slot for this socket, at slot_data offset 0 */
-    const char *path = (const char *)slot_data(s->slot_id);
-    uint32_t i = 0;
-    for (; i < PFLOCAL_PATH_MAX - 1 && path[i] != '\0'; i++)
-        s->path[i] = path[i];
-    s->path[i] = '\0';
-    s->state = SOCK_BOUND;
-
-    microkit_mr_set(0, 1);
-    return microkit_msginfo_new(0, 1);
-}
-
-static microkit_msginfo handle_listen(void)
-{
-    uint32_t sock_id = (uint32_t)microkit_mr_get(1);
-    pflocal_sock_t *s = find_sock(sock_id);
-    if (!s || s->state != SOCK_BOUND) {
-        microkit_mr_set(0, 0);
-        return microkit_msginfo_new(0, 1);
-    }
-    s->state = SOCK_LISTENING;
-    microkit_mr_set(0, 1);
-    return microkit_msginfo_new(0, 1);
-}
-
-static microkit_msginfo handle_connect(void)
-{
-    uint32_t sock_id = (uint32_t)microkit_mr_get(1);
-    pflocal_sock_t *client = find_sock(sock_id);
-    if (!client || client->state != SOCK_CREATED) {
-        microkit_mr_set(0, 0);
-        return microkit_msginfo_new(0, 1);
-    }
-
-    /* path is at slot_data offset 0 of client's ring slot */
-    const char *path = (const char *)slot_data(client->slot_id);
-    pflocal_sock_t *server = find_by_path(path);
-    if (!server || server->state != SOCK_LISTENING) {
-        microkit_mr_set(0, 0);
-        return microkit_msginfo_new(0, 1);
-    }
-
-    uint32_t client_id = (uint32_t)(client - socks) + 1u;
-    server->backlog_sock_id = client_id;
-    client->state = SOCK_CONNECTED;
-
-    microkit_mr_set(0, 1);
-    return microkit_msginfo_new(0, 1);
-}
-
-static microkit_msginfo handle_accept(void)
-{
-    uint32_t sock_id = (uint32_t)microkit_mr_get(1);
-    pflocal_sock_t *server = find_sock(sock_id);
-    if (!server || server->state != SOCK_LISTENING || server->backlog_sock_id == 0) {
-        microkit_mr_set(0, 0);
-        return microkit_msginfo_new(0, 1);
-    }
-
-    uint32_t client_id = server->backlog_sock_id;
-    server->backlog_sock_id = 0;
-
-    /* create a new accepted socket */
-    uint32_t idx = PFLOCAL_MAX_SOCKS;
-    for (uint32_t i = 0; i < PFLOCAL_MAX_SOCKS; i++) {
-        if (socks[i].state == SOCK_FREE) { idx = i; break; }
-    }
-    if (idx == PFLOCAL_MAX_SOCKS) {
-        microkit_mr_set(0, 0);
-        return microkit_msginfo_new(0, 1);
-    }
-
-    uint8_t slot = find_free_slot();
-    if (slot == 0xFF) {
-        microkit_mr_set(0, 0);
-        return microkit_msginfo_new(0, 1);
-    }
-
-    ring_init(slot);
-    socks[idx].state        = SOCK_ACCEPTED;
-    socks[idx].slot_id      = slot;
-    socks[idx].peer_sock_id = client_id;
-    socks[idx].backlog_sock_id = 0;
-    socks[idx].path[0]      = '\0';
-
-    /* wire the client's peer to the new accepted socket */
-    pflocal_sock_t *client = find_sock(client_id);
-    if (client) client->peer_sock_id = idx + 1u;
-
-    uint32_t new_id = idx + 1u;
-    microkit_mr_set(0, 1);
-    microkit_mr_set(1, new_id);
-    microkit_mr_set(2, (uint32_t)(idx * PFLOCAL_SLOT_SIZE));
-    return microkit_msginfo_new(0, 3);
-}
-
-static microkit_msginfo handle_send(void)
-{
-    uint32_t sock_id = (uint32_t)microkit_mr_get(1);
-    uint32_t offset  = (uint32_t)microkit_mr_get(2);
-    uint32_t len     = (uint32_t)microkit_mr_get(3);
-    pflocal_sock_t *s = find_sock(sock_id);
-
-    if (!s || (s->state != SOCK_CONNECTED && s->state != SOCK_ACCEPTED)) {
-        microkit_mr_set(0, 0);
-        return microkit_msginfo_new(0, 1);
-    }
-
-    /* write into the peer's ring buffer */
-    pflocal_sock_t *peer = find_sock(s->peer_sock_id);
-    if (!peer) {
-        microkit_mr_set(0, 0);
-        return microkit_msginfo_new(0, 1);
-    }
-
-    const uint8_t *src = (const uint8_t *)(pflocal_shmem_vaddr + offset);
-    uint32_t sent = ring_write(peer->slot_id, src, len);
-
-    microkit_mr_set(0, 1);
-    microkit_mr_set(1, sent);
-    return microkit_msginfo_new(0, 2);
-}
-
-static microkit_msginfo handle_recv(void)
-{
-    uint32_t sock_id = (uint32_t)microkit_mr_get(1);
-    uint32_t offset  = (uint32_t)microkit_mr_get(2);
-    uint32_t max     = (uint32_t)microkit_mr_get(3);
-    pflocal_sock_t *s = find_sock(sock_id);
-
-    if (!s || (s->state != SOCK_CONNECTED && s->state != SOCK_ACCEPTED)) {
-        microkit_mr_set(0, 0);
-        return microkit_msginfo_new(0, 1);
-    }
-
-    uint8_t *dst  = (uint8_t *)(pflocal_shmem_vaddr + offset);
-    uint32_t recv = ring_read(s->slot_id, dst, max);
-
-    microkit_mr_set(0, 1);
-    microkit_mr_set(1, recv);
-    return microkit_msginfo_new(0, 2);
-}
-
-static microkit_msginfo handle_close(void)
-{
-    uint32_t sock_id = (uint32_t)microkit_mr_get(1);
-    pflocal_sock_t *s = find_sock(sock_id);
-    if (!s) {
-        microkit_mr_set(0, 0);
-        return microkit_msginfo_new(0, 1);
-    }
-
-    /* notify peer of closure */
-    if (s->peer_sock_id != 0) {
-        pflocal_sock_t *peer = find_sock(s->peer_sock_id);
-        if (peer) peer->peer_sock_id = 0;
-    }
-
-    /* invalidate ring slot */
-    ring_hdr_t *h = slot_hdr(s->slot_id);
-    h->magic = 0;
-
-    s->state        = SOCK_FREE;
-    s->peer_sock_id = 0;
-    s->path[0]      = '\0';
-
-    microkit_mr_set(0, 1);
-    return microkit_msginfo_new(0, 1);
-}
-
-static microkit_msginfo handle_status(void)
-{
-    uint32_t sock_id = (uint32_t)microkit_mr_get(1);
-    pflocal_sock_t *s = find_sock(sock_id);
-    if (!s) {
-        microkit_mr_set(0, 0);
-        return microkit_msginfo_new(0, 1);
-    }
-    microkit_mr_set(0, 1);
-    microkit_mr_set(1, s->state);
-    microkit_mr_set(2, s->peer_sock_id);
-    return microkit_msginfo_new(0, 3);
-}
-
-/* ── Microkit entry points ────────────────────────────────────────────── */
 void init(void)
 {
-    /* Zero all socket state */
     for (uint32_t i = 0; i < PFLOCAL_MAX_SOCKS; i++) {
-        socks[i].state        = SOCK_FREE;
-        socks[i].slot_id      = (uint8_t)i;
-        socks[i].peer_sock_id = 0;
-        socks[i].backlog_sock_id = 0;
-        socks[i].path[0]      = '\0';
+        socks[i].state       = SOCK_FREE;
+        socks[i].slot_id     = (uint8_t)i;
+        socks[i].peer_sock_id = 0xFFu;
+        socks[i]._pad        = 0;
+        socks[i].path[0]     = '\0';
     }
 
-    microkit_dbg_puts("[pflocal] AF_UNIX socket server ready (16 slots, 64KB shmem)\n");
+    if (pflocal_shmem_vaddr) {
+        for (uint32_t i = 0; i < PFLOCAL_MAX_SOCKS; i++)
+            ring_init((uint8_t)i);
+        microkit_dbg_puts("[pflocal] init: 16 slots, shmem mapped\n");
+    } else {
+        microkit_dbg_puts("[pflocal] init: 16 slots, shmem not-mapped\n");
+    }
 }
+
+void notified(microkit_channel ch) { (void)ch; }
 
 microkit_msginfo protected(microkit_channel ch, microkit_msginfo msg)
 {
-    (void)ch;
-    (void)msg;
-    uint32_t op = (uint32_t)microkit_mr_get(0);
+    (void)ch; (void)msg;
+    uint32_t op      = (uint32_t)microkit_mr_get(0);
+    uint32_t sock_id = (uint32_t)microkit_mr_get(1);
 
     switch (op) {
-    case OP_PFLOCAL_SOCKET:  return handle_socket();
-    case OP_PFLOCAL_BIND:    return handle_bind();
-    case OP_PFLOCAL_LISTEN:  return handle_listen();
-    case OP_PFLOCAL_CONNECT: return handle_connect();
-    case OP_PFLOCAL_ACCEPT:  return handle_accept();
-    case OP_PFLOCAL_SEND:    return handle_send();
-    case OP_PFLOCAL_RECV:    return handle_recv();
-    case OP_PFLOCAL_CLOSE:   return handle_close();
-    case OP_PFLOCAL_STATUS:  return handle_status();
-    default:
-        microkit_dbg_puts("[pflocal] unknown opcode\n");
-        microkit_mr_set(0, 0);
+
+    /* OP_PFLOCAL_SOCKET: allocate a new local socket.
+     * → MR0=ok(0)/err, MR1=sock_id, MR2=slot_offset */
+    case OP_PFLOCAL_SOCKET: {
+        uint32_t id = PFLOCAL_MAX_SOCKS;
+        for (uint32_t i = 0; i < PFLOCAL_MAX_SOCKS; i++) {
+            if (socks[i].state == SOCK_FREE) { id = i; break; }
+        }
+        if (id == PFLOCAL_MAX_SOCKS) {
+            /* No free slots */
+            microkit_mr_set(0, 0xFDu);  /* PFLOCAL_ERR_FULL */
+            return microkit_msginfo_new(0, 1);
+        }
+        socks[id].state        = SOCK_CREATED;
+        socks[id].slot_id      = (uint8_t)id;
+        socks[id].peer_sock_id = 0xFFu;
+        socks[id].path[0]      = '\0';
+        if (pflocal_shmem_vaddr)
+            ring_init((uint8_t)id);
+        microkit_mr_set(0, 0u);
+        microkit_mr_set(1, id);
+        microkit_mr_set(2, id * PFLOCAL_SLOT_SIZE);
+        return microkit_msginfo_new(0, 3);
+    }
+
+    /* OP_PFLOCAL_BIND: MR1=sock_id; path is null-terminated at pflocal_shmem[0].
+     * → MR0=ok */
+    case OP_PFLOCAL_BIND: {
+        if (sock_id >= PFLOCAL_MAX_SOCKS || socks[sock_id].state == SOCK_FREE) {
+            microkit_mr_set(0, 0xFFu);
+            return microkit_msginfo_new(0, 1);
+        }
+        if (pflocal_shmem_vaddr) {
+            const char *path = (const char *)pflocal_shmem_vaddr;
+            str_ncopy(socks[sock_id].path, path, sizeof(socks[sock_id].path));
+        }
+        socks[sock_id].state = SOCK_BOUND;
+        microkit_mr_set(0, 0u);
         return microkit_msginfo_new(0, 1);
     }
-}
 
-void notified(microkit_channel ch)
-{
-    (void)ch;
-    /* no async notifications needed */
+    /* OP_PFLOCAL_LISTEN: MR1=sock_id → MR0=ok */
+    case OP_PFLOCAL_LISTEN: {
+        if (sock_id >= PFLOCAL_MAX_SOCKS || socks[sock_id].state == SOCK_FREE) {
+            microkit_mr_set(0, 0xFFu);
+            return microkit_msginfo_new(0, 1);
+        }
+        socks[sock_id].state = SOCK_LISTENING;
+        microkit_mr_set(0, 0u);
+        return microkit_msginfo_new(0, 1);
+    }
+
+    /* OP_PFLOCAL_CONNECT: MR1=sock_id; path at pflocal_shmem[0].
+     * Finds a SOCK_LISTENING socket with matching path and connects.
+     * → MR0=ok */
+    case OP_PFLOCAL_CONNECT: {
+        if (sock_id >= PFLOCAL_MAX_SOCKS || socks[sock_id].state == SOCK_FREE) {
+            microkit_mr_set(0, 0xFFu);
+            return microkit_msginfo_new(0, 1);
+        }
+        if (!pflocal_shmem_vaddr) {
+            microkit_mr_set(0, 0xFEu);  /* PFLOCAL_ERR_NO_SHMEM */
+            return microkit_msginfo_new(0, 1);
+        }
+        const char *path = (const char *)pflocal_shmem_vaddr;
+        int server_id = find_bound_sock(path);
+        if (server_id < 0) {
+            microkit_mr_set(0, 0xFEu);  /* PFLOCAL_ERR_NOENT */
+            return microkit_msginfo_new(0, 1);
+        }
+        socks[sock_id].state        = SOCK_CONNECTED;
+        socks[sock_id].peer_sock_id = (uint8_t)server_id;
+        socks[(uint8_t)server_id].peer_sock_id = (uint8_t)sock_id;
+        microkit_mr_set(0, 0u);
+        return microkit_msginfo_new(0, 1);
+    }
+
+    /* OP_PFLOCAL_ACCEPT: MR1=sock_id (listening).
+     * Returns the first connected socket whose peer == sock_id.
+     * → MR0=ok, MR1=new_sock_id, MR2=peer_slot_offset */
+    case OP_PFLOCAL_ACCEPT: {
+        if (sock_id >= PFLOCAL_MAX_SOCKS || socks[sock_id].state == SOCK_FREE) {
+            microkit_mr_set(0, 0xFFu);
+            return microkit_msginfo_new(0, 1);
+        }
+        /* Find a socket in SOCK_CONNECTED state whose peer is this server */
+        uint32_t new_id = PFLOCAL_MAX_SOCKS;
+        for (uint32_t i = 0; i < PFLOCAL_MAX_SOCKS; i++) {
+            if (socks[i].state == SOCK_CONNECTED &&
+                socks[i].peer_sock_id == (uint8_t)sock_id) {
+                new_id = i;
+                break;
+            }
+        }
+        if (new_id == PFLOCAL_MAX_SOCKS) {
+            microkit_mr_set(0, 0xFCu);  /* PFLOCAL_ERR_AGAIN: no pending connection */
+            return microkit_msginfo_new(0, 1);
+        }
+        uint32_t peer_slot = (uint32_t)socks[new_id].slot_id * PFLOCAL_SLOT_SIZE;
+        microkit_mr_set(0, 0u);
+        microkit_mr_set(1, new_id);
+        microkit_mr_set(2, peer_slot);
+        return microkit_msginfo_new(0, 3);
+    }
+
+    /* OP_PFLOCAL_SEND: MR1=sock_id, MR2=src_offset (into pflocal_shmem), MR3=len.
+     * Copies len bytes from pflocal_shmem+src_offset into peer's ring buffer.
+     * → MR0=ok, MR1=bytes_sent */
+    case OP_PFLOCAL_SEND: {
+        uint32_t src_offset = (uint32_t)microkit_mr_get(2);
+        uint32_t len        = (uint32_t)microkit_mr_get(3);
+
+        if (sock_id >= PFLOCAL_MAX_SOCKS || socks[sock_id].state != SOCK_CONNECTED) {
+            microkit_mr_set(0, 0xFFu);
+            return microkit_msginfo_new(0, 1);
+        }
+        uint8_t peer_id = socks[sock_id].peer_sock_id;
+        if (peer_id >= PFLOCAL_MAX_SOCKS || socks[peer_id].state == SOCK_FREE) {
+            microkit_mr_set(0, 0xFBu);  /* PFLOCAL_ERR_PEER_GONE */
+            return microkit_msginfo_new(0, 1);
+        }
+        if (!pflocal_shmem_vaddr || len == 0u) {
+            microkit_mr_set(0, 0u);
+            microkit_mr_set(1, 0u);
+            return microkit_msginfo_new(0, 2);
+        }
+
+        ring_header_t *ring = slot_ring(socks[peer_id].slot_id);
+        uint8_t       *data = slot_data(socks[peer_id].slot_id);
+        const uint8_t *src  = (const uint8_t *)(pflocal_shmem_vaddr + src_offset);
+
+        uint32_t sent = 0;
+        uint32_t cap  = ring->capacity ? ring->capacity : (uint16_t)RING_DATA_SIZE;
+        for (uint32_t i = 0; i < len; i++) {
+            uint16_t next = (uint16_t)((ring->head + 1u) % cap);
+            if (next == ring->tail) break;  /* ring full — drop remaining */
+            data[ring->head] = src[i];
+            ring->head = next;
+            sent++;
+        }
+        microkit_mr_set(0, 0u);
+        microkit_mr_set(1, sent);
+        return microkit_msginfo_new(0, 2);
+    }
+
+    /* OP_PFLOCAL_RECV: MR1=sock_id, MR2=dst_offset (into pflocal_shmem), MR3=max_len.
+     * Copies up to max_len available bytes from this socket's ring into pflocal_shmem.
+     * → MR0=ok, MR1=bytes_received */
+    case OP_PFLOCAL_RECV: {
+        uint32_t dst_offset = (uint32_t)microkit_mr_get(2);
+        uint32_t max_len    = (uint32_t)microkit_mr_get(3);
+
+        if (sock_id >= PFLOCAL_MAX_SOCKS || socks[sock_id].state == SOCK_FREE) {
+            microkit_mr_set(0, 0xFFu);
+            return microkit_msginfo_new(0, 1);
+        }
+        if (!pflocal_shmem_vaddr || max_len == 0u) {
+            microkit_mr_set(0, 0u);
+            microkit_mr_set(1, 0u);
+            return microkit_msginfo_new(0, 2);
+        }
+
+        ring_header_t *ring = slot_ring(socks[sock_id].slot_id);
+        uint8_t       *data = slot_data(socks[sock_id].slot_id);
+        uint8_t       *dst  = (uint8_t *)(pflocal_shmem_vaddr + dst_offset);
+
+        uint32_t copied = 0;
+        uint32_t cap    = ring->capacity ? ring->capacity : (uint16_t)RING_DATA_SIZE;
+        while (copied < max_len && ring->tail != ring->head) {
+            dst[copied] = data[ring->tail];
+            ring->tail  = (uint16_t)((ring->tail + 1u) % cap);
+            copied++;
+        }
+        microkit_mr_set(0, 0u);
+        microkit_mr_set(1, copied);
+        return microkit_msginfo_new(0, 2);
+    }
+
+    /* OP_PFLOCAL_CLOSE: MR1=sock_id → MR0=ok.
+     * Closes the socket; if it has a connected peer, marks peer SOCK_CLOSED too. */
+    case OP_PFLOCAL_CLOSE: {
+        if (sock_id >= PFLOCAL_MAX_SOCKS || socks[sock_id].state == SOCK_FREE) {
+            microkit_mr_set(0, 0xFFu);
+            return microkit_msginfo_new(0, 1);
+        }
+        uint8_t peer_id = socks[sock_id].peer_sock_id;
+        if (peer_id != 0xFFu && peer_id < PFLOCAL_MAX_SOCKS &&
+            socks[peer_id].state != SOCK_FREE) {
+            socks[peer_id].state        = SOCK_CLOSED;
+            socks[peer_id].peer_sock_id = 0xFFu;
+        }
+        socks[sock_id].state        = SOCK_CLOSED;
+        socks[sock_id].peer_sock_id = 0xFFu;
+        microkit_mr_set(0, 0u);
+        return microkit_msginfo_new(0, 1);
+    }
+
+    /* OP_PFLOCAL_STATUS: MR1=sock_id → MR0=ok, MR1=state, MR2=peer_sock_id */
+    case OP_PFLOCAL_STATUS: {
+        if (sock_id >= PFLOCAL_MAX_SOCKS) {
+            microkit_mr_set(0, 0xFFu);
+            return microkit_msginfo_new(0, 1);
+        }
+        microkit_mr_set(0, 0u);
+        microkit_mr_set(1, socks[sock_id].state);
+        microkit_mr_set(2, socks[sock_id].peer_sock_id);
+        return microkit_msginfo_new(0, 3);
+    }
+
+    default:
+        microkit_mr_set(0, 0xFFu);
+        return microkit_msginfo_new(0, 1);
+    }
 }
