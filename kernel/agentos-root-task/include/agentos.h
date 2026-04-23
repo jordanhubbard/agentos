@@ -871,15 +871,16 @@ static inline void log_drain_write(uint32_t slot, uint32_t pd_id, const char *ms
 #define EVENT_GUEST_READY    0x52u  /* MR2=guest_id MR3=os_type (from VMM PDs) */
 
 /* ─── Framebuffer device PD opcodes (0x2500) ────────────────────────────── */
-#define MSG_FB_CREATE                   0x2501  /* fb_create_req in shmem → MR0=ok MR1=handle */
-#define MSG_FB_WRITE                    0x2502  /* MR1=handle; fb_write_req in shmem → MR0=ok */
-#define MSG_FB_FLIP                     0x2503  /* MR1=handle → MR0=ok MR1=frame_seq */
-#define MSG_FB_RESIZE                   0x2504  /* MR1=handle; fb_resize_req in shmem → MR0=ok */
-#define MSG_FB_DESTROY                  0x2505  /* MR1=handle → MR0=ok */
-#define MSG_FB_FRAME_READY              0x2506  /* EventBus event kind: fb_frame_ready_event_t */
+#define MSG_FB_CREATE                   0x2501  /* fb_create_req in shmem → MR0=ok MR1=fb_handle */
+#define MSG_FB_WRITE                    0x2502  /* fb_write_req in shmem; pixels in fb_shmem → MR0=ok */
+#define MSG_FB_FLIP                     0x2503  /* MR1=fb_handle → MR0=ok MR1=frame_seq */
+#define MSG_FB_RESIZE                   0x2504  /* fb_resize_req in shmem → MR0=ok */
+#define MSG_FB_DESTROY                  0x2505  /* MR1=fb_handle → MR0=ok */
+#define MSG_FB_FRAME_READY              0x2506  /* EventBus notification: fb_frame_ready_event_t */
+#define MSG_FB_STATUS                   0x2507  /* MR1=fb_handle → MR0=ok; fb_status_reply in shmem */
 
 /* framebuffer EventBus event ID */
-#define EVENT_FB_FRAME_READY            0x40u   /* MR1=handle, MR2=frame_seq */
+#define EVENT_FB_FRAME_READY            0x40u   /* MR1=fb_handle, MR2=frame_seq */
 
 /* ─── Command-and-Control PD opcodes (0x2600) ───────────────────────────── */
 #define MSG_CC_CONNECT                  0x2601  /* MR1=client_badge → MR0=ok MR1=session_id */
