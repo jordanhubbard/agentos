@@ -23,9 +23,6 @@ members = [
     "tools/attest-verify",
     "tools/make-swap-image",
     "tools/trace-replay",
-    # Console (directories removed — re-add when reimplemented)
-    # "console/agentos-console",
-    # "console/dashboard",
     # Workspace task runner
     "xtask",
 ]
