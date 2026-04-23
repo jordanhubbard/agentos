@@ -79,8 +79,7 @@
         <map mr="spawn_config_shmem" vaddr="0xD100000"  perms="rw" setvar_vaddr="spawn_config_shmem_ctrl_vaddr" />
         <!-- Network packet shmem: vNIC ring headers + packet data -->
         <map mr="net_packet_shmem"   vaddr="0xE000000"  perms="r"  setvar_vaddr="net_packet_shmem_ctrl_vaddr" />
-        <!-- HTTP request shmem: request header + body (observe only) -->
-        <map mr="http_req_shmem"     vaddr="0xF000000"  perms="r"  setvar_vaddr="http_req_shmem_ctrl_vaddr" />
+        <!-- [removed] http_req_shmem mapping — http_svc removed (Phase 0.5 cleanup) -->
         <!-- App manifest shmem: controller writes manifests for AppManager -->
         <map mr="app_manifest_shmem" vaddr="0x10000000" perms="rw" setvar_vaddr="app_manifest_shmem_ctrl_vaddr" />
         <!-- vm_list_shmem r-only: controller reads OP_VM_LIST results from vm_manager -->
@@ -949,13 +948,7 @@
                        mitigated by controller-only write mapping + app_manager validation. -->
     <memory_region name="app_manifest_shmem" size="0x4000"  />
 
-    <!-- http_req_shmem: 64KB HTTP request header + body staging.
-         Write access: http_svc (writes parsed request for handler dispatch).
-         Read access:  controller (r-only, observes request metadata); app slots (future).
-         Cap class:    AGENTOS_CAP_NETWORK (HTTP I/O is network-derived).
-         Threat:       agent reading another agent's HTTP request body (data exfiltration);
-                       mitigated by http_svc-only write path + r-only controller mapping. -->
-    <memory_region name="http_req_shmem"     size="0x10000" />
+    <!-- [removed] http_req_shmem — http_svc removed (Phase 0.5 cleanup) -->
 
     <!--
       ── virtio-blk: block device driver (passive, prio 175) ──
@@ -1242,7 +1235,7 @@
         id=1: spawn_server  (OUT — OP_SPAWN_LAUNCH)
         id=2: vfs_server    (OUT — future manifest/config reads)
         id=3: net_server    (OUT — OP_NET_VNIC_CREATE/DESTROY)
-        id=4: http_svc      (OUT — OP_HTTP_REGISTER/UNREGISTER)
+        id=4: [removed] http_svc (Phase 0.5 cleanup)
     -->
     <protection_domain name="app_manager" priority="130">
         <program_image path="app_manager.elf" />
@@ -1274,32 +1267,9 @@
         <end pd="net_server"  id="10" />
     </channel>
 
-    <!--
-      ── HTTP Service: route registry + dispatcher (active, prio 140) ──
-
-      Longest-prefix-match handler table.  URL prefixes passed inline in MRs.
-      The Rust http-gateway (userspace/servers/http-gateway) calls
-      OP_HTTP_DISPATCH to resolve incoming requests.
-
-      Channels:
-        id=0: controller   (pp=true — admin + health)
-        id=1: app_manager  (pp=true — route register/unregister)
-    -->
-    <protection_domain name="http_svc" priority="140">
-        <program_image path="http_svc.elf" />
-        <map mr="http_req_shmem" vaddr="0x5000000" perms="rw"
-             setvar_vaddr="http_req_shmem_vaddr" />
-    </protection_domain>
-
-    <channel>
-        <end pd="controller" id="24" pp="true" />
-        <end pd="http_svc"   id="0" />
-    </channel>
-    <!-- app_manager PPCs OUT into http_svc for route registration -->
-    <channel>
-        <end pd="app_manager" id="4" pp="true" />
-        <end pd="http_svc"    id="1" />
-    </channel>
+    <!-- [removed] http_svc PD + channels + http_req_shmem — API-first violation (Phase 0.5 cleanup)
+         Was: HTTP route registry + dispatcher (active, prio 140).
+         Superseded by API-first IPC contracts. -->
 
     <!--
       ══════════════════════════════════════════════════════════════════
@@ -1504,20 +1474,9 @@
       ══════════════════════════════════════════════════════════════════
       exec_server: ELF/WASM loader and execution dispatcher (passive, prio 150)
       HURD-equivalent: exec server
+      (NOTE: canonical block moved below pflocal_server with expanded exec_shmem)
       ══════════════════════════════════════════════════════════════════
     -->
-    <memory_region name="exec_shmem" size="0x1000" />
-
-    <protection_domain name="exec_server" priority="150" passive="true">
-        <program_image path="exec_server.elf" />
-        <map mr="exec_shmem" vaddr="0x3800000" perms="rw" cached="true"
-             setvar_vaddr="exec_shmem_vaddr" />
-    </protection_domain>
-
-    <channel>
-        <end pd="controller"   id="28" pp="true" />
-        <end pd="exec_server"  id="0" />
-    </channel>
 
     <!--
       ══════════════════════════════════════════════════════════════════
@@ -1588,12 +1547,7 @@
         <end pd="virtio_blk" id="3" />
     </channel>
 
-    <!-- Channel: controller(id=27, pp=true) → proc_server(id=0)
-         Controller PPCs into proc_server for all process lifecycle operations. -->
-    <channel>
-        <end pd="controller"  id="27" pp="true" />
-        <end pd="proc_server" id="0" />
-    </channel>
+    <!-- (duplicate proc_server channel removed — canonical one is above at channel id=27) -->
 
     <!--
       ══════════════════════════════════════════════════════════════════
@@ -1758,7 +1712,5 @@
         <end pd="app_slot_3"  id="1" />
     </channel>
 
-    <!-- controller maps exec_shmem rw to stage ELF paths for OP_EXEC_LAUNCH -->
-    <map pd="controller" mr="exec_shmem" vaddr="0x3500000" perms="rw" cached="true"
-         setvar_vaddr="exec_shmem_ctrl_vaddr" />
+    <!-- exec_shmem controller mapping moved into controller PD block (line ~83) -->
 </system>
