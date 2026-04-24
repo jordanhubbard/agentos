@@ -1,0 +1,155 @@
+# agentOS system descriptor (TOML)
+# Consumed by: cargo xtask gen-image
+#
+# This file lists all Protection Domains in the default (RISC-V) agentOS image.
+# Each PD ELF must exist as <name>.elf in the build output directory.
+#
+# Priority values mirror those in agentos.system for documentation parity.
+# The gen-image tool uses the 'priority' field to record scheduling intent in
+# the image header; actual scheduling is enforced by the root task at boot.
+#
+# Arch-specific overrides live in boards/<board-name>/agentos.toml.
+
+[[pd]]
+name = "controller"
+priority = 50
+
+[[pd]]
+name = "event_bus"
+priority = 200
+
+[[pd]]
+name = "init_agent"
+priority = 100
+
+[[pd]]
+name = "worker"
+priority = 80
+
+[[pd]]
+name = "agentfs"
+priority = 150
+
+[[pd]]
+name = "vibe_engine"
+priority = 140
+
+[[pd]]
+name = "log_drain"
+priority = 160
+
+[[pd]]
+name = "serial_pd"
+priority = 100
+
+[[pd]]
+name = "swap_slot"
+priority = 75
+
+[[pd]]
+name = "mem_profiler"
+priority = 108
+
+[[pd]]
+name = "net_isolator"
+priority = 160
+
+[[pd]]
+name = "perf_counters"
+priority = 95
+
+[[pd]]
+name = "time_partition"
+priority = 250
+
+[[pd]]
+name = "trace_recorder"
+priority = 128
+
+[[pd]]
+name = "nameserver"
+priority = 170
+
+[[pd]]
+name = "virtio_blk"
+priority = 175
+
+[[pd]]
+name = "vfs_server"
+priority = 155
+
+[[pd]]
+name = "spawn_server"
+priority = 145
+
+[[pd]]
+name = "app_slot"
+priority = 70
+
+[[pd]]
+name = "net_server"
+priority = 160
+
+[[pd]]
+name = "net_pd"
+priority = 160
+
+[[pd]]
+name = "wg_net"
+priority = 100
+
+[[pd]]
+name = "app_manager"
+priority = 130
+
+[[pd]]
+name = "http_svc"
+priority = 140
+
+[[pd]]
+name = "vm_manager"
+priority = 145
+
+[[pd]]
+name = "auth_server"
+priority = 170
+
+[[pd]]
+name = "ext2fs"
+priority = 140
+
+[[pd]]
+name = "proc_server"
+priority = 160
+
+[[pd]]
+name = "vm_snapshot"
+priority = 130
+
+[[pd]]
+name = "pflocal_server"
+priority = 155
+
+[[pd]]
+name = "exec_server"
+priority = 150
+
+[[pd]]
+name = "term_server"
+priority = 150
+
+[[pd]]
+name = "block_pd"
+priority = 165
+
+[[pd]]
+name = "framebuffer_pd"
+priority = 175
+
+[[pd]]
+name = "cc_pd"
+priority = 100
+
+[[pd]]
+name = "gpu_sched"
+priority = 180

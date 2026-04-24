@@ -10,7 +10,7 @@
 #   make test         — CI boot test (exit 0/1)
 #   make clean        — remove build artifacts for current target
 
-.PHONY: all install deps-tools deps-sdk submodules channels run test test-snapshot-sched test-power-mgr test-proc-server test-vibeos-contract test-integration e2e e2e-guest e2e-contract clean clean-all clean-images help release release-minor release-major fetch-guest build-tools
+.PHONY: all install deps-tools submodules channels run test test-snapshot-sched test-power-mgr test-proc-server test-vibeos-contract test-integration e2e e2e-guest e2e-contract clean clean-all clean-images help release release-minor release-major fetch-guest build-tools
 
 # ─── Read config.yaml (if present) ───────────────────────────────────────────
 CONFIG_TARGET := $(shell grep '^target_arch:' config.yaml 2>/dev/null | sed 's/target_arch:[[:space:]]*//' | tr -d '[:space:]')
@@ -27,7 +27,6 @@ GUEST_OS    ?= none
 # repo root.
 ROOT_DIR     := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
 KERNEL_DIR   := $(ROOT_DIR)kernel/agentos-root-task
-MICROKIT_SDK := $(ROOT_DIR)microkit-sdk-2.1.0
 
 # ─── BOARD_NAME: selects a boards/<name>/board.mk configuration ──────────────
 # Derive from TARGET_ARCH when not explicitly provided.  Override with
@@ -43,11 +42,11 @@ ifndef BOARD_NAME
   endif
 endif
 
-# Include per-board configuration.  Sets MICROKIT_BOARD, BOARD_ARCH,
-# BOARD_NATIVE, BOARD_UART_*, and optional QEMU_* flags.
+# Include per-board configuration.  Sets MICROKIT_BOARD (used as BOARD alias),
+# BOARD_ARCH, BOARD_NATIVE, BOARD_UART_*, and optional QEMU_* flags.
 -include boards/$(BOARD_NAME)/board.mk
 
-# Let board.mk override the Microkit board and arch when present.
+# Let board.mk override the board name and arch when present.
 ifneq ($(MICROKIT_BOARD),)
   BOARD := $(MICROKIT_BOARD)
 endif
@@ -117,8 +116,6 @@ else ifeq ($(UNAME_S),FreeBSD)
   SDK_PLATFORM := unsupported-freebsd
 endif
 
-SDK_URL := https://github.com/seL4/microkit/releases/download/2.1.0/microkit-sdk-2.1.0-$(SDK_PLATFORM).tar.gz
-
 # ─── Rust toolchain ──────────────────────────────────────────────────────────
 export PATH := $(HOME)/.cargo/bin:$(PATH)
 
@@ -177,7 +174,7 @@ all: run
 # =============================================================================
 # install: set up build dependencies (alias: deps)
 # =============================================================================
-install: deps-tools deps-sdk
+install: deps-tools
 	@echo ""
 	@echo "✅ All dependencies installed! Run 'make run' to start."
 
@@ -261,28 +258,9 @@ else
 	@echo "  clang:               $$(clang --version 2>/dev/null | head -1 || echo 'NOT FOUND')"
 	@echo "  ld.lld:              $$(ld.lld --version 2>/dev/null | head -1 || echo 'NOT FOUND')"
 endif
-
-ifeq ($(UNAME_S),FreeBSD)
-deps-sdk:
-	@echo ""
-	@echo "ERROR: Microkit SDK does not ship a FreeBSD host toolchain."
-	@echo "  Cross-compile from a Linux or macOS host, or use a Linux VM."
-	@echo "  See: https://github.com/seL4/microkit/releases"
-	@false
-else
-deps-sdk: $(MICROKIT_SDK)/bin/microkit
-endif
-
-$(MICROKIT_SDK)/bin/microkit:
-	@echo ""
-	@echo "[SDK] Downloading Microkit SDK 2.1.0 for $(SDK_PLATFORM)..."
-	@mkdir -p $(dir $(MICROKIT_SDK))
-	@curl -fSL "$(SDK_URL)" -o /tmp/microkit-sdk.tar.gz
-	@echo "[SDK] Extracting..."
-	@tar xzf /tmp/microkit-sdk.tar.gz -C $(ROOT_DIR)
-	@rm /tmp/microkit-sdk.tar.gz
-	@test -x $(MICROKIT_SDK)/bin/microkit && echo "[SDK] ✓ Installed at $(MICROKIT_SDK)" || \
-		(echo "ERROR: SDK extraction failed" && exit 1)
+	@echo "[deps-tools] Building xtask..."
+	@cargo build -p xtask 2>/dev/null || true
+	@echo "  xtask:               $$(cargo run -p xtask -- --version 2>/dev/null || echo 'built')"
 
 # =============================================================================
 # submodules: initialise any uninitialised git submodules
@@ -317,17 +295,13 @@ endif
 # =============================================================================
 # build (internal — used by test)
 # =============================================================================
-build: fetch-guest submodules deps-sdk
+build: fetch-guest submodules
 	@echo ""
 	@echo "╔══════════════════════════════════════════╗"
 	@echo "║   agentOS — building kernel ($(BOARD))   ║"
 	@echo "╚══════════════════════════════════════════╝"
 	@echo ""
-ifeq ($(UNAME_S),FreeBSD)
-	@echo "ERROR: Microkit SDK does not ship a FreeBSD host toolchain."
-	@echo "  Cross-compile from a Linux or macOS host, or use a Linux VM."
-	@false
-else ifeq ($(UNAME_S),Darwin)
+ifeq ($(UNAME_S),Darwin)
 	@test -x "$(LLVM_BIN)/clang" || \
 		(echo "ERROR: Homebrew LLVM not found. Run 'make deps' first." && exit 1)
 	@test -x "$(LLD_BIN)/ld.lld" || \
@@ -338,14 +312,11 @@ else
 	@command -v ld.lld >/dev/null 2>&1 || \
 		(echo "ERROR: ld.lld not found. Run 'make deps' first." && exit 1)
 endif
-	@test -d "$(MICROKIT_SDK)" || \
-		(echo "ERROR: Microkit SDK not found. Run 'make deps' first." && exit 1)
 	@mkdir -p $(BUILD_DIR)
 	@PATH="$(LLVM_BIN):$(LLD_BIN):$$PATH" $(MAKE) -C $(KERNEL_DIR) \
 		BUILD_DIR=$(BUILD_DIR) \
-		MICROKIT_SDK=$(abspath $(MICROKIT_SDK)) \
-		MICROKIT_BOARD=$(BOARD) \
-		MICROKIT_CONFIG=debug \
+		AGENTOS_BOARD=$(BOARD) \
+		AGENTOS_ARCH=$(ARCH) \
 		GUEST_OS=$(GUEST_OS) \
 		BOARD_NAME=$(BOARD_NAME) \
 		BOARD_NATIVE=$(BOARD_NATIVE) \

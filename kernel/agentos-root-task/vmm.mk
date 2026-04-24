@@ -6,7 +6,7 @@
 # then runs from there so vmm.mk's vpath/pattern rules resolve correctly.
 #
 # Required variables (from parent Makefile):
-#   BUILD_DIR, MICROKIT_SDK, MICROKIT_BOARD, MICROKIT_CONFIG, BOARD_DIR
+#   BUILD_DIR, AGENTOS_ARCH, AGENTOS_BOARD
 #
 
 # ─── Paths ────────────────────────────────────────────────────────────────

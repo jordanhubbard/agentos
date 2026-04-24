@@ -127,7 +127,7 @@ aos_service_swap(proposal_id);
 - macOS with Homebrew, or Ubuntu 22.04+
 - 8GB RAM, 20GB disk
 - QEMU for simulation (no hardware needed to start)
-- **FreeBSD hosts**: cross-compile from Linux/macOS (Microkit SDK is Linux/macOS only)
+- **FreeBSD hosts**: cross-compile from Linux/macOS (FreeBSD LLVM cross-compilation support is limited)
 
 ### Quick start — TUI launcher (recommended)
 
@@ -182,12 +182,11 @@ Native agentOS protection domains run fully on all architectures.
 ### FreeBSD host
 
 ```bash
-# Install build tools (LLVM, dtc, python3, etc.)
+# Install build tools (LLVM, dtc, etc.)
 make deps-tools
 
-# Note: Microkit SDK does not ship a FreeBSD host toolchain.
-# Cross-compile from Linux or macOS, or use a Linux VM.
-# See: https://github.com/seL4/microkit/releases
+# Build with xtask gen-image — no external SDK download needed.
+make build
 ```
 
 ### Post-boot CC-PD client

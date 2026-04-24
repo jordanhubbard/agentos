@@ -1,23 +1,19 @@
 # agentOS Root Task Makefile
-# This builds the agentOS personality layer that boots on top of seL4/Microkit
+# This builds the agentOS personality layer that boots on top of seL4.
+# Image packing uses cargo xtask gen-image (no external Microkit SDK required).
 
 ifeq ($(strip $(BUILD_DIR)),)
 $(error BUILD_DIR must be specified)
 endif
 
-ifeq ($(strip $(MICROKIT_SDK)),)
-$(error MICROKIT_SDK must be specified)
-endif
+# AGENTOS_ARCH: target architecture; derived from AGENTOS_BOARD when not set
+AGENTOS_ARCH  ?= riscv64
+AGENTOS_BOARD ?= qemu_virt_riscv64
 
-ifeq ($(strip $(MICROKIT_BOARD)),)
-$(error MICROKIT_BOARD must be specified)
-endif
+# Linker script: agentOS-owned replacement for microkit.ld
+AGENTOS_LD    := $(abspath $(dir $(lastword $(MAKEFILE_LIST)))/../../tools/ld/agentos.ld)
 
-MICROKIT_CONFIG ?= debug
-MICROKIT_BOARD  ?= qemu_virt_riscv64
-
-BOARD_DIR := $(MICROKIT_SDK)/board/$(MICROKIT_BOARD)/$(MICROKIT_CONFIG)
-ARCH      := ${shell grep 'CONFIG_SEL4_ARCH  ' $(BOARD_DIR)/include/kernel/gen_config.h | cut -d' ' -f4}
+ARCH := $(AGENTOS_ARCH)
 
 ifeq ($(ARCH),riscv64)
   CC     := clang -target riscv64-unknown-elf
@@ -35,10 +31,8 @@ else
   $(error Unsupported arch: $(ARCH))
 endif
 
-MICROKIT_TOOL ?= $(MICROKIT_SDK)/bin/microkit
-
 CFLAGS := -nostdlib -ffreestanding -g -O2 -Wall -Wextra -Werror -Wno-unused-function -Wno-unused-parameter -Wno-unused-variable \
-           -I$(BOARD_DIR)/include -Iinclude -Ilwip/include \
+           -Iinclude -Ilwip/include \
            $(CFLAGS_ARCH) \
            -MMD -MP
 
@@ -51,8 +45,8 @@ CFLAGS_WASM3 := $(CFLAGS) -Iwasm3 -include $(CURDIR)/include/m3_bare_metal.h \
 # (the shim is only for vendored wasm3 sources that lack seL4 headers)
 CFLAGS_SWAPSLOT := $(CFLAGS) -Iwasm3
 
-LDFLAGS := -L$(BOARD_DIR)/lib
-LIBS    := -lmicrokit -Tmicrokit.ld
+LDFLAGS :=
+LIBS    := -T$(AGENTOS_LD)
 
 # ─── Root task seL4 boot binary ──────────────────────────────────────────────
 # main.c is the seL4 root task entry point and boot sequence orchestrator.
@@ -69,7 +63,7 @@ ROOT_TASK_SRCS := src/main.c src/ep_alloc.c src/cap_accounting.c \
 
 ifeq ($(ARCH),aarch64)
 ROOT_TASK_SRCS += src/system_desc_aarch64.c
-CFLAGS_ROOT_TASK := $(CFLAGS) -DBOARD_qemu_virt_aarch64
+CFLAGS_ROOT_TASK := $(CFLAGS) -DBOARD_$(AGENTOS_BOARD)
 else
 ROOT_TASK_SRCS += src/system_desc_riscv64.c
 CFLAGS_ROOT_TASK := $(CFLAGS)
@@ -195,32 +189,17 @@ GUEST_OS ?= none
 # AArch64: include VMM based on GUEST_OS
 ifeq ($(ARCH),aarch64)
   ifeq ($(GUEST_OS),freebsd)
-    IMAGES      += freebsd_vmm.elf
-    SYSTEM_FILE := ../../manifests/agentos-freebsd.system
+    IMAGES += freebsd_vmm.elf
   else
     # Default aarch64: include Linux VMM (stub or full)
-    IMAGES      += linux_vmm.elf
-    SYSTEM_FILE := agentos-aarch64.system
+    IMAGES += linux_vmm.elf
   endif
 else ifeq ($(ARCH),x86_64)
-  # Include linux_vmm stub so the system description can reference it
-  IMAGES      += linux_vmm.elf
-  SYSTEM_FILE := ../../manifests/agentos-linux-x86.system
-else
-  SYSTEM_FILE := agentos.system
-endif
-
-# Board-specific system file override: native hardware targets supply their own
-# agentos.system in boards/<BOARD_NAME>/agentos.system (repo root).
-ifneq ($(BOARD_NAME),)
-  _BOARD_SYSTEM := ../../boards/$(BOARD_NAME)/agentos.system
-  ifneq ($(wildcard $(_BOARD_SYSTEM)),)
-    SYSTEM_FILE := $(_BOARD_SYSTEM)
-  endif
+  # Include linux_vmm stub so the image can reference it
+  IMAGES += linux_vmm.elf
 endif
 
 IMAGE_FILE  := $(BUILD_DIR)/agentos.img
-REPORT_FILE := $(BUILD_DIR)/agentos-report.txt
 
 build: $(IMAGE_FILE) $(BUILD_DIR)/root_task.elf
 
@@ -389,10 +368,8 @@ $(BUILD_DIR)/linux_vmm.elf: FORCE
 	@echo "═══ Building Linux VMM (libvmm) ═══"
 	$(MAKE) -f vmm.mk \
 		BUILD_DIR=$(BUILD_DIR) \
-		MICROKIT_SDK=$(MICROKIT_SDK) \
-		MICROKIT_BOARD=$(MICROKIT_BOARD) \
-		MICROKIT_CONFIG=$(MICROKIT_CONFIG) \
-		BOARD_DIR=$(BOARD_DIR) \
+		AGENTOS_ARCH=$(AGENTOS_ARCH) \
+		AGENTOS_BOARD=$(AGENTOS_BOARD) \
 		vmm-all
 endif
 endif
@@ -408,8 +385,8 @@ $(BUILD_DIR)/freebsd_vmm.elf: FORCE
 	@echo "═══ Building FreeBSD VMM (libvmm + EDK2) ═══"
 	$(MAKE) -C $(FREEBSD_VMM_DIR) \
 		BUILD_DIR=$(BUILD_DIR) \
-		MICROKIT_SDK=$(MICROKIT_SDK) \
-		BOARD=$(MICROKIT_BOARD) \
+		AGENTOS_ARCH=$(AGENTOS_ARCH) \
+		BOARD=$(AGENTOS_BOARD) \
 		all
 	@echo "═══ freebsd_vmm.elf ✓ ═══"
 endif
@@ -427,13 +404,25 @@ $(BUILD_DIR)/linux_vmm.elf: $(BUILD_DIR)/linux_vmm.o
 	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
 endif
 
-$(IMAGE_FILE) $(REPORT_FILE): $(addprefix $(BUILD_DIR)/, $(IMAGES)) $(SYSTEM_FILE)
-	$(MICROKIT_TOOL) $(SYSTEM_FILE) \
-		--search-path $(BUILD_DIR) \
-		--board $(MICROKIT_BOARD) \
-		--config $(MICROKIT_CONFIG) \
-		-o $(IMAGE_FILE) \
-		-r $(REPORT_FILE)
+# SYSTEM_TOML: per-arch/board TOML system descriptor consumed by xtask gen-image.
+# The TOML mirrors the PD list from the corresponding .system XML but omits
+# memory-region / channel details (handled by the root task at runtime).
+# A minimal fallback TOML is provided; board-specific overrides live in boards/.
+SYSTEM_TOML_DEFAULT := $(abspath $(CURDIR)/agentos.toml)
+_BOARD_TOML := ../../boards/$(BOARD_NAME)/agentos.toml
+SYSTEM_TOML := $(if $(wildcard $(_BOARD_TOML)),$(_BOARD_TOML),$(SYSTEM_TOML_DEFAULT))
+
+# Kernel ELF: provided by the seL4 build (assumed pre-built or supplied externally)
+KERNEL_ELF  := $(BUILD_DIR)/kernel.elf
+
+$(IMAGE_FILE): $(addprefix $(BUILD_DIR)/, $(IMAGES)) $(SYSTEM_TOML)
+	cargo run -p xtask -- gen-image \
+		--arch $(ARCH) \
+		--system $(SYSTEM_TOML) \
+		--kernel $(KERNEL_ELF) \
+		--root-task $(BUILD_DIR)/root_task.elf \
+		--pd-dir $(BUILD_DIR) \
+		--out $(IMAGE_FILE)
 
 clean:
 	rm -rf $(BUILD_DIR)
