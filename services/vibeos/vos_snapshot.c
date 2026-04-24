@@ -31,7 +31,7 @@
 #include "vos_snap_store.h"
 
 /* Pull in the public API contract for opcodes, error codes, and structs */
-#include "../../../contracts/vibeos/interface.h"
+#include "contracts/vibeos/interface.h"
 
 /* ── Internal instance table ─────────────────────────────────────────────── */
 

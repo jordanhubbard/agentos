@@ -36,7 +36,7 @@
 #include "vos_snap_store.h"
 
 /* Pull in the public API contract for opcodes, error codes, and structs */
-#include "../../../contracts/vibeos/interface.h"
+#include "contracts/vibeos/interface.h"
 
 /* ── Forward-declared types from vos_snapshot.c ─────────────────────────── */
 

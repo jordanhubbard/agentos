@@ -52,6 +52,10 @@ LIBS    := -T$(AGENTOS_LD)
 REPO_ROOT    := $(abspath $(CURDIR)/../..)
 SERVICES_DIR := $(REPO_ROOT)/services
 
+# Extended CFLAGS for service PDs that reference top-level contracts/ headers
+# (e.g. "contracts/vibeos/interface.h" resolved from repo root)
+CFLAGS_SERVICES := $(CFLAGS) -I$(REPO_ROOT)
+
 # ─── Root task seL4 boot binary ──────────────────────────────────────────────
 # main.c is the seL4 root task entry point and boot sequence orchestrator.
 # It is NOT a Microkit PD — it links without libmicrokit and uses its own
@@ -182,7 +186,7 @@ FB_PD_OBJS            := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_FB_PD_SRCS))
 CC_PD_OBJS            := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_CC_PD_SRCS))
 GPU_SCHED_OBJS        := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_GPU_SCHED_SRCS))
 
-IMAGES := controller.elf event_bus.elf init_agent.elf worker.elf agentfs.elf vibe_engine.elf log_drain.elf serial_pd.elf swap_slot.elf mem_profiler.elf net_isolator.elf perf_counters.elf time_partition.elf trace_recorder.elf nameserver.elf virtio_blk.elf vfs_server.elf spawn_server.elf app_slot.elf net_server.elf net_pd.elf wg_net.elf app_manager.elf http_svc.elf vm_manager.elf auth_server.elf ext2fs.elf proc_server.elf vm_snapshot.elf pflocal_server.elf exec_server.elf term_server.elf block_pd.elf framebuffer_pd.elf cc_pd.elf gpu_sched.elf
+IMAGES := controller.elf event_bus.elf init_agent.elf worker.elf agentfs.elf vibe_engine.elf vibeos.elf log_drain.elf serial_pd.elf swap_slot.elf mem_profiler.elf net_isolator.elf perf_counters.elf time_partition.elf trace_recorder.elf nameserver.elf virtio_blk.elf vfs_server.elf spawn_server.elf app_slot.elf net_server.elf net_pd.elf wg_net.elf app_manager.elf http_svc.elf vm_manager.elf auth_server.elf ext2fs.elf proc_server.elf vm_snapshot.elf pflocal_server.elf exec_server.elf term_server.elf block_pd.elf framebuffer_pd.elf cc_pd.elf gpu_sched.elf
 
 # Optional: periodic WASM slot snapshot scheduler
 ifdef AGENTOS_SNAPSHOT_SCHED
@@ -213,6 +217,7 @@ build: $(IMAGE_FILE) $(BUILD_DIR)/root_task.elf
 # ─── Extracted service PDs (E9: sources live in services/, not src/) ─────────
 # CFLAGS already includes -Iinclude (kernel/agentos-root-task/include) so all
 # seL4 and agentos headers resolve identically to when the files lived in src/.
+# CFLAGS_SERVICES adds -I$(REPO_ROOT) for files that include "contracts/…/…".
 $(BUILD_DIR)/agentfs.o: $(SERVICES_DIR)/agentfs/agentfs.c
 	@mkdir -p $(BUILD_DIR)
 	$(CC) -c $(CFLAGS) $< -o $@
@@ -224,6 +229,27 @@ $(BUILD_DIR)/event_bus.o: $(SERVICES_DIR)/event-bus/event_bus.c
 $(BUILD_DIR)/vibe_engine.o: $(SERVICES_DIR)/vibe-engine/vibe_engine.c
 	@mkdir -p $(BUILD_DIR)
 	$(CC) -c $(CFLAGS) $< -o $@
+
+# vibeos — VOS lifecycle PD (CREATE, DESTROY, SNAPSHOT, RESTORE)
+$(BUILD_DIR)/vos_create.o: $(SERVICES_DIR)/vibeos/vos_create.c
+	@mkdir -p $(BUILD_DIR)
+	$(CC) -c $(CFLAGS) $< -o $@
+
+$(BUILD_DIR)/vos_destroy.o: $(SERVICES_DIR)/vibeos/vos_destroy.c
+	@mkdir -p $(BUILD_DIR)
+	$(CC) -c $(CFLAGS) $< -o $@
+
+$(BUILD_DIR)/vos_snapshot.o: $(SERVICES_DIR)/vibeos/vos_snapshot.c
+	@mkdir -p $(BUILD_DIR)
+	$(CC) -c $(CFLAGS_SERVICES) $< -o $@
+
+$(BUILD_DIR)/vos_restore.o: $(SERVICES_DIR)/vibeos/vos_restore.c
+	@mkdir -p $(BUILD_DIR)
+	$(CC) -c $(CFLAGS_SERVICES) $< -o $@
+
+VIBEOS_OBJS := $(BUILD_DIR)/vos_create.o $(BUILD_DIR)/vos_destroy.o \
+               $(BUILD_DIR)/vos_snapshot.o $(BUILD_DIR)/vos_restore.o \
+               $(BUILD_DIR)/m3_bare_metal.o $(BUILD_DIR)/log.o
 
 $(BUILD_DIR)/%.o: src/%.c
 	@mkdir -p $(BUILD_DIR)
@@ -263,6 +289,9 @@ $(BUILD_DIR)/agentfs.elf: $(AGENTFS_OBJS)
 	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
 
 $(BUILD_DIR)/vibe_engine.elf: $(VIBEENGINE_OBJS)
+	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
+
+$(BUILD_DIR)/vibeos.elf: $(VIBEOS_OBJS)
 	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
 
 $(BUILD_DIR)/log_drain.elf: $(LOG_DRAIN_OBJS)
