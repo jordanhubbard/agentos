@@ -1,127 +1,378 @@
 /*
- * agentOS Worker PD
+ * agentOS Worker Protection Domain — E5-S5: raw seL4 IPC
  *
- * One binary, N instances. Each instance is a separate protection domain
- * in the .system file with a different worker_slot_id.
+ * One binary, N instances (worker_0..worker_7).  The worker index is
+ * passed by the root task boot dispatcher in the third argument to
+ * worker_main().  Workers register as "worker_N" with the nameserver,
+ * then enter the server loop accepting task assignments.
+ *
+ * Entry point:
+ *   void worker_main(seL4_CPtr my_ep, seL4_CPtr ns_ep, uint32_t worker_index)
+ *
+ * Outbound service dependencies (resolved via nameserver, cached):
+ *   "event_bus"  — EventBus pub/sub backbone
+ *   "agentfs"    — object store
+ *   "vfs_server" — VFS (file I/O)
+ *   "net_server" — network service
  *
  * Lifecycle:
- *   boot → report_ready → IDLE (seL4_Recv) → task_assigned → run → done → IDLE
+ *   boot → register → IDLE (seL4_Recv) → task_assigned → run → done → IDLE
  *
- * The worker's capability set is replenished per task by the controller.
- * Between tasks, it holds only its own stack and the two channel endpoints.
+ * Copyright (c) 2026 The agentOS Project
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
-#define AGENTOS_DEBUG 1
-#include "agentos.h"
-#include "contracts/worker_contract.h"
+/* ── Conditional compilation ─────────────────────────────────────────────── */
+
+#ifdef AGENTOS_TEST_HOST
+/*
+ * Host-side test build: minimal stubs — no seL4 or Microkit headers.
+ */
 #include <stdint.h>
-#include "string_bare.h"
+#include <stdbool.h>
+#include <string.h>
 
-/* Patched by Microkit at image build time from .system setvar */
-uintptr_t worker_slot_id = 0;
+typedef unsigned long      seL4_CPtr;
+typedef unsigned long long sel4_badge_t;
 
-/* Worker channels */
-#define CH_CONTROLLER 0
-#define CH_EVENTBUS   1
+typedef struct {
+    uint32_t opcode;
+    uint32_t length;
+    uint8_t  data[48];
+} sel4_msg_t;
 
-/* Worker state */
+#define SEL4_ERR_OK          0u
+#define SEL4_ERR_INVALID_OP  1u
+#define SEL4_ERR_NOT_FOUND   2u
+#define SEL4_ERR_BAD_ARG     4u
+#define SEL4_ERR_NO_MEM      5u
+
+typedef uint32_t (*sel4_handler_fn)(sel4_badge_t badge,
+                                     const sel4_msg_t *req,
+                                     sel4_msg_t *rep,
+                                     void *ctx);
+#define SEL4_SERVER_MAX_HANDLERS 32u
+typedef struct {
+    struct {
+        uint32_t        opcode;
+        sel4_handler_fn fn;
+        void           *ctx;
+    } handlers[SEL4_SERVER_MAX_HANDLERS];
+    uint32_t  handler_count;
+    seL4_CPtr ep;
+} sel4_server_t;
+
+static inline void sel4_server_init(sel4_server_t *srv, seL4_CPtr ep)
+{
+    srv->handler_count = 0;
+    srv->ep            = ep;
+    for (uint32_t i = 0; i < SEL4_SERVER_MAX_HANDLERS; i++) {
+        srv->handlers[i].opcode = 0;
+        srv->handlers[i].fn     = (sel4_handler_fn)0;
+        srv->handlers[i].ctx    = (void *)0;
+    }
+}
+static inline int sel4_server_register(sel4_server_t *srv, uint32_t opcode,
+                                        sel4_handler_fn fn, void *ctx)
+{
+    if (srv->handler_count >= SEL4_SERVER_MAX_HANDLERS) return -1;
+    srv->handlers[srv->handler_count].opcode = opcode;
+    srv->handlers[srv->handler_count].fn     = fn;
+    srv->handlers[srv->handler_count].ctx    = ctx;
+    srv->handler_count++;
+    return 0;
+}
+static inline uint32_t sel4_server_dispatch(sel4_server_t *srv,
+                                             sel4_badge_t badge,
+                                             const sel4_msg_t *req,
+                                             sel4_msg_t *rep)
+{
+    for (uint32_t i = 0; i < srv->handler_count; i++) {
+        if (srv->handlers[i].opcode == req->opcode) {
+            uint32_t rc = srv->handlers[i].fn(badge, req, rep,
+                                               srv->handlers[i].ctx);
+            rep->opcode = rc;
+            return rc;
+        }
+    }
+    rep->opcode = SEL4_ERR_INVALID_OP;
+    rep->length = 0;
+    return SEL4_ERR_INVALID_OP;
+}
+
+/* seL4_DebugPutChar stub */
+static inline void seL4_DebugPutChar(char c) { (void)c; }
+
+/* sel4_call stub */
+static sel4_msg_t _test_last_call_rep;
+static inline void sel4_call(seL4_CPtr ep, const sel4_msg_t *req, sel4_msg_t *rep)
+{
+    (void)ep; (void)req;
+    *rep = _test_last_call_rep;
+}
+
+#else /* !AGENTOS_TEST_HOST — production build */
+
+#include <stdint.h>
+#include <stdbool.h>
+#include "sel4_ipc.h"     /* sel4_msg_t, sel4_badge_t, SEL4_ERR_* */
+#include "sel4_server.h"  /* sel4_server_t, sel4_server_init/register/run */
+#include "sel4_client.h"  /* sel4_client_connect, sel4_client_call */
+#include <sel4/sel4.h>    /* seL4_DebugPutChar */
+
+#endif /* AGENTOS_TEST_HOST */
+
+/* ── Contract opcodes ────────────────────────────────────────────────────── */
+
+#ifndef OP_WORKER_TASK_ASSIGN
+#define OP_WORKER_TASK_ASSIGN   0x0701u  /* controller → worker: new task */
+#endif
+#ifndef OP_WORKER_TASK_COMPLETE
+#define OP_WORKER_TASK_COMPLETE 0x0702u  /* worker reports completion */
+#endif
+#ifndef OP_WORKER_STATUS
+#define OP_WORKER_STATUS        0x0703u  /* query worker state */
+#endif
+#ifndef OP_NS_REGISTER
+#define OP_NS_REGISTER          0xD0u
+#endif
+#ifndef NS_NAME_MAX
+#define NS_NAME_MAX             32
+#endif
+
+/* ── Worker state ────────────────────────────────────────────────────────── */
+
 static struct {
+    uint32_t worker_index;
     uint64_t current_task_id;
     uint32_t tasks_completed;
     bool     running;
-    bool     ready_acked;       /* true after controller has acked our ready signal */
-    uint32_t next_task_id;      /* task ID for next assignment */
-} wstate = { 0, 0, false, false, 0 };
+} g_worker = { 0, 0, 0, false };
 
-void init(void) {
-    log_drain_write(6, 6, "[worker] Slot ");
-    char slot_str[4] = { (char)('0' + (worker_slot_id & 0xF)), ':', ' ', '\0' };
-    {
-        char _cl_buf[256] = {};
-        char *_cl_p = _cl_buf;
-        for (const char *_s = slot_str; *_s; _s++) *_cl_p++ = *_s;
-        for (const char *_s = "ready, notifying controller\n"; *_s; _s++) *_cl_p++ = *_s;
-        *_cl_p = 0;
-        log_drain_write(6, 6, _cl_buf);
+/* Cached outbound endpoint caps */
+static seL4_CPtr g_eventbus_ep   = 0;
+static seL4_CPtr g_agentfs_ep    = 0;
+static seL4_CPtr g_vfs_ep        = 0;
+static seL4_CPtr g_net_ep        = 0;
+
+/* Server instance */
+static sel4_server_t g_srv;
+
+/* ── Data field helpers ───────────────────────────────────────────────────── */
+
+static inline uint32_t data_rd32(const uint8_t *d, int off)
+{
+    return (uint32_t)d[off    ]
+         | ((uint32_t)d[off+1] <<  8)
+         | ((uint32_t)d[off+2] << 16)
+         | ((uint32_t)d[off+3] << 24);
+}
+
+static inline uint64_t data_rd64(const uint8_t *d, int off)
+{
+    return (uint64_t)data_rd32(d, off)
+         | ((uint64_t)data_rd32(d, off + 4) << 32);
+}
+
+static inline void data_wr32(uint8_t *d, int off, uint32_t v)
+{
+    d[off  ] = (uint8_t)(v      );
+    d[off+1] = (uint8_t)(v >>  8);
+    d[off+2] = (uint8_t)(v >> 16);
+    d[off+3] = (uint8_t)(v >> 24);
+}
+
+static inline void data_wr64(uint8_t *d, int off, uint64_t v)
+{
+    data_wr32(d, off,     (uint32_t)(v & 0xFFFFFFFFu));
+    data_wr32(d, off + 4, (uint32_t)(v >> 32));
+}
+
+/* ── Debug output ────────────────────────────────────────────────────────── */
+
+static void dbg_puts(const char *s)
+{
+    for (; *s; s++)
+        seL4_DebugPutChar(*s);
+}
+
+/* ── Nameserver registration ─────────────────────────────────────────────── */
+
+static void register_with_nameserver(seL4_CPtr ns_ep, uint32_t worker_index)
+{
+    if (!ns_ep) return;
+
+    sel4_msg_t req, rep;
+    req.opcode = OP_NS_REGISTER;
+    /*
+     * data layout for OP_NS_REGISTER:
+     *   data[0..3]   = channel_id   (0)
+     *   data[4..7]   = pd_id        (TRACE_PD_WORKER_0 + worker_index = 3 + N)
+     *   data[8..11]  = cap_classes  (0)
+     *   data[12..15] = version      (1)
+     *   data[16..47] = name         ("worker_N\0", NUL-padded)
+     */
+    data_wr32(req.data, 0,  0u);
+    data_wr32(req.data, 4,  3u + worker_index); /* TRACE_PD_WORKER_0 = 3 */
+    data_wr32(req.data, 8,  0u);
+    data_wr32(req.data, 12, 1u);
+
+    /* Build "worker_N" name */
+    const char prefix[] = "worker_";
+    int pi = 0;
+    for (; prefix[pi]; pi++)
+        req.data[16 + pi] = (uint8_t)prefix[pi];
+    req.data[16 + pi++] = (uint8_t)('0' + (worker_index & 0xFu));
+    for (int ni = pi; ni < NS_NAME_MAX; ni++)
+        req.data[16 + ni] = 0;
+    req.length = 48u;
+
+    sel4_call(ns_ep, &req, &rep);
+}
+
+/* ── Nameserver lookup helper ────────────────────────────────────────────── */
+
+static seL4_CPtr lookup_service(seL4_CPtr ns_ep, const char *svc_name)
+{
+    if (!ns_ep) return 0;
+    sel4_msg_t req = {0}, rep = {0};
+    req.opcode = 0xD1u; /* OP_NS_LOOKUP */
+    for (int i = 0; i < NS_NAME_MAX; i++)
+        req.data[i] = (uint8_t)(svc_name[i] ? svc_name[i] : 0);
+    req.length = NS_NAME_MAX;
+    sel4_call(ns_ep, &req, &rep);
+    if (rep.opcode != 0u) return 0;
+    return (seL4_CPtr)data_rd32(rep.data, 0);
+}
+
+/* ── IPC handlers ────────────────────────────────────────────────────────── */
+
+/*
+ * handle_task_assign — OP_WORKER_TASK_ASSIGN (0x0701)
+ *
+ * Request:
+ *   data[0..7]  = task_id   (uint64)
+ *   data[8..11] = task_type (uint32, reserved)
+ *
+ * Reply:
+ *   data[0..3]  = status      (0 = accepted)
+ *   data[4..7]  = worker_index (uint32)
+ */
+static uint32_t handle_task_assign(sel4_badge_t badge, const sel4_msg_t *req,
+                                    sel4_msg_t *rep, void *ctx)
+{
+    (void)badge; (void)ctx;
+
+    uint64_t task_id = data_rd64(req->data, 0);
+
+    if (g_worker.running) {
+        /* Already busy — reject */
+        data_wr32(rep->data, 0, 6u);        /* SEL4_ERR_BUSY */
+        data_wr32(rep->data, 4, g_worker.worker_index);
+        rep->length = 8u;
+        return SEL4_ERR_INVALID_OP;
     }
-    
-    /* Signal controller: we're ready for work */
-    microkit_notify(CH_CONTROLLER);
+
+    g_worker.current_task_id = task_id;
+    g_worker.running         = true;
+
+    dbg_puts("[worker] Task assigned\n");
+
+    /*
+     * Execute the task synchronously in this handler for MVP.
+     * Real implementation: dispatch to a worker thread or co-routine.
+     */
+    g_worker.tasks_completed++;
+    g_worker.running = false;
+
+    data_wr32(rep->data, 0, 0u); /* OK */
+    data_wr32(rep->data, 4, g_worker.worker_index);
+    data_wr64(rep->data, 8, task_id);
+    rep->length = 16u;
+    return SEL4_ERR_OK;
 }
 
-void notified(microkit_channel ch) {
-    if (ch == CH_CONTROLLER) {
-        /*
-         * State machine for controller notifications:
-         * - Before ready_acked: this is the controller acking our boot-ready signal
-         * - After ready_acked: this is a task assignment
-         *
-         * NOTE: seL4 notifications don't carry MR payload reliably.
-         * We use state-based dispatch instead of MR-based task_id.
-         */
-        
-        if (!wstate.ready_acked) {
-            /* First notification from controller = ack of our ready signal */
-            wstate.ready_acked = true;
-            log_drain_write(6, 6, "[worker] Acknowledged by controller\n");
-            return;
-        }
-        
-        /* Only execute the demo task ONCE per worker */
-        if (wstate.tasks_completed >= 1) {
-            return;  /* Already did our demo — go idle, ignore further acks */
-        }
-        
-        /* Subsequent notification = task assignment */
-        {
-        uint64_t task_id = (uint64_t)(++wstate.next_task_id);
-        
-        if (true) {
-            /* New task assignment */
-            wstate.current_task_id = task_id;
-            wstate.running = true;
-            
-            log_drain_write(6, 6, "[worker] Task received — retrieve object from AgentFS\n");
-            
-            /*
-             * Demo task: PPC to controller to retrieve an object from AgentFS.
-             * Workers can't access AgentFS directly (no channel), so the
-             * controller acts as a proxy — real capability-mediated access.
-             */
-            log_drain_write(6, 6, "[worker] Requesting object from controller (AgentFS proxy)...\n");
-            
-            /* NOTE: Worker can't PPC into controller because controller is lower
-             * priority (50) and not passive. In the full system, capability-
-             * mediated access would use shared memory or a dedicated proxy PD.
-             * For demo: the demo task is hardcoded (data stored by controller,
-             * fetched by controller, worker logs the confirmed retrieval). */
-            
-            log_drain_write(6, 6, "[worker] Demo task: fetching 'Hello from agentOS' object\n[worker] Object content: 'Hello from agentOS' (18 bytes)\n[worker] Data retrieval confirmed — capability path validated\n");
-            
-            wstate.tasks_completed++;
-            wstate.running = false;
-            
-            /* Report completion back to controller */
-            log_drain_write(6, 6, "[worker] Task complete — notifying controller\n");
-            microkit_mr_set(0, (uint32_t)(task_id & 0xFFFFFFFF));
-            microkit_mr_set(1, (uint32_t)(task_id >> 32));
-            microkit_mr_set(2, 0); /* status: OK */
-            microkit_mr_set(3, wstate.tasks_completed);
-            microkit_notify(CH_CONTROLLER);
-        }
-        } /* end task block */
-        
-    } else if (ch == CH_EVENTBUS) {
-        /* EventBus event notification */
-        if (wstate.running) {
-            /* Forward to running task context */
-            log_drain_write(6, 6, "[worker] EventBus notification during task\n");
-        }
-    }
+/*
+ * handle_status — OP_WORKER_STATUS (0x0703)
+ *
+ * Reply:
+ *   data[0..3]   = worker_index     (uint32)
+ *   data[4..7]   = tasks_completed  (uint32)
+ *   data[8..15]  = current_task_id  (uint64)
+ *   data[16..19] = running          (uint32, 0 or 1)
+ */
+static uint32_t handle_status(sel4_badge_t badge, const sel4_msg_t *req,
+                               sel4_msg_t *rep, void *ctx)
+{
+    (void)badge; (void)req; (void)ctx;
+
+    data_wr32(rep->data, 0,  g_worker.worker_index);
+    data_wr32(rep->data, 4,  g_worker.tasks_completed);
+    data_wr64(rep->data, 8,  g_worker.current_task_id);
+    data_wr32(rep->data, 16, g_worker.running ? 1u : 0u);
+    rep->length = 20u;
+    return SEL4_ERR_OK;
 }
 
-microkit_msginfo protected(microkit_channel ch, microkit_msginfo msg) {
-    /* Workers don't accept PPC from external callers in v0.1 */
-    (void)ch; (void)msg;
-    return microkit_msginfo_new(0xDEAD, 0);
+/* ── Test-visible helpers ────────────────────────────────────────────────── */
+
+static void worker_test_init(uint32_t index)
+{
+    g_worker.worker_index    = index;
+    g_worker.current_task_id = 0;
+    g_worker.tasks_completed = 0;
+    g_worker.running         = false;
+    g_eventbus_ep            = 0;
+    g_agentfs_ep             = 0;
+    g_vfs_ep                 = 0;
+    g_net_ep                 = 0;
+    sel4_server_init(&g_srv, 0);
+    sel4_server_register(&g_srv, OP_WORKER_TASK_ASSIGN,  handle_task_assign, NULL);
+    sel4_server_register(&g_srv, OP_WORKER_STATUS,       handle_status,      NULL);
 }
+
+static uint32_t worker_dispatch_one(sel4_badge_t badge,
+                                     const sel4_msg_t *req,
+                                     sel4_msg_t *rep)
+{
+    return sel4_server_dispatch(&g_srv, badge, req, rep);
+}
+
+static uint32_t worker_get_tasks_completed(void)
+{
+    return g_worker.tasks_completed;
+}
+
+static uint32_t worker_get_index(void)
+{
+    return g_worker.worker_index;
+}
+
+/* ── Entry point ─────────────────────────────────────────────────────────── */
+
+#ifndef AGENTOS_TEST_HOST
+void worker_main(seL4_CPtr my_ep, seL4_CPtr ns_ep, uint32_t worker_index)
+{
+    g_worker.worker_index = worker_index;
+
+    dbg_puts("[worker] Starting up\n");
+
+    /* Register with nameserver as "worker_N" */
+    register_with_nameserver(ns_ep, worker_index);
+
+    /* Cache outbound endpoint caps (resolved once, reused thereafter) */
+    g_eventbus_ep = lookup_service(ns_ep, "event_bus");
+    g_agentfs_ep  = lookup_service(ns_ep, "agentfs");
+    g_vfs_ep      = lookup_service(ns_ep, "vfs_server");
+    g_net_ep      = lookup_service(ns_ep, "net_server");
+
+    dbg_puts("[worker] Entering server loop\n");
+
+    sel4_server_init(&g_srv, my_ep);
+    sel4_server_register(&g_srv, OP_WORKER_TASK_ASSIGN, handle_task_assign, NULL);
+    sel4_server_register(&g_srv, OP_WORKER_STATUS,      handle_status,      NULL);
+
+    /* Enter server loop — never returns */
+    sel4_server_run(&g_srv);
+}
+#endif /* !AGENTOS_TEST_HOST */
