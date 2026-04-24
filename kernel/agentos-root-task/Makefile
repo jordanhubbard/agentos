@@ -48,6 +48,10 @@ CFLAGS_SWAPSLOT := $(CFLAGS) -Iwasm3
 LDFLAGS :=
 LIBS    := -T$(AGENTOS_LD)
 
+# Repository root — two levels above this Makefile (kernel/agentos-root-task/)
+REPO_ROOT    := $(abspath $(CURDIR)/../..)
+SERVICES_DIR := $(REPO_ROOT)/services
+
 # ─── Root task seL4 boot binary ──────────────────────────────────────────────
 # main.c is the seL4 root task entry point and boot sequence orchestrator.
 # It is NOT a Microkit PD — it links without libmicrokit and uses its own
@@ -91,12 +95,12 @@ BOARD_UART_IRQ  ?=
 # monitor/controller: includes vibe_swap for the hot-swap controller-side logic
 # m3_bare_metal.c provides memset/memcpy/memmove needed by compiler-generated code
 PD_MONITOR_SRCS   := src/monitor.c src/cap_broker.c src/agent_pool.c src/vibe_swap.c src/m3_bare_metal.c src/log.c src/boot_integrity.c src/ed25519_verify.c src/monocypher.c src/cap_policy.c src/verify.c src/pd_tcb.c
-PD_EVENTBUS_SRCS  := src/event_bus.c src/m3_bare_metal.c src/log.c
+PD_EVENTBUS_SRCS  := src/m3_bare_metal.c src/log.c   # event_bus.c → services/event-bus/ (E9-S1)
 PD_INITAGENT_SRCS := src/init_agent.c src/m3_bare_metal.c src/log.c
 PD_WORKER_SRCS    := src/worker.c src/m3_bare_metal.c src/log.c
 # agentfs needs m3_bare_metal for memset/sqrtf (no wasm3 headers needed)
-PD_AGENTFS_SRCS     := src/agentfs.c src/m3_bare_metal.c src/log.c
-PD_VIBEENGINE_SRCS   := src/vibe_engine.c src/cap_policy.c src/m3_bare_metal.c src/log.c
+PD_AGENTFS_SRCS      := src/m3_bare_metal.c src/log.c   # agentfs.c → services/agentfs/ (E9-S1)
+PD_VIBEENGINE_SRCS   := src/cap_policy.c src/m3_bare_metal.c src/log.c   # vibe_engine.c → services/vibe-engine/ (E9-S1)
 PD_SWAPSLOT_SRCS     := src/swap_slot.c src/wasm3_host.c src/m3_bare_metal.c src/log.c
 PD_LOG_DRAIN_SRCS    := src/log_drain.c src/m3_bare_metal.c src/log.c
 PD_SERIAL_PD_SRCS    := src/serial_pd.c src/m3_bare_metal.c src/log.c
@@ -136,11 +140,14 @@ WASM3_SRCS := wasm3/m3_core.c wasm3/m3_env.c wasm3/m3_code.c wasm3/m3_compile.c 
               wasm3/m3_function.c wasm3/m3_info.c
 
 CONTROLLER_OBJS   := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_MONITOR_SRCS))
-EVENTBUS_OBJS     := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_EVENTBUS_SRCS))
+EVENTBUS_OBJS     := $(BUILD_DIR)/event_bus.o \
+                    $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_EVENTBUS_SRCS))
 INITAGENT_OBJS    := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_INITAGENT_SRCS))
 WORKER_OBJS       := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_WORKER_SRCS))
-AGENTFS_OBJS      := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_AGENTFS_SRCS))
-VIBEENGINE_OBJS    := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_VIBEENGINE_SRCS))
+AGENTFS_OBJS      := $(BUILD_DIR)/agentfs.o \
+                    $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_AGENTFS_SRCS))
+VIBEENGINE_OBJS   := $(BUILD_DIR)/vibe_engine.o \
+                    $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_VIBEENGINE_SRCS))
 LOG_DRAIN_OBJS     := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_LOG_DRAIN_SRCS))
 SERIAL_PD_OBJS     := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_SERIAL_PD_SRCS))
 SWAPSLOT_OBJS      := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_SWAPSLOT_SRCS))
@@ -202,6 +209,21 @@ endif
 IMAGE_FILE  := $(BUILD_DIR)/agentos.img
 
 build: $(IMAGE_FILE) $(BUILD_DIR)/root_task.elf
+
+# ─── Extracted service PDs (E9: sources live in services/, not src/) ─────────
+# CFLAGS already includes -Iinclude (kernel/agentos-root-task/include) so all
+# seL4 and agentos headers resolve identically to when the files lived in src/.
+$(BUILD_DIR)/agentfs.o: $(SERVICES_DIR)/agentfs/agentfs.c
+	@mkdir -p $(BUILD_DIR)
+	$(CC) -c $(CFLAGS) $< -o $@
+
+$(BUILD_DIR)/event_bus.o: $(SERVICES_DIR)/event-bus/event_bus.c
+	@mkdir -p $(BUILD_DIR)
+	$(CC) -c $(CFLAGS) $< -o $@
+
+$(BUILD_DIR)/vibe_engine.o: $(SERVICES_DIR)/vibe-engine/vibe_engine.c
+	@mkdir -p $(BUILD_DIR)
+	$(CC) -c $(CFLAGS) $< -o $@
 
 $(BUILD_DIR)/%.o: src/%.c
 	@mkdir -p $(BUILD_DIR)
