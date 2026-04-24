@@ -4,11 +4,15 @@
 pub mod cmd_ci_matrix;
 pub mod cmd_fault_inject;
 pub mod cmd_fetch_guest;
+pub mod cmd_gen_image;
 pub mod cmd_host_test;
 pub mod cmd_release;
 pub mod cmd_setup;
 pub mod cmd_test;
 pub mod cmd_test_api;
+
+// ── Re-exports for main.rs ────────────────────────────────────────────────
+pub use cmd_gen_image::GenImageArgs;
 
 // ── Subcommand arg structs ──────────────────────────────────────────────────
 

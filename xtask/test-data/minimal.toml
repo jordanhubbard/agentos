@@ -1,0 +1,6 @@
+# minimal.toml — minimal system description for xtask gen-image tests
+# Contains one PD so the packager has something to work with.
+
+[[pd]]
+name = "hello-pd"
+priority = 1

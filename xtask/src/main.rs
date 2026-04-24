@@ -1,9 +1,9 @@
 use clap::{Parser, Subcommand};
 use xtask::{
-    cmd_ci_matrix, cmd_fault_inject, cmd_fetch_guest, cmd_host_test, cmd_release, cmd_setup,
-    cmd_test, cmd_test_api,
-    CiMatrixArgs, FaultInjectArgs, FetchGuestArgs, HostTestArgs, ReleaseArgs, SetupArgs,
-    TestApiArgs, TestArgs,
+    cmd_ci_matrix, cmd_fault_inject, cmd_fetch_guest, cmd_gen_image, cmd_host_test, cmd_release,
+    cmd_setup, cmd_test, cmd_test_api,
+    CiMatrixArgs, FaultInjectArgs, FetchGuestArgs, GenImageArgs, HostTestArgs, ReleaseArgs,
+    SetupArgs, TestApiArgs, TestArgs,
 };
 
 #[derive(Parser)]
@@ -32,6 +32,8 @@ enum Cmd {
     CiMatrix(CiMatrixArgs),
     /// Compile and run the API test suite only (TAP output)
     TestApi(TestApiArgs),
+    /// Pack ELFs + cap init data into a bootable agentos.img (replaces microkit binary)
+    GenImage(GenImageArgs),
 }
 
 fn main() -> anyhow::Result<()> {
@@ -45,5 +47,6 @@ fn main() -> anyhow::Result<()> {
         Cmd::Release(a) => cmd_release::run(&a),
         Cmd::CiMatrix(a) => cmd_ci_matrix::run(&a),
         Cmd::TestApi(a) => cmd_test_api::run(&a),
+        Cmd::GenImage(a) => cmd_gen_image::run(&a),
     }
 }
