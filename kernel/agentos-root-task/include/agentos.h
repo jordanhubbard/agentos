@@ -47,8 +47,8 @@ static inline void sel4_dbg_puts(const char *s) { (void)s; }
 /* agentOS version */
 #define AGENTOS_VERSION_MAJOR 0
 #define AGENTOS_VERSION_MINOR 1
-#define AGENTOS_VERSION_PATCH 0
-#define AGENTOS_VERSION_STR   "agentOS v0.1.0-alpha"
+#define AGENTOS_VERSION_PATCH 3
+#define AGENTOS_VERSION_STR   "agentOS v0.1.3"
 
 /*
  * Channel IDs (must match agentos.system)
