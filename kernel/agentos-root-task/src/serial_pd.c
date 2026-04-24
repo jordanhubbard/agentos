@@ -1,5 +1,5 @@
 /*
- * serial_pd.c — agentOS Serial I/O Protection Domain
+ * serial_pd.c — agentOS Serial I/O Protection Domain  [E5-S7: raw seL4 IPC]
  *
  * Owns the UART hardware exclusively.  No other PD may map the UART
  * device frame.  Guest VMMs and all other PDs reach serial I/O via IPC.
@@ -9,26 +9,175 @@
  *   - port_id 0 : raw (no banner)
  *   - port_id N : output prefixed with "[portN] "
  *
- * IPC protocol — opcode in MR0, args in MR1..MR3:
- *   MSG_SERIAL_OPEN      MR1=port_id  → MR0=ok  MR1=client_slot
- *   MSG_SERIAL_CLOSE     MR1=slot     → MR0=ok
- *   MSG_SERIAL_WRITE     MR1=slot MR2=len; TX data in serial_shmem → MR0=written
- *   MSG_SERIAL_READ      MR1=slot MR2=max → MR0=count; RX data in serial_shmem
- *   MSG_SERIAL_STATUS    MR1=slot → MR0=baud MR1=rx_cnt MR2=tx_cnt MR3=errs
- *   MSG_SERIAL_CONFIGURE MR1=slot MR2=baud MR3=flags → MR0=ok
+ * IPC protocol (sel4_server_t dispatch, opcode in req->opcode):
+ *   MSG_SERIAL_OPEN      data[0..3]=port_id  → rep: data[0..3]=ok  data[4..7]=slot
+ *   MSG_SERIAL_CLOSE     data[0..3]=slot     → rep: data[0..3]=ok
+ *   MSG_SERIAL_WRITE     data[0..3]=slot data[4..7]=len; TX data in shmem → data[0..3]=written
+ *   MSG_SERIAL_READ      data[0..3]=slot data[4..7]=max → data[0..3]=count; RX data in shmem
+ *   MSG_SERIAL_STATUS    data[0..3]=slot → data[0..3]=baud data[4..7]=rx data[8..11]=tx data[12..15]=errs
+ *   MSG_SERIAL_CONFIGURE data[0..3]=slot data[4..7]=baud data[8..11]=flags → data[0..3]=ok
+ *
+ * Entry point:
+ *   void serial_pd_main(seL4_CPtr my_ep, seL4_CPtr ns_ep)
  *
  * Priority: 180  (above workers/agents; below eventbus)
- * Mode: passive  (woken by PPC from callers, and UART RX IRQ notification)
+ * Mode: passive  (woken by IPC from callers)
  *
  * AGENTS.md Rule 6: This is the generic serial PD.  No guest OS or other PD
  * implements its own UART driver.
+ *
+ * Bugs fixed in this migration (E5-S7):
+ *   - OP_SERIAL_OPEN reply: now correctly returns MR0=ok, MR1=slot_id via
+ *     sel4_server_t rep->data layout (was relying on microkit_mr_set which
+ *     placed results in the wrong layout for the raw seL4 reply path).
+ *   - microkit_dbg_puts replaced with seL4_DebugPutChar loop.
+ *   - Channel-based dispatch removed; nameserver registration added.
+ *
+ * Copyright (c) 2026 The agentOS Project
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
-#define AGENTOS_DEBUG 1
-#include "agentos.h"
-#include "contracts/serial_contract.h"
+/* ── Conditional compilation ─────────────────────────────────────────────── */
 
-/* ─── PL011 UART register offsets ───────────────────────────────────────── */
+#ifdef AGENTOS_TEST_HOST
+/*
+ * Host-side test build: provide minimal type stubs so this file compiles
+ * without seL4 or Microkit headers.  The test file provides framework.h
+ * (which defines microkit_mr_set/get) before including this unit.
+ */
+#include <stdint.h>
+#include <stdbool.h>
+#include <string.h>
+
+typedef unsigned long      seL4_CPtr;
+typedef unsigned long long sel4_badge_t;
+
+typedef struct {
+    uint32_t opcode;
+    uint32_t length;
+    uint8_t  data[48];
+} sel4_msg_t;
+
+#define SEL4_ERR_OK          0u
+#define SEL4_ERR_INVALID_OP  1u
+#define SEL4_ERR_BAD_ARG     4u
+#define SEL4_ERR_NO_MEM      5u
+
+typedef uint32_t (*sel4_handler_fn)(sel4_badge_t badge,
+                                     const sel4_msg_t *req,
+                                     sel4_msg_t *rep,
+                                     void *ctx);
+#define SEL4_SERVER_MAX_HANDLERS 32u
+typedef struct {
+    struct {
+        uint32_t        opcode;
+        sel4_handler_fn fn;
+        void           *ctx;
+    } handlers[SEL4_SERVER_MAX_HANDLERS];
+    uint32_t  handler_count;
+    seL4_CPtr ep;
+} sel4_server_t;
+
+static inline void sel4_server_init(sel4_server_t *srv, seL4_CPtr ep)
+{
+    srv->handler_count = 0;
+    srv->ep            = ep;
+    for (uint32_t i = 0; i < SEL4_SERVER_MAX_HANDLERS; i++) {
+        srv->handlers[i].opcode = 0;
+        srv->handlers[i].fn     = (sel4_handler_fn)0;
+        srv->handlers[i].ctx    = (void *)0;
+    }
+}
+static inline int sel4_server_register(sel4_server_t *srv, uint32_t opcode,
+                                        sel4_handler_fn fn, void *ctx)
+{
+    if (srv->handler_count >= SEL4_SERVER_MAX_HANDLERS) return -1;
+    srv->handlers[srv->handler_count].opcode = opcode;
+    srv->handlers[srv->handler_count].fn     = fn;
+    srv->handlers[srv->handler_count].ctx    = ctx;
+    srv->handler_count++;
+    return 0;
+}
+static inline uint32_t sel4_server_dispatch(sel4_server_t *srv,
+                                             sel4_badge_t badge,
+                                             const sel4_msg_t *req,
+                                             sel4_msg_t *rep)
+{
+    for (uint32_t i = 0; i < srv->handler_count; i++) {
+        if (srv->handlers[i].opcode == req->opcode) {
+            uint32_t rc = srv->handlers[i].fn(badge, req, rep,
+                                               srv->handlers[i].ctx);
+            rep->opcode = rc;
+            return rc;
+        }
+    }
+    rep->opcode = SEL4_ERR_INVALID_OP;
+    rep->length = 0;
+    return SEL4_ERR_INVALID_OP;
+}
+static inline void sel4_call(seL4_CPtr ep, const sel4_msg_t *req, sel4_msg_t *rep)
+{
+    (void)ep; (void)req;
+    rep->opcode = 0;
+    rep->length = 0;
+}
+static inline void seL4_DebugPutChar(char c) { (void)c; }
+
+#else /* !AGENTOS_TEST_HOST — production build */
+
+#include <stdint.h>
+#include <stdbool.h>
+#include "sel4_server.h"    /* sel4_server_t, sel4_server_init/register/run */
+#include "sel4_client.h"    /* sel4_client_t, sel4_client_call */
+#include "sel4_ipc.h"       /* sel4_msg_t, sel4_badge_t, SEL4_ERR_* */
+#include <sel4/sel4.h>      /* seL4_DebugPutChar */
+
+#endif /* AGENTOS_TEST_HOST */
+
+/* ── Contract opcodes ────────────────────────────────────────────────────── */
+
+#ifndef MSG_SERIAL_OPEN
+#define MSG_SERIAL_OPEN       0x2001u
+#define MSG_SERIAL_CLOSE      0x2002u
+#define MSG_SERIAL_WRITE      0x2003u
+#define MSG_SERIAL_READ       0x2004u
+#define MSG_SERIAL_STATUS     0x2005u
+#define MSG_SERIAL_CONFIGURE  0x2006u
+#endif
+
+#ifndef SERIAL_OK
+#define SERIAL_OK             0u
+#define SERIAL_ERR_NO_SLOTS   1u
+#define SERIAL_ERR_BAD_SLOT   3u
+#define SERIAL_ERR_BAD_BAUD   4u
+#endif
+
+#ifndef SERIAL_MAX_CLIENTS
+#define SERIAL_MAX_CLIENTS    8u
+#endif
+
+#ifndef SERIAL_MAX_WRITE_BYTES
+#define SERIAL_MAX_WRITE_BYTES 256u
+#endif
+
+#ifndef SERIAL_ERR_OVERRUN
+#define SERIAL_ERR_OVERRUN (1u << 0)
+#define SERIAL_ERR_FRAMING (1u << 1)
+#define SERIAL_ERR_PARITY  (1u << 2)
+#endif
+
+/* Nameserver opcode */
+#ifndef OP_NS_REGISTER
+#define OP_NS_REGISTER 0xD0u
+#endif
+#ifndef NS_OK
+#define NS_OK 0u
+#endif
+#ifndef NS_NAME_MAX
+#define NS_NAME_MAX 32
+#endif
+
+/* ── PL011 UART register offsets ────────────────────────────────────────── */
 
 #define UART_DR     0x000u
 #define UART_RSR    0x004u
@@ -56,11 +205,7 @@
 #define UART_DR_FE  (1u << 8)
 #define UART_DR_PE  (1u << 9)
 
-/* ─── IRQ notification channel ──────────────────────────────────────────── */
-
-#define CH_UART_IRQ  1u
-
-/* ─── Per-slot RX ring buffer ────────────────────────────────────────────── */
+/* ── Per-slot RX ring buffer ─────────────────────────────────────────────── */
 
 #define RX_BUF_SIZE  512u
 
@@ -70,7 +215,7 @@ typedef struct {
     uint32_t tail;
 } rx_ring_t;
 
-/* ─── Virtual client slot ────────────────────────────────────────────────── */
+/* ── Virtual client slot ─────────────────────────────────────────────────── */
 
 typedef struct {
     bool      open;
@@ -83,16 +228,54 @@ typedef struct {
     rx_ring_t rx;
 } serial_client_t;
 
-/* ─── Module state ───────────────────────────────────────────────────────── */
+/* ── Module state ────────────────────────────────────────────────────────── */
 
-/* Microkit setvar_vaddr — set by system initializer from system description */
+/*
+ * uart_mmio_vaddr — UART MMIO virtual address.
+ * In production set by the root task before calling serial_pd_main().
+ * In test builds set directly by the test harness (or left 0).
+ */
 uintptr_t uart_mmio_vaddr;
+
+/*
+ * serial_shmem_vaddr — shared memory for TX/RX data transfer.
+ * Set by the root task in production; in test builds, set to a static buffer.
+ */
 uintptr_t serial_shmem_vaddr;
 
 static serial_client_t clients[SERIAL_MAX_CLIENTS];
 static bool            hw_ready = false;
 
-/* ─── MMIO helpers ───────────────────────────────────────────────────────── */
+/* Server instance */
+static sel4_server_t g_srv;
+
+/* ── Data-field helpers (little-endian uint32 in sel4_msg_t.data) ─────────── */
+
+static inline uint32_t data_rd32(const uint8_t *d, int off)
+{
+    return (uint32_t)d[off    ]
+         | ((uint32_t)d[off+1] <<  8)
+         | ((uint32_t)d[off+2] << 16)
+         | ((uint32_t)d[off+3] << 24);
+}
+
+static inline void data_wr32(uint8_t *d, int off, uint32_t v)
+{
+    d[off  ] = (uint8_t)(v      );
+    d[off+1] = (uint8_t)(v >>  8);
+    d[off+2] = (uint8_t)(v >> 16);
+    d[off+3] = (uint8_t)(v >> 24);
+}
+
+/* ── Debug output ────────────────────────────────────────────────────────── */
+
+static void dbg_puts(const char *s)
+{
+    for (; *s; s++)
+        seL4_DebugPutChar(*s);
+}
+
+/* ── MMIO helpers ────────────────────────────────────────────────────────── */
 
 static inline volatile uint32_t *uart_reg(uint32_t off)
 {
@@ -102,7 +285,7 @@ static inline volatile uint32_t *uart_reg(uint32_t off)
 static inline uint32_t pl011_rd(uint32_t off)   { return *uart_reg(off); }
 static inline void     pl011_wr(uint32_t off, uint32_t v) { *uart_reg(off) = v; }
 
-/* ─── PL011 driver ───────────────────────────────────────────────────────── */
+/* ── PL011 driver ────────────────────────────────────────────────────────── */
 
 /*
  * Baud divisors for a 24 MHz UARTCLK (QEMU virt / RPI3 default).
@@ -174,7 +357,7 @@ static void pl011_put_banner(uint32_t port_id)
     }
 }
 
-/* ─── RX ring helpers ────────────────────────────────────────────────────── */
+/* ── RX ring helpers ─────────────────────────────────────────────────────── */
 
 static void rx_push(rx_ring_t *r, uint8_t c)
 {
@@ -196,7 +379,7 @@ static uint32_t rx_drain(rx_ring_t *r, uint8_t *dst, uint32_t max)
     return n;
 }
 
-/* ─── Hardware RX poll ───────────────────────────────────────────────────── */
+/* ── Hardware RX poll ────────────────────────────────────────────────────── */
 
 static void poll_hw_rx(void)
 {
@@ -223,11 +406,25 @@ static void poll_hw_rx(void)
     pl011_wr(UART_ICR, 0x7FFu);  /* clear all interrupt flags */
 }
 
-/* ─── IPC handlers ───────────────────────────────────────────────────────── */
+/* ── IPC handlers ────────────────────────────────────────────────────────── */
 
-static void handle_open(void)
+/*
+ * handle_open — MSG_SERIAL_OPEN
+ *
+ * Request data layout:
+ *   data[0..3] = port_id
+ *
+ * Reply data layout (fix for pre-existing bug: was using microkit_mr_set
+ * which did not map to the correct raw IPC reply fields):
+ *   data[0..3] = SERIAL_OK (0) or error code
+ *   data[4..7] = slot_id (only valid when data[0..3] == SERIAL_OK)
+ */
+static uint32_t handle_open(sel4_badge_t badge, const sel4_msg_t *req,
+                              sel4_msg_t *rep, void *ctx)
 {
-    uint32_t port_id = (uint32_t)microkit_mr_get(1);
+    (void)badge; (void)ctx;
+
+    uint32_t port_id = data_rd32(req->data, 0);
 
     for (uint32_t i = 0; i < SERIAL_MAX_CLIENTS; i++) {
         if (clients[i].open) continue;
@@ -242,63 +439,113 @@ static void handle_open(void)
         clients[i].rx.head   = 0;
         clients[i].rx.tail   = 0;
 
-        microkit_mr_set(0, SERIAL_OK);
-        microkit_mr_set(1, i);
-        return;
+        data_wr32(rep->data, 0, SERIAL_OK);
+        data_wr32(rep->data, 4, i);          /* slot_id */
+        rep->length = 8;
+        return SEL4_ERR_OK;
     }
 
-    microkit_mr_set(0, SERIAL_ERR_NO_SLOTS);
-    microkit_mr_set(1, 0);
+    data_wr32(rep->data, 0, SERIAL_ERR_NO_SLOTS);
+    data_wr32(rep->data, 4, 0u);
+    rep->length = 8;
+    return SEL4_ERR_NO_MEM;
 }
 
-static void handle_close(void)
+/*
+ * handle_close — MSG_SERIAL_CLOSE
+ *
+ * Request data layout:
+ *   data[0..3] = slot
+ *
+ * Reply data layout:
+ *   data[0..3] = SERIAL_OK or error code
+ */
+static uint32_t handle_close(sel4_badge_t badge, const sel4_msg_t *req,
+                               sel4_msg_t *rep, void *ctx)
 {
-    uint32_t slot = (uint32_t)microkit_mr_get(1);
+    (void)badge; (void)ctx;
+
+    uint32_t slot = data_rd32(req->data, 0);
 
     if (slot >= SERIAL_MAX_CLIENTS || !clients[slot].open) {
-        microkit_mr_set(0, SERIAL_ERR_BAD_SLOT);
-        return;
+        data_wr32(rep->data, 0, SERIAL_ERR_BAD_SLOT);
+        rep->length = 4;
+        return SEL4_ERR_BAD_ARG;
     }
 
     clients[slot].open = false;
-    microkit_mr_set(0, SERIAL_OK);
+    data_wr32(rep->data, 0, SERIAL_OK);
+    rep->length = 4;
+    return SEL4_ERR_OK;
 }
 
-static void handle_write(void)
+/*
+ * handle_write — MSG_SERIAL_WRITE
+ *
+ * Request data layout:
+ *   data[0..3] = slot
+ *   data[4..7] = len (bytes in serial_shmem)
+ *
+ * Reply data layout:
+ *   data[0..3] = SERIAL_OK or error code
+ *   data[4..7] = bytes written
+ */
+static uint32_t handle_write(sel4_badge_t badge, const sel4_msg_t *req,
+                               sel4_msg_t *rep, void *ctx)
 {
-    uint32_t slot = (uint32_t)microkit_mr_get(1);
-    uint32_t len  = (uint32_t)microkit_mr_get(2);
+    (void)badge; (void)ctx;
+
+    uint32_t slot = data_rd32(req->data, 0);
+    uint32_t len  = data_rd32(req->data, 4);
 
     if (slot >= SERIAL_MAX_CLIENTS || !clients[slot].open) {
-        microkit_mr_set(0, SERIAL_ERR_BAD_SLOT);
-        microkit_mr_set(1, 0);
-        return;
+        data_wr32(rep->data, 0, SERIAL_ERR_BAD_SLOT);
+        data_wr32(rep->data, 4, 0u);
+        rep->length = 8;
+        return SEL4_ERR_BAD_ARG;
     }
 
     if (len > SERIAL_MAX_WRITE_BYTES) len = SERIAL_MAX_WRITE_BYTES;
 
     const uint8_t *data = (const uint8_t *)serial_shmem_vaddr;
 
-    if (hw_ready) {
+    if (hw_ready && serial_shmem_vaddr) {
         pl011_put_banner(clients[slot].port_id);
         for (uint32_t i = 0; i < len; i++)
             pl011_putc((char)data[i]);
     }
 
     clients[slot].tx_count += len;
-    microkit_mr_set(0, SERIAL_OK);
-    microkit_mr_set(1, len);
+    data_wr32(rep->data, 0, SERIAL_OK);
+    data_wr32(rep->data, 4, len);
+    rep->length = 8;
+    return SEL4_ERR_OK;
 }
 
-static void handle_read(void)
+/*
+ * handle_read — MSG_SERIAL_READ
+ *
+ * Request data layout:
+ *   data[0..3] = slot
+ *   data[4..7] = max bytes to read
+ *
+ * Reply data layout:
+ *   data[0..3] = SERIAL_OK or error code
+ *   data[4..7] = count (bytes placed in serial_shmem)
+ */
+static uint32_t handle_read(sel4_badge_t badge, const sel4_msg_t *req,
+                              sel4_msg_t *rep, void *ctx)
 {
-    uint32_t slot = (uint32_t)microkit_mr_get(1);
-    uint32_t max  = (uint32_t)microkit_mr_get(2);
+    (void)badge; (void)ctx;
+
+    uint32_t slot = data_rd32(req->data, 0);
+    uint32_t max  = data_rd32(req->data, 4);
 
     if (slot >= SERIAL_MAX_CLIENTS || !clients[slot].open) {
-        microkit_mr_set(0, SERIAL_ERR_BAD_SLOT);
-        microkit_mr_set(1, 0);
-        return;
+        data_wr32(rep->data, 0, SERIAL_ERR_BAD_SLOT);
+        data_wr32(rep->data, 4, 0u);
+        rep->length = 8;
+        return SEL4_ERR_BAD_ARG;
     }
 
     poll_hw_rx();
@@ -306,42 +553,80 @@ static void handle_read(void)
     if (max > RX_BUF_SIZE) max = RX_BUF_SIZE;
 
     uint8_t *shmem = (uint8_t *)serial_shmem_vaddr;
-    uint32_t n     = rx_drain(&clients[slot].rx, shmem, max);
+    uint32_t n     = 0;
+    if (shmem) n = rx_drain(&clients[slot].rx, shmem, max);
 
-    microkit_mr_set(0, SERIAL_OK);
-    microkit_mr_set(1, n);
+    data_wr32(rep->data, 0, SERIAL_OK);
+    data_wr32(rep->data, 4, n);
+    rep->length = 8;
+    return SEL4_ERR_OK;
 }
 
-static void handle_status(void)
+/*
+ * handle_status — MSG_SERIAL_STATUS
+ *
+ * Request data layout:
+ *   data[0..3] = slot
+ *
+ * Reply data layout:
+ *   data[0..3]  = SERIAL_OK or error
+ *   data[4..7]  = baud
+ *   data[8..11] = rx_count
+ *   data[12..15] = tx_count
+ *   data[16..19] = err_flags
+ */
+static uint32_t handle_status(sel4_badge_t badge, const sel4_msg_t *req,
+                                sel4_msg_t *rep, void *ctx)
 {
-    uint32_t slot = (uint32_t)microkit_mr_get(1);
+    (void)badge; (void)ctx;
+
+    uint32_t slot = data_rd32(req->data, 0);
 
     if (slot >= SERIAL_MAX_CLIENTS || !clients[slot].open) {
-        microkit_mr_set(0, SERIAL_ERR_BAD_SLOT);
-        return;
+        data_wr32(rep->data, 0, SERIAL_ERR_BAD_SLOT);
+        rep->length = 4;
+        return SEL4_ERR_BAD_ARG;
     }
 
-    microkit_mr_set(0, SERIAL_OK);
-    microkit_mr_set(1, clients[slot].baud);
-    microkit_mr_set(2, clients[slot].rx_count);
-    microkit_mr_set(3, clients[slot].tx_count);
-    microkit_mr_set(4, clients[slot].err_flags);
+    data_wr32(rep->data,  0, SERIAL_OK);
+    data_wr32(rep->data,  4, clients[slot].baud);
+    data_wr32(rep->data,  8, clients[slot].rx_count);
+    data_wr32(rep->data, 12, clients[slot].tx_count);
+    data_wr32(rep->data, 16, clients[slot].err_flags);
+    rep->length = 20;
+    return SEL4_ERR_OK;
 }
 
-static void handle_configure(void)
+/*
+ * handle_configure — MSG_SERIAL_CONFIGURE
+ *
+ * Request data layout:
+ *   data[0..3] = slot
+ *   data[4..7] = baud
+ *   data[8..11] = flags
+ *
+ * Reply data layout:
+ *   data[0..3] = SERIAL_OK or error
+ */
+static uint32_t handle_configure(sel4_badge_t badge, const sel4_msg_t *req,
+                                   sel4_msg_t *rep, void *ctx)
 {
-    uint32_t slot  = (uint32_t)microkit_mr_get(1);
-    uint32_t baud  = (uint32_t)microkit_mr_get(2);
-    uint32_t flags = (uint32_t)microkit_mr_get(3);
+    (void)badge; (void)ctx;
+
+    uint32_t slot  = data_rd32(req->data, 0);
+    uint32_t baud  = data_rd32(req->data, 4);
+    uint32_t flags = data_rd32(req->data, 8);
 
     if (slot >= SERIAL_MAX_CLIENTS || !clients[slot].open) {
-        microkit_mr_set(0, SERIAL_ERR_BAD_SLOT);
-        return;
+        data_wr32(rep->data, 0, SERIAL_ERR_BAD_SLOT);
+        rep->length = 4;
+        return SEL4_ERR_BAD_ARG;
     }
 
     if (baud != 9600 && baud != 38400 && baud != 57600 && baud != 115200) {
-        microkit_mr_set(0, SERIAL_ERR_BAD_BAUD);
-        return;
+        data_wr32(rep->data, 0, SERIAL_ERR_BAD_BAUD);
+        rep->length = 4;
+        return SEL4_ERR_BAD_ARG;
     }
 
     clients[slot].baud  = baud;
@@ -352,53 +637,145 @@ static void handle_configure(void)
     if (clients[slot].port_id == 0 && hw_ready)
         pl011_set_baud(baud);
 
-    microkit_mr_set(0, SERIAL_OK);
+    data_wr32(rep->data, 0, SERIAL_OK);
+    rep->length = 4;
+    return SEL4_ERR_OK;
 }
 
-/* ─── Microkit entry points ──────────────────────────────────────────────── */
+/* ── Nameserver self-registration ────────────────────────────────────────── */
 
-void init(void)
+static void register_with_nameserver(seL4_CPtr ns_ep)
 {
-    microkit_dbg_puts("[serial_pd] starting — agentOS serial I/O service\n");
+    if (!ns_ep) return;
 
-    for (uint32_t i = 0; i < SERIAL_MAX_CLIENTS; i++)
-        clients[i].open = false;
+    /*
+     * OP_NS_REGISTER request data layout (matching nameserver.c handle_register):
+     *   data[0..3]   = channel_id  (0 — serial_pd uses nameserver for discovery)
+     *   data[4..7]   = pd_id       (serial_pd trace PD id)
+     *   data[8..11]  = cap_classes (0 — serial is a device service)
+     *   data[12..15] = version     (1)
+     *   data[16..47] = name        (NS_NAME_MAX = 32 bytes, "serial")
+     */
+    sel4_msg_t req, rep;
+    req.opcode = OP_NS_REGISTER;
 
+    data_wr32(req.data,  0, 0u);    /* channel_id */
+    data_wr32(req.data,  4, 16u);   /* pd_id = serial_pd */
+    data_wr32(req.data,  8, 0u);    /* cap_classes */
+    data_wr32(req.data, 12, 1u);    /* version */
+
+    /* Copy service name "serial" into data[16..47] */
+    const char *name = "serial";
+    int i = 0;
+    for (; name[i] && (16 + i) < 48; i++)
+        req.data[16 + i] = (uint8_t)name[i];
+    for (; (16 + i) < 48; i++)
+        req.data[16 + i] = 0;
+
+    req.length = 48;
+
+    sel4_call(ns_ep, &req, &rep);
+    /* Ignore return — if nameserver is offline, continue */
+}
+
+/* ── Test-host entry points ──────────────────────────────────────────────── */
+
+#ifdef AGENTOS_TEST_HOST
+
+/*
+ * serial_pd_test_init — reset all state and register handlers.
+ *
+ * Called by the test harness before each group of tests.
+ */
+void serial_pd_test_init(void)
+{
+    hw_ready = false;
+
+    for (uint32_t i = 0; i < SERIAL_MAX_CLIENTS; i++) {
+        clients[i].open      = false;
+        clients[i].port_id   = 0;
+        clients[i].baud      = 115200;
+        clients[i].flags     = 0;
+        clients[i].rx_count  = 0;
+        clients[i].tx_count  = 0;
+        clients[i].err_flags = 0;
+        clients[i].rx.head   = 0;
+        clients[i].rx.tail   = 0;
+    }
+
+    sel4_server_init(&g_srv, 0 /* ep unused in tests */);
+    sel4_server_register(&g_srv, MSG_SERIAL_OPEN,      handle_open,      (void *)0);
+    sel4_server_register(&g_srv, MSG_SERIAL_CLOSE,     handle_close,     (void *)0);
+    sel4_server_register(&g_srv, MSG_SERIAL_WRITE,     handle_write,     (void *)0);
+    sel4_server_register(&g_srv, MSG_SERIAL_READ,      handle_read,      (void *)0);
+    sel4_server_register(&g_srv, MSG_SERIAL_STATUS,    handle_status,    (void *)0);
+    sel4_server_register(&g_srv, MSG_SERIAL_CONFIGURE, handle_configure, (void *)0);
+}
+
+/*
+ * serial_pd_dispatch_one — exercise one IPC round-trip through the
+ * sel4_server dispatch machinery without seL4.
+ */
+uint32_t serial_pd_dispatch_one(sel4_badge_t badge,
+                                 const sel4_msg_t *req,
+                                 sel4_msg_t *rep)
+{
+    return sel4_server_dispatch(&g_srv, badge, req, rep);
+}
+
+#else /* !AGENTOS_TEST_HOST — production build */
+
+/*
+ * serial_pd_main — production entry point called by the root task boot
+ * dispatcher.
+ *
+ * my_ep: listen endpoint capability (seL4 endpoint cap slot).
+ * ns_ep: nameserver endpoint (0 = nameserver not yet available).
+ *
+ * This function NEVER RETURNS.
+ */
+void serial_pd_main(seL4_CPtr my_ep, seL4_CPtr ns_ep)
+{
+    dbg_puts("[serial_pd] starting — agentOS serial I/O service\n");
+
+    /* Zero client table */
+    for (uint32_t i = 0; i < SERIAL_MAX_CLIENTS; i++) {
+        clients[i].open      = false;
+        clients[i].port_id   = 0;
+        clients[i].baud      = 115200;
+        clients[i].flags     = 0;
+        clients[i].rx_count  = 0;
+        clients[i].tx_count  = 0;
+        clients[i].err_flags = 0;
+        clients[i].rx.head   = 0;
+        clients[i].rx.tail   = 0;
+    }
+
+    /* Initialise PL011 UART hardware if MMIO is mapped */
     if (uart_mmio_vaddr) {
         pl011_init();
         hw_ready = true;
         pl011_puts("[serial_pd] PL011 UART ready — 115200 8N1\n");
     } else {
-        microkit_dbg_puts("[serial_pd] WARNING: uart_mmio_vaddr not mapped "
-                          "(x86 or misconfigured manifest)\n");
-    }
-}
-
-void notified(microkit_channel ch)
-{
-    if (ch == CH_UART_IRQ)
-        poll_hw_rx();
-}
-
-microkit_msginfo protected(microkit_channel ch, microkit_msginfo msginfo)
-{
-    (void)ch;
-    (void)msginfo;
-
-    uint32_t op = (uint32_t)microkit_mr_get(0);
-
-    switch (op) {
-    case MSG_SERIAL_OPEN:      handle_open();      break;
-    case MSG_SERIAL_CLOSE:     handle_close();     break;
-    case MSG_SERIAL_WRITE:     handle_write();     break;
-    case MSG_SERIAL_READ:      handle_read();      break;
-    case MSG_SERIAL_STATUS:    handle_status();    break;
-    case MSG_SERIAL_CONFIGURE: handle_configure(); break;
-    default:
-        microkit_dbg_puts("[serial_pd] unknown opcode\n");
-        microkit_mr_set(0, SERIAL_ERR_BAD_SLOT);
-        break;
+        dbg_puts("[serial_pd] WARNING: uart_mmio_vaddr not mapped "
+                 "(x86 or misconfigured manifest)\n");
     }
 
-    return microkit_msginfo_new(0, 5);
+    /* Self-register with nameserver so other PDs can discover "serial" */
+    register_with_nameserver(ns_ep);
+
+    dbg_puts("[serial_pd] ready — waiting for IPC\n");
+
+    sel4_server_init(&g_srv, my_ep);
+    sel4_server_register(&g_srv, MSG_SERIAL_OPEN,      handle_open,      (void *)0);
+    sel4_server_register(&g_srv, MSG_SERIAL_CLOSE,     handle_close,     (void *)0);
+    sel4_server_register(&g_srv, MSG_SERIAL_WRITE,     handle_write,     (void *)0);
+    sel4_server_register(&g_srv, MSG_SERIAL_READ,      handle_read,      (void *)0);
+    sel4_server_register(&g_srv, MSG_SERIAL_STATUS,    handle_status,    (void *)0);
+    sel4_server_register(&g_srv, MSG_SERIAL_CONFIGURE, handle_configure, (void *)0);
+
+    /* Enter the recv/dispatch/reply loop — never returns */
+    sel4_server_run(&g_srv);
 }
+
+#endif /* AGENTOS_TEST_HOST */
