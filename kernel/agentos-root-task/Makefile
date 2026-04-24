@@ -107,7 +107,7 @@ PD_AGENTFS_SRCS      := src/m3_bare_metal.c src/log.c   # agentfs.c → services
 PD_VIBEENGINE_SRCS   := src/cap_policy.c src/m3_bare_metal.c src/log.c   # vibe_engine.c → services/vibe-engine/ (E9-S1)
 PD_SWAPSLOT_SRCS     := src/swap_slot.c src/wasm3_host.c src/m3_bare_metal.c src/log.c
 PD_LOG_DRAIN_SRCS    := src/log_drain.c src/m3_bare_metal.c src/log.c
-PD_SERIAL_PD_SRCS    := src/serial_pd.c src/m3_bare_metal.c src/log.c
+PD_SERIAL_PD_SRCS    := src/m3_bare_metal.c src/log.c   # serial_pd.c → services/serial-mux/ (E9-S3)
 PD_MEMPROFILER_SRCS  := src/mem_profiler.c src/m3_bare_metal.c src/log.c
 PD_NETISOLATOR_SRCS      := src/net_isolator.c src/m3_bare_metal.c src/log.c
 PD_SNAPSHOTSCHED_SRCS    := src/snapshot_sched.c src/m3_bare_metal.c src/log.c
@@ -119,8 +119,8 @@ PD_VIRTIO_BLK_SRCS       := src/virtio_blk.c src/m3_bare_metal.c src/log.c
 PD_VFS_SERVER_SRCS       := src/vfs_server.c src/m3_bare_metal.c src/log.c
 PD_SPAWN_SERVER_SRCS     := src/spawn_server.c src/sha256_mini.c src/m3_bare_metal.c src/log.c
 PD_APP_SLOT_SRCS         := src/app_slot.c src/sha256_mini.c src/m3_bare_metal.c src/log.c
-PD_NET_SERVER_SRCS       := src/net_server.c src/lwip_sys.c src/lwip_shim.c src/m3_bare_metal.c src/log.c
-PD_NET_PD_SRCS           := src/net_pd.c src/lwip_sys.c src/lwip_shim.c src/m3_bare_metal.c src/log.c
+PD_NET_SERVER_SRCS       := src/lwip_sys.c src/lwip_shim.c src/m3_bare_metal.c src/log.c   # net_server.c → services/net-server/ (E9-S3)
+PD_NET_PD_SRCS           := src/lwip_sys.c src/lwip_shim.c src/m3_bare_metal.c src/log.c   # net_pd.c → services/net-service/ (E9-S3)
 PD_WG_NET_SRCS           := src/wg_net.c src/monocypher.c src/m3_bare_metal.c src/log.c
 PD_APP_MANAGER_SRCS      := src/app_manager.c src/m3_bare_metal.c src/log.c
 PD_HTTP_SVC_SRCS         := src/http_svc.c src/m3_bare_metal.c src/log.c
@@ -153,7 +153,8 @@ AGENTFS_OBJS      := $(BUILD_DIR)/agentfs.o \
 VIBEENGINE_OBJS   := $(BUILD_DIR)/vibe_engine.o \
                     $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_VIBEENGINE_SRCS))
 LOG_DRAIN_OBJS     := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_LOG_DRAIN_SRCS))
-SERIAL_PD_OBJS     := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_SERIAL_PD_SRCS))
+SERIAL_PD_OBJS     := $(BUILD_DIR)/serial_pd.o \
+                    $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_SERIAL_PD_SRCS))
 SWAPSLOT_OBJS      := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_SWAPSLOT_SRCS))
 MEMPROFILER_OBJS   := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_MEMPROFILER_SRCS))
 NETISOLATOR_OBJS      := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_NETISOLATOR_SRCS))
@@ -166,8 +167,10 @@ VIRTIO_BLK_OBJS       := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_VIRTIO_BLK_S
 VFS_SERVER_OBJS       := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_VFS_SERVER_SRCS))
 SPAWN_SERVER_OBJS     := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_SPAWN_SERVER_SRCS))
 APP_SLOT_OBJS         := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_APP_SLOT_SRCS))
-NET_SERVER_OBJS       := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_NET_SERVER_SRCS))
-NET_PD_OBJS           := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_NET_PD_SRCS))
+NET_SERVER_OBJS       := $(BUILD_DIR)/net_server.o \
+                    $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_NET_SERVER_SRCS))
+NET_PD_OBJS           := $(BUILD_DIR)/net_pd.o \
+                    $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_NET_PD_SRCS))
 WG_NET_OBJS           := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_WG_NET_SRCS))
 APP_MANAGER_OBJS      := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_APP_MANAGER_SRCS))
 HTTP_SVC_OBJS         := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_HTTP_SVC_SRCS))
@@ -227,6 +230,18 @@ $(BUILD_DIR)/event_bus.o: $(SERVICES_DIR)/event-bus/event_bus.c
 	$(CC) -c $(CFLAGS) $< -o $@
 
 $(BUILD_DIR)/vibe_engine.o: $(SERVICES_DIR)/vibe-engine/vibe_engine.c
+	@mkdir -p $(BUILD_DIR)
+	$(CC) -c $(CFLAGS) $< -o $@
+
+$(BUILD_DIR)/serial_pd.o: $(SERVICES_DIR)/serial-mux/serial_pd.c
+	@mkdir -p $(BUILD_DIR)
+	$(CC) -c $(CFLAGS) $< -o $@
+
+$(BUILD_DIR)/net_server.o: $(SERVICES_DIR)/net-server/net_server.c
+	@mkdir -p $(BUILD_DIR)
+	$(CC) -c $(CFLAGS) $< -o $@
+
+$(BUILD_DIR)/net_pd.o: $(SERVICES_DIR)/net-service/net_pd.c
 	@mkdir -p $(BUILD_DIR)
 	$(CC) -c $(CFLAGS) $< -o $@
 
