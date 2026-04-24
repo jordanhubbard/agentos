@@ -1,0 +1,19 @@
+# agentOS IPC benchmark baseline — AArch64 QEMU TCG
+# Generated: 2026-04-24
+# Architecture: AArch64 (cntvct_el0, 1 GHz reference)
+#
+# NOTE: Values below are from the AGENTOS_TEST_HOST simulation build running
+# on the development host (macOS/Linux).  They reflect host function-call
+# overhead, not real seL4 kernel-crossing latency.
+#
+# Real AArch64 QEMU TCG baseline (seL4 bare-metal) will differ:
+#   BENCH_PINGPONG_MEAN_NS:  ~2000–20000 ns  (2–20 µs per round-trip in TCG)
+#   BENCH_THROUGHPUT_OPS_SEC: ~50000–200000 ops/sec
+#
+# Update this file after the first successful bare-metal QEMU run by running:
+#   make -C tests/ipc_bench test   (bare-metal build, requires seL4 toolchain)
+# and pasting the TAP output values here.
+BENCH_PINGPONG_MEAN_NS=21
+BENCH_NOTIFY_MEAN_NS=15
+BENCH_THROUGHPUT_OPS_SEC=400000000
+BENCH_CAP_OVERHEAD_CYCLES=0
