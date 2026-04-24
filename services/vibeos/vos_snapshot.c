@@ -33,6 +33,10 @@
 /* Pull in the public API contract for opcodes, error codes, and structs */
 #include "contracts/vibeos/interface.h"
 
+#ifndef AGENTOS_TEST_HOST
+#include "sel4_boot.h"
+#endif
+
 /* ── Internal instance table ─────────────────────────────────────────────── */
 
 /*

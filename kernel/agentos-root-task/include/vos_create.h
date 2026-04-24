@@ -24,7 +24,7 @@
 
 #include "sel4_boot.h"
 #include "cap_tree.h"
-#include "../../contracts/vibeos/interface.h"
+#include "../../../contracts/vibeos/interface.h"
 
 /* ── Capability layout constants ─────────────────────────────────────────── */
 

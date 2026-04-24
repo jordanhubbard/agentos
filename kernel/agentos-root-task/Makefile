@@ -274,7 +274,14 @@ $(BUILD_DIR)/tool_svc.o: $(SERVICES_DIR)/toolsvc/tool_svc.c
 	@mkdir -p $(BUILD_DIR)
 	$(CC) -c $(CFLAGS) $< -o $@
 
-# vibeos — VOS lifecycle PD (CREATE, DESTROY, SNAPSHOT, RESTORE)
+# vibeos — VOS lifecycle PD entry point (IPC dispatch loop — future work)
+# vos_create/destroy/snapshot/restore are compiled for the host test suite;
+# the bare-metal PD dispatch loop will link them in a future sprint.
+$(BUILD_DIR)/vibeos_main.o: $(SERVICES_DIR)/vibeos/vibeos_main.c
+	@mkdir -p $(BUILD_DIR)
+	$(CC) -c $(CFLAGS) $< -o $@
+
+# vos_*.o kept for reference: compiled by xtask test (AGENTOS_TEST_HOST)
 $(BUILD_DIR)/vos_create.o: $(SERVICES_DIR)/vibeos/vos_create.c
 	@mkdir -p $(BUILD_DIR)
 	$(CC) -c $(CFLAGS) $< -o $@
@@ -291,9 +298,7 @@ $(BUILD_DIR)/vos_restore.o: $(SERVICES_DIR)/vibeos/vos_restore.c
 	@mkdir -p $(BUILD_DIR)
 	$(CC) -c $(CFLAGS_SERVICES) $< -o $@
 
-VIBEOS_OBJS := $(BUILD_DIR)/vos_create.o $(BUILD_DIR)/vos_destroy.o \
-               $(BUILD_DIR)/vos_snapshot.o $(BUILD_DIR)/vos_restore.o \
-               $(BUILD_DIR)/m3_bare_metal.o $(BUILD_DIR)/log.o
+VIBEOS_OBJS := $(BUILD_DIR)/vibeos_main.o
 
 $(BUILD_DIR)/%.o: src/%.c
 	@mkdir -p $(BUILD_DIR)

@@ -244,3 +244,54 @@ seL4_Error seL4_IRQHandler_Ack(seL4_CPtr _service);
  * Returns seL4_NoError on success.
  */
 seL4_Error seL4_IRQHandler_Clear(seL4_CPtr _service);
+
+/*
+ * seL4_CNode_Revoke — revoke all derived capabilities of the cap at
+ * _service[index].  Must be called before seL4_CNode_Delete when tearing
+ * down a guest capability tree to avoid dangling child caps.
+ *
+ * Parameters:
+ *   _service   CNode capability (root CNode of the slot to revoke from)
+ *   index      slot index within _service
+ *   depth      radix of _service in bits (typically 64 for the root CNode)
+ *
+ * Returns seL4_NoError on success.
+ */
+seL4_Error seL4_CNode_Revoke(seL4_CPtr _service,
+                              seL4_CPtr index,
+                              uint32_t  depth);
+
+/*
+ * seL4_CNode_Delete — delete the capability stored at _service[index],
+ * freeing the slot.  Call seL4_CNode_Revoke first if the cap has children.
+ *
+ * Parameters:
+ *   _service   CNode capability
+ *   index      slot index within _service
+ *   depth      radix of _service in bits (typically 64 for the root CNode)
+ *
+ * Returns seL4_NoError on success.
+ */
+seL4_Error seL4_CNode_Delete(seL4_CPtr _service,
+                              seL4_CPtr index,
+                              uint32_t  depth);
+
+/*
+ * seL4_VCPU_ReadRegs / seL4_VCPU_WriteRegs — AArch64 vCPU general-purpose
+ * register access.  Used by VOS_SNAPSHOT and VOS_RESTORE to capture and
+ * replay guest CPU state without going through a full context switch.
+ *
+ * Parameters:
+ *   vcpu_cap   VCPU capability index
+ *   regs       array of 32 × 32-bit general-purpose register values (x0-x30 + SP)
+ *   pc         program counter (64-bit)
+ *
+ * seL4_VCPU_ReadRegs returns seL4_NoError on success; writes regs[] and *pc.
+ * seL4_VCPU_WriteRegs returns seL4_NoError on success.
+ */
+seL4_Error seL4_VCPU_ReadRegs(uint32_t  vcpu_cap,
+                               uint32_t  regs[32],
+                               uint64_t *pc);
+seL4_Error seL4_VCPU_WriteRegs(uint32_t       vcpu_cap,
+                                const uint32_t regs[32],
+                                uint64_t       pc);
