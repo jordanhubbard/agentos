@@ -4,6 +4,7 @@
 pub mod cmd_ci_matrix;
 pub mod cmd_fault_inject;
 pub mod cmd_fetch_guest;
+pub mod cmd_host_test;
 pub mod cmd_release;
 pub mod cmd_setup;
 pub mod cmd_test;
@@ -92,4 +93,21 @@ pub struct TestApiArgs {
     /// C compiler to use (overrides CC env var)
     #[arg(long, env = "CC")]
     pub cc: Option<String>,
+}
+
+/// Arguments for the `test` subcommand (host-side TAP test runner).
+#[derive(clap::Args)]
+pub struct HostTestArgs {
+    /// Run only the named suite (e.g. test_vibeos, test_msgbus)
+    #[arg(long)]
+    pub suite: Option<String>,
+    /// C compiler to use (overrides the CC environment variable; default: cc)
+    #[arg(long)]
+    pub compiler: Option<String>,
+    /// Print full TAP output for every suite, not just failures
+    #[arg(long, short = 'v')]
+    pub verbose: bool,
+    /// Also launch QEMU and run the hardware test suite (requires a built image)
+    #[arg(long)]
+    pub hardware: bool,
 }
