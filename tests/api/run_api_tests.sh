@@ -22,7 +22,7 @@ TESTS_DIR="${REPO_ROOT}/tests/api"
 BUILD_DIR="${TMPDIR:-/tmp}/agentos-api-tests-$$"
 
 CC="${CC:-cc}"
-CFLAGS="-DAGENTOS_TEST_HOST -I${TESTS_DIR} -std=c11 -Wall -Wextra -Wpedantic"
+CFLAGS="-DAGENTOS_TEST_HOST -I${TESTS_DIR} -I${REPO_ROOT}/kernel/agentos-root-task/include -std=c11 -Wall -Wextra -Wpedantic"
 
 mkdir -p "${BUILD_DIR}"
 
@@ -33,6 +33,7 @@ TEST_FILES="
     test_memfs.c
     test_logsvc.c
     test_vibeos.c
+    test_pd_tcb.c
 "
 
 PASSED=0
