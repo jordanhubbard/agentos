@@ -23,6 +23,7 @@
 
 #define AGENTOS_DEBUG 1
 #include "agentos.h"
+#include "sel4_server.h"
 #include "contracts/cap_audit_log_contract.h"
 #include "ed25519_verify.h"  /* sha512() — used by attestation response */
 
@@ -134,7 +135,7 @@ static void cap_audit_append(uint32_t event_type, uint32_t agent_id,
 
 /* ── Microkit entry points ───────────────────────────────────────────────── */
 
-void init(void) {
+static void cap_audit_log_pd_init(void) {
     agentos_log_boot("cap_audit_log");
     cap_audit_init();
     log_drain_write(5, 5, "[cap_audit_log] Ready — passive audit trail\n");
@@ -163,26 +164,27 @@ void init(void) {
  *   MR2 = count (max entries to return, capped at 4)
  *   Returns: MR0=actual_count, then 4 MRs per entry (seq, tick, type|agent, caps|slot)
  */
-microkit_msginfo protected(microkit_channel ch, microkit_msginfo msginfo) {
-    (void)ch;
-    (void)msginfo;
+static uint32_t cap_audit_log_h_dispatch(sel4_badge_t b, const sel4_msg_t *req, sel4_msg_t *rep, void *ctx) {
+    (void)b;
+    (void)ctx;
 
-    uint64_t op = microkit_mr_get(0);
+    uint64_t op = msg_u32(req, 0);
     boot_tick++;  /* Simple tick counter, incremented per PPC */
 
     switch (op) {
     case OP_CAP_LOG: {
-        uint32_t event_type = (uint32_t)microkit_mr_get(1);
-        uint32_t agent_id   = (uint32_t)microkit_mr_get(2);
-        uint32_t caps_mask  = (uint32_t)microkit_mr_get(3);
-        uint32_t slot_id    = (uint32_t)microkit_mr_get(4);
+        uint32_t event_type = (uint32_t)msg_u32(req, 4);
+        uint32_t agent_id   = (uint32_t)msg_u32(req, 8);
+        uint32_t caps_mask  = (uint32_t)msg_u32(req, 12);
+        uint32_t slot_id    = (uint32_t)msg_u32(req, 16);
 
         if (event_type != CAP_EVENT_GRANT &&
             event_type != CAP_EVENT_REVOKE &&
             event_type != CAP_AUDIT_POLICY_RELOAD) {
             log_drain_write(5, 5, "[cap_audit_log] WARN: invalid event_type\n");
-            microkit_mr_set(0, 1);  /* error */
-            return microkit_msginfo_new(0, 1);
+            rep_u32(rep, 0, 1);  /* error */
+            rep->length = 4;
+        return SEL4_ERR_OK;
         }
 
         cap_audit_append(event_type, agent_id, caps_mask, slot_id);
@@ -191,33 +193,36 @@ microkit_msginfo protected(microkit_channel ch, microkit_msginfo msginfo) {
             log_drain_write(5, 5, "[cap_audit_log] POLICY_RELOAD logged\n");
         }
 
-        microkit_mr_set(0, 0);  /* success */
-        return microkit_msginfo_new(0, 1);
+        rep_u32(rep, 0, 0);  /* success */
+        rep->length = 4;
+        return SEL4_ERR_OK;
     }
 
     case OP_CAP_LOG_STATUS: {
         volatile cap_audit_header_t *hdr = AUDIT_HDR;
-        microkit_mr_set(0, hdr->count);
-        microkit_mr_set(1, hdr->head);
-        microkit_mr_set(2, hdr->capacity);
-        microkit_mr_set(3, hdr->drops);
-        return microkit_msginfo_new(0, 4);
+        rep_u32(rep, 0, hdr->count);
+        rep_u32(rep, 4, hdr->head);
+        rep_u32(rep, 8, hdr->capacity);
+        rep_u32(rep, 12, hdr->drops);
+        rep->length = 16;
+        return SEL4_ERR_OK;
     }
 
     case OP_CAP_LOG_DUMP: {
         volatile cap_audit_header_t *hdr = AUDIT_HDR;
         volatile cap_audit_entry_t *entries = AUDIT_ENTRIES;
 
-        uint32_t start_back = (uint32_t)microkit_mr_get(1);
-        uint32_t req_count  = (uint32_t)microkit_mr_get(2);
+        uint32_t start_back = (uint32_t)msg_u32(req, 4);
+        uint32_t req_count  = (uint32_t)msg_u32(req, 8);
 
         /* Cap at 4 entries per call (limited by MR count: 4 MRs per entry = 16 MRs) */
         if (req_count > 4) req_count = 4;
 
         uint64_t avail = hdr->count < hdr->capacity ? hdr->count : hdr->capacity;
         if (start_back >= avail) {
-            microkit_mr_set(0, 0);
-            return microkit_msginfo_new(0, 1);
+            rep_u32(rep, 0, 0);
+            rep->length = 4;
+        return SEL4_ERR_OK;
         }
 
         uint32_t actual = req_count;
@@ -225,19 +230,20 @@ microkit_msginfo protected(microkit_channel ch, microkit_msginfo msginfo) {
             actual = (uint32_t)(avail - start_back);
         }
 
-        microkit_mr_set(0, actual);
+        rep_u32(rep, 0, actual);
         for (uint32_t i = 0; i < actual; i++) {
             /* Walk backwards from head */
             uint64_t idx = (hdr->head + hdr->capacity - 1 - start_back - i) % hdr->capacity;
             volatile cap_audit_entry_t *e = &entries[idx];
 
             uint32_t mr_base = 1 + i * 4;
-            microkit_mr_set(mr_base + 0, e->seq);
-            microkit_mr_set(mr_base + 1, e->tick);
-            microkit_mr_set(mr_base + 2, ((uint64_t)e->event_type << 32) | e->agent_id);
-            microkit_mr_set(mr_base + 3, ((uint64_t)e->caps_mask << 32) | e->slot_id);
+            rep_u32(rep, (mr_base + 0) * 4, e->seq);
+            rep_u32(rep, (mr_base + 1) * 4, e->tick);
+            rep_u32(rep, (mr_base + 2) * 4, ((uint64_t)e->event_type << 32) | e->agent_id);
+            rep_u32(rep, (mr_base + 3) * 4, ((uint64_t)e->caps_mask << 32) | e->slot_id);
         }
-        return microkit_msginfo_new(0, 1 + actual * 4);
+        rep->length = (1 + actual * 4) * 4;
+        return SEL4_ERR_OK;
     }
 
     case OP_CAP_ATTEST: {
@@ -257,10 +263,10 @@ microkit_msginfo protected(microkit_channel ch, microkit_msginfo msginfo) {
          *   MR1 = first 4 bytes of SHA-512 hash (as uint32, little-endian)
          *         useful as a quick fingerprint for the report
          */
-        uint32_t tick_lo   = (uint32_t)microkit_mr_get(1);
-        uint32_t tick_hi   = (uint32_t)microkit_mr_get(2);
-        uint32_t net_act   = (uint32_t)microkit_mr_get(3);
-        uint32_t net_deny  = (uint32_t)microkit_mr_get(4);
+        uint32_t tick_lo   = (uint32_t)msg_u32(req, 4);
+        uint32_t tick_hi   = (uint32_t)msg_u32(req, 8);
+        uint32_t net_act   = (uint32_t)msg_u32(req, 12);
+        uint32_t net_deny  = (uint32_t)msg_u32(req, 16);
 
         uint64_t caller_tick = ((uint64_t)tick_hi << 32) | (uint64_t)tick_lo;
         if (caller_tick == 0ULL) caller_tick = (uint64_t)boot_tick;
@@ -287,15 +293,17 @@ microkit_msginfo protected(microkit_channel ch, microkit_msginfo msginfo) {
                           ((uint32_t)h[2] << 16) | ((uint32_t)h[3] << 24);
         }
 
-        microkit_mr_set(0, report_len);
-        microkit_mr_set(1, fingerprint);
-        return microkit_msginfo_new(0, 2);
+        rep_u32(rep, 0, report_len);
+        rep_u32(rep, 4, fingerprint);
+        rep->length = 8;
+        return SEL4_ERR_OK;
     }
 
     default:
         log_drain_write(5, 5, "[cap_audit_log] WARN: unknown opcode\n");
-        microkit_mr_set(0, 0xFF);
-        return microkit_msginfo_new(0, 1);
+        rep_u32(rep, 0, 0xFF);
+        rep->length = 4;
+        return SEL4_ERR_OK;
     }
 }
 
@@ -303,7 +311,19 @@ microkit_msginfo protected(microkit_channel ch, microkit_msginfo msginfo) {
  * Notification handler — cap_audit_log is passive so this is rarely called.
  * If we do get notified, it's a tick signal for the boot_tick counter.
  */
-void notified(microkit_channel ch) {
+static void cap_audit_log_pd_notified(uint32_t ch) {
     (void)ch;
     boot_tick++;
+}
+
+/* ── E5-S8: Entry point ─────────────────────────────────────────────────── */
+void cap_audit_log_main(seL4_CPtr my_ep, seL4_CPtr ns_ep)
+{
+    (void)ns_ep;
+    cap_audit_log_pd_init();
+    static sel4_server_t srv;
+    sel4_server_init(&srv, my_ep);
+    /* Dispatch all opcodes through the generic handler */
+    sel4_server_register(&srv, SEL4_SERVER_OPCODE_ANY, cap_audit_log_h_dispatch, (void *)0);
+    sel4_server_run(&srv);
 }

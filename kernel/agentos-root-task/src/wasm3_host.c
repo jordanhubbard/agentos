@@ -23,7 +23,6 @@
  */
 
 #include "agentos.h"
-#include <microkit.h>
 #include "wasm3_host.h"
 
 /* Include wasm3 — these reference the vendored source */

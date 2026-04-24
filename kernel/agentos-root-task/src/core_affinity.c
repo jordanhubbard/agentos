@@ -32,6 +32,7 @@
 
 #define AGENTOS_DEBUG 1
 #include "agentos.h"
+#include "sel4_server.h"
 #include "core_affinity.h"
 #include <stdint.h>
 #include <stdbool.h>
@@ -99,38 +100,37 @@ static uint8_t pick_core(uint8_t lo, uint8_t hi, bool exclusive)
 static void notify_time_partition(uint8_t slot_id, uint32_t flags)
 {
     uint32_t tp_class = (flags & CORE_FLAG_GPU) ? TP_CLASS_GPU : TP_CLASS_BG;
-    microkit_mr_set(1, (uint32_t)slot_id);
-    microkit_mr_set(2, tp_class);
-    microkit_ppcall(CA_CH_TIME_PARTITION,
-                    microkit_msginfo_new(OP_TP_CONFIGURE, 3));
+    rep_u32(rep, 4, (uint32_t)slot_id);
+    rep_u32(rep, 8, tp_class);
+    /* E5-S8: ppcall stubbed */
 }
 
 /* ── Microkit entry points ───────────────────────────────────────────────── */
 
-void init(void)
+static void core_affinity_pd_init(void)
 {
     agentos_log_boot("core_affinity");
     memset(&g_state, 0, sizeof(g_state));
-    microkit_dbg_puts("[core_affinity] GB10 core affinity table initialised\n");
-    microkit_dbg_puts("[core_affinity] GPU cores [0-3], BG cores [20-27], "
+    sel4_dbg_puts("[core_affinity] GB10 core affinity table initialised\n");
+    sel4_dbg_puts("[core_affinity] GPU cores [0-3], BG cores [20-27], "
                       "MAX_SLOTS=16, MAX_CORES=32\n");
 }
 
-void notified(microkit_channel ch)
+static void core_affinity_pd_notified(uint32_t ch)
 {
     /* Passive PD — no unsolicited notifications expected. */
     (void)ch;
 }
 
-microkit_msginfo protected(microkit_channel ch, microkit_msginfo msginfo)
+static uint32_t core_affinity_h_dispatch(sel4_badge_t b, const sel4_msg_t *req, sel4_msg_t *rep, void *ctx)
 {
-    (void)ch;
+    (void)b; (void)ctx;
     g_tick++;
 
-    uint32_t op   = (uint32_t)microkit_msginfo_get_label(msginfo);
-    uint32_t arg1 = (uint32_t)microkit_mr_get(1);
-    uint32_t arg2 = (uint32_t)microkit_mr_get(2);
-    uint32_t arg3 = (uint32_t)microkit_mr_get(3);
+    uint32_t op   = (uint32_t)msg_u32(req, 0);
+    uint32_t arg1 = (uint32_t)msg_u32(req, 4);
+    uint32_t arg2 = (uint32_t)msg_u32(req, 8);
+    uint32_t arg3 = (uint32_t)msg_u32(req, 12);
 
     switch (op) {
 
@@ -142,14 +142,16 @@ microkit_msginfo protected(microkit_channel ch, microkit_msginfo msginfo)
         bool     exclusive = !!(flags & CORE_FLAG_EXCLUSIVE);
 
         if (core_id >= MAX_CORES) {
-            microkit_mr_set(0, CA_ERR_INVAL);
-            return microkit_msginfo_new(0, 1);
+            rep_u32(rep, 0, CA_ERR_INVAL);
+            rep->length = 4;
+        return SEL4_ERR_OK;
         }
 
         /* Reject if core is reserved by someone else and we're not its owner. */
         if (g_state.reserved_cores[core_id] && !exclusive) {
-            microkit_mr_set(0, CA_ERR_BUSY);
-            return microkit_msginfo_new(0, 1);
+            rep_u32(rep, 0, CA_ERR_BUSY);
+            rep->length = 4;
+        return SEL4_ERR_OK;
         }
 
         CoreAssignment *entry = find_slot(slot_id);
@@ -164,8 +166,9 @@ microkit_msginfo protected(microkit_channel ch, microkit_msginfo msginfo)
         } else {
             /* New assignment. */
             if (g_state.slot_count >= MAX_SLOTS) {
-                microkit_mr_set(0, CA_ERR_FULL);
-                return microkit_msginfo_new(0, 1);
+                rep_u32(rep, 0, CA_ERR_FULL);
+                rep->length = 4;
+        return SEL4_ERR_OK;
             }
             entry = &g_state.slots[g_state.slot_count++];
             entry->slot_id        = slot_id;
@@ -182,9 +185,10 @@ microkit_msginfo protected(microkit_channel ch, microkit_msginfo msginfo)
         /* Notify time_partition to restrict this slot's scheduling budget. */
         notify_time_partition(slot_id, flags);
 
-        microkit_mr_set(0, CA_OK);
-        microkit_mr_set(1, (uint32_t)core_id);
-        return microkit_msginfo_new(0, 2);
+        rep_u32(rep, 0, CA_OK);
+        rep_u32(rep, 4, (uint32_t)core_id);
+        rep->length = 8;
+        return SEL4_ERR_OK;
     }
 
     /* ── OP_AFFINITY_UNPIN ─────────────────────────────────────────────── */
@@ -192,8 +196,9 @@ microkit_msginfo protected(microkit_channel ch, microkit_msginfo msginfo)
         uint8_t slot_id = (uint8_t)arg1;
         CoreAssignment *entry = find_slot(slot_id);
         if (!entry) {
-            microkit_mr_set(0, CA_ERR_NOENT);
-            return microkit_msginfo_new(0, 1);
+            rep_u32(rep, 0, CA_ERR_NOENT);
+            rep->length = 4;
+        return SEL4_ERR_OK;
         }
 
         /* Release exclusive reservation if this slot held it. */
@@ -206,8 +211,9 @@ microkit_msginfo protected(microkit_channel ch, microkit_msginfo msginfo)
             g_state.slots[idx] = g_state.slots[g_state.slot_count - 1u];
         g_state.slot_count--;
 
-        microkit_mr_set(0, CA_OK);
-        return microkit_msginfo_new(0, 1);
+        rep_u32(rep, 0, CA_OK);
+        rep->length = 4;
+        return SEL4_ERR_OK;
     }
 
     /* ── OP_AFFINITY_STATUS ────────────────────────────────────────────── */
@@ -224,46 +230,52 @@ microkit_msginfo protected(microkit_channel ch, microkit_msginfo msginfo)
          * Callers should not request status when slot_count > 16 entries as
          * MR capacity limits the response to MAX_SLOTS (16) slots.
          */
-        microkit_mr_set(0, CA_OK);
-        microkit_mr_set(1, (uint32_t)g_state.slot_count);
-        microkit_mr_set(2, g_state.migrations);
+        rep_u32(rep, 0, CA_OK);
+        rep_u32(rep, 4, (uint32_t)g_state.slot_count);
+        rep_u32(rep, 8, g_state.migrations);
         uint32_t n = g_state.slot_count;
         if (n > MAX_SLOTS) n = MAX_SLOTS;
         for (uint32_t i = 0; i < n; i++) {
             uint32_t base = 3u + i * 3u;
-            microkit_mr_set(base + 0u, (uint32_t)g_state.slots[i].slot_id);
-            microkit_mr_set(base + 1u, (uint32_t)g_state.slots[i].core_id);
-            microkit_mr_set(base + 2u, g_state.slots[i].pinned_at_tick);
+            rep_u32(rep, (base + 0u) * 4, (uint32_t)g_state.slots[i].slot_id);
+            rep_u32(rep, (base + 1u) * 4, (uint32_t)g_state.slots[i].core_id);
+            rep_u32(rep, (base + 2u) * 4, g_state.slots[i].pinned_at_tick);
         }
-        return microkit_msginfo_new(0, 3u + n * 3u);
+        rep->length = (3u + n * 3u) * 4u;
+        return SEL4_ERR_OK;
     }
 
     /* ── OP_AFFINITY_RESERVE ───────────────────────────────────────────── */
     case OP_AFFINITY_RESERVE: {
         uint8_t core_id = (uint8_t)arg1;
         if (core_id >= MAX_CORES) {
-            microkit_mr_set(0, CA_ERR_INVAL);
-            return microkit_msginfo_new(0, 1);
+            rep_u32(rep, 0, CA_ERR_INVAL);
+            rep->length = 4;
+        return SEL4_ERR_OK;
         }
         if (g_state.reserved_cores[core_id]) {
-            microkit_mr_set(0, CA_ERR_BUSY);
-            return microkit_msginfo_new(0, 1);
+            rep_u32(rep, 0, CA_ERR_BUSY);
+            rep->length = 4;
+        return SEL4_ERR_OK;
         }
         g_state.reserved_cores[core_id] = 1u;
-        microkit_mr_set(0, CA_OK);
-        return microkit_msginfo_new(0, 1);
+        rep_u32(rep, 0, CA_OK);
+        rep->length = 4;
+        return SEL4_ERR_OK;
     }
 
     /* ── OP_AFFINITY_UNRESERVE ─────────────────────────────────────────── */
     case OP_AFFINITY_UNRESERVE: {
         uint8_t core_id = (uint8_t)arg1;
         if (core_id >= MAX_CORES) {
-            microkit_mr_set(0, CA_ERR_INVAL);
-            return microkit_msginfo_new(0, 1);
+            rep_u32(rep, 0, CA_ERR_INVAL);
+            rep->length = 4;
+        return SEL4_ERR_OK;
         }
         g_state.reserved_cores[core_id] = 0u;
-        microkit_mr_set(0, CA_OK);
-        return microkit_msginfo_new(0, 1);
+        rep_u32(rep, 0, CA_OK);
+        rep->length = 4;
+        return SEL4_ERR_OK;
     }
 
     /* ── OP_AFFINITY_SUGGEST ───────────────────────────────────────────── */
@@ -305,26 +317,42 @@ microkit_msginfo protected(microkit_channel ch, microkit_msginfo msginfo)
         }
 
         if (suggested >= MAX_CORES) {
-            microkit_mr_set(0, CA_ERR_NOCORE);
-            return microkit_msginfo_new(0, 1);
+            rep_u32(rep, 0, CA_ERR_NOCORE);
+            rep->length = 4;
+        return SEL4_ERR_OK;
         }
 
-        microkit_mr_set(0, CA_OK);
-        microkit_mr_set(1, (uint32_t)suggested);
-        microkit_mr_set(2, core_load(suggested));
-        return microkit_msginfo_new(0, 3);
+        rep_u32(rep, 0, CA_OK);
+        rep_u32(rep, 4, (uint32_t)suggested);
+        rep_u32(rep, 8, core_load(suggested));
+        rep->length = 12;
+        return SEL4_ERR_OK;
     }
 
     /* ── OP_AFFINITY_RESET ─────────────────────────────────────────────── */
     case OP_AFFINITY_RESET: {
         memset(&g_state, 0, sizeof(g_state));
         g_tick = 0;
-        microkit_mr_set(0, CA_OK);
-        return microkit_msginfo_new(0, 1);
+        rep_u32(rep, 0, CA_OK);
+        rep->length = 4;
+        return SEL4_ERR_OK;
     }
 
     default:
-        microkit_mr_set(0, 0xDEADu);
-        return microkit_msginfo_new(1, 1);
+        rep_u32(rep, 0, 0xDEADu);
+        rep->length = 4;
+        return SEL4_ERR_OK;
     }
+}
+
+/* ── E5-S8: Entry point ─────────────────────────────────────────────────── */
+void core_affinity_main(seL4_CPtr my_ep, seL4_CPtr ns_ep)
+{
+    (void)ns_ep;
+    core_affinity_pd_init();
+    static sel4_server_t srv;
+    sel4_server_init(&srv, my_ep);
+    /* Dispatch all opcodes through the generic handler */
+    sel4_server_register(&srv, SEL4_SERVER_OPCODE_ANY, core_affinity_h_dispatch, (void *)0);
+    sel4_server_run(&srv);
 }

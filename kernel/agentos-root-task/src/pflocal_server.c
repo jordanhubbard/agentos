@@ -38,6 +38,7 @@
 
 #define AGENTOS_DEBUG 1
 #include "agentos.h"
+#include "sel4_server.h"
 
 /* ── Shared memory ─────────────────────────────────────────────────────────── */
 uintptr_t pflocal_shmem_vaddr;
@@ -139,7 +140,7 @@ static int find_bound_sock(const char *path)
 
 /* ── Microkit entry points ─────────────────────────────────────────────────── */
 
-void init(void)
+static void pflocal_server_pd_init(void)
 {
     for (uint32_t i = 0; i < PFLOCAL_MAX_SOCKS; i++) {
         socks[i].state       = SOCK_FREE;
@@ -152,19 +153,19 @@ void init(void)
     if (pflocal_shmem_vaddr) {
         for (uint32_t i = 0; i < PFLOCAL_MAX_SOCKS; i++)
             ring_init((uint8_t)i);
-        microkit_dbg_puts("[pflocal] init: 16 slots, shmem mapped\n");
+        sel4_dbg_puts("[pflocal] init: 16 slots, shmem mapped\n");
     } else {
-        microkit_dbg_puts("[pflocal] init: 16 slots, shmem not-mapped\n");
+        sel4_dbg_puts("[pflocal] init: 16 slots, shmem not-mapped\n");
     }
 }
 
-void notified(microkit_channel ch) { (void)ch; }
+static void pflocal_server_pd_notified(uint32_t ch) { (void)ch; }
 
-microkit_msginfo protected(microkit_channel ch, microkit_msginfo msg)
+static uint32_t pflocal_server_pd_dispatch(sel4_badge_t b, const sel4_msg_t *req, sel4_msg_t *rep, void *ctx)
 {
-    (void)ch; (void)msg;
-    uint32_t op      = (uint32_t)microkit_mr_get(0);
-    uint32_t sock_id = (uint32_t)microkit_mr_get(1);
+    (void)b; (void)ctx;
+    uint32_t op      = (uint32_t)msg_u32(req, 0);
+    uint32_t sock_id = (uint32_t)msg_u32(req, 4);
 
     switch (op) {
 
@@ -177,8 +178,9 @@ microkit_msginfo protected(microkit_channel ch, microkit_msginfo msg)
         }
         if (id == PFLOCAL_MAX_SOCKS) {
             /* No free slots */
-            microkit_mr_set(0, 0xFDu);  /* PFLOCAL_ERR_FULL */
-            return microkit_msginfo_new(0, 1);
+            rep_u32(rep, 0, 0xFDu);  /* PFLOCAL_ERR_FULL */
+            rep->length = 4;
+        return SEL4_ERR_OK;
         }
         socks[id].state        = SOCK_CREATED;
         socks[id].slot_id      = (uint8_t)id;
@@ -186,37 +188,42 @@ microkit_msginfo protected(microkit_channel ch, microkit_msginfo msg)
         socks[id].path[0]      = '\0';
         if (pflocal_shmem_vaddr)
             ring_init((uint8_t)id);
-        microkit_mr_set(0, 0u);
-        microkit_mr_set(1, id);
-        microkit_mr_set(2, id * PFLOCAL_SLOT_SIZE);
-        return microkit_msginfo_new(0, 3);
+        rep_u32(rep, 0, 0u);
+        rep_u32(rep, 4, id);
+        rep_u32(rep, 8, id * PFLOCAL_SLOT_SIZE);
+        rep->length = 12;
+        return SEL4_ERR_OK;
     }
 
     /* OP_PFLOCAL_BIND: MR1=sock_id; path is null-terminated at pflocal_shmem[0].
      * → MR0=ok */
     case OP_PFLOCAL_BIND: {
         if (sock_id >= PFLOCAL_MAX_SOCKS || socks[sock_id].state == SOCK_FREE) {
-            microkit_mr_set(0, 0xFFu);
-            return microkit_msginfo_new(0, 1);
+            rep_u32(rep, 0, 0xFFu);
+            rep->length = 4;
+        return SEL4_ERR_OK;
         }
         if (pflocal_shmem_vaddr) {
             const char *path = (const char *)pflocal_shmem_vaddr;
             str_ncopy(socks[sock_id].path, path, sizeof(socks[sock_id].path));
         }
         socks[sock_id].state = SOCK_BOUND;
-        microkit_mr_set(0, 0u);
-        return microkit_msginfo_new(0, 1);
+        rep_u32(rep, 0, 0u);
+        rep->length = 4;
+        return SEL4_ERR_OK;
     }
 
     /* OP_PFLOCAL_LISTEN: MR1=sock_id → MR0=ok */
     case OP_PFLOCAL_LISTEN: {
         if (sock_id >= PFLOCAL_MAX_SOCKS || socks[sock_id].state == SOCK_FREE) {
-            microkit_mr_set(0, 0xFFu);
-            return microkit_msginfo_new(0, 1);
+            rep_u32(rep, 0, 0xFFu);
+            rep->length = 4;
+        return SEL4_ERR_OK;
         }
         socks[sock_id].state = SOCK_LISTENING;
-        microkit_mr_set(0, 0u);
-        return microkit_msginfo_new(0, 1);
+        rep_u32(rep, 0, 0u);
+        rep->length = 4;
+        return SEL4_ERR_OK;
     }
 
     /* OP_PFLOCAL_CONNECT: MR1=sock_id; path at pflocal_shmem[0].
@@ -224,24 +231,28 @@ microkit_msginfo protected(microkit_channel ch, microkit_msginfo msg)
      * → MR0=ok */
     case OP_PFLOCAL_CONNECT: {
         if (sock_id >= PFLOCAL_MAX_SOCKS || socks[sock_id].state == SOCK_FREE) {
-            microkit_mr_set(0, 0xFFu);
-            return microkit_msginfo_new(0, 1);
+            rep_u32(rep, 0, 0xFFu);
+            rep->length = 4;
+        return SEL4_ERR_OK;
         }
         if (!pflocal_shmem_vaddr) {
-            microkit_mr_set(0, 0xFEu);  /* PFLOCAL_ERR_NO_SHMEM */
-            return microkit_msginfo_new(0, 1);
+            rep_u32(rep, 0, 0xFEu);  /* PFLOCAL_ERR_NO_SHMEM */
+            rep->length = 4;
+        return SEL4_ERR_OK;
         }
         const char *path = (const char *)pflocal_shmem_vaddr;
         int server_id = find_bound_sock(path);
         if (server_id < 0) {
-            microkit_mr_set(0, 0xFEu);  /* PFLOCAL_ERR_NOENT */
-            return microkit_msginfo_new(0, 1);
+            rep_u32(rep, 0, 0xFEu);  /* PFLOCAL_ERR_NOENT */
+            rep->length = 4;
+        return SEL4_ERR_OK;
         }
         socks[sock_id].state        = SOCK_CONNECTED;
         socks[sock_id].peer_sock_id = (uint8_t)server_id;
         socks[(uint8_t)server_id].peer_sock_id = (uint8_t)sock_id;
-        microkit_mr_set(0, 0u);
-        return microkit_msginfo_new(0, 1);
+        rep_u32(rep, 0, 0u);
+        rep->length = 4;
+        return SEL4_ERR_OK;
     }
 
     /* OP_PFLOCAL_ACCEPT: MR1=sock_id (listening).
@@ -249,8 +260,9 @@ microkit_msginfo protected(microkit_channel ch, microkit_msginfo msg)
      * → MR0=ok, MR1=new_sock_id, MR2=peer_slot_offset */
     case OP_PFLOCAL_ACCEPT: {
         if (sock_id >= PFLOCAL_MAX_SOCKS || socks[sock_id].state == SOCK_FREE) {
-            microkit_mr_set(0, 0xFFu);
-            return microkit_msginfo_new(0, 1);
+            rep_u32(rep, 0, 0xFFu);
+            rep->length = 4;
+        return SEL4_ERR_OK;
         }
         /* Find a socket in SOCK_CONNECTED state whose peer is this server */
         uint32_t new_id = PFLOCAL_MAX_SOCKS;
@@ -262,36 +274,41 @@ microkit_msginfo protected(microkit_channel ch, microkit_msginfo msg)
             }
         }
         if (new_id == PFLOCAL_MAX_SOCKS) {
-            microkit_mr_set(0, 0xFCu);  /* PFLOCAL_ERR_AGAIN: no pending connection */
-            return microkit_msginfo_new(0, 1);
+            rep_u32(rep, 0, 0xFCu);  /* PFLOCAL_ERR_AGAIN: no pending connection */
+            rep->length = 4;
+        return SEL4_ERR_OK;
         }
         uint32_t peer_slot = (uint32_t)socks[new_id].slot_id * PFLOCAL_SLOT_SIZE;
-        microkit_mr_set(0, 0u);
-        microkit_mr_set(1, new_id);
-        microkit_mr_set(2, peer_slot);
-        return microkit_msginfo_new(0, 3);
+        rep_u32(rep, 0, 0u);
+        rep_u32(rep, 4, new_id);
+        rep_u32(rep, 8, peer_slot);
+        rep->length = 12;
+        return SEL4_ERR_OK;
     }
 
     /* OP_PFLOCAL_SEND: MR1=sock_id, MR2=src_offset (into pflocal_shmem), MR3=len.
      * Copies len bytes from pflocal_shmem+src_offset into peer's ring buffer.
      * → MR0=ok, MR1=bytes_sent */
     case OP_PFLOCAL_SEND: {
-        uint32_t src_offset = (uint32_t)microkit_mr_get(2);
-        uint32_t len        = (uint32_t)microkit_mr_get(3);
+        uint32_t src_offset = (uint32_t)msg_u32(req, 8);
+        uint32_t len        = (uint32_t)msg_u32(req, 12);
 
         if (sock_id >= PFLOCAL_MAX_SOCKS || socks[sock_id].state != SOCK_CONNECTED) {
-            microkit_mr_set(0, 0xFFu);
-            return microkit_msginfo_new(0, 1);
+            rep_u32(rep, 0, 0xFFu);
+            rep->length = 4;
+        return SEL4_ERR_OK;
         }
         uint8_t peer_id = socks[sock_id].peer_sock_id;
         if (peer_id >= PFLOCAL_MAX_SOCKS || socks[peer_id].state == SOCK_FREE) {
-            microkit_mr_set(0, 0xFBu);  /* PFLOCAL_ERR_PEER_GONE */
-            return microkit_msginfo_new(0, 1);
+            rep_u32(rep, 0, 0xFBu);  /* PFLOCAL_ERR_PEER_GONE */
+            rep->length = 4;
+        return SEL4_ERR_OK;
         }
         if (!pflocal_shmem_vaddr || len == 0u) {
-            microkit_mr_set(0, 0u);
-            microkit_mr_set(1, 0u);
-            return microkit_msginfo_new(0, 2);
+            rep_u32(rep, 0, 0u);
+            rep_u32(rep, 4, 0u);
+            rep->length = 8;
+        return SEL4_ERR_OK;
         }
 
         ring_header_t *ring = slot_ring(socks[peer_id].slot_id);
@@ -307,26 +324,29 @@ microkit_msginfo protected(microkit_channel ch, microkit_msginfo msg)
             ring->head = next;
             sent++;
         }
-        microkit_mr_set(0, 0u);
-        microkit_mr_set(1, sent);
-        return microkit_msginfo_new(0, 2);
+        rep_u32(rep, 0, 0u);
+        rep_u32(rep, 4, sent);
+        rep->length = 8;
+        return SEL4_ERR_OK;
     }
 
     /* OP_PFLOCAL_RECV: MR1=sock_id, MR2=dst_offset (into pflocal_shmem), MR3=max_len.
      * Copies up to max_len available bytes from this socket's ring into pflocal_shmem.
      * → MR0=ok, MR1=bytes_received */
     case OP_PFLOCAL_RECV: {
-        uint32_t dst_offset = (uint32_t)microkit_mr_get(2);
-        uint32_t max_len    = (uint32_t)microkit_mr_get(3);
+        uint32_t dst_offset = (uint32_t)msg_u32(req, 8);
+        uint32_t max_len    = (uint32_t)msg_u32(req, 12);
 
         if (sock_id >= PFLOCAL_MAX_SOCKS || socks[sock_id].state == SOCK_FREE) {
-            microkit_mr_set(0, 0xFFu);
-            return microkit_msginfo_new(0, 1);
+            rep_u32(rep, 0, 0xFFu);
+            rep->length = 4;
+        return SEL4_ERR_OK;
         }
         if (!pflocal_shmem_vaddr || max_len == 0u) {
-            microkit_mr_set(0, 0u);
-            microkit_mr_set(1, 0u);
-            return microkit_msginfo_new(0, 2);
+            rep_u32(rep, 0, 0u);
+            rep_u32(rep, 4, 0u);
+            rep->length = 8;
+        return SEL4_ERR_OK;
         }
 
         ring_header_t *ring = slot_ring(socks[sock_id].slot_id);
@@ -340,17 +360,19 @@ microkit_msginfo protected(microkit_channel ch, microkit_msginfo msg)
             ring->tail  = (uint16_t)((ring->tail + 1u) % cap);
             copied++;
         }
-        microkit_mr_set(0, 0u);
-        microkit_mr_set(1, copied);
-        return microkit_msginfo_new(0, 2);
+        rep_u32(rep, 0, 0u);
+        rep_u32(rep, 4, copied);
+        rep->length = 8;
+        return SEL4_ERR_OK;
     }
 
     /* OP_PFLOCAL_CLOSE: MR1=sock_id → MR0=ok.
      * Closes the socket; if it has a connected peer, marks peer SOCK_CLOSED too. */
     case OP_PFLOCAL_CLOSE: {
         if (sock_id >= PFLOCAL_MAX_SOCKS || socks[sock_id].state == SOCK_FREE) {
-            microkit_mr_set(0, 0xFFu);
-            return microkit_msginfo_new(0, 1);
+            rep_u32(rep, 0, 0xFFu);
+            rep->length = 4;
+        return SEL4_ERR_OK;
         }
         uint8_t peer_id = socks[sock_id].peer_sock_id;
         if (peer_id != 0xFFu && peer_id < PFLOCAL_MAX_SOCKS &&
@@ -360,24 +382,28 @@ microkit_msginfo protected(microkit_channel ch, microkit_msginfo msg)
         }
         socks[sock_id].state        = SOCK_CLOSED;
         socks[sock_id].peer_sock_id = 0xFFu;
-        microkit_mr_set(0, 0u);
-        return microkit_msginfo_new(0, 1);
+        rep_u32(rep, 0, 0u);
+        rep->length = 4;
+        return SEL4_ERR_OK;
     }
 
     /* OP_PFLOCAL_STATUS: MR1=sock_id → MR0=ok, MR1=state, MR2=peer_sock_id */
     case OP_PFLOCAL_STATUS: {
         if (sock_id >= PFLOCAL_MAX_SOCKS) {
-            microkit_mr_set(0, 0xFFu);
-            return microkit_msginfo_new(0, 1);
+            rep_u32(rep, 0, 0xFFu);
+            rep->length = 4;
+        return SEL4_ERR_OK;
         }
-        microkit_mr_set(0, 0u);
-        microkit_mr_set(1, socks[sock_id].state);
-        microkit_mr_set(2, socks[sock_id].peer_sock_id);
-        return microkit_msginfo_new(0, 3);
+        rep_u32(rep, 0, 0u);
+        rep_u32(rep, 4, socks[sock_id].state);
+        rep_u32(rep, 8, socks[sock_id].peer_sock_id);
+        rep->length = 12;
+        return SEL4_ERR_OK;
     }
 
     default:
-        microkit_mr_set(0, 0xFFu);
-        return microkit_msginfo_new(0, 1);
+        rep_u32(rep, 0, 0xFFu);
+        rep->length = 4;
+        return SEL4_ERR_OK;
     }
 }

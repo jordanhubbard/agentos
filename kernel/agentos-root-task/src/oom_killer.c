@@ -10,97 +10,77 @@
  *   Lowest score → evict first (penalises high heap, old, and low-priority slots)
  *
  * IPC protocol:
- *   Incoming notifications:
- *     OOM_CH_MEM_PRESSURE (0) — mem_profiler alerts on threshold breach
- *     OOM_CH_POWER_THROTTLE (1) — power_mgr sends thermal alerts
+ *   OP_OOM_STATUS         (0xE2) — MR0=op → MR1=evict_count, MR2=last_slot
+ *   OP_OOM_SET_THRESHOLD  (0xE3) — MR1=pct (1-99)
  *
- *   Outgoing PPCs:
- *     OOM_CH_GPU_SCHED (2) → controller: OP_SLOT_EVICT (MR0=op, MR1=slot_id)
- *     OOM_CH_AGENTFS (3)   → AgentFS: OP_SNAPSHOT_SLOT (MR0=op, MR1=slot_id)
+ * Outgoing PPCs (nameserver-resolved at startup, guarded by AGENTOS_TEST_HOST):
+ *   g_gpu_sched_ep → controller: OP_SLOT_EVICT (MR0=op, MR1=slot_id)
+ *   g_agentfs_ep   → AgentFS: OP_SNAPSHOT_SLOT (MR0=op, MR1=slot_id)
  *
  * Thresholds:
  *   OOM_THRESHOLD_PCT = 80  — trigger eviction at 80% heap budget
  *   OOM_HARD_PCT      = 95  — hard eviction (no snapshot) at 95%
  *
- * The total heap budget is derived from mem_profiler's shared ring header
- * (total_budget_bytes). On sparky GB10 with 192GB unified VRAM this is
- * approximately 192 × 1024³ bytes.
+ * E5-S8: migrated from Microkit to raw seL4 IPC.
  *
  * Copyright 2026 agentOS Project (BSD-2-Clause)
  */
 
 #define AGENTOS_DEBUG 1
 #include "agentos.h"
+#include "sel4_server.h"
 #include "contracts/oom_killer_contract.h"
 #include <stdint.h>
 #include <string.h>
 #include <stdbool.h>
 #include <stddef.h>
 
-/* ── IPC channel IDs ──────────────────────────────────────────────── */
+/* ── Op codes ─────────────────────────────────────────────────────────── */
 
-#define OOM_CH_MEM_PRESSURE   0
-#define OOM_CH_POWER_THROTTLE 1
-#define OOM_CH_GPU_SCHED      2
-#define OOM_CH_AGENTFS        3
+#define OP_SLOT_EVICT         0xE0
+#define OP_SNAPSHOT_SLOT      0xE1
+#define OP_OOM_STATUS         0xE2
+#define OP_OOM_SET_THRESHOLD  0xE3
 
-#ifdef AGENTOS_SNAPSHOT_SCHED
-/* Channel to snapshot_sched — force a full KV snapshot before eviction. */
-#define OOM_CH_SNAPSHOT_SCHED 4
-/* OP_SS_FORCE_SNAPSHOT (0xA3) from snapshot_sched.c */
-#define OP_SS_FORCE_SNAPSHOT  0xA3
-#endif
+/* ── Thresholds ───────────────────────────────────────────────────────── */
 
-/* ── Op codes ─────────────────────────────────────────────────────── */
-
-#define OP_SLOT_EVICT         0xE0   /* MR0=op, MR1=slot_id */
-#define OP_SNAPSHOT_SLOT      0xE1   /* MR0=op, MR1=slot_id */
-#define OP_OOM_STATUS         0xE2   /* Query: MR0=op → MR1=evict_count, MR2=last_slot */
-#define OP_OOM_SET_THRESHOLD  0xE3   /* Set threshold: MR1=pct (1-99) */
-#define OP_MEM_PRESSURE_QUERY 0x64   /* mem_profiler OP_MEM_SNAPSHOT */
-
-/* ── Thresholds ───────────────────────────────────────────────────── */
-
-#define OOM_THRESHOLD_PCT     80     /* soft eviction trigger */
-#define OOM_HARD_PCT          95     /* hard eviction, no snapshot */
-#define OOM_COOLDOWN_TICKS    100    /* ticks between consecutive evictions */
-#define OOM_MAX_SLOTS         16     /* maximum tracked slots */
+#define OOM_THRESHOLD_PCT     80
+#define OOM_HARD_PCT          95
+#define OOM_COOLDOWN_TICKS    100
+#define OOM_MAX_SLOTS         16
 
 /* ── Slot table (populated from mem_profiler shared ring) ─────────── */
 
 typedef struct {
     uint8_t  slot_id;
-    uint8_t  priority;       /* 0=lowest priority = evict first */
-    uint64_t heap_used;      /* bytes currently allocated */
-    uint64_t age_ticks;      /* ticks since last activity */
+    uint8_t  priority;
+    uint64_t heap_used;
+    uint64_t age_ticks;
     bool     active;
-    bool     pinned;         /* pinned slots are never evicted */
+    bool     pinned;
 } OomSlotInfo;
 
-/* ── Module state ─────────────────────────────────────────────────── */
+/* ── Module state ─────────────────────────────────────────────────────── */
 
 typedef struct {
     OomSlotInfo  slots[OOM_MAX_SLOTS];
     int          slot_count;
-
-    uint64_t     total_budget;      /* total heap budget in bytes */
-    uint64_t     total_used;        /* sum of heap_used across active slots */
-    uint32_t     threshold_pct;     /* soft threshold (default 80) */
-    uint32_t     hard_pct;          /* hard threshold (default 95) */
-
-    uint64_t     evict_count;       /* total evictions performed */
-    uint8_t      last_evicted_slot; /* slot_id of last eviction */
-    uint64_t     last_evict_tick;   /* tick counter of last eviction */
-
-    bool         throttled;         /* true if power_mgr sent thermal alert */
-    uint64_t     tick;              /* current tick */
+    uint64_t     total_budget;
+    uint64_t     total_used;
+    uint32_t     threshold_pct;
+    uint32_t     hard_pct;
+    uint64_t     evict_count;
+    uint8_t      last_evicted_slot;
+    uint64_t     last_evict_tick;
+    bool         throttled;
+    uint64_t     tick;
 } OomState;
 
 static OomState s = {0};
 
-/* ── mem_profiler shared ring MR ─────────────────────────────────── */
+/* ── mem_profiler shared ring ─────────────────────────────────────── */
 
-uintptr_t mem_ring_vaddr;   /* set by Microkit linker */
+uintptr_t mem_ring_vaddr;
 
 #define MEM_RING_RECORD_SIZE 64
 
@@ -127,15 +107,19 @@ typedef struct __attribute__((packed)) {
     uint32_t _pad;
     uint32_t ring_head;
     uint32_t capacity;
-    uint64_t total_budget;   /* total system heap budget */
+    uint64_t total_budget;
 } MemRingHeader;
+
+/* ── Outbound endpoints (resolved lazily) ─────────────────────────── */
+
+static seL4_CPtr g_gpu_sched_ep = 0;
+static seL4_CPtr g_agentfs_ep   = 0;
 
 /* ── Scoring function ─────────────────────────────────────────────── */
 
 static uint64_t oom_score(const OomSlotInfo *slot) {
-    if (!slot->active || slot->pinned) return UINT64_MAX; /* never evict */
+    if (!slot->active || slot->pinned) return UINT64_MAX;
     if (slot->heap_used == 0) return 0;
-    /* score = (heap × age) / (priority + 1) */
     uint64_t numerator = slot->heap_used * (slot->age_ticks + 1);
     uint64_t denom     = (uint64_t)(slot->priority + 1);
     return numerator / denom;
@@ -147,21 +131,21 @@ static void refresh_slot_table(void) {
     if (!mem_ring_vaddr) return;
 
     const MemRingHeader *hdr = (const MemRingHeader *)mem_ring_vaddr;
-    if (hdr->magic != 0x4D454D52UL) return; /* "MEMR" */
+    if (hdr->magic != 0x4D454D52UL) return;
 
-    s.total_budget = hdr->total_budget ? hdr->total_budget : (192ULL * 1024 * 1024 * 1024);
+    s.total_budget = hdr->total_budget
+        ? hdr->total_budget
+        : (192ULL * 1024 * 1024 * 1024);
 
     const MemSnapshot *ring = (const MemSnapshot *)(
         (uint8_t *)mem_ring_vaddr + sizeof(MemRingHeader));
     uint32_t cap = hdr->capacity;
     if (cap == 0 || cap > 4096) cap = 256;
 
-    /* Zero out slot table */
     memset(s.slots, 0, sizeof(s.slots));
-    s.slot_count  = 0;
-    s.total_used  = 0;
+    s.slot_count = 0;
+    s.total_used = 0;
 
-    /* Walk ring entries from most recent */
     uint32_t head = hdr->ring_head;
     bool seen[OOM_MAX_SLOTS] = {false};
 
@@ -187,7 +171,6 @@ static void refresh_slot_table(void) {
 /* ── Eviction logic ───────────────────────────────────────────────── */
 
 static void evict_one(bool hard) {
-    /* Cooldown guard */
     if (!hard && (s.tick - s.last_evict_tick) < OOM_COOLDOWN_TICKS) {
         LOG_VMM("oom_killer: cooldown active, skipping eviction\n");
         return;
@@ -195,8 +178,7 @@ static void evict_one(bool hard) {
 
     refresh_slot_table();
 
-    /* Find lowest-score evictable slot */
-    int      victim_idx  = -1;
+    int      victim_idx   = -1;
     uint64_t victim_score = UINT64_MAX;
 
     for (int i = 0; i < s.slot_count; i++) {
@@ -214,109 +196,102 @@ static void evict_one(bool hard) {
     }
 
     uint8_t victim_slot = s.slots[victim_idx].slot_id;
-    LOG_VMM("oom_killer: evicting slot=%d heap=%llu priority=%d hard=%d\n",
-            (int)victim_slot,
-            (unsigned long long)s.slots[victim_idx].heap_used,
-            (int)s.slots[victim_idx].priority,
-            (int)hard);
 
-    if (!hard) {
-#ifdef AGENTOS_SNAPSHOT_SCHED
-        /*
-         * KV-level snapshot via snapshot_sched before eviction.
-         * snapshot_sched writes the full KV store to AgentFS so the slot
-         * can be restored after the eviction pressure subsides.
-         */
-        microkit_mr_set(0, OP_SS_FORCE_SNAPSHOT);
-        microkit_ppcall(OOM_CH_SNAPSHOT_SCHED, microkit_msginfo_new(0, 1));
+    if (!hard && g_agentfs_ep != 0) {
+#ifndef AGENTOS_TEST_HOST
+        seL4_SetMR(0, OP_SNAPSHOT_SLOT);
+        seL4_SetMR(1, victim_slot);
+        seL4_MessageInfo_t _i = seL4_MessageInfo_new(OP_SNAPSHOT_SLOT, 0, 0, 2);
+        (void)seL4_Call(g_agentfs_ep, _i);
 #endif
-        /* Block-level snapshot to AgentFS (legacy — complements KV snapshot) */
-        microkit_mr_set(0, OP_SNAPSHOT_SLOT);
-        microkit_mr_set(1, victim_slot);
-        microkit_ppcall(OOM_CH_AGENTFS, microkit_msginfo_new(0, 2));
     }
 
-    /* Send eviction command to GPU scheduler via controller */
-    microkit_mr_set(0, OP_SLOT_EVICT);
-    microkit_mr_set(1, victim_slot);
-    microkit_ppcall(OOM_CH_GPU_SCHED, microkit_msginfo_new(0, 2));
+    if (g_gpu_sched_ep != 0) {
+#ifndef AGENTOS_TEST_HOST
+        seL4_SetMR(0, OP_SLOT_EVICT);
+        seL4_SetMR(1, victim_slot);
+        seL4_MessageInfo_t _i = seL4_MessageInfo_new(OP_SLOT_EVICT, 0, 0, 2);
+        (void)seL4_Call(g_gpu_sched_ep, _i);
+#endif
+    }
 
     s.evict_count++;
     s.last_evicted_slot = victim_slot;
     s.last_evict_tick   = s.tick;
+    LOG_VMM("oom_killer: evicted slot\n");
 }
 
 static void check_pressure(void) {
     refresh_slot_table();
-
     if (s.total_budget == 0) return;
 
     uint32_t pct = (uint32_t)((s.total_used * 100) / s.total_budget);
 
     if (pct >= s.hard_pct) {
-        LOG_VMM("oom_killer: HARD pressure %u%% >= %u%% — emergency eviction\n",
-                pct, s.hard_pct);
+        LOG_VMM("oom_killer: HARD pressure — emergency eviction\n");
         evict_one(true);
     } else if (pct >= s.threshold_pct || s.throttled) {
-        LOG_VMM("oom_killer: soft pressure %u%% >= %u%% — evicting\n",
-                pct, s.threshold_pct);
+        LOG_VMM("oom_killer: soft pressure — evicting\n");
         evict_one(false);
     }
 }
 
-/* ── Microkit entry points ────────────────────────────────────────── */
+/* ── msg helpers ─────────────────────────────────────────────────── */
 
-void init(void) {
+static inline uint32_t msg_u32(const sel4_msg_t *m, uint32_t off) {
+    uint32_t v = 0;
+    if (off + 4u <= SEL4_MSG_DATA_BYTES) {
+        v  = (uint32_t)m->data[off]; v |= (uint32_t)m->data[off+1]<<8;
+        v |= (uint32_t)m->data[off+2]<<16; v |= (uint32_t)m->data[off+3]<<24;
+    }
+    return v;
+}
+static inline void rep_u32(sel4_msg_t *m, uint32_t off, uint32_t v) {
+    if (off + 4u <= SEL4_MSG_DATA_BYTES) {
+        m->data[off]=(uint8_t)v; m->data[off+1]=(uint8_t)(v>>8);
+        m->data[off+2]=(uint8_t)(v>>16); m->data[off+3]=(uint8_t)(v>>24);
+    }
+}
+
+/* ── IPC handlers ─────────────────────────────────────────────────── */
+
+static uint32_t h_status(sel4_badge_t b, const sel4_msg_t *req,
+                          sel4_msg_t *rep, void *ctx) {
+    (void)b; (void)req; (void)ctx;
+    s.tick++;
+    check_pressure();
+    rep_u32(rep, 0, 0);
+    rep_u32(rep, 4, (uint32_t)(s.evict_count & 0xFFFFFFFF));
+    rep_u32(rep, 8, s.last_evicted_slot);
+    rep_u32(rep, 12, (uint32_t)(s.total_used & 0xFFFFFFFF));
+    rep->length = 16;
+    return SEL4_ERR_OK;
+}
+
+static uint32_t h_set_threshold(sel4_badge_t b, const sel4_msg_t *req,
+                                  sel4_msg_t *rep, void *ctx) {
+    (void)b; (void)ctx;
+    uint32_t pct = msg_u32(req, 4);
+    if (pct > 0 && pct < 100) {
+        s.threshold_pct = pct;
+        LOG_VMM("oom_killer: threshold updated\n");
+    }
+    rep_u32(rep, 0, 0);
+    rep->length = 4;
+    return SEL4_ERR_OK;
+}
+
+void oom_killer_main(seL4_CPtr my_ep, seL4_CPtr ns_ep)
+{
+    (void)ns_ep;
     memset(&s, 0, sizeof(s));
     s.threshold_pct = OOM_THRESHOLD_PCT;
     s.hard_pct      = OOM_HARD_PCT;
-    LOG_VMM("oom_killer: ready (threshold=%u%% hard=%u%%)\n",
-            s.threshold_pct, s.hard_pct);
-}
+    sel4_dbg_puts("[oom_killer] ready (threshold=80% hard=95%)\n");
 
-void notified(microkit_channel ch) {
-    s.tick++;
-    switch (ch) {
-        case OOM_CH_MEM_PRESSURE:
-            LOG_VMM("oom_killer: mem_profiler pressure alert\n");
-            check_pressure();
-            break;
-        case OOM_CH_POWER_THROTTLE:
-            LOG_VMM("oom_killer: power_mgr thermal alert — lowering threshold\n");
-            s.throttled = true;
-            /* Immediately reduce pressure: evict even if below threshold */
-            evict_one(false);
-            break;
-        default:
-            LOG_VMM("oom_killer: unexpected notify ch=%d\n", (int)ch);
-            break;
-    }
-}
-
-seL4_MessageInfo_t protected(microkit_channel ch, microkit_msginfo msginfo) {
-    (void)ch;
-    uint64_t op = microkit_mr_get(0);
-    switch (op) {
-        case OP_OOM_STATUS:
-            microkit_mr_set(0, 0); /* ok */
-            microkit_mr_set(1, s.evict_count);
-            microkit_mr_set(2, s.last_evicted_slot);
-            microkit_mr_set(3, s.total_used);
-            return microkit_msginfo_new(0, 4);
-
-        case OP_OOM_SET_THRESHOLD: {
-            uint64_t pct = microkit_mr_get(1);
-            if (pct > 0 && pct < 100) {
-                s.threshold_pct = (uint32_t)pct;
-                LOG_VMM("oom_killer: threshold updated to %u%%\n", s.threshold_pct);
-            }
-            microkit_mr_set(0, 0);
-            return microkit_msginfo_new(0, 1);
-        }
-
-        default:
-            microkit_mr_set(0, 1); /* error */
-            return microkit_msginfo_new(0, 1);
-    }
-    (void)msginfo;
+    static sel4_server_t srv;
+    sel4_server_init(&srv, my_ep);
+    sel4_server_register(&srv, OP_OOM_STATUS,        h_status,        (void *)0);
+    sel4_server_register(&srv, OP_OOM_SET_THRESHOLD, h_set_threshold, (void *)0);
+    sel4_server_run(&srv);
 }

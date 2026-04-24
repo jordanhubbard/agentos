@@ -6,8 +6,8 @@
  * capability-gated, metadata-rich, and event-emitting.
  *
  * This PD runs as a passive server at priority 150.
- * Clients PPC in with typed operation requests.
- * Results are returned synchronously via PPC reply.
+ * Clients call in with typed operation requests.
+ * Results are returned synchronously via IPC reply.
  *
  * Object model:
  *   - ObjectId: 32-byte identifier (BLAKE3 hash for blobs, UUID for mutable)
@@ -21,10 +21,10 @@
  *   - Cold: deferred to external store (MinIO/S3-compat via model proxy)
  *
  * Channel assignments:
- *   CH_CONTROLLER = 0  (controller PPCs in for admin ops)
- *   CH_EVENTBUS   = 1  (notify on object mutations)
+ *   CH_CONTROLLER = 0  (controller calls in for admin ops)
+ *   CH_EVENTBUS   = 1  (outbound notify on object mutations)
  *
- * IPC ops (MR0 = op code):
+ * IPC ops (opcode in data[0..3]):
  *   OP_AGENTFS_PUT      = 0x30  — write object
  *   OP_AGENTFS_GET      = 0x31  — read object by id
  *   OP_AGENTFS_QUERY    = 0x32  — list/filter objects
@@ -33,22 +33,24 @@
  *   OP_AGENTFS_STAT     = 0x35  — object metadata
  *   OP_AGENTFS_HEALTH   = 0x36  — health check (for swap infra)
  *
+ * E5-S8: migrated from Microkit to raw seL4 IPC.
+ *
  * Copyright (c) 2026 The agentOS Project
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #define AGENTOS_DEBUG 1
 #include "agentos.h"
+#include "sel4_server.h"
 #include "contracts/agentfs_contract.h"
 #include <stdint.h>
 #include <stdbool.h>
 
-/* Microkit setvar_vaddr — patched by the system initializer */
+/* setvar_vaddr — patched by the system initializer */
 uintptr_t agentfs_store_vaddr;
 
-/* ── Channel IDs ────────────────────────────────────────────────────────── */
-#define CH_CONTROLLER  0
-#define CH_EVENTBUS    1
+/* Outbound endpoint to event bus (0 = not wired, fire-and-forget stub) */
+static seL4_CPtr g_eventbus_ep = 0;
 
 /* ── Op codes ───────────────────────────────────────────────────────────── */
 #define OP_AGENTFS_PUT      0x30
@@ -154,7 +156,7 @@ static agentfs_obj_t *find_object(const object_id_t *id) {
             if (match) return &hot_index[i];
         }
     }
-    return NULL;
+    return (void *)0;
 }
 
 /* ── Cosine similarity (for vector queries) ─────────────────────────────── */
@@ -172,37 +174,63 @@ static float cosine_sim(const float *a, const float *b, uint16_t dim) {
     return dot * inv_na * inv_nb;
 }
 
-/* ── Emit event to EventBus ─────────────────────────────────────────────── */
-static void emit_event(uint32_t event_type, const object_id_t *id) {
-    microkit_mr_set(0, MSG_EVENT_PUBLISH);
-    microkit_mr_set(1, event_type);
-    /* Pack first 8 bytes of object ID into MR2+MR3 */
-    uint64_t id_hi = 0, id_lo = 0;
-    for (int i = 0; i < 8; i++) {
-        id_hi = (id_hi << 8) | id->bytes[i];
-        id_lo = (id_lo << 8) | id->bytes[i+8];
+/* ── msg helpers ────────────────────────────────────────────────────────── */
+static inline uint32_t msg_u32(const sel4_msg_t *m, uint32_t off) {
+    uint32_t v = 0;
+    if (off + 4u <= SEL4_MSG_DATA_BYTES) {
+        v  = (uint32_t)m->data[off]; v |= (uint32_t)m->data[off+1]<<8;
+        v |= (uint32_t)m->data[off+2]<<16; v |= (uint32_t)m->data[off+3]<<24;
     }
-    microkit_mr_set(2, (uint32_t)(id_hi >> 32));
-    microkit_mr_set(3, (uint32_t)(id_hi & 0xffffffff));
-    /* seL4_Signal for fire-and-forget to passive event_bus */
-    microkit_notify(CH_EVENTBUS);
+    return v;
+}
+static inline void rep_u32(sel4_msg_t *m, uint32_t off, uint32_t v) {
+    if (off + 4u <= SEL4_MSG_DATA_BYTES) {
+        m->data[off]=(uint8_t)v; m->data[off+1]=(uint8_t)(v>>8);
+        m->data[off+2]=(uint8_t)(v>>16); m->data[off+3]=(uint8_t)(v>>24);
+    }
+}
+
+/* ── Emit event to EventBus (fire-and-forget seL4_Call, guarded) ────────── */
+static void emit_event(uint32_t event_type, const object_id_t *id) {
+#ifndef AGENTOS_TEST_HOST
+    if (!g_eventbus_ep) return;
+    sel4_msg_t emsg = {0};
+    emsg.opcode = MSG_EVENT_PUBLISH;
+    rep_u32(&emsg, 0, MSG_EVENT_PUBLISH);
+    rep_u32(&emsg, 4, event_type);
+    /* Pack first 16 bytes of object ID */
+    uint32_t id0 = 0, id1 = 0, id2 = 0, id3 = 0;
+    for (int i = 0; i < 4; i++) id0 = (id0 << 8) | id->bytes[i];
+    for (int i = 4; i < 8; i++) id1 = (id1 << 8) | id->bytes[i];
+    for (int i = 8; i <12; i++) id2 = (id2 << 8) | id->bytes[i];
+    for (int i = 12;i <16; i++) id3 = (id3 << 8) | id->bytes[i];
+    rep_u32(&emsg, 8,  id0);
+    rep_u32(&emsg, 12, id1);
+    rep_u32(&emsg, 16, id2);
+    rep_u32(&emsg, 20, id3);
+    emsg.length = 24;
+    sel4_msg_t erep = {0};
+    seL4_Call(g_eventbus_ep, sel4_msg_to_info(&emsg), &erep);
+#else
+    (void)event_type; (void)id;
+#endif
 }
 
 /* ── OP handlers ────────────────────────────────────────────────────────── */
 
-static microkit_msginfo handle_put(microkit_msginfo msg) {
-    uint32_t size     = microkit_mr_get(1);
-    uint32_t cap_tag  = microkit_mr_get(2);
-    /* schema type packed in MR3 as first 4 bytes of string */
-    /* (real impl would use shared memory for larger payloads) */
+static uint32_t h_put(sel4_badge_t b, const sel4_msg_t *req,
+                       sel4_msg_t *rep, void *ctx) {
+    (void)b; (void)ctx;
+    uint32_t size    = msg_u32(req, 4);
+    uint32_t cap_tag = msg_u32(req, 8);
 
     if (hot_count >= MAX_HOT_OBJECTS) {
-        microkit_mr_set(0, AFS_ERR_NOSPACE);
-        return microkit_msginfo_new(0, 1);
+        rep_u32(rep, 0, AFS_ERR_NOSPACE); rep->length = 4;
+        return SEL4_ERR_NO_MEM;
     }
     if (blob_watermark + size > BLOB_STORE_SIZE) {
-        microkit_mr_set(0, AFS_ERR_NOSPACE);
-        return microkit_msginfo_new(0, 1);
+        rep_u32(rep, 0, AFS_ERR_NOSPACE); rep->length = 4;
+        return SEL4_ERR_NO_MEM;
     }
 
     agentfs_obj_t *obj = &hot_index[hot_count++];
@@ -222,64 +250,66 @@ static microkit_msginfo handle_put(microkit_msginfo msg) {
     simple_hash(seed, 16, obj->id.bytes);
     obj->id.scheme = 1; /* blake3-analog */
 
-    /* Emit event BEFORE setting return MRs (emit_event clobbers MRs via notify) */
+    /* Emit event */
     emit_event(EVT_OBJECT_CREATED, &obj->id);
 
-    /* Return object ID in MRs 0-4 */
+    /* Return object ID first 16 bytes in reply */
     uint32_t w0 = 0, w1 = 0, w2 = 0, w3 = 0;
     for (int i = 0; i < 4; i++) w0 = (w0 << 8) | obj->id.bytes[i];
     for (int i = 4; i < 8; i++) w1 = (w1 << 8) | obj->id.bytes[i];
     for (int i = 8; i <12; i++) w2 = (w2 << 8) | obj->id.bytes[i];
     for (int i = 12;i <16; i++) w3 = (w3 << 8) | obj->id.bytes[i];
-    microkit_mr_set(0, AFS_OK);  /* status: OK */
-    microkit_mr_set(1, w0);
-    microkit_mr_set(2, w1);
-    microkit_mr_set(3, w2);
-    microkit_mr_set(4, w3);
+    rep_u32(rep, 0,  AFS_OK);
+    rep_u32(rep, 4,  w0);
+    rep_u32(rep, 8,  w1);
+    rep_u32(rep, 12, w2);
+    rep_u32(rep, 16, w3);
+    rep->length = 20;
 
-    log_drain_write(3, 3, "[agentfs] Object stored (18 bytes)\n");
-    return microkit_msginfo_new(0, 5);
+    log_drain_write(3, 3, "[agentfs] Object stored\n");
+    return SEL4_ERR_OK;
 }
 
-static microkit_msginfo handle_get(microkit_msginfo msg) {
-    /* Reconstruct object ID from MRs 1-4 */
+static uint32_t h_get(sel4_badge_t b, const sel4_msg_t *req,
+                       sel4_msg_t *rep, void *ctx) {
+    (void)b; (void)ctx;
+    /* Reconstruct object ID from data[4..19] */
     object_id_t query_id = {0};
     uint32_t words[4];
-    words[0] = microkit_mr_get(1);
-    words[1] = microkit_mr_get(2);
-    words[2] = microkit_mr_get(3);
-    words[3] = microkit_mr_get(4);
+    words[0] = msg_u32(req, 4);
+    words[1] = msg_u32(req, 8);
+    words[2] = msg_u32(req, 12);
+    words[3] = msg_u32(req, 16);
     for (int w = 0; w < 4; w++)
-        for (int b = 0; b < 4; b++)
-            query_id.bytes[w*4+b] = (words[w] >> (24 - b*8)) & 0xff;
+        for (int bb = 0; bb < 4; bb++)
+            query_id.bytes[w*4+bb] = (words[w] >> (24 - bb*8)) & 0xff;
 
     total_gets++;
     agentfs_obj_t *obj = find_object(&query_id);
     if (!obj) {
-        microkit_mr_set(0, AFS_ERR_NOENT);
-        return microkit_msginfo_new(0, 1);
+        rep_u32(rep, 0, AFS_ERR_NOENT); rep->length = 4;
+        return SEL4_ERR_NOT_FOUND;
     }
 
-    microkit_mr_set(0, AFS_OK);
-    microkit_mr_set(1, obj->version);
-    microkit_mr_set(2, obj->size);
-    microkit_mr_set(3, obj->cap_tag);
-    microkit_mr_set(4, obj->blob_offset);
-    return microkit_msginfo_new(0, 5);
+    rep_u32(rep, 0,  AFS_OK);
+    rep_u32(rep, 4,  obj->version);
+    rep_u32(rep, 8,  obj->size);
+    rep_u32(rep, 12, obj->cap_tag);
+    rep_u32(rep, 16, obj->blob_offset);
+    rep->length = 20;
+    return SEL4_ERR_OK;
 }
 
-static microkit_msginfo handle_vector(microkit_msginfo msg) {
-    /* MR1 = vector dimension, MR2..MR(2+dim/2) = packed float pairs */
-    /* For the prototype: linear scan over all objects with vectors     */
-    /* Return MR1 = count of matches, MR2..MRN = (id_prefix, score)*N  */
-
-    uint32_t query_dim = microkit_mr_get(1);
-    if (query_dim > 8) query_dim = 8;  /* limit to 8 dims via MRs for now */
+static uint32_t h_vector(sel4_badge_t b, const sel4_msg_t *req,
+                          sel4_msg_t *rep, void *ctx) {
+    (void)b; (void)ctx;
+    /* query_dim in data[4..7], float dims in data[8..] */
+    uint32_t query_dim = msg_u32(req, 4);
+    if (query_dim > 8) query_dim = 8;
 
     float query_vec[8] = {0};
     for (uint32_t i = 0; i < query_dim; i++) {
-        uint32_t raw = microkit_mr_get(2 + i);
-        /* Reinterpret uint32 bits as float */
+        uint32_t raw = msg_u32(req, 8 + i * 4u);
         float f;
         __builtin_memcpy(&f, &raw, 4);
         query_vec[i] = f;
@@ -287,14 +317,14 @@ static microkit_msginfo handle_vector(microkit_msginfo msg) {
 
     total_vectors++;
 
-    /* Linear scan — HNSW graph acceleration deferred to Phase 2 */
+    /* Linear scan */
     float best_score = -1.0f;
-    agentfs_obj_t *best = NULL;
+    agentfs_obj_t *best = (void *)0;
     for (uint32_t i = 0; i < hot_count; i++) {
         if (hot_index[i].state != OBJ_STATE_LIVE) continue;
         if (hot_index[i].vec_dim == 0) continue;
-        uint16_t cmp_dim = hot_index[i].vec_dim < query_dim ?
-                           hot_index[i].vec_dim : query_dim;
+        uint16_t cmp_dim = hot_index[i].vec_dim < (uint16_t)query_dim ?
+                           hot_index[i].vec_dim : (uint16_t)query_dim;
         float s = cosine_sim(query_vec, hot_index[i].vec, cmp_dim);
         if (s > best_score) {
             best_score = s;
@@ -303,69 +333,82 @@ static microkit_msginfo handle_vector(microkit_msginfo msg) {
     }
 
     if (!best || best_score < 0.01f) {
-        microkit_mr_set(0, AFS_OK);
-        microkit_mr_set(1, 0);  /* zero results */
-        return microkit_msginfo_new(0, 2);
+        rep_u32(rep, 0, AFS_OK);
+        rep_u32(rep, 4, 0);  /* zero results */
+        rep->length = 8;
+        return SEL4_ERR_OK;
     }
 
-    /* Return top-1 result (top-K deferred to Phase 2 with shared memory) */
+    /* Return top-1 result */
     uint32_t id_prefix = 0;
     for (int i = 0; i < 4; i++)
         id_prefix = (id_prefix << 8) | best->id.bytes[i];
     uint32_t score_bits;
     __builtin_memcpy(&score_bits, &best_score, 4);
 
-    microkit_mr_set(0, AFS_OK);
-    microkit_mr_set(1, 1);          /* 1 result */
-    microkit_mr_set(2, id_prefix);  /* first 4 bytes of object ID */
-    microkit_mr_set(3, score_bits); /* similarity score as float bits */
-    return microkit_msginfo_new(0, 4);
+    rep_u32(rep, 0,  AFS_OK);
+    rep_u32(rep, 4,  1);           /* 1 result */
+    rep_u32(rep, 8,  id_prefix);   /* first 4 bytes of object ID */
+    rep_u32(rep, 12, score_bits);  /* similarity score as float bits */
+    rep->length = 16;
+    return SEL4_ERR_OK;
 }
 
-static microkit_msginfo handle_stat(microkit_msginfo msg) {
-    microkit_mr_set(0, AFS_OK);
-    microkit_mr_set(1, hot_count);
-    microkit_mr_set(2, blob_watermark);
-    microkit_mr_set(3, (uint32_t)total_puts);
-    microkit_mr_set(4, (uint32_t)total_gets);
-    microkit_mr_set(5, (uint32_t)total_vectors);
-    return microkit_msginfo_new(0, 6);
+static uint32_t h_stat(sel4_badge_t b, const sel4_msg_t *req,
+                        sel4_msg_t *rep, void *ctx) {
+    (void)b; (void)req; (void)ctx;
+    rep_u32(rep, 0,  AFS_OK);
+    rep_u32(rep, 4,  hot_count);
+    rep_u32(rep, 8,  blob_watermark);
+    rep_u32(rep, 12, (uint32_t)total_puts);
+    rep_u32(rep, 16, (uint32_t)total_gets);
+    rep_u32(rep, 20, (uint32_t)total_vectors);
+    rep->length = 24;
+    return SEL4_ERR_OK;
 }
 
-static microkit_msginfo handle_health(void) {
-    /* Health check for vibe_swap monitoring */
-    microkit_mr_set(0, AFS_OK);
-    microkit_mr_set(1, hot_count);
-    microkit_mr_set(2, blob_watermark);
-    return microkit_msginfo_new(0, 3);
+static uint32_t h_health(sel4_badge_t b, const sel4_msg_t *req,
+                          sel4_msg_t *rep, void *ctx) {
+    (void)b; (void)req; (void)ctx;
+    rep_u32(rep, 0, AFS_OK);
+    rep_u32(rep, 4, hot_count);
+    rep_u32(rep, 8, blob_watermark);
+    rep->length = 12;
+    return SEL4_ERR_OK;
 }
 
-static microkit_msginfo handle_delete(microkit_msginfo msg) {
+static uint32_t h_delete(sel4_badge_t b, const sel4_msg_t *req,
+                          sel4_msg_t *rep, void *ctx) {
+    (void)b; (void)ctx;
     object_id_t del_id = {0};
     uint32_t words[4];
-    words[0] = microkit_mr_get(1);
-    words[1] = microkit_mr_get(2);
-    words[2] = microkit_mr_get(3);
-    words[3] = microkit_mr_get(4);
+    words[0] = msg_u32(req, 4);
+    words[1] = msg_u32(req, 8);
+    words[2] = msg_u32(req, 12);
+    words[3] = msg_u32(req, 16);
     for (int w = 0; w < 4; w++)
-        for (int b = 0; b < 4; b++)
-            del_id.bytes[w*4+b] = (words[w] >> (24 - b*8)) & 0xff;
+        for (int bb = 0; bb < 4; bb++)
+            del_id.bytes[w*4+bb] = (words[w] >> (24 - bb*8)) & 0xff;
 
     agentfs_obj_t *obj = find_object(&del_id);
     if (!obj) {
-        microkit_mr_set(0, AFS_ERR_NOENT);
-        return microkit_msginfo_new(0, 1);
+        rep_u32(rep, 0, AFS_ERR_NOENT); rep->length = 4;
+        return SEL4_ERR_NOT_FOUND;
     }
     obj->state = OBJ_STATE_TOMBSTONE;
     emit_event(EVT_OBJECT_DELETED, &obj->id);
 
-    microkit_mr_set(0, AFS_OK);
-    return microkit_msginfo_new(0, 1);
+    rep_u32(rep, 0, AFS_OK);
+    rep->length = 4;
+    return SEL4_ERR_OK;
 }
 
-/* ── Microkit entry points ──────────────────────────────────────────────── */
+/* ── Entry point ────────────────────────────────────────────────────────── */
 
-void init(void) {
+void agentfs_main(seL4_CPtr my_ep, seL4_CPtr ns_ep)
+{
+    (void)ns_ep;
+
     log_drain_write(3, 3, "[agentfs] AgentFS PD starting...\n");
     for (uint32_t i = 0; i < MAX_HOT_OBJECTS; i++)
         hot_index[i].state = OBJ_STATE_TOMBSTONE;
@@ -374,36 +417,18 @@ void init(void) {
     total_puts     = 0;
     total_gets     = 0;
     total_vectors  = 0;
-    log_drain_write(3, 3, "Capacity: 256 objects, 256KB blob store.\n");
-    log_drain_write(3, 3, "[agentfs] Vector index: linear scan (HNSW in Phase 2).\n[agentfs] AgentFS ALIVE.\n");
-}
+    log_drain_write(3, 3, "[agentfs] Capacity: 256 objects, 256KB blob store.\n");
+    log_drain_write(3, 3, "[agentfs] Vector index: linear scan (HNSW in Phase 2).\n");
+    log_drain_write(3, 3, "[agentfs] AgentFS ALIVE.\n");
 
-/* Passive server — no notified() needed, all traffic via PPC */
-void notified(microkit_channel ch) {
-    /* AgentFS is passive; the only notification we handle is a   */
-    /* controller ping to check we're alive (used by vibe_swap).  */
-    if (ch == CH_CONTROLLER) {
-        log_drain_write(3, 3, "[agentfs] ping from controller\n");
-    }
-}
-
-microkit_msginfo protected(microkit_channel ch, microkit_msginfo msg) {
-    (void)ch;
-    uint32_t op = (uint32_t)microkit_mr_get(0);
-
-    switch (op) {
-        case OP_AGENTFS_PUT:    return handle_put(msg);
-        case OP_AGENTFS_GET:    return handle_get(msg);
-        case OP_AGENTFS_QUERY:
-            /* Phase 1: return stat info as a query stand-in */
-            return handle_stat(msg);
-        case OP_AGENTFS_DELETE: return handle_delete(msg);
-        case OP_AGENTFS_VECTOR: return handle_vector(msg);
-        case OP_AGENTFS_STAT:   return handle_stat(msg);
-        case OP_AGENTFS_HEALTH: return handle_health();
-        default:
-            log_drain_write(3, 3, "[agentfs] unknown op\n");
-            microkit_mr_set(0, AFS_ERR_INTRNL);
-            return microkit_msginfo_new(0, 1);
-    }
+    static sel4_server_t srv;
+    sel4_server_init(&srv, my_ep);
+    sel4_server_register(&srv, OP_AGENTFS_PUT,    h_put,    (void *)0);
+    sel4_server_register(&srv, OP_AGENTFS_GET,    h_get,    (void *)0);
+    sel4_server_register(&srv, OP_AGENTFS_QUERY,  h_stat,   (void *)0); /* Phase 1 stand-in */
+    sel4_server_register(&srv, OP_AGENTFS_DELETE, h_delete, (void *)0);
+    sel4_server_register(&srv, OP_AGENTFS_VECTOR, h_vector, (void *)0);
+    sel4_server_register(&srv, OP_AGENTFS_STAT,   h_stat,   (void *)0);
+    sel4_server_register(&srv, OP_AGENTFS_HEALTH, h_health, (void *)0);
+    sel4_server_run(&srv);
 }

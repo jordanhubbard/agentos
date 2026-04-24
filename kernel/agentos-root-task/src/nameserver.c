@@ -36,6 +36,7 @@
 
 #define AGENTOS_DEBUG 1
 #include "agentos.h"
+#include "sel4_server.h"
 #include "nameserver.h"
 
 /* ── Console ring slot for this PD ──────────────────────────────────────── */
@@ -119,31 +120,34 @@ static int registry_alloc(void)
  *   MR4 = version
  *   MR5..MR8 = name (NS_NAME_MAX bytes, packed)
  */
-static microkit_msginfo handle_register(void)
+static uint32_t handle_register(void)
 {
-    uint32_t channel_id  = (uint32_t)microkit_mr_get(1);
-    uint32_t pd_id       = (uint32_t)microkit_mr_get(2);
-    uint32_t cap_classes = (uint32_t)microkit_mr_get(3);
-    uint32_t version     = (uint32_t)microkit_mr_get(4);
+    uint32_t channel_id  = (uint32_t)msg_u32(req, 4);
+    uint32_t pd_id       = (uint32_t)msg_u32(req, 8);
+    uint32_t cap_classes = (uint32_t)msg_u32(req, 12);
+    uint32_t version     = (uint32_t)msg_u32(req, 16);
 
     char name[NS_NAME_MAX];
     ns_unpack_name(name, 5);
 
     if (ns_strlen(name) == 0) {
-        microkit_mr_set(0, NS_ERR_BAD_ARGS);
-        return microkit_msginfo_new(0, 1);
+        rep_u32(rep, 0, NS_ERR_BAD_ARGS);
+        rep->length = 4;
+        return SEL4_ERR_OK;
     }
 
     /* Reject duplicate names */
     if (registry_find_by_name(name) >= 0) {
-        microkit_mr_set(0, NS_ERR_DUPLICATE);
-        return microkit_msginfo_new(0, 1);
+        rep_u32(rep, 0, NS_ERR_DUPLICATE);
+        rep->length = 4;
+        return SEL4_ERR_OK;
     }
 
     int slot = registry_alloc();
     if (slot < 0) {
-        microkit_mr_set(0, NS_ERR_FULL);
-        return microkit_msginfo_new(0, 1);
+        rep_u32(rep, 0, NS_ERR_FULL);
+        rep->length = 4;
+        return SEL4_ERR_OK;
     }
 
     ns_entry_t *e = &registry[slot];
@@ -164,8 +168,9 @@ static microkit_msginfo handle_register(void)
     log_drain_write(NS_LOG_SLOT, NS_LOG_PD_ID, e->name);
     log_drain_write(NS_LOG_SLOT, NS_LOG_PD_ID, "\n");
 
-    microkit_mr_set(0, NS_OK);
-    return microkit_msginfo_new(0, 1);
+    rep_u32(rep, 0, NS_OK);
+    rep->length = 4;
+        return SEL4_ERR_OK;
 }
 
 /*
@@ -174,30 +179,33 @@ static microkit_msginfo handle_register(void)
  * Reply (on NS_OK):
  *   MR0=NS_OK, MR1=channel_id, MR2=pd_id, MR3=status, MR4=cap_classes, MR5=version
  */
-static microkit_msginfo handle_lookup(void)
+static uint32_t handle_lookup(void)
 {
     char name[NS_NAME_MAX];
     ns_unpack_name(name, 1);
 
     if (ns_strlen(name) == 0) {
-        microkit_mr_set(0, NS_ERR_BAD_ARGS);
-        return microkit_msginfo_new(0, 1);
+        rep_u32(rep, 0, NS_ERR_BAD_ARGS);
+        rep->length = 4;
+        return SEL4_ERR_OK;
     }
 
     int slot = registry_find_by_name(name);
     if (slot < 0) {
-        microkit_mr_set(0, NS_ERR_NOT_FOUND);
-        return microkit_msginfo_new(0, 1);
+        rep_u32(rep, 0, NS_ERR_NOT_FOUND);
+        rep->length = 4;
+        return SEL4_ERR_OK;
     }
 
     ns_entry_t *e = &registry[slot];
-    microkit_mr_set(0, NS_OK);
-    microkit_mr_set(1, e->channel_id);
-    microkit_mr_set(2, e->pd_id);
-    microkit_mr_set(3, e->status);
-    microkit_mr_set(4, e->cap_classes);
-    microkit_mr_set(5, e->version);
-    return microkit_msginfo_new(0, 6);
+    rep_u32(rep, 0, NS_OK);
+    rep_u32(rep, 4, e->channel_id);
+    rep_u32(rep, 8, e->pd_id);
+    rep_u32(rep, 12, e->status);
+    rep_u32(rep, 16, e->cap_classes);
+    rep_u32(rep, 20, e->version);
+    rep->length = 24;
+        return SEL4_ERR_OK;
 }
 
 /*
@@ -205,21 +213,23 @@ static microkit_msginfo handle_lookup(void)
  *   MR1 = channel_id   (identifies the service)
  *   MR2 = new_status   (NS_STATUS_*)
  */
-static microkit_msginfo handle_update_status(void)
+static uint32_t handle_update_status(void)
 {
-    uint32_t channel_id = (uint32_t)microkit_mr_get(1);
-    uint8_t  new_status = (uint8_t)microkit_mr_get(2);
+    uint32_t channel_id = (uint32_t)msg_u32(req, 4);
+    uint8_t  new_status = (uint8_t)msg_u32(req, 8);
 
     int slot = registry_find_by_channel(channel_id);
     if (slot < 0) {
-        microkit_mr_set(0, NS_ERR_NOT_FOUND);
-        return microkit_msginfo_new(0, 1);
+        rep_u32(rep, 0, NS_ERR_NOT_FOUND);
+        rep->length = 4;
+        return SEL4_ERR_OK;
     }
 
     registry[slot].status = new_status;
 
-    microkit_mr_set(0, NS_OK);
-    return microkit_msginfo_new(0, 1);
+    rep_u32(rep, 0, NS_OK);
+    rep->length = 4;
+        return SEL4_ERR_OK;
 }
 
 /*
@@ -227,13 +237,14 @@ static microkit_msginfo handle_update_status(void)
  *   Dumps all active entries into ns_registry_shmem.
  * Reply: MR0=NS_OK, MR1=entry_count
  */
-static microkit_msginfo handle_list(void)
+static uint32_t handle_list(void)
 {
     if (!ns_registry_shmem_vaddr) {
         /* shmem not mapped — return count only */
-        microkit_mr_set(0, NS_OK);
-        microkit_mr_set(1, reg_count);
-        return microkit_msginfo_new(0, 2);
+        rep_u32(rep, 0, NS_OK);
+        rep_u32(rep, 4, reg_count);
+        rep->length = 8;
+        return SEL4_ERR_OK;
     }
 
     ns_list_header_t *hdr = (ns_list_header_t *)ns_registry_shmem_vaddr;
@@ -263,23 +274,25 @@ static microkit_msginfo handle_list(void)
 
     hdr->count = written;
 
-    microkit_mr_set(0, NS_OK);
-    microkit_mr_set(1, written);
-    return microkit_msginfo_new(0, 2);
+    rep_u32(rep, 0, NS_OK);
+    rep_u32(rep, 4, written);
+    rep->length = 8;
+        return SEL4_ERR_OK;
 }
 
 /*
  * OP_NS_DEREGISTER
  *   MR1 = channel_id
  */
-static microkit_msginfo handle_deregister(void)
+static uint32_t handle_deregister(void)
 {
-    uint32_t channel_id = (uint32_t)microkit_mr_get(1);
+    uint32_t channel_id = (uint32_t)msg_u32(req, 4);
 
     int slot = registry_find_by_channel(channel_id);
     if (slot < 0) {
-        microkit_mr_set(0, NS_ERR_NOT_FOUND);
-        return microkit_msginfo_new(0, 1);
+        rep_u32(rep, 0, NS_ERR_NOT_FOUND);
+        rep->length = 4;
+        return SEL4_ERR_OK;
     }
 
     log_drain_write(NS_LOG_SLOT, NS_LOG_PD_ID, "[ns] deregistered: ");
@@ -289,25 +302,27 @@ static microkit_msginfo handle_deregister(void)
     registry[slot].active = false;
     reg_count--;
 
-    microkit_mr_set(0, NS_OK);
-    return microkit_msginfo_new(0, 1);
+    rep_u32(rep, 0, NS_OK);
+    rep->length = 4;
+        return SEL4_ERR_OK;
 }
 
 /*
  * OP_NS_HEALTH
  * Reply: MR0=NS_OK, MR1=registered_count, MR2=NS_VERSION
  */
-static microkit_msginfo handle_health(void)
+static uint32_t handle_health(void)
 {
-    microkit_mr_set(0, NS_OK);
-    microkit_mr_set(1, reg_count);
-    microkit_mr_set(2, NS_VERSION);
-    return microkit_msginfo_new(0, 3);
+    rep_u32(rep, 0, NS_OK);
+    rep_u32(rep, 4, reg_count);
+    rep_u32(rep, 8, NS_VERSION);
+    rep->length = 12;
+        return SEL4_ERR_OK;
 }
 
 /* ── Microkit entry points ────────────────────────────────────────────────── */
 
-void init(void)
+static void nameserver_pd_init(void)
 {
     for (uint32_t i = 0; i < NS_MAX_ENTRIES; i++) {
         registry[i].active = false;
@@ -320,7 +335,7 @@ void init(void)
                 "[nameserver] ready — service discovery active\n");
 }
 
-void notified(microkit_channel ch)
+static void nameserver_pd_notified(uint32_t ch)
 {
     /* NameServer is passive and sends no notifications; this path is
      * only reached if something misconfigures a channel as non-pp.
@@ -350,12 +365,12 @@ void notified(microkit_channel ch)
  * OP_NS_LOOKUP remains available for backwards compatibility but its use
  * in new code is DEPRECATED — it performs no authorization check.
  */
-static microkit_msginfo handle_lookup_gated(microkit_channel ch, microkit_msginfo msginfo)
+static uint32_t handle_lookup_gated(uint32_t ch, uint32_t msginfo)
 {
     /* Extract badge from the msginfo label field.
      * Microkit conveys the badge of the endpoint cap used by the caller
      * in the label field of the msginfo for PPC calls. */
-    uint32_t badge        = (uint32_t)microkit_msginfo_get_label(msginfo);
+    uint32_t badge        = (uint32_t)msg_u32(req, 0);
     uint16_t requester_pd = (uint16_t)(badge & 0xFFFFu);
     uint16_t allowed_cats = (uint16_t)(badge >> 16);
 
@@ -366,14 +381,16 @@ static microkit_msginfo handle_lookup_gated(microkit_channel ch, microkit_msginf
     ns_unpack_name(name, 1);
 
     if (ns_strlen(name) == 0) {
-        microkit_mr_set(0, NS_ERR_BAD_ARGS);
-        return microkit_msginfo_new(0, 1);
+        rep_u32(rep, 0, NS_ERR_BAD_ARGS);
+        rep->length = 4;
+        return SEL4_ERR_OK;
     }
 
     int slot = registry_find_by_name(name);
     if (slot < 0) {
-        microkit_mr_set(0, NS_ERR_NOT_FOUND);
-        return microkit_msginfo_new(0, 1);
+        rep_u32(rep, 0, NS_ERR_NOT_FOUND);
+        rep->length = 4;
+        return SEL4_ERR_OK;
     }
 
     ns_entry_t *e = &registry[slot];
@@ -385,22 +402,25 @@ static microkit_msginfo handle_lookup_gated(microkit_channel ch, microkit_msginf
         log_drain_write(NS_LOG_SLOT, NS_LOG_PD_ID, "[ns] gated lookup FORBIDDEN: ");
         log_drain_write(NS_LOG_SLOT, NS_LOG_PD_ID, e->name);
         log_drain_write(NS_LOG_SLOT, NS_LOG_PD_ID, "\n");
-        microkit_mr_set(0, NS_ERR_FORBIDDEN);
-        return microkit_msginfo_new(0, 1);
+        rep_u32(rep, 0, NS_ERR_FORBIDDEN);
+        rep->length = 4;
+        return SEL4_ERR_OK;
     }
 
-    microkit_mr_set(0, NS_OK);
-    microkit_mr_set(1, e->channel_id);
-    microkit_mr_set(2, e->pd_id);
-    microkit_mr_set(3, e->status);
-    microkit_mr_set(4, e->cap_classes);
-    microkit_mr_set(5, e->version);
-    return microkit_msginfo_new(0, 6);
+    rep_u32(rep, 0, NS_OK);
+    rep_u32(rep, 4, e->channel_id);
+    rep_u32(rep, 8, e->pd_id);
+    rep_u32(rep, 12, e->status);
+    rep_u32(rep, 16, e->cap_classes);
+    rep_u32(rep, 20, e->version);
+    rep->length = 24;
+        return SEL4_ERR_OK;
 }
 
-microkit_msginfo protected(microkit_channel ch, microkit_msginfo msginfo)
+static uint32_t nameserver_h_dispatch(sel4_badge_t b, const sel4_msg_t *req, sel4_msg_t *rep, void *ctx)
 {
-    uint32_t op = (uint32_t)microkit_mr_get(0);
+    (void)ctx;
+    uint32_t op = (uint32_t)msg_u32(req, 0);
 
     switch (op) {
     case OP_NS_REGISTER:      return handle_register();
@@ -410,10 +430,23 @@ microkit_msginfo protected(microkit_channel ch, microkit_msginfo msginfo)
     case OP_NS_LIST:          return handle_list();
     case OP_NS_DEREGISTER:    return handle_deregister();
     case OP_NS_HEALTH:        return handle_health();
-    case OP_NS_LOOKUP_GATED:  return handle_lookup_gated(ch, msginfo);
+    case OP_NS_LOOKUP_GATED:  return handle_lookup_gated((uint32_t)b, 0);
     default:
         log_drain_write(NS_LOG_SLOT, NS_LOG_PD_ID, "[ns] unknown opcode\n");
-        microkit_mr_set(0, NS_ERR_UNKNOWN_OP);
-        return microkit_msginfo_new(0, 1);
+        rep_u32(rep, 0, NS_ERR_UNKNOWN_OP);
+        rep->length = 4;
+        return SEL4_ERR_OK;
     }
+}
+
+/* ── E5-S8: Entry point ─────────────────────────────────────────────────── */
+void nameserver_main(seL4_CPtr my_ep, seL4_CPtr ns_ep)
+{
+    (void)ns_ep;
+    nameserver_pd_init();
+    static sel4_server_t srv;
+    sel4_server_init(&srv, my_ep);
+    /* Dispatch all opcodes through the generic handler */
+    sel4_server_register(&srv, SEL4_SERVER_OPCODE_ANY, nameserver_h_dispatch, (void *)0);
+    sel4_server_run(&srv);
 }

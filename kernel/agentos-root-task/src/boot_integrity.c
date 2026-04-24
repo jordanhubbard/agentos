@@ -42,6 +42,7 @@
 
 #define AGENTOS_DEBUG 1
 #include "agentos.h"
+#include "sel4_server.h"
 #include "monocypher.h"
 #include <stdint.h>
 #include <stdbool.h>
@@ -212,13 +213,13 @@ void boot_integrity_init(void) {
     pcr_sealed    = false;
     measure_count = 0;
     boot_quote_len = 0;
-    microkit_dbg_puts("[boot_integrity] PCR bank initialized\n");
+    sel4_dbg_puts("[boot_integrity] PCR bank initialized\n");
 }
 
 uint32_t boot_integrity_measure(uint32_t pd_id,
                                  const uint8_t measurement[BOOT_INTEGRITY_HASH_LEN]) {
     if (measure_count >= BOOT_INTEGRITY_PCR_COUNT) {
-        microkit_dbg_puts("[boot_integrity] PCR bank full\n");
+        sel4_dbg_puts("[boot_integrity] PCR bank full\n");
         return 0;
     }
     uint32_t slot = measure_count++;
@@ -233,30 +234,32 @@ uint32_t boot_integrity_measure(uint32_t pd_id,
  * boot_integrity_handle_ppc — called from controller's protected() for
  * OP_BOOT_* opcodes forwarded from init_agent / workers.
  */
-microkit_msginfo boot_integrity_handle_ppc(uint32_t op,
-                                            microkit_msginfo msginfo __attribute__((unused))) {
+uint32_t boot_integrity_handle_ppc(uint32_t op,
+                                            uint32_t msginfo __attribute__((unused))) {
     switch (op) {
         case OP_BOOT_MEASURE: {
             /* MR1=pd_id, MR2..MR9 = sha256 as 8×u32 (big-endian order) */
-            uint32_t pd_id = (uint32_t)microkit_mr_get(1);
+            uint32_t pd_id = (uint32_t)msg_u32(req, 4);
             uint8_t  m[BOOT_INTEGRITY_HASH_LEN];
             for (int i = 0; i < 8; i++) {
-                uint32_t w = (uint32_t)microkit_mr_get(2 + i);
+                uint32_t w = (uint32_t)msg_u32(req, (2 + i) * 4);
                 m[i*4+0] = (w>>24)&0xFF; m[i*4+1] = (w>>16)&0xFF;
                 m[i*4+2] = (w>>8)&0xFF;  m[i*4+3] = w&0xFF;
             }
             uint32_t slot = boot_integrity_measure(pd_id, m);
             if (slot == 0 && measure_count == 0) {
-                microkit_mr_set(0, 0);
-                return microkit_msginfo_new(1, 1);
+                rep_u32(rep, 0, 0);
+                rep->length = 4;
+        return SEL4_ERR_OK;
             }
-            microkit_mr_set(0, slot);
-            return microkit_msginfo_new(0, 1);
+            rep_u32(rep, 0, slot);
+            rep->length = 4;
+        return SEL4_ERR_OK;
         }
         case OP_BOOT_SEAL: {
             build_quote();
             pcr_sealed = true;
-            microkit_dbg_puts("[boot_integrity] Boot measurements sealed\n");
+            sel4_dbg_puts("[boot_integrity] Boot measurements sealed\n");
 
             /*
              * Sign the PCR aggregate with an ephemeral Ed25519 key derived
@@ -279,51 +282,56 @@ microkit_msginfo boot_integrity_handle_ppc(uint32_t op,
                 crypto_ed25519_sign(sig, sk, pk,
                                     boot_quote, boot_quote_len);
 
-                microkit_dbg_puts("[boot_integrity] PCR log signed with ephemeral Ed25519 key\n");
+                sel4_dbg_puts("[boot_integrity] PCR log signed with ephemeral Ed25519 key\n");
                 (void)sig; /* stored to AgentFS in a future phase */
             }
 
-            microkit_mr_set(0, boot_quote_len);
+            rep_u32(rep, 0, boot_quote_len);
             /* Return first 28 bytes of quote as preview */
             for (int i = 0; i < 7; i++) {
                 uint32_t word = 0;
                 for (int j = 0; j < 4 && (uint32_t)(i*4+j) < boot_quote_len; j++)
                     word |= (uint32_t)boot_quote[i*4+j] << (j * 8);
-                microkit_mr_set(1 + i, word);
+                rep_u32(rep, (1 + i) * 4, word);
             }
-            return microkit_msginfo_new(0, 8);
+            rep->length = 32;
+        return SEL4_ERR_OK;
         }
         case OP_BOOT_QUOTE: {
-            microkit_mr_set(0, boot_quote_len);
-            microkit_mr_set(1, pcr_sealed ? 1 : 0);
+            rep_u32(rep, 0, boot_quote_len);
+            rep_u32(rep, 4, pcr_sealed ? 1 : 0);
             /* Return first 24 bytes (6 u32) of quote */
             for (int i = 0; i < 6; i++) {
                 uint32_t word = 0;
                 for (int j = 0; j < 4 && (uint32_t)(i*4+j) < boot_quote_len; j++)
                     word |= (uint32_t)boot_quote[i*4+j] << (j * 8);
-                microkit_mr_set(2 + i, word);
+                rep_u32(rep, (2 + i) * 4, word);
             }
-            return microkit_msginfo_new(0, 8);
+            rep->length = 32;
+        return SEL4_ERR_OK;
         }
         case OP_BOOT_VERIFY: {
             /* MR1..MR8 = expected PCR_AGGR value (8×u32) */
             uint8_t expected[BOOT_INTEGRITY_HASH_LEN];
             for (int i = 0; i < 8; i++) {
-                uint32_t w = (uint32_t)microkit_mr_get(1 + i);
+                uint32_t w = (uint32_t)msg_u32(req, (1 + i) * 4);
                 expected[i*4+0]=(w>>24)&0xFF; expected[i*4+1]=(w>>16)&0xFF;
                 expected[i*4+2]=(w>>8)&0xFF;  expected[i*4+3]=w&0xFF;
             }
             bool match = (memcmp(pcr_aggr, expected, BOOT_INTEGRITY_HASH_LEN) == 0);
-            microkit_mr_set(0, match ? 1 : 0);
-            return microkit_msginfo_new(0, 1);
+            rep_u32(rep, 0, match ? 1 : 0);
+            rep->length = 4;
+        return SEL4_ERR_OK;
         }
         case OP_BOOT_RESET: {
             boot_integrity_init();
-            microkit_mr_set(0, 1);
-            return microkit_msginfo_new(0, 1);
+            rep_u32(rep, 0, 1);
+            rep->length = 4;
+        return SEL4_ERR_OK;
         }
         default:
-            microkit_mr_set(0, 0xDEAD);
-            return microkit_msginfo_new(1, 1);
+            rep_u32(rep, 0, 0xDEAD);
+            rep->length = 4;
+        return SEL4_ERR_OK;
     }
 }

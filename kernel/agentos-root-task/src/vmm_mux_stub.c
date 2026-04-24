@@ -11,6 +11,7 @@
  */
 
 #include "agentos.h"
+#include "sel4_server.h"
 #include "vm_manager.h"
 
 /* Required by vmm_mux.h extern declarations */
@@ -59,14 +60,14 @@ int vmm_mux_switch(vm_mux_t *mux __attribute__((unused)),
 }
 
 void vmm_mux_handle_fault(vm_mux_t *mux __attribute__((unused)),
-                           microkit_child child __attribute__((unused)),
-                           microkit_msginfo msginfo __attribute__((unused)),
-                           microkit_msginfo *reply_msginfo __attribute__((unused)))
+                           seL4_CPtr child __attribute__((unused)),
+                           uint32_t msginfo __attribute__((unused)),
+                           uint32_t *reply_msginfo __attribute__((unused)))
 {
 }
 
 void vmm_mux_handle_notify(vm_mux_t *mux __attribute__((unused)),
-                            microkit_channel ch __attribute__((unused)))
+                            uint32_t ch __attribute__((unused)))
 {
 }
 

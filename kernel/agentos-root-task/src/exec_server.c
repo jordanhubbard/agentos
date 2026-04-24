@@ -29,6 +29,7 @@
 
 #define AGENTOS_DEBUG 1
 #include "agentos.h"
+#include "sel4_server.h"
 #include <stdbool.h>
 #include <stdint.h>
 #include <stddef.h>
@@ -85,7 +86,7 @@ static uint32_t     next_exec_id = 1;
 static uint32_t     next_pid     = 100;  /* PIDs 100+ for exec-launched procs */
 
 /* ── Helpers ──────────────────────────────────────────────────────────── */
-static void dbg(const char *s) { microkit_dbg_puts(s); }
+static void dbg(const char *s) { sel4_dbg_puts(s); }
 
 static void copy_path(char *dst, const char *src, int max)
 {
@@ -155,16 +156,17 @@ static uint8_t peek_binary_type(void)
 }
 
 /* ── IPC dispatch ─────────────────────────────────────────────────────── */
-static microkit_msginfo handle_launch(void)
+static uint32_t handle_launch(void)
 {
     if (!exec_shmem_vaddr) {
         dbg("[exec_server] launch: exec_shmem not mapped\n");
-        microkit_mr_set(0, 1);
-        return microkit_msginfo_new(0, 1);
+        rep_u32(rep, 0, 1);
+        rep->length = 4;
+        return SEL4_ERR_OK;
     }
 
-    uint32_t auth_token = (uint32_t)microkit_mr_get(1);
-    uint32_t cap_mask   = (uint32_t)microkit_mr_get(2);
+    uint32_t auth_token = (uint32_t)msg_u32(req, 4);
+    uint32_t cap_mask   = (uint32_t)msg_u32(req, 8);
 
     /* find free exec_table entry */
     uint32_t idx = EXEC_MAX_TABLE;
@@ -172,16 +174,18 @@ static microkit_msginfo handle_launch(void)
         if (exec_table[i].state == EXEC_FREE) { idx = i; break; }
     }
     if (idx == EXEC_MAX_TABLE) {
-        microkit_dbg_puts("[exec_server] exec table full\n");
-        microkit_mr_set(0, 2);
-        return microkit_msginfo_new(0, 1);
+        sel4_dbg_puts("[exec_server] exec table full\n");
+        rep_u32(rep, 0, 2);
+        rep->length = 4;
+        return SEL4_ERR_OK;
     }
 
     int slot = find_free_app_slot();
     if (slot < 0) {
-        microkit_dbg_puts("[exec_server] no free app_slot\n");
-        microkit_mr_set(0, 3);
-        return microkit_msginfo_new(0, 1);
+        sel4_dbg_puts("[exec_server] no free app_slot\n");
+        rep_u32(rep, 0, 3);
+        rep->length = 4;
+        return SEL4_ERR_OK;
     }
 
     /* copy path from shmem */
@@ -216,7 +220,7 @@ static microkit_msginfo handle_launch(void)
 
     /* Signal app_slot PD to load the staged ELF.
      * CH_APP_SLOT_0 = 34; app_slot_N is at channel (34 + N). */
-    microkit_notify((microkit_channel)(CH_APP_SLOT_0 + (uint32_t)slot));
+    sel4_dbg_puts("[E5-S8] notify-stub\n"); /* TODO: seL4_Signal(notify_cap_for_app_slot) */
 
     /* Phase 1: optimistically transition to RUNNING immediately */
     exec_table[idx].state = EXEC_RUNNING;
@@ -225,64 +229,72 @@ static microkit_msginfo handle_launch(void)
     dbg(exec_table[idx].path);
     dbg("\n");
 
-    microkit_mr_set(0, 0);
-    microkit_mr_set(1, exec_id);
-    return microkit_msginfo_new(0, 2);
+    rep_u32(rep, 0, 0);
+    rep_u32(rep, 4, exec_id);
+    rep->length = 8;
+        return SEL4_ERR_OK;
 }
 
-static microkit_msginfo handle_status(void)
+static uint32_t handle_status(void)
 {
-    uint32_t exec_id = (uint32_t)microkit_mr_get(1);
+    uint32_t exec_id = (uint32_t)msg_u32(req, 4);
     exec_entry_t *e  = find_task_by_id(exec_id);
     if (!e) e = find_exec(exec_id);
     if (!e) {
-        microkit_mr_set(0, 1);
-        return microkit_msginfo_new(0, 1);
+        rep_u32(rep, 0, 1);
+        rep->length = 4;
+        return SEL4_ERR_OK;
     }
-    microkit_mr_set(0, 0);
-    microkit_mr_set(1, e->state);
-    microkit_mr_set(2, e->pid);
-    return microkit_msginfo_new(0, 3);
+    rep_u32(rep, 0, 0);
+    rep_u32(rep, 4, e->state);
+    rep_u32(rep, 8, e->pid);
+    rep->length = 12;
+        return SEL4_ERR_OK;
 }
 
-static microkit_msginfo handle_wait(void)
+static uint32_t handle_wait(void)
 {
-    uint32_t exec_id = (uint32_t)microkit_mr_get(1);
+    uint32_t exec_id = (uint32_t)msg_u32(req, 4);
     exec_entry_t *e  = find_task_by_id(exec_id);
     if (!e) e = find_exec(exec_id);
     if (!e) {
-        microkit_mr_set(0, 1);
-        return microkit_msginfo_new(0, 1);
+        rep_u32(rep, 0, 1);
+        rep->length = 4;
+        return SEL4_ERR_OK;
     }
     if (e->state == EXEC_STATE_RUNNING) {
         /* Non-blocking poll: returns current pid; caller must retry if LOADING */
-        microkit_mr_set(0, 0);
-        microkit_mr_set(1, e->pid);
-        return microkit_msginfo_new(0, 2);
+        rep_u32(rep, 0, 0);
+        rep_u32(rep, 4, e->pid);
+        rep->length = 8;
+        return SEL4_ERR_OK;
     }
     /* Still loading — return busy status */
-    microkit_mr_set(0, 1);
-    return microkit_msginfo_new(0, 1);
+    rep_u32(rep, 0, 1);
+    rep->length = 4;
+        return SEL4_ERR_OK;
 }
 
-static microkit_msginfo handle_kill(void)
+static uint32_t handle_kill(void)
 {
-    uint32_t exec_id = (uint32_t)microkit_mr_get(1);
+    uint32_t exec_id = (uint32_t)msg_u32(req, 4);
     exec_entry_t *e  = find_task_by_id(exec_id);
     if (!e) e = find_exec(exec_id);
     if (!e) {
-        microkit_mr_set(0, 1);
-        return microkit_msginfo_new(0, 1);
+        rep_u32(rep, 0, 1);
+        rep->length = 4;
+        return SEL4_ERR_OK;
     }
 
     e->state = EXEC_STATE_DONE;
 
-    microkit_mr_set(0, 0);
-    return microkit_msginfo_new(0, 1);
+    rep_u32(rep, 0, 0);
+    rep->length = 4;
+        return SEL4_ERR_OK;
 }
 
 /* ── Microkit entry points ────────────────────────────────────────────── */
-void init(void)
+static void exec_server_pd_init(void)
 {
     for (uint32_t i = 0; i < EXEC_MAX_TABLE; i++) {
         exec_table[i].state      = EXEC_FREE;
@@ -296,14 +308,10 @@ void init(void)
     dbg("[exec_server] ELF/WASM loader ready (8 exec slots)\n");
 }
 
-microkit_msginfo protected(microkit_channel ch, microkit_msginfo msginfo)
+static uint32_t exec_server_h_dispatch(sel4_badge_t b, const sel4_msg_t *req, sel4_msg_t *rep, void *ctx)
 {
-    if (ch != 0) {
-        /* Only channel 0 serves PPCs */
-        return microkit_msginfo_new(1, 0);
-    }
-    (void)msginfo;
-    uint32_t op = (uint32_t)microkit_mr_get(0);
+    (void)b; (void)ctx;
+    uint32_t op = (uint32_t)msg_u32(req, 0);
 
     switch (op) {
     case OP_EXEC_LAUNCH: return handle_launch();
@@ -311,13 +319,14 @@ microkit_msginfo protected(microkit_channel ch, microkit_msginfo msginfo)
     case OP_EXEC_WAIT:   return handle_wait();
     case OP_EXEC_KILL:   return handle_kill();
     default:
-        microkit_dbg_puts("[exec_server] unknown opcode\n");
-        microkit_mr_set(0, 0xFF);
-        return microkit_msginfo_new(0, 1);
+        sel4_dbg_puts("[exec_server] unknown opcode\n");
+        rep_u32(rep, 0, 0xFF);
+        rep->length = 4;
+        return SEL4_ERR_OK;
     }
 }
 
-void notified(microkit_channel ch)
+static void exec_server_pd_notified(uint32_t ch)
 {
     /*
      * app_slot_N fires back on its end of the bidirectional channel that
@@ -336,9 +345,21 @@ void notified(microkit_channel ch)
             exec_table[i].state = EXEC_STATE_DONE;
             dbg("[exec_server] notified: slot=");
             char sc[2] = { '0' + (char)slot_id, '\0' };
-            microkit_dbg_puts(sc);
+            sel4_dbg_puts(sc);
             dbg(" -> DONE\n");
             break;
         }
     }
+}
+
+/* ── E5-S8: Entry point ─────────────────────────────────────────────────── */
+void exec_server_main(seL4_CPtr my_ep, seL4_CPtr ns_ep)
+{
+    (void)ns_ep;
+    exec_server_pd_init();
+    static sel4_server_t srv;
+    sel4_server_init(&srv, my_ep);
+    /* Dispatch all opcodes through the generic handler */
+    sel4_server_register(&srv, SEL4_SERVER_OPCODE_ANY, exec_server_h_dispatch, (void *)0);
+    sel4_server_run(&srv);
 }

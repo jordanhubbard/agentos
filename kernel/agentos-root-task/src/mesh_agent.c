@@ -41,6 +41,7 @@
  */
 
 #include "agentos.h"
+#include "sel4_server.h"
 #include "contracts/mesh_agent_contract.h"
 #include <stdint.h>
 #include <string.h>
@@ -147,14 +148,15 @@ static void mesh_announce_self(uint32_t worker_total, uint32_t worker_free,
     for (int i = 0; i < 4 && nid[i]; i++) nid_lo |= ((uint32_t)(uint8_t)nid[i] << (i * 8));
     for (int i = 0; i < 4 && nid[4 + i]; i++) nid_hi |= ((uint32_t)(uint8_t)nid[4 + i] << (i * 8));
 
-    microkit_mr_set(0, MSG_MESH_ANNOUNCE);
-    microkit_mr_set(1, worker_total);
-    microkit_mr_set(2, worker_free);
-    microkit_mr_set(3, gpu_total);
-    microkit_mr_set(4, gpu_free);
-    microkit_mr_set(5, nid_lo);
-    microkit_mr_set(6, nid_hi);
-    microkit_notify(CH_SQUIRRELBUS_TX);
+    rep_u32(rep, 0, MSG_MESH_ANNOUNCE);
+    rep_u32(rep, 4, worker_total);
+    rep_u32(rep, 8, worker_free);
+    rep_u32(rep, 12, gpu_total);
+    rep_u32(rep, 16, gpu_free);
+    rep_u32(rep, 20, nid_lo);
+    rep_u32(rep, 24, nid_hi);
+    sel4_dbg_puts("[E5-S8] notify-stub
+");
 
     log_drain_write(15, 15, "[mesh_agent] Announced self to SquirrelBus mesh channel\n");
 }
@@ -192,11 +194,11 @@ static void publish_peer_down(const char *node_id) {
     uint32_t nid_lo = 0, nid_hi = 0;
     for (int i = 0; i < 4 && node_id[i]; i++) nid_lo |= ((uint32_t)(uint8_t)node_id[i] << (i*8));
     for (int i = 0; i < 4 && node_id[4+i]; i++) nid_hi |= ((uint32_t)(uint8_t)node_id[4+i] << (i*8));
-    microkit_mr_set(0, MSG_EVENT_PUBLISH);
-    microkit_mr_set(1, MSG_MESH_PEER_DOWN);
-    microkit_mr_set(2, nid_lo);
-    microkit_mr_set(3, nid_hi);
-    microkit_ppcall(CH_EVENTBUS, microkit_msginfo_new(MSG_EVENT_PUBLISH, 4));
+    rep_u32(rep, 0, MSG_EVENT_PUBLISH);
+    rep_u32(rep, 4, MSG_MESH_PEER_DOWN);
+    rep_u32(rep, 8, nid_lo);
+    rep_u32(rep, 12, nid_hi);
+    /* E5-S8: ppcall stubbed */
 }
 
 /* ── Timeout sweep: mark stale peers offline ───────────────────────────────── */
@@ -218,9 +220,9 @@ static void sweep_stale_peers(void) {
 
 /* ── protected() — synchronous PPC handler ─────────────────────────────────── */
 
-microkit_msginfo protected(microkit_channel ch, microkit_msginfo msg) {
-    (void)ch;
-    uint64_t tag = microkit_msginfo_get_label(msg);
+static uint32_t mesh_agent_pd_dispatch(sel4_badge_t b, const sel4_msg_t *req, sel4_msg_t *rep, void *ctx) {
+    (void)b; (void)ctx;
+    uint64_t tag = msg_u32(req, 0);
 
     switch ((uint32_t)tag) {
 
@@ -230,12 +232,12 @@ microkit_msginfo protected(microkit_channel ch, microkit_msginfo msg) {
          * MR0/1: worker_total/free, MR2/3: gpu_total/free
          * MR4/5: node_id packed as two u32 (LE bytes)
          */
-        uint32_t w_total  = (uint32_t)microkit_mr_get(0);
-        uint32_t w_free   = (uint32_t)microkit_mr_get(1);
-        uint32_t g_total  = (uint32_t)microkit_mr_get(2);
-        uint32_t g_free   = (uint32_t)microkit_mr_get(3);
-        uint32_t nid_lo   = (uint32_t)microkit_mr_get(4);
-        uint32_t nid_hi   = (uint32_t)microkit_mr_get(5);
+        uint32_t w_total  = (uint32_t)msg_u32(req, 0);
+        uint32_t w_free   = (uint32_t)msg_u32(req, 4);
+        uint32_t g_total  = (uint32_t)msg_u32(req, 8);
+        uint32_t g_free   = (uint32_t)msg_u32(req, 12);
+        uint32_t nid_lo   = (uint32_t)msg_u32(req, 16);
+        uint32_t nid_hi   = (uint32_t)msg_u32(req, 20);
 
         /* Unpack node_id */
         char node_id[NODE_ID_LEN] = {0};
@@ -248,8 +250,9 @@ microkit_msginfo protected(microkit_channel ch, microkit_msginfo msg) {
             pi = peer_alloc();
             if (pi < 0) {
                 log_drain_write(15, 15, "[mesh_agent] ANNOUNCE: peer table full\n");
-                microkit_mr_set(0, 0xE1);
-                return microkit_msginfo_new(MSG_MESH_ANNOUNCE_REPLY, 1);
+                rep_u32(rep, 0, 0xE1);
+                rep->length = 4;
+        return SEL4_ERR_OK;
             }
             mesh.peer_count++;
         }
@@ -275,8 +278,9 @@ microkit_msginfo protected(microkit_channel ch, microkit_msginfo msg) {
         put_dec(g_total);
         log_drain_write(15, 15, "\n");
 
-        microkit_mr_set(0, 0);  /* ok */
-        return microkit_msginfo_new(MSG_MESH_ANNOUNCE_REPLY, 1);
+        rep_u32(rep, 0, 0);  /* ok */
+        rep->length = 4;
+        return SEL4_ERR_OK;
     }
 
     case MSG_MESH_STATUS: {
@@ -292,14 +296,15 @@ microkit_msginfo protected(microkit_channel ch, microkit_msginfo msg) {
             total_gpu     += mesh.peers[i].gpu_slots_total;
             free_gpu      += mesh.peers[i].gpu_slots_free;
         }
-        microkit_mr_set(0, online);
-        microkit_mr_set(1, total_workers);
-        microkit_mr_set(2, free_workers);
-        microkit_mr_set(3, total_gpu);
-        microkit_mr_set(4, free_gpu);
-        microkit_mr_set(5, mesh.spawns_local);
-        microkit_mr_set(6, mesh.spawns_remote);
-        return microkit_msginfo_new(MSG_MESH_STATUS_REPLY, 7);
+        rep_u32(rep, 0, online);
+        rep_u32(rep, 4, total_workers);
+        rep_u32(rep, 8, free_workers);
+        rep_u32(rep, 12, total_gpu);
+        rep_u32(rep, 16, free_gpu);
+        rep_u32(rep, 20, mesh.spawns_local);
+        rep_u32(rep, 24, mesh.spawns_remote);
+        rep->length = 28;
+        return SEL4_ERR_OK;
     }
 
     case MSG_REMOTE_SPAWN: {
@@ -308,27 +313,29 @@ microkit_msginfo protected(microkit_channel ch, microkit_msginfo msg) {
          * MR0/1: wasm_hash_lo, MR2/3: wasm_hash_hi
          * MR4: priority, MR5: flags (SPAWN_FLAG_GPU etc.)
          */
-        uint64_t hash_lo = (uint64_t)microkit_mr_get(0) | ((uint64_t)microkit_mr_get(1) << 32);
-        uint64_t hash_hi = (uint64_t)microkit_mr_get(2) | ((uint64_t)microkit_mr_get(3) << 32);
-        uint32_t priority = (uint32_t)microkit_mr_get(4);
-        uint32_t flags    = (uint32_t)microkit_mr_get(5);
+        uint64_t hash_lo = (uint64_t)msg_u32(req, 0) | ((uint64_t)msg_u32(req, 4) << 32);
+        uint64_t hash_hi = (uint64_t)msg_u32(req, 8) | ((uint64_t)msg_u32(req, 12) << 32);
+        uint32_t priority = (uint32_t)msg_u32(req, 16);
+        uint32_t flags    = (uint32_t)msg_u32(req, 20);
         (void)hash_lo; (void)hash_hi; (void)priority;
 
         int peer = select_peer(flags);
         if (peer < 0) {
             if (flags & SPAWN_FLAG_STRICT) {
                 mesh.spawns_failed++;
-                microkit_mr_set(0, 0);
-                microkit_mr_set(1, 0xE2);  /* ERR_NO_PEER */
-                return microkit_msginfo_new(MSG_REMOTE_SPAWN_REPLY, 2);
+                rep_u32(rep, 0, 0);
+                rep_u32(rep, 4, 0xE2);  /* ERR_NO_PEER */
+                rep->length = 8;
+        return SEL4_ERR_OK;
             }
             /* Fallback: route to local init_agent (MSG_SPAWN_AGENT) */
             log_drain_write(15, 15, "[mesh_agent] REMOTE_SPAWN: no peer available, routing locally\n");
             mesh.spawns_local++;
-            microkit_mr_set(0, 0);        /* node_id = 0 (local) */
-            microkit_mr_set(1, 0);        /* ticket = pending from local pool */
-            microkit_mr_set(2, 0);        /* status: local fallback */
-            return microkit_msginfo_new(MSG_REMOTE_SPAWN_REPLY, 3);
+            rep_u32(rep, 0, 0);        /* node_id = 0 (local) */
+            rep_u32(rep, 4, 0);        /* ticket = pending from local pool */
+            rep_u32(rep, 8, 0);        /* status: local fallback */
+            rep->length = 12;
+        return SEL4_ERR_OK;
         }
 
         peer_entry_t *p = &mesh.peers[peer];
@@ -341,14 +348,15 @@ microkit_msginfo protected(microkit_channel ch, microkit_msginfo msg) {
             uint32_t nid_lo = 0, nid_hi = 0;
             for (int i = 0; i < 4; i++) nid_lo |= ((uint32_t)(uint8_t)p->node_id[i] << (i*8));
             for (int i = 0; i < 4; i++) nid_hi |= ((uint32_t)(uint8_t)p->node_id[4+i] << (i*8));
-            microkit_mr_set(0, MSG_REMOTE_SPAWN);
-            microkit_mr_set(1, (uint32_t)(hash_lo & 0xFFFFFFFF));
-            microkit_mr_set(2, (uint32_t)((hash_lo >> 32) & 0xFFFFFFFF));
-            microkit_mr_set(3, priority);
-            microkit_mr_set(4, flags);
-            microkit_mr_set(5, nid_lo);
-            microkit_mr_set(6, nid_hi);
-            microkit_notify(CH_SQUIRRELBUS_TX);
+            rep_u32(rep, 0, MSG_REMOTE_SPAWN);
+            rep_u32(rep, 4, (uint32_t)(hash_lo & 0xFFFFFFFF));
+            rep_u32(rep, 8, (uint32_t)((hash_lo >> 32) & 0xFFFFFFFF));
+            rep_u32(rep, 12, priority);
+            rep_u32(rep, 16, flags);
+            rep_u32(rep, 20, nid_lo);
+            rep_u32(rep, 24, nid_hi);
+            sel4_dbg_puts("[E5-S8] notify-stub
+");
         }
 
         /* Decrement peer's free slot count optimistically */
@@ -363,22 +371,24 @@ microkit_msginfo protected(microkit_channel ch, microkit_msginfo msg) {
         uint32_t nid_r_lo = 0, nid_r_hi = 0;
         for (int i = 0; i < 4; i++) nid_r_lo |= ((uint32_t)(uint8_t)p->node_id[i] << (i*8));
         for (int i = 0; i < 4; i++) nid_r_hi |= ((uint32_t)(uint8_t)p->node_id[4+i] << (i*8));
-        microkit_mr_set(0, nid_r_lo);
-        microkit_mr_set(1, nid_r_hi);
-        microkit_mr_set(2, 0);  /* ticket_id TBD — bridge assigns on delivery */
-        microkit_mr_set(3, 1);  /* status: routed to peer */
-        return microkit_msginfo_new(MSG_REMOTE_SPAWN_REPLY, 4);
+        rep_u32(rep, 0, nid_r_lo);
+        rep_u32(rep, 4, nid_r_hi);
+        rep_u32(rep, 8, 0);  /* ticket_id TBD — bridge assigns on delivery */
+        rep_u32(rep, 12, 1);  /* status: routed to peer */
+        rep->length = 16;
+        return SEL4_ERR_OK;
     }
 
     default:
-        microkit_mr_set(0, 0xFFFF);
-        return microkit_msginfo_new(0xFFFF, 1);
+        rep_u32(rep, 0, 0xFFFF);
+        rep->length = 4;
+        return SEL4_ERR_OK;
     }
 }
 
 /* ── notified() ─────────────────────────────────────────────────────────────── */
 
-void notified(microkit_channel ch) {
+static void mesh_agent_pd_notified(uint32_t ch) {
     switch (ch) {
     case CH_CONTROLLER:
         /* Controller signals mesh_agent ready */
@@ -393,16 +403,16 @@ void notified(microkit_channel ch) {
          * Incoming SquirrelBus message routed to us.
          * MR0 = message tag.
          */
-        uint32_t rx_tag = (uint32_t)microkit_mr_get(0);
+        uint32_t rx_tag = (uint32_t)msg_u32(req, 0);
         switch (rx_tag) {
         case (uint32_t)MSG_MESH_ANNOUNCE: {
             /* Peer announcing itself via the bus — register */
-            uint32_t w_total = (uint32_t)microkit_mr_get(1);
-            uint32_t w_free  = (uint32_t)microkit_mr_get(2);
-            uint32_t g_total = (uint32_t)microkit_mr_get(3);
-            uint32_t g_free  = (uint32_t)microkit_mr_get(4);
-            uint32_t nid_lo  = (uint32_t)microkit_mr_get(5);
-            uint32_t nid_hi  = (uint32_t)microkit_mr_get(6);
+            uint32_t w_total = (uint32_t)msg_u32(req, 4);
+            uint32_t w_free  = (uint32_t)msg_u32(req, 8);
+            uint32_t g_total = (uint32_t)msg_u32(req, 12);
+            uint32_t g_free  = (uint32_t)msg_u32(req, 16);
+            uint32_t nid_lo  = (uint32_t)msg_u32(req, 20);
+            uint32_t nid_hi  = (uint32_t)msg_u32(req, 24);
             char node_id[NODE_ID_LEN] = {0};
             for (int i = 0; i < 4; i++) node_id[i]     = (char)((nid_lo >> (i*8)) & 0xFF);
             for (int i = 0; i < 4; i++) node_id[4+i]   = (char)((nid_hi >> (i*8)) & 0xFF);
@@ -432,8 +442,8 @@ void notified(microkit_channel ch) {
             break;
         }
         case (uint32_t)MSG_MESH_HEARTBEAT: {
-            uint32_t nid_lo = (uint32_t)microkit_mr_get(1);
-            uint32_t nid_hi = (uint32_t)microkit_mr_get(2);
+            uint32_t nid_lo = (uint32_t)msg_u32(req, 4);
+            uint32_t nid_hi = (uint32_t)msg_u32(req, 8);
             char node_id[NODE_ID_LEN] = {0};
             for (int i = 0; i < 4; i++) node_id[i]   = (char)((nid_lo >> (i*8)) & 0xFF);
             for (int i = 0; i < 4; i++) node_id[4+i] = (char)((nid_hi >> (i*8)) & 0xFF);
@@ -450,9 +460,9 @@ void notified(microkit_channel ch) {
     case CH_EVENTBUS:
         mesh.eventbus_ready = true;
         /* Subscribe to EventBus for peer-down events */
-        microkit_mr_set(0, CH_EVENTBUS);
-        microkit_mr_set(1, 0);
-        microkit_ppcall(CH_EVENTBUS, microkit_msginfo_new(MSG_EVENTBUS_SUBSCRIBE, 2));
+        rep_u32(rep, 0, CH_EVENTBUS);
+        rep_u32(rep, 4, 0);
+        /* E5-S8: ppcall stubbed */
         break;
 
     default:
@@ -468,7 +478,7 @@ void notified(microkit_channel ch) {
 
 /* ── init() ─────────────────────────────────────────────────────────────────── */
 
-void init(void) {
+static void mesh_agent_pd_init(void) {
     /* Zero the mesh state */
     for (int i = 0; i < MAX_PEERS; i++) {
         mesh.peers[i].online = false;
@@ -485,5 +495,6 @@ void init(void) {
     log_drain_write(15, 15, "[mesh_agent] Distributed Agent Mesh PD online\n[mesh_agent]   node_id=" AGENTOS_NODE_ID "\n[mesh_agent]   max_peers=8, timeout=30 ticks\n[mesh_agent]   spawn_policy=least-loaded, GPU-affinity\n");
 
     /* Signal controller: mesh_agent ready */
-    microkit_notify(CH_CONTROLLER);
+    sel4_dbg_puts("[E5-S8] notify-stub
+");
 }

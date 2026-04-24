@@ -26,8 +26,14 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <stdbool.h>
-#include <microkit.h>
+#include "sel4_boot.h"
 #include "contracts/linux_vmm_contract.h"
+
+/* Raw seL4 replacement for microkit_dbg_puts */
+static inline void sel4_dbg_puts(const char *s)
+{
+    for (; *s; s++) seL4_DebugPutChar(*s);
+}
 
 /* ─── x86_64 stub ──────────────────────────────────────────────────────────
  *
@@ -89,7 +95,7 @@ int vmm_set_affinity(uint8_t slot_id, uint32_t cpu_mask)
 {
     if (slot_id >= VMM_MAX_SLOTS) return -1;
     vmm_affinity[slot_id] = cpu_mask;
-    microkit_dbg_puts("[linux_vmm] x86_64 stub: vmm_set_affinity stored\n");
+    sel4_dbg_puts("[linux_vmm] x86_64 stub: vmm_set_affinity stored\n");
     return 0;
 }
 
@@ -106,33 +112,26 @@ int vmm_inject_irq(uint8_t slot_id, uint32_t irq_num)
 {
     (void)slot_id;
     (void)irq_num;
-    microkit_dbg_puts("[linux_vmm] x86_64 stub: vmm_inject_irq (no-op)\n");
+    sel4_dbg_puts("[linux_vmm] x86_64 stub: vmm_inject_irq (no-op)\n");
     return 0;
 }
 
-void init(void)
+static void linux_vmm_x86_init(void)
 {
     for (uint8_t i = 0; i < VMM_MAX_SLOTS; i++)
         vmm_affinity[i] = 0xFFFFFFFFu;  /* any core */
 
-    microkit_dbg_puts("[linux_vmm] x86_64: libvmm VMM support not yet implemented.\n");
-    microkit_dbg_puts("[linux_vmm] x86_64: PD running as passive stub.\n");
+    sel4_dbg_puts("[linux_vmm] x86_64: libvmm VMM support not yet implemented.\n");
+    sel4_dbg_puts("[linux_vmm] x86_64: PD running as passive stub.\n");
 }
 
-void notified(microkit_channel ch)
+void linux_vmm_main(seL4_CPtr ep, seL4_CPtr ns_ep)
 {
-    (void)ch;
-    microkit_dbg_puts("[linux_vmm] x86_64 stub: unexpected notification\n");
-}
-
-seL4_Bool fault(microkit_child child, microkit_msginfo msginfo,
-                microkit_msginfo *reply_msginfo)
-{
-    (void)child;
-    (void)msginfo;
-    microkit_dbg_puts("[linux_vmm] x86_64 stub: unexpected fault\n");
-    *reply_msginfo = microkit_msginfo_new(0, 0);
-    return seL4_False;
+    (void)ns_ep;
+    linux_vmm_x86_init();
+    /* Passive stub — just spin; root task handles any faults. */
+    seL4_Word badge;
+    while (1) seL4_Wait(ep, &badge);
 }
 
 #endif /* ARCH_X86_64 */
@@ -148,25 +147,13 @@ seL4_Bool fault(microkit_child child, microkit_msginfo msginfo,
  */
 #ifdef LINUX_VMM_NATIVE_STUB
 
-void init(void)
+void linux_vmm_main(seL4_CPtr ep, seL4_CPtr ns_ep)
 {
-    microkit_dbg_puts("[linux_vmm] native AArch64 stub: VMM not yet configured for real hardware.\n");
-    microkit_dbg_puts("[linux_vmm] native stub: Use console_shell to manage VMs via controller.\n");
-}
-
-void notified(microkit_channel ch)
-{
-    (void)ch;
-}
-
-seL4_Bool fault(microkit_child child, microkit_msginfo msginfo,
-                microkit_msginfo *reply_msginfo)
-{
-    (void)child;
-    (void)msginfo;
-    microkit_dbg_puts("[linux_vmm] native stub: unexpected fault\n");
-    *reply_msginfo = microkit_msginfo_new(0, 0);
-    return seL4_False;
+    (void)ns_ep;
+    sel4_dbg_puts("[linux_vmm] native AArch64 stub: VMM not yet configured for real hardware.\n");
+    sel4_dbg_puts("[linux_vmm] native stub: Use console_shell to manage VMs via controller.\n");
+    seL4_Word badge;
+    while (1) seL4_Wait(ep, &badge);
 }
 
 #endif /* LINUX_VMM_NATIVE_STUB */
@@ -182,7 +169,13 @@ seL4_Bool fault(microkit_child child, microkit_msginfo msginfo,
 #include "gpu_shmem.h"
 #include "contracts/linux_vmm_contract.h"
 #include "sel4_boot.h"    /* seL4_IRQHandler_Ack, seL4_CPtr               */
+#include "sel4_ipc.h"     /* sel4_call, sel4_msg_t, data_wr32/rd32        */
+#include "sel4_client.h"  /* sel4_client_t, sel4_client_call              */
 #include "system_desc.h"  /* PD_IRQHANDLER_SLOT_BASE                       */
+
+/* ── Caps resolved at init time ──────────────────────────────────────── */
+static seL4_CPtr g_serial_ep        = 0;
+static seL4_CPtr g_controller_ntfn_cap = 0;
 
 /* ── Per-slot affinity (AArch64) ─────────────────────────────────────── */
 
@@ -326,16 +319,21 @@ static void linux_vmm_binding_init(void)
 
     /* ── Step 2: MSG_SERIAL_OPEN (serial_pd) ─────────────────────────────
      * Open a virtual serial port.  serial_pd owns PL011 exclusively.
+     * TODO: resolve g_serial_ep from nameserver instead of using channel slot.
      */
-    microkit_mr_set(0, MSG_SERIAL_OPEN);
-    microkit_mr_set(1, 0u);  /* port_id 0 — raw, no banner */
-    microkit_ppcall(SERIAL_PD_CH,
-                    microkit_msginfo_new(MSG_SERIAL_OPEN, 2));
-    if (microkit_mr_get(0) == 1u) {
-        serial_client_slot = (uint32_t)microkit_mr_get(1);
-        LOG_VMM("binding: serial slot=%u\n", serial_client_slot);
+    if (g_serial_ep) {
+        sel4_msg_t req = {0}, rep = {0};
+        req.opcode = MSG_SERIAL_OPEN;
+        data_wr32(req.data, 0, 0u);  /* port_id 0 — raw, no banner */
+        if (sel4_call(g_serial_ep, &req, &rep) == 0 &&
+            data_rd32(rep.data, 0) == 1u) {
+            serial_client_slot = data_rd32(rep.data, 4);
+            LOG_VMM("binding: serial slot=%u\n", serial_client_slot);
+        } else {
+            LOG_VMM_ERR("binding: MSG_SERIAL_OPEN failed\n");
+        }
     } else {
-        LOG_VMM_ERR("binding: MSG_SERIAL_OPEN failed\n");
+        LOG_VMM_ERR("binding: serial_ep not resolved (nameserver not ready)\n");
     }
 
     /* ── Step 3: MSG_GUEST_BIND_DEVICE (serial) ──────────────────────────
@@ -458,7 +456,7 @@ void init(void)
     for (uint8_t i = 0; i < VMM_MAX_SLOTS; i++)
         vmm_affinity[i] = 0xFFFFFFFFu;
 
-    LOG_VMM("agentOS linux_vmm starting \"%s\"\n", microkit_name);
+    LOG_VMM("agentOS linux_vmm starting \"linux_vmm\"\n");
     LOG_VMM("  Guest RAM: 0x%lx (%d MB)\n",
             (unsigned long)guest_ram_vaddr, GUEST_RAM_SIZE / (1024 * 1024));
 
@@ -537,7 +535,7 @@ void init(void)
     }
 
     /* Notify controller that VMM is ready */
-    microkit_notify(CONTROLLER_CH);
+    if (g_controller_ntfn_cap) seL4_Signal(g_controller_ntfn_cap);
 }
 
 /* ─── Notification Handler ───────────────────────────────────────────── */
@@ -557,14 +555,15 @@ void init(void)
  * Non-IRQ notifications (controller, GPU shmem) arrive on Microkit IPC
  * channels and are dispatched by channel number in the remaining cases.
  */
-void notified(microkit_channel ch)
+static void linux_vmm_notified(seL4_Word badge)
 {
+    seL4_Word ch = badge;
+    (void)ch;
     /*
-     * IRQ notifications: the channel value carries badge bits when seL4
-     * delivers a badged notification.  Microkit passes the badge as the
-     * channel number for IRQ notifications.  Check badge bits for virtio IRQs.
+     * Badge bits from seL4 notification delivery.  Multiple IRQs may be
+     * coalesced; test each bit independently.
      */
-    if ((microkit_channel)ch & (microkit_channel)VIRTIO_NET_NTFN_BADGE) {
+    if (badge & (seL4_Word)VIRTIO_NET_NTFN_BADGE) {
         bool success = virq_inject(VIRTIO_NET_IRQ);
         if (!success) {
             LOG_VMM_ERR("virtio-net IRQ %d dropped on inject\n", VIRTIO_NET_IRQ);
@@ -572,7 +571,7 @@ void notified(microkit_channel ch)
         /* IRQHandler_Ack is called by virtio_net_ack() registered via virq_register */
     }
 
-    if ((microkit_channel)ch & (microkit_channel)VIRTIO_BLK_NTFN_BADGE) {
+    if (badge & (seL4_Word)VIRTIO_BLK_NTFN_BADGE) {
         bool success = virq_inject(VIRTIO_BLK_IRQ);
         if (!success) {
             LOG_VMM_ERR("virtio-blk IRQ %d dropped on inject\n", VIRTIO_BLK_IRQ);
@@ -580,8 +579,8 @@ void notified(microkit_channel ch)
         /* IRQHandler_Ack is called by virtio_blk_ack() registered via virq_register */
     }
 
-    /* Non-IRQ channel notifications — dispatch by channel number */
-    switch (ch) {
+    /* Non-IRQ channel notifications — dispatch by badge/channel number */
+    switch (badge) {
     case CONTROLLER_CH: {
         /*
          * Controller sent us a notification. This is the agent-to-linux
@@ -642,16 +641,15 @@ void notified(microkit_channel ch)
          */
         if (gpu_shmem_ready) {
             LOG_VMM("GPU shmem: result ready — notifying controller\n");
-            microkit_notify(CONTROLLER_CH);
+            if (g_controller_ntfn_cap) seL4_Signal(g_controller_ntfn_cap);
         }
         break;
     }
 
     default:
         /* Only log if no badge bits were set (i.e. not a virtio IRQ notification) */
-        if (!((microkit_channel)ch & (microkit_channel)(VIRTIO_NET_NTFN_BADGE |
-                                                         VIRTIO_BLK_NTFN_BADGE))) {
-            LOG_VMM("Unexpected notification on channel 0x%lx\n", (unsigned long)ch);
+        if (!(badge & (seL4_Word)(VIRTIO_NET_NTFN_BADGE | VIRTIO_BLK_NTFN_BADGE))) {
+            LOG_VMM("Unexpected notification on badge 0x%lx\n", (unsigned long)badge);
         }
         break;
     }
@@ -679,18 +677,40 @@ void notified(microkit_channel ch)
  *   dropped until the full proxy is wired.  The guest still boots because
  *   early serial writes do not require a response.
  */
-seL4_Bool fault(microkit_child child, microkit_msginfo msginfo,
-                microkit_msginfo *reply_msginfo)
+static seL4_MessageInfo_t linux_vmm_fault(seL4_Word child,
+                                          seL4_MessageInfo_t msginfo)
 {
     bool success = fault_handle(child, msginfo);
-    if (success) {
-        *reply_msginfo = microkit_msginfo_new(0, 0);
-        return seL4_True;
-    }
-
+    (void)success;
     /* UART MMIO fault compliance stub — silently accept, guest continues. */
-    *reply_msginfo = microkit_msginfo_new(0, 0);
-    return seL4_True;
+    return seL4_MessageInfo_new(0, 0, 0, 0);
+}
+
+/* ─── Main loop ─────────────────────────────────────────────────────────── */
+
+void linux_vmm_main(seL4_CPtr ep, seL4_CPtr ns_ep)
+{
+    sel4_client_t client;
+    sel4_client_init(&client, ns_ep);
+
+    g_serial_ep = sel4_client_lookup(&client, "serial_pd");
+    g_controller_ntfn_cap = sel4_client_lookup(&client, "controller");
+
+    /* Run init() — sets up guest images, GIC, virtio IRQs, starts guest */
+    init();
+
+    /* Main dispatch loop — receive notifications and faults */
+    seL4_Word badge;
+    while (1) {
+        seL4_MessageInfo_t info = seL4_Recv(ep, &badge);
+        seL4_Word label = seL4_MessageInfo_get_label(info);
+        if (label == seL4_Fault_NullFault) {
+            linux_vmm_notified(badge);
+        } else {
+            seL4_MessageInfo_t reply = linux_vmm_fault(badge, info);
+            seL4_Reply(reply);
+        }
+    }
 }
 
 #endif /* ARCH_AARCH64 && !LINUX_VMM_NATIVE_STUB */

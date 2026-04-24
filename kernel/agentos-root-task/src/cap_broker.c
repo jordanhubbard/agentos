@@ -15,6 +15,7 @@
 
 #define AGENTOS_DEBUG 1
 #include "agentos.h"
+#include "sel4_server.h"
 #include "contracts/cap_broker_contract.h"
 
 #define MAX_CAPS 256
@@ -115,12 +116,12 @@ bool cap_broker_grant(int handle, uint32_t to_pd, uint64_t boot_seq) {
     audit_seq++;
     
     /* Send audit event to cap_audit_log PD */
-    microkit_mr_set(0, OP_CAP_LOG);
-    microkit_mr_set(1, CAP_EVENT_GRANT);
-    microkit_mr_set(2, to_pd);
-    microkit_mr_set(3, entry->cap.rights);  /* caps mask = rights field */
-    microkit_mr_set(4, (uint32_t)handle);   /* slot_id = handle */
-    microkit_ppcall(CH_CAP_AUDIT_CTRL, microkit_msginfo_new(0, 5));
+    rep_u32(rep, 0, OP_CAP_LOG);
+    rep_u32(rep, 4, CAP_EVENT_GRANT);
+    rep_u32(rep, 8, to_pd);
+    rep_u32(rep, 12, entry->cap.rights);  /* caps mask = rights field */
+    rep_u32(rep, 16, (uint32_t)handle);   /* slot_id = handle */
+    /* E5-S8: ppcall stubbed */
     
     log_drain_write(4, 4, "[cap_broker] Capability granted (audited)\n");
     return true;
@@ -149,12 +150,12 @@ bool cap_broker_revoke(int handle, uint32_t requesting_pd) {
     audit_seq++;
     
     /* Send audit event to cap_audit_log PD */
-    microkit_mr_set(0, OP_CAP_LOG);
-    microkit_mr_set(1, CAP_EVENT_REVOKE);
-    microkit_mr_set(2, requesting_pd);
-    microkit_mr_set(3, entry->cap.rights);
-    microkit_mr_set(4, (uint32_t)handle);
-    microkit_ppcall(CH_CAP_AUDIT_CTRL, microkit_msginfo_new(0, 5));
+    rep_u32(rep, 0, OP_CAP_LOG);
+    rep_u32(rep, 4, CAP_EVENT_REVOKE);
+    rep_u32(rep, 8, requesting_pd);
+    rep_u32(rep, 12, entry->cap.rights);
+    rep_u32(rep, 16, (uint32_t)handle);
+    /* E5-S8: ppcall stubbed */
     
     log_drain_write(4, 4, "[cap_broker] Capability revoked (audited)\n");
     return true;
@@ -190,12 +191,12 @@ void cap_broker_revoke_agent(uint32_t agent_pd, uint32_t reason_flags) {
         audit_seq++;
         revoked = true;
 
-        microkit_mr_set(0, OP_CAP_LOG);
-        microkit_mr_set(1, CAP_EVENT_REVOKE);
-        microkit_mr_set(2, agent_pd);
-        microkit_mr_set(3, cap_table[i].cap.rights);
-        microkit_mr_set(4, (uint32_t)i);
-        microkit_ppcall(CH_CAP_AUDIT_CTRL, microkit_msginfo_new(0, 5));
+        rep_u32(rep, 0, OP_CAP_LOG);
+        rep_u32(rep, 4, CAP_EVENT_REVOKE);
+        rep_u32(rep, 8, agent_pd);
+        rep_u32(rep, 12, cap_table[i].cap.rights);
+        rep_u32(rep, 16, (uint32_t)i);
+        /* E5-S8: ppcall stubbed */
     }
 
     if (revoked) {
@@ -393,13 +394,13 @@ uint32_t cap_broker_attest(uint64_t boot_tick, uint32_t net_active, uint32_t net
 
     /* ── Store to AgentFS ────────────────────────────────────────────────── */
     /* MR0: opcode, MR1: object kind (0xCA=attest), MR2: tick lo32, MR3: len */
-    microkit_mr_set(0, OP_AGENTFS_PUT);
-    microkit_mr_set(1, 0xCAu);
-    microkit_mr_set(2, (uint32_t)(boot_tick & 0xFFFFFFFFu));
-    microkit_mr_set(3, total_len);
-    microkit_ppcall(CH_AGENTFS_CTRL, microkit_msginfo_new(0, 4));
+    rep_u32(rep, 0, OP_AGENTFS_PUT);
+    rep_u32(rep, 4, 0xCAu);
+    rep_u32(rep, 8, (uint32_t)(boot_tick & 0xFFFFFFFFu));
+    rep_u32(rep, 12, total_len);
+    /* E5-S8: ppcall stubbed */
 
-    uint32_t agentfs_result = (uint32_t)microkit_mr_get(0);
+    uint32_t agentfs_result = (uint32_t)msg_u32(req, 0);
     if (agentfs_result == 0) {
         log_drain_write(4, 4, "[cap_broker] Attestation stored in AgentFS\n");
     } else {
@@ -553,12 +554,12 @@ int cap_broker_policy_reload(const uint8_t *blob, uint32_t size,
             audit_seq++;
             revoked++;
 
-            microkit_mr_set(0, OP_CAP_LOG);
-            microkit_mr_set(1, CAP_EVENT_REVOKE);
-            microkit_mr_set(2, grantee);
-            microkit_mr_set(3, cap_table[i].cap.rights);
-            microkit_mr_set(4, (uint32_t)i);
-            microkit_ppcall(CH_CAP_AUDIT_CTRL, microkit_msginfo_new(0, 5));
+            rep_u32(rep, 0, OP_CAP_LOG);
+            rep_u32(rep, 4, CAP_EVENT_REVOKE);
+            rep_u32(rep, 8, grantee);
+            rep_u32(rep, 12, cap_table[i].cap.rights);
+            rep_u32(rep, 16, (uint32_t)i);
+            /* E5-S8: ppcall stubbed */
         }
     }
 
@@ -571,12 +572,12 @@ int cap_broker_policy_reload(const uint8_t *blob, uint32_t size,
      *   caps_mask field ← grants_revoked
      *   slot_id   field ← new policy_version
      */
-    microkit_mr_set(0, OP_CAP_LOG);
-    microkit_mr_set(1, CAP_AUDIT_POLICY_RELOAD);
-    microkit_mr_set(2, checked);
-    microkit_mr_set(3, revoked);
-    microkit_mr_set(4, policy_version);
-    microkit_ppcall(CH_CAP_AUDIT_CTRL, microkit_msginfo_new(0, 5));
+    rep_u32(rep, 0, OP_CAP_LOG);
+    rep_u32(rep, 4, CAP_AUDIT_POLICY_RELOAD);
+    rep_u32(rep, 8, checked);
+    rep_u32(rep, 12, revoked);
+    rep_u32(rep, 16, policy_version);
+    /* E5-S8: ppcall stubbed */
 
     log_drain_write(4, 4, "[cap_broker] policy_reload: complete\n");
 
@@ -613,7 +614,7 @@ void cap_broker_status(uint32_t *out_cap_count, uint32_t *out_policy_version,
  * The caller must have written the policy blob to cap_policy_shmem_vaddr
  * before issuing the PPC.
  *
- * Returns microkit_msginfo with:
+ * Returns uint32_t with:
  *   MR0 = 0  (success)
  *         1  (bad size)
  *         2  (blob parse error — old policy unchanged)
@@ -625,24 +626,26 @@ void cap_broker_status(uint32_t *out_cap_count, uint32_t *out_policy_version,
  */
 extern uintptr_t cap_policy_shmem_vaddr;  /* seL4cp setvar — wired in monitor.c */
 
-microkit_msginfo cap_broker_handle_policy_reload_ppc(void)
+uint32_t cap_broker_handle_policy_reload_ppc(void)
 {
-    uint32_t size = (uint32_t)microkit_mr_get(1);
+    uint32_t size = (uint32_t)msg_u32(req, 4);
     if (size == 0 || size > CAP_POLICY_BLOB_MAX) {
-        microkit_mr_set(0, 1u);  /* bad size */
-        microkit_mr_set(1, 0u);
-        microkit_mr_set(2, 0u);
-        microkit_mr_set(3, policy_version);
-        return microkit_msginfo_new(0, 4);
+        rep_u32(rep, 0, 1u);  /* bad size */
+        rep_u32(rep, 4, 0u);
+        rep_u32(rep, 8, 0u);
+        rep_u32(rep, 12, policy_version);
+        rep->length = 16;
+        return SEL4_ERR_OK;
     }
 
     const uint8_t *blob = (const uint8_t *)cap_policy_shmem_vaddr;
     uint32_t checked = 0u, revoked = 0u;
     int rc = cap_broker_policy_reload(blob, size, &checked, &revoked);
 
-    microkit_mr_set(0, rc == 0 ? 0u : 2u);
-    microkit_mr_set(1, checked);
-    microkit_mr_set(2, revoked);
-    microkit_mr_set(3, policy_version);
-    return microkit_msginfo_new(0, 4);
+    rep_u32(rep, 0, rc == 0 ? 0u : 2u);
+    rep_u32(rep, 4, checked);
+    rep_u32(rep, 8, revoked);
+    rep_u32(rep, 12, policy_version);
+    rep->length = 16;
+        return SEL4_ERR_OK;
 }

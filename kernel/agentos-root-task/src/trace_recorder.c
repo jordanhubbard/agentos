@@ -24,6 +24,7 @@
 
 #define AGENTOS_DEBUG 1
 #include "agentos.h"
+#include "sel4_server.h"
 #include "contracts/trace_recorder_contract.h"
 
 /* ── Channel IDs (trace_recorder's local view) ───────────────────────────── */
@@ -103,7 +104,7 @@ static uint32_t buf_read_ordered(TraceEntry *dst, uint32_t max_out)
 
 /* ── Microkit entry points ───────────────────────────────────────────────── */
 
-void init(void)
+static void trace_recorder_pd_init(void)
 {
     buf_head      = 0;
     buf_count     = 0;
@@ -112,21 +113,21 @@ void init(void)
     recording     = true;   /* begin recording immediately */
     overflow_count = 0;
 
-    microkit_dbg_puts("[trace_recorder] init: 512-entry ring, output region ");
-    microkit_dbg_puts(trace_out_vaddr ? "mapped\n" : "NOT MAPPED\n");
+    sel4_dbg_puts("[trace_recorder] init: 512-entry ring, output region ");
+    sel4_dbg_puts(trace_out_vaddr ? "mapped\n" : "NOT MAPPED\n");
 }
 
 /*
  * notified() — one notify per inter-PD dispatch from controller.
  * MR0 = (from_pd << 24) | (to_pd << 16) | label[15:0]
  */
-void notified(microkit_channel ch)
+static void trace_recorder_pd_notified(uint32_t ch)
 {
     /* Advance approximate timestamp regardless of recording state */
     tick_ns += 1000u;   /* 1 µs per notify tick (rough approximation) */
 
     if (ch == CH_CTRL_NOTIFY && recording) {
-        uint32_t word    = (uint32_t)microkit_mr_get(0);
+        uint32_t word    = (uint32_t)msg_u32(req, 0);
         uint8_t  from_pd = (uint8_t)((word >> 24) & 0xFFu);
         uint8_t  to_pd   = (uint8_t)((word >> 16) & 0xFFu);
         uint16_t label   = (uint16_t)(word & 0xFFFFu);
@@ -139,11 +140,10 @@ void notified(microkit_channel ch)
 /*
  * protected() — handles START/STOP/QUERY/DUMP from controller.
  */
-microkit_msginfo protected(microkit_channel ch, microkit_msginfo msg)
+static uint32_t trace_recorder_pd_dispatch(sel4_badge_t b, const sel4_msg_t *req, sel4_msg_t *rep, void *ctx)
 {
-    (void)ch;
-    (void)msg;
-    uint32_t op = (uint32_t)microkit_mr_get(0);
+    (void)b; (void)ctx;
+    uint32_t op = (uint32_t)msg_u32(req, 0);
 
     switch (op) {
 
@@ -154,17 +154,19 @@ microkit_msginfo protected(microkit_channel ch, microkit_msginfo msg)
         seq           = 0;
         overflow_count = 0;
         recording     = true;
-        microkit_dbg_puts("[trace_recorder] START: buffer reset, recording on\n");
-        microkit_mr_set(0, 0u);
-        return microkit_msginfo_new(0, 1);
+        sel4_dbg_puts("[trace_recorder] START: buffer reset, recording on\n");
+        rep_u32(rep, 0, 0u);
+        rep->length = 4;
+        return SEL4_ERR_OK;
 
     /* ── OP_TRACE_STOP: stop recording; buffer contents preserved ───────── */
     case OP_TRACE_STOP:
         recording = false;
-        microkit_dbg_puts("[trace_recorder] STOP: recording paused\n");
-        microkit_mr_set(0, 0u);
-        microkit_mr_set(1, (uint32_t)(seq & 0xFFFFFFFFu));  /* total events seen */
-        return microkit_msginfo_new(0, 2);
+        sel4_dbg_puts("[trace_recorder] STOP: recording paused\n");
+        rep_u32(rep, 0, 0u);
+        rep_u32(rep, 4, (uint32_t)(seq & 0xFFFFFFFFu));  /* total events seen */
+        rep->length = 8;
+        return SEL4_ERR_OK;
 
     /* ── OP_TRACE_QUERY: return live buffer statistics ───────────────────── */
     case OP_TRACE_QUERY:
@@ -175,20 +177,22 @@ microkit_msginfo protected(microkit_channel ch, microkit_msginfo msg)
          * MR3 = overflow_count (events dropped due to buffer full)
          * MR4 = recording state (1 = on, 0 = off)
          */
-        microkit_mr_set(0, 0u);
-        microkit_mr_set(1, buf_count);
-        microkit_mr_set(2, buf_count * (uint32_t)sizeof(TraceEntry));
-        microkit_mr_set(3, overflow_count);
-        microkit_mr_set(4, recording ? 1u : 0u);
-        return microkit_msginfo_new(0, 5);
+        rep_u32(rep, 0, 0u);
+        rep_u32(rep, 4, buf_count);
+        rep_u32(rep, 8, buf_count * (uint32_t)sizeof(TraceEntry));
+        rep_u32(rep, 12, overflow_count);
+        rep_u32(rep, 16, recording ? 1u : 0u);
+        rep->length = 20;
+        return SEL4_ERR_OK;
 
     /* ── OP_TRACE_DUMP: serialise buffer to trace_out shmem region ───────── */
     case OP_TRACE_DUMP: {
         if (!trace_out_vaddr) {
             /* Output region not mapped — return error */
-            microkit_mr_set(0, 0xFFu);
-            microkit_mr_set(1, 0u);
-            return microkit_msginfo_new(0, 2);
+            rep_u32(rep, 0, 0xFFu);
+            rep_u32(rep, 4, 0u);
+            rep->length = 8;
+        return SEL4_ERR_OK;
         }
 
         /* How many entries fit in the output region? */
@@ -204,15 +208,17 @@ microkit_msginfo protected(microkit_channel ch, microkit_msginfo msg)
          * MR2 = number of entries written
          * MR3 = overflow_count (informational: entries dropped since last start)
          */
-        microkit_mr_set(0, 0u);
-        microkit_mr_set(1, bytes);
-        microkit_mr_set(2, n);
-        microkit_mr_set(3, overflow_count);
-        return microkit_msginfo_new(0, 4);
+        rep_u32(rep, 0, 0u);
+        rep_u32(rep, 4, bytes);
+        rep_u32(rep, 8, n);
+        rep_u32(rep, 12, overflow_count);
+        rep->length = 16;
+        return SEL4_ERR_OK;
     }
 
     default:
-        microkit_mr_set(0, 0xFFu);
-        return microkit_msginfo_new(0, 1);
+        rep_u32(rep, 0, 0xFFu);
+        rep->length = 4;
+        return SEL4_ERR_OK;
     }
 }

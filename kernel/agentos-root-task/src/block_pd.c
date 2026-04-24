@@ -17,7 +17,7 @@
  *     block_pd copies data to/from this region when forwarding I/O.
  *
  * Per-guest isolation:
- *   Handles are bound to the microkit_channel that opened them.
+ *   Handles are bound to the uint32_t that opened them.
  *   A guest PD cannot read, write, flush, or close another guest's handle.
  *
  * Partition support (MVP):
@@ -27,6 +27,7 @@
 
 #define AGENTOS_DEBUG 1
 #include "agentos.h"
+#include "sel4_server.h"
 #include "virtio_blk.h"
 #include "contracts/block_contract.h"
 #include "arch_barrier.h"
@@ -44,7 +45,7 @@ uintptr_t block_shmem_vaddr;
 uintptr_t blk_dma_shmem_vaddr;
 
 /* Declared for log_drain_write(); left unmapped so log calls fall back to
- * microkit_dbg_puts (no log_drain channel required). */
+ * sel4_dbg_puts(no log_drain channel required). */
 uintptr_t log_drain_rings_vaddr;
 
 /* ── DMA layout mirrors virtio_blk.c ────────────────────────────────────── */
@@ -57,7 +58,7 @@ uintptr_t log_drain_rings_vaddr;
 
 typedef struct {
     bool             active;
-    microkit_channel owner;        /* channel that issued MSG_BLOCK_OPEN */
+    uint32_t owner;        /* channel that issued MSG_BLOCK_OPEN */
     uint32_t         dev_id;
     uint32_t         partition;
     uint32_t         flags;        /* BLOCK_OPEN_FLAG_* */
@@ -80,7 +81,7 @@ static int alloc_handle(void)
 }
 
 /* Validate handle index and ownership.  Returns true if ok. */
-static bool validate_handle(uint32_t h, microkit_channel ch)
+static bool validate_handle(uint32_t h, uint32_t ch)
 {
     if (h == 0 || h > (uint32_t)BLOCK_MAX_CLIENTS)
         return false;
@@ -95,15 +96,15 @@ static bool validate_handle(uint32_t h, microkit_channel ch)
 /* Call OP_BLK_INFO on virtio_blk.  Returns true on success. */
 static bool vblk_info(uint64_t *out_capacity, uint32_t *out_block_size)
 {
-    microkit_msginfo reply =
-        microkit_ppcall(BPD_CH_VBLK, microkit_msginfo_new(OP_BLK_INFO, 0));
-    uint32_t rc = (uint32_t)microkit_mr_get(0);
+    uint32_t reply =
+        /* E5-S8: ppcall stubbed */
+    uint32_t rc = (uint32_t)msg_u32(req, 0);
     if (rc != BLK_OK)
         return false;
-    uint32_t cap_lo    = (uint32_t)microkit_mr_get(1);
-    uint32_t cap_hi    = (uint32_t)microkit_mr_get(2);
+    uint32_t cap_lo    = (uint32_t)msg_u32(req, 4);
+    uint32_t cap_hi    = (uint32_t)msg_u32(req, 8);
     *out_capacity      = ((uint64_t)cap_hi << 32) | (uint64_t)cap_lo;
-    *out_block_size    = (uint32_t)microkit_mr_get(3);
+    *out_block_size    = (uint32_t)msg_u32(req, 12);
     (void)reply;
     return true;
 }
@@ -120,41 +121,45 @@ static void bpd_memcpy(volatile uint8_t *dst, volatile uint8_t *src, uint32_t n)
  * MR1=dev_id, MR2=partition, MR3=flags
  * Reply: MR0=ok (0=BLOCK_OK), MR1=handle
  */
-static microkit_msginfo handle_open(microkit_channel ch, microkit_msginfo msg)
+static uint32_t handle_open(uint32_t ch, uint32_t msg)
 {
     (void)msg;
-    uint32_t dev_id    = (uint32_t)microkit_mr_get(1);
-    uint32_t partition = (uint32_t)microkit_mr_get(2);
-    uint32_t flags     = (uint32_t)microkit_mr_get(3);
+    uint32_t dev_id    = (uint32_t)msg_u32(req, 4);
+    uint32_t partition = (uint32_t)msg_u32(req, 8);
+    uint32_t flags     = (uint32_t)msg_u32(req, 12);
 
     /* Only device 0 is supported in this release */
     if (dev_id != 0) {
-        microkit_mr_set(0, BLOCK_ERR_BAD_DEV);
-        microkit_mr_set(1, 0);
-        return microkit_msginfo_new(0, 2);
+        rep_u32(rep, 0, BLOCK_ERR_BAD_DEV);
+        rep_u32(rep, 4, 0);
+        rep->length = 8;
+        return SEL4_ERR_OK;
     }
 
     /* Only whole-device partition (0) in this MVP */
     if (partition != 0) {
-        microkit_mr_set(0, BLOCK_ERR_BAD_PART);
-        microkit_mr_set(1, 0);
-        return microkit_msginfo_new(0, 2);
+        rep_u32(rep, 0, BLOCK_ERR_BAD_PART);
+        rep_u32(rep, 4, 0);
+        rep->length = 8;
+        return SEL4_ERR_OK;
     }
 
     /* Query device geometry */
     uint64_t capacity   = 0;
     uint32_t block_size = BPD_SECTOR_SIZE;
     if (!vblk_info(&capacity, &block_size)) {
-        microkit_mr_set(0, BLOCK_ERR_BAD_DEV);
-        microkit_mr_set(1, 0);
-        return microkit_msginfo_new(0, 2);
+        rep_u32(rep, 0, BLOCK_ERR_BAD_DEV);
+        rep_u32(rep, 4, 0);
+        rep->length = 8;
+        return SEL4_ERR_OK;
     }
 
     int idx = alloc_handle();
     if (idx < 0) {
-        microkit_mr_set(0, BLOCK_ERR_NO_SLOTS);
-        microkit_mr_set(1, 0);
-        return microkit_msginfo_new(0, 2);
+        rep_u32(rep, 0, BLOCK_ERR_NO_SLOTS);
+        rep_u32(rep, 4, 0);
+        rep->length = 8;
+        return SEL4_ERR_OK;
     }
 
     handles[idx].active       = true;
@@ -166,9 +171,10 @@ static microkit_msginfo handle_open(microkit_channel ch, microkit_msginfo msg)
     handles[idx].sector_count = capacity;
     handles[idx].block_size   = block_size;
 
-    microkit_mr_set(0, BLOCK_OK);
-    microkit_mr_set(1, (uint32_t)(idx + 1));  /* handle = idx + 1 */
-    return microkit_msginfo_new(0, 2);
+    rep_u32(rep, 0, BLOCK_OK);
+    rep_u32(rep, 4, (uint32_t)(idx + 1));  /* handle = idx + 1 */
+    rep->length = 8;
+        return SEL4_ERR_OK;
 }
 
 /* ── MSG_BLOCK_CLOSE ─────────────────────────────────────────────────────── */
@@ -176,21 +182,23 @@ static microkit_msginfo handle_open(microkit_channel ch, microkit_msginfo msg)
  * MR1=handle
  * Reply: MR0=ok
  */
-static microkit_msginfo handle_close(microkit_channel ch, microkit_msginfo msg)
+static uint32_t handle_close(uint32_t ch, uint32_t msg)
 {
     (void)msg;
-    uint32_t h = (uint32_t)microkit_mr_get(1);
+    uint32_t h = (uint32_t)msg_u32(req, 4);
 
     if (!validate_handle(h, ch)) {
-        microkit_mr_set(0, BLOCK_ERR_BAD_HANDLE);
-        return microkit_msginfo_new(0, 1);
+        rep_u32(rep, 0, BLOCK_ERR_BAD_HANDLE);
+        rep->length = 4;
+        return SEL4_ERR_OK;
     }
 
     int idx = (int)h - 1;
     handles[idx].active = false;
 
-    microkit_mr_set(0, BLOCK_OK);
-    return microkit_msginfo_new(0, 1);
+    rep_u32(rep, 0, BLOCK_OK);
+    rep->length = 4;
+        return SEL4_ERR_OK;
 }
 
 /* ── MSG_BLOCK_READ ──────────────────────────────────────────────────────── */
@@ -199,40 +207,44 @@ static microkit_msginfo handle_close(microkit_channel ch, microkit_msginfo msg)
  * Data written to block_shmem on success.
  * Reply: MR0=ok, MR1=sectors_read
  */
-static microkit_msginfo handle_read(microkit_channel ch, microkit_msginfo msg)
+static uint32_t handle_read(uint32_t ch, uint32_t msg)
 {
     (void)msg;
-    uint32_t h       = (uint32_t)microkit_mr_get(1);
-    uint32_t lba_lo  = (uint32_t)microkit_mr_get(2);
-    uint32_t sectors = (uint32_t)microkit_mr_get(3);
+    uint32_t h       = (uint32_t)msg_u32(req, 4);
+    uint32_t lba_lo  = (uint32_t)msg_u32(req, 8);
+    uint32_t sectors = (uint32_t)msg_u32(req, 12);
 
     if (!validate_handle(h, ch)) {
-        microkit_mr_set(0, BLOCK_ERR_BAD_HANDLE);
-        microkit_mr_set(1, 0);
-        return microkit_msginfo_new(0, 2);
+        rep_u32(rep, 0, BLOCK_ERR_BAD_HANDLE);
+        rep_u32(rep, 4, 0);
+        rep->length = 8;
+        return SEL4_ERR_OK;
     }
 
     int idx = (int)h - 1;
 
     if (sectors == 0) {
-        microkit_mr_set(0, BLOCK_OK);
-        microkit_mr_set(1, 0);
-        return microkit_msginfo_new(0, 2);
+        rep_u32(rep, 0, BLOCK_OK);
+        rep_u32(rep, 4, 0);
+        rep->length = 8;
+        return SEL4_ERR_OK;
     }
 
     if (sectors > BLOCK_MAX_SECTORS) {
-        microkit_mr_set(0, BLOCK_ERR_IO);
-        microkit_mr_set(1, 0);
-        return microkit_msginfo_new(0, 2);
+        rep_u32(rep, 0, BLOCK_ERR_IO);
+        rep_u32(rep, 4, 0);
+        rep->length = 8;
+        return SEL4_ERR_OK;
     }
 
     uint64_t abs_lba      = handles[idx].lba_base + (uint64_t)lba_lo;
     uint64_t sector_count = handles[idx].sector_count;
 
     if (sector_count > 0 && (abs_lba + sectors) > sector_count) {
-        microkit_mr_set(0, BLOCK_ERR_OOB);
-        microkit_mr_set(1, 0);
-        return microkit_msginfo_new(0, 2);
+        rep_u32(rep, 0, BLOCK_ERR_OOB);
+        rep_u32(rep, 4, 0);
+        rep->length = 8;
+        return SEL4_ERR_OK;
     }
 
     /* Issue in chunks of BPD_DMA_MAX_SECTORS if the request is large */
@@ -249,22 +261,23 @@ static microkit_msginfo handle_read(microkit_channel ch, microkit_msginfo msg)
         uint32_t lba_lo32  = (uint32_t)(cur_lba & 0xFFFFFFFFu);
         uint32_t lba_hi32  = (uint32_t)(cur_lba >> 32);
 
-        microkit_mr_set(1, lba_lo32);
-        microkit_mr_set(2, lba_hi32);
-        microkit_mr_set(3, batch);
-        microkit_msginfo reply =
-            microkit_ppcall(BPD_CH_VBLK, microkit_msginfo_new(OP_BLK_READ, 3));
-        uint32_t rc = (uint32_t)microkit_mr_get(0);
+        rep_u32(rep, 4, lba_lo32);
+        rep_u32(rep, 8, lba_hi32);
+        rep_u32(rep, 12, batch);
+        uint32_t reply =
+            /* E5-S8: ppcall stubbed */
+        uint32_t rc = (uint32_t)msg_u32(req, 0);
         (void)reply;
 
         if (rc != BLK_OK) {
             if (rc == BLK_ERR_OOB) {
-                microkit_mr_set(0, BLOCK_ERR_OOB);
+                rep_u32(rep, 0, BLOCK_ERR_OOB);
             } else {
-                microkit_mr_set(0, BLOCK_ERR_IO);
+                rep_u32(rep, 0, BLOCK_ERR_IO);
             }
-            microkit_mr_set(1, done);
-            return microkit_msginfo_new(0, 2);
+            rep_u32(rep, 4, done);
+            rep->length = 8;
+        return SEL4_ERR_OK;
         }
 
         /* Copy from DMA shmem to block_shmem */
@@ -277,9 +290,10 @@ static microkit_msginfo handle_read(microkit_channel ch, microkit_msginfo msg)
         done += batch;
     }
 
-    microkit_mr_set(0, BLOCK_OK);
-    microkit_mr_set(1, sectors);
-    return microkit_msginfo_new(0, 2);
+    rep_u32(rep, 0, BLOCK_OK);
+    rep_u32(rep, 4, sectors);
+    rep->length = 8;
+        return SEL4_ERR_OK;
 }
 
 /* ── MSG_BLOCK_WRITE ─────────────────────────────────────────────────────── */
@@ -288,46 +302,51 @@ static microkit_msginfo handle_read(microkit_channel ch, microkit_msginfo msg)
  * Data sourced from block_shmem.
  * Reply: MR0=ok, MR1=sectors_written
  */
-static microkit_msginfo handle_write(microkit_channel ch, microkit_msginfo msg)
+static uint32_t handle_write(uint32_t ch, uint32_t msg)
 {
     (void)msg;
-    uint32_t h       = (uint32_t)microkit_mr_get(1);
-    uint32_t lba_lo  = (uint32_t)microkit_mr_get(2);
-    uint32_t sectors = (uint32_t)microkit_mr_get(3);
+    uint32_t h       = (uint32_t)msg_u32(req, 4);
+    uint32_t lba_lo  = (uint32_t)msg_u32(req, 8);
+    uint32_t sectors = (uint32_t)msg_u32(req, 12);
 
     if (!validate_handle(h, ch)) {
-        microkit_mr_set(0, BLOCK_ERR_BAD_HANDLE);
-        microkit_mr_set(1, 0);
-        return microkit_msginfo_new(0, 2);
+        rep_u32(rep, 0, BLOCK_ERR_BAD_HANDLE);
+        rep_u32(rep, 4, 0);
+        rep->length = 8;
+        return SEL4_ERR_OK;
     }
 
     int idx = (int)h - 1;
 
     if (handles[idx].flags & BLOCK_OPEN_FLAG_RDONLY) {
-        microkit_mr_set(0, BLOCK_ERR_READONLY);
-        microkit_mr_set(1, 0);
-        return microkit_msginfo_new(0, 2);
+        rep_u32(rep, 0, BLOCK_ERR_READONLY);
+        rep_u32(rep, 4, 0);
+        rep->length = 8;
+        return SEL4_ERR_OK;
     }
 
     if (sectors == 0) {
-        microkit_mr_set(0, BLOCK_OK);
-        microkit_mr_set(1, 0);
-        return microkit_msginfo_new(0, 2);
+        rep_u32(rep, 0, BLOCK_OK);
+        rep_u32(rep, 4, 0);
+        rep->length = 8;
+        return SEL4_ERR_OK;
     }
 
     if (sectors > BLOCK_MAX_SECTORS) {
-        microkit_mr_set(0, BLOCK_ERR_IO);
-        microkit_mr_set(1, 0);
-        return microkit_msginfo_new(0, 2);
+        rep_u32(rep, 0, BLOCK_ERR_IO);
+        rep_u32(rep, 4, 0);
+        rep->length = 8;
+        return SEL4_ERR_OK;
     }
 
     uint64_t abs_lba      = handles[idx].lba_base + (uint64_t)lba_lo;
     uint64_t sector_count = handles[idx].sector_count;
 
     if (sector_count > 0 && (abs_lba + sectors) > sector_count) {
-        microkit_mr_set(0, BLOCK_ERR_OOB);
-        microkit_mr_set(1, 0);
-        return microkit_msginfo_new(0, 2);
+        rep_u32(rep, 0, BLOCK_ERR_OOB);
+        rep_u32(rep, 4, 0);
+        rep->length = 8;
+        return SEL4_ERR_OK;
     }
 
     volatile uint8_t *shmem = (volatile uint8_t *)block_shmem_vaddr;
@@ -351,30 +370,32 @@ static microkit_msginfo handle_write(microkit_channel ch, microkit_msginfo msg)
         uint32_t lba_lo32 = (uint32_t)(cur_lba & 0xFFFFFFFFu);
         uint32_t lba_hi32 = (uint32_t)(cur_lba >> 32);
 
-        microkit_mr_set(1, lba_lo32);
-        microkit_mr_set(2, lba_hi32);
-        microkit_mr_set(3, batch);
-        microkit_msginfo reply =
-            microkit_ppcall(BPD_CH_VBLK, microkit_msginfo_new(OP_BLK_WRITE, 3));
-        uint32_t rc = (uint32_t)microkit_mr_get(0);
+        rep_u32(rep, 4, lba_lo32);
+        rep_u32(rep, 8, lba_hi32);
+        rep_u32(rep, 12, batch);
+        uint32_t reply =
+            /* E5-S8: ppcall stubbed */
+        uint32_t rc = (uint32_t)msg_u32(req, 0);
         (void)reply;
 
         if (rc != BLK_OK) {
             if (rc == BLK_ERR_OOB) {
-                microkit_mr_set(0, BLOCK_ERR_OOB);
+                rep_u32(rep, 0, BLOCK_ERR_OOB);
             } else {
-                microkit_mr_set(0, BLOCK_ERR_IO);
+                rep_u32(rep, 0, BLOCK_ERR_IO);
             }
-            microkit_mr_set(1, done);
-            return microkit_msginfo_new(0, 2);
+            rep_u32(rep, 4, done);
+            rep->length = 8;
+        return SEL4_ERR_OK;
         }
 
         done += batch;
     }
 
-    microkit_mr_set(0, BLOCK_OK);
-    microkit_mr_set(1, sectors);
-    return microkit_msginfo_new(0, 2);
+    rep_u32(rep, 0, BLOCK_OK);
+    rep_u32(rep, 4, sectors);
+    rep->length = 8;
+        return SEL4_ERR_OK;
 }
 
 /* ── MSG_BLOCK_FLUSH ─────────────────────────────────────────────────────── */
@@ -382,23 +403,25 @@ static microkit_msginfo handle_write(microkit_channel ch, microkit_msginfo msg)
  * MR1=handle
  * Reply: MR0=ok
  */
-static microkit_msginfo handle_flush(microkit_channel ch, microkit_msginfo msg)
+static uint32_t handle_flush(uint32_t ch, uint32_t msg)
 {
     (void)msg;
-    uint32_t h = (uint32_t)microkit_mr_get(1);
+    uint32_t h = (uint32_t)msg_u32(req, 4);
 
     if (!validate_handle(h, ch)) {
-        microkit_mr_set(0, BLOCK_ERR_BAD_HANDLE);
-        return microkit_msginfo_new(0, 1);
+        rep_u32(rep, 0, BLOCK_ERR_BAD_HANDLE);
+        rep->length = 4;
+        return SEL4_ERR_OK;
     }
 
-    microkit_msginfo reply =
-        microkit_ppcall(BPD_CH_VBLK, microkit_msginfo_new(OP_BLK_FLUSH, 0));
-    uint32_t rc = (uint32_t)microkit_mr_get(0);
+    uint32_t reply =
+        /* E5-S8: ppcall stubbed */
+    uint32_t rc = (uint32_t)msg_u32(req, 0);
     (void)reply;
 
-    microkit_mr_set(0, (rc == BLK_OK) ? BLOCK_OK : BLOCK_ERR_IO);
-    return microkit_msginfo_new(0, 1);
+    rep_u32(rep, 0, (rc == BLK_OK) ? BLOCK_OK : BLOCK_ERR_IO);
+    rep->length = 4;
+        return SEL4_ERR_OK;
 }
 
 /* ── MSG_BLOCK_STATUS ────────────────────────────────────────────────────── */
@@ -407,14 +430,15 @@ static microkit_msginfo handle_flush(microkit_channel ch, microkit_msginfo msg)
  * Reply: MR0=ok, MR1=sector_count_lo, MR2=sector_count_hi,
  *        MR3=sector_size, MR4=flags
  */
-static microkit_msginfo handle_status(microkit_channel ch, microkit_msginfo msg)
+static uint32_t handle_status(uint32_t ch, uint32_t msg)
 {
     (void)msg;
-    uint32_t h = (uint32_t)microkit_mr_get(1);
+    uint32_t h = (uint32_t)msg_u32(req, 4);
 
     if (!validate_handle(h, ch)) {
-        microkit_mr_set(0, BLOCK_ERR_BAD_HANDLE);
-        return microkit_msginfo_new(0, 1);
+        rep_u32(rep, 0, BLOCK_ERR_BAD_HANDLE);
+        rep->length = 4;
+        return SEL4_ERR_OK;
     }
 
     int idx = (int)h - 1;
@@ -423,12 +447,13 @@ static microkit_msginfo handle_status(microkit_channel ch, microkit_msginfo msg)
     if (handles[idx].flags & BLOCK_OPEN_FLAG_RDONLY)
         status_flags |= BLOCK_STATUS_FLAG_READONLY;
 
-    microkit_mr_set(0, BLOCK_OK);
-    microkit_mr_set(1, (uint32_t)(handles[idx].sector_count & 0xFFFFFFFFu));
-    microkit_mr_set(2, (uint32_t)(handles[idx].sector_count >> 32));
-    microkit_mr_set(3, handles[idx].block_size);
-    microkit_mr_set(4, status_flags);
-    return microkit_msginfo_new(0, 5);
+    rep_u32(rep, 0, BLOCK_OK);
+    rep_u32(rep, 4, (uint32_t)(handles[idx].sector_count & 0xFFFFFFFFu));
+    rep_u32(rep, 8, (uint32_t)(handles[idx].sector_count >> 32));
+    rep_u32(rep, 12, handles[idx].block_size);
+    rep_u32(rep, 16, status_flags);
+    rep->length = 20;
+        return SEL4_ERR_OK;
 }
 
 /* ── MSG_BLOCK_TRIM ──────────────────────────────────────────────────────── */
@@ -437,23 +462,25 @@ static microkit_msginfo handle_status(microkit_channel ch, microkit_msginfo msg)
  * MR1=handle, MR2=lba_lo, MR3=sectors
  * Reply: MR0=ok
  */
-static microkit_msginfo handle_trim(microkit_channel ch, microkit_msginfo msg)
+static uint32_t handle_trim(uint32_t ch, uint32_t msg)
 {
     (void)msg;
-    uint32_t h = (uint32_t)microkit_mr_get(1);
+    uint32_t h = (uint32_t)msg_u32(req, 4);
 
     if (!validate_handle(h, ch)) {
-        microkit_mr_set(0, BLOCK_ERR_BAD_HANDLE);
-        return microkit_msginfo_new(0, 1);
+        rep_u32(rep, 0, BLOCK_ERR_BAD_HANDLE);
+        rep->length = 4;
+        return SEL4_ERR_OK;
     }
 
-    microkit_mr_set(0, BLOCK_OK);
-    return microkit_msginfo_new(0, 1);
+    rep_u32(rep, 0, BLOCK_OK);
+    rep->length = 4;
+        return SEL4_ERR_OK;
 }
 
 /* ── Microkit entry points ───────────────────────────────────────────────── */
 
-void init(void)
+static void block_pd_pd_init(void)
 {
     agentos_log_boot("block_pd");
 
@@ -464,33 +491,48 @@ void init(void)
                             "8 handle slots, virtio transport on ch1\n");
 }
 
-void notified(microkit_channel ch)
+static void block_pd_pd_notified(uint32_t ch)
 {
     agentos_log_channel("block_pd", ch);
 }
 
-microkit_msginfo protected(microkit_channel ch, microkit_msginfo msginfo)
+static uint32_t block_pd_h_dispatch(sel4_badge_t b, const sel4_msg_t *req, sel4_msg_t *rep, void *ctx)
 {
-    uint64_t op = microkit_msginfo_get_label(msginfo);
+    (void)ctx;
+    uint32_t ch = (uint32_t)b;  /* badge encodes caller channel/identity */
+    uint64_t op = msg_u32(req, 0);
 
     switch (op) {
     case MSG_BLOCK_OPEN:
-        return handle_open(ch, msginfo);
+        return handle_open(ch, 0);
     case MSG_BLOCK_CLOSE:
-        return handle_close(ch, msginfo);
+        return handle_close(ch, 0);
     case MSG_BLOCK_READ:
-        return handle_read(ch, msginfo);
+        return handle_read(ch, 0);
     case MSG_BLOCK_WRITE:
-        return handle_write(ch, msginfo);
+        return handle_write(ch, 0);
     case MSG_BLOCK_FLUSH:
-        return handle_flush(ch, msginfo);
+        return handle_flush(ch, 0);
     case MSG_BLOCK_STATUS:
-        return handle_status(ch, msginfo);
+        return handle_status(ch, 0);
     case MSG_BLOCK_TRIM:
-        return handle_trim(ch, msginfo);
+        return handle_trim(ch, 0);
     default:
         log_drain_write(18, 18, "[block_pd] WARNING: unknown opcode\n");
-        microkit_mr_set(0, BLOCK_ERR_IO);
-        return microkit_msginfo_new(0xFFFF, 1);
+        rep_u32(rep, 0, BLOCK_ERR_IO);
+        rep->length = 4;
+        return SEL4_ERR_OK;
     }
+}
+
+/* ── E5-S8: Entry point ─────────────────────────────────────────────────── */
+void block_pd_main(seL4_CPtr my_ep, seL4_CPtr ns_ep)
+{
+    (void)ns_ep;
+    block_pd_pd_init();
+    static sel4_server_t srv;
+    sel4_server_init(&srv, my_ep);
+    /* Dispatch all opcodes through the generic handler */
+    sel4_server_register(&srv, SEL4_SERVER_OPCODE_ANY, block_pd_h_dispatch, (void *)0);
+    sel4_server_run(&srv);
 }

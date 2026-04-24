@@ -24,6 +24,7 @@
 
 #define AGENTOS_DEBUG 1
 #include "agentos.h"
+#include "sel4_server.h"
 #include "virtio_blk.h"
 #include <stdbool.h>
 #include <stdint.h>
@@ -161,7 +162,7 @@ static uint32_t ext2_u32toa(uint32_t v, char *buf)
 /* Simple debug log: writes literal string via microkit_dbg_puts */
 static void ext2_log(const char *msg)
 {
-    microkit_dbg_puts(msg);
+    sel4_dbg_puts(msg);
 }
 
 /* ── Block I/O via virtio_blk ────────────────────────────────────────────── */
@@ -178,14 +179,13 @@ static int raw_blk_read(uint32_t block_num)
     if (sectors_per_block == 0) sectors_per_block = 2; /* 1024-byte default */
     uint64_t first_sector = (uint64_t)block_num * sectors_per_block;
 
-    microkit_mr_set(0, OP_BLK_READ);
-    microkit_mr_set(1, (uint32_t)(first_sector & 0xFFFFFFFFu));
-    microkit_mr_set(2, (uint32_t)(first_sector >> 32));
-    microkit_mr_set(3, sectors_per_block);
+    rep_u32(rep, 0, OP_BLK_READ);
+    rep_u32(rep, 4, (uint32_t)(first_sector & 0xFFFFFFFFu));
+    rep_u32(rep, 8, (uint32_t)(first_sector >> 32));
+    rep_u32(rep, 12, sectors_per_block);
 
-    microkit_msginfo reply = microkit_ppcall(EXT2_CH_VIRTIO_BLK,
-                                             microkit_msginfo_new(OP_BLK_READ, 4));
-    uint32_t rc = (uint32_t)microkit_msginfo_get_label(reply);
+    uint32_t reply = /* E5-S8: ppcall stubbed */
+    uint32_t rc = (uint32_t)msg_u32(req, 0);
     return (rc == 0) ? 0 : -1;   /* BLK_OK == 0 */
 }
 
@@ -377,14 +377,13 @@ static int do_mount(void)
 
     /* Read sectors 2-3 (byte offset 1024) as a raw 1024-byte region.
      * We issue OP_BLK_READ for sector 2, count 2. */
-    microkit_mr_set(0, OP_BLK_READ);
-    microkit_mr_set(1, 2);   /* LBA 2 */
-    microkit_mr_set(2, 0);   /* sector_hi */
-    microkit_mr_set(3, 2);   /* 2 sectors = 1024 bytes */
+    rep_u32(rep, 0, OP_BLK_READ);
+    rep_u32(rep, 4, 2);   /* LBA 2 */
+    rep_u32(rep, 8, 0);   /* sector_hi */
+    rep_u32(rep, 12, 2);   /* 2 sectors = 1024 bytes */
 
-    microkit_msginfo reply = microkit_ppcall(EXT2_CH_VIRTIO_BLK,
-                                             microkit_msginfo_new(OP_BLK_READ, 4));
-    uint32_t rc = (uint32_t)microkit_msginfo_get_label(reply);
+    uint32_t reply = /* E5-S8: ppcall stubbed */
+    uint32_t rc = (uint32_t)msg_u32(req, 0);
 
     if (rc != 0 || !ext2_blk_dma_shmem_vaddr) {
         /* I/O failure — copy zeros so magic check fails cleanly */
@@ -463,7 +462,7 @@ static uint32_t ext2_walk_path(const char *path)
 
 /* ── Microkit entry points ───────────────────────────────────────────────── */
 
-void init(void)
+static void ext2fs_pd_init(void)
 {
     /* Zero all cache slots */
     for (uint32_t i = 0; i < BLOCK_CACHE_SIZE; i++) {
@@ -488,15 +487,15 @@ void init(void)
     }
 }
 
-void notified(microkit_channel ch)
+static void ext2fs_pd_notified(uint32_t ch)
 {
     (void)ch;
 }
 
-microkit_msginfo protected(microkit_channel ch, microkit_msginfo msginfo)
+static uint32_t ext2fs_h_dispatch(sel4_badge_t b, const sel4_msg_t *req, sel4_msg_t *rep, void *ctx)
 {
-    (void)ch;
-    uint32_t op = (uint32_t)microkit_msginfo_get_label(msginfo);
+    (void)b; (void)ctx;
+    uint32_t op = (uint32_t)msg_u32(req, 0);
 
     switch (op) {
 
@@ -508,74 +507,85 @@ microkit_msginfo protected(microkit_channel ch, microkit_msginfo msginfo)
         g_mounted = false;
 
         if (do_mount() != 0) {
-            microkit_mr_set(0, 0xFFu);
-            return microkit_msginfo_new(0, 1);
+            rep_u32(rep, 0, 0xFFu);
+            rep->length = 4;
+        return SEL4_ERR_OK;
         }
 
-        microkit_mr_set(0, 0u);
-        microkit_mr_set(1, g_sb.s_blocks_count);
-        microkit_mr_set(2, g_sb.s_inodes_count);
-        return microkit_msginfo_new(0, 3);
+        rep_u32(rep, 0, 0u);
+        rep_u32(rep, 4, g_sb.s_blocks_count);
+        rep_u32(rep, 8, g_sb.s_inodes_count);
+        rep->length = 12;
+        return SEL4_ERR_OK;
     }
 
     /* ── OP_EXT2_STAT ───────────────────────────────────────────────────── */
     case OP_EXT2_STAT: {
         if (!g_mounted) {
-            microkit_mr_set(0, 0xFBu);   /* EXT2_ERR_NOT_MOUNTED */
-            return microkit_msginfo_new(0, 1);
+            rep_u32(rep, 0, 0xFBu);   /* EXT2_ERR_NOT_MOUNTED */
+            rep->length = 4;
+        return SEL4_ERR_OK;
         }
         if (!ext2_shmem_vaddr) {
-            microkit_mr_set(0, 0xFAu);   /* EXT2_ERR_NO_SHMEM */
-            return microkit_msginfo_new(0, 1);
+            rep_u32(rep, 0, 0xFAu);   /* EXT2_ERR_NO_SHMEM */
+            rep->length = 4;
+        return SEL4_ERR_OK;
         }
 
         const char *path = (const char *)ext2_shmem_vaddr;
         uint32_t ino = ext2_walk_path(path);
         if (ino == 0) {
-            microkit_mr_set(0, 0xF9u);   /* EXT2_ERR_NOENT */
-            return microkit_msginfo_new(0, 1);
+            rep_u32(rep, 0, 0xF9u);   /* EXT2_ERR_NOENT */
+            rep->length = 4;
+        return SEL4_ERR_OK;
         }
 
         ext2_inode_t inode;
         if (ext2_read_inode(ino, &inode) != 0) {
-            microkit_mr_set(0, 0xF8u);   /* EXT2_ERR_IO */
-            return microkit_msginfo_new(0, 1);
+            rep_u32(rep, 0, 0xF8u);   /* EXT2_ERR_IO */
+            rep->length = 4;
+        return SEL4_ERR_OK;
         }
 
-        microkit_mr_set(0, 0u);
-        microkit_mr_set(1, ino);
-        microkit_mr_set(2, inode.i_size);
-        microkit_mr_set(3, inode.i_mode);
-        return microkit_msginfo_new(0, 4);
+        rep_u32(rep, 0, 0u);
+        rep_u32(rep, 4, ino);
+        rep_u32(rep, 8, inode.i_size);
+        rep_u32(rep, 12, inode.i_mode);
+        rep->length = 16;
+        return SEL4_ERR_OK;
     }
 
     /* ── OP_EXT2_READ ───────────────────────────────────────────────────── */
     case OP_EXT2_READ: {
         if (!g_mounted) {
-            microkit_mr_set(0, 0xFBu);
-            return microkit_msginfo_new(0, 1);
+            rep_u32(rep, 0, 0xFBu);
+            rep->length = 4;
+        return SEL4_ERR_OK;
         }
         if (!ext2_shmem_vaddr) {
-            microkit_mr_set(0, 0xFAu);
-            return microkit_msginfo_new(0, 1);
+            rep_u32(rep, 0, 0xFAu);
+            rep->length = 4;
+        return SEL4_ERR_OK;
         }
 
-        uint32_t ino        = (uint32_t)microkit_mr_get(1);
-        uint32_t file_off   = (uint32_t)microkit_mr_get(2);
-        uint32_t req_len    = (uint32_t)microkit_mr_get(3);
+        uint32_t ino        = (uint32_t)msg_u32(req, 4);
+        uint32_t file_off   = (uint32_t)msg_u32(req, 8);
+        uint32_t req_len    = (uint32_t)msg_u32(req, 12);
 
         if (req_len > EXT2_SHMEM_SIZE) req_len = EXT2_SHMEM_SIZE;
 
         ext2_inode_t inode;
         if (ext2_read_inode(ino, &inode) != 0) {
-            microkit_mr_set(0, 0xF8u);
-            return microkit_msginfo_new(0, 1);
+            rep_u32(rep, 0, 0xF8u);
+            rep->length = 4;
+        return SEL4_ERR_OK;
         }
 
         if (file_off >= inode.i_size) {
-            microkit_mr_set(0, 0u);
-            microkit_mr_set(1, 0u);
-            return microkit_msginfo_new(0, 2);
+            rep_u32(rep, 0, 0u);
+            rep_u32(rep, 4, 0u);
+            rep->length = 8;
+        return SEL4_ERR_OK;
         }
 
         /* Clamp to file size */
@@ -604,35 +614,40 @@ microkit_msginfo protected(microkit_channel ch, microkit_msginfo msginfo)
             cur_off  += chunk;
         }
 
-        microkit_mr_set(0, 0u);
-        microkit_mr_set(1, written);
-        return microkit_msginfo_new(0, 2);
+        rep_u32(rep, 0, 0u);
+        rep_u32(rep, 4, written);
+        rep->length = 8;
+        return SEL4_ERR_OK;
     }
 
     /* ── OP_EXT2_WRITE ──────────────────────────────────────────────────── */
     case OP_EXT2_WRITE: {
         /* Phase 1: read-only filesystem */
-        microkit_mr_set(0, 0xFEu);   /* EXT2_ERR_READONLY */
-        return microkit_msginfo_new(0, 1);
+        rep_u32(rep, 0, 0xFEu);   /* EXT2_ERR_READONLY */
+        rep->length = 4;
+        return SEL4_ERR_OK;
     }
 
     /* ── OP_EXT2_READDIR ────────────────────────────────────────────────── */
     case OP_EXT2_READDIR: {
         if (!g_mounted) {
-            microkit_mr_set(0, 0xFBu);
-            return microkit_msginfo_new(0, 1);
+            rep_u32(rep, 0, 0xFBu);
+            rep->length = 4;
+        return SEL4_ERR_OK;
         }
         if (!ext2_shmem_vaddr) {
-            microkit_mr_set(0, 0xFAu);
-            return microkit_msginfo_new(0, 1);
+            rep_u32(rep, 0, 0xFAu);
+            rep->length = 4;
+        return SEL4_ERR_OK;
         }
 
-        uint32_t dir_ino = (uint32_t)microkit_mr_get(1);
+        uint32_t dir_ino = (uint32_t)msg_u32(req, 4);
 
         ext2_inode_t dir_inode;
         if (ext2_read_inode(dir_ino, &dir_inode) != 0) {
-            microkit_mr_set(0, 0xF8u);
-            return microkit_msginfo_new(0, 1);
+            rep_u32(rep, 0, 0xF8u);
+            rep->length = 4;
+        return SEL4_ERR_OK;
         }
 
         uint8_t  *out_ptr    = (uint8_t *)ext2_shmem_vaddr;
@@ -686,26 +701,41 @@ microkit_msginfo protected(microkit_channel ch, microkit_msginfo msginfo)
         }
 
     readdir_done:
-        microkit_mr_set(0, 0u);
-        microkit_mr_set(1, entry_count);
-        return microkit_msginfo_new(0, 2);
+        rep_u32(rep, 0, 0u);
+        rep_u32(rep, 4, entry_count);
+        rep->length = 8;
+        return SEL4_ERR_OK;
     }
 
     /* ── OP_EXT2_STATUS ─────────────────────────────────────────────────── */
     case OP_EXT2_STATUS: {
-        microkit_mr_set(0, 0u);
-        microkit_mr_set(1, g_mounted ? 1u : 0u);
-        microkit_mr_set(2, g_sb.s_blocks_count);
-        microkit_mr_set(3, g_sb.s_free_blocks_count);
-        return microkit_msginfo_new(0, 4);
+        rep_u32(rep, 0, 0u);
+        rep_u32(rep, 4, g_mounted ? 1u : 0u);
+        rep_u32(rep, 8, g_sb.s_blocks_count);
+        rep_u32(rep, 12, g_sb.s_free_blocks_count);
+        rep->length = 16;
+        return SEL4_ERR_OK;
     }
 
     /* ── Unknown opcode ─────────────────────────────────────────────────── */
     default: {
         ext2_log("[ext2fs] WARNING: unknown opcode\n");
-        microkit_mr_set(0, 0xFFu);
-        return microkit_msginfo_new(0xFFFF, 1);
+        rep_u32(rep, 0, 0xFFu);
+        rep->length = 4;
+        return SEL4_ERR_OK;
     }
 
     } /* switch (op) */
+}
+
+/* ── E5-S8: Entry point ─────────────────────────────────────────────────── */
+void ext2fs_main(seL4_CPtr my_ep, seL4_CPtr ns_ep)
+{
+    (void)ns_ep;
+    ext2fs_pd_init();
+    static sel4_server_t srv;
+    sel4_server_init(&srv, my_ep);
+    /* Dispatch all opcodes through the generic handler */
+    sel4_server_register(&srv, SEL4_SERVER_OPCODE_ANY, ext2fs_h_dispatch, (void *)0);
+    sel4_server_run(&srv);
 }

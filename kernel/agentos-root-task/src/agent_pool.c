@@ -24,6 +24,7 @@
 
 #define AGENTOS_DEBUG 1
 #include "agentos.h"
+#include "sel4_server.h"
 #include "contracts/agent_pool_contract.h"
 #include "string_bare.h"
 #include <stdint.h>
@@ -154,13 +155,14 @@ int agent_pool_spawn(const char *agent_name, uint64_t task_id,
      *
      * In production: use shared memory for larger payloads.
      */
-    microkit_mr_set(0, (uint32_t)(pool[slot].task_id & 0xFFFFFFFF));
-    microkit_mr_set(1, (uint32_t)(pool[slot].task_id >> 32));
-    microkit_mr_set(2, (uintptr_t)payload);
-    microkit_mr_set(3, payload_len);
+    rep_u32(rep, 0, (uint32_t)(pool[slot].task_id & 0xFFFFFFFF));
+    rep_u32(rep, 4, (uint32_t)(pool[slot].task_id >> 32));
+    rep_u32(rep, 8, (uintptr_t)payload);
+    rep_u32(rep, 12, payload_len);
     
     /* Notify the worker to wake up */
-    microkit_notify(pool[slot].channel_id);
+    sel4_dbg_puts("[E5-S8] notify-stub
+"); /* TODO: seL4_Signal(notify_cap_for_pool[slot].channel_id) */
     
     return slot;
 }
@@ -233,7 +235,8 @@ void worker_pd_init(void) {
     log_drain_write(6, 6, "[worker] Slot ready, waiting for task assignment\n");
     
     /* Notify controller we're ready */
-    microkit_notify(WORKER_CH_CONTROLLER);
+    sel4_dbg_puts("[E5-S8] notify-stub
+");
 }
 
 /*
@@ -242,14 +245,14 @@ void worker_pd_init(void) {
  * Reads the task assignment from message registers,
  * executes the task (via a jump table), then notifies completion.
  */
-void worker_pd_notified(microkit_channel ch) {
+void worker_pd_notified(uint32_t ch) {
     switch (ch) {
         case WORKER_CH_CONTROLLER: {
             /* Read task assignment from MRs */
-            uint64_t task_id_lo = (uint64_t)microkit_mr_get(0);
-            uint64_t task_id_hi = (uint64_t)microkit_mr_get(1);
-            uint64_t payload_ptr = (uint64_t)microkit_mr_get(2);
-            uint32_t payload_len = (uint32_t)microkit_mr_get(3);
+            uint64_t task_id_lo = (uint64_t)msg_u32(req, 0);
+            uint64_t task_id_hi = (uint64_t)msg_u32(req, 4);
+            uint64_t payload_ptr = (uint64_t)msg_u32(req, 8);
+            uint32_t payload_len = (uint32_t)msg_u32(req, 12);
             
             worker.task_id = task_id_lo | (task_id_hi << 32);
             
@@ -274,11 +277,12 @@ void worker_pd_notified(microkit_channel ch) {
             log_drain_write(6, 6, "[worker] Task complete, notifying controller\n");
             
             /* Signal completion back to controller */
-            microkit_mr_set(0, (uint32_t)(worker.task_id & 0xFFFFFFFF));
-            microkit_mr_set(1, (uint32_t)(worker.task_id >> 32));
-            microkit_mr_set(2, (uint32_t)status);
-            microkit_mr_set(3, 0);
-            microkit_notify(WORKER_CH_CONTROLLER);
+            rep_u32(rep, 0, (uint32_t)(worker.task_id & 0xFFFFFFFF));
+            rep_u32(rep, 4, (uint32_t)(worker.task_id >> 32));
+            rep_u32(rep, 8, (uint32_t)status);
+            rep_u32(rep, 12, 0);
+            sel4_dbg_puts("[E5-S8] notify-stub
+");
             break;
         }
         

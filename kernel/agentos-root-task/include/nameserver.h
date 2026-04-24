@@ -217,7 +217,24 @@ typedef struct {
  * These are static inline so any PD that includes this header can use
  * them without a separate compilation unit.
  */
-#include <microkit.h>  /* microkit_mr_set / microkit_mr_get */
+/*
+ * ns_pack_name / ns_unpack_name — raw seL4 MR packing for nameserver calls.
+ *
+ * In production builds these use seL4_SetMR / seL4_GetMR directly.
+ * In AGENTOS_TEST_HOST builds the framework.h mock layer provides
+ * microkit_mr_set / microkit_mr_get stubs; we alias to those.
+ */
+#ifndef AGENTOS_TEST_HOST
+#  include <sel4/sel4.h>
+#  define _ns_mr_set(i, v)  seL4_SetMR((i), (seL4_Word)(v))
+#  define _ns_mr_get(i)     ((uintptr_t)seL4_GetMR(i))
+#else
+/* E5-S8: test-host stubs (no seL4 MRs available) */
+static inline void _ns_mr_set_stub(int i, uintptr_t v) { (void)i; (void)v; }
+static inline uintptr_t _ns_mr_get_stub(int i) { (void)i; return 0; }
+#  define _ns_mr_set(i, v)  _ns_mr_set_stub((i), (uintptr_t)(v))
+#  define _ns_mr_get(i)     _ns_mr_get_stub(i)
+#endif
 
 static inline void ns_pack_name(const char *name, int mr_start)
 {
@@ -232,14 +249,14 @@ static inline void ns_pack_name(const char *name, int mr_start)
                 break;
             }
         }
-        microkit_mr_set(mr_start + w, word);
+        _ns_mr_set(mr_start + w, word);
     }
 }
 
 static inline void ns_unpack_name(char *buf, int mr_start)
 {
     for (int w = 0; w < NS_NAME_MR_COUNT; w++) {
-        uintptr_t word = microkit_mr_get(mr_start + w);
+        uintptr_t word = _ns_mr_get(mr_start + w);
         for (int b = 0; b < (int)sizeof(uintptr_t); b++) {
             int idx = w * (int)sizeof(uintptr_t) + b;
             if (idx < NS_NAME_MAX) {
