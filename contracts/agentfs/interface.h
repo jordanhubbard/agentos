@@ -267,3 +267,86 @@ typedef struct agentfs_health_rep {
     uint32_t hot_bytes_used;
     uint32_t version;                       /* AGENTFS_INTERFACE_VERSION */
 } __attribute__((packed)) agentfs_health_rep_t;
+
+/* ── Blob store opcodes (for VOS snapshot / restore path) ────────────────── */
+
+/*
+ * AGENTFS_OP_WRITE (0xAF01)
+ *
+ * Write a raw byte blob under a caller-supplied key string.  The blob data is
+ * placed in the agentfs_store shared MR at data_store_offset.  On success the
+ * service returns a 64-bit storage token (token_lo + token_hi) that can later
+ * be passed to AGENTFS_OP_READ to retrieve the blob.
+ *
+ * The token is formed from the first 8 bytes of the assigned ObjectId:
+ *   token_lo = bytes[0..3] as big-endian uint32
+ *   token_hi = bytes[4..7] as big-endian uint32
+ *
+ * Request MRs:
+ *   MR0 = AGENTFS_OP_WRITE
+ *   MR1 = data_store_offset (offset into agentfs_store MR)
+ *   MR2 = data_len (bytes)
+ *   MR3 = key_len  (length of key string at key_store_offset)
+ *   MR4 = key_store_offset (key string in agentfs_store MR)
+ *
+ * Reply MRs on success:
+ *   MR0 = AGENTFS_ERR_OK
+ *   MR1 = token_lo
+ *   MR2 = token_hi
+ *
+ * Errors: AGENTFS_ERR_NO_SPACE, AGENTFS_ERR_INVALID_ARG, AGENTFS_ERR_INTERNAL
+ */
+#define AGENTFS_OP_WRITE    0xAF01u
+
+typedef struct agentfs_write_req {
+    uint32_t opcode;             /* AGENTFS_OP_WRITE */
+    uint32_t data_store_offset;  /* offset into agentfs_store MR */
+    uint32_t data_len;
+    uint32_t key_len;
+    uint32_t key_store_offset;
+    uint32_t _pad;
+} __attribute__((packed)) agentfs_write_req_t;
+
+typedef struct agentfs_write_rep {
+    uint32_t status;   /* AGENTFS_ERR_* */
+    uint32_t token_lo; /* low  32 bits of storage token */
+    uint32_t token_hi; /* high 32 bits of storage token */
+    uint32_t _pad;
+} __attribute__((packed)) agentfs_write_rep_t;
+
+/*
+ * AGENTFS_OP_READ (0xAF02)
+ *
+ * Read a blob previously stored with AGENTFS_OP_WRITE.  The blob is written
+ * into the agentfs_store MR at buf_store_offset.  The caller supplies the
+ * token obtained from the corresponding AGENTFS_OP_WRITE reply.
+ *
+ * Request MRs:
+ *   MR0 = AGENTFS_OP_READ
+ *   MR1 = token_lo
+ *   MR2 = token_hi
+ *   MR3 = buf_store_offset (destination in agentfs_store MR)
+ *   MR4 = buf_len (maximum bytes to write)
+ *
+ * Reply MRs on success:
+ *   MR0 = AGENTFS_ERR_OK
+ *   MR1 = bytes_written
+ *
+ * Errors: AGENTFS_ERR_NOT_FOUND, AGENTFS_ERR_INVALID_ARG, AGENTFS_ERR_INTERNAL
+ */
+#define AGENTFS_OP_READ     0xAF02u
+
+typedef struct agentfs_read_req {
+    uint32_t opcode;            /* AGENTFS_OP_READ */
+    uint32_t token_lo;
+    uint32_t token_hi;
+    uint32_t buf_store_offset;
+    uint32_t buf_len;
+    uint32_t _pad;
+} __attribute__((packed)) agentfs_read_req_t;
+
+typedef struct agentfs_read_rep {
+    uint32_t status;        /* AGENTFS_ERR_* */
+    uint32_t bytes_written;
+    uint32_t _pad[2];
+} __attribute__((packed)) agentfs_read_rep_t;
