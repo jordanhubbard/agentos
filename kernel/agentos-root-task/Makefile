@@ -54,6 +54,37 @@ CFLAGS_SWAPSLOT := $(CFLAGS) -Iwasm3
 LDFLAGS := -L$(BOARD_DIR)/lib
 LIBS    := -lmicrokit -Tmicrokit.ld
 
+# ─── Root task seL4 boot binary ──────────────────────────────────────────────
+# main.c is the seL4 root task entry point and boot sequence orchestrator.
+# It is NOT a Microkit PD — it links without libmicrokit and uses its own
+# minimal linker flags.  The resulting root_task.elf is loaded directly by
+# the seL4 kernel as the first user-mode process.
+#
+# Board-specific defines passed to main.c so it selects the correct
+# system_desc_<arch>.c at compile time:
+#   -DBOARD_qemu_virt_aarch64  (for AArch64 QEMU)
+#   (default: RISC-V — no define needed; system_desc_riscv64 is the fallback)
+ROOT_TASK_SRCS := src/main.c src/ep_alloc.c src/cap_accounting.c \
+                  src/pd_tcb.c src/m3_bare_metal.c
+
+ifeq ($(ARCH),aarch64)
+ROOT_TASK_SRCS += src/system_desc_aarch64.c
+CFLAGS_ROOT_TASK := $(CFLAGS) -DBOARD_qemu_virt_aarch64
+else
+ROOT_TASK_SRCS += src/system_desc_riscv64.c
+CFLAGS_ROOT_TASK := $(CFLAGS)
+endif
+
+ROOT_TASK_OBJS := $(patsubst src/%.c, $(BUILD_DIR)/rt_%.o, $(ROOT_TASK_SRCS))
+
+# Compile root task objects with rt_ prefix to avoid colliding with PD objects
+$(BUILD_DIR)/rt_%.o: src/%.c
+	@mkdir -p $(BUILD_DIR)
+	$(CC) -c $(CFLAGS_ROOT_TASK) $< -o $@
+
+$(BUILD_DIR)/root_task.elf: $(ROOT_TASK_OBJS)
+	$(LD) $(LDFLAGS) $^ -o $@
+
 # ─── Board identification (passed from top-level Makefile) ───────────────────
 BOARD_NAME      ?=
 BOARD_NATIVE    ?= 0
@@ -191,7 +222,7 @@ endif
 IMAGE_FILE  := $(BUILD_DIR)/agentos.img
 REPORT_FILE := $(BUILD_DIR)/agentos-report.txt
 
-build: $(IMAGE_FILE)
+build: $(IMAGE_FILE) $(BUILD_DIR)/root_task.elf
 
 $(BUILD_DIR)/%.o: src/%.c
 	@mkdir -p $(BUILD_DIR)
