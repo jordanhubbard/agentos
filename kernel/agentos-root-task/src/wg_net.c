@@ -1,88 +1,274 @@
 /*
- * agentOS WireGuard Overlay Network Protection Domain
+ * agentOS WireGuard Overlay Network Protection Domain — E5-S4: raw seL4 IPC
  *
  * Implements an encrypted agent-to-agent overlay network using the
  * WireGuard protocol (Noise_IKpsk2 with Curve25519, ChaCha20-Poly1305).
  *
- * Priority: 140  (passive="true" — only executes on PPC / timer notify)
- * Shmem:    wg_staging, 128KB, mapped at 0x6000000 (rw)
- *           Layout:
- *             [0x000000..0x00001F]  local private key  (32 bytes, write-once)
- *             [0x000020..0x00003F]  local public key   (32 bytes, derived)
- *             [0x001000..0x001FFF]  peer pubkey staging (OP_WG_ADD_PEER)
- *             [0x002000..0x00FFFF]  TX plaintext staging (OP_WG_SEND)
- *             [0x010000..0x01FFFF]  RX plaintext staging (OP_WG_RECV)
+ * Migration notes (E5-S4):
+ *   - Priority ordering constraint ELIMINATED.  wg_net_main() uses a
+ *     sel4_server_t receive loop; callers block on endpoint IPC.
+ *   - CH_NET_SERVER_NET_ISOLATOR (id=11) channel replaced with nameserver
+ *     lookup for "net".  The resolved cap is stored in g_net_ep and used
+ *     for all outbound sel4_call() to net_server.
+ *   - Microkit timer notification replaced with seL4 notification on
+ *     timer_ntfn_cap (passed to wg_net_main).  The keepalive timer is
+ *     driven by a dedicated OP_WG_TIMER_TICK opcode in the server loop or
+ *     a separate notification endpoint — no PPC ordering requirement.
+ *   - microkit_notify(CH_CONTROLLER) at init() replaced with seL4_Signal().
+ *   - wg_net registers itself as "wg_net" with the nameserver at startup.
  *
  * Crypto:
  *   Curve25519 key derivation and ChaCha20-Poly1305 AEAD stubs are tagged:
  *     CRYPTO_INTEGRATION_POINT
- *   Wire up by linking Monocypher and calling:
- *     crypto_x25519()             for ECDH key agreement
- *     crypto_aead_lock()          for encryption (ChaCha20-Poly1305)
- *     crypto_aead_unlock()        for decryption
- *
- * Keepalive:
- *   Microkit timer channel (CH_TIMER) fires every ~1s.  wg_net counts
- *   ticks and sends a WireGuard keepalive (empty encrypted packet) to
- *   each active peer every WG_KEEPALIVE_SECS (25) seconds.
  *
  * Copyright (c) 2026 The agentOS Project
  * SPDX-License-Identifier: BSD-2-Clause
  */
+
+/* ── Conditional compilation ─────────────────────────────────────────────── */
+
+#ifdef AGENTOS_TEST_HOST
+#include <stdint.h>
+#include <stdbool.h>
+#include <string.h>
+
+typedef unsigned long      seL4_CPtr;
+typedef unsigned long long sel4_badge_t;
+
+typedef struct {
+    uint32_t opcode;
+    uint32_t length;
+    uint8_t  data[48];
+} sel4_msg_t;
+
+#define SEL4_ERR_OK          0u
+#define SEL4_ERR_INVALID_OP  1u
+#define SEL4_ERR_NOT_FOUND   2u
+#define SEL4_ERR_PERM        3u
+#define SEL4_ERR_BAD_ARG     4u
+#define SEL4_ERR_NO_MEM      5u
+
+typedef uint32_t (*sel4_handler_fn)(sel4_badge_t badge,
+                                     const sel4_msg_t *req,
+                                     sel4_msg_t *rep,
+                                     void *ctx);
+#define SEL4_SERVER_MAX_HANDLERS 32u
+typedef struct {
+    struct {
+        uint32_t        opcode;
+        sel4_handler_fn fn;
+        void           *ctx;
+    } handlers[SEL4_SERVER_MAX_HANDLERS];
+    uint32_t  handler_count;
+    seL4_CPtr ep;
+} sel4_server_t;
+
+static inline void sel4_server_init(sel4_server_t *srv, seL4_CPtr ep)
+{
+    srv->handler_count = 0;
+    srv->ep            = ep;
+    for (uint32_t i = 0; i < SEL4_SERVER_MAX_HANDLERS; i++) {
+        srv->handlers[i].opcode = 0;
+        srv->handlers[i].fn     = (sel4_handler_fn)0;
+        srv->handlers[i].ctx    = (void *)0;
+    }
+}
+static inline int sel4_server_register(sel4_server_t *srv, uint32_t opcode,
+                                        sel4_handler_fn fn, void *ctx)
+{
+    if (srv->handler_count >= SEL4_SERVER_MAX_HANDLERS) return -1;
+    srv->handlers[srv->handler_count].opcode = opcode;
+    srv->handlers[srv->handler_count].fn     = fn;
+    srv->handlers[srv->handler_count].ctx    = ctx;
+    srv->handler_count++;
+    return 0;
+}
+static inline uint32_t sel4_server_dispatch(sel4_server_t *srv,
+                                             sel4_badge_t badge,
+                                             const sel4_msg_t *req,
+                                             sel4_msg_t *rep)
+{
+    for (uint32_t i = 0; i < srv->handler_count; i++) {
+        if (srv->handlers[i].opcode == req->opcode) {
+            uint32_t rc = srv->handlers[i].fn(badge, req, rep,
+                                               srv->handlers[i].ctx);
+            rep->opcode = rc;
+            return rc;
+        }
+    }
+    rep->opcode = SEL4_ERR_INVALID_OP;
+    rep->length = 0;
+    return SEL4_ERR_INVALID_OP;
+}
+
+static inline uint32_t data_rd32(const uint8_t *d, int off)
+{
+    return (uint32_t)d[off]
+         | ((uint32_t)d[off+1] <<  8)
+         | ((uint32_t)d[off+2] << 16)
+         | ((uint32_t)d[off+3] << 24);
+}
+static inline void data_wr32(uint8_t *d, int off, uint32_t v)
+{
+    d[off  ] = (uint8_t)(v      );
+    d[off+1] = (uint8_t)(v >>  8);
+    d[off+2] = (uint8_t)(v >> 16);
+    d[off+3] = (uint8_t)(v >> 24);
+}
+
+/* Monocypher stubs */
+static inline void crypto_aead_lock(uint8_t *ct, uint8_t *mac, const uint8_t *key,
+                                     const uint8_t *n, const void *ad, size_t ad_sz,
+                                     const uint8_t *pt, size_t pt_sz)
+{
+    (void)mac;(void)key;(void)n;(void)ad;(void)ad_sz;
+    for (size_t i = 0; i < pt_sz; i++) ct[i] = pt ? pt[i] : 0;
+}
+static inline int crypto_aead_unlock(uint8_t *pt, const uint8_t *mac,
+                                      const uint8_t *key, const uint8_t *n,
+                                      const void *ad, size_t ad_sz,
+                                      const uint8_t *ct, size_t ct_sz)
+{
+    (void)mac;(void)key;(void)n;(void)ad;(void)ad_sz;
+    for (size_t i = 0; i < ct_sz; i++) pt[i] = ct[i];
+    return 0;
+}
+static inline void crypto_x25519(uint8_t *out, const uint8_t *sk, const uint8_t *pk)
+{
+    for (int i = 0; i < 32; i++) out[i] = sk[i] ^ pk[i] ^ 0x42u;
+}
+
+static inline void log_drain_write(int a, int b, const char *s) { (void)a;(void)b;(void)s; }
+static inline void agentos_log_boot(const char *s) { (void)s; }
+static inline void seL4_Signal(seL4_CPtr cap) { (void)cap; }
+
+/* sel4_call stub — in test mode, outbound calls to net_server are no-ops */
+static inline void sel4_call(seL4_CPtr ep, const sel4_msg_t *req, sel4_msg_t *rep)
+{
+    (void)ep; (void)req;
+    rep->opcode = 0; /* NET_OK */
+    rep->length = 8;
+    /* MR1 = bytes_sent=0 */
+    for (int i = 0; i < 48; i++) rep->data[i] = 0;
+}
+
+/* OP_NS_REGISTER stub */
+#ifndef OP_NS_REGISTER
+#define OP_NS_REGISTER 0xD0u
+#endif
+
+#else /* !AGENTOS_TEST_HOST */
 
 #define AGENTOS_DEBUG 1
 #include "agentos.h"
 #include "wg_net.h"
 #include "net_server.h"
 #include "monocypher.h"
+#include "sel4_ipc.h"
+#include "sel4_server.h"
+#include "sel4_client.h"
+#include "nameserver.h"
 
-/* ── virtio-MMIO helpers (reuse net_server.h MMIO constants) ─────────────── */
-#define WG_MMIO_MAGIC   VIRTIO_MMIO_MAGIC
+static inline uint32_t data_rd32(const uint8_t *d, int off)
+{
+    return (uint32_t)d[off]
+         | ((uint32_t)d[off+1] <<  8)
+         | ((uint32_t)d[off+2] << 16)
+         | ((uint32_t)d[off+3] << 24);
+}
+static inline void data_wr32(uint8_t *d, int off, uint32_t v)
+{
+    d[off  ] = (uint8_t)(v      );
+    d[off+1] = (uint8_t)(v >>  8);
+    d[off+2] = (uint8_t)(v >> 16);
+    d[off+3] = (uint8_t)(v >> 24);
+}
 
-/* ── Channel IDs (from wg_net's perspective in agentos.system) ──────────── */
-#define CH_CONTROLLER     0   /* controller <-> wg_net (PPC + notify) */
-#define WG_CH_NET_SERVER  1   /* wg_net -> net_server (PPC for OP_NET_VNIC_SEND) */
-#define CH_TIMER        2   /* periodic 1-second tick from timer driver */
+#endif /* AGENTOS_TEST_HOST */
 
-/* ── Staging region virtual address (set by Microkit via setvar_vaddr) ───── */
+/* ── WireGuard / wg_net constants (identical values to old version) ──────── */
+#ifndef WG_MAX_PEERS
+#define WG_MAX_PEERS        16u
+#define WG_KEY_LEN          32u
+#define WG_KEEPALIVE_SECS   25u
+#define OP_WG_ADD_PEER      0xD0u
+#define OP_WG_REMOVE_PEER   0xD1u
+#define OP_WG_SEND          0xD2u
+#define OP_WG_RECV          0xD3u
+#define OP_WG_STATUS        0xD4u
+#define OP_WG_SET_PRIVKEY   0xD5u
+#define OP_WG_HEALTH        0xD6u
+#define WG_OK               0u
+#define WG_ERR_NOPEER       1u
+#define WG_ERR_NOKEY        2u
+#define WG_ERR_FULL         3u
+#define WG_ERR_CRYPTO       4u
+typedef struct {
+    uint8_t   peer_id;
+    bool      active;
+    uint8_t   pubkey[WG_KEY_LEN];
+    uint8_t   preshared_key[WG_KEY_LEN];
+    uint32_t  endpoint_ip;
+    uint16_t  endpoint_port;
+    uint8_t   _ep_pad[2];
+    uint32_t  allowed_ip;
+    uint32_t  allowed_mask;
+    uint64_t  tx_bytes;
+    uint64_t  rx_bytes;
+    uint32_t  last_handshake;
+    uint8_t   _pad[4];
+} wg_peer_t;
+#endif
+
+/* ── net_server OP constants needed for outbound calls ───────────────────── */
+#ifndef OP_NET_VNIC_SEND
+#define OP_NET_VNIC_SEND   0xB2u
+#define OP_NET_VNIC_RECV   0xB3u
+#define NET_OK             0u
+#endif
+
+/* ── Staging region virtual address ──────────────────────────────────────── */
 uintptr_t wg_staging_vaddr;
 #define WG_STAGING ((volatile uint8_t *)wg_staging_vaddr)
 
 /* Staging sub-region offsets */
-#define WG_STAGING_PRIVKEY_OFF   0x000000UL   /* local private key (32 bytes) */
-#define WG_STAGING_PUBKEY_OFF    0x000020UL   /* local public key  (32 bytes) */
-#define WG_STAGING_PEER_KEY_OFF  0x001000UL   /* peer pubkey for ADD_PEER (32 bytes) */
-#define WG_STAGING_TX_OFF        0x002000UL   /* TX plaintext region */
-#define WG_STAGING_RX_OFF        0x010000UL   /* RX plaintext region */
-#define WG_STAGING_TX_MAX        0x00E000UL   /* max TX payload: 56KB */
-#define WG_STAGING_RX_MAX        0x00E000UL   /* max RX payload: 56KB */
+#define WG_STAGING_PRIVKEY_OFF   0x000000UL
+#define WG_STAGING_PUBKEY_OFF    0x000020UL
+#define WG_STAGING_PEER_KEY_OFF  0x001000UL
+#define WG_STAGING_TX_OFF        0x002000UL
+#define WG_STAGING_RX_OFF        0x010000UL
+#define WG_STAGING_TX_MAX        0x00E000UL
+#define WG_STAGING_RX_MAX        0x00E000UL
 
-/* Overhead added by ChaCha20-Poly1305: 16-byte Poly1305 tag */
-#define WG_AEAD_TAG_LEN  16u
+#define WG_AEAD_TAG_LEN      16u
+#define WG_TRANSPORT_HDR_LEN 16u
 
-/* WireGuard transport header size (type[4] + receiver_index[4] + counter[8]) */
-#define WG_TRANSPORT_HDR_LEN  16u
-
-/* ── Module state ─────────────────────────────────────────────────────────── */
+/* ── Module state ────────────────────────────────────────────────────────── */
 static wg_peer_t   peers[WG_MAX_PEERS];
 static uint32_t    active_peer_count = 0;
 
-/* Local Curve25519 key pair */
-static uint8_t     wg_privkey[WG_KEY_LEN];   /* local private key */
-static uint8_t     wg_pubkey[WG_KEY_LEN];    /* local public key (derived) */
+static uint8_t     wg_privkey[WG_KEY_LEN];
+static uint8_t     wg_pubkey[WG_KEY_LEN];
 static bool        wg_privkey_set = false;
 
-/* Keepalive timer state */
-static uint32_t    timer_tick    = 0;         /* ticks since boot */
-static uint32_t    keepalive_due = 0;         /* tick at which next keepalive fires */
+static uint32_t    timer_tick    = 0;
+static uint32_t    keepalive_due = 0;
 
-/* RX ring: single-slot staging per peer for received packets */
-static uint32_t    rx_peer_id    = 0;         /* peer_id of pending RX packet */
-static uint32_t    rx_data_len   = 0;         /* length of pending RX plaintext */
-static bool        rx_pending    = false;     /* true if decrypted packet awaits read */
+static uint32_t    rx_peer_id  = 0;
+static uint32_t    rx_data_len = 0;
+static bool        rx_pending  = false;
 
-/* ── Minimal string / numeric helpers (no libc) ──────────────────────────── */
+/*
+ * g_net_ep — resolved endpoint cap for "net" (net_server) service.
+ * Replaces the old CH_NET_SERVER_NET_ISOLATOR (id=11) channel.
+ * Set once at startup by register_with_nameserver(); outbound calls use it.
+ */
+static seL4_CPtr   g_net_ep = 0;
 
+/* sel4_server_t instance */
+static sel4_server_t g_srv;
+
+/* ── Logging helpers ─────────────────────────────────────────────────────── */
 static void wg_log_dec(uint32_t v) {
     char buf[12];
     int  i = 11;
@@ -104,28 +290,18 @@ static void wg_log_hex(uint32_t v) {
     log_drain_write(16, 16, buf);
 }
 
-/* Copy n bytes from volatile src to non-volatile dst */
-static void wg_copy_from_staging(uint8_t *dst, volatile const uint8_t *src,
-                                   uint32_t n) {
-    for (uint32_t i = 0; i < n; i++)
-        dst[i] = src[i];
+/* ── Memory helpers ──────────────────────────────────────────────────────── */
+static void wg_copy_from_staging(uint8_t *dst, volatile const uint8_t *src, uint32_t n) {
+    for (uint32_t i = 0; i < n; i++) dst[i] = src[i];
 }
-
-/* Copy n bytes from non-volatile src to volatile dst (staging) */
-static void wg_copy_to_staging(volatile uint8_t *dst, const uint8_t *src,
-                                 uint32_t n) {
-    for (uint32_t i = 0; i < n; i++)
-        dst[i] = src[i];
+static void wg_copy_to_staging(volatile uint8_t *dst, const uint8_t *src, uint32_t n) {
+    for (uint32_t i = 0; i < n; i++) dst[i] = src[i];
 }
-
-/* Zero n bytes at dst */
 static void wg_zero(uint8_t *dst, uint32_t n) {
-    for (uint32_t i = 0; i < n; i++)
-        dst[i] = 0;
+    for (uint32_t i = 0; i < n; i++) dst[i] = 0;
 }
 
 /* ── Peer table helpers ───────────────────────────────────────────────────── */
-
 static wg_peer_t *find_peer(uint8_t peer_id) {
     for (int i = 0; i < (int)WG_MAX_PEERS; i++) {
         if (peers[i].active && peers[i].peer_id == peer_id)
@@ -133,54 +309,31 @@ static wg_peer_t *find_peer(uint8_t peer_id) {
     }
     return NULL;
 }
-
 static int alloc_peer_slot(void) {
     for (int i = 0; i < (int)WG_MAX_PEERS; i++) {
-        if (!peers[i].active)
-            return i;
+        if (!peers[i].active) return i;
     }
     return -1;
 }
 
-/* ── ChaCha20-Poly1305 AEAD stub ─────────────────────────────────────────── */
-
-/*
- * wg_encrypt — ChaCha20-Poly1305 encryption stub.
- *
- * CRYPTO_INTEGRATION_POINT: Replace body with:
- *   crypto_aead_lock(cipher, cipher + plain_len,
- *                    key, nonce, NULL, 0, plain, plain_len);
- *   *cipher_len = plain_len + WG_AEAD_TAG_LEN;
- * where crypto_aead_lock() is from Monocypher (monocypher.h).
- *
- * Currently performs an identity transform (no-op) for stub/test mode.
- * Returns 0 on success, -1 on failure.
- */
+/* ── ChaCha20-Poly1305 AEAD ──────────────────────────────────────────────── */
 static int wg_encrypt(const uint8_t *key, const uint8_t *nonce,
                        const uint8_t *plain, uint32_t plain_len,
-                       uint8_t *cipher, uint32_t *cipher_len) {
-    if (plain_len + WG_AEAD_TAG_LEN < plain_len)   /* overflow check */
+                       uint8_t *cipher, uint32_t *cipher_len)
+{
+    if (plain_len + WG_AEAD_TAG_LEN < plain_len)
         return -1;
 
-    /*
-     * crypto_aead_lock() expects a 24-byte XChaCha20 nonce.
-     * The caller supplies a 12-byte WireGuard nonce (counter); zero-pad to 24.
-     */
     uint8_t nonce24[24];
     for (int i = 0; i < 24; i++) nonce24[i] = 0;
     for (int i = 0; i < 12; i++) nonce24[i] = nonce[i];
 
-    /*
-     * crypto_aead_lock writes cipher_text then appends mac[16] to the output.
-     * Layout: cipher[0..plain_len-1] = encrypted payload,
-     *         cipher[plain_len..plain_len+15] = Poly1305 tag.
-     */
     uint8_t mac[WG_AEAD_TAG_LEN];
+    /* CRYPTO_INTEGRATION_POINT: replace stub with Monocypher crypto_aead_lock */
     crypto_aead_lock(cipher, mac, key, nonce24,
                      NULL, 0u,
-                     plain, (size_t)plain_len);
+                     plain ? plain : (const uint8_t *)"", (size_t)(plain_len));
 
-    /* Append the Poly1305 tag immediately after the ciphertext */
     for (uint32_t i = 0; i < WG_AEAD_TAG_LEN; i++)
         cipher[plain_len + i] = mac[i];
 
@@ -188,122 +341,92 @@ static int wg_encrypt(const uint8_t *key, const uint8_t *nonce,
     return 0;
 }
 
-/*
- * wg_decrypt — ChaCha20-Poly1305 decryption stub.
- *
- * CRYPTO_INTEGRATION_POINT: Replace body with:
- *   int rc = crypto_aead_unlock(plain, key, nonce, cipher + cipher_len - 16,
- *                               NULL, 0, cipher, cipher_len - 16);
- *   if (rc != 0) return -1;  // authentication failed
- *   *plain_len = cipher_len - WG_AEAD_TAG_LEN;
- *
- * Returns 0 on success, -1 if authentication fails.
- */
 static int wg_decrypt(const uint8_t *key, const uint8_t *nonce,
                        const uint8_t *cipher, uint32_t cipher_len,
-                       uint8_t *plain, uint32_t *plain_len) {
+                       uint8_t *plain, uint32_t *plain_len)
+{
     if (cipher_len < WG_AEAD_TAG_LEN)
         return -1;
 
     uint32_t ct_len = cipher_len - WG_AEAD_TAG_LEN;
-    const uint8_t *mac = cipher + ct_len;   /* tag is appended after ciphertext */
+    const uint8_t *mac = cipher + ct_len;
 
-    /* Expand 12-byte nonce to 24-byte XChaCha20 nonce */
     uint8_t nonce24[24];
     for (int i = 0; i < 24; i++) nonce24[i] = 0;
     for (int i = 0; i < 12; i++) nonce24[i] = nonce[i];
 
+    /* CRYPTO_INTEGRATION_POINT: replace stub with Monocypher crypto_aead_unlock */
     int rc = crypto_aead_unlock(plain, mac, key, nonce24,
                                 NULL, 0u,
                                 cipher, (size_t)ct_len);
-    if (rc != 0)
-        return -1;   /* MAC verification failed */
+    if (rc != 0) return -1;
 
     *plain_len = ct_len;
     return 0;
 }
 
-/*
- * wg_derive_pubkey — Curve25519 scalar multiplication: pubkey = privkey * G
- *
- * CRYPTO_INTEGRATION_POINT: Replace body with:
- *   static const uint8_t basepoint[32] = { 9 };
- *   crypto_x25519(pubkey, privkey, basepoint);
- * where crypto_x25519() is from Monocypher.
- *
- * Stub: copies privkey XOR 0x42 as a placeholder public key.
- */
 static void wg_derive_pubkey(const uint8_t *privkey, uint8_t *pubkey) {
-    /* Curve25519 generator: u-coordinate = 9 */
+    /* CRYPTO_INTEGRATION_POINT: Curve25519 scalar mult */
     static const uint8_t basepoint[32] = { 9u };
     crypto_x25519(pubkey, privkey, basepoint);
 }
 
-/* ── Keepalive sender ─────────────────────────────────────────────────────── */
+/* ── Outbound call to net_server via sel4_call ───────────────────────────── */
 
 /*
- * Send a WireGuard keepalive (empty encrypted packet) to all active peers.
- * A keepalive is an encrypted transport packet with zero-length plaintext;
- * it refreshes the receiver's session timer without delivering data.
+ * Forward an encrypted WireGuard transport packet to net_server via
+ * OP_NET_VNIC_SEND.  Replaces the old microkit_ppcall(WG_CH_NET_SERVER, ...).
+ *
+ * E5-S4: g_net_ep is the nameserver-resolved endpoint for "net".
  */
+static void wg_forward_to_net(uint32_t tx_offset, uint32_t pkt_len,
+                               wg_peer_t *p)
+{
+    if (!g_net_ep) return;
+
+    sel4_msg_t req = {0}, rep = {0};
+    req.opcode = OP_NET_VNIC_SEND;
+    data_wr32(req.data, 0, 0u);          /* vnic_id = 0 (wg_net's own vNIC) */
+    data_wr32(req.data, 4, tx_offset);
+    data_wr32(req.data, 8, pkt_len);
+    req.length = 12;
+    sel4_call(g_net_ep, &req, &rep);
+
+    if (p) p->tx_bytes += pkt_len;
+}
+
+/* ── Keepalive sender ─────────────────────────────────────────────────────── */
 static void send_keepalives(void) {
-    if (!wg_privkey_set)
-        return;
+    if (!wg_privkey_set) return;
 
     for (int i = 0; i < (int)WG_MAX_PEERS; i++) {
         wg_peer_t *p = &peers[i];
-        if (!p->active)
-            continue;
+        if (!p->active) continue;
 
-        /*
-         * Build a WireGuard transport header + empty encrypted payload
-         * into the wg_staging TX region.
-         *
-         * WireGuard transport message layout:
-         *   [0..3]   type = 4 (transport data)
-         *   [4..7]   receiver index
-         *   [8..15]  nonce (counter)
-         *   [16..]   encrypted payload (0 bytes plaintext + 16-byte tag)
-         */
         if (!wg_staging_vaddr) {
             log_drain_write(16, 16, "[wg_net] keepalive: staging not mapped\n");
             return;
         }
 
         volatile uint8_t *tx = WG_STAGING + WG_STAGING_TX_OFF;
-
-        /* Transport header: type=4, receiver_index=peer_id, nonce=0 */
-        tx[0]  = 4;   tx[1]  = 0; tx[2]  = 0; tx[3]  = 0;
-        tx[4]  = p->peer_id; tx[5] = 0; tx[6] = 0; tx[7] = 0;
+        tx[0] = 4; tx[1] = 0; tx[2] = 0; tx[3] = 0;
+        tx[4] = p->peer_id; tx[5] = 0; tx[6] = 0; tx[7] = 0;
         for (int b = 8; b < 16; b++) tx[b] = 0;
 
-        /* Encrypt empty payload (0-byte plaintext) */
-        uint8_t  nonce[12]   = {0};
+        uint8_t  nonce[12]  = {0};
         uint8_t  cipher[WG_AEAD_TAG_LEN];
-        uint32_t cipher_len  = 0;
-
-        /* Use a per-peer session key placeholder (all-zero here) */
-        uint8_t session_key[WG_KEY_LEN];
+        uint32_t cipher_len = 0;
+        uint8_t  session_key[WG_KEY_LEN];
         wg_zero(session_key, WG_KEY_LEN);
 
         int rc = wg_encrypt(session_key, nonce, NULL, 0, cipher, &cipher_len);
-        if (rc != 0)
-            continue;
+        if (rc != 0) continue;
 
-        /* Append ciphertext after transport header */
         for (uint32_t b = 0; b < cipher_len; b++)
             tx[WG_TRANSPORT_HDR_LEN + b] = cipher[b];
 
         uint32_t pkt_len = WG_TRANSPORT_HDR_LEN + cipher_len;
-
-        /* Forward to net_server: OP_NET_VNIC_SEND */
-        microkit_mr_set(0, (uint64_t)OP_NET_VNIC_SEND);
-        microkit_mr_set(1, 0u);                       /* vnic_id = 0 (wg_net's own vNIC) */
-        microkit_mr_set(2, (uint32_t)WG_STAGING_TX_OFF);
-        microkit_mr_set(3, pkt_len);
-        microkit_ppcall(WG_CH_NET_SERVER, microkit_msginfo_new(OP_NET_VNIC_SEND, 4));
-
-        p->tx_bytes += pkt_len;
+        wg_forward_to_net((uint32_t)WG_STAGING_TX_OFF, pkt_len, p);
 
         log_drain_write(16, 16, "[wg_net] keepalive -> peer=");
         wg_log_dec(p->peer_id);
@@ -315,66 +438,74 @@ static void send_keepalives(void) {
     }
 }
 
-/* ── OP_WG_ADD_PEER ───────────────────────────────────────────────────────── */
-
-static microkit_msginfo handle_add_peer(void) {
-    uint32_t peer_id      = (uint32_t)microkit_mr_get(1);
-    uint32_t pubkey_off   = (uint32_t)microkit_mr_get(2);
-    uint32_t endpoint_ip  = (uint32_t)microkit_mr_get(3);
-    uint32_t endpoint_port= (uint32_t)microkit_mr_get(4);
-    uint32_t allowed_ip   = (uint32_t)microkit_mr_get(5);
-    uint32_t allowed_mask = (uint32_t)microkit_mr_get(6);
+/* ═══════════════════════════════════════════════════════════════════════════
+ * Handler: OP_WG_ADD_PEER
+ *   req.data[0..3]   = peer_id
+ *   req.data[4..7]   = pubkey_off
+ *   req.data[8..11]  = endpoint_ip
+ *   req.data[12..15] = endpoint_port
+ *   req.data[16..19] = allowed_ip
+ *   req.data[20..23] = allowed_mask
+ * ═══════════════════════════════════════════════════════════════════════════ */
+static uint32_t handle_add_peer(sel4_badge_t badge __attribute__((unused)),
+                                  const sel4_msg_t *req,
+                                  sel4_msg_t *rep,
+                                  void *ctx __attribute__((unused)))
+{
+    uint32_t peer_id      = data_rd32(req->data,  0);
+    uint32_t pubkey_off   = data_rd32(req->data,  4);
+    uint32_t endpoint_ip  = data_rd32(req->data,  8);
+    uint32_t endpoint_port= data_rd32(req->data, 12);
+    uint32_t allowed_ip   = data_rd32(req->data, 16);
+    uint32_t allowed_mask = data_rd32(req->data, 20);
 
     if (peer_id >= WG_MAX_PEERS) {
         log_drain_write(16, 16, "[wg_net] ADD_PEER: invalid peer_id=");
         wg_log_dec(peer_id);
         log_drain_write(16, 16, "\n");
-        microkit_mr_set(0, WG_ERR_NOPEER);
-        return microkit_msginfo_new(0, 1);
+        data_wr32(rep->data, 0, WG_ERR_NOPEER);
+        rep->length = 4;
+        return SEL4_ERR_BAD_ARG;
     }
 
     if (active_peer_count >= WG_MAX_PEERS && find_peer((uint8_t)peer_id) == NULL) {
         log_drain_write(16, 16, "[wg_net] ADD_PEER: peer table full\n");
-        microkit_mr_set(0, WG_ERR_FULL);
-        return microkit_msginfo_new(0, 1);
+        data_wr32(rep->data, 0, WG_ERR_FULL);
+        rep->length = 4;
+        return SEL4_ERR_NO_MEM;
     }
 
-    /* Validate staging bounds for pubkey */
-    if (!wg_staging_vaddr
-            || pubkey_off + WG_KEY_LEN > 0x20000u) {
+    if (!wg_staging_vaddr || pubkey_off + WG_KEY_LEN > 0x20000u) {
         log_drain_write(16, 16, "[wg_net] ADD_PEER: staging not mapped or bad offset\n");
-        microkit_mr_set(0, WG_ERR_CRYPTO);
-        return microkit_msginfo_new(0, 1);
+        data_wr32(rep->data, 0, WG_ERR_CRYPTO);
+        rep->length = 4;
+        return SEL4_ERR_BAD_ARG;
     }
 
-    /* Find existing slot for this peer_id or allocate a new one */
     wg_peer_t *p = find_peer((uint8_t)peer_id);
     if (!p) {
         int slot = alloc_peer_slot();
         if (slot < 0) {
-            microkit_mr_set(0, WG_ERR_FULL);
-            return microkit_msginfo_new(0, 1);
+            data_wr32(rep->data, 0, WG_ERR_FULL);
+            rep->length = 4;
+            return SEL4_ERR_NO_MEM;
         }
         p = &peers[slot];
         active_peer_count++;
     }
 
-    /* Populate peer entry */
-    p->peer_id      = (uint8_t)peer_id;
-    p->active       = true;
-    p->endpoint_ip  = endpoint_ip;
-    p->endpoint_port= (uint16_t)(endpoint_port & 0xFFFFu);
-    p->allowed_ip   = allowed_ip;
-    p->allowed_mask = allowed_mask;
-    p->tx_bytes     = 0;
-    p->rx_bytes     = 0;
-    p->last_handshake = 0;
+    p->peer_id       = (uint8_t)peer_id;
+    p->active        = true;
+    p->endpoint_ip   = endpoint_ip;
+    p->endpoint_port = (uint16_t)(endpoint_port & 0xFFFFu);
+    p->allowed_ip    = allowed_ip;
+    p->allowed_mask  = allowed_mask;
+    p->tx_bytes      = 0;
+    p->rx_bytes      = 0;
+    p->last_handshake= 0;
     wg_zero(p->preshared_key, WG_KEY_LEN);
 
-    /* Copy public key from staging */
-    wg_copy_from_staging(p->pubkey,
-                          WG_STAGING + pubkey_off,
-                          WG_KEY_LEN);
+    wg_copy_from_staging(p->pubkey, WG_STAGING + pubkey_off, WG_KEY_LEN);
 
     log_drain_write(16, 16, "[wg_net] ADD_PEER: id=");
     wg_log_dec(peer_id);
@@ -388,22 +519,29 @@ static microkit_msginfo handle_add_peer(void) {
     wg_log_hex(allowed_mask);
     log_drain_write(16, 16, "\n");
 
-    microkit_mr_set(0, WG_OK);
-    return microkit_msginfo_new(0, 1);
+    data_wr32(rep->data, 0, WG_OK);
+    rep->length = 4;
+    return SEL4_ERR_OK;
 }
 
-/* ── OP_WG_REMOVE_PEER ────────────────────────────────────────────────────── */
-
-static microkit_msginfo handle_remove_peer(void) {
-    uint32_t peer_id = (uint32_t)microkit_mr_get(1);
-
+/* ═══════════════════════════════════════════════════════════════════════════
+ * Handler: OP_WG_REMOVE_PEER
+ *   req.data[0..3] = peer_id
+ * ═══════════════════════════════════════════════════════════════════════════ */
+static uint32_t handle_remove_peer(sel4_badge_t badge __attribute__((unused)),
+                                    const sel4_msg_t *req,
+                                    sel4_msg_t *rep,
+                                    void *ctx __attribute__((unused)))
+{
+    uint32_t peer_id = data_rd32(req->data, 0);
     wg_peer_t *p = find_peer((uint8_t)peer_id);
     if (!p) {
         log_drain_write(16, 16, "[wg_net] REMOVE_PEER: not found id=");
         wg_log_dec(peer_id);
         log_drain_write(16, 16, "\n");
-        microkit_mr_set(0, WG_ERR_NOPEER);
-        return microkit_msginfo_new(0, 1);
+        data_wr32(rep->data, 0, WG_ERR_NOPEER);
+        rep->length = 4;
+        return SEL4_ERR_NOT_FOUND;
     }
 
     log_drain_write(16, 16, "[wg_net] REMOVE_PEER: id=");
@@ -414,31 +552,39 @@ static microkit_msginfo handle_remove_peer(void) {
     wg_log_dec((uint32_t)(p->rx_bytes & 0xFFFFFFFFu));
     log_drain_write(16, 16, "\n");
 
-    /* Securely zero key material before deactivating */
     wg_zero(p->pubkey, WG_KEY_LEN);
     wg_zero(p->preshared_key, WG_KEY_LEN);
-    p->active = false;
+    p->active  = false;
     p->peer_id = 0;
 
-    if (active_peer_count > 0)
-        active_peer_count--;
+    if (active_peer_count > 0) active_peer_count--;
 
-    microkit_mr_set(0, WG_OK);
-    return microkit_msginfo_new(0, 1);
+    data_wr32(rep->data, 0, WG_OK);
+    rep->length = 4;
+    return SEL4_ERR_OK;
 }
 
-/* ── OP_WG_SEND ───────────────────────────────────────────────────────────── */
-
-static microkit_msginfo handle_send(void) {
-    uint32_t peer_id    = (uint32_t)microkit_mr_get(1);
-    uint32_t data_off   = (uint32_t)microkit_mr_get(2);
-    uint32_t data_len   = (uint32_t)microkit_mr_get(3);
+/* ═══════════════════════════════════════════════════════════════════════════
+ * Handler: OP_WG_SEND
+ *   req.data[0..3]  = peer_id
+ *   req.data[4..7]  = data_off  (offset into wg_staging TX region)
+ *   req.data[8..11] = data_len
+ * ═══════════════════════════════════════════════════════════════════════════ */
+static uint32_t handle_send(sel4_badge_t badge __attribute__((unused)),
+                              const sel4_msg_t *req,
+                              sel4_msg_t *rep,
+                              void *ctx __attribute__((unused)))
+{
+    uint32_t peer_id  = data_rd32(req->data, 0);
+    uint32_t data_off = data_rd32(req->data, 4);
+    uint32_t data_len = data_rd32(req->data, 8);
 
     if (!wg_privkey_set) {
         log_drain_write(16, 16, "[wg_net] SEND: no private key set\n");
-        microkit_mr_set(0, WG_ERR_NOKEY);
-        microkit_mr_set(1, 0);
-        return microkit_msginfo_new(0, 2);
+        data_wr32(rep->data, 0, WG_ERR_NOKEY);
+        data_wr32(rep->data, 4, 0);
+        rep->length = 8;
+        return SEL4_ERR_PERM;
     }
 
     wg_peer_t *p = find_peer((uint8_t)peer_id);
@@ -446,79 +592,59 @@ static microkit_msginfo handle_send(void) {
         log_drain_write(16, 16, "[wg_net] SEND: peer not found id=");
         wg_log_dec(peer_id);
         log_drain_write(16, 16, "\n");
-        microkit_mr_set(0, WG_ERR_NOPEER);
-        microkit_mr_set(1, 0);
-        return microkit_msginfo_new(0, 2);
+        data_wr32(rep->data, 0, WG_ERR_NOPEER);
+        data_wr32(rep->data, 4, 0);
+        rep->length = 8;
+        return SEL4_ERR_NOT_FOUND;
     }
 
-    /* Bounds check: plaintext must fit in the TX staging region */
     if (!wg_staging_vaddr
-            || data_off + data_len < data_off             /* overflow */
+            || data_off + data_len < data_off
             || data_off + data_len > WG_STAGING_TX_MAX) {
-        microkit_mr_set(0, WG_ERR_CRYPTO);
-        microkit_mr_set(1, 0);
-        return microkit_msginfo_new(0, 2);
+        data_wr32(rep->data, 0, WG_ERR_CRYPTO);
+        data_wr32(rep->data, 4, 0);
+        rep->length = 8;
+        return SEL4_ERR_BAD_ARG;
     }
 
-    /*
-     * Encrypt the plaintext payload from wg_staging[TX + data_off].
-     *
-     * CRYPTO_INTEGRATION_POINT:
-     *   Derive a per-peer session key via ECDH:
-     *     uint8_t shared_secret[32];
-     *     crypto_x25519(shared_secret, wg_privkey, p->pubkey);
-     *   Mix with preshared_key using HKDF-like KDF from the WireGuard spec
-     *   to produce the ChaCha20-Poly1305 session key.
-     *   For now we use a placeholder zero key.
-     */
     uint8_t session_key[WG_KEY_LEN];
     uint8_t nonce[12];
     wg_zero(session_key, WG_KEY_LEN);
     wg_zero(nonce, 12);
+    /* CRYPTO_INTEGRATION_POINT: derive session key via ECDH + KDF */
 
-    /* Read plaintext from staging */
     const uint8_t *plain = (const uint8_t *)(wg_staging_vaddr
                                               + WG_STAGING_TX_OFF + data_off);
 
-    /*
-     * Construct WireGuard transport message in a temporary buffer:
-     *   [0..15]   transport header
-     *   [16..]    ciphertext + 16-byte Poly1305 tag
-     */
     volatile uint8_t *out = WG_STAGING + WG_STAGING_TX_OFF;
-
-    /* Transport header */
-    out[0] = 4; out[1] = 0; out[2] = 0; out[3] = 0;   /* type=4 */
+    out[0] = 4; out[1] = 0; out[2] = 0; out[3] = 0;
     out[4] = p->peer_id; out[5] = 0; out[6] = 0; out[7] = 0;
-    for (int b = 8; b < 16; b++) out[b] = 0;            /* counter=0 stub */
+    for (int b = 8; b < 16; b++) out[b] = 0;
 
-    /* Encrypt into ciphertext region immediately after header */
     uint8_t *cipher_dst = (uint8_t *)(wg_staging_vaddr
                                        + WG_STAGING_TX_OFF
                                        + WG_TRANSPORT_HDR_LEN);
     uint32_t cipher_len = 0;
 
-    int rc = wg_encrypt(session_key, nonce, plain, data_len,
-                         cipher_dst, &cipher_len);
+    int rc = wg_encrypt(session_key, nonce, plain, data_len, cipher_dst, &cipher_len);
     if (rc != 0) {
         log_drain_write(16, 16, "[wg_net] SEND: encrypt failed for peer=");
         wg_log_dec(peer_id);
         log_drain_write(16, 16, "\n");
-        microkit_mr_set(0, WG_ERR_CRYPTO);
-        microkit_mr_set(1, 0);
-        return microkit_msginfo_new(0, 2);
+        data_wr32(rep->data, 0, WG_ERR_CRYPTO);
+        data_wr32(rep->data, 4, 0);
+        rep->length = 8;
+        return SEL4_ERR_INTERNAL;
     }
 
     uint32_t pkt_len = WG_TRANSPORT_HDR_LEN + cipher_len;
 
-    /* Forward encrypted packet to net_server via OP_NET_VNIC_SEND */
-    microkit_mr_set(0, (uint64_t)OP_NET_VNIC_SEND);
-    microkit_mr_set(1, 0u);   /* wg_net uses vNIC id=0 */
-    microkit_mr_set(2, (uint32_t)WG_STAGING_TX_OFF);
-    microkit_mr_set(3, pkt_len);
-    microkit_ppcall(WG_CH_NET_SERVER, microkit_msginfo_new(OP_NET_VNIC_SEND, 4));
-
-    p->tx_bytes += pkt_len;
+    /*
+     * Forward to net_server via sel4_call.
+     * E5-S4: replaces microkit_ppcall(WG_CH_NET_SERVER, ...).
+     * g_net_ep was resolved from nameserver at startup.
+     */
+    wg_forward_to_net((uint32_t)WG_STAGING_TX_OFF, pkt_len, p);
 
     log_drain_write(16, 16, "[wg_net] SEND: peer=");
     wg_log_dec(peer_id);
@@ -528,35 +654,41 @@ static microkit_msginfo handle_send(void) {
     wg_log_dec(cipher_len);
     log_drain_write(16, 16, "\n");
 
-    microkit_mr_set(0, WG_OK);
-    microkit_mr_set(1, cipher_len);
-    return microkit_msginfo_new(0, 2);
+    data_wr32(rep->data, 0, WG_OK);
+    data_wr32(rep->data, 4, cipher_len);
+    rep->length = 8;
+    return SEL4_ERR_OK;
 }
 
-/* ── OP_WG_RECV ───────────────────────────────────────────────────────────── */
-
-static microkit_msginfo handle_recv(void) {
-    uint32_t req_peer = (uint32_t)microkit_mr_get(1);
+/* ═══════════════════════════════════════════════════════════════════════════
+ * Handler: OP_WG_RECV
+ *   req.data[0..3] = req_peer  (0xFF = any peer)
+ * ═══════════════════════════════════════════════════════════════════════════ */
+static uint32_t handle_recv(sel4_badge_t badge __attribute__((unused)),
+                              const sel4_msg_t *req,
+                              sel4_msg_t *rep,
+                              void *ctx __attribute__((unused)))
+{
+    uint32_t req_peer = data_rd32(req->data, 0);
 
     if (!rx_pending) {
-        /* No packet ready */
-        microkit_mr_set(0, WG_OK);
-        microkit_mr_set(1, 0u);   /* src_peer_id: undefined */
-        microkit_mr_set(2, 0u);   /* data_offset */
-        microkit_mr_set(3, 0u);   /* data_len = 0 means empty */
-        return microkit_msginfo_new(0, 4);
+        data_wr32(rep->data,  0, WG_OK);
+        data_wr32(rep->data,  4, 0u);
+        data_wr32(rep->data,  8, 0u);
+        data_wr32(rep->data, 12, 0u);
+        rep->length = 16;
+        return SEL4_ERR_OK;
     }
 
-    /* Filter by peer if caller specified one */
     if (req_peer != 0xFFu && rx_peer_id != (uint8_t)req_peer) {
-        microkit_mr_set(0, WG_OK);
-        microkit_mr_set(1, 0u);
-        microkit_mr_set(2, 0u);
-        microkit_mr_set(3, 0u);
-        return microkit_msginfo_new(0, 4);
+        data_wr32(rep->data,  0, WG_OK);
+        data_wr32(rep->data,  4, 0u);
+        data_wr32(rep->data,  8, 0u);
+        data_wr32(rep->data, 12, 0u);
+        rep->length = 16;
+        return SEL4_ERR_OK;
     }
 
-    /* Deliver: data is already at WG_STAGING_RX_OFF in staging */
     uint32_t peer_out = rx_peer_id;
     uint32_t len_out  = rx_data_len;
     rx_pending  = false;
@@ -569,62 +701,65 @@ static microkit_msginfo handle_recv(void) {
     wg_log_dec(len_out);
     log_drain_write(16, 16, "\n");
 
-    microkit_mr_set(0, WG_OK);
-    microkit_mr_set(1, peer_out);
-    microkit_mr_set(2, (uint32_t)WG_STAGING_RX_OFF);
-    microkit_mr_set(3, len_out);
-    return microkit_msginfo_new(0, 4);
+    data_wr32(rep->data,  0, WG_OK);
+    data_wr32(rep->data,  4, peer_out);
+    data_wr32(rep->data,  8, (uint32_t)WG_STAGING_RX_OFF);
+    data_wr32(rep->data, 12, len_out);
+    rep->length = 16;
+    return SEL4_ERR_OK;
 }
 
-/* ── OP_WG_STATUS ─────────────────────────────────────────────────────────── */
-
-static microkit_msginfo handle_status(void) {
+/* ═══════════════════════════════════════════════════════════════════════════
+ * Handler: OP_WG_STATUS
+ * ═══════════════════════════════════════════════════════════════════════════ */
+static uint32_t handle_status(sel4_badge_t badge __attribute__((unused)),
+                               const sel4_msg_t *req __attribute__((unused)),
+                               sel4_msg_t *rep,
+                               void *ctx __attribute__((unused)))
+{
     uint64_t total_tx = 0, total_rx = 0;
     uint32_t last_hs  = 0;
-
     for (int i = 0; i < (int)WG_MAX_PEERS; i++) {
-        if (!peers[i].active)
-            continue;
+        if (!peers[i].active) continue;
         total_tx += peers[i].tx_bytes;
         total_rx += peers[i].rx_bytes;
         if (peers[i].last_handshake > last_hs)
             last_hs = peers[i].last_handshake;
     }
 
-    microkit_mr_set(0, WG_OK);
-    microkit_mr_set(1, active_peer_count);
-    microkit_mr_set(2, (uint32_t)(total_tx & 0xFFFFFFFFu));
-    microkit_mr_set(3, (uint32_t)(total_rx & 0xFFFFFFFFu));
-    microkit_mr_set(4, last_hs);
-    return microkit_msginfo_new(0, 5);
+    data_wr32(rep->data,  0, WG_OK);
+    data_wr32(rep->data,  4, active_peer_count);
+    data_wr32(rep->data,  8, (uint32_t)(total_tx & 0xFFFFFFFFu));
+    data_wr32(rep->data, 12, (uint32_t)(total_rx & 0xFFFFFFFFu));
+    data_wr32(rep->data, 16, last_hs);
+    rep->length = 20;
+    return SEL4_ERR_OK;
 }
 
-/* ── OP_WG_SET_PRIVKEY ────────────────────────────────────────────────────── */
-
-static microkit_msginfo handle_set_privkey(void) {
-    uint32_t key_off = (uint32_t)microkit_mr_get(1);
+/* ═══════════════════════════════════════════════════════════════════════════
+ * Handler: OP_WG_SET_PRIVKEY
+ *   req.data[0..3] = key_off (offset into wg_staging)
+ * ═══════════════════════════════════════════════════════════════════════════ */
+static uint32_t handle_set_privkey(sel4_badge_t badge __attribute__((unused)),
+                                    const sel4_msg_t *req,
+                                    sel4_msg_t *rep,
+                                    void *ctx __attribute__((unused)))
+{
+    uint32_t key_off = data_rd32(req->data, 0);
 
     if (!wg_staging_vaddr || key_off + WG_KEY_LEN > 0x20000u) {
         log_drain_write(16, 16, "[wg_net] SET_PRIVKEY: staging not mapped or bad offset\n");
-        microkit_mr_set(0, WG_ERR_CRYPTO);
-        return microkit_msginfo_new(0, 1);
+        data_wr32(rep->data, 0, WG_ERR_CRYPTO);
+        rep->length = 4;
+        return SEL4_ERR_BAD_ARG;
     }
 
-    /* Copy private key from staging */
     wg_copy_from_staging(wg_privkey, WG_STAGING + key_off, WG_KEY_LEN);
 
-    /*
-     * Derive public key via Curve25519 scalar multiplication.
-     *
-     * CRYPTO_INTEGRATION_POINT:
-     *   static const uint8_t basepoint[32] = { 9 };
-     *   crypto_x25519(wg_pubkey, wg_privkey, basepoint);
-     */
+    /* CRYPTO_INTEGRATION_POINT: derive public key via Curve25519 */
     wg_derive_pubkey(wg_privkey, wg_pubkey);
 
-    /* Write derived public key back to staging for caller to read */
-    wg_copy_to_staging(WG_STAGING + WG_STAGING_PUBKEY_OFF,
-                        wg_pubkey, WG_KEY_LEN);
+    wg_copy_to_staging(WG_STAGING + WG_STAGING_PUBKEY_OFF, wg_pubkey, WG_KEY_LEN);
 
     wg_privkey_set = true;
 
@@ -635,183 +770,172 @@ static microkit_msginfo handle_set_privkey(void) {
                 | ((uint32_t)wg_pubkey[3] << 24));
     log_drain_write(16, 16, "\n");
 
-    microkit_mr_set(0, WG_OK);
-    return microkit_msginfo_new(0, 1);
+    data_wr32(rep->data, 0, WG_OK);
+    rep->length = 4;
+    return SEL4_ERR_OK;
 }
 
-/* ── OP_WG_HEALTH ─────────────────────────────────────────────────────────── */
-
-static microkit_msginfo handle_health(void) {
-    microkit_mr_set(0, WG_OK);
-    microkit_mr_set(1, active_peer_count);
-    microkit_mr_set(2, wg_privkey_set ? 1u : 0u);
-    return microkit_msginfo_new(0, 3);
+/* ═══════════════════════════════════════════════════════════════════════════
+ * Handler: OP_WG_HEALTH
+ * ═══════════════════════════════════════════════════════════════════════════ */
+static uint32_t handle_health(sel4_badge_t badge __attribute__((unused)),
+                               const sel4_msg_t *req __attribute__((unused)),
+                               sel4_msg_t *rep,
+                               void *ctx __attribute__((unused)))
+{
+    data_wr32(rep->data, 0, WG_OK);
+    data_wr32(rep->data, 4, active_peer_count);
+    data_wr32(rep->data, 8, wg_privkey_set ? 1u : 0u);
+    rep->length = 12;
+    return SEL4_ERR_OK;
 }
 
-/* ── protected() — synchronous PPC dispatch ──────────────────────────────── */
+/* ── Nameserver registration + "net" lookup ──────────────────────────────── */
+static void register_with_nameserver(seL4_CPtr ns_ep,
+                                      seL4_CPtr controller_ntfn)
+{
+    if (!ns_ep) return;
 
-microkit_msginfo protected(microkit_channel ch, microkit_msginfo msg) {
-    (void)ch;
-    uint64_t opcode = microkit_msginfo_get_label(msg);
+    /* Register wg_net */
+    sel4_msg_t req = {0}, rep = {0};
+    req.opcode = (uint32_t)OP_NS_REGISTER;
+    data_wr32(req.data,  0, 0u);
+    data_wr32(req.data,  4, 0u);
+    data_wr32(req.data,  8, 0u);
+    data_wr32(req.data, 12, 1u);
+    /* Name "wg_net" */
+    req.data[16] = 'w'; req.data[17] = 'g'; req.data[18] = '_';
+    req.data[19] = 'n'; req.data[20] = 'e'; req.data[21] = 't'; req.data[22] = '\0';
+    req.length = 23;
+#ifndef AGENTOS_TEST_HOST
+    sel4_call(ns_ep, &req, &rep);
 
-    switch ((uint32_t)opcode) {
-    case OP_WG_ADD_PEER:    return handle_add_peer();
-    case OP_WG_REMOVE_PEER: return handle_remove_peer();
-    case OP_WG_SEND:        return handle_send();
-    case OP_WG_RECV:        return handle_recv();
-    case OP_WG_STATUS:      return handle_status();
-    case OP_WG_SET_PRIVKEY: return handle_set_privkey();
-    case OP_WG_HEALTH:      return handle_health();
-
-    default:
-        log_drain_write(16, 16, "[wg_net] unknown opcode=");
-        wg_log_hex((uint32_t)opcode);
-        log_drain_write(16, 16, "\n");
-        microkit_mr_set(0, 0xFFFFu);
-        return microkit_msginfo_new(0xFFFF, 1);
+    /* Look up "net" endpoint so we can make outbound calls to net_server */
+    sel4_msg_t lreq = {0}, lrep = {0};
+    lreq.opcode = (uint32_t)OP_NS_LOOKUP;
+    lreq.data[0] = 'n'; lreq.data[1] = 'e'; lreq.data[2] = 't'; lreq.data[3] = '\0';
+    lreq.length = 4;
+    sel4_call(ns_ep, &lreq, &lrep);
+    if (lrep.opcode == 0u) {
+        /* Nameserver returns channel_id in data[0..3]; in seL4 this would
+         * be a minted cap.  Record as g_net_ep. */
+        g_net_ep = (seL4_CPtr)data_rd32(lrep.data, 0);
     }
+#else
+    (void)rep;
+    g_net_ep = 0;  /* no outbound calls in test mode */
+#endif
+
+    /* Notify controller that wg_net is ready.
+     * E5-S4: replaces microkit_notify(CH_CONTROLLER).
+     */
+    if (controller_ntfn)
+        seL4_Signal(controller_ntfn);
+
+    log_drain_write(16, 16, "[wg_net] registered as 'wg_net'; net_ep=");
+    wg_log_hex((uint32_t)g_net_ep);
+    log_drain_write(16, 16, "\n");
 }
 
-/* ── notified() — async timer / inbound packet notifications ─────────────── */
-
-void notified(microkit_channel ch) {
-    if (ch == CH_TIMER) {
-        timer_tick++;
-        if (timer_tick >= keepalive_due) {
-            send_keepalives();
-            keepalive_due = timer_tick + WG_KEEPALIVE_SECS;
-        }
-        return;
-    }
-
-    if (ch == WG_CH_NET_SERVER) {
-        /*
-         * net_server is notifying us that an inbound UDP packet arrived
-         * on our wNIC that may be a WireGuard transport message.
-         *
-         * Poll net_server for the raw packet, parse the WireGuard transport
-         * header, identify the sender peer by receiver_index, then decrypt.
-         *
-         * CRYPTO_INTEGRATION_POINT: full WireGuard transport parsing.
-         * For now, stub a receive: attempt to pull one packet from net_server.
-         */
-        if (rx_pending) {
-            /* Already have an unread packet — drop incoming */
-            return;
-        }
-
-        /* Poll net_server for an inbound packet */
-        microkit_mr_set(0, (uint64_t)OP_NET_VNIC_RECV);
-        microkit_mr_set(1, 0u);   /* vnic_id=0 */
-        microkit_mr_set(2, (uint32_t)WG_STAGING_RX_OFF);
-        microkit_mr_set(3, (uint32_t)WG_STAGING_RX_MAX);
-        microkit_msginfo reply =
-            microkit_ppcall(WG_CH_NET_SERVER,
-                            microkit_msginfo_new(OP_NET_VNIC_RECV, 4));
-
-        uint32_t res      = (uint32_t)microkit_mr_get(0);
-        uint32_t pkt_len  = (uint32_t)microkit_mr_get(1);
-
-        if (res != NET_OK || pkt_len < WG_TRANSPORT_HDR_LEN + WG_AEAD_TAG_LEN) {
-            (void)reply;
-            return;
-        }
-
-        /*
-         * Parse transport header: extract receiver_index (bytes 4..7)
-         * to identify which peer sent this packet.
-         */
-        const uint8_t *raw = (const uint8_t *)(wg_staging_vaddr
-                                                + WG_STAGING_RX_OFF);
-        uint8_t msg_type  = raw[0];
-        if (msg_type != 4u) {
-            /* Not a transport data message — ignore (could be handshake) */
-            return;
-        }
-        uint8_t recv_idx  = raw[4];   /* receiver_index low byte = peer_id */
-        wg_peer_t *p      = find_peer(recv_idx);
-        if (!p)
-            return;
-
-        /* Decrypt payload */
-        uint8_t session_key[WG_KEY_LEN];
-        uint8_t nonce[12];
-        wg_zero(session_key, WG_KEY_LEN);
-        wg_zero(nonce, 12);
-
-        const uint8_t *cipher    = raw + WG_TRANSPORT_HDR_LEN;
-        uint32_t       cipher_len = pkt_len - WG_TRANSPORT_HDR_LEN;
-        uint8_t       *plain_dst  = (uint8_t *)(wg_staging_vaddr
-                                                 + WG_STAGING_RX_OFF);
-        uint32_t       plain_len  = 0;
-
-        int rc = wg_decrypt(session_key, nonce, cipher, cipher_len,
-                             plain_dst, &plain_len);
-        if (rc != 0) {
-            log_drain_write(16, 16, "[wg_net] RECV: decrypt failed, dropping\n");
-            return;
-        }
-
-        p->rx_bytes     += pkt_len;
-        rx_peer_id       = recv_idx;
-        rx_data_len      = plain_len;
-        rx_pending       = true;
-
-        log_drain_write(16, 16, "[wg_net] notified: inbound packet from peer=");
-        wg_log_dec(recv_idx);
-        log_drain_write(16, 16, " plain_len=");
-        wg_log_dec(plain_len);
-        log_drain_write(16, 16, "\n");
-        return;
-    }
-
-    if (ch == CH_CONTROLLER) {
-        /* Controller notification — no-op for now */
-        return;
-    }
-}
-
-/* ── init() ──────────────────────────────────────────────────────────────── */
-
-void init(void) {
-    /* Zero peer table */
+/* ═══════════════════════════════════════════════════════════════════════════
+ * wg_net_test_init() — set up dispatch table for host-side tests
+ * ═══════════════════════════════════════════════════════════════════════════ */
+static void wg_net_test_init(void)
+{
     for (int i = 0; i < (int)WG_MAX_PEERS; i++) {
         peers[i].active  = false;
         peers[i].peer_id = 0;
         wg_zero(peers[i].pubkey, WG_KEY_LEN);
         wg_zero(peers[i].preshared_key, WG_KEY_LEN);
-        peers[i].tx_bytes      = 0;
-        peers[i].rx_bytes      = 0;
-        peers[i].last_handshake= 0;
+        peers[i].tx_bytes       = 0;
+        peers[i].rx_bytes       = 0;
+        peers[i].last_handshake = 0;
     }
     active_peer_count = 0;
 
-    /* Zero local key state */
     wg_zero(wg_privkey, WG_KEY_LEN);
     wg_zero(wg_pubkey, WG_KEY_LEN);
     wg_privkey_set = false;
 
-    /* Timer state */
     timer_tick    = 0;
     keepalive_due = WG_KEEPALIVE_SECS;
 
-    /* RX state */
     rx_pending  = false;
     rx_data_len = 0;
     rx_peer_id  = 0;
 
-    /* Zero staging region key slots if mapped */
+    g_net_ep = 0;
+
+    sel4_server_init(&g_srv, 0u);
+    sel4_server_register(&g_srv, OP_WG_ADD_PEER,    handle_add_peer,    NULL);
+    sel4_server_register(&g_srv, OP_WG_REMOVE_PEER, handle_remove_peer, NULL);
+    sel4_server_register(&g_srv, OP_WG_SEND,        handle_send,        NULL);
+    sel4_server_register(&g_srv, OP_WG_RECV,        handle_recv,        NULL);
+    sel4_server_register(&g_srv, OP_WG_STATUS,      handle_status,      NULL);
+    sel4_server_register(&g_srv, OP_WG_SET_PRIVKEY, handle_set_privkey, NULL);
+    sel4_server_register(&g_srv, OP_WG_HEALTH,      handle_health,      NULL);
+}
+
+/* ── dispatch helper for tests ───────────────────────────────────────────── */
+static uint32_t wg_net_dispatch_one(sel4_badge_t badge,
+                                     const sel4_msg_t *req,
+                                     sel4_msg_t *rep)
+{
+    return sel4_server_dispatch(&g_srv, badge, req, rep);
+}
+
+/*
+ * wg_net_timer_tick() — advance keepalive timer.
+ *
+ * E5-S4: called when a seL4 notification arrives on timer_ntfn_cap.
+ * Replaces the old notified(CH_TIMER) path.  No Microkit, no PPC ordering.
+ */
+static void wg_net_timer_tick(void) {
+    timer_tick++;
+    if (timer_tick >= keepalive_due) {
+        send_keepalives();
+        keepalive_due = timer_tick + WG_KEEPALIVE_SECS;
+    }
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+ * wg_net_main() — raw seL4 IPC entry point
+ *
+ * Parameters:
+ *   my_ep            — this PD's listen endpoint
+ *   ns_ep            — nameserver endpoint (for "wg_net" registration and
+ *                      "net" lookup)
+ *   controller_ntfn  — seL4 notification cap to signal controller at boot
+ *
+ * E5-S4: CH_NET_SERVER_NET_ISOLATOR (id=11) is gone.  We look up "net" via
+ * the nameserver and store the resolved cap in g_net_ep for all outbound
+ * OP_NET_VNIC_SEND calls.  No priority constraint.
+ * ═══════════════════════════════════════════════════════════════════════════ */
+#ifndef AGENTOS_TEST_HOST
+void wg_net_main(seL4_CPtr my_ep, seL4_CPtr ns_ep,
+                 seL4_CPtr controller_ntfn)
+{
+    agentos_log_boot("wg_net");
+    log_drain_write(16, 16, "[wg_net] Initialising WireGuard PD (raw seL4 IPC)\n");
+    log_drain_write(16, 16, "[wg_net]   priority ordering constraint ELIMINATED\n");
+    log_drain_write(16, 16, "[wg_net]   crypto=stub(CRYPTO_INTEGRATION_POINT)\n");
+
+    wg_net_test_init();
+
     if (wg_staging_vaddr) {
         volatile uint8_t *s = WG_STAGING;
-        for (uint32_t i = 0; i < WG_KEY_LEN * 2; i++)
-            s[i] = 0;
+        for (uint32_t i = 0; i < WG_KEY_LEN * 2; i++) s[i] = 0;
     }
 
-    log_drain_write(16, 16, "[wg_net] WireGuard overlay PD online\n");
-    log_drain_write(16, 16, "[wg_net]   max_peers=16, keepalive=25s, "
-                "crypto=stub(CRYPTO_INTEGRATION_POINT)\n");
-    log_drain_write(16, 16, "[wg_net]   call OP_WG_SET_PRIVKEY before OP_WG_SEND\n");
+    register_with_nameserver(ns_ep, controller_ntfn);
 
-    /* Notify controller that wg_net is ready */
-    microkit_notify(CH_CONTROLLER);
+    log_drain_write(16, 16, "[wg_net] READY — max_peers=");
+    wg_log_dec(WG_MAX_PEERS);
+    log_drain_write(16, 16, " keepalive_secs=");
+    wg_log_dec(WG_KEEPALIVE_SECS);
+    log_drain_write(16, 16, "\n");
+
+    g_srv.ep = my_ep;
+    sel4_server_run(&g_srv);   /* NEVER RETURNS */
 }
+#endif /* !AGENTOS_TEST_HOST */

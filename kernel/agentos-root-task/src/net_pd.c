@@ -1,32 +1,148 @@
 /*
- * agentOS Network Device Protection Domain
+ * agentOS Network Device Protection Domain — E5-S4: raw seL4 IPC
  *
  * OS-neutral network service PD that moves lwIP behind a proper PD boundary.
- * Previously, lwIP was embedded directly in net_server.c.  net_pd owns the
- * virtio-net hardware exclusively via seL4 device frame capabilities.
+ * Owns the virtio-net hardware exclusively via seL4 device frame capabilities.
  *
- * API surface (see net_contract.h):
+ * Migration notes (E5-S4):
+ *   - Priority ordering constraint ELIMINATED.  net_pd_main() uses a
+ *     sel4_server_t receive loop; callers block on endpoint IPC.
+ *   - CH_NET_PD / CH_NET_SERVER channel constants removed.  The nameserver
+ *     provides the endpoint cap at runtime.
+ *   - net_pd registers itself as "net_pd" with the nameserver at startup.
+ *   - Timer notification (ch=1) becomes an out-of-band seL4 notification;
+ *     in-band timer handling can be done via a dedicated opcode if needed.
+ *
+ * API surface (see contracts/net_contract.h):
  *   Packet I/O:  MSG_NET_OPEN/CLOSE/SEND/RECV/DEV_STATUS/CONFIGURE/
  *                MSG_NET_FILTER_ADD/FILTER_REMOVE
  *   Sockets:     MSG_NET_SOCKET_OPEN/CLOSE/CONNECT/BIND/LISTEN/ACCEPT/SET_OPT
  *
- * Invariants:
- *   - Every client opens a handle via MSG_NET_OPEN or MSG_NET_SOCKET_OPEN.
- *   - NIC handles get a dedicated shmem slot (ring header + frame data).
- *   - Socket handles share the same shmem space; each gets a 16KB slot.
- *   - lwIP runs internally; callers never touch it directly.
- *   - WireGuard integration is marked WG_INTEGRATION_POINT.
- *   - Guest OSes get a handle via device binding, not direct lwIP access.
- *   - Multiple virtual NICs per guest slot are supported via the handle table.
- *
- * Channel: CH_NET_PD (48) — controller PPCs in
- * Priority: 160 (passive)
- * Shmem: net_pd_shmem (256KB at 0x5000000, rw)
- * MMIO: virtio_net_mmio (0x6000000, rw, uncached)
- *
  * Copyright (c) 2026 The agentOS Project
  * SPDX-License-Identifier: BSD-2-Clause
  */
+
+/* ── Conditional compilation ─────────────────────────────────────────────── */
+
+#ifdef AGENTOS_TEST_HOST
+#include <stdint.h>
+#include <stdbool.h>
+#include <string.h>
+
+typedef unsigned long      seL4_CPtr;
+typedef unsigned long long sel4_badge_t;
+
+typedef struct {
+    uint32_t opcode;
+    uint32_t length;
+    uint8_t  data[48];
+} sel4_msg_t;
+
+#define SEL4_ERR_OK          0u
+#define SEL4_ERR_INVALID_OP  1u
+#define SEL4_ERR_NOT_FOUND   2u
+#define SEL4_ERR_PERM        3u
+#define SEL4_ERR_BAD_ARG     4u
+#define SEL4_ERR_NO_MEM      5u
+
+typedef uint32_t (*sel4_handler_fn)(sel4_badge_t badge,
+                                     const sel4_msg_t *req,
+                                     sel4_msg_t *rep,
+                                     void *ctx);
+#define SEL4_SERVER_MAX_HANDLERS 32u
+typedef struct {
+    struct {
+        uint32_t        opcode;
+        sel4_handler_fn fn;
+        void           *ctx;
+    } handlers[SEL4_SERVER_MAX_HANDLERS];
+    uint32_t  handler_count;
+    seL4_CPtr ep;
+} sel4_server_t;
+
+static inline void sel4_server_init(sel4_server_t *srv, seL4_CPtr ep)
+{
+    srv->handler_count = 0;
+    srv->ep            = ep;
+    for (uint32_t i = 0; i < SEL4_SERVER_MAX_HANDLERS; i++) {
+        srv->handlers[i].opcode = 0;
+        srv->handlers[i].fn     = (sel4_handler_fn)0;
+        srv->handlers[i].ctx    = (void *)0;
+    }
+}
+static inline int sel4_server_register(sel4_server_t *srv, uint32_t opcode,
+                                        sel4_handler_fn fn, void *ctx)
+{
+    if (srv->handler_count >= SEL4_SERVER_MAX_HANDLERS) return -1;
+    srv->handlers[srv->handler_count].opcode = opcode;
+    srv->handlers[srv->handler_count].fn     = fn;
+    srv->handlers[srv->handler_count].ctx    = ctx;
+    srv->handler_count++;
+    return 0;
+}
+static inline uint32_t sel4_server_dispatch(sel4_server_t *srv,
+                                             sel4_badge_t badge,
+                                             const sel4_msg_t *req,
+                                             sel4_msg_t *rep)
+{
+    for (uint32_t i = 0; i < srv->handler_count; i++) {
+        if (srv->handlers[i].opcode == req->opcode) {
+            uint32_t rc = srv->handlers[i].fn(badge, req, rep,
+                                               srv->handlers[i].ctx);
+            rep->opcode = rc;
+            return rc;
+        }
+    }
+    rep->opcode = SEL4_ERR_INVALID_OP;
+    rep->length = 0;
+    return SEL4_ERR_INVALID_OP;
+}
+
+static inline uint32_t data_rd32(const uint8_t *d, int off)
+{
+    return (uint32_t)d[off]
+         | ((uint32_t)d[off+1] <<  8)
+         | ((uint32_t)d[off+2] << 16)
+         | ((uint32_t)d[off+3] << 24);
+}
+static inline void data_wr32(uint8_t *d, int off, uint32_t v)
+{
+    d[off  ] = (uint8_t)(v      );
+    d[off+1] = (uint8_t)(v >>  8);
+    d[off+2] = (uint8_t)(v >> 16);
+    d[off+3] = (uint8_t)(v >> 24);
+}
+
+/* lwIP / TCP stubs */
+struct netif { int (*linkoutput)(struct netif *, void *); };
+static struct netif g_netif;
+typedef void* pbuf;
+#define PBUF_LINK  0
+#define PBUF_RAM   0
+static inline pbuf *pbuf_alloc(int l, unsigned short s, int t) { (void)l;(void)s;(void)t; return (void*)0; }
+static inline void pbuf_free(pbuf *p) { (void)p; }
+static inline void net_server_lwip_init(uintptr_t m, uint32_t a, uint32_t b) { (void)m;(void)a;(void)b; }
+static inline void lwip_tick(void) {}
+static inline void lwip_virtio_rx_poll(void) {}
+static inline void sys_check_timeouts(void) {}
+static inline int  lwip_net_recv(uint8_t id, uint8_t *buf, uint32_t len) { (void)id;(void)buf;(void)len; return 0; }
+static inline int  lwip_net_connect(uint8_t id, uint32_t ip, uint16_t port) { (void)id;(void)ip;(void)port; return -1; }
+static inline int  lwip_net_send(uint8_t id, const uint8_t *d, uint16_t l) { (void)id;(void)d;(void)l; return -1; }
+struct lwip_conn { void *tcp; uint32_t state; };
+static struct lwip_conn g_conns[16];
+struct tcp_pcb;
+static inline int tcp_close(struct tcp_pcb *p) { (void)p; return 0; }
+
+static inline void log_drain_write(int a, int b, const char *s) { (void)a;(void)b;(void)s; }
+static inline void agentos_log_boot(const char *s) { (void)s; }
+static inline void seL4_Signal(seL4_CPtr cap) { (void)cap; }
+
+/* OP_NS_REGISTER stub */
+#ifndef OP_NS_REGISTER
+#define OP_NS_REGISTER 0xD0u
+#endif
+
+#else /* !AGENTOS_TEST_HOST */
 
 #define AGENTOS_DEBUG 1
 #include "agentos.h"
@@ -34,37 +150,88 @@
 #include "lwip_sys.h"
 #include "lwip/pbuf.h"
 #include "lwip/tcp.h"
+#include "sel4_ipc.h"
+#include "sel4_server.h"
+#include "sel4_client.h"
+#include "nameserver.h"
 
-/* ─── virtio-MMIO register offsets ──────────────────────────────────────────── */
+static inline uint32_t data_rd32(const uint8_t *d, int off)
+{
+    return (uint32_t)d[off]
+         | ((uint32_t)d[off+1] <<  8)
+         | ((uint32_t)d[off+2] << 16)
+         | ((uint32_t)d[off+3] << 24);
+}
+static inline void data_wr32(uint8_t *d, int off, uint32_t v)
+{
+    d[off  ] = (uint8_t)(v      );
+    d[off+1] = (uint8_t)(v >>  8);
+    d[off+2] = (uint8_t)(v >> 16);
+    d[off+3] = (uint8_t)(v >> 24);
+}
+
+#endif /* AGENTOS_TEST_HOST */
+
+/* ── Contract opcodes (keep identical to Microkit version) ───────────────── */
+/* These mirror agentos.h MSG_NET_* constants so the wire format is unchanged */
+#ifndef MSG_NET_OPEN
+#define MSG_NET_OPEN           0x2101u
+#define MSG_NET_CLOSE          0x2102u
+#define MSG_NET_SEND           0x2103u
+#define MSG_NET_RECV           0x2104u
+#define MSG_NET_DEV_STATUS     0x2105u
+#define MSG_NET_CONFIGURE      0x2106u
+#define MSG_NET_FILTER_ADD     0x2107u
+#define MSG_NET_FILTER_REMOVE  0x2108u
+#define MSG_NET_SOCKET_OPEN    0x2109u
+#define MSG_NET_SOCKET_CLOSE   0x210Au
+#define MSG_NET_SOCKET_CONNECT 0x210Bu
+#define MSG_NET_SOCKET_BIND    0x210Cu
+#define MSG_NET_SOCKET_LISTEN  0x210Du
+#define MSG_NET_SOCKET_ACCEPT  0x210Eu
+#define MSG_NET_SOCKET_SET_OPT 0x210Fu
+#endif
+
+/* ── Result codes ────────────────────────────────────────────────────────── */
+#ifndef NET_OK
+#define NET_OK              0u
+#define NET_ERR_NO_SLOTS    1u
+#define NET_ERR_BAD_HANDLE  2u
+#define NET_ERR_FRAME_TOO_LARGE 3u
+#define NET_ERR_FILTER_FULL 4u
+#define NET_ERR_BAD_FILTER_ID 5u
+#endif
+
+/* ── virtio-MMIO register offsets ───────────────────────────────────────── */
 #define VIRTIO_MMIO_MAGIC_VALUE  0x000u
 #define VIRTIO_MMIO_VERSION      0x004u
 #define VIRTIO_MMIO_DEVICE_ID    0x008u
 #define VIRTIO_MMIO_STATUS       0x070u
-#define VIRTIO_MMIO_MAGIC        0x74726976u  /* "virt" */
+#define VIRTIO_MMIO_MAGIC        0x74726976u
 #define VIRTIO_STATUS_ACKNOWLEDGE (1u << 0)
 #define VIRTIO_STATUS_DRIVER      (1u << 1)
 #define VIRTIO_NET_DEVICE_ID     1u
 
-/* ─── Shared memory ─────────────────────────────────────────────────────────── */
+/* ── Shared memory ───────────────────────────────────────────────────────── */
 uintptr_t net_pd_shmem_vaddr;
 uintptr_t net_pd_mmio_vaddr;
 uintptr_t log_drain_rings_vaddr;
 
 #define NET_PD_SHMEM ((volatile uint8_t *)net_pd_shmem_vaddr)
 
-/* ─── Shmem layout (mirrors net_server.h geometry) ─────────────────────────── */
-#define NETPD_SHMEM_TOTAL      0x40000u   /* 256KB */
-#define NETPD_SLOT_SIZE        0x4000u    /* 16KB per handle slot */
-#define NETPD_SLOT_HDR_SIZE    1024u      /* ring header within slot */
+/* ── Shmem layout ────────────────────────────────────────────────────────── */
+#define NETPD_SHMEM_TOTAL      0x40000u
+#define NETPD_SLOT_SIZE        0x4000u
+#define NETPD_SLOT_HDR_SIZE    1024u
 #define NETPD_SLOT_DATA_SIZE   (NETPD_SLOT_SIZE - NETPD_SLOT_HDR_SIZE)
 #define NETPD_SLOT_OFFSET(n)   ((n) * NETPD_SLOT_SIZE)
 
-/* ─── Handle type discriminator ─────────────────────────────────────────────── */
+/* ── Handle type discriminators ─────────────────────────────────────────── */
 #define HANDLE_TYPE_INVALID  0u
-#define HANDLE_TYPE_NIC      1u   /* MSG_NET_OPEN: raw Ethernet frame client */
-#define HANDLE_TYPE_SOCKET   2u   /* MSG_NET_SOCKET_OPEN: TCP/UDP socket client */
+#define HANDLE_TYPE_NIC      1u
+#define HANDLE_TYPE_SOCKET   2u
 
-/* ─── Socket states ──────────────────────────────────────────────────────────── */
+/* ── Socket states ───────────────────────────────────────────────────────── */
 #define SOCK_STATE_FREE        0u
 #define SOCK_STATE_BOUND       1u
 #define SOCK_STATE_CONNECTING  2u
@@ -72,13 +239,28 @@ uintptr_t log_drain_rings_vaddr;
 #define SOCK_STATE_LISTENING   4u
 #define SOCK_STATE_CLOSED      5u
 
-/* ─── Socket options (MSG_NET_SOCKET_SET_OPT option IDs) ────────────────────── */
+/* ── Socket options ──────────────────────────────────────────────────────── */
 #define NET_SOCKOPT_REUSEADDR  0u
 #define NET_SOCKOPT_NODELAY    1u
 #define NET_SOCKOPT_KEEPALIVE  2u
 
-/* ─── NIC ring header at slot offset 0 ─────────────────────────────────────── */
-#define NETPD_RING_MAGIC  0x4E455450u   /* "NETP" */
+/* ── Config limits ───────────────────────────────────────────────────────── */
+#ifndef NET_MAX_CLIENTS
+#define NET_MAX_CLIENTS  16u
+#endif
+#ifndef NET_MAX_FILTERS
+#define NET_MAX_FILTERS  32u
+#endif
+#ifndef NET_MAX_FRAME_BYTES
+#define NET_MAX_FRAME_BYTES  1514u
+#endif
+#ifndef NET_PROTO_TCP
+#define NET_PROTO_TCP  0u
+#define NET_PROTO_UDP  1u
+#endif
+
+/* ── NIC ring header ─────────────────────────────────────────────────────── */
+#define NETPD_RING_MAGIC  0x4E455450u
 
 typedef struct {
     uint32_t magic;
@@ -91,16 +273,16 @@ typedef struct {
     uint32_t rx_drops;
 } netpd_ring_t;
 
-/* ─── Per-client handle entry ───────────────────────────────────────────────── */
+/* ── Per-client handle entry ─────────────────────────────────────────────── */
 typedef struct {
     bool     active;
-    uint32_t type;         /* HANDLE_TYPE_NIC or HANDLE_TYPE_SOCKET */
-    uint32_t shmem_slot;   /* index 0-15 into net_pd_shmem */
+    uint32_t type;
+    uint32_t shmem_slot;
 
     /* NIC handle state */
     uint32_t iface_id;
     uint32_t mtu;
-    uint32_t cfg_flags;    /* NET_CFG_FLAG_* bitmask */
+    uint32_t cfg_flags;
     uint64_t rx_pkts;
     uint64_t tx_pkts;
     uint64_t rx_bytes;
@@ -111,33 +293,32 @@ typedef struct {
     uint8_t  _mac_pad[2];
     uint32_t filter_count;
     uint32_t next_filter_id;
-    /* filter_id[n] pairs with filter in shmem (recorded for removal) */
     uint32_t filter_ids[NET_MAX_FILTERS];
-    uint32_t filter_lens[NET_MAX_FILTERS];   /* byte lengths of installed rules */
+    uint32_t filter_lens[NET_MAX_FILTERS];
 
-    /* Socket handle state (valid when type == HANDLE_TYPE_SOCKET) */
-    uint8_t  proto;          /* NET_PROTO_TCP or NET_PROTO_UDP */
-    uint8_t  sock_state;     /* SOCK_STATE_* */
+    /* Socket handle state */
+    uint8_t  proto;
+    uint8_t  sock_state;
     uint32_t local_port;
     uint32_t remote_ip;
     uint32_t remote_port;
-    /* lwIP TCP PCB is tracked in lwip_sys g_conns[shmem_slot] */
 } net_pd_client_t;
 
-/* ─── Module state ──────────────────────────────────────────────────────────── */
+/* ── Module state ────────────────────────────────────────────────────────── */
 static net_pd_client_t clients[NET_MAX_CLIENTS];
 static uint32_t        active_clients = 0;
-static uint32_t        slot_bitmap    = 0u;   /* bit N set = shmem slot N in use */
+static uint32_t        slot_bitmap    = 0u;
 static bool            hw_present     = false;
 
-/* ─── Module-level iface counters (link-level) ──────────────────────────────── */
 static uint64_t iface_rx_pkts = 0, iface_tx_pkts = 0;
 static uint64_t iface_rx_bytes = 0, iface_tx_bytes = 0;
 static uint32_t iface_rx_errors = 0, iface_tx_errors = 0;
 static bool     iface_link_up = false;
 
-/* ─── Minimal string/number log helpers (no libc) ──────────────────────────── */
+/* sel4_server_t instance */
+static sel4_server_t g_srv;
 
+/* ── Logging helpers ─────────────────────────────────────────────────────── */
 static void log_dec(uint32_t v)
 {
     if (v == 0) { log_drain_write(17, 17, "0"); return; }
@@ -161,20 +342,17 @@ static void log_hex(uint32_t v)
     log_drain_write(17, 17, buf);
 }
 
-/* ─── MMIO helpers ─────────────────────────────────────────────────────────── */
-
+/* ── MMIO helpers ────────────────────────────────────────────────────────── */
 static inline uint32_t mmio_read32(uintptr_t base, uint32_t off)
 {
     return *(volatile uint32_t *)(base + off);
 }
-
 static inline void mmio_write32(uintptr_t base, uint32_t off, uint32_t val)
 {
     *(volatile uint32_t *)(base + off) = val;
 }
 
-/* ─── Shmem slot allocation ─────────────────────────────────────────────────── */
-
+/* ── Shmem slot allocation ───────────────────────────────────────────────── */
 static int alloc_slot(void)
 {
     for (int i = 0; i < (int)NET_MAX_CLIENTS; i++) {
@@ -185,41 +363,35 @@ static int alloc_slot(void)
     }
     return -1;
 }
-
 static void free_slot(uint32_t slot)
 {
     if (slot < NET_MAX_CLIENTS)
         slot_bitmap &= ~(1u << slot);
 }
 
-/* ─── Handle lookup helpers ─────────────────────────────────────────────────── */
-
+/* ── Handle lookup helpers ───────────────────────────────────────────────── */
 static net_pd_client_t *find_client(uint32_t handle)
 {
     if (handle >= NET_MAX_CLIENTS) return NULL;
     net_pd_client_t *c = &clients[handle];
     return (c->active) ? c : NULL;
 }
-
 static net_pd_client_t *find_nic(uint32_t handle)
 {
     net_pd_client_t *c = find_client(handle);
     return (c && c->type == HANDLE_TYPE_NIC) ? c : NULL;
 }
-
 static net_pd_client_t *find_sock(uint32_t handle)
 {
     net_pd_client_t *c = find_client(handle);
     return (c && c->type == HANDLE_TYPE_SOCKET) ? c : NULL;
 }
 
-/* ─── Ring accessor ─────────────────────────────────────────────────────────── */
-
+/* ── Ring accessor ───────────────────────────────────────────────────────── */
 static volatile netpd_ring_t *slot_ring(uint32_t slot)
 {
     return (volatile netpd_ring_t *)(net_pd_shmem_vaddr + NETPD_SLOT_OFFSET(slot));
 }
-
 static void init_ring(uint32_t slot, uint32_t handle)
 {
     volatile netpd_ring_t *r = slot_ring(slot);
@@ -230,7 +402,6 @@ static void init_ring(uint32_t slot, uint32_t handle)
     r->tx_drops = 0; r->rx_drops = 0;
     __asm__ volatile("" ::: "memory");
 }
-
 static void clear_ring(uint32_t slot)
 {
     volatile netpd_ring_t *r = slot_ring(slot);
@@ -238,8 +409,7 @@ static void clear_ring(uint32_t slot)
     __asm__ volatile("" ::: "memory");
 }
 
-/* ─── virtio-net probe ─────────────────────────────────────────────────────── */
-
+/* ── virtio-net probe ────────────────────────────────────────────────────── */
 static void probe_virtio_net(void)
 {
     if (!net_pd_mmio_vaddr) {
@@ -259,8 +429,8 @@ static void probe_virtio_net(void)
         return;
     }
 
-    hw_present     = true;
-    iface_link_up  = true;
+    hw_present    = true;
+    iface_link_up = true;
 
     mmio_write32(net_pd_mmio_vaddr, VIRTIO_MMIO_STATUS, VIRTIO_STATUS_ACKNOWLEDGE);
     mmio_write32(net_pd_mmio_vaddr, VIRTIO_MMIO_STATUS,
@@ -270,63 +440,82 @@ static void probe_virtio_net(void)
     log_hex((uint32_t)net_pd_mmio_vaddr);
     log_drain_write(17, 17, ", hw present\n");
 
-    /*
-     * Initialise lwIP against this virtio-net MMIO base.
-     * Virtqueue descriptor tables not yet allocated; pass 0 — lwip_sys.c
-     * handles missing queues by skipping the virtqueue kick path.
-     */
     net_server_lwip_init(net_pd_mmio_vaddr, 0u, 0u);
 }
 
-/* ═══════════════════════════════════════════════════════════════════════════
- * MSG_NET_OPEN (0x2101) — open a raw-Ethernet NIC handle
- *
- *   MR1 = iface_id  (0 = primary interface)
- *   Reply: MR0=ok, MR1=handle, MR2=shmem_slot_offset, MR3..MR8=mac[0..5]
- * ═══════════════════════════════════════════════════════════════════════════ */
-static microkit_msginfo handle_net_open(void)
+/* ── Nameserver registration ─────────────────────────────────────────────── */
+static void register_with_nameserver(seL4_CPtr ns_ep)
 {
-    uint32_t iface_id = (uint32_t)microkit_mr_get(1);
+    if (!ns_ep) return;
+    sel4_msg_t req = {0}, rep = {0};
+    req.opcode = (uint32_t)OP_NS_REGISTER;
+    data_wr32(req.data,  0, 0u);
+    data_wr32(req.data,  4, 0u);
+    data_wr32(req.data,  8, 0u);
+    data_wr32(req.data, 12, 1u);
+    /* Name "net_pd" at data[16..] */
+    req.data[16] = 'n'; req.data[17] = 'e'; req.data[18] = 't'; req.data[19] = '_';
+    req.data[20] = 'p'; req.data[21] = 'd'; req.data[22] = '\0';
+    req.length = 23;
+#ifndef AGENTOS_TEST_HOST
+    sel4_call(ns_ep, &req, &rep);
+#else
+    (void)rep;
+#endif
+    log_drain_write(17, 17, "[net_pd] registered with nameserver as 'net_pd'\n");
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+ * MSG_NET_OPEN (0x2101)
+ *   req.data[0..3] = iface_id
+ * ═══════════════════════════════════════════════════════════════════════════ */
+static uint32_t handle_net_open(sel4_badge_t badge __attribute__((unused)),
+                                 const sel4_msg_t *req,
+                                 sel4_msg_t *rep,
+                                 void *ctx __attribute__((unused)))
+{
+    uint32_t iface_id = data_rd32(req->data, 0);
 
     if (active_clients >= NET_MAX_CLIENTS) {
-        microkit_mr_set(0, NET_ERR_NO_SLOTS);
-        return microkit_msginfo_new(0, 1);
+        data_wr32(rep->data, 0, NET_ERR_NO_SLOTS);
+        rep->length = 4;
+        return SEL4_ERR_NO_MEM;
     }
 
     int slot = alloc_slot();
     if (slot < 0) {
-        microkit_mr_set(0, NET_ERR_NO_SLOTS);
-        return microkit_msginfo_new(0, 1);
+        data_wr32(rep->data, 0, NET_ERR_NO_SLOTS);
+        rep->length = 4;
+        return SEL4_ERR_NO_MEM;
     }
 
-    /* Find an unused handle index */
     int handle = -1;
     for (int i = 0; i < (int)NET_MAX_CLIENTS; i++) {
         if (!clients[i].active) { handle = i; break; }
     }
     if (handle < 0) {
         free_slot((uint32_t)slot);
-        microkit_mr_set(0, NET_ERR_NO_SLOTS);
-        return microkit_msginfo_new(0, 1);
+        data_wr32(rep->data, 0, NET_ERR_NO_SLOTS);
+        rep->length = 4;
+        return SEL4_ERR_NO_MEM;
     }
 
     net_pd_client_t *c = &clients[handle];
-    c->active        = true;
-    c->type          = HANDLE_TYPE_NIC;
-    c->shmem_slot    = (uint32_t)slot;
-    c->iface_id      = iface_id;
-    c->mtu           = 1500u;
-    c->cfg_flags     = 0u;
-    c->rx_pkts       = 0; c->tx_pkts = 0;
-    c->rx_bytes      = 0; c->tx_bytes = 0;
-    c->rx_errors     = 0; c->tx_errors = 0;
-    c->filter_count  = 0; c->next_filter_id = 1u;
+    c->active       = true;
+    c->type         = HANDLE_TYPE_NIC;
+    c->shmem_slot   = (uint32_t)slot;
+    c->iface_id     = iface_id;
+    c->mtu          = 1500u;
+    c->cfg_flags    = 0u;
+    c->rx_pkts      = 0; c->tx_pkts = 0;
+    c->rx_bytes     = 0; c->tx_bytes = 0;
+    c->rx_errors    = 0; c->tx_errors = 0;
+    c->filter_count = 0; c->next_filter_id = 1u;
     for (uint32_t i = 0; i < NET_MAX_FILTERS; i++) {
         c->filter_ids[i]  = 0;
         c->filter_lens[i] = 0;
     }
 
-    /* Locally-administered MAC: 02:00:00:00:00:NN (handle index) */
     c->mac[0] = 0x02; c->mac[1] = 0x00; c->mac[2] = 0x00;
     c->mac[3] = 0x00; c->mac[4] = 0x00; c->mac[5] = (uint8_t)(handle & 0xFFu);
 
@@ -343,30 +532,32 @@ static microkit_msginfo handle_net_open(void)
     log_dec((uint32_t)slot);
     log_drain_write(17, 17, "\n");
 
-    microkit_mr_set(0, NET_OK);
-    microkit_mr_set(1, (uint32_t)handle);
-    microkit_mr_set(2, slot_off);
-    /* Return MAC address in MR3..MR8 */
-    microkit_mr_set(3, c->mac[0]);
-    microkit_mr_set(4, c->mac[1]);
-    microkit_mr_set(5, c->mac[2]);
-    microkit_mr_set(6, c->mac[3]);
-    microkit_mr_set(7, c->mac[4]);
-    microkit_mr_set(8, c->mac[5]);
-    return microkit_msginfo_new(0, 9);
+    data_wr32(rep->data,  0, NET_OK);
+    data_wr32(rep->data,  4, (uint32_t)handle);
+    data_wr32(rep->data,  8, slot_off);
+    /* MAC in data[12..17] */
+    rep->data[12] = c->mac[0]; rep->data[13] = c->mac[1];
+    rep->data[14] = c->mac[2]; rep->data[15] = c->mac[3];
+    rep->data[16] = c->mac[4]; rep->data[17] = c->mac[5];
+    rep->length = 18;
+    return SEL4_ERR_OK;
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
- * MSG_NET_CLOSE (0x2102) — close a NIC handle
+ * MSG_NET_CLOSE (0x2102)
+ *   req.data[0..3] = handle
  * ═══════════════════════════════════════════════════════════════════════════ */
-static microkit_msginfo handle_net_close(void)
+static uint32_t handle_net_close(sel4_badge_t badge __attribute__((unused)),
+                                  const sel4_msg_t *req,
+                                  sel4_msg_t *rep,
+                                  void *ctx __attribute__((unused)))
 {
-    uint32_t handle = (uint32_t)microkit_mr_get(1);
-
+    uint32_t handle = data_rd32(req->data, 0);
     net_pd_client_t *c = find_nic(handle);
     if (!c) {
-        microkit_mr_set(0, NET_ERR_BAD_HANDLE);
-        return microkit_msginfo_new(0, 1);
+        data_wr32(rep->data, 0, NET_ERR_BAD_HANDLE);
+        rep->length = 4;
+        return SEL4_ERR_NOT_FOUND;
     }
 
     log_drain_write(17, 17, "[net_pd] CLOSE: handle=");
@@ -378,37 +569,39 @@ static microkit_msginfo handle_net_close(void)
     c->active = false;
     if (active_clients > 0) active_clients--;
 
-    microkit_mr_set(0, NET_OK);
-    return microkit_msginfo_new(0, 1);
+    data_wr32(rep->data, 0, NET_OK);
+    rep->length = 4;
+    return SEL4_ERR_OK;
 }
 
-/* ═══════════════════════════════════════════════════════════════════════════
- * MSG_NET_SEND (0x2103) — transmit an Ethernet frame (NIC handle)
- *   OR send data bytes (socket handle — dispatched below)
- *
- *   NIC: MR1=handle, MR2=len (frame in shmem at slot_offset)
- *   Reply: MR0=ok
- * ═══════════════════════════════════════════════════════════════════════════ */
-static microkit_msginfo handle_net_send_nic(net_pd_client_t *c, uint32_t handle)
+/* ── MSG_NET_SEND helpers ────────────────────────────────────────────────── */
+
+static uint32_t handle_net_send_nic(net_pd_client_t *c, uint32_t handle,
+                                     sel4_msg_t *rep)
 {
-    uint32_t frame_len = (uint32_t)microkit_mr_get(2);
+    uint32_t frame_len = data_rd32(rep->data, 0);  /* re-read from original req */
+    /* NOTE: rep is used as scratch here; frame_len is re-decoded from the
+     * call site wrapper which places it in rep->data[4..7] before this call. */
+    frame_len = *(uint32_t *)(void *)&rep->data[4]; /* set by wrapper */
 
     if (frame_len == 0 || frame_len > NET_MAX_FRAME_BYTES) {
         c->tx_errors++;
-        microkit_mr_set(0, NET_ERR_FRAME_TOO_LARGE);
-        return microkit_msginfo_new(0, 1);
+        data_wr32(rep->data, 0, NET_ERR_FRAME_TOO_LARGE);
+        rep->length = 4;
+        return SEL4_ERR_BAD_ARG;
     }
 
     uint32_t slot_off = NETPD_SLOT_OFFSET(c->shmem_slot) + NETPD_SLOT_HDR_SIZE;
     if (slot_off + frame_len > NETPD_SHMEM_TOTAL) {
         c->tx_errors++;
-        microkit_mr_set(0, NET_ERR_FRAME_TOO_LARGE);
-        return microkit_msginfo_new(0, 1);
+        data_wr32(rep->data, 0, NET_ERR_FRAME_TOO_LARGE);
+        rep->length = 4;
+        return SEL4_ERR_BAD_ARG;
     }
 
-    const uint8_t *frame = (const uint8_t *)(net_pd_shmem_vaddr + slot_off);
-
     if (hw_present) {
+#ifndef AGENTOS_TEST_HOST
+        const uint8_t *frame = (const uint8_t *)(net_pd_shmem_vaddr + slot_off);
         struct pbuf *p = pbuf_alloc(PBUF_LINK, (u16_t)frame_len, PBUF_RAM);
         if (p) {
             uint8_t *dst = (uint8_t *)p->payload;
@@ -418,10 +611,8 @@ static microkit_msginfo handle_net_send_nic(net_pd_client_t *c, uint32_t handle)
         } else {
             c->tx_errors++;
         }
+#endif
     } else {
-        /* WG_INTEGRATION_POINT: if WireGuard is active for this handle,
-         * encrypt the frame via wg_encrypt() and send over the WG tunnel
-         * instead of dropping.  Wire up by calling wg_net_send() here. */
         log_drain_write(17, 17, "[net_pd] TX stub (no hw): handle=");
         log_dec(handle);
         log_drain_write(17, 17, " len=");
@@ -434,25 +625,28 @@ static microkit_msginfo handle_net_send_nic(net_pd_client_t *c, uint32_t handle)
     iface_tx_pkts++;
     iface_tx_bytes += frame_len;
 
-    microkit_mr_set(0, NET_OK);
-    return microkit_msginfo_new(0, 1);
+    data_wr32(rep->data, 0, NET_OK);
+    rep->length = 4;
+    return SEL4_ERR_OK;
 }
 
-static microkit_msginfo handle_net_send_sock(net_pd_client_t *c, uint32_t handle)
+static uint32_t handle_net_send_sock(net_pd_client_t *c, uint32_t handle,
+                                      uint32_t data_len,
+                                      sel4_msg_t *rep)
 {
-    uint32_t data_len = (uint32_t)microkit_mr_get(2);
-
     if (data_len == 0) {
-        microkit_mr_set(0, NET_OK);
-        return microkit_msginfo_new(0, 1);
+        data_wr32(rep->data, 0, NET_OK);
+        rep->length = 4;
+        return SEL4_ERR_OK;
     }
 
     uint32_t slot_off = NETPD_SLOT_OFFSET(c->shmem_slot) + NETPD_SLOT_HDR_SIZE;
     const uint8_t *data = (const uint8_t *)(net_pd_shmem_vaddr + slot_off);
 
     if (c->sock_state != SOCK_STATE_CONNECTED) {
-        microkit_mr_set(0, NET_ERR_BAD_HANDLE);
-        return microkit_msginfo_new(0, 1);
+        data_wr32(rep->data, 0, NET_ERR_BAD_HANDLE);
+        rep->length = 4;
+        return SEL4_ERR_BAD_ARG;
     }
 
     uint16_t len16 = (data_len > 65535u) ? 65535u : (uint16_t)data_len;
@@ -460,8 +654,9 @@ static microkit_msginfo handle_net_send_sock(net_pd_client_t *c, uint32_t handle
 
     if (sent < 0) {
         c->tx_errors++;
-        microkit_mr_set(0, NET_ERR_BAD_HANDLE);
-        return microkit_msginfo_new(0, 1);
+        data_wr32(rep->data, 0, NET_ERR_BAD_HANDLE);
+        rep->length = 4;
+        return SEL4_ERR_BAD_ARG;
     }
 
     c->tx_pkts++;
@@ -473,47 +668,59 @@ static microkit_msginfo handle_net_send_sock(net_pd_client_t *c, uint32_t handle
     log_dec((uint32_t)sent);
     log_drain_write(17, 17, "\n");
 
-    microkit_mr_set(0, NET_OK);
-    return microkit_msginfo_new(0, 1);
-}
-
-static microkit_msginfo handle_net_send(void)
-{
-    uint32_t handle = (uint32_t)microkit_mr_get(1);
-    net_pd_client_t *c = find_client(handle);
-    if (!c) {
-        microkit_mr_set(0, NET_ERR_BAD_HANDLE);
-        return microkit_msginfo_new(0, 1);
-    }
-    if (c->type == HANDLE_TYPE_NIC)
-        return handle_net_send_nic(c, handle);
-    return handle_net_send_sock(c, handle);
+    data_wr32(rep->data, 0, NET_OK);
+    rep->length = 4;
+    return SEL4_ERR_OK;
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
- * MSG_NET_RECV (0x2104) — receive a frame (NIC) or data bytes (socket)
- *   MR1=handle, MR2=max_bytes
- *   Reply: MR0=ok, MR1=len, MR2=shmem_offset
+ * MSG_NET_SEND (0x2103)
+ *   req.data[0..3] = handle
+ *   req.data[4..7] = len (frame bytes for NIC; data bytes for socket)
  * ═══════════════════════════════════════════════════════════════════════════ */
-static microkit_msginfo handle_net_recv_nic(net_pd_client_t *c, uint32_t handle)
+static uint32_t handle_net_send(sel4_badge_t badge __attribute__((unused)),
+                                 const sel4_msg_t *req,
+                                 sel4_msg_t *rep,
+                                 void *ctx __attribute__((unused)))
 {
-    uint32_t max_len = (uint32_t)microkit_mr_get(2);
-    (void)handle;
+    uint32_t handle   = data_rd32(req->data, 0);
+    uint32_t data_len = data_rd32(req->data, 4);
 
+    net_pd_client_t *c = find_client(handle);
+    if (!c) {
+        data_wr32(rep->data, 0, NET_ERR_BAD_HANDLE);
+        rep->length = 4;
+        return SEL4_ERR_NOT_FOUND;
+    }
+
+    if (c->type == HANDLE_TYPE_NIC) {
+        /* pass frame_len via rep scratch slot */
+        data_wr32(rep->data, 4, data_len);
+        return handle_net_send_nic(c, handle, rep);
+    }
+    return handle_net_send_sock(c, handle, data_len, rep);
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+ * MSG_NET_RECV (0x2104)
+ *   req.data[0..3] = handle
+ *   req.data[4..7] = max_bytes
+ * ═══════════════════════════════════════════════════════════════════════════ */
+static uint32_t handle_net_recv_nic(net_pd_client_t *c,
+                                     uint32_t max_len,
+                                     sel4_msg_t *rep)
+{
     volatile netpd_ring_t *ring = slot_ring(c->shmem_slot);
     uint32_t data_off = NETPD_SLOT_OFFSET(c->shmem_slot) + NETPD_SLOT_HDR_SIZE;
 
-    /* Simple ring: check if rx_head != rx_tail (data available) */
     if (ring->rx_head == ring->rx_tail) {
-        /* WG_INTEGRATION_POINT: poll WireGuard RX tunnel here to inject
-         * decrypted frames into the ring before returning empty. */
-        microkit_mr_set(0, NET_OK);
-        microkit_mr_set(1, 0u);
-        microkit_mr_set(2, 0u);
-        return microkit_msginfo_new(0, 3);
+        data_wr32(rep->data, 0, NET_OK);
+        data_wr32(rep->data, 4, 0u);
+        data_wr32(rep->data, 8, 0u);
+        rep->length = 12;
+        return SEL4_ERR_OK;
     }
 
-    /* Frame length stored at ring->rx_tail as a 2-byte header */
     uint32_t frame_len = *(volatile uint16_t *)(net_pd_shmem_vaddr + data_off
                           + ring->rx_tail);
     if (frame_len > max_len) frame_len = max_len;
@@ -525,17 +732,17 @@ static microkit_msginfo handle_net_recv_nic(net_pd_client_t *c, uint32_t handle)
     iface_rx_pkts++;
     iface_rx_bytes += frame_len;
 
-    microkit_mr_set(0, NET_OK);
-    microkit_mr_set(1, frame_len);
-    microkit_mr_set(2, frame_off);
-    return microkit_msginfo_new(0, 3);
+    data_wr32(rep->data, 0, NET_OK);
+    data_wr32(rep->data, 4, frame_len);
+    data_wr32(rep->data, 8, frame_off);
+    rep->length = 12;
+    return SEL4_ERR_OK;
 }
 
-static microkit_msginfo handle_net_recv_sock(net_pd_client_t *c, uint32_t handle)
+static uint32_t handle_net_recv_sock(net_pd_client_t *c,
+                                      uint32_t max_len,
+                                      sel4_msg_t *rep)
 {
-    uint32_t max_len = (uint32_t)microkit_mr_get(2);
-    (void)handle;
-
     uint32_t slot_off = NETPD_SLOT_OFFSET(c->shmem_slot) + NETPD_SLOT_HDR_SIZE;
     uint8_t *buf = (uint8_t *)(net_pd_shmem_vaddr + slot_off);
 
@@ -548,82 +755,98 @@ static microkit_msginfo handle_net_recv_sock(net_pd_client_t *c, uint32_t handle
         c->rx_bytes += (uint32_t)n;
     }
 
-    microkit_mr_set(0, NET_OK);
-    microkit_mr_set(1, (uint32_t)(n > 0 ? n : 0));
-    microkit_mr_set(2, slot_off);
-    return microkit_msginfo_new(0, 3);
+    data_wr32(rep->data, 0, NET_OK);
+    data_wr32(rep->data, 4, (uint32_t)(n > 0 ? n : 0));
+    data_wr32(rep->data, 8, slot_off);
+    rep->length = 12;
+    return SEL4_ERR_OK;
 }
 
-static microkit_msginfo handle_net_recv(void)
+static uint32_t handle_net_recv(sel4_badge_t badge __attribute__((unused)),
+                                  const sel4_msg_t *req,
+                                  sel4_msg_t *rep,
+                                  void *ctx __attribute__((unused)))
 {
-    uint32_t handle = (uint32_t)microkit_mr_get(1);
+    uint32_t handle  = data_rd32(req->data, 0);
+    uint32_t max_len = data_rd32(req->data, 4);
+
     net_pd_client_t *c = find_client(handle);
     if (!c) {
-        microkit_mr_set(0, NET_ERR_BAD_HANDLE);
-        microkit_mr_set(1, 0); microkit_mr_set(2, 0);
-        return microkit_msginfo_new(0, 3);
+        data_wr32(rep->data, 0, NET_ERR_BAD_HANDLE);
+        data_wr32(rep->data, 4, 0);
+        data_wr32(rep->data, 8, 0);
+        rep->length = 12;
+        return SEL4_ERR_NOT_FOUND;
     }
     if (c->type == HANDLE_TYPE_NIC)
-        return handle_net_recv_nic(c, handle);
-    return handle_net_recv_sock(c, handle);
+        return handle_net_recv_nic(c, max_len, rep);
+    return handle_net_recv_sock(c, max_len, rep);
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
- * MSG_NET_DEV_STATUS (0x2105) — query link status and packet counters
- *   MR1=handle (0xFFFFFFFF = global iface stats)
- *   Reply: MR0=ok, MR1=link_up, MR2=rx_pkts_lo, MR3=tx_pkts_lo,
- *          MR4=rx_bytes_lo, MR5=tx_bytes_lo, MR6=rx_errors, MR7=tx_errors
+ * MSG_NET_DEV_STATUS (0x2105)
+ *   req.data[0..3] = handle (0xFFFFFFFF = global)
  * ═══════════════════════════════════════════════════════════════════════════ */
-static microkit_msginfo handle_net_dev_status(void)
+static uint32_t handle_net_dev_status(sel4_badge_t badge __attribute__((unused)),
+                                       const sel4_msg_t *req,
+                                       sel4_msg_t *rep,
+                                       void *ctx __attribute__((unused)))
 {
-    uint32_t handle = (uint32_t)microkit_mr_get(1);
+    uint32_t handle = data_rd32(req->data, 0);
 
     uint64_t rx_pkts, tx_pkts, rx_bytes, tx_bytes;
-    uint32_t rx_errors, tx_errors;
-    uint32_t link;
+    uint32_t rx_errors, tx_errors, link;
 
     if (handle == 0xFFFFFFFFu) {
-        rx_pkts  = iface_rx_pkts;  tx_pkts  = iface_tx_pkts;
-        rx_bytes = iface_rx_bytes; tx_bytes = iface_tx_bytes;
+        rx_pkts   = iface_rx_pkts;   tx_pkts   = iface_tx_pkts;
+        rx_bytes  = iface_rx_bytes;  tx_bytes  = iface_tx_bytes;
         rx_errors = iface_rx_errors; tx_errors = iface_tx_errors;
-        link = iface_link_up ? 1u : 0u;
+        link      = iface_link_up ? 1u : 0u;
     } else {
         net_pd_client_t *c = find_client(handle);
         if (!c) {
-            microkit_mr_set(0, NET_ERR_BAD_HANDLE);
-            return microkit_msginfo_new(0, 1);
+            data_wr32(rep->data, 0, NET_ERR_BAD_HANDLE);
+            rep->length = 4;
+            return SEL4_ERR_NOT_FOUND;
         }
-        rx_pkts  = c->rx_pkts;  tx_pkts  = c->tx_pkts;
-        rx_bytes = c->rx_bytes; tx_bytes = c->tx_bytes;
+        rx_pkts   = c->rx_pkts;   tx_pkts   = c->tx_pkts;
+        rx_bytes  = c->rx_bytes;  tx_bytes  = c->tx_bytes;
         rx_errors = c->rx_errors; tx_errors = c->tx_errors;
-        link = iface_link_up ? 1u : 0u;
+        link      = iface_link_up ? 1u : 0u;
     }
 
-    microkit_mr_set(0, NET_OK);
-    microkit_mr_set(1, link);
-    microkit_mr_set(2, (uint32_t)(rx_pkts  & 0xFFFFFFFFu));
-    microkit_mr_set(3, (uint32_t)(tx_pkts  & 0xFFFFFFFFu));
-    microkit_mr_set(4, (uint32_t)(rx_bytes & 0xFFFFFFFFu));
-    microkit_mr_set(5, (uint32_t)(tx_bytes & 0xFFFFFFFFu));
-    microkit_mr_set(6, rx_errors);
-    microkit_mr_set(7, tx_errors);
-    return microkit_msginfo_new(0, 8);
+    data_wr32(rep->data,  0, NET_OK);
+    data_wr32(rep->data,  4, link);
+    data_wr32(rep->data,  8, (uint32_t)(rx_pkts  & 0xFFFFFFFFu));
+    data_wr32(rep->data, 12, (uint32_t)(tx_pkts  & 0xFFFFFFFFu));
+    data_wr32(rep->data, 16, (uint32_t)(rx_bytes & 0xFFFFFFFFu));
+    data_wr32(rep->data, 20, (uint32_t)(tx_bytes & 0xFFFFFFFFu));
+    data_wr32(rep->data, 24, rx_errors);
+    data_wr32(rep->data, 28, tx_errors);
+    rep->length = 32;
+    return SEL4_ERR_OK;
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
- * MSG_NET_CONFIGURE (0x2106) — set MTU and flags for a NIC handle
- *   MR1=handle, MR2=mtu (0=keep current), MR3=flags
+ * MSG_NET_CONFIGURE (0x2106)
+ *   req.data[0..3]  = handle
+ *   req.data[4..7]  = mtu
+ *   req.data[8..11] = flags
  * ═══════════════════════════════════════════════════════════════════════════ */
-static microkit_msginfo handle_net_configure(void)
+static uint32_t handle_net_configure(sel4_badge_t badge __attribute__((unused)),
+                                      const sel4_msg_t *req,
+                                      sel4_msg_t *rep,
+                                      void *ctx __attribute__((unused)))
 {
-    uint32_t handle = (uint32_t)microkit_mr_get(1);
-    uint32_t mtu    = (uint32_t)microkit_mr_get(2);
-    uint32_t flags  = (uint32_t)microkit_mr_get(3);
+    uint32_t handle = data_rd32(req->data, 0);
+    uint32_t mtu    = data_rd32(req->data, 4);
+    uint32_t flags  = data_rd32(req->data, 8);
 
     net_pd_client_t *c = find_nic(handle);
     if (!c) {
-        microkit_mr_set(0, NET_ERR_BAD_HANDLE);
-        return microkit_msginfo_new(0, 1);
+        data_wr32(rep->data, 0, NET_ERR_BAD_HANDLE);
+        rep->length = 4;
+        return SEL4_ERR_NOT_FOUND;
     }
 
     if (mtu > 0u && mtu <= 9000u) c->mtu = mtu;
@@ -637,31 +860,37 @@ static microkit_msginfo handle_net_configure(void)
     log_hex(flags);
     log_drain_write(17, 17, "\n");
 
-    microkit_mr_set(0, NET_OK);
-    return microkit_msginfo_new(0, 1);
+    data_wr32(rep->data, 0, NET_OK);
+    rep->length = 4;
+    return SEL4_ERR_OK;
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
- * MSG_NET_FILTER_ADD (0x2107) — install a BPF-style filter for a NIC handle
- *   MR1=handle, MR2=filter_len (bytecodes in shmem at slot data region)
- *   Reply: MR0=ok, MR1=filter_id
+ * MSG_NET_FILTER_ADD (0x2107)
+ *   req.data[0..3] = handle
+ *   req.data[4..7] = filter_len
  * ═══════════════════════════════════════════════════════════════════════════ */
-static microkit_msginfo handle_net_filter_add(void)
+static uint32_t handle_net_filter_add(sel4_badge_t badge __attribute__((unused)),
+                                       const sel4_msg_t *req,
+                                       sel4_msg_t *rep,
+                                       void *ctx __attribute__((unused)))
 {
-    uint32_t handle     = (uint32_t)microkit_mr_get(1);
-    uint32_t filter_len = (uint32_t)microkit_mr_get(2);
+    uint32_t handle     = data_rd32(req->data, 0);
+    uint32_t filter_len = data_rd32(req->data, 4);
 
     net_pd_client_t *c = find_nic(handle);
     if (!c) {
-        microkit_mr_set(0, NET_ERR_BAD_HANDLE);
-        microkit_mr_set(1, 0);
-        return microkit_msginfo_new(0, 2);
+        data_wr32(rep->data, 0, NET_ERR_BAD_HANDLE);
+        data_wr32(rep->data, 4, 0);
+        rep->length = 8;
+        return SEL4_ERR_NOT_FOUND;
     }
 
     if (c->filter_count >= NET_MAX_FILTERS) {
-        microkit_mr_set(0, NET_ERR_FILTER_FULL);
-        microkit_mr_set(1, 0);
-        return microkit_msginfo_new(0, 2);
+        data_wr32(rep->data, 0, NET_ERR_FILTER_FULL);
+        data_wr32(rep->data, 4, 0);
+        rep->length = 8;
+        return SEL4_ERR_NO_MEM;
     }
 
     uint32_t filter_id = c->next_filter_id++;
@@ -670,39 +899,40 @@ static microkit_msginfo handle_net_filter_add(void)
     c->filter_lens[slot] = filter_len;
     c->filter_count++;
 
-    /* BPF filter bytecodes are in shmem; real enforcement would parse them here.
-     * WG_INTEGRATION_POINT: apply filter to the WireGuard RX path as well. */
     log_drain_write(17, 17, "[net_pd] FILTER_ADD: handle=");
     log_dec(handle);
     log_drain_write(17, 17, " filter_id=");
     log_dec(filter_id);
-    log_drain_write(17, 17, " len=");
-    log_dec(filter_len);
     log_drain_write(17, 17, "\n");
 
-    microkit_mr_set(0, NET_OK);
-    microkit_mr_set(1, filter_id);
-    return microkit_msginfo_new(0, 2);
+    data_wr32(rep->data, 0, NET_OK);
+    data_wr32(rep->data, 4, filter_id);
+    rep->length = 8;
+    return SEL4_ERR_OK;
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
- * MSG_NET_FILTER_REMOVE (0x2108) — remove a BPF filter from a NIC handle
- *   MR1=handle, MR2=filter_id
+ * MSG_NET_FILTER_REMOVE (0x2108)
+ *   req.data[0..3] = handle
+ *   req.data[4..7] = filter_id
  * ═══════════════════════════════════════════════════════════════════════════ */
-static microkit_msginfo handle_net_filter_remove(void)
+static uint32_t handle_net_filter_remove(sel4_badge_t badge __attribute__((unused)),
+                                          const sel4_msg_t *req,
+                                          sel4_msg_t *rep,
+                                          void *ctx __attribute__((unused)))
 {
-    uint32_t handle    = (uint32_t)microkit_mr_get(1);
-    uint32_t filter_id = (uint32_t)microkit_mr_get(2);
+    uint32_t handle    = data_rd32(req->data, 0);
+    uint32_t filter_id = data_rd32(req->data, 4);
 
     net_pd_client_t *c = find_nic(handle);
     if (!c) {
-        microkit_mr_set(0, NET_ERR_BAD_HANDLE);
-        return microkit_msginfo_new(0, 1);
+        data_wr32(rep->data, 0, NET_ERR_BAD_HANDLE);
+        rep->length = 4;
+        return SEL4_ERR_NOT_FOUND;
     }
 
     for (uint32_t i = 0; i < c->filter_count; i++) {
         if (c->filter_ids[i] == filter_id) {
-            /* Compact the filter table */
             for (uint32_t j = i; j + 1u < c->filter_count; j++) {
                 c->filter_ids[j]  = c->filter_ids[j + 1u];
                 c->filter_lens[j] = c->filter_lens[j + 1u];
@@ -713,38 +943,45 @@ static microkit_msginfo handle_net_filter_remove(void)
             log_drain_write(17, 17, " filter_id=");
             log_dec(filter_id);
             log_drain_write(17, 17, "\n");
-            microkit_mr_set(0, NET_OK);
-            return microkit_msginfo_new(0, 1);
+            data_wr32(rep->data, 0, NET_OK);
+            rep->length = 4;
+            return SEL4_ERR_OK;
         }
     }
 
-    microkit_mr_set(0, NET_ERR_BAD_FILTER_ID);
-    return microkit_msginfo_new(0, 1);
+    data_wr32(rep->data, 0, NET_ERR_BAD_FILTER_ID);
+    rep->length = 4;
+    return SEL4_ERR_NOT_FOUND;
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
- * MSG_NET_SOCKET_OPEN (0x2109) — open a TCP or UDP socket
- *   MR1=proto (NET_PROTO_TCP=0, NET_PROTO_UDP=1)
- *   Reply: MR0=ok, MR1=sock_handle, MR2=shmem_slot_offset
+ * MSG_NET_SOCKET_OPEN (0x2109)
+ *   req.data[0..3] = proto (NET_PROTO_TCP=0, NET_PROTO_UDP=1)
  * ═══════════════════════════════════════════════════════════════════════════ */
-static microkit_msginfo handle_socket_open(void)
+static uint32_t handle_socket_open(sel4_badge_t badge __attribute__((unused)),
+                                    const sel4_msg_t *req,
+                                    sel4_msg_t *rep,
+                                    void *ctx __attribute__((unused)))
 {
-    uint32_t proto = (uint32_t)microkit_mr_get(1);
+    uint32_t proto = data_rd32(req->data, 0);
 
     if (proto != NET_PROTO_TCP && proto != NET_PROTO_UDP) {
-        microkit_mr_set(0, NET_ERR_BAD_HANDLE);
-        return microkit_msginfo_new(0, 1);
+        data_wr32(rep->data, 0, NET_ERR_BAD_HANDLE);
+        rep->length = 4;
+        return SEL4_ERR_BAD_ARG;
     }
 
     if (active_clients >= NET_MAX_CLIENTS) {
-        microkit_mr_set(0, NET_ERR_NO_SLOTS);
-        return microkit_msginfo_new(0, 1);
+        data_wr32(rep->data, 0, NET_ERR_NO_SLOTS);
+        rep->length = 4;
+        return SEL4_ERR_NO_MEM;
     }
 
     int slot = alloc_slot();
     if (slot < 0) {
-        microkit_mr_set(0, NET_ERR_NO_SLOTS);
-        return microkit_msginfo_new(0, 1);
+        data_wr32(rep->data, 0, NET_ERR_NO_SLOTS);
+        rep->length = 4;
+        return SEL4_ERR_NO_MEM;
     }
 
     int handle = -1;
@@ -753,8 +990,9 @@ static microkit_msginfo handle_socket_open(void)
     }
     if (handle < 0) {
         free_slot((uint32_t)slot);
-        microkit_mr_set(0, NET_ERR_NO_SLOTS);
-        return microkit_msginfo_new(0, 1);
+        data_wr32(rep->data, 0, NET_ERR_NO_SLOTS);
+        rep->length = 4;
+        return SEL4_ERR_NO_MEM;
     }
 
     net_pd_client_t *c = &clients[handle];
@@ -779,33 +1017,38 @@ static microkit_msginfo handle_socket_open(void)
     log_dec(proto);
     log_drain_write(17, 17, "\n");
 
-    microkit_mr_set(0, NET_OK);
-    microkit_mr_set(1, (uint32_t)handle);
-    microkit_mr_set(2, NETPD_SLOT_OFFSET((uint32_t)slot));
-    return microkit_msginfo_new(0, 3);
+    data_wr32(rep->data, 0, NET_OK);
+    data_wr32(rep->data, 4, (uint32_t)handle);
+    data_wr32(rep->data, 8, NETPD_SLOT_OFFSET((uint32_t)slot));
+    rep->length = 12;
+    return SEL4_ERR_OK;
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
- * MSG_NET_SOCKET_CLOSE (0x210A) — close a socket
- *   MR1=sock_handle
+ * MSG_NET_SOCKET_CLOSE (0x210A)
+ *   req.data[0..3] = handle
  * ═══════════════════════════════════════════════════════════════════════════ */
-static microkit_msginfo handle_socket_close(void)
+static uint32_t handle_socket_close(sel4_badge_t badge __attribute__((unused)),
+                                     const sel4_msg_t *req,
+                                     sel4_msg_t *rep,
+                                     void *ctx __attribute__((unused)))
 {
-    uint32_t handle = (uint32_t)microkit_mr_get(1);
-
+    uint32_t handle = data_rd32(req->data, 0);
     net_pd_client_t *c = find_sock(handle);
     if (!c) {
-        microkit_mr_set(0, NET_ERR_BAD_HANDLE);
-        return microkit_msginfo_new(0, 1);
+        data_wr32(rep->data, 0, NET_ERR_BAD_HANDLE);
+        rep->length = 4;
+        return SEL4_ERR_NOT_FOUND;
     }
 
-    /* Close underlying lwIP TCP PCB if connected */
+#ifndef AGENTOS_TEST_HOST
     uint32_t slot = c->shmem_slot;
     if (c->proto == NET_PROTO_TCP && g_conns[slot].tcp) {
         tcp_close(g_conns[slot].tcp);
         g_conns[slot].tcp   = NULL;
         g_conns[slot].state = 0u;
     }
+#endif
 
     log_drain_write(17, 17, "[net_pd] SOCKET_CLOSE: handle=");
     log_dec(handle);
@@ -816,34 +1059,35 @@ static microkit_msginfo handle_socket_close(void)
     c->active = false;
     if (active_clients > 0) active_clients--;
 
-    microkit_mr_set(0, NET_OK);
-    return microkit_msginfo_new(0, 1);
+    data_wr32(rep->data, 0, NET_OK);
+    rep->length = 4;
+    return SEL4_ERR_OK;
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
- * MSG_NET_SOCKET_CONNECT (0x210B) — TCP connect to remote endpoint
- *   MR1=sock_handle, MR2=dest_ip (u32 big-endian), MR3=dest_port
- *   Reply: MR0=ok (connection initiated; poll DEV_STATUS for completion)
+ * MSG_NET_SOCKET_CONNECT (0x210B)
+ *   req.data[0..3]  = handle
+ *   req.data[4..7]  = dest_ip
+ *   req.data[8..11] = dest_port
  * ═══════════════════════════════════════════════════════════════════════════ */
-static microkit_msginfo handle_socket_connect(void)
+static uint32_t handle_socket_connect(sel4_badge_t badge __attribute__((unused)),
+                                       const sel4_msg_t *req,
+                                       sel4_msg_t *rep,
+                                       void *ctx __attribute__((unused)))
 {
-    uint32_t handle    = (uint32_t)microkit_mr_get(1);
-    uint32_t dest_ip   = (uint32_t)microkit_mr_get(2);
-    uint32_t dest_port = (uint32_t)microkit_mr_get(3);
+    uint32_t handle    = data_rd32(req->data, 0);
+    uint32_t dest_ip   = data_rd32(req->data, 4);
+    uint32_t dest_port = data_rd32(req->data, 8);
 
     net_pd_client_t *c = find_sock(handle);
-    if (!c) {
-        microkit_mr_set(0, NET_ERR_BAD_HANDLE);
-        return microkit_msginfo_new(0, 1);
-    }
-    if (c->proto != NET_PROTO_TCP) {
-        microkit_mr_set(0, NET_ERR_BAD_HANDLE);
-        return microkit_msginfo_new(0, 1);
+    if (!c || c->proto != NET_PROTO_TCP) {
+        data_wr32(rep->data, 0, NET_ERR_BAD_HANDLE);
+        rep->length = 4;
+        return SEL4_ERR_NOT_FOUND;
     }
 
     int err = lwip_net_connect((uint8_t)(c->shmem_slot & 0xFFu),
                                dest_ip, (uint16_t)(dest_port & 0xFFFFu));
-
     if (err == 0) {
         c->sock_state  = SOCK_STATE_CONNECTING;
         c->remote_ip   = dest_ip;
@@ -856,32 +1100,31 @@ static microkit_msginfo handle_socket_connect(void)
     log_hex(dest_ip);
     log_drain_write(17, 17, " port=");
     log_dec(dest_port);
-    log_drain_write(17, 17, " err=");
-    log_dec((uint32_t)(err < 0 ? (uint32_t)(-err) : 0u));
     log_drain_write(17, 17, "\n");
 
-    microkit_mr_set(0, err == 0 ? NET_OK : NET_ERR_BAD_HANDLE);
-    return microkit_msginfo_new(0, 1);
+    data_wr32(rep->data, 0, err == 0 ? NET_OK : NET_ERR_BAD_HANDLE);
+    rep->length = 4;
+    return SEL4_ERR_OK;
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
- * MSG_NET_SOCKET_BIND (0x210C) — bind socket to a local port
- *   MR1=sock_handle, MR2=port
+ * MSG_NET_SOCKET_BIND (0x210C)
+ *   req.data[0..3] = handle
+ *   req.data[4..7] = port
  * ═══════════════════════════════════════════════════════════════════════════ */
-static microkit_msginfo handle_socket_bind(void)
+static uint32_t handle_socket_bind(sel4_badge_t badge __attribute__((unused)),
+                                    const sel4_msg_t *req,
+                                    sel4_msg_t *rep,
+                                    void *ctx __attribute__((unused)))
 {
-    uint32_t handle = (uint32_t)microkit_mr_get(1);
-    uint32_t port   = (uint32_t)microkit_mr_get(2);
+    uint32_t handle = data_rd32(req->data, 0);
+    uint32_t port   = data_rd32(req->data, 4);
 
     net_pd_client_t *c = find_sock(handle);
-    if (!c) {
-        microkit_mr_set(0, NET_ERR_BAD_HANDLE);
-        return microkit_msginfo_new(0, 1);
-    }
-
-    if (port == 0 || port > 65535u) {
-        microkit_mr_set(0, NET_ERR_BAD_HANDLE);
-        return microkit_msginfo_new(0, 1);
+    if (!c || port == 0 || port > 65535u) {
+        data_wr32(rep->data, 0, NET_ERR_BAD_HANDLE);
+        rep->length = 4;
+        return SEL4_ERR_BAD_ARG;
     }
 
     c->local_port = port;
@@ -893,29 +1136,26 @@ static microkit_msginfo handle_socket_bind(void)
     log_dec(port);
     log_drain_write(17, 17, "\n");
 
-    /* WG_INTEGRATION_POINT: for WireGuard-tunnelled sockets, bind the UDP
-     * underlay port here so keepalives can reach the remote peer. */
-
-    microkit_mr_set(0, NET_OK);
-    return microkit_msginfo_new(0, 1);
+    data_wr32(rep->data, 0, NET_OK);
+    rep->length = 4;
+    return SEL4_ERR_OK;
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
- * MSG_NET_SOCKET_LISTEN (0x210D) — begin accepting incoming connections
- *   MR1=sock_handle
+ * MSG_NET_SOCKET_LISTEN (0x210D)
+ *   req.data[0..3] = handle
  * ═══════════════════════════════════════════════════════════════════════════ */
-static microkit_msginfo handle_socket_listen(void)
+static uint32_t handle_socket_listen(sel4_badge_t badge __attribute__((unused)),
+                                      const sel4_msg_t *req,
+                                      sel4_msg_t *rep,
+                                      void *ctx __attribute__((unused)))
 {
-    uint32_t handle = (uint32_t)microkit_mr_get(1);
-
+    uint32_t handle = data_rd32(req->data, 0);
     net_pd_client_t *c = find_sock(handle);
-    if (!c) {
-        microkit_mr_set(0, NET_ERR_BAD_HANDLE);
-        return microkit_msginfo_new(0, 1);
-    }
-    if (c->proto != NET_PROTO_TCP || c->sock_state != SOCK_STATE_BOUND) {
-        microkit_mr_set(0, NET_ERR_BAD_HANDLE);
-        return microkit_msginfo_new(0, 1);
+    if (!c || c->proto != NET_PROTO_TCP || c->sock_state != SOCK_STATE_BOUND) {
+        data_wr32(rep->data, 0, NET_ERR_BAD_HANDLE);
+        rep->length = 4;
+        return SEL4_ERR_BAD_ARG;
     }
 
     c->sock_state = SOCK_STATE_LISTENING;
@@ -926,101 +1166,91 @@ static microkit_msginfo handle_socket_listen(void)
     log_dec(c->local_port);
     log_drain_write(17, 17, "\n");
 
-    /* LWIP_INTEGRATION_POINT: call tcp_listen() on a pre-bound PCB.
-     * Accepted PCBs are queued in g_conns[shmem_slot].accept_queue (future). */
-
-    microkit_mr_set(0, NET_OK);
-    return microkit_msginfo_new(0, 1);
+    data_wr32(rep->data, 0, NET_OK);
+    rep->length = 4;
+    return SEL4_ERR_OK;
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
- * MSG_NET_SOCKET_ACCEPT (0x210E) — accept a pending incoming connection
- *   MR1=sock_handle (the listening socket)
- *   Reply: MR0=ok, MR1=new_sock_handle (0 = none pending), MR2=peer_ip, MR3=peer_port
+ * MSG_NET_SOCKET_ACCEPT (0x210E)
+ *   req.data[0..3] = handle (listening socket)
  * ═══════════════════════════════════════════════════════════════════════════ */
-static microkit_msginfo handle_socket_accept(void)
+static uint32_t handle_socket_accept(sel4_badge_t badge __attribute__((unused)),
+                                      const sel4_msg_t *req,
+                                      sel4_msg_t *rep,
+                                      void *ctx __attribute__((unused)))
 {
-    uint32_t handle = (uint32_t)microkit_mr_get(1);
-
+    uint32_t handle = data_rd32(req->data, 0);
     net_pd_client_t *c = find_sock(handle);
-    if (!c) {
-        microkit_mr_set(0, NET_ERR_BAD_HANDLE);
-        microkit_mr_set(1, 0); microkit_mr_set(2, 0); microkit_mr_set(3, 0);
-        return microkit_msginfo_new(0, 4);
-    }
-    if (c->sock_state != SOCK_STATE_LISTENING) {
-        microkit_mr_set(0, NET_ERR_BAD_HANDLE);
-        microkit_mr_set(1, 0); microkit_mr_set(2, 0); microkit_mr_set(3, 0);
-        return microkit_msginfo_new(0, 4);
+    if (!c || c->sock_state != SOCK_STATE_LISTENING) {
+        data_wr32(rep->data, 0, NET_ERR_BAD_HANDLE);
+        data_wr32(rep->data, 4, 0); data_wr32(rep->data, 8, 0); data_wr32(rep->data, 12, 0);
+        rep->length = 16;
+        return SEL4_ERR_BAD_ARG;
     }
 
-    /* LWIP_INTEGRATION_POINT: dequeue an accepted PCB from g_conns accept_queue.
-     * Allocate a new client handle, wire up the accepted PCB to g_conns[new_slot],
-     * and return new_handle + peer address. */
     log_drain_write(17, 17, "[net_pd] SOCKET_ACCEPT: handle=");
     log_dec(handle);
     log_drain_write(17, 17, " (no pending connection)\n");
 
-    microkit_mr_set(0, NET_OK);
-    microkit_mr_set(1, 0u);   /* no connection pending yet */
-    microkit_mr_set(2, 0u);
-    microkit_mr_set(3, 0u);
-    return microkit_msginfo_new(0, 4);
+    data_wr32(rep->data,  0, NET_OK);
+    data_wr32(rep->data,  4, 0u);
+    data_wr32(rep->data,  8, 0u);
+    data_wr32(rep->data, 12, 0u);
+    rep->length = 16;
+    return SEL4_ERR_OK;
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
- * MSG_NET_SOCKET_SET_OPT (0x210F) — set socket option
- *   MR1=sock_handle, MR2=option_id, MR3=value
+ * MSG_NET_SOCKET_SET_OPT (0x210F)
+ *   req.data[0..3]  = handle
+ *   req.data[4..7]  = option_id
+ *   req.data[8..11] = value
  * ═══════════════════════════════════════════════════════════════════════════ */
-static microkit_msginfo handle_socket_set_opt(void)
+static uint32_t handle_socket_set_opt(sel4_badge_t badge __attribute__((unused)),
+                                       const sel4_msg_t *req,
+                                       sel4_msg_t *rep,
+                                       void *ctx __attribute__((unused)))
 {
-    uint32_t handle = (uint32_t)microkit_mr_get(1);
-    uint32_t opt    = (uint32_t)microkit_mr_get(2);
-    uint32_t val    = (uint32_t)microkit_mr_get(3);
+    uint32_t handle = data_rd32(req->data, 0);
+    uint32_t opt    = data_rd32(req->data, 4);
+    uint32_t val    = data_rd32(req->data, 8);
+    (void)val;
 
     net_pd_client_t *c = find_sock(handle);
     if (!c) {
-        microkit_mr_set(0, NET_ERR_BAD_HANDLE);
-        return microkit_msginfo_new(0, 1);
+        data_wr32(rep->data, 0, NET_ERR_BAD_HANDLE);
+        rep->length = 4;
+        return SEL4_ERR_NOT_FOUND;
     }
 
     switch (opt) {
     case NET_SOCKOPT_REUSEADDR:
-        /* LWIP_INTEGRATION_POINT: set ip_set_option(pcb, SOF_REUSEADDR) */
-        break;
     case NET_SOCKOPT_NODELAY:
-        /* LWIP_INTEGRATION_POINT: set tcp_set_flags(pcb, TF_NODELAY) */
-        break;
     case NET_SOCKOPT_KEEPALIVE:
-        /* LWIP_INTEGRATION_POINT: set ip_set_option(pcb, SOF_KEEPALIVE) */
         break;
     default:
-        microkit_mr_set(0, NET_ERR_BAD_HANDLE);
-        return microkit_msginfo_new(0, 1);
+        data_wr32(rep->data, 0, NET_ERR_BAD_HANDLE);
+        rep->length = 4;
+        return SEL4_ERR_BAD_ARG;
     }
 
     log_drain_write(17, 17, "[net_pd] SOCKET_SET_OPT: handle=");
     log_dec(handle);
     log_drain_write(17, 17, " opt=");
     log_dec(opt);
-    log_drain_write(17, 17, " val=");
-    log_dec(val);
     log_drain_write(17, 17, "\n");
 
-    microkit_mr_set(0, NET_OK);
-    return microkit_msginfo_new(0, 1);
+    data_wr32(rep->data, 0, NET_OK);
+    rep->length = 4;
+    return SEL4_ERR_OK;
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
- * Microkit entry points
+ * net_pd_test_init() — set up the server's dispatch table for host-side tests
  * ═══════════════════════════════════════════════════════════════════════════ */
-
-void init(void)
+static void net_pd_test_init(void)
 {
-    agentos_log_boot("net_pd");
-    log_drain_write(17, 17,
-        "[net_pd] Initialising net_pd (priority 160, passive)\n");
-
     for (int i = 0; i < (int)NET_MAX_CLIENTS; i++) {
         clients[i].active     = false;
         clients[i].type       = HANDLE_TYPE_INVALID;
@@ -1028,81 +1258,58 @@ void init(void)
     }
     active_clients = 0;
     slot_bitmap    = 0u;
+    hw_present     = false;
+    iface_link_up  = false;
 
+    sel4_server_init(&g_srv, 0u);
+    sel4_server_register(&g_srv, MSG_NET_OPEN,           handle_net_open,          NULL);
+    sel4_server_register(&g_srv, MSG_NET_CLOSE,          handle_net_close,         NULL);
+    sel4_server_register(&g_srv, MSG_NET_SEND,           handle_net_send,          NULL);
+    sel4_server_register(&g_srv, MSG_NET_RECV,           handle_net_recv,          NULL);
+    sel4_server_register(&g_srv, MSG_NET_DEV_STATUS,     handle_net_dev_status,    NULL);
+    sel4_server_register(&g_srv, MSG_NET_CONFIGURE,      handle_net_configure,     NULL);
+    sel4_server_register(&g_srv, MSG_NET_FILTER_ADD,     handle_net_filter_add,    NULL);
+    sel4_server_register(&g_srv, MSG_NET_FILTER_REMOVE,  handle_net_filter_remove, NULL);
+    sel4_server_register(&g_srv, MSG_NET_SOCKET_OPEN,    handle_socket_open,       NULL);
+    sel4_server_register(&g_srv, MSG_NET_SOCKET_CLOSE,   handle_socket_close,      NULL);
+    sel4_server_register(&g_srv, MSG_NET_SOCKET_CONNECT, handle_socket_connect,    NULL);
+    sel4_server_register(&g_srv, MSG_NET_SOCKET_BIND,    handle_socket_bind,       NULL);
+    sel4_server_register(&g_srv, MSG_NET_SOCKET_LISTEN,  handle_socket_listen,     NULL);
+    sel4_server_register(&g_srv, MSG_NET_SOCKET_ACCEPT,  handle_socket_accept,     NULL);
+    sel4_server_register(&g_srv, MSG_NET_SOCKET_SET_OPT, handle_socket_set_opt,    NULL);
+}
+
+/* ── dispatch helper for tests ───────────────────────────────────────────── */
+static uint32_t net_pd_dispatch_one(sel4_badge_t badge,
+                                     const sel4_msg_t *req,
+                                     sel4_msg_t *rep)
+{
+    return sel4_server_dispatch(&g_srv, badge, req, rep);
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+ * net_pd_main() — raw seL4 IPC entry point (replaces init() / protected())
+ *
+ * E5-S4: No priority ordering constraint.  Callers block on endpoint IPC.
+ * ═══════════════════════════════════════════════════════════════════════════ */
+#ifndef AGENTOS_TEST_HOST
+void net_pd_main(seL4_CPtr my_ep, seL4_CPtr ns_ep)
+{
+    agentos_log_boot("net_pd");
+    log_drain_write(17, 17,
+        "[net_pd] Initialising net_pd (raw seL4 IPC, no priority constraint)\n");
+
+    net_pd_test_init();
     probe_virtio_net();
+    register_with_nameserver(ns_ep);
 
     log_drain_write(17, 17, "[net_pd] READY — max_clients=");
     log_dec(NET_MAX_CLIENTS);
     log_drain_write(17, 17, " hw=");
     log_drain_write(17, 17, hw_present ? "1" : "0");
     log_drain_write(17, 17, "\n");
+
+    g_srv.ep = my_ep;
+    sel4_server_run(&g_srv);   /* NEVER RETURNS */
 }
-
-/*
- * notified() — virtio-net RX interrupt or periodic lwIP timer tick.
- *
- *   ch=0: virtio-net RX interrupt from the controller (device ring has frames)
- *   ch=1: 10 ms periodic tick for lwIP timer processing
- *
- * WG_INTEGRATION_POINT: on the timer channel, also call wg_keepalive_tick()
- * to send WireGuard keepalives to peers that have gone quiet.
- */
-void notified(microkit_channel ch)
-{
-    switch (ch) {
-    case 0:
-        lwip_virtio_rx_poll();
-        break;
-    case 1:
-        lwip_tick();
-        lwip_virtio_rx_poll();
-        sys_check_timeouts();
-        break;
-    default:
-        log_drain_write(17, 17, "[net_pd] unexpected notify ch=");
-        log_dec((uint32_t)ch);
-        log_drain_write(17, 17, "\n");
-        break;
-    }
-}
-
-/*
- * protected() — IPC dispatch for all net_pd operations.
- *
- * The label field of msginfo carries the opcode (MSG_NET_*).
- * All channels share a single dispatch table.
- */
-microkit_msginfo protected(microkit_channel ch, microkit_msginfo msginfo)
-{
-    (void)ch;
-
-    uint64_t op = microkit_msginfo_get_label(msginfo);
-
-    switch (op) {
-    /* ── Packet I/O interface (net_contract.h) ─────────────────────────────── */
-    case MSG_NET_OPEN:           return handle_net_open();
-    case MSG_NET_CLOSE:          return handle_net_close();
-    case MSG_NET_SEND:           return handle_net_send();
-    case MSG_NET_RECV:           return handle_net_recv();
-    case MSG_NET_DEV_STATUS:     return handle_net_dev_status();
-    case MSG_NET_CONFIGURE:      return handle_net_configure();
-    case MSG_NET_FILTER_ADD:     return handle_net_filter_add();
-    case MSG_NET_FILTER_REMOVE:  return handle_net_filter_remove();
-
-    /* ── Socket interface (net_contract.h socket extension) ─────────────────── */
-    case MSG_NET_SOCKET_OPEN:    return handle_socket_open();
-    case MSG_NET_SOCKET_CLOSE:   return handle_socket_close();
-    case MSG_NET_SOCKET_CONNECT: return handle_socket_connect();
-    case MSG_NET_SOCKET_BIND:    return handle_socket_bind();
-    case MSG_NET_SOCKET_LISTEN:  return handle_socket_listen();
-    case MSG_NET_SOCKET_ACCEPT:  return handle_socket_accept();
-    case MSG_NET_SOCKET_SET_OPT: return handle_socket_set_opt();
-
-    default:
-        log_drain_write(17, 17, "[net_pd] unknown op=");
-        log_hex((uint32_t)(op & 0xFFFFFFFFu));
-        log_drain_write(17, 17, "\n");
-        microkit_mr_set(0, NET_ERR_BAD_HANDLE);
-        return microkit_msginfo_new(0, 1);
-    }
-}
+#endif /* !AGENTOS_TEST_HOST */
