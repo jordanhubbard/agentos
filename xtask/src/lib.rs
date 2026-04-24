@@ -1,6 +1,7 @@
 // Public library surface — shared types and command implementations.
 // The binary entry point (src/main.rs) re-uses everything from here.
 
+pub mod cmd_audit_caps;
 pub mod cmd_ci_matrix;
 pub mod cmd_fault_inject;
 pub mod cmd_fetch_guest;
@@ -92,4 +93,19 @@ pub struct TestApiArgs {
     /// C compiler to use (overrides CC env var)
     #[arg(long, env = "CC")]
     pub cc: Option<String>,
+}
+
+#[derive(clap::Args)]
+pub struct AuditCapsArgs {
+    /// Filter by protection domain ID (0 = all PDs; default)
+    #[arg(long)]
+    pub pd: Option<u32>,
+
+    /// Use OP_CAP_AUDIT_GUEST for a specific vibeOS guest handle
+    #[arg(long)]
+    pub guest: Option<u32>,
+
+    /// Force test-mode output (hardcoded example data, no live IPC)
+    #[arg(long)]
+    pub test: bool,
 }

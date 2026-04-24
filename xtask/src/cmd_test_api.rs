@@ -21,6 +21,7 @@ const TEST_FILES: &[&str] = &[
     "test_memfs.c",
     "test_logsvc.c",
     "test_vibeos.c",
+    "test_cap_audit.c",
 ];
 
 pub fn run(args: &TestApiArgs) -> Result<()> {

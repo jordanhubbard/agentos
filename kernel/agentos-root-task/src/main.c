@@ -40,8 +40,22 @@
 #include "pd_tcb.h"          /* pd_tcb_create, pd_tcb_set_regs, pd_tcb_start      */
 #include "ep_alloc.h"        /* ep_alloc_init, ep_alloc_for_service, ep_mint_badge */
 #include "cap_accounting.h"  /* cap_acct_init, cap_acct_record                    */
+#include "cap_audit.h"       /* handle_cap_audit, handle_cap_audit_guest,
+                                cap_tree_verify_all_pds                            */
 #include "system_desc.h"     /* system_desc_t, pd_desc_t, SVC_ID_*, PD_IRQHANDLER_SLOT_BASE */
 #include <stdint.h>
+
+/*
+ * g_audit_mr_vaddr — virtual address of the shared capability audit memory region.
+ *
+ * Set during boot from the system descriptor's shmem layout before any caller
+ * can invoke OP_CAP_AUDIT or OP_CAP_AUDIT_GUEST.  In the current build this
+ * defaults to 0 (no live target); the simulator and hardware builds override
+ * it via their respective shmem mapping steps.
+ *
+ * cap_audit.c references this symbol via `extern uintptr_t g_audit_mr_vaddr`.
+ */
+uintptr_t g_audit_mr_vaddr = 0u;
 
 /* ── System descriptor selection ─────────────────────────────────────────── */
 
@@ -435,6 +449,24 @@ void root_task_main(const seL4_BootInfo *bi)
                          0u /* arg0 */);
         pd_tcb_start(tr.tcb_cap);
     }
+
+    /* ── Step 4.5: Capability audit baseline ─────────────────────────────── */
+    /*
+     * After all PDs are started, record the initial capability counts per PD
+     * as a regression baseline.  cap_tree_verify_all_pds() is implemented in
+     * cap_audit.c; it walks the cap accounting table and logs counts.
+     *
+     * The OP_CAP_AUDIT and OP_CAP_AUDIT_GUEST handlers are available to the
+     * controller PD via the root task's service endpoint.  They are dispatched
+     * from the server loop (to be wired in via sel4_server_register once the
+     * server loop is introduced in a future sprint).
+     *
+     * For now, declare the handlers here so the linker confirms they resolve:
+     */
+    (void)handle_cap_audit;
+    (void)handle_cap_audit_guest;
+
+    cap_tree_verify_all_pds();
 
     /* ── Step 5: Idle loop ────────────────────────────────────────────────── */
     /*
