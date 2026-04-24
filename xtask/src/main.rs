@@ -1,8 +1,8 @@
 use clap::{Parser, Subcommand};
 use xtask::{
-    cmd_audit_caps, cmd_ci_matrix, cmd_fault_inject, cmd_fetch_guest, cmd_release, cmd_setup,
+    cmd_ci_matrix, cmd_fault_inject, cmd_fetch_guest, cmd_host_test, cmd_release, cmd_setup,
     cmd_test, cmd_test_api,
-    AuditCapsArgs, CiMatrixArgs, FaultInjectArgs, FetchGuestArgs, ReleaseArgs, SetupArgs,
+    CiMatrixArgs, FaultInjectArgs, FetchGuestArgs, HostTestArgs, ReleaseArgs, SetupArgs,
     TestApiArgs, TestArgs,
 };
 
@@ -15,8 +15,11 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
-    /// Build the seL4 image and run QEMU boot test
-    Test(TestArgs),
+    /// Compile and run host-side TAP test suites (API + integration)
+    Test(HostTestArgs),
+    /// Build the seL4 image and run a QEMU boot test
+    #[command(name = "qemu-test")]
+    QemuTest(TestArgs),
     /// Run fault injection tests
     FaultInject(FaultInjectArgs),
     /// Set up the development environment
@@ -27,22 +30,20 @@ enum Cmd {
     Release(ReleaseArgs),
     /// Run the libvmm CI test matrix
     CiMatrix(CiMatrixArgs),
-    /// Compile and run the API test suite (TAP output)
+    /// Compile and run the API test suite only (TAP output)
     TestApi(TestApiArgs),
-    /// Audit capabilities held by protection domains or vibeOS guests
-    AuditCaps(AuditCapsArgs),
 }
 
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     match cli.command {
-        Cmd::Test(a) => cmd_test::run(&a),
+        Cmd::Test(a) => cmd_host_test::run(&a),
+        Cmd::QemuTest(a) => cmd_test::run(&a),
         Cmd::FaultInject(a) => cmd_fault_inject::run(&a),
         Cmd::Setup(a) => cmd_setup::run(&a),
         Cmd::FetchGuest(a) => cmd_fetch_guest::run(&a),
         Cmd::Release(a) => cmd_release::run(&a),
         Cmd::CiMatrix(a) => cmd_ci_matrix::run(&a),
         Cmd::TestApi(a) => cmd_test_api::run(&a),
-        Cmd::AuditCaps(a) => cmd_audit_caps::run(&a),
     }
 }

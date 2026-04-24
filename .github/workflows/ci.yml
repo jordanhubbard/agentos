@@ -631,3 +631,39 @@ jobs:
           test -f "$f" || { echo "MISSING: $f"; exit 1; }
           grep -qE 'vm_panel|VmPanel' "$f" || { echo "FAIL: neither vm_panel nor VmPanel found in $f"; exit 1; }
           echo "✓ lib.rs references vm_panel/VmPanel"
+
+  # ---------------------------------------------------------------------------
+  # E8-S4: Host-side TAP test suite — compile and run tests/api/ suites
+  # Uses xtask test which compiles each suite with -DAGENTOS_TEST_HOST and
+  # parses TAP output to determine pass/fail.
+  # ---------------------------------------------------------------------------
+  host-tests:
+    name: Host-side TAP tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Run xtask test
+        run: cargo run --manifest-path xtask/Cargo.toml -- test
+
+  # ---------------------------------------------------------------------------
+  # E8-S4: xtask build check — verify the task runner itself compiles cleanly
+  # ---------------------------------------------------------------------------
+  rust-check:
+    name: Rust xtask check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: cargo check xtask
+        run: cargo check --manifest-path xtask/Cargo.toml

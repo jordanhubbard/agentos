@@ -1,10 +1,10 @@
 // Public library surface — shared types and command implementations.
 // The binary entry point (src/main.rs) re-uses everything from here.
 
-pub mod cmd_audit_caps;
 pub mod cmd_ci_matrix;
 pub mod cmd_fault_inject;
 pub mod cmd_fetch_guest;
+pub mod cmd_host_test;
 pub mod cmd_release;
 pub mod cmd_setup;
 pub mod cmd_test;
@@ -95,17 +95,19 @@ pub struct TestApiArgs {
     pub cc: Option<String>,
 }
 
+/// Arguments for the `test` subcommand (host-side TAP test runner).
 #[derive(clap::Args)]
-pub struct AuditCapsArgs {
-    /// Filter by protection domain ID (0 = all PDs; default)
+pub struct HostTestArgs {
+    /// Run only the named suite (e.g. test_vibeos, test_msgbus)
     #[arg(long)]
-    pub pd: Option<u32>,
-
-    /// Use OP_CAP_AUDIT_GUEST for a specific vibeOS guest handle
+    pub suite: Option<String>,
+    /// C compiler to use (overrides the CC environment variable; default: cc)
     #[arg(long)]
-    pub guest: Option<u32>,
-
-    /// Force test-mode output (hardcoded example data, no live IPC)
+    pub compiler: Option<String>,
+    /// Print full TAP output for every suite, not just failures
+    #[arg(long, short = 'v')]
+    pub verbose: bool,
+    /// Also launch QEMU and run the hardware test suite (requires a built image)
     #[arg(long)]
-    pub test: bool,
+    pub hardware: bool,
 }
