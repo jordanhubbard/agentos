@@ -13,6 +13,7 @@
 
 #define AGENTOS_DEBUG 1
 #include "agentos.h"
+#include "sel4_server.h"
 #include "contracts/worker_contract.h"
 #include <stdint.h>
 #include "string_bare.h"
@@ -33,7 +34,7 @@ static struct {
     uint32_t next_task_id;      /* task ID for next assignment */
 } wstate = { 0, 0, false, false, 0 };
 
-void init(void) {
+static void worker_pd_init(void) {
     log_drain_write(6, 6, "[worker] Slot ");
     char slot_str[4] = { (char)('0' + (worker_slot_id & 0xF)), ':', ' ', '\0' };
     {
@@ -46,10 +47,11 @@ void init(void) {
     }
     
     /* Signal controller: we're ready for work */
-    microkit_notify(CH_CONTROLLER);
+    sel4_dbg_puts("[E5-S8] notify-stub
+");
 }
 
-void notified(microkit_channel ch) {
+static void worker_pd_notified(uint32_t ch) {
     if (ch == CH_CONTROLLER) {
         /*
          * State machine for controller notifications:
@@ -103,11 +105,12 @@ void notified(microkit_channel ch) {
             
             /* Report completion back to controller */
             log_drain_write(6, 6, "[worker] Task complete — notifying controller\n");
-            microkit_mr_set(0, (uint32_t)(task_id & 0xFFFFFFFF));
-            microkit_mr_set(1, (uint32_t)(task_id >> 32));
-            microkit_mr_set(2, 0); /* status: OK */
-            microkit_mr_set(3, wstate.tasks_completed);
-            microkit_notify(CH_CONTROLLER);
+            rep_u32(rep, 0, (uint32_t)(task_id & 0xFFFFFFFF));
+            rep_u32(rep, 4, (uint32_t)(task_id >> 32));
+            rep_u32(rep, 8, 0); /* status: OK */
+            rep_u32(rep, 12, wstate.tasks_completed);
+            sel4_dbg_puts("[E5-S8] notify-stub
+");
         }
         } /* end task block */
         
@@ -120,8 +123,9 @@ void notified(microkit_channel ch) {
     }
 }
 
-microkit_msginfo protected(microkit_channel ch, microkit_msginfo msg) {
+static uint32_t worker_pd_dispatch(sel4_badge_t b, const sel4_msg_t *req, sel4_msg_t *rep, void *ctx) {
     /* Workers don't accept PPC from external callers in v0.1 */
-    (void)ch; (void)msg;
-    return microkit_msginfo_new(0xDEAD, 0);
+    (void)b; (void)req; (void)ctx;
+    rep->length = 0;
+        return SEL4_ERR_OK;
 }

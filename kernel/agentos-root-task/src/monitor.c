@@ -7,6 +7,7 @@
 
 #define AGENTOS_DEBUG 1
 #include "agentos.h"
+#include "sel4_server.h"
 #include "cap_policy.h"
 #include "contracts/vmm_contract.h"
 #include "prio_inherit.h"
@@ -113,22 +114,23 @@ static void trace_notify(uint8_t src_pd, uint8_t dst_pd, uint16_t label,
      * registers as-set, so without save/restore the next microkit_ppcall would
      * receive the trace header in MR0 instead of the intended op code.
      * This was the root cause of [controller] AgentFS PUT FAILED. */
-    seL4_Word saved0 = microkit_mr_get(0);
-    seL4_Word saved1 = microkit_mr_get(1);
-    seL4_Word saved2 = microkit_mr_get(2);
+    seL4_Word saved0 = msg_u32(req, 0);
+    seL4_Word saved1 = msg_u32(req, 4);
+    seL4_Word saved2 = msg_u32(req, 8);
 
     uint32_t packed = ((uint32_t)src_pd << 24)
                     | ((uint32_t)dst_pd << 16)
                     | (uint32_t)(label & 0xFFFF);
-    microkit_mr_set(0, packed);
-    microkit_mr_set(1, mr0_val);
-    microkit_mr_set(2, mr1_val);
-    microkit_notify(CH_TRACE_NOTIFY);
+    rep_u32(rep, 0, packed);
+    rep_u32(rep, 4, mr0_val);
+    rep_u32(rep, 8, mr1_val);
+    sel4_dbg_puts("[E5-S8] notify-stub
+");
 
     /* Restore so the caller's subsequent microkit_ppcall sees the right MRs */
-    microkit_mr_set(0, saved0);
-    microkit_mr_set(1, saved1);
-    microkit_mr_set(2, saved2);
+    rep_u32(rep, 0, saved0);
+    rep_u32(rep, 4, saved1);
+    rep_u32(rep, 8, saved2);
 }
 
 /* Forward declarations */
@@ -324,21 +326,21 @@ static void demo_sequence(void) {
 
     /* AgentFS PUT: MR0=op, MR1=size, MR2=cap_tag */
     uint32_t obj_size = 18;  /* "Hello from agentOS" = 18 bytes */
-    microkit_mr_set(0, OP_AGENTFS_PUT);
-    microkit_mr_set(1, obj_size);
-    microkit_mr_set(2, 0x42);  /* cap_tag: badge 0x42 */
+    rep_u32(rep, 0, OP_AGENTFS_PUT);
+    rep_u32(rep, 4, obj_size);
+    rep_u32(rep, 8, 0x42);  /* cap_tag: badge 0x42 */
 
     trace_notify(TRACE_PD_CONTROLLER, TRACE_PD_AGENTFS,
                  (uint16_t)OP_AGENTFS_PUT, obj_size, 0x42);
-    microkit_ppcall(CH_AGENTFS, microkit_msginfo_new(0, 3));
+    /* E5-S8: ppcall stubbed */
 
-    uint32_t afs_status = (uint32_t)microkit_mr_get(0);
+    uint32_t afs_status = (uint32_t)msg_u32(req, 0);
     if (afs_status == 0) {
         /* Success — read back the object ID from MR1-MR4 */
-        ctrl.demo_obj_id[0] = (uint32_t)microkit_mr_get(1);
-        ctrl.demo_obj_id[1] = (uint32_t)microkit_mr_get(2);
-        ctrl.demo_obj_id[2] = (uint32_t)microkit_mr_get(3);
-        ctrl.demo_obj_id[3] = (uint32_t)microkit_mr_get(4);
+        ctrl.demo_obj_id[0] = (uint32_t)msg_u32(req, 4);
+        ctrl.demo_obj_id[1] = (uint32_t)msg_u32(req, 8);
+        ctrl.demo_obj_id[2] = (uint32_t)msg_u32(req, 12);
+        ctrl.demo_obj_id[3] = (uint32_t)msg_u32(req, 16);
         ctrl.demo_obj_stored = true;
 
         log_drain_write(0, 0, "[controller] AgentFS PUT OK — object id: 0x");
@@ -357,14 +359,14 @@ static void demo_sequence(void) {
     /* ── Step 2: Publish event to EventBus ──────────────────────────── */
     log_drain_write(0, 0, "[controller] Step 2: Publishing OBJECT_CREATED event to EventBus...\n");
 
-    microkit_mr_set(0, EVT_OBJECT_CREATED);  /* event kind */
-    microkit_mr_set(1, ctrl.demo_obj_id[0]); /* first 4 bytes of object ID */
-    microkit_mr_set(2, obj_size);             /* object size */
+    rep_u32(rep, 0, EVT_OBJECT_CREATED);  /* event kind */
+    rep_u32(rep, 4, ctrl.demo_obj_id[0]); /* first 4 bytes of object ID */
+    rep_u32(rep, 8, obj_size);             /* object size */
 
     trace_notify(TRACE_PD_CONTROLLER, TRACE_PD_EVENT_BUS,
                  (uint16_t)EVT_OBJECT_CREATED,
                  ctrl.demo_obj_id[0], obj_size);
-    microkit_ppcall(CH_EVENTBUS, microkit_msginfo_new(EVT_OBJECT_CREATED, 3));
+    /* E5-S8: ppcall stubbed */
     log_drain_write(0, 0, "[controller] Event published to ring buffer\n");
 
     demo_delay();
@@ -374,7 +376,8 @@ static void demo_sequence(void) {
 
     ctrl.worker_task_dispatched = true;
     trace_notify(TRACE_PD_CONTROLLER, TRACE_PD_WORKER_0, 0, 0, 0);
-    microkit_notify(CH_WORKER_BASE);  /* notify worker_0 */
+    sel4_dbg_puts("[E5-S8] notify-stub
+");  /* notify worker_0 */
 
     log_drain_write(0, 0, "[controller] Task dispatched. Waiting for worker completion...\n");
     /* Worker will notify us back on channel 10 when done */
@@ -387,15 +390,15 @@ static void demo_sequence(void) {
 static void ns_register_service(uint32_t channel_id, uint32_t pd_id,
                                  uint32_t cap_classes, const char *name)
 {
-    microkit_mr_set(0, OP_NS_REGISTER);
-    microkit_mr_set(1, channel_id);
-    microkit_mr_set(2, pd_id);
-    microkit_mr_set(3, cap_classes);
-    microkit_mr_set(4, 1u);  /* version */
+    rep_u32(rep, 0, OP_NS_REGISTER);
+    rep_u32(rep, 4, channel_id);
+    rep_u32(rep, 8, pd_id);
+    rep_u32(rep, 12, cap_classes);
+    rep_u32(rep, 16, 1u);  /* version */
     ns_pack_name(name, 5);
     /* MR0..MR4 + 4 name MRs = 9 total */
-    microkit_ppcall(CH_NAMESERVER, microkit_msginfo_new(OP_NS_REGISTER, 9));
-    uint32_t rc = (uint32_t)microkit_mr_get(0);
+    /* E5-S8: ppcall stubbed */
+    uint32_t rc = (uint32_t)msg_u32(req, 0);
     if (rc != NS_OK) {
         log_drain_write(0, 0, "[controller] NS_REGISTER failed for: ");
         log_drain_write(0, 0, name);
@@ -435,14 +438,13 @@ static void microservice_demo(void)
 
     log_drain_write(0, 0, "[controller] Manifest written — calling OP_APP_LAUNCH...\n");
 
-    microkit_mr_set(0, OP_APP_LAUNCH);
-    microkit_mr_set(1, DEMO_MANIFEST_LEN);
-    microkit_ppcall((microkit_channel)CH_APP_MANAGER,
-                    microkit_msginfo_new(OP_APP_LAUNCH, 2));
+    rep_u32(rep, 0, OP_APP_LAUNCH);
+    rep_u32(rep, 4, DEMO_MANIFEST_LEN);
+    /* E5-S8: ppcall stubbed */
 
-    uint32_t rc     = (uint32_t)microkit_mr_get(0);
-    uint32_t app_id = (uint32_t)microkit_mr_get(1);
-    uint32_t vnic   = (uint32_t)microkit_mr_get(2);
+    uint32_t rc     = (uint32_t)msg_u32(req, 0);
+    uint32_t app_id = (uint32_t)msg_u32(req, 4);
+    uint32_t vnic   = (uint32_t)msg_u32(req, 8);
 
     if (rc == APP_OK) {
         log_drain_write(0, 0, "[controller] APP_LAUNCH OK — app_id=");
@@ -536,7 +538,7 @@ static void monitor_apply_policy(void) {
     log_drain_write(0, 0, "[monitor] applied policy grants\n");
 }
 
-void init(void) {
+static void monitor_pd_init(void) {
     agentos_log_boot("controller");
 
     log_drain_write(0, 0, "[controller] Initializing agentOS core services\n");
@@ -562,7 +564,7 @@ void init(void) {
         crypto_ed25519_public_key(pk, test_sk);
         crypto_ed25519_sign(sig, test_sk, pk, test_msg, 0);
         bool ok = crypto_ed25519_check(sig, test_msg, 0, pk) == 0;
-        microkit_dbg_puts(ok ? "[verify] Ed25519 selftest PASS\n"
+        sel4_dbg_puts(ok ? "[verify] Ed25519 selftest PASS\n"
                              : "[verify] Ed25519 selftest FAIL\n");
     }
 
@@ -570,10 +572,9 @@ void init(void) {
     log_drain_write(0, 0, "[controller] Waking EventBus via PPC...\n");
     trace_notify(TRACE_PD_CONTROLLER, TRACE_PD_EVENT_BUS,
                  (uint16_t)MSG_EVENTBUS_INIT, 0, 0);
-    microkit_msginfo result = microkit_ppcall(CH_EVENTBUS,
-        microkit_msginfo_new(MSG_EVENTBUS_INIT, 0));
+    uint32_t result = /* E5-S8: ppcall stubbed */
     
-    uint64_t resp = microkit_msginfo_get_label(result);
+    uint64_t resp = msg_u32(req, 0);
     if (resp == MSG_EVENTBUS_READY) {
         ctrl.eventbus_ready = true;
         log_drain_write(0, 0, "[controller] EventBus: READY\n");
@@ -585,7 +586,8 @@ void init(void) {
     log_drain_write(0, 0, "[controller] Notifying InitAgent to start...\n");
     trace_notify(TRACE_PD_CONTROLLER, TRACE_PD_INIT_AGENT,
                  (uint16_t)MSG_INITAGENT_START, 0, 0);
-    microkit_notify(CH_INITAGENT);
+    sel4_dbg_puts("[E5-S8] notify-stub
+");
     
     /* Initialize vibe-swap subsystem (sets up swap slot channels + service table) */
     vibe_swap_init();
@@ -616,7 +618,7 @@ void init(void) {
     demo_sequence();
 }
 
-void notified(microkit_channel ch) {
+static void monitor_pd_notified(uint32_t ch) {
     ctrl.notification_count++;
 
     /* Periodic lwIP timer tick: notify net_server every NET_TICK_INTERVAL
@@ -625,7 +627,7 @@ void notified(microkit_channel ch) {
     ctrl.net_tick_counter++;
     if (ctrl.net_tick_counter >= NET_TICK_INTERVAL) {
         ctrl.net_tick_counter = 0;
-        microkit_notify((microkit_channel)CH_NET_TIMER);
+        sel4_dbg_puts("[E5-S8] notify-stub\n"); /* TODO: seL4_Signal(notify_cap_for_CH_NET_TIMER) */
     }
 
     switch (ch) {
@@ -643,7 +645,7 @@ void notified(microkit_channel ch) {
              * We distinguish by reading MR0. seL4 Microkit does preserve MR values
              * across notifications to the notified() handler.
              */
-            uint32_t notif_tag = (uint32_t)microkit_mr_get(0);
+            uint32_t notif_tag = (uint32_t)msg_u32(req, 0);
             if (notif_tag == (uint32_t)MSG_SPAWN_AGENT) {
                 /*
                  * init_agent is relaying a dynamic spawn request.
@@ -651,11 +653,11 @@ void notified(microkit_channel ch) {
                  * MR3: wasm_hash_hi_low32   MR4: spawn_id
                  * MR5: priority
                  */
-                uint32_t hash_lo_lo  = (uint32_t)microkit_mr_get(1);
-                uint32_t hash_lo_hi  = (uint32_t)microkit_mr_get(2);
-                uint32_t hash_hi_lo  = (uint32_t)microkit_mr_get(3);
-                uint32_t spawn_id    = (uint32_t)microkit_mr_get(4);
-                uint32_t priority    = (uint32_t)microkit_mr_get(5);
+                uint32_t hash_lo_lo  = (uint32_t)msg_u32(req, 4);
+                uint32_t hash_lo_hi  = (uint32_t)msg_u32(req, 8);
+                uint32_t hash_hi_lo  = (uint32_t)msg_u32(req, 12);
+                uint32_t spawn_id    = (uint32_t)msg_u32(req, 16);
+                uint32_t priority    = (uint32_t)msg_u32(req, 20);
 
                 log_drain_write(0, 0, "[controller] SPAWN_AGENT request: spawn_id=");
                 /* print spawn_id decimal */
@@ -714,13 +716,14 @@ void notified(microkit_channel ch) {
                  * MR1: spawn_id
                  * MR2: slot_id (negative = failure)
                  */
-                microkit_mr_set(0, MSG_SPAWN_AGENT_REPLY);
-                microkit_mr_set(1, spawn_id);
-                microkit_mr_set(2, (uint32_t)(int32_t)slot);
+                rep_u32(rep, 0, MSG_SPAWN_AGENT_REPLY);
+                rep_u32(rep, 4, spawn_id);
+                rep_u32(rep, 8, (uint32_t)(int32_t)slot);
                 trace_notify(TRACE_PD_CONTROLLER, TRACE_PD_INIT_AGENT,
                              (uint16_t)MSG_SPAWN_AGENT_REPLY,
                              spawn_id, (uint32_t)(int32_t)slot);
-                microkit_notify(CH_INITAGENT);
+                sel4_dbg_puts("[E5-S8] notify-stub
+");
 
                 if (slot >= 0) {
                     log_drain_write(0, 0, "[controller] Agent spawned: slot=");
@@ -758,18 +761,18 @@ void notified(microkit_channel ch) {
                     
                     /* Publish TASK_COMPLETE event to EventBus */
                     log_drain_write(0, 0, "[controller] Publishing TASK_COMPLETE event to EventBus...\n");
-                    microkit_mr_set(0, MSG_EVENT_AGENT_EXITED);
-                    microkit_mr_set(1, 0);
-                    microkit_mr_set(2, 1);
+                    rep_u32(rep, 0, MSG_EVENT_AGENT_EXITED);
+                    rep_u32(rep, 4, 0);
+                    rep_u32(rep, 8, 1);
 
                     trace_notify(TRACE_PD_CONTROLLER, TRACE_PD_EVENT_BUS,
                                  (uint16_t)MSG_EVENT_AGENT_EXITED, 0, 1);
-                    microkit_ppcall(CH_EVENTBUS,
-                        microkit_msginfo_new(MSG_EVENT_AGENT_EXITED, 3));
+                    /* E5-S8: ppcall stubbed */
                     log_drain_write(0, 0, "[controller] TASK_COMPLETE event published\n");
                     
                     /* Notify InitAgent to query final EventBus status */
-                    microkit_notify(CH_INITAGENT);
+                    sel4_dbg_puts("[E5-S8] notify-stub
+");
                     
                     demo_delay();
                     
@@ -854,19 +857,20 @@ void notified(microkit_channel ch) {
                         log_drain_write(0, 0, _cl_buf);
                     }
                     /* Ack the worker's ready signal */
-                    microkit_notify(ch);
+                    sel4_dbg_puts("[E5-S8] notify-stub
+");
                 }
             /* Channel 50: GPU scheduler ready / GPU task dispatch request */
             } else if (ch == CH_GPUSCHED) {
-                uint32_t gpu_tag = (uint32_t)microkit_mr_get(0);
+                uint32_t gpu_tag = (uint32_t)msg_u32(req, 0);
                 if (gpu_tag == (uint32_t)MSG_GPU_SUBMIT) {
                     /*
                      * gpu_sched is asking us to route a WASM GPU task to a worker slot.
                      * MR1: ticket_id, MR2/3: hash_lo, MR4: hash_hi low32, MR5: slot_id
                      * We notify the appropriate worker slot to load+execute the WASM.
                      */
-                    uint32_t ticket  = (uint32_t)microkit_mr_get(1);
-                    uint32_t slot_id = (uint32_t)microkit_mr_get(5);
+                    uint32_t ticket  = (uint32_t)msg_u32(req, 4);
+                    uint32_t slot_id = (uint32_t)msg_u32(req, 20);
                     (void)ticket;
                     log_drain_write(0, 0, "[controller] GPU task dispatched to slot=");
                     {
@@ -883,19 +887,19 @@ void notified(microkit_channel ch) {
                         trace_notify(TRACE_PD_CONTROLLER,
                                      (uint8_t)(TRACE_PD_SWAP_SLOT_0 + slot_id),
                                      (uint16_t)MSG_GPU_SUBMIT, ticket, slot_id);
-                        microkit_notify((microkit_channel)(CH_SWAP_BASE + slot_id));
+                        sel4_dbg_puts("[E5-S8] notify-stub\n"); /* TODO: seL4_Signal(notify_cap_for_swap_slot) */
                     }
                 } else {
                     /* gpu_sched startup ready notification */
                     log_drain_write(0, 0, "[controller] GPU Scheduler online\n");
                 }
             /* Channel 55: mesh_agent ready notification */
-            } else if (ch == (microkit_channel)CH_MESHAGENT) {
+            } else if (ch == (uint32_t)CH_MESHAGENT) {
                 log_drain_write(0, 0, "[controller] Distributed mesh agent online\n");
-            } else if (ch == (microkit_channel)CH_QUOTA_NOTIFY) {
-                uint32_t tag = (uint32_t)microkit_mr_get(0);
-                uint32_t agent_id = (uint32_t)microkit_mr_get(1);
-                uint32_t reason   = (uint32_t)microkit_mr_get(2);
+            } else if (ch == (uint32_t)CH_QUOTA_NOTIFY) {
+                uint32_t tag = (uint32_t)msg_u32(req, 0);
+                uint32_t agent_id = (uint32_t)msg_u32(req, 4);
+                uint32_t reason   = (uint32_t)msg_u32(req, 8);
                 if (tag == (uint32_t)MSG_QUOTA_REVOKE) {
                     log_drain_write(0, 0, "[controller] Quota revoke request: agent=");
                     char buf[12]; int bi = 11; buf[bi] = '\0';
@@ -939,7 +943,7 @@ void notified(microkit_channel ch) {
             /* Channels 30-33: swap slot health-OK notifications */
             } else if (ch >= CH_SWAP_BASE && ch < CH_SWAP_BASE + NUM_SWAP_SLOTS) {
                 int swap_slot_idx = (int)(ch - CH_SWAP_BASE);
-                uint32_t status = (uint32_t)microkit_mr_get(0);
+                uint32_t status = (uint32_t)msg_u32(req, 0);
                 if (status == 0) {
                     log_drain_write(0, 0, "[controller] Swap slot health OK — activating\n");
                     vibe_swap_health_notify(swap_slot_idx);
@@ -963,11 +967,11 @@ void notified(microkit_channel ch) {
     }
 }
 
-microkit_msginfo protected(microkit_channel ch, microkit_msginfo msg) {
-    uint64_t label = microkit_msginfo_get_label(msg);
+static uint32_t monitor_pd_dispatch(sel4_badge_t b, const sel4_msg_t *req, sel4_msg_t *rep, void *ctx) {
+    uint64_t label = msg_u32(req, 0);
 
     /* ── Ring-1 enforcement: VMM kernel protocol (CH_VMM_KERNEL = 76) ───── */
-    if (ch == (microkit_channel)CH_VMM_KERNEL) {
+    if (ch == (uint32_t)CH_VMM_KERNEL) {
         /*
          * All PPCs on CH_VMM_KERNEL originate from a registered VMM PD.
          * Enforce ring-1 isolation before granting any capability.
@@ -979,8 +983,9 @@ microkit_msginfo protected(microkit_channel ch, microkit_msginfo msg) {
             /* Fail-closed: deny if shmem not mapped — no bypass window */
             if (!vmm_vcpu_regs_vaddr) {
                 AGENTOS_CRIT("[cap_policy] vCPU regs shmem not mapped — EPERM");
-                microkit_mr_set(0, 0u);
-                return microkit_msginfo_new(0xDEAD, 1);
+                rep_u32(rep, 0, 0u);
+                rep->length = 4;
+        return SEL4_ERR_OK;
             }
             {
                 volatile vcpu_regs_t *regs =
@@ -992,32 +997,37 @@ microkit_msginfo protected(microkit_channel ch, microkit_msginfo msg) {
 #endif
                 if (el_rc != 0) {
                     AGENTOS_CRIT("[cap_policy] vCPU EL2/CPL0 escalation REJECTED");
-                    microkit_mr_set(0, 0u);
-                    return microkit_msginfo_new(0xDEAD, 1);
+                    rep_u32(rep, 0, 0u);
+                    rep->length = 4;
+        return SEL4_ERR_OK;
                 }
             }
-            microkit_mr_set(0, 1u);
-            return microkit_msginfo_new(0, 1);
+            rep_u32(rep, 0, 1u);
+            rep->length = 4;
+        return SEL4_ERR_OK;
         }
 
         if (label == (uint64_t)MSG_VMM_REGISTER) {
             /* Assign a non-zero vmm_token; real allocation tracked per-VMM */
-            microkit_mr_set(0, 1u);  /* ok */
-            microkit_mr_set(1, 1u);  /* vmm_token */
-            microkit_mr_set(2, 1u);  /* granted_guests */
-            return microkit_msginfo_new(0, 3);
+            rep_u32(rep, 0, 1u);  /* ok */
+            rep_u32(rep, 4, 1u);  /* vmm_token */
+            rep_u32(rep, 8, 1u);  /* granted_guests */
+            rep->length = 12;
+        return SEL4_ERR_OK;
         }
 
         /* All other MSG_VMM_* stub ok until full VMM protocol is wired */
-        microkit_mr_set(0, 1u);
-        return microkit_msginfo_new(0, 1);
+        rep_u32(rep, 0, 1u);
+        rep->length = 4;
+        return SEL4_ERR_OK;
     }
 
     if (label == OP_CAP_POLICY_RELOAD) {
         /* Reload capability policy blob from shmem */
         monitor_apply_policy();
-        microkit_mr_set(0, policy_loaded ? 1u : 0u);
-        return microkit_msginfo_new(0, 1);
+        rep_u32(rep, 0, policy_loaded ? 1u : 0u);
+        rep->length = 4;
+        return SEL4_ERR_OK;
     }
 
     if (label == MSG_WORKER_RETRIEVE) {
@@ -1025,27 +1035,26 @@ microkit_msginfo protected(microkit_channel ch, microkit_msginfo msg) {
         log_drain_write(0, 0, "[controller] Proxying AgentFS GET for worker...\n");
         
         /* Read the object ID words from MRs */
-        uint32_t id0 = (uint32_t)microkit_mr_get(0);
-        uint32_t id1 = (uint32_t)microkit_mr_get(1);
-        uint32_t id2 = (uint32_t)microkit_mr_get(2);
-        uint32_t id3 = (uint32_t)microkit_mr_get(3);
+        uint32_t id0 = (uint32_t)msg_u32(req, 0);
+        uint32_t id1 = (uint32_t)msg_u32(req, 4);
+        uint32_t id2 = (uint32_t)msg_u32(req, 8);
+        uint32_t id3 = (uint32_t)msg_u32(req, 12);
         
         /* PPC into AgentFS to GET the object */
-        microkit_mr_set(0, OP_AGENTFS_GET);
-        microkit_mr_set(1, id0);
-        microkit_mr_set(2, id1);
-        microkit_mr_set(3, id2);
-        microkit_mr_set(4, id3);
+        rep_u32(rep, 0, OP_AGENTFS_GET);
+        rep_u32(rep, 4, id0);
+        rep_u32(rep, 8, id1);
+        rep_u32(rep, 12, id2);
+        rep_u32(rep, 16, id3);
         
-        PPCALL_DONATE(CH_AGENTFS, microkit_msginfo_new(0, 5),
-                      PRIO_CONTROLLER, PRIO_AGENTFS);
+        0 /* E5-S8: PPCALL_DONATE stubbed */;
         
-        uint32_t status = (uint32_t)microkit_mr_get(0);
+        uint32_t status = (uint32_t)msg_u32(req, 0);
         if (status == 0) {
             /* Success — forward AgentFS response back to worker */
-            uint32_t version    = (uint32_t)microkit_mr_get(1);
-            uint32_t size       = (uint32_t)microkit_mr_get(2);
-            uint32_t cap_tag    = (uint32_t)microkit_mr_get(3);
+            uint32_t version    = (uint32_t)msg_u32(req, 4);
+            uint32_t size       = (uint32_t)msg_u32(req, 8);
+            uint32_t cap_tag    = (uint32_t)msg_u32(req, 12);
             
             log_drain_write(0, 0, "[controller] AgentFS returned object: version=");
             char v[2] = { (char)('0' + (version % 10)), '\0' };
@@ -1069,20 +1078,23 @@ microkit_msginfo protected(microkit_channel ch, microkit_msginfo msg) {
             log_drain_write(0, 0, " bytes\n");
             
             /* Pack response for worker: MR0=status, MR1=size, MR2=cap_tag, MR3=version */
-            microkit_mr_set(0, 0);       /* OK */
-            microkit_mr_set(1, size);
-            microkit_mr_set(2, cap_tag);
-            microkit_mr_set(3, version);
-            return microkit_msginfo_new(MSG_WORKER_RETRIEVE_REPLY, 4);
+            rep_u32(rep, 0, 0);       /* OK */
+            rep_u32(rep, 4, size);
+            rep_u32(rep, 8, cap_tag);
+            rep_u32(rep, 12, version);
+            rep->length = 16;
+        return SEL4_ERR_OK;
         } else {
             log_drain_write(0, 0, "[controller] AgentFS GET failed\n");
-            microkit_mr_set(0, status);
-            return microkit_msginfo_new(MSG_WORKER_RETRIEVE_REPLY, 1);
+            rep_u32(rep, 0, status);
+            rep->length = 4;
+        return SEL4_ERR_OK;
         }
     }
     
     log_drain_write(0, 0, "[controller] Unexpected PPC call\n");
-    return microkit_msginfo_new(0xDEAD, 0);
+    rep->length = 0;
+        return SEL4_ERR_OK;
 }
 
 /* Note: this extends the notified() function above.

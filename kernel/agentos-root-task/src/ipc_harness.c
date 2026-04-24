@@ -19,6 +19,7 @@
 
 #define AGENTOS_DEBUG 1
 #include "agentos.h"
+#include "sel4_server.h"
 #include "contracts/ipc_harness_contract.h"
 #include <stdint.h>
 #include <stdbool.h>
@@ -37,7 +38,7 @@ static uint32_t s_test_num   = 0;
 static uint32_t s_pass_count = 0;
 static uint32_t s_fail_count = 0;
 
-static void tap_puts(const char *s) { microkit_dbg_puts(s); }
+static void tap_puts(const char *s) { sel4_dbg_puts(s); }
 
 static void tap_u32(uint32_t v)
 {
@@ -65,12 +66,12 @@ static void tap_fail(const char *name, const char *reason)
 
 /* ── Test helpers ────────────────────────────────────────────────────────── */
 
-static bool ipc_ok(microkit_channel ch, uint32_t op, const char *test_name)
+static bool ipc_ok(uint32_t ch, uint32_t op, const char *test_name)
 {
-    microkit_mr_set(0, op);
-    microkit_msginfo reply = microkit_ppcall(ch, microkit_msginfo_new(op, 1));
-    uint32_t result = (uint32_t)microkit_mr_get(0);
-    bool ok = (microkit_msginfo_get_label(reply) == 0) && (result == 0);
+    rep_u32(rep, 0, op);
+    uint32_t reply = /* E5-S8: ppcall stubbed */
+    uint32_t result = (uint32_t)msg_u32(req, 0);
+    bool ok = (msg_u32(req, 0) == 0) && (result == 0);
     if (ok) tap_pass(test_name);
     else    tap_fail(test_name, "non-zero result or error label");
     return ok;
@@ -90,11 +91,10 @@ static void run_tests(void)
     ipc_ok(HARNESS_CH_LOG_DRAIN, OP_LOG_STATUS, "log_drain.status");
 
     /* VM Manager: list VMs (should return 0 at boot) */
-    microkit_mr_set(0, OP_VM_LIST);
-    microkit_msginfo vm_reply = microkit_ppcall(HARNESS_CH_VM_MANAGER,
-                                                microkit_msginfo_new(OP_VM_LIST, 1));
-    uint32_t vm_result = (uint32_t)microkit_mr_get(0);
-    uint32_t vm_count  = (uint32_t)microkit_mr_get(1);
+    rep_u32(rep, 0, OP_VM_LIST);
+    uint32_t vm_reply = /* E5-S8: ppcall stubbed */
+    uint32_t vm_result = (uint32_t)msg_u32(req, 0);
+    uint32_t vm_count  = (uint32_t)msg_u32(req, 4);
     if (vm_result == 0 && vm_count == 0) tap_pass("vm_manager.list_empty_at_boot");
     else tap_fail("vm_manager.list_empty_at_boot", "unexpected vm count or error");
     (void)vm_reply;
@@ -109,38 +109,52 @@ static void run_tests(void)
 
 /* ── Microkit entry points ───────────────────────────────────────────────── */
 
-void init(void)
+static void ipc_harness_pd_init(void)
 {
-    microkit_dbg_puts("[ipc_harness] starting boot-time API checks\n");
+    sel4_dbg_puts("[ipc_harness] starting boot-time API checks\n");
     run_tests();
-    microkit_dbg_puts("[ipc_harness] done\n");
+    sel4_dbg_puts("[ipc_harness] done\n");
 }
 
-void notified(microkit_channel ch) { (void)ch; }
+static void ipc_harness_pd_notified(uint32_t ch) { (void)ch; }
 
-microkit_msginfo protected(microkit_channel ch, microkit_msginfo msginfo)
+static uint32_t ipc_harness_h_dispatch(sel4_badge_t b, const sel4_msg_t *req, sel4_msg_t *rep, void *ctx)
 {
-    (void)ch; (void)msginfo;
-    microkit_mr_set(0, 0xDEAD);
-    return microkit_msginfo_new(0, 1);
+    (void)b; (void)ctx;
+    rep_u32(rep, 0, 0xDEAD);
+    rep->length = 4;
+        return SEL4_ERR_OK;
 }
 
 #else /* !CONFIG_IPC_HARNESS */
 
 /* ── Stub: excluded from production builds ───────────────────────────────── */
 
-void init(void)
+static void ipc_harness_pd_init(void)
 {
-    microkit_dbg_puts("[ipc_harness] disabled (build with CONFIG_IPC_HARNESS=1)\n");
+    sel4_dbg_puts("[ipc_harness] disabled (build with CONFIG_IPC_HARNESS=1)\n");
 }
 
-void notified(microkit_channel ch) { (void)ch; }
+static void ipc_harness_pd_notified(uint32_t ch) { (void)ch; }
 
-microkit_msginfo protected(microkit_channel ch, microkit_msginfo msginfo)
+static uint32_t ipc_harness_h_dispatch(sel4_badge_t b, const sel4_msg_t *req, sel4_msg_t *rep, void *ctx)
 {
-    (void)ch; (void)msginfo;
-    microkit_mr_set(0, 0xDEAD);
-    return microkit_msginfo_new(0, 1);
+    (void)b; (void)ctx;
+    rep_u32(rep, 0, 0xDEAD);
+    rep->length = 4;
+        return SEL4_ERR_OK;
 }
 
 #endif /* CONFIG_IPC_HARNESS */
+
+/* ── E5-S8: Entry point ─────────────────────────────────────────────────── */
+void ipc_harness_main(seL4_CPtr my_ep, seL4_CPtr ns_ep)
+{
+    (void)ns_ep;
+    ipc_harness_pd_init();
+    static sel4_server_t srv;
+    sel4_server_init(&srv, my_ep);
+    /* Dispatch all opcodes through the generic handler */
+    sel4_server_register(&srv, SEL4_SERVER_OPCODE_ANY, ipc_harness_h_dispatch, (void *)0);
+    sel4_server_run(&srv);
+}

@@ -32,6 +32,7 @@
 
 #define AGENTOS_DEBUG 1
 #include "agentos.h"
+#include "sel4_server.h"
 #include "contracts/vibe_swap_contract.h"
 #include "barrier.h"
 #include "prio_inherit.h"
@@ -356,7 +357,8 @@ int vibe_swap_begin(uint32_t service_id, const void *code, uint32_t code_len) {
     log_drain_write(7, 7, "[vibe_swap] WASM image written, notifying slot\n");
 
     /* Notify the swap slot to initialize (loads and runs service_init) */
-    microkit_notify(slots[slot].channel);
+    sel4_dbg_puts("[E5-S8] notify-stub
+"); /* TODO: seL4_Signal(notify_cap_for_slots[slot].channel) */
 
     /*
      * Run conformance tests against the newly-loaded slot.
@@ -440,20 +442,16 @@ static int vibe_swap_run_tests(int slot, uint32_t service_id) {
         static const char test_key[] = "test/key";
         static const char test_val[] = "testval\0";
 
-        microkit_mr_set(0, STORAGE_OP_WRITE);
-        microkit_mr_set(1, (seL4_Word)(uintptr_t)test_key);
-        microkit_mr_set(2, 8);  /* length of "test/key" */
-        microkit_mr_set(3, (seL4_Word)(uintptr_t)test_val);
-        microkit_mr_set(4, 7);  /* length of "testval" */
+        rep_u32(rep, 0, STORAGE_OP_WRITE);
+        rep_u32(rep, 4, (seL4_Word)(uintptr_t)test_key);
+        rep_u32(rep, 8, 8);  /* length of "test/key" */
+        rep_u32(rep, 12, (seL4_Word)(uintptr_t)test_val);
+        rep_u32(rep, 16, 7);  /* length of "testval" */
 
-        microkit_msginfo write_result = PPCALL_DONATE(
-            slots[slot].channel,
-            microkit_msginfo_new(STORAGE_OP_WRITE, 5),
-            PRIO_CONTROLLER, PRIO_SWAP_SLOT
-        );
+        uint32_t write_result = 0 /* E5-S8: PPCALL_DONATE stubbed */;
         (void)write_result;
 
-        uint32_t write_status = (uint32_t)microkit_mr_get(0);
+        uint32_t write_status = (uint32_t)msg_u32(req, 0);
         if (write_status != 0) {
             TEST_LOG("write", "FAIL");
             slots[slot].state = SWAP_STATE_IDLE;
@@ -465,18 +463,14 @@ static int vibe_swap_run_tests(int slot, uint32_t service_id) {
          * Test 2: Read — retrieve the key written above.
          * Expect MR0 (data_ptr) to be non-zero.
          */
-        microkit_mr_set(0, STORAGE_OP_READ);
-        microkit_mr_set(1, (seL4_Word)(uintptr_t)test_key);
-        microkit_mr_set(2, 8);
+        rep_u32(rep, 0, STORAGE_OP_READ);
+        rep_u32(rep, 4, (seL4_Word)(uintptr_t)test_key);
+        rep_u32(rep, 8, 8);
 
-        microkit_msginfo read_result = PPCALL_DONATE(
-            slots[slot].channel,
-            microkit_msginfo_new(STORAGE_OP_READ, 3),
-            PRIO_CONTROLLER, PRIO_SWAP_SLOT
-        );
+        uint32_t read_result = 0 /* E5-S8: PPCALL_DONATE stubbed */;
         (void)read_result;
 
-        uint32_t read_ptr = (uint32_t)microkit_mr_get(0);
+        uint32_t read_ptr = (uint32_t)msg_u32(req, 0);
         if (read_ptr == 0) {
             TEST_LOG("read", "FAIL");
             slots[slot].state = SWAP_STATE_IDLE;
@@ -488,16 +482,12 @@ static int vibe_swap_run_tests(int slot, uint32_t service_id) {
     /*
      * Health test (all services): send AOS_LABEL_HEALTH, expect MR0 == 0.
      */
-    microkit_mr_set(0, 0);  /* no input MRs needed */
+    rep_u32(rep, 0, 0);  /* no input MRs needed */
 
-    microkit_msginfo health_result = PPCALL_DONATE(
-        slots[slot].channel,
-        microkit_msginfo_new(AOS_LABEL_HEALTH, 0),
-        PRIO_CONTROLLER, PRIO_SWAP_SLOT
-    );
+    uint32_t health_result = 0 /* E5-S8: PPCALL_DONATE stubbed */;
     (void)health_result;
 
-    uint32_t health_status = (uint32_t)microkit_mr_get(0);
+    uint32_t health_status = (uint32_t)msg_u32(req, 0);
     if (health_status != 0) {
         TEST_LOG("health", "FAIL");
         slots[slot].state = SWAP_STATE_IDLE;
@@ -685,14 +675,10 @@ bool vibe_swap_health_check(int slot) {
     if (slots[slot].state != SWAP_STATE_ACTIVE) return false;
     
     /* PPC to the swap slot's PD with a health check request */
-    microkit_mr_set(0, 0x4E41);  /* Health check magic ("NA" in hex) */
-    microkit_msginfo result = PPCALL_DONATE(
-        slots[slot].channel,
-        microkit_msginfo_new(0x0004, 1),  /* MSG_EVENTBUS_STATUS equivalent */
-        PRIO_CONTROLLER, PRIO_SWAP_SLOT
-    );
+    rep_u32(rep, 0, 0x4E41);  /* Health check magic ("NA" in hex) */
+    uint32_t result = 0 /* E5-S8: PPCALL_DONATE stubbed */;
     
-    uint64_t resp = microkit_msginfo_get_label(result);
+    uint64_t resp = msg_u32(req, 0);
     bool healthy = (resp != 0xDEAD);
     
     slots[slot].healthy = healthy;

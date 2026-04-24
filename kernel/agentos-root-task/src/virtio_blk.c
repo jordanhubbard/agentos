@@ -30,6 +30,7 @@
 
 #define AGENTOS_DEBUG 1
 #include "agentos.h"
+#include "sel4_server.h"
 #include "virtio_blk.h"
 #include "arch_barrier.h"
 
@@ -432,7 +433,7 @@ static void virtio_blk_device_init(void)
  * init() — called once by the Microkit runtime before any IPC arrives.
  * No main(); Microkit provides the entry point.
  */
-void init(void)
+static void virtio_blk_pd_init(void)
 {
     agentos_log_boot("virtio_blk");
     log_drain_write(17, 17, "[virtio_blk] Initializing virtio-blk driver...\n");
@@ -451,7 +452,7 @@ void init(void)
  * virtio_blk is passive (priority 175, passive="true") so it should not
  * normally receive notifications, but we handle them gracefully.
  */
-void notified(microkit_channel ch)
+static void virtio_blk_pd_notified(uint32_t ch)
 {
     /* Log unexpected notification and ignore */
     agentos_log_channel("virtio_blk", ch);
@@ -466,115 +467,143 @@ void notified(microkit_channel ch)
  * Both channels carry the same opcode space (OP_BLK_*); the channel
  * argument is available for future per-caller access-control policy.
  */
-microkit_msginfo protected(microkit_channel ch, microkit_msginfo msginfo)
+static uint32_t virtio_blk_h_dispatch(sel4_badge_t b, const sel4_msg_t *req, sel4_msg_t *rep, void *ctx)
 {
-    (void)ch;   /* channel not used in dispatch; all ops share one table */
-    uint64_t op = microkit_msginfo_get_label(msginfo);
+    (void)b; (void)ctx;
+    uint64_t op = msg_u32(req, 0);
 
     switch (op) {
 
     /* ── OP_BLK_READ ────────────────────────────────────────────────────── */
     case OP_BLK_READ: {
         if (!dev.initialized) {
-            microkit_mr_set(0, BLK_ERR_NODEV);
-            return microkit_msginfo_new(0, 1);
+            rep_u32(rep, 0, BLK_ERR_NODEV);
+            rep->length = 4;
+        return SEL4_ERR_OK;
         }
 
-        uint32_t block_lo = (uint32_t)microkit_mr_get(1);
-        uint32_t block_hi = (uint32_t)microkit_mr_get(2);
-        uint32_t count    = (uint32_t)microkit_mr_get(3);
+        uint32_t block_lo = (uint32_t)msg_u32(req, 4);
+        uint32_t block_hi = (uint32_t)msg_u32(req, 8);
+        uint32_t count    = (uint32_t)msg_u32(req, 12);
         uint64_t sector   = ((uint64_t)block_hi << 32) | (uint64_t)block_lo;
 
         if (count == 0) {
-            microkit_mr_set(0, BLK_OK);
-            return microkit_msginfo_new(0, 1);
+            rep_u32(rep, 0, BLK_OK);
+            rep->length = 4;
+        return SEL4_ERR_OK;
         }
         if (count > DMA_MAX_SECTORS) {
-            microkit_mr_set(0, BLK_ERR_IO);
-            return microkit_msginfo_new(0, 1);
+            rep_u32(rep, 0, BLK_ERR_IO);
+            rep->length = 4;
+        return SEL4_ERR_OK;
         }
         /* Bounds check: sector + count must not exceed device capacity */
         if (dev.capacity > 0 && (sector + count) > dev.capacity) {
-            microkit_mr_set(0, BLK_ERR_OOB);
-            return microkit_msginfo_new(0, 1);
+            rep_u32(rep, 0, BLK_ERR_OOB);
+            rep->length = 4;
+        return SEL4_ERR_OK;
         }
 
         uint32_t rc = virtio_blk_do_io(VIRTIO_BLK_T_IN, sector, count);
-        microkit_mr_set(0, rc);
-        return microkit_msginfo_new(0, 1);
+        rep_u32(rep, 0, rc);
+        rep->length = 4;
+        return SEL4_ERR_OK;
     }
 
     /* ── OP_BLK_WRITE ───────────────────────────────────────────────────── */
     case OP_BLK_WRITE: {
         if (!dev.initialized) {
-            microkit_mr_set(0, BLK_ERR_NODEV);
-            return microkit_msginfo_new(0, 1);
+            rep_u32(rep, 0, BLK_ERR_NODEV);
+            rep->length = 4;
+        return SEL4_ERR_OK;
         }
 
-        uint32_t block_lo = (uint32_t)microkit_mr_get(1);
-        uint32_t block_hi = (uint32_t)microkit_mr_get(2);
-        uint32_t count    = (uint32_t)microkit_mr_get(3);
+        uint32_t block_lo = (uint32_t)msg_u32(req, 4);
+        uint32_t block_hi = (uint32_t)msg_u32(req, 8);
+        uint32_t count    = (uint32_t)msg_u32(req, 12);
         uint64_t sector   = ((uint64_t)block_hi << 32) | (uint64_t)block_lo;
 
         if (count == 0) {
-            microkit_mr_set(0, BLK_OK);
-            return microkit_msginfo_new(0, 1);
+            rep_u32(rep, 0, BLK_OK);
+            rep->length = 4;
+        return SEL4_ERR_OK;
         }
         if (count > DMA_MAX_SECTORS) {
-            microkit_mr_set(0, BLK_ERR_IO);
-            return microkit_msginfo_new(0, 1);
+            rep_u32(rep, 0, BLK_ERR_IO);
+            rep->length = 4;
+        return SEL4_ERR_OK;
         }
         if (dev.capacity > 0 && (sector + count) > dev.capacity) {
-            microkit_mr_set(0, BLK_ERR_OOB);
-            return microkit_msginfo_new(0, 1);
+            rep_u32(rep, 0, BLK_ERR_OOB);
+            rep->length = 4;
+        return SEL4_ERR_OK;
         }
 
         uint32_t rc = virtio_blk_do_io(VIRTIO_BLK_T_OUT, sector, count);
-        microkit_mr_set(0, rc);
-        return microkit_msginfo_new(0, 1);
+        rep_u32(rep, 0, rc);
+        rep->length = 4;
+        return SEL4_ERR_OK;
     }
 
     /* ── OP_BLK_FLUSH ───────────────────────────────────────────────────── */
     case OP_BLK_FLUSH: {
         if (!dev.initialized) {
-            microkit_mr_set(0, BLK_ERR_NODEV);
-            return microkit_msginfo_new(0, 1);
+            rep_u32(rep, 0, BLK_ERR_NODEV);
+            rep->length = 4;
+        return SEL4_ERR_OK;
         }
 
         /* Send a flush request (sector and count are ignored by the device) */
         uint32_t rc = virtio_blk_do_io(VIRTIO_BLK_T_FLUSH, 0, 0);
-        microkit_mr_set(0, rc);
-        return microkit_msginfo_new(0, 1);
+        rep_u32(rep, 0, rc);
+        rep->length = 4;
+        return SEL4_ERR_OK;
     }
 
     /* ── OP_BLK_INFO ────────────────────────────────────────────────────── */
     case OP_BLK_INFO: {
         if (!dev.initialized) {
-            microkit_mr_set(0, BLK_ERR_NODEV);
-            return microkit_msginfo_new(0, 1);
+            rep_u32(rep, 0, BLK_ERR_NODEV);
+            rep->length = 4;
+        return SEL4_ERR_OK;
         }
 
-        microkit_mr_set(0, BLK_OK);
-        microkit_mr_set(1, (uint32_t)(dev.capacity & 0xFFFFFFFFu));
-        microkit_mr_set(2, (uint32_t)(dev.capacity >> 32));
-        microkit_mr_set(3, dev.block_size);
-        return microkit_msginfo_new(0, 4);
+        rep_u32(rep, 0, BLK_OK);
+        rep_u32(rep, 4, (uint32_t)(dev.capacity & 0xFFFFFFFFu));
+        rep_u32(rep, 8, (uint32_t)(dev.capacity >> 32));
+        rep_u32(rep, 12, dev.block_size);
+        rep->length = 16;
+        return SEL4_ERR_OK;
     }
 
     /* ── OP_BLK_HEALTH ──────────────────────────────────────────────────── */
     case OP_BLK_HEALTH: {
-        microkit_mr_set(0, BLK_OK);
-        microkit_mr_set(1, dev.initialized ? 1u : 0u);
-        microkit_mr_set(2, dev.error_count);
-        return microkit_msginfo_new(0, 3);
+        rep_u32(rep, 0, BLK_OK);
+        rep_u32(rep, 4, dev.initialized ? 1u : 0u);
+        rep_u32(rep, 8, dev.error_count);
+        rep->length = 12;
+        return SEL4_ERR_OK;
     }
 
     /* ── Unknown opcode ─────────────────────────────────────────────────── */
     default: {
         log_drain_write(17, 17, "[virtio_blk] WARNING: unknown opcode received\n");
-        microkit_mr_set(0, BLK_ERR_IO);
-        return microkit_msginfo_new(0xFFFF, 1);
+        rep_u32(rep, 0, BLK_ERR_IO);
+        rep->length = 4;
+        return SEL4_ERR_OK;
     }
 
     } /* switch (op) */
+}
+
+/* ── E5-S8: Entry point ─────────────────────────────────────────────────── */
+void virtio_blk_main(seL4_CPtr my_ep, seL4_CPtr ns_ep)
+{
+    (void)ns_ep;
+    virtio_blk_pd_init();
+    static sel4_server_t srv;
+    sel4_server_init(&srv, my_ep);
+    /* Dispatch all opcodes through the generic handler */
+    sel4_server_register(&srv, SEL4_SERVER_OPCODE_ANY, virtio_blk_h_dispatch, (void *)0);
+    sel4_server_run(&srv);
 }

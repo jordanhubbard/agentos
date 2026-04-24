@@ -143,15 +143,26 @@ static inline void prio_donate_end(uint8_t caller_prio,
  *   caller_prio — this PD's compile-time priority constant
  *   server_prio — target passive PD's compile-time priority constant
  */
-static inline microkit_msginfo
-ppcall_with_prio(microkit_channel ch,
-                 microkit_msginfo  msg,
-                 uint8_t           caller_prio,
-                 uint8_t           server_prio) {
+/*
+ * E5-S8: ppcall_with_prio migrated from Microkit to raw seL4.
+ * In the raw seL4 model, callers hold an explicit seL4_CPtr endpoint.
+ * The ch parameter is now treated as a seL4_CPtr endpoint cap.
+ * PPCALL_DONATE callers must ensure ch is a valid endpoint CPtr.
+ */
+static inline uint32_t
+ppcall_with_prio(seL4_CPtr ep,
+                 sel4_msg_t *req,
+                 sel4_msg_t *rep,
+                 uint8_t     caller_prio,
+                 uint8_t     server_prio) {
     uint8_t saved = prio_donate_begin(caller_prio, server_prio);
-    microkit_msginfo reply = microkit_ppcall(ch, msg);
+#ifndef AGENTOS_TEST_HOST
+    if (ep) seL4_Call(ep, sel4_msg_to_info(req), rep);
+#else
+    (void)ep; (void)req;
+#endif
     prio_donate_end(caller_prio, saved);
-    return reply;
+    return 0;
 }
 
 /* ── Convenience macros ──────────────────────────────────────────────────── */
@@ -171,8 +182,10 @@ ppcall_with_prio(microkit_channel ch,
  *   PPCALL_DONATE(CH_VIBE, microkit_msginfo_new(OP_VIBE_PROPOSE, 3),
  *                 PRIO_INIT_AGENT, PRIO_VIBE_ENGINE)
  */
-#define PPCALL_DONATE(ch, msg, caller_prio, server_prio) \
-    ppcall_with_prio((ch), (msg), (uint8_t)(caller_prio), (uint8_t)(server_prio))
+/* E5-S8: PPCALL_DONATE now takes ep+req+rep triple instead of ch+msg.
+ * Usage: PPCALL_DONATE(ep, &req_msg, &rep_msg, caller_prio, server_prio) */
+#define PPCALL_DONATE(ep, req, rep, caller_prio, server_prio) \
+    ppcall_with_prio((ep), (req), (rep), (uint8_t)(caller_prio), (uint8_t)(server_prio))
 
 /*
  * PD-local priority constants (mirror agentos.system priorities).

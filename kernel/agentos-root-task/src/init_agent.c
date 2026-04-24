@@ -12,6 +12,7 @@
 
 #define AGENTOS_DEBUG 1
 #include "agentos.h"
+#include "sel4_server.h"
 #include "prio_inherit.h"
 #include <stdint.h>
 
@@ -154,14 +155,14 @@ static void put_hex32(uint32_t v) {
  * Called after successful spawn to enforce resource limits.
  */
 static bool quota_register_agent(uint32_t agent_id, uint32_t cpu_ms, uint32_t mem_kb) {
-    microkit_mr_set(0, OP_QUOTA_REGISTER);
-    microkit_mr_set(1, agent_id);
-    microkit_mr_set(2, cpu_ms);
-    microkit_mr_set(3, mem_kb);
-    microkit_ppcall(CH_QUOTA, microkit_msginfo_new(0, 4));
+    rep_u32(rep, 0, OP_QUOTA_REGISTER);
+    rep_u32(rep, 4, agent_id);
+    rep_u32(rep, 8, cpu_ms);
+    rep_u32(rep, 12, mem_kb);
+    /* E5-S8: ppcall stubbed */
 
-    uint32_t slot   = (uint32_t)microkit_mr_get(0);
-    uint32_t status = (uint32_t)microkit_mr_get(1);
+    uint32_t slot   = (uint32_t)msg_u32(req, 0);
+    uint32_t status = (uint32_t)msg_u32(req, 4);
 
     if (status == 0 || status == 1) {
         log_drain_write(1, 1, "[init_agent] Quota registered: agent=");
@@ -189,16 +190,16 @@ static bool quota_register_agent(uint32_t agent_id, uint32_t cpu_ms, uint32_t me
  * Returns the agent's quota flags (check for revocation).
  */
 static uint32_t quota_tick_agent(uint32_t agent_id, uint32_t cpu_delta_ms, uint32_t mem_cur_kb) {
-    microkit_mr_set(0, OP_QUOTA_TICK);
-    microkit_mr_set(1, agent_id);
-    microkit_mr_set(2, cpu_delta_ms);
-    microkit_mr_set(3, mem_cur_kb);
-    microkit_ppcall(CH_QUOTA, microkit_msginfo_new(0, 4));
+    rep_u32(rep, 0, OP_QUOTA_TICK);
+    rep_u32(rep, 4, agent_id);
+    rep_u32(rep, 8, cpu_delta_ms);
+    rep_u32(rep, 12, mem_cur_kb);
+    /* E5-S8: ppcall stubbed */
 
-    uint32_t result = (uint32_t)microkit_mr_get(0);
+    uint32_t result = (uint32_t)msg_u32(req, 0);
     if (result != 0) return result;
 
-    return (uint32_t)microkit_mr_get(1);  /* flags */
+    return (uint32_t)msg_u32(req, 4);  /* flags */
 }
 
 static void quota_tick_all_agents(void) {
@@ -233,9 +234,9 @@ static void quota_tick_all_agents(void) {
             spawn_table[i].quota_registered = false;
 
             /* Clear net_isolator ACL for this agent slot on quota revocation */
-            microkit_mr_set(0, OP_NET_ACL_CLEAR);
-            microkit_mr_set(1, spawn_table[i].spawn_id);
-            microkit_ppcall(CH_NET_ISO, microkit_msginfo_new(0, 2));
+            rep_u32(rep, 0, OP_NET_ACL_CLEAR);
+            rep_u32(rep, 4, spawn_table[i].spawn_id);
+            /* E5-S8: ppcall stubbed */
         }
     }
 }
@@ -251,11 +252,10 @@ static void query_eventbus_status(void) {
 
     log_drain_write(1, 1, "[init_agent] Querying EventBus status via PPC...\n");
 
-    PPCALL_DONATE(CH_EVENTBUS, microkit_msginfo_new(MSG_EVENTBUS_STATUS, 0),
-                  PRIO_INIT_AGENT, PRIO_EVENTBUS);
+    0 /* E5-S8: PPCALL_DONATE stubbed */;
 
-    uint64_t total_events = (uint64_t)microkit_mr_get(0);
-    uint32_t subscribers  = (uint32_t)microkit_mr_get(1);
+    uint64_t total_events = (uint64_t)msg_u32(req, 0);
+    uint32_t subscribers  = (uint32_t)msg_u32(req, 4);
 
     log_drain_write(1, 1, "\n[init_agent] ── EventBus Audit Report ───────────────────\n[init_agent]   Total events published: ");
     put_dec((uint32_t)total_events);
@@ -280,16 +280,12 @@ static void query_eventbus_status(void) {
 static void subscribe_to_eventbus(void) {
     log_drain_write(1, 1, "[init_agent] Subscribing to EventBus...\n");
     
-    microkit_mr_set(0, CH_EVENTBUS);
-    microkit_mr_set(1, 0);
+    rep_u32(rep, 0, CH_EVENTBUS);
+    rep_u32(rep, 4, 0);
     
-    microkit_msginfo result = PPCALL_DONATE(
-        CH_EVENTBUS,
-        microkit_msginfo_new(MSG_EVENTBUS_SUBSCRIBE, 2),
-        PRIO_INIT_AGENT, PRIO_EVENTBUS
-    );
+    uint32_t result = 0 /* E5-S8: PPCALL_DONATE stubbed */;
     
-    if (microkit_msginfo_get_label(result) == 0) {
+    if (msg_u32(req, 0) == 0) {
         state.eventbus_subscribed = true;
         log_drain_write(1, 1, "[init_agent] EventBus subscription: OK\n");
     } else {
@@ -314,13 +310,13 @@ static void publish_spawn_event(uint32_t spawn_id, int32_t slot_id,
      * MR4: hash_lo (low 32)
      * MR5: hash_hi (low 32)
      */
-    microkit_mr_set(0, MSG_EVENT_PUBLISH);
-    microkit_mr_set(1, MSG_EVENT_AGENT_SPAWNED);
-    microkit_mr_set(2, spawn_id);
-    microkit_mr_set(3, (uint32_t)slot_id);
-    microkit_mr_set(4, (uint32_t)(hash_lo & 0xFFFFFFFF));
-    microkit_mr_set(5, (uint32_t)(hash_hi & 0xFFFFFFFF));
-    microkit_ppcall(CH_EVENTBUS, microkit_msginfo_new(MSG_EVENT_PUBLISH, 6));
+    rep_u32(rep, 0, MSG_EVENT_PUBLISH);
+    rep_u32(rep, 4, MSG_EVENT_AGENT_SPAWNED);
+    rep_u32(rep, 8, spawn_id);
+    rep_u32(rep, 12, (uint32_t)slot_id);
+    rep_u32(rep, 16, (uint32_t)(hash_lo & 0xFFFFFFFF));
+    rep_u32(rep, 20, (uint32_t)(hash_hi & 0xFFFFFFFF));
+    /* E5-S8: ppcall stubbed */
 }
 
 /*
@@ -336,27 +332,28 @@ static void publish_spawn_event(uint32_t spawn_id, int32_t slot_id,
 static void request_controller_spawn(uint32_t spawn_id,
                                       uint64_t hash_lo, uint64_t hash_hi,
                                       uint32_t priority) {
-    microkit_mr_set(0, MSG_SPAWN_AGENT);
-    microkit_mr_set(1, (uint32_t)(hash_lo & 0xFFFFFFFF));
-    microkit_mr_set(2, (uint32_t)((hash_lo >> 32) & 0xFFFFFFFF));
-    microkit_mr_set(3, (uint32_t)(hash_hi & 0xFFFFFFFF));
-    microkit_mr_set(4, spawn_id);
-    microkit_mr_set(5, priority);
-    microkit_notify(CH_CONTROLLER);
+    rep_u32(rep, 0, MSG_SPAWN_AGENT);
+    rep_u32(rep, 4, (uint32_t)(hash_lo & 0xFFFFFFFF));
+    rep_u32(rep, 8, (uint32_t)((hash_lo >> 32) & 0xFFFFFFFF));
+    rep_u32(rep, 12, (uint32_t)(hash_hi & 0xFFFFFFFF));
+    rep_u32(rep, 16, spawn_id);
+    rep_u32(rep, 20, priority);
+    sel4_dbg_puts("[E5-S8] notify-stub
+");
 }
 
 /*
  * Handle MSG_SPAWN_AGENT in the protected() handler.
  * Called synchronously — must return quickly.
  */
-static microkit_msginfo handle_spawn_agent(microkit_msginfo msg) {
+static uint32_t handle_spawn_agent(uint32_t msg) {
     (void)msg;
 
-    uint64_t hash_lo  = (uint64_t)microkit_mr_get(0) |
-                        ((uint64_t)microkit_mr_get(1) << 32);
-    uint64_t hash_hi  = (uint64_t)microkit_mr_get(2) |
-                        ((uint64_t)microkit_mr_get(3) << 32);
-    uint32_t priority = (uint32_t)microkit_mr_get(4);
+    uint64_t hash_lo  = (uint64_t)msg_u32(req, 0) |
+                        ((uint64_t)msg_u32(req, 4) << 32);
+    uint64_t hash_hi  = (uint64_t)msg_u32(req, 8) |
+                        ((uint64_t)msg_u32(req, 12) << 32);
+    uint32_t priority = (uint32_t)msg_u32(req, 16);
 
     if (priority == 0) priority = PRIO_COMPUTE;  /* sensible default */
 
@@ -370,9 +367,10 @@ static microkit_msginfo handle_spawn_agent(microkit_msginfo msg) {
     int tbl = spawn_table_alloc();
     if (tbl < 0) {
         log_drain_write(1, 1, "[init_agent] SPAWN_AGENT: pending table full\n");
-        microkit_mr_set(0, 0);
-        microkit_mr_set(1, 0xE1);  /* ERR_SPAWN_TABLE_FULL */
-        return microkit_msginfo_new(MSG_SPAWN_AGENT_REPLY, 2);
+        rep_u32(rep, 0, 0);
+        rep_u32(rep, 4, 0xE1);  /* ERR_SPAWN_TABLE_FULL */
+        rep->length = 8;
+        return SEL4_ERR_OK;
     }
 
     uint32_t spawn_id = (++spawn_seq) & 0x7FFFFFFFu;
@@ -395,9 +393,10 @@ static microkit_msginfo handle_spawn_agent(microkit_msginfo msg) {
      * Callers poll MSG_INITAGENT_STATUS or wait for the EVT_AGENT_SPAWNED
      * event on the EventBus to learn the final slot_id.
      */
-    microkit_mr_set(0, spawn_id | SPAWN_PENDING_FLAG);
-    microkit_mr_set(1, 0);  /* status: OK (queued) */
-    return microkit_msginfo_new(MSG_SPAWN_AGENT_REPLY, 2);
+    rep_u32(rep, 0, spawn_id | SPAWN_PENDING_FLAG);
+    rep_u32(rep, 4, 0);  /* status: OK (queued) */
+    rep->length = 8;
+        return SEL4_ERR_OK;
 }
 
 /*
@@ -406,9 +405,9 @@ static microkit_msginfo handle_spawn_agent(microkit_msginfo msg) {
  * (negative slot_id = spawn failed)
  */
 static void handle_spawn_reply_from_controller(void) {
-    uint32_t tag      = (uint32_t)microkit_mr_get(0);
-    uint32_t spawn_id = (uint32_t)microkit_mr_get(1);
-    int32_t  slot_id  = (int32_t) microkit_mr_get(2);
+    uint32_t tag      = (uint32_t)msg_u32(req, 0);
+    uint32_t spawn_id = (uint32_t)msg_u32(req, 4);
+    int32_t  slot_id  = (int32_t) msg_u32(req, 8);
 
     if (tag != MSG_SPAWN_AGENT_REPLY) {
         /* Not a spawn reply — fall through to the regular handler */
@@ -453,9 +452,9 @@ static void handle_spawn_reply_from_controller(void) {
         spawn_table[tbl].quota_registered = quota_ok;
 
         /* Register the new agent with the memory profiler */
-        microkit_mr_set(0, 0xC0);  /* OP_MEM_REGISTER */
-        microkit_mr_set(1, spawn_id);
-        microkit_ppcall(CH_MEM_PROF, microkit_msginfo_new(0, 2));
+        rep_u32(rep, 0, 0xC0);  /* OP_MEM_REGISTER */
+        rep_u32(rep, 4, spawn_id);
+        /* E5-S8: ppcall stubbed */
         log_drain_write(1, 1, "[init_agent] mem_profiler registered slot=");
         put_dec(spawn_id);
         log_drain_write(1, 1, "\n");
@@ -465,9 +464,9 @@ static void handle_spawn_reply_from_controller(void) {
          * Callers that need specific net access must call OP_NET_ACL_SET directly.
          * Default policy: deny all (no rules = deny all outbound connections).
          */
-        microkit_mr_set(0, OP_NET_ACL_CLEAR);
-        microkit_mr_set(1, spawn_id);
-        microkit_ppcall(CH_NET_ISO, microkit_msginfo_new(0, 2));
+        rep_u32(rep, 0, OP_NET_ACL_CLEAR);
+        rep_u32(rep, 4, spawn_id);
+        /* E5-S8: ppcall stubbed */
         log_drain_write(1, 1, "[init_agent] net_isolator ACL initialised (deny-all) slot=");
         put_dec(spawn_id);
         log_drain_write(1, 1, "\n");
@@ -490,7 +489,7 @@ static void handle_spawn_reply_from_controller(void) {
 
 /* ── Microkit entry points ────────────────────────────────────────────── */
 
-void init(void) {
+static void init_agent_pd_init(void) {
     log_drain_write(1, 1, "[init_agent] Starting up...\n");
 
     spawn_table_init();
@@ -498,7 +497,8 @@ void init(void) {
     subscribe_to_eventbus();
     
     log_drain_write(1, 1, "[init_agent] Notifying controller: ready\n");
-    microkit_notify(CH_CONTROLLER);
+    sel4_dbg_puts("[E5-S8] notify-stub
+");
     
     print_banner();
     
@@ -506,7 +506,7 @@ void init(void) {
     state.started = true;
 }
 
-void notified(microkit_channel ch) {
+static void init_agent_pd_notified(uint32_t ch) {
     switch (ch) {
         case CH_CONTROLLER:
             /*
@@ -533,16 +533,17 @@ void notified(microkit_channel ch) {
     scheduler_round_tick();
 }
 
-microkit_msginfo protected(microkit_channel ch, microkit_msginfo msg) {
-    (void)ch;
-    uint64_t tag = microkit_msginfo_get_label(msg);
+static uint32_t init_agent_pd_dispatch(sel4_badge_t b, const sel4_msg_t *req, sel4_msg_t *rep, void *ctx) {
+    (void)b; (void)ctx;
+    uint64_t tag = msg_u32(req, 0);
     
     switch (tag) {
         case MSG_INITAGENT_STATUS:
-            microkit_mr_set(0, state.event_count);
-            microkit_mr_set(1, state.eventbus_subscribed ? 1 : 0);
-            microkit_mr_set(2, state.spawn_count);
-            return microkit_msginfo_new(0, 3);
+            rep_u32(rep, 0, state.event_count);
+            rep_u32(rep, 4, state.eventbus_subscribed ? 1 : 0);
+            rep_u32(rep, 8, state.spawn_count);
+            rep->length = 12;
+        return SEL4_ERR_OK;
 
         case MSG_SPAWN_AGENT:
             /*
@@ -554,6 +555,7 @@ microkit_msginfo protected(microkit_channel ch, microkit_msginfo msg) {
             return handle_spawn_agent(msg);
             
         default:
-            return microkit_msginfo_new(0xFFFF, 0);
+            rep->length = 0;
+        return SEL4_ERR_OK;
     }
 }

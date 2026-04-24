@@ -24,7 +24,7 @@
  */
 
 #include "agentos.h"
-#include <microkit.h>
+#include "sel4_server.h"
 #include <stdint.h>
 #include <stdbool.h>
 
@@ -78,16 +78,17 @@ static uint32_t busy_bitmask(void) {
 
 /* ── IPC handlers ───────────────────────────────────────────────────── */
 
-static microkit_msginfo handle_submit(void) {
-    uint32_t prop_slot  = (uint32_t)microkit_mr_get(1);
-    uint32_t ptx_offset = (uint32_t)microkit_mr_get(2);
-    uint32_t ptx_len    = (uint32_t)microkit_mr_get(3);
+static uint32_t handle_submit(void) {
+    uint32_t prop_slot  = (uint32_t)msg_u32(req, 4);
+    uint32_t ptx_offset = (uint32_t)msg_u32(req, 8);
+    uint32_t ptx_len    = (uint32_t)msg_u32(req, 12);
 
     int slot = find_free_slot();
     if (slot < 0) {
         log_drain_write(15, 15, "[gpu_scheduler] REJECT: all 4 GPU slots busy\n");
-        microkit_mr_set(0, GPU_ERR_FULL);
-        return microkit_msginfo_new(0, 1);
+        rep_u32(rep, 0, GPU_ERR_FULL);
+        rep->length = 4;
+        return SEL4_ERR_OK;
     }
 
     gpu_slots[slot].busy         = true;
@@ -141,21 +142,24 @@ static microkit_msginfo handle_submit(void) {
      * For now: bookkeeping only (QEMU doesn't have a GPU).
      */
 
-    microkit_mr_set(0, GPU_OK);
-    microkit_mr_set(1, (uint32_t)slot);
-    microkit_mr_set(2, gpu_slots[slot].module_id);
-    return microkit_msginfo_new(0, 3);
+    rep_u32(rep, 0, GPU_OK);
+    rep_u32(rep, 4, (uint32_t)slot);
+    rep_u32(rep, 8, gpu_slots[slot].module_id);
+    rep->length = 12;
+        return SEL4_ERR_OK;
 }
 
-static microkit_msginfo handle_complete(void) {
-    uint32_t slot_id = (uint32_t)microkit_mr_get(1);
+static uint32_t handle_complete(void) {
+    uint32_t slot_id = (uint32_t)msg_u32(req, 4);
     if (slot_id >= NUM_GPU_SLOTS) {
-        microkit_mr_set(0, GPU_ERR_BADSLOT);
-        return microkit_msginfo_new(0, 1);
+        rep_u32(rep, 0, GPU_ERR_BADSLOT);
+        rep->length = 4;
+        return SEL4_ERR_OK;
     }
     if (!gpu_slots[slot_id].busy) {
-        microkit_mr_set(0, GPU_ERR_IDLE);
-        return microkit_msginfo_new(0, 1);
+        rep_u32(rep, 0, GPU_ERR_IDLE);
+        rep->length = 4;
+        return SEL4_ERR_OK;
     }
 
     log_drain_write(15, 15, "[gpu_scheduler] COMPLETE: slot=");
@@ -173,21 +177,23 @@ static microkit_msginfo handle_complete(void) {
     gpu_slots[slot_id].module_id = 0;
     total_completed++;
 
-    microkit_mr_set(0, GPU_OK);
-    return microkit_msginfo_new(0, 1);
+    rep_u32(rep, 0, GPU_OK);
+    rep->length = 4;
+        return SEL4_ERR_OK;
 }
 
-static microkit_msginfo handle_status(void) {
-    microkit_mr_set(0, GPU_OK);
-    microkit_mr_set(1, busy_bitmask());
-    microkit_mr_set(2, total_submitted);
-    microkit_mr_set(3, total_completed);
-    return microkit_msginfo_new(0, 4);
+static uint32_t handle_status(void) {
+    rep_u32(rep, 0, GPU_OK);
+    rep_u32(rep, 4, busy_bitmask());
+    rep_u32(rep, 8, total_submitted);
+    rep_u32(rep, 12, total_completed);
+    rep->length = 16;
+        return SEL4_ERR_OK;
 }
 
 /* ── Microkit entrypoints ───────────────────────────────────────────── */
 
-void init(void) {
+static void gpu_scheduler_pd_init(void) {
     log_drain_write(15, 15, "[gpu_scheduler] init — 4 GPU slots ready\n");
     for (int i = 0; i < NUM_GPU_SLOTS; i++) {
         gpu_slots[i].busy      = false;
@@ -195,9 +201,9 @@ void init(void) {
     }
 }
 
-microkit_msginfo protected(microkit_channel ch, microkit_msginfo msginfo) {
-    (void)msginfo;
-    uint32_t op = (uint32_t)microkit_mr_get(0);
+static uint32_t gpu_scheduler_h_dispatch(sel4_badge_t b, const sel4_msg_t *req, sel4_msg_t *rep, void *ctx) {
+    (void)b; (void)ctx;
+    uint32_t op = (uint32_t)msg_u32(req, 0);
 
     switch (op) {
     case OP_GPU_SUBMIT:   return handle_submit();
@@ -205,17 +211,30 @@ microkit_msginfo protected(microkit_channel ch, microkit_msginfo msginfo) {
     case OP_GPU_STATUS:   return handle_status();
     default:
         log_drain_write(15, 15, "[gpu_scheduler] unknown op\n");
-        microkit_mr_set(0, 0xFF);
-        return microkit_msginfo_new(0, 1);
+        rep_u32(rep, 0, 0xFF);
+        rep->length = 4;
+        return SEL4_ERR_OK;
     }
 }
 
-void notified(microkit_channel ch) {
+static void gpu_scheduler_pd_notified(uint32_t ch) {
     /* Notifications from vibe_engine on CUDA submit */
     if (ch == CH_VIBE) {
-        uint32_t op = (uint32_t)microkit_mr_get(0);
+        uint32_t op = (uint32_t)msg_u32(req, 0);
         if (op == OP_GPU_SUBMIT) {
             handle_submit();
         }
     }
+}
+
+/* ── E5-S8: Entry point ─────────────────────────────────────────────────── */
+void gpu_scheduler_main(seL4_CPtr my_ep, seL4_CPtr ns_ep)
+{
+    (void)ns_ep;
+    gpu_scheduler_pd_init();
+    static sel4_server_t srv;
+    sel4_server_init(&srv, my_ep);
+    /* Dispatch all opcodes through the generic handler */
+    sel4_server_register(&srv, SEL4_SERVER_OPCODE_ANY, gpu_scheduler_h_dispatch, (void *)0);
+    sel4_server_run(&srv);
 }

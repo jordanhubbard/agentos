@@ -22,6 +22,7 @@
  */
 
 #include "agentos.h"
+#include "sel4_server.h"
 #include "gpu_sched.h"
 #include <stdint.h>
 #include <string.h>
@@ -265,31 +266,32 @@ static void dispatch_pending(void) {
          *   MR4: wasm_hash_hi low32
          *   MR5: slot_id
          */
-        microkit_mr_set(0, (uint64_t)MSG_GPU_SUBMIT);
-        microkit_mr_set(1, t->ticket_id);
-        microkit_mr_set(2, (uint32_t)(t->wasm_hash_lo & 0xFFFFFFFF));
-        microkit_mr_set(3, (uint32_t)((t->wasm_hash_lo >> 32) & 0xFFFFFFFF));
-        microkit_mr_set(4, (uint32_t)(t->wasm_hash_hi & 0xFFFFFFFF));
-        microkit_mr_set(5, (uint32_t)slot);
-        microkit_notify(CH_CONTROLLER);
+        rep_u32(rep, 0, (uint64_t)MSG_GPU_SUBMIT);
+        rep_u32(rep, 4, t->ticket_id);
+        rep_u32(rep, 8, (uint32_t)(t->wasm_hash_lo & 0xFFFFFFFF));
+        rep_u32(rep, 12, (uint32_t)((t->wasm_hash_lo >> 32) & 0xFFFFFFFF));
+        rep_u32(rep, 16, (uint32_t)(t->wasm_hash_hi & 0xFFFFFFFF));
+        rep_u32(rep, 20, (uint32_t)slot);
+        sel4_dbg_puts("[E5-S8] notify-stub
+");
     }
 }
 
 /* Publish completion event to EventBus */
 static void publish_completion(uint32_t ticket_id, bool success) {
     uint64_t tag = success ? (uint64_t)MSG_GPU_COMPLETE : (uint64_t)MSG_GPU_FAILED;
-    microkit_mr_set(0, (uint64_t)MSG_EVENT_PUBLISH);
-    microkit_mr_set(1, tag);
-    microkit_mr_set(2, ticket_id);
-    microkit_mr_set(3, (uint32_t)(success ? 0 : 1));
-    microkit_ppcall(CH_EVENTBUS, microkit_msginfo_new(MSG_EVENT_PUBLISH, 4));
+    rep_u32(rep, 0, (uint64_t)MSG_EVENT_PUBLISH);
+    rep_u32(rep, 4, tag);
+    rep_u32(rep, 8, ticket_id);
+    rep_u32(rep, 12, (uint32_t)(success ? 0 : 1));
+    /* E5-S8: ppcall stubbed */
 }
 
 /* ── protected() — synchronous PPC handler ────────────────────────────────── */
 
-microkit_msginfo protected(microkit_channel ch, microkit_msginfo msg) {
-    (void)ch;
-    uint64_t tag = microkit_msginfo_get_label(msg);
+static uint32_t gpu_sched_pd_dispatch(sel4_badge_t b, const sel4_msg_t *req, sel4_msg_t *rep, void *ctx) {
+    (void)b; (void)ctx;
+    uint64_t tag = msg_u32(req, 0);
 
     switch ((uint32_t)tag) {
 
@@ -298,21 +300,22 @@ microkit_msginfo protected(microkit_channel ch, microkit_msginfo msg) {
          * Agent submits a GPU task.
          * MR0/1: wasm_hash_lo, MR2/3: wasm_hash_hi, MR4: priority, MR5: flags
          */
-        uint64_t hash_lo = (uint64_t)microkit_mr_get(0) |
-                           ((uint64_t)microkit_mr_get(1) << 32);
-        uint64_t hash_hi = (uint64_t)microkit_mr_get(2) |
-                           ((uint64_t)microkit_mr_get(3) << 32);
-        uint32_t priority = (uint32_t)microkit_mr_get(4);
-        uint32_t flags    = (uint32_t)microkit_mr_get(5);
+        uint64_t hash_lo = (uint64_t)msg_u32(req, 0) |
+                           ((uint64_t)msg_u32(req, 4) << 32);
+        uint64_t hash_hi = (uint64_t)msg_u32(req, 8) |
+                           ((uint64_t)msg_u32(req, 12) << 32);
+        uint32_t priority = (uint32_t)msg_u32(req, 16);
+        uint32_t flags    = (uint32_t)msg_u32(req, 20);
 
         if (priority == 0) priority = GPU_PRIO_DEFAULT;
 
         int qi = queue_alloc();
         if (qi < 0) {
             log_drain_write(15, 15, "[gpu_sched] SUBMIT: queue full\n");
-            microkit_mr_set(0, 0);
-            microkit_mr_set(1, GPU_ERR_QUEUE_FULL);
-            return microkit_msginfo_new(MSG_GPU_SUBMIT_REPLY, 2);
+            rep_u32(rep, 0, 0);
+            rep_u32(rep, 4, GPU_ERR_QUEUE_FULL);
+            rep->length = 8;
+        return SEL4_ERR_OK;
         }
 
         uint32_t ticket = ++sched.ticket_seq;
@@ -336,9 +339,10 @@ microkit_msginfo protected(microkit_channel ch, microkit_msginfo msg) {
         /* Try to dispatch immediately if a slot is free */
         dispatch_pending();
 
-        microkit_mr_set(0, ticket);
-        microkit_mr_set(1, GPU_ERR_OK);
-        return microkit_msginfo_new(MSG_GPU_SUBMIT_REPLY, 2);
+        rep_u32(rep, 0, ticket);
+        rep_u32(rep, 4, GPU_ERR_OK);
+        rep->length = 8;
+        return SEL4_ERR_OK;
     }
 
     case MSG_GPU_STATUS: {
@@ -355,20 +359,22 @@ microkit_msginfo protected(microkit_channel ch, microkit_msginfo msg) {
         for (int i = 0; i < GPU_SLOT_COUNT; i++) {
             if (!sched.slots[i].busy) idle++;
         }
-        microkit_mr_set(0, queued);
-        microkit_mr_set(1, running);
-        microkit_mr_set(2, idle);
-        microkit_mr_set(3, sched.tasks_completed);
-        microkit_mr_set(4, sched.tasks_failed);
-        return microkit_msginfo_new(MSG_GPU_STATUS_REPLY, 5);
+        rep_u32(rep, 0, queued);
+        rep_u32(rep, 4, running);
+        rep_u32(rep, 8, idle);
+        rep_u32(rep, 12, sched.tasks_completed);
+        rep_u32(rep, 16, sched.tasks_failed);
+        rep->length = 20;
+        return SEL4_ERR_OK;
     }
 
     case MSG_GPU_CANCEL: {
-        uint32_t ticket = (uint32_t)microkit_mr_get(0);
+        uint32_t ticket = (uint32_t)msg_u32(req, 0);
         int qi = queue_find(ticket);
         if (qi < 0) {
-            microkit_mr_set(0, 0);
-            return microkit_msginfo_new(MSG_GPU_CANCEL_REPLY, 1);
+            rep_u32(rep, 0, 0);
+            rep->length = 4;
+        return SEL4_ERR_OK;
         }
         if (sched.queue[qi].state == TASK_QUEUED) {
             sched.queue[qi].state = TASK_FREE;
@@ -376,11 +382,12 @@ microkit_msginfo protected(microkit_channel ch, microkit_msginfo msg) {
             log_drain_write(15, 15, "[gpu_sched] CANCEL: ticket=");
             put_dec(ticket);
             log_drain_write(15, 15, " removed from queue\n");
-            microkit_mr_set(0, 1);  /* cancelled */
+            rep_u32(rep, 0, 1);  /* cancelled */
         } else {
-            microkit_mr_set(0, 0);  /* running or done, can't cancel */
+            rep_u32(rep, 0, 0);  /* running or done, can't cancel */
         }
-        return microkit_msginfo_new(MSG_GPU_CANCEL_REPLY, 1);
+        rep->length = 4;
+        return SEL4_ERR_OK;
     }
 
     case OP_GPU_SUBMIT_CMD: {
@@ -395,15 +402,16 @@ microkit_msginfo protected(microkit_channel ch, microkit_msginfo msg) {
          * MR0 = GPU_ERR_OK or GPU_ERR_INVALID
          * MR1 = fence_id (monotonic; 0 in stub mode)
          */
-        uint32_t slot_id    = (uint32_t)microkit_mr_get(1);
-        uint32_t cmd_offset = (uint32_t)microkit_mr_get(2);
-        uint32_t cmd_len    = (uint32_t)microkit_mr_get(3);
+        uint32_t slot_id    = (uint32_t)msg_u32(req, 4);
+        uint32_t cmd_offset = (uint32_t)msg_u32(req, 8);
+        uint32_t cmd_len    = (uint32_t)msg_u32(req, 12);
 
         if (slot_id >= GPU_SLOT_COUNT || cmd_len == 0) {
             log_drain_write(15, 15, "[gpu_sched] SUBMIT_CMD: invalid args\n");
-            microkit_mr_set(0, GPU_ERR_INVALID);
-            microkit_mr_set(1, 0);
-            return microkit_msginfo_new(OP_GPU_SUBMIT_CMD, 2);
+            rep_u32(rep, 0, GPU_ERR_INVALID);
+            rep_u32(rep, 4, 0);
+            rep->length = 8;
+        return SEL4_ERR_OK;
         }
 
         uint32_t fence = ++gpu_fence_seq;
@@ -451,20 +459,22 @@ microkit_msginfo protected(microkit_channel ch, microkit_msginfo msg) {
             log_drain_write(15, 15, "\n");
         }
 
-        microkit_mr_set(0, GPU_ERR_OK);
-        microkit_mr_set(1, fence);
-        return microkit_msginfo_new(OP_GPU_SUBMIT_CMD, 2);
+        rep_u32(rep, 0, GPU_ERR_OK);
+        rep_u32(rep, 4, fence);
+        rep->length = 8;
+        return SEL4_ERR_OK;
     }
 
     default:
-        microkit_mr_set(0, 0xFFFF);
-        return microkit_msginfo_new(0xFFFF, 1);
+        rep_u32(rep, 0, 0xFFFF);
+        rep->length = 4;
+        return SEL4_ERR_OK;
     }
 }
 
 /* ── notified() — async events ────────────────────────────────────────────── */
 
-void notified(microkit_channel ch) {
+static void gpu_sched_pd_notified(uint32_t ch) {
     if (ch == CH_CONTROLLER) {
         /*
          * Controller notifying gpu_sched:
@@ -472,10 +482,10 @@ void notified(microkit_channel ch) {
          *   MSG_GPU_COMPLETE: slot finished, ticket in MR1, success in MR2
          *   MSG_EVENTBUS_READY: EventBus is up — subscribe now
          */
-        uint32_t ntag = (uint32_t)microkit_mr_get(0);
+        uint32_t ntag = (uint32_t)msg_u32(req, 0);
 
         if (ntag == (uint32_t)MSG_GPU_COMPLETE || ntag == (uint32_t)MSG_GPU_FAILED) {
-            uint32_t ticket  = (uint32_t)microkit_mr_get(1);
+            uint32_t ticket  = (uint32_t)msg_u32(req, 4);
             bool     success = (ntag == (uint32_t)MSG_GPU_COMPLETE);
             int qi = queue_find(ticket);
             int slot_id = -1;
@@ -545,15 +555,15 @@ void notified(microkit_channel ch) {
         log_drain_write(15, 15, "[gpu_sched] EventBus ready\n");
 
         /* Subscribe to EventBus */
-        microkit_mr_set(0, (uint64_t)CH_EVENTBUS);
-        microkit_mr_set(1, 0);
-        microkit_ppcall(CH_EVENTBUS, microkit_msginfo_new(MSG_EVENTBUS_SUBSCRIBE, 2));
+        rep_u32(rep, 0, (uint64_t)CH_EVENTBUS);
+        rep_u32(rep, 4, 0);
+        /* E5-S8: ppcall stubbed */
     }
 }
 
 /* ── init() ─────────────────────────────────────────────────────────────────── */
 
-void init(void) {
+static void gpu_sched_pd_init(void) {
     /* Zero-initialise scheduler state */
     for (int i = 0; i < GPU_QUEUE_DEPTH; i++) {
         sched.queue[i].state = TASK_FREE;
@@ -576,5 +586,6 @@ void init(void) {
     probe_virtio_gpu();
 
     /* Signal controller: GPU scheduler ready */
-    microkit_notify(CH_CONTROLLER);
+    sel4_dbg_puts("[E5-S8] notify-stub
+");
 }

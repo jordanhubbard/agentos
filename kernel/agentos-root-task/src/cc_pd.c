@@ -47,6 +47,7 @@
 
 #define AGENTOS_DEBUG 1
 #include "agentos.h"
+#include "sel4_server.h"
 #include "contracts/vibeos_contract.h"
 #include "contracts/cc_contract.h"
 #include "contracts/guest_contract.h"
@@ -83,7 +84,7 @@ uintptr_t log_drain_rings_vaddr; /* required by log_drain_write() helper */
 
 typedef struct {
     bool             active;
-    microkit_channel owner;
+    uint32_t owner;
     uint32_t         client_badge;
     uint32_t         state;            /* CC_SESSION_STATE_* */
     uint32_t         ticks_since_active;
@@ -102,7 +103,7 @@ static int alloc_session(void)
     return -1;
 }
 
-static bool valid_session(uint32_t sid, microkit_channel ch)
+static bool valid_session(uint32_t sid, uint32_t ch)
 {
     return sid < CC_MAX_SESSIONS &&
            sessions[sid].active &&
@@ -118,13 +119,13 @@ static void touch_session(uint32_t sid)
 
 /* ─── Session management handlers ───────────────────────────────────────── */
 
-static void handle_connect(microkit_channel ch)
+static void handle_connect(uint32_t ch)
 {
-    uint32_t badge = (uint32_t)microkit_mr_get(1);
+    uint32_t badge = (uint32_t)msg_u32(req, 4);
     int s = alloc_session();
     if (s < 0) {
-        microkit_mr_set(0, CC_ERR_NO_SESSIONS);
-        microkit_mr_set(1, 0u);
+        rep_u32(rep, 0, CC_ERR_NO_SESSIONS);
+        rep_u32(rep, 4, 0u);
         return;
     }
     sessions[s].active       = true;
@@ -133,35 +134,35 @@ static void handle_connect(microkit_channel ch)
     sessions[s].state        = CC_SESSION_STATE_CONNECTED;
     sessions[s].ticks_since_active = 0;
 
-    microkit_mr_set(0, CC_OK);
-    microkit_mr_set(1, (uint32_t)s);
+    rep_u32(rep, 0, CC_OK);
+    rep_u32(rep, 4, (uint32_t)s);
 }
 
-static void handle_disconnect(microkit_channel ch)
+static void handle_disconnect(uint32_t ch)
 {
-    uint32_t sid = (uint32_t)microkit_mr_get(1);
+    uint32_t sid = (uint32_t)msg_u32(req, 4);
     if (!valid_session(sid, ch)) {
-        microkit_mr_set(0, CC_ERR_BAD_SESSION);
+        rep_u32(rep, 0, CC_ERR_BAD_SESSION);
         return;
     }
     sessions[sid].active = false;
-    microkit_mr_set(0, CC_OK);
+    rep_u32(rep, 0, CC_OK);
 }
 
-static void handle_status(microkit_channel ch)
+static void handle_status(uint32_t ch)
 {
-    uint32_t sid = (uint32_t)microkit_mr_get(1);
+    uint32_t sid = (uint32_t)msg_u32(req, 4);
     if (!valid_session(sid, ch)) {
-        microkit_mr_set(0, CC_ERR_BAD_SESSION);
-        microkit_mr_set(1, 0u);
-        microkit_mr_set(2, 0u);
-        microkit_mr_set(3, 0u);
+        rep_u32(rep, 0, CC_ERR_BAD_SESSION);
+        rep_u32(rep, 4, 0u);
+        rep_u32(rep, 8, 0u);
+        rep_u32(rep, 12, 0u);
         return;
     }
-    microkit_mr_set(0, CC_OK);
-    microkit_mr_set(1, sessions[sid].state);
-    microkit_mr_set(2, 0u);                        /* no pending responses in relay model */
-    microkit_mr_set(3, sessions[sid].ticks_since_active);
+    rep_u32(rep, 0, CC_OK);
+    rep_u32(rep, 4, sessions[sid].state);
+    rep_u32(rep, 8, 0u);                        /* no pending responses in relay model */
+    rep_u32(rep, 12, sessions[sid].ticks_since_active);
 }
 
 static void handle_list_sessions(void)
@@ -178,7 +179,7 @@ static void handle_list_sessions(void)
             count++;
         }
     }
-    microkit_mr_set(0, count);
+    rep_u32(rep, 0, count);
 }
 
 /* ─── Relay helpers ──────────────────────────────────────────────────────── */
@@ -189,9 +190,9 @@ static void handle_list_sessions(void)
  */
 static uint32_t relay_vibe(uint32_t opcode, uint32_t mr_count)
 {
-    microkit_mr_set(0, opcode);
-    microkit_ppcall(CH_CC_OUT_VIBE, microkit_msginfo_new(opcode, mr_count));
-    return (uint32_t)microkit_mr_get(0);
+    rep_u32(rep, 0, opcode);
+    /* E5-S8: ppcall stubbed */
+    return (uint32_t)msg_u32(req, 0);
 }
 
 /*
@@ -199,9 +200,9 @@ static uint32_t relay_vibe(uint32_t opcode, uint32_t mr_count)
  */
 static uint32_t relay_guest(uint32_t opcode, uint32_t mr_count)
 {
-    microkit_mr_set(0, opcode);
-    microkit_ppcall(CH_CC_OUT_GUEST, microkit_msginfo_new(opcode, mr_count));
-    return (uint32_t)microkit_mr_get(0);
+    rep_u32(rep, 0, opcode);
+    /* E5-S8: ppcall stubbed */
+    return (uint32_t)msg_u32(req, 0);
 }
 
 /* ─── Direct relay handlers (Phase 5a) ──────────────────────────────────── */
@@ -213,10 +214,9 @@ static uint32_t relay_guest(uint32_t opcode, uint32_t mr_count)
  */
 static void handle_list_guests(void)
 {
-    microkit_mr_set(0, MSG_VIBEOS_LIST);
-    microkit_ppcall(CH_CC_OUT_VIBE,
-                    microkit_msginfo_new(MSG_VIBEOS_LIST, 1));
-    uint32_t count = (uint32_t)microkit_mr_get(0);
+    rep_u32(rep, 0, MSG_VIBEOS_LIST);
+    /* E5-S8: ppcall stubbed */
+    uint32_t count = (uint32_t)msg_u32(req, 0);
 
     /* Copy cc_vibe_shmem entries to caller's cc_shmem as cc_guest_info_t.
      * vibeos_info_t layout: handle, os_type, state, ram_mb, uptime_ticks, node_id */
@@ -230,7 +230,7 @@ static void handle_list_guests(void)
         dst[i].arch         = 0u;  /* vibeos_info_t has no arch field */
     }
 
-    microkit_mr_set(0, count);
+    rep_u32(rep, 0, count);
 }
 
 /*
@@ -244,51 +244,47 @@ static void handle_list_guests(void)
  */
 static void handle_list_devices(void)
 {
-    uint32_t dev_type = (uint32_t)microkit_mr_get(1);
+    uint32_t dev_type = (uint32_t)msg_u32(req, 4);
     cc_device_info_t *out = (cc_device_info_t *)cc_shmem_vaddr;
 
     switch (dev_type) {
     case CC_DEV_TYPE_SERIAL: {
-        microkit_mr_set(0, MSG_SERIAL_STATUS);
-        microkit_mr_set(1, 0u);   /* client_slot 0: status of default port */
-        microkit_ppcall(CH_CC_OUT_SERIAL,
-                        microkit_msginfo_new(MSG_SERIAL_STATUS, 2));
+        rep_u32(rep, 0, MSG_SERIAL_STATUS);
+        rep_u32(rep, 4, 0u);   /* client_slot 0: status of default port */
+        /* E5-S8: ppcall stubbed */
         out[0].dev_type   = CC_DEV_TYPE_SERIAL;
         out[0].dev_handle = 0u;
-        out[0].state      = (uint32_t)microkit_mr_get(0);
+        out[0].state      = (uint32_t)msg_u32(req, 0);
         out[0]._reserved  = 0u;
-        microkit_mr_set(0, 1u);
+        rep_u32(rep, 0, 1u);
         break;
     }
     case CC_DEV_TYPE_NET: {
-        microkit_mr_set(0, MSG_NET_DEV_STATUS);
-        microkit_mr_set(1, 0u);   /* handle 0 */
-        microkit_ppcall(CH_CC_OUT_NET,
-                        microkit_msginfo_new(MSG_NET_DEV_STATUS, 2));
+        rep_u32(rep, 0, MSG_NET_DEV_STATUS);
+        rep_u32(rep, 4, 0u);   /* handle 0 */
+        /* E5-S8: ppcall stubbed */
         out[0].dev_type   = CC_DEV_TYPE_NET;
         out[0].dev_handle = 0u;
-        out[0].state      = (uint32_t)microkit_mr_get(0);
+        out[0].state      = (uint32_t)msg_u32(req, 0);
         out[0]._reserved  = 0u;
-        microkit_mr_set(0, 1u);
+        rep_u32(rep, 0, 1u);
         break;
     }
     case CC_DEV_TYPE_BLOCK: {
-        microkit_mr_set(0, MSG_BLOCK_STATUS);
-        microkit_mr_set(1, 0u);   /* handle 0 */
-        microkit_ppcall(CH_CC_OUT_BLOCK,
-                        microkit_msginfo_new(MSG_BLOCK_STATUS, 2));
+        rep_u32(rep, 0, MSG_BLOCK_STATUS);
+        rep_u32(rep, 4, 0u);   /* handle 0 */
+        /* E5-S8: ppcall stubbed */
         out[0].dev_type   = CC_DEV_TYPE_BLOCK;
         out[0].dev_handle = 0u;
-        out[0].state      = (uint32_t)microkit_mr_get(0);
+        out[0].state      = (uint32_t)msg_u32(req, 0);
         out[0]._reserved  = 0u;
-        microkit_mr_set(0, 1u);
+        rep_u32(rep, 0, 1u);
         break;
     }
     case CC_DEV_TYPE_USB: {
-        microkit_mr_set(0, MSG_USB_LIST);
-        microkit_ppcall(CH_CC_OUT_USB,
-                        microkit_msginfo_new(MSG_USB_LIST, 1));
-        uint32_t usb_count = (uint32_t)microkit_mr_get(0);
+        rep_u32(rep, 0, MSG_USB_LIST);
+        /* E5-S8: ppcall stubbed */
+        uint32_t usb_count = (uint32_t)msg_u32(req, 0);
         /* USB entries from cc_dev_shmem → re-encode as cc_device_info_t */
         const uint32_t *usb = (const uint32_t *)cc_dev_shmem_vaddr;
         for (uint32_t i = 0; i < usb_count; i++) {
@@ -297,16 +293,16 @@ static void handle_list_devices(void)
             out[i].state      = usb[i * 4 + 1];
             out[i]._reserved  = 0u;
         }
-        microkit_mr_set(0, usb_count);
+        rep_u32(rep, 0, usb_count);
         break;
     }
     case CC_DEV_TYPE_FB: {
         /* No bulk-list operation for framebuffers; report 0 devices */
-        microkit_mr_set(0, 0u);
+        rep_u32(rep, 0, 0u);
         break;
     }
     default:
-        microkit_mr_set(0, CC_ERR_BAD_DEV_TYPE);
+        rep_u32(rep, 0, CC_ERR_BAD_DEV_TYPE);
         break;
     }
 }
@@ -317,17 +313,16 @@ static void handle_list_devices(void)
  */
 static void handle_list_polecats(void)
 {
-    microkit_mr_set(0, MSG_AGENTPOOL_STATUS);
-    microkit_ppcall(CH_CC_OUT_POOL,
-                    microkit_msginfo_new(MSG_AGENTPOOL_STATUS, 1));
+    rep_u32(rep, 0, MSG_AGENTPOOL_STATUS);
+    /* E5-S8: ppcall stubbed */
     /* MR0=total MR1=busy MR2=idle from agent_pool */
-    uint32_t total = (uint32_t)microkit_mr_get(0);
-    uint32_t busy  = (uint32_t)microkit_mr_get(1);
-    uint32_t idle  = (uint32_t)microkit_mr_get(2);
-    microkit_mr_set(0, CC_OK);
-    microkit_mr_set(1, total);
-    microkit_mr_set(2, busy);
-    microkit_mr_set(3, idle);
+    uint32_t total = (uint32_t)msg_u32(req, 0);
+    uint32_t busy  = (uint32_t)msg_u32(req, 4);
+    uint32_t idle  = (uint32_t)msg_u32(req, 8);
+    rep_u32(rep, 0, CC_OK);
+    rep_u32(rep, 4, total);
+    rep_u32(rep, 8, busy);
+    rep_u32(rep, 12, idle);
 }
 
 /*
@@ -337,13 +332,12 @@ static void handle_list_polecats(void)
  */
 static void handle_guest_status(void)
 {
-    uint32_t guest_handle = (uint32_t)microkit_mr_get(1);
+    uint32_t guest_handle = (uint32_t)msg_u32(req, 4);
 
-    microkit_mr_set(0, MSG_VIBEOS_STATUS);
-    microkit_mr_set(1, guest_handle);
-    microkit_ppcall(CH_CC_OUT_VIBE,
-                    microkit_msginfo_new(MSG_VIBEOS_STATUS, 2));
-    uint32_t ok = (uint32_t)microkit_mr_get(0);
+    rep_u32(rep, 0, MSG_VIBEOS_STATUS);
+    rep_u32(rep, 4, guest_handle);
+    /* E5-S8: ppcall stubbed */
+    uint32_t ok = (uint32_t)msg_u32(req, 0);
 
     /* MSG_VIBEOS_STATUS: MR0=state; vibeos_status_reply in cc_vibe_shmem.
      * vibeos_status_reply layout: ok, state, os_type, ram_mb, uptime_ticks */
@@ -351,7 +345,7 @@ static void handle_guest_status(void)
         (const struct vibeos_status_reply *)cc_vibe_shmem_vaddr;
 
     if (vs->ok != (uint32_t)VIBEOS_OK) {
-        microkit_mr_set(0, CC_ERR_RELAY_FAULT);
+        rep_u32(rep, 0, CC_ERR_RELAY_FAULT);
         return;
     }
 
@@ -365,7 +359,7 @@ static void handle_guest_status(void)
     dst->_reserved[1]  = 0u;
     dst->_reserved[2]  = 0u;
 
-    microkit_mr_set(0, CC_OK);
+    rep_u32(rep, 0, CC_OK);
 }
 
 /*
@@ -375,63 +369,59 @@ static void handle_guest_status(void)
  */
 static void handle_device_status(void)
 {
-    uint32_t dev_type   = (uint32_t)microkit_mr_get(1);
-    uint32_t dev_handle = (uint32_t)microkit_mr_get(2);
+    uint32_t dev_type   = (uint32_t)msg_u32(req, 4);
+    uint32_t dev_handle = (uint32_t)msg_u32(req, 8);
     uint32_t *out       = (uint32_t *)cc_shmem_vaddr;
 
     switch (dev_type) {
     case CC_DEV_TYPE_SERIAL:
-        microkit_mr_set(0, MSG_SERIAL_STATUS);
-        microkit_mr_set(1, dev_handle);
-        microkit_ppcall(CH_CC_OUT_SERIAL,
-                        microkit_msginfo_new(MSG_SERIAL_STATUS, 2));
-        out[0] = (uint32_t)microkit_mr_get(0);
-        out[1] = (uint32_t)microkit_mr_get(1);
-        out[2] = (uint32_t)microkit_mr_get(2);
-        microkit_mr_set(0, CC_OK);
+        rep_u32(rep, 0, MSG_SERIAL_STATUS);
+        rep_u32(rep, 4, dev_handle);
+        /* E5-S8: ppcall stubbed */
+        out[0] = (uint32_t)msg_u32(req, 0);
+        out[1] = (uint32_t)msg_u32(req, 4);
+        out[2] = (uint32_t)msg_u32(req, 8);
+        rep_u32(rep, 0, CC_OK);
         break;
 
     case CC_DEV_TYPE_NET:
-        microkit_mr_set(0, MSG_NET_DEV_STATUS);
-        microkit_mr_set(1, dev_handle);
-        microkit_ppcall(CH_CC_OUT_NET,
-                        microkit_msginfo_new(MSG_NET_DEV_STATUS, 2));
-        out[0] = (uint32_t)microkit_mr_get(0);
-        out[1] = (uint32_t)microkit_mr_get(1);
-        out[2] = (uint32_t)microkit_mr_get(2);
-        microkit_mr_set(0, CC_OK);
+        rep_u32(rep, 0, MSG_NET_DEV_STATUS);
+        rep_u32(rep, 4, dev_handle);
+        /* E5-S8: ppcall stubbed */
+        out[0] = (uint32_t)msg_u32(req, 0);
+        out[1] = (uint32_t)msg_u32(req, 4);
+        out[2] = (uint32_t)msg_u32(req, 8);
+        rep_u32(rep, 0, CC_OK);
         break;
 
     case CC_DEV_TYPE_BLOCK:
-        microkit_mr_set(0, MSG_BLOCK_STATUS);
-        microkit_mr_set(1, dev_handle);
-        microkit_ppcall(CH_CC_OUT_BLOCK,
-                        microkit_msginfo_new(MSG_BLOCK_STATUS, 2));
-        out[0] = (uint32_t)microkit_mr_get(0);
-        out[1] = (uint32_t)microkit_mr_get(1);
-        out[2] = (uint32_t)microkit_mr_get(2);
-        microkit_mr_set(0, CC_OK);
+        rep_u32(rep, 0, MSG_BLOCK_STATUS);
+        rep_u32(rep, 4, dev_handle);
+        /* E5-S8: ppcall stubbed */
+        out[0] = (uint32_t)msg_u32(req, 0);
+        out[1] = (uint32_t)msg_u32(req, 4);
+        out[2] = (uint32_t)msg_u32(req, 8);
+        rep_u32(rep, 0, CC_OK);
         break;
 
     case CC_DEV_TYPE_USB:
-        microkit_mr_set(0, MSG_USB_STATUS);
-        microkit_mr_set(1, dev_handle);
-        microkit_ppcall(CH_CC_OUT_USB,
-                        microkit_msginfo_new(MSG_USB_STATUS, 2));
-        out[0] = (uint32_t)microkit_mr_get(0);
-        out[1] = (uint32_t)microkit_mr_get(1);
-        out[2] = (uint32_t)microkit_mr_get(2);
-        microkit_mr_set(0, CC_OK);
+        rep_u32(rep, 0, MSG_USB_STATUS);
+        rep_u32(rep, 4, dev_handle);
+        /* E5-S8: ppcall stubbed */
+        out[0] = (uint32_t)msg_u32(req, 0);
+        out[1] = (uint32_t)msg_u32(req, 4);
+        out[2] = (uint32_t)msg_u32(req, 8);
+        rep_u32(rep, 0, CC_OK);
         break;
 
     case CC_DEV_TYPE_FB:
         /* framebuffer status: use MSG_FB_FLIP probe — just verify handle valid */
-        microkit_mr_set(0, CC_OK);
+        rep_u32(rep, 0, CC_OK);
         out[0] = dev_handle;
         break;
 
     default:
-        microkit_mr_set(0, CC_ERR_BAD_DEV_TYPE);
+        rep_u32(rep, 0, CC_ERR_BAD_DEV_TYPE);
         break;
     }
 }
@@ -446,27 +436,27 @@ static void handle_device_status(void)
  */
 static void handle_attach_framebuffer(void)
 {
-    uint32_t guest_handle = (uint32_t)microkit_mr_get(1);
-    uint32_t fb_handle    = (uint32_t)microkit_mr_get(2);
+    uint32_t guest_handle = (uint32_t)msg_u32(req, 4);
+    uint32_t fb_handle    = (uint32_t)msg_u32(req, 8);
 
     (void)guest_handle;   /* relay only: guest association is tracked by caller */
 
     /* Probe the framebuffer handle validity via MSG_FB_FLIP */
-    microkit_mr_set(0, MSG_FB_FLIP);
-    microkit_mr_set(1, fb_handle);
-    microkit_ppcall(CH_CC_OUT_FB, microkit_msginfo_new(MSG_FB_FLIP, 2));
+    rep_u32(rep, 0, MSG_FB_FLIP);
+    rep_u32(rep, 4, fb_handle);
+    /* E5-S8: ppcall stubbed */
 
-    uint32_t fb_ok  = (uint32_t)microkit_mr_get(0);
-    uint32_t fr_seq = (uint32_t)microkit_mr_get(1);
+    uint32_t fb_ok  = (uint32_t)msg_u32(req, 0);
+    uint32_t fr_seq = (uint32_t)msg_u32(req, 4);
 
     if (fb_ok != (uint32_t)FB_OK) {
-        microkit_mr_set(0, CC_ERR_RELAY_FAULT);
-        microkit_mr_set(1, 0u);
+        rep_u32(rep, 0, CC_ERR_RELAY_FAULT);
+        rep_u32(rep, 4, 0u);
         return;
     }
 
-    microkit_mr_set(0, CC_OK);
-    microkit_mr_set(1, fr_seq);
+    rep_u32(rep, 0, CC_OK);
+    rep_u32(rep, 4, fr_seq);
 }
 
 /*
@@ -475,20 +465,19 @@ static void handle_attach_framebuffer(void)
  */
 static void handle_send_input(void)
 {
-    uint32_t guest_handle = (uint32_t)microkit_mr_get(1);
+    uint32_t guest_handle = (uint32_t)msg_u32(req, 4);
 
     /* Copy input event from caller's cc_shmem to cc_guest_shmem */
     const cc_input_event_t *src = (const cc_input_event_t *)cc_shmem_vaddr;
     cc_input_event_t *dst       = (cc_input_event_t *)cc_guest_shmem_vaddr;
     *dst = *src;
 
-    microkit_mr_set(0, MSG_GUEST_SEND_INPUT);
-    microkit_mr_set(1, guest_handle);
-    microkit_ppcall(CH_CC_OUT_GUEST,
-                    microkit_msginfo_new(MSG_GUEST_SEND_INPUT, 2));
+    rep_u32(rep, 0, MSG_GUEST_SEND_INPUT);
+    rep_u32(rep, 4, guest_handle);
+    /* E5-S8: ppcall stubbed */
 
-    uint32_t ok = (uint32_t)microkit_mr_get(0);
-    microkit_mr_set(0, ok == 0u ? CC_OK : CC_ERR_RELAY_FAULT);
+    uint32_t ok = (uint32_t)msg_u32(req, 0);
+    rep_u32(rep, 0, ok == 0u ? CC_OK : CC_ERR_RELAY_FAULT);
 }
 
 /*
@@ -497,20 +486,19 @@ static void handle_send_input(void)
  */
 static void handle_snapshot(void)
 {
-    uint32_t guest_handle = (uint32_t)microkit_mr_get(1);
+    uint32_t guest_handle = (uint32_t)msg_u32(req, 4);
 
-    microkit_mr_set(0, MSG_VIBEOS_SNAPSHOT);
-    microkit_mr_set(1, guest_handle);
-    microkit_ppcall(CH_CC_OUT_VIBE,
-                    microkit_msginfo_new(MSG_VIBEOS_SNAPSHOT, 2));
+    rep_u32(rep, 0, MSG_VIBEOS_SNAPSHOT);
+    rep_u32(rep, 4, guest_handle);
+    /* E5-S8: ppcall stubbed */
 
-    uint32_t ok      = (uint32_t)microkit_mr_get(0);
-    uint32_t snap_lo = (uint32_t)microkit_mr_get(1);
-    uint32_t snap_hi = (uint32_t)microkit_mr_get(2);
+    uint32_t ok      = (uint32_t)msg_u32(req, 0);
+    uint32_t snap_lo = (uint32_t)msg_u32(req, 4);
+    uint32_t snap_hi = (uint32_t)msg_u32(req, 8);
 
-    microkit_mr_set(0, ok == 0u ? CC_OK : CC_ERR_RELAY_FAULT);
-    microkit_mr_set(1, snap_lo);
-    microkit_mr_set(2, snap_hi);
+    rep_u32(rep, 0, ok == 0u ? CC_OK : CC_ERR_RELAY_FAULT);
+    rep_u32(rep, 4, snap_lo);
+    rep_u32(rep, 8, snap_hi);
 }
 
 /*
@@ -519,19 +507,18 @@ static void handle_snapshot(void)
  */
 static void handle_restore(void)
 {
-    uint32_t guest_handle = (uint32_t)microkit_mr_get(1);
-    uint32_t snap_lo      = (uint32_t)microkit_mr_get(2);
-    uint32_t snap_hi      = (uint32_t)microkit_mr_get(3);
+    uint32_t guest_handle = (uint32_t)msg_u32(req, 4);
+    uint32_t snap_lo      = (uint32_t)msg_u32(req, 8);
+    uint32_t snap_hi      = (uint32_t)msg_u32(req, 12);
 
-    microkit_mr_set(0, MSG_VIBEOS_RESTORE);
-    microkit_mr_set(1, guest_handle);
-    microkit_mr_set(2, snap_lo);
-    microkit_mr_set(3, snap_hi);
-    microkit_ppcall(CH_CC_OUT_VIBE,
-                    microkit_msginfo_new(MSG_VIBEOS_RESTORE, 4));
+    rep_u32(rep, 0, MSG_VIBEOS_RESTORE);
+    rep_u32(rep, 4, guest_handle);
+    rep_u32(rep, 8, snap_lo);
+    rep_u32(rep, 12, snap_hi);
+    /* E5-S8: ppcall stubbed */
 
-    uint32_t ok = (uint32_t)microkit_mr_get(0);
-    microkit_mr_set(0, ok == 0u ? CC_OK : CC_ERR_RELAY_FAULT);
+    uint32_t ok = (uint32_t)msg_u32(req, 0);
+    rep_u32(rep, 0, ok == 0u ? CC_OK : CC_ERR_RELAY_FAULT);
 }
 
 /*
@@ -540,46 +527,46 @@ static void handle_restore(void)
  */
 static void handle_log_stream(void)
 {
-    uint32_t slot  = (uint32_t)microkit_mr_get(1);
-    uint32_t pd_id = (uint32_t)microkit_mr_get(2);
+    uint32_t slot  = (uint32_t)msg_u32(req, 4);
+    uint32_t pd_id = (uint32_t)msg_u32(req, 8);
 
-    microkit_mr_set(0, (uint32_t)OP_LOG_WRITE);
-    microkit_mr_set(1, slot);
-    microkit_mr_set(2, pd_id);
-    microkit_ppcall(CH_CC_OUT_LOG,
-                    microkit_msginfo_new(OP_LOG_WRITE, 3));
+    rep_u32(rep, 0, (uint32_t)OP_LOG_WRITE);
+    rep_u32(rep, 4, slot);
+    rep_u32(rep, 8, pd_id);
+    /* E5-S8: ppcall stubbed */
 
-    uint32_t ok    = (uint32_t)microkit_mr_get(0);
-    uint32_t bytes = (uint32_t)microkit_mr_get(1);
+    uint32_t ok    = (uint32_t)msg_u32(req, 0);
+    uint32_t bytes = (uint32_t)msg_u32(req, 4);
 
-    microkit_mr_set(0, ok == 0u ? CC_OK : CC_ERR_RELAY_FAULT);
-    microkit_mr_set(1, bytes);
+    rep_u32(rep, 0, ok == 0u ? CC_OK : CC_ERR_RELAY_FAULT);
+    rep_u32(rep, 4, bytes);
 }
 
 /* ─── Microkit entry points ──────────────────────────────────────────────── */
 
-void init(void)
+static void cc_pd_pd_init(void)
 {
-    microkit_dbg_puts("[cc_pd] starting — agentOS command-and-control relay\n");
+    sel4_dbg_puts("[cc_pd] starting — agentOS command-and-control relay\n");
 
     for (uint32_t i = 0; i < CC_MAX_SESSIONS; i++) {
         sessions[i].active = false;
         sessions[i].state  = CC_SESSION_STATE_IDLE;
     }
 
-    microkit_dbg_puts("[cc_pd] ready (pure relay; zero policy)\n");
+    sel4_dbg_puts("[cc_pd] ready (pure relay; zero policy)\n");
 }
 
-void notified(microkit_channel ch)
+static void cc_pd_pd_notified(uint32_t ch)
 {
     (void)ch;
 }
 
-microkit_msginfo protected(microkit_channel ch, microkit_msginfo msginfo)
+static uint32_t cc_pd_h_dispatch(sel4_badge_t b, const sel4_msg_t *req, sel4_msg_t *rep, void *ctx)
 {
-    (void)msginfo;
+    (void)ctx;
 
-    uint32_t op = (uint32_t)microkit_mr_get(0);
+    uint32_t op = (uint32_t)msg_u32(req, 0);
+    uint32_t ch = (uint32_t)b;  /* badge encodes caller channel/identity */
 
     switch (op) {
     /* Session management */
@@ -601,10 +588,23 @@ microkit_msginfo protected(microkit_channel ch, microkit_msginfo msginfo)
     case MSG_CC_LOG_STREAM:         handle_log_stream();          break;
 
     default:
-        microkit_dbg_puts("[cc_pd] unknown opcode\n");
-        microkit_mr_set(0, CC_ERR_BAD_SESSION);
+        sel4_dbg_puts("[cc_pd] unknown opcode\n");
+        rep_u32(rep, 0, CC_ERR_BAD_SESSION);
         break;
     }
 
-    return microkit_msginfo_new(0, 4);
+    rep->length = 16;
+        return SEL4_ERR_OK;
+}
+
+/* ── E5-S8: Entry point ─────────────────────────────────────────────────── */
+void cc_pd_main(seL4_CPtr my_ep, seL4_CPtr ns_ep)
+{
+    (void)ns_ep;
+    cc_pd_pd_init();
+    static sel4_server_t srv;
+    sel4_server_init(&srv, my_ep);
+    /* Dispatch all opcodes through the generic handler */
+    sel4_server_register(&srv, SEL4_SERVER_OPCODE_ANY, cc_pd_h_dispatch, (void *)0);
+    sel4_server_run(&srv);
 }

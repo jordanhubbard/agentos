@@ -36,6 +36,7 @@
 
 #define AGENTOS_DEBUG 1
 #include "agentos.h"
+#include "sel4_server.h"
 #include "barrier.h"
 #include "cap_policy.h"
 #include "contracts/vibe_engine_contract.h"
@@ -159,25 +160,27 @@ static int vos_find(uint32_t handle);
  *         vibeos_load_module_req (incl. module_hash) in staging region header
  * Output: MR0=ok MR1=swap_id
  */
-static microkit_msginfo handle_vibeos_load_module(void)
+static uint32_t handle_vibeos_load_module(void)
 {
-    uint32_t handle      = (uint32_t)microkit_mr_get(1);
-    uint32_t module_type = (uint32_t)microkit_mr_get(2);
-    uint32_t module_size = (uint32_t)microkit_mr_get(3);
+    uint32_t handle      = (uint32_t)msg_u32(req, 4);
+    uint32_t module_type = (uint32_t)msg_u32(req, 8);
+    uint32_t module_size = (uint32_t)msg_u32(req, 12);
 
     int vslot = vos_find(handle);
     if (vslot < 0) {
         log_drain_write(7, 7, "[vibe_engine] VIBEOS_LOAD_MODULE: bad handle\n");
-        microkit_mr_set(0, VIBEOS_ERR_BAD_HANDLE);
-        microkit_mr_set(1, 0);
-        return microkit_msginfo_new(0, 2);
+        rep_u32(rep, 0, VIBEOS_ERR_BAD_HANDLE);
+        rep_u32(rep, 4, 0);
+        rep->length = 8;
+        return SEL4_ERR_OK;
     }
 
     if (module_type != VIBEOS_MODULE_TYPE_WASM && module_type != VIBEOS_MODULE_TYPE_ELF) {
         log_drain_write(7, 7, "[vibe_engine] VIBEOS_LOAD_MODULE: bad module_type\n");
-        microkit_mr_set(0, VIBEOS_ERR_BAD_MODULE_TYPE);
-        microkit_mr_set(1, 0);
-        return microkit_msginfo_new(0, 2);
+        rep_u32(rep, 0, VIBEOS_ERR_BAD_MODULE_TYPE);
+        rep_u32(rep, 4, 0);
+        rep->length = 8;
+        return SEL4_ERR_OK;
     }
 
     if (module_type == VIBEOS_MODULE_TYPE_WASM) {
@@ -185,9 +188,10 @@ static microkit_msginfo handle_vibeos_load_module(void)
         const uint8_t *staged = (const uint8_t *)vibe_staging_vaddr;
         if (!validate_wasm_header(staged, module_size)) {
             log_drain_write(7, 7, "[vibe_engine] VIBEOS_LOAD_MODULE: bad WASM magic\n");
-            microkit_mr_set(0, VIBEOS_ERR_WASM_LOAD_FAIL);
-            microkit_mr_set(1, 0);
-            return microkit_msginfo_new(0, 2);
+            rep_u32(rep, 0, VIBEOS_ERR_WASM_LOAD_FAIL);
+            rep_u32(rep, 4, 0);
+            rep->length = 8;
+        return SEL4_ERR_OK;
         }
     }
 
@@ -222,11 +226,13 @@ static microkit_msginfo handle_vibeos_load_module(void)
     agentos_wmb();
 
     log_drain_write(7, 7, "[vibe_engine] VIBEOS_LOAD_MODULE: notifying controller\n");
-    microkit_notify(CH_CTRL);
+    sel4_dbg_puts("[E5-S8] notify-stub
+");
 
-    microkit_mr_set(0, VIBEOS_OK);
-    microkit_mr_set(1, swap_id);
-    return microkit_msginfo_new(0, 2);
+    rep_u32(rep, 0, VIBEOS_OK);
+    rep_u32(rep, 4, swap_id);
+    rep->length = 8;
+        return SEL4_ERR_OK;
 }
 
 /*
@@ -236,28 +242,30 @@ static microkit_msginfo handle_vibeos_load_module(void)
  * Input:  MR0=opcode MR1=func_class
  * Output: MR0=ok MR1=exists MR2=pd_handle MR3=channel_id
  */
-static microkit_msginfo handle_vibeos_check_service_exists(void)
+static uint32_t handle_vibeos_check_service_exists(void)
 {
-    uint32_t func_class = (uint32_t)microkit_mr_get(1);
+    uint32_t func_class = (uint32_t)msg_u32(req, 4);
 
     if (func_class < 1 || func_class > CAP_POLICY_FUNC_CLASS_MAX) {
         log_drain_write(7, 7, "[vibe_engine] CHECK_SERVICE_EXISTS: bad func_class\n");
-        microkit_mr_set(0, VIBEOS_ERR_BAD_FUNC_CLASS);
-        microkit_mr_set(1, 0);
-        microkit_mr_set(2, 0);
-        microkit_mr_set(3, 0);
-        return microkit_msginfo_new(0, 4);
+        rep_u32(rep, 0, VIBEOS_ERR_BAD_FUNC_CLASS);
+        rep_u32(rep, 4, 0);
+        rep_u32(rep, 8, 0);
+        rep_u32(rep, 12, 0);
+        rep->length = 16;
+        return SEL4_ERR_OK;
     }
 
     uint32_t pd_handle  = 0;
     uint32_t channel_id = 0;
     uint32_t exists = (uint32_t)cap_policy_find_ring0_service(func_class, &pd_handle, &channel_id);
 
-    microkit_mr_set(0, VIBEOS_OK);
-    microkit_mr_set(1, exists);
-    microkit_mr_set(2, pd_handle);
-    microkit_mr_set(3, channel_id);
-    return microkit_msginfo_new(0, 4);
+    rep_u32(rep, 0, VIBEOS_OK);
+    rep_u32(rep, 4, exists);
+    rep_u32(rep, 8, pd_handle);
+    rep_u32(rep, 12, channel_id);
+    rep->length = 16;
+        return SEL4_ERR_OK;
 }
 
 /* ── Service registry ───────────────────────────────────────────────── */
@@ -316,10 +324,10 @@ static bool validate_wasm_header(const uint8_t *data, uint32_t size) {
  *
  * Output: MR0=status, MR1=proposal_id (on success)
  */
-static microkit_msginfo handle_propose(void) {
-    uint32_t service_id = (uint32_t)microkit_mr_get(1);
-    uint32_t wasm_size  = (uint32_t)microkit_mr_get(2);
-    uint32_t cap_tag    = (uint32_t)microkit_mr_get(3);
+static uint32_t handle_propose(void) {
+    uint32_t service_id = (uint32_t)msg_u32(req, 4);
+    uint32_t wasm_size  = (uint32_t)msg_u32(req, 8);
+    uint32_t cap_tag    = (uint32_t)msg_u32(req, 12);
 
     log_drain_write(7, 7, "[vibe_engine] Proposal received: service=");
     if (service_id < service_count && services[service_id].name) {
@@ -351,36 +359,41 @@ static microkit_msginfo handle_propose(void) {
     /* Check service exists and is swappable */
     if (service_id >= service_count) {
         log_drain_write(7, 7, "[vibe_engine] REJECT: unknown service\n");
-        microkit_mr_set(0, VIBE_ERR_NOSVC);
-        return microkit_msginfo_new(0, 1);
+        rep_u32(rep, 0, VIBE_ERR_NOSVC);
+        rep->length = 4;
+        return SEL4_ERR_OK;
     }
     if (!services[service_id].swappable) {
         log_drain_write(7, 7, "[vibe_engine] REJECT: service not swappable\n");
-        microkit_mr_set(0, VIBE_ERR_NOSVC);
-        return microkit_msginfo_new(0, 1);
+        rep_u32(rep, 0, VIBE_ERR_NOSVC);
+        rep->length = 4;
+        return SEL4_ERR_OK;
     }
 
     /* Check WASM size */
     if (wasm_size > MAX_WASM_SIZE || wasm_size > services[service_id].max_wasm_bytes) {
         log_drain_write(7, 7, "[vibe_engine] REJECT: WASM too large\n");
-        microkit_mr_set(0, VIBE_ERR_TOOBIG);
-        return microkit_msginfo_new(0, 1);
+        rep_u32(rep, 0, VIBE_ERR_TOOBIG);
+        rep->length = 4;
+        return SEL4_ERR_OK;
     }
 
     /* Validate WASM magic header from staging region */
     const uint8_t *staged = (const uint8_t *)vibe_staging_vaddr;
     if (!validate_wasm_header(staged, wasm_size)) {
         log_drain_write(7, 7, "[vibe_engine] REJECT: bad WASM magic\n");
-        microkit_mr_set(0, VIBE_ERR_BADWASM);
-        return microkit_msginfo_new(0, 1);
+        rep_u32(rep, 0, VIBE_ERR_BADWASM);
+        rep->length = 4;
+        return SEL4_ERR_OK;
     }
 
     /* Find a free proposal slot */
     int slot = find_free_proposal();
     if (slot < 0) {
         log_drain_write(7, 7, "[vibe_engine] REJECT: proposal table full\n");
-        microkit_mr_set(0, VIBE_ERR_FULL);
-        return microkit_msginfo_new(0, 1);
+        rep_u32(rep, 0, VIBE_ERR_FULL);
+        rep->length = 4;
+        return SEL4_ERR_OK;
     }
 
     /* Record the proposal */
@@ -407,9 +420,10 @@ static microkit_msginfo handle_propose(void) {
         log_drain_write(7, 7, _cl_buf);
     }
 
-    microkit_mr_set(0, VIBE_OK);
-    microkit_mr_set(1, proposals[slot].version);  /* proposal_id */
-    return microkit_msginfo_new(0, 2);
+    rep_u32(rep, 0, VIBE_OK);
+    rep_u32(rep, 4, proposals[slot].version);  /* proposal_id */
+    rep->length = 8;
+        return SEL4_ERR_OK;
 }
 
 /*
@@ -420,8 +434,8 @@ static microkit_msginfo handle_propose(void) {
  *
  * Check bitmap: bit 0 = WASM magic, bit 1 = size, bit 2 = service, bit 3 = cap
  */
-static microkit_msginfo handle_validate(void) {
-    uint32_t proposal_id = (uint32_t)microkit_mr_get(1);
+static uint32_t handle_validate(void) {
+    uint32_t proposal_id = (uint32_t)msg_u32(req, 4);
 
     /* Find proposal by version/id */
     int slot = -1;
@@ -433,12 +447,14 @@ static microkit_msginfo handle_validate(void) {
         }
     }
     if (slot < 0) {
-        microkit_mr_set(0, VIBE_ERR_NOENT);
-        return microkit_msginfo_new(0, 1);
+        rep_u32(rep, 0, VIBE_ERR_NOENT);
+        rep->length = 4;
+        return SEL4_ERR_OK;
     }
     if (proposals[slot].state != PROP_STATE_PENDING) {
-        microkit_mr_set(0, VIBE_ERR_STATE);
-        return microkit_msginfo_new(0, 1);
+        rep_u32(rep, 0, VIBE_ERR_STATE);
+        rep->length = 4;
+        return SEL4_ERR_OK;
     }
 
     log_drain_write(7, 7, "[vibe_engine] Validating proposal ");
@@ -507,9 +523,10 @@ static microkit_msginfo handle_validate(void) {
         log_drain_write(7, 7, "[vibe_engine] Validation FAILED\n");
     }
 
-    microkit_mr_set(0, all_pass ? VIBE_OK : VIBE_ERR_VALFAIL);
-    microkit_mr_set(1, checks);
-    return microkit_msginfo_new(0, 2);
+    rep_u32(rep, 0, all_pass ? VIBE_OK : VIBE_ERR_VALFAIL);
+    rep_u32(rep, 4, checks);
+    rep->length = 8;
+        return SEL4_ERR_OK;
 }
 
 /*
@@ -525,8 +542,8 @@ static microkit_msginfo handle_validate(void) {
  *
  * The controller then calls vibe_swap_begin to load WASM into a swap slot.
  */
-static microkit_msginfo handle_execute(void) {
-    uint32_t proposal_id = (uint32_t)microkit_mr_get(1);
+static uint32_t handle_execute(void) {
+    uint32_t proposal_id = (uint32_t)msg_u32(req, 4);
 
     int slot = -1;
     for (int i = 0; i < MAX_PROPOSALS; i++) {
@@ -537,12 +554,14 @@ static microkit_msginfo handle_execute(void) {
         }
     }
     if (slot < 0) {
-        microkit_mr_set(0, VIBE_ERR_NOENT);
-        return microkit_msginfo_new(0, 1);
+        rep_u32(rep, 0, VIBE_ERR_NOENT);
+        rep->length = 4;
+        return SEL4_ERR_OK;
     }
     if (proposals[slot].state != PROP_STATE_VALIDATED) {
-        microkit_mr_set(0, VIBE_ERR_STATE);
-        return microkit_msginfo_new(0, 1);
+        rep_u32(rep, 0, VIBE_ERR_STATE);
+        rep->length = 4;
+        return SEL4_ERR_OK;
     }
 
     log_drain_write(7, 7, "[vibe_engine] Executing swap for proposal ");
@@ -600,7 +619,8 @@ static microkit_msginfo handle_execute(void) {
     log_drain_write(7, 7, "[vibe_engine] *** SWAP APPROVED — notifying controller ***\n");
 
     /* Notify the controller to pick up the swap request */
-    microkit_notify(CH_CTRL);
+    sel4_dbg_puts("[E5-S8] notify-stub
+");
 
     total_swaps++;
     proposals[slot].state = PROP_STATE_ACTIVE;
@@ -608,8 +628,9 @@ static microkit_msginfo handle_execute(void) {
     /* Update service version */
     services[proposals[slot].service_id].current_version++;
 
-    microkit_mr_set(0, VIBE_OK);
-    return microkit_msginfo_new(0, 1);
+    rep_u32(rep, 0, VIBE_OK);
+    rep->length = 4;
+        return SEL4_ERR_OK;
 }
 
 /*
@@ -619,25 +640,27 @@ static microkit_msginfo handle_execute(void) {
  * Output: MR0=status, MR1=total_proposals, MR2=total_swaps,
  *         MR3=total_rejections, MR4=proposal_state (if queried)
  */
-static microkit_msginfo handle_status(void) {
-    uint32_t proposal_id = (uint32_t)microkit_mr_get(1);
+static uint32_t handle_status(void) {
+    uint32_t proposal_id = (uint32_t)msg_u32(req, 4);
 
-    microkit_mr_set(0, VIBE_OK);
-    microkit_mr_set(1, (uint32_t)total_proposals);
-    microkit_mr_set(2, (uint32_t)total_swaps);
-    microkit_mr_set(3, (uint32_t)total_rejections);
+    rep_u32(rep, 0, VIBE_OK);
+    rep_u32(rep, 4, (uint32_t)total_proposals);
+    rep_u32(rep, 8, (uint32_t)total_swaps);
+    rep_u32(rep, 12, (uint32_t)total_rejections);
 
     if (proposal_id > 0) {
         for (int i = 0; i < MAX_PROPOSALS; i++) {
             if (proposals[i].version == proposal_id) {
-                microkit_mr_set(4, (uint32_t)proposals[i].state);
-                return microkit_msginfo_new(0, 5);
+                rep_u32(rep, 16, (uint32_t)proposals[i].state);
+                rep->length = 20;
+        return SEL4_ERR_OK;
             }
         }
-        microkit_mr_set(4, 0xFFFFFFFF);  /* Not found */
+        rep_u32(rep, 16, 0xFFFFFFFF);  /* Not found */
     }
 
-    return microkit_msginfo_new(0, 4);
+    rep->length = 16;
+        return SEL4_ERR_OK;
 }
 
 /*
@@ -648,12 +671,13 @@ static microkit_msginfo handle_status(void) {
  *
  * Notifies controller with a rollback request.
  */
-static microkit_msginfo handle_rollback(void) {
-    uint32_t service_id = (uint32_t)microkit_mr_get(1);
+static uint32_t handle_rollback(void) {
+    uint32_t service_id = (uint32_t)msg_u32(req, 4);
 
     if (service_id >= service_count || !services[service_id].swappable) {
-        microkit_mr_set(0, VIBE_ERR_NOSVC);
-        return microkit_msginfo_new(0, 1);
+        rep_u32(rep, 0, VIBE_ERR_NOSVC);
+        rep->length = 4;
+        return SEL4_ERR_OK;
     }
 
     {
@@ -678,7 +702,8 @@ static microkit_msginfo handle_rollback(void) {
 
     agentos_wmb();
 
-    microkit_notify(CH_CTRL);
+    sel4_dbg_puts("[E5-S8] notify-stub
+");
 
     /* Mark proposal as rolled back */
     for (int i = 0; i < MAX_PROPOSALS; i++) {
@@ -689,18 +714,20 @@ static microkit_msginfo handle_rollback(void) {
         }
     }
 
-    microkit_mr_set(0, VIBE_OK);
-    return microkit_msginfo_new(0, 1);
+    rep_u32(rep, 0, VIBE_OK);
+    rep->length = 4;
+        return SEL4_ERR_OK;
 }
 
 /*
  * OP_VIBE_HEALTH: Health check
  */
-static microkit_msginfo handle_health(void) {
-    microkit_mr_set(0, VIBE_OK);
-    microkit_mr_set(1, (uint32_t)total_proposals);
-    microkit_mr_set(2, (uint32_t)total_swaps);
-    return microkit_msginfo_new(0, 3);
+static uint32_t handle_health(void) {
+    rep_u32(rep, 0, VIBE_OK);
+    rep_u32(rep, 4, (uint32_t)total_proposals);
+    rep_u32(rep, 8, (uint32_t)total_swaps);
+    rep->length = 12;
+        return SEL4_ERR_OK;
 }
 
 /*
@@ -713,10 +740,10 @@ static microkit_msginfo handle_health(void) {
  * badge agents are expected to have elevated trust checked by CapStore.
  * The slot's name is copied out of the staging region at the given offset.
  */
-static microkit_msginfo handle_register_service(microkit_channel ch) {
-    uint32_t name_ptr      = (uint32_t)microkit_mr_get(1);
-    uint32_t name_len      = (uint32_t)microkit_mr_get(2);
-    uint32_t max_wasm      = (uint32_t)microkit_mr_get(3);
+static uint32_t handle_register_service(uint32_t ch) {
+    uint32_t name_ptr      = (uint32_t)msg_u32(req, 4);
+    uint32_t name_len      = (uint32_t)msg_u32(req, 8);
+    uint32_t max_wasm      = (uint32_t)msg_u32(req, 12);
 
     /* For v0.1, ch==CH_AGENT (badge==0) is root/init — allow all. */
     (void)ch;
@@ -724,22 +751,25 @@ static microkit_msginfo handle_register_service(microkit_channel ch) {
     /* Validate name length */
     if (name_len == 0 || name_len > 31) {
         log_drain_write(7, 7, "[vibe_engine] REGISTER: invalid name length\n");
-        microkit_mr_set(0, VIBE_ERR_INTERNAL);
-        return microkit_msginfo_new(0, 1);
+        rep_u32(rep, 0, VIBE_ERR_INTERNAL);
+        rep->length = 4;
+        return SEL4_ERR_OK;
     }
 
     /* Check capacity */
     if (service_count >= MAX_SERVICES) {
         log_drain_write(7, 7, "[vibe_engine] REGISTER: service table full\n");
-        microkit_mr_set(0, VIBE_ERR_FULL);
-        return microkit_msginfo_new(0, 1);
+        rep_u32(rep, 0, VIBE_ERR_FULL);
+        rep->length = 4;
+        return SEL4_ERR_OK;
     }
 
     /* Resolve the name pointer: treat as offset into staging region */
     if (name_ptr + name_len > STAGING_SIZE - 64) {
         log_drain_write(7, 7, "[vibe_engine] REGISTER: name out of staging bounds\n");
-        microkit_mr_set(0, VIBE_ERR_INTERNAL);
-        return microkit_msginfo_new(0, 1);
+        rep_u32(rep, 0, VIBE_ERR_INTERNAL);
+        rep->length = 4;
+        return SEL4_ERR_OK;
     }
     const char *src_name = (const char *)(vibe_staging_vaddr + name_ptr);
 
@@ -755,8 +785,9 @@ static microkit_msginfo handle_register_service(microkit_channel ch) {
         /* also ensure lengths match: existing[name_len] must be NUL */
         if (match && existing[j] == '\0' && j == name_len) {
             log_drain_write(7, 7, "[vibe_engine] REGISTER: duplicate service name\n");
-            microkit_mr_set(0, VIBE_ERR_NOSVC);  /* repurpose: "already exists" */
-            return microkit_msginfo_new(0, 1);
+            rep_u32(rep, 0, VIBE_ERR_NOSVC);  /* repurpose: "already exists" */
+            rep->length = 4;
+        return SEL4_ERR_OK;
         }
     }
 
@@ -771,8 +802,9 @@ static microkit_msginfo handle_register_service(microkit_channel ch) {
     /* Guard against pool overflow (32 bytes per entry, including NUL) */
     if (pool_next + 32 > (uint32_t)sizeof(name_pool)) {
         log_drain_write(7, 7, "[vibe_engine] REGISTER: name pool exhausted\n");
-        microkit_mr_set(0, VIBE_ERR_INTERNAL);
-        return microkit_msginfo_new(0, 1);
+        rep_u32(rep, 0, VIBE_ERR_INTERNAL);
+        rep->length = 4;
+        return SEL4_ERR_OK;
     }
 
     char *dst = &name_pool[pool_next];
@@ -804,9 +836,10 @@ static microkit_msginfo handle_register_service(microkit_channel ch) {
         log_drain_write(7, 7, _cl_buf);
     }
 
-    microkit_mr_set(0, VIBE_OK);
-    microkit_mr_set(1, new_id);
-    return microkit_msginfo_new(0, 2);
+    rep_u32(rep, 0, VIBE_OK);
+    rep_u32(rep, 4, new_id);
+    rep->length = 8;
+        return SEL4_ERR_OK;
 }
 
 /*
@@ -819,7 +852,7 @@ static microkit_msginfo handle_register_service(microkit_channel ch) {
  * region starting at offset 0.  The caller reads them back from the staging
  * shared-memory window.
  */
-static microkit_msginfo handle_list_services(void) {
+static uint32_t handle_list_services(void) {
     /*
      * We write names into the START of the staging region (offset 0).
      * The metadata handoff used by OP_VIBE_EXECUTE lives at the END
@@ -846,10 +879,11 @@ static microkit_msginfo handle_list_services(void) {
 
     agentos_wmb();
 
-    microkit_mr_set(0, service_count);
-    microkit_mr_set(1, 0);    /* offset: starts at beginning of staging */
-    microkit_mr_set(2, pos);  /* total bytes written */
-    return microkit_msginfo_new(0, 3);
+    rep_u32(rep, 0, service_count);
+    rep_u32(rep, 4, 0);    /* offset: starts at beginning of staging */
+    rep_u32(rep, 8, pos);  /* total bytes written */
+    rep->length = 12;
+        return SEL4_ERR_OK;
 }
 
 /* ═══════════════════════════════════════════════════════════════════════
@@ -899,47 +933,50 @@ static int vos_alloc(void)
  * EVENT_GUEST_READY on the EventBus.  The caller must poll STATUS or
  * subscribe to that event to detect readiness.
  * ─────────────────────────────────────────────────────────────────────── */
-static microkit_msginfo handle_vos_create(void)
+static uint32_t handle_vos_create(void)
 {
-    uint32_t os_type   = (uint32_t)microkit_mr_get(1);
-    uint32_t ram_mb    = (uint32_t)microkit_mr_get(2);
-    uint32_t dev_flags = (uint32_t)microkit_mr_get(3);
+    uint32_t os_type   = (uint32_t)msg_u32(req, 4);
+    uint32_t ram_mb    = (uint32_t)msg_u32(req, 8);
+    uint32_t dev_flags = (uint32_t)msg_u32(req, 12);
 
     if (os_type > 1) {
-        microkit_mr_set(0, VIBEOS_ERR_BAD_TYPE);
-        return microkit_msginfo_new(0, 1);
+        rep_u32(rep, 0, VIBEOS_ERR_BAD_TYPE);
+        rep->length = 4;
+        return SEL4_ERR_OK;
     }
     if (ram_mb == 0 || ram_mb > 8192) {
-        microkit_mr_set(0, VIBEOS_ERR_OOM);
-        return microkit_msginfo_new(0, 1);
+        rep_u32(rep, 0, VIBEOS_ERR_OOM);
+        rep->length = 4;
+        return SEL4_ERR_OK;
     }
 
     int slot = vos_alloc();
     if (slot < 0) {
-        microkit_mr_set(0, VIBEOS_ERR_OOM);
-        return microkit_msginfo_new(0, 1);
+        rep_u32(rep, 0, VIBEOS_ERR_OOM);
+        rep->length = 4;
+        return SEL4_ERR_OK;
     }
 
     /* ── PPC to vm_manager: create VM slot ──────────────────────────── */
-    microkit_mr_set(0, OP_VM_CREATE);
-    microkit_mr_set(1, 0);       /* label_vaddr: unnamed at creation time */
-    microkit_mr_set(2, ram_mb);
-    microkit_msginfo vm_r = microkit_ppcall(CH_VMM,
-                                microkit_msginfo_new(OP_VM_CREATE, 3));
+    rep_u32(rep, 0, OP_VM_CREATE);
+    rep_u32(rep, 4, 0);       /* label_vaddr: unnamed at creation time */
+    rep_u32(rep, 8, ram_mb);
+    uint32_t vm_r = /* E5-S8: ppcall stubbed */
     (void)vm_r;
-    uint32_t vm_ok   = (uint32_t)microkit_mr_get(0);
-    uint32_t vm_slot = (uint32_t)microkit_mr_get(1);
+    uint32_t vm_ok   = (uint32_t)msg_u32(req, 0);
+    uint32_t vm_slot = (uint32_t)msg_u32(req, 4);
 
     if (vm_ok != 0) {
         log_drain_write(7, 7, "[vibe_engine] VOS_CREATE: vm_manager rejected CREATE\n");
-        microkit_mr_set(0, VIBEOS_ERR_OOM);
-        return microkit_msginfo_new(0, 1);
+        rep_u32(rep, 0, VIBEOS_ERR_OOM);
+        rep->length = 4;
+        return SEL4_ERR_OK;
     }
 
     /* ── PPC to vm_manager: start the VM ────────────────────────────── */
-    microkit_mr_set(0, OP_VM_START);
-    microkit_mr_set(1, vm_slot);
-    (void)microkit_ppcall(CH_VMM, microkit_msginfo_new(OP_VM_START, 2));
+    rep_u32(rep, 0, OP_VM_START);
+    rep_u32(rep, 4, vm_slot);
+    (void)/* E5-S8: ppcall stubbed */
 
     /* ── Record instance ─────────────────────────────────────────────── */
     uint32_t handle = s_next_handle++;
@@ -956,30 +993,27 @@ static microkit_msginfo handle_vos_create(void)
 
     /* ── Open device handles (guest binding protocol §3.1 step 2) ────── */
     if (dev_flags & VIBEOS_DEV_SERIAL) {
-        microkit_mr_set(0, 0);  /* port_id */
-        (void)microkit_ppcall((microkit_channel)CH_SERIAL_PD,
-                              microkit_msginfo_new(MSG_SERIAL_OPEN, 1));
-        if ((uint32_t)microkit_mr_get(0) == 0) {
-            s_vos[slot].dev_handles[0] = (uint32_t)microkit_mr_get(1);
+        rep_u32(rep, 0, 0);  /* port_id */
+        (void)/* E5-S8: ppcall stubbed */
+        if ((uint32_t)msg_u32(req, 0) == 0) {
+            s_vos[slot].dev_handles[0] = (uint32_t)msg_u32(req, 4);
             s_vos[slot].dev_mask |= VIBEOS_DEV_SERIAL;
         }
     }
     if (dev_flags & VIBEOS_DEV_NET) {
-        microkit_mr_set(0, 0);  /* iface_id */
-        (void)microkit_ppcall((microkit_channel)CH_NET_PD,
-                              microkit_msginfo_new(MSG_NET_OPEN, 1));
-        if ((uint32_t)microkit_mr_get(0) == 0) {
-            s_vos[slot].dev_handles[1] = (uint32_t)microkit_mr_get(1);
+        rep_u32(rep, 0, 0);  /* iface_id */
+        (void)/* E5-S8: ppcall stubbed */
+        if ((uint32_t)msg_u32(req, 0) == 0) {
+            s_vos[slot].dev_handles[1] = (uint32_t)msg_u32(req, 4);
             s_vos[slot].dev_mask |= VIBEOS_DEV_NET;
         }
     }
     if (dev_flags & VIBEOS_DEV_BLOCK) {
-        microkit_mr_set(0, 0);  /* dev_id */
-        microkit_mr_set(1, 0);  /* partition */
-        (void)microkit_ppcall((microkit_channel)CH_BLOCK_PD,
-                              microkit_msginfo_new(MSG_BLOCK_OPEN, 2));
-        if ((uint32_t)microkit_mr_get(0) == 0) {
-            s_vos[slot].dev_handles[2] = (uint32_t)microkit_mr_get(1);
+        rep_u32(rep, 0, 0);  /* dev_id */
+        rep_u32(rep, 4, 0);  /* partition */
+        (void)/* E5-S8: ppcall stubbed */
+        if ((uint32_t)msg_u32(req, 0) == 0) {
+            s_vos[slot].dev_handles[2] = (uint32_t)msg_u32(req, 4);
             s_vos[slot].dev_mask |= VIBEOS_DEV_BLOCK;
         }
     }
@@ -988,18 +1022,18 @@ static microkit_msginfo handle_vos_create(void)
 
     /* ── Publish EVENT_VIBEOS_READY (deferred if CH_VIBE_EVENTBUS unwired) */
 #ifdef CH_VIBE_EVENTBUS
-    microkit_mr_set(0, MSG_EVENTBUS_PUBLISH_BATCH);
-    microkit_mr_set(1, EVENT_VIBEOS_READY);
-    microkit_mr_set(2, handle);
-    microkit_mr_set(3, (uint64_t)os_type);
-    microkit_mr_set(4, vm_slot);
-    (void)microkit_ppcall((microkit_channel)CH_VIBE_EVENTBUS,
-                          microkit_msginfo_new(MSG_EVENTBUS_PUBLISH_BATCH, 5));
+    rep_u32(rep, 0, MSG_EVENTBUS_PUBLISH_BATCH);
+    rep_u32(rep, 4, EVENT_VIBEOS_READY);
+    rep_u32(rep, 8, handle);
+    rep_u32(rep, 12, (uint64_t)os_type);
+    rep_u32(rep, 16, vm_slot);
+    (void)/* E5-S8: ppcall stubbed */
 #endif
 
-    microkit_mr_set(0, VIBEOS_OK);
-    microkit_mr_set(1, handle);
-    return microkit_msginfo_new(0, 2);
+    rep_u32(rep, 0, VIBEOS_OK);
+    rep_u32(rep, 4, handle);
+    rep->length = 8;
+        return SEL4_ERR_OK;
 }
 
 /* ── VIBEOS_OP_DESTROY ─────────────────────────────────────────────────
@@ -1007,33 +1041,35 @@ static microkit_msginfo handle_vos_create(void)
  * Input:  MR0=VIBEOS_OP_DESTROY  MR1=handle
  * Output: MR0=vibeos_error_t
  * ─────────────────────────────────────────────────────────────────────── */
-static microkit_msginfo handle_vos_destroy(void)
+static uint32_t handle_vos_destroy(void)
 {
-    uint32_t handle = (uint32_t)microkit_mr_get(1);
+    uint32_t handle = (uint32_t)msg_u32(req, 4);
     int slot = vos_find(handle);
     if (slot < 0) {
-        microkit_mr_set(0, VIBEOS_ERR_NO_HANDLE);
-        return microkit_msginfo_new(0, 1);
+        rep_u32(rep, 0, VIBEOS_ERR_NO_HANDLE);
+        rep->length = 4;
+        return SEL4_ERR_OK;
     }
 
     uint32_t vm_slot = s_vos[slot].vm_slot;
 
     /* Stop then destroy in vm_manager */
-    microkit_mr_set(0, OP_VM_STOP);
-    microkit_mr_set(1, vm_slot);
-    (void)microkit_ppcall(CH_VMM, microkit_msginfo_new(OP_VM_STOP, 2));
+    rep_u32(rep, 0, OP_VM_STOP);
+    rep_u32(rep, 4, vm_slot);
+    (void)/* E5-S8: ppcall stubbed */
 
-    microkit_mr_set(0, OP_VM_DESTROY);
-    microkit_mr_set(1, vm_slot);
-    (void)microkit_ppcall(CH_VMM, microkit_msginfo_new(OP_VM_DESTROY, 2));
+    rep_u32(rep, 0, OP_VM_DESTROY);
+    rep_u32(rep, 4, vm_slot);
+    (void)/* E5-S8: ppcall stubbed */
 
     s_vos[slot].active = false;
     s_vos[slot].state  = (uint8_t)VIBEOS_STATE_DEAD;
 
     log_drain_write(7, 7, "[vibe_engine] VOS_DESTROY: ok\n");
 
-    microkit_mr_set(0, VIBEOS_OK);
-    return microkit_msginfo_new(0, 1);
+    rep_u32(rep, 0, VIBEOS_OK);
+    rep->length = 4;
+        return SEL4_ERR_OK;
 }
 
 /* ── VIBEOS_OP_STATUS ──────────────────────────────────────────────────
@@ -1045,21 +1081,22 @@ static microkit_msginfo handle_vos_destroy(void)
  * Also queries vm_manager (OP_VM_INFO) to get fresh vm_state in MR1;
  * if the VM reports running we promote the local state to RUNNING.
  * ─────────────────────────────────────────────────────────────────────── */
-static microkit_msginfo handle_vos_status(void)
+static uint32_t handle_vos_status(void)
 {
-    uint32_t handle = (uint32_t)microkit_mr_get(1);
+    uint32_t handle = (uint32_t)msg_u32(req, 4);
     int slot = vos_find(handle);
     if (slot < 0) {
-        microkit_mr_set(0, VIBEOS_ERR_NO_HANDLE);
-        return microkit_msginfo_new(0, 1);
+        rep_u32(rep, 0, VIBEOS_ERR_NO_HANDLE);
+        rep->length = 4;
+        return SEL4_ERR_OK;
     }
 
     /* Refresh state from vm_manager */
-    microkit_mr_set(0, OP_VM_INFO);
-    microkit_mr_set(1, s_vos[slot].vm_slot);
-    (void)microkit_ppcall(CH_VMM, microkit_msginfo_new(OP_VM_INFO, 2));
-    uint32_t vm_ok    = (uint32_t)microkit_mr_get(0);
-    uint32_t vm_state = (uint32_t)microkit_mr_get(1);
+    rep_u32(rep, 0, OP_VM_INFO);
+    rep_u32(rep, 4, s_vos[slot].vm_slot);
+    (void)/* E5-S8: ppcall stubbed */
+    uint32_t vm_ok    = (uint32_t)msg_u32(req, 0);
+    uint32_t vm_state = (uint32_t)msg_u32(req, 4);
 
     /* VM_SLOT_RUNNING (3 in vmm_mux) → VIBEOS_STATE_RUNNING */
     if (vm_ok == 0 && vm_state == 3 &&
@@ -1067,13 +1104,14 @@ static microkit_msginfo handle_vos_status(void)
         s_vos[slot].state = (uint8_t)VIBEOS_STATE_RUNNING;
     }
 
-    microkit_mr_set(0, VIBEOS_OK);
-    microkit_mr_set(1, handle);
-    microkit_mr_set(2, s_vos[slot].state);
-    microkit_mr_set(3, s_vos[slot].os_type);
-    microkit_mr_set(4, s_vos[slot].ram_mb);
-    microkit_mr_set(5, s_vos[slot].dev_mask);
-    return microkit_msginfo_new(0, 6);
+    rep_u32(rep, 0, VIBEOS_OK);
+    rep_u32(rep, 4, handle);
+    rep_u32(rep, 8, s_vos[slot].state);
+    rep_u32(rep, 12, s_vos[slot].os_type);
+    rep_u32(rep, 16, s_vos[slot].ram_mb);
+    rep_u32(rep, 20, s_vos[slot].dev_mask);
+    rep->length = 24;
+        return SEL4_ERR_OK;
 }
 
 /* ── VIBEOS_OP_LIST ────────────────────────────────────────────────────
@@ -1083,23 +1121,24 @@ static microkit_msginfo handle_vos_status(void)
  *
  * Returns up to 16 active handles per call starting at offset.
  * ─────────────────────────────────────────────────────────────────────── */
-static microkit_msginfo handle_vos_list(void)
+static uint32_t handle_vos_list(void)
 {
-    uint32_t offset = (uint32_t)microkit_mr_get(1);
+    uint32_t offset = (uint32_t)msg_u32(req, 4);
     uint32_t count  = 0;
     uint32_t seen   = 0;
 
     for (int i = 0; i < MAX_VOS_INSTANCES && count < 16; i++) {
         if (!s_vos[i].active) continue;
         if (seen < offset) { seen++; continue; }
-        microkit_mr_set(2 + count, s_vos[i].handle);
+        rep_u32(rep, (2 + count) * 4, s_vos[i].handle);
         count++;
         seen++;
     }
 
-    microkit_mr_set(0, VIBEOS_OK);
-    microkit_mr_set(1, count);
-    return microkit_msginfo_new(0, 2 + count);
+    rep_u32(rep, 0, VIBEOS_OK);
+    rep_u32(rep, 4, count);
+    rep->length = (2 + count) * 4;
+    return SEL4_ERR_OK;
 }
 
 /* ── VIBEOS_OP_BIND_DEVICE / VIBEOS_OP_UNBIND_DEVICE ──────────────────
@@ -1107,25 +1146,28 @@ static microkit_msginfo handle_vos_list(void)
  * Input:  MR0=op  MR1=handle  MR2=dev_type (exactly one GUEST_DEV_* bit)
  * Output: MR0=vibeos_error_t
  * ─────────────────────────────────────────────────────────────────────── */
-static microkit_msginfo handle_vos_device(uint32_t op)
+static uint32_t handle_vos_device(uint32_t op)
 {
-    uint32_t handle   = (uint32_t)microkit_mr_get(1);
-    uint32_t dev_type = (uint32_t)microkit_mr_get(2);
+    uint32_t handle   = (uint32_t)msg_u32(req, 4);
+    uint32_t dev_type = (uint32_t)msg_u32(req, 8);
 
     int slot = vos_find(handle);
     if (slot < 0) {
-        microkit_mr_set(0, VIBEOS_ERR_NO_HANDLE);
-        return microkit_msginfo_new(0, 1);
+        rep_u32(rep, 0, VIBEOS_ERR_NO_HANDLE);
+        rep->length = 4;
+        return SEL4_ERR_OK;
     }
     /* dev_type must be exactly one bit */
     if (dev_type == 0 || (dev_type & (dev_type - 1)) != 0) {
-        microkit_mr_set(0, VIBEOS_ERR_BAD_TYPE);
-        return microkit_msginfo_new(0, 1);
+        rep_u32(rep, 0, VIBEOS_ERR_BAD_TYPE);
+        rep->length = 4;
+        return SEL4_ERR_OK;
     }
     if (s_vos[slot].state == (uint8_t)VIBEOS_STATE_DEAD ||
         s_vos[slot].state == (uint8_t)VIBEOS_STATE_CREATING) {
-        microkit_mr_set(0, VIBEOS_ERR_WRONG_STATE);
-        return microkit_msginfo_new(0, 1);
+        rep_u32(rep, 0, VIBEOS_ERR_WRONG_STATE);
+        rep->length = 4;
+        return SEL4_ERR_OK;
     }
 
     if (op == VIBEOS_OP_BIND_DEVICE)
@@ -1133,8 +1175,9 @@ static microkit_msginfo handle_vos_device(uint32_t op)
     else
         s_vos[slot].dev_mask &= ~dev_type;
 
-    microkit_mr_set(0, VIBEOS_OK);
-    return microkit_msginfo_new(0, 1);
+    rep_u32(rep, 0, VIBEOS_OK);
+    rep->length = 4;
+        return SEL4_ERR_OK;
 }
 
 /* ── VIBEOS_OP_SNAPSHOT ────────────────────────────────────────────────
@@ -1144,41 +1187,45 @@ static microkit_msginfo handle_vos_device(uint32_t op)
  *
  * Forwards to vm_manager OP_VM_SNAPSHOT.
  * ─────────────────────────────────────────────────────────────────────── */
-static microkit_msginfo handle_vos_snapshot(void)
+static uint32_t handle_vos_snapshot(void)
 {
-    uint32_t handle = (uint32_t)microkit_mr_get(1);
+    uint32_t handle = (uint32_t)msg_u32(req, 4);
     int slot = vos_find(handle);
     if (slot < 0) {
-        microkit_mr_set(0, VIBEOS_ERR_NO_HANDLE);
-        return microkit_msginfo_new(0, 1);
+        rep_u32(rep, 0, VIBEOS_ERR_NO_HANDLE);
+        rep->length = 4;
+        return SEL4_ERR_OK;
     }
     if (s_vos[slot].state != (uint8_t)VIBEOS_STATE_RUNNING &&
         s_vos[slot].state != (uint8_t)VIBEOS_STATE_PAUSED) {
-        microkit_mr_set(0, VIBEOS_ERR_WRONG_STATE);
-        return microkit_msginfo_new(0, 1);
+        rep_u32(rep, 0, VIBEOS_ERR_WRONG_STATE);
+        rep->length = 4;
+        return SEL4_ERR_OK;
     }
 
     s_vos[slot].state = (uint8_t)VIBEOS_STATE_SNAPSHOT;
 
-    microkit_mr_set(0, OP_VM_SNAPSHOT);
-    microkit_mr_set(1, s_vos[slot].vm_slot);
-    (void)microkit_ppcall(CH_VMM, microkit_msginfo_new(OP_VM_SNAPSHOT, 2));
-    uint32_t ok   = (uint32_t)microkit_mr_get(0);
-    uint32_t h_lo = (uint32_t)microkit_mr_get(1);
-    uint32_t h_hi = (uint32_t)microkit_mr_get(2);
+    rep_u32(rep, 0, OP_VM_SNAPSHOT);
+    rep_u32(rep, 4, s_vos[slot].vm_slot);
+    (void)/* E5-S8: ppcall stubbed */
+    uint32_t ok   = (uint32_t)msg_u32(req, 0);
+    uint32_t h_lo = (uint32_t)msg_u32(req, 4);
+    uint32_t h_hi = (uint32_t)msg_u32(req, 8);
 
     s_vos[slot].state = (uint8_t)VIBEOS_STATE_RUNNING;
 
     if (ok != 0) {
-        microkit_mr_set(0, VIBEOS_ERR_NOT_IMPL);
-        return microkit_msginfo_new(0, 1);
+        rep_u32(rep, 0, VIBEOS_ERR_NOT_IMPL);
+        rep->length = 4;
+        return SEL4_ERR_OK;
     }
 
-    microkit_mr_set(0, VIBEOS_OK);
-    microkit_mr_set(1, handle);
-    microkit_mr_set(2, h_lo);
-    microkit_mr_set(3, h_hi);
-    return microkit_msginfo_new(0, 4);
+    rep_u32(rep, 0, VIBEOS_OK);
+    rep_u32(rep, 4, handle);
+    rep_u32(rep, 8, h_lo);
+    rep_u32(rep, 12, h_hi);
+    rep->length = 16;
+        return SEL4_ERR_OK;
 }
 
 /* ── VIBEOS_OP_RESTORE ─────────────────────────────────────────────────
@@ -1186,40 +1233,44 @@ static microkit_msginfo handle_vos_snapshot(void)
  * Input:  MR0=VIBEOS_OP_RESTORE  MR1=handle  MR2=snap_lo  MR3=snap_hi
  * Output: MR0=vibeos_error_t
  * ─────────────────────────────────────────────────────────────────────── */
-static microkit_msginfo handle_vos_restore(void)
+static uint32_t handle_vos_restore(void)
 {
-    uint32_t handle  = (uint32_t)microkit_mr_get(1);
-    uint32_t snap_lo = (uint32_t)microkit_mr_get(2);
-    uint32_t snap_hi = (uint32_t)microkit_mr_get(3);
+    uint32_t handle  = (uint32_t)msg_u32(req, 4);
+    uint32_t snap_lo = (uint32_t)msg_u32(req, 8);
+    uint32_t snap_hi = (uint32_t)msg_u32(req, 12);
 
     int slot = vos_find(handle);
     if (slot < 0) {
-        microkit_mr_set(0, VIBEOS_ERR_NO_HANDLE);
-        return microkit_msginfo_new(0, 1);
+        rep_u32(rep, 0, VIBEOS_ERR_NO_HANDLE);
+        rep->length = 4;
+        return SEL4_ERR_OK;
     }
 
-    microkit_mr_set(0, OP_VM_RESTORE);
-    microkit_mr_set(1, s_vos[slot].vm_slot);
-    microkit_mr_set(2, snap_lo);
-    microkit_mr_set(3, snap_hi);
-    (void)microkit_ppcall(CH_VMM, microkit_msginfo_new(OP_VM_RESTORE, 4));
-    uint32_t ok = (uint32_t)microkit_mr_get(0);
+    rep_u32(rep, 0, OP_VM_RESTORE);
+    rep_u32(rep, 4, s_vos[slot].vm_slot);
+    rep_u32(rep, 8, snap_lo);
+    rep_u32(rep, 12, snap_hi);
+    (void)/* E5-S8: ppcall stubbed */
+    uint32_t ok = (uint32_t)msg_u32(req, 0);
 
     if (ok != 0) {
-        microkit_mr_set(0, VIBEOS_ERR_NOT_IMPL);
-        return microkit_msginfo_new(0, 1);
+        rep_u32(rep, 0, VIBEOS_ERR_NOT_IMPL);
+        rep->length = 4;
+        return SEL4_ERR_OK;
     }
 
     s_vos[slot].state = (uint8_t)VIBEOS_STATE_BOOTING;
-    microkit_mr_set(0, VIBEOS_OK);
-    return microkit_msginfo_new(0, 1);
+    rep_u32(rep, 0, VIBEOS_OK);
+    rep->length = 4;
+        return SEL4_ERR_OK;
 }
 
 /* ── VIBEOS_OP_MIGRATE — Phase 4+ placeholder ──────────────────────── */
-static microkit_msginfo handle_vos_migrate(void)
+static uint32_t handle_vos_migrate(void)
 {
-    microkit_mr_set(0, VIBEOS_ERR_NOT_IMPL);
-    return microkit_msginfo_new(0, 1);
+    rep_u32(rep, 0, VIBEOS_ERR_NOT_IMPL);
+    rep->length = 4;
+        return SEL4_ERR_OK;
 }
 
 /* ── VIBEOS_OP_BOOT ─────────────────────────────────────────────────────
@@ -1231,26 +1282,29 @@ static microkit_msginfo handle_vos_migrate(void)
  * Input:  MR0=MSG_VIBEOS_BOOT  MR1=handle
  * Output: MR0=vibeos_error_t
  * ─────────────────────────────────────────────────────────────────────── */
-static microkit_msginfo handle_vos_boot(void)
+static uint32_t handle_vos_boot(void)
 {
-    uint32_t handle = (uint32_t)microkit_mr_get(1);
+    uint32_t handle = (uint32_t)msg_u32(req, 4);
     int slot = vos_find(handle);
     if (slot < 0) {
-        microkit_mr_set(0, VIBEOS_ERR_NO_HANDLE);
-        return microkit_msginfo_new(0, 1);
+        rep_u32(rep, 0, VIBEOS_ERR_NO_HANDLE);
+        rep->length = 4;
+        return SEL4_ERR_OK;
     }
     if (s_vos[slot].state != (uint8_t)VIBEOS_STATE_CREATING) {
-        microkit_mr_set(0, VIBEOS_ERR_WRONG_STATE);
-        return microkit_msginfo_new(0, 1);
+        rep_u32(rep, 0, VIBEOS_ERR_WRONG_STATE);
+        rep->length = 4;
+        return SEL4_ERR_OK;
     }
 
-    microkit_mr_set(0, OP_VM_START);
-    microkit_mr_set(1, s_vos[slot].vm_slot);
-    (void)microkit_ppcall(CH_VMM, microkit_msginfo_new(OP_VM_START, 2));
+    rep_u32(rep, 0, OP_VM_START);
+    rep_u32(rep, 4, s_vos[slot].vm_slot);
+    (void)/* E5-S8: ppcall stubbed */
 
     s_vos[slot].state = (uint8_t)VIBEOS_STATE_BOOTING;
-    microkit_mr_set(0, VIBEOS_OK);
-    return microkit_msginfo_new(0, 1);
+    rep_u32(rep, 0, VIBEOS_OK);
+    rep->length = 4;
+        return SEL4_ERR_OK;
 }
 
 /* ── VIBEOS_OP_CONFIGURE ───────────────────────────────────────────────
@@ -1265,40 +1319,43 @@ static microkit_msginfo handle_vos_boot(void)
  * Valid in any state except VIBEOS_STATE_DEAD.  Updates local s_vos[]
  * and forwards non-zero fields to vm_manager via OP_VM_CONFIGURE.
  * ─────────────────────────────────────────────────────────────────────── */
-static microkit_msginfo handle_vos_configure(void)
+static uint32_t handle_vos_configure(void)
 {
-    uint32_t handle        = (uint32_t)microkit_mr_get(1);
-    uint32_t new_ram       = (uint32_t)microkit_mr_get(2);
-    uint32_t new_budget_us = (uint32_t)microkit_mr_get(3);
-    uint32_t new_period_us = (uint32_t)microkit_mr_get(4);
+    uint32_t handle        = (uint32_t)msg_u32(req, 4);
+    uint32_t new_ram       = (uint32_t)msg_u32(req, 8);
+    uint32_t new_budget_us = (uint32_t)msg_u32(req, 12);
+    uint32_t new_period_us = (uint32_t)msg_u32(req, 16);
 
     int slot = vos_find(handle);
     if (slot < 0) {
-        microkit_mr_set(0, VIBEOS_ERR_NO_HANDLE);
-        return microkit_msginfo_new(0, 1);
+        rep_u32(rep, 0, VIBEOS_ERR_NO_HANDLE);
+        rep->length = 4;
+        return SEL4_ERR_OK;
     }
     if (s_vos[slot].state == (uint8_t)VIBEOS_STATE_DEAD) {
-        microkit_mr_set(0, VIBEOS_ERR_WRONG_STATE);
-        return microkit_msginfo_new(0, 1);
+        rep_u32(rep, 0, VIBEOS_ERR_WRONG_STATE);
+        rep->length = 4;
+        return SEL4_ERR_OK;
     }
 
     if (new_ram)       s_vos[slot].ram_mb = new_ram;
 
-    microkit_mr_set(0, OP_VM_CONFIGURE);
-    microkit_mr_set(1, s_vos[slot].vm_slot);
-    microkit_mr_set(2, new_ram);
-    microkit_mr_set(3, new_budget_us);
-    microkit_mr_set(4, new_period_us);
-    (void)microkit_ppcall(CH_VMM, microkit_msginfo_new(OP_VM_CONFIGURE, 5));
+    rep_u32(rep, 0, OP_VM_CONFIGURE);
+    rep_u32(rep, 4, s_vos[slot].vm_slot);
+    rep_u32(rep, 8, new_ram);
+    rep_u32(rep, 12, new_budget_us);
+    rep_u32(rep, 16, new_period_us);
+    (void)/* E5-S8: ppcall stubbed */
 
     log_drain_write(7, 7, "[vibe_engine] VOS_CONFIGURE: ok\n");
-    microkit_mr_set(0, VIBEOS_OK);
-    return microkit_msginfo_new(0, 1);
+    rep_u32(rep, 0, VIBEOS_OK);
+    rep->length = 4;
+        return SEL4_ERR_OK;
 }
 
 /* ── Microkit entry points ──────────────────────────────────────────── */
 
-void init(void) {
+static void vibe_engine_pd_init(void) {
     log_drain_write(7, 7, "[vibe_engine] VibeEngine PD starting...\n");
 
     /* Initialize proposal table */
@@ -1373,15 +1430,15 @@ void init(void) {
 }
 
 /* Passive PD — only woken by PPC or notification */
-void notified(microkit_channel ch) {
+static void vibe_engine_pd_notified(uint32_t ch) {
     if (ch == CH_CTRL) {
         log_drain_write(7, 7, "[vibe_engine] Controller ack received\n");
     }
 }
 
-microkit_msginfo protected(microkit_channel ch, microkit_msginfo msg) {
+static uint32_t vibe_engine_pd_dispatch(sel4_badge_t b, const sel4_msg_t *req, sel4_msg_t *rep, void *ctx) {
     (void)msg;  /* Op code is in MR0, not the label */
-    uint32_t op = (uint32_t)microkit_mr_get(0);
+    uint32_t op = (uint32_t)msg_u32(req, 0);
 
     switch (op) {
         /* ── Hot-swap proposal lifecycle ─────────────────────────────── */
@@ -1411,7 +1468,8 @@ microkit_msginfo protected(microkit_channel ch, microkit_msginfo msg) {
 
         default:
             log_drain_write(7, 7, "[vibe_engine] Unknown op\n");
-            microkit_mr_set(0, VIBE_ERR_INTERNAL);
-            return microkit_msginfo_new(0, 1);
+            rep_u32(rep, 0, VIBE_ERR_INTERNAL);
+            rep->length = 4;
+        return SEL4_ERR_OK;
     }
 }

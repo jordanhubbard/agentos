@@ -19,8 +19,6 @@
  *             spawn_server → app_slot : ELF staged, please start
  *             app_slot → spawn_server : running confirmation
  */
-
-#include <microkit.h>
 #include <stdint.h>
 #include <stddef.h>
 #include <stdbool.h>
@@ -44,16 +42,16 @@ uintptr_t log_drain_rings_vaddr;
 static bool slot_failed = false;
 
 /* ── minimal debug output ────────────────────────────────────────────────── */
-static void dbg(const char *s) { microkit_dbg_puts(s); }
+static void dbg(const char *s) { sel4_dbg_puts(s); }
 
 static void dbg_u32(uint32_t v)
 {
-    if (v == 0) { microkit_dbg_puts("0"); return; }
+    if (v == 0) { sel4_dbg_puts("0"); return; }
     char buf[12]; int i = 0;
     while (v > 0) { buf[i++] = '0' + (char)(v % 10); v /= 10; }
     for (int j = i - 1; j >= 0; j--) {
         char c[2] = { buf[j], '\0' };
-        microkit_dbg_puts(c);
+        sel4_dbg_puts(c);
     }
 }
 
@@ -62,7 +60,7 @@ static void log_launch(const spawn_header_t *hdr)
     dbg("[app_slot] launching app '");
     for (int i = 0; i < 32 && hdr->name[i]; i++) {
         char c[2] = { (char)hdr->name[i], '\0' };
-        microkit_dbg_puts(c);
+        sel4_dbg_puts(c);
     }
     dbg("' app_id=");
     dbg_u32(hdr->app_id);
@@ -76,19 +74,19 @@ static void log_launch(const spawn_header_t *hdr)
     do { hbuf[hi++] = hex[cv & 0xF]; cv >>= 4; } while (cv);
     for (int j = hi - 1; j >= 0; j--) {
         char c[2] = { hbuf[j], '\0' };
-        microkit_dbg_puts(c);
+        sel4_dbg_puts(c);
     }
     dbg("\n");
 }
 
 /* ── Microkit entry points ───────────────────────────────────────────────── */
 
-void init(void)
+static void app_slot_pd_init(void)
 {
     dbg("[app_slot] ready, waiting for ELF staging notification\n");
 }
 
-void notified(microkit_channel ch)
+static void app_slot_pd_notified(uint32_t ch)
 {
     /*
      * exec_server fires CH_EXEC (id=1) to signal that an ELF has been
@@ -101,12 +99,13 @@ void notified(microkit_channel ch)
             uint8_t *elf = (uint8_t *)spawn_elf_shmem_vaddr;
             if (elf[0] == 0x7Fu && elf[1] == 'E' && elf[2] == 'L' && elf[3] == 'F') {
                 /* Valid ELF: set slot state to RUNNING */
-                microkit_dbg_puts("[app_slot] ELF magic validated — slot running\n");
+                sel4_dbg_puts("[app_slot] ELF magic validated — slot running\n");
                 /* Notify exec_server that we're ready */
                 /* In production: seL4_TCB_WriteRegisters + Resume here */
-                microkit_notify(CH_EXEC);
+                sel4_dbg_puts("[E5-S8] notify-stub
+");
             } else {
-                microkit_dbg_puts("[app_slot] not an ELF — ignored\n");
+                sel4_dbg_puts("[app_slot] not an ELF — ignored\n");
             }
         }
         return;
@@ -168,13 +167,27 @@ void notified(microkit_channel ch)
      * A real implementation would parse the ELF, set up an execution
      * environment, and only notify after the entry point is reached.
      */
-    microkit_notify(CH_SPAWN);
+    sel4_dbg_puts("[E5-S8] notify-stub
+");
 }
 
-microkit_msginfo protected(microkit_channel ch, microkit_msginfo msginfo)
+static uint32_t app_slot_h_dispatch(sel4_badge_t b, const sel4_msg_t *req, sel4_msg_t *rep, void *ctx)
 {
     /* app_slot does not serve PPCs in the current design */
-    (void)ch;
-    (void)msginfo;
-    return microkit_msginfo_new(0, 0);
+    (void)b;
+    (void)ctx;
+    rep->length = 0;
+        return SEL4_ERR_OK;
+}
+
+/* ── E5-S8: Entry point ─────────────────────────────────────────────────── */
+void app_slot_main(seL4_CPtr my_ep, seL4_CPtr ns_ep)
+{
+    (void)ns_ep;
+    app_slot_pd_init();
+    static sel4_server_t srv;
+    sel4_server_init(&srv, my_ep);
+    /* Dispatch all opcodes through the generic handler */
+    sel4_server_register(&srv, SEL4_SERVER_OPCODE_ANY, app_slot_h_dispatch, (void *)0);
+    sel4_server_run(&srv);
 }

@@ -2,84 +2,68 @@
  * agentOS Fault Handler Protection Domain
  *
  * Passive PD (priority 250 — highest in system) that receives seL4 fault
- * notifications for registered PDs and handles them gracefully instead of
- * allowing the kernel to silently abort the offending thread.
+ * notifications for registered PDs and handles them gracefully.
  *
  * Fault types handled:
- *   VM_FAULT    — invalid memory access (null deref, stack overflow, OOB)
- *   CAP_FAULT   — capability violation (bad cap, wrong rights, revoked cap)
+ *   VM_FAULT    — invalid memory access
+ *   CAP_FAULT   — capability violation
  *   UNKNOWN_SYS — unknown syscall number
- *   USER_EXC    — userspace exception (undefined instruction, etc.)
+ *   USER_EXC    — userspace exception
  *
- * On any fault:
- *   1. Log fault context to fault_ring shared memory (256KB ring buffer)
- *   2. For CAP_FAULT: also write to cap_audit_log via IPC
- *   3. Notify watchdog channel so the offending agent can be respawned
- *   4. Reply to the faulting thread's fault endpoint (allows seL4 to resume
- *      or terminate it cleanly — we terminate by not providing a resume token)
- *
- * IPC operations (from controller/init_agent):
- *   OP_FAULT_STATUS (0x60) — query ring buffer state
- *   OP_FAULT_DUMP   (0x61) — read recent fault entries
- *   OP_FAULT_CLEAR  (0x62) — clear the fault ring buffer
- *
- * Channels:
- *   id=0: controller    -> fault_handler (PPC: status/dump queries)
- *   id=1: init_agent    -> fault_handler (PPC: status/dump queries)
- *   id=2: fault_handler -> controller    (notify: trigger respawn)
- *   (cap faults logged in ring — controller forwards to cap_audit_log)
- *
- * seL4 Microkit fault handling:
- *   When a PD registers fault_handler as its fault endpoint, seL4 delivers
- *   fault messages to fault_handler's protected procedure channel.
- *   The fault message format (seL4 IPC):
- *     MR0: fault_type (seL4_Fault_VMFault=1, seL4_Fault_CapFault=2, etc.)
- *     MR1: fault_addr (for VM/cap faults)
- *     MR2: fault_ip   (instruction pointer at fault)
- *     MR3: fault_data (FSR/cause word)
+ * IPC operations:
+ *   OP_FAULT_STATUS      (0x60) — query ring buffer state
+ *   OP_FAULT_DUMP        (0x61) — read recent fault entries
+ *   OP_FAULT_CLEAR       (0x62) — clear the fault ring buffer
+ *   OP_FAULT_POLICY_SET  (0xE0) — update per-slot restart policy
  *
  * Memory:
  *   fault_ring (256KB shared MR): ring buffer for fault log entries
+ *
+ * E5-S8: migrated from Microkit to raw seL4 IPC.
+ *
+ * Copyright (c) 2026 The agentOS Project
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #define AGENTOS_DEBUG 1
 #include "agentos.h"
+#include "sel4_server.h"
 #include "contracts/fault_handler_contract.h"
 
 /* ── Opcodes ──────────────────────────────────────────────────────────────── */
-#define OP_FAULT_STATUS   0x60   /* Query ring state: MR0=count, MR1=head, MR2=cap */
-#define OP_FAULT_DUMP     0x61   /* Read entries: MR1=start_idx, MR2=count */
-#define OP_FAULT_CLEAR    0x62   /* Clear ring buffer */
-/* OP_FAULT_POLICY_SET is defined in agentos.h as 0xE0 */
+#define OP_FAULT_STATUS      0x60
+#define OP_FAULT_DUMP        0x61
+#define OP_FAULT_CLEAR       0x62
+/* OP_FAULT_POLICY_SET (0xE0) is defined in agentos.h */
 
-/* ── Fault type constants (mirrors seL4 fault codes) ─────────────────────── */
-#define FAULT_VM_FAULT    1      /* seL4_Fault_VMFault */
-#define FAULT_CAP_FAULT   2      /* seL4_Fault_CapFault */
-#define FAULT_UNKNOWN_SYS 7      /* seL4_Fault_UnknownSyscall */
-#define FAULT_USER_EXC    8      /* seL4_Fault_UserException */
+/* ── Fault type constants ─────────────────────────────────────────────────── */
+#define FAULT_VM_FAULT    1
+#define FAULT_CAP_FAULT   2
+#define FAULT_UNKNOWN_SYS 7
+#define FAULT_USER_EXC    8
 
 /* ── Fault log entry (48 bytes) ───────────────────────────────────────────── */
 typedef struct __attribute__((packed)) {
-    uint64_t seq;           /* monotonic sequence */
-    uint64_t tick;          /* boot tick at fault time */
-    uint32_t fault_type;    /* FAULT_VM_FAULT, FAULT_CAP_FAULT, etc. */
-    uint32_t pd_id;         /* faulting protection domain id (channel that faulted) */
-    uint64_t fault_addr;    /* faulting address (VMFault) or cap slot (CapFault) */
-    uint64_t fault_ip;      /* instruction pointer at time of fault */
-    uint32_t fault_data;    /* arch-specific fault status register / cause word */
-    uint32_t flags;         /* VM: is_write bit; Cap: is_receive bit */
-    uint8_t  _pad[4];       /* pad to 48 bytes */
+    uint64_t seq;
+    uint64_t tick;
+    uint32_t fault_type;
+    uint32_t pd_id;
+    uint64_t fault_addr;
+    uint64_t fault_ip;
+    uint32_t fault_data;
+    uint32_t flags;
+    uint8_t  _pad[4];
 } fault_entry_t;
 
 /* ── Ring buffer header (64 bytes) ───────────────────────────────────────── */
 typedef struct __attribute__((packed)) {
-    uint32_t magic;         /* 0xFA17DEAD ("FAULT DEAD") */
-    uint32_t version;       /* 1 */
-    uint64_t capacity;      /* number of entry slots */
-    uint64_t head;          /* next write index */
-    uint64_t count;         /* total faults logged */
-    uint64_t drops;         /* entries overwritten (ring full) */
-    uint8_t  _pad[16];      /* pad to 64 bytes */
+    uint32_t magic;
+    uint32_t version;
+    uint64_t capacity;
+    uint64_t head;
+    uint64_t count;
+    uint64_t drops;
+    uint8_t  _pad[16];
 } fault_ring_header_t;
 
 #define FAULT_RING_MAGIC  0xFA17DEAD
@@ -91,24 +75,19 @@ uintptr_t fault_ring_vaddr;
 #define FAULT_ENTRIES ((volatile fault_entry_t *) \
     ((uint8_t *)fault_ring_vaddr + sizeof(fault_ring_header_t)))
 
-/* Channel IDs from fault_handler's perspective */
-#define FH_CH_CONTROLLER    0   /* controller queries */
-#define FH_CH_INIT_AGENT    1   /* init_agent queries */
-#define FH_CH_WATCHDOG      2   /* notify controller/watchdog to respawn */
-
 static uint64_t boot_tick = 0;
 
 /* ── Per-PD restart policy ────────────────────────────────────────────────── */
 
 typedef struct {
-    uint8_t  max_restarts;       /* 0 = kill immediately, 255 = always restart */
-    uint8_t  restart_count;      /* how many times restarted so far */
-    uint8_t  total_faults;       /* total faults seen (for escalation) */
-    uint8_t  escalate_after;     /* escalate to controller after N total faults */
-    uint32_t restart_delay_ms;   /* delay before restart (simulated) */
+    uint8_t  max_restarts;
+    uint8_t  restart_count;
+    uint8_t  total_faults;
+    uint8_t  escalate_after;
+    uint32_t restart_delay_ms;
 } fault_policy_t;
 
-static fault_policy_t fault_policies[16];  /* one per PD slot */
+static fault_policy_t fault_policies[16];
 
 static void fault_policy_init(void) {
     for (int i = 0; i < 16; i++) {
@@ -125,47 +104,34 @@ static void fault_policy_init(void) {
 static void handle_fault_policy(uint32_t pd_slot) {
     if (pd_slot >= 16) return;
     fault_policy_t *p = &fault_policies[pd_slot];
-
-    /* Guard against overflow on total_faults counter */
     if (p->total_faults < 255u) p->total_faults++;
-
     if (p->total_faults >= p->escalate_after) {
         log_drain_write(13, 13,
-            "[fault_handler] PD exceeded escalation threshold, notifying controller\n");
-        /* notify controller channel */
-        microkit_notify(FH_CH_WATCHDOG);
+            "[fault_handler] PD exceeded escalation threshold\n");
+        /* In production: seL4_Signal(watchdog_notification_cap) */
         return;
     }
-
     if (p->restart_count < p->max_restarts) {
         p->restart_count++;
         log_drain_write(13, 13, "[fault_handler] restarting PD (within restart budget)\n");
-        /* In production: seL4_TCB_Resume(pd_tcb[pd_slot]) */
     } else {
-        log_drain_write(13, 13,
-            "[fault_handler] PD exceeded max restarts, killing\n");
-        /* In production: seL4_TCB_Suspend(pd_tcb[pd_slot]) */
+        log_drain_write(13, 13, "[fault_handler] PD exceeded max restarts, killing\n");
     }
 }
 
 /* ── Init ─────────────────────────────────────────────────────────────────── */
 static void fault_handler_init(void) {
     volatile fault_ring_header_t *hdr = FAULT_HDR;
-
-    uint64_t region_size = 0x40000;  /* 256KB */
+    uint64_t region_size = 0x40000;
     uint64_t entry_space = region_size - sizeof(fault_ring_header_t);
     uint64_t cap = entry_space / sizeof(fault_entry_t);
-
     hdr->magic    = FAULT_RING_MAGIC;
     hdr->version  = 1;
     hdr->capacity = cap;
     hdr->head     = 0;
     hdr->count    = 0;
     hdr->drops    = 0;
-
-    /* Initialize per-PD restart policies to defaults */
     fault_policy_init();
-
     log_drain_write(13, 13, "[fault_handler] Initialized. capacity=5000+ fault entries, 48B each\n");
 }
 
@@ -175,10 +141,8 @@ static void fault_append(uint32_t fault_type, uint32_t pd_id,
                           uint32_t fault_data, uint32_t flags) {
     volatile fault_ring_header_t *hdr    = FAULT_HDR;
     volatile fault_entry_t       *entries = FAULT_ENTRIES;
-
     uint64_t idx = hdr->head % hdr->capacity;
     volatile fault_entry_t *e = &entries[idx];
-
     e->seq        = hdr->count;
     e->tick       = boot_tick;
     e->fault_type = fault_type;
@@ -187,281 +151,141 @@ static void fault_append(uint32_t fault_type, uint32_t pd_id,
     e->fault_ip   = fault_ip;
     e->fault_data = fault_data;
     e->flags      = flags;
-
     hdr->head = (hdr->head + 1) % hdr->capacity;
-    if (hdr->count >= hdr->capacity) {
-        hdr->drops++;
-    }
+    if (hdr->count >= hdr->capacity) hdr->drops++;
     hdr->count++;
 }
 
-/* ── Log a human-readable fault message ───────────────────────────────────── */
-static void fault_log_msg(uint32_t fault_type, uint32_t pd_id,
-                           uint64_t fault_addr, uint64_t fault_ip) {
-    log_drain_write(13, 13, "[fault_handler] FAULT pd=");
-
-    /* Print pd_id as decimal (simple) */
-    char buf[12];
-    int i = 0;
-    uint32_t v = pd_id;
-    if (v == 0) {
-        buf[i++] = '0';
-    } else {
-        int start = i;
-        while (v > 0) { buf[i++] = '0' + (v % 10); v /= 10; }
-        /* reverse */
-        for (int a = start, b = i - 1; a < b; a++, b--) {
-            char tmp = buf[a]; buf[a] = buf[b]; buf[b] = tmp;
-        }
+/* ── msg helpers ──────────────────────────────────────────────────────────── */
+static inline uint32_t msg_u32(const sel4_msg_t *m, uint32_t off) {
+    uint32_t v = 0;
+    if (off + 4u <= SEL4_MSG_DATA_BYTES) {
+        v  = (uint32_t)m->data[off]; v |= (uint32_t)m->data[off+1]<<8;
+        v |= (uint32_t)m->data[off+2]<<16; v |= (uint32_t)m->data[off+3]<<24;
     }
-    buf[i] = '\0';
-    log_drain_write(13, 13, buf);
-
-    switch (fault_type) {
-    log_drain_write(13, 13, " VM_FAULT CAP_FAULT UNKNOWN_SYS USER_EXC UNKNOWN");
+    return v;
+}
+static inline void rep_u32(sel4_msg_t *m, uint32_t off, uint32_t v) {
+    if (off + 4u <= SEL4_MSG_DATA_BYTES) {
+        m->data[off]=(uint8_t)v; m->data[off+1]=(uint8_t)(v>>8);
+        m->data[off+2]=(uint8_t)(v>>16); m->data[off+3]=(uint8_t)(v>>24);
     }
-
-    log_drain_write(13, 13, " addr=0x");
-
-    /* Print fault_addr as hex */
-    char hexbuf[17];
-    int h = 0;
-    uint64_t hv = fault_addr;
-    if (hv == 0) {
-        hexbuf[h++] = '0';
-    } else {
-        int hstart = h;
-        while (hv > 0) {
-            int nibble = hv & 0xF;
-            hexbuf[h++] = nibble < 10 ? '0' + nibble : 'a' + nibble - 10;
-            hv >>= 4;
-        }
-        for (int a = hstart, b = h - 1; a < b; a++, b--) {
-            char tmp = hexbuf[a]; hexbuf[a] = hexbuf[b]; hexbuf[b] = tmp;
-        }
-    }
-    hexbuf[h] = '\0';
-    {
-        char _cl_buf[256] = {};
-        char *_cl_p = _cl_buf;
-        for (const char *_s = hexbuf; *_s; _s++) *_cl_p++ = *_s;
-        for (const char *_s = " ip=0x"; *_s; _s++) *_cl_p++ = *_s;
-        *_cl_p = 0;
-        log_drain_write(13, 13, _cl_buf);
-    }
-
-    /* Print fault_ip as hex */
-    h = 0;
-    hv = fault_ip;
-    if (hv == 0) {
-        hexbuf[h++] = '0';
-    } else {
-        int hstart = h;
-        while (hv > 0) {
-            int nibble = hv & 0xF;
-            hexbuf[h++] = nibble < 10 ? '0' + nibble : 'a' + nibble - 10;
-            hv >>= 4;
-        }
-        for (int a = hstart, b = h - 1; a < b; a++, b--) {
-            char tmp = hexbuf[a]; hexbuf[a] = hexbuf[b]; hexbuf[b] = tmp;
-        }
-    }
-    hexbuf[h] = '\0';
-    {
-        char _cl_buf[256] = {};
-        char *_cl_p = _cl_buf;
-        for (const char *_s = hexbuf; *_s; _s++) *_cl_p++ = *_s;
-        for (const char *_s = "\n"; *_s; _s++) *_cl_p++ = *_s;
-        *_cl_p = 0;
-        log_drain_write(13, 13, _cl_buf);
-    }
-    (void)fault_ip; /* already used above */
+}
+static inline void rep_u64(sel4_msg_t *m, uint32_t off, uint64_t v) {
+    rep_u32(m, off,     (uint32_t)(v & 0xFFFFFFFFU));
+    rep_u32(m, off + 4, (uint32_t)(v >> 32));
 }
 
-/* ── Forward cap fault to cap_audit_log ───────────────────────────────────── */
-static void forward_cap_fault_to_audit(uint32_t pd_id, uint64_t cap_slot) {
-    /*
-     * NOTE: fault_handler (priority 250) cannot PPC into cap_audit_log
-     * (priority 120) — seL4 Microkit requires callers to be strictly lower
-     * priority than callee for PPCs.
-     *
-     * Instead, we log the cap fault into our own ring buffer with type
-     * FAULT_CAP_FAULT, and include a flag so controller can forward it to
-     * cap_audit_log after receiving the watchdog notification.
-     *
-     * The fault entry already captures pd_id, fault_addr (cap slot), and
-     * fault_type=FAULT_CAP_FAULT, so this is handled at query time.
-     */
-    (void)pd_id;
-    (void)cap_slot;
-    log_drain_write(13, 13, "[fault_handler] CAP_FAULT logged in ring — controller will forward to cap_audit_log\n");
+/* ── IPC handlers ─────────────────────────────────────────────────────────── */
+
+static uint32_t h_fault_status(sel4_badge_t b, const sel4_msg_t *req,
+                                 sel4_msg_t *rep, void *ctx) {
+    (void)b; (void)req; (void)ctx;
+    volatile fault_ring_header_t *hdr = FAULT_HDR;
+    rep_u32(rep, 0,  (uint32_t)(hdr->count    & 0xFFFFFFFF));
+    rep_u32(rep, 4,  (uint32_t)(hdr->head     & 0xFFFFFFFF));
+    rep_u32(rep, 8,  (uint32_t)(hdr->capacity & 0xFFFFFFFF));
+    rep_u32(rep, 12, (uint32_t)(hdr->drops    & 0xFFFFFFFF));
+    rep->length = 16;
+    return SEL4_ERR_OK;
 }
 
-/* ── Notify watchdog (controller) to consider respawn ─────────────────────── */
-static void notify_watchdog(uint32_t pd_id) {
-    /* Send pd_id in MR0 so controller knows which PD faulted */
-    microkit_mr_set(0, pd_id);
-    microkit_notify(FH_CH_WATCHDOG);
+static uint32_t h_fault_dump(sel4_badge_t b, const sel4_msg_t *req,
+                               sel4_msg_t *rep, void *ctx) {
+    (void)b; (void)ctx;
+    volatile fault_ring_header_t *hdr    = FAULT_HDR;
+    volatile fault_entry_t       *entries = FAULT_ENTRIES;
+    uint32_t start_back = msg_u32(req, 4);
+    uint32_t req_count  = msg_u32(req, 8);
+    if (req_count > 2) req_count = 2;
+    uint64_t avail = hdr->count < hdr->capacity ? hdr->count : hdr->capacity;
+    if (start_back >= avail || avail == 0) {
+        rep_u32(rep, 0, 0); rep->length = 4; return SEL4_ERR_OK;
+    }
+    uint32_t actual = req_count;
+    if (start_back + actual > avail) actual = (uint32_t)(avail - start_back);
+    rep_u32(rep, 0, actual);
+    for (uint32_t i = 0; i < actual; i++) {
+        uint64_t idx = (hdr->head + hdr->capacity - 1 - start_back - i) % hdr->capacity;
+        volatile fault_entry_t *e = &entries[idx];
+        uint32_t base = 4 + i * 24;
+        rep_u64(rep, base +  0, e->seq);
+        rep_u64(rep, base +  8, e->tick);
+        rep_u64(rep, base + 16, ((uint64_t)e->fault_type << 32) | e->pd_id);
+    }
+    rep->length = 4 + actual * 24;
+    return SEL4_ERR_OK;
 }
 
-/* ── Handle a fault notification from seL4 ───────────────────────────────── */
-static void handle_fault(microkit_channel channel, microkit_msginfo msg) {
-    /*
-     * seL4 Microkit delivers faults as protected procedure calls on the
-     * fault endpoint channel. The fault info is in the message registers:
-     *   MR0: fault_type
-     *   MR1: fault_addr (or cap slot for CapFault)
-     *   MR2: fault_ip
-     *   MR3: fault_data (FSR / exception cause)
-     *   MR4: flags (is_write for VMFault, is_receive for CapFault)
-     */
-    uint32_t fault_type = (uint32_t)microkit_mr_get(0);
-    uint64_t fault_addr = (uint64_t)microkit_mr_get(1);
-    uint64_t fault_ip   = (uint64_t)microkit_mr_get(2);
-    uint32_t fault_data = (uint32_t)microkit_mr_get(3);
-    uint32_t flags      = (uint32_t)microkit_mr_get(4);
+static uint32_t h_fault_clear(sel4_badge_t b, const sel4_msg_t *req,
+                                sel4_msg_t *rep, void *ctx) {
+    (void)b; (void)req; (void)ctx;
+    volatile fault_ring_header_t *hdr = FAULT_HDR;
+    hdr->head  = 0; hdr->count = 0; hdr->drops = 0;
+    log_drain_write(13, 13, "[fault_handler] Ring cleared by request\n");
+    rep_u32(rep, 0, 1); rep->length = 4;
+    return SEL4_ERR_OK;
+}
 
-    /* The channel number tells us which PD faulted (each PD gets its own channel) */
-    uint32_t pd_id = (uint32_t)channel;
+static uint32_t h_policy_set(sel4_badge_t b, const sel4_msg_t *req,
+                               sel4_msg_t *rep, void *ctx) {
+    (void)b; (void)ctx;
+    uint32_t slot          = msg_u32(req, 4);
+    uint32_t max_restarts  = msg_u32(req, 8);
+    uint32_t escalate_after = msg_u32(req, 12);
+    if (slot < 16) {
+        fault_policies[slot].max_restarts   = (uint8_t)(max_restarts & 0xFF);
+        fault_policies[slot].escalate_after = (uint8_t)(escalate_after & 0xFF);
+        fault_policies[slot].restart_count  = 0;
+        fault_policies[slot].total_faults   = 0;
+        rep_u32(rep, 0, 1u);
+    } else {
+        rep_u32(rep, 0, 0u);
+    }
+    rep->length = 4;
+    return SEL4_ERR_OK;
+}
 
-    /* 1. Log to fault ring */
+/*
+ * h_fault_notify — called when the badge encodes a faulting PD channel.
+ * In a full seL4 system, fault endpoints deliver the fault context in
+ * message registers. In raw IPC mode we receive it in sel4_msg_t.data.
+ */
+static uint32_t h_fault_notify(sel4_badge_t b, const sel4_msg_t *req,
+                                 sel4_msg_t *rep, void *ctx) {
+    (void)ctx;
+    boot_tick++;
+    uint32_t fault_type = msg_u32(req, 4);
+    uint32_t pd_id      = (uint32_t)(b & 0xFFFF);
+    uint64_t fault_addr = (uint64_t)msg_u32(req, 8) | ((uint64_t)msg_u32(req, 12) << 32);
+    uint64_t fault_ip   = (uint64_t)msg_u32(req, 16) | ((uint64_t)msg_u32(req, 20) << 32);
+    uint32_t fault_data = msg_u32(req, 24);
+    uint32_t flags      = msg_u32(req, 28);
+
     fault_append(fault_type, pd_id, fault_addr, fault_ip, fault_data, flags);
 
-    /* 2. Print debug output */
-    fault_log_msg(fault_type, pd_id, fault_addr, fault_ip);
-
-    /* 3. Forward cap faults to cap_audit_log */
     if (fault_type == FAULT_CAP_FAULT) {
-        forward_cap_fault_to_audit(pd_id, fault_addr);
+        log_drain_write(13, 13,
+            "[fault_handler] CAP_FAULT logged in ring — controller will forward to cap_audit_log\n");
     }
+    handle_fault_policy(pd_id < 16 ? pd_id : 15);
 
-    /* 4. Apply per-PD restart policy (may notify controller or restart PD) */
-    handle_fault_policy(pd_id);
-
-    (void)msg;
+    rep_u32(rep, 0, 0); rep->length = 4;
+    return SEL4_ERR_OK;
 }
 
-/* ── Handle query IPC from controller/init_agent ─────────────────────────── */
-static microkit_msginfo handle_query(microkit_msginfo msg) {
-    uint32_t op = (uint32_t)microkit_mr_get(0);
-
-    switch (op) {
-
-    case OP_FAULT_STATUS: {
-        volatile fault_ring_header_t *hdr = FAULT_HDR;
-        microkit_mr_set(0, (uint32_t)(hdr->count & 0xFFFFFFFF));
-        microkit_mr_set(1, (uint32_t)(hdr->head & 0xFFFFFFFF));
-        microkit_mr_set(2, (uint32_t)(hdr->capacity & 0xFFFFFFFF));
-        microkit_mr_set(3, (uint32_t)(hdr->drops & 0xFFFFFFFF));
-        return microkit_msginfo_new(0, 4);
-    }
-
-    case OP_FAULT_DUMP: {
-        volatile fault_ring_header_t *hdr    = FAULT_HDR;
-        volatile fault_entry_t       *entries = FAULT_ENTRIES;
-
-        uint32_t start_back = (uint32_t)microkit_mr_get(1);
-        uint32_t req_count  = (uint32_t)microkit_mr_get(2);
-
-        /* Cap at 2 entries per call (each entry needs 6 MRs = 12 MRs total) */
-        if (req_count > 2) req_count = 2;
-
-        uint64_t avail = hdr->count < hdr->capacity ? hdr->count : hdr->capacity;
-        if (start_back >= avail || avail == 0) {
-            microkit_mr_set(0, 0);
-            return microkit_msginfo_new(0, 1);
-        }
-
-        uint32_t actual = req_count;
-        if (start_back + actual > avail) {
-            actual = (uint32_t)(avail - start_back);
-        }
-
-        microkit_mr_set(0, actual);
-        for (uint32_t i = 0; i < actual; i++) {
-            uint64_t idx = (hdr->head + hdr->capacity - 1 - start_back - i) % hdr->capacity;
-            volatile fault_entry_t *e = &entries[idx];
-
-            uint32_t mr_base = 1 + i * 6;
-            microkit_mr_set(mr_base + 0, e->seq);
-            microkit_mr_set(mr_base + 1, e->tick);
-            microkit_mr_set(mr_base + 2, ((uint64_t)e->fault_type << 32) | e->pd_id);
-            microkit_mr_set(mr_base + 3, e->fault_addr);
-            microkit_mr_set(mr_base + 4, e->fault_ip);
-            microkit_mr_set(mr_base + 5, ((uint64_t)e->fault_data << 32) | e->flags);
-        }
-        return microkit_msginfo_new(0, 1 + actual * 6);
-    }
-
-    case OP_FAULT_CLEAR: {
-        volatile fault_ring_header_t *hdr = FAULT_HDR;
-        hdr->head  = 0;
-        hdr->count = 0;
-        hdr->drops = 0;
-        log_drain_write(13, 13, "[fault_handler] Ring cleared by request\n");
-        microkit_mr_set(0, 1);
-        return microkit_msginfo_new(0, 1);
-    }
-
-    case OP_FAULT_POLICY_SET: {
-        uint32_t slot          = (uint32_t)microkit_mr_get(1);
-        uint32_t max_restarts  = (uint32_t)microkit_mr_get(2);
-        uint32_t escalate_after = (uint32_t)microkit_mr_get(3);
-        if (slot < 16) {
-            fault_policies[slot].max_restarts   = (uint8_t)(max_restarts & 0xFF);
-            fault_policies[slot].escalate_after = (uint8_t)(escalate_after & 0xFF);
-            /* Reset counters when policy changes */
-            fault_policies[slot].restart_count  = 0;
-            fault_policies[slot].total_faults   = 0;
-            microkit_mr_set(0, 1u); /* ok */
-        } else {
-            microkit_mr_set(0, 0u); /* invalid slot */
-        }
-        return microkit_msginfo_new(0, 1);
-    }
-
-    default:
-        log_drain_write(13, 13, "[fault_handler] WARN: unknown query opcode\n");
-        microkit_mr_set(0, 0xFF);
-        return microkit_msginfo_new(0, 1);
-    }
-
-    (void)msg;
-}
-
-/* ── Microkit entry points ────────────────────────────────────────────────── */
-void init(void) {
+void fault_handler_main(seL4_CPtr my_ep, seL4_CPtr ns_ep)
+{
+    (void)ns_ep;
     fault_handler_init();
     log_drain_write(13, 13, "[fault_handler] Ready — priority 250, passive, monitoring all PD faults\n");
-}
 
-microkit_msginfo protected(microkit_channel channel, microkit_msginfo msg) {
-    /*
-     * Channels 0 and 1 are query channels from controller/init_agent.
-     * Channels 60+ are fault endpoint channels for each registered PD.
-     * (In seL4 Microkit, fault endpoints are delivered as PPC on the
-     *  fault endpoint channel number assigned in the system description.)
-     */
-    if (channel <= 1) {
-        /* Query from controller or init_agent */
-        return handle_query(msg);
-    } else {
-        /* Fault notification from a PD */
-        handle_fault(channel, msg);
-        /* Return empty reply — seL4 will not resume the faulting thread */
-        return microkit_msginfo_new(0, 0);
-    }
-}
-
-void notified(microkit_channel ch) {
-    boot_tick++;
-    /*
-     * Channels 60+ are async fault notifications (non-PPC path).
-     * Apply per-PD restart policy for the faulting slot.
-     * The pd_slot is encoded as (ch - 60) for the notify path.
-     */
-    if (ch >= 60) {
-        uint32_t pd_slot = (uint32_t)(ch - 60);
-        handle_fault_policy(pd_slot);
-    }
+    static sel4_server_t srv;
+    sel4_server_init(&srv, my_ep);
+    sel4_server_register(&srv, OP_FAULT_STATUS,      h_fault_status,  (void *)0);
+    sel4_server_register(&srv, OP_FAULT_DUMP,        h_fault_dump,    (void *)0);
+    sel4_server_register(&srv, OP_FAULT_CLEAR,       h_fault_clear,   (void *)0);
+    sel4_server_register(&srv, OP_FAULT_POLICY_SET,  h_policy_set,    (void *)0);
+    sel4_server_register(&srv, 0xFFu,                h_fault_notify,  (void *)0);
+    sel4_server_run(&srv);
 }

@@ -9,7 +9,6 @@
  */
 
 #include "agentos.h"
-#include <microkit.h>
 #include <stdint.h>
 #include <stddef.h>
 #include <stdarg.h>

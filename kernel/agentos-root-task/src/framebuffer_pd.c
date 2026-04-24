@@ -47,6 +47,7 @@
 
 #define AGENTOS_DEBUG 1
 #include "agentos.h"
+#include "sel4_server.h"
 #include "contracts/framebuffer_contract.h"
 #include "contracts/cc_contract.h"
 #include "gpu_sched.h"
@@ -144,7 +145,7 @@ static bool         eventbus_connected = false;
 
 typedef struct {
     bool             active;
-    microkit_channel ch;      /* calling channel that registered this subscriber */
+    uint32_t ch;      /* calling channel that registered this subscriber */
     uint32_t         handle;  /* framebuffer handle the subscriber is attached to */
 } fb_remote_sub_t;
 
@@ -198,15 +199,15 @@ static void probe_hw_direct(void)
             fb_mmio_write32(virtio_gpu_mmio_vaddr, VIRTIO_MMIO_STATUS,
                             VIRTIO_STATUS_ACKNOWLEDGE | VIRTIO_STATUS_DRIVER);
             hw_mode = HW_MODE_VIRTIO_GPU;
-            microkit_dbg_puts("[framebuffer_pd] HW_DIRECT: virtio-gpu detected (QEMU path)\n");
+            sel4_dbg_puts("[framebuffer_pd] HW_DIRECT: virtio-gpu detected (QEMU path)\n");
             return;
         }
-        microkit_dbg_puts("[framebuffer_pd] HW_DIRECT: virtio-gpu not at MMIO, trying gpu_sched\n");
+        sel4_dbg_puts("[framebuffer_pd] HW_DIRECT: virtio-gpu not at MMIO, trying gpu_sched\n");
     }
 
     /* No virtio-gpu detected — assume real GPU via gpu_sched (Sparky GB10/NUC) */
     hw_mode = HW_MODE_GPU_SCHED;
-    microkit_dbg_puts("[framebuffer_pd] HW_DIRECT: gpu_sched path active (Sparky/NUC)\n");
+    sel4_dbg_puts("[framebuffer_pd] HW_DIRECT: gpu_sched path active (Sparky/NUC)\n");
 }
 
 /* ─── Surface allocation helpers ────────────────────────────────────────── */
@@ -244,27 +245,27 @@ static void publish_frame_ready(uint32_t handle, uint32_t frame_seq,
     if (!eventbus_connected)
         return;
 
-    microkit_mr_set(0, (uint64_t)MSG_EVENT_PUBLISH);
-    microkit_mr_set(1, (uint64_t)EVENT_FB_FRAME_READY);
-    microkit_mr_set(2, (uint64_t)handle);
-    microkit_mr_set(3, (uint64_t)frame_seq);
-    microkit_mr_set(4, (uint64_t)backend);
-    microkit_ppcall(CH_FB_EVENTBUS, microkit_msginfo_new(MSG_EVENT_PUBLISH, 5));
+    rep_u32(rep, 0, (uint64_t)MSG_EVENT_PUBLISH);
+    rep_u32(rep, 4, (uint64_t)EVENT_FB_FRAME_READY);
+    rep_u32(rep, 8, (uint64_t)handle);
+    rep_u32(rep, 12, (uint64_t)frame_seq);
+    rep_u32(rep, 16, (uint64_t)backend);
+    /* E5-S8: ppcall stubbed */
 }
 
 /* ─── IPC handlers ───────────────────────────────────────────────────────── */
 
-static void handle_remote_attach(microkit_channel ch)
+static void handle_remote_attach(uint32_t ch)
 {
-    uint32_t handle = (uint32_t)microkit_mr_get(1);
+    uint32_t handle = (uint32_t)msg_u32(req, 4);
 
     fb_surface_t *s = surface_find(handle);
     if (!s) {
-        microkit_mr_set(0, FB_ERR_BAD_HANDLE);
+        rep_u32(rep, 0, FB_ERR_BAD_HANDLE);
         return;
     }
     if (s->backend != FB_BACKEND_REMOTE_API) {
-        microkit_mr_set(0, FB_ERR_BAD_BACKEND);
+        rep_u32(rep, 0, FB_ERR_BAD_BACKEND);
         return;
     }
 
@@ -274,19 +275,19 @@ static void handle_remote_attach(microkit_channel ch)
             remote_subs[i].active = true;
             remote_subs[i].ch     = ch;
             remote_subs[i].handle = handle;
-            microkit_mr_set(0, FB_OK);
+            rep_u32(rep, 0, FB_OK);
             return;
         }
     }
 
-    microkit_mr_set(0, FB_ERR_NO_SLOTS);
+    rep_u32(rep, 0, FB_ERR_NO_SLOTS);
 }
 
 static void handle_create(void)
 {
     if (!fb_shmem_vaddr) {
-        microkit_mr_set(0, FB_ERR_NO_SHMEM);
-        microkit_mr_set(1, FB_HANDLE_INVALID);
+        rep_u32(rep, 0, FB_ERR_NO_SHMEM);
+        rep_u32(rep, 4, FB_HANDLE_INVALID);
         return;
     }
 
@@ -294,15 +295,15 @@ static void handle_create(void)
 
     uint32_t bpp = fmt_bpp(req->format);
     if (bpp == 0) {
-        microkit_mr_set(0, FB_ERR_BAD_FORMAT);
-        microkit_mr_set(1, FB_HANDLE_INVALID);
+        rep_u32(rep, 0, FB_ERR_BAD_FORMAT);
+        rep_u32(rep, 4, FB_HANDLE_INVALID);
         return;
     }
 
     if (req->width == 0 || req->height == 0 ||
         req->width > FB_MAX_WIDTH || req->height > FB_MAX_HEIGHT) {
-        microkit_mr_set(0, FB_ERR_BAD_DIMS);
-        microkit_mr_set(1, FB_HANDLE_INVALID);
+        rep_u32(rep, 0, FB_ERR_BAD_DIMS);
+        rep_u32(rep, 4, FB_HANDLE_INVALID);
         return;
     }
 
@@ -317,15 +318,15 @@ static void handle_create(void)
     uint32_t aligned_size = (buf_size + 63u) & ~63u;
 
     if (shmem_used + aligned_size > FB_SHMEM_SIZE) {
-        microkit_mr_set(0, FB_ERR_NO_SLOTS);
-        microkit_mr_set(1, FB_HANDLE_INVALID);
+        rep_u32(rep, 0, FB_ERR_NO_SLOTS);
+        rep_u32(rep, 4, FB_HANDLE_INVALID);
         return;
     }
 
     fb_surface_t *s = surface_alloc();
     if (!s) {
-        microkit_mr_set(0, FB_ERR_NO_SLOTS);
-        microkit_mr_set(1, FB_HANDLE_INVALID);
+        rep_u32(rep, 0, FB_ERR_NO_SLOTS);
+        rep_u32(rep, 4, FB_HANDLE_INVALID);
         return;
     }
 
@@ -352,14 +353,14 @@ static void handle_create(void)
     rep->buf_size       = s->buf_size;
     rep->shmem_offset   = s->shmem_offset;
 
-    microkit_mr_set(0, FB_OK);
-    microkit_mr_set(1, s->handle);
+    rep_u32(rep, 0, FB_OK);
+    rep_u32(rep, 4, s->handle);
 }
 
 static void handle_write(void)
 {
     if (!fb_shmem_vaddr) {
-        microkit_mr_set(0, FB_ERR_NO_SHMEM);
+        rep_u32(rep, 0, FB_ERR_NO_SHMEM);
         return;
     }
 
@@ -367,14 +368,14 @@ static void handle_write(void)
 
     fb_surface_t *s = surface_find(req->fb_handle);
     if (!s) {
-        microkit_mr_set(0, FB_ERR_BAD_HANDLE);
+        rep_u32(rep, 0, FB_ERR_BAD_HANDLE);
         return;
     }
 
     /* Validate destination rectangle */
     if (req->x + req->w > s->width || req->y + req->h > s->height ||
         req->w == 0 || req->h == 0) {
-        microkit_mr_set(0, FB_ERR_BAD_RECT);
+        rep_u32(rep, 0, FB_ERR_BAD_RECT);
         return;
     }
 
@@ -385,24 +386,24 @@ static void handle_write(void)
      * We simply validate bounds above and count the write.
      */
     s->write_count++;
-    microkit_mr_set(0, FB_OK);
+    rep_u32(rep, 0, FB_OK);
 }
 
 static void handle_flip(void)
 {
-    uint32_t handle = (uint32_t)microkit_mr_get(1);
+    uint32_t handle = (uint32_t)msg_u32(req, 4);
 
     fb_surface_t *s = surface_find(handle);
     if (!s) {
-        microkit_mr_set(0, FB_ERR_BAD_HANDLE);
-        microkit_mr_set(1, 0);
+        rep_u32(rep, 0, FB_ERR_BAD_HANDLE);
+        rep_u32(rep, 4, 0);
         return;
     }
 
     uint32_t result = backend_ops[s->backend].flip(s->handle, s->frame_seq + 1);
     if (result != FB_OK) {
-        microkit_mr_set(0, result);
-        microkit_mr_set(1, s->frame_seq);
+        rep_u32(rep, 0, result);
+        rep_u32(rep, 4, s->frame_seq);
         return;
     }
 
@@ -416,7 +417,8 @@ static void handle_flip(void)
     if (s->backend == FB_BACKEND_REMOTE_API) {
         for (uint32_t i = 0; i < FB_MAX_REMOTE_SUBS; i++) {
             if (remote_subs[i].active && remote_subs[i].handle == handle)
-                microkit_notify(remote_subs[i].ch);
+                sel4_dbg_puts("[E5-S8] notify-stub
+"); /* TODO: seL4_Signal(notify_cap_for_remote_subs[i].ch) */
         }
     }
 
@@ -426,14 +428,14 @@ static void handle_flip(void)
      */
     publish_frame_ready(handle, s->frame_seq, s->backend);
 
-    microkit_mr_set(0, FB_OK);
-    microkit_mr_set(1, s->frame_seq);
+    rep_u32(rep, 0, FB_OK);
+    rep_u32(rep, 4, s->frame_seq);
 }
 
 static void handle_resize(void)
 {
     if (!fb_shmem_vaddr) {
-        microkit_mr_set(0, FB_ERR_NO_SHMEM);
+        rep_u32(rep, 0, FB_ERR_NO_SHMEM);
         return;
     }
 
@@ -441,20 +443,20 @@ static void handle_resize(void)
 
     fb_surface_t *s = surface_find(req->fb_handle);
     if (!s) {
-        microkit_mr_set(0, FB_ERR_BAD_HANDLE);
+        rep_u32(rep, 0, FB_ERR_BAD_HANDLE);
         return;
     }
 
     uint32_t new_fmt = (req->format != 0) ? req->format : s->format;
     uint32_t bpp     = fmt_bpp(new_fmt);
     if (bpp == 0) {
-        microkit_mr_set(0, FB_ERR_BAD_FORMAT);
+        rep_u32(rep, 0, FB_ERR_BAD_FORMAT);
         return;
     }
 
     if (req->width == 0 || req->height == 0 ||
         req->width > FB_MAX_WIDTH || req->height > FB_MAX_HEIGHT) {
-        microkit_mr_set(0, FB_ERR_BAD_DIMS);
+        rep_u32(rep, 0, FB_ERR_BAD_DIMS);
         return;
     }
 
@@ -469,13 +471,13 @@ static void handle_resize(void)
         if (tail_offset == shmem_used) {
             /* Surface is at the tail — can expand in place */
             if (shmem_used - aligned_old + aligned_new > FB_SHMEM_SIZE) {
-                microkit_mr_set(0, FB_ERR_NO_SHMEM);
+                rep_u32(rep, 0, FB_ERR_NO_SHMEM);
                 return;
             }
             shmem_used = shmem_used - aligned_old + aligned_new;
         } else {
             /* Mid-table surface — cannot resize in place without compaction */
-            microkit_mr_set(0, FB_ERR_NO_SHMEM);
+            rep_u32(rep, 0, FB_ERR_NO_SHMEM);
             return;
         }
     }
@@ -495,16 +497,16 @@ static void handle_resize(void)
     rep->buf_size      = s->buf_size;
     rep->shmem_offset  = s->shmem_offset;
 
-    microkit_mr_set(0, FB_OK);
+    rep_u32(rep, 0, FB_OK);
 }
 
 static void handle_destroy(void)
 {
-    uint32_t handle = (uint32_t)microkit_mr_get(1);
+    uint32_t handle = (uint32_t)msg_u32(req, 4);
 
     fb_surface_t *s = surface_find(handle);
     if (!s) {
-        microkit_mr_set(0, FB_ERR_BAD_HANDLE);
+        rep_u32(rep, 0, FB_ERR_BAD_HANDLE);
         return;
     }
 
@@ -520,21 +522,21 @@ static void handle_destroy(void)
         shmem_used -= aligned;
 
     surface_free(s);
-    microkit_mr_set(0, FB_OK);
+    rep_u32(rep, 0, FB_OK);
 }
 
 static void handle_status(void)
 {
-    uint32_t handle = (uint32_t)microkit_mr_get(1);
+    uint32_t handle = (uint32_t)msg_u32(req, 4);
 
     fb_surface_t *s = surface_find(handle);
     if (!s) {
-        microkit_mr_set(0, FB_ERR_BAD_HANDLE);
+        rep_u32(rep, 0, FB_ERR_BAD_HANDLE);
         return;
     }
 
     if (!fb_shmem_vaddr) {
-        microkit_mr_set(0, FB_ERR_NO_SHMEM);
+        rep_u32(rep, 0, FB_ERR_NO_SHMEM);
         return;
     }
 
@@ -548,14 +550,14 @@ static void handle_status(void)
     rep->flip_count  = s->flip_count;
     rep->write_count = s->write_count;
 
-    microkit_mr_set(0, FB_OK);
+    rep_u32(rep, 0, FB_OK);
 }
 
 /* ─── Microkit entry points ──────────────────────────────────────────────── */
 
-void init(void)
+static void framebuffer_pd_pd_init(void)
 {
-    microkit_dbg_puts("[framebuffer_pd] starting — agentOS virtual framebuffer service\n");
+    sel4_dbg_puts("[framebuffer_pd] starting — agentOS virtual framebuffer service\n");
 
     for (uint32_t i = 0; i < FB_MAX_SURFACES; i++)
         surfaces[i].in_use = false;
@@ -576,26 +578,26 @@ void init(void)
     eventbus_connected = (fb_eventbus_wired_flag != 0);
 
     if (!fb_shmem_vaddr)
-        microkit_dbg_puts("[framebuffer_pd] WARNING: fb_shmem_vaddr not mapped "
+        sel4_dbg_puts("[framebuffer_pd] WARNING: fb_shmem_vaddr not mapped "
                           "(NULL backend only)\n");
 
     if (eventbus_connected)
-        microkit_dbg_puts("[framebuffer_pd] ready (EventBus wired)\n");
+        sel4_dbg_puts("[framebuffer_pd] ready (EventBus wired)\n");
     else
-        microkit_dbg_puts("[framebuffer_pd] ready\n");
+        sel4_dbg_puts("[framebuffer_pd] ready\n");
 }
 
-void notified(microkit_channel ch)
+static void framebuffer_pd_pd_notified(uint32_t ch)
 {
     (void)ch;
     /* No async notifications expected in Phase 4a core */
 }
 
-microkit_msginfo protected(microkit_channel ch, microkit_msginfo msginfo)
+static uint32_t framebuffer_pd_h_dispatch(sel4_badge_t b, const sel4_msg_t *req, sel4_msg_t *rep, void *ctx)
 {
-    (void)msginfo;
+    (void)b; (void)ctx;
 
-    uint32_t op = (uint32_t)microkit_mr_get(0);
+    uint32_t op = (uint32_t)msg_u32(req, 0);
 
     switch (op) {
     case MSG_FB_CREATE:             handle_create();           break;
@@ -606,10 +608,23 @@ microkit_msginfo protected(microkit_channel ch, microkit_msginfo msginfo)
     case MSG_FB_STATUS:             handle_status();           break;
     case MSG_CC_ATTACH_FRAMEBUFFER: handle_remote_attach(ch);  break;
     default:
-        microkit_dbg_puts("[framebuffer_pd] unknown opcode\n");
-        microkit_mr_set(0, FB_ERR_BAD_HANDLE);
+        sel4_dbg_puts("[framebuffer_pd] unknown opcode\n");
+        rep_u32(rep, 0, FB_ERR_BAD_HANDLE);
         break;
     }
 
-    return microkit_msginfo_new(0, 6);
+    rep->length = 24;
+        return SEL4_ERR_OK;
+}
+
+/* ── E5-S8: Entry point ─────────────────────────────────────────────────── */
+void framebuffer_pd_main(seL4_CPtr my_ep, seL4_CPtr ns_ep)
+{
+    (void)ns_ep;
+    framebuffer_pd_pd_init();
+    static sel4_server_t srv;
+    sel4_server_init(&srv, my_ep);
+    /* Dispatch all opcodes through the generic handler */
+    sel4_server_register(&srv, SEL4_SERVER_OPCODE_ANY, framebuffer_pd_h_dispatch, (void *)0);
+    sel4_server_run(&srv);
 }

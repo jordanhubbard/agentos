@@ -7,12 +7,11 @@
  * Provides user/group identity mapped to capability tokens.
  * Analogous to GNU HURD's auth server but using agentOS capability model.
  *
- * Channel assignments (auth_server's local view):
- *   id=0: receives PPC from controller (LOGIN/VERIFY/REVOKE/ADDUSER/STATUS)
- *
  * Pre-created users at init:
  *   uid=0 "root"  cap_mask=0xFF (all capabilities)
  *   uid=1 "admin" cap_mask=0x3F (no SWAP_WRITE/SWAP_READ caps)
+ *
+ * E5-S8: migrated from Microkit to raw seL4 IPC.
  *
  * Copyright (c) 2026 The agentOS Project
  * SPDX-License-Identifier: BSD-2-Clause
@@ -20,6 +19,7 @@
 
 #define AGENTOS_DEBUG 1
 #include "agentos.h"
+#include "sel4_server.h"
 #include <stdbool.h>
 
 /* ── Configuration ─────────────────────────────────────────────────────── */
@@ -28,7 +28,7 @@
 #define AUTH_TOKEN_MAGIC 0xA0710001u
 
 /* ── Shared memory region for user name reads ─────────────────────────── */
-uintptr_t auth_shmem_vaddr;   /* mapped by Microkit linker */
+uintptr_t auth_shmem_vaddr;
 
 /* ── Data structures ───────────────────────────────────────────────────── */
 typedef struct {
@@ -42,7 +42,7 @@ typedef struct {
     uint32_t  token_id;
     uint32_t  uid;
     uint32_t  cap_mask;
-    uint64_t  issued_tick;  /* approximate (tick counter) */
+    uint64_t  issued_tick;
     bool      valid;
 } auth_token_t;
 
@@ -51,33 +51,144 @@ static auth_token_t tokens[AUTH_MAX_TOKENS];
 static uint32_t     next_token_id = 1;
 static uint64_t     tick_counter  = 0;
 
-/* ── Channel IDs ───────────────────────────────────────────────────────── */
-#define CH_CTRL_PPC  0
-
 /* ── Helpers ───────────────────────────────────────────────────────────── */
 static auth_user_t *find_user(uint32_t uid) {
     for (int i = 0; i < AUTH_MAX_USERS; i++)
         if (users[i].active && users[i].uid == uid) return &users[i];
-    return NULL;
+    return (void *)0;
 }
 
 static auth_token_t *find_token(uint32_t token_id) {
     for (int i = 0; i < AUTH_MAX_TOKENS; i++)
         if (tokens[i].valid && tokens[i].token_id == token_id) return &tokens[i];
-    return NULL;
+    return (void *)0;
 }
 
 static auth_token_t *alloc_token(void) {
     for (int i = 0; i < AUTH_MAX_TOKENS; i++)
         if (!tokens[i].valid) return &tokens[i];
-    return NULL;
+    return (void *)0;
 }
 
-/* ── Microkit entry points ─────────────────────────────────────────────── */
+/* ── Helpers to read/write msg data fields ─────────────────────────────── */
+static inline uint32_t msg_u32(const sel4_msg_t *m, uint32_t off) {
+    uint32_t v = 0;
+    if (off + 4u <= SEL4_MSG_DATA_BYTES) {
+        v  = (uint32_t)m->data[off];
+        v |= (uint32_t)m->data[off+1] << 8;
+        v |= (uint32_t)m->data[off+2] << 16;
+        v |= (uint32_t)m->data[off+3] << 24;
+    }
+    return v;
+}
 
-void init(void)
+static inline void rep_u32(sel4_msg_t *m, uint32_t off, uint32_t v) {
+    if (off + 4u <= SEL4_MSG_DATA_BYTES) {
+        m->data[off]   = (uint8_t)(v);
+        m->data[off+1] = (uint8_t)(v >> 8);
+        m->data[off+2] = (uint8_t)(v >> 16);
+        m->data[off+3] = (uint8_t)(v >> 24);
+    }
+}
+
+/* ── Opcode handlers ───────────────────────────────────────────────────── */
+
+static uint32_t handle_login(sel4_badge_t b, const sel4_msg_t *req,
+                              sel4_msg_t *rep, void *ctx)
 {
-    /* Clear all state */
+    (void)b; (void)ctx;
+    uint32_t uid = msg_u32(req, 0);
+    auth_user_t *u = find_user(uid);
+    if (!u) { rep_u32(rep, 0, 0xFFu); rep->length = 4; return 0xFFu; }
+    auth_token_t *t = alloc_token();
+    if (!t) { rep_u32(rep, 0, 0xFEu); rep->length = 4; return 0xFEu; }
+    t->token_id    = next_token_id++;
+    t->uid         = uid;
+    t->cap_mask    = u->cap_mask;
+    t->issued_tick = tick_counter;
+    t->valid       = true;
+    rep_u32(rep, 0, 0u);
+    rep_u32(rep, 4, t->token_id);
+    rep->length = 8;
+    return SEL4_ERR_OK;
+}
+
+static uint32_t handle_verify(sel4_badge_t b, const sel4_msg_t *req,
+                               sel4_msg_t *rep, void *ctx)
+{
+    (void)b; (void)ctx;
+    uint32_t token_id = msg_u32(req, 0);
+    auth_token_t *t = find_token(token_id);
+    if (!t) { rep_u32(rep, 0, 0xFFu); rep->length = 4; return 0xFFu; }
+    rep_u32(rep, 0, 0u);
+    rep_u32(rep, 4, t->uid);
+    rep_u32(rep, 8, t->cap_mask);
+    rep->length = 12;
+    return SEL4_ERR_OK;
+}
+
+static uint32_t handle_revoke(sel4_badge_t b, const sel4_msg_t *req,
+                               sel4_msg_t *rep, void *ctx)
+{
+    (void)b; (void)ctx;
+    uint32_t token_id = msg_u32(req, 0);
+    auth_token_t *t = find_token(token_id);
+    if (t) t->valid = false;
+    rep_u32(rep, 0, 0u);
+    rep->length = 4;
+    return SEL4_ERR_OK;
+}
+
+static uint32_t handle_adduser(sel4_badge_t b, const sel4_msg_t *req,
+                                sel4_msg_t *rep, void *ctx)
+{
+    (void)b; (void)ctx;
+    uint32_t uid      = msg_u32(req, 0);
+    uint32_t cap_mask = msg_u32(req, 4);
+    if (find_user(uid)) { rep_u32(rep, 0, 0xFDu); rep->length = 4; return 0xFDu; }
+    auth_user_t *slot = (void *)0;
+    for (int i = 0; i < AUTH_MAX_USERS; i++)
+        if (!users[i].active) { slot = &users[i]; break; }
+    if (!slot) { rep_u32(rep, 0, 0xFCu); rep->length = 4; return 0xFCu; }
+    slot->uid      = uid;
+    slot->cap_mask = cap_mask;
+    slot->active   = true;
+    if (auth_shmem_vaddr) {
+        const char *name = (const char *)(uintptr_t)auth_shmem_vaddr;
+        for (int i = 0; i < 15; i++) {
+            slot->name[i] = name[i];
+            if (!name[i]) break;
+        }
+        slot->name[15] = '\0';
+    } else {
+        slot->name[0] = 'u'; slot->name[1] = '\0';
+    }
+    rep_u32(rep, 0, 0u);
+    rep->length = 4;
+    return SEL4_ERR_OK;
+}
+
+static uint32_t handle_status(sel4_badge_t b, const sel4_msg_t *req,
+                               sel4_msg_t *rep, void *ctx)
+{
+    (void)b; (void)req; (void)ctx;
+    uint32_t atokens = 0, ausers = 0;
+    for (int i = 0; i < AUTH_MAX_TOKENS; i++) if (tokens[i].valid)  atokens++;
+    for (int i = 0; i < AUTH_MAX_USERS;  i++) if (users[i].active)  ausers++;
+    rep_u32(rep, 0, 0u);
+    rep_u32(rep, 4, atokens);
+    rep_u32(rep, 8, ausers);
+    rep->length = 12;
+    return SEL4_ERR_OK;
+}
+
+/* ── Main entry point ──────────────────────────────────────────────────── */
+
+void auth_server_main(seL4_CPtr my_ep, seL4_CPtr ns_ep)
+{
+    (void)ns_ep;
+
+    /* Initialise state */
     for (int i = 0; i < AUTH_MAX_USERS;  i++) users[i].active  = false;
     for (int i = 0; i < AUTH_MAX_TOKENS; i++) tokens[i].valid  = false;
 
@@ -86,123 +197,28 @@ void init(void)
     users[0].cap_mask = 0xFFu;
     users[0].active   = true;
     users[0].name[0]  = 'r'; users[0].name[1] = 'o';
-    users[0].name[2]  = 'o'; users[0].name[3] = 't';
-    users[0].name[4]  = '\0';
+    users[0].name[2]  = 'o'; users[0].name[3] = 't'; users[0].name[4] = '\0';
 
     /* Pre-create admin (uid=1) */
     users[1].uid      = 1;
-    users[1].cap_mask = 0x3Fu;   /* COMPUTE|MEM|OBJECTSTORE|NETWORK|SPAWN|AUDIT */
+    users[1].cap_mask = 0x3Fu;
     users[1].active   = true;
     users[1].name[0]  = 'a'; users[1].name[1] = 'd';
     users[1].name[2]  = 'm'; users[1].name[3] = 'i';
     users[1].name[4]  = 'n'; users[1].name[5] = '\0';
 
-    microkit_dbg_puts("[auth_server] READY: 2 users, root+admin\n");
+    sel4_dbg_puts("[auth_server] READY: 2 users, root+admin\n");
+
+    static sel4_server_t srv;
+    sel4_server_init(&srv, my_ep);
+    sel4_server_register(&srv, OP_AUTH_LOGIN,   handle_login,   (void *)0);
+    sel4_server_register(&srv, OP_AUTH_VERIFY,  handle_verify,  (void *)0);
+    sel4_server_register(&srv, OP_AUTH_REVOKE,  handle_revoke,  (void *)0);
+    sel4_server_register(&srv, OP_AUTH_ADDUSER, handle_adduser, (void *)0);
+    sel4_server_register(&srv, OP_AUTH_STATUS,  handle_status,  (void *)0);
+    sel4_server_run(&srv);
 }
 
-void notified(microkit_channel ch) { (void)ch; tick_counter++; }
-
-microkit_msginfo protected(microkit_channel ch, microkit_msginfo msg)
-{
-    (void)ch; (void)msg;
-    uint32_t op = (uint32_t)microkit_mr_get(0);
-
-    switch (op) {
-
-    /* OP_AUTH_LOGIN: MR1=uid → MR0=ok, MR1=token_id */
-    case OP_AUTH_LOGIN: {
-        uint32_t uid = (uint32_t)microkit_mr_get(1);
-        auth_user_t *u = find_user(uid);
-        if (!u) {
-            microkit_mr_set(0, 0xFFu);  /* AUTH_ERR_NO_USER */
-            return microkit_msginfo_new(0, 1);
-        }
-        auth_token_t *t = alloc_token();
-        if (!t) {
-            microkit_mr_set(0, 0xFEu);  /* AUTH_ERR_NO_TOKENS */
-            return microkit_msginfo_new(0, 1);
-        }
-        t->token_id    = next_token_id++;
-        t->uid         = uid;
-        t->cap_mask    = u->cap_mask;
-        t->issued_tick = tick_counter;
-        t->valid       = true;
-        microkit_mr_set(0, 0u);
-        microkit_mr_set(1, t->token_id);
-        return microkit_msginfo_new(0, 2);
-    }
-
-    /* OP_AUTH_VERIFY: MR1=token_id → MR0=ok, MR1=uid, MR2=cap_mask */
-    case OP_AUTH_VERIFY: {
-        uint32_t token_id = (uint32_t)microkit_mr_get(1);
-        auth_token_t *t = find_token(token_id);
-        if (!t) {
-            microkit_mr_set(0, 0xFFu);  /* AUTH_ERR_BAD_TOKEN */
-            return microkit_msginfo_new(0, 1);
-        }
-        microkit_mr_set(0, 0u);
-        microkit_mr_set(1, t->uid);
-        microkit_mr_set(2, t->cap_mask);
-        return microkit_msginfo_new(0, 3);
-    }
-
-    /* OP_AUTH_REVOKE: MR1=token_id → MR0=ok */
-    case OP_AUTH_REVOKE: {
-        uint32_t token_id = (uint32_t)microkit_mr_get(1);
-        auth_token_t *t = find_token(token_id);
-        if (t) t->valid = false;
-        microkit_mr_set(0, 0u);
-        return microkit_msginfo_new(0, 1);
-    }
-
-    /* OP_AUTH_ADDUSER: MR1=uid, MR2=cap_mask → MR0=ok */
-    case OP_AUTH_ADDUSER: {
-        uint32_t uid      = (uint32_t)microkit_mr_get(1);
-        uint32_t cap_mask = (uint32_t)microkit_mr_get(2);
-        /* Check uid not already active */
-        if (find_user(uid)) {
-            microkit_mr_set(0, 0xFDu);  /* AUTH_ERR_EXISTS */
-            return microkit_msginfo_new(0, 1);
-        }
-        /* Find free user slot */
-        auth_user_t *slot = NULL;
-        for (int i = 0; i < AUTH_MAX_USERS; i++)
-            if (!users[i].active) { slot = &users[i]; break; }
-        if (!slot) {
-            microkit_mr_set(0, 0xFCu);  /* AUTH_ERR_FULL */
-            return microkit_msginfo_new(0, 1);
-        }
-        slot->uid      = uid;
-        slot->cap_mask = cap_mask;
-        slot->active   = true;
-        /* Read name from auth_shmem if mapped */
-        if (auth_shmem_vaddr) {
-            const char *name = (const char *)(uintptr_t)auth_shmem_vaddr;
-            for (int i = 0; i < 15; i++) {
-                slot->name[i] = name[i];
-                if (!name[i]) break;
-            }
-            slot->name[15] = '\0';
-        } else {
-            slot->name[0] = 'u'; slot->name[1] = '\0';
-        }
-        microkit_mr_set(0, 0u);
-        return microkit_msginfo_new(0, 1);
-    }
-
-    /* OP_AUTH_STATUS: → MR0=ok, MR1=active_tokens, MR2=active_users */
-    case OP_AUTH_STATUS: {
-        uint32_t atokens = 0, ausers = 0;
-        for (int i = 0; i < AUTH_MAX_TOKENS; i++) if (tokens[i].valid)  atokens++;
-        for (int i = 0; i < AUTH_MAX_USERS;  i++) if (users[i].active)  ausers++;
-        microkit_mr_set(0, 0u);
-        microkit_mr_set(1, atokens);
-        microkit_mr_set(2, ausers);
-        return microkit_msginfo_new(0, 3);
-    }
-
-    default:
-        microkit_mr_set(0, 0xFFu);
-        return microkit_msginfo_new(0, 1);
-    }
-}
+/* suppress tick_counter unused warning */
+static void _tick(void) { tick_counter++; }
+static void (*_tick_fn)(void) __attribute__((unused)) = _tick;

@@ -15,6 +15,7 @@
 
 #define AGENTOS_DEBUG 1
 #include "agentos.h"
+#include "sel4_server.h"
 #include "vfs.h"
 
 /* ── Microkit setvar_vaddr — filled in by the system initialiser ─────────── */
@@ -385,8 +386,8 @@ static uint32_t mem_open(const char *path, uint32_t flags) {
     open_handle_count++;
 
     /* Encode both result and handle: caller checks MR0==VFS_OK, MR1==handle */
-    microkit_mr_set(0, VFS_OK);
-    microkit_mr_set(1, h);
+    rep_u32(rep, 0, VFS_OK);
+    rep_u32(rep, 4, h);
     return VFS_OK;
 }
 
@@ -394,7 +395,7 @@ static uint32_t mem_close(uint32_t h) {
     if (h >= VFS_MAX_HANDLES || !handles[h].active) return VFS_ERR_INVAL;
     handles[h].active = false;
     open_handle_count--;
-    microkit_mr_set(0, VFS_OK);
+    rep_u32(rep, 0, VFS_OK);
     return VFS_OK;
 }
 
@@ -406,8 +407,8 @@ static uint32_t mem_read(uint32_t h, uint64_t offset, uint32_t length) {
     if (ino->is_dir) return VFS_ERR_INVAL;
 
     if (offset >= ino->size) {
-        microkit_mr_set(0, VFS_OK);
-        microkit_mr_set(1, 0);
+        rep_u32(rep, 0, VFS_OK);
+        rep_u32(rep, 4, 0);
         return VFS_OK;
     }
 
@@ -419,8 +420,8 @@ static uint32_t mem_read(uint32_t h, uint64_t offset, uint32_t length) {
     const uint8_t *src = ino->data + offset;
     for (uint32_t i = 0; i < to_read; i++) dst[i] = src[i];
 
-    microkit_mr_set(0, VFS_OK);
-    microkit_mr_set(1, to_read);
+    rep_u32(rep, 0, VFS_OK);
+    rep_u32(rep, 4, to_read);
     return VFS_OK;
 }
 
@@ -444,8 +445,8 @@ static uint32_t mem_write(uint32_t h, uint64_t offset, uint32_t length) {
     if ((uint32_t)offset + to_write > ino->size)
         ino->size = (uint32_t)offset + to_write;
 
-    microkit_mr_set(0, VFS_OK);
-    microkit_mr_set(1, to_write);
+    rep_u32(rep, 0, VFS_OK);
+    rep_u32(rep, 4, to_write);
     return VFS_OK;
 }
 
@@ -455,10 +456,10 @@ static uint32_t mem_stat(uint32_t h) {
     mem_inode_t *ino = &mem_inodes[handles[h].inode];
     uint32_t mode = ino->is_dir ? 0x4000u : 0x8000u;  /* S_IFDIR / S_IFREG */
 
-    microkit_mr_set(0, VFS_OK);
-    microkit_mr_set(1, (uintptr_t)(ino->size & 0xFFFFFFFFu));
-    microkit_mr_set(2, 0);  /* size_hi — mem files always < 4GB */
-    microkit_mr_set(3, mode);
+    rep_u32(rep, 0, VFS_OK);
+    rep_u32(rep, 4, (uintptr_t)(ino->size & 0xFFFFFFFFu));
+    rep_u32(rep, 8, 0);  /* size_hi — mem files always < 4GB */
+    rep_u32(rep, 12, mode);
     return VFS_OK;
 }
 
@@ -478,7 +479,7 @@ static uint32_t mem_unlink(const char *path) {
     mem_inodes[ino].active = false;
     mem_inodes[ino].size   = 0;
 
-    microkit_mr_set(0, VFS_OK);
+    rep_u32(rep, 0, VFS_OK);
     return VFS_OK;
 }
 
@@ -521,7 +522,7 @@ static uint32_t mem_mkdir(const char *path) {
     }
 
     log_drain_write(VFS_CONSOLE_SLOT, VFS_PD_ID, "[vfs] mkdir ok\n");
-    microkit_mr_set(0, VFS_OK);
+    rep_u32(rep, 0, VFS_OK);
     return VFS_OK;
 }
 
@@ -555,8 +556,8 @@ static uint32_t mem_readdir(const char *path) {
         count++;
     }
 
-    microkit_mr_set(0, VFS_OK);
-    microkit_mr_set(1, count);
+    rep_u32(rep, 0, VFS_OK);
+    rep_u32(rep, 4, count);
     return VFS_OK;
 }
 
@@ -575,14 +576,14 @@ static uint32_t mem_truncate(uint32_t h, uint64_t new_size) {
     }
     ino->size = sz;
 
-    microkit_mr_set(0, VFS_OK);
+    rep_u32(rep, 0, VFS_OK);
     return VFS_OK;
 }
 
 /* sync is a no-op for the mem backend — data is already "durable" in RAM */
 static uint32_t mem_sync(uint32_t h) {
     if (h >= VFS_MAX_HANDLES || !handles[h].active) return VFS_ERR_INVAL;
-    microkit_mr_set(0, VFS_OK);
+    rep_u32(rep, 0, VFS_OK);
     return VFS_OK;
 }
 
@@ -600,16 +601,15 @@ static uint32_t mem_sync(uint32_t h) {
 
 static uint32_t blk_call(uint32_t op, uint64_t block_lo_hi, uint32_t count) {
     if (!blk_present) {
-        microkit_mr_set(0, VFS_ERR_IO);
+        rep_u32(rep, 0, VFS_ERR_IO);
         return VFS_ERR_IO;
     }
-    microkit_mr_set(0, op);
-    microkit_mr_set(1, (uintptr_t)(block_lo_hi & 0xFFFFFFFFu));
-    microkit_mr_set(2, (uintptr_t)(block_lo_hi >> 32));
-    microkit_mr_set(3, count);
-    microkit_msginfo reply = microkit_ppcall(VFS_CH_VIRTIO_BLK,
-                                              microkit_msginfo_new(op, 4));
-    uint32_t blk_rc = (uint32_t)microkit_msginfo_get_label(reply);
+    rep_u32(rep, 0, op);
+    rep_u32(rep, 4, (uintptr_t)(block_lo_hi & 0xFFFFFFFFu));
+    rep_u32(rep, 8, (uintptr_t)(block_lo_hi >> 32));
+    rep_u32(rep, 12, count);
+    uint32_t reply = /* E5-S8: ppcall stubbed */
+    uint32_t blk_rc = (uint32_t)msg_u32(req, 0);
     return (blk_rc == BLK_OK) ? VFS_OK : VFS_ERR_IO;
 }
 
@@ -619,8 +619,8 @@ static uint32_t blk_call(uint32_t op, uint64_t block_lo_hi, uint32_t count) {
  */
 static uint32_t blk_open(const char *path, uint32_t flags) {
     if (!blk_present) {
-        microkit_mr_set(0, VFS_ERR_IO);
-        microkit_mr_set(1, 0);
+        rep_u32(rep, 0, VFS_ERR_IO);
+        rep_u32(rep, 4, 0);
         return VFS_ERR_IO;
     }
 
@@ -633,8 +633,8 @@ static uint32_t blk_open(const char *path, uint32_t flags) {
 
     uint32_t h = alloc_handle();
     if (h == VFS_MAX_HANDLES) {
-        microkit_mr_set(0, VFS_ERR_NO_HANDLES);
-        microkit_mr_set(1, 0);
+        rep_u32(rep, 0, VFS_ERR_NO_HANDLES);
+        rep_u32(rep, 4, 0);
         return VFS_ERR_NO_HANDLES;
     }
 
@@ -645,8 +645,8 @@ static uint32_t blk_open(const char *path, uint32_t flags) {
     handles[h].offset  = 0;
     open_handle_count++;
 
-    microkit_mr_set(0, VFS_OK);
-    microkit_mr_set(1, h);
+    rep_u32(rep, 0, VFS_OK);
+    rep_u32(rep, 4, h);
     return VFS_OK;
 }
 
@@ -654,7 +654,7 @@ static uint32_t blk_close(uint32_t h) {
     if (h >= VFS_MAX_HANDLES || !handles[h].active) return VFS_ERR_INVAL;
     handles[h].active = false;
     open_handle_count--;
-    microkit_mr_set(0, VFS_OK);
+    rep_u32(rep, 0, VFS_OK);
     return VFS_OK;
 }
 
@@ -675,8 +675,8 @@ static uint32_t blk_read(uint32_t h, uint64_t offset, uint32_t length) {
 
     uint32_t rc = blk_call(OP_BLK_READ, first_block, blk_count);
     if (rc != VFS_OK) {
-        microkit_mr_set(0, rc);
-        microkit_mr_set(1, 0);
+        rep_u32(rep, 0, rc);
+        rep_u32(rep, 4, 0);
         return rc;
     }
 
@@ -685,8 +685,8 @@ static uint32_t blk_read(uint32_t h, uint64_t offset, uint32_t length) {
     uint8_t       *dst = SHMEM_DATA();
     for (uint32_t i = 0; i < to_read; i++) dst[i] = src[i];
 
-    microkit_mr_set(0, VFS_OK);
-    microkit_mr_set(1, to_read);
+    rep_u32(rep, 0, VFS_OK);
+    rep_u32(rep, 4, to_read);
     return VFS_OK;
 }
 
@@ -712,13 +712,13 @@ static uint32_t blk_write(uint32_t h, uint64_t offset, uint32_t length) {
 
     uint32_t rc = blk_call(OP_BLK_WRITE, first_block, blk_count);
     if (rc != VFS_OK) {
-        microkit_mr_set(0, rc);
-        microkit_mr_set(1, 0);
+        rep_u32(rep, 0, rc);
+        rep_u32(rep, 4, 0);
         return rc;
     }
 
-    microkit_mr_set(0, VFS_OK);
-    microkit_mr_set(1, to_write);
+    rep_u32(rep, 0, VFS_OK);
+    rep_u32(rep, 4, to_write);
     return VFS_OK;
 }
 
@@ -726,52 +726,52 @@ static uint32_t blk_write(uint32_t h, uint64_t offset, uint32_t length) {
 static uint32_t blk_stat(uint32_t h) {
     if (h >= VFS_MAX_HANDLES || !handles[h].active) return VFS_ERR_INVAL;
     uint64_t total_bytes = blk_block_count * blk_block_size;
-    microkit_mr_set(0, VFS_OK);
-    microkit_mr_set(1, (uintptr_t)(total_bytes & 0xFFFFFFFFu));
-    microkit_mr_set(2, (uintptr_t)(total_bytes >> 32));
-    microkit_mr_set(3, 0x6000u);  /* block device */
+    rep_u32(rep, 0, VFS_OK);
+    rep_u32(rep, 4, (uintptr_t)(total_bytes & 0xFFFFFFFFu));
+    rep_u32(rep, 8, (uintptr_t)(total_bytes >> 32));
+    rep_u32(rep, 12, 0x6000u);  /* block device */
     return VFS_OK;
 }
 
 /* Remaining blk ops return VFS_ERR_IO when blk absent, VFS_OK otherwise */
 static uint32_t blk_unlink(const char *path) {
     (void)path;
-    if (!blk_present) { microkit_mr_set(0, VFS_ERR_IO); return VFS_ERR_IO; }
-    microkit_mr_set(0, VFS_ERR_PERM);  /* raw block device — no unlink */
+    if (!blk_present) { rep_u32(rep, 0, VFS_ERR_IO); return VFS_ERR_IO; }
+    rep_u32(rep, 0, VFS_ERR_PERM);  /* raw block device — no unlink */
     return VFS_ERR_PERM;
 }
 
 static uint32_t blk_mkdir(const char *path) {
     (void)path;
-    if (!blk_present) { microkit_mr_set(0, VFS_ERR_IO); return VFS_ERR_IO; }
-    microkit_mr_set(0, VFS_ERR_PERM);
+    if (!blk_present) { rep_u32(rep, 0, VFS_ERR_IO); return VFS_ERR_IO; }
+    rep_u32(rep, 0, VFS_ERR_PERM);
     return VFS_ERR_PERM;
 }
 
 static uint32_t blk_readdir(const char *path) {
     (void)path;
-    if (!blk_present) { microkit_mr_set(0, VFS_ERR_IO); return VFS_ERR_IO; }
+    if (!blk_present) { rep_u32(rep, 0, VFS_ERR_IO); return VFS_ERR_IO; }
     /* Emit a single pseudo-entry "." for the block device root */
     char *buf = SHMEM_READDIR();
     buf[0] = '.'; buf[1] = '\0';
-    microkit_mr_set(0, VFS_OK);
-    microkit_mr_set(1, 1);
+    rep_u32(rep, 0, VFS_OK);
+    rep_u32(rep, 4, 1);
     return VFS_OK;
 }
 
 static uint32_t blk_truncate(uint32_t h, uint64_t new_size) {
     (void)new_size;
     if (h >= VFS_MAX_HANDLES || !handles[h].active) return VFS_ERR_INVAL;
-    if (!blk_present) { microkit_mr_set(0, VFS_ERR_IO); return VFS_ERR_IO; }
-    microkit_mr_set(0, VFS_ERR_PERM);
+    if (!blk_present) { rep_u32(rep, 0, VFS_ERR_IO); return VFS_ERR_IO; }
+    rep_u32(rep, 0, VFS_ERR_PERM);
     return VFS_ERR_PERM;
 }
 
 static uint32_t blk_sync(uint32_t h) {
     if (h >= VFS_MAX_HANDLES || !handles[h].active) return VFS_ERR_INVAL;
-    if (!blk_present) { microkit_mr_set(0, VFS_ERR_IO); return VFS_ERR_IO; }
+    if (!blk_present) { rep_u32(rep, 0, VFS_ERR_IO); return VFS_ERR_IO; }
     uint32_t rc = blk_call(OP_BLK_FLUSH, 0, 0);
-    microkit_mr_set(0, rc);
+    rep_u32(rep, 0, rc);
     return rc;
 }
 
@@ -792,11 +792,11 @@ static uint32_t vfs_mount(const char *prefix, uint8_t backend_type) {
             mounts[i].backend_type = backend_type;
             vfs_strncpy(mounts[i].prefix, prefix, VFS_MEM_NAME_MAX);
             log_drain_write(VFS_CONSOLE_SLOT, VFS_PD_ID, "[vfs] mount ok\n");
-            microkit_mr_set(0, VFS_OK);
+            rep_u32(rep, 0, VFS_OK);
             return VFS_OK;
         }
     }
-    microkit_mr_set(0, VFS_ERR_NO_SPACE);
+    rep_u32(rep, 0, VFS_ERR_NO_SPACE);
     return VFS_ERR_NO_SPACE;
 }
 
@@ -804,7 +804,7 @@ static uint32_t vfs_mount(const char *prefix, uint8_t backend_type) {
  * Microkit entry points
  * ═══════════════════════════════════════════════════════════════════════════ */
 
-void init(void) {
+static void vfs_server_pd_init(void) {
     agentos_log_boot("vfs_server");
     log_drain_write(VFS_CONSOLE_SLOT, VFS_PD_ID, "[vfs_server] init\n");
 
@@ -845,19 +845,18 @@ void init(void) {
     mounts[0].prefix[1]    = '\0';
 
     /* ── Probe virtio-blk via OP_BLK_INFO ── */
-    microkit_mr_set(0, OP_BLK_INFO);
-    microkit_mr_set(1, 0);
-    microkit_mr_set(2, 0);
-    microkit_mr_set(3, 0);
-    microkit_msginfo blk_reply = microkit_ppcall(VFS_CH_VIRTIO_BLK,
-                                                  microkit_msginfo_new(OP_BLK_INFO, 1));
-    uint32_t blk_rc = (uint32_t)microkit_msginfo_get_label(blk_reply);
+    rep_u32(rep, 0, OP_BLK_INFO);
+    rep_u32(rep, 4, 0);
+    rep_u32(rep, 8, 0);
+    rep_u32(rep, 12, 0);
+    uint32_t blk_reply = /* E5-S8: ppcall stubbed */
+    uint32_t blk_rc = (uint32_t)msg_u32(req, 0);
 
     if (blk_rc == BLK_OK) {
-        uint64_t bc_lo  = (uint64_t)microkit_mr_get(1);
-        uint64_t bc_hi  = (uint64_t)microkit_mr_get(2);
+        uint64_t bc_lo  = (uint64_t)msg_u32(req, 4);
+        uint64_t bc_hi  = (uint64_t)msg_u32(req, 8);
         blk_block_count = (bc_hi << 32) | bc_lo;
-        blk_block_size  = (uint32_t)microkit_mr_get(3);
+        blk_block_size  = (uint32_t)msg_u32(req, 12);
         blk_present     = true;
 
         /* Mount "/blk" on BLK backend */
@@ -893,7 +892,7 @@ void init(void) {
  * notified() — VFS Server is passive; we do not expect notifications.
  * Log anything unexpected so it surfaces in the console.
  */
-void notified(microkit_channel ch) {
+static void vfs_server_pd_notified(uint32_t ch) {
     (void)ch;
     log_drain_write(VFS_CONSOLE_SLOT, VFS_PD_ID, "[vfs_server] unexpected notify\n");
 }
@@ -903,10 +902,10 @@ void notified(microkit_channel ch) {
  * All opcodes are dispatched by the label field (same as MR0 per convention
  * in this codebase — label carries the opcode for VFS callers).
  */
-microkit_msginfo protected(microkit_channel ch, microkit_msginfo msginfo) {
-    (void)ch;
+static uint32_t vfs_server_h_dispatch(sel4_badge_t b, const sel4_msg_t *req, sel4_msg_t *rep, void *ctx) {
+    (void)b; (void)ctx;
 
-    uint64_t op = microkit_msginfo_get_label(msginfo);
+    uint64_t op = msg_u32(req, 0);
 
     /* Path is always in shmem[48]; null-terminate defensively */
     char *path = SHMEM_PATH();
@@ -916,7 +915,7 @@ microkit_msginfo protected(microkit_channel ch, microkit_msginfo msginfo) {
 
     /* ── OP_VFS_OPEN ────────────────────────────────────────────────────── */
     case OP_VFS_OPEN: {
-        uint32_t flags   = (uint32_t)microkit_mr_get(1);
+        uint32_t flags   = (uint32_t)msg_u32(req, 4);
         uint8_t  backend = path_to_backend(path);
 
         uint32_t rc;
@@ -926,18 +925,19 @@ microkit_msginfo protected(microkit_channel ch, microkit_msginfo msginfo) {
             rc = mem_open(path, flags);
 
         if (rc != VFS_OK) {
-            microkit_mr_set(0, rc);
-            microkit_mr_set(1, 0);
+            rep_u32(rep, 0, rc);
+            rep_u32(rep, 4, 0);
             log_drain_write(VFS_CONSOLE_SLOT, VFS_PD_ID, "[vfs] open error\n");
         } else {
             log_drain_write(VFS_CONSOLE_SLOT, VFS_PD_ID, "[vfs] open ok\n");
         }
-        return microkit_msginfo_new(0, 2);
+        rep->length = 8;
+        return SEL4_ERR_OK;
     }
 
     /* ── OP_VFS_CLOSE ───────────────────────────────────────────────────── */
     case OP_VFS_CLOSE: {
-        uint32_t h  = (uint32_t)microkit_mr_get(1);
+        uint32_t h  = (uint32_t)msg_u32(req, 4);
         uint32_t rc;
         if (h < VFS_MAX_HANDLES && handles[h].active &&
             handles[h].backend == VFS_BACKEND_BLK)
@@ -946,20 +946,21 @@ microkit_msginfo protected(microkit_channel ch, microkit_msginfo msginfo) {
             rc = mem_close(h);
 
         if (rc != VFS_OK) {
-            microkit_mr_set(0, rc);
+            rep_u32(rep, 0, rc);
             log_drain_write(VFS_CONSOLE_SLOT, VFS_PD_ID, "[vfs] close error\n");
         } else {
             log_drain_write(VFS_CONSOLE_SLOT, VFS_PD_ID, "[vfs] close ok\n");
         }
-        return microkit_msginfo_new(0, 1);
+        rep->length = 4;
+        return SEL4_ERR_OK;
     }
 
     /* ── OP_VFS_READ ────────────────────────────────────────────────────── */
     case OP_VFS_READ: {
-        uint32_t h      = (uint32_t)microkit_mr_get(1);
-        uint64_t off_lo = (uint64_t)microkit_mr_get(2);
-        uint64_t off_hi = (uint64_t)microkit_mr_get(3);
-        uint32_t len    = (uint32_t)microkit_mr_get(4);
+        uint32_t h      = (uint32_t)msg_u32(req, 4);
+        uint64_t off_lo = (uint64_t)msg_u32(req, 8);
+        uint64_t off_hi = (uint64_t)msg_u32(req, 12);
+        uint32_t len    = (uint32_t)msg_u32(req, 16);
         uint64_t offset = (off_hi << 32) | off_lo;
 
         uint32_t rc;
@@ -970,18 +971,19 @@ microkit_msginfo protected(microkit_channel ch, microkit_msginfo msginfo) {
             rc = mem_read(h, offset, len);
 
         if (rc != VFS_OK) {
-            microkit_mr_set(0, rc);
-            microkit_mr_set(1, 0);
+            rep_u32(rep, 0, rc);
+            rep_u32(rep, 4, 0);
         }
-        return microkit_msginfo_new(0, 2);
+        rep->length = 8;
+        return SEL4_ERR_OK;
     }
 
     /* ── OP_VFS_WRITE ───────────────────────────────────────────────────── */
     case OP_VFS_WRITE: {
-        uint32_t h      = (uint32_t)microkit_mr_get(1);
-        uint64_t off_lo = (uint64_t)microkit_mr_get(2);
-        uint64_t off_hi = (uint64_t)microkit_mr_get(3);
-        uint32_t len    = (uint32_t)microkit_mr_get(4);
+        uint32_t h      = (uint32_t)msg_u32(req, 4);
+        uint64_t off_lo = (uint64_t)msg_u32(req, 8);
+        uint64_t off_hi = (uint64_t)msg_u32(req, 12);
+        uint32_t len    = (uint32_t)msg_u32(req, 16);
         uint64_t offset = (off_hi << 32) | off_lo;
 
         uint32_t rc;
@@ -992,15 +994,16 @@ microkit_msginfo protected(microkit_channel ch, microkit_msginfo msginfo) {
             rc = mem_write(h, offset, len);
 
         if (rc != VFS_OK) {
-            microkit_mr_set(0, rc);
-            microkit_mr_set(1, 0);
+            rep_u32(rep, 0, rc);
+            rep_u32(rep, 4, 0);
         }
-        return microkit_msginfo_new(0, 2);
+        rep->length = 8;
+        return SEL4_ERR_OK;
     }
 
     /* ── OP_VFS_STAT ────────────────────────────────────────────────────── */
     case OP_VFS_STAT: {
-        uint32_t h  = (uint32_t)microkit_mr_get(1);
+        uint32_t h  = (uint32_t)msg_u32(req, 4);
         uint32_t rc;
         if (h < VFS_MAX_HANDLES && handles[h].active &&
             handles[h].backend == VFS_BACKEND_BLK)
@@ -1009,12 +1012,13 @@ microkit_msginfo protected(microkit_channel ch, microkit_msginfo msginfo) {
             rc = mem_stat(h);
 
         if (rc != VFS_OK) {
-            microkit_mr_set(0, rc);
-            microkit_mr_set(1, 0);
-            microkit_mr_set(2, 0);
-            microkit_mr_set(3, 0);
+            rep_u32(rep, 0, rc);
+            rep_u32(rep, 4, 0);
+            rep_u32(rep, 8, 0);
+            rep_u32(rep, 12, 0);
         }
-        return microkit_msginfo_new(0, 4);
+        rep->length = 16;
+        return SEL4_ERR_OK;
     }
 
     /* ── OP_VFS_UNLINK ──────────────────────────────────────────────────── */
@@ -1027,10 +1031,11 @@ microkit_msginfo protected(microkit_channel ch, microkit_msginfo msginfo) {
             rc = mem_unlink(path);
 
         if (rc != VFS_OK) {
-            microkit_mr_set(0, rc);
+            rep_u32(rep, 0, rc);
             log_drain_write(VFS_CONSOLE_SLOT, VFS_PD_ID, "[vfs] unlink error\n");
         }
-        return microkit_msginfo_new(0, 1);
+        rep->length = 4;
+        return SEL4_ERR_OK;
     }
 
     /* ── OP_VFS_MKDIR ───────────────────────────────────────────────────── */
@@ -1043,10 +1048,11 @@ microkit_msginfo protected(microkit_channel ch, microkit_msginfo msginfo) {
             rc = mem_mkdir(path);
 
         if (rc != VFS_OK) {
-            microkit_mr_set(0, rc);
+            rep_u32(rep, 0, rc);
             log_drain_write(VFS_CONSOLE_SLOT, VFS_PD_ID, "[vfs] mkdir error\n");
         }
-        return microkit_msginfo_new(0, 1);
+        rep->length = 4;
+        return SEL4_ERR_OK;
     }
 
     /* ── OP_VFS_READDIR ─────────────────────────────────────────────────── */
@@ -1059,17 +1065,18 @@ microkit_msginfo protected(microkit_channel ch, microkit_msginfo msginfo) {
             rc = mem_readdir(path);
 
         if (rc != VFS_OK) {
-            microkit_mr_set(0, rc);
-            microkit_mr_set(1, 0);
+            rep_u32(rep, 0, rc);
+            rep_u32(rep, 4, 0);
         }
-        return microkit_msginfo_new(0, 2);
+        rep->length = 8;
+        return SEL4_ERR_OK;
     }
 
     /* ── OP_VFS_TRUNCATE ────────────────────────────────────────────────── */
     case OP_VFS_TRUNCATE: {
-        uint32_t h       = (uint32_t)microkit_mr_get(1);
-        uint64_t sz_lo   = (uint64_t)microkit_mr_get(2);
-        uint64_t sz_hi   = (uint64_t)microkit_mr_get(3);
+        uint32_t h       = (uint32_t)msg_u32(req, 4);
+        uint64_t sz_lo   = (uint64_t)msg_u32(req, 8);
+        uint64_t sz_hi   = (uint64_t)msg_u32(req, 12);
         uint64_t new_sz  = (sz_hi << 32) | sz_lo;
 
         uint32_t rc;
@@ -1079,13 +1086,14 @@ microkit_msginfo protected(microkit_channel ch, microkit_msginfo msginfo) {
         else
             rc = mem_truncate(h, new_sz);
 
-        if (rc != VFS_OK) microkit_mr_set(0, rc);
-        return microkit_msginfo_new(0, 1);
+        if (rc != VFS_OK) rep_u32(rep, 0, rc);
+        rep->length = 4;
+        return SEL4_ERR_OK;
     }
 
     /* ── OP_VFS_SYNC ────────────────────────────────────────────────────── */
     case OP_VFS_SYNC: {
-        uint32_t h  = (uint32_t)microkit_mr_get(1);
+        uint32_t h  = (uint32_t)msg_u32(req, 4);
         uint32_t rc;
         if (h < VFS_MAX_HANDLES && handles[h].active &&
             handles[h].backend == VFS_BACKEND_BLK)
@@ -1093,31 +1101,47 @@ microkit_msginfo protected(microkit_channel ch, microkit_msginfo msginfo) {
         else
             rc = mem_sync(h);
 
-        if (rc != VFS_OK) microkit_mr_set(0, rc);
-        return microkit_msginfo_new(0, 1);
+        if (rc != VFS_OK) rep_u32(rep, 0, rc);
+        rep->length = 4;
+        return SEL4_ERR_OK;
     }
 
     /* ── OP_VFS_MOUNT ───────────────────────────────────────────────────── */
     case OP_VFS_MOUNT: {
-        uint32_t backend_type = (uint32_t)microkit_mr_get(1);
+        uint32_t backend_type = (uint32_t)msg_u32(req, 4);
         /* prefix is in path buffer (shmem[48]) */
         uint32_t rc = vfs_mount(path, (uint8_t)backend_type);
-        if (rc != VFS_OK) microkit_mr_set(0, rc);
-        return microkit_msginfo_new(0, 1);
+        if (rc != VFS_OK) rep_u32(rep, 0, rc);
+        rep->length = 4;
+        return SEL4_ERR_OK;
     }
 
     /* ── OP_VFS_HEALTH ──────────────────────────────────────────────────── */
     case OP_VFS_HEALTH: {
-        microkit_mr_set(0, VFS_OK);
-        microkit_mr_set(1, open_handle_count);
-        microkit_mr_set(2, VFS_VERSION);
-        return microkit_msginfo_new(0, 3);
+        rep_u32(rep, 0, VFS_OK);
+        rep_u32(rep, 4, open_handle_count);
+        rep_u32(rep, 8, VFS_VERSION);
+        rep->length = 12;
+        return SEL4_ERR_OK;
     }
 
     /* ── Unknown opcode ─────────────────────────────────────────────────── */
     default:
         log_drain_write(VFS_CONSOLE_SLOT, VFS_PD_ID, "[vfs_server] unknown op\n");
-        microkit_mr_set(0, VFS_ERR_INVAL);
-        return microkit_msginfo_new(0, 1);
+        rep_u32(rep, 0, VFS_ERR_INVAL);
+        rep->length = 4;
+        return SEL4_ERR_OK;
     }
+}
+
+/* ── E5-S8: Entry point ─────────────────────────────────────────────────── */
+void vfs_server_main(seL4_CPtr my_ep, seL4_CPtr ns_ep)
+{
+    (void)ns_ep;
+    vfs_server_pd_init();
+    static sel4_server_t srv;
+    sel4_server_init(&srv, my_ep);
+    /* Dispatch all opcodes through the generic handler */
+    sel4_server_register(&srv, SEL4_SERVER_OPCODE_ANY, vfs_server_h_dispatch, (void *)0);
+    sel4_server_run(&srv);
 }

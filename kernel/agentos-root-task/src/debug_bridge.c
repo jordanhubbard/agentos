@@ -40,6 +40,7 @@
 
 #define AGENTOS_DEBUG 1
 #include "agentos.h"
+#include "sel4_server.h"
 #include "contracts/debug_bridge_contract.h"
 #include "ipc_bridge.h"
 
@@ -389,27 +390,29 @@ void ipc_bridge_notified(void)
  *
  * Reply: MR0=0 (ok)/0xFF (error), MR1=seq
  */
-static microkit_msginfo handle_ipc_send(void)
+static uint32_t handle_ipc_send(void)
 {
-    uint32_t op             = (uint32_t)microkit_mr_get(1);
-    uint32_t vm_slot        = (uint32_t)microkit_mr_get(2);
-    uint32_t payload_offset = (uint32_t)microkit_mr_get(3);
-    uint32_t payload_len    = (uint32_t)microkit_mr_get(4);
+    uint32_t op             = (uint32_t)msg_u32(req, 4);
+    uint32_t vm_slot        = (uint32_t)msg_u32(req, 8);
+    uint32_t payload_offset = (uint32_t)msg_u32(req, 12);
+    uint32_t payload_len    = (uint32_t)msg_u32(req, 16);
 
     /* Validate op code. */
     if (op < IPC_OP_EXEC || op > IPC_OP_SIGNAL) {
         log_drain_write(12, 12, "[ipc_bridge] IPC_SEND: invalid op\n");
-        microkit_mr_set(0, 0xFF);
-        microkit_mr_set(1, 0);
-        return microkit_msginfo_new(0, 2);
+        rep_u32(rep, 0, 0xFF);
+        rep_u32(rep, 4, 0);
+        rep->length = 8;
+        return SEL4_ERR_OK;
     }
 
     /* Validate vm_slot. */
     if (vm_slot >= 4) {
         log_drain_write(12, 12, "[ipc_bridge] IPC_SEND: invalid vm_slot\n");
-        microkit_mr_set(0, 0xFF);
-        microkit_mr_set(1, 0);
-        return microkit_msginfo_new(0, 2);
+        rep_u32(rep, 0, 0xFF);
+        rep_u32(rep, 4, 0);
+        rep->length = 8;
+        return SEL4_ERR_OK;
     }
 
     /* Resolve the payload pointer from the shared MR. */
@@ -421,9 +424,10 @@ static microkit_msginfo handle_ipc_send(void)
     uint32_t seq = 0;
     int rc = ipc_bridge_send_cmd(op, vm_slot, payload, payload_len, &seq);
     if (rc < 0) {
-        microkit_mr_set(0, 0xFF);
-        microkit_mr_set(1, 0);
-        return microkit_msginfo_new(0, 2);
+        rep_u32(rep, 0, 0xFF);
+        rep_u32(rep, 4, 0);
+        rep->length = 8;
+        return SEL4_ERR_OK;
     }
 
     log_drain_write(12, 12, "[ipc_bridge] IPC_SEND: enqueued cmd op=");
@@ -444,9 +448,10 @@ static microkit_msginfo handle_ipc_send(void)
         log_drain_write(12, 12, _cl_buf);
     }
 
-    microkit_mr_set(0, 0);
-    microkit_mr_set(1, seq);
-    return microkit_msginfo_new(0, 2);
+    rep_u32(rep, 0, 0);
+    rep_u32(rep, 4, seq);
+    rep->length = 8;
+        return SEL4_ERR_OK;
 }
 
 /* ── Handle: OP_DEBUG_IPC_POLL ───────────────────────────────────────────── */
@@ -459,38 +464,41 @@ static microkit_msginfo handle_ipc_send(void)
  *   MR2 = resp.payload_offset — not meaningful here; we report 0
  *   MR3 = resp.payload_len
  */
-static microkit_msginfo handle_ipc_poll(void)
+static uint32_t handle_ipc_poll(void)
 {
-    uint32_t seq = (uint32_t)microkit_mr_get(1);
+    uint32_t seq = (uint32_t)msg_u32(req, 4);
 
     ipc_resp_t resp;
     int rc = ipc_bridge_poll_resp(seq, &resp);
 
     if (rc < 0) {
         /* Bridge not initialised or bad pointer. */
-        microkit_mr_set(0, 0xFF);
-        microkit_mr_set(1, 0);
-        microkit_mr_set(2, 0);
-        microkit_mr_set(3, 0);
-        return microkit_msginfo_new(0, 4);
+        rep_u32(rep, 0, 0xFF);
+        rep_u32(rep, 4, 0);
+        rep_u32(rep, 8, 0);
+        rep_u32(rep, 12, 0);
+        rep->length = 16;
+        return SEL4_ERR_OK;
     }
 
     if (rc == 0) {
         /* Still pending — no response yet. */
-        microkit_mr_set(0, 1);
-        microkit_mr_set(1, 0);
-        microkit_mr_set(2, 0);
-        microkit_mr_set(3, 0);
-        return microkit_msginfo_new(0, 4);
+        rep_u32(rep, 0, 1);
+        rep_u32(rep, 4, 0);
+        rep_u32(rep, 8, 0);
+        rep_u32(rep, 12, 0);
+        rep->length = 16;
+        return SEL4_ERR_OK;
     }
 
     /* rc == 1: response found. */
     log_drain_write(12, 12, "[ipc_bridge] IPC_POLL: response received\n");
-    microkit_mr_set(0, 0);
-    microkit_mr_set(1, resp.status);
-    microkit_mr_set(2, 0);            /* payload_offset — inline only */
-    microkit_mr_set(3, resp.payload_len);
-    return microkit_msginfo_new(0, 4);
+    rep_u32(rep, 0, 0);
+    rep_u32(rep, 4, resp.status);
+    rep_u32(rep, 8, 0);            /* payload_offset — inline only */
+    rep_u32(rep, 12, resp.payload_len);
+    rep->length = 16;
+        return SEL4_ERR_OK;
 }
 
 /* ── Init ─────────────────────────────────────────────────────────────────── */
@@ -554,25 +562,28 @@ static void debug_event_append(uint32_t event_type, uint32_t slot_id,
 
 /* ── Notify controller that a debug event is available ────────────────────── */
 static void notify_controller_debug_event(uint32_t slot_id, uint32_t event_type) {
-    microkit_mr_set(0, slot_id);
-    microkit_mr_set(1, event_type);
-    microkit_notify(DBG_CH_NOTIFY_CTRL);
+    rep_u32(rep, 0, slot_id);
+    rep_u32(rep, 4, event_type);
+    sel4_dbg_puts("[E5-S8] notify-stub
+");
 }
 
 /* ── Handle: OP_DBG_ATTACH ────────────────────────────────────────────────── */
-static microkit_msginfo handle_attach(void) {
-    uint32_t slot_id = (uint32_t)microkit_mr_get(1);
+static uint32_t handle_attach(void) {
+    uint32_t slot_id = (uint32_t)msg_u32(req, 4);
 
     if (slot_id >= MAX_DEBUG_SLOTS) {
         log_drain_write(12, 12, "[debug_bridge] ATTACH failed: invalid slot_id\n");
-        microkit_mr_set(0, 0xFF); /* error: invalid slot */
-        return microkit_msginfo_new(0, 1);
+        rep_u32(rep, 0, 0xFF); /* error: invalid slot */
+        rep->length = 4;
+        return SEL4_ERR_OK;
     }
 
     if (slot_state[slot_id].attached) {
         log_drain_write(12, 12, "[debug_bridge] ATTACH: slot already attached\n");
-        microkit_mr_set(0, 0xFE); /* error: already attached */
-        return microkit_msginfo_new(0, 1);
+        rep_u32(rep, 0, 0xFE); /* error: already attached */
+        rep->length = 4;
+        return SEL4_ERR_OK;
     }
 
     slot_state[slot_id].attached  = 1;
@@ -598,22 +609,25 @@ static microkit_msginfo handle_attach(void) {
         log_drain_write(12, 12, _cl_buf);
     }
 
-    microkit_mr_set(0, 0); /* success */
-    return microkit_msginfo_new(0, 1);
+    rep_u32(rep, 0, 0); /* success */
+    rep->length = 4;
+        return SEL4_ERR_OK;
 }
 
 /* ── Handle: OP_DBG_DETACH ────────────────────────────────────────────────── */
-static microkit_msginfo handle_detach(void) {
-    uint32_t slot_id = (uint32_t)microkit_mr_get(1);
+static uint32_t handle_detach(void) {
+    uint32_t slot_id = (uint32_t)msg_u32(req, 4);
 
     if (slot_id >= MAX_DEBUG_SLOTS) {
-        microkit_mr_set(0, 0xFF);
-        return microkit_msginfo_new(0, 1);
+        rep_u32(rep, 0, 0xFF);
+        rep->length = 4;
+        return SEL4_ERR_OK;
     }
 
     if (!slot_state[slot_id].attached) {
-        microkit_mr_set(0, 0xFE); /* not attached */
-        return microkit_msginfo_new(0, 1);
+        rep_u32(rep, 0, 0xFE); /* not attached */
+        rep->length = 4;
+        return SEL4_ERR_OK;
     }
 
     /* If suspended, resume before detaching */
@@ -643,19 +657,21 @@ static microkit_msginfo handle_detach(void) {
         log_drain_write(12, 12, _cl_buf);
     }
 
-    microkit_mr_set(0, 0);
-    return microkit_msginfo_new(0, 1);
+    rep_u32(rep, 0, 0);
+    rep->length = 4;
+        return SEL4_ERR_OK;
 }
 
 /* ── Handle: OP_DBG_BREAKPOINT ────────────────────────────────────────────── */
-static microkit_msginfo handle_breakpoint(void) {
-    uint32_t slot_id     = (uint32_t)microkit_mr_get(1);
-    uint32_t wasm_offset = (uint32_t)microkit_mr_get(2);
-    uint32_t enable      = (uint32_t)microkit_mr_get(3);
+static uint32_t handle_breakpoint(void) {
+    uint32_t slot_id     = (uint32_t)msg_u32(req, 4);
+    uint32_t wasm_offset = (uint32_t)msg_u32(req, 8);
+    uint32_t enable      = (uint32_t)msg_u32(req, 12);
 
     if (slot_id >= MAX_DEBUG_SLOTS || !slot_state[slot_id].attached) {
-        microkit_mr_set(0, 0xFF);
-        return microkit_msginfo_new(0, 1);
+        rep_u32(rep, 0, 0xFF);
+        rep->length = 4;
+        return SEL4_ERR_OK;
     }
 
     slot_debug_state_t *s = &slot_state[slot_id];
@@ -666,17 +682,19 @@ static microkit_msginfo handle_breakpoint(void) {
         for (uint32_t i = 0; i < s->bp_count; i++) {
             if (s->breakpoints[i].wasm_offset == wasm_offset) {
                 s->breakpoints[i].enabled = 1;
-                microkit_mr_set(0, 0);
-                microkit_mr_set(1, i); /* breakpoint index */
-                return microkit_msginfo_new(0, 2);
+                rep_u32(rep, 0, 0);
+                rep_u32(rep, 4, i); /* breakpoint index */
+                rep->length = 8;
+        return SEL4_ERR_OK;
             }
         }
 
         /* Add new breakpoint */
         if (s->bp_count >= MAX_BREAKPOINTS) {
             log_drain_write(12, 12, "[debug_bridge] BP table full\n");
-            microkit_mr_set(0, 0xFD); /* table full */
-            return microkit_msginfo_new(0, 1);
+            rep_u32(rep, 0, 0xFD); /* table full */
+            rep->length = 4;
+        return SEL4_ERR_OK;
         }
 
         uint32_t idx = s->bp_count++;
@@ -696,41 +714,47 @@ static microkit_msginfo handle_breakpoint(void) {
             log_drain_write(12, 12, _cl_buf);
         }
 
-        microkit_mr_set(0, 0);
-        microkit_mr_set(1, idx);
-        return microkit_msginfo_new(0, 2);
+        rep_u32(rep, 0, 0);
+        rep_u32(rep, 4, idx);
+        rep->length = 8;
+        return SEL4_ERR_OK;
     } else {
         /* Disable breakpoint at offset */
         for (uint32_t i = 0; i < s->bp_count; i++) {
             if (s->breakpoints[i].wasm_offset == wasm_offset) {
                 s->breakpoints[i].enabled = 0;
-                microkit_mr_set(0, 0);
-                return microkit_msginfo_new(0, 1);
+                rep_u32(rep, 0, 0);
+                rep->length = 4;
+        return SEL4_ERR_OK;
             }
         }
-        microkit_mr_set(0, 0xFC); /* not found */
-        return microkit_msginfo_new(0, 1);
+        rep_u32(rep, 0, 0xFC); /* not found */
+        rep->length = 4;
+        return SEL4_ERR_OK;
     }
 }
 
 /* ── Handle: OP_DBG_STEP ──────────────────────────────────────────────────── */
-static microkit_msginfo handle_step(void) {
-    uint32_t slot_id   = (uint32_t)microkit_mr_get(1);
-    uint32_t step_mode = (uint32_t)microkit_mr_get(2);
+static uint32_t handle_step(void) {
+    uint32_t slot_id   = (uint32_t)msg_u32(req, 4);
+    uint32_t step_mode = (uint32_t)msg_u32(req, 8);
 
     if (slot_id >= MAX_DEBUG_SLOTS || !slot_state[slot_id].attached) {
-        microkit_mr_set(0, 0xFF);
-        return microkit_msginfo_new(0, 1);
+        rep_u32(rep, 0, 0xFF);
+        rep->length = 4;
+        return SEL4_ERR_OK;
     }
 
     if (!slot_state[slot_id].suspended) {
-        microkit_mr_set(0, 0xFE); /* not suspended, can't step */
-        return microkit_msginfo_new(0, 1);
+        rep_u32(rep, 0, 0xFE); /* not suspended, can't step */
+        rep->length = 4;
+        return SEL4_ERR_OK;
     }
 
     if (step_mode < STEP_INTO || step_mode > STEP_OUT) {
-        microkit_mr_set(0, 0xFD); /* invalid step mode */
-        return microkit_msginfo_new(0, 1);
+        rep_u32(rep, 0, 0xFD); /* invalid step mode */
+        rep->length = 4;
+        return SEL4_ERR_OK;
     }
 
     slot_state[slot_id].step_mode = (uint8_t)step_mode;
@@ -768,42 +792,46 @@ static microkit_msginfo handle_step(void) {
      * back via the debug notification channel.
      */
 
-    microkit_mr_set(0, 0);
-    return microkit_msginfo_new(0, 1);
+    rep_u32(rep, 0, 0);
+    rep->length = 4;
+        return SEL4_ERR_OK;
 }
 
 /* ── Handle: OP_DBG_STATUS ────────────────────────────────────────────────── */
-static microkit_msginfo handle_status(void) {
-    uint32_t slot_id = (uint32_t)microkit_mr_get(1);
+static uint32_t handle_status(void) {
+    uint32_t slot_id = (uint32_t)msg_u32(req, 4);
 
     if (slot_id == 0xFF) {
         /* Ring buffer status */
         volatile debug_ring_header_t *hdr = DBG_HDR;
-        microkit_mr_set(0, (uint32_t)(hdr->count & 0xFFFFFFFF));
-        microkit_mr_set(1, (uint32_t)(hdr->head & 0xFFFFFFFF));
-        microkit_mr_set(2, (uint32_t)(hdr->capacity & 0xFFFFFFFF));
-        microkit_mr_set(3, (uint32_t)(hdr->drops & 0xFFFFFFFF));
-        return microkit_msginfo_new(0, 4);
+        rep_u32(rep, 0, (uint32_t)(hdr->count & 0xFFFFFFFF));
+        rep_u32(rep, 4, (uint32_t)(hdr->head & 0xFFFFFFFF));
+        rep_u32(rep, 8, (uint32_t)(hdr->capacity & 0xFFFFFFFF));
+        rep_u32(rep, 12, (uint32_t)(hdr->drops & 0xFFFFFFFF));
+        rep->length = 16;
+        return SEL4_ERR_OK;
     }
 
     if (slot_id >= MAX_DEBUG_SLOTS) {
-        microkit_mr_set(0, 0xFF);
-        return microkit_msginfo_new(0, 1);
+        rep_u32(rep, 0, 0xFF);
+        rep->length = 4;
+        return SEL4_ERR_OK;
     }
 
     slot_debug_state_t *s = &slot_state[slot_id];
-    microkit_mr_set(0, s->attached);
-    microkit_mr_set(1, s->suspended);
-    microkit_mr_set(2, s->step_mode);
-    microkit_mr_set(3, s->bp_count);
-    microkit_mr_set(4, (uint32_t)(s->suspend_pc & 0xFFFFFFFF));
-    microkit_mr_set(5, (uint32_t)(s->hit_count & 0xFFFFFFFF));
-    return microkit_msginfo_new(0, 6);
+    rep_u32(rep, 0, s->attached);
+    rep_u32(rep, 4, s->suspended);
+    rep_u32(rep, 8, s->step_mode);
+    rep_u32(rep, 12, s->bp_count);
+    rep_u32(rep, 16, (uint32_t)(s->suspend_pc & 0xFFFFFFFF));
+    rep_u32(rep, 20, (uint32_t)(s->hit_count & 0xFFFFFFFF));
+    rep->length = 24;
+        return SEL4_ERR_OK;
 }
 
 /* ── Microkit entry points ────────────────────────────────────────────────── */
 
-void init(void) {
+static void debug_bridge_pd_init(void) {
     agentos_log_boot("debug_bridge");
     debug_bridge_init();
     log_drain_write(12, 12, "[debug_bridge] Ready — passive debug channel, priority 160\n");
@@ -813,11 +841,11 @@ void init(void) {
  * Protected procedure call handler (passive PD).
  * Called when vibe_engine or controller PPCs into us.
  */
-microkit_msginfo protected(microkit_channel ch, microkit_msginfo msginfo) {
-    (void)ch;
-    (void)msginfo;
+static uint32_t debug_bridge_h_dispatch(sel4_badge_t b, const sel4_msg_t *req, sel4_msg_t *rep, void *ctx) {
+    (void)b;
+    (void)ctx;
 
-    uint64_t op = microkit_mr_get(0);
+    uint64_t op = msg_u32(req, 0);
     boot_tick++;
 
     switch (op) {
@@ -830,8 +858,9 @@ microkit_msginfo protected(microkit_channel ch, microkit_msginfo msginfo) {
     case OP_DEBUG_IPC_POLL:  return handle_ipc_poll();
     default:
         log_drain_write(12, 12, "[debug_bridge] WARN: unknown opcode\n");
-        microkit_mr_set(0, 0xFF);
-        return microkit_msginfo_new(0, 1);
+        rep_u32(rep, 0, 0xFF);
+        rep->length = 4;
+        return SEL4_ERR_OK;
     }
 }
 
@@ -853,7 +882,7 @@ microkit_msginfo protected(microkit_channel ch, microkit_msginfo msginfo) {
  *     a full implementation; here we use a convention that the slot wrote
  *     the PC into MR0 of the notification badge)
  */
-void notified(microkit_channel ch) {
+static void debug_bridge_pd_notified(uint32_t ch) {
     boot_tick++;
 
     /* IPC shmem notification: Linux→seL4 response ring has data (channel 7). */
@@ -935,4 +964,16 @@ void notified(microkit_channel ch) {
             }
         }
     }
+}
+
+/* ── E5-S8: Entry point ─────────────────────────────────────────────────── */
+void debug_bridge_main(seL4_CPtr my_ep, seL4_CPtr ns_ep)
+{
+    (void)ns_ep;
+    debug_bridge_pd_init();
+    static sel4_server_t srv;
+    sel4_server_init(&srv, my_ep);
+    /* Dispatch all opcodes through the generic handler */
+    sel4_server_register(&srv, SEL4_SERVER_OPCODE_ANY, debug_bridge_h_dispatch, (void *)0);
+    sel4_server_run(&srv);
 }

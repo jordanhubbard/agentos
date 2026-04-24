@@ -26,6 +26,7 @@
 
 #define AGENTOS_DEBUG 1
 #include "agentos.h"
+#include "sel4_server.h"
 #include "contracts/serial_contract.h"
 
 /* ─── PL011 UART register offsets ───────────────────────────────────────── */
@@ -227,7 +228,7 @@ static void poll_hw_rx(void)
 
 static void handle_open(void)
 {
-    uint32_t port_id = (uint32_t)microkit_mr_get(1);
+    uint32_t port_id = (uint32_t)msg_u32(req, 4);
 
     for (uint32_t i = 0; i < SERIAL_MAX_CLIENTS; i++) {
         if (clients[i].open) continue;
@@ -242,36 +243,36 @@ static void handle_open(void)
         clients[i].rx.head   = 0;
         clients[i].rx.tail   = 0;
 
-        microkit_mr_set(0, SERIAL_OK);
-        microkit_mr_set(1, i);
+        rep_u32(rep, 0, SERIAL_OK);
+        rep_u32(rep, 4, i);
         return;
     }
 
-    microkit_mr_set(0, SERIAL_ERR_NO_SLOTS);
-    microkit_mr_set(1, 0);
+    rep_u32(rep, 0, SERIAL_ERR_NO_SLOTS);
+    rep_u32(rep, 4, 0);
 }
 
 static void handle_close(void)
 {
-    uint32_t slot = (uint32_t)microkit_mr_get(1);
+    uint32_t slot = (uint32_t)msg_u32(req, 4);
 
     if (slot >= SERIAL_MAX_CLIENTS || !clients[slot].open) {
-        microkit_mr_set(0, SERIAL_ERR_BAD_SLOT);
+        rep_u32(rep, 0, SERIAL_ERR_BAD_SLOT);
         return;
     }
 
     clients[slot].open = false;
-    microkit_mr_set(0, SERIAL_OK);
+    rep_u32(rep, 0, SERIAL_OK);
 }
 
 static void handle_write(void)
 {
-    uint32_t slot = (uint32_t)microkit_mr_get(1);
-    uint32_t len  = (uint32_t)microkit_mr_get(2);
+    uint32_t slot = (uint32_t)msg_u32(req, 4);
+    uint32_t len  = (uint32_t)msg_u32(req, 8);
 
     if (slot >= SERIAL_MAX_CLIENTS || !clients[slot].open) {
-        microkit_mr_set(0, SERIAL_ERR_BAD_SLOT);
-        microkit_mr_set(1, 0);
+        rep_u32(rep, 0, SERIAL_ERR_BAD_SLOT);
+        rep_u32(rep, 4, 0);
         return;
     }
 
@@ -286,18 +287,18 @@ static void handle_write(void)
     }
 
     clients[slot].tx_count += len;
-    microkit_mr_set(0, SERIAL_OK);
-    microkit_mr_set(1, len);
+    rep_u32(rep, 0, SERIAL_OK);
+    rep_u32(rep, 4, len);
 }
 
 static void handle_read(void)
 {
-    uint32_t slot = (uint32_t)microkit_mr_get(1);
-    uint32_t max  = (uint32_t)microkit_mr_get(2);
+    uint32_t slot = (uint32_t)msg_u32(req, 4);
+    uint32_t max  = (uint32_t)msg_u32(req, 8);
 
     if (slot >= SERIAL_MAX_CLIENTS || !clients[slot].open) {
-        microkit_mr_set(0, SERIAL_ERR_BAD_SLOT);
-        microkit_mr_set(1, 0);
+        rep_u32(rep, 0, SERIAL_ERR_BAD_SLOT);
+        rep_u32(rep, 4, 0);
         return;
     }
 
@@ -308,39 +309,39 @@ static void handle_read(void)
     uint8_t *shmem = (uint8_t *)serial_shmem_vaddr;
     uint32_t n     = rx_drain(&clients[slot].rx, shmem, max);
 
-    microkit_mr_set(0, SERIAL_OK);
-    microkit_mr_set(1, n);
+    rep_u32(rep, 0, SERIAL_OK);
+    rep_u32(rep, 4, n);
 }
 
 static void handle_status(void)
 {
-    uint32_t slot = (uint32_t)microkit_mr_get(1);
+    uint32_t slot = (uint32_t)msg_u32(req, 4);
 
     if (slot >= SERIAL_MAX_CLIENTS || !clients[slot].open) {
-        microkit_mr_set(0, SERIAL_ERR_BAD_SLOT);
+        rep_u32(rep, 0, SERIAL_ERR_BAD_SLOT);
         return;
     }
 
-    microkit_mr_set(0, SERIAL_OK);
-    microkit_mr_set(1, clients[slot].baud);
-    microkit_mr_set(2, clients[slot].rx_count);
-    microkit_mr_set(3, clients[slot].tx_count);
-    microkit_mr_set(4, clients[slot].err_flags);
+    rep_u32(rep, 0, SERIAL_OK);
+    rep_u32(rep, 4, clients[slot].baud);
+    rep_u32(rep, 8, clients[slot].rx_count);
+    rep_u32(rep, 12, clients[slot].tx_count);
+    rep_u32(rep, 16, clients[slot].err_flags);
 }
 
 static void handle_configure(void)
 {
-    uint32_t slot  = (uint32_t)microkit_mr_get(1);
-    uint32_t baud  = (uint32_t)microkit_mr_get(2);
-    uint32_t flags = (uint32_t)microkit_mr_get(3);
+    uint32_t slot  = (uint32_t)msg_u32(req, 4);
+    uint32_t baud  = (uint32_t)msg_u32(req, 8);
+    uint32_t flags = (uint32_t)msg_u32(req, 12);
 
     if (slot >= SERIAL_MAX_CLIENTS || !clients[slot].open) {
-        microkit_mr_set(0, SERIAL_ERR_BAD_SLOT);
+        rep_u32(rep, 0, SERIAL_ERR_BAD_SLOT);
         return;
     }
 
     if (baud != 9600 && baud != 38400 && baud != 57600 && baud != 115200) {
-        microkit_mr_set(0, SERIAL_ERR_BAD_BAUD);
+        rep_u32(rep, 0, SERIAL_ERR_BAD_BAUD);
         return;
     }
 
@@ -352,14 +353,14 @@ static void handle_configure(void)
     if (clients[slot].port_id == 0 && hw_ready)
         pl011_set_baud(baud);
 
-    microkit_mr_set(0, SERIAL_OK);
+    rep_u32(rep, 0, SERIAL_OK);
 }
 
 /* ─── Microkit entry points ──────────────────────────────────────────────── */
 
-void init(void)
+static void serial_pd_pd_init(void)
 {
-    microkit_dbg_puts("[serial_pd] starting — agentOS serial I/O service\n");
+    sel4_dbg_puts("[serial_pd] starting — agentOS serial I/O service\n");
 
     for (uint32_t i = 0; i < SERIAL_MAX_CLIENTS; i++)
         clients[i].open = false;
@@ -369,23 +370,23 @@ void init(void)
         hw_ready = true;
         pl011_puts("[serial_pd] PL011 UART ready — 115200 8N1\n");
     } else {
-        microkit_dbg_puts("[serial_pd] WARNING: uart_mmio_vaddr not mapped "
+        sel4_dbg_puts("[serial_pd] WARNING: uart_mmio_vaddr not mapped "
                           "(x86 or misconfigured manifest)\n");
     }
 }
 
-void notified(microkit_channel ch)
+static void serial_pd_pd_notified(uint32_t ch)
 {
     if (ch == CH_UART_IRQ)
         poll_hw_rx();
 }
 
-microkit_msginfo protected(microkit_channel ch, microkit_msginfo msginfo)
+static uint32_t serial_pd_h_dispatch(sel4_badge_t b, const sel4_msg_t *req, sel4_msg_t *rep, void *ctx)
 {
-    (void)ch;
-    (void)msginfo;
+    (void)b;
+    (void)ctx;
 
-    uint32_t op = (uint32_t)microkit_mr_get(0);
+    uint32_t op = (uint32_t)msg_u32(req, 0);
 
     switch (op) {
     case MSG_SERIAL_OPEN:      handle_open();      break;
@@ -395,10 +396,23 @@ microkit_msginfo protected(microkit_channel ch, microkit_msginfo msginfo)
     case MSG_SERIAL_STATUS:    handle_status();    break;
     case MSG_SERIAL_CONFIGURE: handle_configure(); break;
     default:
-        microkit_dbg_puts("[serial_pd] unknown opcode\n");
-        microkit_mr_set(0, SERIAL_ERR_BAD_SLOT);
+        sel4_dbg_puts("[serial_pd] unknown opcode\n");
+        rep_u32(rep, 0, SERIAL_ERR_BAD_SLOT);
         break;
     }
 
-    return microkit_msginfo_new(0, 5);
+    rep->length = 20;
+        return SEL4_ERR_OK;
+}
+
+/* ── E5-S8: Entry point ─────────────────────────────────────────────────── */
+void serial_pd_main(seL4_CPtr my_ep, seL4_CPtr ns_ep)
+{
+    (void)ns_ep;
+    serial_pd_pd_init();
+    static sel4_server_t srv;
+    sel4_server_init(&srv, my_ep);
+    /* Dispatch all opcodes through the generic handler */
+    sel4_server_register(&srv, SEL4_SERVER_OPCODE_ANY, serial_pd_h_dispatch, (void *)0);
+    sel4_server_run(&srv);
 }

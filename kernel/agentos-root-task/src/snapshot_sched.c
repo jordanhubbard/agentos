@@ -54,7 +54,6 @@
  *   test/test_snapshot_sched.c — unit tests
  */
 
-#include <microkit.h>
 #include "contracts/snapshot_sched_contract.h"
 #include <stdint.h>
 #include <stdbool.h>
@@ -123,7 +122,7 @@ static uint32_t g_min_delta      = SNAP_MIN_DELTA_DEFAULT;
 
 /* ── Init ────────────────────────────────────────────────────────────────── */
 
-void init(void) {
+static void snapshot_sched_pd_init(void) {
     memset(g_slots, 0, sizeof(g_slots));
     memset(g_history, 0, sizeof(g_history));
     g_tick_counter  = 0;
@@ -162,15 +161,15 @@ static void history_push(uint32_t tick, uint32_t checked,
 /* ── Snapshot one slot via AgentFS ──────────────────────────────────────── */
 
 static bool snapshot_slot(SlotSnapState *s) {
-    microkit_mr_set(0, OP_SNAPSHOT_SLOT);
-    microkit_mr_set(1, s->slot_id);
-    microkit_msginfo_t resp =
-        microkit_ppcall(CH_AGENTFS, microkit_msginfo_new(OP_SNAPSHOT_SLOT, 2));
+    rep_u32(rep, 0, OP_SNAPSHOT_SLOT);
+    rep_u32(rep, 4, s->slot_id);
+    uint32_t resp =
+        /* E5-S8: ppcall stubbed */
     (void)resp; /* AgentFS returns MR0=ok, MR1:MR2=hash_lo:hash_hi */
 
-    uint32_t ok      = (uint32_t)microkit_mr_get(0);
-    uint32_t hash_lo = (uint32_t)microkit_mr_get(1);
-    uint32_t hash_hi = (uint32_t)microkit_mr_get(2);
+    uint32_t ok      = (uint32_t)msg_u32(req, 0);
+    uint32_t hash_lo = (uint32_t)msg_u32(req, 4);
+    uint32_t hash_hi = (uint32_t)msg_u32(req, 8);
 
     if (!ok) return false;
 
@@ -219,27 +218,27 @@ static void run_snapshot_round(uint32_t running_mask) {
     history_push(g_tick_counter, checked, snapped, skipped, failed);
 
     /* Publish SNAP_SCHED_DONE to event bus */
-    microkit_mr_set(0, OP_EVENT_BUS_PUBLISH);
-    microkit_mr_set(1, EVENT_SNAP_SCHED_DONE);
-    microkit_mr_set(2, checked);
-    microkit_mr_set(3, snapped);
-    microkit_mr_set(4, g_tick_counter);
-    microkit_ppcall(CH_EVENT_BUS, microkit_msginfo_new(OP_EVENT_BUS_PUBLISH, 5));
+    rep_u32(rep, 0, OP_EVENT_BUS_PUBLISH);
+    rep_u32(rep, 4, EVENT_SNAP_SCHED_DONE);
+    rep_u32(rep, 8, checked);
+    rep_u32(rep, 12, snapped);
+    rep_u32(rep, 16, g_tick_counter);
+    /* E5-S8: ppcall stubbed */
 }
 
 /* ── Query controller for running slot bitmask ──────────────────────────── */
 
 static uint32_t query_running_slots(void) {
-    microkit_mr_set(0, OP_CTRL_SLOT_LIST);
-    microkit_msginfo_t resp =
-        microkit_ppcall(CH_CTRL, microkit_msginfo_new(OP_CTRL_SLOT_LIST, 1));
+    rep_u32(rep, 0, OP_CTRL_SLOT_LIST);
+    uint32_t resp =
+        /* E5-S8: ppcall stubbed */
     (void)resp;
-    return (uint32_t)microkit_mr_get(1); /* bitmask of running slots */
+    return (uint32_t)msg_u32(req, 4); /* bitmask of running slots */
 }
 
 /* ── notified — timer tick path ─────────────────────────────────────────── */
 
-void notified(microkit_channel ch) {
+static void snapshot_sched_pd_notified(uint32_t ch) {
     if (ch == CH_TIMER_TICK) {
         g_tick_counter++;
         if ((g_tick_counter % g_interval_ticks) == 0) {
@@ -251,51 +250,67 @@ void notified(microkit_channel ch) {
 
 /* ── protected_procedure_call — policy + status ─────────────────────────── */
 
-microkit_msginfo_t protected(microkit_channel ch, microkit_msginfo_t msginfo) {
-    uint32_t op = (uint32_t)microkit_mr_get(0);
-    (void)ch;
-    (void)msginfo;
+static uint32_t snapshot_sched_h_dispatch(sel4_badge_t b, const sel4_msg_t *req, sel4_msg_t *rep, void *ctx) {
+    uint32_t op = (uint32_t)msg_u32(req, 0);
+    (void)b;
+    (void)ctx;
 
     switch (op) {
 
     case OP_SNAP_STATUS:
-        microkit_mr_set(1, g_round_counter);
-        microkit_mr_set(2, g_total_snapped);
-        microkit_mr_set(3, g_tick_counter);
-        microkit_mr_set(4, g_slot_count);
-        return microkit_msginfo_new(0, 5);
+        rep_u32(rep, 4, g_round_counter);
+        rep_u32(rep, 8, g_total_snapped);
+        rep_u32(rep, 12, g_tick_counter);
+        rep_u32(rep, 16, g_slot_count);
+        rep->length = 20;
+        return SEL4_ERR_OK;
 
     case OP_SNAP_SET_POLICY: {
-        uint32_t new_interval = (uint32_t)microkit_mr_get(1);
-        uint32_t new_delta    = (uint32_t)microkit_mr_get(2);
+        uint32_t new_interval = (uint32_t)msg_u32(req, 4);
+        uint32_t new_delta    = (uint32_t)msg_u32(req, 8);
         if (new_interval > 0)  g_interval_ticks = new_interval;
         if (new_delta > 0)     g_min_delta       = new_delta;
-        microkit_mr_set(0, 1); /* ok */
-        return microkit_msginfo_new(0, 1);
+        rep_u32(rep, 0, 1); /* ok */
+        rep->length = 4;
+        return SEL4_ERR_OK;
     }
 
     case OP_SNAP_FORCE: {
         /* Immediate snapshot round of all running slots */
         uint32_t running_mask = query_running_slots();
         run_snapshot_round(running_mask);
-        microkit_mr_set(0, 1);
-        microkit_mr_set(1, g_round_counter);
-        return microkit_msginfo_new(0, 2);
+        rep_u32(rep, 0, 1);
+        rep_u32(rep, 4, g_round_counter);
+        rep->length = 8;
+        return SEL4_ERR_OK;
     }
 
     case OP_SNAP_GET_HISTORY: {
         /* Return last 4 history entries (8 MRs = 4 × 2 MRs each) */
         for (uint32_t i = 0; i < 4 && i < SNAP_HISTORY_SIZE; i++) {
             uint32_t idx = (g_history_head + SNAP_HISTORY_SIZE - 1 - i) % SNAP_HISTORY_SIZE;
-            microkit_mr_set(i * 2 + 1, g_history[idx].tick);
-            microkit_mr_set(i * 2 + 2,
-                (g_history[idx].slots_snapped << 16) | g_history[idx].slots_checked);
+            rep_u32(rep, (i * 2 + 1) * 4, g_history[idx].tick);
+            rep_u32(rep, (i * 2 + 2) * 4,                 (g_history[idx].slots_snapped << 16) | g_history[idx].slots_checked);
         }
-        return microkit_msginfo_new(0, 9);
+        rep->length = 36;
+        return SEL4_ERR_OK;
     }
 
     default:
-        microkit_mr_set(0, 0); /* unknown op */
-        return microkit_msginfo_new(0, 1);
+        rep_u32(rep, 0, 0); /* unknown op */
+        rep->length = 4;
+        return SEL4_ERR_OK;
     }
+}
+
+/* ── E5-S8: Entry point ─────────────────────────────────────────────────── */
+void snapshot_sched_main(seL4_CPtr my_ep, seL4_CPtr ns_ep)
+{
+    (void)ns_ep;
+    snapshot_sched_pd_init();
+    static sel4_server_t srv;
+    sel4_server_init(&srv, my_ep);
+    /* Dispatch all opcodes through the generic handler */
+    sel4_server_register(&srv, SEL4_SERVER_OPCODE_ANY, snapshot_sched_h_dispatch, (void *)0);
+    sel4_server_run(&srv);
 }

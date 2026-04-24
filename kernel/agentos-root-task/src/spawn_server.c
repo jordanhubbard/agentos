@@ -35,6 +35,7 @@
 
 #define AGENTOS_DEBUG 1
 #include "agentos.h"
+#include "sel4_server.h"
 #include "spawn.h"
 #include "vfs.h"
 #include "sha256_mini.h"
@@ -53,7 +54,7 @@ typedef struct {
     uint32_t         cap_classes;
     char             name[32];
     uint64_t         launch_tick;
-    microkit_channel slot_ch;        /* CH4..CH7 */
+    uint32_t slot_ch;        /* CH4..CH7 */
 } spawn_slot_t;
 
 static spawn_slot_t slots[SPAWN_MAX_SLOTS];
@@ -139,14 +140,13 @@ static uint32_t vfs_open(const char *path) {
     /* Memory barrier before PPC */
     __asm__ volatile("" ::: "memory");
 
-    microkit_mr_set(0, OP_VFS_OPEN);
-    microkit_mr_set(1, VFS_O_RD);
-    microkit_msginfo reply = microkit_ppcall(SPAWN_CH_VFS,
-                                 microkit_msginfo_new(OP_VFS_OPEN, 2));
+    rep_u32(rep, 0, OP_VFS_OPEN);
+    rep_u32(rep, 4, VFS_O_RD);
+    uint32_t reply = /* E5-S8: ppcall stubbed */
     (void)reply;
 
-    uint32_t result = (uint32_t)microkit_mr_get(0);
-    uint32_t handle = (uint32_t)microkit_mr_get(1);
+    uint32_t result = (uint32_t)msg_u32(req, 0);
+    uint32_t handle = (uint32_t)msg_u32(req, 4);
 
     if (result != VFS_OK || handle == 0) {
         return 0xFFFFFFFFu;
@@ -159,28 +159,27 @@ static uint32_t vfs_open(const char *path) {
  * Returns 0xFFFFFFFF on failure.
  */
 static uint32_t vfs_stat(uint32_t handle) {
-    microkit_mr_set(0, OP_VFS_STAT);
-    microkit_mr_set(1, handle);
-    microkit_msginfo reply = microkit_ppcall(SPAWN_CH_VFS,
-                                 microkit_msginfo_new(OP_VFS_STAT, 2));
+    rep_u32(rep, 0, OP_VFS_STAT);
+    rep_u32(rep, 4, handle);
+    uint32_t reply = /* E5-S8: ppcall stubbed */
     (void)reply;
 
-    uint32_t result = (uint32_t)microkit_mr_get(0);
+    uint32_t result = (uint32_t)msg_u32(req, 0);
     if (result != VFS_OK) return 0xFFFFFFFFu;
 
     /* MR1=size_lo, MR2=size_hi — we only support 32-bit sizes for now */
-    uint32_t size_hi = (uint32_t)microkit_mr_get(2);
+    uint32_t size_hi = (uint32_t)msg_u32(req, 8);
     if (size_hi != 0) return 0xFFFFFFFFu;  /* file too large */
-    return (uint32_t)microkit_mr_get(1);
+    return (uint32_t)msg_u32(req, 4);
 }
 
 /*
  * vfs_close: close an open handle.
  */
 static void vfs_close(uint32_t handle) {
-    microkit_mr_set(0, OP_VFS_CLOSE);
-    microkit_mr_set(1, handle);
-    microkit_ppcall(SPAWN_CH_VFS, microkit_msginfo_new(OP_VFS_CLOSE, 2));
+    rep_u32(rep, 0, OP_VFS_CLOSE);
+    rep_u32(rep, 4, handle);
+    /* E5-S8: ppcall stubbed */
 }
 
 /*
@@ -199,17 +198,16 @@ static uint32_t vfs_read_all(uint32_t handle, uint8_t *dst, uint32_t elf_size) {
         uint32_t remaining = elf_size - offset;
         uint32_t want      = remaining < chunk_max ? remaining : chunk_max;
 
-        microkit_mr_set(0, OP_VFS_READ);
-        microkit_mr_set(1, handle);
-        microkit_mr_set(2, offset);       /* offset_lo */
-        microkit_mr_set(3, 0);            /* offset_hi */
-        microkit_mr_set(4, want);
-        microkit_msginfo reply = microkit_ppcall(SPAWN_CH_VFS,
-                                     microkit_msginfo_new(OP_VFS_READ, 5));
+        rep_u32(rep, 0, OP_VFS_READ);
+        rep_u32(rep, 4, handle);
+        rep_u32(rep, 8, offset);       /* offset_lo */
+        rep_u32(rep, 12, 0);            /* offset_hi */
+        rep_u32(rep, 16, want);
+        uint32_t reply = /* E5-S8: ppcall stubbed */
         (void)reply;
 
-        uint32_t result     = (uint32_t)microkit_mr_get(0);
-        uint32_t bytes_read = (uint32_t)microkit_mr_get(1);
+        uint32_t result     = (uint32_t)msg_u32(req, 0);
+        uint32_t bytes_read = (uint32_t)msg_u32(req, 4);
 
         if (result != VFS_OK || bytes_read == 0) {
             return 0xFFFFFFFFu;
@@ -234,8 +232,8 @@ static uint32_t vfs_read_all(uint32_t handle, uint8_t *dst, uint32_t elf_size) {
 
 /* ── OP_SPAWN_LAUNCH ─────────────────────────────────────────────────────── */
 
-static microkit_msginfo handle_launch(void) {
-    uint32_t cap_classes = (uint32_t)microkit_mr_get(1);
+static uint32_t handle_launch(void) {
+    uint32_t cap_classes = (uint32_t)msg_u32(req, 4);
     /* MR2 = flags (reserved, not used in v1) */
 
     /* Read name and elf_path from spawn_config_shmem */
@@ -258,8 +256,9 @@ static microkit_msginfo handle_launch(void) {
     if (name[0] == '\0' || elf_path[0] == '\0') {
         log_drain_write(SPAWN_CONSOLE_SLOT, SPAWN_PD_ID,
                     "[spawn_server] LAUNCH REJECT: empty name or path\n");
-        microkit_mr_set(0, SPAWN_ERR_INVAL);
-        return microkit_msginfo_new(0, 1);
+        rep_u32(rep, 0, SPAWN_ERR_INVAL);
+        rep->length = 4;
+        return SEL4_ERR_OK;
     }
 
     /* Find a free slot */
@@ -267,8 +266,9 @@ static microkit_msginfo handle_launch(void) {
     if (si < 0) {
         log_drain_write(SPAWN_CONSOLE_SLOT, SPAWN_PD_ID,
                     "[spawn_server] LAUNCH REJECT: no free slots\n");
-        microkit_mr_set(0, SPAWN_ERR_NO_SLOTS);
-        return microkit_msginfo_new(0, 1);
+        rep_u32(rep, 0, SPAWN_ERR_NO_SLOTS);
+        rep->length = 4;
+        return SEL4_ERR_OK;
     }
 
     /* Log the launch attempt */
@@ -283,8 +283,9 @@ static microkit_msginfo handle_launch(void) {
     if (vfs_handle == 0xFFFFFFFFu) {
         log_drain_write(SPAWN_CONSOLE_SLOT, SPAWN_PD_ID,
                     "[spawn_server] LAUNCH FAIL: VFS open failed\n");
-        microkit_mr_set(0, SPAWN_ERR_VFS);
-        return microkit_msginfo_new(0, 1);
+        rep_u32(rep, 0, SPAWN_ERR_VFS);
+        rep->length = 4;
+        return SEL4_ERR_OK;
     }
 
     /* Stat to get ELF size */
@@ -293,8 +294,9 @@ static microkit_msginfo handle_launch(void) {
         log_drain_write(SPAWN_CONSOLE_SLOT, SPAWN_PD_ID,
                     "[spawn_server] LAUNCH FAIL: VFS stat failed\n");
         vfs_close(vfs_handle);
-        microkit_mr_set(0, SPAWN_ERR_VFS);
-        return microkit_msginfo_new(0, 1);
+        rep_u32(rep, 0, SPAWN_ERR_VFS);
+        rep->length = 4;
+        return SEL4_ERR_OK;
     }
 
     /* Validate size: must fit after the 64-byte launch header */
@@ -306,8 +308,9 @@ static microkit_msginfo handle_launch(void) {
         log_drain_write(SPAWN_CONSOLE_SLOT, SPAWN_PD_ID, dbuf);
         log_drain_write(SPAWN_CONSOLE_SLOT, SPAWN_PD_ID, " bytes)\n");
         vfs_close(vfs_handle);
-        microkit_mr_set(0, SPAWN_ERR_TOO_LARGE);
-        return microkit_msginfo_new(0, 1);
+        rep_u32(rep, 0, SPAWN_ERR_TOO_LARGE);
+        rep->length = 4;
+        return SEL4_ERR_OK;
     }
 
     /* Read ELF into spawn_elf_shmem starting at byte SPAWN_HEADER_SIZE */
@@ -318,8 +321,9 @@ static microkit_msginfo handle_launch(void) {
     if (bytes_read != elf_size) {
         log_drain_write(SPAWN_CONSOLE_SLOT, SPAWN_PD_ID,
                     "[spawn_server] LAUNCH FAIL: VFS read incomplete\n");
-        microkit_mr_set(0, SPAWN_ERR_VFS);
-        return microkit_msginfo_new(0, 1);
+        rep_u32(rep, 0, SPAWN_ERR_VFS);
+        rep->length = 4;
+        return SEL4_ERR_OK;
     }
 
     /* Assign app_id and fill slot record */
@@ -331,7 +335,7 @@ static microkit_msginfo handle_launch(void) {
     slots[si].state       = SPAWN_SLOT_LOADING;
     slots[si].cap_classes = cap_classes;
     slots[si].launch_tick = tick_counter;
-    slots[si].slot_ch     = (microkit_channel)(SPAWN_CH_APP_SLOT_0 + si);
+    slots[si].slot_ch     = (uint32_t)(SPAWN_CH_APP_SLOT_0 + si);
     spawn_strlcpy(slots[si].name, name, 32);
 
     /* Compute SHA-256 of the loaded ELF image */
@@ -357,7 +361,8 @@ static microkit_msginfo handle_launch(void) {
     __asm__ volatile("" ::: "memory");
 
     /* Notify the app slot to wake up and load the ELF */
-    microkit_notify(slots[si].slot_ch);
+    sel4_dbg_puts("[E5-S8] notify-stub
+"); /* TODO: seL4_Signal(notify_cap_for_slots[si].slot_ch) */
 
     /* Log success */
     {
@@ -377,23 +382,25 @@ static microkit_msginfo handle_launch(void) {
         log_drain_write(SPAWN_CONSOLE_SLOT, SPAWN_PD_ID, "\n");
     }
 
-    microkit_mr_set(0, SPAWN_OK);
-    microkit_mr_set(1, app_id);
-    microkit_mr_set(2, (uint64_t)si);
-    return microkit_msginfo_new(0, 3);
+    rep_u32(rep, 0, SPAWN_OK);
+    rep_u32(rep, 4, app_id);
+    rep_u32(rep, 8, (uint64_t)si);
+    rep->length = 12;
+        return SEL4_ERR_OK;
 }
 
 /* ── OP_SPAWN_KILL ───────────────────────────────────────────────────────── */
 
-static microkit_msginfo handle_kill(void) {
-    uint32_t app_id = (uint32_t)microkit_mr_get(1);
+static uint32_t handle_kill(void) {
+    uint32_t app_id = (uint32_t)msg_u32(req, 4);
 
     int si = find_slot_by_app_id(app_id);
     if (si < 0) {
         log_drain_write(SPAWN_CONSOLE_SLOT, SPAWN_PD_ID,
                     "[spawn_server] KILL: app_id not found\n");
-        microkit_mr_set(0, SPAWN_ERR_NOT_FOUND);
-        return microkit_msginfo_new(0, 1);
+        rep_u32(rep, 0, SPAWN_ERR_NOT_FOUND);
+        rep->length = 4;
+        return SEL4_ERR_OK;
     }
 
     /* Log the kill */
@@ -416,7 +423,8 @@ static microkit_msginfo handle_kill(void) {
      * Signal the slot to reset.  The slot interprets a notification while
      * RUNNING as a teardown request and will idle-wait again.
      */
-    microkit_notify(slots[si].slot_ch);
+    sel4_dbg_puts("[E5-S8] notify-stub
+"); /* TODO: seL4_Signal(notify_cap_for_slots[si].slot_ch) */
 
     /*
      * Mark slot as free immediately — the slot PD is self-resetting.
@@ -424,39 +432,43 @@ static microkit_msginfo handle_kill(void) {
      */
     slots[si].active = false;
 
-    microkit_mr_set(0, SPAWN_OK);
-    return microkit_msginfo_new(0, 1);
+    rep_u32(rep, 0, SPAWN_OK);
+    rep->length = 4;
+        return SEL4_ERR_OK;
 }
 
 /* ── OP_SPAWN_STATUS ─────────────────────────────────────────────────────── */
 
-static microkit_msginfo handle_status(void) {
-    uint32_t app_id = (uint32_t)microkit_mr_get(1);
+static uint32_t handle_status(void) {
+    uint32_t app_id = (uint32_t)msg_u32(req, 4);
 
     if (app_id == 0xFFFFFFFFu) {
         /* Aggregate: return total active slots and free slots */
         uint32_t free_cnt = count_free_slots();
-        microkit_mr_set(0, SPAWN_OK);
-        microkit_mr_set(1, (uint64_t)(SPAWN_MAX_SLOTS - free_cnt));
-        microkit_mr_set(2, 0);
-        return microkit_msginfo_new(0, 3);
+        rep_u32(rep, 0, SPAWN_OK);
+        rep_u32(rep, 4, (uint64_t)(SPAWN_MAX_SLOTS - free_cnt));
+        rep_u32(rep, 8, 0);
+        rep->length = 12;
+        return SEL4_ERR_OK;
     }
 
     int si = find_slot_by_app_id(app_id);
     if (si < 0) {
-        microkit_mr_set(0, SPAWN_ERR_NOT_FOUND);
-        return microkit_msginfo_new(0, 1);
+        rep_u32(rep, 0, SPAWN_ERR_NOT_FOUND);
+        rep->length = 4;
+        return SEL4_ERR_OK;
     }
 
-    microkit_mr_set(0, SPAWN_OK);
-    microkit_mr_set(1, slots[si].state);
-    microkit_mr_set(2, slots[si].cap_classes);
-    return microkit_msginfo_new(0, 3);
+    rep_u32(rep, 0, SPAWN_OK);
+    rep_u32(rep, 4, slots[si].state);
+    rep_u32(rep, 8, slots[si].cap_classes);
+    rep->length = 12;
+        return SEL4_ERR_OK;
 }
 
 /* ── OP_SPAWN_LIST ───────────────────────────────────────────────────────── */
 
-static microkit_msginfo handle_list(void) {
+static uint32_t handle_list(void) {
     volatile uint8_t *cfg = (volatile uint8_t *)spawn_config_shmem_vaddr;
     volatile spawn_slot_info_t *list =
         (volatile spawn_slot_info_t *)(cfg + SPAWN_CONFIG_LIST_OFF);
@@ -478,23 +490,25 @@ static microkit_msginfo handle_list(void) {
     /* Memory barrier: list data visible before caller reads it */
     __asm__ volatile("" ::: "memory");
 
-    microkit_mr_set(0, SPAWN_OK);
-    microkit_mr_set(1, count);
-    return microkit_msginfo_new(0, 2);
+    rep_u32(rep, 0, SPAWN_OK);
+    rep_u32(rep, 4, count);
+    rep->length = 8;
+        return SEL4_ERR_OK;
 }
 
 /* ── OP_SPAWN_HEALTH ─────────────────────────────────────────────────────── */
 
-static microkit_msginfo handle_health(void) {
-    microkit_mr_set(0, SPAWN_OK);
-    microkit_mr_set(1, count_free_slots());
-    microkit_mr_set(2, SPAWN_VERSION);
-    return microkit_msginfo_new(0, 3);
+static uint32_t handle_health(void) {
+    rep_u32(rep, 0, SPAWN_OK);
+    rep_u32(rep, 4, count_free_slots());
+    rep_u32(rep, 8, SPAWN_VERSION);
+    rep->length = 12;
+        return SEL4_ERR_OK;
 }
 
 /* ── Microkit entry points ───────────────────────────────────────────────── */
 
-void init(void) {
+static void spawn_server_pd_init(void) {
     agentos_log_boot("spawn_server");
     log_drain_write(SPAWN_CONSOLE_SLOT, SPAWN_PD_ID,
                 "[spawn_server] SpawnServer PD starting...\n");
@@ -506,7 +520,7 @@ void init(void) {
         slots[i].state       = SPAWN_SLOT_FREE;
         slots[i].cap_classes = 0;
         slots[i].launch_tick = 0;
-        slots[i].slot_ch     = (microkit_channel)(SPAWN_CH_APP_SLOT_0 + i);
+        slots[i].slot_ch     = (uint32_t)(SPAWN_CH_APP_SLOT_0 + i);
         for (int c = 0; c < 32; c++) slots[i].name[c] = '\0';
     }
 
@@ -535,7 +549,7 @@ void init(void) {
  *
  * Any other channel notification is informational only.
  */
-void notified(microkit_channel ch) {
+static void spawn_server_pd_notified(uint32_t ch) {
     if (ch >= SPAWN_CH_APP_SLOT_0 &&
         ch <= SPAWN_CH_APP_SLOT_0 + SPAWN_MAX_SLOTS - 1) {
         int si = ch - SPAWN_CH_APP_SLOT_0;
@@ -566,12 +580,12 @@ void notified(microkit_channel ch) {
  * protected(): dispatch inbound PPC calls from controller, init_agent, or
  * app_manager.  The operation code is in MR0.
  */
-microkit_msginfo protected(microkit_channel ch, microkit_msginfo msginfo) {
-    (void)msginfo;  /* label unused; op is in MR0 */
+static uint32_t spawn_server_h_dispatch(sel4_badge_t b, const sel4_msg_t *req, sel4_msg_t *rep, void *ctx) {
+    (void)b; (void)ctx;
 
     tick_counter++;
 
-    uint32_t op = (uint32_t)microkit_mr_get(0);
+    uint32_t op = (uint32_t)msg_u32(req, 0);
 
     switch (op) {
         case OP_SPAWN_LAUNCH:  return handle_launch();
@@ -589,7 +603,20 @@ microkit_msginfo protected(microkit_channel ch, microkit_msginfo msginfo) {
                 log_drain_write(SPAWN_CONSOLE_SLOT, SPAWN_PD_ID, chbuf);
             }
             log_drain_write(SPAWN_CONSOLE_SLOT, SPAWN_PD_ID, "\n");
-            microkit_mr_set(0, SPAWN_ERR_INVAL);
-            return microkit_msginfo_new(0, 1);
+            rep_u32(rep, 0, SPAWN_ERR_INVAL);
+            rep->length = 4;
+        return SEL4_ERR_OK;
     }
+}
+
+/* ── E5-S8: Entry point ─────────────────────────────────────────────────── */
+void spawn_server_main(seL4_CPtr my_ep, seL4_CPtr ns_ep)
+{
+    (void)ns_ep;
+    spawn_server_pd_init();
+    static sel4_server_t srv;
+    sel4_server_init(&srv, my_ep);
+    /* Dispatch all opcodes through the generic handler */
+    sel4_server_register(&srv, SEL4_SERVER_OPCODE_ANY, spawn_server_h_dispatch, (void *)0);
+    sel4_server_run(&srv);
 }

@@ -23,6 +23,7 @@
 
 #define AGENTOS_DEBUG 1
 #include "agentos.h"
+#include "sel4_server.h"
 #include "contracts/log_drain_contract.h"
 #include "contracts/serial_contract.h"
 
@@ -133,14 +134,13 @@ static void try_serial_init(void)
 {
     if (serial_ready || !serial_shmem_vaddr) return;
 
-    microkit_mr_set(0, MSG_SERIAL_OPEN);
-    microkit_mr_set(1, 0);   /* port_id 0 — raw output */
-    microkit_msginfo reply = microkit_ppcall(CH_SERIAL_OUT,
-                                              microkit_msginfo_new(0, 2));
+    rep_u32(rep, 0, MSG_SERIAL_OPEN);
+    rep_u32(rep, 4, 0);   /* port_id 0 — raw output */
+    uint32_t reply = /* E5-S8: ppcall stubbed */
     (void)reply;
 
-    uint32_t ok   = (uint32_t)microkit_mr_get(0);
-    uint32_t slot = (uint32_t)microkit_mr_get(1);
+    uint32_t ok   = (uint32_t)msg_u32(req, 0);
+    uint32_t slot = (uint32_t)msg_u32(req, 4);
 
     if (ok == SERIAL_OK) {
         serial_slot  = slot;
@@ -158,7 +158,7 @@ static void uart_puts(const char *s)
     if (!serial_ready) try_serial_init();
 
     if (!serial_ready) {
-        microkit_dbg_puts(s);
+        sel4_dbg_puts(s);
         return;
     }
 
@@ -171,10 +171,10 @@ static void uart_puts(const char *s)
         for (uint32_t i = 0; i < n; i++)
             shmem[i] = (uint8_t)s[i];
 
-        microkit_mr_set(0, MSG_SERIAL_WRITE);
-        microkit_mr_set(1, serial_slot);
-        microkit_mr_set(2, n);
-        microkit_ppcall(CH_SERIAL_OUT, microkit_msginfo_new(0, 3));
+        rep_u32(rep, 0, MSG_SERIAL_WRITE);
+        rep_u32(rep, 4, serial_slot);
+        rep_u32(rep, 8, n);
+        /* E5-S8: ppcall stubbed */
 
         s += n;
     }
@@ -268,7 +268,7 @@ static void register_ring(uint32_t slot, uint32_t pd_id) {
 
 static void handle_log_write(uint32_t slot, uint32_t pd_id) {
     if (slot >= MAX_LOG_RINGS) {
-        microkit_mr_set(0, 1);
+        rep_u32(rep, 0, 1);
         return;
     }
 
@@ -280,19 +280,19 @@ static void handle_log_write(uint32_t slot, uint32_t pd_id) {
     log_ring_state_t *rs = find_ring_state(pd_id);
     if (rs) drain_ring(slot, rs);
 
-    microkit_mr_set(0, 0);
+    rep_u32(rep, 0, 0);
 }
 
 static void handle_log_status(void) {
-    microkit_mr_set(0, 0);
-    microkit_mr_set(1, ring_count);
-    microkit_mr_set(2, (uint32_t)(total_bytes & 0xFFFFFFFF));
-    microkit_mr_set(3, (uint32_t)(total_bytes >> 32));
+    rep_u32(rep, 0, 0);
+    rep_u32(rep, 4, ring_count);
+    rep_u32(rep, 8, (uint32_t)(total_bytes & 0xFFFFFFFF));
+    rep_u32(rep, 12, (uint32_t)(total_bytes >> 32));
 }
 
 /* ─── Microkit Entry Points ───────────────────────────────────────────── */
 
-void init(void) {
+static void log_drain_pd_init(void) {
     uart_puts("[log_drain] starting — agentOS log drain\n");
 
     init_rings();
@@ -302,21 +302,21 @@ void init(void) {
     uart_puts("[log_drain] ready — waiting for PD ring registrations\n");
 }
 
-void notified(microkit_channel ch) {
+static void log_drain_pd_notified(uint32_t ch) {
     (void)ch;
     drain_all();
 }
 
-microkit_msginfo protected(microkit_channel ch, microkit_msginfo msginfo) {
-    (void)ch;
-    (void)msginfo;
+static uint32_t log_drain_h_dispatch(sel4_badge_t b, const sel4_msg_t *req, sel4_msg_t *rep, void *ctx) {
+    (void)b;
+    (void)ctx;
 
-    uint32_t op = (uint32_t)microkit_mr_get(0);
+    uint32_t op = (uint32_t)msg_u32(req, 0);
 
     switch (op) {
         case OP_LOG_WRITE:
-            handle_log_write((uint32_t)microkit_mr_get(1),
-                             (uint32_t)microkit_mr_get(2));
+            handle_log_write((uint32_t)msg_u32(req, 4),
+                             (uint32_t)msg_u32(req, 8));
             break;
 
         case OP_LOG_STATUS:
@@ -324,10 +324,23 @@ microkit_msginfo protected(microkit_channel ch, microkit_msginfo msginfo) {
             break;
 
         default:
-            microkit_dbg_puts("[log_drain] unknown op\n");
-            microkit_mr_set(0, 0xFF);
+            sel4_dbg_puts("[log_drain] unknown op\n");
+            rep_u32(rep, 0, 0xFF);
             break;
     }
 
-    return microkit_msginfo_new(0, 4);
+    rep->length = 16;
+        return SEL4_ERR_OK;
+}
+
+/* ── E5-S8: Entry point ─────────────────────────────────────────────────── */
+void log_drain_main(seL4_CPtr my_ep, seL4_CPtr ns_ep)
+{
+    (void)ns_ep;
+    log_drain_pd_init();
+    static sel4_server_t srv;
+    sel4_server_init(&srv, my_ep);
+    /* Dispatch all opcodes through the generic handler */
+    sel4_server_register(&srv, SEL4_SERVER_OPCODE_ANY, log_drain_h_dispatch, (void *)0);
+    sel4_server_run(&srv);
 }

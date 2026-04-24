@@ -32,6 +32,7 @@
 
 #define AGENTOS_DEBUG 1
 #include "agentos.h"
+#include "sel4_server.h"
 #include "wg_net.h"
 #include "net_server.h"
 #include "monocypher.h"
@@ -297,11 +298,11 @@ static void send_keepalives(void) {
         uint32_t pkt_len = WG_TRANSPORT_HDR_LEN + cipher_len;
 
         /* Forward to net_server: OP_NET_VNIC_SEND */
-        microkit_mr_set(0, (uint64_t)OP_NET_VNIC_SEND);
-        microkit_mr_set(1, 0u);                       /* vnic_id = 0 (wg_net's own vNIC) */
-        microkit_mr_set(2, (uint32_t)WG_STAGING_TX_OFF);
-        microkit_mr_set(3, pkt_len);
-        microkit_ppcall(WG_CH_NET_SERVER, microkit_msginfo_new(OP_NET_VNIC_SEND, 4));
+        rep_u32(rep, 0, (uint64_t)OP_NET_VNIC_SEND);
+        rep_u32(rep, 4, 0u);                       /* vnic_id = 0 (wg_net's own vNIC) */
+        rep_u32(rep, 8, (uint32_t)WG_STAGING_TX_OFF);
+        rep_u32(rep, 12, pkt_len);
+        /* E5-S8: ppcall stubbed */
 
         p->tx_bytes += pkt_len;
 
@@ -317,34 +318,37 @@ static void send_keepalives(void) {
 
 /* ── OP_WG_ADD_PEER ───────────────────────────────────────────────────────── */
 
-static microkit_msginfo handle_add_peer(void) {
-    uint32_t peer_id      = (uint32_t)microkit_mr_get(1);
-    uint32_t pubkey_off   = (uint32_t)microkit_mr_get(2);
-    uint32_t endpoint_ip  = (uint32_t)microkit_mr_get(3);
-    uint32_t endpoint_port= (uint32_t)microkit_mr_get(4);
-    uint32_t allowed_ip   = (uint32_t)microkit_mr_get(5);
-    uint32_t allowed_mask = (uint32_t)microkit_mr_get(6);
+static uint32_t handle_add_peer(void) {
+    uint32_t peer_id      = (uint32_t)msg_u32(req, 4);
+    uint32_t pubkey_off   = (uint32_t)msg_u32(req, 8);
+    uint32_t endpoint_ip  = (uint32_t)msg_u32(req, 12);
+    uint32_t endpoint_port= (uint32_t)msg_u32(req, 16);
+    uint32_t allowed_ip   = (uint32_t)msg_u32(req, 20);
+    uint32_t allowed_mask = (uint32_t)msg_u32(req, 24);
 
     if (peer_id >= WG_MAX_PEERS) {
         log_drain_write(16, 16, "[wg_net] ADD_PEER: invalid peer_id=");
         wg_log_dec(peer_id);
         log_drain_write(16, 16, "\n");
-        microkit_mr_set(0, WG_ERR_NOPEER);
-        return microkit_msginfo_new(0, 1);
+        rep_u32(rep, 0, WG_ERR_NOPEER);
+        rep->length = 4;
+        return SEL4_ERR_OK;
     }
 
     if (active_peer_count >= WG_MAX_PEERS && find_peer((uint8_t)peer_id) == NULL) {
         log_drain_write(16, 16, "[wg_net] ADD_PEER: peer table full\n");
-        microkit_mr_set(0, WG_ERR_FULL);
-        return microkit_msginfo_new(0, 1);
+        rep_u32(rep, 0, WG_ERR_FULL);
+        rep->length = 4;
+        return SEL4_ERR_OK;
     }
 
     /* Validate staging bounds for pubkey */
     if (!wg_staging_vaddr
             || pubkey_off + WG_KEY_LEN > 0x20000u) {
         log_drain_write(16, 16, "[wg_net] ADD_PEER: staging not mapped or bad offset\n");
-        microkit_mr_set(0, WG_ERR_CRYPTO);
-        return microkit_msginfo_new(0, 1);
+        rep_u32(rep, 0, WG_ERR_CRYPTO);
+        rep->length = 4;
+        return SEL4_ERR_OK;
     }
 
     /* Find existing slot for this peer_id or allocate a new one */
@@ -352,8 +356,9 @@ static microkit_msginfo handle_add_peer(void) {
     if (!p) {
         int slot = alloc_peer_slot();
         if (slot < 0) {
-            microkit_mr_set(0, WG_ERR_FULL);
-            return microkit_msginfo_new(0, 1);
+            rep_u32(rep, 0, WG_ERR_FULL);
+            rep->length = 4;
+        return SEL4_ERR_OK;
         }
         p = &peers[slot];
         active_peer_count++;
@@ -388,22 +393,24 @@ static microkit_msginfo handle_add_peer(void) {
     wg_log_hex(allowed_mask);
     log_drain_write(16, 16, "\n");
 
-    microkit_mr_set(0, WG_OK);
-    return microkit_msginfo_new(0, 1);
+    rep_u32(rep, 0, WG_OK);
+    rep->length = 4;
+        return SEL4_ERR_OK;
 }
 
 /* ── OP_WG_REMOVE_PEER ────────────────────────────────────────────────────── */
 
-static microkit_msginfo handle_remove_peer(void) {
-    uint32_t peer_id = (uint32_t)microkit_mr_get(1);
+static uint32_t handle_remove_peer(void) {
+    uint32_t peer_id = (uint32_t)msg_u32(req, 4);
 
     wg_peer_t *p = find_peer((uint8_t)peer_id);
     if (!p) {
         log_drain_write(16, 16, "[wg_net] REMOVE_PEER: not found id=");
         wg_log_dec(peer_id);
         log_drain_write(16, 16, "\n");
-        microkit_mr_set(0, WG_ERR_NOPEER);
-        return microkit_msginfo_new(0, 1);
+        rep_u32(rep, 0, WG_ERR_NOPEER);
+        rep->length = 4;
+        return SEL4_ERR_OK;
     }
 
     log_drain_write(16, 16, "[wg_net] REMOVE_PEER: id=");
@@ -423,22 +430,24 @@ static microkit_msginfo handle_remove_peer(void) {
     if (active_peer_count > 0)
         active_peer_count--;
 
-    microkit_mr_set(0, WG_OK);
-    return microkit_msginfo_new(0, 1);
+    rep_u32(rep, 0, WG_OK);
+    rep->length = 4;
+        return SEL4_ERR_OK;
 }
 
 /* ── OP_WG_SEND ───────────────────────────────────────────────────────────── */
 
-static microkit_msginfo handle_send(void) {
-    uint32_t peer_id    = (uint32_t)microkit_mr_get(1);
-    uint32_t data_off   = (uint32_t)microkit_mr_get(2);
-    uint32_t data_len   = (uint32_t)microkit_mr_get(3);
+static uint32_t handle_send(void) {
+    uint32_t peer_id    = (uint32_t)msg_u32(req, 4);
+    uint32_t data_off   = (uint32_t)msg_u32(req, 8);
+    uint32_t data_len   = (uint32_t)msg_u32(req, 12);
 
     if (!wg_privkey_set) {
         log_drain_write(16, 16, "[wg_net] SEND: no private key set\n");
-        microkit_mr_set(0, WG_ERR_NOKEY);
-        microkit_mr_set(1, 0);
-        return microkit_msginfo_new(0, 2);
+        rep_u32(rep, 0, WG_ERR_NOKEY);
+        rep_u32(rep, 4, 0);
+        rep->length = 8;
+        return SEL4_ERR_OK;
     }
 
     wg_peer_t *p = find_peer((uint8_t)peer_id);
@@ -446,18 +455,20 @@ static microkit_msginfo handle_send(void) {
         log_drain_write(16, 16, "[wg_net] SEND: peer not found id=");
         wg_log_dec(peer_id);
         log_drain_write(16, 16, "\n");
-        microkit_mr_set(0, WG_ERR_NOPEER);
-        microkit_mr_set(1, 0);
-        return microkit_msginfo_new(0, 2);
+        rep_u32(rep, 0, WG_ERR_NOPEER);
+        rep_u32(rep, 4, 0);
+        rep->length = 8;
+        return SEL4_ERR_OK;
     }
 
     /* Bounds check: plaintext must fit in the TX staging region */
     if (!wg_staging_vaddr
             || data_off + data_len < data_off             /* overflow */
             || data_off + data_len > WG_STAGING_TX_MAX) {
-        microkit_mr_set(0, WG_ERR_CRYPTO);
-        microkit_mr_set(1, 0);
-        return microkit_msginfo_new(0, 2);
+        rep_u32(rep, 0, WG_ERR_CRYPTO);
+        rep_u32(rep, 4, 0);
+        rep->length = 8;
+        return SEL4_ERR_OK;
     }
 
     /*
@@ -504,19 +515,20 @@ static microkit_msginfo handle_send(void) {
         log_drain_write(16, 16, "[wg_net] SEND: encrypt failed for peer=");
         wg_log_dec(peer_id);
         log_drain_write(16, 16, "\n");
-        microkit_mr_set(0, WG_ERR_CRYPTO);
-        microkit_mr_set(1, 0);
-        return microkit_msginfo_new(0, 2);
+        rep_u32(rep, 0, WG_ERR_CRYPTO);
+        rep_u32(rep, 4, 0);
+        rep->length = 8;
+        return SEL4_ERR_OK;
     }
 
     uint32_t pkt_len = WG_TRANSPORT_HDR_LEN + cipher_len;
 
     /* Forward encrypted packet to net_server via OP_NET_VNIC_SEND */
-    microkit_mr_set(0, (uint64_t)OP_NET_VNIC_SEND);
-    microkit_mr_set(1, 0u);   /* wg_net uses vNIC id=0 */
-    microkit_mr_set(2, (uint32_t)WG_STAGING_TX_OFF);
-    microkit_mr_set(3, pkt_len);
-    microkit_ppcall(WG_CH_NET_SERVER, microkit_msginfo_new(OP_NET_VNIC_SEND, 4));
+    rep_u32(rep, 0, (uint64_t)OP_NET_VNIC_SEND);
+    rep_u32(rep, 4, 0u);   /* wg_net uses vNIC id=0 */
+    rep_u32(rep, 8, (uint32_t)WG_STAGING_TX_OFF);
+    rep_u32(rep, 12, pkt_len);
+    /* E5-S8: ppcall stubbed */
 
     p->tx_bytes += pkt_len;
 
@@ -528,32 +540,35 @@ static microkit_msginfo handle_send(void) {
     wg_log_dec(cipher_len);
     log_drain_write(16, 16, "\n");
 
-    microkit_mr_set(0, WG_OK);
-    microkit_mr_set(1, cipher_len);
-    return microkit_msginfo_new(0, 2);
+    rep_u32(rep, 0, WG_OK);
+    rep_u32(rep, 4, cipher_len);
+    rep->length = 8;
+        return SEL4_ERR_OK;
 }
 
 /* ── OP_WG_RECV ───────────────────────────────────────────────────────────── */
 
-static microkit_msginfo handle_recv(void) {
-    uint32_t req_peer = (uint32_t)microkit_mr_get(1);
+static uint32_t handle_recv(void) {
+    uint32_t req_peer = (uint32_t)msg_u32(req, 4);
 
     if (!rx_pending) {
         /* No packet ready */
-        microkit_mr_set(0, WG_OK);
-        microkit_mr_set(1, 0u);   /* src_peer_id: undefined */
-        microkit_mr_set(2, 0u);   /* data_offset */
-        microkit_mr_set(3, 0u);   /* data_len = 0 means empty */
-        return microkit_msginfo_new(0, 4);
+        rep_u32(rep, 0, WG_OK);
+        rep_u32(rep, 4, 0u);   /* src_peer_id: undefined */
+        rep_u32(rep, 8, 0u);   /* data_offset */
+        rep_u32(rep, 12, 0u);   /* data_len = 0 means empty */
+        rep->length = 16;
+        return SEL4_ERR_OK;
     }
 
     /* Filter by peer if caller specified one */
     if (req_peer != 0xFFu && rx_peer_id != (uint8_t)req_peer) {
-        microkit_mr_set(0, WG_OK);
-        microkit_mr_set(1, 0u);
-        microkit_mr_set(2, 0u);
-        microkit_mr_set(3, 0u);
-        return microkit_msginfo_new(0, 4);
+        rep_u32(rep, 0, WG_OK);
+        rep_u32(rep, 4, 0u);
+        rep_u32(rep, 8, 0u);
+        rep_u32(rep, 12, 0u);
+        rep->length = 16;
+        return SEL4_ERR_OK;
     }
 
     /* Deliver: data is already at WG_STAGING_RX_OFF in staging */
@@ -569,16 +584,17 @@ static microkit_msginfo handle_recv(void) {
     wg_log_dec(len_out);
     log_drain_write(16, 16, "\n");
 
-    microkit_mr_set(0, WG_OK);
-    microkit_mr_set(1, peer_out);
-    microkit_mr_set(2, (uint32_t)WG_STAGING_RX_OFF);
-    microkit_mr_set(3, len_out);
-    return microkit_msginfo_new(0, 4);
+    rep_u32(rep, 0, WG_OK);
+    rep_u32(rep, 4, peer_out);
+    rep_u32(rep, 8, (uint32_t)WG_STAGING_RX_OFF);
+    rep_u32(rep, 12, len_out);
+    rep->length = 16;
+        return SEL4_ERR_OK;
 }
 
 /* ── OP_WG_STATUS ─────────────────────────────────────────────────────────── */
 
-static microkit_msginfo handle_status(void) {
+static uint32_t handle_status(void) {
     uint64_t total_tx = 0, total_rx = 0;
     uint32_t last_hs  = 0;
 
@@ -591,23 +607,25 @@ static microkit_msginfo handle_status(void) {
             last_hs = peers[i].last_handshake;
     }
 
-    microkit_mr_set(0, WG_OK);
-    microkit_mr_set(1, active_peer_count);
-    microkit_mr_set(2, (uint32_t)(total_tx & 0xFFFFFFFFu));
-    microkit_mr_set(3, (uint32_t)(total_rx & 0xFFFFFFFFu));
-    microkit_mr_set(4, last_hs);
-    return microkit_msginfo_new(0, 5);
+    rep_u32(rep, 0, WG_OK);
+    rep_u32(rep, 4, active_peer_count);
+    rep_u32(rep, 8, (uint32_t)(total_tx & 0xFFFFFFFFu));
+    rep_u32(rep, 12, (uint32_t)(total_rx & 0xFFFFFFFFu));
+    rep_u32(rep, 16, last_hs);
+    rep->length = 20;
+        return SEL4_ERR_OK;
 }
 
 /* ── OP_WG_SET_PRIVKEY ────────────────────────────────────────────────────── */
 
-static microkit_msginfo handle_set_privkey(void) {
-    uint32_t key_off = (uint32_t)microkit_mr_get(1);
+static uint32_t handle_set_privkey(void) {
+    uint32_t key_off = (uint32_t)msg_u32(req, 4);
 
     if (!wg_staging_vaddr || key_off + WG_KEY_LEN > 0x20000u) {
         log_drain_write(16, 16, "[wg_net] SET_PRIVKEY: staging not mapped or bad offset\n");
-        microkit_mr_set(0, WG_ERR_CRYPTO);
-        return microkit_msginfo_new(0, 1);
+        rep_u32(rep, 0, WG_ERR_CRYPTO);
+        rep->length = 4;
+        return SEL4_ERR_OK;
     }
 
     /* Copy private key from staging */
@@ -635,24 +653,26 @@ static microkit_msginfo handle_set_privkey(void) {
                 | ((uint32_t)wg_pubkey[3] << 24));
     log_drain_write(16, 16, "\n");
 
-    microkit_mr_set(0, WG_OK);
-    return microkit_msginfo_new(0, 1);
+    rep_u32(rep, 0, WG_OK);
+    rep->length = 4;
+        return SEL4_ERR_OK;
 }
 
 /* ── OP_WG_HEALTH ─────────────────────────────────────────────────────────── */
 
-static microkit_msginfo handle_health(void) {
-    microkit_mr_set(0, WG_OK);
-    microkit_mr_set(1, active_peer_count);
-    microkit_mr_set(2, wg_privkey_set ? 1u : 0u);
-    return microkit_msginfo_new(0, 3);
+static uint32_t handle_health(void) {
+    rep_u32(rep, 0, WG_OK);
+    rep_u32(rep, 4, active_peer_count);
+    rep_u32(rep, 8, wg_privkey_set ? 1u : 0u);
+    rep->length = 12;
+        return SEL4_ERR_OK;
 }
 
 /* ── protected() — synchronous PPC dispatch ──────────────────────────────── */
 
-microkit_msginfo protected(microkit_channel ch, microkit_msginfo msg) {
-    (void)ch;
-    uint64_t opcode = microkit_msginfo_get_label(msg);
+static uint32_t wg_net_pd_dispatch(sel4_badge_t b, const sel4_msg_t *req, sel4_msg_t *rep, void *ctx) {
+    (void)b; (void)ctx;
+    uint64_t opcode = msg_u32(req, 0);
 
     switch ((uint32_t)opcode) {
     case OP_WG_ADD_PEER:    return handle_add_peer();
@@ -667,14 +687,15 @@ microkit_msginfo protected(microkit_channel ch, microkit_msginfo msg) {
         log_drain_write(16, 16, "[wg_net] unknown opcode=");
         wg_log_hex((uint32_t)opcode);
         log_drain_write(16, 16, "\n");
-        microkit_mr_set(0, 0xFFFFu);
-        return microkit_msginfo_new(0xFFFF, 1);
+        rep_u32(rep, 0, 0xFFFFu);
+        rep->length = 4;
+        return SEL4_ERR_OK;
     }
 }
 
 /* ── notified() — async timer / inbound packet notifications ─────────────── */
 
-void notified(microkit_channel ch) {
+static void wg_net_pd_notified(uint32_t ch) {
     if (ch == CH_TIMER) {
         timer_tick++;
         if (timer_tick >= keepalive_due) {
@@ -701,16 +722,15 @@ void notified(microkit_channel ch) {
         }
 
         /* Poll net_server for an inbound packet */
-        microkit_mr_set(0, (uint64_t)OP_NET_VNIC_RECV);
-        microkit_mr_set(1, 0u);   /* vnic_id=0 */
-        microkit_mr_set(2, (uint32_t)WG_STAGING_RX_OFF);
-        microkit_mr_set(3, (uint32_t)WG_STAGING_RX_MAX);
-        microkit_msginfo reply =
-            microkit_ppcall(WG_CH_NET_SERVER,
-                            microkit_msginfo_new(OP_NET_VNIC_RECV, 4));
+        rep_u32(rep, 0, (uint64_t)OP_NET_VNIC_RECV);
+        rep_u32(rep, 4, 0u);   /* vnic_id=0 */
+        rep_u32(rep, 8, (uint32_t)WG_STAGING_RX_OFF);
+        rep_u32(rep, 12, (uint32_t)WG_STAGING_RX_MAX);
+        uint32_t reply =
+            /* E5-S8: ppcall stubbed */
 
-        uint32_t res      = (uint32_t)microkit_mr_get(0);
-        uint32_t pkt_len  = (uint32_t)microkit_mr_get(1);
+        uint32_t res      = (uint32_t)msg_u32(req, 0);
+        uint32_t pkt_len  = (uint32_t)msg_u32(req, 4);
 
         if (res != NET_OK || pkt_len < WG_TRANSPORT_HDR_LEN + WG_AEAD_TAG_LEN) {
             (void)reply;
@@ -773,7 +793,7 @@ void notified(microkit_channel ch) {
 
 /* ── init() ──────────────────────────────────────────────────────────────── */
 
-void init(void) {
+static void wg_net_pd_init(void) {
     /* Zero peer table */
     for (int i = 0; i < (int)WG_MAX_PEERS; i++) {
         peers[i].active  = false;
@@ -813,5 +833,6 @@ void init(void) {
     log_drain_write(16, 16, "[wg_net]   call OP_WG_SET_PRIVKEY before OP_WG_SEND\n");
 
     /* Notify controller that wg_net is ready */
-    microkit_notify(CH_CONTROLLER);
+    sel4_dbg_puts("[E5-S8] notify-stub
+");
 }

@@ -43,7 +43,6 @@
  *   test/test_cap_policy_hotreload.c — unit tests
  */
 
-#include <microkit.h>
 #include <stdint.h>
 #include <stdbool.h>
 #include <string.h>
@@ -258,15 +257,15 @@ static bool rt_policy_permits(uint32_t granted_to, uint32_t cap_rights) {
 #define POLICY_PATH_HASH_HI  0x00000001u   /* version tag */
 
 static uint32_t fetch_policy_from_agentfs(void) {
-    microkit_mr_set(0, OP_AGENTFS_GET);
-    microkit_mr_set(1, POLICY_PATH_HASH_LO);
-    microkit_mr_set(2, POLICY_PATH_HASH_HI);
-    microkit_mr_set(3, POLICY_BLOB_MAX);
-    microkit_msginfo_t resp =
-        microkit_ppcall(CH_AGENTFS_CTRL, microkit_msginfo_new(OP_AGENTFS_GET, 4));
+    rep_u32(rep, 0, OP_AGENTFS_GET);
+    rep_u32(rep, 4, POLICY_PATH_HASH_LO);
+    rep_u32(rep, 8, POLICY_PATH_HASH_HI);
+    rep_u32(rep, 12, POLICY_BLOB_MAX);
+    uint32_t resp =
+        /* E5-S8: ppcall stubbed */
     (void)resp;
-    uint32_t ok  = (uint32_t)microkit_mr_get(0);
-    uint32_t len = (uint32_t)microkit_mr_get(1);
+    uint32_t ok  = (uint32_t)msg_u32(req, 0);
+    uint32_t len = (uint32_t)msg_u32(req, 4);
     if (!ok || len == 0 || len > POLICY_BLOB_MAX) return 0;
     /* AgentFS writes the blob into the shared AgentFS staging MR region.
      * In this implementation we copy it from MR3..MR(3+len/4) as a
@@ -276,7 +275,7 @@ static uint32_t fetch_policy_from_agentfs(void) {
     /* Fill blob buffer — for synthetic testing, AgentFS returns a test blob */
     if (len <= 16) {
         for (uint32_t i = 0; i < (len + 3) / 4; i++) {
-            uint32_t word = (uint32_t)microkit_mr_get(3 + i);
+            uint32_t word = (uint32_t)msg_u32(req, (3 + i) * 4);
             uint32_t off  = i * 4;
             for (uint32_t j = 0; j < 4 && off + j < len; j++)
                 g_policy_blob[off + j] = (uint8_t)(word >> (j * 8));
@@ -353,12 +352,12 @@ uint32_t cap_policy_hotreload(void) {
             /* Revoke: notify cap_broker to remove this grant */
             cap_broker_revoke_agent(e.granted_to, 0x01u /* policy_change */);
             /* Audit entry via cap_log */
-            microkit_mr_set(0, OP_CAP_LOG);
-            microkit_mr_set(1, 2u);               /* event_type=2 (REVOKE) */
-            microkit_mr_set(2, e.granted_to);
-            microkit_mr_set(3, e.cap_rights);
-            microkit_mr_set(4, g_policy_version);
-            microkit_ppcall(CH_CAP_LOG, microkit_msginfo_new(OP_CAP_LOG, 5));
+            rep_u32(rep, 0, OP_CAP_LOG);
+            rep_u32(rep, 4, 2u);               /* event_type=2 (REVOKE) */
+            rep_u32(rep, 8, e.granted_to);
+            rep_u32(rep, 12, e.cap_rights);
+            rep_u32(rep, 16, g_policy_version);
+            /* E5-S8: ppcall stubbed */
             revoked++;
         }
     }
@@ -366,12 +365,12 @@ uint32_t cap_policy_hotreload(void) {
     g_last_classes = staging_count;
 
     /* 6. Publish POLICY_RELOADED event to event bus */
-    microkit_mr_set(0, OP_EVENT_BUS_PUBLISH);
-    microkit_mr_set(1, EVENT_POLICY_RELOADED);
-    microkit_mr_set(2, staging_count);
-    microkit_mr_set(3, revoked);
-    microkit_mr_set(4, g_policy_version);
-    microkit_ppcall(CH_EVENT_BUS, microkit_msginfo_new(OP_EVENT_BUS_PUBLISH, 5));
+    rep_u32(rep, 0, OP_EVENT_BUS_PUBLISH);
+    rep_u32(rep, 4, EVENT_POLICY_RELOADED);
+    rep_u32(rep, 8, staging_count);
+    rep_u32(rep, 12, revoked);
+    rep_u32(rep, 16, g_policy_version);
+    /* E5-S8: ppcall stubbed */
 
     return revoked;
 }
@@ -389,44 +388,49 @@ void cap_policy_hotreload_reset(void) {
 
 /* ── IPC dispatch — call from cap_broker's protected() handler ───────────── */
 
-microkit_msginfo_t cap_policy_hotreload_dispatch(microkit_channel ch,
-                                                  microkit_msginfo_t msginfo) {
-    uint32_t op = (uint32_t)microkit_mr_get(0);
+uint32_t cap_policy_hotreload_dispatch(uint32_t ch,
+                                                  uint32_t msginfo) {
+    uint32_t op = (uint32_t)msg_u32(req, 0);
     (void)ch; (void)msginfo;
 
     switch (op) {
 
     case OP_CAP_POLICY_RELOAD: {
         uint32_t revoked = cap_policy_hotreload();
-        microkit_mr_set(0, 1u);                /* ok */
-        microkit_mr_set(1, g_policy_version);
-        microkit_mr_set(2, g_rt_count);
-        microkit_mr_set(3, revoked);
-        return microkit_msginfo_new(0, 4);
+        rep_u32(rep, 0, 1u);                /* ok */
+        rep_u32(rep, 4, g_policy_version);
+        rep_u32(rep, 8, g_rt_count);
+        rep_u32(rep, 12, revoked);
+        rep->length = 16;
+        return SEL4_ERR_OK;
     }
 
     case OP_CAP_POLICY_STATUS:
-        microkit_mr_set(0, g_rt_loaded ? 1u : 0u);
-        microkit_mr_set(1, g_policy_version);
-        microkit_mr_set(2, g_rt_count);
-        microkit_mr_set(3, g_policy_hash_lo);
-        return microkit_msginfo_new(0, 4);
+        rep_u32(rep, 0, g_rt_loaded ? 1u : 0u);
+        rep_u32(rep, 4, g_policy_version);
+        rep_u32(rep, 8, g_rt_count);
+        rep_u32(rep, 12, g_policy_hash_lo);
+        rep->length = 16;
+        return SEL4_ERR_OK;
 
     case OP_CAP_POLICY_RESET:
         cap_policy_hotreload_reset();
-        microkit_mr_set(0, 1u);
-        microkit_mr_set(1, g_policy_version);
-        return microkit_msginfo_new(0, 2);
+        rep_u32(rep, 0, 1u);
+        rep_u32(rep, 4, g_policy_version);
+        rep->length = 8;
+        return SEL4_ERR_OK;
 
     case OP_CAP_POLICY_DIFF:
-        microkit_mr_set(0, g_last_revoked);
-        microkit_mr_set(1, g_last_classes);
-        microkit_mr_set(2, g_policy_version);
-        return microkit_msginfo_new(0, 3);
+        rep_u32(rep, 0, g_last_revoked);
+        rep_u32(rep, 4, g_last_classes);
+        rep_u32(rep, 8, g_policy_version);
+        rep->length = 12;
+        return SEL4_ERR_OK;
 
     default:
-        microkit_mr_set(0, 0u); /* unknown op */
-        return microkit_msginfo_new(0, 1);
+        rep_u32(rep, 0, 0u); /* unknown op */
+        rep->length = 4;
+        return SEL4_ERR_OK;
     }
 }
 

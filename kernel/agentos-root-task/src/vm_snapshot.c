@@ -20,6 +20,7 @@
 
 #define AGENTOS_DEBUG 1
 #include "agentos.h"
+#include "sel4_server.h"
 #include "contracts/vm_snapshot_contract.h"
 
 /* ── Output shared memory region (mapped by Microkit linker) ─────────── */
@@ -81,7 +82,7 @@ static void snap_hash(const uint8_t *data, uint32_t len,
  * Microkit entry points
  * ═══════════════════════════════════════════════════════════════════════ */
 
-void init(void)
+static void vm_snapshot_pd_init(void)
 {
     /* Zero per-slot metadata */
     for (uint32_t i = 0; i < MAX_VM_SLOTS; i++) {
@@ -92,33 +93,35 @@ void init(void)
         snap_meta[i].snap_hash_hi = 0;
     }
 
-    microkit_dbg_puts("[vm_snapshot] init: state region ");
-    microkit_dbg_puts(vm_state_vaddr ? "mapped" : "NOT MAPPED");
-    microkit_dbg_puts("\n");
+    sel4_dbg_puts("[vm_snapshot] init: state region ");
+    sel4_dbg_puts(vm_state_vaddr ? "mapped" : "NOT MAPPED");
+    sel4_dbg_puts("\n");
 }
 
-microkit_msginfo protected(microkit_channel ch, microkit_msginfo msg)
+static uint32_t vm_snapshot_pd_dispatch(sel4_badge_t b, const sel4_msg_t *req, sel4_msg_t *rep, void *ctx)
 {
-    (void)ch;
+    (void)b; (void)ctx;
 
-    uint32_t op = (uint32_t)microkit_msginfo_get_label(msg);
+    uint32_t op = (uint32_t)msg_u32(req, 0);
 
     switch (op) {
 
     /* ── OP_VM_SNAPSHOT ──────────────────────────────────────────────── */
     case OP_VM_SNAPSHOT: {
-        uint32_t slot_id = (uint32_t)microkit_mr_get(1);
+        uint32_t slot_id = (uint32_t)msg_u32(req, 4);
 
         /* Validate slot_id */
         if (slot_id >= MAX_VM_SLOTS) {
-            microkit_mr_set(0, 0xFFu);
-            return microkit_msginfo_new(0, 1);
+            rep_u32(rep, 0, 0xFFu);
+            rep->length = 4;
+        return SEL4_ERR_OK;
         }
 
         /* Require mapped state region */
         if (!vm_state_vaddr) {
-            microkit_mr_set(0, 0xFFu);
-            return microkit_msginfo_new(0, 1);
+            rep_u32(rep, 0, 0xFFu);
+            rep->length = 4;
+        return SEL4_ERR_OK;
         }
 
         /* Build snapshot header at the start of the state region */
@@ -172,27 +175,29 @@ microkit_msginfo protected(microkit_channel ch, microkit_msginfo msg)
         snap_meta[slot_id].snap_hash_lo = hash_lo;
         snap_meta[slot_id].snap_hash_hi = hash_hi;
 
-        microkit_dbg_puts("[vm_snapshot] snapshotted slot ");
-        microkit_dbg_putc('0' + (char)slot_id);
-        microkit_dbg_puts("\n");
+        sel4_dbg_puts("[vm_snapshot] snapshotted slot ");
+        sel4_dbg_putc('0' + (char)slot_id);
+        sel4_dbg_puts("\n");
 
         /* Return: MR0=ok, MR1=hash_lo (low 32 bits), MR2=hash_hi (low 32 bits) */
-        microkit_mr_set(0, 0);
-        microkit_mr_set(1, (uint32_t)(hash_lo & 0xFFFFFFFFu));
-        microkit_mr_set(2, (uint32_t)(hash_hi & 0xFFFFFFFFu));
-        return microkit_msginfo_new(0, 3);
+        rep_u32(rep, 0, 0);
+        rep_u32(rep, 4, (uint32_t)(hash_lo & 0xFFFFFFFFu));
+        rep_u32(rep, 8, (uint32_t)(hash_hi & 0xFFFFFFFFu));
+        rep->length = 12;
+        return SEL4_ERR_OK;
     }
 
     /* ── OP_VM_RESTORE ───────────────────────────────────────────────── */
     case OP_VM_RESTORE: {
-        uint32_t slot_id  = (uint32_t)microkit_mr_get(1);
-        uint32_t snap_lo  = (uint32_t)microkit_mr_get(2);
-        uint32_t snap_hi  = (uint32_t)microkit_mr_get(3);
+        uint32_t slot_id  = (uint32_t)msg_u32(req, 4);
+        uint32_t snap_lo  = (uint32_t)msg_u32(req, 8);
+        uint32_t snap_hi  = (uint32_t)msg_u32(req, 12);
 
         /* Validate slot_id and existence of a previous snapshot */
         if (slot_id >= MAX_VM_SLOTS || !snap_meta[slot_id].valid) {
-            microkit_mr_set(0, 0xFFu);
-            return microkit_msginfo_new(0, 1);
+            rep_u32(rep, 0, 0xFFu);
+            rep->length = 4;
+        return SEL4_ERR_OK;
         }
 
         /* Verify the caller's hash tokens match what we stored */
@@ -200,8 +205,9 @@ microkit_msginfo protected(microkit_channel ch, microkit_msginfo msg)
         uint32_t stored_hi = (uint32_t)(snap_meta[slot_id].snap_hash_hi & 0xFFFFFFFFu);
 
         if (snap_lo != stored_lo || snap_hi != stored_hi) {
-            microkit_mr_set(0, 0xFEu);
-            return microkit_msginfo_new(0, 1);
+            rep_u32(rep, 0, 0xFEu);
+            rep->length = 4;
+        return SEL4_ERR_OK;
         }
 
         /*
@@ -214,28 +220,30 @@ microkit_msginfo protected(microkit_channel ch, microkit_msginfo msg)
             (volatile vm_snapshot_header_t *)vm_state_vaddr;
         (void)hdr;  /* accessed in real impl; suppress unused warning */
 
-        microkit_dbg_puts("[vm_snapshot] restored slot ");
-        microkit_dbg_putc('0' + (char)slot_id);
-        microkit_dbg_puts(" from snap ");
+        sel4_dbg_puts("[vm_snapshot] restored slot ");
+        sel4_dbg_putc('0' + (char)slot_id);
+        sel4_dbg_puts(" from snap ");
         /* Print snap_lo as a simple hex nibble hint */
-        microkit_dbg_putc('0' + (char)((snap_lo >> 28) & 0xF));
-        microkit_dbg_puts("\n");
+        sel4_dbg_putc('0' + (char)((snap_lo >> 28) & 0xF));
+        sel4_dbg_puts("\n");
 
         /* Return: MR0=ok, MR1=snap_lo, MR2=snap_hi (echo back for caller) */
-        microkit_mr_set(0, 0);
-        microkit_mr_set(1, snap_lo);
-        microkit_mr_set(2, snap_hi);
-        return microkit_msginfo_new(0, 3);
+        rep_u32(rep, 0, 0);
+        rep_u32(rep, 4, snap_lo);
+        rep_u32(rep, 8, snap_hi);
+        rep->length = 12;
+        return SEL4_ERR_OK;
     }
 
     /* ── Unknown opcode ──────────────────────────────────────────────── */
     default:
-        microkit_mr_set(0, 0xFFu);
-        return microkit_msginfo_new(0, 1);
+        rep_u32(rep, 0, 0xFFu);
+        rep->length = 4;
+        return SEL4_ERR_OK;
     }
 }
 
-void notified(microkit_channel ch)
+static void vm_snapshot_pd_notified(uint32_t ch)
 {
     /* vm_snapshot receives no async notifications in the current design */
     (void)ch;

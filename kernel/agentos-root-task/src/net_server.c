@@ -23,6 +23,7 @@
 
 #define AGENTOS_DEBUG 1
 #include "agentos.h"
+#include "sel4_server.h"
 #include "net_server.h"
 #include "lwip_sys.h"
 #include "lwip/pbuf.h"
@@ -207,10 +208,10 @@ static bool acl_outbound_allowed(const net_vnic_t *v) {
 }
 
 /* ── OP_NET_VNIC_CREATE ───────────────────────────────────────────────────── */
-static microkit_msginfo handle_vnic_create(void) {
-    uint32_t requested_id = (uint32_t)microkit_mr_get(1);
-    uint32_t cap_classes  = (uint32_t)microkit_mr_get(2);
-    uint32_t caller_pd    = (uint32_t)microkit_mr_get(3);
+static uint32_t handle_vnic_create(void) {
+    uint32_t requested_id = (uint32_t)msg_u32(req, 4);
+    uint32_t cap_classes  = (uint32_t)msg_u32(req, 8);
+    uint32_t caller_pd    = (uint32_t)msg_u32(req, 12);
 
     /* CAP_CLASS_NET is mandatory */
     if (!(cap_classes & CAP_CLASS_NET)) {
@@ -218,15 +219,17 @@ static microkit_msginfo handle_vnic_create(void) {
                     "pd=");
         log_dec(caller_pd);
         log_drain_write(16, 16, "\n");
-        microkit_mr_set(0, NET_ERR_PERM);
-        return microkit_msginfo_new(0, 1);
+        rep_u32(rep, 0, NET_ERR_PERM);
+        rep->length = 4;
+        return SEL4_ERR_OK;
     }
 
     int slot = alloc_vnic_slot();
     if (slot < 0) {
         log_drain_write(16, 16, "[net_server] VNIC_CREATE failed: table full\n");
-        microkit_mr_set(0, NET_ERR_NO_VNICS);
-        return microkit_msginfo_new(0, 1);
+        rep_u32(rep, 0, NET_ERR_NO_VNICS);
+        rep->length = 4;
+        return SEL4_ERR_OK;
     }
 
     /*
@@ -286,23 +289,25 @@ static microkit_msginfo handle_vnic_create(void) {
     }
     log_drain_write(16, 16, "\n");
 
-    microkit_mr_set(0, NET_OK);
-    microkit_mr_set(1, vnic_id);
-    microkit_mr_set(2, slot_offset);
-    return microkit_msginfo_new(0, 3);
+    rep_u32(rep, 0, NET_OK);
+    rep_u32(rep, 4, vnic_id);
+    rep_u32(rep, 8, slot_offset);
+    rep->length = 12;
+        return SEL4_ERR_OK;
 }
 
 /* ── OP_NET_VNIC_DESTROY ──────────────────────────────────────────────────── */
-static microkit_msginfo handle_vnic_destroy(void) {
-    uint32_t vnic_id = (uint32_t)microkit_mr_get(1);
+static uint32_t handle_vnic_destroy(void) {
+    uint32_t vnic_id = (uint32_t)msg_u32(req, 4);
 
     net_vnic_t *v = find_vnic(vnic_id);
     if (!v) {
         log_drain_write(16, 16, "[net_server] VNIC_DESTROY: not found id=");
         log_dec(vnic_id);
         log_drain_write(16, 16, "\n");
-        microkit_mr_set(0, NET_ERR_NOT_FOUND);
-        return microkit_msginfo_new(0, 1);
+        rep_u32(rep, 0, NET_ERR_NOT_FOUND);
+        rep->length = 4;
+        return SEL4_ERR_OK;
     }
 
     log_drain_write(16, 16, "[net_server] VNIC destroyed: id=");
@@ -316,21 +321,23 @@ static microkit_msginfo handle_vnic_destroy(void) {
     if (active_vnic_count > 0)
         active_vnic_count--;
 
-    microkit_mr_set(0, NET_OK);
-    return microkit_msginfo_new(0, 1);
+    rep_u32(rep, 0, NET_OK);
+    rep->length = 4;
+        return SEL4_ERR_OK;
 }
 
 /* ── OP_NET_VNIC_SEND ─────────────────────────────────────────────────────── */
-static microkit_msginfo handle_vnic_send(void) {
-    uint32_t vnic_id      = (uint32_t)microkit_mr_get(1);
-    uint32_t pkt_offset   = (uint32_t)microkit_mr_get(2);
-    uint32_t pkt_len      = (uint32_t)microkit_mr_get(3);
+static uint32_t handle_vnic_send(void) {
+    uint32_t vnic_id      = (uint32_t)msg_u32(req, 4);
+    uint32_t pkt_offset   = (uint32_t)msg_u32(req, 8);
+    uint32_t pkt_len      = (uint32_t)msg_u32(req, 12);
 
     net_vnic_t *v = find_vnic(vnic_id);
     if (!v) {
-        microkit_mr_set(0, NET_ERR_NOT_FOUND);
-        microkit_mr_set(1, 0);
-        return microkit_msginfo_new(0, 2);
+        rep_u32(rep, 0, NET_ERR_NOT_FOUND);
+        rep_u32(rep, 4, 0);
+        rep->length = 8;
+        return SEL4_ERR_OK;
     }
 
     /* ACL: outbound must be permitted */
@@ -340,17 +347,19 @@ static microkit_msginfo handle_vnic_send(void) {
         log_drain_write(16, 16, " pd=");
         log_dec(v->owner_pd);
         log_drain_write(16, 16, "\n");
-        microkit_mr_set(0, NET_ERR_PERM);
-        microkit_mr_set(1, 0);
-        return microkit_msginfo_new(0, 2);
+        rep_u32(rep, 0, NET_ERR_PERM);
+        rep_u32(rep, 4, 0);
+        rep->length = 8;
+        return SEL4_ERR_OK;
     }
 
     /* Validate shmem bounds */
     if (pkt_offset >= NET_SHMEM_TOTAL || pkt_len == 0
             || pkt_offset + pkt_len > NET_SHMEM_TOTAL) {
-        microkit_mr_set(0, NET_ERR_INVAL);
-        microkit_mr_set(1, 0);
-        return microkit_msginfo_new(0, 2);
+        rep_u32(rep, 0, NET_ERR_INVAL);
+        rep_u32(rep, 4, 0);
+        rep->length = 8;
+        return SEL4_ERR_OK;
     }
 
     /*
@@ -438,30 +447,33 @@ static microkit_msginfo handle_vnic_send(void) {
 
     v->tx_packets++;
 
-    microkit_mr_set(0, NET_OK);
-    microkit_mr_set(1, pkt_len);
-    return microkit_msginfo_new(0, 2);
+    rep_u32(rep, 0, NET_OK);
+    rep_u32(rep, 4, pkt_len);
+    rep->length = 8;
+        return SEL4_ERR_OK;
 }
 
 /* ── OP_NET_VNIC_RECV ─────────────────────────────────────────────────────── */
-static microkit_msginfo handle_vnic_recv(void) {
-    uint32_t vnic_id    = (uint32_t)microkit_mr_get(1);
-    uint32_t buf_offset = (uint32_t)microkit_mr_get(2);
-    uint32_t max_len    = (uint32_t)microkit_mr_get(3);
+static uint32_t handle_vnic_recv(void) {
+    uint32_t vnic_id    = (uint32_t)msg_u32(req, 4);
+    uint32_t buf_offset = (uint32_t)msg_u32(req, 8);
+    uint32_t max_len    = (uint32_t)msg_u32(req, 12);
 
     net_vnic_t *v = find_vnic(vnic_id);
     if (!v) {
-        microkit_mr_set(0, NET_ERR_NOT_FOUND);
-        microkit_mr_set(1, 0);
-        return microkit_msginfo_new(0, 2);
+        rep_u32(rep, 0, NET_ERR_NOT_FOUND);
+        rep_u32(rep, 4, 0);
+        rep->length = 8;
+        return SEL4_ERR_OK;
     }
 
     /* Validate shmem bounds */
     if (buf_offset >= NET_SHMEM_TOTAL
             || (max_len > 0 && buf_offset + max_len > NET_SHMEM_TOTAL)) {
-        microkit_mr_set(0, NET_ERR_INVAL);
-        microkit_mr_set(1, 0);
-        return microkit_msginfo_new(0, 2);
+        rep_u32(rep, 0, NET_ERR_INVAL);
+        rep_u32(rep, 4, 0);
+        rep->length = 8;
+        return SEL4_ERR_OK;
     }
 
     /* Poll lwIP for received data on this vnic's TCP connection */
@@ -469,33 +481,37 @@ static microkit_msginfo handle_vnic_recv(void) {
                           (uint8_t *)(net_packet_shmem_vaddr + buf_offset),
                           max_len > 65536u ? 65536u : max_len);
     v->rx_packets += (n > 0) ? 1u : 0u;
-    microkit_mr_set(0, NET_OK);
-    microkit_mr_set(1, (uint32_t)n);
-    return microkit_msginfo_new(0, 2);
+    rep_u32(rep, 0, NET_OK);
+    rep_u32(rep, 4, (uint32_t)n);
+    rep->length = 8;
+        return SEL4_ERR_OK;
 }
 
 /* ── OP_NET_BIND ──────────────────────────────────────────────────────────── */
-static microkit_msginfo handle_net_bind(void) {
-    uint32_t vnic_id  = (uint32_t)microkit_mr_get(1);
-    uint32_t port     = (uint32_t)microkit_mr_get(2);
-    uint32_t protocol = (uint32_t)microkit_mr_get(3);
+static uint32_t handle_net_bind(void) {
+    uint32_t vnic_id  = (uint32_t)msg_u32(req, 4);
+    uint32_t port     = (uint32_t)msg_u32(req, 8);
+    uint32_t protocol = (uint32_t)msg_u32(req, 12);
 
     (void)protocol;  /* stored for future smoltcp socket creation */
 
     if (port == 0 || port > 65535u) {
-        microkit_mr_set(0, NET_ERR_INVAL);
-        return microkit_msginfo_new(0, 1);
+        rep_u32(rep, 0, NET_ERR_INVAL);
+        rep->length = 4;
+        return SEL4_ERR_OK;
     }
 
     net_vnic_t *v = find_vnic(vnic_id);
     if (!v) {
-        microkit_mr_set(0, NET_ERR_NOT_FOUND);
-        return microkit_msginfo_new(0, 1);
+        rep_u32(rep, 0, NET_ERR_NOT_FOUND);
+        rep->length = 4;
+        return SEL4_ERR_OK;
     }
 
     if (v->port_count >= NET_MAX_BOUND_PORTS) {
-        microkit_mr_set(0, NET_ERR_NO_VNICS);  /* reuse: means "table full" */
-        return microkit_msginfo_new(0, 1);
+        rep_u32(rep, 0, NET_ERR_NO_VNICS);  /* reuse: means "table full" */
+        rep->length = 4;
+        return SEL4_ERR_OK;
     }
 
     v->bound_ports[v->port_count++] = port;
@@ -508,22 +524,24 @@ static microkit_msginfo handle_net_bind(void) {
     log_dec(protocol);
     log_drain_write(16, 16, "\n");
 
-    microkit_mr_set(0, NET_OK);
-    return microkit_msginfo_new(0, 1);
+    rep_u32(rep, 0, NET_OK);
+    rep->length = 4;
+        return SEL4_ERR_OK;
 }
 
 /* ── OP_NET_CONNECT ───────────────────────────────────────────────────────── */
-static microkit_msginfo handle_net_connect(void) {
-    uint32_t vnic_id   = (uint32_t)microkit_mr_get(1);
-    uint32_t dest_ip   = (uint32_t)microkit_mr_get(2);
-    uint32_t dest_port = (uint32_t)microkit_mr_get(3);
-    uint32_t protocol  = (uint32_t)microkit_mr_get(4);
+static uint32_t handle_net_connect(void) {
+    uint32_t vnic_id   = (uint32_t)msg_u32(req, 4);
+    uint32_t dest_ip   = (uint32_t)msg_u32(req, 8);
+    uint32_t dest_port = (uint32_t)msg_u32(req, 12);
+    uint32_t protocol  = (uint32_t)msg_u32(req, 16);
 
     net_vnic_t *v = find_vnic(vnic_id);
     if (!v) {
-        microkit_mr_set(0, NET_ERR_NOT_FOUND);
-        microkit_mr_set(1, 0);
-        return microkit_msginfo_new(0, 2);
+        rep_u32(rep, 0, NET_ERR_NOT_FOUND);
+        rep_u32(rep, 4, 0);
+        rep->length = 8;
+        return SEL4_ERR_OK;
     }
 
     log_drain_write(16, 16, "[net_server] CONNECT: vnic=");
@@ -539,14 +557,15 @@ static microkit_msginfo handle_net_connect(void) {
     /* Open a lwIP TCP connection for this vNIC slot (TCP only in Phase 1) */
     int err = lwip_net_connect((uint8_t)(vnic_id & 0xFFu),
                                 dest_ip, (uint16_t)dest_port);
-    microkit_mr_set(0, err == 0 ? NET_OK : NET_ERR_STUB);
-    microkit_mr_set(1, vnic_id);
-    return microkit_msginfo_new(0, 2);
+    rep_u32(rep, 0, err == 0 ? NET_OK : NET_ERR_STUB);
+    rep_u32(rep, 4, vnic_id);
+    rep->length = 8;
+        return SEL4_ERR_OK;
 }
 
 /* ── OP_NET_STATUS ────────────────────────────────────────────────────────── */
-static microkit_msginfo handle_net_status(void) {
-    uint32_t vnic_id = (uint32_t)microkit_mr_get(1);
+static uint32_t handle_net_status(void) {
+    uint32_t vnic_id = (uint32_t)msg_u32(req, 4);
 
     if (vnic_id == 0xFFFFFFFFu) {
         /* Global status */
@@ -557,35 +576,39 @@ static microkit_msginfo handle_net_status(void) {
                 total_tx += vnics[i].tx_packets;
             }
         }
-        microkit_mr_set(0, NET_OK);
-        microkit_mr_set(1, active_vnic_count);
-        microkit_mr_set(2, (uint32_t)(total_rx & 0xFFFFFFFFu));
-        microkit_mr_set(3, (uint32_t)(total_tx & 0xFFFFFFFFu));
-        return microkit_msginfo_new(0, 4);
+        rep_u32(rep, 0, NET_OK);
+        rep_u32(rep, 4, active_vnic_count);
+        rep_u32(rep, 8, (uint32_t)(total_rx & 0xFFFFFFFFu));
+        rep_u32(rep, 12, (uint32_t)(total_tx & 0xFFFFFFFFu));
+        rep->length = 16;
+        return SEL4_ERR_OK;
     }
 
     net_vnic_t *v = find_vnic(vnic_id);
     if (!v) {
-        microkit_mr_set(0, NET_ERR_NOT_FOUND);
-        return microkit_msginfo_new(0, 1);
+        rep_u32(rep, 0, NET_ERR_NOT_FOUND);
+        rep->length = 4;
+        return SEL4_ERR_OK;
     }
 
-    microkit_mr_set(0, NET_OK);
-    microkit_mr_set(1, active_vnic_count);
-    microkit_mr_set(2, (uint32_t)(v->rx_packets & 0xFFFFFFFFu));
-    microkit_mr_set(3, (uint32_t)(v->tx_packets & 0xFFFFFFFFu));
-    return microkit_msginfo_new(0, 4);
+    rep_u32(rep, 0, NET_OK);
+    rep_u32(rep, 4, active_vnic_count);
+    rep_u32(rep, 8, (uint32_t)(v->rx_packets & 0xFFFFFFFFu));
+    rep_u32(rep, 12, (uint32_t)(v->tx_packets & 0xFFFFFFFFu));
+    rep->length = 16;
+        return SEL4_ERR_OK;
 }
 
 /* ── OP_NET_SET_ACL ───────────────────────────────────────────────────────── */
-static microkit_msginfo handle_net_set_acl(void) {
-    uint32_t vnic_id   = (uint32_t)microkit_mr_get(1);
-    uint32_t acl_flags = (uint32_t)microkit_mr_get(2);
+static uint32_t handle_net_set_acl(void) {
+    uint32_t vnic_id   = (uint32_t)msg_u32(req, 4);
+    uint32_t acl_flags = (uint32_t)msg_u32(req, 8);
 
     net_vnic_t *v = find_vnic(vnic_id);
     if (!v) {
-        microkit_mr_set(0, NET_ERR_NOT_FOUND);
-        return microkit_msginfo_new(0, 1);
+        rep_u32(rep, 0, NET_ERR_NOT_FOUND);
+        rep->length = 4;
+        return SEL4_ERR_OK;
     }
 
     uint32_t old_flags = v->acl_flags;
@@ -599,8 +622,9 @@ static microkit_msginfo handle_net_set_acl(void) {
     log_hex(acl_flags);
     log_drain_write(16, 16, "\n");
 
-    microkit_mr_set(0, NET_OK);
-    return microkit_msginfo_new(0, 1);
+    rep_u32(rep, 0, NET_OK);
+    rep->length = 4;
+        return SEL4_ERR_OK;
 }
 
 /* ── OP_NET_HTTP_POST ─────────────────────────────────────────────────────── */
@@ -639,19 +663,20 @@ static uint16_t buf_append_dec(uint8_t *dst, uint16_t pos, uint16_t cap, uint32_
     return buf_append(dst, pos, cap, &tmp[i], (uint16_t)(11 - i));
 }
 
-static microkit_msginfo handle_net_http_post(void)
+static uint32_t handle_net_http_post(void)
 {
-    uint32_t url_offset  = (uint32_t)microkit_mr_get(1);
-    uint32_t url_len     = (uint32_t)microkit_mr_get(2);
-    uint32_t body_offset = (uint32_t)microkit_mr_get(3);
-    uint32_t body_len    = (uint32_t)microkit_mr_get(4);
+    uint32_t url_offset  = (uint32_t)msg_u32(req, 4);
+    uint32_t url_len     = (uint32_t)msg_u32(req, 8);
+    uint32_t body_offset = (uint32_t)msg_u32(req, 12);
+    uint32_t body_len    = (uint32_t)msg_u32(req, 16);
 
     if (!vibe_staging_vaddr) {
         log_drain_write(16, 16, "[net_server] HTTP_POST: staging not mapped\n");
-        microkit_mr_set(0, 0u);
-        microkit_mr_set(1, 0u);
-        microkit_mr_set(2, 0u);
-        return microkit_msginfo_new(0, 3);
+        rep_u32(rep, 0, 0u);
+        rep_u32(rep, 4, 0u);
+        rep_u32(rep, 8, 0u);
+        rep->length = 12;
+        return SEL4_ERR_OK;
     }
 
     const char *url  = (const char *)(vibe_staging_vaddr + url_offset);
@@ -705,10 +730,11 @@ static microkit_msginfo handle_net_http_post(void)
         log_drain_write(16, 16, "[net_server] HTTP_POST: connect error=");
         log_dec((uint32_t)(uint32_t)(-err));
         log_drain_write(16, 16, "\n");
-        microkit_mr_set(0, 0u);
-        microkit_mr_set(1, 0u);
-        microkit_mr_set(2, 0u);
-        return microkit_msginfo_new(0, 3);
+        rep_u32(rep, 0, 0u);
+        rep_u32(rep, 4, 0u);
+        rep_u32(rep, 8, 0u);
+        rep->length = 12;
+        return SEL4_ERR_OK;
     }
 
     /* Poll until TCP connected (state 2) or failed (state 3), ~5 s at 10 ms/tick */
@@ -722,19 +748,21 @@ static microkit_msginfo handle_net_http_post(void)
 
     if (g_conns[HTTP_CONN_ID].state != 2u) {
         log_drain_write(16, 16, "[net_server] HTTP_POST: connect timeout\n");
-        microkit_mr_set(0, 0u);
-        microkit_mr_set(1, 0u);
-        microkit_mr_set(2, 0u);
-        return microkit_msginfo_new(0, 3);
+        rep_u32(rep, 0, 0u);
+        rep_u32(rep, 4, 0u);
+        rep_u32(rep, 8, 0u);
+        rep->length = 12;
+        return SEL4_ERR_OK;
     }
 
     /* Send request header */
     if (lwip_net_send(HTTP_CONN_ID, http_hdr, hlen) < 0) {
         log_drain_write(16, 16, "[net_server] HTTP_POST: header send failed\n");
-        microkit_mr_set(0, 0u);
-        microkit_mr_set(1, 0u);
-        microkit_mr_set(2, 0u);
-        return microkit_msginfo_new(0, 3);
+        rep_u32(rep, 0, 0u);
+        rep_u32(rep, 4, 0u);
+        rep_u32(rep, 8, 0u);
+        rep->length = 12;
+        return SEL4_ERR_OK;
     }
 
     /* Send body (up to 65535 bytes fit in uint16_t) */
@@ -742,10 +770,11 @@ static microkit_msginfo handle_net_http_post(void)
         uint16_t blen16 = (body_len > 65535u) ? 65535u : (uint16_t)body_len;
         if (lwip_net_send(HTTP_CONN_ID, (const uint8_t *)body, blen16) < 0) {
             log_drain_write(16, 16, "[net_server] HTTP_POST: body send failed\n");
-            microkit_mr_set(0, 0u);
-            microkit_mr_set(1, 0u);
-            microkit_mr_set(2, 0u);
-            return microkit_msginfo_new(0, 3);
+            rep_u32(rep, 0, 0u);
+            rep_u32(rep, 4, 0u);
+            rep_u32(rep, 8, 0u);
+            rep->length = 12;
+        return SEL4_ERR_OK;
         }
     }
 
@@ -761,10 +790,11 @@ static microkit_msginfo handle_net_http_post(void)
     uint32_t rx_len = g_conns[HTTP_CONN_ID].rx_buf_len;
     if (rx_len == 0u) {
         log_drain_write(16, 16, "[net_server] HTTP_POST: no response received\n");
-        microkit_mr_set(0, 0u);
-        microkit_mr_set(1, 0u);
-        microkit_mr_set(2, 0u);
-        return microkit_msginfo_new(0, 3);
+        rep_u32(rep, 0, 0u);
+        rep_u32(rep, 4, 0u);
+        rep_u32(rep, 8, 0u);
+        rep->length = 12;
+        return SEL4_ERR_OK;
     }
 
     /* Parse HTTP status code from first response line: "HTTP/1.1 NNN ..." */
@@ -807,18 +837,20 @@ static microkit_msginfo handle_net_http_post(void)
     log_dec(resp_body_len);
     log_drain_write(16, 16, "\n");
 
-    microkit_mr_set(0, http_status);
-    microkit_mr_set(1, body_offset);   /* response body written at same staging offset */
-    microkit_mr_set(2, resp_body_len);
-    return microkit_msginfo_new(0, 3);
+    rep_u32(rep, 0, http_status);
+    rep_u32(rep, 4, body_offset);   /* response body written at same staging offset */
+    rep_u32(rep, 8, resp_body_len);
+    rep->length = 12;
+        return SEL4_ERR_OK;
 }
 
 /* ── OP_NET_HEALTH ────────────────────────────────────────────────────────── */
-static microkit_msginfo handle_net_health(void) {
-    microkit_mr_set(0, NET_OK);
-    microkit_mr_set(1, active_vnic_count);
-    microkit_mr_set(2, NET_VERSION);
-    return microkit_msginfo_new(0, 3);
+static uint32_t handle_net_health(void) {
+    rep_u32(rep, 0, NET_OK);
+    rep_u32(rep, 4, active_vnic_count);
+    rep_u32(rep, 8, NET_VERSION);
+    rep->length = 12;
+        return SEL4_ERR_OK;
 }
 
 /* ══════════════════════════════════════════════════════════════════════════
@@ -828,7 +860,7 @@ static microkit_msginfo handle_net_health(void) {
 /*
  * init() — called once at boot before any PPCs arrive.
  */
-void init(void) {
+static void net_server_pd_init(void) {
     agentos_log_boot("net_server");
     log_drain_write(16, 16, "[net_server] Initialising NetServer PD (priority 160, passive)\n");
 
@@ -876,7 +908,7 @@ void init(void) {
  *   - lwIP_INTEGRATION_NOTE: call smoltcp_iface_poll() and dispatch
  *     any received packets to the appropriate vNIC's RX ring.
  */
-void notified(microkit_channel ch) {
+static void net_server_pd_notified(uint32_t ch) {
     switch (ch) {
     case NET_CH_CONTROLLER:
         /* virtio-net RX interrupt from controller — poll virtqueue */
@@ -902,10 +934,10 @@ void notified(microkit_channel ch) {
  * Callers: controller (CH0), init_agent (CH1), workers CH2..CH9, app_manager (CH10).
  * The label field of msginfo carries the opcode (OP_NET_*).
  */
-microkit_msginfo protected(microkit_channel ch, microkit_msginfo msginfo) {
-    (void)ch;   /* all channels share the same dispatch table for now */
+static uint32_t net_server_h_dispatch(sel4_badge_t b, const sel4_msg_t *req, sel4_msg_t *rep, void *ctx) {
+    (void)b; (void)ctx;   /* all callers share the same dispatch table */
 
-    uint64_t op = microkit_msginfo_get_label(msginfo);
+    uint64_t op = msg_u32(req, 0);
 
     switch (op) {
     case OP_NET_VNIC_CREATE:  return handle_vnic_create();
@@ -919,20 +951,22 @@ microkit_msginfo protected(microkit_channel ch, microkit_msginfo msginfo) {
     case OP_NET_HEALTH:       return handle_net_health();
     case OP_NET_HTTP_POST:    return handle_net_http_post();
     case OP_NET_CONN_STATE: {
-        uint8_t vid = (uint8_t)microkit_mr_get(1);
-        microkit_mr_set(0, NET_OK);
-        microkit_mr_set(1, (uint32_t)lwip_conn_state(vid));
-        return microkit_msginfo_new(0, 2);
+        uint8_t vid = (uint8_t)msg_u32(req, 4);
+        rep_u32(rep, 0, NET_OK);
+        rep_u32(rep, 4, (uint32_t)lwip_conn_state(vid));
+        rep->length = 8;
+        return SEL4_ERR_OK;
     }
     case OP_NET_TCP_CLOSE: {
-        uint8_t vid = (uint8_t)microkit_mr_get(1);
+        uint8_t vid = (uint8_t)msg_u32(req, 4);
         if (vid < NET_MAX_VNICS && g_conns[vid].tcp) {
             tcp_close(g_conns[vid].tcp);
             g_conns[vid].tcp   = NULL;
             g_conns[vid].state = 0u;
         }
-        microkit_mr_set(0, NET_OK);
-        return microkit_msginfo_new(0, 1);
+        rep_u32(rep, 0, NET_OK);
+        rep->length = 4;
+        return SEL4_ERR_OK;
     }
     default:
         log_drain_write(16, 16, "[net_server] unknown op=");
@@ -940,7 +974,20 @@ microkit_msginfo protected(microkit_channel ch, microkit_msginfo msginfo) {
         log_drain_write(16, 16, " ch=");
         log_dec((uint32_t)ch);
         log_drain_write(16, 16, "\n");
-        microkit_mr_set(0, NET_ERR_INVAL);
-        return microkit_msginfo_new(0, 1);
+        rep_u32(rep, 0, NET_ERR_INVAL);
+        rep->length = 4;
+        return SEL4_ERR_OK;
     }
+}
+
+/* ── E5-S8: Entry point ─────────────────────────────────────────────────── */
+void net_server_main(seL4_CPtr my_ep, seL4_CPtr ns_ep)
+{
+    (void)ns_ep;
+    net_server_pd_init();
+    static sel4_server_t srv;
+    sel4_server_init(&srv, my_ep);
+    /* Dispatch all opcodes through the generic handler */
+    sel4_server_register(&srv, SEL4_SERVER_OPCODE_ANY, net_server_h_dispatch, (void *)0);
+    sel4_server_run(&srv);
 }

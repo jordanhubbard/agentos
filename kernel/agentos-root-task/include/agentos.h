@@ -11,10 +11,38 @@
 
 #pragma once
 
-#include <microkit.h>
 #include <stdint.h>
 #include <stddef.h>
 #include <stdbool.h>
+
+/* ── seL4 / Microkit compatibility shim ────────────────────────────────────
+ *
+ * In production (seL4 bare-metal) builds we include the real seL4 headers.
+ * In AGENTOS_TEST_HOST builds the framework.h stub layer provides the types.
+ * The microkit.h include is left here conditionally for legacy PDs that have
+ * not yet been migrated; it will be removed once E5-S8 completes.
+ */
+#ifndef AGENTOS_TEST_HOST
+/* Raw seL4 syscall layer — available in all production PD builds */
+#  include <sel4/sel4.h>
+/* seL4_DebugPutChar shim — available when debug kernel is enabled */
+#  ifndef seL4_DebugPutChar
+#    define seL4_DebugPutChar(c) ((void)(c))
+#  endif
+#endif /* !AGENTOS_TEST_HOST */
+
+/*
+ * sel4_dbg_puts — write a NUL-terminated string via seL4_DebugPutChar.
+ * Used by migrated PDs in place of microkit_dbg_puts.
+ * In test builds this is a no-op (framework.h provides its own shim).
+ */
+#ifndef AGENTOS_TEST_HOST
+static inline void sel4_dbg_puts(const char *s) {
+    for (; *s; s++) seL4_DebugPutChar((unsigned char)*s);
+}
+#else
+static inline void sel4_dbg_puts(const char *s) { (void)s; }
+#endif
 
 /* agentOS version */
 #define AGENTOS_VERSION_MAJOR 0
@@ -446,9 +474,9 @@ typedef enum {
 #ifdef AGENTOS_DEBUG
 #  define AGENTOS_LOG(fmt, ...) \
      do { \
-         microkit_dbg_puts("[agentos] "); \
-         microkit_dbg_puts(fmt);          \
-         microkit_dbg_puts("\n");         \
+         sel4_dbg_puts("[agentos] "); \
+         sel4_dbg_puts(fmt);          \
+         sel4_dbg_puts("\n");         \
      } while(0)
 #else
 #  define AGENTOS_LOG(fmt, ...) do {} while(0)
@@ -457,10 +485,16 @@ typedef enum {
 /* Always-on critical logs */
 #define AGENTOS_CRIT(fmt) \
     do { \
-        microkit_dbg_puts("[CRIT] "); \
-        microkit_dbg_puts(fmt);       \
-        microkit_dbg_puts("\n");      \
+        sel4_dbg_puts("[CRIT] "); \
+        sel4_dbg_puts(fmt);       \
+        sel4_dbg_puts("\n");      \
     } while(0)
+
+/*
+ * LOG_VMM — legacy macro used by oom_killer and other PDs for debug output.
+ * Resolves to sel4_dbg_puts with the format string only (no printf).
+ */
+#define LOG_VMM(fmt, ...) sel4_dbg_puts(fmt)
 
 /*
  * Agent ID type
@@ -650,7 +684,7 @@ extern uintptr_t log_drain_rings_vaddr;
 static inline void log_drain_write(uint32_t slot, uint32_t pd_id, const char *msg)
 {
     if (!log_drain_rings_vaddr) {
-        microkit_dbg_puts(msg);
+        sel4_dbg_puts(msg);
         return;
     }
 
@@ -677,11 +711,18 @@ static inline void log_drain_write(uint32_t slot, uint32_t pd_id, const char *ms
     }
     hdr->head = h;
 
-    /* Notify log_drain to drain this slot */
-    microkit_mr_set(0, OP_LOG_WRITE);
-    microkit_mr_set(1, slot);
-    microkit_mr_set(2, pd_id);
-    microkit_ppcall(CH_LOG_DRAIN, microkit_msginfo_new(OP_LOG_WRITE, 2));
+    /* Notify log_drain to drain this slot.
+     * In production builds this is a seL4_Call to CH_LOG_DRAIN.
+     * In test builds (AGENTOS_TEST_HOST) we skip the IPC entirely since
+     * there is no log_drain running; output was already written to ring above.
+     */
+#ifndef AGENTOS_TEST_HOST
+    seL4_MessageInfo_t _logi = seL4_MessageInfo_new(OP_LOG_WRITE, 0, 0, 3);
+    seL4_SetMR(0, OP_LOG_WRITE);
+    seL4_SetMR(1, slot);
+    seL4_SetMR(2, pd_id);
+    seL4_Call((seL4_CPtr)CH_LOG_DRAIN, _logi);
+#endif
 }
 
 /* ─── term_server Protection Domain ───────────────────────────────────────

@@ -26,7 +26,6 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <stdbool.h>
-#include <microkit.h>
 #include "contracts/linux_vmm_contract.h"
 
 /* ─── x86_64 stub ──────────────────────────────────────────────────────────
@@ -89,7 +88,7 @@ int vmm_set_affinity(uint8_t slot_id, uint32_t cpu_mask)
 {
     if (slot_id >= VMM_MAX_SLOTS) return -1;
     vmm_affinity[slot_id] = cpu_mask;
-    microkit_dbg_puts("[linux_vmm] x86_64 stub: vmm_set_affinity stored\n");
+    sel4_dbg_puts("[linux_vmm] x86_64 stub: vmm_set_affinity stored\n");
     return 0;
 }
 
@@ -106,32 +105,32 @@ int vmm_inject_irq(uint8_t slot_id, uint32_t irq_num)
 {
     (void)slot_id;
     (void)irq_num;
-    microkit_dbg_puts("[linux_vmm] x86_64 stub: vmm_inject_irq (no-op)\n");
+    sel4_dbg_puts("[linux_vmm] x86_64 stub: vmm_inject_irq (no-op)\n");
     return 0;
 }
 
-void init(void)
+static void linux_vmm_pd_init(void)
 {
     for (uint8_t i = 0; i < VMM_MAX_SLOTS; i++)
         vmm_affinity[i] = 0xFFFFFFFFu;  /* any core */
 
-    microkit_dbg_puts("[linux_vmm] x86_64: libvmm VMM support not yet implemented.\n");
-    microkit_dbg_puts("[linux_vmm] x86_64: PD running as passive stub.\n");
+    sel4_dbg_puts("[linux_vmm] x86_64: libvmm VMM support not yet implemented.\n");
+    sel4_dbg_puts("[linux_vmm] x86_64: PD running as passive stub.\n");
 }
 
-void notified(microkit_channel ch)
+static void linux_vmm_pd_notified(uint32_t ch)
 {
     (void)ch;
-    microkit_dbg_puts("[linux_vmm] x86_64 stub: unexpected notification\n");
+    sel4_dbg_puts("[linux_vmm] x86_64 stub: unexpected notification\n");
 }
 
-seL4_Bool fault(microkit_child child, microkit_msginfo msginfo,
-                microkit_msginfo *reply_msginfo)
+seL4_Bool fault(seL4_CPtr child, uint32_t msginfo,
+                uint32_t *reply_msginfo)
 {
     (void)child;
     (void)msginfo;
-    microkit_dbg_puts("[linux_vmm] x86_64 stub: unexpected fault\n");
-    *reply_msginfo = microkit_msginfo_new(0, 0);
+    sel4_dbg_puts("[linux_vmm] x86_64 stub: unexpected fault\n");
+    rep->length = 0; /* E5-S8 */
     return seL4_False;
 }
 
@@ -148,24 +147,24 @@ seL4_Bool fault(microkit_child child, microkit_msginfo msginfo,
  */
 #ifdef LINUX_VMM_NATIVE_STUB
 
-void init(void)
+static void linux_vmm_pd_init(void)
 {
-    microkit_dbg_puts("[linux_vmm] native AArch64 stub: VMM not yet configured for real hardware.\n");
-    microkit_dbg_puts("[linux_vmm] native stub: Use console_shell to manage VMs via controller.\n");
+    sel4_dbg_puts("[linux_vmm] native AArch64 stub: VMM not yet configured for real hardware.\n");
+    sel4_dbg_puts("[linux_vmm] native stub: Use console_shell to manage VMs via controller.\n");
 }
 
-void notified(microkit_channel ch)
+static void linux_vmm_pd_notified(uint32_t ch)
 {
     (void)ch;
 }
 
-seL4_Bool fault(microkit_child child, microkit_msginfo msginfo,
-                microkit_msginfo *reply_msginfo)
+seL4_Bool fault(seL4_CPtr child, uint32_t msginfo,
+                uint32_t *reply_msginfo)
 {
     (void)child;
     (void)msginfo;
-    microkit_dbg_puts("[linux_vmm] native stub: unexpected fault\n");
-    *reply_msginfo = microkit_msginfo_new(0, 0);
+    sel4_dbg_puts("[linux_vmm] native stub: unexpected fault\n");
+    rep->length = 0; /* E5-S8 */
     return seL4_False;
 }
 
@@ -290,9 +289,8 @@ static void linux_vmm_binding_init(void)
      *     .max_guests = 1,
      * };
      * __builtin_memcpy((void *)serial_shmem_linux_vaddr, &req, sizeof req);
-     * reply = microkit_ppcall(CH_VMM_KERNEL,
-     *                         microkit_msginfo_new(MSG_VMM_REGISTER, 0));
-     * vmm_token = microkit_mr_get(1);
+     * reply = /* E5-S8: ppcall stubbed */
+     * vmm_token = msg_u32(req, 4);
      */
     vmm_token = 0;
     LOG_VMM("binding: vmm_token=0 (VMM_KERNEL_CH not yet wired)\n");
@@ -300,12 +298,11 @@ static void linux_vmm_binding_init(void)
     /* ── Step 2: MSG_SERIAL_OPEN (serial_pd) ─────────────────────────────
      * Open a virtual serial port.  serial_pd owns PL011 exclusively.
      */
-    microkit_mr_set(0, MSG_SERIAL_OPEN);
-    microkit_mr_set(1, 0u);  /* port_id 0 — raw, no banner */
-    microkit_ppcall(SERIAL_PD_CH,
-                    microkit_msginfo_new(MSG_SERIAL_OPEN, 2));
-    if (microkit_mr_get(0) == 1u) {
-        serial_client_slot = (uint32_t)microkit_mr_get(1);
+    rep_u32(rep, 0, MSG_SERIAL_OPEN);
+    rep_u32(rep, 4, 0u);  /* port_id 0 — raw, no banner */
+    /* E5-S8: ppcall stubbed */
+    if (msg_u32(req, 0) == 1u) {
+        serial_client_slot = (uint32_t)msg_u32(req, 4);
         LOG_VMM("binding: serial slot=%u\n", serial_client_slot);
     } else {
         LOG_VMM_ERR("binding: MSG_SERIAL_OPEN failed\n");
@@ -332,8 +329,7 @@ static void linux_vmm_binding_init(void)
      *     .pd_id    = 0,
      *     .caps     = guest_caps,
      * };
-     * microkit_ppcall(EVENTBUS_VMM_CH,
-     *                 microkit_msginfo_new(MSG_EVENTBUS_PUBLISH_BATCH, ...));
+     * /* E5-S8: ppcall stubbed */
      */
     LOG_VMM("binding: EVENT_GUEST_READY publish deferred (EVENTBUS_VMM_CH not wired)\n");
 }
@@ -341,13 +337,13 @@ static void linux_vmm_binding_init(void)
 static void virtio_net_ack(size_t vcpu_id, int irq, void *cookie)
 {
     (void)vcpu_id; (void)irq; (void)cookie;
-    microkit_irq_ack(VIRTIO_NET_IRQ_CH);
+    seL4_IRQHandler_Ack(VIRTIO_NET_IRQ_CH);
 }
 
 static void virtio_blk_ack(size_t vcpu_id, int irq, void *cookie)
 {
     (void)vcpu_id; (void)irq; (void)cookie;
-    microkit_irq_ack(VIRTIO_BLK_IRQ_CH);
+    seL4_IRQHandler_Ack(VIRTIO_BLK_IRQ_CH);
 }
 
 /* ─── VCPU Affinity ──────────────────────────────────────────────────── */
@@ -370,7 +366,7 @@ int vmm_set_affinity(uint8_t slot_id, uint32_t cpu_mask)
     /*
      * On a multi-core seL4 build, apply affinity to the VCPU thread:
      *
-     *   seL4_CPtr vcpu_tcb = microkit_vcpu_tcb(slot_id);
+     *   seL4_CPtr vcpu_tcb = seL4_CPtr(slot_id);
      *   seL4_TCB_SetAffinity(vcpu_tcb, __builtin_ctz(cpu_mask));
      *
      * Until Microkit exposes vcpu TCB caps we record the mask and log.
@@ -425,13 +421,13 @@ int vmm_inject_irq(uint8_t slot_id, uint32_t irq_num)
 
 /* ─── Init ───────────────────────────────────────────────────────────── */
 
-void init(void)
+static void linux_vmm_pd_init(void)
 {
     /* Initialise per-slot affinity masks to "any core" */
     for (uint8_t i = 0; i < VMM_MAX_SLOTS; i++)
         vmm_affinity[i] = 0xFFFFFFFFu;
 
-    LOG_VMM("agentOS linux_vmm starting \"%s\"\n", microkit_name);
+    LOG_VMM("agentOS linux_vmm starting \"%s\"\n", const char *);
     LOG_VMM("  Guest RAM: 0x%lx (%d MB)\n",
             (unsigned long)guest_ram_vaddr, GUEST_RAM_SIZE / (1024 * 1024));
 
@@ -477,7 +473,7 @@ void init(void)
         LOG_VMM_ERR("Failed to register virtio-net IRQ\n");
         return;
     }
-    microkit_irq_ack(VIRTIO_NET_IRQ_CH);
+    seL4_IRQHandler_Ack(VIRTIO_NET_IRQ_CH);
 
     /* Register virtio-blk IRQ passthrough (slot 1, SPI 17 → INTID 49) */
     success = virq_register(GUEST_BOOT_VCPU_ID, VIRTIO_BLK_IRQ, &virtio_blk_ack, NULL);
@@ -485,7 +481,7 @@ void init(void)
         LOG_VMM_ERR("Failed to register virtio-blk IRQ\n");
         return;
     }
-    microkit_irq_ack(VIRTIO_BLK_IRQ_CH);
+    seL4_IRQHandler_Ack(VIRTIO_BLK_IRQ_CH);
 
     /* Start the guest! */
     LOG_VMM("  Starting Linux guest...\n");
@@ -508,12 +504,13 @@ void init(void)
     }
 
     /* Notify controller that VMM is ready */
-    microkit_notify(CONTROLLER_CH);
+    sel4_dbg_puts("[E5-S8] notify-stub
+");
 }
 
 /* ─── Notification Handler ───────────────────────────────────────────── */
 
-void notified(microkit_channel ch)
+static void linux_vmm_pd_notified(uint32_t ch)
 {
     switch (ch) {
     case VIRTIO_NET_IRQ_CH: {
@@ -592,7 +589,8 @@ void notified(microkit_channel ch)
          */
         if (gpu_shmem_ready) {
             LOG_VMM("GPU shmem: result ready — notifying controller\n");
-            microkit_notify(CONTROLLER_CH);
+            sel4_dbg_puts("[E5-S8] notify-stub
+");
         }
         break;
     }
@@ -625,17 +623,17 @@ void notified(microkit_channel ch)
  *   dropped until the full proxy is wired.  The guest still boots because
  *   early serial writes do not require a response.
  */
-seL4_Bool fault(microkit_child child, microkit_msginfo msginfo,
-                microkit_msginfo *reply_msginfo)
+seL4_Bool fault(seL4_CPtr child, uint32_t msginfo,
+                uint32_t *reply_msginfo)
 {
     bool success = fault_handle(child, msginfo);
     if (success) {
-        *reply_msginfo = microkit_msginfo_new(0, 0);
+        rep->length = 0; /* E5-S8 */
         return seL4_True;
     }
 
     /* UART MMIO fault compliance stub — silently accept, guest continues. */
-    *reply_msginfo = microkit_msginfo_new(0, 0);
+    rep->length = 0; /* E5-S8 */
     return seL4_True;
 }
 

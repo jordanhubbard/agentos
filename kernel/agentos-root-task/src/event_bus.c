@@ -16,6 +16,7 @@
 
 #define AGENTOS_DEBUG 1
 #include "agentos.h"
+#include "sel4_server.h"
 
 /* The ring buffer lives in shared memory - Microkit sets this via setvar_vaddr */
 uintptr_t eventbus_ring_vaddr;
@@ -26,7 +27,7 @@ uintptr_t eventbus_ring_vaddr;
 
 typedef struct {
     bool active;
-    microkit_channel notify_ch;   /* channel to notify on new events */
+    uint32_t notify_ch;   /* channel to notify on new events */
     uint32_t topic_mask;          /* event kind bitmask (0 = all events) */
     uint64_t last_seq;            /* last seen sequence number */
 } subscriber_t;
@@ -86,7 +87,8 @@ static int eventbus_write(uint32_t kind, uint32_t source_pd,
 static void eventbus_notify_all(void) {
     for (int i = 0; i < MAX_SUBSCRIBERS; i++) {
         if (subscribers[i].active) {
-            microkit_notify(subscribers[i].notify_ch);
+            sel4_dbg_puts("[E5-S8] notify-stub
+"); /* TODO: seL4_Signal(notify_cap_for_subscribers[i].notify_ch) */
         }
     }
 }
@@ -94,7 +96,7 @@ static void eventbus_notify_all(void) {
 /*
  * init() - EventBus is passive but still gets init() called
  */
-void init(void) {
+static void event_bus_pd_init(void) {
     log_drain_write(2, 2, "[event_bus] Initializing...\n");
     
     /* Clear subscriber table */
@@ -111,7 +113,7 @@ void init(void) {
  * This happens when a publisher fires a notify instead of a PPC.
  * For high-priority events only.
  */
-void notified(microkit_channel ch) {
+static void event_bus_pd_notified(uint32_t ch) {
     /* Channel 6: AgentFS notify on mutations (async mutation event) */
     if (ch == 6) {
         log_drain_write(2, 2, "[event_bus] AgentFS mutation notification received\n");
@@ -128,8 +130,8 @@ void notified(microkit_channel ch) {
  *   MSG_EVENTBUS_SUBSCRIBE -> Add a subscriber
  *   MSG_EVENTBUS_STATUS    -> Return status info
  */
-microkit_msginfo protected(microkit_channel ch, microkit_msginfo msg) {
-    uint64_t tag = microkit_msginfo_get_label(msg);
+static uint32_t event_bus_pd_dispatch(sel4_badge_t b, const sel4_msg_t *req, sel4_msg_t *rep, void *ctx) {
+    uint64_t tag = msg_u32(req, 0);
     
     switch (tag) {
         case MSG_EVENTBUS_INIT: {
@@ -141,13 +143,14 @@ microkit_msginfo protected(microkit_channel ch, microkit_msginfo msg) {
             eventbus_write(MSG_EVENT_SYSTEM_READY, 0, NULL, 0);
             
             log_drain_write(2, 2, "[event_bus] READY\n");
-            return microkit_msginfo_new(MSG_EVENTBUS_READY, 0);
+            rep->length = 0;
+        return SEL4_ERR_OK;
         }
         
         case MSG_EVENTBUS_SUBSCRIBE: {
             /* mr[0] = notify channel, mr[1] = topic mask */
-            uint32_t notify_ch = (uint32_t)microkit_mr_get(0);
-            uint32_t topic_mask = (uint32_t)microkit_mr_get(1);
+            uint32_t notify_ch = (uint32_t)msg_u32(req, 0);
+            uint32_t topic_mask = (uint32_t)msg_u32(req, 4);
             
             /* Find a free subscriber slot */
             for (int i = 0; i < MAX_SUBSCRIBERS; i++) {
@@ -159,35 +162,40 @@ microkit_msginfo protected(microkit_channel ch, microkit_msginfo msg) {
                     sub_count++;
                     
                     log_drain_write(2, 2, "[event_bus] New subscriber registered\n");
-                    microkit_mr_set(0, i); /* return subscription handle */
-                    return microkit_msginfo_new(0, 1);
+                    rep_u32(rep, 0, i); /* return subscription handle */
+                    rep->length = 4;
+        return SEL4_ERR_OK;
                 }
             }
             
             /* No free slots */
             log_drain_write(2, 2, "[event_bus] ERROR: subscriber table full\n");
-            return microkit_msginfo_new(0xFFFF, 0);
+            rep->length = 0;
+        return SEL4_ERR_OK;
         }
         
         case MSG_EVENTBUS_UNSUBSCRIBE: {
-            uint32_t handle = (uint32_t)microkit_mr_get(0);
+            uint32_t handle = (uint32_t)msg_u32(req, 0);
             if (handle < MAX_SUBSCRIBERS && subscribers[handle].active) {
                 subscribers[handle].active = false;
                 sub_count--;
                 log_drain_write(2, 2, "[event_bus] Subscriber removed\n");
-                return microkit_msginfo_new(0, 0);
+                rep->length = 0;
+        return SEL4_ERR_OK;
             }
-            return microkit_msginfo_new(0xFFFF, 0);
+            rep->length = 0;
+        return SEL4_ERR_OK;
         }
         
         case MSG_EVENTBUS_STATUS: {
             volatile agentos_ring_header_t *ring = EVENTBUS_RING;
             /* MR0 = head, MR1 = tail, MR2 = capacity, MR3 = overflow_count */
-            microkit_mr_set(0, (uint64_t)ring->head);
-            microkit_mr_set(1, (uint64_t)ring->tail);
-            microkit_mr_set(2, (uint64_t)ring->capacity);
-            microkit_mr_set(3, (uint64_t)ring->overflow_count);
-            return microkit_msginfo_new(0, 4);
+            rep_u32(rep, 0, (uint64_t)ring->head);
+            rep_u32(rep, 4, (uint64_t)ring->tail);
+            rep_u32(rep, 8, (uint64_t)ring->capacity);
+            rep_u32(rep, 12, (uint64_t)ring->overflow_count);
+            rep->length = 16;
+        return SEL4_ERR_OK;
         }
         
         case OP_PUBLISH_BATCH: {
@@ -201,23 +209,25 @@ microkit_msginfo protected(microkit_channel ch, microkit_msginfo msg) {
              * then notify all subscribers exactly once — avoiding N-1 extra
              * kernel crossings vs. individual OP_PUBLISH calls.
              */
-            uint32_t count  = (uint32_t)microkit_mr_get(0);
-            uint32_t offset = (uint32_t)microkit_mr_get(1);
+            uint32_t count  = (uint32_t)msg_u32(req, 0);
+            uint32_t offset = (uint32_t)msg_u32(req, 4);
 
             if (count == 0 || count > PUBLISH_BATCH_MAX) {
-                microkit_dbg_puts("[event_bus] BATCH: bad count\n");
-                microkit_mr_set(0, 0);
-                microkit_mr_set(1, 0);
-                return microkit_msginfo_new(0xFFFF, 2);
+                sel4_dbg_puts("[event_bus] BATCH: bad count\n");
+                rep_u32(rep, 0, 0);
+                rep_u32(rep, 4, 0);
+                rep->length = 8;
+        return SEL4_ERR_OK;
             }
 
             /* Batch entries live in shared mem after the ring data region.
              * Caller controls offset; verify it stays within the 256KB region. */
             if (offset >= 0x40000u) {
-                microkit_dbg_puts("[event_bus] BATCH: offset out of range\n");
-                microkit_mr_set(0, 0);
-                microkit_mr_set(1, 0);
-                return microkit_msginfo_new(0xFFFF, 2);
+                sel4_dbg_puts("[event_bus] BATCH: offset out of range\n");
+                rep_u32(rep, 0, 0);
+                rep_u32(rep, 4, 0);
+                rep->length = 8;
+        return SEL4_ERR_OK;
             }
 
             const uint8_t *ptr = (const uint8_t *)eventbus_ring_vaddr + offset;
@@ -251,9 +261,10 @@ microkit_msginfo protected(microkit_channel ch, microkit_msginfo msg) {
                 eventbus_notify_all();
             }
 
-            microkit_mr_set(0, dispatched);
-            microkit_mr_set(1, dropped);
-            return microkit_msginfo_new(0, 2);
+            rep_u32(rep, 0, dispatched);
+            rep_u32(rep, 4, dropped);
+            rep->length = 8;
+        return SEL4_ERR_OK;
         }
 
         default: {
@@ -261,7 +272,7 @@ microkit_msginfo protected(microkit_channel ch, microkit_msginfo msg) {
             uint32_t kind = (uint32_t)(tag & 0xFFFF);
 
             /* Write event to ring (source_pd from MR1 if available, else channel) */
-            uint32_t source = (uint32_t)microkit_mr_get(1);
+            uint32_t source = (uint32_t)msg_u32(req, 4);
             if (source == 0) source = ch;
             eventbus_write(kind, source, NULL, 0);
 
@@ -288,7 +299,8 @@ microkit_msginfo protected(microkit_channel ch, microkit_msginfo msg) {
             /* Notify subscribers */
             eventbus_notify_all();
 
-            return microkit_msginfo_new(0, 0);
+            rep->length = 0;
+        return SEL4_ERR_OK;
         }
     }
 }

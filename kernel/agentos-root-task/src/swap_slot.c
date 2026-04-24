@@ -27,6 +27,7 @@
 
 #define AGENTOS_DEBUG 1
 #include "agentos.h"
+#include "sel4_server.h"
 #include "contracts/swap_slot_contract.h"
 #include "wasm3_host.h"
 
@@ -156,12 +157,12 @@ static bool load_service(void) {
     }
 }
 
-void init(void) {
+static void swap_slot_pd_init(void) {
     log_drain_write(15, 15, "[swap_slot] Swap slot PD initialized (idle)\n");
     state = SLOT_IDLE;
 }
 
-void notified(microkit_channel ch) {
+static void swap_slot_pd_notified(uint32_t ch) {
     if (ch != CH_CONTROLLER) return;
     
     switch (state) {
@@ -175,11 +176,13 @@ void notified(microkit_channel ch) {
                     state = SLOT_READY;
                     log_drain_write(15, 15, "[swap_slot] Service loaded successfully\n");
                     /* Notify controller we're ready */
-                    microkit_notify(CH_CONTROLLER);
+                    sel4_dbg_puts("[E5-S8] notify-stub
+");
                 } else {
                     state = SLOT_FAILED;
                     log_drain_write(15, 15, "[swap_slot] Service load FAILED\n");
-                    microkit_notify(CH_CONTROLLER);
+                    sel4_dbg_puts("[E5-S8] notify-stub
+");
                 }
             } else {
                 log_drain_write(15, 15, "[swap_slot] No code in region yet\n");
@@ -202,12 +205,13 @@ void notified(microkit_channel ch) {
     }
 }
 
-microkit_msginfo protected(microkit_channel ch, microkit_msginfo msginfo) {
+static uint32_t swap_slot_h_dispatch(sel4_badge_t b, const sel4_msg_t *req, sel4_msg_t *rep, void *ctx) {
     if (ch != CH_CONTROLLER) {
-        return microkit_msginfo_new(0xDEAD, 0);
+        rep->length = 0;
+        return SEL4_ERR_OK;
     }
     
-    uint64_t label = microkit_msginfo_get_label(msginfo);
+    uint64_t label = msg_u32(req, 0);
     
     switch (label) {
         case MSG_VIBE_SWAP_HEALTH:
@@ -219,22 +223,26 @@ microkit_msginfo protected(microkit_channel ch, microkit_msginfo msginfo) {
                     healthy = wasm3_host_call_health_check(wasm_host);
                 }
                 if (healthy) {
-                    microkit_mr_set(0, requests_served);
-                    microkit_mr_set(1, health_checks_passed);
-                    return microkit_msginfo_new(MSG_VIBE_SLOT_HEALTHY, 2);
+                    rep_u32(rep, 0, requests_served);
+                    rep_u32(rep, 4, health_checks_passed);
+                    rep->length = 8;
+        return SEL4_ERR_OK;
                 } else {
-                    return microkit_msginfo_new(MSG_VIBE_SLOT_FAILED, 0);
+                    rep->length = 0;
+        return SEL4_ERR_OK;
                 }
             } else {
-                return microkit_msginfo_new(MSG_VIBE_SLOT_FAILED, 0);
+                rep->length = 0;
+        return SEL4_ERR_OK;
             }
             
         case MSG_VIBE_SWAP_STATUS:
             /* Status query */
-            microkit_mr_set(0, (uint64_t)state);
-            microkit_mr_set(1, requests_served);
-            microkit_mr_set(2, health_checks_passed);
-            return microkit_msginfo_new(MSG_VIBE_SWAP_STATUS, 3);
+            rep_u32(rep, 0, (uint64_t)state);
+            rep_u32(rep, 4, requests_served);
+            rep_u32(rep, 8, health_checks_passed);
+            rep->length = 12;
+        return SEL4_ERR_OK;
             
         default:
             if (state == SLOT_ACTIVE) {
@@ -242,30 +250,46 @@ microkit_msginfo protected(microkit_channel ch, microkit_msginfo msginfo) {
                 
                 /* Dispatch to WASM module if loaded */
                 if (wasm_host) {
-                    uint64_t mr0 = microkit_mr_get(0);
-                    uint64_t mr1 = microkit_mr_get(1);
-                    uint64_t mr2 = microkit_mr_get(2);
-                    uint64_t mr3 = microkit_mr_get(3);
+                    uint64_t mr0 = msg_u32(req, 0);
+                    uint64_t mr1 = msg_u32(req, 4);
+                    uint64_t mr2 = msg_u32(req, 8);
+                    uint64_t mr3 = msg_u32(req, 12);
                     
                     wasm_ppc_result_t result;
                     if (wasm3_host_call_ppc(wasm_host, label, mr0, mr1, mr2, mr3, &result)) {
-                        microkit_mr_set(0, result.mr0);
-                        microkit_mr_set(1, result.mr1);
-                        microkit_mr_set(2, result.mr2);
-                        microkit_mr_set(3, result.mr3);
-                        return microkit_msginfo_new(result.label, 4);
+                        rep_u32(rep, 0, result.mr0);
+                        rep_u32(rep, 4, result.mr1);
+                        rep_u32(rep, 8, result.mr2);
+                        rep_u32(rep, 12, result.mr3);
+                        rep->length = 16;
+        return SEL4_ERR_OK;
                     }
                     /* WASM call failed — fall through to error */
                     log_drain_write(15, 15, "[swap_slot] WASM handle_ppc() failed\n");
-                    return microkit_msginfo_new(MSG_VIBE_SLOT_FAILED, 0);
+                    rep->length = 0;
+        return SEL4_ERR_OK;
                 }
                 
                 /* No WASM module — echo back (legacy behavior) */
-                microkit_mr_set(0, 0);  /* AOS_OK */
-                microkit_mr_set(1, requests_served);
-                return microkit_msginfo_new(label, 2);
+                rep_u32(rep, 0, 0);  /* AOS_OK */
+                rep_u32(rep, 4, requests_served);
+                rep->length = 8;
+        return SEL4_ERR_OK;
             }
             
-            return microkit_msginfo_new(MSG_VIBE_SLOT_FAILED, 0);
+            rep->length = 0;
+        return SEL4_ERR_OK;
     }
+}
+
+/* ── E5-S8: Entry point ─────────────────────────────────────────────────── */
+void swap_slot_main(seL4_CPtr my_ep, seL4_CPtr ns_ep)
+{
+    (void)ns_ep;
+    swap_slot_pd_init();
+    static sel4_server_t srv;
+    sel4_server_init(&srv, my_ep);
+    /* Dispatch all opcodes through the generic handler */
+    sel4_server_register(&srv, SEL4_SERVER_OPCODE_ANY, swap_slot_h_dispatch, (void *)0);
+    sel4_server_run(&srv);
 }

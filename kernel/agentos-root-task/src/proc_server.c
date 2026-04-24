@@ -20,6 +20,7 @@
 #ifndef AGENTOS_TEST_HOST
 #define AGENTOS_DEBUG 1
 #include "agentos.h"
+#include "sel4_server.h"
 #endif
 
 #include <stdbool.h>
@@ -79,7 +80,7 @@ static proc_entry_t *alloc_proc(void) {
 
 /* ── Microkit entry points ─────────────────────────────────────────────── */
 
-void init(void)
+static void proc_server_pd_init(void)
 {
     for (int i = 0; i < PROC_MAX; i++) procs[i].state = PROC_STATE_FREE;
 
@@ -95,27 +96,28 @@ void init(void)
     procs[0].name[4] = 'e'; procs[0].name[5] = 'l';
     procs[0].name[6] = '\0';
 
-    microkit_dbg_puts("[proc_server] READY: process table initialized\n");
+    sel4_dbg_puts("[proc_server] READY: process table initialized\n");
 }
 
-void notified(microkit_channel ch) { (void)ch; }
+static void proc_server_pd_notified(uint32_t ch) { (void)ch; }
 
-microkit_msginfo protected(microkit_channel ch, microkit_msginfo msg)
+static uint32_t proc_server_pd_dispatch(sel4_badge_t b, const sel4_msg_t *req, sel4_msg_t *rep, void *ctx)
 {
-    (void)ch; (void)msg;
-    uint32_t op = (uint32_t)microkit_mr_get(0);
+    (void)b; (void)ctx;
+    uint32_t op = (uint32_t)msg_u32(req, 0);
 
     switch (op) {
 
     /* OP_PROC_SPAWN: MR1=parent_pid, MR2=auth_token, MR3=cap_mask → MR0=ok, MR1=pid */
     case OP_PROC_SPAWN: {
-        uint32_t parent_pid  = (uint32_t)microkit_mr_get(1);
-        uint32_t auth_token  = (uint32_t)microkit_mr_get(2);
-        uint32_t cap_mask    = (uint32_t)microkit_mr_get(3);
+        uint32_t parent_pid  = (uint32_t)msg_u32(req, 4);
+        uint32_t auth_token  = (uint32_t)msg_u32(req, 8);
+        uint32_t cap_mask    = (uint32_t)msg_u32(req, 12);
         proc_entry_t *p = alloc_proc();
         if (!p) {
-            microkit_mr_set(0, 0xFFu);  /* PROC_ERR_FULL */
-            return microkit_msginfo_new(0, 1);
+            rep_u32(rep, 0, 0xFFu);  /* PROC_ERR_FULL */
+            rep->length = 4;
+        return SEL4_ERR_OK;
         }
         p->pid        = next_pid++;
         p->parent_pid = parent_pid;
@@ -134,52 +136,58 @@ microkit_msginfo protected(microkit_channel ch, microkit_msginfo msg)
         } else {
             p->name[0] = 'p'; p->name[1] = '\0';
         }
-        microkit_mr_set(0, 0u);
-        microkit_mr_set(1, p->pid);
-        return microkit_msginfo_new(0, 2);
+        rep_u32(rep, 0, 0u);
+        rep_u32(rep, 4, p->pid);
+        rep->length = 8;
+        return SEL4_ERR_OK;
     }
 
     /* OP_PROC_EXIT: MR1=pid, MR2=exit_code → MR0=ok */
     case OP_PROC_EXIT: {
-        uint32_t pid       = (uint32_t)microkit_mr_get(1);
-        uint8_t  exit_code = (uint8_t)microkit_mr_get(2);
+        uint32_t pid       = (uint32_t)msg_u32(req, 4);
+        uint8_t  exit_code = (uint8_t)msg_u32(req, 8);
         proc_entry_t *p = find_proc(pid);
         if (p) {
             p->state     = PROC_STATE_ZOMBIE;
             p->exit_code = exit_code;
         }
-        microkit_mr_set(0, 0u);
-        return microkit_msginfo_new(0, 1);
+        rep_u32(rep, 0, 0u);
+        rep->length = 4;
+        return SEL4_ERR_OK;
     }
 
     /* OP_PROC_WAIT: MR1=pid → MR0=ok, MR1=exit_code, MR2=state
      * Returns immediately if already ZOMBIE (Phase 1: no blocking) */
     case OP_PROC_WAIT: {
-        uint32_t pid = (uint32_t)microkit_mr_get(1);
+        uint32_t pid = (uint32_t)msg_u32(req, 4);
         proc_entry_t *p = find_proc(pid);
         if (!p) {
-            microkit_mr_set(0, 0xFFu);
-            return microkit_msginfo_new(0, 1);
+            rep_u32(rep, 0, 0xFFu);
+            rep->length = 4;
+        return SEL4_ERR_OK;
         }
         /* For Phase 1: return current state; don't actually block */
-        microkit_mr_set(0, 0u);
-        microkit_mr_set(1, p->exit_code);
-        microkit_mr_set(2, p->state);
-        return microkit_msginfo_new(0, 3);
+        rep_u32(rep, 0, 0u);
+        rep_u32(rep, 4, p->exit_code);
+        rep_u32(rep, 8, p->state);
+        rep->length = 12;
+        return SEL4_ERR_OK;
     }
 
     /* OP_PROC_STATUS: MR1=pid → MR0=ok, MR1=state, MR2=cap_mask */
     case OP_PROC_STATUS: {
-        uint32_t pid = (uint32_t)microkit_mr_get(1);
+        uint32_t pid = (uint32_t)msg_u32(req, 4);
         proc_entry_t *p = find_proc(pid);
         if (!p) {
-            microkit_mr_set(0, 0xFFu);
-            return microkit_msginfo_new(0, 1);
+            rep_u32(rep, 0, 0xFFu);
+            rep->length = 4;
+        return SEL4_ERR_OK;
         }
-        microkit_mr_set(0, 0u);
-        microkit_mr_set(1, p->state);
-        microkit_mr_set(2, p->cap_mask);
-        return microkit_msginfo_new(0, 3);
+        rep_u32(rep, 0, 0u);
+        rep_u32(rep, 4, p->state);
+        rep_u32(rep, 8, p->cap_mask);
+        rep->length = 12;
+        return SEL4_ERR_OK;
     }
 
     /* OP_PROC_LIST: → MR0=ok, MR1=count; proc_info_t[] in proc_shmem */
@@ -198,19 +206,21 @@ microkit_msginfo protected(microkit_channel ch, microkit_msginfo msg)
                 }
             }
         }
-        microkit_mr_set(0, 0u);
-        microkit_mr_set(1, count);
-        return microkit_msginfo_new(0, 2);
+        rep_u32(rep, 0, 0u);
+        rep_u32(rep, 4, count);
+        rep->length = 8;
+        return SEL4_ERR_OK;
     }
 
     /* OP_PROC_KILL: MR1=pid, MR2=signal → MR0=ok */
     case OP_PROC_KILL: {
-        uint32_t pid    = (uint32_t)microkit_mr_get(1);
-        uint32_t signal = (uint32_t)microkit_mr_get(2);
+        uint32_t pid    = (uint32_t)msg_u32(req, 4);
+        uint32_t signal = (uint32_t)msg_u32(req, 8);
         proc_entry_t *p = find_proc(pid);
         if (!p) {
-            microkit_mr_set(0, 0xFFu);
-            return microkit_msginfo_new(0, 1);
+            rep_u32(rep, 0, 0xFFu);
+            rep->length = 4;
+        return SEL4_ERR_OK;
         }
         if (signal == 9 || signal == 15) {
             /* SIGKILL / SIGTERM: immediately zombie */
@@ -224,26 +234,29 @@ microkit_msginfo protected(microkit_channel ch, microkit_msginfo msg)
             if (p->state == PROC_STATE_STOPPED)
                 p->state = PROC_STATE_RUNNING;
         }
-        microkit_mr_set(0, 0u);
-        return microkit_msginfo_new(0, 1);
+        rep_u32(rep, 0, 0u);
+        rep->length = 4;
+        return SEL4_ERR_OK;
     }
 
     /* OP_PROC_SETCAP: MR1=pid, MR2=cap_mask → MR0=ok */
     case OP_PROC_SETCAP: {
-        uint32_t pid      = (uint32_t)microkit_mr_get(1);
-        uint32_t cap_mask = (uint32_t)microkit_mr_get(2);
+        uint32_t pid      = (uint32_t)msg_u32(req, 4);
+        uint32_t cap_mask = (uint32_t)msg_u32(req, 8);
         proc_entry_t *p = find_proc(pid);
         if (p) {
             p->cap_mask = cap_mask;
-            microkit_mr_set(0, 0u);
+            rep_u32(rep, 0, 0u);
         } else {
-            microkit_mr_set(0, 0xFFu);
+            rep_u32(rep, 0, 0xFFu);
         }
-        return microkit_msginfo_new(0, 1);
+        rep->length = 4;
+        return SEL4_ERR_OK;
     }
 
     default:
-        microkit_mr_set(0, 0xFFu);
-        return microkit_msginfo_new(0, 1);
+        rep_u32(rep, 0, 0xFFu);
+        rep->length = 4;
+        return SEL4_ERR_OK;
     }
 }

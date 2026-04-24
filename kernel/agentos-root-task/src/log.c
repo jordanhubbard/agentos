@@ -5,7 +5,6 @@
  log_drain_write(15, 15, "");
  */
 
-#include <microkit.h>
 #include <stdint.h>
 #include "agentos.h"
 
