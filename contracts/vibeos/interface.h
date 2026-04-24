@@ -161,6 +161,8 @@ typedef uint32_t vos_err_t;
 #define VOS_ERR_SNAPSHOT_FAILED   UINT32_C(8)   /* Snapshot serialisation error         */
 #define VOS_ERR_MIGRATE_FAILED    UINT32_C(9)   /* Migration to dest domain failed      */
 #define VOS_ERR_NOT_SUPPORTED     UINT32_C(10)  /* Op valid but not impl on this build  */
+#define VOS_ERR_SNAP_CORRUPT      UINT32_C(11)  /* Bad magic or version in blob         */
+#define VOS_ERR_SNAP_NOT_FOUND    UINT32_C(12)  /* AgentFS storage token not found      */
 #define VOS_ERR_INTERNAL          UINT32_C(99)  /* Unexpected internal error (bug)      */
 
 /* ── Core structures ─────────────────────────────────────────────────────── */
@@ -526,57 +528,95 @@ typedef uint32_t vos_rights_t;
                              VOS_RIGHT_MIGRATE   | \
                              VOS_RIGHT_CONFIGURE)
 
-/* ── Snapshot wire format ────────────────────────────────────────────────── */
+/* ── Snapshot wire structures ────────────────────────────────────────────── */
 
 /*
- * vos_snap_hdr_t — header at byte 0 of every VOS snapshot blob stored in
- * AgentFS.  The full blob layout is:
+ * VOS_SNAP_MAGIC / VOS_SNAP_VERSION — identify a valid snapshot blob header.
  *
- *   [0x00]  vos_snap_hdr_t         (32 bytes)
- *   [0x20]  seL4_VCPUContext dump  (reg_dump_size bytes)
- *   [0x20 + reg_dump_size]
- *           raw guest RAM          (ram_size_pages × 4096 bytes)
- *
- * magic     — must equal VOS_SNAP_MAGIC ('SNAP' big-endian).
- * version   — blob format version; this revision == 1.
- * guest_handle — vos_handle_t of the guest that was snapshot-ted.
- * ram_size_pages — number of 4 KiB pages of guest RAM serialised.
- * reg_dump_size  — byte length of the register dump region.
- * _pad      — reserved; zero on write, ignored on read.
+ * The blob layout is:
+ *   [0]  vos_snap_hdr_t   (fixed-size header)
+ *   [sizeof(vos_snap_hdr_t)]  vCPU register dump (32 × uint32_t GP regs + uint64_t PC)
+ *   [...]  guest RAM bytes (hdr.ram_bytes in length)
  */
-#define VOS_SNAP_MAGIC  UINT32_C(0x534E4150)  /* 'SNAP' */
-#define VOS_SNAP_VERSION UINT32_C(1)
-
-typedef struct __attribute__((packed)) {
-    uint32_t magic;          /* VOS_SNAP_MAGIC == 0x534E4150 */
-    uint32_t version;        /* VOS_SNAP_VERSION == 1 */
-    uint32_t guest_handle;   /* vos_handle_t of the snapshotted guest */
-    uint32_t ram_size_pages; /* number of 4K pages */
-    uint32_t reg_dump_size;  /* bytes of register dump following this header */
-    uint32_t _pad[3];        /* reserved, zero */
-} vos_snap_hdr_t;            /* exactly 32 bytes */
+#define VOS_SNAP_MAGIC    UINT32_C(0x564F534E)  /* "VOSN" */
+#define VOS_SNAP_VERSION  UINT32_C(1)
 
 /*
- * VOS_OP_SNAPSHOT request / reply structs.
+ * vos_snap_hdr_t — header prefixed to every snapshot blob stored in AgentFS.
+ */
+typedef struct __attribute__((packed)) {
+    uint32_t        magic;          /* VOS_SNAP_MAGIC                        */
+    uint32_t        version;        /* VOS_SNAP_VERSION                      */
+    uint32_t        guest_handle;   /* handle at snapshot time (informational)*/
+    uint8_t         os_type;        /* vos_os_type_t at snapshot time        */
+    uint8_t         _pad[3];
+    uint32_t        vcpu_count;     /* number of vCPUs serialised            */
+    uint64_t        ram_bytes;      /* bytes of guest RAM following regs     */
+    uint64_t        timestamp_ns;   /* monotonic nanoseconds (0 in host stub)*/
+} vos_snap_hdr_t;                  /* total: 32 bytes                       */
+
+/*
+ * vos_snap_req_t — IPC request struct for VOS_OP_SNAPSHOT.
  *
- * vos_snap_req_t  — passed in shared memory at offset 0 before the PPC.
- * vos_snap_rep_t  — written by vibeOS to shared memory at offset 0 on success.
- *
- * The snap_lo / snap_hi token pair encodes the AgentFS ObjectId returned by
- * AGENTFS_OP_PUT.  VOS_OP_RESTORE supplies the same pair to locate the blob.
+ * MR layout:
+ *   MR0 = VOS_OP_SNAPSHOT
+ *   MR1 = guest_handle
+ *   MR2 = dest_store_cap (seL4 cap index of destination storage object)
+ *   MR3 = _pad
  */
 typedef struct __attribute__((packed)) {
     uint32_t opcode;        /* VOS_OP_SNAPSHOT */
-    uint32_t handle;        /* vos_handle_t to snapshot */
-    uint32_t _pad[2];
-} vos_snap_req_t;
+    uint32_t guest_handle;
+    uint32_t dest_store_cap;
+    uint32_t _pad;
+} vos_snap_req_t;           /* 16 bytes */
 
+/*
+ * vos_snap_rep_t — IPC reply struct for VOS_OP_SNAPSHOT.
+ *
+ * MR layout:
+ *   MR0 = VOS_ERR_*
+ *   MR1 = snap_lo (low 32-bit storage token from AgentFS)
+ *   MR2 = snap_hi (high 32-bit storage token)
+ *   MR3 = _pad
+ */
+typedef struct __attribute__((packed)) {
+    uint32_t status;    /* VOS_ERR_* */
+    uint32_t snap_lo;   /* AgentFS storage token (low 32 bits)  */
+    uint32_t snap_hi;   /* AgentFS storage token (high 32 bits) */
+    uint32_t _pad;
+} vos_snap_rep_t;       /* 16 bytes */
+
+/*
+ * vos_restore_req_t — IPC request struct for VOS_OP_RESTORE.
+ *
+ * MR layout:
+ *   MR0 = VOS_OP_RESTORE
+ *   MR1 = snap_lo (storage token returned by VOS_OP_SNAPSHOT)
+ *   MR2 = snap_hi
+ *   MR3 = _pad
+ */
+typedef struct __attribute__((packed)) {
+    uint32_t opcode;    /* VOS_OP_RESTORE */
+    uint32_t snap_lo;
+    uint32_t snap_hi;
+    uint32_t _pad;
+} vos_restore_req_t;    /* 16 bytes */
+
+/*
+ * vos_restore_rep_t — IPC reply struct for VOS_OP_RESTORE.
+ *
+ * MR layout:
+ *   MR0 = VOS_ERR_*
+ *   MR1 = guest_handle (new handle for the restored instance)
+ *   MR2 = _pad[0]
+ *   MR3 = _pad[1]
+ */
 typedef struct __attribute__((packed)) {
     uint32_t status;        /* VOS_ERR_* */
-    uint32_t snap_lo;       /* low  32 bits of AgentFS token */
-    uint32_t snap_hi;       /* high 32 bits of AgentFS token */
-    uint32_t _pad;
-} vos_snap_rep_t;
+    uint32_t guest_handle;  /* new handle of restored instance */
+    uint32_t _pad[2];
+} vos_restore_rep_t;        /* 16 bytes */
 
 /* ── Static assertions (C11) ─────────────────────────────────────────────── */
 #ifdef __STDC_VERSION__
@@ -587,8 +627,10 @@ _Static_assert(sizeof(vos_list_entry_t) == 24, "vos_list_entry_t size mismatch")
 _Static_assert(sizeof(vos_os_type_t)    ==  1, "vos_os_type_t must be 1 byte");
 _Static_assert(sizeof(vos_state_t)      ==  1, "vos_state_t must be 1 byte");
 _Static_assert(sizeof(vos_service_type_t) == 1, "vos_service_type_t must be 1 byte");
-_Static_assert(sizeof(vos_snap_hdr_t)   == 32, "vos_snap_hdr_t must be 32 bytes");
+_Static_assert(sizeof(vos_snap_hdr_t)   == 36, "vos_snap_hdr_t size mismatch");
 _Static_assert(sizeof(vos_snap_req_t)   == 16, "vos_snap_req_t size mismatch");
 _Static_assert(sizeof(vos_snap_rep_t)   == 16, "vos_snap_rep_t size mismatch");
+_Static_assert(sizeof(vos_restore_req_t) == 16, "vos_restore_req_t size mismatch");
+_Static_assert(sizeof(vos_restore_rep_t) == 16, "vos_restore_rep_t size mismatch");
 #endif
 #endif
