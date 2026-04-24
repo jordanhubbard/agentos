@@ -328,13 +328,13 @@
         <irq irq="33" id="1" />
     </protection_domain>
 
-    <!-- Channel 67: controller → serial_pd (CH_SERIAL_PD) -->
+    <!-- Channel 44: controller → serial_pd (CH_SERIAL_PD) -->
     <channel>
-        <end pd="controller" id="67" pp="true" />
+        <end pd="controller" id="44" pp="true" />
         <end pd="serial_pd"  id="0" />
     </channel>
 
-    <protection_domain name="linux_vmm" priority="254">
+    <protection_domain name="linux_vmm" priority="175">
         <program_image path="linux_vmm.elf" />
         <!--
             The VMM maps guest RAM at the same vaddr as the guest sees it
@@ -808,9 +808,9 @@
              setvar_vaddr="blk_dma_shmem_vaddr" />
     </protection_domain>
 
-    <!-- Channel CH_BLOCK_PD (69): controller → block_pd -->
+    <!-- Channel CH_BLOCK_PD (49): controller → block_pd -->
     <channel>
-        <end pd="controller" id="69" pp="true" />
+        <end pd="controller" id="49" pp="true" />
         <end pd="block_pd"   id="0" />
     </channel>
 
@@ -830,7 +830,7 @@
       Note: virtio_gpu_mmio is NOT mapped here — framebuffer_pd owns it.
       ══════════════════════════════════════════════════════════════════
     -->
-    <protection_domain name="gpu_sched" priority="120" passive="true">
+    <protection_domain name="gpu_sched" priority="185" passive="true">
         <program_image path="gpu_sched.elf" />
         <map mr="log_drain_rings" vaddr="0x9000000" perms="rw"
              setvar_vaddr="log_drain_rings_vaddr" />
@@ -849,18 +849,21 @@
       See agentos.system for full description.
 
       AArch64 note:
-        virtio_gpu_mmio phys_addr = 0xa003e00
+        virtio_gpu_mmio phys_addr = 0xa003000 (page-aligned)
         QEMU virt AArch64 virtio-MMIO devices are at 0xa000000 + n*0x200.
-        The GPU device index depends on QEMU CLI device ordering; adjust
-        phys_addr here to match your target configuration.  The probe
-        logic gracefully falls back to the gpu_sched path if magic != ok.
+        Slot 31 (0xa003e00) is not page-aligned; map the containing page
+        (0xa003000) instead. The probe logic gracefully falls back to the
+        gpu_sched path if magic != ok — no virtio-gpu device is configured
+        in QEMU_RUN_FLAGS, so this path always falls back currently.
       ══════════════════════════════════════════════════════════════════
     -->
     <memory_region name="fb_shmem" size="0x800000" />
 
-    <!-- virtio_gpu_mmio: AArch64 virt QEMU — virtio device slot (phys 0xa003e00).
-         Adjust phys_addr to match actual QEMU device ordering for your platform. -->
-    <memory_region name="virtio_gpu_mmio" size="0x1000" phys_addr="0xa003e00" />
+    <!-- virtio_gpu_mmio: AArch64 virt QEMU — page-aligned mapping of the virtio-mmio
+         region (0xa003000–0xa003fff covers slots 24-31, each 0x200 bytes).
+         Adjust phys_addr to the page-aligned base of the slot used for virtio-gpu
+         and update framebuffer_pd's mmio probe offset accordingly. -->
+    <memory_region name="virtio_gpu_mmio" size="0x1000" phys_addr="0xa003000" />
 
     <protection_domain name="framebuffer_pd" priority="175" passive="true">
         <program_image path="framebuffer_pd.elf" />
@@ -872,9 +875,9 @@
              setvar_vaddr="log_drain_rings_vaddr" />
     </protection_domain>
 
-    <!-- Channel CH_FB_PD (71): controller(id=71, pp=true) → framebuffer_pd(id=0) -->
+    <!-- Channel CH_FB_PD (51): controller(id=51, pp=true) → framebuffer_pd(id=0) -->
     <channel>
-        <end pd="controller"     id="71" pp="true" />
+        <end pd="controller"     id="51" pp="true" />
         <end pd="framebuffer_pd" id="0" />
     </channel>
 

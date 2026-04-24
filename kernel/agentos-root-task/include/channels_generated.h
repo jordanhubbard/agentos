@@ -16,27 +16,30 @@ typedef enum {
     CH_APP_MANAGER_SPAWN_SERVER                  = 1,
     CH_APP_MANAGER_VFS_SERVER                    = 2,
     CH_APP_MANAGER_NET_SERVER                    = 3,
-    CH_APP_MANAGER_HTTP_SVC                      = 4,
 } app_manager_channel_t;
 
 /* Channel IDs from app_slot_0 perspective */
 typedef enum {
     CH_APP_SLOT_0_SPAWN_SERVER                   = 0,
+    CH_APP_SLOT_0_EXEC_SERVER                    = 1,
 } app_slot_0_channel_t;
 
 /* Channel IDs from app_slot_1 perspective */
 typedef enum {
     CH_APP_SLOT_1_SPAWN_SERVER                   = 0,
+    CH_APP_SLOT_1_EXEC_SERVER                    = 1,
 } app_slot_1_channel_t;
 
 /* Channel IDs from app_slot_2 perspective */
 typedef enum {
     CH_APP_SLOT_2_SPAWN_SERVER                   = 0,
+    CH_APP_SLOT_2_EXEC_SERVER                    = 1,
 } app_slot_2_channel_t;
 
 /* Channel IDs from app_slot_3 perspective */
 typedef enum {
     CH_APP_SLOT_3_SPAWN_SERVER                   = 0,
+    CH_APP_SLOT_3_EXEC_SERVER                    = 1,
 } app_slot_3_channel_t;
 
 /* Channel IDs from auth_server perspective */
@@ -71,7 +74,6 @@ typedef enum {
     CH_CONTROLLER_NET_SERVER                     = 21,
     CH_CONTROLLER_VIRTIO_BLK                     = 22,
     CH_CONTROLLER_APP_MANAGER                    = 23,
-    CH_CONTROLLER_HTTP_SVC                       = 24,
     CH_CONTROLLER_GPU_SCHED                      = 25,
     CH_CONTROLLER_PFLOCAL_SERVER                 = 26,
     CH_CONTROLLER_PROC_SERVER                    = 27,
@@ -116,6 +118,10 @@ typedef enum {
 /* Channel IDs from exec_server perspective */
 typedef enum {
     CH_EXEC_SERVER_CONTROLLER                    = 0,
+    CH_EXEC_SERVER_APP_SLOT_0                    = 34,
+    CH_EXEC_SERVER_APP_SLOT_1                    = 35,
+    CH_EXEC_SERVER_APP_SLOT_2                    = 36,
+    CH_EXEC_SERVER_APP_SLOT_3                    = 37,
 } exec_server_channel_t;
 
 /* Channel IDs from ext2fs perspective */
@@ -135,12 +141,6 @@ typedef enum {
     CH_GPU_SCHED_CONTROLLER                      = 1,
     CH_GPU_SCHED_FRAMEBUFFER_PD                  = 7,
 } gpu_sched_channel_t;
-
-/* Channel IDs from http_svc perspective */
-typedef enum {
-    CH_HTTP_SVC_CONTROLLER                       = 0,
-    CH_HTTP_SVC_APP_MANAGER                      = 1,
-} http_svc_channel_t;
 
 /* Channel IDs from init_agent perspective */
 typedef enum {

@@ -926,11 +926,11 @@ static inline void log_drain_write(uint32_t slot, uint32_t pd_id, const char *ms
 #define CH_OOM_KILLER         64u   /* controller -> oom_killer (PPC) */
 #define CH_TIME_PART          65u   /* controller -> time_partition (PPC) */
 #define CH_POWER_MGR          66u   /* controller -> power_mgr (PPC) */
-#define CH_SERIAL_PD          67u   /* controller -> serial_pd (PPC) */
-#define CH_NET_PD             68u   /* controller -> net_pd (PPC) */
-#define CH_BLOCK_PD           69u   /* controller -> block_pd (PPC) */
-#define CH_USB_PD             70u   /* controller -> usb_pd (PPC) */
-#define CH_FB_PD              71u   /* controller -> framebuffer_pd (PPC) */
+#define CH_SERIAL_PD          44u   /* controller -> serial_pd (PPC) */
+#define CH_NET_PD             48u   /* controller -> net_pd (PPC) */
+#define CH_BLOCK_PD           49u   /* controller -> block_pd (PPC) */
+#define CH_USB_PD             50u   /* controller -> usb_pd (PPC) */
+#define CH_FB_PD              51u   /* controller -> framebuffer_pd (PPC) */
 #define CH_CC_PD              72u   /* controller -> cc_pd (PPC) */
 #define CH_NET_ISOLATOR       73u   /* controller -> net_isolator (PPC) */
 #define CH_IPC_HARNESS        74u   /* controller -> ipc_harness (PPC, test builds only) */
