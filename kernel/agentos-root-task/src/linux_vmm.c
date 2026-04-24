@@ -181,6 +181,8 @@ seL4_Bool fault(microkit_child child, microkit_msginfo msginfo,
 #include <libvmm/libvmm.h>
 #include "gpu_shmem.h"
 #include "contracts/linux_vmm_contract.h"
+#include "sel4_boot.h"    /* seL4_IRQHandler_Ack, seL4_CPtr               */
+#include "system_desc.h"  /* PD_IRQHANDLER_SLOT_BASE                       */
 
 /* ── Per-slot affinity (AArch64) ─────────────────────────────────────── */
 
@@ -213,17 +215,42 @@ static uint32_t vmm_affinity[VMM_MAX_SLOTS];
 /* IPC channel: controller <-> linux_vmm (agent-to-linux bridge) */
 #define CONTROLLER_CH           2
 
-/* IRQ channel: virtio-net (slot 0, bus=virtio-mmio-bus.0 → SPI 16 → INTID 48) */
-#define VIRTIO_NET_IRQ_CH       5
-#define VIRTIO_NET_IRQ          48
-
-/* IRQ channel: virtio-blk (slot 1, bus=virtio-mmio-bus.1 → SPI 17 → INTID 49) */
-#define VIRTIO_BLK_IRQ_CH       6
-#define VIRTIO_BLK_IRQ          49
-
 /* GPU shared memory notification channels (assigned when MR is mapped) */
 #define GPU_SHMEM_NOTIFY_IN_CH  3   /* seL4 PD → linux_vmm: tensor ready */
 #define GPU_SHMEM_NOTIFY_OUT_CH 4   /* linux_vmm → seL4 PD: result ready */
+
+/*
+ * Virtual IRQ numbers injected into the guest via the vGIC.
+ * These match the QEMU virt board SPI assignments for virtio-mmio devices:
+ *   virtio-mmio-bus.0 → GIC SPI 16 → INTID 48
+ *   virtio-mmio-bus.1 → GIC SPI 17 → INTID 49
+ */
+#define VIRTIO_NET_IRQ          48
+#define VIRTIO_BLK_IRQ          49
+
+/*
+ * Notification badge bits for virtio IRQs.
+ * These match irq_desc_t.ntfn_badge in system_desc_aarch64.c:
+ *   irqs[0] (virtio-net, INTID 48): badge 0x1
+ *   irqs[1] (virtio-blk, INTID 49): badge 0x2
+ */
+#define VIRTIO_NET_NTFN_BADGE   0x1u
+#define VIRTIO_BLK_NTFN_BADGE   0x2u
+
+/*
+ * IRQ handler capabilities distributed by the root task at boot.
+ * Placed in this PD's CNode at PD_IRQHANDLER_SLOT_BASE + index,
+ * matching the irq_desc_t ordering in system_desc_aarch64.c:
+ *   irqs[0] (virtio-net, INTID 48) → slot PD_IRQHANDLER_SLOT_BASE + 0
+ *   irqs[1] (virtio-blk, INTID 49) → slot PD_IRQHANDLER_SLOT_BASE + 1
+ *
+ * The PD calls seL4_IRQHandler_Ack(cap) after the guest has consumed each
+ * injected virtual IRQ to re-enable delivery from the GIC.
+ */
+static const seL4_CPtr g_virtio_net_irq_cap =
+    (seL4_CPtr)(PD_IRQHANDLER_SLOT_BASE + 0u);
+static const seL4_CPtr g_virtio_blk_irq_cap =
+    (seL4_CPtr)(PD_IRQHANDLER_SLOT_BASE + 1u);
 
 /* ─── Guest Image Symbols ────────────────────────────────────────────── */
 /* These are linked in by package_guest_images.S */
@@ -341,13 +368,13 @@ static void linux_vmm_binding_init(void)
 static void virtio_net_ack(size_t vcpu_id, int irq, void *cookie)
 {
     (void)vcpu_id; (void)irq; (void)cookie;
-    microkit_irq_ack(VIRTIO_NET_IRQ_CH);
+    seL4_IRQHandler_Ack(g_virtio_net_irq_cap);
 }
 
 static void virtio_blk_ack(size_t vcpu_id, int irq, void *cookie)
 {
     (void)vcpu_id; (void)irq; (void)cookie;
-    microkit_irq_ack(VIRTIO_BLK_IRQ_CH);
+    seL4_IRQHandler_Ack(g_virtio_blk_irq_cap);
 }
 
 /* ─── VCPU Affinity ──────────────────────────────────────────────────── */
@@ -471,21 +498,23 @@ void init(void)
      */
     linux_vmm_binding_init();
 
-    /* Register virtio-net IRQ passthrough (slot 0, SPI 16 → INTID 48) */
+    /* Register virtio-net IRQ passthrough (QEMU virt: SPI 16 → INTID 48) */
     success = virq_register(GUEST_BOOT_VCPU_ID, VIRTIO_NET_IRQ, &virtio_net_ack, NULL);
     if (!success) {
         LOG_VMM_ERR("Failed to register virtio-net IRQ\n");
         return;
     }
-    microkit_irq_ack(VIRTIO_NET_IRQ_CH);
+    /* Initial ack to prime the GIC for first delivery (seL4 native API) */
+    seL4_IRQHandler_Ack(g_virtio_net_irq_cap);
 
-    /* Register virtio-blk IRQ passthrough (slot 1, SPI 17 → INTID 49) */
+    /* Register virtio-blk IRQ passthrough (QEMU virt: SPI 17 → INTID 49) */
     success = virq_register(GUEST_BOOT_VCPU_ID, VIRTIO_BLK_IRQ, &virtio_blk_ack, NULL);
     if (!success) {
         LOG_VMM_ERR("Failed to register virtio-blk IRQ\n");
         return;
     }
-    microkit_irq_ack(VIRTIO_BLK_IRQ_CH);
+    /* Initial ack to prime the GIC for first delivery (seL4 native API) */
+    seL4_IRQHandler_Ack(g_virtio_blk_irq_cap);
 
     /* Start the guest! */
     LOG_VMM("  Starting Linux guest...\n");
@@ -513,25 +542,46 @@ void init(void)
 
 /* ─── Notification Handler ───────────────────────────────────────────── */
 
+/*
+ * notified — handle incoming notifications.
+ *
+ * seL4 delivers hardware IRQs as badged notifications on the PD's notification
+ * object.  The badge value is the ntfn_badge from the irq_desc_t for that IRQ
+ * (set up by the root task at boot via seL4_IRQHandler_SetNotification).
+ *
+ * Multiple IRQs may be coalesced into a single notification word (bitwise OR of
+ * all pending badges).  We must therefore test each badge bit independently
+ * with bitwise AND — not use a switch statement — so that all pending IRQs are
+ * serviced in one notification delivery.
+ *
+ * Non-IRQ notifications (controller, GPU shmem) arrive on Microkit IPC
+ * channels and are dispatched by channel number in the remaining cases.
+ */
 void notified(microkit_channel ch)
 {
-    switch (ch) {
-    case VIRTIO_NET_IRQ_CH: {
+    /*
+     * IRQ notifications: the channel value carries badge bits when seL4
+     * delivers a badged notification.  Microkit passes the badge as the
+     * channel number for IRQ notifications.  Check badge bits for virtio IRQs.
+     */
+    if ((microkit_channel)ch & (microkit_channel)VIRTIO_NET_NTFN_BADGE) {
         bool success = virq_inject(VIRTIO_NET_IRQ);
         if (!success) {
             LOG_VMM_ERR("virtio-net IRQ %d dropped on inject\n", VIRTIO_NET_IRQ);
         }
-        break;
+        /* IRQHandler_Ack is called by virtio_net_ack() registered via virq_register */
     }
 
-    case VIRTIO_BLK_IRQ_CH: {
+    if ((microkit_channel)ch & (microkit_channel)VIRTIO_BLK_NTFN_BADGE) {
         bool success = virq_inject(VIRTIO_BLK_IRQ);
         if (!success) {
             LOG_VMM_ERR("virtio-blk IRQ %d dropped on inject\n", VIRTIO_BLK_IRQ);
         }
-        break;
+        /* IRQHandler_Ack is called by virtio_blk_ack() registered via virq_register */
     }
 
+    /* Non-IRQ channel notifications — dispatch by channel number */
+    switch (ch) {
     case CONTROLLER_CH: {
         /*
          * Controller sent us a notification. This is the agent-to-linux
@@ -598,7 +648,11 @@ void notified(microkit_channel ch)
     }
 
     default:
-        LOG_VMM("Unexpected notification on channel 0x%lx\n", (unsigned long)ch);
+        /* Only log if no badge bits were set (i.e. not a virtio IRQ notification) */
+        if (!((microkit_channel)ch & (microkit_channel)(VIRTIO_NET_NTFN_BADGE |
+                                                         VIRTIO_BLK_NTFN_BADGE))) {
+            LOG_VMM("Unexpected notification on channel 0x%lx\n", (unsigned long)ch);
+        }
         break;
     }
 }

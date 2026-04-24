@@ -34,12 +34,13 @@
  */
 
 #include "boot_info.h"       /* seL4_BootInfo, seL4_Yield, object type constants */
+#include "sel4_boot.h"       /* seL4_IRQControl_Get, seL4_IRQHandler_Ack, etc.   */
 #include "ut_alloc.h"        /* ut_alloc_init, ut_alloc                          */
 #include "pd_vspace.h"       /* pd_vspace_create, pd_vspace_load_elf              */
 #include "pd_tcb.h"          /* pd_tcb_create, pd_tcb_set_regs, pd_tcb_start      */
 #include "ep_alloc.h"        /* ep_alloc_init, ep_alloc_for_service, ep_mint_badge */
 #include "cap_accounting.h"  /* cap_acct_init, cap_acct_record                    */
-#include "system_desc.h"     /* system_desc_t, pd_desc_t, SVC_ID_*                */
+#include "system_desc.h"     /* system_desc_t, pd_desc_t, SVC_ID_*, PD_IRQHANDLER_SLOT_BASE */
 #include <stdint.h>
 
 /* ── System descriptor selection ─────────────────────────────────────────── */
@@ -223,6 +224,53 @@ static seL4_Word boot_elf_size(const seL4_BootInfo *bi, const char *elf_path)
     return 0u;
 }
 
+/* ── IRQ capability setup ─────────────────────────────────────────────────── */
+
+/*
+ * boot_setup_irqs — bind hardware IRQ handler caps into a PD's CNode.
+ *
+ * Called once per PD after its CNode and TCB are created.  For each entry in
+ * pd->irqs[], the root task calls seL4_IRQControl_Get to obtain an IRQ handler
+ * capability from the kernel and places it into the PD's CNode at slot
+ * (PD_IRQHANDLER_SLOT_BASE + i).
+ *
+ * The PD then references these caps by their known slot offsets:
+ *   seL4_CPtr irq_cap = PD_IRQHANDLER_SLOT_BASE + i;
+ *   seL4_IRQHandler_Ack(irq_cap);   /* after handling the IRQ */
+ *
+ * Parameters:
+ *   pd               PD descriptor (contains irq_count and irqs[])
+ *   pd_cnode         capability to the PD's own CNode (in root task's CSpace)
+ *   irq_control_cap  seL4_CapIRQControl — the kernel's IRQ control capability
+ *   pd_cnode_depth   radix of pd_cnode (pd->cnode_size_bits)
+ */
+static void boot_setup_irqs(const pd_desc_t *pd,
+                             seL4_CPtr        pd_cnode,
+                             seL4_CPtr        irq_control_cap,
+                             seL4_Word        pd_cnode_depth)
+{
+    for (uint8_t i = 0u; i < pd->irq_count; i++) {
+        const irq_desc_t *d = &pd->irqs[i];
+
+        /* Destination slot in the PD's own CNode */
+        seL4_Word dest_slot = (seL4_Word)PD_IRQHANDLER_SLOT_BASE + (seL4_Word)i;
+
+        seL4_Error err = seL4_IRQControl_Get(
+            irq_control_cap,
+            (seL4_Word)d->irq_number,
+            pd_cnode,
+            dest_slot,
+            pd_cnode_depth);
+
+        /*
+         * Log failures but do not abort boot: a missing IRQ handler cap means
+         * the PD will receive seL4_InvalidCapability when it calls
+         * seL4_IRQHandler_Ack(), which is recoverable.
+         */
+        (void)err;
+    }
+}
+
 /* ── Main boot sequence ───────────────────────────────────────────────────── */
 
 void root_task_main(const seL4_BootInfo *bi)
@@ -356,6 +404,18 @@ void root_task_main(const seL4_BootInfo *bi)
             ep_mint_badge(service_ep, badge,
                            pd_cnode, ep_spec->cnode_slot,
                            pd->cnode_size_bits);
+        }
+
+        /* ── 4g.5: Bind hardware IRQ handler caps into the PD's CNode ─────── */
+        /*
+         * For each irq_desc_t in pd->irqs[], obtain an IRQ handler cap from
+         * the kernel and place it at slot (PD_IRQHANDLER_SLOT_BASE + index)
+         * in the PD's CNode.  PDs with irq_count == 0 skip this step.
+         */
+        if (pd->irq_count > 0u) {
+            boot_setup_irqs(pd, pd_cnode,
+                            seL4_CapIRQControl,
+                            (seL4_Word)pd->cnode_size_bits);
         }
 
         /* ── 4h: Record all new caps in the accounting tree ─────────────── */

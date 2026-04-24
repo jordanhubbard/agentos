@@ -181,3 +181,66 @@ seL4_Error seL4_TCB_Resume(seL4_CPtr _service);
  * Returns seL4_NoError on success.
  */
 seL4_Error seL4_TCB_Suspend(seL4_CPtr _service);
+
+/* ── IRQ capability invocations ───────────────────────────────────────────── */
+
+/*
+ * seL4_IRQControl_Get — obtain an IRQ handler capability for one hardware IRQ.
+ *
+ * The kernel places a new IRQ handler capability into dest_cnode[dest_index]
+ * interpreted at dest_depth bits of address.
+ *
+ * Parameters:
+ *   _service      IRQ control capability (seL4_CapIRQControl)
+ *   irq           hardware IRQ number (GIC SPI number on AArch64)
+ *   dest_root     CNode in which to place the new capability
+ *   dest_index    slot within dest_root
+ *   dest_depth    number of bits of address resolved in dest_root (e.g. 8 for
+ *                 a 256-slot CNode, 6 for a 64-slot CNode)
+ *
+ * Returns seL4_NoError on success.
+ */
+seL4_Error seL4_IRQControl_Get(seL4_CPtr  _service,
+                                seL4_Word  irq,
+                                seL4_CPtr  dest_root,
+                                seL4_Word  dest_index,
+                                seL4_Word  dest_depth);
+
+/*
+ * seL4_IRQHandler_SetNotification — bind a notification object to an IRQ handler.
+ *
+ * When the hardware IRQ fires, seL4 signals the notification with the given
+ * badge.  The PD waiting on the notification receives a badged signal.
+ *
+ * Parameters:
+ *   _service      IRQ handler capability (obtained via seL4_IRQControl_Get)
+ *   notification  notification capability to signal on IRQ
+ *
+ * Returns seL4_NoError on success.
+ */
+seL4_Error seL4_IRQHandler_SetNotification(seL4_CPtr _service,
+                                            seL4_CPtr notification);
+
+/*
+ * seL4_IRQHandler_Ack — acknowledge a handled IRQ, re-enabling it in the GIC.
+ *
+ * Must be called after each IRQ is handled.  Until Ack is called, the GIC will
+ * not deliver further instances of this IRQ to the CPU.
+ *
+ * Parameters:
+ *   _service      IRQ handler capability
+ *
+ * Returns seL4_NoError on success.
+ */
+seL4_Error seL4_IRQHandler_Ack(seL4_CPtr _service);
+
+/*
+ * seL4_IRQHandler_Clear — detach the notification from an IRQ handler and
+ * mask the IRQ in the GIC.  Call before deleting an IRQ handler capability.
+ *
+ * Parameters:
+ *   _service      IRQ handler capability
+ *
+ * Returns seL4_NoError on success.
+ */
+seL4_Error seL4_IRQHandler_Clear(seL4_CPtr _service);

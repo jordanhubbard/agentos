@@ -175,17 +175,31 @@ const system_desc_t system_desc_aarch64 = {
             },
         },
 
-        /* pd[11] — linux_vmm (prio 254; highest-priority VMM) */
+        /* pd[11] — linux_vmm (prio 254; highest-priority VMM)
+         *
+         * cnode_size_bits=7 (128 slots) is required so that IRQ handler caps
+         * can be placed at PD_IRQHANDLER_SLOT_BASE (64) without overflowing
+         * the 64-slot CNode used by other PDs.
+         *
+         * IRQ assignments (QEMU virt AArch64 GIC SPI numbers):
+         *   virtio-net: SPI 16 → INTID 48 → irq_number=48, badge 0x1
+         *   virtio-blk: SPI 17 → INTID 49 → irq_number=49, badge 0x2
+         */
         {
             .name           = "linux_vmm",
             .elf_path       = "linux_vmm.elf",
             .stack_size     = 0x10000u,
-            .cnode_size_bits = 6u,
+            .cnode_size_bits = 7u,   /* 128 slots — needed for IRQ handler caps */
             .priority       = 254u,
             .init_ep_count  = 2u,
             .init_eps = {
                 { SVC_ID_NAMESERVER, PD_CNODE_SLOT_NAMESERVER_EP },
                 { SVC_ID_LOG_DRAIN,  PD_CNODE_SLOT_LOG_DRAIN_EP  },
+            },
+            .irq_count = 2u,
+            .irqs = {
+                { .irq_number = 48u, .ntfn_badge = 0x1u, .name = "virtio-net" },
+                { .irq_number = 49u, .ntfn_badge = 0x2u, .name = "virtio-blk" },
             },
         },
 

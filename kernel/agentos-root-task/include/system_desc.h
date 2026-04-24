@@ -26,7 +26,48 @@
 #define PD_MAX_NAME_LEN    32u  /* max length of pd_desc_t.name (with NUL)   */
 #define PD_MAX_ELF_PATH    64u  /* max length of pd_desc_t.elf_path (NUL)    */
 #define PD_MAX_INIT_EPS     8u  /* max initial endpoints distributed per PD  */
+#define PD_MAX_IRQS         8u  /* max hardware IRQs bound per PD            */
 #define SYSTEM_MAX_PDS     64u  /* max PDs per system description             */
+
+/*
+ * PD_IRQHANDLER_SLOT_BASE — first CNode slot in a PD's own CNode reserved for
+ * seL4 IRQ handler capabilities distributed by the root task during boot.
+ *
+ * Slot layout within the PD's CNode (cnode_size_bits == 6 → 64 slots):
+ *   Slots  0 .. PD_MAX_INIT_EPS-1   — initial endpoint caps (pd_init_ep_t)
+ *   Slots 64 .. 64+PD_MAX_IRQS-1   — IRQ handler caps (one per irq_desc_t)
+ *
+ * 64 is chosen to sit well above the maximum init_ep_count (PD_MAX_INIT_EPS=8)
+ * and well below the practical CNode capacity (2^6=64 or larger).  PDs that
+ * need IRQ handler caps must be created with cnode_size_bits >= 7 (128 slots).
+ */
+#define PD_IRQHANDLER_SLOT_BASE  64u
+
+/* ── irq_desc_t ───────────────────────────────────────────────────────────── */
+
+/*
+ * irq_desc_t — compile-time descriptor for one hardware IRQ bound to a PD.
+ *
+ * The root task calls seL4_IRQControl_Get during boot to obtain an IRQ handler
+ * capability for each irq_desc_t entry and places it into the PD's CNode at
+ * slot (PD_IRQHANDLER_SLOT_BASE + index).
+ *
+ * Fields:
+ *   irq_number   hardware IRQ number (GIC SPI number on AArch64)
+ *   ntfn_badge   badge value placed on the PD's notification object for this
+ *                IRQ; the PD dispatches on this badge in its notification loop
+ *   name         human-readable label for diagnostics (e.g. "virtio-net")
+ *
+ * Size: 4 + 4 + 16 = 24 bytes (packed).
+ */
+typedef struct __attribute__((packed)) {
+    uint32_t irq_number;  /* hardware IRQ number                        */
+    uint32_t ntfn_badge;  /* badge on the PD's notification for this IRQ */
+    char     name[16];    /* human-readable label, e.g. "virtio-net"    */
+} irq_desc_t;
+
+_Static_assert(sizeof(irq_desc_t) == 24u,
+               "irq_desc_t must be exactly 24 bytes");
 
 /* ── pd_init_ep_t ─────────────────────────────────────────────────────────── */
 
@@ -56,6 +97,9 @@ typedef struct {
  *   priority         seL4 scheduling priority (0 = lowest, 255 = highest)
  *   init_ep_count    number of entries in init_eps[]
  *   init_eps         initial endpoint capabilities distributed to this PD
+ *   irq_count        number of hardware IRQs bound to this PD (0 = none)
+ *   irqs             hardware IRQ descriptors; root task binds these at boot
+ *                    and places handler caps at PD_IRQHANDLER_SLOT_BASE+i
  */
 typedef struct {
     const char   name[PD_MAX_NAME_LEN];
@@ -65,6 +109,8 @@ typedef struct {
     uint8_t      priority;
     uint32_t     init_ep_count;
     pd_init_ep_t init_eps[PD_MAX_INIT_EPS];
+    uint8_t      irq_count;
+    irq_desc_t   irqs[PD_MAX_IRQS];
 } pd_desc_t;
 
 /* ── system_desc_t ────────────────────────────────────────────────────────── */
