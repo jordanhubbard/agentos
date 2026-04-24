@@ -459,6 +459,7 @@ test-integration:
 	    tests/test_serial_pd.c \
 	    tests/test_framebuffer_pd.c \
 	    tests/test_guest_contract.c \
+	    tests/test_vm_multi_guest.c \
 	    tests/vibe/test_vibeos_contract.c; do \
 	    gcc -I tests \
 	        -I kernel/agentos-root-task/include \

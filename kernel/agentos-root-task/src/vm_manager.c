@@ -69,6 +69,14 @@ static vm_slot_quota_t g_quotas[VM_MAX_SLOTS];
 static uint8_t g_sched_current = 0;
 static uint32_t g_affinity[VM_MAX_SLOTS];
 
+/* ── IPC-driven scheduler tick ───────────────────────────────────────────
+ * Fire vm_sched_tick() every VM_SCHED_IPC_QUANTUM IPC dispatches.
+ * Provides work-conserving credit scheduling without a hardware timer;
+ * a real timer PD will replace this once timer-service is implemented.
+ */
+#define VM_SCHED_IPC_QUANTUM 16u
+static uint32_t g_ipc_counter = 0;
+
 /* ── msg helpers ────────────────────────────────────────────────────────*/
 static inline uint32_t msg_u32(const sel4_msg_t *m, uint32_t off) {
     uint32_t v = 0;
@@ -258,6 +266,22 @@ static uint32_t h_create(sel4_badge_t ba, const sel4_msg_t *req,
         rep_u32(rep, 0, VM_ERR); rep->length = 4;
         return SEL4_ERR_NO_MEM;
     }
+
+    /* Rebalance quotas equally across all now-active slots.
+     * Reset credits so existing slots don't carry excess credit from their
+     * previous higher quota into the new smaller-quota regime. */
+    {
+        uint8_t active = g_mux.slot_count;
+        uint8_t share  = (active > 0u) ? (uint8_t)(100u / active) : 100u;
+        for (uint8_t i = 0; i < VM_MAX_SLOTS; i++) {
+            if (g_mux.slots[i].state != VM_SLOT_FREE) {
+                g_quotas[i].max_cpu_pct = share;
+                g_quotas[i].credits =
+                    (int32_t)((uint32_t)share * SCHED_CREDITS_PER_PCT);
+            }
+        }
+    }
+
     sel4_dbg_puts("[vm_manager] CREATE slot=");
     dbg_u8(slot_id);
     sel4_dbg_puts("\n");
@@ -481,5 +505,33 @@ void vm_manager_main(seL4_CPtr my_ep, seL4_CPtr ns_ep)
     sel4_server_register(&srv, OP_VM_GET_STATS,    h_get_stats,        (void *)0);
     sel4_server_register(&srv, OP_VM_SET_AFFINITY, h_set_affinity,     (void *)0);
     sel4_server_register(&srv, OP_VM_INJECT_IRQ,   h_inject_irq,       (void *)0);
-    sel4_server_run(&srv);
+    /* Custom dispatch loop: fire vm_sched_tick() every VM_SCHED_IPC_QUANTUM
+     * IPC dispatches.  Provides work-conserving credit scheduling without a
+     * hardware timer; replace with a timer-notification path once timer-service
+     * is implemented. */
+    {
+        sel4_msg_t   req   = {0};
+        sel4_msg_t   rep   = {0};
+        sel4_badge_t badge;
+        int          first = 1;
+
+        while (1) {
+            if (first) {
+                badge = sel4_recv(srv.ep, &req);
+                first = 0;
+            } else {
+                badge = sel4_reply_recv(srv.ep, &rep, &req);
+            }
+
+            rep.opcode = 0;
+            rep.length = 0;
+
+            if (++g_ipc_counter >= VM_SCHED_IPC_QUANTUM) {
+                g_ipc_counter = 0;
+                vm_sched_tick(&g_mux);
+            }
+
+            sel4_server_dispatch(&srv, badge, &req, &rep);
+        }
+    }
 }
