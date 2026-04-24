@@ -1,61 +1,265 @@
 /*
- * agentOS Controller Protection Domain
- * 
- * Priority 50. Lowest of the three PDs so it can PPC into higher-priority servers.
- * Controls the EventBus (passive, prio 200) and coordinates with InitAgent (prio 100).
+ * agentOS Controller Protection Domain — raw seL4 IPC (E5-S2)
+ *
+ * Priority 50. Orchestrates the boot sequence and calls every other service.
+ * All Microkit ppcall/notify calls have been replaced with sel4_client_call()
+ * and seL4_Signal() using endpoints looked up from the nameserver.
+ *
+ * Entry point: controller_main(my_ep, ns_ep)
+ *
+ * Inbound requests are dispatched through a sel4_server_t dispatch loop.
+ * Outbound calls use a sel4_client_t that caches nameserver lookups.
  */
 
 #define AGENTOS_DEBUG 1
-#include "agentos.h"
+
+#ifndef AGENTOS_TEST_HOST
+#include "sel4_ipc.h"
+#include "sel4_server.h"
+#include "sel4_client.h"
+#include "nameserver.h"
 #include "cap_policy.h"
 #include "contracts/vmm_contract.h"
-#include "prio_inherit.h"
 #include "boot_integrity.h"
-#include "nameserver.h"
 #include "app_manager.h"
 #include "verify.h"
 #include "monocypher.h"
+#else
+/* ── Host-test stubs ─────────────────────────────────────────────────────── */
 #include <stdint.h>
+#include <stddef.h>
 #include <stdbool.h>
+#include <string.h>
 
-/* Memory regions - patched by Microkit setvar */
+/* Minimal sel4_ipc types for host builds */
+#define SEL4_ERR_OK         0u
+#define SEL4_ERR_INVALID_OP 1u
+#define SEL4_ERR_NOT_FOUND  2u
+#define SEL4_ERR_PERM       3u
+#define SEL4_ERR_BAD_ARG    4u
+#define SEL4_ERR_NO_MEM     5u
+#define SEL4_ERR_BUSY       6u
+#define SEL4_ERR_INTERNAL   8u
+
+#define SEL4_MSG_DATA_BYTES 48u
+
+typedef uint64_t seL4_CPtr;
+typedef uint64_t seL4_Word;
+typedef uint64_t sel4_badge_t;
+
+typedef struct {
+    uint32_t opcode;
+    uint32_t length;
+    uint8_t  data[SEL4_MSG_DATA_BYTES];
+} sel4_msg_t;
+
+/* Stub nameserver constants */
+#define NS_OK            0u
+#define NS_ERR_NOT_FOUND 2u
+#define NS_SVC_EVENTBUS  "event_bus"
+#define NS_SVC_VFS       "vfs"
+#define NS_SVC_NET       "net"
+#define NS_SVC_SPAWN     "spawn"
+#define NS_SVC_APPMANAGER "app_manager"
+#define NS_SVC_HTTP      "http"
+#define NS_SVC_AGENTFS   "agentfs"
+#define NS_SVC_VIBEENGINE "vibe_engine"
+#define CAP_CLASS_FS     (1 << 0)
+#define CAP_CLASS_NET    (1 << 1)
+#define CAP_CLASS_GPU    (1 << 2)
+#define CAP_CLASS_IPC    (1 << 3)
+#define CAP_CLASS_SPAWN  (1 << 6)
+#define NS_VERSION       1u
+
+/* Stub cap_policy */
+#define CAP_POLICY_MAGIC   0xCAB01CA5u
+#define CAP_POLICY_VERSION 1u
+#define CAP_POLICY_MAX_GRANTS 64u
+typedef struct { uint32_t magic; uint32_t version; uint32_t num_grants; } cap_policy_header_t;
+typedef struct { uint32_t agent_id; uint8_t cap_class; uint8_t rights; } cap_grant_t;
+
+/* Stub app_manager */
+#define APP_OK 0u
+#define OP_APP_LAUNCH 0xC0u
+
+/* Stub verify */
+static inline int verify_capabilities_manifest(const uint8_t *b, uint32_t l) { (void)b; (void)l; return -1; }
+
+/* Stub monocypher */
+static inline void crypto_ed25519_public_key(uint8_t *pk, const uint8_t *sk) { (void)pk; (void)sk; }
+static inline void crypto_ed25519_sign(uint8_t *s, const uint8_t *sk, const uint8_t *pk,
+                                        const uint8_t *m, size_t l) { (void)s;(void)sk;(void)pk;(void)m;(void)l; }
+static inline int  crypto_ed25519_check(const uint8_t *s, const uint8_t *m, size_t l,
+                                         const uint8_t *pk) { (void)s;(void)m;(void)l;(void)pk; return 0; }
+
+/* Stub boot_integrity */
+static inline void boot_integrity_init(void) {}
+
+/* Stub cap_broker */
+static inline void cap_broker_init(void) {}
+static inline void cap_broker_revoke_agent(uint32_t a, uint32_t r) { (void)a;(void)r; }
+static inline uint32_t cap_broker_attest(uint64_t t, uint32_t n, uint32_t d) { (void)t;(void)n;(void)d; return 0; }
+
+/* Stub agent_pool */
+static inline void agent_pool_init(void) {}
+static inline int  agent_pool_spawn(const char *n, uint64_t t,
+                                     const uint8_t *p, uint32_t l, uint32_t prio) {
+    (void)n;(void)t;(void)p;(void)l;(void)prio; return 0;
+}
+
+/* Stub agentos_log_boot */
+static inline void agentos_log_boot(const char *n) { (void)n; }
+
+/* seL4_DebugPutChar stub */
+static inline void seL4_DebugPutChar(char c) { (void)c; }
+
+/* sel4_client / sel4_server minimal stubs for host tests */
+#define SEL4_CLIENT_CACHE_SIZE 16u
+#define SEL4_CLIENT_NAME_MAX   48u
+
+typedef struct { char name[SEL4_CLIENT_NAME_MAX]; seL4_CPtr ep; uint32_t valid; } sel4_client_entry_t;
+typedef struct {
+    sel4_client_entry_t entries[SEL4_CLIENT_CACHE_SIZE];
+    seL4_CPtr nameserver_ep;
+    seL4_CPtr my_cnode;
+    seL4_Word next_free_slot;
+} sel4_client_t;
+
+static inline void sel4_client_init(sel4_client_t *c, seL4_CPtr ns, seL4_CPtr cn, seL4_Word slot) {
+    (void)ns;(void)cn;(void)slot;
+    for (uint32_t i = 0; i < SEL4_CLIENT_CACHE_SIZE; i++) { c->entries[i].valid = 0; c->entries[i].ep = 0; c->entries[i].name[0] = '\0'; }
+    c->nameserver_ep = ns; c->my_cnode = cn; c->next_free_slot = slot;
+}
+/* Returns SEL4_ERR_OK and ep=0 for host tests (no real nameserver) */
+static inline uint32_t sel4_client_connect(sel4_client_t *c, const char *name, seL4_CPtr *ep) {
+    (void)c;(void)name; *ep = 0; return SEL4_ERR_OK;
+}
+static inline uint32_t sel4_client_call(seL4_CPtr ep, uint32_t op,
+                                         const void *payload, uint32_t len,
+                                         sel4_msg_t *rep) {
+    (void)ep;(void)op;(void)payload;(void)len;
+    rep->opcode = SEL4_ERR_OK; rep->length = 0;
+    return SEL4_ERR_OK;
+}
+
+/* sel4_server stubs */
+#define SEL4_SERVER_MAX_HANDLERS 32u
+typedef uint32_t (*sel4_handler_fn)(sel4_badge_t, const sel4_msg_t *, sel4_msg_t *, void *);
+typedef struct {
+    struct { uint32_t opcode; sel4_handler_fn fn; void *ctx; } handlers[SEL4_SERVER_MAX_HANDLERS];
+    uint32_t handler_count;
+    seL4_CPtr ep;
+} sel4_server_t;
+static inline void sel4_server_init(sel4_server_t *s, seL4_CPtr ep) {
+    s->handler_count = 0; s->ep = ep;
+    for (uint32_t i = 0; i < SEL4_SERVER_MAX_HANDLERS; i++) {
+        s->handlers[i].opcode = 0; s->handlers[i].fn = (sel4_handler_fn)0; s->handlers[i].ctx = (void *)0;
+    }
+}
+static inline int sel4_server_register(sel4_server_t *s, uint32_t op, sel4_handler_fn fn, void *ctx) {
+    if (s->handler_count >= SEL4_SERVER_MAX_HANDLERS) return -1;
+    s->handlers[s->handler_count].opcode = op;
+    s->handlers[s->handler_count].fn = fn;
+    s->handlers[s->handler_count].ctx = ctx;
+    s->handler_count++; return 0;
+}
+static inline uint32_t sel4_server_dispatch(sel4_server_t *s, sel4_badge_t badge,
+                                              const sel4_msg_t *req, sel4_msg_t *rep) {
+    for (uint32_t i = 0; i < s->handler_count; i++) {
+        if (s->handlers[i].opcode == req->opcode) {
+            uint32_t rc = s->handlers[i].fn(badge, req, rep, s->handlers[i].ctx);
+            rep->opcode = rc; return rc;
+        }
+    }
+    rep->opcode = SEL4_ERR_INVALID_OP; rep->length = 0; return SEL4_ERR_INVALID_OP;
+}
+/* sel4_server_run is intentionally omitted for host tests (would loop forever) */
+
+/* seL4_Signal stub */
+static inline void seL4_Signal(seL4_CPtr cap) { (void)cap; }
+
+/* MSG_* and OP_* constants needed by monitor.c logic */
+#define MSG_EVENTBUS_INIT          0x0001u
+#define MSG_EVENTBUS_READY         0x0101u
+#define MSG_INITAGENT_START        0x0201u
+#define MSG_EVENT_AGENT_EXITED     0x0402u
+#define MSG_SPAWN_AGENT            0x0801u
+#define MSG_SPAWN_AGENT_REPLY      0x0802u
+#define MSG_WORKER_RETRIEVE        0x0701u
+#define MSG_WORKER_RETRIEVE_REPLY  0x0702u
+#define MSG_QUOTA_REVOKE           0x0B01u
+#define MSG_GPU_SUBMIT             0x0901u
+#define MSG_VMM_VCPU_SET_REGS      0x2B05u
+#define MSG_VMM_REGISTER           0x2B01u
+#define EVT_OBJECT_CREATED         0x0411u
+#define OP_AGENTFS_PUT             0x30u
+#define OP_AGENTFS_GET             0x31u
+#define OP_CAP_POLICY_RELOAD       0xC0u
+#define TRACE_PD_CONTROLLER        0u
+#define TRACE_PD_EVENT_BUS         1u
+#define TRACE_PD_INIT_AGENT        2u
+#define TRACE_PD_WORKER_0          3u
+#define TRACE_PD_VFS_SERVER        27u
+#define TRACE_PD_VIRTIO_BLK        28u
+#define TRACE_PD_SPAWN_SERVER      29u
+#define TRACE_PD_NET_SERVER        30u
+#define TRACE_PD_APP_MANAGER       31u
+#define TRACE_PD_HTTP_SVC          32u
+#define TRACE_PD_AGENTFS           11u
+#define TRACE_PD_SWAP_SLOT_0       13u
+
+/* Stub vcpu_regs_t for VMM contract */
+#ifndef VMM_CONTRACT_H
+typedef struct { uint64_t spsr; } vcpu_regs_t;
+static inline int cap_policy_vcpu_el_check(uint64_t spsr, bool aarch64) { (void)spsr;(void)aarch64; return 0; }
+#define AGENTOS_CRIT(s) do {} while(0)
+#endif
+
+/* NUM_SWAP_SLOTS */
+#define NUM_SWAP_SLOTS 4
+
+#endif /* AGENTOS_TEST_HOST */
+
+/* ─────────────────────────────────────────────────────────────────────────────
+ * Memory regions (set by root-task on real hardware; zeroed in host tests)
+ * ─────────────────────────────────────────────────────────────────────────── */
+#ifndef AGENTOS_TEST_HOST
 uintptr_t monitor_stack_vaddr;
 uintptr_t swap_code_ctrl_0;
 uintptr_t swap_code_ctrl_1;
 uintptr_t swap_code_ctrl_2;
 uintptr_t swap_code_ctrl_3;
-/* VibeEngine staging region: controller reads WASM proposals here (mapped r) */
 uintptr_t vibe_staging_ctrl_vaddr;
-/* cap_policy hot-reload shmem: caller writes policy blob here before PPC */
 uintptr_t cap_policy_shmem_vaddr;
-/* NameServer registry dump shmem: read after OP_NS_LIST call (mapped r) */
 uintptr_t ns_registry_shmem_ctrl_vaddr;
-/* VFS I/O shmem: request descriptor + path/data buffers (mapped rw) */
 uintptr_t vfs_io_shmem_ctrl_vaddr;
-/* SpawnServer ELF staging area (mapped rw) */
 uintptr_t spawn_elf_shmem_ctrl_vaddr;
-/* Spawn config shmem: app name/path/list area (mapped rw) */
 uintptr_t spawn_config_shmem_ctrl_vaddr;
-/* Network packet shmem: 16 vNIC slots (mapped r) */
 uintptr_t net_packet_shmem_ctrl_vaddr;
-/* HTTP request shmem: request header + body (mapped r) */
 uintptr_t http_req_shmem_ctrl_vaddr;
-/* App manifest shmem: key=value manifests written by controller (mapped rw) */
 uintptr_t app_manifest_shmem_ctrl_vaddr;
-/* ext2fs I/O shmem: controller reads stat/readdir results here (mapped r) */
 uintptr_t ext2_shmem_ctrl_vaddr;
-/* vm_list shmem: controller reads OP_VM_LIST results from vm_manager (mapped r) */
 uintptr_t vm_list_shmem_ctrl_vaddr;
-/* vmm vCPU regs shmem: VMM PD writes vcpu_regs_t here before MSG_VMM_VCPU_SET_REGS */
 uintptr_t vmm_vcpu_regs_vaddr;
-/* block_shmem: controller writes data before MSG_BLOCK_WRITE, reads after MSG_BLOCK_READ */
 uintptr_t block_shmem_ctrl_vaddr;
+uintptr_t log_drain_rings_vaddr;
+#else
+/* Host test: expose as simple globals so test code can set them */
+uintptr_t monitor_stack_vaddr;
+uintptr_t vibe_staging_ctrl_vaddr;
+uintptr_t cap_policy_shmem_vaddr;
+uintptr_t app_manifest_shmem_ctrl_vaddr;
+uintptr_t vmm_vcpu_regs_vaddr;
+uintptr_t log_drain_rings_vaddr;
+uintptr_t swap_code_ctrl_0;
+uintptr_t swap_code_ctrl_1;
+uintptr_t swap_code_ctrl_2;
+uintptr_t swap_code_ctrl_3;
+#endif
 
-/*
- * Echo service WASM binary (embedded for demo Step 4)
- * This is test/echo_service.wasm — 305 bytes.
- * exports: init(), handle_ppc(i64,i64,i64,i64,i64), health_check() -> i32
- */
+/* ─────────────────────────────────────────────────────────────────────────────
+ * Echo service WASM binary (embedded; 305 bytes)
+ * ─────────────────────────────────────────────────────────────────────────── */
 static const uint8_t ECHO_SERVICE_WASM[] = {
     0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, 0x01, 0x21, 0x06, 0x60,
     0x03, 0x7f, 0x7f, 0x7f, 0x00, 0x60, 0x00, 0x01, 0x7e, 0x60, 0x03, 0x7f,
@@ -84,135 +288,392 @@ static const uint8_t ECHO_SERVICE_WASM[] = {
     0x67, 0x65, 0x6e, 0x74, 0x4f, 0x53, 0x20, 0x76, 0x69, 0x62, 0x65, 0x2d,
     0x73, 0x77, 0x61, 0x70, 0x21
 };
-static const uint32_t ECHO_SERVICE_WASM_LEN = 305;
+static const uint32_t ECHO_SERVICE_WASM_LEN = 305u;
 
-/* Channel IDs (must match agentos.system id= values) */
-#define CH_EVENTBUS      0
-#define CH_INITAGENT     1
-#define CH_SWAP_BASE     30   /* Channels 30-33: swap slot PDs */
-#define NUM_SWAP_SLOTS   4
-#define CH_VIBEENGINE    40   /* Channel 40: vibe_engine notifies us when swap approved */
-#define CH_GPUSCHED      50   /* Channel 50: gpu_sched <-> controller */
-#define CH_MESHAGENT     55   /* Channel 55: mesh_agent <-> controller */
-/* CH_QUOTA_NOTIFY and CH_WATCHDOG_NOTIFY come from agentos.h defines */
+/* ─────────────────────────────────────────────────────────────────────────────
+ * Global seL4 IPC objects
+ * ─────────────────────────────────────────────────────────────────────────── */
+
+/* Client: outbound service calls */
+static sel4_client_t g_client;
+
+/* Server: inbound dispatch loop */
+static sel4_server_t g_srv;
 
 /*
- * trace_notify — forward an inter-PD dispatch event to trace_recorder.
- *
- * Packs src/dst/label into MR0 and the first two payload MRs into MR1/MR2,
- * then notifies the trace_recorder on CH_TRACE_NOTIFY (local id=63).
- * The trace_recorder's notified() handler reads these before any preemption
- * because it runs as a passive PD woken by the notification.
- *
- * This is a best-effort, non-blocking observation point.  If the
- * trace_recorder buffer is full it sets TRACE_FLAG_OVERFLOW and wraps.
+ * Cached endpoint capabilities for services the controller calls.
+ * Populated during controller_main startup via sel4_client_connect().
  */
-static void trace_notify(uint8_t src_pd, uint8_t dst_pd, uint16_t label,
-                          uint32_t mr0_val, uint32_t mr1_val) {
-    /* Save caller's MRs — microkit_notify is fire-and-forget but seL4 leaves
-     * registers as-set, so without save/restore the next microkit_ppcall would
-     * receive the trace header in MR0 instead of the intended op code.
-     * This was the root cause of [controller] AgentFS PUT FAILED. */
-    seL4_Word saved0 = microkit_mr_get(0);
-    seL4_Word saved1 = microkit_mr_get(1);
-    seL4_Word saved2 = microkit_mr_get(2);
+static seL4_CPtr g_ep_eventbus;   /* event_bus PD endpoint    */
+static seL4_CPtr g_ep_agentfs;    /* agentfs PD endpoint      */
+static seL4_CPtr g_ep_vfs;        /* vfs_server endpoint      */
+static seL4_CPtr g_ep_net;        /* net_server endpoint      */
+static seL4_CPtr g_ep_spawn;      /* spawn_server endpoint    */
+static seL4_CPtr g_ep_appmgr;     /* app_manager endpoint     */
+static seL4_CPtr g_ep_http;       /* http_svc endpoint        */
 
-    uint32_t packed = ((uint32_t)src_pd << 24)
-                    | ((uint32_t)dst_pd << 16)
-                    | (uint32_t)(label & 0xFFFF);
-    microkit_mr_set(0, packed);
-    microkit_mr_set(1, mr0_val);
-    microkit_mr_set(2, mr1_val);
-    microkit_notify(CH_TRACE_NOTIFY);
+/*
+ * Notification capability for event_bus (used for seL4_Signal instead of
+ * microkit_notify).  Obtained from nameserver at startup.
+ * On real hardware this is a badged notification cap minted by the nameserver.
+ * In host tests it stays 0 and seL4_Signal is a no-op.
+ */
+static seL4_CPtr g_event_bus_ntfn_cap;
+static seL4_CPtr g_initagent_ntfn_cap;
+static seL4_CPtr g_net_timer_ntfn_cap;
 
-    /* Restore so the caller's subsequent microkit_ppcall sees the right MRs */
-    microkit_mr_set(0, saved0);
-    microkit_mr_set(1, saved1);
-    microkit_mr_set(2, saved2);
+/* ─────────────────────────────────────────────────────────────────────────────
+ * Controller runtime state
+ * ─────────────────────────────────────────────────────────────────────────── */
+
+static struct {
+    bool     eventbus_ready;
+    bool     initagent_ready;
+    uint32_t notification_count;
+    /* Demo object ID from AgentFS */
+    uint32_t demo_obj_id[4];
+    bool     demo_obj_stored;
+    /* Worker / demo state */
+    bool     worker_task_dispatched;
+    bool     demo_complete;
+    /* VibeEngine demo state */
+    bool     vibe_demo_triggered;
+    bool     vibe_swap_in_progress;
+    bool     vibe_demo_complete;
+    /* lwIP tick counter */
+    uint32_t net_tick_counter;
+} ctrl;
+
+/* Periodic lwIP timer tick period */
+#define NET_TICK_INTERVAL 10u
+
+/* ─────────────────────────────────────────────────────────────────────────────
+ * Debug output helpers (no Microkit API)
+ * ─────────────────────────────────────────────────────────────────────────── */
+
+static void ctrl_puts(const char *s)
+{
+#ifndef AGENTOS_TEST_HOST
+    for (const char *p = s; *p; p++)
+        seL4_DebugPutChar(*p);
+#else
+    (void)s;
+#endif
 }
 
-/* Forward declarations */
+/* ─────────────────────────────────────────────────────────────────────────────
+ * Forward declarations (vibe-swap and cap-broker subsystems)
+ * These are implemented elsewhere in the root-task source tree.
+ * ─────────────────────────────────────────────────────────────────────────── */
 void vibe_swap_init(void);
 int  vibe_swap_begin(uint32_t service_id, const void *code, uint32_t code_len);
 int  vibe_swap_health_notify(int slot);
 int  vibe_swap_rollback(uint32_t service_id);
-void cap_broker_init(void);
-void cap_broker_revoke_agent(uint32_t agent_pd, uint32_t reason_flags);
-uint32_t cap_broker_attest(uint64_t boot_tick, uint32_t net_active, uint32_t net_denials);
-void agent_pool_init(void);
-int  agent_pool_spawn(const char *agent_name, uint64_t task_id,
-                      const uint8_t *payload, uint32_t payload_len,
-                      uint32_t priority);
 
-/* AgentFS op codes (must match agentfs.c) */
-#define OP_AGENTFS_PUT      0x30
-#define OP_AGENTFS_GET      0x31
-#define OP_AGENTFS_STAT     0x35
-#define CH_AGENTFS           5
+/* ─────────────────────────────────────────────────────────────────────────────
+ * Utility: demo_delay
+ * ─────────────────────────────────────────────────────────────────────────── */
 
-/* Worker channel base */
-#define CH_WORKER_BASE      10
-
-/* Controller state */
-static struct {
-    bool eventbus_ready;
-    bool initagent_ready;
-    uint32_t notification_count;
-    /* Demo state: stored object ID from AgentFS (first 16 bytes in 4 words) */
-    uint32_t demo_obj_id[4];
-    bool demo_obj_stored;
-    /* Worker state tracking */
-    bool     worker_task_dispatched;  /* true after we dispatched the demo task */
-    bool     demo_complete;           /* true after the data-flow demo is done */
-    /* VibeEngine demo state (Step 4: hot-swap) */
-    bool     vibe_demo_triggered;     /* true after we wrote WASM to staging */
-    bool     vibe_swap_in_progress;   /* true while waiting for swap slot health */
-    bool     vibe_demo_complete;      /* true after vibe-swap demo finishes */
-    /* lwIP timer tick counter: notify net_server every NET_TICK_INTERVAL notifications */
-    uint32_t net_tick_counter;
-} ctrl = { false, false, 0, {0}, false, false, false, false, false, false, 0 };
-
-/* Send a 10ms timer tick to net_server every NET_TICK_INTERVAL controller notifications */
-#define NET_TICK_INTERVAL 10u
-
-/* Simple busy-wait delay for demo sequencing (no timers on bare metal) */
 static void demo_delay(void) {
     for (volatile uint32_t i = 0; i < 100000; i++) {
         __asm__ volatile("" ::: "memory");
     }
 }
 
-/* Print a hex byte */
-static void put_hex_byte(uint8_t b) {
+/* ─────────────────────────────────────────────────────────────────────────────
+ * Utility: put_hex_byte, put_uint32_dec
+ * ─────────────────────────────────────────────────────────────────────────── */
+
+static void put_hex_byte(uint8_t b)
+{
     static const char hex[] = "0123456789abcdef";
     char buf[3];
     buf[0] = hex[(b >> 4) & 0xf];
     buf[1] = hex[b & 0xf];
     buf[2] = '\0';
-    log_drain_write(0, 0, buf);
+    ctrl_puts(buf);
 }
 
-/*
- * vibe_demo_step4() — Step 4: VibeEngine hot-swap demo
- *
- * Called when vibe_engine notifies us that a swap was approved.
- * We read the WASM + service_id from the staging region and call
- * vibe_swap_begin to load the WASM into a swap slot.
- *
- * This closes the full end-to-end pipeline:
- *   init_agent → VibeEngine (propose/validate/execute)
- *   → vibe_engine notifies controller (channel 40)
- *   → controller reads staging region
- *   → vibe_swap_begin → swap_slot wakes → loads WASM via wasm3
- *   → health_check → SERVICE LIVE
- */
-static void vibe_demo_step4_notify(void) {
-    log_drain_write(0, 0, "[controller] Step 4: VibeEngine approved a swap!\n[controller] Reading proposal from staging region...\n");
+/* Print uint32 as decimal into caller-supplied buffer (must be >=12 bytes). */
+static void uint32_to_dec(uint32_t v, char *out, int out_sz)
+{
+    char tmp[12]; int ti = 0;
+    if (v == 0) { tmp[ti++] = '0'; }
+    else { while (v > 0 && ti < 11) { tmp[ti++] = (char)('0' + (v % 10)); v /= 10; } }
+    int o = 0;
+    for (int i = ti - 1; i >= 0 && o + 1 < out_sz; i--)
+        out[o++] = tmp[i];
+    out[o] = '\0';
+}
 
-    /* Read metadata from end of staging region (last 64 bytes) */
-    static const uint32_t STAGING_SIZE = 0x400000;
+/* ─────────────────────────────────────────────────────────────────────────────
+ * Policy helpers
+ * ─────────────────────────────────────────────────────────────────────────── */
+
+static bool g_policy_loaded = false;
+
+static void monitor_apply_default_policy(void)
+{
+    ctrl_puts("[monitor] applying hardcoded default policy\n");
+    g_policy_loaded = true;
+}
+
+static void monitor_apply_policy(void)
+{
+#ifndef AGENTOS_TEST_HOST
+    volatile cap_policy_header_t *hdr =
+        (volatile cap_policy_header_t *)cap_policy_shmem_vaddr;
+
+    if (!cap_policy_shmem_vaddr || hdr->magic != CAP_POLICY_MAGIC) {
+        ctrl_puts("[monitor] no policy blob, using defaults\n");
+        monitor_apply_default_policy();
+        return;
+    }
+    if (hdr->version != CAP_POLICY_VERSION || hdr->num_grants > CAP_POLICY_MAX_GRANTS) {
+        ctrl_puts("[monitor] invalid policy header, using defaults\n");
+        monitor_apply_default_policy();
+        return;
+    }
+
+    volatile cap_grant_t *grants = (volatile cap_grant_t *)(hdr + 1);
+    for (uint32_t i = 0; i < hdr->num_grants; i++) {
+        ctrl_puts("[monitor] policy grant agent=");
+        char abuf[4];
+        abuf[0] = (char)('0' + (grants[i].agent_id % 10));
+        abuf[1] = '\0';
+        ctrl_puts(abuf);
+        ctrl_puts("\n");
+    }
+    g_policy_loaded = true;
+    ctrl_puts("[monitor] applied policy grants\n");
+#else
+    monitor_apply_default_policy();
+#endif
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+ * ns_register_service — register one service via nameserver client call
+ * ─────────────────────────────────────────────────────────────────────────── */
+
+static void ns_register_service(const char *svc_name,
+                                 uint32_t    channel_id,
+                                 uint32_t    pd_id,
+                                 uint32_t    cap_classes)
+{
+    /*
+     * Pack the register request into sel4_msg_t.data[]:
+     *   data[0..3]   = channel_id (LE)
+     *   data[4..7]   = pd_id (LE)
+     *   data[8..11]  = cap_classes (LE)
+     *   data[12..15] = version (LE) = 1
+     *   data[16..47] = service name, NUL-padded
+     */
+    uint8_t payload[SEL4_MSG_DATA_BYTES];
+    payload[0]  = (uint8_t)(channel_id & 0xff);
+    payload[1]  = (uint8_t)((channel_id >> 8) & 0xff);
+    payload[2]  = (uint8_t)((channel_id >> 16) & 0xff);
+    payload[3]  = (uint8_t)((channel_id >> 24) & 0xff);
+    payload[4]  = (uint8_t)(pd_id & 0xff);
+    payload[5]  = (uint8_t)((pd_id >> 8) & 0xff);
+    payload[6]  = (uint8_t)((pd_id >> 16) & 0xff);
+    payload[7]  = (uint8_t)((pd_id >> 24) & 0xff);
+    payload[8]  = (uint8_t)(cap_classes & 0xff);
+    payload[9]  = (uint8_t)((cap_classes >> 8) & 0xff);
+    payload[10] = (uint8_t)((cap_classes >> 16) & 0xff);
+    payload[11] = (uint8_t)((cap_classes >> 24) & 0xff);
+    payload[12] = 1u;  /* version low byte */
+    payload[13] = 0u; payload[14] = 0u; payload[15] = 0u;
+
+    /* Copy service name into data[16..47] */
+    uint32_t ni = 16u;
+    for (const char *p = svc_name; *p && ni < SEL4_MSG_DATA_BYTES - 1u; p++, ni++)
+        payload[ni] = (uint8_t)*p;
+    for (; ni < SEL4_MSG_DATA_BYTES; ni++)
+        payload[ni] = 0u;
+
+    sel4_msg_t rep;
+#ifndef AGENTOS_TEST_HOST
+    seL4_CPtr ns_ep;
+    uint32_t conn_rc = sel4_client_connect(&g_client, "nameserver", &ns_ep);
+    if (conn_rc != SEL4_ERR_OK) {
+        ctrl_puts("[controller] ns_register: nameserver not found\n");
+        return;
+    }
+    uint32_t rc = sel4_client_call(ns_ep, 0xD0u /* OP_NS_REGISTER */,
+                                   payload, SEL4_MSG_DATA_BYTES, &rep);
+#else
+    uint32_t rc = sel4_client_call(0, 0xD0u, payload, SEL4_MSG_DATA_BYTES, &rep);
+#endif
+    if (rc != SEL4_ERR_OK && rc != NS_OK) {
+        ctrl_puts("[controller] NS_REGISTER failed for: ");
+        ctrl_puts(svc_name);
+        ctrl_puts("\n");
+    }
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+ * Demo helpers
+ * ─────────────────────────────────────────────────────────────────────────── */
+
+static void demo_sequence(void)
+{
+    ctrl_puts("\n"
+              "======================================================\n"
+              "  DEMO: Agent Data Flow — PDs exchanging real data\n"
+              "======================================================\n\n");
+
+    /* Step 1: Store object in AgentFS */
+    ctrl_puts("[controller] Step 1: Storing object in AgentFS via IPC...\n");
+
+    uint8_t put_payload[12];
+    uint32_t obj_size = 18u;
+    put_payload[0]  = (uint8_t)(OP_AGENTFS_PUT);
+    put_payload[1]  = 0u; put_payload[2] = 0u; put_payload[3] = 0u;
+    put_payload[4]  = (uint8_t)(obj_size & 0xff);
+    put_payload[5]  = (uint8_t)((obj_size >> 8) & 0xff);
+    put_payload[6]  = (uint8_t)((obj_size >> 16) & 0xff);
+    put_payload[7]  = (uint8_t)((obj_size >> 24) & 0xff);
+    put_payload[8]  = 0x42u; /* cap_tag */
+    put_payload[9]  = 0u; put_payload[10] = 0u; put_payload[11] = 0u;
+
+    sel4_msg_t rep;
+    uint32_t rc = sel4_client_call(g_ep_agentfs, OP_AGENTFS_PUT,
+                                   put_payload, sizeof(put_payload), &rep);
+    if (rc == SEL4_ERR_OK) {
+        /* Read back object ID from reply data */
+        ctrl.demo_obj_id[0] = (uint32_t)rep.data[0]  | ((uint32_t)rep.data[1] << 8)
+                            | ((uint32_t)rep.data[2] << 16) | ((uint32_t)rep.data[3] << 24);
+        ctrl.demo_obj_id[1] = (uint32_t)rep.data[4]  | ((uint32_t)rep.data[5] << 8)
+                            | ((uint32_t)rep.data[6] << 16) | ((uint32_t)rep.data[7] << 24);
+        ctrl.demo_obj_id[2] = (uint32_t)rep.data[8]  | ((uint32_t)rep.data[9] << 8)
+                            | ((uint32_t)rep.data[10] << 16)| ((uint32_t)rep.data[11] << 24);
+        ctrl.demo_obj_id[3] = (uint32_t)rep.data[12] | ((uint32_t)rep.data[13] << 8)
+                            | ((uint32_t)rep.data[14] << 16)| ((uint32_t)rep.data[15] << 24);
+        ctrl.demo_obj_stored = true;
+        ctrl_puts("[controller] AgentFS PUT OK — object id: 0x");
+        put_hex_byte((ctrl.demo_obj_id[0] >> 24) & 0xff);
+        put_hex_byte((ctrl.demo_obj_id[0] >> 16) & 0xff);
+        put_hex_byte((ctrl.demo_obj_id[0] >>  8) & 0xff);
+        put_hex_byte( ctrl.demo_obj_id[0]        & 0xff);
+        ctrl_puts("...\n[controller] Object payload: 'Hello from agentOS' (18 bytes)\n");
+    } else {
+        ctrl_puts("[controller] AgentFS PUT FAILED\n");
+        return;
+    }
+
+    demo_delay();
+
+    /* Step 2: Publish event to EventBus via capability call */
+    ctrl_puts("[controller] Step 2: Publishing OBJECT_CREATED event to EventBus...\n");
+    {
+        uint8_t evt_payload[12];
+        evt_payload[0]  = (uint8_t)(EVT_OBJECT_CREATED & 0xff);
+        evt_payload[1]  = (uint8_t)((EVT_OBJECT_CREATED >> 8) & 0xff);
+        evt_payload[2]  = 0u; evt_payload[3] = 0u;
+        evt_payload[4]  = (uint8_t)(ctrl.demo_obj_id[0] & 0xff);
+        evt_payload[5]  = (uint8_t)((ctrl.demo_obj_id[0] >> 8) & 0xff);
+        evt_payload[6]  = (uint8_t)((ctrl.demo_obj_id[0] >> 16) & 0xff);
+        evt_payload[7]  = (uint8_t)((ctrl.demo_obj_id[0] >> 24) & 0xff);
+        evt_payload[8]  = (uint8_t)(obj_size & 0xff);
+        evt_payload[9]  = (uint8_t)((obj_size >> 8) & 0xff);
+        evt_payload[10] = 0u; evt_payload[11] = 0u;
+        sel4_client_call(g_ep_eventbus, (uint32_t)EVT_OBJECT_CREATED,
+                         evt_payload, sizeof(evt_payload), &rep);
+        ctrl_puts("[controller] Event published to ring buffer\n");
+    }
+
+    demo_delay();
+
+    /* Step 3: Dispatch task to worker_0 via notification signal */
+    ctrl_puts("[controller] Step 3: Dispatching task to worker_0 — 'retrieve object'\n");
+    ctrl.worker_task_dispatched = true;
+    /* Signal worker_0's notification cap (cap looked up at startup for pool slot 0) */
+    seL4_Signal(g_initagent_ntfn_cap);  /* proxy: signal initagent which signals worker */
+    ctrl_puts("[controller] Task dispatched. Waiting for worker completion...\n");
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+ * microservice_demo — Step 5: AppManager launch
+ * ─────────────────────────────────────────────────────────────────────────── */
+
+static void microservice_demo(void)
+{
+    ctrl_puts("\n"
+              "======================================================\n"
+              "  DEMO Step 5: AppManager — full-stack app launch\n"
+              "======================================================\n\n");
+
+    if (!app_manifest_shmem_ctrl_vaddr) {
+        ctrl_puts("[controller] app_manifest_shmem not mapped — skipping step 5\n");
+        return;
+    }
+
+    static const char DEMO_MANIFEST[] =
+        "name=echo-app\n"
+        "elf=/apps/echo.elf\n"
+        "http_prefix=/echo\n"
+        "caps=35\n";
+    static const uint32_t DEMO_MANIFEST_LEN = sizeof(DEMO_MANIFEST) - 1u;
+
+#ifndef AGENTOS_TEST_HOST
+    volatile uint8_t *dst = (volatile uint8_t *)app_manifest_shmem_ctrl_vaddr;
+    for (uint32_t i = 0; i < DEMO_MANIFEST_LEN; i++)
+        dst[i] = (uint8_t)DEMO_MANIFEST[i];
+#endif
+
+    ctrl_puts("[controller] Manifest written — calling OP_APP_LAUNCH...\n");
+
+    uint8_t launch_payload[8];
+    launch_payload[0] = (uint8_t)(DEMO_MANIFEST_LEN & 0xff);
+    launch_payload[1] = (uint8_t)((DEMO_MANIFEST_LEN >> 8) & 0xff);
+    launch_payload[2] = 0u; launch_payload[3] = 0u;
+    launch_payload[4] = 0u; launch_payload[5] = 0u;
+    launch_payload[6] = 0u; launch_payload[7] = 0u;
+
+    sel4_msg_t rep;
+    uint32_t rc = sel4_client_call(g_ep_appmgr, OP_APP_LAUNCH,
+                                   launch_payload, sizeof(launch_payload), &rep);
+    uint32_t app_id = (uint32_t)rep.data[0] | ((uint32_t)rep.data[1] << 8)
+                    | ((uint32_t)rep.data[2] << 16) | ((uint32_t)rep.data[3] << 24);
+    uint32_t vnic   = (uint32_t)rep.data[4] | ((uint32_t)rep.data[5] << 8)
+                    | ((uint32_t)rep.data[6] << 16) | ((uint32_t)rep.data[7] << 24);
+
+    if (rc == SEL4_ERR_OK) {
+        ctrl_puts("[controller] APP_LAUNCH OK — app_id=");
+        char buf[12]; uint32_to_dec(app_id, buf, sizeof(buf));
+        ctrl_puts(buf);
+        ctrl_puts(" vnic=");
+        if (vnic == 0xFFFFFFFFu) { ctrl_puts("none"); }
+        else { uint32_to_dec(vnic, buf, sizeof(buf)); ctrl_puts(buf); }
+        ctrl_puts("\n[controller] echo-app registered at HTTP prefix /echo\n");
+        ctrl_puts("\n"
+                  "======================================================\n"
+                  "  DEMO COMPLETE — All 5 steps passed!\n"
+                  "  Step 1: AgentFS object store    — PUT/GET via IPC\n"
+                  "  Step 2: EventBus pub/sub        — ring buffer + notify\n"
+                  "  Step 3: Agent pool workers      — task dispatch + done\n"
+                  "  Step 4: VibeEngine hot-swap     — WASM live via wasm3\n"
+                  "  Step 5: AppManager launch       — echo-app at /echo\n"
+                  "  PDs: 34 on seL4 (RISC-V / AArch64)\n"
+                  "======================================================\n\n");
+    } else {
+        ctrl_puts("[controller] APP_LAUNCH failed (services may be stubs)\n");
+    }
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+ * vibe_demo_step4_notify — process VibeEngine swap notification
+ * ─────────────────────────────────────────────────────────────────────────── */
+
+static void vibe_demo_step4_notify(void)
+{
+    ctrl_puts("[controller] Step 4: VibeEngine approved a swap!\n");
+    ctrl_puts("[controller] Reading proposal from staging region...\n");
+
+#ifndef AGENTOS_TEST_HOST
+    static const uint32_t STAGING_SIZE = 0x400000u;
     const volatile uint8_t *meta =
-        (const volatile uint8_t *)(vibe_staging_ctrl_vaddr + STAGING_SIZE - 64);
+        (const volatile uint8_t *)(vibe_staging_ctrl_vaddr + STAGING_SIZE - 64u);
 
     uint32_t service_id  = (uint32_t)meta[0] | ((uint32_t)meta[1] << 8)
                          | ((uint32_t)meta[2] << 16) | ((uint32_t)meta[3] << 24);
@@ -221,335 +682,388 @@ static void vibe_demo_step4_notify(void) {
     uint32_t wasm_size   = (uint32_t)meta[8] | ((uint32_t)meta[9] << 8)
                          | ((uint32_t)meta[10] << 16) | ((uint32_t)meta[11] << 24);
 
-    /* Check for rollback request (wasm_size == 0xFFFFFFFF) */
-    if (wasm_size == 0xFFFFFFFFU) {
-        log_drain_write(0, 0, "[controller] Rollback requested for service ");
-        char sid[4];
-        sid[0] = '0' + (service_id % 10);
-        sid[1] = '\0';
-        {
-            char _cl_buf[256] = {};
-            char *_cl_p = _cl_buf;
-            for (const char *_s = sid; *_s; _s++) *_cl_p++ = *_s;
-            for (const char *_s = "\n"; *_s; _s++) *_cl_p++ = *_s;
-            *_cl_p = 0;
-            log_drain_write(0, 0, _cl_buf);
-        }
+    if (wasm_size == 0xFFFFFFFFu) {
+        ctrl_puts("[controller] Rollback requested\n");
         vibe_swap_rollback(service_id);
         return;
     }
 
-    log_drain_write(0, 0, "[controller] Swap proposal: service=");
-    char svc_str[4];
-    svc_str[0] = '0' + (service_id % 10);
-    svc_str[1] = '\0';
-    {
-        char _cl_buf[256] = {};
-        char *_cl_p = _cl_buf;
-        for (const char *_s = svc_str; *_s; _s++) *_cl_p++ = *_s;
-        for (const char *_s = ", wasm_size="; *_s; _s++) *_cl_p++ = *_s;
-        *_cl_p = 0;
-        log_drain_write(0, 0, _cl_buf);
-    }
-    char sz_str[8];
-    uint32_t s = wasm_size; int p = 0;
-    if (s == 0) { sz_str[p++] = '0'; }
-    else { char t[8]; int ti = 0;
-           while (s > 0 && ti < 7) { t[ti++] = '0' + (s % 10); s /= 10; }
-           while (ti > 0 && p < 7) sz_str[p++] = t[--ti]; }
-    sz_str[p] = '\0';
-    {
-        char _cl_buf[256] = {};
-        char *_cl_p = _cl_buf;
-        for (const char *_s = sz_str; *_s; _s++) *_cl_p++ = *_s;
-        for (const char *_s = " bytes\n"; *_s; _s++) *_cl_p++ = *_s;
-        *_cl_p = 0;
-        log_drain_write(0, 0, _cl_buf);
-    }
+    const uint8_t *wasm_bytes =
+        (const uint8_t *)(vibe_staging_ctrl_vaddr + wasm_offset);
 
-    /* The WASM binary is in the vibe_staging region at wasm_offset.
-     * We need to copy it to the swap slot's code region (swap_code_ctrl_N).
-     * vibe_swap_begin handles this — it takes a pointer to code bytes. */
-    const uint8_t *wasm_bytes = (const uint8_t *)(vibe_staging_ctrl_vaddr + wasm_offset);
-
-    /* Verify the WASM capability manifest before granting any capabilities.
-     * reject agents whose agentos.cap_signature does not match the
-     * SHA-256 of their agentos.capabilities section — a tampered manifest
-     * could silently escalate privilege. */
     int manifest_ok = verify_capabilities_manifest(wasm_bytes, wasm_size);
     if (manifest_ok == -2) {
-        log_drain_write(0, 0, "[monitor] WASM manifest hash mismatch — rejecting agent load\n");
+        ctrl_puts("[monitor] WASM manifest hash mismatch — rejecting agent load\n");
         return;
     } else if (manifest_ok == -1) {
-        log_drain_write(0, 0, "[monitor] no capability manifest — granting minimal defaults only\n");
-        /* Continue with minimal default capabilities rather than full manifest */
+        ctrl_puts("[monitor] no capability manifest — granting minimal defaults only\n");
     }
 
-    log_drain_write(0, 0, "[controller] Initiating kernel-side swap...\n");
+    ctrl_puts("[controller] Initiating kernel-side swap...\n");
     ctrl.vibe_swap_in_progress = true;
-
     int slot = vibe_swap_begin(service_id, wasm_bytes, wasm_size);
-
     if (slot < 0) {
-        log_drain_write(0, 0, "[controller] vibe_swap_begin FAILED\n");
+        ctrl_puts("[controller] vibe_swap_begin FAILED\n");
         ctrl.vibe_swap_in_progress = false;
     } else {
-        log_drain_write(0, 0, "[controller] vibe_swap_begin OK — swap slot ");
-        char sl[4];
-        sl[0] = '0' + (slot % 10);
-        sl[1] = '\0';
-        {
-            char _cl_buf[256] = {};
-            char *_cl_p = _cl_buf;
-            for (const char *_s = sl; *_s; _s++) *_cl_p++ = *_s;
-            for (const char *_s = " loading WASM via wasm3...\n"; *_s; _s++) *_cl_p++ = *_s;
-            for (const char *_s = "[controller] Waiting for swap slot health notification...\n"; *_s; _s++) *_cl_p++ = *_s;
-            *_cl_p = 0;
-            log_drain_write(0, 0, _cl_buf);
+        ctrl_puts("[controller] vibe_swap_begin OK\n");
+    }
+#else
+    ctrl.vibe_swap_in_progress = true;
+    ctrl_puts("[controller] (host test) vibe step4 notify processed\n");
+#endif
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+ * Inbound handler: OP_CAP_POLICY_RELOAD
+ * ─────────────────────────────────────────────────────────────────────────── */
+
+static uint32_t handle_cap_policy_reload(sel4_badge_t badge,
+                                          const sel4_msg_t *req,
+                                          sel4_msg_t *rep,
+                                          void *ctx)
+{
+    (void)badge; (void)req; (void)ctx;
+    monitor_apply_policy();
+    rep->data[0] = g_policy_loaded ? 1u : 0u;
+    rep->length  = 1u;
+    return SEL4_ERR_OK;
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+ * Inbound handler: MSG_VMM_VCPU_SET_REGS
+ * ─────────────────────────────────────────────────────────────────────────── */
+
+static uint32_t handle_vmm_vcpu_set_regs(sel4_badge_t badge,
+                                           const sel4_msg_t *req,
+                                           sel4_msg_t *rep,
+                                           void *ctx)
+{
+    (void)badge; (void)req; (void)ctx;
+#ifndef AGENTOS_TEST_HOST
+    if (!vmm_vcpu_regs_vaddr) {
+        AGENTOS_CRIT("[cap_policy] vCPU regs shmem not mapped — EPERM");
+        rep->data[0] = 0u;
+        rep->length  = 1u;
+        return SEL4_ERR_PERM;
+    }
+    {
+        volatile vcpu_regs_t *regs = (volatile vcpu_regs_t *)vmm_vcpu_regs_vaddr;
+#ifdef ARCH_AARCH64
+        int el_rc = cap_policy_vcpu_el_check(regs->spsr, true);
+#else
+        int el_rc = cap_policy_vcpu_el_check(regs->spsr, false);
+#endif
+        if (el_rc != 0) {
+            AGENTOS_CRIT("[cap_policy] vCPU EL2/CPL0 escalation REJECTED");
+            rep->data[0] = 0u;
+            rep->length  = 1u;
+            return SEL4_ERR_PERM;
         }
     }
+#endif
+    rep->data[0] = 1u;
+    rep->length  = 1u;
+    return SEL4_ERR_OK;
 }
 
-/*
- * demo_sequence() — The main demo: real data flow between PDs
- *
- * This runs after all PDs are booted and shows agents actually
- * exchanging messages, storing/retrieving data, and publishing events.
- */
-static void demo_sequence(void) {
-    log_drain_write(0, 0, "\n══════════════════════════════════════════════════════\n  DEMO: Agent Data Flow — PDs exchanging real data\n══════════════════════════════════════════════════════\n\n");
+/* ─────────────────────────────────────────────────────────────────────────────
+ * Inbound handler: MSG_VMM_REGISTER
+ * ─────────────────────────────────────────────────────────────────────────── */
 
-    /* ── Step 1: Store an object in AgentFS ─────────────────────────── */
-    log_drain_write(0, 0, "[controller] Step 1: Storing object in AgentFS via PPC...\n");
+static uint32_t handle_vmm_register(sel4_badge_t badge,
+                                     const sel4_msg_t *req,
+                                     sel4_msg_t *rep,
+                                     void *ctx)
+{
+    (void)badge; (void)req; (void)ctx;
+    rep->data[0] = 1u;  /* ok */
+    rep->data[1] = 1u;  /* vmm_token */
+    rep->data[2] = 1u;  /* granted_guests */
+    rep->length  = 3u;
+    return SEL4_ERR_OK;
+}
 
-    /* AgentFS PUT: MR0=op, MR1=size, MR2=cap_tag */
-    uint32_t obj_size = 18;  /* "Hello from agentOS" = 18 bytes */
-    microkit_mr_set(0, OP_AGENTFS_PUT);
-    microkit_mr_set(1, obj_size);
-    microkit_mr_set(2, 0x42);  /* cap_tag: badge 0x42 */
+/* ─────────────────────────────────────────────────────────────────────────────
+ * Inbound handler: MSG_WORKER_RETRIEVE (proxy AgentFS GET for worker)
+ * ─────────────────────────────────────────────────────────────────────────── */
 
-    trace_notify(TRACE_PD_CONTROLLER, TRACE_PD_AGENTFS,
-                 (uint16_t)OP_AGENTFS_PUT, obj_size, 0x42);
-    microkit_ppcall(CH_AGENTFS, microkit_msginfo_new(0, 3));
+static uint32_t handle_worker_retrieve(sel4_badge_t badge,
+                                        const sel4_msg_t *req,
+                                        sel4_msg_t *rep,
+                                        void *ctx)
+{
+    (void)badge; (void)ctx;
+    ctrl_puts("[controller] Proxying AgentFS GET for worker...\n");
 
-    uint32_t afs_status = (uint32_t)microkit_mr_get(0);
-    if (afs_status == 0) {
-        /* Success — read back the object ID from MR1-MR4 */
-        ctrl.demo_obj_id[0] = (uint32_t)microkit_mr_get(1);
-        ctrl.demo_obj_id[1] = (uint32_t)microkit_mr_get(2);
-        ctrl.demo_obj_id[2] = (uint32_t)microkit_mr_get(3);
-        ctrl.demo_obj_id[3] = (uint32_t)microkit_mr_get(4);
-        ctrl.demo_obj_stored = true;
+    /* Extract object ID from request data */
+    uint8_t get_payload[20];
+    get_payload[0] = (uint8_t)(OP_AGENTFS_GET);
+    get_payload[1] = 0u; get_payload[2] = 0u; get_payload[3] = 0u;
+    /* Copy 16 bytes of object ID from req->data */
+    for (uint32_t i = 0; i < 16u && i < req->length; i++)
+        get_payload[4 + i] = req->data[i];
+    for (uint32_t i = req->length; i < 16u; i++)
+        get_payload[4 + i] = 0u;
 
-        log_drain_write(0, 0, "[controller] AgentFS PUT OK — object id: 0x");
-        put_hex_byte((ctrl.demo_obj_id[0] >> 24) & 0xff);
-        put_hex_byte((ctrl.demo_obj_id[0] >> 16) & 0xff);
-        put_hex_byte((ctrl.demo_obj_id[0] >>  8) & 0xff);
-        put_hex_byte((ctrl.demo_obj_id[0]      ) & 0xff);
-        log_drain_write(0, 0, "...\n[controller] Object payload: 'Hello from agentOS' (18 bytes)\n");
+    sel4_msg_t agentfs_rep;
+    uint32_t rc = sel4_client_call(g_ep_agentfs, OP_AGENTFS_GET,
+                                   get_payload, sizeof(get_payload), &agentfs_rep);
+    if (rc == SEL4_ERR_OK) {
+        uint32_t version = (uint32_t)agentfs_rep.data[0];
+        uint32_t size    = (uint32_t)agentfs_rep.data[4] | ((uint32_t)agentfs_rep.data[5] << 8)
+                         | ((uint32_t)agentfs_rep.data[6] << 16) | ((uint32_t)agentfs_rep.data[7] << 24);
+        uint32_t cap_tag = (uint32_t)agentfs_rep.data[8];
+        ctrl_puts("[controller] AgentFS returned object\n");
+        rep->data[0] = 0u;   /* status OK */
+        rep->data[1] = (uint8_t)(size & 0xff);
+        rep->data[2] = (uint8_t)((size >> 8) & 0xff);
+        rep->data[3] = (uint8_t)((size >> 16) & 0xff);
+        rep->data[4] = (uint8_t)((size >> 24) & 0xff);
+        rep->data[5] = (uint8_t)(cap_tag & 0xff);
+        rep->data[6] = (uint8_t)(version & 0xff);
+        rep->length  = 7u;
+        return SEL4_ERR_OK;
     } else {
-        log_drain_write(0, 0, "[controller] AgentFS PUT FAILED\n");
-        return;
-    }
-
-    demo_delay();
-
-    /* ── Step 2: Publish event to EventBus ──────────────────────────── */
-    log_drain_write(0, 0, "[controller] Step 2: Publishing OBJECT_CREATED event to EventBus...\n");
-
-    microkit_mr_set(0, EVT_OBJECT_CREATED);  /* event kind */
-    microkit_mr_set(1, ctrl.demo_obj_id[0]); /* first 4 bytes of object ID */
-    microkit_mr_set(2, obj_size);             /* object size */
-
-    trace_notify(TRACE_PD_CONTROLLER, TRACE_PD_EVENT_BUS,
-                 (uint16_t)EVT_OBJECT_CREATED,
-                 ctrl.demo_obj_id[0], obj_size);
-    microkit_ppcall(CH_EVENTBUS, microkit_msginfo_new(EVT_OBJECT_CREATED, 3));
-    log_drain_write(0, 0, "[controller] Event published to ring buffer\n");
-
-    demo_delay();
-
-    /* ── Step 3: Dispatch task to worker_0 ──────────────────────────── */
-    log_drain_write(0, 0, "[controller] Step 3: Dispatching task to worker_0 — 'retrieve object'\n");
-
-    ctrl.worker_task_dispatched = true;
-    trace_notify(TRACE_PD_CONTROLLER, TRACE_PD_WORKER_0, 0, 0, 0);
-    microkit_notify(CH_WORKER_BASE);  /* notify worker_0 */
-
-    log_drain_write(0, 0, "[controller] Task dispatched. Waiting for worker completion...\n");
-    /* Worker will notify us back on channel 10 when done */
-}
-
-/*
- * ns_register_service — register one service with the NameServer.
- * Uses the controller's CH_NAMESERVER (id=80) channel.
- */
-static void ns_register_service(uint32_t channel_id, uint32_t pd_id,
-                                 uint32_t cap_classes, const char *name)
-{
-    microkit_mr_set(0, OP_NS_REGISTER);
-    microkit_mr_set(1, channel_id);
-    microkit_mr_set(2, pd_id);
-    microkit_mr_set(3, cap_classes);
-    microkit_mr_set(4, 1u);  /* version */
-    ns_pack_name(name, 5);
-    /* MR0..MR4 + 4 name MRs = 9 total */
-    microkit_ppcall(CH_NAMESERVER, microkit_msginfo_new(OP_NS_REGISTER, 9));
-    uint32_t rc = (uint32_t)microkit_mr_get(0);
-    if (rc != NS_OK) {
-        log_drain_write(0, 0, "[controller] NS_REGISTER failed for: ");
-        log_drain_write(0, 0, name);
-        log_drain_write(0, 0, "\n");
+        ctrl_puts("[controller] AgentFS GET failed\n");
+        rep->data[0] = (uint8_t)(rc & 0xff);
+        rep->length  = 1u;
+        return rc;
     }
 }
 
-/*
- * microservice_demo — Step 5: launch a demo app via AppManager.
- *
- * Writes a minimal key=value manifest into app_manifest_shmem and
- * calls OP_APP_LAUNCH.  The app is named "echo-app" with HTTP prefix "/echo".
- */
-static void microservice_demo(void)
+/* ─────────────────────────────────────────────────────────────────────────────
+ * Worker-pool notification handler (called from notification loop)
+ * ─────────────────────────────────────────────────────────────────────────── */
+
+static void on_worker_complete(uint32_t pool_slot)
 {
-    log_drain_write(0, 0, "\n══════════════════════════════════════════════════════\n"
-                      "  DEMO Step 5: AppManager — full-stack app launch\n"
-                      "══════════════════════════════════════════════════════\n\n");
+    if (pool_slot == 0 && ctrl.worker_task_dispatched && !ctrl.demo_complete) {
+        ctrl.demo_complete = true;
+        ctrl_puts("[controller] Worker 0 task COMPLETE\n");
 
-    if (!app_manifest_shmem_ctrl_vaddr) {
-        log_drain_write(0, 0, "[controller] app_manifest_shmem not mapped — skipping step 5\n");
-        return;
-    }
+        /* Publish TASK_COMPLETE event */
+        ctrl_puts("[controller] Publishing TASK_COMPLETE event to EventBus...\n");
+        uint8_t evt[4];
+        evt[0] = (uint8_t)(MSG_EVENT_AGENT_EXITED & 0xff);
+        evt[1] = (uint8_t)((MSG_EVENT_AGENT_EXITED >> 8) & 0xff);
+        evt[2] = 0u; evt[3] = 0u;
+        sel4_msg_t rep;
+        sel4_client_call(g_ep_eventbus, (uint32_t)MSG_EVENT_AGENT_EXITED,
+                         evt, sizeof(evt), &rep);
+        ctrl_puts("[controller] TASK_COMPLETE event published\n");
 
-    /* Write manifest text: key=value, newline-separated */
-    static const char DEMO_MANIFEST[] =
-        "name=echo-app\n"
-        "elf=/apps/echo.elf\n"
-        "http_prefix=/echo\n"
-        "caps=35\n";  /* CAP_CLASS_FS|NET|IPC|STDIO = 1|2|8|32-1 = 35 */
-    static const uint32_t DEMO_MANIFEST_LEN =
-        sizeof(DEMO_MANIFEST) - 1u;  /* exclude null terminator */
+        /* Signal initagent to query EventBus status */
+        seL4_Signal(g_initagent_ntfn_cap);
 
-    volatile uint8_t *dst = (volatile uint8_t *)app_manifest_shmem_ctrl_vaddr;
-    for (uint32_t i = 0; i < DEMO_MANIFEST_LEN; i++)
-        dst[i] = (uint8_t)DEMO_MANIFEST[i];
+        demo_delay();
 
-    log_drain_write(0, 0, "[controller] Manifest written — calling OP_APP_LAUNCH...\n");
+        ctrl_puts("\n"
+                  "------------------------------------------------------\n"
+                  "  Steps 1-3 complete: AgentFS + EventBus + Workers\n"
+                  "------------------------------------------------------\n\n");
 
-    microkit_mr_set(0, OP_APP_LAUNCH);
-    microkit_mr_set(1, DEMO_MANIFEST_LEN);
-    microkit_ppcall((microkit_channel)CH_APP_MANAGER,
-                    microkit_msginfo_new(OP_APP_LAUNCH, 2));
+        /* Step 4: VibeEngine hot-swap demo (direct path) */
+        ctrl_puts("[controller] Step 4: VibeEngine hot-swap demo...\n");
+        ctrl_puts("[controller] Direct path: loading echo_service.wasm into swap slot 0\n");
 
-    uint32_t rc     = (uint32_t)microkit_mr_get(0);
-    uint32_t app_id = (uint32_t)microkit_mr_get(1);
-    uint32_t vnic   = (uint32_t)microkit_mr_get(2);
+        int demo_manifest_ok = verify_capabilities_manifest(
+            ECHO_SERVICE_WASM, ECHO_SERVICE_WASM_LEN);
+        if (demo_manifest_ok == -2) {
+            ctrl_puts("[monitor] WASM manifest hash mismatch — rejecting agent load\n");
+            return;
+        } else if (demo_manifest_ok == -1) {
+            ctrl_puts("[monitor] no capability manifest — granting minimal defaults only\n");
+        }
 
-    if (rc == APP_OK) {
-        log_drain_write(0, 0, "[controller] APP_LAUNCH OK — app_id=");
-        char buf[12]; int bi = 11; buf[bi] = '\0';
-        uint32_t v = app_id;
-        if (v == 0) { buf[--bi] = '0'; }
-        else while (v > 0 && bi > 0) { buf[--bi] = (char)('0' + (v % 10)); v /= 10; }
-        log_drain_write(0, 0, &buf[bi]);
-        log_drain_write(0, 0, " vnic=");
-        v = vnic; bi = 11; buf[bi] = '\0';
-        if (v == 0xFFFFFFFFu) {
-            buf[--bi] = 'e'; buf[--bi] = 'n'; buf[--bi] = 'o'; buf[--bi] = 'n';
+        ctrl.vibe_demo_triggered = true;
+        int vslot = vibe_swap_begin(2, ECHO_SERVICE_WASM, ECHO_SERVICE_WASM_LEN);
+        if (vslot < 0) {
+            ctrl_puts("[controller] Step 4 vibe_swap_begin FAILED\n");
+            ctrl.vibe_demo_triggered = false;
         } else {
-            if (v == 0) { buf[--bi] = '0'; }
-            else while (v > 0 && bi > 0) { buf[--bi] = (char)('0' + (v % 10)); v /= 10; }
+            ctrl_puts("[controller] Step 4: WASM loaded into swap slot\n");
+            ctrl.vibe_swap_in_progress = true;
         }
-        log_drain_write(0, 0, &buf[bi]);
-        log_drain_write(0, 0, "\n[controller] echo-app registered at HTTP prefix /echo\n");
-        log_drain_write(0, 0,
-            "\n══════════════════════════════════════════════════════\n"
-            "  DEMO COMPLETE — All 5 steps passed!\n"
-            "  Step 1: AgentFS object store    — PUT/GET via IPC\n"
-            "  Step 2: EventBus pub/sub        — ring buffer + notify\n"
-            "  Step 3: Agent pool workers      — task dispatch + done\n"
-            "  Step 4: VibeEngine hot-swap     — WASM live via wasm3\n"
-            "  Step 5: AppManager launch       — echo-app at /echo\n"
-            "  PDs: 34 on seL4 (RISC-V / AArch64)\n"
-            "══════════════════════════════════════════════════════\n\n");
     } else {
-        log_drain_write(0, 0, "[controller] APP_LAUNCH failed (services may be stubs)\n");
+        char s[2] = { (char)('0' + (pool_slot % 10)), '\0' };
+        ctrl_puts("[controller] Worker ");
+        ctrl_puts(s);
+        ctrl_puts(" ready\n");
     }
 }
 
-/* ── Runtime capability policy loading ───────────────────────────────────── */
+/* ─────────────────────────────────────────────────────────────────────────────
+ * Notification loop — called periodically or on notification arrival.
+ * In raw seL4 this would be driven by a separate notification recv path.
+ * Here we expose it as a callable function for testing.
+ * ─────────────────────────────────────────────────────────────────────────── */
 
-static bool policy_loaded = false;
+void controller_handle_notification(uint32_t notif_kind, uint32_t arg0, uint32_t arg1)
+{
+    ctrl.notification_count++;
 
-static void monitor_apply_default_policy(void) {
-    /* Existing hardcoded grants stay here as fallback */
-    log_drain_write(0, 0, "[monitor] applying hardcoded default policy\n");
-    policy_loaded = true;
-}
-
-static void monitor_apply_policy(void) {
-    volatile cap_policy_header_t *hdr =
-        (volatile cap_policy_header_t *)cap_policy_shmem_vaddr;
-
-    if (!cap_policy_shmem_vaddr || hdr->magic != CAP_POLICY_MAGIC) {
-        log_drain_write(0, 0, "[monitor] no policy blob, using defaults\n");
-        /* Fall back to hardcoded defaults */
-        monitor_apply_default_policy();
-        return;
-    }
-    if (hdr->version != CAP_POLICY_VERSION || hdr->num_grants > CAP_POLICY_MAX_GRANTS) {
-        log_drain_write(0, 0, "[monitor] invalid policy header, using defaults\n");
-        monitor_apply_default_policy();
-        return;
+    /* lwIP timer tick */
+    ctrl.net_tick_counter++;
+    if (ctrl.net_tick_counter >= NET_TICK_INTERVAL) {
+        ctrl.net_tick_counter = 0;
+        seL4_Signal(g_net_timer_ntfn_cap);
     }
 
-    volatile cap_grant_t *grants = (volatile cap_grant_t *)(hdr + 1);
-    for (uint32_t i = 0; i < hdr->num_grants; i++) {
-        log_drain_write(0, 0, "[monitor] policy grant agent=");
-        /* Print agent_id */
-        char abuf[4];
-        abuf[0] = '0' + (grants[i].agent_id % 10);
-        abuf[1] = '\0';
-        log_drain_write(0, 0, abuf);
-        log_drain_write(0, 0, " class=0x");
+    switch (notif_kind) {
+        case 0:  /* EventBus notification */
+            ctrl_puts("[controller] EventBus notification\n");
+            ctrl.eventbus_ready = true;
+            break;
+
+        case 1:  /* InitAgent notification */
+            if (arg0 == (uint32_t)MSG_SPAWN_AGENT) {
+                /*
+                 * init_agent relay: spawn a WASM agent.
+                 * arg1 = spawn_id (simplified: full hash in prod).
+                 */
+                uint32_t spawn_id = arg1;
+                ctrl_puts("[controller] SPAWN_AGENT request: spawn_id=");
+                char spbuf[12]; uint32_to_dec(spawn_id, spbuf, sizeof(spbuf));
+                ctrl_puts(spbuf); ctrl_puts("\n");
+
+                char agent_name[17] = "wasm-agent-00000";
+                uint32_t sid = spawn_id;
+                for (int ni = 15; ni >= 11; ni--) {
+                    agent_name[ni] = (char)('0' + (sid % 10));
+                    sid /= 10;
+                }
+
+                uint8_t spawn_payload[8];
+                spawn_payload[0] = (uint8_t)(spawn_id & 0xff);
+                spawn_payload[1] = (uint8_t)((spawn_id >> 8) & 0xff);
+                spawn_payload[2] = (uint8_t)((spawn_id >> 16) & 0xff);
+                spawn_payload[3] = (uint8_t)((spawn_id >> 24) & 0xff);
+                spawn_payload[4] = 0u; spawn_payload[5] = 0u;
+                spawn_payload[6] = 0u; spawn_payload[7] = 0u;
+
+                int slot = agent_pool_spawn(agent_name, 0,
+                                            spawn_payload, 8u, 80u);
+
+                /* Signal initagent with result */
+                seL4_Signal(g_initagent_ntfn_cap);
+
+                if (slot >= 0) {
+                    ctrl_puts("[controller] Agent spawned: slot=");
+                    char s[2] = { (char)('0' + (slot % 10)), '\0' };
+                    ctrl_puts(s); ctrl_puts("\n");
+                } else {
+                    ctrl_puts("[controller] SPAWN_AGENT: pool exhausted\n");
+                }
+            } else {
+                ctrl_puts("[controller] InitAgent ready notification received\n");
+                ctrl.initagent_ready = true;
+            }
+            break;
+
+        case 2:  /* Quota revoke notification */
+            if (arg0 == (uint32_t)MSG_QUOTA_REVOKE) {
+                uint32_t agent_id = arg1;
+                ctrl_puts("[controller] Quota revoke request: agent=");
+                char abuf[12]; uint32_to_dec(agent_id, abuf, sizeof(abuf));
+                ctrl_puts(abuf); ctrl_puts("\n");
+                cap_broker_revoke_agent(agent_id, 0);
+            } else {
+                ctrl_puts("[controller] Unknown quota notify\n");
+            }
+            break;
+
+        case 3:  /* VibeEngine notification — swap approved */
+            vibe_demo_step4_notify();
+            break;
+
+        case 4:  /* Swap slot health notification */
         {
-            static const char hex[] = "0123456789abcdef";
-            char hbuf[3];
-            hbuf[0] = hex[(grants[i].cap_class >> 4) & 0xf];
-            hbuf[1] = hex[grants[i].cap_class & 0xf];
-            hbuf[2] = '\0';
-            log_drain_write(0, 0, hbuf);
+            uint32_t swap_slot_idx = arg1;
+            if (arg0 == 0u) {
+                ctrl_puts("[controller] Swap slot health OK — activating\n");
+                vibe_swap_health_notify((int)swap_slot_idx);
+                if (ctrl.vibe_swap_in_progress && !ctrl.vibe_demo_complete) {
+                    ctrl.vibe_swap_in_progress = false;
+                    ctrl.vibe_demo_complete = true;
+                    ctrl_puts("\n"
+                              "------------------------------------------------------\n"
+                              "  Steps 1-4 complete — launching microservice demo...\n"
+                              "------------------------------------------------------\n\n");
+                    microservice_demo();
+                }
+            } else {
+                ctrl_puts("[controller] Swap slot health FAIL\n");
+            }
         }
-        log_drain_write(0, 0, " rights=0x");
-        {
-            static const char hex[] = "0123456789abcdef";
-            char hbuf[3];
-            hbuf[0] = hex[(grants[i].rights >> 4) & 0xf];
-            hbuf[1] = hex[grants[i].rights & 0xf];
-            hbuf[2] = '\0';
-            log_drain_write(0, 0, hbuf);
-        }
-        log_drain_write(0, 0, "\n");
-        /* In production, this would invoke seL4 cap mint/grant operations */
-        /* For now, record that the grant was applied */
+        break;
+
+        case 5:  /* GPU scheduler dispatch */
+            if (arg0 == (uint32_t)MSG_GPU_SUBMIT) {
+                uint32_t slot_id = arg1;
+                ctrl_puts("[controller] GPU task dispatched to slot=");
+                char s[2] = { (char)('0' + (slot_id % 10)), '\0' };
+                ctrl_puts(s); ctrl_puts("\n");
+                if (slot_id < (uint32_t)NUM_SWAP_SLOTS)
+                    seL4_Signal(g_initagent_ntfn_cap);  /* proxy to swap slot */
+            } else {
+                ctrl_puts("[controller] GPU Scheduler online\n");
+            }
+            break;
+
+        case 6:  /* Mesh agent notification */
+            ctrl_puts("[controller] Distributed mesh agent online\n");
+            break;
+
+        default:
+            /* Worker pool slots 10-17 */
+            if (notif_kind >= 10u && notif_kind <= 17u) {
+                on_worker_complete(notif_kind - 10u);
+            } else {
+                ctrl_puts("[controller] Unknown notification kind\n");
+            }
+            break;
     }
-    policy_loaded = true;
-    log_drain_write(0, 0, "[monitor] applied policy grants\n");
 }
 
-void init(void) {
+/* ─────────────────────────────────────────────────────────────────────────────
+ * controller_main — raw seL4 entry point
+ *
+ * Parameters:
+ *   my_ep  — this PD's inbound endpoint capability (from root-task boot info)
+ *   ns_ep  — nameserver endpoint capability
+ * ─────────────────────────────────────────────────────────────────────────── */
+
+void controller_main(seL4_CPtr my_ep, seL4_CPtr ns_ep)
+{
     agentos_log_boot("controller");
 
-    log_drain_write(0, 0, "[controller] Initializing agentOS core services\n");
+    /* ── 1. Initialise client ───────────────────────────────────────────────── */
+    sel4_client_init(&g_client, ns_ep, 0 /* my_cnode */, 0x100u /* first_free_slot */);
 
-    /* Load capability policy blob from shmem (or fall back to defaults) */
+    /* Zero controller state */
+    ctrl.eventbus_ready        = false;
+    ctrl.initagent_ready       = false;
+    ctrl.notification_count    = 0;
+    ctrl.demo_obj_stored       = false;
+    ctrl.worker_task_dispatched = false;
+    ctrl.demo_complete         = false;
+    ctrl.vibe_demo_triggered   = false;
+    ctrl.vibe_swap_in_progress = false;
+    ctrl.vibe_demo_complete    = false;
+    ctrl.net_tick_counter      = 0;
+
+    ctrl_puts("[controller] Initializing agentOS core services\n");
+
+    /* ── 2. Apply capability policy ─────────────────────────────────────────── */
     monitor_apply_policy();
 
-    /* Initialize subsystems */
+    /* ── 3. Initialise subsystems ───────────────────────────────────────────── */
     cap_broker_init();
     agent_pool_init();
     boot_integrity_init();
 
-    /* ── Ed25519 selftest (RFC 8037 test vector 1) ───────────────────────── */
+    /* ── 4. Ed25519 selftest ────────────────────────────────────────────────── */
     {
         static const uint8_t test_sk[32] = {
             0x9d, 0x61, 0xb1, 0x9d, 0xef, 0xfd, 0x5a, 0x60,
@@ -557,534 +1071,113 @@ void init(void) {
             0xda, 0x4d, 0xa0, 0x5d, 0xe7, 0xe8, 0xc8, 0x6b,
             0xef, 0x64, 0x77, 0x64, 0xb4, 0x24, 0x09, 0x57
         };
-        static const uint8_t test_msg[1] = {0}; /* zero-length message workaround */
+        static const uint8_t test_msg[1] = {0};
         uint8_t pk[32], sig[64];
         crypto_ed25519_public_key(pk, test_sk);
         crypto_ed25519_sign(sig, test_sk, pk, test_msg, 0);
         bool ok = crypto_ed25519_check(sig, test_msg, 0, pk) == 0;
-        microkit_dbg_puts(ok ? "[verify] Ed25519 selftest PASS\n"
-                             : "[verify] Ed25519 selftest FAIL\n");
+        ctrl_puts(ok ? "[verify] Ed25519 selftest PASS\n"
+                     : "[verify] Ed25519 selftest FAIL\n");
     }
 
-    /* PPC into EventBus (passive, higher priority) to initialize it */
-    log_drain_write(0, 0, "[controller] Waking EventBus via PPC...\n");
-    trace_notify(TRACE_PD_CONTROLLER, TRACE_PD_EVENT_BUS,
-                 (uint16_t)MSG_EVENTBUS_INIT, 0, 0);
-    microkit_msginfo result = microkit_ppcall(CH_EVENTBUS,
-        microkit_msginfo_new(MSG_EVENTBUS_INIT, 0));
-    
-    uint64_t resp = microkit_msginfo_get_label(result);
-    if (resp == MSG_EVENTBUS_READY) {
-        ctrl.eventbus_ready = true;
-        log_drain_write(0, 0, "[controller] EventBus: READY\n");
-    } else {
-        log_drain_write(0, 0, "[controller] EventBus: unexpected response\n");
+    /* ── 5. Connect to upstream services ────────────────────────────────────── */
+    sel4_client_connect(&g_client, NS_SVC_EVENTBUS,   &g_ep_eventbus);
+    sel4_client_connect(&g_client, NS_SVC_AGENTFS,    &g_ep_agentfs);
+    sel4_client_connect(&g_client, NS_SVC_VFS,        &g_ep_vfs);
+    sel4_client_connect(&g_client, NS_SVC_NET,        &g_ep_net);
+    sel4_client_connect(&g_client, NS_SVC_SPAWN,      &g_ep_spawn);
+    sel4_client_connect(&g_client, NS_SVC_APPMANAGER, &g_ep_appmgr);
+    sel4_client_connect(&g_client, NS_SVC_HTTP,       &g_ep_http);
+
+    /* Obtain notification caps from nameserver.
+     * In real hardware the nameserver mints badged ntfn caps;
+     * in host tests these remain 0 and seL4_Signal is a no-op. */
+    sel4_client_connect(&g_client, "event_bus_ntfn",   &g_event_bus_ntfn_cap);
+    sel4_client_connect(&g_client, "initagent_ntfn",   &g_initagent_ntfn_cap);
+    sel4_client_connect(&g_client, "net_timer_ntfn",   &g_net_timer_ntfn_cap);
+
+    /* ── 6. Wake EventBus via service call ──────────────────────────────────── */
+    ctrl_puts("[controller] Waking EventBus via IPC call...\n");
+    {
+        sel4_msg_t rep;
+        uint32_t rc = sel4_client_call(g_ep_eventbus, (uint32_t)MSG_EVENTBUS_INIT,
+                                       (void *)0, 0u, &rep);
+        if (rc == SEL4_ERR_OK) {
+            ctrl.eventbus_ready = true;
+            ctrl_puts("[controller] EventBus: READY\n");
+        } else {
+            ctrl_puts("[controller] EventBus: unexpected response\n");
+        }
     }
-    
-    /* Notify InitAgent to start (it's active, so we can't PPC into it) */
-    log_drain_write(0, 0, "[controller] Notifying InitAgent to start...\n");
-    trace_notify(TRACE_PD_CONTROLLER, TRACE_PD_INIT_AGENT,
-                 (uint16_t)MSG_INITAGENT_START, 0, 0);
-    microkit_notify(CH_INITAGENT);
-    
-    /* Initialize vibe-swap subsystem (sets up swap slot channels + service table) */
+
+    /* ── 7. Signal InitAgent to start ───────────────────────────────────────── */
+    ctrl_puts("[controller] Notifying InitAgent to start...\n");
+    seL4_Signal(g_initagent_ntfn_cap);
+
+    /* ── 8. Initialise vibe-swap subsystem ──────────────────────────────────── */
     vibe_swap_init();
 
-    log_drain_write(0, 0, "[controller] *** agentOS controller boot complete ***\n[controller] Ready for agents.\n");
-    /* Canonical boot-complete marker — must match xtask/cmd_test.rs and end_to_end_boot_test.sh */
-    log_drain_write(0, 0, "agentOS boot complete\n");
+    /* ── 9. Boot complete ───────────────────────────────────────────────────── */
+    ctrl_puts("[controller] *** agentOS controller boot complete ***\n");
+    ctrl_puts("[controller] Ready for agents.\n");
+    /* Canonical boot-complete marker — must match xtask/cmd_test.rs */
+    ctrl_puts("agentOS boot complete\n");
 
-    /* ── Register new microkernel services with NameServer ───────────────── */
-    log_drain_write(0, 0, "[controller] Registering services with NameServer...\n");
+    /* ── 10. Register services with NameServer ──────────────────────────────── */
+    ctrl_puts("[controller] Registering services with NameServer...\n");
+    ns_register_service(NS_SVC_VFS,        19u  /* CH_VFS_SERVER   */, TRACE_PD_VFS_SERVER,   CAP_CLASS_FS);
+    ns_register_service(NS_SVC_SPAWN,      20u  /* CH_SPAWN_SERVER */, TRACE_PD_SPAWN_SERVER, CAP_CLASS_SPAWN);
+    ns_register_service(NS_SVC_NET,        21u  /* CH_NET_SERVER   */, TRACE_PD_NET_SERVER,   CAP_CLASS_NET);
+    ns_register_service("virtio_blk",      22u  /* CH_VIRTIO_BLK   */, TRACE_PD_VIRTIO_BLK,   CAP_CLASS_FS);
+    ns_register_service(NS_SVC_APPMANAGER, 23u  /* CH_APP_MANAGER  */, TRACE_PD_APP_MANAGER,  CAP_CLASS_SPAWN | CAP_CLASS_NET);
+    ns_register_service(NS_SVC_HTTP,       24u  /* CH_HTTP_SVC     */, TRACE_PD_HTTP_SVC,     CAP_CLASS_NET);
+    ctrl_puts("[controller] 6 microkernel services registered\n");
 
-    ns_register_service(CH_VFS_SERVER,   TRACE_PD_VFS_SERVER,
-                        CAP_CLASS_FS,                       NS_SVC_VFS);
-    ns_register_service(CH_SPAWN_SERVER, TRACE_PD_SPAWN_SERVER,
-                        CAP_CLASS_SPAWN,                    NS_SVC_SPAWN);
-    ns_register_service(CH_NET_SERVER,   TRACE_PD_NET_SERVER,
-                        CAP_CLASS_NET,                      NS_SVC_NET);
-    ns_register_service(CH_VIRTIO_BLK,   TRACE_PD_VIRTIO_BLK,
-                        CAP_CLASS_FS,                       "virtio_blk");
-    ns_register_service(CH_APP_MANAGER,  TRACE_PD_APP_MANAGER,
-                        CAP_CLASS_SPAWN | CAP_CLASS_NET,    NS_SVC_APPMANAGER);
-    ns_register_service(CH_HTTP_SVC,     TRACE_PD_HTTP_SVC,
-                        CAP_CLASS_NET,                      NS_SVC_HTTP);
-
-    log_drain_write(0, 0, "[controller] 6 microkernel services registered\n");
-
-    /* ── Run legacy data-flow demo (Steps 1-4) ───────────────────────────── */
+    /* ── 11. Legacy data-flow demo (Steps 1-4) ──────────────────────────────── */
     demo_sequence();
-}
 
-void notified(microkit_channel ch) {
-    ctrl.notification_count++;
+    /* ── 12. Register self as "controller" with nameserver ──────────────────── */
+    ns_register_service("controller", 0u, TRACE_PD_CONTROLLER, 0u);
 
-    /* Periodic lwIP timer tick: notify net_server every NET_TICK_INTERVAL
-     * notifications so that sys_check_timeouts() drives TCP retransmits,
-     * ARP aging, etc. (~10ms per tick at typical notification rates). */
-    ctrl.net_tick_counter++;
-    if (ctrl.net_tick_counter >= NET_TICK_INTERVAL) {
-        ctrl.net_tick_counter = 0;
-        microkit_notify((microkit_channel)CH_NET_TIMER);
-    }
+    /* ── 13. Register inbound handlers and enter dispatch loop ─────────────── */
+    sel4_server_init(&g_srv, my_ep);
+    sel4_server_register(&g_srv, (uint32_t)OP_CAP_POLICY_RELOAD, handle_cap_policy_reload, (void *)0);
+    sel4_server_register(&g_srv, (uint32_t)MSG_VMM_VCPU_SET_REGS, handle_vmm_vcpu_set_regs, (void *)0);
+    sel4_server_register(&g_srv, (uint32_t)MSG_VMM_REGISTER,      handle_vmm_register,      (void *)0);
+    sel4_server_register(&g_srv, (uint32_t)MSG_WORKER_RETRIEVE,   handle_worker_retrieve,    (void *)0);
 
-    switch (ch) {
-        case CH_EVENTBUS:
-            log_drain_write(0, 0, "[controller] EventBus notification\n");
-            ctrl.eventbus_ready = true;
-            break;
-            
-        case CH_INITAGENT: {
-            /*
-             * Two sub-cases:
-             *   a) InitAgent startup ready notification (MR0 = 0 or not MSG_SPAWN_AGENT)
-             *   b) Spawn request relay from init_agent (MR0 = MSG_SPAWN_AGENT)
-             *
-             * We distinguish by reading MR0. seL4 Microkit does preserve MR values
-             * across notifications to the notified() handler.
-             */
-            uint32_t notif_tag = (uint32_t)microkit_mr_get(0);
-            if (notif_tag == (uint32_t)MSG_SPAWN_AGENT) {
-                /*
-                 * init_agent is relaying a dynamic spawn request.
-                 * MR1: wasm_hash_lo_low32   MR2: wasm_hash_lo_hi32
-                 * MR3: wasm_hash_hi_low32   MR4: spawn_id
-                 * MR5: priority
-                 */
-                uint32_t hash_lo_lo  = (uint32_t)microkit_mr_get(1);
-                uint32_t hash_lo_hi  = (uint32_t)microkit_mr_get(2);
-                uint32_t hash_hi_lo  = (uint32_t)microkit_mr_get(3);
-                uint32_t spawn_id    = (uint32_t)microkit_mr_get(4);
-                uint32_t priority    = (uint32_t)microkit_mr_get(5);
-
-                log_drain_write(0, 0, "[controller] SPAWN_AGENT request: spawn_id=");
-                /* print spawn_id decimal */
-                {
-                    char buf[12]; int bi = 11; buf[bi] = '\0';
-                    uint32_t v = spawn_id;
-                    if (v == 0) { buf[--bi] = '0'; }
-                    else while (v > 0 && bi > 0) { buf[--bi] = '0' + (v % 10); v /= 10; }
-                    log_drain_write(0, 0, &buf[bi]);
-                }
-                log_drain_write(0, 0, " hash_lo=");
-                {
-                    static const char hex[] = "0123456789abcdef";
-                    char hbuf[9]; hbuf[8] = '\0';
-                    for (int hi = 7; hi >= 0; hi--) {
-                        hbuf[hi] = hex[hash_lo_lo & 0xf]; hash_lo_lo >>= 4;
-                    }
-                    (void)hash_lo_hi; (void)hash_hi_lo;
-                    log_drain_write(0, 0, hbuf);
-                }
-                log_drain_write(0, 0, "\n");
-
-                /*
-                 * Construct an agent name from spawn_id for pool tracking.
-                 * In production: resolve from AgentFS metadata.
-                 */
-                char agent_name[17] = "wasm-agent-00000";
-                {
-                    uint32_t sid = spawn_id;
-                    for (int ni = 15; ni >= 11; ni--) {
-                        agent_name[ni] = '0' + (sid % 10);
-                        sid /= 10;
-                    }
-                }
-
-                /*
-                 * Dispatch via agent_pool_spawn. The payload carries spawn_id
-                 * and priority so the worker knows its identity.
-                 */
-                uint8_t spawn_payload[8];
-                spawn_payload[0] = (uint8_t)(spawn_id & 0xff);
-                spawn_payload[1] = (uint8_t)((spawn_id >> 8) & 0xff);
-                spawn_payload[2] = (uint8_t)((spawn_id >> 16) & 0xff);
-                spawn_payload[3] = (uint8_t)((spawn_id >> 24) & 0xff);
-                spawn_payload[4] = (uint8_t)(priority & 0xff);
-                spawn_payload[5] = (uint8_t)((priority >> 8) & 0xff);
-                spawn_payload[6] = 0;
-                spawn_payload[7] = 0;
-
-                int slot = agent_pool_spawn(agent_name, 0,
-                                            spawn_payload, 8, priority);
-
-                /*
-                 * Notify init_agent with the result.
-                 * MR0: MSG_SPAWN_AGENT_REPLY
-                 * MR1: spawn_id
-                 * MR2: slot_id (negative = failure)
-                 */
-                microkit_mr_set(0, MSG_SPAWN_AGENT_REPLY);
-                microkit_mr_set(1, spawn_id);
-                microkit_mr_set(2, (uint32_t)(int32_t)slot);
-                trace_notify(TRACE_PD_CONTROLLER, TRACE_PD_INIT_AGENT,
-                             (uint16_t)MSG_SPAWN_AGENT_REPLY,
-                             spawn_id, (uint32_t)(int32_t)slot);
-                microkit_notify(CH_INITAGENT);
-
-                if (slot >= 0) {
-                    log_drain_write(0, 0, "[controller] Agent spawned: slot=");
-                    char s[2] = { (char)('0' + (slot % 10)), '\0' };
-                    {
-                        char _cl_buf[256] = {};
-                        char *_cl_p = _cl_buf;
-                        for (const char *_s = s; *_s; _s++) *_cl_p++ = *_s;
-                        for (const char *_s = "\n"; *_s; _s++) *_cl_p++ = *_s;
-                        *_cl_p = 0;
-                        log_drain_write(0, 0, _cl_buf);
-                    }
-                } else {
-                    log_drain_write(0, 0, "[controller] SPAWN_AGENT: pool exhausted\n");
-                }
-            } else {
-                log_drain_write(0, 0, "[controller] InitAgent ready notification received\n");
-                ctrl.initagent_ready = true;
-            }
-            break;
-        }
-            
-        default:
-            /* Channels 10-17: worker pool ready/completion notifications */
-            if (ch >= 10 && ch <= 17) {
-                uint32_t pool_slot = ch - 10;
-                
-                /* State-based dispatch: notifications don't carry MR payload
-                 * in seL4. Use ctrl state to determine notification meaning. */
-                if (pool_slot == 0 && ctrl.worker_task_dispatched && !ctrl.demo_complete) {
-                    /* Worker_0 completed the demo task */
-                    ctrl.demo_complete = true;
-                    
-                    log_drain_write(0, 0, "[controller] Worker 0 task COMPLETE\n");
-                    
-                    /* Publish TASK_COMPLETE event to EventBus */
-                    log_drain_write(0, 0, "[controller] Publishing TASK_COMPLETE event to EventBus...\n");
-                    microkit_mr_set(0, MSG_EVENT_AGENT_EXITED);
-                    microkit_mr_set(1, 0);
-                    microkit_mr_set(2, 1);
-
-                    trace_notify(TRACE_PD_CONTROLLER, TRACE_PD_EVENT_BUS,
-                                 (uint16_t)MSG_EVENT_AGENT_EXITED, 0, 1);
-                    microkit_ppcall(CH_EVENTBUS,
-                        microkit_msginfo_new(MSG_EVENT_AGENT_EXITED, 3));
-                    log_drain_write(0, 0, "[controller] TASK_COMPLETE event published\n");
-                    
-                    /* Notify InitAgent to query final EventBus status */
-                    microkit_notify(CH_INITAGENT);
-                    
-                    demo_delay();
-                    
-                    /* Print Step 1-3 summary */
-                    log_drain_write(0, 0, "\n──────────────────────────────────────────────────────\n  Steps 1-3 complete: AgentFS + EventBus + Workers\n──────────────────────────────────────────────────────\n\n");
-
-                    /*
-                     * Step 4: VibeEngine hot-swap demo.
-                     *
-                     * The controller writes the echo_service.wasm into the
-                     * vibe_staging shared memory region, then PPCs into
-                     * vibe_engine (via init_agent as proxy — or directly
-                     * if we had a channel).
-                     *
-                     * For the demo, controller drives the VibeEngine pipeline
-                     * directly using the staging region + VibeEngine notify path:
-                     *
-                     *   1. Write echo_service.wasm to staging region (we have
-                     *      the staging mapped r, but for the demo controller
-                     *      has NO write access to staging — vibe_engine owns it rw).
-                     *
-                     *   So instead: controller embeds the WASM and feeds it
-                     *   directly to vibe_swap_begin (bypassing VibeEngine for
-                     *   this one step, since we don't have a controller→vibe_engine
-                     *   PPC channel — only the notify channel).
-                     *
-                     *   This is the correct architecture: VibeEngine is for
-                     *   external agent proposals. The controller already HAS
-                     *   vibe_swap_begin for trusted internal swaps. Both paths
-                     *   land in the same swap slot pipeline.
-                     *
-                     *   The VibeEngine demo (external agent path) is shown
-                     *   via the init_agent→vibe_engine PPC channel (channel 41).
-                     *   init_agent will trigger that path when it receives our
-                     *   notify below.
-                     */
-                    log_drain_write(0, 0, "[controller] Step 4: VibeEngine hot-swap demo...\n[controller] Direct path: loading echo_service.wasm into swap slot 0\n");
-
-                    /* Verify capability manifest before loading (trusted path still
-                     * checks, since ECHO_SERVICE_WASM has no manifest sections it
-                     * returns -1 → minimal defaults, which is correct for demo). */
-                    int demo_manifest_ok = verify_capabilities_manifest(
-                        ECHO_SERVICE_WASM, ECHO_SERVICE_WASM_LEN);
-                    if (demo_manifest_ok == -2) {
-                        log_drain_write(0, 0, "[monitor] WASM manifest hash mismatch — rejecting agent load\n");
-                        break;
-                    } else if (demo_manifest_ok == -1) {
-                        log_drain_write(0, 0, "[monitor] no capability manifest — granting minimal defaults only\n");
-                    }
-
-                    /* Direct vibe_swap_begin (trusted controller path) */
-                    /* service 2 = toolsvc (swappable) */
-                    ctrl.vibe_demo_triggered = true;
-                    int vslot = vibe_swap_begin(2, ECHO_SERVICE_WASM, ECHO_SERVICE_WASM_LEN);
-                    if (vslot < 0) {
-                        log_drain_write(0, 0, "[controller] Step 4 vibe_swap_begin FAILED\n");
-                        ctrl.vibe_demo_triggered = false;
-                    } else {
-                        log_drain_write(0, 0, "[controller] Step 4: WASM loaded into swap slot ");
-                        char vsl[4];
-                        vsl[0] = '0' + (vslot % 10);
-                        vsl[1] = '\0';
-                        {
-                            char _cl_buf[256] = {};
-                            char *_cl_p = _cl_buf;
-                            for (const char *_s = vsl; *_s; _s++) *_cl_p++ = *_s;
-                            for (const char *_s = " — waiting for wasm3 health check...\n"; *_s; _s++) *_cl_p++ = *_s;
-                            *_cl_p = 0;
-                            log_drain_write(0, 0, _cl_buf);
-                        }
-                        ctrl.vibe_swap_in_progress = true;
-                    }
-                } else {
-                    log_drain_write(0, 0, "[controller] Worker ");
-                    char s[2] = { (char)('0' + pool_slot), '\0' };
-                    {
-                        char _cl_buf[256] = {};
-                        char *_cl_p = _cl_buf;
-                        for (const char *_s = s; *_s; _s++) *_cl_p++ = *_s;
-                        for (const char *_s = " ready\n"; *_s; _s++) *_cl_p++ = *_s;
-                        *_cl_p = 0;
-                        log_drain_write(0, 0, _cl_buf);
-                    }
-                    /* Ack the worker's ready signal */
-                    microkit_notify(ch);
-                }
-            /* Channel 50: GPU scheduler ready / GPU task dispatch request */
-            } else if (ch == CH_GPUSCHED) {
-                uint32_t gpu_tag = (uint32_t)microkit_mr_get(0);
-                if (gpu_tag == (uint32_t)MSG_GPU_SUBMIT) {
-                    /*
-                     * gpu_sched is asking us to route a WASM GPU task to a worker slot.
-                     * MR1: ticket_id, MR2/3: hash_lo, MR4: hash_hi low32, MR5: slot_id
-                     * We notify the appropriate worker slot to load+execute the WASM.
-                     */
-                    uint32_t ticket  = (uint32_t)microkit_mr_get(1);
-                    uint32_t slot_id = (uint32_t)microkit_mr_get(5);
-                    (void)ticket;
-                    log_drain_write(0, 0, "[controller] GPU task dispatched to slot=");
-                    {
-                        char s[2] = { (char)('0' + (slot_id % 10)), '\0' };
-                        log_drain_write(0, 0, s);
-                    }
-                    log_drain_write(0, 0, "\n");
-                    /*
-                     * Notify the target swap slot to start WASM execution.
-                     * In production: pass hash via MRs for agentfs fetch first.
-                     * For now: worker slot gets a generic compute notification.
-                     */
-                    if (slot_id < (uint32_t)NUM_SWAP_SLOTS) {
-                        trace_notify(TRACE_PD_CONTROLLER,
-                                     (uint8_t)(TRACE_PD_SWAP_SLOT_0 + slot_id),
-                                     (uint16_t)MSG_GPU_SUBMIT, ticket, slot_id);
-                        microkit_notify((microkit_channel)(CH_SWAP_BASE + slot_id));
-                    }
-                } else {
-                    /* gpu_sched startup ready notification */
-                    log_drain_write(0, 0, "[controller] GPU Scheduler online\n");
-                }
-            /* Channel 55: mesh_agent ready notification */
-            } else if (ch == (microkit_channel)CH_MESHAGENT) {
-                log_drain_write(0, 0, "[controller] Distributed mesh agent online\n");
-            } else if (ch == (microkit_channel)CH_QUOTA_NOTIFY) {
-                uint32_t tag = (uint32_t)microkit_mr_get(0);
-                uint32_t agent_id = (uint32_t)microkit_mr_get(1);
-                uint32_t reason   = (uint32_t)microkit_mr_get(2);
-                if (tag == (uint32_t)MSG_QUOTA_REVOKE) {
-                    log_drain_write(0, 0, "[controller] Quota revoke request: agent=");
-                    char buf[12]; int bi = 11; buf[bi] = '\0';
-                    uint32_t v = agent_id;
-                    if (v == 0) { buf[--bi] = '0'; }
-                    else {
-                        while (v > 0 && bi > 0) {
-                            buf[--bi] = (char)('0' + (v % 10));
-                            v /= 10;
-                        }
-                    }
-                    {
-                        char _cl_buf[256] = {};
-                        char *_cl_p = _cl_buf;
-                        for (const char *_s = &buf[bi]; *_s; _s++) *_cl_p++ = *_s;
-                        for (const char *_s = " reason=0x"; *_s; _s++) *_cl_p++ = *_s;
-                        *_cl_p = 0;
-                        log_drain_write(0, 0, _cl_buf);
-                    }
-                    char hex[9];
-                    for (int i = 0; i < 8; i++) {
-                        uint32_t nib = (reason >> (28 - i * 4)) & 0xF;
-                        hex[i] = (char)(nib < 10 ? '0' + nib : 'a' + nib - 10);
-                    }
-                    hex[8] = '\0';
-                    {
-                        char _cl_buf[256] = {};
-                        char *_cl_p = _cl_buf;
-                        for (const char *_s = hex; *_s; _s++) *_cl_p++ = *_s;
-                        for (const char *_s = "\n"; *_s; _s++) *_cl_p++ = *_s;
-                        *_cl_p = 0;
-                        log_drain_write(0, 0, _cl_buf);
-                    }
-                    cap_broker_revoke_agent(agent_id, reason);
-                } else {
-                    log_drain_write(0, 0, "[controller] Unknown quota notify\n");
-                }
-            /* Channel 40: vibe_engine approved a swap — read staging and begin */
-            } else if (ch == CH_VIBEENGINE) {
-                vibe_demo_step4_notify();
-            /* Channels 30-33: swap slot health-OK notifications */
-            } else if (ch >= CH_SWAP_BASE && ch < CH_SWAP_BASE + NUM_SWAP_SLOTS) {
-                int swap_slot_idx = (int)(ch - CH_SWAP_BASE);
-                uint32_t status = (uint32_t)microkit_mr_get(0);
-                if (status == 0) {
-                    log_drain_write(0, 0, "[controller] Swap slot health OK — activating\n");
-                    vibe_swap_health_notify(swap_slot_idx);
-
-                    /* If this is the vibe demo swap, print final summary */
-                    if (ctrl.vibe_swap_in_progress && !ctrl.vibe_demo_complete) {
-                        ctrl.vibe_swap_in_progress = false;
-                        ctrl.vibe_demo_complete = true;
-                        log_drain_write(0, 0, "\n──────────────────────────────────────────────────────\n"
-                            "  Steps 1-4 complete — launching microservice demo...\n"
-                            "──────────────────────────────────────────────────────\n\n");
-                        microservice_demo();
-                    }
-                } else {
-                    log_drain_write(0, 0, "[controller] Swap slot health FAIL\n");
-                }
-            } else {
-                log_drain_write(0, 0, "[controller] Unknown channel\n");
-            }
-            break;
-    }
-}
-
-microkit_msginfo protected(microkit_channel ch, microkit_msginfo msg) {
-    uint64_t label = microkit_msginfo_get_label(msg);
-
-    /* ── Ring-1 enforcement: VMM kernel protocol (CH_VMM_KERNEL = 76) ───── */
-    if (ch == (microkit_channel)CH_VMM_KERNEL) {
-        /*
-         * All PPCs on CH_VMM_KERNEL originate from a registered VMM PD.
-         * Enforce ring-1 isolation before granting any capability.
-         *
-         * For MSG_VMM_VCPU_SET_REGS: validate that the vCPU privilege level
-         * in SPSR is EL1 (AArch64) or CPL3 (x86), never EL2 or CPL0.
-         */
-        if (label == (uint64_t)MSG_VMM_VCPU_SET_REGS) {
-            /* Fail-closed: deny if shmem not mapped — no bypass window */
-            if (!vmm_vcpu_regs_vaddr) {
-                AGENTOS_CRIT("[cap_policy] vCPU regs shmem not mapped — EPERM");
-                microkit_mr_set(0, 0u);
-                return microkit_msginfo_new(0xDEAD, 1);
-            }
-            {
-                volatile vcpu_regs_t *regs =
-                    (volatile vcpu_regs_t *)vmm_vcpu_regs_vaddr;
-#ifdef ARCH_AARCH64
-                int el_rc = cap_policy_vcpu_el_check(regs->spsr, true);
-#else
-                int el_rc = cap_policy_vcpu_el_check(regs->spsr, false);
+#ifndef AGENTOS_TEST_HOST
+    /* Enter the never-returning server dispatch loop */
+    sel4_server_run(&g_srv);
 #endif
-                if (el_rc != 0) {
-                    AGENTOS_CRIT("[cap_policy] vCPU EL2/CPL0 escalation REJECTED");
-                    microkit_mr_set(0, 0u);
-                    return microkit_msginfo_new(0xDEAD, 1);
-                }
-            }
-            microkit_mr_set(0, 1u);
-            return microkit_msginfo_new(0, 1);
-        }
-
-        if (label == (uint64_t)MSG_VMM_REGISTER) {
-            /* Assign a non-zero vmm_token; real allocation tracked per-VMM */
-            microkit_mr_set(0, 1u);  /* ok */
-            microkit_mr_set(1, 1u);  /* vmm_token */
-            microkit_mr_set(2, 1u);  /* granted_guests */
-            return microkit_msginfo_new(0, 3);
-        }
-
-        /* All other MSG_VMM_* stub ok until full VMM protocol is wired */
-        microkit_mr_set(0, 1u);
-        return microkit_msginfo_new(0, 1);
-    }
-
-    if (label == OP_CAP_POLICY_RELOAD) {
-        /* Reload capability policy blob from shmem */
-        monitor_apply_policy();
-        microkit_mr_set(0, policy_loaded ? 1u : 0u);
-        return microkit_msginfo_new(0, 1);
-    }
-
-    if (label == MSG_WORKER_RETRIEVE) {
-        /* Worker requesting AgentFS object retrieval (proxy) */
-        log_drain_write(0, 0, "[controller] Proxying AgentFS GET for worker...\n");
-        
-        /* Read the object ID words from MRs */
-        uint32_t id0 = (uint32_t)microkit_mr_get(0);
-        uint32_t id1 = (uint32_t)microkit_mr_get(1);
-        uint32_t id2 = (uint32_t)microkit_mr_get(2);
-        uint32_t id3 = (uint32_t)microkit_mr_get(3);
-        
-        /* PPC into AgentFS to GET the object */
-        microkit_mr_set(0, OP_AGENTFS_GET);
-        microkit_mr_set(1, id0);
-        microkit_mr_set(2, id1);
-        microkit_mr_set(3, id2);
-        microkit_mr_set(4, id3);
-        
-        PPCALL_DONATE(CH_AGENTFS, microkit_msginfo_new(0, 5),
-                      PRIO_CONTROLLER, PRIO_AGENTFS);
-        
-        uint32_t status = (uint32_t)microkit_mr_get(0);
-        if (status == 0) {
-            /* Success — forward AgentFS response back to worker */
-            uint32_t version    = (uint32_t)microkit_mr_get(1);
-            uint32_t size       = (uint32_t)microkit_mr_get(2);
-            uint32_t cap_tag    = (uint32_t)microkit_mr_get(3);
-            
-            log_drain_write(0, 0, "[controller] AgentFS returned object: version=");
-            char v[2] = { (char)('0' + (version % 10)), '\0' };
-            {
-                char _cl_buf[256] = {};
-                char *_cl_p = _cl_buf;
-                for (const char *_s = v; *_s; _s++) *_cl_p++ = *_s;
-                for (const char *_s = ", size="; *_s; _s++) *_cl_p++ = *_s;
-                *_cl_p = 0;
-                log_drain_write(0, 0, _cl_buf);
-            }
-            /* Print size as decimal */
-            if (size < 100) {
-                char tens = (char)('0' + (size / 10));
-                char ones = (char)('0' + (size % 10));
-                char sz[3] = { tens, ones, '\0' };
-                log_drain_write(0, 0, sz);
-            } else {
-                log_drain_write(0, 0, "??");
-            }
-            log_drain_write(0, 0, " bytes\n");
-            
-            /* Pack response for worker: MR0=status, MR1=size, MR2=cap_tag, MR3=version */
-            microkit_mr_set(0, 0);       /* OK */
-            microkit_mr_set(1, size);
-            microkit_mr_set(2, cap_tag);
-            microkit_mr_set(3, version);
-            return microkit_msginfo_new(MSG_WORKER_RETRIEVE_REPLY, 4);
-        } else {
-            log_drain_write(0, 0, "[controller] AgentFS GET failed\n");
-            microkit_mr_set(0, status);
-            return microkit_msginfo_new(MSG_WORKER_RETRIEVE_REPLY, 1);
-        }
-    }
-    
-    log_drain_write(0, 0, "[controller] Unexpected PPC call\n");
-    return microkit_msginfo_new(0xDEAD, 0);
 }
 
-/* Note: this extends the notified() function above.
- * In the actual build, the notified() switch needs a POOL_CH_BASE case.
- * Adding it here as a patch note for next refactor. */
+/* ─────────────────────────────────────────────────────────────────────────────
+ * Test-only exported symbols
+ * ─────────────────────────────────────────────────────────────────────────── */
+#ifdef AGENTOS_TEST_HOST
+
+/* Allow test code to invoke the server dispatch directly */
+uint32_t controller_dispatch_one(sel4_badge_t badge,
+                                  const sel4_msg_t *req,
+                                  sel4_msg_t *rep)
+{
+    return sel4_server_dispatch(&g_srv, badge, req, rep);
+}
+
+/* Expose ctrl state accessors for test assertions */
+bool controller_eventbus_ready(void)   { return ctrl.eventbus_ready; }
+bool controller_initagent_ready(void)  { return ctrl.initagent_ready; }
+uint32_t controller_notif_count(void)  { return ctrl.notification_count; }
+bool controller_demo_obj_stored(void)  { return ctrl.demo_obj_stored; }
+bool controller_worker_dispatched(void){ return ctrl.worker_task_dispatched; }
+bool controller_demo_complete(void)    { return ctrl.demo_complete; }
+bool controller_vibe_triggered(void)   { return ctrl.vibe_demo_triggered; }
+bool controller_vibe_in_progress(void) { return ctrl.vibe_swap_in_progress; }
+bool controller_vibe_complete(void)    { return ctrl.vibe_demo_complete; }
+bool controller_policy_loaded(void)    { return g_policy_loaded; }
+
+/* Expose g_srv handler_count so tests can verify registration */
+uint32_t controller_handler_count(void) { return g_srv.handler_count; }
+
+#endif /* AGENTOS_TEST_HOST */
