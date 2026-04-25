@@ -75,29 +75,6 @@ seL4_CPtr ep_alloc(void)
 
 /* ── Badge minting ────────────────────────────────────────────────────────── */
 
-/*
- * seL4_CNode_Mint — mint a badged copy of a capability.
- *
- * This is a simplified wrapper: it emits the seL4_CNode_Mint syscall to
- * copy src_cap into dest_cnode[dest_index] with the given badge.
- *
- * On AArch64 and RISC-V seL4 this is invoked via seL4_Call on the CNode
- * cap.  For the root task's early boot phase we use the direct invocation
- * path available through the inline seL4 syscall shim.
- *
- * NOTE: The actual seL4_CNode_Mint implementation is arch-specific and
- * provided by the seL4 kernel syscall interface.  At link time this symbol
- * is resolved from the Microkit libsel4 stub or the simulator.
- */
-extern seL4_Error seL4_CNode_Mint(seL4_CPtr  service,
-                                   seL4_Word  dest_index,
-                                   uint8_t    dest_depth,
-                                   seL4_CPtr  src_root,
-                                   seL4_Word  src_index,
-                                   uint8_t    src_depth,
-                                   seL4_Word  rights,
-                                   seL4_Word  badge);
-
 seL4_Error ep_mint_badge(seL4_CPtr  src_ep,
                          seL4_Word  badge,
                          seL4_CPtr  dest_cnode,
@@ -110,7 +87,7 @@ seL4_Error ep_mint_badge(seL4_CPtr  src_ep,
                             g_root_cnode,   /* source root: root task CNode */
                             src_ep,          /* source index: the endpoint cap */
                             64u,             /* source depth */
-                            3u /* seL4_AllRights */,
+                            seL4_AllRights /* all cap rights */,
                             badge);
 }
 

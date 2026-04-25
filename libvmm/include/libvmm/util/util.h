@@ -7,7 +7,8 @@
 
 #pragma once
 
-#include <microkit.h>
+#include <sel4/sel4.h>
+#include <libvmm/vmm_caps.h>
 #include <stdint.h>
 #include <stddef.h>
 #include <libvmm/util/printf.h>
@@ -24,8 +25,8 @@
 #define static_assert _Static_assert
 #endif
 
-#define LOG_VMM(...) do{ printf("%s|INFO: ", microkit_name); printf(__VA_ARGS__); }while(0)
-#define LOG_VMM_ERR(...) do{ printf("%s|ERROR: ", microkit_name); printf(__VA_ARGS__); }while(0)
+#define LOG_VMM(...) do{ printf("%s|INFO: ", vmm_pd_name); printf(__VA_ARGS__); }while(0)
+#define LOG_VMM_ERR(...) do{ printf("%s|ERROR: ", vmm_pd_name); printf(__VA_ARGS__); }while(0)
 
 static void assert_fail(
     const char  *assertion,

@@ -17,7 +17,7 @@
 
 #pragma once
 
-#include "sel4_boot.h"
+#include "boot_info.h"   /* seL4_BootInfo, seL4_CPtr, seL4_Word */
 #include <stdint.h>
 
 /* Maximum number of capability records that can be tracked. */

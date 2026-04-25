@@ -41,7 +41,7 @@
  */
 #include <string.h>
 #include <stdint.h>
-#include <microkit.h>
+#include <libvmm/vmm_caps.h>
 
 #include <libvmm/virq.h>
 #include <libvmm/util/util.h>

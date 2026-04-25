@@ -4,6 +4,7 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <libvmm/vmm_caps.h>
 #include <libvmm/guest.h>
 #include <libvmm/virq.h>
 #include <libvmm/virtio/virtio.h>
@@ -11,8 +12,8 @@
 #include <libvmm/virtio/virtq.h>
 #include <libvmm/arch/aarch64/fault.h>
 
-#define LOG_PCI_INFO(...) do{ printf("%s|VIRTIO(PCI) INFO: ", microkit_name); printf(__VA_ARGS__); }while(0)
-#define LOG_PCI_ERR(...) do{ printf("%s|VIRTIO(PCI) ERROR: ", microkit_name); printf(__VA_ARGS__); }while(0)
+#define LOG_PCI_INFO(...) do{ printf("%s|VIRTIO(PCI) INFO: ", vmm_pd_name); printf(__VA_ARGS__); }while(0)
+#define LOG_PCI_ERR(...) do{ printf("%s|VIRTIO(PCI) ERROR: ", vmm_pd_name); printf(__VA_ARGS__); }while(0)
 
 /* We assume that there is only one PCI node */
 static struct virtio_pci_ecam global_pci_ecam;

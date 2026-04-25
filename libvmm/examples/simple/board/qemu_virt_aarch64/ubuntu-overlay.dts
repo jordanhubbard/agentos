@@ -22,10 +22,11 @@
 
     chosen {
         stdout-path = "/pl011@9000000";
-        /* Ubuntu 24.04 minimal: initrdless boot via PARTUUID.
-         * root=PARTUUID matches the rootfs partition UUID in ubuntu-24.04-arm64.raw.
-         * earlycon/console direct serial output through PL011 at 0x9000000. */
-        bootargs = "earlycon=pl011,0x9000000 console=ttyAMA0,115200 root=PARTUUID=6cb74abd-5e56-4fc1-a7be-4ad74dbbe860 ro";
+        /* Ubuntu 24.04 cloud image: initrdless boot via device path.
+         * vda = first virtio-blk (ubuntu disk), vda1 = root partition.
+         * cloud-init reads NoCloud data from vdb (linux-seed.img, label CIDATA).
+         * earlycon/console through PL011 at 0x9000000. */
+        bootargs = "earlycon=pl011,0x9000000 console=ttyAMA0,115200 root=/dev/vda1 rw";
         linux,stdout-path = "/pl011@9000000";
     };
 
@@ -47,8 +48,7 @@
     /*
      * virtio-blk passthrough: QEMU virt virtio-mmio slot 1.
      * Physical address: 0xa000000 + 1*0x200 = 0xa000200.
-     * IRQ: SPI 17 (INTID 49) — QEMU assigns SPI (16+slot) per transport.
-     * Slot 1: QEMU command uses bus=virtio-mmio-bus.1.
+     * IRQ: SPI 17 (INTID 49) — slot 1 = ubuntu root disk (vda).
      * trigger 0x01 = edge-rising.
      */
     virtio_mmio@a000200 {
@@ -56,5 +56,18 @@
         reg = <0x00 0xa000200 0x00 0x200>;
         interrupt-parent = <0x8001>;
         interrupts = <0x00 0x11 0x01>;
+    };
+
+    /*
+     * virtio-blk passthrough: QEMU virt virtio-mmio slot 2.
+     * Physical address: 0xa000000 + 2*0x200 = 0xa000400.
+     * IRQ: SPI 18 (INTID 50) — slot 2 = cloud-init seed (vdb, label CIDATA).
+     * trigger 0x01 = edge-rising.
+     */
+    virtio_mmio@a000400 {
+        compatible = "virtio,mmio";
+        reg = <0x00 0xa000400 0x00 0x200>;
+        interrupt-parent = <0x8001>;
+        interrupts = <0x00 0x12 0x01>;
     };
 };

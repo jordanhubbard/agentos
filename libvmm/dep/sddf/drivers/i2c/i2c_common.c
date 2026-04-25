@@ -234,5 +234,5 @@ void state_resp(fsm_data_t *f, i2c_driver_data_t *data, i2c_queue_handle_t *queu
         LOG_I2C_DRIVER_ERR("Failed to return response to virt!\n");
     }
     f->next_state = S_IDLE;
-    microkit_notify(config.virt.id);
+    seL4_Signal(config.virt.id);
 }

@@ -3,7 +3,7 @@
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
-#include <microkit.h>
+#include <libvmm/vmm_caps.h>
 #include <string.h>
 #include <stdint.h>
 #include <stdbool.h>
@@ -567,7 +567,7 @@ static bool virtio_blk_mmio_queue_notify(struct virtio_device *dev)
     struct virtio_blk_device *state = device_state(dev);
     if (nums_consumed && !blk_queue_plugged_req(&state->queue_h)) {
         LOG_BLOCK("virtio_blk_mmio_queue_notify notified virt\n");
-        microkit_notify(state->server_ch);
+        vmm_notify(state->server_ch);
     }
 
     return virq_inject_success;
@@ -799,7 +799,7 @@ bool virtio_blk_handle_resp(struct virtio_blk_device *state)
 
     if (virt_notify) {
         LOG_BLOCK("virtio_blk_handle_resp virt notify\n");
-        microkit_notify(state->server_ch);
+        vmm_notify(state->server_ch);
     }
 
     return virq_inject_success;
@@ -841,7 +841,7 @@ static virtio_device_funs_t functions = {
 static struct virtio_device *virtio_blk_init(struct virtio_blk_device *blk_dev, virtio_transport_type_t type,
                                              size_t virq, uintptr_t data_region, size_t data_region_size,
                                              blk_storage_info_t *storage_info, blk_queue_handle_t *queue_h,
-                                             uint32_t queue_capacity, int server_ch)
+                                             uint32_t queue_capacity, seL4_CPtr server_ch)
 {
     struct virtio_device *dev = &blk_dev->virtio_device;
     dev->regs.DeviceID = VIRTIO_DEVICE_ID_BLOCK;
@@ -877,7 +877,7 @@ static struct virtio_device *virtio_blk_init(struct virtio_blk_device *blk_dev, 
 
 bool virtio_mmio_blk_init(struct virtio_blk_device *blk_dev, uintptr_t region_base, uintptr_t region_size, size_t virq,
                           uintptr_t data_region, size_t data_region_size, blk_storage_info_t *storage_info,
-                          blk_queue_handle_t *queue_h, uint32_t queue_capacity, int server_ch)
+                          blk_queue_handle_t *queue_h, uint32_t queue_capacity, seL4_CPtr server_ch)
 {
     struct virtio_device *dev = virtio_blk_init(blk_dev, VIRTIO_TRANSPORT_MMIO, virq, data_region, data_region_size,
                                                 storage_info, queue_h, queue_capacity, server_ch);
@@ -887,7 +887,7 @@ bool virtio_mmio_blk_init(struct virtio_blk_device *blk_dev, uintptr_t region_ba
 
 bool virtio_pci_blk_init(struct virtio_blk_device *blk_dev, uint32_t dev_slot, size_t virq, uintptr_t data_region,
                          size_t data_region_size, blk_storage_info_t *storage_info, blk_queue_handle_t *queue_h,
-                         uint32_t queue_capacity, int server_ch)
+                         uint32_t queue_capacity, seL4_CPtr server_ch)
 {
     struct virtio_device *dev = virtio_blk_init(blk_dev, VIRTIO_TRANSPORT_PCI, virq, data_region, data_region_size,
                                                 storage_info, queue_h, queue_capacity, server_ch);

@@ -33,6 +33,7 @@
 #pragma once
 
 #include <stdint.h>
+#include <sel4/sel4.h>
 #include <libvmm/virtio/virtio.h>
 #include <sddf/util/fsmalloc.h>
 #include <sddf/util/ialloc.h>
@@ -193,16 +194,16 @@ struct virtio_blk_device {
     blk_queue_handle_t queue_h;
     uint32_t queue_capacity;
     uintptr_t data_region;
-    /* Channel to notify microkit component serving this client */
-    int server_ch;
+    /* Cap to notify sDDF server serving this client */
+    seL4_CPtr server_ch;
 };
 
 bool virtio_mmio_blk_init(struct virtio_blk_device *blk_dev, uintptr_t region_base, uintptr_t region_size, size_t virq,
                           uintptr_t data_region, size_t data_region_size, blk_storage_info_t *storage_info,
-                          blk_queue_handle_t *queue_h, uint32_t queue_capacity, int server_ch);
+                          blk_queue_handle_t *queue_h, uint32_t queue_capacity, seL4_CPtr server_ch);
 
 bool virtio_blk_handle_resp(struct virtio_blk_device *blk_dev);
 
 bool virtio_pci_blk_init(struct virtio_blk_device *blk_dev, uint32_t dev_slot, size_t virq, uintptr_t data_region,
                          size_t data_region_size, blk_storage_info_t *storage_info, blk_queue_handle_t *queue_h,
-                         uint32_t queue_capacity, int server_ch);
+                         uint32_t queue_capacity, seL4_CPtr server_ch);

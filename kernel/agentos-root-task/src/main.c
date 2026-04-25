@@ -43,6 +43,7 @@
 #include "cap_audit.h"       /* handle_cap_audit, handle_cap_audit_guest,
                                 cap_tree_verify_all_pds                            */
 #include "system_desc.h"     /* system_desc_t, pd_desc_t, SVC_ID_*, PD_IRQHANDLER_SLOT_BASE */
+#include "agentos.h"         /* sel4_dbg_puts                                    */
 #include <stdint.h>
 
 /*
@@ -77,13 +78,16 @@ extern const system_desc_t system_desc_riscv64;
 /*
  * The root task's own CNode contains:
  *   Slots 0 .. seL4_NumInitialCaps-1   — kernel well-known caps (fixed)
- *   Slots seL4_NumInitialCaps onwards  — allocated by the root task
+ *   Slots seL4_NumInitialCaps onwards  — boot caps (user image frames, untypeds)
+ *   Slots bi->empty.start onwards      — free for root-task use
  *
- * We reserve SLOTS_PER_PD consecutive slots for each PD's kernel objects
- * (CNODE, TCB, VSPACE, IPC_FRAME), then a further 256 slots for the
- * endpoint pool, then one slot per PD for the IPC buffer frame.
+ * g_cap_base is set to bi->empty.start after ut_alloc_init so that all
+ * PD_SLOT_* calculations fall within the genuinely-free range.
+ * This avoids clobbering boot caps that the kernel placed between
+ * seL4_NumInitialCaps and bi->empty.start.
  */
-#define CAP_ROOT_INITIAL_BASE  ((seL4_Word)seL4_NumInitialCaps)
+static seL4_Word g_cap_base;  /* set to bi->empty.start in root_task_main */
+#define CAP_ROOT_INITIAL_BASE  g_cap_base
 #define SLOTS_PER_PD           4u    /* CNODE slot + TCB slot + VSPACE slot + IPC_FRAME slot */
 
 /* Slot layout per PD index i (base + i * SLOTS_PER_PD + offset): */
@@ -106,14 +110,7 @@ extern const system_desc_t system_desc_riscv64;
  */
 #define PD_IPC_BUF_VA    0x0000000010000000UL
 
-/* ── ut_alloc_init declaration ────────────────────────────────────────────── */
-
-/*
- * ut_alloc_init is not declared in ut_alloc.h (only ut_alloc is).
- * Provide the declaration here so the linker can find the definition in
- * ut_alloc.c (which will be provided in a follow-on sprint).
- */
-extern void ut_alloc_init(const seL4_BootInfo *bi);
+/* ut_alloc_init, ut_free_slot_base, ut_advance_slot_cursor are in ut_alloc.h */
 
 /* ── ELF lookup helpers ───────────────────────────────────────────────────── */
 
@@ -250,12 +247,12 @@ static seL4_Word boot_elf_size(const seL4_BootInfo *bi, const char *elf_path)
  *
  * The PD then references these caps by their known slot offsets:
  *   seL4_CPtr irq_cap = PD_IRQHANDLER_SLOT_BASE + i;
- *   seL4_IRQHandler_Ack(irq_cap);   /* after handling the IRQ */
+ *   seL4_IRQHandler_Ack(irq_cap);   // after handling the IRQ
  *
  * Parameters:
  *   pd               PD descriptor (contains irq_count and irqs[])
  *   pd_cnode         capability to the PD's own CNode (in root task's CSpace)
- *   irq_control_cap  seL4_CapIRQControl — the kernel's IRQ control capability
+ *   irq_control_cap  seL4_CapIRQControl - the kernel's IRQ control capability
  *   pd_cnode_depth   radix of pd_cnode (pd->cnode_size_bits)
  */
 static void boot_setup_irqs(const pd_desc_t *pd,
@@ -291,6 +288,14 @@ void root_task_main(const seL4_BootInfo *bi)
 {
     /* ── Step 1: Initialise untyped memory allocator ──────────────────────── */
     ut_alloc_init(bi);
+
+    /*
+     * Set the static cap slot base to bi->empty.start (the first truly-free
+     * slot) and reserve static slots for per-PD objects and the EP pool so
+     * that subsequent ut_alloc_cap() calls start AFTER them.
+     */
+    g_cap_base = ut_free_slot_base();
+    ut_advance_slot_cursor((seL4_Word)SYSTEM_MAX_PDS * SLOTS_PER_PD + EP_POOL_SIZE);
 
     /* ── Step 2: Initialise capability accounting ─────────────────────────── */
     cap_acct_init(bi);
@@ -418,6 +423,45 @@ void root_task_main(const seL4_BootInfo *bi)
             ep_mint_badge(service_ep, badge,
                            pd_cnode, ep_spec->cnode_slot,
                            pd->cnode_size_bits);
+        }
+
+        /* ── 4g.4: Distribute device MMIO frame caps ────────────────────────
+         * For each device_frame_desc_t, find the device untyped covering its
+         * physical address, retype it as a 4K page frame, and install the cap
+         * directly into the PD's CNode at the specified slot.              */
+        for (uint8_t j = 0u; j < pd->device_frame_count; j++) {
+            const device_frame_desc_t *df = &pd->device_frames[j];
+            seL4_Error df_err = ut_alloc_device_frame(
+                (seL4_Word)df->paddr,
+                pd_cnode,
+                (seL4_Word)df->cnode_slot
+            );
+            if (df_err != seL4_NoError) {
+                sel4_dbg_puts("[root] WARN: device frame retype failed: ");
+                sel4_dbg_puts(df->name);
+                sel4_dbg_puts("\n");
+            }
+        }
+
+        /* ── 4g.4.5: Map large anonymous RAM regions into the PD's VSpace ─── */
+        /*
+         * For each memory_region_desc_t, allocate 2 MB large pages from the
+         * untyped pool and map them at [mr->vaddr, mr->vaddr+mr->size) in the
+         * PD's VSpace.  Frame caps are retained in the root task's CNode to
+         * maintain the mappings.  Used for linux_vmm guest RAM (256 MB).     */
+        for (uint8_t j = 0u; j < pd->mr_count; j++) {
+            const memory_region_desc_t *mr = &pd->memory_regions[j];
+            seL4_Error mr_err = pd_vspace_map_region(
+                vspace,
+                (seL4_Word)mr->vaddr,
+                (size_t)mr->size,
+                (int)mr->writable
+            );
+            if (mr_err != seL4_NoError) {
+                sel4_dbg_puts("[root] WARN: memory region map failed: ");
+                sel4_dbg_puts(mr->name);
+                sel4_dbg_puts("\n");
+            }
         }
 
         /* ── 4g.5: Bind hardware IRQ handler caps into the PD's CNode ─────── */

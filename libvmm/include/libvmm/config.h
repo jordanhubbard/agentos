@@ -7,7 +7,7 @@
 
 #include <stdbool.h>
 #include <stdint.h>
-#include <microkit.h>
+#include <sel4/sel4.h>
 
 #define VMM_MAGIC_LEN 3
 static char VMM_MAGIC[VMM_MAGIC_LEN] = { 'v', 'm', 'm' };

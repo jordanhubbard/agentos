@@ -29,12 +29,6 @@
 #include "sel4_boot.h"
 #include "contracts/linux_vmm_contract.h"
 
-/* Raw seL4 replacement for microkit_dbg_puts */
-static inline void sel4_dbg_puts(const char *s)
-{
-    for (; *s; s++) seL4_DebugPutChar(*s);
-}
-
 /* ─── x86_64 stub ──────────────────────────────────────────────────────────
  *
  * libvmm does not yet provide x86_64 VMM support. This stub satisfies the
@@ -136,6 +130,235 @@ void linux_vmm_main(seL4_CPtr ep, seL4_CPtr ns_ep)
 
 #endif /* ARCH_X86_64 */
 
+/* ─── RISC-V 64 process-in-PD VMM ──────────────────────────────────────────
+ *
+ * On RISC-V without the H-extension (hypervisor mode), Linux runs as a seL4
+ * PD at U-mode.  The VMM:
+ *
+ *   1. Checks for an embedded guest kernel (linked via package_guest_images.S
+ *      as _guest_kernel_image / _guest_kernel_image_end weak symbols).
+ *   2. Builds a minimal FDT into a local static buffer describing one HART,
+ *      256 MB RAM at 0x80000000, PLIC, virtio-mmio[0] (net, IRQ 1) and
+ *      virtio-mmio[1] (blk, IRQ 2), and a /chosen bootargs node.
+ *   3. Copies the kernel image to GUEST_IMAGE_BASE (requires root task to have
+ *      mapped the guest RAM region into this PD's VSpace).
+ *   4. Sets a0 = hart_id (0), a1 = FDT VA, and jumps to GUEST_IMAGE_BASE.
+ *
+ * NOTE: Full Linux boot requires the H-extension for S-mode guest isolation.
+ * Without it this path boots bare-metal RISC-V programs only.  The FDT is
+ * built correctly for future use; the jump path is enabled when the kernel
+ * image weak symbol is provided by xtask gen-image.
+ *
+ * Guest kernel faults (SBI ecalls → seL4_Fault_UnknownSyscall) are fielded
+ * by fault_handler.elf which handles SBI_EXT_LEGACY_CONSOLE_PUTCHAR and
+ * SBI_EXT_TIME; all other SBI calls return -1.
+ */
+#if defined(__riscv) && !defined(ARCH_AARCH64) && !defined(ARCH_X86_64)
+
+#include "fdt_builder.h"
+
+/* Guest memory layout (must match FDT and kernel config) */
+#define GUEST_IMAGE_BASE  0x80200000UL  /* flat Image entry point           */
+#define GUEST_RAM_BASE    0x80000000UL
+#define GUEST_RAM_SIZE    0x10000000UL  /* 256 MB — DTB placed at 240 MB    */
+
+/* QEMU virt RISC-V peripheral addresses */
+#define PLIC_BASE         0x0c000000UL
+#define PLIC_SIZE         0x00600000UL
+#define VIRTIO_NET_BASE   0x10001000UL  /* slot 0: virtio-net  */
+#define VIRTIO_BLK_BASE   0x10002000UL  /* slot 1: virtio-blk  */
+#define VIRTIO_MMIO_SIZE  0x00001000UL
+#define VIRTIO_NET_IRQ    1u
+#define VIRTIO_BLK_IRQ    2u
+
+/*
+ * Guest kernel image linked by package_guest_images.S.  Weak so linux_vmm.elf
+ * links without an embedded kernel; _guest_kernel_image == NULL in that case.
+ */
+extern char _guest_kernel_image[]     __attribute__((weak));
+extern char _guest_kernel_image_end[] __attribute__((weak));
+
+/* Static FDT buffer — always in the PD's writable data segment. */
+static uint8_t s_fdt_buf[4096] __attribute__((aligned(8)));
+
+/* ── FDT builder ─────────────────────────────────────────────────────────── */
+
+static size_t build_guest_fdt(void)
+{
+    fdt_ctx_t ctx;
+    fdt_init(&ctx, s_fdt_buf, sizeof(s_fdt_buf));
+
+    /* Root */
+    fdt_begin_node(&ctx, "");
+    fdt_prop_u32(&ctx, "#address-cells", 2u);
+    fdt_prop_u32(&ctx, "#size-cells",    2u);
+    fdt_prop_string(&ctx, "compatible",  "riscv-virtio");
+    fdt_prop_string(&ctx, "model",       "riscv-virtio,qemu");
+
+    /* /cpus */
+    fdt_begin_node(&ctx, "cpus");
+    fdt_prop_u32(&ctx, "#address-cells",    1u);
+    fdt_prop_u32(&ctx, "#size-cells",       0u);
+    fdt_prop_u32(&ctx, "timebase-frequency", 10000000u);  /* 10 MHz */
+
+    fdt_begin_node(&ctx, "cpu@0");
+    fdt_prop_string(&ctx, "device_type", "cpu");
+    fdt_prop_string(&ctx, "compatible",  "riscv");
+    fdt_prop_string(&ctx, "riscv,isa",   "rv64imafdc");
+    fdt_prop_string(&ctx, "mmu-type",    "riscv,sv48");
+    fdt_prop_u32(&ctx, "reg",            0u);
+    fdt_prop_string(&ctx, "status",      "okay");
+
+    /* INTC — local interrupt controller for this hart (phandle 1) */
+    fdt_begin_node(&ctx, "interrupt-controller");
+    fdt_prop_u32(&ctx, "#interrupt-cells", 1u);
+    fdt_prop_string(&ctx, "compatible",    "riscv,cpu-intc");
+    fdt_prop_u32_array(&ctx, "interrupt-controller", NULL, 0u); /* boolean */
+    fdt_prop_u32(&ctx, "phandle",          1u);
+    fdt_end_node(&ctx);  /* interrupt-controller */
+
+    fdt_end_node(&ctx);  /* cpu@0 */
+    fdt_end_node(&ctx);  /* cpus */
+
+    /* /memory@80000000 */
+    fdt_begin_node(&ctx, "memory@80000000");
+    fdt_prop_string(&ctx, "device_type", "memory");
+    fdt_prop_reg64(&ctx, GUEST_RAM_BASE, GUEST_RAM_SIZE);
+    fdt_end_node(&ctx);
+
+    /* /soc — simple-bus with identity ranges */
+    fdt_begin_node(&ctx, "soc");
+    fdt_prop_u32(&ctx, "#address-cells", 2u);
+    fdt_prop_u32(&ctx, "#size-cells",    2u);
+    fdt_prop_u32(&ctx, "#interrupt-cells", 1u);
+    fdt_prop_string(&ctx, "compatible",  "simple-bus");
+    fdt_prop_u32_array(&ctx, "ranges",   NULL, 0u);  /* identity mapping */
+
+    /* PLIC (phandle 2) */
+    fdt_begin_node(&ctx, "plic@c000000");
+    fdt_prop_string(&ctx, "compatible",   "sifive,plic-1.0.0");
+    fdt_prop_u32(&ctx, "#interrupt-cells", 1u);
+    fdt_prop_u32(&ctx, "#address-cells",   0u);
+    fdt_prop_u32_array(&ctx, "interrupt-controller", NULL, 0u); /* boolean */
+    fdt_prop_reg64(&ctx, PLIC_BASE, PLIC_SIZE);
+    fdt_prop_u32(&ctx, "riscv,ndev",      31u);
+    /* interrupts-extended: hart 0 M-EI (11) and S-EI (9) via phandle 1 */
+    {
+        uint32_t ix[4] = { 1u, 11u, 1u, 9u };
+        fdt_prop_u32_array(&ctx, "interrupts-extended", ix, 4u);
+    }
+    fdt_prop_u32(&ctx, "phandle",         2u);
+    fdt_end_node(&ctx);  /* plic */
+
+    /* virtio-net (slot 0, IRQ 1) */
+    fdt_begin_node(&ctx, "virtio_mmio@10001000");
+    fdt_prop_string(&ctx, "compatible",   "virtio,mmio");
+    fdt_prop_reg64(&ctx, VIRTIO_NET_BASE, VIRTIO_MMIO_SIZE);
+    {
+        uint32_t irq = VIRTIO_NET_IRQ;
+        fdt_prop_u32_array(&ctx, "interrupts", &irq, 1u);
+    }
+    fdt_prop_u32(&ctx, "interrupt-parent", 2u);
+    fdt_end_node(&ctx);
+
+    /* virtio-blk (slot 1, IRQ 2) */
+    fdt_begin_node(&ctx, "virtio_mmio@10002000");
+    fdt_prop_string(&ctx, "compatible",   "virtio,mmio");
+    fdt_prop_reg64(&ctx, VIRTIO_BLK_BASE, VIRTIO_MMIO_SIZE);
+    {
+        uint32_t irq = VIRTIO_BLK_IRQ;
+        fdt_prop_u32_array(&ctx, "interrupts", &irq, 1u);
+    }
+    fdt_prop_u32(&ctx, "interrupt-parent", 2u);
+    fdt_end_node(&ctx);
+
+    fdt_end_node(&ctx);  /* soc */
+
+    /* /chosen */
+    fdt_begin_node(&ctx, "chosen");
+    fdt_prop_string(&ctx, "bootargs",
+                    "console=hvc0 root=/dev/vda rw earlycon=sbi loglevel=8");
+    fdt_end_node(&ctx);
+
+    fdt_end_node(&ctx);  /* root */
+
+    return fdt_finish(&ctx);
+}
+
+/* ── Kernel entry jump ───────────────────────────────────────────────────── */
+
+/*
+ * jump_to_kernel — transfer control to a RISC-V flat Image.
+ *
+ * RISC-V boot ABI (OpenSBI spec §3.1):
+ *   a0 = hart_id (physical hart index)
+ *   a1 = FDT physical (or virtual) address
+ *   All other registers are caller-saved and will be clobbered by the kernel.
+ *
+ * jalr x0, 0(t0) — unconditional jump with no return address saved.
+ */
+static void __attribute__((noreturn))
+jump_to_kernel(unsigned long entry, unsigned long hart_id, unsigned long dtb_va)
+{
+    register unsigned long a0 __asm__("a0") = hart_id;
+    register unsigned long a1 __asm__("a1") = dtb_va;
+    register unsigned long t0 __asm__("t0") = entry;
+    __asm__ volatile (
+        "jalr zero, 0(%0)"
+        :
+        : "r"(t0), "r"(a0), "r"(a1)
+        : "memory"
+    );
+    __builtin_unreachable();
+}
+
+/* ── Main entry ──────────────────────────────────────────────────────────── */
+
+void linux_vmm_main(seL4_CPtr ep, seL4_CPtr ns_ep)
+{
+    (void)ns_ep;
+
+    sel4_dbg_puts("[linux_vmm] RISC-V: process-in-PD VMM starting.\n");
+
+    /* ── Build FDT ─────────────────────────────────────────────────────── */
+    size_t fdt_sz = build_guest_fdt();
+    if (fdt_sz == 0u) {
+        sel4_dbg_puts("[linux_vmm] RISC-V: FDT build FAILED (buffer overflow).\n");
+        while (1) { seL4_Word b; seL4_Wait(ep, &b); }
+    }
+    sel4_dbg_puts("[linux_vmm] RISC-V: FDT built OK.\n");
+
+    /* ── Check for embedded kernel ─────────────────────────────────────── */
+    if (!_guest_kernel_image || (_guest_kernel_image == _guest_kernel_image_end)) {
+        sel4_dbg_puts("[linux_vmm] RISC-V: no guest kernel linked"
+                      " (xtask gen-image step required).\n");
+        sel4_dbg_puts("[linux_vmm] RISC-V: running as passive stub.\n");
+        while (1) { seL4_Word b; seL4_Wait(ep, &b); }
+    }
+
+    size_t ksize = (size_t)(_guest_kernel_image_end - _guest_kernel_image);
+
+    /* ── Copy kernel to GUEST_IMAGE_BASE ───────────────────────────────── */
+    /* Root task must have mapped 256 MB of guest RAM into this PD's VSpace
+     * at GUEST_IMAGE_BASE for this write to succeed.  Without that mapping
+     * the copy faults, caught by fault_handler.elf. */
+    {
+        uint8_t       *dst = (uint8_t *)GUEST_IMAGE_BASE;
+        const uint8_t *src = (const uint8_t *)_guest_kernel_image;
+        for (size_t i = 0u; i < ksize; i++) dst[i] = src[i];
+    }
+    sel4_dbg_puts("[linux_vmm] RISC-V: kernel copied to 0x80200000.\n");
+
+    /* ── Jump to kernel ─────────────────────────────────────────────────── */
+    /* Pass the VA of the local FDT buffer as a1.  In the process-in-PD model
+     * VA == PA only if seL4 identity-maps the VSpace; otherwise the kernel
+     * will need to translate the DTB address through its own page tables. */
+    sel4_dbg_puts("[linux_vmm] RISC-V: jumping to kernel entry.\n");
+    jump_to_kernel(GUEST_IMAGE_BASE, 0UL, (unsigned long)s_fdt_buf);
+}
+
+#endif /* __riscv */
+
 /* ─── AArch64 native hardware stub ─────────────────────────────────────────
  *
  * Used when BOARD_NATIVE=1 on AArch64 (e.g., Raspberry Pi 5).  libvmm
@@ -166,12 +389,67 @@ void linux_vmm_main(seL4_CPtr ep, seL4_CPtr ns_ep)
 #if defined(ARCH_AARCH64) && !defined(LINUX_VMM_NATIVE_STUB)
 
 #include <libvmm/libvmm.h>
+#include <libvmm/vmm_caps.h>   /* vmm_register_vcpu                           */
 #include "gpu_shmem.h"
 #include "contracts/linux_vmm_contract.h"
 #include "sel4_boot.h"    /* seL4_IRQHandler_Ack, seL4_CPtr               */
-#include "sel4_ipc.h"     /* sel4_call, sel4_msg_t, data_wr32/rd32        */
+#include "sel4_ipc.h"     /* sel4_call, sel4_msg_t                        */
 #include "sel4_client.h"  /* sel4_client_t, sel4_client_call              */
-#include "system_desc.h"  /* PD_IRQHANDLER_SLOT_BASE                       */
+
+/* Microkit CNode layout constants (from microkit.h — not included directly
+ * to avoid the conflicting `void init(void)` declaration). */
+#define MICROKIT_BASE_IRQ_CAP    138u
+#define MICROKIT_BASE_VM_TCB_CAP 266u
+#define MICROKIT_BASE_VCPU_CAP   330u
+
+/* ── Microkit shim ───────────────────────────────────────────────────────
+ *
+ * libvmm was designed as a Microkit library and references several Microkit
+ * runtime symbols for debug output and channel state.  agentOS does not use
+ * the Microkit runtime; we provide seL4-native equivalents here so that
+ * libvmm.a links without libmicrokit.a.
+ *
+ * These are NOT Microkit: they are raw seL4 wrappers with the same ABI that
+ * libvmm's LOG_VMM/virq code requires for debug output.
+ */
+char microkit_name[64] = "linux_vmm";
+const char vmm_pd_name[] = "linux_vmm";     /* libvmm's LOG_VMM uses this */
+seL4_Word microkit_irqs          = 0;        /* libvmm virq_passthrough_ack guard */
+seL4_Word microkit_notifications = 0;        /* libvmm virq guard           */
+/* Microkit runtime stubs — required by the Microkit tool's ELF validator.
+ * agentOS linux_vmm does not use the Microkit runtime; these are zero-valued
+ * placeholders that satisfy the image packer's symbol checks. */
+__attribute__((used)) volatile int microkit_passive       = 0;
+__attribute__((used)) seL4_Word    microkit_pps           = 0;
+__attribute__((used)) seL4_Word    microkit_have_signal   = 0;
+__attribute__((used)) seL4_Word    microkit_ioports       = 0;
+__attribute__((used)) seL4_Word    microkit_signal_cap    = 0;
+__attribute__((used)) seL4_Word    microkit_signal_msg    = 0;
+
+void microkit_dbg_putc(char c) { seL4_DebugPutChar(c); }
+
+void microkit_dbg_puts(const char *s)
+{
+    for (; s && *s; s++) seL4_DebugPutChar(*s);
+}
+
+void microkit_dbg_put32(uint32_t v)
+{
+    static const char hex[] = "0123456789abcdef";
+    seL4_DebugPutChar('0'); seL4_DebugPutChar('x');
+    for (int i = 28; i >= 0; i -= 4)
+        seL4_DebugPutChar(hex[(v >> i) & 0xfu]);
+}
+
+/* seL4 IPC buffer pointer. Compiled with -D__thread= (TLS suppressed) so
+ * this is a regular global matching libvmm.a's expectation. The frame is
+ * mapped by the CapDL initializer at __sel4_ipc_buffer_obj's VA, set via
+ * seL4_SetIPCBuffer() in linux_vmm_main() before any seL4 IPC calls. */
+seL4_IPCBuffer *__sel4_ipc_buffer = NULL;
+
+/* vmm_caps.c is not included in libvmm.a — define g_vmm_vcpus here.
+ * Populated by vmm_register_vcpu() calls in init() before any libvmm use. */
+vmm_vcpu_t g_vmm_vcpus[VMM_MAX_VCPUS];
 
 /* ── Caps resolved at init time ──────────────────────────────────────── */
 static seL4_CPtr g_serial_ep        = 0;
@@ -220,30 +498,33 @@ static uint32_t vmm_affinity[VMM_MAX_SLOTS];
  */
 #define VIRTIO_NET_IRQ          48
 #define VIRTIO_BLK_IRQ          49
+#define VIRTIO_BLK2_IRQ         50  /* ubuntu cloud-init seed disk (slot 2) */
 
 /*
  * Notification badge bits for virtio IRQs.
- * These match irq_desc_t.ntfn_badge in system_desc_aarch64.c:
- *   irqs[0] (virtio-net, INTID 48): badge 0x1
- *   irqs[1] (virtio-blk, INTID 49): badge 0x2
+ * Microkit delivers IRQ N (id=K in .system) as bit K of the notification word:
+ *   badge = (1 << K)
+ * The .system file assigns:
+ *   id=3 (virtio-net,  INTID 48) → badge 0x8   (1<<3)
+ *   id=4 (virtio-blk0, INTID 49) → badge 0x10  (1<<4)
+ *   id=5 (virtio-blk1, INTID 50) → badge 0x20  (1<<5)
  */
-#define VIRTIO_NET_NTFN_BADGE   0x1u
-#define VIRTIO_BLK_NTFN_BADGE   0x2u
+#define VIRTIO_NET_NTFN_BADGE    (1u << 3)
+#define VIRTIO_BLK_NTFN_BADGE    (1u << 4)
+#define VIRTIO_BLK2_NTFN_BADGE   (1u << 5)
 
 /*
- * IRQ handler capabilities distributed by the root task at boot.
- * Placed in this PD's CNode at PD_IRQHANDLER_SLOT_BASE + index,
- * matching the irq_desc_t ordering in system_desc_aarch64.c:
- *   irqs[0] (virtio-net, INTID 48) → slot PD_IRQHANDLER_SLOT_BASE + 0
- *   irqs[1] (virtio-blk, INTID 49) → slot PD_IRQHANDLER_SLOT_BASE + 1
- *
- * The PD calls seL4_IRQHandler_Ack(cap) after the guest has consumed each
- * injected virtual IRQ to re-enable delivery from the GIC.
+ * IRQ handler capabilities placed by Microkit at BASE_IRQ_CAP + <irq id=N>.
+ * The .system file assigns id=3 to virtio-net, id=4 to virtio-blk0,
+ * id=5 to virtio-blk1 (ids 1 and 2 are taken by serial_pd/controller channels).
+ * Slots 141/142/143 in linux_vmm's CNode.
  */
 static const seL4_CPtr g_virtio_net_irq_cap =
-    (seL4_CPtr)(PD_IRQHANDLER_SLOT_BASE + 0u);
+    (seL4_CPtr)(MICROKIT_BASE_IRQ_CAP + 3u);
 static const seL4_CPtr g_virtio_blk_irq_cap =
-    (seL4_CPtr)(PD_IRQHANDLER_SLOT_BASE + 1u);
+    (seL4_CPtr)(MICROKIT_BASE_IRQ_CAP + 4u);
+static const seL4_CPtr g_virtio_blk2_irq_cap =
+    (seL4_CPtr)(MICROKIT_BASE_IRQ_CAP + 5u);
 
 /* ─── Guest Image Symbols ────────────────────────────────────────────── */
 /* These are linked in by package_guest_images.S */
@@ -318,20 +599,12 @@ static void linux_vmm_binding_init(void)
     LOG_VMM("binding: vmm_token=0 (VMM_KERNEL_CH not yet wired)\n");
 
     /* ── Step 2: MSG_SERIAL_OPEN (serial_pd) ─────────────────────────────
-     * Open a virtual serial port.  serial_pd owns PL011 exclusively.
-     * TODO: resolve g_serial_ep from nameserver instead of using channel slot.
+     * TODO: resolve g_serial_ep from nameserver (sel4_client_lookup not yet wired).
+     * Until wired, g_serial_ep remains 0 and serial binding is skipped.
      */
     if (g_serial_ep) {
-        sel4_msg_t req = {0}, rep = {0};
-        req.opcode = MSG_SERIAL_OPEN;
-        data_wr32(req.data, 0, 0u);  /* port_id 0 — raw, no banner */
-        if (sel4_call(g_serial_ep, &req, &rep) == 0 &&
-            data_rd32(rep.data, 0) == 1u) {
-            serial_client_slot = data_rd32(rep.data, 4);
-            LOG_VMM("binding: serial slot=%u\n", serial_client_slot);
-        } else {
-            LOG_VMM_ERR("binding: MSG_SERIAL_OPEN failed\n");
-        }
+        /* Placeholder — g_serial_ep is always 0 until nameserver lookup is wired */
+        LOG_VMM_ERR("binding: MSG_SERIAL_OPEN (TODO: implement nameserver lookup)\n");
     } else {
         LOG_VMM_ERR("binding: serial_ep not resolved (nameserver not ready)\n");
     }
@@ -373,6 +646,52 @@ static void virtio_blk_ack(size_t vcpu_id, int irq, void *cookie)
 {
     (void)vcpu_id; (void)irq; (void)cookie;
     seL4_IRQHandler_Ack(g_virtio_blk_irq_cap);
+}
+
+static void virtio_blk2_ack(size_t vcpu_id, int irq, void *cookie)
+{
+    (void)vcpu_id; (void)irq; (void)cookie;
+    seL4_IRQHandler_Ack(g_virtio_blk2_irq_cap);
+}
+
+/* ─── PL011 UART MMIO Emulation ──────────────────────────────────────────
+ *
+ * The Ubuntu kernel uses the PL011 UART at 0x9000000 for earlycon and the
+ * ttyAMA0 console driver.  serial_pd owns the physical PL011 IRQ; the guest
+ * never reaches the hardware.  Guest accesses to 0x9000000..0x9000FFF fault
+ * into linux_vmm and are dispatched here by fault_handle().
+ *
+ * Critical register: FR (offset 0x18).
+ *   FR=0  → TXFE=0 (TX FIFO not empty) → kernel spins in drain_fifo().
+ *   FR=0x90 → TXFE=1 (bit 7) + RXFE=1 (bit 4) → TX idle, RX empty.
+ *
+ * All other registers: reads return 0, writes are silently discarded.
+ * Guest console output is dropped; SSH provides the interactive channel.
+ */
+#define PL011_BASE   0x9000000UL
+#define PL011_SIZE   0x1000UL
+#define PL011_FR     0x18u      /* Flag Register offset */
+#define PL011_FR_TXFE (1u << 7) /* TX FIFO empty */
+#define PL011_FR_RXFE (1u << 4) /* RX FIFO empty */
+
+static bool pl011_fault_handler(size_t vcpu_id, size_t offset, size_t fsr,
+                                 seL4_UserContext *regs, void *data)
+{
+    (void)data;
+    uint64_t reg_val = 0;
+    if (fault_is_read((uint64_t)fsr)) {
+        if (offset == PL011_FR)
+            reg_val = PL011_FR_TXFE | PL011_FR_RXFE;
+    } else {
+        /* Write: offset 0x0 is the Data Register (DR) — forward char to host */
+        if (offset == 0) {
+            char c = (char)(fault_get_data(regs, (uint64_t)fsr) & 0xff);
+            seL4_DebugPutChar(c);
+        }
+    }
+    return fault_advance(vcpu_id, regs,
+                         (uint64_t)(PL011_BASE + offset),
+                         (uint64_t)fsr, reg_val);
 }
 
 /* ─── VCPU Affinity ──────────────────────────────────────────────────── */
@@ -456,9 +775,23 @@ void init(void)
     for (uint8_t i = 0; i < VMM_MAX_SLOTS; i++)
         vmm_affinity[i] = 0xFFFFFFFFu;
 
+    /* In raw seL4 mode (no Microkit), the root task maps 256 MB at 0x40000000
+     * into this PD's VSpace and leaves guest_ram_vaddr uninitialised (0).
+     * Use the fixed convention address as a fallback. */
+    if (guest_ram_vaddr == 0u) {
+        guest_ram_vaddr = 0x40000000UL;
+    }
+
     LOG_VMM("agentOS linux_vmm starting \"linux_vmm\"\n");
     LOG_VMM("  Guest RAM: 0x%lx (%d MB)\n",
             (unsigned long)guest_ram_vaddr, GUEST_RAM_SIZE / (1024 * 1024));
+
+    /* Register VCPU and TCB caps with libvmm before any libvmm call that
+     * uses vmm_vcpu_cap() or vmm_tcb_cap().  Microkit places these at the
+     * fixed CNode slots BASE_VCPU_CAP+id and BASE_VM_TCB_CAP+id. */
+    vmm_register_vcpu(GUEST_BOOT_VCPU_ID,
+                      MICROKIT_BASE_VCPU_CAP   + GUEST_BOOT_VCPU_ID,
+                      MICROKIT_BASE_VM_TCB_CAP + GUEST_BOOT_VCPU_ID);
 
     /* Place guest images in RAM */
     size_t kernel_size = _guest_kernel_image_end - _guest_kernel_image;
@@ -490,6 +823,15 @@ void init(void)
         return;
     }
 
+    /* Register PL011 UART MMIO emulation (0x9000000 .. 0x9000FFF).
+     * Ubuntu kernel uses PL011 for earlycon/ttyAMA0; serial_pd owns the
+     * physical IRQ.  Our handler returns FR=0x90 on reads so the kernel
+     * does not spin waiting for TX-empty. */
+    if (!fault_register_vm_exception_handler(PL011_BASE, PL011_SIZE,
+                                             pl011_fault_handler, NULL)) {
+        LOG_VMM_ERR("Failed to register PL011 UART fault handler\n");
+    }
+
     /*
      * Complete guest binding protocol (guest_contract.h §3.1) before boot.
      * UART IRQ 33 is no longer registered here — serial_pd owns it.
@@ -505,14 +847,23 @@ void init(void)
     /* Initial ack to prime the GIC for first delivery (seL4 native API) */
     seL4_IRQHandler_Ack(g_virtio_net_irq_cap);
 
-    /* Register virtio-blk IRQ passthrough (QEMU virt: SPI 17 → INTID 49) */
+    /* Register virtio-blk0 IRQ passthrough (QEMU virt: SPI 17 → INTID 49) */
     success = virq_register(GUEST_BOOT_VCPU_ID, VIRTIO_BLK_IRQ, &virtio_blk_ack, NULL);
     if (!success) {
-        LOG_VMM_ERR("Failed to register virtio-blk IRQ\n");
+        LOG_VMM_ERR("Failed to register virtio-blk0 IRQ\n");
         return;
     }
     /* Initial ack to prime the GIC for first delivery (seL4 native API) */
     seL4_IRQHandler_Ack(g_virtio_blk_irq_cap);
+
+    /* Register virtio-blk1 IRQ passthrough (SPI 18 → INTID 50, ubuntu seed) */
+    success = virq_register(GUEST_BOOT_VCPU_ID, VIRTIO_BLK2_IRQ, &virtio_blk2_ack, NULL);
+    if (!success) {
+        LOG_VMM_ERR("Failed to register virtio-blk1 IRQ (ubuntu seed — may not be present)\n");
+        /* Non-fatal: buildroot guests do not use the seed disk slot */
+    } else {
+        seL4_IRQHandler_Ack(g_virtio_blk2_irq_cap);
+    }
 
     /* Start the guest! */
     LOG_VMM("  Starting Linux guest...\n");
@@ -574,9 +925,15 @@ static void linux_vmm_notified(seL4_Word badge)
     if (badge & (seL4_Word)VIRTIO_BLK_NTFN_BADGE) {
         bool success = virq_inject(VIRTIO_BLK_IRQ);
         if (!success) {
-            LOG_VMM_ERR("virtio-blk IRQ %d dropped on inject\n", VIRTIO_BLK_IRQ);
+            LOG_VMM_ERR("virtio-blk0 IRQ %d dropped on inject\n", VIRTIO_BLK_IRQ);
         }
-        /* IRQHandler_Ack is called by virtio_blk_ack() registered via virq_register */
+    }
+
+    if (badge & (seL4_Word)VIRTIO_BLK2_NTFN_BADGE) {
+        bool success = virq_inject(VIRTIO_BLK2_IRQ);
+        if (!success) {
+            LOG_VMM_ERR("virtio-blk1 IRQ %d dropped on inject\n", VIRTIO_BLK2_IRQ);
+        }
     }
 
     /* Non-IRQ channel notifications — dispatch by badge/channel number */
@@ -648,7 +1005,8 @@ static void linux_vmm_notified(seL4_Word badge)
 
     default:
         /* Only log if no badge bits were set (i.e. not a virtio IRQ notification) */
-        if (!(badge & (seL4_Word)(VIRTIO_NET_NTFN_BADGE | VIRTIO_BLK_NTFN_BADGE))) {
+        if (!(badge & (seL4_Word)(VIRTIO_NET_NTFN_BADGE | VIRTIO_BLK_NTFN_BADGE |
+                                   VIRTIO_BLK2_NTFN_BADGE))) {
             LOG_VMM("Unexpected notification on badge 0x%lx\n", (unsigned long)badge);
         }
         break;
@@ -677,10 +1035,13 @@ static void linux_vmm_notified(seL4_Word badge)
  *   dropped until the full proxy is wired.  The guest still boots because
  *   early serial writes do not require a response.
  */
-static seL4_MessageInfo_t linux_vmm_fault(seL4_Word child,
+static seL4_MessageInfo_t linux_vmm_fault(seL4_Word badge,
                                           seL4_MessageInfo_t msginfo)
 {
-    bool success = fault_handle(child, msginfo);
+    /* Microkit 2.1 encodes VCPU fault badges as (1ULL<<62)|vcpu_id.
+     * Strip the upper flag bits to recover the raw vcpu_id. */
+    size_t vcpu_id = badge & ~(1ULL << 62);
+    bool success = fault_handle(vcpu_id, msginfo);
     (void)success;
     /* UART MMIO fault compliance stub — silently accept, guest continues. */
     return seL4_MessageInfo_new(0, 0, 0, 0);
@@ -688,29 +1049,68 @@ static seL4_MessageInfo_t linux_vmm_fault(seL4_Word child,
 
 /* ─── Main loop ─────────────────────────────────────────────────────────── */
 
-void linux_vmm_main(seL4_CPtr ep, seL4_CPtr ns_ep)
-{
-    sel4_client_t client;
-    sel4_client_init(&client, ns_ep);
+/*
+ * Microkit CapDL CNode layout for linux_vmm:
+ *   slot 1: ep_linux_vmm  (receive endpoint)
+ *   slot 4: reply_linux_vmm  (MCS reply cap storage)
+ */
+#define VMM_EP_CAP    ((seL4_CPtr)1u)
+#define VMM_REPLY_CAP ((seL4_CPtr)4u)
 
-    g_serial_ep = sel4_client_lookup(&client, "serial_pd");
-    g_controller_ntfn_cap = sel4_client_lookup(&client, "controller");
+void linux_vmm_main(seL4_CPtr ep, seL4_CPtr reply_cap)
+{
+    /* Point __sel4_ipc_buffer at the frame mapped by the CapDL initializer.
+     * Must happen before any seL4 IPC call that uses message registers. */
+    extern char __sel4_ipc_buffer_obj[];
+    seL4_SetIPCBuffer((seL4_IPCBuffer *)__sel4_ipc_buffer_obj);
 
     /* Run init() — sets up guest images, GIC, virtio IRQs, starts guest */
     init();
 
-    /* Main dispatch loop — receive notifications and faults */
+    /* Main dispatch loop — receive notifications and faults.
+     *
+     * seL4 MCS mode (CONFIG_KERNEL_MCS=1):
+     *   seL4_Recv takes a reply cap slot as third argument; the kernel saves
+     *   the caller's reply context there.  seL4_Reply is not available in MCS;
+     *   use seL4_Send on the reply cap slot to complete the reply instead.
+     *
+     * seL4 non-MCS mode:
+     *   seL4_Recv takes two arguments; seL4_Reply completes the round-trip.
+     */
     seL4_Word badge;
+#ifdef CONFIG_KERNEL_MCS
+    seL4_MessageInfo_t info = seL4_Recv(ep, &badge, reply_cap);
+#else
+    seL4_MessageInfo_t info = seL4_Recv(ep, &badge);
+#endif
     while (1) {
-        seL4_MessageInfo_t info = seL4_Recv(ep, &badge);
         seL4_Word label = seL4_MessageInfo_get_label(info);
         if (label == seL4_Fault_NullFault) {
             linux_vmm_notified(badge);
+#ifdef CONFIG_KERNEL_MCS
+            info = seL4_Recv(ep, &badge, reply_cap);
+#else
+            info = seL4_Recv(ep, &badge);
+#endif
         } else {
             seL4_MessageInfo_t reply = linux_vmm_fault(badge, info);
+#ifdef CONFIG_KERNEL_MCS
+            seL4_Send(reply_cap, reply);
+            info = seL4_Recv(ep, &badge, reply_cap);
+#else
             seL4_Reply(reply);
+            info = seL4_Recv(ep, &badge);
+#endif
         }
     }
+}
+
+/* ELF entry point required by Microkit linker script and monitor.
+ * Uses the Microkit CapDL CNode layout constants above. */
+__attribute__((section(".text.start"), noreturn))
+void _start(void) {
+    linux_vmm_main(VMM_EP_CAP, VMM_REPLY_CAP);
+    __builtin_unreachable();
 }
 
 #endif /* ARCH_AARCH64 && !LINUX_VMM_NATIVE_STUB */

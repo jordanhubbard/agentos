@@ -13,7 +13,7 @@
  * may be needed if instead this driver was to be used in a different environment.
  */
 
-#include <microkit.h>
+#include <sel4/sel4.h>
 #include <stdint.h>
 #include <sddf/util/printf.h>
 #include <sddf/util/util.h>
@@ -65,7 +65,6 @@ _Static_assert((uint64_t)VIRTIO_DATA_ENTRY_SIZE *(uint64_t)VIRTQ_QUEUE_SIZE <= G
 #define BIT_LOW(n)  (1ul<<(n))
 #define BIT_HIGH(n) (1ul<<(n - 32 ))
 
-/* Microkit patched variables */
 uintptr_t virtio_regs;
 uintptr_t virtio_metadata;
 uintptr_t virtio_metadata_paddr;
@@ -107,20 +106,13 @@ static void virtio_gpu_init();
 static void handle_request();
 static void handle_irq();
 
-void init(void)
+static seL4_CPtr g_ep;
+static seL4_CPtr g_irq_cap;
+static seL4_CPtr g_virt_ntfn;
+
+static void pd_notified(seL4_Word badge)
 {
-    LOG_GPU_VIRTIO_DRIVER("Initialising GPU virtio driver!\n");
-    ialloc_init(&ialloc_desc, ialloc_desc_idxlist, VIRTQ_QUEUE_SIZE);
-
-    gpu_queue_init(&gpu_queue_h, gpu_req_queue, gpu_resp_queue, GPU_QUEUE_CAPACITY_DRV);
-
-    regs = (volatile virtio_mmio_regs_t *)(virtio_regs + VIRTIO_MMIO_GPU_OFFSET);
-    virtio_config = (volatile struct virtio_gpu_config *)regs->Config;
-    virtio_gpu_init();
-}
-
-void notified(microkit_channel ch)
-{
+    seL4_Word ch = badge;
 #ifdef DEBUG_GPU_VIRTIO_DRIVER
     if (ch == IRQ_CH) {
         LOG_GPU_VIRTIO_DRIVER("Received interrupt from device\n");
@@ -131,13 +123,38 @@ void notified(microkit_channel ch)
     switch (ch) {
     case IRQ_CH:
         handle_irq();
-        microkit_deferred_irq_ack(ch);
+        seL4_IRQHandler_Ack(g_irq_cap);
         break;
     case VIRT_CH:
         handle_request();
         break;
     default:
-        LOG_GPU_VIRTIO_DRIVER_ERR("Received notification from unknown channel: 0x%x\n", ch);
+        LOG_GPU_VIRTIO_DRIVER_ERR("Received notification from unknown channel: 0x%lx\n", ch);
+    }
+}
+
+void gpu_drv_main(seL4_CPtr ep)
+{
+    g_ep = ep;
+
+    LOG_GPU_VIRTIO_DRIVER("Initialising GPU virtio driver!\n");
+    ialloc_init(&ialloc_desc, ialloc_desc_idxlist, VIRTQ_QUEUE_SIZE);
+
+    gpu_queue_init(&gpu_queue_h, gpu_req_queue, gpu_resp_queue, GPU_QUEUE_CAPACITY_DRV);
+
+    regs = (volatile virtio_mmio_regs_t *)(virtio_regs + VIRTIO_MMIO_GPU_OFFSET);
+    virtio_config = (volatile struct virtio_gpu_config *)regs->Config;
+    virtio_gpu_init();
+
+    seL4_Word badge;
+    while (1) {
+        seL4_MessageInfo_t info = seL4_Recv(ep, &badge);
+        seL4_Word label = seL4_MessageInfo_get_label(info);
+        if (label == seL4_Fault_NullFault) {
+            pd_notified(badge);
+        } else {
+            seL4_Reply(seL4_MessageInfo_new(0, 0, 0, 0));
+        }
     }
 }
 
@@ -769,7 +786,7 @@ static void handle_request()
     }
 
     if (sddf_notify) {
-        microkit_notify(VIRT_CH);
+        seL4_Signal(VIRT_CH);
     }
 
     if (virtio_queue_notify) {
@@ -807,7 +824,7 @@ static void handle_irq()
     }
 
     if (notify) {
-        microkit_notify(VIRT_CH);
+        seL4_Signal(VIRT_CH);
     } else {
         LOG_GPU_VIRTIO_DRIVER_ERR("Received interrupt but is neither a used buffer notification nor "
                                   "a gpu event, irq status: 0x%x\n",

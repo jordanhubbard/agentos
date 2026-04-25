@@ -4,7 +4,7 @@
  */
 
 #include <stdint.h>
-#include <microkit.h>
+#include <sel4/sel4.h>
 #include <sddf/util/printf.h>
 #include <sddf/resources/device.h>
 #include <sddf/timer/protocol.h>
@@ -108,7 +108,7 @@ static void process_timeouts(uint64_t curr_time)
     uint64_t next_timeout = UINT64_MAX;
     for (int i = 0; i < MAX_TIMEOUTS; i++) {
         if (timeouts[i] <= curr_time) {
-            sddf_notify(i);
+            seL4_Signal(i);
             timeouts[i] = UINT64_MAX;
         } else if (timeouts[i] < next_timeout) {
             next_timeout = timeouts[i];
@@ -120,22 +120,60 @@ static void process_timeouts(uint64_t curr_time)
     }
 }
 
-void init(void)
+static seL4_CPtr g_ep;
+static seL4_CPtr g_irq_cap;
+
+static void pd_notified(seL4_Word badge)
 {
-    // Read COUNTER_CLK_PERIOD 32:63 from General Capabilities and ID Register
+    seL4_Word ch = badge;
+    if (ch != IRQ_CH) {
+        return;
+    }
+
+    seL4_IRQHandler_Ack(g_irq_cap);
+
+    uint64_t now = get_time();
+
+    process_timeouts(now);
+}
+
+static seL4_MessageInfo_t pd_protected(seL4_Word badge, seL4_MessageInfo_t msginfo)
+{
+    seL4_Word ch = badge;
+    switch (seL4_MessageInfo_get_label(msginfo)) {
+
+    case 0: {
+        uint64_t now = get_time();
+        seL4_SetMR(0, now);
+        return seL4_MessageInfo_new(0, 0, 0, 1);
+    }
+
+    case 1: {
+        uint64_t delta = seL4_GetMR(0);
+        uint64_t now = get_time();
+
+        timeouts[ch] = now + delta;
+        process_timeouts(now);
+        return seL4_MessageInfo_new(0, 0, 0, 0);
+    }
+
+    default:
+        return seL4_MessageInfo_new(0, 0, 0, 0);
+    }
+}
+
+void timer_main(seL4_CPtr ep)
+{
+    g_ep = ep;
+
     volatile uint64_t cap = *((uint64_t *)HPET_REGION + HPET_GENERAL_CAP_ID_REG);
     tick_period_fs = cap >> 32;
 
-    // Enable all timer interrupts
     volatile uint64_t *general_config_reg = (void *)HPET_REGION + HPET_GENERAL_CONFIG_REG;
     *general_config_reg |= BIT(ENABLE_CNF);
 
     timer_0 = (void *)HPET_REGION + HPET_TIMER1_OFFSET;
-    // Enable Timer 0 interrupts
     timer_0->config |= BIT(TN_FSB_EN_CNF) | BIT(TN_INT_ENB_CNF);
-    // Direct timer interrupts to local APIC: write address and value (interrupt vector)
-    // interrupt vector = vector (in SDF) + irq_user_min(0x10) + IRQ_INT_OFFSET(0x20)
-    // @terryb: remove hard-coded IRQ number
     timer_0->fsb_irr = (LOCAL_APIC_ADDR << 32llu) | IRQ_NUM;
 
     next_timeout = UINT64_MAX;
@@ -143,42 +181,17 @@ void init(void)
         timeouts[i] = UINT64_MAX;
     }
 
-    microkit_deferred_irq_ack(IRQ_CH);
-}
+    seL4_IRQHandler_Ack(g_irq_cap);
 
-seL4_MessageInfo_t protected(microkit_channel ch, microkit_msginfo msginfo)
-{
-    switch (microkit_msginfo_get_label(msginfo)) {
-
-    case 0: {
-        uint64_t now = get_time();
-        microkit_mr_set(0, now);
-        return microkit_msginfo_new(0, 1);
+    seL4_Word badge;
+    while (1) {
+        seL4_MessageInfo_t info = seL4_Recv(ep, &badge);
+        seL4_Word label = seL4_MessageInfo_get_label(info);
+        if (label == seL4_Fault_NullFault) {
+            pd_notified(badge);
+        } else {
+            seL4_MessageInfo_t reply = pd_protected(badge, info);
+            seL4_Reply(reply);
+        }
     }
-
-    case 1: {
-        uint64_t delta = microkit_mr_get(0);
-        uint64_t now = get_time();
-
-        timeouts[ch] = now + delta;
-        process_timeouts(now);
-        return microkit_msginfo_new(0, 0);
-    }
-
-    default:
-        return microkit_msginfo_new(0, 0);
-    }
-}
-
-void notified(microkit_channel ch)
-{
-    if (ch != IRQ_CH) {
-        return;
-    }
-
-    microkit_deferred_irq_ack(IRQ_CH);
-
-    uint64_t now = get_time();
-
-    process_timeouts(now);
 }

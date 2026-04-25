@@ -13,6 +13,7 @@
 
 #include "sel4_boot.h"
 #include <stdint.h>
+#include <stddef.h>
 
 /*
  * pd_vspace_result_t — result returned by pd_vspace_create and pd_vspace_load_elf.
@@ -72,3 +73,27 @@ pd_vspace_result_t pd_vspace_load_elf(seL4_CPtr    vspace_cap,
                                        const void  *elf_base,
                                        uint32_t     elf_size,
                                        uint32_t     stack_size);
+
+/*
+ * pd_vspace_map_region — allocate and map an anonymous RAM region into a VSpace.
+ *
+ * Maps [va_start, va_start + size) into vspace using 2 MB large pages.
+ * Both va_start and size must be 2 MB-aligned (2097152 byte multiples).
+ * Frame capabilities are retained in the root task's CNode to maintain the
+ * mappings; they are never returned to the caller.
+ *
+ * This is used by the root task to give PDs like linux_vmm large private RAM
+ * regions (e.g. 256 MB of guest RAM at 0x40000000 on AArch64).
+ *
+ * Parameters:
+ *   vspace    VSpace capability for the target PD
+ *   va_start  first virtual address of the region (2 MB aligned)
+ *   size      size in bytes (2 MB aligned; must be ≥ 2 MB)
+ *   writable  1 = R/W mapping, 0 = R/O mapping
+ *
+ * Returns seL4_NoError on success, or an seL4 error code on failure.
+ */
+seL4_Error pd_vspace_map_region(seL4_CPtr vspace,
+                                 seL4_Word  va_start,
+                                 size_t     size,
+                                 int        writable);

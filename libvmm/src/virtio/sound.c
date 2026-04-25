@@ -4,7 +4,7 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
-#include <microkit.h>
+#include <libvmm/vmm_caps.h>
 #include <libvmm/guest.h>
 #include <libvmm/virq.h>
 #include <libvmm/util/util.h>
@@ -652,7 +652,7 @@ static bool virtio_snd_mmio_queue_notify(struct virtio_device *dev)
     handle_virtq(dev, dev->regs.QueueNotify, &notify_driver, &respond);
 
     if (notify_driver) {
-        microkit_notify(state->server_ch);
+        vmm_notify(state->server_ch);
     }
     if (respond) {
         virtio_snd_respond(dev);
@@ -677,7 +677,7 @@ bool virtio_mmio_snd_init(struct virtio_snd_device *sound_dev,
                           sound_shared_state_t *shared_state,
                           sound_queues_t *queues,
                           uintptr_t data_region,
-                          int server_ch)
+                          seL4_CPtr server_ch)
 {
     struct virtio_device *dev = &sound_dev->virtio_device;
 

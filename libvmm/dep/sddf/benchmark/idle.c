@@ -4,7 +4,7 @@
  */
 
 #include <stdint.h>
-#include <microkit.h>
+#include <sel4/sel4.h>
 #include <sddf/util/util.h>
 #include <sddf/util/fence.h>
 #include <sddf/util/printf.h>
@@ -53,17 +53,32 @@ void count_idle(void)
 #endif
 }
 
-void notified(microkit_channel ch)
+static seL4_CPtr g_ep;
+
+static void pd_notified(seL4_Word badge)
 {
+    seL4_Word ch = badge;
     if (ch == config.init_channel) {
         count_idle();
     } else {
-        sddf_dprintf("Idle thread notified on unexpected channel: %u\n", ch);
+        sddf_dprintf("Idle thread notified on unexpected channel: %lu\n", ch);
     }
 }
 
-void init(void)
+void benchmark_idle_main(seL4_CPtr ep)
 {
+    g_ep = ep;
+
     b = (void *)config.cycle_counters;
-    return;
+
+    seL4_Word badge;
+    while (1) {
+        seL4_MessageInfo_t info = seL4_Recv(ep, &badge);
+        seL4_Word label = seL4_MessageInfo_get_label(info);
+        if (label == seL4_Fault_NullFault) {
+            pd_notified(badge);
+        } else {
+            seL4_Reply(seL4_MessageInfo_new(0, 0, 0, 0));
+        }
+    }
 }

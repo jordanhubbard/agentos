@@ -3,7 +3,7 @@
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
-#include <microkit.h>
+#include <sel4/sel4.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <sddf/i2c/i2c_virt.h>
@@ -45,7 +45,7 @@ static inline int return_error(i2c_err_t err, int client_id, i2c_addr_t bus_addr
 {
     purge_intermediary();
     int ret = i2c_enqueue_response(client_queues[client_id], bus_addr, err, err_idx);
-    microkit_notify(CLIENT_CH_OFFSET + client_id);
+    seL4_Signal(CLIENT_CH_OFFSET + client_id);
     return ret;
 }
 
@@ -281,7 +281,7 @@ int process_request(uint32_t client_id, i2c_cmd_t *deferred_cmd, size_t deferred
     // Successfully validated command(s). Send.
     // Invariant: only commands validated as small enough to fit in the driver queue exist in intermediary
     if (enqueued) {
-        microkit_deferred_notify(config.driver.id);
+        seL4_Signal(config.driver.id);
     }
     return deferred;
 }
@@ -315,12 +315,100 @@ void process_response()
         i2c_enqueue_response(client_queues[client_id], bus_address, error, err_cmd);
 
         LOG_VIRT("Notifying client.\n");
-        microkit_notify(CLIENT_CH_OFFSET + client_id);
+        seL4_Signal(CLIENT_CH_OFFSET + client_id);
     }
 }
 
-void init(void)
+static seL4_CPtr g_ep;
+
+static void pd_notified(seL4_Word badge)
 {
+    seL4_Word ch = badge;
+    bool driver_q_exhausted = false;
+    if (ch == config.driver.id) {
+        LOG_VIRT("notified by driver\n");
+        process_response();
+    }
+    while (!virt_q_empty(&deferred_queue)) {
+        uint32_t client_id;
+        size_t num_cmds;
+        i2c_cmd_t head_cmd;
+        virt_q_peek(&deferred_queue, &client_id, &num_cmds, &head_cmd);
+        if (num_cmds > i2c_request_queue_length(driver_queue)) {
+            LOG_VIRT("Deferred entry is too big to be handled now. Giving up.");
+            driver_q_exhausted = true;
+            break;
+        }
+
+        int deferred = process_request(client_id, &head_cmd, num_cmds, false);
+        if (deferred) {
+            LOG_VIRT("Driver queue is exhausted after handling deferred request.");
+            driver_q_exhausted = true;
+            break;
+        }
+    }
+
+    if (ch != config.driver.id) {
+        uint32_t client_id = ch - CLIENT_CH_OFFSET;
+        LOG_VIRT("notified by client %u\n", client_id);
+        if (driver_q_exhausted) {
+            LOG_VIRT("Pending request from client %u deferred to maintain run order.", client_id);
+        }
+        process_request(client_id, NULL, 0, driver_q_exhausted);
+    }
+}
+
+// TODO: replace this with sdf_gen method for bus address assignment once
+// sdf_gen refactor is complete.
+static seL4_MessageInfo_t pd_protected(seL4_Word badge, seL4_MessageInfo_t msginfo)
+{
+    seL4_Word ch = badge;
+    size_t label = seL4_MessageInfo_get_label(msginfo);
+    size_t bus = seL4_GetMR(I2C_BUS_SLOT);
+    uint32_t client_id = ch - CLIENT_CH_OFFSET;
+
+    if (label != I2C_BUS_CLAIM && label != I2C_BUS_RELEASE) {
+        LOG_VIRT_ERR("unknown label (0x%lx) given by client on channel 0x%lx\n", label, ch);
+        return seL4_MessageInfo_new(I2C_FAILURE, 0, 0, 0);
+    }
+
+    if (bus > I2C_BUS_ADDRESS_MAX) {
+        LOG_VIRT_ERR("invalid bus address (0x%lx) given by client on "
+                     "channel 0x%lx. Max bus address is 0x%x\n",
+                     bus, ch, I2C_BUS_ADDRESS_MAX);
+        return seL4_MessageInfo_new(I2C_FAILURE, 0, 0, 0);
+    }
+
+    switch (label) {
+    case I2C_BUS_CLAIM:
+        LOG_VIRT("Client %u claimed address %zu\n", client_id, bus);
+        if (security_list[bus] != BUS_UNCLAIMED) {
+            LOG_VIRT_ERR("bus address 0x%lx already claimed, cannot claim for channel 0x%lx\n", bus, ch);
+            return seL4_MessageInfo_new(I2C_FAILURE, 0, 0, 0);
+        }
+
+        security_list[bus] = client_id;
+        break;
+    case I2C_BUS_RELEASE:
+        if (security_list[bus] != (int)client_id) {
+            LOG_VIRT_ERR("bus address 0x%lx is not claimed by channel 0x%lx\n", bus, ch);
+            return seL4_MessageInfo_new(I2C_FAILURE, 0, 0, 0);
+        }
+
+        security_list[bus] = BUS_UNCLAIMED;
+        break;
+    default:
+        LOG_VIRT_ERR("reached unreachable case\n");
+        return seL4_MessageInfo_new(I2C_FAILURE, 0, 0, 0);
+    }
+
+    return seL4_MessageInfo_new(I2C_SUCCESS, 0, 0, 0);
+}
+
+void i2c_virt_main(seL4_CPtr ep)
+{
+    g_ep = ep;
+
     assert(i2c_config_check_magic(&config));
     assert(config.driver.id == 0);
     LOG_VIRT("initialising\n");
@@ -332,110 +420,16 @@ void init(void)
         client_queues[i] = i2c_queue_init(config.clients[i].conn.req_queue.vaddr,
                                           config.clients[i].conn.resp_queue.vaddr);
     }
-}
 
-/**
- *  Since i2c is a synchronous bus, we must take great care to ensure incoming work is
- *  processed monotonically to avoid the possibility of starvation. Additionally, since
- *  commands are strictly dependent on each other, we can only ever move entire batches
- *  of valid commands between queues.
- *
- *  To handle these constraints, we only ever accept requests if the driver queue can fit
- *  all commands involved and never allow requests to be accepted in a partial state.
- *
- *  This loop will always handle the driver response first to make room, and then will
- *  handle any deferred requests in the deferred request queue. New requests are handled
- *  last and are sent straight to the deferred queue if we couldn't deplete all deferred
- *  work first.
- */
-void notified(microkit_channel ch)
-{
-    bool driver_q_exhausted = false;
-    // Handle response first
-    if (ch == config.driver.id) {
-        LOG_VIRT("notified by driver\n");
-        process_response();
-    }
-    // Check for deferred work and process it.
-    while (!virt_q_empty(&deferred_queue)) {
-        uint32_t client_id;
-        size_t num_cmds;
-        i2c_cmd_t head_cmd;
-        // Check we can actually fit the next batch of deferred work before
-        // starting. Otherwise we can end up running for absurdly long as work
-        // is re-queued and is no longer processed monotonically!
-        virt_q_peek(&deferred_queue, &client_id, &num_cmds, &head_cmd);
-        if (num_cmds > i2c_request_queue_length(driver_queue)) {
-            LOG_VIRT("Deferred entry is too big to be handled now. Giving up.");
-            driver_q_exhausted = true;
-            break;
-        }
-
-        int deferred = process_request(client_id, &head_cmd, num_cmds, false);
-        // Leave early if we ran out of work again.
-        if (deferred) {
-            LOG_VIRT("Driver queue is exhausted after handling deferred request.");
-            driver_q_exhausted = true;
-            break;
+    seL4_Word badge;
+    while (1) {
+        seL4_MessageInfo_t info = seL4_Recv(ep, &badge);
+        seL4_Word label = seL4_MessageInfo_get_label(info);
+        if (label == seL4_Fault_NullFault) {
+            pd_notified(badge);
+        } else {
+            seL4_MessageInfo_t reply = pd_protected(badge, info);
+            seL4_Reply(reply);
         }
     }
-
-    if (ch != config.driver.id) {
-        uint32_t client_id = ch - CLIENT_CH_OFFSET;
-        LOG_VIRT("notified by client %u\n", client_id);
-        // If we couldn't fulfill deferred requests, we shouldn't process this
-        // request to maintain monotonicity. A client can starve all others that
-        // use large requests if we don't bail out here. We do this by setting force_defer
-        if (driver_q_exhausted) {
-            LOG_VIRT("Pending request from client %u deferred to maintain run order.", client_id);
-        }
-        process_request(client_id, NULL, 0, driver_q_exhausted);
-    }
-}
-
-// TODO: replace this with sdf_gen method for bus address assignment once
-// sdf_gen refactor is complete.
-seL4_MessageInfo_t protected(microkit_channel ch, seL4_MessageInfo_t msginfo)
-{
-    size_t label = microkit_msginfo_get_label(msginfo);
-    size_t bus = microkit_mr_get(I2C_BUS_SLOT);
-    uint32_t client_id = ch - CLIENT_CH_OFFSET;
-
-    if (label != I2C_BUS_CLAIM && label != I2C_BUS_RELEASE) {
-        LOG_VIRT_ERR("unknown label (0x%lx) given by client on channel 0x%x\n", label, ch);
-        return microkit_msginfo_new(I2C_FAILURE, 0);
-    }
-
-    if (bus > I2C_BUS_ADDRESS_MAX) {
-        LOG_VIRT_ERR("invalid bus address (0x%lx) given by client on "
-                     "channel 0x%x. Max bus address is 0x%x\n",
-                     bus, ch, I2C_BUS_ADDRESS_MAX);
-        return microkit_msginfo_new(I2C_FAILURE, 0);
-    }
-
-    switch (label) {
-    case I2C_BUS_CLAIM:
-        // We have a valid bus address, we need to make sure no one else has claimed it.
-        LOG_VIRT("Client %u claimed address %u\n", client_id, bus);
-        if (security_list[bus] != BUS_UNCLAIMED) {
-            LOG_VIRT_ERR("bus address 0x%lx already claimed, cannot claim for channel 0x%x\n", bus, ch);
-            return microkit_msginfo_new(I2C_FAILURE, 0);
-        }
-
-        security_list[bus] = client_id;
-        break;
-    case I2C_BUS_RELEASE:
-        if (security_list[bus] != client_id) {
-            LOG_VIRT_ERR("bus address 0x%lx is not claimed by channel 0x%x\n", bus, ch);
-            return microkit_msginfo_new(I2C_FAILURE, 0);
-        }
-
-        security_list[bus] = BUS_UNCLAIMED;
-        break;
-    default:
-        LOG_VIRT_ERR("reached unreachable case\n");
-        return microkit_msginfo_new(I2C_FAILURE, 0);
-    }
-
-    return microkit_msginfo_new(I2C_SUCCESS, 0);
 }

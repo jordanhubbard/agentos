@@ -1,26 +1,28 @@
 # agentOS FreeBSD VMM PD — Makefile
 #
 # Builds freebsd_vmm.elf: the VMM protection domain that hosts FreeBSD
-# as a seL4 Microkit virtual machine guest using libvmm.
+# as a raw seL4 virtual machine guest using libvmm.
 #
 # Prerequisites:
-#   - MICROKIT_SDK pointing to the Microkit SDK (aarch64 linux variant)
-#   - LIBVMM_DIR pointing to libs/libvmm checkout
+#   - SEL4_BOARD_DIR pointing to the board package with seL4 headers
+#     (e.g. microkit-sdk-2.1.0/board/qemu_virt_aarch64; we use its seL4
+#     headers and kernel API stubs — NOT libmicrokit)
+#   - LIBVMM_DIR pointing to the libvmm checkout
 #   - EDK2_FD pointing to the edk2-aarch64-code.fd firmware image
 #   - FREEBSD_DTB pointing to the compiled freebsd-guest.dtb (optional)
 #   - clang + ld.lld + llvm-objcopy (LLVM cross toolchain)
 
-BOARD        ?= qemu_virt_aarch64
-MICROKIT_SDK ?= ../../microkit-sdk-2.1.0
-LIBVMM_DIR   ?= ../../libs/libvmm
-BUILD_DIR    ?= build
-EDK2_FD      ?= $(HOME)/.local/agentos-images/edk2-aarch64-code.fd
-FREEBSD_DTB  ?= $(BUILD_DIR)/freebsd-guest.dtb
+BOARD           ?= qemu_virt_aarch64
+SEL4_BOARD_DIR  ?= ../../microkit-sdk-2.1.0/board/$(BOARD)
+LIBVMM_DIR      ?= ../../libvmm
+BUILD_DIR       ?= build
+EDK2_FD         ?= $(HOME)/.local/agentos-images/edk2-aarch64-code.fd
+FREEBSD_DTB     ?= $(BUILD_DIR)/freebsd-guest.dtb
 
-MICROKIT_INCLUDE := $(MICROKIT_SDK)/board/$(BOARD)/include
-MICROKIT_LIB     := $(MICROKIT_SDK)/board/$(BOARD)/lib
-LIBVMM_INCLUDE   := $(LIBVMM_DIR)/include
-LIBVMM_SRC       := $(LIBVMM_DIR)/src
+SEL4_INCLUDE    := $(SEL4_BOARD_DIR)/include
+SEL4_LIB        := $(SEL4_BOARD_DIR)/lib
+LIBVMM_INCLUDE  := $(LIBVMM_DIR)/include
+LIBVMM_SRC      := $(LIBVMM_DIR)/src
 
 CC      := clang --target=aarch64-none-elf
 LD      := ld.lld
@@ -34,18 +36,20 @@ CFLAGS := \
     -nostdlib \
     -O2 \
     -Wall -Wextra \
-    -I$(MICROKIT_INCLUDE) \
+    -I$(SEL4_INCLUDE) \
     -I$(LIBVMM_INCLUDE) \
     -I$(AGENTOS_INCLUDE) \
     -I.
 
 LDFLAGS := \
-    -L$(MICROKIT_LIB) \
+    -L$(SEL4_LIB) \
     -L$(LIBVMM_DIR)/build/$(BOARD) \
     -Ttext-segment=0x800000 \
-    --entry=microkit_main
+    --entry=freebsd_vmm_main
 
-LIBS := -lmicrokit -lvmm
+# seL4 API calls are inline (from sel4/sel4.h); no libmicrokit needed.
+# libc builtins (memcpy/memset) are provided by libvmm or compiler intrinsics.
+LIBS := -lvmm
 
 SRCS := vmm.c vmm_mux.c
 
@@ -87,7 +91,7 @@ $(EDK2_OBJ): $(EDK2_FD) | $(BUILD_DIR)
 $(FREEBSD_DTB): freebsd-vmm.dts | $(BUILD_DIR)
 	dtc -I dts -O dtb -o $@ $<
 
-# Embed DTB as a binary blob (stub if DTB not available)
+# Embed DTB as a binary blob
 $(DTB_OBJ): $(FREEBSD_DTB) | $(BUILD_DIR)
 	$(OBJCOPY) \
 	    -I binary \

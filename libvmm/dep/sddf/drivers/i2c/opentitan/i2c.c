@@ -303,7 +303,7 @@ void state_cmd_ret(fsm_data_t *f, i2c_driver_data_t *data, i2c_queue_handle_t *q
     } else if (cmd_is_read(data->active_cmd) && data->bytes_read < data->rw_idx) {
         // Go to sleep until next IRQ (more rx data)
         f->next_state = S_CMD_RET;
-        microkit_irq_ack(IRQ_RXTHRESH_CH);
+        seL4_IRQHandler_Ack(g_irq_caps[1]);
         f->yield = true; //
     // Case 3: no more work to do here, but command is incomplete
     } else {
@@ -318,9 +318,92 @@ void state_cmd_ret(fsm_data_t *f, i2c_driver_data_t *data, i2c_queue_handle_t *q
     }
 }
 
-void init(void)
+static seL4_CPtr g_ep;
+static seL4_CPtr g_irq_caps[6]; /* indexed by IRQ slot 0..5 matching device_resources.irqs[] */
+
+static void pd_notified(seL4_Word badge)
 {
-    // Check sdfgen properties
+    seL4_Word ch = badge;
+    assert(driver_data.err == I2C_ERR_OK);
+    if (ch == config.virt.id) {
+        fsm_virt_notified(&fsm_data);
+    } else if (ch == IRQ_FMTTHRESH_CH) {
+        LOG_I2C_DRIVER("IRQ_FMTTHRESH\n");
+        clear_irq(I2C_INTR_STATE_FMT_THRESHOLD_BIT);
+        seL4_IRQHandler_Ack(g_irq_caps[2]);
+
+        if (fsm_data.curr_state == S_CMD) {
+            fsm(&fsm_data);
+        }
+    } else if (ch == IRQ_CMD_COMPLETE_CH) {
+        LOG_I2C_DRIVER("IRQ_CMD_COMPLETE\n");
+        LOG_I2C_DRIVER("fmt fifo level: %u\n", get_fmt_fifo_lvl());
+        clear_irq(I2C_INTR_STATE_CMD_COMPLETE_BIT);
+        if (fsm_data.curr_state == S_CMD_RET) {
+            fsm(&fsm_data);
+        } else {
+            LOG_I2C_DRIVER("Warning: received spurious CMD_COMPLETE irq!\n");
+        }
+        seL4_IRQHandler_Ack(g_irq_caps[3]);
+    } else if (ch == IRQ_RXTHRESH_CH) {
+        LOG_I2C_DRIVER("IRQ_RXTHRESH\n");
+        clear_irq(I2C_INTR_STATE_RX_THRESHOLD_BIT);
+        seL4_IRQHandler_Ack(g_irq_caps[1]);
+        if (fsm_data.curr_state == S_CMD_RET) {
+            fsm(&fsm_data);
+        } else {
+            LOG_I2C_DRIVER("Warning: received spurious RXTHRESH irq!\n");
+        }
+    } else if (ch == IRQ_NAK_CH) {
+        i2c_halt();
+        LOG_I2C_DRIVER("IRQ_NAK\n");
+        clear_irq(I2C_INTR_STATE_NAK_BIT);
+        seL4_IRQHandler_Ack(g_irq_caps[0]);
+        if (fsm_data.curr_state == S_CMD || fsm_data.curr_state == S_CMD_RET) {
+            driver_data.err = I2C_ERR_NACK;
+        }
+    } else if (ch == IRQ_TIMEOUT_CH) {
+        i2c_halt();
+        LOG_I2C_DRIVER("IRQ_TIMEOUT\n");
+        clear_irq(I2C_INTR_STATE_HOST_TIMEOUT_BIT);
+        driver_data.err = I2C_ERR_TIMEOUT;
+        seL4_IRQHandler_Ack(g_irq_caps[5]);
+    } else if (ch == IRQ_BAD_STOP_CH) {
+        i2c_halt();
+        LOG_I2C_DRIVER("IRQ_UNEXPECTED_STOP\n");
+        clear_irq(I2C_INTR_STATE_UNEXP_STOP_BIT);
+        driver_data.err = I2C_ERR_OTHER;
+        seL4_IRQHandler_Ack(g_irq_caps[4]);
+    } else {
+        { const char *_s = "DRIVER|ERROR: unexpected notification!\n"; while (*_s) seL4_DebugPutChar(*_s++); }
+    }
+    if (driver_data.err != I2C_ERR_OK && (fsm_data.curr_state == S_CMD || fsm_data.curr_state == S_CMD_RET)) {
+        LOG_I2C_DRIVER("Transaction failed! Proceeding to respond.\n");
+        i2c_halt();
+        fsm_data.curr_state = S_RESPONSE;
+        fsm_data.next_state = S_RESPONSE;
+        fsm(&fsm_data);
+    } else if (driver_data.err != I2C_ERR_OK) {
+        LOG_I2C_DRIVER_ERR("Spurious error interrupt received! err=%u\n", driver_data.err);
+        LOG_I2C_DRIVER_ERR("Current state: %s\n", state_to_str(fsm_data.curr_state));
+        if (ch == IRQ_BAD_STOP_CH)
+            LOG_I2C_DRIVER_ERR("IRQ_BAD_STOP\n");
+        else if (ch == IRQ_TIMEOUT_CH)
+            LOG_I2C_DRIVER_ERR("IRQ_TIMEOUT\n");
+        else if (ch == IRQ_NAK_CH)
+            LOG_I2C_DRIVER_ERR("IRQ_NAK\n");
+        else
+            LOG_I2C_DRIVER_ERR("No sane channel could have caused error! ch = %lu\n", ch);
+    }
+}
+
+void i2c_drv_main(seL4_CPtr ep, seL4_CPtr irq_caps[], int num_irq_caps)
+{
+    g_ep = ep;
+    for (int i = 0; i < num_irq_caps && i < 6; i++) {
+        g_irq_caps[i] = irq_caps[i];
+    }
+
     assert(i2c_config_check_magic(&config));
     assert(device_resources_check_magic(&device_resources));
     assert(device_resources.num_irqs == 6);
@@ -341,132 +424,36 @@ void init(void)
     LOG_I2C_DRIVER("I2C DRIVER|INFO: \t t_h = %u\n", timing_params.t_h);
     LOG_I2C_DRIVER("I2C DRIVER|INFO: \t t_l = %u\n", timing_params.t_l);
 
-    // Perform initial set up - calculate and validate timing parameters.
-    // If any of the below conditions are not true, the device cannot initialise!
     assert(timing_params.t_hd_dat_min >= 1);
     assert(timing_params.t_hd_sta_min > timing_params.t_hd_dat_min);
     assert(timing_params.t_buf_min > timing_params.t_hd_dat_min);
 
-    // T_H + T_L >= PERIOD - T_F - T_R
-    // Check T_H and T_L fit and achieve duty cycle defined by board.
-    // t_h = ( 100 * (T-T_F-T_R) ) / (duty_cycle*100)
-    // t_l = ( 100 * (T-T_F-T_R) ) / ((1 - duty_cycle)*100)
-
-    // Check values are valid
     assert(timing_params.t_h >= timing_params.t_high_min);
     assert(timing_params.t_l >= timing_params.t_low_min);
 
-    // Load timing parameters into registers
     load_timing_params(&timing_params);
 
-    // Set up control register -> disable everything and reset all FIFOs.
     i2c_halt();
 
-    // Set up interrupts
     regs->intr_enable = I2C_INTR_ENABLE_FMT_THRESHOLD_BIT | I2C_INTR_ENABLE_RX_THRESHOLD_BIT | I2C_INTR_ENABLE_NAK_BIT
                       | I2C_INTR_ENABLE_CMD_COMPLETE_BIT | I2C_INTR_ENABLE_UNEXP_STOP_BIT
                       | I2C_INTR_ENABLE_HOST_TIMEOUT_BIT;
 
-    // Configure FIFO interrupt thresholds.
-    // FMT: interrupt once emptied.
-    // RX: interrupt if 1 or more entries present
-    // Both values require 0 in their respective fields, and this is unfortunately not documented
-    // anywhere human readable. See `i2c.hjson` from opentitan.
     regs->fifo_ctrl &= (~I2C_FIFO_CTRL_RXILVL_MASK);
     regs->fifo_ctrl &= (~I2C_FIFO_CTRL_FMTILVL_MASK);
 
-    // Prepare transport layer
     queue_handle = i2c_queue_init(config.virt.req_queue.vaddr, config.virt.resp_queue.vaddr);
     i2c_reset_state(&driver_data);
     LOG_I2C_DRIVER("Driver initialised.\n");
-}
 
-void notified(microkit_channel ch)
-{
-    assert(driver_data.err == I2C_ERR_OK);
-    if (ch == config.virt.id) {
-        fsm_virt_notified(&fsm_data);
-    } else if (ch == IRQ_FMTTHRESH_CH) {
-        // Asserted when FMT FIFO has < 1 entry.
-        LOG_I2C_DRIVER("IRQ_FMTTHRESH\n");
-        clear_irq(I2C_INTR_STATE_FMT_THRESHOLD_BIT);
-        microkit_irq_ack(ch);
-
-        // We can ignore this IRQ unless we are in S_CMD and awaiting commands to process
-        // (i.e. the FMT FIFO was full last time we tried to push commands)
-        if (fsm_data.curr_state == S_CMD) {
-            fsm(&fsm_data);
-        }
-    } else if (ch == IRQ_CMD_COMPLETE_CH) {
-        // Asserted when the hardware is finished processing a command sequence.
-        // We must wake up and run the state machine if we were awaiting this.
-        LOG_I2C_DRIVER("IRQ_CMD_COMPLETE\n");
-        LOG_I2C_DRIVER("fmt fifo level: %u\n", get_fmt_fifo_lvl());
-        clear_irq(I2C_INTR_STATE_CMD_COMPLETE_BIT);
-        if (fsm_data.curr_state == S_CMD_RET) {
-            fsm(&fsm_data);
+    seL4_Word badge;
+    while (1) {
+        seL4_MessageInfo_t info = seL4_Recv(ep, &badge);
+        seL4_Word label = seL4_MessageInfo_get_label(info);
+        if (label == seL4_Fault_NullFault) {
+            pd_notified(badge);
         } else {
-            LOG_I2C_DRIVER("Warning: received spurious CMD_COMPLETE irq!\n");
+            seL4_Reply(seL4_MessageInfo_new(0, 0, 0, 0));
         }
-        microkit_irq_ack(ch);
-    } else if (ch == IRQ_RXTHRESH_CH) {
-        // Asserted when RX FIFO has > 0 entries OR command is done. We only need to
-        // use this IRQ if we went back to sleep in S_CMD_RET awaiting commands.
-        // It is an invariant that this IRQ should only ever arrive while we're in S_CMD_RET
-        // if the above case occurs, as if the command completes without needing this it will
-        // move back to S_CMD before the next IRQ arrives.
-        LOG_I2C_DRIVER("IRQ_RXTHRESH\n");
-        clear_irq(I2C_INTR_STATE_RX_THRESHOLD_BIT);
-        microkit_irq_ack(ch);
-        if (fsm_data.curr_state == S_CMD_RET) {
-            fsm(&fsm_data);
-        } else {
-            LOG_I2C_DRIVER("Warning: received spurious RXTHRESH irq!\n");
-        }
-    // Error cases different IRQ for every fail type in Cheshire
-    } else if (ch == IRQ_NAK_CH) {
-        // In this version of opentitan, NACKs are delivered late and will double
-        // up often. Ignore NACKs if we aren't expecting one
-        i2c_halt();
-        LOG_I2C_DRIVER("IRQ_NAK\n");
-        clear_irq(I2C_INTR_STATE_NAK_BIT);
-        microkit_irq_ack(ch);
-        if (fsm_data.curr_state == S_CMD || fsm_data.curr_state == S_CMD_RET) {
-            driver_data.err = I2C_ERR_NACK;
-        }
-    } else if (ch == IRQ_TIMEOUT_CH) {
-        i2c_halt();
-        LOG_I2C_DRIVER("IRQ_TIMEOUT\n");
-        clear_irq(I2C_INTR_STATE_HOST_TIMEOUT_BIT);
-        driver_data.err = I2C_ERR_TIMEOUT;
-        microkit_irq_ack(ch);
-    } else if (ch == IRQ_BAD_STOP_CH) {
-        i2c_halt();
-        LOG_I2C_DRIVER("IRQ_UNEXPECTED_STOP\n");
-        clear_irq(I2C_INTR_STATE_UNEXP_STOP_BIT);
-        driver_data.err = I2C_ERR_OTHER;
-        microkit_irq_ack(ch);
-    } else {
-        microkit_dbg_puts("DRIVER|ERROR: unexpected notification!\n");
-    }
-    // Handle error IRQ if we are in the process of handling a request
-    if (driver_data.err != I2C_ERR_OK && (fsm_data.curr_state == S_CMD || fsm_data.curr_state == S_CMD_RET)) {
-        LOG_I2C_DRIVER("Transaction failed! Proceeding to respond.\n");
-        i2c_halt();
-        // We are outside the FSM - assign current state not next state.
-        fsm_data.curr_state = S_RESPONSE;
-        fsm_data.next_state = S_RESPONSE;
-        fsm(&fsm_data);
-    } else if (driver_data.err != I2C_ERR_OK) {
-        LOG_I2C_DRIVER_ERR("Spurious error interrupt received! err=%u\n", driver_data.err);
-        LOG_I2C_DRIVER_ERR("Current state: %s\n", state_to_str(fsm_data.curr_state));
-        if (ch == IRQ_BAD_STOP_CH)
-            LOG_I2C_DRIVER_ERR("IRQ_BAD_STOP\n");
-        else if (ch == IRQ_TIMEOUT_CH)
-            LOG_I2C_DRIVER_ERR("IRQ_TIMEOUT\n");
-        else if (ch == IRQ_NAK_CH)
-            LOG_I2C_DRIVER_ERR("IRQ_NAK\n");
-        else
-            LOG_I2C_DRIVER_ERR("No sane channel could have caused error! ch = %u\n", ch);
     }
 }

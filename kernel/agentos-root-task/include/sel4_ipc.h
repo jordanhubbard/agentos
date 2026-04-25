@@ -3,11 +3,16 @@
  *
  * Provides the canonical sel4_msg_t / sel4_badge_t types and the thin
  * inline wrappers (sel4_call, sel4_reply, sel4_recv, sel4_reply_recv)
- * that all agentOS service PDs use.  Built on top of Microkit MR primitives.
+ * that all agentOS service PDs use.
+ *
+ * MCS mode (CONFIG_KERNEL_MCS): seL4 MCS kernels (used by the Microkit SDK)
+ * require an explicit reply capability slot for seL4_Recv and seL4_ReplyRecv.
+ * AGENTOS_IPC_REPLY_CAP (cap slot 9) is reserved for this purpose.  The root
+ * task allocates a seL4_ReplyObject cap at slot 9 in each PD's CNode before
+ * starting it.  Service PDs must not use cap slot 9 for any other purpose.
  *
  * Design notes:
  *   - sel4_msg_t packs the first 48 bytes of payload into inline data[].
- *     This covers the most common small-message case without allocation.
  *   - All fields are explicitly sized (uint32_t / uint8_t) so the layout
  *     is identical on 32-bit and 64-bit targets.
  *   - No libc dependency.  No dynamic allocation.
@@ -19,6 +24,7 @@
 #pragma once
 
 #include <stdint.h>
+#include "sel4_msg_types.h"  /* sel4_msg_t, sel4_badge_t, SEL4_MSG_DATA_BYTES, SEL4_ERR_* */
 
 /*
  * In production (seL4 bare-metal) builds include the real seL4 types.
@@ -40,64 +46,18 @@ typedef uint64_t seL4_CPtr;
 typedef uint64_t seL4_Word;
 #endif
 
-/* ── Error / status codes ────────────────────────────────────────────────── */
-
-#define SEL4_ERR_OK           0u   /* success                              */
-#define SEL4_ERR_INVALID_OP   1u   /* unknown opcode                       */
-#define SEL4_ERR_NOT_FOUND    2u   /* requested resource does not exist    */
-#define SEL4_ERR_PERM         3u   /* caller lacks required capability     */
-#define SEL4_ERR_BAD_ARG      4u   /* malformed request                    */
-#define SEL4_ERR_NO_MEM       5u   /* server-side allocation failure       */
-#define SEL4_ERR_BUSY         6u   /* resource temporarily unavailable     */
-#define SEL4_ERR_OVERFLOW     7u   /* client-side buffer too small         */
-#define SEL4_ERR_INTERNAL     8u   /* unrecoverable server error           */
-#define SEL4_ERR_FORBIDDEN    9u   /* capability policy rejects the caller */
-
-/* ── Message geometry ────────────────────────────────────────────────────── */
-
 /*
- * SEL4_MSG_DATA_BYTES: number of inline payload bytes in sel4_msg_t.data[].
+ * AGENTOS_IPC_REPLY_CAP — CNode slot reserved for the MCS reply object cap.
  *
- * 48 bytes fits comfortably within Microkit's 64-MR limit:
- *   MR0  = opcode  (uint32, occupies one seL4_Word)
- *   MR1  = length  (uint32, occupies one seL4_Word)
- *   MR2..MR7 = 6 × 8-byte seL4_Words = 48 bytes of data
+ * In seL4 MCS mode, seL4_Recv and seL4_ReplyRecv require an explicit cap slot
+ * to receive the caller's reply capability into.  Slot 9 is chosen because
+ * seL4_boot.h defines 8 initial caps (slots 1–8); slot 9 is the first free
+ * slot available to the root task after initial cap setup.
  *
- * Total MR count: 8, well within the 64-MR cap.
+ * The root task must allocate a seL4_ReplyObject and grant its cap to slot 9
+ * of each service PD's CNode before starting the PD thread.
  */
-#define SEL4_MSG_DATA_BYTES  48u
-
-/* ── Core types ─────────────────────────────────────────────────────────── */
-
-/*
- * sel4_msg_t — a fixed-size IPC message.
- *
- * Used for both requests and replies.  The receiver always gets a fresh
- * copy; no aliasing between caller and callee.
- *
- * Fields:
- *   opcode  — operation selector on request; status code on reply
- *   length  — valid bytes in data[]  (0 .. SEL4_MSG_DATA_BYTES)
- *   data[]  — inline payload bytes
- */
-typedef struct {
-    uint32_t opcode;
-    uint32_t length;
-    uint8_t  data[SEL4_MSG_DATA_BYTES];
-} sel4_msg_t;
-
-_Static_assert(sizeof(sel4_msg_t) == 4u + 4u + SEL4_MSG_DATA_BYTES,
-               "sel4_msg_t layout mismatch");
-
-/*
- * sel4_badge_t — capability badge delivered with an incoming IPC.
- *
- * On seL4 the badge is a seL4_Word embedded in the badged endpoint cap.
- * We expose it as a typed uint64_t so 64-bit badge values are legal on
- * both 32-bit and 64-bit targets (truncation on 32-bit is intentional and
- * documented in the seL4 reference manual §4.2.1).
- */
-typedef uint64_t sel4_badge_t;
+#define AGENTOS_IPC_REPLY_CAP  ((seL4_CPtr)9u)
 
 /* ── MR layout helpers (internal) ─────────────────────────────────────────
  *
@@ -209,7 +169,11 @@ static inline sel4_badge_t sel4_recv(seL4_CPtr ep, sel4_msg_t *msg)
     sel4_badge_t badge = 0;
 #ifndef AGENTOS_TEST_HOST
     seL4_Word _badge = 0;
+#  ifdef CONFIG_KERNEL_MCS
+    (void)seL4_Recv(ep, &_badge, AGENTOS_IPC_REPLY_CAP);
+#  else
     (void)seL4_Recv(ep, &_badge);
+#  endif
     badge = (sel4_badge_t)_badge;
 #else
     (void)ep;
@@ -238,7 +202,11 @@ static inline sel4_badge_t sel4_reply_recv(seL4_CPtr ep,
     seL4_MessageInfo_t _info = seL4_MessageInfo_new(
         (seL4_Word)rep->opcode, 0, 0, (seL4_Word)_SEL4_MR_COUNT);
     seL4_Word _badge = 0;
+#  ifdef CONFIG_KERNEL_MCS
+    (void)seL4_ReplyRecv(ep, _info, &_badge, AGENTOS_IPC_REPLY_CAP);
+#  else
     (void)seL4_ReplyRecv(ep, _info, &_badge);
+#  endif
     badge = (sel4_badge_t)_badge;
 #endif
     _sel4_mrs_to_msg(req);

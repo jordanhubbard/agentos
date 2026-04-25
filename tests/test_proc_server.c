@@ -35,6 +35,29 @@ static inline void microkit_dbg_puts(const char *s) { (void)s; }
  * global when AGENTOS_TEST_HOST is defined */
 static uintptr_t proc_shmem_vaddr;
 
+/* ── seL4 IPC stubs (proc_server.c uses these when AGENTOS_TEST_HOST) ────── */
+#ifndef SEL4_BADGE_DEFINED
+typedef uint64_t sel4_badge_t;
+#define SEL4_BADGE_DEFINED 1
+#endif
+#ifndef SEL4_MSG_DATA_BYTES
+#define SEL4_MSG_DATA_BYTES 48u
+#endif
+#ifndef SEL4_MSG_T_DEFINED
+typedef struct { uint32_t opcode; uint32_t length; uint8_t data[SEL4_MSG_DATA_BYTES]; } sel4_msg_t;
+#define SEL4_MSG_T_DEFINED 1
+#endif
+#define SEL4_ERR_OK 0u
+static inline uint32_t msg_u32(const sel4_msg_t *m, uint32_t off) {
+    uint32_t v = 0;
+    if (off + 4u <= SEL4_MSG_DATA_BYTES) __builtin_memcpy(&v, m->data + off, 4);
+    return v;
+}
+static inline void rep_u32(sel4_msg_t *m, uint32_t off, uint32_t v) {
+    if (off + 4u <= SEL4_MSG_DATA_BYTES) { __builtin_memcpy(m->data + off, &v, 4); m->length = off + 4u; }
+}
+static inline void sel4_dbg_puts(const char *s) { (void)s; }
+
 /* ── proc_server opcodes (must match agentos.h) ──────────────────────────── */
 #define OP_PROC_SPAWN   0xD0u
 #define OP_PROC_EXIT    0xD1u
@@ -46,6 +69,30 @@ static uintptr_t proc_shmem_vaddr;
 
 /* ── Pull in the implementation ─────────────────────────────────────────── */
 #include "../kernel/agentos-root-task/src/proc_server.c"
+
+/* ── Microkit→seL4 IPC shims ─────────────────────────────────────────────── *
+ * proc_server.c was migrated from Microkit to raw seL4 IPC; the test still
+ * drives it via the old _mrs[] pattern.  These shims pack/unpack the message
+ * registers into sel4_msg_t so the dispatch function can be called uniformly.
+ * Must appear after proc_server.c include since the functions are static.
+ */
+static void init(void) { proc_server_pd_init(); }
+
+static void protected(uint32_t ch, uint64_t msginfo)
+{
+    (void)ch; (void)msginfo;
+    sel4_msg_t req = {0}, rep = {0};
+    /* msg_u32(req, 0) is the opcode; pack _mrs[i] → req.data[i*4] */
+    for (unsigned i = 0; i < 8 && i * 4u + 4u <= SEL4_MSG_DATA_BYTES; i++) {
+        uint32_t v = (uint32_t)_mrs[i];
+        __builtin_memcpy(req.data + i * 4, &v, 4);
+    }
+    req.length = 8u * 4u;
+    proc_server_pd_dispatch(0, &req, &rep, NULL);
+    for (unsigned i = 0; i < 8 && i * 4u + 4u <= SEL4_MSG_DATA_BYTES; i++) {
+        _mrs[i] = msg_u32(&rep, i * 4u);
+    }
+}
 
 /* ── Test harness ────────────────────────────────────────────────────────── */
 static int tests_passed = 0;

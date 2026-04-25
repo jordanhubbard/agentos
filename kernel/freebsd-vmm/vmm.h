@@ -129,6 +129,11 @@ extern char _binary_freebsd_dtb_end[];
 
 /* ─── VMM entry points ──────────────────────────────────────────────────── */
 
-void vmm_init(void);
-void vmm_notified(microkit_channel ch);
-microkit_msginfo vmm_protected(microkit_channel ch, microkit_msginfo msginfo);
+#include <sel4/sel4.h>
+
+void vmm_init(seL4_CPtr kernel_ep);
+void vmm_notified(seL4_Word badge);
+seL4_MessageInfo_t vmm_protected(seL4_Word badge, seL4_MessageInfo_t msginfo);
+void freebsd_vmm_main(seL4_CPtr ep, seL4_CPtr kernel_ep,
+                      seL4_CPtr serial_ep, seL4_CPtr net_ep,
+                      seL4_CPtr block_ep);

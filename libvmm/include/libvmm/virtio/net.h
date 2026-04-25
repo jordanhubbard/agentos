@@ -30,6 +30,7 @@
 #pragma once
 
 #include <stdint.h>
+#include <sel4/sel4.h>
 #include <sddf/network/queue.h>
 #include <libvmm/virtio/virtio.h>
 #include <libvmm/virtio/pci.h>
@@ -222,8 +223,8 @@ struct virtio_net_device {
     net_queue_handle_t tx;
     void *rx_data;
     void *tx_data;
-    microkit_channel tx_ch;
-    microkit_channel rx_ch;
+    seL4_CPtr tx_cap;
+    seL4_CPtr rx_cap;
 };
 
 bool virtio_mmio_net_init(struct virtio_net_device *dev,
@@ -234,12 +235,12 @@ bool virtio_mmio_net_init(struct virtio_net_device *dev,
                           net_queue_handle_t *tx,
                           uintptr_t rx_data,
                           uintptr_t tx_data,
-                          microkit_channel rx_ch,
-                          microkit_channel tx_ch,
+                          seL4_CPtr rx_cap,
+                          seL4_CPtr tx_cap,
                           uint8_t mac[VIRTIO_NET_CONFIG_MAC_SZ]);
 
 bool virtio_net_handle_rx(struct virtio_net_device *dev);
 
 bool virtio_pci_net_init(struct virtio_net_device *net_dev, uint32_t pci_dev_slot, size_t virq, net_queue_handle_t *rx,
-                         net_queue_handle_t *tx, uintptr_t rx_data, uintptr_t tx_data, microkit_channel rx_ch,
-                         microkit_channel tx_ch, uint8_t mac[VIRTIO_NET_CONFIG_MAC_SZ]);
+                         net_queue_handle_t *tx, uintptr_t rx_data, uintptr_t tx_data, seL4_CPtr rx_cap,
+                         seL4_CPtr tx_cap, uint8_t mac[VIRTIO_NET_CONFIG_MAC_SZ]);

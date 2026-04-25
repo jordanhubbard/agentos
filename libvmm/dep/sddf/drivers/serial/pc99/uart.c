@@ -5,7 +5,7 @@
 
 #include <stdbool.h>
 #include <stdint.h>
-#include <microkit.h>
+#include <sel4/sel4.h>
 #include <sddf/util/printf.h>
 #include <sddf/util/util.h>
 #include <sddf/resources/device.h>
@@ -50,14 +50,17 @@ enum irq_state { MODEM_STATUS = 0, TX_HOLD_REG_EMPTY, RX_DATA_AVAIL, RX_LINE_STS
 serial_queue_handle_t rx_queue_handle;
 serial_queue_handle_t tx_queue_handle;
 
+static seL4_CPtr g_ioport_cap;
+
 void write(uint16_t port_offset, uint8_t v)
 {
-    microkit_x86_ioport_write_8((IOPORT_ID), IOPORT_BASE + port_offset, v);
+    seL4_X86_IOPort_Out8(g_ioport_cap, IOPORT_BASE + port_offset, v);
 }
 
 uint8_t read(uint16_t port_offset)
 {
-    return microkit_x86_ioport_read_8((IOPORT_ID), IOPORT_BASE + port_offset);
+    seL4_X86_IOPort_In8_t r = seL4_X86_IOPort_In8(g_ioport_cap, IOPORT_BASE + port_offset);
+    return (uint8_t)r.result;
 }
 
 int tx_ready(void)
@@ -70,35 +73,8 @@ int rx_ready(void)
     return read(SERIAL_LSR) & SERIAL_LSR_DATA_READY;
 }
 
-void init(void)
-{
-    assert(serial_config_check_magic(&config));
-    assert(device_resources_check_magic(&device_resources));
-
-    if (config.rx_enabled) {
-        serial_queue_init(&rx_queue_handle, config.rx.queue.vaddr, config.rx.data.size, config.rx.data.vaddr);
-    }
-    serial_queue_init(&tx_queue_handle, config.tx.queue.vaddr, config.tx.data.size, config.tx.data.vaddr);
-
-    while (!(read(SERIAL_LSR) & 0x60)); /* wait until not busy */
-
-    write(SERIAL_LCR, 0x00); /* line control register: command: set divisor */
-    if (config.rx_enabled) {
-        write(SERIAL_IER, 0x01); /* IRQ on received data available */
-    } else {
-        write(SERIAL_IER, 0x00); /* disable generating interrupts */
-    }
-    write(SERIAL_LCR, 0x80); /* line control register: command: set divisor */
-    write(SERIAL_DLL, 0x01); /* set low byte of divisor to 0x01 = 115200 baud */
-    write(SERIAL_DLH, 0x00); /* set high byte of divisor to 0x00 */
-    write(SERIAL_LCR, 0x03); /* line control register: set 8 bit, no parity, 1 stop bit */
-    write(SERIAL_MCR, 0x0b); /* modem control register: set DTR/RTS/OUT2 */
-    write(SERIAL_FCR, 0x00); /* set IRQ trigger level to 1 byte */
-
-    read(SERIAL_RBR); /* clear receiver port */
-    read(SERIAL_LSR); /* clear line status port */
-    read(SERIAL_MSR); /* clear modem status port */
-}
+static seL4_CPtr g_ep;
+static seL4_CPtr g_irq_cap;
 
 static void tx_provide(void)
 {
@@ -113,7 +89,7 @@ static void tx_provide(void)
 
     if (transferred && serial_require_consumer_signal(&tx_queue_handle)) {
         serial_cancel_consumer_signal(&tx_queue_handle);
-        microkit_notify(config.tx.id);
+        seL4_Signal(config.tx.id);
     }
 }
 
@@ -127,7 +103,7 @@ static void rx_return(void)
     }
 
     if (enqueued) {
-        microkit_notify(config.rx.id);
+        seL4_Signal(config.rx.id);
     }
 }
 
@@ -139,16 +115,62 @@ static void handle_irq(void)
     }
 }
 
-void notified(microkit_channel ch)
+static void pd_notified(seL4_Word badge)
 {
+    seL4_Word ch = badge;
     if (ch == config.tx.id) {
         tx_provide();
     } else if (ch == config.rx.id) {
         rx_return();
     } else if (ch == IRQ_ID) {
         handle_irq();
-        microkit_deferred_irq_ack(IRQ_ID);
+        seL4_IRQHandler_Ack(g_irq_cap);
     } else {
-        sddf_dprintf("UART|LOG: received notification on unexpected channel: %u\n", ch);
+        sddf_dprintf("UART|LOG: received notification on unexpected channel: %lu\n", ch);
+    }
+}
+
+void serial_drv_main(seL4_CPtr ep, seL4_CPtr ioport_cap, seL4_CPtr irq_cap)
+{
+    g_ep = ep;
+    g_ioport_cap = ioport_cap;
+    g_irq_cap = irq_cap;
+
+    assert(serial_config_check_magic(&config));
+    assert(device_resources_check_magic(&device_resources));
+
+    if (config.rx_enabled) {
+        serial_queue_init(&rx_queue_handle, config.rx.queue.vaddr, config.rx.data.size, config.rx.data.vaddr);
+    }
+    serial_queue_init(&tx_queue_handle, config.tx.queue.vaddr, config.tx.data.size, config.tx.data.vaddr);
+
+    while (!(read(SERIAL_LSR) & 0x60));
+
+    write(SERIAL_LCR, 0x00);
+    if (config.rx_enabled) {
+        write(SERIAL_IER, 0x01);
+    } else {
+        write(SERIAL_IER, 0x00);
+    }
+    write(SERIAL_LCR, 0x80);
+    write(SERIAL_DLL, 0x01);
+    write(SERIAL_DLH, 0x00);
+    write(SERIAL_LCR, 0x03);
+    write(SERIAL_MCR, 0x0b);
+    write(SERIAL_FCR, 0x00);
+
+    read(SERIAL_RBR);
+    read(SERIAL_LSR);
+    read(SERIAL_MSR);
+
+    seL4_Word badge;
+    while (1) {
+        seL4_MessageInfo_t info = seL4_Recv(ep, &badge);
+        seL4_Word label = seL4_MessageInfo_get_label(info);
+        if (label == seL4_Fault_NullFault) {
+            pd_notified(badge);
+        } else {
+            seL4_Reply(seL4_MessageInfo_new(0, 0, 0, 0));
+        }
     }
 }

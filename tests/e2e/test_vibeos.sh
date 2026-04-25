@@ -30,6 +30,7 @@ skip() { printf "  ${YELLOW}[SKIP]${RESET} %s\n" "$*"; SKIP=$(( SKIP + 1 )); }
 CC_PORT="${E2E_CC_PORT:-8789}"
 CC_BASE="http://localhost:${CC_PORT}"
 BRIDGE_AVAIL="${BRIDGE_AVAILABLE:-0}"
+VMM_TYPE="${E2E_GUEST_VMM_TYPE:-freebsd}"
 
 cc_post() {
     curl -sf --max-time 5 \
@@ -55,7 +56,7 @@ VIBEOS_HANDLE=""
 
 # ── Test 1: MSG_VIBEOS_CREATE ──────────────────────────────────────────────────
 
-RESP="$(cc_post "vibeos/create" '{"name":"e2e-test-vibe","vmm_type":"freebsd"}')"
+RESP="$(cc_post "vibeos/create" "{\"name\":\"e2e-test-vibe\",\"vmm_type\":\"${VMM_TYPE}\"}")"
 if ok_field "${RESP}"; then
     VIBEOS_HANDLE="$(printf '%s' "${RESP}" | grep -o '"handle":[0-9]*' | grep -o '[0-9]*')"
     pass "MSG_VIBEOS_CREATE: handle=${VIBEOS_HANDLE:-?}"

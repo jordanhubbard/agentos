@@ -5,6 +5,7 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <libvmm/vmm_caps.h>
 #include <libvmm/util/util.h>
 #include <libvmm/tcb.h>
 #include <libvmm/vcpu.h>
@@ -32,7 +33,7 @@ bool fault_advance_vcpu(size_t vcpu_id, seL4_UserContext *regs)
      * Do not explicitly resume the TCB because we will eventually reply to the
      * fault which will result in the TCB being restarted.
      */
-    int err = seL4_TCB_WriteRegisters(BASE_VM_TCB_CAP + vcpu_id, false, 0, SEL4_USER_CONTEXT_SIZE, regs);
+    int err = seL4_TCB_WriteRegisters(vmm_tcb_cap(vcpu_id), false, 0, SEL4_USER_CONTEXT_SIZE, regs);
     assert(err == seL4_NoError);
 
     return (err == seL4_NoError);
@@ -263,11 +264,11 @@ bool fault_advance(size_t vcpu_id, seL4_UserContext *regs, uint64_t addr, uint64
 
 bool fault_handle_vcpu_exception(size_t vcpu_id)
 {
-    uint64_t hsr = microkit_mr_get(seL4_VCPUFault_HSR);
+    uint64_t hsr = seL4_GetMR(seL4_VCPUFault_HSR);
     uint64_t hsr_ec_class = HSR_EXCEPTION_CLASS(hsr);
 
     seL4_UserContext regs;
-    int err = seL4_TCB_ReadRegisters(BASE_VM_TCB_CAP + vcpu_id, false, 0, SEL4_USER_CONTEXT_SIZE, &regs);
+    int err = seL4_TCB_ReadRegisters(vmm_tcb_cap(vcpu_id), false, 0, SEL4_USER_CONTEXT_SIZE, &regs);
     assert(err == seL4_NoError);
 
     switch (hsr_ec_class) {
@@ -286,7 +287,7 @@ bool fault_handle_vcpu_exception(size_t vcpu_id)
 
 bool fault_handle_vppi_event(size_t vcpu_id)
 {
-    uint64_t ppi_irq = microkit_mr_get(seL4_VPPIEvent_IRQ);
+    uint64_t ppi_irq = seL4_GetMR(seL4_VPPIEvent_IRQ);
     // We directly inject the interrupt assuming it has been previously registered.
     // If not the interrupt will dropped by the VM.
     bool success = vgic_inject_irq(vcpu_id, ppi_irq);
@@ -294,7 +295,7 @@ bool fault_handle_vppi_event(size_t vcpu_id)
         // @ivanv, make a note that when having a lot of printing on it can cause this error
         LOG_VMM_ERR("VPPI IRQ %lu dropped on vCPU %d\n", ppi_irq, vcpu_id);
         // Acknowledge to unmask it as our guest will not use the interrupt
-        microkit_vcpu_arm_ack_vppi(vcpu_id, ppi_irq);
+        vmm_vcpu_arm_ack_vppi(vcpu_id, ppi_irq);
     }
 
     return true;
@@ -303,8 +304,8 @@ bool fault_handle_vppi_event(size_t vcpu_id)
 bool fault_handle_user_exception(size_t vcpu_id)
 {
     // @ivanv: print out VM name/vCPU id when we have multiple VMs
-    size_t fault_ip = microkit_mr_get(seL4_UserException_FaultIP);
-    size_t number = microkit_mr_get(seL4_UserException_Number);
+    size_t fault_ip = seL4_GetMR(seL4_UserException_FaultIP);
+    size_t number = seL4_GetMR(seL4_UserException_Number);
     LOG_VMM_ERR("Invalid instruction fault at IP: 0x%lx, number: 0x%lx from vCPU %d\n", fault_ip, number, vcpu_id);
     /* All we do is dump the TCB registers. */
     tcb_print_regs(vcpu_id);
@@ -319,8 +320,8 @@ bool fault_handle_user_exception(size_t vcpu_id)
 bool fault_handle_unknown_syscall(size_t vcpu_id)
 {
     // @ivanv: should print out the name of the VM the fault came from.
-    size_t syscall = microkit_mr_get(seL4_UnknownSyscall_Syscall);
-    size_t fault_ip = microkit_mr_get(seL4_UnknownSyscall_FaultIP);
+    size_t syscall = seL4_GetMR(seL4_UnknownSyscall_Syscall);
+    size_t fault_ip = seL4_GetMR(seL4_UnknownSyscall_FaultIP);
 
     LOG_VMM("Received syscall 0x%lx\n", syscall);
     switch (syscall) {
@@ -338,7 +339,7 @@ bool fault_handle_unknown_syscall(size_t vcpu_id)
     }
 
     seL4_UserContext regs;
-    seL4_Error err = seL4_TCB_ReadRegisters(BASE_VM_TCB_CAP + vcpu_id, false, 0, SEL4_USER_CONTEXT_SIZE, &regs);
+    seL4_Error err = seL4_TCB_ReadRegisters(vmm_tcb_cap(vcpu_id), false, 0, SEL4_USER_CONTEXT_SIZE, &regs);
     assert(err == seL4_NoError);
     if (err != seL4_NoError) {
         LOG_VMM_ERR("Failure reading TCB registers when handling unknown syscall, error %d", err);
@@ -417,11 +418,11 @@ static bool fault_handle_registered_vm_exceptions(size_t vcpu_id, uintptr_t addr
 
 bool fault_handle_vm_exception(size_t vcpu_id)
 {
-    uintptr_t addr = microkit_mr_get(seL4_VMFault_Addr);
-    size_t fsr = microkit_mr_get(seL4_VMFault_FSR);
+    uintptr_t addr = seL4_GetMR(seL4_VMFault_Addr);
+    size_t fsr = seL4_GetMR(seL4_VMFault_FSR);
 
     seL4_UserContext regs;
-    int err = seL4_TCB_ReadRegisters(BASE_VM_TCB_CAP + vcpu_id, false, 0, SEL4_USER_CONTEXT_SIZE, &regs);
+    int err = seL4_TCB_ReadRegisters(vmm_tcb_cap(vcpu_id), false, 0, SEL4_USER_CONTEXT_SIZE, &regs);
     assert(err == seL4_NoError);
 
     bool success = fault_handle_registered_vm_exceptions(vcpu_id, addr, fsr, &regs);
@@ -432,7 +433,7 @@ bool fault_handle_vm_exception(size_t vcpu_id)
          * Now we print out as much information relating to the fault as we can, hopefully
          * the programmer can figure out what went wrong.
          */
-        size_t ip = microkit_mr_get(seL4_VMFault_IP);
+        size_t ip = seL4_GetMR(seL4_VMFault_IP);
         size_t is_prefetch = seL4_GetMR(seL4_VMFault_PrefetchFault);
         bool is_write = fault_is_write(fsr);
         LOG_VMM_ERR("unexpected memory fault on address: 0x%lx, FSR: 0x%lx, IP: 0x%lx, is_prefetch: %s, is_write: %s\n",
@@ -446,9 +447,9 @@ bool fault_handle_vm_exception(size_t vcpu_id)
     return success;
 }
 
-bool fault_handle(size_t vcpu_id, microkit_msginfo msginfo)
+bool fault_handle(size_t vcpu_id, seL4_MessageInfo_t msginfo)
 {
-    size_t label = microkit_msginfo_get_label(msginfo);
+    size_t label = seL4_MessageInfo_get_label(msginfo);
     bool success = false;
     switch (label) {
     case seL4_Fault_VMFault:
@@ -472,7 +473,7 @@ bool fault_handle(size_t vcpu_id, microkit_msginfo msginfo)
     default:
         /* We have reached a genuinely unexpected case, stop the guest. */
         LOG_VMM_ERR("unknown fault label 0x%lx, stopping guest with ID 0x%lx\n", label, vcpu_id);
-        microkit_vcpu_stop(vcpu_id);
+        vmm_vcpu_stop(vcpu_id);
     }
 
     if (!success) {

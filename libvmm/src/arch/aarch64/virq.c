@@ -4,14 +4,14 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
-#include <microkit.h>
+#include <libvmm/vmm_caps.h>
 #include <libvmm/guest.h>
 #include <libvmm/virq.h>
 #include <libvmm/util/util.h>
 #include <libvmm/arch/aarch64/fault.h>
 #include <libvmm/arch/aarch64/vgic/vgic.h>
 
-/* Maps Microkit channel numbers with registered vIRQ */
+/* Maps seL4_CPtr cap values (used as cookies) with registered vIRQ */
 int virq_passthrough_map[MAX_PASSTHROUGH_IRQ] = {-1};
 
 #define SGI_RESCHEDULE_IRQ  0
@@ -20,7 +20,7 @@ int virq_passthrough_map[MAX_PASSTHROUGH_IRQ] = {-1};
 
 static void vppi_event_ack(size_t vcpu_id, int irq, void *cookie)
 {
-    microkit_vcpu_arm_ack_vppi(vcpu_id, irq);
+    vmm_vcpu_arm_ack_vppi(vcpu_id, irq);
 }
 
 static void sgi_ack(size_t vcpu_id, int irq, void *cookie) {}
@@ -91,22 +91,22 @@ bool virq_register(size_t vcpu_id, size_t virq_num, virq_ack_fn_t ack_fn, void *
 
 static void virq_passthrough_ack(size_t vcpu_id, int irq, void *cookie)
 {
-    /* We are down-casting to microkit_channel so must first cast to size_t */
-    microkit_irq_ack((microkit_channel)(size_t)cookie);
+    /* We are down-casting to seL4_CPtr so must first cast to size_t */
+    vmm_irq_ack((seL4_CPtr)(size_t)cookie);
 }
 
-bool virq_register_passthrough(size_t vcpu_id, size_t irq, microkit_channel irq_ch)
+bool virq_register_passthrough(size_t vcpu_id, size_t irq, seL4_CPtr irq_cap)
 {
-    assert(irq_ch < MICROKIT_MAX_CHANNELS);
-    if (irq_ch >= MICROKIT_MAX_CHANNELS) {
-        LOG_VMM_ERR("Invalid channel number given '0x%lx' for passthrough vIRQ 0x%lx\n", irq_ch, irq);
+    assert(irq_cap != 0);
+    if (irq_cap == 0) {
+        LOG_VMM_ERR("Invalid cap given '0x%lx' for passthrough vIRQ 0x%lx\n", irq_cap, irq);
         return false;
     }
 
-    LOG_VMM("Register passthrough vIRQ 0x%lx on vCPU 0x%lx (IRQ channel: 0x%lx)\n", irq, vcpu_id, irq_ch);
-    virq_passthrough_map[irq_ch] = irq;
+    LOG_VMM("Register passthrough vIRQ 0x%lx on vCPU 0x%lx (IRQ cap: 0x%lx)\n", irq, vcpu_id, irq_cap);
+    virq_passthrough_map[irq_cap] = irq;
 
-    bool success = virq_register(GUEST_BOOT_VCPU_ID, irq, &virq_passthrough_ack, (void *)(size_t)irq_ch);
+    bool success = virq_register(GUEST_BOOT_VCPU_ID, irq, &virq_passthrough_ack, (void *)(size_t)irq_cap);
     assert(success);
     if (!success) {
         LOG_VMM_ERR("Failed to register passthrough vIRQ %d\n", irq);
@@ -116,17 +116,17 @@ bool virq_register_passthrough(size_t vcpu_id, size_t irq, microkit_channel irq_
     return true;
 }
 
-bool virq_handle_passthrough(microkit_channel irq_ch)
+bool virq_handle_passthrough(seL4_CPtr irq_cap)
 {
-    assert(virq_passthrough_map[irq_ch] >= 0);
-    if (virq_passthrough_map[irq_ch] < 0) {
-        LOG_VMM_ERR("attempted to handle invalid passthrough IRQ channel 0x%lx\n", irq_ch);
+    assert(virq_passthrough_map[irq_cap] >= 0);
+    if (virq_passthrough_map[irq_cap] < 0) {
+        LOG_VMM_ERR("attempted to handle invalid passthrough IRQ cap 0x%lx\n", irq_cap);
         return false;
     }
 
-    bool success = vgic_inject_irq(GUEST_BOOT_VCPU_ID, virq_passthrough_map[irq_ch]);
+    bool success = vgic_inject_irq(GUEST_BOOT_VCPU_ID, virq_passthrough_map[irq_cap]);
     if (!success) {
-        LOG_VMM_ERR("could not inject passthrough vIRQ 0x%lx, dropped on vCPU 0x%lx\n", virq_passthrough_map[irq_ch],
+        LOG_VMM_ERR("could not inject passthrough vIRQ 0x%lx, dropped on vCPU 0x%lx\n", virq_passthrough_map[irq_cap],
                     GUEST_BOOT_VCPU_ID);
         return false;
     }

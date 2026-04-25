@@ -25,8 +25,11 @@
 #ifndef AGENTOS_TEST_HOST
 /* Raw seL4 syscall layer — available in all production PD builds */
 #  include <sel4/sel4.h>
-/* seL4_DebugPutChar shim — available when debug kernel is enabled */
-#  ifndef seL4_DebugPutChar
+/* seL4_DebugPutChar shim — only needed when CONFIG_PRINTING is absent
+ * (release kernel builds).  seL4_DebugPutChar is a static inline function in
+ * debug builds, not a macro, so #ifndef seL4_DebugPutChar is always true and
+ * must NOT be used as the guard here. */
+#  ifndef CONFIG_PRINTING
 #    define seL4_DebugPutChar(c) ((void)(c))
 #  endif
 #endif /* !AGENTOS_TEST_HOST */

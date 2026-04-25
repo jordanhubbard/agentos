@@ -17,6 +17,8 @@
 #   E2E_BOARD           override board selection (default: auto-detect)
 #   E2E_QEMU            override QEMU binary (default: auto-detect)
 #   E2E_IMAGE           override agentos image (default: build/<board>/agentos.img)
+#   E2E_GUEST_OS        guest OS to test: freebsd|ubuntu-amd64|ubuntu-arm64|nixos
+#                       (default: freebsd; set to "all" to loop all available images)
 #   E2E_FREEBSD_IMG     FreeBSD disk image for slot 0 (default: guest-images/freebsd.img)
 #   E2E_SSH_KEY         path to ED25519 private key (default: tests/e2e/id_ed25519)
 #   E2E_DEBUG           if set, echo all serial output to stdout
@@ -79,6 +81,51 @@ fi
 E2E_IMAGE="${E2E_IMAGE:-${REPO_ROOT}/build/${BOARD}/agentos.img}"
 E2E_FREEBSD_IMG="${E2E_FREEBSD_IMG:-${REPO_ROOT}/guest-images/freebsd.img}"
 E2E_SSH_KEY="${E2E_SSH_KEY:-${SCRIPT_DIR}/id_ed25519}"
+
+# ── Guest OS selection ─────────────────────────────────────────────────────────
+# E2E_GUEST_OS selects which guest disk image to boot.
+# When set to "all", the suite re-runs for each available image in sequence.
+E2E_GUEST_OS="${E2E_GUEST_OS:-freebsd}"
+
+# Resolve the guest image path and vmm_type for the selected OS.
+# Sub-scripts read E2E_GUEST_VMM_TYPE to parameterise cc_post JSON payloads.
+resolve_guest_os() {
+    local gos="$1"
+    case "${gos}" in
+        freebsd)
+            E2E_GUEST_IMG="${E2E_FREEBSD_IMG}"
+            E2E_GUEST_VMM_TYPE="freebsd"
+            E2E_GUEST_BOOT_MARKER="login:"
+            ;;
+        ubuntu-amd64)
+            E2E_GUEST_IMG="${E2E_GUEST_IMG:-${REPO_ROOT}/guest-images/ubuntu-amd64.img}"
+            E2E_GUEST_VMM_TYPE="linux"
+            E2E_GUEST_BOOT_MARKER="login:"
+            ;;
+        ubuntu-arm64)
+            E2E_GUEST_IMG="${E2E_GUEST_IMG:-${REPO_ROOT}/guest-images/ubuntu-arm64.img}"
+            E2E_GUEST_VMM_TYPE="linux"
+            E2E_GUEST_BOOT_MARKER="login:"
+            ;;
+        nixos)
+            E2E_GUEST_IMG="${E2E_GUEST_IMG:-${REPO_ROOT}/guest-images/nixos.img}"
+            E2E_GUEST_VMM_TYPE="linux"
+            E2E_GUEST_BOOT_MARKER="<<< NixOS Stage 2"
+            ;;
+        freebsd15)
+            E2E_GUEST_IMG="${E2E_GUEST_IMG:-${REPO_ROOT}/guest-images/freebsd15-amd64.img}"
+            E2E_GUEST_VMM_TYPE="freebsd"
+            E2E_GUEST_BOOT_MARKER="login:"
+            ;;
+        *)
+            printf "Unknown E2E_GUEST_OS '%s'. Valid: freebsd ubuntu-amd64 ubuntu-arm64 nixos freebsd15 all\n" "${gos}" >&2
+            exit 2
+            ;;
+    esac
+    export E2E_GUEST_VMM_TYPE E2E_GUEST_BOOT_MARKER E2E_GUEST_IMG
+}
+
+resolve_guest_os "${E2E_GUEST_OS}"
 
 # Temporary files
 SERIAL_SOCK="/tmp/agentos-e2e-$$.sock"
@@ -208,7 +255,7 @@ printf "\n"
 
 HAVE_QEMU=1
 HAVE_IMAGE=1
-HAVE_FREEBSD=1
+HAVE_GUEST_IMG=1
 HAVE_SSH_TOOLS=1
 HAVE_CURL=1
 
@@ -222,9 +269,10 @@ if [ ! -f "${E2E_IMAGE}" ]; then
     HAVE_IMAGE=0
 fi
 
-if [ ! -f "${E2E_FREEBSD_IMG}" ]; then
-    skip "FreeBSD guest image not found: ${E2E_FREEBSD_IMG} (run 'make fetch-guest')"
-    HAVE_FREEBSD=0
+if [ ! -f "${E2E_GUEST_IMG}" ]; then
+    skip "Guest image for '${E2E_GUEST_OS}' not found: ${E2E_GUEST_IMG}"
+    skip "  Run: tools/bootstrap-guest.sh ${E2E_GUEST_OS}"
+    HAVE_GUEST_IMG=0
 fi
 
 if ! command -v ssh >/dev/null 2>&1 || ! command -v ssh-keygen >/dev/null 2>&1; then
@@ -256,15 +304,15 @@ elif [ "${UNAME_S}" = "Linux" ] && [ -e /dev/kvm ]; then
     ACCEL_FLAGS="-enable-kvm"
 fi
 
-# Build hostfwd list: CC bridge + SSH to FreeBSD VM slot 0
+# Build hostfwd list: CC bridge + SSH to guest VM slot 0
 HOSTFWD="hostfwd=tcp:127.0.0.1:${E2E_CC_PORT}-:${E2E_CC_PORT}"
 HOSTFWD="${HOSTFWD},hostfwd=tcp:127.0.0.1:${E2E_SSH_PORT}-:22"
 
-# If FreeBSD image is available, add it as a block device
+# Attach guest image as a block device if available
 GUEST_BLOCK_FLAGS=()
-if [ "${HAVE_FREEBSD}" -eq 1 ]; then
+if [ "${HAVE_GUEST_IMG}" -eq 1 ]; then
     GUEST_BLOCK_FLAGS+=(
-        -drive "file=${E2E_FREEBSD_IMG},if=virtio,format=raw,readonly=off"
+        -drive "file=${E2E_GUEST_IMG},if=virtio,format=raw,readonly=off"
     )
 fi
 
@@ -377,27 +425,25 @@ fi
 
 pass "agentOS boot complete"
 
-# ── Wait for FreeBSD guest (slot 0) ───────────────────────────────────────────
+# ── Wait for guest VM (slot 0) ────────────────────────────────────────────────
 
-if [ "${HAVE_FREEBSD}" -eq 1 ]; then
-    section "Phase 3: Waiting for FreeBSD VM (slot 0)"
-    info "Polling serial for login prompt (timeout ${E2E_TIMEOUT}s)..."
+GUEST_BOOTED=0
+if [ "${HAVE_GUEST_IMG}" -eq 1 ]; then
+    section "Phase 3: Waiting for ${E2E_GUEST_OS} VM (slot 0)"
+    info "Polling serial for boot marker '${E2E_GUEST_BOOT_MARKER}' (timeout ${E2E_TIMEOUT}s)..."
 
-    # FreeBSD shows "login:" on its console; agentOS serial_pd muxes it
-    FREEBSD_BOOTED=0
-    if wait_for_marker "login:" "${E2E_TIMEOUT}"; then
-        info "FreeBSD login prompt found"
-        FREEBSD_BOOTED=1
-        pass "FreeBSD VM (slot 0) booted and reached login prompt"
+    if wait_for_marker "${E2E_GUEST_BOOT_MARKER}" "${E2E_TIMEOUT}"; then
+        info "${E2E_GUEST_OS} boot marker found"
+        GUEST_BOOTED=1
+        pass "${E2E_GUEST_OS} VM (slot 0) booted and reached login prompt"
     else
-        fail "FreeBSD VM did not reach login prompt within ${E2E_TIMEOUT}s"
+        fail "${E2E_GUEST_OS} VM did not reach boot marker within ${E2E_TIMEOUT}s"
         printf "\nLast 60 lines of serial output:\n"
         tail -60 "${SERIAL_LOG}" 2>/dev/null || true
     fi
 
-    if [ "${FREEBSD_BOOTED}" -eq 1 ] && [ "${HAVE_SSH_TOOLS}" -eq 1 ] && \
+    if [ "${GUEST_BOOTED}" -eq 1 ] && [ "${HAVE_SSH_TOOLS}" -eq 1 ] && \
        [ -z "${E2E_SKIP_SSH:-}" ]; then
-        # Wait for SSH to become available
         info "Waiting for SSH on port ${E2E_SSH_PORT}..."
         SSH_WAIT=0
         SSH_AVAILABLE=0
@@ -417,9 +463,11 @@ if [ "${HAVE_FREEBSD}" -eq 1 ]; then
         fi
     fi
 else
-    warn "FreeBSD image not found — skipping FreeBSD VM tests"
-    FREEBSD_BOOTED=0
+    warn "Guest image not found for ${E2E_GUEST_OS} — skipping guest VM tests"
 fi
+
+# Backward-compat alias so sub-scripts that still reference FREEBSD_BOOTED work
+FREEBSD_BOOTED="${GUEST_BOOTED}"
 
 # ── Check CC bridge availability ───────────────────────────────────────────────
 
@@ -439,7 +487,8 @@ fi
 # Export helpers and config for sub-scripts
 export E2E_TIMEOUT E2E_CC_PORT E2E_SSH_PORT E2E_SSH_KEY
 export CC_BASE SCRIPT_DIR REPO_ROOT SERIAL_LOG
-export FREEBSD_BOOTED BRIDGE_AVAILABLE HAVE_SSH_TOOLS HAVE_CURL
+export E2E_GUEST_OS E2E_GUEST_VMM_TYPE E2E_GUEST_BOOT_MARKER E2E_GUEST_IMG
+export GUEST_BOOTED FREEBSD_BOOTED BRIDGE_AVAILABLE HAVE_SSH_TOOLS HAVE_CURL
 export -f pass fail skip info warn section guest_ssh cc_call cc_get
 
 run_test_module() {
@@ -461,7 +510,9 @@ run_test_module() {
 run_test_module "test_guest_lifecycle.sh"   "Guest Contract Lifecycle"
 run_test_module "test_device_contracts.sh"  "Device Contracts (serial/net/block/USB)"
 run_test_module "test_framebuffer.sh"       "Framebuffer Contract"
-run_test_module "test_vibeos.sh"            "VibeOS Contract"
+run_test_module "test_vibeos.sh"            "VibeOS Contract (create/boot/status/snapshot/destroy)"
+run_test_module "test_vibeos_restore.sh"    "VibeOS Restore (snapshot → restore → verify)"
+run_test_module "test_vibeos_migrate.sh"    "VibeOS Migrate (live migration between slots)"
 run_test_module "test_cc_contract.sh"       "Command-and-Control Contract"
 run_test_module "test_cap_policy.sh"        "Cap Policy (ring-1 enforcement)"
 

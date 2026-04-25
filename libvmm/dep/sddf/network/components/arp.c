@@ -4,7 +4,7 @@
  */
 
 #include <string.h>
-#include <microkit.h>
+#include <sel4/sel4.h>
 #include <sddf/network/queue.h>
 #include <sddf/network/constants.h>
 #include <sddf/network/util.h>
@@ -175,30 +175,33 @@ void receive(void)
 
     if (transmitted && net_require_signal_active(&tx_queue)) {
         net_cancel_signal_active(&tx_queue);
-        microkit_deferred_notify(TX_CH);
+        seL4_Signal(TX_CH);
     }
 }
 
-void notified(microkit_channel ch)
+static seL4_CPtr g_ep;
+
+static void pd_notified(seL4_Word badge)
 {
     receive();
 }
 
-seL4_MessageInfo_t protected(microkit_channel ch, microkit_msginfo msginfo)
+static seL4_MessageInfo_t pd_protected(seL4_Word badge, seL4_MessageInfo_t msginfo)
 {
+    seL4_Word ch = badge;
     int client = ch - CLIENT_CH;
     if (client >= NUM_ARP_CLIENTS || client < 0) {
         sddf_dprintf("ARP|LOG: PPC from unkown client %d\n", client);
-        return microkit_msginfo_new(0, 0);
+        return seL4_MessageInfo_new(0, 0, 0, 0);
     }
 
-    uint32_t ip_addr = microkit_mr_get(0);
-    uint32_t mac_higher = microkit_mr_get(1);
-    uint32_t mac_lower = microkit_mr_get(2);
+    uint32_t ip_addr = seL4_GetMR(0);
+    uint32_t mac_higher = seL4_GetMR(1);
+    uint32_t mac_lower = seL4_GetMR(2);
     uint64_t mac = (((uint64_t) mac_higher) << 32) | mac_lower;
 
     char buf[16];
-    switch (microkit_msginfo_get_label(msginfo)) {
+    switch (seL4_MessageInfo_get_label(msginfo)) {
     case REG_IP:
         sddf_printf("ARP|NOTICE: client%d registering ip address: %s with MAC: %02lx:%02lx:%02lx:%02lx:%02lx:%02lx\n",
                     client, ipaddr_to_string(ip_addr, buf, 16), mac >> 40, mac >> 32 & 0xff, mac >> 24 & 0xff,
@@ -207,18 +210,32 @@ seL4_MessageInfo_t protected(microkit_channel ch, microkit_msginfo msginfo)
         break;
     default:
         sddf_dprintf("ARP|LOG: PPC from client%d with unknown message label %lu\n", client,
-                     microkit_msginfo_get_label(msginfo));
+                     seL4_MessageInfo_get_label(msginfo));
         break;
     }
 
-    return microkit_msginfo_new(0, 0);
+    return seL4_MessageInfo_new(0, 0, 0, 0);
 }
 
-void init(void)
+void arp_main(seL4_CPtr ep)
 {
+    g_ep = ep;
+
     net_queue_init(&rx_queue, rx_free, rx_active, ETHERNET_RX_QUEUE_SIZE_ARP);
     net_queue_init(&tx_queue, tx_free, tx_active, ETHERNET_TX_QUEUE_SIZE_ARP);
     net_buffers_init(&tx_queue, 0);
 
-    ethernet_arp_mac_addr_init_sys(microkit_name, (uint8_t *) mac_addrs);
+    ethernet_arp_mac_addr_init_sys(vmm_pd_name, (uint8_t *) mac_addrs);
+
+    seL4_Word badge;
+    while (1) {
+        seL4_MessageInfo_t info = seL4_Recv(ep, &badge);
+        seL4_Word label = seL4_MessageInfo_get_label(info);
+        if (label == seL4_Fault_NullFault) {
+            pd_notified(badge);
+        } else {
+            seL4_MessageInfo_t reply = pd_protected(badge, info);
+            seL4_Reply(reply);
+        }
+    }
 }

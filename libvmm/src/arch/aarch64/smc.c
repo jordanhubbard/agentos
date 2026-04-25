@@ -5,6 +5,7 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <libvmm/vmm_caps.h>
 #include <libvmm/util/util.h>
 #include <libvmm/arch/aarch64/smc.h>
 #include <libvmm/arch/aarch64/psci.h>
@@ -156,7 +157,7 @@ bool smc_sip_forward(size_t vcpu_id, seL4_UserContext *regs, size_t fn_number)
     dump_smc_request(&request);
 #endif
 
-    microkit_arm_smc_call(&request, &response);
+    seL4_ARM_SMC(&request, &response);
 
 #if defined(DEBUG_SMC)
     dump_smc_response(&response);
@@ -195,7 +196,7 @@ bool smc_register_sip_handler(smc_sip_handler_t handler)
 bool smc_handle(size_t vcpu_id, uint64_t hsr)
 {
     seL4_UserContext regs;
-    int err = seL4_TCB_ReadRegisters(BASE_VM_TCB_CAP + vcpu_id, false, 0, SEL4_USER_CONTEXT_SIZE, &regs);
+    int err = seL4_TCB_ReadRegisters(vmm_tcb_cap(vcpu_id), false, 0, SEL4_USER_CONTEXT_SIZE, &regs);
     assert(err == seL4_NoError);
 
     size_t fn_number = smc_get_function_number(&regs);

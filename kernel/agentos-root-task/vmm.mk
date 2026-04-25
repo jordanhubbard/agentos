@@ -16,6 +16,11 @@ LIBVMM_ABS     := $(AGENTOS_ROOT)/libvmm
 SDDF_ABS       := $(LIBVMM_ABS)/dep/sddf
 DTC            := dtc
 
+# BOARD_DIR: seL4 SDK board package containing include/ and lib/.
+# Default matches the SDK bundled in the repo; override when invoking vmm.mk
+# directly with a different SDK installation.
+BOARD_DIR ?= $(AGENTOS_ROOT)/microkit-sdk-2.1.0/board/$(AGENTOS_BOARD)/debug
+
 # Guest OS selection: buildroot (default) or ubuntu
 GUEST_OS ?= buildroot
 
@@ -50,8 +55,8 @@ VMM_CFLAGS := \
     -g3 -O3 -Wall \
     -Wno-unused-function \
     -DARCH_AARCH64 \
-    -DMICROKIT_CONFIG_$(MICROKIT_CONFIG) \
     -DBOARD_qemu_virt_aarch64 \
+    -D__thread= \
     -I$(BOARD_DIR)/include \
     -I$(LIBVMM_ABS)/include \
     -I$(SDDF_ABS)/include \
@@ -64,6 +69,13 @@ VMM_CFLAGS := \
 .PHONY: vmm-all vmm-clean FORCE
 
 vmm-all: $(BUILD_DIR)/linux_vmm.elf
+
+# ─── Ubuntu kernel: fetch via xtask (downloads .deb, extracts Image) ─────
+ifeq ($(GUEST_OS),ubuntu)
+$(UBUNTU_KERNEL):
+	@echo "[VMM] Fetching Ubuntu kernel binary (via xtask fetch-guest)..."
+	cargo xtask fetch-guest --os ubuntu
+endif
 
 # ─── Download buildroot guest images ─────────────────────────────────────
 ifneq ($(GUEST_OS),ubuntu)
@@ -112,13 +124,13 @@ $(BUILD_DIR)/vmm_wrapper.mk: $(KERNEL_SRC_DIR)/vmm_wrapper_template.mk
 		-e 's|@LIBVMM@|$(LIBVMM_ABS)|g' \
 		-e 's|@SDDF@|$(SDDF_ABS)|g' \
 		-e 's|@BOARD_DIR@|$(BOARD_DIR)|g' \
-		-e 's|@MICROKIT_CONFIG@|$(MICROKIT_CONFIG)|g' \
+		-e 's|@KERNEL_SRC_DIR@|$(KERNEL_SRC_DIR)|g' \
 		$< > $@
 	@echo "[VMM] Generated wrapper Makefile ✓"
 
 # ─── Build libvmm.a + libsddf_util_debug.a ───────────────────────────────
 # Run make FROM BUILD_DIR so vmm.mk's relative paths work
-$(BUILD_DIR)/libvmm.a $(BUILD_DIR)/libsddf_util_debug.a: $(BUILD_DIR)/vmm_wrapper.mk FORCE
+$(BUILD_DIR)/libvmm.a $(BUILD_DIR)/libsddf_util_debug.a: $(BUILD_DIR)/vmm_wrapper.mk
 	@echo "[VMM] Building libvmm.a and libsddf_util_debug.a (from $(BUILD_DIR))..."
 	$(MAKE) -C $(BUILD_DIR) -f vmm_wrapper.mk vmm-libs
 	@echo "[VMM] Libraries built ✓"
@@ -154,9 +166,10 @@ $(BUILD_DIR)/linux_vmm.elf: $(BUILD_DIR)/linux_vmm.o \
                              $(BUILD_DIR)/libvmm.a \
                              $(BUILD_DIR)/libsddf_util_debug.a
 	@echo "[VMM] Linking linux_vmm.elf..."
-	ld.lld -L$(BOARD_DIR)/lib \
+	ld.lld -T$(BOARD_DIR)/lib/microkit.ld \
+		-L$(BOARD_DIR)/lib \
 		$(BUILD_DIR)/linux_vmm.o $(BUILD_DIR)/gpu_shmem.o $(BUILD_DIR)/images.o \
-		--start-group -lmicrokit -Tmicrokit.ld \
+		--start-group \
 		$(BUILD_DIR)/libvmm.a $(BUILD_DIR)/libsddf_util_debug.a \
 		--end-group \
 		-o $@

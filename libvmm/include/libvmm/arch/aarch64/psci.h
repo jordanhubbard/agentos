@@ -9,7 +9,7 @@
 
 #include <stddef.h>
 #include <stdint.h>
-#include <microkit.h>
+#include <sel4/sel4.h>
 
 /* PSCI function IDs */
 typedef enum psci {

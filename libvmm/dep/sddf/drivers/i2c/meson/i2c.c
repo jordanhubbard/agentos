@@ -10,7 +10,7 @@
 // Lesley Rossouw (lesley.rossouw@unsw.edu.au)
 // 05/2025
 
-#include <microkit.h>
+#include <sel4/sel4.h>
 #include <sddf/i2c/queue.h>
 #include <sddf/i2c/config.h>
 #include <sddf/resources/device.h>
@@ -314,23 +314,6 @@ int i2c_halt(void)
     return 0;
 }
 
-void init(void)
-{
-    assert(i2c_config_check_magic(&config));
-    assert(device_resources_check_magic(&device_resources));
-    assert(device_resources.num_irqs == 2);
-    assert(device_resources.num_regions == 1);
-
-    regs = (volatile struct i2c_regs *)device_resources.regions[0].region.vaddr;
-    i2c_setup();
-
-    // Set up driver state and shared regions
-    i2c_reset_state(&driver_data);
-    queue_handle = i2c_queue_init(config.virt.req_queue.vaddr, config.virt.resp_queue.vaddr);
-
-    microkit_dbg_puts("Driver initialised.\n");
-}
-
 /**
  * S_CMD (command)
  * Initiate work for the current command then go to S_CMD_RET to await device completion.
@@ -519,15 +502,13 @@ void state_cmd_ret(fsm_data_t *f, i2c_driver_data_t *data, i2c_queue_handle_t *q
     }
 }
 
-void notified(microkit_channel ch)
+static seL4_CPtr g_ep;
+static seL4_CPtr g_irq0_cap;
+static seL4_CPtr g_irq1_cap;
+
+static void pd_notified(seL4_Word badge)
 {
-    // We have only two possible cases for returning to the FSM from this entrypoint:
-    // 1. The virt has pinged us. No direct action needed, other than to wake the FSM
-    //    if currently idle. If working, will be answered automagically.
-    //    (curr state = S_IDLE)
-    // 2. IRQ 0 has landed indicating a completed transaction - resume FSM if we expected this.
-    //    (curr state = S_CMD_RET)
-    // Any other combination requires no direct action as the FSM is still running, or is spurious.
+    seL4_Word ch = badge;
     LOG_I2C_DRIVER("Notified\n");
     if (ch == config.virt.id) {
         LOG_I2C_DRIVER("Notified by virt!\n");
@@ -535,15 +516,42 @@ void notified(microkit_channel ch)
     } else if (ch == device_resources.irqs[0].id) {
         LOG_I2C_DRIVER("IRQ!\n");
         fsm_cmd_done(&fsm_data);
-        microkit_irq_ack(ch);
+        seL4_IRQHandler_Ack(g_irq0_cap);
     } else if (ch == device_resources.irqs[1].id) {
-        /* Timeout IRQ */
         LOG_I2C_DRIVER("Timeout!\n");
-        // We don't handle this as there is no clear principled way to do so.
-        // This IRQ is undocumented and will rapidly be followed by a NACK if
-        // a device disappears, so there's no clear reason to do anything here.
-        microkit_irq_ack(ch);
+        seL4_IRQHandler_Ack(g_irq1_cap);
     } else {
-        LOG_I2C_DRIVER_ERR("unexpected notification on channel %d\n", ch);
+        LOG_I2C_DRIVER_ERR("unexpected notification on channel %lu\n", ch);
+    }
+}
+
+void i2c_drv_main(seL4_CPtr ep, seL4_CPtr irq0_cap, seL4_CPtr irq1_cap)
+{
+    g_ep = ep;
+    g_irq0_cap = irq0_cap;
+    g_irq1_cap = irq1_cap;
+
+    assert(i2c_config_check_magic(&config));
+    assert(device_resources_check_magic(&device_resources));
+    assert(device_resources.num_irqs == 2);
+    assert(device_resources.num_regions == 1);
+
+    regs = (volatile struct i2c_regs *)device_resources.regions[0].region.vaddr;
+    i2c_setup();
+
+    i2c_reset_state(&driver_data);
+    queue_handle = i2c_queue_init(config.virt.req_queue.vaddr, config.virt.resp_queue.vaddr);
+
+    { const char *_s = "Driver initialised.\n"; while (*_s) seL4_DebugPutChar(*_s++); }
+
+    seL4_Word badge;
+    while (1) {
+        seL4_MessageInfo_t info = seL4_Recv(ep, &badge);
+        seL4_Word label = seL4_MessageInfo_get_label(info);
+        if (label == seL4_Fault_NullFault) {
+            pd_notified(badge);
+        } else {
+            seL4_Reply(seL4_MessageInfo_new(0, 0, 0, 0));
+        }
     }
 }

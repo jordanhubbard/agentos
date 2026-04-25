@@ -4,7 +4,7 @@
  */
 
 #include <stdint.h>
-#include <microkit.h>
+#include <sel4/sel4.h>
 #include <sddf/resources/device.h>
 #include <sddf/util/printf.h>
 #include <sddf/util/util.h>
@@ -218,7 +218,7 @@ static void process_timeouts(void)
         bool ret = timer_heap_pop(&timeouts, &expired);
         assert(ret); // This should never happen! Peek should catch empty queue
         LOG_APBTIMER("timeout expired for client %u\n", expired.client_channel);
-        microkit_notify(expired.client_channel);
+        seL4_Signal(expired.client_channel);
     }
 
     timeout_t *next = timer_heap_peek(&timeouts);
@@ -238,10 +238,23 @@ static void process_timeouts(void)
     }
 }
 
-void notified(microkit_channel ch)
-{
+static seL4_CPtr g_ep;
+static seL4_CPtr g_irq_caps[APBTIMER_NUM_IRQ * 2];
 
-    LOG_APBTIMER("notified by channel %u\n", ch);
+static seL4_CPtr lookup_irq_cap(seL4_Word badge)
+{
+    for (int i = 0; i < device_resources.num_irqs; i++) {
+        if (device_resources.irqs[i].id == badge) {
+            return g_irq_caps[i];
+        }
+    }
+    return 0;
+}
+
+static void pd_notified(seL4_Word badge)
+{
+    seL4_Word ch = badge;
+    LOG_APBTIMER("notified by channel %lu\n", ch);
     if (ch == OVERFLOW_IRQ(TIMER_TIMEKEEPER)) {
         LOG_APBTIMER("timekeeper overflow irq!\n");
         timekeeper_overflow_count += 1;
@@ -251,22 +264,26 @@ void notified(microkit_channel ch)
         regs[TIMER_TIMEOUT].timer = 0;
         process_timeouts();
     } else {
-        LOG_APBTIMER("unexpected notification from channel %u\n", ch);
+        LOG_APBTIMER("unexpected notification from channel %lu\n", ch);
         return;
     }
 
-    microkit_deferred_irq_ack(ch);
+    seL4_CPtr irq_cap = lookup_irq_cap(ch);
+    if (irq_cap) {
+        seL4_IRQHandler_Ack(irq_cap);
+    }
 }
 
-seL4_MessageInfo_t protected(microkit_channel ch, microkit_msginfo msginfo)
+static seL4_MessageInfo_t pd_protected(seL4_Word badge, seL4_MessageInfo_t msginfo)
 {
-    LOG_APBTIMER("ppc from channel %u\n", ch);
-    switch (microkit_msginfo_get_label(msginfo)) {
+    seL4_Word ch = badge;
+    LOG_APBTIMER("ppc from channel %lu\n", ch);
+    switch (seL4_MessageInfo_get_label(msginfo)) {
     case SDDF_TIMER_GET_TIME: {
         uint64_t time_ns = get_time_ns();
         seL4_SetMR(0, time_ns);
         LOG_APBTIMER("getting time\n");
-        return microkit_msginfo_new(0, 1);
+        return seL4_MessageInfo_new(0, 0, 0, 1);
     }
     case SDDF_TIMER_SET_TIMEOUT: {
         uint64_t curr_time = get_time_ns();
@@ -277,24 +294,41 @@ seL4_MessageInfo_t protected(microkit_channel ch, microkit_msginfo msginfo)
         break;
     }
     default:
-        LOG_APBTIMER("Unknown request %lu to timer from channel %u\n", microkit_msginfo_get_label(msginfo), ch);
+        LOG_APBTIMER("Unknown request %lu to timer from channel %lu\n", seL4_MessageInfo_get_label(msginfo), ch);
         break;
     }
 
-    return microkit_msginfo_new(0, 0);
+    return seL4_MessageInfo_new(0, 0, 0, 0);
 }
 
-void init(void)
+void timer_main(seL4_CPtr ep, seL4_CPtr irq_caps[], int num_irq_caps)
 {
+    g_ep = ep;
+
     assert(device_resources_check_magic(&device_resources));
     assert(device_resources.num_irqs == 4);
     assert(device_resources.num_regions == 1);
+    assert(num_irq_caps <= (int)(sizeof(g_irq_caps)/sizeof(g_irq_caps[0])));
+    for (int i = 0; i < num_irq_caps; i++) {
+        g_irq_caps[i] = irq_caps[i];
+    }
 
     uintptr_t timer_base = (uintptr_t)device_resources.regions[0].region.vaddr;
     regs = (volatile struct timer_regs *)timer_base;
 
     setup_timekeeper();
 
-    // Initialise priority heap
     timer_heap_init(&timeouts);
+
+    seL4_Word badge;
+    while (1) {
+        seL4_MessageInfo_t info = seL4_Recv(ep, &badge);
+        seL4_Word label = seL4_MessageInfo_get_label(info);
+        if (label == seL4_Fault_NullFault) {
+            pd_notified(badge);
+        } else {
+            seL4_MessageInfo_t reply = pd_protected(badge, info);
+            seL4_Reply(reply);
+        }
+    }
 }

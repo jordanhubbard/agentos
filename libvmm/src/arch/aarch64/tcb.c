@@ -4,7 +4,7 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
-#include <microkit.h>
+#include <libvmm/vmm_caps.h>
 #include <stdbool.h>
 #include <libvmm/tcb.h>
 #include <libvmm/util/util.h>
@@ -19,7 +19,7 @@ void tcb_print_regs(size_t vcpu_id)
      * not be an issue.
      */
     seL4_UserContext regs;
-    seL4_Error err = seL4_TCB_ReadRegisters(BASE_VM_TCB_CAP + vcpu_id, false, 0, SEL4_USER_CONTEXT_SIZE, &regs);
+    seL4_Error err = seL4_TCB_ReadRegisters(vmm_tcb_cap(vcpu_id), false, 0, SEL4_USER_CONTEXT_SIZE, &regs);
     assert(err == seL4_NoError);
     if (err != seL4_NoError) {
         LOG_VMM_ERR("Could not read TCB registers when trying to print TCB registers\n");

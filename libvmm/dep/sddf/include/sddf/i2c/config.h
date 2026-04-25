@@ -7,7 +7,7 @@
 
 #include <stdbool.h>
 #include <stdint.h>
-#include <microkit.h>
+#include <sel4/sel4.h>
 #include <sddf/resources/common.h>
 #include <sddf/resources/device.h>
 #include <sddf/i2c/queue.h>

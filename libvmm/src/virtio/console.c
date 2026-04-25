@@ -4,6 +4,7 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <libvmm/vmm_caps.h>
 #include <libvmm/guest.h>
 #include <libvmm/virq.h>
 #include <libvmm/util/util.h>
@@ -166,7 +167,7 @@ static bool virtio_console_handle_tx(struct virtio_device *dev)
         bool success = virq_inject(dev->virq);
         assert(success);
 
-        microkit_notify(console->tx_ch);
+        vmm_notify(console->tx_cap);
 
         return success;
     }
@@ -238,7 +239,7 @@ virtio_device_funs_t functions = {
 
 static struct virtio_device *virtio_console_init(struct virtio_console_device *console, virtio_transport_type_t type,
                                                  size_t virq, serial_queue_handle_t *rxq, serial_queue_handle_t *txq,
-                                                 int tx_ch)
+                                                 seL4_CPtr tx_cap)
 {
     struct virtio_device *dev = &console->virtio_device;
     dev->regs.DeviceID = VIRTIO_DEVICE_ID_CONSOLE;
@@ -252,13 +253,13 @@ static struct virtio_device *virtio_console_init(struct virtio_console_device *c
 
     console->rxq = rxq;
     console->txq = txq;
-    console->tx_ch = tx_ch;
+    console->tx_cap = tx_cap;
 
     return dev;
 }
 
 bool virtio_mmio_console_init(struct virtio_console_device *console, uintptr_t region_base, uintptr_t region_size,
-                              size_t virq, serial_queue_handle_t *rxq, serial_queue_handle_t *txq, int tx_ch)
+                              size_t virq, serial_queue_handle_t *rxq, serial_queue_handle_t *txq, seL4_CPtr tx_cap)
 {
     struct virtio_device *dev = virtio_console_init(console, VIRTIO_TRANSPORT_MMIO, virq, rxq, txq, tx_ch);
 
@@ -266,7 +267,7 @@ bool virtio_mmio_console_init(struct virtio_console_device *console, uintptr_t r
 }
 
 bool virtio_pci_console_init(struct virtio_console_device *console, uint32_t dev_slot, size_t virq,
-                             serial_queue_handle_t *rxq, serial_queue_handle_t *txq, int tx_ch)
+                             serial_queue_handle_t *rxq, serial_queue_handle_t *txq, seL4_CPtr tx_cap)
 {
     struct virtio_device *dev = virtio_console_init(console, VIRTIO_TRANSPORT_PCI, virq, rxq, txq, tx_ch);
 

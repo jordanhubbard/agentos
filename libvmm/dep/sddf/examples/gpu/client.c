@@ -5,7 +5,7 @@
 
 #include <stdint.h>
 #include <stddef.h>
-#include <microkit.h>
+#include <sel4/sel4.h>
 #include <sddf/util/util.h>
 #include <sddf/util/printf.h>
 #include <sddf/gpu/queue.h>
@@ -284,7 +284,7 @@ static void do_draw_state(void)
                    });
         sddf_timer_set_timeout(TIMER_CH, NS_IN_S);
         draw_state = DRAW_QUADRANT;
-        microkit_notify(VIRT_CH);
+        seL4_Signal(VIRT_CH);
         break;
     case DRAW_QUADRANT:
         /* This will make the following requests:
@@ -304,7 +304,7 @@ static void do_draw_state(void)
                    });
         sddf_timer_set_timeout(TIMER_CH, NS_IN_S);
         draw_state = DRAW_DISABLE;
-        microkit_notify(VIRT_CH);
+        seL4_Signal(VIRT_CH);
         break;
     case DRAW_DISABLE:
         /* This will make the following requests:
@@ -319,7 +319,7 @@ static void do_draw_state(void)
 #else
         draw_state = DRAW_FULL;
 #endif
-        microkit_notify(VIRT_CH);
+        seL4_Signal(VIRT_CH);
         break;
 #ifdef GPU_BLOB_SUPPORT
     case DRAW_FULL_BLOB:
@@ -337,7 +337,7 @@ static void do_draw_state(void)
                         });
         sddf_timer_set_timeout(TIMER_CH, NS_IN_S);
         draw_state = DRAW_QUADRANT_BLOB;
-        microkit_notify(VIRT_CH);
+        seL4_Signal(VIRT_CH);
         break;
     case DRAW_QUADRANT_BLOB:
         /* This will make the following requests:
@@ -353,7 +353,7 @@ static void do_draw_state(void)
                         });
         sddf_timer_set_timeout(TIMER_CH, NS_IN_S);
         draw_state = DRAW_DISABLE_BLOB;
-        microkit_notify(VIRT_CH);
+        seL4_Signal(VIRT_CH);
         break;
     case DRAW_DISABLE_BLOB:
         /* This will make the following requests:
@@ -363,7 +363,7 @@ static void do_draw_state(void)
         cleanup_resources(1, 2);
         sddf_timer_set_timeout(TIMER_CH, NS_IN_S);
         draw_state = DRAW_FULL;
-        microkit_notify(VIRT_CH);
+        seL4_Signal(VIRT_CH);
         break;
 #endif
     }
@@ -396,22 +396,11 @@ static void request_display_info()
     assert(!err);
 }
 
-void init(void)
-{
-    LOG_GPU_CLIENT("Initialising GPU client!\n");
-    /* Assert image size does not exceed data region size */
-    assert(FB_IMG_WIDTH * FB_IMG_HEIGHT * GPU_BPP_2D + DISPLAY_INFO_DATA_OFFSET <= GPU_DATA_REGION_SIZE_CLI0);
-    gpu_queue_init(&gpu_queue_handle, gpu_req_queue, gpu_resp_queue, GPU_QUEUE_CAPACITY_CLI0);
-    memcpy((void *)(gpu_data + 0x1000), (void *)_fb_img, (size_t)(_fb_img_end - _fb_img));
+static seL4_CPtr g_ep;
 
-    /* As part of initialisation, request for display info before sending anything else */
-    LOG_GPU_CLIENT("Requesting initial display info\n");
-    request_display_info();
-    microkit_notify(VIRT_CH);
-}
-
-void notified(microkit_channel ch)
+static void pd_notified(seL4_Word badge)
 {
+    seL4_Word ch = badge;
     int err = 0;
     if (!display_info_init) {
         if (ch == VIRT_CH) {
@@ -444,7 +433,7 @@ void notified(microkit_channel ch)
         LOG_GPU_CLIENT("Requesting display info\n");
         request_display_info();
         pending_display_info_request = true;
-        microkit_notify(VIRT_CH);
+        seL4_Signal(VIRT_CH);
         return;
     }
 
@@ -460,6 +449,31 @@ void notified(microkit_channel ch)
         if (resp.id == display_info_req_id) {
             handle_display_info_response();
             pending_display_info_request = false;
+        }
+    }
+}
+
+void gpu_client_main(seL4_CPtr ep)
+{
+    g_ep = ep;
+
+    LOG_GPU_CLIENT("Initialising GPU client!\n");
+    assert(FB_IMG_WIDTH * FB_IMG_HEIGHT * GPU_BPP_2D + DISPLAY_INFO_DATA_OFFSET <= GPU_DATA_REGION_SIZE_CLI0);
+    gpu_queue_init(&gpu_queue_handle, gpu_req_queue, gpu_resp_queue, GPU_QUEUE_CAPACITY_CLI0);
+    memcpy((void *)(gpu_data + 0x1000), (void *)_fb_img, (size_t)(_fb_img_end - _fb_img));
+
+    LOG_GPU_CLIENT("Requesting initial display info\n");
+    request_display_info();
+    seL4_Signal(VIRT_CH);
+
+    seL4_Word badge;
+    while (1) {
+        seL4_MessageInfo_t info = seL4_Recv(ep, &badge);
+        seL4_Word label = seL4_MessageInfo_get_label(info);
+        if (label == seL4_Fault_NullFault) {
+            pd_notified(badge);
+        } else {
+            seL4_Reply(seL4_MessageInfo_new(0, 0, 0, 0));
         }
     }
 }

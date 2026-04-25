@@ -3,7 +3,7 @@
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
-#include <microkit.h>
+#include <libvmm/vmm_caps.h>
 #include <libvmm/guest.h>
 #include <libvmm/virq.h>
 #include <libvmm/util/util.h>
@@ -16,7 +16,7 @@
 // #define DEBUG_MMIO
 
 #if defined(DEBUG_MMIO)
-#define LOG_MMIO(...) do{ printf("%s|VIRTIO(MMIO): ", microkit_name); printf(__VA_ARGS__); }while(0)
+#define LOG_MMIO(...) do{ printf("%s|VIRTIO(MMIO): ", vmm_pd_name); printf(__VA_ARGS__); }while(0)
 #else
 #define LOG_MMIO(...) do{}while(0)
 #endif

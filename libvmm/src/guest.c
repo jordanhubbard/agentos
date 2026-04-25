@@ -4,7 +4,7 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 #include <string.h>
-#include <microkit.h>
+#include <libvmm/vmm_caps.h>
 #include <libvmm/vcpu.h>
 #include <libvmm/guest.h>
 #include <libvmm/util/util.h>
@@ -23,7 +23,7 @@ bool guest_start(uintptr_t kernel_pc, uintptr_t dtb, uintptr_t initrd)
     regs.pc = kernel_pc;
     /* Write out all the TCB registers */
     seL4_Word err = seL4_TCB_WriteRegisters(
-        BASE_VM_TCB_CAP + GUEST_BOOT_VCPU_ID,
+        vmm_tcb_cap(GUEST_BOOT_VCPU_ID),
         false, // We'll explcitly start the guest below rather than in this call
         0, // No flags
         4, // Writing to x0, pc, and spsr. Due to the ordering of seL4_UserContext the count must be 4.
@@ -38,7 +38,7 @@ bool guest_start(uintptr_t kernel_pc, uintptr_t dtb, uintptr_t initrd)
 
     vcpu_set_on(GUEST_BOOT_VCPU_ID, true);
     /* Restart the boot vCPU to the program counter of the TCB associated with it */
-    microkit_vcpu_restart(GUEST_BOOT_VCPU_ID, regs.pc);
+    vmm_vcpu_restart(GUEST_BOOT_VCPU_ID, regs.pc);
 
     return true;
 }
@@ -46,7 +46,7 @@ bool guest_start(uintptr_t kernel_pc, uintptr_t dtb, uintptr_t initrd)
 void guest_stop()
 {
     LOG_VMM("Stopping guest\n");
-    microkit_vcpu_stop(GUEST_BOOT_VCPU_ID);
+    vmm_vcpu_stop(GUEST_BOOT_VCPU_ID);
     LOG_VMM("Stopped guest\n");
 }
 
@@ -54,7 +54,7 @@ bool guest_restart(uintptr_t guest_ram_vaddr, size_t guest_ram_size)
 {
     LOG_VMM("Attempting to restart guest\n");
     // First, stop the guest
-    microkit_vcpu_stop(GUEST_BOOT_VCPU_ID);
+    vmm_vcpu_stop(GUEST_BOOT_VCPU_ID);
     LOG_VMM("Stopped guest\n");
     // Then, we need to clear all of RAM
     LOG_VMM("Clearing guest RAM\n");

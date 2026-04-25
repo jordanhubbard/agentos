@@ -4,7 +4,7 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
-#include <microkit.h>
+#include <sel4/sel4.h>
 #include <libco.h>
 #include <sddf/util/printf.h>
 #include <sddf/serial/queue.h>
@@ -124,8 +124,24 @@ bool delay_ms(size_t milliseconds)
     return true;
 }
 
-void init(void)
+static seL4_CPtr g_ep;
+
+static void pd_notified(seL4_Word badge)
 {
+    seL4_Word ch = badge;
+    if (ch == i2c_config.virt.id || ch == timer_config.driver_id) {
+        co_switch(t_main);
+    } else if (ch == serial_config.tx.id) {
+        // Nothing to do
+    } else {
+        LOG_CLIENT_ERR("Unknown channel 0x%lx!\n", ch);
+    }
+}
+
+void ds3231_client_main(seL4_CPtr ep)
+{
+    g_ep = ep;
+
     assert(serial_config_check_magic(&serial_config));
     serial_queue_init(&serial_tx_queue_handle, serial_config.tx.queue.vaddr, serial_config.tx.data.size,
                       serial_config.tx.data.vaddr);
@@ -145,25 +161,22 @@ void init(void)
     }
     LOG_CLIENT("claimed DS3231 bus!\n");
 
-    /* Initialise libi2c for DS3231 */
     libi2c_init(&libi2c_conf, &queue);
 
-    /* Define the event loop/notified thread as the active co-routine */
     t_event = co_active();
 
-    /* derive main entry point */
     t_main = co_derive((void *)t_client_main_stack, STACK_SIZE, client_main);
 
     co_switch(t_main);
-}
 
-void notified(microkit_channel ch)
-{
-    if (ch == i2c_config.virt.id || ch == timer_config.driver_id) {
-        co_switch(t_main);
-    } else if (ch == serial_config.tx.id) {
-        // Nothing to do
-    } else {
-        LOG_CLIENT_ERR("Unknown channel 0x%x!\n", ch);
+    seL4_Word badge;
+    while (1) {
+        seL4_MessageInfo_t info = seL4_Recv(ep, &badge);
+        seL4_Word label = seL4_MessageInfo_get_label(info);
+        if (label == seL4_Fault_NullFault) {
+            pd_notified(badge);
+        } else {
+            seL4_Reply(seL4_MessageInfo_new(0, 0, 0, 0));
+        }
     }
 }

@@ -5,7 +5,7 @@
 
 #include <stdbool.h>
 #include <stdint.h>
-#include <microkit.h>
+#include <sel4/sel4.h>
 #include <sddf/sound/queue.h>
 #include <sddf/util/util.h>
 #include <sddf/util/printf.h>
@@ -156,10 +156,10 @@ static int notified_by_client(int client)
     }
 
     if (notify_client) {
-        microkit_notify(CLIENT_CH_BEGIN + client);
+        seL4_Signal(CLIENT_CH_BEGIN + client);
     }
     if (notify_driver) {
-        microkit_notify(DRIVER_CH);
+        seL4_Signal(DRIVER_CH);
     }
 
     return 0;
@@ -241,15 +241,38 @@ int notified_by_driver(void)
 
     for (int client = 0; client < NUM_CLIENTS; client++) {
         if (notify[client]) {
-            microkit_notify(CLIENT_CH_BEGIN + client);
+            seL4_Signal(CLIENT_CH_BEGIN + client);
         }
     }
 
     return 0;
 }
 
-void init(void)
+static seL4_CPtr g_ep;
+
+static void pd_notified(seL4_Word badge)
 {
+    seL4_Word ch = badge;
+    if (ch == DRIVER_CH) {
+        if (notified_by_driver() != 0) {
+            sddf_dprintf("SND VIRT|ERR: failed to handle driver notification\n");
+        }
+    } else if (ch >= CLIENT_CH_BEGIN && ch < CLIENT_CH_BEGIN + NUM_CLIENTS) {
+        int client = ch - CLIENT_CH_BEGIN;
+        if (notified_by_client(client) != 0) {
+            sddf_dprintf(
+                "SND VIRT|ERR: failed to handle notification from client %d\n",
+                client);
+        }
+    } else {
+        sddf_dprintf("SND VIRT|ERR: notified by unexpected channel %d\n", (int)ch);
+    }
+}
+
+void sound_virt_main(seL4_CPtr ep)
+{
+    g_ep = ep;
+
     assert(data_region_paddr);
     assert(data_region_vaddr);
 
@@ -266,22 +289,15 @@ void init(void)
     for (int i = 0; i < MAX_STREAMS; i++) {
         owners[i] = NO_OWNER;
     }
-}
 
-void notified(microkit_channel ch)
-{
-    if (ch == DRIVER_CH) {
-        if (notified_by_driver() != 0) {
-            sddf_dprintf("SND VIRT|ERR: failed to handle driver notification\n");
+    seL4_Word badge;
+    while (1) {
+        seL4_MessageInfo_t info = seL4_Recv(ep, &badge);
+        seL4_Word label = seL4_MessageInfo_get_label(info);
+        if (label == seL4_Fault_NullFault) {
+            pd_notified(badge);
+        } else {
+            seL4_Reply(seL4_MessageInfo_new(0, 0, 0, 0));
         }
-    } else if (ch >= CLIENT_CH_BEGIN && ch < CLIENT_CH_BEGIN + NUM_CLIENTS) {
-        int client = ch - CLIENT_CH_BEGIN;
-        if (notified_by_client(client) != 0) {
-            sddf_dprintf(
-                "SND VIRT|ERR: failed to handle notification from client %d\n",
-                client);
-        }
-    } else {
-        sddf_dprintf("SND VIRT|ERR: notified by unexpected channel %d\n", ch);
     }
 }

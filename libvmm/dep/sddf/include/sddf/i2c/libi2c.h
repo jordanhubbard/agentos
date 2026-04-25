@@ -21,11 +21,8 @@
 #include <sddf/i2c/config.h>
 #ifdef LIBI2C_RAW
 #include <libco.h>
-// Client must define and set up these cothreads for this interface to function.
 extern cothread_t t_event;
 extern cothread_t t_main;
-#else
-#include <libmicrokitco.h>
 #endif
 
 // Client must define this. E.g.

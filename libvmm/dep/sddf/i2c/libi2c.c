@@ -39,13 +39,10 @@ static inline int check_data_buf(void *data_buf)
 static void __i2c_block(libi2c_conf_t *conf)
 {
     LOG_LIBI2C("Dispatching request to virt...\n");
-    microkit_notify(i2c_config.virt.id);
+    seL4_Signal(i2c_config.virt.id);
 
-    // Await response.
 #ifdef LIBI2C_RAW
     co_switch(t_event);
-#else
-    microkit_cothread_wait_on_channel(i2c_config.virt.id);
 #endif
 }
 

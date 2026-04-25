@@ -182,8 +182,10 @@ const system_desc_t system_desc_aarch64 = {
          * the 64-slot CNode used by other PDs.
          *
          * IRQ assignments (QEMU virt AArch64 GIC SPI numbers):
-         *   virtio-net: SPI 16 → INTID 48 → irq_number=48, badge 0x1
-         *   virtio-blk: SPI 17 → INTID 49 → irq_number=49, badge 0x2
+         *   virtio-net:  SPI 16 → INTID 48 → irq_number=48, badge 0x1
+         *   virtio-blk0: SPI 17 → INTID 49 → irq_number=49, badge 0x2
+         *   virtio-blk1: SPI 18 → INTID 50 → irq_number=50, badge 0x4
+         *                (used by ubuntu guest for cloud-init seed disk)
          */
         {
             .name           = "linux_vmm",
@@ -196,10 +198,21 @@ const system_desc_t system_desc_aarch64 = {
                 { SVC_ID_NAMESERVER, PD_CNODE_SLOT_NAMESERVER_EP },
                 { SVC_ID_LOG_DRAIN,  PD_CNODE_SLOT_LOG_DRAIN_EP  },
             },
-            .irq_count = 2u,
+            .irq_count = 3u,
             .irqs = {
-                { .irq_number = 48u, .ntfn_badge = 0x1u, .name = "virtio-net" },
-                { .irq_number = 49u, .ntfn_badge = 0x2u, .name = "virtio-blk" },
+                { .irq_number = 48u, .ntfn_badge = 0x1u, .name = "virtio-net"  },
+                { .irq_number = 49u, .ntfn_badge = 0x2u, .name = "virtio-blk0" },
+                { .irq_number = 50u, .ntfn_badge = 0x4u, .name = "virtio-blk1" },
+            },
+            /* 256 MB guest RAM mapped at 0x40000000 (AArch64 DRAM base).
+             * linux_vmm uses this as guest_ram_vaddr for libvmm image setup.
+             * GPA 0x40000000 matches the QEMU virt board's DRAM region. */
+            .mr_count = 1u,
+            .memory_regions = {
+                { .vaddr    = 0x40000000ULL,
+                  .size     = 0x10000000u,  /* 256 MB */
+                  .writable = 1u,
+                  .name     = "guest_ram" },
             },
         },
 

@@ -33,6 +33,7 @@
 #pragma once
 
 #include <stdint.h>
+#include <sel4/sel4.h>
 #include <libvmm/util/queue.h>
 #include <libvmm/virtio/virtio.h>
 #include <sddf/sound/queue.h>
@@ -317,7 +318,7 @@ struct virtio_snd_device {
     sound_pcm_queue_handle_t pcm_req;
     sound_pcm_queue_handle_t pcm_res;
     void *data_region;
-    int server_ch;
+    seL4_CPtr server_ch;
 };
 
 /**
@@ -331,7 +332,7 @@ struct virtio_snd_device {
  * @param virq The virtual IRQ used to notify the VM.
  * @param shared_state Pointer to the sDDF sound shared data region.
  * @param queues Pointer to sDDF sound queues.
- * @param server_ch Channel of the sound server.
+ * @param server_ch Cap of the sound server notification endpoint.
  *
  * @return `true` on success, `false` otherwise.
  */
@@ -342,6 +343,6 @@ bool virtio_mmio_snd_init(struct virtio_snd_device *sound_dev,
                           sound_shared_state_t *shared_state,
                           sound_queues_t *queues,
                           uintptr_t data_region,
-                          int server_ch);
+                          seL4_CPtr server_ch);
 
 void virtio_snd_notified(struct virtio_snd_device *sound_dev);

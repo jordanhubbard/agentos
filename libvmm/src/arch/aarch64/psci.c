@@ -6,6 +6,7 @@
  */
 
 #include <stdbool.h>
+#include <libvmm/vmm_caps.h>
 #include <libvmm/guest.h>
 #include <libvmm/vcpu.h>
 #include <libvmm/util/util.h>
@@ -63,10 +64,10 @@ bool handle_psci(size_t vcpu_id, seL4_UserContext *regs, uint64_t fn_number, uin
                 /* TODO: support more than 16 vCPUs, we need to correctly set the affinity
                  * bits in VMPIDR_EL2. */
                 assert(vcpu_id < 16);
-                microkit_vcpu_arm_write_reg(target_vcpu, seL4_VCPUReg_VMPIDR_EL2, target_vcpu);
+                vmm_vcpu_arm_write_reg(target_vcpu, seL4_VCPUReg_VMPIDR_EL2, target_vcpu);
 
                 seL4_Error err = seL4_TCB_WriteRegisters(
-                    BASE_VM_TCB_CAP + target_vcpu,
+                    vmm_tcb_cap(target_vcpu),
                     false, // We'll explcitly start the guest below rather than in this call
                     0, // No flags
                     SEL4_USER_CONTEXT_SIZE, &vcpu_regs);
@@ -80,7 +81,7 @@ bool handle_psci(size_t vcpu_id, seL4_UserContext *regs, uint64_t fn_number, uin
 
                 LOG_VMM("starting guest vCPU (0x%lx) with entry point 0x%lx, context ID: 0x%lx\n", target_vcpu,
                         vcpu_regs.pc, context_id);
-                microkit_vcpu_restart(target_vcpu, vcpu_regs.pc);
+                vmm_vcpu_restart(target_vcpu, vcpu_regs.pc);
 
                 smc_set_return_value(regs, PSCI_SUCCESS);
             }

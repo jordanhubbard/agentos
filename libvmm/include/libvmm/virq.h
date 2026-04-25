@@ -6,10 +6,11 @@
 
 #include <stddef.h>
 #include <stdbool.h>
-#include <microkit.h>
+#include <sel4/sel4.h>
+#include <libvmm/vmm_caps.h>
 
 #ifndef MAX_PASSTHROUGH_IRQ
-#define MAX_PASSTHROUGH_IRQ MICROKIT_MAX_CHANNELS
+#define MAX_PASSTHROUGH_IRQ VMM_MAX_IRQ_HANDLERS
 #endif
 
 typedef void (*virq_ack_fn_t)(size_t vcpu_id, int irq, void *cookie);
@@ -40,5 +41,5 @@ bool virq_inject_vcpu(size_t vcpu_id, int irq);
  * After registering the passthrough IRQ, call `virq_handle_passthrough` when
  * the IRQ has come through from seL4.
  */
-bool virq_register_passthrough(size_t vcpu_id, size_t irq, microkit_channel irq_ch);
-bool virq_handle_passthrough(microkit_channel irq_ch);
+bool virq_register_passthrough(size_t vcpu_id, size_t irq, seL4_CPtr irq_cap);
+bool virq_handle_passthrough(seL4_CPtr irq_cap);

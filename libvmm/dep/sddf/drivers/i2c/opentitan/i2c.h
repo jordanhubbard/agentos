@@ -11,7 +11,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <stdbool.h>
-#include <microkit.h>
+#include <sel4/sel4.h>
 #include <sddf/i2c/queue.h>
 #include <sddf/i2c/config.h>
 #include <sddf/resources/device.h>

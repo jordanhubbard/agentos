@@ -43,7 +43,7 @@ typedef struct {
 #define SEL4_MSG_T_DEFINED 1
 #endif
 #else
-#include "sel4_ipc.h"   /* sel4_msg_t, sel4_badge_t */
+#include "sel4_msg_types.h"   /* sel4_msg_t, sel4_badge_t — no seL4 SDK dep */
 #endif
 
 #include "../../../contracts/cap-audit/interface.h"

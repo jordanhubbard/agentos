@@ -4,7 +4,7 @@
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
-#include <microkit.h>
+#include <libvmm/vmm_caps.h>
 #include <libvmm/vcpu.h>
 #include <libvmm/util/util.h>
 #include <libvmm/arch/aarch64/fault.h>
@@ -28,7 +28,7 @@ bool vgic_handle_fault_maintenance(size_t vcpu_id)
 {
     // @ivanv: reivist, also inconsistency between int and bool
     bool success = true;
-    int idx = microkit_mr_get(seL4_VGICMaintenance_IDX);
+    int idx = seL4_GetMR(seL4_VGICMaintenance_IDX);
     /* Currently not handling spurious IRQs */
     // @ivanv: this comment seems irrelevant to the code.
     assert(idx >= 0);

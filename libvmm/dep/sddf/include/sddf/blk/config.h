@@ -5,7 +5,7 @@
  */
 #pragma once
 
-#include <microkit.h>
+#include <sel4/sel4.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <sddf/resources/common.h>

@@ -70,14 +70,12 @@ pd_tcb_result_t pd_tcb_create(seL4_CPtr  dest_cnode,
      * vspace_root_data = 0: no VSpace guard.
      */
     err = seL4_TCB_Configure(tcb,
-                              seL4_CapNull   /* fault_ep */,
-                              pd_cnode,      /* cspace_root */
-                              0              /* cspace_root_data */,
-                              64             /* cspace_size_bits */,
-                              vspace_cap,    /* vspace_root */
-                              0              /* vspace_root_data */,
-                              ipc_buf_va,    /* buffer VA in PD's VSpace */
-                              ipc_buf_cap    /* frame cap for IPC buffer */);
+                              pd_cnode,  /* cspace_root */
+                              0          /* cspace_root_data */,
+                              vspace_cap, /* vspace_root */
+                              0          /* vspace_root_data */,
+                              ipc_buf_va, /* buffer VA in PD's VSpace */
+                              ipc_buf_cap /* frame cap for IPC buffer */);
     if (err != seL4_NoError) {
         return (pd_tcb_result_t){ .tcb_cap = seL4_CapNull, .error = (int)err };
     }
@@ -115,18 +113,19 @@ seL4_Error pd_tcb_set_regs(seL4_CPtr tcb_cap,
 
     regs.pc = entry;  /* instruction pointer: ELF entry symbol          */
     regs.sp = sp;     /* stack pointer: stack_top from pd_vspace_load_elf */
-    regs.x0 = arg0;   /* first argument: AArch64 x0 / RISC-V a0         */
+    regs.AGENTOS_CTX_ARG0 = arg0; /* first argument (a0 on RISC-V, x0 on AArch64) */
 
     /*
-     * Write all 34 registers (seL4_UserContext_n_regs) to the TCB.
+     * Write the full register context to the TCB.
      *
      * resume = 0: keep the thread suspended; pd_tcb_start will resume it.
-     * arch_flags = 0: no AArch64-specific execution state flags.
+     * arch_flags = 0: no arch-specific execution state flags.
+     * count = full seL4_UserContext size in words.
      */
     return seL4_TCB_WriteRegisters(tcb_cap,
                                    0 /* resume */,
                                    0 /* arch_flags */,
-                                   seL4_UserContext_n_regs,
+                                   (seL4_Word)(sizeof(seL4_UserContext) / sizeof(seL4_Word)),
                                    &regs);
 }
 

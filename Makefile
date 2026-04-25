@@ -10,7 +10,7 @@
 #   make test         — CI boot test (exit 0/1)
 #   make clean        — remove build artifacts for current target
 
-.PHONY: all install deps-tools submodules channels run test test-snapshot-sched test-power-mgr test-proc-server test-vibeos-contract test-integration e2e e2e-guest e2e-contract clean clean-all clean-images help release release-minor release-major fetch-guest build-tools
+.PHONY: all install deps-tools submodules channels run test test-snapshot-sched test-power-mgr test-proc-server test-vibeos-contract test-integration e2e e2e-guest e2e-contract e2e-ubuntu-amd64 e2e-ubuntu-arm64 e2e-nixos e2e-freebsd15 e2e-all bootstrap-guest clean clean-all clean-images help release release-minor release-major fetch-guest build-tools
 
 # ─── Read config.yaml (if present) ───────────────────────────────────────────
 CONFIG_TARGET := $(shell grep '^target_arch:' config.yaml 2>/dev/null | sed 's/target_arch:[[:space:]]*//' | tr -d '[:space:]')
@@ -378,7 +378,7 @@ run:
 # test: CI boot test (exits 0 on success, 1 on failure)
 # =============================================================================
 test: build
-	@cargo xtask test --board $(BOARD) --guest-os $(GUEST_OS)
+	@cargo xtask qemu-test --board $(BOARD) --guest-os $(GUEST_OS)
 
 # =============================================================================
 # test-snapshot-sched: standalone unit test for the snapshot_sched PD
@@ -492,6 +492,54 @@ e2e-guest:
 e2e-contract:
 	@chmod +x tests/e2e/test_cc_contract.sh
 	@BRIDGE_AVAILABLE=1 bash tests/e2e/test_cc_contract.sh
+
+# Per-guest-OS E2E targets — run the full suite against a specific guest image.
+# Images must exist in guest-images/; create them with: make bootstrap-guest OS=<os>
+e2e-ubuntu-amd64:
+	@chmod +x tests/e2e/run_e2e.sh tests/e2e/*.sh
+	@E2E_GUEST_OS=ubuntu-amd64 bash tests/e2e/run_e2e.sh
+
+e2e-ubuntu-arm64:
+	@chmod +x tests/e2e/run_e2e.sh tests/e2e/*.sh
+	@E2E_GUEST_OS=ubuntu-arm64 bash tests/e2e/run_e2e.sh
+
+e2e-nixos:
+	@chmod +x tests/e2e/run_e2e.sh tests/e2e/*.sh
+	@E2E_GUEST_OS=nixos bash tests/e2e/run_e2e.sh
+
+e2e-freebsd15:
+	@chmod +x tests/e2e/run_e2e.sh tests/e2e/*.sh
+	@E2E_GUEST_OS=freebsd15 bash tests/e2e/run_e2e.sh
+
+# e2e-all: run E2E suite for every guest image that exists in guest-images/
+e2e-all:
+	@chmod +x tests/e2e/run_e2e.sh tests/e2e/*.sh
+	@failed=0; \
+	for gos in freebsd ubuntu-amd64 ubuntu-arm64 nixos freebsd15; do \
+	    img=""; \
+	    case "$$gos" in \
+	        freebsd)       img="$(AGENTOS_IMAGES)/freebsd.img" ;; \
+	        ubuntu-amd64)  img="$(AGENTOS_IMAGES)/ubuntu-amd64.img" ;; \
+	        ubuntu-arm64)  img="$(AGENTOS_IMAGES)/ubuntu-arm64.img" ;; \
+	        nixos)         img="$(AGENTOS_IMAGES)/nixos.img" ;; \
+	        freebsd15)     img="$(AGENTOS_IMAGES)/freebsd15-amd64.img" ;; \
+	    esac; \
+	    if [ -f "$$img" ]; then \
+	        echo ""; echo "══ E2E: $$gos ══"; \
+	        E2E_GUEST_OS=$$gos E2E_GUEST_IMG=$$img bash tests/e2e/run_e2e.sh || failed=$$((failed+1)); \
+	    else \
+	        echo "[SKIP] $$gos: image not found ($$img)"; \
+	    fi; \
+	done; \
+	[ "$$failed" -eq 0 ] || (echo ""; echo "$$failed guest OS(es) failed E2E"; exit 1)
+
+# bootstrap-guest: create a guest disk image from ISO files in /Volumes/ISOs
+# Usage: make bootstrap-guest OS=nixos
+#        make bootstrap-guest OS=ubuntu-amd64
+bootstrap-guest:
+	@chmod +x tools/bootstrap-guest.sh
+	@[ -n "$(OS)" ] || (echo "Usage: make bootstrap-guest OS=<ubuntu-amd64|ubuntu-arm64|nixos|freebsd15>"; exit 1)
+	@bash tools/bootstrap-guest.sh $(OS)
 
 # =============================================================================
 # clean

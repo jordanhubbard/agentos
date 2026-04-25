@@ -4,6 +4,7 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 #include <string.h>
+#include <libvmm/vmm_caps.h>
 #include <libvmm/guest.h>
 #include <libvmm/virq.h>
 #include <libvmm/util/util.h>
@@ -245,7 +246,7 @@ static bool virtio_net_queue_notify(struct virtio_device *dev)
 
     if (notify_tx_server && net_require_signal_active(&state->tx)) {
         net_cancel_signal_active(&state->tx);
-        microkit_notify(state->tx_ch);
+        vmm_notify(state->tx_cap);
     }
 
     bool success = true;
@@ -374,8 +375,8 @@ static virtio_device_funs_t functions = {
 
 static struct virtio_device *virtio_net_init(struct virtio_net_device *net_dev, virtio_transport_type_t type,
                                              size_t virq, net_queue_handle_t *rx, net_queue_handle_t *tx,
-                                             uintptr_t rx_data, uintptr_t tx_data, microkit_channel rx_ch,
-                                             microkit_channel tx_ch, uint8_t mac[VIRTIO_NET_CONFIG_MAC_SZ])
+                                             uintptr_t rx_data, uintptr_t tx_data, seL4_CPtr rx_cap,
+                                             seL4_CPtr tx_cap, uint8_t mac[VIRTIO_NET_CONFIG_MAC_SZ])
 {
     struct virtio_device *dev = &net_dev->virtio_device;
 
@@ -394,28 +395,28 @@ static struct virtio_device *virtio_net_init(struct virtio_net_device *net_dev, 
     net_dev->tx = *tx;
     net_dev->rx_data = (void *)rx_data;
     net_dev->tx_data = (void *)tx_data;
-    net_dev->rx_ch = rx_ch;
-    net_dev->tx_ch = tx_ch;
+    net_dev->rx_cap = rx_cap;
+    net_dev->tx_cap = tx_cap;
 
     return dev;
 }
 
 bool virtio_mmio_net_init(struct virtio_net_device *net_dev, uintptr_t region_base, uintptr_t region_size, size_t virq,
                           net_queue_handle_t *rx, net_queue_handle_t *tx, uintptr_t rx_data, uintptr_t tx_data,
-                          microkit_channel rx_ch, microkit_channel tx_ch, uint8_t mac[VIRTIO_NET_CONFIG_MAC_SZ])
+                          seL4_CPtr rx_cap, seL4_CPtr tx_cap, uint8_t mac[VIRTIO_NET_CONFIG_MAC_SZ])
 {
-    struct virtio_device *dev = virtio_net_init(net_dev, VIRTIO_TRANSPORT_MMIO, virq, rx, tx, rx_data, tx_data, rx_ch,
-                                                tx_ch, mac);
+    struct virtio_device *dev = virtio_net_init(net_dev, VIRTIO_TRANSPORT_MMIO, virq, rx, tx, rx_data, tx_data, rx_cap,
+                                                tx_cap, mac);
 
     return virtio_mmio_register_device(dev, region_base, region_size, virq);
 }
 
 bool virtio_pci_net_init(struct virtio_net_device *net_dev, uint32_t dev_slot, size_t virq, net_queue_handle_t *rx,
-                         net_queue_handle_t *tx, uintptr_t rx_data, uintptr_t tx_data, microkit_channel rx_ch,
-                         microkit_channel tx_ch, uint8_t mac[VIRTIO_NET_CONFIG_MAC_SZ])
+                         net_queue_handle_t *tx, uintptr_t rx_data, uintptr_t tx_data, seL4_CPtr rx_cap,
+                         seL4_CPtr tx_cap, uint8_t mac[VIRTIO_NET_CONFIG_MAC_SZ])
 {
-    struct virtio_device *dev = virtio_net_init(net_dev, VIRTIO_TRANSPORT_PCI, virq, rx, tx, rx_data, tx_data, rx_ch,
-                                                tx_ch, mac);
+    struct virtio_device *dev = virtio_net_init(net_dev, VIRTIO_TRANSPORT_PCI, virq, rx, tx, rx_data, tx_data, rx_cap,
+                                                tx_cap, mac);
 
     dev->transport.pci.device_id = VIRTIO_PCI_NET_DEV_ID;
     dev->transport.pci.vendor_id = VIRTIO_PCI_VENDOR_ID;

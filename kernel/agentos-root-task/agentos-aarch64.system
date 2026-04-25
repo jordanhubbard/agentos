@@ -370,6 +370,14 @@
             receives hardware UART notifications; serial_pd delivers data
             to guests via the serial_shmem proxy buffer (SERIAL_PD_CH=1).
         -->
+        <!-- virtio IRQ passthroughs: Microkit places these at BASE_IRQ_CAP + id
+             in linux_vmm's CNode (BASE_IRQ_CAP=138).
+             ids 1 and 2 are already taken by serial_pd and controller channels,
+             so use ids 3, 4, 5 → slots 141, 142, 143.
+             QEMU virt SPI assignments: net=16→INTID 48, blk0=17→49, blk1=18→50. -->
+        <irq irq="48" id="3" trigger="edge" />
+        <irq irq="49" id="4" trigger="edge" />
+        <irq irq="50" id="5" trigger="edge" />
     </protection_domain>
 
     <!-- Channel 50: controller <-> linux_vmm (agent-to-linux bridge) -->

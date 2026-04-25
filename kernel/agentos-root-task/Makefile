@@ -10,6 +10,13 @@ endif
 AGENTOS_ARCH  ?= riscv64
 AGENTOS_BOARD ?= qemu_virt_riscv64
 
+# seL4 kernel headers: shipped in the Microkit SDK board package.
+# We use these headers only — libmicrokit is NOT linked.
+# The board package provides arch-specific seL4 API headers (sel4/sel4.h, etc.)
+REPO_ROOT_MK  := $(abspath $(dir $(lastword $(MAKEFILE_LIST)))/../..)
+SEL4_SDK      ?= $(REPO_ROOT_MK)/microkit-sdk-2.1.0
+SEL4_INC_DIR  := $(SEL4_SDK)/board/$(AGENTOS_BOARD)/debug/include
+
 # Linker script: agentOS-owned replacement for microkit.ld
 AGENTOS_LD    := $(abspath $(dir $(lastword $(MAKEFILE_LIST)))/../../tools/ld/agentos.ld)
 
@@ -32,7 +39,7 @@ else
 endif
 
 CFLAGS := -nostdlib -ffreestanding -g -O2 -Wall -Wextra -Werror -Wno-unused-function -Wno-unused-parameter -Wno-unused-variable \
-           -Iinclude -Ilwip/include \
+           -Iinclude -Ilwip/include -I$(SEL4_INC_DIR) \
            $(CFLAGS_ARCH) \
            -MMD -MP
 
@@ -67,7 +74,10 @@ CFLAGS_SERVICES := $(CFLAGS) -I$(REPO_ROOT)
 #   -DBOARD_qemu_virt_aarch64  (for AArch64 QEMU)
 #   (default: RISC-V — no define needed; system_desc_riscv64 is the fallback)
 ROOT_TASK_SRCS := src/main.c src/ep_alloc.c src/cap_accounting.c \
-                  src/pd_tcb.c src/m3_bare_metal.c
+                  src/pd_tcb.c src/m3_bare_metal.c \
+                  src/sel4_crt.c src/log.c \
+                  src/ut_alloc.c src/pd_vspace.c src/cap_audit.c \
+                  src/vos_create.c
 
 ifeq ($(ARCH),aarch64)
 ROOT_TASK_SRCS += src/system_desc_aarch64.c
@@ -137,6 +147,24 @@ PD_BLOCK_PD_SRCS         := src/block_pd.c src/m3_bare_metal.c src/log.c
 PD_FB_PD_SRCS            := src/framebuffer_pd.c src/m3_bare_metal.c src/log.c
 PD_CC_PD_SRCS            := src/cc_pd.c src/m3_bare_metal.c src/log.c
 PD_GPU_SCHED_SRCS        := src/gpu_sched.c src/gpu_shmem.c src/m3_bare_metal.c src/log.c
+PD_IRQ_PD_SRCS           := src/irq_pd.c src/m3_bare_metal.c src/log.c
+PD_TIMER_PD_SRCS         := src/timer_pd.c src/m3_bare_metal.c src/log.c
+
+# ─── Inject seL4 CRT into every service PD ────────────────────────────────────
+# sel4_crt.c provides __sel4_ipc_buffer (libmicrokit replacement) needed by
+# any PD that includes agentos.h → log_drain_write → seL4_SetMR.
+_PD_SRC_VARS := \
+    PD_MONITOR_SRCS PD_EVENTBUS_SRCS PD_INITAGENT_SRCS PD_WORKER_SRCS \
+    PD_AGENTFS_SRCS PD_VIBEENGINE_SRCS PD_SWAPSLOT_SRCS PD_LOG_DRAIN_SRCS \
+    PD_SERIAL_PD_SRCS PD_MEMPROFILER_SRCS PD_NETISOLATOR_SRCS PD_SNAPSHOTSCHED_SRCS \
+    PD_PERFCOUNTERS_SRCS PD_TIMEPARTITION_SRCS PD_TRACERECORDER_SRCS PD_NAMESERVER_SRCS \
+    PD_VIRTIO_BLK_SRCS PD_VFS_SERVER_SRCS PD_SPAWN_SERVER_SRCS PD_APP_SLOT_SRCS \
+    PD_NET_SERVER_SRCS PD_NET_PD_SRCS PD_WG_NET_SRCS PD_APP_MANAGER_SRCS \
+    PD_HTTP_SVC_SRCS PD_VM_MANAGER_SRCS PD_AUTH_SERVER_SRCS PD_EXT2FS_SRCS \
+    PD_PROC_SERVER_SRCS PD_VM_SNAPSHOT_SRCS PD_PFLOCAL_SERVER_SRCS PD_PFLOCAL_SRCS \
+    PD_EXEC_SERVER_SRCS PD_TERM_SERVER_SRCS PD_BLOCK_PD_SRCS PD_FB_PD_SRCS \
+    PD_CC_PD_SRCS PD_GPU_SCHED_SRCS PD_IRQ_PD_SRCS PD_TIMER_PD_SRCS
+$(foreach v,$(_PD_SRC_VARS),$(eval $(v) += src/sel4_crt.c))
 
 # wasm3 vendored sources (core interpreter only)
 WASM3_SRCS := wasm3/m3_core.c wasm3/m3_env.c wasm3/m3_code.c wasm3/m3_compile.c \
@@ -188,8 +216,10 @@ BLOCK_PD_OBJS         := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_BLOCK_PD_SRC
 FB_PD_OBJS            := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_FB_PD_SRCS))
 CC_PD_OBJS            := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_CC_PD_SRCS))
 GPU_SCHED_OBJS        := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_GPU_SCHED_SRCS))
+IRQ_PD_OBJS           := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_IRQ_PD_SRCS))
+TIMER_PD_OBJS         := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_TIMER_PD_SRCS))
 
-IMAGES := controller.elf event_bus.elf init_agent.elf worker.elf agentfs.elf vibe_engine.elf vibeos.elf log_drain.elf serial_pd.elf swap_slot.elf mem_profiler.elf net_isolator.elf perf_counters.elf time_partition.elf trace_recorder.elf nameserver.elf virtio_blk.elf vfs_server.elf spawn_server.elf app_slot.elf net_server.elf net_pd.elf wg_net.elf app_manager.elf http_svc.elf vm_manager.elf auth_server.elf ext2fs.elf proc_server.elf vm_snapshot.elf pflocal_server.elf exec_server.elf term_server.elf block_pd.elf framebuffer_pd.elf cc_pd.elf gpu_sched.elf timer_svc.elf entropy_svc.elf block_svc.elf console_mux.elf usb_svc.elf model_svc.elf tool_svc.elf
+IMAGES := controller.elf event_bus.elf init_agent.elf worker.elf agentfs.elf vibe_engine.elf vibeos.elf log_drain.elf serial_pd.elf swap_slot.elf mem_profiler.elf net_isolator.elf perf_counters.elf time_partition.elf trace_recorder.elf nameserver.elf virtio_blk.elf vfs_server.elf spawn_server.elf app_slot.elf net_server.elf net_pd.elf wg_net.elf app_manager.elf http_svc.elf vm_manager.elf auth_server.elf ext2fs.elf proc_server.elf vm_snapshot.elf pflocal_server.elf exec_server.elf term_server.elf block_pd.elf framebuffer_pd.elf cc_pd.elf gpu_sched.elf timer_svc.elf entropy_svc.elf block_svc.elf console_mux.elf usb_svc.elf model_svc.elf tool_svc.elf irq_pd.elf timer_pd.elf
 
 # Optional: periodic WASM slot snapshot scheduler
 ifdef AGENTOS_SNAPSHOT_SCHED
@@ -211,6 +241,9 @@ ifeq ($(ARCH),aarch64)
 else ifeq ($(ARCH),x86_64)
   # Include linux_vmm stub so the image can reference it
   IMAGES += linux_vmm.elf
+else ifeq ($(ARCH),riscv64)
+  # RISC-V 64: process-in-PD VMMs (no hypervisor extension)
+  IMAGES += linux_vmm.elf freebsd_vmm.elf
 endif
 
 IMAGE_FILE  := $(BUILD_DIR)/agentos.img
@@ -470,6 +503,36 @@ $(BUILD_DIR)/cc_pd.elf: $(CC_PD_OBJS)
 
 $(BUILD_DIR)/gpu_sched.elf: $(GPU_SCHED_OBJS)
 	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
+
+$(BUILD_DIR)/irq_pd.elf: $(IRQ_PD_OBJS)
+	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
+
+$(BUILD_DIR)/timer_pd.elf: $(TIMER_PD_OBJS)
+	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
+
+# ─── RISC-V 64 VMMs (process-in-PD, no hypervisor extension) ─────────────
+ifeq ($(ARCH),riscv64)
+$(BUILD_DIR)/fdt_builder.o: src/fdt_builder.c
+	@mkdir -p $(BUILD_DIR)
+	$(CC) -c $(CFLAGS) $< -o $@
+
+$(BUILD_DIR)/linux_vmm.o: src/linux_vmm.c
+	@mkdir -p $(BUILD_DIR)
+	$(CC) -c $(CFLAGS) $< -o $@
+
+$(BUILD_DIR)/linux_vmm.elf: $(BUILD_DIR)/linux_vmm.o $(BUILD_DIR)/fdt_builder.o \
+                             $(BUILD_DIR)/sel4_crt.o $(BUILD_DIR)/m3_bare_metal.o
+	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
+
+$(BUILD_DIR)/freebsd_vmm.o: src/freebsd_vmm.c
+	@mkdir -p $(BUILD_DIR)
+	$(CC) -c $(CFLAGS) $< -o $@
+
+$(BUILD_DIR)/freebsd_vmm.elf: $(BUILD_DIR)/freebsd_vmm.o $(BUILD_DIR)/fdt_builder.o \
+                               $(BUILD_DIR)/sel4_crt.o \
+                               $(BUILD_DIR)/m3_bare_metal.o
+	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
+endif
 
 # ─── Linux VMM (AArch64 only) ─────────────────────────────────────────────
 ifeq ($(ARCH),aarch64)

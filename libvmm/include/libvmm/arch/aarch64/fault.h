@@ -9,10 +9,10 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <stddef.h>
-#include <microkit.h>
+#include <sel4/sel4.h>
 
 /* Fault-handling functions */
-bool fault_handle(size_t vcpu_id, microkit_msginfo msginfo);
+bool fault_handle(size_t vcpu_id, seL4_MessageInfo_t msginfo);
 
 bool fault_handle_vcpu_exception(size_t vcpu_id);
 bool fault_handle_vppi_event(size_t vcpu_id);

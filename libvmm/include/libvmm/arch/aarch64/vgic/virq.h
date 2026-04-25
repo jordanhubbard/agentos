@@ -224,7 +224,7 @@ static inline bool vgic_vcpu_load_list_reg(vgic_t *vgic, size_t vcpu_id, int idx
     assert(group == 1);
 #endif
 
-    microkit_vcpu_arm_inject_irq(vcpu_id, virq->virq, 0, group, idx);
+    vmm_vcpu_arm_inject_irq(vcpu_id, virq->virq, 0, group, idx);
     vgic_vcpu->lr_shadow[idx] = *virq;
 
     return true;

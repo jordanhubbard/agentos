@@ -30,6 +30,7 @@ skip() { printf "  ${YELLOW}[SKIP]${RESET} %s\n" "$*"; SKIP=$(( SKIP + 1 )); }
 CC_PORT="${E2E_CC_PORT:-8789}"
 CC_BASE="http://localhost:${CC_PORT}"
 BRIDGE_AVAIL="${BRIDGE_AVAILABLE:-0}"
+VMM_TYPE="${E2E_GUEST_VMM_TYPE:-freebsd}"
 
 cc_post() {
     curl -sf --max-time 5 \
@@ -84,7 +85,7 @@ fi
 
 # ── Test 3: MSG_GUEST_CREATE — create slot 1 on demand ────────────────────────
 
-RESP="$(cc_post "guest/create" '{"slot":1,"vmm_type":"freebsd"}')"
+RESP="$(cc_post "guest/create" "{\"slot\":1,\"vmm_type\":\"${VMM_TYPE}\"}")"
 if ok_field "${RESP}"; then
     GUEST_ID="$(printf '%s' "${RESP}" | grep -o '"guest_id":[0-9]*' | grep -o '[0-9]*')"
     pass "MSG_GUEST_CREATE: slot 1 created (guest_id=${GUEST_ID:-?})"

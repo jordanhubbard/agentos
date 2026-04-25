@@ -4,6 +4,7 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <sel4/sel4.h>
 #include <libvmm/util/util.h>
 #include <libvmm/util/printf.h>
 
@@ -12,7 +13,7 @@
    in the VMM. */
 void _putchar(char character)
 {
-    microkit_dbg_putc(character);
+    seL4_DebugPutChar(character);
 }
 
 void print_mem_hex(uintptr_t addr, size_t size)

@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
-#include <microkit.h>
+#include <sel4/sel4.h>
 #include <stdint.h>
 #include <stdbool.h>
 #include <sddf/gpu/queue.h>
@@ -36,7 +36,6 @@ the largest value reserved for unmapped resources");
 _Static_assert(GPU_NUM_CLIENTS <= UINT32_MAX - 1, "Client ids can only occupy 32 bits of memory, with the largest "
                                                   "value reserved for virtualiser id itself");
 
-/* Microkit patched variables */
 gpu_events_t *gpu_driver_events;
 gpu_req_queue_t *gpu_driver_req_queue;
 gpu_resp_queue_t *gpu_driver_resp_queue;
@@ -51,7 +50,7 @@ gpu_queue_handle_t drv_h;
 typedef struct client {
     gpu_queue_handle_t queue_h;
     gpu_events_t *events;
-    microkit_channel ch;
+    seL4_CPtr ch;
     /* Mapping from virtualiser resource id to driver resource id */
     uint32_t res_map_virt_to_drv[GPU_MAX_RESOURCES + 1];
 } client_t;
@@ -105,33 +104,11 @@ static void handle_driver(void);
 static void init_request_get_display_info(void);
 static bool handle_init_get_display_info_response(void);
 
-void init(void)
+static seL4_CPtr g_ep;
+
+static void pd_notified(seL4_Word badge)
 {
-    LOG_GPU_VIRT("Initialising GPU virtualiser!\n");
-    ialloc_init(&req_ialloc, req_ialloc_idxlist, GPU_QUEUE_CAPACITY_DRV);
-    ialloc_init_with_offset(&res_ialloc, res_ialloc_idxlist, GPU_MAX_RESOURCES, 1);
-
-    /* Initialise client queues */
-    for (int i = 0; i < GPU_NUM_CLIENTS; i++) {
-        gpu_req_queue_t *curr_req = gpu_virt_cli_req_queue(gpu_client_req_queue, i);
-        gpu_resp_queue_t *curr_resp = gpu_virt_cli_resp_queue(gpu_client_resp_queue, i);
-        uint32_t curr_queue_capacity = gpu_virt_cli_queue_capacity(i);
-        gpu_queue_init(&clients[i].queue_h, curr_req, curr_resp, curr_queue_capacity);
-        gpu_events_t *curr_events = gpu_virt_cli_events_region(gpu_client_events, i);
-        clients[i].events = curr_events;
-        clients[i].ch = CLI_CH_OFFSET + i;
-        for (int j = 1; j < GPU_MAX_RESOURCES + 1; j++) {
-            clients[i].res_map_virt_to_drv[j] = UNMAPPED_RESOURCE_ID;
-        }
-    }
-
-    gpu_queue_init(&drv_h, gpu_driver_req_queue, gpu_driver_resp_queue, GPU_QUEUE_CAPACITY_DRV);
-    LOG_GPU_VIRT("Requesting initial display info\n");
-    init_request_get_display_info();
-}
-
-void notified(microkit_channel ch)
-{
+    seL4_Word ch = badge;
 #ifdef DEBUG_GPU_VIRT
     if (ch == DRIVER_CH) {
         LOG_GPU_VIRT("Received notification from driver\n");
@@ -161,6 +138,44 @@ void notified(microkit_channel ch)
     }
 }
 
+void gpu_virt_main(seL4_CPtr ep)
+{
+    g_ep = ep;
+
+    LOG_GPU_VIRT("Initialising GPU virtualiser!\n");
+    ialloc_init(&req_ialloc, req_ialloc_idxlist, GPU_QUEUE_CAPACITY_DRV);
+    ialloc_init_with_offset(&res_ialloc, res_ialloc_idxlist, GPU_MAX_RESOURCES, 1);
+
+    /* Initialise client queues */
+    for (int i = 0; i < GPU_NUM_CLIENTS; i++) {
+        gpu_req_queue_t *curr_req = gpu_virt_cli_req_queue(gpu_client_req_queue, i);
+        gpu_resp_queue_t *curr_resp = gpu_virt_cli_resp_queue(gpu_client_resp_queue, i);
+        uint32_t curr_queue_capacity = gpu_virt_cli_queue_capacity(i);
+        gpu_queue_init(&clients[i].queue_h, curr_req, curr_resp, curr_queue_capacity);
+        gpu_events_t *curr_events = gpu_virt_cli_events_region(gpu_client_events, i);
+        clients[i].events = curr_events;
+        clients[i].ch = CLI_CH_OFFSET + i;
+        for (int j = 1; j < GPU_MAX_RESOURCES + 1; j++) {
+            clients[i].res_map_virt_to_drv[j] = UNMAPPED_RESOURCE_ID;
+        }
+    }
+
+    gpu_queue_init(&drv_h, gpu_driver_req_queue, gpu_driver_resp_queue, GPU_QUEUE_CAPACITY_DRV);
+    LOG_GPU_VIRT("Requesting initial display info\n");
+    init_request_get_display_info();
+
+    seL4_Word badge;
+    while (1) {
+        seL4_MessageInfo_t info = seL4_Recv(ep, &badge);
+        seL4_Word label = seL4_MessageInfo_get_label(info);
+        if (label == seL4_Fault_NullFault) {
+            pd_notified(badge);
+        } else {
+            seL4_Reply(seL4_MessageInfo_new(0, 0, 0, 0));
+        }
+    }
+}
+
 static inline void init_request_get_display_info()
 {
     int err = 0;
@@ -172,7 +187,7 @@ static inline void init_request_get_display_info()
         },
     });
     assert(!err);
-    microkit_notify(DRIVER_CH);
+    seL4_Signal(DRIVER_CH);
 }
 
 static inline bool handle_init_get_display_info_response()
@@ -736,7 +751,7 @@ static bool handle_client(int cli_id)
     }
 
     if (client_notify) {
-        microkit_notify(clients[cli_id].ch);
+        seL4_Signal(clients[cli_id].ch);
     }
 
     return driver_notify;
@@ -751,7 +766,7 @@ static void handle_clients()
         }
     }
     if (notify) {
-        microkit_notify(DRIVER_CH);
+        seL4_Signal(DRIVER_CH);
     }
 }
 
@@ -932,12 +947,12 @@ static void handle_driver()
     }
 
     if (driver_notify) {
-        microkit_notify(DRIVER_CH);
+        seL4_Signal(DRIVER_CH);
     }
 
     for (int i = 0; i < GPU_NUM_CLIENTS; i++) {
         if (client_notify[i]) {
-            microkit_notify(clients[i].ch);
+            seL4_Signal(clients[i].ch);
         }
     }
 }

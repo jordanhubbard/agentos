@@ -53,7 +53,8 @@
 #define PRIO_INHERIT_H
 
 #include <stdint.h>
-#include "agentos.h"   /* agentos_priority_t, microkit_ppcall */
+#include "agentos.h"        /* agentos_priority_t */
+#include "sel4_ipc.h"       /* sel4_call, sel4_msg_t */
 
 /* ── seL4 MCS priority-donation API ─────────────────────────────────────── */
 
@@ -156,11 +157,7 @@ ppcall_with_prio(seL4_CPtr ep,
                  uint8_t     caller_prio,
                  uint8_t     server_prio) {
     uint8_t saved = prio_donate_begin(caller_prio, server_prio);
-#ifndef AGENTOS_TEST_HOST
-    if (ep) seL4_Call(ep, sel4_msg_to_info(req), rep);
-#else
-    (void)ep; (void)req;
-#endif
+    if (ep) sel4_call(ep, req, rep);
     prio_donate_end(caller_prio, saved);
     return 0;
 }

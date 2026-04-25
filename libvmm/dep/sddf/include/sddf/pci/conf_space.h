@@ -4,7 +4,7 @@
  */
 #pragma once
 
-#include <microkit.h>
+#include <sel4/sel4.h>
 #include <stdint.h>
 
 /* Describe the configuration space that all PCI device implements.

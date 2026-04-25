@@ -62,7 +62,7 @@
 
 #include <stdint.h>
 #include <stdbool.h>
-#include <microkit.h>
+#include <sel4/sel4.h>
 #ifdef __aarch64__
 #include <libvmm/guest.h>
 #endif
@@ -251,14 +251,20 @@ int vmm_mux_switch(vm_mux_t *mux, uint8_t slot_id);
  * Called from the Microkit fault() handler. Identifies which VM the
  * fault belongs to by matching the child capability.
  */
-void vmm_mux_handle_fault(vm_mux_t *mux, microkit_child child,
-                           microkit_msginfo msginfo,
-                           microkit_msginfo *reply_msginfo);
+void vmm_mux_handle_fault(vm_mux_t *mux, seL4_Word vcpu_id,
+                           seL4_MessageInfo_t msginfo,
+                           seL4_MessageInfo_t *reply_msginfo);
 
 /**
- * vmm_mux_handle_notify — dispatch a channel notification to the correct slot
+ * vmm_mux_handle_notify — dispatch a notification badge to the correct slot
  */
-void vmm_mux_handle_notify(vm_mux_t *mux, microkit_channel ch);
+void vmm_mux_handle_notify(vm_mux_t *mux, seL4_Word badge);
+
+/**
+ * vmm_mux_set_channel_ep — bind a channel number to a seL4 endpoint cap
+ * Called by freebsd_vmm_main() before vmm_mux_init().
+ */
+void vmm_mux_set_channel_ep(uint32_t ch, seL4_CPtr ep);
 
 /**
  * vmm_mux_status — fill a status array (VM_MAX_SLOTS entries of vm_slot_state_t)

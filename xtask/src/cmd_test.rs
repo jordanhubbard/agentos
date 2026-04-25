@@ -28,11 +28,19 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
     let log_path = log_file.path().to_path_buf();
 
     println!("[xtask:test] Launching QEMU for board={}...", args.board);
-    let mut qemu = spawn_qemu(&args.board, &repo_root, &log_path)?;
+    let mut qemu = spawn_qemu_with_guest(&args.board, &repo_root, &log_path, &args.guest_os)?;
 
+    /* Success markers: any match is a pass.
+     * "agentOS boot complete" = root task + all PDs launched.
+     * "buildroot login:"      = Linux guest reached login prompt (buildroot).
+     * "Ubuntu"                = Ubuntu cloud-init banner visible on console. */
+    let markers: &[&str] = match args.guest_os.as_str() {
+        "ubuntu" => &["Ubuntu 24.04", "ubuntu login:", "login:"],
+        _        => &["agentOS boot complete", "buildroot login:"],
+    };
     let result = wait_for_markers(
         &log_path,
-        &["agentOS boot complete", "buildroot login:"],
+        markers,
         Duration::from_secs(args.timeout_secs),
     );
 
@@ -84,10 +92,11 @@ fn repo_root() -> anyhow::Result<std::path::PathBuf> {
     Ok(std::path::PathBuf::from(root))
 }
 
-fn spawn_qemu(
+fn spawn_qemu_with_guest(
     board: &str,
     repo_root: &Path,
     log_path: &Path,
+    guest_os: &str,
 ) -> anyhow::Result<std::process::Child> {
     let log_file = std::fs::File::create(log_path).context("failed to create QEMU log file")?;
 
@@ -109,25 +118,72 @@ fn spawn_qemu(
                 "-nographic",
                 "-kernel",
                 build_image.to_str().unwrap_or("build/qemu_virt_aarch64/agentos.img"),
+                /* virtio-net (SPI 16 → INTID 48, bus.0) with SSH port forward */
+                "-device",  "virtio-net-device,netdev=net0,bus=virtio-mmio-bus.0",
+                "-netdev",  "user,id=net0,hostfwd=tcp::2222-:22",
             ]);
+            if guest_os == "ubuntu" {
+                /* ubuntu: root disk on bus.1 (vda), cloud-init seed on bus.2 (vdb) */
+                let ubuntu_img = repo_root.join("guest-images/ubuntu-24.04-aarch64.img");
+                let seed_img   = repo_root.join("guest-images/linux-seed.img");
+                if ubuntu_img.exists() {
+                    c.args([
+                        "-device", "virtio-blk-device,drive=hd0,bus=virtio-mmio-bus.1",
+                        "-drive",
+                        &format!("file={},format=raw,id=hd0,if=none",
+                                 ubuntu_img.to_str().unwrap()),
+                    ]);
+                }
+                if seed_img.exists() {
+                    c.args([
+                        "-device", "virtio-blk-device,drive=seed,bus=virtio-mmio-bus.2",
+                        "-drive",
+                        &format!("file={},format=raw,id=seed,if=none,readonly=on",
+                                 seed_img.to_str().unwrap()),
+                    ]);
+                }
+            } else {
+                /* buildroot / default: optional generic disk on bus.1 */
+                let disk = repo_root.join("build/qemu_virt_aarch64/disk.img");
+                if disk.exists() {
+                    c.args([
+                        "-device", "virtio-blk-device,drive=hd0,bus=virtio-mmio-bus.1",
+                        "-drive",
+                        &format!(
+                            "file={},format=raw,id=hd0,if=none",
+                            disk.to_str().unwrap_or("build/qemu_virt_aarch64/disk.img")
+                        ),
+                    ]);
+                }
+            }
             c
         }
         "qemu_virt_riscv64" => {
             let bios = find_opensbi_bios();
             let mut c = std::process::Command::new("qemu-system-riscv64");
             c.args([
-                "-machine",
-                "virt",
-                "-cpu",
-                "rv64",
-                "-m",
-                "2G",
+                "-machine", "virt",
+                "-cpu",     "rv64",
+                "-m",       "2G",
                 "-nographic",
-                "-bios",
-                &bios,
-                "-kernel",
-                build_image.to_str().unwrap_or("build/qemu_virt_riscv64/agentos.img"),
+                "-bios",    &bios,
+                "-kernel",  build_image.to_str().unwrap_or("build/qemu_virt_riscv64/agentos.img"),
+                /* virtio-net (slot 0 → 0x10001000, IRQ 1) with SSH port forward */
+                "-device",  "virtio-net-device,netdev=net0",
+                "-netdev",  "user,id=net0,hostfwd=tcp::2222-:22",
             ]);
+            /* virtio-blk (slot 1 → 0x10002000, IRQ 2) — only if disk image exists */
+            let disk = repo_root.join("build/qemu_virt_riscv64/disk.img");
+            if disk.exists() {
+                c.args([
+                    "-device", "virtio-blk-device,drive=hd0",
+                    "-drive",
+                    &format!(
+                        "file={},format=raw,id=hd0,if=none",
+                        disk.to_str().unwrap_or("build/qemu_virt_riscv64/disk.img")
+                    ),
+                ]);
+            }
             c
         }
         other => {

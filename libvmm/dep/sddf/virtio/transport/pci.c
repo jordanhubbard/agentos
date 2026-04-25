@@ -4,6 +4,7 @@
  */
 
 #include <string.h>
+#include <sel4/sel4.h>
 #include <sddf/pci/conf_space.h>
 #include <sddf/virtio/transport/common.h>
 #include <sddf/virtio/transport/pci.h>
@@ -21,6 +22,9 @@
 
 /* Multiplier for virtIO queue kick mechanism. */
 uint32_t nftn_multiplier;
+
+seL4_CPtr pci_addr_port_cap;
+seL4_CPtr pci_data_port_cap;
 
 uint32_t pci_compute_port_address(uint8_t bus, uint8_t dev, uint8_t func, uint8_t off)
 {
@@ -46,29 +50,29 @@ uint32_t pci_x86_read_32(uint8_t bus, uint8_t dev, uint8_t func, uint8_t off)
     uint32_t addr = pci_compute_port_address(bus, dev, func, off);
 
     /* Write the address into the "select" port, then the data will be available at the "data" port. */
-    microkit_x86_ioport_write_32(PCI_ADDR_PORT_ID, PCI_ADDR_PORT_ADDR, addr);
-    return microkit_x86_ioport_read_32(PCI_DATA_PORT_ID, PCI_DATA_PORT_ADDR);
+    seL4_X86_IOPort_Out32(pci_addr_port_cap, PCI_ADDR_PORT_ADDR, addr);
+    return seL4_X86_IOPort_In32(pci_data_port_cap, PCI_DATA_PORT_ADDR).result;
 }
 
 void pci_x86_write_8(uint8_t bus, uint8_t dev, uint8_t func, uint8_t off, uint8_t data)
 {
     uint32_t addr = pci_compute_port_address(bus, dev, func, off);
-    microkit_x86_ioport_write_32(PCI_ADDR_PORT_ID, PCI_ADDR_PORT_ADDR, addr);
-    microkit_x86_ioport_write_8(PCI_DATA_PORT_ID, PCI_DATA_PORT_ADDR, data);
+    seL4_X86_IOPort_Out32(pci_addr_port_cap, PCI_ADDR_PORT_ADDR, addr);
+    seL4_X86_IOPort_Out8(pci_data_port_cap, PCI_DATA_PORT_ADDR, data);
 }
 
 void pci_x86_write_16(uint8_t bus, uint8_t dev, uint8_t func, uint8_t off, uint16_t data)
 {
     uint32_t addr = pci_compute_port_address(bus, dev, func, off);
-    microkit_x86_ioport_write_32(PCI_ADDR_PORT_ID, PCI_ADDR_PORT_ADDR, addr);
-    microkit_x86_ioport_write_16(PCI_DATA_PORT_ID, PCI_DATA_PORT_ADDR, data);
+    seL4_X86_IOPort_Out32(pci_addr_port_cap, PCI_ADDR_PORT_ADDR, addr);
+    seL4_X86_IOPort_Out16(pci_data_port_cap, PCI_DATA_PORT_ADDR, data);
 }
 
 void pci_x86_write_32(uint8_t bus, uint8_t dev, uint8_t func, uint8_t off, uint32_t data)
 {
     uint32_t addr = pci_compute_port_address(bus, dev, func, off);
-    microkit_x86_ioport_write_32(PCI_ADDR_PORT_ID, PCI_ADDR_PORT_ADDR, addr);
-    microkit_x86_ioport_write_32(PCI_DATA_PORT_ID, PCI_DATA_PORT_ADDR, data);
+    seL4_X86_IOPort_Out32(pci_addr_port_cap, PCI_ADDR_PORT_ADDR, addr);
+    seL4_X86_IOPort_Out32(pci_data_port_cap, PCI_DATA_PORT_ADDR, data);
 }
 
 // @billn fix hard coded addresses

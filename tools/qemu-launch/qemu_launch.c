@@ -569,7 +569,17 @@ static void build_qemu_cmd(const cfg_t *cfg, char *cmd, size_t len)
                  cfg->kvm ? " -enable-kvm" : "",
                  image, gdb);
     } else {
-        /* riscv64 */
+        /* riscv64 — add virtio-net (slot 0) and virtio-blk (slot 1).
+         * Disk image: build/qemu_virt_riscv64/disk.img if present, else /dev/null. */
+        char disk[512];
+        char disk_args[256] = "";
+        snprintf(disk, sizeof(disk), "build/qemu_virt_riscv64/disk.img");
+        if (file_exists(disk)) {
+            snprintf(disk_args, sizeof(disk_args),
+                     " -device virtio-blk-device,drive=hd0"
+                     " -drive file=%s,format=raw,id=hd0,if=none",
+                     disk);
+        }
         snprintf(cmd, len,
                  "%s"
                  " -machine virt"
@@ -578,8 +588,11 @@ static void build_qemu_cmd(const cfg_t *cfg, char *cmd, size_t len)
                  " -nographic"
                  " -bios /usr/share/qemu/opensbi-riscv64-generic-fw_dynamic.bin"
                  " -kernel %s"
+                 " -device virtio-net-device,netdev=net0"
+                 " -netdev user,id=net0,hostfwd=tcp::2222-:22"
+                 "%s"
                  "%s",
-                 qemu, mem, image, gdb);
+                 qemu, mem, image, disk_args, gdb);
     }
 }
 
