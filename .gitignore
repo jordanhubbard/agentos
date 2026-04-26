@@ -44,7 +44,7 @@ build-*/
 
 # Node.js
 node_modules/
-console/package-lock.json
+console/
 .claude/
 
 # Guest OS images — downloaded on demand to ~/.local/agentos-images, not stored in the repo
