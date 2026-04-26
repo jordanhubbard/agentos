@@ -547,11 +547,21 @@ bootstrap-guest:
 clean:
 	@echo "Cleaning build artifacts for $(BOARD)..."
 	@rm -rf $(BUILD_DIR)
+	@rm -rf $(ROOT_DIR)libvmm/arch $(ROOT_DIR)libvmm/util $(ROOT_DIR)libvmm/virtio
+	@rm -f  $(ROOT_DIR)libvmm/guest.d $(ROOT_DIR)libvmm/guest.o
+	@rm -rf $(ROOT_DIR)util
+	@rm -f  $(ROOT_DIR).libvmm_cflags.*
+	@rm -f  $(KERNEL_DIR)/report.txt
 	@echo "✓ Clean."
 
 clean-all:
 	@echo "Cleaning all build artifacts..."
 	@rm -rf $(ROOT_DIR)build
+	@rm -rf $(ROOT_DIR)libvmm/arch $(ROOT_DIR)libvmm/util $(ROOT_DIR)libvmm/virtio
+	@rm -f  $(ROOT_DIR)libvmm/guest.d $(ROOT_DIR)libvmm/guest.o
+	@rm -rf $(ROOT_DIR)util
+	@rm -f  $(ROOT_DIR).libvmm_cflags.*
+	@rm -f  $(KERNEL_DIR)/report.txt
 	@echo "✓ Clean."
 
 clean-images:

@@ -2,9 +2,12 @@
 build/
 deps/
 *.o
+*.d
 *.a
 *.elf
 *.img
+.libvmm_cflags.*
+kernel/agentos-root-task/report.txt
 
 # Python
 __pycache__/
