@@ -68,3 +68,5 @@ bool vgic_handle_fault_redist(size_t vcpu_id, size_t offset, size_t fsr, seL4_Us
 
 bool vgic_register_irq(size_t vcpu_id, int virq_num, virq_ack_fn_t ack_fn, void *ack_data);
 bool vgic_inject_irq(size_t vcpu_id, int irq);
+/* Returns true if irq is currently in a vCPU LR (injected but not yet EOI'd). */
+bool vgic_irq_is_inflight(size_t vcpu_id, int irq);

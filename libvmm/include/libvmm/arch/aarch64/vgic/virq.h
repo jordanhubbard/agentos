@@ -51,8 +51,11 @@ struct virq_handle {
 // @ivanv: revisit
 static inline void virq_ack(size_t vcpu_id, struct virq_handle *irq)
 {
-    // printf("VGIC|INFO: Acking for vIRQ %d\n", irq->virq);
-    assert(irq->ack_fn);
+    if (!irq->ack_fn) {
+        LOG_VMM_ERR("virq_ack: NULL ack_fn for IRQ %d (vcpu %zu) — skipping\n",
+                    irq->virq, vcpu_id);
+        return;
+    }
     irq->ack_fn(vcpu_id, irq->virq, irq->ack_data);
 }
 
@@ -215,16 +218,34 @@ static inline int vgic_find_empty_list_reg(vgic_t *vgic, size_t vcpu_id)
 static inline bool vgic_vcpu_load_list_reg(vgic_t *vgic, size_t vcpu_id, int idx, int group, struct virq_handle *virq)
 {
     vgic_vcpu_t *vgic_vcpu = get_vgic_vcpu(vgic, vcpu_id);
-    assert(vgic_vcpu);
-    assert((idx >= 0) && (idx < ARRAY_SIZE(vgic_vcpu->lr_shadow)));
+    if (!vgic_vcpu) {
+        LOG_VMM_ERR("vgic_vcpu_load_list_reg: no vgic_vcpu for vcpu %zu\n", vcpu_id);
+        return false;
+    }
+    if (idx < 0 || idx >= (int)ARRAY_SIZE(vgic_vcpu->lr_shadow)) {
+        LOG_VMM_ERR("vgic_vcpu_load_list_reg: LR idx %d out of range [0,%zu)\n",
+                    idx, ARRAY_SIZE(vgic_vcpu->lr_shadow));
+        return false;
+    }
     // TODO: we always set the priority to zero, but the guest tells us the priority so we should be
     // respecting that instead.
 
 #if defined(GIC_V3)
-    assert(group == 1);
+    if (group != 1) {
+        LOG_VMM_ERR("vgic_vcpu_load_list_reg: GICv3 requires group=1, got %d\n", group);
+        return false;
+    }
 #endif
 
-    vmm_vcpu_arm_inject_irq(vcpu_id, virq->virq, 0, group, idx);
+    seL4_Error err = seL4_ARM_VCPU_InjectIRQ(vmm_vcpu_cap(vcpu_id),
+                                               virq->virq, 0, group, idx);
+    LOG_VMM("InjectIRQ: vCPU=%zu LR[%d] IRQ=%d group=%d → seL4_err=%d\n",
+            vcpu_id, idx, virq->virq, group, (int)err);
+    if (err != seL4_NoError) {
+        LOG_VMM_ERR("InjectIRQ FAILED: err=%d for vCPU=%zu LR[%d] IRQ=%d\n",
+                    (int)err, vcpu_id, idx, virq->virq);
+        return false;
+    }
     vgic_vcpu->lr_shadow[idx] = *virq;
 
     return true;

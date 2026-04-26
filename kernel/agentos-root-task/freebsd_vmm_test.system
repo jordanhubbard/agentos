@@ -1,0 +1,144 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  freebsd_vmm_test.system: minimal system to boot FreeBSD via EDK2 UEFI.
+
+  Purpose: boot FreeBSD 14 AArch64 inside agentOS using only freebsd_vmm.
+  No controller, serial_pd, or other PDs present.
+
+  Boot path:
+    seL4 -> freebsd_vmm init() -> copies EDK2 to uefi_code (guest phys 0x0)
+    -> guest_start(0x0) -> EDK2 -> loader.efi -> FreeBSD kernel
+
+  QEMU command (after building freebsd_vmm_test.img):
+    qemu-system-aarch64
+      -machine virt,virtualization=on,highmem=off,secure=off
+      -cpu cortex-a57 -m 2G -nographic
+      -device loader,file=build/qemu_virt_aarch64/freebsd_vmm_test.img,
+               addr=0x70000000,cpu-num=0
+      -drive file=guest-images/freebsd-14.4-aarch64.img,format=raw,
+             id=blk0,if=none
+      -device virtio-blk-device,drive=blk0
+      -global virtio-mmio.force-legacy=false
+
+  Memory layout — IDENTITY MAPPED for VirtIO DMA correctness:
+    guest_ram: 384MB at host:0x40000000 -> guest phys 0x40000000  (FreeBSD RAM)
+    uefi_code: 64MB  at host:0x58000000 -> guest phys 0x00000000  (EDK2 code flash)
+    uefi_data: 64MB  at host:0x5c000000 -> guest phys 0x04000000  (UEFI var store)
+
+  VirtIO DMA requirement: VirtIO ring descriptors hold GUEST PHYSICAL addresses.
+  QEMU reads those addresses as MACHINE PHYSICAL.  For DMA to work, guest phys
+  must equal machine phys for the memory range VirtIO ring buffers are allocated
+  from (guest_ram).  The identity mapping above satisfies this constraint.
+
+  uefi_code and uefi_data are placed at 0x58000000/0x5c000000 (still below
+  seL4 at 0x60000000) to free up 0x40000000 for the identity-mapped guest_ram.
+
+  PSCI: EDK2 and FreeBSD use SMC-based PSCI ("method = smc" in freebsd-edk2.dts).
+  seL4 intercepts HVC from VCPU EL1; libvmm fault.c routes SMC to handle_psci().
+-->
+<system>
+    <!--
+      Guest RAM: 384MB, host phys 0x40000000 = guest phys 0x40000000 (identity mapped).
+      Identity mapping is required for VirtIO DMA: VirtIO ring descriptors carry
+      guest physical addresses that QEMU reads as machine physical.  With machine
+      phys == guest phys for this region all VirtIO DMA addresses are correct.
+    -->
+    <memory_region name="guest_ram" size="0x18_000_000" page_size="0x200_000"
+                   phys_addr="0x40000000" />
+
+    <!-- EDK2 UEFI code flash: 64MB, host phys 0x58000000, guest phys 0x0 -->
+    <memory_region name="uefi_code" size="0x4_000_000" page_size="0x200_000"
+                   phys_addr="0x58000000" />
+
+    <!-- UEFI variable store: 64MB, host phys 0x5c000000, guest phys 0x4000000 -->
+    <memory_region name="uefi_data" size="0x4_000_000" page_size="0x200_000"
+                   phys_addr="0x5c000000" />
+
+    <!-- GIC vCPU interface: mapped to guest at 0x8010000 (hardware vCPU regs) -->
+    <memory_region name="gic_vcpu" size="0x1_000" phys_addr="0x8040000" />
+
+    <!--
+      PL011 UART: direct passthrough so EDK2 and FreeBSD can use the console.
+      EDK2 outputs to PL011 at 0x9000000 during UEFI boot;
+      FreeBSD uses it as ttyAMA0 after the kernel starts.
+    -->
+    <memory_region name="serial" size="0x1_000" phys_addr="0x9000000" />
+
+    <!--
+      QEMU fw_cfg MMIO (0x9020000, 24 bytes): direct passthrough so EDK2's
+      QemuFwCfgLib can read platform configuration data, including ACPI tables
+      via the "etc/acpi/tables" fw_cfg key.  ACPI-based VirtIO discovery is how
+      EDK2 finds the virtio-blk device in direct QEMU mode; this enables the
+      same path in the VMM.  Full page mapped (0x1000) to cover the DMA address
+      register at +0x8 and avoid infinite VMFault retry on that access.
+    -->
+    <memory_region name="fw_cfg" size="0x1_000" phys_addr="0x9020000" />
+
+    <!--
+      VirtIO-MMIO: all 32 slots at 0xa000000-0xa003fff (32 × 0x200 = 0x4000).
+      QEMU assigns the first -device virtio-blk-device to bus 31 (the highest
+      available bus), at 0xa003e00.  Map the full range so all slots are
+      accessible from the guest.
+    -->
+    <memory_region name="virtio_mmio" size="0x4_000" phys_addr="0xa000000" />
+
+    <protection_domain name="freebsd_vmm" priority="254">
+        <program_image path="freebsd_vmm.elf" />
+
+        <!--
+          VMM maps uefi_code to copy EDK2 into it before guest starts.
+          setvar_vaddr tells the linker to initialise uefi_code_vaddr with
+          this mapping's virtual address so freebsd_vmm.c can memcpy into it.
+        -->
+        <map mr="uefi_code" vaddr="0x10000000" perms="rw"
+             setvar_vaddr="uefi_code_vaddr" />
+
+        <!--
+          VMM maps uefi_data to zero the variable store before guest starts.
+        -->
+        <map mr="uefi_data" vaddr="0x14000000" perms="rw"
+             setvar_vaddr="uefi_data_vaddr" />
+
+        <!--
+          VMM maps guest_ram so init() can copy the FDT to guest phys 0x40000000.
+          setvar_vaddr lets the Microkit tool patch guest_ram_vaddr at link time.
+        -->
+        <map mr="guest_ram" vaddr="0x60000000" perms="rw"
+             setvar_vaddr="guest_ram_vaddr" />
+
+        <virtual_machine name="freebsd">
+            <vcpu id="0" />
+
+            <!-- EDK2 code flash at guest phys 0x0 (rwx so EDK2 can relocate) -->
+            <map mr="uefi_code" vaddr="0x0" perms="rwx" cached="true" />
+
+            <!-- UEFI variable store at guest phys 0x4000000 -->
+            <map mr="uefi_data" vaddr="0x4000000" perms="rw" cached="true" />
+
+            <!-- Main guest RAM at guest phys 0x40000000 -->
+            <map mr="guest_ram" vaddr="0x40000000" perms="rwx" cached="true" />
+
+            <!-- GIC vCPU interface for hardware-assisted interrupt delivery -->
+            <map mr="gic_vcpu" vaddr="0x8010000" perms="rw" cached="false" />
+
+            <!-- PL011 UART: direct passthrough to guest -->
+            <map mr="serial" vaddr="0x9000000" perms="rw" cached="false" />
+
+            <!-- fw_cfg MMIO: QemuFwCfgDxe reads ACPI tables via this interface -->
+            <map mr="fw_cfg" vaddr="0x9020000" perms="rw" cached="false" />
+
+            <!-- VirtIO-MMIO: slot 0 (blk) at 0xa000000 -->
+            <map mr="virtio_mmio" vaddr="0xa000000" perms="rw" cached="false" />
+        </virtual_machine>
+
+        <!--
+          IRQ passthroughs: badge = (1 << id); cap slot = BASE_IRQ_CAP + id.
+            id=3 -> badge 0x08 -> slot 141 = g_virtio_blk_irq_cap (SPI 47, INTID 79)
+            id=6 -> badge 0x40 -> slot 144 = g_uart_irq_cap        (SPI 1,  INTID 33)
+          virtio-blk: QEMU bus 31 = INTID 79 (SPI 47), edge trigger.
+          PL011 uses level trigger (level-high); no trigger= means level.
+        -->
+        <irq irq="79" id="3" trigger="edge" />
+        <irq irq="33" id="6" />
+    </protection_domain>
+</system>

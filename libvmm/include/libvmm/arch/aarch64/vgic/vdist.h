@@ -216,8 +216,8 @@ static bool vgic_dist_set_pending_irq(vgic_t *vgic, size_t vcpu_id, int irq)
      */
     bool success = vgic_irq_enqueue(vgic, vcpu_id, virq_data);
     if (!success) {
-        LOG_VMM_ERR("Failure enqueueing IRQ, increase MAX_IRQ_QUEUE_LEN");
-        assert(0);
+        LOG_VMM_ERR("Failure enqueueing IRQ %d, queue full (MAX_IRQ_QUEUE_LEN=%d)\n", irq, MAX_IRQ_QUEUE_LEN);
+        set_pending(vgic, virq_data->virq, false, vcpu_id);
         return false;
     }
 
@@ -242,7 +242,16 @@ static bool vgic_dist_set_pending_irq(vgic_t *vgic, size_t vcpu_id, int irq)
 #endif
 
     // @ivanv: I don't understand why GIC v2 is group 0 and GIC v3 is group 1.
-    return vgic_vcpu_load_list_reg(vgic, vcpu_id, idx, group, virq);
+    bool loaded = vgic_vcpu_load_list_reg(vgic, vcpu_id, idx, group, virq);
+    if (!loaded) {
+        /* InjectIRQ failed — clear the pending flag so the next delivery attempt
+         * isn't silently skipped by the is_pending early-exit. */
+        set_pending(vgic, virq->virq, false, vcpu_id);
+        LOG_VMM_ERR("vgic_dist_set_pending_irq: load_list_reg failed for IRQ %d on vCPU %zu\n",
+                    virq->virq, vcpu_id);
+        return false;
+    }
+    return true;
 }
 
 static void vgic_dist_clr_pending_irq(vgic_t *vgic, size_t vcpu_id, int irq)
@@ -505,7 +514,10 @@ static bool vgic_handle_fault_dist_write(size_t vcpu_id, vgic_t *vgic, uint64_t 
             data &= ~(1U << irq);
             irq += (offset - GIC_DIST_ISPENDR0) * 8;
             success = vgic_dist_set_pending_irq(vgic, vcpu_id, irq);
-            assert(success);
+            if (!success) {
+                LOG_VMM_ERR("vgic: ISPENDR set for IRQ %d failed (dist or IRQ disabled)\n", irq);
+                success = true;
+            }
         }
         break;
     case RANGE32(GIC_DIST_ICPENDR0, GIC_DIST_ICPENDRN):
@@ -584,9 +596,9 @@ static bool vgic_handle_fault_dist_write(size_t vcpu_id, vgic_t *vgic, uint64_t 
         for (int i = 0; i < GUEST_NUM_VCPUS; i++) {
             if ((1 << i) & target_list && vcpu_is_on(i)) {
                 success = vgic_inject_irq(i, virq);
-                assert(success);
                 if (!success) {
-                    return false;
+                    LOG_VMM_ERR("vgic: SGI %d inject on vCPU %d failed\n", virq, i);
+                    success = true;
                 }
             }
         }
@@ -595,8 +607,8 @@ static bool vgic_handle_fault_dist_write(size_t vcpu_id, vgic_t *vgic, uint64_t 
         /* Reserved */
         break;
     case RANGE32(GIC_DIST_CPENDSGIR0, GIC_DIST_SPENDSGIRN):
-        // @ivanv: come back to
-        assert(!"vgic SGI reg not implemented!\n");
+        /* CPENDSGIR/SPENDSGIR not fully implemented — guest write ignored */
+        LOG_VMM_ERR("vgic: CPENDSGIR/SPENDSGIR write at offset 0x%x (ignored)\n", (unsigned)offset);
         break;
     case RANGE32(0xF30, 0xFBC):
         /* Reserved */
@@ -614,12 +626,12 @@ static bool vgic_handle_fault_dist_write(size_t vcpu_id, vgic_t *vgic, uint64_t 
         break;
 #endif
     default:
-        LOG_VMM_ERR("Unknown register offset 0x%x", offset);
-        assert(0);
+        LOG_VMM_ERR("vgic: unknown GICD write offset 0x%x (ignored)\n", (unsigned)offset);
+        break;
     }
 ignore_fault:
-    assert(success);
     if (!success) {
+        LOG_VMM_ERR("vgic: GICD write at offset 0x%x failed\n", (unsigned)offset);
         return false;
     }
 

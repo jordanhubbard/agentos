@@ -1,0 +1,147 @@
+/dts-v1/;
+
+/*
+ * freebsd-edk2.dts — Full 32-slot VirtIO FDT for EDK2 on QEMU virt/aarch64
+ *
+ * Structure matches QEMU's generated FDT so EDK2 can discover the virtio-blk
+ * device.  fw-cfg@9020000 is included with full-page passthrough (0x1000) in
+ * the system file, covering the DMA register at +0x8.  This lets EDK2 read
+ * QEMU's ACPI tables via the "etc/acpi/tables" fw_cfg key, enabling ACPI-based
+ * VirtIO MMIO discovery — the same path that works in direct QEMU pflash mode.
+ *
+ * Memory layout (must match freebsd_vmm_test.system guest_ram):
+ *   384 MB (0x18000000) at guest phys 0x40000000
+ *
+ * PSCI: SMC method — seL4 intercepts HVC from VCPU EL1 as a seL4 syscall,
+ * not a VCPUFault, so we use SMC.  libvmm fault.c routes SMC to handle_psci().
+ *
+ * VirtIO: all 32 MMIO slots listed with dma-coherent so VirtioFdtDxe installs
+ * gVirtioDeviceProtocolGuid without requiring gEdkiiIoMmuProtocolGuid.
+ * QEMU assigns virtio-blk-device to bus 31 (highest slot = 0xa003e00).
+ */
+
+/ {
+	interrupt-parent = <0x8001>;
+	#size-cells = <0x02>;
+	#address-cells = <0x02>;
+	compatible = "linux,dummy-virt";
+
+	psci {
+		migrate = <0xc4000005>;
+		cpu_on = <0xc4000003>;
+		cpu_off = <0x84000002>;
+		cpu_suspend = <0xc4000001>;
+		method = "smc";
+		compatible = "arm,psci-1.0\0arm,psci-0.2\0arm,psci";
+	};
+
+	/* 384 MB — matches guest_ram MR size in freebsd_vmm_test.system */
+	memory@40000000 {
+		reg = <0x00 0x40000000 0x00 0x18000000>;
+		device_type = "memory";
+	};
+
+	pl011@9000000 {
+		clock-names = "uartclk\0apb_pclk";
+		clocks = <0x8000 0x8000>;
+		interrupts = <0x00 0x01 0x04>;
+		reg = <0x00 0x9000000 0x00 0x1000>;
+		compatible = "arm,pl011\0arm,primecell";
+	};
+
+	/* GIC: distributor + CPU interface + hypervisor + virtual CPU interface */
+	intc@8000000 {
+		phandle = <0x8001>;
+		interrupts = <0x01 0x09 0x04>;
+		reg = <0x00 0x8000000 0x00 0x10000
+		       0x00 0x8010000 0x00 0x10000
+		       0x00 0x8030000 0x00 0x10000
+		       0x00 0x8040000 0x00 0x10000>;
+		compatible = "arm,cortex-a15-gic";
+		ranges;
+		#size-cells = <0x02>;
+		#address-cells = <0x02>;
+		interrupt-controller;
+		#interrupt-cells = <0x03>;
+	};
+
+	/* EDK2 code flash + UEFI variable store */
+	flash@0 {
+		bank-width = <0x04>;
+		reg = <0x00 0x00 0x00 0x4000000
+		       0x00 0x4000000 0x00 0x4000000>;
+		compatible = "cfi-flash";
+	};
+
+	cpus {
+		#size-cells = <0x00>;
+		#address-cells = <0x01>;
+
+		cpu@0 {
+			reg = <0x00>;
+			enable-method = "psci";
+			compatible = "arm,cortex-a57";
+			device_type = "cpu";
+		};
+	};
+
+	timer {
+		interrupts = <0x01 0x0d 0x104
+		              0x01 0x0e 0x104
+		              0x01 0x0b 0x104
+		              0x01 0x0a 0x104>;
+		always-on;
+		compatible = "arm,armv8-timer\0arm,armv7-timer";
+	};
+
+	apb-pclk {
+		phandle = <0x8000>;
+		clock-output-names = "clk24mhz";
+		clock-frequency = <0x16e3600>;
+		#clock-cells = <0x00>;
+		compatible = "fixed-clock";
+	};
+
+	/* QEMU fw_cfg MMIO — DMA mode enabled.
+	 *
+	 * reg size=0x18: covers selector (0x0-0x7), data (0x8-0x9), and DMA
+	 * address register (0x10-0x17).  QemuFwCfgLib enables DMA when reg is
+	 * at least 0x18 bytes.  DMA writes guest-physical addresses; with
+	 * guest_ram identity-mapped (host phys 0x40000000 == guest phys
+	 * 0x40000000) those addresses equal machine physical addresses, so QEMU
+	 * can resolve them correctly.
+	 *
+	 * DMA mode is required for ACPI-based VirtIO discovery: EDK2 reads
+	 * etc/acpi/tables via DMA, the ACPI SSDT describes the virtio-blk MMIO
+	 * device, and VirtioMmioTransportDxe installs gVirtioDeviceProtocolGuid
+	 * so VirtioBlkDxe can connect. */
+	fw-cfg@9020000 {
+		dma-coherent;
+		reg = <0x00 0x9020000 0x00 0x18>;
+		compatible = "qemu,fw-cfg-mmio";
+	};
+
+	/*
+	 * VirtIO-MMIO: only slot 31 (the actual virtio-blk-device).
+	 * QEMU assigns -device virtio-blk-device to bus 31 (highest available),
+	 * at 0xa003e00, SPI 47 = INTID 79, edge trigger.
+	 *
+	 * Only the occupied slot is listed, matching QEMU's auto-generated FDT
+	 * which omits empty slots.  VirtioFdtDxe creates one handle here;
+	 * VirtioBlkDxe connects to it.  The full virtio_mmio MR (0xa000000,
+	 * size 0x4000) is still mapped in the .system file.
+	 *
+	 * dma-coherent is required — without it VirtioMmioInstallDevice requires
+	 * gEdkiiIoMmuProtocolGuid (not available) and returns EFI_UNSUPPORTED.
+	 */
+	virtio_mmio@a003e00 {
+		dma-coherent;
+		interrupts = <0x00 0x2f 0x01>;
+		reg = <0x00 0xa003e00 0x00 0x200>;
+		compatible = "virtio,mmio";
+	};
+
+	chosen {
+		stdout-path = "/pl011@9000000";
+	};
+};

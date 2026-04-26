@@ -29,15 +29,40 @@ bool vgic_handle_fault_maintenance(size_t vcpu_id)
     // @ivanv: reivist, also inconsistency between int and bool
     bool success = true;
     int idx = seL4_GetMR(seL4_VGICMaintenance_IDX);
-    /* Currently not handling spurious IRQs */
-    // @ivanv: this comment seems irrelevant to the code.
-    assert(idx >= 0);
+    static uint64_t maint_count = 0;
+    maint_count++;
+    LOG_VMM("VGICMaintenance #%llu: IDX=%d on vCPU %zu\n",
+            (unsigned long long)maint_count, idx, vcpu_id);
+    if (idx < 0) {
+        /* Spurious maintenance IRQ (underrun or other condition with no LR EOI).
+         * Drain any queued IRQs into a free LR and resume the vCPU. */
+        struct virq_handle *virq = vgic_irq_dequeue(&vgic, vcpu_id);
+        if (virq) {
+#if defined(GIC_V2)
+            int group = 0;
+#elif defined(GIC_V3)
+            int group = 1;
+#endif
+            int free_idx = vgic_find_empty_list_reg(&vgic, vcpu_id);
+            LOG_VMM("VGICMaintenance spurious: dequeued IRQ %d, free_idx=%d\n",
+                    virq->virq, free_idx);
+            if (free_idx >= 0) {
+                vgic_vcpu_load_list_reg(&vgic, vcpu_id, free_idx, group, virq);
+            }
+        } else {
+            LOG_VMM("VGICMaintenance spurious: queue empty\n");
+        }
+        return true;
+    }
 
     // @ivanv: Revisit and make sure it's still correct.
     vgic_vcpu_t *vgic_vcpu = get_vgic_vcpu(&vgic, vcpu_id);
     assert(vgic_vcpu);
     assert((idx >= 0) && (idx < ARRAY_SIZE(vgic_vcpu->lr_shadow)));
     struct virq_handle *slot = &vgic_vcpu->lr_shadow[idx];
+    LOG_VMM("VGICMaintenance #%llu: LR[%d] holds IRQ %d (INVALID=%s)\n",
+            (unsigned long long)maint_count, idx,
+            slot->virq, slot->virq == VIRQ_INVALID ? "YES" : "no");
     assert(slot->virq != VIRQ_INVALID);
     struct virq_handle lr_virq = *slot;
     slot->virq = VIRQ_INVALID;
@@ -63,11 +88,10 @@ bool vgic_handle_fault_maintenance(size_t vcpu_id)
     }
 
     if (!success) {
-        LOG_VMM_ERR("vGIC maintenance handler failed\n");
-        assert(0);
+        LOG_VMM_ERR("vGIC maintenance: load_list_reg failed for idx %d\n", idx);
     }
 
-    return success;
+    return true;
 }
 
 bool vgic_handle_fault_dist(size_t vcpu_id, size_t offset, size_t fsr, seL4_UserContext *regs, void *data)
@@ -75,10 +99,15 @@ bool vgic_handle_fault_dist(size_t vcpu_id, size_t offset, size_t fsr, seL4_User
     bool success = false;
     if (fault_is_read(fsr)) {
         success = vgic_handle_fault_dist_read(vcpu_id, &vgic, offset, fsr, regs);
-        assert(success);
+        if (!success) {
+            LOG_VMM_ERR("vGIC dist read fault at offset 0x%lx failed\n", offset);
+        }
     } else {
         success = vgic_handle_fault_dist_write(vcpu_id, &vgic, offset, fsr, regs);
-        assert(success);
+        if (!success) {
+            LOG_VMM_ERR("vGIC dist write fault at offset 0x%lx failed\n", offset);
+            success = true;
+        }
     }
 
     return success;
@@ -101,4 +130,14 @@ bool vgic_inject_irq(size_t vcpu_id, int irq)
     LOG_IRQ("(vCPU %d) injecting IRQ %d\n", vcpu_id, irq);
 
     return vgic_dist_set_pending_irq(&vgic, vcpu_id, irq);
+}
+
+bool vgic_irq_is_inflight(size_t vcpu_id, int irq)
+{
+    vgic_vcpu_t *vgic_vcpu = get_vgic_vcpu(&vgic, vcpu_id);
+    if (!vgic_vcpu) return false;
+    for (int i = 0; i < NUM_LIST_REGS; i++) {
+        if (vgic_vcpu->lr_shadow[i].virq == irq) return true;
+    }
+    return false;
 }

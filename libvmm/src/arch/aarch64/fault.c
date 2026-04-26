@@ -273,6 +273,7 @@ bool fault_handle_vcpu_exception(size_t vcpu_id)
 
     switch (hsr_ec_class) {
     case HSR_SMC_64_EXCEPTION:
+    case HSR_HVC_64_EXCEPTION:
         return smc_handle(vcpu_id, hsr);
     case HSR_WFx_EXCEPTION:
         // If we get a WFI exception, we just do nothing in the VMM.
@@ -287,14 +288,80 @@ bool fault_handle_vcpu_exception(size_t vcpu_id)
 
 bool fault_handle_vppi_event(size_t vcpu_id)
 {
+    static uint64_t vppi_count = 0;
+    vppi_count++;
     uint64_t ppi_irq = seL4_GetMR(seL4_VPPIEvent_IRQ);
-    // We directly inject the interrupt assuming it has been previously registered.
-    // If not the interrupt will dropped by the VM.
+
+    /* Dump VCPU state to diagnose deadlocks */
+    seL4_UserContext regs = {0};
+    seL4_TCB_ReadRegisters(vmm_tcb_cap(vcpu_id), 0, 0, SEL4_USER_CONTEXT_SIZE, &regs);
+    seL4_Word spsr_el1   = vmm_vcpu_arm_read_reg(vcpu_id, seL4_VCPUReg_SPSR_EL1);
+    seL4_Word elr_el1    = vmm_vcpu_arm_read_reg(vcpu_id, seL4_VCPUReg_ELR_EL1);
+    seL4_Word cntv_ctl   = vmm_vcpu_arm_read_reg(vcpu_id, seL4_VCPUReg_CNTV_CTL);
+    seL4_Word cntv_cval  = vmm_vcpu_arm_read_reg(vcpu_id, seL4_VCPUReg_CNTV_CVAL);
+    LOG_VMM("VPPIEvent #%llu: IRQ %llu on vCPU %zu\n",
+            (unsigned long long)vppi_count,
+            (unsigned long long)ppi_irq,
+            vcpu_id);
+    LOG_VMM("VPPIEvent #%llu: PC=0x%lx pstate=0x%lx (I=%s)\n",
+            (unsigned long long)vppi_count,
+            (unsigned long)regs.pc, (unsigned long)regs.spsr,
+            (regs.spsr >> 7) & 1 ? "masked" : "enabled");
+    LOG_VMM("VPPIEvent #%llu: SPSR_EL1=0x%lx ELR_EL1=0x%lx\n",
+            (unsigned long long)vppi_count,
+            (unsigned long)spsr_el1, (unsigned long)elr_el1);
+    LOG_VMM("VPPIEvent #%llu: CNTV_CTL=0x%lx CNTV_CVAL=0x%lx\n",
+            (unsigned long long)vppi_count,
+            (unsigned long)cntv_ctl, (unsigned long)cntv_cval);
+    /*
+     * I=masked + ISTATUS=1: VCPU is inside an ISR (I=masked) with the
+     * virtual timer expired.
+     *
+     * Root cause of the VPPIEvent flood: after VGICMaintenance clears the
+     * LR and calls AckVPPI (unmasking the physical GIC), CNTV_CVAL is still
+     * expired, so the hardware re-fires IRQ 27 before the guest can execute
+     * even one instruction.  The ISR fires at PC=0x57dc0b14, which is the
+     * `ret` at the end of MmioWrite32() called from EndOfInterrupt().  After
+     * that `ret` returns, the ISR checks `if (CNTV_CTL & ISTATUS)` and, if
+     * ISTATUS=1, calls the notify callbacks then advances CNTV_CVAL past
+     * CNTVCT with `do { cval += mTimerTicks; } while (cval < cntvct);`.
+     *
+     * Fix (v25): inject IRQ 27 into a fresh LR (pends silently while
+     * I=masked) and skip AckVPPI.  The GIC stays masked, so no new
+     * VPPIEvent can fire.  After `ret`, the ISR sees ISTATUS=1, runs its
+     * update body, and writes the correct near-future CNTV_CVAL.  On ERET
+     * with I=enabled the LR fires a second ISR invocation; that invocation's
+     * EndOfInterrupt → Maintenance → virq_ack → AckVPPI unmasks the GIC,
+     * restoring normal timer delivery with CVAL already set to the next tick.
+     *
+     * Prior failures:
+     *  v21: ENABLE=0 + AckVPPI → ISR sees ISTATUS=0 (ENABLE=0 clears it),
+     *       CVAL never updated, callbacks spin `while (!ISTATUS)` forever.
+     *  v22: AckVPPI only, CVAL unchanged → 134K VPPIEvents/s flood.
+     *  v23: MRS cntvct_el0 from EL0 → traps (seL4 does not set CNTHCTL_EL2
+     *       to allow EL0 virtual-counter access) → VMM crash.
+     *  v24: advance CVAL to far-future → ISR sees ISTATUS=0, skips its
+     *       update body, CVAL stays huge, timer dead for ~544 real seconds.
+     */
+    if (((regs.spsr >> 7) & 1) && (cntv_ctl & 4)) {
+        LOG_VMM("VPPIEvent #%llu: I=masked+ISTATUS=1 at PC=0x%lx -- inject+defer AckVPPI (CVAL unchanged)\n",
+                (unsigned long long)vppi_count, (unsigned long)regs.pc);
+        bool ok = vgic_inject_irq(vcpu_id, ppi_irq);
+        if (!ok) {
+            LOG_VMM_ERR("VPPIEvent #%llu: no free LR, falling back to AckVPPI\n",
+                        (unsigned long long)vppi_count);
+            vmm_vcpu_arm_ack_vppi(vcpu_id, ppi_irq);
+        }
+        /* Skip AckVPPI: GIC stays masked until Maintenance → virq_ack. */
+        return true;
+    }
     bool success = vgic_inject_irq(vcpu_id, ppi_irq);
+    LOG_VMM("VPPIEvent #%llu: inject_irq(%llu) returned %s\n",
+            (unsigned long long)vppi_count,
+            (unsigned long long)ppi_irq,
+            success ? "OK" : "DROPPED");
     if (!success) {
-        // @ivanv, make a note that when having a lot of printing on it can cause this error
-        LOG_VMM_ERR("VPPI IRQ %lu dropped on vCPU %d\n", ppi_irq, vcpu_id);
-        // Acknowledge to unmask it as our guest will not use the interrupt
+        LOG_VMM_ERR("VPPI IRQ %lu dropped on vCPU %d -- acking VPPI to unmask\n", ppi_irq, vcpu_id);
         vmm_vcpu_arm_ack_vppi(vcpu_id, ppi_irq);
     }
 
