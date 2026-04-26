@@ -398,8 +398,7 @@ fi
 section "Phase 2: Waiting for agentOS boot"
 
 AGENTOS_BOOT_MARKERS=(
-    "[event_bus] READY"
-    "[net_server] READY"
+    "[controller] EventBus: READY"
     "agentOS boot complete"
 )
 
