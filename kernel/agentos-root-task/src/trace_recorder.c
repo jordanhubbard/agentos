@@ -123,6 +123,7 @@ static void trace_recorder_pd_init(void)
  */
 static void trace_recorder_pd_notified(uint32_t ch)
 {
+    IPC_STUB_LOCALS
     /* Advance approximate timestamp regardless of recording state */
     tick_ns += 1000u;   /* 1 µs per notify tick (rough approximation) */
 

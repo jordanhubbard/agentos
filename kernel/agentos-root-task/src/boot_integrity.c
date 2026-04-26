@@ -236,6 +236,7 @@ uint32_t boot_integrity_measure(uint32_t pd_id,
  */
 uint32_t boot_integrity_handle_ppc(uint32_t op,
                                             uint32_t msginfo __attribute__((unused))) {
+    IPC_STUB_LOCALS
     switch (op) {
         case OP_BOOT_MEASURE: {
             /* MR1=pd_id, MR2..MR9 = sha256 as 8×u32 (big-endian order) */

@@ -24,6 +24,17 @@
 #include "app_manager.h"
 #include "verify.h"
 #include "monocypher.h"
+/* Forward declarations for agent_pool (no separate header yet) */
+void agent_pool_init(void);
+int  agent_pool_spawn(const char *agent_name, uint64_t task_id,
+                      const uint8_t *payload, uint32_t payload_len, uint32_t prio);
+/* Forward declarations for cap_broker (no separate header yet) */
+void cap_broker_init(void);
+void cap_broker_revoke_agent(uint32_t agent_id, uint32_t reason);
+/* Local opcode aliases (defined in test-host stub too, kept in sync) */
+#define OP_AGENTFS_PUT  0x30u
+#define OP_AGENTFS_GET  0x31u
+#define NUM_SWAP_SLOTS  4
 #else
 /* ── Host-test stubs ─────────────────────────────────────────────────────── */
 #include <stdint.h>

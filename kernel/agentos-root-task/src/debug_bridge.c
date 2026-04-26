@@ -392,6 +392,7 @@ void ipc_bridge_notified(void)
  */
 static uint32_t handle_ipc_send(void)
 {
+    IPC_STUB_LOCALS
     uint32_t op             = (uint32_t)msg_u32(req, 4);
     uint32_t vm_slot        = (uint32_t)msg_u32(req, 8);
     uint32_t payload_offset = (uint32_t)msg_u32(req, 12);
@@ -466,6 +467,7 @@ static uint32_t handle_ipc_send(void)
  */
 static uint32_t handle_ipc_poll(void)
 {
+    IPC_STUB_LOCALS
     uint32_t seq = (uint32_t)msg_u32(req, 4);
 
     ipc_resp_t resp;
@@ -562,6 +564,7 @@ static void debug_event_append(uint32_t event_type, uint32_t slot_id,
 
 /* ── Notify controller that a debug event is available ────────────────────── */
 static void notify_controller_debug_event(uint32_t slot_id, uint32_t event_type) {
+    IPC_STUB_LOCALS
     rep_u32(rep, 0, slot_id);
     rep_u32(rep, 4, event_type);
     sel4_dbg_puts("[E5-S8] notify-stub
@@ -570,6 +573,7 @@ static void notify_controller_debug_event(uint32_t slot_id, uint32_t event_type)
 
 /* ── Handle: OP_DBG_ATTACH ────────────────────────────────────────────────── */
 static uint32_t handle_attach(void) {
+    IPC_STUB_LOCALS
     uint32_t slot_id = (uint32_t)msg_u32(req, 4);
 
     if (slot_id >= MAX_DEBUG_SLOTS) {
@@ -616,6 +620,7 @@ static uint32_t handle_attach(void) {
 
 /* ── Handle: OP_DBG_DETACH ────────────────────────────────────────────────── */
 static uint32_t handle_detach(void) {
+    IPC_STUB_LOCALS
     uint32_t slot_id = (uint32_t)msg_u32(req, 4);
 
     if (slot_id >= MAX_DEBUG_SLOTS) {
@@ -664,6 +669,7 @@ static uint32_t handle_detach(void) {
 
 /* ── Handle: OP_DBG_BREAKPOINT ────────────────────────────────────────────── */
 static uint32_t handle_breakpoint(void) {
+    IPC_STUB_LOCALS
     uint32_t slot_id     = (uint32_t)msg_u32(req, 4);
     uint32_t wasm_offset = (uint32_t)msg_u32(req, 8);
     uint32_t enable      = (uint32_t)msg_u32(req, 12);
@@ -736,6 +742,7 @@ static uint32_t handle_breakpoint(void) {
 
 /* ── Handle: OP_DBG_STEP ──────────────────────────────────────────────────── */
 static uint32_t handle_step(void) {
+    IPC_STUB_LOCALS
     uint32_t slot_id   = (uint32_t)msg_u32(req, 4);
     uint32_t step_mode = (uint32_t)msg_u32(req, 8);
 
@@ -799,6 +806,7 @@ static uint32_t handle_step(void) {
 
 /* ── Handle: OP_DBG_STATUS ────────────────────────────────────────────────── */
 static uint32_t handle_status(void) {
+    IPC_STUB_LOCALS
     uint32_t slot_id = (uint32_t)msg_u32(req, 4);
 
     if (slot_id == 0xFF) {

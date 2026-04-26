@@ -175,6 +175,8 @@ static float cosine_sim(const float *a, const float *b, uint16_t dim) {
 }
 
 /* ── msg helpers ────────────────────────────────────────────────────────── */
+#ifndef AGENTOS_IPC_HELPERS_DEFINED
+#define AGENTOS_IPC_HELPERS_DEFINED
 static inline uint32_t msg_u32(const sel4_msg_t *m, uint32_t off) {
     uint32_t v = 0;
     if (off + 4u <= SEL4_MSG_DATA_BYTES) {
@@ -189,6 +191,7 @@ static inline void rep_u32(sel4_msg_t *m, uint32_t off, uint32_t v) {
         m->data[off+2]=(uint8_t)(v>>16); m->data[off+3]=(uint8_t)(v>>24);
     }
 }
+#endif /* AGENTOS_IPC_HELPERS_DEFINED */
 
 /* ── Emit event to EventBus (fire-and-forget seL4_Call, guarded) ────────── */
 static void emit_event(uint32_t event_type, const object_id_t *id) {
@@ -210,7 +213,7 @@ static void emit_event(uint32_t event_type, const object_id_t *id) {
     rep_u32(&emsg, 20, id3);
     emsg.length = 24;
     sel4_msg_t erep = {0};
-    seL4_Call(g_eventbus_ep, sel4_msg_to_info(&emsg), &erep);
+    sel4_call(g_eventbus_ep, &emsg, &erep);
 #else
     (void)event_type; (void)id;
 #endif

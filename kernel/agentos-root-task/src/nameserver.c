@@ -122,6 +122,7 @@ static int registry_alloc(void)
  */
 static uint32_t handle_register(void)
 {
+    IPC_STUB_LOCALS
     uint32_t channel_id  = (uint32_t)msg_u32(req, 4);
     uint32_t pd_id       = (uint32_t)msg_u32(req, 8);
     uint32_t cap_classes = (uint32_t)msg_u32(req, 12);
@@ -181,6 +182,7 @@ static uint32_t handle_register(void)
  */
 static uint32_t handle_lookup(void)
 {
+    IPC_STUB_LOCALS
     char name[NS_NAME_MAX];
     ns_unpack_name(name, 1);
 
@@ -215,6 +217,7 @@ static uint32_t handle_lookup(void)
  */
 static uint32_t handle_update_status(void)
 {
+    IPC_STUB_LOCALS
     uint32_t channel_id = (uint32_t)msg_u32(req, 4);
     uint8_t  new_status = (uint8_t)msg_u32(req, 8);
 
@@ -239,6 +242,7 @@ static uint32_t handle_update_status(void)
  */
 static uint32_t handle_list(void)
 {
+    IPC_STUB_LOCALS
     if (!ns_registry_shmem_vaddr) {
         /* shmem not mapped — return count only */
         rep_u32(rep, 0, NS_OK);
@@ -286,6 +290,7 @@ static uint32_t handle_list(void)
  */
 static uint32_t handle_deregister(void)
 {
+    IPC_STUB_LOCALS
     uint32_t channel_id = (uint32_t)msg_u32(req, 4);
 
     int slot = registry_find_by_channel(channel_id);
@@ -313,6 +318,7 @@ static uint32_t handle_deregister(void)
  */
 static uint32_t handle_health(void)
 {
+    IPC_STUB_LOCALS
     rep_u32(rep, 0, NS_OK);
     rep_u32(rep, 4, reg_count);
     rep_u32(rep, 8, NS_VERSION);
@@ -367,6 +373,7 @@ static void nameserver_pd_notified(uint32_t ch)
  */
 static uint32_t handle_lookup_gated(uint32_t ch, uint32_t msginfo)
 {
+    IPC_STUB_LOCALS
     /* Extract badge from the msginfo label field.
      * Microkit conveys the badge of the endpoint cap used by the caller
      * in the label field of the msginfo for PPC calls. */

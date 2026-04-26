@@ -128,6 +128,7 @@ static inline uint64_t microkit_mr_get(uint32_t i) { (void)i; return 0; }
 
 #else  /* !AGENTOS_TEST_HOST */
 
+#include <stdbool.h>
 #include "sel4_ipc.h"
 #include "sel4_server.h"
 #include "sel4_client.h"

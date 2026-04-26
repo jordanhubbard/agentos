@@ -121,6 +121,7 @@ static void touch_session(uint32_t sid)
 
 static void handle_connect(uint32_t ch)
 {
+    IPC_STUB_LOCALS
     uint32_t badge = (uint32_t)msg_u32(req, 4);
     int s = alloc_session();
     if (s < 0) {
@@ -140,6 +141,7 @@ static void handle_connect(uint32_t ch)
 
 static void handle_disconnect(uint32_t ch)
 {
+    IPC_STUB_LOCALS
     uint32_t sid = (uint32_t)msg_u32(req, 4);
     if (!valid_session(sid, ch)) {
         rep_u32(rep, 0, CC_ERR_BAD_SESSION);
@@ -151,6 +153,7 @@ static void handle_disconnect(uint32_t ch)
 
 static void handle_status(uint32_t ch)
 {
+    IPC_STUB_LOCALS
     uint32_t sid = (uint32_t)msg_u32(req, 4);
     if (!valid_session(sid, ch)) {
         rep_u32(rep, 0, CC_ERR_BAD_SESSION);
@@ -167,6 +170,7 @@ static void handle_status(uint32_t ch)
 
 static void handle_list_sessions(void)
 {
+    IPC_STUB_LOCALS
     cc_session_info_t *out = (cc_session_info_t *)cc_shmem_vaddr;
     uint32_t count = 0;
 
@@ -190,6 +194,7 @@ static void handle_list_sessions(void)
  */
 static uint32_t relay_vibe(uint32_t opcode, uint32_t mr_count)
 {
+    IPC_STUB_LOCALS
     rep_u32(rep, 0, opcode);
     /* E5-S8: ppcall stubbed */
     return (uint32_t)msg_u32(req, 0);
@@ -200,6 +205,7 @@ static uint32_t relay_vibe(uint32_t opcode, uint32_t mr_count)
  */
 static uint32_t relay_guest(uint32_t opcode, uint32_t mr_count)
 {
+    IPC_STUB_LOCALS
     rep_u32(rep, 0, opcode);
     /* E5-S8: ppcall stubbed */
     return (uint32_t)msg_u32(req, 0);
@@ -214,6 +220,7 @@ static uint32_t relay_guest(uint32_t opcode, uint32_t mr_count)
  */
 static void handle_list_guests(void)
 {
+    IPC_STUB_LOCALS
     rep_u32(rep, 0, MSG_VIBEOS_LIST);
     /* E5-S8: ppcall stubbed */
     uint32_t count = (uint32_t)msg_u32(req, 0);
@@ -244,6 +251,7 @@ static void handle_list_guests(void)
  */
 static void handle_list_devices(void)
 {
+    IPC_STUB_LOCALS
     uint32_t dev_type = (uint32_t)msg_u32(req, 4);
     cc_device_info_t *out = (cc_device_info_t *)cc_shmem_vaddr;
 
@@ -313,6 +321,7 @@ static void handle_list_devices(void)
  */
 static void handle_list_polecats(void)
 {
+    IPC_STUB_LOCALS
     rep_u32(rep, 0, MSG_AGENTPOOL_STATUS);
     /* E5-S8: ppcall stubbed */
     /* MR0=total MR1=busy MR2=idle from agent_pool */
@@ -332,6 +341,7 @@ static void handle_list_polecats(void)
  */
 static void handle_guest_status(void)
 {
+    IPC_STUB_LOCALS
     uint32_t guest_handle = (uint32_t)msg_u32(req, 4);
 
     rep_u32(rep, 0, MSG_VIBEOS_STATUS);
@@ -369,6 +379,7 @@ static void handle_guest_status(void)
  */
 static void handle_device_status(void)
 {
+    IPC_STUB_LOCALS
     uint32_t dev_type   = (uint32_t)msg_u32(req, 4);
     uint32_t dev_handle = (uint32_t)msg_u32(req, 8);
     uint32_t *out       = (uint32_t *)cc_shmem_vaddr;
@@ -436,6 +447,7 @@ static void handle_device_status(void)
  */
 static void handle_attach_framebuffer(void)
 {
+    IPC_STUB_LOCALS
     uint32_t guest_handle = (uint32_t)msg_u32(req, 4);
     uint32_t fb_handle    = (uint32_t)msg_u32(req, 8);
 
@@ -465,6 +477,7 @@ static void handle_attach_framebuffer(void)
  */
 static void handle_send_input(void)
 {
+    IPC_STUB_LOCALS
     uint32_t guest_handle = (uint32_t)msg_u32(req, 4);
 
     /* Copy input event from caller's cc_shmem to cc_guest_shmem */
@@ -486,6 +499,7 @@ static void handle_send_input(void)
  */
 static void handle_snapshot(void)
 {
+    IPC_STUB_LOCALS
     uint32_t guest_handle = (uint32_t)msg_u32(req, 4);
 
     rep_u32(rep, 0, MSG_VIBEOS_SNAPSHOT);
@@ -507,6 +521,7 @@ static void handle_snapshot(void)
  */
 static void handle_restore(void)
 {
+    IPC_STUB_LOCALS
     uint32_t guest_handle = (uint32_t)msg_u32(req, 4);
     uint32_t snap_lo      = (uint32_t)msg_u32(req, 8);
     uint32_t snap_hi      = (uint32_t)msg_u32(req, 12);
@@ -527,6 +542,7 @@ static void handle_restore(void)
  */
 static void handle_log_stream(void)
 {
+    IPC_STUB_LOCALS
     uint32_t slot  = (uint32_t)msg_u32(req, 4);
     uint32_t pd_id = (uint32_t)msg_u32(req, 8);
 

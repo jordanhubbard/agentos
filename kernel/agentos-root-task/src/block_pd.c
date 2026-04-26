@@ -96,8 +96,8 @@ static bool validate_handle(uint32_t h, uint32_t ch)
 /* Call OP_BLK_INFO on virtio_blk.  Returns true on success. */
 static bool vblk_info(uint64_t *out_capacity, uint32_t *out_block_size)
 {
-    uint32_t reply =
-        /* E5-S8: ppcall stubbed */
+    IPC_STUB_LOCALS
+    /* E5-S8: ppcall stubbed */
     uint32_t rc = (uint32_t)msg_u32(req, 0);
     if (rc != BLK_OK)
         return false;
@@ -105,7 +105,6 @@ static bool vblk_info(uint64_t *out_capacity, uint32_t *out_block_size)
     uint32_t cap_hi    = (uint32_t)msg_u32(req, 8);
     *out_capacity      = ((uint64_t)cap_hi << 32) | (uint64_t)cap_lo;
     *out_block_size    = (uint32_t)msg_u32(req, 12);
-    (void)reply;
     return true;
 }
 
@@ -123,6 +122,7 @@ static void bpd_memcpy(volatile uint8_t *dst, volatile uint8_t *src, uint32_t n)
  */
 static uint32_t handle_open(uint32_t ch, uint32_t msg)
 {
+    IPC_STUB_LOCALS
     (void)msg;
     uint32_t dev_id    = (uint32_t)msg_u32(req, 4);
     uint32_t partition = (uint32_t)msg_u32(req, 8);
@@ -184,6 +184,7 @@ static uint32_t handle_open(uint32_t ch, uint32_t msg)
  */
 static uint32_t handle_close(uint32_t ch, uint32_t msg)
 {
+    IPC_STUB_LOCALS
     (void)msg;
     uint32_t h = (uint32_t)msg_u32(req, 4);
 
@@ -209,6 +210,7 @@ static uint32_t handle_close(uint32_t ch, uint32_t msg)
  */
 static uint32_t handle_read(uint32_t ch, uint32_t msg)
 {
+    IPC_STUB_LOCALS
     (void)msg;
     uint32_t h       = (uint32_t)msg_u32(req, 4);
     uint32_t lba_lo  = (uint32_t)msg_u32(req, 8);
@@ -264,10 +266,8 @@ static uint32_t handle_read(uint32_t ch, uint32_t msg)
         rep_u32(rep, 4, lba_lo32);
         rep_u32(rep, 8, lba_hi32);
         rep_u32(rep, 12, batch);
-        uint32_t reply =
-            /* E5-S8: ppcall stubbed */
+        /* E5-S8: ppcall stubbed */
         uint32_t rc = (uint32_t)msg_u32(req, 0);
-        (void)reply;
 
         if (rc != BLK_OK) {
             if (rc == BLK_ERR_OOB) {
@@ -304,6 +304,7 @@ static uint32_t handle_read(uint32_t ch, uint32_t msg)
  */
 static uint32_t handle_write(uint32_t ch, uint32_t msg)
 {
+    IPC_STUB_LOCALS
     (void)msg;
     uint32_t h       = (uint32_t)msg_u32(req, 4);
     uint32_t lba_lo  = (uint32_t)msg_u32(req, 8);
@@ -373,10 +374,8 @@ static uint32_t handle_write(uint32_t ch, uint32_t msg)
         rep_u32(rep, 4, lba_lo32);
         rep_u32(rep, 8, lba_hi32);
         rep_u32(rep, 12, batch);
-        uint32_t reply =
-            /* E5-S8: ppcall stubbed */
+        /* E5-S8: ppcall stubbed */
         uint32_t rc = (uint32_t)msg_u32(req, 0);
-        (void)reply;
 
         if (rc != BLK_OK) {
             if (rc == BLK_ERR_OOB) {
@@ -405,6 +404,7 @@ static uint32_t handle_write(uint32_t ch, uint32_t msg)
  */
 static uint32_t handle_flush(uint32_t ch, uint32_t msg)
 {
+    IPC_STUB_LOCALS
     (void)msg;
     uint32_t h = (uint32_t)msg_u32(req, 4);
 
@@ -414,10 +414,8 @@ static uint32_t handle_flush(uint32_t ch, uint32_t msg)
         return SEL4_ERR_OK;
     }
 
-    uint32_t reply =
-        /* E5-S8: ppcall stubbed */
+    /* E5-S8: ppcall stubbed */
     uint32_t rc = (uint32_t)msg_u32(req, 0);
-    (void)reply;
 
     rep_u32(rep, 0, (rc == BLK_OK) ? BLOCK_OK : BLOCK_ERR_IO);
     rep->length = 4;
@@ -432,6 +430,7 @@ static uint32_t handle_flush(uint32_t ch, uint32_t msg)
  */
 static uint32_t handle_status(uint32_t ch, uint32_t msg)
 {
+    IPC_STUB_LOCALS
     (void)msg;
     uint32_t h = (uint32_t)msg_u32(req, 4);
 
@@ -464,6 +463,7 @@ static uint32_t handle_status(uint32_t ch, uint32_t msg)
  */
 static uint32_t handle_trim(uint32_t ch, uint32_t msg)
 {
+    IPC_STUB_LOCALS
     (void)msg;
     uint32_t h = (uint32_t)msg_u32(req, 4);
 

@@ -114,6 +114,7 @@ static inline void sel4_call(seL4_CPtr ep, const sel4_msg_t *req, sel4_msg_t *re
 
 #include <stdint.h>
 #include <stdbool.h>
+#include <stddef.h>       /* NULL */
 #include "sel4_ipc.h"     /* sel4_msg_t, sel4_badge_t, SEL4_ERR_* */
 #include "sel4_server.h"  /* sel4_server_t, sel4_server_init/register/run */
 #include <sel4/sel4.h>    /* seL4_DebugPutChar */

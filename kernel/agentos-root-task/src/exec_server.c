@@ -158,6 +158,7 @@ static uint8_t peek_binary_type(void)
 /* ── IPC dispatch ─────────────────────────────────────────────────────── */
 static uint32_t handle_launch(void)
 {
+    IPC_STUB_LOCALS
     if (!exec_shmem_vaddr) {
         dbg("[exec_server] launch: exec_shmem not mapped\n");
         rep_u32(rep, 0, 1);
@@ -237,6 +238,7 @@ static uint32_t handle_launch(void)
 
 static uint32_t handle_status(void)
 {
+    IPC_STUB_LOCALS
     uint32_t exec_id = (uint32_t)msg_u32(req, 4);
     exec_entry_t *e  = find_task_by_id(exec_id);
     if (!e) e = find_exec(exec_id);
@@ -254,6 +256,7 @@ static uint32_t handle_status(void)
 
 static uint32_t handle_wait(void)
 {
+    IPC_STUB_LOCALS
     uint32_t exec_id = (uint32_t)msg_u32(req, 4);
     exec_entry_t *e  = find_task_by_id(exec_id);
     if (!e) e = find_exec(exec_id);
@@ -277,6 +280,7 @@ static uint32_t handle_wait(void)
 
 static uint32_t handle_kill(void)
 {
+    IPC_STUB_LOCALS
     uint32_t exec_id = (uint32_t)msg_u32(req, 4);
     exec_entry_t *e  = find_task_by_id(exec_id);
     if (!e) e = find_exec(exec_id);

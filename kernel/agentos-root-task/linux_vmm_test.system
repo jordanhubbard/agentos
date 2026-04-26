@@ -1,0 +1,81 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  linux_vmm_test.system: minimal system to boot Ubuntu via linux_vmm.elf.
+
+  Purpose: debug the Ubuntu early kernel panic without the full agentOS stack.
+  Only linux_vmm is present; no controller, serial_pd, or other PDs.
+
+  Console output path: Ubuntu writes to PL011 at 0x9000000 => VM fault =>
+  pl011_fault_handler in linux_vmm.c => seL4_DebugPutChar => QEMU serial.
+-->
+<system>
+    <!-- Guest RAM: 256MB at phys 0x40000000, matches ubuntu-overlay.dts memory node. -->
+    <memory_region name="guest_ram" size="0x10_000_000" page_size="0x200_000"
+                   phys_addr="0x40000000" />
+
+    <!-- GIC vCPU interface: mapped into guest at 0x8010000 (hardware vCPU regs). -->
+    <memory_region name="gic_vcpu" size="0x1_000" phys_addr="0x8040000" />
+
+    <!--
+      PL011 UART: direct passthrough to guest so the AMBA driver can probe.
+      The guest earlycon (earlycon=pl011,0x9000000) and full ttyAMA0 driver
+      both write to the actual QEMU-emulated PL011 which appears in serial output.
+      In the full agentOS system, serial_pd owns this region instead.
+    -->
+    <memory_region name="serial" size="0x1_000" phys_addr="0x9000000" />
+
+    <!--
+      virtio-mmio transport region: 4KB covers slots 0-2 (net, blk, blk2).
+      Slot N is at phys 0xa000000 + N*0x200 (QEMU virt aarch64 convention).
+    -->
+    <memory_region name="virtio_mmio" size="0x1_000" phys_addr="0xa000000" />
+
+    <protection_domain name="linux_vmm" priority="254">
+        <program_image path="linux_vmm.elf" />
+
+        <!--
+          VMM maps guest RAM to load kernel/DTB/initrd.
+          Same vaddr as guest physical base (required by libvmm convention).
+        -->
+        <map mr="guest_ram" vaddr="0x40000000" perms="rw"
+             setvar_vaddr="guest_ram_vaddr" />
+
+        <virtual_machine name="linux">
+            <vcpu id="0" />
+
+            <!-- Guest physical RAM -->
+            <map mr="guest_ram" vaddr="0x40000000" perms="rwx" />
+
+            <!-- GIC vCPU interface for hardware-assisted interrupt delivery -->
+            <map mr="gic_vcpu" vaddr="0x8010000" perms="rw" cached="false" />
+
+            <!--
+              PL011 UART: mapped directly so the AMBA driver probes correctly.
+              Guest writes to PL011 DR go to the physical QEMU UART, visible
+              in serial output. IRQ 33 is passed through via id=6 below.
+            -->
+            <map mr="serial" vaddr="0x9000000" perms="rw" cached="false" />
+
+            <!--
+              virtio-mmio direct passthrough (net slot 0, blk slots 1 and 2).
+              Guest DTS declares nodes at 0xa000000/0xa000200/0xa000400.
+            -->
+            <map mr="virtio_mmio" vaddr="0xa000000" perms="rw" cached="false" />
+        </virtual_machine>
+
+        <!--
+          IRQ passthroughs: Microkit places caps at BASE_IRQ_CAP + id.
+          linux_vmm.c hardcodes BASE_IRQ_CAP=138, so:
+            id=3 => slot 141 = g_virtio_net_irq_cap  (SPI 16, INTID 48)
+            id=4 => slot 142 = g_virtio_blk_irq_cap  (SPI 17, INTID 49)
+            id=5 => slot 143 = g_virtio_blk2_irq_cap (SPI 18, INTID 50)
+            id=6 => slot 144 = g_uart_irq_cap        (PL011, SPI 1, INTID 33)
+          UART uses id=6 to avoid conflicting with serial_pd channel (id=1)
+          in the full agentOS system. level trigger: PL011 is level-high.
+        -->
+        <irq irq="48" id="3" trigger="edge" />
+        <irq irq="49" id="4" trigger="edge" />
+        <irq irq="50" id="5" trigger="edge" />
+        <irq irq="33" id="6" />
+    </protection_domain>
+</system>

@@ -123,6 +123,7 @@ static int pool_find_idle(void) {
 int agent_pool_spawn(const char *agent_name, uint64_t task_id,
                       const uint8_t *payload, uint32_t payload_len,
                       uint32_t priority) {
+    sel4_msg_t _rep_buf = {0}; sel4_msg_t *rep = &_rep_buf;
     int slot = pool_find_idle();
     if (slot < 0) {
         log_drain_write(6, 6, "[pool] ERROR: all workers busy\n");
@@ -161,9 +162,8 @@ int agent_pool_spawn(const char *agent_name, uint64_t task_id,
     rep_u32(rep, 12, payload_len);
     
     /* Notify the worker to wake up */
-    sel4_dbg_puts("[E5-S8] notify-stub
-"); /* TODO: seL4_Signal(notify_cap_for_pool[slot].channel_id) */
-    
+    sel4_dbg_puts("[E5-S8] notify-stub\n"); /* TODO: seL4_Signal(notify_cap_for_pool[slot].channel_id) */
+
     return slot;
 }
 
@@ -235,8 +235,7 @@ void worker_pd_init(void) {
     log_drain_write(6, 6, "[worker] Slot ready, waiting for task assignment\n");
     
     /* Notify controller we're ready */
-    sel4_dbg_puts("[E5-S8] notify-stub
-");
+    sel4_dbg_puts("[E5-S8] notify-stub\n");
 }
 
 /*
@@ -246,6 +245,8 @@ void worker_pd_init(void) {
  * executes the task (via a jump table), then notifies completion.
  */
 void worker_pd_notified(uint32_t ch) {
+    sel4_msg_t _rep_buf = {0}; sel4_msg_t *rep = &_rep_buf;
+    sel4_msg_t _req_dummy = {0}; const sel4_msg_t *req = &_req_dummy; (void)req;
     switch (ch) {
         case WORKER_CH_CONTROLLER: {
             /* Read task assignment from MRs */
@@ -281,8 +282,7 @@ void worker_pd_notified(uint32_t ch) {
             rep_u32(rep, 4, (uint32_t)(worker.task_id >> 32));
             rep_u32(rep, 8, (uint32_t)status);
             rep_u32(rep, 12, 0);
-            sel4_dbg_puts("[E5-S8] notify-stub
-");
+            sel4_dbg_puts("[E5-S8] notify-stub\n");
             break;
         }
         

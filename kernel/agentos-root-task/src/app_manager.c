@@ -67,6 +67,8 @@ static app_entry_t apps[APP_MAX_APPS];
 static uint32_t    next_app_id = 1;
 
 /* ── msg helpers ──────────────────────────────────────────────────────────── */
+#ifndef AGENTOS_IPC_HELPERS_DEFINED
+#define AGENTOS_IPC_HELPERS_DEFINED
 static inline uint32_t msg_u32(const sel4_msg_t *m, uint32_t off) {
     uint32_t v = 0;
     if (off + 4u <= SEL4_MSG_DATA_BYTES) {
@@ -81,6 +83,7 @@ static inline void rep_u32(sel4_msg_t *m, uint32_t off, uint32_t v) {
         m->data[off+2]=(uint8_t)(v>>16); m->data[off+3]=(uint8_t)(v>>24);
     }
 }
+#endif /* AGENTOS_IPC_HELPERS_DEFINED */
 
 /* ── String helpers (no libc) ────────────────────────────────────────────── */
 static void s_copy(char *dst, const char *src, uint32_t max)
@@ -227,7 +230,7 @@ static uint32_t outbound_call(seL4_CPtr ep, sel4_msg_t *req, sel4_msg_t *rep)
 {
 #ifndef AGENTOS_TEST_HOST
     if (!ep) return 0xFFFFFFFFu;
-    seL4_Call(ep, sel4_msg_to_info(req), rep);
+    sel4_call(ep, req, rep);
     return msg_u32(rep, 0);
 #else
     (void)ep; (void)req;
@@ -247,7 +250,7 @@ static uint32_t h_launch(sel4_badge_t b, const sel4_msg_t *req,
     if (!app_manifest_shmem_vaddr ||
         manifest_len == 0 || manifest_len > APP_MANIFEST_TEXT_MAX) {
         rep_u32(rep, 0, APP_ERR_INVAL); rep->length = 4;
-        return SEL4_ERR_INVALID_ARG;
+        return SEL4_ERR_BAD_ARG;
     }
 
     app_entry_t *slot = alloc_slot();
@@ -260,7 +263,7 @@ static uint32_t h_launch(sel4_badge_t b, const sel4_msg_t *req,
     if (parse_manifest((const char *)app_manifest_shmem_vaddr,
                        manifest_len, &manifest) < 0) {
         rep_u32(rep, 0, APP_ERR_INVAL); rep->length = 4;
-        return SEL4_ERR_INVALID_ARG;
+        return SEL4_ERR_BAD_ARG;
     }
 
     slot->app_id      = next_app_id++;
@@ -316,7 +319,7 @@ static uint32_t h_launch(sel4_badge_t b, const sel4_msg_t *req,
         }
         slot->active = false;
         rep_u32(rep, 0, APP_ERR_SPAWN); rep->length = 4;
-        return SEL4_ERR_INVALID_ARG;
+        return SEL4_ERR_BAD_ARG;
     }
 
     slot->spawn_slot = spawn_assigned_id;
@@ -423,7 +426,7 @@ static uint32_t h_list(sel4_badge_t b, const sel4_msg_t *req,
     (void)b; (void)req; (void)ctx;
     if (!app_manifest_shmem_vaddr) {
         rep_u32(rep, 0, APP_ERR_INVAL); rep->length = 4;
-        return SEL4_ERR_INVALID_ARG;
+        return SEL4_ERR_BAD_ARG;
     }
 
     volatile app_list_entry_t *list =

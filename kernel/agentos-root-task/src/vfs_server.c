@@ -324,6 +324,7 @@ static uint8_t path_to_backend(const char *path) {
  * ═══════════════════════════════════════════════════════════════════════════ */
 
 static uint32_t mem_open(const char *path, uint32_t flags) {
+    IPC_STUB_LOCALS
     /* Ensure path starts with '/' */
     if (path[0] != '/') return VFS_ERR_INVAL;
 
@@ -392,6 +393,7 @@ static uint32_t mem_open(const char *path, uint32_t flags) {
 }
 
 static uint32_t mem_close(uint32_t h) {
+    IPC_STUB_LOCALS
     if (h >= VFS_MAX_HANDLES || !handles[h].active) return VFS_ERR_INVAL;
     handles[h].active = false;
     open_handle_count--;
@@ -400,6 +402,7 @@ static uint32_t mem_close(uint32_t h) {
 }
 
 static uint32_t mem_read(uint32_t h, uint64_t offset, uint32_t length) {
+    IPC_STUB_LOCALS
     if (h >= VFS_MAX_HANDLES || !handles[h].active) return VFS_ERR_INVAL;
     if (!(handles[h].flags & VFS_O_RD))             return VFS_ERR_PERM;
 
@@ -426,6 +429,7 @@ static uint32_t mem_read(uint32_t h, uint64_t offset, uint32_t length) {
 }
 
 static uint32_t mem_write(uint32_t h, uint64_t offset, uint32_t length) {
+    IPC_STUB_LOCALS
     if (h >= VFS_MAX_HANDLES || !handles[h].active) return VFS_ERR_INVAL;
     if (!(handles[h].flags & VFS_O_WR))             return VFS_ERR_PERM;
 
@@ -451,6 +455,7 @@ static uint32_t mem_write(uint32_t h, uint64_t offset, uint32_t length) {
 }
 
 static uint32_t mem_stat(uint32_t h) {
+    IPC_STUB_LOCALS
     if (h >= VFS_MAX_HANDLES || !handles[h].active) return VFS_ERR_INVAL;
 
     mem_inode_t *ino = &mem_inodes[handles[h].inode];
@@ -464,6 +469,7 @@ static uint32_t mem_stat(uint32_t h) {
 }
 
 static uint32_t mem_unlink(const char *path) {
+    IPC_STUB_LOCALS
     uint32_t ino = mem_find_inode(path);
     if (ino == VFS_MEM_MAX_INODES) return VFS_ERR_NOT_FOUND;
     if (ino == 0)                   return VFS_ERR_PERM;  /* cannot unlink root */
@@ -484,6 +490,7 @@ static uint32_t mem_unlink(const char *path) {
 }
 
 static uint32_t mem_mkdir(const char *path) {
+    IPC_STUB_LOCALS
     if (mem_find_inode(path) != VFS_MEM_MAX_INODES)
         return VFS_ERR_EXISTS;
 
@@ -532,6 +539,7 @@ static uint32_t mem_mkdir(const char *path) {
  * Returns the entry count in MR1.
  */
 static uint32_t mem_readdir(const char *path) {
+    IPC_STUB_LOCALS
     uint32_t dir_ino = mem_find_inode(path);
     if (dir_ino == VFS_MEM_MAX_INODES)          return VFS_ERR_NOT_FOUND;
     if (!mem_inodes[dir_ino].is_dir)             return VFS_ERR_NOT_DIR;
@@ -562,6 +570,7 @@ static uint32_t mem_readdir(const char *path) {
 }
 
 static uint32_t mem_truncate(uint32_t h, uint64_t new_size) {
+    IPC_STUB_LOCALS
     if (h >= VFS_MAX_HANDLES || !handles[h].active) return VFS_ERR_INVAL;
     if (!(handles[h].flags & VFS_O_WR))             return VFS_ERR_PERM;
 
@@ -582,6 +591,7 @@ static uint32_t mem_truncate(uint32_t h, uint64_t new_size) {
 
 /* sync is a no-op for the mem backend — data is already "durable" in RAM */
 static uint32_t mem_sync(uint32_t h) {
+    IPC_STUB_LOCALS
     if (h >= VFS_MAX_HANDLES || !handles[h].active) return VFS_ERR_INVAL;
     rep_u32(rep, 0, VFS_OK);
     return VFS_OK;
@@ -600,6 +610,7 @@ static uint32_t mem_sync(uint32_t h) {
  * ═══════════════════════════════════════════════════════════════════════════ */
 
 static uint32_t blk_call(uint32_t op, uint64_t block_lo_hi, uint32_t count) {
+    IPC_STUB_LOCALS
     if (!blk_present) {
         rep_u32(rep, 0, VFS_ERR_IO);
         return VFS_ERR_IO;
@@ -608,7 +619,7 @@ static uint32_t blk_call(uint32_t op, uint64_t block_lo_hi, uint32_t count) {
     rep_u32(rep, 4, (uintptr_t)(block_lo_hi & 0xFFFFFFFFu));
     rep_u32(rep, 8, (uintptr_t)(block_lo_hi >> 32));
     rep_u32(rep, 12, count);
-    uint32_t reply = /* E5-S8: ppcall stubbed */
+    /* E5-S8: ppcall stubbed */
     uint32_t blk_rc = (uint32_t)msg_u32(req, 0);
     return (blk_rc == BLK_OK) ? VFS_OK : VFS_ERR_IO;
 }
@@ -618,6 +629,7 @@ static uint32_t blk_call(uint32_t op, uint64_t block_lo_hi, uint32_t count) {
  * Inode number is repurposed as the block address base.
  */
 static uint32_t blk_open(const char *path, uint32_t flags) {
+    IPC_STUB_LOCALS
     if (!blk_present) {
         rep_u32(rep, 0, VFS_ERR_IO);
         rep_u32(rep, 4, 0);
@@ -651,6 +663,7 @@ static uint32_t blk_open(const char *path, uint32_t flags) {
 }
 
 static uint32_t blk_close(uint32_t h) {
+    IPC_STUB_LOCALS
     if (h >= VFS_MAX_HANDLES || !handles[h].active) return VFS_ERR_INVAL;
     handles[h].active = false;
     open_handle_count--;
@@ -663,6 +676,7 @@ static uint32_t blk_close(uint32_t h) {
  * copy into the caller-visible vfs_io_shmem data buffer.
  */
 static uint32_t blk_read(uint32_t h, uint64_t offset, uint32_t length) {
+    IPC_STUB_LOCALS
     if (!blk_present)                               return VFS_ERR_IO;
     if (h >= VFS_MAX_HANDLES || !handles[h].active) return VFS_ERR_INVAL;
     if (blk_block_size == 0)                        return VFS_ERR_IO;
@@ -695,6 +709,7 @@ static uint32_t blk_read(uint32_t h, uint64_t offset, uint32_t length) {
  * then issue OP_BLK_WRITE on CH12.
  */
 static uint32_t blk_write(uint32_t h, uint64_t offset, uint32_t length) {
+    IPC_STUB_LOCALS
     if (!blk_present)                               return VFS_ERR_IO;
     if (h >= VFS_MAX_HANDLES || !handles[h].active) return VFS_ERR_INVAL;
     if (blk_block_size == 0)                        return VFS_ERR_IO;
@@ -724,6 +739,7 @@ static uint32_t blk_write(uint32_t h, uint64_t offset, uint32_t length) {
 
 /* blk_stat — return device-level size; mode = block device (0x6000) */
 static uint32_t blk_stat(uint32_t h) {
+    IPC_STUB_LOCALS
     if (h >= VFS_MAX_HANDLES || !handles[h].active) return VFS_ERR_INVAL;
     uint64_t total_bytes = blk_block_count * blk_block_size;
     rep_u32(rep, 0, VFS_OK);
@@ -735,6 +751,7 @@ static uint32_t blk_stat(uint32_t h) {
 
 /* Remaining blk ops return VFS_ERR_IO when blk absent, VFS_OK otherwise */
 static uint32_t blk_unlink(const char *path) {
+    IPC_STUB_LOCALS
     (void)path;
     if (!blk_present) { rep_u32(rep, 0, VFS_ERR_IO); return VFS_ERR_IO; }
     rep_u32(rep, 0, VFS_ERR_PERM);  /* raw block device — no unlink */
@@ -742,6 +759,7 @@ static uint32_t blk_unlink(const char *path) {
 }
 
 static uint32_t blk_mkdir(const char *path) {
+    IPC_STUB_LOCALS
     (void)path;
     if (!blk_present) { rep_u32(rep, 0, VFS_ERR_IO); return VFS_ERR_IO; }
     rep_u32(rep, 0, VFS_ERR_PERM);
@@ -749,6 +767,7 @@ static uint32_t blk_mkdir(const char *path) {
 }
 
 static uint32_t blk_readdir(const char *path) {
+    IPC_STUB_LOCALS
     (void)path;
     if (!blk_present) { rep_u32(rep, 0, VFS_ERR_IO); return VFS_ERR_IO; }
     /* Emit a single pseudo-entry "." for the block device root */
@@ -760,6 +779,7 @@ static uint32_t blk_readdir(const char *path) {
 }
 
 static uint32_t blk_truncate(uint32_t h, uint64_t new_size) {
+    IPC_STUB_LOCALS
     (void)new_size;
     if (h >= VFS_MAX_HANDLES || !handles[h].active) return VFS_ERR_INVAL;
     if (!blk_present) { rep_u32(rep, 0, VFS_ERR_IO); return VFS_ERR_IO; }
@@ -768,6 +788,7 @@ static uint32_t blk_truncate(uint32_t h, uint64_t new_size) {
 }
 
 static uint32_t blk_sync(uint32_t h) {
+    IPC_STUB_LOCALS
     if (h >= VFS_MAX_HANDLES || !handles[h].active) return VFS_ERR_INVAL;
     if (!blk_present) { rep_u32(rep, 0, VFS_ERR_IO); return VFS_ERR_IO; }
     uint32_t rc = blk_call(OP_BLK_FLUSH, 0, 0);
@@ -780,6 +801,7 @@ static uint32_t blk_sync(uint32_t h) {
  * ═══════════════════════════════════════════════════════════════════════════ */
 
 static uint32_t vfs_mount(const char *prefix, uint8_t backend_type) {
+    IPC_STUB_LOCALS
     /* Check for existing mount at same prefix */
     for (uint32_t i = 0; i < VFS_MAX_MOUNTS; i++) {
         if (mounts[i].active && vfs_strcmp(mounts[i].prefix, prefix) == 0)
@@ -805,6 +827,7 @@ static uint32_t vfs_mount(const char *prefix, uint8_t backend_type) {
  * ═══════════════════════════════════════════════════════════════════════════ */
 
 static void vfs_server_pd_init(void) {
+    IPC_STUB_LOCALS
     agentos_log_boot("vfs_server");
     log_drain_write(VFS_CONSOLE_SLOT, VFS_PD_ID, "[vfs_server] init\n");
 
@@ -849,7 +872,7 @@ static void vfs_server_pd_init(void) {
     rep_u32(rep, 4, 0);
     rep_u32(rep, 8, 0);
     rep_u32(rep, 12, 0);
-    uint32_t blk_reply = /* E5-S8: ppcall stubbed */
+    /* E5-S8: ppcall stubbed */
     uint32_t blk_rc = (uint32_t)msg_u32(req, 0);
 
     if (blk_rc == BLK_OK) {

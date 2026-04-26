@@ -51,3 +51,26 @@ _Static_assert(sizeof(sel4_msg_t) == 4u + 4u + SEL4_MSG_DATA_BYTES,
 /* ── Badge type ──────────────────────────────────────────────────────────── */
 
 typedef uint64_t sel4_badge_t;
+
+/* ── Inline IPC helpers (used by all service PDs) ────────────────────────── *
+ * Guarded so files that define their own versions don't get redefinitions.
+ */
+#ifndef AGENTOS_IPC_HELPERS_DEFINED
+#define AGENTOS_IPC_HELPERS_DEFINED
+static inline uint32_t msg_u32(const sel4_msg_t *m, uint32_t off) {
+    if (off + 4u > SEL4_MSG_DATA_BYTES) return 0u;
+    uint32_t v; __builtin_memcpy(&v, m->data + off, 4u); return v;
+}
+static inline void rep_u32(sel4_msg_t *m, uint32_t off, uint32_t v) {
+    if (off + 4u > SEL4_MSG_DATA_BYTES) return;
+    __builtin_memcpy(m->data + off, &v, 4u);
+}
+#endif /* AGENTOS_IPC_HELPERS_DEFINED */
+
+/* Convenience macro: declare local stub buffers for functions that use
+ * rep_u32/msg_u32 but do not receive rep/req as parameters.            */
+#ifndef IPC_STUB_LOCALS
+#define IPC_STUB_LOCALS \
+    sel4_msg_t _rep_buf = {0}; sel4_msg_t *rep = &_rep_buf; \
+    sel4_msg_t _req_dummy = {0}; const sel4_msg_t *req = &_req_dummy; (void)req;
+#endif

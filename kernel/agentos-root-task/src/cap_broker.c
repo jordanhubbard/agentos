@@ -99,6 +99,7 @@ int cap_broker_register(uint32_t owner_pd, agentos_cap_desc_t cap, bool revokabl
 
 /* Grant a capability to another PD */
 bool cap_broker_grant(int handle, uint32_t to_pd, uint64_t boot_seq) {
+    sel4_msg_t _rep_buf = {0}; sel4_msg_t *rep = &_rep_buf;
     if (handle < 0 || handle >= MAX_CAPS || !cap_table[handle].active) {
         return false;
     }
@@ -129,6 +130,7 @@ bool cap_broker_grant(int handle, uint32_t to_pd, uint64_t boot_seq) {
 
 /* Revoke a granted capability */
 bool cap_broker_revoke(int handle, uint32_t requesting_pd) {
+    sel4_msg_t _rep_buf = {0}; sel4_msg_t *rep = &_rep_buf;
     if (handle < 0 || handle >= MAX_CAPS || !cap_table[handle].active) {
         return false;
     }
@@ -181,6 +183,7 @@ bool cap_broker_check(uint32_t pd, uint32_t cptr, uint32_t required_rights) {
 }
 
 void cap_broker_revoke_agent(uint32_t agent_pd, uint32_t reason_flags) {
+    sel4_msg_t _rep_buf = {0}; sel4_msg_t *rep = &_rep_buf;
     bool revoked = false;
     for (int i = 0; i < MAX_CAPS; i++) {
         if (!cap_table[i].active) continue;
@@ -347,6 +350,8 @@ static void attest_put_u64(uint8_t *p, uint64_t v) {
  * for now the report is computed in-kernel and the SHA-512 hash is stored.
  */
 uint32_t cap_broker_attest(uint64_t boot_tick, uint32_t net_active, uint32_t net_denials) {
+    sel4_msg_t _rep_buf = {0}; sel4_msg_t *rep = &_rep_buf;
+    sel4_msg_t _req_dummy = {0}; const sel4_msg_t *req = &_req_dummy; (void)req;
     /* ── Build report buffer ─────────────────────────────────────────────── */
     static uint8_t report[ATTEST_MAX_REPORT];
     uint8_t *p = report;
@@ -532,6 +537,7 @@ static int cap_policy_parse(const uint8_t *blob, uint32_t size,
 int cap_broker_policy_reload(const uint8_t *blob, uint32_t size,
                               uint32_t *out_checked, uint32_t *out_revoked)
 {
+    sel4_msg_t _rep_buf = {0}; sel4_msg_t *rep = &_rep_buf;
     if (size > CAP_POLICY_BLOB_MAX) return -1;
 
     /* Phase 1: parse new policy into staging buffer; bail on any error. */
@@ -628,6 +634,8 @@ extern uintptr_t cap_policy_shmem_vaddr;  /* seL4cp setvar — wired in monitor.
 
 uint32_t cap_broker_handle_policy_reload_ppc(void)
 {
+    sel4_msg_t _rep_buf = {0}; sel4_msg_t *rep = &_rep_buf;
+    sel4_msg_t _req_dummy = {0}; const sel4_msg_t *req = &_req_dummy; (void)req;
     uint32_t size = (uint32_t)msg_u32(req, 4);
     if (size == 0 || size > CAP_POLICY_BLOB_MAX) {
         rep_u32(rep, 0, 1u);  /* bad size */

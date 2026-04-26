@@ -161,6 +161,7 @@ static void history_push(uint32_t tick, uint32_t checked,
 /* ── Snapshot one slot via AgentFS ──────────────────────────────────────── */
 
 static bool snapshot_slot(SlotSnapState *s) {
+    IPC_STUB_LOCALS
     rep_u32(rep, 0, OP_SNAPSHOT_SLOT);
     rep_u32(rep, 4, s->slot_id);
     uint32_t resp =
@@ -186,6 +187,7 @@ static bool snapshot_slot(SlotSnapState *s) {
 /* ── Full snapshot round ─────────────────────────────────────────────────── */
 
 static void run_snapshot_round(uint32_t running_mask) {
+    IPC_STUB_LOCALS
     uint32_t checked = 0, snapped = 0, skipped = 0, failed = 0;
 
     for (uint32_t slot_id = 0; slot_id < SNAP_MAX_SLOTS; slot_id++) {
@@ -229,6 +231,7 @@ static void run_snapshot_round(uint32_t running_mask) {
 /* ── Query controller for running slot bitmask ──────────────────────────── */
 
 static uint32_t query_running_slots(void) {
+    IPC_STUB_LOCALS
     rep_u32(rep, 0, OP_CTRL_SLOT_LIST);
     uint32_t resp =
         /* E5-S8: ppcall stubbed */

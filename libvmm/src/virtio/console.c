@@ -261,7 +261,7 @@ static struct virtio_device *virtio_console_init(struct virtio_console_device *c
 bool virtio_mmio_console_init(struct virtio_console_device *console, uintptr_t region_base, uintptr_t region_size,
                               size_t virq, serial_queue_handle_t *rxq, serial_queue_handle_t *txq, seL4_CPtr tx_cap)
 {
-    struct virtio_device *dev = virtio_console_init(console, VIRTIO_TRANSPORT_MMIO, virq, rxq, txq, tx_ch);
+    struct virtio_device *dev = virtio_console_init(console, VIRTIO_TRANSPORT_MMIO, virq, rxq, txq, tx_cap);
 
     return virtio_mmio_register_device(dev, region_base, region_size, virq);
 }
@@ -269,7 +269,7 @@ bool virtio_mmio_console_init(struct virtio_console_device *console, uintptr_t r
 bool virtio_pci_console_init(struct virtio_console_device *console, uint32_t dev_slot, size_t virq,
                              serial_queue_handle_t *rxq, serial_queue_handle_t *txq, seL4_CPtr tx_cap)
 {
-    struct virtio_device *dev = virtio_console_init(console, VIRTIO_TRANSPORT_PCI, virq, rxq, txq, tx_ch);
+    struct virtio_device *dev = virtio_console_init(console, VIRTIO_TRANSPORT_PCI, virq, rxq, txq, tx_cap);
 
     dev->transport.pci.device_id = VIRTIO_PCI_CONSOLE_DEV_ID;
     dev->transport.pci.vendor_id = VIRTIO_PCI_VENDOR_ID;

@@ -68,8 +68,9 @@ static void tap_fail(const char *name, const char *reason)
 
 static bool ipc_ok(uint32_t ch, uint32_t op, const char *test_name)
 {
+    IPC_STUB_LOCALS
     rep_u32(rep, 0, op);
-    uint32_t reply = /* E5-S8: ppcall stubbed */
+    /* E5-S8: ppcall stubbed */
     uint32_t result = (uint32_t)msg_u32(req, 0);
     bool ok = (msg_u32(req, 0) == 0) && (result == 0);
     if (ok) tap_pass(test_name);
@@ -81,6 +82,7 @@ static bool ipc_ok(uint32_t ch, uint32_t op, const char *test_name)
 
 static void run_tests(void)
 {
+    IPC_STUB_LOCALS
     tap_puts("TAP version 14\n");
     tap_puts("# agentOS ipc_harness — boot-time API health checks\n");
 
@@ -92,12 +94,11 @@ static void run_tests(void)
 
     /* VM Manager: list VMs (should return 0 at boot) */
     rep_u32(rep, 0, OP_VM_LIST);
-    uint32_t vm_reply = /* E5-S8: ppcall stubbed */
+    /* E5-S8: ppcall stubbed */
     uint32_t vm_result = (uint32_t)msg_u32(req, 0);
     uint32_t vm_count  = (uint32_t)msg_u32(req, 4);
     if (vm_result == 0 && vm_count == 0) tap_pass("vm_manager.list_empty_at_boot");
     else tap_fail("vm_manager.list_empty_at_boot", "unexpected vm count or error");
-    (void)vm_reply;
 
     /* Print summary */
     tap_puts("1.."); tap_u32(s_test_num); tap_puts("\n");

@@ -175,6 +175,7 @@ static void ext2_log(const char *msg)
  */
 static int raw_blk_read(uint32_t block_num)
 {
+    IPC_STUB_LOCALS
     uint32_t sectors_per_block = g_block_size >> 9;   /* / 512 */
     if (sectors_per_block == 0) sectors_per_block = 2; /* 1024-byte default */
     uint64_t first_sector = (uint64_t)block_num * sectors_per_block;
@@ -184,7 +185,7 @@ static int raw_blk_read(uint32_t block_num)
     rep_u32(rep, 8, (uint32_t)(first_sector >> 32));
     rep_u32(rep, 12, sectors_per_block);
 
-    uint32_t reply = /* E5-S8: ppcall stubbed */
+    /* E5-S8: ppcall stubbed */
     uint32_t rc = (uint32_t)msg_u32(req, 0);
     return (rc == 0) ? 0 : -1;   /* BLK_OK == 0 */
 }
@@ -370,6 +371,7 @@ static int ext2_find_dirent(uint32_t dir_ino, const char *name, uint32_t *out_in
 
 static int do_mount(void)
 {
+    IPC_STUB_LOCALS
     /* The ext2 superblock is at byte offset 1024 = block 1 for 1024-byte
      * blocks, which is LBA 2 for 512-byte sectors.
      * We read block 0 of the device (containing the superblock at offset 1024
@@ -382,7 +384,7 @@ static int do_mount(void)
     rep_u32(rep, 8, 0);   /* sector_hi */
     rep_u32(rep, 12, 2);   /* 2 sectors = 1024 bytes */
 
-    uint32_t reply = /* E5-S8: ppcall stubbed */
+    /* E5-S8: ppcall stubbed */
     uint32_t rc = (uint32_t)msg_u32(req, 0);
 
     if (rc != 0 || !ext2_blk_dma_shmem_vaddr) {

@@ -25,6 +25,7 @@ CFLAGS := \
     -I$(BOARD_DIR)/include \
     -I$(LIBVMM)/include \
     -I$(SDDF)/include \
+    -I$(SDDF)/include/microkit \
     -I$(SDDF)/include/sddf/util/custom_libc \
     -MD -MP \
     -target $(TARGET)

@@ -79,6 +79,7 @@ static uint32_t busy_bitmask(void) {
 /* ── IPC handlers ───────────────────────────────────────────────────── */
 
 static uint32_t handle_submit(void) {
+    IPC_STUB_LOCALS
     uint32_t prop_slot  = (uint32_t)msg_u32(req, 4);
     uint32_t ptx_offset = (uint32_t)msg_u32(req, 8);
     uint32_t ptx_len    = (uint32_t)msg_u32(req, 12);
@@ -150,6 +151,7 @@ static uint32_t handle_submit(void) {
 }
 
 static uint32_t handle_complete(void) {
+    IPC_STUB_LOCALS
     uint32_t slot_id = (uint32_t)msg_u32(req, 4);
     if (slot_id >= NUM_GPU_SLOTS) {
         rep_u32(rep, 0, GPU_ERR_BADSLOT);
@@ -183,6 +185,7 @@ static uint32_t handle_complete(void) {
 }
 
 static uint32_t handle_status(void) {
+    IPC_STUB_LOCALS
     rep_u32(rep, 0, GPU_OK);
     rep_u32(rep, 4, busy_bitmask());
     rep_u32(rep, 8, total_submitted);

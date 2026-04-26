@@ -35,6 +35,8 @@ static uint32_t s_count[IRQ_MAX_IRQS];
 
 /* ── msg helpers ─────────────────────────────────────────────────────────── */
 
+#ifndef AGENTOS_IPC_HELPERS_DEFINED
+#define AGENTOS_IPC_HELPERS_DEFINED
 static inline uint32_t msg_u32(const sel4_msg_t *m, uint32_t off) {
     uint32_t v = 0;
     if (off + 4u <= SEL4_MSG_DATA_BYTES) {
@@ -49,6 +51,7 @@ static inline void rep_u32(sel4_msg_t *m, uint32_t off, uint32_t v) {
         m->data[off+2]=(uint8_t)(v>>16); m->data[off+3]=(uint8_t)(v>>24);
     }
 }
+#endif /* AGENTOS_IPC_HELPERS_DEFINED */
 
 /* ── Handlers ────────────────────────────────────────────────────────────── */
 
@@ -59,11 +62,11 @@ static uint32_t h_register(sel4_badge_t b, const sel4_msg_t *req,
     uint32_t notify_ch = msg_u32(req, 8);
     if (irq_num >= IRQ_MAX_IRQS) {
         rep_u32(rep, 0, IRQ_ERR_BAD_IRQ); rep->length = 4;
-        return SEL4_ERR_INVALID_ARG;
+        return SEL4_ERR_BAD_ARG;
     }
     if (s_registered[irq_num]) {
         rep_u32(rep, 0, IRQ_ERR_ALREADY_REG); rep->length = 4;
-        return SEL4_ERR_INVALID_ARG;
+        return SEL4_ERR_BAD_ARG;
     }
     s_registered[irq_num] = true;
     s_masked[irq_num]     = true;

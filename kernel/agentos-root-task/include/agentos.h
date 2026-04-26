@@ -43,8 +43,12 @@
 static inline void sel4_dbg_puts(const char *s) {
     for (; *s; s++) seL4_DebugPutChar((unsigned char)*s);
 }
+static inline void sel4_dbg_putc(char c) {
+    seL4_DebugPutChar((unsigned char)c);
+}
 #else
 static inline void sel4_dbg_puts(const char *s) { (void)s; }
+static inline void sel4_dbg_putc(char c) { (void)c; }
 #endif
 
 /* agentOS version */

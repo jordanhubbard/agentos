@@ -189,6 +189,8 @@ static void audit_deny(uint32_t slot_id, uint32_t host_hash, uint32_t port) {
 }
 
 /* ── msg helpers ────────────────────────────────────────────────────────── */
+#ifndef AGENTOS_IPC_HELPERS_DEFINED
+#define AGENTOS_IPC_HELPERS_DEFINED
 static inline uint32_t msg_u32(const sel4_msg_t *m, uint32_t off) {
     uint32_t v = 0;
     if (off + 4u <= SEL4_MSG_DATA_BYTES) {
@@ -203,6 +205,7 @@ static inline void rep_u32(sel4_msg_t *m, uint32_t off, uint32_t v) {
         m->data[off+2]=(uint8_t)(v>>16); m->data[off+3]=(uint8_t)(v>>24);
     }
 }
+#endif /* AGENTOS_IPC_HELPERS_DEFINED */
 
 /* ── Handlers ─────────────────────────────────────────────────────────────── */
 
@@ -263,7 +266,7 @@ static uint32_t h_acl_set(sel4_badge_t b, const sel4_msg_t *req,
     uint32_t port     = msg_u32(req, 12);
 
     if (rule_idx >= NET_MAX_RULES) {
-        rep_u32(rep, 0, 0); rep->length = 4; return SEL4_ERR_INVALID_ARG;
+        rep_u32(rep, 0, 0); rep->length = 4; return SEL4_ERR_BAD_ARG;
     }
     net_slot_t *s = get_or_alloc_slot(slot_id);
     if (!s) {

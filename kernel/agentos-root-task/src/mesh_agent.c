@@ -140,6 +140,7 @@ static int peer_alloc(void) {
  */
 static void mesh_announce_self(uint32_t worker_total, uint32_t worker_free,
                                 uint32_t gpu_total, uint32_t gpu_free) {
+    IPC_STUB_LOCALS
     if (!mesh.squirrelbus_ready) return;
 
     /* Pack node_id into two u32s */
@@ -189,6 +190,7 @@ static int select_peer(uint32_t flags) {
 /* ── EventBus publish ──────────────────────────────────────────────────────── */
 
 static void publish_peer_down(const char *node_id) {
+    IPC_STUB_LOCALS
     if (!mesh.eventbus_ready) return;
     /* Pack node_id for event payload */
     uint32_t nid_lo = 0, nid_hi = 0;
@@ -389,6 +391,7 @@ static uint32_t mesh_agent_pd_dispatch(sel4_badge_t b, const sel4_msg_t *req, se
 /* ── notified() ─────────────────────────────────────────────────────────────── */
 
 static void mesh_agent_pd_notified(uint32_t ch) {
+    IPC_STUB_LOCALS
     switch (ch) {
     case CH_CONTROLLER:
         /* Controller signals mesh_agent ready */

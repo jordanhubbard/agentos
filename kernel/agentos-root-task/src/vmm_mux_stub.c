@@ -60,14 +60,14 @@ int vmm_mux_switch(vm_mux_t *mux __attribute__((unused)),
 }
 
 void vmm_mux_handle_fault(vm_mux_t *mux __attribute__((unused)),
-                           seL4_CPtr child __attribute__((unused)),
-                           uint32_t msginfo __attribute__((unused)),
-                           uint32_t *reply_msginfo __attribute__((unused)))
+                           seL4_Word vcpu_id __attribute__((unused)),
+                           seL4_MessageInfo_t msginfo __attribute__((unused)),
+                           seL4_MessageInfo_t *reply_msginfo __attribute__((unused)))
 {
 }
 
 void vmm_mux_handle_notify(vm_mux_t *mux __attribute__((unused)),
-                            uint32_t ch __attribute__((unused)))
+                            seL4_Word badge __attribute__((unused)))
 {
 }
 

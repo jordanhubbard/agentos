@@ -512,12 +512,20 @@ static uint32_t vmm_affinity[VMM_MAX_SLOTS];
 #define VIRTIO_NET_NTFN_BADGE    (1u << 3)
 #define VIRTIO_BLK_NTFN_BADGE    (1u << 4)
 #define VIRTIO_BLK2_NTFN_BADGE   (1u << 5)
+/*
+ * UART IRQ passthrough: id=6 in .system avoids the ids 1-5 used by channels
+ * (serial_pd=1, controller=2) and virtio IRQs (3,4,5).
+ * Active only in linux_vmm_test.system; in full agentOS.system id=6 is absent
+ * so this badge never fires and the init guard below is a no-op.
+ */
+#define UART_NTFN_BADGE          (1u << 6)
 
 /*
  * IRQ handler capabilities placed by Microkit at BASE_IRQ_CAP + <irq id=N>.
  * The .system file assigns id=3 to virtio-net, id=4 to virtio-blk0,
  * id=5 to virtio-blk1 (ids 1 and 2 are taken by serial_pd/controller channels).
  * Slots 141/142/143 in linux_vmm's CNode.
+ * id=6 (slot 144) is the UART IRQ in linux_vmm_test.system.
  */
 static const seL4_CPtr g_virtio_net_irq_cap =
     (seL4_CPtr)(MICROKIT_BASE_IRQ_CAP + 3u);
@@ -525,6 +533,8 @@ static const seL4_CPtr g_virtio_blk_irq_cap =
     (seL4_CPtr)(MICROKIT_BASE_IRQ_CAP + 4u);
 static const seL4_CPtr g_virtio_blk2_irq_cap =
     (seL4_CPtr)(MICROKIT_BASE_IRQ_CAP + 5u);
+static const seL4_CPtr g_uart_irq_cap =
+    (seL4_CPtr)(MICROKIT_BASE_IRQ_CAP + 6u);
 
 /* ─── Guest Image Symbols ────────────────────────────────────────────── */
 /* These are linked in by package_guest_images.S */
@@ -652,6 +662,12 @@ static void virtio_blk2_ack(size_t vcpu_id, int irq, void *cookie)
 {
     (void)vcpu_id; (void)irq; (void)cookie;
     seL4_IRQHandler_Ack(g_virtio_blk2_irq_cap);
+}
+
+static void uart_ack(size_t vcpu_id, int irq, void *cookie)
+{
+    (void)vcpu_id; (void)irq; (void)cookie;
+    seL4_IRQHandler_Ack(g_uart_irq_cap);
 }
 
 /* ─── PL011 UART MMIO Emulation ──────────────────────────────────────────
@@ -865,6 +881,25 @@ void init(void)
         seL4_IRQHandler_Ack(g_virtio_blk2_irq_cap);
     }
 
+    /*
+     * Register UART IRQ passthrough (PL011 SPI 1 → INTID 33).
+     * Only active in linux_vmm_test.system where irq id=6 is assigned.
+     * In the full agentOS system serial_pd owns IRQ 33; id=6 is absent and
+     * g_uart_irq_cap (slot 144) holds no valid cap — so we guard with a
+     * seL4_IRQHandler_Ack only if virq_register succeeds.
+     * UART_IRQ = 33: QEMU virt aarch64 PL011 SPI 1 → GIC INTID 33.
+     */
+    {
+        /* UART_IRQ in the guest's GIC address space = INTID 33 (SPI 1) */
+        const uint32_t UART_IRQ = 33u;
+        bool uart_ok = virq_register(GUEST_BOOT_VCPU_ID, UART_IRQ, &uart_ack, NULL);
+        if (uart_ok) {
+            seL4_IRQHandler_Ack(g_uart_irq_cap);
+            LOG_VMM("UART IRQ 33 passthrough registered (direct PL011 mode)\n");
+        }
+        /* If not registered, PL011 uses fault-emulation path — non-fatal */
+    }
+
     /* Start the guest! */
     LOG_VMM("  Starting Linux guest...\n");
     guest_start(kernel_pc, GUEST_DTB_VADDR, GUEST_INIT_RAM_DISK_VADDR);
@@ -933,6 +968,15 @@ static void linux_vmm_notified(seL4_Word badge)
         bool success = virq_inject(VIRTIO_BLK2_IRQ);
         if (!success) {
             LOG_VMM_ERR("virtio-blk1 IRQ %d dropped on inject\n", VIRTIO_BLK2_IRQ);
+        }
+    }
+
+    if (badge & (seL4_Word)UART_NTFN_BADGE) {
+        /* PL011 UART IRQ 33 — used in linux_vmm_test.system (direct serial mapping).
+         * Inject INTID 33 into the guest so the PL011 driver can process RX/TX. */
+        bool success = virq_inject(33u);
+        if (!success) {
+            LOG_VMM_ERR("UART IRQ 33 dropped on inject\n");
         }
     }
 

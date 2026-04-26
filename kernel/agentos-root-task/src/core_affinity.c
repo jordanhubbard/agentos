@@ -99,6 +99,7 @@ static uint8_t pick_core(uint8_t lo, uint8_t hi, bool exclusive)
  */
 static void notify_time_partition(uint8_t slot_id, uint32_t flags)
 {
+    IPC_STUB_LOCALS
     uint32_t tp_class = (flags & CORE_FLAG_GPU) ? TP_CLASS_GPU : TP_CLASS_BG;
     rep_u32(rep, 4, (uint32_t)slot_id);
     rep_u32(rep, 8, tp_class);

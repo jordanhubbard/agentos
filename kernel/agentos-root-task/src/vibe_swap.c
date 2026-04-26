@@ -133,6 +133,7 @@ static inline uint64_t microkit_mr_get(uint32_t i) { (void)i; return 0; }
 
 #else  /* !AGENTOS_TEST_HOST */
 
+#include <stdbool.h>
 #include "sel4_ipc.h"
 #include "sel4_server.h"
 #include "sel4_client.h"
@@ -635,11 +636,9 @@ static uint32_t handle_swap_status_op(sel4_badge_t badge, const sel4_msg_t *req,
 {
     (void)badge; (void)req; (void)ctx;
     uint32_t in_flight = 0;
-    uint32_t total = 0;
     for (int i = 0; i < MAX_SWAP_SLOTS; i++) {
         if (slots[i].state == SWAP_STATE_LOADING ||
             slots[i].state == SWAP_STATE_TESTING) in_flight++;
-        total += (uint32_t)slots[i].health_checks;
     }
     vs_data_wr32(rep->data, 0, in_flight);
     vs_data_wr32(rep->data, 4, (uint32_t)swap_sequence);

@@ -137,6 +137,8 @@ static void line_disc_write(uint32_t pty_id, const uint8_t *buf, uint32_t len)
 }
 
 /* ── msg data helpers ──────────────────────────────────────────────────── */
+#ifndef AGENTOS_IPC_HELPERS_DEFINED
+#define AGENTOS_IPC_HELPERS_DEFINED
 static inline uint32_t msg_u32(const sel4_msg_t *m, uint32_t off) {
     uint32_t v = 0;
     if (off + 4u <= SEL4_MSG_DATA_BYTES) {
@@ -155,6 +157,7 @@ static inline void rep_u32(sel4_msg_t *m, uint32_t off, uint32_t v) {
         m->data[off+3] = (uint8_t)(v >> 24);
     }
 }
+#endif /* AGENTOS_IPC_HELPERS_DEFINED */
 
 /* ── Opcode handlers ───────────────────────────────────────────────────── */
 

@@ -166,6 +166,7 @@ static bool trigger_fault(uint32_t slot, uint8_t fault_kind) {
 /* ── Trace recorder integration ─────────────────────────────────────────── */
 
 static uint32_t emit_trace_event(uint8_t kind, uint32_t slot, uint8_t fault_kind) {
+    IPC_STUB_LOCALS
     static uint32_t s_trace_seq = 0;
     uint32_t seq = ++s_trace_seq;
     /* Notify trace_recorder via EventBus publish */
@@ -180,10 +181,10 @@ static uint32_t emit_trace_event(uint8_t kind, uint32_t slot, uint8_t fault_kind
 /* ── Recovery verification ──────────────────────────────────────────────── */
 
 static bool slot_is_running(uint32_t slot) {
+    IPC_STUB_LOCALS
     /* Query monitor for slot state via OP_SLOT_STATUS */
     rep_u32(rep, 0, slot);
-    uint32_t reply = /* E5-S8: ppcall stubbed */
-    (void)reply;
+    /* E5-S8: ppcall stubbed */
     return msg_u32(req, 0) == SLOT_STATE_RUNNING;
 }
 

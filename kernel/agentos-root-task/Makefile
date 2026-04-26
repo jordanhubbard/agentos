@@ -108,7 +108,7 @@ BOARD_UART_IRQ  ?=
 # Protection Domain ELFs
 # monitor/controller: includes vibe_swap for the hot-swap controller-side logic
 # m3_bare_metal.c provides memset/memcpy/memmove needed by compiler-generated code
-PD_MONITOR_SRCS   := src/monitor.c src/cap_broker.c src/agent_pool.c src/vibe_swap.c src/m3_bare_metal.c src/log.c src/boot_integrity.c src/ed25519_verify.c src/monocypher.c src/cap_policy.c src/verify.c src/pd_tcb.c
+PD_MONITOR_SRCS   := src/monitor.c src/cap_broker.c src/agent_pool.c src/vibe_swap.c src/m3_bare_metal.c src/log.c src/boot_integrity.c src/ed25519_verify.c src/monocypher.c src/cap_policy.c src/verify.c src/pd_tcb.c src/ut_alloc.c
 PD_EVENTBUS_SRCS  := src/m3_bare_metal.c src/log.c   # event_bus.c → services/event-bus/ (E9-S1)
 PD_INITAGENT_SRCS := src/init_agent.c src/m3_bare_metal.c src/log.c
 PD_WORKER_SRCS    := src/worker.c src/m3_bare_metal.c src/log.c
