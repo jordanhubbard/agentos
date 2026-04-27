@@ -157,6 +157,14 @@ typedef struct {
     uint32_t           stack_size;
     uint32_t           cnode_size_bits;
     uint8_t            priority;
+    /*
+     * self_svc_id — service ID for this PD's own listen endpoint, or 0 if the
+     * PD has no server endpoint.  When non-zero, the root task calls
+     * ep_alloc_for_service(self_svc_id) to obtain the endpoint, mints an
+     * unbadged copy into the PD's CNode at PD_CNODE_SLOT_SELF_EP, and passes
+     * PD_CNODE_SLOT_SELF_EP as arg0 (x0) to the PD thread.
+     */
+    uint8_t            self_svc_id;
     uint32_t           init_ep_count;
     pd_init_ep_t       init_eps[PD_MAX_INIT_EPS];
     uint8_t            irq_count;
@@ -205,6 +213,10 @@ typedef struct {
 #define SVC_ID_FB_PD          15u   /* framebuffer PD                        */
 #define SVC_ID_LINUX_VMM      16u   /* Linux VMM PD                          */
 #define SVC_ID_FREEBSD_VMM    17u   /* FreeBSD VMM PD                        */
+#define SVC_ID_AGENTFS        18u   /* agentfs content-addressed object store */
+#define SVC_ID_VIRTIO_BLK     19u   /* virtio block device driver PD          */
+#define SVC_ID_VM_MANAGER     20u   /* multi-VM lifecycle manager PD          */
+#define SVC_ID_CC_PD          21u   /* command-and-control relay PD           */
 
 /* Standard per-PD CNode slot assignments for well-known capabilities.
  * These are the slots at which each PD finds its initial endpoint caps. */
@@ -213,3 +225,13 @@ typedef struct {
 #define PD_CNODE_SLOT_EVENTBUS_EP     2u
 #define PD_CNODE_SLOT_CAP_BROKER_EP   3u
 #define PD_CNODE_SLOT_LOG_DRAIN_EP    4u
+/*
+ * PD_CNODE_SLOT_SELF_EP — CNode slot in each PD's own CNode where the root
+ * task places an unbadged copy of that PD's own server endpoint.  This is
+ * passed as arg0 (x0) to the PD's _start, so pd_main(my_ep, ns_ep) receives
+ * the correct listen endpoint without any nameserver lookup.
+ *
+ * Slot 7 is used because slots 0–6 are reserved for init_eps (PD_MAX_INIT_EPS
+ * is 8, but only slots 0–4 are currently defined).
+ */
+#define PD_CNODE_SLOT_SELF_EP         7u

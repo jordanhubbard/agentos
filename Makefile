@@ -143,15 +143,20 @@ ifeq ($(NATIVE_ARCH),aarch64)
   NATIVE_QEMU       := qemu-system-aarch64
   # -cpu host requires KVM/HVF; use cortex-a53 for TCG (matches libvmm reference)
   _NATIVE_CPU       := $(if $(QEMU_ACCEL_NATIVE),host,cortex-a53)
+  NATIVE_LOADER_ELF = $(NATIVE_BUILD_DIR)/loader.elf
   NATIVE_QEMU_FLAGS  = -machine virt,virtualization=on,highmem=off,secure=off \
                         -cpu $(_NATIVE_CPU) -m 2G \
                         -display none -monitor none \
                         -chardev socket,id=char0,path=/tmp/agentos-serial.sock,server=on,wait=off \
                         -serial chardev:char0 \
+                        -chardev socket,id=cc_pd_char,path=build/cc_pd.sock,server=on,wait=off \
+                        -device virtio-serial-device,bus=virtio-mmio-bus.2,id=vser0 \
+                        -device virtserialport,bus=vser0.0,chardev=cc_pd_char,name=cc.0 \
                         $(QEMU_ACCEL_NATIVE) \
                         -netdev user,id=net0,hostfwd=tcp:127.0.0.1:8789-:8789 \
-                        -device virtio-net-device,netdev=net0 \
-                        -device loader,file=$(NATIVE_IMAGE),addr=0x70000000,cpu-num=0
+                        -device virtio-net-device,netdev=net0,bus=virtio-mmio-bus.0 \
+                        -device loader,file=$(NATIVE_LOADER_ELF),cpu-num=0 \
+                        -device loader,file=$(NATIVE_IMAGE),addr=0x48000000
 else
   NATIVE_BOARD      := x86_64_generic
   NATIVE_QEMU       := qemu-system-x86_64
@@ -313,7 +318,7 @@ else
 		(echo "ERROR: ld.lld not found. Run 'make deps' first." && exit 1)
 endif
 	@mkdir -p $(BUILD_DIR)
-	@PATH="$(LLVM_BIN):$(LLD_BIN):$$PATH" $(MAKE) -C $(KERNEL_DIR) \
+	@PATH="$(LLVM_BIN):$(LLD_BIN):$$PATH" $(MAKE) -C $(KERNEL_DIR) build \
 		BUILD_DIR=$(BUILD_DIR) \
 		AGENTOS_BOARD=$(BOARD) \
 		AGENTOS_ARCH=$(ARCH) \
@@ -347,11 +352,15 @@ _QEMU_BLK_FLAGS = $(if $(filter ubuntu,$(GUEST_OS)),$(_UBUNTU_BLK),)
 QEMU_RUN_FLAGS = -machine virt,virtualization=on,highmem=off,secure=off \
                  -cpu $(_RUN_CPU) -m 2G \
                  -display none -monitor none \
-                 -nographic \
+                 -serial stdio \
+                 -chardev socket,id=cc_pd_char,path=build/cc_pd.sock,server=on,wait=off \
+                 -device virtio-serial-device,bus=virtio-mmio-bus.2,id=vser0 \
+                 -device virtserialport,bus=vser0.0,chardev=cc_pd_char,name=cc.0 \
                  -netdev user,id=net0,hostfwd=tcp:127.0.0.1:8789-:8789,hostfwd=tcp:127.0.0.1:2222-10.0.2.15:22,hostfwd=tcp:127.0.0.1:2223-10.0.2.15:2223,hostfwd=tcp:127.0.0.1:2224-10.0.2.15:2224 \
                  -device virtio-net-device,netdev=net0,bus=virtio-mmio-bus.0,ctrl_vq=off,ctrl_rx=off,ctrl_vlan=off,guest_announce=off,mq=off,ctrl_mac_addr=off,ctrl_guest_offloads=off \
                  $(_QEMU_BLK_FLAGS) \
-                 -device loader,file=$(NATIVE_IMAGE),addr=0x70000000,cpu-num=0
+                 -device loader,file=$(NATIVE_LOADER_ELF),cpu-num=0 \
+                 -device loader,file=$(NATIVE_IMAGE),addr=0x48000000
 
 # run (default): build native → QEMU with serial on stdout
 # =============================================================================

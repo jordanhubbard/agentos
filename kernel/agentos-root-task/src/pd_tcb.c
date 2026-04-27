@@ -32,7 +32,8 @@ pd_tcb_result_t pd_tcb_create(seL4_CPtr  dest_cnode,
                                seL4_CPtr  pd_cnode,
                                seL4_CPtr  ipc_buf_cap,
                                seL4_Word  ipc_buf_va,
-                               uint8_t    priority)
+                               uint8_t    priority,
+                               uint8_t    cnode_size_bits)
 {
     seL4_Error err;
 
@@ -57,25 +58,29 @@ pd_tcb_result_t pd_tcb_create(seL4_CPtr  dest_cnode,
     /*
      * Bind the TCB to the PD's address-space resources.
      *
-     * seL4_TCB_Configure takes three extra capabilities via cap transfer:
-     *   - cspace_root: pd_cnode  — the PD's own CNode (CSpace root)
-     *   - vspace_root: vspace_cap — the PD's VSpace (page-table root)
-     *   - bufferFrame: ipc_buf_cap — the IPC buffer page frame
-     *
-     * fault_ep = seL4_CapNull: no fault handler for now.  The monitor PD can
-     * bind a fault endpoint later via a separate seL4_TCB_Configure call.
-     *
-     * cspace_root_data = 0: no CNode guard.
-     * cspace_size_bits = 64: the PD CNode has 2^6 = 64 slots.
-     * vspace_root_data = 0: no VSpace guard.
+     * MCS seL4_TCB_Configure (7-arg form, gated by CONFIG_KERNEL_MCS):
+     *   cspace_root      — extra cap[0]: PD's own CNode (CSpace root)
+     *   cspace_root_data — MR[0]: guard+guardSize for the CNode cap.
+     *                      MUST be non-zero: passing 0 means "has no effect"
+     *                      in seL4 (the kernel treats it as "don't configure
+     *                      the CSpace root"), leaving cspace_root as null.
+     *                      Correct value: seL4_WordBits - cnode_size_bits,
+     *                      which sets guardSize = (64 - size) bits covering
+     *                      the upper address bits so cap addresses 0..2^size-1
+     *                      map directly to their slot indices.
+     *   vspace_root      — extra cap[1]: PD's VSpace
+     *   vspace_root_data — MR[1]: 0 (no effect on ARM)
+     *   buffer           — MR[2]: IPC buffer VA in PD's VSpace
+     *   bufferFrame      — extra cap[2]: frame cap for IPC buffer page
      */
+    seL4_Word cspace_root_data = (seL4_Word)(seL4_WordBits - (uint32_t)cnode_size_bits);
     err = seL4_TCB_Configure(tcb,
-                              pd_cnode,  /* cspace_root */
-                              0          /* cspace_root_data */,
-                              vspace_cap, /* vspace_root */
-                              0          /* vspace_root_data */,
-                              ipc_buf_va, /* buffer VA in PD's VSpace */
-                              ipc_buf_cap /* frame cap for IPC buffer */);
+                              pd_cnode,          /* cspace_root */
+                              cspace_root_data,  /* guard covers upper bits */
+                              vspace_cap,        /* vspace_root */
+                              0,                 /* vspace_root_data: no effect on ARM */
+                              ipc_buf_va,        /* buffer VA in PD's VSpace */
+                              ipc_buf_cap);      /* frame cap for IPC buffer */
     if (err != seL4_NoError) {
         return (pd_tcb_result_t){ .tcb_cap = seL4_CapNull, .error = (int)err };
     }
@@ -99,7 +104,8 @@ pd_tcb_result_t pd_tcb_create(seL4_CPtr  dest_cnode,
 seL4_Error pd_tcb_set_regs(seL4_CPtr tcb_cap,
                             seL4_Word entry,
                             seL4_Word sp,
-                            seL4_Word arg0)
+                            seL4_Word arg0,
+                            seL4_Word arg1)
 {
     /*
      * Zero the entire context first so that every unset register has a
@@ -113,17 +119,28 @@ seL4_Error pd_tcb_set_regs(seL4_CPtr tcb_cap,
 
     regs.pc = entry;  /* instruction pointer: ELF entry symbol          */
     regs.sp = sp;     /* stack pointer: stack_top from pd_vspace_load_elf */
-    regs.AGENTOS_CTX_ARG0 = arg0; /* first argument (a0 on RISC-V, x0 on AArch64) */
+    regs.AGENTOS_CTX_ARG0 = arg0; /* first argument: my_ep CNode slot   */
+#if defined(__aarch64__)
+    regs.x1 = arg1;   /* second argument: ns_ep CNode slot (AArch64 x1) */
+#elif defined(__riscv)
+    regs.a1 = arg1;   /* second argument: ns_ep CNode slot (RISC-V a1)  */
+#endif
 
     /*
-     * Write the full register context to the TCB.
+     * Write the full register context to the TCB and atomically resume.
      *
-     * resume = 0: keep the thread suspended; pd_tcb_start will resume it.
+     * resume = 1: transition the thread to ThreadState_Restart and enqueue it
+     * in the scheduler's run queue immediately.  On seL4 MCS, WriteRegisters
+     * with resume=0 followed by a separate seL4_TCB_Resume does NOT reliably
+     * add freshly-typed Inactive threads to the run queue; resume=1 does so
+     * atomically as part of the same kernel invocation, when the SC is already
+     * bound (seL4_SchedContext_Bind has been called before this).
+     *
      * arch_flags = 0: no arch-specific execution state flags.
      * count = full seL4_UserContext size in words.
      */
     return seL4_TCB_WriteRegisters(tcb_cap,
-                                   0 /* resume */,
+                                   1 /* resume: set Restart + SCHED_ENQUEUE */,
                                    0 /* arch_flags */,
                                    (seL4_Word)(sizeof(seL4_UserContext) / sizeof(seL4_Word)),
                                    &regs);

@@ -314,8 +314,12 @@ static inline void data_wr64(uint8_t *d, int off, uint64_t v)
 
 static void dbg_puts(const char *s)
 {
+#ifdef CONFIG_PRINTING
     for (; *s; s++)
         seL4_DebugPutChar(*s);
+#else
+    (void)s;
+#endif
 }
 
 /* ── String helpers (no libc) ────────────────────────────────────────────── */

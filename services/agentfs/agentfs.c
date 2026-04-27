@@ -435,3 +435,5 @@ void agentfs_main(seL4_CPtr my_ep, seL4_CPtr ns_ep)
     sel4_server_register(&srv, OP_AGENTFS_HEALTH, h_health, (void *)0);
     sel4_server_run(&srv);
 }
+
+void pd_main(seL4_CPtr my_ep, seL4_CPtr ns_ep) { agentfs_main(my_ep, ns_ep); }

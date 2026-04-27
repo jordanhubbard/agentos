@@ -19,7 +19,7 @@ DTC            := dtc
 # BOARD_DIR: seL4 SDK board package containing include/ and lib/.
 # Default matches the SDK bundled in the repo; override when invoking vmm.mk
 # directly with a different SDK installation.
-BOARD_DIR ?= $(AGENTOS_ROOT)/microkit-sdk-2.1.0/board/$(AGENTOS_BOARD)/debug
+BOARD_DIR ?= $(AGENTOS_ROOT)/microkit-sdk-2.1.0/board/$(AGENTOS_BOARD)/release
 
 # Guest OS selection: buildroot (default) or ubuntu
 GUEST_OS ?= buildroot

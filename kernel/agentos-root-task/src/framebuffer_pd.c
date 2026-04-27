@@ -288,8 +288,12 @@ static inline void data_wr32(uint8_t *d, int off, uint32_t v)
 
 static void dbg_puts(const char *s)
 {
+#ifdef CONFIG_PRINTING
     for (; *s; s++)
         seL4_DebugPutChar(*s);
+#else
+    (void)s;
+#endif
 }
 
 /* ── Bytes-per-pixel table ───────────────────────────────────────────────── */

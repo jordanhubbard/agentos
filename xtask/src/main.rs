@@ -1,9 +1,9 @@
 use clap::{Parser, Subcommand};
 use xtask::{
-    cmd_ci_matrix, cmd_fault_inject, cmd_fetch_guest, cmd_gen_image, cmd_host_test, cmd_release,
-    cmd_setup, cmd_test, cmd_test_api,
-    CiMatrixArgs, FaultInjectArgs, FetchGuestArgs, GenImageArgs, HostTestArgs, ReleaseArgs,
-    SetupArgs, TestApiArgs, TestArgs,
+    cmd_ci_matrix, cmd_fault_inject, cmd_fetch_guest, cmd_gen_image, cmd_gen_pd_bundle,
+    cmd_host_test, cmd_release, cmd_setup, cmd_test, cmd_test_api,
+    CiMatrixArgs, FaultInjectArgs, FetchGuestArgs, GenImageArgs, GenPdBundleArgs, HostTestArgs,
+    ReleaseArgs, SetupArgs, TestApiArgs, TestArgs,
 };
 
 #[derive(Parser)]
@@ -34,6 +34,9 @@ enum Cmd {
     TestApi(TestApiArgs),
     /// Pack ELFs + cap init data into a bootable agentos.img (replaces microkit binary)
     GenImage(GenImageArgs),
+    /// Pack PD ELFs into a .pd_bundle blob for embedding into root_task.elf
+    #[command(name = "gen-pd-bundle")]
+    GenPdBundle(GenPdBundleArgs),
 }
 
 fn main() -> anyhow::Result<()> {
@@ -48,5 +51,6 @@ fn main() -> anyhow::Result<()> {
         Cmd::CiMatrix(a) => cmd_ci_matrix::run(&a),
         Cmd::TestApi(a) => cmd_test_api::run(&a),
         Cmd::GenImage(a) => cmd_gen_image::run(&a),
+        Cmd::GenPdBundle(a) => cmd_gen_pd_bundle::run(&a),
     }
 }

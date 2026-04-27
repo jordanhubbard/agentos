@@ -271,8 +271,12 @@ static inline void data_wr32(uint8_t *d, int off, uint32_t v)
 
 static void dbg_puts(const char *s)
 {
+#ifdef CONFIG_PRINTING
     for (; *s; s++)
         seL4_DebugPutChar(*s);
+#else
+    (void)s;
+#endif
 }
 
 /* ── MMIO helpers ────────────────────────────────────────────────────────── */
@@ -777,5 +781,7 @@ void serial_pd_main(seL4_CPtr my_ep, seL4_CPtr ns_ep)
     /* Enter the recv/dispatch/reply loop — never returns */
     sel4_server_run(&g_srv);
 }
+
+void pd_main(seL4_CPtr my_ep, seL4_CPtr ns_ep) { serial_pd_main(my_ep, ns_ep); }
 
 #endif /* AGENTOS_TEST_HOST */

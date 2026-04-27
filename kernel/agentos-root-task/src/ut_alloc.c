@@ -28,6 +28,7 @@ typedef struct {
 typedef struct {
     seL4_CPtr cap;
     seL4_Word paddr;
+    seL4_Word pages_used; /* watermark: how many 4 KB pages retyped so far */
     uint8_t   size_bits;
 } dev_ut_entry_t;
 
@@ -70,9 +71,10 @@ void ut_alloc_init(const seL4_BootInfo *bi)
         const seL4_UntypedDesc *d = &bi->untypedList[i];
         if (d->isDevice) {
             if (g_dev_ut_count < DEV_UT_MAX) {
-                g_dev_ut[g_dev_ut_count].cap       = bi->untyped.start + (seL4_CPtr)i;
-                g_dev_ut[g_dev_ut_count].paddr     = d->paddr;
-                g_dev_ut[g_dev_ut_count].size_bits = d->sizeBits;
+                g_dev_ut[g_dev_ut_count].cap        = bi->untyped.start + (seL4_CPtr)i;
+                g_dev_ut[g_dev_ut_count].paddr      = d->paddr;
+                g_dev_ut[g_dev_ut_count].pages_used = 0u;
+                g_dev_ut[g_dev_ut_count].size_bits  = d->sizeBits;
                 g_dev_ut_count++;
             }
             continue;
@@ -206,5 +208,68 @@ seL4_Error ut_alloc_device_frame(seL4_Word paddr,
             1u                          /* num_objects                            */
         );
     }
+    return seL4_InvalidArgument;
+}
+
+seL4_Error ut_alloc_device_cap(seL4_Word paddr, seL4_CPtr *cap_out)
+{
+    seL4_Word slot = ut_alloc_slot();
+    if (slot == seL4_CapNull) {
+        *cap_out = seL4_CapNull;
+        return seL4_NotEnoughMemory;
+    }
+
+    for (uint32_t i = 0u; i < g_dev_ut_count; i++) {
+        seL4_Word ut_start = g_dev_ut[i].paddr;
+        seL4_Word ut_end   = ut_start + (1UL << g_dev_ut[i].size_bits);
+        if (paddr < ut_start || paddr >= ut_end) {
+            continue;
+        }
+
+        /* Advance watermark to paddr by retyping dummy frames into throwaway slots.
+         * seL4 allocates frames sequentially from the untyped's watermark, so we
+         * must consume all pages between the current watermark and paddr before
+         * creating the desired frame.  Dummy caps remain in the root CNode but are
+         * never used again (device MMIO pages — not a resource leak in practice). */
+        seL4_Word target_page = (paddr - ut_start) >> 12u; /* 4 KB pages from base */
+        while (g_dev_ut[i].pages_used < target_page) {
+            seL4_Word dummy = ut_alloc_slot();
+            if (dummy == seL4_CapNull) {
+                *cap_out = seL4_CapNull;
+                return seL4_NotEnoughMemory;
+            }
+            seL4_Error skip_err = seL4_Untyped_Retype(
+                g_dev_ut[i].cap,
+                (seL4_Word)seL4_ARM_SmallPageObject,
+                0u,
+                seL4_CapInitThreadCNode, 0u, 0u,
+                dummy, 1u
+            );
+            if (skip_err != seL4_NoError) {
+                *cap_out = seL4_CapNull;
+                return skip_err;
+            }
+            g_dev_ut[i].pages_used++;
+        }
+
+        seL4_Error err = seL4_Untyped_Retype(
+            g_dev_ut[i].cap,
+            (seL4_Word)seL4_ARM_SmallPageObject,
+            0u,                         /* size_bits: fixed 4 KB page */
+            seL4_CapInitThreadCNode,    /* root: root task CNode, direct target  */
+            0u,                         /* node_index: no CSpace traversal       */
+            0u,                         /* node_depth: 0 → root CNode is target  */
+            slot,                       /* node_offset: slot in root task CNode  */
+            1u                          /* num_objects                           */
+        );
+        if (err != seL4_NoError) {
+            *cap_out = seL4_CapNull;
+            return err;
+        }
+        g_dev_ut[i].pages_used++;
+        *cap_out = (seL4_CPtr)slot;
+        return seL4_NoError;
+    }
+    *cap_out = seL4_CapNull;
     return seL4_InvalidArgument;
 }

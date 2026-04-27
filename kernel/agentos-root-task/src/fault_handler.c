@@ -292,3 +292,5 @@ void fault_handler_main(seL4_CPtr my_ep, seL4_CPtr ns_ep)
     sel4_server_register(&srv, 0xFFu,                h_fault_notify,  (void *)0);
     sel4_server_run(&srv);
 }
+
+void pd_main(seL4_CPtr my_ep, seL4_CPtr ns_ep) { fault_handler_main(my_ep, ns_ep); }

@@ -52,3 +52,4 @@ console/
 
 # Guest OS images — downloaded on demand to ~/.local/agentos-images, not stored in the repo
 guest-images/
+tests/e2e/id_ed25519

@@ -97,3 +97,27 @@ seL4_Error pd_vspace_map_region(seL4_CPtr vspace,
                                  seL4_Word  va_start,
                                  size_t     size,
                                  int        writable);
+
+/*
+ * pd_vspace_map_device_frame — map a device MMIO frame into a VSpace.
+ *
+ * Maps frame_cap (a 4 KB device frame capability in the root task's CNode) at
+ * vaddr in vspace.  Installs any missing intermediate page tables automatically
+ * (up to 3 retries on seL4_FailedLookup), so the caller does not need to
+ * pre-install page tables.
+ *
+ * The frame cap must NOT already be mapped (capFMappedASID == 0).  To map the
+ * same physical frame in a second VSpace, first copy the cap with
+ * seL4_CNode_Copy — the copy has capFMappedASID cleared and can be
+ * independently mapped.
+ *
+ * Parameters:
+ *   vspace     target VSpace capability
+ *   frame_cap  4 KB device frame capability (in root task CNode, unmapped)
+ *   vaddr      virtual address at which to map the frame (4 KB aligned)
+ *
+ * Returns seL4_NoError on success, or an seL4 error code on failure.
+ */
+seL4_Error pd_vspace_map_device_frame(seL4_CPtr vspace,
+                                       seL4_CPtr frame_cap,
+                                       seL4_Word vaddr);

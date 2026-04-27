@@ -362,11 +362,18 @@ static struct {
  * Debug output helpers (no Microkit API)
  * ─────────────────────────────────────────────────────────────────────────── */
 
+/* PL011 UART mapped at this VA by the root task before the controller PD starts. */
+#define AGENTOS_UART_VA  0x10001000UL
+
 static void ctrl_puts(const char *s)
 {
 #ifndef AGENTOS_TEST_HOST
-    for (const char *p = s; *p; p++)
-        seL4_DebugPutChar(*p);
+    volatile uint32_t *fr = (volatile uint32_t *)(AGENTOS_UART_VA + 0x18u);
+    volatile uint32_t *dr = (volatile uint32_t *)(AGENTOS_UART_VA + 0x00u);
+    for (const char *p = s; *p; p++) {
+        while (*fr & (1u << 5)) {}  /* spin while TX FIFO full (TXFF = bit 5) */
+        *dr = (uint32_t)(uint8_t)*p;
+    }
 #else
     (void)s;
 #endif
@@ -1161,6 +1168,29 @@ void controller_main(seL4_CPtr my_ep, seL4_CPtr ns_ep)
     /* Enter the never-returning server dispatch loop */
     sel4_server_run(&g_srv);
 #endif
+}
+
+/* ELF entry point for the controller PD — called by pd_entry.c's _start */
+void pd_main(seL4_CPtr my_ep, seL4_CPtr ns_ep)
+{
+    /*
+     * Diagnostic: write a single '!' before entering controller_main.
+     * Uses only integer MMIO — no FP registers — so it fires even if
+     * seL4 lazy-FP enable is broken for this PD.  If '!' appears but
+     * "[controller] Initializing" does not, the fault is in the FP
+     * prologue of controller_main (str d8 / ldr q0).
+     */
+#ifndef AGENTOS_TEST_HOST
+    {
+        volatile uint32_t *fr = (volatile uint32_t *)(AGENTOS_UART_VA + 0x18u);
+        volatile uint32_t *dr = (volatile uint32_t *)(AGENTOS_UART_VA + 0x00u);
+        while (*fr & (1u << 5)) {}
+        *dr = (uint32_t)'!';
+        while (*fr & (1u << 5)) {}
+        *dr = (uint32_t)'\n';
+    }
+#endif
+    controller_main(my_ep, ns_ep);
 }
 
 /* ─────────────────────────────────────────────────────────────────────────────

@@ -82,6 +82,7 @@ typedef uint32_t   seL4_Error;
 #define seL4_CapIOPortControl       ((seL4_CPtr)7u)
 #define seL4_CapBootInfoFrame       ((seL4_CPtr)9u)
 #define seL4_CapInitThreadIPCBuffer ((seL4_CPtr)10u)
+#define seL4_CapInitThreadSC        ((seL4_CPtr)14u) /* MCS: initial thread's scheduling context */
 
 /*
  * seL4_UserContext — unified register layout for test-host builds.

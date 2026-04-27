@@ -64,19 +64,26 @@ __attribute__((used)) seL4_Word    microkit_ioports       = 0;
 __attribute__((used)) seL4_Word    microkit_signal_cap    = 0;
 __attribute__((used)) seL4_Word    microkit_signal_msg    = 0;
 
-void microkit_dbg_putc(char c) { seL4_DebugPutChar(c); }
+/* PL011 UART on QEMU virt — direct write, no seL4_DebugPutChar needed */
+#define FREEBSD_VMM_UART_VA 0x10001000UL
+static inline void _uart_putc(char c) {
+    volatile uint32_t *dr = (volatile uint32_t *)FREEBSD_VMM_UART_VA;
+    *dr = (uint32_t)(unsigned char)c;
+}
+
+void microkit_dbg_putc(char c) { _uart_putc(c); }
 
 void microkit_dbg_puts(const char *s)
 {
-    for (; s && *s; s++) seL4_DebugPutChar(*s);
+    for (; s && *s; s++) _uart_putc(*s);
 }
 
 void microkit_dbg_put32(uint32_t v)
 {
     static const char hex[] = "0123456789abcdef";
-    seL4_DebugPutChar('0'); seL4_DebugPutChar('x');
+    _uart_putc('0'); _uart_putc('x');
     for (int i = 28; i >= 0; i -= 4)
-        seL4_DebugPutChar(hex[(v >> i) & 0xfu]);
+        _uart_putc(hex[(v >> i) & 0xfu]);
 }
 
 seL4_IPCBuffer *__sel4_ipc_buffer = NULL;

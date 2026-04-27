@@ -15,7 +15,7 @@ AGENTOS_BOARD ?= qemu_virt_riscv64
 # The board package provides arch-specific seL4 API headers (sel4/sel4.h, etc.)
 REPO_ROOT_MK  := $(abspath $(dir $(lastword $(MAKEFILE_LIST)))/../..)
 SEL4_SDK      ?= $(REPO_ROOT_MK)/microkit-sdk-2.1.0
-SEL4_INC_DIR  := $(SEL4_SDK)/board/$(AGENTOS_BOARD)/debug/include
+SEL4_INC_DIR  := $(SEL4_SDK)/board/$(AGENTOS_BOARD)/release/include
 
 # Linker script: agentOS-owned replacement for microkit.ld
 AGENTOS_LD    := $(abspath $(dir $(lastword $(MAKEFILE_LIST)))/../../tools/ld/agentos.ld)
@@ -41,6 +41,7 @@ endif
 CFLAGS := -nostdlib -ffreestanding -g -O2 -Wall -Wextra -Werror -Wno-unused-function -Wno-unused-parameter -Wno-unused-variable \
            -Iinclude -Ilwip/include -I$(SEL4_INC_DIR) \
            $(CFLAGS_ARCH) \
+           -DCONFIG_KERNEL_MCS \
            -MMD -MP
 
 # wasm3-specific flags: suppress warnings from vendored code, include bare-metal shim
@@ -63,6 +64,27 @@ SERVICES_DIR := $(REPO_ROOT)/services
 # (e.g. "contracts/vibeos/interface.h" resolved from repo root)
 CFLAGS_SERVICES := $(CFLAGS) -I$(REPO_ROOT)
 
+# AArch64 loader and custom root_task linker script
+LOADER_DIR      := $(REPO_ROOT)/kernel/loader
+ROOT_TASK_LD    := $(REPO_ROOT)/tools/ld/root_task.ld
+# Resolve llvm-objcopy: prefer the same LLVM installation that provides CC/LD.
+# On macOS, llvm-objcopy lives alongside clang in the Homebrew LLVM keg.
+ifeq ($(UNAME_S),Darwin)
+  UNAME_S := $(shell uname -s)
+  _BREW_LLVM := $(shell \
+    for d in /opt/homebrew/opt/llvm/bin /usr/local/opt/llvm/bin \
+              /opt/homebrew/Cellar/llvm/*/bin /usr/local/Cellar/llvm/*/bin; do \
+      [ -x "$$d/llvm-objcopy" ] && echo "$$d/llvm-objcopy" && break; \
+    done 2>/dev/null)
+  ifneq ($(_BREW_LLVM),)
+    OBJCOPY := $(_BREW_LLVM)
+  else
+    OBJCOPY ?= llvm-objcopy
+  endif
+else
+  OBJCOPY ?= llvm-objcopy
+endif
+
 # ─── Root task seL4 boot binary ──────────────────────────────────────────────
 # main.c is the seL4 root task entry point and boot sequence orchestrator.
 # It is NOT a Microkit PD — it links without libmicrokit and uses its own
@@ -77,14 +99,16 @@ ROOT_TASK_SRCS := src/main.c src/ep_alloc.c src/cap_accounting.c \
                   src/pd_tcb.c src/m3_bare_metal.c \
                   src/sel4_crt.c src/log.c \
                   src/ut_alloc.c src/pd_vspace.c src/cap_audit.c \
-                  src/vos_create.c
+                  src/vos_create.c src/pd_bundle_stub.c
 
 ifeq ($(ARCH),aarch64)
 ROOT_TASK_SRCS += src/system_desc_aarch64.c
 CFLAGS_ROOT_TASK := $(CFLAGS) -DBOARD_$(AGENTOS_BOARD)
+ROOT_TASK_ASM_OBJS := $(BUILD_DIR)/rt_start_aarch64.o
 else
 ROOT_TASK_SRCS += src/system_desc_riscv64.c
 CFLAGS_ROOT_TASK := $(CFLAGS)
+ROOT_TASK_ASM_OBJS :=
 endif
 
 ROOT_TASK_OBJS := $(patsubst src/%.c, $(BUILD_DIR)/rt_%.o, $(ROOT_TASK_SRCS))
@@ -94,8 +118,72 @@ $(BUILD_DIR)/rt_%.o: src/%.c
 	@mkdir -p $(BUILD_DIR)
 	$(CC) -c $(CFLAGS_ROOT_TASK) $< -o $@
 
+# Assemble AArch64 startup stub
+$(BUILD_DIR)/rt_start_aarch64.o: src/start_aarch64.S
+	@mkdir -p $(BUILD_DIR)
+	$(CC) -c -target aarch64-unknown-elf $< -o $@
+
+# ─── AArch64: root_task uses custom LD script + embedded PD bundle ───────────
+# On AArch64 the loader (kernel/loader/) loads root_task.elf from DRAM at
+# 0x41000000.  The custom root_task.ld places it there and provides the
+# .pd_bundle section that holds embedded PD ELFs.
+#
+# Build sequence:
+#   1. Build loader.elf (kernel/loader/)
+#   2. Generate PD bundle (xtask gen-pd-bundle) — requires all PD ELFs
+#   3. Convert bundle to a linkable .o (objcopy --input binary)
+#   4. Link root_task.elf with root_task.ld + bundle .o
+#
+# Non-AArch64 builds keep the original flat agentos.ld link.
+ifeq ($(ARCH),aarch64)
+
+PD_BUNDLE       := $(BUILD_DIR)/agentos_pd_bundle.bin
+PD_BUNDLE_OBJ   := $(BUILD_DIR)/agentos_pd_bundle.o
+# Deferred reference: SYSTEM_TOML is set later in this Makefile
+SYSTEM_TOML_FOR_BUNDLE = $(SYSTEM_TOML)
+
+# Step 1: Build the loader
+$(BUILD_DIR)/loader.elf: FORCE
+	$(MAKE) -C $(LOADER_DIR) \
+		BUILD_DIR=$(BUILD_DIR) \
+		AGENTOS_ARCH=$(AGENTOS_ARCH)
+
+# Step 2: Generate the PD bundle (after all IMAGES are built)
+$(PD_BUNDLE): $(addprefix $(BUILD_DIR)/, $(IMAGES)) $(SYSTEM_TOML_FOR_BUNDLE)
+	cargo run -p xtask -- gen-pd-bundle \
+		--system $(SYSTEM_TOML_FOR_BUNDLE) \
+		--pd-dir $(BUILD_DIR) \
+		--out $@
+
+# Step 3: Turn the binary bundle into a relocatable ELF64 object.
+#
+# objcopy --input binary derives symbol names from the input file path,
+# mangling every non-alphanumeric character to '_'.  To get predictable
+# symbol names we invoke objcopy from BUILD_DIR with just the basename, so
+# the mangled name is always:
+#   _binary_agentos_pd_bundle_bin_{start,end,size}
+$(PD_BUNDLE_OBJ): $(PD_BUNDLE)
+	cd $(BUILD_DIR) && $(OBJCOPY) \
+		--input-target=binary \
+		--output-target=elf64-littleaarch64 \
+		--binary-architecture=aarch64 \
+		--rename-section .data=.pd_bundle,alloc,load,data,contents \
+		--redefine-sym _binary_agentos_pd_bundle_bin_start=__pd_bundle_start \
+		--redefine-sym _binary_agentos_pd_bundle_bin_end=__pd_bundle_end \
+		--redefine-sym _binary_agentos_pd_bundle_bin_size=__pd_bundle_size \
+		agentos_pd_bundle.bin agentos_pd_bundle.o
+
+# Step 4: Link root_task.elf with the custom AArch64 LD script + bundle object
+$(BUILD_DIR)/root_task.elf: $(ROOT_TASK_ASM_OBJS) $(ROOT_TASK_OBJS) $(PD_BUNDLE_OBJ) $(ROOT_TASK_LD)
+	$(LD) $(LDFLAGS) -T$(ROOT_TASK_LD) $(filter-out $(ROOT_TASK_LD),$^) -o $@
+
+else
+
+# Non-AArch64: simple link with the standard PD linker script
 $(BUILD_DIR)/root_task.elf: $(ROOT_TASK_OBJS)
 	$(LD) $(LDFLAGS) $^ -o $@
+
+endif
 
 # ─── Board identification (passed from top-level Makefile) ───────────────────
 BOARD_NAME      ?=
@@ -165,6 +253,10 @@ _PD_SRC_VARS := \
     PD_EXEC_SERVER_SRCS PD_TERM_SERVER_SRCS PD_BLOCK_PD_SRCS PD_FB_PD_SRCS \
     PD_CC_PD_SRCS PD_GPU_SCHED_SRCS PD_IRQ_PD_SRCS PD_TIMER_PD_SRCS
 $(foreach v,$(_PD_SRC_VARS),$(eval $(v) += src/sel4_crt.c))
+# pd_entry.c provides _start (ELF entry) + IPC buffer fix for all service PDs.
+# It is NOT added to ROOT_TASK_SRCS — the root task has its own _start in
+# start_aarch64.S.
+$(foreach v,$(_PD_SRC_VARS),$(eval $(v) += src/pd_entry.c))
 
 # wasm3 vendored sources (core interpreter only)
 WASM3_SRCS := wasm3/m3_core.c wasm3/m3_env.c wasm3/m3_code.c wasm3/m3_compile.c \
@@ -597,10 +689,18 @@ SYSTEM_TOML_DEFAULT := $(abspath $(CURDIR)/agentos.toml)
 _BOARD_TOML := ../../boards/$(BOARD_NAME)/agentos.toml
 SYSTEM_TOML := $(if $(wildcard $(_BOARD_TOML)),$(_BOARD_TOML),$(SYSTEM_TOML_DEFAULT))
 
-# Kernel ELF: provided by the seL4 build (assumed pre-built or supplied externally)
-KERNEL_ELF  := $(BUILD_DIR)/kernel.elf
+# Kernel ELF: pulled directly from the Microkit SDK release package
+KERNEL_ELF  := $(SEL4_SDK)/board/$(AGENTOS_BOARD)/release/elf/sel4.elf
 
-$(IMAGE_FILE): $(addprefix $(BUILD_DIR)/, $(IMAGES)) $(SYSTEM_TOML)
+# On AArch64, loader.elf is also a build artifact (needed at QEMU launch time).
+# We add it as a dependency so it is rebuilt whenever the loader sources change.
+ifeq ($(ARCH),aarch64)
+_LOADER_DEP := $(BUILD_DIR)/loader.elf
+else
+_LOADER_DEP :=
+endif
+
+$(IMAGE_FILE): $(addprefix $(BUILD_DIR)/, $(IMAGES)) $(BUILD_DIR)/root_task.elf $(SYSTEM_TOML) $(KERNEL_ELF) $(_LOADER_DEP)
 	cargo run -p xtask -- gen-image \
 		--arch $(ARCH) \
 		--system $(SYSTEM_TOML) \

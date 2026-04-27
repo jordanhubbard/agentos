@@ -238,8 +238,12 @@ static inline void data_wr64(uint8_t *d, int off, uint64_t v)
 
 static void dbg_puts(const char *s)
 {
+#ifdef CONFIG_PRINTING
     for (; *s; s++)
         seL4_DebugPutChar(*s);
+#else
+    (void)s;
+#endif
 }
 
 /* ── Spawn table helpers ──────────────────────────────────────────────────── */
@@ -661,4 +665,7 @@ void init_agent_main(seL4_CPtr my_ep, seL4_CPtr ns_ep)
     /* Enter server loop — never returns */
     sel4_server_run(&g_srv);
 }
+
+void pd_main(seL4_CPtr my_ep, seL4_CPtr ns_ep) { init_agent_main(my_ep, ns_ep); }
+
 #endif /* !AGENTOS_TEST_HOST */

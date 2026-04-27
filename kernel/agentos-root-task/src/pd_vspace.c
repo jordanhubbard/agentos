@@ -310,8 +310,11 @@ static int elf64_valid(const elf64_hdr_t *h)
 /*
  * load_elf_segments — parse PT_LOAD segments and map them into vspace.
  *
- * For each PT_LOAD segment, pages are allocated and mapped.  ELF file bytes
- * are written through the scratch window; BSS bytes are zeroed automatically.
+ * Processes all PT_LOAD segments page-by-page across their combined VA range.
+ * Each unique page is allocated once; all segments that contribute bytes to
+ * that page are merged into it.  This correctly handles adjacent or overlapping
+ * PT_LOAD segments that share a page boundary (e.g. GOT at 0x428200 and data
+ * at 0x428210 both requiring page 0x428000).
  *
  * Sets *entry_out to the ELF entry point virtual address.
  */
@@ -329,51 +332,83 @@ static seL4_Error load_elf_segments(seL4_CPtr vspace,
 
     const elf64_phdr_t *phdrs = (const elf64_phdr_t *)(elf_base + ehdr->e_phoff);
 
+    /* Find the combined page-aligned VA range of all PT_LOAD segments. */
+    seL4_Word va_min = ~(seL4_Word)0u;
+    seL4_Word va_max = 0u;
     for (uint16_t i = 0u; i < ehdr->e_phnum; i++) {
-        if (phdrs[i].p_type != PT_LOAD) {
+        if (phdrs[i].p_type != PT_LOAD || phdrs[i].p_memsz == 0u) {
             continue;
         }
-        if (phdrs[i].p_memsz == 0u) {
-            continue;
+        seL4_Word s = PAGE_ALIGN_DOWN((seL4_Word)phdrs[i].p_vaddr);
+        seL4_Word e = PAGE_ALIGN_UP((seL4_Word)phdrs[i].p_vaddr + (seL4_Word)phdrs[i].p_memsz);
+        if (s < va_min) { va_min = s; }
+        if (e > va_max) { va_max = e; }
+    }
+
+    if (va_min == ~(seL4_Word)0u) {
+        return seL4_NoError;  /* no PT_LOAD segments — nothing to do */
+    }
+
+    /*
+     * For each page in [va_min, va_max), allocate one frame, zero it, copy
+     * in all file bytes from every PT_LOAD segment that covers this page,
+     * then map the frame into the PD VSpace.  Processing the full VA range in
+     * a single pass ensures overlapping segments share one frame per page.
+     */
+    for (seL4_Word va = va_min; va < va_max; va += PAGE_SIZE) {
+        seL4_CPtr frame;
+        seL4_Error err = ut_alloc_cap(seL4_ARM_SmallPageObject, 0u, &frame);
+        if (err != seL4_NoError) {
+            return err;
         }
 
-        seL4_Word seg_va     = (seL4_Word)phdrs[i].p_vaddr;
-        seL4_Word seg_filesz = (seL4_Word)phdrs[i].p_filesz;
-        seL4_Word seg_memsz  = (seL4_Word)phdrs[i].p_memsz;
-        seL4_Word seg_off    = (seL4_Word)phdrs[i].p_offset;
+        err = seL4_ARCH_Page_Map(frame,
+                                  seL4_CapInitThreadVSpace,
+                                  SCRATCH_VA,
+                                  seL4_AllRights,
+                                  seL4_ARM_Default_VMAttributes);
+        if (err != seL4_NoError) {
+            return err;
+        }
 
-        /* Page-align the mapped VA range */
-        seL4_Word va_start = PAGE_ALIGN_DOWN(seg_va);
-        seL4_Word va_end   = PAGE_ALIGN_UP(seg_va + seg_memsz);
+        volatile uint8_t *dst = (volatile uint8_t *)SCRATCH_VA;
+        for (seL4_Word b = 0u; b < PAGE_SIZE; b++) {
+            dst[b] = 0u;
+        }
 
-        for (seL4_Word va = va_start; va < va_end; va += PAGE_SIZE) {
-            /*
-             * Determine how many bytes from the ELF file fall in this page.
-             *
-             * page_seg_off  = byte offset from segment start to start of this page
-             * file_start    = offset into ELF file for first byte of this page
-             * file_bytes    = bytes from file to copy into this page
-             * page_data_off = offset within this page at which file data starts
-             *                 (non-zero only if page starts before seg_va)
-             */
-            seL4_Word page_seg_off = (va > seg_va) ? (va - seg_va) : 0u;
-            seL4_Word page_data_off = (seg_va > va) ? (seg_va - va) : 0u;
+        /* Merge file bytes from every segment that overlaps this page. */
+        for (uint16_t si = 0u; si < ehdr->e_phnum; si++) {
+            if (phdrs[si].p_type != PT_LOAD || phdrs[si].p_memsz == 0u) {
+                continue;
+            }
+            seL4_Word seg_va     = (seL4_Word)phdrs[si].p_vaddr;
+            seL4_Word seg_filesz = (seL4_Word)phdrs[si].p_filesz;
+            seL4_Word seg_off    = (seL4_Word)phdrs[si].p_offset;
+            seL4_Word seg_end    = seg_va + (seL4_Word)phdrs[si].p_memsz;
+            seL4_Word page_end   = va + PAGE_SIZE;
 
-            seL4_Word file_bytes = 0u;
-            const uint8_t *src_ptr = (const uint8_t *)0;
-
-            if (page_seg_off < seg_filesz) {
-                seL4_Word avail = seg_filesz - page_seg_off;
-                file_bytes = (avail < (PAGE_SIZE - page_data_off))
-                                 ? avail
-                                 : (PAGE_SIZE - page_data_off);
-                src_ptr = elf_base + seg_off + page_seg_off;
+            if (seg_va >= page_end || seg_end <= va) {
+                continue;  /* segment doesn't touch this page */
             }
 
-            seL4_Error err = load_page(vspace, va, src_ptr, page_data_off, file_bytes);
-            if (err != seL4_NoError) {
-                return err;
+            /* File data range within this page. */
+            seL4_Word file_va_start = (seg_va > va) ? seg_va : va;
+            seL4_Word file_va_end   = seg_va + seg_filesz;
+            if (file_va_end > page_end) { file_va_end = page_end; }
+
+            for (seL4_Word bva = file_va_start; bva < file_va_end; bva++) {
+                dst[bva - va] = elf_base[seg_off + (bva - seg_va)];
             }
+        }
+
+        AGENTOS_MEMORY_FENCE();
+        seL4_ARCH_Page_Unmap(frame);
+
+        err = map_page(frame, vspace, va,
+                       seL4_AllRights,
+                       seL4_ARM_Default_VMAttributes);
+        if (err != seL4_NoError) {
+            return err;
         }
     }
 
@@ -476,6 +511,15 @@ pd_vspace_result_t pd_vspace_load_elf(seL4_CPtr    vspace_cap,
     };
 }
 
+seL4_Error pd_vspace_map_device_frame(seL4_CPtr vspace,
+                                       seL4_CPtr frame_cap,
+                                       seL4_Word vaddr)
+{
+    return map_page(frame_cap, vspace, vaddr,
+                    seL4_AllRights,
+                    seL4_ARM_Default_VMAttributes);
+}
+
 #else /* AGENTOS_TEST_HOST ───────────────────────────────────────────────── */
 
 pd_vspace_result_t pd_vspace_create(seL4_CPtr pd_cnode, seL4_CPtr asid_pool)
@@ -509,6 +553,16 @@ pd_vspace_result_t pd_vspace_load_elf(seL4_CPtr    vspace_cap,
         .ipc_buf_cap = seL4_CapNull,
         .error       = (int)seL4_IllegalOperation,
     };
+}
+
+seL4_Error pd_vspace_map_device_frame(seL4_CPtr vspace,
+                                       seL4_CPtr frame_cap,
+                                       seL4_Word vaddr)
+{
+    (void)vspace;
+    (void)frame_cap;
+    (void)vaddr;
+    return seL4_IllegalOperation;
 }
 
 #endif /* AGENTOS_TEST_HOST */

@@ -313,8 +313,12 @@ static log_ring_state_t *get_or_create_ring_state(uint32_t pd_id)
 
 static void dbg_puts(const char *s)
 {
+#ifdef CONFIG_PRINTING
     for (; *s; s++)
         seL4_DebugPutChar(*s);
+#else
+    (void)s;
+#endif
 }
 
 /* ── Serial output ─────────────────────────────────────────────────────────── */
@@ -655,5 +659,7 @@ void log_drain_main(seL4_CPtr my_ep, seL4_CPtr ns_ep, seL4_CPtr serial_ep)
     /* Enter the recv/dispatch/reply loop — never returns */
     sel4_server_run(&g_srv);
 }
+
+void pd_main(seL4_CPtr my_ep, seL4_CPtr ns_ep) { log_drain_main(my_ep, ns_ep, 0u); }
 
 #endif /* AGENTOS_TEST_HOST */

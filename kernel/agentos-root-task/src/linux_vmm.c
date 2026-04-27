@@ -426,19 +426,26 @@ __attribute__((used)) seL4_Word    microkit_ioports       = 0;
 __attribute__((used)) seL4_Word    microkit_signal_cap    = 0;
 __attribute__((used)) seL4_Word    microkit_signal_msg    = 0;
 
-void microkit_dbg_putc(char c) { seL4_DebugPutChar(c); }
+/* PL011 UART on QEMU virt — direct write, no seL4_DebugPutChar needed */
+#define LINUX_VMM_UART_VA 0x10001000UL
+static inline void _uart_putc(char c) {
+    volatile uint32_t *dr = (volatile uint32_t *)LINUX_VMM_UART_VA;
+    *dr = (uint32_t)(unsigned char)c;
+}
+
+void microkit_dbg_putc(char c) { _uart_putc(c); }
 
 void microkit_dbg_puts(const char *s)
 {
-    for (; s && *s; s++) seL4_DebugPutChar(*s);
+    for (; s && *s; s++) _uart_putc(*s);
 }
 
 void microkit_dbg_put32(uint32_t v)
 {
     static const char hex[] = "0123456789abcdef";
-    seL4_DebugPutChar('0'); seL4_DebugPutChar('x');
+    _uart_putc('0'); _uart_putc('x');
     for (int i = 28; i >= 0; i -= 4)
-        seL4_DebugPutChar(hex[(v >> i) & 0xfu]);
+        _uart_putc(hex[(v >> i) & 0xfu]);
 }
 
 /* seL4 IPC buffer pointer. Compiled with -D__thread= (TLS suppressed) so
@@ -702,7 +709,7 @@ static bool pl011_fault_handler(size_t vcpu_id, size_t offset, size_t fsr,
         /* Write: offset 0x0 is the Data Register (DR) — forward char to host */
         if (offset == 0) {
             char c = (char)(fault_get_data(regs, (uint64_t)fsr) & 0xff);
-            seL4_DebugPutChar(c);
+            _uart_putc(c);
         }
     }
     return fault_advance(vcpu_id, regs,
@@ -1103,10 +1110,8 @@ static seL4_MessageInfo_t linux_vmm_fault(seL4_Word badge,
 
 void linux_vmm_main(seL4_CPtr ep, seL4_CPtr reply_cap)
 {
-    /* Point __sel4_ipc_buffer at the frame mapped by the CapDL initializer.
-     * Must happen before any seL4 IPC call that uses message registers. */
-    extern char __sel4_ipc_buffer_obj[];
-    seL4_SetIPCBuffer((seL4_IPCBuffer *)__sel4_ipc_buffer_obj);
+    /* __sel4_ipc_buffer is set to 0x10000000 by pd_entry.c _start before
+     * this function is called; no need to set it again here. */
 
     /* Run init() — sets up guest images, GIC, virtio IRQs, starts guest */
     init();
@@ -1149,12 +1154,6 @@ void linux_vmm_main(seL4_CPtr ep, seL4_CPtr reply_cap)
     }
 }
 
-/* ELF entry point required by Microkit linker script and monitor.
- * Uses the Microkit CapDL CNode layout constants above. */
-__attribute__((section(".text.start"), noreturn))
-void _start(void) {
-    linux_vmm_main(VMM_EP_CAP, VMM_REPLY_CAP);
-    __builtin_unreachable();
-}
+void pd_main(seL4_CPtr my_ep, seL4_CPtr ns_ep) { linux_vmm_main(my_ep, ns_ep); }
 
 #endif /* ARCH_AARCH64 && !LINUX_VMM_NATIVE_STUB */

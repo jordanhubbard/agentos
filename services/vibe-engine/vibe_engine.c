@@ -254,7 +254,11 @@ static inline void data_wr32(uint8_t *d, int off, uint32_t v) {
 
 /* ── Debug output helper ────────────────────────────────────────────────── */
 static void dbg_puts(const char *s) {
+#ifdef CONFIG_PRINTING
     for (; *s; s++) seL4_DebugPutChar(*s);
+#else
+    (void)s;
+#endif
 }
 
 /* ── Memory barrier ─────────────────────────────────────────────────────── */
@@ -1461,4 +1465,7 @@ void vibe_engine_main(seL4_CPtr my_ep, seL4_CPtr ns_ep, seL4_CPtr ctrl_ep)
     dbg_puts("[vibe_engine] *** VibeEngine ALIVE — accepting proposals ***\n");
     sel4_server_run(&g_srv);  /* NEVER RETURNS */
 }
+
+void pd_main(seL4_CPtr my_ep, seL4_CPtr ns_ep) { vibe_engine_main(my_ep, ns_ep, 0u); }
+
 #endif /* !AGENTOS_TEST_HOST */

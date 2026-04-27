@@ -105,3 +105,21 @@ seL4_Error ut_alloc_cap(uint32_t   type,
 seL4_Error ut_alloc_device_frame(seL4_Word paddr,
                                   seL4_CPtr pd_cnode,
                                   seL4_Word target_slot);
+
+/*
+ * ut_alloc_device_cap — retype a device untyped into a frame cap in the root
+ * task's own CNode (analogous to ut_alloc_cap but for device untypeds).
+ *
+ * Parameters:
+ *   paddr     physical address of the device MMIO page (must be page-aligned)
+ *   cap_out   receives the new capability (== allocated slot) on success
+ *
+ * The root task can then map cap_out into any VSpace (including its own) for
+ * direct MMIO access, or copy it with seL4_CNode_Copy before mapping into a
+ * second VSpace (the copy operation clears capFMappedASID, allowing independent
+ * re-mapping).
+ *
+ * Returns seL4_NoError on success, seL4_InvalidArgument if no device untyped
+ * covers paddr, seL4_NotEnoughMemory if the cap slot pool is exhausted.
+ */
+seL4_Error ut_alloc_device_cap(seL4_Word paddr, seL4_CPtr *cap_out);

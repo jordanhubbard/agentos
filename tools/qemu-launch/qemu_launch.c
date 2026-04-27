@@ -550,6 +550,8 @@ static void build_qemu_cmd(const cfg_t *cfg, char *cmd, size_t len)
                  " -cpu cortex-a53"
                  " -m %s"
                  " -serial mon:stdio"
+                 " -chardev socket,id=cc_pd_char,path=build/cc_pd.sock,server=on,wait=off"
+                 " -serial chardev:cc_pd_char"
                  " -nographic"
                  " -device loader,file=%s,addr=0x70000000,cpu-num=0"
                  "%s",

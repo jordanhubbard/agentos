@@ -1,55 +1,37 @@
 /*
  * cc_pd.c — agentOS Command-and-Control Protection Domain
  *
- * Pure IPC relay and multiplexer.  Receives MSG_CC_* from external callers
- * (agentctl, mesh agents) and routes each call to the appropriate service PD:
+ * Receives binary-framed requests from external callers (agentctl,
+ * agentos_gui) via a VirtIO MMIO serial port, which QEMU bridges to
+ * build/cc_pd.sock on the host.  Routes each call to the appropriate
+ * service PD via seL4 IPC and returns the binary-framed reply.
  *
- *   MSG_CC_LIST_GUESTS        → vibe_engine   (MSG_VIBEOS_LIST)
- *   MSG_CC_LIST_DEVICES       → device PD     (selected by dev_type)
- *   MSG_CC_LIST_POLECATS      → agent_pool    (MSG_AGENTPOOL_STATUS)
- *   MSG_CC_GUEST_STATUS       → vibe_engine   (MSG_VIBEOS_STATUS)
- *   MSG_CC_DEVICE_STATUS      → device PD     (selected by dev_type)
- *   MSG_CC_ATTACH_FRAMEBUFFER → framebuffer_pd (MSG_FB_FLIP handle probe)
- *   MSG_CC_SEND_INPUT         → guest_pd      (MSG_GUEST_SEND_INPUT)
- *   MSG_CC_SNAPSHOT           → vibe_engine   (MSG_VIBEOS_SNAPSHOT)
- *   MSG_CC_RESTORE            → vibe_engine   (MSG_VIBEOS_RESTORE)
- *   MSG_CC_LOG_STREAM         → log_drain     (OP_LOG_WRITE)
- *
- * Session management (MSG_CC_CONNECT / DISCONNECT / SEND / RECV / STATUS /
- * LIST) is also handled here — sessions track external callers.
+ * Transport:  VirtIO MMIO serial, virtio-mmio-bus.2 (PA 0x0A000400).
+ *   QEMU args: -chardev socket,id=cc_pd_char,path=build/cc_pd.sock,...
+ *              -device virtio-serial-device,bus=virtio-mmio-bus.2,id=vser0
+ *              -device virtserialport,bus=vser0.0,chardev=cc_pd_char,name=cc.0
+ *   Wire frame (both directions): 4112 bytes
+ *     Request:  opcode(4) + mr[3](12) + shmem(4096) = 4112
+ *     Reply:    mr[4](16) + shmem(4096) = 4112
  *
  * INVARIANT: cc_pd contains ZERO policy.  It is a relay only.
  * No routing logic beyond opcode dispatch and dev_type field lives here.
- * No command may be implemented here that belongs in a service PD.
  *
- * Channel assignments (outbound from cc_pd):
- *   CH_CC_OUT_VIBE    — cc_pd → vibe_engine   (MSG_VIBEOS_*)
- *   CH_CC_OUT_GUEST   — cc_pd → guest_pd      (MSG_GUEST_*)
- *   CH_CC_OUT_FB      — cc_pd → framebuffer_pd (MSG_FB_*)
- *   CH_CC_OUT_SERIAL  — cc_pd → serial_pd     (MSG_SERIAL_STATUS)
- *   CH_CC_OUT_NET     — cc_pd → net_pd        (MSG_NET_DEV_STATUS)
- *   CH_CC_OUT_BLOCK   — cc_pd → block_pd      (MSG_BLOCK_STATUS)
- *   CH_CC_OUT_USB     — cc_pd → usb_pd        (MSG_USB_LIST)
- *   CH_CC_OUT_POOL    — cc_pd → agent_pool    (MSG_AGENTPOOL_STATUS)
- *   CH_CC_OUT_LOG     — cc_pd → log_drain     (OP_LOG_WRITE)
+ * Relay stubs: outbound seL4_Call paths to downstream PDs are implemented
+ * as well-formed CC_OK stubs (empty data) until inter-PD endpoint wiring
+ * is complete in Phase 5.
  *
- * Shared memory (setvar_vaddr):
- *   cc_shmem_vaddr    — caller-facing shmem (requests + responses)
- *   cc_vibe_shmem_vaddr  — cc_pd ↔ vibe_engine shmem
- *   cc_guest_shmem_vaddr — cc_pd ↔ guest_pd shmem
- *   cc_fb_shmem_vaddr    — cc_pd ↔ framebuffer_pd shmem
- *   cc_dev_shmem_vaddr   — cc_pd ↔ device PDs shmem (serial/net/block/usb)
- *
- * Channel: CH_CC_PD (see agentos.h) — inbound PPC from callers
  * Priority: 160
- * Mode: passive (woken by PPC from callers)
+ * Mode: VirtIO polled loop; seL4_Yield while used ring empty to avoid starving PDs
+ *
+ * Copyright (c) 2026 The agentOS Project
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #define AGENTOS_DEBUG 1
 #include "agentos.h"
-#include "sel4_server.h"
-#include "contracts/vibeos_contract.h"
 #include "contracts/cc_contract.h"
+#include "contracts/vibeos_contract.h"
 #include "contracts/guest_contract.h"
 #include "contracts/framebuffer_contract.h"
 #include "contracts/log_drain_contract.h"
@@ -58,569 +40,549 @@
 #include <stdbool.h>
 #include <stddef.h>
 
-/* ─── Outbound channel assignments ───────────────────────────────────────── */
+/* ─── VirtIO MMIO serial driver ──────────────────────────────────────────── */
+/*
+ * Transport: virtio-serial-device on QEMU virtio-mmio-bus.2 (PA 0x0A000400).
+ * QEMU bridges the virtserialport named "cc.0" to build/cc_pd.sock.
+ *
+ * The root task allocates three 4K frames and identity-maps them (VA=PA) into
+ * cc_pd's VSpace, then writes the three PAs into a shared startup record page
+ * at CC_PD_STARTUP_VA before starting cc_pd.  The three pages are:
+ *   [0] VQ struct page — descriptor tables, avail/used rings for TX+RX queues
+ *   [1] TX data buffer
+ *   [2] RX data buffer
+ *
+ * We use a single descriptor per queue (VQ_DEPTH=4 slots, one in flight at a
+ * time) and poll the used ring with seL4_Yield so other PDs can run.
+ *
+ * Wire frame sizes (4112 bytes) exceed the 4096-byte buffer page, so TX and RX
+ * loop in ≤4096-byte chunks.  The protocol is strictly sequential (one reply
+ * per request), so no RX overflow can occur across frame boundaries.
+ */
 
-#define CH_CC_OUT_VIBE    0u   /* cc_pd → vibe_engine (MSG_VIBEOS_*) */
-#define CH_CC_OUT_GUEST   1u   /* cc_pd → guest_pd (MSG_GUEST_*) */
-#define CH_CC_OUT_FB      2u   /* cc_pd → framebuffer_pd (MSG_FB_*) */
-#define CH_CC_OUT_SERIAL  3u   /* cc_pd → serial_pd (MSG_SERIAL_STATUS) */
-#define CH_CC_OUT_NET     4u   /* cc_pd → net_pd (MSG_NET_DEV_STATUS) */
-#define CH_CC_OUT_BLOCK   5u   /* cc_pd → block_pd (MSG_BLOCK_STATUS) */
-#define CH_CC_OUT_USB     6u   /* cc_pd → usb_pd (MSG_USB_LIST) */
-#define CH_CC_OUT_POOL    7u   /* cc_pd → agent_pool (MSG_AGENTPOOL_STATUS) */
-#define CH_CC_OUT_LOG     8u   /* cc_pd → log_drain (OP_LOG_WRITE) */
+#define CC_PD_VIRTIO_VA   0x10002000UL   /* VirtIO MMIO page mapped by root task */
+#define CC_PD_STARTUP_VA  0x10003000UL   /* Startup record: VQ PAs from root task */
+#define CC_PD_UART_DBG_VA 0x10004000UL   /* PL011 UART0 for direct debug output */
+#define VMMIO_SLOT_OFF    (2u * 0x200u)  /* bus.2 → offset +0x400 within the page */
 
-/* ─── Shmem (Microkit setvar_vaddr) ─────────────────────────────────────── */
+/* ─── Direct UART0 debug output (bypasses CONFIG_PRINTING) ──────────────── */
 
-uintptr_t cc_shmem_vaddr;        /* caller-facing shmem */
-uintptr_t cc_vibe_shmem_vaddr;   /* cc_pd ↔ vibe_engine */
-uintptr_t cc_guest_shmem_vaddr;  /* cc_pd ↔ guest_pd */
-uintptr_t cc_fb_shmem_vaddr;     /* cc_pd ↔ framebuffer_pd */
-uintptr_t cc_dev_shmem_vaddr;    /* cc_pd ↔ device PDs (shared region) */
+#define CC_UART_DR   (*(volatile uint32_t *)(CC_PD_UART_DBG_VA + 0x000u))
+#define CC_UART_FR   (*(volatile uint32_t *)(CC_PD_UART_DBG_VA + 0x018u))
+#define CC_FR_TXFF   (1u << 5)
 
-uintptr_t log_drain_rings_vaddr; /* required by log_drain_write() helper */
+static void cc_dbg_putc(char c)
+{
+    /* No TXFF spin: with seL4 MCS 10ms budget, a tight spin exhausts the
+     * budget before QEMU's UART FIFO (16 bytes at 115200) gets a chance to
+     * drain.  Writing unconditionally is safe on QEMU TCG; worst case one
+     * character is silently dropped when the FIFO is momentarily full.   */
+    CC_UART_DR = (uint32_t)(unsigned char)c;
+}
+static void cc_dbg_puts(const char *s)
+{
+    for (; *s; s++) cc_dbg_putc(*s);
+}
+static void cc_dbg_hex(uint64_t v)
+{
+    cc_dbg_puts("0x");
+    for (int sh = 60; sh >= 0; sh -= 4) {
+        uint32_t n = (uint32_t)((v >> (uint32_t)sh) & 0xFu);
+        cc_dbg_putc(n < 10u ? (char)('0'+n) : (char)('a'+n-10u));
+    }
+}
+
+/* VirtIO MMIO register offsets (relative to slot base) */
+#define VMMIO_MAGIC           0x000u
+#define VMMIO_VERSION         0x004u
+#define VMMIO_DEVICE_ID       0x008u
+#define VMMIO_DEV_FEAT        0x010u   /* DeviceFeatures (R): read current features word */
+#define VMMIO_DEV_FEAT_SEL    0x014u   /* DeviceFeaturesSel (W): select features word to read */
+#define VMMIO_DRV_FEAT        0x020u   /* DriverFeatures (W): write accepted features word */
+#define VMMIO_DRV_FEAT_SEL    0x024u   /* DriverFeaturesSel (W): select features word to write */
+#define VMMIO_QUEUE_SEL       0x030u
+#define VMMIO_QUEUE_NUM_MAX   0x034u
+#define VMMIO_QUEUE_NUM       0x038u
+#define VMMIO_QUEUE_READY     0x044u
+#define VMMIO_QUEUE_NOTIFY    0x050u
+#define VMMIO_STATUS          0x070u
+#define VMMIO_Q_DESC_LO       0x080u
+#define VMMIO_Q_DESC_HI       0x084u
+#define VMMIO_Q_AVAIL_LO      0x090u
+#define VMMIO_Q_AVAIL_HI      0x094u
+#define VMMIO_Q_USED_LO       0x0A0u
+#define VMMIO_Q_USED_HI       0x0A4u
+
+#define VSTATUS_ACK       1u
+#define VSTATUS_DRIVER    2u
+#define VSTATUS_FEAT_OK   8u
+#define VSTATUS_DRIVER_OK 4u
+#define VSTATUS_FAILED    128u
+#define VIRTIO_MAGIC      0x74726976u
+#define VIRTIO_ID_CONSOLE 3u
+#define VQ_DEPTH          4u
+
+typedef struct { uint64_t addr; uint32_t len; uint16_t flags; uint16_t next; }
+    __attribute__((packed)) vq_desc_t;
+typedef struct { uint16_t flags; uint16_t idx; uint16_t ring[VQ_DEPTH]; uint16_t used_event; }
+    __attribute__((packed)) vq_avail_t;
+typedef struct { uint32_t id; uint32_t len; } __attribute__((packed)) vq_used_elem_t;
+typedef struct { uint16_t flags; uint16_t idx; vq_used_elem_t ring[VQ_DEPTH]; uint16_t avail_event; }
+    __attribute__((packed)) vq_used_t;
+
+/* Offsets within VQ struct page (all alignment requirements met) */
+#define TX_DESC_OFF   0u    /* 4 × 16 B = 64 B; 16-byte aligned */
+#define TX_AVAIL_OFF  128u  /* 14 B; 2-byte aligned */
+#define TX_USED_OFF   256u  /* 38 B; 4-byte aligned */
+#define RX_DESC_OFF   512u  /* 64 B; 16-byte aligned */
+#define RX_AVAIL_OFF  640u  /* 14 B; 2-byte aligned */
+#define RX_USED_OFF   768u  /* 38 B; 4-byte aligned */
+
+static seL4_Word          g_vq_pa[3];       /* [0]=structs, [1]=TX buf, [2]=RX buf */
+static volatile uint32_t *g_virtio;         /* VirtIO MMIO base at bus.2 slot */
+static uint16_t           g_rx_used_last;   /* shadow of RX used ring consumer idx */
+
+/* VQ struct page is identity-mapped: virtual address == physical address */
+#define QP       ((uintptr_t)g_vq_pa[0])
+#define TX_DESC  ((volatile vq_desc_t  *)(QP + TX_DESC_OFF))
+#define TX_AVAIL ((volatile vq_avail_t *)(QP + TX_AVAIL_OFF))
+#define TX_USED  ((volatile vq_used_t  *)(QP + TX_USED_OFF))
+#define RX_DESC  ((volatile vq_desc_t  *)(QP + RX_DESC_OFF))
+#define RX_AVAIL ((volatile vq_avail_t *)(QP + RX_AVAIL_OFF))
+#define RX_USED  ((volatile vq_used_t  *)(QP + RX_USED_OFF))
+
+static inline uint32_t vio_rd(uint32_t off)
+{
+    return *(volatile uint32_t *)((uintptr_t)g_virtio + off);
+}
+static inline void vio_wr(uint32_t off, uint32_t val)
+{
+    *(volatile uint32_t *)((uintptr_t)g_virtio + off) = val;
+}
+#define VQ_MB() __asm__ volatile("dsb sy" ::: "memory")
+
+static void vio_queue_setup(uint32_t qidx,
+                             seL4_Word desc_pa, seL4_Word avail_pa, seL4_Word used_pa)
+{
+    vio_wr(VMMIO_QUEUE_SEL,   qidx);
+    vio_wr(VMMIO_QUEUE_NUM,   VQ_DEPTH);
+    vio_wr(VMMIO_Q_DESC_LO,   (uint32_t)(desc_pa  & 0xFFFFFFFFu));
+    vio_wr(VMMIO_Q_DESC_HI,   (uint32_t)(desc_pa  >> 32u));
+    vio_wr(VMMIO_Q_AVAIL_LO,  (uint32_t)(avail_pa & 0xFFFFFFFFu));
+    vio_wr(VMMIO_Q_AVAIL_HI,  (uint32_t)(avail_pa >> 32u));
+    vio_wr(VMMIO_Q_USED_LO,   (uint32_t)(used_pa  & 0xFFFFFFFFu));
+    vio_wr(VMMIO_Q_USED_HI,   (uint32_t)(used_pa  >> 32u));
+    vio_wr(VMMIO_QUEUE_READY, 1u);
+}
+
+static void virtio_serial_init(void)
+{
+    /* VQ PAs written by root task into startup record before cc_pd started */
+    volatile seL4_Word *sp = (volatile seL4_Word *)CC_PD_STARTUP_VA;
+    g_vq_pa[0] = sp[0];
+    g_vq_pa[1] = sp[1];
+    g_vq_pa[2] = sp[2];
+
+    g_virtio = (volatile uint32_t *)(CC_PD_VIRTIO_VA + VMMIO_SLOT_OFF);
+
+    uint32_t magic   = vio_rd(VMMIO_MAGIC);
+    uint32_t version = vio_rd(VMMIO_VERSION);
+    uint32_t devid   = vio_rd(VMMIO_DEVICE_ID);
+    cc_dbg_puts("[cc_pd] VirtIO magic="); cc_dbg_hex(magic);
+    cc_dbg_puts(" ver="); cc_dbg_hex(version);
+    cc_dbg_puts(" devid="); cc_dbg_hex(devid);
+    cc_dbg_puts("\n");
+
+    if (magic != VIRTIO_MAGIC || devid != VIRTIO_ID_CONSOLE) {
+        cc_dbg_puts("[cc_pd] VirtIO init FAILED: bad magic/devid\n");
+        return;
+    }
+
+    /* VirtIO 1.0 initialisation sequence */
+    vio_wr(VMMIO_STATUS, 0u);
+    vio_wr(VMMIO_STATUS, VSTATUS_ACK);
+    vio_wr(VMMIO_STATUS, VSTATUS_ACK | VSTATUS_DRIVER);
+    /* Negotiate features: read both 32-bit words, accept them with MULTIPORT
+     * cleared (bit 1 of word 0) and VIRTIO_F_VERSION_1 set (bit 0 of word 1).
+     * Without VIRTIO_F_VERSION_1 the device falls back to legacy mode where
+     * QueueDescLow/High and QueueReady do not exist. */
+    vio_wr(VMMIO_DEV_FEAT_SEL, 0u);
+    uint32_t feat0 = vio_rd(VMMIO_DEV_FEAT);
+    vio_wr(VMMIO_DEV_FEAT_SEL, 1u);
+    uint32_t feat1 = vio_rd(VMMIO_DEV_FEAT);
+    vio_wr(VMMIO_DRV_FEAT_SEL, 0u);
+    vio_wr(VMMIO_DRV_FEAT, feat0 & ~(1u << 1u));  /* clear MULTIPORT */
+    vio_wr(VMMIO_DRV_FEAT_SEL, 1u);
+    vio_wr(VMMIO_DRV_FEAT, feat1);                /* accepts VIRTIO_F_VERSION_1 */
+    vio_wr(VMMIO_STATUS, VSTATUS_ACK | VSTATUS_DRIVER | VSTATUS_FEAT_OK);
+    uint32_t s_after = vio_rd(VMMIO_STATUS);
+    cc_dbg_puts("[cc_pd] STATUS after FEAT_OK write="); cc_dbg_hex(s_after); cc_dbg_puts("\n");
+    if (!(s_after & VSTATUS_FEAT_OK)) {
+        cc_dbg_puts("[cc_pd] VirtIO FEAT_OK not set\n");
+        vio_wr(VMMIO_STATUS, VSTATUS_FAILED);
+        return;
+    }
+
+    vio_queue_setup(0u,
+        g_vq_pa[0] + RX_DESC_OFF, g_vq_pa[0] + RX_AVAIL_OFF, g_vq_pa[0] + RX_USED_OFF);
+    vio_queue_setup(1u,
+        g_vq_pa[0] + TX_DESC_OFF, g_vq_pa[0] + TX_AVAIL_OFF, g_vq_pa[0] + TX_USED_OFF);
+
+    vio_wr(VMMIO_STATUS,
+           VSTATUS_ACK | VSTATUS_DRIVER | VSTATUS_FEAT_OK | VSTATUS_DRIVER_OK);
+
+    /* Pre-post RX descriptor so the device can buffer incoming bytes */
+    RX_DESC[0].addr  = (uint64_t)g_vq_pa[2];
+    RX_DESC[0].len   = 4096u;
+    RX_DESC[0].flags = 2u;  /* VIRTQ_DESC_F_WRITE: device writes into this buf */
+    RX_DESC[0].next  = 0u;
+    VQ_MB();
+    RX_AVAIL->ring[0] = 0u;
+    VQ_MB();
+    RX_AVAIL->idx = 1u;
+    VQ_MB();
+    vio_wr(VMMIO_QUEUE_NOTIFY, 0u);
+    g_rx_used_last = 0u;
+
+    cc_dbg_puts("[cc_pd] VirtIO serial ready\n");
+}
+
+static void vio_serial_write(const void *buf, uint32_t n)
+{
+    const uint8_t *p = (const uint8_t *)buf;
+    while (n > 0u) {
+        uint32_t chunk = (n > 4096u) ? 4096u : n;
+        __builtin_memcpy((void *)g_vq_pa[1], p, chunk);
+        VQ_MB();
+        TX_DESC[0].addr  = (uint64_t)g_vq_pa[1];
+        TX_DESC[0].len   = chunk;
+        TX_DESC[0].flags = 0u;
+        TX_DESC[0].next  = 0u;
+        VQ_MB();
+        uint16_t old_used = TX_USED->idx;
+        TX_AVAIL->ring[TX_AVAIL->idx & (uint16_t)(VQ_DEPTH - 1u)] = 0u;
+        VQ_MB();
+        TX_AVAIL->idx++;
+        VQ_MB();
+        cc_dbg_puts("[cc_pd] TX notify n="); cc_dbg_hex(n);
+        cc_dbg_puts(" old_used="); cc_dbg_hex(old_used);
+        cc_dbg_puts(" avail_idx="); cc_dbg_hex(TX_AVAIL->idx);
+        cc_dbg_puts(" desc_addr="); cc_dbg_hex(TX_DESC[0].addr);
+        cc_dbg_puts("\n");
+        vio_wr(VMMIO_QUEUE_NOTIFY, 1u);
+        uint16_t cur_used = TX_USED->idx;
+        cc_dbg_puts("[cc_pd] TX post-notify used="); cc_dbg_hex(cur_used); cc_dbg_puts("\n");
+        uint32_t spin = 0u;
+        while (TX_USED->idx == old_used) {
+            VQ_MB();
+            seL4_Yield();
+            spin++;
+            if (spin <= 3u || (spin & 0xFFFFu) == 0u) {
+                cc_dbg_puts("[cc_pd] TX yield spin="); cc_dbg_hex(spin);
+                cc_dbg_puts(" used="); cc_dbg_hex(TX_USED->idx);
+                cc_dbg_puts("\n");
+            }
+        }
+        cc_dbg_puts("[cc_pd] TX done spin="); cc_dbg_hex(spin); cc_dbg_puts("\n");
+        p += chunk;
+        n -= chunk;
+    }
+}
+
+static void vio_serial_read(void *buf, uint32_t n)
+{
+    uint8_t *p = (uint8_t *)buf;
+    while (n > 0u) {
+        uint16_t cur;
+        for (;;) {
+            VQ_MB();
+            cur = RX_USED->idx;
+            if (cur != g_rx_used_last) { break; }
+            seL4_Yield();
+        }
+        uint32_t got  = RX_USED->ring[g_rx_used_last & (uint16_t)(VQ_DEPTH - 1u)].len;
+        VQ_MB();
+        uint32_t take = (got > n) ? n : got;
+        __builtin_memcpy(p, (const void *)g_vq_pa[2], take);
+        p += take;
+        n -= take;
+        g_rx_used_last++;
+        /* Re-post RX buffer */
+        RX_DESC[0].addr  = (uint64_t)g_vq_pa[2];
+        RX_DESC[0].len   = 4096u;
+        RX_DESC[0].flags = 2u;
+        RX_DESC[0].next  = 0u;
+        VQ_MB();
+        RX_AVAIL->ring[RX_AVAIL->idx & (uint16_t)(VQ_DEPTH - 1u)] = 0u;
+        VQ_MB();
+        RX_AVAIL->idx++;
+        VQ_MB();
+        vio_wr(VMMIO_QUEUE_NOTIFY, 0u);
+    }
+}
+
+/* ─── Wire frame types ───────────────────────────────────────────────────── */
+/*
+ * These match the layout used by agentctl-ng and agentos_gui exactly.
+ * The static_asserts enforce the 4112-byte invariant at compile time.
+ */
+
+#define CC_WIRE_SHMEM_SIZE  4096u
+
+typedef struct {
+    uint32_t opcode;
+    uint32_t mr[3];             /* MR1, MR2, MR3 from caller */
+    uint8_t  shmem[CC_WIRE_SHMEM_SIZE];
+} cc_req_wire_t;
+
+typedef struct {
+    uint32_t mr[4];             /* MR0 (status), MR1, MR2, MR3 */
+    uint8_t  shmem[CC_WIRE_SHMEM_SIZE];
+} cc_reply_wire_t;
+
+_Static_assert(sizeof(cc_req_wire_t)   == 4112u, "cc_req_wire_t size");
+_Static_assert(sizeof(cc_reply_wire_t) == 4112u, "cc_reply_wire_t size");
 
 /* ─── Session table ──────────────────────────────────────────────────────── */
 
 typedef struct {
-    bool             active;
-    uint32_t owner;
-    uint32_t         client_badge;
-    uint32_t         state;            /* CC_SESSION_STATE_* */
-    uint32_t         ticks_since_active;
+    bool     active;
+    uint32_t client_badge;
+    uint32_t state;
+    uint32_t ticks_since_active;
 } cc_session_t;
 
-static cc_session_t sessions[CC_MAX_SESSIONS];
-
-/* ─── Helpers ────────────────────────────────────────────────────────────── */
+static cc_session_t g_sessions[CC_MAX_SESSIONS];
 
 static int alloc_session(void)
 {
     for (int i = 0; i < (int)CC_MAX_SESSIONS; i++) {
-        if (!sessions[i].active)
-            return i;
+        if (!g_sessions[i].active) return i;
     }
     return -1;
 }
 
-static bool valid_session(uint32_t sid, uint32_t ch)
+static bool valid_session(uint32_t sid)
 {
     return sid < CC_MAX_SESSIONS &&
-           sessions[sid].active &&
-           sessions[sid].owner == ch &&
-           sessions[sid].state != CC_SESSION_STATE_EXPIRED;
-}
-
-static void touch_session(uint32_t sid)
-{
-    if (sid < CC_MAX_SESSIONS && sessions[sid].active)
-        sessions[sid].ticks_since_active = 0;
+           g_sessions[sid].active &&
+           g_sessions[sid].state != (uint32_t)CC_SESSION_STATE_EXPIRED;
 }
 
 /* ─── Session management handlers ───────────────────────────────────────── */
 
-static void handle_connect(uint32_t ch)
+static void handle_connect(const cc_req_wire_t *req, cc_reply_wire_t *rep)
 {
-    IPC_STUB_LOCALS
-    uint32_t badge = (uint32_t)msg_u32(req, 4);
     int s = alloc_session();
     if (s < 0) {
-        rep_u32(rep, 0, CC_ERR_NO_SESSIONS);
-        rep_u32(rep, 4, 0u);
+        rep->mr[0] = CC_ERR_NO_SESSIONS;
+        rep->mr[1] = 0u;
         return;
     }
-    sessions[s].active       = true;
-    sessions[s].owner        = ch;
-    sessions[s].client_badge = badge;
-    sessions[s].state        = CC_SESSION_STATE_CONNECTED;
-    sessions[s].ticks_since_active = 0;
+    g_sessions[s].active             = true;
+    g_sessions[s].client_badge       = req->mr[0]; /* badge in MR1 */
+    g_sessions[s].state              = CC_SESSION_STATE_CONNECTED;
+    g_sessions[s].ticks_since_active = 0u;
 
-    rep_u32(rep, 0, CC_OK);
-    rep_u32(rep, 4, (uint32_t)s);
+    rep->mr[0] = CC_OK;
+    rep->mr[1] = (uint32_t)s;
 }
 
-static void handle_disconnect(uint32_t ch)
+static void handle_disconnect(const cc_req_wire_t *req, cc_reply_wire_t *rep)
 {
-    IPC_STUB_LOCALS
-    uint32_t sid = (uint32_t)msg_u32(req, 4);
-    if (!valid_session(sid, ch)) {
-        rep_u32(rep, 0, CC_ERR_BAD_SESSION);
+    uint32_t sid = req->mr[0]; /* session_id in MR1 */
+    if (!valid_session(sid)) {
+        rep->mr[0] = CC_ERR_BAD_SESSION;
         return;
     }
-    sessions[sid].active = false;
-    rep_u32(rep, 0, CC_OK);
+    g_sessions[sid].active = false;
+    rep->mr[0] = CC_OK;
 }
 
-static void handle_status(uint32_t ch)
+static void handle_status(const cc_req_wire_t *req, cc_reply_wire_t *rep)
 {
-    IPC_STUB_LOCALS
-    uint32_t sid = (uint32_t)msg_u32(req, 4);
-    if (!valid_session(sid, ch)) {
-        rep_u32(rep, 0, CC_ERR_BAD_SESSION);
-        rep_u32(rep, 4, 0u);
-        rep_u32(rep, 8, 0u);
-        rep_u32(rep, 12, 0u);
+    uint32_t sid = req->mr[0]; /* session_id in MR1 */
+    if (!valid_session(sid)) {
+        rep->mr[0] = CC_ERR_BAD_SESSION;
+        rep->mr[1] = 0u;
+        rep->mr[2] = 0u;
+        rep->mr[3] = 0u;
         return;
     }
-    rep_u32(rep, 0, CC_OK);
-    rep_u32(rep, 4, sessions[sid].state);
-    rep_u32(rep, 8, 0u);                        /* no pending responses in relay model */
-    rep_u32(rep, 12, sessions[sid].ticks_since_active);
+    rep->mr[0] = CC_OK;
+    rep->mr[1] = g_sessions[sid].state;
+    rep->mr[2] = 0u; /* no pending responses in relay model */
+    rep->mr[3] = g_sessions[sid].ticks_since_active;
 }
 
-static void handle_list_sessions(void)
+static void handle_list_sessions(cc_reply_wire_t *rep)
 {
-    IPC_STUB_LOCALS
-    cc_session_info_t *out = (cc_session_info_t *)cc_shmem_vaddr;
-    uint32_t count = 0;
+    cc_session_info_t *out = (cc_session_info_t *)rep->shmem;
+    uint32_t count = 0u;
 
-    for (uint32_t i = 0; i < CC_MAX_SESSIONS; i++) {
-        if (sessions[i].active) {
-            out[count].session_id        = i;
-            out[count].state             = sessions[i].state;
-            out[count].client_badge      = sessions[i].client_badge;
-            out[count].ticks_since_active = sessions[i].ticks_since_active;
+    for (uint32_t i = 0u; i < CC_MAX_SESSIONS; i++) {
+        if (g_sessions[i].active) {
+            out[count].session_id         = i;
+            out[count].state              = g_sessions[i].state;
+            out[count].client_badge       = g_sessions[i].client_badge;
+            out[count].ticks_since_active = g_sessions[i].ticks_since_active;
             count++;
         }
     }
-    rep_u32(rep, 0, count);
+    rep->mr[0] = count;
 }
 
-/* ─── Relay helpers ──────────────────────────────────────────────────────── */
-
+/* ─── Relay stubs ────────────────────────────────────────────────────────── */
 /*
- * relay_vibe: forward a MSG_VIBEOS_* call to vibe_engine.
- * MRs must be set by caller before invoking.  Returns the raw MR0 result.
+ * Each handler below will call the corresponding downstream service PD via
+ * seL4_Call once inter-PD endpoint wiring is complete (Phase 5).
+ * For now they return CC_OK with empty/zero data so that external callers
+ * (agentos_gui) get well-formed responses and can display an empty state.
  */
-static uint32_t relay_vibe(uint32_t opcode, uint32_t mr_count)
+
+static void handle_list_guests(cc_reply_wire_t *rep)
 {
-    IPC_STUB_LOCALS
-    rep_u32(rep, 0, opcode);
-    /* E5-S8: ppcall stubbed */
-    return (uint32_t)msg_u32(req, 0);
+    /* Phase 5: seL4_Call(vibe_engine_ep, MSG_VIBEOS_LIST) */
+    rep->mr[0] = 0u; /* count = 0 */
 }
 
-/*
- * relay_guest: forward a MSG_GUEST_* call to guest_pd.
- */
-static uint32_t relay_guest(uint32_t opcode, uint32_t mr_count)
+static void handle_list_devices(const cc_req_wire_t *req, cc_reply_wire_t *rep)
 {
-    IPC_STUB_LOCALS
-    rep_u32(rep, 0, opcode);
-    /* E5-S8: ppcall stubbed */
-    return (uint32_t)msg_u32(req, 0);
+    (void)req;
+    /* Phase 5: route by req->mr[0] (dev_type) to appropriate driver PD */
+    rep->mr[0] = 0u; /* count = 0 */
 }
 
-/* ─── Direct relay handlers (Phase 5a) ──────────────────────────────────── */
-
-/*
- * MSG_CC_LIST_GUESTS → MSG_VIBEOS_LIST
- * Relays to vibe_engine; result (vibeos_info_t[] in cc_vibe_shmem) is
- * copied to cc_shmem as cc_guest_info_t[].
- */
-static void handle_list_guests(void)
+static void handle_list_polecats(cc_reply_wire_t *rep)
 {
-    IPC_STUB_LOCALS
-    rep_u32(rep, 0, MSG_VIBEOS_LIST);
-    /* E5-S8: ppcall stubbed */
-    uint32_t count = (uint32_t)msg_u32(req, 0);
-
-    /* Copy cc_vibe_shmem entries to caller's cc_shmem as cc_guest_info_t.
-     * vibeos_info_t layout: handle, os_type, state, ram_mb, uptime_ticks, node_id */
-    const vibeos_info_t *src  = (const vibeos_info_t *)cc_vibe_shmem_vaddr;
-    cc_guest_info_t *dst      = (cc_guest_info_t *)cc_shmem_vaddr;
-
-    for (uint32_t i = 0; i < count; i++) {
-        dst[i].guest_handle = src[i].handle;
-        dst[i].state        = src[i].state;
-        dst[i].os_type      = src[i].os_type;
-        dst[i].arch         = 0u;  /* vibeos_info_t has no arch field */
-    }
-
-    rep_u32(rep, 0, count);
+    /* Phase 5: seL4_Call(agent_pool_ep, MSG_AGENTPOOL_STATUS) */
+    rep->mr[0] = CC_OK;
+    rep->mr[1] = 0u; /* total */
+    rep->mr[2] = 0u; /* busy  */
+    rep->mr[3] = 0u; /* idle  */
 }
 
-/*
- * MSG_CC_LIST_DEVICES → device PD selected by dev_type in MR1.
- * Routes:
- *   CC_DEV_TYPE_SERIAL → MSG_SERIAL_STATUS on CH_CC_OUT_SERIAL
- *   CC_DEV_TYPE_NET    → MSG_NET_DEV_STATUS on CH_CC_OUT_NET
- *   CC_DEV_TYPE_BLOCK  → MSG_BLOCK_STATUS on CH_CC_OUT_BLOCK
- *   CC_DEV_TYPE_USB    → MSG_USB_LIST on CH_CC_OUT_USB
- *   CC_DEV_TYPE_FB     → MSG_FB_* (handled via attach path)
- */
-static void handle_list_devices(void)
+static void handle_guest_status(const cc_req_wire_t *req, cc_reply_wire_t *rep)
 {
-    IPC_STUB_LOCALS
-    uint32_t dev_type = (uint32_t)msg_u32(req, 4);
-    cc_device_info_t *out = (cc_device_info_t *)cc_shmem_vaddr;
-
-    switch (dev_type) {
-    case CC_DEV_TYPE_SERIAL: {
-        rep_u32(rep, 0, MSG_SERIAL_STATUS);
-        rep_u32(rep, 4, 0u);   /* client_slot 0: status of default port */
-        /* E5-S8: ppcall stubbed */
-        out[0].dev_type   = CC_DEV_TYPE_SERIAL;
-        out[0].dev_handle = 0u;
-        out[0].state      = (uint32_t)msg_u32(req, 0);
-        out[0]._reserved  = 0u;
-        rep_u32(rep, 0, 1u);
-        break;
-    }
-    case CC_DEV_TYPE_NET: {
-        rep_u32(rep, 0, MSG_NET_DEV_STATUS);
-        rep_u32(rep, 4, 0u);   /* handle 0 */
-        /* E5-S8: ppcall stubbed */
-        out[0].dev_type   = CC_DEV_TYPE_NET;
-        out[0].dev_handle = 0u;
-        out[0].state      = (uint32_t)msg_u32(req, 0);
-        out[0]._reserved  = 0u;
-        rep_u32(rep, 0, 1u);
-        break;
-    }
-    case CC_DEV_TYPE_BLOCK: {
-        rep_u32(rep, 0, MSG_BLOCK_STATUS);
-        rep_u32(rep, 4, 0u);   /* handle 0 */
-        /* E5-S8: ppcall stubbed */
-        out[0].dev_type   = CC_DEV_TYPE_BLOCK;
-        out[0].dev_handle = 0u;
-        out[0].state      = (uint32_t)msg_u32(req, 0);
-        out[0]._reserved  = 0u;
-        rep_u32(rep, 0, 1u);
-        break;
-    }
-    case CC_DEV_TYPE_USB: {
-        rep_u32(rep, 0, MSG_USB_LIST);
-        /* E5-S8: ppcall stubbed */
-        uint32_t usb_count = (uint32_t)msg_u32(req, 0);
-        /* USB entries from cc_dev_shmem → re-encode as cc_device_info_t */
-        const uint32_t *usb = (const uint32_t *)cc_dev_shmem_vaddr;
-        for (uint32_t i = 0; i < usb_count; i++) {
-            out[i].dev_type   = CC_DEV_TYPE_USB;
-            out[i].dev_handle = usb[i * 4];
-            out[i].state      = usb[i * 4 + 1];
-            out[i]._reserved  = 0u;
-        }
-        rep_u32(rep, 0, usb_count);
-        break;
-    }
-    case CC_DEV_TYPE_FB: {
-        /* No bulk-list operation for framebuffers; report 0 devices */
-        rep_u32(rep, 0, 0u);
-        break;
-    }
-    default:
-        rep_u32(rep, 0, CC_ERR_BAD_DEV_TYPE);
-        break;
-    }
+    (void)req;
+    /* Phase 5: seL4_Call(vibe_engine_ep, MSG_VIBEOS_STATUS, guest_handle) */
+    rep->mr[0] = CC_ERR_BAD_HANDLE;
 }
 
-/*
- * MSG_CC_LIST_POLECATS → MSG_AGENTPOOL_STATUS
- * Relays total/busy/idle counts from agent_pool.
- */
-static void handle_list_polecats(void)
+static void handle_device_status(const cc_req_wire_t *req, cc_reply_wire_t *rep)
 {
-    IPC_STUB_LOCALS
-    rep_u32(rep, 0, MSG_AGENTPOOL_STATUS);
-    /* E5-S8: ppcall stubbed */
-    /* MR0=total MR1=busy MR2=idle from agent_pool */
-    uint32_t total = (uint32_t)msg_u32(req, 0);
-    uint32_t busy  = (uint32_t)msg_u32(req, 4);
-    uint32_t idle  = (uint32_t)msg_u32(req, 8);
-    rep_u32(rep, 0, CC_OK);
-    rep_u32(rep, 4, total);
-    rep_u32(rep, 8, busy);
-    rep_u32(rep, 12, idle);
+    (void)req;
+    /* Phase 5: route by req->mr[0] (dev_type) */
+    rep->mr[0] = CC_ERR_BAD_DEV_TYPE;
 }
 
-/*
- * MSG_CC_GUEST_STATUS → MSG_VIBEOS_STATUS
- * MR1=guest_handle → relays to vibe_engine; copies vibeos_status from
- * cc_vibe_shmem to cc_shmem as cc_guest_status_t.
- */
-static void handle_guest_status(void)
+static void handle_attach_framebuffer(const cc_req_wire_t *req,
+                                       cc_reply_wire_t *rep)
 {
-    IPC_STUB_LOCALS
-    uint32_t guest_handle = (uint32_t)msg_u32(req, 4);
-
-    rep_u32(rep, 0, MSG_VIBEOS_STATUS);
-    rep_u32(rep, 4, guest_handle);
-    /* E5-S8: ppcall stubbed */
-    uint32_t ok = (uint32_t)msg_u32(req, 0);
-
-    /* MSG_VIBEOS_STATUS: MR0=state; vibeos_status_reply in cc_vibe_shmem.
-     * vibeos_status_reply layout: ok, state, os_type, ram_mb, uptime_ticks */
-    const struct vibeos_status_reply *vs =
-        (const struct vibeos_status_reply *)cc_vibe_shmem_vaddr;
-
-    if (vs->ok != (uint32_t)VIBEOS_OK) {
-        rep_u32(rep, 0, CC_ERR_RELAY_FAULT);
-        return;
-    }
-
-    cc_guest_status_t *dst = (cc_guest_status_t *)cc_shmem_vaddr;
-    dst->guest_handle  = guest_handle;
-    dst->state         = vs->state;
-    dst->os_type       = vs->os_type;
-    dst->arch          = 0u;   /* vibeos_status_reply has no arch field */
-    dst->device_flags  = 0u;   /* not surfaced by MSG_VIBEOS_STATUS */
-    dst->_reserved[0]  = 0u;
-    dst->_reserved[1]  = 0u;
-    dst->_reserved[2]  = 0u;
-
-    rep_u32(rep, 0, CC_OK);
+    (void)req;
+    /* Phase 5: seL4_Call(framebuffer_ep, MSG_FB_FLIP, fb_handle) */
+    rep->mr[0] = CC_ERR_BAD_HANDLE;
+    rep->mr[1] = 0u;
 }
 
-/*
- * MSG_CC_DEVICE_STATUS → device PD selected by dev_type.
- * MR1=dev_type MR2=dev_handle → routes to appropriate PD status opcode.
- * Raw PD response is placed in cc_shmem for the caller to interpret.
- */
-static void handle_device_status(void)
+static void handle_send_input(const cc_req_wire_t *req, cc_reply_wire_t *rep)
 {
-    IPC_STUB_LOCALS
-    uint32_t dev_type   = (uint32_t)msg_u32(req, 4);
-    uint32_t dev_handle = (uint32_t)msg_u32(req, 8);
-    uint32_t *out       = (uint32_t *)cc_shmem_vaddr;
-
-    switch (dev_type) {
-    case CC_DEV_TYPE_SERIAL:
-        rep_u32(rep, 0, MSG_SERIAL_STATUS);
-        rep_u32(rep, 4, dev_handle);
-        /* E5-S8: ppcall stubbed */
-        out[0] = (uint32_t)msg_u32(req, 0);
-        out[1] = (uint32_t)msg_u32(req, 4);
-        out[2] = (uint32_t)msg_u32(req, 8);
-        rep_u32(rep, 0, CC_OK);
-        break;
-
-    case CC_DEV_TYPE_NET:
-        rep_u32(rep, 0, MSG_NET_DEV_STATUS);
-        rep_u32(rep, 4, dev_handle);
-        /* E5-S8: ppcall stubbed */
-        out[0] = (uint32_t)msg_u32(req, 0);
-        out[1] = (uint32_t)msg_u32(req, 4);
-        out[2] = (uint32_t)msg_u32(req, 8);
-        rep_u32(rep, 0, CC_OK);
-        break;
-
-    case CC_DEV_TYPE_BLOCK:
-        rep_u32(rep, 0, MSG_BLOCK_STATUS);
-        rep_u32(rep, 4, dev_handle);
-        /* E5-S8: ppcall stubbed */
-        out[0] = (uint32_t)msg_u32(req, 0);
-        out[1] = (uint32_t)msg_u32(req, 4);
-        out[2] = (uint32_t)msg_u32(req, 8);
-        rep_u32(rep, 0, CC_OK);
-        break;
-
-    case CC_DEV_TYPE_USB:
-        rep_u32(rep, 0, MSG_USB_STATUS);
-        rep_u32(rep, 4, dev_handle);
-        /* E5-S8: ppcall stubbed */
-        out[0] = (uint32_t)msg_u32(req, 0);
-        out[1] = (uint32_t)msg_u32(req, 4);
-        out[2] = (uint32_t)msg_u32(req, 8);
-        rep_u32(rep, 0, CC_OK);
-        break;
-
-    case CC_DEV_TYPE_FB:
-        /* framebuffer status: use MSG_FB_FLIP probe — just verify handle valid */
-        rep_u32(rep, 0, CC_OK);
-        out[0] = dev_handle;
-        break;
-
-    default:
-        rep_u32(rep, 0, CC_ERR_BAD_DEV_TYPE);
-        break;
-    }
+    (void)req;
+    /* Phase 5: seL4_Call(guest_ep, MSG_GUEST_SEND_INPUT, handle) */
+    rep->mr[0] = CC_ERR_BAD_HANDLE;
 }
 
-/*
- * MSG_CC_ATTACH_FRAMEBUFFER → MSG_FB_FLIP (handle probe) on framebuffer_pd.
- * MR1=guest_handle MR2=fb_handle
- *
- * Validates that fb_handle is a live framebuffer by issuing a non-mutating
- * probe; then records the subscription in cc_shmem for the caller.
- * Actual EVENT_FB_FRAME_READY delivery is via EventBus (out-of-band).
- */
-static void handle_attach_framebuffer(void)
+static void handle_snapshot(const cc_req_wire_t *req, cc_reply_wire_t *rep)
 {
-    IPC_STUB_LOCALS
-    uint32_t guest_handle = (uint32_t)msg_u32(req, 4);
-    uint32_t fb_handle    = (uint32_t)msg_u32(req, 8);
-
-    (void)guest_handle;   /* relay only: guest association is tracked by caller */
-
-    /* Probe the framebuffer handle validity via MSG_FB_FLIP */
-    rep_u32(rep, 0, MSG_FB_FLIP);
-    rep_u32(rep, 4, fb_handle);
-    /* E5-S8: ppcall stubbed */
-
-    uint32_t fb_ok  = (uint32_t)msg_u32(req, 0);
-    uint32_t fr_seq = (uint32_t)msg_u32(req, 4);
-
-    if (fb_ok != (uint32_t)FB_OK) {
-        rep_u32(rep, 0, CC_ERR_RELAY_FAULT);
-        rep_u32(rep, 4, 0u);
-        return;
-    }
-
-    rep_u32(rep, 0, CC_OK);
-    rep_u32(rep, 4, fr_seq);
+    (void)req;
+    /* Phase 5: seL4_Call(vibe_engine_ep, MSG_VIBEOS_SNAPSHOT, handle) */
+    rep->mr[0] = CC_ERR_RELAY_FAULT;
+    rep->mr[1] = 0u;
+    rep->mr[2] = 0u;
 }
 
-/*
- * MSG_CC_SEND_INPUT → MSG_GUEST_SEND_INPUT on guest_pd.
- * MR1=guest_handle; cc_input_event_t in cc_shmem → relayed via cc_guest_shmem.
- */
-static void handle_send_input(void)
+static void handle_restore(const cc_req_wire_t *req, cc_reply_wire_t *rep)
 {
-    IPC_STUB_LOCALS
-    uint32_t guest_handle = (uint32_t)msg_u32(req, 4);
-
-    /* Copy input event from caller's cc_shmem to cc_guest_shmem */
-    const cc_input_event_t *src = (const cc_input_event_t *)cc_shmem_vaddr;
-    cc_input_event_t *dst       = (cc_input_event_t *)cc_guest_shmem_vaddr;
-    *dst = *src;
-
-    rep_u32(rep, 0, MSG_GUEST_SEND_INPUT);
-    rep_u32(rep, 4, guest_handle);
-    /* E5-S8: ppcall stubbed */
-
-    uint32_t ok = (uint32_t)msg_u32(req, 0);
-    rep_u32(rep, 0, ok == 0u ? CC_OK : CC_ERR_RELAY_FAULT);
+    (void)req;
+    /* Phase 5: seL4_Call(vibe_engine_ep, MSG_VIBEOS_RESTORE, ...) */
+    rep->mr[0] = CC_ERR_RELAY_FAULT;
 }
 
-/*
- * MSG_CC_SNAPSHOT → MSG_VIBEOS_SNAPSHOT on vibe_engine.
- * MR1=guest_handle → MR0=ok MR1=snap_lo MR2=snap_hi
- */
-static void handle_snapshot(void)
+static void handle_log_stream(const cc_req_wire_t *req, cc_reply_wire_t *rep)
 {
-    IPC_STUB_LOCALS
-    uint32_t guest_handle = (uint32_t)msg_u32(req, 4);
-
-    rep_u32(rep, 0, MSG_VIBEOS_SNAPSHOT);
-    rep_u32(rep, 4, guest_handle);
-    /* E5-S8: ppcall stubbed */
-
-    uint32_t ok      = (uint32_t)msg_u32(req, 0);
-    uint32_t snap_lo = (uint32_t)msg_u32(req, 4);
-    uint32_t snap_hi = (uint32_t)msg_u32(req, 8);
-
-    rep_u32(rep, 0, ok == 0u ? CC_OK : CC_ERR_RELAY_FAULT);
-    rep_u32(rep, 4, snap_lo);
-    rep_u32(rep, 8, snap_hi);
+    (void)req;
+    /* Phase 5: seL4_Call(log_drain_ep, OP_LOG_WRITE, slot, pd_id) */
+    rep->mr[0] = CC_OK;
+    rep->mr[1] = 0u; /* bytes_drained */
 }
 
-/*
- * MSG_CC_RESTORE → MSG_VIBEOS_RESTORE on vibe_engine.
- * MR1=guest_handle MR2=snap_lo MR3=snap_hi → MR0=ok
- */
-static void handle_restore(void)
+/* ─── Dispatch ───────────────────────────────────────────────────────────── */
+
+static void cc_dispatch(const cc_req_wire_t *req, cc_reply_wire_t *rep)
 {
-    IPC_STUB_LOCALS
-    uint32_t guest_handle = (uint32_t)msg_u32(req, 4);
-    uint32_t snap_lo      = (uint32_t)msg_u32(req, 8);
-    uint32_t snap_hi      = (uint32_t)msg_u32(req, 12);
-
-    rep_u32(rep, 0, MSG_VIBEOS_RESTORE);
-    rep_u32(rep, 4, guest_handle);
-    rep_u32(rep, 8, snap_lo);
-    rep_u32(rep, 12, snap_hi);
-    /* E5-S8: ppcall stubbed */
-
-    uint32_t ok = (uint32_t)msg_u32(req, 0);
-    rep_u32(rep, 0, ok == 0u ? CC_OK : CC_ERR_RELAY_FAULT);
-}
-
-/*
- * MSG_CC_LOG_STREAM → OP_LOG_WRITE on log_drain.
- * MR1=slot MR2=pd_id → MR0=ok MR1=bytes_drained
- */
-static void handle_log_stream(void)
-{
-    IPC_STUB_LOCALS
-    uint32_t slot  = (uint32_t)msg_u32(req, 4);
-    uint32_t pd_id = (uint32_t)msg_u32(req, 8);
-
-    rep_u32(rep, 0, (uint32_t)OP_LOG_WRITE);
-    rep_u32(rep, 4, slot);
-    rep_u32(rep, 8, pd_id);
-    /* E5-S8: ppcall stubbed */
-
-    uint32_t ok    = (uint32_t)msg_u32(req, 0);
-    uint32_t bytes = (uint32_t)msg_u32(req, 4);
-
-    rep_u32(rep, 0, ok == 0u ? CC_OK : CC_ERR_RELAY_FAULT);
-    rep_u32(rep, 4, bytes);
-}
-
-/* ─── Microkit entry points ──────────────────────────────────────────────── */
-
-static void cc_pd_pd_init(void)
-{
-    sel4_dbg_puts("[cc_pd] starting — agentOS command-and-control relay\n");
-
-    for (uint32_t i = 0; i < CC_MAX_SESSIONS; i++) {
-        sessions[i].active = false;
-        sessions[i].state  = CC_SESSION_STATE_IDLE;
-    }
-
-    sel4_dbg_puts("[cc_pd] ready (pure relay; zero policy)\n");
-}
-
-static void cc_pd_pd_notified(uint32_t ch)
-{
-    (void)ch;
-}
-
-static uint32_t cc_pd_h_dispatch(sel4_badge_t b, const sel4_msg_t *req, sel4_msg_t *rep, void *ctx)
-{
-    (void)ctx;
-
-    uint32_t op = (uint32_t)msg_u32(req, 0);
-    uint32_t ch = (uint32_t)b;  /* badge encodes caller channel/identity */
-
-    switch (op) {
+    switch (req->opcode) {
     /* Session management */
-    case MSG_CC_CONNECT:    handle_connect(ch);        break;
-    case MSG_CC_DISCONNECT: handle_disconnect(ch);     break;
-    case MSG_CC_STATUS:     handle_status(ch);         break;
-    case MSG_CC_LIST:       handle_list_sessions();    break;
+    case MSG_CC_CONNECT:    handle_connect(req, rep);          break;
+    case MSG_CC_DISCONNECT: handle_disconnect(req, rep);       break;
+    case MSG_CC_STATUS:     handle_status(req, rep);           break;
+    case MSG_CC_LIST:       handle_list_sessions(rep);         break;
 
-    /* Direct relay API */
-    case MSG_CC_LIST_GUESTS:        handle_list_guests();         break;
-    case MSG_CC_LIST_DEVICES:       handle_list_devices();        break;
-    case MSG_CC_LIST_POLECATS:      handle_list_polecats();       break;
-    case MSG_CC_GUEST_STATUS:       handle_guest_status();        break;
-    case MSG_CC_DEVICE_STATUS:      handle_device_status();       break;
-    case MSG_CC_ATTACH_FRAMEBUFFER: handle_attach_framebuffer();  break;
-    case MSG_CC_SEND_INPUT:         handle_send_input();          break;
-    case MSG_CC_SNAPSHOT:           handle_snapshot();            break;
-    case MSG_CC_RESTORE:            handle_restore();             break;
-    case MSG_CC_LOG_STREAM:         handle_log_stream();          break;
+    /* Relay API */
+    case MSG_CC_LIST_GUESTS:        handle_list_guests(rep);             break;
+    case MSG_CC_LIST_DEVICES:       handle_list_devices(req, rep);       break;
+    case MSG_CC_LIST_POLECATS:      handle_list_polecats(rep);           break;
+    case MSG_CC_GUEST_STATUS:       handle_guest_status(req, rep);       break;
+    case MSG_CC_DEVICE_STATUS:      handle_device_status(req, rep);      break;
+    case MSG_CC_ATTACH_FRAMEBUFFER: handle_attach_framebuffer(req, rep); break;
+    case MSG_CC_SEND_INPUT:         handle_send_input(req, rep);         break;
+    case MSG_CC_SNAPSHOT:           handle_snapshot(req, rep);           break;
+    case MSG_CC_RESTORE:            handle_restore(req, rep);            break;
+    case MSG_CC_LOG_STREAM:         handle_log_stream(req, rep);         break;
 
     default:
         sel4_dbg_puts("[cc_pd] unknown opcode\n");
-        rep_u32(rep, 0, CC_ERR_BAD_SESSION);
+        rep->mr[0] = CC_ERR_BAD_SESSION;
         break;
     }
-
-    rep->length = 16;
-        return SEL4_ERR_OK;
 }
 
-/* ── E5-S8: Entry point ─────────────────────────────────────────────────── */
+/* ─── Entry point ────────────────────────────────────────────────────────── */
+
 void cc_pd_main(seL4_CPtr my_ep, seL4_CPtr ns_ep)
 {
+    (void)my_ep;
     (void)ns_ep;
-    cc_pd_pd_init();
-    static sel4_server_t srv;
-    sel4_server_init(&srv, my_ep);
-    /* Dispatch all opcodes through the generic handler */
-    sel4_server_register(&srv, SEL4_SERVER_OPCODE_ANY, cc_pd_h_dispatch, (void *)0);
-    sel4_server_run(&srv);
+
+    /* Canary: unconditional DR write — appears iff cc_pd runs + UART mapped */
+    *(volatile uint32_t *)CC_PD_UART_DBG_VA = (uint32_t)'[';
+    *(volatile uint32_t *)CC_PD_UART_DBG_VA = (uint32_t)'@';
+    *(volatile uint32_t *)CC_PD_UART_DBG_VA = (uint32_t)']';
+    *(volatile uint32_t *)CC_PD_UART_DBG_VA = (uint32_t)'\n';
+
+    /* Initialise session table */
+    for (uint32_t i = 0u; i < CC_MAX_SESSIONS; i++) {
+        g_sessions[i].active = false;
+        g_sessions[i].state  = CC_SESSION_STATE_IDLE;
+    }
+
+    /* Initialise VirtIO MMIO serial (mapped by root task; VQ PAs in startup record) */
+    virtio_serial_init();
+    {
+        uint8_t probe = '!';
+        vio_serial_write(&probe, 1u);
+    }
+
+    /* Static buffers live in BSS — kept off the stack since each frame is
+     * 4112 bytes, which would exhaust cc_pd's 16 KB stack otherwise.    */
+    static cc_req_wire_t   g_req;
+    static cc_reply_wire_t g_rep;
+
+    while (1) {
+        vio_serial_read(&g_req, sizeof(g_req));
+        __builtin_memset(&g_rep, 0, sizeof(g_rep));
+        cc_dispatch(&g_req, &g_rep);
+        vio_serial_write(&g_rep, sizeof(g_rep));
+    }
 }
+
+void pd_main(seL4_CPtr my_ep, seL4_CPtr ns_ep) { cc_pd_main(my_ep, ns_ep); }

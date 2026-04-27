@@ -79,6 +79,7 @@ fi
 
 # Images
 E2E_IMAGE="${E2E_IMAGE:-${REPO_ROOT}/build/${BOARD}/agentos.img}"
+E2E_LOADER_ELF="${E2E_LOADER_ELF:-${REPO_ROOT}/build/${BOARD}/loader.elf}"
 E2E_FREEBSD_IMG="${E2E_FREEBSD_IMG:-${REPO_ROOT}/guest-images/freebsd.img}"
 E2E_SSH_KEY="${E2E_SSH_KEY:-${SCRIPT_DIR}/id_ed25519}"
 
@@ -246,6 +247,7 @@ info "Repo root  : ${REPO_ROOT}"
 info "Board      : ${BOARD}"
 info "QEMU       : ${QEMU_BIN}"
 info "Image      : ${E2E_IMAGE}"
+info "Loader ELF : ${E2E_LOADER_ELF}"
 info "FreeBSD img: ${E2E_FREEBSD_IMG}"
 info "CC port    : ${E2E_CC_PORT}"
 info "SSH port   : ${E2E_SSH_PORT}"
@@ -328,7 +330,8 @@ case "${BOARD}" in
             -serial "chardev:char0"
             -netdev "user,id=net0,${HOSTFWD}"
             -device virtio-net-device,netdev=net0
-            -device "loader,file=${E2E_IMAGE},addr=0x70000000,cpu-num=0"
+            -device "loader,file=${E2E_LOADER_ELF},cpu-num=0"
+            -device "loader,file=${E2E_IMAGE},addr=0x48000000"
             "${GUEST_BLOCK_FLAGS[@]+"${GUEST_BLOCK_FLAGS[@]}"}"
         )
         if [ -n "${ACCEL_FLAGS}" ]; then QEMU_FLAGS+=( ${ACCEL_FLAGS} ); fi

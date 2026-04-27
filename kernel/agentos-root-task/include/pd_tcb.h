@@ -60,7 +60,12 @@ typedef struct {
  *                 the thread's CSpace root)
  *   ipc_buf_cap   frame capability for the IPC buffer page
  *   ipc_buf_va    virtual address of the IPC buffer inside the PD's VSpace
- *   priority      scheduling priority to assign (0 = lowest, 255 = highest)
+ *   priority         scheduling priority to assign (0 = lowest, 255 = highest)
+ *   cnode_size_bits  log2 of the PD's CNode slot count (e.g. 6 for 64 slots).
+ *                    Used to set cspace_root_data = seL4_WordBits - cnode_size_bits,
+ *                    which is the correct guard size for a flat single-level CSpace.
+ *                    Passing 0 here would leave the guard unconfigured (seL4 treats
+ *                    cspace_root_data=0 as "no effect"), breaking cap resolution.
  *
  * Returns:
  *   pd_tcb_result_t.tcb_cap  == dest_slot on success
@@ -72,7 +77,8 @@ pd_tcb_result_t pd_tcb_create(seL4_CPtr  dest_cnode,
                                seL4_CPtr  pd_cnode,
                                seL4_CPtr  ipc_buf_cap,
                                seL4_Word  ipc_buf_va,
-                               uint8_t    priority);
+                               uint8_t    priority,
+                               uint8_t    cnode_size_bits);
 
 /*
  * pd_tcb_set_regs — write initial register state for a PD thread.
@@ -81,6 +87,7 @@ pd_tcb_result_t pd_tcb_create(seL4_CPtr  dest_cnode,
  *   regs.pc = entry   (program counter / instruction pointer)
  *   regs.sp = sp      (initial stack pointer)
  *   regs.x0 = arg0    (first argument register: AArch64 x0 / RISC-V a0)
+ *   regs.x1 = arg1    (second argument register: AArch64 x1 / RISC-V a1)
  *
  * The thread is NOT resumed; resume=0 is passed to seL4_TCB_WriteRegisters.
  * Call pd_tcb_start after this function to make the thread runnable.
@@ -89,14 +96,16 @@ pd_tcb_result_t pd_tcb_create(seL4_CPtr  dest_cnode,
  *   tcb_cap    capability to the TCB to configure
  *   entry      virtual address of the PD's entry point (from pd_vspace_load_elf)
  *   sp         initial stack pointer (stack_top from pd_vspace_load_elf)
- *   arg0       value to place in the first argument register
+ *   arg0       value to place in the first argument register (my_ep CNode slot)
+ *   arg1       value to place in the second argument register (ns_ep CNode slot)
  *
  * Returns seL4_NoError on success.
  */
 seL4_Error pd_tcb_set_regs(seL4_CPtr tcb_cap,
                             seL4_Word entry,
                             seL4_Word sp,
-                            seL4_Word arg0);
+                            seL4_Word arg0,
+                            seL4_Word arg1);
 
 /*
  * pd_tcb_start — make a configured PD thread runnable.

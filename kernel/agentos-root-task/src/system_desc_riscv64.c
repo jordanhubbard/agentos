@@ -13,10 +13,29 @@
  *
  * Each virtio-mmio device region is 0x200 bytes (rounds up to one 4K page).
  *
- * PD CNode size notes:
- *   cnode_size_bits = 6 → 64 slots (for PDs with no IRQs or device frames)
- *   cnode_size_bits = 7 → 128 slots (for PDs with IRQs needing slots ≥ 64)
- *   PD_IRQHANDLER_SLOT_BASE = 64, so IRQ PDs need cnode_size_bits ≥ 7.
+ * ── Priority DAG ──────────────────────────────────────────────────────────────
+ *
+ * Same principle as AArch64: providers run at higher priority than callers.
+ * RISC-V adds irq_pd (PLIC routing) and timer_pd above hardware drivers.
+ *
+ *   255  fault_handler   — fault delivery must preempt everything
+ *   250  irq_pd          — PLIC IRQ routing; hardware interrupt demuxer
+ *   245  timer_pd        — timer interrupt handler
+ *   240  nameserver      — foundation: every PD resolves caps through it
+ *   230  log_drain       — nearly every PD logs
+ *   220  serial_pd       — UART hardware driver
+ *   215  virtio_blk      — block device driver
+ *   210  net_pd          — virtio-net hardware driver
+ *   205  net_server      — lwIP network stack over net_pd
+ *   195  event_bus       — pub/sub backbone
+ *   185  vfs_server      — virtual filesystem
+ *   175  agentfs         — content-addressed object store
+ *   170  framebuffer_pd  — framebuffer driver (optional)
+ *   165  vibe_engine     — WASM hot-swap engine
+ *   160  linux_vmm       — Linux guest VMM
+ *   155  freebsd_vmm     — FreeBSD guest VMM
+ *   110  init_agent      — agent-ecosystem bootstrapper
+ *    50  controller      — policy coordinator; calls everything above it
  *
  * Copyright (c) 2026 The agentOS Project
  * SPDX-License-Identifier: BSD-2-Clause
@@ -30,37 +49,37 @@ const system_desc_t system_desc_riscv64 = {
     .pd_count = 18u,
     .pds = {
 
-        /* pd[0] — nameserver (MUST be first; prio 130) */
+        /* pd[0] — nameserver (MUST be first; prio 240) */
         {
             .name            = "nameserver",
             .elf_path        = "nameserver.elf",
             .stack_size      = 0x4000u,
-            .cnode_size_bits = 6u,
-            .priority        = 130u,
+            .cnode_size_bits = 10u,
+            .priority        = 240u,
             .init_ep_count   = 0u,
             .init_eps        = {},
         },
 
-        /* pd[1] — log_drain (prio 120) */
+        /* pd[1] — log_drain (prio 230) */
         {
             .name            = "log_drain",
             .elf_path        = "log_drain.elf",
             .stack_size      = 0x4000u,
-            .cnode_size_bits = 6u,
-            .priority        = 120u,
+            .cnode_size_bits = 10u,
+            .priority        = 230u,
             .init_ep_count   = 1u,
             .init_eps = {
                 { SVC_ID_NAMESERVER, PD_CNODE_SLOT_NAMESERVER_EP },
             },
         },
 
-        /* pd[2] — serial_pd (prio 180) */
+        /* pd[2] — serial_pd (prio 220; UART hardware driver) */
         {
             .name            = "serial_pd",
             .elf_path        = "serial_pd.elf",
             .stack_size      = 0x4000u,
-            .cnode_size_bits = 6u,
-            .priority        = 180u,
+            .cnode_size_bits = 10u,
+            .priority        = 220u,
             .init_ep_count   = 2u,
             .init_eps = {
                 { SVC_ID_NAMESERVER, PD_CNODE_SLOT_NAMESERVER_EP },
@@ -68,13 +87,13 @@ const system_desc_t system_desc_riscv64 = {
             },
         },
 
-        /* pd[3] — event_bus (prio 200) */
+        /* pd[3] — event_bus (prio 195; pub/sub backbone) */
         {
             .name            = "event_bus",
             .elf_path        = "event_bus.elf",
             .stack_size      = 0x4000u,
-            .cnode_size_bits = 6u,
-            .priority        = 200u,
+            .cnode_size_bits = 10u,
+            .priority        = 195u,
             .init_ep_count   = 2u,
             .init_eps = {
                 { SVC_ID_NAMESERVER, PD_CNODE_SLOT_NAMESERVER_EP },
@@ -82,13 +101,15 @@ const system_desc_t system_desc_riscv64 = {
             },
         },
 
-        /* pd[4] — irq_pd (prio 230) — highest non-fault priority */
+        /* pd[4] — irq_pd (prio 250; PLIC IRQ routing)
+         * Highest non-fault priority: hardware interrupt demultiplexer.
+         * All PLIC IRQs arrive here first before being forwarded to drivers. */
         {
             .name            = "irq_pd",
             .elf_path        = "irq_pd.elf",
             .stack_size      = 0x4000u,
-            .cnode_size_bits = 6u,
-            .priority        = 230u,
+            .cnode_size_bits = 10u,
+            .priority        = 250u,
             .init_ep_count   = 2u,
             .init_eps = {
                 { SVC_ID_NAMESERVER, PD_CNODE_SLOT_NAMESERVER_EP },
@@ -96,13 +117,13 @@ const system_desc_t system_desc_riscv64 = {
             },
         },
 
-        /* pd[5] — timer_pd (prio 225) */
+        /* pd[5] — timer_pd (prio 245; timer interrupt handler) */
         {
             .name            = "timer_pd",
             .elf_path        = "timer_pd.elf",
             .stack_size      = 0x4000u,
-            .cnode_size_bits = 6u,
-            .priority        = 225u,
+            .cnode_size_bits = 10u,
+            .priority        = 245u,
             .init_ep_count   = 2u,
             .init_eps = {
                 { SVC_ID_NAMESERVER, PD_CNODE_SLOT_NAMESERVER_EP },
@@ -110,12 +131,12 @@ const system_desc_t system_desc_riscv64 = {
             },
         },
 
-        /* pd[6] — controller (prio 50) */
+        /* pd[6] — controller (prio 50; policy coordinator) */
         {
             .name            = "controller",
             .elf_path        = "controller.elf",
             .stack_size      = 0x10000u,
-            .cnode_size_bits = 6u,
+            .cnode_size_bits = 10u,
             .priority        = 50u,
             .init_ep_count   = 3u,
             .init_eps = {
@@ -125,13 +146,13 @@ const system_desc_t system_desc_riscv64 = {
             },
         },
 
-        /* pd[7] — init_agent (prio 100) */
+        /* pd[7] — init_agent (prio 110; agent-ecosystem bootstrapper) */
         {
             .name            = "init_agent",
             .elf_path        = "init_agent.elf",
             .stack_size      = 0x8000u,
-            .cnode_size_bits = 6u,
-            .priority        = 100u,
+            .cnode_size_bits = 10u,
+            .priority        = 110u,
             .init_ep_count   = 3u,
             .init_eps = {
                 { SVC_ID_NAMESERVER, PD_CNODE_SLOT_NAMESERVER_EP },
@@ -140,13 +161,13 @@ const system_desc_t system_desc_riscv64 = {
             },
         },
 
-        /* pd[8] — agentfs (prio 150) */
+        /* pd[8] — agentfs (prio 175; content-addressed object store) */
         {
             .name            = "agentfs",
             .elf_path        = "agentfs.elf",
             .stack_size      = 0x8000u,
-            .cnode_size_bits = 6u,
-            .priority        = 150u,
+            .cnode_size_bits = 10u,
+            .priority        = 175u,
             .init_ep_count   = 2u,
             .init_eps = {
                 { SVC_ID_NAMESERVER, PD_CNODE_SLOT_NAMESERVER_EP },
@@ -154,13 +175,13 @@ const system_desc_t system_desc_riscv64 = {
             },
         },
 
-        /* pd[9] — vibe_engine (prio 140) */
+        /* pd[9] — vibe_engine (prio 165; WASM hot-swap lifecycle) */
         {
             .name            = "vibe_engine",
             .elf_path        = "vibe_engine.elf",
             .stack_size      = 0x8000u,
-            .cnode_size_bits = 6u,
-            .priority        = 140u,
+            .cnode_size_bits = 10u,
+            .priority        = 165u,
             .init_ep_count   = 2u,
             .init_eps = {
                 { SVC_ID_NAMESERVER, PD_CNODE_SLOT_NAMESERVER_EP },
@@ -168,13 +189,13 @@ const system_desc_t system_desc_riscv64 = {
             },
         },
 
-        /* pd[10] — vfs_server (prio 160) */
+        /* pd[10] — vfs_server (prio 185; virtual filesystem multiplexer) */
         {
             .name            = "vfs_server",
             .elf_path        = "vfs_server.elf",
             .stack_size      = 0x8000u,
-            .cnode_size_bits = 6u,
-            .priority        = 160u,
+            .cnode_size_bits = 10u,
+            .priority        = 185u,
             .init_ep_count   = 2u,
             .init_eps = {
                 { SVC_ID_NAMESERVER, PD_CNODE_SLOT_NAMESERVER_EP },
@@ -182,15 +203,15 @@ const system_desc_t system_desc_riscv64 = {
             },
         },
 
-        /* pd[11] — net_pd (virtio-net driver, prio 175)
+        /* pd[11] — net_pd (prio 210; virtio-net hardware driver)
          * Owns the virtio-mmio[0] device frame (0x10001000) and PLIC IRQ 1.
-         * cnode_size_bits = 7 so IRQ handler cap fits at slot 64.          */
+         * Runs above net_server (205) which calls it for packet I/O. */
         {
             .name            = "net_pd",
             .elf_path        = "net_pd.elf",
             .stack_size      = 0x8000u,
-            .cnode_size_bits = 7u,
-            .priority        = 175u,
+            .cnode_size_bits = 10u,
+            .priority        = 210u,
             .init_ep_count   = 2u,
             .init_eps = {
                 { SVC_ID_NAMESERVER, PD_CNODE_SLOT_NAMESERVER_EP },
@@ -207,15 +228,15 @@ const system_desc_t system_desc_riscv64 = {
             },
         },
 
-        /* pd[12] — virtio_blk (block device driver, prio 190)
+        /* pd[12] — virtio_blk (prio 215; block device driver)
          * Owns the virtio-mmio[1] device frame (0x10002000) and PLIC IRQ 2.
-         * Placed second on the QEMU command line so QEMU assigns it slot 1. */
+         * Runs above all storage consumers (agentfs 175, vfs_server 185). */
         {
             .name            = "virtio_blk",
             .elf_path        = "virtio_blk.elf",
             .stack_size      = 0x4000u,
-            .cnode_size_bits = 7u,
-            .priority        = 190u,
+            .cnode_size_bits = 10u,
+            .priority        = 215u,
             .init_ep_count   = 2u,
             .init_eps = {
                 { SVC_ID_NAMESERVER, PD_CNODE_SLOT_NAMESERVER_EP },
@@ -232,12 +253,28 @@ const system_desc_t system_desc_riscv64 = {
             },
         },
 
-        /* pd[13] — net_server (prio 170) — lwIP network stack over net_pd */
+        /* pd[13] — net_server (prio 205; lwIP network stack over net_pd)
+         * Runs above callers (vfs_server 185, controller 50) but below
+         * net_pd (210) so the hardware driver can preempt the stack. */
         {
             .name            = "net_server",
             .elf_path        = "net_server.elf",
             .stack_size      = 0x8000u,
-            .cnode_size_bits = 6u,
+            .cnode_size_bits = 10u,
+            .priority        = 205u,
+            .init_ep_count   = 2u,
+            .init_eps = {
+                { SVC_ID_NAMESERVER, PD_CNODE_SLOT_NAMESERVER_EP },
+                { SVC_ID_LOG_DRAIN,  PD_CNODE_SLOT_LOG_DRAIN_EP  },
+            },
+        },
+
+        /* pd[14] — framebuffer_pd (prio 170; framebuffer driver, optional) */
+        {
+            .name            = "framebuffer_pd",
+            .elf_path        = "framebuffer_pd.elf",
+            .stack_size      = 0x8000u,
+            .cnode_size_bits = 10u,
             .priority        = 170u,
             .init_ep_count   = 2u,
             .init_eps = {
@@ -246,26 +283,12 @@ const system_desc_t system_desc_riscv64 = {
             },
         },
 
-        /* pd[14] — framebuffer_pd (prio 175, optional) */
-        {
-            .name            = "framebuffer_pd",
-            .elf_path        = "framebuffer_pd.elf",
-            .stack_size      = 0x8000u,
-            .cnode_size_bits = 6u,
-            .priority        = 175u,
-            .init_ep_count   = 2u,
-            .init_eps = {
-                { SVC_ID_NAMESERVER, PD_CNODE_SLOT_NAMESERVER_EP },
-                { SVC_ID_LOG_DRAIN,  PD_CNODE_SLOT_LOG_DRAIN_EP  },
-            },
-        },
-
-        /* pd[15] — fault_handler (prio 255) — highest, handles all faults */
+        /* pd[15] — fault_handler (prio 255; highest, handles all faults) */
         {
             .name            = "fault_handler",
             .elf_path        = "fault_handler.elf",
             .stack_size      = 0x4000u,
-            .cnode_size_bits = 6u,
+            .cnode_size_bits = 10u,
             .priority        = 255u,
             .init_ep_count   = 2u,
             .init_eps = {
@@ -274,13 +297,15 @@ const system_desc_t system_desc_riscv64 = {
             },
         },
 
-        /* pd[16] — linux_vmm (prio 90) — Linux guest process-in-PD */
+        /* pd[16] — linux_vmm (prio 160; Linux guest VMM)
+         * Runs above init_agent (110) and controller (50) so that VM operations
+         * requested by those orchestrators complete without starving. */
         {
             .name            = "linux_vmm",
             .elf_path        = "linux_vmm.elf",
             .stack_size      = 0x10000u,
-            .cnode_size_bits = 6u,
-            .priority        = 90u,
+            .cnode_size_bits = 10u,
+            .priority        = 160u,
             .init_ep_count   = 2u,
             .init_eps = {
                 { SVC_ID_NAMESERVER, PD_CNODE_SLOT_NAMESERVER_EP },
@@ -288,13 +313,13 @@ const system_desc_t system_desc_riscv64 = {
             },
         },
 
-        /* pd[17] — freebsd_vmm (prio 85) — FreeBSD guest process-in-PD */
+        /* pd[17] — freebsd_vmm (prio 155; FreeBSD guest VMM) */
         {
             .name            = "freebsd_vmm",
             .elf_path        = "freebsd_vmm.elf",
             .stack_size      = 0x10000u,
-            .cnode_size_bits = 6u,
-            .priority        = 85u,
+            .cnode_size_bits = 10u,
+            .priority        = 155u,
             .init_ep_count   = 2u,
             .init_eps = {
                 { SVC_ID_NAMESERVER, PD_CNODE_SLOT_NAMESERVER_EP },

@@ -538,3 +538,5 @@ void vm_manager_main(seL4_CPtr my_ep, seL4_CPtr ns_ep)
         }
     }
 }
+
+void pd_main(seL4_CPtr my_ep, seL4_CPtr ns_ep) { vm_manager_main(my_ep, ns_ep); }
