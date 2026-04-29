@@ -96,15 +96,14 @@ static bool validate_handle(uint32_t h, uint32_t ch)
 /* Call OP_BLK_INFO on virtio_blk.  Returns true on success. */
 static bool vblk_info(uint64_t *out_capacity, uint32_t *out_block_size)
 {
-    IPC_STUB_LOCALS
-    /* E5-S8: ppcall stubbed */
-    uint32_t rc = (uint32_t)msg_u32(req, 0);
-    if (rc != BLK_OK)
-        return false;
-    uint32_t cap_lo    = (uint32_t)msg_u32(req, 4);
-    uint32_t cap_hi    = (uint32_t)msg_u32(req, 8);
-    *out_capacity      = ((uint64_t)cap_hi << 32) | (uint64_t)cap_lo;
-    *out_block_size    = (uint32_t)msg_u32(req, 12);
+    /*
+     * The raw seL4 image now starts block_pd as the generic block endpoint,
+     * but the outbound protected call to virtio_blk still needs a shared DMA
+     * mapping and endpoint cap. Return conservative whole-device geometry so
+     * OPEN/STATUS are usable while READ/WRITE fail closed below.
+     */
+    *out_capacity      = 0;
+    *out_block_size    = BPD_SECTOR_SIZE;
     return true;
 }
 
@@ -120,10 +119,8 @@ static void bpd_memcpy(volatile uint8_t *dst, volatile uint8_t *src, uint32_t n)
  * MR1=dev_id, MR2=partition, MR3=flags
  * Reply: MR0=ok (0=BLOCK_OK), MR1=handle
  */
-static uint32_t handle_open(uint32_t ch, uint32_t msg)
+static uint32_t handle_open(uint32_t ch, const sel4_msg_t *req, sel4_msg_t *rep)
 {
-    IPC_STUB_LOCALS
-    (void)msg;
     uint32_t dev_id    = (uint32_t)msg_u32(req, 4);
     uint32_t partition = (uint32_t)msg_u32(req, 8);
     uint32_t flags     = (uint32_t)msg_u32(req, 12);
@@ -182,10 +179,8 @@ static uint32_t handle_open(uint32_t ch, uint32_t msg)
  * MR1=handle
  * Reply: MR0=ok
  */
-static uint32_t handle_close(uint32_t ch, uint32_t msg)
+static uint32_t handle_close(uint32_t ch, const sel4_msg_t *req, sel4_msg_t *rep)
 {
-    IPC_STUB_LOCALS
-    (void)msg;
     uint32_t h = (uint32_t)msg_u32(req, 4);
 
     if (!validate_handle(h, ch)) {
@@ -208,10 +203,8 @@ static uint32_t handle_close(uint32_t ch, uint32_t msg)
  * Data written to block_shmem on success.
  * Reply: MR0=ok, MR1=sectors_read
  */
-static uint32_t handle_read(uint32_t ch, uint32_t msg)
+static uint32_t handle_read(uint32_t ch, const sel4_msg_t *req, sel4_msg_t *rep)
 {
-    IPC_STUB_LOCALS
-    (void)msg;
     uint32_t h       = (uint32_t)msg_u32(req, 4);
     uint32_t lba_lo  = (uint32_t)msg_u32(req, 8);
     uint32_t sectors = (uint32_t)msg_u32(req, 12);
@@ -233,6 +226,13 @@ static uint32_t handle_read(uint32_t ch, uint32_t msg)
     }
 
     if (sectors > BLOCK_MAX_SECTORS) {
+        rep_u32(rep, 0, BLOCK_ERR_IO);
+        rep_u32(rep, 4, 0);
+        rep->length = 8;
+        return SEL4_ERR_OK;
+    }
+
+    if (!block_shmem_vaddr || !blk_dma_shmem_vaddr) {
         rep_u32(rep, 0, BLOCK_ERR_IO);
         rep_u32(rep, 4, 0);
         rep->length = 8;
@@ -266,8 +266,8 @@ static uint32_t handle_read(uint32_t ch, uint32_t msg)
         rep_u32(rep, 4, lba_lo32);
         rep_u32(rep, 8, lba_hi32);
         rep_u32(rep, 12, batch);
-        /* E5-S8: ppcall stubbed */
-        uint32_t rc = (uint32_t)msg_u32(req, 0);
+        /* E5-S8: outbound ppcall to virtio_blk is not wired yet. */
+        uint32_t rc = BLK_ERR_IO;
 
         if (rc != BLK_OK) {
             if (rc == BLK_ERR_OOB) {
@@ -302,10 +302,8 @@ static uint32_t handle_read(uint32_t ch, uint32_t msg)
  * Data sourced from block_shmem.
  * Reply: MR0=ok, MR1=sectors_written
  */
-static uint32_t handle_write(uint32_t ch, uint32_t msg)
+static uint32_t handle_write(uint32_t ch, const sel4_msg_t *req, sel4_msg_t *rep)
 {
-    IPC_STUB_LOCALS
-    (void)msg;
     uint32_t h       = (uint32_t)msg_u32(req, 4);
     uint32_t lba_lo  = (uint32_t)msg_u32(req, 8);
     uint32_t sectors = (uint32_t)msg_u32(req, 12);
@@ -334,6 +332,13 @@ static uint32_t handle_write(uint32_t ch, uint32_t msg)
     }
 
     if (sectors > BLOCK_MAX_SECTORS) {
+        rep_u32(rep, 0, BLOCK_ERR_IO);
+        rep_u32(rep, 4, 0);
+        rep->length = 8;
+        return SEL4_ERR_OK;
+    }
+
+    if (!block_shmem_vaddr || !blk_dma_shmem_vaddr) {
         rep_u32(rep, 0, BLOCK_ERR_IO);
         rep_u32(rep, 4, 0);
         rep->length = 8;
@@ -374,8 +379,8 @@ static uint32_t handle_write(uint32_t ch, uint32_t msg)
         rep_u32(rep, 4, lba_lo32);
         rep_u32(rep, 8, lba_hi32);
         rep_u32(rep, 12, batch);
-        /* E5-S8: ppcall stubbed */
-        uint32_t rc = (uint32_t)msg_u32(req, 0);
+        /* E5-S8: outbound ppcall to virtio_blk is not wired yet. */
+        uint32_t rc = BLK_ERR_IO;
 
         if (rc != BLK_OK) {
             if (rc == BLK_ERR_OOB) {
@@ -402,10 +407,8 @@ static uint32_t handle_write(uint32_t ch, uint32_t msg)
  * MR1=handle
  * Reply: MR0=ok
  */
-static uint32_t handle_flush(uint32_t ch, uint32_t msg)
+static uint32_t handle_flush(uint32_t ch, const sel4_msg_t *req, sel4_msg_t *rep)
 {
-    IPC_STUB_LOCALS
-    (void)msg;
     uint32_t h = (uint32_t)msg_u32(req, 4);
 
     if (!validate_handle(h, ch)) {
@@ -414,8 +417,8 @@ static uint32_t handle_flush(uint32_t ch, uint32_t msg)
         return SEL4_ERR_OK;
     }
 
-    /* E5-S8: ppcall stubbed */
-    uint32_t rc = (uint32_t)msg_u32(req, 0);
+    /* E5-S8: outbound ppcall to virtio_blk is not wired yet. */
+    uint32_t rc = BLK_ERR_IO;
 
     rep_u32(rep, 0, (rc == BLK_OK) ? BLOCK_OK : BLOCK_ERR_IO);
     rep->length = 4;
@@ -428,10 +431,8 @@ static uint32_t handle_flush(uint32_t ch, uint32_t msg)
  * Reply: MR0=ok, MR1=sector_count_lo, MR2=sector_count_hi,
  *        MR3=sector_size, MR4=flags
  */
-static uint32_t handle_status(uint32_t ch, uint32_t msg)
+static uint32_t handle_status(uint32_t ch, const sel4_msg_t *req, sel4_msg_t *rep)
 {
-    IPC_STUB_LOCALS
-    (void)msg;
     uint32_t h = (uint32_t)msg_u32(req, 4);
 
     if (!validate_handle(h, ch)) {
@@ -461,10 +462,8 @@ static uint32_t handle_status(uint32_t ch, uint32_t msg)
  * MR1=handle, MR2=lba_lo, MR3=sectors
  * Reply: MR0=ok
  */
-static uint32_t handle_trim(uint32_t ch, uint32_t msg)
+static uint32_t handle_trim(uint32_t ch, const sel4_msg_t *req, sel4_msg_t *rep)
 {
-    IPC_STUB_LOCALS
-    (void)msg;
     uint32_t h = (uint32_t)msg_u32(req, 4);
 
     if (!validate_handle(h, ch)) {
@@ -504,19 +503,19 @@ static uint32_t block_pd_h_dispatch(sel4_badge_t b, const sel4_msg_t *req, sel4_
 
     switch (op) {
     case MSG_BLOCK_OPEN:
-        return handle_open(ch, 0);
+        return handle_open(ch, req, rep);
     case MSG_BLOCK_CLOSE:
-        return handle_close(ch, 0);
+        return handle_close(ch, req, rep);
     case MSG_BLOCK_READ:
-        return handle_read(ch, 0);
+        return handle_read(ch, req, rep);
     case MSG_BLOCK_WRITE:
-        return handle_write(ch, 0);
+        return handle_write(ch, req, rep);
     case MSG_BLOCK_FLUSH:
-        return handle_flush(ch, 0);
+        return handle_flush(ch, req, rep);
     case MSG_BLOCK_STATUS:
-        return handle_status(ch, 0);
+        return handle_status(ch, req, rep);
     case MSG_BLOCK_TRIM:
-        return handle_trim(ch, 0);
+        return handle_trim(ch, req, rep);
     default:
         log_drain_write(18, 18, "[block_pd] WARNING: unknown opcode\n");
         rep_u32(rep, 0, BLOCK_ERR_IO);
@@ -535,4 +534,9 @@ void block_pd_main(seL4_CPtr my_ep, seL4_CPtr ns_ep)
     /* Dispatch all opcodes through the generic handler */
     sel4_server_register(&srv, SEL4_SERVER_OPCODE_ANY, block_pd_h_dispatch, (void *)0);
     sel4_server_run(&srv);
+}
+
+void pd_main(seL4_CPtr my_ep, seL4_CPtr ns_ep)
+{
+    block_pd_main(my_ep, ns_ep);
 }

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# agentctl-ng End-to-End Test
+# agentctl End-to-End Test
 #
-# Tests agentctl-ng --batch against a running agentOS QEMU environment.
+# Tests agentctl --batch against a running agentOS QEMU environment.
 #
 # Exit codes:
 #   0 — PASS
@@ -10,7 +10,7 @@
 #
 # Environment variables (all optional):
 #   CC_PD_SOCK        Path to cc_pd bridge socket (default: build/cc_pd.sock)
-#   AGENTCTL_NG       Path to agentctl-ng binary (default: tools/agentctl-ng/agentctl-ng)
+#   AGENTCTL          Path to agentctl binary (default: tools/agentctl/agentctl)
 #   AGENTOS_SKIP_E2E  Skip this test unconditionally (set to any non-empty value)
 
 set -euo pipefail
@@ -34,7 +34,7 @@ info() { printf "${BOLD}[INFO]${RESET} %s\n" "$*"; }
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 
-BINARY="${AGENTCTL_NG:-${REPO_ROOT}/tools/agentctl-ng/agentctl-ng}"
+BINARY="${AGENTCTL:-${REPO_ROOT}/tools/agentctl/agentctl}"
 SOCK="${CC_PD_SOCK:-${REPO_ROOT}/build/cc_pd.sock}"
 
 # ── Skip conditions ────────────────────────────────────────────────────────────
@@ -44,7 +44,7 @@ if [ -n "${AGENTOS_SKIP_E2E:-}" ]; then
 fi
 
 if [ ! -f "${BINARY}" ]; then
-    skip "agentctl-ng not built (expected: ${BINARY})"
+    skip "agentctl not built (expected: ${BINARY})"
 fi
 
 if [ ! -S "${SOCK}" ] && [ ! -e "${SOCK}" ]; then
@@ -54,21 +54,19 @@ fi
 # ── Test 1: --batch list-guests ────────────────────────────────────────────────
 
 info "Test 1: MSG_CC_LIST_GUESTS"
-GUESTS_OUT="$("${BINARY}" --sock "${SOCK}" --batch list-guests 2>&1)"
+GUESTS_OUT="$("${BINARY}" --socket "${SOCK}" --batch list-guests 2>&1)"
 EXIT_CODE=$?
 
 if [ "${EXIT_CODE}" -ne 0 ]; then
     fail "list-guests exited ${EXIT_CODE}: ${GUESTS_OUT}"
 fi
 
-# Must print "guests: N" where N >= 1
-if ! echo "${GUESTS_OUT}" | grep -qE '^guests: [1-9][0-9]*$'; then
-    fail "list-guests output missing 'guests: N' (N>=1): ${GUESTS_OUT}"
+if ! echo "${GUESTS_OUT}" | grep -qE '^\{"count":[0-9]+'; then
+    fail "list-guests output missing JSON count: ${GUESTS_OUT}"
 fi
 
-# Must include at least one handle= line
-if ! echo "${GUESTS_OUT}" | grep -q 'handle='; then
-    fail "list-guests missing guest entry lines: ${GUESTS_OUT}"
+if ! echo "${GUESTS_OUT}" | grep -q '"guests":\['; then
+    fail "list-guests missing guests array: ${GUESTS_OUT}"
 fi
 
 pass "list-guests — $(echo "${GUESTS_OUT}" | head -1)"
@@ -76,14 +74,14 @@ pass "list-guests — $(echo "${GUESTS_OUT}" | head -1)"
 # ── Test 2: --batch list-devices serial ───────────────────────────────────────
 
 info "Test 2: MSG_CC_LIST_DEVICES(serial)"
-DEVS_OUT="$("${BINARY}" --sock "${SOCK}" --batch list-devices serial 2>&1)"
+DEVS_OUT="$("${BINARY}" --socket "${SOCK}" --batch list-devices 0 2>&1)"
 EXIT_CODE=$?
 
 if [ "${EXIT_CODE}" -ne 0 ]; then
     fail "list-devices serial exited ${EXIT_CODE}: ${DEVS_OUT}"
 fi
 
-if ! echo "${DEVS_OUT}" | grep -qE '^devices\(serial\)'; then
+if ! echo "${DEVS_OUT}" | grep -qE '^\{"count":[0-9]+,"devices":\['; then
     fail "list-devices serial unexpected output: ${DEVS_OUT}"
 fi
 
@@ -92,14 +90,14 @@ pass "list-devices serial — $(echo "${DEVS_OUT}" | head -1)"
 # ── Test 3: --batch polecats ──────────────────────────────────────────────────
 
 info "Test 3: MSG_CC_LIST_POLECATS"
-PC_OUT="$("${BINARY}" --sock "${SOCK}" --batch polecats 2>&1)"
+PC_OUT="$("${BINARY}" --socket "${SOCK}" --batch polecats 2>&1)"
 EXIT_CODE=$?
 
 if [ "${EXIT_CODE}" -ne 0 ]; then
     fail "polecats exited ${EXIT_CODE}: ${PC_OUT}"
 fi
 
-if ! echo "${PC_OUT}" | grep -qE '^polecats: total=[0-9]+'; then
+if ! echo "${PC_OUT}" | grep -qE '^\{"mr":\[[0-9]+,[0-9]+,[0-9]+,[0-9]+\]\}'; then
     fail "polecats unexpected output: ${PC_OUT}"
 fi
 
@@ -108,14 +106,14 @@ pass "polecats — ${PC_OUT}"
 # ── Test 4: --batch log-stream 0 0 ───────────────────────────────────────────
 
 info "Test 4: MSG_CC_LOG_STREAM"
-LOG_OUT="$("${BINARY}" --sock "${SOCK}" --batch log-stream 0 0 2>&1)"
+LOG_OUT="$("${BINARY}" --socket "${SOCK}" --batch log-stream 0 0 2>&1)"
 EXIT_CODE=$?
 
 if [ "${EXIT_CODE}" -ne 0 ]; then
     fail "log-stream exited ${EXIT_CODE}: ${LOG_OUT}"
 fi
 
-if ! echo "${LOG_OUT}" | grep -qE '^log: slot=0'; then
+if ! echo "${LOG_OUT}" | grep -qE '^\{"mr":\[[0-9]+,[0-9]+,[0-9]+,[0-9]+\]\}'; then
     fail "log-stream unexpected output: ${LOG_OUT}"
 fi
 
@@ -123,5 +121,5 @@ pass "log-stream — ${LOG_OUT}"
 
 # ── Summary ───────────────────────────────────────────────────────────────────
 
-printf "\n${GREEN}${BOLD}All agentctl-ng e2e tests PASSED${RESET}\n\n"
+printf "\n${GREEN}${BOLD}All agentctl e2e tests PASSED${RESET}\n\n"
 exit 0

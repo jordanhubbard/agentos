@@ -27,7 +27,6 @@ IDs from the caller's perspective depend on which PD is calling:
 | init_agent       | 1 (eb_init, pp_b)    |
 | worker_0..7      | 1 (eb_worker_N)      |
 | agentfs          | 1 (agentfs_eb)       |
-| console_mux      | 2 (eb_console)       |
 
 The IPC label field carries the opcode (`MSGBUS_OP_*`).
 

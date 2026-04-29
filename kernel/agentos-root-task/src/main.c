@@ -88,7 +88,7 @@ extern const system_desc_t system_desc_riscv64;
  */
 static seL4_Word g_cap_base;  /* set to bi->empty.start in root_task_main */
 #define CAP_ROOT_INITIAL_BASE  g_cap_base
-#define SLOTS_PER_PD           5u    /* CNODE + TCB + VSPACE + IPC_FRAME + SC (MCS) */
+#define SLOTS_PER_PD           6u    /* CNODE + TCB + VSPACE + IPC_FRAME + SC + NTFN */
 
 /* Slot layout per PD index i (base + i * SLOTS_PER_PD + offset): */
 #define PD_SLOT_CNODE(i)      (CAP_ROOT_INITIAL_BASE + (seL4_Word)(i) * SLOTS_PER_PD + 0u)
@@ -96,6 +96,31 @@ static seL4_Word g_cap_base;  /* set to bi->empty.start in root_task_main */
 #define PD_SLOT_VSPACE(i)     (CAP_ROOT_INITIAL_BASE + (seL4_Word)(i) * SLOTS_PER_PD + 2u)
 #define PD_SLOT_IPC_FRAME(i)  (CAP_ROOT_INITIAL_BASE + (seL4_Word)(i) * SLOTS_PER_PD + 3u)
 #define PD_SLOT_SC(i)         (CAP_ROOT_INITIAL_BASE + (seL4_Word)(i) * SLOTS_PER_PD + 4u)
+#define PD_SLOT_NTFN(i)       (CAP_ROOT_INITIAL_BASE + (seL4_Word)(i) * SLOTS_PER_PD + 5u)
+
+/* VMM-private caps installed into linux_vmm/freebsd_vmm CSpaces.
+ *
+ * These slots deliberately match the fixed libvmm registration offsets used
+ * by the VMM PDs.  They are well above the low service/IRQ slots and fit in
+ * the VMM PDs' 1024-slot CNodes.
+ */
+#define VMM_GUEST_TCB_SLOT_BASE   266u
+#define VMM_GUEST_VCPU_SLOT_BASE  330u
+#define VMM_FAULT_BADGE_BASE      (1ULL << 62)
+
+/* Active PD scheduling defaults.
+ *
+ * Most agentOS PDs are short-running IPC servers, so the conservative 1% CPU
+ * default keeps the system responsive while preventing an accidental busy loop
+ * from monopolising the board. VMM PDs and their guest TCBs are different:
+ * booting a real guest is CPU-bound between VM exits. Give them enough budget
+ * to make E2E boot progress, while retaining a periodic gap for lower-priority
+ * infrastructure PDs.
+ */
+#define PD_DEFAULT_SC_BUDGET_US   10000u
+#define PD_DEFAULT_SC_PERIOD_US   1000000u
+#define VMM_SC_BUDGET_US          90000u
+#define VMM_SC_PERIOD_US          100000u
 
 /*
  * Number of PD slots reserved statically.  We size for SYSTEM_MAX_PDS
@@ -399,6 +424,9 @@ static seL4_Word boot_elf_size(const seL4_BootInfo *bi, const char *elf_path)
 
 /* ── IRQ capability setup ─────────────────────────────────────────────────── */
 
+static void dbg_puts(const char *s);
+static void dbg_hex(seL4_Word v);
+
 /*
  * boot_setup_irqs — bind hardware IRQ handler caps into a PD's CNode.
  *
@@ -420,20 +448,86 @@ static seL4_Word boot_elf_size(const seL4_BootInfo *bi, const char *elf_path)
 static void boot_setup_irqs(const pd_desc_t *pd,
                              seL4_CPtr        pd_cnode,
                              seL4_CPtr        irq_control_cap,
-                             seL4_Word        pd_cnode_depth)
+                             seL4_Word        pd_cnode_depth,
+                             seL4_CPtr        notification_cap)
 {
     for (uint8_t i = 0u; i < pd->irq_count; i++) {
         const irq_desc_t *d = &pd->irqs[i];
 
         /* Destination slot in the PD's own CNode */
         seL4_Word dest_slot = (seL4_Word)PD_IRQHANDLER_SLOT_BASE + (seL4_Word)i;
+        seL4_Word root_irq_slot = ut_alloc_slot();
+        if (root_irq_slot == seL4_CapNull) {
+            dbg_puts("[rt] WARN: no slot for IRQ handler cap\n");
+            continue;
+        }
 
         seL4_Error err = seL4_IRQControl_Get(
             irq_control_cap,
             (seL4_Word)d->irq_number,
-            pd_cnode,
-            dest_slot,
-            pd_cnode_depth);
+            seL4_CapInitThreadCNode,
+            root_irq_slot,
+            64u);
+        if (err != seL4_NoError) {
+            dbg_puts("[rt] WARN: IRQControl_Get failed irq=");
+            dbg_hex((seL4_Word)d->irq_number);
+            dbg_puts(" err=");
+            dbg_hex((seL4_Word)err);
+            dbg_puts("\n");
+            continue;
+        }
+
+        err = seL4_CNode_Copy(pd_cnode,
+                              dest_slot,
+                              (uint8_t)pd_cnode_depth,
+                              seL4_CapInitThreadCNode,
+                              root_irq_slot,
+                              64u,
+                              seL4_AllRights);
+        if (err != seL4_NoError) {
+            dbg_puts("[rt] WARN: IRQ cap copy failed irq=");
+            dbg_hex((seL4_Word)d->irq_number);
+            dbg_puts(" err=");
+            dbg_hex((seL4_Word)err);
+            dbg_puts("\n");
+            continue;
+        }
+
+        if (notification_cap != seL4_CapNull) {
+            seL4_Word badged_ntfn_slot = ut_alloc_slot();
+            if (badged_ntfn_slot == seL4_CapNull) {
+                dbg_puts("[rt] WARN: no slot for badged IRQ notification\n");
+                continue;
+            }
+
+            err = seL4_CNode_Mint(seL4_CapInitThreadCNode,
+                                  badged_ntfn_slot,
+                                  64u,
+                                  seL4_CapInitThreadCNode,
+                                  notification_cap,
+                                  64u,
+                                  seL4_AllRights,
+                                  (seL4_Word)d->ntfn_badge);
+            if (err != seL4_NoError) {
+                dbg_puts("[rt] WARN: IRQ notification mint failed irq=");
+                dbg_hex((seL4_Word)d->irq_number);
+                dbg_puts(" err=");
+                dbg_hex((seL4_Word)err);
+                dbg_puts("\n");
+                continue;
+            }
+
+            err = seL4_IRQHandler_SetNotification((seL4_CPtr)root_irq_slot,
+                                                  (seL4_CPtr)badged_ntfn_slot);
+            if (err != seL4_NoError) {
+                dbg_puts("[rt] WARN: IRQ SetNotification failed irq=");
+                dbg_hex((seL4_Word)d->irq_number);
+                dbg_puts(" err=");
+                dbg_hex((seL4_Word)err);
+                dbg_puts("\n");
+                continue;
+            }
+        }
 
         /*
          * Log failures but do not abort boot: a missing IRQ handler cap means
@@ -454,11 +548,32 @@ static void boot_setup_irqs(const pd_desc_t *pd,
 #define AGENTOS_UART_PA  0x09000000UL  /* PL011 UART0 physical address on QEMU virt */
 #define AGENTOS_UART_VA  0x10001000UL  /* VA in root + controller VSpaces           */
 
+/* QEMU virt GICv2 virtual CPU interface.
+ *
+ * The guest DTB exposes the GIC CPU interface at IPA 0x08010000. seL4/libvmm
+ * expects the real GIC vCPU interface frame at PA 0x08040000 to be mapped at
+ * that IPA in the guest execution VSpace, matching libvmm's Microkit example.
+ */
+#define GIC_VCPU_IF_PA   0x08040000UL
+#define GIC_VCPU_IF_VA   0x08010000UL
+
+/* QEMU virt virtio-mmio transports.
+ *
+ * Slots are 0x200-byte windows inside the 4 KB page at 0x0A000000. The VMM
+ * guest sees that page at the same IPA for passthrough probing; cc_pd maps a
+ * copy of the same frame at its private VA to drive slot 2 for the host relay.
+ */
+#define VIRTIO_MMIO_PAGE_PA  0x0A000000UL
+#define VIRTIO_MMIO_PAGE_VA  0x0A000000UL
+#define FREEBSD_FW_CFG_PAGE_PA  0x09020000UL
+#define FREEBSD_FW_CFG_PAGE_VA  0x09020000UL
+#define FREEBSD_VIRTIO_MMIO_BUS31_PAGE_PA  0x0A003000UL
+#define FREEBSD_VIRTIO_MMIO_BUS31_PAGE_VA  0x0A003000UL
+
 /* VirtIO serial device for cc_pd ↔ host socket bridge.
  * QEMU flags: -device virtio-serial-device,bus=virtio-mmio-bus.2,id=vser0
  *             -device virtserialport,bus=vser0.0,chardev=cc_pd_char,name=cc.0
  * virtio-mmio-bus.2 = PA 0x0A000400, inside the first virtio-mmio page (PA 0x0A000000). */
-#define CC_PD_VIRTIO_PAGE_PA  0x0A000000UL  /* First virtio-mmio page (covers slots 0-7) */
 #define CC_PD_VIRTIO_VA       0x10002000UL  /* VA in cc_pd's VSpace for this device page */
 #define CC_PD_STARTUP_VA      0x10003000UL  /* VA in cc_pd's VSpace for startup record   */
 #define CC_PD_UART_DBG_VA     0x10004000UL  /* VA in cc_pd's VSpace for debug UART0      */
@@ -466,6 +581,9 @@ static void boot_setup_irqs(const pd_desc_t *pd,
 
 /* Frame cap in root task CNode; seL4_CNode_Copy'd per VSpace that needs output. */
 static seL4_CPtr g_uart_frame_cap = seL4_CapNull;
+static seL4_CPtr g_virtio_mmio_frame_cap = seL4_CapNull;
+static seL4_CPtr g_freebsd_fw_cfg_frame_cap = seL4_CapNull;
+static seL4_CPtr g_freebsd_virtio31_frame_cap = seL4_CapNull;
 
 static volatile uint32_t *g_uart_dr;  /* PL011 UARTDR (offset 0x00) */
 static volatile uint32_t *g_uart_fr;  /* PL011 UARTFR (offset 0x18) */
@@ -499,6 +617,227 @@ static int name_eq(const char *a, const char *b)
     while (*a && *b && *a == *b) { a++; b++; }
     return (*a == '\0' && *b == '\0');
 }
+
+#if defined(__aarch64__)
+static seL4_Error map_vmm_guest_ram_identity(seL4_CPtr vspace,
+                                              seL4_Word  guest_pa,
+                                              size_t     size)
+{
+    const seL4_Word large_page = (seL4_Word)1u << seL4_ARCH_LargePageBits;
+
+    if ((guest_pa & (large_page - 1u)) != 0u ||
+        (((seL4_Word)size) & (large_page - 1u)) != 0u) {
+        return seL4_InvalidArgument;
+    }
+
+    for (seL4_Word off = 0u; off < (seL4_Word)size; off += large_page) {
+        seL4_CPtr frame = seL4_CapNull;
+        seL4_Error err = ut_alloc_device_cap_typed(guest_pa + off,
+                                                   (uint32_t)seL4_ARCH_LargePageObject,
+                                                   (uint8_t)seL4_ARCH_LargePageBits,
+                                                   &frame);
+        if (err != seL4_NoError) {
+            return err;
+        }
+
+        err = pd_vspace_map_device_frame(vspace, frame, guest_pa + off);
+        if (err != seL4_NoError) {
+            return err;
+        }
+    }
+
+    return seL4_NoError;
+}
+
+static seL4_Error setup_vmm_guest_vcpu(const pd_desc_t *pd,
+                                        uint32_t         pd_index,
+                                        seL4_CPtr        pd_cnode,
+                                        seL4_CPtr        vspace,
+                                        seL4_CPtr        ipc_buf_cap,
+                                        seL4_Word        ipc_buf_va,
+                                        seL4_CPtr        self_ep,
+                                        const seL4_BootInfo *bi)
+{
+    if (!name_eq(pd->name, "linux_vmm") && !name_eq(pd->name, "freebsd_vmm")) {
+        return seL4_NoError;
+    }
+
+    if (self_ep == seL4_CapNull) {
+        dbg_puts("[rt] VMM guest setup skipped: missing self endpoint\n");
+        return seL4_InvalidCapability;
+    }
+
+    seL4_Word guest_tcb_slot = ut_alloc_slot();
+    seL4_Word guest_vcpu_slot = ut_alloc_slot();
+    seL4_Word guest_fault_ep_slot = ut_alloc_slot();
+    if (guest_tcb_slot == seL4_CapNull ||
+        guest_vcpu_slot == seL4_CapNull ||
+        guest_fault_ep_slot == seL4_CapNull) {
+        dbg_puts("[rt] VMM guest setup failed: no root CNode slots\n");
+        return seL4_NotEnoughMemory;
+    }
+
+    seL4_Error err = ut_alloc(seL4_TCBObject,
+                               0u,
+                               seL4_CapInitThreadCNode,
+                               guest_tcb_slot,
+                               64u);
+    if (err != seL4_NoError) {
+        dbg_puts("[rt] VMM guest TCB alloc err=");
+        dbg_hex((seL4_Word)err);
+        dbg_puts("\n");
+        return err;
+    }
+
+    err = ut_alloc(seL4_ARM_VCPUObject,
+                   0u,
+                   seL4_CapInitThreadCNode,
+                   guest_vcpu_slot,
+                   64u);
+    if (err != seL4_NoError) {
+        dbg_puts("[rt] VMM guest VCPU alloc err=");
+        dbg_hex((seL4_Word)err);
+        dbg_puts("\n");
+        return err;
+    }
+
+    seL4_Word cspace_root_data =
+        (seL4_Word)(seL4_WordBits - (uint32_t)pd->cnode_size_bits);
+    err = seL4_TCB_Configure((seL4_CPtr)guest_tcb_slot,
+                              pd_cnode,
+                              cspace_root_data,
+                              vspace,
+                              0u,
+                              ipc_buf_va,
+                              ipc_buf_cap);
+    if (err != seL4_NoError) {
+        dbg_puts("[rt] VMM guest TCB configure err=");
+        dbg_hex((seL4_Word)err);
+        dbg_puts("\n");
+        return err;
+    }
+
+#ifdef CONFIG_KERNEL_MCS
+    seL4_Word guest_sc_slot = ut_alloc_slot();
+    if (guest_sc_slot == seL4_CapNull) {
+        dbg_puts("[rt] VMM guest SC slot alloc failed\n");
+        return seL4_NotEnoughMemory;
+    }
+
+    err = ut_alloc(seL4_SchedContextObject,
+                   seL4_MinSchedContextBits,
+                   seL4_CapInitThreadCNode,
+                   guest_sc_slot,
+                   64u);
+    if (err != seL4_NoError) {
+        dbg_puts("[rt] VMM guest SC alloc err=");
+        dbg_hex((seL4_Word)err);
+        dbg_puts("\n");
+        return err;
+    }
+
+    err = seL4_SchedControl_ConfigureFlags(
+              bi->schedcontrol.start,
+              (seL4_SchedContext)guest_sc_slot,
+              VMM_SC_BUDGET_US,
+              VMM_SC_PERIOD_US,
+              0u,
+              0u,
+              0u);
+    if (err != seL4_NoError) {
+        dbg_puts("[rt] VMM guest SC configure err=");
+        dbg_hex((seL4_Word)err);
+        dbg_puts("\n");
+        return err;
+    }
+
+    err = ep_mint_badge(self_ep,
+                        (seL4_Word)(VMM_FAULT_BADGE_BASE | 0u),
+                        seL4_CapInitThreadCNode,
+                        guest_fault_ep_slot,
+                        64u);
+    if (err != seL4_NoError) {
+        dbg_puts("[rt] VMM guest fault EP mint err=");
+        dbg_hex((seL4_Word)err);
+        dbg_puts("\n");
+        return err;
+    }
+
+    err = seL4_TCB_SetSchedParams((seL4_CPtr)guest_tcb_slot,
+                                  seL4_CapInitThreadTCB,
+                                  255u,
+                                  (seL4_Word)pd->priority,
+                                  (seL4_CPtr)guest_sc_slot,
+                                  (seL4_CPtr)guest_fault_ep_slot);
+    if (err != seL4_NoError) {
+        dbg_puts("[rt] VMM guest SetSchedParams err=");
+        dbg_hex((seL4_Word)err);
+        dbg_puts("\n");
+        return err;
+    }
+#else
+    err = seL4_TCB_SetPriority((seL4_CPtr)guest_tcb_slot,
+                               seL4_CapInitThreadTCB,
+                               (seL4_Word)pd->priority);
+    if (err != seL4_NoError) {
+        return err;
+    }
+#endif
+
+    err = seL4_ARM_VCPU_SetTCB((seL4_ARM_VCPU)guest_vcpu_slot,
+                               (seL4_TCB)guest_tcb_slot);
+    if (err != seL4_NoError) {
+        dbg_puts("[rt] VMM guest VCPU bind err=");
+        dbg_hex((seL4_Word)err);
+        dbg_puts("\n");
+        return err;
+    }
+
+    err = seL4_CNode_Copy(pd_cnode,
+                          VMM_GUEST_TCB_SLOT_BASE,
+                          (uint8_t)pd->cnode_size_bits,
+                          seL4_CapInitThreadCNode,
+                          guest_tcb_slot,
+                          64u,
+                          seL4_AllRights);
+    if (err != seL4_NoError) {
+        dbg_puts("[rt] VMM guest TCB copy err=");
+        dbg_hex((seL4_Word)err);
+        dbg_puts("\n");
+        return err;
+    }
+
+    err = seL4_CNode_Copy(pd_cnode,
+                          VMM_GUEST_VCPU_SLOT_BASE,
+                          (uint8_t)pd->cnode_size_bits,
+                          seL4_CapInitThreadCNode,
+                          guest_vcpu_slot,
+                          64u,
+                          seL4_AllRights);
+    if (err != seL4_NoError) {
+        dbg_puts("[rt] VMM guest VCPU copy err=");
+        dbg_hex((seL4_Word)err);
+        dbg_puts("\n");
+        return err;
+    }
+
+    cap_acct_record(seL4_CapNull, (seL4_CPtr)guest_tcb_slot,
+                    seL4_TCBObject, pd_index, pd->name);
+    cap_acct_record(seL4_CapNull, (seL4_CPtr)guest_vcpu_slot,
+                    seL4_ARM_VCPUObject, pd_index, pd->name);
+#ifdef CONFIG_KERNEL_MCS
+    cap_acct_record(seL4_CapNull, (seL4_CPtr)guest_sc_slot,
+                    seL4_SchedContextObject, pd_index, pd->name);
+#endif
+
+    dbg_puts("[rt] VMM guest caps installed tcb=");
+    dbg_hex((seL4_Word)guest_tcb_slot);
+    dbg_puts(" vcpu=");
+    dbg_hex((seL4_Word)guest_vcpu_slot);
+    dbg_puts("\n");
+    return seL4_NoError;
+}
+#endif
 
 void root_task_main(const seL4_BootInfo *bi)
 {
@@ -599,6 +938,36 @@ void root_task_main(const seL4_BootInfo *bi)
         }
     }
     dbg_puts("[rt] UART mapped, direct PL011 output active\n");
+
+    {
+        seL4_Error virtio_err = ut_alloc_device_cap(VIRTIO_MMIO_PAGE_PA,
+                                                    &g_virtio_mmio_frame_cap);
+        dbg_puts("[rt] virtio-mmio frame cap err=");
+        dbg_hex((seL4_Word)virtio_err);
+        dbg_puts(" cap=");
+        dbg_hex((seL4_Word)g_virtio_mmio_frame_cap);
+        dbg_puts("\n");
+    }
+
+    {
+        seL4_Error fw_err = ut_alloc_device_cap(FREEBSD_FW_CFG_PAGE_PA,
+                                                &g_freebsd_fw_cfg_frame_cap);
+        dbg_puts("[rt] freebsd fw_cfg frame cap err=");
+        dbg_hex((seL4_Word)fw_err);
+        dbg_puts(" cap=");
+        dbg_hex((seL4_Word)g_freebsd_fw_cfg_frame_cap);
+        dbg_puts("\n");
+    }
+
+    {
+        seL4_Error v31_err = ut_alloc_device_cap(FREEBSD_VIRTIO_MMIO_BUS31_PAGE_PA,
+                                                 &g_freebsd_virtio31_frame_cap);
+        dbg_puts("[rt] freebsd virtio-mmio bus31 cap err=");
+        dbg_hex((seL4_Word)v31_err);
+        dbg_puts(" cap=");
+        dbg_hex((seL4_Word)g_freebsd_virtio31_frame_cap);
+        dbg_puts("\n");
+    }
 
     /* Temporary: dump device untypeds to diagnose UART1 frame allocation */
     {
@@ -771,9 +1140,10 @@ void root_task_main(const seL4_BootInfo *bi)
          * runnable.  Without an SC the thread is "passive" — it can only run
          * when invoked via a protected procedure call that donates the caller's SC.
          *
-         * For active PDs we allocate a fresh SC, configure it with 10ms budget /
-         * 1s period (1% CPU per PD; gap lets lower-priority PDs run each cycle), and bind it to the TCB.
-         * seL4_Time values are in MICROSECONDS: 10ms=10000, 1s=1000000.
+         * For active PDs we allocate a fresh SC and bind it to the TCB.
+         * Normal IPC servers receive a conservative budget. VMM PDs receive
+         * a larger budget because guest boot is CPU-bound between VM exits.
+         * seL4_Time values are in MICROSECONDS.
          * The SchedControl capability is from bi->schedcontrol.start (CPU 0).
          */
 #ifdef CONFIG_KERNEL_MCS
@@ -790,11 +1160,18 @@ void root_task_main(const seL4_BootInfo *bi)
                 continue;
             }
 
+            seL4_Word sc_budget = PD_DEFAULT_SC_BUDGET_US;
+            seL4_Word sc_period = PD_DEFAULT_SC_PERIOD_US;
+            if (name_eq(pd->name, "linux_vmm") || name_eq(pd->name, "freebsd_vmm")) {
+                sc_budget = VMM_SC_BUDGET_US;
+                sc_period = VMM_SC_PERIOD_US;
+            }
+
             sc_err = seL4_SchedControl_ConfigureFlags(
                          bi->schedcontrol.start,
                          (seL4_SchedContext)PD_SLOT_SC(i),
-                         10000u,       /* budget: 10ms in µs (seL4_Time unit) */
-                         1000000u,     /* period: 1s in µs — 1% CPU; gaps let lower-prio PDs run */
+                         sc_budget,
+                         sc_period,
                          0u,           /* extra_refills */
                          0u,           /* badge */
                          0u);          /* flags */
@@ -831,6 +1208,29 @@ void root_task_main(const seL4_BootInfo *bi)
 #endif /* CONFIG_KERNEL_MCS */
 
         dbg_puts("[rt] pd SC bound, starting\n");
+
+        seL4_CPtr pd_ntfn_cap = seL4_CapNull;
+        if (pd->irq_count > 0u) {
+            seL4_Error ntfn_err = ut_alloc(seL4_NotificationObject,
+                                           seL4_NotificationBits,
+                                           seL4_CapInitThreadCNode,
+                                           PD_SLOT_NTFN(i),
+                                           64u);
+            if (ntfn_err != seL4_NoError) {
+                dbg_puts("[rt] WARN: notification alloc failed err=");
+                dbg_hex((seL4_Word)ntfn_err);
+                dbg_puts("\n");
+            } else {
+                pd_ntfn_cap = (seL4_CPtr)PD_SLOT_NTFN(i);
+                ntfn_err = seL4_TCB_BindNotification(tr.tcb_cap, pd_ntfn_cap);
+                dbg_puts("[rt] notification bind err=");
+                dbg_hex((seL4_Word)ntfn_err);
+                dbg_puts("\n");
+                if (ntfn_err != seL4_NoError) {
+                    pd_ntfn_cap = seL4_CapNull;
+                }
+            }
+        }
 
         /* ── 4g: Distribute initial endpoint caps into PD's CNode ──────── */
         /*
@@ -881,12 +1281,27 @@ void root_task_main(const seL4_BootInfo *bi)
          * maintain the mappings.  Used for linux_vmm guest RAM (256 MB).     */
         for (uint8_t j = 0u; j < pd->mr_count; j++) {
             const memory_region_desc_t *mr = &pd->memory_regions[j];
-            seL4_Error mr_err = pd_vspace_map_region(
-                vspace,
-                (seL4_Word)mr->vaddr,
-                (size_t)mr->size,
-                (int)mr->writable
-            );
+            seL4_Error mr_err;
+#if defined(__aarch64__)
+            if ((name_eq(pd->name, "linux_vmm") || name_eq(pd->name, "freebsd_vmm")) &&
+                name_eq(mr->name, "guest_ram")) {
+                /* QEMU virtio passthrough DMAs into guest physical addresses.
+                 * Map the guest RAM window from the same physical RAM range
+                 * advertised in the guest DTB so QEMU and the VMM share backing
+                 * pages for virtqueue descriptors and data buffers. */
+                mr_err = map_vmm_guest_ram_identity(vspace,
+                                                    (seL4_Word)mr->vaddr,
+                                                    (size_t)mr->size);
+            } else
+#endif
+            {
+                mr_err = pd_vspace_map_region(
+                    vspace,
+                    (seL4_Word)mr->vaddr,
+                    (size_t)mr->size,
+                    (int)mr->writable
+                );
+            }
             if (mr_err != seL4_NoError) {
                 dbg_puts("[root] WARN: memory region map failed: ");
                 dbg_puts(mr->name);
@@ -894,21 +1309,26 @@ void root_task_main(const seL4_BootInfo *bi)
             }
         }
 
-        /* ── 4g.4.6: Map UART MMIO into controller PD VSpace ──────────────── */
+        /* ── 4g.4.6: Map UART MMIO into debug-printing PD VSpaces ─────────── */
         /*
-         * The controller PD (monitor.c) uses ctrl_puts() which writes directly
-         * to the PL011 UART at AGENTOS_UART_VA.  We copy the root task's UART
-         * frame cap (already mapped in the root VSpace) to a fresh slot and
-         * map it into the controller's VSpace.  seL4_CNode_Copy clears
-         * capFMappedASID in the copy, allowing independent re-mapping.
+         * The controller and current VMM PDs still use direct early debug
+         * output at AGENTOS_UART_VA.  We copy the root task's UART frame cap
+         * (already mapped in the root VSpace) to a fresh slot and map it into
+         * those VSpaces.  seL4_CNode_Copy clears capFMappedASID in the copy,
+         * allowing independent re-mapping.
          *
          * The IPC buffer mapping (pd_vspace_load_elf, 0x10000000) already
          * installed the L1 page table covering [0x10000000, 0x11FFFFF], so
          * the map call for 0x10001000 succeeds without any PT retries.
          */
-        if (g_uart_frame_cap != seL4_CapNull && name_eq(pd->name, "controller")) {
+        if (g_uart_frame_cap != seL4_CapNull &&
+            (name_eq(pd->name, "controller") ||
+             name_eq(pd->name, "linux_vmm") ||
+             name_eq(pd->name, "freebsd_vmm"))) {
             seL4_Word uart_copy = ut_alloc_slot();
-            dbg_puts("[rt] ctrl UART: uart_copy=");
+            dbg_puts("[rt] debug UART: pd=");
+            dbg_puts(pd->name);
+            dbg_puts(" uart_copy=");
             dbg_hex(uart_copy);
             dbg_puts(" g_uart_frame_cap=");
             dbg_hex((seL4_Word)g_uart_frame_cap);
@@ -918,24 +1338,111 @@ void root_task_main(const seL4_BootInfo *bi)
                     seL4_CapInitThreadCNode, uart_copy,         64u,
                     seL4_CapInitThreadCNode, g_uart_frame_cap,  64u,
                     seL4_AllRights);
-                dbg_puts("[rt] ctrl CNode_Copy err=");
+                dbg_puts("[rt] debug UART CNode_Copy err=");
                 dbg_hex((seL4_Word)cp_err);
                 dbg_puts("\n");
                 if (cp_err == seL4_NoError) {
                     cp_err = pd_vspace_map_device_frame(vspace,
                                                          (seL4_CPtr)uart_copy,
                                                          AGENTOS_UART_VA);
-                    dbg_puts("[rt] ctrl UART map err=");
+                    dbg_puts("[rt] debug UART map err=");
                     dbg_hex((seL4_Word)cp_err);
                     dbg_puts("\n");
                 }
                 if (cp_err != seL4_NoError) {
-                    dbg_puts("[rt] WARN: controller UART map failed\n");
+                    dbg_puts("[rt] WARN: debug UART map failed\n");
                 } else {
-                    dbg_puts("[rt] controller UART mapped OK\n");
+                    dbg_puts("[rt] debug UART mapped OK\n");
                 }
             } else {
-                dbg_puts("[rt] WARN: no slot for controller UART copy\n");
+                dbg_puts("[rt] WARN: no slot for debug UART copy\n");
+            }
+        }
+
+        /* ── 4g.4.6b: Map GICv2 vCPU interface for VMM guests ───────────── */
+        /*
+         * QEMU virt exposes a GICv2 CPU interface to the guest at 0x08010000.
+         * On seL4 this is backed by the hardware virtual CPU interface frame
+         * at 0x08040000. Without this pass-through mapping Linux faults as
+         * soon as it writes GICC_PMR during IRQ setup.
+         */
+        if (name_eq(pd->name, "linux_vmm") || name_eq(pd->name, "freebsd_vmm")) {
+            seL4_CPtr gic_vcpu_cap = seL4_CapNull;
+            seL4_Error gic_err = ut_alloc_device_cap(GIC_VCPU_IF_PA, &gic_vcpu_cap);
+            if (gic_err == seL4_NoError) {
+                gic_err = pd_vspace_map_device_frame(vspace,
+                                                      gic_vcpu_cap,
+                                                      GIC_VCPU_IF_VA);
+            }
+            dbg_puts("[rt] VMM GIC vCPU map err=");
+            dbg_hex((seL4_Word)gic_err);
+            dbg_puts("\n");
+        }
+
+        /* ── 4g.4.6c: Map QEMU virtio-mmio transport page for VMM guests ─── */
+        /*
+         * The guest DTB exposes virtio-mmio slots under 0x0A000000. Map the
+         * single backing page into the guest execution VSpace so Linux can
+         * probe QEMU's virtio-net and virtio-blk transports directly while
+         * IRQ delivery still flows through the VMM/vGIC path.
+         */
+        if (g_virtio_mmio_frame_cap != seL4_CapNull &&
+            (name_eq(pd->name, "linux_vmm") || name_eq(pd->name, "freebsd_vmm"))) {
+            seL4_Word virtio_copy = ut_alloc_slot();
+            seL4_Error virtio_err = seL4_NotEnoughMemory;
+            if (virtio_copy != seL4_CapNull) {
+                virtio_err = seL4_CNode_Copy(
+                    seL4_CapInitThreadCNode, virtio_copy,              64u,
+                    seL4_CapInitThreadCNode, g_virtio_mmio_frame_cap,  64u,
+                    seL4_AllRights);
+                if (virtio_err == seL4_NoError) {
+                    virtio_err = pd_vspace_map_device_frame(vspace,
+                                                            (seL4_CPtr)virtio_copy,
+                                                            VIRTIO_MMIO_PAGE_VA);
+                }
+            }
+            dbg_puts("[rt] VMM virtio-mmio map err=");
+            dbg_hex((seL4_Word)virtio_err);
+            dbg_puts("\n");
+        }
+
+        if (name_eq(pd->name, "freebsd_vmm")) {
+            if (g_freebsd_fw_cfg_frame_cap != seL4_CapNull) {
+                seL4_Word fw_copy = ut_alloc_slot();
+                seL4_Error fw_err = seL4_NotEnoughMemory;
+                if (fw_copy != seL4_CapNull) {
+                    fw_err = seL4_CNode_Copy(
+                        seL4_CapInitThreadCNode, fw_copy,                    64u,
+                        seL4_CapInitThreadCNode, g_freebsd_fw_cfg_frame_cap, 64u,
+                        seL4_AllRights);
+                    if (fw_err == seL4_NoError) {
+                        fw_err = pd_vspace_map_device_frame(vspace,
+                                                            (seL4_CPtr)fw_copy,
+                                                            FREEBSD_FW_CFG_PAGE_VA);
+                    }
+                }
+                dbg_puts("[rt] FreeBSD fw_cfg map err=");
+                dbg_hex((seL4_Word)fw_err);
+                dbg_puts("\n");
+            }
+
+            if (g_freebsd_virtio31_frame_cap != seL4_CapNull) {
+                seL4_Word v31_copy = ut_alloc_slot();
+                seL4_Error v31_err = seL4_NotEnoughMemory;
+                if (v31_copy != seL4_CapNull) {
+                    v31_err = seL4_CNode_Copy(
+                        seL4_CapInitThreadCNode, v31_copy,                       64u,
+                        seL4_CapInitThreadCNode, g_freebsd_virtio31_frame_cap,    64u,
+                        seL4_AllRights);
+                    if (v31_err == seL4_NoError) {
+                        v31_err = pd_vspace_map_device_frame(vspace,
+                                                             (seL4_CPtr)v31_copy,
+                                                             FREEBSD_VIRTIO_MMIO_BUS31_PAGE_VA);
+                    }
+                }
+                dbg_puts("[rt] FreeBSD virtio bus31 map err=");
+                dbg_hex((seL4_Word)v31_err);
+                dbg_puts("\n");
             }
         }
 
@@ -956,8 +1463,22 @@ void root_task_main(const seL4_BootInfo *bi)
             /* 1. Allocate + map VirtIO MMIO device page */
             seL4_CPtr cc_virtio_cap = seL4_CapNull;
             {
-                seL4_Error ve = ut_alloc_device_cap(CC_PD_VIRTIO_PAGE_PA, &cc_virtio_cap);
-                if (ve == seL4_NoError) {
+                seL4_Error ve = seL4_InvalidCapability;
+                if (g_virtio_mmio_frame_cap != seL4_CapNull) {
+                    seL4_Word cc_virtio_slot = ut_alloc_slot();
+                    if (cc_virtio_slot != seL4_CapNull) {
+                        ve = seL4_CNode_Copy(
+                            seL4_CapInitThreadCNode, cc_virtio_slot,           64u,
+                            seL4_CapInitThreadCNode, g_virtio_mmio_frame_cap,  64u,
+                            seL4_AllRights);
+                        if (ve == seL4_NoError) {
+                            cc_virtio_cap = (seL4_CPtr)cc_virtio_slot;
+                        }
+                    } else {
+                        ve = seL4_NotEnoughMemory;
+                    }
+                }
+                if (ve == seL4_NoError && cc_virtio_cap != seL4_CapNull) {
                     ve = pd_vspace_map_device_frame(vspace, cc_virtio_cap, CC_PD_VIRTIO_VA);
                 }
                 dbg_puts("[rt] cc_pd VirtIO page err=");
@@ -1044,7 +1565,8 @@ void root_task_main(const seL4_BootInfo *bi)
         if (pd->irq_count > 0u) {
             boot_setup_irqs(pd, pd_cnode,
                             seL4_CapIRQControl,
-                            (seL4_Word)pd->cnode_size_bits);
+                            (seL4_Word)pd->cnode_size_bits,
+                            pd_ntfn_cap);
         }
 
         /* ── 4g.6: Allocate MCS reply object at slot AGENTOS_IPC_REPLY_CAP ── */
@@ -1106,8 +1628,9 @@ void root_task_main(const seL4_BootInfo *bi)
          * endpoint slot so PDs can register on first call.
          */
         seL4_Word self_ep_slot = 0u;
+        seL4_CPtr self_ep = seL4_CapNull;
         if (pd->self_svc_id != 0u) {
-            seL4_CPtr self_ep = ep_alloc_for_service((uint16_t)pd->self_svc_id);
+            self_ep = ep_alloc_for_service((uint16_t)pd->self_svc_id);
             if (self_ep != seL4_CapNull) {
                 ep_mint_badge(self_ep, 0u /* unbadged */,
                               pd_cnode, PD_CNODE_SLOT_SELF_EP,
@@ -1115,6 +1638,26 @@ void root_task_main(const seL4_BootInfo *bi)
                 self_ep_slot = PD_CNODE_SLOT_SELF_EP;
             }
         }
+
+#if defined(__aarch64__)
+        if (name_eq(pd->name, "linux_vmm") || name_eq(pd->name, "freebsd_vmm")) {
+            seL4_Error vm_err = setup_vmm_guest_vcpu(pd,
+                                                      i,
+                                                      pd_cnode,
+                                                      vspace,
+                                                      ipc_buf_cap,
+                                                      ipc_buf_va,
+                                                      self_ep,
+                                                      bi);
+            if (vm_err != seL4_NoError) {
+                dbg_puts("[rt] WARN: VMM guest cap setup failed for ");
+                dbg_puts(pd->name);
+                dbg_puts(" err=");
+                dbg_hex((seL4_Word)vm_err);
+                dbg_puts("\n");
+            }
+        }
+#endif
         {
             dbg_puts("[rt] pd entry=");
             dbg_hex(vr.entry_point);

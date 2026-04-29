@@ -379,6 +379,8 @@ void linux_vmm_main(seL4_CPtr ep, seL4_CPtr ns_ep)
     while (1) seL4_Wait(ep, &badge);
 }
 
+void pd_main(seL4_CPtr my_ep, seL4_CPtr ns_ep) { linux_vmm_main(my_ep, ns_ep); }
+
 #endif /* LINUX_VMM_NATIVE_STUB */
 
 /* ─── AArch64 full implementation ──────────────────────────────────────────
@@ -396,11 +398,18 @@ void linux_vmm_main(seL4_CPtr ep, seL4_CPtr ns_ep)
 #include "sel4_ipc.h"     /* sel4_call, sel4_msg_t                        */
 #include "sel4_client.h"  /* sel4_client_t, sel4_client_call              */
 
-/* Microkit CNode layout constants (from microkit.h — not included directly
- * to avoid the conflicting `void init(void)` declaration). */
-#define MICROKIT_BASE_IRQ_CAP    138u
-#define MICROKIT_BASE_VM_TCB_CAP 266u
-#define MICROKIT_BASE_VCPU_CAP   330u
+/* Raw agentOS CNode layout constants.
+ *
+ * The root task gives hardware IRQ handler caps to every PD at
+ * PD_IRQHANDLER_SLOT_BASE + irq_index (see system_desc.h/main.c).
+ *
+ * VMM_TCB/VCPU slots intentionally keep the old Microkit offsets because
+ * they are high enough to avoid service caps and IRQ caps in linux_vmm's
+ * 1024-slot CNode, while letting libvmm keep a simple fixed-cap model.
+ */
+#define AGENTOS_IRQ_CAP_BASE     64u
+#define AGENTOS_VMM_TCB_CAP_BASE 266u
+#define AGENTOS_VMM_VCPU_CAP_BASE 330u
 
 /* ── Microkit shim ───────────────────────────────────────────────────────
  *
@@ -474,8 +483,9 @@ static uint32_t vmm_affinity[VMM_MAX_SLOTS];
 
 /* ─── Guest Configuration ─────────────────────────────────────────────── */
 
-/* 256MB guest RAM — plenty for Buildroot + basic agent workloads */
-#define GUEST_RAM_SIZE          0x10000000
+/* 512MB guest RAM — Ubuntu's generic arm64 kernel needs more headroom than
+ * the old 256MB Buildroot-oriented configuration. */
+#define GUEST_RAM_SIZE          0x20000000
 
 /* Guest DTB and initrd placement addresses (must match DTS) */
 #define GUEST_DTB_VADDR         0x4f000000
@@ -505,20 +515,19 @@ static uint32_t vmm_affinity[VMM_MAX_SLOTS];
  */
 #define VIRTIO_NET_IRQ          48
 #define VIRTIO_BLK_IRQ          49
-#define VIRTIO_BLK2_IRQ         50  /* ubuntu cloud-init seed disk (slot 2) */
+#define VIRTIO_BLK2_IRQ         51  /* ubuntu cloud-init seed disk (slot 3) */
 
 /*
  * Notification badge bits for virtio IRQs.
- * Microkit delivers IRQ N (id=K in .system) as bit K of the notification word:
- *   badge = (1 << K)
- * The .system file assigns:
- *   id=3 (virtio-net,  INTID 48) → badge 0x8   (1<<3)
- *   id=4 (virtio-blk0, INTID 49) → badge 0x10  (1<<4)
- *   id=5 (virtio-blk1, INTID 50) → badge 0x20  (1<<5)
+ * The raw root task uses the explicit ntfn_badge values from
+ * system_desc_aarch64.c:
+ *   virtio-net   INTID 48 → badge 0x1
+ *   virtio-blk0  INTID 49 → badge 0x2
+ *   virtio-blk1  INTID 51 → badge 0x4
  */
-#define VIRTIO_NET_NTFN_BADGE    (1u << 3)
-#define VIRTIO_BLK_NTFN_BADGE    (1u << 4)
-#define VIRTIO_BLK2_NTFN_BADGE   (1u << 5)
+#define VIRTIO_NET_NTFN_BADGE    0x1u
+#define VIRTIO_BLK_NTFN_BADGE    0x2u
+#define VIRTIO_BLK2_NTFN_BADGE   0x4u
 /*
  * UART IRQ passthrough: id=6 in .system avoids the ids 1-5 used by channels
  * (serial_pd=1, controller=2) and virtio IRQs (3,4,5).
@@ -526,22 +535,22 @@ static uint32_t vmm_affinity[VMM_MAX_SLOTS];
  * so this badge never fires and the init guard below is a no-op.
  */
 #define UART_NTFN_BADGE          (1u << 6)
+#define VMM_IRQ_LOG_INTERVAL     1000u
+#define VMM_FAULT_BADGE_FLAG     (1ULL << 62)
 
 /*
- * IRQ handler capabilities placed by Microkit at BASE_IRQ_CAP + <irq id=N>.
- * The .system file assigns id=3 to virtio-net, id=4 to virtio-blk0,
- * id=5 to virtio-blk1 (ids 1 and 2 are taken by serial_pd/controller channels).
- * Slots 141/142/143 in linux_vmm's CNode.
- * id=6 (slot 144) is the UART IRQ in linux_vmm_test.system.
+ * IRQ handler capabilities placed by the raw root task at
+ * AGENTOS_IRQ_CAP_BASE + irq_index.  system_desc_aarch64.c orders them as
+ * virtio-net, virtio-blk0, virtio-blk1.
  */
 static const seL4_CPtr g_virtio_net_irq_cap =
-    (seL4_CPtr)(MICROKIT_BASE_IRQ_CAP + 3u);
+    (seL4_CPtr)(AGENTOS_IRQ_CAP_BASE + 0u);
 static const seL4_CPtr g_virtio_blk_irq_cap =
-    (seL4_CPtr)(MICROKIT_BASE_IRQ_CAP + 4u);
+    (seL4_CPtr)(AGENTOS_IRQ_CAP_BASE + 1u);
 static const seL4_CPtr g_virtio_blk2_irq_cap =
-    (seL4_CPtr)(MICROKIT_BASE_IRQ_CAP + 5u);
+    (seL4_CPtr)(AGENTOS_IRQ_CAP_BASE + 2u);
 static const seL4_CPtr g_uart_irq_cap =
-    (seL4_CPtr)(MICROKIT_BASE_IRQ_CAP + 6u);
+    (seL4_CPtr)(AGENTOS_IRQ_CAP_BASE + 3u);
 
 /* ─── Guest Image Symbols ────────────────────────────────────────────── */
 /* These are linked in by package_guest_images.S */
@@ -656,18 +665,36 @@ static void linux_vmm_binding_init(void)
 static void virtio_net_ack(size_t vcpu_id, int irq, void *cookie)
 {
     (void)vcpu_id; (void)irq; (void)cookie;
+    static uint64_t ack_count;
+    ack_count++;
+    if (ack_count <= 4u || (ack_count % VMM_IRQ_LOG_INTERVAL) == 0u) {
+        LOG_VMM("virtio-net guest EOI/ack #%llu\n",
+                (unsigned long long)ack_count);
+    }
     seL4_IRQHandler_Ack(g_virtio_net_irq_cap);
 }
 
 static void virtio_blk_ack(size_t vcpu_id, int irq, void *cookie)
 {
     (void)vcpu_id; (void)irq; (void)cookie;
+    static uint64_t ack_count;
+    ack_count++;
+    if (ack_count <= 4u || (ack_count % VMM_IRQ_LOG_INTERVAL) == 0u) {
+        LOG_VMM("virtio-blk0 guest EOI/ack #%llu\n",
+                (unsigned long long)ack_count);
+    }
     seL4_IRQHandler_Ack(g_virtio_blk_irq_cap);
 }
 
 static void virtio_blk2_ack(size_t vcpu_id, int irq, void *cookie)
 {
     (void)vcpu_id; (void)irq; (void)cookie;
+    static uint64_t ack_count;
+    ack_count++;
+    if (ack_count <= 4u || (ack_count % VMM_IRQ_LOG_INTERVAL) == 0u) {
+        LOG_VMM("virtio-blk1 guest EOI/ack #%llu\n",
+                (unsigned long long)ack_count);
+    }
     seL4_IRQHandler_Ack(g_virtio_blk2_irq_cap);
 }
 
@@ -700,11 +727,14 @@ static void uart_ack(size_t vcpu_id, int irq, void *cookie)
 static bool pl011_fault_handler(size_t vcpu_id, size_t offset, size_t fsr,
                                  seL4_UserContext *regs, void *data)
 {
+    (void)vcpu_id;
     (void)data;
     uint64_t reg_val = 0;
     if (fault_is_read((uint64_t)fsr)) {
         if (offset == PL011_FR)
             reg_val = PL011_FR_TXFE | PL011_FR_RXFE;
+        fault_emulate_write(regs, (size_t)(PL011_BASE + offset),
+                            (size_t)fsr, (size_t)reg_val);
     } else {
         /* Write: offset 0x0 is the Data Register (DR) — forward char to host */
         if (offset == 0) {
@@ -712,9 +742,7 @@ static bool pl011_fault_handler(size_t vcpu_id, size_t offset, size_t fsr,
             _uart_putc(c);
         }
     }
-    return fault_advance(vcpu_id, regs,
-                         (uint64_t)(PL011_BASE + offset),
-                         (uint64_t)fsr, reg_val);
+    return true;
 }
 
 /* ─── VCPU Affinity ──────────────────────────────────────────────────── */
@@ -810,11 +838,12 @@ void init(void)
             (unsigned long)guest_ram_vaddr, GUEST_RAM_SIZE / (1024 * 1024));
 
     /* Register VCPU and TCB caps with libvmm before any libvmm call that
-     * uses vmm_vcpu_cap() or vmm_tcb_cap().  Microkit places these at the
-     * fixed CNode slots BASE_VCPU_CAP+id and BASE_VM_TCB_CAP+id. */
+     * uses vmm_vcpu_cap() or vmm_tcb_cap().  The raw root task copies the
+     * guest execution TCB and VCPU caps into these fixed slots before it
+     * starts the linux_vmm PD. */
     vmm_register_vcpu(GUEST_BOOT_VCPU_ID,
-                      MICROKIT_BASE_VCPU_CAP   + GUEST_BOOT_VCPU_ID,
-                      MICROKIT_BASE_VM_TCB_CAP + GUEST_BOOT_VCPU_ID);
+                      AGENTOS_VMM_VCPU_CAP_BASE + GUEST_BOOT_VCPU_ID,
+                      AGENTOS_VMM_TCB_CAP_BASE  + GUEST_BOOT_VCPU_ID);
 
     /* Place guest images in RAM */
     size_t kernel_size = _guest_kernel_image_end - _guest_kernel_image;
@@ -879,7 +908,7 @@ void init(void)
     /* Initial ack to prime the GIC for first delivery (seL4 native API) */
     seL4_IRQHandler_Ack(g_virtio_blk_irq_cap);
 
-    /* Register virtio-blk1 IRQ passthrough (SPI 18 → INTID 50, ubuntu seed) */
+    /* Register virtio-blk1 IRQ passthrough (SPI 19 → INTID 51, ubuntu seed) */
     success = virq_register(GUEST_BOOT_VCPU_ID, VIRTIO_BLK2_IRQ, &virtio_blk2_ack, NULL);
     if (!success) {
         LOG_VMM_ERR("Failed to register virtio-blk1 IRQ (ubuntu seed — may not be present)\n");
@@ -952,12 +981,21 @@ static void linux_vmm_notified(seL4_Word badge)
 {
     seL4_Word ch = badge;
     (void)ch;
+    bool handled_irq = false;
     /*
      * Badge bits from seL4 notification delivery.  Multiple IRQs may be
      * coalesced; test each bit independently.
      */
     if (badge & (seL4_Word)VIRTIO_NET_NTFN_BADGE) {
+        handled_irq = true;
+        static uint64_t irq_count;
+        irq_count++;
         bool success = virq_inject(VIRTIO_NET_IRQ);
+        if (irq_count <= 4u || (irq_count % VMM_IRQ_LOG_INTERVAL) == 0u || !success) {
+            LOG_VMM("virtio-net host IRQ #%llu inject=%s\n",
+                    (unsigned long long)irq_count,
+                    success ? "ok" : "failed");
+        }
         if (!success) {
             LOG_VMM_ERR("virtio-net IRQ %d dropped on inject\n", VIRTIO_NET_IRQ);
         }
@@ -965,26 +1003,47 @@ static void linux_vmm_notified(seL4_Word badge)
     }
 
     if (badge & (seL4_Word)VIRTIO_BLK_NTFN_BADGE) {
+        handled_irq = true;
+        static uint64_t irq_count;
+        irq_count++;
         bool success = virq_inject(VIRTIO_BLK_IRQ);
+        if (irq_count <= 4u || (irq_count % VMM_IRQ_LOG_INTERVAL) == 0u || !success) {
+            LOG_VMM("virtio-blk0 host IRQ #%llu inject=%s\n",
+                    (unsigned long long)irq_count,
+                    success ? "ok" : "failed");
+        }
         if (!success) {
             LOG_VMM_ERR("virtio-blk0 IRQ %d dropped on inject\n", VIRTIO_BLK_IRQ);
         }
     }
 
     if (badge & (seL4_Word)VIRTIO_BLK2_NTFN_BADGE) {
+        handled_irq = true;
+        static uint64_t irq_count;
+        irq_count++;
         bool success = virq_inject(VIRTIO_BLK2_IRQ);
+        if (irq_count <= 4u || (irq_count % VMM_IRQ_LOG_INTERVAL) == 0u || !success) {
+            LOG_VMM("virtio-blk1 host IRQ #%llu inject=%s\n",
+                    (unsigned long long)irq_count,
+                    success ? "ok" : "failed");
+        }
         if (!success) {
             LOG_VMM_ERR("virtio-blk1 IRQ %d dropped on inject\n", VIRTIO_BLK2_IRQ);
         }
     }
 
     if (badge & (seL4_Word)UART_NTFN_BADGE) {
+        handled_irq = true;
         /* PL011 UART IRQ 33 — used in linux_vmm_test.system (direct serial mapping).
          * Inject INTID 33 into the guest so the PL011 driver can process RX/TX. */
         bool success = virq_inject(33u);
         if (!success) {
             LOG_VMM_ERR("UART IRQ 33 dropped on inject\n");
         }
+    }
+
+    if (handled_irq) {
+        return;
     }
 
     /* Non-IRQ channel notifications — dispatch by badge/channel number */
@@ -1091,7 +1150,7 @@ static seL4_MessageInfo_t linux_vmm_fault(seL4_Word badge,
 {
     /* Microkit 2.1 encodes VCPU fault badges as (1ULL<<62)|vcpu_id.
      * Strip the upper flag bits to recover the raw vcpu_id. */
-    size_t vcpu_id = badge & ~(1ULL << 62);
+    size_t vcpu_id = badge & ~VMM_FAULT_BADGE_FLAG;
     bool success = fault_handle(vcpu_id, msginfo);
     (void)success;
     /* UART MMIO fault compliance stub — silently accept, guest continues. */
@@ -1101,13 +1160,10 @@ static seL4_MessageInfo_t linux_vmm_fault(seL4_Word badge,
 /* ─── Main loop ─────────────────────────────────────────────────────────── */
 
 /*
- * Microkit CapDL CNode layout for linux_vmm:
- *   slot 1: ep_linux_vmm  (receive endpoint)
- *   slot 4: reply_linux_vmm  (MCS reply cap storage)
+ * agentOS root-task CNode layout:
+ *   my_ep:             passed in x0 by pd_entry.c
+ *   AGENTOS_IPC_REPLY_CAP: reserved MCS reply object slot
  */
-#define VMM_EP_CAP    ((seL4_CPtr)1u)
-#define VMM_REPLY_CAP ((seL4_CPtr)4u)
-
 void linux_vmm_main(seL4_CPtr ep, seL4_CPtr reply_cap)
 {
     /* __sel4_ipc_buffer is set to 0x10000000 by pd_entry.c _start before
@@ -1134,7 +1190,7 @@ void linux_vmm_main(seL4_CPtr ep, seL4_CPtr reply_cap)
 #endif
     while (1) {
         seL4_Word label = seL4_MessageInfo_get_label(info);
-        if (label == seL4_Fault_NullFault) {
+        if (label == seL4_Fault_NullFault || !(badge & VMM_FAULT_BADGE_FLAG)) {
             linux_vmm_notified(badge);
 #ifdef CONFIG_KERNEL_MCS
             info = seL4_Recv(ep, &badge, reply_cap);
@@ -1154,6 +1210,10 @@ void linux_vmm_main(seL4_CPtr ep, seL4_CPtr reply_cap)
     }
 }
 
-void pd_main(seL4_CPtr my_ep, seL4_CPtr ns_ep) { linux_vmm_main(my_ep, ns_ep); }
+void pd_main(seL4_CPtr my_ep, seL4_CPtr ns_ep)
+{
+    (void)ns_ep;
+    linux_vmm_main(my_ep, AGENTOS_IPC_REPLY_CAP);
+}
 
 #endif /* ARCH_AARCH64 && !LINUX_VMM_NATIVE_STUB */

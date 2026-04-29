@@ -19,8 +19,8 @@ delegates to AgentFS or an external object store.
 ## Protection Domain
 
 MemFS is currently implemented as a library linked into the controller PD.
-The long-term plan is to promote it to a standalone passive PD at priority
-~150 (between agentfs at 150 and console_mux at 160).
+The long-term plan is to promote it to a standalone passive PD near the
+AgentFS service priority.
 
 ## IPC Endpoint
 

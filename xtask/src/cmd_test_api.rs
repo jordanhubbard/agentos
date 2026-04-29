@@ -8,7 +8,7 @@
 //!   1  — one or more suites failed or a compile error occurred
 
 use crate::TestApiArgs;
-use anyhow::{Context, Result, bail};
+use anyhow::{bail, Context, Result};
 use std::path::{Path, PathBuf};
 
 /// Ordered list of API test source files.
@@ -37,8 +37,7 @@ pub fn run(args: &TestApiArgs) -> Result<()> {
         d.push(format!("agentos-api-tests-{}", std::process::id()));
         d
     };
-    std::fs::create_dir_all(&build_dir)
-        .context("failed to create API test build directory")?;
+    std::fs::create_dir_all(&build_dir).context("failed to create API test build directory")?;
 
     println!("[xtask:test-api] compiler: {}", cc);
     println!("[xtask:test-api] test dir: {}", tests_dir.display());
@@ -50,9 +49,9 @@ pub fn run(args: &TestApiArgs) -> Result<()> {
     let mut errors = 0usize;
 
     for &file in TEST_FILES {
-        let src  = tests_dir.join(file);
+        let src = tests_dir.join(file);
         let stem = file.trim_end_matches(".c");
-        let bin  = build_dir.join(stem);
+        let bin = build_dir.join(stem);
 
         // ── Compile ──────────────────────────────────────────────────────
         let compile_status = std::process::Command::new(&cc)
@@ -87,15 +86,12 @@ pub fn run(args: &TestApiArgs) -> Result<()> {
         let stderr = String::from_utf8_lossy(&run_output.stderr);
 
         // ── Parse TAP counts ─────────────────────────────────────────────
-        let ok_count: usize = stdout.lines()
+        let ok_count: usize = stdout
+            .lines()
             .filter(|l| l.starts_with("ok ") && !l.contains("# TODO"))
             .count();
-        let notok_count: usize = stdout.lines()
-            .filter(|l| l.starts_with("not ok "))
-            .count();
-        let todo_count: usize = stdout.lines()
-            .filter(|l| l.contains("# TODO"))
-            .count();
+        let notok_count: usize = stdout.lines().filter(|l| l.starts_with("not ok ")).count();
+        let todo_count: usize = stdout.lines().filter(|l| l.contains("# TODO")).count();
 
         // Print TAP output if verbose or suite failed.
         let suite_passed = run_output.status.success();
@@ -151,10 +147,7 @@ pub fn run(args: &TestApiArgs) -> Result<()> {
     println!("═══════════════════════════════════════════════");
 
     if failed > 0 || errors > 0 {
-        bail!(
-            "{} suite(s) failed, {} compile error(s)",
-            failed, errors
-        );
+        bail!("{} suite(s) failed, {} compile error(s)", failed, errors);
     }
 
     println!("ALL API TESTS PASSED");

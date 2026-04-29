@@ -38,6 +38,7 @@
 
 #include "vmm.h"
 #include "vmm_mux.h"
+#include "sel4_ipc.h"
 
 /* Phase 3 — guest OS binding contract (guest_contract.h §3.1 compliance) */
 #include "../../kernel/agentos-root-task/include/contracts/freebsd_vmm_contract.h"
@@ -53,8 +54,8 @@ uintptr_t vmm_serial_shmem_vaddr;
 uintptr_t vmm_block_shmem_vaddr;
 uintptr_t vmm_net_shmem_vaddr;
 
-/* Global multiplexer state */
-static vm_mux_t g_mux;
+/* Global multiplexer state; vmm_mux.c MMIO handlers reference it directly. */
+vm_mux_t g_mux;
 
 /* Endpoint cap for calling the root task (MSG_VMM_*) */
 static seL4_CPtr g_kernel_ep;
@@ -227,21 +228,34 @@ void freebsd_vmm_main(seL4_CPtr ep, seL4_CPtr kernel_ep,
 
     seL4_Word badge;
     while (1) {
-        seL4_MessageInfo_t info = seL4_Recv(ep, &badge);
+        seL4_MessageInfo_t info;
+#ifdef CONFIG_KERNEL_MCS
+        info = seL4_Recv(ep, &badge, AGENTOS_IPC_REPLY_CAP);
+#else
+        info = seL4_Recv(ep, &badge);
+#endif
         seL4_Word label = seL4_MessageInfo_get_label(info);
 
         if (badge & VMM_FAULT_BADGE_BIT) {
             /* VCPU fault — low bits of badge encode the vcpu_id */
             seL4_MessageInfo_t reply =
                 vmm_fault(badge & ~VMM_FAULT_BADGE_BIT, info);
+#ifdef CONFIG_KERNEL_MCS
+            seL4_Send(AGENTOS_IPC_REPLY_CAP, reply);
+#else
             seL4_Reply(reply);
+#endif
         } else if (label == seL4_Fault_NullFault) {
             /* Notification: IRQ, virtio ring, or controller notify */
             vmm_notified(badge);
         } else {
             /* IPC call from controller: label = opcode */
             seL4_MessageInfo_t reply = vmm_protected(badge, info);
+#ifdef CONFIG_KERNEL_MCS
+            seL4_Send(AGENTOS_IPC_REPLY_CAP, reply);
+#else
             seL4_Reply(reply);
+#endif
         }
     }
 }

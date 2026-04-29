@@ -35,11 +35,11 @@
 #define HTTP_SVC_VERSION  1u
 
 /* ─── Opcodes ─────────────────────────────────────────────────────────────── */
-#define OP_HTTP_REGISTER    0x01
-#define OP_HTTP_UNREGISTER  0x02
-#define OP_HTTP_DISPATCH    0x03
-#define OP_HTTP_LIST        0x04
-#define OP_HTTP_HEALTH      0x05
+#define OP_HTTP_REGISTER    0x90u
+#define OP_HTTP_UNREGISTER  0x91u
+#define OP_HTTP_DISPATCH    0x92u
+#define OP_HTTP_LIST        0x93u
+#define OP_HTTP_HEALTH      0x94u
 
 /* ─── Inline prefix size ─────────────────────────────────────────────────── */
 #define HTTP_PREFIX_MR_WORDS   8u   /* MR4..MR11 carry prefix inline */
@@ -105,6 +105,8 @@ struct http_svc_reply_health {
 /* ─── Shmem layout: handler entry ────────────────────────────────────────── */
 
 typedef struct __attribute__((packed)) {
+    uint8_t  active;
+    uint8_t  _pad[3];
     uint32_t handler_id;
     uint32_t app_id;
     uint32_t vnic_id;
@@ -115,7 +117,8 @@ typedef struct __attribute__((packed)) {
 
 enum http_svc_error {
     HTTP_OK              = 0,
-    HTTP_ERR_INVAL       = 1,    /* bad argument */
-    HTTP_ERR_NO_SLOTS    = 2,    /* handler table full */
-    HTTP_ERR_NOT_FOUND   = 3,    /* no handler matches path */
+    HTTP_ERR_NO_SLOTS    = 1,    /* handler table full */
+    HTTP_ERR_NOT_FOUND   = 2,    /* no handler matches path */
+    HTTP_ERR_INVAL       = 3,    /* bad argument */
+    HTTP_ERR_STUB        = 4,    /* feature not yet implemented */
 };

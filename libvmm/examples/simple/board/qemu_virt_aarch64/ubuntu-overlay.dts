@@ -10,10 +10,12 @@
  *   - Adds virtio_mmio@a000200 for virtio-blk (slot 1, SPI 17 → INTID 49)
  */
 / {
-    /* 256MB guest RAM — matches guest_ram MR in agentos-aarch64.system */
+    dma-coherent;
+
+    /* 512MB guest RAM — matches linux_vmm guest_ram MR in system_desc_aarch64.c */
     memory@40000000 {
         device_type = "memory";
-        reg = <0x00 0x40000000 0x00 0x10000000>;
+        reg = <0x00 0x40000000 0x00 0x20000000>;
     };
 
     flash@0 {
@@ -24,9 +26,9 @@
         stdout-path = "/pl011@9000000";
         /* Ubuntu 24.04 cloud image: initrdless boot via device path.
          * vda = first virtio-blk (ubuntu disk), vda1 = root partition.
-         * cloud-init reads NoCloud data from vdb (linux-seed.img, label CIDATA).
+         * cloud-init reads NoCloud data from QEMU user-net host 10.0.2.2.
          * earlycon/console through PL011 at 0x9000000. */
-        bootargs = "earlycon=pl011,0x9000000 console=ttyAMA0,115200 root=/dev/vda1 rw";
+        bootargs = "earlycon=pl011,0x9000000 console=ttyAMA0,115200 root=/dev/vda1 rw systemd.unit=multi-user.target systemd.mask=boot.mount systemd.mask=boot-efi.mount systemd.mask=multipathd.service systemd.mask=multipathd.socket ds=nocloud-net;s=http://10.0.2.2:18790/";
         linux,stdout-path = "/pl011@9000000";
     };
 
@@ -40,6 +42,7 @@
      */
     virtio_mmio@a000000 {
         compatible = "virtio,mmio";
+        dma-coherent;
         reg = <0x00 0xa000000 0x00 0x200>;
         interrupt-parent = <0x8001>;
         interrupts = <0x00 0x10 0x01>;
@@ -53,21 +56,24 @@
      */
     virtio_mmio@a000200 {
         compatible = "virtio,mmio";
+        dma-coherent;
         reg = <0x00 0xa000200 0x00 0x200>;
         interrupt-parent = <0x8001>;
         interrupts = <0x00 0x11 0x01>;
     };
 
     /*
-     * virtio-blk passthrough: QEMU virt virtio-mmio slot 2.
-     * Physical address: 0xa000000 + 2*0x200 = 0xa000400.
-     * IRQ: SPI 18 (INTID 50) — slot 2 = cloud-init seed (vdb, label CIDATA).
+     * virtio-blk passthrough: QEMU virt virtio-mmio slot 3.
+     * Physical address: 0xa000000 + 3*0x200 = 0xa000600.
+     * IRQ: SPI 19 (INTID 51) — slot 3 = cloud-init seed (vdb, label CIDATA).
+     * Slot 2 is reserved for cc_pd's host command relay.
      * trigger 0x01 = edge-rising.
      */
-    virtio_mmio@a000400 {
+    virtio_mmio@a000600 {
         compatible = "virtio,mmio";
-        reg = <0x00 0xa000400 0x00 0x200>;
+        dma-coherent;
+        reg = <0x00 0xa000600 0x00 0x200>;
         interrupt-parent = <0x8001>;
-        interrupts = <0x00 0x12 0x01>;
+        interrupts = <0x00 0x13 0x01>;
     };
 };

@@ -15,7 +15,7 @@
 //!   --hardware           Also run the QEMU-backed hardware test suite (disabled by default)
 
 use crate::HostTestArgs;
-use anyhow::{Context, Result, bail};
+use anyhow::{bail, Context, Result};
 use std::path::{Path, PathBuf};
 
 // ---------------------------------------------------------------------------
@@ -81,8 +81,7 @@ pub fn run(args: &HostTestArgs) -> Result<()> {
 
     // Build a temporary output directory for compiled binaries.
     let build_dir = repo_root.join("target").join("test-bins");
-    std::fs::create_dir_all(&build_dir)
-        .context("failed to create test binary output directory")?;
+    std::fs::create_dir_all(&build_dir).context("failed to create test binary output directory")?;
 
     println!("[xtask:test] compiler : {}", cc);
     println!("[xtask:test] repo root: {}", repo_root.display());
@@ -105,9 +104,11 @@ pub fn run(args: &HostTestArgs) -> Result<()> {
 
     if selected.is_empty() {
         if let Some(ref name) = args.suite {
-            bail!("unknown suite {:?} — available suites: {}",
-                  name,
-                  SUITES.iter().map(|s| s.name).collect::<Vec<_>>().join(", "));
+            bail!(
+                "unknown suite {:?} — available suites: {}",
+                name,
+                SUITES.iter().map(|s| s.name).collect::<Vec<_>>().join(", ")
+            );
         }
         println!("[xtask:test] no suites found");
         return Ok(());
@@ -117,23 +118,29 @@ pub fn run(args: &HostTestArgs) -> Result<()> {
     // Compile & run each suite
     // ---------------------------------------------------------------------------
 
-    let mut passed  = 0usize;
-    let mut failed  = 0usize;
+    let mut passed = 0usize;
+    let mut failed = 0usize;
     let mut skipped = 0usize;
-    let mut errors  = 0usize;
+    let mut errors = 0usize;
 
     // Include paths always passed to the compiler.
-    let include_root    = repo_root.join("kernel").join("agentos-root-task").join("include");
+    let include_root = repo_root
+        .join("kernel")
+        .join("agentos-root-task")
+        .join("include");
     let include_harness = repo_root.join("tests").join("harness");
-    let include_api     = repo_root.join("tests").join("api");
+    let include_api = repo_root.join("tests").join("api");
 
     for suite in &selected {
         let primary_src = repo_root.join(suite.sources[0]);
 
         // Skip suites whose primary source file does not exist yet.
         if !primary_src.exists() {
-            println!("[xtask:test] SKIP  {} — source not found: {}",
-                     suite.name, primary_src.display());
+            println!(
+                "[xtask:test] SKIP  {} — source not found: {}",
+                suite.name,
+                primary_src.display()
+            );
             skipped += 1;
             continue;
         }
@@ -164,7 +171,8 @@ pub fn run(args: &HostTestArgs) -> Result<()> {
             }
         }
 
-        let compile_out = cmd.output()
+        let compile_out = cmd
+            .output()
             .with_context(|| format!("failed to invoke C compiler for suite {}", suite.name))?;
 
         if !compile_out.status.success() {
@@ -191,10 +199,7 @@ pub fn run(args: &HostTestArgs) -> Result<()> {
             .lines()
             .filter(|l| l.starts_with("ok ") && !l.contains("# TODO"))
             .count();
-        let not_ok_count: usize = stdout
-            .lines()
-            .filter(|l| l.starts_with("not ok "))
-            .count();
+        let not_ok_count: usize = stdout.lines().filter(|l| l.starts_with("not ok ")).count();
         let todo_count: usize = stdout.lines().filter(|l| l.contains("# TODO")).count();
 
         let suite_passed = run_out.status.success() && not_ok_count == 0;
@@ -248,19 +253,30 @@ pub fn run(args: &HostTestArgs) -> Result<()> {
     println!("┌─────────────────────────────────────────────────────┐");
     println!("│  agentOS host-side test results                     │");
     println!("├─────────────────────────────────────────────────────┤");
-    println!("│  Total suites:   {:>3}                               │", total);
-    println!("│  Passed:         {:>3}                               │", passed);
-    println!("│  Failed:         {:>3}                               │", failed);
-    println!("│  Compile errors: {:>3}                               │", errors);
-    println!("│  Skipped:        {:>3}  (source not found)           │", skipped);
+    println!(
+        "│  Total suites:   {:>3}                               │",
+        total
+    );
+    println!(
+        "│  Passed:         {:>3}                               │",
+        passed
+    );
+    println!(
+        "│  Failed:         {:>3}                               │",
+        failed
+    );
+    println!(
+        "│  Compile errors: {:>3}                               │",
+        errors
+    );
+    println!(
+        "│  Skipped:        {:>3}  (source not found)           │",
+        skipped
+    );
     println!("└─────────────────────────────────────────────────────┘");
 
     if failed > 0 || errors > 0 {
-        bail!(
-            "{} suite(s) failed, {} compile error(s)",
-            failed,
-            errors
-        );
+        bail!("{} suite(s) failed, {} compile error(s)", failed, errors);
     }
 
     if passed > 0 {

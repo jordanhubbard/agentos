@@ -61,8 +61,7 @@ pub fn run(args: &CiMatrixArgs) -> anyhow::Result<()> {
             // Build — collect owned strings first so &str slices remain valid
             let board_arg = format!("BOARD={}", tc.board);
             let guest_arg = format!("GUEST_OS={}", tc.guest_os);
-            let mut make_args_owned: Vec<String> =
-                vec!["build".to_string(), board_arg, guest_arg];
+            let mut make_args_owned: Vec<String> = vec!["build".to_string(), board_arg, guest_arg];
             for &extra in tc.extra_make_args {
                 make_args_owned.push(extra.to_string());
             }
@@ -79,7 +78,10 @@ pub fn run(args: &CiMatrixArgs) -> anyhow::Result<()> {
         let log_file = match tempfile::NamedTempFile::new() {
             Ok(f) => f,
             Err(e) => {
-                println!("[ci-matrix] FAIL ({}): could not create temp file: {}", tc.name, e);
+                println!(
+                    "[ci-matrix] FAIL ({}): could not create temp file: {}",
+                    tc.name, e
+                );
                 fail += 1;
                 failures.push(format!("{}: temp file error: {}", tc.name, e));
                 continue;

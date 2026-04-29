@@ -1,0 +1,83 @@
+#!/usr/bin/env expect
+#
+# Provision a temporary FreeBSD qcow2 overlay for E2E SSH tests.
+#
+# Usage:
+#   provision_freebsd_ssh.expect <kernel.bin> <disk.qcow2> <ssh_port> <pubkey>
+
+if {$argc != 4} {
+    puts stderr "usage: provision_freebsd_ssh.expect <kernel.bin> <disk.qcow2> <ssh_port> <pubkey>"
+    exit 64
+}
+
+set kernel [lindex $argv 0]
+set disk [lindex $argv 1]
+set ssh_port [lindex $argv 2]
+set pubkey [lindex $argv 3]
+set timeout 300
+
+proc wait_prompt {} {
+    expect {
+        -re {root@[^#]+# $} {}
+        -re {# $} {}
+        timeout {
+            puts stderr "timeout waiting for FreeBSD root prompt"
+            exit 70
+        }
+    }
+}
+
+proc run_cmd {cmd} {
+    send -- "$cmd\r"
+    wait_prompt
+}
+
+spawn qemu-system-aarch64 \
+    -machine virt,highmem=off,secure=off \
+    -cpu cortex-a57 \
+    -m 512M \
+    -display none \
+    -monitor none \
+    -serial stdio \
+    -kernel $kernel \
+    -append "FreeBSD:-s vfs.root.mountfrom=ufs:/dev/vtbd0p3 console=ttyu0" \
+    -global virtio-mmio.force-legacy=off \
+    -device virtio-net-device,netdev=net0,bus=virtio-mmio-bus.0 \
+    -netdev user,id=net0,hostfwd=tcp:127.0.0.1:${ssh_port}-:22 \
+    -device virtio-blk-device,drive=hd0,bus=virtio-mmio-bus.31 \
+    -drive file=${disk},format=qcow2,id=hd0,if=none
+
+expect {
+    "Enter full pathname of shell" {
+        send -- "\r"
+    }
+    timeout {
+        puts stderr "timeout waiting for FreeBSD single-user shell prompt"
+        exit 70
+    }
+}
+
+wait_prompt
+
+run_cmd "fsck -y /"
+run_cmd "mount -u -o rw /"
+run_cmd "mount -a -t ufs"
+run_cmd "sysrc sshd_enable=YES"
+run_cmd "sysrc growfs_enable=NO"
+run_cmd "sysrc ifconfig_DEFAULT=DHCP"
+run_cmd "sysrc ipv6_activate_all_interfaces=NO"
+run_cmd "mkdir -p /root/.ssh"
+run_cmd "chmod 700 /root/.ssh"
+run_cmd "printf '%s\\n' '$pubkey' > /root/.ssh/authorized_keys"
+run_cmd "chmod 600 /root/.ssh/authorized_keys"
+run_cmd "printf '\\nPermitRootLogin yes\\nPasswordAuthentication no\\nPubkeyAuthentication yes\\n' >> /etc/ssh/sshd_config"
+run_cmd "sync"
+
+send -- "shutdown -p now\r"
+expect {
+    eof {}
+    timeout {
+        puts stderr "timeout waiting for FreeBSD shutdown"
+        exit 70
+    }
+}

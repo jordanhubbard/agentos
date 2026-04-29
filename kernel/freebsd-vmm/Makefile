@@ -13,16 +13,19 @@
 #   - clang + ld.lld + llvm-objcopy (LLVM cross toolchain)
 
 BOARD           ?= qemu_virt_aarch64
-SEL4_BOARD_DIR  ?= ../../microkit-sdk-2.1.0/board/$(BOARD)
-LIBVMM_DIR      ?= ../../libvmm
+AGENTOS_ROOT    := $(abspath ../..)
+SEL4_BOARD_DIR  ?= $(AGENTOS_ROOT)/microkit-sdk-2.1.0/board/$(BOARD)/release
+LIBVMM_DIR      ?= $(AGENTOS_ROOT)/libvmm
 BUILD_DIR       ?= build
-EDK2_FD         ?= $(HOME)/.local/agentos-images/edk2-aarch64-code.fd
+LIBVMM_LIB_DIR  ?= $(AGENTOS_ROOT)/build/$(BOARD)
+EDK2_FD         ?= $(AGENTOS_ROOT)/guest-images/edk2-aarch64-code.fd
 FREEBSD_DTB     ?= $(BUILD_DIR)/freebsd-guest.dtb
 
 SEL4_INCLUDE    := $(SEL4_BOARD_DIR)/include
 SEL4_LIB        := $(SEL4_BOARD_DIR)/lib
 LIBVMM_INCLUDE  := $(LIBVMM_DIR)/include
 LIBVMM_SRC      := $(LIBVMM_DIR)/src
+SDDF_DIR        := $(LIBVMM_DIR)/dep/sddf
 
 CC      := clang --target=aarch64-none-elf
 LD      := ld.lld
@@ -38,18 +41,21 @@ CFLAGS := \
     -Wall -Wextra \
     -I$(SEL4_INCLUDE) \
     -I$(LIBVMM_INCLUDE) \
+    -I$(SDDF_DIR)/include \
+    -I$(SDDF_DIR)/include/sddf/util/custom_libc \
+    -I$(SDDF_DIR)/include/microkit \
     -I$(AGENTOS_INCLUDE) \
     -I.
 
 LDFLAGS := \
     -L$(SEL4_LIB) \
-    -L$(LIBVMM_DIR)/build/$(BOARD) \
+    -L$(LIBVMM_LIB_DIR) \
     -Ttext-segment=0x800000 \
     --entry=freebsd_vmm_main
 
 # seL4 API calls are inline (from sel4/sel4.h); no libmicrokit needed.
 # libc builtins (memcpy/memset) are provided by libvmm or compiler intrinsics.
-LIBS := -lvmm
+LIBS := -lvmm -lsddf_util_debug
 
 SRCS := vmm.c vmm_mux.c
 

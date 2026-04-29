@@ -14,6 +14,7 @@
 #   E2E_TIMEOUT         seconds to wait for guest SSH (default: 120)
 #   E2E_CC_PORT         agentOS CC bridge port forwarded by QEMU (default: 8789)
 #   E2E_SSH_PORT        host port forwarded to guest SSH (default: 2222)
+#   E2E_SEED_PORT       host port for Ubuntu NoCloud-Net seed (default: 18790)
 #   E2E_BOARD           override board selection (default: auto-detect)
 #   E2E_QEMU            override QEMU binary (default: auto-detect)
 #   E2E_IMAGE           override agentos image (default: build/<board>/agentos.img)
@@ -21,8 +22,10 @@
 #                       (default: freebsd; set to "all" to loop all available images)
 #   E2E_FREEBSD_IMG     FreeBSD disk image for slot 0 (default: guest-images/freebsd.img)
 #   E2E_SSH_KEY         path to ED25519 private key (default: tests/e2e/id_ed25519)
+#   E2E_SSH_USER        SSH user (default: ubuntu for Ubuntu guests, root otherwise)
 #   E2E_DEBUG           if set, echo all serial output to stdout
 #   E2E_SKIP_SSH        if set, skip SSH-based tests (useful in restricted envs)
+#   E2E_ALLOW_NO_SSH    if set, missing SSH is downgraded to a warning
 #   E2E_SKIP_BRIDGE     if set, skip HTTP bridge/CC API tests
 
 set -uo pipefail
@@ -48,6 +51,7 @@ section() { printf "\n${CYAN}━━━ %s ━━━${RESET}\n" "$*"; }
 E2E_TIMEOUT="${E2E_TIMEOUT:-120}"
 E2E_CC_PORT="${E2E_CC_PORT:-8789}"
 E2E_SSH_PORT="${E2E_SSH_PORT:-2222}"
+E2E_SEED_PORT="${E2E_SEED_PORT:-18790}"
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
@@ -82,6 +86,7 @@ E2E_IMAGE="${E2E_IMAGE:-${REPO_ROOT}/build/${BOARD}/agentos.img}"
 E2E_LOADER_ELF="${E2E_LOADER_ELF:-${REPO_ROOT}/build/${BOARD}/loader.elf}"
 E2E_FREEBSD_IMG="${E2E_FREEBSD_IMG:-${REPO_ROOT}/guest-images/freebsd.img}"
 E2E_SSH_KEY="${E2E_SSH_KEY:-${SCRIPT_DIR}/id_ed25519}"
+E2E_CC_SOCK="${E2E_CC_SOCK:-${REPO_ROOT}/build/cc_pd.sock}"
 
 # ── Guest OS selection ─────────────────────────────────────────────────────────
 # E2E_GUEST_OS selects which guest disk image to boot.
@@ -104,7 +109,12 @@ resolve_guest_os() {
             E2E_GUEST_BOOT_MARKER="login:"
             ;;
         ubuntu-arm64)
-            E2E_GUEST_IMG="${E2E_GUEST_IMG:-${REPO_ROOT}/guest-images/ubuntu-arm64.img}"
+            local ubuntu_default="${REPO_ROOT}/guest-images/ubuntu-arm64.img"
+            local ubuntu_cached="${HOME}/.local/agentos-images/ubuntu-24.04-aarch64.img"
+            if [ -f "${ubuntu_cached}" ]; then
+                ubuntu_default="${ubuntu_cached}"
+            fi
+            E2E_GUEST_IMG="${E2E_GUEST_IMG:-${ubuntu_default}}"
             E2E_GUEST_VMM_TYPE="linux"
             E2E_GUEST_BOOT_MARKER="login:"
             ;;
@@ -140,6 +150,15 @@ TESTS_SKIPPED=0
 # Process tracking
 QEMU_PID=""
 SERIAL_NC_PID=""
+SEED_HTTP_PID=""
+SEED_DIR=""
+
+is_ubuntu_guest() {
+    case "${E2E_GUEST_OS}" in
+        ubuntu-*) return 0 ;;
+        *) return 1 ;;
+    esac
+}
 
 # ── SSH helper ─────────────────────────────────────────────────────────────────
 
@@ -152,7 +171,28 @@ guest_ssh() {
         -o ConnectTimeout=10 \
         -o BatchMode=yes \
         -p "${E2E_SSH_PORT}" \
-        root@localhost "$@" 2>/dev/null
+        "${E2E_SSH_USER}@localhost" "$@" 2>/dev/null
+}
+
+wait_for_guest_ssh() {
+    local timeout="$1"
+    local elapsed=0
+    while [ "${elapsed}" -lt "${timeout}" ]; do
+        if is_ubuntu_guest; then
+            if guest_ssh systemctl is-active --quiet multi-user.target 2>/dev/null; then
+                return 0
+            fi
+        elif [ "${E2E_GUEST_OS}" = "freebsd" ]; then
+            if guest_ssh "uname -s | grep -qx FreeBSD && service sshd onestatus >/dev/null 2>&1" 2>/dev/null; then
+                return 0
+            fi
+        elif guest_ssh true 2>/dev/null; then
+            return 0
+        fi
+        sleep 2
+        elapsed=$(( elapsed + 2 ))
+    done
+    return 1
 }
 
 # ── CC bridge helper ───────────────────────────────────────────────────────────
@@ -186,6 +226,10 @@ cc_available() {
 
 cleanup() {
     local code=$?
+    if [ -n "${SEED_HTTP_PID}" ]; then
+        kill "${SEED_HTTP_PID}" 2>/dev/null || true
+        wait "${SEED_HTTP_PID}" 2>/dev/null || true
+    fi
     if [ -n "${SERIAL_NC_PID}" ]; then
         kill "${SERIAL_NC_PID}" 2>/dev/null || true
         wait "${SERIAL_NC_PID}" 2>/dev/null || true
@@ -195,6 +239,9 @@ cleanup() {
         wait "${QEMU_PID}" 2>/dev/null || true
     fi
     rm -f "${SERIAL_SOCK}" "${SERIAL_LOG}"
+    if [ -n "${SEED_DIR}" ]; then
+        rm -rf "${SEED_DIR}"
+    fi
     exit "${code}"
 }
 trap cleanup EXIT INT TERM
@@ -237,7 +284,77 @@ ensure_ssh_key() {
     return 0
 }
 
+start_ubuntu_seed_server() {
+    local pubkey
+    if [ ! -f "${E2E_SSH_KEY}.pub" ]; then
+        warn "Missing SSH public key ${E2E_SSH_KEY}.pub — cannot seed Ubuntu SSH"
+        return 1
+    fi
+    if ! command -v python3 >/dev/null 2>&1; then
+        warn "python3 not found — cannot serve Ubuntu NoCloud-Net seed"
+        return 1
+    fi
+
+    SEED_DIR="$(mktemp -d "/tmp/agentos-nocloud-${E2E_GUEST_OS}.XXXXXX")"
+    pubkey="$(cat "${E2E_SSH_KEY}.pub")"
+    {
+        printf "instance-id: agentos-%s-%s-%s\n" "${E2E_GUEST_OS}" "$$" "$(date +%s)"
+        printf "local-hostname: agentos-linux\n"
+    } > "${SEED_DIR}/meta-data"
+    : > "${SEED_DIR}/vendor-data"
+    {
+        printf "%s\n" "#cloud-config"
+        printf "%s\n" "disable_root: false"
+        printf "%s\n" "ssh_pwauth: true"
+        printf "%s\n" "ssh_authorized_keys:"
+        printf "  - %s\n" "${pubkey}"
+        printf "%s\n" "users:"
+        printf "%s\n" "  - default"
+        printf "%s\n" "  - name: ubuntu"
+        printf "%s\n" "    lock_passwd: false"
+        printf "%s\n" "    groups: [adm, sudo]"
+        printf "%s\n" "    shell: /bin/bash"
+        printf "%s\n" "    ssh_authorized_keys:"
+        printf "      - %s\n" "${pubkey}"
+        printf "%s\n" "  - name: root"
+        printf "%s\n" "    lock_passwd: false"
+        printf "%s\n" "    ssh_authorized_keys:"
+        printf "      - %s\n" "${pubkey}"
+        printf "%s\n" "chpasswd:"
+        printf "%s\n" "  expire: false"
+        printf "%s\n" "  users:"
+        printf "%s\n" "    - name: root"
+        printf "%s\n" "      password: agentos"
+        printf "%s\n" "      type: text"
+        printf "%s\n" "write_files:"
+        printf "%s\n" "  - path: /root/.ssh/authorized_keys"
+        printf "%s\n" "    owner: root:root"
+        printf "%s\n" "    permissions: '0600'"
+        printf "%s\n" "    content: |"
+        printf "      %s\n" "${pubkey}"
+    } > "${SEED_DIR}/user-data"
+
+    python3 -m http.server "${E2E_SEED_PORT}" --bind 127.0.0.1 \
+        --directory "${SEED_DIR}" >/tmp/agentos-e2e-seed-${E2E_SEED_PORT}.log 2>&1 &
+    SEED_HTTP_PID=$!
+    sleep 1
+    if ! kill -0 "${SEED_HTTP_PID}" 2>/dev/null; then
+        warn "Ubuntu NoCloud-Net seed server failed to start on port ${E2E_SEED_PORT}"
+        return 1
+    fi
+    info "Ubuntu NoCloud-Net seed: http://127.0.0.1:${E2E_SEED_PORT}/"
+    return 0
+}
+
 # ── Prerequisite checks ────────────────────────────────────────────────────────
+
+if [ -z "${E2E_SSH_USER:-}" ]; then
+    if is_ubuntu_guest; then
+        E2E_SSH_USER="ubuntu"
+    else
+        E2E_SSH_USER="root"
+    fi
+fi
 
 printf "\n${BOLD}══════════════════════════════════════════${RESET}\n"
 printf "${BOLD}  agentOS End-to-End Integration Test Suite${RESET}\n"
@@ -251,6 +368,7 @@ info "Loader ELF : ${E2E_LOADER_ELF}"
 info "FreeBSD img: ${E2E_FREEBSD_IMG}"
 info "CC port    : ${E2E_CC_PORT}"
 info "SSH port   : ${E2E_SSH_PORT}"
+info "SSH user   : ${E2E_SSH_USER}"
 info "SSH key    : ${E2E_SSH_KEY}"
 info "Timeout    : ${E2E_TIMEOUT}s"
 printf "\n"
@@ -260,6 +378,7 @@ HAVE_IMAGE=1
 HAVE_GUEST_IMG=1
 HAVE_SSH_TOOLS=1
 HAVE_CURL=1
+HAVE_SEED_SERVER=1
 
 if ! command -v "${QEMU_BIN}" >/dev/null 2>&1; then
     skip "QEMU binary '${QEMU_BIN}' not found"
@@ -296,6 +415,21 @@ if [ "${HAVE_SSH_TOOLS}" -eq 1 ]; then
     ensure_ssh_key || HAVE_SSH_TOOLS=0
 fi
 
+if is_ubuntu_guest; then
+    if [ "${HAVE_SSH_TOOLS}" -eq 0 ]; then
+        skip "Ubuntu E2E requires SSH tools for cloud-init key seeding"
+        HAVE_SEED_SERVER=0
+    elif ! start_ubuntu_seed_server; then
+        skip "Ubuntu NoCloud-Net seed server unavailable"
+        HAVE_SEED_SERVER=0
+    fi
+fi
+
+if is_ubuntu_guest && [ "${HAVE_SEED_SERVER}" -eq 0 ]; then
+    printf "\n${YELLOW}[SKIP]${RESET} Prerequisites not met — skipping Ubuntu E2E tests\n"
+    exit 2
+fi
+
 # ── QEMU flags ─────────────────────────────────────────────────────────────────
 
 # Acceleration
@@ -313,9 +447,27 @@ HOSTFWD="${HOSTFWD},hostfwd=tcp:127.0.0.1:${E2E_SSH_PORT}-:22"
 # Attach guest image as a block device if available
 GUEST_BLOCK_FLAGS=()
 if [ "${HAVE_GUEST_IMG}" -eq 1 ]; then
-    GUEST_BLOCK_FLAGS+=(
-        -drive "file=${E2E_GUEST_IMG},if=virtio,format=raw,readonly=off"
-    )
+    GUEST_DRIVE_SNAPSHOT=""
+    if is_ubuntu_guest; then
+        GUEST_DRIVE_SNAPSHOT=",snapshot=on"
+    fi
+    case "${BOARD}" in
+        qemu_virt_aarch64)
+            bus="1"
+            if [ "${E2E_GUEST_OS}" = "freebsd" ]; then
+                bus="31"
+            fi
+            GUEST_BLOCK_FLAGS+=(
+                -device "virtio-blk-device,drive=guest0,bus=virtio-mmio-bus.${bus}"
+                -drive "file=${E2E_GUEST_IMG},format=raw,id=guest0,if=none${GUEST_DRIVE_SNAPSHOT}"
+            )
+            ;;
+        *)
+            GUEST_BLOCK_FLAGS+=(
+                -drive "file=${E2E_GUEST_IMG},if=virtio,format=raw,readonly=off${GUEST_DRIVE_SNAPSHOT}"
+            )
+            ;;
+    esac
 fi
 
 case "${BOARD}" in
@@ -326,10 +478,14 @@ case "${BOARD}" in
             -machine "virt,virtualization=on,highmem=off,secure=off"
             -cpu "${CPU_FLAG}" -m 2G
             -display none -monitor none
+            -global "virtio-mmio.force-legacy=off"
             -chardev "socket,id=char0,path=${SERIAL_SOCK},server=on,wait=off"
             -serial "chardev:char0"
+            -chardev "socket,id=cc_pd_char,path=${E2E_CC_SOCK},server=on,wait=off"
+            -device "virtio-serial-device,bus=virtio-mmio-bus.2,id=vser0"
+            -device "virtserialport,bus=vser0.0,chardev=cc_pd_char,name=cc.0"
             -netdev "user,id=net0,${HOSTFWD}"
-            -device virtio-net-device,netdev=net0
+            -device "virtio-net-device,netdev=net0,bus=virtio-mmio-bus.0"
             -device "loader,file=${E2E_LOADER_ELF},cpu-num=0"
             -device "loader,file=${E2E_IMAGE},addr=0x48000000"
             "${GUEST_BLOCK_FLAGS[@]+"${GUEST_BLOCK_FLAGS[@]}"}"
@@ -361,9 +517,15 @@ info "Command: ${QEMU_BIN} ${QEMU_FLAGS[*]}"
 printf "\n"
 
 rm -f "${SERIAL_SOCK}"
+mkdir -p "$(dirname "${E2E_CC_SOCK}")"
+rm -f "${E2E_CC_SOCK}"
 touch "${SERIAL_LOG}"
 
-setsid "${QEMU_BIN}" "${QEMU_FLAGS[@]}" >/dev/null 2>&1 &
+if command -v setsid >/dev/null 2>&1; then
+    setsid "${QEMU_BIN}" "${QEMU_FLAGS[@]}" >/dev/null 2>&1 &
+else
+    "${QEMU_BIN}" "${QEMU_FLAGS[@]}" >/dev/null 2>&1 &
+fi
 QEMU_PID=$!
 info "QEMU PID: ${QEMU_PID}"
 
@@ -385,14 +547,17 @@ done
 info "Serial socket ready (${SOCK_WAIT}s)"
 
 # Connect to the serial socket
-if command -v nc >/dev/null 2>&1; then
-    nc -U "${SERIAL_SOCK}" >> "${SERIAL_LOG}" 2>/dev/null &
+if command -v ncat >/dev/null 2>&1; then
+    ncat --unixsock --recv-only "${SERIAL_SOCK}" >> "${SERIAL_LOG}" 2>/dev/null &
     SERIAL_NC_PID=$!
 elif command -v socat >/dev/null 2>&1; then
     socat - "UNIX-CONNECT:${SERIAL_SOCK}" >> "${SERIAL_LOG}" 2>/dev/null &
     SERIAL_NC_PID=$!
+elif command -v nc >/dev/null 2>&1; then
+    nc -U "${SERIAL_SOCK}" >> "${SERIAL_LOG}" 2>/dev/null &
+    SERIAL_NC_PID=$!
 else
-    fail "Neither nc nor socat available — cannot capture serial output"
+    fail "No Unix-socket client available — install ncat, socat, or nc"
     exit 2
 fi
 
@@ -430,38 +595,67 @@ pass "agentOS boot complete"
 # ── Wait for guest VM (slot 0) ────────────────────────────────────────────────
 
 GUEST_BOOTED=0
+GUEST_SSH_READY=0
 if [ "${HAVE_GUEST_IMG}" -eq 1 ]; then
     section "Phase 3: Waiting for ${E2E_GUEST_OS} VM (slot 0)"
-    info "Polling serial for boot marker '${E2E_GUEST_BOOT_MARKER}' (timeout ${E2E_TIMEOUT}s)..."
-
-    if wait_for_marker "${E2E_GUEST_BOOT_MARKER}" "${E2E_TIMEOUT}"; then
-        info "${E2E_GUEST_OS} boot marker found"
-        GUEST_BOOTED=1
-        pass "${E2E_GUEST_OS} VM (slot 0) booted and reached login prompt"
+    if is_ubuntu_guest; then
+        info "Waiting for guest SSH on port ${E2E_SSH_PORT} (timeout ${E2E_TIMEOUT}s)..."
+        if [ "${HAVE_SSH_TOOLS}" -eq 1 ] && [ -z "${E2E_SKIP_SSH:-}" ] && \
+           wait_for_guest_ssh "${E2E_TIMEOUT}"; then
+            GUEST_BOOTED=1
+            GUEST_SSH_READY=1
+            pass "${E2E_GUEST_OS} VM (slot 0) booted to SSH-ready multi-user"
+        else
+            fail "${E2E_GUEST_OS} VM did not accept SSH within ${E2E_TIMEOUT}s"
+            printf "\nLast 60 lines of serial output:\n"
+            tail -60 "${SERIAL_LOG}" 2>/dev/null || true
+        fi
     else
-        fail "${E2E_GUEST_OS} VM did not reach boot marker within ${E2E_TIMEOUT}s"
-        printf "\nLast 60 lines of serial output:\n"
-        tail -60 "${SERIAL_LOG}" 2>/dev/null || true
+        info "Polling serial for boot marker '${E2E_GUEST_BOOT_MARKER}' (timeout ${E2E_TIMEOUT}s)..."
+
+        if [ "${HAVE_SSH_TOOLS}" -eq 1 ] && [ -z "${E2E_SKIP_SSH:-}" ] && \
+           wait_for_guest_ssh "${E2E_TIMEOUT}"; then
+            info "${E2E_GUEST_OS} accepted SSH and passed OS probe"
+            GUEST_BOOTED=1
+            GUEST_SSH_READY=1
+            pass "${E2E_GUEST_OS} VM (slot 0) booted to SSH-ready multi-user"
+        elif wait_for_marker "${E2E_GUEST_BOOT_MARKER}" "${E2E_TIMEOUT}"; then
+            info "${E2E_GUEST_OS} boot marker found"
+            GUEST_BOOTED=1
+            pass "${E2E_GUEST_OS} VM (slot 0) booted and reached login prompt"
+        else
+            fail "${E2E_GUEST_OS} VM did not reach boot marker within ${E2E_TIMEOUT}s"
+            printf "\nLast 60 lines of serial output:\n"
+            tail -60 "${SERIAL_LOG}" 2>/dev/null || true
+        fi
     fi
 
     if [ "${GUEST_BOOTED}" -eq 1 ] && [ "${HAVE_SSH_TOOLS}" -eq 1 ] && \
        [ -z "${E2E_SKIP_SSH:-}" ]; then
         info "Waiting for SSH on port ${E2E_SSH_PORT}..."
+        SSH_AVAILABLE="${GUEST_SSH_READY}"
         SSH_WAIT=0
-        SSH_AVAILABLE=0
-        while [ "${SSH_WAIT}" -lt 30 ]; do
-            if guest_ssh true 2>/dev/null; then
-                SSH_AVAILABLE=1
-                break
-            fi
-            sleep 2
-            SSH_WAIT=$(( SSH_WAIT + 2 ))
-        done
+        if [ "${SSH_AVAILABLE}" -eq 0 ]; then
+            while [ "${SSH_WAIT}" -lt 30 ]; do
+                if guest_ssh true 2>/dev/null; then
+                    SSH_AVAILABLE=1
+                    break
+                fi
+                sleep 2
+                SSH_WAIT=$(( SSH_WAIT + 2 ))
+            done
+        fi
         if [ "${SSH_AVAILABLE}" -eq 1 ]; then
             info "SSH available after ${SSH_WAIT}s"
+            pass "${E2E_GUEST_OS} SSH reachable on port ${E2E_SSH_PORT}"
         else
-            warn "SSH not available on port ${E2E_SSH_PORT} — SSH tests will be skipped"
-            HAVE_SSH_TOOLS=0
+            if [ -n "${E2E_ALLOW_NO_SSH:-}" ]; then
+                warn "SSH not available on port ${E2E_SSH_PORT} — allowed by E2E_ALLOW_NO_SSH"
+                HAVE_SSH_TOOLS=0
+            else
+                fail "${E2E_GUEST_OS} SSH not available on port ${E2E_SSH_PORT}"
+                HAVE_SSH_TOOLS=0
+            fi
         fi
     fi
 else
@@ -487,7 +681,7 @@ fi
 # ── Source and run test modules ────────────────────────────────────────────────
 
 # Export helpers and config for sub-scripts
-export E2E_TIMEOUT E2E_CC_PORT E2E_SSH_PORT E2E_SSH_KEY
+export E2E_TIMEOUT E2E_CC_PORT E2E_SSH_PORT E2E_SSH_KEY E2E_SSH_USER
 export CC_BASE SCRIPT_DIR REPO_ROOT SERIAL_LOG
 export E2E_GUEST_OS E2E_GUEST_VMM_TYPE E2E_GUEST_BOOT_MARKER E2E_GUEST_IMG
 export GUEST_BOOTED FREEBSD_BOOTED BRIDGE_AVAILABLE HAVE_SSH_TOOLS HAVE_CURL
@@ -498,11 +692,15 @@ run_test_module() {
     local name="$2"
     if [ -f "${SCRIPT_DIR}/${script}" ]; then
         section "${name}"
-        # Run in subshell to isolate failures; inherit counters via file
+        # Run in a subshell to isolate failures; account for its exit status here.
         bash "${SCRIPT_DIR}/${script}" 2>&1
         local rc=$?
         if [ "${rc}" -eq 2 ]; then
             skip "${name}: prerequisites not met"
+        elif [ "${rc}" -eq 0 ]; then
+            pass "${name}: module completed"
+        else
+            fail "${name}: module failed with exit ${rc}"
         fi
     else
         warn "Test script not found: ${SCRIPT_DIR}/${script}"
@@ -522,6 +720,14 @@ run_test_module "test_cap_policy.sh"        "Cap Policy (ring-1 enforcement)"
 if [ "${FREEBSD_BOOTED}" -eq 1 ] && [ "${HAVE_SSH_TOOLS}" -eq 1 ]; then
     section "Guest SSH Command Suite"
     bash "${SCRIPT_DIR}/suite_common.sh" 2>&1
+    SSH_SUITE_RC=$?
+    if [ "${SSH_SUITE_RC}" -eq 0 ]; then
+        pass "Guest SSH Command Suite"
+    elif [ "${SSH_SUITE_RC}" -eq 2 ]; then
+        skip "Guest SSH Command Suite: SSH unavailable"
+    else
+        fail "Guest SSH Command Suite: failed with exit ${SSH_SUITE_RC}"
+    fi
 fi
 
 # ── Summary ────────────────────────────────────────────────────────────────────

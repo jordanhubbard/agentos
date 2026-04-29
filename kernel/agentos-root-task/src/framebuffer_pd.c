@@ -986,4 +986,9 @@ void framebuffer_pd_main(seL4_CPtr my_ep, seL4_CPtr ns_ep)
     sel4_server_run(&g_srv);
 }
 
+void pd_main(seL4_CPtr my_ep, seL4_CPtr ns_ep)
+{
+    framebuffer_pd_main(my_ep, ns_ep);
+}
+
 #endif /* AGENTOS_TEST_HOST */

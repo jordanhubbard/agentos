@@ -478,21 +478,31 @@ void usb_pd_main(seL4_CPtr my_ep, seL4_CPtr ns_ep)
 
 #else /* !AGENTOS_USB_PD — no-op stub ────────────────────────────────────── */
 
+static uint32_t usb_stub_dispatch(sel4_badge_t b, const sel4_msg_t *req,
+                                  sel4_msg_t *rep, void *ctx)
+{
+    (void)b; (void)req; (void)ctx;
+    rep->data[0] = 0;
+    rep->data[1] = 0;
+    rep->data[2] = 0;
+    rep->data[3] = 0;
+    rep->length = 4;
+    return SEL4_ERR_OK;
+}
+
 void usb_pd_main(seL4_CPtr my_ep, seL4_CPtr ns_ep)
 {
     (void)my_ep; (void)ns_ep;
-    sel4_dbg_puts("[usb_pd] stub (build with AGENTOS_USB_PD=1 to enable)\n");
-    for (;;) {
-#ifndef AGENTOS_TEST_HOST
-        seL4_Word badge = 0;
-        (void)seL4_Recv(my_ep, &badge);
-        seL4_MessageInfo_t rep = seL4_MessageInfo_new(0, 0, 0, 1);
-        seL4_SetMR(0, 0U);
-        seL4_Reply(rep);
-#else
-        break;
-#endif
-    }
+    agentos_log_boot("usb_pd");
+    static sel4_server_t srv;
+    sel4_server_init(&srv, my_ep);
+    sel4_server_register(&srv, SEL4_SERVER_OPCODE_ANY, usb_stub_dispatch, (void *)0);
+    sel4_server_run(&srv);
 }
 
 #endif /* AGENTOS_USB_PD */
+
+void pd_main(seL4_CPtr my_ep, seL4_CPtr ns_ep)
+{
+    usb_pd_main(my_ep, ns_ep);
+}

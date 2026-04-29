@@ -239,8 +239,6 @@ static inline bool vgic_vcpu_load_list_reg(vgic_t *vgic, size_t vcpu_id, int idx
 
     seL4_Error err = seL4_ARM_VCPU_InjectIRQ(vmm_vcpu_cap(vcpu_id),
                                                virq->virq, 0, group, idx);
-    LOG_VMM("InjectIRQ: vCPU=%zu LR[%d] IRQ=%d group=%d → seL4_err=%d\n",
-            vcpu_id, idx, virq->virq, group, (int)err);
     if (err != seL4_NoError) {
         LOG_VMM_ERR("InjectIRQ FAILED: err=%d for vCPU=%zu LR[%d] IRQ=%d\n",
                     (int)err, vcpu_id, idx, virq->virq);

@@ -276,8 +276,13 @@ bool fault_handle_vcpu_exception(size_t vcpu_id)
     case HSR_HVC_64_EXCEPTION:
         return smc_handle(vcpu_id, hsr);
     case HSR_WFx_EXCEPTION:
-        // If we get a WFI exception, we just do nothing in the VMM.
-        return true;
+        /*
+         * seL4 delivers trapped WFI/WFE as a VCPU fault at the instruction
+         * itself.  Returning without advancing the PC re-executes the same
+         * WFI/WFE and can pin the VMM in a fault loop while the guest is idle.
+         * Treat it as a completed wait operation for now.
+         */
+        return fault_advance_vcpu(vcpu_id, &regs);
     case HSR_SYSREG_64_EXCEPTION:
         return handle_sysreg_64_fault(vcpu_id, hsr, &regs);
     default:
@@ -290,6 +295,7 @@ bool fault_handle_vppi_event(size_t vcpu_id)
 {
     static uint64_t vppi_count = 0;
     vppi_count++;
+    bool log_vppi = vppi_count <= 4 || (vppi_count % 100000) == 0;
     uint64_t ppi_irq = seL4_GetMR(seL4_VPPIEvent_IRQ);
 
     /* Dump VCPU state to diagnose deadlocks */
@@ -299,20 +305,22 @@ bool fault_handle_vppi_event(size_t vcpu_id)
     seL4_Word elr_el1    = vmm_vcpu_arm_read_reg(vcpu_id, seL4_VCPUReg_ELR_EL1);
     seL4_Word cntv_ctl   = vmm_vcpu_arm_read_reg(vcpu_id, seL4_VCPUReg_CNTV_CTL);
     seL4_Word cntv_cval  = vmm_vcpu_arm_read_reg(vcpu_id, seL4_VCPUReg_CNTV_CVAL);
-    LOG_VMM("VPPIEvent #%llu: IRQ %llu on vCPU %zu\n",
-            (unsigned long long)vppi_count,
-            (unsigned long long)ppi_irq,
-            vcpu_id);
-    LOG_VMM("VPPIEvent #%llu: PC=0x%lx pstate=0x%lx (I=%s)\n",
-            (unsigned long long)vppi_count,
-            (unsigned long)regs.pc, (unsigned long)regs.spsr,
-            (regs.spsr >> 7) & 1 ? "masked" : "enabled");
-    LOG_VMM("VPPIEvent #%llu: SPSR_EL1=0x%lx ELR_EL1=0x%lx\n",
-            (unsigned long long)vppi_count,
-            (unsigned long)spsr_el1, (unsigned long)elr_el1);
-    LOG_VMM("VPPIEvent #%llu: CNTV_CTL=0x%lx CNTV_CVAL=0x%lx\n",
-            (unsigned long long)vppi_count,
-            (unsigned long)cntv_ctl, (unsigned long)cntv_cval);
+    if (log_vppi) {
+        LOG_VMM("VPPIEvent #%llu: IRQ %llu on vCPU %zu\n",
+                (unsigned long long)vppi_count,
+                (unsigned long long)ppi_irq,
+                vcpu_id);
+        LOG_VMM("VPPIEvent #%llu: PC=0x%lx pstate=0x%lx (I=%s)\n",
+                (unsigned long long)vppi_count,
+                (unsigned long)regs.pc, (unsigned long)regs.spsr,
+                (regs.spsr >> 7) & 1 ? "masked" : "enabled");
+        LOG_VMM("VPPIEvent #%llu: SPSR_EL1=0x%lx ELR_EL1=0x%lx\n",
+                (unsigned long long)vppi_count,
+                (unsigned long)spsr_el1, (unsigned long)elr_el1);
+        LOG_VMM("VPPIEvent #%llu: CNTV_CTL=0x%lx CNTV_CVAL=0x%lx\n",
+                (unsigned long long)vppi_count,
+                (unsigned long)cntv_ctl, (unsigned long)cntv_cval);
+    }
     /*
      * I=masked + ISTATUS=1: VCPU is inside an ISR (I=masked) with the
      * virtual timer expired.
@@ -344,8 +352,10 @@ bool fault_handle_vppi_event(size_t vcpu_id)
      *       update body, CVAL stays huge, timer dead for ~544 real seconds.
      */
     if (((regs.spsr >> 7) & 1) && (cntv_ctl & 4)) {
-        LOG_VMM("VPPIEvent #%llu: I=masked+ISTATUS=1 at PC=0x%lx -- inject+defer AckVPPI (CVAL unchanged)\n",
-                (unsigned long long)vppi_count, (unsigned long)regs.pc);
+        if (log_vppi) {
+            LOG_VMM("VPPIEvent #%llu: I=masked+ISTATUS=1 at PC=0x%lx -- inject+defer AckVPPI (CVAL unchanged)\n",
+                    (unsigned long long)vppi_count, (unsigned long)regs.pc);
+        }
         bool ok = vgic_inject_irq(vcpu_id, ppi_irq);
         if (!ok) {
             LOG_VMM_ERR("VPPIEvent #%llu: no free LR, falling back to AckVPPI\n",
@@ -356,10 +366,12 @@ bool fault_handle_vppi_event(size_t vcpu_id)
         return true;
     }
     bool success = vgic_inject_irq(vcpu_id, ppi_irq);
-    LOG_VMM("VPPIEvent #%llu: inject_irq(%llu) returned %s\n",
-            (unsigned long long)vppi_count,
-            (unsigned long long)ppi_irq,
-            success ? "OK" : "DROPPED");
+    if (log_vppi) {
+        LOG_VMM("VPPIEvent #%llu: inject_irq(%llu) returned %s\n",
+                (unsigned long long)vppi_count,
+                (unsigned long long)ppi_irq,
+                success ? "OK" : "DROPPED");
+    }
     if (!success) {
         LOG_VMM_ERR("VPPI IRQ %lu dropped on vCPU %d -- acking VPPI to unmask\n", ppi_irq, vcpu_id);
         vmm_vcpu_arm_ack_vppi(vcpu_id, ppi_irq);

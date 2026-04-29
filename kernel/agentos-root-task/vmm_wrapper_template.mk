@@ -11,8 +11,8 @@ TARGET := aarch64-none-elf
 CC     := clang
 LD     := ld.lld
 AS     := llvm-as
-AR     := llvm-ar
-RANLIB := llvm-ranlib
+AR     := $(shell command -v llvm-ar 2>/dev/null || command -v /opt/homebrew/opt/llvm/bin/llvm-ar 2>/dev/null || command -v /usr/local/opt/llvm/bin/llvm-ar 2>/dev/null || command -v ar)
+RANLIB := $(shell command -v llvm-ranlib 2>/dev/null || command -v /opt/homebrew/opt/llvm/bin/llvm-ranlib 2>/dev/null || command -v /usr/local/opt/llvm/bin/llvm-ranlib 2>/dev/null || command -v ranlib)
 
 SDDF_CUSTOM_LIBC := 1
 
@@ -27,6 +27,7 @@ CFLAGS := \
     -I$(SDDF)/include \
     -I$(SDDF)/include/microkit \
     -I$(SDDF)/include/sddf/util/custom_libc \
+    -include @KERNEL_SRC_DIR@/include/sel4_debug_putchar_compat.h \
     -MD -MP \
     -target $(TARGET)
 

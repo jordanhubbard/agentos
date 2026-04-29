@@ -31,9 +31,10 @@ pass() { printf "${GREEN}  [PASS]${RESET} %s\n" "$*"; PASS=$(( PASS + 1 )); }
 fail() { printf "${RED}  [FAIL]${RESET} %s\n"   "$*"; FAIL=$(( FAIL + 1 )); }
 skip() { printf "${YELLOW}  [SKIP]${RESET} %s\n" "$*"; SKIP=$(( SKIP + 1 )); }
 
-# E2E_SSH_PORT and E2E_SSH_KEY may be set by run_e2e.sh; use sensible defaults
+# E2E_SSH_PORT, E2E_SSH_KEY, and E2E_SSH_USER may be set by run_e2e.sh.
 SSH_PORT="${E2E_SSH_PORT:-2222}"
 SSH_KEY="${E2E_SSH_KEY:-$(dirname "$0")/id_ed25519}"
+SSH_USER="${E2E_SSH_USER:-root}"
 
 if [ ! -f "${SSH_KEY}" ]; then
     skip "SSH key not found: ${SSH_KEY}"
@@ -48,7 +49,7 @@ gssh() {
         -o ConnectTimeout=10 \
         -o BatchMode=yes \
         -p "${SSH_PORT}" \
-        root@localhost "$@" 2>/dev/null
+        "${SSH_USER}@localhost" "$@" 2>/dev/null
 }
 
 # Verify SSH is responsive

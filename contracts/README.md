@@ -65,7 +65,6 @@ its own priority when the caller PPCs in — this prevents priority inversion.
 | [agentfs](agentfs/) | Implemented | 150 | Agent-native object store (content-addressed, versioned, vector search) |
 | [cap-broker](cap-broker/) | Implemented | (monitor PD) | Capability delegation and ACL enforcement |
 | [capstore](capstore/) | Implemented | (monitor PD) | Semantic capability database and audit log |
-| [console-mux](console-mux/) | Partially implemented | 160 | Serial console multiplexer |
 | [event-bus](event-bus/) | Implemented | 200 | Pub/sub event routing between PDs |
 | [logsvc](logsvc/) | Implemented | (controller PD) | Structured audit logging service |
 | [memfs](memfs/) | Implemented | (controller PD) | In-memory virtual filesystem (storage.v1 ABI) |
@@ -86,7 +85,7 @@ oom_killer       (priority 245) — memory pressure response
 event_bus        (priority 200) — event routing (also MsgBus)
 snapshot_sched   (priority 180) — periodic WASM checkpoint
 vibe_engine      (priority 140) — hot-swap WASM execution engine
-net_server / console_mux (priority 160) — I/O services
+net_server / serial_pd (priority 160) — I/O services
 agentfs          (priority 150) — object store
 mem_profiler     (priority 108) — heap leak detection
 init_agent       (priority 100) — bootstrap and spawn
@@ -94,7 +93,6 @@ linux_vmm        (priority 100) — CUDA/PyTorch GPU VMM
 controller       (priority  50) — system coordinator
 worker_N         (priority  80) — agent worker pool (8 workers)
 swap_slot_N      (priority  75) — WASM execution sandboxes (4 slots)
-dev_shell        (priority  70) — interactive debug REPL (dev-only)
 ```
 
 ## Opcode Namespace Allocation
@@ -121,7 +119,6 @@ To avoid collisions, opcode ranges are allocated per service:
 | 0x0500 | NetServer HTTP POST proxy (NET_OP_HTTP_POST) |
 | 0x0600 – 0x0606 | EventBus (EVENTBUS_OP_*) |
 | 0x0700 – 0x0708 | CapBroker (CAP_BROKER_OP_*) |
-| 0x0800 – 0x0807 | ConsoleMux (CONSOLE_MUX_OP_*) |
 | 0x0030 – 0x0036 | AgentFS (AGENTFS_OP_*) |
 
 Note: ModelSvc uses 0x500 range and NetServer HTTP POST is also at 0x500.

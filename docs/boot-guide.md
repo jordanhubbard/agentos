@@ -1,7 +1,7 @@
 # agentOS Boot Guide
 
-This guide covers prerequisites, build steps, the QEMU boot command, connecting
-the dashboard, and expected first-boot output.
+This guide covers prerequisites, build steps, the QEMU boot command, external
+tool connections, and expected first-boot output.
 
 ## Prerequisites
 
@@ -56,15 +56,13 @@ Where `<platform>` is one of:
 # 1. Install all dependencies (downloads Microkit SDK automatically)
 make deps
 
-# 2. Build and launch (native arch, hardware-accelerated QEMU + dashboard)
+# 2. Build and launch (native arch, hardware-accelerated QEMU)
 make
 ```
 
-`make` is equivalent to `make console` which:
+`make`:
 1. Builds agentOS for the host's native CPU architecture
 2. Launches it headlessly in QEMU (HVF on Intel Mac, KVM on Linux, TCG fallback on Apple Silicon)
-3. Starts the agentOS console server
-4. Opens `http://localhost:8080` in the default browser
 
 To build a specific architecture without launching:
 
@@ -148,21 +146,11 @@ qemu-system-x86_64 \
     -kernel build/x86_64_generic/agentos.img
 ```
 
-## Connecting the Dashboard
+## Connecting External Tools
 
-The agentOS console (dashboard + serial bridge) runs at:
-```
-http://localhost:8080
-```
-
-It connects to the agentOS HTTP API at `http://127.0.0.1:8789`.
-
-To start only the dashboard (when agentOS is already running on hardware or
-in a separate terminal):
-
-```bash
-make dashboard
-```
+agentOS does not ship an in-repository dashboard. External tools connect to
+the exported IPC/API contracts; the default QEMU run forwards the host API
+port at `127.0.0.1:8789`.
 
 ## Expected First-Boot Output
 
@@ -199,7 +187,7 @@ domains:
 | `vibe_engine` | 140 | WASM hot-swap lifecycle engine |
 | `agentfs` | 150 | Content-addressed object store |
 | `swap_slot_0..3` | 75 | WASM hot-swap execution slots |
-| `console_mux` | 160 | Session multiplexer (serial/ring) |
+| `log_drain` | 160 | Structured log drain |
 | `mem_profiler` | 108 | Heap allocation tracker |
 | `net_isolator` | 160 | Per-agent network firewall |
 | `nameserver` | 130 | PD name → channel ID lookup |

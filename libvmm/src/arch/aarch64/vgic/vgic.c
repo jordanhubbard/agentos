@@ -24,6 +24,13 @@
 /* The driver expects the VGIC state to be initialised before calling any of the driver functionality. */
 extern vgic_t vgic;
 
+__attribute__((weak)) bool agentos_vgic_maintenance_reinject(size_t vcpu_id, int irq)
+{
+    (void)vcpu_id;
+    (void)irq;
+    return false;
+}
+
 bool vgic_handle_fault_maintenance(size_t vcpu_id)
 {
     // @ivanv: reivist, also inconsistency between int and bool
@@ -31,8 +38,11 @@ bool vgic_handle_fault_maintenance(size_t vcpu_id)
     int idx = seL4_GetMR(seL4_VGICMaintenance_IDX);
     static uint64_t maint_count = 0;
     maint_count++;
-    LOG_VMM("VGICMaintenance #%llu: IDX=%d on vCPU %zu\n",
-            (unsigned long long)maint_count, idx, vcpu_id);
+    bool log_maintenance = maint_count <= 4 || (maint_count % 100000) == 0;
+    if (log_maintenance) {
+        LOG_VMM("VGICMaintenance #%llu: IDX=%d on vCPU %zu\n",
+                (unsigned long long)maint_count, idx, vcpu_id);
+    }
     if (idx < 0) {
         /* Spurious maintenance IRQ (underrun or other condition with no LR EOI).
          * Drain any queued IRQs into a free LR and resume the vCPU. */
@@ -44,13 +54,17 @@ bool vgic_handle_fault_maintenance(size_t vcpu_id)
             int group = 1;
 #endif
             int free_idx = vgic_find_empty_list_reg(&vgic, vcpu_id);
-            LOG_VMM("VGICMaintenance spurious: dequeued IRQ %d, free_idx=%d\n",
-                    virq->virq, free_idx);
+            if (log_maintenance) {
+                LOG_VMM("VGICMaintenance spurious: dequeued IRQ %d, free_idx=%d\n",
+                        virq->virq, free_idx);
+            }
             if (free_idx >= 0) {
                 vgic_vcpu_load_list_reg(&vgic, vcpu_id, free_idx, group, virq);
             }
         } else {
-            LOG_VMM("VGICMaintenance spurious: queue empty\n");
+            if (log_maintenance) {
+                LOG_VMM("VGICMaintenance spurious: queue empty\n");
+            }
         }
         return true;
     }
@@ -60,9 +74,11 @@ bool vgic_handle_fault_maintenance(size_t vcpu_id)
     assert(vgic_vcpu);
     assert((idx >= 0) && (idx < ARRAY_SIZE(vgic_vcpu->lr_shadow)));
     struct virq_handle *slot = &vgic_vcpu->lr_shadow[idx];
-    LOG_VMM("VGICMaintenance #%llu: LR[%d] holds IRQ %d (INVALID=%s)\n",
-            (unsigned long long)maint_count, idx,
-            slot->virq, slot->virq == VIRQ_INVALID ? "YES" : "no");
+    if (log_maintenance) {
+        LOG_VMM("VGICMaintenance #%llu: LR[%d] holds IRQ %d (INVALID=%s)\n",
+                (unsigned long long)maint_count, idx,
+                slot->virq, slot->virq == VIRQ_INVALID ? "YES" : "no");
+    }
     assert(slot->virq != VIRQ_INVALID);
     struct virq_handle lr_virq = *slot;
     slot->virq = VIRQ_INVALID;
@@ -71,10 +87,7 @@ bool vgic_handle_fault_maintenance(size_t vcpu_id)
     /* Clear pending */
     LOG_IRQ("Maintenance IRQ %d\n", lr_virq.virq);
     set_pending(&vgic, lr_virq.virq, false, vcpu_id);
-    virq_ack(vcpu_id, &lr_virq);
-    /* Check the overflow list for pending IRQs */
-    struct virq_handle *virq = vgic_irq_dequeue(&vgic, vcpu_id);
-
+    bool reinject = agentos_vgic_maintenance_reinject(vcpu_id, lr_virq.virq);
 #if defined(GIC_V2)
     int group = 0;
 #elif defined(GIC_V3)
@@ -82,6 +95,18 @@ bool vgic_handle_fault_maintenance(size_t vcpu_id)
 #else
 #error "Unknown GIC version"
 #endif
+    if (reinject) {
+        set_pending(&vgic, lr_virq.virq, true, vcpu_id);
+        success = vgic_vcpu_load_list_reg(&vgic, vcpu_id, idx, group, &lr_virq);
+        if (!success) {
+            set_pending(&vgic, lr_virq.virq, false, vcpu_id);
+            virq_ack(vcpu_id, &lr_virq);
+        }
+        return true;
+    }
+    virq_ack(vcpu_id, &lr_virq);
+    /* Check the overflow list for pending IRQs */
+    struct virq_handle *virq = vgic_irq_dequeue(&vgic, vcpu_id);
 
     if (virq) {
         success = vgic_vcpu_load_list_reg(&vgic, vcpu_id, idx, group, virq);

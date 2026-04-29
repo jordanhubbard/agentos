@@ -10,7 +10,7 @@
 #   make test         — CI boot test (exit 0/1)
 #   make clean        — remove build artifacts for current target
 
-.PHONY: all install deps-tools submodules channels run test test-snapshot-sched test-power-mgr test-proc-server test-vibeos-contract test-integration e2e e2e-guest e2e-contract e2e-ubuntu-amd64 e2e-ubuntu-arm64 e2e-nixos e2e-freebsd15 e2e-all bootstrap-guest clean clean-all clean-images help release release-minor release-major fetch-guest build-tools
+.PHONY: all install deps-tools submodules channels run test test-snapshot-sched test-power-mgr test-proc-server test-vibeos-contract test-integration e2e e2e-guest e2e-contract e2e-dual-os e2e-ubuntu-amd64 e2e-ubuntu-arm64 e2e-nixos e2e-freebsd15 e2e-all bootstrap-guest clean clean-all clean-images help release release-minor release-major fetch-guest build-tools
 
 # ─── Read config.yaml (if present) ───────────────────────────────────────────
 CONFIG_TARGET := $(shell grep '^target_arch:' config.yaml 2>/dev/null | sed 's/target_arch:[[:space:]]*//' | tr -d '[:space:]')
@@ -147,6 +147,7 @@ ifeq ($(NATIVE_ARCH),aarch64)
   NATIVE_QEMU_FLAGS  = -machine virt,virtualization=on,highmem=off,secure=off \
                         -cpu $(_NATIVE_CPU) -m 2G \
                         -display none -monitor none \
+                        -global virtio-mmio.force-legacy=off \
                         -chardev socket,id=char0,path=/tmp/agentos-serial.sock,server=on,wait=off \
                         -serial chardev:char0 \
                         -chardev socket,id=cc_pd_char,path=build/cc_pd.sock,server=on,wait=off \
@@ -333,25 +334,18 @@ endif
 	@echo "✓ Build complete: $(IMAGE)"
 	@echo ""
 
-# =============================================================================
-# dashboard: removed — agentOS has no built-in UI.
-# Consumers connect to the agentOS API via the contracts/ interface contracts.
-# =============================================================================
-dashboard:
-	@echo "ERROR: The agentOS web console has been removed."
-	@echo "Connect to agentOS services via the API contracts in contracts/."
-	@echo "See contracts/vibeos/README.md for the OS lifecycle API."
-	@exit 1
-
 # QEMU flags for interactive run: serial → stdio, SSH port forwarding per guest.
 _RUN_CPU := $(if $(filter aarch64,$(NATIVE_ARCH)),cortex-a53,qemu64)
 AGENTOS_IMAGES := $(HOME)/.local/agentos-images
-_UBUNTU_BLK = -drive file=$(AGENTOS_IMAGES)/ubuntu-24.04-arm64.raw,format=raw,if=none,id=hd0 \
+_UBUNTU_BLK = -drive file=$(AGENTOS_IMAGES)/ubuntu-24.04-aarch64.img,format=raw,if=none,id=hd0,snapshot=on \
               -device virtio-blk-device,drive=hd0,bus=virtio-mmio-bus.1
-_QEMU_BLK_FLAGS = $(if $(filter ubuntu,$(GUEST_OS)),$(_UBUNTU_BLK),)
+_FREEBSD_BLK = -drive file=$(AGENTOS_IMAGES)/freebsd-14.4-aarch64.img,format=raw,if=none,id=hd0,snapshot=on \
+               -device virtio-blk-device,drive=hd0,bus=virtio-mmio-bus.31
+_QEMU_BLK_FLAGS = $(if $(filter ubuntu,$(GUEST_OS)),$(_UBUNTU_BLK),$(if $(filter freebsd,$(GUEST_OS)),$(_FREEBSD_BLK),))
 QEMU_RUN_FLAGS = -machine virt,virtualization=on,highmem=off,secure=off \
                  -cpu $(_RUN_CPU) -m 2G \
                  -display none -monitor none \
+                 -global virtio-mmio.force-legacy=off \
                  -serial stdio \
                  -chardev socket,id=cc_pd_char,path=build/cc_pd.sock,server=on,wait=off \
                  -device virtio-serial-device,bus=virtio-mmio-bus.2,id=vser0 \
@@ -458,12 +452,12 @@ test-integration:
 	@echo "╚══════════════════════════════════════════╝"
 	@echo ""
 	@echo "[make] Running integration tests..."
-	@for test in \
+	@status=0; \
+	for test in \
 	    tests/test_quota.c \
 	    tests/test_cap_policy_hotreload.c \
 	    tests/test_power_mgr.c \
 	    tests/test_snapshot_sched.c \
-	    tests/test_dev_shell.c \
 	    tests/test_proc_server.c \
 	    tests/test_serial_pd.c \
 	    tests/test_framebuffer_pd.c \
@@ -471,19 +465,22 @@ test-integration:
 	    tests/test_vm_multi_guest.c \
 	    tests/test_e13_agent_boot.c \
 	    tests/vibe/test_vibeos_contract.c; do \
-	    gcc -I tests \
+	    if gcc -I tests \
 	        -I kernel/agentos-root-task/include \
 	        -DAGENTOS_TEST_HOST \
 	        -DAGENTOS_SNAPSHOT_SCHED \
-	        -DAGENTOS_DEV_SHELL \
 	        -o /tmp/agentos_test $$test 2>&1 \
-	    && /tmp/agentos_test \
-	    && echo "PASS: $$test" \
-	    || echo "FAIL: $$test"; \
-	done
-	@echo ""
-	@echo "Integration tests complete."
-	@echo ""
+	    && /tmp/agentos_test; then \
+	        echo "PASS: $$test"; \
+	    else \
+	        echo "FAIL: $$test"; \
+	        status=1; \
+	    fi; \
+	done; \
+	echo ""; \
+	echo "Integration tests complete."; \
+	echo ""; \
+	exit $$status
 
 # =============================================================================
 # e2e: End-to-end integration test suite (QEMU + guest VMs + SSH)
@@ -501,6 +498,10 @@ e2e-guest:
 e2e-contract:
 	@chmod +x tests/e2e/test_cc_contract.sh
 	@BRIDGE_AVAILABLE=1 bash tests/e2e/test_cc_contract.sh
+
+e2e-dual-os:
+	@chmod +x tests/e2e/run_dual_os_e2e.sh
+	@bash tests/e2e/run_dual_os_e2e.sh
 
 # Per-guest-OS E2E targets — run the full suite against a specific guest image.
 # Images must exist in guest-images/; create them with: make bootstrap-guest OS=<os>

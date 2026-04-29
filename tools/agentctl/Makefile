@@ -1,8 +1,6 @@
 # agentctl — agentOS C&C Reference Consumer
 #
 # External consumer of cc_contract.h — zero kernel/ or services/ dependencies.
-# Requires: pkg-config, ncurses (libncurses-dev on Debian/Ubuntu,
-#           ncurses via brew on macOS)
 #
 # Usage:
 #   make              Build agentctl
@@ -12,26 +10,10 @@
 
 PREFIX ?= /usr/local
 
-UNAME_S := $(shell uname -s)
-
-ifeq ($(UNAME_S),Darwin)
-  BREW_PREFIX := $(shell brew --prefix 2>/dev/null || echo /usr/local)
-  BREW_NCURSES := $(BREW_PREFIX)/opt/ncurses
-  ifeq ($(wildcard $(BREW_NCURSES)/lib/libncurses.*),)
-    NCURSES_CFLAGS :=
-    NCURSES_LIBS   := -lncurses
-  else
-    NCURSES_CFLAGS := -I$(BREW_NCURSES)/include
-    NCURSES_LIBS   := -L$(BREW_NCURSES)/lib -lncurses
-  endif
-else
-  NCURSES_CFLAGS := $(shell pkg-config --cflags ncurses 2>/dev/null)
-  NCURSES_LIBS   := $(shell pkg-config --libs   ncurses 2>/dev/null || echo -lncurses)
-endif
-
 CC      ?= cc
-CFLAGS  := -O2 -Wall -Wextra -std=c11 $(NCURSES_CFLAGS)
-LDFLAGS := $(NCURSES_LIBS)
+CFLAGS  := -O2 -Wall -Wextra -std=c11 -DAGENTOS_TEST_HOST \
+           -I../../kernel/agentos-root-task/include
+LDFLAGS :=
 
 TARGET  := agentctl
 SRC     := agentctl.c

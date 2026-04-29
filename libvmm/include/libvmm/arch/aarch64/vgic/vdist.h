@@ -141,6 +141,8 @@ static inline bool is_active(vgic_t *vgic, int irq, int vcpu_id)
     }
 }
 
+static bool vgic_dist_set_pending_irq(vgic_t *vgic, size_t vcpu_id, int irq);
+
 static void vgic_dist_enable_irq(vgic_t *vgic, size_t vcpu_id, int irq)
 {
     LOG_DIST("Enabling IRQ %d\n", irq);
@@ -153,7 +155,10 @@ static void vgic_dist_enable_irq(vgic_t *vgic, size_t vcpu_id, int irq)
     }
     if (virq_data->virq != VIRQ_INVALID) {
         /* STATE b) */
-        if (!is_pending(vgic, virq_data->virq, vcpu_id)) {
+        if (is_pending(vgic, virq_data->virq, vcpu_id)) {
+            set_pending(vgic, virq_data->virq, false, vcpu_id);
+            (void)vgic_dist_set_pending_irq(vgic, vcpu_id, irq);
+        } else {
             virq_ack(vcpu_id, virq_data);
         }
     } else {
@@ -190,15 +195,12 @@ static bool vgic_dist_set_pending_irq(vgic_t *vgic, size_t vcpu_id, int irq)
     }
     struct gic_dist_map *dist = vgic_get_dist(vgic->registers);
 
-    if (virq_data->virq == VIRQ_INVALID || !vgic_dist_is_enabled(dist) || !is_enabled(vgic, irq, vcpu_id)) {
+    if (virq_data->virq == VIRQ_INVALID || !vgic_dist_is_enabled(dist)) {
         if (virq_data->virq == VIRQ_INVALID) {
             LOG_VMM_ERR("vIRQ data could not be found for IRQ 0x%lx\n", irq);
         }
         if (!vgic_dist_is_enabled(dist)) {
             LOG_VMM_ERR("vGIC distributor is not enabled for IRQ 0x%lx\n", irq);
-        }
-        if (!is_enabled(vgic, irq, vcpu_id)) {
-            LOG_VMM_ERR("vIRQ 0x%lx is not enabled\n", irq);
         }
         return false;
     }
@@ -210,6 +212,9 @@ static bool vgic_dist_set_pending_irq(vgic_t *vgic, size_t vcpu_id, int irq)
 
     LOG_DIST("Pending set: Inject IRQ from pending set (%d)\n", irq);
     set_pending(vgic, virq_data->virq, true, vcpu_id);
+    if (!is_enabled(vgic, irq, vcpu_id)) {
+        return true;
+    }
 
     /* Enqueueing an IRQ and dequeueing it right after makes little sense
      * now, but in the future this is needed to support IRQ priorities.

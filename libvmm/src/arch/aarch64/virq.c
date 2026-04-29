@@ -18,8 +18,19 @@ int virq_passthrough_map[MAX_PASSTHROUGH_IRQ] = {-1};
 #define SGI_FUNC_CALL       1
 #define PPI_VTIMER_IRQ      27
 
+__attribute__((weak)) bool agentos_vppi_defer_ack(size_t vcpu_id, int irq)
+{
+    (void)vcpu_id;
+    (void)irq;
+    return false;
+}
+
 static void vppi_event_ack(size_t vcpu_id, int irq, void *cookie)
 {
+    (void)cookie;
+    if (irq == PPI_VTIMER_IRQ && agentos_vppi_defer_ack(vcpu_id, irq)) {
+        return;
+    }
     vmm_vcpu_arm_ack_vppi(vcpu_id, irq);
 }
 

@@ -350,6 +350,9 @@ typedef struct {
     uint32_t client_badge;
     uint32_t state;
     uint32_t ticks_since_active;
+    uint32_t resp_pending;
+    uint32_t resp_len;
+    uint8_t  resp[CC_MAX_RESP_BYTES];
 } cc_session_t;
 
 static cc_session_t g_sessions[CC_MAX_SESSIONS];
@@ -383,6 +386,8 @@ static void handle_connect(const cc_req_wire_t *req, cc_reply_wire_t *rep)
     g_sessions[s].client_badge       = req->mr[0]; /* badge in MR1 */
     g_sessions[s].state              = CC_SESSION_STATE_CONNECTED;
     g_sessions[s].ticks_since_active = 0u;
+    g_sessions[s].resp_pending       = 0u;
+    g_sessions[s].resp_len           = 0u;
 
     rep->mr[0] = CC_OK;
     rep->mr[1] = (uint32_t)s;
@@ -396,7 +401,72 @@ static void handle_disconnect(const cc_req_wire_t *req, cc_reply_wire_t *rep)
         return;
     }
     g_sessions[sid].active = false;
+    g_sessions[sid].resp_pending = 0u;
+    g_sessions[sid].resp_len = 0u;
     rep->mr[0] = CC_OK;
+}
+
+static void handle_send(const cc_req_wire_t *req, cc_reply_wire_t *rep)
+{
+    uint32_t sid = req->mr[0]; /* session_id in MR1 */
+    uint32_t len = req->mr[2]; /* command byte length in MR3 */
+
+    if (!valid_session(sid)) {
+        rep->mr[0] = CC_ERR_BAD_SESSION;
+        rep->mr[1] = 0u;
+        return;
+    }
+    if (len > CC_MAX_CMD_BYTES) {
+        rep->mr[0] = CC_ERR_CMD_TOO_LARGE;
+        rep->mr[1] = 0u;
+        return;
+    }
+
+    /*
+     * The real service-routing surface is the direct MSG_CC_* relay API below.
+     * For the legacy session API, queue a deterministic empty success response
+     * so callers can distinguish "accepted command" from "unknown opcode".
+     */
+    (void)req;
+    g_sessions[sid].state = CC_SESSION_STATE_IDLE;
+    g_sessions[sid].ticks_since_active = 0u;
+    g_sessions[sid].resp_pending = 1u;
+    g_sessions[sid].resp_len = 0u;
+
+    rep->mr[0] = CC_OK;
+    rep->mr[1] = 1u;
+}
+
+static void handle_recv(const cc_req_wire_t *req, cc_reply_wire_t *rep)
+{
+    uint32_t sid = req->mr[0]; /* session_id in MR1 */
+    uint32_t max = req->mr[1]; /* max response bytes in MR2 */
+
+    if (!valid_session(sid)) {
+        rep->mr[0] = CC_ERR_BAD_SESSION;
+        rep->mr[1] = 0u;
+        return;
+    }
+    if (!g_sessions[sid].resp_pending) {
+        rep->mr[0] = CC_ERR_NO_RESPONSE;
+        rep->mr[1] = 0u;
+        return;
+    }
+
+    uint32_t n = g_sessions[sid].resp_len;
+    if (n > max) n = max;
+    if (n > CC_WIRE_SHMEM_SIZE) n = CC_WIRE_SHMEM_SIZE;
+    if (n > 0u) {
+        __builtin_memcpy(rep->shmem, g_sessions[sid].resp, n);
+    }
+
+    g_sessions[sid].resp_pending = 0u;
+    g_sessions[sid].resp_len = 0u;
+    g_sessions[sid].state = CC_SESSION_STATE_IDLE;
+    g_sessions[sid].ticks_since_active = 0u;
+
+    rep->mr[0] = CC_OK;
+    rep->mr[1] = n;
 }
 
 static void handle_status(const cc_req_wire_t *req, cc_reply_wire_t *rep)
@@ -411,7 +481,7 @@ static void handle_status(const cc_req_wire_t *req, cc_reply_wire_t *rep)
     }
     rep->mr[0] = CC_OK;
     rep->mr[1] = g_sessions[sid].state;
-    rep->mr[2] = 0u; /* no pending responses in relay model */
+    rep->mr[2] = g_sessions[sid].resp_pending ? 1u : 0u;
     rep->mr[3] = g_sessions[sid].ticks_since_active;
 }
 
@@ -524,6 +594,8 @@ static void cc_dispatch(const cc_req_wire_t *req, cc_reply_wire_t *rep)
     /* Session management */
     case MSG_CC_CONNECT:    handle_connect(req, rep);          break;
     case MSG_CC_DISCONNECT: handle_disconnect(req, rep);       break;
+    case MSG_CC_SEND:       handle_send(req, rep);             break;
+    case MSG_CC_RECV:       handle_recv(req, rep);             break;
     case MSG_CC_STATUS:     handle_status(req, rep);           break;
     case MSG_CC_LIST:       handle_list_sessions(rep);         break;
 
@@ -563,6 +635,8 @@ void cc_pd_main(seL4_CPtr my_ep, seL4_CPtr ns_ep)
     for (uint32_t i = 0u; i < CC_MAX_SESSIONS; i++) {
         g_sessions[i].active = false;
         g_sessions[i].state  = CC_SESSION_STATE_IDLE;
+        g_sessions[i].resp_pending = 0u;
+        g_sessions[i].resp_len = 0u;
     }
 
     /* Initialise VirtIO MMIO serial (mapped by root task; VQ PAs in startup record) */

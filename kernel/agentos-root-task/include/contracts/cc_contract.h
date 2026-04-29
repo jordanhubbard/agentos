@@ -16,8 +16,10 @@
  *
  * Session protocol (session management):
  *   - MSG_CC_CONNECT assigns a session_id; subsequent calls use it.
- *   - MSG_CC_SEND places a command (binary struct or JSON) in cc_shmem.
- *   - MSG_CC_RECV retrieves the response (placed in cc_shmem by CC PD).
+ *   - MSG_CC_SEND validates and accepts an opaque command in cc_shmem.
+ *   - MSG_CC_RECV retrieves the queued response from cc_shmem.
+ *   - Current implementation queues an empty ACK response; service routing
+ *     uses the direct relay API below.
  *   - Sessions expire after CC_SESSION_TIMEOUT_TICKS of inactivity.
  *   - Multiple concurrent sessions are supported (CC_MAX_SESSIONS).
  *   - The CC PD does not initiate communication; it only responds to PPCs.
@@ -128,8 +130,7 @@ struct cc_reply_status {
 };
 
 struct cc_reply_list {
-    uint32_t ok;
-    uint32_t count;             /* entries written to cc_shmem */
+    uint32_t count;             /* cc_session_info_t entries written to shmem */
 };
 
 /* ─── Shmem layout: session info entry ──────────────────────────────────── */
@@ -218,7 +219,6 @@ struct cc_req_list_guests {
 };
 
 struct cc_reply_list_guests {
-    uint32_t ok;
     uint32_t count;            /* cc_guest_info_t entries written to shmem */
 };
 
@@ -230,7 +230,6 @@ struct cc_req_list_devices {
 };
 
 struct cc_reply_list_devices {
-    uint32_t ok;
     uint32_t count;            /* cc_device_info_t entries written to shmem */
 };
 

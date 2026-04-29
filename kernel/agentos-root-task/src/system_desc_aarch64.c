@@ -42,7 +42,7 @@
 /* ── AArch64 system description ───────────────────────────────────────────── */
 
 const system_desc_t system_desc_aarch64 = {
-    .pd_count = 15u,
+    .pd_count = 19u,
     .pds = {
 
         /* pd[0] — nameserver (MUST be first; prio 245)
@@ -237,7 +237,70 @@ const system_desc_t system_desc_aarch64 = {
             },
         },
 
-        /* pd[11] — linux_vmm (prio 250; VM-exit latency is latency-critical)
+        /* pd[11] — block_pd (prio 213; OS-neutral block API)
+         * Exposes the block contract to VMMs and native services. */
+        {
+            .name           = "block_pd",
+            .elf_path       = "block_pd.elf",
+            .stack_size     = 0x4000u,
+            .cnode_size_bits = 10u,
+            .priority       = 213u,
+            .self_svc_id    = SVC_ID_BLOCK_SERVICE,
+            .init_ep_count  = 2u,
+            .init_eps = {
+                { SVC_ID_NAMESERVER, PD_CNODE_SLOT_NAMESERVER_EP },
+                { SVC_ID_LOG_DRAIN,  PD_CNODE_SLOT_LOG_DRAIN_EP  },
+            },
+        },
+
+        /* pd[12] — net_pd (prio 207; OS-neutral network API)
+         * Starts alongside net_server so guest bindings can target a generic
+         * device PD rather than a per-guest driver path. */
+        {
+            .name           = "net_pd",
+            .elf_path       = "net_pd.elf",
+            .stack_size     = 0x8000u,
+            .cnode_size_bits = 10u,
+            .priority       = 207u,
+            .self_svc_id    = SVC_ID_NET_PD,
+            .init_ep_count  = 2u,
+            .init_eps = {
+                { SVC_ID_NAMESERVER, PD_CNODE_SLOT_NAMESERVER_EP },
+                { SVC_ID_LOG_DRAIN,  PD_CNODE_SLOT_LOG_DRAIN_EP  },
+            },
+        },
+
+        /* pd[13] — framebuffer_pd (prio 206; OS-neutral framebuffer API) */
+        {
+            .name           = "framebuffer_pd",
+            .elf_path       = "framebuffer_pd.elf",
+            .stack_size     = 0x8000u,
+            .cnode_size_bits = 10u,
+            .priority       = 206u,
+            .self_svc_id    = SVC_ID_FB_PD,
+            .init_ep_count  = 2u,
+            .init_eps = {
+                { SVC_ID_NAMESERVER, PD_CNODE_SLOT_NAMESERVER_EP },
+                { SVC_ID_LOG_DRAIN,  PD_CNODE_SLOT_LOG_DRAIN_EP  },
+            },
+        },
+
+        /* pd[14] — usb_pd (prio 204; OS-neutral USB API) */
+        {
+            .name           = "usb_pd",
+            .elf_path       = "usb_pd.elf",
+            .stack_size     = 0x4000u,
+            .cnode_size_bits = 10u,
+            .priority       = 204u,
+            .self_svc_id    = SVC_ID_USB_PD,
+            .init_ep_count  = 2u,
+            .init_eps = {
+                { SVC_ID_NAMESERVER, PD_CNODE_SLOT_NAMESERVER_EP },
+                { SVC_ID_LOG_DRAIN,  PD_CNODE_SLOT_LOG_DRAIN_EP  },
+            },
+        },
+
+        /* pd[15] — guest VMM (prio 250; VM-exit latency is latency-critical)
          *
          * VM exits must be handled near-immediately to avoid guest stalls.
          * Runs just below fault_handler (255) and above all services.
@@ -245,10 +308,43 @@ const system_desc_t system_desc_aarch64 = {
          * IRQ assignments (QEMU virt AArch64 GIC SPI numbers):
          *   virtio-net:  SPI 16 → INTID 48 → irq_number=48, badge 0x1
          *   virtio-blk0: SPI 17 → INTID 49 → irq_number=49, badge 0x2
-         *   virtio-blk1: SPI 18 → INTID 50 → irq_number=50, badge 0x4
-         *                (used by ubuntu guest for cloud-init seed disk)
+         *   virtio-blk1: SPI 19 → INTID 51 → irq_number=51, badge 0x4
+         *                (used by ubuntu guest for cloud-init seed disk on bus.3)
          */
         {
+#if defined(AGENTOS_GUEST_FREEBSD)
+            .name           = "freebsd_vmm",
+            .elf_path       = "freebsd_vmm.elf",
+            .stack_size     = 0x10000u,
+            .cnode_size_bits = 10u,
+            .priority       = 250u,
+            .self_svc_id    = SVC_ID_FREEBSD_VMM,
+            .init_ep_count  = 2u,
+            .init_eps = {
+                { SVC_ID_NAMESERVER, PD_CNODE_SLOT_NAMESERVER_EP },
+                { SVC_ID_LOG_DRAIN,  PD_CNODE_SLOT_LOG_DRAIN_EP  },
+            },
+            .irq_count = 2u,
+            .irqs = {
+                { .irq_number = 48u, .ntfn_badge = 0x1u, .name = "virtio-net" },
+                { .irq_number = 79u, .ntfn_badge = 0x2u, .name = "virtio-blk" },
+            },
+            .mr_count = 3u,
+            .memory_regions = {
+                { .vaddr    = 0x00000000ULL,
+                  .size     = 0x04000000u,  /* 64 MB EDK2 code flash */
+                  .writable = 1u,
+                  .name     = "uefi_code" },
+                { .vaddr    = 0x04000000ULL,
+                  .size     = 0x04000000u,  /* 64 MB UEFI variable store */
+                  .writable = 1u,
+                  .name     = "uefi_data" },
+                { .vaddr    = 0x40000000ULL,
+                  .size     = 0x18000000u,  /* 384 MB FreeBSD guest RAM */
+                  .writable = 1u,
+                  .name     = "guest_ram" },
+            },
+#else
             .name           = "linux_vmm",
             .elf_path       = "linux_vmm.elf",
             .stack_size     = 0x10000u,
@@ -264,21 +360,22 @@ const system_desc_t system_desc_aarch64 = {
             .irqs = {
                 { .irq_number = 48u, .ntfn_badge = 0x1u, .name = "virtio-net"  },
                 { .irq_number = 49u, .ntfn_badge = 0x2u, .name = "virtio-blk0" },
-                { .irq_number = 50u, .ntfn_badge = 0x4u, .name = "virtio-blk1" },
+                { .irq_number = 51u, .ntfn_badge = 0x4u, .name = "virtio-blk1" },
             },
-            /* 256 MB guest RAM mapped at 0x40000000 (AArch64 DRAM base).
+            /* 512 MB guest RAM mapped at 0x40000000 (AArch64 DRAM base).
              * linux_vmm uses this as guest_ram_vaddr for libvmm image setup.
              * GPA 0x40000000 matches the QEMU virt board's DRAM region. */
             .mr_count = 1u,
             .memory_regions = {
                 { .vaddr    = 0x40000000ULL,
-                  .size     = 0x10000000u,  /* 256 MB */
+                  .size     = 0x20000000u,  /* 512 MB */
                   .writable = 1u,
                   .name     = "guest_ram" },
             },
+#endif
         },
 
-        /* pd[12] — vm_manager (prio 155; multi-VM lifecycle manager)
+        /* pd[16] — vm_manager (prio 155; multi-VM lifecycle manager)
          * Called by controller to create/destroy/snapshot VMs.  Runs above
          * controller (50) but below all the services it calls. */
         {
@@ -295,7 +392,7 @@ const system_desc_t system_desc_aarch64 = {
             },
         },
 
-        /* pd[13] — cc_pd (prio 160; command-and-control relay)
+        /* pd[17] — cc_pd (prio 160; command-and-control relay)
          * Pure IPC relay: receives MSG_CC_* from external callers and routes
          * each to the appropriate service PD.  Passive — woken by PPC.
          * Priority 160: above vm_manager (155) and controller (50) callers;
@@ -314,7 +411,7 @@ const system_desc_t system_desc_aarch64 = {
             },
         },
 
-        /* pd[14] — fault_handler (prio 255; highest priority for fault recovery)
+        /* pd[18] — fault_handler (prio 255; highest priority for fault recovery)
          * Must preempt every other PD to handle seL4 fault IPC promptly.
          * No self_svc_id: receives fault IPC via TCB fault endpoint, not a
          * registered service endpoint. */

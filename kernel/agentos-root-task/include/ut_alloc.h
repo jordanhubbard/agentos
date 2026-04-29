@@ -123,3 +123,19 @@ seL4_Error ut_alloc_device_frame(seL4_Word paddr,
  * covers paddr, seL4_NotEnoughMemory if the cap slot pool is exhausted.
  */
 seL4_Error ut_alloc_device_cap(seL4_Word paddr, seL4_CPtr *cap_out);
+
+/*
+ * ut_alloc_device_cap_typed — retype a device untyped into a page frame cap
+ * of the requested page size in the root task's CNode.
+ *
+ * This is used for QEMU guest RAM passthrough: the guest advertises a physical
+ * RAM window to virtio devices, so the VMM must map the same physical pages
+ * into its VSpace or QEMU DMA will update memory the guest cannot see.
+ *
+ * page_bits is the log2 page size represented by object_type, for example
+ * 12 for seL4_ARM_SmallPageObject or seL4_ARCH_LargePageBits for a 2 MB page.
+ */
+seL4_Error ut_alloc_device_cap_typed(seL4_Word paddr,
+                                      uint32_t  object_type,
+                                      uint8_t   page_bits,
+                                      seL4_CPtr *cap_out);

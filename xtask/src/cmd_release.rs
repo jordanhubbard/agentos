@@ -6,12 +6,15 @@ pub fn run(args: &ReleaseArgs) -> anyhow::Result<()> {
     let repo_root = repo_root()?;
     let workspace_toml = repo_root.join("Cargo.toml");
 
-    let current = read_workspace_version(&workspace_toml)
-        .context("failed to read workspace version")?;
+    let current =
+        read_workspace_version(&workspace_toml).context("failed to read workspace version")?;
     println!("[xtask:release] Current version: {}", current);
 
     let next = bump_version(&current, args.bump.clone())?;
-    println!("[xtask:release] Next version:    {} ({:?})", next, args.bump);
+    println!(
+        "[xtask:release] Next version:    {} ({:?})",
+        next, args.bump
+    );
 
     if args.dry_run {
         println!("[xtask:release] --dry-run: would commit and tag v{}", next);
@@ -90,7 +93,9 @@ fn read_workspace_version(workspace_toml: &Path) -> anyhow::Result<String> {
     let content = std::fs::read_to_string(workspace_toml)
         .with_context(|| format!("failed to read {}", workspace_toml.display()))?;
 
-    let doc: toml::Value = content.parse().context("failed to parse workspace Cargo.toml")?;
+    let doc: toml::Value = content
+        .parse()
+        .context("failed to parse workspace Cargo.toml")?;
 
     // Try [workspace.package].version first
     if let Some(v) = doc

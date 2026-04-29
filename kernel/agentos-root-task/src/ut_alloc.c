@@ -211,6 +211,89 @@ seL4_Error ut_alloc_device_frame(seL4_Word paddr,
     return seL4_InvalidArgument;
 }
 
+seL4_Error ut_alloc_device_cap_typed(seL4_Word paddr,
+                                      uint32_t  object_type,
+                                      uint8_t   page_bits,
+                                      seL4_CPtr *cap_out)
+{
+    if (!cap_out) {
+        return seL4_InvalidArgument;
+    }
+    *cap_out = seL4_CapNull;
+
+    if (page_bits < 12u || page_bits >= (sizeof(seL4_Word) * 8u)) {
+        return seL4_InvalidArgument;
+    }
+
+    seL4_Word object_bytes = (seL4_Word)1u << page_bits;
+    seL4_Word object_pages = object_bytes >> 12u;
+    if ((paddr & (object_bytes - 1u)) != 0u) {
+        return seL4_InvalidArgument;
+    }
+
+    for (uint32_t i = 0u; i < g_dev_ut_count; i++) {
+        seL4_Word ut_start = g_dev_ut[i].paddr;
+        seL4_Word ut_end   = ut_start + ((seL4_Word)1u << g_dev_ut[i].size_bits);
+        if (paddr < ut_start || paddr + object_bytes > ut_end) {
+            continue;
+        }
+
+        seL4_Word target_page = (paddr - ut_start) >> 12u;
+        if (g_dev_ut[i].pages_used > target_page) {
+            return seL4_InvalidArgument;
+        }
+
+        /* Advance the untyped watermark to paddr. seL4 retypes sequentially
+         * from the current watermark; dummy 4 KB caps consume any gap. */
+        while (g_dev_ut[i].pages_used < target_page) {
+            seL4_Word dummy = ut_alloc_slot();
+            if (dummy == seL4_CapNull) {
+                return seL4_NotEnoughMemory;
+            }
+            seL4_Error skip_err = seL4_Untyped_Retype(
+                g_dev_ut[i].cap,
+                (seL4_Word)seL4_ARM_SmallPageObject,
+                0u,
+                seL4_CapInitThreadCNode, 0u, 0u,
+                dummy, 1u
+            );
+            if (skip_err != seL4_NoError) {
+                return skip_err;
+            }
+            g_dev_ut[i].pages_used++;
+        }
+
+        if ((g_dev_ut[i].pages_used & (object_pages - 1u)) != 0u) {
+            return seL4_InvalidArgument;
+        }
+
+        seL4_Word slot = ut_alloc_slot();
+        if (slot == seL4_CapNull) {
+            return seL4_NotEnoughMemory;
+        }
+
+        seL4_Error err = seL4_Untyped_Retype(
+            g_dev_ut[i].cap,
+            (seL4_Word)object_type,
+            0u,                         /* size_bits: fixed page object */
+            seL4_CapInitThreadCNode,    /* root: root task CNode, direct target  */
+            0u,                         /* node_index: no CSpace traversal       */
+            0u,                         /* node_depth: 0 -> root CNode is target  */
+            slot,                       /* node_offset: slot in root task CNode  */
+            1u                          /* num_objects                           */
+        );
+        if (err != seL4_NoError) {
+            return err;
+        }
+
+        g_dev_ut[i].pages_used += object_pages;
+        *cap_out = (seL4_CPtr)slot;
+        return seL4_NoError;
+    }
+
+    return seL4_InvalidArgument;
+}
+
 seL4_Error ut_alloc_device_cap(seL4_Word paddr, seL4_CPtr *cap_out)
 {
     seL4_Word slot = ut_alloc_slot();

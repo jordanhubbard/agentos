@@ -304,12 +304,13 @@ static int test_cc_req_reply_sizes(void)
     CHECK(sizeof(struct cc_reply_send)     == 2 * sizeof(uint32_t));
     CHECK(sizeof(struct cc_reply_recv)     == 2 * sizeof(uint32_t));
     CHECK(sizeof(struct cc_reply_status)   == 4 * sizeof(uint32_t));
+    CHECK(sizeof(struct cc_reply_list)     == 1 * sizeof(uint32_t));
 
     /* Relay API */
     CHECK(sizeof(struct cc_req_list_guests)       == 1 * sizeof(uint32_t));
-    CHECK(sizeof(struct cc_reply_list_guests)     == 2 * sizeof(uint32_t));
+    CHECK(sizeof(struct cc_reply_list_guests)     == 1 * sizeof(uint32_t));
     CHECK(sizeof(struct cc_req_list_devices)      == 2 * sizeof(uint32_t));
-    CHECK(sizeof(struct cc_reply_list_devices)    == 2 * sizeof(uint32_t));
+    CHECK(sizeof(struct cc_reply_list_devices)    == 1 * sizeof(uint32_t));
     CHECK(sizeof(struct cc_reply_list_polecats)   == 4 * sizeof(uint32_t));
     CHECK(sizeof(struct cc_req_guest_status)      == 1 * sizeof(uint32_t));
     CHECK(sizeof(struct cc_reply_guest_status)    == 1 * sizeof(uint32_t));

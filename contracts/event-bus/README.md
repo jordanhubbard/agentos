@@ -33,7 +33,6 @@ it via a dedicated channel:
 | init_agent | eb_init (id_b=1, pp_b=true) |
 | worker_N   | eb_worker_N |
 | agentfs    | agentfs_eb |
-| console_mux| eb_console |
 | snapshot_sched | snap_event_publish |
 
 ## Operations

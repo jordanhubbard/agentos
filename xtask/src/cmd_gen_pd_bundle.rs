@@ -24,7 +24,7 @@ use std::path::PathBuf;
 use anyhow::{Context, Result};
 
 // Re-use the same SystemDesc / PdDesc types from cmd_gen_image
-use crate::cmd_gen_image::{SystemDesc, IMAGE_MAGIC, IMAGE_VERSION, HEADER_SIZE, PD_ENTRY_SIZE};
+use crate::cmd_gen_image::{SystemDesc, HEADER_SIZE, IMAGE_MAGIC, IMAGE_VERSION, PD_ENTRY_SIZE};
 
 // ─── CLI args ────────────────────────────────────────────────────────────────
 
@@ -89,17 +89,21 @@ pub fn run(args: &GenPdBundleArgs) -> Result<()> {
     // ── Header (64 bytes) ────────────────────────────────────────────────────
     // kernel_off = 0, kernel_len = 0  (no kernel in bundle)
     // root_off   = 0, root_len   = 0  (no root_task in bundle)
-    bundle.extend_from_slice(&IMAGE_MAGIC.to_le_bytes());           // [0..8]
-    bundle.extend_from_slice(&IMAGE_VERSION.to_le_bytes());         // [8..12]
-    bundle.extend_from_slice(&num_pds.to_le_bytes());               // [12..16]
-    bundle.extend_from_slice(&0u32.to_le_bytes());                  // [16..20] kernel_off = 0
-    bundle.extend_from_slice(&0u32.to_le_bytes());                  // [20..24] kernel_len = 0
-    bundle.extend_from_slice(&0u32.to_le_bytes());                  // [24..28] root_off = 0
-    bundle.extend_from_slice(&0u32.to_le_bytes());                  // [28..32] root_len = 0
-    bundle.extend_from_slice(&pd_table_off.to_le_bytes());          // [32..36] pd_table_off
-    bundle.extend_from_slice(&[0u8; 28]);                           // [36..64] _pad
+    bundle.extend_from_slice(&IMAGE_MAGIC.to_le_bytes()); // [0..8]
+    bundle.extend_from_slice(&IMAGE_VERSION.to_le_bytes()); // [8..12]
+    bundle.extend_from_slice(&num_pds.to_le_bytes()); // [12..16]
+    bundle.extend_from_slice(&0u32.to_le_bytes()); // [16..20] kernel_off = 0
+    bundle.extend_from_slice(&0u32.to_le_bytes()); // [20..24] kernel_len = 0
+    bundle.extend_from_slice(&0u32.to_le_bytes()); // [24..28] root_off = 0
+    bundle.extend_from_slice(&0u32.to_le_bytes()); // [28..32] root_len = 0
+    bundle.extend_from_slice(&pd_table_off.to_le_bytes()); // [32..36] pd_table_off
+    bundle.extend_from_slice(&[0u8; 28]); // [36..64] _pad
 
-    debug_assert_eq!(bundle.len(), HEADER_SIZE, "bundle header must be exactly 64 bytes");
+    debug_assert_eq!(
+        bundle.len(),
+        HEADER_SIZE,
+        "bundle header must be exactly 64 bytes"
+    );
 
     // ── PD entry table (num_pds × 64 bytes) ─────────────────────────────────
     for (i, pd) in pds.iter().enumerate() {
@@ -108,11 +112,11 @@ pub fn run(args: &GenPdBundleArgs) -> Result<()> {
         let copy_len = name_bytes.len().min(47);
         name_buf[..copy_len].copy_from_slice(&name_bytes[..copy_len]);
 
-        bundle.extend_from_slice(&name_buf);                                   // [0..48]  name
-        bundle.extend_from_slice(&pd_elf_offsets[i].to_le_bytes());            // [48..52] elf_off
-        bundle.extend_from_slice(&(pd_elfs[i].len() as u32).to_le_bytes());   // [52..56] elf_len
-        bundle.push(pd.priority);                                              // [56]     priority
-        bundle.extend_from_slice(&[0u8; 7]);                                   // [57..64] _pad
+        bundle.extend_from_slice(&name_buf); // [0..48]  name
+        bundle.extend_from_slice(&pd_elf_offsets[i].to_le_bytes()); // [48..52] elf_off
+        bundle.extend_from_slice(&(pd_elfs[i].len() as u32).to_le_bytes()); // [52..56] elf_len
+        bundle.push(pd.priority); // [56]     priority
+        bundle.extend_from_slice(&[0u8; 7]); // [57..64] _pad
     }
 
     // ── PD ELF data ──────────────────────────────────────────────────────────
@@ -197,8 +201,8 @@ priority = 1
         // kernel_off / kernel_len / root_off / root_len must all be 0
         let kernel_off = u32::from_le_bytes(bytes[16..20].try_into().unwrap());
         let kernel_len = u32::from_le_bytes(bytes[20..24].try_into().unwrap());
-        let root_off   = u32::from_le_bytes(bytes[24..28].try_into().unwrap());
-        let root_len   = u32::from_le_bytes(bytes[28..32].try_into().unwrap());
+        let root_off = u32::from_le_bytes(bytes[24..28].try_into().unwrap());
+        let root_len = u32::from_le_bytes(bytes[28..32].try_into().unwrap());
         assert_eq!(kernel_off, 0);
         assert_eq!(kernel_len, 0);
         assert_eq!(root_off, 0);

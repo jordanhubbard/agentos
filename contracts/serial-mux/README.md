@@ -13,18 +13,13 @@ protection domain.
 
 ## Status
 
-**IMPLEMENTED.**  The concrete implementation lives in
-`kernel/agentos-root-task/src/console_mux.c`.
-
-The `console-mux` contract directory provides a higher-level perspective of
-the same service (open/close/write/read/flush API).  SerialMux defines the
-low-level session ring protocol used at the kernel boundary.
+**LEGACY.**  The old `console_mux` UI-facing service has been removed from
+the active build.  New serial I/O work should use the generic serial PD
+contract in `kernel/agentos-root-task/include/contracts/serial_contract.h`.
 
 ## Protection Domain
 
-SerialMux runs as the `console_mux` passive PD (priority 160) from
-`tools/topology.yaml`.  It maps the `console_ring` MR (16KB) at vaddr
-0x6000000.
+SerialMux no longer maps an active PD in the default system description.
 
 ## IPC Endpoint
 
@@ -72,7 +67,5 @@ Each session has a 4096-byte ring in the `console_ring` MR:
 
 ## Source Files
 
-- `kernel/agentos-root-task/src/console_mux.c` — implementation
-- `contracts/serial-mux/interface.h` — this contract
-- `contracts/console-mux/interface.h` — higher-level open/close/write API
-- `tools/topology.yaml` — console_mux PD and channel definitions
+- `contracts/serial-mux/interface.h` — legacy contract reference
+- `kernel/agentos-root-task/include/contracts/serial_contract.h` — active serial PD contract

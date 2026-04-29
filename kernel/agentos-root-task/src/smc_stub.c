@@ -25,6 +25,15 @@
 #define SMC_CALL_ARM_ARCH       0u   /* ARM architecture calls: SMCCC_VERSION etc. */
 #define SMC_CALL_STD_SERVICE    4u   /* Standard service: PSCI lives here */
 
+#define SMCCC_RET_SUCCESS       0u
+#define SMCCC_RET_NOT_SUPPORTED ((uint64_t)-1)
+#define SMCCC_TRNG_VERSION      0x50u
+#define SMCCC_TRNG_FEATURES     0x51u
+#define SMCCC_TRNG_GET_UUID     0x52u
+#define SMCCC_TRNG_RND32        0x53u
+#define SMCCC_TRNG_RND64        0x53u
+#define SMCCC_TRNG_VERSION_1_0  0x00010000u
+
 void smc_set_return_value(seL4_UserContext *u, uint64_t val)
 {
     u->x0 = val;
@@ -49,6 +58,57 @@ bool smc_register_sip_handler(smc_sip_handler_t handler)
     return true;
 }
 
+static uint64_t smc_trng_next(void)
+{
+    static uint64_t state = 0x41474f5354524e47ull; /* "AGOSTRNG" */
+    state ^= state << 13;
+    state ^= state >> 7;
+    state ^= state << 17;
+    return state;
+}
+
+static bool smc_handle_trng(size_t vcpu_id, seL4_UserContext *regs)
+{
+    uint64_t fn = regs->x0 & SMC_FUNC_ID_MASK;
+
+    switch (fn) {
+    case SMCCC_TRNG_VERSION:
+        regs->x0 = SMCCC_TRNG_VERSION_1_0;
+        break;
+    case SMCCC_TRNG_FEATURES:
+        switch (regs->x1 & SMC_FUNC_ID_MASK) {
+        case SMCCC_TRNG_VERSION:
+        case SMCCC_TRNG_FEATURES:
+        case SMCCC_TRNG_GET_UUID:
+        case SMCCC_TRNG_RND32:
+            regs->x0 = SMCCC_RET_SUCCESS;
+            break;
+        default:
+            regs->x0 = SMCCC_RET_NOT_SUPPORTED;
+            break;
+        }
+        break;
+    case SMCCC_TRNG_GET_UUID:
+        regs->x0 = 0x3cc0d623u;
+        regs->x1 = 0x1d5c4fbeu;
+        regs->x2 = 0x8a7a3f19u;
+        regs->x3 = 0x41474f53u;
+        break;
+    case SMCCC_TRNG_RND64:
+        regs->x0 = SMCCC_RET_SUCCESS;
+        regs->x1 = smc_trng_next();
+        regs->x2 = smc_trng_next();
+        regs->x3 = smc_trng_next();
+        break;
+    default:
+        regs->x0 = SMCCC_RET_NOT_SUPPORTED;
+        break;
+    }
+
+    extern bool fault_advance_vcpu(size_t vcpu_id, seL4_UserContext *regs);
+    return fault_advance_vcpu(vcpu_id, regs);
+}
+
 bool smc_handle(size_t vcpu_id, uint64_t hsr)
 {
     seL4_UserContext regs;
@@ -61,13 +121,20 @@ bool smc_handle(size_t vcpu_id, uint64_t hsr)
     if (service == SMC_CALL_STD_SERVICE && fn_number < (uint64_t)PSCI_MAX) {
         return handle_psci(vcpu_id, &regs, fn_number, hsr);
     }
+    if (service == SMC_CALL_STD_SERVICE &&
+        (fn_number == SMCCC_TRNG_VERSION ||
+         fn_number == SMCCC_TRNG_FEATURES ||
+         fn_number == SMCCC_TRNG_GET_UUID ||
+         fn_number == SMCCC_TRNG_RND32)) {
+        return smc_handle_trng(vcpu_id, &regs);
+    }
 
     /* SMCCC architectural calls (ARM DEN0028):
      *   fn 0 = SMCCC_VERSION  → return v1.1 (0x00010001)
      *   fn 1 = SMCCC_ARCH_FEATURES → NOT_SUPPORTED (-1)
      *   others → NOT_SUPPORTED */
     if (service == SMC_CALL_ARM_ARCH) {
-        smc_set_return_value(&regs, fn_number == 0u ? 0x00010001u : (uint64_t)-1);
+        smc_set_return_value(&regs, fn_number == 0u ? 0x00010001u : SMCCC_RET_NOT_SUPPORTED);
         extern bool fault_advance_vcpu(size_t vcpu_id, seL4_UserContext *regs);
         return fault_advance_vcpu(vcpu_id, &regs);
     }
@@ -77,7 +144,7 @@ bool smc_handle(size_t vcpu_id, uint64_t hsr)
      * the guest can detect and fall back rather than hanging. */
     LOG_VMM("Unhandled SMC ignored: service=0x%lx fn=0x%lx (x0=0x%lx) → NOT_SUPPORTED\n",
             service, fn_number, regs.x0);
-    smc_set_return_value(&regs, (uint64_t)-1);
+    smc_set_return_value(&regs, SMCCC_RET_NOT_SUPPORTED);
     extern bool fault_advance_vcpu(size_t vcpu_id, seL4_UserContext *regs);
     return fault_advance_vcpu(vcpu_id, &regs);
 }

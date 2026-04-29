@@ -24,6 +24,9 @@ pub struct TestArgs {
     pub board: String,
     #[arg(long, default_value = "buildroot")]
     pub guest_os: String,
+    /// Host TCP port forwarded to guest SSH; 0 disables SSH forwarding.
+    #[arg(long, env = "AGENTOS_TEST_SSH_PORT", default_value_t = 0)]
+    pub ssh_port: u16,
     #[arg(long, default_value_t = 120)]
     pub timeout_secs: u64,
     #[arg(long)]

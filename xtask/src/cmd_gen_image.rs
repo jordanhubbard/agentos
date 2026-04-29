@@ -134,15 +134,15 @@ pub fn run(args: &GenImageArgs) -> Result<()> {
     let mut img: Vec<u8> = Vec::with_capacity(total_size);
 
     // ── Header (64 bytes) ────────────────────────────────────────────────────
-    img.extend_from_slice(&IMAGE_MAGIC.to_le_bytes());        // [0..8]   magic
-    img.extend_from_slice(&IMAGE_VERSION.to_le_bytes());      // [8..12]  version
-    img.extend_from_slice(&num_pds.to_le_bytes());            // [12..16] num_pds
-    img.extend_from_slice(&kernel_off.to_le_bytes());         // [16..20] kernel_off
-    img.extend_from_slice(&kernel_len.to_le_bytes());         // [20..24] kernel_len
-    img.extend_from_slice(&root_off.to_le_bytes());           // [24..28] root_off
-    img.extend_from_slice(&root_len.to_le_bytes());           // [28..32] root_len
-    img.extend_from_slice(&pd_table_off.to_le_bytes());       // [32..36] pd_table_off
-    img.extend_from_slice(&[0u8; 28]);                        // [36..64] _pad
+    img.extend_from_slice(&IMAGE_MAGIC.to_le_bytes()); // [0..8]   magic
+    img.extend_from_slice(&IMAGE_VERSION.to_le_bytes()); // [8..12]  version
+    img.extend_from_slice(&num_pds.to_le_bytes()); // [12..16] num_pds
+    img.extend_from_slice(&kernel_off.to_le_bytes()); // [16..20] kernel_off
+    img.extend_from_slice(&kernel_len.to_le_bytes()); // [20..24] kernel_len
+    img.extend_from_slice(&root_off.to_le_bytes()); // [24..28] root_off
+    img.extend_from_slice(&root_len.to_le_bytes()); // [28..32] root_len
+    img.extend_from_slice(&pd_table_off.to_le_bytes()); // [32..36] pd_table_off
+    img.extend_from_slice(&[0u8; 28]); // [36..64] _pad
 
     debug_assert_eq!(img.len(), HEADER_SIZE, "header must be exactly 64 bytes");
 
@@ -154,11 +154,11 @@ pub fn run(args: &GenImageArgs) -> Result<()> {
         let copy_len = name_bytes.len().min(47); // leave at least one NUL
         name_buf[..copy_len].copy_from_slice(&name_bytes[..copy_len]);
 
-        img.extend_from_slice(&name_buf);                              // [0..48]  name
-        img.extend_from_slice(&pd_elf_offsets[i].to_le_bytes());       // [48..52] elf_off
+        img.extend_from_slice(&name_buf); // [0..48]  name
+        img.extend_from_slice(&pd_elf_offsets[i].to_le_bytes()); // [48..52] elf_off
         img.extend_from_slice(&(pd_elfs[i].len() as u32).to_le_bytes()); // [52..56] elf_len
-        img.push(pd.priority);                                         // [56]     priority
-        img.extend_from_slice(&[0u8; 7]);                              // [57..64] _pad
+        img.push(pd.priority); // [56]     priority
+        img.extend_from_slice(&[0u8; 7]); // [57..64] _pad
     }
 
     // ── ELF data ─────────────────────────────────────────────────────────────

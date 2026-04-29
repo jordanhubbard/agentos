@@ -75,6 +75,10 @@ name = "virtio_blk"
 priority = 175
 
 [[pd]]
+name = "linux_vmm"
+priority = 250
+
+[[pd]]
 name = "vfs_server"
 priority = 155
 
@@ -147,9 +151,17 @@ name = "framebuffer_pd"
 priority = 175
 
 [[pd]]
+name = "usb_pd"
+priority = 165
+
+[[pd]]
 name = "cc_pd"
 priority = 100
 
 [[pd]]
 name = "gpu_sched"
 priority = 180
+
+[[pd]]
+name = "fault_handler"
+priority = 255

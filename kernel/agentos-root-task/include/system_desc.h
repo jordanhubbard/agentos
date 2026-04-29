@@ -28,7 +28,7 @@
 #define PD_MAX_INIT_EPS        8u  /* max initial endpoints distributed per PD  */
 #define PD_MAX_IRQS            8u  /* max hardware IRQs bound per PD            */
 #define PD_MAX_DEVICE_FRAMES   4u  /* max MMIO device frames distributed per PD */
-#define PD_MAX_MEMORY_REGIONS  2u  /* max large RAM regions mapped per PD       */
+#define PD_MAX_MEMORY_REGIONS  3u  /* max large RAM regions mapped per PD       */
 #define SYSTEM_MAX_PDS        64u  /* max PDs per system description             */
 
 /*
@@ -217,6 +217,7 @@ typedef struct {
 #define SVC_ID_VIRTIO_BLK     19u   /* virtio block device driver PD          */
 #define SVC_ID_VM_MANAGER     20u   /* multi-VM lifecycle manager PD          */
 #define SVC_ID_CC_PD          21u   /* command-and-control relay PD           */
+#define SVC_ID_USB_PD         22u   /* USB device service PD                  */
 
 /* Standard per-PD CNode slot assignments for well-known capabilities.
  * These are the slots at which each PD finds its initial endpoint caps. */

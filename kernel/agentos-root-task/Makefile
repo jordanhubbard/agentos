@@ -148,32 +148,9 @@ $(BUILD_DIR)/loader.elf: FORCE
 		BUILD_DIR=$(BUILD_DIR) \
 		AGENTOS_ARCH=$(AGENTOS_ARCH)
 
-# Step 2: Generate the PD bundle (after all IMAGES are built)
-$(PD_BUNDLE): $(addprefix $(BUILD_DIR)/, $(IMAGES)) $(SYSTEM_TOML_FOR_BUNDLE)
-	cargo run -p xtask -- gen-pd-bundle \
-		--system $(SYSTEM_TOML_FOR_BUNDLE) \
-		--pd-dir $(BUILD_DIR) \
-		--out $@
-
-# Step 3: Turn the binary bundle into a relocatable ELF64 object.
-#
-# objcopy --input binary derives symbol names from the input file path,
-# mangling every non-alphanumeric character to '_'.  To get predictable
-# symbol names we invoke objcopy from BUILD_DIR with just the basename, so
-# the mangled name is always:
-#   _binary_agentos_pd_bundle_bin_{start,end,size}
-$(PD_BUNDLE_OBJ): $(PD_BUNDLE)
-	cd $(BUILD_DIR) && $(OBJCOPY) \
-		--input-target=binary \
-		--output-target=elf64-littleaarch64 \
-		--binary-architecture=aarch64 \
-		--rename-section .data=.pd_bundle,alloc,load,data,contents \
-		--redefine-sym _binary_agentos_pd_bundle_bin_start=__pd_bundle_start \
-		--redefine-sym _binary_agentos_pd_bundle_bin_end=__pd_bundle_end \
-		--redefine-sym _binary_agentos_pd_bundle_bin_size=__pd_bundle_size \
-		agentos_pd_bundle.bin agentos_pd_bundle.o
-
-# Step 4: Link root_task.elf with the custom AArch64 LD script + bundle object
+# Step 4: Link root_task.elf with the custom AArch64 LD script + bundle object.
+# The PD bundle rules are declared after IMAGES/SYSTEM_TOML are finalized so
+# Make records the real PD ELF prerequisite list.
 $(BUILD_DIR)/root_task.elf: $(ROOT_TASK_ASM_OBJS) $(ROOT_TASK_OBJS) $(PD_BUNDLE_OBJ) $(ROOT_TASK_LD)
 	$(LD) $(LDFLAGS) -T$(ROOT_TASK_LD) $(filter-out $(ROOT_TASK_LD),$^) -o $@
 
@@ -233,10 +210,12 @@ PD_EXEC_SERVER_SRCS      := src/exec_server.c src/m3_bare_metal.c src/log.c
 PD_TERM_SERVER_SRCS      := src/term_server.c src/m3_bare_metal.c src/log.c
 PD_BLOCK_PD_SRCS         := src/block_pd.c src/m3_bare_metal.c src/log.c
 PD_FB_PD_SRCS            := src/framebuffer_pd.c src/m3_bare_metal.c src/log.c
+PD_USB_PD_SRCS           := src/usb_pd.c src/m3_bare_metal.c src/log.c
 PD_CC_PD_SRCS            := src/cc_pd.c src/m3_bare_metal.c src/log.c
 PD_GPU_SCHED_SRCS        := src/gpu_sched.c src/gpu_shmem.c src/m3_bare_metal.c src/log.c
 PD_IRQ_PD_SRCS           := src/irq_pd.c src/m3_bare_metal.c src/log.c
 PD_TIMER_PD_SRCS         := src/timer_pd.c src/m3_bare_metal.c src/log.c
+PD_FAULT_HANDLER_SRCS    := src/fault_handler.c src/m3_bare_metal.c src/log.c
 
 # ─── Inject seL4 CRT into every service PD ────────────────────────────────────
 # sel4_crt.c provides __sel4_ipc_buffer (libmicrokit replacement) needed by
@@ -251,7 +230,8 @@ _PD_SRC_VARS := \
     PD_HTTP_SVC_SRCS PD_VM_MANAGER_SRCS PD_AUTH_SERVER_SRCS PD_EXT2FS_SRCS \
     PD_PROC_SERVER_SRCS PD_VM_SNAPSHOT_SRCS PD_PFLOCAL_SERVER_SRCS PD_PFLOCAL_SRCS \
     PD_EXEC_SERVER_SRCS PD_TERM_SERVER_SRCS PD_BLOCK_PD_SRCS PD_FB_PD_SRCS \
-    PD_CC_PD_SRCS PD_GPU_SCHED_SRCS PD_IRQ_PD_SRCS PD_TIMER_PD_SRCS
+    PD_USB_PD_SRCS PD_CC_PD_SRCS PD_GPU_SCHED_SRCS PD_IRQ_PD_SRCS PD_TIMER_PD_SRCS \
+    PD_FAULT_HANDLER_SRCS
 $(foreach v,$(_PD_SRC_VARS),$(eval $(v) += src/sel4_crt.c))
 # pd_entry.c provides _start (ELF entry) + IPC buffer fix for all service PDs.
 # It is NOT added to ROOT_TASK_SRCS — the root task has its own _start in
@@ -306,12 +286,14 @@ TERM_SERVER_OBJS      := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_TERM_SERVER_
 WASM3_OBJS            := $(patsubst wasm3/%.c, $(BUILD_DIR)/wasm3_%.o, $(WASM3_SRCS))
 BLOCK_PD_OBJS         := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_BLOCK_PD_SRCS))
 FB_PD_OBJS            := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_FB_PD_SRCS))
+USB_PD_OBJS           := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_USB_PD_SRCS))
 CC_PD_OBJS            := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_CC_PD_SRCS))
 GPU_SCHED_OBJS        := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_GPU_SCHED_SRCS))
 IRQ_PD_OBJS           := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_IRQ_PD_SRCS))
 TIMER_PD_OBJS         := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_TIMER_PD_SRCS))
+FAULT_HANDLER_OBJS    := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_FAULT_HANDLER_SRCS))
 
-IMAGES := controller.elf event_bus.elf init_agent.elf worker.elf agentfs.elf vibe_engine.elf vibeos.elf log_drain.elf serial_pd.elf swap_slot.elf mem_profiler.elf net_isolator.elf perf_counters.elf time_partition.elf trace_recorder.elf nameserver.elf virtio_blk.elf vfs_server.elf spawn_server.elf app_slot.elf net_server.elf net_pd.elf wg_net.elf app_manager.elf http_svc.elf vm_manager.elf auth_server.elf ext2fs.elf proc_server.elf vm_snapshot.elf pflocal_server.elf exec_server.elf term_server.elf block_pd.elf framebuffer_pd.elf cc_pd.elf gpu_sched.elf timer_svc.elf entropy_svc.elf block_svc.elf console_mux.elf usb_svc.elf model_svc.elf tool_svc.elf irq_pd.elf timer_pd.elf
+IMAGES := controller.elf event_bus.elf init_agent.elf worker.elf agentfs.elf vibe_engine.elf vibeos.elf log_drain.elf serial_pd.elf swap_slot.elf mem_profiler.elf net_isolator.elf perf_counters.elf time_partition.elf trace_recorder.elf nameserver.elf virtio_blk.elf vfs_server.elf spawn_server.elf app_slot.elf net_server.elf net_pd.elf wg_net.elf app_manager.elf http_svc.elf vm_manager.elf auth_server.elf ext2fs.elf proc_server.elf vm_snapshot.elf pflocal_server.elf exec_server.elf term_server.elf block_pd.elf framebuffer_pd.elf usb_pd.elf cc_pd.elf gpu_sched.elf timer_svc.elf entropy_svc.elf block_svc.elf usb_svc.elf model_svc.elf tool_svc.elf irq_pd.elf timer_pd.elf fault_handler.elf
 
 # Optional: periodic WASM slot snapshot scheduler
 ifdef AGENTOS_SNAPSHOT_SCHED
@@ -325,6 +307,7 @@ GUEST_OS ?= none
 # AArch64: include VMM based on GUEST_OS
 ifeq ($(ARCH),aarch64)
   ifeq ($(GUEST_OS),freebsd)
+    CFLAGS_ROOT_TASK += -DAGENTOS_GUEST_FREEBSD=1
     IMAGES += freebsd_vmm.elf
   else
     # Default aarch64: include Linux VMM (stub or full)
@@ -380,10 +363,6 @@ $(BUILD_DIR)/entropy_svc.o: $(SERVICES_DIR)/entropy-service/entropy_svc.c
 	$(CC) -c $(CFLAGS) $< -o $@
 
 $(BUILD_DIR)/block_svc.o: $(SERVICES_DIR)/block-service/block_svc.c
-	@mkdir -p $(BUILD_DIR)
-	$(CC) -c $(CFLAGS) $< -o $@
-
-$(BUILD_DIR)/console_mux.o: $(SERVICES_DIR)/console-mux/console_mux.c
 	@mkdir -p $(BUILD_DIR)
 	$(CC) -c $(CFLAGS) $< -o $@
 
@@ -476,9 +455,6 @@ $(BUILD_DIR)/entropy_svc.elf: $(BUILD_DIR)/entropy_svc.o
 	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
 
 $(BUILD_DIR)/block_svc.elf: $(BUILD_DIR)/block_svc.o
-	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
-
-$(BUILD_DIR)/console_mux.elf: $(BUILD_DIR)/console_mux.o
 	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
 
 $(BUILD_DIR)/usb_svc.elf: $(BUILD_DIR)/usb_svc.o
@@ -590,6 +566,9 @@ $(BUILD_DIR)/block_pd.elf: $(BLOCK_PD_OBJS)
 $(BUILD_DIR)/framebuffer_pd.elf: $(FB_PD_OBJS)
 	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
 
+$(BUILD_DIR)/usb_pd.elf: $(USB_PD_OBJS)
+	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
+
 $(BUILD_DIR)/cc_pd.elf: $(CC_PD_OBJS)
 	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
 
@@ -600,6 +579,9 @@ $(BUILD_DIR)/irq_pd.elf: $(IRQ_PD_OBJS)
 	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
 
 $(BUILD_DIR)/timer_pd.elf: $(TIMER_PD_OBJS)
+	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
+
+$(BUILD_DIR)/fault_handler.elf: $(FAULT_HANDLER_OBJS)
 	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
 
 # ─── RISC-V 64 VMMs (process-in-PD, no hypervisor extension) ─────────────
@@ -629,15 +611,36 @@ endif
 # ─── Linux VMM (AArch64 only) ─────────────────────────────────────────────
 ifeq ($(ARCH),aarch64)
 ifneq ($(GUEST_OS),freebsd)
+ifeq ($(GUEST_OS),none)
+# Default AArch64 build: keep a normal agentOS-linked placeholder VMM PD.
+# The libvmm Microkit ELF currently has entry 0 under the custom root-task
+# loader, so full VMM builds are opt-in via GUEST_OS=buildroot/ubuntu.
+$(BUILD_DIR)/linux_vmm.o: src/linux_vmm.c
+	@mkdir -p $(BUILD_DIR)
+	$(CC) -c $(CFLAGS) -DARCH_AARCH64 -DLINUX_VMM_NATIVE_STUB=1 $< -o $@
+
+$(BUILD_DIR)/linux_vmm.elf: FORCE \
+                             $(BUILD_DIR)/linux_vmm.o \
+                             $(BUILD_DIR)/sel4_crt.o \
+                             $(BUILD_DIR)/pd_entry.o \
+                             $(BUILD_DIR)/m3_bare_metal.o \
+                             $(BUILD_DIR)/log.o
+	$(LD) $(LDFLAGS) $(filter-out FORCE,$^) $(LIBS) -o $@
+else
 ifeq ($(BOARD_NATIVE),1)
 # Native AArch64 board (e.g., RPi5): libvmm has QEMU-specific GIC addresses;
 # use a stub instead until board-specific VMM support is added.
 $(BUILD_DIR)/linux_vmm.o: src/linux_vmm.c
 	@mkdir -p $(BUILD_DIR)
-	$(CC) -c $(CFLAGS) -DLINUX_VMM_NATIVE_STUB=1 $< -o $@
+	$(CC) -c $(CFLAGS) -DARCH_AARCH64 -DLINUX_VMM_NATIVE_STUB=1 $< -o $@
 
-$(BUILD_DIR)/linux_vmm.elf: $(BUILD_DIR)/linux_vmm.o
-	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
+$(BUILD_DIR)/linux_vmm.elf: FORCE \
+                             $(BUILD_DIR)/linux_vmm.o \
+                             $(BUILD_DIR)/sel4_crt.o \
+                             $(BUILD_DIR)/pd_entry.o \
+                             $(BUILD_DIR)/m3_bare_metal.o \
+                             $(BUILD_DIR)/log.o
+	$(LD) $(LDFLAGS) $(filter-out FORCE,$^) $(LIBS) -o $@
 else
 # QEMU AArch64: use libvmm for full Linux VM support
 $(BUILD_DIR)/linux_vmm.elf: FORCE
@@ -647,7 +650,9 @@ $(BUILD_DIR)/linux_vmm.elf: FORCE
 		BUILD_DIR=$(BUILD_DIR) \
 		AGENTOS_ARCH=$(AGENTOS_ARCH) \
 		AGENTOS_BOARD=$(AGENTOS_BOARD) \
+		GUEST_OS=$(GUEST_OS) \
 		vmm-all
+endif
 endif
 endif
 endif
@@ -655,16 +660,15 @@ endif
 # ─── FreeBSD VMM (AArch64 + GUEST_OS=freebsd) ─────────────────────────────
 ifeq ($(ARCH),aarch64)
 ifeq ($(GUEST_OS),freebsd)
-FREEBSD_VMM_DIR := $(abspath $(CURDIR)/../freebsd-vmm)
-
 $(BUILD_DIR)/freebsd_vmm.elf: FORCE
 	@echo ""
 	@echo "═══ Building FreeBSD VMM (libvmm + EDK2) ═══"
-	$(MAKE) -C $(FREEBSD_VMM_DIR) \
+	$(MAKE) -f vmm.mk \
 		BUILD_DIR=$(BUILD_DIR) \
 		AGENTOS_ARCH=$(AGENTOS_ARCH) \
-		BOARD=$(AGENTOS_BOARD) \
-		all
+		AGENTOS_BOARD=$(AGENTOS_BOARD) \
+		GUEST_OS=freebsd \
+		vmm-all
 	@echo "═══ freebsd_vmm.elf ✓ ═══"
 endif
 endif
@@ -686,8 +690,15 @@ endif
 # memory-region / channel details (handled by the root task at runtime).
 # A minimal fallback TOML is provided; board-specific overrides live in boards/.
 SYSTEM_TOML_DEFAULT := $(abspath $(CURDIR)/agentos.toml)
+ifeq ($(GUEST_OS),freebsd)
+SYSTEM_TOML_DEFAULT := $(abspath $(BUILD_DIR)/agentos-freebsd.toml)
+$(SYSTEM_TOML_DEFAULT): $(abspath $(CURDIR)/agentos.toml)
+	@mkdir -p $(BUILD_DIR)
+	sed 's/name = "linux_vmm"/name = "freebsd_vmm"/' $< > $@
+endif
 _BOARD_TOML := ../../boards/$(BOARD_NAME)/agentos.toml
-SYSTEM_TOML := $(if $(wildcard $(_BOARD_TOML)),$(_BOARD_TOML),$(SYSTEM_TOML_DEFAULT))
+_BOARD_TOML_NONEMPTY := $(shell [ -s "$(_BOARD_TOML)" ] && printf '%s' "$(_BOARD_TOML)")
+SYSTEM_TOML := $(if $(_BOARD_TOML_NONEMPTY),$(_BOARD_TOML_NONEMPTY),$(SYSTEM_TOML_DEFAULT))
 
 # Kernel ELF: pulled directly from the Microkit SDK release package
 KERNEL_ELF  := $(SEL4_SDK)/board/$(AGENTOS_BOARD)/release/elf/sel4.elf
@@ -698,6 +709,34 @@ ifeq ($(ARCH),aarch64)
 _LOADER_DEP := $(BUILD_DIR)/loader.elf
 else
 _LOADER_DEP :=
+endif
+
+ifeq ($(ARCH),aarch64)
+# Step 2: Generate the PD bundle after all service PD ELFs and the final
+# system TOML have been selected.
+$(PD_BUNDLE): $(addprefix $(BUILD_DIR)/, $(IMAGES)) $(SYSTEM_TOML)
+	cargo run -p xtask -- gen-pd-bundle \
+		--system $(SYSTEM_TOML) \
+		--pd-dir $(BUILD_DIR) \
+		--out $@
+
+# Step 3: Turn the binary bundle into a relocatable ELF64 object.
+#
+# objcopy --input binary derives symbol names from the input file path,
+# mangling every non-alphanumeric character to '_'.  To get predictable
+# symbol names we invoke objcopy from BUILD_DIR with just the basename, so
+# the mangled name is always:
+#   _binary_agentos_pd_bundle_bin_{start,end,size}
+$(PD_BUNDLE_OBJ): $(PD_BUNDLE)
+	cd $(BUILD_DIR) && $(OBJCOPY) \
+		--input-target=binary \
+		--output-target=elf64-littleaarch64 \
+		--binary-architecture=aarch64 \
+		--rename-section .data=.pd_bundle,alloc,load,data,contents \
+		--redefine-sym _binary_agentos_pd_bundle_bin_start=__pd_bundle_start \
+		--redefine-sym _binary_agentos_pd_bundle_bin_end=__pd_bundle_end \
+		--redefine-sym _binary_agentos_pd_bundle_bin_size=__pd_bundle_size \
+		agentos_pd_bundle.bin agentos_pd_bundle.o
 endif
 
 $(IMAGE_FILE): $(addprefix $(BUILD_DIR)/, $(IMAGES)) $(BUILD_DIR)/root_task.elf $(SYSTEM_TOML) $(KERNEL_ELF) $(_LOADER_DEP)

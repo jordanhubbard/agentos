@@ -1,10 +1,11 @@
 /*
  * contracts/serial-mux/interface.h — Serial/UART Multiplexer Generic Device Interface
  *
- * // STATUS: IMPLEMENTED
+ * // STATUS: LEGACY
  *
  * This is the canonical contract for the serial-mux device service in agentOS.
- * The concrete implementation lives in kernel/agentos-root-task/src/console_mux.c.
+ * This legacy interface is superseded by
+ * kernel/agentos-root-task/include/contracts/serial_contract.h.
  *
  * The serial-mux service multiplexes per-PD output streams onto the debug UART
  * (and optionally onto guest UART devices) with open/close/read/write semantics.

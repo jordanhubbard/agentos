@@ -146,9 +146,11 @@ static void boot_setup_irqs(const pd_desc_t *pd,
 
 static int g_virtio_net_handled;
 static int g_virtio_blk_handled;
+static int g_controller_handled;
 
 static void handle_virtio_net_irq(void) { g_virtio_net_handled++; }
 static void handle_virtio_blk_irq(void) { g_virtio_blk_handled++; }
+static void handle_controller_notify(void) { g_controller_handled++; }
 
 /*
  * badge_dispatch — model of the linux_vmm notified() badge dispatch logic.
@@ -158,14 +160,37 @@ static void handle_virtio_blk_irq(void) { g_virtio_blk_handled++; }
  */
 static void badge_dispatch(uint32_t badge)
 {
+    int handled_irq = 0;
     if (badge & 0x1u) {
+        handled_irq = 1;
         handle_virtio_net_irq();
         seL4_IRQHandler_Ack((seL4_CPtr)(PD_IRQHANDLER_SLOT_BASE + 0u));
     }
     if (badge & 0x2u) {
+        handled_irq = 1;
         handle_virtio_blk_irq();
         seL4_IRQHandler_Ack((seL4_CPtr)(PD_IRQHANDLER_SLOT_BASE + 1u));
     }
+    if (handled_irq) {
+        return;
+    }
+    if (badge == 0x2u) {
+        handle_controller_notify();
+    }
+}
+
+#define TEST_SE_L4_FAULT_NULL 0u
+#define TEST_VMM_FAULT_BADGE_FLAG (1ull << 62)
+
+static int vmm_dispatches_to_fault(uint64_t label, uint64_t badge)
+{
+    return label != TEST_SE_L4_FAULT_NULL &&
+           (badge & TEST_VMM_FAULT_BADGE_FLAG) != 0u;
+}
+
+static uint64_t vmm_fault_vcpu_id(uint64_t badge)
+{
+    return badge & ~TEST_VMM_FAULT_BADGE_FLAG;
 }
 
 /* ── Tests ───────────────────────────────────────────────────────────────── */
@@ -314,6 +339,7 @@ static void test_badge_dispatch_net_only(void)
 {
     g_virtio_net_handled = 0;
     g_virtio_blk_handled = 0;
+    g_controller_handled = 0;
     badge_dispatch(0x1u);
     ASSERT_EQ((uint64_t)g_virtio_net_handled, 1u,
               "badge 0x1: virtio-net handler called");
@@ -326,11 +352,14 @@ static void test_badge_dispatch_blk_only(void)
 {
     g_virtio_net_handled = 0;
     g_virtio_blk_handled = 0;
+    g_controller_handled = 0;
     badge_dispatch(0x2u);
     ASSERT_EQ((uint64_t)g_virtio_net_handled, 0u,
               "badge 0x2: virtio-net handler NOT called");
     ASSERT_EQ((uint64_t)g_virtio_blk_handled, 1u,
               "badge 0x2: virtio-blk handler called");
+    ASSERT_EQ((uint64_t)g_controller_handled, 0u,
+              "badge 0x2: IRQ does not fall through to controller channel");
 }
 
 /* Test 13: badge 0x3 → both handlers called (coalesced notification) */
@@ -338,6 +367,7 @@ static void test_badge_dispatch_both(void)
 {
     g_virtio_net_handled = 0;
     g_virtio_blk_handled = 0;
+    g_controller_handled = 0;
     badge_dispatch(0x3u);
     ASSERT_EQ((uint64_t)g_virtio_net_handled, 1u,
               "badge 0x3: virtio-net handler called");
@@ -350,6 +380,7 @@ static void test_badge_dispatch_none(void)
 {
     g_virtio_net_handled = 0;
     g_virtio_blk_handled = 0;
+    g_controller_handled = 0;
     badge_dispatch(0x0u);
     ASSERT_EQ((uint64_t)g_virtio_net_handled, 0u,
               "badge 0x0: virtio-net handler NOT called");
@@ -366,6 +397,23 @@ static void test_cap_slot_values(void)
               "virtio-net IRQ cap slot == PD_IRQHANDLER_SLOT_BASE");
     ASSERT_EQ((uint64_t)expected_blk, (uint64_t)(PD_IRQHANDLER_SLOT_BASE + 1u),
               "virtio-blk IRQ cap slot == PD_IRQHANDLER_SLOT_BASE + 1");
+}
+
+/* Test 16: non-fault labels without the VMM fault badge stay notifications */
+static void test_vmm_non_fault_label_notification(void)
+{
+    ASSERT_TRUE(!vmm_dispatches_to_fault(0x3ffffdfu, 0x4u),
+                "non-fault label with IRQ badge dispatches as notification");
+}
+
+/* Test 17: only fault-badged messages enter the VMM fault path */
+static void test_vmm_fault_badge_dispatch(void)
+{
+    uint64_t badge = TEST_VMM_FAULT_BADGE_FLAG | 7u;
+    ASSERT_TRUE(vmm_dispatches_to_fault(1u, badge),
+                "VMM fault badge dispatches as guest fault");
+    ASSERT_EQ(vmm_fault_vcpu_id(badge), 7u,
+              "VMM fault badge flag is stripped before fault_handle");
 }
 
 /* ── main ─────────────────────────────────────────────────────────────────── */
@@ -385,16 +433,18 @@ int main(void)
      *   test_cnode_depth_passed     :  1
      *   test_slot_base_above_eps    :  1
      *   test_badge_dispatch_net     :  2
-     *   test_badge_dispatch_blk     :  2
+     *   test_badge_dispatch_blk     :  3
      *   test_badge_dispatch_both    :  2
      *   test_badge_dispatch_none    :  2
      *   test_cap_slot_values        :  2
-     *   TOTAL = 26
+     *   test_vmm_non_fault_label    :  1
+     *   test_vmm_fault_badge        :  2
+     *   TOTAL = 30
      *
-     * Note: 15 logical test scenarios, 26 TAP points (multiple assertions per
+     * Note: 17 logical test scenarios, 30 TAP points (multiple assertions per
      * scenario ensure both positive and negative conditions are checked).
      */
-    TAP_PLAN(26);
+    TAP_PLAN(30);
 
     test_irq_desc_size();
     test_irq_desc_field_offsets();
@@ -411,6 +461,8 @@ int main(void)
     test_badge_dispatch_both();
     test_badge_dispatch_none();
     test_cap_slot_values();
+    test_vmm_non_fault_label_notification();
+    test_vmm_fault_badge_dispatch();
 
     return tap_exit();
 }

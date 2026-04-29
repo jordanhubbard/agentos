@@ -207,7 +207,8 @@ fi
 
 # Test 10: cap_policy logged rejections (informational — not required)
 REJECTIONS="$(grep -c 'cap_policy.*reject\|cap_policy.*deny\|ring-0.*blocked' \
-    "${SERIAL_LOG}" 2>/dev/null || echo 0)"
+    "${SERIAL_LOG}" 2>/dev/null || true)"
+REJECTIONS="${REJECTIONS:-0}"
 if [ "${REJECTIONS}" -gt 0 ]; then
     pass "Serial log: ${REJECTIONS} cap_policy rejection(s) logged (enforcement active)"
 else

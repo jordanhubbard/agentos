@@ -2,6 +2,11 @@
  * Bare-metal stdlib.h stub for agentOS/seL4 freestanding build.
  * Provides only what wasm3 and agentfs actually use.
  */
+#ifdef AGENTOS_TEST_HOST
+#undef _STDLIB_H
+#include_next <stdlib.h>
+#else
+
 #ifndef _STDLIB_H
 #define _STDLIB_H
 
@@ -28,3 +33,5 @@ double             strtod(const char *str, char **endptr);
 float              strtof(const char *str, char **endptr);
 
 #endif /* _STDLIB_H */
+
+#endif /* AGENTOS_TEST_HOST */

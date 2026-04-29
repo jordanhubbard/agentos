@@ -55,10 +55,10 @@ pub fn run(args: &SetupArgs) -> anyhow::Result<()> {
         println!("To install missing tools:");
         println!("  macOS:  brew install qemu aarch64-elf-gcc");
         println!("          rustup target add wasm32-unknown-unknown");
-        println!("          cargo install trunk wasm-pack");
+        println!("          cargo install wasm-pack");
         println!("  Linux:  sudo apt install qemu-system-aarch64 gcc-aarch64-linux-gnu");
         println!("          rustup target add wasm32-unknown-unknown");
-        println!("          cargo install trunk wasm-pack");
+        println!("          cargo install wasm-pack");
         println!();
         println!("  Or rerun with --install to install automatically.");
     }
@@ -87,10 +87,12 @@ fn install_tool(tool: &str, os: &Os) -> anyhow::Result<()> {
     println!("[setup] Installing {}...", tool);
     match tool {
         "cargo" => {
-            println!("[setup] Please install Rust via https://rustup.rs/ — skipping automatic install.");
+            println!(
+                "[setup] Please install Rust via https://rustup.rs/ — skipping automatic install."
+            );
             return Ok(());
         }
-        "wasm-pack" | "trunk" => {
+        "wasm-pack" => {
             let status = std::process::Command::new("cargo")
                 .args(["install", tool])
                 .status()
@@ -146,10 +148,7 @@ const REQUIRED_TOOLS: [(&str, &str); 4] = [
     ("cargo", "Rust package manager"),
 ];
 
-const SDK_TOOLS: [(&str, &str); 2] = [
-    ("wasm-pack", "wasm-pack — WebAssembly build tool"),
-    ("trunk", "trunk — WASM dashboard bundler"),
-];
+const SDK_TOOLS: [(&str, &str); 1] = [("wasm-pack", "wasm-pack — WebAssembly build tool")];
 
 fn print_install_hint(tool: &str) {
     match tool {
@@ -162,7 +161,6 @@ fn print_install_hint(tool: &str) {
         }
         "cargo" => println!("         Install: https://rustup.rs/"),
         "wasm-pack" => println!("         Install: cargo install wasm-pack"),
-        "trunk" => println!("         Install: cargo install trunk"),
         _ => {}
     }
 }

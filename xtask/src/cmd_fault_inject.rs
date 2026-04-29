@@ -10,11 +10,7 @@ pub fn run(args: &FaultInjectArgs) -> anyhow::Result<()> {
         args.board
     );
     crate::cmd_test::run_make(
-        &[
-            "build",
-            "FAULT_INJECT=1",
-            &format!("BOARD={}", args.board),
-        ],
+        &["build", "FAULT_INJECT=1", &format!("BOARD={}", args.board)],
         &repo_root,
     )
     .context("fault-inject build failed")?;
@@ -30,7 +26,10 @@ pub fn run(args: &FaultInjectArgs) -> anyhow::Result<()> {
 
     let result = crate::cmd_test::wait_for_markers(
         &log_path,
-        &["fault injection test passed", "ALL FAULT INJECT TESTS PASSED"],
+        &[
+            "fault injection test passed",
+            "ALL FAULT INJECT TESTS PASSED",
+        ],
         Duration::from_secs(args.timeout_secs),
     );
 
@@ -52,16 +51,11 @@ pub fn run(args: &FaultInjectArgs) -> anyhow::Result<()> {
         "fault_handler: PD",
         "watchdog: escalated",
     ];
-    let found_secondary = secondary_markers
-        .iter()
-        .find(|&&m| output_str.contains(m));
+    let found_secondary = secondary_markers.iter().find(|&&m| output_str.contains(m));
 
     match result {
         Ok(marker) => {
-            println!(
-                "PASS [board={}]: found marker \"{}\"",
-                args.board, marker
-            );
+            println!("PASS [board={}]: found marker \"{}\"", args.board, marker);
             Ok(())
         }
         Err(e) => {
@@ -97,13 +91,9 @@ fn spawn_qemu_fault_inject(
     repo_root: &std::path::Path,
     log_path: &std::path::Path,
 ) -> anyhow::Result<std::process::Child> {
-    let log_file =
-        std::fs::File::create(log_path).context("failed to create QEMU log file")?;
+    let log_file = std::fs::File::create(log_path).context("failed to create QEMU log file")?;
 
-    let build_image = repo_root
-        .join("build")
-        .join(board)
-        .join("agentos.img");
+    let build_image = repo_root.join("build").join(board).join("agentos.img");
 
     let mut cmd = match board {
         "qemu_virt_aarch64" => {
@@ -117,7 +107,9 @@ fn spawn_qemu_fault_inject(
                 "2G",
                 "-nographic",
                 "-kernel",
-                build_image.to_str().unwrap_or("build/qemu_virt_aarch64/agentos.img"),
+                build_image
+                    .to_str()
+                    .unwrap_or("build/qemu_virt_aarch64/agentos.img"),
             ]);
             c
         }
@@ -134,7 +126,9 @@ fn spawn_qemu_fault_inject(
                 "-bios",
                 "/usr/share/qemu/opensbi-riscv64-generic-fw_dynamic.bin",
                 "-kernel",
-                build_image.to_str().unwrap_or("build/qemu_virt_riscv64/agentos.img"),
+                build_image
+                    .to_str()
+                    .unwrap_or("build/qemu_virt_riscv64/agentos.img"),
             ]);
             c
         }

@@ -1,9 +1,9 @@
 use clap::{Parser, Subcommand};
 use xtask::{
     cmd_ci_matrix, cmd_fault_inject, cmd_fetch_guest, cmd_gen_image, cmd_gen_pd_bundle,
-    cmd_host_test, cmd_release, cmd_setup, cmd_test, cmd_test_api,
-    CiMatrixArgs, FaultInjectArgs, FetchGuestArgs, GenImageArgs, GenPdBundleArgs, HostTestArgs,
-    ReleaseArgs, SetupArgs, TestApiArgs, TestArgs,
+    cmd_host_test, cmd_release, cmd_setup, cmd_test, cmd_test_api, CiMatrixArgs, FaultInjectArgs,
+    FetchGuestArgs, GenImageArgs, GenPdBundleArgs, HostTestArgs, ReleaseArgs, SetupArgs,
+    TestApiArgs, TestArgs,
 };
 
 #[derive(Parser)]

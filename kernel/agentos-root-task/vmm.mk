@@ -68,7 +68,11 @@ VMM_CFLAGS := \
 
 .PHONY: vmm-all vmm-clean FORCE
 
-vmm-all: $(BUILD_DIR)/linux_vmm.elf $(BUILD_DIR)/freebsd_vmm.elf
+ifeq ($(GUEST_OS),freebsd)
+vmm-all: $(BUILD_DIR)/freebsd_vmm.elf
+else
+vmm-all: $(BUILD_DIR)/linux_vmm.elf
+endif
 
 # ─── Ubuntu kernel: fetch via xtask (downloads .deb, extracts Image) ─────
 ifeq ($(GUEST_OS),ubuntu)
@@ -108,12 +112,12 @@ $(UBUNTU_EMPTY_INITRD):
 	printf '' | gzip > $@
 
 # ─── Device tree ──────────────────────────────────────────────────────────
-$(BUILD_DIR)/vm.dts: $(DTS_DIR)/linux.dts $(DTS_DIR)/$(DTS_OVERLAY)
+$(BUILD_DIR)/vm.dts: FORCE $(DTS_DIR)/linux.dts $(DTS_DIR)/$(DTS_OVERLAY)
 	@mkdir -p $(BUILD_DIR)
-	$(DTSCAT) $^ > $@
+	$(DTSCAT) $(filter-out FORCE,$^) > $@
 
-$(BUILD_DIR)/vm.dtb: $(BUILD_DIR)/vm.dts
-	$(DTC) -q -I dts -O dtb $< > $@
+$(BUILD_DIR)/vm.dtb: FORCE $(BUILD_DIR)/vm.dts
+	$(DTC) -q -I dts -O dtb $(filter-out FORCE,$^) > $@
 
 # ─── Generate wrapper Makefile in BUILD_DIR ───────────────────────────────
 # vmm.mk uses vpath and is designed to be included, not invoked via -f.
@@ -136,7 +140,8 @@ $(BUILD_DIR)/libvmm.a $(BUILD_DIR)/libsddf_util_debug.a: $(BUILD_DIR)/vmm_wrappe
 	@echo "[VMM] Libraries built ✓"
 
 # ─── Package guest images ─────────────────────────────────────────────────
-$(BUILD_DIR)/images.o: $(PKG_IMG) \
+$(BUILD_DIR)/images.o: FORCE \
+                       $(PKG_IMG) \
                        $(LINUX_IMAGE) \
                        $(INITRD_IMAGE) \
                        $(BUILD_DIR)/vm.dtb
@@ -148,51 +153,71 @@ $(BUILD_DIR)/images.o: $(PKG_IMG) \
 		-target aarch64-none-elf \
 		$(PKG_IMG) -o $@
 
+LINUX_VMM_FULL_OBJ := $(BUILD_DIR)/linux_vmm.full.o
+GPU_SHMEM_FULL_OBJ := $(BUILD_DIR)/gpu_shmem.full.o
+VMM_PD_ENTRY_OBJ   := $(BUILD_DIR)/pd_entry.vmm.o
+
 # ─── Compile linux_vmm.c + gpu_shmem.c ──────────────────────────────────
-$(BUILD_DIR)/linux_vmm.o: $(KERNEL_SRC_DIR)/src/linux_vmm.c
+#
+# Use object names that are private to the libvmm build. The main kernel
+# Makefile also writes $(BUILD_DIR)/linux_vmm.o for the default stub build, and
+# reusing that path can silently link a stale object compiled with incompatible
+# flags.
+$(LINUX_VMM_FULL_OBJ): $(KERNEL_SRC_DIR)/src/linux_vmm.c
 	@mkdir -p $(BUILD_DIR)
 	@echo "[VMM] Compiling linux_vmm.c..."
 	clang $(VMM_CFLAGS) -c -o $@ $<
 
-$(BUILD_DIR)/gpu_shmem.o: $(KERNEL_SRC_DIR)/src/gpu_shmem.c
+$(GPU_SHMEM_FULL_OBJ): $(KERNEL_SRC_DIR)/src/gpu_shmem.c
 	@mkdir -p $(BUILD_DIR)
 	@echo "[VMM] Compiling gpu_shmem.c..."
 	clang $(VMM_CFLAGS) -c -o $@ $<
 
+$(VMM_PD_ENTRY_OBJ): $(KERNEL_SRC_DIR)/src/pd_entry.c
+	@mkdir -p $(BUILD_DIR)
+	@echo "[VMM] Compiling pd_entry.c..."
+	clang $(VMM_CFLAGS) -c -o $@ $<
+
 # ─── Link linux_vmm.elf ──────────────────────────────────────────────────
-$(BUILD_DIR)/linux_vmm.elf: $(BUILD_DIR)/linux_vmm.o \
-                             $(BUILD_DIR)/gpu_shmem.o \
-                             $(BUILD_DIR)/images.o \
-                             $(BUILD_DIR)/libvmm.a \
-                             $(BUILD_DIR)/libsddf_util_debug.a
+$(BUILD_DIR)/linux_vmm.elf: FORCE \
+	                             $(LINUX_VMM_FULL_OBJ) \
+	                             $(GPU_SHMEM_FULL_OBJ) \
+	                             $(VMM_PD_ENTRY_OBJ) \
+	                             $(BUILD_DIR)/images.o \
+	                             $(BUILD_DIR)/libvmm.a \
+	                             $(BUILD_DIR)/libsddf_util_debug.a
 	@echo "[VMM] Linking linux_vmm.elf..."
 	ld.lld -T$(BOARD_DIR)/lib/microkit.ld \
 		-L$(BOARD_DIR)/lib \
-		$(BUILD_DIR)/linux_vmm.o $(BUILD_DIR)/gpu_shmem.o $(BUILD_DIR)/images.o \
+		$(VMM_PD_ENTRY_OBJ) $(LINUX_VMM_FULL_OBJ) $(GPU_SHMEM_FULL_OBJ) $(BUILD_DIR)/images.o \
 		--start-group \
 		$(BUILD_DIR)/libvmm.a $(BUILD_DIR)/libsddf_util_debug.a \
 		--end-group \
 		-o $@
 	@echo "[VMM] linux_vmm.elf ✓"
 
-# ─── FreeBSD VMM: EDK2 code flash + FDT packaging ────────────────────────
-# EDK2 UEFI firmware (64MB) embedded as the "kernel image".
-# A minimal FDT (freebsd-edk2.dts) is compiled and embedded separately;
-# freebsd_vmm.c copies it to guest phys 0x40000000 before guest_start() so
-# EDK2's ArmVirtQemu FDT check finds the magic (0xD00DFEED) and initialises.
-EDK2_IMAGE := $(AGENTOS_ROOT)/guest-images/edk2-aarch64-code.fd
-
+# ─── FreeBSD VMM: direct kernel Image + FDT packaging ─────────────────────
+FREEBSD_CACHED_RAW := $(HOME)/.local/agentos-images/freebsd-14.4-aarch64.img
+FREEBSD_REPO_RAW   := $(AGENTOS_ROOT)/guest-images/freebsd-14.4-aarch64.img
+FREEBSD_RAW_IMAGE ?= $(if $(wildcard $(FREEBSD_REPO_RAW)),$(FREEBSD_REPO_RAW),$(FREEBSD_CACHED_RAW))
+FREEBSD_KERNEL_IMAGE := $(BUILD_DIR)/freebsd-kernel.bin
 FREEBSD_DTS := $(KERNEL_SRC_DIR)/freebsd-edk2.dts
+FREEBSD_EXTRACT := $(AGENTOS_ROOT)/tools/extract_freebsd_file.py
+
+$(FREEBSD_KERNEL_IMAGE): $(FREEBSD_RAW_IMAGE) $(FREEBSD_EXTRACT)
+	@mkdir -p $(BUILD_DIR)
+	@echo "[VMM] Extracting FreeBSD /boot/kernel/kernel.bin..."
+	python3 $(FREEBSD_EXTRACT) $(FREEBSD_RAW_IMAGE) /boot/kernel/kernel.bin $@
 
 $(BUILD_DIR)/freebsd-edk2.dtb: $(FREEBSD_DTS)
 	@mkdir -p $(BUILD_DIR)
-	@echo "[VMM] Compiling FreeBSD/EDK2 device tree..."
+	@echo "[VMM] Compiling FreeBSD direct-boot device tree..."
 	$(DTC) -q -I dts -O dtb $< > $@
 
-$(BUILD_DIR)/freebsd_images.o: $(PKG_IMG) $(EDK2_IMAGE) $(BUILD_DIR)/freebsd-edk2.dtb
-	@echo "[VMM] Packaging EDK2 firmware + FDT images..."
+$(BUILD_DIR)/freebsd_images.o: $(PKG_IMG) $(FREEBSD_KERNEL_IMAGE) $(BUILD_DIR)/freebsd-edk2.dtb
+	@echo "[VMM] Packaging FreeBSD kernel + FDT images..."
 	clang -c -g3 -x assembler-with-cpp \
-		-DGUEST_KERNEL_IMAGE_PATH=\"$(EDK2_IMAGE)\" \
+		-DGUEST_KERNEL_IMAGE_PATH=\"$(FREEBSD_KERNEL_IMAGE)\" \
 		-DGUEST_DTB_IMAGE_PATH=\"$(BUILD_DIR)/freebsd-edk2.dtb\" \
 		-target aarch64-none-elf \
 		$(PKG_IMG) -o $@
@@ -209,7 +234,7 @@ $(BUILD_DIR)/freebsd_vmm.elf: $(BUILD_DIR)/freebsd_vmm.o \
                                $(BUILD_DIR)/libvmm.a \
                                $(BUILD_DIR)/libsddf_util_debug.a
 	@echo "[VMM] Linking freebsd_vmm.elf..."
-	ld.lld -T$(BOARD_DIR)/lib/microkit.ld \
+	ld.lld -T$(KERNEL_SRC_DIR)/freebsd_vmm.ld \
 		-L$(BOARD_DIR)/lib \
 		$(BUILD_DIR)/freebsd_vmm.o $(BUILD_DIR)/freebsd_images.o \
 		--start-group \
@@ -219,7 +244,7 @@ $(BUILD_DIR)/freebsd_vmm.elf: $(BUILD_DIR)/freebsd_vmm.o \
 	@echo "[VMM] freebsd_vmm.elf ✓"
 
 vmm-clean:
-	rm -f $(BUILD_DIR)/linux_vmm.o $(BUILD_DIR)/gpu_shmem.o $(BUILD_DIR)/linux_vmm.elf
+	rm -f $(BUILD_DIR)/linux_vmm.full.o $(BUILD_DIR)/gpu_shmem.full.o $(BUILD_DIR)/pd_entry.vmm.o $(BUILD_DIR)/linux_vmm.elf
 	rm -f $(BUILD_DIR)/freebsd_vmm.o $(BUILD_DIR)/freebsd_images.o $(BUILD_DIR)/freebsd_vmm.elf
 	rm -f $(BUILD_DIR)/freebsd-edk2.dtb
 	rm -f $(BUILD_DIR)/images.o $(BUILD_DIR)/vm.dts $(BUILD_DIR)/vm.dtb

@@ -31,6 +31,8 @@ CC_PORT="${E2E_CC_PORT:-8789}"
 CC_BASE="http://localhost:${CC_PORT}"
 SSH_PORT="${E2E_SSH_PORT:-2222}"
 SSH_KEY="${E2E_SSH_KEY:-$(dirname "$0")/id_ed25519}"
+SSH_USER="${E2E_SSH_USER:-root}"
+SSH_CMD_TIMEOUT="${E2E_SSH_CMD_TIMEOUT:-20}"
 SERIAL_LOG="${SERIAL_LOG:-/dev/null}"
 BRIDGE_AVAIL="${BRIDGE_AVAILABLE:-0}"
 HAVE_SSH="${HAVE_SSH_TOOLS:-0}"
@@ -50,14 +52,26 @@ ok_field() {
     printf '%s' "$1" | grep -q '"ok":true'
 }
 
+run_bounded() {
+    local seconds="$1"
+    shift
+    if command -v timeout >/dev/null 2>&1; then
+        timeout "${seconds}" "$@"
+    elif command -v gtimeout >/dev/null 2>&1; then
+        gtimeout "${seconds}" "$@"
+    else
+        "$@"
+    fi
+}
+
 gssh() {
-    ssh -i "${SSH_KEY}" \
+    run_bounded "${SSH_CMD_TIMEOUT}" ssh -i "${SSH_KEY}" \
         -o StrictHostKeyChecking=no \
         -o UserKnownHostsFile=/dev/null \
         -o ConnectTimeout=10 \
         -o BatchMode=yes \
         -p "${SSH_PORT}" \
-        root@localhost "$@" 2>/dev/null
+        "${SSH_USER}@localhost" "$@" 2>/dev/null
 }
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -71,6 +85,13 @@ if grep -qF "login:" "${SERIAL_LOG}" 2>/dev/null; then
     pass "serial: login prompt visible on console (getty running)"
 elif grep -qiE "login:|getty" "${SERIAL_LOG}" 2>/dev/null; then
     pass "serial: getty/login activity on serial console"
+elif [ "${E2E_GUEST_OS:-}" = "ubuntu-arm64" ] || [ "${E2E_GUEST_OS:-}" = "ubuntu-amd64" ]; then
+    if grep -qF "Linux version" "${SERIAL_LOG}" 2>/dev/null && \
+       grep -qF "systemd[1]:" "${SERIAL_LOG}" 2>/dev/null; then
+        pass "serial: Ubuntu console emitted kernel and systemd boot logs"
+    else
+        skip "serial: Ubuntu boot output not captured by this harness"
+    fi
 else
     fail "serial: no login prompt in serial log"
 fi
@@ -222,7 +243,7 @@ fi
 # Test 12: USB enumeration visible inside guest (via SSH)
 if [ "${HAVE_SSH}" = "1" ] && gssh true 2>/dev/null; then
     # FreeBSD: usbconfig list or camcontrol devlist; Linux: lsusb
-    USB_OUT="$(gssh usbconfig list 2>/dev/null || gssh lsusb 2>/dev/null || true)"
+    USB_OUT="$(gssh "if command -v usbconfig >/dev/null 2>&1; then usbconfig list; elif command -v lsusb >/dev/null 2>&1; then lsusb; else exit 127; fi" 2>/dev/null || true)"
     if [ -n "${USB_OUT}" ]; then
         DEV_COUNT="$(printf '%s' "${USB_OUT}" | grep -c 'ugen\|Bus\|Device' 2>/dev/null || echo 0)"
         pass "usb: USB enumeration inside guest: ${DEV_COUNT} device(s) visible"

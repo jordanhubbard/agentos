@@ -11,8 +11,7 @@ const UBUNTU_RAW_NAME: &str = "ubuntu-24.04-aarch64.img";
 
 /* Ubuntu Noble arm64 package repository — used for kernel .deb extraction */
 const UBUNTU_PORTS_BASE: &str = "https://ports.ubuntu.com/ubuntu-ports";
-const UBUNTU_PKGS_INDEX: &str =
-    "dists/noble/main/binary-arm64/Packages.gz";
+const UBUNTU_PKGS_INDEX: &str = "dists/noble/main/binary-arm64/Packages.gz";
 
 /* The extracted kernel is stored here (relative to repo root).
  * vmm.mk looks for UBUNTU_KERNEL at this path. */
@@ -100,10 +99,7 @@ fn fetch_ubuntu_disk(output_dir: &Path) -> anyhow::Result<()> {
     let _ = std::fs::remove_file(&cloud_dest);
     anyhow::ensure!(status.success(), "qemu-img convert failed");
 
-    println!(
-        "[fetch-guest] Ubuntu raw image ready: {}",
-        dest.display()
-    );
+    println!("[fetch-guest] Ubuntu raw image ready: {}", dest.display());
     Ok(())
 }
 
@@ -169,8 +165,7 @@ fn fetch_ubuntu_kernel() -> anyhow::Result<()> {
     let tmp_dir = tempfile::TempDir::new().context("failed to create temp dir")?;
     let deb_file = tmp_dir.path().join("linux-image.deb");
 
-    download_file(&deb_url, &deb_file, 5)
-        .context("failed to download Ubuntu kernel .deb")?;
+    download_file(&deb_url, &deb_file, 5).context("failed to download Ubuntu kernel .deb")?;
 
     println!("[fetch-guest] Extracting kernel binary from .deb...");
     extract_kernel_from_deb(&deb_file, &kernel_dest, tmp_dir.path())
@@ -294,8 +289,7 @@ fn extract_kernel_from_deb(
     /* Step 5: the Ubuntu arm64 vmlinuz is a gzip-compressed Image.
      * libvmm needs the raw Image binary (not the gzip wrapper).
      * Detect by checking the first two bytes for the gzip magic 0x1f8b. */
-    let kernel_bytes = std::fs::read(&extracted)
-        .context("failed to read extracted vmlinuz")?;
+    let kernel_bytes = std::fs::read(&extracted).context("failed to read extracted vmlinuz")?;
 
     if kernel_bytes.starts_with(&[0x1f, 0x8b]) {
         /* Gzip-compressed — decompress to get the raw Image */
@@ -303,8 +297,7 @@ fn extract_kernel_from_deb(
         let mut raw = Vec::new();
         std::io::Read::read_to_end(&mut gz, &mut raw)
             .context("failed to decompress vmlinuz gzip")?;
-        std::fs::write(kernel_dest, &raw)
-            .context("failed to write decompressed kernel")?;
+        std::fs::write(kernel_dest, &raw).context("failed to write decompressed kernel")?;
         println!(
             "[fetch-guest] Decompressed gzip vmlinuz → {} ({} bytes)",
             kernel_dest.display(),
@@ -312,8 +305,7 @@ fn extract_kernel_from_deb(
         );
     } else {
         /* Already a raw Image */
-        std::fs::copy(&extracted, kernel_dest)
-            .context("failed to copy kernel binary")?;
+        std::fs::copy(&extracted, kernel_dest).context("failed to copy kernel binary")?;
         println!(
             "[fetch-guest] Copied raw kernel → {} ({} bytes)",
             kernel_dest.display(),
@@ -373,10 +365,7 @@ fn fetch_freebsd(output_dir: &Path) -> anyhow::Result<()> {
     let _ = std::fs::remove_file(&qcow2_dest);
     anyhow::ensure!(status.success(), "qemu-img convert failed");
 
-    println!(
-        "[fetch-guest] FreeBSD raw image ready: {}",
-        dest.display()
-    );
+    println!("[fetch-guest] FreeBSD raw image ready: {}", dest.display());
     Ok(())
 }
 
@@ -422,11 +411,14 @@ fn download_file(url: &str, dest: &Path, max_redirects: u8) -> anyhow::Result<()
     let mut buf = vec![0u8; 65536];
     loop {
         use std::io::Read;
-        let n = response.read(&mut buf).context("read error during download")?;
+        let n = response
+            .read(&mut buf)
+            .context("read error during download")?;
         if n == 0 {
             break;
         }
-        file.write_all(&buf[..n]).context("write error during download")?;
+        file.write_all(&buf[..n])
+            .context("write error during download")?;
         downloaded += n as u64;
         pb.set_position(downloaded);
     }
