@@ -856,10 +856,13 @@ void root_task_main(const seL4_BootInfo *bi)
         (seL4_IPCBuffer *)((seL4_Word)bi->ipcBuffer & ~(seL4_Word)0xFFF);
     seL4_SetIPCBuffer(ipc_buf);
 
-    /* Read TPIDR_EL0 — seL4 restores this from the TCB on context switch;
-     * its value tells us what seL4 put in the init thread's TCB for TPIDR_EL0. */
+    /* Read TPIDR_EL0 on AArch64; other architectures leave this diagnostic 0. */
+#if defined(__aarch64__)
     seL4_Word tpidr_val;
     __asm__ volatile("mrs %0, tpidr_el0" : "=r"(tpidr_val));
+#else
+    seL4_Word tpidr_val = 0u;
+#endif
 
     dbg_puts("[rt] root_task_main: bi=");
     dbg_hex((seL4_Word)bi);
@@ -1493,7 +1496,7 @@ void root_task_main(const seL4_BootInfo *bi)
                 seL4_CPtr vq_cap = seL4_CapNull;
                 seL4_Error ve = ut_alloc_cap(seL4_ARM_SmallPageObject, 0u, &vq_cap);
                 if (ve == seL4_NoError) {
-                    seL4_ARM_Page_GetAddress_t r = seL4_ARM_Page_GetAddress(vq_cap);
+                    seL4_ARCH_Page_GetAddress_t r = seL4_ARCH_Page_GetAddress(vq_cap);
                     vq_pas[vqp] = r.paddr;
                     ve = pd_vspace_map_device_frame(vspace, vq_cap, vq_pas[vqp]);
                 }
@@ -1520,8 +1523,8 @@ void root_task_main(const seL4_BootInfo *bi)
                         sp[0] = vq_pas[0];
                         sp[1] = vq_pas[1];
                         sp[2] = vq_pas[2];
-                        __asm__ volatile("dsb sy" ::: "memory");
-                        seL4_ARM_Page_Unmap(cc_start_cap);
+                        AGENTOS_MEMORY_FENCE();
+                        seL4_ARCH_Page_Unmap(cc_start_cap);
                         seL4_Error ve2 = pd_vspace_map_device_frame(vspace, cc_start_cap, CC_PD_STARTUP_VA);
                         dbg_puts("[rt] cc_pd startup PAs written remap_err=");
                         dbg_hex((seL4_Word)ve2);

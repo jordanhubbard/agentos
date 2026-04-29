@@ -555,7 +555,6 @@ void _start(seL4_CPtr my_ep, seL4_CPtr ns_ep) {
 __attribute__((section(".text.start"), noreturn))
 void _start(void)
 {
-    sel4_dbg_puts("[freebsd_vmm] AArch64 only\n");
     while (1) {}
     __builtin_unreachable();
 }

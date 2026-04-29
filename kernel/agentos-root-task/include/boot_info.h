@@ -40,6 +40,19 @@
 /* Architecture-neutral large page (2 MB) alias — test host */
 #define seL4_ARCH_LargePageObject  seL4_ARM_LargePageObject
 #define seL4_ARCH_LargePageBits    21u   /* log2(2 MB) */
+#define seL4_ARCH_Page_Unmap(f)     ((void)(f), (seL4_Error)0u)
+#define AGENTOS_MEMORY_FENCE()      __asm__ volatile ("" ::: "memory")
+
+typedef struct {
+    seL4_Word paddr;
+} seL4_ARCH_Page_GetAddress_t;
+
+static inline seL4_ARCH_Page_GetAddress_t seL4_ARCH_Page_GetAddress(seL4_CPtr frame)
+{
+    (void)frame;
+    seL4_ARCH_Page_GetAddress_t r = {0u};
+    return r;
+}
 
 /* seL4_Yield — host-side no-op */
 static inline void seL4_Yield(void) { /* no-op */ }
@@ -112,6 +125,8 @@ typedef struct {
 #    define seL4_ARCH_VMAttributes          seL4_RISCV_VMAttributes
 #    define seL4_ARCH_Page_Map(f,v,a,r,at)  seL4_RISCV_Page_Map((f),(v),(a),(r),(at))
 #    define seL4_ARCH_Page_Unmap(f)         seL4_RISCV_Page_Unmap(f)
+#    define seL4_ARCH_Page_GetAddress_t     seL4_RISCV_Page_GetAddress_t
+#    define seL4_ARCH_Page_GetAddress(f)    seL4_RISCV_Page_GetAddress(f)
 #    define seL4_ARCH_PageTable_Map(p,v,a,at) seL4_RISCV_PageTable_Map((p),(v),(a),(at))
 #    define seL4_ARCH_ASIDPool_Assign(pool,vs) seL4_RISCV_ASIDPool_Assign((pool),(vs))
 #    define AGENTOS_MEMORY_FENCE() __asm__ volatile ("fence rw,rw" ::: "memory")
@@ -125,6 +140,8 @@ typedef struct {
 #    define seL4_ARCH_VMAttributes          seL4_ARM_VMAttributes
 #    define seL4_ARCH_Page_Map(f,v,a,r,at)  seL4_ARM_Page_Map((f),(v),(a),(r),(at))
 #    define seL4_ARCH_Page_Unmap(f)         seL4_ARM_Page_Unmap(f)
+#    define seL4_ARCH_Page_GetAddress_t     seL4_ARM_Page_GetAddress_t
+#    define seL4_ARCH_Page_GetAddress(f)    seL4_ARM_Page_GetAddress(f)
 #    define seL4_ARCH_PageTable_Map(p,v,a,at) seL4_ARM_PageTable_Map((p),(v),(a),(at))
 #    define seL4_ARCH_ASIDPool_Assign(pool,vs) seL4_ARM_ASIDPool_Assign((pool),(vs))
 #    define AGENTOS_MEMORY_FENCE() __asm__ volatile ("dsb sy" ::: "memory")

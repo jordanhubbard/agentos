@@ -357,6 +357,11 @@ void linux_vmm_main(seL4_CPtr ep, seL4_CPtr ns_ep)
     jump_to_kernel(GUEST_IMAGE_BASE, 0UL, (unsigned long)s_fdt_buf);
 }
 
+void pd_main(seL4_CPtr my_ep, seL4_CPtr ns_ep)
+{
+    linux_vmm_main(my_ep, ns_ep);
+}
+
 #endif /* __riscv */
 
 /* ─── AArch64 native hardware stub ─────────────────────────────────────────

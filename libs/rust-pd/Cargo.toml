@@ -21,8 +21,3 @@ std = []
 name = "rust_pd_unit_test"
 path = "../../tests/rust_pd_unit_test.rs"
 required-features = ["std"]
-
-[profile.release]
-panic = "abort"
-opt-level = "s"
-lto = true

@@ -157,8 +157,8 @@ $(BUILD_DIR)/root_task.elf: $(ROOT_TASK_ASM_OBJS) $(ROOT_TASK_OBJS) $(PD_BUNDLE_
 else
 
 # Non-AArch64: simple link with the standard PD linker script
-$(BUILD_DIR)/root_task.elf: $(ROOT_TASK_OBJS)
-	$(LD) $(LDFLAGS) $^ -o $@
+$(BUILD_DIR)/root_task.elf: $(ROOT_TASK_OBJS) $(AGENTOS_LD)
+	$(LD) $(LDFLAGS) -T$(AGENTOS_LD) $(filter-out $(AGENTOS_LD),$^) -o $@
 
 endif
 
@@ -402,7 +402,9 @@ $(BUILD_DIR)/vos_restore.o: $(SERVICES_DIR)/vibeos/vos_restore.c
 	@mkdir -p $(BUILD_DIR)
 	$(CC) -c $(CFLAGS_SERVICES) $< -o $@
 
-VIBEOS_OBJS := $(BUILD_DIR)/vibeos_main.o
+VIBEOS_OBJS := $(BUILD_DIR)/vibeos_main.o \
+               $(BUILD_DIR)/sel4_crt.o \
+               $(BUILD_DIR)/pd_entry.o
 
 $(BUILD_DIR)/%.o: src/%.c
 	@mkdir -p $(BUILD_DIR)
@@ -449,22 +451,22 @@ $(BUILD_DIR)/vibeos.elf: $(VIBEOS_OBJS)
 
 # Stub ELFs — each links a single minimal stub object
 $(BUILD_DIR)/timer_svc.elf: $(BUILD_DIR)/timer_svc.o
-	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
+	$(LD) $(LDFLAGS) $^ $(BUILD_DIR)/sel4_crt.o $(BUILD_DIR)/pd_entry.o $(LIBS) -o $@
 
 $(BUILD_DIR)/entropy_svc.elf: $(BUILD_DIR)/entropy_svc.o
-	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
+	$(LD) $(LDFLAGS) $^ $(BUILD_DIR)/sel4_crt.o $(BUILD_DIR)/pd_entry.o $(LIBS) -o $@
 
 $(BUILD_DIR)/block_svc.elf: $(BUILD_DIR)/block_svc.o
-	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
+	$(LD) $(LDFLAGS) $^ $(BUILD_DIR)/sel4_crt.o $(BUILD_DIR)/pd_entry.o $(LIBS) -o $@
 
 $(BUILD_DIR)/usb_svc.elf: $(BUILD_DIR)/usb_svc.o
-	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
+	$(LD) $(LDFLAGS) $^ $(BUILD_DIR)/sel4_crt.o $(BUILD_DIR)/pd_entry.o $(LIBS) -o $@
 
 $(BUILD_DIR)/model_svc.elf: $(BUILD_DIR)/model_svc.o
-	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
+	$(LD) $(LDFLAGS) $^ $(BUILD_DIR)/sel4_crt.o $(BUILD_DIR)/pd_entry.o $(LIBS) -o $@
 
 $(BUILD_DIR)/tool_svc.elf: $(BUILD_DIR)/tool_svc.o
-	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
+	$(LD) $(LDFLAGS) $^ $(BUILD_DIR)/sel4_crt.o $(BUILD_DIR)/pd_entry.o $(LIBS) -o $@
 
 $(BUILD_DIR)/log_drain.elf: $(LOG_DRAIN_OBJS)
 	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
@@ -595,7 +597,8 @@ $(BUILD_DIR)/linux_vmm.o: src/linux_vmm.c
 	$(CC) -c $(CFLAGS) $< -o $@
 
 $(BUILD_DIR)/linux_vmm.elf: $(BUILD_DIR)/linux_vmm.o $(BUILD_DIR)/fdt_builder.o \
-                             $(BUILD_DIR)/sel4_crt.o $(BUILD_DIR)/m3_bare_metal.o
+                             $(BUILD_DIR)/sel4_crt.o $(BUILD_DIR)/m3_bare_metal.o \
+                             $(BUILD_DIR)/log.o $(BUILD_DIR)/pd_entry.o
 	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
 
 $(BUILD_DIR)/freebsd_vmm.o: src/freebsd_vmm.c
@@ -603,8 +606,8 @@ $(BUILD_DIR)/freebsd_vmm.o: src/freebsd_vmm.c
 	$(CC) -c $(CFLAGS) $< -o $@
 
 $(BUILD_DIR)/freebsd_vmm.elf: $(BUILD_DIR)/freebsd_vmm.o $(BUILD_DIR)/fdt_builder.o \
-                               $(BUILD_DIR)/sel4_crt.o \
-                               $(BUILD_DIR)/m3_bare_metal.o
+                               $(BUILD_DIR)/sel4_crt.o $(BUILD_DIR)/m3_bare_metal.o \
+                               $(BUILD_DIR)/log.o
 	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
 endif
 

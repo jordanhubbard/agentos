@@ -265,8 +265,14 @@ static void dbg_puts(const char *s) {
 #ifndef agentos_wmb
 #ifdef AGENTOS_TEST_HOST
 #define agentos_wmb() ((void)0)
-#else
+#elif defined(__aarch64__)
 #define agentos_wmb() __asm__ volatile("dmb st" ::: "memory")
+#elif defined(__riscv)
+#define agentos_wmb() __asm__ volatile("fence rw,w" ::: "memory")
+#elif defined(__x86_64__)
+#define agentos_wmb() __asm__ volatile("sfence" ::: "memory")
+#else
+#define agentos_wmb() __asm__ volatile("" ::: "memory")
 #endif
 #endif
 

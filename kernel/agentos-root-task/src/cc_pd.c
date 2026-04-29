@@ -159,7 +159,15 @@ static inline void vio_wr(uint32_t off, uint32_t val)
 {
     *(volatile uint32_t *)((uintptr_t)g_virtio + off) = val;
 }
+#if defined(__aarch64__)
 #define VQ_MB() __asm__ volatile("dsb sy" ::: "memory")
+#elif defined(__riscv)
+#define VQ_MB() __asm__ volatile("fence rw,rw" ::: "memory")
+#elif defined(__x86_64__)
+#define VQ_MB() __asm__ volatile("mfence" ::: "memory")
+#else
+#define VQ_MB() __asm__ volatile("" ::: "memory")
+#endif
 
 static void vio_queue_setup(uint32_t qidx,
                              seL4_Word desc_pa, seL4_Word avail_pa, seL4_Word used_pa)
