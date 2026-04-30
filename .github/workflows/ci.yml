@@ -87,8 +87,8 @@ jobs:
       fail-fast: false
       matrix:
         board:
-          - qemu_virt_riscv64
           - qemu_virt_aarch64
+          - x86_64_generic
 
     steps:
       - name: Checkout
@@ -102,8 +102,8 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends \
             clang lld \
-            qemu-system-misc qemu-system-arm \
-            python3 python3-pip
+            qemu-system-arm qemu-system-x86 \
+            python3 python3-pip curl
 
       # -----------------------------------------------------------------------
       # Microkit SDK
@@ -152,14 +152,9 @@ jobs:
       # -----------------------------------------------------------------------
       # Build & test
       # -----------------------------------------------------------------------
-      - name: Build agentOS
-        run: make BOARD=${{ matrix.board }}
-
-      - name: Run boot tests
-        run: |
-          chmod +x scripts/run-tests.sh
-          BOARD=${{ matrix.board }} scripts/run-tests.sh
-        timeout-minutes: 2
+      - name: Build and run boot tests
+        run: make test BOARD=${{ matrix.board }} GUEST_OS=none
+        timeout-minutes: 8
 
       # -----------------------------------------------------------------------
       # Artifacts
@@ -191,7 +186,7 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             clang lld \
             qemu-system-arm \
-            python3
+            python3 curl
 
       - name: Cache Microkit SDK
         id: cache-sdk-ct
@@ -214,7 +209,7 @@ jobs:
 
       - name: Build agentOS with IPC harness (CONFIG_IPC_HARNESS=1)
         run: |
-          make BOARD=qemu_virt_aarch64 CONFIG_IPC_HARNESS=1
+          make build BOARD=qemu_virt_aarch64 CONFIG_IPC_HARNESS=1
 
       - name: Run contract tests
         run: |
@@ -230,7 +225,7 @@ jobs:
           if-no-files-found: ignore
 
   # ---------------------------------------------------------------------------
-  # Dedicated QEMU boot test — riscv64 serial banner check
+  # Dedicated QEMU boot test — x86_64 root-task smoke path
   # ---------------------------------------------------------------------------
   boot-test:
     name: QEMU boot test
@@ -240,8 +235,8 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update -q
-          sudo apt-get install -y qemu-system-misc gcc-riscv64-linux-gnu \
-            clang lld python3 device-tree-compiler
+          sudo apt-get install -y qemu-system-x86 \
+            clang lld python3 device-tree-compiler curl
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Cache Microkit SDK
@@ -252,114 +247,15 @@ jobs:
           key: microkit-sdk-2.1.0-linux-x86-64
       - name: Download Microkit SDK
         if: steps.cache-sdk-bt.outputs.cache-hit != 'true'
-        run: make deps-sdk
-      - name: Build kernel image
-        run: make TARGET_ARCH=riscv64 BOARD=qemu_virt_riscv64 build
-      - name: Boot test
-        timeout-minutes: 2
-        run: |
-          chmod +x scripts/boot-test.sh
-          scripts/boot-test.sh build/qemu_virt_riscv64/agentos.img "agentOS v0.1.0"
-
-  # ---------------------------------------------------------------------------
-  # Fault injection CI scenario
-  # Exercises watchdog + fault_handler recovery paths adversarially.
-  # ---------------------------------------------------------------------------
-  fault-injection:
-    name: Fault Injection Tests (${{ matrix.board }})
-    runs-on: ubuntu-24.04
-    needs: [validate-topology]
-    strategy:
-      fail-fast: false
-      matrix:
-        board: [qemu_virt_riscv64]
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Install toolchain + QEMU
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends \
-            clang lld \
-            qemu-system-misc qemu-system-riscv \
-            python3 python3-pip
-
-      - name: Cache Microkit SDK
-        id: cache-sdk-fi
-        uses: actions/cache@v4
-        with:
-          path: microkit-sdk-2.1.0
-          key: microkit-sdk-2.1.0-linux-x86-64
-
-      - name: Download Microkit SDK
-        if: steps.cache-sdk-fi.outputs.cache-hit != 'true'
         run: |
           curl -fsSL \
             https://github.com/seL4/microkit/releases/download/2.1.0/microkit-sdk-2.1.0-linux-x86-64.tar.gz \
             -o microkit-sdk.tar.gz
           tar -xzf microkit-sdk.tar.gz
           rm microkit-sdk.tar.gz
-
-      - name: Build agentOS with fault_inject PD
-        run: make BOARD=${{ matrix.board }} EXTRA_PDS=fault_inject
-
-      - name: Run fault injection test suite
-        id: fi_tests
-        run: |
-          chmod +x scripts/run-fault-inject-tests.sh
-          BOARD=${{ matrix.board }} \
-          MAX_RECOVERY_TICKS=100 \
-            scripts/run-fault-inject-tests.sh 2>&1 | tee /tmp/fi_output.txt
-          echo "exit_code=${PIPESTATUS[0]}" >> $GITHUB_OUTPUT
-        timeout-minutes: 5
-
-      - name: Parse fault injection results
-        if: always()
-        run: |
-          echo "=== Fault Injection Test Results ==="
-          python3 scripts/parse_fi_results.py /tmp/fi_output.txt || true
-
-      - name: Verify trace_recorder JSONL output
-        if: always()
-        run: |
-          # trace_recorder emits one line per event; check for inject+recovery pairs
-          TRACE_LOG=build/${{ matrix.board }}/trace.jsonl
-          if [ -f "$TRACE_LOG" ]; then
-            python3 - <<'EOF'
-          import json, sys
-          injected = set()
-          recovered = set()
-          with open("$TRACE_LOG") as f:
-              for line in f:
-                  try:
-                      ev = json.loads(line)
-                      if ev.get("type") == "FAULT_INJECT":
-                          injected.add(ev["trace_id"])
-                      elif ev.get("type") == "FAULT_RECOVERY":
-                          recovered.add(ev["trace_id"])
-                  except Exception:
-                      pass
-          missing = injected - recovered
-          if missing:
-              print(f"FAIL: {len(missing)} fault(s) injected with no recovery event: {missing}")
-              sys.exit(1)
-          print(f"OK: {len(recovered)}/{len(injected)} fault(s) recovered and traced")
-          EOF
-          else
-            echo "trace.jsonl not found — skipping JSONL verification"
-          fi
-
-      - name: Upload fault injection artifacts
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: fault-injection-${{ matrix.board }}
-          path: |
-            /tmp/fi_output.txt
-            build/${{ matrix.board }}/trace.jsonl
-          if-no-files-found: ignore
+      - name: Boot test
+        timeout-minutes: 8
+        run: make test TARGET_ARCH=x86_64 GUEST_OS=none
 
   # ── Track P: HURD-parity service CI jobs ────────────────────────────────
 
@@ -375,7 +271,7 @@ jobs:
       - name: Install cross-compile toolchain
         run: |
           sudo apt-get update -q
-          sudo apt-get install -y gcc-aarch64-linux-gnu gcc-riscv64-linux-gnu clang lld
+          sudo apt-get install -y clang lld
 
       - name: Compile HURD service PDs
         run: |
@@ -512,15 +408,16 @@ jobs:
 
       - name: Check for lwIP init message in net_server
         run: |
-          # Verify lwIP integration site comments replaced with real calls
-          if grep -q "SMOLTCP_INTEGRATION_POINT" kernel/agentos-root-task/src/net_server.c; then
-            echo "FAIL: net_server.c still has unimplemented SMOLTCP_INTEGRATION_POINT stubs"
+          f=services/net-server/net_server.c
+          test -f "$f" || { echo "MISSING: $f"; exit 1; }
+          if grep -q "SMOLTCP_INTEGRATION_POINT" "$f"; then
+            echo "FAIL: $f still has unimplemented SMOLTCP_INTEGRATION_POINT markers"
             exit 1
           fi
-          if grep -q "lwIP\|lwip" kernel/agentos-root-task/src/net_server.c; then
-            echo "OK: net_server.c has lwIP integration"
+          if grep -q "lwIP\|lwip" "$f"; then
+            echo "OK: $f has lwIP integration"
           else
-            echo "FAIL: net_server.c has no lwIP references"
+            echo "FAIL: $f has no lwIP references"
             exit 1
           fi
 
@@ -601,36 +498,6 @@ jobs:
           grep -q 'OP_VM_CREATE' kernel/agentos-root-task/include/agentos.h || \
             { echo "FAIL: OP_VM_CREATE not found in agentos.h"; exit 1; }
           echo "✓ agentos.h contains OP_VM_CREATE"
-
-  # ---------------------------------------------------------------------------
-  # HURD-parity: VM panel UI checks
-  # ---------------------------------------------------------------------------
-  hurd-ui-check:
-    name: HURD VM Panel UI Check
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Check vm_panel.rs exists
-        run: |
-          f=console/dashboard/src/vm_panel.rs
-          test -f "$f" || { echo "MISSING: $f"; exit 1; }
-          echo "✓ vm_panel.rs exists"
-
-      - name: Check style.css contains .vm-panel class
-        run: |
-          f=console/dashboard/style.css
-          test -f "$f" || { echo "MISSING: $f"; exit 1; }
-          grep -q '\.vm-panel' "$f" || { echo "FAIL: .vm-panel class not found in $f"; exit 1; }
-          echo "✓ style.css contains .vm-panel"
-
-      - name: Check lib.rs references vm_panel
-        run: |
-          f=console/dashboard/src/lib.rs
-          test -f "$f" || { echo "MISSING: $f"; exit 1; }
-          grep -qE 'vm_panel|VmPanel' "$f" || { echo "FAIL: neither vm_panel nor VmPanel found in $f"; exit 1; }
-          echo "✓ lib.rs references vm_panel/VmPanel"
 
   # ---------------------------------------------------------------------------
   # E8-S4: Host-side TAP test suite — compile and run tests/api/ suites

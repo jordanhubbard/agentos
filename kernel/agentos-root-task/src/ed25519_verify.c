@@ -1,7 +1,7 @@
 /*
  * ed25519_verify.c — Ed25519 / SHA-512 signature verification for agentOS
  *
- * Phase 1 (hash-only) stub replaced by real Ed25519 verification via
+ * Phase 1 hash-only verifier replaced by real Ed25519 verification via
  * monocypher.c (Track C).
  *
  * The public API (ed25519_verify, sha512) is unchanged so callers in
