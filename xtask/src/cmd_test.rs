@@ -29,25 +29,6 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
         .context("build step failed")?;
     }
 
-    if args.board == "x86_64_generic" {
-        anyhow::ensure!(
-            args.guest_os == "none",
-            "x86_64_generic QEMU boot is not wired for guest_os={}; use make build until the x86 flat-image loader path exists",
-            args.guest_os
-        );
-        let image = repo_root.join("build").join(&args.board).join("agentos.img");
-        anyhow::ensure!(
-            image.exists(),
-            "x86_64_generic build did not produce {}",
-            image.display()
-        );
-        println!(
-            "[xtask:test] x86_64_generic has no QEMU boot path for flat agentos.img yet; build-only gate passed."
-        );
-        println!("PASS [board={}]: build-only x86_64 image check", args.board);
-        return Ok(());
-    }
-
     let log_file = tempfile::NamedTempFile::new().context("failed to create temp log file")?;
     let log_path = log_file.path().to_path_buf();
 
@@ -101,8 +82,14 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
         _ => {
             /* Success markers: any match is a pass.
              * "agentOS boot complete" = root task + all PDs launched.
+             * "[rt] boot complete"    = x86 root-task smoke boot; service PD
+             *                           runtime health is tracked separately.
              * "buildroot login:"      = Linux guest reached login prompt (buildroot). */
-            let markers: &[&str] = &["agentOS boot complete", "buildroot login:"];
+            let markers: &[&str] = if args.board == "x86_64_generic" {
+                &["[rt] boot complete", "agentOS boot complete"]
+            } else {
+                &["agentOS boot complete", "buildroot login:"]
+            };
             wait_for_markers(&log_path, markers, Duration::from_secs(args.timeout_secs))
         }
     };
@@ -410,6 +397,33 @@ fn spawn_qemu_with_guest(
                     ),
                 ]);
             }
+            c
+        }
+        "x86_64_generic" => {
+            let kernel = repo_root
+                .join("microkit-sdk-2.1.0/board/x86_64_generic/release/elf/sel4_32.elf");
+            let root_task = repo_root.join("build/x86_64_generic/root_task.elf");
+            let mut c = std::process::Command::new("qemu-system-x86_64");
+            c.arg("-machine")
+                .arg("q35")
+                .arg("-cpu")
+                .arg("max")
+                .arg("-m")
+                .arg("2G")
+                .arg("-display")
+                .arg("none")
+                .arg("-monitor")
+                .arg("none")
+                .arg("-serial")
+                .arg("stdio")
+                .arg("-kernel")
+                .arg(kernel)
+                .arg("-initrd")
+                .arg(root_task)
+                .arg("-netdev")
+                .arg(netdev)
+                .arg("-device")
+                .arg("e1000,netdev=net0");
             c
         }
         other => {

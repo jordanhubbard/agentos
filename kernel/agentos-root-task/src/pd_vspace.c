@@ -1,10 +1,10 @@
 /*
  * pd_vspace.c — VSpace creation and ELF loading for protection domains
  *
- * Creates an seL4 VSpace (RISC-V Sv39 or AArch64 4-level page-table hierarchy)
- * for a protection domain, loads an ELF64 image into it, and maps a stack and
- * IPC buffer.  Architecture-specific operations use seL4_ARCH_* aliases from
- * boot_info.h so this file compiles on RISC-V and AArch64 without #ifdefs.
+ * Creates an seL4 VSpace (RISC-V Sv39, AArch64 4-level, or x86-64 PML4
+ * hierarchy) for a protection domain, loads an ELF64 image into it, and maps a
+ * stack and IPC buffer.  Architecture-specific operations use seL4_ARCH_*
+ * aliases from boot_info.h.
  *
  * Three-phase flow:
  *   pd_vspace_create  — allocate root page table and assign ASID
@@ -25,6 +25,9 @@
 #include "ut_alloc.h"
 #include "boot_info.h"
 #include <stdint.h>
+#if defined(__x86_64__) && !defined(AGENTOS_TEST_HOST)
+#include <sel4/sel4_arch/mapping.h>
+#endif
 
 #ifndef AGENTOS_TEST_HOST
 
@@ -113,6 +116,12 @@ static pd_vspace_result_t error_result(int err)
     };
 }
 
+static seL4_Error map_page(seL4_CPtr frame_cap,
+                            seL4_CPtr vspace,
+                            seL4_Word vaddr,
+                            seL4_CapRights_t rights,
+                            seL4_ARCH_VMAttributes attr);
+
 /* ── Scratch VA initialisation ───────────────────────────────────────────── */
 
 /*
@@ -127,31 +136,80 @@ static seL4_Error scratch_init(void)
         return seL4_NoError;  /* already done */
     }
 
+    /*
+     * Install whatever intermediate paging objects the root VSpace needs for
+     * SCRATCH_VA by briefly mapping and unmapping one frame through the common
+     * retry path.  Keep the cap as an initialization marker; the frame itself is
+     * not mapped after this function returns.
+     */
+    seL4_Error err = ut_alloc_cap(seL4_ARM_SmallPageObject, 0u, &g_scratch_l2);
+    if (err != seL4_NoError) {
+        return err;
+    }
+    err = map_page(g_scratch_l2,
+                   seL4_CapInitThreadVSpace,
+                   SCRATCH_VA,
+                   seL4_AllRights,
+                   seL4_ARM_Default_VMAttributes);
+    if (err != seL4_NoError) {
+        g_scratch_l2 = seL4_CapNull;
+        return err;
+    }
+    seL4_ARCH_Page_Unmap(g_scratch_l2);
+    g_scratch_l1 = g_scratch_l2;
+    return seL4_NoError;
+}
+
+static seL4_Error install_missing_paging_object(seL4_CPtr vspace, seL4_Word vaddr)
+{
+#if defined(__x86_64__)
+    seL4_Word level = seL4_MappingFailedLookupLevel();
+    seL4_CPtr obj;
     seL4_Error err;
 
-    /* Allocate and install first intermediate page table for SCRATCH_VA */
-    err = ut_alloc_cap(seL4_ARCH_IntermediatePTObject, 0u, &g_scratch_l2);
-    if (err != seL4_NoError) {
-        return err;
-    }
-    err = seL4_ARCH_PageTable_Map(g_scratch_l2,
-                                   seL4_CapInitThreadVSpace,
-                                   SCRATCH_VA,
-                                   seL4_ARM_Default_VMAttributes);
-    if (err != seL4_NoError) {
-        return err;
+    if (level == SEL4_MAPPING_LOOKUP_NO_PDPT) {
+        err = ut_alloc_cap(seL4_X86_PDPTObject, 0u, &obj);
+        if (err != seL4_NoError) {
+            return err;
+        }
+        return seL4_X86_PDPT_Map((seL4_X86_PDPT)obj,
+                                  (seL4_X64_PML4)vspace,
+                                  vaddr,
+                                  seL4_X86_Default_VMAttributes);
     }
 
-    /* Allocate and install second intermediate page table for SCRATCH_VA */
-    err = ut_alloc_cap(seL4_ARCH_IntermediatePTObject, 0u, &g_scratch_l1);
+    if (level == SEL4_MAPPING_LOOKUP_NO_PD) {
+        err = ut_alloc_cap(seL4_X86_PageDirectoryObject, 0u, &obj);
+        if (err != seL4_NoError) {
+            return err;
+        }
+        return seL4_X86_PageDirectory_Map((seL4_X86_PageDirectory)obj,
+                                           vspace,
+                                           vaddr,
+                                           seL4_X86_Default_VMAttributes);
+    }
+
+    if (level == SEL4_MAPPING_LOOKUP_NO_PT) {
+        err = ut_alloc_cap(seL4_X86_PageTableObject, 0u, &obj);
+        if (err != seL4_NoError) {
+            return err;
+        }
+        return seL4_X86_PageTable_Map((seL4_X86_PageTable)obj,
+                                       vspace,
+                                       vaddr,
+                                       seL4_X86_Default_VMAttributes);
+    }
+
+    return seL4_FailedLookup;
+#else
+    seL4_CPtr pt;
+    seL4_Error err = ut_alloc_cap(seL4_ARCH_IntermediatePTObject, 0u, &pt);
     if (err != seL4_NoError) {
         return err;
     }
-    err = seL4_ARCH_PageTable_Map(g_scratch_l1,
-                                   seL4_CapInitThreadVSpace,
-                                   SCRATCH_VA,
+    return seL4_ARCH_PageTable_Map(pt, vspace, vaddr,
                                    seL4_ARM_Default_VMAttributes);
-    return err;
+#endif
 }
 
 /* ── Map a page with intermediate PT installation ────────────────────────── */
@@ -180,14 +238,8 @@ static seL4_Error map_page(seL4_CPtr frame_cap,
             return err;
         }
 
-        /* Install the missing intermediate page table and retry */
-        seL4_CPtr pt;
-        err = ut_alloc_cap(seL4_ARCH_IntermediatePTObject, 0u, &pt);
-        if (err != seL4_NoError) {
-            return err;
-        }
-        err = seL4_ARCH_PageTable_Map(pt, vspace, vaddr,
-                                       seL4_ARM_Default_VMAttributes);
+        /* Install the missing intermediate paging object and retry. */
+        err = install_missing_paging_object(vspace, vaddr);
         if (err != seL4_NoError) {
             return err;
         }

@@ -42,6 +42,7 @@ CFLAGS := -nostdlib -ffreestanding -g -O2 -Wall -Wextra -Werror -Wno-unused-func
            -Iinclude -Ilwip/include -I$(SEL4_INC_DIR) \
            $(CFLAGS_ARCH) \
            -DCONFIG_KERNEL_MCS \
+           -D__thread= \
            -MMD -MP
 
 # wasm3-specific flags: suppress warnings from vendored code, include bare-metal shim
@@ -105,6 +106,10 @@ ifeq ($(ARCH),aarch64)
 ROOT_TASK_SRCS += src/system_desc_aarch64.c
 CFLAGS_ROOT_TASK := $(CFLAGS) -DBOARD_$(AGENTOS_BOARD)
 ROOT_TASK_ASM_OBJS := $(BUILD_DIR)/rt_start_aarch64.o
+else ifeq ($(ARCH),x86_64)
+ROOT_TASK_SRCS += src/system_desc_aarch64.c
+CFLAGS_ROOT_TASK := $(CFLAGS)
+ROOT_TASK_ASM_OBJS := $(BUILD_DIR)/rt_start_x86_64.o
 else
 ROOT_TASK_SRCS += src/system_desc_riscv64.c
 CFLAGS_ROOT_TASK := $(CFLAGS)
@@ -123,6 +128,18 @@ $(BUILD_DIR)/rt_start_aarch64.o: src/start_aarch64.S
 	@mkdir -p $(BUILD_DIR)
 	$(CC) -c -target aarch64-unknown-elf $< -o $@
 
+# Assemble x86_64 startup stub
+$(BUILD_DIR)/rt_start_x86_64.o: src/start_x86_64.S
+	@mkdir -p $(BUILD_DIR)
+	$(CC) -c -target x86_64-unknown-elf $< -o $@
+
+# Embedded PD bundle used by root_task on targets whose boot path does not
+# provide agentOS extra BootInfo chunks.
+PD_BUNDLE       := $(BUILD_DIR)/agentos_pd_bundle.bin
+PD_BUNDLE_OBJ   := $(BUILD_DIR)/agentos_pd_bundle.o
+# Deferred reference: SYSTEM_TOML is set later in this Makefile.
+SYSTEM_TOML_FOR_BUNDLE = $(SYSTEM_TOML)
+
 # ─── AArch64: root_task uses custom LD script + embedded PD bundle ───────────
 # On AArch64 the loader (kernel/loader/) loads root_task.elf from DRAM at
 # 0x41000000.  The custom root_task.ld places it there and provides the
@@ -134,13 +151,7 @@ $(BUILD_DIR)/rt_start_aarch64.o: src/start_aarch64.S
 #   3. Convert bundle to a linkable .o (objcopy --input binary)
 #   4. Link root_task.elf with root_task.ld + bundle .o
 #
-# Non-AArch64 builds keep the original flat agentos.ld link.
 ifeq ($(ARCH),aarch64)
-
-PD_BUNDLE       := $(BUILD_DIR)/agentos_pd_bundle.bin
-PD_BUNDLE_OBJ   := $(BUILD_DIR)/agentos_pd_bundle.o
-# Deferred reference: SYSTEM_TOML is set later in this Makefile
-SYSTEM_TOML_FOR_BUNDLE = $(SYSTEM_TOML)
 
 # Step 1: Build the loader
 $(BUILD_DIR)/loader.elf: FORCE
@@ -154,9 +165,18 @@ $(BUILD_DIR)/loader.elf: FORCE
 $(BUILD_DIR)/root_task.elf: $(ROOT_TASK_ASM_OBJS) $(ROOT_TASK_OBJS) $(PD_BUNDLE_OBJ) $(ROOT_TASK_LD)
 	$(LD) $(LDFLAGS) -T$(ROOT_TASK_LD) $(filter-out $(ROOT_TASK_LD),$^) -o $@
 
+else ifeq ($(ARCH),x86_64)
+
+# x86_64 boots via seL4's multiboot path, with root_task.elf passed as the
+# initial module.  Embed the PD bundle in root_task.elf so it can launch PDs
+# without an agentOS-specific boot-info extension.
+$(BUILD_DIR)/root_task.elf: $(ROOT_TASK_ASM_OBJS) $(ROOT_TASK_OBJS) $(PD_BUNDLE_OBJ) $(AGENTOS_LD)
+	$(LD) $(LDFLAGS) -T$(AGENTOS_LD) $(filter-out $(AGENTOS_LD),$^) -o $@
+
 else
 
-# Non-AArch64: simple link with the standard PD linker script
+# RISC-V: simple link with the standard PD linker script.  The current RISC-V
+# path still expects PD ELFs via extra BootInfo.
 $(BUILD_DIR)/root_task.elf: $(ROOT_TASK_OBJS) $(AGENTOS_LD)
 	$(LD) $(LDFLAGS) -T$(AGENTOS_LD) $(filter-out $(AGENTOS_LD),$^) -o $@
 
@@ -724,7 +744,7 @@ else
 _LOADER_DEP :=
 endif
 
-ifeq ($(ARCH),aarch64)
+ifneq ($(filter $(ARCH),aarch64 x86_64),)
 # Step 2: Generate the PD bundle after all service PD ELFs and the final
 # system TOML have been selected.
 $(PD_BUNDLE): $(addprefix $(BUILD_DIR)/, $(IMAGES)) $(SYSTEM_TOML)
@@ -740,6 +760,7 @@ $(PD_BUNDLE): $(addprefix $(BUILD_DIR)/, $(IMAGES)) $(SYSTEM_TOML)
 # symbol names we invoke objcopy from BUILD_DIR with just the basename, so
 # the mangled name is always:
 #   _binary_agentos_pd_bundle_bin_{start,end,size}
+ifeq ($(ARCH),aarch64)
 $(PD_BUNDLE_OBJ): $(PD_BUNDLE)
 	cd $(BUILD_DIR) && $(OBJCOPY) \
 		--input-target=binary \
@@ -750,6 +771,18 @@ $(PD_BUNDLE_OBJ): $(PD_BUNDLE)
 		--redefine-sym _binary_agentos_pd_bundle_bin_end=__pd_bundle_end \
 		--redefine-sym _binary_agentos_pd_bundle_bin_size=__pd_bundle_size \
 		agentos_pd_bundle.bin agentos_pd_bundle.o
+else ifeq ($(ARCH),x86_64)
+$(PD_BUNDLE_OBJ): $(PD_BUNDLE)
+	cd $(BUILD_DIR) && $(OBJCOPY) \
+		--input-target=binary \
+		--output-target=elf64-x86-64 \
+		--binary-architecture=i386:x86-64 \
+		--rename-section .data=.pd_bundle,alloc,load,data,contents \
+		--redefine-sym _binary_agentos_pd_bundle_bin_start=__pd_bundle_start \
+		--redefine-sym _binary_agentos_pd_bundle_bin_end=__pd_bundle_end \
+		--redefine-sym _binary_agentos_pd_bundle_bin_size=__pd_bundle_size \
+		agentos_pd_bundle.bin agentos_pd_bundle.o
+endif
 endif
 
 $(IMAGE_FILE): $(addprefix $(BUILD_DIR)/, $(IMAGES)) $(BUILD_DIR)/root_task.elf $(SYSTEM_TOML) $(KERNEL_ELF) $(_LOADER_DEP)

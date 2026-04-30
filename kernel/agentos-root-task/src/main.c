@@ -62,10 +62,11 @@ uintptr_t g_audit_mr_vaddr = 0u;
 
 /*
  * Choose the correct system descriptor at compile time.
- * The BOARD_qemu_virt_aarch64 define is injected by the Makefile when
- * MICROKIT_BOARD=qemu_virt_aarch64.  All other boards default to RISC-V.
+ * The x86_64 QEMU target currently shares the QEMU service topology used by
+ * the AArch64 target; the hardware-specific VMM setup paths remain guarded
+ * separately by architecture checks.
  */
-#ifdef BOARD_qemu_virt_aarch64
+#if defined(BOARD_qemu_virt_aarch64) || defined(__x86_64__)
 extern const system_desc_t system_desc_aarch64;
 #define SYSTEM_DESC (&system_desc_aarch64)
 #else
@@ -588,8 +589,84 @@ static seL4_CPtr g_freebsd_virtio31_frame_cap = seL4_CapNull;
 static volatile uint32_t *g_uart_dr;  /* PL011 UARTDR (offset 0x00) */
 static volatile uint32_t *g_uart_fr;  /* PL011 UARTFR (offset 0x18) */
 
+#if defined(__x86_64__)
+#define X86_COM1_PORT  0x03F8u
+static seL4_CPtr g_x86_com1_cap = seL4_CapNull;
+
+static void x86_com1_out(uint16_t port, uint8_t value)
+{
+    if (g_x86_com1_cap != seL4_CapNull) {
+        (void)seL4_X86_IOPort_Out8((seL4_X86_IOPort)g_x86_com1_cap,
+                                   (seL4_Word)port,
+                                   (seL4_Word)value);
+    }
+}
+
+static uint8_t x86_com1_in(uint16_t port)
+{
+    seL4_X86_IOPort_In8_t r =
+        seL4_X86_IOPort_In8((seL4_X86_IOPort)g_x86_com1_cap, port);
+    if (r.error != seL4_NoError) {
+        return 0x20u;
+    }
+    return r.result;
+}
+
+static void x86_com1_putc(char c)
+{
+    for (uint32_t spin = 0u; spin < 100000u; spin++) {
+        if ((x86_com1_in((uint16_t)(X86_COM1_PORT + 5u)) & 0x20u) != 0u) {
+            break;
+        }
+    }
+    x86_com1_out(X86_COM1_PORT, (uint8_t)c);
+}
+
+static seL4_Word platform_debug_init(void)
+{
+    seL4_Word slot = ut_alloc_slot();
+    if (slot == seL4_CapNull) {
+        return 0u;
+    }
+
+    seL4_Error err = seL4_X86_IOPortControl_Issue(
+        (seL4_X86_IOPortControl)seL4_CapIOPortControl,
+        X86_COM1_PORT,
+        X86_COM1_PORT + 7u,
+        seL4_CapInitThreadCNode,
+        slot,
+        64u);
+    if (err != seL4_NoError) {
+        return 1u;  /* slot consumed */
+    }
+
+    g_x86_com1_cap = (seL4_CPtr)slot;
+    x86_com1_out((uint16_t)(X86_COM1_PORT + 1u), 0x00u); /* disable IRQs */
+    x86_com1_out((uint16_t)(X86_COM1_PORT + 3u), 0x80u); /* divisor latch */
+    x86_com1_out((uint16_t)(X86_COM1_PORT + 0u), 0x03u); /* 38400 baud */
+    x86_com1_out((uint16_t)(X86_COM1_PORT + 1u), 0x00u);
+    x86_com1_out((uint16_t)(X86_COM1_PORT + 3u), 0x03u); /* 8N1 */
+    x86_com1_out((uint16_t)(X86_COM1_PORT + 2u), 0xC7u); /* FIFO */
+    x86_com1_out((uint16_t)(X86_COM1_PORT + 4u), 0x0Bu); /* DTR/RTS */
+    return 1u;
+}
+#else
+static seL4_Word platform_debug_init(void)
+{
+    return 0u;
+}
+#endif
+
 static void dbg_puts(const char *s)
 {
+#if defined(__x86_64__)
+    if (g_x86_com1_cap != seL4_CapNull) {
+        for (; *s; s++) {
+            x86_com1_putc(*s);
+        }
+        return;
+    }
+#endif
     if (!g_uart_dr) {
         return;  /* UART not yet mapped; silent before step 3.5 */
     }
@@ -856,6 +933,10 @@ void root_task_main(const seL4_BootInfo *bi)
         (seL4_IPCBuffer *)((seL4_Word)bi->ipcBuffer & ~(seL4_Word)0xFFF);
     seL4_SetIPCBuffer(ipc_buf);
 
+    /* ── Step 1: Initialise untyped memory allocator ──────────────────────── */
+    ut_alloc_init(bi);
+    seL4_Word pre_reserved_slots = platform_debug_init();
+
     /* Read TPIDR_EL0 on AArch64; other architectures leave this diagnostic 0. */
 #if defined(__aarch64__)
     seL4_Word tpidr_val;
@@ -890,8 +971,6 @@ void root_task_main(const seL4_BootInfo *bi)
     dbg_hex(bi->initThreadCNodeSizeBits);
     dbg_puts("\n");
 
-    /* ── Step 1: Initialise untyped memory allocator ──────────────────────── */
-    ut_alloc_init(bi);
     dbg_puts("[rt] ut_alloc_init ok\n");
 
     /*
@@ -899,7 +978,7 @@ void root_task_main(const seL4_BootInfo *bi)
      * slot) and reserve static slots for per-PD objects and the EP pool so
      * that subsequent ut_alloc_cap() calls start AFTER them.
      */
-    g_cap_base = ut_free_slot_base();
+    g_cap_base = ut_free_slot_base() + pre_reserved_slots;
     ut_advance_slot_cursor((seL4_Word)SYSTEM_MAX_PDS * SLOTS_PER_PD + EP_POOL_SIZE);
     dbg_puts("[rt] g_cap_base=");
     dbg_hex(g_cap_base);
@@ -920,7 +999,11 @@ void root_task_main(const seL4_BootInfo *bi)
     ep_alloc_init(seL4_CapInitThreadCNode, EP_POOL_BASE, EP_POOL_SIZE);
     dbg_puts("[rt] ep_alloc_init ok\n");
 
-    /* ── Step 3.5: Map PL011 UART MMIO for direct boot output ─────────────── */
+    /* ── Step 3.5: Map platform debug output ──────────────────────────────── */
+#if defined(__x86_64__)
+    dbg_puts("[rt] x86 COM1 debug output active\n");
+#else
+    /* Map PL011 UART MMIO for direct boot output. */
     /*
      * Retype the QEMU virt PL011 device untyped (PA 0x09000000) into a 4 KB
      * frame cap in the root task's CNode, then map it at AGENTOS_UART_VA in
@@ -941,6 +1024,7 @@ void root_task_main(const seL4_BootInfo *bi)
         }
     }
     dbg_puts("[rt] UART mapped, direct PL011 output active\n");
+#endif
 
     {
         seL4_Error virtio_err = ut_alloc_device_cap(VIRTIO_MMIO_PAGE_PA,
@@ -1760,9 +1844,11 @@ void root_task_main(const seL4_BootInfo *bi)
  *
  * On AArch64, called from start_aarch64.S after SP is initialized.
  * On RISC-V, _start is this function directly (SP set by seL4 convention).
+ * On x86_64, start_x86_64.S installs a bootstrap stack before calling C.
  *
  * seL4 AArch64 boot protocol: BootInfo pointer is in x0 (capRegister).
  * seL4 RISC-V boot protocol:  BootInfo pointer is in a0.
+ * seL4 x86_64 boot protocol:  BootInfo pointer is in rdi.
  */
 #if defined(__aarch64__)
 /*
@@ -1789,13 +1875,16 @@ void __attribute__((noreturn)) _rt_start(seL4_BootInfo *bi)
     root_task_main(bi);
     __builtin_unreachable();
 }
-#else
-void __attribute__((noreturn)) _start(void)
+#elif defined(__x86_64__)
+void __attribute__((noreturn)) _rt_start_x86_64(seL4_BootInfo *bi)
 {
-    seL4_BootInfo *bi;
-#if defined(__riscv)
-    __asm__ volatile("mv %0, a0" : "=r"(bi) : : );
+    root_task_main(bi);
+    __builtin_unreachable();
+}
 #else
+void __attribute__((noreturn)) _start(seL4_BootInfo *bi)
+{
+#if !defined(__riscv) && !defined(__x86_64__)
     bi = (seL4_BootInfo *)0;
 #endif
     root_task_main(bi);

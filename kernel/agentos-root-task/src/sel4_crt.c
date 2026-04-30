@@ -6,9 +6,9 @@
  * can link without the Microkit SDK runtime.
  *
  * The SDK header (sel4/functions.h) declares __sel4_ipc_buffer as
- * 'extern __thread', but for bare-metal single-threaded seL4 PDs a plain
- * global satisfies the linker — identical to how libmicrokit.a exports a
- * 'D' (data section) symbol for this pointer (confirmed via nm).
+ * 'extern __thread'.  The agentOS freestanding build suppresses __thread via
+ * compiler flags, because each current PD has a single seL4 thread and no
+ * architecture TLS setup.
  */
 
 #include <stdint.h>
@@ -28,9 +28,8 @@ static uint8_t _pd_ipc_buf_storage[_SEL4_IPC_BUF_BYTES]
     __attribute__((aligned(_SEL4_IPC_BUF_BYTES)));
 
 /*
- * Plain global definition — matches libmicrokit.a's 'D' section export.
- * lld resolves bare-metal local-exec TLS references to this symbol at
- * link time, avoiding the need for OS-level TLS setup.
+ * Plain global definition — used by libsel4 inline helpers after __thread is
+ * suppressed in the freestanding build.
  */
 seL4_IPCBuffer *__sel4_ipc_buffer =
     (seL4_IPCBuffer *)_pd_ipc_buf_storage;

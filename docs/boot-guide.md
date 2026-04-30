@@ -69,6 +69,7 @@ To build a specific architecture without launching:
 ```bash
 make build BOARD=qemu_virt_riscv64    # RISC-V 64-bit
 make build BOARD=qemu_virt_aarch64    # AArch64
+make build BOARD=x86_64_generic       # x86-64
 ```
 
 To run the CI boot test:
@@ -136,15 +137,19 @@ $(brew --prefix)/share/qemu/opensbi-riscv64-generic-fw_dynamic.bin
 ```bash
 qemu-system-x86_64 \
     -machine q35 \
-    -cpu host \
+    -cpu max \
     -m 2G \
     -display none -monitor none \
-    -serial unix:/tmp/agentos-serial.sock \
-    -enable-kvm \
+    -serial stdio \
     -netdev user,id=net0,hostfwd=tcp:127.0.0.1:8789-:8789 \
     -device e1000,netdev=net0 \
-    -kernel build/x86_64_generic/agentos.img
+    -kernel microkit-sdk-2.1.0/board/x86_64_generic/release/elf/sel4_32.elf \
+    -initrd build/x86_64_generic/root_task.elf
 ```
+
+The x86-64 build still emits `build/x86_64_generic/agentos.img`, but that file
+is the agentOS flat image container.  QEMU boots the seL4 kernel ELF directly
+and passes `root_task.elf` as the initial module.
 
 ## Connecting External Tools
 
@@ -171,7 +176,8 @@ agentOS v0.1.0-alpha
 ```
 
 The CI test (`make test` / `scripts/ci-test.sh`) checks for these strings and
-exits 0 on success or 1 on failure.
+exits 0 on success or 1 on failure.  The x86-64 smoke test currently checks
+for the root-task marker `[rt] boot complete`.
 
 ## Protection Domain Layout
 

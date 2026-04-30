@@ -119,7 +119,16 @@ seL4_Error pd_tcb_set_regs(seL4_CPtr tcb_cap,
     }
 
     regs.AGENTOS_CTX_PC = entry; /* instruction pointer: ELF entry symbol */
+#if defined(__x86_64__)
+    /*
+     * x86-64 C entry code expects the SysV ABI function-entry stack state:
+     * %rsp is 8 mod 16, as if a caller had pushed a return address.  seL4
+     * starts the thread directly at _start, so synthesize that alignment.
+     */
+    regs.AGENTOS_CTX_SP = sp - 8u;
+#else
     regs.AGENTOS_CTX_SP = sp;    /* stack pointer: stack_top from loader  */
+#endif
     regs.AGENTOS_CTX_ARG0 = arg0; /* first argument: my_ep CNode slot */
     regs.AGENTOS_CTX_ARG1 = arg1; /* second argument: ns_ep CNode slot */
 
