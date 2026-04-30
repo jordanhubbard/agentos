@@ -9,8 +9,9 @@
  *     priority via seL4_TCB_SetPriority (authority = root-task TCB, MCP=255).
  *
  *   Phase 2 — pd_tcb_set_regs:
- *     Writes initial register state (PC, SP, first argument) into the TCB via
- *     seL4_TCB_WriteRegisters with resume=0 so the thread stays suspended.
+ *     Writes initial register state (PC, SP, startup args) into the TCB via
+ *     seL4_TCB_WriteRegisters with resume=1 so the MCS thread is enqueued
+ *     atomically after its scheduling context has been bound.
  *
  *   Phase 3 — pd_tcb_start / pd_tcb_suspend:
  *     Transitions the thread between runnable and suspended states via
@@ -117,14 +118,10 @@ seL4_Error pd_tcb_set_regs(seL4_CPtr tcb_cap,
         ((seL4_Word *)&regs)[i] = 0;
     }
 
-    regs.pc = entry;  /* instruction pointer: ELF entry symbol          */
-    regs.sp = sp;     /* stack pointer: stack_top from pd_vspace_load_elf */
-    regs.AGENTOS_CTX_ARG0 = arg0; /* first argument: my_ep CNode slot   */
-#if defined(__aarch64__)
-    regs.x1 = arg1;   /* second argument: ns_ep CNode slot (AArch64 x1) */
-#elif defined(__riscv)
-    regs.a1 = arg1;   /* second argument: ns_ep CNode slot (RISC-V a1)  */
-#endif
+    regs.AGENTOS_CTX_PC = entry; /* instruction pointer: ELF entry symbol */
+    regs.AGENTOS_CTX_SP = sp;    /* stack pointer: stack_top from loader  */
+    regs.AGENTOS_CTX_ARG0 = arg0; /* first argument: my_ep CNode slot */
+    regs.AGENTOS_CTX_ARG1 = arg1; /* second argument: ns_ep CNode slot */
 
     /*
      * Write the full register context to the TCB and atomically resume.

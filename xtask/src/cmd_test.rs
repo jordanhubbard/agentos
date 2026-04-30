@@ -29,6 +29,25 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
         .context("build step failed")?;
     }
 
+    if args.board == "x86_64_generic" {
+        anyhow::ensure!(
+            args.guest_os == "none",
+            "x86_64_generic QEMU boot is not wired for guest_os={}; use make build until the x86 flat-image loader path exists",
+            args.guest_os
+        );
+        let image = repo_root.join("build").join(&args.board).join("agentos.img");
+        anyhow::ensure!(
+            image.exists(),
+            "x86_64_generic build did not produce {}",
+            image.display()
+        );
+        println!(
+            "[xtask:test] x86_64_generic has no QEMU boot path for flat agentos.img yet; build-only gate passed."
+        );
+        println!("PASS [board={}]: build-only x86_64 image check", args.board);
+        return Ok(());
+    }
+
     let log_file = tempfile::NamedTempFile::new().context("failed to create temp log file")?;
     let log_path = log_file.path().to_path_buf();
 

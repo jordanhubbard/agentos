@@ -6,9 +6,11 @@
  *
  *   1. pd_tcb_create  — allocate the TCB object and bind it to the PD's
  *                       CSpace, VSpace, and IPC buffer via seL4_TCB_Configure.
- *   2. pd_tcb_set_regs — write initial register state (PC, SP, first argument)
- *                        via seL4_TCB_WriteRegisters without resuming yet.
- *   3. pd_tcb_start    — make the thread runnable via seL4_TCB_Resume.
+ *   2. pd_tcb_set_regs — write initial register state (PC, SP, startup args)
+ *                        and atomically enqueue the thread via
+ *                        seL4_TCB_WriteRegisters(resume=1).
+ *   3. pd_tcb_start    — explicit resume for callers that still use the
+ *                        older create/set_regs/start sequencing.
  *
  * Callers are responsible for allocating an IPC buffer frame and mapping it
  * into the PD's VSpace (see pd_vspace.h) before calling pd_tcb_create.
@@ -48,8 +50,8 @@ typedef struct {
  * sets the scheduling priority via seL4_TCB_SetPriority, using the root-task
  * TCB (seL4_CapInitThreadTCB) as the authority (MCP = 255).
  *
- * The thread is NOT started.  Call pd_tcb_set_regs then pd_tcb_start when
- * the caller is ready to begin scheduling the PD.
+ * The thread is not started by create alone.  pd_tcb_set_regs writes the
+ * initial context and enqueues the thread atomically.
  *
  * Parameters:
  *   dest_cnode    CNode in which to place the new TCB cap
@@ -84,13 +86,13 @@ pd_tcb_result_t pd_tcb_create(seL4_CPtr  dest_cnode,
  * pd_tcb_set_regs — write initial register state for a PD thread.
  *
  * Zeroes the full seL4_UserContext, then sets:
- *   regs.pc = entry   (program counter / instruction pointer)
- *   regs.sp = sp      (initial stack pointer)
- *   regs.x0 = arg0    (first argument register: AArch64 x0 / RISC-V a0)
- *   regs.x1 = arg1    (second argument register: AArch64 x1 / RISC-V a1)
+ *   PC  = entry   (program counter / instruction pointer)
+ *   SP  = sp      (initial stack pointer)
+ *   ARG0 = arg0   (AArch64 x0 / RISC-V a0 / x86-64 rdi)
+ *   ARG1 = arg1   (AArch64 x1 / RISC-V a1 / x86-64 rsi)
  *
- * The thread is NOT resumed; resume=0 is passed to seL4_TCB_WriteRegisters.
- * Call pd_tcb_start after this function to make the thread runnable.
+ * resume=1 is passed to seL4_TCB_WriteRegisters so a freshly-typed MCS TCB is
+ * enqueued atomically after its scheduling context has been bound.
  *
  * Parameters:
  *   tcb_cap    capability to the TCB to configure

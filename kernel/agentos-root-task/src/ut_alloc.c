@@ -126,8 +126,9 @@ seL4_Error ut_alloc(uint32_t   type,
      * Try each untyped cap starting from g_ut_next.  On seL4_NotEnoughMemory
      * advance to the next cap; any other error is fatal for this allocation.
      */
+    uint32_t start = g_ut_next;
     for (uint32_t i = 0u; i < g_ut_count; i++) {
-        uint32_t idx = (g_ut_next + i) % g_ut_count;
+        uint32_t idx = (start + i) % g_ut_count;
 
         seL4_Error err = seL4_Untyped_Retype(
             g_ut[idx].cap,      /* untyped cap to retype                   */

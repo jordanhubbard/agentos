@@ -52,10 +52,8 @@ typedef struct {
 
 typedef struct {
     seL4_CPtr  service;
-    seL4_CPtr  fault_ep;
     seL4_CPtr  cspace_root;
     seL4_Word  cspace_root_data;
-    seL4_Word  cspace_size_bits;
     seL4_CPtr  vspace_root;
     seL4_Word  vspace_root_data;
     seL4_Word  buffer;
@@ -66,7 +64,7 @@ typedef struct {
 typedef struct {
     seL4_CPtr service;
     seL4_CPtr authority;
-    uint8_t   priority;
+    seL4_Word priority;
     uint32_t  call_count;
 } StubTCBSetPriority;
 
@@ -136,19 +134,15 @@ seL4_Error ut_alloc(uint32_t type, uint32_t size_bits,
 }
 
 seL4_Error seL4_TCB_Configure(seL4_CPtr service,
-                               seL4_CPtr fault_ep,
                                seL4_CPtr cspace_root,
                                seL4_Word cspace_root_data,
-                               seL4_Word cspace_size_bits,
                                seL4_CPtr vspace_root,
                                seL4_Word vspace_root_data,
                                seL4_Word buffer,
                                seL4_CPtr buffer_frame) {
     g_cfg.service          = service;
-    g_cfg.fault_ep         = fault_ep;
     g_cfg.cspace_root      = cspace_root;
     g_cfg.cspace_root_data = cspace_root_data;
-    g_cfg.cspace_size_bits = cspace_size_bits;
     g_cfg.vspace_root      = vspace_root;
     g_cfg.vspace_root_data = vspace_root_data;
     g_cfg.buffer           = buffer;
@@ -159,7 +153,7 @@ seL4_Error seL4_TCB_Configure(seL4_CPtr service,
 
 seL4_Error seL4_TCB_SetPriority(seL4_CPtr service,
                                  seL4_CPtr authority,
-                                 uint8_t   priority) {
+                                 seL4_Word priority) {
     g_prio.service   = service;
     g_prio.authority = authority;
     g_prio.priority  = priority;
@@ -211,16 +205,18 @@ seL4_Error seL4_TCB_Suspend(seL4_CPtr service) {
 #define TEST_IPC_BUF_CAP  ((seL4_CPtr)12u)
 #define TEST_IPC_BUF_VA   ((seL4_Word)0x8000u)
 #define TEST_PRIORITY     ((uint8_t)128u)
+#define TEST_CNODE_SIZE_BITS ((uint8_t)6u)
 
 #define TEST_ENTRY        ((seL4_Word)0x400000u)
 #define TEST_SP           ((seL4_Word)0x7fff0000u)
 #define TEST_ARG0         ((seL4_Word)0xCAFEu)
+#define TEST_ARG1         ((seL4_Word)0xBEEFu)
 
 static pd_tcb_result_t do_create(void) {
     return pd_tcb_create(TEST_DEST_CNODE, TEST_DEST_SLOT,
                          TEST_VSPACE_CAP, TEST_PD_CNODE,
                          TEST_IPC_BUF_CAP, TEST_IPC_BUF_VA,
-                         TEST_PRIORITY);
+                         TEST_PRIORITY, TEST_CNODE_SIZE_BITS);
 }
 
 /* ════════════════════════════════════════════════════════════════════════════
@@ -255,9 +251,12 @@ static void test_create_calls_tcb_configure(void) {
     ASSERT_EQ((uint64_t)g_cfg.service,     (uint64_t)TEST_DEST_SLOT,   "create: configure service == dest_slot");
     ASSERT_EQ((uint64_t)g_cfg.vspace_root, (uint64_t)TEST_VSPACE_CAP,  "create: configure vspace_root == vspace_cap");
     ASSERT_EQ((uint64_t)g_cfg.cspace_root, (uint64_t)TEST_PD_CNODE,    "create: configure cspace_root == pd_cnode");
+    ASSERT_EQ((uint64_t)g_cfg.cspace_root_data,
+              (uint64_t)(seL4_WordBits - TEST_CNODE_SIZE_BITS),
+              "create: configure cspace_root_data encodes guard size");
     ASSERT_EQ((uint64_t)g_cfg.buffer,      (uint64_t)TEST_IPC_BUF_VA,  "create: configure buffer == ipc_buf_va");
     ASSERT_EQ((uint64_t)g_cfg.buffer_frame,(uint64_t)TEST_IPC_BUF_CAP, "create: configure bufferFrame == ipc_buf_cap");
-    ASSERT_EQ((uint64_t)g_cfg.fault_ep,    (uint64_t)seL4_CapNull,     "create: fault_ep == seL4_CapNull");
+    ASSERT_EQ((uint64_t)g_cfg.vspace_root_data, 0u, "create: configure vspace_root_data == 0");
 }
 
 static void test_create_calls_set_priority(void) {
@@ -314,7 +313,8 @@ static void test_create_priority_zero(void) {
     pd_tcb_result_t r = pd_tcb_create(TEST_DEST_CNODE, TEST_DEST_SLOT,
                                        TEST_VSPACE_CAP, TEST_PD_CNODE,
                                        TEST_IPC_BUF_CAP, TEST_IPC_BUF_VA,
-                                       0 /* lowest priority */);
+                                       0 /* lowest priority */,
+                                       TEST_CNODE_SIZE_BITS);
     ASSERT_EQ((uint64_t)r.error, (uint64_t)seL4_NoError,
               "create: priority 0 (lowest) is accepted");
     ASSERT_EQ((uint64_t)g_prio.priority, 0u,
@@ -326,7 +326,8 @@ static void test_create_priority_max(void) {
     pd_tcb_result_t r = pd_tcb_create(TEST_DEST_CNODE, TEST_DEST_SLOT,
                                        TEST_VSPACE_CAP, TEST_PD_CNODE,
                                        TEST_IPC_BUF_CAP, TEST_IPC_BUF_VA,
-                                       255 /* highest priority */);
+                                       255 /* highest priority */,
+                                       TEST_CNODE_SIZE_BITS);
     ASSERT_EQ((uint64_t)r.error, (uint64_t)seL4_NoError,
               "create: priority 255 (highest) is accepted");
     ASSERT_EQ((uint64_t)g_prio.priority, 255u,
@@ -340,60 +341,60 @@ static void test_create_priority_max(void) {
 static void test_set_regs_success(void) {
     stub_reset();
     seL4_Error err = pd_tcb_set_regs(TEST_DEST_SLOT,
-                                      TEST_ENTRY, TEST_SP, TEST_ARG0);
+                                      TEST_ENTRY, TEST_SP, TEST_ARG0, TEST_ARG1);
     ASSERT_EQ((uint64_t)err, (uint64_t)seL4_NoError,
               "set_regs: returns seL4_NoError on success");
 }
 
 static void test_set_regs_calls_write_registers(void) {
     stub_reset();
-    pd_tcb_set_regs(TEST_DEST_SLOT, TEST_ENTRY, TEST_SP, TEST_ARG0);
+    pd_tcb_set_regs(TEST_DEST_SLOT, TEST_ENTRY, TEST_SP, TEST_ARG0, TEST_ARG1);
     ASSERT_EQ((uint64_t)g_wrregs.call_count, 1u,
               "set_regs: seL4_TCB_WriteRegisters called exactly once");
     ASSERT_EQ((uint64_t)g_wrregs.service, (uint64_t)TEST_DEST_SLOT,
               "set_regs: WriteRegisters service == tcb_cap");
 }
 
-static void test_set_regs_no_resume(void) {
+static void test_set_regs_resume_flag(void) {
     stub_reset();
-    pd_tcb_set_regs(TEST_DEST_SLOT, TEST_ENTRY, TEST_SP, TEST_ARG0);
-    ASSERT_EQ((uint64_t)g_wrregs.resume, 0u,
-              "set_regs: resume == 0 (thread stays suspended)");
+    pd_tcb_set_regs(TEST_DEST_SLOT, TEST_ENTRY, TEST_SP, TEST_ARG0, TEST_ARG1);
+    ASSERT_EQ((uint64_t)g_wrregs.resume, 1u,
+              "set_regs: resume == 1 (thread is enqueued atomically)");
 }
 
 static void test_set_regs_pc_set(void) {
     stub_reset();
-    pd_tcb_set_regs(TEST_DEST_SLOT, TEST_ENTRY, TEST_SP, TEST_ARG0);
+    pd_tcb_set_regs(TEST_DEST_SLOT, TEST_ENTRY, TEST_SP, TEST_ARG0, TEST_ARG1);
     ASSERT_EQ((uint64_t)g_wrregs.regs.pc, (uint64_t)TEST_ENTRY,
               "set_regs: PC == entry point");
 }
 
 static void test_set_regs_sp_set(void) {
     stub_reset();
-    pd_tcb_set_regs(TEST_DEST_SLOT, TEST_ENTRY, TEST_SP, TEST_ARG0);
+    pd_tcb_set_regs(TEST_DEST_SLOT, TEST_ENTRY, TEST_SP, TEST_ARG0, TEST_ARG1);
     ASSERT_EQ((uint64_t)g_wrregs.regs.sp, (uint64_t)TEST_SP,
               "set_regs: SP == stack_top");
 }
 
 static void test_set_regs_arg0_set(void) {
     stub_reset();
-    pd_tcb_set_regs(TEST_DEST_SLOT, TEST_ENTRY, TEST_SP, TEST_ARG0);
+    pd_tcb_set_regs(TEST_DEST_SLOT, TEST_ENTRY, TEST_SP, TEST_ARG0, TEST_ARG1);
     ASSERT_EQ((uint64_t)g_wrregs.regs.x0, (uint64_t)TEST_ARG0,
               "set_regs: x0 == arg0");
 }
 
 static void test_set_regs_other_regs_zero(void) {
     stub_reset();
-    pd_tcb_set_regs(TEST_DEST_SLOT, TEST_ENTRY, TEST_SP, TEST_ARG0);
-    /* x1 through x30 must be zero (deterministic initial state) */
-    ASSERT_EQ((uint64_t)g_wrregs.regs.x1,  0u, "set_regs: x1 == 0");
+    pd_tcb_set_regs(TEST_DEST_SLOT, TEST_ENTRY, TEST_SP, TEST_ARG0, TEST_ARG1);
+    ASSERT_EQ((uint64_t)g_wrregs.regs.x1, (uint64_t)TEST_ARG1,
+              "set_regs: x1 == arg1");
     ASSERT_EQ((uint64_t)g_wrregs.regs.x2,  0u, "set_regs: x2 == 0");
     ASSERT_EQ((uint64_t)g_wrregs.regs.x30, 0u, "set_regs: link register x30 == 0");
 }
 
 static void test_set_regs_full_context_written(void) {
     stub_reset();
-    pd_tcb_set_regs(TEST_DEST_SLOT, TEST_ENTRY, TEST_SP, TEST_ARG0);
+    pd_tcb_set_regs(TEST_DEST_SLOT, TEST_ENTRY, TEST_SP, TEST_ARG0, TEST_ARG1);
     ASSERT_EQ((uint64_t)g_wrregs.count, (uint64_t)seL4_UserContext_n_regs,
               "set_regs: count == seL4_UserContext_n_regs (all regs written)");
 }
@@ -402,14 +403,14 @@ static void test_set_regs_write_failure(void) {
     stub_reset();
     g_wrregs_err = seL4_InvalidCapability;
     seL4_Error err = pd_tcb_set_regs(TEST_DEST_SLOT,
-                                      TEST_ENTRY, TEST_SP, TEST_ARG0);
+                                      TEST_ENTRY, TEST_SP, TEST_ARG0, TEST_ARG1);
     ASSERT_NE((uint64_t)err, (uint64_t)seL4_NoError,
               "set_regs: propagates error from WriteRegisters");
 }
 
 static void test_set_regs_zero_entry(void) {
     stub_reset();
-    seL4_Error err = pd_tcb_set_regs(TEST_DEST_SLOT, 0, TEST_SP, TEST_ARG0);
+    seL4_Error err = pd_tcb_set_regs(TEST_DEST_SLOT, 0, TEST_SP, TEST_ARG0, TEST_ARG1);
     ASSERT_EQ((uint64_t)err, (uint64_t)seL4_NoError,
               "set_regs: entry == 0 is accepted (stub does not reject it)");
     ASSERT_EQ((uint64_t)g_wrregs.regs.pc, 0u,
@@ -485,7 +486,7 @@ static void test_full_lifecycle(void) {
     ASSERT_NE((uint64_t)r.tcb_cap, (uint64_t)seL4_CapNull,    "lifecycle: tcb_cap is non-null");
 
     /* Step 2: write registers */
-    seL4_Error err = pd_tcb_set_regs(r.tcb_cap, TEST_ENTRY, TEST_SP, TEST_ARG0);
+    seL4_Error err = pd_tcb_set_regs(r.tcb_cap, TEST_ENTRY, TEST_SP, TEST_ARG0, TEST_ARG1);
     ASSERT_EQ((uint64_t)err, (uint64_t)seL4_NoError, "lifecycle: set_regs succeeds");
 
     /* Step 3: start */
@@ -517,18 +518,18 @@ int main(void) {
      * Total test points:
      *   test_create_success             :  2
      *   test_create_calls_ut_alloc      :  4
-     *   test_create_calls_tcb_configure :  7
+     *   test_create_calls_tcb_configure :  8
      *   test_create_calls_set_priority  :  4
      *   test_create_ut_alloc_failure    :  3
      *   test_create_configure_failure   :  3
      *   test_create_set_priority_failure:  2
      *   test_create_priority_zero       :  2
      *   test_create_priority_max        :  2
-     *   create subtotal                 : 29
+     *   create subtotal                 : 30
      *
      *   test_set_regs_success           :  1
      *   test_set_regs_calls_write_regs  :  2
-     *   test_set_regs_no_resume         :  1
+     *   test_set_regs_resume_flag       :  1
      *   test_set_regs_pc_set            :  1
      *   test_set_regs_sp_set            :  1
      *   test_set_regs_arg0_set          :  1
@@ -550,9 +551,9 @@ int main(void) {
      *
      *   test_full_lifecycle             : 12
      *
-     *   TOTAL = 29 + 14 + 4 + 4 + 12 = 63
+     *   TOTAL = 30 + 14 + 4 + 4 + 12 = 64
      */
-    TAP_PLAN(63);
+    TAP_PLAN(64);
 
     /* pd_tcb_create */
     test_create_success();
@@ -568,7 +569,7 @@ int main(void) {
     /* pd_tcb_set_regs */
     test_set_regs_success();
     test_set_regs_calls_write_registers();
-    test_set_regs_no_resume();
+    test_set_regs_resume_flag();
     test_set_regs_pc_set();
     test_set_regs_sp_set();
     test_set_regs_arg0_set();

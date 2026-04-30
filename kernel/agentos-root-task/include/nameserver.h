@@ -229,11 +229,9 @@ typedef struct {
 #  define _ns_mr_set(i, v)  seL4_SetMR((i), (seL4_Word)(v))
 #  define _ns_mr_get(i)     ((uintptr_t)seL4_GetMR(i))
 #else
-/* E5-S8: test-host stubs (no seL4 MRs available) */
-static inline void _ns_mr_set_stub(int i, uintptr_t v) { (void)i; (void)v; }
-static inline uintptr_t _ns_mr_get_stub(int i) { (void)i; return 0; }
-#  define _ns_mr_set(i, v)  _ns_mr_set_stub((i), (uintptr_t)(v))
-#  define _ns_mr_get(i)     _ns_mr_get_stub(i)
+/* E5-S8: test-host stubs are supplied by tests/api/framework.h. */
+#  define _ns_mr_set(i, v)  microkit_mr_set((uint32_t)(i), (uint64_t)(uintptr_t)(v))
+#  define _ns_mr_get(i)     ((uintptr_t)microkit_mr_get((uint32_t)(i)))
 #endif
 
 static inline void ns_pack_name(const char *name, int mr_start)

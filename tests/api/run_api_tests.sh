@@ -33,7 +33,13 @@ TEST_FILES="
     test_memfs.c
     test_logsvc.c
     test_vibeos.c
+    test_cap_accounting.c
+    test_ut_alloc.c
+    test_ep_alloc.c
+    test_pd_vspace.c
     test_pd_tcb.c
+    test_nameserver.c
+    test_storage_stack.c
 "
 
 PASSED=0

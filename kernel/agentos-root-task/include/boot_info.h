@@ -145,6 +145,23 @@ typedef struct {
 #    define seL4_ARCH_PageTable_Map(p,v,a,at) seL4_ARM_PageTable_Map((p),(v),(a),(at))
 #    define seL4_ARCH_ASIDPool_Assign(pool,vs) seL4_ARM_ASIDPool_Assign((pool),(vs))
 #    define AGENTOS_MEMORY_FENCE() __asm__ volatile ("dsb sy" ::: "memory")
+#  elif defined(__x86_64__)
+/* x86-64 aliases used by shared root-task VSpace/device-frame code. */
+#    define seL4_ARM_VSpaceObject         seL4_X64_PML4Object
+#    define seL4_ARM_SmallPageObject      seL4_X86_4K
+#    define seL4_ARM_LargePageObject      seL4_X86_LargePageObject
+#    define seL4_ARM_Default_VMAttributes seL4_X86_Default_VMAttributes
+#    define seL4_ARCH_IntermediatePTObject seL4_X86_PageTableObject
+#    define seL4_ARCH_LargePageObject     seL4_X86_LargePageObject
+#    define seL4_ARCH_LargePageBits       seL4_LargePageBits
+#    define seL4_ARCH_VMAttributes        seL4_X86_VMAttributes
+#    define seL4_ARCH_Page_Map(f,v,a,r,at) seL4_X86_Page_Map((f),(v),(a),(r),(at))
+#    define seL4_ARCH_Page_Unmap(f)       seL4_X86_Page_Unmap(f)
+#    define seL4_ARCH_Page_GetAddress_t   seL4_X86_Page_GetAddress_t
+#    define seL4_ARCH_Page_GetAddress(f)  seL4_X86_Page_GetAddress(f)
+#    define seL4_ARCH_PageTable_Map(p,v,a,at) seL4_X86_PageTable_Map((p),(v),(a),(at))
+#    define seL4_ARCH_ASIDPool_Assign(pool,vs) seL4_X86_ASIDPool_Assign((pool),(vs))
+#    define AGENTOS_MEMORY_FENCE() __asm__ volatile ("mfence" ::: "memory")
 #  endif
 
 /* seL4_ReadWrite — capability rights alias.  The seL4 SDK provides

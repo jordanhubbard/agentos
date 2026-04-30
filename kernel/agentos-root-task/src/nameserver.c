@@ -120,9 +120,8 @@ static int registry_alloc(void)
  *   MR4 = version
  *   MR5..MR8 = name (NS_NAME_MAX bytes, packed)
  */
-static uint32_t handle_register(void)
+static uint32_t handle_register(const sel4_msg_t *req, sel4_msg_t *rep)
 {
-    IPC_STUB_LOCALS
     uint32_t channel_id  = (uint32_t)msg_u32(req, 4);
     uint32_t pd_id       = (uint32_t)msg_u32(req, 8);
     uint32_t cap_classes = (uint32_t)msg_u32(req, 12);
@@ -180,9 +179,8 @@ static uint32_t handle_register(void)
  * Reply (on NS_OK):
  *   MR0=NS_OK, MR1=channel_id, MR2=pd_id, MR3=status, MR4=cap_classes, MR5=version
  */
-static uint32_t handle_lookup(void)
+static uint32_t handle_lookup(const sel4_msg_t *req, sel4_msg_t *rep)
 {
-    IPC_STUB_LOCALS
     char name[NS_NAME_MAX];
     ns_unpack_name(name, 1);
 
@@ -215,9 +213,8 @@ static uint32_t handle_lookup(void)
  *   MR1 = channel_id   (identifies the service)
  *   MR2 = new_status   (NS_STATUS_*)
  */
-static uint32_t handle_update_status(void)
+static uint32_t handle_update_status(const sel4_msg_t *req, sel4_msg_t *rep)
 {
-    IPC_STUB_LOCALS
     uint32_t channel_id = (uint32_t)msg_u32(req, 4);
     uint8_t  new_status = (uint8_t)msg_u32(req, 8);
 
@@ -240,9 +237,8 @@ static uint32_t handle_update_status(void)
  *   Dumps all active entries into ns_registry_shmem.
  * Reply: MR0=NS_OK, MR1=entry_count
  */
-static uint32_t handle_list(void)
+static uint32_t handle_list(sel4_msg_t *rep)
 {
-    IPC_STUB_LOCALS
     if (!ns_registry_shmem_vaddr) {
         /* shmem not mapped — return count only */
         rep_u32(rep, 0, NS_OK);
@@ -288,9 +284,8 @@ static uint32_t handle_list(void)
  * OP_NS_DEREGISTER
  *   MR1 = channel_id
  */
-static uint32_t handle_deregister(void)
+static uint32_t handle_deregister(const sel4_msg_t *req, sel4_msg_t *rep)
 {
-    IPC_STUB_LOCALS
     uint32_t channel_id = (uint32_t)msg_u32(req, 4);
 
     int slot = registry_find_by_channel(channel_id);
@@ -316,9 +311,8 @@ static uint32_t handle_deregister(void)
  * OP_NS_HEALTH
  * Reply: MR0=NS_OK, MR1=registered_count, MR2=NS_VERSION
  */
-static uint32_t handle_health(void)
+static uint32_t handle_health(sel4_msg_t *rep)
 {
-    IPC_STUB_LOCALS
     rep_u32(rep, 0, NS_OK);
     rep_u32(rep, 4, reg_count);
     rep_u32(rep, 8, NS_VERSION);
@@ -371,17 +365,16 @@ static void nameserver_pd_notified(uint32_t ch)
  * OP_NS_LOOKUP remains available for backwards compatibility but its use
  * in new code is DEPRECATED — it performs no authorization check.
  */
-static uint32_t handle_lookup_gated(uint32_t ch, uint32_t msginfo)
+static uint32_t handle_lookup_gated(uint32_t badge,
+                                    const sel4_msg_t *req,
+                                    sel4_msg_t *rep)
 {
-    IPC_STUB_LOCALS
     /* Extract badge from the msginfo label field.
      * Microkit conveys the badge of the endpoint cap used by the caller
      * in the label field of the msginfo for PPC calls. */
-    uint32_t badge        = (uint32_t)msg_u32(req, 0);
     uint16_t requester_pd = (uint16_t)(badge & 0xFFFFu);
     uint16_t allowed_cats = (uint16_t)(badge >> 16);
 
-    (void)ch;
     (void)requester_pd;  /* available for future per-PD audit logging */
 
     char name[NS_NAME_MAX];
@@ -430,14 +423,14 @@ static uint32_t nameserver_h_dispatch(sel4_badge_t b, const sel4_msg_t *req, sel
     uint32_t op = (uint32_t)msg_u32(req, 0);
 
     switch (op) {
-    case OP_NS_REGISTER:      return handle_register();
+    case OP_NS_REGISTER:      return handle_register(req, rep);
     /* DEPRECATED: use OP_NS_LOOKUP_GATED — no authorization check */
-    case OP_NS_LOOKUP:        return handle_lookup();
-    case OP_NS_UPDATE_STATUS: return handle_update_status();
-    case OP_NS_LIST:          return handle_list();
-    case OP_NS_DEREGISTER:    return handle_deregister();
-    case OP_NS_HEALTH:        return handle_health();
-    case OP_NS_LOOKUP_GATED:  return handle_lookup_gated((uint32_t)b, 0);
+    case OP_NS_LOOKUP:        return handle_lookup(req, rep);
+    case OP_NS_UPDATE_STATUS: return handle_update_status(req, rep);
+    case OP_NS_LIST:          return handle_list(rep);
+    case OP_NS_DEREGISTER:    return handle_deregister(req, rep);
+    case OP_NS_HEALTH:        return handle_health(rep);
+    case OP_NS_LOOKUP_GATED:  return handle_lookup_gated((uint32_t)b, req, rep);
     default:
         log_drain_write(NS_LOG_SLOT, NS_LOG_PD_ID, "[ns] unknown opcode\n");
         rep_u32(rep, 0, NS_ERR_UNKNOWN_OP);

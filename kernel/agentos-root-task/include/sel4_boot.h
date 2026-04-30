@@ -37,13 +37,25 @@
  * AGENTOS_CTX_ARG0 instead of a hardcoded field name.
  */
 #  if defined(__riscv)
+#    define AGENTOS_CTX_PC    pc   /* RISC-V: program counter */
+#    define AGENTOS_CTX_SP    sp   /* RISC-V: stack pointer */
 #    define AGENTOS_CTX_ARG0  a0   /* RISC-V: first argument register */
+#    define AGENTOS_CTX_ARG1  a1   /* RISC-V: second argument register */
 #  elif defined(__aarch64__)
+#    define AGENTOS_CTX_PC    pc   /* AArch64: program counter */
+#    define AGENTOS_CTX_SP    sp   /* AArch64: stack pointer */
 #    define AGENTOS_CTX_ARG0  x0   /* AArch64: first argument register */
+#    define AGENTOS_CTX_ARG1  x1   /* AArch64: second argument register */
 #  elif defined(__x86_64__)
+#    define AGENTOS_CTX_PC    rip  /* x86-64: instruction pointer */
+#    define AGENTOS_CTX_SP    rsp  /* x86-64: stack pointer */
 #    define AGENTOS_CTX_ARG0  rdi  /* x86-64 SysV ABI: first integer argument */
+#    define AGENTOS_CTX_ARG1  rsi  /* x86-64 SysV ABI: second integer argument */
 #  else
+#    define AGENTOS_CTX_PC    pc   /* fallback */
+#    define AGENTOS_CTX_SP    sp   /* fallback */
 #    define AGENTOS_CTX_ARG0  x0   /* fallback */
+#    define AGENTOS_CTX_ARG1  x1   /* fallback */
 #  endif
 
 #else /* AGENTOS_TEST_HOST ─────────────────────────────────────────────────── */
@@ -53,6 +65,8 @@
 typedef uintptr_t  seL4_Word;
 typedef seL4_Word  seL4_CPtr;
 typedef uint32_t   seL4_Error;
+
+#define seL4_WordBits  ((seL4_Word)(sizeof(seL4_Word) * 8u))
 
 /* Error codes */
 #define seL4_NoError             ((seL4_Error)0u)
@@ -83,6 +97,7 @@ typedef uint32_t   seL4_Error;
 #define seL4_CapBootInfoFrame       ((seL4_CPtr)9u)
 #define seL4_CapInitThreadIPCBuffer ((seL4_CPtr)10u)
 #define seL4_CapInitThreadSC        ((seL4_CPtr)14u) /* MCS: initial thread's scheduling context */
+#define seL4_AllRights              ((seL4_Word)0x0Fu)
 
 /*
  * seL4_UserContext — unified register layout for test-host builds.
@@ -126,7 +141,10 @@ typedef struct {
     seL4_Word x30;
 } seL4_UserContext;
 
+#define AGENTOS_CTX_PC    pc
+#define AGENTOS_CTX_SP    sp
 #define AGENTOS_CTX_ARG0  x0
+#define AGENTOS_CTX_ARG1  x1
 #define seL4_UserContext_n_regs  34u
 
 /* Stub function declarations for test builds (no-op implementations in test CRT) */

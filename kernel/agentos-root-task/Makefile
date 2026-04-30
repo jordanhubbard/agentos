@@ -329,6 +329,12 @@ build: $(IMAGE_FILE) $(BUILD_DIR)/root_task.elf
 # CFLAGS already includes -Iinclude (kernel/agentos-root-task/include) so all
 # seL4 and agentos headers resolve identically to when the files lived in src/.
 # CFLAGS_SERVICES adds -I$(REPO_ROOT) for files that include "contracts/…/…".
+#
+# Older incremental build directories may still have .d files that name the
+# service files at their pre-E9 src/ paths. Empty rules let make recover once
+# and regenerate those dependency files from the current services/ sources.
+src/agentfs.c src/event_bus.c src/vibe_engine.c src/serial_pd.c src/net_server.c src/net_pd.c:
+
 $(BUILD_DIR)/agentfs.o: $(SERVICES_DIR)/agentfs/agentfs.c
 	@mkdir -p $(BUILD_DIR)
 	$(CC) -c $(CFLAGS) $< -o $@
@@ -684,7 +690,11 @@ $(BUILD_DIR)/linux_vmm.o: src/linux_vmm.c
 	@mkdir -p $(BUILD_DIR)
 	$(CC) -c $(CFLAGS) -DARCH_X86_64 -DLINUX_VMM_X86_STUB=1 $< -o $@
 
-$(BUILD_DIR)/linux_vmm.elf: $(BUILD_DIR)/linux_vmm.o
+$(BUILD_DIR)/linux_vmm.elf: $(BUILD_DIR)/linux_vmm.o \
+                             $(BUILD_DIR)/sel4_crt.o \
+                             $(BUILD_DIR)/pd_entry.o \
+                             $(BUILD_DIR)/m3_bare_metal.o \
+                             $(BUILD_DIR)/log.o
 	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
 endif
 
