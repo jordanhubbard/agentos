@@ -1,0 +1,7 @@
+{
+  "database": "dolt",
+  "backend": "dolt",
+  "dolt_mode": "embedded",
+  "dolt_database": "agentos",
+  "project_id": "94c7b030-a836-4fd7-9059-145609a95f1d"
+}
