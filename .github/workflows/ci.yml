@@ -101,7 +101,7 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends \
-            clang lld \
+            clang lld llvm \
             qemu-system-arm qemu-system-x86 \
             python3 python3-pip curl
 
@@ -184,7 +184,7 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends \
-            clang lld \
+            clang lld llvm \
             qemu-system-arm \
             python3 curl
 
@@ -236,7 +236,7 @@ jobs:
         run: |
           sudo apt-get update -q
           sudo apt-get install -y qemu-system-x86 \
-            clang lld python3 device-tree-compiler curl
+            clang lld llvm python3 device-tree-compiler curl
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Cache Microkit SDK
