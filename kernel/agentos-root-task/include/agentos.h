@@ -644,6 +644,24 @@ void agentos_log_channel(const char *pd, uint32_t ch);
 void agentos_log_fault(const char *pd, agentos_fault_t *f);
 
 /*
+ * agentos_vendor_fault — vendor extension hook for guest faults libvmm
+ * does not recognise. Called by linux_vmm and freebsd_vmm after
+ * libvmm's fault_handle() returns false.
+ *
+ * Default implementation (weak symbol in linux_vmm.c) returns false so
+ * the stock build behaves identically. Distros that extend agentOS —
+ * e.g. SSI cluster work that needs guest -> cluster RPC over a
+ * vendor-defined HVC immediate — override this symbol in their own
+ * translation unit and dispatch to a vendor PD via PPC.
+ *
+ * Returning true means "fault is fully handled, no further action".
+ * Returning false falls through to the existing UART MMIO compliance
+ * stub (linux_vmm) or the LOG_VMM_ERR "unhandled fault" path
+ * (freebsd_vmm).
+ */
+bool agentos_vendor_fault(seL4_Word badge, seL4_MessageInfo_t msginfo);
+
+/*
  * Capability descriptor (simplified for C layer)
  * Full capability management is in the Rust SDK.
  */
