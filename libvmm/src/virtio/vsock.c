@@ -395,10 +395,11 @@ static bool virtio_vsock_get_device_features(struct virtio_device *dev, uint32_t
     LOG_VSOCK("operation: get device features\n");
     switch (dev->regs.DeviceFeaturesSel) {
     case 0:
-        /* No bits in the lower word: VIRTIO_VSOCK_F_STREAM is bit 0 in
-         * the *device* feature space (per Virtio 1.2 §5.10.3) but the
-         * Linux driver doesn't actually require it to be advertised. */
-        *features = 0;
+        /* VIRTIO_VSOCK_F_STREAM (bit 0) — Linux 6.8's vsock-virtio
+         * driver insists on at least one socket-type bit; without it
+         * the probe negotiation never reaches "device ready" and the
+         * platform device sits in /sys/devices/platform unbound. */
+        *features = BIT_LOW(VIRTIO_VSOCK_F_STREAM);
         break;
     case 1:
         *features = BIT_HIGH(VIRTIO_F_VERSION_1);
@@ -415,7 +416,8 @@ static bool virtio_vsock_set_driver_features(struct virtio_device *dev, uint32_t
     bool ok = false;
     switch (dev->regs.DriverFeaturesSel) {
     case 0:
-        ok = (features == 0);
+        /* Driver may accept STREAM or 0 (some kernels mask down). Both ok. */
+        ok = (features == 0 || features == BIT_LOW(VIRTIO_VSOCK_F_STREAM));
         break;
     case 1:
         ok = (features == BIT_HIGH(VIRTIO_F_VERSION_1));
