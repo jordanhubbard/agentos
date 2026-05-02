@@ -1438,6 +1438,33 @@ static void linux_vmm_notified(seL4_Word badge)
  *   dropped until the full proxy is wired.  The guest still boots because
  *   early serial writes do not require a response.
  */
+/*
+ * agentos_vendor_fault — vendor extension hook for guest faults libvmm
+ * doesn't recognise.
+ *
+ * libvmm's fault_handle() handles standard ARMv8 VM faults (MMIO, VPPI,
+ * legacy SBI/HVC subset). Anything outside that surface — vendor-defined
+ * HVC immediates, SBI extension EIDs in the vendor-reserved range,
+ * platform-specific traps — falls through to here.
+ *
+ * Default implementation (this file, weak symbol) returns false so the
+ * stock build behaves identically to before this commit. Distros that
+ * extend agentOS (e.g. SSI cluster work that needs guest -> cluster RPC)
+ * override this symbol in their own translation unit and dispatch to a
+ * vendor PD via PPC.
+ *
+ * Returning true means "this fault is fully handled, nothing else to
+ * do". Returning false falls through to the existing UART MMIO
+ * compliance stub.
+ */
+__attribute__((weak))
+bool agentos_vendor_fault(seL4_Word badge, seL4_MessageInfo_t msginfo)
+{
+    (void)badge;
+    (void)msginfo;
+    return false;
+}
+
 static seL4_MessageInfo_t linux_vmm_fault(seL4_Word badge,
                                           seL4_MessageInfo_t msginfo)
 {
@@ -1445,6 +1472,12 @@ static seL4_MessageInfo_t linux_vmm_fault(seL4_Word badge,
      * Strip the upper flag bits to recover the raw vcpu_id. */
     size_t vcpu_id = badge & ~VMM_FAULT_BADGE_FLAG;
     bool success = fault_handle(vcpu_id, msginfo);
+    if (!success) {
+        /* libvmm did not recognise the fault. Give a vendor extension
+         * a chance to handle it before falling through to the UART
+         * MMIO compliance stub. */
+        success = agentos_vendor_fault(badge, msginfo);
+    }
     (void)success;
     /* UART MMIO fault compliance stub — silently accept, guest continues. */
     return seL4_MessageInfo_new(0, 0, 0, 0);

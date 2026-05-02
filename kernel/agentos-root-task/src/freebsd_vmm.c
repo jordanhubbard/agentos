@@ -699,6 +699,13 @@ static seL4_MessageInfo_t freebsd_vmm_fault(seL4_Word badge,
     bool success = (label == seL4_Fault_VPPIEvent)
         ? freebsd_handle_vppi_event(vcpu_id)
         : fault_handle(vcpu_id, msginfo);
+    if (!success) {
+        /* libvmm did not recognise the fault. Give a vendor extension
+         * a chance before logging it as unhandled. The hook is the
+         * same weak symbol shared with linux_vmm.c so a single
+         * vendor implementation covers both VMMs. */
+        success = agentos_vendor_fault(badge, msginfo);
+    }
     if (!success)
         LOG_VMM_ERR("Unhandled fault: badge=0x%lx label=0x%lx\n",
                     (unsigned long)badge, (unsigned long)label);
