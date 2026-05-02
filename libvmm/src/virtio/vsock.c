@@ -240,7 +240,13 @@ static void tx_handle_packet(struct virtio_vsock_device *vs,
             hdr_for_conn(conn, &reply, VIRTIO_VSOCK_OP_RST, 0, 0);
         }
         rx_push(vs, &reply, NULL, 0);
-        if (!accept) conn_free(conn);
+        if (!accept) {
+            conn_free(conn);
+        } else if (vs->ops && vs->ops->on_accepted) {
+            /* Connection now established from the guest's POV. Backend
+             * may push its first host→guest packet here. */
+            vs->ops->on_accepted(conn, vs->backend_user);
+        }
         break;
     }
 

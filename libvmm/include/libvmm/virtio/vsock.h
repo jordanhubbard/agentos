@@ -146,6 +146,14 @@ typedef struct virtio_vsock_backend_ops {
      * should release its cookie. on_close is also invoked when the host
      * calls virtio_vsock_close(). */
     void (*on_close)(struct virtio_vsock_conn *conn, void *user);
+
+    /* Optional. Fires after the device has synthesised OP_RESPONSE for
+     * an accepted connection — i.e. once the connection is fully
+     * established from the guest's point of view. The backend may use
+     * this to send the first host→guest packet (e.g. the first work
+     * item). May be NULL. Runs in the same TX-virtqueue processing
+     * context as on_connect. */
+    void (*on_accepted)(struct virtio_vsock_conn *conn, void *user);
 } virtio_vsock_backend_ops_t;
 
 /* Top-level device state. Allocated and owned by the linux_vmm
