@@ -373,7 +373,7 @@ static void handle_control_msg(struct virtio_device *dev,
                                bool *respond)
 {
     struct virtq_desc *req_desc = &virtq->desc[desc_head];
-    struct virtio_snd_hdr *hdr = (void *)req_desc->addr;
+    struct virtio_snd_hdr *hdr = (void *)req_desc->addr; /* GPA; sound still identity-mapped */
     struct virtio_snd_pcm_hdr *pcm_hdr = (void *)hdr;
 
     bool immediate = false;

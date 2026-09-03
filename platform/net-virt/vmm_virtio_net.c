@@ -7,10 +7,12 @@
 
 #include <libvmm/libvmm.h>
 #include <libvmm/virtio/net.h>
+#include <libvmm/virtio/gpa.h>
 #include <sddf/network/queue.h>
 #include <platform/net_layout.h>
 #include <platform/net_virt_pump.h>
 #include <platform/vmm_virtio_net.h>
+#include <platform/guest_ram.h>
 
 _Static_assert(AOS_NET_BUFFER_SIZE == NET_BUFFER_SIZE,
                "platform net buffer size must match sDDF NET_BUFFER_SIZE");
@@ -22,6 +24,12 @@ static aos_net_virt_t           g_aos_virt;
 static net_queue_handle_t       g_rx;
 static net_queue_handle_t       g_tx;
 static int                      g_aos_net_ready;
+
+void aos_vmm_guest_ram_bind(uint64_t gpa_base, uintptr_t hva_base, size_t size)
+{
+    aos_guest_ram_configure(gpa_base, hva_base, size);
+    virtio_gpa_set_translate(aos_gpa_to_hva_configured);
+}
 
 void aos_vmm_virtio_net_init(void)
 {

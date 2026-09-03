@@ -12,6 +12,7 @@
 #include <libvmm/virtio/virtq.h>
 #include <libvmm/virtio/virtio.h>
 #include <libvmm/virtio/net.h>
+#include <libvmm/virtio/gpa.h>
 #include <sddf/network/queue.h>
 
 /* Uncomment this to enable debug logging */
@@ -183,7 +184,11 @@ static void handle_tx_msg(struct virtio_device *dev,
         /* Truncate packets that are large than BUF_SIZE */
         uint32_t writing = MIN(dest_remaining, desc->len - skipping);
 
-        memcpy(dest_buf + written, (void *)desc->addr + skipping, writing);
+        /* desc->addr is a GPA, not a host pointer. */
+        if (writing > 0u &&
+            virtio_copy_from_gpa(desc->addr, skipping, dest_buf + written, writing) != 0) {
+            goto fail;
+        }
 
         skip_remaining -= skipping;
         written += writing;
@@ -266,7 +271,12 @@ static uint32_t copy_rx(struct virtq *virtq,
     do {
         uint32_t copying = MIN(size - copied, virtq->desc[*curr_desc_head].len - *desc_copied);
 
-        memcpy((void *)virtq->desc[*curr_desc_head].addr + *desc_copied, buf + copied, copying);
+        /* desc.addr is a GPA. Do not cast it to a host pointer. */
+        if (copying > 0u &&
+            virtio_copy_to_gpa(virtq->desc[*curr_desc_head].addr, *desc_copied,
+                               buf + copied, copying) != 0) {
+            break;
+        }
 
         copied += copying;
         *desc_copied += copying;

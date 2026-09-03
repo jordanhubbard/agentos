@@ -1525,8 +1525,12 @@ void root_task_main(const seL4_BootInfo *bi)
                 name_eq(mr->name, "guest_ram")) {
                 /* KILL-DATED: QEMU virtio passthrough DMAs into guest GPA.
                  * Only guest_ram is identity-mapped. net_virt is anonymous.
-                 * Remove this path once emulated virtio walks GPA→HVA
-                 * (agentos-4yf). */
+                 *
+                 * Emulated virtio-net copies and MMIO queue rings now walk
+                 * GPA→HVA (aos_gpa_to_hva). Residual identity-map users:
+                 *   - QEMU virtio-mmio passthrough (net 0x0A000000 / blk)
+                 *   - libvmm virtio-blk, console, sound desc->addr casts
+                 * Remove this path when those are gone. */
                 mr_err = map_vmm_guest_ram_identity(vspace,
                                                     (seL4_Word)mr->vaddr,
                                                     (size_t)mr->size);

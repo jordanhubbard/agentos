@@ -1354,7 +1354,9 @@ void init(void)
     /*
      * Emulated virtio-net at IPA 0x0A010000 (faults here, sDDF pump).
      * QEMU virtio-mmio at 0x0A000000 / IRQ 48 is a kill-dated crutch.
+     * Bind guest RAM so desc->addr is translated GPA→HVA (identity today).
      */
+    aos_vmm_guest_ram_bind(LINUX_GUEST_RAM_VADDR, guest_ram_vaddr, GUEST_RAM_SIZE);
     aos_vmm_virtio_net_init();
 
     /* Register virtio-net IRQ passthrough (QEMU virt: SPI 16 → INTID 48) */

@@ -178,6 +178,7 @@ static inline void virtio_blk_set_req_fail(struct virtio_device *dev, uint16_t d
     }
     assert(virtq->desc[curr_desc].flags & VIRTQ_DESC_F_WRITE);
     *(uint8_t *)(virtq->desc[curr_desc].addr + virtq->desc[curr_desc].len - 1) = VIRTIO_BLK_S_IOERR;
+    /* desc.addr is a GPA. virtio-blk copies are not translated this pass. */
 }
 
 static inline void virtio_blk_set_req_success(struct virtio_device *dev, uint16_t desc)
