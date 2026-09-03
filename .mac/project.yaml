@@ -1,0 +1,22 @@
+schema: mac.repository_contract.v1
+project: agentos
+canonical_remote_url: https://github.com/jordanhubbard/agentos.git
+default_branch: main
+platforms:
+  - darwin
+  - linux
+toolchain:
+  required_commands:
+    - make
+    - git
+    - clang
+    - gcc
+test:
+  command: make test-host
+evidence:
+  required:
+    - repo.head_sha
+    - repo.pushed
+    - repo.dirty
+    - repo.files_changed
+    - tests

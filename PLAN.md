@@ -2,7 +2,7 @@
 
 **Status:** Active  
 **Last updated:** 2026-09-02  
-**Epic:** `agentos-kpq`
+**Epic:** mac project `agentos` (former beads `agentos-kpq`)
 
 QEMU is a hardware emulator so we can prototype quickly. agentOS is the
 platform that will run on bare metal. Guests (Linux, FreeBSD) consume
@@ -14,7 +14,8 @@ binding) described the wrong I/O model. It is superseded by this document.
 
 ## Priority order (do not skip)
 
-| Step | Beads | Status | Work |
+| Step | Former beads | Status | Work |
+|------|--------------|--------|------|
 |------|-------|--------|------|
 | 1 | `agentos-mzl` | done | TCB page + constitution rewrite |
 | 2 | `agentos-f6y` | done (host-tested) | sDDF net under VMM (`virtio_mmio_net_init`), not QEMU passthrough |

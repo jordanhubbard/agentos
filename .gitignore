@@ -54,7 +54,12 @@ console/
 guest-images/
 tests/e2e/id_ed25519
 
-# Beads / Dolt files (added by bd init)
+# Beads / Dolt — retired. Tracker is mac (`mac task`). Ignore a stray bd init.
 .dolt/
-*.db
+.beads/
 .beads-credential-key
+*.db
+
+# MAC local task-ledger mirror (hub is canonical; never product content)
+.tickets/
+mac-evidence.json
