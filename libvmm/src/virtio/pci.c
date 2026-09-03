@@ -10,6 +10,7 @@
 #include <libvmm/virtio/virtio.h>
 #include <libvmm/virtio/config.h>
 #include <libvmm/virtio/virtq.h>
+#include <libvmm/virtio/gpa.h>
 #include <libvmm/arch/aarch64/fault.h>
 
 #define LOG_PCI_INFO(...) do{ printf("%s|VIRTIO(PCI) INFO: ", vmm_pd_name); printf(__VA_ARGS__); }while(0)
@@ -316,8 +317,22 @@ static bool virtio_pci_common_reg_write(virtio_device_t *dev, size_t vcpu_id, si
         break;
     case REG_RANGE(VIRTIO_PCI_COMMON_Q_ENABLE, VIRTIO_PCI_COMMON_Q_NOTIF_OFF):
         if (data == 0x1) {
+            if (dev->regs.QueueSel >= dev->num_vqs) {
+                LOG_PCI_ERR("invalid virtq index 0x%lx (number of virtqs is 0x%lx) "
+                            "given when accessing REG_VIRTIO_PCI_Q_ENABLE\n",
+                            dev->regs.QueueSel, dev->num_vqs);
+                success = false;
+                break;
+            }
+            if (!dev->vqs[dev->regs.QueueSel].ready) {
+                if (!virtio_queue_map_guest_rings(&dev->vqs[dev->regs.QueueSel].virtq)) {
+                    LOG_PCI_ERR("virtq GPA→HVA map failed (QueueSel 0x%x)\n",
+                                dev->regs.QueueSel);
+                    success = false;
+                    break;
+                }
+            }
             dev->vqs[dev->regs.QueueSel].ready = true;
-            // the virtq is already in ram so we don't need to do any initiation
         }
         break;
     case REG_RANGE(VIRTIO_PCI_COMMON_Q_DESC_LO, VIRTIO_PCI_COMMON_Q_DESC_HI):

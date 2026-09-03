@@ -12,6 +12,7 @@
 #include <libvmm/virtio/virtq.h>
 #include <libvmm/virtio/virtio.h>
 #include <libvmm/virtio/net.h>
+#include <libvmm/virtio/gpa.h>
 #include <sddf/network/queue.h>
 
 /* Uncomment this to enable debug logging */
@@ -57,7 +58,8 @@ static bool virtio_net_get_device_features(struct virtio_device *dev, uint32_t *
     switch (dev->regs.DeviceFeaturesSel) {
     /* Feature bits 0 to 31 */
     case 0:
-        *features = BIT_LOW(VIRTIO_NET_F_MAC);
+        /* F_MRG_RXBUF matches handle_tx_msg / handle_rx_buffer (12-byte hdr). */
+        *features = BIT_LOW(VIRTIO_NET_F_MAC) | BIT_LOW(VIRTIO_NET_F_MRG_RXBUF);
         break;
     /* Features bits 32 to 63 */
     case 1:
@@ -76,15 +78,15 @@ static bool virtio_net_set_driver_features(struct virtio_device *dev, uint32_t f
     bool success = true;
 
     switch (dev->regs.DriverFeaturesSel) {
-    /* Feature bits 0 to 31 */
+    /* Feature bits 0 to 31 — any subset of offered bits. Linux writes the
+     * intersection of device and driver features, not an exact singleton. */
     case 0:
-        /** F_MAC is required */
-        success = (features == BIT_LOW(VIRTIO_NET_F_MAC));
+        success = (features & ~(BIT_LOW(VIRTIO_NET_F_MAC) | BIT_LOW(VIRTIO_NET_F_MRG_RXBUF))) == 0;
         break;
 
     /* Features bits 32 to 63 */
     case 1:
-        success = (features == BIT_HIGH(VIRTIO_F_VERSION_1));
+        success = (features & ~BIT_HIGH(VIRTIO_F_VERSION_1)) == 0;
         break;
 
     default:
@@ -183,7 +185,11 @@ static void handle_tx_msg(struct virtio_device *dev,
         /* Truncate packets that are large than BUF_SIZE */
         uint32_t writing = MIN(dest_remaining, desc->len - skipping);
 
-        memcpy(dest_buf + written, (void *)desc->addr + skipping, writing);
+        /* desc->addr is a GPA, not a host pointer. */
+        if (writing > 0u &&
+            virtio_copy_from_gpa(desc->addr, skipping, dest_buf + written, writing) != 0) {
+            goto fail;
+        }
 
         skip_remaining -= skipping;
         written += writing;
@@ -219,9 +225,13 @@ static bool virtio_net_queue_notify(struct virtio_device *dev)
         LOG_NET_ERR("Driver not ready\n");
         return false;
     }
-    if (dev->regs.QueueSel != VIRTIO_NET_TX_VIRTQ) {
-        LOG_NET_ERR("Invalid queue\n");
-        return false;
+    /*
+     * Linux virtio-mmio writes the queue index to QUEUE_NOTIFY and does not
+     * update QUEUE_SEL first. RX kicks are pulled by virtio_net_handle_rx
+     * after aos_vmm_virtio_net_after_fault pumps sDDF.
+     */
+    if (dev->regs.QueueNotify != VIRTIO_NET_TX_VIRTQ) {
+        return true;
     }
     if (!dev->vqs[VIRTIO_NET_TX_VIRTQ].ready) {
         LOG_NET_ERR("TX virtq not ready\n");
@@ -266,7 +276,12 @@ static uint32_t copy_rx(struct virtq *virtq,
     do {
         uint32_t copying = MIN(size - copied, virtq->desc[*curr_desc_head].len - *desc_copied);
 
-        memcpy((void *)virtq->desc[*curr_desc_head].addr + *desc_copied, buf + copied, copying);
+        /* desc.addr is a GPA. Do not cast it to a host pointer. */
+        if (copying > 0u &&
+            virtio_copy_to_gpa(virtq->desc[*curr_desc_head].addr, *desc_copied,
+                               buf + copied, copying) != 0) {
+            break;
+        }
 
         copied += copying;
         *desc_copied += copying;

@@ -570,6 +570,9 @@ static void boot_setup_irqs(const pd_desc_t *pd,
  * Slots are 0x200-byte windows inside the 4 KB page at 0x0A000000. The VMM
  * guest sees that page at the same IPA for passthrough probing; cc_pd maps a
  * copy of the same frame at its private VA to drive slot 2 for the host relay.
+ *
+ * Guest IPA 0x0A010000 (emulated virtio-net) is outside this page on purpose:
+ * it must remain unmapped so accesses fault into linux_vmm.
  */
 #define VIRTIO_MMIO_PAGE_PA  0x0A000000UL
 #define VIRTIO_MMIO_PAGE_VA  0x0A000000UL
@@ -1525,8 +1528,12 @@ void root_task_main(const seL4_BootInfo *bi)
                 name_eq(mr->name, "guest_ram")) {
                 /* KILL-DATED: QEMU virtio passthrough DMAs into guest GPA.
                  * Only guest_ram is identity-mapped. net_virt is anonymous.
-                 * Remove this path once emulated virtio walks GPA→HVA
-                 * (agentos-4yf). */
+                 *
+                 * Emulated virtio-net copies and MMIO queue rings now walk
+                 * GPA→HVA (aos_gpa_to_hva). Residual identity-map users:
+                 *   - QEMU virtio-mmio passthrough (net 0x0A000000 / blk)
+                 *   - libvmm virtio-blk, console, sound desc->addr casts
+                 * Remove this path when those are gone. */
                 mr_err = map_vmm_guest_ram_identity(vspace,
                                                     (seL4_Word)mr->vaddr,
                                                     (size_t)mr->size);

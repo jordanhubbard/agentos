@@ -10,6 +10,7 @@
 #include <libvmm/virtio/config.h>
 #include <libvmm/virtio/virtio.h>
 #include <libvmm/virtio/virtq.h>
+#include <libvmm/virtio/gpa.h>
 #include <libvmm/arch/aarch64/fault.h>
 
 /* Uncomment this to enable debug logging */
@@ -183,8 +184,27 @@ static bool handle_virtio_mmio_reg_write(virtio_device_t *dev, size_t vcpu_id, s
     }
     case REG_RANGE(REG_VIRTIO_MMIO_QUEUE_READY, REG_VIRTIO_MMIO_QUEUE_NOTIFY):
         if (data == 0x1) {
+            if (dev->regs.QueueSel >= dev->num_vqs) {
+                LOG_VMM_ERR("invalid virtq index 0x%lx (number of virtqs is 0x%lx) "
+                            "given when accessing REG_VIRTIO_MMIO_QUEUE_READY\n",
+                            dev->regs.QueueSel, dev->num_vqs);
+                success = false;
+                break;
+            }
+            /*
+             * QueueDesc/Avail/Used were accumulated as GPA bit-patterns.
+             * Map them to HVAs before walking the rings. Identity until
+             * the VMM installs virtio_gpa_set_translate().
+             */
+            if (!dev->vqs[dev->regs.QueueSel].ready) {
+                if (!virtio_queue_map_guest_rings(&dev->vqs[dev->regs.QueueSel].virtq)) {
+                    LOG_VMM_ERR("virtq GPA→HVA map failed (QueueSel 0x%x)\n",
+                                dev->regs.QueueSel);
+                    success = false;
+                    break;
+                }
+            }
             dev->vqs[dev->regs.QueueSel].ready = true;
-            // the virtq is already in ram so we don't need to do any initiation
         }
         break;
     case REG_RANGE(REG_VIRTIO_MMIO_QUEUE_NOTIFY, REG_VIRTIO_MMIO_INTERRUPT_STATUS):
