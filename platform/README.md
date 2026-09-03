@@ -9,6 +9,8 @@ QEMU virtio-mmio. Native agents attach to the same virtualizers as a VMM.
 | Path | Role |
 |------|------|
 | `include/platform/net_layout.h` | sDDF-shaped net queue ABI (no seL4) |
+| `include/platform/inspect.h` | Read-only memory/thread/hardware snapshot (no seL4) |
+| `inspect/inspect_snapshot.c` | Fill + `key=value` report (host-testable) |
 | `include/platform/guest_ram.h` | GPA→HVA translator for emulated virtio (host-testable) |
 | `guest-ram/gpa_translate.c` | Bounds-checked `aos_gpa_to_hva` |
 | `net-virt/net_virt_pump.c` | Hub / loopback (host-testable) |

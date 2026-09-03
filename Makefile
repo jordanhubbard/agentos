@@ -638,6 +638,28 @@ test-integration:
 	    status=1; \
 	fi; \
 	if gcc -I platform/include \
+	        tests/platform/test_inspect_snapshot.c \
+	        platform/inspect/inspect_snapshot.c \
+	        -o $(BUILD_TMP_DIR)/test_inspect_snapshot 2>&1 \
+	    && $(BUILD_TMP_DIR)/test_inspect_snapshot; then \
+	    echo "PASS: tests/platform/test_inspect_snapshot.c"; \
+	else \
+	    echo "FAIL: tests/platform/test_inspect_snapshot.c"; \
+	    status=1; \
+	fi; \
+	if gcc -I platform/include -I tests/platform \
+	        -DAOS_REPO_ROOT='"$(ROOT_DIR)"' \
+	        tests/platform/test_virtio_net_guest_path.c \
+	        tests/platform/virtio_mmio_net_emu.c \
+	        platform/net-virt/net_virt_pump.c \
+	        -o $(BUILD_TMP_DIR)/test_virtio_net_guest_path 2>&1 \
+	    && $(BUILD_TMP_DIR)/test_virtio_net_guest_path; then \
+	    echo "PASS: tests/platform/test_virtio_net_guest_path.c"; \
+	else \
+	    echo "FAIL: tests/platform/test_virtio_net_guest_path.c"; \
+	    status=1; \
+	fi; \
+	if gcc -I platform/include \
 	        tests/platform/test_gpa_translate.c \
 	        platform/guest-ram/gpa_translate.c \
 	        -o $(BUILD_TMP_DIR)/test_gpa_translate 2>&1 \
