@@ -54,6 +54,19 @@
     };
 
     /*
+     * agentOS emulated virtio-console backed by sDDF serial queues.
+     * PL011 is earlycon only; hvc0 carries the usable console and login.
+     * IRQ: SPI 21 -> INTID 53.
+     */
+    virtio_mmio@a030000 {
+        compatible = "virtio,mmio";
+        dma-coherent;
+        reg = <0x00 0xa030000 0x00 0x1000>;
+        interrupt-parent = <0x8001>;
+        interrupts = <0x00 0x15 0x01>;
+    };
+
+    /*
      * agentOS emulated virtio-blk — NOT LIVE this pass.
      * IPA 0xa020000 / SPI 20 → INTID 52. Do not enable this node until
      * the sDDF RAM/blk_virt backend can replace QEMU virtio-mmio@a000200

@@ -20,7 +20,7 @@ binding) described the wrong I/O model. It is superseded by this document.
 | 2 | (done) | done (host-tested) | sDDF net under VMM (`virtio_mmio_net_init`), not QEMU passthrough |
 | 2b | `task_0d44a94246554eeabc8d5bc8e36ab6d7` | done | `make test-guest-net`: boot buildroot, enumerate IPA `0x0A010000`, pump one frame |
 | 3 | `task_892273845b0949ce8be59f70c02bf644` | done | `make test-guest-blk`: boot buildroot, enumerate IPA `0x0A020000`, pump one request |
-| 4 | `task_9218737eb11a438b89552c599c25d012` | ready | sDDF serial; one UART owner |
+| 4 | `task_9218737eb11a438b89552c599c25d012` | in progress | Ubuntu hvc0 uses emulated virtio-console + sDDF queues; remove residual direct UART ownership |
 | 5 | `task_7f6653b7dcc840b9ab7fa092685c9d57` | waiting on 4 | One VMM implementation; guest flavor is data |
 | 6 | `task_c03b1c0527de416fbcfcdfcb77787559` | waiting on 4 | Stop identity-mapping guest RAM for device DMA |
 | 7 | (done) | done (quarantine by docs) | Quarantine PD museum (no deletes this pass) |
@@ -82,3 +82,15 @@ services is out of scope until inspect and serial attach exist.
    proves the pump. Do not set `root=` to the RAM disk.
 5. Payload copies in libvmm `block.c` still cast `desc.addr` as a host
    pointer — identity map of guest RAM stays until step 6.
+
+## First serial vertical slice (step 4)
+
+1. Ubuntu guest IPA `0x0A030000` is an emulated virtio-console (SPI 21,
+   INTID 53) backed by sDDF byte queues.
+2. `console=hvc0` makes the agentOS device the usable console; PL011 is
+   earlycon only.
+3. `make test-guest-console` requires Ubuntu's login prompt plus echoed
+   input over CC-PD and VMM probe / DRIVER_OK / bidirectional pump markers.
+4. Virtio-console descriptor payloads use bounds-checked GPA translation.
+5. Remaining before step 4 closes: remove direct UART mappings from every
+   non-driver PD so `serial_pd` is the sole post-bootstrap hardware owner.

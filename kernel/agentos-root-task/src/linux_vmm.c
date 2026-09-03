@@ -405,6 +405,7 @@ void pd_main(seL4_CPtr my_ep, seL4_CPtr ns_ep) { linux_vmm_main(my_ep, ns_ep); }
 #include <libvmm/vmm_caps.h>   /* vmm_register_vcpu                           */
 #include <platform/vmm_virtio_net.h>
 #include <platform/vmm_virtio_blk.h>
+#include <platform/vmm_virtio_console.h>
 #include "gpu_shmem.h"
 #include "contracts/linux_vmm_contract.h"
 #include "sel4_boot.h"    /* seL4_IRQHandler_Ack, seL4_CPtr               */
@@ -1181,11 +1182,14 @@ static seL4_MessageInfo_t linux_vmm_rpc(seL4_MessageInfo_t info)
         uint32_t event_type = vmm_msg_rd32(req.data, 4u);
         uint32_t keycode = vmm_msg_rd32(req.data, 8u);
         if (input_event_to_byte(event_type, keycode, &byte)) {
-            if (!console_rx_push(byte)) {
-                rep.opcode = GUEST_ERR_DEVICE_UNAVAILABLE;
-                break;
+            if (!aos_vmm_virtio_console_push_rx(byte)) {
+                /* Early boot fallback before virtio-console reaches DRIVER_OK. */
+                if (!console_rx_push(byte)) {
+                    rep.opcode = GUEST_ERR_DEVICE_UNAVAILABLE;
+                    break;
+                }
+                pl011_maybe_inject_irq();
             }
-            pl011_maybe_inject_irq();
         }
         rep.opcode = GUEST_OK;
         break;
@@ -1201,7 +1205,13 @@ static seL4_MessageInfo_t linux_vmm_rpc(seL4_MessageInfo_t info)
         }
         uint32_t max = vmm_msg_rd32(req.data, 4u);
         if (max > SEL4_MSG_DATA_BYTES) max = SEL4_MSG_DATA_BYTES;
+        /*
+         * PL011 contains earlycon bytes. Once hvc0 is active, all usable
+         * console/login traffic comes from the sDDF-backed virtio-console.
+         */
         rep.length = console_tx_drain(rep.data, max);
+        rep.length += aos_vmm_virtio_console_drain_tx(
+            rep.data + rep.length, max - rep.length);
         rep.opcode = GUEST_OK;
         break;
     }
@@ -1377,6 +1387,7 @@ void init(void)
      * virtio-blk at 0x0A000200 / IRQ 49 as the boot-disk crutch.
      */
     aos_vmm_virtio_blk_init();
+    aos_vmm_virtio_console_init();
 
     /* Register virtio-net IRQ passthrough (QEMU virt: SPI 16 → INTID 48) */
     success = virq_register(GUEST_BOOT_VCPU_ID, VIRTIO_NET_IRQ, &virtio_net_ack, NULL);
@@ -1672,6 +1683,7 @@ static seL4_MessageInfo_t linux_vmm_fault(seL4_Word badge,
     /* Guest virtio-net QueueNotify is an MMIO fault; pump sDDF → RX virtq. */
     aos_vmm_virtio_net_after_fault();
     aos_vmm_virtio_blk_after_fault();
+    aos_vmm_virtio_console_after_fault();
     /* UART MMIO fault compliance stub — silently accept, guest continues. */
     return seL4_MessageInfo_new(0, 0, 0, 0);
 }

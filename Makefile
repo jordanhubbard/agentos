@@ -13,9 +13,10 @@
 #   make test-guest-login — prove Ubuntu/FreeBSD serial login via CC-PD
 #   make test-guest-net   — prove one packet through emulated virtio-net
 #   make test-guest-blk   — prove one request through emulated virtio-blk
+#   make test-guest-console — prove Ubuntu login through emulated virtio-console
 #   make clean        — remove build artifacts for current board
 
-.PHONY: all install deps deps-tools submodules channels run run-fast test test-guest-login test-guest-net test-guest-blk sel4-test-image run-tests test-snapshot-sched test-power-mgr test-proc-server test-vibeos-contract test-integration test-host gate gate-aarch64 gate-x86_64 e2e e2e-guest e2e-contract e2e-dual-os e2e-ubuntu-amd64 e2e-ubuntu-arm64 e2e-nixos e2e-freebsd15 e2e-all bootstrap-guest clean clean-all clean-images help release release-minor release-major fetch-guest build-tools
+.PHONY: all install deps deps-tools submodules channels run run-fast test test-guest-login test-guest-net test-guest-blk test-guest-console sel4-test-image run-tests test-snapshot-sched test-power-mgr test-proc-server test-vibeos-contract test-integration test-host gate gate-aarch64 gate-x86_64 e2e e2e-guest e2e-contract e2e-dual-os e2e-ubuntu-amd64 e2e-ubuntu-arm64 e2e-nixos e2e-freebsd15 e2e-all bootstrap-guest clean clean-all clean-images help release release-minor release-major fetch-guest build-tools
 
 # ─── Read config.yaml (if present) ───────────────────────────────────────────
 CONFIG_TARGET := $(shell grep '^target_arch:' config.yaml 2>/dev/null | sed 's/target_arch:[[:space:]]*//' | tr -d '[:space:]')
@@ -552,6 +553,15 @@ test-guest-blk:
 	fi
 	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os buildroot --timeout-secs $(QEMU_TEST_TIMEOUT) --assert-emulated-blk
 
+# Boot Ubuntu to its login prompt over agentOS's emulated virtio-console,
+# then inject input and require the guest to echo it back through sDDF queues.
+test-guest-console:
+	@if [ "$(BOARD)" != "qemu_virt_aarch64" ]; then \
+		echo "test-guest-console requires BOARD=qemu_virt_aarch64 (got BOARD=$(BOARD))"; \
+		exit 1; \
+	fi
+	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os ubuntu --timeout-secs $(QEMU_TEST_TIMEOUT) --assert-emulated-console
+
 # =============================================================================
 # test-snapshot-sched: standalone unit test for the snapshot_sched PD
 # =============================================================================
@@ -714,6 +724,16 @@ test-integration:
 	    echo "FAIL: tests/platform/test_virtio_blk_guest_path.c"; \
 	    status=1; \
 	fi; \
+	if gcc -I platform/include \
+	        -DAOS_REPO_ROOT='"$(ROOT_DIR)"' \
+	        tests/platform/test_virtio_console_guest_path.c \
+	        -o $(BUILD_TMP_DIR)/test_virtio_console_guest_path 2>&1 \
+	    && $(BUILD_TMP_DIR)/test_virtio_console_guest_path; then \
+	    echo "PASS: tests/platform/test_virtio_console_guest_path.c"; \
+	else \
+	    echo "FAIL: tests/platform/test_virtio_console_guest_path.c"; \
+	    status=1; \
+	fi; \
 	echo ""; \
 	echo "Integration tests complete."; \
 	echo ""; \
@@ -868,6 +888,7 @@ help:
 	@echo "  make test-guest-login Boot Ubuntu and FreeBSD to an interactive serial prompt"
 	@echo "  make test-guest-net   Boot buildroot and prove one packet through emulated virtio-net"
 	@echo "  make test-guest-blk   Boot buildroot and prove one request through emulated virtio-blk"
+	@echo "  make test-guest-console Boot Ubuntu and prove login I/O through emulated virtio-console"
 	@echo ""
 	@echo "Guest images:"
 	@echo "  make fetch-guest GUEST_OS=ubuntu     Stage Ubuntu 26.04 assets in build/guest-images"
@@ -885,6 +906,7 @@ help:
 	@echo "  make test-host        Host-only suite (alias of test-integration; NOT OS proof)"
 	@echo "  make test-guest-net   Guest packet proof: emulated virtio-net (buildroot)"
 	@echo "  make test-guest-blk   Guest I/O proof: emulated virtio-blk (buildroot)"
+	@echo "  make test-guest-console Guest I/O proof: emulated virtio-console (Ubuntu)"
 	@echo "  make test-integration Run host-side contract/integration tests"
 	@echo "  make e2e              Run the default QEMU/guest/CC end-to-end suite"
 	@echo "  make e2e-dual-os      Run Ubuntu and FreeBSD guest E2E coverage"
@@ -908,5 +930,6 @@ help:
 	@echo "  make test-guest-login QEMU_TEST_TIMEOUT=420"
 	@echo "  make test-guest-net QEMU_TEST_TIMEOUT=480"
 	@echo "  make test-guest-blk QEMU_TEST_TIMEOUT=480"
+	@echo "  make test-guest-console QEMU_TEST_TIMEOUT=480"
 	@echo "  cd ../agentos_gui && make run"
 	@echo ""

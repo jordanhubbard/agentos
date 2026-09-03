@@ -11,6 +11,7 @@
 #include <libvmm/virtio/config.h>
 #include <libvmm/virtio/mmio.h>
 #include <libvmm/virtio/console.h>
+#include <libvmm/virtio/gpa.h>
 #include <sddf/serial/queue.h>
 
 /* Uncomment this to enable debug logging */
@@ -142,9 +143,14 @@ static bool virtio_console_handle_tx(struct virtio_device *dev)
                     transferred = true;
                 }
 
-                memcpy(console->txq->data_region + (console->txq->queue->tail % console->txq->capacity),
-                       /* desc.addr is a GPA. Not translated this pass (serial). Identity map still required. */
-                       (char *)(desc.addr + (desc.len - bytes_remain)), to_transfer);
+                if (virtio_copy_from_gpa(
+                        desc.addr, desc.len - bytes_remain,
+                        console->txq->data_region +
+                            (console->txq->queue->tail % console->txq->capacity),
+                        to_transfer) != 0) {
+                    LOG_CONSOLE_ERR("TX descriptor GPA is outside guest RAM\n");
+                    return false;
+                }
 
                 serial_update_shared_tail(console->txq, console->txq->queue->tail + to_transfer);
                 bytes_remain -= to_transfer;
@@ -191,7 +197,9 @@ bool virtio_console_handle_rx(struct virtio_console_device *console)
          * started, so just dequeue all data and early return.
          */
         char c;
-        while (serial_dequeue(console->rxq, &c));
+        while (serial_dequeue(console->rxq, &c) == 0) {
+            /* discard bytes queued before the guest supplied RX buffers */
+        }
         return true;
     }
 
@@ -205,7 +213,10 @@ bool virtio_console_handle_rx(struct virtio_console_device *console)
         uint32_t bytes_written = 0;
         char c;
         while (bytes_written < desc.len && !serial_dequeue(console->rxq, &c)) {
-            *(char *)(desc.addr + bytes_written) = c; /* GPA; serial still identity-mapped */
+            if (virtio_copy_to_gpa(desc.addr, bytes_written, &c, 1u) != 0) {
+                LOG_CONSOLE_ERR("RX descriptor GPA is outside guest RAM\n");
+                return false;
+            }
             bytes_written++;
         }
 

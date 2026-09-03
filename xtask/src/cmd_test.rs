@@ -35,14 +35,20 @@ const VIBEOS_DEV_BLOCK: u32 = 1 << 2;
 pub fn run(args: &TestArgs) -> anyhow::Result<()> {
     let repo_root = repo_root()?;
 
-    if args.assert_emulated_net || args.assert_emulated_blk {
+    if args.assert_emulated_net || args.assert_emulated_blk || args.assert_emulated_console {
         anyhow::ensure!(
             args.board == "qemu_virt_aarch64",
-            "--assert-emulated-net/--assert-emulated-blk require --board qemu_virt_aarch64"
+            "emulated VirtIO assertions require --board qemu_virt_aarch64"
         );
         anyhow::ensure!(
             args.guest_os != "none",
-            "--assert-emulated-net/--assert-emulated-blk need a real guest (buildroot or ubuntu); GUEST_OS=none is a stub VMM"
+            "emulated VirtIO assertions need a real guest; GUEST_OS=none is a stub VMM"
+        );
+    }
+    if args.assert_emulated_console {
+        anyhow::ensure!(
+            args.guest_os == "ubuntu",
+            "--assert-emulated-console currently requires --guest-os ubuntu"
         );
     }
 
@@ -97,7 +103,7 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
         ssh_port,
     )?;
 
-    let result = if args.assert_emulated_net {
+    let mut result = if args.assert_emulated_net {
         println!(
             "[xtask:test] Waiting for emulated virtio-net guest proof in {}...",
             log_path.display()
@@ -166,6 +172,28 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
         }
         }
     };
+
+    if result.is_ok() && args.assert_emulated_console {
+        let console = wait_for_all_markers(
+            &log_path,
+            &[
+                "emulated virtio-console: guest probed",
+                "emulated virtio-console: guest DRIVER_OK",
+                "emulated virtio-console: pumped ",
+                "emulated virtio-console: pumped input serial_virt->guest",
+            ],
+            Duration::from_secs(10),
+        );
+        result = match (result, console) {
+            (Ok(login), Ok(_)) => Ok(format!(
+                "{login}; emulated virtio-console probed + DRIVER_OK + bidirectional I/O"
+            )),
+            (_, Err(err)) => Err(err.context(
+                "Ubuntu login succeeded but virtio-console proof was incomplete",
+            )),
+            (Err(err), _) => Err(err),
+        };
+    }
 
     let _ = qemu.kill();
     let _ = qemu.wait();
@@ -647,6 +675,45 @@ pub fn wait_for_markers(
                 if accumulated.contains(marker) {
                     return Ok(marker.to_string());
                 }
+            }
+        }
+
+        std::thread::sleep(Duration::from_millis(200));
+    }
+}
+
+fn wait_for_all_markers(
+    log_path: &Path,
+    markers: &[&str],
+    timeout: Duration,
+) -> anyhow::Result<String> {
+    let start = Instant::now();
+    let mut file = std::fs::File::open(log_path).context("failed to open log file")?;
+    let mut offset: u64 = 0;
+    let mut accumulated = String::new();
+
+    loop {
+        if start.elapsed() >= timeout {
+            let missing: Vec<&str> = markers
+                .iter()
+                .copied()
+                .filter(|marker| !accumulated.contains(marker))
+                .collect();
+            anyhow::bail!(
+                "timeout after {}s waiting for all markers; missing {:?}",
+                timeout.as_secs(),
+                missing
+            );
+        }
+
+        file.seek(SeekFrom::Start(offset))?;
+        let mut raw = Vec::new();
+        let bytes_read = file.read_to_end(&mut raw)?;
+        if bytes_read > 0 {
+            offset += bytes_read as u64;
+            accumulated.push_str(&String::from_utf8_lossy(&raw));
+            if markers.iter().all(|marker| accumulated.contains(marker)) {
+                return Ok(markers.join(" + "));
             }
         }
 

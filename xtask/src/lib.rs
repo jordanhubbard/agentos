@@ -41,6 +41,9 @@ pub struct TestArgs {
     /// Require emulated virtio-blk probe + DRIVER_OK + a pumped request.
     #[arg(long)]
     pub assert_emulated_blk: bool,
+    /// Require Ubuntu login and bidirectional I/O through emulated virtio-console.
+    #[arg(long)]
+    pub assert_emulated_console: bool,
 }
 
 #[derive(clap::Args)]

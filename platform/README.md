@@ -20,6 +20,8 @@ QEMU virtio-mmio. Native agents attach to the same virtualizers as a VMM.
 | `blk-virt/blk_virt_pump.c` | RAM-disk pump (host-testable) |
 | `blk-virt/vmm_virtio_blk.c` | libvmm `virtio_mmio_blk_init` + after-fault pump |
 | `blk-virt/blk_virt.c` | Future `blk_virt` PD — **not in the live image** |
+| `include/platform/serial_layout.h` | sDDF serial queue sizes + guest virtio-console ABI |
+| `serial-virt/vmm_virtio_console.c` | libvmm virtio-console + CC-PD queue bridge |
 
 Do not add `net_virt` to `IMAGES` / `system_desc` until a nic_drv owns the
 host NIC and the 2 MB region is a shared MR. This pass the VMM pumps locally.
@@ -35,5 +37,8 @@ Emulated virtio-net copies and MMIO/PCI queue-ring walks go through
 
 1. **QEMU virtio passthrough DMA** — host virtio-net/blk at `0x0A000000` /
    `0x0A000200` programs the guest GPA as a host physical address.
-2. **libvmm virtio-blk / console / sound** — still cast `desc->addr` to a
+2. **libvmm virtio-blk / sound** — still cast `desc->addr` to a
    host pointer. Do not remove the map for those devices in this pass.
+
+Virtio-net and virtio-console descriptor payloads and all emulated virtqueue
+rings already use the configured GPA-to-HVA translator.
