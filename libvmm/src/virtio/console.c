@@ -143,6 +143,7 @@ static bool virtio_console_handle_tx(struct virtio_device *dev)
                 }
 
                 memcpy(console->txq->data_region + (console->txq->queue->tail % console->txq->capacity),
+                       /* desc.addr is a GPA. Not translated this pass (serial). Identity map still required. */
                        (char *)(desc.addr + (desc.len - bytes_remain)), to_transfer);
 
                 serial_update_shared_tail(console->txq, console->txq->queue->tail + to_transfer);
@@ -204,7 +205,7 @@ bool virtio_console_handle_rx(struct virtio_console_device *console)
         uint32_t bytes_written = 0;
         char c;
         while (bytes_written < desc.len && !serial_dequeue(console->rxq, &c)) {
-            *(char *)(desc.addr + bytes_written) = c;
+            *(char *)(desc.addr + bytes_written) = c; /* GPA; serial still identity-mapped */
             bytes_written++;
         }
 

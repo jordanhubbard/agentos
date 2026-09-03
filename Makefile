@@ -659,6 +659,16 @@ test-integration:
 	    echo "FAIL: tests/platform/test_virtio_net_guest_path.c"; \
 	    status=1; \
 	fi; \
+	if gcc -I platform/include \
+	        tests/platform/test_gpa_translate.c \
+	        platform/guest-ram/gpa_translate.c \
+	        -o $(BUILD_TMP_DIR)/test_gpa_translate 2>&1 \
+	    && $(BUILD_TMP_DIR)/test_gpa_translate; then \
+	    echo "PASS: tests/platform/test_gpa_translate.c"; \
+	else \
+	    echo "FAIL: tests/platform/test_gpa_translate.c"; \
+	    status=1; \
+	fi; \
 	echo ""; \
 	echo "Integration tests complete."; \
 	echo ""; \
