@@ -1352,7 +1352,7 @@ void init(void)
     linux_vmm_binding_init();
 
     /*
-     * Emulated virtio-net at IPA 0x0A010000 (faults here, sDDF pump).
+     * Emulated virtio-net at IPA 0x0A010000 (unmapped; faults here, sDDF pump).
      * QEMU virtio-mmio at 0x0A000000 / IRQ 48 is a kill-dated crutch.
      */
     aos_vmm_virtio_net_init();

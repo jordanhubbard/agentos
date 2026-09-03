@@ -57,7 +57,8 @@ static bool virtio_net_get_device_features(struct virtio_device *dev, uint32_t *
     switch (dev->regs.DeviceFeaturesSel) {
     /* Feature bits 0 to 31 */
     case 0:
-        *features = BIT_LOW(VIRTIO_NET_F_MAC);
+        /* F_MRG_RXBUF matches handle_tx_msg / handle_rx_buffer (12-byte hdr). */
+        *features = BIT_LOW(VIRTIO_NET_F_MAC) | BIT_LOW(VIRTIO_NET_F_MRG_RXBUF);
         break;
     /* Features bits 32 to 63 */
     case 1:
@@ -76,15 +77,15 @@ static bool virtio_net_set_driver_features(struct virtio_device *dev, uint32_t f
     bool success = true;
 
     switch (dev->regs.DriverFeaturesSel) {
-    /* Feature bits 0 to 31 */
+    /* Feature bits 0 to 31 — any subset of offered bits. Linux writes the
+     * intersection of device and driver features, not an exact singleton. */
     case 0:
-        /** F_MAC is required */
-        success = (features == BIT_LOW(VIRTIO_NET_F_MAC));
+        success = (features & ~(BIT_LOW(VIRTIO_NET_F_MAC) | BIT_LOW(VIRTIO_NET_F_MRG_RXBUF))) == 0;
         break;
 
     /* Features bits 32 to 63 */
     case 1:
-        success = (features == BIT_HIGH(VIRTIO_F_VERSION_1));
+        success = (features & ~BIT_HIGH(VIRTIO_F_VERSION_1)) == 0;
         break;
 
     default:
@@ -219,9 +220,13 @@ static bool virtio_net_queue_notify(struct virtio_device *dev)
         LOG_NET_ERR("Driver not ready\n");
         return false;
     }
-    if (dev->regs.QueueSel != VIRTIO_NET_TX_VIRTQ) {
-        LOG_NET_ERR("Invalid queue\n");
-        return false;
+    /*
+     * Linux virtio-mmio writes the queue index to QUEUE_NOTIFY and does not
+     * update QUEUE_SEL first. RX kicks are pulled by virtio_net_handle_rx
+     * after aos_vmm_virtio_net_after_fault pumps sDDF.
+     */
+    if (dev->regs.QueueNotify != VIRTIO_NET_TX_VIRTQ) {
+        return true;
     }
     if (!dev->vqs[VIRTIO_NET_TX_VIRTQ].ready) {
         LOG_NET_ERR("TX virtq not ready\n");
