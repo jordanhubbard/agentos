@@ -637,6 +637,16 @@ test-integration:
 	    echo "FAIL: tests/platform/test_net_virt_pump.c"; \
 	    status=1; \
 	fi; \
+	if gcc -I platform/include \
+	        tests/platform/test_blk_virt_pump.c \
+	        platform/blk-virt/blk_virt_pump.c \
+	        -o $(BUILD_TMP_DIR)/test_blk_virt_pump 2>&1 \
+	    && $(BUILD_TMP_DIR)/test_blk_virt_pump; then \
+	    echo "PASS: tests/platform/test_blk_virt_pump.c"; \
+	else \
+	    echo "FAIL: tests/platform/test_blk_virt_pump.c"; \
+	    status=1; \
+	fi; \
 	echo ""; \
 	echo "Integration tests complete."; \
 	echo ""; \
