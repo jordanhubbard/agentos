@@ -404,6 +404,7 @@ void pd_main(seL4_CPtr my_ep, seL4_CPtr ns_ep) { linux_vmm_main(my_ep, ns_ep); }
 #include <libvmm/libvmm.h>
 #include <libvmm/vmm_caps.h>   /* vmm_register_vcpu                           */
 #include <platform/vmm_virtio_net.h>
+#include <platform/vmm_virtio_blk.h>
 #include "gpu_shmem.h"
 #include "contracts/linux_vmm_contract.h"
 #include "sel4_boot.h"    /* seL4_IRQHandler_Ack, seL4_CPtr               */
@@ -1359,6 +1360,13 @@ void init(void)
     aos_vmm_guest_ram_bind(LINUX_GUEST_RAM_VADDR, guest_ram_vaddr, GUEST_RAM_SIZE);
     aos_vmm_virtio_net_init();
 
+    /*
+     * Emulated virtio-blk at IPA 0x0A020000 (faults here, sDDF RAM pump).
+     * Not in the live guest DTB this pass — QEMU virtio-blk at 0x0A000200
+     * / IRQ 49 remains the boot disk (kill-dated crutch).
+     */
+    aos_vmm_virtio_blk_init();
+
     /* Register virtio-net IRQ passthrough (QEMU virt: SPI 16 → INTID 48) */
     success = virq_register(GUEST_BOOT_VCPU_ID, VIRTIO_NET_IRQ, &virtio_net_ack, NULL);
     if (!success) {
@@ -1627,6 +1635,7 @@ static seL4_MessageInfo_t linux_vmm_fault(seL4_Word badge,
     (void)success;
     /* Guest virtio-net QueueNotify is an MMIO fault; pump sDDF → RX virtq. */
     aos_vmm_virtio_net_after_fault();
+    aos_vmm_virtio_blk_after_fault();
     /* UART MMIO fault compliance stub — silently accept, guest continues. */
     return seL4_MessageInfo_new(0, 0, 0, 0);
 }

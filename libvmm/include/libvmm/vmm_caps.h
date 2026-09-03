@@ -142,9 +142,13 @@ static inline void vmm_irq_ack(seL4_CPtr irq_cap)
     seL4_IRQHandler_Ack(irq_cap);
 }
 
-/* vmm_notify — signal a notification cap (replaces microkit_notify). */
+/* vmm_notify — signal a notification cap (replaces microkit_notify).
+ * Cap 0 means no server PD yet (local pump). Never seL4_Signal(0). */
 static inline void vmm_notify(seL4_CPtr ntfn_cap)
 {
+    if (ntfn_cap == 0) {
+        return;
+    }
     seL4_Signal(ntfn_cap);
 }
 
