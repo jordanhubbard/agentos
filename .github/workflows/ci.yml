@@ -209,11 +209,11 @@ jobs:
 
       - name: Build agentOS with IPC harness (CONFIG_IPC_HARNESS=1)
         run: |
-          make build BOARD=qemu_virt_aarch64 CONFIG_IPC_HARNESS=1
+          make build BOARD=qemu_virt_aarch64 CONFIG_IPC_HARNESS=1 GUEST_OS=none
 
       - name: Run contract tests
         run: |
-          make test BOARD=qemu_virt_aarch64
+          make test BOARD=qemu_virt_aarch64 GUEST_OS=none
         timeout-minutes: 5
 
       - name: Upload contract test artifacts
