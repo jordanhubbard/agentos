@@ -4,25 +4,25 @@
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────┐
-│  Ring 5 — Agents / Applications                                         │
+│  Native agents / applications (EL0 clients of virtualizers)             │
 │                                                                         │
 │   Agent binary (WASM or ELF)         agentctl CLI                      │
 │   libagent.c (seL4_Call wrappers)    xtask / build tools               │
 └────────────────────────────┬────────────────────────────────────────────┘
                              │ seL4 IPC (capability-gated)
 ┌────────────────────────────▼────────────────────────────────────────────┐
-│  Ring 3–4 — Guest OS VMMs                                               │
+│  VMM PDs (EL0) — vCPU, vGIC, emulated virtio                            │
 │                                                                         │
 │   linux_vmm.c          freebsd_vmm.c      (future guest VMMs)          │
 │   ┌──────────────┐     ┌─────────────┐                                 │
 │   │ Linux guest  │     │ FreeBSD     │  virtio devices via seL4 shmem  │
-│   │ (EL0 / Ring4)│     │ guest (EL0) │                                 │
+│   │ (EL1)        │     │ guest (EL1) │                                 │
 │   └──────────────┘     └─────────────┘                                 │
 │   gpu_shmem.c (approved custom channel — DEFECT-001)                   │
 └────────────────────────────┬────────────────────────────────────────────┘
                              │ seL4 IPC
 ┌────────────────────────────▼────────────────────────────────────────────┐
-│  Ring 2 — System Services (Microkit Protection Domains)                 │
+│  Driver + virtualizer PDs (EL0) — own hardware, mux I/O                 │
 │                                                                         │
 │  VibeOS lifecycle        Hot-swap pipeline     OS management            │
 │  ┌─────────────────┐    ┌────────────────┐    ┌──────────────────┐    │
@@ -51,15 +51,15 @@
 └────────────────────────────┬────────────────────────────────────────────┘
                              │ seL4 system calls only
 ┌────────────────────────────▼────────────────────────────────────────────┐
-│  Ring 1 — agentOS Root Task / Init                                      │
+│  Root task (EL0) — untyped, spawn, initial caps                         │
 │                                                                         │
 │   init_agent.c     controller.c     vibe_engine init                   │
 │   Distributes initial capabilities. No policy enforcement.              │
-│   Spawns all Ring-2 PDs. Never modified after boot.                    │
+│   Spawns TCB PDs. Never modified after boot.                            │
 └────────────────────────────┬────────────────────────────────────────────┘
                              │ seL4 kernel API (seL4_Call, seL4_Reply …)
 ┌────────────────────────────▼────────────────────────────────────────────┐
-│  Ring 0 — seL4 Microkernel (formally verified, never modified)          │
+│  seL4 (EL2) — formally verified, never modified                         │
 │                                                                         │
 │   Capability system   IPC endpoints   TCB / scheduling   Memory objects │
 └─────────────────────────────────────────────────────────────────────────┘
@@ -145,9 +145,9 @@ API-first rule):
 
 ## Key Invariants
 
-- **seL4 is the only Ring 0 component.** Never modified.
-- **Capabilities are monotonically decreasing** as they are delegated down the
-  ring hierarchy. No PD may escalate its own privileges.
+- **seL4 is the only kernel-mode (EL2) component.** Never modified.
+- **Capabilities are monotonically decreasing** as they are delegated. No PD
+  may escalate its own privileges.
 - **Root task distributes, never enforces policy.** Policy is the cap-broker's job.
 - **No UI code** in this repository. GUI clients live outside the repo and
   consume CC-PD or IPC contracts.

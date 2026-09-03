@@ -32,6 +32,7 @@ label is chosen.
 |-----------|-------------|------------------|
 | seL4/Microkit boot (AArch64, x86_64) | boot-proven | `xtask qemu-test`, `tests/end_to_end_boot_test.sh` wait for boot markers; RISC-V builds but is not regularly boot-asserted |
 | Linux/Ubuntu guest boot | boot-proven | `tests/e2e/run_dual_os_e2e.sh` boots + SSHes in; `make test-guest-login` |
+| Emulated virtio-net (sDDF pump, IPA `0x0A010000`) | host-tested | `aos_net_virt_pump`; linux_vmm calls `virtio_mmio_net_init`; QEMU passthrough is still the SSH path |
 | FreeBSD 15.0 guest boot | boot-proven | Dual-OS E2E (`3f5365a` "prove dual linux freebsd lifecycle") |
 | Guest VMM slot mux (create/switch/list/status) | target-tested | Per-guest VMM slots (`470679f`); contract exercised |
 | Guest snapshot / restore | stubbed | `vm_manager.c`: "SNAPSHOT/RESTORE: not implemented (Phase 1)"; `cc_pd.c` returns `CC_ERR_RELAY_FAULT` |
@@ -88,47 +89,32 @@ agentOS boots bare metal. Agents run in isolated address spaces with capability-
 
 ## 2. Architecture Overview
 
+Binding TCB: `docs/TCB.md`. Binding plan: `PLAN.md`.
+
+QEMU (or a physical SoC) is **hardware**. agentOS owns that hardware in
+user-mode driver PDs, muxes it in virtualizer PDs, and presents **emulated
+virtio** to Linux and FreeBSD. Native agents attach to the same virtualizers.
+
 ```
-┌─────────────────────────────────────────────────────────┐
-│                    AGENT SPACE                          │
-│  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐  │
-│  │ Agent A  │ │ Agent B  │ │ Agent C  │ │ Agent N  │  │
-│  │(CAmkES)  │ │(CAmkES)  │ │(CAmkES)  │ │(CAmkES)  │  │
-│  └────┬─────┘ └────┬─────┘ └────┬─────┘ └────┬─────┘  │
-│       │             │             │             │        │
-│  ═════╪═════════════╪═════════════╪═════════════╪══════  │
-│       │      AGENT SDK LAYER (libagent)        │        │
-│  ═════╪═════════════╪═════════════╪═════════════╪══════  │
-│       │             │             │             │        │
-│  ┌────┴─────────────┴─────────────┴─────────────┴────┐  │
-│  │              SYSTEM SERVICES                       │  │
-│  │  ┌─────────┐ ┌─────────┐ ┌─────────┐ ┌────────┐  │  │
-│  │  │CapStore │ │ MsgBus  │ │MemFS   │ │ToolSvc│  │  │
-│  │  │(caps DB)│ │(IPC hub)│ │(VFS)   │ │(tools)│  │  │
-│  │  └─────────┘ └─────────┘ └─────────┘ └────────┘  │  │
-│  │  ┌─────────┐ ┌─────────┐ ┌─────────┐ ┌────────┐  │  │
-│  │  │ModelSvc │ │NetStack │ │BlobSvc │ │LogSvc │  │  │
-│  │  │(LLM)   │ │(TCP/IP) │ │(objects)│ │(audit)│  │  │
-│  │  └─────────┘ └─────────┘ └─────────┘ └────────┘  │  │
-│  └────────────────────────────────────────────────────┘  │
-│                                                          │
-│  ════════════════════════════════════════════════════════ │
-│                  INIT / ROOT TASK                        │
-│          (Bootstrap, resource distribution)              │
-│  ════════════════════════════════════════════════════════ │
-│                                                          │
-│  ┌──────────────────────────────────────────────────────┐│
-│  │                seL4 MICROKERNEL                      ││
-│  │  Capabilities │ IPC │ Scheduling │ Memory Mgmt      ││
-│  │  (formally verified, ~10K lines of C)                ││
-│  └──────────────────────────────────────────────────────┘│
-│                                                          │
-│  ┌──────────────────────────────────────────────────────┐│
-│  │                   HARDWARE                           ││
-│  │  CPU │ RAM │ NIC │ Storage │ GPU (optional)          ││
-│  └──────────────────────────────────────────────────────┘│
-└─────────────────────────────────────────────────────────┘
+ Hardware / QEMU stand-in
+        │
+        ▼
+ seL4 (EL2) ──────────────────────────────────────────────
+        │
+        ├── root task (untyped, spawn, caps; no policy)
+        │
+        ├── driver PDs     (UART, NIC, disk)     EL0
+        ├── virtualizers   (sDDF queues)         EL0
+        └── VMM            (vCPU, vGIC, virtio device emu) EL0
+                │
+                ├── Linux guest     EL1  (in-tree virtio)
+                └── FreeBSD guest   EL1  (in-tree virtio)
+
+ Native agent PDs ──queues──► virtualizers   (no guest OS required)
 ```
+
+CapStore / MsgBus / ModelSvc are **optional clients**, not the OS. See the
+museum list in `docs/TCB.md`.
 
 ---
 

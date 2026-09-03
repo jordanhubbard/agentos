@@ -1523,10 +1523,10 @@ void root_task_main(const seL4_BootInfo *bi)
 #if defined(__aarch64__)
             if ((name_eq(pd->name, "linux_vmm") || name_eq(pd->name, "freebsd_vmm")) &&
                 name_eq(mr->name, "guest_ram")) {
-                /* QEMU virtio passthrough DMAs into guest physical addresses.
-                 * Map the guest RAM window from the same physical RAM range
-                 * advertised in the guest DTB so QEMU and the VMM share backing
-                 * pages for virtqueue descriptors and data buffers. */
+                /* KILL-DATED: QEMU virtio passthrough DMAs into guest GPA.
+                 * Only guest_ram is identity-mapped. net_virt is anonymous.
+                 * Remove this path once emulated virtio walks GPA→HVA
+                 * (agentos-4yf). */
                 mr_err = map_vmm_guest_ram_identity(vspace,
                                                     (seL4_Word)mr->vaddr,
                                                     (size_t)mr->size);

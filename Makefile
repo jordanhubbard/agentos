@@ -613,7 +613,7 @@ test-integration:
 	    tests/test_guest_contract.c \
 	    tests/test_vm_multi_guest.c \
 	    tests/test_e13_agent_boot.c \
-	    tests/vibe/test_vibeos_contract.c; do \
+	            tests/vibe/test_vibeos_contract.c; do \
 	    if gcc -I tests \
 	        -I kernel/agentos-root-task/include \
 	        -DAGENTOS_TEST_HOST \
@@ -627,6 +627,16 @@ test-integration:
 	        status=1; \
 	    fi; \
 	done; \
+	if gcc -I platform/include \
+	        tests/platform/test_net_virt_pump.c \
+	        platform/net-virt/net_virt_pump.c \
+	        -o $(BUILD_TMP_DIR)/test_net_virt_pump 2>&1 \
+	    && $(BUILD_TMP_DIR)/test_net_virt_pump; then \
+	    echo "PASS: tests/platform/test_net_virt_pump.c"; \
+	else \
+	    echo "FAIL: tests/platform/test_net_virt_pump.c"; \
+	    status=1; \
+	fi; \
 	echo ""; \
 	echo "Integration tests complete."; \
 	echo ""; \

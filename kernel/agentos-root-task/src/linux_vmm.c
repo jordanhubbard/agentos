@@ -403,6 +403,7 @@ void pd_main(seL4_CPtr my_ep, seL4_CPtr ns_ep) { linux_vmm_main(my_ep, ns_ep); }
 
 #include <libvmm/libvmm.h>
 #include <libvmm/vmm_caps.h>   /* vmm_register_vcpu                           */
+#include <platform/vmm_virtio_net.h>
 #include "gpu_shmem.h"
 #include "contracts/linux_vmm_contract.h"
 #include "sel4_boot.h"    /* seL4_IRQHandler_Ack, seL4_CPtr               */
@@ -1350,6 +1351,12 @@ void init(void)
      */
     linux_vmm_binding_init();
 
+    /*
+     * Emulated virtio-net at IPA 0x0A010000 (faults here, sDDF pump).
+     * QEMU virtio-mmio at 0x0A000000 / IRQ 48 is a kill-dated crutch.
+     */
+    aos_vmm_virtio_net_init();
+
     /* Register virtio-net IRQ passthrough (QEMU virt: SPI 16 → INTID 48) */
     success = virq_register(GUEST_BOOT_VCPU_ID, VIRTIO_NET_IRQ, &virtio_net_ack, NULL);
     if (!success) {
@@ -1616,6 +1623,8 @@ static seL4_MessageInfo_t linux_vmm_fault(seL4_Word badge,
 
     bool success = fault_handle(vcpu_id, msginfo);
     (void)success;
+    /* Guest virtio-net QueueNotify is an MMIO fault; pump sDDF → RX virtq. */
+    aos_vmm_virtio_net_after_fault();
     /* UART MMIO fault compliance stub — silently accept, guest continues. */
     return seL4_MessageInfo_new(0, 0, 0, 0);
 }

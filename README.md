@@ -39,26 +39,23 @@ requires a mapped staging region and has not been proven on target.
 
 ## Architecture
 
+QEMU is a hardware emulator for prototyping. agentOS is the platform that
+runs on that hardware (and later on a real board): user-mode drivers,
+sDDF virtualizers, and a VMM that presents **emulated virtio** to Linux and
+FreeBSD. Native agents use the same virtualizers without a guest OS.
+
+See `docs/TCB.md` and `PLAN.md`.
+
 ```
-┌──────────────────────────────────────────┐
-│              AGENT SPACE                 │
-│   Agent A   Agent B   Agent C   ...      │
-│   (seL4 isolated address spaces)         │
-├──────────────────────────────────────────┤
-│            SYSTEM SERVICES               │
-│  CapStore  MsgBus  MemFS  ToolSvc        │
-│  ModelSvc  NetStack  BlobSvc  LogSvc     │
-├──────────────────────────────────────────┤
-│         INIT / ROOT TASK                 │
-│   (Bootstrap, resource distribution)     │
-├──────────────────────────────────────────┤
-│            seL4 MICROKERNEL              │
-│   Capabilities · IPC · Scheduling        │
-│   Memory Management (formally verified)  │
-├──────────────────────────────────────────┤
-│               HARDWARE                   │
-│   CPU · RAM · NIC · Storage · GPU        │
-└──────────────────────────────────────────┘
+ Hardware / QEMU
+      │
+      ▼
+ seL4 (EL2)
+      ├── root task
+      ├── driver PDs + virtualizers (user mode)
+      └── VMM (emulated virtio-net/blk/console)
+            ├── Linux guest
+            └── FreeBSD guest
 ```
 
 ## Core Concepts

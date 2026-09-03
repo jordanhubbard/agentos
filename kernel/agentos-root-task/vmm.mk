@@ -88,6 +88,7 @@ VMM_CFLAGS := \
     -I$(SDDF_ABS)/include/sddf/util/custom_libc \
     -I$(SDDF_ABS)/include/microkit \
     -I$(KERNEL_SRC_DIR)/include \
+    -I$(AGENTOS_ROOT)/platform/include \
     -MD -MP \
     -target aarch64-none-elf
 
@@ -206,6 +207,8 @@ $(BUILD_DIR)/images.o: FORCE \
 LINUX_VMM_FULL_OBJ := $(BUILD_DIR)/linux_vmm.full.o
 GPU_SHMEM_FULL_OBJ := $(BUILD_DIR)/gpu_shmem.full.o
 VMM_PD_ENTRY_OBJ   := $(BUILD_DIR)/pd_entry.vmm.o
+NET_VIRT_PUMP_OBJ  := $(BUILD_DIR)/net_virt_pump.o
+VMM_VIRTIO_NET_OBJ := $(BUILD_DIR)/vmm_virtio_net.o
 
 # ─── Compile linux_vmm.c + gpu_shmem.c ──────────────────────────────────
 #
@@ -213,7 +216,8 @@ VMM_PD_ENTRY_OBJ   := $(BUILD_DIR)/pd_entry.vmm.o
 # Makefile also writes $(BUILD_DIR)/linux_vmm.o for the default stub build, and
 # reusing that path can silently link a stale object compiled with incompatible
 # flags.
-$(LINUX_VMM_FULL_OBJ): $(KERNEL_SRC_DIR)/src/linux_vmm.c $(VMM_CONFIG_STAMP)
+$(LINUX_VMM_FULL_OBJ): $(KERNEL_SRC_DIR)/src/linux_vmm.c $(VMM_CONFIG_STAMP) \
+                      $(AGENTOS_ROOT)/platform/include/platform/vmm_virtio_net.h
 	@mkdir -p $(BUILD_DIR)
 	@echo "[VMM] Compiling linux_vmm.c..."
 	clang $(VMM_CFLAGS) -c -o $@ $<
@@ -228,18 +232,36 @@ $(VMM_PD_ENTRY_OBJ): $(KERNEL_SRC_DIR)/src/pd_entry.c $(VMM_CONFIG_STAMP)
 	@echo "[VMM] Compiling pd_entry.c..."
 	clang $(VMM_CFLAGS) -c -o $@ $<
 
+$(NET_VIRT_PUMP_OBJ): $(AGENTOS_ROOT)/platform/net-virt/net_virt_pump.c \
+                      $(AGENTOS_ROOT)/platform/include/platform/net_layout.h \
+                      $(AGENTOS_ROOT)/platform/include/platform/net_virt_pump.h
+	@mkdir -p $(BUILD_DIR)
+	@echo "[VMM] Compiling net_virt_pump.c..."
+	clang $(VMM_CFLAGS) -c -o $@ $<
+
+$(VMM_VIRTIO_NET_OBJ): $(AGENTOS_ROOT)/platform/net-virt/vmm_virtio_net.c \
+                       $(AGENTOS_ROOT)/platform/include/platform/net_layout.h \
+                       $(AGENTOS_ROOT)/platform/include/platform/net_virt_pump.h \
+                       $(AGENTOS_ROOT)/platform/include/platform/vmm_virtio_net.h
+	@mkdir -p $(BUILD_DIR)
+	@echo "[VMM] Compiling vmm_virtio_net.c..."
+	clang $(VMM_CFLAGS) -c -o $@ $<
+
 # ─── Link linux_vmm.elf ──────────────────────────────────────────────────
 $(BUILD_DIR)/linux_vmm.elf: FORCE \
 	                             $(LINUX_VMM_FULL_OBJ) \
 	                             $(GPU_SHMEM_FULL_OBJ) \
 	                             $(VMM_PD_ENTRY_OBJ) \
+	                             $(NET_VIRT_PUMP_OBJ) \
+	                             $(VMM_VIRTIO_NET_OBJ) \
 	                             $(BUILD_DIR)/images.o \
 	                             $(BUILD_DIR)/libvmm.a \
 	                             $(BUILD_DIR)/libsddf_util_debug.a
 	@echo "[VMM] Linking linux_vmm.elf..."
 	ld.lld -T$(BOARD_DIR)/lib/microkit.ld \
 		-L$(BOARD_DIR)/lib \
-		$(VMM_PD_ENTRY_OBJ) $(LINUX_VMM_FULL_OBJ) $(GPU_SHMEM_FULL_OBJ) $(BUILD_DIR)/images.o \
+		$(VMM_PD_ENTRY_OBJ) $(LINUX_VMM_FULL_OBJ) $(GPU_SHMEM_FULL_OBJ) \
+		$(NET_VIRT_PUMP_OBJ) $(VMM_VIRTIO_NET_OBJ) $(BUILD_DIR)/images.o \
 		--start-group \
 		$(BUILD_DIR)/libvmm.a $(BUILD_DIR)/libsddf_util_debug.a \
 		--end-group \
@@ -304,6 +326,7 @@ $(BUILD_DIR)/freebsd_vmm.elf: $(BUILD_DIR)/freebsd_vmm.o \
 
 vmm-clean:
 	rm -f $(BUILD_DIR)/linux_vmm.full.o $(BUILD_DIR)/gpu_shmem.full.o $(BUILD_DIR)/pd_entry.vmm.o $(BUILD_DIR)/linux_vmm.elf
+	rm -f $(BUILD_DIR)/net_virt_pump.o $(BUILD_DIR)/vmm_virtio_net.o
 	rm -f $(BUILD_DIR)/freebsd_vmm.o $(BUILD_DIR)/freebsd_images.o $(BUILD_DIR)/freebsd_vmm.elf
 	rm -f $(BUILD_DIR)/freebsd-direct.dtb
 	rm -f $(BUILD_DIR)/images.o $(BUILD_DIR)/vm.dts $(BUILD_DIR)/vm.dtb

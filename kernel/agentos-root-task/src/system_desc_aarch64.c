@@ -397,8 +397,8 @@ const system_desc_t system_desc_aarch64 = {
                 { .irq_number = 49u, .ntfn_badge = 0x2u, .name = "virtio-blk0" },
                 { .irq_number = 51u, .ntfn_badge = 0x4u, .name = "virtio-blk1" },
             },
-            /* 512 MB guest RAM. */
-            .mr_count = 1u,
+            /* guest_ram + private net_virt queues (loopback until shared MR). */
+            .mr_count = 2u,
             .memory_regions = {
                 { .vaddr    =
 #if defined(AGENTOS_GUEST_BOTH)
@@ -409,6 +409,10 @@ const system_desc_t system_desc_aarch64 = {
                   .size     = 0x20000000u,  /* 512 MB */
                   .writable = 1u,
                   .name     = "guest_ram" },
+                { .vaddr    = 0x20000000ULL,
+                  .size     = 0x200000u,    /* 2 MB sDDF net queues */
+                  .writable = 1u,
+                  .name     = "net_virt" },
             },
 #endif
         },
