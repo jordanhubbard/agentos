@@ -35,14 +35,14 @@ const VIBEOS_DEV_BLOCK: u32 = 1 << 2;
 pub fn run(args: &TestArgs) -> anyhow::Result<()> {
     let repo_root = repo_root()?;
 
-    if args.assert_emulated_net {
+    if args.assert_emulated_net || args.assert_emulated_blk {
         anyhow::ensure!(
             args.board == "qemu_virt_aarch64",
-            "--assert-emulated-net requires --board qemu_virt_aarch64"
+            "--assert-emulated-net/--assert-emulated-blk require --board qemu_virt_aarch64"
         );
         anyhow::ensure!(
             args.guest_os != "none",
-            "--assert-emulated-net needs a real guest (buildroot or ubuntu); GUEST_OS=none is a stub VMM"
+            "--assert-emulated-net/--assert-emulated-blk need a real guest (buildroot or ubuntu); GUEST_OS=none is a stub VMM"
         );
     }
 
@@ -103,6 +103,12 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
             log_path.display()
         );
         wait_for_emulated_net(&log_path, Duration::from_secs(args.timeout_secs))
+    } else if args.assert_emulated_blk {
+        println!(
+            "[xtask:test] Waiting for emulated virtio-blk guest proof in {}...",
+            log_path.display()
+        );
+        wait_for_emulated_blk(&log_path, Duration::from_secs(args.timeout_secs))
     } else {
         match args.guest_os.as_str() {
         "ubuntu" => {
@@ -660,6 +666,65 @@ const EMU_NET_GUEST_ANY: &[&str] = &[
     "02:00:00:00:00:01",
     "Sending DHCP requests",
 ];
+
+const EMU_BLK_REQUIRED: &[&str] = &[
+    "emulated virtio-blk: guest probed",
+    "emulated virtio-blk: guest DRIVER_OK",
+    "emulated virtio-blk: pumped",
+];
+
+const EMU_BLK_GUEST_ANY: &[&str] = &[
+    "0a020000.virtio_mmio",
+    "a020000.virtio_mmio",
+    "virtio_blk",
+    "[vda]",
+];
+
+fn wait_for_emulated_blk(log_path: &Path, timeout: Duration) -> anyhow::Result<String> {
+    let start = Instant::now();
+    let mut file = std::fs::File::open(log_path).context("failed to open log file")?;
+    let mut offset: u64 = 0;
+    let mut accumulated = String::new();
+
+    loop {
+        if start.elapsed() >= timeout {
+            let missing: Vec<&str> = EMU_BLK_REQUIRED
+                .iter()
+                .copied()
+                .filter(|m| !accumulated.contains(m))
+                .collect();
+            let guest_ok = EMU_BLK_GUEST_ANY
+                .iter()
+                .any(|m| accumulated.contains(m));
+            anyhow::bail!(
+                "emulated virtio-blk proof timeout after {}s; missing VMM markers {:?}; guest IPA/disk observed={}",
+                timeout.as_secs(),
+                missing,
+                guest_ok
+            );
+        }
+
+        file.seek(SeekFrom::Start(offset))?;
+        let mut raw = Vec::new();
+        let bytes_read = file.read_to_end(&mut raw)?;
+        if bytes_read > 0 {
+            offset += bytes_read as u64;
+            accumulated.push_str(&String::from_utf8_lossy(&raw));
+
+            let vmm_ok = EMU_BLK_REQUIRED
+                .iter()
+                .all(|m| accumulated.contains(m));
+            let guest_ok = EMU_BLK_GUEST_ANY
+                .iter()
+                .any(|m| accumulated.contains(m));
+            if vmm_ok && guest_ok {
+                return Ok("emulated virtio-blk: guest probed + DRIVER_OK + pumped + guest IPA/disk".to_string());
+            }
+        }
+
+        std::thread::sleep(Duration::from_millis(200));
+    }
+}
 
 fn wait_for_emulated_net(log_path: &Path, timeout: Duration) -> anyhow::Result<String> {
     let start = Instant::now();

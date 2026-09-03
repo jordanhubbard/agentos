@@ -219,6 +219,57 @@ jobs:
           if-no-files-found: ignore
 
   # ---------------------------------------------------------------------------
+  # Guest I/O proof: emulated virtio-blk request through linux_vmm (not GUEST_OS=none)
+  # ---------------------------------------------------------------------------
+  guest-blk-proof:
+    name: Guest virtio-blk I/O proof (buildroot)
+    runs-on: ubuntu-24.04
+    needs: validate-topology
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install clang / lld / QEMU / dtc
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            clang lld llvm \
+            qemu-system-arm \
+            device-tree-compiler \
+            python3 curl
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Cache Microkit SDK
+        id: cache-sdk-blk
+        uses: actions/cache@v4
+        with:
+          path: microkit-sdk-2.1.0
+          key: microkit-sdk-2.1.0-linux-x86-64
+
+      - name: Download Microkit SDK
+        if: steps.cache-sdk-blk.outputs.cache-hit != 'true'
+        run: |
+          curl -fsSL \
+            https://github.com/seL4/microkit/releases/download/2.1.0/microkit-sdk-2.1.0-linux-x86-64.tar.gz \
+            -o microkit-sdk.tar.gz
+          tar -xzf microkit-sdk.tar.gz
+          rm microkit-sdk.tar.gz
+
+      - name: Prove guest I/O through emulated virtio-blk
+        timeout-minutes: 20
+        run: make test-guest-blk QEMU_TEST_TIMEOUT=480
+
+      - name: Upload QEMU serial logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: guest-blk-proof-logs
+          path: build/tmp/agentos-qemu-*
+          if-no-files-found: ignore
+
+  # ---------------------------------------------------------------------------
   # Phase 5 contract tests — run all PD contract test suites via xtask
   # Mirrors the build-and-test job structure; runs on qemu_virt_aarch64 only.
   # ---------------------------------------------------------------------------

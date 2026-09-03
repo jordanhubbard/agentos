@@ -1373,8 +1373,8 @@ void init(void)
 
     /*
      * Emulated virtio-blk at IPA 0x0A020000 (faults here, sDDF RAM pump).
-     * Not in the live guest DTB this pass — QEMU virtio-blk at 0x0A000200
-     * / IRQ 49 remains the boot disk (kill-dated crutch).
+     * Buildroot DTB advertises only this disk. Ubuntu still has QEMU
+     * virtio-blk at 0x0A000200 / IRQ 49 as the boot-disk crutch.
      */
     aos_vmm_virtio_blk_init();
 

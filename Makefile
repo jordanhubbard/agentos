@@ -12,9 +12,10 @@
 #   make test         — CI boot test (exit 0/1)
 #   make test-guest-login — prove Ubuntu/FreeBSD serial login via CC-PD
 #   make test-guest-net   — prove one packet through emulated virtio-net
+#   make test-guest-blk   — prove one request through emulated virtio-blk
 #   make clean        — remove build artifacts for current board
 
-.PHONY: all install deps deps-tools submodules channels run run-fast test test-guest-login test-guest-net sel4-test-image run-tests test-snapshot-sched test-power-mgr test-proc-server test-vibeos-contract test-integration test-host gate gate-aarch64 gate-x86_64 e2e e2e-guest e2e-contract e2e-dual-os e2e-ubuntu-amd64 e2e-ubuntu-arm64 e2e-nixos e2e-freebsd15 e2e-all bootstrap-guest clean clean-all clean-images help release release-minor release-major fetch-guest build-tools
+.PHONY: all install deps deps-tools submodules channels run run-fast test test-guest-login test-guest-net test-guest-blk sel4-test-image run-tests test-snapshot-sched test-power-mgr test-proc-server test-vibeos-contract test-integration test-host gate gate-aarch64 gate-x86_64 e2e e2e-guest e2e-contract e2e-dual-os e2e-ubuntu-amd64 e2e-ubuntu-arm64 e2e-nixos e2e-freebsd15 e2e-all bootstrap-guest clean clean-all clean-images help release release-minor release-major fetch-guest build-tools
 
 # ─── Read config.yaml (if present) ───────────────────────────────────────────
 CONFIG_TARGET := $(shell grep '^target_arch:' config.yaml 2>/dev/null | sed 's/target_arch:[[:space:]]*//' | tr -d '[:space:]')
@@ -539,6 +540,18 @@ test-guest-net:
 	fi
 	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os buildroot --timeout-secs $(QEMU_TEST_TIMEOUT) --assert-emulated-net
 
+# Guest I/O proof: boot buildroot Linux under linux_vmm and require the
+# emulated virtio-blk (IPA 0x0A020000) to probe, reach DRIVER_OK, and pump
+# at least one guest request (partition scan of the RAM disk). Host
+# tests/test_virtio_blk_guest_path.c is not this gate. Ubuntu still boots
+# from QEMU virtio-blk at 0x0A000200 — do not enable emulated blk there yet.
+test-guest-blk:
+	@if [ "$(BOARD)" != "qemu_virt_aarch64" ]; then \
+		echo "test-guest-blk requires BOARD=qemu_virt_aarch64 (got BOARD=$(BOARD))"; \
+		exit 1; \
+	fi
+	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os buildroot --timeout-secs $(QEMU_TEST_TIMEOUT) --assert-emulated-blk
+
 # =============================================================================
 # test-snapshot-sched: standalone unit test for the snapshot_sched PD
 # =============================================================================
@@ -689,6 +702,16 @@ test-integration:
 	    echo "PASS: tests/platform/test_blk_virt_pump.c"; \
 	else \
 	    echo "FAIL: tests/platform/test_blk_virt_pump.c"; \
+	    status=1; \
+	fi; \
+	if gcc -I platform/include \
+	        -DAOS_REPO_ROOT='"$(ROOT_DIR)"' \
+	        tests/platform/test_virtio_blk_guest_path.c \
+	        -o $(BUILD_TMP_DIR)/test_virtio_blk_guest_path 2>&1 \
+	    && $(BUILD_TMP_DIR)/test_virtio_blk_guest_path; then \
+	    echo "PASS: tests/platform/test_virtio_blk_guest_path.c"; \
+	else \
+	    echo "FAIL: tests/platform/test_virtio_blk_guest_path.c"; \
 	    status=1; \
 	fi; \
 	echo ""; \
@@ -844,6 +867,7 @@ help:
 	@echo "                        (host suite + aarch64 + x86_64 GUEST_OS=none boot tests)"
 	@echo "  make test-guest-login Boot Ubuntu and FreeBSD to an interactive serial prompt"
 	@echo "  make test-guest-net   Boot buildroot and prove one packet through emulated virtio-net"
+	@echo "  make test-guest-blk   Boot buildroot and prove one request through emulated virtio-blk"
 	@echo ""
 	@echo "Guest images:"
 	@echo "  make fetch-guest GUEST_OS=ubuntu     Stage Ubuntu 26.04 assets in build/guest-images"
@@ -860,6 +884,7 @@ help:
 	@echo "  make run-tests        Run the seL4-target TAP test image in QEMU"
 	@echo "  make test-host        Host-only suite (alias of test-integration; NOT OS proof)"
 	@echo "  make test-guest-net   Guest packet proof: emulated virtio-net (buildroot)"
+	@echo "  make test-guest-blk   Guest I/O proof: emulated virtio-blk (buildroot)"
 	@echo "  make test-integration Run host-side contract/integration tests"
 	@echo "  make e2e              Run the default QEMU/guest/CC end-to-end suite"
 	@echo "  make e2e-dual-os      Run Ubuntu and FreeBSD guest E2E coverage"
@@ -882,5 +907,6 @@ help:
 	@echo "  make gate                          # full release gate, both arches"
 	@echo "  make test-guest-login QEMU_TEST_TIMEOUT=420"
 	@echo "  make test-guest-net QEMU_TEST_TIMEOUT=480"
+	@echo "  make test-guest-blk QEMU_TEST_TIMEOUT=480"
 	@echo "  cd ../agentos_gui && make run"
 	@echo ""
