@@ -40,7 +40,7 @@ else
 endif
 
 CFLAGS := -nostdlib -ffreestanding -g -O2 -Wall -Wextra -Werror -Wno-unused-function -Wno-unused-parameter -Wno-unused-variable -Wno-unused-but-set-variable \
-           -Iinclude -Ilwip/include -I$(SEL4_INC_DIR) \
+           -Iinclude -Ilwip/include -I$(REPO_ROOT_MK)/platform/include -I$(SEL4_INC_DIR) \
            $(CFLAGS_ARCH) \
            -DCONFIG_KERNEL_MCS \
            -D__thread= \
@@ -353,6 +353,11 @@ ifeq ($(ARCH),aarch64)
   else
     ifneq ($(GUEST_OS),none)
       CFLAGS += -DAGENTOS_GUEST_LINUX=1
+      CFLAGS_ROOT_TASK += -DAGENTOS_GUEST_LINUX=1
+    endif
+    ifeq ($(GUEST_OS),ubuntu)
+      CFLAGS += -DAGENTOS_GUEST_UBUNTU=1
+      CFLAGS_ROOT_TASK += -DAGENTOS_GUEST_UBUNTU=1
     endif
     # Default aarch64: include Linux VMM (stub or full)
     IMAGES += linux_vmm.elf

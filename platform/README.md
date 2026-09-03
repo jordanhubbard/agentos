@@ -26,10 +26,12 @@ QEMU virtio-mmio. Native agents attach to the same virtualizers as a VMM.
 Do not add `net_virt` to `IMAGES` / `system_desc` until a nic_drv owns the
 host NIC and the 2 MB region is a shared MR. This pass the VMM pumps locally.
 
-Do not add `blk_virt` to `IMAGES` / `system_desc`. Buildroot DTB advertises
-the emulated device at `0x0A020000` (SPI 20 / INTID 52). The single Ubuntu
-E2E guest also uses this RAM backend and launches with no QEMU net/blk
-devices. Dual-guest and full live-media boot still retain the QEMU ISO crutch.
+Buildroot uses the local RAM fallback behind the emulated device at
+`0x0A020000` (SPI 20 / INTID 52). Single-guest Ubuntu attaches the ISO only
+as host hardware on QEMU bus.8. The root task grants that page solely to
+`virtio_blk`; linux_vmm reaches it through IPC and shared DMA, and the guest
+DTB advertises only agentOS's emulated block device. Full casper userspace
+boot and dual-guest passthrough removal remain.
 
 ## Residual `guest_ram` identity map
 

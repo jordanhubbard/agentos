@@ -44,6 +44,7 @@
                                 cap_tree_verify_all_pds                            */
 #include "system_desc.h"     /* system_desc_t, pd_desc_t, SVC_ID_*, PD_IRQHANDLER_SLOT_BASE */
 #include "agentos.h"         /* sel4_dbg_puts                                    */
+#include <platform/blk_host_layout.h> /* host block MMIO/shared DMA layout       */
 #include "pd_startup_record.h" /* pd_startup_record_t, PD_STARTUP_RECORD_VA      */
 #include <stdint.h>
 
@@ -592,10 +593,13 @@ static void boot_setup_irqs(const pd_desc_t *pd,
 #define CC_PD_STARTUP_VA      0x10003000UL  /* VA in cc_pd's VSpace for startup record   */
 #define CC_PD_UART_DBG_VA     0x10004000UL  /* VA in cc_pd's VSpace for debug UART0      */
 #define RT_VQ_SCRATCH_VA      0x60000000UL  /* Root-task scratch VA to write startup PAs */
+#define RT_BLK_SCRATCH_VA     0x70000000UL  /* Separate 2 MiB leaf for shared blk frame  */
 
 /* Frame cap in root task CNode; seL4_CNode_Copy'd per VSpace that needs output. */
 static seL4_CPtr g_uart_frame_cap = seL4_CapNull;
 static seL4_CPtr g_virtio_mmio_frame_cap = seL4_CapNull;
+static seL4_CPtr g_host_blk_mmio_frame_cap = seL4_CapNull;
+static seL4_CPtr g_blk_shared_frame_cap = seL4_CapNull;
 static seL4_CPtr g_freebsd_virtio31_frame_cap = seL4_CapNull;
 static seL4_CPtr g_gic_vcpu_frame_cap = seL4_CapNull;
 
@@ -1215,6 +1219,66 @@ void root_task_main(const seL4_BootInfo *bi)
         dbg_puts("\n");
     }
 
+#if defined(__aarch64__)
+    {
+        seL4_Error blk_err =
+            ut_alloc_device_cap(AGENTOS_HOST_BLK_MMIO_PA,
+                                &g_host_blk_mmio_frame_cap);
+        dbg_puts("[rt] host blk virtio-mmio frame cap err=");
+        dbg_hex((seL4_Word)blk_err);
+        dbg_puts(" cap=");
+        dbg_hex((seL4_Word)g_host_blk_mmio_frame_cap);
+        dbg_puts("\n");
+        if (blk_err == seL4_NoError) {
+            blk_err = pd_vspace_map_device_frame(
+                seL4_CapInitThreadVSpace, g_host_blk_mmio_frame_cap,
+                RT_VQ_SCRATCH_VA);
+            if (blk_err == seL4_NoError) {
+                volatile uint32_t *blk_regs =
+                    (volatile uint32_t *)RT_VQ_SCRATCH_VA;
+                dbg_puts("[rt] host blk magic=");
+                dbg_hex((seL4_Word)blk_regs[0]);
+                dbg_puts(" version=");
+                dbg_hex((seL4_Word)blk_regs[1]);
+                dbg_puts(" device=");
+                dbg_hex((seL4_Word)blk_regs[2]);
+                dbg_puts("\n");
+                seL4_ARCH_Page_Unmap(g_host_blk_mmio_frame_cap);
+            }
+        }
+    }
+
+    {
+        seL4_Error blk_err =
+            ut_alloc_cap(seL4_ARM_LargePageObject, 0u,
+                         &g_blk_shared_frame_cap);
+        seL4_Word blk_shared_pa = 0u;
+        if (blk_err == seL4_NoError) {
+            seL4_ARCH_Page_GetAddress_t r =
+                seL4_ARCH_Page_GetAddress(g_blk_shared_frame_cap);
+            blk_shared_pa = r.paddr;
+            blk_err = pd_vspace_map_device_frame(
+                seL4_CapInitThreadVSpace, g_blk_shared_frame_cap,
+                RT_BLK_SCRATCH_VA);
+        }
+        if (blk_err == seL4_NoError) {
+            agentos_blk_shared_meta_t *meta =
+                (agentos_blk_shared_meta_t *)RT_BLK_SCRATCH_VA;
+            meta->magic = AGENTOS_BLK_SHARED_MAGIC;
+            meta->version = 1u;
+            meta->paddr = (uint64_t)blk_shared_pa;
+            meta->size = AGENTOS_BLK_SHARED_SIZE;
+            AGENTOS_MEMORY_FENCE();
+            seL4_ARCH_Page_Unmap(g_blk_shared_frame_cap);
+        }
+        dbg_puts("[rt] blk shared frame pa=");
+        dbg_hex(blk_shared_pa);
+        dbg_puts(" err=");
+        dbg_hex((seL4_Word)blk_err);
+        dbg_puts("\n");
+    }
+#endif
+
     {
         seL4_Error v31_err = ut_alloc_device_cap(FREEBSD_VIRTIO_MMIO_BUS31_PAGE_PA,
                                                  &g_freebsd_virtio31_frame_cap);
@@ -1649,13 +1713,59 @@ void root_task_main(const seL4_BootInfo *bi)
             dbg_puts("\n");
         }
 
-        /* ── 4g.4.6c: Map QEMU virtio-mmio transport page for VMM guests ─── */
+        /* ── 4g.4.6c: Give virtio_blk sole access to host block hardware ─── */
+#if defined(__aarch64__)
+        if (name_eq(pd->name, "virtio_blk") &&
+            g_host_blk_mmio_frame_cap != seL4_CapNull) {
+            seL4_Word blk_mmio_copy = ut_alloc_slot();
+            seL4_Error blk_err = seL4_NotEnoughMemory;
+            if (blk_mmio_copy != seL4_CapNull) {
+                blk_err = seL4_CNode_Copy(
+                    seL4_CapInitThreadCNode, blk_mmio_copy, 64u,
+                    seL4_CapInitThreadCNode, g_host_blk_mmio_frame_cap, 64u,
+                    seL4_AllRights);
+                if (blk_err == seL4_NoError) {
+                    blk_err = pd_vspace_map_device_frame(
+                        vspace, (seL4_CPtr)blk_mmio_copy,
+                        AGENTOS_HOST_BLK_MMIO_VA);
+                }
+            }
+            dbg_puts("[rt] virtio_blk host MMIO map err=");
+            dbg_hex((seL4_Word)blk_err);
+            dbg_puts("\n");
+        }
+
+        if (g_blk_shared_frame_cap != seL4_CapNull &&
+            (name_eq(pd->name, "virtio_blk") ||
+             name_eq(pd->name, "linux_vmm"))) {
+            seL4_Word blk_shared_copy = ut_alloc_slot();
+            seL4_Error blk_err = seL4_NotEnoughMemory;
+            if (blk_shared_copy != seL4_CapNull) {
+                blk_err = seL4_CNode_Copy(
+                    seL4_CapInitThreadCNode, blk_shared_copy, 64u,
+                    seL4_CapInitThreadCNode, g_blk_shared_frame_cap, 64u,
+                    seL4_AllRights);
+                if (blk_err == seL4_NoError) {
+                    blk_err = pd_vspace_map_device_frame(
+                        vspace, (seL4_CPtr)blk_shared_copy,
+                        AGENTOS_BLK_SHARED_VA);
+                }
+            }
+            dbg_puts("[rt] ");
+            dbg_puts(pd->name);
+            dbg_puts(" blk shared map err=");
+            dbg_hex((seL4_Word)blk_err);
+            dbg_puts("\n");
+        }
+#endif
+
+        /* ── 4g.4.6d: Legacy QEMU virtio-mmio passthrough page ───────────── */
         /*
-         * The guest DTB exposes virtio-mmio slots under 0x0A000000. Map the
-         * single backing page into the guest execution VSpace so Linux can
-         * probe QEMU's virtio-net and virtio-blk transports directly while
-         * IRQ delivery still flows through the VMM/vGIC path.
+         * Ubuntu advertises only agentOS-emulated devices, so the host page
+         * must not be present in its guest execution VSpace. Buildroot and
+         * FreeBSD retain the legacy mapping until their separate migrations.
          */
+#if !defined(AGENTOS_GUEST_UBUNTU)
         if (g_virtio_mmio_frame_cap != seL4_CapNull &&
             (name_eq(pd->name, "linux_vmm") || name_eq(pd->name, "freebsd_vmm"))) {
             seL4_Word virtio_copy = ut_alloc_slot();
@@ -1675,6 +1785,7 @@ void root_task_main(const seL4_BootInfo *bi)
             dbg_hex((seL4_Word)virtio_err);
             dbg_puts("\n");
         }
+#endif
 
         if (name_eq(pd->name, "freebsd_vmm")) {
             if (g_freebsd_virtio31_frame_cap != seL4_CapNull) {

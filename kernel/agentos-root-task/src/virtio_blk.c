@@ -5,26 +5,13 @@
  * virtio-MMIO requires the PHYSICAL addresses of virtqueue memory regions to
  * be written into the QueueDesc/QueueAvail/QueueUsed MMIO registers.
  *
- * In seL4 Microkit, the virtual→physical mapping for a PD is NOT an identity
- * map in general.  However, for memory regions declared as `fixed_mr` in the
- * .system file (i.e., memory regions whose physical address is pinned at
- * system-build time), Microkit places the region at the same address in the
- * PD's virtual address space as its physical base.  We exploit this for the
- * queue_mem array by requiring it to live inside such a fixed_mr region.
+ * Virtual and physical addresses are distinct. The root task maps the host
+ * device page at AGENTOS_HOST_BLK_MMIO_VA and maps one shared large frame at
+ * AGENTOS_BLK_SHARED_VA. Its physical base is carried in frame metadata.
  *
- * The blk_mmio region is accessed via a setvar_vaddr mechanism: Microkit
- * writes the mapped virtual address of the `blk_mmio` memory region into the
- * `blk_mmio_vaddr` symbol before init() is called.
- *
- * queue_mem is 4 KB page-aligned and must be backed by a fixed_mr in
- * agentos.system so that vaddr == paddr.  Without this, the physical address
- * computation below would be wrong and the device would DMA to the wrong
- * memory.  A comment in the .system file must document this constraint.
- *
- * The blk_dma_shmem region (32 KB, mapped at 0x5000000 in virtio_blk) is
- * also a fixed_mr shared with vfs_server.  For I/O operations the driver uses
- * the DMA shmem physical address (== vaddr due to fixed_mr) for the data
- * descriptor so the device can DMA directly into/from the shared window.
+ * Queue and DMA memory live in a 2 MiB frame shared with linux_vmm. The root
+ * task records the frame's physical address in its metadata, so this driver
+ * never assumes that a virtual address is also a DMA address.
  * ────────────────────────────────────────────────────────────────────────────
  */
 
@@ -33,15 +20,16 @@
 #include "sel4_server.h"
 #include "virtio_blk.h"
 #include "arch_barrier.h"
+#include <platform/blk_host_layout.h>
 
 /* ─────────────────────────────────────────────────────────────────────────────
  * Microkit setvar_vaddr symbols — written by the Microkit runtime before init()
  * ──────────────────────────────────────────────────────────────────────────── */
 
-/* Virtual (== physical due to fixed_mr) address of the 4 KB MMIO region */
+/* Host device MMIO VA installed by the root task. */
 uintptr_t blk_mmio_vaddr;
 
-/* Virtual (== physical due to fixed_mr) address of the 32 KB DMA shmem */
+/* Shared DMA VA installed by the root task. */
 uintptr_t blk_dma_shmem_vaddr;
 
 /* log_drain_rings_vaddr required by log_drain_write() in agentos.h */
@@ -79,52 +67,43 @@ typedef struct {
     uint64_t           capacity;     /* total 512-byte sectors on the device */
     uint32_t           block_size;   /* logical block size reported by device (bytes) */
     uint32_t           error_count;  /* cumulative I/O errors since boot */
+    uint32_t           init_error;   /* non-zero initialization stage */
 } blk_device_t;
 
 static blk_device_t dev;
+static uint64_t g_blk_shared_paddr;
 
 /* ─────────────────────────────────────────────────────────────────────────────
  * Virtqueue memory
  *
  * For the MVP we use a single queue of depth 1 (one descriptor chain in
  * flight at a time, polled synchronously).  The three virtqueue regions
- * must be physically contiguous and their physical addresses passed to the
- * device.  We place them in a statically-allocated, page-aligned buffer;
- * see the file-top comment about the fixed_mr requirement.
+ * are physically contiguous inside the shared large frame and their physical
+ * addresses are passed to the device.
  *
  * Layout inside queue_mem[]:
  *   [0]                    : descriptor table  (1 × 16 bytes = 16 bytes)
  *   [AVAIL_OFFSET]         : available ring    (4 + 2×1 bytes = 6 bytes, aligned 2)
  *   [USED_OFFSET]          : used ring         (4 + 8×1 bytes = 12 bytes, aligned 4)
  *
- * We over-allocate to 4 KB so that the natural page alignment is preserved
- * for any fixed_mr placement in the .system file.
+ * The queue layout reserves one 4 KB page.
  * ──────────────────────────────────────────────────────────────────────────── */
-
-/*
- * Queue memory buffer.  __attribute__((aligned(4096))) ensures both that
- * the compiler does not split it across a page and that the symbol address
- * itself is page-aligned.  If this PD's fixed_mr is mapped at an address
- * that equals its physical address (vaddr == paddr), then
- * (uintptr_t)queue_mem IS the physical address we hand to the device.
- */
-static uint8_t queue_mem[4096] __attribute__((aligned(4096)));
 
 /* Offsets within queue_mem for each virtqueue region */
 #define DESC_OFFSET     0u
-#define AVAIL_OFFSET    16u   /* after 1 × 16-byte descriptor */
-#define USED_OFFSET     32u   /* after avail header (2+2+2=6) + 2 bytes padding → align 4 */
+#define AVAIL_OFFSET    0x100u
+#define USED_OFFSET     0x200u
+
+#define QUEUE_MEM ((volatile uint8_t *)(AGENTOS_BLK_SHARED_VA + \
+                                        AGENTOS_BLK_SHARED_QUEUE_OFF))
 
 /* Typed pointers into queue_mem */
-#define QUEUE_DESC  ((volatile virtq_desc_t  *)(queue_mem + DESC_OFFSET))
-#define QUEUE_AVAIL ((volatile virtq_avail_t *)(queue_mem + AVAIL_OFFSET))
-#define QUEUE_USED  ((volatile virtq_used_t  *)(queue_mem + USED_OFFSET))
+#define QUEUE_DESC  ((volatile virtq_desc_t  *)(QUEUE_MEM + DESC_OFFSET))
+#define QUEUE_AVAIL ((volatile virtq_avail_t *)(QUEUE_MEM + AVAIL_OFFSET))
+#define QUEUE_USED  ((volatile virtq_used_t  *)(QUEUE_MEM + USED_OFFSET))
 
-/*
- * Physical address of queue_mem (and its sub-regions).
- * Valid only because queue_mem lives inside a fixed_mr (vaddr == paddr).
- */
-#define QUEUE_MEM_PADDR     ((uintptr_t)queue_mem)
+/* Physical address of queue memory from root-task metadata. */
+#define QUEUE_MEM_PADDR     (g_blk_shared_paddr + AGENTOS_BLK_SHARED_QUEUE_OFF)
 #define DESC_PADDR          (QUEUE_MEM_PADDR + DESC_OFFSET)
 #define AVAIL_PADDR         (QUEUE_MEM_PADDR + AVAIL_OFFSET)
 #define USED_PADDR          (QUEUE_MEM_PADDR + USED_OFFSET)
@@ -156,8 +135,8 @@ static uint8_t queue_mem[4096] __attribute__((aligned(4096)));
 /* Cast the DMA shmem base to a byte pointer */
 #define DMA_BASE  ((volatile uint8_t *)blk_dma_shmem_vaddr)
 
-/* Physical address of DMA shmem base (valid because it is a fixed_mr) */
-#define DMA_PADDR ((uintptr_t)blk_dma_shmem_vaddr)
+/* Physical address of DMA shmem from root-task metadata. */
+#define DMA_PADDR (g_blk_shared_paddr + AGENTOS_BLK_SHARED_DMA_OFF)
 
 /* ─────────────────────────────────────────────────────────────────────────────
  * Internal: perform a virtio-blk I/O request (synchronous polling)
@@ -292,12 +271,32 @@ static uint32_t virtio_blk_do_io(uint32_t type, uint64_t sector, uint32_t count)
  * ──────────────────────────────────────────────────────────────────────────── */
 static void virtio_blk_device_init(void)
 {
+    const agentos_blk_shared_meta_t *shared =
+        (const agentos_blk_shared_meta_t *)AGENTOS_BLK_SHARED_VA;
+
     dev.initialized = false;
     dev.error_count = 0;
+    dev.init_error = 0;
 
-    /* Obtain MMIO base from setvar_vaddr */
+    if (blk_mmio_vaddr == 0) {
+        blk_mmio_vaddr = AGENTOS_HOST_BLK_MMIO_VA;
+    }
+    if (blk_dma_shmem_vaddr == 0) {
+        blk_dma_shmem_vaddr =
+            AGENTOS_BLK_SHARED_VA + AGENTOS_BLK_SHARED_DMA_OFF;
+    }
+    if (shared->magic != AGENTOS_BLK_SHARED_MAGIC ||
+        shared->version != 1u ||
+        shared->size != AGENTOS_BLK_SHARED_SIZE) {
+        log_drain_write(17, 17, "[virtio_blk] ERROR: shared DMA metadata invalid\n");
+        dev.init_error = 1u;
+        return;
+    }
+    g_blk_shared_paddr = shared->paddr;
+
     if (blk_mmio_vaddr == 0) {
         log_drain_write(17, 17, "[virtio_blk] ERROR: blk_mmio_vaddr not set\n");
+        dev.init_error = 2u;
         return;
     }
     dev.mmio = (volatile uint32_t *)blk_mmio_vaddr;
@@ -309,14 +308,17 @@ static void virtio_blk_device_init(void)
 
     if (magic != VIRTIO_MMIO_MAGIC) {
         log_drain_write(17, 17, "[virtio_blk] ERROR: bad magic value (not a virtio device)\n");
+        dev.init_error = 3u;
         return;
     }
     if (version != 2) {
         log_drain_write(17, 17, "[virtio_blk] ERROR: unsupported virtio-MMIO version (need v2)\n");
+        dev.init_error = 4u;
         return;
     }
     if (devid != 2) {
         log_drain_write(17, 17, "[virtio_blk] ERROR: device ID is not 2 (not a block device)\n");
+        dev.init_error = 5u;
         return;
     }
 
@@ -342,9 +344,9 @@ static void virtio_blk_device_init(void)
     mmio_write(dev.mmio, VIRTIO_MMIO_DRIVER_FEATURES_SEL, 0);
     mmio_write(dev.mmio, VIRTIO_MMIO_DRIVER_FEATURES, drv_features);
 
-    /* Feature word 1 (high bits): we request none, write zero */
+    /* Feature word 1: virtio 1.x devices require VIRTIO_F_VERSION_1 (bit 32). */
     mmio_write(dev.mmio, VIRTIO_MMIO_DRIVER_FEATURES_SEL, 1);
-    mmio_write(dev.mmio, VIRTIO_MMIO_DRIVER_FEATURES, 0);
+    mmio_write(dev.mmio, VIRTIO_MMIO_DRIVER_FEATURES, 1u);
 
     /* Step 5 — Set FEATURES_OK and confirm it sticks */
     status |= VIRTIO_STATUS_FEATURES_OK;
@@ -353,6 +355,7 @@ static void virtio_blk_device_init(void)
     uint32_t confirmed = mmio_read(dev.mmio, VIRTIO_MMIO_STATUS);
     if (!(confirmed & VIRTIO_STATUS_FEATURES_OK)) {
         log_drain_write(17, 17, "[virtio_blk] ERROR: device rejected feature set\n");
+        dev.init_error = 6u;
         mmio_write(dev.mmio, VIRTIO_MMIO_STATUS,
                    mmio_read(dev.mmio, VIRTIO_MMIO_STATUS) | VIRTIO_STATUS_FAILED);
         return;
@@ -367,6 +370,7 @@ static void virtio_blk_device_init(void)
     uint32_t qnum_max = mmio_read(dev.mmio, VIRTIO_MMIO_QUEUE_NUM_MAX);
     if (qnum_max == 0) {
         log_drain_write(17, 17, "[virtio_blk] ERROR: device reports queue 0 not available\n");
+        dev.init_error = 7u;
         mmio_write(dev.mmio, VIRTIO_MMIO_STATUS,
                    mmio_read(dev.mmio, VIRTIO_MMIO_STATUS) | VIRTIO_STATUS_FAILED);
         return;
@@ -376,8 +380,8 @@ static void virtio_blk_device_init(void)
     mmio_write(dev.mmio, VIRTIO_MMIO_QUEUE_NUM, VIRTIO_BLK_QUEUE_SIZE);
 
     /* Zero the queue memory so all fields start clean */
-    volatile uint8_t *qm = queue_mem;
-    for (uint32_t i = 0; i < sizeof(queue_mem); i++) {
+    volatile uint8_t *qm = QUEUE_MEM;
+    for (uint32_t i = 0; i < 4096u; i++) {
         qm[i] = 0;
     }
     ARCH_WMB();
@@ -581,7 +585,8 @@ static uint32_t virtio_blk_h_dispatch(sel4_badge_t b, const sel4_msg_t *req, sel
         rep_u32(rep, 0, BLK_OK);
         rep_u32(rep, 4, dev.initialized ? 1u : 0u);
         rep_u32(rep, 8, dev.error_count);
-        rep->length = 12;
+        rep_u32(rep, 12, dev.init_error);
+        rep->length = 16;
         return SEL4_ERR_OK;
     }
 

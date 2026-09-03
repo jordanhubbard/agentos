@@ -386,10 +386,11 @@ const system_desc_t system_desc_aarch64 = {
             .cnode_size_bits = 10u,  /* 1024 slots — IRQ handler caps + microkit layout */
             .priority       = 250u,
             .self_svc_id    = SVC_ID_LINUX_VMM,
-            .init_ep_count  = 2u,
+            .init_ep_count  = 3u,
             .init_eps = {
                 { SVC_ID_NAMESERVER, PD_CNODE_SLOT_NAMESERVER_EP },
                 { SVC_ID_LOG_DRAIN,  PD_CNODE_SLOT_LOG_DRAIN_EP  },
+                { SVC_ID_VIRTIO_BLK, 12u },
             },
             .irq_count = 3u,
             .irqs = {

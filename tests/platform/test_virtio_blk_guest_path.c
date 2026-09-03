@@ -190,6 +190,38 @@ int main(void)
                  !src_contains("libvmm/src/virtio/block.c",
                                "(void *)virtq->desc[curr_desc].addr"),
                  "libvmm block payloads use bounds-checked GPA translation");
+    (void)tap_ok(src_contains("kernel/agentos-root-task/src/main.c",
+                              "AGENTOS_HOST_BLK_MMIO_PA") &&
+                 src_contains("kernel/agentos-root-task/src/main.c",
+                              "AGENTOS_BLK_SHARED_VA") &&
+                 src_contains("kernel/agentos-root-task/src/main.c",
+                              "name_eq(pd->name, \"virtio_blk\")"),
+                 "root maps isolated host MMIO and shared DMA to virtio_blk");
+    (void)tap_ok(src_contains("kernel/agentos-root-task/src/virtio_blk.c",
+                              "shared->paddr") &&
+                 src_contains("kernel/agentos-root-task/src/virtio_blk.c",
+                              "VIRTIO_MMIO_DRIVER_FEATURES, 1u") &&
+                 src_contains("kernel/agentos-root-task/include/virtio_blk.h",
+                              "VIRTIO_BLK_QUEUE_SIZE           8u"),
+                 "host driver uses explicit DMA PA and valid modern queue");
+    (void)tap_ok(src_contains("xtask/src/cmd_test.rs",
+                              "virtio-mmio-bus.8") &&
+                 src_contains("xtask/src/cmd_test.rs",
+                              "drive=agentos_hd"),
+                 "Ubuntu QEMU launch attaches ISO only as agentOS host hardware");
+    (void)tap_ok(src_contains("kernel/agentos-root-task/src/system_desc_aarch64.c",
+                              "{ SVC_ID_VIRTIO_BLK, 12u }") &&
+                 src_contains("platform/blk-virt/vmm_virtio_blk.c",
+                              "aos_blk_virt_set_backend") &&
+                 src_contains("platform/blk-virt/vmm_virtio_blk.c",
+                              "host-media read"),
+                 "linux_vmm routes emulated block requests to virtio_blk");
+    (void)tap_ok(src_contains("kernel/agentos-root-task/Makefile",
+                              "-DAGENTOS_GUEST_UBUNTU=1") &&
+                 src_contains_in_order("kernel/agentos-root-task/src/main.c",
+                                       "#if !defined(AGENTOS_GUEST_UBUNTU)",
+                                       "g_virtio_mmio_frame_cap"),
+                 "Ubuntu guest VSpace excludes the QEMU passthrough page");
 
     printf("1..%d\n", g_testno);
     if (g_failed) {

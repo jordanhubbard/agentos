@@ -192,6 +192,8 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
                 "emulated virtio-blk: guest probed",
                 "emulated virtio-blk: guest DRIVER_OK",
                 "emulated virtio-blk: pumped",
+                    "emulated virtio-blk: agentOS host media ready",
+                    "emulated virtio-blk: host-media read",
             ]);
         }
         let console = wait_for_all_markers(
@@ -451,13 +453,27 @@ pub fn spawn_qemu_with_guest(
             }
             if guest_os == "ubuntu" || guest_os == "both" {
                 /*
-                 * The Ubuntu E2E initramfs is packaged into linux_vmm. For the
-                 * single Ubuntu guest, do not attach QEMU net/blk: its DTB
-                 * advertises only agentOS emulated devices. Dual-guest mode
-                 * retains the ISO crutch until its separate migration.
+                 * The single Ubuntu guest gets a host block device on bus.8,
+                 * owned only by agentOS virtio_blk. Its guest DTB still
+                 * advertises only the emulated device at 0x0a020000. Dual
+                 * guest mode retains the bus.1 guest-passthrough crutch.
                  */
                 let ubuntu_img = ubuntu_disk_image(repo_root);
-                if guest_os == "both" && ubuntu_img.exists() {
+                if guest_os == "ubuntu" && ubuntu_img.exists() {
+                    println!(
+                        "[xtask:test] agentOS host block media: {}",
+                        ubuntu_img.display()
+                    );
+                    c.args([
+                        "-device",
+                        "virtio-blk-device,drive=agentos_hd,bus=virtio-mmio-bus.8",
+                        "-drive",
+                        &format!(
+                            "file={},format=raw,id=agentos_hd,if=none,readonly=on,file.locking=off",
+                            ubuntu_img.to_str().unwrap()
+                        ),
+                    ]);
+                } else if guest_os == "both" && ubuntu_img.exists() {
                     println!(
                         "[xtask:test] Ubuntu disk image: {} (snapshot writes)",
                         ubuntu_img.display()

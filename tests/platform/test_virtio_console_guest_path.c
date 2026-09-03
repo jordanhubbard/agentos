@@ -114,8 +114,10 @@ int main(void)
        "empty pre-driver RX queue terminates instead of spinning");
     ok(contains("xtask/src/cmd_test.rs", "if guest_os != \"ubuntu\"") &&
        contains("xtask/src/cmd_test.rs",
-                "if guest_os == \"both\" && ubuntu_img.exists()"),
-       "single Ubuntu QEMU launch attaches no host net or block device");
+                "virtio-blk-device,drive=agentos_hd,bus=virtio-mmio-bus.8") &&
+       contains("platform/include/platform/blk_host_layout.h",
+                "AGENTOS_HOST_BLK_MMIO_PA         0x0A001000UL"),
+       "single Ubuntu host block device is owned by agentOS on isolated bus.8");
 
     printf("1..%d\n", testno);
     return failed ? 1 : 0;

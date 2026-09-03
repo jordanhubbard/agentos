@@ -117,11 +117,16 @@ typedef struct aos_blk_virt_client {
     uint32_t                capacity;
 } aos_blk_virt_client_t;
 
+typedef aos_blk_resp_status_t (*aos_blk_backend_fn)(
+    void *ctx, aos_blk_virt_client_t *client, const aos_blk_req_t *req);
+
 typedef struct aos_blk_virt {
     aos_blk_virt_client_t clients[AOS_BLK_MAX_CLIENTS];
     uint32_t num_clients;
     uint8_t *disk;
     uint32_t disk_blocks;
+    aos_blk_backend_fn backend;
+    void *backend_ctx;
 } aos_blk_virt_t;
 
 #endif /* AOS_PLATFORM_BLK_LAYOUT_H */

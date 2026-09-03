@@ -13,6 +13,7 @@
 #include <stdint.h>
 #include <stddef.h>
 #include <stdbool.h>
+#include <platform/blk_host_layout.h>
 
 /* ─────────────────────────────────────────────────────────────────────────────
  * virtio-MMIO register offsets (relative to MMIO base)
@@ -26,9 +27,9 @@
 #define VIRTIO_MMIO_DEVICE_FEATURES_SEL 0x014u  /* WO: select feature word (0 or 1) */
 #define VIRTIO_MMIO_DRIVER_FEATURES     0x020u  /* WO: negotiated feature bits */
 #define VIRTIO_MMIO_DRIVER_FEATURES_SEL 0x024u  /* WO: select feature word (0 or 1) */
-#define VIRTIO_MMIO_QUEUE_SEL           0x034u  /* WO: select queue index */
-#define VIRTIO_MMIO_QUEUE_NUM_MAX       0x038u  /* RO: max queue size for selected queue */
-#define VIRTIO_MMIO_QUEUE_NUM           0x03cu  /* WO: chosen queue size */
+#define VIRTIO_MMIO_QUEUE_SEL           0x030u  /* WO: select queue index */
+#define VIRTIO_MMIO_QUEUE_NUM_MAX       0x034u  /* RO: max queue size for selected queue */
+#define VIRTIO_MMIO_QUEUE_NUM           0x038u  /* WO: chosen queue size */
 #define VIRTIO_MMIO_QUEUE_READY         0x044u  /* RW: write 1 to activate, read to confirm */
 #define VIRTIO_MMIO_QUEUE_NOTIFY        0x050u  /* WO: write queue index to kick device */
 #define VIRTIO_MMIO_INTERRUPT_STATUS    0x060u  /* RO: bit0=used_ring_update, bit1=config_change */
@@ -181,7 +182,7 @@ typedef struct __attribute__((packed)) {
  *   Data is placed in blk_dma_shmem starting at offset 0.
  *   Reply: MR0 = BLK_OK or error code
  */
-#define OP_BLK_READ                     0xF0u
+#define OP_BLK_READ                     AOS_HOST_BLK_OP_READ
 
 /*
  * OP_BLK_WRITE — write count sectors starting at (block_hi<<32 | block_lo)
@@ -191,34 +192,34 @@ typedef struct __attribute__((packed)) {
  *   Data is sourced from blk_dma_shmem starting at offset 0.
  *   Reply: MR0 = BLK_OK or error code
  */
-#define OP_BLK_WRITE                    0xF1u
+#define OP_BLK_WRITE                    AOS_HOST_BLK_OP_WRITE
 
 /*
  * OP_BLK_FLUSH — flush volatile write cache
  *   Reply: MR0 = BLK_OK, or BLK_ERR_NODEV if device not initialised
  */
-#define OP_BLK_FLUSH                    0xF2u
+#define OP_BLK_FLUSH                    AOS_HOST_BLK_OP_FLUSH
 
 /*
  * OP_BLK_INFO — query device geometry
  *   Reply: MR0=BLK_OK, MR1=capacity_lo, MR2=capacity_hi, MR3=block_size
  */
-#define OP_BLK_INFO                     0xF3u
+#define OP_BLK_INFO                     AOS_HOST_BLK_OP_INFO
 
 /*
  * OP_BLK_HEALTH — query driver health counters
  *   Reply: MR0=BLK_OK, MR1=initialized(0/1), MR2=error_count
  */
-#define OP_BLK_HEALTH                   0xF4u
+#define OP_BLK_HEALTH                   AOS_HOST_BLK_OP_HEALTH
 
 /* ─────────────────────────────────────────────────────────────────────────────
  * virtio-blk return codes (placed in MR0 of PPC reply)
  * ──────────────────────────────────────────────────────────────────────────── */
 
-#define BLK_OK                          0u   /* operation succeeded */
-#define BLK_ERR_IO                      1u   /* device I/O error or timeout */
-#define BLK_ERR_OOB                     2u   /* request exceeds device capacity */
-#define BLK_ERR_NODEV                   3u   /* device not initialised / absent */
+#define BLK_OK                          AOS_HOST_BLK_OK
+#define BLK_ERR_IO                      AOS_HOST_BLK_ERR_IO
+#define BLK_ERR_OOB                     AOS_HOST_BLK_ERR_OOB
+#define BLK_ERR_NODEV                   AOS_HOST_BLK_ERR_NODEV
 
 /* ─────────────────────────────────────────────────────────────────────────────
  * Channel assignments (from virtio_blk's own perspective)
@@ -227,8 +228,8 @@ typedef struct __attribute__((packed)) {
 #define VIRTIO_BLK_CH_CONTROLLER        0u   /* pp=true inbound from controller (admin/status) */
 #define VIRTIO_BLK_CH_VFS               1u   /* pp=true inbound from vfs_server (block I/O) */
 
-/* Queue size for the MVP synchronous polling mode (single in-flight request) */
-#define VIRTIO_BLK_QUEUE_SIZE           1u
+/* Eight entries leave room for the three-descriptor synchronous chain. */
+#define VIRTIO_BLK_QUEUE_SIZE           8u
 
 /* Poll timeout: maximum spin iterations before declaring an I/O timeout */
 #define VIRTIO_BLK_POLL_ITERS           100000u

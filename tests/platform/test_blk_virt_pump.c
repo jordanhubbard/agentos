@@ -222,6 +222,46 @@ static int test_drop_when_resp_full(void)
     PASS("test_drop_when_resp_full");
 }
 
+typedef struct {
+    uint32_t calls;
+    aos_blk_req_code_t code;
+} backend_probe_t;
+
+static aos_blk_resp_status_t probe_backend(
+    void *ctx, aos_blk_virt_client_t *client, const aos_blk_req_t *req)
+{
+    backend_probe_t *probe = (backend_probe_t *)ctx;
+    probe->calls++;
+    probe->code = req->code;
+    if (req->code == AOS_BLK_REQ_READ) {
+        memset(client->data + (uint32_t)req->io_or_offset, 0xa5,
+               (size_t)req->count * AOS_BLK_TRANSFER_SIZE);
+    }
+    return AOS_BLK_RESP_OK;
+}
+
+static int test_external_backend(void)
+{
+    aos_blk_virt_t v;
+    aos_blk_virt_client_t c;
+    aos_blk_resp_t resp;
+    backend_probe_t probe = {0};
+
+    if (setup_one(&v, &c) != 0) {
+        return 1;
+    }
+    aos_blk_virt_set_backend(&v, probe_backend, &probe);
+    CHECK(enqueue_req(&c, AOS_BLK_REQ_READ, 0, 42, 1, 123) == 0);
+    CHECK(aos_blk_virt_pump(&v) == 1u);
+    CHECK(dequeue_resp(&c, &resp) == 0);
+    CHECK(resp.status == AOS_BLK_RESP_OK);
+    CHECK(resp.success_count == 1u);
+    CHECK(probe.calls == 1u);
+    CHECK(probe.code == AOS_BLK_REQ_READ);
+    CHECK(c.data[0] == 0xa5 && c.data[AOS_BLK_TRANSFER_SIZE - 1u] == 0xa5);
+    PASS("test_external_backend");
+}
+
 int main(void)
 {
     int failed = 0;
@@ -233,6 +273,7 @@ int main(void)
     failed += test_flush_and_oob();
     failed += test_two_clients_share_disk();
     failed += test_drop_when_resp_full();
+    failed += test_external_backend();
     if (failed) {
         printf("%d test(s) failed\n", failed);
         return 1;

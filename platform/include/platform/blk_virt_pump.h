@@ -19,8 +19,12 @@ int aos_blk_virt_add_client(aos_blk_virt_t *v, const aos_blk_virt_client_t *c);
 
 void aos_blk_virt_set_disk(aos_blk_virt_t *v, uint8_t *disk, uint32_t disk_blocks);
 
+/* Replace the RAM disk with a synchronous agentOS block backend. */
+void aos_blk_virt_set_backend(aos_blk_virt_t *v, aos_blk_backend_fn backend,
+                              void *ctx);
+
 /*
- * Serve every pending request against the shared RAM disk.
+ * Serve every pending request against the configured backend or RAM disk.
  * Returns I/O operations that produced a response (including invalid-param).
  */
 uint32_t aos_blk_virt_pump(aos_blk_virt_t *v);
