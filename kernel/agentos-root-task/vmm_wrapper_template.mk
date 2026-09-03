@@ -16,12 +16,18 @@ RANLIB := $(shell command -v llvm-ranlib 2>/dev/null || command -v /opt/homebrew
 
 SDDF_CUSTOM_LIBC := 1
 
+# -D__thread= is mandatory and must match linux_vmm.c / pd_entry.c (VMM_CFLAGS).
+# libsel4 declares __sel4_ipc_buffer as extern __thread. Without this, libvmm.a
+# (guest_start → seL4_TCB_WriteRegisters, 38 MRs) uses a TLS copy that stays
+# NULL and VMFaults at address 0. linux_vmm's global is a different symbol.
 CFLAGS := \
     -mstrict-align \
     -ffreestanding \
     -g3 -O3 -Wall \
     -Wno-unused-function \
     -DBOARD_qemu_virt_aarch64 \
+    -D__thread= \
+    -DAOS_NO_UBSAN=1 \
     -I$(BOARD_DIR)/include \
     -I$(LIBVMM)/include \
     -I$(SDDF)/include \
@@ -36,6 +42,11 @@ vpath %.c $(LIBVMM)
 
 include $(LIBVMM)/vmm.mk
 include $(SDDF)/util/util.mk
+
+# libvmm.mk adds -fsanitize-trap=undefined (brk). In this PD that trap is a
+# VCPUFault/UserException with no handler: the guest dies after the first
+# emulated MMIO. Strip it after the include so CHECK_LIBVMM_CFLAGS rebuilds.
+CFLAGS := $(filter-out -fsanitize=undefined -fsanitize-trap=undefined,$(CFLAGS))
 
 # smc.c calls seL4_ARM_SMC() which is a typedef (not a function) in Microkit SDK 2.1.
 # Override the pattern rule with a stub that compiles cleanly.  On QEMU virt,

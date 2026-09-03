@@ -245,6 +245,15 @@ static bool handle_client_requests(struct virtio_device *dev, int *num_reqs_cons
     virtio_queue_handler_t *vq = &dev->vqs[VIRTIO_BLK_DEFAULT_VIRTQ];
     struct virtq *virtq = &vq->virtq;
 
+    /*
+     * after_fault pumps on every guest MMIO (UART/GIC first). The virtq
+     * pointers stay NULL until the guest writes QUEUE_READY.
+     */
+    if (!vq->ready || virtq->avail == NULL || virtq->desc == NULL || virtq->used == NULL) {
+        *num_reqs_consumed = 0;
+        return true;
+    }
+
     struct virtio_blk_device *state = device_state(dev);
 
     /* If any request has to be dropped due to any number of reasons, such as an invalid req, this becomes

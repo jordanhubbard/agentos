@@ -516,9 +516,30 @@ int main(void)
                    "DTB ubuntu-iso-overlay.dts.in has virtio_mmio@a010000");
     (void)test_dtb("libvmm/examples/simple/board/qemu_virt_aarch64/overlay.dts",
                    "DTB buildroot overlay.dts has virtio_mmio@a010000");
+    (void)tap_ok(!src_contains("libvmm/examples/simple/board/qemu_virt_aarch64/overlay.dts",
+                               "virtio_mmio@a000000"),
+                 "buildroot overlay.dts has no QEMU virtio-net at 0xa000000");
     (void)test_dtb("libvmm/examples/simple/board/qemu_virt_aarch64/ubuntu-overlay.dts",
                    "DTB ubuntu-overlay.dts has virtio_mmio@a010000");
     (void)test_vmm_fault_path();
+    (void)tap_ok(src_contains("kernel/agentos-root-task/vmm_wrapper_template.mk",
+                              "-D__thread="),
+                 "libvmm.a CFLAGS suppress TLS so IPC buffer matches linux_vmm");
+    (void)tap_ok(src_contains("kernel/agentos-root-task/src/linux_vmm.c",
+                              "seL4_SetIPCBuffer"),
+                 "linux_vmm_main pins mapped IPC buffer before guest_start");
+    (void)tap_ok(src_contains("kernel/agentos-root-task/src/linux_vmm.c",
+                              "} else if (label == seL4_Fault_NullFault) {"),
+                 "linux_vmm treats hypervisor faults as faults, not notifications");
+    (void)tap_ok(src_contains("kernel/agentos-root-task/vmm_wrapper_template.mk",
+                              "filter-out -fsanitize=undefined"),
+                 "libvmm.a is not built with UBSan trap-to-brk");
+    (void)tap_ok(src_contains("libvmm/src/virtio/block.c",
+                              "virtq->avail == NULL"),
+                 "virtio-blk skips avail->idx until the guest programs the virtq");
+    (void)tap_ok(src_contains("platform/net-virt/vmm_virtio_net.c",
+                              "guest DRIVER_OK virq %u MAC"),
+                 "VMM logs guest MAC 02:00:00:00:00:01 at DRIVER_OK");
     (void)test_qemu_page_unmapped();
     (void)test_mmio_probe();
     (void)test_guest_tx_rx_loopback();

@@ -450,9 +450,19 @@ __attribute__((used)) seL4_Word    microkit_signal_msg    = 0;
 
 /* PL011 UART on QEMU virt — direct write, no seL4_DebugPutChar needed */
 #define LINUX_VMM_UART_VA 0x10001000UL
+#define LINUX_VMM_UARTFR_TXFF (1u << 5)
 static inline void _uart_putc(char c) {
+    volatile uint32_t *fr = (volatile uint32_t *)(LINUX_VMM_UART_VA + 0x18UL);
     volatile uint32_t *dr = (volatile uint32_t *)LINUX_VMM_UART_VA;
+    while (*fr & LINUX_VMM_UARTFR_TXFF) {
+        /* wait until the TX FIFO has room */
+    }
     *dr = (uint32_t)(unsigned char)c;
+}
+
+void _putchar(char character)
+{
+    _uart_putc(character);
 }
 
 void microkit_dbg_putc(char c) { _uart_putc(c); }
@@ -471,9 +481,9 @@ void microkit_dbg_put32(uint32_t v)
 }
 
 /* seL4 IPC buffer pointer. Compiled with -D__thread= (TLS suppressed) so
- * this is a regular global matching libvmm.a's expectation. The frame is
- * mapped by the CapDL initializer at __sel4_ipc_buffer_obj's VA, set via
- * seL4_SetIPCBuffer() in linux_vmm_main() before any seL4 IPC calls. */
+ * this is a regular global matching libvmm.a (vmm_wrapper_template.mk).
+ * linux_vmm_main() points it at the mapped page (0x10000000) before any
+ * seL4 invocation that uses extra message registers. */
 seL4_IPCBuffer *__sel4_ipc_buffer = NULL;
 
 /* vmm_caps.c is not included in libvmm.a — define g_vmm_vcpus here.
@@ -1041,6 +1051,7 @@ static bool linux_vmm_start_guest(void)
     }
 
     LOG_VMM("  Starting Linux guest...\n");
+    vcpu_reset(GUEST_BOOT_VCPU_ID);
     guest_start(g_linux_kernel_pc, GUEST_DTB_VADDR, GUEST_INIT_RAM_DISK_VADDR);
     guest_started = true;
     g_guest_state = GUEST_STATE_RUNNING;
@@ -1627,11 +1638,36 @@ static void linux_vmm_notified(seL4_Word badge)
 static seL4_MessageInfo_t linux_vmm_fault(seL4_Word badge,
                                           seL4_MessageInfo_t msginfo)
 {
-    /* Microkit 2.1 encodes VCPU fault badges as (1ULL<<62)|vcpu_id.
-     * Strip the upper flag bits to recover the raw vcpu_id. */
+    /* Bit 62 is the Microkit VCPU-fault flag when present. Unbadged
+     * deliveries (guest TCB fault handler = VMM listen EP) are vCPU 0. */
     size_t vcpu_id = badge & ~VMM_FAULT_BADGE_FLAG;
+    seL4_Word label = seL4_MessageInfo_get_label(msginfo);
+
+    {
+        static uint32_t fault_log;
+        if (fault_log < 8u) {
+            fault_log++;
+            LOG_VMM("guest fault #%u label=0x%lx badge=0x%lx vcpu=%lu\n",
+                    (unsigned)fault_log, (unsigned long)label,
+                    (unsigned long)badge, (unsigned long)vcpu_id);
+            if (label == seL4_Fault_VMFault) {
+                LOG_VMM("  VMFault ip=0x%lx addr=0x%lx fsr=0x%lx\n",
+                        (unsigned long)seL4_GetMR(seL4_VMFault_IP),
+                        (unsigned long)seL4_GetMR(seL4_VMFault_Addr),
+                        (unsigned long)seL4_GetMR(seL4_VMFault_FSR));
+            } else if (label == seL4_Fault_VCPUFault) {
+                LOG_VMM("  VCPUFault HSR=0x%lx\n",
+                        (unsigned long)seL4_GetMR(seL4_VCPUFault_HSR));
+            } else {
+                LOG_VMM("\n");
+            }
+        }
+    }
 
     bool success = fault_handle(vcpu_id, msginfo);
+    if (!success) {
+        LOG_VMM_ERR("fault_handle failed label=0x%lx\n", (unsigned long)label);
+    }
     (void)success;
     /* Guest virtio-net QueueNotify is an MMIO fault; pump sDDF → RX virtq. */
     aos_vmm_virtio_net_after_fault();
@@ -1649,8 +1685,10 @@ static seL4_MessageInfo_t linux_vmm_fault(seL4_Word badge,
  */
 void linux_vmm_main(seL4_CPtr ep, seL4_CPtr reply_cap)
 {
-    /* __sel4_ipc_buffer is set to 0x10000000 by pd_entry.c _start before
-     * this function is called; no need to set it again here. */
+    /* Same as freebsd_vmm: pin the mapped IPC page before libvmm inlines
+     * seL4_TCB_WriteRegisters (38 MRs through seL4_GetIPCBuffer). pd_entry
+     * also assigns the global; this call is the one that must not be skipped. */
+    seL4_SetIPCBuffer((seL4_IPCBuffer *)0x10000000UL);
 
     /* Run init() — sets up guest images, GIC, virtio IRQs, starts guest */
     init();
@@ -1688,7 +1726,7 @@ void linux_vmm_main(seL4_CPtr ep, seL4_CPtr reply_cap)
             seL4_Reply(reply);
             info = seL4_Recv(ep, &badge);
 #endif
-        } else if (label == seL4_Fault_NullFault || !(badge & VMM_FAULT_BADGE_FLAG)) {
+        } else if (label == seL4_Fault_NullFault) {
             linux_vmm_notified(badge);
 #ifdef CONFIG_KERNEL_MCS
             info = seL4_Recv(ep, &badge, reply_cap);

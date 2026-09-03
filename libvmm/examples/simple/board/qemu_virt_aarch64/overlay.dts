@@ -2,12 +2,19 @@
  * Copyright 2024, UNSW
  *
  * SPDX-License-Identifier: BSD-2-Clause
+ *
+ * Buildroot guest overlay. vmm.mk fills @BUILDROOT_INITRD_*@ from the
+ * packaged initrd size. RAM / initrd IPA must match linux_vmm.c
+ * (LINUX_GUEST_RAM_VADDR / GUEST_INIT_RAM_DISK_VADDR / GUEST_RAM_SIZE).
+ *
+ * Guest net is the emulated virtio-mmio at 0xa010000 only. QEMU virtio-net
+ * at 0xa000000 is not in this tree so TX goes through aos_net_virt_pump.
  */
 / {
     /* Need to specify how much RAM the guest will have */
     memory@40000000 {
         device_type = "memory";
-        reg = <0x00 0x40000000 0x00 0x10000000>;
+        reg = <0x00 0x40000000 0x00 0x20000000>;
     };
 
     flash@0 {
@@ -16,25 +23,10 @@
 
     chosen {
         stdout-path = "/pl011@9000000";
-        bootargs = "earlycon=pl011,0x9000000 earlyprintk=serial debug loglevel=8";
+        bootargs = "earlycon=pl011,0x9000000 console=ttyAMA0,115200n8 earlyprintk=serial debug loglevel=8 ip=dhcp";
         linux,stdout-path = "/pl011@9000000";
-        linux,initrd-start = <0x4d000000>;
-        linux,initrd-end = <0x4d800000>;
-    };
-
-    /*
-     * virtio-net passthrough: QEMU virt virtio-mmio slot 0.
-     * Physical address: 0xa000000 + 0*0x200 = 0xa000000.
-     * IRQ: SPI 16 (INTID 48) — QEMU assigns SPI (16+slot) per transport.
-     * Slot 0 is chosen explicitly: QEMU command uses bus=virtio-mmio-bus.0.
-     * interrupt-parent 0x8001 = intc@8000000 (GIC) phandle in linux.dts.
-     * trigger 0x01 = edge-rising (matches QEMU's virt machine DT for slot 0).
-     */
-    virtio_mmio@a000000 {
-        compatible = "virtio,mmio";
-        reg = <0x00 0xa000000 0x00 0x200>;
-        interrupt-parent = <0x8001>;
-        interrupts = <0x00 0x10 0x01>;
+        linux,initrd-start = <@BUILDROOT_INITRD_START@>;
+        linux,initrd-end = <@BUILDROOT_INITRD_END@>;
     };
 
     /* agentOS emulated virtio-net (not QEMU). SPI 18 → INTID 50. */
@@ -45,18 +37,4 @@
         interrupt-parent = <0x8001>;
         interrupts = <0x00 0x12 0x01>;
     };
-
-    /*
-     * agentOS emulated virtio-blk — NOT LIVE this pass.
-     * IPA 0xa020000 / SPI 20 → INTID 52. Do not enable until it can
-     * replace QEMU virtio-blk without stealing the boot disk.
-     *
-     * virtio_mmio@a020000 {
-     *     compatible = "virtio,mmio";
-     *     dma-coherent;
-     *     reg = <0x00 0xa020000 0x00 0x1000>;
-     *     interrupt-parent = <0x8001>;
-     *     interrupts = <0x00 0x14 0x01>;
-     * };
-     */
 };
