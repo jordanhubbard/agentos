@@ -54,7 +54,8 @@ DTS_OVERLAY_FILE := $(UBUNTU_DTS_OVERLAY)
 else
 LINUX_IMAGE  := $(BUILD_DIR)/$(BUILDROOT_LINUX_IMAGE)
 INITRD_IMAGE := $(BUILD_DIR)/$(BUILDROOT_INITRD_IMAGE)
-DTS_OVERLAY_FILE = $(DTS_DIR)/overlay.dts
+DTS_OVERLAY_FILE := $(BUILD_DIR)/buildroot-overlay.dts
+BUILDROOT_INITRD_START := 0x50000000
 endif
 
 # DTS + tools
@@ -155,6 +156,18 @@ $(UBUNTU_DTS_OVERLAY): $(KERNEL_SRC_DIR)/ubuntu-iso-overlay.dts.in $(KERNEL_SRC_
 		-e 's|@UBUNTU_RAM_BASE@|0x00 $(UBUNTU_RAM_BASE)|g' \
 		-e 's|@UBUNTU_INITRD_START@|0x00 $(UBUNTU_INITRD_START)|g' \
 		-e "s|@UBUNTU_INITRD_END@|0x00 $$end_hex|g" \
+		$< > $@
+
+$(BUILD_DIR)/buildroot-overlay.dts: $(DTS_DIR)/overlay.dts $(KERNEL_SRC_DIR)/vmm.mk $(INITRD_IMAGE) $(VMM_CONFIG_STAMP)
+	@mkdir -p $(BUILD_DIR)
+	@echo "[VMM] Generating buildroot overlay (initrd at $(BUILDROOT_INITRD_START))..."
+	@initrd_size=$$(python3 -c 'import os,sys; print(os.path.getsize(sys.argv[1]))' "$(INITRD_IMAGE)"); \
+	start=$$(( $(BUILDROOT_INITRD_START) )); \
+	end=$$(( start + initrd_size )); \
+	end_hex=$$(printf "0x%08x" $$end); \
+	sed \
+		-e 's|@BUILDROOT_INITRD_START@|0x00 $(BUILDROOT_INITRD_START)|g' \
+		-e "s|@BUILDROOT_INITRD_END@|0x00 $$end_hex|g" \
 		$< > $@
 
 $(BUILD_DIR)/vm.dts: FORCE $(LINUX_DTS_BASE) $(DTS_OVERLAY_FILE)

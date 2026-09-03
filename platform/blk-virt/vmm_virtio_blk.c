@@ -88,10 +88,18 @@ void aos_vmm_virtio_blk_init(void)
 
 void aos_vmm_virtio_blk_after_fault(void)
 {
+    virtio_queue_handler_t *vq;
+
     if (!g_aos_blk_ready) {
         return;
     }
     (void)aos_blk_virt_pump(&g_aos_virt);
+
+    vq = &g_aos_blk.virtio_device.vqs[VIRTIO_BLK_DEFAULT_VIRTQ];
+    if (!vq->ready || vq->virtq.avail == NULL) {
+        return;
+    }
+
     (void)virtio_blk_handle_resp(&g_aos_blk);
     /* Keep plugged so a later handle_resp enqueue cannot unplug. */
     if (g_queue.req_queue) {

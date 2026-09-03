@@ -39,7 +39,7 @@ else
   $(error Unsupported arch: $(ARCH))
 endif
 
-CFLAGS := -nostdlib -ffreestanding -g -O2 -Wall -Wextra -Werror -Wno-unused-function -Wno-unused-parameter -Wno-unused-variable \
+CFLAGS := -nostdlib -ffreestanding -g -O2 -Wall -Wextra -Werror -Wno-unused-function -Wno-unused-parameter -Wno-unused-variable -Wno-unused-but-set-variable \
            -Iinclude -Ilwip/include -I$(SEL4_INC_DIR) \
            $(CFLAGS_ARCH) \
            -DCONFIG_KERNEL_MCS \

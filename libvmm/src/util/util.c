@@ -8,10 +8,9 @@
 #include <libvmm/util/util.h>
 #include <libvmm/util/printf.h>
 
-/* This is required to use the printf library we brought in, it is
-   simply for convenience since there's a lot of logging/debug printing
-   in the VMM. */
-void _putchar(char character)
+/* Weak so linux_vmm can send printf to the mapped PL011 (release seL4 has
+ * CONFIG_PRINTING off; seL4_DebugPutChar is then a no-op). */
+__attribute__((weak)) void _putchar(char character)
 {
     seL4_DebugPutChar(character);
 }

@@ -18,14 +18,14 @@ binding) described the wrong I/O model. It is superseded by this document.
 |------|----------|--------|------|
 | 1 | (done) | done | TCB page + constitution rewrite |
 | 2 | (done) | done (host-tested) | sDDF net under VMM (`virtio_mmio_net_init`), not QEMU passthrough |
-| 2b | `task_0d44a94246554eeabc8d5bc8e36ab6d7` | open | Guest must enumerate IPA `0x0A010000` and pass a packet through the pump |
-| 3 | `task_892273845b0949ce8be59f70c02bf644` | waiting on 2b | sDDF blk + emulated virtio-blk |
-| 4 | `task_9218737eb11a438b89552c599c25d012` | waiting on 2b | sDDF serial; one UART owner |
-| 5 | `task_7f6653b7dcc840b9ab7fa092685c9d57` | waiting on 2b | One VMM implementation; guest flavor is data |
-| 6 | `task_c03b1c0527de416fbcfcdfcb77787559` | waiting on 2b | Stop identity-mapping guest RAM for device DMA |
+| 2b | `task_0d44a94246554eeabc8d5bc8e36ab6d7` | done | `make test-guest-net`: boot buildroot, enumerate IPA `0x0A010000`, pump one frame |
+| 3 | `task_892273845b0949ce8be59f70c02bf644` | ready | sDDF blk + emulated virtio-blk |
+| 4 | `task_9218737eb11a438b89552c599c25d012` | waiting on 3 | sDDF serial; one UART owner |
+| 5 | `task_7f6653b7dcc840b9ab7fa092685c9d57` | waiting on 3 | One VMM implementation; guest flavor is data |
+| 6 | `task_c03b1c0527de416fbcfcdfcb77787559` | waiting on 3 | Stop identity-mapping guest RAM for device DMA |
 | 7 | (done) | done (quarantine by docs) | Quarantine PD museum (no deletes this pass) |
 | 8 | (done) | done | Skills + Python HTML helpers |
-| 9 | `task_ec992e5743354a538d1c3235a2e2c0da` | waiting on 2b | Native agent services as virtualizer clients |
+| 9 | `task_ec992e5743354a538d1c3235a2e2c0da` | waiting on 3 | Native agent services as virtualizer clients |
 
 ## Proof policy (unchanged)
 
@@ -62,7 +62,9 @@ services is out of scope until inspect and serial attach exist.
 
 1. Guest IPA `0x0A010000` is an **emulated** virtio-mmio net device (fault to VMM).
 2. Backend is sDDF-shaped queues + `aos_net_virt_pump` (loopback / hub).
-3. Guest DTB advertises this device. QEMU virtio-net at `0x0A000000` stays as
-   a kill-dated crutch so existing SSH E2E does not go dark in this pass.
-4. Next: host virtio-net MMIO moves to a nic_drv PD; passthrough is removed;
-   both guests share one `net_virt`.
+3. Guest DTB advertises this device. Buildroot overlay has **only** the
+   emulated NIC (`make test-guest-net`). Ubuntu overlays still carry QEMU
+   virtio-net at `0x0A000000` as a kill-dated SSH crutch until nic_drv
+   exists.
+4. Next: host virtio-net MMIO moves to a nic_drv PD; passthrough is removed
+   from Ubuntu too; both guests share one `net_virt`.

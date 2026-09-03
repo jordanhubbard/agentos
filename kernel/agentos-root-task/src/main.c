@@ -109,6 +109,11 @@ static seL4_Word g_cap_base;  /* set to bi->empty.start in root_task_main */
 #define VMM_GUEST_TCB_SLOT_BASE   266u
 #define VMM_GUEST_VCPU_SLOT_BASE  330u
 #define VMM_FAULT_BADGE_BASE      (1ULL << 62)
+/* Guest TCB IPC buffer: next 4K after the debug UART page. Must not share
+ * the VMM thread's buffer — seL4 forbids two TCBs on one IPC page, and a
+ * guest VMFault would clobber in-flight VMM syscalls. L1 for
+ * [0x10000000, 0x11FFFFF] is already installed with the VMM IPC mapping. */
+#define VMM_GUEST_IPC_BUF_VA      0x0000000010002000UL
 
 /* Active PD scheduling defaults.
  *
@@ -892,10 +897,8 @@ static seL4_Error setup_vmm_guest_vcpu(const pd_desc_t *pd,
 
     seL4_Word guest_tcb_slot = ut_alloc_slot();
     seL4_Word guest_vcpu_slot = ut_alloc_slot();
-    seL4_Word guest_fault_ep_slot = ut_alloc_slot();
     if (guest_tcb_slot == seL4_CapNull ||
-        guest_vcpu_slot == seL4_CapNull ||
-        guest_fault_ep_slot == seL4_CapNull) {
+        guest_vcpu_slot == seL4_CapNull) {
         dbg_puts("[rt] VMM guest setup failed: no root CNode slots\n");
         return seL4_NotEnoughMemory;
     }
@@ -924,6 +927,24 @@ static seL4_Error setup_vmm_guest_vcpu(const pd_desc_t *pd,
         return err;
     }
 
+    seL4_CPtr guest_ipc_cap = seL4_CapNull;
+    err = ut_alloc_cap(seL4_ARM_SmallPageObject, 0u, &guest_ipc_cap);
+    if (err != seL4_NoError) {
+        dbg_puts("[rt] VMM guest IPC frame alloc err=");
+        dbg_hex((seL4_Word)err);
+        dbg_puts("\n");
+        return err;
+    }
+    err = pd_vspace_map_device_frame(vspace, guest_ipc_cap, VMM_GUEST_IPC_BUF_VA);
+    if (err != seL4_NoError) {
+        dbg_puts("[rt] VMM guest IPC map err=");
+        dbg_hex((seL4_Word)err);
+        dbg_puts("\n");
+        return err;
+    }
+    (void)ipc_buf_va;
+    (void)ipc_buf_cap;
+
     seL4_Word cspace_root_data =
         (seL4_Word)(seL4_WordBits - (uint32_t)pd->cnode_size_bits);
     err = seL4_TCB_Configure((seL4_CPtr)guest_tcb_slot,
@@ -931,8 +952,8 @@ static seL4_Error setup_vmm_guest_vcpu(const pd_desc_t *pd,
                               cspace_root_data,
                               vspace,
                               0u,
-                              ipc_buf_va,
-                              ipc_buf_cap);
+                              VMM_GUEST_IPC_BUF_VA,
+                              guest_ipc_cap);
     if (err != seL4_NoError) {
         dbg_puts("[rt] VMM guest TCB configure err=");
         dbg_hex((seL4_Word)err);
@@ -974,24 +995,16 @@ static seL4_Error setup_vmm_guest_vcpu(const pd_desc_t *pd,
         return err;
     }
 
-    err = ep_mint_badge(self_ep,
-                        (seL4_Word)(VMM_FAULT_BADGE_BASE | 0u),
-                        seL4_CapInitThreadCNode,
-                        guest_fault_ep_slot,
-                        64u);
-    if (err != seL4_NoError) {
-        dbg_puts("[rt] VMM guest fault EP mint err=");
-        dbg_hex((seL4_Word)err);
-        dbg_puts("\n");
-        return err;
-    }
-
     err = seL4_TCB_SetSchedParams((seL4_CPtr)guest_tcb_slot,
                                   seL4_CapInitThreadTCB,
                                   255u,
                                   (seL4_Word)pd->priority,
                                   (seL4_CPtr)guest_sc_slot,
-                                  (seL4_CPtr)guest_fault_ep_slot);
+                                  /* Guest faults must land on the VMM listen EP.
+                                   * PD TCBs use a raw endpoint cap here (g_fault_ep).
+                                   * A badged mint was accepted but VCPUFaults still
+                                   * arrived on the root-task fault EP instead. */
+                                  self_ep);
     if (err != seL4_NoError) {
         dbg_puts("[rt] VMM guest SetSchedParams err=");
         dbg_hex((seL4_Word)err);
@@ -1057,6 +1070,8 @@ static seL4_Error setup_vmm_guest_vcpu(const pd_desc_t *pd,
     dbg_hex((seL4_Word)guest_tcb_slot);
     dbg_puts(" vcpu=");
     dbg_hex((seL4_Word)guest_vcpu_slot);
+    dbg_puts(" ipc_va=");
+    dbg_hex((seL4_Word)VMM_GUEST_IPC_BUF_VA);
     dbg_puts("\n");
     return seL4_NoError;
 }

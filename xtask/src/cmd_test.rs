@@ -35,6 +35,17 @@ const VIBEOS_DEV_BLOCK: u32 = 1 << 2;
 pub fn run(args: &TestArgs) -> anyhow::Result<()> {
     let repo_root = repo_root()?;
 
+    if args.assert_emulated_net {
+        anyhow::ensure!(
+            args.board == "qemu_virt_aarch64",
+            "--assert-emulated-net requires --board qemu_virt_aarch64"
+        );
+        anyhow::ensure!(
+            args.guest_os != "none",
+            "--assert-emulated-net needs a real guest (buildroot or ubuntu); GUEST_OS=none is a stub VMM"
+        );
+    }
+
     if !args.no_build {
         println!(
             "[xtask:test] Building BOARD={} GUEST_OS={}...",
@@ -86,7 +97,14 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
         ssh_port,
     )?;
 
-    let result = match args.guest_os.as_str() {
+    let result = if args.assert_emulated_net {
+        println!(
+            "[xtask:test] Waiting for emulated virtio-net guest proof in {}...",
+            log_path.display()
+        );
+        wait_for_emulated_net(&log_path, Duration::from_secs(args.timeout_secs))
+    } else {
+        match args.guest_os.as_str() {
         "ubuntu" => {
             println!(
                 "[xtask:test] Waiting for Ubuntu login prompt via CC-PD API ({})...",
@@ -139,6 +157,7 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
                     Duration::from_secs(args.timeout_secs),
                 )
             }
+        }
         }
     };
 
@@ -622,6 +641,65 @@ pub fn wait_for_markers(
                 if accumulated.contains(marker) {
                     return Ok(marker.to_string());
                 }
+            }
+        }
+
+        std::thread::sleep(Duration::from_millis(200));
+    }
+}
+
+const EMU_NET_REQUIRED: &[&str] = &[
+    "emulated virtio-net: guest probed",
+    "emulated virtio-net: guest DRIVER_OK",
+    "emulated virtio-net: pumped",
+];
+
+const EMU_NET_GUEST_ANY: &[&str] = &[
+    "0a010000.virtio_mmio",
+    "a010000.virtio_mmio",
+    "02:00:00:00:00:01",
+    "Sending DHCP requests",
+];
+
+fn wait_for_emulated_net(log_path: &Path, timeout: Duration) -> anyhow::Result<String> {
+    let start = Instant::now();
+    let mut file = std::fs::File::open(log_path).context("failed to open log file")?;
+    let mut offset: u64 = 0;
+    let mut accumulated = String::new();
+
+    loop {
+        if start.elapsed() >= timeout {
+            let missing: Vec<&str> = EMU_NET_REQUIRED
+                .iter()
+                .copied()
+                .filter(|m| !accumulated.contains(m))
+                .collect();
+            let guest_ok = EMU_NET_GUEST_ANY
+                .iter()
+                .any(|m| accumulated.contains(m));
+            anyhow::bail!(
+                "emulated virtio-net proof timeout after {}s; missing VMM markers {:?}; guest IPA/MAC observed={}",
+                timeout.as_secs(),
+                missing,
+                guest_ok
+            );
+        }
+
+        file.seek(SeekFrom::Start(offset))?;
+        let mut raw = Vec::new();
+        let bytes_read = file.read_to_end(&mut raw)?;
+        if bytes_read > 0 {
+            offset += bytes_read as u64;
+            accumulated.push_str(&String::from_utf8_lossy(&raw));
+
+            let vmm_ok = EMU_NET_REQUIRED
+                .iter()
+                .all(|m| accumulated.contains(m));
+            let guest_ok = EMU_NET_GUEST_ANY
+                .iter()
+                .any(|m| accumulated.contains(m));
+            if vmm_ok && guest_ok {
+                return Ok("emulated virtio-net: guest probed + DRIVER_OK + pumped + guest IPA/MAC".to_string());
             }
         }
 

@@ -27,6 +27,7 @@ static net_queue_handle_t       g_tx;
 static int                      g_aos_net_ready;
 static int                      g_aos_net_probed;
 static int                      g_aos_net_driver_ok;
+static int                      g_aos_net_pumped;
 
 void aos_vmm_guest_ram_bind(uint64_t gpa_base, uintptr_t hva_base, size_t size)
 {
@@ -89,6 +90,7 @@ void aos_vmm_virtio_net_init(void)
 void aos_vmm_virtio_net_after_fault(void)
 {
     uint32_t status;
+    uint32_t n;
 
     if (!g_aos_net_ready) {
         return;
@@ -102,11 +104,21 @@ void aos_vmm_virtio_net_after_fault(void)
     }
     if (!g_aos_net_driver_ok && (status & VIRTIO_CONFIG_S_DRIVER_OK)) {
         g_aos_net_driver_ok = 1;
-        LOG_VMM("emulated virtio-net: guest DRIVER_OK virq %u\n",
-                (unsigned)AOS_VIRTIO_NET_VIRQ);
+        LOG_VMM("emulated virtio-net: guest DRIVER_OK virq %u MAC %02x:%02x:%02x:%02x:%02x:%02x\n",
+                (unsigned)AOS_VIRTIO_NET_VIRQ,
+                (unsigned)AOS_VIRTIO_NET_MAC0,
+                (unsigned)AOS_VIRTIO_NET_MAC1,
+                (unsigned)AOS_VIRTIO_NET_MAC2,
+                (unsigned)AOS_VIRTIO_NET_MAC3,
+                (unsigned)AOS_VIRTIO_NET_MAC4,
+                (unsigned)AOS_VIRTIO_NET_MAC5);
     }
 
-    (void)aos_net_virt_pump(&g_aos_virt);
+    n = aos_net_virt_pump(&g_aos_virt);
+    if (!g_aos_net_pumped && n > 0u) {
+        g_aos_net_pumped = 1;
+        LOG_VMM("emulated virtio-net: pumped %u frame(s) TX->RX\n", n);
+    }
     (void)virtio_net_handle_rx(&g_aos_net);
     if (g_tx.active) {
         g_tx.active->consumer_signalled = 1u;
