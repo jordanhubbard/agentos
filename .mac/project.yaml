@@ -12,7 +12,7 @@ toolchain:
     - clang
     - gcc
 bootstrap:
-  command: true
+  command: "true"
   creates: []
 test:
   command: make test-host
