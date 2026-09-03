@@ -74,10 +74,9 @@ services is out of scope until inspect and serial attach exist.
 
 1. Guest IPA `0x0A020000` is an **emulated** virtio-mmio blk device (fault to VMM).
 2. Backend is sDDF-shaped queues + `aos_blk_virt_pump` (256 KB RAM disk).
-3. Buildroot overlay advertises **only** emulated net + emulated blk
-   (`make test-guest-blk`). Ubuntu overlays keep QEMU virtio-blk at
-   `0x0A000200` as a kill-dated boot-disk crutch; do not put emulated
-   blk before that node (it would steal `vda`).
+3. Buildroot and the single-guest Ubuntu E2E overlay advertise **only**
+   emulated net + emulated blk. Dual-guest mode still retains the QEMU ISO
+   crutch until the host block driver can serve live media to `blk_virt`.
 4. Linux `virtio_blk` probe + partition scan of LBA 0 is the I/O that
    proves the pump. Do not set `root=` to the RAM disk.
 5. Payload copies in libvmm `block.c` still cast `desc.addr` as a host
@@ -94,3 +93,17 @@ services is out of scope until inspect and serial attach exist.
 4. Virtio-console descriptor payloads use bounds-checked GPA translation.
 5. Remaining before step 4 closes: remove direct UART mappings from every
    non-driver PD so `serial_pd` is the sole post-bootstrap hardware owner.
+
+## Ubuntu all-VirtIO gate
+
+`make test-ubuntu-virtio` launches no QEMU net or block device for the single
+Ubuntu guest. The DTB advertises only agentOS emulated net (`0x0A010000`),
+block (`0x0A020000`), and console (`0x0A030000`). The gate requires all three
+to probe, reach DRIVER_OK, and transfer real guest I/O before accepting a login
+and echoed input over CC-PD. CI runs the same gate.
+
+This currently proves the Ubuntu kernel plus deterministic E2E initramfs. It
+does **not** yet prove the full Ubuntu live filesystem from the ISO. That
+requires the QEMU host block device to be owned by the agentOS block driver
+and served through `blk_virt`; do not call the platform pivot complete before
+that live-media boot passes.

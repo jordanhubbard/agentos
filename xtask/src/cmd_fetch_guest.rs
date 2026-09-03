@@ -172,7 +172,7 @@ fn ubuntu_e2e_initrd_ready(initrd: &Path) -> anyhow::Result<bool> {
         .any(|entry| entry == "init" || entry == "./init")
         && entries
             .iter()
-            .any(|entry| entry == "agentos-init-v2" || entry == "./agentos-init-v2"))
+            .any(|entry| entry == "agentos-init-v3" || entry == "./agentos-init-v3"))
 }
 
 fn build_linux_e2e_init(work_dir: &Path) -> anyhow::Result<Vec<u8>> {
@@ -231,7 +231,13 @@ fn create_ubuntu_e2e_initramfs(init_elf: &[u8]) -> anyhow::Result<Vec<u8>> {
     ino += 1;
     append_newc_file(&mut out, "init", ino, 0o755, init_elf)?;
     ino += 1;
-    append_newc_file(&mut out, "agentos-init-v2", ino, 0o444, b"console-open\n")?;
+    append_newc_file(
+        &mut out,
+        "agentos-init-v3",
+        ino,
+        0o444,
+        b"console-open\nvirtio-net-frame\n",
+    )?;
     ino += 1;
     append_newc_trailer(&mut out, ino)?;
     Ok(out)
@@ -307,6 +313,8 @@ const LINUX_E2E_INIT_ASM: &str = r#"
 .section .text
 .global _start
 _start:
+    bl   net_probe
+
     mov  x0, #-100
     adrp x1, dev_console
     add  x1, x1, :lo12:dev_console
@@ -361,6 +369,49 @@ _start:
     svc  #0
     b 1b
 
+/* Bring eth0 up and emit one Ethernet frame through the guest virtio NIC. */
+net_probe:
+    mov  x0, #2                  /* AF_INET */
+    mov  x1, #2                  /* SOCK_DGRAM */
+    mov  x2, #0
+    mov  x8, #198                /* socket */
+    svc  #0
+    cmp  x0, #0
+    b.lt 8f
+    mov  x20, x0
+    adrp x2, ifreq
+    add  x2, x2, :lo12:ifreq
+    mov  x1, #0x8914            /* SIOCSIFFLAGS */
+    mov  x0, x20
+    mov  x8, #29                 /* ioctl */
+    svc  #0
+    mov  x0, x20
+    mov  x8, #57                 /* close */
+    svc  #0
+
+    mov  x0, #17                 /* AF_PACKET */
+    mov  x1, #3                  /* SOCK_RAW */
+    mov  x2, #0xb588            /* htons(ETH_P_802_EX1 / 0x88b5) */
+    mov  x8, #198                /* socket */
+    svc  #0
+    cmp  x0, #0
+    b.lt 8f
+    mov  x20, x0
+    adrp x1, net_frame
+    add  x1, x1, :lo12:net_frame
+    mov  x2, #60
+    mov  x3, #0
+    adrp x4, sockaddr_ll
+    add  x4, x4, :lo12:sockaddr_ll
+    mov  x5, #20
+    mov  x8, #206                /* sendto */
+    svc  #0
+    mov  x0, x20
+    mov  x8, #57                 /* close */
+    svc  #0
+8:
+    ret
+
 .section .rodata
 banner:
     .ascii "agentOS Linux E2E init\nagentos-linux login: "
@@ -372,6 +423,28 @@ prompt_end:
 .equ prompt_len, prompt_end - prompt
 dev_console:
     .asciz "/dev/console"
+
+.section .data
+.balign 8
+ifreq:
+    .asciz "eth0"
+    .zero 11
+    .hword 1                     /* IFF_UP */
+    .zero 22
+sockaddr_ll:
+    .hword 17                    /* AF_PACKET */
+    .byte 0x88, 0xb5            /* protocol in network byte order */
+    .word 2                      /* eth0: loopback is ifindex 1 */
+    .hword 1                     /* ARPHRD_ETHER */
+    .byte 0
+    .byte 6
+    .byte 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0, 0
+net_frame:
+    .byte 0xff, 0xff, 0xff, 0xff, 0xff, 0xff
+    .byte 0x02, 0x00, 0x00, 0x00, 0x00, 0x01
+    .byte 0x88, 0xb5
+    .ascii "agentOS virtio-net guest proof"
+    .zero 17
 
 .section .bss
 .balign 16

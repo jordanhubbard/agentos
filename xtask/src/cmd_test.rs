@@ -35,7 +35,11 @@ const VIBEOS_DEV_BLOCK: u32 = 1 << 2;
 pub fn run(args: &TestArgs) -> anyhow::Result<()> {
     let repo_root = repo_root()?;
 
-    if args.assert_emulated_net || args.assert_emulated_blk || args.assert_emulated_console {
+    if args.assert_emulated_net
+        || args.assert_emulated_blk
+        || args.assert_emulated_console
+        || args.assert_agentos_virtio
+    {
         anyhow::ensure!(
             args.board == "qemu_virt_aarch64",
             "emulated VirtIO assertions require --board qemu_virt_aarch64"
@@ -45,10 +49,10 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
             "emulated VirtIO assertions need a real guest; GUEST_OS=none is a stub VMM"
         );
     }
-    if args.assert_emulated_console {
+    if args.assert_emulated_console || args.assert_agentos_virtio {
         anyhow::ensure!(
             args.guest_os == "ubuntu",
-            "--assert-emulated-console currently requires --guest-os ubuntu"
+            "Ubuntu VirtIO assertions require --guest-os ubuntu"
         );
     }
 
@@ -173,18 +177,32 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
         }
     };
 
-    if result.is_ok() && args.assert_emulated_console {
+    if result.is_ok() && (args.assert_emulated_console || args.assert_agentos_virtio) {
+        let mut required = vec![
+            "emulated virtio-console: guest probed",
+            "emulated virtio-console: guest DRIVER_OK",
+            "emulated virtio-console: pumped ",
+            "emulated virtio-console: pumped input serial_virt->guest",
+        ];
+        if args.assert_agentos_virtio {
+            required.extend_from_slice(&[
+                "emulated virtio-net: guest probed",
+                "emulated virtio-net: guest DRIVER_OK",
+                "emulated virtio-net: pumped",
+                "emulated virtio-blk: guest probed",
+                "emulated virtio-blk: guest DRIVER_OK",
+                "emulated virtio-blk: pumped",
+            ]);
+        }
         let console = wait_for_all_markers(
             &log_path,
-            &[
-                "emulated virtio-console: guest probed",
-                "emulated virtio-console: guest DRIVER_OK",
-                "emulated virtio-console: pumped ",
-                "emulated virtio-console: pumped input serial_virt->guest",
-            ],
+            &required,
             Duration::from_secs(10),
         );
         result = match (result, console) {
+            (Ok(login), Ok(_)) if args.assert_agentos_virtio => Ok(format!(
+                "{login}; agentOS virtio net + blk + console probed, DRIVER_OK, and pumped real I/O"
+            )),
             (Ok(login), Ok(_)) => Ok(format!(
                 "{login}; emulated virtio-console probed + DRIVER_OK + bidirectional I/O"
             )),
@@ -417,21 +435,29 @@ pub fn spawn_qemu_with_guest(
                 .arg("-device")
                 .arg("virtconsole,bus=vser0.0,chardev=cc_pd_char,name=cc.0")
                 .arg("-device")
-                .arg("virtio-net-device,netdev=net0,bus=virtio-mmio-bus.0")
-                .arg("-netdev")
-                .arg(netdev)
-                .arg("-device")
                 .arg(format!("loader,file={},cpu-num=0", loader.display()))
                 .arg("-device")
                 .arg(format!(
                     "loader,file={},addr=0x48000000",
                     build_image.display()
                 ));
+            if guest_os != "ubuntu" {
+                c.args([
+                    "-device",
+                    "virtio-net-device,netdev=net0,bus=virtio-mmio-bus.0",
+                    "-netdev",
+                    &netdev,
+                ]);
+            }
             if guest_os == "ubuntu" || guest_os == "both" {
-                /* ubuntu: root disk on bus.1 (vda). NoCloud data is served
-                 * over QEMU user-net; do not also attach a stale seed disk. */
+                /*
+                 * The Ubuntu E2E initramfs is packaged into linux_vmm. For the
+                 * single Ubuntu guest, do not attach QEMU net/blk: its DTB
+                 * advertises only agentOS emulated devices. Dual-guest mode
+                 * retains the ISO crutch until its separate migration.
+                 */
                 let ubuntu_img = ubuntu_disk_image(repo_root);
-                if ubuntu_img.exists() {
+                if guest_os == "both" && ubuntu_img.exists() {
                     println!(
                         "[xtask:test] Ubuntu disk image: {} (snapshot writes)",
                         ubuntu_img.display()

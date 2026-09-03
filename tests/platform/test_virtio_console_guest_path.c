@@ -93,6 +93,12 @@ int main(void)
     ok(contains(overlay, "virtio_mmio@a030000") &&
        contains(overlay, "interrupts = <0x00 0x15 0x01>"),
        "Ubuntu DTB advertises agentOS virtio-console");
+    ok(contains(overlay, "virtio_mmio@a010000") &&
+       contains(overlay, "virtio_mmio@a020000") &&
+       !contains(overlay, "virtio_mmio@a000000") &&
+       !contains(overlay, "virtio_mmio@a000200") &&
+       !contains(overlay, "virtio_mmio@a000600"),
+       "Ubuntu DTB advertises agentOS net/blk and no QEMU passthrough");
     ok(contains("kernel/agentos-root-task/vmm.mk", "console=hvc0"),
        "Ubuntu primary console is hvc0");
     ok(contains_after(vmm, "aos_vmm_virtio_console_init()",
@@ -106,6 +112,10 @@ int main(void)
        "virtio-console payloads use bounds-checked GPA translation");
     ok(contains(console, "serial_dequeue(console->rxq, &c) == 0"),
        "empty pre-driver RX queue terminates instead of spinning");
+    ok(contains("xtask/src/cmd_test.rs", "if guest_os != \"ubuntu\"") &&
+       contains("xtask/src/cmd_test.rs",
+                "if guest_os == \"both\" && ubuntu_img.exists()"),
+       "single Ubuntu QEMU launch attaches no host net or block device");
 
     printf("1..%d\n", testno);
     return failed ? 1 : 0;

@@ -45,7 +45,7 @@ UBUNTU_RAM_BASE := 0x40000000
 UBUNTU_RAM_NODE := 40000000
 UBUNTU_INITRD_START := 0x50000000
 endif
-UBUNTU_BOOTARGS := earlycon=pl011,0x9000000 console=hvc0 rdinit=/init panic=-1
+UBUNTU_BOOTARGS := earlycon=pl011,0x9000000 console=hvc0 rdinit=/init panic=-1 ip=dhcp
 
 ifeq ($(GUEST_OS),ubuntu)
 LINUX_IMAGE  := $(UBUNTU_KERNEL)

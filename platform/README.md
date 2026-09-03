@@ -27,8 +27,9 @@ Do not add `net_virt` to `IMAGES` / `system_desc` until a nic_drv owns the
 host NIC and the 2 MB region is a shared MR. This pass the VMM pumps locally.
 
 Do not add `blk_virt` to `IMAGES` / `system_desc`. Buildroot DTB advertises
-the emulated device at `0x0A020000` (SPI 20 / INTID 52). Ubuntu still points
-at QEMU virtio-blk (`0x0A000200`) so E2E boot disk is unchanged.
+the emulated device at `0x0A020000` (SPI 20 / INTID 52). The single Ubuntu
+E2E guest also uses this RAM backend and launches with no QEMU net/blk
+devices. Dual-guest and full live-media boot still retain the QEMU ISO crutch.
 
 ## Residual `guest_ram` identity map
 

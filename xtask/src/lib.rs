@@ -44,6 +44,9 @@ pub struct TestArgs {
     /// Require Ubuntu login and bidirectional I/O through emulated virtio-console.
     #[arg(long)]
     pub assert_emulated_console: bool,
+    /// Require Ubuntu login plus real I/O through agentOS net, blk, and console.
+    #[arg(long)]
+    pub assert_agentos_virtio: bool,
 }
 
 #[derive(clap::Args)]
