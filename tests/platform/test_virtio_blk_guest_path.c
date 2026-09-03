@@ -183,6 +183,13 @@ int main(void)
     (void)tap_ok(src_contains("platform/blk-virt/vmm_virtio_blk.c",
                               "emulated virtio-blk: pumped"),
                  "VMM logs first pumped blk request");
+    (void)tap_ok(src_contains("libvmm/src/virtio/block.c",
+                              "virtio_copy_from_gpa") &&
+                 src_contains("libvmm/src/virtio/block.c",
+                              "virtio_copy_to_gpa") &&
+                 !src_contains("libvmm/src/virtio/block.c",
+                               "(void *)virtq->desc[curr_desc].addr"),
+                 "libvmm block payloads use bounds-checked GPA translation");
 
     printf("1..%d\n", g_testno);
     if (g_failed) {

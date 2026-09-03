@@ -14,6 +14,7 @@
 #include <libvmm/virtio/virtq.h>
 #include <libvmm/virtio/virtio.h>
 #include <libvmm/virtio/block.h>
+#include <libvmm/virtio/gpa.h>
 #include <sddf/blk/queue.h>
 #include <sddf/util/fsmalloc.h>
 #include <sddf/util/ialloc.h>
@@ -177,8 +178,12 @@ static inline void virtio_blk_set_req_fail(struct virtio_device *dev, uint16_t d
         curr_desc = virtq->desc[curr_desc].next;
     }
     assert(virtq->desc[curr_desc].flags & VIRTQ_DESC_F_WRITE);
-    *(uint8_t *)(virtq->desc[curr_desc].addr + virtq->desc[curr_desc].len - 1) = VIRTIO_BLK_S_IOERR;
-    /* desc.addr is a GPA. virtio-blk copies are not translated this pass. */
+    uint8_t status = VIRTIO_BLK_S_IOERR;
+    if (virtio_copy_to_gpa(virtq->desc[curr_desc].addr,
+                           virtq->desc[curr_desc].len - 1u,
+                           &status, sizeof(status)) != 0) {
+        LOG_BLOCK_ERR("request status GPA is outside guest RAM\n");
+    }
 }
 
 static inline void virtio_blk_set_req_success(struct virtio_device *dev, uint16_t desc)
@@ -190,7 +195,12 @@ static inline void virtio_blk_set_req_success(struct virtio_device *dev, uint16_
         curr_desc = virtq->desc[curr_desc].next;
     }
     assert(virtq->desc[curr_desc].flags & VIRTQ_DESC_F_WRITE);
-    *(uint8_t *)(virtq->desc[curr_desc].addr + virtq->desc[curr_desc].len - 1) = VIRTIO_BLK_S_OK;
+    uint8_t status = VIRTIO_BLK_S_OK;
+    if (virtio_copy_to_gpa(virtq->desc[curr_desc].addr,
+                           virtq->desc[curr_desc].len - 1u,
+                           &status, sizeof(status)) != 0) {
+        LOG_BLOCK_ERR("request status GPA is outside guest RAM\n");
+    }
 }
 
 static inline bool sddf_make_req_check(struct virtio_blk_device *state, uint16_t sddf_count)
@@ -281,20 +291,28 @@ static bool handle_client_requests(struct virtio_device *dev, int *num_reqs_cons
              */
             assert(virtq->desc[curr_desc].flags & VIRTQ_DESC_F_NEXT);
             if (header_bytes_read + virtq->desc[curr_desc].len > sizeof(struct virtio_blk_outhdr)) {
-                void *src_addr = (void *)virtq->desc[curr_desc].addr;
-                void *dst_addr = (void *)&virtio_req_header;
                 uint32_t copy_sz = sizeof(struct virtio_blk_outhdr) - header_bytes_read;
-                memcpy(dst_addr, src_addr, copy_sz);
+                if (virtio_copy_from_gpa(
+                        virtq->desc[curr_desc].addr, 0u,
+                        (uint8_t *)&virtio_req_header + header_bytes_read,
+                        copy_sz) != 0) {
+                    LOG_BLOCK_ERR("request header GPA is outside guest RAM\n");
+                    return false;
+                }
                 curr_desc_bytes_read = sizeof(struct virtio_blk_outhdr) - header_bytes_read;
                 header_bytes_read += sizeof(struct virtio_blk_outhdr) - header_bytes_read;
                 /* Don't go to the next descriptor yet, we're not done processing with
                  * current one */
                 break;
             } else {
-                void *src_addr = (void *)virtq->desc[curr_desc].addr;
-                void *dst_addr = (void *)&virtio_req_header;
                 uint32_t copy_sz = virtq->desc[curr_desc].len;
-                memcpy(dst_addr, src_addr, copy_sz);
+                if (virtio_copy_from_gpa(
+                        virtq->desc[curr_desc].addr, 0u,
+                        (uint8_t *)&virtio_req_header + header_bytes_read,
+                        copy_sz) != 0) {
+                    LOG_BLOCK_ERR("request header GPA is outside guest RAM\n");
+                    return false;
+                }
                 header_bytes_read += virtq->desc[curr_desc].len;
             }
         }
@@ -487,17 +505,24 @@ static bool handle_client_requests(struct virtio_device *dev, int *num_reqs_cons
                     assert(body_bytes_read + virtq->desc[curr_desc].len <= body_size_bytes);
                     assert(virtq->desc[curr_desc].flags & VIRTQ_DESC_F_NEXT);
                     if (curr_desc_bytes_read != 0) {
-                        void *src_addr = (void *)virtq->desc[curr_desc].addr + curr_desc_bytes_read;
                         void *dst_addr = (void *)sddf_data + body_bytes_read;
                         uint32_t copy_sz = virtq->desc[curr_desc].len - curr_desc_bytes_read;
-                        memcpy(dst_addr, src_addr, copy_sz);
+                        if (virtio_copy_from_gpa(virtq->desc[curr_desc].addr,
+                                                 curr_desc_bytes_read,
+                                                 dst_addr, copy_sz) != 0) {
+                            LOG_BLOCK_ERR("write payload GPA is outside guest RAM\n");
+                            return false;
+                        }
                         body_bytes_read += virtq->desc[curr_desc].len - curr_desc_bytes_read;
                         curr_desc_bytes_read = 0;
                     } else {
-                        void *src_addr = (void *)virtq->desc[curr_desc].addr;
                         void *dst_addr = (void *)sddf_data + body_bytes_read;
                         uint32_t copy_sz = virtq->desc[curr_desc].len;
-                        memcpy(dst_addr, src_addr, copy_sz);
+                        if (virtio_copy_from_gpa(virtq->desc[curr_desc].addr,
+                                                 0u, dst_addr, copy_sz) != 0) {
+                            LOG_BLOCK_ERR("write payload GPA is outside guest RAM\n");
+                            return false;
+                        }
                         body_bytes_read += virtq->desc[curr_desc].len;
                     }
                 }
@@ -618,20 +643,28 @@ bool virtio_blk_handle_resp(struct virtio_blk_device *state)
              * only */
             assert(virtq->desc[curr_desc].flags & VIRTQ_DESC_F_NEXT);
             if (header_bytes_read + virtq->desc[curr_desc].len > sizeof(struct virtio_blk_outhdr)) {
-                void *src_addr = (void *)virtq->desc[curr_desc].addr;
-                void *dst_addr = (void *)&virtio_req_header;
                 uint32_t copy_sz = sizeof(struct virtio_blk_outhdr) - header_bytes_read;
-                memcpy(dst_addr, src_addr, copy_sz);
+                if (virtio_copy_from_gpa(
+                        virtq->desc[curr_desc].addr, 0u,
+                        (uint8_t *)&virtio_req_header + header_bytes_read,
+                        copy_sz) != 0) {
+                    LOG_BLOCK_ERR("response header GPA is outside guest RAM\n");
+                    return false;
+                }
                 curr_desc_bytes_read = sizeof(struct virtio_blk_outhdr) - header_bytes_read;
                 header_bytes_read += sizeof(struct virtio_blk_outhdr) - header_bytes_read;
                 /* Don't go to the next descriptor yet, we're not done processing with
                  * current one */
                 break;
             } else {
-                void *src_addr = (void *)virtq->desc[curr_desc].addr;
-                void *dst_addr = (void *)&virtio_req_header;
                 uint32_t copy_sz = virtq->desc[curr_desc].len;
-                memcpy(dst_addr, src_addr, copy_sz);
+                if (virtio_copy_from_gpa(
+                        virtq->desc[curr_desc].addr, 0u,
+                        (uint8_t *)&virtio_req_header + header_bytes_read,
+                        copy_sz) != 0) {
+                    LOG_BLOCK_ERR("response header GPA is outside guest RAM\n");
+                    return false;
+                }
                 header_bytes_read += virtq->desc[curr_desc].len;
             }
         }
@@ -653,9 +686,12 @@ bool virtio_blk_handle_resp(struct virtio_blk_device *state)
                 for (; body_bytes_read < reqbk->virtio_body_size_bytes; curr_desc = virtq->desc[curr_desc].next) {
                     if (body_bytes_read + virtq->desc[curr_desc].len > reqbk->virtio_body_size_bytes) {
                         void *src_addr = (void *)reqbk->sddf_data + body_bytes_read;
-                        void *dst_addr = (void *)virtq->desc[curr_desc].addr;
                         uint32_t copy_sz = reqbk->virtio_body_size_bytes - body_bytes_read;
-                        memcpy(dst_addr, src_addr, copy_sz);
+                        if (virtio_copy_to_gpa(virtq->desc[curr_desc].addr,
+                                               0u, src_addr, copy_sz) != 0) {
+                            LOG_BLOCK_ERR("read payload GPA is outside guest RAM\n");
+                            return false;
+                        }
                         body_bytes_read += reqbk->virtio_body_size_bytes - body_bytes_read;
                         /* This is the final descriptor if we get into this condition, don't
                         //  * go to next descriptor */
@@ -664,9 +700,12 @@ bool virtio_blk_handle_resp(struct virtio_blk_device *state)
                         break;
                     } else {
                         void *src_addr = (void *)reqbk->sddf_data + body_bytes_read;
-                        void *dst_addr = (void *)virtq->desc[curr_desc].addr;
                         uint32_t copy_sz = virtq->desc[curr_desc].len;
-                        memcpy(dst_addr, src_addr, copy_sz);
+                        if (virtio_copy_to_gpa(virtq->desc[curr_desc].addr,
+                                               0u, src_addr, copy_sz) != 0) {
+                            LOG_BLOCK_ERR("read payload GPA is outside guest RAM\n");
+                            return false;
+                        }
 
                         body_bytes_read += virtq->desc[curr_desc].len;
                         /* Because there is still the footer, we are guaranteed next
@@ -695,17 +734,24 @@ bool virtio_blk_handle_resp(struct virtio_blk_device *state)
                         assert(body_bytes_read + virtq->desc[curr_desc].len <= reqbk->virtio_body_size_bytes);
                         assert(virtq->desc[curr_desc].flags & VIRTQ_DESC_F_NEXT);
                         if (curr_desc_bytes_read != 0) {
-                            void *src_addr = (void *)virtq->desc[curr_desc].addr + curr_desc_bytes_read;
                             void *dst_addr = (void *)reqbk->sddf_data + body_bytes_read;
                             uint32_t copy_sz = virtq->desc[curr_desc].len - curr_desc_bytes_read;
-                            memcpy(dst_addr, src_addr, copy_sz);
+                            if (virtio_copy_from_gpa(virtq->desc[curr_desc].addr,
+                                                     curr_desc_bytes_read,
+                                                     dst_addr, copy_sz) != 0) {
+                                LOG_BLOCK_ERR("RMW payload GPA is outside guest RAM\n");
+                                return false;
+                            }
                             body_bytes_read += virtq->desc[curr_desc].len - curr_desc_bytes_read;
                             curr_desc_bytes_read = 0;
                         } else {
-                            void *src_addr = (void *)virtq->desc[curr_desc].addr;
                             void *dst_addr = (void *)reqbk->sddf_data + body_bytes_read;
                             uint32_t copy_sz = virtq->desc[curr_desc].len;
-                            memcpy(dst_addr, src_addr, copy_sz);
+                            if (virtio_copy_from_gpa(virtq->desc[curr_desc].addr,
+                                                     0u, dst_addr, copy_sz) != 0) {
+                                LOG_BLOCK_ERR("RMW payload GPA is outside guest RAM\n");
+                                return false;
+                            }
                             body_bytes_read += virtq->desc[curr_desc].len;
                         }
                     }

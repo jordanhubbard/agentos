@@ -38,8 +38,8 @@ Emulated virtio-net copies and MMIO/PCI queue-ring walks go through
 
 1. **QEMU virtio passthrough DMA** — host virtio-net/blk at `0x0A000000` /
    `0x0A000200` programs the guest GPA as a host physical address.
-2. **libvmm virtio-blk / sound** — still cast `desc->addr` to a
-   host pointer. Do not remove the map for those devices in this pass.
+2. **libvmm virtio-sound** — still casts `desc->addr` to a host pointer.
+   Do not remove the map for that device in this pass.
 
-Virtio-net and virtio-console descriptor payloads and all emulated virtqueue
-rings already use the configured GPA-to-HVA translator.
+Virtio-net, virtio-blk, and virtio-console descriptor payloads and all
+emulated virtqueue rings use the configured GPA-to-HVA translator.

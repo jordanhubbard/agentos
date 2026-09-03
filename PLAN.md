@@ -79,8 +79,9 @@ services is out of scope until inspect and serial attach exist.
    crutch until the host block driver can serve live media to `blk_virt`.
 4. Linux `virtio_blk` probe + partition scan of LBA 0 is the I/O that
    proves the pump. Do not set `root=` to the RAM disk.
-5. Payload copies in libvmm `block.c` still cast `desc.addr` as a host
-   pointer — identity map of guest RAM stays until step 6.
+5. Payload copies in libvmm `block.c` now use bounds-checked GPA translation.
+   The physical identity map remains until residual passthrough and
+   virtio-sound users are removed in step 6.
 
 ## First serial vertical slice (step 4)
 
