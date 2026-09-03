@@ -9,6 +9,8 @@ QEMU virtio-mmio. Native agents attach to the same virtualizers as a VMM.
 | Path | Role |
 |------|------|
 | `include/platform/net_layout.h` | sDDF-shaped net queue ABI (no seL4) |
+| `include/platform/inspect.h` | Read-only memory/thread/hardware snapshot (no seL4) |
+| `inspect/inspect_snapshot.c` | Fill + `key=value` report (host-testable) |
 | `net-virt/net_virt_pump.c` | Hub / loopback (host-testable) |
 | `net-virt/vmm_virtio_net.c` | libvmm `virtio_mmio_net_init` + after-fault pump |
 | `net-virt/net_virt.c` | Future `net_virt` PD — **not in the live image** |

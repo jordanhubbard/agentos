@@ -1,7 +1,7 @@
 # agentOS — Platform Plan
 
 **Status:** Active  
-**Last updated:** 2026-09-02  
+**Last updated:** 2026-09-03  
 **Epic:** mac `task_a2c5cdc55f994af8bc9fc48b13c54d5a` (project `agentos`)
 
 QEMU is a hardware emulator so we can prototype quickly. agentOS is the
@@ -40,6 +40,23 @@ packets. Then it must assert I/O through `net_virt`, not QEMU bus ownership.
 Host tests for `aos_net_virt_pump` are a pre-filter. They are not proof that
 the guest sees the device. That proof is
 `task_0d44a94246554eeabc8d5bc8e36ab6d7`.
+
+## Operator session (parallel; not I/O proof)
+
+Hermes-on-agentOS is a **client** of inspect + later `serial_virt`, not a PD
+and not `term_server`. Start with a read-only snapshot of memory, threads,
+and hardware (`platform/include/platform/inspect.h`). Host tests are a
+pre-filter. They are not a live seL4 query.
+
+| Step | mac task | Status | Work |
+|------|----------|--------|------|
+| A | `task_72e781c303084d638b732e48d0e9132d` | open | Epic: inspect, then Hermes client |
+| A1 | `task_a80ae509b10540c7932b03d95df2e74b` | open | Packed inspect snapshot + structured report |
+| A2 | `task_0981068853cc4881886a6483f1583733` | waiting on A1 | Line protocol on `serial_virt` |
+| A3 | `task_1ab2cbb61c374bd99b43bbfbebf05bdc` | waiting on A1 | Guest/external Hermes; user API key; never in-tree |
+
+Session context: `skills/hermes-session/SKILL.md`. Compose/mutate of
+services is out of scope until inspect and serial attach exist.
 
 ## First net vertical slice (step 2)
 
