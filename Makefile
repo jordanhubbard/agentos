@@ -637,6 +637,16 @@ test-integration:
 	    echo "FAIL: tests/platform/test_net_virt_pump.c"; \
 	    status=1; \
 	fi; \
+	if gcc -I platform/include \
+	        tests/platform/test_inspect_snapshot.c \
+	        platform/inspect/inspect_snapshot.c \
+	        -o $(BUILD_TMP_DIR)/test_inspect_snapshot 2>&1 \
+	    && $(BUILD_TMP_DIR)/test_inspect_snapshot; then \
+	    echo "PASS: tests/platform/test_inspect_snapshot.c"; \
+	else \
+	    echo "FAIL: tests/platform/test_inspect_snapshot.c"; \
+	    status=1; \
+	fi; \
 	if gcc -I platform/include -I tests/platform \
 	        -DAOS_REPO_ROOT='"$(ROOT_DIR)"' \
 	        tests/platform/test_virtio_net_guest_path.c \
