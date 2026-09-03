@@ -2,7 +2,7 @@
 
 **Status:** Active  
 **Last updated:** 2026-09-02  
-**Epic:** mac project `agentos` (former beads `agentos-kpq`)
+**Epic:** mac `task_a2c5cdc55f994af8bc9fc48b13c54d5a` (project `agentos`)
 
 QEMU is a hardware emulator so we can prototype quickly. agentOS is the
 platform that will run on bare metal. Guests (Linux, FreeBSD) consume
@@ -14,19 +14,18 @@ binding) described the wrong I/O model. It is superseded by this document.
 
 ## Priority order (do not skip)
 
-| Step | Former beads | Status | Work |
-|------|--------------|--------|------|
-|------|-------|--------|------|
-| 1 | `agentos-mzl` | done | TCB page + constitution rewrite |
-| 2 | `agentos-f6y` | done (host-tested) | sDDF net under VMM (`virtio_mmio_net_init`), not QEMU passthrough |
-| 2b | `agentos-bp0` | open | Guest must enumerate IPA `0x0A010000` and pass a packet through the pump |
-| 3 | `agentos-328` | blocked on 2 guest proof | sDDF blk + emulated virtio-blk |
-| 4 | `agentos-9sc` | blocked on 2 guest proof | sDDF serial; one UART owner |
-| 5 | `agentos-pux` | blocked on 2 guest proof | One VMM implementation; guest flavor is data |
-| 6 | `agentos-4yf` | blocked on 2 guest proof | Stop identity-mapping guest RAM for device DMA |
-| 7 | `agentos-vck` | done (quarantine by docs) | Quarantine PD museum (no deletes this pass) |
-| 8 | `agentos-anr` | done | Skills + Python HTML helpers |
-| 9 | `agentos-mq0` | blocked on 2 guest proof | Native agent services as virtualizer clients |
+| Step | mac task | Status | Work |
+|------|----------|--------|------|
+| 1 | (done) | done | TCB page + constitution rewrite |
+| 2 | (done) | done (host-tested) | sDDF net under VMM (`virtio_mmio_net_init`), not QEMU passthrough |
+| 2b | `task_0d44a94246554eeabc8d5bc8e36ab6d7` | open | Guest must enumerate IPA `0x0A010000` and pass a packet through the pump |
+| 3 | `task_892273845b0949ce8be59f70c02bf644` | waiting on 2b | sDDF blk + emulated virtio-blk |
+| 4 | `task_9218737eb11a438b89552c599c25d012` | waiting on 2b | sDDF serial; one UART owner |
+| 5 | `task_7f6653b7dcc840b9ab7fa092685c9d57` | waiting on 2b | One VMM implementation; guest flavor is data |
+| 6 | `task_c03b1c0527de416fbcfcdfcb77787559` | waiting on 2b | Stop identity-mapping guest RAM for device DMA |
+| 7 | (done) | done (quarantine by docs) | Quarantine PD museum (no deletes this pass) |
+| 8 | (done) | done | Skills + Python HTML helpers |
+| 9 | `task_ec992e5743354a538d1c3235a2e2c0da` | waiting on 2b | Native agent services as virtualizer clients |
 
 ## Proof policy (unchanged)
 
@@ -39,7 +38,8 @@ Dual-guest E2E remains a **guest-boot** gate until emulated virtio-net carries
 packets. Then it must assert I/O through `net_virt`, not QEMU bus ownership.
 
 Host tests for `aos_net_virt_pump` are a pre-filter. They are not proof that
-the guest sees the device. That proof is `agentos-bp0`.
+the guest sees the device. That proof is
+`task_0d44a94246554eeabc8d5bc8e36ab6d7`.
 
 ## First net vertical slice (step 2)
 

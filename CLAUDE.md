@@ -161,12 +161,16 @@ Canonical tracker: `mac task` on the MAC hub (https://github.com/jordanhubbard/m
 Do not run `bd`. Do not use Dolt. Project: `agentos`. Dispatch is paused.
 
 ```bash
+mac task list --project agentos
 mac task ready --project agentos --limit 10
 mac task show <id>
 mac task create "title" --project agentos --description-file=desc.txt --no-dispatch
 mac task close <id> --reason="..."
 mac admin memory remember <key> "<content>" --project=agentos
 ```
+
+`--no-dispatch` hides tasks from `ready`. Do not `mac task release` or
+`mac project activate agentos` while you are doing the work yourself.
 
 `.tickets/` is a gitignored local mirror. Never commit it.
 

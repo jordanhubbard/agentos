@@ -96,6 +96,7 @@ fleet agent rewrites seL4 code unsupervised. Interactive sessions file,
 claim, and close tasks themselves.
 
 ```bash
+mac task list --project agentos
 mac task ready --project agentos --limit 10
 mac task show <id>
 mac task create "title" --project agentos --description-file=desc.txt --no-dispatch
@@ -103,6 +104,8 @@ mac task close <id> --reason="..."
 mac admin memory remember <key> "<content>" --project=agentos
 ```
 
+- `--no-dispatch` stages work: it is hidden from `task ready` until
+  `mac task release <id>`. Keep it while dispatch is paused.
 - Multi-line / shell-hostile text: `--description-file` (or `-` for stdin).
 - `.tickets/` is a local mirror. Do not commit it.
 - Do not use TodoWrite, TaskCreate, or markdown TODO lists as the tracker.
