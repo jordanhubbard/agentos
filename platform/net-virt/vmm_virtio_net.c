@@ -6,6 +6,7 @@
  */
 
 #include <libvmm/libvmm.h>
+#include <libvmm/virtio/config.h>
 #include <libvmm/virtio/net.h>
 #include <sddf/network/queue.h>
 #include <platform/net_layout.h>
@@ -22,6 +23,8 @@ static aos_net_virt_t           g_aos_virt;
 static net_queue_handle_t       g_rx;
 static net_queue_handle_t       g_tx;
 static int                      g_aos_net_ready;
+static int                      g_aos_net_probed;
+static int                      g_aos_net_driver_ok;
 
 void aos_vmm_virtio_net_init(void)
 {
@@ -77,9 +80,24 @@ void aos_vmm_virtio_net_init(void)
 
 void aos_vmm_virtio_net_after_fault(void)
 {
+    uint32_t status;
+
     if (!g_aos_net_ready) {
         return;
     }
+
+    status = g_aos_net.virtio_device.regs.Status;
+    if (!g_aos_net_probed && (status & VIRTIO_CONFIG_S_ACKNOWLEDGE)) {
+        g_aos_net_probed = 1;
+        LOG_VMM("emulated virtio-net: guest probed IPA 0x%lx (status=0x%x)\n",
+                (unsigned long)AOS_VIRTIO_NET_GUEST_IPA, (unsigned)status);
+    }
+    if (!g_aos_net_driver_ok && (status & VIRTIO_CONFIG_S_DRIVER_OK)) {
+        g_aos_net_driver_ok = 1;
+        LOG_VMM("emulated virtio-net: guest DRIVER_OK virq %u\n",
+                (unsigned)AOS_VIRTIO_NET_VIRQ);
+    }
+
     (void)aos_net_virt_pump(&g_aos_virt);
     (void)virtio_net_handle_rx(&g_aos_net);
     if (g_tx.active) {

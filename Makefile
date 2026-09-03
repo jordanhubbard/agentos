@@ -637,6 +637,18 @@ test-integration:
 	    echo "FAIL: tests/platform/test_net_virt_pump.c"; \
 	    status=1; \
 	fi; \
+	if gcc -I platform/include -I tests/platform \
+	        -DAOS_REPO_ROOT='"$(ROOT_DIR)"' \
+	        tests/platform/test_virtio_net_guest_path.c \
+	        tests/platform/virtio_mmio_net_emu.c \
+	        platform/net-virt/net_virt_pump.c \
+	        -o $(BUILD_TMP_DIR)/test_virtio_net_guest_path 2>&1 \
+	    && $(BUILD_TMP_DIR)/test_virtio_net_guest_path; then \
+	    echo "PASS: tests/platform/test_virtio_net_guest_path.c"; \
+	else \
+	    echo "FAIL: tests/platform/test_virtio_net_guest_path.c"; \
+	    status=1; \
+	fi; \
 	echo ""; \
 	echo "Integration tests complete."; \
 	echo ""; \
