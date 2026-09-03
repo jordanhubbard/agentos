@@ -19,13 +19,13 @@ binding) described the wrong I/O model. It is superseded by this document.
 | 1 | (done) | done | TCB page + constitution rewrite |
 | 2 | (done) | done (host-tested) | sDDF net under VMM (`virtio_mmio_net_init`), not QEMU passthrough |
 | 2b | `task_0d44a94246554eeabc8d5bc8e36ab6d7` | done | `make test-guest-net`: boot buildroot, enumerate IPA `0x0A010000`, pump one frame |
-| 3 | `task_892273845b0949ce8be59f70c02bf644` | ready | sDDF blk + emulated virtio-blk |
-| 4 | `task_9218737eb11a438b89552c599c25d012` | waiting on 3 | sDDF serial; one UART owner |
-| 5 | `task_7f6653b7dcc840b9ab7fa092685c9d57` | waiting on 3 | One VMM implementation; guest flavor is data |
-| 6 | `task_c03b1c0527de416fbcfcdfcb77787559` | waiting on 3 | Stop identity-mapping guest RAM for device DMA |
+| 3 | `task_892273845b0949ce8be59f70c02bf644` | done | `make test-guest-blk`: boot buildroot, enumerate IPA `0x0A020000`, pump one request |
+| 4 | `task_9218737eb11a438b89552c599c25d012` | ready | sDDF serial; one UART owner |
+| 5 | `task_7f6653b7dcc840b9ab7fa092685c9d57` | waiting on 4 | One VMM implementation; guest flavor is data |
+| 6 | `task_c03b1c0527de416fbcfcdfcb77787559` | waiting on 4 | Stop identity-mapping guest RAM for device DMA |
 | 7 | (done) | done (quarantine by docs) | Quarantine PD museum (no deletes this pass) |
 | 8 | (done) | done | Skills + Python HTML helpers |
-| 9 | `task_ec992e5743354a538d1c3235a2e2c0da` | waiting on 3 | Native agent services as virtualizer clients |
+| 9 | `task_ec992e5743354a538d1c3235a2e2c0da` | waiting on 4 | Native agent services as virtualizer clients |
 
 ## Proof policy (unchanged)
 
@@ -34,12 +34,13 @@ production IPC or I/O. OS-level claims require `make gate` (both target
 arches under QEMU) plus, for a device class, a guest I/O assertion through
 the virtualizer — not QEMU bus ownership.
 
-Dual-guest E2E remains a **guest-boot** gate until emulated virtio-net carries
-packets. Then it must assert I/O through `net_virt`, not QEMU bus ownership.
+Dual-guest E2E remains a **guest-boot** gate until emulated virtio-blk is
+the Ubuntu boot disk. Buildroot already proves I/O through `net_virt` and
+`blk_virt` (`make test-guest-net`, `make test-guest-blk`).
 
-Host tests for `aos_net_virt_pump` are a pre-filter. They are not proof that
-the guest sees the device. That proof is
-`task_0d44a94246554eeabc8d5bc8e36ab6d7`.
+Host tests for `aos_net_virt_pump` / `aos_blk_virt_pump` are a pre-filter.
+They are not proof that the guest sees the device. That proof is
+`make test-guest-net` / `make test-guest-blk`.
 
 ## Operator session (parallel; not I/O proof)
 
@@ -68,3 +69,16 @@ services is out of scope until inspect and serial attach exist.
    exists.
 4. Next: host virtio-net MMIO moves to a nic_drv PD; passthrough is removed
    from Ubuntu too; both guests share one `net_virt`.
+
+## First blk vertical slice (step 3)
+
+1. Guest IPA `0x0A020000` is an **emulated** virtio-mmio blk device (fault to VMM).
+2. Backend is sDDF-shaped queues + `aos_blk_virt_pump` (256 KB RAM disk).
+3. Buildroot overlay advertises **only** emulated net + emulated blk
+   (`make test-guest-blk`). Ubuntu overlays keep QEMU virtio-blk at
+   `0x0A000200` as a kill-dated boot-disk crutch; do not put emulated
+   blk before that node (it would steal `vda`).
+4. Linux `virtio_blk` probe + partition scan of LBA 0 is the I/O that
+   proves the pump. Do not set `root=` to the RAM disk.
+5. Payload copies in libvmm `block.c` still cast `desc.addr` as a host
+   pointer — identity map of guest RAM stays until step 6.

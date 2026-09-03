@@ -38,6 +38,9 @@ pub struct TestArgs {
     /// Host tests are not this proof. GUEST_OS=none is a stub VMM.
     #[arg(long)]
     pub assert_emulated_net: bool,
+    /// Require emulated virtio-blk probe + DRIVER_OK + a pumped request.
+    #[arg(long)]
+    pub assert_emulated_blk: bool,
 }
 
 #[derive(clap::Args)]

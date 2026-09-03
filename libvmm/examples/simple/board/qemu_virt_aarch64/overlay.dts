@@ -7,8 +7,10 @@
  * packaged initrd size. RAM / initrd IPA must match linux_vmm.c
  * (LINUX_GUEST_RAM_VADDR / GUEST_INIT_RAM_DISK_VADDR / GUEST_RAM_SIZE).
  *
- * Guest net is the emulated virtio-mmio at 0xa010000 only. QEMU virtio-net
- * at 0xa000000 is not in this tree so TX goes through aos_net_virt_pump.
+ * Guest I/O is emulated virtio-mmio only:
+ *   net  0xa010000  SPI 18 → INTID 50
+ *   blk  0xa020000  SPI 20 → INTID 52
+ * QEMU virtio-net/blk (0xa000000 / 0xa000200) are not in this tree.
  */
 / {
     /* Need to specify how much RAM the guest will have */
@@ -36,5 +38,14 @@
         reg = <0x00 0xa010000 0x00 0x1000>;
         interrupt-parent = <0x8001>;
         interrupts = <0x00 0x12 0x01>;
+    };
+
+    /* agentOS emulated virtio-blk (sDDF RAM pump, not QEMU). SPI 20 → INTID 52. */
+    virtio_mmio@a020000 {
+        compatible = "virtio,mmio";
+        dma-coherent;
+        reg = <0x00 0xa020000 0x00 0x1000>;
+        interrupt-parent = <0x8001>;
+        interrupts = <0x00 0x14 0x01>;
     };
 };

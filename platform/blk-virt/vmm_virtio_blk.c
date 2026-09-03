@@ -3,10 +3,11 @@
  * backend = sDDF queues + local aos_blk_virt_pump (RAM disk until blk_drv).
  *
  * QEMU virtio-mmio blk at 0x0A000200 remains a kill-dated passthrough
- * crutch (guest vda). This device is not in the live DTB this pass.
+ * crutch on Ubuntu (guest vda). Buildroot DTB uses only this device.
  */
 
 #include <libvmm/libvmm.h>
+#include <libvmm/virtio/config.h>
 #include <libvmm/virtio/block.h>
 #include <sddf/blk/queue.h>
 #include <sddf/blk/storage_info.h>
@@ -35,6 +36,9 @@ static aos_blk_virt_t           g_aos_virt;
 static aos_blk_virt_client_t    g_aos_client;
 static blk_queue_handle_t       g_queue;
 static int                      g_aos_blk_ready;
+static int                      g_aos_blk_probed;
+static int                      g_aos_blk_driver_ok;
+static int                      g_aos_blk_pumped;
 
 void aos_vmm_virtio_blk_init(void)
 {
@@ -89,11 +93,31 @@ void aos_vmm_virtio_blk_init(void)
 void aos_vmm_virtio_blk_after_fault(void)
 {
     virtio_queue_handler_t *vq;
+    uint32_t status;
+    uint32_t n;
 
     if (!g_aos_blk_ready) {
         return;
     }
-    (void)aos_blk_virt_pump(&g_aos_virt);
+
+    status = g_aos_blk.virtio_device.regs.Status;
+    if (!g_aos_blk_probed && (status & VIRTIO_CONFIG_S_ACKNOWLEDGE)) {
+        g_aos_blk_probed = 1;
+        LOG_VMM("emulated virtio-blk: guest probed IPA 0x%lx (status=0x%x)\n",
+                (unsigned long)AOS_VIRTIO_BLK_GUEST_IPA, (unsigned)status);
+    }
+    if (!g_aos_blk_driver_ok && (status & VIRTIO_CONFIG_S_DRIVER_OK)) {
+        g_aos_blk_driver_ok = 1;
+        LOG_VMM("emulated virtio-blk: guest DRIVER_OK virq %u capacity %u blocks\n",
+                (unsigned)AOS_VIRTIO_BLK_VIRQ,
+                (unsigned)AOS_BLK_DISK_BLOCKS);
+    }
+
+    n = aos_blk_virt_pump(&g_aos_virt);
+    if (!g_aos_blk_pumped && n > 0u) {
+        g_aos_blk_pumped = 1;
+        LOG_VMM("emulated virtio-blk: pumped %u request(s)\n", n);
+    }
 
     vq = &g_aos_blk.virtio_device.vqs[VIRTIO_BLK_DEFAULT_VIRTQ];
     if (!vq->ready || vq->virtq.avail == NULL) {
