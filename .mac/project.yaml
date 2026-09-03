@@ -11,6 +11,9 @@ toolchain:
     - git
     - clang
     - gcc
+bootstrap:
+  command: true
+  creates: []
 test:
   command: make test-host
 evidence:
