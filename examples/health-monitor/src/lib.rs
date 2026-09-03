@@ -1,3 +1,4 @@
+#[link(wasm_import_module = "env")]
 extern "C" {
     fn aos_log(ptr: *const u8, len: usize);
     fn aos_event_publish(
