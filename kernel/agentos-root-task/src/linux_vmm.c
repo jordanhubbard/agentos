@@ -868,8 +868,13 @@ static void pl011_maybe_inject_irq(void)
 
 static void guest_console_write(uint8_t byte)
 {
+    /*
+     * Guest console bytes belong to the per-guest virtual TTY drained by
+     * CC-PD.  Do not mirror them synchronously to the physical PL011:
+     * serial_pd owns that UART for bounded agentOS diagnostics, and coupling
+     * guest printk throughput to a 115200-baud device can stall guest boot.
+     */
     console_tx_push(byte);
-    serial_log_putc(&g_vmm_log, (char)byte);
 }
 
 static bool input_event_to_byte(uint32_t event_type, uint32_t keycode,
@@ -1663,6 +1668,21 @@ static void linux_vmm_notified(seL4_Word badge)
 static seL4_MessageInfo_t linux_vmm_fault(seL4_Word badge,
                                           seL4_MessageInfo_t msginfo)
 {
+    seL4_Word fault_mrs[seL4_MsgMaxLength];
+    seL4_Word fault_length = seL4_MessageInfo_get_length(msginfo);
+
+    if (fault_length > seL4_MsgMaxLength) {
+        fault_length = seL4_MsgMaxLength;
+    }
+    /*
+     * serial_log uses a synchronous seL4 call and therefore shares this
+     * thread's IPC buffer. Preserve the incoming fault payload before any
+     * diagnostic output, then restore it for libvmm's fault decoder.
+     */
+    for (seL4_Word i = 0u; i < fault_length; i++) {
+        fault_mrs[i] = seL4_GetMR((int)i);
+    }
+
     /* Bit 62 is the Microkit VCPU-fault flag when present. Unbadged
      * deliveries (guest TCB fault handler = VMM listen EP) are vCPU 0. */
     size_t vcpu_id = badge & ~VMM_FAULT_BADGE_FLAG;
@@ -1677,18 +1697,21 @@ static seL4_MessageInfo_t linux_vmm_fault(seL4_Word badge,
                     (unsigned long)badge, (unsigned long)vcpu_id);
             if (label == seL4_Fault_VMFault) {
                 LOG_VMM("  VMFault ip=0x%lx addr=0x%lx fsr=0x%lx\n",
-                        (unsigned long)seL4_GetMR(seL4_VMFault_IP),
-                        (unsigned long)seL4_GetMR(seL4_VMFault_Addr),
-                        (unsigned long)seL4_GetMR(seL4_VMFault_FSR));
+                        (unsigned long)fault_mrs[seL4_VMFault_IP],
+                        (unsigned long)fault_mrs[seL4_VMFault_Addr],
+                        (unsigned long)fault_mrs[seL4_VMFault_FSR]);
             } else if (label == seL4_Fault_VCPUFault) {
                 LOG_VMM("  VCPUFault HSR=0x%lx\n",
-                        (unsigned long)seL4_GetMR(seL4_VCPUFault_HSR));
+                        (unsigned long)fault_mrs[seL4_VCPUFault_HSR]);
             } else {
                 LOG_VMM("\n");
             }
         }
     }
 
+    for (seL4_Word i = 0u; i < fault_length; i++) {
+        seL4_SetMR((int)i, fault_mrs[i]);
+    }
     bool success = fault_handle(vcpu_id, msginfo);
     if (!success) {
         LOG_VMM_ERR("fault_handle failed label=0x%lx\n", (unsigned long)label);

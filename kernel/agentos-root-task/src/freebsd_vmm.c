@@ -753,6 +753,18 @@ static void freebsd_vmm_notified(seL4_Word badge)
 static seL4_MessageInfo_t freebsd_vmm_fault(seL4_Word badge,
                                             seL4_MessageInfo_t msginfo)
 {
+    seL4_Word fault_mrs[seL4_MsgMaxLength];
+    seL4_Word fault_length = seL4_MessageInfo_get_length(msginfo);
+
+    if (fault_length > seL4_MsgMaxLength) {
+        fault_length = seL4_MsgMaxLength;
+    }
+    /* serial_pd diagnostics use this thread's IPC buffer. Keep the guest
+     * fault payload intact until libvmm has decoded it. */
+    for (seL4_Word i = 0u; i < fault_length; i++) {
+        fault_mrs[i] = seL4_GetMR((int)i);
+    }
+
     /* Microkit 2.1 encodes VCPU fault badges as (1ULL<<62)|vcpu_id */
     size_t vcpu_id = badge & ~(1ULL << 62);
 
@@ -760,7 +772,7 @@ static seL4_MessageInfo_t freebsd_vmm_fault(seL4_Word badge,
     static uint64_t other_vcpu_count = 0;
     size_t label = seL4_MessageInfo_get_label(msginfo);
     if (label == seL4_Fault_VCPUFault) {
-        uint64_t hsr = seL4_GetMR(seL4_VCPUFault_HSR);
+        uint64_t hsr = fault_mrs[seL4_VCPUFault_HSR];
         uint64_t ec = (hsr >> 26) & 0x3f;
         if (ec == 0x01) { /* HSR_WFx = 0x01 */
             wfi_count++;
@@ -774,14 +786,14 @@ static seL4_MessageInfo_t freebsd_vmm_fault(seL4_Word badge,
             if (other_vcpu_count <= 5)
                 LOG_VMM("VCPUFault ec=0x%lx hsr=0x%lx\n",
                         (unsigned long)ec,
-                        (unsigned long)seL4_GetMR(seL4_VCPUFault_HSR));
+                        (unsigned long)hsr);
         }
     } else if (label == seL4_Fault_VMFault) {
         static uint64_t vmfault_count = 0;
         vmfault_count++;
-        uint64_t fault_addr = seL4_GetMR(seL4_VMFault_IP);
-        uint64_t fault_data_addr = seL4_GetMR(seL4_VMFault_Addr);
-        uint64_t fault_fsr = seL4_GetMR(seL4_VMFault_FSR);
+        uint64_t fault_addr = fault_mrs[seL4_VMFault_IP];
+        uint64_t fault_data_addr = fault_mrs[seL4_VMFault_Addr];
+        uint64_t fault_fsr = fault_mrs[seL4_VMFault_FSR];
         if (vmfault_count <= 8) {
             LOG_VMM("VMFault #%llu addr=0x%lx ip=0x%lx fsr=0x%lx\n",
                     (unsigned long long)vmfault_count,
@@ -810,7 +822,7 @@ static seL4_MessageInfo_t freebsd_vmm_fault(seL4_Word badge,
     if (label == seL4_Fault_VPPIEvent) {
         static uint64_t vppi_count = 0;
         vppi_count++;
-        uint64_t ppi_irq = seL4_GetMR(seL4_VPPIEvent_IRQ);
+        uint64_t ppi_irq = fault_mrs[seL4_VPPIEvent_IRQ];
         seL4_UserContext regs = {0};
         seL4_TCB_ReadRegisters(vmm_tcb_cap(vcpu_id), 0, 0,
                                SEL4_USER_CONTEXT_SIZE, &regs);
@@ -833,6 +845,9 @@ static seL4_MessageInfo_t freebsd_vmm_fault(seL4_Word badge,
                     injected ? "inject" : "ack-drop");
         }
         return seL4_MessageInfo_new(0, 0, 0, 0);
+    }
+    for (seL4_Word i = 0u; i < fault_length; i++) {
+        seL4_SetMR((int)i, fault_mrs[i]);
     }
     bool success = fault_handle(vcpu_id, msginfo);
     if (!success)

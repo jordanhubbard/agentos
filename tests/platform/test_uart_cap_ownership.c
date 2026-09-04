@@ -142,6 +142,16 @@ int main(void)
                         "irq=\"33\""),
        "standalone Linux VMM manifest grants no PL011 frame or IRQ");
 
+    ok(source_contains("kernel/agentos-root-task/src/linux_vmm.c",
+                       "fault_mrs[seL4_MsgMaxLength]") &&
+       source_contains("kernel/agentos-root-task/src/linux_vmm.c",
+                       "seL4_SetMR((int)i, fault_mrs[i])") &&
+       source_contains("kernel/agentos-root-task/src/freebsd_vmm.c",
+                       "fault_mrs[seL4_MsgMaxLength]") &&
+       source_contains("kernel/agentos-root-task/src/freebsd_vmm.c",
+                       "seL4_SetMR((int)i, fault_mrs[i])"),
+       "VMMs preserve fault MRs across serial_pd diagnostic IPC");
+
     ok(source_contains("kernel/agentos-root-task/ubuntu-iso-overlay.dts.in",
                        "pl011@9000000") &&
        source_contains("kernel/agentos-root-task/ubuntu-iso-overlay.dts.in",

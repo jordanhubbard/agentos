@@ -111,6 +111,9 @@ int main(void)
     ok(contains(vmm, "aos_vmm_virtio_console_drain_tx") &&
        contains(vmm, "aos_vmm_virtio_console_push_rx"),
        "guest console contract bridges both TX and RX");
+    ok(contains(vmm, "Guest console bytes belong to the per-guest virtual TTY") &&
+       contains(vmm, "console_tx_push(byte);"),
+       "guest virtual TTY is not synchronously mirrored to physical PL011");
     ok(contains(console, "virtio_copy_from_gpa") &&
        contains(console, "virtio_copy_to_gpa"),
        "virtio-console payloads use bounds-checked GPA translation");
