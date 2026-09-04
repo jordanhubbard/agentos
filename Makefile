@@ -407,7 +407,7 @@ _AGENTOS_HOST_NET = -netdev user,id=agentos_net0,hostfwd=tcp:127.0.0.1:8789-:878
 # Buses 8 and 31 are host hardware owned only by the canonical agentOS
 # virtio_blk PD. Neither transport is mapped or advertised to either guest.
 _QEMU_BLK_FLAGS = $(if $(filter both,$(GUEST_OS)),$(_UBUNTU_HOST_BLK) $(_FREEBSD_HOST_BLK),$(if $(filter ubuntu,$(GUEST_OS)),$(_UBUNTU_HOST_BLK),$(if $(filter freebsd,$(GUEST_OS)),$(_FREEBSD_HOST_BLK),)))
-_QEMU_NET_FLAGS = $(if $(filter ubuntu both,$(GUEST_OS)),$(_AGENTOS_HOST_NET),-netdev user,id=net0,hostfwd=tcp:127.0.0.1:8789-:8789,hostfwd=tcp:127.0.0.1:2222-10.0.2.15:22,hostfwd=tcp:127.0.0.1:2223-10.0.2.15:2223,hostfwd=tcp:127.0.0.1:2224-10.0.2.15:2224 -device virtio-net-device,netdev=net0,bus=virtio-mmio-bus.0,ctrl_vq=off,ctrl_rx=off,ctrl_vlan=off,guest_announce=off,mq=off,ctrl_mac_addr=off,ctrl_guest_offloads=off)
+_QEMU_NET_FLAGS = $(if $(filter ubuntu freebsd both,$(GUEST_OS)),$(_AGENTOS_HOST_NET),-netdev user,id=net0,hostfwd=tcp:127.0.0.1:8789-:8789,hostfwd=tcp:127.0.0.1:2222-10.0.2.15:22,hostfwd=tcp:127.0.0.1:2223-10.0.2.15:2223,hostfwd=tcp:127.0.0.1:2224-10.0.2.15:2224 -device virtio-net-device,netdev=net0,bus=virtio-mmio-bus.0,ctrl_vq=off,ctrl_rx=off,ctrl_vlan=off,guest_announce=off,mq=off,ctrl_mac_addr=off,ctrl_guest_offloads=off)
 QEMU_RUN_MEM ?= $(if $(filter both,$(GUEST_OS)),3G,2G)
 QEMU_RUN_SMP ?= $(if $(filter smp-% smp,$(SEL4_PROFILE)),4,1)
 comma := ,

@@ -318,10 +318,19 @@ bool virtio_mmio_fault_handle(size_t vcpu_id, size_t offset, size_t fsr, seL4_Us
 }
 
 /*
- * If the guest acknowledges the virtual IRQ associated with the virtIO
- * device, there is nothing that we need to do.
+ * VirtIO IRQs are level-triggered. A second completion can set
+ * InterruptStatus while the same vIRQ is already active, in which case the
+ * vGIC cannot record another edge. Reassert on EOI until the guest writes
+ * InterruptAck and clears the device status.
  */
-static void virtio_virq_default_ack(size_t vcpu_id, int irq, void *cookie) {}
+static void virtio_virq_default_ack(size_t vcpu_id, int irq, void *cookie)
+{
+    struct virtio_device *dev = cookie;
+    if (dev->regs.InterruptStatus != 0u) {
+        bool success = virq_inject_vcpu(vcpu_id, irq);
+        assert(success);
+    }
+}
 
 bool virtio_mmio_register_device(virtio_device_t *dev,
                                  uintptr_t region_base,
@@ -343,7 +352,8 @@ bool virtio_mmio_register_device(virtio_device_t *dev,
     /* Register the virtual IRQ that will be used to communicate from the device
      * to the guest. This assumes that the interrupt controller is already setup. */
     // @ivanv: we should check that (on AArch64) the virq is an SPI.
-    success = virq_register(GUEST_BOOT_VCPU_ID, virq, &virtio_virq_default_ack, NULL);
+    success = virq_register(GUEST_BOOT_VCPU_ID, virq,
+                            &virtio_virq_default_ack, dev);
     assert(success);
 
     return success;

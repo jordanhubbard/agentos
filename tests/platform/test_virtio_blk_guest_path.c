@@ -296,6 +296,10 @@ int main(void)
     (void)tap_ok(src_contains("platform/blk-virt/vmm_virtio_blk.c",
                               "handle_resp() can consume additional guest descriptors") &&
                  src_contains("platform/blk-virt/vmm_virtio_blk.c",
+                              "!blk_queue_empty_req(&g_queue)") &&
+                 src_contains("platform/blk-virt/vmm_virtio_blk.c",
+                              "!blk_queue_empty_resp(&g_queue)") &&
+                 src_contains("platform/blk-virt/vmm_virtio_blk.c",
                               "rounds <= (AOS_BLK_QUEUE_CAPACITY * 2u + 1u)"),
                  "synchronous block backend drains deferred requests to quiescence");
     (void)tap_ok(src_contains("kernel/agentos-root-task/src/freebsd_vmm.c",
@@ -303,6 +307,30 @@ int main(void)
                  src_contains("xtask/src/cmd_test.rs",
                               "wait_for_dual_guest_consoles_via_cc"),
                  "FreeBSD emulated console is observable through dual CC proof");
+    (void)tap_ok(!src_contains("kernel/agentos-root-task/src/freebsd_vmm.c",
+                               "if (label == seL4_Fault_VPPIEvent) {") &&
+                 src_contains("libvmm/src/arch/aarch64/vgic/vgic.c",
+                              "vgic_maintenance_reinject") &&
+                 src_contains("libvmm/src/arch/aarch64/vgic/vgic.c",
+                              "(ctl & 0x5u) == 0x5u"),
+                 "FreeBSD timer faults use shared deferred-ack VPPI handling");
+    (void)tap_ok(src_contains("libvmm/src/virtio/mmio.c",
+                              "dev->regs.InterruptStatus != 0u") &&
+                 src_contains("libvmm/src/virtio/mmio.c",
+                              "&virtio_virq_default_ack, dev") &&
+                 src_contains("libvmm/src/virtio/pci.c",
+                              "&virtio_virq_default_ack, dev") &&
+                 src_contains("libvmm/src/virtio/block.c",
+                              "__atomic_thread_fence(__ATOMIC_RELEASE)") &&
+                 src_contains("libvmm/src/virtio/block.c",
+                              "virtio_desc_chain_payload_len") &&
+                 src_contains("libvmm/src/virtio/block.c",
+                              "virtio_copy_desc_chain") &&
+                 src_contains("libvmm/src/virtio/block.c",
+                              "VIRTIO_BLK_REQ_STATE_INVALID") &&
+                 src_contains("libvmm/src/virtio/block.c",
+                              "used_len +="),
+                 "rewritten block engine validates chains and reports used length");
 
     printf("1..%d\n", g_testno);
     if (g_failed) {

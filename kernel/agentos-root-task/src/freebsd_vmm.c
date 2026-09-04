@@ -38,7 +38,9 @@
 #include <libvmm/arch/aarch64/vgic/vgic.h>
 #include <platform/blk_layout.h>
 #include <platform/guest_ram.h>
+#include <platform/vmm_virtio_net.h>
 #include <platform/vmm_virtio_blk.h>
+#include <contracts/net-service/interface.h>
 #include "serial_log.h"
 
 /* ── Raw agentOS CNode layout constants ─────────────────────────────────── */
@@ -485,6 +487,7 @@ static bool freebsd_vmm_prepare_runtime(void)
      * libvmm installs its MMIO fault handler and virtual IRQ here; no host
      * transport or hardware IRQ capability enters this VMM.
      */
+    aos_vmm_virtio_net_init(1u);
     aos_vmm_virtio_blk_init(AOS_HOST_BLK_MEDIA_FREEBSD);
 
     if (!virq_register(GUEST_BOOT_VCPU_ID, FREEBSD_UART_IRQ, &uart_ack, NULL)) {
@@ -776,7 +779,7 @@ static seL4_MessageInfo_t freebsd_vmm_fault(seL4_Word badge,
         uint64_t ec = (hsr >> 26) & 0x3f;
         if (ec == 0x01) { /* HSR_WFx = 0x01 */
             wfi_count++;
-            if (wfi_count <= 3)
+            if (wfi_count <= 3u)
                 LOG_VMM("WFI fault #%llu\n", (unsigned long long)wfi_count);
 #if FREEBSD_IRQ_TRACE
             freebsd_log_irq_state("WFI irq state", (unsigned)wfi_count);
@@ -819,33 +822,6 @@ static seL4_MessageInfo_t freebsd_vmm_fault(seL4_Word badge,
                     (unsigned long)label, (unsigned long)badge);
         }
     }
-    if (label == seL4_Fault_VPPIEvent) {
-        static uint64_t vppi_count = 0;
-        vppi_count++;
-        uint64_t ppi_irq = fault_mrs[seL4_VPPIEvent_IRQ];
-        seL4_UserContext regs = {0};
-        seL4_TCB_ReadRegisters(vmm_tcb_cap(vcpu_id), 0, 0,
-                               SEL4_USER_CONTEXT_SIZE, &regs);
-        seL4_Word cntv_ctl = vmm_vcpu_arm_read_reg(vcpu_id,
-                                                   seL4_VCPUReg_CNTV_CTL);
-        seL4_Word cntv_cval = vmm_vcpu_arm_read_reg(vcpu_id,
-                                                    seL4_VCPUReg_CNTV_CVAL);
-        bool injected = vgic_inject_irq(vcpu_id, ppi_irq);
-        if (!injected) {
-            vmm_vcpu_arm_ack_vppi(vcpu_id, ppi_irq);
-        }
-        if (vppi_count <= 4u) {
-            LOG_VMM("FreeBSD VPPI #%llu irq=%llu pc=0x%lx pstate=0x%lx ctl=0x%lx cval=0x%lx action=%s\n",
-                    (unsigned long long)vppi_count,
-                    (unsigned long long)ppi_irq,
-                    (unsigned long)regs.pc,
-                    (unsigned long)regs.spsr,
-                    (unsigned long)cntv_ctl,
-                    (unsigned long)cntv_cval,
-                    injected ? "inject" : "ack-drop");
-        }
-        return seL4_MessageInfo_new(0, 0, 0, 0);
-    }
     for (seL4_Word i = 0u; i < fault_length; i++) {
         seL4_SetMR((int)i, fault_mrs[i]);
     }
@@ -853,6 +829,7 @@ static seL4_MessageInfo_t freebsd_vmm_fault(seL4_Word badge,
     if (!success)
         LOG_VMM_ERR("Unhandled fault: badge=0x%lx label=0x%lx\n",
                     (unsigned long)badge, (unsigned long)label);
+    aos_vmm_virtio_net_after_fault();
     aos_vmm_virtio_blk_after_fault();
     return seL4_MessageInfo_new(0, 0, 0, 0);
 }
@@ -889,6 +866,13 @@ void freebsd_vmm_main(seL4_CPtr ep, seL4_CPtr reply_cap)
             info = seL4_Recv(ep, &badge, reply_cap);
 #else
             seL4_Reply(reply);
+            info = seL4_Recv(ep, &badge);
+#endif
+        } else if (label == NET_SVC_EVENT_RX_READY) {
+            aos_vmm_virtio_net_rx_ready();
+#ifdef CONFIG_KERNEL_MCS
+            info = seL4_Recv(ep, &badge, reply_cap);
+#else
             info = seL4_Recv(ep, &badge);
 #endif
         } else if (label == seL4_Fault_NullFault) {

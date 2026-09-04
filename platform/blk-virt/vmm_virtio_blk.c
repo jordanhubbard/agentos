@@ -482,6 +482,8 @@ void aos_vmm_virtio_blk_after_fault(void)
     uint32_t status;
     uint32_t n;
     uint32_t rounds = 0u;
+    uint32_t total = 0u;
+    bool pending;
 
     if (!g_aos_blk_ready) {
         return;
@@ -513,6 +515,7 @@ void aos_vmm_virtio_blk_after_fault(void)
      */
     do {
         n = aos_blk_virt_pump(&g_aos_virt);
+        total += n;
         if (!g_aos_blk_pumped && n > 0u) {
             g_aos_blk_pumped = 1;
             LOG_VMM("emulated virtio-blk: pumped %u request(s)\n", n);
@@ -522,11 +525,25 @@ void aos_vmm_virtio_blk_after_fault(void)
         if (g_queue.req_queue) {
             g_queue.req_queue->plugged = true;
         }
+        pending = !blk_queue_empty_req(&g_queue) ||
+                  !blk_queue_empty_resp(&g_queue);
         rounds++;
-    } while (n > 0u &&
+    } while ((n > 0u || pending) &&
              rounds <= (AOS_BLK_QUEUE_CAPACITY * 2u + 1u));
 
-    if (n > 0u) {
+    if (n > 0u || pending) {
         LOG_VMM_ERR("emulated virtio-blk: synchronous drain did not quiesce\n");
+    }
+    if (total > 0u) {
+        static uint32_t drain_count;
+        drain_count++;
+        if (drain_count <= 16u ||
+            (drain_count & (drain_count - 1u)) == 0u) {
+            LOG_VMM("emulated virtio-blk: drain=%u rounds=%u requests=%u avail=%u last=%u used=%u irq=0x%x\n",
+                    (unsigned)drain_count, (unsigned)rounds, (unsigned)total,
+                    (unsigned)vq->virtq.avail->idx, (unsigned)vq->last_idx,
+                    (unsigned)vq->virtq.used->idx,
+                    (unsigned)g_aos_blk.virtio_device.regs.InterruptStatus);
+        }
     }
 }

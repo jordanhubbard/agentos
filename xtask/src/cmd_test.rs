@@ -502,7 +502,7 @@ pub fn spawn_qemu_with_guest(
                     "loader,file={},addr=0x48000000",
                     build_image.display()
                 ));
-            if guest_os != "ubuntu" && guest_os != "both" {
+            if guest_os != "ubuntu" && guest_os != "freebsd" && guest_os != "both" {
                 c.args([
                     "-device",
                     "virtio-net-device,netdev=net0,bus=virtio-mmio-bus.0",
@@ -511,8 +511,8 @@ pub fn spawn_qemu_with_guest(
                 ]);
             } else {
                 /*
-                 * Page-isolated host transport owned by net_pd. linux_vmm
-                 * sees only its emulated IPA 0x0a010000 device.
+                 * Page-isolated host transport owned by net_pd. Guest VMMs
+                 * see only their emulated IPA 0x0a010000 devices.
                  */
                 c.args([
                     "-device",
@@ -1028,6 +1028,7 @@ fn wait_for_guest_console_login_via_cc(
     let prompt_markers = guest_prompt_markers(guest_os);
     let mut freebsd_console_type_accepted = false;
     let mut freebsd_installer_shell_requested = false;
+    let mut last_progress = Instant::now();
 
     while start.elapsed() < timeout {
         ensure_qemu_running(qemu, "waiting for guest login prompt via CC-PD API")?;
@@ -1036,6 +1037,15 @@ fn wait_for_guest_console_login_via_cc(
                 if !chunk.is_empty() {
                     transcript.push_str(&chunk);
                     reject_bad_guest_path(guest_os, &transcript)?;
+                    if last_progress.elapsed() >= Duration::from_secs(30) {
+                        println!(
+                            "[xtask:test] {} console progress ({} bytes), tail:\n{}",
+                            guest_os,
+                            transcript.len(),
+                            tail_chars(&transcript, 800)
+                        );
+                        last_progress = Instant::now();
+                    }
                     if guest_os == "freebsd"
                         && !freebsd_console_type_accepted
                         && transcript.contains("Console type [vt100]:")

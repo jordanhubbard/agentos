@@ -88,6 +88,17 @@
 	};
 
 	/*
+	 * Per-guest agentOS-emulated VirtIO network endpoint. FreeBSD uses client
+	 * slot 1 and MAC 02:00:00:00:00:02 behind the canonical net-service PD.
+	 */
+	virtio_mmio@a010000 {
+		dma-coherent;
+		interrupts = <0x00 0x12 0x01>;
+		reg = <0x00 0xa010000 0x00 0x1000>;
+		compatible = "virtio,mmio";
+	};
+
+	/*
 	 * agentOS-emulated VirtIO block endpoint. The IPA is deliberately outside
 	 * QEMU's virtio-mmio transport window and remains unmapped so accesses
 	 * fault to freebsd_vmm. Host media is reachable only through BlockService.

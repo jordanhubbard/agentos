@@ -3,7 +3,6 @@
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
-#include <libvmm/vmm_caps.h>
 #include <string.h>
 #include <stdint.h>
 #include <stdbool.h>
@@ -19,10 +18,110 @@
 #include <sddf/util/fsmalloc.h>
 #include <sddf/util/ialloc.h>
 
+/* This file implements a guest-visible "virtio block" device. It translate standardised
+ * virtio block requests into sDDF block requests. A virtio block request is always paired
+ * with a virtio block response. But it is possible for one virtio block request to be translated
+ * into multiple sDDF block requests internally within the device for reasons explained below.
+ *
+ * Note that while the sDDF block protocol operates in 4 KiB blocks, virtio block operates on
+ * 512-bytes sectors. For example, reading sector 8 or 9 means reading block number 1. This difference
+ * in protocol is what we are trying to reconcile in this code. The phrase "transfer window" and "blocks" will
+ * be used interchangably but refers to the same concept, a 4 KiB block in sDDF block protocol.
+ *
+ * Due to the difference in transfer size, a read or write request may be "aigned" or "unaligned".
+ * In this case, aligned means that the number of sectors in the request is divisible by the number
+ * of sectors that can fit within one transfer window, and the starting sector is aligned on the start
+ * of a transfer window. The diagram below illustrates the alignment concept:
+ *
+ * |Sector|Sector|Sector|Sector|Sector|Sector|Sector|Sector|
+ * |         sDDF 4KiB Block / Transfer window             |
+ *
+ * For example:
+ * - Write request starting at sector 8, of size 4096 bytes is aligned.
+ * - Write request starting at sector 8, of size 8192 bytes is aligned.
+ * - Write request starting at sector 8, of size 512 bytes is unaligned.
+ * - Write request starting at sector 9, of size 3584 bytes is unaligned.
+ *
+ * A virtio block request has the following structure:
+ * struct virtio_blk_req {
+ *     le32 type;
+ *     le32 ioprio;
+ *     le64 sector;
+ *     u8 data[];
+ *     u8 status;
+ * };
+ * This is represented as a linked list of buffers in guest RAM, formally called a "descriptor chain".
+ * Briefly, when a guest wants to send us (the device) a request, it enqueues a descriptor chain
+ * into the "available" ring and then notify us via a fault. We then dequeue the descriptor chain and
+ * "decode" it. Which entails copying the list of buffers' pointers and inspecting the header. The header is
+ * all struct members before `data`.
+ *
+ * The header and the sum of the length of all the desciptor chain's buffers tell us:
+ * 1. What type of virtio block request? (Read, Write, Get ID, Flush...),
+ * 2. Which 512-bytes sector on the disk is the request starting from, and
+ * 3. How much data the guest want to transfer, which is divisible by sector size.
+ *
+ * Once a virtio block request has been "decoded", we begin to process it immediately.
+ *
+ * For a read request, a corresponding sDDF block request will be dispatched whether it is
+ * aligned or not.
+ *
+ * For a write request, there are 3 cases we must consider:
+ * 1. Aligned and does not overlap with other requests.
+ * In this case, it is safe to dispatch it to sDDF block right away, as there is no
+ * synchronisation needed. Thus, a sDDF block write request will be generated.
+ *
+ * 2. Not aligned and does not overlap with other requests.
+ * In this case we have to perform a Read-Modify-Write (RMW) procedure. RMW is needed because
+ * there are data in the transfer window that we don't want to clobber. For example,
+ * writing 1024 bytes to sector 10 will look like this:
+ *
+ * <-no clobber--><---write----><-------no clobber--------->
+ * |Sector|Sector|Sector|Sector|Sector|Sector|Sector|Sector|
+ * |         sDDF 4KiB Block / Transfer window             |
+ *
+ * We have to read in the entire 4KiB block, modify the range of data requested by the guest,
+ * then write out the entire block to disk.
+ *
+ * 3. Does overlap with other requests
+ * In this case, it is necessary to queue up the request for synchronisation. Because in the
+ * guest's perspective, issuing 2 requests for writing to sector 8 and 9, each 512 bytes won't
+ * cause any overlap. But internally in our code, both requests map to sDDF block 1. Thus we have
+ * to dispatch RMW for the first request, wait asynchronously for that to finish. Then dispatch
+ * RMW for the second request.
+ *
+ * Therefore each virtio block request has an attached state machine. A request can be in one of the
+ * following states at any given time:
+ * 1. Flushing
+ * 2. Reading
+ * 3. Writing aligned
+ * 4. Queued for RMW
+ * 5. Read phase of RMW
+ * 6. Write phase of RMW
+ * 7. Completed (this is represented as an invalid state machine in the code)
+ *
+ * Once a virtio block request is decoded and initially processed, it can only be in states 1, 2, 3, 4 or 5.
+ * For a state transition to occur in a request's state machine, a notification from the block virtualiser
+ * must be received and a sDDF block response with that request's identifier dequeued.
+ * It is only possible for states 1, 2 and 3 to transition to state 7.
+ * Once a request is in state 7, a virtio block response is generated and it cannot transition to another state.
+ *
+ * Therefore the only possible state transitions are:
+ * A. Flushing (1) -> Completed (7)
+ * B. Reading (2) -> Completed (7)
+ * C. Writing aligned (3) -> Completed (7)
+ * D. Read phase of RMW (5) -> Write phase of RMW (6) -> Completed (7)
+ * E. Queued for RMW (4) -> Read phase of RMW (5) -> Write phase of RMW (6) -> Completed (7)
+ *
+ * In E, it is only possible for a request in state 4 to transition to state 5 if another write request
+ * completely perform transitions C or D.
+ *
+ */
+
 #define SECTORS_IN_TRANSFER_WINDOW (BLK_TRANSFER_SIZE / VIRTIO_BLK_SECTOR_SIZE)
 
 /* Uncomment this to enable debug logging */
-/* #define DEBUG_BLOCK */
+// #define DEBUG_BLOCK
 
 #if defined(DEBUG_BLOCK)
 #define LOG_BLOCK(...)             \
@@ -38,6 +137,13 @@
     } while (0)
 #endif
 
+#define LOG_BLOCK_WARN(...)               \
+    do                                   \
+    {                                    \
+        printf("VIRTIO(BLOCK)|WARN: "); \
+        printf(__VA_ARGS__);             \
+    } while (0)
+
 #define LOG_BLOCK_ERR(...)               \
     do                                   \
     {                                    \
@@ -45,18 +151,152 @@
         printf(__VA_ARGS__);             \
     } while (0)
 
+static uint64_t virtio_desc_chain_payload_len(
+    virtio_queue_handler_t *vq_handler, uint16_t desc_head)
+{
+    struct virtq *virtq = &vq_handler->virtq;
+    uint16_t desc = desc_head;
+    uint64_t payload_len = 0u;
+
+    for (uint16_t walked = 0u; walked < virtq->num; walked++) {
+        if (desc >= virtq->num ||
+            UINT64_MAX - payload_len < virtq->desc[desc].len) {
+            return 0u;
+        }
+        payload_len += virtq->desc[desc].len;
+        if (!(virtq->desc[desc].flags & VIRTQ_DESC_F_NEXT)) {
+            return payload_len;
+        }
+        desc = virtq->desc[desc].next;
+    }
+    return 0u;
+}
+
+static bool virtio_copy_desc_chain(virtio_queue_handler_t *vq_handler,
+                                   uint16_t desc_head, uint64_t bytes,
+                                   uint64_t chain_offset, void *data,
+                                   bool write_guest)
+{
+    struct virtq *virtq = &vq_handler->virtq;
+    uint16_t desc = desc_head;
+    uint64_t desc_start = 0u;
+    uint64_t copied = 0u;
+
+    if (UINT64_MAX - chain_offset < bytes) {
+        return false;
+    }
+    for (uint16_t walked = 0u;
+         walked < virtq->num && copied < bytes; walked++) {
+        uint64_t desc_end;
+        uint64_t wanted = chain_offset + copied;
+
+        if (desc >= virtq->num ||
+            UINT64_MAX - desc_start < virtq->desc[desc].len) {
+            return false;
+        }
+        desc_end = desc_start + virtq->desc[desc].len;
+        if (wanted >= desc_start && wanted < desc_end) {
+            uint64_t available = desc_end - wanted;
+            uint64_t copy_size = bytes - copied;
+            uint64_t desc_offset = wanted - desc_start;
+            int rc;
+
+            if (copy_size > available) {
+                copy_size = available;
+            }
+            if (copy_size > SIZE_MAX) {
+                return false;
+            }
+            if (write_guest) {
+                rc = virtio_copy_to_gpa(virtq->desc[desc].addr,
+                                        (size_t)desc_offset,
+                                        (const uint8_t *)data + copied,
+                                        (size_t)copy_size);
+            } else {
+                rc = virtio_copy_from_gpa(virtq->desc[desc].addr,
+                                          (size_t)desc_offset,
+                                          (uint8_t *)data + copied,
+                                          (size_t)copy_size);
+            }
+            if (rc != 0) {
+                return false;
+            }
+            copied += copy_size;
+        }
+        if (copied == bytes) {
+            break;
+        }
+        if (!(virtq->desc[desc].flags & VIRTQ_DESC_F_NEXT)) {
+            return false;
+        }
+        desc_start = desc_end;
+        desc = virtq->desc[desc].next;
+    }
+    return copied == bytes;
+}
+
+static bool virtio_read_data_from_desc_chain(
+    virtio_queue_handler_t *vq_handler, uint16_t desc_head,
+    uint64_t bytes, uint64_t offset, char *data)
+{
+    return virtio_copy_desc_chain(vq_handler, desc_head, bytes, offset,
+                                  data, false);
+}
+
+static bool virtio_write_data_to_desc_chain(
+    virtio_queue_handler_t *vq_handler, uint16_t desc_head,
+    uint64_t bytes, uint64_t offset, char *data)
+{
+    return virtio_copy_desc_chain(vq_handler, desc_head, bytes, offset,
+                                  data, true);
+}
+
+static bool virtio_virtq_peek_avail(virtio_queue_handler_t *vq_handler,
+                                    uint16_t *desc_head)
+{
+    struct virtq *virtq = &vq_handler->virtq;
+    if (vq_handler->last_idx == virtq->avail->idx) {
+        return false;
+    }
+    *desc_head = virtq->avail->ring[vq_handler->last_idx % virtq->num];
+    return *desc_head < virtq->num;
+}
+
+static bool virtio_virtq_pop_avail(virtio_queue_handler_t *vq_handler,
+                                   uint16_t *desc_head)
+{
+    if (!virtio_virtq_peek_avail(vq_handler, desc_head)) {
+        return false;
+    }
+    vq_handler->last_idx++;
+    return true;
+}
+
+static void virtio_virtq_add_used(virtio_queue_handler_t *vq_handler,
+                                  uint16_t desc_head, uint32_t len)
+{
+    struct virtq *virtq = &vq_handler->virtq;
+    struct virtq_used_elem *used =
+        &virtq->used->ring[virtq->used->idx % virtq->num];
+
+    used->id = desc_head;
+    used->len = len;
+    __atomic_thread_fence(__ATOMIC_RELEASE);
+    virtq->used->idx++;
+}
+
 static inline struct virtio_blk_device *device_state(struct virtio_device *dev)
 {
     return (struct virtio_blk_device *)dev->device_data;
 }
 
-static inline void virtio_blk_mmio_reset(struct virtio_device *dev)
+static inline void virtio_blk_reset(struct virtio_device *dev)
 {
     dev->vqs[VIRTIO_BLK_DEFAULT_VIRTQ].ready = false;
     dev->vqs[VIRTIO_BLK_DEFAULT_VIRTQ].last_idx = 0;
 }
 
-static inline bool virtio_blk_mmio_get_device_features(struct virtio_device *dev, uint32_t *features)
+static inline bool virtio_blk_get_device_features(struct virtio_device *dev, uint32_t *features)
 {
     if (dev->regs.Status & VIRTIO_CONFIG_S_FEATURES_OK) {
         LOG_BLOCK_ERR("driver somehow wants to read device features after FEATURES_OK\n");
@@ -71,7 +311,7 @@ static inline bool virtio_blk_mmio_get_device_features(struct virtio_device *dev
         *features = *features | BIT_LOW(VIRTIO_BLK_F_SEG_MAX);
         *features = *features | BIT_LOW(VIRTIO_BLK_F_TOPOLOGY);
         if (device_state(dev)->storage_info->read_only) {
-            *features = *features | BIT_LOW(VIRTIO_BLK_F_RO);
+            *features |= BIT_LOW(VIRTIO_BLK_F_RO);
         }
         break;
     /* features bits 32 to 63 */
@@ -86,7 +326,7 @@ static inline bool virtio_blk_mmio_get_device_features(struct virtio_device *dev
     return true;
 }
 
-static inline bool virtio_blk_mmio_set_driver_features(struct virtio_device *dev, uint32_t features)
+static inline bool virtio_blk_set_driver_features(struct virtio_device *dev, uint32_t features)
 {
     /* According to virtio initialisation protocol,
        this should check what device features were set, and return the subset of
@@ -113,8 +353,7 @@ static inline bool virtio_blk_mmio_set_driver_features(struct virtio_device *dev
         success = (features == BIT_HIGH(VIRTIO_F_VERSION_1));
         break;
     default:
-        LOG_BLOCK_ERR("driver sets DriverFeaturesSel to 0x%x, which doesn't make sense\n",
-                      dev->regs.DriverFeaturesSel);
+        LOG_BLOCK_ERR("driver sets DriverFeaturesSel to 0x%x, which doesn't make sense\n", dev->regs.DriverFeaturesSel);
         return false;
     }
 
@@ -127,7 +366,7 @@ static inline bool virtio_blk_mmio_set_driver_features(struct virtio_device *dev
     return success;
 }
 
-static inline bool virtio_blk_mmio_get_device_config(struct virtio_device *dev, uint32_t offset, uint32_t *ret_val)
+static inline bool virtio_blk_get_device_config(struct virtio_device *dev, uint32_t offset, uint32_t *ret_val)
 {
     struct virtio_blk_device *state = device_state(dev);
 
@@ -140,7 +379,7 @@ static inline bool virtio_blk_mmio_get_device_config(struct virtio_device *dev, 
     return true;
 }
 
-static inline bool virtio_blk_mmio_set_device_config(struct virtio_device *dev, uint32_t offset, uint32_t val)
+static inline bool virtio_blk_set_device_config(struct virtio_device *dev, uint32_t offset, uint32_t val)
 {
     struct virtio_blk_device *state = device_state(dev);
 
@@ -151,15 +390,6 @@ static inline bool virtio_blk_mmio_set_device_config(struct virtio_device *dev, 
               config_base_addr, offset, val);
 
     return true;
-}
-
-static inline void virtio_blk_used_buffer(struct virtio_device *dev, uint16_t desc)
-{
-    struct virtq *virtq = &dev->vqs[VIRTIO_BLK_DEFAULT_VIRTQ].virtq;
-    struct virtq_used_elem used_elem = {desc, 0};
-
-    virtq->used->ring[virtq->used->idx % virtq->num] = used_elem;
-    virtq->used->idx++;
 }
 
 static inline bool virtio_blk_virq_inject(struct virtio_device *dev)
@@ -175,59 +405,22 @@ static inline void virtio_blk_set_interrupt_status(struct virtio_device *dev, bo
     dev->regs.InterruptStatus = used_buffer | (config_change << 1);
 }
 
-static inline void virtio_blk_set_req_fail(struct virtio_device *dev, uint16_t desc)
-{
-    struct virtq *virtq = &dev->vqs[VIRTIO_BLK_DEFAULT_VIRTQ].virtq;
-
-    /* Loop to the final byte of the final descriptor and write response code
-     * there */
-    uint16_t curr_desc = desc;
-    while (virtq->desc[curr_desc].flags & VIRTQ_DESC_F_NEXT) {
-        curr_desc = virtq->desc[curr_desc].next;
-    }
-    assert(virtq->desc[curr_desc].flags & VIRTQ_DESC_F_WRITE);
-    uint8_t status = VIRTIO_BLK_S_IOERR;
-    if (virtio_copy_to_gpa(virtq->desc[curr_desc].addr,
-                           virtq->desc[curr_desc].len - 1u,
-                           &status, sizeof(status)) != 0) {
-        LOG_BLOCK_ERR("request status GPA is outside guest RAM\n");
-    }
-}
-
-static inline void virtio_blk_set_req_success(struct virtio_device *dev, uint16_t desc)
-{
-    struct virtq *virtq = &dev->vqs[VIRTIO_BLK_DEFAULT_VIRTQ].virtq;
-
-    uint16_t curr_desc = desc;
-    while (virtq->desc[curr_desc].flags & VIRTQ_DESC_F_NEXT) {
-        curr_desc = virtq->desc[curr_desc].next;
-    }
-    assert(virtq->desc[curr_desc].flags & VIRTQ_DESC_F_WRITE);
-    uint8_t status = VIRTIO_BLK_S_OK;
-    if (virtio_copy_to_gpa(virtq->desc[curr_desc].addr,
-                           virtq->desc[curr_desc].len - 1u,
-                           &status, sizeof(status)) != 0) {
-        LOG_BLOCK_ERR("request status GPA is outside guest RAM\n");
-    }
-}
-
 static inline bool sddf_make_req_check(struct virtio_blk_device *state, uint16_t sddf_count)
 {
     /* Check if ialloc is full, if data region is full, if req queue is full.
        If these all pass then this request can be handled successfully */
-
     if (ialloc_full(&state->ialloc)) {
-        LOG_BLOCK("Request bookkeeping array is full\n");
+        LOG_BLOCK_WARN("Request bookkeeping array is full\n");
         return false;
     }
 
     if (blk_queue_full_req(&state->queue_h)) {
-        LOG_BLOCK("Request queue is full\n");
+        LOG_BLOCK_WARN("Request queue is full\n");
         return false;
     }
 
     if (fsmalloc_full(&state->fsmalloc, sddf_count)) {
-        LOG_BLOCK("Data region is full\n");
+        LOG_BLOCK_WARN("Data region is full\n");
         return false;
     }
 
@@ -235,7 +428,7 @@ static inline bool sddf_make_req_check(struct virtio_blk_device *state, uint16_t
 }
 
 /* Returns true if both requests hit the same block */
-bool do_requests_overlap(reqbk_t *req1, reqbk_t *req2)
+static bool do_requests_overlap(reqbk_t *req1, reqbk_t *req2)
 {
     uint32_t start1 = req1->sddf_block_number;
     uint32_t end1 = start1 + req1->sddf_count - 1;
@@ -244,9 +437,97 @@ bool do_requests_overlap(reqbk_t *req1, reqbk_t *req2)
     return (start1 <= end2 && start2 <= end1);
 }
 
-bool request_is_write(reqbk_t *req)
+static bool request_is_write(reqbk_t *req)
 {
-    return req->state >= STATE_WRITING_ALIGNED;
+    return req->state >= VIRTIO_BLK_REQ_STATE_WRITING_ALIGNED;
+}
+
+static inline void virtio_blk_set_req_fail(virtio_queue_handler_t *vq_handler, reqbk_t *reqbk)
+{
+    char fail_byte = VIRTIO_BLK_S_IOERR;
+    assert(
+        virtio_write_data_to_desc_chain(vq_handler, reqbk->virtio_desc_head, 1, reqbk->total_req_size - 1, &fail_byte));
+}
+
+static inline void virtio_blk_set_req_success(virtio_queue_handler_t *vq_handler, reqbk_t *reqbk)
+{
+    char ok_byte = VIRTIO_BLK_S_OK;
+    assert(
+        virtio_write_data_to_desc_chain(vq_handler, reqbk->virtio_desc_head, 1, reqbk->total_req_size - 1, &ok_byte));
+}
+
+static uint64_t request_bytes_to_body_bytes(uint64_t request_bytes)
+{
+    return request_bytes - sizeof(struct virtio_blk_outhdr) - 1;
+}
+
+bool decode_virtio_block_request(virtio_queue_handler_t *vq_handler, uint16_t desc_head, reqbk_t *ret)
+{
+    /* A virtio block request looks like this:
+       struct virtio_blk_req {
+            le32 type;
+            le32 ioprio;
+            le64 sector;
+            u8 data[];
+            u8 status;
+       };
+       We just need to walk the scatter-gather list, and re-assemble the data
+     */
+
+    LOG_BLOCK("decode_virtio_block_request(): decoding desc head %u\n", desc_head);
+    uint64_t payload_len = virtio_desc_chain_payload_len(vq_handler, desc_head);
+    if (payload_len < sizeof(struct virtio_blk_outhdr) + 1u) {
+        /* Malicious guest driver */
+        LOG_BLOCK_ERR("decode_virtio_block_request(): desc head %u, payload length %lu bytes too short\n", desc_head,
+                      payload_len);
+        return false;
+    }
+
+    ret->virtio_desc_head = desc_head;
+    ret->total_req_size = payload_len;
+
+    /* Step 2: read the request header from the scatter-gather list */
+    struct virtio_blk_outhdr header;
+    assert(
+        virtio_read_data_from_desc_chain(vq_handler, desc_head, sizeof(struct virtio_blk_outhdr), 0, (char *)&header));
+
+    ret->virtio_req_type = header.type;
+    ret->virtio_sector = header.sector;
+    ret->sddf_block_number = 0u;
+    ret->sddf_data_offset = 0u;
+    ret->sddf_count = 0u;
+
+    if (header.type == VIRTIO_BLK_T_IN ||
+        header.type == VIRTIO_BLK_T_OUT) {
+        uint64_t byte_offset;
+        uint64_t body_size = request_bytes_to_body_bytes(payload_len);
+
+        if (header.sector >
+                UINT64_MAX / (uint64_t)VIRTIO_BLK_SECTOR_SIZE ||
+            body_size == 0u ||
+            body_size % VIRTIO_BLK_SECTOR_SIZE != 0u ||
+            body_size > UINT32_MAX) {
+            return false;
+        }
+        byte_offset =
+            header.sector * (uint64_t)VIRTIO_BLK_SECTOR_SIZE;
+        if (byte_offset / BLK_TRANSFER_SIZE > UINT32_MAX) {
+            return false;
+        }
+        ret->sddf_block_number =
+            (uint32_t)(byte_offset / BLK_TRANSFER_SIZE);
+        ret->sddf_data_offset =
+            (uint32_t)(byte_offset % BLK_TRANSFER_SIZE);
+        uint64_t sddf_count =
+            (ret->sddf_data_offset + body_size +
+             BLK_TRANSFER_SIZE - 1u) / BLK_TRANSFER_SIZE;
+        if (sddf_count == 0u || sddf_count > SDDF_MAX_DATA_CELLS) {
+            return false;
+        }
+        ret->sddf_count = (uint16_t)sddf_count;
+    }
+
+    return true;
 }
 
 static bool handle_client_requests(struct virtio_device *dev, int *num_reqs_consumed)
@@ -256,16 +537,6 @@ static bool handle_client_requests(struct virtio_device *dev, int *num_reqs_cons
        dev->QueueNotify, but for now we just assume it's the one and only default
        queue */
     virtio_queue_handler_t *vq = &dev->vqs[VIRTIO_BLK_DEFAULT_VIRTQ];
-    struct virtq *virtq = &vq->virtq;
-
-    /*
-     * after_fault pumps on every guest MMIO (UART/GIC first). The virtq
-     * pointers stay NULL until the guest writes QUEUE_READY.
-     */
-    if (!vq->ready || virtq->avail == NULL || virtq->desc == NULL || virtq->used == NULL) {
-        *num_reqs_consumed = 0;
-        return true;
-    }
 
     struct virtio_blk_device *state = device_state(dev);
 
@@ -274,329 +545,179 @@ static bool handle_client_requests(struct virtio_device *dev, int *num_reqs_cons
     bool has_dropped = false;
     int nums_consumed = 0;
 
-    /* Handle available requests beginning from the last handled request */
-    uint16_t last_handled_avail_idx = vq->last_idx;
-
     LOG_BLOCK("------------- handle_client_requests start loop -------------\n");
-    for (; last_handled_avail_idx != virtq->avail->idx; last_handled_avail_idx++) {
-        uint16_t desc_head = virtq->avail->ring[last_handled_avail_idx % virtq->num];
-        uint16_t curr_desc = desc_head;
-        uint32_t curr_desc_bytes_read = 0;
+    uint16_t desc_head;
+    while (virtio_virtq_peek_avail(vq, &desc_head)) {
+        if (ialloc_full(&state->ialloc)) {
+            goto stop_processing;
+        }
+        /* Generate sddf request id and bookkeep the request */
+        uint32_t req_id;
+        err = ialloc_alloc(&state->ialloc, &req_id);
+        assert(!err);
+        assert(state->reqsbk[req_id].state == VIRTIO_BLK_REQ_STATE_INVALID);
 
-        /* There are three parts with each block request. The header, body (which
-         * contains the data) and reply. */
-        uint32_t header_bytes_read = 0;
-        struct virtio_blk_outhdr virtio_req_header;
-        for (; header_bytes_read < sizeof(struct virtio_blk_outhdr); curr_desc = virtq->desc[curr_desc].next) {
-            /* Header is device read only */
-            assert(!(virtq->desc[curr_desc].flags & VIRTQ_DESC_F_WRITE));
-            /* We can guarantee existence of next descriptor as footer is write only
-             */
-            assert(virtq->desc[curr_desc].flags & VIRTQ_DESC_F_NEXT);
-            if (header_bytes_read + virtq->desc[curr_desc].len > sizeof(struct virtio_blk_outhdr)) {
-                uint32_t copy_sz = sizeof(struct virtio_blk_outhdr) - header_bytes_read;
-                if (virtio_copy_from_gpa(
-                        virtq->desc[curr_desc].addr, 0u,
-                        (uint8_t *)&virtio_req_header + header_bytes_read,
-                        copy_sz) != 0) {
-                    LOG_BLOCK_ERR("request header GPA is outside guest RAM\n");
-                    return false;
-                }
-                curr_desc_bytes_read = sizeof(struct virtio_blk_outhdr) - header_bytes_read;
-                header_bytes_read += sizeof(struct virtio_blk_outhdr) - header_bytes_read;
-                /* Don't go to the next descriptor yet, we're not done processing with
-                 * current one */
-                break;
-            } else {
-                uint32_t copy_sz = virtq->desc[curr_desc].len;
-                if (virtio_copy_from_gpa(
-                        virtq->desc[curr_desc].addr, 0u,
-                        (uint8_t *)&virtio_req_header + header_bytes_read,
-                        copy_sz) != 0) {
-                    LOG_BLOCK_ERR("request header GPA is outside guest RAM\n");
-                    return false;
-                }
-                header_bytes_read += virtq->desc[curr_desc].len;
-            }
+        LOG_BLOCK("----- Begin processing request at descriptor head %u -----\n", desc_head);
+        if (!decode_virtio_block_request(vq, desc_head,
+                                         &state->reqsbk[req_id])) {
+            LOG_BLOCK_ERR("invalid request at descriptor head %u\n",
+                          desc_head);
+            ialloc_free(&state->ialloc, req_id);
+            state->reqsbk[req_id].state = VIRTIO_BLK_REQ_STATE_INVALID;
+            goto stop_processing;
         }
 
-        LOG_BLOCK("----- Request type is 0x%x -----\n", virtio_req_header.type);
-
-        switch (virtio_req_header.type) {
-        case VIRTIO_BLK_T_IN: {
-            LOG_BLOCK("Request type is VIRTIO_BLK_T_IN\n");
-            LOG_BLOCK("Sector (read/write offset) is %d\n", virtio_req_header.sector);
-
-            /* Converting virtio sector number to sddf block number, we are rounding
-             * down */
-            uint32_t sddf_block_number = (virtio_req_header.sector * VIRTIO_BLK_SECTOR_SIZE) / BLK_TRANSFER_SIZE;
-
-            /* Figure out how many bytes are in the body of the request */
-            uint32_t body_size_bytes = 0;
-            uint32_t tmp_curr_desc_bytes_read = curr_desc_bytes_read;
-            for (uint16_t tmp_curr_desc = curr_desc; virtq->desc[tmp_curr_desc].flags & VIRTQ_DESC_F_NEXT;
-                 tmp_curr_desc = virtq->desc[tmp_curr_desc].next) {
-                if (tmp_curr_desc_bytes_read != 0) {
-                    body_size_bytes += virtq->desc[tmp_curr_desc].len - tmp_curr_desc_bytes_read;
-                    tmp_curr_desc_bytes_read = 0;
-                } else {
-                    body_size_bytes += virtq->desc[tmp_curr_desc].len;
-                }
-                if (!(virtq->desc[tmp_curr_desc].flags & VIRTQ_DESC_F_WRITE)
-                    || virtq->desc[tmp_curr_desc].len < VIRTIO_BLK_SECTOR_SIZE) {
-                    break;
-                }
-            }
-
-            /* Figure out whether the guest's read request spills over to the next 4k transfer window */
-            uint32_t num_sectors = body_size_bytes / VIRTIO_BLK_SECTOR_SIZE;
-            uint32_t sddf_count = (body_size_bytes + BLK_TRANSFER_SIZE - 1) / BLK_TRANSFER_SIZE;
-            if (((virtio_req_header.sector % SECTORS_IN_TRANSFER_WINDOW) + num_sectors) > SECTORS_IN_TRANSFER_WINDOW) {
-                sddf_count++;
-            }
-
-            if (!sddf_make_req_check(state, sddf_count)) {
-                /* One of the book-keeping structure or the data region is full */
-                goto stop_processing;
-            }
-
-            /* Allocate data cells from sddf data region based on sddf_count */
-            uintptr_t sddf_data_cell_base;
-            fsmalloc_alloc(&state->fsmalloc, &sddf_data_cell_base, sddf_count);
-
-            /* Find address within the data cells for reading/writing virtio data */
-            uintptr_t sddf_data = sddf_data_cell_base
-                                + (virtio_req_header.sector * VIRTIO_BLK_SECTOR_SIZE) % BLK_TRANSFER_SIZE;
-
-            /* Generate sddf request id and bookkeep the request */
-            uint32_t req_id;
-            err = ialloc_alloc(&state->ialloc, &req_id);
-            assert(!err);
-            assert(!state->reqsbk[req_id].valid);
-
-            state->reqsbk[req_id] =
-                (reqbk_t) { true,      desc_head,       sddf_data_cell_base, sddf_count, sddf_block_number,
-                            sddf_data, body_size_bytes, STATE_READING };
-
-            uintptr_t sddf_offset = sddf_data_cell_base - ((struct virtio_blk_device *)dev->device_data)->data_region;
-            err = blk_enqueue_req(&state->queue_h, BLK_REQ_READ, sddf_offset, sddf_block_number, sddf_count, req_id);
-            nums_consumed += 1;
-            assert(!err);
-
-            LOG_BLOCK("send read sector %u, sddf block %u, body size %u, data off %u, nums block %u, virtio desc %u\n",
-                      virtio_req_header.sector, sddf_block_number, body_size_bytes,
-                      (virtio_req_header.sector * VIRTIO_BLK_SECTOR_SIZE) % BLK_TRANSFER_SIZE, sddf_count, curr_desc);
-
-            break;
-        }
+        switch (state->reqsbk[req_id].virtio_req_type) {
+        case VIRTIO_BLK_T_IN:
         case VIRTIO_BLK_T_OUT: {
-            LOG_BLOCK("Request type is VIRTIO_BLK_T_OUT\n");
-            LOG_BLOCK("Sector (read/write offset) is %d, curr_desc is %u\n", virtio_req_header.sector, curr_desc);
+            if (!sddf_make_req_check(state, state->reqsbk[req_id].sddf_count)) {
+                LOG_BLOCK_WARN("out of resource for request at sector %lu, body bytes %lu, sddf count %u\n",
+                               state->reqsbk[req_id].virtio_sector,
+                               request_bytes_to_body_bytes(state->reqsbk[req_id].total_req_size),
+                               state->reqsbk[req_id].sddf_count);
 
-            /* Converting virtio sector number to sddf block number, we are rounding
-             * down */
-            uint32_t sddf_block_number = (virtio_req_header.sector * VIRTIO_BLK_SECTOR_SIZE) / BLK_TRANSFER_SIZE;
-            LOG_BLOCK("sddf_block_number is %u\n", sddf_block_number);
-
-            /* Figure out how many bytes are in the body of the request */
-            uint32_t body_size_bytes = 0;
-            uint32_t tmp_curr_desc_bytes_read = curr_desc_bytes_read;
-            for (uint16_t tmp_curr_desc = curr_desc; virtq->desc[tmp_curr_desc].flags & VIRTQ_DESC_F_NEXT;
-                 tmp_curr_desc = virtq->desc[tmp_curr_desc].next) {
-                if (tmp_curr_desc_bytes_read != 0) {
-                    body_size_bytes += virtq->desc[tmp_curr_desc].len - tmp_curr_desc_bytes_read;
-                    tmp_curr_desc_bytes_read = 0;
-                } else {
-                    body_size_bytes += virtq->desc[tmp_curr_desc].len;
-                }
-                if (!(virtq->desc[tmp_curr_desc].flags & VIRTQ_DESC_F_WRITE)
-                    || virtq->desc[tmp_curr_desc].len < VIRTIO_BLK_SECTOR_SIZE) {
-                    break;
-                }
-            }
-            LOG_BLOCK("body_size_bytes is %u\n", body_size_bytes);
-
-            /* Figure out whether the guest's write request spills over to the next 4k transfer window */
-            uint32_t num_sectors = body_size_bytes / VIRTIO_BLK_SECTOR_SIZE;
-            uint32_t sddf_count = (body_size_bytes + BLK_TRANSFER_SIZE - 1) / BLK_TRANSFER_SIZE;
-            if (((virtio_req_header.sector % SECTORS_IN_TRANSFER_WINDOW) + num_sectors) > SECTORS_IN_TRANSFER_WINDOW) {
-                sddf_count++;
-            }
-
-            LOG_BLOCK("sddf_count is %u\n", sddf_count);
-
-            if (!sddf_make_req_check(state, sddf_count)) {
-                LOG_BLOCK("write: data region full at sector %u, body bytes %u, sddf count %u\n",
-                          virtio_req_header.sector, body_size_bytes, sddf_count);
+                /* Create backpressure, don't consume this request until the block virtualiser gives us
+                 * responses to free up resources */
+                state->reqsbk[req_id].state = VIRTIO_BLK_REQ_STATE_INVALID;
+                ialloc_free(&state->ialloc, req_id);
                 goto stop_processing;
             }
 
-            /* If the write request is not aligned on the sddf transfer window, we need
-             * to do a read-modify-write: we need to first read the surrounding
-             * memory, overwrite the memory on the unaligned areas, and then write the
-             * entire memory back to disk.
-             */
-            bool aligned = true;
-            if (body_size_bytes % BLK_TRANSFER_SIZE != 0) {
-                aligned = false;
-            } else {
-                aligned = ((virtio_req_header.sector % (BLK_TRANSFER_SIZE / VIRTIO_BLK_SECTOR_SIZE)) == 0);
-            }
+            /* Allocate data cells from sddf data region based on sddf_count. This should always succeed
+             * because we checked the error conditions in sddf_make_req_check(). */
+            assert(fsmalloc_alloc(&state->fsmalloc, &state->reqsbk[req_id].sddf_data_cell_base,
+                                  state->reqsbk[req_id].sddf_count)
+                   != -1);
 
-            LOG_BLOCK("aligned is %d, \n", aligned);
+            uintptr_t sddf_offset = state->reqsbk[req_id].sddf_data_cell_base
+                                  - ((struct virtio_blk_device *)dev->device_data)->data_region;
 
-            if (!aligned) {
-                /* Allocate data buffer from data region based on sddf_count */
-                uintptr_t sddf_data_cell_base;
-                assert(fsmalloc_alloc(&state->fsmalloc, &sddf_data_cell_base, sddf_count) == 0);
+            LOG_BLOCK("%s request sector %u, sddf block %u, body size %u, data off %u, nums block %u, virtio desc %u\n",
+                      state->reqsbk[req_id].virtio_req_type == VIRTIO_BLK_T_IN ? "Read" : "Write",
+                      state->reqsbk[req_id].virtio_sector, state->reqsbk[req_id].sddf_block_number,
+                      request_bytes_to_body_bytes(state->reqsbk[req_id].total_req_size),
+                      state->reqsbk[req_id].sddf_data_offset, state->reqsbk[req_id].sddf_count,
+                      state->reqsbk[req_id].virtio_desc_head);
 
-                /* Find address within the data cells for reading/writing virtio data */
-                uintptr_t sddf_data = sddf_data_cell_base
-                                    + (virtio_req_header.sector * VIRTIO_BLK_SECTOR_SIZE) % BLK_TRANSFER_SIZE;
-                LOG_BLOCK("not aligned, sddf_data offset is %u\n",
-                          (virtio_req_header.sector * VIRTIO_BLK_SECTOR_SIZE) % BLK_TRANSFER_SIZE);
+            if (state->reqsbk[req_id].virtio_req_type == VIRTIO_BLK_T_IN) {
+                err = blk_enqueue_req(&state->queue_h, BLK_REQ_READ, sddf_offset,
+                                      state->reqsbk[req_id].sddf_block_number, state->reqsbk[req_id].sddf_count,
+                                      req_id);
+                assert(!err);
+                state->reqsbk[req_id].state = VIRTIO_BLK_REQ_STATE_READING;
+            } else if (state->reqsbk[req_id].virtio_req_type == VIRTIO_BLK_T_OUT) {
+                /* If the write request is not aligned on the sddf transfer window, we need
+                * to do a read-modify-write: we need to first read the surrounding
+                * memory, overwrite the memory on the unaligned areas, and then write the
+                * entire memory back to disk.
+                */
+                bool aligned_on_transfer_window = true;
+                if (request_bytes_to_body_bytes(state->reqsbk[req_id].total_req_size) % BLK_TRANSFER_SIZE != 0
+                    || (state->reqsbk[req_id].virtio_sector % (BLK_TRANSFER_SIZE / VIRTIO_BLK_SECTOR_SIZE)) != 0) {
 
-                /* Generate sddf request id and bookkeep the request */
-                uint32_t req_id;
-                assert(!ialloc_alloc(&state->ialloc, &req_id));
-                assert(!state->reqsbk[req_id].valid);
-                state->reqsbk[req_id] =
-                    (reqbk_t) { true,      desc_head,       sddf_data_cell_base, sddf_count, sddf_block_number,
-                                sddf_data, body_size_bytes, STATE_RMW_READING };
+                    LOG_BLOCK("...not aligned on transfer window.\n");
+                    aligned_on_transfer_window = false;
+                }
 
-                /* Before we actually do anything, double check whether we are already handling
-                   an unaligned write op on that sDDF block to prevent data race. */
-                bool process = true;
+                /* Check if this request overlap with other requests, if so, also perform read modify write.
+                 * But we queue it up. */
+                bool overlap_with_other_requests = false;
                 for (int i = 0; i < SDDF_MAX_QUEUE_CAPACITY; i++) {
-                    if (i != req_id && state->reqsbk[i].valid
+                    if (i != req_id && state->reqsbk[i].state != VIRTIO_BLK_REQ_STATE_INVALID
                         && do_requests_overlap(&state->reqsbk[i], &state->reqsbk[req_id])
                         && request_is_write(&state->reqsbk[i])) {
 
-                        LOG_BLOCK("not aligned and found another req inflight, queueing, this req id is %u\n", req_id);
-                        process = false;
+                        LOG_BLOCK("...overlap with other requests.\n");
+                        overlap_with_other_requests = true;
                         break;
                     }
                 }
 
-                if (process) {
-                    LOG_BLOCK("not aligned and NOT found another unaligned req inflight, sending read\n");
-                    uintptr_t sddf_offset = sddf_data_cell_base
-                                          - ((struct virtio_blk_device *)dev->device_data)->data_region;
-                    err = blk_enqueue_req(&state->queue_h, BLK_REQ_READ, sddf_offset, sddf_block_number, sddf_count,
+                if (aligned_on_transfer_window && !overlap_with_other_requests) {
+                    /* Normal case, just send a normal write and we are done. */
+                    /* Copy data from virtio buffer to sddf buffer */
+                    assert(virtio_read_data_from_desc_chain(
+                        vq, state->reqsbk[req_id].virtio_desc_head,
+                        request_bytes_to_body_bytes(state->reqsbk[req_id].total_req_size),
+                        sizeof(struct virtio_blk_outhdr), (char *)state->reqsbk[req_id].sddf_data_cell_base));
+
+                    err = blk_enqueue_req(&state->queue_h, BLK_REQ_WRITE, sddf_offset,
+                                          state->reqsbk[req_id].sddf_block_number, state->reqsbk[req_id].sddf_count,
                                           req_id);
-                    nums_consumed += 1;
                     assert(!err);
-                } else {
-                    state->reqsbk[req_id].state = STATE_RMW_QUEUEING;
+
+                    state->reqsbk[req_id].state = VIRTIO_BLK_REQ_STATE_WRITING_ALIGNED;
+                } else if (!aligned_on_transfer_window && !overlap_with_other_requests) {
+                    /* Read modify write as described above */
+                    err = blk_enqueue_req(&state->queue_h, BLK_REQ_READ, sddf_offset,
+                                          state->reqsbk[req_id].sddf_block_number, state->reqsbk[req_id].sddf_count,
+                                          req_id);
+                    assert(!err);
+
+                    state->reqsbk[req_id].state = VIRTIO_BLK_REQ_STATE_RMW_READING;
+                } else if (overlap_with_other_requests) {
+                    state->reqsbk[req_id].state = VIRTIO_BLK_REQ_STATE_RMW_QUEUEING;
                 }
-            } else {
-                /* Handle normal write request */
-                /* Allocate data buffer from data region based on sddf_count */
-                uintptr_t sddf_data_cell_base;
-                assert(fsmalloc_alloc(&state->fsmalloc, &sddf_data_cell_base, sddf_count) == 0);
-                /* Find address within the data cells for reading/writing virtio data */
-                uintptr_t sddf_data = sddf_data_cell_base
-                                    + (virtio_req_header.sector * VIRTIO_BLK_SECTOR_SIZE) % BLK_TRANSFER_SIZE;
-
-                /* Copy data from virtio buffer to sddf buffer */
-                uint32_t body_bytes_read = 0;
-                for (; body_bytes_read < body_size_bytes; curr_desc = virtq->desc[curr_desc].next) {
-                    /* For write requests, the body is a read descriptor, and the footer
-                     * is a write descriptor, we know there must be a descriptor cut-off
-                     * at the end.
-                     */
-                    assert(body_bytes_read + virtq->desc[curr_desc].len <= body_size_bytes);
-                    assert(virtq->desc[curr_desc].flags & VIRTQ_DESC_F_NEXT);
-                    if (curr_desc_bytes_read != 0) {
-                        void *dst_addr = (void *)sddf_data + body_bytes_read;
-                        uint32_t copy_sz = virtq->desc[curr_desc].len - curr_desc_bytes_read;
-                        if (virtio_copy_from_gpa(virtq->desc[curr_desc].addr,
-                                                 curr_desc_bytes_read,
-                                                 dst_addr, copy_sz) != 0) {
-                            LOG_BLOCK_ERR("write payload GPA is outside guest RAM\n");
-                            return false;
-                        }
-                        body_bytes_read += virtq->desc[curr_desc].len - curr_desc_bytes_read;
-                        curr_desc_bytes_read = 0;
-                    } else {
-                        void *dst_addr = (void *)sddf_data + body_bytes_read;
-                        uint32_t copy_sz = virtq->desc[curr_desc].len;
-                        if (virtio_copy_from_gpa(virtq->desc[curr_desc].addr,
-                                                 0u, dst_addr, copy_sz) != 0) {
-                            LOG_BLOCK_ERR("write payload GPA is outside guest RAM\n");
-                            return false;
-                        }
-                        body_bytes_read += virtq->desc[curr_desc].len;
-                    }
-                }
-
-                /* Generate sddf request id and bookkeep the request */
-                uint32_t req_id;
-                assert(!ialloc_alloc(&state->ialloc, &req_id));
-                assert(!state->reqsbk[req_id].valid);
-                state->reqsbk[req_id] =
-                    (reqbk_t) { true,      desc_head,       sddf_data_cell_base,  sddf_count, sddf_block_number,
-                                sddf_data, body_size_bytes, STATE_WRITING_ALIGNED };
-
-                uintptr_t sddf_offset = sddf_data_cell_base
-                                      - ((struct virtio_blk_device *)dev->device_data)->data_region;
-                err = blk_enqueue_req(&state->queue_h, BLK_REQ_WRITE, sddf_offset, sddf_block_number, sddf_count,
-                                      req_id);
-                nums_consumed += 1;
-                assert(!err);
-                LOG_BLOCK("send normal write sector %u, sddf block %u, body size %u, data off %u, nums block %u, "
-                          "virtio desc %u\n",
-                          virtio_req_header.sector, sddf_block_number, body_size_bytes,
-                          (virtio_req_header.sector * VIRTIO_BLK_SECTOR_SIZE) % BLK_TRANSFER_SIZE, sddf_count,
-                          curr_desc);
             }
+            nums_consumed += 1;
+            assert(virtio_virtq_pop_avail(vq, &desc_head));
             break;
         }
         case VIRTIO_BLK_T_FLUSH: {
             LOG_BLOCK("Request type is VIRTIO_BLK_T_FLUSH\n");
             if (!sddf_make_req_check(state, 0)) {
+                state->reqsbk[req_id].state = VIRTIO_BLK_REQ_STATE_INVALID;
+                ialloc_free(&state->ialloc, req_id);
                 goto stop_processing;
             }
 
-            /* Bookkeep the request */
-            uint32_t req_id;
-            ialloc_alloc(&state->ialloc, &req_id);
-            /* except for virtio desc, nothing else needs to be retrieved later
-             * so leave as 0 */
-            state->reqsbk[req_id] = (reqbk_t) { true, desc_head, 0, 0, 0, 0, 0, STATE_FLUSHING };
+            state->reqsbk[req_id].state = VIRTIO_BLK_REQ_STATE_FLUSHING;
 
             err = blk_enqueue_req(&state->queue_h, BLK_REQ_FLUSH, 0, 0, 0, req_id);
             nums_consumed += 1;
+            assert(virtio_virtq_pop_avail(vq, &desc_head));
             break;
         }
         case VIRTIO_BLK_T_GET_ID: {
-            static const uint8_t id[20] = {
+            static const char id[20] = {
                 'a', 'g', 'e', 'n', 't', 'O', 'S', '-',
                 'h', 'o', 's', 't', '-', 'm', 'e', 'd',
                 'i', 'a', 0, 0
             };
-            uint32_t id_len = virtq->desc[curr_desc].len;
+            uint64_t id_len =
+                request_bytes_to_body_bytes(
+                    state->reqsbk[req_id].total_req_size);
             if (id_len > sizeof(id)) {
                 id_len = sizeof(id);
             }
-            if (!(virtq->desc[curr_desc].flags & VIRTQ_DESC_F_WRITE) ||
-                virtio_copy_to_gpa(virtq->desc[curr_desc].addr, 0u,
-                                   id, id_len) != 0) {
-                virtio_blk_set_req_fail(dev, desc_head);
+            if (!virtio_write_data_to_desc_chain(
+                    vq, desc_head, id_len,
+                    sizeof(struct virtio_blk_outhdr), (char *)id)) {
+                virtio_blk_set_req_fail(vq, &state->reqsbk[req_id]);
             } else {
-                virtio_blk_set_req_success(dev, desc_head);
+                virtio_blk_set_req_success(vq, &state->reqsbk[req_id]);
             }
-            virtio_blk_used_buffer(dev, desc_head);
-            /* Reuse the immediate-completion path to inject the used IRQ. */
+            virtio_virtq_add_used(vq, desc_head,
+                                  (uint32_t)id_len + 1u);
+            assert(virtio_virtq_pop_avail(vq, &desc_head));
+            ialloc_free(&state->ialloc, req_id);
+            state->reqsbk[req_id].state =
+                VIRTIO_BLK_REQ_STATE_INVALID;
+            nums_consumed++;
             has_dropped = true;
             break;
         }
         default: {
             LOG_BLOCK_ERR("Handling VirtIO block request, but virtIO request type is "
                           "not recognised: %d\n",
-                          virtio_req_header.type);
-            virtio_blk_set_req_fail(dev, desc_head);
-            virtio_blk_used_buffer(dev, desc_head);
+                          state->reqsbk[req_id].virtio_req_type);
+            virtio_blk_set_req_fail(vq, &state->reqsbk[req_id]);
+            virtio_virtq_add_used(
+                vq, state->reqsbk[req_id].virtio_desc_head, 1u);
+            assert(virtio_virtq_pop_avail(vq, &desc_head));
+            ialloc_free(&state->ialloc, req_id);
+            state->reqsbk[req_id].state = VIRTIO_BLK_REQ_STATE_INVALID;
+            nums_consumed++;
             has_dropped = true;
             break;
         }
@@ -606,28 +727,25 @@ static bool handle_client_requests(struct virtio_device *dev, int *num_reqs_cons
 stop_processing:
     *num_reqs_consumed = nums_consumed;
 
-    /* Update virtq index to the next available request to be handled */
-    vq->last_idx = last_handled_avail_idx;
-
     return !has_dropped;
 }
 
-static bool virtio_blk_mmio_queue_notify(struct virtio_device *dev)
+static bool virtio_blk_queue_notify(struct virtio_device *dev)
 {
     int nums_consumed = 0;
-    LOG_BLOCK("virtio_blk_mmio_queue_notify calling handle_client_requests\n");
+    LOG_BLOCK("virtio_blk_queue_notify calling handle_client_requests\n");
     bool consumption_status = handle_client_requests(dev, &nums_consumed);
 
     bool virq_inject_success = true;
     if (!consumption_status) {
-        LOG_BLOCK("virtio_blk_mmio_queue_notify dropped requests\n");
+        LOG_BLOCK("virtio_blk_queue_notify dropped requests\n");
         virtio_blk_set_interrupt_status(dev, true, false);
         virq_inject_success = virtio_blk_virq_inject(dev);
     }
 
     struct virtio_blk_device *state = device_state(dev);
     if (nums_consumed && !blk_queue_plugged_req(&state->queue_h)) {
-        LOG_BLOCK("virtio_blk_mmio_queue_notify notified virt\n");
+        LOG_BLOCK("virtio_blk_queue_notify notified virt\n");
         vmm_notify(state->server_ch);
     }
 
@@ -640,6 +758,8 @@ bool virtio_blk_handle_resp(struct virtio_blk_device *state)
 
     int err = 0;
     struct virtio_device *dev = &state->virtio_device;
+
+    virtio_queue_handler_t *vq = &dev->vqs[VIRTIO_BLK_DEFAULT_VIRTQ];
 
     blk_resp_status_t sddf_ret_status;
     uint16_t sddf_ret_success_count;
@@ -654,135 +774,33 @@ bool virtio_blk_handle_resp(struct virtio_blk_device *state)
 
         /* Retrieve request bookkeep information */
         reqbk_t *reqbk = &state->reqsbk[sddf_ret_id];
+        assert(reqbk->state != VIRTIO_BLK_REQ_STATE_INVALID);
 
-        struct virtq *virtq = &dev->vqs[VIRTIO_BLK_DEFAULT_VIRTQ].virtq;
-
-        uint16_t curr_desc = reqbk->virtio_desc_head;
-        uint32_t curr_desc_bytes_read = 0;
-
-        uint32_t header_bytes_read = 0;
-        struct virtio_blk_outhdr virtio_req_header;
-        for (; header_bytes_read < sizeof(struct virtio_blk_outhdr); curr_desc = virtq->desc[curr_desc].next) {
-            /* Header is device read only */
-            assert(!(virtq->desc[curr_desc].flags & VIRTQ_DESC_F_WRITE));
-            /* We can always guarantee existence of next descriptor as footer is write
-             * only */
-            assert(virtq->desc[curr_desc].flags & VIRTQ_DESC_F_NEXT);
-            if (header_bytes_read + virtq->desc[curr_desc].len > sizeof(struct virtio_blk_outhdr)) {
-                uint32_t copy_sz = sizeof(struct virtio_blk_outhdr) - header_bytes_read;
-                if (virtio_copy_from_gpa(
-                        virtq->desc[curr_desc].addr, 0u,
-                        (uint8_t *)&virtio_req_header + header_bytes_read,
-                        copy_sz) != 0) {
-                    LOG_BLOCK_ERR("response header GPA is outside guest RAM\n");
-                    return false;
-                }
-                curr_desc_bytes_read = sizeof(struct virtio_blk_outhdr) - header_bytes_read;
-                header_bytes_read += sizeof(struct virtio_blk_outhdr) - header_bytes_read;
-                /* Don't go to the next descriptor yet, we're not done processing with
-                 * current one */
-                break;
-            } else {
-                uint32_t copy_sz = virtq->desc[curr_desc].len;
-                if (virtio_copy_from_gpa(
-                        virtq->desc[curr_desc].addr, 0u,
-                        (uint8_t *)&virtio_req_header + header_bytes_read,
-                        copy_sz) != 0) {
-                    LOG_BLOCK_ERR("response header GPA is outside guest RAM\n");
-                    return false;
-                }
-                header_bytes_read += virtq->desc[curr_desc].len;
-            }
-        }
+        LOG_BLOCK("----- Response for request at descriptor head %u -----\n", reqbk->virtio_desc_head);
 
         bool resp_success = false;
         if (sddf_ret_status == BLK_RESP_OK) {
             resp_success = true;
-            switch (virtio_req_header.type) {
+            switch (reqbk->virtio_req_type) {
             case VIRTIO_BLK_T_IN: {
-                uint32_t data_off = reqbk->sddf_data - reqbk->sddf_data_cell_base;
-                LOG_BLOCK("resp read sector %u, sddf block %u, body size %u, data off %u\n", virtio_req_header.sector,
-                          reqbk->sddf_block_number, reqbk->virtio_body_size_bytes, data_off);
-                assert(reqbk->sddf_data_cell_base + data_off == reqbk->sddf_data);
-
-                /* Going from read (header) to write (body) descriptor, there should be
-                 * a descriptor cut-off at the beginning. */
-                assert(curr_desc_bytes_read == 0);
-                uint32_t body_bytes_read = 0;
-                for (; body_bytes_read < reqbk->virtio_body_size_bytes; curr_desc = virtq->desc[curr_desc].next) {
-                    if (body_bytes_read + virtq->desc[curr_desc].len > reqbk->virtio_body_size_bytes) {
-                        void *src_addr = (void *)reqbk->sddf_data + body_bytes_read;
-                        uint32_t copy_sz = reqbk->virtio_body_size_bytes - body_bytes_read;
-                        if (virtio_copy_to_gpa(virtq->desc[curr_desc].addr,
-                                               0u, src_addr, copy_sz) != 0) {
-                            LOG_BLOCK_ERR("read payload GPA is outside guest RAM\n");
-                            return false;
-                        }
-                        body_bytes_read += reqbk->virtio_body_size_bytes - body_bytes_read;
-                        /* This is the final descriptor if we get into this condition, don't
-                        //  * go to next descriptor */
-                        LOG_BLOCK("virtq->desc[curr_desc].len: %d\n", virtq->desc[curr_desc].len);
-                        assert(!(virtq->desc[curr_desc].flags & VIRTQ_DESC_F_NEXT));
-                        break;
-                    } else {
-                        void *src_addr = (void *)reqbk->sddf_data + body_bytes_read;
-                        uint32_t copy_sz = virtq->desc[curr_desc].len;
-                        if (virtio_copy_to_gpa(virtq->desc[curr_desc].addr,
-                                               0u, src_addr, copy_sz) != 0) {
-                            LOG_BLOCK_ERR("read payload GPA is outside guest RAM\n");
-                            return false;
-                        }
-
-                        body_bytes_read += virtq->desc[curr_desc].len;
-                        /* Because there is still the footer, we are guaranteed next
-                         * descriptor exists */
-                        assert(virtq->desc[curr_desc].flags & VIRTQ_DESC_F_NEXT);
-                    }
-                }
+                /* Copy data into guest RAM */
+                assert(virtio_write_data_to_desc_chain(
+                    vq, reqbk->virtio_desc_head, request_bytes_to_body_bytes(reqbk->total_req_size),
+                    sizeof(struct virtio_blk_outhdr), (char *)(reqbk->sddf_data_cell_base + reqbk->sddf_data_offset)));
                 break;
             }
             case VIRTIO_BLK_T_OUT: {
-                if (reqbk->state == STATE_RMW_READING) {
-                    LOG_BLOCK("resp read-to-write sector %u, sddf block %u, body size %u, data off %u, sddf_cell_base "
-                              "0x%x, virtio desc %u\n",
-                              virtio_req_header.sector, reqbk->sddf_block_number, reqbk->virtio_body_size_bytes,
-                              reqbk->sddf_data - reqbk->sddf_data_cell_base, reqbk->sddf_data_cell_base, curr_desc);
+                if (reqbk->state == VIRTIO_BLK_REQ_STATE_RMW_READING) {
                     /* Handling read-modify-write procedure, copy virtio write data to the
                      * correct offset in the same sddf data region allocated to do the
                      * surrounding read.
                      */
-                    uint32_t body_bytes_read = 0;
-                    for (; body_bytes_read < reqbk->virtio_body_size_bytes; curr_desc = virtq->desc[curr_desc].next) {
-                        /* For write requests, the body is a read descriptor and the footer
-                         * is a write descriptor, there must be a descriptor cut-off at the
-                         * end
-                         */
-                        assert(body_bytes_read + virtq->desc[curr_desc].len <= reqbk->virtio_body_size_bytes);
-                        assert(virtq->desc[curr_desc].flags & VIRTQ_DESC_F_NEXT);
-                        if (curr_desc_bytes_read != 0) {
-                            void *dst_addr = (void *)reqbk->sddf_data + body_bytes_read;
-                            uint32_t copy_sz = virtq->desc[curr_desc].len - curr_desc_bytes_read;
-                            if (virtio_copy_from_gpa(virtq->desc[curr_desc].addr,
-                                                     curr_desc_bytes_read,
-                                                     dst_addr, copy_sz) != 0) {
-                                LOG_BLOCK_ERR("RMW payload GPA is outside guest RAM\n");
-                                return false;
-                            }
-                            body_bytes_read += virtq->desc[curr_desc].len - curr_desc_bytes_read;
-                            curr_desc_bytes_read = 0;
-                        } else {
-                            void *dst_addr = (void *)reqbk->sddf_data + body_bytes_read;
-                            uint32_t copy_sz = virtq->desc[curr_desc].len;
-                            if (virtio_copy_from_gpa(virtq->desc[curr_desc].addr,
-                                                     0u, dst_addr, copy_sz) != 0) {
-                                LOG_BLOCK_ERR("RMW payload GPA is outside guest RAM\n");
-                                return false;
-                            }
-                            body_bytes_read += virtq->desc[curr_desc].len;
-                        }
-                    }
+                    assert(virtio_read_data_from_desc_chain(
+                        vq, reqbk->virtio_desc_head, request_bytes_to_body_bytes(reqbk->total_req_size),
+                        sizeof(struct virtio_blk_outhdr),
+                        (char *)(reqbk->sddf_data_cell_base + reqbk->sddf_data_offset)));
 
-                    state->reqsbk[sddf_ret_id].state = STATE_RMW_WRITING;
+                    state->reqsbk[sddf_ret_id].state = VIRTIO_BLK_REQ_STATE_RMW_WRITING;
                     err = blk_enqueue_req(&state->queue_h, BLK_REQ_WRITE,
                                           reqbk->sddf_data_cell_base
                                               - ((struct virtio_blk_device *)dev->device_data)->data_region,
@@ -792,13 +810,7 @@ bool virtio_blk_handle_resp(struct virtio_blk_device *state)
                     read_write_modify_inflight = true;
                     /* The virtIO request is not complete yet so we don't tell the driver
                      * (just skip over to next request) */
-
                     continue;
-                } else {
-                    LOG_BLOCK(
-                        "resp write complete sector %u, sddf block %u, body size %u, data off %u, virtio desc %u\n",
-                        virtio_req_header.sector, reqbk->sddf_block_number, reqbk->virtio_body_size_bytes,
-                        reqbk->sddf_data - reqbk->sddf_data_cell_base, curr_desc);
                 }
                 break;
             }
@@ -807,20 +819,21 @@ bool virtio_blk_handle_resp(struct virtio_blk_device *state)
             default: {
                 LOG_BLOCK_ERR("Retrieving sDDF block response, but virtIO request type "
                               "is not recognised: %d\n",
-                              virtio_req_header.type);
+                              reqbk->virtio_req_type);
                 resp_success = false;
                 break;
             }
             }
 
-            if (reqbk->state == STATE_WRITING_ALIGNED || reqbk->state == STATE_RMW_WRITING) {
+            if (reqbk->state == VIRTIO_BLK_REQ_STATE_WRITING_ALIGNED
+                || reqbk->state == VIRTIO_BLK_REQ_STATE_RMW_WRITING) {
                 /* If we get here, we've just finished processing a normal or unaligned write. Now check
                    which request is queueing on the same sDDF block we touched and process it. */
                 for (int i = 0; i < SDDF_MAX_QUEUE_CAPACITY; i++) {
-                    if (state->reqsbk[i].valid && state->reqsbk[i].state == STATE_RMW_QUEUEING
+                    if (state->reqsbk[i].state == VIRTIO_BLK_REQ_STATE_RMW_QUEUEING
                         && do_requests_overlap(&(state->reqsbk[i]), reqbk)) {
 
-                        state->reqsbk[i].state = STATE_RMW_READING;
+                        state->reqsbk[i].state = VIRTIO_BLK_REQ_STATE_RMW_READING;
                         uintptr_t next_sddf_offset = state->reqsbk[i].sddf_data_cell_base
                                                    - ((struct virtio_blk_device *)dev->device_data)->data_region;
 
@@ -837,23 +850,27 @@ bool virtio_blk_handle_resp(struct virtio_blk_device *state)
         }
 
         if (resp_success) {
-            virtio_blk_set_req_success(dev, reqbk->virtio_desc_head);
+            virtio_blk_set_req_success(vq, reqbk);
         } else {
-            virtio_blk_set_req_fail(dev, reqbk->virtio_desc_head);
+            virtio_blk_set_req_fail(vq, reqbk);
         }
 
         /* Free corresponding bookkeeping structures regardless of the request's
          * success status.
          */
-        if (virtio_req_header.type == VIRTIO_BLK_T_IN || virtio_req_header.type == VIRTIO_BLK_T_OUT) {
-
-            LOG_BLOCK("freeing fs buff for sector %u\n", virtio_req_header.sector);
+        if (reqbk->virtio_req_type == VIRTIO_BLK_T_IN || reqbk->virtio_req_type == VIRTIO_BLK_T_OUT) {
             fsmalloc_free(&state->fsmalloc, reqbk->sddf_data_cell_base, reqbk->sddf_count);
         }
 
-        virtio_blk_used_buffer(dev, reqbk->virtio_desc_head);
+        uint32_t used_len = 1u;
+        if (resp_success && reqbk->virtio_req_type == VIRTIO_BLK_T_IN) {
+            used_len +=
+                (uint32_t)request_bytes_to_body_bytes(
+                    reqbk->total_req_size);
+        }
+        virtio_virtq_add_used(vq, reqbk->virtio_desc_head, used_len);
 
-        reqbk->valid = false;
+        reqbk->state = VIRTIO_BLK_REQ_STATE_INVALID;
         err = ialloc_free(&state->ialloc, sddf_ret_id);
         assert(!err);
 
@@ -901,8 +918,8 @@ static inline void virtio_blk_config_init(struct virtio_blk_device *blk_dev)
     /* Restrict the guest driver to only send 1x 4K segment per request at any given time.
     This is to prevent internal fragmentation within the data region, leading to a deadlock
     where we can't handle large requests when the free cells in the data region isn't contiguous. */
-    blk_dev->config.size_max = BLK_TRANSFER_SIZE;
-    blk_dev->config.seg_max = 1;
+    blk_dev->config.size_max = VIRTIO_BLK_SIZE_MAX;
+    blk_dev->config.seg_max = VIRTIO_BLK_SEG_MAX;
 
     blk_dev->config.topology.physical_block_exp =
         3; // 2^3 = 8 logical blocks in 1 physical block (sDDF transfer window)
@@ -912,12 +929,12 @@ static inline void virtio_blk_config_init(struct virtio_blk_device *blk_dev)
 }
 
 static virtio_device_funs_t functions = {
-    .device_reset = virtio_blk_mmio_reset,
-    .get_device_features = virtio_blk_mmio_get_device_features,
-    .set_driver_features = virtio_blk_mmio_set_driver_features,
-    .get_device_config = virtio_blk_mmio_get_device_config,
-    .set_device_config = virtio_blk_mmio_set_device_config,
-    .queue_notify = virtio_blk_mmio_queue_notify,
+    .device_reset = virtio_blk_reset,
+    .get_device_features = virtio_blk_get_device_features,
+    .set_driver_features = virtio_blk_set_driver_features,
+    .get_device_config = virtio_blk_get_device_config,
+    .set_device_config = virtio_blk_set_device_config,
+    .queue_notify = virtio_blk_queue_notify,
 };
 
 static struct virtio_device *virtio_blk_init(struct virtio_blk_device *blk_dev, virtio_transport_type_t type,

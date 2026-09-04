@@ -414,6 +414,8 @@ $(BUILD_DIR)/freebsd_vmm.o: $(KERNEL_SRC_DIR)/src/freebsd_vmm.c $(VMM_CONFIG_STA
 # ─── Link freebsd_vmm.elf ────────────────────────────────────────────────
 $(BUILD_DIR)/freebsd_vmm.elf: $(BUILD_DIR)/freebsd_vmm.o \
                                $(BUILD_DIR)/freebsd_images.o \
+                               $(NET_VIRT_PUMP_OBJ) \
+                               $(VMM_VIRTIO_NET_OBJ) \
                                $(GPA_TRANSLATE_OBJ) \
                                $(VMM_GUEST_RAM_OBJ) \
                                $(BLK_VIRT_PUMP_OBJ) \
@@ -424,6 +426,7 @@ $(BUILD_DIR)/freebsd_vmm.elf: $(BUILD_DIR)/freebsd_vmm.o \
 	ld.lld -T$(KERNEL_SRC_DIR)/freebsd_vmm.ld \
 		-L$(BOARD_DIR)/lib \
 		$(BUILD_DIR)/freebsd_vmm.o $(BUILD_DIR)/freebsd_images.o \
+		$(NET_VIRT_PUMP_OBJ) $(VMM_VIRTIO_NET_OBJ) \
 		$(GPA_TRANSLATE_OBJ) $(VMM_GUEST_RAM_OBJ) \
 		$(BLK_VIRT_PUMP_OBJ) $(VMM_VIRTIO_BLK_OBJ) \
 		--start-group \

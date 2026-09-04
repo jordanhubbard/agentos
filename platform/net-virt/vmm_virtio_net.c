@@ -4,7 +4,7 @@
  * net_pd alone owns the page-isolated QEMU bus.16 transport and its DMA.
  */
 
-#if defined(AGENTOS_GUEST_UBUNTU)
+#if defined(AGENTOS_GUEST_UBUNTU) || defined(AGENTOS_GUEST_FREEBSD)
 #include <contracts/net-service/interface.h>
 #include "sel4_ipc.h"
 #include "system_desc.h"
@@ -24,6 +24,9 @@ _Static_assert(AOS_NET_BUFFER_SIZE == NET_BUFFER_SIZE,
                "platform net buffer size must match sDDF NET_BUFFER_SIZE");
 _Static_assert(sizeof(aos_net_buff_desc_t) == sizeof(net_buff_desc_t),
                "aos_net_buff_desc_t must match sDDF net_buff_desc_t");
+_Static_assert(AOS_NET_GUEST_CLIENTS * AOS_NET_CLIENT_STRIDE <=
+               AOS_NET_SHMEM_SIZE / 2u,
+               "guest net queues must not overlap net-service slots");
 
 static struct virtio_net_device g_aos_net;
 static aos_net_virt_t           g_aos_virt;
@@ -33,7 +36,7 @@ static int                      g_aos_net_ready;
 static int                      g_aos_net_probed;
 static int                      g_aos_net_driver_ok;
 static int                      g_aos_net_pumped;
-#if defined(AGENTOS_GUEST_UBUNTU)
+#if defined(AGENTOS_GUEST_UBUNTU) || defined(AGENTOS_GUEST_FREEBSD)
 static uint32_t                 g_net_pd_handle;
 static uint32_t                 g_net_pd_slot;
 static int                      g_net_pd_ready;
@@ -69,11 +72,11 @@ static int net_pd_call(uint32_t opcode, uint32_t arg0, uint32_t arg1,
            net_rd32(rep->data, 0u) == NET_SVC_RAW_OK;
 }
 
-static void net_pd_bridge_init(void)
+static void net_pd_bridge_init(uint32_t client_id)
 {
     sel4_msg_t rep = {0};
 
-    if (!net_pd_call(NET_SVC_OP_RAW_OPEN, 0u, 0u, &rep) ||
+    if (!net_pd_call(NET_SVC_OP_RAW_OPEN, client_id, 0u, &rep) ||
         rep.length < 18u) {
         LOG_VMM_ERR("emulated virtio-net: net_pd OPEN failed rc=%u\n",
                     (unsigned)rep.opcode);
@@ -188,7 +191,7 @@ static uint32_t net_pd_bridge_rx(void)
 
 void aos_vmm_virtio_net_rx_ready(void)
 {
-#if defined(AGENTOS_GUEST_UBUNTU)
+#if defined(AGENTOS_GUEST_UBUNTU) || defined(AGENTOS_GUEST_FREEBSD)
     if (!g_aos_net_ready || !g_net_pd_ready) {
         return;
     }
@@ -202,14 +205,19 @@ void aos_vmm_virtio_net_rx_ready(void)
 #endif
 }
 
-void aos_vmm_virtio_net_init(void)
+void aos_vmm_virtio_net_init(uint32_t client_id)
 {
     uint8_t *region = (uint8_t *)AOS_NET_SHMEM_VA;
     aos_net_virt_client_t client;
     uint8_t mac[VIRTIO_NET_CONFIG_MAC_SZ];
 
+    if (client_id >= AOS_NET_GUEST_CLIENTS) {
+        LOG_VMM_ERR("emulated virtio-net: invalid client %u\n",
+                    (unsigned)client_id);
+        return;
+    }
     aos_net_virt_reset(&g_aos_virt);
-    aos_net_client_bind(region, 0u, &client);
+    aos_net_client_bind(region, client_id, &client);
     aos_net_client_init_buffers(&client);
     if (aos_net_virt_add_client(&g_aos_virt, &client) != 0) {
         LOG_VMM_ERR("emulated virtio-net: add client failed\n");
@@ -229,8 +237,8 @@ void aos_vmm_virtio_net_init(void)
      */
     client.tx_active->consumer_signalled = 1u;
 
-#if defined(AGENTOS_GUEST_UBUNTU)
-    net_pd_bridge_init();
+#if defined(AGENTOS_GUEST_UBUNTU) || defined(AGENTOS_GUEST_FREEBSD)
+    net_pd_bridge_init(client_id);
 #endif
 
     mac[0] = AOS_VIRTIO_NET_MAC0;
@@ -238,7 +246,7 @@ void aos_vmm_virtio_net_init(void)
     mac[2] = AOS_VIRTIO_NET_MAC2;
     mac[3] = AOS_VIRTIO_NET_MAC3;
     mac[4] = AOS_VIRTIO_NET_MAC4;
-    mac[5] = AOS_VIRTIO_NET_MAC5;
+    mac[5] = (uint8_t)(AOS_VIRTIO_NET_MAC5 + client_id);
 
     if (!virtio_mmio_net_init(&g_aos_net,
                               AOS_VIRTIO_NET_GUEST_IPA,
@@ -282,10 +290,10 @@ void aos_vmm_virtio_net_after_fault(void)
                 (unsigned)AOS_VIRTIO_NET_MAC2,
                 (unsigned)AOS_VIRTIO_NET_MAC3,
                 (unsigned)AOS_VIRTIO_NET_MAC4,
-                (unsigned)AOS_VIRTIO_NET_MAC5);
+                (unsigned)g_aos_net.config.mac[5]);
     }
 
-#if defined(AGENTOS_GUEST_UBUNTU)
+#if defined(AGENTOS_GUEST_UBUNTU) || defined(AGENTOS_GUEST_FREEBSD)
     n = 0u;
     if (g_net_pd_ready) {
         n += net_pd_bridge_tx();

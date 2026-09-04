@@ -860,6 +860,7 @@ static uint32_t handle_net_open(sel4_badge_t badge __attribute__((unused)),
     for (uint32_t i = 0u; i < 6u; i++) {
         c->mac[i] = iface_mac[i];
     }
+    c->mac[5] = (uint8_t)(c->mac[5] + (uint8_t)iface_id);
 
     init_ring((uint32_t)slot, (uint32_t)handle);
     active_clients++;
@@ -1639,7 +1640,13 @@ static void net_pd_notify_vmm_rx(void)
 {
     seL4_MessageInfo_t event =
         seL4_MessageInfo_new(NET_SVC_EVENT_RX_READY, 0u, 0u, 0u);
-    seL4_Send((seL4_CPtr)PD_CNODE_SLOT_LINUX_VMM_EP, event);
+#if defined(AGENTOS_GUEST_UBUNTU)
+    seL4_NBSend((seL4_CPtr)PD_CNODE_SLOT_LINUX_VMM_EP, event);
+#endif
+#if defined(AGENTOS_GUEST_FREEBSD)
+    seL4_NBSend((seL4_CPtr)PD_CNODE_SLOT_FREEBSD_VMM_EP, event);
+#endif
+    (void)event;
 }
 
 static void net_pd_handle_host_irq(void)

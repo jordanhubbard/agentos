@@ -309,27 +309,32 @@ const system_desc_t system_desc_aarch64 = {
             .cnode_size_bits = 10u,
             .priority       = 207u,
             .self_svc_id    = SVC_ID_NET_PD,
-            .init_ep_count  =
+            .init_ep_count  = 2u
 #if defined(AGENTOS_GUEST_UBUNTU)
-                              3u,
-#else
-                              2u,
+                              + 1u
 #endif
+#if defined(AGENTOS_GUEST_FREEBSD)
+                              + 1u
+#endif
+                              ,
             .init_eps = {
                 { SVC_ID_NAMESERVER, PD_CNODE_SLOT_NAMESERVER_EP },
                 { SVC_ID_LOG_DRAIN,  PD_CNODE_SLOT_LOG_DRAIN_EP  },
 #if defined(AGENTOS_GUEST_UBUNTU)
                 { SVC_ID_LINUX_VMM,  PD_CNODE_SLOT_LINUX_VMM_EP },
 #endif
+#if defined(AGENTOS_GUEST_FREEBSD)
+                { SVC_ID_FREEBSD_VMM, PD_CNODE_SLOT_FREEBSD_VMM_EP },
+#endif
             },
             .irq_count =
-#if defined(AGENTOS_GUEST_UBUNTU)
+#if defined(AGENTOS_GUEST_UBUNTU) || defined(AGENTOS_GUEST_FREEBSD)
                               1u,
 #else
                               0u,
 #endif
             .irqs = {
-#if defined(AGENTOS_GUEST_UBUNTU)
+#if defined(AGENTOS_GUEST_UBUNTU) || defined(AGENTOS_GUEST_FREEBSD)
                 { .irq_number = 64u, .ntfn_badge = 0x80000000u,
                   .name = "host-net-bus16" },
 #endif
@@ -385,11 +390,12 @@ const system_desc_t system_desc_aarch64 = {
             .cnode_size_bits = 10u,
             .priority       = 250u,
             .self_svc_id    = SVC_ID_FREEBSD_VMM,
-            .init_ep_count  = 4u,
+            .init_ep_count  = 5u,
             .init_eps = {
                 { SVC_ID_NAMESERVER, PD_CNODE_SLOT_NAMESERVER_EP },
                 { SVC_ID_LOG_DRAIN,  PD_CNODE_SLOT_LOG_DRAIN_EP  },
                 { SVC_ID_VIRTIO_BLK, 12u },
+                { SVC_ID_NET_PD,     PD_CNODE_SLOT_NET_PD_EP },
                 { SVC_ID_SERIAL,     PD_CNODE_SLOT_SERIAL_EP     },
             },
             .irq_count = 0u,
@@ -463,11 +469,12 @@ const system_desc_t system_desc_aarch64 = {
             .cnode_size_bits = 10u,
             .priority       = 250u,
             .self_svc_id    = SVC_ID_FREEBSD_VMM,
-            .init_ep_count  = 4u,
+            .init_ep_count  = 5u,
             .init_eps = {
                 { SVC_ID_NAMESERVER, PD_CNODE_SLOT_NAMESERVER_EP },
                 { SVC_ID_LOG_DRAIN,  PD_CNODE_SLOT_LOG_DRAIN_EP  },
                 { SVC_ID_VIRTIO_BLK, 12u },
+                { SVC_ID_NET_PD,     PD_CNODE_SLOT_NET_PD_EP },
                 { SVC_ID_SERIAL,     PD_CNODE_SLOT_SERIAL_EP     },
             },
             .irq_count = 0u,

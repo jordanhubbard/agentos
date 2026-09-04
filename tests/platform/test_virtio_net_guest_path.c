@@ -191,6 +191,25 @@ static int test_vmm_fault_path(void)
                   "linux_vmm: init + fault_handle then after_fault for IPA 0x0A010000");
 }
 
+static int test_freebsd_vmm_fault_path(void)
+{
+    int init_ok = src_contains("kernel/agentos-root-task/src/freebsd_vmm.c",
+                               "aos_vmm_virtio_net_init(1u)");
+    int after = src_contains_in_order(
+        "kernel/agentos-root-task/src/freebsd_vmm.c",
+        "fault_handle(vcpu_id, msginfo)",
+        "aos_vmm_virtio_net_after_fault()");
+    int rx_event = src_contains(
+        "kernel/agentos-root-task/src/freebsd_vmm.c",
+        "label == NET_SVC_EVENT_RX_READY");
+    int shared = src_contains_in_order(
+        "kernel/agentos-root-task/src/main.c",
+        "name_eq(pd->name, \"linux_vmm\")",
+        "name_eq(pd->name, \"freebsd_vmm\")");
+    return tap_ok(init_ok && after && rx_event && shared,
+                  "FreeBSD VMM uses isolated client 1 through shared net_pd");
+}
+
 static int test_qemu_page_unmapped(void)
 {
     int page = src_contains("kernel/agentos-root-task/src/main.c",
@@ -573,6 +592,9 @@ int main(void)
     (void)test_dtb("libvmm/examples/simple/board/qemu_virt_aarch64/ubuntu-overlay.dts",
                    "DTB ubuntu-overlay.dts has virtio_mmio@a010000");
     (void)test_vmm_fault_path();
+    (void)test_dtb("kernel/agentos-root-task/freebsd-direct.dts",
+                   "DTB FreeBSD has agentOS virtio_mmio@a010000");
+    (void)test_freebsd_vmm_fault_path();
     (void)tap_ok(src_contains("kernel/agentos-root-task/vmm_wrapper_template.mk",
                               "-D__thread="),
                  "libvmm.a CFLAGS suppress TLS so IPC buffer matches linux_vmm");
@@ -585,8 +607,8 @@ int main(void)
     (void)tap_ok(src_contains("kernel/agentos-root-task/vmm_wrapper_template.mk",
                               "filter-out -fsanitize=undefined"),
                  "libvmm.a is not built with UBSan trap-to-brk");
-    (void)tap_ok(src_contains("libvmm/src/virtio/block.c",
-                              "virtq->avail == NULL"),
+    (void)tap_ok(src_contains("platform/blk-virt/vmm_virtio_blk.c",
+                              "vq->virtq.avail == NULL"),
                  "virtio-blk skips avail->idx until the guest programs the virtq");
     (void)tap_ok(src_contains("platform/net-virt/vmm_virtio_net.c",
                               "guest DRIVER_OK virq %u MAC"),

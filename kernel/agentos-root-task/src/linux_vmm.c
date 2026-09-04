@@ -1416,7 +1416,7 @@ void init(void)
      * physical addresses to this PD's independently allocated host mapping.
      */
     aos_vmm_guest_ram_bind(LINUX_GUEST_RAM_VADDR, guest_ram_vaddr, GUEST_RAM_SIZE);
-    aos_vmm_virtio_net_init();
+    aos_vmm_virtio_net_init(0u);
 
     /* Emulated virtio-blk at IPA 0x0A020000 (faults here, sDDF pump). */
     aos_vmm_virtio_blk_init(AOS_HOST_BLK_MEDIA_UBUNTU);

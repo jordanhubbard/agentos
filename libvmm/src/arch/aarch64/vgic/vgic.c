@@ -24,11 +24,23 @@
 /* The driver expects the VGIC state to be initialised before calling any of the driver functionality. */
 extern vgic_t vgic;
 
-__attribute__((weak)) bool agentos_vgic_maintenance_reinject(size_t vcpu_id, int irq)
+#define PPI_VTIMER_IRQ 27
+
+static bool vgic_maintenance_reinject(size_t vcpu_id, int irq)
 {
-    (void)vcpu_id;
-    (void)irq;
-    return false;
+    if (irq != PPI_VTIMER_IRQ) {
+        return false;
+    }
+
+    /*
+     * CNTV is level-triggered. FreeBSD EOIs the vGIC before advancing CVAL,
+     * so the timer can still be enabled and asserted here. Keep it in an LR
+     * and leave the physical VPPI masked until a subsequent EOI observes the
+     * level deasserted; otherwise that timer edge is lost at idle WFI.
+     */
+    seL4_Word ctl =
+        vmm_vcpu_arm_read_reg(vcpu_id, seL4_VCPUReg_CNTV_CTL);
+    return (ctl & 0x5u) == 0x5u;
 }
 
 bool vgic_handle_fault_maintenance(size_t vcpu_id)
@@ -87,7 +99,7 @@ bool vgic_handle_fault_maintenance(size_t vcpu_id)
     /* Clear pending */
     LOG_IRQ("Maintenance IRQ %d\n", lr_virq.virq);
     set_pending(&vgic, lr_virq.virq, false, vcpu_id);
-    bool reinject = agentos_vgic_maintenance_reinject(vcpu_id, lr_virq.virq);
+    bool reinject = vgic_maintenance_reinject(vcpu_id, lr_virq.virq);
 #if defined(GIC_V2)
     int group = 0;
 #elif defined(GIC_V3)
