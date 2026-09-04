@@ -38,7 +38,19 @@
 #include <stdint.h>
 
 /* ── Interface version ──────────────────────────────────────────────────── */
-#define BLK_SVC_INTERFACE_VERSION       1
+#define BLK_SVC_INTERFACE_VERSION       2
+
+/*
+ * Canonical media identifiers.
+ *
+ * A caller must select one of these media IDs in every request.  The ID is
+ * resolved by block-service; callers never receive a host transport
+ * capability.  Separate IDs have independent VirtIO queues and DMA windows,
+ * so simultaneous guest reads cannot change another guest's backing media.
+ */
+#define BLK_SVC_MEDIA_UBUNTU_INSTALL    0u
+#define BLK_SVC_MEDIA_FREEBSD_INSTALL   1u
+#define BLK_SVC_MEDIA_COUNT             2u
 
 /* ── Geometry constants ─────────────────────────────────────────────────── */
 #define BLK_SVC_SECTOR_SIZE             512u        /* bytes per sector (virtio-blk standard) */
@@ -59,6 +71,7 @@
  *   MR1 = sector_lo    — low 32 bits of starting sector number
  *   MR2 = sector_hi    — high 32 bits
  *   MR3 = count        — number of sectors (max BLK_SVC_MAX_SECTORS_PER_OP)
+ *   MR4 = media_id     — BLK_SVC_MEDIA_*
  * Reply:
  *   MR0 = status
  *   MR1 = sectors_read — actual sectors transferred (may be < count on error)
@@ -75,6 +88,7 @@
  *   MR1 = sector_lo    — low 32 bits of starting sector number
  *   MR2 = sector_hi    — high 32 bits
  *   MR3 = count        — number of sectors
+ *   MR4 = media_id     — BLK_SVC_MEDIA_*
  * Reply:
  *   MR0 = status
  *   MR1 = sectors_written
@@ -88,7 +102,8 @@
  * Only meaningful when VIRTIO_BLK_F_FLUSH was negotiated.  If the device
  * has no volatile cache this is a harmless no-op.
  *
- * Request: (none beyond MR0)
+ * Request:
+ *   MR1 = media_id     — BLK_SVC_MEDIA_*
  * Reply:
  *   MR0 = status
  */
@@ -98,7 +113,8 @@
  * BLK_SVC_OP_GET_GEOMETRY (0xF3)
  * Query device capacity and block parameters.
  *
- * Request: (none beyond MR0)
+ * Request:
+ *   MR1 = media_id     — BLK_SVC_MEDIA_*
  * Reply:
  *   MR0 = status
  *   MR1 = capacity_lo  — low 32 bits of total 512-byte sector count
@@ -125,6 +141,7 @@
  *   MR1 = sector_lo    — low 32 bits of starting sector
  *   MR2 = sector_hi    — high 32 bits
  *   MR3 = count        — number of sectors to discard
+ *   MR4 = media_id     — BLK_SVC_MEDIA_*
  * Reply:
  *   MR0 = status
  */
@@ -134,7 +151,8 @@
  * BLK_SVC_OP_HEALTH (0xF5)
  * Query driver health counters for monitoring and diagnostics.
  *
- * Request: (none)
+ * Request:
+ *   MR1 = media_id     — BLK_SVC_MEDIA_*
  * Reply:
  *   MR0 = status
  *   MR1 = initialized  — 1 if device is ready, 0 if not
@@ -160,6 +178,7 @@ typedef struct __attribute__((packed)) {
     uint32_t sector_lo;   /* starting sector (low 32 bits) */
     uint32_t sector_hi;   /* starting sector (high 32 bits) */
     uint32_t count;       /* sector count or discard count */
+    uint32_t media_id;    /* BLK_SVC_MEDIA_* */
 } blk_svc_req_t;
 
 typedef struct __attribute__((packed)) {

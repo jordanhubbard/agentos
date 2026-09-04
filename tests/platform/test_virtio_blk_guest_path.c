@@ -19,6 +19,7 @@
 
 #include <platform/blk_layout.h>
 #include <platform/net_layout.h>
+#include "../../contracts/block-service/interface.h"
 
 #ifndef AOS_REPO_ROOT
 #define AOS_REPO_ROOT "./"
@@ -154,12 +155,23 @@ static int test_abi(void)
     return tap_ok(ok, "abi IPA 0x0A020000 IRQ 52 (SPI 20) outside QEMU page");
 }
 
+static int test_block_service_media_contract(void)
+{
+    int ok = BLK_SVC_INTERFACE_VERSION == 2u
+          && BLK_SVC_MEDIA_UBUNTU_INSTALL == 0u
+          && BLK_SVC_MEDIA_FREEBSD_INSTALL == 1u
+          && BLK_SVC_MEDIA_COUNT == 2u
+          && sizeof(blk_svc_req_t) == 20u;
+    return tap_ok(ok, "block-service v2 selects independent canonical media");
+}
+
 int main(void)
 {
     printf("TAP version 14\n");
     printf("# suite: virtio_blk_guest_path (host pre-filter, not guest-boot proof)\n");
 
     (void)test_abi();
+    (void)test_block_service_media_contract();
     (void)tap_ok(dts_emulated_blk_ok(
                      "libvmm/examples/simple/board/qemu_virt_aarch64/overlay.dts"),
                  "DTB buildroot overlay.dts has virtio_mmio@a020000");
@@ -239,6 +251,42 @@ int main(void)
                  src_contains("kernel/agentos-root-task/src/main.c",
                               "CC_PD_VIRTIO_VA"),
                  "all Linux guest VSpaces exclude the QEMU passthrough page");
+    (void)tap_ok(dts_emulated_blk_ok(
+                     "kernel/agentos-root-task/freebsd-direct.dts") &&
+                 !src_contains("kernel/agentos-root-task/freebsd-direct.dts",
+                               "virtio_mmio@a003e00"),
+                 "FreeBSD DTB advertises agentOS emulated block only");
+    (void)tap_ok(src_contains("kernel/agentos-root-task/src/freebsd_vmm.c",
+                              "aos_vmm_guest_ram_bind") &&
+                 src_contains("kernel/agentos-root-task/src/freebsd_vmm.c",
+                              "aos_vmm_virtio_blk_init") &&
+                 src_contains_in_order(
+                     "kernel/agentos-root-task/src/freebsd_vmm.c",
+                     "fault_handle(vcpu_id, msginfo)",
+                     "aos_vmm_virtio_blk_after_fault()"),
+                 "FreeBSD VMM binds translated RAM and pumps emulated block");
+    (void)tap_ok(!src_contains("kernel/agentos-root-task/src/main.c",
+                               "map_vmm_guest_ram_identity") &&
+                 !src_contains("kernel/agentos-root-task/src/main.c",
+                               "FreeBSD virtio bus31 map err"),
+                 "FreeBSD VSpace has neither identity RAM nor host bus.31 mapping");
+    (void)tap_ok(src_contains("kernel/agentos-root-task/src/system_desc_aarch64.c",
+                              "{ SVC_ID_VIRTIO_BLK, 12u }") &&
+                 !src_contains("kernel/agentos-root-task/src/system_desc_aarch64.c",
+                               "{ .irq_number = 79u"),
+                 "FreeBSD receives canonical block endpoint and no host block IRQ");
+    (void)tap_ok(src_contains("platform/include/platform/blk_host_layout.h",
+                              "AGENTOS_BLK_MEDIA_STRIDE") &&
+                 src_contains("platform/blk-virt/vmm_virtio_blk.c",
+                              "AOS_VMM_BLK_MEDIA_ID") &&
+                 src_contains("kernel/agentos-root-task/src/virtio_blk.c",
+                              "BLK_MEDIA_FREEBSD_INSTALL"),
+                 "canonical driver separates Ubuntu and FreeBSD queues and DMA");
+    (void)tap_ok(src_contains("kernel/agentos-root-task/src/freebsd_vmm.c",
+                              "MSG_GUEST_CONSOLE_DRAIN") &&
+                 src_contains("xtask/src/cmd_test.rs",
+                              "wait_for_dual_guest_consoles_via_cc"),
+                 "FreeBSD emulated console is observable through dual CC proof");
 
     printf("1..%d\n", g_testno);
     if (g_failed) {

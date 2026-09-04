@@ -9,13 +9,12 @@
  * Channel: VIRTIO_BLK_CH_CONTROLLER (0) — controller PPCs into virtio_blk.
  *
  * Shared memory:
- *   blk_dma_shmem (32KB) — data buffer shared between virtio_blk and
- *   callers.  On OP_BLK_READ the driver writes block data here after the
- *   call completes.  On OP_BLK_WRITE the caller must populate this region
- *   before calling.  This region is also shared with vfs_server for
- *   back-to-back block-layer access without a copy.
+ *   Each media has a private 32KB DMA window inside blk_dma_shmem. On
+ *   OP_BLK_READ the driver writes block data to the selected media window.
+ *   On OP_BLK_WRITE the caller must populate that media's window first.
  *
  * Invariants:
+ *   - media_id selects one canonical block-service medium.
  *   - block_lo / block_hi are the low and high 32-bit halves of the 64-bit
  *     logical block address (LBA).
  *   - count is the number of 512-byte sectors to transfer; must not exceed
@@ -34,6 +33,11 @@
 /* ─── Channel IDs ────────────────────────────────────────────────────────── */
 #define VIRTIO_BLK_CH_CONTROLLER   0u   /* controller → virtio_blk (from virtio_blk's perspective) */
 
+#define VIRTIO_BLK_CONTRACT_VERSION 2u
+#define BLK_MEDIA_UBUNTU_INSTALL    0u
+#define BLK_MEDIA_FREEBSD_INSTALL   1u
+#define BLK_MEDIA_COUNT             2u
+
 /* ─── Opcodes (placed in MR0) ────────────────────────────────────────────── */
 #define OP_BLK_READ    0x01u  /* read sectors from device into blk_dma_shmem */
 #define OP_BLK_WRITE   0x02u  /* write sectors from blk_dma_shmem to device */
@@ -44,17 +48,18 @@
 /* ─── Request structs ────────────────────────────────────────────────────── */
 
 /* OP_BLK_READ
- * MR0=op, MR1=block_lo, MR2=block_hi, MR3=count
+ * MR0=op, MR1=block_lo, MR2=block_hi, MR3=count, MR4=media_id
  */
 struct __attribute__((packed)) virtio_blk_req_read {
     uint32_t op;        /* OP_BLK_READ */
     uint32_t block_lo;  /* low 32 bits of LBA */
     uint32_t block_hi;  /* high 32 bits of LBA */
     uint32_t count;     /* sector count (512-byte sectors) */
+    uint32_t media_id;  /* BLK_MEDIA_* */
 };
 
 /* OP_BLK_WRITE
- * MR0=op, MR1=block_lo, MR2=block_hi, MR3=count
+ * MR0=op, MR1=block_lo, MR2=block_hi, MR3=count, MR4=media_id
  * (data placed in blk_dma_shmem before the call)
  */
 struct __attribute__((packed)) virtio_blk_req_write {
@@ -62,6 +67,7 @@ struct __attribute__((packed)) virtio_blk_req_write {
     uint32_t block_lo;
     uint32_t block_hi;
     uint32_t count;
+    uint32_t media_id;
 };
 
 /* OP_BLK_FLUSH
@@ -69,6 +75,7 @@ struct __attribute__((packed)) virtio_blk_req_write {
  */
 struct __attribute__((packed)) virtio_blk_req_flush {
     uint32_t op;
+    uint32_t media_id;
 };
 
 /* OP_BLK_INFO
@@ -76,6 +83,7 @@ struct __attribute__((packed)) virtio_blk_req_flush {
  */
 struct __attribute__((packed)) virtio_blk_req_info {
     uint32_t op;
+    uint32_t media_id;
 };
 
 /* OP_BLK_HEALTH
@@ -83,6 +91,7 @@ struct __attribute__((packed)) virtio_blk_req_info {
  */
 struct __attribute__((packed)) virtio_blk_req_health {
     uint32_t op;
+    uint32_t media_id;
 };
 
 /* ─── Reply structs ──────────────────────────────────────────────────────── */
