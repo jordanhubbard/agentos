@@ -445,9 +445,9 @@ static void dbg_hex(seL4_Word v);
  * boot_setup_irqs — bind hardware IRQ handler caps into a PD's CNode.
  *
  * Called once per PD after its CNode and TCB are created.  For each entry in
- * pd->irqs[], the root task calls seL4_IRQControl_Get to obtain an IRQ handler
- * capability from the kernel and places it into the PD's CNode at slot
- * (PD_IRQHANDLER_SLOT_BASE + i).
+ * pd->irqs[], the root task calls seL4_IRQControl_Get, binds the handler to
+ * the PD notification, and moves the cap into the PD's CNode at slot
+ * (PD_IRQHANDLER_SLOT_BASE + i).  No root handler-cap alias is retained.
  *
  * The PD then references these caps by their known slot offsets:
  *   seL4_CPtr irq_cap = PD_IRQHANDLER_SLOT_BASE + i;
@@ -491,26 +491,12 @@ static void boot_setup_irqs(const pd_desc_t *pd,
             continue;
         }
 
-        err = seL4_CNode_Copy(pd_cnode,
-                              dest_slot,
-                              (uint8_t)pd_cnode_depth,
-                              seL4_CapInitThreadCNode,
-                              root_irq_slot,
-                              64u,
-                              seL4_AllRights);
-        if (err != seL4_NoError) {
-            dbg_puts("[rt] WARN: IRQ cap copy failed irq=");
-            dbg_hex((seL4_Word)d->irq_number);
-            dbg_puts(" err=");
-            dbg_hex((seL4_Word)err);
-            dbg_puts("\n");
-            continue;
-        }
-
         if (notification_cap != seL4_CapNull) {
             seL4_Word badged_ntfn_slot = ut_alloc_slot();
             if (badged_ntfn_slot == seL4_CapNull) {
                 dbg_puts("[rt] WARN: no slot for badged IRQ notification\n");
+                (void)seL4_CNode_Delete(seL4_CapInitThreadCNode,
+                                        root_irq_slot, 64u);
                 continue;
             }
 
@@ -528,6 +514,8 @@ static void boot_setup_irqs(const pd_desc_t *pd,
                 dbg_puts(" err=");
                 dbg_hex((seL4_Word)err);
                 dbg_puts("\n");
+                (void)seL4_CNode_Delete(seL4_CapInitThreadCNode,
+                                        root_irq_slot, 64u);
                 continue;
             }
 
@@ -539,8 +527,32 @@ static void boot_setup_irqs(const pd_desc_t *pd,
                 dbg_puts(" err=");
                 dbg_hex((seL4_Word)err);
                 dbg_puts("\n");
+                (void)seL4_CNode_Delete(seL4_CapInitThreadCNode,
+                                        root_irq_slot, 64u);
                 continue;
             }
+        }
+
+        /*
+         * Transfer rather than copy the handler capability.  IRQControl is
+         * retained by the root task as initial authority, but the resulting
+         * IRQ handler cap exists only in the designated driver/VMM CSpace.
+         */
+        err = seL4_CNode_Move(pd_cnode,
+                              dest_slot,
+                              (uint8_t)pd_cnode_depth,
+                              seL4_CapInitThreadCNode,
+                              root_irq_slot,
+                              64u);
+        if (err != seL4_NoError) {
+            dbg_puts("[rt] WARN: IRQ cap move failed irq=");
+            dbg_hex((seL4_Word)d->irq_number);
+            dbg_puts(" err=");
+            dbg_hex((seL4_Word)err);
+            dbg_puts("\n");
+            (void)seL4_CNode_Delete(seL4_CapInitThreadCNode,
+                                    root_irq_slot, 64u);
+            continue;
         }
 
         /*
@@ -560,7 +572,7 @@ static void boot_setup_irqs(const pd_desc_t *pd,
  * Before init: dbg_puts falls back to sel4_dbg_puts (no-op on release kernel).
  */
 #define AGENTOS_UART_PA  0x09000000UL  /* PL011 UART0 physical address on QEMU virt */
-#define AGENTOS_UART_VA  0x10001000UL  /* VA in root + controller VSpaces           */
+#define AGENTOS_UART_VA  0x10001000UL  /* root bootstrap, then serial_pd driver VA   */
 
 /* QEMU virt GICv2 virtual CPU interface.
  *
@@ -590,12 +602,14 @@ static void boot_setup_irqs(const pd_desc_t *pd,
  * virtio-mmio-bus.2 = PA 0x0A000400, inside the first virtio-mmio page (PA 0x0A000000). */
 #define CC_PD_VIRTIO_VA       0x10002000UL  /* VA in cc_pd's VSpace for this device page */
 #define CC_PD_STARTUP_VA      0x10003000UL  /* VA in cc_pd's VSpace for startup record   */
-#define CC_PD_UART_DBG_VA     0x10004000UL  /* VA in cc_pd's VSpace for debug UART0      */
+#define SERIAL_SHMEM_VA       0x10005000UL  /* MSG_SERIAL_* transfer page in client PDs   */
 #define RT_VQ_SCRATCH_VA      0x60000000UL  /* Root-task scratch VA to write startup PAs */
 #define RT_BLK_SCRATCH_VA     0xA0000000UL  /* Above max embedded live-media PD bundle  */
 
-/* Frame cap in root task CNode; seL4_CNode_Copy'd per VSpace that needs output. */
+/* UART starts in the root CSpace for bounded bootstrap output, then is moved
+ * into serial_pd.  No root or non-driver copy survives that handoff. */
 static seL4_CPtr g_uart_frame_cap = seL4_CapNull;
+static seL4_CPtr g_serial_shmem_frame_cap = seL4_CapNull;
 static seL4_CPtr g_virtio_mmio_frame_cap = seL4_CapNull;
 static seL4_CPtr g_host_blk_mmio_frame_cap = seL4_CapNull;
 static seL4_CPtr g_blk_shared_frame_cap = seL4_CapNull;
@@ -1199,6 +1213,15 @@ void root_task_main(const seL4_BootInfo *bi)
 #endif
 
     {
+        seL4_Error serial_shmem_err = ut_alloc_cap(seL4_ARM_SmallPageObject,
+                                                   0u,
+                                                   &g_serial_shmem_frame_cap);
+        dbg_puts("[rt] serial transfer frame cap err=");
+        dbg_hex((seL4_Word)serial_shmem_err);
+        dbg_puts("\n");
+    }
+
+    {
         seL4_Error gic_err = ut_alloc_device_cap(GIC_VCPU_IF_PA,
                                                  &g_gic_vcpu_frame_cap);
         dbg_puts("[rt] GIC vCPU frame cap err=");
@@ -1580,11 +1603,47 @@ void root_task_main(const seL4_BootInfo *bi)
          * directly into the PD's CNode at the specified slot.              */
         for (uint8_t j = 0u; j < pd->device_frame_count; j++) {
             const device_frame_desc_t *df = &pd->device_frames[j];
-            seL4_Error df_err = ut_alloc_device_frame(
-                (seL4_Word)df->paddr,
-                pd_cnode,
-                (seL4_Word)df->cnode_slot
-            );
+            seL4_Error df_err;
+
+            /*
+             * The root task already retyped and mapped PL011 for bounded
+             * bootstrap output.  Transfer that exact cap to serial_pd:
+             * unmap it from root, map it in the driver VSpace, then move the
+             * cap into the driver's CSpace.  Retyping a second frame would
+             * leave an illicit root alias and fail once the 4K device untyped
+             * is exhausted.
+             */
+            if (name_eq(pd->name, "serial_pd") &&
+                df->paddr == AGENTOS_UART_PA &&
+                g_uart_frame_cap != seL4_CapNull) {
+                (void)seL4_ARCH_Page_Unmap(g_uart_frame_cap);
+                g_uart_dr = (volatile uint32_t *)0;
+                g_uart_fr = (volatile uint32_t *)0;
+
+                df_err = pd_vspace_map_device_frame(vspace,
+                                                     g_uart_frame_cap,
+                                                     AGENTOS_UART_VA);
+                seL4_Error move_err = seL4_CNode_Move(
+                    pd_cnode,
+                    (seL4_Word)df->cnode_slot,
+                    (seL4_Word)pd->cnode_size_bits,
+                    seL4_CapInitThreadCNode,
+                    (seL4_Word)g_uart_frame_cap,
+                    64u);
+                if (move_err != seL4_NoError) {
+                    (void)seL4_CNode_Delete(seL4_CapInitThreadCNode,
+                                            (seL4_Word)g_uart_frame_cap,
+                                            64u);
+                    df_err = move_err;
+                }
+                g_uart_frame_cap = seL4_CapNull;
+            } else {
+                df_err = ut_alloc_device_frame(
+                    (seL4_Word)df->paddr,
+                    pd_cnode,
+                    (seL4_Word)df->cnode_slot
+                );
+            }
             if (df_err != seL4_NoError) {
                 dbg_puts("[root] WARN: device frame retype failed: ");
                 dbg_puts(df->name);
@@ -1642,54 +1701,31 @@ void root_task_main(const seL4_BootInfo *bi)
             }
         }
 
-        /* ── 4g.4.6: Map UART MMIO into debug-printing PD VSpaces ─────────── */
-        /*
-         * The controller and current VMM PDs still use direct early debug
-         * output at AGENTOS_UART_VA.  We copy the root task's UART frame cap
-         * (already mapped in the root VSpace) to a fresh slot and map it into
-         * those VSpaces.  seL4_CNode_Copy clears capFMappedASID in the copy,
-         * allowing independent re-mapping.
-         *
-         * The IPC buffer mapping (pd_vspace_load_elf, 0x10000000) already
-         * installed the L1 page table covering [0x10000000, 0x11FFFFF], so
-         * the map call for 0x10001000 succeeds without any PT retries.
-         */
-        if (g_uart_frame_cap != seL4_CapNull &&
-            (name_eq(pd->name, "controller") ||
+        /* Map the contract transfer page, never the UART frame, into serial
+         * clients that emit boot diagnostics or console proof markers. */
+        if (g_serial_shmem_frame_cap != seL4_CapNull &&
+            (name_eq(pd->name, "serial_pd") ||
+             name_eq(pd->name, "log_drain") ||
+             name_eq(pd->name, "controller") ||
              name_eq(pd->name, "linux_vmm") ||
-             name_eq(pd->name, "freebsd_vmm"))) {
-            seL4_Word uart_copy = ut_alloc_slot();
-            dbg_puts("[rt] debug UART: pd=");
-            dbg_puts(pd->name);
-            dbg_puts(" uart_copy=");
-            dbg_hex(uart_copy);
-            dbg_puts(" g_uart_frame_cap=");
-            dbg_hex((seL4_Word)g_uart_frame_cap);
-            dbg_puts("\n");
-            if (uart_copy != seL4_CapNull) {
-                seL4_Error cp_err = seL4_CNode_Copy(
-                    seL4_CapInitThreadCNode, uart_copy,         64u,
-                    seL4_CapInitThreadCNode, g_uart_frame_cap,  64u,
+             name_eq(pd->name, "freebsd_vmm") ||
+             name_eq(pd->name, "cc_pd") ||
+             name_eq(pd->name, "test_runner"))) {
+            seL4_Word serial_copy = ut_alloc_slot();
+            seL4_Error serial_err = seL4_NotEnoughMemory;
+            if (serial_copy != seL4_CapNull) {
+                serial_err = seL4_CNode_Copy(
+                    seL4_CapInitThreadCNode, serial_copy, 64u,
+                    seL4_CapInitThreadCNode, g_serial_shmem_frame_cap, 64u,
                     seL4_AllRights);
-                dbg_puts("[rt] debug UART CNode_Copy err=");
-                dbg_hex((seL4_Word)cp_err);
-                dbg_puts("\n");
-                if (cp_err == seL4_NoError) {
-                    cp_err = pd_vspace_map_device_frame(vspace,
-                                                         (seL4_CPtr)uart_copy,
-                                                         AGENTOS_UART_VA);
-                    dbg_puts("[rt] debug UART map err=");
-                    dbg_hex((seL4_Word)cp_err);
-                    dbg_puts("\n");
+                if (serial_err == seL4_NoError) {
+                    serial_err = pd_vspace_map_device_frame(
+                        vspace, (seL4_CPtr)serial_copy, SERIAL_SHMEM_VA);
                 }
-                if (cp_err != seL4_NoError) {
-                    dbg_puts("[rt] WARN: debug UART map failed\n");
-                } else {
-                    dbg_puts("[rt] debug UART mapped OK\n");
-                }
-            } else {
-                dbg_puts("[rt] WARN: no slot for debug UART copy\n");
             }
+            dbg_puts("[rt] serial transfer page map err=");
+            dbg_hex((seL4_Word)serial_err);
+            dbg_puts("\n");
         }
 
         /* ── 4g.4.6b: Map GICv2 vCPU interface for VMM guests ───────────── */
@@ -1879,50 +1915,7 @@ void root_task_main(const seL4_BootInfo *bi)
                 }
             }
 
-            /* 4. UART0 debug access: copy frame cap + map at CC_PD_UART_DBG_VA
-             * so cc_pd can print to the seL4 debug console even without
-             * CONFIG_PRINTING (which is disabled in the release SDK). */
-            if (g_uart_frame_cap != seL4_CapNull) {
-                seL4_Word cc_uart_copy = ut_alloc_slot();
-                if (cc_uart_copy != seL4_CapNull) {
-                    seL4_Error ce = seL4_CNode_Copy(
-                        seL4_CapInitThreadCNode, cc_uart_copy,        64u,
-                        seL4_CapInitThreadCNode, g_uart_frame_cap,    64u,
-                        seL4_AllRights);
-                    if (ce == seL4_NoError) {
-                        ce = pd_vspace_map_device_frame(vspace,
-                                                        (seL4_CPtr)cc_uart_copy,
-                                                        CC_PD_UART_DBG_VA);
-                    }
-                    dbg_puts("[rt] cc_pd UART map err=");
-                    dbg_hex((seL4_Word)ce);
-                    dbg_puts("\n");
-                }
-            }
         }
-
-#ifdef AGENTOS_SEL4_TEST_IMAGE
-        /* agentos-8f5: map UART0 into the contract-runner PD so it can emit TAP
-         * (release kernel has CONFIG_PRINTING disabled).  VA must match
-         * TEST_RUNNER_UART_VA in tests/harness/target_contract_runner.c. */
-        if (name_eq(pd->name, "test_runner") && g_uart_frame_cap != seL4_CapNull) {
-            seL4_Word tr_uart_copy = ut_alloc_slot();
-            if (tr_uart_copy != seL4_CapNull) {
-                seL4_Error ce = seL4_CNode_Copy(
-                    seL4_CapInitThreadCNode, tr_uart_copy,     64u,
-                    seL4_CapInitThreadCNode, g_uart_frame_cap, 64u,
-                    seL4_AllRights);
-                if (ce == seL4_NoError) {
-                    ce = pd_vspace_map_device_frame(vspace,
-                                                    (seL4_CPtr)tr_uart_copy,
-                                                    0x10006000UL /* TEST_RUNNER_UART_VA */);
-                }
-                dbg_puts("[rt] test_runner UART map err=");
-                dbg_hex((seL4_Word)ce);
-                dbg_puts("\n");
-            }
-        }
-#endif
 
         /* ── 4g.4.9: EventBus ring RAM region (agentos-gom) ─────────────────
          * Map a private 2 MB RAM region at EVENTBUS_RING_VA into the event_bus

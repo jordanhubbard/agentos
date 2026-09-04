@@ -130,6 +130,7 @@ static inline void seL4_DebugPutChar(char c) { (void)c; }
 #include "sel4_server.h"    /* sel4_server_t, sel4_server_init/register/run */
 #include "sel4_client.h"    /* sel4_client_t, sel4_client_call */
 #include "sel4_ipc.h"       /* sel4_msg_t, sel4_badge_t, SEL4_ERR_* */
+#include "system_desc.h"    /* PD_IRQHANDLER_SLOT_BASE */
 #include <sel4/sel4.h>      /* seL4_DebugPutChar */
 
 #endif /* AGENTOS_TEST_HOST */
@@ -232,16 +233,25 @@ typedef struct {
 
 /*
  * uart_mmio_vaddr — UART MMIO virtual address.
- * In production set by the root task before calling serial_pd_main().
- * In test builds set directly by the test harness (or left 0).
+ * In production the root task maps PL011 at this fixed driver VA before
+ * starting the PD.  In tests the harness supplies a stub buffer (or leaves 0).
  */
+#ifdef AGENTOS_TEST_HOST
 uintptr_t uart_mmio_vaddr;
+#else
+uintptr_t uart_mmio_vaddr = 0x10001000UL;
+#endif
 
 /*
  * serial_shmem_vaddr — shared memory for TX/RX data transfer.
- * Set by the root task in production; in test builds, set to a static buffer.
+ * In production the root task maps the transfer frame at this fixed client VA;
+ * in tests the harness supplies a static buffer.
  */
+#ifdef AGENTOS_TEST_HOST
 uintptr_t serial_shmem_vaddr;
+#else
+uintptr_t serial_shmem_vaddr = 0x10005000UL;
+#endif
 
 static serial_client_t clients[SERIAL_MAX_CLIENTS];
 static bool            hw_ready = false;
@@ -729,6 +739,60 @@ uint32_t serial_pd_dispatch_one(sel4_badge_t badge,
 
 #else /* !AGENTOS_TEST_HOST — production build */
 
+#define SERIAL_UART_IRQ_BADGE 0x1u
+#define SERIAL_UART_IRQ_CAP \
+    ((seL4_CPtr)(PD_IRQHANDLER_SLOT_BASE + 0u))
+
+/*
+ * Receive endpoint calls and the bound UART notification in one loop.  A
+ * notification carries no reply capability, so the next wait must be Recv,
+ * not ReplyRecv.  Endpoint badges minted by the root task have zero low bits;
+ * bit 0 is reserved for PL011 IRQ 33.
+ */
+static void serial_pd_run(void)
+{
+    sel4_msg_t req = {0};
+    sel4_msg_t rep = {0};
+    bool reply_pending = false;
+
+    for (;;) {
+        seL4_Word badge = 0u;
+        seL4_MessageInfo_t info;
+
+        if (reply_pending) {
+            _sel4_msg_to_mrs(&rep);
+            seL4_MessageInfo_t reply_info = seL4_MessageInfo_new(
+                (seL4_Word)rep.opcode, 0, 0, (seL4_Word)_SEL4_MR_COUNT);
+#ifdef CONFIG_KERNEL_MCS
+            info = seL4_ReplyRecv(g_srv.ep, reply_info, &badge,
+                                  AGENTOS_IPC_REPLY_CAP);
+#else
+            info = seL4_ReplyRecv(g_srv.ep, reply_info, &badge);
+#endif
+        } else {
+#ifdef CONFIG_KERNEL_MCS
+            info = seL4_Recv(g_srv.ep, &badge, AGENTOS_IPC_REPLY_CAP);
+#else
+            info = seL4_Recv(g_srv.ep, &badge);
+#endif
+        }
+
+        if ((badge & SERIAL_UART_IRQ_BADGE) != 0u &&
+            seL4_MessageInfo_get_length(info) == 0u) {
+            poll_hw_rx();
+            seL4_IRQHandler_Ack(SERIAL_UART_IRQ_CAP);
+            reply_pending = false;
+            continue;
+        }
+
+        _sel4_mrs_to_msg(&req);
+        rep.opcode = 0u;
+        rep.length = 0u;
+        (void)sel4_server_dispatch(&g_srv, (sel4_badge_t)badge, &req, &rep);
+        reply_pending = true;
+    }
+}
+
 /*
  * serial_pd_main — production entry point called by the root task boot
  * dispatcher.
@@ -759,6 +823,7 @@ void serial_pd_main(seL4_CPtr my_ep, seL4_CPtr ns_ep)
     if (uart_mmio_vaddr) {
         pl011_init();
         hw_ready = true;
+        seL4_IRQHandler_Ack(SERIAL_UART_IRQ_CAP);
         pl011_puts("[serial_pd] PL011 UART ready — 115200 8N1\n");
     } else {
         dbg_puts("[serial_pd] WARNING: uart_mmio_vaddr not mapped "
@@ -778,8 +843,8 @@ void serial_pd_main(seL4_CPtr my_ep, seL4_CPtr ns_ep)
     sel4_server_register(&g_srv, MSG_SERIAL_STATUS,    handle_status,    (void *)0);
     sel4_server_register(&g_srv, MSG_SERIAL_CONFIGURE, handle_configure, (void *)0);
 
-    /* Enter the recv/dispatch/reply loop — never returns */
-    sel4_server_run(&g_srv);
+    /* Enter the combined endpoint/IRQ dispatch loop — never returns. */
+    serial_pd_run();
 }
 
 void pd_main(seL4_CPtr my_ep, seL4_CPtr ns_ep) { serial_pd_main(my_ep, ns_ep); }
