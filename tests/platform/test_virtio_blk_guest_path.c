@@ -209,6 +209,20 @@ int main(void)
                  src_contains("xtask/src/cmd_test.rs",
                               "drive=agentos_hd"),
                  "Ubuntu QEMU launch attaches ISO only as agentOS host hardware");
+    (void)tap_ok(src_contains("Makefile",
+                              "$(_UBUNTU_HOST_BLK) $(_FREEBSD_BLK)") &&
+                 src_contains("xtask/src/cmd_test.rs",
+                              "guest_os == \"ubuntu\" || guest_os == \"both\"") &&
+                 !src_contains("xtask/src/cmd_test.rs",
+                               "else if guest_os == \"both\" && ubuntu_img.exists()"),
+                 "dual-image Ubuntu also uses agentOS bus.8, never guest bus.1");
+    (void)tap_ok(src_contains("kernel/agentos-root-task/Makefile",
+                              "UBUNTU_BOOT_MODE=%s") &&
+                 src_contains("kernel/agentos-root-task/Makefile",
+                              "CFLAGS_ROOT_TASK=%s") &&
+                 src_contains("kernel/agentos-root-task/vmm.mk",
+                              "VMM_CFLAGS=%s"),
+                 "Ubuntu mode and flags invalidate stale root-task and VMM objects");
     (void)tap_ok(src_contains("kernel/agentos-root-task/src/system_desc_aarch64.c",
                               "{ SVC_ID_VIRTIO_BLK, 12u }") &&
                  src_contains("platform/blk-virt/vmm_virtio_blk.c",
@@ -218,10 +232,13 @@ int main(void)
                  "linux_vmm routes emulated block requests to virtio_blk");
     (void)tap_ok(src_contains("kernel/agentos-root-task/Makefile",
                               "-DAGENTOS_GUEST_UBUNTU=1") &&
-                 src_contains_in_order("kernel/agentos-root-task/src/main.c",
-                                       "#if !defined(AGENTOS_GUEST_UBUNTU)",
-                                       "g_virtio_mmio_frame_cap"),
-                 "Ubuntu guest VSpace excludes the QEMU passthrough page");
+                 src_contains("kernel/agentos-root-task/src/main.c",
+                              "Every Linux DTB now advertises only emulated VirtIO") &&
+                 !src_contains("kernel/agentos-root-task/src/main.c",
+                               "#define VIRTIO_MMIO_PAGE_VA") &&
+                 src_contains("kernel/agentos-root-task/src/main.c",
+                              "CC_PD_VIRTIO_VA"),
+                 "all Linux guest VSpaces exclude the QEMU passthrough page");
 
     printf("1..%d\n", g_testno);
     if (g_failed) {

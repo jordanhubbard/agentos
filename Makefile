@@ -398,17 +398,14 @@ else
   _QEMU_FAST_FLAGS :=
 endif
 FREEBSD_IMAGE ?= $(if $(AGENTOS_FREEBSD_IMAGE),$(AGENTOS_FREEBSD_IMAGE),$(AGENTOS_IMAGES)/freebsd-15.0-aarch64.iso)
-_UBUNTU_BLK = -drive file=$(AGENTOS_IMAGES)/ubuntu-26.04-aarch64.iso,format=raw,if=none,id=ubuntu_hd,readonly=on,file.locking=off \
-              -device virtio-blk-device,drive=ubuntu_hd,bus=virtio-mmio-bus.1
 _UBUNTU_HOST_BLK = -drive file=$(AGENTOS_IMAGES)/ubuntu-26.04-aarch64.iso,format=raw,if=none,id=agentos_hd,readonly=on,file.locking=off \
                    -device virtio-blk-device,drive=agentos_hd,bus=virtio-mmio-bus.8
 _FREEBSD_BLK = -drive file=$(FREEBSD_IMAGE),format=raw,if=none,id=freebsd_hd,readonly=on,file.locking=off \
                -device virtio-blk-device,drive=freebsd_hd,bus=virtio-mmio-bus.31
-# For one Ubuntu guest, bus.8 is host hardware owned by agentOS virtio_blk;
-# it is never mapped or advertised to Linux. Dual-guest mode retains the
-# bus.1 passthrough crutch until its separate migration.
-_QEMU_BLK_FLAGS = $(if $(filter both,$(GUEST_OS)),$(_UBUNTU_BLK) $(_FREEBSD_BLK),$(if $(filter ubuntu,$(GUEST_OS)),$(_UBUNTU_HOST_BLK),$(if $(filter freebsd,$(GUEST_OS)),$(_FREEBSD_BLK),)))
-_QEMU_NET_FLAGS = $(if $(filter ubuntu,$(GUEST_OS)),,-netdev user,id=net0,hostfwd=tcp:127.0.0.1:8789-:8789,hostfwd=tcp:127.0.0.1:2222-10.0.2.15:22,hostfwd=tcp:127.0.0.1:2223-10.0.2.15:2223,hostfwd=tcp:127.0.0.1:2224-10.0.2.15:2224 -device virtio-net-device,netdev=net0,bus=virtio-mmio-bus.0,ctrl_vq=off,ctrl_rx=off,ctrl_vlan=off,guest_announce=off,mq=off,ctrl_mac_addr=off,ctrl_guest_offloads=off)
+# Bus.8 is host hardware owned by agentOS virtio_blk and is never mapped or
+# advertised to Ubuntu, including the Linux half of a dual-guest image.
+_QEMU_BLK_FLAGS = $(if $(filter both,$(GUEST_OS)),$(_UBUNTU_HOST_BLK) $(_FREEBSD_BLK),$(if $(filter ubuntu,$(GUEST_OS)),$(_UBUNTU_HOST_BLK),$(if $(filter freebsd,$(GUEST_OS)),$(_FREEBSD_BLK),)))
+_QEMU_NET_FLAGS = $(if $(filter ubuntu both,$(GUEST_OS)),,-netdev user,id=net0,hostfwd=tcp:127.0.0.1:8789-:8789,hostfwd=tcp:127.0.0.1:2222-10.0.2.15:22,hostfwd=tcp:127.0.0.1:2223-10.0.2.15:2223,hostfwd=tcp:127.0.0.1:2224-10.0.2.15:2224 -device virtio-net-device,netdev=net0,bus=virtio-mmio-bus.0,ctrl_vq=off,ctrl_rx=off,ctrl_vlan=off,guest_announce=off,mq=off,ctrl_mac_addr=off,ctrl_guest_offloads=off)
 QEMU_RUN_MEM ?= $(if $(filter both,$(GUEST_OS)),3G,2G)
 QEMU_RUN_SMP ?= $(if $(filter smp-% smp,$(SEL4_PROFILE)),4,1)
 comma := ,

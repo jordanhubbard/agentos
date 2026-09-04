@@ -113,8 +113,11 @@ VMM_CFLAGS := \
     -MD -MP \
     -target aarch64-none-elf
 
+ifeq ($(GUEST_OS),ubuntu)
+VMM_CFLAGS += -DAGENTOS_GUEST_UBUNTU=1
+endif
 ifeq ($(VMM_DUAL_GUEST),1)
-VMM_CFLAGS += -DAGENTOS_GUEST_BOTH=1
+VMM_CFLAGS += -DAGENTOS_GUEST_BOTH=1 -DAGENTOS_GUEST_UBUNTU=1
 endif
 ifeq ($(UBUNTU_BOOT_MODE),live)
 VMM_CFLAGS += -DAGENTOS_GUEST_UBUNTU_LIVE=1
@@ -125,8 +128,8 @@ VMM_CONFIG_STAMP := $(BUILD_DIR)/vmm-$(GUEST_OS).stamp
 $(VMM_CONFIG_STAMP): FORCE
 	@mkdir -p $(BUILD_DIR)
 	@tmp="$@.tmp"; \
-	printf 'GUEST_OS=%s\nVMM_DUAL_GUEST=%s\nUBUNTU_BOOT_MODE=%s\nSEL4_PROFILE=%s\n' \
-		'$(GUEST_OS)' '$(VMM_DUAL_GUEST)' '$(UBUNTU_BOOT_MODE)' '$(SEL4_PROFILE)' > "$$tmp"; \
+	printf 'GUEST_OS=%s\nVMM_DUAL_GUEST=%s\nUBUNTU_BOOT_MODE=%s\nSEL4_PROFILE=%s\nVMM_CFLAGS=%s\n' \
+		'$(GUEST_OS)' '$(VMM_DUAL_GUEST)' '$(UBUNTU_BOOT_MODE)' '$(SEL4_PROFILE)' '$(VMM_CFLAGS)' > "$$tmp"; \
 	if test -f "$@" && cmp -s "$$tmp" "$@"; then rm -f "$$tmp"; else mv "$$tmp" "$@"; fi
 
 .PHONY: vmm-all vmm-clean FORCE

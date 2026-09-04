@@ -343,8 +343,8 @@ GUEST_CONFIG_STAMP := $(BUILD_DIR)/guest_config.stamp
 # AArch64: include VMM based on GUEST_OS
 ifeq ($(ARCH),aarch64)
   ifeq ($(GUEST_OS),both)
-    CFLAGS += -DAGENTOS_GUEST_LINUX=1 -DAGENTOS_GUEST_FREEBSD=1 -DAGENTOS_GUEST_BOTH=1
-    CFLAGS_ROOT_TASK += -DAGENTOS_GUEST_LINUX=1 -DAGENTOS_GUEST_FREEBSD=1 -DAGENTOS_GUEST_BOTH=1
+    CFLAGS += -DAGENTOS_GUEST_LINUX=1 -DAGENTOS_GUEST_FREEBSD=1 -DAGENTOS_GUEST_BOTH=1 -DAGENTOS_GUEST_UBUNTU=1
+    CFLAGS_ROOT_TASK += -DAGENTOS_GUEST_LINUX=1 -DAGENTOS_GUEST_FREEBSD=1 -DAGENTOS_GUEST_BOTH=1 -DAGENTOS_GUEST_UBUNTU=1
     IMAGES += linux_vmm.elf freebsd_vmm.elf
   else ifeq ($(GUEST_OS),freebsd)
     CFLAGS += -DAGENTOS_GUEST_FREEBSD=1
@@ -377,9 +377,10 @@ endif
 $(GUEST_CONFIG_STAMP): FORCE
 	@mkdir -p $(BUILD_DIR)
 	@tmp="$@.tmp"; \
-	printf 'ARCH=%s\nBOARD=%s\nGUEST_OS=%s\nFAULT_INJECT=%s\nSEL4_TEST_IMAGE=%s\n' \
-		'$(ARCH)' '$(AGENTOS_BOARD)' '$(GUEST_OS)' '$(FAULT_INJECT)' '$(SEL4_TEST_IMAGE)' > "$$tmp"; \
-	printf 'SEL4_PROFILE=%s\n' '$(SEL4_PROFILE)' >> "$$tmp"; \
+	printf 'ARCH=%s\nBOARD=%s\nGUEST_OS=%s\nUBUNTU_BOOT_MODE=%s\nFAULT_INJECT=%s\nSEL4_TEST_IMAGE=%s\n' \
+		'$(ARCH)' '$(AGENTOS_BOARD)' '$(GUEST_OS)' '$(UBUNTU_BOOT_MODE)' '$(FAULT_INJECT)' '$(SEL4_TEST_IMAGE)' > "$$tmp"; \
+	printf 'SEL4_PROFILE=%s\nCFLAGS=%s\nCFLAGS_ROOT_TASK=%s\n' \
+		'$(SEL4_PROFILE)' '$(CFLAGS)' '$(CFLAGS_ROOT_TASK)' >> "$$tmp"; \
 	if test -f "$@" && cmp -s "$$tmp" "$@"; then rm -f "$$tmp"; else mv "$$tmp" "$@"; fi
 
 $(BUILD_DIR)/rt_main.o: $(GUEST_CONFIG_STAMP)

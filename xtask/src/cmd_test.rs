@@ -474,7 +474,7 @@ pub fn spawn_qemu_with_guest(
                     "loader,file={},addr=0x48000000",
                     build_image.display()
                 ));
-            if guest_os != "ubuntu" {
+            if guest_os != "ubuntu" && guest_os != "both" {
                 c.args([
                     "-device",
                     "virtio-net-device,netdev=net0,bus=virtio-mmio-bus.0",
@@ -484,13 +484,12 @@ pub fn spawn_qemu_with_guest(
             }
             if guest_os == "ubuntu" || guest_os == "both" {
                 /*
-                 * The single Ubuntu guest gets a host block device on bus.8,
-                 * owned only by agentOS virtio_blk. Its guest DTB still
-                 * advertises only the emulated device at 0x0a020000. Dual
-                 * guest mode retains the bus.1 guest-passthrough crutch.
+                 * Ubuntu media is host hardware on bus.8, owned only by the
+                 * agentOS virtio_blk PD. The guest DTB advertises only the
+                 * emulated device at 0x0a020000 in single and dual mode.
                  */
                 let ubuntu_img = ubuntu_disk_image(repo_root);
-                if guest_os == "ubuntu" && ubuntu_img.exists() {
+                if ubuntu_img.exists() {
                     println!(
                         "[xtask:test] agentOS host block media: {}",
                         ubuntu_img.display()
@@ -501,20 +500,6 @@ pub fn spawn_qemu_with_guest(
                         "-drive",
                         &format!(
                             "file={},format=raw,id=agentos_hd,if=none,readonly=on,file.locking=off",
-                            ubuntu_img.to_str().unwrap()
-                        ),
-                    ]);
-                } else if guest_os == "both" && ubuntu_img.exists() {
-                    println!(
-                        "[xtask:test] Ubuntu disk image: {} (snapshot writes)",
-                        ubuntu_img.display()
-                    );
-                    c.args([
-                        "-device",
-                        "virtio-blk-device,drive=hd0,bus=virtio-mmio-bus.1",
-                        "-drive",
-                        &format!(
-                            "file={},format=raw,id=hd0,if=none,readonly=on,file.locking=off",
                             ubuntu_img.to_str().unwrap()
                         ),
                     ]);

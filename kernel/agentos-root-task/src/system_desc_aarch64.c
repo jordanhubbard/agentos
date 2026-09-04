@@ -392,11 +392,18 @@ const system_desc_t system_desc_aarch64 = {
                 { SVC_ID_LOG_DRAIN,  PD_CNODE_SLOT_LOG_DRAIN_EP  },
                 { SVC_ID_VIRTIO_BLK, 12u },
             },
-            .irq_count = 3u,
+            .irq_count =
+#if defined(AGENTOS_GUEST_UBUNTU)
+                0u,
+#else
+                3u,
+#endif
             .irqs = {
+#if !defined(AGENTOS_GUEST_UBUNTU)
                 { .irq_number = 48u, .ntfn_badge = 0x1u, .name = "virtio-net"  },
                 { .irq_number = 49u, .ntfn_badge = 0x2u, .name = "virtio-blk0" },
                 { .irq_number = 51u, .ntfn_badge = 0x4u, .name = "virtio-blk1" },
+#endif
             },
             /* guest_ram + private net_virt queues (loopback until shared MR). */
             .mr_count = 2u,

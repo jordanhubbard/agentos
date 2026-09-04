@@ -1427,17 +1427,13 @@ void init(void)
 
     /*
      * Emulated virtio-net at IPA 0x0A010000 (unmapped; faults here, sDDF pump).
-     * QEMU virtio-mmio at 0x0A000000 / IRQ 48 is a kill-dated crutch.
-     * Bind guest RAM so desc->addr is translated GPA→HVA (identity today).
+     * Bind guest RAM so descriptor addresses are translated from guest
+     * physical addresses to this PD's independently allocated host mapping.
      */
     aos_vmm_guest_ram_bind(LINUX_GUEST_RAM_VADDR, guest_ram_vaddr, GUEST_RAM_SIZE);
     aos_vmm_virtio_net_init();
 
-    /*
-     * Emulated virtio-blk at IPA 0x0A020000 (faults here, sDDF RAM pump).
-     * Buildroot DTB advertises only this disk. Ubuntu still has QEMU
-     * virtio-blk at 0x0A000200 / IRQ 49 as the boot-disk crutch.
-     */
+    /* Emulated virtio-blk at IPA 0x0A020000 (faults here, sDDF pump). */
     aos_vmm_virtio_blk_init();
 #if defined(AGENTOS_GUEST_UBUNTU_LIVE)
     size_t live_initrd_size = 0u;
@@ -1453,6 +1449,7 @@ void init(void)
 #endif
     aos_vmm_virtio_console_init();
 
+#if !defined(AGENTOS_GUEST_UBUNTU)
     /* Register virtio-net IRQ passthrough (QEMU virt: SPI 16 → INTID 48) */
     success = virq_register(GUEST_BOOT_VCPU_ID, VIRTIO_NET_IRQ, &virtio_net_ack, NULL);
     if (!success) {
@@ -1498,6 +1495,7 @@ void init(void)
         }
         /* If not registered, PL011 uses fault-emulation path — non-fatal */
     }
+#endif
 
     g_linux_kernel_pc = kernel_pc;
     g_linux_startable = true;

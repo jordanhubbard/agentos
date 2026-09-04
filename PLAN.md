@@ -22,7 +22,7 @@ binding) described the wrong I/O model. It is superseded by this document.
 | 3 | `task_892273845b0949ce8be59f70c02bf644` | done | `make test-guest-blk`: boot buildroot, enumerate IPA `0x0A020000`, pump one request |
 | 4 | `task_9218737eb11a438b89552c599c25d012` | in progress | Ubuntu hvc0 uses emulated virtio-console + sDDF queues; remove residual direct UART ownership |
 | 5 | `task_7f6653b7dcc840b9ab7fa092685c9d57` | waiting on 4 | One VMM implementation; guest flavor is data |
-| 6 | `task_c03b1c0527de416fbcfcdfcb77787559` | waiting on 4 | Stop identity-mapping guest RAM for device DMA |
+| 6 | `task_c03b1c0527de416fbcfcdfcb77787559` | in progress | Linux guest RAM is nonidentity; migrate FreeBSD and residual non-guest DMA users |
 | 7 | (done) | done (quarantine by docs) | Quarantine PD museum (no deletes this pass) |
 | 8 | (done) | done | Skills + Python HTML helpers |
 | 9 | `task_ec992e5743354a538d1c3235a2e2c0da` | waiting on 4 | Native agent services as virtualizer clients |
@@ -34,9 +34,10 @@ production IPC or I/O. OS-level claims require `make gate` (both target
 arches under QEMU) plus, for a device class, a guest I/O assertion through
 the virtualizer — not QEMU bus ownership.
 
-Dual-guest E2E remains a **guest-boot** gate until emulated virtio-blk is
-the Ubuntu boot disk. Buildroot already proves I/O through `net_virt` and
-`blk_virt` (`make test-guest-net`, `make test-guest-blk`).
+Dual-guest E2E remains a **guest-boot** gate. Its Ubuntu half uses emulated
+virtio-blk backed by agentOS bus.8; FreeBSD still uses isolated bus.31
+passthrough. Buildroot already proves I/O through `net_virt` and `blk_virt`
+(`make test-guest-net`, `make test-guest-blk`).
 
 Host tests for `aos_net_virt_pump` / `aos_blk_virt_pump` are a pre-filter.
 They are not proof that the guest sees the device. That proof is
@@ -63,12 +64,10 @@ services is out of scope until inspect and serial attach exist.
 
 1. Guest IPA `0x0A010000` is an **emulated** virtio-mmio net device (fault to VMM).
 2. Backend is sDDF-shaped queues + `aos_net_virt_pump` (loopback / hub).
-3. Guest DTB advertises this device. Buildroot overlay has **only** the
-   emulated NIC (`make test-guest-net`). Ubuntu overlays still carry QEMU
-   virtio-net at `0x0A000000` as a kill-dated SSH crutch until nic_drv
-   exists.
-4. Next: host virtio-net MMIO moves to a nic_drv PD; passthrough is removed
-   from Ubuntu too; both guests share one `net_virt`.
+3. Buildroot and Ubuntu DTBs advertise only this emulated NIC; no Linux VMM
+   maps the QEMU first virtio-mmio page.
+4. Next: host virtio-net MMIO moves to a driver PD and both guests share one
+   live `net_virt` instead of the current VMM-local loopback/hub.
 
 ## First blk vertical slice (step 3)
 
@@ -76,15 +75,15 @@ services is out of scope until inspect and serial attach exist.
 2. Backend is sDDF-shaped queues + `aos_blk_virt_pump`. Single-guest Ubuntu
    routes those requests over seL4 IPC to the `virtio_blk` PD, which alone
    owns QEMU bus.8 and DMA memory. Buildroot retains the 256 KB RAM fallback.
-3. Buildroot and the single-guest Ubuntu E2E overlay advertise **only**
-   emulated net + emulated blk. Dual-guest mode still retains the QEMU ISO
-   passthrough crutch pending its separate migration.
+3. Buildroot and Ubuntu overlays advertise **only** emulated net + emulated
+   blk. This also holds for Ubuntu in dual-guest mode; only FreeBSD retains
+   its isolated QEMU bus.31 backend.
 4. Linux `virtio_blk` probe + partition scan reads the real Ubuntu ISO through
    guest emulation → sDDF pump → `virtio_blk` → host device. The runtime gate
    requires an explicit host-media read marker.
-5. Payload copies in libvmm `block.c` now use bounds-checked GPA translation.
-   The physical identity map remains until residual passthrough and
-   virtio-sound users are removed in step 6.
+5. Payload copies in libvmm `block.c` use bounds-checked GPA translation.
+   Every Linux VMM now receives independently allocated, nonidentity guest
+   RAM. FreeBSD bus.31 and residual non-guest DMA users remain in step 6.
 
 ## First serial vertical slice (step 4)
 
@@ -113,6 +112,8 @@ bounded guest network probe. The gate rejects initramfs unpack failures and
 requires probe, DRIVER_OK, and real I/O markers for net, block, and console.
 CI runs both the deterministic initramfs gate and this full-live gate.
 
-This closes the full Ubuntu live-filesystem proof. The wider platform cleanup
-still requires the step 4 UART-ownership audit, step 6 removal of residual
-identity-map users, and migration of dual-guest passthrough.
+This closes the full Ubuntu live-filesystem proof. Ubuntu also retains the
+same emulated-only DTB, translated RAM, and agentOS-owned bus.8 backend in a
+dual image. Wider cleanup still requires exclusive `serial_pd` UART ownership,
+a host-network driver behind `net_virt`, and migration of FreeBSD bus.31 plus
+residual non-guest identity-DMA users.

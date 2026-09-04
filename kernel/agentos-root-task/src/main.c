@@ -573,15 +573,14 @@ static void boot_setup_irqs(const pd_desc_t *pd,
 
 /* QEMU virt virtio-mmio transports.
  *
- * Slots are 0x200-byte windows inside the 4 KB page at 0x0A000000. The VMM
- * guest sees that page at the same IPA for passthrough probing; cc_pd maps a
- * copy of the same frame at its private VA to drive slot 2 for the host relay.
+ * Slots are 0x200-byte windows inside the 4 KB page at 0x0A000000. Guest
+ * VMMs never map this host page; cc_pd maps a copy at its private VA to drive
+ * slot 2 for the host relay.
  *
  * Guest IPA 0x0A010000 (emulated virtio-net) is outside this page on purpose:
  * it must remain unmapped so accesses fault into linux_vmm.
  */
 #define VIRTIO_MMIO_PAGE_PA  0x0A000000UL
-#define VIRTIO_MMIO_PAGE_VA  0x0A000000UL
 #define FREEBSD_VIRTIO_MMIO_BUS31_PAGE_PA  0x0A003000UL
 #define FREEBSD_VIRTIO_MMIO_BUS31_PAGE_VA  0x0A003000UL
 
@@ -1605,25 +1604,25 @@ void root_task_main(const seL4_BootInfo *bi)
 #if defined(__aarch64__)
             if ((name_eq(pd->name, "linux_vmm") || name_eq(pd->name, "freebsd_vmm")) &&
                 name_eq(mr->name, "guest_ram")) {
-#if defined(AGENTOS_GUEST_UBUNTU_LIVE)
-                /*
-                 * All live-Ubuntu VirtIO queue and payload paths translate
-                 * guest addresses. Its RAM therefore does not need host
-                 * physical identity, which would overlap the PD bundle.
-                 */
-                mr_err = pd_vspace_map_region(
-                    vspace,
-                    (seL4_Word)mr->vaddr,
-                    (size_t)mr->size,
-                    (int)mr->writable
-                );
-#else
-                /* Legacy Buildroot/FreeBSD paths still contain passthrough or
-                 * virtio-sound users that require guest GPA == host PA. */
-                mr_err = map_vmm_guest_ram_identity(vspace,
-                                                    (seL4_Word)mr->vaddr,
-                                                    (size_t)mr->size);
-#endif
+                if (name_eq(pd->name, "linux_vmm")) {
+                    /*
+                     * Every Linux DTB now advertises only emulated VirtIO
+                     * devices whose queue and payload paths translate GPAs.
+                     */
+                    mr_err = pd_vspace_map_region(
+                        vspace,
+                        (seL4_Word)mr->vaddr,
+                        (size_t)mr->size,
+                        (int)mr->writable
+                    );
+                } else {
+                    /* FreeBSD bus.31 remains passthrough until its own
+                     * emulated block backend is available. */
+                    mr_err = map_vmm_guest_ram_identity(
+                        vspace,
+                        (seL4_Word)mr->vaddr,
+                        (size_t)mr->size);
+                }
             } else
 #endif
             {
@@ -1769,34 +1768,8 @@ void root_task_main(const seL4_BootInfo *bi)
         }
 #endif
 
-        /* ── 4g.4.6d: Legacy QEMU virtio-mmio passthrough page ───────────── */
-        /*
-         * Ubuntu advertises only agentOS-emulated devices, so the host page
-         * must not be present in its guest execution VSpace. Buildroot and
-         * FreeBSD retain the legacy mapping until their separate migrations.
-         */
-#if !defined(AGENTOS_GUEST_UBUNTU)
-        if (g_virtio_mmio_frame_cap != seL4_CapNull &&
-            (name_eq(pd->name, "linux_vmm") || name_eq(pd->name, "freebsd_vmm"))) {
-            seL4_Word virtio_copy = ut_alloc_slot();
-            seL4_Error virtio_err = seL4_NotEnoughMemory;
-            if (virtio_copy != seL4_CapNull) {
-                virtio_err = seL4_CNode_Copy(
-                    seL4_CapInitThreadCNode, virtio_copy,              64u,
-                    seL4_CapInitThreadCNode, g_virtio_mmio_frame_cap,  64u,
-                    seL4_AllRights);
-                if (virtio_err == seL4_NoError) {
-                    virtio_err = pd_vspace_map_device_frame(vspace,
-                                                            (seL4_CPtr)virtio_copy,
-                                                            VIRTIO_MMIO_PAGE_VA);
-                }
-            }
-            dbg_puts("[rt] VMM virtio-mmio map err=");
-            dbg_hex((seL4_Word)virtio_err);
-            dbg_puts("\n");
-        }
-#endif
-
+        /* QEMU's first virtio-mmio page is host transport only. It is mapped
+         * into cc_pd below for bus.2, never into a guest VMM. */
         if (name_eq(pd->name, "freebsd_vmm")) {
             if (g_freebsd_virtio31_frame_cap != seL4_CapNull) {
                 seL4_Word v31_copy = ut_alloc_slot();
