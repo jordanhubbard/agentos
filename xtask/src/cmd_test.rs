@@ -32,6 +32,8 @@ const VIBEOS_ARCH_AARCH64: u8 = 0x01;
 const VIBEOS_DEV_SERIAL: u32 = 1 << 0;
 const VIBEOS_DEV_NET: u32 = 1 << 1;
 const VIBEOS_DEV_BLOCK: u32 = 1 << 2;
+const TRACE_PD_LINUX_VMM: u32 = 41;
+const TRACE_PD_FREEBSD_VMM: u32 = 42;
 
 pub fn run(args: &TestArgs) -> anyhow::Result<()> {
     let repo_root = repo_root()?;
@@ -1029,7 +1031,7 @@ fn wait_for_guest_console_login_via_cc(
 
     while start.elapsed() < timeout {
         ensure_qemu_running(qemu, "waiting for guest login prompt via CC-PD API")?;
-        match cc_log_stream_for_handle(&mut cc, guest_handle) {
+        match cc_log_stream_for_handle(&mut cc, guest_handle, guest_os) {
             Ok(chunk) => {
                 if !chunk.is_empty() {
                     transcript.push_str(&chunk);
@@ -1198,7 +1200,7 @@ fn verify_guest_console_input(
     let start = Instant::now();
     while start.elapsed() < timeout {
         ensure_qemu_running(qemu, "waiting for guest console input echo via CC-PD API")?;
-        let chunk = match cc_log_stream_for_handle(cc, guest_handle) {
+        let chunk = match cc_log_stream_for_handle(cc, guest_handle, guest_os) {
             Ok(chunk) => chunk,
             Err(err) => {
                 println!("[xtask:test] CC console post-input drain not ready yet: {err:#}");
@@ -1245,7 +1247,7 @@ fn verify_ubuntu_live_console_and_net(
     let mut login_attempts = 1u32;
     while login_start.elapsed() < phase_timeout {
         ensure_qemu_running(qemu, "logging into Ubuntu live console")?;
-        let chunk = match cc_log_stream_for_handle(cc, guest_handle) {
+        let chunk = match cc_log_stream_for_handle(cc, guest_handle, "ubuntu-live") {
             Ok(chunk) => chunk,
             Err(err) => {
                 println!("[xtask:test] CC live-login drain not ready yet: {err:#}");
@@ -1307,7 +1309,8 @@ fn verify_ubuntu_live_console_and_net(
     let mut output = String::new();
     while proof_start.elapsed() < phase_timeout {
         ensure_qemu_running(qemu, "waiting for Ubuntu live userspace proof")?;
-        let chunk = cc_log_stream_for_handle(cc, guest_handle).unwrap_or_default();
+        let chunk =
+            cc_log_stream_for_handle(cc, guest_handle, "ubuntu-live").unwrap_or_default();
         if !chunk.is_empty() {
             output.push_str(&chunk);
             if output.contains("agentos-live-proof") {
@@ -1599,9 +1602,20 @@ fn connect_host_net_stimulus(port: u16, qemu: &mut Child) -> Option<TcpStream> {
     None
 }
 
-fn cc_log_stream_for_handle(cc: &mut CcClient, guest_handle: u32) -> anyhow::Result<String> {
+fn cc_log_stream_for_handle(
+    cc: &mut CcClient,
+    guest_handle: u32,
+    guest_os: &str,
+) -> anyhow::Result<String> {
+    let pd_id = if guest_handle == 0 {
+        0
+    } else if guest_os == "freebsd" {
+        TRACE_PD_FREEBSD_VMM
+    } else {
+        TRACE_PD_LINUX_VMM
+    };
     let reply = cc
-        .call(MSG_CC_LOG_STREAM, guest_handle, 0, 0, &[])
+        .call(MSG_CC_LOG_STREAM, guest_handle, pd_id, 0, &[])
         .context("MSG_CC_LOG_STREAM failed")?;
     anyhow::ensure!(
         reply.mr[0] == CC_OK,

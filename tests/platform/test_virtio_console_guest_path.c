@@ -114,6 +114,16 @@ int main(void)
     ok(contains(vmm, "Guest console bytes belong to the per-guest virtual TTY") &&
        contains(vmm, "console_tx_push(byte);"),
        "guest virtual TTY is not synchronously mirrored to physical PL011");
+    ok(contains("kernel/agentos-root-task/src/freebsd_vmm.c",
+                "Guest PL011 output belongs to this guest's virtual TTY") &&
+       !contains_after("kernel/agentos-root-task/src/freebsd_vmm.c",
+                       "static void guest_console_write(uint8_t byte)",
+                       "serial_log_putc(&g_vmm_log, (char)byte)"),
+       "FreeBSD virtual TTY is not synchronously mirrored to physical PL011");
+    ok(contains("xtask/src/cmd_test.rs", "TRACE_PD_FREEBSD_VMM") &&
+       contains("xtask/src/cmd_test.rs",
+                ".call(MSG_CC_LOG_STREAM, guest_handle, pd_id, 0, &[])"),
+       "dual guest console drain identifies the FreeBSD VMM stream");
     ok(contains(console, "virtio_copy_from_gpa") &&
        contains(console, "virtio_copy_to_gpa"),
        "virtio-console payloads use bounds-checked GPA translation");

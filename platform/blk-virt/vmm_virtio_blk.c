@@ -39,19 +39,15 @@ static int                      g_aos_blk_driver_ok;
 static int                      g_aos_blk_pumped;
 static int                      g_host_backend;
 static int                      g_host_read_pumped;
+static uint32_t                 g_media_id;
+static uint32_t                 g_host_request_count;
 
 #define AOS_HOST_BLK_EP 12u
-
-#if defined(AGENTOS_GUEST_FREEBSD)
-#define AOS_VMM_BLK_MEDIA_ID AOS_HOST_BLK_MEDIA_FREEBSD
-#else
-#define AOS_VMM_BLK_MEDIA_ID AOS_HOST_BLK_MEDIA_UBUNTU
-#endif
 
 static uint8_t *host_dma(void)
 {
     return (uint8_t *)(AGENTOS_BLK_SHARED_VA +
-                       AGENTOS_BLK_MEDIA_DMA_OFF(AOS_VMM_BLK_MEDIA_ID) +
+                       AGENTOS_BLK_MEDIA_DMA_OFF(g_media_id) +
                        AGENTOS_BLK_SHARED_DMA_DATA_OFF);
 }
 
@@ -78,7 +74,7 @@ static uint32_t host_blk_call(uint32_t op, uint64_t sector, uint32_t count,
     seL4_SetMR(1, 20u);
     seL4_SetMR(2, payload0);
     seL4_SetMR(3, payload1);
-    seL4_SetMR(4, (seL4_Word)AOS_VMM_BLK_MEDIA_ID);
+    seL4_SetMR(4, (seL4_Word)g_media_id);
     seL4_SetMR(5, 0u);
     seL4_SetMR(6, 0u);
     seL4_SetMR(7, 0u);
@@ -98,6 +94,39 @@ static uint32_t host_blk_call(uint32_t op, uint64_t sector, uint32_t count,
                     (uint64_t)(uint32_t)(payload0 >> 32);
     }
     return (uint32_t)payload0;
+}
+
+static uint32_t host_blk_transfer(uint32_t op, uint64_t sector,
+                                  uint8_t *client_data, uint32_t nbytes)
+{
+    uint8_t *dma = host_dma();
+    uint32_t sectors_left = nbytes / AOS_HOST_BLK_SECTOR_SIZE;
+    uint32_t byte_offset = 0u;
+
+    while (sectors_left > 0u) {
+        uint32_t sectors = sectors_left;
+        uint32_t bytes;
+        uint32_t rc;
+
+        if (sectors > AGENTOS_BLK_SHARED_DMA_MAX_SECTORS) {
+            sectors = AGENTOS_BLK_SHARED_DMA_MAX_SECTORS;
+        }
+        bytes = sectors * AOS_HOST_BLK_SECTOR_SIZE;
+        if (op == AOS_HOST_BLK_OP_WRITE) {
+            aos_copy(dma, client_data + byte_offset, bytes);
+        }
+        rc = host_blk_call(op, sector, sectors, 0);
+        if (rc != AOS_HOST_BLK_OK) {
+            return rc;
+        }
+        if (op == AOS_HOST_BLK_OP_READ) {
+            aos_copy(client_data + byte_offset, dma, bytes);
+        }
+        sector += sectors;
+        sectors_left -= sectors;
+        byte_offset += bytes;
+    }
+    return AOS_HOST_BLK_OK;
 }
 
 #define ISO9660_SECTOR_SIZE 2048u
@@ -287,7 +316,6 @@ bool aos_vmm_virtio_blk_load_casper_initrd(uintptr_t guest_dest,
 static aos_blk_resp_status_t host_blk_backend(
     void *ctx, aos_blk_virt_client_t *client, const aos_blk_req_t *req)
 {
-    uint8_t *dma = host_dma();
     uint32_t nbytes = (uint32_t)req->count * AOS_BLK_TRANSFER_SIZE;
     uint64_t data_end = req->io_or_offset + (uint64_t)nbytes;
     uint64_t sector = req->block_number *
@@ -297,17 +325,26 @@ static aos_blk_resp_status_t host_blk_backend(
     uint32_t rc;
     (void)ctx;
 
-    if (data_end > AOS_BLK_DATA_BYTES ||
-        nbytes > AGENTOS_BLK_SHARED_DMA_SIZE) {
+    g_host_request_count++;
+    if (g_host_request_count <= 16u ||
+        (g_host_request_count & (g_host_request_count - 1u)) == 0u) {
+        LOG_VMM("emulated virtio-blk: media=%u request=%u code=%u block=%lu count=%u offset=%lu\n",
+                (unsigned)g_media_id, (unsigned)g_host_request_count,
+                (unsigned)req->code, (unsigned long)req->block_number,
+                (unsigned)req->count, (unsigned long)req->io_or_offset);
+    }
+    if (data_end > AOS_BLK_DATA_BYTES) {
+        LOG_VMM_ERR("emulated virtio-blk: request exceeds staging region bytes=%u end=%lu\n",
+                    (unsigned)nbytes, (unsigned long)data_end);
         return AOS_BLK_RESP_ERR_INVALID_PARAM;
     }
 
     switch (req->code) {
     case AOS_BLK_REQ_READ:
-        rc = host_blk_call(AOS_HOST_BLK_OP_READ, sector, sectors, 0);
+        rc = host_blk_transfer(
+            AOS_HOST_BLK_OP_READ, sector,
+            client->data + (uint32_t)req->io_or_offset, nbytes);
         if (rc == AOS_HOST_BLK_OK) {
-            aos_copy(client->data + (uint32_t)req->io_or_offset,
-                     dma, nbytes);
             if (!g_host_read_pumped) {
                 g_host_read_pumped = 1;
                 LOG_VMM("emulated virtio-blk: host-media read sector=%lu count=%u\n",
@@ -316,9 +353,9 @@ static aos_blk_resp_status_t host_blk_backend(
         }
         break;
     case AOS_BLK_REQ_WRITE:
-        aos_copy(dma, client->data + (uint32_t)req->io_or_offset,
-                 nbytes);
-        rc = host_blk_call(AOS_HOST_BLK_OP_WRITE, sector, sectors, 0);
+        rc = host_blk_transfer(
+            AOS_HOST_BLK_OP_WRITE, sector,
+            client->data + (uint32_t)req->io_or_offset, nbytes);
         break;
     case AOS_BLK_REQ_FLUSH:
     case AOS_BLK_REQ_BARRIER:
@@ -331,6 +368,8 @@ static aos_blk_resp_status_t host_blk_backend(
     if (rc == AOS_HOST_BLK_OK) {
         return AOS_BLK_RESP_OK;
     }
+    LOG_VMM_ERR("emulated virtio-blk: host request failed media=%u rc=%u\n",
+                (unsigned)g_media_id, (unsigned)rc);
     if (rc == AOS_HOST_BLK_ERR_NODEV) {
         return AOS_BLK_RESP_ERR_NO_DEVICE;
     }
@@ -340,12 +379,20 @@ static aos_blk_resp_status_t host_blk_backend(
     return AOS_BLK_RESP_ERR_IO;
 }
 
-void aos_vmm_virtio_blk_init(void)
+void aos_vmm_virtio_blk_init(uint32_t media_id)
 {
     uint8_t *region = g_blk_region;
     uint32_t i;
     uint64_t host_sectors = 0u;
     uint32_t host_info_rc;
+
+    if (media_id >= AOS_HOST_BLK_MEDIA_COUNT) {
+        LOG_VMM_ERR("emulated virtio-blk: invalid host media %u\n",
+                    (unsigned)media_id);
+        return;
+    }
+    g_media_id = media_id;
+    g_host_request_count = 0u;
 
     for (i = 0; i < AOS_BLK_SHMEM_SIZE; i++) {
         region[i] = 0;
@@ -376,7 +423,7 @@ void aos_vmm_virtio_blk_init(void)
         aos_blk_virt_set_backend(&g_aos_virt, host_blk_backend, 0);
         g_host_backend = 1;
         LOG_VMM("emulated virtio-blk: agentOS host media %u ready sectors=%lu\n",
-                (unsigned)AOS_VMM_BLK_MEDIA_ID,
+                (unsigned)g_media_id,
                 (unsigned long)host_sectors);
     } else {
         LOG_VMM("emulated virtio-blk: host unavailable rc=%u; using RAM backend\n",
@@ -415,6 +462,12 @@ void aos_vmm_virtio_blk_init(void)
         LOG_VMM_ERR("emulated virtio-blk: virtio_mmio_blk_init failed\n");
         return;
     }
+    /*
+     * FreeBSD arm64 rejects VIRTIO_BLK_F_SIZE_MAX values below MAXPHYS.
+     * The extra transfer cell accommodates a MAXPHYS request beginning at a
+     * non-4K sector; host IPC then chunks it through the bounded DMA window.
+     */
+    g_aos_blk.config.size_max = AOS_BLK_GUEST_MAX_SEGMENT_SIZE;
 
     g_aos_blk_ready = 1;
     LOG_VMM("emulated virtio-blk IPA 0x%lx IRQ %u (sDDF %s backend)\n",
@@ -428,6 +481,7 @@ void aos_vmm_virtio_blk_after_fault(void)
     virtio_queue_handler_t *vq;
     uint32_t status;
     uint32_t n;
+    uint32_t rounds = 0u;
 
     if (!g_aos_blk_ready) {
         return;
@@ -446,20 +500,33 @@ void aos_vmm_virtio_blk_after_fault(void)
                 (unsigned)g_aos_client.info->capacity);
     }
 
-    n = aos_blk_virt_pump(&g_aos_virt);
-    if (!g_aos_blk_pumped && n > 0u) {
-        g_aos_blk_pumped = 1;
-        LOG_VMM("emulated virtio-blk: pumped %u request(s)\n", n);
-    }
-
     vq = &g_aos_blk.virtio_device.vqs[VIRTIO_BLK_DEFAULT_VIRTQ];
     if (!vq->ready || vq->virtq.avail == NULL) {
         return;
     }
 
-    (void)virtio_blk_handle_resp(&g_aos_blk);
-    /* Keep plugged so a later handle_resp enqueue cannot unplug. */
-    if (g_queue.req_queue) {
-        g_queue.req_queue->plugged = true;
+    /*
+     * This backend is synchronous and has no blk_virt notification cap.
+     * handle_resp() can consume additional guest descriptors and enqueue more
+     * sDDF requests after the pump has run, so drain request/response batches
+     * until no new work remains.
+     */
+    do {
+        n = aos_blk_virt_pump(&g_aos_virt);
+        if (!g_aos_blk_pumped && n > 0u) {
+            g_aos_blk_pumped = 1;
+            LOG_VMM("emulated virtio-blk: pumped %u request(s)\n", n);
+        }
+        (void)virtio_blk_handle_resp(&g_aos_blk);
+        /* Keep plugged so a later handle_resp enqueue cannot signal cap 0. */
+        if (g_queue.req_queue) {
+            g_queue.req_queue->plugged = true;
+        }
+        rounds++;
+    } while (n > 0u &&
+             rounds <= (AOS_BLK_QUEUE_CAPACITY * 2u + 1u));
+
+    if (n > 0u) {
+        LOG_VMM_ERR("emulated virtio-blk: synchronous drain did not quiesce\n");
     }
 }

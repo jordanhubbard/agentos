@@ -76,7 +76,9 @@ static int test_abi_sizes(void)
     CHECK(sizeof(aos_blk_storage_info_t) == 88u);
     CHECK(offsetof(aos_blk_storage_info_t, capacity) == 80u);
     CHECK(AOS_BLK_TRANSFER_SIZE == 4096u);
-    CHECK(AOS_BLK_QUEUE_CAPACITY == 16u);
+    CHECK(AOS_BLK_QUEUE_CAPACITY == 128u);
+    CHECK(AOS_BLK_GUEST_MAX_SEGMENT_SIZE == 0x100000u);
+    CHECK(AOS_BLK_DATA_CELLS == 257u);
     CHECK(AOS_VIRTIO_BLK_GUEST_IPA == 0x0A020000UL);
     CHECK(AOS_VIRTIO_BLK_GUEST_IPA != 0x0A000000UL);
     CHECK(AOS_VIRTIO_BLK_GUEST_IPA != AOS_VIRTIO_NET_GUEST_IPA);
@@ -225,6 +227,7 @@ static int test_drop_when_resp_full(void)
 typedef struct {
     uint32_t calls;
     aos_blk_req_code_t code;
+    uint16_t count;
 } backend_probe_t;
 
 static aos_blk_resp_status_t probe_backend(
@@ -233,6 +236,7 @@ static aos_blk_resp_status_t probe_backend(
     backend_probe_t *probe = (backend_probe_t *)ctx;
     probe->calls++;
     probe->code = req->code;
+    probe->count = req->count;
     if (req->code == AOS_BLK_REQ_READ) {
         memset(client->data + (uint32_t)req->io_or_offset, 0xa5,
                (size_t)req->count * AOS_BLK_TRANSFER_SIZE);
@@ -262,6 +266,29 @@ static int test_external_backend(void)
     PASS("test_external_backend");
 }
 
+static int test_maxphys_backend_request(void)
+{
+    aos_blk_virt_t v;
+    aos_blk_virt_client_t c;
+    aos_blk_resp_t resp;
+    backend_probe_t probe = {0};
+
+    if (setup_one(&v, &c) != 0) {
+        return 1;
+    }
+    aos_blk_virt_set_backend(&v, probe_backend, &probe);
+    CHECK(enqueue_req(&c, AOS_BLK_REQ_READ, 0, 42,
+                      AOS_BLK_DATA_CELLS, 124) == 0);
+    CHECK(aos_blk_virt_pump(&v) == 1u);
+    CHECK(dequeue_resp(&c, &resp) == 0);
+    CHECK(resp.status == AOS_BLK_RESP_OK);
+    CHECK(resp.success_count == AOS_BLK_DATA_CELLS);
+    CHECK(probe.calls == 1u);
+    CHECK(probe.count == AOS_BLK_DATA_CELLS);
+    CHECK(c.data[AOS_BLK_DATA_BYTES - 1u] == 0xa5);
+    PASS("test_maxphys_backend_request");
+}
+
 int main(void)
 {
     int failed = 0;
@@ -274,6 +301,7 @@ int main(void)
     failed += test_two_clients_share_disk();
     failed += test_drop_when_resp_full();
     failed += test_external_backend();
+    failed += test_maxphys_backend_request();
     if (failed) {
         printf("%d test(s) failed\n", failed);
         return 1;

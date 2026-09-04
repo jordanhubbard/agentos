@@ -106,7 +106,7 @@ static inline bool virtio_blk_mmio_set_driver_features(struct virtio_device *dev
     switch (dev->regs.DriverFeaturesSel) {
     /* feature bits 0 to 31 */
     case 0:
-        success = (features == device_features);
+        success = (features & ~device_features) == 0u;
         break;
     /* features bits 32 to 63 */
     case 1:
@@ -120,6 +120,8 @@ static inline bool virtio_blk_mmio_set_driver_features(struct virtio_device *dev
 
     if (success) {
         dev->features_happy = 1;
+    } else {
+        dev->features_happy = 0;
     }
 
     return success;
@@ -213,11 +215,6 @@ static inline bool sddf_make_req_check(struct virtio_blk_device *state, uint16_t
 {
     /* Check if ialloc is full, if data region is full, if req queue is full.
        If these all pass then this request can be handled successfully */
-
-    /* A sanity check that all the maths checks out. <=2 because we have negotiated
-       with the driver to only send 1 4k segment at any given time. And 2 because such segment
-       can sit between 2 sDDF block transfer window. */
-    assert(sddf_count <= 2);
 
     if (ialloc_full(&state->ialloc)) {
         LOG_BLOCK("Request bookkeeping array is full\n");
@@ -948,14 +945,15 @@ static struct virtio_device *virtio_blk_init(struct virtio_blk_device *blk_dev, 
                               ? (data_region_size / BLK_TRANSFER_SIZE)
                               : SDDF_MAX_DATA_CELLS;
 
-    assert(num_sddf_cells == queue_capacity);
+    assert(num_sddf_cells <= SDDF_MAX_DATA_CELLS);
+    assert(queue_capacity <= SDDF_MAX_QUEUE_CAPACITY);
 
     virtio_blk_config_init(blk_dev);
 
     fsmalloc_init(&blk_dev->fsmalloc, data_region, BLK_TRANSFER_SIZE, num_sddf_cells, &blk_dev->fsmalloc_avail_bitarr,
                   blk_dev->fsmalloc_avail_bitarr_words, roundup_bits2words64(num_sddf_cells));
 
-    ialloc_init(&blk_dev->ialloc, blk_dev->ialloc_idxlist, num_sddf_cells);
+    ialloc_init(&blk_dev->ialloc, blk_dev->ialloc_idxlist, queue_capacity);
 
     return dev;
 }

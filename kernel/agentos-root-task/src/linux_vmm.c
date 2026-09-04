@@ -1419,7 +1419,7 @@ void init(void)
     aos_vmm_virtio_net_init();
 
     /* Emulated virtio-blk at IPA 0x0A020000 (faults here, sDDF pump). */
-    aos_vmm_virtio_blk_init();
+    aos_vmm_virtio_blk_init(AOS_HOST_BLK_MEDIA_UBUNTU);
 #if defined(AGENTOS_GUEST_UBUNTU_LIVE)
     size_t live_initrd_size = 0u;
     if (!aos_vmm_virtio_blk_load_casper_initrd(

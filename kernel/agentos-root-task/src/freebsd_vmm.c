@@ -289,8 +289,8 @@ static void freebsd_log_irq_state(const char *where, unsigned count)
 
 static void guest_console_write(uint8_t byte)
 {
+    /* Guest PL011 output belongs to this guest's virtual TTY. */
     console_tx_push(byte);
-    serial_log_putc(&g_vmm_log, (char)byte);
 }
 
 static bool input_event_to_byte(uint32_t event_type, uint32_t keycode,
@@ -485,7 +485,7 @@ static bool freebsd_vmm_prepare_runtime(void)
      * libvmm installs its MMIO fault handler and virtual IRQ here; no host
      * transport or hardware IRQ capability enters this VMM.
      */
-    aos_vmm_virtio_blk_init();
+    aos_vmm_virtio_blk_init(AOS_HOST_BLK_MEDIA_FREEBSD);
 
     if (!virq_register(GUEST_BOOT_VCPU_ID, FREEBSD_UART_IRQ, &uart_ack, NULL)) {
         LOG_VMM_ERR("Failed to register UART IRQ %u\n", FREEBSD_UART_IRQ);

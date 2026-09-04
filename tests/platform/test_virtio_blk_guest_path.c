@@ -278,10 +278,26 @@ int main(void)
     (void)tap_ok(src_contains("platform/include/platform/blk_host_layout.h",
                               "AGENTOS_BLK_MEDIA_STRIDE") &&
                  src_contains("platform/blk-virt/vmm_virtio_blk.c",
-                              "AOS_VMM_BLK_MEDIA_ID") &&
+                              "AGENTOS_BLK_MEDIA_DMA_OFF(g_media_id)") &&
+                 src_contains("kernel/agentos-root-task/src/linux_vmm.c",
+                              "AOS_HOST_BLK_MEDIA_UBUNTU") &&
+                 src_contains("kernel/agentos-root-task/src/freebsd_vmm.c",
+                              "AOS_HOST_BLK_MEDIA_FREEBSD") &&
                  src_contains("kernel/agentos-root-task/src/virtio_blk.c",
                               "AOS_HOST_BLK_MEDIA_FREEBSD"),
                  "canonical driver separates Ubuntu and FreeBSD queues and DMA");
+    (void)tap_ok(AOS_BLK_GUEST_MAX_SEGMENT_SIZE == 0x100000u &&
+                 AOS_BLK_DATA_CELLS == 257u &&
+                 src_contains("platform/blk-virt/vmm_virtio_blk.c",
+                              "AGENTOS_BLK_SHARED_DMA_MAX_SECTORS") &&
+                 src_contains("platform/blk-virt/vmm_virtio_blk.c",
+                              "g_aos_blk.config.size_max ="),
+                 "FreeBSD MAXPHYS requests are staged and chunked to host DMA");
+    (void)tap_ok(src_contains("platform/blk-virt/vmm_virtio_blk.c",
+                              "handle_resp() can consume additional guest descriptors") &&
+                 src_contains("platform/blk-virt/vmm_virtio_blk.c",
+                              "rounds <= (AOS_BLK_QUEUE_CAPACITY * 2u + 1u)"),
+                 "synchronous block backend drains deferred requests to quiescence");
     (void)tap_ok(src_contains("kernel/agentos-root-task/src/freebsd_vmm.c",
                               "MSG_GUEST_CONSOLE_DRAIN") &&
                  src_contains("xtask/src/cmd_test.rs",
