@@ -412,6 +412,7 @@ void pd_main(seL4_CPtr my_ep, seL4_CPtr ns_ep) { linux_vmm_main(my_ep, ns_ep); }
 #include "sel4_boot.h"    /* seL4_IRQHandler_Ack, seL4_CPtr               */
 #include "sel4_ipc.h"     /* sel4_call, sel4_msg_t                        */
 #include "sel4_client.h"  /* sel4_client_t, sel4_client_call              */
+#include "serial_log.h"   /* non-driver diagnostics through serial_pd      */
 
 /* Raw agentOS CNode layout constants.
  *
@@ -450,36 +451,31 @@ __attribute__((used)) seL4_Word    microkit_ioports       = 0;
 __attribute__((used)) seL4_Word    microkit_signal_cap    = 0;
 __attribute__((used)) seL4_Word    microkit_signal_msg    = 0;
 
-/* PL011 UART on QEMU virt — direct write, no seL4_DebugPutChar needed */
-#define LINUX_VMM_UART_VA 0x10001000UL
-#define LINUX_VMM_UARTFR_TXFF (1u << 5)
-static inline void _uart_putc(char c) {
-    volatile uint32_t *fr = (volatile uint32_t *)(LINUX_VMM_UART_VA + 0x18UL);
-    volatile uint32_t *dr = (volatile uint32_t *)LINUX_VMM_UART_VA;
-    while (*fr & LINUX_VMM_UARTFR_TXFF) {
-        /* wait until the TX FIFO has room */
-    }
-    *dr = (uint32_t)(unsigned char)c;
-}
+/* linux_vmm holds only serial_pd's endpoint and transfer-page mapping. */
+static serial_log_t g_vmm_log = {
+    .ep = PD_CNODE_SLOT_SERIAL_EP,
+};
 
 void _putchar(char character)
 {
-    _uart_putc(character);
+    serial_log_putc(&g_vmm_log, character);
 }
 
-void microkit_dbg_putc(char c) { _uart_putc(c); }
+void microkit_dbg_putc(char c) { serial_log_putc(&g_vmm_log, c); }
 
 void microkit_dbg_puts(const char *s)
 {
-    for (; s && *s; s++) _uart_putc(*s);
+    serial_log_puts(&g_vmm_log, s);
 }
 
 void microkit_dbg_put32(uint32_t v)
 {
     static const char hex[] = "0123456789abcdef";
-    _uart_putc('0'); _uart_putc('x');
+    serial_log_putc(&g_vmm_log, '0');
+    serial_log_putc(&g_vmm_log, 'x');
     for (int i = 28; i >= 0; i -= 4)
-        _uart_putc(hex[(v >> i) & 0xfu]);
+        serial_log_putc(&g_vmm_log, hex[(v >> i) & 0xfu]);
+    serial_log_flush(&g_vmm_log);
 }
 
 /* seL4 IPC buffer pointer. Compiled with -D__thread= (TLS suppressed) so
@@ -498,7 +494,7 @@ static uint32_t g_guest_state = GUEST_STATE_RUNNING;
 #endif
 
 /* ── Caps resolved at init time ──────────────────────────────────────── */
-static seL4_CPtr g_serial_ep        = 0;
+static seL4_CPtr g_serial_ep        = PD_CNODE_SLOT_SERIAL_EP;
 static seL4_CPtr g_controller_ntfn_cap = 0;
 
 /* ── Per-slot affinity (AArch64) ─────────────────────────────────────── */
@@ -571,13 +567,6 @@ static uint32_t vmm_affinity[VMM_MAX_SLOTS];
 #define VIRTIO_NET_NTFN_BADGE    0x1u
 #define VIRTIO_BLK_NTFN_BADGE    0x2u
 #define VIRTIO_BLK2_NTFN_BADGE   0x4u
-/*
- * UART IRQ passthrough: id=6 in .system avoids the ids 1-5 used by channels
- * (serial_pd=1, controller=2) and virtio IRQs (3,4,5).
- * Active only in linux_vmm_test.system; in full agentOS.system id=6 is absent
- * so this badge never fires and the init guard below is a no-op.
- */
-#define UART_NTFN_BADGE          (1u << 6)
 #define VMM_IRQ_LOG_INTERVAL     100000u
 #define VMM_FAULT_BADGE_FLAG     (1ULL << 62)
 #define LINUX_VTIMER_IRQ         27u
@@ -593,9 +582,6 @@ static const seL4_CPtr g_virtio_blk_irq_cap =
     (seL4_CPtr)(AGENTOS_IRQ_CAP_BASE + 1u);
 static const seL4_CPtr g_virtio_blk2_irq_cap =
     (seL4_CPtr)(AGENTOS_IRQ_CAP_BASE + 2u);
-static const seL4_CPtr g_uart_irq_cap =
-    (seL4_CPtr)(AGENTOS_IRQ_CAP_BASE + 3u);
-
 /* ─── Guest Image Symbols ────────────────────────────────────────────── */
 /* These are linked in by package_guest_images.S */
 
@@ -754,18 +740,11 @@ static void virtio_blk2_ack(size_t vcpu_id, int irq, void *cookie)
     seL4_IRQHandler_Ack(g_virtio_blk2_irq_cap);
 }
 
-static void uart_ack(size_t vcpu_id, int irq, void *cookie)
-{
-    (void)vcpu_id; (void)irq; (void)cookie;
-    seL4_IRQHandler_Ack(g_uart_irq_cap);
-}
-
 /* ─── PL011 UART MMIO Emulation ──────────────────────────────────────────
  *
- * Ubuntu uses the PL011 UART at 0x9000000 for earlycon and ttyAMA0.  The
- * VMM emulates enough PL011 state to expose a real byte stream over the
- * guest IPC contract: guest writes are buffered for MSG_GUEST_CONSOLE_DRAIN,
- * and MSG_GUEST_SEND_INPUT bytes are presented through DR/RX interrupts.
+ * Ubuntu uses the PL011 address only for bounded earlycon output.  The DT
+ * disables the device and console=hvc0 selects virtio-console for login.
+ * These virtual registers are not backed by a physical device capability.
  */
 #define PL011_BASE   0x9000000UL
 #define PL011_SIZE   0x1000UL
@@ -890,7 +869,7 @@ static void pl011_maybe_inject_irq(void)
 static void guest_console_write(uint8_t byte)
 {
     console_tx_push(byte);
-    _uart_putc((char)byte);
+    serial_log_putc(&g_vmm_log, (char)byte);
 }
 
 static bool input_event_to_byte(uint32_t event_type, uint32_t keycode,
@@ -1478,24 +1457,6 @@ void init(void)
         seL4_IRQHandler_Ack(g_virtio_blk2_irq_cap);
     }
 
-    /*
-     * Register UART IRQ passthrough (PL011 SPI 1 → INTID 33).
-     * Only active in linux_vmm_test.system where irq id=6 is assigned.
-     * In the full agentOS system serial_pd owns IRQ 33; id=6 is absent and
-     * g_uart_irq_cap (slot 144) holds no valid cap — so we guard with a
-     * seL4_IRQHandler_Ack only if virq_register succeeds.
-     * UART_IRQ = 33: QEMU virt aarch64 PL011 SPI 1 → GIC INTID 33.
-     */
-    {
-        /* UART_IRQ in the guest's GIC address space = INTID 33 (SPI 1) */
-        const uint32_t UART_IRQ = 33u;
-        bool uart_ok = virq_register(GUEST_BOOT_VCPU_ID, UART_IRQ, &uart_ack, NULL);
-        if (uart_ok) {
-            seL4_IRQHandler_Ack(g_uart_irq_cap);
-            LOG_VMM("UART IRQ 33 passthrough registered (direct PL011 mode)\n");
-        }
-        /* If not registered, PL011 uses fault-emulation path — non-fatal */
-    }
 #endif
 
     g_linux_kernel_pc = kernel_pc;
@@ -1593,16 +1554,6 @@ static void linux_vmm_notified(seL4_Word badge)
         }
         if (!success) {
             LOG_VMM_ERR("virtio-blk1 IRQ %d dropped on inject\n", VIRTIO_BLK2_IRQ);
-        }
-    }
-
-    if (badge & (seL4_Word)UART_NTFN_BADGE) {
-        handled_irq = true;
-        /* PL011 UART IRQ 33 — used in linux_vmm_test.system (direct serial mapping).
-         * Inject INTID 33 into the guest so the PL011 driver can process RX/TX. */
-        bool success = virq_inject(33u);
-        if (!success) {
-            LOG_VMM_ERR("UART IRQ 33 dropped on inject\n");
         }
     }
 

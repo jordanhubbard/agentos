@@ -16,14 +16,17 @@
         status = "disabled";
     };
 
-    aliases {
-        serial0 = "/pl011@9000000";
+    /*
+     * Physical PL011 belongs to serial_pd.  Keep only the address-based
+     * earlycon from bootargs; suppress the normal AMBA tty driver so hvc0 is
+     * the sole usable Ubuntu console after early boot.
+     */
+    pl011@9000000 {
+        status = "disabled";
     };
 
     chosen {
-        stdout-path = "serial0:115200n8";
         bootargs = "@UBUNTU_BOOTARGS@";
-        linux,stdout-path = "serial0:115200n8";
         linux,initrd-start = <@UBUNTU_INITRD_START@>;
         linux,initrd-end = <@UBUNTU_INITRD_END@>;
     };

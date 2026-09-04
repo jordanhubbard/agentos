@@ -39,6 +39,7 @@
 #include <platform/blk_layout.h>
 #include <platform/guest_ram.h>
 #include <platform/vmm_virtio_blk.h>
+#include "serial_log.h"
 
 /* ── Raw agentOS CNode layout constants ─────────────────────────────────── */
 #define AGENTOS_VMM_TCB_CAP_BASE 266u
@@ -56,26 +57,26 @@ __attribute__((used)) seL4_Word    microkit_ioports       = 0;
 __attribute__((used)) seL4_Word    microkit_signal_cap    = 0;
 __attribute__((used)) seL4_Word    microkit_signal_msg    = 0;
 
-/* PL011 UART on QEMU virt — direct write, no seL4_DebugPutChar needed */
-#define FREEBSD_VMM_UART_VA 0x10001000UL
-static inline void _uart_putc(char c) {
-    volatile uint32_t *dr = (volatile uint32_t *)FREEBSD_VMM_UART_VA;
-    *dr = (uint32_t)(unsigned char)c;
-}
+/* FreeBSD VMM diagnostics are serialized by the generic serial driver. */
+static serial_log_t g_vmm_log = {
+    .ep = PD_CNODE_SLOT_SERIAL_EP,
+};
 
-void microkit_dbg_putc(char c) { _uart_putc(c); }
+void microkit_dbg_putc(char c) { serial_log_putc(&g_vmm_log, c); }
 
 void microkit_dbg_puts(const char *s)
 {
-    for (; s && *s; s++) _uart_putc(*s);
+    serial_log_puts(&g_vmm_log, s);
 }
 
 void microkit_dbg_put32(uint32_t v)
 {
     static const char hex[] = "0123456789abcdef";
-    _uart_putc('0'); _uart_putc('x');
+    serial_log_putc(&g_vmm_log, '0');
+    serial_log_putc(&g_vmm_log, 'x');
     for (int i = 28; i >= 0; i -= 4)
-        _uart_putc(hex[(v >> i) & 0xfu]);
+        serial_log_putc(&g_vmm_log, hex[(v >> i) & 0xfu]);
+    serial_log_flush(&g_vmm_log);
 }
 
 seL4_IPCBuffer *__sel4_ipc_buffer = NULL;
@@ -289,7 +290,7 @@ static void freebsd_log_irq_state(const char *where, unsigned count)
 static void guest_console_write(uint8_t byte)
 {
     console_tx_push(byte);
-    _uart_putc((char)byte);
+    serial_log_putc(&g_vmm_log, (char)byte);
 }
 
 static bool input_event_to_byte(uint32_t event_type, uint32_t keycode,

@@ -754,6 +754,17 @@ test-integration:
 	    echo "FAIL: tests/platform/test_virtio_console_guest_path.c"; \
 	    status=1; \
 	fi; \
+	if gcc -idirafter kernel/agentos-root-task/include \
+	        -DAOS_REPO_ROOT='"$(ROOT_DIR)"' \
+	        tests/platform/test_uart_cap_ownership.c \
+	        kernel/agentos-root-task/src/system_desc_aarch64.c \
+	        -o $(BUILD_TMP_DIR)/test_uart_cap_ownership 2>&1 \
+	    && $(BUILD_TMP_DIR)/test_uart_cap_ownership; then \
+	    echo "PASS: tests/platform/test_uart_cap_ownership.c"; \
+	else \
+	    echo "FAIL: tests/platform/test_uart_cap_ownership.c"; \
+	    status=1; \
+	fi; \
 	echo ""; \
 	echo "Integration tests complete."; \
 	echo ""; \

@@ -7,14 +7,12 @@ MICROKIT_BOARD := qemu_virt_aarch64
 BOARD_ARCH     := aarch64
 BOARD_NATIVE   := 0
 
-# Console UART: on QEMU the PL011 at 0x9000000 (IRQ 33) is owned by
-# linux_vmm for guest passthrough — console_shell must not map it.
-# console_shell output goes through microkit_dbg_puts() (seL4 debug serial)
-# and the ring buffer; UART MMIO code is excluded by leaving these unset.
-BOARD_UART_PHYS  :=
-BOARD_UART_SIZE  :=
-BOARD_UART_TYPE  :=
-BOARD_UART_IRQ   :=
+# Console UART: serial_pd exclusively owns QEMU virt PL011 after root-task
+# bootstrap.  VMMs and other PDs receive only serial_pd endpoint capabilities.
+BOARD_UART_PHYS  := 0x09000000
+BOARD_UART_SIZE  := 0x1000
+BOARD_UART_TYPE  := pl011
+BOARD_UART_IRQ   := 33
 
 # QEMU launch configuration
 QEMU_BIN     := qemu-system-aarch64

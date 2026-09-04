@@ -38,6 +38,7 @@
 #include "contracts/log_drain_contract.h"
 #include "contracts/agent_pool_contract.h"
 #include "sel4_ipc.h"
+#include "serial_log.h"
 #include "system_desc.h"
 #include <stdint.h>
 #include <stdbool.h>
@@ -65,26 +66,20 @@
 
 #define CC_PD_VIRTIO_VA   0x10002000UL   /* VirtIO MMIO page mapped by root task */
 #define CC_PD_STARTUP_VA  0x10003000UL   /* Startup record: VQ PAs from root task */
-#define CC_PD_UART_DBG_VA 0x10004000UL   /* PL011 UART0 for direct debug output */
 #define VMMIO_SLOT_OFF    (2u * 0x200u)  /* bus.2 → offset +0x400 within the page */
 
-/* ─── Direct UART0 debug output (bypasses CONFIG_PRINTING) ──────────────── */
+/* ─── Diagnostics through the generic serial driver ────────────────────── */
 
-#define CC_UART_DR   (*(volatile uint32_t *)(CC_PD_UART_DBG_VA + 0x000u))
-#define CC_UART_FR   (*(volatile uint32_t *)(CC_PD_UART_DBG_VA + 0x018u))
-#define CC_FR_TXFF   (1u << 5)
-
+static serial_log_t g_cc_log = {
+    .ep = PD_CNODE_SLOT_SERIAL_EP,
+};
 static void cc_dbg_putc(char c)
 {
-    /* No TXFF spin: with seL4 MCS 10ms budget, a tight spin exhausts the
-     * budget before QEMU's UART FIFO (16 bytes at 115200) gets a chance to
-     * drain.  Writing unconditionally is safe on QEMU TCG; worst case one
-     * character is silently dropped when the FIFO is momentarily full.   */
-    CC_UART_DR = (uint32_t)(unsigned char)c;
+    serial_log_putc(&g_cc_log, c);
 }
 static void cc_dbg_puts(const char *s)
 {
-    for (; *s; s++) cc_dbg_putc(*s);
+    serial_log_puts(&g_cc_log, s);
 }
 static void cc_dbg_hex(uint64_t v)
 {
@@ -1672,12 +1667,6 @@ void cc_pd_main(seL4_CPtr my_ep, seL4_CPtr ns_ep)
 {
     (void)my_ep;
     (void)ns_ep;
-
-    /* Canary: unconditional DR write — appears iff cc_pd runs + UART mapped */
-    *(volatile uint32_t *)CC_PD_UART_DBG_VA = (uint32_t)'[';
-    *(volatile uint32_t *)CC_PD_UART_DBG_VA = (uint32_t)'@';
-    *(volatile uint32_t *)CC_PD_UART_DBG_VA = (uint32_t)']';
-    *(volatile uint32_t *)CC_PD_UART_DBG_VA = (uint32_t)'\n';
 
     /* Initialise session table */
     for (uint32_t i = 0u; i < CC_MAX_SESSIONS; i++) {

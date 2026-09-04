@@ -101,6 +101,10 @@ int main(void)
        "Ubuntu DTB advertises agentOS net/blk and no QEMU passthrough");
     ok(contains("kernel/agentos-root-task/vmm.mk", "console=hvc0"),
        "Ubuntu primary console is hvc0");
+    ok(contains(overlay, "pl011@9000000") &&
+       contains(overlay, "status = \"disabled\"") &&
+       !contains(overlay, "stdout-path"),
+       "PL011 is earlycon-only and not an advertised Ubuntu console");
     ok(contains_after(vmm, "aos_vmm_virtio_console_init()",
                      "aos_vmm_virtio_console_after_fault()"),
        "linux_vmm initializes and services virtio-console");
