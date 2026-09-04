@@ -25,6 +25,7 @@ BOARD_DIR ?= $(AGENTOS_ROOT)/microkit-sdk-2.1.0/board/$(AGENTOS_BOARD)/$(SEL4_PR
 # Guest OS selection: buildroot (default) or ubuntu
 GUEST_OS ?= buildroot
 VMM_DUAL_GUEST ?= 0
+UBUNTU_BOOT_MODE ?= e2e
 AGENTOS_IMAGES ?= $(AGENTOS_ROOT)/build/guest-images
 
 # Buildroot guest: download libvmm example images (kernel + initrd)
@@ -34,22 +35,41 @@ IMAGES_URL             := https://trustworthy.systems/Downloads/libvmm/images
 
 # Ubuntu guest: local Ubuntu 26.04 live ISO assets staged by xtask fetch-guest.
 UBUNTU_KERNEL := $(AGENTOS_IMAGES)/ubuntu-26.04-aarch64-Image
-UBUNTU_INITRD := $(AGENTOS_IMAGES)/ubuntu-26.04-aarch64-initrd
+UBUNTU_E2E_INITRD := $(AGENTOS_IMAGES)/ubuntu-26.04-aarch64-initrd
+UBUNTU_LIVE_INITRD := $(AGENTOS_IMAGES)/ubuntu-26.04-aarch64-live-initrd
+UBUNTU_LIVE_PLACEHOLDER := $(BUILD_DIR)/ubuntu-26.04-live-initrd.placeholder
 UBUNTU_DTS_OVERLAY := $(BUILD_DIR)/ubuntu-26.04-overlay.dts
-ifeq ($(VMM_DUAL_GUEST),1)
+ifeq ($(UBUNTU_BOOT_MODE),live)
+UBUNTU_RAM_BASE := 0x40000000
+UBUNTU_RAM_NODE := 40000000
+UBUNTU_RAM_SIZE := 0x40000000
+UBUNTU_INITRD_START := 0x50000000
+else ifeq ($(VMM_DUAL_GUEST),1)
 UBUNTU_RAM_BASE := 0xc0000000
 UBUNTU_RAM_NODE := c0000000
+UBUNTU_RAM_SIZE := 0x20000000
 UBUNTU_INITRD_START := 0xd0000000
 else
 UBUNTU_RAM_BASE := 0x40000000
 UBUNTU_RAM_NODE := 40000000
+UBUNTU_RAM_SIZE := 0x20000000
 UBUNTU_INITRD_START := 0x50000000
 endif
+ifeq ($(UBUNTU_BOOT_MODE),live)
+UBUNTU_INITRD := $(UBUNTU_LIVE_INITRD)
+UBUNTU_BOOTARGS := earlycon=pl011,0x9000000 console=hvc0 boot=casper noprompt systemd.unit=console-getty.service systemd.wants=systemd-user-sessions.service systemd.mask=ldconfig.service systemd.mask=systemd-udev-trigger.service panic=-1
+else
+UBUNTU_INITRD := $(UBUNTU_E2E_INITRD)
 UBUNTU_BOOTARGS := earlycon=pl011,0x9000000 console=hvc0 rdinit=/init panic=-1 ip=dhcp
+endif
 
 ifeq ($(GUEST_OS),ubuntu)
 LINUX_IMAGE  := $(UBUNTU_KERNEL)
+ifeq ($(UBUNTU_BOOT_MODE),live)
+INITRD_IMAGE := $(UBUNTU_LIVE_PLACEHOLDER)
+else
 INITRD_IMAGE := $(UBUNTU_INITRD)
+endif
 DTS_OVERLAY_FILE := $(UBUNTU_DTS_OVERLAY)
 else
 LINUX_IMAGE  := $(BUILD_DIR)/$(BUILDROOT_LINUX_IMAGE)
@@ -96,14 +116,17 @@ VMM_CFLAGS := \
 ifeq ($(VMM_DUAL_GUEST),1)
 VMM_CFLAGS += -DAGENTOS_GUEST_BOTH=1
 endif
+ifeq ($(UBUNTU_BOOT_MODE),live)
+VMM_CFLAGS += -DAGENTOS_GUEST_UBUNTU_LIVE=1
+endif
 
 VMM_CONFIG_STAMP := $(BUILD_DIR)/vmm-$(GUEST_OS).stamp
 
 $(VMM_CONFIG_STAMP): FORCE
 	@mkdir -p $(BUILD_DIR)
 	@tmp="$@.tmp"; \
-	printf 'GUEST_OS=%s\nVMM_DUAL_GUEST=%s\nSEL4_PROFILE=%s\n' \
-		'$(GUEST_OS)' '$(VMM_DUAL_GUEST)' '$(SEL4_PROFILE)' > "$$tmp"; \
+	printf 'GUEST_OS=%s\nVMM_DUAL_GUEST=%s\nUBUNTU_BOOT_MODE=%s\nSEL4_PROFILE=%s\n' \
+		'$(GUEST_OS)' '$(VMM_DUAL_GUEST)' '$(UBUNTU_BOOT_MODE)' '$(SEL4_PROFILE)' > "$$tmp"; \
 	if test -f "$@" && cmp -s "$$tmp" "$@"; then rm -f "$$tmp"; else mv "$$tmp" "$@"; fi
 
 .PHONY: vmm-all vmm-clean FORCE
@@ -116,9 +139,13 @@ endif
 
 # ─── Ubuntu kernel/initrd: stage local ISO and extract boot assets ────────
 ifeq ($(GUEST_OS),ubuntu)
-$(UBUNTU_KERNEL) $(UBUNTU_INITRD):
+$(UBUNTU_KERNEL) $(UBUNTU_E2E_INITRD) $(UBUNTU_LIVE_INITRD):
 	@echo "[VMM] Fetching Ubuntu 26.04 boot assets (via xtask fetch-guest)..."
 	cargo xtask fetch-guest --os ubuntu --output-dir $(AGENTOS_IMAGES)
+
+$(UBUNTU_LIVE_PLACEHOLDER):
+	@mkdir -p $(BUILD_DIR)
+	@printf '\0' > $@
 endif
 
 # ─── Download buildroot guest images ─────────────────────────────────────
@@ -154,6 +181,7 @@ $(UBUNTU_DTS_OVERLAY): $(KERNEL_SRC_DIR)/ubuntu-iso-overlay.dts.in $(KERNEL_SRC_
 		-e 's|@UBUNTU_BOOTARGS@|$(UBUNTU_BOOTARGS)|g' \
 		-e 's|@UBUNTU_RAM_NODE@|$(UBUNTU_RAM_NODE)|g' \
 		-e 's|@UBUNTU_RAM_BASE@|0x00 $(UBUNTU_RAM_BASE)|g' \
+		-e 's|@UBUNTU_RAM_SIZE@|$(UBUNTU_RAM_SIZE)|g' \
 		-e 's|@UBUNTU_INITRD_START@|0x00 $(UBUNTU_INITRD_START)|g' \
 		-e "s|@UBUNTU_INITRD_END@|0x00 $$end_hex|g" \
 		$< > $@

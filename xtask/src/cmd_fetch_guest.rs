@@ -19,6 +19,7 @@ const UBUNTU_ISO_URL: &str =
 const UBUNTU_IMAGE_NAME: &str = "ubuntu-26.04-aarch64.iso";
 const UBUNTU_KERNEL_NAME: &str = "ubuntu-26.04-aarch64-Image";
 const UBUNTU_INITRD_NAME: &str = "ubuntu-26.04-aarch64-initrd";
+const UBUNTU_LIVE_INITRD_NAME: &str = "ubuntu-26.04-aarch64-live-initrd";
 
 const FREEBSD_VERSION: &str = "15.0";
 const FREEBSD_ISO_NAME: &str = "FreeBSD-15.0-RELEASE-arm64-aarch64-dvd1.iso";
@@ -128,6 +129,7 @@ fn fetch_ubuntu(output_dir: &Path) -> anyhow::Result<()> {
         UBUNTU_ISO_URL,
     )?;
     extract_ubuntu_initrd(&iso, &output_dir.join(UBUNTU_INITRD_NAME))?;
+    extract_ubuntu_live_initrd(&iso, &output_dir.join(UBUNTU_LIVE_INITRD_NAME))?;
     extract_ubuntu_kernel(&iso, &output_dir.join(UBUNTU_KERNEL_NAME))?;
     println!(
         "[fetch-guest] Ubuntu {} assets ready under {}",
@@ -135,6 +137,39 @@ fn fetch_ubuntu(output_dir: &Path) -> anyhow::Result<()> {
         output_dir.display()
     );
     Ok(())
+}
+
+fn extract_ubuntu_live_initrd(iso: &Path, initrd_dest: &Path) -> anyhow::Result<()> {
+    extract_iso_file(iso, "casper/initrd", initrd_dest)?;
+    anyhow::ensure!(
+        fs::metadata(initrd_dest).map(|m| m.len()).unwrap_or(0) > 1024 * 1024,
+        "Ubuntu casper initrd is unexpectedly small: {}",
+        initrd_dest.display()
+    );
+    println!(
+        "[fetch-guest] Ubuntu Casper initrd FNV-1a: 0x{:08x}",
+        file_fnv1a(initrd_dest)?
+    );
+    Ok(())
+}
+
+fn file_fnv1a(path: &Path) -> anyhow::Result<u32> {
+    let mut file =
+        fs::File::open(path).with_context(|| format!("failed to open {}", path.display()))?;
+    let mut hash = 2166136261u32;
+    let mut buf = [0u8; 64 * 1024];
+    loop {
+        let n = file
+            .read(&mut buf)
+            .with_context(|| format!("failed to read {}", path.display()))?;
+        if n == 0 {
+            break;
+        }
+        for byte in &buf[..n] {
+            hash = (hash ^ u32::from(*byte)).wrapping_mul(16777619u32);
+        }
+    }
+    Ok(hash)
 }
 
 fn extract_ubuntu_initrd(_iso: &Path, initrd_dest: &Path) -> anyhow::Result<()> {

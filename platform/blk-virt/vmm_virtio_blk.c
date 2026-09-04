@@ -90,11 +90,200 @@ static uint32_t host_blk_call(uint32_t op, uint64_t sector, uint32_t count,
     return (uint32_t)payload0;
 }
 
+#define ISO9660_SECTOR_SIZE 2048u
+
+static uint8_t g_iso_sector[ISO9660_SECTOR_SIZE];
+
+static uint32_t read_le32(const uint8_t *p)
+{
+    return (uint32_t)p[0] |
+           ((uint32_t)p[1] << 8) |
+           ((uint32_t)p[2] << 16) |
+           ((uint32_t)p[3] << 24);
+}
+
+static bool iso_read_sector(uint32_t lba)
+{
+    uint8_t *dma = (uint8_t *)(AGENTOS_BLK_SHARED_VA +
+                               AGENTOS_BLK_SHARED_DMA_OFF +
+                               AGENTOS_BLK_SHARED_DMA_DATA_OFF);
+    uint64_t host_sector =
+        (uint64_t)lba * (ISO9660_SECTOR_SIZE / AOS_HOST_BLK_SECTOR_SIZE);
+    uint32_t count = ISO9660_SECTOR_SIZE / AOS_HOST_BLK_SECTOR_SIZE;
+    uint32_t rc = host_blk_call(AOS_HOST_BLK_OP_READ, host_sector, count, 0);
+    if (rc != AOS_HOST_BLK_OK) {
+        LOG_VMM_ERR("emulated virtio-blk: ISO sector read failed lba=%u rc=%u\n",
+                    (unsigned)lba, (unsigned)rc);
+        return false;
+    }
+    aos_copy(g_iso_sector, dma, ISO9660_SECTOR_SIZE);
+    LOG_VMM("emulated virtio-blk: ISO sector=%u first=%x %x %x %x\n",
+            (unsigned)lba, (unsigned)g_iso_sector[0],
+            (unsigned)g_iso_sector[1], (unsigned)g_iso_sector[2],
+            (unsigned)g_iso_sector[3]);
+    return true;
+}
+
+static uint8_t ascii_fold(uint8_t c)
+{
+    return (c >= 'A' && c <= 'Z') ? (uint8_t)(c + ('a' - 'A')) : c;
+}
+
+static bool iso_name_eq(const uint8_t *id, uint8_t id_len, const char *name)
+{
+    uint8_t n = 0u;
+    while (name[n] != '\0') {
+        n++;
+    }
+    if (id_len >= 2u && id[id_len - 2u] == ';' &&
+        id[id_len - 1u] == '1') {
+        id_len -= 2u;
+    }
+    if (id_len > 0u && id[id_len - 1u] == '.') {
+        id_len--;
+    }
+    if (id_len != n) {
+        return false;
+    }
+    for (uint8_t i = 0u; i < n; i++) {
+        if (ascii_fold(id[i]) != ascii_fold((uint8_t)name[i])) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static bool iso_find_entry(uint32_t dir_lba, uint32_t dir_size,
+                           const char *name, uint32_t *entry_lba,
+                           uint32_t *entry_size)
+{
+    uint32_t sectors =
+        (dir_size + ISO9660_SECTOR_SIZE - 1u) / ISO9660_SECTOR_SIZE;
+    for (uint32_t s = 0u; s < sectors; s++) {
+        if (!iso_read_sector(dir_lba + s)) {
+            return false;
+        }
+        uint32_t off = 0u;
+        while (off < ISO9660_SECTOR_SIZE) {
+            uint8_t record_len = g_iso_sector[off];
+            if (record_len == 0u) {
+                break;
+            }
+            if (off + record_len > ISO9660_SECTOR_SIZE ||
+                record_len < 34u) {
+                return false;
+            }
+            uint8_t id_len = g_iso_sector[off + 32u];
+            if ((uint32_t)33u + id_len <= record_len &&
+                iso_name_eq(&g_iso_sector[off + 33u], id_len, name)) {
+                *entry_lba = read_le32(&g_iso_sector[off + 2u]);
+                *entry_size = read_le32(&g_iso_sector[off + 10u]);
+                return true;
+            }
+            off += record_len;
+        }
+    }
+    return false;
+}
+
+bool aos_vmm_virtio_blk_load_casper_initrd(uintptr_t guest_dest,
+                                           size_t guest_capacity,
+                                           size_t *loaded_size)
+{
+    uint32_t root_lba;
+    uint32_t root_size;
+    uint32_t casper_lba;
+    uint32_t casper_size;
+    uint32_t initrd_lba;
+    uint32_t initrd_size;
+    uint8_t *dma = (uint8_t *)(AGENTOS_BLK_SHARED_VA +
+                               AGENTOS_BLK_SHARED_DMA_OFF +
+                               AGENTOS_BLK_SHARED_DMA_DATA_OFF);
+
+    if (!g_host_backend || !iso_read_sector(16u)) {
+        LOG_VMM_ERR("emulated virtio-blk: failed to read ISO9660 primary descriptor\n");
+        return false;
+    }
+    LOG_VMM("emulated virtio-blk: ISO PVD bytes=%x %x %x %x %x %x %x %x\n",
+            (unsigned)g_iso_sector[0], (unsigned)g_iso_sector[1],
+            (unsigned)g_iso_sector[2], (unsigned)g_iso_sector[3],
+            (unsigned)g_iso_sector[4], (unsigned)g_iso_sector[5],
+            (unsigned)g_iso_sector[6], (unsigned)g_iso_sector[7]);
+    if (g_iso_sector[0] != 1u ||
+        g_iso_sector[1] != 'C' || g_iso_sector[2] != 'D' ||
+        g_iso_sector[3] != '0' || g_iso_sector[4] != '0' ||
+        g_iso_sector[5] != '1') {
+        LOG_VMM_ERR("emulated virtio-blk: invalid ISO9660 primary descriptor\n");
+        return false;
+    }
+    root_lba = read_le32(&g_iso_sector[158u]);
+    root_size = read_le32(&g_iso_sector[166u]);
+    LOG_VMM("emulated virtio-blk: ISO root lba=%u bytes=%u\n",
+            (unsigned)root_lba, (unsigned)root_size);
+    if (!iso_find_entry(root_lba, root_size, "casper",
+                        &casper_lba, &casper_size)) {
+        LOG_VMM_ERR("emulated virtio-blk: ISO /casper not found\n");
+        return false;
+    }
+    LOG_VMM("emulated virtio-blk: ISO casper lba=%u bytes=%u\n",
+            (unsigned)casper_lba, (unsigned)casper_size);
+    if (!iso_find_entry(casper_lba, casper_size, "initrd",
+                        &initrd_lba, &initrd_size)) {
+        LOG_VMM_ERR("emulated virtio-blk: ISO /casper/initrd not found\n");
+        return false;
+    }
+    if (initrd_size == 0u || (size_t)initrd_size > guest_capacity) {
+        LOG_VMM_ERR("emulated virtio-blk: casper initrd size invalid\n");
+        return false;
+    }
+
+    size_t copied = 0u;
+    while (copied < initrd_size) {
+        size_t remaining = (size_t)initrd_size - copied;
+        uint32_t bytes = remaining > AGENTOS_BLK_SHARED_DMA_DATA_SIZE
+            ? AGENTOS_BLK_SHARED_DMA_DATA_SIZE : (uint32_t)remaining;
+        uint32_t sectors =
+            (bytes + AOS_HOST_BLK_SECTOR_SIZE - 1u) /
+            AOS_HOST_BLK_SECTOR_SIZE;
+        uint64_t host_sector =
+            (uint64_t)initrd_lba *
+            (ISO9660_SECTOR_SIZE / AOS_HOST_BLK_SECTOR_SIZE) +
+            copied / AOS_HOST_BLK_SECTOR_SIZE;
+        if (host_blk_call(AOS_HOST_BLK_OP_READ, host_sector, sectors, 0) !=
+            AOS_HOST_BLK_OK) {
+            return false;
+        }
+        volatile uint8_t *dest =
+            (volatile uint8_t *)(guest_dest + copied);
+        for (uint32_t i = 0u; i < bytes; i++) {
+            dest[i] = dma[i];
+        }
+        copied += bytes;
+    }
+
+    g_host_read_pumped = 1;
+    uint32_t hash = 2166136261u;
+    const volatile uint8_t *image = (const volatile uint8_t *)guest_dest;
+    for (uint32_t i = 0u; i < initrd_size; i++) {
+        hash = (hash ^ image[i]) * 16777619u;
+    }
+    LOG_VMM("emulated virtio-blk: loaded casper/initrd from host media bytes=%u fnv1a=%x\n",
+            (unsigned)initrd_size, (unsigned)hash);
+    LOG_VMM("emulated virtio-blk: host-media read sector=%lu count=%u\n",
+            (unsigned long)((uint64_t)initrd_lba * 4u),
+            (unsigned)((initrd_size + 511u) / 512u));
+    if (loaded_size) {
+        *loaded_size = initrd_size;
+    }
+    return true;
+}
+
 static aos_blk_resp_status_t host_blk_backend(
     void *ctx, aos_blk_virt_client_t *client, const aos_blk_req_t *req)
 {
     uint8_t *dma = (uint8_t *)(AGENTOS_BLK_SHARED_VA +
-                               AGENTOS_BLK_SHARED_DMA_OFF);
+                               AGENTOS_BLK_SHARED_DMA_OFF +
+                               AGENTOS_BLK_SHARED_DMA_DATA_OFF);
     uint32_t nbytes = (uint32_t)req->count * AOS_BLK_TRANSFER_SIZE;
     uint64_t data_end = req->io_or_offset + (uint64_t)nbytes;
     uint64_t sector = req->block_number *
@@ -173,6 +362,13 @@ void aos_vmm_virtio_blk_init(void)
         }
         aos_blk_storage_init(g_aos_client.info, (uint32_t)host_blocks);
         g_aos_client.info->read_only = true;
+        /*
+         * ISO9660 requires a logical sector no larger than 2048 bytes.
+         * The backend still batches requests through 4 KiB sDDF transfer
+         * windows, but the guest-visible VirtIO geometry is 512-byte sectors.
+         */
+        g_aos_client.info->sector_size = AOS_HOST_BLK_SECTOR_SIZE;
+        g_aos_client.info->block_size = 0u;
         aos_blk_virt_set_backend(&g_aos_virt, host_blk_backend, 0);
         g_host_backend = 1;
         LOG_VMM("emulated virtio-blk: agentOS host media ready sectors=%lu\n",

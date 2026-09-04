@@ -512,16 +512,21 @@ static uint32_t vmm_affinity[VMM_MAX_SLOTS];
 
 /* ─── Guest Configuration ─────────────────────────────────────────────── */
 
-/* 512MB guest RAM is the largest mapping currently proven by the root-task
- * allocator for qemu_virt_aarch64. The Ubuntu 26.04 initrd still fits when
- * placed below the DTB. */
+#if defined(AGENTOS_GUEST_UBUNTU_LIVE)
+#define GUEST_RAM_SIZE          0x40000000
+#else
 #define GUEST_RAM_SIZE          0x20000000
+#endif
 
 /* Guest RAM, DTB, and initrd placement addresses (must match DTS). */
 #if defined(AGENTOS_GUEST_BOTH)
 #define LINUX_GUEST_RAM_VADDR      0xc0000000UL
 #define GUEST_DTB_VADDR            0xdf000000UL
 #define GUEST_INIT_RAM_DISK_VADDR  0xd0000000UL
+#elif defined(AGENTOS_GUEST_UBUNTU_LIVE)
+#define LINUX_GUEST_RAM_VADDR      0x40000000UL
+#define GUEST_DTB_VADDR            0x7f000000UL
+#define GUEST_INIT_RAM_DISK_VADDR  0x50000000UL
 #else
 #define LINUX_GUEST_RAM_VADDR      0x40000000UL
 #define GUEST_DTB_VADDR            0x5f000000UL
@@ -599,6 +604,16 @@ extern char _guest_dtb_image[];
 extern char _guest_dtb_image_end[];
 extern char _guest_initrd_image[];
 extern char _guest_initrd_image_end[];
+
+static uint32_t guest_image_checksum(const void *data, size_t size)
+{
+    const uint8_t *bytes = (const uint8_t *)data;
+    uint32_t hash = 2166136261u;
+    for (size_t i = 0; i < size; i++) {
+        hash = (hash ^ bytes[i]) * 16777619u;
+    }
+    return hash;
+}
 
 /* Microkit sets this to the start of guest_ram MR. */
 uintptr_t guest_ram_vaddr;
@@ -1329,13 +1344,31 @@ void init(void)
     size_t kernel_size = _guest_kernel_image_end - _guest_kernel_image;
     size_t dtb_size    = _guest_dtb_image_end - _guest_dtb_image;
     size_t initrd_size = _guest_initrd_image_end - _guest_initrd_image;
+#if defined(AGENTOS_GUEST_UBUNTU_LIVE)
+    /* Casper is staged from the agentOS-owned ISO after blk backend init. */
+    initrd_size = 0u;
+#endif
 
     LOG_VMM("  Kernel: %zu bytes\n", kernel_size);
     LOG_VMM("  DTB:    %zu bytes\n", dtb_size);
     LOG_VMM("  Initrd: %zu bytes\n", initrd_size);
+    uint32_t kernel_source_checksum =
+        guest_image_checksum(_guest_kernel_image, kernel_size);
+    uint32_t dtb_source_checksum =
+        guest_image_checksum(_guest_dtb_image, dtb_size);
+    uint32_t initrd_source_checksum =
+        guest_image_checksum(_guest_initrd_image, initrd_size);
+    if (initrd_size > 0u) {
+        LOG_VMM("  Initrd source 0x%lx checksum: 0x%x\n",
+                (unsigned long)_guest_initrd_image, initrd_source_checksum);
+    }
 
     LOG_VMM("  Clearing guest RAM window...\n");
     linux_clear_guest_ram(guest_ram_vaddr, GUEST_RAM_SIZE);
+    if (initrd_size > 0u) {
+        LOG_VMM("  Initrd checksum after RAM clear: 0x%x\n",
+                guest_image_checksum(_guest_initrd_image, initrd_size));
+    }
 
     uintptr_t kernel_pc = linux_setup_images(
         guest_ram_vaddr,
@@ -1346,6 +1379,25 @@ void init(void)
 
     if (!kernel_pc) {
         LOG_VMM_ERR("Failed to initialise guest images\n");
+        return;
+    }
+    uint32_t initrd_guest_checksum = guest_image_checksum(
+        (const void *)GUEST_INIT_RAM_DISK_VADDR, initrd_size);
+    uint32_t kernel_guest_checksum =
+        guest_image_checksum((const void *)kernel_pc, kernel_size);
+    uint32_t dtb_guest_checksum =
+        guest_image_checksum((const void *)GUEST_DTB_VADDR, dtb_size);
+    if (initrd_size > 0u) {
+        LOG_VMM("  Initrd guest checksum:  0x%x\n", initrd_guest_checksum);
+    }
+    LOG_VMM("  Kernel checksums: source=0x%x guest=0x%x\n",
+            kernel_source_checksum, kernel_guest_checksum);
+    LOG_VMM("  DTB checksums: source=0x%x guest=0x%x\n",
+            dtb_source_checksum, dtb_guest_checksum);
+    if (initrd_source_checksum != initrd_guest_checksum ||
+        kernel_source_checksum != kernel_guest_checksum ||
+        dtb_source_checksum != dtb_guest_checksum) {
+        LOG_VMM_ERR("Guest image copy checksum mismatch\n");
         return;
     }
 
@@ -1387,6 +1439,18 @@ void init(void)
      * virtio-blk at 0x0A000200 / IRQ 49 as the boot-disk crutch.
      */
     aos_vmm_virtio_blk_init();
+#if defined(AGENTOS_GUEST_UBUNTU_LIVE)
+    size_t live_initrd_size = 0u;
+    if (!aos_vmm_virtio_blk_load_casper_initrd(
+            GUEST_INIT_RAM_DISK_VADDR,
+            GUEST_DTB_VADDR - GUEST_INIT_RAM_DISK_VADDR,
+            &live_initrd_size)) {
+        LOG_VMM_ERR("Failed to stage casper/initrd from agentOS host media\n");
+        return;
+    }
+    LOG_VMM("Ubuntu live initrd ready in guest RAM (%zu bytes)\n",
+            live_initrd_size);
+#endif
     aos_vmm_virtio_console_init();
 
     /* Register virtio-net IRQ passthrough (QEMU virt: SPI 16 → INTID 48) */

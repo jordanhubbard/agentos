@@ -231,5 +231,5 @@ typedef struct __attribute__((packed)) {
 /* Eight entries leave room for the three-descriptor synchronous chain. */
 #define VIRTIO_BLK_QUEUE_SIZE           8u
 
-/* Poll timeout: maximum spin iterations before declaring an I/O timeout */
-#define VIRTIO_BLK_POLL_ITERS           100000u
+/* Allow host file-backed I/O to complete even under nested QEMU emulation. */
+#define VIRTIO_BLK_POLL_ITERS           100000000u

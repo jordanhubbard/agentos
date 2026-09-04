@@ -39,6 +39,7 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
         || args.assert_emulated_blk
         || args.assert_emulated_console
         || args.assert_agentos_virtio
+        || args.assert_ubuntu_live
     {
         anyhow::ensure!(
             args.board == "qemu_virt_aarch64",
@@ -49,7 +50,7 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
             "emulated VirtIO assertions need a real guest; GUEST_OS=none is a stub VMM"
         );
     }
-    if args.assert_emulated_console || args.assert_agentos_virtio {
+    if args.assert_emulated_console || args.assert_agentos_virtio || args.assert_ubuntu_live {
         anyhow::ensure!(
             args.guest_os == "ubuntu",
             "Ubuntu VirtIO assertions require --guest-os ubuntu"
@@ -61,15 +62,28 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
             "[xtask:test] Building BOARD={} GUEST_OS={}...",
             args.board, args.guest_os
         );
-        run_make(
-            &[
-                "build",
-                &format!("BOARD={}", args.board),
-                &format!("GUEST_OS={}", args.guest_os),
-            ],
-            &repo_root,
-        )
-        .context("build step failed")?;
+        if args.assert_ubuntu_live {
+            run_make(
+                &[
+                    "build",
+                    &format!("BOARD={}", args.board),
+                    &format!("GUEST_OS={}", args.guest_os),
+                    "UBUNTU_BOOT_MODE=live",
+                ],
+                &repo_root,
+            )
+            .context("live Ubuntu build step failed")?;
+        } else {
+            run_make(
+                &[
+                    "build",
+                    &format!("BOARD={}", args.board),
+                    &format!("GUEST_OS={}", args.guest_os),
+                ],
+                &repo_root,
+            )
+            .context("build step failed")?;
+        }
     }
 
     let tmp_dir = repo_root.join("build/tmp");
@@ -105,6 +119,7 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
         &cc_sock,
         &args.guest_os,
         ssh_port,
+        args.assert_ubuntu_live,
     )?;
 
     let mut result = if args.assert_emulated_net {
@@ -129,7 +144,11 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
             wait_for_guest_console_login_via_cc(
                 &cc_sock,
                 0,
-                "ubuntu",
+                if args.assert_ubuntu_live {
+                    "ubuntu-live"
+                } else {
+                    "ubuntu"
+                },
                 Duration::from_secs(args.timeout_secs),
                 &mut qemu,
             )
@@ -177,14 +196,18 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
         }
     };
 
-    if result.is_ok() && (args.assert_emulated_console || args.assert_agentos_virtio) {
+    if result.is_ok()
+        && (args.assert_emulated_console
+            || args.assert_agentos_virtio
+            || args.assert_ubuntu_live)
+    {
         let mut required = vec![
             "emulated virtio-console: guest probed",
             "emulated virtio-console: guest DRIVER_OK",
             "emulated virtio-console: pumped ",
             "emulated virtio-console: pumped input serial_virt->guest",
         ];
-        if args.assert_agentos_virtio {
+        if args.assert_agentos_virtio || args.assert_ubuntu_live {
             required.extend_from_slice(&[
                 "emulated virtio-net: guest probed",
                 "emulated virtio-net: guest DRIVER_OK",
@@ -202,6 +225,9 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
             Duration::from_secs(10),
         );
         result = match (result, console) {
+            (Ok(login), Ok(_)) if args.assert_ubuntu_live => Ok(format!(
+                "{login}; full Ubuntu Casper userspace uses agentOS virtio net + blk + console"
+            )),
             (Ok(login), Ok(_)) if args.assert_agentos_virtio => Ok(format!(
                 "{login}; agentOS virtio net + blk + console probed, DRIVER_OK, and pumped real I/O"
             )),
@@ -385,6 +411,7 @@ pub fn spawn_qemu_with_guest(
     cc_sock: &Path,
     guest_os: &str,
     ssh_port: u16,
+    ubuntu_live: bool,
 ) -> anyhow::Result<std::process::Child> {
     let log_file = std::fs::File::create(log_path).context("failed to create QEMU log file")?;
     let netdev = qemu_netdev_arg(ssh_port)?;
@@ -401,7 +428,11 @@ pub fn spawn_qemu_with_guest(
             } else {
                 "virt,virtualization=on,highmem=off,secure=off"
             };
-            let memory = if guest_os == "both" { "3G" } else { "2G" };
+            let memory = if guest_os == "both" || ubuntu_live {
+                "3G"
+            } else {
+                "2G"
+            };
             let sel4_profile =
                 std::env::var("SEL4_PROFILE").unwrap_or_else(|_| String::from("release"));
             let smp = if sel4_profile.starts_with("smp-") || sel4_profile == "smp" {
@@ -997,7 +1028,13 @@ fn wait_for_guest_console_login_via_cc(
                         .iter()
                         .find(|marker| transcript.contains(**marker))
                     {
-                        Some((*marker).to_string())
+                        if guest_os == "ubuntu-live"
+                            && !transcript.contains("Ubuntu 26.04")
+                        {
+                            None
+                        } else {
+                            Some((*marker).to_string())
+                        }
                     } else if guest_os == "freebsd"
                         && freebsd_installer_shell_requested
                         && freebsd_shell_prompt_seen(&transcript)
@@ -1043,7 +1080,11 @@ fn wait_for_guest_console_login_via_cc(
         guest_os,
         timeout
             .saturating_sub(start.elapsed())
-            .min(Duration::from_secs(20)),
+            .min(Duration::from_secs(if guest_os == "ubuntu-live" {
+                360
+            } else {
+                20
+            })),
         qemu,
     )?;
     Ok(format!(
@@ -1055,13 +1096,20 @@ fn wait_for_guest_console_login_via_cc(
 fn guest_prompt_markers(guest_os: &str) -> &'static [&'static str] {
     match guest_os {
         "ubuntu" => &["agentos-linux login:", "ubuntu login:", "login:"],
+        "ubuntu-live" => &["ubuntu login:", "login:"],
         "freebsd" => &["login:"],
         _ => &["login:"],
     }
 }
 
 fn reject_bad_guest_path(guest_os: &str, transcript: &str) -> anyhow::Result<()> {
-    if guest_os == "ubuntu"
+    if guest_os == "ubuntu-live" && transcript.contains("Initramfs unpacking failed") {
+        anyhow::bail!(
+            "Ubuntu live initramfs did not unpack cleanly; tail:\n{}",
+            tail_chars(transcript, 4000)
+        );
+    }
+    if guest_os.starts_with("ubuntu")
         && (transcript.contains("emergency mode")
             || transcript.contains("Emergency Shell")
             || transcript.contains("Press Enter for maintenance"))
@@ -1099,7 +1147,17 @@ fn verify_guest_console_input(
     timeout: Duration,
     qemu: &mut Child,
 ) -> anyhow::Result<String> {
-    let probe = if guest_os == "ubuntu" {
+    if guest_os == "ubuntu-live" {
+        return verify_ubuntu_live_console_and_net(
+            cc_sock,
+            cc,
+            guest_handle,
+            timeout,
+            qemu,
+        );
+    }
+
+    let probe = if guest_os.starts_with("ubuntu") {
         "agentos-linux-proof\n"
     } else {
         "~"
@@ -1139,6 +1197,118 @@ fn verify_guest_console_input(
         probe.trim_end(),
         tail_chars(&echo, 2000)
     );
+}
+
+fn verify_ubuntu_live_console_and_net(
+    cc_sock: &Path,
+    cc: &mut CcClient,
+    guest_handle: u32,
+    timeout: Duration,
+    qemu: &mut Child,
+) -> anyhow::Result<String> {
+    cc_send_raw_bytes(cc, guest_handle, b"ubuntu\n")?;
+
+    let phase_timeout = timeout.min(Duration::from_secs(180));
+    let login_start = Instant::now();
+    let mut transcript = String::new();
+    let mut blank_password_sent = false;
+    let mut login_attempts = 1u32;
+    while login_start.elapsed() < phase_timeout {
+        ensure_qemu_running(qemu, "logging into Ubuntu live console")?;
+        let chunk = match cc_log_stream_for_handle(cc, guest_handle) {
+            Ok(chunk) => chunk,
+            Err(err) => {
+                println!("[xtask:test] CC live-login drain not ready yet: {err:#}");
+                if !is_transient_cc_read_error(&err) {
+                    if let Ok(next) = CcClient::connect(cc_sock) {
+                        *cc = next;
+                    }
+                }
+                String::new()
+            }
+        };
+        if !chunk.is_empty() {
+            transcript.push_str(&chunk);
+            if transcript.contains("Login incorrect") {
+                if transcript.contains("pam_nologin")
+                    || transcript.contains("System is booting up")
+                {
+                    anyhow::ensure!(
+                        login_attempts < 5,
+                        "Ubuntu live user sessions never became available; tail:\n{}",
+                        tail_chars(&transcript, 2000)
+                    );
+                    std::thread::sleep(Duration::from_secs(5));
+                    cc_send_raw_bytes(cc, guest_handle, b"ubuntu\n")?;
+                    login_attempts += 1;
+                    transcript.clear();
+                    blank_password_sent = false;
+                    continue;
+                }
+                anyhow::bail!(
+                    "Ubuntu live account rejected console login; tail:\n{}",
+                    tail_chars(&transcript, 2000)
+                );
+            }
+            if !blank_password_sent && transcript.to_ascii_lowercase().contains("password:") {
+                cc_send_raw_byte(cc, guest_handle, b'\n')?;
+                blank_password_sent = true;
+            }
+            if transcript.contains("ubuntu@") && transcript.contains("$ ") {
+                break;
+            }
+        }
+        std::thread::sleep(Duration::from_millis(500));
+    }
+
+    anyhow::ensure!(
+        transcript.contains("ubuntu@") && transcript.contains("$ "),
+        "Ubuntu live login did not reach a shell prompt; tail:\n{}",
+        tail_chars(&transcript, 2000)
+    );
+
+    /* Split the token so terminal command echo cannot satisfy the proof. */
+    cc_send_raw_bytes(
+        cc,
+        guest_handle,
+        b"printf 'agentos-live-%s\\n' proof\r",
+    )?;
+    let proof_start = Instant::now();
+    let mut output = String::new();
+    while proof_start.elapsed() < phase_timeout {
+        ensure_qemu_running(qemu, "waiting for Ubuntu live userspace proof")?;
+        let chunk = cc_log_stream_for_handle(cc, guest_handle).unwrap_or_default();
+        if !chunk.is_empty() {
+            output.push_str(&chunk);
+            if output.contains("agentos-live-proof") {
+                /*
+                 * Link-up emits IPv6 control traffic; the bounded all-nodes
+                 * ping guarantees a guest-originated frame without DHCP.
+                 */
+                cc_send_raw_bytes(
+                    cc,
+                    guest_handle,
+                    b"sudo -n ip link set eth0 up\r",
+                )?;
+                std::thread::sleep(Duration::from_secs(1));
+                cc_send_raw_bytes(
+                    cc,
+                    guest_handle,
+                    b"ping -6 -c1 -W1 ff02::1%eth0\r",
+                )?;
+                return Ok(String::from(
+                    "logged into Ubuntu live userspace, executed a command, and emitted a network probe",
+                ));
+            }
+        }
+        std::thread::sleep(Duration::from_millis(500));
+    }
+
+    anyhow::bail!(
+        "Ubuntu live shell did not complete the userspace/network proof; login tail:\n{}\ncommand tail:\n{}",
+        tail_chars(&transcript, 2000),
+        tail_chars(&output, 2000)
+    )
 }
 
 fn try_create_guest_via_cc(

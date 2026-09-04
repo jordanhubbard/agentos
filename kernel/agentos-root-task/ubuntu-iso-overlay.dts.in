@@ -9,7 +9,7 @@
 
     memory@@UBUNTU_RAM_NODE@ {
         device_type = "memory";
-        reg = <@UBUNTU_RAM_BASE@ 0x00 0x20000000>;
+        reg = <@UBUNTU_RAM_BASE@ 0x00 @UBUNTU_RAM_SIZE@>;
     };
 
     flash@0 {

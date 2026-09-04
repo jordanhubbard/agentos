@@ -106,8 +106,13 @@ block (`0x0A020000`), and console (`0x0A030000`). The gate requires all three
 to probe, reach DRIVER_OK, and transfer real guest I/O before accepting a login
 and echoed input over CC-PD. CI runs the same gate.
 
-This currently proves the Ubuntu kernel plus deterministic E2E initramfs and
-real ISO reads through the agentOS-owned block path. It does **not** yet prove
-the full Ubuntu live filesystem. The remaining work is to package Ubuntu's
-real casper initrd/boot arguments and require a live-userspace login; do not
-call the platform pivot complete before that passes.
+`make test-ubuntu-live QEMU_TEST_TIMEOUT=1500` additionally loads Ubuntu's real
+Casper initrd from the agentOS-owned ISO, mounts the live filesystem, reaches
+an authenticated `ubuntu` shell over emulated virtio-console, and emits a
+bounded guest network probe. The gate rejects initramfs unpack failures and
+requires probe, DRIVER_OK, and real I/O markers for net, block, and console.
+CI runs both the deterministic initramfs gate and this full-live gate.
+
+This closes the full Ubuntu live-filesystem proof. The wider platform cleanup
+still requires the step 4 UART-ownership audit, step 6 removal of residual
+identity-map users, and migration of dual-guest passthrough.

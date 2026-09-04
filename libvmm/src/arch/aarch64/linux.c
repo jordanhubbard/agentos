@@ -8,6 +8,15 @@
 #include <libvmm/util/util.h>
 #include <libvmm/arch/aarch64/linux.h>
 
+static void linux_copy_guest_image(uintptr_t dest, uintptr_t src, size_t size)
+{
+    volatile uint8_t *d = (volatile uint8_t *)dest;
+    const volatile uint8_t *s = (const volatile uint8_t *)src;
+    for (size_t i = 0; i < size; i++) {
+        d[i] = s[i];
+    }
+}
+
 uintptr_t linux_setup_images(uintptr_t ram_start,
                              uintptr_t kernel,
                              size_t kernel_size,
@@ -67,7 +76,7 @@ uintptr_t linux_setup_images(uintptr_t ram_start,
     // so we need to make sure that the start of guest RAM is 2MiB aligned.
     assert((ram_start & ((1 << 20) - 1)) == 0);
     LOG_VMM("Copying guest kernel image to 0x%x (0x%x bytes)\n", kernel_dest, kernel_size);
-    memcpy((char *)kernel_dest, (char *)kernel, kernel_size);
+    linux_copy_guest_image(kernel_dest, kernel, kernel_size);
     // Copy the guest device tree blob into the right location
     // First check that the DTB given is actually a DTB!
     struct dtb_header dtb_header = {};
@@ -90,11 +99,16 @@ uintptr_t linux_setup_images(uintptr_t ram_start,
         return 0;
     }
     LOG_VMM("Copying guest DTB to 0x%x (0x%x bytes)\n", dtb_dest, dtb_size);
-    memcpy((char *)dtb_dest, (char *)dtb_src, dtb_size);
+    linux_copy_guest_image(dtb_dest, dtb_src, dtb_size);
     // Copy the initial RAM disk into the right location
     // @ivanv: add checks for initrd according to Linux docs
     LOG_VMM("Copying guest initial RAM disk to 0x%x (0x%x bytes)\n", initrd_dest, initrd_size);
-    memcpy((char *)initrd_dest, (char *)initrd_src, initrd_size);
+    /*
+     * Keep both accesses volatile. Large initrds cross many independently
+     * capability-backed guest frames; the optimized freestanding memcpy
+     * implementation has been observed to corrupt such cross-frame copies.
+     */
+    linux_copy_guest_image(initrd_dest, initrd_src, initrd_size);
 
     return kernel_dest;
 }

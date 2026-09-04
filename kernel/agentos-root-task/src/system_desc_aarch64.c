@@ -407,7 +407,11 @@ const system_desc_t system_desc_aarch64 = {
 #else
                               0x40000000ULL,
 #endif
+#if defined(AGENTOS_GUEST_UBUNTU_LIVE)
+                  .size     = 0x40000000u,  /* 1 GB Casper guest RAM */
+#else
                   .size     = 0x20000000u,  /* 512 MB */
+#endif
                   .writable = 1u,
                   .name     = "guest_ram" },
                 { .vaddr    = 0x20000000ULL,

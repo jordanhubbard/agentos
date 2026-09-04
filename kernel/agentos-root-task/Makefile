@@ -358,6 +358,10 @@ ifeq ($(ARCH),aarch64)
     ifeq ($(GUEST_OS),ubuntu)
       CFLAGS += -DAGENTOS_GUEST_UBUNTU=1
       CFLAGS_ROOT_TASK += -DAGENTOS_GUEST_UBUNTU=1
+      ifeq ($(UBUNTU_BOOT_MODE),live)
+        CFLAGS += -DAGENTOS_GUEST_UBUNTU_LIVE=1
+        CFLAGS_ROOT_TASK += -DAGENTOS_GUEST_UBUNTU_LIVE=1
+      endif
     endif
     # Default aarch64: include Linux VMM (stub or full)
     IMAGES += linux_vmm.elf
@@ -741,6 +745,7 @@ $(BUILD_DIR)/linux_vmm.elf: FORCE
 		SEL4_PROFILE=$(SEL4_PROFILE) \
 		GUEST_OS=$(if $(filter both,$(GUEST_OS)),ubuntu,$(GUEST_OS)) \
 		VMM_DUAL_GUEST=$(if $(filter both,$(GUEST_OS)),1,0) \
+		UBUNTU_BOOT_MODE=$(UBUNTU_BOOT_MODE) \
 		vmm-all
 endif
 endif

@@ -593,7 +593,7 @@ static void boot_setup_irqs(const pd_desc_t *pd,
 #define CC_PD_STARTUP_VA      0x10003000UL  /* VA in cc_pd's VSpace for startup record   */
 #define CC_PD_UART_DBG_VA     0x10004000UL  /* VA in cc_pd's VSpace for debug UART0      */
 #define RT_VQ_SCRATCH_VA      0x60000000UL  /* Root-task scratch VA to write startup PAs */
-#define RT_BLK_SCRATCH_VA     0x70000000UL  /* Separate 2 MiB leaf for shared blk frame  */
+#define RT_BLK_SCRATCH_VA     0xA0000000UL  /* Above max embedded live-media PD bundle  */
 
 /* Frame cap in root task CNode; seL4_CNode_Copy'd per VSpace that needs output. */
 static seL4_CPtr g_uart_frame_cap = seL4_CapNull;
@@ -1605,17 +1605,25 @@ void root_task_main(const seL4_BootInfo *bi)
 #if defined(__aarch64__)
             if ((name_eq(pd->name, "linux_vmm") || name_eq(pd->name, "freebsd_vmm")) &&
                 name_eq(mr->name, "guest_ram")) {
-                /* KILL-DATED: QEMU virtio passthrough DMAs into guest GPA.
-                 * Only guest_ram is identity-mapped. net_virt is anonymous.
-                 *
-                 * Emulated virtio-net copies and MMIO queue rings now walk
-                 * GPA→HVA (aos_gpa_to_hva). Residual identity-map users:
-                 *   - QEMU virtio-mmio passthrough (net 0x0A000000 / blk)
-                 *   - libvmm virtio-blk, console, sound desc->addr casts
-                 * Remove this path when those are gone. */
+#if defined(AGENTOS_GUEST_UBUNTU_LIVE)
+                /*
+                 * All live-Ubuntu VirtIO queue and payload paths translate
+                 * guest addresses. Its RAM therefore does not need host
+                 * physical identity, which would overlap the PD bundle.
+                 */
+                mr_err = pd_vspace_map_region(
+                    vspace,
+                    (seL4_Word)mr->vaddr,
+                    (size_t)mr->size,
+                    (int)mr->writable
+                );
+#else
+                /* Legacy Buildroot/FreeBSD paths still contain passthrough or
+                 * virtio-sound users that require guest GPA == host PA. */
                 mr_err = map_vmm_guest_ram_identity(vspace,
                                                     (seL4_Word)mr->vaddr,
                                                     (size_t)mr->size);
+#endif
             } else
 #endif
             {
@@ -1629,6 +1637,8 @@ void root_task_main(const seL4_BootInfo *bi)
             if (mr_err != seL4_NoError) {
                 dbg_puts("[root] WARN: memory region map failed: ");
                 dbg_puts(mr->name);
+                dbg_puts(" err=");
+                dbg_hex((seL4_Word)mr_err);
                 dbg_puts("\n");
             }
         }

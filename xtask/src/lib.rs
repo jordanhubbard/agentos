@@ -47,6 +47,9 @@ pub struct TestArgs {
     /// Require Ubuntu login plus real I/O through agentOS net, blk, and console.
     #[arg(long)]
     pub assert_agentos_virtio: bool,
+    /// Boot Ubuntu's real Casper initrd and require live-filesystem login.
+    #[arg(long)]
+    pub assert_ubuntu_live: bool,
 }
 
 #[derive(clap::Args)]

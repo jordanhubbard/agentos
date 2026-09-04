@@ -319,6 +319,10 @@ jobs:
         timeout-minutes: 30
         run: make test-ubuntu-virtio QEMU_TEST_TIMEOUT=480
 
+      - name: Prove Ubuntu Casper userspace on agentOS VirtIO
+        timeout-minutes: 45
+        run: make test-ubuntu-live QEMU_TEST_TIMEOUT=1500
+
       - name: Upload QEMU serial logs
         if: always()
         uses: actions/upload-artifact@v4

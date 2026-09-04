@@ -70,6 +70,9 @@ static inline bool virtio_blk_mmio_get_device_features(struct virtio_device *dev
         *features = *features | BIT_LOW(VIRTIO_BLK_F_SIZE_MAX);
         *features = *features | BIT_LOW(VIRTIO_BLK_F_SEG_MAX);
         *features = *features | BIT_LOW(VIRTIO_BLK_F_TOPOLOGY);
+        if (device_state(dev)->storage_info->read_only) {
+            *features = *features | BIT_LOW(VIRTIO_BLK_F_RO);
+        }
         break;
     /* features bits 32 to 63 */
     case 1:
@@ -96,6 +99,9 @@ static inline bool virtio_blk_mmio_set_driver_features(struct virtio_device *dev
     device_features |= BIT_LOW(VIRTIO_BLK_F_SIZE_MAX);
     device_features |= BIT_LOW(VIRTIO_BLK_F_SEG_MAX);
     device_features |= BIT_LOW(VIRTIO_BLK_F_TOPOLOGY);
+    if (device_state(dev)->storage_info->read_only) {
+        device_features |= BIT_LOW(VIRTIO_BLK_F_RO);
+    }
 
     switch (dev->regs.DriverFeaturesSel) {
     /* feature bits 0 to 31 */
@@ -566,11 +572,34 @@ static bool handle_client_requests(struct virtio_device *dev, int *num_reqs_cons
             nums_consumed += 1;
             break;
         }
+        case VIRTIO_BLK_T_GET_ID: {
+            static const uint8_t id[20] = {
+                'a', 'g', 'e', 'n', 't', 'O', 'S', '-',
+                'h', 'o', 's', 't', '-', 'm', 'e', 'd',
+                'i', 'a', 0, 0
+            };
+            uint32_t id_len = virtq->desc[curr_desc].len;
+            if (id_len > sizeof(id)) {
+                id_len = sizeof(id);
+            }
+            if (!(virtq->desc[curr_desc].flags & VIRTQ_DESC_F_WRITE) ||
+                virtio_copy_to_gpa(virtq->desc[curr_desc].addr, 0u,
+                                   id, id_len) != 0) {
+                virtio_blk_set_req_fail(dev, desc_head);
+            } else {
+                virtio_blk_set_req_success(dev, desc_head);
+            }
+            virtio_blk_used_buffer(dev, desc_head);
+            /* Reuse the immediate-completion path to inject the used IRQ. */
+            has_dropped = true;
+            break;
+        }
         default: {
             LOG_BLOCK_ERR("Handling VirtIO block request, but virtIO request type is "
                           "not recognised: %d\n",
                           virtio_req_header.type);
-            virtio_blk_set_req_fail(dev, curr_desc);
+            virtio_blk_set_req_fail(dev, desc_head);
+            virtio_blk_used_buffer(dev, desc_head);
             has_dropped = true;
             break;
         }

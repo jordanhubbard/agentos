@@ -15,9 +15,10 @@
 #   make test-guest-blk   — prove one request through emulated virtio-blk
 #   make test-guest-console — prove Ubuntu login through emulated virtio-console
 #   make test-ubuntu-virtio — require Ubuntu on agentOS net + blk + console
+#   make test-ubuntu-live — boot the full Ubuntu Casper live filesystem
 #   make clean        — remove build artifacts for current board
 
-.PHONY: all install deps deps-tools submodules channels run run-fast test test-guest-login test-guest-net test-guest-blk test-guest-console test-ubuntu-virtio sel4-test-image run-tests test-snapshot-sched test-power-mgr test-proc-server test-vibeos-contract test-integration test-host gate gate-aarch64 gate-x86_64 e2e e2e-guest e2e-contract e2e-dual-os e2e-ubuntu-amd64 e2e-ubuntu-arm64 e2e-nixos e2e-freebsd15 e2e-all bootstrap-guest clean clean-all clean-images help release release-minor release-major fetch-guest build-tools
+.PHONY: all install deps deps-tools submodules channels run run-fast test test-guest-login test-guest-net test-guest-blk test-guest-console test-ubuntu-virtio test-ubuntu-live sel4-test-image run-tests test-snapshot-sched test-power-mgr test-proc-server test-vibeos-contract test-integration test-host gate gate-aarch64 gate-x86_64 e2e e2e-guest e2e-contract e2e-dual-os e2e-ubuntu-amd64 e2e-ubuntu-arm64 e2e-nixos e2e-freebsd15 e2e-all bootstrap-guest clean clean-all clean-images help release release-minor release-major fetch-guest build-tools
 
 # ─── Read config.yaml (if present) ───────────────────────────────────────────
 CONFIG_TARGET := $(shell grep '^target_arch:' config.yaml 2>/dev/null | sed 's/target_arch:[[:space:]]*//' | tr -d '[:space:]')
@@ -363,6 +364,7 @@ endif
 		SEL4_PROFILE=$(SEL4_PROFILE) \
 		AGENTOS_FREEBSD_IMAGE=$(if $(AGENTOS_FREEBSD_IMAGE),$(AGENTOS_FREEBSD_IMAGE),$(FREEBSD_IMAGE)) \
 		GUEST_OS=$(GUEST_OS) \
+		UBUNTU_BOOT_MODE=$(UBUNTU_BOOT_MODE) \
 		BOARD_NAME=$(BOARD_NAME) \
 		BOARD_NATIVE=$(BOARD_NATIVE) \
 		BOARD_UART_PHYS=$(BOARD_UART_PHYS) \
@@ -563,14 +565,23 @@ test-guest-console:
 	fi
 	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os ubuntu --timeout-secs $(QEMU_TEST_TIMEOUT) --assert-emulated-console
 
-# End-state Ubuntu device proof. No QEMU net or block device is attached to
-# the single Ubuntu guest; its DTB advertises agentOS emulated devices only.
+# Deterministic initramfs device proof. Host media is owned by virtio_blk;
+# Ubuntu's DTB advertises agentOS emulated devices only.
 test-ubuntu-virtio:
 	@if [ "$(BOARD)" != "qemu_virt_aarch64" ]; then \
 		echo "test-ubuntu-virtio requires BOARD=qemu_virt_aarch64 (got BOARD=$(BOARD))"; \
 		exit 1; \
 	fi
 	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os ubuntu --timeout-secs $(QEMU_TEST_TIMEOUT) --assert-agentos-virtio
+
+# End-state proof: boot Ubuntu's real Casper initrd and ISO filesystem to a
+# serial login while requiring real I/O through every agentOS VirtIO class.
+test-ubuntu-live:
+	@if [ "$(BOARD)" != "qemu_virt_aarch64" ]; then \
+		echo "test-ubuntu-live requires BOARD=qemu_virt_aarch64 (got BOARD=$(BOARD))"; \
+		exit 1; \
+	fi
+	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os ubuntu --timeout-secs $(QEMU_TEST_TIMEOUT) --assert-ubuntu-live
 
 # =============================================================================
 # test-snapshot-sched: standalone unit test for the snapshot_sched PD
@@ -900,6 +911,7 @@ help:
 	@echo "  make test-guest-blk   Boot buildroot and prove one request through emulated virtio-blk"
 	@echo "  make test-guest-console Boot Ubuntu and prove login I/O through emulated virtio-console"
 	@echo "  make test-ubuntu-virtio Require Ubuntu login and I/O on agentOS net/blk/console only"
+	@echo "  make test-ubuntu-live Boot Ubuntu Casper userspace on agentOS VirtIO only"
 	@echo ""
 	@echo "Guest images:"
 	@echo "  make fetch-guest GUEST_OS=ubuntu     Stage Ubuntu 26.04 assets in build/guest-images"
@@ -919,6 +931,7 @@ help:
 	@echo "  make test-guest-blk   Guest I/O proof: emulated virtio-blk (buildroot)"
 	@echo "  make test-guest-console Guest I/O proof: emulated virtio-console (Ubuntu)"
 	@echo "  make test-ubuntu-virtio End-state Ubuntu agentOS VirtIO proof"
+	@echo "  make test-ubuntu-live Full Ubuntu Casper filesystem/login proof"
 	@echo "  make test-integration Run host-side contract/integration tests"
 	@echo "  make e2e              Run the default QEMU/guest/CC end-to-end suite"
 	@echo "  make e2e-dual-os      Run Ubuntu and FreeBSD guest E2E coverage"
@@ -944,5 +957,6 @@ help:
 	@echo "  make test-guest-blk QEMU_TEST_TIMEOUT=480"
 	@echo "  make test-guest-console QEMU_TEST_TIMEOUT=480"
 	@echo "  make test-ubuntu-virtio QEMU_TEST_TIMEOUT=480"
+	@echo "  make test-ubuntu-live QEMU_TEST_TIMEOUT=900"
 	@echo "  cd ../agentos_gui && make run"
 	@echo ""

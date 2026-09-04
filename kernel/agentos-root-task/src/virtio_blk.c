@@ -127,8 +127,8 @@ static uint64_t g_blk_shared_paddr;
 
 #define DMA_SHMEM_SIZE          0x8000u   /* 32 KB */
 #define DMA_HDR_OFFSET          0u
-#define DMA_DATA_OFFSET         16u
-#define DMA_MAX_SECTORS         63u       /* floor((32768 - 16 - 1) / 512) */
+#define DMA_DATA_OFFSET         AGENTOS_BLK_SHARED_DMA_DATA_OFF
+#define DMA_MAX_SECTORS         AGENTOS_BLK_SHARED_DMA_MAX_SECTORS
 #define DMA_MAX_DATA_BYTES      (DMA_MAX_SECTORS * 512u)
 #define DMA_STATUS_OFFSET(cnt)  (DMA_DATA_OFFSET + (uint32_t)(cnt) * 512u)
 
@@ -227,9 +227,10 @@ static uint32_t virtio_blk_do_io(uint32_t type, uint64_t sector, uint32_t count)
 
     /* The available ring ring[] element and idx update must be visible to the
      * device before we write QueueNotify. */
-    QUEUE_AVAIL->ring[0] = 0;  /* head descriptor index = 0 */
+    uint16_t avail_idx = QUEUE_AVAIL->idx;
+    QUEUE_AVAIL->ring[avail_idx % VIRTIO_BLK_QUEUE_SIZE] = 0;
     ARCH_WMB();
-    QUEUE_AVAIL->idx = (uint16_t)(QUEUE_AVAIL->idx + 1u);
+    QUEUE_AVAIL->idx = (uint16_t)(avail_idx + 1u);
     ARCH_WMB();
 
     /* ── Step 4: Kick the device ── */
