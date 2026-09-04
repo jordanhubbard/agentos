@@ -45,6 +45,7 @@
 #include "system_desc.h"     /* system_desc_t, pd_desc_t, SVC_ID_*, PD_IRQHANDLER_SLOT_BASE */
 #include "agentos.h"         /* sel4_dbg_puts                                    */
 #include <platform/blk_host_layout.h> /* host block MMIO/shared DMA layout       */
+#include <platform/net_host_layout.h> /* host net MMIO/private DMA/shared bridge */
 #include "pd_startup_record.h" /* pd_startup_record_t, PD_STARTUP_RECORD_VA      */
 #include <stdint.h>
 
@@ -597,6 +598,9 @@ static seL4_CPtr g_uart_frame_cap = seL4_CapNull;
 static seL4_CPtr g_virtio_mmio_frame_cap = seL4_CapNull;
 static seL4_CPtr g_host_blk_mmio_frame_cap = seL4_CapNull;
 static seL4_CPtr g_blk_shared_frame_cap = seL4_CapNull;
+static seL4_CPtr g_host_net_mmio_frame_cap = seL4_CapNull;
+static seL4_CPtr g_net_shared_frame_cap = seL4_CapNull;
+static seL4_CPtr g_net_dma_frame_cap = seL4_CapNull;
 static seL4_CPtr g_host_freebsd_blk_mmio_frame_cap = seL4_CapNull;
 static seL4_CPtr g_gic_vcpu_frame_cap = seL4_CapNull;
 
@@ -842,7 +846,6 @@ static seL4_CPtr schedcontrol_for_node(const seL4_BootInfo *bi, seL4_Word node)
 #endif
 
 #if defined(__aarch64__)
-
 static seL4_Error setup_vmm_guest_vcpu(const pd_desc_t *pd,
                                         uint32_t         pd_index,
                                         seL4_CPtr        pd_cnode,
@@ -1237,6 +1240,56 @@ void root_task_main(const seL4_BootInfo *bi)
         dbg_hex(blk_shared_pa);
         dbg_puts(" err=");
         dbg_hex((seL4_Word)blk_err);
+        dbg_puts("\n");
+    }
+
+    {
+        seL4_Error net_err =
+            ut_alloc_device_cap(AGENTOS_HOST_NET_MMIO_PA,
+                                &g_host_net_mmio_frame_cap);
+        dbg_puts("[rt] host net virtio-mmio bus16 frame cap err=");
+        dbg_hex((seL4_Word)net_err);
+        dbg_puts(" cap=");
+        dbg_hex((seL4_Word)g_host_net_mmio_frame_cap);
+        dbg_puts("\n");
+    }
+
+    {
+        seL4_Error net_err =
+            ut_alloc_cap(seL4_ARM_LargePageObject, 0u,
+                         &g_net_shared_frame_cap);
+        dbg_puts("[rt] net agentOS shared frame err=");
+        dbg_hex((seL4_Word)net_err);
+        dbg_puts("\n");
+    }
+
+    {
+        seL4_Error net_err =
+            ut_alloc_cap(seL4_ARM_LargePageObject, 0u,
+                         &g_net_dma_frame_cap);
+        seL4_Word net_dma_pa = 0u;
+        if (net_err == seL4_NoError) {
+            seL4_ARCH_Page_GetAddress_t r =
+                seL4_ARCH_Page_GetAddress(g_net_dma_frame_cap);
+            net_dma_pa = r.paddr;
+            net_err = pd_vspace_map_device_frame(
+                seL4_CapInitThreadVSpace, g_net_dma_frame_cap,
+                RT_BLK_SCRATCH_VA);
+        }
+        if (net_err == seL4_NoError) {
+            agentos_net_host_dma_meta_t *meta =
+                (agentos_net_host_dma_meta_t *)RT_BLK_SCRATCH_VA;
+            meta->magic = AGENTOS_NET_HOST_DMA_MAGIC;
+            meta->version = AGENTOS_NET_HOST_DMA_VERSION;
+            meta->paddr = (uint64_t)net_dma_pa;
+            meta->size = AGENTOS_NET_HOST_DMA_SIZE;
+            AGENTOS_MEMORY_FENCE();
+            seL4_ARCH_Page_Unmap(g_net_dma_frame_cap);
+        }
+        dbg_puts("[rt] net private DMA frame pa=");
+        dbg_hex(net_dma_pa);
+        dbg_puts(" err=");
+        dbg_hex((seL4_Word)net_err);
         dbg_puts("\n");
     }
 #endif
@@ -1744,8 +1797,71 @@ void root_task_main(const seL4_BootInfo *bi)
             dbg_hex((seL4_Word)blk_err);
             dbg_puts("\n");
         }
-#endif
 
+        if (g_net_shared_frame_cap != seL4_CapNull &&
+            (name_eq(pd->name, "net_pd") ||
+             name_eq(pd->name, "linux_vmm"))) {
+            seL4_Word net_shared_copy = ut_alloc_slot();
+            seL4_Error net_err = seL4_NotEnoughMemory;
+            if (net_shared_copy != seL4_CapNull) {
+                net_err = seL4_CNode_Copy(
+                    seL4_CapInitThreadCNode, net_shared_copy, 64u,
+                    seL4_CapInitThreadCNode, g_net_shared_frame_cap, 64u,
+                    seL4_AllRights);
+                if (net_err == seL4_NoError) {
+                    net_err = pd_vspace_map_device_frame(
+                        vspace, (seL4_CPtr)net_shared_copy,
+                        AGENTOS_NET_SHARED_VA);
+                }
+            }
+            dbg_puts("[rt] ");
+            dbg_puts(pd->name);
+            dbg_puts(" agentOS net shared map err=");
+            dbg_hex((seL4_Word)net_err);
+            dbg_puts("\n");
+        }
+
+        if (name_eq(pd->name, "net_pd")) {
+            seL4_Error net_err = seL4_NotEnoughMemory;
+            if (g_host_net_mmio_frame_cap != seL4_CapNull) {
+                seL4_Word net_mmio_copy = ut_alloc_slot();
+                if (net_mmio_copy != seL4_CapNull) {
+                    net_err = seL4_CNode_Copy(
+                        seL4_CapInitThreadCNode, net_mmio_copy, 64u,
+                        seL4_CapInitThreadCNode,
+                        g_host_net_mmio_frame_cap, 64u,
+                        seL4_AllRights);
+                    if (net_err == seL4_NoError) {
+                        net_err = pd_vspace_map_device_frame(
+                            vspace, (seL4_CPtr)net_mmio_copy,
+                            AGENTOS_HOST_NET_MMIO_VA);
+                    }
+                }
+            }
+            dbg_puts("[rt] net_pd host MMIO map err=");
+            dbg_hex((seL4_Word)net_err);
+            dbg_puts("\n");
+
+            net_err = seL4_NotEnoughMemory;
+            if (g_net_dma_frame_cap != seL4_CapNull) {
+                seL4_Word net_dma_copy = ut_alloc_slot();
+                if (net_dma_copy != seL4_CapNull) {
+                    net_err = seL4_CNode_Copy(
+                        seL4_CapInitThreadCNode, net_dma_copy, 64u,
+                        seL4_CapInitThreadCNode, g_net_dma_frame_cap, 64u,
+                        seL4_AllRights);
+                    if (net_err == seL4_NoError) {
+                        net_err = pd_vspace_map_device_frame(
+                            vspace, (seL4_CPtr)net_dma_copy,
+                            AGENTOS_NET_HOST_DMA_VA);
+                    }
+                }
+            }
+            dbg_puts("[rt] net_pd private DMA map err=");
+            dbg_hex((seL4_Word)net_err);
+            dbg_puts("\n");
+        }
+#endif
 
         /* ── 4g.4.7: Set up VirtIO serial transport for cc_pd ───────────────── */
         /*

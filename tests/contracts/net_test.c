@@ -9,9 +9,25 @@
 #include "../harness/test_framework.h"
 #include "../../kernel/agentos-root-task/include/agentos.h"
 #include "../../kernel/agentos-root-task/include/contracts/net_contract.h"
+#include "../../contracts/net-service/interface.h"
 
 void run_net_tests(microkit_channel ch) {
     TEST_SECTION("net");
+
+    ASSERT_TRUE(NET_PD_CONTRACT_VERSION == 2u, "net contract version == 2");
+    ASSERT_TRUE(NET_SVC_OP_RAW_OPEN == MSG_NET_OPEN &&
+                NET_SVC_OP_RAW_SEND == MSG_NET_SEND &&
+                NET_SVC_OP_RAW_RECV == MSG_NET_RECV,
+                "canonical and legacy net opcodes agree");
+    ASSERT_TRUE(NET_SVC_EVENT_RX_READY == 0x2110u,
+                "net RX-ready event opcode is stable");
+    ASSERT_TRUE(sizeof(net_svc_raw_open_reply_t) == 20u,
+                "canonical raw OPEN reply wire size");
+    ASSERT_TRUE(sizeof(struct net_reply_open) == 20u,
+                "net OPEN reply includes packed shmem offset and MAC");
+    ASSERT_TRUE(NET_SHMEM_SLOT_BASE + NET_MAX_CLIENTS * NET_SHMEM_SLOT_BYTES
+                    <= NET_SHMEM_BYTES,
+                "net contract slots fit shared memory");
 
     /* STATUS — should always succeed */
     ASSERT_IPC_OK(ch, MSG_NET_DEV_STATUS, "net dev status");

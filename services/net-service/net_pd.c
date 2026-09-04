@@ -22,6 +22,8 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <platform/net_host_layout.h>
+
 /* ── Conditional compilation ─────────────────────────────────────────────── */
 
 #ifdef AGENTOS_TEST_HOST
@@ -154,6 +156,7 @@ static inline void seL4_Signal(seL4_CPtr cap) { (void)cap; }
 #include "sel4_server.h"
 #include "sel4_client.h"
 #include "nameserver.h"
+#include "system_desc.h"
 
 static inline uint32_t data_rd32(const uint8_t *d, int off)
 {
@@ -193,38 +196,65 @@ static inline void data_wr32(uint8_t *d, int off, uint32_t v)
 #endif
 
 /* ── Result codes ────────────────────────────────────────────────────────── */
-#ifndef NET_OK
+#ifdef AGENTOS_TEST_HOST
 #define NET_OK              0u
 #define NET_ERR_NO_SLOTS    1u
 #define NET_ERR_BAD_HANDLE  2u
-#define NET_ERR_FRAME_TOO_LARGE 3u
-#define NET_ERR_FILTER_FULL 4u
-#define NET_ERR_BAD_FILTER_ID 5u
+#define NET_ERR_BAD_IFACE   3u
+#define NET_ERR_LINK_DOWN   4u
+#define NET_ERR_FRAME_TOO_LARGE 5u
+#define NET_ERR_FILTER_FULL 6u
+#define NET_ERR_BAD_FILTER_ID 7u
 #endif
 
 /* ── virtio-MMIO register offsets ───────────────────────────────────────── */
 #define VIRTIO_MMIO_MAGIC_VALUE  0x000u
 #define VIRTIO_MMIO_VERSION      0x004u
 #define VIRTIO_MMIO_DEVICE_ID    0x008u
+#define VIRTIO_MMIO_DEVICE_FEATURES     0x010u
+#define VIRTIO_MMIO_DEVICE_FEATURES_SEL 0x014u
+#define VIRTIO_MMIO_DRIVER_FEATURES     0x020u
+#define VIRTIO_MMIO_DRIVER_FEATURES_SEL 0x024u
+#define VIRTIO_MMIO_QUEUE_SEL           0x030u
+#define VIRTIO_MMIO_QUEUE_NUM_MAX       0x034u
+#define VIRTIO_MMIO_QUEUE_NUM           0x038u
+#define VIRTIO_MMIO_QUEUE_READY         0x044u
+#define VIRTIO_MMIO_QUEUE_NOTIFY        0x050u
+#define VIRTIO_MMIO_INTERRUPT_STATUS    0x060u
+#define VIRTIO_MMIO_INTERRUPT_ACK       0x064u
 #define VIRTIO_MMIO_STATUS       0x070u
+#define VIRTIO_MMIO_QUEUE_DESC_LOW      0x080u
+#define VIRTIO_MMIO_QUEUE_DESC_HIGH     0x084u
+#define VIRTIO_MMIO_QUEUE_AVAIL_LOW     0x090u
+#define VIRTIO_MMIO_QUEUE_AVAIL_HIGH    0x094u
+#define VIRTIO_MMIO_QUEUE_USED_LOW      0x0a0u
+#define VIRTIO_MMIO_QUEUE_USED_HIGH     0x0a4u
+#define VIRTIO_MMIO_CONFIG              0x100u
 #define VIRTIO_MMIO_MAGIC        0x74726976u
 #define VIRTIO_STATUS_ACKNOWLEDGE (1u << 0)
 #define VIRTIO_STATUS_DRIVER      (1u << 1)
+#define VIRTIO_STATUS_DRIVER_OK   (1u << 2)
+#define VIRTIO_STATUS_FEATURES_OK (1u << 3)
 #define VIRTIO_NET_DEVICE_ID     1u
+#define VIRTIO_NET_F_MAC         (1u << 5)
+#define VIRTIO_NET_RX_QUEUE      0u
+#define VIRTIO_NET_TX_QUEUE      1u
+#define VIRTQ_DESC_F_WRITE       (1u << 1)
+#define NET_HOST_POLL_ITERS      100000000u
 
 /* ── Shared memory ───────────────────────────────────────────────────────── */
 uintptr_t net_pd_shmem_vaddr;
 uintptr_t net_pd_mmio_vaddr;
+uintptr_t net_pd_dma_vaddr;
 uintptr_t log_drain_rings_vaddr;
 
-#define NET_PD_SHMEM ((volatile uint8_t *)net_pd_shmem_vaddr)
-
 /* ── Shmem layout ────────────────────────────────────────────────────────── */
-#define NETPD_SHMEM_TOTAL      0x40000u
-#define NETPD_SLOT_SIZE        0x4000u
-#define NETPD_SLOT_HDR_SIZE    1024u
+#define NETPD_SHMEM_TOTAL      NET_SHMEM_BYTES
+#define NETPD_SLOT_BASE        NET_SHMEM_SLOT_BASE
+#define NETPD_SLOT_SIZE        NET_SHMEM_SLOT_BYTES
+#define NETPD_SLOT_HDR_SIZE    NET_SHMEM_DATA_OFFSET
 #define NETPD_SLOT_DATA_SIZE   (NETPD_SLOT_SIZE - NETPD_SLOT_HDR_SIZE)
-#define NETPD_SLOT_OFFSET(n)   ((n) * NETPD_SLOT_SIZE)
+#define NETPD_SLOT_OFFSET(n)   (NETPD_SLOT_BASE + (n) * NETPD_SLOT_SIZE)
 
 /* ── Handle type discriminators ─────────────────────────────────────────── */
 #define HANDLE_TYPE_INVALID  0u
@@ -257,6 +287,12 @@ uintptr_t log_drain_rings_vaddr;
 #ifndef NET_PROTO_TCP
 #define NET_PROTO_TCP  0u
 #define NET_PROTO_UDP  1u
+#endif
+#ifndef NET_SHMEM_BYTES
+#define NET_SHMEM_BYTES        0x200000u
+#define NET_SHMEM_SLOT_BASE    0x100000u
+#define NET_SHMEM_SLOT_BYTES   0x4000u
+#define NET_SHMEM_DATA_OFFSET  1024u
 #endif
 
 /* ── NIC ring header ─────────────────────────────────────────────────────── */
@@ -314,6 +350,38 @@ static uint64_t iface_rx_pkts = 0, iface_tx_pkts = 0;
 static uint64_t iface_rx_bytes = 0, iface_tx_bytes = 0;
 static uint32_t iface_rx_errors = 0, iface_tx_errors = 0;
 static bool     iface_link_up = false;
+static uint8_t  iface_mac[6] = { 0x02u, 0x00u, 0x00u, 0x00u, 0x00u, 0x01u };
+
+typedef struct __attribute__((packed)) {
+    uint64_t addr;
+    uint32_t len;
+    uint16_t flags;
+    uint16_t next;
+} net_host_desc_t;
+
+typedef struct __attribute__((packed)) {
+    uint16_t flags;
+    uint16_t idx;
+    uint16_t ring[AGENTOS_NET_HOST_QUEUE_SIZE];
+} net_host_avail_t;
+
+typedef struct __attribute__((packed)) {
+    uint32_t id;
+    uint32_t len;
+} net_host_used_elem_t;
+
+typedef struct __attribute__((packed)) {
+    uint16_t flags;
+    uint16_t idx;
+    net_host_used_elem_t ring[AGENTOS_NET_HOST_QUEUE_SIZE];
+} net_host_used_t;
+
+static uint64_t net_host_dma_paddr;
+static uint16_t net_host_rx_used;
+static uint16_t net_host_tx_used;
+static uint16_t net_host_tx_avail;
+static uint32_t net_host_tx_marked;
+static uint32_t net_host_rx_marked;
 
 /* sel4_server_t instance */
 static sel4_server_t g_srv;
@@ -350,6 +418,12 @@ static inline uint32_t mmio_read32(uintptr_t base, uint32_t off)
 static inline void mmio_write32(uintptr_t base, uint32_t off, uint32_t val)
 {
     *(volatile uint32_t *)(base + off) = val;
+    __atomic_thread_fence(__ATOMIC_SEQ_CST);
+}
+
+static inline void net_host_fence(void)
+{
+    __atomic_thread_fence(__ATOMIC_SEQ_CST);
 }
 
 /* ── Shmem slot allocation ───────────────────────────────────────────────── */
@@ -409,13 +483,236 @@ static void clear_ring(uint32_t slot)
     __asm__ volatile("" ::: "memory");
 }
 
+static volatile net_host_desc_t *net_host_desc(uint32_t off)
+{
+    return (volatile net_host_desc_t *)(net_pd_dma_vaddr + off);
+}
+
+static volatile net_host_avail_t *net_host_avail(uint32_t off)
+{
+    return (volatile net_host_avail_t *)(net_pd_dma_vaddr + off);
+}
+
+static volatile net_host_used_t *net_host_used(uint32_t off)
+{
+    return (volatile net_host_used_t *)(net_pd_dma_vaddr + off);
+}
+
+static void net_host_zero(uint32_t off, uint32_t bytes)
+{
+    volatile uint8_t *p = (volatile uint8_t *)(net_pd_dma_vaddr + off);
+    for (uint32_t i = 0u; i < bytes; i++) {
+        p[i] = 0u;
+    }
+}
+
+static bool net_host_setup_queue(uint32_t queue, uint32_t desc_off,
+                                 uint32_t avail_off, uint32_t used_off)
+{
+    mmio_write32(net_pd_mmio_vaddr, VIRTIO_MMIO_QUEUE_SEL, queue);
+    if (mmio_read32(net_pd_mmio_vaddr, VIRTIO_MMIO_QUEUE_NUM_MAX) <
+        AGENTOS_NET_HOST_QUEUE_SIZE) {
+        return false;
+    }
+    mmio_write32(net_pd_mmio_vaddr, VIRTIO_MMIO_QUEUE_NUM,
+                 AGENTOS_NET_HOST_QUEUE_SIZE);
+    mmio_write32(net_pd_mmio_vaddr, VIRTIO_MMIO_QUEUE_DESC_LOW,
+                 (uint32_t)(net_host_dma_paddr + desc_off));
+    mmio_write32(net_pd_mmio_vaddr, VIRTIO_MMIO_QUEUE_DESC_HIGH,
+                 (uint32_t)((net_host_dma_paddr + desc_off) >> 32));
+    mmio_write32(net_pd_mmio_vaddr, VIRTIO_MMIO_QUEUE_AVAIL_LOW,
+                 (uint32_t)(net_host_dma_paddr + avail_off));
+    mmio_write32(net_pd_mmio_vaddr, VIRTIO_MMIO_QUEUE_AVAIL_HIGH,
+                 (uint32_t)((net_host_dma_paddr + avail_off) >> 32));
+    mmio_write32(net_pd_mmio_vaddr, VIRTIO_MMIO_QUEUE_USED_LOW,
+                 (uint32_t)(net_host_dma_paddr + used_off));
+    mmio_write32(net_pd_mmio_vaddr, VIRTIO_MMIO_QUEUE_USED_HIGH,
+                 (uint32_t)((net_host_dma_paddr + used_off) >> 32));
+    mmio_write32(net_pd_mmio_vaddr, VIRTIO_MMIO_QUEUE_READY, 1u);
+    return true;
+}
+
+static void net_host_offer_rx(void)
+{
+    volatile net_host_desc_t *desc =
+        net_host_desc(AGENTOS_NET_HOST_RX_DESC_OFF);
+    volatile net_host_avail_t *avail =
+        net_host_avail(AGENTOS_NET_HOST_RX_AVAIL_OFF);
+
+    for (uint32_t i = 0u; i < AGENTOS_NET_HOST_QUEUE_SIZE; i++) {
+        desc[i].addr = net_host_dma_paddr + AGENTOS_NET_HOST_RX_DATA_OFF +
+                       i * AGENTOS_NET_HOST_BUFFER_SIZE;
+        desc[i].len = AGENTOS_NET_HOST_BUFFER_SIZE;
+        desc[i].flags = VIRTQ_DESC_F_WRITE;
+        desc[i].next = 0u;
+        avail->ring[i] = (uint16_t)i;
+    }
+    net_host_fence();
+    avail->idx = AGENTOS_NET_HOST_QUEUE_SIZE;
+    net_host_fence();
+    mmio_write32(net_pd_mmio_vaddr, VIRTIO_MMIO_QUEUE_NOTIFY,
+                 VIRTIO_NET_RX_QUEUE);
+}
+
+static void net_host_deliver(const uint8_t *frame, uint32_t len)
+{
+    for (uint32_t i = 0u; i < NET_MAX_CLIENTS; i++) {
+        net_pd_client_t *c = &clients[i];
+        if (!c->active || c->type != HANDLE_TYPE_NIC) {
+            continue;
+        }
+        volatile netpd_ring_t *ring = slot_ring(c->shmem_slot);
+        uint32_t data_off = NETPD_SLOT_OFFSET(c->shmem_slot) +
+                            NETPD_SLOT_HDR_SIZE;
+        if (ring->rx_head != ring->rx_tail) {
+            ring->rx_drops++;
+            c->rx_errors++;
+            continue;
+        }
+        ring->rx_head = 0u;
+        ring->rx_tail = 0u;
+        *(volatile uint16_t *)(net_pd_shmem_vaddr + data_off) =
+            (uint16_t)len;
+        volatile uint8_t *dst =
+            (volatile uint8_t *)(net_pd_shmem_vaddr + data_off + 2u);
+        for (uint32_t j = 0u; j < len; j++) {
+            dst[j] = frame[j];
+        }
+        net_host_fence();
+        ring->rx_head = 2u + len;
+    }
+}
+
+static uint32_t net_host_poll_rx(void)
+{
+    volatile net_host_desc_t *desc =
+        net_host_desc(AGENTOS_NET_HOST_RX_DESC_OFF);
+    volatile net_host_avail_t *avail =
+        net_host_avail(AGENTOS_NET_HOST_RX_AVAIL_OFF);
+    volatile net_host_used_t *used =
+        net_host_used(AGENTOS_NET_HOST_RX_USED_OFF);
+    uint32_t received = 0u;
+
+    net_host_fence();
+    while (net_host_rx_used != used->idx) {
+        net_host_used_elem_t elem =
+            used->ring[net_host_rx_used % AGENTOS_NET_HOST_QUEUE_SIZE];
+        uint32_t id = elem.id;
+        if (id < AGENTOS_NET_HOST_QUEUE_SIZE &&
+            elem.len > AGENTOS_NET_HOST_HEADER_SIZE) {
+            uint32_t len = elem.len - AGENTOS_NET_HOST_HEADER_SIZE;
+            if (len > NET_MAX_FRAME_BYTES) {
+                len = NET_MAX_FRAME_BYTES;
+            }
+            const uint8_t *frame =
+                (const uint8_t *)(net_pd_dma_vaddr +
+                    AGENTOS_NET_HOST_RX_DATA_OFF +
+                    id * AGENTOS_NET_HOST_BUFFER_SIZE +
+                    AGENTOS_NET_HOST_HEADER_SIZE);
+            net_host_deliver(frame, len);
+            received++;
+            iface_rx_pkts++;
+            iface_rx_bytes += len;
+            if (!net_host_rx_marked) {
+                net_host_rx_marked = 1u;
+                log_drain_write(17, 17,
+                    "[net_pd] HOST_RX: QEMU bus.16 frame received\n");
+            }
+        } else {
+            iface_rx_errors++;
+        }
+
+        if (id < AGENTOS_NET_HOST_QUEUE_SIZE) {
+            uint16_t a = avail->idx;
+            avail->ring[a % AGENTOS_NET_HOST_QUEUE_SIZE] = (uint16_t)id;
+            desc[id].len = AGENTOS_NET_HOST_BUFFER_SIZE;
+            net_host_fence();
+            avail->idx = (uint16_t)(a + 1u);
+        }
+        net_host_rx_used++;
+    }
+    if (received > 0u) {
+        net_host_fence();
+        mmio_write32(net_pd_mmio_vaddr, VIRTIO_MMIO_QUEUE_NOTIFY,
+                     VIRTIO_NET_RX_QUEUE);
+        mmio_write32(net_pd_mmio_vaddr, VIRTIO_MMIO_INTERRUPT_ACK,
+                     mmio_read32(net_pd_mmio_vaddr,
+                                 VIRTIO_MMIO_INTERRUPT_STATUS));
+    }
+    return received;
+}
+
+static bool net_host_send(const uint8_t *frame, uint32_t len)
+{
+    volatile net_host_desc_t *desc =
+        net_host_desc(AGENTOS_NET_HOST_TX_DESC_OFF);
+    volatile net_host_avail_t *avail =
+        net_host_avail(AGENTOS_NET_HOST_TX_AVAIL_OFF);
+    volatile net_host_used_t *used =
+        net_host_used(AGENTOS_NET_HOST_TX_USED_OFF);
+    uint16_t id = (uint16_t)(net_host_tx_avail %
+                             AGENTOS_NET_HOST_QUEUE_SIZE);
+    volatile uint8_t *buf =
+        (volatile uint8_t *)(net_pd_dma_vaddr +
+            AGENTOS_NET_HOST_TX_DATA_OFF +
+            (uint32_t)id * AGENTOS_NET_HOST_BUFFER_SIZE);
+
+    for (uint32_t i = 0u; i < AGENTOS_NET_HOST_HEADER_SIZE; i++) {
+        buf[i] = 0u;
+    }
+    for (uint32_t i = 0u; i < len; i++) {
+        buf[AGENTOS_NET_HOST_HEADER_SIZE + i] = frame[i];
+    }
+    desc[id].addr = net_host_dma_paddr + AGENTOS_NET_HOST_TX_DATA_OFF +
+                    (uint32_t)id * AGENTOS_NET_HOST_BUFFER_SIZE;
+    desc[id].len = AGENTOS_NET_HOST_HEADER_SIZE + len;
+    desc[id].flags = 0u;
+    desc[id].next = 0u;
+    avail->ring[net_host_tx_avail % AGENTOS_NET_HOST_QUEUE_SIZE] = id;
+    net_host_fence();
+    avail->idx = (uint16_t)(net_host_tx_avail + 1u);
+    net_host_tx_avail++;
+    net_host_fence();
+    mmio_write32(net_pd_mmio_vaddr, VIRTIO_MMIO_QUEUE_NOTIFY,
+                 VIRTIO_NET_TX_QUEUE);
+
+    for (uint32_t i = 0u; i < NET_HOST_POLL_ITERS; i++) {
+        net_host_fence();
+        if (used->idx != net_host_tx_used) {
+            net_host_tx_used = used->idx;
+            if (!net_host_tx_marked) {
+                net_host_tx_marked = 1u;
+                log_drain_write(17, 17,
+                    "[net_pd] HOST_TX: QEMU bus.16 completion observed\n");
+            }
+            (void)net_host_poll_rx();
+            return true;
+        }
+    }
+    iface_tx_errors++;
+    log_drain_write(17, 17, "[net_pd] ERROR: host TX timeout\n");
+    return false;
+}
+
 /* ── virtio-net probe ────────────────────────────────────────────────────── */
 static void probe_virtio_net(void)
 {
-    if (!net_pd_mmio_vaddr) {
+    const agentos_net_host_dma_meta_t *meta;
+    uint32_t status;
+
+    if (!net_pd_mmio_vaddr || !net_pd_dma_vaddr) {
         log_drain_write(17, 17, "[net_pd] virtio-net: MMIO not mapped, stub mode\n");
         return;
     }
+    meta = (const agentos_net_host_dma_meta_t *)net_pd_dma_vaddr;
+    if (meta->magic != AGENTOS_NET_HOST_DMA_MAGIC ||
+        meta->version != AGENTOS_NET_HOST_DMA_VERSION ||
+        meta->size != AGENTOS_NET_HOST_DMA_SIZE) {
+        log_drain_write(17, 17,
+            "[net_pd] virtio-net: host DMA metadata invalid\n");
+        return;
+    }
+    net_host_dma_paddr = meta->paddr;
 
     uint32_t magic     = mmio_read32(net_pd_mmio_vaddr, VIRTIO_MMIO_MAGIC_VALUE);
     uint32_t version   = mmio_read32(net_pd_mmio_vaddr, VIRTIO_MMIO_VERSION);
@@ -429,18 +726,62 @@ static void probe_virtio_net(void)
         return;
     }
 
+    mmio_write32(net_pd_mmio_vaddr, VIRTIO_MMIO_STATUS, 0u);
+    status = VIRTIO_STATUS_ACKNOWLEDGE;
+    mmio_write32(net_pd_mmio_vaddr, VIRTIO_MMIO_STATUS, status);
+    status |= VIRTIO_STATUS_DRIVER;
+    mmio_write32(net_pd_mmio_vaddr, VIRTIO_MMIO_STATUS,
+                 status);
+
+    mmio_write32(net_pd_mmio_vaddr, VIRTIO_MMIO_DEVICE_FEATURES_SEL, 0u);
+    uint32_t features =
+        mmio_read32(net_pd_mmio_vaddr, VIRTIO_MMIO_DEVICE_FEATURES);
+    mmio_write32(net_pd_mmio_vaddr, VIRTIO_MMIO_DRIVER_FEATURES_SEL, 0u);
+    mmio_write32(net_pd_mmio_vaddr, VIRTIO_MMIO_DRIVER_FEATURES,
+                 features & VIRTIO_NET_F_MAC);
+    mmio_write32(net_pd_mmio_vaddr, VIRTIO_MMIO_DRIVER_FEATURES_SEL, 1u);
+    mmio_write32(net_pd_mmio_vaddr, VIRTIO_MMIO_DRIVER_FEATURES, 1u);
+    status |= VIRTIO_STATUS_FEATURES_OK;
+    mmio_write32(net_pd_mmio_vaddr, VIRTIO_MMIO_STATUS, status);
+    if (!(mmio_read32(net_pd_mmio_vaddr, VIRTIO_MMIO_STATUS) &
+          VIRTIO_STATUS_FEATURES_OK)) {
+        log_drain_write(17, 17,
+            "[net_pd] virtio-net: device rejected features\n");
+        return;
+    }
+
+    net_host_zero(AGENTOS_NET_HOST_RX_DESC_OFF, 0x4000u);
+    net_host_zero(AGENTOS_NET_HOST_TX_DESC_OFF, 0x2000u);
+    if (!net_host_setup_queue(VIRTIO_NET_RX_QUEUE,
+                              AGENTOS_NET_HOST_RX_DESC_OFF,
+                              AGENTOS_NET_HOST_RX_AVAIL_OFF,
+                              AGENTOS_NET_HOST_RX_USED_OFF) ||
+        !net_host_setup_queue(VIRTIO_NET_TX_QUEUE,
+                              AGENTOS_NET_HOST_TX_DESC_OFF,
+                              AGENTOS_NET_HOST_TX_AVAIL_OFF,
+                              AGENTOS_NET_HOST_TX_USED_OFF)) {
+        log_drain_write(17, 17,
+            "[net_pd] virtio-net: queue setup failed\n");
+        return;
+    }
+
+    for (uint32_t i = 0u; i < 6u; i++) {
+        iface_mac[i] =
+            *(volatile uint8_t *)(net_pd_mmio_vaddr + VIRTIO_MMIO_CONFIG + i);
+    }
+    status |= VIRTIO_STATUS_DRIVER_OK;
+    mmio_write32(net_pd_mmio_vaddr, VIRTIO_MMIO_STATUS, status);
+    net_host_offer_rx();
+    mmio_write32(net_pd_mmio_vaddr, VIRTIO_MMIO_INTERRUPT_ACK,
+                 mmio_read32(net_pd_mmio_vaddr,
+                             VIRTIO_MMIO_INTERRUPT_STATUS));
+
     hw_present    = true;
     iface_link_up = true;
 
-    mmio_write32(net_pd_mmio_vaddr, VIRTIO_MMIO_STATUS, VIRTIO_STATUS_ACKNOWLEDGE);
-    mmio_write32(net_pd_mmio_vaddr, VIRTIO_MMIO_STATUS,
-                 VIRTIO_STATUS_ACKNOWLEDGE | VIRTIO_STATUS_DRIVER);
-
-    log_drain_write(17, 17, "[net_pd] virtio-net detected at ");
+    log_drain_write(17, 17, "[net_pd] HOST_READY: virtio-net bus.16 at ");
     log_hex((uint32_t)net_pd_mmio_vaddr);
-    log_drain_write(17, 17, ", hw present\n");
-
-    net_server_lwip_init(net_pd_mmio_vaddr, 0u, 0u);
+    log_drain_write(17, 17, " with private DMA\n");
 }
 
 /* ── Nameserver registration ─────────────────────────────────────────────── */
@@ -516,8 +857,9 @@ static uint32_t handle_net_open(sel4_badge_t badge __attribute__((unused)),
         c->filter_lens[i] = 0;
     }
 
-    c->mac[0] = 0x02; c->mac[1] = 0x00; c->mac[2] = 0x00;
-    c->mac[3] = 0x00; c->mac[4] = 0x00; c->mac[5] = (uint8_t)(handle & 0xFFu);
+    for (uint32_t i = 0u; i < 6u; i++) {
+        c->mac[i] = iface_mac[i];
+    }
 
     init_ring((uint32_t)slot, (uint32_t)handle);
     active_clients++;
@@ -602,22 +944,19 @@ static uint32_t handle_net_send_nic(net_pd_client_t *c, uint32_t handle,
     if (hw_present) {
 #ifndef AGENTOS_TEST_HOST
         const uint8_t *frame = (const uint8_t *)(net_pd_shmem_vaddr + slot_off);
-        struct pbuf *p = pbuf_alloc(PBUF_LINK, (u16_t)frame_len, PBUF_RAM);
-        if (p) {
-            uint8_t *dst = (uint8_t *)p->payload;
-            for (uint16_t i = 0; i < (uint16_t)frame_len; i++) dst[i] = frame[i];
-            g_netif.linkoutput(&g_netif, p);
-            pbuf_free(p);
-        } else {
+        if (!net_host_send(frame, frame_len)) {
             c->tx_errors++;
+            data_wr32(rep->data, 0, NET_ERR_LINK_DOWN);
+            rep->length = 4;
+            return SEL4_ERR_INTERNAL;
         }
 #endif
     } else {
-        log_drain_write(17, 17, "[net_pd] TX stub (no hw): handle=");
-        log_dec(handle);
-        log_drain_write(17, 17, " len=");
-        log_dec(frame_len);
-        log_drain_write(17, 17, "\n");
+        (void)handle;
+        c->tx_errors++;
+        data_wr32(rep->data, 0, NET_ERR_LINK_DOWN);
+        rep->length = 4;
+        return SEL4_ERR_INTERNAL;
     }
 
     c->tx_pkts++;
@@ -710,6 +1049,9 @@ static uint32_t handle_net_recv_nic(net_pd_client_t *c,
                                      uint32_t max_len,
                                      sel4_msg_t *rep)
 {
+    if (hw_present) {
+        (void)net_host_poll_rx();
+    }
     volatile netpd_ring_t *ring = slot_ring(c->shmem_slot);
     uint32_t data_off = NETPD_SLOT_OFFSET(c->shmem_slot) + NETPD_SLOT_HDR_SIZE;
 
@@ -729,8 +1071,6 @@ static uint32_t handle_net_recv_nic(net_pd_client_t *c,
     ring->rx_tail = (ring->rx_tail + 2u + frame_len) % NETPD_SLOT_DATA_SIZE;
     c->rx_pkts++;
     c->rx_bytes += frame_len;
-    iface_rx_pkts++;
-    iface_rx_bytes += frame_len;
 
     data_wr32(rep->data, 0, NET_OK);
     data_wr32(rep->data, 4, frame_len);
@@ -1260,6 +1600,11 @@ static void net_pd_test_init(void)
     slot_bitmap    = 0u;
     hw_present     = false;
     iface_link_up  = false;
+    net_host_rx_used = 0u;
+    net_host_tx_used = 0u;
+    net_host_tx_avail = 0u;
+    net_host_tx_marked = 0u;
+    net_host_rx_marked = 0u;
 
     sel4_server_init(&g_srv, 0u);
     sel4_server_register(&g_srv, MSG_NET_OPEN,           handle_net_open,          NULL);
@@ -1287,6 +1632,64 @@ static uint32_t net_pd_dispatch_one(sel4_badge_t badge,
     return sel4_server_dispatch(&g_srv, badge, req, rep);
 }
 
+#ifndef AGENTOS_TEST_HOST
+#define NET_HOST_IRQ_BADGE  0x80000000u
+
+static void net_pd_notify_vmm_rx(void)
+{
+    seL4_MessageInfo_t event =
+        seL4_MessageInfo_new(NET_SVC_EVENT_RX_READY, 0u, 0u, 0u);
+    seL4_Send((seL4_CPtr)PD_CNODE_SLOT_LINUX_VMM_EP, event);
+}
+
+static void net_pd_handle_host_irq(void)
+{
+    uint32_t status =
+        mmio_read32(net_pd_mmio_vaddr, VIRTIO_MMIO_INTERRUPT_STATUS);
+    uint32_t received = net_host_poll_rx();
+    if (status != 0u) {
+        mmio_write32(net_pd_mmio_vaddr, VIRTIO_MMIO_INTERRUPT_ACK, status);
+    }
+    seL4_IRQHandler_Ack(
+        (seL4_CPtr)(PD_IRQHANDLER_SLOT_BASE + 0u));
+    if (received > 0u) {
+        net_pd_notify_vmm_rx();
+    }
+}
+
+static void net_pd_server_run(seL4_CPtr ep)
+{
+    for (;;) {
+        sel4_msg_t req = {0};
+        sel4_msg_t rep = {0};
+        seL4_Word badge = 0u;
+#ifdef CONFIG_KERNEL_MCS
+        seL4_MessageInfo_t info =
+            seL4_Recv(ep, &badge, AGENTOS_IPC_REPLY_CAP);
+#else
+        seL4_MessageInfo_t info = seL4_Recv(ep, &badge);
+#endif
+        if (seL4_MessageInfo_get_label(info) == seL4_Fault_NullFault &&
+            (badge & NET_HOST_IRQ_BADGE) != 0u) {
+            net_pd_handle_host_irq();
+            continue;
+        }
+
+        _sel4_mrs_to_msg(&req);
+        (void)net_pd_dispatch_one((sel4_badge_t)badge, &req, &rep);
+        _sel4_msg_to_mrs(&rep);
+        seL4_MessageInfo_t reply =
+            seL4_MessageInfo_new((seL4_Word)rep.opcode, 0u, 0u,
+                                 (seL4_Word)_SEL4_MR_COUNT);
+#ifdef CONFIG_KERNEL_MCS
+        seL4_Send(AGENTOS_IPC_REPLY_CAP, reply);
+#else
+        seL4_Reply(reply);
+#endif
+    }
+}
+#endif
+
 /* ═══════════════════════════════════════════════════════════════════════════
  * net_pd_main() — raw seL4 IPC entry point (replaces init() / protected())
  *
@@ -1299,8 +1702,21 @@ void net_pd_main(seL4_CPtr my_ep, seL4_CPtr ns_ep)
     log_drain_write(17, 17,
         "[net_pd] Initialising net_pd (raw seL4 IPC, no priority constraint)\n");
 
+    if (net_pd_shmem_vaddr == 0u) {
+        net_pd_shmem_vaddr = AGENTOS_NET_SHARED_VA;
+    }
+    if (net_pd_mmio_vaddr == 0u) {
+        net_pd_mmio_vaddr = AGENTOS_HOST_NET_MMIO_VA;
+    }
+    if (net_pd_dma_vaddr == 0u) {
+        net_pd_dma_vaddr = AGENTOS_NET_HOST_DMA_VA;
+    }
     net_pd_test_init();
     probe_virtio_net();
+    if (hw_present) {
+        seL4_IRQHandler_Ack(
+            (seL4_CPtr)(PD_IRQHANDLER_SLOT_BASE + 0u));
+    }
     register_with_nameserver(ns_ep);
 
     log_drain_write(17, 17, "[net_pd] READY — max_clients=");
@@ -1310,7 +1726,7 @@ void net_pd_main(seL4_CPtr my_ep, seL4_CPtr ns_ep)
     log_drain_write(17, 17, "\n");
 
     g_srv.ep = my_ep;
-    sel4_server_run(&g_srv);   /* NEVER RETURNS */
+    net_pd_server_run(my_ep);   /* NEVER RETURNS */
 }
 
 void pd_main(seL4_CPtr my_ep, seL4_CPtr ns_ep)

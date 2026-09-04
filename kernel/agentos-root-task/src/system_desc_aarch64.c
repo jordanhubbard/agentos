@@ -298,10 +298,30 @@ const system_desc_t system_desc_aarch64 = {
             .cnode_size_bits = 10u,
             .priority       = 207u,
             .self_svc_id    = SVC_ID_NET_PD,
-            .init_ep_count  = 2u,
+            .init_ep_count  =
+#if defined(AGENTOS_GUEST_UBUNTU)
+                              3u,
+#else
+                              2u,
+#endif
             .init_eps = {
                 { SVC_ID_NAMESERVER, PD_CNODE_SLOT_NAMESERVER_EP },
                 { SVC_ID_LOG_DRAIN,  PD_CNODE_SLOT_LOG_DRAIN_EP  },
+#if defined(AGENTOS_GUEST_UBUNTU)
+                { SVC_ID_LINUX_VMM,  PD_CNODE_SLOT_LINUX_VMM_EP },
+#endif
+            },
+            .irq_count =
+#if defined(AGENTOS_GUEST_UBUNTU)
+                              1u,
+#else
+                              0u,
+#endif
+            .irqs = {
+#if defined(AGENTOS_GUEST_UBUNTU)
+                { .irq_number = 64u, .ntfn_badge = 0x80000000u,
+                  .name = "host-net-bus16" },
+#endif
             },
         },
 
@@ -377,11 +397,12 @@ const system_desc_t system_desc_aarch64 = {
             .cnode_size_bits = 10u,  /* 1024 slots — IRQ handler caps + microkit layout */
             .priority       = 250u,
             .self_svc_id    = SVC_ID_LINUX_VMM,
-            .init_ep_count  = 3u,
+            .init_ep_count  = 4u,
             .init_eps = {
                 { SVC_ID_NAMESERVER, PD_CNODE_SLOT_NAMESERVER_EP },
                 { SVC_ID_LOG_DRAIN,  PD_CNODE_SLOT_LOG_DRAIN_EP  },
                 { SVC_ID_VIRTIO_BLK, 12u },
+                { SVC_ID_NET_PD,     PD_CNODE_SLOT_NET_PD_EP },
             },
             .irq_count =
 #if defined(AGENTOS_GUEST_UBUNTU)
@@ -396,8 +417,8 @@ const system_desc_t system_desc_aarch64 = {
                 { .irq_number = 51u, .ntfn_badge = 0x4u, .name = "virtio-blk1" },
 #endif
             },
-            /* guest_ram + private net_virt queues (loopback until shared MR). */
-            .mr_count = 2u,
+            /* Net queues are a root-provisioned frame shared only with net_pd. */
+            .mr_count = 1u,
             .memory_regions = {
                 { .vaddr    =
 #if defined(AGENTOS_GUEST_BOTH)
@@ -412,10 +433,6 @@ const system_desc_t system_desc_aarch64 = {
 #endif
                   .writable = 1u,
                   .name     = "guest_ram" },
-                { .vaddr    = 0x20000000ULL,
-                  .size     = 0x200000u,    /* 2 MB sDDF net queues */
-                  .writable = 1u,
-                  .name     = "net_virt" },
             },
 #endif
         },

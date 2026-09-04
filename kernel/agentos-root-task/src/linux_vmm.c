@@ -406,6 +406,7 @@ void pd_main(seL4_CPtr my_ep, seL4_CPtr ns_ep) { linux_vmm_main(my_ep, ns_ep); }
 #include <platform/vmm_virtio_net.h>
 #include <platform/vmm_virtio_blk.h>
 #include <platform/vmm_virtio_console.h>
+#include <contracts/net-service/interface.h>
 #include "gpu_shmem.h"
 #include "contracts/linux_vmm_contract.h"
 #include "sel4_boot.h"    /* seL4_IRQHandler_Ack, seL4_CPtr               */
@@ -1798,6 +1799,13 @@ void linux_vmm_main(seL4_CPtr ep, seL4_CPtr reply_cap)
             info = seL4_Recv(ep, &badge, reply_cap);
 #else
             seL4_Reply(reply);
+            info = seL4_Recv(ep, &badge);
+#endif
+        } else if (label == NET_SVC_EVENT_RX_READY) {
+            aos_vmm_virtio_net_rx_ready();
+#ifdef CONFIG_KERNEL_MCS
+            info = seL4_Recv(ep, &badge, reply_cap);
+#else
             info = seL4_Recv(ep, &badge);
 #endif
         } else if (label == seL4_Fault_NullFault) {

@@ -203,6 +203,57 @@ static int test_qemu_page_unmapped(void)
                   "root task maps QEMU 0x0A000000 page only; emulated IPA stays unmapped");
 }
 
+static int test_host_backed_architecture(void)
+{
+    int qemu_bus = src_contains(
+        "Makefile",
+        "virtio-net-device,netdev=agentos_net0,bus=virtio-mmio-bus.16");
+    int test_qemu_bus = src_contains(
+        "xtask/src/cmd_test.rs",
+        "virtio-net-device,netdev=net0,bus=virtio-mmio-bus.16");
+    int isolated_page = src_contains(
+        "platform/include/platform/net_host_layout.h",
+        "AGENTOS_HOST_NET_MMIO_PA          0x0A002000UL");
+    int private_dma = src_contains_in_order(
+        "kernel/agentos-root-task/src/main.c",
+        "if (name_eq(pd->name, \"net_pd\"))",
+        "AGENTOS_NET_HOST_DMA_VA");
+    int shared_bridge = src_contains(
+        "kernel/agentos-root-task/src/main.c",
+        "name_eq(pd->name, \"linux_vmm\")") &&
+        src_contains(
+        "kernel/agentos-root-task/src/main.c",
+        "AGENTOS_NET_SHARED_VA");
+    int ipc = src_contains(
+        "platform/net-virt/vmm_virtio_net.c",
+        "net_pd_call(NET_SVC_OP_RAW_SEND") &&
+        src_contains(
+        "platform/net-virt/vmm_virtio_net.c",
+        "net_pd_call(NET_SVC_OP_RAW_RECV");
+    int contract = src_contains(
+        "contracts/net-service/interface.h",
+        "NET_SVC_INTERFACE_VERSION       2") &&
+        src_contains(
+        "contracts/net-service/interface.h",
+        "uint32_t shmem_offset");
+    int no_vmm_dma = !src_contains(
+        "platform/net-virt/vmm_virtio_net.c",
+        "AGENTOS_NET_HOST_DMA_VA");
+    int async_rx = src_contains(
+        "kernel/agentos-root-task/src/system_desc_aarch64.c",
+        ".irq_number = 64u") &&
+        src_contains(
+        "services/net-service/net_pd.c",
+        "NET_SVC_EVENT_RX_READY") &&
+        src_contains(
+        "kernel/agentos-root-task/src/linux_vmm.c",
+        "label == NET_SVC_EVENT_RX_READY");
+
+    return tap_ok(qemu_bus && test_qemu_bus && isolated_page && private_dma &&
+                  shared_bridge && ipc && contract && no_vmm_dma && async_rx,
+                  "Ubuntu host net: bus.16 net_pd ownership, private DMA, contract IPC bridge");
+}
+
 #define VQ_NUM 8u
 
 static uint8_t g_region[AOS_NET_CLIENT_STRIDE];
@@ -541,6 +592,7 @@ int main(void)
                               "guest DRIVER_OK virq %u MAC"),
                  "VMM logs guest MAC 02:00:00:00:00:01 at DRIVER_OK");
     (void)test_qemu_page_unmapped();
+    (void)test_host_backed_architecture();
     (void)test_mmio_probe();
     (void)test_guest_tx_rx_loopback();
     (void)test_chained_tx_desc();

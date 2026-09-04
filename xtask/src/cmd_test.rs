@@ -1,6 +1,7 @@
 use crate::TestArgs;
 use anyhow::Context;
 use std::io::{Read, Seek, SeekFrom, Write};
+use std::net::{SocketAddr, TcpStream};
 use std::os::unix::net::UnixStream;
 use std::os::unix::process::CommandExt;
 use std::path::Path;
@@ -99,7 +100,9 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
         .context("failed to persist build/tmp QEMU log file")?;
 
     let needs_ssh_probe = !matches!(args.guest_os.as_str(), "ubuntu" | "freebsd");
-    let ssh_port = if needs_ssh_probe {
+    let needs_host_net_stimulus = args.guest_os == "ubuntu" &&
+        (args.assert_agentos_virtio || args.assert_ubuntu_live);
+    let ssh_port = if needs_ssh_probe || needs_host_net_stimulus {
         effective_ssh_port(args)
     } else {
         0
@@ -121,6 +124,17 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
         ssh_port,
         args.assert_ubuntu_live,
     )?;
+    let _host_net_probe = if needs_host_net_stimulus {
+        wait_for_all_markers(
+            &log_path,
+            &["emulated virtio-net: guest DRIVER_OK"],
+            Duration::from_secs(args.timeout_secs),
+        )
+        .context("guest net driver did not become ready for host RX stimulus")?;
+        connect_host_net_stimulus(ssh_port, &mut qemu)
+    } else {
+        None
+    };
 
     let mut result = if args.assert_emulated_net {
         println!(
@@ -211,7 +225,13 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
             required.extend_from_slice(&[
                 "emulated virtio-net: guest probed",
                 "emulated virtio-net: guest DRIVER_OK",
-                "emulated virtio-net: pumped",
+                "emulated virtio-net: backend TX accepted by net_pd",
+                "emulated virtio-net: backend RX delivered from net_pd",
+                "emulated virtio-net: pumped ",
+                "via host-backed net_pd",
+                "[net_pd] HOST_READY: virtio-net bus.16",
+                "[net_pd] HOST_TX: QEMU bus.16 completion observed",
+                "[net_pd] HOST_RX: QEMU bus.16 frame received",
                 "emulated virtio-blk: guest probed",
                 "emulated virtio-blk: guest DRIVER_OK",
                 "emulated virtio-blk: pumped",
@@ -224,7 +244,13 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
             &required,
             Duration::from_secs(10),
         );
+        let no_loopback = std::fs::read_to_string(&log_path)
+            .map(|log| !log.contains("frame(s) TX->RX"))
+            .unwrap_or(false);
         result = match (result, console) {
+            (Ok(_), Ok(_)) if !no_loopback => anyhow::bail!(
+                "Ubuntu network proof used the forbidden VMM-local TX->RX loopback"
+            ),
             (Ok(login), Ok(_)) if args.assert_ubuntu_live => Ok(format!(
                 "{login}; full Ubuntu Casper userspace uses agentOS virtio net + blk + console"
             )),
@@ -235,7 +261,7 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
                 "{login}; emulated virtio-console probed + DRIVER_OK + bidirectional I/O"
             )),
             (_, Err(err)) => Err(err.context(
-                "Ubuntu login succeeded but virtio-console proof was incomplete",
+                "Ubuntu login succeeded but host-backed virtio proof was incomplete",
             )),
             (Err(err), _) => Err(err),
         };
@@ -478,6 +504,17 @@ pub fn spawn_qemu_with_guest(
                 c.args([
                     "-device",
                     "virtio-net-device,netdev=net0,bus=virtio-mmio-bus.0",
+                    "-netdev",
+                    &netdev,
+                ]);
+            } else {
+                /*
+                 * Page-isolated host transport owned by net_pd. linux_vmm
+                 * sees only its emulated IPA 0x0a010000 device.
+                 */
+                c.args([
+                    "-device",
+                    "virtio-net-device,netdev=net0,bus=virtio-mmio-bus.16,mac=02:00:00:00:00:01,ctrl_vq=off,mq=off",
                     "-netdev",
                     &netdev,
                 ]);
@@ -1539,6 +1576,27 @@ fn ensure_qemu_running(qemu: &mut Child, context: &str) -> anyhow::Result<()> {
         anyhow::bail!("QEMU exited with status {status} while {context}");
     }
     Ok(())
+}
+
+fn connect_host_net_stimulus(port: u16, qemu: &mut Child) -> Option<TcpStream> {
+    let addr = SocketAddr::from(([127, 0, 0, 1], port));
+    let start = Instant::now();
+    while start.elapsed() < Duration::from_secs(10) {
+        if ensure_qemu_running(qemu, "connecting host network stimulus").is_err() {
+            return None;
+        }
+        if let Ok(stream) = TcpStream::connect_timeout(&addr, Duration::from_millis(250)) {
+            println!(
+                "[xtask:test] Host network stimulus connected through 127.0.0.1:{port}"
+            );
+            return Some(stream);
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    println!(
+        "[xtask:test] WARN: host network stimulus could not connect to 127.0.0.1:{port}"
+    );
+    None
 }
 
 fn cc_log_stream_for_handle(cc: &mut CcClient, guest_handle: u32) -> anyhow::Result<String> {
