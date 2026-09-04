@@ -581,8 +581,6 @@ static void boot_setup_irqs(const pd_desc_t *pd,
  * it must remain unmapped so accesses fault into linux_vmm.
  */
 #define VIRTIO_MMIO_PAGE_PA  0x0A000000UL
-#define FREEBSD_VIRTIO_MMIO_BUS31_PAGE_PA  0x0A003000UL
-#define FREEBSD_VIRTIO_MMIO_BUS31_PAGE_VA  0x0A003000UL
 
 /* VirtIO serial device for cc_pd ↔ host socket bridge.
  * QEMU flags: -device virtio-serial-device,bus=virtio-mmio-bus.2,id=vser0
@@ -599,7 +597,7 @@ static seL4_CPtr g_uart_frame_cap = seL4_CapNull;
 static seL4_CPtr g_virtio_mmio_frame_cap = seL4_CapNull;
 static seL4_CPtr g_host_blk_mmio_frame_cap = seL4_CapNull;
 static seL4_CPtr g_blk_shared_frame_cap = seL4_CapNull;
-static seL4_CPtr g_freebsd_virtio31_frame_cap = seL4_CapNull;
+static seL4_CPtr g_host_freebsd_blk_mmio_frame_cap = seL4_CapNull;
 static seL4_CPtr g_gic_vcpu_frame_cap = seL4_CapNull;
 
 static volatile uint32_t *g_uart_dr;  /* PL011 UARTDR (offset 0x00) */
@@ -844,41 +842,6 @@ static seL4_CPtr schedcontrol_for_node(const seL4_BootInfo *bi, seL4_Word node)
 #endif
 
 #if defined(__aarch64__)
-static seL4_Error map_vmm_guest_ram_identity(seL4_CPtr vspace,
-                                              seL4_Word  guest_pa,
-                                              size_t     size)
-{
-    const seL4_Word large_page = (seL4_Word)1u << seL4_ARCH_LargePageBits;
-
-    if ((guest_pa & (large_page - 1u)) != 0u ||
-        (((seL4_Word)size) & (large_page - 1u)) != 0u) {
-        return seL4_InvalidArgument;
-    }
-
-    for (seL4_Word off = 0u; off < (seL4_Word)size; off += large_page) {
-        seL4_CPtr frame = seL4_CapNull;
-        seL4_Error err = ut_alloc_device_cap_typed(guest_pa + off,
-                                                   (uint32_t)seL4_ARCH_LargePageObject,
-                                                   (uint8_t)seL4_ARCH_LargePageBits,
-                                                   &frame);
-        if (err == seL4_InvalidArgument) {
-            err = ut_alloc_phys_cap_typed(guest_pa + off,
-                                          (uint32_t)seL4_ARCH_LargePageObject,
-                                          (uint8_t)seL4_ARCH_LargePageBits,
-                                          &frame);
-        }
-        if (err != seL4_NoError) {
-            return err;
-        }
-
-        err = pd_vspace_map_device_frame(vspace, frame, guest_pa + off);
-        if (err != seL4_NoError) {
-            return err;
-        }
-    }
-
-    return seL4_NoError;
-}
 
 static seL4_Error setup_vmm_guest_vcpu(const pd_desc_t *pd,
                                         uint32_t         pd_index,
@@ -1279,12 +1242,13 @@ void root_task_main(const seL4_BootInfo *bi)
 #endif
 
     {
-        seL4_Error v31_err = ut_alloc_device_cap(FREEBSD_VIRTIO_MMIO_BUS31_PAGE_PA,
-                                                 &g_freebsd_virtio31_frame_cap);
-        dbg_puts("[rt] freebsd virtio-mmio bus31 cap err=");
+        seL4_Error v31_err =
+            ut_alloc_device_cap(AGENTOS_HOST_FREEBSD_BLK_PAGE_PA,
+                                &g_host_freebsd_blk_mmio_frame_cap);
+        dbg_puts("[rt] host FreeBSD block page cap err=");
         dbg_hex((seL4_Word)v31_err);
         dbg_puts(" cap=");
-        dbg_hex((seL4_Word)g_freebsd_virtio31_frame_cap);
+        dbg_hex((seL4_Word)g_host_freebsd_blk_mmio_frame_cap);
         dbg_puts("\n");
     }
 
@@ -1604,25 +1568,17 @@ void root_task_main(const seL4_BootInfo *bi)
 #if defined(__aarch64__)
             if ((name_eq(pd->name, "linux_vmm") || name_eq(pd->name, "freebsd_vmm")) &&
                 name_eq(mr->name, "guest_ram")) {
-                if (name_eq(pd->name, "linux_vmm")) {
-                    /*
-                     * Every Linux DTB now advertises only emulated VirtIO
-                     * devices whose queue and payload paths translate GPAs.
-                     */
-                    mr_err = pd_vspace_map_region(
-                        vspace,
-                        (seL4_Word)mr->vaddr,
-                        (size_t)mr->size,
-                        (int)mr->writable
-                    );
-                } else {
-                    /* FreeBSD bus.31 remains passthrough until its own
-                     * emulated block backend is available. */
-                    mr_err = map_vmm_guest_ram_identity(
-                        vspace,
-                        (seL4_Word)mr->vaddr,
-                        (size_t)mr->size);
-                }
+                /*
+                 * Guest RAM is anonymous host memory at an independent VMM
+                 * mapping. Emulated VirtIO translates every queue and payload
+                 * GPA before dereferencing it.
+                 */
+                mr_err = pd_vspace_map_region(
+                    vspace,
+                    (seL4_Word)mr->vaddr,
+                    (size_t)mr->size,
+                    (int)mr->writable
+                );
             } else
 #endif
             {
@@ -1744,9 +1700,31 @@ void root_task_main(const seL4_BootInfo *bi)
             dbg_puts("\n");
         }
 
+        if (name_eq(pd->name, "virtio_blk") &&
+            g_host_freebsd_blk_mmio_frame_cap != seL4_CapNull) {
+            seL4_Word blk_mmio_copy = ut_alloc_slot();
+            seL4_Error blk_err = seL4_NotEnoughMemory;
+            if (blk_mmio_copy != seL4_CapNull) {
+                blk_err = seL4_CNode_Copy(
+                    seL4_CapInitThreadCNode, blk_mmio_copy, 64u,
+                    seL4_CapInitThreadCNode,
+                    g_host_freebsd_blk_mmio_frame_cap, 64u,
+                    seL4_AllRights);
+                if (blk_err == seL4_NoError) {
+                    blk_err = pd_vspace_map_device_frame(
+                        vspace, (seL4_CPtr)blk_mmio_copy,
+                        AGENTOS_HOST_FREEBSD_BLK_PAGE_VA);
+                }
+            }
+            dbg_puts("[rt] virtio_blk FreeBSD host MMIO map err=");
+            dbg_hex((seL4_Word)blk_err);
+            dbg_puts("\n");
+        }
+
         if (g_blk_shared_frame_cap != seL4_CapNull &&
             (name_eq(pd->name, "virtio_blk") ||
-             name_eq(pd->name, "linux_vmm"))) {
+             name_eq(pd->name, "linux_vmm") ||
+             name_eq(pd->name, "freebsd_vmm"))) {
             seL4_Word blk_shared_copy = ut_alloc_slot();
             seL4_Error blk_err = seL4_NotEnoughMemory;
             if (blk_shared_copy != seL4_CapNull) {
@@ -1768,28 +1746,6 @@ void root_task_main(const seL4_BootInfo *bi)
         }
 #endif
 
-        /* QEMU's first virtio-mmio page is host transport only. It is mapped
-         * into cc_pd below for bus.2, never into a guest VMM. */
-        if (name_eq(pd->name, "freebsd_vmm")) {
-            if (g_freebsd_virtio31_frame_cap != seL4_CapNull) {
-                seL4_Word v31_copy = ut_alloc_slot();
-                seL4_Error v31_err = seL4_NotEnoughMemory;
-                if (v31_copy != seL4_CapNull) {
-                    v31_err = seL4_CNode_Copy(
-                        seL4_CapInitThreadCNode, v31_copy,                       64u,
-                        seL4_CapInitThreadCNode, g_freebsd_virtio31_frame_cap,    64u,
-                        seL4_AllRights);
-                    if (v31_err == seL4_NoError) {
-                        v31_err = pd_vspace_map_device_frame(vspace,
-                                                             (seL4_CPtr)v31_copy,
-                                                             FREEBSD_VIRTIO_MMIO_BUS31_PAGE_VA);
-                    }
-                }
-                dbg_puts("[rt] FreeBSD virtio bus31 map err=");
-                dbg_hex((seL4_Word)v31_err);
-                dbg_puts("\n");
-            }
-        }
 
         /* ── 4g.4.7: Set up VirtIO serial transport for cc_pd ───────────────── */
         /*

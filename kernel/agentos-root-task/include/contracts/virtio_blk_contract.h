@@ -39,11 +39,11 @@
 #define BLK_MEDIA_COUNT             2u
 
 /* ─── Opcodes (placed in MR0) ────────────────────────────────────────────── */
-#define OP_BLK_READ    0x01u  /* read sectors from device into blk_dma_shmem */
-#define OP_BLK_WRITE   0x02u  /* write sectors from blk_dma_shmem to device */
-#define OP_BLK_FLUSH   0x03u  /* flush write cache to stable storage */
-#define OP_BLK_INFO    0x04u  /* return device geometry */
-#define OP_BLK_HEALTH  0x05u  /* return initialized flag and error_count */
+#define OP_BLK_READ    0xF0u  /* read sectors from device into blk_dma_shmem */
+#define OP_BLK_WRITE   0xF1u  /* write sectors from blk_dma_shmem to device */
+#define OP_BLK_FLUSH   0xF2u  /* flush write cache to stable storage */
+#define OP_BLK_INFO    0xF3u  /* return device geometry */
+#define OP_BLK_HEALTH  0xF5u  /* return initialized flag and error_count */
 
 /* ─── Request structs ────────────────────────────────────────────────────── */
 
@@ -130,7 +130,7 @@ struct __attribute__((packed)) virtio_blk_reply_health {
 
 enum virtio_blk_error {
     BLK_OK        = 0,
-    BLK_ERR_NODEV = 1,  /* device not present or not initialised */
-    BLK_ERR_IO    = 2,  /* I/O error returned by virtio device */
-    BLK_ERR_OOB   = 3,  /* LBA + count exceeds device capacity */
+    BLK_ERR_IO    = 1,  /* I/O error returned by virtio device */
+    BLK_ERR_OOB   = 2,  /* LBA + count exceeds device capacity */
+    BLK_ERR_NODEV = 3,  /* device not present or not initialised */
 };

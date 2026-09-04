@@ -508,7 +508,15 @@ pub fn spawn_qemu_with_guest(
             if guest_os == "freebsd" || guest_os == "both" {
                 let freebsd_img = freebsd_disk_image(repo_root);
                 if freebsd_img.exists() {
-                    println!("[xtask:test] FreeBSD disk image: {}", freebsd_img.display());
+                    println!(
+                        "[xtask:test] agentOS FreeBSD host block media: {}",
+                        freebsd_img.display()
+                    );
+                    /*
+                     * bus.31 is host hardware owned only by the canonical
+                     * block-service PD. FreeBSD sees the emulated endpoint at
+                     * 0x0a020000 and never receives this MMIO page.
+                     */
                     c.args([
                         "-device",
                         "virtio-blk-device,drive=freebsd_hd,bus=virtio-mmio-bus.31",

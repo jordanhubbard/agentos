@@ -109,12 +109,16 @@ VMM_CFLAGS := \
     -I$(SDDF_ABS)/include/sddf/util/custom_libc \
     -I$(SDDF_ABS)/include/microkit \
     -I$(KERNEL_SRC_DIR)/include \
+    -I$(AGENTOS_ROOT) \
     -I$(AGENTOS_ROOT)/platform/include \
     -MD -MP \
     -target aarch64-none-elf
 
 ifeq ($(GUEST_OS),ubuntu)
 VMM_CFLAGS += -DAGENTOS_GUEST_UBUNTU=1
+endif
+ifeq ($(GUEST_OS),freebsd)
+VMM_CFLAGS += -DAGENTOS_GUEST_FREEBSD=1
 endif
 ifeq ($(VMM_DUAL_GUEST),1)
 VMM_CFLAGS += -DAGENTOS_GUEST_BOTH=1 -DAGENTOS_GUEST_UBUNTU=1
@@ -254,6 +258,7 @@ VMM_PD_ENTRY_OBJ   := $(BUILD_DIR)/pd_entry.vmm.o
 NET_VIRT_PUMP_OBJ  := $(BUILD_DIR)/net_virt_pump.o
 VMM_VIRTIO_NET_OBJ := $(BUILD_DIR)/vmm_virtio_net.o
 GPA_TRANSLATE_OBJ  := $(BUILD_DIR)/gpa_translate.o
+VMM_GUEST_RAM_OBJ  := $(BUILD_DIR)/vmm_guest_ram.o
 BLK_VIRT_PUMP_OBJ  := $(BUILD_DIR)/blk_virt_pump.o
 VMM_VIRTIO_BLK_OBJ := $(BUILD_DIR)/vmm_virtio_blk.o
 VMM_VIRTIO_CONSOLE_OBJ := $(BUILD_DIR)/vmm_virtio_console.o
@@ -291,6 +296,7 @@ $(NET_VIRT_PUMP_OBJ): $(AGENTOS_ROOT)/platform/net-virt/net_virt_pump.c \
 
 $(VMM_VIRTIO_NET_OBJ): $(AGENTOS_ROOT)/platform/net-virt/vmm_virtio_net.c \
                        $(AGENTOS_ROOT)/platform/include/platform/net_layout.h \
+                       $(AGENTOS_ROOT)/platform/include/platform/net_host_layout.h \
                        $(AGENTOS_ROOT)/platform/include/platform/net_virt_pump.h \
                        $(AGENTOS_ROOT)/platform/include/platform/vmm_virtio_net.h \
                        $(AGENTOS_ROOT)/platform/include/platform/guest_ram.h \
@@ -303,6 +309,13 @@ $(GPA_TRANSLATE_OBJ): $(AGENTOS_ROOT)/platform/guest-ram/gpa_translate.c \
                       $(AGENTOS_ROOT)/platform/include/platform/guest_ram.h
 	@mkdir -p $(BUILD_DIR)
 	@echo "[VMM] Compiling gpa_translate.c..."
+	clang $(VMM_CFLAGS) -c -o $@ $<
+
+$(VMM_GUEST_RAM_OBJ): $(AGENTOS_ROOT)/platform/guest-ram/vmm_guest_ram.c \
+                      $(AGENTOS_ROOT)/platform/include/platform/guest_ram.h \
+                      $(LIBVMM_ABS)/include/libvmm/virtio/gpa.h
+	@mkdir -p $(BUILD_DIR)
+	@echo "[VMM] Compiling vmm_guest_ram.c..."
 	clang $(VMM_CFLAGS) -c -o $@ $<
 
 $(BLK_VIRT_PUMP_OBJ): $(AGENTOS_ROOT)/platform/blk-virt/blk_virt_pump.c \
@@ -337,6 +350,7 @@ $(BUILD_DIR)/linux_vmm.elf: FORCE \
 	                             $(NET_VIRT_PUMP_OBJ) \
 	                             $(VMM_VIRTIO_NET_OBJ) \
 	                             $(GPA_TRANSLATE_OBJ) \
+	                             $(VMM_GUEST_RAM_OBJ) \
 	                             $(BLK_VIRT_PUMP_OBJ) \
 	                             $(VMM_VIRTIO_BLK_OBJ) \
 	                             $(VMM_VIRTIO_CONSOLE_OBJ) \
@@ -347,7 +361,7 @@ $(BUILD_DIR)/linux_vmm.elf: FORCE \
 	ld.lld -T$(BOARD_DIR)/lib/microkit.ld \
 		-L$(BOARD_DIR)/lib \
 		$(VMM_PD_ENTRY_OBJ) $(LINUX_VMM_FULL_OBJ) $(GPU_SHMEM_FULL_OBJ) \
-		$(NET_VIRT_PUMP_OBJ) $(VMM_VIRTIO_NET_OBJ) $(GPA_TRANSLATE_OBJ) \
+		$(NET_VIRT_PUMP_OBJ) $(VMM_VIRTIO_NET_OBJ) $(GPA_TRANSLATE_OBJ) $(VMM_GUEST_RAM_OBJ) \
 		$(BLK_VIRT_PUMP_OBJ) $(VMM_VIRTIO_BLK_OBJ) \
 		$(VMM_VIRTIO_CONSOLE_OBJ) $(BUILD_DIR)/images.o \
 		--start-group \
@@ -400,12 +414,18 @@ $(BUILD_DIR)/freebsd_vmm.o: $(KERNEL_SRC_DIR)/src/freebsd_vmm.c $(VMM_CONFIG_STA
 # ─── Link freebsd_vmm.elf ────────────────────────────────────────────────
 $(BUILD_DIR)/freebsd_vmm.elf: $(BUILD_DIR)/freebsd_vmm.o \
                                $(BUILD_DIR)/freebsd_images.o \
+                               $(GPA_TRANSLATE_OBJ) \
+                               $(VMM_GUEST_RAM_OBJ) \
+                               $(BLK_VIRT_PUMP_OBJ) \
+                               $(VMM_VIRTIO_BLK_OBJ) \
                                $(BUILD_DIR)/libvmm.a \
                                $(BUILD_DIR)/libsddf_util_debug.a
 	@echo "[VMM] Linking freebsd_vmm.elf..."
 	ld.lld -T$(KERNEL_SRC_DIR)/freebsd_vmm.ld \
 		-L$(BOARD_DIR)/lib \
 		$(BUILD_DIR)/freebsd_vmm.o $(BUILD_DIR)/freebsd_images.o \
+		$(GPA_TRANSLATE_OBJ) $(VMM_GUEST_RAM_OBJ) \
+		$(BLK_VIRT_PUMP_OBJ) $(VMM_VIRTIO_BLK_OBJ) \
 		--start-group \
 		$(BUILD_DIR)/libvmm.a $(BUILD_DIR)/libsddf_util_debug.a \
 		--end-group \
@@ -416,6 +436,7 @@ vmm-clean:
 	rm -f $(BUILD_DIR)/linux_vmm.full.o $(BUILD_DIR)/gpu_shmem.full.o $(BUILD_DIR)/pd_entry.vmm.o $(BUILD_DIR)/linux_vmm.elf
 	rm -f $(BUILD_DIR)/net_virt_pump.o $(BUILD_DIR)/vmm_virtio_net.o
 	rm -f $(BUILD_DIR)/gpa_translate.o
+	rm -f $(BUILD_DIR)/vmm_guest_ram.o
 	rm -f $(BUILD_DIR)/blk_virt_pump.o $(BUILD_DIR)/vmm_virtio_blk.o
 	rm -f $(BUILD_DIR)/vmm_virtio_console.o
 	rm -f $(BUILD_DIR)/freebsd_vmm.o $(BUILD_DIR)/freebsd_images.o $(BUILD_DIR)/freebsd_vmm.elf

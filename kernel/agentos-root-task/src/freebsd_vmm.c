@@ -8,21 +8,12 @@
  *   1. VMM copies the FreeBSD kernel (_guest_kernel_image) to guest RAM.
  *   2. VMM copies freebsd-direct.dtb (_guest_dtb_image) near the top of RAM.
  *   3. guest_start(kernel, fdt, 0): vCPU PC = FreeBSD Image entry, x0 = FDT.
- *   4. FreeBSD mounts the 15.0 DVD ISO from the virtio-blk device and reaches
- *      the serial installer/login path.
+ *   4. FreeBSD mounts the 15.0 DVD ISO through agentOS's emulated virtio-blk
+ *      endpoint and reaches the emulated PL011/CC-PD console path.
  *
- * Memory layout (host phys -> guest phys):
- *   single-FreeBSD image: guest_ram at 0x40000000, FDT at 0x5f000000.
- *   dual Linux+FreeBSD image: FreeBSD keeps the standalone-proven
- *   0x40000000 guest RAM window while Linux uses a separate high window.
- *
- * IRQ passthrough:
- *   single-FreeBSD image: net INTID 48 at IRQ cap slot 64, block INTID 79 at 65
- *   dual Linux+FreeBSD image: Linux owns net INTID 48, FreeBSD owns only
- *   block INTID 79 at IRQ cap slot 64.
- *
- * QEMU bus assignment: QEMU assigns -device virtio-blk-device to the highest
- * available virtio-mmio bus (bus 31), at 0xa003e00, SPI 47 = INTID 79.
+ * Guest RAM is anonymous VMM memory, not identity-mapped host RAM. All
+ * emulated VirtIO queue and payload GPAs are translated before dereference.
+ * Host bus.31 is owned only by the canonical block-service PD.
  *
  * PSCI: FreeBSD uses SMC-based PSCI (psci { method = "smc"; }).
  *   seL4 intercepts HVC from VCPU EL1 as a seL4 UnknownSyscall, so we use SMC.
@@ -45,9 +36,11 @@
 #include <libvmm/vmm_caps.h>
 #include <libvmm/guest.h>
 #include <libvmm/arch/aarch64/vgic/vgic.h>
+#include <platform/blk_layout.h>
+#include <platform/guest_ram.h>
+#include <platform/vmm_virtio_blk.h>
 
 /* ── Raw agentOS CNode layout constants ─────────────────────────────────── */
-#define AGENTOS_IRQ_CAP_BASE     64u
 #define AGENTOS_VMM_TCB_CAP_BASE 266u
 #define AGENTOS_VMM_VCPU_CAP_BASE 330u
 
@@ -92,34 +85,6 @@ vmm_vcpu_t g_vmm_vcpus[VMM_MAX_VCPUS];
 static uint32_t g_guest_state = GUEST_STATE_READY;
 #else
 static uint32_t g_guest_state = GUEST_STATE_RUNNING;
-#endif
-
-/* ── IRQ capabilities ────────────────────────────────────────────────────── */
-#if defined(AGENTOS_GUEST_BOTH)
-#define FREEBSD_VMM_HAS_NET_IRQ 0u
-#define FREEBSD_VMM_BLK_IRQ_CAP_INDEX 0u
-#else
-#define FREEBSD_VMM_HAS_NET_IRQ 1u
-#define FREEBSD_VMM_BLK_IRQ_CAP_INDEX 1u
-#endif
-
-static const seL4_CPtr g_virtio_blk_irq_cap =
-    (seL4_CPtr)(AGENTOS_IRQ_CAP_BASE + FREEBSD_VMM_BLK_IRQ_CAP_INDEX);
-#if FREEBSD_VMM_HAS_NET_IRQ
-static const seL4_CPtr g_virtio_net_irq_cap =
-    (seL4_CPtr)(AGENTOS_IRQ_CAP_BASE + 0u);    /* INTID 48, SPI 16 */
-#endif
-
-/* ── Notification badge bits from system_desc_aarch64.c ─────────────────── */
-#if FREEBSD_VMM_HAS_NET_IRQ
-#define VIRTIO_NET_NTFN_BADGE  0x1u
-#endif
-#define VIRTIO_BLK_NTFN_BADGE  0x2u
-
-/* ── GIC INTID values ────────────────────────────────────────────────────── */
-#define VIRTIO_BLK_IRQ  79u    /* QEMU virt bus 31 = 0xa003e00, SPI 47 */
-#if FREEBSD_VMM_HAS_NET_IRQ
-#define VIRTIO_NET_IRQ  48u    /* QEMU virt bus 0  = 0xa000000, SPI 16 */
 #endif
 
 /* ── Guest image symbols (kernel + FDT from package_guest_images.S) ─────── */
@@ -167,22 +132,6 @@ static void freebsd_clear_guest_ram(uintptr_t base, size_t size)
         *tail++ = 0u;
     }
 }
-
-/* ── IRQ ack callbacks ───────────────────────────────────────────────────── */
-
-static void virtio_blk_ack(size_t vcpu_id, int irq, void *cookie)
-{
-    (void)vcpu_id; (void)irq; (void)cookie;
-    seL4_IRQHandler_Ack(g_virtio_blk_irq_cap);
-}
-
-#if FREEBSD_VMM_HAS_NET_IRQ
-static void virtio_net_ack(size_t vcpu_id, int irq, void *cookie)
-{
-    (void)vcpu_id; (void)irq; (void)cookie;
-    seL4_IRQHandler_Ack(g_virtio_net_irq_cap);
-}
-#endif
 
 static void uart_ack(size_t vcpu_id, int irq, void *cookie)
 {
@@ -325,10 +274,10 @@ static void freebsd_log_irq_state(const char *where, unsigned count)
     if (count <= 8u || (count % 1000u) == 0u) {
         LOG_VMM("%s irq%u pending=%u enabled=%u inflight=%u irq%u pending=%u enabled=%u inflight=%u\n",
                 where,
-                VIRTIO_BLK_IRQ,
-                vgic_irq_is_pending(GUEST_BOOT_VCPU_ID, VIRTIO_BLK_IRQ) ? 1u : 0u,
-                vgic_irq_is_enabled(GUEST_BOOT_VCPU_ID, VIRTIO_BLK_IRQ) ? 1u : 0u,
-                vgic_irq_is_inflight(GUEST_BOOT_VCPU_ID, VIRTIO_BLK_IRQ) ? 1u : 0u,
+                AOS_VIRTIO_BLK_VIRQ,
+                vgic_irq_is_pending(GUEST_BOOT_VCPU_ID, AOS_VIRTIO_BLK_VIRQ) ? 1u : 0u,
+                vgic_irq_is_enabled(GUEST_BOOT_VCPU_ID, AOS_VIRTIO_BLK_VIRQ) ? 1u : 0u,
+                vgic_irq_is_inflight(GUEST_BOOT_VCPU_ID, AOS_VIRTIO_BLK_VIRQ) ? 1u : 0u,
                 FREEBSD_UART_IRQ,
                 vgic_irq_is_pending(GUEST_BOOT_VCPU_ID, FREEBSD_UART_IRQ) ? 1u : 0u,
                 vgic_irq_is_enabled(GUEST_BOOT_VCPU_ID, FREEBSD_UART_IRQ) ? 1u : 0u,
@@ -530,24 +479,12 @@ static bool freebsd_vmm_prepare_runtime(void)
         return false;
     }
 
-#if FREEBSD_VMM_HAS_NET_IRQ
-    if (!virq_register(GUEST_BOOT_VCPU_ID, VIRTIO_NET_IRQ, &virtio_net_ack, NULL)) {
-        LOG_VMM_ERR("Failed to register virtio-net IRQ %u\n", VIRTIO_NET_IRQ);
-        return false;
-    }
-    seL4_IRQHandler_Ack(g_virtio_net_irq_cap);
-    LOG_VMM("  VirtIO-net IRQ %u registered\n", VIRTIO_NET_IRQ);
-#else
-    LOG_VMM("  VirtIO-net IRQ disabled; dual guest mode reserves it for Linux\n");
-#endif
-
-    /* VirtIO-blk: QEMU assigns to highest bus = bus 31 = 0xa003e00, SPI 47 = INTID 79 */
-    if (!virq_register(GUEST_BOOT_VCPU_ID, VIRTIO_BLK_IRQ, &virtio_blk_ack, NULL)) {
-        LOG_VMM_ERR("Failed to register virtio-blk IRQ %u\n", VIRTIO_BLK_IRQ);
-        return false;
-    }
-    seL4_IRQHandler_Ack(g_virtio_blk_irq_cap);
-    LOG_VMM("  VirtIO-blk IRQ %u registered\n", VIRTIO_BLK_IRQ);
+    /*
+     * Register the guest-only VirtIO endpoint after the vGIC exists.
+     * libvmm installs its MMIO fault handler and virtual IRQ here; no host
+     * transport or hardware IRQ capability enters this VMM.
+     */
+    aos_vmm_virtio_blk_init();
 
     if (!virq_register(GUEST_BOOT_VCPU_ID, FREEBSD_UART_IRQ, &uart_ack, NULL)) {
         LOG_VMM_ERR("Failed to register UART IRQ %u\n", FREEBSD_UART_IRQ);
@@ -758,6 +695,8 @@ void init(void)
     if (guest_ram_vaddr == 0) {
         guest_ram_vaddr = FREEBSD_GUEST_RAM_VADDR;
     }
+    aos_vmm_guest_ram_bind(FREEBSD_GUEST_RAM_VADDR, guest_ram_vaddr,
+                           FREEBSD_GUEST_RAM_SIZE);
 
     uintptr_t kernel_dst = guest_ram_vaddr +
         (FREEBSD_KERNEL_VADDR - FREEBSD_GUEST_RAM_VADDR);
@@ -803,42 +742,9 @@ void init(void)
 
 static void freebsd_vmm_notified(seL4_Word badge)
 {
-    static uint64_t ntfn_count = 0;
-    ntfn_count++;
-    if (ntfn_count <= 10 || ntfn_count % 1000 == 0)
-        LOG_VMM("notified #%llu badge=0x%lx\n",
-                (unsigned long long)ntfn_count, (unsigned long)badge);
-
-    if (!g_freebsd_runtime_ready) {
-        return;
-    }
-
-    if (badge & (seL4_Word)VIRTIO_BLK_NTFN_BADGE) {
-        bool injected = virq_inject(VIRTIO_BLK_IRQ);
-        if (ntfn_count <= 10 || ntfn_count % 1000 == 0 || !injected)
-            LOG_VMM("virtio-blk IRQ %u: inject=%s\n",
-                    VIRTIO_BLK_IRQ, injected ? "ok" : "deferred");
-#if FREEBSD_IRQ_TRACE
-        freebsd_log_irq_state("virtio-blk state after inject", (unsigned)ntfn_count);
-#endif
-        if (!injected) {
-            LOG_VMM_ERR("virtio-blk IRQ %u dropped\n", VIRTIO_BLK_IRQ);
-            seL4_IRQHandler_Ack(g_virtio_blk_irq_cap);
-        }
-    }
-
-#if FREEBSD_VMM_HAS_NET_IRQ
-    if (badge & (seL4_Word)VIRTIO_NET_NTFN_BADGE) {
-        bool injected = virq_inject(VIRTIO_NET_IRQ);
-        if (ntfn_count <= 10 || ntfn_count % 1000 == 0 || !injected)
-            LOG_VMM("virtio-net IRQ %u: inject=%s\n",
-                    VIRTIO_NET_IRQ, injected ? "ok" : "deferred");
-        if (!injected) {
-            LOG_VMM_ERR("virtio-net IRQ %u dropped\n", VIRTIO_NET_IRQ);
-            seL4_IRQHandler_Ack(g_virtio_net_irq_cap);
-        }
-    }
-#endif
+    /* Emulated devices signal the guest vGIC directly from their VMM fault
+     * handlers. This PD intentionally owns no host device IRQ capability. */
+    (void)badge;
 }
 
 /* ── Fault handler ────────────────────────────────────────────────────────── */
@@ -931,6 +837,7 @@ static seL4_MessageInfo_t freebsd_vmm_fault(seL4_Word badge,
     if (!success)
         LOG_VMM_ERR("Unhandled fault: badge=0x%lx label=0x%lx\n",
                     (unsigned long)badge, (unsigned long)label);
+    aos_vmm_virtio_blk_after_fault();
     return seL4_MessageInfo_new(0, 0, 0, 0);
 }
 

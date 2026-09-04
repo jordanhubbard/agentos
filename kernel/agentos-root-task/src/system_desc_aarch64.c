@@ -354,23 +354,14 @@ const system_desc_t system_desc_aarch64 = {
             .cnode_size_bits = 10u,
             .priority       = 250u,
             .self_svc_id    = SVC_ID_FREEBSD_VMM,
-            .init_ep_count  = 2u,
+            .init_ep_count  = 3u,
             .init_eps = {
                 { SVC_ID_NAMESERVER, PD_CNODE_SLOT_NAMESERVER_EP },
                 { SVC_ID_LOG_DRAIN,  PD_CNODE_SLOT_LOG_DRAIN_EP  },
+                { SVC_ID_VIRTIO_BLK, 12u },
             },
-            .irq_count =
-#if defined(AGENTOS_GUEST_BOTH)
-                1u,
-#else
-                2u,
-#endif
-            .irqs = {
-#if !defined(AGENTOS_GUEST_BOTH)
-                { .irq_number = 48u, .ntfn_badge = 0x1u, .name = "virtio-net" },
-#endif
-                { .irq_number = 79u, .ntfn_badge = 0x2u, .name = "virtio-blk" },
-            },
+            .irq_count = 0u,
+            .irqs = { },
             .mr_count = 1u,
             .memory_regions = {
                 { .vaddr    =
@@ -442,15 +433,14 @@ const system_desc_t system_desc_aarch64 = {
             .cnode_size_bits = 10u,
             .priority       = 250u,
             .self_svc_id    = SVC_ID_FREEBSD_VMM,
-            .init_ep_count  = 2u,
+            .init_ep_count  = 3u,
             .init_eps = {
                 { SVC_ID_NAMESERVER, PD_CNODE_SLOT_NAMESERVER_EP },
                 { SVC_ID_LOG_DRAIN,  PD_CNODE_SLOT_LOG_DRAIN_EP  },
+                { SVC_ID_VIRTIO_BLK, 12u },
             },
-            .irq_count = 1u,
-            .irqs = {
-                { .irq_number = 79u, .ntfn_badge = 0x2u, .name = "virtio-blk" },
-            },
+            .irq_count = 0u,
+            .irqs = { },
             .mr_count = 1u,
             .memory_regions = {
                 { .vaddr    = 0x40000000ULL,

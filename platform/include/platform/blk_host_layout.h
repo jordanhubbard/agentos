@@ -1,8 +1,9 @@
 /*
  * Host virtio-blk ownership and shared-DMA ABI.
  *
- * QEMU bus.8 models host hardware. Only the agentOS virtio_blk PD receives
- * its MMIO capability; linux_vmm reaches it through IPC and this shared frame.
+ * QEMU buses 8 and 31 model host hardware. Only the canonical agentOS
+ * virtio_blk PD receives their MMIO capabilities; VMMs reach selected media
+ * through IPC and this shared frame.
  */
 #ifndef AOS_PLATFORM_BLK_HOST_LAYOUT_H
 #define AOS_PLATFORM_BLK_HOST_LAYOUT_H
@@ -11,13 +12,21 @@
 
 #define AGENTOS_HOST_BLK_MMIO_PA         0x0A001000UL
 #define AGENTOS_HOST_BLK_MMIO_VA         0x06000000UL
+#define AGENTOS_HOST_FREEBSD_BLK_PAGE_PA 0x0A003000UL
+#define AGENTOS_HOST_FREEBSD_BLK_PAGE_VA 0x06001000UL
+#define AGENTOS_HOST_FREEBSD_BLK_PAGE_OFF 0x00000E00UL
 
 #define AGENTOS_BLK_SHARED_VA            0x22000000UL
 #define AGENTOS_BLK_SHARED_SIZE          0x00200000UL
 #define AGENTOS_BLK_SHARED_MAGIC         0x414F5342u /* "AOSB" */
 #define AGENTOS_BLK_SHARED_META_OFF      0x0000u
-#define AGENTOS_BLK_SHARED_QUEUE_OFF     0x1000u
-#define AGENTOS_BLK_SHARED_DMA_OFF       0x2000u
+#define AGENTOS_BLK_MEDIA_STRIDE         0x10000u
+#define AGENTOS_BLK_MEDIA_QUEUE_OFF(id)  \
+    (0x1000u + (uint32_t)(id) * AGENTOS_BLK_MEDIA_STRIDE)
+#define AGENTOS_BLK_MEDIA_DMA_OFF(id)    \
+    (0x2000u + (uint32_t)(id) * AGENTOS_BLK_MEDIA_STRIDE)
+#define AGENTOS_BLK_SHARED_QUEUE_OFF     AGENTOS_BLK_MEDIA_QUEUE_OFF(0u)
+#define AGENTOS_BLK_SHARED_DMA_OFF       AGENTOS_BLK_MEDIA_DMA_OFF(0u)
 #define AGENTOS_BLK_SHARED_DMA_SIZE      0x8000u
 #define AGENTOS_BLK_SHARED_DMA_DATA_OFF  16u
 #define AGENTOS_BLK_SHARED_DMA_MAX_SECTORS 63u
@@ -36,7 +45,11 @@ typedef struct __attribute__((packed)) {
 #define AOS_HOST_BLK_OP_WRITE            0xF1u
 #define AOS_HOST_BLK_OP_FLUSH            0xF2u
 #define AOS_HOST_BLK_OP_INFO             0xF3u
-#define AOS_HOST_BLK_OP_HEALTH           0xF4u
+#define AOS_HOST_BLK_OP_HEALTH           0xF5u
+
+#define AOS_HOST_BLK_MEDIA_UBUNTU        0u
+#define AOS_HOST_BLK_MEDIA_FREEBSD       1u
+#define AOS_HOST_BLK_MEDIA_COUNT         2u
 
 #define AOS_HOST_BLK_OK                  0u
 #define AOS_HOST_BLK_ERR_IO              1u

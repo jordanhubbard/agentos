@@ -1,9 +1,6 @@
 /*
  * Guest-facing virtio-blk: libvmm device at AOS_VIRTIO_BLK_GUEST_IPA,
- * backend = sDDF queues + local aos_blk_virt_pump (RAM disk until blk_drv).
- *
- * QEMU virtio-mmio blk at 0x0A000200 remains a kill-dated passthrough
- * crutch on Ubuntu (guest vda). Buildroot DTB uses only this device.
+ * backend = sDDF queues + canonical agentOS block-service media.
  */
 
 #include <libvmm/libvmm.h>
@@ -45,6 +42,19 @@ static int                      g_host_read_pumped;
 
 #define AOS_HOST_BLK_EP 12u
 
+#if defined(AGENTOS_GUEST_FREEBSD)
+#define AOS_VMM_BLK_MEDIA_ID AOS_HOST_BLK_MEDIA_FREEBSD
+#else
+#define AOS_VMM_BLK_MEDIA_ID AOS_HOST_BLK_MEDIA_UBUNTU
+#endif
+
+static uint8_t *host_dma(void)
+{
+    return (uint8_t *)(AGENTOS_BLK_SHARED_VA +
+                       AGENTOS_BLK_MEDIA_DMA_OFF(AOS_VMM_BLK_MEDIA_ID) +
+                       AGENTOS_BLK_SHARED_DMA_DATA_OFF);
+}
+
 static void aos_copy(void *dst, const void *src, uint32_t n)
 {
     uint8_t *d = (uint8_t *)dst;
@@ -65,10 +75,10 @@ static uint32_t host_blk_call(uint32_t op, uint64_t sector, uint32_t count,
     seL4_MessageInfo_t reply;
 
     seL4_SetMR(0, op);
-    seL4_SetMR(1, 16u);
+    seL4_SetMR(1, 20u);
     seL4_SetMR(2, payload0);
     seL4_SetMR(3, payload1);
-    seL4_SetMR(4, 0u);
+    seL4_SetMR(4, (seL4_Word)AOS_VMM_BLK_MEDIA_ID);
     seL4_SetMR(5, 0u);
     seL4_SetMR(6, 0u);
     seL4_SetMR(7, 0u);
@@ -104,9 +114,7 @@ static uint32_t read_le32(const uint8_t *p)
 
 static bool iso_read_sector(uint32_t lba)
 {
-    uint8_t *dma = (uint8_t *)(AGENTOS_BLK_SHARED_VA +
-                               AGENTOS_BLK_SHARED_DMA_OFF +
-                               AGENTOS_BLK_SHARED_DMA_DATA_OFF);
+    uint8_t *dma = host_dma();
     uint64_t host_sector =
         (uint64_t)lba * (ISO9660_SECTOR_SIZE / AOS_HOST_BLK_SECTOR_SIZE);
     uint32_t count = ISO9660_SECTOR_SIZE / AOS_HOST_BLK_SECTOR_SIZE;
@@ -196,9 +204,7 @@ bool aos_vmm_virtio_blk_load_casper_initrd(uintptr_t guest_dest,
     uint32_t casper_size;
     uint32_t initrd_lba;
     uint32_t initrd_size;
-    uint8_t *dma = (uint8_t *)(AGENTOS_BLK_SHARED_VA +
-                               AGENTOS_BLK_SHARED_DMA_OFF +
-                               AGENTOS_BLK_SHARED_DMA_DATA_OFF);
+    uint8_t *dma = host_dma();
 
     if (!g_host_backend || !iso_read_sector(16u)) {
         LOG_VMM_ERR("emulated virtio-blk: failed to read ISO9660 primary descriptor\n");
@@ -281,9 +287,7 @@ bool aos_vmm_virtio_blk_load_casper_initrd(uintptr_t guest_dest,
 static aos_blk_resp_status_t host_blk_backend(
     void *ctx, aos_blk_virt_client_t *client, const aos_blk_req_t *req)
 {
-    uint8_t *dma = (uint8_t *)(AGENTOS_BLK_SHARED_VA +
-                               AGENTOS_BLK_SHARED_DMA_OFF +
-                               AGENTOS_BLK_SHARED_DMA_DATA_OFF);
+    uint8_t *dma = host_dma();
     uint32_t nbytes = (uint32_t)req->count * AOS_BLK_TRANSFER_SIZE;
     uint64_t data_end = req->io_or_offset + (uint64_t)nbytes;
     uint64_t sector = req->block_number *
@@ -371,7 +375,8 @@ void aos_vmm_virtio_blk_init(void)
         g_aos_client.info->block_size = 0u;
         aos_blk_virt_set_backend(&g_aos_virt, host_blk_backend, 0);
         g_host_backend = 1;
-        LOG_VMM("emulated virtio-blk: agentOS host media ready sectors=%lu\n",
+        LOG_VMM("emulated virtio-blk: agentOS host media %u ready sectors=%lu\n",
+                (unsigned)AOS_VMM_BLK_MEDIA_ID,
                 (unsigned long)host_sectors);
     } else {
         LOG_VMM("emulated virtio-blk: host unavailable rc=%u; using RAM backend\n",

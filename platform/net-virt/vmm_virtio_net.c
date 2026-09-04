@@ -29,12 +29,6 @@ static int                      g_aos_net_probed;
 static int                      g_aos_net_driver_ok;
 static int                      g_aos_net_pumped;
 
-void aos_vmm_guest_ram_bind(uint64_t gpa_base, uintptr_t hva_base, size_t size)
-{
-    aos_guest_ram_configure(gpa_base, hva_base, size);
-    virtio_gpa_set_translate(aos_gpa_to_hva_configured);
-}
-
 void aos_vmm_virtio_net_init(void)
 {
     uint8_t *region = (uint8_t *)AOS_NET_SHMEM_VA;

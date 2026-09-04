@@ -64,13 +64,16 @@ static inline void mmio_write(volatile uint32_t *base, uint32_t offset, uint32_t
 typedef struct {
     bool               initialized;
     volatile uint32_t *mmio;         /* MMIO base pointer (blk_mmio_vaddr) */
+    uint32_t           media_id;      /* BLK_MEDIA_* */
+    uint32_t           queue_off;     /* offset in shared large frame */
+    uint32_t           dma_off;       /* offset in shared large frame */
     uint64_t           capacity;     /* total 512-byte sectors on the device */
     uint32_t           block_size;   /* logical block size reported by device (bytes) */
     uint32_t           error_count;  /* cumulative I/O errors since boot */
     uint32_t           init_error;   /* non-zero initialization stage */
 } blk_device_t;
 
-static blk_device_t dev;
+static blk_device_t dev[AOS_HOST_BLK_MEDIA_COUNT];
 static uint64_t g_blk_shared_paddr;
 
 /* ─────────────────────────────────────────────────────────────────────────────
@@ -94,19 +97,30 @@ static uint64_t g_blk_shared_paddr;
 #define AVAIL_OFFSET    0x100u
 #define USED_OFFSET     0x200u
 
-#define QUEUE_MEM ((volatile uint8_t *)(AGENTOS_BLK_SHARED_VA + \
-                                        AGENTOS_BLK_SHARED_QUEUE_OFF))
+static volatile uint8_t *queue_mem(const blk_device_t *device)
+{
+    return (volatile uint8_t *)(AGENTOS_BLK_SHARED_VA + device->queue_off);
+}
 
-/* Typed pointers into queue_mem */
-#define QUEUE_DESC  ((volatile virtq_desc_t  *)(QUEUE_MEM + DESC_OFFSET))
-#define QUEUE_AVAIL ((volatile virtq_avail_t *)(QUEUE_MEM + AVAIL_OFFSET))
-#define QUEUE_USED  ((volatile virtq_used_t  *)(QUEUE_MEM + USED_OFFSET))
+static volatile virtq_desc_t *queue_desc(const blk_device_t *device)
+{
+    return (volatile virtq_desc_t *)(queue_mem(device) + DESC_OFFSET);
+}
 
-/* Physical address of queue memory from root-task metadata. */
-#define QUEUE_MEM_PADDR     (g_blk_shared_paddr + AGENTOS_BLK_SHARED_QUEUE_OFF)
-#define DESC_PADDR          (QUEUE_MEM_PADDR + DESC_OFFSET)
-#define AVAIL_PADDR         (QUEUE_MEM_PADDR + AVAIL_OFFSET)
-#define USED_PADDR          (QUEUE_MEM_PADDR + USED_OFFSET)
+static volatile virtq_avail_t *queue_avail(const blk_device_t *device)
+{
+    return (volatile virtq_avail_t *)(queue_mem(device) + AVAIL_OFFSET);
+}
+
+static volatile virtq_used_t *queue_used(const blk_device_t *device)
+{
+    return (volatile virtq_used_t *)(queue_mem(device) + USED_OFFSET);
+}
+
+static uint64_t queue_paddr(const blk_device_t *device)
+{
+    return g_blk_shared_paddr + device->queue_off;
+}
 
 /* ─────────────────────────────────────────────────────────────────────────────
  * Request scratch buffers (inside the DMA window)
@@ -132,11 +146,15 @@ static uint64_t g_blk_shared_paddr;
 #define DMA_MAX_DATA_BYTES      (DMA_MAX_SECTORS * 512u)
 #define DMA_STATUS_OFFSET(cnt)  (DMA_DATA_OFFSET + (uint32_t)(cnt) * 512u)
 
-/* Cast the DMA shmem base to a byte pointer */
-#define DMA_BASE  ((volatile uint8_t *)blk_dma_shmem_vaddr)
+static volatile uint8_t *dma_base(const blk_device_t *device)
+{
+    return (volatile uint8_t *)(AGENTOS_BLK_SHARED_VA + device->dma_off);
+}
 
-/* Physical address of DMA shmem from root-task metadata. */
-#define DMA_PADDR (g_blk_shared_paddr + AGENTOS_BLK_SHARED_DMA_OFF)
+static uint64_t dma_paddr(const blk_device_t *device)
+{
+    return g_blk_shared_paddr + device->dma_off;
+}
 
 /* ─────────────────────────────────────────────────────────────────────────────
  * Internal: perform a virtio-blk I/O request (synchronous polling)
@@ -152,21 +170,27 @@ static uint64_t g_blk_shared_paddr;
  *
  * Returns BLK_OK on success, BLK_ERR_IO on device error or timeout.
  * ──────────────────────────────────────────────────────────────────────────── */
-static uint32_t virtio_blk_do_io(uint32_t type, uint64_t sector, uint32_t count)
+static uint32_t virtio_blk_do_io(blk_device_t *device, uint32_t type,
+                                 uint64_t sector, uint32_t count)
 {
     uint32_t data_len    = count * 512u;
     uint32_t status_off  = DMA_STATUS_OFFSET(count);
+    volatile uint8_t *dma = dma_base(device);
+    uint64_t dma_pa = dma_paddr(device);
+    volatile virtq_desc_t *desc = queue_desc(device);
+    volatile virtq_avail_t *avail = queue_avail(device);
+    volatile virtq_used_t *used = queue_used(device);
 
     /* ── Step 1: Write request header into DMA shmem ── */
     volatile virtio_blk_req_hdr_t *hdr =
-        (volatile virtio_blk_req_hdr_t *)(DMA_BASE + DMA_HDR_OFFSET);
+        (volatile virtio_blk_req_hdr_t *)(dma + DMA_HDR_OFFSET);
     hdr->type     = type;
     hdr->reserved = 0;
     hdr->sector   = sector;
 
     /* Initialise the status byte to a non-zero sentinel so we can detect
      * whether the device has written back a completion status */
-    DMA_BASE[status_off] = 0xFFu;
+    dma[status_off] = 0xFFu;
 
     /* Compiler + hardware barrier: header writes must complete before we
      * publish the descriptor to the device */
@@ -194,16 +218,14 @@ static uint32_t virtio_blk_do_io(uint32_t type, uint64_t sector, uint32_t count)
      * that fits a 3-descriptor chain) or use indirect descriptors.  For the
      * MVP polling path this works reliably on QEMU.
      */
-    volatile virtq_desc_t *desc = QUEUE_DESC;
-
     /* Descriptor 0 — request header (device reads) */
-    desc[0].addr  = (uint64_t)(DMA_PADDR + DMA_HDR_OFFSET);
+    desc[0].addr  = dma_pa + DMA_HDR_OFFSET;
     desc[0].len   = sizeof(virtio_blk_req_hdr_t);
     desc[0].flags = VIRTQ_DESC_F_NEXT;
     desc[0].next  = 1;
 
     /* Descriptor 1 — data buffer */
-    desc[1].addr  = (uint64_t)(DMA_PADDR + DMA_DATA_OFFSET);
+    desc[1].addr  = dma_pa + DMA_DATA_OFFSET;
     desc[1].len   = (data_len > 0) ? data_len : 0u;
     /* For reads the device writes into this buffer; for writes/flush the
      * device reads from it. */
@@ -212,7 +234,7 @@ static uint32_t virtio_blk_do_io(uint32_t type, uint64_t sector, uint32_t count)
     desc[1].next  = 2;
 
     /* Descriptor 2 — status byte (device writes) */
-    desc[2].addr  = (uint64_t)(DMA_PADDR + status_off);
+    desc[2].addr  = dma_pa + status_off;
     desc[2].len   = 1;
     desc[2].flags = VIRTQ_DESC_F_WRITE;
     desc[2].next  = 0;
@@ -223,18 +245,18 @@ static uint32_t virtio_blk_do_io(uint32_t type, uint64_t sector, uint32_t count)
      * device processes the request it will advance used->idx by 1; we poll
      * for that increment.
      */
-    uint16_t used_idx_before = QUEUE_USED->idx;
+    uint16_t used_idx_before = used->idx;
 
     /* The available ring ring[] element and idx update must be visible to the
      * device before we write QueueNotify. */
-    uint16_t avail_idx = QUEUE_AVAIL->idx;
-    QUEUE_AVAIL->ring[avail_idx % VIRTIO_BLK_QUEUE_SIZE] = 0;
+    uint16_t avail_idx = avail->idx;
+    avail->ring[avail_idx % VIRTIO_BLK_QUEUE_SIZE] = 0;
     ARCH_WMB();
-    QUEUE_AVAIL->idx = (uint16_t)(avail_idx + 1u);
+    avail->idx = (uint16_t)(avail_idx + 1u);
     ARCH_WMB();
 
     /* ── Step 4: Kick the device ── */
-    mmio_write(dev.mmio, VIRTIO_MMIO_QUEUE_NOTIFY, 0);
+    mmio_write(device->mmio, VIRTIO_MMIO_QUEUE_NOTIFY, 0);
 
     /* ── Step 5: Poll for completion ──
      *
@@ -243,12 +265,12 @@ static uint32_t virtio_blk_do_io(uint32_t type, uint64_t sector, uint32_t count)
      * are used in this MVP.
      */
     uint32_t iters = 0;
-    while (QUEUE_USED->idx == used_idx_before) {
+    while (used->idx == used_idx_before) {
         /* Read barrier: ensure we see the device's update */
         ARCH_MB();
         if (++iters >= VIRTIO_BLK_POLL_ITERS) {
             log_drain_write(17, 17, "[virtio_blk] ERROR: I/O timeout\n");
-            dev.error_count++;
+            device->error_count++;
             return BLK_ERR_IO;
         }
     }
@@ -257,10 +279,10 @@ static uint32_t virtio_blk_do_io(uint32_t type, uint64_t sector, uint32_t count)
     ARCH_MB();
 
     /* ── Step 6: Check device status ── */
-    uint8_t status = DMA_BASE[status_off];
+    uint8_t status = dma[status_off];
     if (status != VIRTIO_BLK_S_OK) {
         log_drain_write(17, 17, "[virtio_blk] ERROR: device returned non-OK status\n");
-        dev.error_count++;
+        device->error_count++;
         return BLK_ERR_IO;
     }
 
@@ -270,163 +292,153 @@ static uint32_t virtio_blk_do_io(uint32_t type, uint64_t sector, uint32_t count)
 /* ─────────────────────────────────────────────────────────────────────────────
  * Device initialisation — called once from init()
  * ──────────────────────────────────────────────────────────────────────────── */
-static void virtio_blk_device_init(void)
+static void virtio_blk_device_init(blk_device_t *device, uint32_t media_id,
+                                   uintptr_t mmio_vaddr)
 {
-    const agentos_blk_shared_meta_t *shared =
-        (const agentos_blk_shared_meta_t *)AGENTOS_BLK_SHARED_VA;
+    device->initialized = false;
+    device->error_count = 0;
+    device->init_error = 0;
+    device->media_id = media_id;
+    device->queue_off = AGENTOS_BLK_MEDIA_QUEUE_OFF(media_id);
+    device->dma_off = AGENTOS_BLK_MEDIA_DMA_OFF(media_id);
+    device->mmio = (volatile uint32_t *)mmio_vaddr;
 
-    dev.initialized = false;
-    dev.error_count = 0;
-    dev.init_error = 0;
-
-    if (blk_mmio_vaddr == 0) {
-        blk_mmio_vaddr = AGENTOS_HOST_BLK_MMIO_VA;
-    }
-    if (blk_dma_shmem_vaddr == 0) {
-        blk_dma_shmem_vaddr =
-            AGENTOS_BLK_SHARED_VA + AGENTOS_BLK_SHARED_DMA_OFF;
-    }
-    if (shared->magic != AGENTOS_BLK_SHARED_MAGIC ||
-        shared->version != 1u ||
-        shared->size != AGENTOS_BLK_SHARED_SIZE) {
-        log_drain_write(17, 17, "[virtio_blk] ERROR: shared DMA metadata invalid\n");
-        dev.init_error = 1u;
+    if (mmio_vaddr == 0u) {
+        device->init_error = 2u;
         return;
     }
-    g_blk_shared_paddr = shared->paddr;
-
-    if (blk_mmio_vaddr == 0) {
-        log_drain_write(17, 17, "[virtio_blk] ERROR: blk_mmio_vaddr not set\n");
-        dev.init_error = 2u;
-        return;
-    }
-    dev.mmio = (volatile uint32_t *)blk_mmio_vaddr;
 
     /* ── Probe: check magic, version, device ID ── */
-    uint32_t magic    = mmio_read(dev.mmio, VIRTIO_MMIO_MAGIC_VALUE);
-    uint32_t version  = mmio_read(dev.mmio, VIRTIO_MMIO_VERSION);
-    uint32_t devid    = mmio_read(dev.mmio, VIRTIO_MMIO_DEVICE_ID);
+    uint32_t magic    = mmio_read(device->mmio, VIRTIO_MMIO_MAGIC_VALUE);
+    uint32_t version  = mmio_read(device->mmio, VIRTIO_MMIO_VERSION);
+    uint32_t devid    = mmio_read(device->mmio, VIRTIO_MMIO_DEVICE_ID);
 
     if (magic != VIRTIO_MMIO_MAGIC) {
-        log_drain_write(17, 17, "[virtio_blk] ERROR: bad magic value (not a virtio device)\n");
-        dev.init_error = 3u;
+        device->init_error = 3u;
         return;
     }
     if (version != 2) {
         log_drain_write(17, 17, "[virtio_blk] ERROR: unsupported virtio-MMIO version (need v2)\n");
-        dev.init_error = 4u;
+        device->init_error = 4u;
         return;
     }
     if (devid != 2) {
         log_drain_write(17, 17, "[virtio_blk] ERROR: device ID is not 2 (not a block device)\n");
-        dev.init_error = 5u;
+        device->init_error = 5u;
         return;
     }
 
     /* ── Initialisation sequence (virtio spec §3.1.1) ── */
 
     /* Step 1 — Reset the device */
-    mmio_write(dev.mmio, VIRTIO_MMIO_STATUS, 0);
+    mmio_write(device->mmio, VIRTIO_MMIO_STATUS, 0);
 
     /* Step 2 — Acknowledge: guest has seen the device */
     uint32_t status = VIRTIO_STATUS_ACKNOWLEDGE;
-    mmio_write(dev.mmio, VIRTIO_MMIO_STATUS, status);
+    mmio_write(device->mmio, VIRTIO_MMIO_STATUS, status);
 
     /* Step 3 — Driver: guest knows how to drive this device */
     status |= VIRTIO_STATUS_DRIVER;
-    mmio_write(dev.mmio, VIRTIO_MMIO_STATUS, status);
+    mmio_write(device->mmio, VIRTIO_MMIO_STATUS, status);
 
     /* Step 4 — Feature negotiation
      * Select word 0 of device features, read them, mask to what we want */
-    mmio_write(dev.mmio, VIRTIO_MMIO_DEVICE_FEATURES_SEL, 0);
-    uint32_t dev_features = mmio_read(dev.mmio, VIRTIO_MMIO_DEVICE_FEATURES);
+    mmio_write(device->mmio, VIRTIO_MMIO_DEVICE_FEATURES_SEL, 0);
+    uint32_t dev_features = mmio_read(device->mmio, VIRTIO_MMIO_DEVICE_FEATURES);
     uint32_t drv_features = dev_features & VIRTIO_BLK_FEATURES_WANTED;
 
-    mmio_write(dev.mmio, VIRTIO_MMIO_DRIVER_FEATURES_SEL, 0);
-    mmio_write(dev.mmio, VIRTIO_MMIO_DRIVER_FEATURES, drv_features);
+    mmio_write(device->mmio, VIRTIO_MMIO_DRIVER_FEATURES_SEL, 0);
+    mmio_write(device->mmio, VIRTIO_MMIO_DRIVER_FEATURES, drv_features);
 
     /* Feature word 1: virtio 1.x devices require VIRTIO_F_VERSION_1 (bit 32). */
-    mmio_write(dev.mmio, VIRTIO_MMIO_DRIVER_FEATURES_SEL, 1);
-    mmio_write(dev.mmio, VIRTIO_MMIO_DRIVER_FEATURES, 1u);
+    mmio_write(device->mmio, VIRTIO_MMIO_DRIVER_FEATURES_SEL, 1);
+    mmio_write(device->mmio, VIRTIO_MMIO_DRIVER_FEATURES, 1u);
 
     /* Step 5 — Set FEATURES_OK and confirm it sticks */
     status |= VIRTIO_STATUS_FEATURES_OK;
-    mmio_write(dev.mmio, VIRTIO_MMIO_STATUS, status);
+    mmio_write(device->mmio, VIRTIO_MMIO_STATUS, status);
 
-    uint32_t confirmed = mmio_read(dev.mmio, VIRTIO_MMIO_STATUS);
+    uint32_t confirmed = mmio_read(device->mmio, VIRTIO_MMIO_STATUS);
     if (!(confirmed & VIRTIO_STATUS_FEATURES_OK)) {
         log_drain_write(17, 17, "[virtio_blk] ERROR: device rejected feature set\n");
-        dev.init_error = 6u;
-        mmio_write(dev.mmio, VIRTIO_MMIO_STATUS,
-                   mmio_read(dev.mmio, VIRTIO_MMIO_STATUS) | VIRTIO_STATUS_FAILED);
+        device->init_error = 6u;
+        mmio_write(device->mmio, VIRTIO_MMIO_STATUS,
+                   mmio_read(device->mmio, VIRTIO_MMIO_STATUS) | VIRTIO_STATUS_FAILED);
         return;
     }
 
     /* Step 6 — Setup virtqueue 0 */
 
     /* Select queue 0 */
-    mmio_write(dev.mmio, VIRTIO_MMIO_QUEUE_SEL, 0);
+    mmio_write(device->mmio, VIRTIO_MMIO_QUEUE_SEL, 0);
 
     /* Check the max queue size the device supports */
-    uint32_t qnum_max = mmio_read(dev.mmio, VIRTIO_MMIO_QUEUE_NUM_MAX);
+    uint32_t qnum_max = mmio_read(device->mmio, VIRTIO_MMIO_QUEUE_NUM_MAX);
     if (qnum_max == 0) {
         log_drain_write(17, 17, "[virtio_blk] ERROR: device reports queue 0 not available\n");
-        dev.init_error = 7u;
-        mmio_write(dev.mmio, VIRTIO_MMIO_STATUS,
-                   mmio_read(dev.mmio, VIRTIO_MMIO_STATUS) | VIRTIO_STATUS_FAILED);
+        device->init_error = 7u;
+        mmio_write(device->mmio, VIRTIO_MMIO_STATUS,
+                   mmio_read(device->mmio, VIRTIO_MMIO_STATUS) | VIRTIO_STATUS_FAILED);
         return;
     }
 
     /* Set our chosen queue size (1 for MVP polling mode) */
-    mmio_write(dev.mmio, VIRTIO_MMIO_QUEUE_NUM, VIRTIO_BLK_QUEUE_SIZE);
+    mmio_write(device->mmio, VIRTIO_MMIO_QUEUE_NUM, VIRTIO_BLK_QUEUE_SIZE);
 
     /* Zero the queue memory so all fields start clean */
-    volatile uint8_t *qm = QUEUE_MEM;
+    volatile uint8_t *qm = queue_mem(device);
     for (uint32_t i = 0; i < 4096u; i++) {
         qm[i] = 0;
     }
     ARCH_WMB();
 
     /* Write queue region physical addresses (split into low/high 32-bit words) */
-    mmio_write(dev.mmio, VIRTIO_MMIO_QUEUE_DESC_LOW,   (uint32_t)(DESC_PADDR & 0xFFFFFFFFu));
-    mmio_write(dev.mmio, VIRTIO_MMIO_QUEUE_DESC_HIGH,  (uint32_t)(DESC_PADDR >> 32));
-    mmio_write(dev.mmio, VIRTIO_MMIO_QUEUE_AVAIL_LOW,  (uint32_t)(AVAIL_PADDR & 0xFFFFFFFFu));
-    mmio_write(dev.mmio, VIRTIO_MMIO_QUEUE_AVAIL_HIGH, (uint32_t)(AVAIL_PADDR >> 32));
-    mmio_write(dev.mmio, VIRTIO_MMIO_QUEUE_USED_LOW,   (uint32_t)(USED_PADDR & 0xFFFFFFFFu));
-    mmio_write(dev.mmio, VIRTIO_MMIO_QUEUE_USED_HIGH,  (uint32_t)(USED_PADDR >> 32));
+    uint64_t qpa = queue_paddr(device);
+    mmio_write(device->mmio, VIRTIO_MMIO_QUEUE_DESC_LOW,
+               (uint32_t)((qpa + DESC_OFFSET) & 0xFFFFFFFFu));
+    mmio_write(device->mmio, VIRTIO_MMIO_QUEUE_DESC_HIGH,
+               (uint32_t)((qpa + DESC_OFFSET) >> 32));
+    mmio_write(device->mmio, VIRTIO_MMIO_QUEUE_AVAIL_LOW,
+               (uint32_t)((qpa + AVAIL_OFFSET) & 0xFFFFFFFFu));
+    mmio_write(device->mmio, VIRTIO_MMIO_QUEUE_AVAIL_HIGH,
+               (uint32_t)((qpa + AVAIL_OFFSET) >> 32));
+    mmio_write(device->mmio, VIRTIO_MMIO_QUEUE_USED_LOW,
+               (uint32_t)((qpa + USED_OFFSET) & 0xFFFFFFFFu));
+    mmio_write(device->mmio, VIRTIO_MMIO_QUEUE_USED_HIGH,
+               (uint32_t)((qpa + USED_OFFSET) >> 32));
 
     /* Activate the queue */
-    mmio_write(dev.mmio, VIRTIO_MMIO_QUEUE_READY, 1);
+    mmio_write(device->mmio, VIRTIO_MMIO_QUEUE_READY, 1);
 
     /* Suppress used-ring interrupts: we poll instead */
-    QUEUE_AVAIL->flags = 1u;  /* VIRTQ_AVAIL_F_NO_INTERRUPT */
+    queue_avail(device)->flags = 1u;  /* VIRTQ_AVAIL_F_NO_INTERRUPT */
 
     /* Step 7 — Signal DRIVER_OK */
     status |= VIRTIO_STATUS_DRIVER_OK;
-    mmio_write(dev.mmio, VIRTIO_MMIO_STATUS, status);
+    mmio_write(device->mmio, VIRTIO_MMIO_STATUS, status);
 
     /* ── Read device configuration ── */
     /*
      * Read capacity as two 32-bit LE words from the config space.
      * The virtio spec requires 32-bit-wide reads for config space on MMIO.
      */
-    uint32_t cap_lo = mmio_read(dev.mmio, VIRTIO_MMIO_CONFIG + 0);
-    uint32_t cap_hi = mmio_read(dev.mmio, VIRTIO_MMIO_CONFIG + 4);
-    dev.capacity    = ((uint64_t)cap_hi << 32) | (uint64_t)cap_lo;
+    uint32_t cap_lo = mmio_read(device->mmio, VIRTIO_MMIO_CONFIG + 0);
+    uint32_t cap_hi = mmio_read(device->mmio, VIRTIO_MMIO_CONFIG + 4);
+    device->capacity = ((uint64_t)cap_hi << 32) | (uint64_t)cap_lo;
 
     /* Block size: at offset 20 within config space (after capacity(8) +
      * size_max(4) + seg_max(4) + geometry(4)) */
     if (drv_features & VIRTIO_BLK_F_BLK_SIZE) {
         /* blk_size is at config offset 20 (0x14) */
-        dev.block_size = mmio_read(dev.mmio, VIRTIO_MMIO_CONFIG + 20);
-        if (dev.block_size == 0) {
-            dev.block_size = VIRTIO_BLK_DEFAULT_SECTOR_SIZE;
+        device->block_size = mmio_read(device->mmio, VIRTIO_MMIO_CONFIG + 20);
+        if (device->block_size == 0) {
+            device->block_size = VIRTIO_BLK_DEFAULT_SECTOR_SIZE;
         }
     } else {
-        dev.block_size = VIRTIO_BLK_DEFAULT_SECTOR_SIZE;
+        device->block_size = VIRTIO_BLK_DEFAULT_SECTOR_SIZE;
     }
 
-    dev.initialized = true;
+    device->initialized = true;
     log_drain_write(17, 17, "[virtio_blk] device initialised OK\n");
 }
 
@@ -440,12 +452,38 @@ static void virtio_blk_device_init(void)
  */
 static void virtio_blk_pd_init(void)
 {
+    const agentos_blk_shared_meta_t *shared =
+        (const agentos_blk_shared_meta_t *)AGENTOS_BLK_SHARED_VA;
+
     agentos_log_boot("virtio_blk");
     log_drain_write(17, 17, "[virtio_blk] Initializing virtio-blk driver...\n");
 
-    virtio_blk_device_init();
+    if (blk_mmio_vaddr == 0u)
+        blk_mmio_vaddr = AGENTOS_HOST_BLK_MMIO_VA;
+    if (blk_dma_shmem_vaddr == 0u)
+        blk_dma_shmem_vaddr =
+            AGENTOS_BLK_SHARED_VA + AGENTOS_BLK_SHARED_DMA_OFF;
 
-    if (dev.initialized) {
+    if (shared->magic != AGENTOS_BLK_SHARED_MAGIC ||
+        shared->version != 1u ||
+        shared->size != AGENTOS_BLK_SHARED_SIZE) {
+        log_drain_write(17, 17, "[virtio_blk] ERROR: shared DMA metadata invalid\n");
+        return;
+    }
+    g_blk_shared_paddr = shared->paddr;
+
+    virtio_blk_device_init(
+        &dev[AOS_HOST_BLK_MEDIA_UBUNTU],
+        AOS_HOST_BLK_MEDIA_UBUNTU,
+        blk_mmio_vaddr);
+    virtio_blk_device_init(
+        &dev[AOS_HOST_BLK_MEDIA_FREEBSD],
+        AOS_HOST_BLK_MEDIA_FREEBSD,
+        AGENTOS_HOST_FREEBSD_BLK_PAGE_VA +
+            AGENTOS_HOST_FREEBSD_BLK_PAGE_OFF);
+
+    if (dev[AOS_HOST_BLK_MEDIA_UBUNTU].initialized ||
+        dev[AOS_HOST_BLK_MEDIA_FREEBSD].initialized) {
         log_drain_write(17, 17, "[virtio_blk] READY\n");
     } else {
         log_drain_write(17, 17, "[virtio_blk] WARNING: device absent, all ops return BLK_ERR_NODEV\n");
@@ -472,19 +510,46 @@ static void virtio_blk_pd_notified(uint32_t ch)
  * Both channels carry the same opcode space (OP_BLK_*); the channel
  * argument is available for future per-caller access-control policy.
  */
-static uint32_t virtio_blk_h_dispatch(sel4_badge_t b, const sel4_msg_t *req, sel4_msg_t *rep, void *ctx)
+static bool blk_canonical_op(uint32_t op)
+{
+    return op >= AOS_HOST_BLK_OP_READ && op <= AOS_HOST_BLK_OP_HEALTH;
+}
+
+static uint32_t blk_wire_status(uint32_t op, uint32_t status)
+{
+    if (!blk_canonical_op(op)) return status;
+    switch (status) {
+    case BLK_OK:        return AOS_HOST_BLK_OK;
+    case BLK_ERR_NODEV: return AOS_HOST_BLK_ERR_NODEV;
+    case BLK_ERR_OOB:   return AOS_HOST_BLK_ERR_OOB;
+    default:            return AOS_HOST_BLK_ERR_IO;
+    }
+}
+
+static uint32_t virtio_blk_h_dispatch(sel4_badge_t b, const sel4_msg_t *req,
+                                      sel4_msg_t *rep, void *ctx)
 {
     (void)b; (void)ctx;
-    uint64_t op = msg_u32(req, 0);
+    uint32_t op = (uint32_t)msg_u32(req, 0);
+    uint32_t media_id = blk_canonical_op(op) && req->length >= 20u
+        ? (uint32_t)msg_u32(req, 16) : AOS_HOST_BLK_MEDIA_UBUNTU;
+    blk_device_t *device;
+
+    if (media_id >= AOS_HOST_BLK_MEDIA_COUNT) {
+        rep_u32(rep, 0, blk_canonical_op(op) ? 4u : BLK_ERR_NODEV);
+        rep->length = 4u;
+        return SEL4_ERR_OK;
+    }
+    device = &dev[media_id];
 
     switch (op) {
 
     /* ── OP_BLK_READ ────────────────────────────────────────────────────── */
     case OP_BLK_READ: {
-        if (!dev.initialized) {
-            rep_u32(rep, 0, BLK_ERR_NODEV);
+        if (!device->initialized) {
+            rep_u32(rep, 0, blk_wire_status(op, BLK_ERR_NODEV));
             rep->length = 4;
-        return SEL4_ERR_OK;
+            return SEL4_ERR_OK;
         }
 
         uint32_t block_lo = (uint32_t)msg_u32(req, 4);
@@ -493,34 +558,36 @@ static uint32_t virtio_blk_h_dispatch(sel4_badge_t b, const sel4_msg_t *req, sel
         uint64_t sector   = ((uint64_t)block_hi << 32) | (uint64_t)block_lo;
 
         if (count == 0) {
-            rep_u32(rep, 0, BLK_OK);
+            rep_u32(rep, 0, blk_wire_status(op, BLK_OK));
             rep->length = 4;
-        return SEL4_ERR_OK;
+            return SEL4_ERR_OK;
         }
         if (count > DMA_MAX_SECTORS) {
-            rep_u32(rep, 0, BLK_ERR_IO);
+            rep_u32(rep, 0, blk_wire_status(op, BLK_ERR_IO));
             rep->length = 4;
-        return SEL4_ERR_OK;
+            return SEL4_ERR_OK;
         }
-        /* Bounds check: sector + count must not exceed device capacity */
-        if (dev.capacity > 0 && (sector + count) > dev.capacity) {
-            rep_u32(rep, 0, BLK_ERR_OOB);
+        if (device->capacity > 0 &&
+            (sector > device->capacity ||
+             (uint64_t)count > device->capacity - sector)) {
+            rep_u32(rep, 0, blk_wire_status(op, BLK_ERR_OOB));
             rep->length = 4;
-        return SEL4_ERR_OK;
+            return SEL4_ERR_OK;
         }
 
-        uint32_t rc = virtio_blk_do_io(VIRTIO_BLK_T_IN, sector, count);
-        rep_u32(rep, 0, rc);
+        uint32_t rc = virtio_blk_do_io(device, VIRTIO_BLK_T_IN,
+                                       sector, count);
+        rep_u32(rep, 0, blk_wire_status(op, rc));
         rep->length = 4;
         return SEL4_ERR_OK;
     }
 
     /* ── OP_BLK_WRITE ───────────────────────────────────────────────────── */
     case OP_BLK_WRITE: {
-        if (!dev.initialized) {
-            rep_u32(rep, 0, BLK_ERR_NODEV);
+        if (!device->initialized) {
+            rep_u32(rep, 0, blk_wire_status(op, BLK_ERR_NODEV));
             rep->length = 4;
-        return SEL4_ERR_OK;
+            return SEL4_ERR_OK;
         }
 
         uint32_t block_lo = (uint32_t)msg_u32(req, 4);
@@ -529,64 +596,67 @@ static uint32_t virtio_blk_h_dispatch(sel4_badge_t b, const sel4_msg_t *req, sel
         uint64_t sector   = ((uint64_t)block_hi << 32) | (uint64_t)block_lo;
 
         if (count == 0) {
-            rep_u32(rep, 0, BLK_OK);
+            rep_u32(rep, 0, blk_wire_status(op, BLK_OK));
             rep->length = 4;
-        return SEL4_ERR_OK;
+            return SEL4_ERR_OK;
         }
         if (count > DMA_MAX_SECTORS) {
-            rep_u32(rep, 0, BLK_ERR_IO);
+            rep_u32(rep, 0, blk_wire_status(op, BLK_ERR_IO));
             rep->length = 4;
-        return SEL4_ERR_OK;
+            return SEL4_ERR_OK;
         }
-        if (dev.capacity > 0 && (sector + count) > dev.capacity) {
-            rep_u32(rep, 0, BLK_ERR_OOB);
+        if (device->capacity > 0 &&
+            (sector > device->capacity ||
+             (uint64_t)count > device->capacity - sector)) {
+            rep_u32(rep, 0, blk_wire_status(op, BLK_ERR_OOB));
             rep->length = 4;
-        return SEL4_ERR_OK;
+            return SEL4_ERR_OK;
         }
 
-        uint32_t rc = virtio_blk_do_io(VIRTIO_BLK_T_OUT, sector, count);
-        rep_u32(rep, 0, rc);
+        uint32_t rc = virtio_blk_do_io(device, VIRTIO_BLK_T_OUT,
+                                       sector, count);
+        rep_u32(rep, 0, blk_wire_status(op, rc));
         rep->length = 4;
         return SEL4_ERR_OK;
     }
 
     /* ── OP_BLK_FLUSH ───────────────────────────────────────────────────── */
     case OP_BLK_FLUSH: {
-        if (!dev.initialized) {
-            rep_u32(rep, 0, BLK_ERR_NODEV);
+        if (!device->initialized) {
+            rep_u32(rep, 0, blk_wire_status(op, BLK_ERR_NODEV));
             rep->length = 4;
-        return SEL4_ERR_OK;
+            return SEL4_ERR_OK;
         }
 
         /* Send a flush request (sector and count are ignored by the device) */
-        uint32_t rc = virtio_blk_do_io(VIRTIO_BLK_T_FLUSH, 0, 0);
-        rep_u32(rep, 0, rc);
+        uint32_t rc = virtio_blk_do_io(device, VIRTIO_BLK_T_FLUSH, 0, 0);
+        rep_u32(rep, 0, blk_wire_status(op, rc));
         rep->length = 4;
         return SEL4_ERR_OK;
     }
 
     /* ── OP_BLK_INFO ────────────────────────────────────────────────────── */
     case OP_BLK_INFO: {
-        if (!dev.initialized) {
-            rep_u32(rep, 0, BLK_ERR_NODEV);
+        if (!device->initialized) {
+            rep_u32(rep, 0, blk_wire_status(op, BLK_ERR_NODEV));
             rep->length = 4;
-        return SEL4_ERR_OK;
+            return SEL4_ERR_OK;
         }
 
-        rep_u32(rep, 0, BLK_OK);
-        rep_u32(rep, 4, (uint32_t)(dev.capacity & 0xFFFFFFFFu));
-        rep_u32(rep, 8, (uint32_t)(dev.capacity >> 32));
-        rep_u32(rep, 12, dev.block_size);
+        rep_u32(rep, 0, blk_wire_status(op, BLK_OK));
+        rep_u32(rep, 4, (uint32_t)(device->capacity & 0xFFFFFFFFu));
+        rep_u32(rep, 8, (uint32_t)(device->capacity >> 32));
+        rep_u32(rep, 12, device->block_size);
         rep->length = 16;
         return SEL4_ERR_OK;
     }
 
     /* ── OP_BLK_HEALTH ──────────────────────────────────────────────────── */
     case OP_BLK_HEALTH: {
-        rep_u32(rep, 0, BLK_OK);
-        rep_u32(rep, 4, dev.initialized ? 1u : 0u);
-        rep_u32(rep, 8, dev.error_count);
-        rep_u32(rep, 12, dev.init_error);
+        rep_u32(rep, 0, blk_wire_status(op, BLK_OK));
+        rep_u32(rep, 4, device->initialized ? 1u : 0u);
+        rep_u32(rep, 8, device->error_count);
+        rep_u32(rep, 12, device->init_error);
         rep->length = 16;
         return SEL4_ERR_OK;
     }

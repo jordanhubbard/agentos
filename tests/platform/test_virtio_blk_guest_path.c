@@ -222,7 +222,7 @@ int main(void)
                               "drive=agentos_hd"),
                  "Ubuntu QEMU launch attaches ISO only as agentOS host hardware");
     (void)tap_ok(src_contains("Makefile",
-                              "$(_UBUNTU_HOST_BLK) $(_FREEBSD_BLK)") &&
+                              "$(_UBUNTU_HOST_BLK) $(_FREEBSD_HOST_BLK)") &&
                  src_contains("xtask/src/cmd_test.rs",
                               "guest_os == \"ubuntu\" || guest_os == \"both\"") &&
                  !src_contains("xtask/src/cmd_test.rs",
@@ -245,7 +245,7 @@ int main(void)
     (void)tap_ok(src_contains("kernel/agentos-root-task/Makefile",
                               "-DAGENTOS_GUEST_UBUNTU=1") &&
                  src_contains("kernel/agentos-root-task/src/main.c",
-                              "Every Linux DTB now advertises only emulated VirtIO") &&
+                              "Emulated VirtIO translates every queue and payload") &&
                  !src_contains("kernel/agentos-root-task/src/main.c",
                                "#define VIRTIO_MMIO_PAGE_VA") &&
                  src_contains("kernel/agentos-root-task/src/main.c",
@@ -280,7 +280,7 @@ int main(void)
                  src_contains("platform/blk-virt/vmm_virtio_blk.c",
                               "AOS_VMM_BLK_MEDIA_ID") &&
                  src_contains("kernel/agentos-root-task/src/virtio_blk.c",
-                              "BLK_MEDIA_FREEBSD_INSTALL"),
+                              "AOS_HOST_BLK_MEDIA_FREEBSD"),
                  "canonical driver separates Ubuntu and FreeBSD queues and DMA");
     (void)tap_ok(src_contains("kernel/agentos-root-task/src/freebsd_vmm.c",
                               "MSG_GUEST_CONSOLE_DRAIN") &&
