@@ -728,6 +728,17 @@ test-integration:
 	    echo "FAIL: tests/platform/test_gpa_translate.c"; \
 	    status=1; \
 	fi; \
+	if gcc -DAGENTOS_TEST_HOST \
+	        -I platform/include -I kernel/agentos-root-task/include \
+	        tests/platform/test_guest_vmm_runtime.c \
+	        platform/guest-vmm/runtime.c \
+	        -o $(BUILD_TMP_DIR)/test_guest_vmm_runtime 2>&1 \
+	    && $(BUILD_TMP_DIR)/test_guest_vmm_runtime; then \
+	    echo "PASS: tests/platform/test_guest_vmm_runtime.c"; \
+	else \
+	    echo "FAIL: tests/platform/test_guest_vmm_runtime.c"; \
+	    status=1; \
+	fi; \
 	if gcc -I platform/include \
 	        tests/platform/test_blk_virt_pump.c \
 	        platform/blk-virt/blk_virt_pump.c \

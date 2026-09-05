@@ -39,6 +39,7 @@
 #include <libvmm/arch/aarch64/vgic/vgic.h>
 #include <platform/blk_layout.h>
 #include <platform/guest_ram.h>
+#include <platform/guest_vmm_runtime.h>
 #include <platform/vmm_virtio_net.h>
 #include <platform/vmm_virtio_blk.h>
 #include <platform/vmm_virtio_console.h>
@@ -162,7 +163,6 @@ static void uart_ack(size_t vcpu_id, int irq, void *cookie)
 #define FREEBSD_UART_IRQ 33u
 #define GUEST_CONSOLE_TX_RING_SIZE 8192u
 #define GUEST_CONSOLE_RX_RING_SIZE 1024u
-#define GUEST_INPUT_RAW_BYTE_BASE  0x100u
 
 static uint32_t pl011_rsr_ecr;
 static uint32_t pl011_ilpr;
@@ -184,22 +184,6 @@ static uint8_t console_rx_ring[GUEST_CONSOLE_RX_RING_SIZE];
 static uint32_t console_rx_head;
 static uint32_t console_rx_tail;
 static uint32_t console_rx_count;
-
-static uint32_t vmm_msg_rd32(const uint8_t *src, uint32_t off)
-{
-    return ((uint32_t)src[off + 0u]) |
-           ((uint32_t)src[off + 1u] << 8u) |
-           ((uint32_t)src[off + 2u] << 16u) |
-           ((uint32_t)src[off + 3u] << 24u);
-}
-
-static void vmm_msg_wr32(uint8_t *dst, uint32_t off, uint32_t value)
-{
-    dst[off + 0u] = (uint8_t)(value & 0xffu);
-    dst[off + 1u] = (uint8_t)((value >> 8u) & 0xffu);
-    dst[off + 2u] = (uint8_t)((value >> 16u) & 0xffu);
-    dst[off + 3u] = (uint8_t)((value >> 24u) & 0xffu);
-}
 
 static void console_tx_push(uint8_t byte)
 {
@@ -286,47 +270,6 @@ static void guest_console_write(uint8_t byte)
 {
     /* Guest PL011 output belongs to this guest's virtual TTY. */
     console_tx_push(byte);
-}
-
-static bool input_event_to_byte(uint32_t event_type, uint32_t keycode,
-                                uint8_t *byte)
-{
-    if (event_type != 1u) return false; /* CC_INPUT_KEY_DOWN */
-
-    if ((keycode & 0xffffff00u) == GUEST_INPUT_RAW_BYTE_BASE) {
-        *byte = (uint8_t)(keycode & 0xffu);
-        return true;
-    }
-
-    if (keycode >= 0x04u && keycode <= 0x1du) {
-        *byte = (uint8_t)('a' + (keycode - 0x04u));
-        return true;
-    }
-    if (keycode >= 0x1eu && keycode <= 0x26u) {
-        *byte = (uint8_t)('1' + (keycode - 0x1eu));
-        return true;
-    }
-
-    switch (keycode) {
-    case 0x27u: *byte = '0'; return true;
-    case 0x28u: *byte = '\r'; return true;
-    case 0x29u: *byte = 0x1bu; return true;
-    case 0x2au: *byte = 0x7fu; return true;
-    case 0x2bu: *byte = '\t'; return true;
-    case 0x2cu: *byte = ' '; return true;
-    case 0x2du: *byte = '-'; return true;
-    case 0x2eu: *byte = '='; return true;
-    case 0x2fu: *byte = '['; return true;
-    case 0x30u: *byte = ']'; return true;
-    case 0x31u: *byte = '\\'; return true;
-    case 0x33u: *byte = ';'; return true;
-    case 0x34u: *byte = '\''; return true;
-    case 0x35u: *byte = '`'; return true;
-    case 0x36u: *byte = ','; return true;
-    case 0x37u: *byte = '.'; return true;
-    case 0x38u: *byte = '/'; return true;
-    default: return false;
-    }
 }
 
 static void pl011_store32(uint32_t *reg, size_t offset, uint64_t fsr,
@@ -531,6 +474,17 @@ static void freebsd_vmm_suspend_guest_tcb(void)
     }
 }
 
+static void freebsd_vmm_resume_guest_tcb(void)
+{
+    (void)seL4_TCB_Resume(
+        (seL4_CPtr)(AGENTOS_VMM_TCB_CAP_BASE + GUEST_BOOT_VCPU_ID));
+}
+
+static void freebsd_vmm_quiesce_timer(void)
+{
+    vmm_vcpu_arm_ack_vppi(GUEST_BOOT_VCPU_ID, FREEBSD_VTIMER_IRQ);
+}
+
 #define FREEBSD_KERNBASE         0xffff000000000000ull
 #define FREEBSD_DMAPBASE         0xffffa00000000000ull
 #define FREEBSD_ALLPROC_VA       0xffff000001088b00ull
@@ -652,90 +606,25 @@ static seL4_MessageInfo_t freebsd_vmm_rpc(seL4_MessageInfo_t info)
     sel4_msg_t rep = {0};
     _sel4_mrs_to_msg(&req);
 
+    const aos_guest_vmm_runtime_t runtime = {
+        .os_type = FREEBSD_VMM_OS_TYPE,
+        .guest_id = 0u,
+        .state = &g_guest_state,
+        .started = &guest_started,
+        .start = freebsd_vmm_start_guest,
+        .suspend = freebsd_vmm_suspend_guest_tcb,
+        .resume = freebsd_vmm_resume_guest_tcb,
+        .quiesce_timer = freebsd_vmm_quiesce_timer,
+    };
+    if (aos_guest_vmm_lifecycle_rpc(&req, &rep, &runtime)) {
+        _sel4_msg_to_mrs(&rep);
+        return seL4_MessageInfo_new((seL4_Word)rep.opcode, 0, 0,
+                                    (seL4_Word)_SEL4_MR_COUNT);
+    }
+
     switch (req.opcode) {
-    case MSG_GUEST_CREATE: {
-        if (req.length >= 4u) {
-            uint32_t os_type = vmm_msg_rd32(req.data, 0u);
-            if (os_type != 0u && os_type != FREEBSD_VMM_OS_TYPE) {
-                rep.opcode = GUEST_ERR_BAD_OS_TYPE;
-                break;
-            }
-        }
-        if (g_guest_state == GUEST_STATE_DEAD) {
-            rep.opcode = GUEST_ERR_DEAD;
-            break;
-        }
-        vmm_msg_wr32(rep.data, 0u, GUEST_OK);
-        vmm_msg_wr32(rep.data, 4u, 0u);
-        rep.length = 8u;
-        rep.opcode = GUEST_OK;
-        break;
-    }
-    case MSG_GUEST_BOOT: {
-        if (req.length < 4u || vmm_msg_rd32(req.data, 0u) != 0u) {
-            rep.opcode = GUEST_ERR_BAD_GUEST_ID;
-            break;
-        }
-        if (g_guest_state == GUEST_STATE_DEAD) {
-            rep.opcode = GUEST_ERR_DEAD;
-            break;
-        }
-        if (!guest_started && !freebsd_vmm_start_guest()) {
-            rep.opcode = GUEST_ERR_NOT_READY;
-            break;
-        }
-        g_guest_state = GUEST_STATE_RUNNING;
-        rep.opcode = GUEST_OK;
-        break;
-    }
-    case MSG_GUEST_SUSPEND: {
-        if (req.length < 4u || vmm_msg_rd32(req.data, 0u) != 0u) {
-            rep.opcode = GUEST_ERR_BAD_GUEST_ID;
-            break;
-        }
-        if (g_guest_state == GUEST_STATE_DEAD) {
-            rep.opcode = GUEST_ERR_DEAD;
-            break;
-        }
-        if (g_guest_state != GUEST_STATE_SUSPENDED) {
-            freebsd_vmm_suspend_guest_tcb();
-            vmm_vcpu_arm_ack_vppi(GUEST_BOOT_VCPU_ID, FREEBSD_VTIMER_IRQ);
-            g_guest_state = GUEST_STATE_SUSPENDED;
-        }
-        rep.opcode = GUEST_OK;
-        break;
-    }
-    case MSG_GUEST_RESUME: {
-        if (req.length < 4u || vmm_msg_rd32(req.data, 0u) != 0u) {
-            rep.opcode = GUEST_ERR_BAD_GUEST_ID;
-            break;
-        }
-        if (g_guest_state == GUEST_STATE_DEAD) {
-            rep.opcode = GUEST_ERR_DEAD;
-            break;
-        }
-        if (g_guest_state == GUEST_STATE_SUSPENDED) {
-            seL4_TCB_Resume((seL4_CPtr)(AGENTOS_VMM_TCB_CAP_BASE + GUEST_BOOT_VCPU_ID));
-        }
-        g_guest_state = GUEST_STATE_RUNNING;
-        rep.opcode = GUEST_OK;
-        break;
-    }
-    case MSG_GUEST_DESTROY: {
-        if (req.length < 4u || vmm_msg_rd32(req.data, 0u) != 0u) {
-            rep.opcode = GUEST_ERR_BAD_GUEST_ID;
-            break;
-        }
-        if (g_guest_state != GUEST_STATE_DEAD) {
-            freebsd_vmm_suspend_guest_tcb();
-            vmm_vcpu_arm_ack_vppi(GUEST_BOOT_VCPU_ID, FREEBSD_VTIMER_IRQ);
-            g_guest_state = GUEST_STATE_DEAD;
-        }
-        rep.opcode = GUEST_OK;
-        break;
-    }
     case MSG_GUEST_SEND_INPUT: {
-        if (req.length < 28u || vmm_msg_rd32(req.data, 0u) != 0u) {
+        if (req.length < 28u || msg_u32(&req, 0u) != 0u) {
             rep.opcode = GUEST_ERR_BAD_GUEST_ID;
             break;
         }
@@ -749,8 +638,8 @@ static seL4_MessageInfo_t freebsd_vmm_rpc(seL4_MessageInfo_t info)
         }
 
         uint8_t byte = 0u;
-        uint32_t event_type = vmm_msg_rd32(req.data, 4u);
-        uint32_t keycode = vmm_msg_rd32(req.data, 8u);
+        uint32_t event_type = msg_u32(&req, 4u);
+        uint32_t keycode = msg_u32(&req, 8u);
         if (event_type == CC_INPUT_TEXT) {
             if (keycode > CC_INPUT_TEXT_MAX || req.length < 28u + keycode) {
                 rep.opcode = GUEST_ERR_PROTOCOL_VIOLATION;
@@ -770,7 +659,8 @@ static seL4_MessageInfo_t freebsd_vmm_rpc(seL4_MessageInfo_t info)
             }
             if (rep.opcode != 0u) break;
             pl011_maybe_inject_irq();
-        } else if (input_event_to_byte(event_type, keycode, &byte)) {
+        } else if (aos_guest_vmm_input_event_to_byte(
+                       event_type, keycode, &byte)) {
             if (byte == 0x1du) {
                 freebsd_dump_init_stack();
                 rep.opcode = GUEST_OK;
@@ -787,7 +677,7 @@ static seL4_MessageInfo_t freebsd_vmm_rpc(seL4_MessageInfo_t info)
         break;
     }
     case MSG_GUEST_CONSOLE_DRAIN: {
-        if (req.length < 8u || vmm_msg_rd32(req.data, 0u) != 0u) {
+        if (req.length < 8u || msg_u32(&req, 0u) != 0u) {
             rep.opcode = GUEST_ERR_BAD_GUEST_ID;
             break;
         }
@@ -795,7 +685,7 @@ static seL4_MessageInfo_t freebsd_vmm_rpc(seL4_MessageInfo_t info)
             rep.opcode = GUEST_ERR_DEAD;
             break;
         }
-        uint32_t max = vmm_msg_rd32(req.data, 4u);
+        uint32_t max = msg_u32(&req, 4u);
         if (max > SEL4_MSG_DATA_BYTES) max = SEL4_MSG_DATA_BYTES;
         rep.length = aos_vmm_virtio_console_drain_tx(rep.data, max);
         rep.length += console_tx_drain(&rep.data[rep.length],

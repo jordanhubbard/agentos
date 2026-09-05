@@ -263,6 +263,7 @@ NET_VIRT_PUMP_OBJ  := $(BUILD_DIR)/net_virt_pump.o
 VMM_VIRTIO_NET_OBJ := $(BUILD_DIR)/vmm_virtio_net.o
 GPA_TRANSLATE_OBJ  := $(BUILD_DIR)/gpa_translate.o
 VMM_GUEST_RAM_OBJ  := $(BUILD_DIR)/vmm_guest_ram.o
+GUEST_VMM_RUNTIME_OBJ := $(BUILD_DIR)/guest_vmm_runtime.o
 BLK_VIRT_PUMP_OBJ  := $(BUILD_DIR)/blk_virt_pump.o
 VMM_VIRTIO_BLK_OBJ := $(BUILD_DIR)/vmm_virtio_blk.o
 VMM_VIRTIO_CONSOLE_OBJ := $(BUILD_DIR)/vmm_virtio_console.o
@@ -274,6 +275,7 @@ VMM_VIRTIO_CONSOLE_OBJ := $(BUILD_DIR)/vmm_virtio_console.o
 # reusing that path can silently link a stale object compiled with incompatible
 # flags.
 $(LINUX_VMM_FULL_OBJ): $(KERNEL_SRC_DIR)/src/linux_vmm.c $(VMM_CONFIG_STAMP) \
+                      $(AGENTOS_ROOT)/platform/include/platform/guest_vmm_runtime.h \
                       $(AGENTOS_ROOT)/platform/include/platform/vmm_virtio_net.h \
                       $(AGENTOS_ROOT)/platform/include/platform/vmm_virtio_blk.h \
                       $(AGENTOS_ROOT)/platform/include/platform/vmm_virtio_console.h
@@ -322,6 +324,12 @@ $(VMM_GUEST_RAM_OBJ): $(AGENTOS_ROOT)/platform/guest-ram/vmm_guest_ram.c \
 	@echo "[VMM] Compiling vmm_guest_ram.c..."
 	clang $(VMM_CFLAGS) -c -o $@ $<
 
+$(GUEST_VMM_RUNTIME_OBJ): $(AGENTOS_ROOT)/platform/guest-vmm/runtime.c \
+                         $(AGENTOS_ROOT)/platform/include/platform/guest_vmm_runtime.h
+	@mkdir -p $(BUILD_DIR)
+	@echo "[VMM] Compiling shared guest VMM runtime..."
+	clang $(VMM_CFLAGS) -c -o $@ $<
+
 $(BLK_VIRT_PUMP_OBJ): $(AGENTOS_ROOT)/platform/blk-virt/blk_virt_pump.c \
                       $(AGENTOS_ROOT)/platform/include/platform/blk_layout.h \
                       $(AGENTOS_ROOT)/platform/include/platform/blk_virt_pump.h
@@ -355,6 +363,7 @@ $(BUILD_DIR)/linux_vmm.elf: FORCE \
 	                             $(VMM_VIRTIO_NET_OBJ) \
 	                             $(GPA_TRANSLATE_OBJ) \
 	                             $(VMM_GUEST_RAM_OBJ) \
+	                             $(GUEST_VMM_RUNTIME_OBJ) \
 	                             $(BLK_VIRT_PUMP_OBJ) \
 	                             $(VMM_VIRTIO_BLK_OBJ) \
 	                             $(VMM_VIRTIO_CONSOLE_OBJ) \
@@ -366,6 +375,7 @@ $(BUILD_DIR)/linux_vmm.elf: FORCE \
 		-L$(BOARD_DIR)/lib \
 		$(VMM_PD_ENTRY_OBJ) $(LINUX_VMM_FULL_OBJ) $(GPU_SHMEM_FULL_OBJ) \
 		$(NET_VIRT_PUMP_OBJ) $(VMM_VIRTIO_NET_OBJ) $(GPA_TRANSLATE_OBJ) $(VMM_GUEST_RAM_OBJ) \
+		$(GUEST_VMM_RUNTIME_OBJ) \
 		$(BLK_VIRT_PUMP_OBJ) $(VMM_VIRTIO_BLK_OBJ) \
 		$(VMM_VIRTIO_CONSOLE_OBJ) $(BUILD_DIR)/images.o \
 		--start-group \
@@ -417,6 +427,7 @@ $(BUILD_DIR)/freebsd_images.o: $(PKG_IMG) $(FREEBSD_KERNEL_IMAGE) $(BUILD_DIR)/f
 
 # ─── Compile freebsd_vmm.c ───────────────────────────────────────────────
 $(BUILD_DIR)/freebsd_vmm.o: $(KERNEL_SRC_DIR)/src/freebsd_vmm.c $(VMM_CONFIG_STAMP) \
+                           $(AGENTOS_ROOT)/platform/include/platform/guest_vmm_runtime.h \
                            $(AGENTOS_ROOT)/platform/include/platform/vmm_virtio_console.h
 	@mkdir -p $(BUILD_DIR)
 	@echo "[VMM] Compiling freebsd_vmm.c..."
@@ -429,6 +440,7 @@ $(BUILD_DIR)/freebsd_vmm.elf: $(BUILD_DIR)/freebsd_vmm.o \
                                $(VMM_VIRTIO_NET_OBJ) \
                                $(GPA_TRANSLATE_OBJ) \
                                $(VMM_GUEST_RAM_OBJ) \
+                               $(GUEST_VMM_RUNTIME_OBJ) \
                                $(BLK_VIRT_PUMP_OBJ) \
                                $(VMM_VIRTIO_BLK_OBJ) \
                                $(VMM_VIRTIO_CONSOLE_OBJ) \
@@ -440,6 +452,7 @@ $(BUILD_DIR)/freebsd_vmm.elf: $(BUILD_DIR)/freebsd_vmm.o \
 		$(BUILD_DIR)/freebsd_vmm.o $(BUILD_DIR)/freebsd_images.o \
 		$(NET_VIRT_PUMP_OBJ) $(VMM_VIRTIO_NET_OBJ) \
 		$(GPA_TRANSLATE_OBJ) $(VMM_GUEST_RAM_OBJ) \
+		$(GUEST_VMM_RUNTIME_OBJ) \
 		$(BLK_VIRT_PUMP_OBJ) $(VMM_VIRTIO_BLK_OBJ) \
 		$(VMM_VIRTIO_CONSOLE_OBJ) \
 		--start-group \
@@ -453,6 +466,7 @@ vmm-clean:
 	rm -f $(BUILD_DIR)/net_virt_pump.o $(BUILD_DIR)/vmm_virtio_net.o
 	rm -f $(BUILD_DIR)/gpa_translate.o
 	rm -f $(BUILD_DIR)/vmm_guest_ram.o
+	rm -f $(BUILD_DIR)/guest_vmm_runtime.o
 	rm -f $(BUILD_DIR)/blk_virt_pump.o $(BUILD_DIR)/vmm_virtio_blk.o
 	rm -f $(BUILD_DIR)/vmm_virtio_console.o
 	rm -f $(BUILD_DIR)/freebsd_vmm.o $(BUILD_DIR)/freebsd_images.o $(BUILD_DIR)/freebsd_vmm.elf
