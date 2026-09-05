@@ -250,7 +250,7 @@ int main(void)
                  !src_contains("kernel/agentos-root-task/src/main.c",
                                "#define VIRTIO_MMIO_PAGE_VA") &&
                  src_contains("kernel/agentos-root-task/src/main.c",
-                              "CC_PD_VIRTIO_VA"),
+                              "CC_VIRTIO_MMIO_VA"),
                  "all Linux guest VSpaces exclude the QEMU passthrough page");
     (void)tap_ok(dts_emulated_blk_ok(
                      "kernel/agentos-root-task/freebsd-direct.dts") &&

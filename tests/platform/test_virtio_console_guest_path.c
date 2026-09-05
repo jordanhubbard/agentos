@@ -137,6 +137,18 @@ int main(void)
        contains("kernel/agentos-root-task/src/cc_pd.c",
                 "virtio_serial_recover_tx"),
        "lost CC reply retries replay once after TX queue reset");
+    ok(contains("kernel/agentos-root-task/include/contracts/cc_contract.h",
+                "CC_VIRTIO_STARTUP_VERSION") &&
+       contains("kernel/agentos-root-task/src/main.c",
+                "pd_vspace_map_device_frame(vspace, vq_cap,") &&
+       contains("kernel/agentos-root-task/src/main.c", "vq_vas[vqp]") &&
+       !contains("kernel/agentos-root-task/src/main.c",
+                 "pd_vspace_map_device_frame(vspace, vq_cap, vq_pas[vqp])") &&
+       contains("kernel/agentos-root-task/src/cc_pd.c",
+                "#define TX_BUFFER ((void *)(uintptr_t)CC_VIRTIO_TX_BUFFER_VA)") &&
+       contains("kernel/agentos-root-task/src/cc_pd.c",
+                "TX_DESC[0].addr  = (uint64_t)g_vq_pa[1]"),
+       "CC CPU mappings are distinct from VirtIO DMA physical addresses");
     ok(contains(vmm, "Guest console bytes belong to the per-guest virtual TTY") &&
        contains(vmm, "console_tx_push(byte);"),
        "guest virtual TTY is not synchronously mirrored to physical PL011");

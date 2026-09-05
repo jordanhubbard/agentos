@@ -64,6 +64,27 @@
 #define CC_MAX_CMD_BYTES        4096u
 #define CC_MAX_RESP_BYTES       4096u
 
+/*
+ * Root-task → cc_pd startup ABI for the host VirtIO-serial transport.
+ * Device-visible physical addresses and cc_pd CPU virtual addresses are
+ * deliberately distinct; DMA addresses must never be dereferenced as pointers.
+ */
+#define CC_VIRTIO_STARTUP_MAGIC   0x43435651u /* "CCVQ" */
+#define CC_VIRTIO_STARTUP_VERSION 1u
+#define CC_VIRTIO_MMIO_VA         0x10002000UL
+#define CC_VIRTIO_STARTUP_VA      0x10003000UL
+#define CC_VIRTIO_QUEUE_VA        0x10006000UL
+#define CC_VIRTIO_TX_BUFFER_VA    0x10007000UL
+#define CC_VIRTIO_RX_BUFFER_VA    0x10008000UL
+
+typedef struct __attribute__((packed)) cc_virtio_startup {
+    uint32_t magic;
+    uint32_t version;
+    uint64_t queue_pa;
+    uint64_t tx_buffer_pa;
+    uint64_t rx_buffer_pa;
+} cc_virtio_startup_t;
+
 /* ─── Command types ──────────────────────────────────────────────────────── */
 
 #define CC_CMD_TYPE_QUERY   0x01u   /* read-only status query */

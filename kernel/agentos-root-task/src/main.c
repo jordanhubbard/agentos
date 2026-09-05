@@ -44,6 +44,7 @@
                                 cap_tree_verify_all_pds                            */
 #include "system_desc.h"     /* system_desc_t, pd_desc_t, SVC_ID_*, PD_IRQHANDLER_SLOT_BASE */
 #include "agentos.h"         /* sel4_dbg_puts                                    */
+#include "contracts/cc_contract.h" /* cc_pd VirtIO startup ABI                    */
 #include <platform/blk_host_layout.h> /* host block MMIO/shared DMA layout       */
 #include <platform/net_host_layout.h> /* host net MMIO/private DMA/shared bridge */
 #include "pd_startup_record.h" /* pd_startup_record_t, PD_STARTUP_RECORD_VA      */
@@ -614,8 +615,6 @@ static void boot_setup_irqs(const pd_desc_t *pd,
  * QEMU flags: -device virtio-serial-device,bus=virtio-mmio-bus.2,id=vser0
  *             -device virtconsole,bus=vser0.0,chardev=cc_pd_char,name=cc.0
  * virtio-mmio-bus.2 = PA 0x0A000400, inside the first virtio-mmio page (PA 0x0A000000). */
-#define CC_PD_VIRTIO_VA       0x10002000UL  /* VA in cc_pd's VSpace for this device page */
-#define CC_PD_STARTUP_VA      0x10003000UL  /* VA in cc_pd's VSpace for startup record   */
 #define SERIAL_SHMEM_VA       0x10005000UL  /* MSG_SERIAL_* transfer page in client PDs   */
 #define RT_VQ_SCRATCH_VA      0x60000000UL  /* Root-task scratch VA to write startup PAs */
 #define RT_BLK_SCRATCH_VA     0xA0000000UL  /* Above max embedded live-media PD bundle  */
@@ -2005,11 +2004,11 @@ void root_task_main(const seL4_BootInfo *bi)
          *
          * We map three resources into cc_pd's VSpace:
          *   1. Device page at PA 0x0A000000 (covers virtio-mmio slots 0-7) at
-         *      CC_PD_VIRTIO_VA.  cc_pd probes slot 2 (offset +0x400).
+         *      CC_VIRTIO_MMIO_VA.  cc_pd probes slot 2 (offset +0x400).
          *   2. Three normal frames for VirtIO queue memory (desc/avail/used
-         *      rings + TX/RX data buffers).  Each is mapped at VA = PA so cc_pd
-         *      can use the pointer value directly as the DMA physical address.
-         *   3. A startup record page at CC_PD_STARTUP_VA carrying the three PAs.
+         *      rings + TX/RX data buffers), mapped at fixed cc_pd CPU VAs.
+         *   3. A versioned startup record at CC_VIRTIO_STARTUP_VA carrying
+         *      only the three device-visible physical addresses.
          */
         if (name_eq(pd->name, "cc_pd")) {
             /* 1. Allocate + map VirtIO MMIO device page */
@@ -2031,23 +2030,30 @@ void root_task_main(const seL4_BootInfo *bi)
                     }
                 }
                 if (ve == seL4_NoError && cc_virtio_cap != seL4_CapNull) {
-                    ve = pd_vspace_map_device_frame(vspace, cc_virtio_cap, CC_PD_VIRTIO_VA);
+                    ve = pd_vspace_map_device_frame(vspace, cc_virtio_cap,
+                                                    CC_VIRTIO_MMIO_VA);
                 }
                 dbg_puts("[rt] cc_pd VirtIO page err=");
                 dbg_hex((seL4_Word)ve);
                 dbg_puts("\n");
             }
 
-            /* 2. Allocate 3 normal frames for queue structs + TX/RX buffers.
-             *    Each mapped at VA = PA (identity) so cc_pd uses ptr as DMA PA. */
+            /* 2. Allocate queue + buffer frames and map fixed CPU virtual
+             * addresses independently from their device-visible PAs. */
             seL4_Word vq_pas[3] = {0u, 0u, 0u};
+            static const seL4_Word vq_vas[3] = {
+                CC_VIRTIO_QUEUE_VA,
+                CC_VIRTIO_TX_BUFFER_VA,
+                CC_VIRTIO_RX_BUFFER_VA,
+            };
             for (uint32_t vqp = 0u; vqp < 3u; vqp++) {
                 seL4_CPtr vq_cap = seL4_CapNull;
                 seL4_Error ve = ut_alloc_cap(seL4_ARM_SmallPageObject, 0u, &vq_cap);
                 if (ve == seL4_NoError) {
                     seL4_ARCH_Page_GetAddress_t r = seL4_ARCH_Page_GetAddress(vq_cap);
                     vq_pas[vqp] = r.paddr;
-                    ve = pd_vspace_map_device_frame(vspace, vq_cap, vq_pas[vqp]);
+                    ve = pd_vspace_map_device_frame(vspace, vq_cap,
+                                                    vq_vas[vqp]);
                 }
                 dbg_puts("[rt] cc_pd vq[");
                 dbg_hex((seL4_Word)vqp);
@@ -2068,13 +2074,17 @@ void root_task_main(const seL4_BootInfo *bi)
                     ve = pd_vspace_map_device_frame(seL4_CapInitThreadVSpace,
                                                     cc_start_cap, RT_VQ_SCRATCH_VA);
                     if (ve == seL4_NoError) {
-                        volatile seL4_Word *sp = (volatile seL4_Word *)RT_VQ_SCRATCH_VA;
-                        sp[0] = vq_pas[0];
-                        sp[1] = vq_pas[1];
-                        sp[2] = vq_pas[2];
+                        volatile cc_virtio_startup_t *sp =
+                            (volatile cc_virtio_startup_t *)RT_VQ_SCRATCH_VA;
+                        sp->magic = CC_VIRTIO_STARTUP_MAGIC;
+                        sp->version = CC_VIRTIO_STARTUP_VERSION;
+                        sp->queue_pa = (uint64_t)vq_pas[0];
+                        sp->tx_buffer_pa = (uint64_t)vq_pas[1];
+                        sp->rx_buffer_pa = (uint64_t)vq_pas[2];
                         AGENTOS_MEMORY_FENCE();
                         seL4_ARCH_Page_Unmap(cc_start_cap);
-                        seL4_Error ve2 = pd_vspace_map_device_frame(vspace, cc_start_cap, CC_PD_STARTUP_VA);
+                        seL4_Error ve2 = pd_vspace_map_device_frame(
+                            vspace, cc_start_cap, CC_VIRTIO_STARTUP_VA);
                         dbg_puts("[rt] cc_pd startup PAs written remap_err=");
                         dbg_hex((seL4_Word)ve2);
                         dbg_puts("\n");

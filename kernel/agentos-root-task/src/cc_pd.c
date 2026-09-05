@@ -50,9 +50,9 @@
  * Transport: virtio-serial-device on QEMU virtio-mmio-bus.2 (PA 0x0A000400).
  * QEMU bridges the virtconsole named "cc.0" to build/cc_pd.sock.
  *
- * The root task allocates three 4K frames and identity-maps them (VA=PA) into
- * cc_pd's VSpace, then writes the three PAs into a shared startup record page
- * at CC_PD_STARTUP_VA before starting cc_pd.  The three pages are:
+ * The root task allocates three 4K frames and maps them at fixed CPU virtual
+ * addresses in cc_pd. A versioned startup record at CC_VIRTIO_STARTUP_VA
+ * separately carries their device-visible physical addresses:
  *   [0] VQ struct page — descriptor tables, avail/used rings for TX+RX queues
  *   [1] TX data buffer
  *   [2] RX data buffer
@@ -65,8 +65,6 @@
  * per request), so no RX overflow can occur across frame boundaries.
  */
 
-#define CC_PD_VIRTIO_VA   0x10002000UL   /* VirtIO MMIO page mapped by root task */
-#define CC_PD_STARTUP_VA  0x10003000UL   /* Startup record: VQ PAs from root task */
 #define VMMIO_SLOT_OFF    (2u * 0x200u)  /* bus.2 → offset +0x400 within the page */
 
 /* ─── Diagnostics through the generic serial driver ────────────────────── */
@@ -142,8 +140,9 @@ static seL4_Word          g_vq_pa[3];       /* [0]=structs, [1]=TX buf, [2]=RX b
 static volatile uint32_t *g_virtio;         /* VirtIO MMIO base at bus.2 slot */
 static uint16_t           g_rx_used_last;   /* shadow of RX used ring consumer idx */
 
-/* VQ struct page is identity-mapped: virtual address == physical address */
-#define QP       ((uintptr_t)g_vq_pa[0])
+#define QP       ((uintptr_t)CC_VIRTIO_QUEUE_VA)
+#define TX_BUFFER ((void *)(uintptr_t)CC_VIRTIO_TX_BUFFER_VA)
+#define RX_BUFFER ((void *)(uintptr_t)CC_VIRTIO_RX_BUFFER_VA)
 #define TX_DESC  ((volatile vq_desc_t  *)(QP + TX_DESC_OFF))
 #define TX_AVAIL ((volatile vq_avail_t *)(QP + TX_AVAIL_OFF))
 #define TX_USED  ((volatile vq_used_t  *)(QP + TX_USED_OFF))
@@ -185,13 +184,20 @@ static void vio_queue_setup(uint32_t qidx,
 
 static bool virtio_serial_init(void)
 {
-    /* VQ PAs written by root task into startup record before cc_pd started */
-    volatile seL4_Word *sp = (volatile seL4_Word *)CC_PD_STARTUP_VA;
-    g_vq_pa[0] = sp[0];
-    g_vq_pa[1] = sp[1];
-    g_vq_pa[2] = sp[2];
+    const volatile cc_virtio_startup_t *sp =
+        (const volatile cc_virtio_startup_t *)CC_VIRTIO_STARTUP_VA;
+    if (sp->magic != CC_VIRTIO_STARTUP_MAGIC ||
+        sp->version != CC_VIRTIO_STARTUP_VERSION ||
+        sp->queue_pa == 0u || sp->tx_buffer_pa == 0u ||
+        sp->rx_buffer_pa == 0u) {
+        cc_dbg_puts("[cc_pd] VirtIO init FAILED: bad startup record\n");
+        return false;
+    }
+    g_vq_pa[0] = (seL4_Word)sp->queue_pa;
+    g_vq_pa[1] = (seL4_Word)sp->tx_buffer_pa;
+    g_vq_pa[2] = (seL4_Word)sp->rx_buffer_pa;
 
-    g_virtio = (volatile uint32_t *)(CC_PD_VIRTIO_VA + VMMIO_SLOT_OFF);
+    g_virtio = (volatile uint32_t *)(CC_VIRTIO_MMIO_VA + VMMIO_SLOT_OFF);
 
     uint32_t magic   = vio_rd(VMMIO_MAGIC);
     uint32_t version = vio_rd(VMMIO_VERSION);
@@ -233,7 +239,7 @@ static bool virtio_serial_init(void)
 
     /* Device reset invalidates every in-flight descriptor. Start both rings
      * from a known epoch before making them ready again. */
-    __builtin_memset((void *)g_vq_pa[0], 0, 4096u);
+    __builtin_memset((void *)QP, 0, 4096u);
     VQ_MB();
     vio_queue_setup(0u,
         g_vq_pa[0] + RX_DESC_OFF, g_vq_pa[0] + RX_AVAIL_OFF, g_vq_pa[0] + RX_USED_OFF);
@@ -277,7 +283,7 @@ static bool vio_serial_write(const void *buf, uint32_t n)
     const uint8_t *p = (const uint8_t *)buf;
     while (n > 0u) {
         uint32_t chunk = (n > 4096u) ? 4096u : n;
-        __builtin_memcpy((void *)g_vq_pa[1], p, chunk);
+        __builtin_memcpy(TX_BUFFER, p, chunk);
         VQ_MB();
         TX_DESC[0].addr  = (uint64_t)g_vq_pa[1];
         TX_DESC[0].len   = chunk;
@@ -351,7 +357,7 @@ static bool vio_serial_read(void *buf, uint32_t n)
         uint32_t got  = RX_USED->ring[g_rx_used_last & (uint16_t)(VQ_DEPTH - 1u)].len;
         VQ_MB();
         uint32_t take = (got > n) ? n : got;
-        __builtin_memcpy(p, (const void *)g_vq_pa[2], take);
+        __builtin_memcpy(p, RX_BUFFER, take);
         p += take;
         n -= take;
         g_rx_used_last++;
