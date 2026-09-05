@@ -387,6 +387,17 @@ int main(void)
                  src_contains("kernel/agentos-root-task/src/main.c",
                               "never enter the hour-scale 4 KiB"),
                  "guest RAM large pages are reserved before PD ELF fragmentation");
+    (void)tap_ok(src_contains("kernel/agentos-root-task/src/main.c",
+                              "guest_vspace = guest_vr.vspace_cap") &&
+                 src_contains("kernel/agentos-root-task/src/main.c",
+                              "map_guest_ram_reservation") &&
+                 src_contains("kernel/agentos-root-task/src/main.c",
+                              "seL4_CNode_Copy") &&
+                 src_contains("kernel/agentos-root-task/src/linux_vmm.c",
+                              "aos_vmm_guest_ram_bind(LINUX_GUEST_RAM_GPA") &&
+                 src_contains("kernel/agentos-root-task/src/freebsd_vmm.c",
+                              "aos_vmm_guest_ram_bind(FREEBSD_GUEST_RAM_GPA"),
+                 "guest TCB VSpaces use GPA mappings distinct from VMM aliases");
 
     printf("1..%d\n", g_testno);
     if (g_failed) {

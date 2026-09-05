@@ -19,17 +19,22 @@ int main(void)
     failed += check(AOS_FREEBSD_GUEST_RAM_BASE +
                         AOS_FREEBSD_GUEST_RAM_SIZE <=
                     AOS_LINUX_GUEST_RAM_BASE,
-                    "dual guest virtual RAM windows do not overlap");
-    failed += check(AOS_LINUX_GUEST_DTB_BASE >= AOS_LINUX_GUEST_RAM_BASE &&
+                    "dual VMM HVA windows do not overlap");
+    failed += check(AOS_LINUX_GUEST_DTB_BASE >= AOS_LINUX_GUEST_GPA_BASE &&
                     AOS_LINUX_GUEST_DTB_BASE <
-                        AOS_LINUX_GUEST_RAM_BASE + AOS_LINUX_GUEST_RAM_SIZE &&
+                        AOS_LINUX_GUEST_GPA_BASE + AOS_LINUX_GUEST_RAM_SIZE &&
                     AOS_FREEBSD_GUEST_DTB_BASE >=
-                        AOS_FREEBSD_GUEST_RAM_BASE &&
+                        AOS_FREEBSD_GUEST_GPA_BASE &&
                     AOS_FREEBSD_GUEST_DTB_BASE <
-                        AOS_FREEBSD_GUEST_RAM_BASE +
+                        AOS_FREEBSD_GUEST_GPA_BASE +
                         AOS_FREEBSD_GUEST_RAM_SIZE,
                     "both device trees fit their allocated RAM windows");
+    failed += check(AOS_LINUX_GUEST_GPA_BASE !=
+                        AOS_LINUX_GUEST_RAM_BASE &&
+                    AOS_FREEBSD_GUEST_GPA_BASE !=
+                        AOS_FREEBSD_GUEST_RAM_BASE,
+                    "guest GPAs are distinct from VMM host aliases");
 
-    printf("1..4\n");
+    printf("1..5\n");
     return failed == 0 ? 0 : 1;
 }

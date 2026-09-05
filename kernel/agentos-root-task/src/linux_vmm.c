@@ -515,6 +515,7 @@ static uint32_t vmm_affinity[VMM_MAX_SLOTS];
 /* Guest RAM, DTB, and initrd placement addresses (must match DTS). */
 #define GUEST_RAM_SIZE             AOS_LINUX_GUEST_RAM_SIZE
 #define LINUX_GUEST_RAM_VADDR      AOS_LINUX_GUEST_RAM_BASE
+#define LINUX_GUEST_RAM_GPA        AOS_LINUX_GUEST_GPA_BASE
 #define GUEST_DTB_VADDR            AOS_LINUX_GUEST_DTB_BASE
 #define GUEST_INIT_RAM_DISK_VADDR  AOS_LINUX_GUEST_INITRD_BASE
 
@@ -1122,23 +1123,29 @@ void init(void)
                 guest_image_checksum(_guest_initrd_image, initrd_size));
     }
 
-    uintptr_t kernel_pc = linux_setup_images(
+    uintptr_t dtb_hva = guest_ram_vaddr +
+        (GUEST_DTB_VADDR - LINUX_GUEST_RAM_GPA);
+    uintptr_t initrd_hva = guest_ram_vaddr +
+        (GUEST_INIT_RAM_DISK_VADDR - LINUX_GUEST_RAM_GPA);
+    uintptr_t kernel_hva = linux_setup_images(
         guest_ram_vaddr,
         (uintptr_t)_guest_kernel_image, kernel_size,
-        (uintptr_t)_guest_dtb_image, GUEST_DTB_VADDR, dtb_size,
-        (uintptr_t)_guest_initrd_image, GUEST_INIT_RAM_DISK_VADDR, initrd_size
+        (uintptr_t)_guest_dtb_image, dtb_hva, dtb_size,
+        (uintptr_t)_guest_initrd_image, initrd_hva, initrd_size
     );
 
-    if (!kernel_pc) {
+    if (!kernel_hva) {
         LOG_VMM_ERR("Failed to initialise guest images\n");
         return;
     }
+    uintptr_t kernel_pc = LINUX_GUEST_RAM_GPA +
+        (kernel_hva - guest_ram_vaddr);
     uint32_t initrd_guest_checksum = guest_image_checksum(
-        (const void *)GUEST_INIT_RAM_DISK_VADDR, initrd_size);
+        (const void *)initrd_hva, initrd_size);
     uint32_t kernel_guest_checksum =
-        guest_image_checksum((const void *)kernel_pc, kernel_size);
+        guest_image_checksum((const void *)kernel_hva, kernel_size);
     uint32_t dtb_guest_checksum =
-        guest_image_checksum((const void *)GUEST_DTB_VADDR, dtb_size);
+        guest_image_checksum((const void *)dtb_hva, dtb_size);
     if (initrd_size > 0u) {
         LOG_VMM("  Initrd guest checksum:  0x%x\n", initrd_guest_checksum);
     }
@@ -1182,7 +1189,7 @@ void init(void)
      * Bind guest RAM so descriptor addresses are translated from guest
      * physical addresses to this PD's independently allocated host mapping.
      */
-    aos_vmm_guest_ram_bind(LINUX_GUEST_RAM_VADDR, guest_ram_vaddr, GUEST_RAM_SIZE);
+    aos_vmm_guest_ram_bind(LINUX_GUEST_RAM_GPA, guest_ram_vaddr, GUEST_RAM_SIZE);
     aos_vmm_virtio_net_init(0u);
 
     /* Emulated virtio-blk at IPA 0x0A020000 (faults here, sDDF pump). */
@@ -1190,7 +1197,7 @@ void init(void)
 #if defined(AGENTOS_GUEST_UBUNTU_LIVE)
     size_t live_initrd_size = 0u;
     if (!aos_vmm_virtio_blk_load_casper_initrd(
-            GUEST_INIT_RAM_DISK_VADDR,
+            initrd_hva,
             GUEST_DTB_VADDR - GUEST_INIT_RAM_DISK_VADDR,
             &live_initrd_size)) {
         LOG_VMM_ERR("Failed to stage casper/initrd from agentOS host media\n");

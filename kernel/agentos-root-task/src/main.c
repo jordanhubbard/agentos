@@ -47,6 +47,7 @@
 #include "contracts/cc_contract.h" /* cc_pd VirtIO startup ABI                    */
 #include <platform/blk_host_layout.h> /* host block MMIO/shared DMA layout       */
 #include <platform/net_host_layout.h> /* host net MMIO/private DMA/shared bridge */
+#include <platform/guest_memory_layout.h> /* guest GPA and VMM HVA windows        */
 #include "pd_startup_record.h" /* pd_startup_record_t, PD_STARTUP_RECORD_VA      */
 #include <stdint.h>
 
@@ -163,6 +164,7 @@ typedef struct guest_ram_reservation {
 } guest_ram_reservation_t;
 
 static seL4_CPtr g_guest_large_frames[AOS_MAX_GUEST_LARGE_FRAMES];
+static seL4_CPtr g_guest_large_frame_aliases[AOS_MAX_GUEST_LARGE_FRAMES];
 static guest_ram_reservation_t
     g_guest_ram_reservations[AOS_MAX_GUEST_RAM_REGIONS];
 static uint32_t g_guest_ram_reservation_count;
@@ -800,6 +802,35 @@ guest_ram_reservation_for(uint32_t pd_index, uint8_t mr_index)
     }
     return NULL;
 }
+
+static seL4_Error map_guest_ram_reservation(
+    const guest_ram_reservation_t *reservation,
+    seL4_CPtr vmm_vspace, seL4_CPtr guest_vspace,
+    seL4_Word hva_base, seL4_Word gpa_base, int writable)
+{
+    seL4_Error err = pd_vspace_map_reserved_region(
+        guest_vspace, gpa_base,
+        &g_guest_large_frames[reservation->first_frame],
+        reservation->frame_count, writable);
+    if (err != seL4_NoError) return err;
+
+    for (uint32_t i = 0u; i < reservation->frame_count; i++) {
+        seL4_Word alias_slot = ut_alloc_slot();
+        if (alias_slot == seL4_CapNull) return seL4_NotEnoughMemory;
+        err = seL4_CNode_Copy(
+            seL4_CapInitThreadCNode, alias_slot, 64u,
+            seL4_CapInitThreadCNode,
+            g_guest_large_frames[reservation->first_frame + i], 64u,
+            seL4_AllRights);
+        if (err != seL4_NoError) return err;
+        g_guest_large_frame_aliases[reservation->first_frame + i] =
+            (seL4_CPtr)alias_slot;
+    }
+    return pd_vspace_map_reserved_region(
+        vmm_vspace, hva_base,
+        &g_guest_large_frame_aliases[reservation->first_frame],
+        reservation->frame_count, writable);
+}
 #endif
 
 /* True iff name starts with prefix. */
@@ -938,7 +969,7 @@ static seL4_CPtr schedcontrol_for_node(const seL4_BootInfo *bi, seL4_Word node)
 static seL4_Error setup_vmm_guest_vcpu(const pd_desc_t *pd,
                                         uint32_t         pd_index,
                                         seL4_CPtr        pd_cnode,
-                                        seL4_CPtr        vspace,
+                                        seL4_CPtr        guest_vspace,
                                         seL4_CPtr        ipc_buf_cap,
                                         seL4_Word        ipc_buf_va,
                                         seL4_CPtr        self_ep,
@@ -993,7 +1024,8 @@ static seL4_Error setup_vmm_guest_vcpu(const pd_desc_t *pd,
         dbg_puts("\n");
         return err;
     }
-    err = pd_vspace_map_device_frame(vspace, guest_ipc_cap, VMM_GUEST_IPC_BUF_VA);
+    err = pd_vspace_map_device_frame(guest_vspace, guest_ipc_cap,
+                                     VMM_GUEST_IPC_BUF_VA);
     if (err != seL4_NoError) {
         dbg_puts("[rt] VMM guest IPC map err=");
         dbg_hex((seL4_Word)err);
@@ -1008,7 +1040,7 @@ static seL4_Error setup_vmm_guest_vcpu(const pd_desc_t *pd,
     err = seL4_TCB_Configure((seL4_CPtr)guest_tcb_slot,
                               pd_cnode,
                               cspace_root_data,
-                              vspace,
+                              guest_vspace,
                               0u,
                               VMM_GUEST_IPC_BUF_VA,
                               guest_ipc_cap);
@@ -1479,6 +1511,22 @@ void root_task_main(const seL4_BootInfo *bi)
             continue;
         }
         seL4_CPtr vspace = vr_create.vspace_cap;
+#if defined(__aarch64__)
+        seL4_CPtr guest_vspace = seL4_CapNull;
+        if (name_eq(pd->name, "linux_vmm") ||
+            name_eq(pd->name, "freebsd_vmm")) {
+            pd_vspace_result_t guest_vr =
+                pd_vspace_create(seL4_CapInitThreadCNode,
+                                 seL4_CapInitThreadASIDPool);
+            if (guest_vr.error != 0) {
+                dbg_puts("[rt] guest vspace_create fail err=");
+                dbg_hex((seL4_Word)guest_vr.error);
+                dbg_puts("\n");
+                continue;
+            }
+            guest_vspace = guest_vr.vspace_cap;
+        }
+#endif
 
         /* ── 4b: Allocate IPC buffer frame ──────────────────────────────── */
         seL4_Error err = ut_alloc(seL4_ARM_SmallPageObject,
@@ -1782,10 +1830,14 @@ void root_task_main(const seL4_BootInfo *bi)
                 if (reservation == NULL) {
                     mr_err = seL4_NotEnoughMemory;
                 } else {
-                    mr_err = pd_vspace_map_reserved_region(
-                        vspace, (seL4_Word)mr->vaddr,
-                        &g_guest_large_frames[reservation->first_frame],
-                        reservation->frame_count, (int)mr->writable);
+                    seL4_Word guest_gpa =
+                        name_eq(pd->name, "linux_vmm")
+                            ? AOS_LINUX_GUEST_GPA_BASE
+                            : AOS_FREEBSD_GUEST_GPA_BASE;
+                    mr_err = map_guest_ram_reservation(
+                        reservation, vspace, guest_vspace,
+                        (seL4_Word)mr->vaddr, guest_gpa,
+                        (int)mr->writable);
                 }
             } else
 #endif
@@ -2191,6 +2243,12 @@ void root_task_main(const seL4_BootInfo *bi)
         /* ── 4h: Record all new caps in the accounting tree ─────────────── */
         cap_acct_record(seL4_CapNull, pd_cnode, seL4_CapTableObject,   i, pd->name);
         cap_acct_record(seL4_CapNull, vspace,   seL4_ARM_VSpaceObject, i, pd->name);
+#if defined(__aarch64__)
+        if (guest_vspace != seL4_CapNull) {
+            cap_acct_record(seL4_CapNull, guest_vspace,
+                            seL4_ARM_VSpaceObject, i, pd->name);
+        }
+#endif
         cap_acct_record(seL4_CapNull, tr.tcb_cap, seL4_TCBObject,       i, pd->name);
         cap_acct_record(seL4_CapNull, ipc_frame,  seL4_ARM_SmallPageObject, i, pd->name);
 
@@ -2219,7 +2277,7 @@ void root_task_main(const seL4_BootInfo *bi)
             seL4_Error vm_err = setup_vmm_guest_vcpu(pd,
                                                       i,
                                                       pd_cnode,
-                                                      vspace,
+                                                      guest_vspace,
                                                       ipc_buf_cap,
                                                       ipc_buf_va,
                                                       self_ep,

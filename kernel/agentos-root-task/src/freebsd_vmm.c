@@ -104,7 +104,8 @@ extern char _guest_dtb_image_end[];
 uintptr_t guest_ram_vaddr;   /* VMM virtual address of guest_ram MR */
 
 #define FREEBSD_GUEST_RAM_VADDR AOS_FREEBSD_GUEST_RAM_BASE
-#define FREEBSD_KERNEL_VADDR    AOS_FREEBSD_GUEST_RAM_BASE
+#define FREEBSD_GUEST_RAM_GPA   AOS_FREEBSD_GUEST_GPA_BASE
+#define FREEBSD_KERNEL_VADDR    AOS_FREEBSD_GUEST_GPA_BASE
 #define FREEBSD_FDT_VADDR       AOS_FREEBSD_GUEST_DTB_BASE
 #define FREEBSD_GUEST_RAM_SIZE  AOS_FREEBSD_GUEST_RAM_SIZE
 #define FREEBSD_VTIMER_IRQ      27u
@@ -532,7 +533,7 @@ static void *freebsd_debug_va(uint64_t va, size_t len)
     if (off > FREEBSD_GUEST_RAM_SIZE - len) {
         return NULL;
     }
-    return aos_gpa_to_hva_configured(FREEBSD_GUEST_RAM_VADDR + off, len);
+    return aos_gpa_to_hva_configured(FREEBSD_GUEST_RAM_GPA + off, len);
 }
 
 static uint64_t freebsd_debug_u64(uint64_t va)
@@ -675,13 +676,13 @@ void init(void)
     if (guest_ram_vaddr == 0) {
         guest_ram_vaddr = FREEBSD_GUEST_RAM_VADDR;
     }
-    aos_vmm_guest_ram_bind(FREEBSD_GUEST_RAM_VADDR, guest_ram_vaddr,
+    aos_vmm_guest_ram_bind(FREEBSD_GUEST_RAM_GPA, guest_ram_vaddr,
                            FREEBSD_GUEST_RAM_SIZE);
 
     uintptr_t kernel_dst = guest_ram_vaddr +
-        (FREEBSD_KERNEL_VADDR - FREEBSD_GUEST_RAM_VADDR);
+        (FREEBSD_KERNEL_VADDR - FREEBSD_GUEST_RAM_GPA);
     uintptr_t fdt_dst = guest_ram_vaddr +
-        (FREEBSD_FDT_VADDR - FREEBSD_GUEST_RAM_VADDR);
+        (FREEBSD_FDT_VADDR - FREEBSD_GUEST_RAM_GPA);
     if ((FREEBSD_KERNEL_VADDR + kernel_size) >= FREEBSD_FDT_VADDR) {
         LOG_VMM_ERR("FreeBSD kernel overlaps FDT load address\n");
         return;
@@ -700,7 +701,7 @@ void init(void)
     size_t dtb_size = (size_t)(_guest_dtb_image_end - _guest_dtb_image);
     if (dtb_size && guest_ram_vaddr &&
         (FREEBSD_FDT_VADDR + dtb_size) <=
-        (FREEBSD_GUEST_RAM_VADDR + FREEBSD_GUEST_RAM_SIZE)) {
+        (FREEBSD_GUEST_RAM_GPA + FREEBSD_GUEST_RAM_SIZE)) {
         freebsd_copy_to_guest(fdt_dst, _guest_dtb_image, dtb_size);
         LOG_VMM("  FDT (%zu bytes) copied to guest phys 0x%lx\n",
                 dtb_size, (unsigned long)FREEBSD_FDT_VADDR);
