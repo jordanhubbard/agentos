@@ -33,14 +33,40 @@ static bool vgic_maintenance_reinject(size_t vcpu_id, int irq)
     }
 
     /*
-     * CNTV is level-triggered. FreeBSD EOIs the vGIC before advancing CVAL,
-     * so the timer can still be enabled and asserted here. Keep it in an LR
-     * and leave the physical VPPI masked until a subsequent EOI observes the
-     * level deasserted; otherwise that timer edge is lost at idle WFI.
+     * FreeBSD EOIs before advancing CVAL. Keep the physical VPPI masked and
+     * inject one more virtual timer IRQ while the level remains asserted.
+     * The subsequent EOI observes the deasserted level and acknowledges the
+     * physical VPPI. vdist clears pending when loading the LR, so this
+     * reinjection cannot be silently discarded.
      */
     seL4_Word ctl =
         vmm_vcpu_arm_read_reg(vcpu_id, seL4_VCPUReg_CNTV_CTL);
     return (ctl & 0x5u) == 0x5u;
+}
+
+bool vgic_flush_pending_irqs(size_t vcpu_id)
+{
+#if defined(GIC_V2)
+    const int group = 0;
+#elif defined(GIC_V3)
+    const int group = 1;
+#else
+#error "Unknown GIC version"
+#endif
+    int idx;
+
+    while ((idx = vgic_find_empty_list_reg(&vgic, vcpu_id)) >= 0) {
+        struct virq_handle *virq = vgic_irq_dequeue(&vgic, vcpu_id);
+        if (virq == NULL) {
+            return true;
+        }
+        if (!vgic_vcpu_load_list_reg(&vgic, vcpu_id, idx, group, virq)) {
+            set_pending(&vgic, virq->virq, false, vcpu_id);
+            return false;
+        }
+        set_pending(&vgic, virq->virq, false, vcpu_id);
+    }
+    return true;
 }
 
 bool vgic_handle_fault_maintenance(size_t vcpu_id)
@@ -56,27 +82,9 @@ bool vgic_handle_fault_maintenance(size_t vcpu_id)
                 (unsigned long long)maint_count, idx, vcpu_id);
     }
     if (idx < 0) {
-        /* Spurious maintenance IRQ (underrun or other condition with no LR EOI).
-         * Drain any queued IRQs into a free LR and resume the vCPU. */
-        struct virq_handle *virq = vgic_irq_dequeue(&vgic, vcpu_id);
-        if (virq) {
-#if defined(GIC_V2)
-            int group = 0;
-#elif defined(GIC_V3)
-            int group = 1;
-#endif
-            int free_idx = vgic_find_empty_list_reg(&vgic, vcpu_id);
-            if (log_maintenance) {
-                LOG_VMM("VGICMaintenance spurious: dequeued IRQ %d, free_idx=%d\n",
-                        virq->virq, free_idx);
-            }
-            if (free_idx >= 0) {
-                vgic_vcpu_load_list_reg(&vgic, vcpu_id, free_idx, group, virq);
-            }
-        } else {
-            if (log_maintenance) {
-                LOG_VMM("VGICMaintenance spurious: queue empty\n");
-            }
+        /* Drain queued IRQs without dropping one when no LR is available. */
+        if (!vgic_flush_pending_irqs(vcpu_id)) {
+            LOG_VMM_ERR("vGIC spurious maintenance queue flush failed\n");
         }
         return true;
     }
@@ -110,19 +118,19 @@ bool vgic_handle_fault_maintenance(size_t vcpu_id)
     if (reinject) {
         set_pending(&vgic, lr_virq.virq, true, vcpu_id);
         success = vgic_vcpu_load_list_reg(&vgic, vcpu_id, idx, group, &lr_virq);
-        if (!success) {
+        if (success) {
+            set_pending(&vgic, lr_virq.virq, false, vcpu_id);
+        } else {
             set_pending(&vgic, lr_virq.virq, false, vcpu_id);
             virq_ack(vcpu_id, &lr_virq);
+        }
+        if (!vgic_flush_pending_irqs(vcpu_id)) {
+            LOG_VMM_ERR("vGIC timer maintenance queue flush failed\n");
         }
         return true;
     }
     virq_ack(vcpu_id, &lr_virq);
-    /* Check the overflow list for pending IRQs */
-    struct virq_handle *virq = vgic_irq_dequeue(&vgic, vcpu_id);
-
-    if (virq) {
-        success = vgic_vcpu_load_list_reg(&vgic, vcpu_id, idx, group, virq);
-    }
+    success = vgic_flush_pending_irqs(vcpu_id);
 
     if (!success) {
         LOG_VMM_ERR("vGIC maintenance: load_list_reg failed for idx %d\n", idx);

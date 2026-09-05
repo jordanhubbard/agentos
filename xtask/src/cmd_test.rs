@@ -1028,6 +1028,7 @@ fn wait_for_guest_console_login_via_cc(
     let prompt_markers = guest_prompt_markers(guest_os);
     let mut freebsd_console_type_accepted = false;
     let mut freebsd_installer_shell_requested = false;
+    let mut freebsd_stack_requested = false;
     let mut last_progress = Instant::now();
 
     while start.elapsed() < timeout {
@@ -1100,6 +1101,14 @@ fn wait_for_guest_console_login_via_cc(
                     }
                 }
             }
+        }
+        if guest_os == "freebsd"
+            && !freebsd_stack_requested
+            && start.elapsed() >= Duration::from_secs(180)
+        {
+            println!("[xtask:test] requesting FreeBSD PID 1 stack");
+            cc_send_raw_byte(&mut cc, guest_handle, 0x1d)?;
+            freebsd_stack_requested = true;
         }
         std::thread::sleep(Duration::from_secs(1));
     }

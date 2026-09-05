@@ -276,13 +276,11 @@ bool fault_handle_vcpu_exception(size_t vcpu_id)
     case HSR_HVC_64_EXCEPTION:
         return smc_handle(vcpu_id, hsr);
     case HSR_WFx_EXCEPTION:
-        /*
-         * seL4 delivers trapped WFI/WFE as a VCPU fault at the instruction
-         * itself.  Returning without advancing the PC re-executes the same
-         * WFI/WFE and can pin the VMM in a fault loop while the guest is idle.
-         * Treat it as a completed wait operation for now.
-         */
-        return fault_advance_vcpu(vcpu_id, &regs);
+        /* seL4 resumes trapped WFI/WFE without VMM-side PC adjustment. */
+        if (!vgic_flush_pending_irqs(vcpu_id)) {
+            LOG_VMM_ERR("failed to flush pending IRQs at trapped WFI/WFE\n");
+        }
+        return true;
     case HSR_SYSREG_64_EXCEPTION:
         return handle_sysreg_64_fault(vcpu_id, hsr, &regs);
     default:

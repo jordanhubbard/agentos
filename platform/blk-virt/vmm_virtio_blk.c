@@ -4,6 +4,7 @@
  */
 
 #include <libvmm/libvmm.h>
+#include <libvmm/arch/aarch64/vgic/vgic.h>
 #include <libvmm/virtio/config.h>
 #include <libvmm/virtio/block.h>
 #include <sddf/blk/queue.h>
@@ -544,6 +545,22 @@ void aos_vmm_virtio_blk_after_fault(void)
                     (unsigned)vq->virtq.avail->idx, (unsigned)vq->last_idx,
                     (unsigned)vq->virtq.used->idx,
                     (unsigned)g_aos_blk.virtio_device.regs.InterruptStatus);
+        }
+    } else if (g_host_request_count >= 64u) {
+        static uint32_t idle_count;
+        idle_count++;
+        if (idle_count <= 8u) {
+            LOG_VMM("emulated virtio-blk: idle=%u requests=%u avail=%u last=%u used=%u irq=0x%x pending=%u inflight=%u\n",
+                    (unsigned)idle_count,
+                    (unsigned)g_host_request_count,
+                    (unsigned)vq->virtq.avail->idx,
+                    (unsigned)vq->last_idx,
+                    (unsigned)vq->virtq.used->idx,
+                    (unsigned)g_aos_blk.virtio_device.regs.InterruptStatus,
+                    vgic_irq_is_pending(GUEST_BOOT_VCPU_ID,
+                                        AOS_VIRTIO_BLK_VIRQ) ? 1u : 0u,
+                    vgic_irq_is_inflight(GUEST_BOOT_VCPU_ID,
+                                         AOS_VIRTIO_BLK_VIRQ) ? 1u : 0u);
         }
     }
 }

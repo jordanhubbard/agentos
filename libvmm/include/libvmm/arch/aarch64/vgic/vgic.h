@@ -62,6 +62,7 @@
 void vgic_init();
 
 bool vgic_handle_fault_maintenance(size_t vcpu_id);
+bool vgic_flush_pending_irqs(size_t vcpu_id);
 
 bool vgic_handle_fault_dist(size_t vcpu_id, size_t offset, size_t fsr, seL4_UserContext *regs, void *data);
 bool vgic_handle_fault_redist(size_t vcpu_id, size_t offset, size_t fsr, seL4_UserContext *regs, void *data);

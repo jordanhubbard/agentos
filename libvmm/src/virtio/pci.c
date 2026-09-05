@@ -611,14 +611,11 @@ static bool virtio_ecam_fault_handle(size_t vcpu_id, size_t offset, size_t fsr, 
     }
 }
 
-/* Keep level-triggered VirtIO IRQs asserted until device status is cleared. */
 static void virtio_virq_default_ack(size_t vcpu_id, int irq, void *cookie)
 {
-    virtio_device_t *dev = cookie;
-    if (dev->regs.InterruptStatus != 0u) {
-        bool success = virq_inject_vcpu(vcpu_id, irq);
-        assert(success);
-    }
+    (void)vcpu_id;
+    (void)irq;
+    (void)cookie;
 }
 
 bool virtio_pci_alloc_dev_cfg_space(virtio_device_t *dev, uint8_t dev_slot)

@@ -310,12 +310,26 @@ int main(void)
     (void)tap_ok(!src_contains("kernel/agentos-root-task/src/freebsd_vmm.c",
                                "if (label == seL4_Fault_VPPIEvent) {") &&
                  src_contains("libvmm/src/arch/aarch64/vgic/vgic.c",
+                              "virq_ack(vcpu_id, &lr_virq)") &&
+                 src_contains("libvmm/src/arch/aarch64/vgic/vgic.c",
                               "vgic_maintenance_reinject") &&
                  src_contains("libvmm/src/arch/aarch64/vgic/vgic.c",
-                              "(ctl & 0x5u) == 0x5u"),
-                 "FreeBSD timer faults use shared deferred-ack VPPI handling");
-    (void)tap_ok(src_contains("libvmm/src/virtio/mmio.c",
-                              "dev->regs.InterruptStatus != 0u") &&
+                              "vgic_flush_pending_irqs") &&
+                 src_contains("libvmm/src/arch/aarch64/fault.c",
+                              "vgic_flush_pending_irqs(vcpu_id)") &&
+                 src_contains("libvmm/include/libvmm/arch/aarch64/vgic/vdist.h",
+                              "set_pending(vgic, virq->virq, false, vcpu_id)") &&
+                 src_contains("kernel/agentos-root-task/src/freebsd_vmm.c",
+                              "vmm_vcpu_arm_ack_vppi(vcpu_id, FREEBSD_VTIMER_IRQ)") &&
+                 src_contains("kernel/agentos-root-task/src/freebsd_vmm.c",
+                              "virq_inject_vcpu(vcpu_id, FREEBSD_VTIMER_IRQ)") &&
+                 !src_contains("libvmm/src/arch/aarch64/fault.c",
+                               "Treat it as a completed wait operation"),
+                 "vGIC preserves and releases deferred level timer VPPI");
+    (void)tap_ok(!src_contains("libvmm/src/virtio/mmio.c",
+                               "if (dev->regs.InterruptStatus != 0u)") &&
+                 !src_contains("libvmm/src/virtio/pci.c",
+                               "if (dev->regs.InterruptStatus != 0u)") &&
                  src_contains("libvmm/src/virtio/mmio.c",
                               "&virtio_virq_default_ack, dev") &&
                  src_contains("libvmm/src/virtio/pci.c",

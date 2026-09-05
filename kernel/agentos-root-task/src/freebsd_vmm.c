@@ -537,6 +537,95 @@ static void freebsd_vmm_suspend_guest_tcb(void)
     }
 }
 
+#define FREEBSD_KERNBASE         0xffff000000000000ull
+#define FREEBSD_DMAPBASE         0xffffa00000000000ull
+#define FREEBSD_ALLPROC_VA       0xffff000001088b00ull
+#define FREEBSD_PROC_THREADS_OFF 16u
+#define FREEBSD_PROC_PID_OFF     196u
+#define FREEBSD_THREAD_PCB_OFF   1152u
+#define FREEBSD_PCB_FP_OFF       80u
+#define FREEBSD_PCB_LR_OFF       88u
+#define FREEBSD_PCB_SP_OFF       96u
+
+static void *freebsd_debug_va(uint64_t va, size_t len)
+{
+    uint64_t off;
+    if (len > FREEBSD_GUEST_RAM_SIZE) {
+        return NULL;
+    }
+    if (va >= FREEBSD_DMAPBASE) {
+        off = va - FREEBSD_DMAPBASE;
+    } else if (va >= FREEBSD_KERNBASE) {
+        off = va - FREEBSD_KERNBASE;
+    } else {
+        return NULL;
+    }
+    if (off > FREEBSD_GUEST_RAM_SIZE - len) {
+        return NULL;
+    }
+    return (void *)(guest_ram_vaddr + (uintptr_t)off);
+}
+
+static uint64_t freebsd_debug_u64(uint64_t va)
+{
+    uint64_t value = 0u;
+    uint8_t *src = freebsd_debug_va(va, sizeof(value));
+    if (src != NULL) {
+        for (size_t i = 0u; i < sizeof(value); i++) {
+            ((uint8_t *)&value)[i] = src[i];
+        }
+    }
+    return value;
+}
+
+static uint32_t freebsd_debug_u32(uint64_t va)
+{
+    uint32_t value = 0u;
+    uint8_t *src = freebsd_debug_va(va, sizeof(value));
+    if (src != NULL) {
+        for (size_t i = 0u; i < sizeof(value); i++) {
+            ((uint8_t *)&value)[i] = src[i];
+        }
+    }
+    return value;
+}
+
+static void freebsd_dump_init_stack(void)
+{
+    uint64_t proc = freebsd_debug_u64(FREEBSD_ALLPROC_VA);
+    for (unsigned n = 0u; proc != 0u && n < 256u; n++) {
+        if (freebsd_debug_u32(proc + FREEBSD_PROC_PID_OFF) == 1u) {
+            uint64_t td =
+                freebsd_debug_u64(proc + FREEBSD_PROC_THREADS_OFF);
+            uint64_t pcb =
+                freebsd_debug_u64(td + FREEBSD_THREAD_PCB_OFF);
+            uint64_t fp = freebsd_debug_u64(pcb + FREEBSD_PCB_FP_OFF);
+            LOG_VMM("FreeBSD pid1 td=0x%lx pcb=0x%lx fp=0x%lx lr=0x%lx sp=0x%lx\n",
+                    (unsigned long)td, (unsigned long)pcb,
+                    (unsigned long)fp,
+                    (unsigned long)freebsd_debug_u64(
+                        pcb + FREEBSD_PCB_LR_OFF),
+                    (unsigned long)freebsd_debug_u64(
+                        pcb + FREEBSD_PCB_SP_OFF));
+            for (unsigned frame = 0u;
+                 fp != 0u && frame < 24u; frame++) {
+                uint64_t next_fp = freebsd_debug_u64(fp);
+                uint64_t next_lr = freebsd_debug_u64(fp + 8u);
+                LOG_VMM("FreeBSD pid1 frame[%u] fp=0x%lx lr=0x%lx\n",
+                        frame, (unsigned long)fp,
+                        (unsigned long)next_lr);
+                if (next_fp <= fp) {
+                    break;
+                }
+                fp = next_fp;
+            }
+            return;
+        }
+        proc = freebsd_debug_u64(proc);
+    }
+    LOG_VMM_ERR("FreeBSD pid1 not found\n");
+}
+
 static seL4_MessageInfo_t freebsd_vmm_rpc(seL4_MessageInfo_t info)
 {
     (void)info;
@@ -644,6 +733,11 @@ static seL4_MessageInfo_t freebsd_vmm_rpc(seL4_MessageInfo_t info)
         uint32_t event_type = vmm_msg_rd32(req.data, 4u);
         uint32_t keycode = vmm_msg_rd32(req.data, 8u);
         if (input_event_to_byte(event_type, keycode, &byte)) {
+            if (byte == 0x1du) {
+                freebsd_dump_init_stack();
+                rep.opcode = GUEST_OK;
+                break;
+            }
             if (!console_rx_push(byte)) {
                 rep.opcode = GUEST_ERR_DEVICE_UNAVAILABLE;
                 break;
@@ -781,6 +875,26 @@ static seL4_MessageInfo_t freebsd_vmm_fault(seL4_Word badge,
             wfi_count++;
             if (wfi_count <= 3u)
                 LOG_VMM("WFI fault #%llu\n", (unsigned long long)wfi_count);
+            seL4_Word timer_ctl =
+                vmm_vcpu_arm_read_reg(vcpu_id, seL4_VCPUReg_CNTV_CTL);
+            if (!vgic_irq_is_pending(vcpu_id, FREEBSD_VTIMER_IRQ) &&
+                !vgic_irq_is_inflight(vcpu_id, FREEBSD_VTIMER_IRQ)) {
+                if ((timer_ctl & 0x5u) == 0x5u) {
+                    /*
+                     * The deadline expired while seL4's physical VPPI was
+                     * masked. Reflect the asserted architectural timer level
+                     * into the vGIC now that no delivery is outstanding.
+                     */
+                    (void)virq_inject_vcpu(vcpu_id, FREEBSD_VTIMER_IRQ);
+                } else if ((timer_ctl & 0x5u) == 0x1u) {
+                    /*
+                     * FreeBSD advanced CVAL after EOI. Release a physical
+                     * VPPI whose acknowledgement was deferred while the timer
+                     * level remained asserted.
+                     */
+                    vmm_vcpu_arm_ack_vppi(vcpu_id, FREEBSD_VTIMER_IRQ);
+                }
+            }
 #if FREEBSD_IRQ_TRACE
             freebsd_log_irq_state("WFI irq state", (unsigned)wfi_count);
 #endif
