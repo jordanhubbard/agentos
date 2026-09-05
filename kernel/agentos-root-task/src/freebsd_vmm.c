@@ -41,6 +41,7 @@
 #include <platform/guest_ram.h>
 #include <platform/vmm_virtio_net.h>
 #include <platform/vmm_virtio_blk.h>
+#include <platform/vmm_virtio_console.h>
 #include <contracts/net-service/interface.h>
 #include "serial_log.h"
 
@@ -481,6 +482,7 @@ static bool freebsd_vmm_prepare_runtime(void)
      */
     aos_vmm_virtio_net_init(1u);
     aos_vmm_virtio_blk_init(AOS_HOST_BLK_MEDIA_FREEBSD);
+    aos_vmm_virtio_console_init();
 
     if (!virq_register(GUEST_BOOT_VCPU_ID, FREEBSD_UART_IRQ, &uart_ack, NULL)) {
         LOG_VMM_ERR("Failed to register UART IRQ %u\n", FREEBSD_UART_IRQ);
@@ -754,6 +756,12 @@ static seL4_MessageInfo_t freebsd_vmm_rpc(seL4_MessageInfo_t info)
                 rep.opcode = GUEST_ERR_PROTOCOL_VIOLATION;
                 break;
             }
+            /*
+             * FreeBSD still boots on fault-emulated PL011, but mirror input to
+             * virtio-console once its driver is ready. This keeps recovery on
+             * ttyu0 while allowing ttyV0 consumers to use the generic path.
+             */
+            (void)aos_vmm_virtio_console_push_rx_bytes(&req.data[28u], keycode);
             for (uint32_t i = 0u; i < keycode; i++) {
                 if (!console_rx_push(req.data[28u + i])) {
                     rep.opcode = GUEST_ERR_DEVICE_UNAVAILABLE;
@@ -768,6 +776,7 @@ static seL4_MessageInfo_t freebsd_vmm_rpc(seL4_MessageInfo_t info)
                 rep.opcode = GUEST_OK;
                 break;
             }
+            (void)aos_vmm_virtio_console_push_rx(byte);
             if (!console_rx_push(byte)) {
                 rep.opcode = GUEST_ERR_DEVICE_UNAVAILABLE;
                 break;
@@ -788,7 +797,9 @@ static seL4_MessageInfo_t freebsd_vmm_rpc(seL4_MessageInfo_t info)
         }
         uint32_t max = vmm_msg_rd32(req.data, 4u);
         if (max > SEL4_MSG_DATA_BYTES) max = SEL4_MSG_DATA_BYTES;
-        rep.length = console_tx_drain(rep.data, max);
+        rep.length = aos_vmm_virtio_console_drain_tx(rep.data, max);
+        rep.length += console_tx_drain(&rep.data[rep.length],
+                                       max - rep.length);
         rep.opcode = GUEST_OK;
         break;
     }
@@ -974,6 +985,7 @@ static seL4_MessageInfo_t freebsd_vmm_fault(seL4_Word badge,
                     (unsigned long)badge, (unsigned long)label);
     aos_vmm_virtio_net_after_fault();
     aos_vmm_virtio_blk_after_fault();
+    aos_vmm_virtio_console_after_fault();
     return seL4_MessageInfo_new(0, 0, 0, 0);
 }
 

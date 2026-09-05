@@ -416,7 +416,8 @@ $(BUILD_DIR)/freebsd_images.o: $(PKG_IMG) $(FREEBSD_KERNEL_IMAGE) $(BUILD_DIR)/f
 		$(PKG_IMG) -o $@
 
 # ─── Compile freebsd_vmm.c ───────────────────────────────────────────────
-$(BUILD_DIR)/freebsd_vmm.o: $(KERNEL_SRC_DIR)/src/freebsd_vmm.c $(VMM_CONFIG_STAMP)
+$(BUILD_DIR)/freebsd_vmm.o: $(KERNEL_SRC_DIR)/src/freebsd_vmm.c $(VMM_CONFIG_STAMP) \
+                           $(AGENTOS_ROOT)/platform/include/platform/vmm_virtio_console.h
 	@mkdir -p $(BUILD_DIR)
 	@echo "[VMM] Compiling freebsd_vmm.c..."
 	clang $(VMM_CFLAGS) -c -o $@ $<
@@ -430,6 +431,7 @@ $(BUILD_DIR)/freebsd_vmm.elf: $(BUILD_DIR)/freebsd_vmm.o \
                                $(VMM_GUEST_RAM_OBJ) \
                                $(BLK_VIRT_PUMP_OBJ) \
                                $(VMM_VIRTIO_BLK_OBJ) \
+                               $(VMM_VIRTIO_CONSOLE_OBJ) \
                                $(BUILD_DIR)/libvmm.a \
                                $(BUILD_DIR)/libsddf_util_debug.a
 	@echo "[VMM] Linking freebsd_vmm.elf..."
@@ -439,6 +441,7 @@ $(BUILD_DIR)/freebsd_vmm.elf: $(BUILD_DIR)/freebsd_vmm.o \
 		$(NET_VIRT_PUMP_OBJ) $(VMM_VIRTIO_NET_OBJ) \
 		$(GPA_TRANSLATE_OBJ) $(VMM_GUEST_RAM_OBJ) \
 		$(BLK_VIRT_PUMP_OBJ) $(VMM_VIRTIO_BLK_OBJ) \
+		$(VMM_VIRTIO_CONSOLE_OBJ) \
 		--start-group \
 		$(BUILD_DIR)/libvmm.a $(BUILD_DIR)/libsddf_util_debug.a \
 		--end-group \

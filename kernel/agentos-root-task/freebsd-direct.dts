@@ -110,9 +110,20 @@
 		compatible = "virtio,mmio";
 	};
 
+	/*
+	 * Generic agentOS virtio-console. PL011 remains the boot/recovery console
+	 * until FreeBSD can select this endpoint before its console subsystem starts.
+	 */
+	virtio_mmio@a030000 {
+		dma-coherent;
+		interrupts = <0x00 0x15 0x01>;
+		reg = <0x00 0xa030000 0x00 0x1000>;
+		compatible = "virtio,mmio";
+	};
+
 	chosen {
 		bootargs = "FreeBSD:vfs.root.mountfrom=cd9660:/dev/iso9660/15_0_RELEASE_AARCH64_DVD console=ttyu0 boot_serial=YES";
-		/* This PL011 is fault-emulated by freebsd_vmm and drained via CC-PD. */
+		/* PL011 is fault-emulated and retained as the boot/recovery console. */
 		stdout-path = "/pl011@9000000";
 	};
 };

@@ -312,11 +312,19 @@ int main(void)
                  src_contains("platform/blk-virt/vmm_virtio_blk.c",
                               "rounds <= (AOS_BLK_QUEUE_CAPACITY * 2u + 1u)"),
                  "synchronous block backend drains deferred requests to quiescence");
-    (void)tap_ok(src_contains("kernel/agentos-root-task/src/freebsd_vmm.c",
-                              "MSG_GUEST_CONSOLE_DRAIN") &&
+    (void)tap_ok(dts_emulated_blk_ok(
+                     "kernel/agentos-root-task/freebsd-direct.dts") &&
+                 src_contains("kernel/agentos-root-task/freebsd-direct.dts",
+                              "virtio_mmio@a030000") &&
+                 src_contains("kernel/agentos-root-task/src/freebsd_vmm.c",
+                              "aos_vmm_virtio_console_init") &&
+                 src_contains("kernel/agentos-root-task/src/freebsd_vmm.c",
+                              "aos_vmm_virtio_console_after_fault") &&
+                 src_contains("kernel/agentos-root-task/src/freebsd_vmm.c",
+                              "aos_vmm_virtio_console_drain_tx") &&
                  src_contains("xtask/src/cmd_test.rs",
                               "wait_for_dual_guest_consoles_via_cc"),
-                 "FreeBSD emulated console is observable through dual CC proof");
+                 "FreeBSD exposes generic virtio-console while retaining PL011 recovery");
     (void)tap_ok(!src_contains("kernel/agentos-root-task/src/freebsd_vmm.c",
                                "if (label == seL4_Fault_VPPIEvent) {") &&
                  src_contains("libvmm/src/arch/aarch64/vgic/vgic.c",
