@@ -13,6 +13,9 @@ static unsigned starts;
 static unsigned suspends;
 static unsigned resumes;
 static unsigned timer_quiesces;
+static uint32_t pushed_event;
+static uint32_t pushed_length;
+static uint8_t pushed_bytes[CC_INPUT_TEXT_MAX];
 
 static bool start_guest(void)
 {
@@ -24,6 +27,21 @@ static bool start_guest(void)
 static void suspend_guest(void) { suspends++; }
 static void resume_guest(void) { resumes++; }
 static void quiesce_timer(void) { timer_quiesces++; }
+static bool push_input(uint32_t event_type, const uint8_t *bytes,
+                       uint32_t length)
+{
+    pushed_event = event_type;
+    pushed_length = length;
+    for (uint32_t i = 0u; i < length; i++) pushed_bytes[i] = bytes[i];
+    return true;
+}
+static uint32_t drain_console(uint8_t *bytes, uint32_t capacity)
+{
+    static const uint8_t output[] = {'t', 't', 'y'};
+    uint32_t length = capacity < sizeof(output) ? capacity : sizeof(output);
+    for (uint32_t i = 0u; i < length; i++) bytes[i] = output[i];
+    return length;
+}
 
 static void request(sel4_msg_t *req, uint32_t opcode, uint32_t value)
 {
@@ -53,6 +71,8 @@ int main(void)
         .suspend = suspend_guest,
         .resume = resume_guest,
         .quiesce_timer = quiesce_timer,
+        .push_input = push_input,
+        .drain_console = drain_console,
     };
 
     state = GUEST_STATE_READY;
@@ -67,6 +87,48 @@ int main(void)
                     rep.opcode == GUEST_OK && state == GUEST_STATE_RUNNING &&
                     started && starts == 1u,
                     "boot starts configured flavor");
+
+    rep = (sel4_msg_t){0};
+    request(&req, MSG_GUEST_SEND_INPUT, 0u);
+    req.length = 31u;
+    rep_u32(&req, 4u, CC_INPUT_TEXT);
+    rep_u32(&req, 8u, 3u);
+    req.data[28] = 'a';
+    req.data[29] = 'b';
+    req.data[30] = 'c';
+    failed += check(aos_guest_vmm_console_rpc(&req, &rep, &runtime) &&
+                    rep.opcode == GUEST_OK &&
+                    pushed_event == CC_INPUT_TEXT && pushed_length == 3u &&
+                    pushed_bytes[0] == 'a' && pushed_bytes[2] == 'c',
+                    "text input uses shared validation and flavor callback");
+
+    rep = (sel4_msg_t){0};
+    request(&req, MSG_GUEST_SEND_INPUT, 0u);
+    req.length = 28u;
+    rep_u32(&req, 4u, CC_INPUT_KEY_DOWN);
+    rep_u32(&req, 8u, 0x04u);
+    failed += check(aos_guest_vmm_console_rpc(&req, &rep, &runtime) &&
+                    rep.opcode == GUEST_OK && pushed_length == 1u &&
+                    pushed_bytes[0] == 'a',
+                    "key input is decoded before flavor delivery");
+
+    rep = (sel4_msg_t){0};
+    request(&req, MSG_GUEST_CONSOLE_DRAIN, 0u);
+    req.length = 8u;
+    rep_u32(&req, 4u, 2u);
+    failed += check(aos_guest_vmm_console_rpc(&req, &rep, &runtime) &&
+                    rep.opcode == GUEST_OK && rep.length == 2u &&
+                    rep.data[0] == 't' && rep.data[1] == 't',
+                    "console drain is bounded by caller capacity");
+
+    rep = (sel4_msg_t){0};
+    request(&req, MSG_GUEST_SEND_INPUT, 0u);
+    req.length = 28u;
+    rep_u32(&req, 4u, CC_INPUT_TEXT);
+    rep_u32(&req, 8u, CC_INPUT_TEXT_MAX + 1u);
+    failed += check(aos_guest_vmm_console_rpc(&req, &rep, &runtime) &&
+                    rep.opcode == GUEST_ERR_PROTOCOL_VIOLATION,
+                    "oversized text is rejected centrally");
 
     rep = (sel4_msg_t){0};
     request(&req, MSG_GUEST_SUSPEND, 0u);
@@ -111,6 +173,6 @@ int main(void)
                         "shared HID and raw-byte decoding is stable");
     }
 
-    printf("1..8\n");
+    printf("1..12\n");
     return failed == 0 ? 0 : 1;
 }

@@ -119,9 +119,11 @@ int main(void)
                 "uint32_t input_len = req->length - 4u;") &&
        contains("kernel/agentos-root-task/src/vm_manager.c",
                 "payload, 4u + input_len") &&
+       contains("platform/guest-vmm/runtime.c",
+                "event_type == CC_INPUT_TEXT") &&
        contains(vmm, "aos_vmm_virtio_console_push_rx_bytes") &&
        contains("kernel/agentos-root-task/src/freebsd_vmm.c",
-                "event_type == CC_INPUT_TEXT") &&
+                "freebsd_vmm_push_input") &&
        contains("xtask/src/cmd_test.rs",
                 "const CC_INPUT_TEXT_CHUNK: usize = 20;"),
        "bounded CC text input is forwarded through both guest VMM paths");

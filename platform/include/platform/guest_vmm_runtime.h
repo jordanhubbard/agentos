@@ -22,6 +22,9 @@ typedef struct aos_guest_vmm_runtime {
     void (*suspend)(void);
     void (*resume)(void);
     void (*quiesce_timer)(void);
+    bool (*push_input)(uint32_t event_type, const uint8_t *bytes,
+                       uint32_t length);
+    uint32_t (*drain_console)(uint8_t *bytes, uint32_t capacity);
 } aos_guest_vmm_runtime_t;
 
 /*
@@ -30,6 +33,10 @@ typedef struct aos_guest_vmm_runtime {
  */
 bool aos_guest_vmm_lifecycle_rpc(const sel4_msg_t *req, sel4_msg_t *rep,
                                  const aos_guest_vmm_runtime_t *runtime);
+
+/* Handle the common SEND_INPUT and CONSOLE_DRAIN wire protocol. */
+bool aos_guest_vmm_console_rpc(const sel4_msg_t *req, sel4_msg_t *rep,
+                               const aos_guest_vmm_runtime_t *runtime);
 
 /* Shared CC key-event decoder used by every guest console frontend. */
 bool aos_guest_vmm_input_event_to_byte(uint32_t event_type, uint32_t keycode,

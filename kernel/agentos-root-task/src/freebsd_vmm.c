@@ -595,6 +595,32 @@ static void freebsd_dump_init_stack(void)
     LOG_VMM_ERR("FreeBSD pid1 not found\n");
 }
 
+static bool freebsd_vmm_push_input(uint32_t event_type, const uint8_t *bytes,
+                                   uint32_t length)
+{
+    if (event_type != CC_INPUT_TEXT && length == 1u && bytes[0] == 0x1du) {
+        freebsd_dump_init_stack();
+        return true;
+    }
+    /*
+     * FreeBSD still boots on fault-emulated PL011, but mirror input to
+     * virtio-console once its driver is ready. This keeps recovery on ttyu0
+     * while allowing ttyV0 consumers to use the generic path.
+     */
+    (void)aos_vmm_virtio_console_push_rx_bytes(bytes, length);
+    for (uint32_t i = 0u; i < length; i++) {
+        if (!console_rx_push(bytes[i])) return false;
+    }
+    if (length != 0u) pl011_maybe_inject_irq();
+    return true;
+}
+
+static uint32_t freebsd_vmm_drain_console(uint8_t *bytes, uint32_t capacity)
+{
+    uint32_t length = aos_vmm_virtio_console_drain_tx(bytes, capacity);
+    return length + console_tx_drain(bytes + length, capacity - length);
+}
+
 static seL4_MessageInfo_t freebsd_vmm_rpc(seL4_MessageInfo_t info)
 {
     (void)info;
@@ -611,88 +637,17 @@ static seL4_MessageInfo_t freebsd_vmm_rpc(seL4_MessageInfo_t info)
         .suspend = freebsd_vmm_suspend_guest_tcb,
         .resume = freebsd_vmm_resume_guest_tcb,
         .quiesce_timer = freebsd_vmm_quiesce_timer,
+        .push_input = freebsd_vmm_push_input,
+        .drain_console = freebsd_vmm_drain_console,
     };
-    if (aos_guest_vmm_lifecycle_rpc(&req, &rep, &runtime)) {
+    if (aos_guest_vmm_lifecycle_rpc(&req, &rep, &runtime) ||
+        aos_guest_vmm_console_rpc(&req, &rep, &runtime)) {
         _sel4_msg_to_mrs(&rep);
         return seL4_MessageInfo_new((seL4_Word)rep.opcode, 0, 0,
                                     (seL4_Word)_SEL4_MR_COUNT);
     }
 
-    switch (req.opcode) {
-    case MSG_GUEST_SEND_INPUT: {
-        if (req.length < 28u || msg_u32(&req, 0u) != 0u) {
-            rep.opcode = GUEST_ERR_BAD_GUEST_ID;
-            break;
-        }
-        if (g_guest_state == GUEST_STATE_DEAD) {
-            rep.opcode = GUEST_ERR_DEAD;
-            break;
-        }
-        if (g_guest_state != GUEST_STATE_RUNNING) {
-            rep.opcode = GUEST_ERR_BAD_STATE;
-            break;
-        }
-
-        uint8_t byte = 0u;
-        uint32_t event_type = msg_u32(&req, 4u);
-        uint32_t keycode = msg_u32(&req, 8u);
-        if (event_type == CC_INPUT_TEXT) {
-            if (keycode > CC_INPUT_TEXT_MAX || req.length < 28u + keycode) {
-                rep.opcode = GUEST_ERR_PROTOCOL_VIOLATION;
-                break;
-            }
-            /*
-             * FreeBSD still boots on fault-emulated PL011, but mirror input to
-             * virtio-console once its driver is ready. This keeps recovery on
-             * ttyu0 while allowing ttyV0 consumers to use the generic path.
-             */
-            (void)aos_vmm_virtio_console_push_rx_bytes(&req.data[28u], keycode);
-            for (uint32_t i = 0u; i < keycode; i++) {
-                if (!console_rx_push(req.data[28u + i])) {
-                    rep.opcode = GUEST_ERR_DEVICE_UNAVAILABLE;
-                    break;
-                }
-            }
-            if (rep.opcode != 0u) break;
-            pl011_maybe_inject_irq();
-        } else if (aos_guest_vmm_input_event_to_byte(
-                       event_type, keycode, &byte)) {
-            if (byte == 0x1du) {
-                freebsd_dump_init_stack();
-                rep.opcode = GUEST_OK;
-                break;
-            }
-            (void)aos_vmm_virtio_console_push_rx(byte);
-            if (!console_rx_push(byte)) {
-                rep.opcode = GUEST_ERR_DEVICE_UNAVAILABLE;
-                break;
-            }
-            pl011_maybe_inject_irq();
-        }
-        rep.opcode = GUEST_OK;
-        break;
-    }
-    case MSG_GUEST_CONSOLE_DRAIN: {
-        if (req.length < 8u || msg_u32(&req, 0u) != 0u) {
-            rep.opcode = GUEST_ERR_BAD_GUEST_ID;
-            break;
-        }
-        if (g_guest_state == GUEST_STATE_DEAD) {
-            rep.opcode = GUEST_ERR_DEAD;
-            break;
-        }
-        uint32_t max = msg_u32(&req, 4u);
-        if (max > SEL4_MSG_DATA_BYTES) max = SEL4_MSG_DATA_BYTES;
-        rep.length = aos_vmm_virtio_console_drain_tx(rep.data, max);
-        rep.length += console_tx_drain(&rep.data[rep.length],
-                                       max - rep.length);
-        rep.opcode = GUEST_OK;
-        break;
-    }
-    default:
-        rep.opcode = GUEST_ERR_PROTOCOL_VIOLATION;
-        break;
-    }
+    rep.opcode = GUEST_ERR_PROTOCOL_VIOLATION;
 
     _sel4_msg_to_mrs(&rep);
     return seL4_MessageInfo_new((seL4_Word)rep.opcode, 0, 0,
