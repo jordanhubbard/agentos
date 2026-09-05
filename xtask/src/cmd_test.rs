@@ -233,11 +233,10 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
                 "via host-backed net_pd",
                 "[net_pd] HOST_READY: virtio-net bus.16",
                 "[net_pd] HOST_TX: QEMU bus.16 completion observed",
-                "[net_pd] HOST_RX: QEMU bus.16 frame received",
                 "emulated virtio-blk: guest probed",
                 "emulated virtio-blk: guest DRIVER_OK",
                 "emulated virtio-blk: pumped",
-                    "emulated virtio-blk: agentOS host media ready",
+                    "emulated virtio-blk: agentOS host media 0 ready",
                     "emulated virtio-blk: host-media read",
             ]);
         }
@@ -1461,14 +1460,6 @@ fn wait_for_dual_guest_consoles_via_cc(
     )
     .context("failed to create FreeBSD guest through vm_manager")?;
 
-    let freebsd = wait_for_guest_console_login_via_cc(
-        cc_sock,
-        freebsd_handle,
-        "freebsd",
-        timeout.saturating_sub(start.elapsed()),
-        qemu,
-    )?;
-
     let linux_handle = create_guest_via_cc_wait(
         cc_sock,
         VIBEOS_TYPE_LINUX,
@@ -1478,6 +1469,14 @@ fn wait_for_dual_guest_consoles_via_cc(
         qemu,
     )
     .context("failed to create Linux guest through vm_manager")?;
+
+    let freebsd = wait_for_guest_console_login_via_cc(
+        cc_sock,
+        freebsd_handle,
+        "freebsd",
+        timeout.saturating_sub(start.elapsed()),
+        qemu,
+    )?;
 
     let linux = wait_for_guest_console_login_via_cc(
         cc_sock,

@@ -340,11 +340,13 @@ int main(void)
                               "virtio_desc_chain_payload_len") &&
                  src_contains("libvmm/src/virtio/block.c",
                               "virtio_copy_desc_chain") &&
+                 src_contains("libvmm/include/libvmm/virtio/block.h",
+                              "#define VIRTIO_BLK_SEG_MAX 2") &&
                  src_contains("libvmm/src/virtio/block.c",
                               "VIRTIO_BLK_REQ_STATE_INVALID") &&
                  src_contains("libvmm/src/virtio/block.c",
                               "used_len +="),
-                 "rewritten block engine validates chains and reports used length");
+                 "rewritten block engine supports split pages and reports used length");
 
     printf("1..%d\n", g_testno);
     if (g_failed) {

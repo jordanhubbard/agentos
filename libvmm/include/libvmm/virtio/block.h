@@ -137,7 +137,7 @@ struct virtio_blk_outhdr {
 
 /* Device (backend) implementation */
 #define VIRTIO_BLK_SIZE_MAX BLK_TRANSFER_SIZE
-#define VIRTIO_BLK_SEG_MAX 1
+#define VIRTIO_BLK_SEG_MAX 2
 // TODO: instead of hardcoding these, get it from the tool
 /* Maximum number of buffers in sddf data region */
 #define SDDF_MAX_DATA_CELLS 257

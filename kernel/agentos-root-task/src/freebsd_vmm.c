@@ -557,6 +557,31 @@ static void *freebsd_debug_va(uint64_t va, size_t len)
         off = va - FREEBSD_DMAPBASE;
     } else if (va >= FREEBSD_KERNBASE) {
         off = va - FREEBSD_KERNBASE;
+        if (off > FREEBSD_GUEST_RAM_SIZE - len) {
+            uint64_t table =
+                vmm_vcpu_arm_read_reg(
+                    GUEST_BOOT_VCPU_ID, seL4_VCPUReg_TTBR1) &
+                0x0000fffffffff000ull;
+            for (unsigned level = 0u; level < 4u; level++) {
+                unsigned shift = 39u - level * 9u;
+                uint64_t index = (va >> shift) & 0x1ffu;
+                uint64_t *entry = aos_gpa_to_hva_configured(
+                    table + index * sizeof(uint64_t), sizeof(uint64_t));
+                if (entry == NULL || ((*entry & 1u) == 0u)) {
+                    return NULL;
+                }
+                if (level < 3u && ((*entry & 2u) == 0u)) {
+                    uint64_t block_mask = (1ull << shift) - 1ull;
+                    uint64_t gpa =
+                        (*entry & 0x0000fffffffff000ull) & ~block_mask;
+                    return aos_gpa_to_hva_configured(
+                        gpa | (va & block_mask), len);
+                }
+                table = *entry & 0x0000fffffffff000ull;
+            }
+            return aos_gpa_to_hva_configured(
+                table | (va & 0xfffu), len);
+        }
     } else {
         return NULL;
     }

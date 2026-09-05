@@ -60,7 +60,7 @@ UBUNTU_INITRD := $(UBUNTU_LIVE_INITRD)
 UBUNTU_BOOTARGS := earlycon=pl011,0x9000000 console=hvc0 boot=casper noprompt systemd.unit=console-getty.service systemd.wants=systemd-user-sessions.service systemd.mask=ldconfig.service systemd.mask=systemd-udev-trigger.service panic=-1
 else
 UBUNTU_INITRD := $(UBUNTU_E2E_INITRD)
-UBUNTU_BOOTARGS := earlycon=pl011,0x9000000 console=hvc0 rdinit=/init panic=-1 ip=dhcp
+UBUNTU_BOOTARGS := earlycon=pl011,0x9000000 console=hvc0 quiet loglevel=3 rdinit=/init panic=-1 ip=dhcp
 endif
 
 ifeq ($(GUEST_OS),ubuntu)

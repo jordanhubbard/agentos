@@ -981,20 +981,6 @@ static uint32_t pl011_read(size_t offset)
     }
 }
 
-static void linux_clear_guest_ram(uintptr_t base, size_t size)
-{
-    volatile uint64_t *p = (volatile uint64_t *)base;
-    size_t words = size / sizeof(*p);
-    for (size_t i = 0u; i < words; i++) {
-        p[i] = 0u;
-    }
-
-    volatile uint8_t *tail = (volatile uint8_t *)(base + words * sizeof(*p));
-    for (size_t i = words * sizeof(*p); i < size; i++) {
-        *tail++ = 0u;
-    }
-}
-
 static bool pl011_fault_handler(size_t vcpu_id, size_t offset, size_t fsr,
                                 seL4_UserContext *regs, void *data)
 {
@@ -1348,10 +1334,14 @@ void init(void)
                 (unsigned long)_guest_initrd_image, initrd_source_checksum);
     }
 
-    LOG_VMM("  Clearing guest RAM window...\n");
-    linux_clear_guest_ram(guest_ram_vaddr, GUEST_RAM_SIZE);
+    /*
+     * Guest frames are non-device seL4 objects and are already zeroed by
+     * Untyped_Retype before this PD can map them. Do not clear the full
+     * window again here: under nested TCG that duplicate pass dominates boot.
+     */
+    LOG_VMM("  Guest RAM zeroed by seL4 retype\n");
     if (initrd_size > 0u) {
-        LOG_VMM("  Initrd checksum after RAM clear: 0x%x\n",
+        LOG_VMM("  Initrd checksum after guest RAM setup: 0x%x\n",
                 guest_image_checksum(_guest_initrd_image, initrd_size));
     }
 
