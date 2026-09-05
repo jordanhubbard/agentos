@@ -64,6 +64,27 @@
 static seL4_CPtr g_scratch_l2 = seL4_CapNull;
 static seL4_CPtr g_scratch_l1 = seL4_CapNull;
 
+/*
+ * Publish writes made through the root task's scratch alias before the frame
+ * is remapped into a PD. AArch64 requires explicit data-cache maintenance;
+ * x86-64 is cache coherent and RISC-V has no corresponding seL4 cache syscall
+ * in the supported SDK, so an architecture memory fence is sufficient there.
+ */
+static seL4_Error sync_scratch_frame(seL4_CPtr frame)
+{
+#if defined(__aarch64__)
+    seL4_Error err =
+        seL4_ARM_Page_CleanInvalidate_Data(frame, 0u, PAGE_SIZE);
+    if (err != seL4_NoError) {
+        return err;
+    }
+#else
+    (void)frame;
+#endif
+    AGENTOS_MEMORY_FENCE();
+    return seL4_NoError;
+}
+
 /* ── ELF64 types ─────────────────────────────────────────────────────────── */
 
 #define ELF_MAGIC0  0x7Fu
@@ -358,7 +379,7 @@ static seL4_Error load_page(seL4_CPtr    vspace,
     }
 
     /* Make scratch-alias writes visible through the PD's virtual mapping. */
-    err = seL4_ARM_Page_CleanInvalidate_Data(frame, 0u, PAGE_SIZE);
+    err = sync_scratch_frame(frame);
     if (err != seL4_NoError) {
         return err;
     }
@@ -481,7 +502,7 @@ static seL4_Error load_elf_segments(seL4_CPtr vspace,
             }
         }
 
-        err = seL4_ARM_Page_CleanInvalidate_Data(frame, 0u, PAGE_SIZE);
+        err = sync_scratch_frame(frame);
         if (err != seL4_NoError) {
             return err;
         }
