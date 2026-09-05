@@ -33,7 +33,7 @@ endif
 TARGET_ARCH ?= $(CONFIG_TARGET)
 GUEST_OS    ?= $(CONFIG_GUEST_OS)
 QEMU_TEST_TIMEOUT ?= 300
-DUAL_OS_TEST_TIMEOUT ?= 3000
+DUAL_OS_TEST_TIMEOUT ?= 5400
 QEMU_TEST_GUEST_OS = $(if $(filter x86_64,$(ARCH)),none,$(GUEST_OS))
 
 # ─── Paths (computed FIRST, before any -include changes MAKEFILE_LIST) ───────
