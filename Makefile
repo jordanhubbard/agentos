@@ -42,6 +42,9 @@ QEMU_TEST_GUEST_OS = $(if $(filter x86_64,$(ARCH)),none,$(GUEST_OS))
 # repo root.
 ROOT_DIR     := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
 KERNEL_DIR   := $(ROOT_DIR)kernel/agentos-root-task
+SEL4_SDK_VERSION ?= 2.1.0
+SEL4_SDK ?= $(HOME)/.cache/agentos/microkit-sdk-$(SEL4_SDK_VERSION)
+export SEL4_SDK
 
 # ─── BOARD_NAME: selects a boards/<name>/board.mk configuration ──────────────
 # Derive from TARGET_ARCH when not explicitly provided.  Override with
@@ -361,6 +364,7 @@ endif
 		BUILD_DIR=$(BUILD_DIR) \
 		AGENTOS_BOARD=$(BOARD) \
 		AGENTOS_ARCH=$(ARCH) \
+		SEL4_SDK=$(SEL4_SDK) \
 		SEL4_PROFILE=$(SEL4_PROFILE) \
 		AGENTOS_FREEBSD_IMAGE=$(if $(AGENTOS_FREEBSD_IMAGE),$(AGENTOS_FREEBSD_IMAGE),$(FREEBSD_IMAGE)) \
 		GUEST_OS=$(GUEST_OS) \
@@ -903,6 +907,7 @@ help:
 	@echo "  BOARD           $(BOARD)"
 	@echo "  GUEST_OS        $(GUEST_OS)"
 	@echo "  QEMU_RUN_MEM    $(QEMU_RUN_MEM)"
+	@echo "  SEL4_SDK        $(SEL4_SDK)"
 	@echo "  BUILD_DIR       $(BUILD_DIR)"
 	@echo "  AGENTOS_IMAGES  $(AGENTOS_IMAGES)"
 	@echo ""

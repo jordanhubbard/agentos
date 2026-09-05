@@ -17,10 +17,10 @@ SDDF_ABS       := $(LIBVMM_ABS)/dep/sddf
 DTC            := dtc
 
 # BOARD_DIR: seL4 SDK board package containing include/ and lib/.
-# Default matches the SDK bundled in the repo; override when invoking vmm.mk
-# directly with a different SDK installation.
+SEL4_SDK_VERSION ?= 2.1.0
+SEL4_SDK ?= $(HOME)/.cache/agentos/microkit-sdk-$(SEL4_SDK_VERSION)
 SEL4_PROFILE ?= release
-BOARD_DIR ?= $(AGENTOS_ROOT)/microkit-sdk-2.1.0/board/$(AGENTOS_BOARD)/$(SEL4_PROFILE)
+BOARD_DIR ?= $(SEL4_SDK)/board/$(AGENTOS_BOARD)/$(SEL4_PROFILE)
 
 # Guest OS selection: buildroot (default) or ubuntu
 GUEST_OS ?= buildroot

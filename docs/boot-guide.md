@@ -34,7 +34,16 @@ rustup target add wasm32-unknown-unknown
 
 ### Microkit SDK and Artifacts
 
-The build uses the seL4 Microkit 2.1.0 SDK under `microkit-sdk-2.1.0/`.
+The build uses one external seL4 Microkit 2.1.0 SDK, shared by every agentOS
+worktree. `SEL4_SDK` defaults to
+`$HOME/.cache/agentos/microkit-sdk-2.1.0`; set it explicitly to use another
+installation:
+
+```bash
+export SEL4_SDK=/absolute/path/to/microkit-sdk-2.1.0
+make build
+```
+
 Generated images, sockets, QEMU logs, guest images, and temporary files belong
 under `build/`; do not place binary artifacts in the repository root.
 

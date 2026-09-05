@@ -8,6 +8,7 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  SEL4_SDK: ${{ runner.temp }}/microkit-sdk-2.1.0
 
 jobs:
   # ---------------------------------------------------------------------------
@@ -112,7 +113,7 @@ jobs:
         id: cache-sdk
         uses: actions/cache@v4
         with:
-          path: microkit-sdk-2.1.0
+          path: ${{ env.SEL4_SDK }}
           key: microkit-sdk-2.1.0-linux-x86-64
 
       - name: Download Microkit SDK
@@ -120,9 +121,10 @@ jobs:
         run: |
           curl -fsSL \
             https://github.com/seL4/microkit/releases/download/2.1.0/microkit-sdk-2.1.0-linux-x86-64.tar.gz \
-            -o microkit-sdk.tar.gz
-          tar -xzf microkit-sdk.tar.gz
-          rm microkit-sdk.tar.gz
+            -o /tmp/microkit-sdk.tar.gz
+          mkdir -p "$(dirname "$SEL4_SDK")"
+          tar -xzf /tmp/microkit-sdk.tar.gz -C "$(dirname "$SEL4_SDK")"
+          rm /tmp/microkit-sdk.tar.gz
 
       # -----------------------------------------------------------------------
       # Topology validation (gen_sdf.py)
@@ -194,7 +196,7 @@ jobs:
         id: cache-sdk-net
         uses: actions/cache@v4
         with:
-          path: microkit-sdk-2.1.0
+          path: ${{ env.SEL4_SDK }}
           key: microkit-sdk-2.1.0-linux-x86-64
 
       - name: Download Microkit SDK
@@ -202,9 +204,10 @@ jobs:
         run: |
           curl -fsSL \
             https://github.com/seL4/microkit/releases/download/2.1.0/microkit-sdk-2.1.0-linux-x86-64.tar.gz \
-            -o microkit-sdk.tar.gz
-          tar -xzf microkit-sdk.tar.gz
-          rm microkit-sdk.tar.gz
+            -o /tmp/microkit-sdk.tar.gz
+          mkdir -p "$(dirname "$SEL4_SDK")"
+          tar -xzf /tmp/microkit-sdk.tar.gz -C "$(dirname "$SEL4_SDK")"
+          rm /tmp/microkit-sdk.tar.gz
 
       - name: Prove guest packet through emulated virtio-net
         timeout-minutes: 20
@@ -245,7 +248,7 @@ jobs:
         id: cache-sdk-blk
         uses: actions/cache@v4
         with:
-          path: microkit-sdk-2.1.0
+          path: ${{ env.SEL4_SDK }}
           key: microkit-sdk-2.1.0-linux-x86-64
 
       - name: Download Microkit SDK
@@ -253,9 +256,10 @@ jobs:
         run: |
           curl -fsSL \
             https://github.com/seL4/microkit/releases/download/2.1.0/microkit-sdk-2.1.0-linux-x86-64.tar.gz \
-            -o microkit-sdk.tar.gz
-          tar -xzf microkit-sdk.tar.gz
-          rm microkit-sdk.tar.gz
+            -o /tmp/microkit-sdk.tar.gz
+          mkdir -p "$(dirname "$SEL4_SDK")"
+          tar -xzf /tmp/microkit-sdk.tar.gz -C "$(dirname "$SEL4_SDK")"
+          rm /tmp/microkit-sdk.tar.gz
 
       - name: Prove guest I/O through emulated virtio-blk
         timeout-minutes: 20
@@ -297,7 +301,7 @@ jobs:
         id: cache-sdk-ubuntu-virtio
         uses: actions/cache@v4
         with:
-          path: microkit-sdk-2.1.0
+          path: ${{ env.SEL4_SDK }}
           key: microkit-sdk-2.1.0-linux-x86-64
 
       - name: Download Microkit SDK
@@ -305,9 +309,10 @@ jobs:
         run: |
           curl -fsSL \
             https://github.com/seL4/microkit/releases/download/2.1.0/microkit-sdk-2.1.0-linux-x86-64.tar.gz \
-            -o microkit-sdk.tar.gz
-          tar -xzf microkit-sdk.tar.gz
-          rm microkit-sdk.tar.gz
+            -o /tmp/microkit-sdk.tar.gz
+          mkdir -p "$(dirname "$SEL4_SDK")"
+          tar -xzf /tmp/microkit-sdk.tar.gz -C "$(dirname "$SEL4_SDK")"
+          rm /tmp/microkit-sdk.tar.gz
 
       - name: Cache Ubuntu ISO
         uses: actions/cache@v4
@@ -356,7 +361,7 @@ jobs:
         id: cache-sdk-ct
         uses: actions/cache@v4
         with:
-          path: microkit-sdk-2.1.0
+          path: ${{ env.SEL4_SDK }}
           key: microkit-sdk-2.1.0-linux-x86-64
 
       - name: Download Microkit SDK
@@ -364,9 +369,10 @@ jobs:
         run: |
           curl -fsSL \
             https://github.com/seL4/microkit/releases/download/2.1.0/microkit-sdk-2.1.0-linux-x86-64.tar.gz \
-            -o microkit-sdk.tar.gz
-          tar -xzf microkit-sdk.tar.gz
-          rm microkit-sdk.tar.gz
+            -o /tmp/microkit-sdk.tar.gz
+          mkdir -p "$(dirname "$SEL4_SDK")"
+          tar -xzf /tmp/microkit-sdk.tar.gz -C "$(dirname "$SEL4_SDK")"
+          rm /tmp/microkit-sdk.tar.gz
 
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
@@ -407,16 +413,17 @@ jobs:
         id: cache-sdk-bt
         uses: actions/cache@v4
         with:
-          path: microkit-sdk-2.1.0
+          path: ${{ env.SEL4_SDK }}
           key: microkit-sdk-2.1.0-linux-x86-64
       - name: Download Microkit SDK
         if: steps.cache-sdk-bt.outputs.cache-hit != 'true'
         run: |
           curl -fsSL \
             https://github.com/seL4/microkit/releases/download/2.1.0/microkit-sdk-2.1.0-linux-x86-64.tar.gz \
-            -o microkit-sdk.tar.gz
-          tar -xzf microkit-sdk.tar.gz
-          rm microkit-sdk.tar.gz
+            -o /tmp/microkit-sdk.tar.gz
+          mkdir -p "$(dirname "$SEL4_SDK")"
+          tar -xzf /tmp/microkit-sdk.tar.gz -C "$(dirname "$SEL4_SDK")"
+          rm /tmp/microkit-sdk.tar.gz
       - name: Boot test
         timeout-minutes: 8
         run: make test TARGET_ARCH=x86_64 GUEST_OS=none
@@ -460,7 +467,7 @@ jobs:
         id: cache-sdk-gate
         uses: actions/cache@v4
         with:
-          path: microkit-sdk-2.1.0
+          path: ${{ env.SEL4_SDK }}
           key: microkit-sdk-2.1.0-linux-x86-64
 
       - name: Download Microkit SDK
@@ -468,9 +475,10 @@ jobs:
         run: |
           curl -fsSL \
             https://github.com/seL4/microkit/releases/download/2.1.0/microkit-sdk-2.1.0-linux-x86-64.tar.gz \
-            -o microkit-sdk.tar.gz
-          tar -xzf microkit-sdk.tar.gz
-          rm microkit-sdk.tar.gz
+            -o /tmp/microkit-sdk.tar.gz
+          mkdir -p "$(dirname "$SEL4_SDK")"
+          tar -xzf /tmp/microkit-sdk.tar.gz -C "$(dirname "$SEL4_SDK")"
+          rm /tmp/microkit-sdk.tar.gz
 
       # TARGET/QEMU test #1 — aarch64.  Required for any OS-level claim.
       - name: GATE — make test TARGET_ARCH=aarch64 GUEST_OS=none

@@ -474,6 +474,17 @@ fn repo_root() -> anyhow::Result<std::path::PathBuf> {
     Ok(std::path::PathBuf::from(root))
 }
 
+pub(crate) fn sel4_sdk_path() -> anyhow::Result<PathBuf> {
+    if let Some(path) = std::env::var_os("SEL4_SDK") {
+        return Ok(PathBuf::from(path));
+    }
+
+    let home = std::env::var_os("HOME").context(
+        "SEL4_SDK is unset and HOME is unavailable; set SEL4_SDK to the external Microkit SDK",
+    )?;
+    Ok(PathBuf::from(home).join(".cache/agentos/microkit-sdk-2.1.0"))
+}
+
 pub fn spawn_qemu_with_guest(
     board: &str,
     repo_root: &Path,
@@ -665,8 +676,7 @@ pub fn spawn_qemu_with_guest(
             c
         }
         "x86_64_generic" => {
-            let kernel =
-                repo_root.join("microkit-sdk-2.1.0/board/x86_64_generic/release/elf/sel4_32.elf");
+            let kernel = sel4_sdk_path()?.join("board/x86_64_generic/release/elf/sel4_32.elf");
             let root_task = repo_root.join("build/x86_64_generic/root_task.elf");
             let mut c = std::process::Command::new("qemu-system-x86_64");
             c.arg("-machine")

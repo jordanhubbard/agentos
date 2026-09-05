@@ -14,7 +14,8 @@ AGENTOS_BOARD ?= qemu_virt_riscv64
 # We use these headers only — libmicrokit is NOT linked.
 # The board package provides arch-specific seL4 API headers (sel4/sel4.h, etc.)
 REPO_ROOT_MK  := $(abspath $(dir $(lastword $(MAKEFILE_LIST)))/../..)
-SEL4_SDK      ?= $(REPO_ROOT_MK)/microkit-sdk-2.1.0
+SEL4_SDK_VERSION ?= 2.1.0
+SEL4_SDK      ?= $(HOME)/.cache/agentos/microkit-sdk-$(SEL4_SDK_VERSION)
 SEL4_PROFILE  ?= release
 SEL4_INC_DIR  := $(SEL4_SDK)/board/$(AGENTOS_BOARD)/$(SEL4_PROFILE)/include
 
@@ -398,7 +399,13 @@ $(BUILD_DIR)/vm_manager.o: $(GUEST_CONFIG_STAMP)
 
 IMAGE_FILE  := $(BUILD_DIR)/agentos.img
 
-build: $(IMAGE_FILE) $(BUILD_DIR)/root_task.elf
+.PHONY: check-sel4-sdk
+check-sel4-sdk:
+	@test -f "$(SEL4_INC_DIR)/sel4/sel4.h" -a \
+	      -f "$(SEL4_SDK)/board/$(AGENTOS_BOARD)/$(SEL4_PROFILE)/elf/sel4.elf" || \
+		{ echo "ERROR: SEL4_SDK=$(SEL4_SDK) is not a Microkit 2.1.0 SDK; set SEL4_SDK to the external SDK directory."; exit 1; }
+
+build: check-sel4-sdk $(IMAGE_FILE) $(BUILD_DIR)/root_task.elf
 
 # ─── Extracted service PDs (E9: sources live in services/, not src/) ─────────
 # CFLAGS already includes -Iinclude (kernel/agentos-root-task/include) so all
@@ -747,6 +754,7 @@ $(BUILD_DIR)/linux_vmm.elf: FORCE
 		BUILD_DIR=$(BUILD_DIR) \
 		AGENTOS_ARCH=$(AGENTOS_ARCH) \
 		AGENTOS_BOARD=$(AGENTOS_BOARD) \
+		SEL4_SDK=$(SEL4_SDK) \
 		SEL4_PROFILE=$(SEL4_PROFILE) \
 		GUEST_OS=$(if $(filter both,$(GUEST_OS)),ubuntu,$(GUEST_OS)) \
 		VMM_DUAL_GUEST=$(if $(filter both,$(GUEST_OS)),1,0) \
@@ -767,6 +775,7 @@ $(BUILD_DIR)/freebsd_vmm.elf: FORCE
 		BUILD_DIR=$(BUILD_DIR) \
 		AGENTOS_ARCH=$(AGENTOS_ARCH) \
 		AGENTOS_BOARD=$(AGENTOS_BOARD) \
+		SEL4_SDK=$(SEL4_SDK) \
 		SEL4_PROFILE=$(SEL4_PROFILE) \
 		GUEST_OS=freebsd \
 		VMM_DUAL_GUEST=$(if $(filter both,$(GUEST_OS)),1,0) \

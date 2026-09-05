@@ -2,8 +2,7 @@ CompileFlags:
   Add:
     # agentOS kernel root task include path (agentos.h, contracts/)
     - -Ikernel/agentos-root-task/include
-    # Microkit SDK headers — debug profile, qemu_virt_aarch64 (matches CI default)
-    - -Imicrokit-sdk-2.1.0/board/qemu_virt_aarch64/debug/include
+    # The external Microkit SDK include path comes from compile_commands.json.
     # seL4 / Microkit type stubs (uint32_t etc. come from the SDK's sel4/types.h)
     - -D__GNUC__=12
     - -D__aarch64__=1
