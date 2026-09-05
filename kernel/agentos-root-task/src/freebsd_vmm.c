@@ -608,6 +608,7 @@ static bool freebsd_vmm_push_input(uint32_t event_type, const uint8_t *bytes,
      * virtio-console once its driver is ready. This keeps recovery on ttyu0
      * while allowing ttyV0 consumers to use the generic path.
      */
+    if (length > GUEST_CONSOLE_RX_RING_SIZE - console_rx_count) return false;
     (void)aos_vmm_virtio_console_push_rx_bytes(bytes, length);
     for (uint32_t i = 0u; i < length; i++) {
         if (!console_rx_push(bytes[i])) return false;

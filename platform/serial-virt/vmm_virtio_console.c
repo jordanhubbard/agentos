@@ -119,15 +119,23 @@ bool aos_vmm_virtio_console_push_rx_bytes(const uint8_t *bytes, uint32_t len)
     if (!g_ready || !g_driver_ok || bytes == 0 || len == 0u) {
         return false;
     }
+    if (len > g_rx.capacity - serial_queue_length_producer(&g_rx)) {
+        return false;
+    }
     for (uint32_t i = 0u; i < len; i++) {
         if (serial_enqueue(&g_rx, (char)bytes[i]) != 0) {
             return false;
         }
     }
-    if (!virtio_console_handle_rx(&g_aos_console)) {
-        return false;
-    }
-    if (!g_rx_pumped) {
+    /*
+     * Successful enqueue transfers ownership to this device.  Delivery is
+     * asynchronous: after_fault() pumps again when the guest posts buffers.
+     * A delivery fault must not make the caller resend bytes already queued.
+     */
+    bool delivered = virtio_console_handle_rx(&g_aos_console);
+    if (!delivered) {
+        LOG_VMM_ERR("emulated virtio-console: queued input delivery failed\n");
+    } else if (!g_rx_pumped) {
         g_rx_pumped = 1;
         LOG_VMM("emulated virtio-console: pumped input serial_virt->guest\n");
     }

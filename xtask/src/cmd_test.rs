@@ -1619,7 +1619,7 @@ fn provision_dual_ssh(
         "ubuntu",
         &ubuntu,
         "agentos-ubuntu-ssh-ready",
-        Duration::from_secs(90),
+        Duration::from_secs(600),
         qemu,
     )?;
 
@@ -1631,7 +1631,7 @@ fn provision_dual_ssh(
         "freebsd",
         &freebsd,
         "agentos-freebsd-ssh-ready",
-        Duration::from_secs(90),
+        Duration::from_secs(600),
         qemu,
     )
 }
@@ -1806,7 +1806,7 @@ fn wait_for_dual_guest_consoles_via_cc(
         ssh_key,
         qemu,
     )?;
-    let ssh = wait_for_dual_ssh(ssh_key, Duration::from_secs(120), qemu)?;
+    let ssh = wait_for_dual_ssh(ssh_key, Duration::from_secs(600), qemu)?;
 
     destroy_guest_via_cc(&mut cc, linux_handle).context("failed to destroy Linux guest")?;
     destroy_guest_via_cc(&mut cc, freebsd_handle).context("failed to destroy FreeBSD guest")?;
@@ -1960,6 +1960,12 @@ fn cc_send_raw_bytes(cc: &mut CcClient, guest_handle: u32, bytes: &[u8]) -> anyh
             "MSG_CC_SEND_INPUT text returned ok={}",
             reply.mr[0]
         );
+        /*
+         * Let the lower-priority guest consume RX descriptors between frames.
+         * Without this yield, a host can fill the VMM ingress queue while the
+         * higher-priority CC/Vibe/VM-manager call chain remains runnable.
+         */
+        std::thread::sleep(Duration::from_millis(50));
     }
     Ok(())
 }

@@ -938,6 +938,7 @@ static bool linux_vmm_push_input(uint32_t event_type, const uint8_t *bytes,
 {
     (void)event_type;
     if (aos_vmm_virtio_console_push_rx_bytes(bytes, length)) return true;
+    if (length > GUEST_CONSOLE_RX_RING_SIZE - console_rx_count) return false;
     for (uint32_t i = 0u; i < length; i++) {
         if (!console_rx_push(bytes[i])) return false;
     }

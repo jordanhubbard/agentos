@@ -124,9 +124,20 @@ int main(void)
        contains(vmm, "aos_vmm_virtio_console_push_rx_bytes") &&
        contains("kernel/agentos-root-task/src/freebsd_vmm.c",
                 "freebsd_vmm_push_input") &&
+       contains("kernel/agentos-root-task/src/cc_pd.c",
+                "? CC_OK : CC_ERR_RELAY_FAULT;") &&
        contains("xtask/src/cmd_test.rs",
-                "const CC_INPUT_TEXT_CHUNK: usize = 20;"),
+                "const CC_INPUT_TEXT_CHUNK: usize = 20;") &&
+       contains("xtask/src/cmd_test.rs",
+                "std::thread::sleep(Duration::from_millis(50));"),
        "bounded CC text input is forwarded through both guest VMM paths");
+    ok(contains("platform/serial-virt/vmm_virtio_console.c",
+                "len > g_rx.capacity - serial_queue_length_producer(&g_rx)") &&
+       contains("platform/serial-virt/vmm_virtio_console.c",
+                "Successful enqueue transfers ownership to this device") &&
+       contains("platform/serial-virt/vmm_virtio_console.c",
+                "bool delivered = virtio_console_handle_rx(&g_aos_console);"),
+       "console text chunks have atomic asynchronous enqueue semantics");
     ok(contains("kernel/agentos-root-task/src/cc_pd.c",
                 "One downstream call per host frame keeps CC latency bounded") &&
        contains("kernel/agentos-root-task/src/cc_pd.c",

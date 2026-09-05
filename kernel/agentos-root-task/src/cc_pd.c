@@ -1289,7 +1289,7 @@ static void handle_send_input(const cc_req_wire_t *req, cc_reply_wire_t *rep)
     }
 
     rep->mr[0] = cc_forward_vibe_input(req->mr[0], event, text, text_len)
-                 ? CC_OK : CC_ERR_BAD_HANDLE;
+                 ? CC_OK : CC_ERR_RELAY_FAULT;
     return;
 #else
     (void)req;
