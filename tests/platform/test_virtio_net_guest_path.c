@@ -267,10 +267,19 @@ static int test_host_backed_architecture(void)
         src_contains(
         "kernel/agentos-root-task/src/linux_vmm.c",
         "label == NET_SVC_EVENT_RX_READY");
+    int no_guest_passthrough =
+        !src_contains("Makefile", "bus=virtio-mmio-bus.0") &&
+        !src_contains("xtask/src/cmd_test.rs",
+                      "bus=virtio-mmio-bus.0") &&
+        !src_contains("kernel/agentos-root-task/src/linux_vmm.c",
+                      "VIRTIO_NET_NTFN_BADGE") &&
+        !src_contains("kernel/agentos-root-task/src/system_desc_aarch64.c",
+                      ".irq_number = 48u");
 
     return tap_ok(qemu_bus && test_qemu_bus && isolated_page && private_dma &&
-                  shared_bridge && ipc && contract && no_vmm_dma && async_rx,
-                  "Ubuntu host net: bus.16 net_pd ownership, private DMA, contract IPC bridge");
+                  shared_bridge && ipc && contract && no_vmm_dma && async_rx &&
+                  no_guest_passthrough,
+                  "all guests use emulated net backed by bus.16 net_pd");
 }
 
 #define VQ_NUM 8u

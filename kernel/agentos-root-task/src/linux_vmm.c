@@ -547,42 +547,8 @@ static uint32_t vmm_affinity[VMM_MAX_SLOTS];
 #define GPU_SHMEM_NOTIFY_IN_CH  3   /* seL4 PD → linux_vmm: tensor ready */
 #define GPU_SHMEM_NOTIFY_OUT_CH 4   /* linux_vmm → seL4 PD: result ready */
 
-/*
- * Virtual IRQ numbers injected into the guest via the vGIC.
- * These match the QEMU virt board SPI assignments for virtio-mmio devices:
- *   virtio-mmio-bus.0 → GIC SPI 16 → INTID 48
- *   virtio-mmio-bus.1 → GIC SPI 17 → INTID 49
- */
-#define VIRTIO_NET_IRQ          48
-#define VIRTIO_BLK_IRQ          49
-#define VIRTIO_BLK2_IRQ         51  /* ubuntu cloud-init seed disk (slot 3) */
-
-/*
- * Notification badge bits for virtio IRQs.
- * The raw root task uses the explicit ntfn_badge values from
- * system_desc_aarch64.c:
- *   virtio-net   INTID 48 → badge 0x1
- *   virtio-blk0  INTID 49 → badge 0x2
- *   virtio-blk1  INTID 51 → badge 0x4
- */
-#define VIRTIO_NET_NTFN_BADGE    0x1u
-#define VIRTIO_BLK_NTFN_BADGE    0x2u
-#define VIRTIO_BLK2_NTFN_BADGE   0x4u
-#define VMM_IRQ_LOG_INTERVAL     100000u
 #define VMM_FAULT_BADGE_FLAG     (1ULL << 62)
 #define LINUX_VTIMER_IRQ         27u
-
-/*
- * IRQ handler capabilities placed by the raw root task at
- * AGENTOS_IRQ_CAP_BASE + irq_index.  system_desc_aarch64.c orders them as
- * virtio-net, virtio-blk0, virtio-blk1.
- */
-static const seL4_CPtr g_virtio_net_irq_cap =
-    (seL4_CPtr)(AGENTOS_IRQ_CAP_BASE + 0u);
-static const seL4_CPtr g_virtio_blk_irq_cap =
-    (seL4_CPtr)(AGENTOS_IRQ_CAP_BASE + 1u);
-static const seL4_CPtr g_virtio_blk2_irq_cap =
-    (seL4_CPtr)(AGENTOS_IRQ_CAP_BASE + 2u);
 /* ─── Guest Image Symbols ────────────────────────────────────────────── */
 /* These are linked in by package_guest_images.S */
 
@@ -703,42 +669,6 @@ static void linux_vmm_binding_init(void)
      *                 microkit_msginfo_new(MSG_EVENTBUS_PUBLISH_BATCH, ...));
      */
     LOG_VMM("binding: EVENT_GUEST_READY publish deferred (EVENTBUS_VMM_CH not wired)\n");
-}
-
-static void virtio_net_ack(size_t vcpu_id, int irq, void *cookie)
-{
-    (void)vcpu_id; (void)irq; (void)cookie;
-    static uint64_t ack_count;
-    ack_count++;
-    if (ack_count <= 4u || (ack_count % VMM_IRQ_LOG_INTERVAL) == 0u) {
-        LOG_VMM("virtio-net guest EOI/ack #%llu\n",
-                (unsigned long long)ack_count);
-    }
-    seL4_IRQHandler_Ack(g_virtio_net_irq_cap);
-}
-
-static void virtio_blk_ack(size_t vcpu_id, int irq, void *cookie)
-{
-    (void)vcpu_id; (void)irq; (void)cookie;
-    static uint64_t ack_count;
-    ack_count++;
-    if (ack_count <= 4u || (ack_count % VMM_IRQ_LOG_INTERVAL) == 0u) {
-        LOG_VMM("virtio-blk0 guest EOI/ack #%llu\n",
-                (unsigned long long)ack_count);
-    }
-    seL4_IRQHandler_Ack(g_virtio_blk_irq_cap);
-}
-
-static void virtio_blk2_ack(size_t vcpu_id, int irq, void *cookie)
-{
-    (void)vcpu_id; (void)irq; (void)cookie;
-    static uint64_t ack_count;
-    ack_count++;
-    if (ack_count <= 4u || (ack_count % VMM_IRQ_LOG_INTERVAL) == 0u) {
-        LOG_VMM("virtio-blk1 guest EOI/ack #%llu\n",
-                (unsigned long long)ack_count);
-    }
-    seL4_IRQHandler_Ack(g_virtio_blk2_irq_cap);
 }
 
 /* ─── PL011 UART MMIO Emulation ──────────────────────────────────────────
@@ -1447,36 +1377,6 @@ void init(void)
 #endif
     aos_vmm_virtio_console_init();
 
-#if !defined(AGENTOS_GUEST_UBUNTU)
-    /* Register virtio-net IRQ passthrough (QEMU virt: SPI 16 → INTID 48) */
-    success = virq_register(GUEST_BOOT_VCPU_ID, VIRTIO_NET_IRQ, &virtio_net_ack, NULL);
-    if (!success) {
-        LOG_VMM_ERR("Failed to register virtio-net IRQ\n");
-        return;
-    }
-    /* Initial ack to prime the GIC for first delivery (seL4 native API) */
-    seL4_IRQHandler_Ack(g_virtio_net_irq_cap);
-
-    /* Register virtio-blk0 IRQ passthrough (QEMU virt: SPI 17 → INTID 49) */
-    success = virq_register(GUEST_BOOT_VCPU_ID, VIRTIO_BLK_IRQ, &virtio_blk_ack, NULL);
-    if (!success) {
-        LOG_VMM_ERR("Failed to register virtio-blk0 IRQ\n");
-        return;
-    }
-    /* Initial ack to prime the GIC for first delivery (seL4 native API) */
-    seL4_IRQHandler_Ack(g_virtio_blk_irq_cap);
-
-    /* Register virtio-blk1 IRQ passthrough (SPI 19 → INTID 51, ubuntu seed) */
-    success = virq_register(GUEST_BOOT_VCPU_ID, VIRTIO_BLK2_IRQ, &virtio_blk2_ack, NULL);
-    if (!success) {
-        LOG_VMM_ERR("Failed to register virtio-blk1 IRQ (ubuntu seed — may not be present)\n");
-        /* Non-fatal: buildroot guests do not use the seed disk slot */
-    } else {
-        seL4_IRQHandler_Ack(g_virtio_blk2_irq_cap);
-    }
-
-#endif
-
     g_linux_kernel_pc = kernel_pc;
     g_linux_startable = true;
 #if defined(AGENTOS_GUEST_BOTH)
@@ -1508,78 +1408,11 @@ void init(void)
 /*
  * notified — handle incoming notifications.
  *
- * seL4 delivers hardware IRQs as badged notifications on the PD's notification
- * object.  The badge value is the ntfn_badge from the irq_desc_t for that IRQ
- * (set up by the root task at boot via seL4_IRQHandler_SetNotification).
- *
- * Multiple IRQs may be coalesced into a single notification word (bitwise OR of
- * all pending badges).  We must therefore test each badge bit independently
- * with bitwise AND — not use a switch statement — so that all pending IRQs are
- * serviced in one notification delivery.
- *
- * Non-IRQ notifications (controller, GPU shmem) arrive on Microkit IPC
- * channels and are dispatched by channel number in the remaining cases.
+ * Host IRQs terminate in driver PDs. Emulated virtio injects guest IRQs from
+ * its MMIO/backend paths, so this handler receives only VMM control events.
  */
 static void linux_vmm_notified(seL4_Word badge)
 {
-    seL4_Word ch = badge;
-    (void)ch;
-    bool handled_irq = false;
-    /*
-     * Badge bits from seL4 notification delivery.  Multiple IRQs may be
-     * coalesced; test each bit independently.
-     */
-    if (badge & (seL4_Word)VIRTIO_NET_NTFN_BADGE) {
-        handled_irq = true;
-        static uint64_t irq_count;
-        irq_count++;
-        bool success = virq_inject(VIRTIO_NET_IRQ);
-        if (irq_count <= 4u || (irq_count % VMM_IRQ_LOG_INTERVAL) == 0u || !success) {
-            LOG_VMM("virtio-net host IRQ #%llu inject=%s\n",
-                    (unsigned long long)irq_count,
-                    success ? "ok" : "failed");
-        }
-        if (!success) {
-            LOG_VMM_ERR("virtio-net IRQ %d dropped on inject\n", VIRTIO_NET_IRQ);
-        }
-        /* IRQHandler_Ack is called by virtio_net_ack() registered via virq_register */
-    }
-
-    if (badge & (seL4_Word)VIRTIO_BLK_NTFN_BADGE) {
-        handled_irq = true;
-        static uint64_t irq_count;
-        irq_count++;
-        bool success = virq_inject(VIRTIO_BLK_IRQ);
-        if (irq_count <= 4u || (irq_count % VMM_IRQ_LOG_INTERVAL) == 0u || !success) {
-            LOG_VMM("virtio-blk0 host IRQ #%llu inject=%s\n",
-                    (unsigned long long)irq_count,
-                    success ? "ok" : "failed");
-        }
-        if (!success) {
-            LOG_VMM_ERR("virtio-blk0 IRQ %d dropped on inject\n", VIRTIO_BLK_IRQ);
-        }
-    }
-
-    if (badge & (seL4_Word)VIRTIO_BLK2_NTFN_BADGE) {
-        handled_irq = true;
-        static uint64_t irq_count;
-        irq_count++;
-        bool success = virq_inject(VIRTIO_BLK2_IRQ);
-        if (irq_count <= 4u || (irq_count % VMM_IRQ_LOG_INTERVAL) == 0u || !success) {
-            LOG_VMM("virtio-blk1 host IRQ #%llu inject=%s\n",
-                    (unsigned long long)irq_count,
-                    success ? "ok" : "failed");
-        }
-        if (!success) {
-            LOG_VMM_ERR("virtio-blk1 IRQ %d dropped on inject\n", VIRTIO_BLK2_IRQ);
-        }
-    }
-
-    if (handled_irq) {
-        return;
-    }
-
-    /* Non-IRQ channel notifications — dispatch by badge/channel number */
     switch (badge) {
     case CONTROLLER_CH: {
         /*
@@ -1647,11 +1480,7 @@ static void linux_vmm_notified(seL4_Word badge)
     }
 
     default:
-        /* Only log if no badge bits were set (i.e. not a virtio IRQ notification) */
-        if (!(badge & (seL4_Word)(VIRTIO_NET_NTFN_BADGE | VIRTIO_BLK_NTFN_BADGE |
-                                   VIRTIO_BLK2_NTFN_BADGE))) {
-            LOG_VMM("Unexpected notification on badge 0x%lx\n", (unsigned long)badge);
-        }
+        LOG_VMM("Unexpected notification on badge 0x%lx\n", (unsigned long)badge);
         break;
     }
 }

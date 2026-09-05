@@ -580,7 +580,7 @@ static void *freebsd_debug_va(uint64_t va, size_t len)
     if (off > FREEBSD_GUEST_RAM_SIZE - len) {
         return NULL;
     }
-    return (void *)(guest_ram_vaddr + (uintptr_t)off);
+    return aos_gpa_to_hva_configured(FREEBSD_GUEST_RAM_VADDR + off, len);
 }
 
 static uint64_t freebsd_debug_u64(uint64_t va)

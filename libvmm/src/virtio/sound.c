@@ -12,6 +12,7 @@
 #include <libvmm/virtio/config.h>
 #include <libvmm/virtio/mmio.h>
 #include <libvmm/virtio/virtq.h>
+#include <libvmm/virtio/gpa.h>
 #include <sddf/sound/queue.h>
 
 // #define DEBUG_SOUND
@@ -373,7 +374,16 @@ static void handle_control_msg(struct virtio_device *dev,
                                bool *respond)
 {
     struct virtq_desc *req_desc = &virtq->desc[desc_head];
-    struct virtio_snd_hdr *hdr = (void *)req_desc->addr; /* GPA; sound still identity-mapped */
+    if (req_desc->len < sizeof(struct virtio_snd_hdr)) {
+        LOG_SOUND_ERR("Control request descriptor is too small\n");
+        return;
+    }
+    struct virtio_snd_hdr *hdr =
+        virtio_gpa_to_hva(req_desc->addr, req_desc->len);
+    if (hdr == NULL) {
+        LOG_SOUND_ERR("Control request GPA is outside guest RAM\n");
+        return;
+    }
     struct virtio_snd_pcm_hdr *pcm_hdr = (void *)hdr;
 
     bool immediate = false;
@@ -386,7 +396,10 @@ static void handle_control_msg(struct virtio_device *dev,
     }
 
     struct virtq_desc *status_desc = &virtq->desc[req_desc->next];
-    uint32_t *status_ptr = (void *)status_desc->addr;
+    if (status_desc->len < sizeof(uint32_t)) {
+        LOG_SOUND_ERR("Control status descriptor is too small\n");
+        return;
+    }
 
     int result;
 
@@ -400,9 +413,16 @@ static void handle_control_msg(struct virtio_device *dev,
         }
 
         struct virtq_desc *response_desc = &virtq->desc[status_desc->next];
+        void *response =
+            virtio_gpa_to_hva(response_desc->addr, response_desc->len);
+        if (response == NULL) {
+            LOG_SOUND_ERR("Control response GPA is outside guest RAM\n");
+            result = -VIRTIO_SOUND_S_BAD_MSG;
+            break;
+        }
         result = handle_pcm_info(dev, virtq,
                                  (void *)hdr,
-                                 (void *)response_desc->addr,
+                                 response,
                                  response_desc->len / sizeof(struct virtio_snd_pcm_info),
                                  &bytes_written);
         if (result >= 0) {
@@ -446,7 +466,11 @@ static void handle_control_msg(struct virtio_device *dev,
     }
 
     if (immediate) {
-        *status_ptr = status;
+        if (virtio_copy_to_gpa(status_desc->addr, 0u, &status,
+                               sizeof(status)) != 0) {
+            LOG_SOUND_ERR("Control status GPA is outside guest RAM\n");
+            return;
+        }
         bytes_written += sizeof(uint32_t);
         virtq_enqueue_used(virtq, desc_head, bytes_written);
     } else {
@@ -493,8 +517,12 @@ static bool perform_xfer(struct virtio_device *dev,
 
             if (transmit) {
                 void *pcm_buffer = state->data_region + buf_offset;
-                memcpy(pcm_buffer + pcm_transmitted,
-                       (void *)desc->addr + desc_transmitted, to_xfer);
+                if (virtio_copy_from_gpa(desc->addr, desc_transmitted,
+                                         pcm_buffer + pcm_transmitted,
+                                         to_xfer) != 0) {
+                    LOG_SOUND_ERR("PCM transmit GPA is outside guest RAM\n");
+                    return false;
+                }
             }
             desc_transmitted += to_xfer;
             desc_remaining -= to_xfer;
@@ -557,7 +585,16 @@ static void handle_xfer(struct virtio_device *dev,
                         bool *notify_driver, bool *respond)
 {
     struct virtq_desc *req_desc = &virtq->desc[desc_head];
-    struct virtio_snd_pcm_xfer *hdr = (void *)req_desc->addr;
+    if (req_desc->len < sizeof(struct virtio_snd_pcm_xfer)) {
+        LOG_SOUND_ERR("XFER request descriptor is too small\n");
+        return;
+    }
+    struct virtio_snd_pcm_xfer *hdr =
+        virtio_gpa_to_hva(req_desc->addr, sizeof(*hdr));
+    if (hdr == NULL) {
+        LOG_SOUND_ERR("XFER request GPA is outside guest RAM\n");
+        return;
+    }
 
     struct virtio_snd_device *state = device_state(dev);
 
@@ -586,8 +623,14 @@ static void handle_xfer(struct virtio_device *dev,
 
         assert(desc->flags & VIRTQ_DESC_F_WRITE);
 
-        uint32_t *status_ptr = (void *)desc->addr;
-        *status_ptr = VIRTIO_SOUND_S_IO_ERR;
+        uint32_t status = VIRTIO_SOUND_S_IO_ERR;
+        if (desc->len < sizeof(status) ||
+            virtio_copy_to_gpa(desc->addr, 0u, &status,
+                               sizeof(status)) != 0) {
+            LOG_SOUND_ERR("XFER status GPA is outside guest RAM\n");
+            ialloc_free(&state->free_requests, cookie);
+            return;
+        }
 
         virtq_enqueue_used(virtq, desc_head, sizeof(uint32_t));
         ialloc_free(&state->free_requests, cookie);
@@ -745,7 +788,11 @@ static unsigned copy_rx_data(struct virtq *virtq,
             uint32_t offset = req->bytes_received - desc_position;
             uint32_t to_write = MIN(pcm_len, desc->len - offset);
 
-            memcpy((void *)desc->addr + offset, pcm, to_write);
+            if (virtio_copy_to_gpa(desc->addr, offset, pcm, to_write) != 0) {
+                LOG_SOUND_ERR("PCM receive GPA is outside guest RAM\n");
+                req->status = SOUND_S_BAD_MSG;
+                break;
+            }
             pcm += to_write;
             req->bytes_received += to_write;
             pcm_len -= to_write;
@@ -815,8 +862,11 @@ static bool respond_to_request(virtio_snd_request_t *req,
 
     if (status_desc == req_desc || (status_desc->flags & VIRTQ_DESC_F_WRITE) == 0) {
         LOG_SOUND_ERR("Message must contain writeable status descriptor\n");
+    } else if (response_len > status_desc->len ||
+               virtio_copy_to_gpa(status_desc->addr, 0u,
+                                  response, response_len) != 0) {
+        LOG_SOUND_ERR("Sound response GPA is outside guest RAM\n");
     } else {
-        memcpy((void *)status_desc->addr, response, response_len);
         used += response_len;
     }
 

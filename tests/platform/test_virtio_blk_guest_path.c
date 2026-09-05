@@ -357,6 +357,17 @@ int main(void)
                  src_contains("libvmm/src/virtio/block.c",
                               "used_len +="),
                  "rewritten block engine supports split pages and reports used length");
+    (void)tap_ok(src_contains("libvmm/src/virtio/sound.c",
+                              "virtio_gpa_to_hva") &&
+                 src_contains("libvmm/src/virtio/sound.c",
+                              "virtio_copy_from_gpa") &&
+                 src_contains("libvmm/src/virtio/sound.c",
+                              "virtio_copy_to_gpa") &&
+                 !src_contains("libvmm/src/virtio/sound.c",
+                               "(void *)desc->addr") &&
+                 src_contains("kernel/agentos-root-task/src/freebsd_vmm.c",
+                              "aos_gpa_to_hva_configured"),
+                 "sound and FreeBSD debug paths translate guest physical addresses");
 
     printf("1..%d\n", g_testno);
     if (g_failed) {

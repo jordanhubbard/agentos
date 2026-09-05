@@ -555,25 +555,16 @@ pub fn spawn_qemu_with_guest(
                     "loader,file={},addr=0x48000000",
                     build_image.display()
                 ));
-            if guest_os != "ubuntu" && guest_os != "freebsd" && guest_os != "both" {
-                c.args([
-                    "-device",
-                    "virtio-net-device,netdev=net0,bus=virtio-mmio-bus.0",
-                    "-netdev",
-                    &netdev,
-                ]);
-            } else {
-                /*
-                 * Page-isolated host transport owned by net_pd. Guest VMMs
-                 * see only their emulated IPA 0x0a010000 devices.
-                 */
-                c.args([
-                    "-device",
-                    "virtio-net-device,netdev=net0,bus=virtio-mmio-bus.16,mac=02:00:00:00:00:01,ctrl_vq=off,mq=off",
-                    "-netdev",
-                    &netdev,
-                ]);
-            }
+            /*
+             * Page-isolated host transport owned by net_pd. Every guest sees
+             * only its separately emulated device at IPA 0x0a010000.
+             */
+            c.args([
+                "-device",
+                "virtio-net-device,netdev=net0,bus=virtio-mmio-bus.16,mac=02:00:00:00:00:01,ctrl_vq=off,mq=off",
+                "-netdev",
+                &netdev,
+            ]);
             if guest_os == "ubuntu" || guest_os == "both" {
                 /*
                  * Ubuntu media is host hardware on bus.8, owned only by the
@@ -616,21 +607,6 @@ pub fn spawn_qemu_with_guest(
                         &format!(
                             "file={},format=raw,id=freebsd_hd,if=none,readonly=on,file.locking=off",
                             freebsd_img.to_str().unwrap()
-                        ),
-                    ]);
-                }
-            }
-            if guest_os != "ubuntu" && guest_os != "freebsd" && guest_os != "both" {
-                /* buildroot / default: optional generic disk on bus.1 */
-                let disk = build_dir.join("disk.img");
-                if disk.exists() {
-                    c.args([
-                        "-device",
-                        "virtio-blk-device,drive=hd0,bus=virtio-mmio-bus.1",
-                        "-drive",
-                        &format!(
-                            "file={},format=raw,id=hd0,if=none",
-                            disk.to_str().unwrap_or("build/qemu_virt_aarch64/disk.img")
                         ),
                     ]);
                 }
