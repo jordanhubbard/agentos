@@ -327,6 +327,29 @@ seL4_Error pd_vspace_map_region(seL4_CPtr vspace,
     return seL4_NoError;
 }
 
+seL4_Error pd_vspace_map_reserved_region(seL4_CPtr vspace,
+                                          seL4_Word va_start,
+                                          const seL4_CPtr *frames,
+                                          size_t frame_count,
+                                          int writable)
+{
+    const seL4_Word large_page = (1UL << seL4_ARCH_LargePageBits);
+    seL4_CapRights_t rights = writable ? seL4_AllRights : seL4_CanRead;
+
+    if (frames == NULL || frame_count == 0u ||
+        (va_start & (large_page - 1u)) != 0u) {
+        return seL4_InvalidArgument;
+    }
+    for (size_t i = 0u; i < frame_count; i++) {
+        if (frames[i] == seL4_CapNull) return seL4_InvalidArgument;
+        seL4_Error err = map_page(frames[i], vspace,
+                                  va_start + (seL4_Word)i * large_page,
+                                  rights, seL4_ARM_Default_VMAttributes);
+        if (err != seL4_NoError) return err;
+    }
+    return seL4_NoError;
+}
+
 /* ── Zero + write one page via scratch VA, then map into PD VSpace ────────── */
 
 /*

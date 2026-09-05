@@ -376,6 +376,17 @@ int main(void)
                  src_contains("kernel/agentos-root-task/src/freebsd_vmm.c",
                               "aos_gpa_to_hva_configured"),
                  "sound and FreeBSD debug paths translate guest physical addresses");
+    (void)tap_ok(src_contains_in_order(
+                     "kernel/agentos-root-task/src/main.c",
+                     "reserve_guest_ram_frames(sys)",
+                     "for (uint32_t i = 0u; i < sys->pd_count; i++)") &&
+                 src_contains("kernel/agentos-root-task/src/main.c",
+                              "pd_vspace_map_reserved_region") &&
+                 src_contains("kernel/agentos-root-task/src/pd_vspace.c",
+                              "pd_vspace_map_reserved_region") &&
+                 src_contains("kernel/agentos-root-task/src/main.c",
+                              "never enter the hour-scale 4 KiB"),
+                 "guest RAM large pages are reserved before PD ELF fragmentation");
 
     printf("1..%d\n", g_testno);
     if (g_failed) {

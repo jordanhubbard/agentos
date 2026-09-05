@@ -151,6 +151,21 @@ static seL4_Word g_cap_base;  /* set to bi->empty.start in root_task_main */
  */
 #define PD_IPC_BUF_VA    0x0000000010000000UL
 
+#define AOS_MAX_GUEST_RAM_REGIONS 4u
+#define AOS_MAX_GUEST_LARGE_FRAMES 1024u
+
+typedef struct guest_ram_reservation {
+    uint32_t pd_index;
+    uint8_t mr_index;
+    uint16_t frame_count;
+    uint16_t first_frame;
+} guest_ram_reservation_t;
+
+static seL4_CPtr g_guest_large_frames[AOS_MAX_GUEST_LARGE_FRAMES];
+static guest_ram_reservation_t
+    g_guest_ram_reservations[AOS_MAX_GUEST_RAM_REGIONS];
+static uint32_t g_guest_ram_reservation_count;
+
 /* ut_alloc_init, ut_free_slot_base, ut_advance_slot_cursor are in ut_alloc.h */
 
 /* ── ELF lookup helpers ───────────────────────────────────────────────────── */
@@ -726,6 +741,67 @@ static int name_eq(const char *a, const char *b)
     while (*a && *b && *a == *b) { a++; b++; }
     return (*a == '\0' && *b == '\0');
 }
+
+#if defined(__aarch64__)
+static seL4_Error reserve_guest_ram_frames(const system_desc_t *sys)
+{
+    const size_t large_page = (size_t)1u << seL4_ARCH_LargePageBits;
+    uint32_t next_frame = 0u;
+
+    g_guest_ram_reservation_count = 0u;
+    for (uint32_t i = 0u; i < sys->pd_count; i++) {
+        const pd_desc_t *pd = &sys->pds[i];
+        if (!name_eq(pd->name, "linux_vmm") &&
+            !name_eq(pd->name, "freebsd_vmm")) {
+            continue;
+        }
+        for (uint8_t j = 0u; j < pd->mr_count; j++) {
+            const memory_region_desc_t *mr = &pd->memory_regions[j];
+            if (!name_eq(mr->name, "guest_ram")) continue;
+            if ((mr->size & (large_page - 1u)) != 0u ||
+                g_guest_ram_reservation_count >=
+                    AOS_MAX_GUEST_RAM_REGIONS) {
+                return seL4_InvalidArgument;
+            }
+            uint32_t count = (uint32_t)(mr->size / large_page);
+            if (count == 0u ||
+                count > AOS_MAX_GUEST_LARGE_FRAMES - next_frame) {
+                return seL4_NotEnoughMemory;
+            }
+
+            guest_ram_reservation_t *reservation =
+                &g_guest_ram_reservations[g_guest_ram_reservation_count];
+            reservation->pd_index = i;
+            reservation->mr_index = j;
+            reservation->first_frame = (uint16_t)next_frame;
+            reservation->frame_count = (uint16_t)count;
+            for (uint32_t frame = 0u; frame < count; frame++) {
+                seL4_Error err = ut_alloc_cap(
+                    (uint32_t)seL4_ARCH_LargePageObject, 0u,
+                    &g_guest_large_frames[next_frame]);
+                if (err != seL4_NoError) return err;
+                next_frame++;
+            }
+            g_guest_ram_reservation_count++;
+        }
+    }
+    return seL4_NoError;
+}
+
+static const guest_ram_reservation_t *
+guest_ram_reservation_for(uint32_t pd_index, uint8_t mr_index)
+{
+    for (uint32_t i = 0u; i < g_guest_ram_reservation_count; i++) {
+        const guest_ram_reservation_t *reservation =
+            &g_guest_ram_reservations[i];
+        if (reservation->pd_index == pd_index &&
+            reservation->mr_index == mr_index) {
+            return reservation;
+        }
+    }
+    return NULL;
+}
+#endif
 
 /* True iff name starts with prefix. */
 static int name_has_prefix(const char *name, const char *prefix)
@@ -1352,8 +1428,23 @@ void root_task_main(const seL4_BootInfo *bi)
         dbg_puts("\n");
     }
 
-    /* ── Step 4: Load and start each PD ───────────────────────────────────── */
     const system_desc_t *sys = SYSTEM_DESC;
+
+#if defined(__aarch64__)
+    /*
+     * Reserve all guest RAM as 2 MiB frames before loading any PD ELF. Small
+     * boot objects fragment untyped watermarks; allocating guest RAM inside
+     * the late PD loop forced hundreds of thousands of 4 KiB retypes.
+     */
+    {
+        seL4_Error reserve_err = reserve_guest_ram_frames(sys);
+        dbg_puts("[rt] early guest RAM large-page reservation err=");
+        dbg_hex((seL4_Word)reserve_err);
+        dbg_puts("\n");
+    }
+#endif
+
+    /* ── Step 4: Load and start each PD ───────────────────────────────────── */
     dbg_puts("[rt] starting ");
     dbg_hex((seL4_Word)sys->pd_count);
     dbg_puts(" PDs\n");
@@ -1681,16 +1772,22 @@ void root_task_main(const seL4_BootInfo *bi)
             if ((name_eq(pd->name, "linux_vmm") || name_eq(pd->name, "freebsd_vmm")) &&
                 name_eq(mr->name, "guest_ram")) {
                 /*
-                 * Guest RAM is anonymous host memory at an independent VMM
-                 * mapping. Emulated VirtIO translates every queue and payload
-                 * GPA before dereferencing it.
+                 * Guest RAM frames were reserved before PD ELF loading, while
+                 * large aligned untypeds were still available. Fail fast if a
+                 * reservation is missing; never enter the hour-scale 4 KiB
+                 * fallback for GiB-sized guests.
+                 * Emulated VirtIO translates every queue and payload GPA.
                  */
-                mr_err = pd_vspace_map_region(
-                    vspace,
-                    (seL4_Word)mr->vaddr,
-                    (size_t)mr->size,
-                    (int)mr->writable
-                );
+                const guest_ram_reservation_t *reservation =
+                    guest_ram_reservation_for(i, j);
+                if (reservation == NULL) {
+                    mr_err = seL4_NotEnoughMemory;
+                } else {
+                    mr_err = pd_vspace_map_reserved_region(
+                        vspace, (seL4_Word)mr->vaddr,
+                        &g_guest_large_frames[reservation->first_frame],
+                        reservation->frame_count, (int)mr->writable);
+                }
             } else
 #endif
             {
