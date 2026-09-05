@@ -16,7 +16,8 @@ const CC_INPUT_TEXT: u32 = 0x05;
 const CC_INPUT_TEXT_CHUNK: usize = 20;
 const CC_REQ_SIZE: usize = 4 + 12 + CC_WIRE_SHMEM_SIZE;
 const CC_REPLY_SIZE: usize = 16 + CC_WIRE_SHMEM_SIZE;
-const CC_IO_TIMEOUT: Duration = Duration::from_secs(45);
+const CC_IO_TIMEOUT: Duration = Duration::from_secs(5);
+const CC_FRAME_DEADLINE: Duration = Duration::from_secs(180);
 const CC_OK: u32 = 0;
 const CC_ERR_RELAY_FAULT: u32 = 8;
 const MSG_CC_LOG_STREAM: u32 = 0x2610;
@@ -1024,16 +1025,8 @@ impl CcClient {
         })
     }
 
-    fn reconnect(&mut self, cc_sock: &Path) -> anyhow::Result<()> {
-        /*
-         * A timed-out framed request leaves the byte stream ambiguous: a late
-         * reply may still arrive, so the connection must never be reused.
-         * Close it before opening the replacement; QEMU's chardev accepts one
-         * host client at a time.
-         */
-        self.stream.take();
-        *self = Self::connect(cc_sock)?;
-        Ok(())
+    fn is_closed(&self) -> bool {
+        self.stream.is_none()
     }
 
     fn call(
@@ -1054,23 +1047,71 @@ impl CcClient {
             req[16..16 + copy_len].copy_from_slice(&shmem_in[..copy_len]);
         }
 
-        let stream = self
-            .stream
-            .as_mut()
-            .context("CC connection is closed")?;
-        stream
-            .write_all(&req)
-            .context("failed to write CC frame")?;
+        let result: anyhow::Result<CcReply> = (|| {
+            let stream = self
+                .stream
+                .as_mut()
+                .context("CC connection is closed")?;
+            write_cc_frame(stream, &req)?;
 
-        let mut raw = [0u8; CC_REPLY_SIZE];
-        stream
-            .read_exact(&mut raw)
-            .context("failed to read CC frame")?;
-        Ok(CcReply {
-            mr: [rd32(&raw, 0), rd32(&raw, 4), rd32(&raw, 8), rd32(&raw, 12)],
-            shmem: raw[16..].to_vec(),
-        })
+            let mut raw = [0u8; CC_REPLY_SIZE];
+            read_cc_frame(stream, &mut raw)?;
+            Ok(CcReply {
+                mr: [rd32(&raw, 0), rd32(&raw, 4), rd32(&raw, 8), rd32(&raw, 12)],
+                shmem: raw[16..].to_vec(),
+            })
+        })();
+        if result.is_err() {
+            self.stream.take();
+        }
+        result
     }
+}
+
+fn retryable_cc_io(err: &std::io::Error) -> bool {
+    matches!(
+        err.kind(),
+        std::io::ErrorKind::Interrupted
+            | std::io::ErrorKind::WouldBlock
+            | std::io::ErrorKind::TimedOut
+    )
+}
+
+fn write_cc_frame(stream: &mut UnixStream, frame: &[u8]) -> anyhow::Result<()> {
+    let start = Instant::now();
+    let mut written = 0usize;
+    while written < frame.len() {
+        match stream.write(&frame[written..]) {
+            Ok(0) => anyhow::bail!("CC connection closed while writing frame"),
+            Ok(count) => written += count,
+            Err(err) if retryable_cc_io(&err) && start.elapsed() < CC_FRAME_DEADLINE => {}
+            Err(err) if retryable_cc_io(&err) => {
+                anyhow::bail!(
+                    "timed out writing CC frame after {} bytes",
+                    written
+                )
+            }
+            Err(err) => return Err(err).context("failed to write CC frame"),
+        }
+    }
+    Ok(())
+}
+
+fn read_cc_frame(stream: &mut UnixStream, frame: &mut [u8]) -> anyhow::Result<()> {
+    let start = Instant::now();
+    let mut read = 0usize;
+    while read < frame.len() {
+        match stream.read(&mut frame[read..]) {
+            Ok(0) => anyhow::bail!("CC connection closed while reading frame"),
+            Ok(count) => read += count,
+            Err(err) if retryable_cc_io(&err) && start.elapsed() < CC_FRAME_DEADLINE => {}
+            Err(err) if retryable_cc_io(&err) => {
+                anyhow::bail!("timed out reading CC frame after {} bytes", read)
+            }
+            Err(err) => return Err(err).context("failed to read CC frame"),
+        }
+    }
+    Ok(())
 }
 
 fn wait_for_guest_console_login_via_cc(
@@ -1168,12 +1209,10 @@ fn wait_for_guest_console_login_via_cc(
                 }
             }
             Err(err) => {
-                println!("[xtask:test] CC console drain not ready yet: {err:#}");
-                if let Err(reconnect_err) = cc.reconnect(cc_sock) {
-                    println!(
-                        "[xtask:test] CC console reconnect not ready yet: {reconnect_err:#}"
-                    );
+                if cc.is_closed() {
+                    return Err(err).context("CC console transport closed");
                 }
+                println!("[xtask:test] CC console drain not ready yet: {err:#}");
             }
         }
         if guest_os == "freebsd"
@@ -1304,8 +1343,10 @@ fn verify_guest_console_input(
         let chunk = match cc_log_stream_for_handle(cc, guest_handle, guest_os) {
             Ok(chunk) => chunk,
             Err(err) => {
+                if cc.is_closed() {
+                    return Err(err).context("CC console transport closed after input");
+                }
                 println!("[xtask:test] CC console post-input drain not ready yet: {err:#}");
-                let _ = cc.reconnect(cc_sock);
                 String::new()
             }
         };
@@ -1329,7 +1370,7 @@ fn verify_guest_console_input(
 }
 
 fn verify_ubuntu_live_console_and_net(
-    cc_sock: &Path,
+    _cc_sock: &Path,
     cc: &mut CcClient,
     guest_handle: u32,
     timeout: Duration,
@@ -1347,8 +1388,10 @@ fn verify_ubuntu_live_console_and_net(
         let chunk = match cc_log_stream_for_handle(cc, guest_handle, "ubuntu-live") {
             Ok(chunk) => chunk,
             Err(err) => {
+                if cc.is_closed() {
+                    return Err(err).context("CC live-login transport closed");
+                }
                 println!("[xtask:test] CC live-login drain not ready yet: {err:#}");
-                let _ = cc.reconnect(cc_sock);
                 String::new()
             }
         };
@@ -1497,12 +1540,16 @@ fn create_guest_via_cc_wait(
             }
             Err(err) => {
                 last_err = format!("{err:#}");
+                if cc.is_closed() {
+                    return Err(err).context(format!(
+                        "{label} guest create transport closed"
+                    ));
+                }
                 if attempts == 1 || attempts % 5 == 0 {
                     println!(
                         "[xtask:test] {label} guest create transport not ready yet: {last_err}"
                     );
                 }
-                let _ = cc.reconnect(cc_sock);
             }
         }
 
@@ -1516,7 +1563,7 @@ fn create_guest_via_cc_wait(
 }
 
 fn run_guest_console_command(
-    cc_sock: &Path,
+    _cc_sock: &Path,
     cc: &mut CcClient,
     guest_handle: u32,
     guest_os: &str,
@@ -1541,10 +1588,12 @@ fn run_guest_console_command(
                 }
             }
             Err(err) => {
+                if cc.is_closed() {
+                    return Err(err).context("CC provisioning transport closed");
+                }
                 println!(
-                    "[xtask:test] CC provisioning poll failed; reconnecting: {err:#}"
+                    "[xtask:test] CC provisioning poll not ready yet: {err:#}"
                 );
-                let _ = cc.reconnect(cc_sock);
             }
         }
         std::thread::sleep(Duration::from_millis(250));
@@ -2068,19 +2117,22 @@ mod tests {
     }
 
     #[test]
-    fn reconnect_closes_the_desynchronized_stream_first() {
-        use std::os::unix::net::UnixListener;
+    fn framed_read_preserves_progress_across_socket_timeouts() {
+        let (mut reader, mut writer) = UnixStream::pair().expect("create socket pair");
+        reader
+            .set_read_timeout(Some(Duration::from_millis(10)))
+            .expect("set short test timeout");
+        let expected: Vec<u8> = (0u8..32u8).collect();
+        let send = expected.clone();
+        let writer_thread = std::thread::spawn(move || {
+            writer.write_all(&send[..7]).expect("write first fragment");
+            std::thread::sleep(Duration::from_millis(30));
+            writer.write_all(&send[7..]).expect("write second fragment");
+        });
 
-        let dir = tempfile::tempdir().expect("create socket directory");
-        let socket = dir.path().join("cc.sock");
-        let listener = UnixListener::bind(&socket).expect("bind test socket");
-        let mut cc = CcClient::connect(&socket).expect("connect first client");
-        let (mut stale, _) = listener.accept().expect("accept first client");
-
-        cc.reconnect(&socket).expect("replace client");
-        let (_replacement, _) = listener.accept().expect("accept replacement client");
-
-        let mut byte = [0u8; 1];
-        assert_eq!(stale.read(&mut byte).expect("observe closed client"), 0);
+        let mut received = [0u8; 32];
+        read_cc_frame(&mut reader, &mut received).expect("read fragmented frame");
+        writer_thread.join().expect("join writer");
+        assert_eq!(received.as_slice(), expected.as_slice());
     }
 }
