@@ -1836,6 +1836,7 @@ void root_task_main(const seL4_BootInfo *bi)
 
         if (g_net_shared_frame_cap != seL4_CapNull &&
             (name_eq(pd->name, "net_pd") ||
+             name_eq(pd->name, "init_agent") ||
              name_eq(pd->name, "linux_vmm") ||
              name_eq(pd->name, "freebsd_vmm"))) {
             seL4_Word net_shared_copy = ut_alloc_slot();

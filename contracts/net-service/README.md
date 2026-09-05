@@ -22,7 +22,11 @@ vNIC/ACL opcodes remain reserved for compatibility.
 
 On QEMU AArch64, `net_pd` exclusively owns the page-isolated host virtio-net
 transport on bus.16 and a private DMA frame. Linux VMMs share only the
-agentOS packet staging frame and call `RAW_SEND`/`RAW_RECV`.
+agentOS packet staging frame and call `RAW_SEND`/`RAW_RECV`. FreeBSD uses a
+separate slot through the same contract. Native agents are peers, not a second
+network stack: `init_agent` opens its own slot through
+`native_net_client_open()` and can issue the same raw send/receive operations
+without a guest or VirtIO frontend.
 
 ## Operations
 

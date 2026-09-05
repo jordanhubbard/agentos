@@ -186,11 +186,12 @@ const system_desc_t system_desc_aarch64 = {
             .cnode_size_bits = 10u,
             .priority       = 110u,
             .self_svc_id    = SVC_ID_INIT_AGENT,
-            .init_ep_count  = 3u,
+            .init_ep_count  = 4u,
             .init_eps = {
                 { SVC_ID_NAMESERVER, PD_CNODE_SLOT_NAMESERVER_EP },
                 { SVC_ID_EVENTBUS,   PD_CNODE_SLOT_EVENTBUS_EP   },
                 { SVC_ID_LOG_DRAIN,  PD_CNODE_SLOT_LOG_DRAIN_EP  },
+                { SVC_ID_NET_PD,     PD_CNODE_SLOT_NET_PD_EP     },
             },
         },
 

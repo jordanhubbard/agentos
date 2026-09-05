@@ -13,6 +13,7 @@
  *   "quota_pd"     — per-agent resource quota enforcement
  *   "mem_profiler" — memory usage monitoring
  *   "net_isolator" — per-agent network ACL
+ *   "net_pd"       — canonical sDDF-backed network virtualizer
  *
  * Copyright (c) 2026 The agentOS Project
  * SPDX-License-Identifier: BSD-2-Clause
@@ -118,6 +119,12 @@ static inline void sel4_call(seL4_CPtr ep, const sel4_msg_t *req, sel4_msg_t *re
 #include "sel4_ipc.h"     /* sel4_msg_t, sel4_badge_t, SEL4_ERR_* */
 #include "sel4_server.h"  /* sel4_server_t, sel4_server_init/register/run */
 #include "sel4_client.h"  /* sel4_client_connect, sel4_client_call */
+#if defined(__aarch64__)
+#include "native_net_client.h"
+#include "system_desc.h"
+#include <contracts/net-service/interface.h>
+#include <platform/net_host_layout.h>
+#endif
 #include <sel4/sel4.h>    /* seL4_DebugPutChar */
 
 #endif /* AGENTOS_TEST_HOST */
@@ -200,6 +207,9 @@ static seL4_CPtr g_eventbus_ep    = 0;
 static seL4_CPtr g_quota_ep       = 0;
 static seL4_CPtr g_mem_profiler_ep = 0;
 static seL4_CPtr g_net_isolator_ep = 0;
+#if !defined(AGENTOS_TEST_HOST) && defined(__aarch64__)
+static native_net_client_t g_native_net;
+#endif
 
 /* Server instance */
 static sel4_server_t g_srv;
@@ -324,6 +334,39 @@ static seL4_CPtr lookup_service(seL4_CPtr ns_ep, const char *svc_name)
      * In the current implementation the channel_id IS the seL4 cap slot. */
     return (seL4_CPtr)data_rd32(rep.data, 4);
 }
+
+#if !defined(AGENTOS_TEST_HOST) && defined(__aarch64__)
+static void native_net_call(uintptr_t endpoint, const sel4_msg_t *req,
+                            sel4_msg_t *rep)
+{
+    sel4_call((seL4_CPtr)endpoint, req, rep);
+}
+
+static void connect_native_net_client(seL4_CPtr ns_ep)
+{
+    (void)ns_ep;
+    seL4_CPtr net_ep = (seL4_CPtr)PD_CNODE_SLOT_NET_PD_EP;
+    bool link_up = false;
+
+    if (!native_net_client_open(&g_native_net, (uintptr_t)net_ep,
+                                (void *)AGENTOS_NET_SHARED_VA,
+                                AGENTOS_NET_SHARED_SIZE, 2u,
+                                native_net_call)) {
+        dbg_puts("[init_agent] native net virtualizer unavailable\n");
+        return;
+    }
+    if (native_net_client_status(&g_native_net, &link_up) && link_up) {
+        dbg_puts("[init_agent] native net virtualizer ready\n");
+    } else {
+        dbg_puts("[init_agent] native net slot open; host link down\n");
+    }
+}
+#elif !defined(AGENTOS_TEST_HOST)
+static void connect_native_net_client(seL4_CPtr ns_ep)
+{
+    (void)ns_ep;
+}
+#endif
 
 /* ── Quota helpers ───────────────────────────────────────────────────────── */
 
@@ -649,6 +692,7 @@ void init_agent_main(seL4_CPtr my_ep, seL4_CPtr ns_ep)
     g_quota_ep        = lookup_service(ns_ep, "quota_pd");
     g_mem_profiler_ep = lookup_service(ns_ep, "mem_profiler");
     g_net_isolator_ep = lookup_service(ns_ep, "net_isolator");
+    connect_native_net_client(ns_ep);
 
     /* Subscribe to the EventBus */
     subscribe_to_eventbus();

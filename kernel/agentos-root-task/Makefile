@@ -41,7 +41,7 @@ else
 endif
 
 CFLAGS := -nostdlib -ffreestanding -g -O2 -Wall -Wextra -Werror -Wno-unused-function -Wno-unused-parameter -Wno-unused-variable -Wno-unused-but-set-variable \
-           -Iinclude -Ilwip/include -I$(REPO_ROOT_MK)/platform/include -I$(SEL4_INC_DIR) \
+           -Iinclude -Ilwip/include -I$(REPO_ROOT_MK) -I$(REPO_ROOT_MK)/platform/include -I$(SEL4_INC_DIR) \
            $(CFLAGS_ARCH) \
            -DCONFIG_KERNEL_MCS \
            -D__thread= \
@@ -197,7 +197,7 @@ BOARD_UART_IRQ  ?=
 # m3_bare_metal.c provides memset/memcpy/memmove needed by compiler-generated code
 PD_MONITOR_SRCS   := src/monitor.c src/cap_broker.c src/agent_pool.c src/vibe_swap.c src/m3_bare_metal.c src/log.c src/boot_integrity.c src/ed25519_verify.c src/monocypher.c src/cap_policy.c src/verify.c src/pd_tcb.c src/ut_alloc.c
 PD_EVENTBUS_SRCS  := src/m3_bare_metal.c src/log.c   # event_bus.c → services/event-bus/ (E9-S1)
-PD_INITAGENT_SRCS := src/init_agent.c src/m3_bare_metal.c src/log.c
+PD_INITAGENT_SRCS := src/init_agent.c src/native_net_client.c src/m3_bare_metal.c src/log.c
 PD_WORKER_SRCS    := src/worker.c src/m3_bare_metal.c src/log.c
 # agentfs needs m3_bare_metal for memset/sqrtf (no wasm3 headers needed)
 PD_AGENTFS_SRCS      := src/m3_bare_metal.c src/log.c   # agentfs.c → services/agentfs/ (E9-S1)

@@ -739,6 +739,16 @@ test-integration:
 	    echo "FAIL: tests/platform/test_guest_vmm_runtime.c"; \
 	    status=1; \
 	fi; \
+	if gcc -I kernel/agentos-root-task/include -I . \
+	        tests/platform/test_native_net_client.c \
+	        kernel/agentos-root-task/src/native_net_client.c \
+	        -o $(BUILD_TMP_DIR)/test_native_net_client 2>&1 \
+	    && $(BUILD_TMP_DIR)/test_native_net_client; then \
+	    echo "PASS: tests/platform/test_native_net_client.c"; \
+	else \
+	    echo "FAIL: tests/platform/test_native_net_client.c"; \
+	    status=1; \
+	fi; \
 	if gcc -I platform/include \
 	        tests/platform/test_blk_virt_pump.c \
 	        platform/blk-virt/blk_virt_pump.c \

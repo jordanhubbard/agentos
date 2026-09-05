@@ -275,11 +275,22 @@ static int test_host_backed_architecture(void)
                       "VIRTIO_NET_NTFN_BADGE") &&
         !src_contains("kernel/agentos-root-task/src/system_desc_aarch64.c",
                       ".irq_number = 48u");
+    int native_client =
+        src_contains("kernel/agentos-root-task/src/init_agent.c",
+                     "connect_native_net_client") &&
+        src_contains("kernel/agentos-root-task/src/native_net_client.c",
+                     "NET_SVC_OP_RAW_SEND") &&
+        src_contains("kernel/agentos-root-task/src/native_net_client.c",
+                     "NET_SVC_OP_RAW_RECV") &&
+        src_contains("kernel/agentos-root-task/src/main.c",
+                     "name_eq(pd->name, \"init_agent\")") &&
+        src_contains("kernel/agentos-root-task/src/system_desc_aarch64.c",
+                     "{ SVC_ID_NET_PD,     PD_CNODE_SLOT_NET_PD_EP     }");
 
     return tap_ok(qemu_bus && test_qemu_bus && isolated_page && private_dma &&
                   shared_bridge && ipc && contract && no_vmm_dma && async_rx &&
-                  no_guest_passthrough,
-                  "all guests use emulated net backed by bus.16 net_pd");
+                  no_guest_passthrough && native_client,
+                  "guests and native init agent share bus.16 net virtualizer");
 }
 
 #define VQ_NUM 8u
