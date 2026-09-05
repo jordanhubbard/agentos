@@ -38,6 +38,7 @@
  */
 
 #include "system_desc.h"
+#include <platform/guest_memory_layout.h>
 
 /* agentos-8f5: a target contract-runner PD is appended only in test images. */
 #ifdef AGENTOS_SEL4_TEST_IMAGE
@@ -395,9 +396,8 @@ const system_desc_t system_desc_aarch64 = {
             .irqs = { },
             .mr_count = 1u,
             .memory_regions = {
-                { .vaddr    =
-                              0x40000000ULL,
-                  .size     = 0x20000000u,  /* 512 MB FreeBSD guest RAM */
+                { .vaddr    = AOS_FREEBSD_GUEST_RAM_BASE,
+                  .size     = AOS_FREEBSD_GUEST_RAM_SIZE,
                   .writable = 1u,
                   .name     = "guest_ram" },
             },
@@ -421,17 +421,8 @@ const system_desc_t system_desc_aarch64 = {
             /* Net queues are a root-provisioned frame shared only with net_pd. */
             .mr_count = 1u,
             .memory_regions = {
-                { .vaddr    =
-#if defined(AGENTOS_GUEST_BOTH)
-                              0xc0000000ULL,
-#else
-                              0x40000000ULL,
-#endif
-#if defined(AGENTOS_GUEST_UBUNTU_LIVE)
-                  .size     = 0x40000000u,  /* 1 GB Casper guest RAM */
-#else
-                  .size     = 0x20000000u,  /* 512 MB */
-#endif
+                { .vaddr    = AOS_LINUX_GUEST_RAM_BASE,
+                  .size     = AOS_LINUX_GUEST_RAM_SIZE,
                   .writable = 1u,
                   .name     = "guest_ram" },
             },
@@ -463,8 +454,8 @@ const system_desc_t system_desc_aarch64 = {
             .irqs = { },
             .mr_count = 1u,
             .memory_regions = {
-                { .vaddr    = 0x40000000ULL,
-                  .size     = 0x10000000u,  /* 256 MB FreeBSD guest RAM */
+                { .vaddr    = AOS_FREEBSD_GUEST_RAM_BASE,
+                  .size     = AOS_FREEBSD_GUEST_RAM_SIZE,
                   .writable = 1u,
                   .name     = "guest_ram" },
             },

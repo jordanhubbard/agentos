@@ -749,6 +749,26 @@ test-integration:
 	    echo "FAIL: tests/platform/test_native_net_client.c"; \
 	    status=1; \
 	fi; \
+	if gcc -I kernel/agentos-root-task/include \
+	        tests/platform/test_cc_retry_cache.c \
+	        kernel/agentos-root-task/src/cc_retry_cache.c \
+	        -o $(BUILD_TMP_DIR)/test_cc_retry_cache 2>&1 \
+	    && $(BUILD_TMP_DIR)/test_cc_retry_cache; then \
+	    echo "PASS: tests/platform/test_cc_retry_cache.c"; \
+	else \
+	    echo "FAIL: tests/platform/test_cc_retry_cache.c"; \
+	    status=1; \
+	fi; \
+	if gcc -DAGENTOS_GUEST_BOTH -DAGENTOS_GUEST_UBUNTU_LIVE \
+	        -I platform/include \
+	        tests/platform/test_guest_memory_layout.c \
+	        -o $(BUILD_TMP_DIR)/test_guest_memory_layout 2>&1 \
+	    && $(BUILD_TMP_DIR)/test_guest_memory_layout; then \
+	    echo "PASS: tests/platform/test_guest_memory_layout.c"; \
+	else \
+	    echo "FAIL: tests/platform/test_guest_memory_layout.c"; \
+	    status=1; \
+	fi; \
 	if gcc -I platform/include \
 	        tests/platform/test_blk_virt_pump.c \
 	        platform/blk-virt/blk_virt_pump.c \
@@ -779,7 +799,7 @@ test-integration:
 	    echo "FAIL: tests/platform/test_virtio_console_guest_path.c"; \
 	    status=1; \
 	fi; \
-	if gcc -idirafter kernel/agentos-root-task/include \
+	if gcc -I platform/include -idirafter kernel/agentos-root-task/include \
 	        -DAOS_REPO_ROOT='"$(ROOT_DIR)"' \
 	        tests/platform/test_uart_cap_ownership.c \
 	        kernel/agentos-root-task/src/system_desc_aarch64.c \

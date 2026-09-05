@@ -38,6 +38,7 @@
 #include <libvmm/guest.h>
 #include <libvmm/arch/aarch64/vgic/vgic.h>
 #include <platform/blk_layout.h>
+#include <platform/guest_memory_layout.h>
 #include <platform/guest_ram.h>
 #include <platform/guest_vmm_runtime.h>
 #include <platform/vmm_virtio_net.h>
@@ -102,15 +103,10 @@ extern char _guest_dtb_image_end[];
 /* ── Guest memory map symbols ────────────────────────────────────────────── */
 uintptr_t guest_ram_vaddr;   /* VMM virtual address of guest_ram MR */
 
-#define FREEBSD_GUEST_RAM_VADDR 0x40000000UL
-#define FREEBSD_KERNEL_VADDR    0x40000000UL
-#if defined(AGENTOS_GUEST_BOTH)
-#define FREEBSD_FDT_VADDR       0x4f000000UL
-#define FREEBSD_GUEST_RAM_SIZE  0x10000000UL
-#else
-#define FREEBSD_FDT_VADDR       0x5f000000UL
-#define FREEBSD_GUEST_RAM_SIZE  0x20000000UL
-#endif
+#define FREEBSD_GUEST_RAM_VADDR AOS_FREEBSD_GUEST_RAM_BASE
+#define FREEBSD_KERNEL_VADDR    AOS_FREEBSD_GUEST_RAM_BASE
+#define FREEBSD_FDT_VADDR       AOS_FREEBSD_GUEST_DTB_BASE
+#define FREEBSD_GUEST_RAM_SIZE  AOS_FREEBSD_GUEST_RAM_SIZE
 #define FREEBSD_VTIMER_IRQ      27u
 
 #ifndef FREEBSD_IRQ_TRACE

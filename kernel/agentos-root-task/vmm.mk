@@ -275,6 +275,7 @@ VMM_VIRTIO_CONSOLE_OBJ := $(BUILD_DIR)/vmm_virtio_console.o
 # reusing that path can silently link a stale object compiled with incompatible
 # flags.
 $(LINUX_VMM_FULL_OBJ): $(KERNEL_SRC_DIR)/src/linux_vmm.c $(VMM_CONFIG_STAMP) \
+                      $(AGENTOS_ROOT)/platform/include/platform/guest_memory_layout.h \
                       $(AGENTOS_ROOT)/platform/include/platform/guest_vmm_runtime.h \
                       $(AGENTOS_ROOT)/platform/include/platform/vmm_virtio_net.h \
                       $(AGENTOS_ROOT)/platform/include/platform/vmm_virtio_blk.h \
@@ -427,6 +428,7 @@ $(BUILD_DIR)/freebsd_images.o: $(PKG_IMG) $(FREEBSD_KERNEL_IMAGE) $(BUILD_DIR)/f
 
 # ─── Compile freebsd_vmm.c ───────────────────────────────────────────────
 $(BUILD_DIR)/freebsd_vmm.o: $(KERNEL_SRC_DIR)/src/freebsd_vmm.c $(VMM_CONFIG_STAMP) \
+                           $(AGENTOS_ROOT)/platform/include/platform/guest_memory_layout.h \
                            $(AGENTOS_ROOT)/platform/include/platform/guest_vmm_runtime.h \
                            $(AGENTOS_ROOT)/platform/include/platform/vmm_virtio_console.h
 	@mkdir -p $(BUILD_DIR)

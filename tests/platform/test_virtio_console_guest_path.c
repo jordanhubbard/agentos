@@ -130,6 +130,13 @@ int main(void)
        contains("kernel/agentos-root-task/src/cc_pd.c",
                 "Do not monopolize the VMM with a 4 KiB loop"),
        "CC console polls perform one bounded downstream IPC");
+    ok(contains("kernel/agentos-root-task/src/cc_pd.c",
+                "cc_retry_cache_replay") &&
+       contains("kernel/agentos-root-task/src/cc_pd.c",
+                "cc_retry_cache_record") &&
+       contains("kernel/agentos-root-task/src/cc_pd.c",
+                "virtio_serial_recover_tx"),
+       "lost CC reply retries replay once after TX queue reset");
     ok(contains(vmm, "Guest console bytes belong to the per-guest virtual TTY") &&
        contains(vmm, "console_tx_push(byte);"),
        "guest virtual TTY is not synchronously mirrored to physical PL011");

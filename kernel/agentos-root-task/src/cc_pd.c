@@ -37,6 +37,7 @@
 #include "contracts/fault_inject_contract.h"
 #include "contracts/log_drain_contract.h"
 #include "contracts/agent_pool_contract.h"
+#include "cc_retry_cache.h"
 #include "sel4_ipc.h"
 #include "serial_log.h"
 #include "system_desc.h"
@@ -182,7 +183,7 @@ static void vio_queue_setup(uint32_t qidx,
     vio_wr(VMMIO_QUEUE_READY, 1u);
 }
 
-static void virtio_serial_init(void)
+static bool virtio_serial_init(void)
 {
     /* VQ PAs written by root task into startup record before cc_pd started */
     volatile seL4_Word *sp = (volatile seL4_Word *)CC_PD_STARTUP_VA;
@@ -202,7 +203,7 @@ static void virtio_serial_init(void)
 
     if (magic != VIRTIO_MAGIC || devid != VIRTIO_ID_CONSOLE) {
         cc_dbg_puts("[cc_pd] VirtIO init FAILED: bad magic/devid\n");
-        return;
+        return false;
     }
 
     /* VirtIO 1.0 initialisation sequence */
@@ -227,9 +228,13 @@ static void virtio_serial_init(void)
     if (!(s_after & VSTATUS_FEAT_OK)) {
         cc_dbg_puts("[cc_pd] VirtIO FEAT_OK not set\n");
         vio_wr(VMMIO_STATUS, VSTATUS_FAILED);
-        return;
+        return false;
     }
 
+    /* Device reset invalidates every in-flight descriptor. Start both rings
+     * from a known epoch before making them ready again. */
+    __builtin_memset((void *)g_vq_pa[0], 0, 4096u);
+    VQ_MB();
     vio_queue_setup(0u,
         g_vq_pa[0] + RX_DESC_OFF, g_vq_pa[0] + RX_AVAIL_OFF, g_vq_pa[0] + RX_USED_OFF);
     vio_queue_setup(1u,
@@ -252,6 +257,19 @@ static void virtio_serial_init(void)
     g_rx_used_last = 0u;
 
     cc_dbg_puts("[cc_pd] VirtIO serial ready\n");
+    return true;
+}
+
+static void virtio_serial_recover_tx(void)
+{
+    cc_dbg_puts("[cc_pd] resetting VirtIO serial after incomplete reply\n");
+    vio_wr(VMMIO_STATUS, VSTATUS_FAILED);
+    VQ_MB();
+    vio_wr(VMMIO_STATUS, 0u);
+    VQ_MB();
+    if (!virtio_serial_init()) {
+        cc_dbg_puts("[cc_pd] VirtIO serial recovery failed\n");
+    }
 }
 
 static bool vio_serial_write(const void *buf, uint32_t n)
@@ -1682,20 +1700,32 @@ void cc_pd_main(seL4_CPtr my_ep, seL4_CPtr ns_ep)
     }
 
     /* Initialise VirtIO MMIO serial (mapped by root task; VQ PAs in startup record) */
-    virtio_serial_init();
+    (void)virtio_serial_init();
 
     /* Static buffers live in BSS — kept off the stack since each frame is
      * 4112 bytes, which would exhaust cc_pd's 16 KB stack otherwise.    */
     static cc_req_wire_t   g_req;
     static cc_reply_wire_t g_rep;
+    static cc_retry_cache_t g_retry;
+    cc_retry_cache_init(&g_retry);
 
     while (1) {
         if (!vio_serial_read(&g_req, sizeof(g_req))) {
             continue;
         }
-        __builtin_memset(&g_rep, 0, sizeof(g_rep));
-        cc_dispatch(&g_req, &g_rep);
-        (void)vio_serial_write(&g_rep, sizeof(g_rep));
+        if (!cc_retry_cache_replay(&g_retry, &g_req, &g_rep)) {
+            __builtin_memset(&g_rep, 0, sizeof(g_rep));
+            cc_dispatch(&g_req, &g_rep);
+        }
+        if (!vio_serial_write(&g_rep, sizeof(g_rep))) {
+            /*
+             * The operation may already have changed state. Save the exact
+             * request/reply pair before resetting the poisoned TX queue; a
+             * reconnecting host can retry without executing it twice.
+             */
+            cc_retry_cache_record(&g_retry, &g_req, &g_rep);
+            virtio_serial_recover_tx();
+        }
     }
 }
 

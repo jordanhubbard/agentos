@@ -403,6 +403,7 @@ void pd_main(seL4_CPtr my_ep, seL4_CPtr ns_ep) { linux_vmm_main(my_ep, ns_ep); }
 
 #include <libvmm/libvmm.h>
 #include <libvmm/vmm_caps.h>   /* vmm_register_vcpu                           */
+#include <platform/guest_memory_layout.h>
 #include <platform/guest_vmm_runtime.h>
 #include <platform/vmm_virtio_net.h>
 #include <platform/vmm_virtio_blk.h>
@@ -511,26 +512,11 @@ static uint32_t vmm_affinity[VMM_MAX_SLOTS];
 
 /* ─── Guest Configuration ─────────────────────────────────────────────── */
 
-#if defined(AGENTOS_GUEST_UBUNTU_LIVE)
-#define GUEST_RAM_SIZE          0x40000000
-#else
-#define GUEST_RAM_SIZE          0x20000000
-#endif
-
 /* Guest RAM, DTB, and initrd placement addresses (must match DTS). */
-#if defined(AGENTOS_GUEST_BOTH)
-#define LINUX_GUEST_RAM_VADDR      0xc0000000UL
-#define GUEST_DTB_VADDR            0xdf000000UL
-#define GUEST_INIT_RAM_DISK_VADDR  0xd0000000UL
-#elif defined(AGENTOS_GUEST_UBUNTU_LIVE)
-#define LINUX_GUEST_RAM_VADDR      0x40000000UL
-#define GUEST_DTB_VADDR            0x7f000000UL
-#define GUEST_INIT_RAM_DISK_VADDR  0x50000000UL
-#else
-#define LINUX_GUEST_RAM_VADDR      0x40000000UL
-#define GUEST_DTB_VADDR            0x5f000000UL
-#define GUEST_INIT_RAM_DISK_VADDR  0x50000000UL
-#endif
+#define GUEST_RAM_SIZE             AOS_LINUX_GUEST_RAM_SIZE
+#define LINUX_GUEST_RAM_VADDR      AOS_LINUX_GUEST_RAM_BASE
+#define GUEST_DTB_VADDR            AOS_LINUX_GUEST_DTB_BASE
+#define GUEST_INIT_RAM_DISK_VADDR  AOS_LINUX_GUEST_INITRD_BASE
 
 /* ─── Channel IDs ────────────────────────────────────────────────────── */
 

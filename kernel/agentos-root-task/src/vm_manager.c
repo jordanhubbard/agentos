@@ -43,6 +43,7 @@
 #include "contracts/vibeos_contract.h"
 #include "contracts/vm_manager_contract.h"
 #include "system_desc.h"
+#include <platform/guest_memory_layout.h>
 /* vm_manager.h includes vmm_mux.h (found via -I../../freebsd-vmm in Makefile) */
 #include "vm_manager.h"
 
@@ -181,13 +182,20 @@ static uintptr_t dedicated_ram_base(uint32_t vm_type, uint8_t slot_id)
 {
 #if defined(AGENTOS_GUEST_BOTH)
     if (vm_type == VM_TYPE_FREEBSD)
-        return 0x40000000UL;
+        return AOS_FREEBSD_GUEST_RAM_BASE;
     if (vm_type == VM_TYPE_LINUX)
-        return 0xc0000000UL;
+        return AOS_LINUX_GUEST_RAM_BASE;
 #else
     (void)vm_type;
 #endif
     return VM_SLOT_RAM_BASE(slot_id);
+}
+
+static uint32_t dedicated_ram_capacity_mb(uint32_t vm_type)
+{
+    return vm_type == VM_TYPE_FREEBSD
+         ? AOS_FREEBSD_GUEST_RAM_MB
+         : AOS_LINUX_GUEST_RAM_MB;
 }
 
 static uint8_t dedicated_slot_for_type(uint32_t vm_type)
@@ -246,8 +254,11 @@ static int dedicated_create(uint32_t vm_type, uint32_t ram_mb,
                             uint32_t flags, uint8_t *slot_out)
 {
     seL4_CPtr ep = vm_endpoint_for_type(vm_type);
+    uint32_t capacity_mb = dedicated_ram_capacity_mb(vm_type);
     if (!ep)
         return -1;
+    if (ram_mb > capacity_mb)
+        return -4;
 
     uint8_t slot_id = dedicated_slot_for_type(vm_type);
     if (slot_id >= VM_MAX_SLOTS)
@@ -271,7 +282,9 @@ static int dedicated_create(uint32_t vm_type, uint32_t ram_mb,
     slot->id = slot_id;
     slot->state = VM_SLOT_RUNNING;
     slot->ram_vaddr = ram_base;
-    slot->ram_size = (ram_mb ? ((size_t)ram_mb << 20) : VM_SLOT_RAM_SIZE);
+    /* Dedicated VMM frames are provisioned by the root task before launch.
+     * Report the actual mapped capacity, never an unfulfilled request size. */
+    slot->ram_size = (size_t)capacity_mb << 20;
     slot->ram_paddr = ram_base;
     slot->vcpu_id = (uint32_t)slot_id;
     vm_label_copy(slot->label,
@@ -512,6 +525,11 @@ static uint32_t h_create(sel4_badge_t ba, const sel4_msg_t *req,
         rep_u32(rep, 0, VM_ERR);
         rep->length = 4;
         return SEL4_ERR_INTERNAL;
+    }
+    if (dedicated_rc == -4) {
+        rep_u32(rep, 0, VM_ERR);
+        rep->length = 4;
+        return SEL4_ERR_BAD_ARG;
     }
     if (dedicated_rc == 0) {
         sel4_dbg_puts("[vm_manager] CREATE dedicated slot=");
