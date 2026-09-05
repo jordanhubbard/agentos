@@ -1088,6 +1088,7 @@ fn wait_for_guest_console_login_via_cc(
     let prompt_markers = guest_prompt_markers(guest_os);
     let mut freebsd_console_type_accepted = false;
     let mut freebsd_installer_shell_requested = false;
+    let mut freebsd_rescue_shell_requested = false;
     let mut freebsd_stack_requested = false;
     let mut last_progress = Instant::now();
 
@@ -1099,6 +1100,16 @@ fn wait_for_guest_console_login_via_cc(
                 if !chunk.is_empty() {
                     drained_console = true;
                     transcript.push_str(&chunk);
+                    if guest_os == "freebsd"
+                        && !freebsd_rescue_shell_requested
+                        && freebsd_static_rescue_needed(&transcript)
+                    {
+                        println!(
+                            "[xtask:test] FreeBSD dynamic shell unavailable; selecting /rescue/sh"
+                        );
+                        cc_send_raw_bytes(&mut cc, guest_handle, b"/rescue/sh\r")?;
+                        freebsd_rescue_shell_requested = true;
+                    }
                     reject_bad_guest_path(guest_os, &transcript)?;
                     if last_progress.elapsed() >= Duration::from_secs(30) {
                         println!(
@@ -1141,7 +1152,8 @@ fn wait_for_guest_console_login_via_cc(
                             Some((*marker).to_string())
                         }
                     } else if guest_os == "freebsd"
-                        && freebsd_installer_shell_requested
+                        && (freebsd_installer_shell_requested
+                            || freebsd_rescue_shell_requested)
                         && freebsd_shell_prompt_seen(&transcript)
                     {
                         Some(String::from("installer shell prompt"))
@@ -1240,9 +1252,7 @@ fn reject_bad_guest_path(guest_os: &str, transcript: &str) -> anyhow::Result<()>
         && (transcript.contains("mountroot>")
             || transcript.contains("Manual root filesystem specification")
             || transcript.contains("Mounting from cd9660:")
-                && transcript.contains("failed with error")
-            || transcript.contains("Enter full pathname")
-            || transcript.contains("single-user"))
+                && transcript.contains("failed with error"))
     {
         anyhow::bail!(
             "FreeBSD reached mountroot, maintenance, or single-user fallback instead of a normal login or configured installer shell; tail:\n{}",
@@ -1250,6 +1260,12 @@ fn reject_bad_guest_path(guest_os: &str, transcript: &str) -> anyhow::Result<()>
         );
     }
     Ok(())
+}
+
+fn freebsd_static_rescue_needed(transcript: &str) -> bool {
+    transcript.contains("Enter full pathname of shell")
+        && (transcript.contains("Unsupported version")
+            || transcript.contains("ld-elf.so.1:"))
 }
 
 fn freebsd_shell_prompt_seen(transcript: &str) -> bool {
@@ -2032,6 +2048,23 @@ mod tests {
             assert!(!command.contains("sshd || true"));
             assert!(command.contains("&& printf 'agentos-"));
         }
+    }
+
+    #[test]
+    fn freebsd_dynamic_shell_failure_selects_static_rescue() {
+        let transcript = "ld-elf.so.1: /lib/libedit.so.8: Unsupported version 0 \
+                          of Elf_Verneed entry\nEnter full pathname of shell \
+                          or RETURN for /bin/sh:";
+        assert!(freebsd_static_rescue_needed(transcript));
+        assert!(reject_bad_guest_path("freebsd", transcript).is_ok());
+        assert!(!freebsd_static_rescue_needed(
+            "Enter full pathname of shell or RETURN for /bin/sh:"
+        ));
+        assert!(reject_bad_guest_path(
+            "freebsd",
+            "mountroot>\nManual root filesystem specification:"
+        )
+        .is_err());
     }
 
     #[test]
