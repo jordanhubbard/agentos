@@ -1397,13 +1397,19 @@ static uint32_t handle_vos_send_input(sel4_badge_t badge, const sel4_msg_t *req,
     }
 
     sel4_msg_t vreq = {0}, vrep = {0};
+    if (req->length < 28u ||
+        req->length > SEL4_MSG_DATA_BYTES - 4u) {
+        data_wr32(rep->data, 0, VIBEOS_ERR_BAD_TYPE);
+        rep->length = 4;
+        return VIBEOS_ERR_BAD_TYPE;
+    }
+    uint32_t input_len = req->length - 4u;
     vreq.opcode = OP_VM_SEND_INPUT;
     data_wr32(vreq.data, 0, s_vos[slot].vm_slot);
-    for (uint32_t i = 0; i < 24u; i++) {
-        uint32_t src = 4u + i;
-        vreq.data[4u + i] = (src < req->length) ? req->data[src] : 0u;
+    for (uint32_t i = 0; i < input_len; i++) {
+        vreq.data[4u + i] = req->data[4u + i];
     }
-    vreq.length = 28u;
+    vreq.length = 4u + input_len;
     sel4_call(g_vmm_ep, &vreq, &vrep);
 
     uint32_t vm_ok = data_rd32(vrep.data, 0);

@@ -482,7 +482,7 @@ const system_desc_t system_desc_aarch64 = {
             .mr_count = 1u,
             .memory_regions = {
                 { .vaddr    = 0x40000000ULL,
-                  .size     = 0x20000000u,  /* 512 MB FreeBSD guest RAM */
+                  .size     = 0x10000000u,  /* 256 MB FreeBSD guest RAM */
                   .writable = 1u,
                   .name     = "guest_ram" },
             },

@@ -161,6 +161,8 @@ static int test_cc_input_event_types(void)
     CHECK(CC_INPUT_KEY_UP     == 0x02u);
     CHECK(CC_INPUT_MOUSE_MOVE == 0x03u);
     CHECK(CC_INPUT_MOUSE_BTN  == 0x04u);
+    CHECK(CC_INPUT_TEXT       == 0x05u);
+    CHECK(CC_INPUT_TEXT_MAX   == 20u);
 
     /* All distinct */
     CHECK(CC_INPUT_KEY_DOWN   != CC_INPUT_KEY_UP);
@@ -169,6 +171,7 @@ static int test_cc_input_event_types(void)
     CHECK(CC_INPUT_KEY_UP     != CC_INPUT_MOUSE_MOVE);
     CHECK(CC_INPUT_KEY_UP     != CC_INPUT_MOUSE_BTN);
     CHECK(CC_INPUT_MOUSE_MOVE != CC_INPUT_MOUSE_BTN);
+    CHECK(CC_INPUT_MOUSE_BTN  != CC_INPUT_TEXT);
 
     PASS("cc_input_event_types");
 }

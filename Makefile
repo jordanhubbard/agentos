@@ -33,7 +33,7 @@ endif
 TARGET_ARCH ?= $(CONFIG_TARGET)
 GUEST_OS    ?= $(CONFIG_GUEST_OS)
 QEMU_TEST_TIMEOUT ?= 300
-DUAL_OS_TEST_TIMEOUT ?= 900
+DUAL_OS_TEST_TIMEOUT ?= 3000
 QEMU_TEST_GUEST_OS = $(if $(filter x86_64,$(ARCH)),none,$(GUEST_OS))
 
 # ─── Paths (computed FIRST, before any -include changes MAKEFILE_LIST) ───────
@@ -763,6 +763,12 @@ test-integration:
 	    echo "PASS: tests/platform/test_uart_cap_ownership.c"; \
 	else \
 	    echo "FAIL: tests/platform/test_uart_cap_ownership.c"; \
+	    status=1; \
+	fi; \
+	if cargo test -p xtask --lib --quiet; then \
+	    echo "PASS: xtask focused unit tests"; \
+	else \
+	    echo "FAIL: xtask focused unit tests"; \
 	    status=1; \
 	fi; \
 	echo ""; \

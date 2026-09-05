@@ -109,8 +109,10 @@ static uint32_t host_blk_transfer(uint32_t op, uint64_t sector,
         uint32_t bytes;
         uint32_t rc;
 
-        if (sectors > AGENTOS_BLK_SHARED_DMA_MAX_SECTORS) {
-            sectors = AGENTOS_BLK_SHARED_DMA_MAX_SECTORS;
+        uint32_t max_sectors =
+            AGENTOS_BLK_MEDIA_DMA_MAX_SECTORS(g_media_id);
+        if (sectors > max_sectors) {
+            sectors = max_sectors;
         }
         bytes = sectors * AOS_HOST_BLK_SECTOR_SIZE;
         if (op == AOS_HOST_BLK_OP_WRITE) {
@@ -274,6 +276,7 @@ bool aos_vmm_virtio_blk_load_casper_initrd(uintptr_t guest_dest,
     }
 
     size_t copied = 0u;
+    uint32_t chunks = 0u;
     while (copied < initrd_size) {
         size_t remaining = (size_t)initrd_size - copied;
         uint32_t bytes = remaining > AGENTOS_BLK_SHARED_DMA_DATA_SIZE
@@ -289,22 +292,20 @@ bool aos_vmm_virtio_blk_load_casper_initrd(uintptr_t guest_dest,
             AOS_HOST_BLK_OK) {
             return false;
         }
-        volatile uint8_t *dest =
-            (volatile uint8_t *)(guest_dest + copied);
-        for (uint32_t i = 0u; i < bytes; i++) {
-            dest[i] = dma[i];
-        }
+        aos_copy((void *)(guest_dest + copied), dma, bytes);
         copied += bytes;
+        chunks++;
+        if ((chunks & (chunks - 1u)) == 0u) {
+            LOG_VMM("emulated virtio-blk: casper initrd staging chunks=%u bytes=%u\n",
+                    (unsigned)chunks, (unsigned)copied);
+        }
+        seL4_Yield();
     }
 
+    __atomic_thread_fence(__ATOMIC_SEQ_CST);
     g_host_read_pumped = 1;
-    uint32_t hash = 2166136261u;
-    const volatile uint8_t *image = (const volatile uint8_t *)guest_dest;
-    for (uint32_t i = 0u; i < initrd_size; i++) {
-        hash = (hash ^ image[i]) * 16777619u;
-    }
-    LOG_VMM("emulated virtio-blk: loaded casper/initrd from host media bytes=%u fnv1a=%x\n",
-            (unsigned)initrd_size, (unsigned)hash);
+    LOG_VMM("emulated virtio-blk: loaded casper/initrd from host media bytes=%u\n",
+            (unsigned)initrd_size);
     LOG_VMM("emulated virtio-blk: host-media read sector=%lu count=%u\n",
             (unsigned long)((uint64_t)initrd_lba * 4u),
             (unsigned)((initrd_size + 511u) / 512u));

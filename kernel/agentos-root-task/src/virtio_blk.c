@@ -134,16 +134,13 @@ static uint64_t queue_paddr(const blk_device_t *device)
  * regions directly.  The header sits at shmem+0, the data at shmem+16, and
  * the status byte at shmem+16+data_len.
  *
- * blk_dma_shmem is 32 KB.  The maximum useful I/O is therefore:
- *   (32768 - 16 - 1) / 512 = 63 full sectors per call.
- * We cap count at 63 to prevent buffer overflow.
+ * The common layout assigns a large staging window to Ubuntu media loading
+ * while retaining FreeBSD's proven 32 KB window. Per-medium limits keep data
+ * and status inside the selected window.
  * ──────────────────────────────────────────────────────────────────────────── */
 
-#define DMA_SHMEM_SIZE          0x8000u   /* 32 KB */
 #define DMA_HDR_OFFSET          0u
 #define DMA_DATA_OFFSET         AGENTOS_BLK_SHARED_DMA_DATA_OFF
-#define DMA_MAX_SECTORS         AGENTOS_BLK_SHARED_DMA_MAX_SECTORS
-#define DMA_MAX_DATA_BYTES      (DMA_MAX_SECTORS * 512u)
 #define DMA_STATUS_OFFSET(cnt)  (DMA_DATA_OFFSET + (uint32_t)(cnt) * 512u)
 
 static volatile uint8_t *dma_base(const blk_device_t *device)
@@ -154,6 +151,11 @@ static volatile uint8_t *dma_base(const blk_device_t *device)
 static uint64_t dma_paddr(const blk_device_t *device)
 {
     return g_blk_shared_paddr + device->dma_off;
+}
+
+static uint32_t dma_max_sectors(const blk_device_t *device)
+{
+    return AGENTOS_BLK_MEDIA_DMA_MAX_SECTORS(device->media_id);
 }
 
 /* ─────────────────────────────────────────────────────────────────────────────
@@ -562,7 +564,7 @@ static uint32_t virtio_blk_h_dispatch(sel4_badge_t b, const sel4_msg_t *req,
             rep->length = 4;
             return SEL4_ERR_OK;
         }
-        if (count > DMA_MAX_SECTORS) {
+        if (count > dma_max_sectors(device)) {
             rep_u32(rep, 0, blk_wire_status(op, BLK_ERR_IO));
             rep->length = 4;
             return SEL4_ERR_OK;
@@ -600,7 +602,7 @@ static uint32_t virtio_blk_h_dispatch(sel4_badge_t b, const sel4_msg_t *req,
             rep->length = 4;
             return SEL4_ERR_OK;
         }
-        if (count > DMA_MAX_SECTORS) {
+        if (count > dma_max_sectors(device)) {
             rep_u32(rep, 0, blk_wire_status(op, BLK_ERR_IO));
             rep->length = 4;
             return SEL4_ERR_OK;

@@ -654,17 +654,24 @@ static bool cc_call_boot_guest(uint32_t opcode, const uint8_t *payload,
     return reply->opcode == GUEST_OK;
 }
 
-static bool cc_forward_boot_guest_input(const cc_input_event_t *event)
+static bool cc_forward_boot_guest_input(const cc_input_event_t *event,
+                                        const uint8_t *text,
+                                        uint32_t text_len)
 {
     if (!g_boot_guest_present) return false;
 
-    uint8_t payload[4u + sizeof(cc_input_event_t)];
+    uint8_t payload[SEL4_MSG_DATA_BYTES];
+    uint32_t payload_len = 4u + (uint32_t)sizeof(cc_input_event_t) + text_len;
+    if (payload_len > sizeof(payload)) return false;
     cc_msg_wr32(payload, 0u, CC_BOOT_GUEST_HANDLE);
     __builtin_memcpy(payload + 4u, event, sizeof(cc_input_event_t));
+    if (text_len > 0u) {
+        __builtin_memcpy(payload + 4u + sizeof(cc_input_event_t), text, text_len);
+    }
 
     sel4_msg_t reply = {0};
     return cc_call_boot_guest(MSG_GUEST_SEND_INPUT, payload,
-                              (uint32_t)sizeof(payload), &reply);
+                              payload_len, &reply);
 }
 
 static bool cc_drain_boot_guest_console(uint8_t *dst, uint32_t max,
@@ -704,13 +711,20 @@ static bool cc_drain_boot_guest_console(uint8_t *dst, uint32_t max,
 }
 
 static bool cc_forward_vibe_input(uint32_t handle,
-                                  const cc_input_event_t *event)
+                                  const cc_input_event_t *event,
+                                  const uint8_t *text,
+                                  uint32_t text_len)
 {
     sel4_msg_t msg = {0}, reply = {0};
+    uint32_t payload_len = (uint32_t)sizeof(cc_input_event_t) + text_len;
+    if (4u + payload_len > SEL4_MSG_DATA_BYTES) return false;
     msg.opcode = MSG_VIBEOS_SEND_INPUT;
-    msg.length = 4u + (uint32_t)sizeof(cc_input_event_t);
+    msg.length = 4u + payload_len;
     cc_msg_wr32(msg.data, 0u, handle);
     __builtin_memcpy(msg.data + 4u, event, sizeof(cc_input_event_t));
+    if (text_len > 0u) {
+        __builtin_memcpy(msg.data + 4u + sizeof(cc_input_event_t), text, text_len);
+    }
 
     sel4_call((seL4_CPtr)PD_CNODE_SLOT_VIBE_ENGINE_EP, &msg, &reply);
     return reply.opcode == SEL4_ERR_OK && cc_msg_rd32(reply.data, 0u) == 0u;
@@ -1254,12 +1268,20 @@ static void handle_send_input(const cc_req_wire_t *req, cc_reply_wire_t *rep)
 {
 #if defined(AGENTOS_GUEST_LINUX) || defined(AGENTOS_GUEST_FREEBSD)
     const cc_input_event_t *event = (const cc_input_event_t *)req->shmem;
+    uint32_t text_len = event->event_type == CC_INPUT_TEXT ? event->keycode : 0u;
+    if (text_len > CC_INPUT_TEXT_MAX ||
+        sizeof(cc_input_event_t) + text_len > sizeof(req->shmem)) {
+        rep->mr[0] = CC_ERR_BAD_HANDLE;
+        return;
+    }
+    const uint8_t *text = req->shmem + sizeof(cc_input_event_t);
     if (req->mr[0] == CC_BOOT_GUEST_HANDLE) {
-        rep->mr[0] = cc_forward_boot_guest_input(event) ? CC_OK : CC_ERR_RELAY_FAULT;
+        rep->mr[0] = cc_forward_boot_guest_input(event, text, text_len)
+                     ? CC_OK : CC_ERR_RELAY_FAULT;
         return;
     }
 
-    rep->mr[0] = cc_forward_vibe_input(req->mr[0], event)
+    rep->mr[0] = cc_forward_vibe_input(req->mr[0], event, text, text_len)
                  ? CC_OK : CC_ERR_BAD_HANDLE;
     return;
 #else

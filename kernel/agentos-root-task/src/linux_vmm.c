@@ -408,6 +408,7 @@ void pd_main(seL4_CPtr my_ep, seL4_CPtr ns_ep) { linux_vmm_main(my_ep, ns_ep); }
 #include <platform/vmm_virtio_console.h>
 #include <contracts/net-service/interface.h>
 #include "gpu_shmem.h"
+#include "contracts/cc_contract.h"
 #include "contracts/linux_vmm_contract.h"
 #include "sel4_boot.h"    /* seL4_IRQHandler_Ack, seL4_CPtr               */
 #include "sel4_ipc.h"     /* sel4_call, sel4_msg_t                        */
@@ -918,6 +919,18 @@ static bool input_event_to_byte(uint32_t event_type, uint32_t keycode,
     }
 }
 
+static bool guest_console_push_input(uint8_t byte)
+{
+    if (aos_vmm_virtio_console_push_rx(byte)) {
+        return true;
+    }
+    if (!console_rx_push(byte)) {
+        return false;
+    }
+    pl011_maybe_inject_irq();
+    return true;
+}
+
 static void pl011_store32(uint32_t *reg, size_t offset, uint64_t fsr,
                           uint32_t value)
 {
@@ -1167,15 +1180,25 @@ static seL4_MessageInfo_t linux_vmm_rpc(seL4_MessageInfo_t info)
         uint8_t byte = 0u;
         uint32_t event_type = vmm_msg_rd32(req.data, 4u);
         uint32_t keycode = vmm_msg_rd32(req.data, 8u);
-        if (input_event_to_byte(event_type, keycode, &byte)) {
-            if (!aos_vmm_virtio_console_push_rx(byte)) {
-                /* Early boot fallback before virtio-console reaches DRIVER_OK. */
-                if (!console_rx_push(byte)) {
-                    rep.opcode = GUEST_ERR_DEVICE_UNAVAILABLE;
-                    break;
+        if (event_type == CC_INPUT_TEXT) {
+            if (keycode > CC_INPUT_TEXT_MAX || req.length < 28u + keycode) {
+                rep.opcode = GUEST_ERR_PROTOCOL_VIOLATION;
+                break;
+            }
+            if (!aos_vmm_virtio_console_push_rx_bytes(&req.data[28u], keycode)) {
+                for (uint32_t i = 0u; i < keycode; i++) {
+                    if (!console_rx_push(req.data[28u + i])) {
+                        rep.opcode = GUEST_ERR_DEVICE_UNAVAILABLE;
+                        break;
+                    }
                 }
                 pl011_maybe_inject_irq();
             }
+            if (rep.opcode != 0u) break;
+        } else if (input_event_to_byte(event_type, keycode, &byte) &&
+                   !guest_console_push_input(byte)) {
+            rep.opcode = GUEST_ERR_DEVICE_UNAVAILABLE;
+            break;
         }
         rep.opcode = GUEST_OK;
         break;

@@ -111,6 +111,20 @@ int main(void)
     ok(contains(vmm, "aos_vmm_virtio_console_drain_tx") &&
        contains(vmm, "aos_vmm_virtio_console_push_rx"),
        "guest console contract bridges both TX and RX");
+    ok(contains("kernel/agentos-root-task/include/contracts/cc_contract.h",
+                "#define CC_INPUT_TEXT       0x05u") &&
+       contains("kernel/agentos-root-task/src/cc_pd.c",
+                "cc_forward_vibe_input(req->mr[0], event, text, text_len)") &&
+       contains("services/vibe-engine/vibe_engine.c",
+                "uint32_t input_len = req->length - 4u;") &&
+       contains("kernel/agentos-root-task/src/vm_manager.c",
+                "payload, 4u + input_len") &&
+       contains(vmm, "aos_vmm_virtio_console_push_rx_bytes") &&
+       contains("kernel/agentos-root-task/src/freebsd_vmm.c",
+                "event_type == CC_INPUT_TEXT") &&
+       contains("xtask/src/cmd_test.rs",
+                "const CC_INPUT_TEXT_CHUNK: usize = 20;"),
+       "bounded CC text input is forwarded through both guest VMM paths");
     ok(contains(vmm, "Guest console bytes belong to the per-guest virtual TTY") &&
        contains(vmm, "console_tx_push(byte);"),
        "guest virtual TTY is not synchronously mirrored to physical PL011");

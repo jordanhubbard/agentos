@@ -111,8 +111,18 @@ uint32_t aos_vmm_virtio_console_drain_tx(uint8_t *dst, uint32_t max)
 
 bool aos_vmm_virtio_console_push_rx(uint8_t byte)
 {
-    if (!g_ready || !g_driver_ok || serial_enqueue(&g_rx, (char)byte) != 0) {
+    return aos_vmm_virtio_console_push_rx_bytes(&byte, 1u);
+}
+
+bool aos_vmm_virtio_console_push_rx_bytes(const uint8_t *bytes, uint32_t len)
+{
+    if (!g_ready || !g_driver_ok || bytes == 0 || len == 0u) {
         return false;
+    }
+    for (uint32_t i = 0u; i < len; i++) {
+        if (serial_enqueue(&g_rx, (char)bytes[i]) != 0) {
+            return false;
+        }
     }
     if (!virtio_console_handle_rx(&g_aos_console)) {
         return false;

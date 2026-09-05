@@ -4,7 +4,7 @@ use std::io::{Read, Seek, SeekFrom, Write};
 use std::net::{SocketAddr, TcpStream};
 use std::os::unix::net::UnixStream;
 use std::os::unix::process::CommandExt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Stdio};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -12,6 +12,8 @@ const UBUNTU_DEFAULT_SSH_PORT: u16 = 12222;
 const FREEBSD_DEFAULT_SSH_PORT: u16 = 12223;
 const UBUNTU_NOCLOUD_PORT: u16 = 18790;
 const CC_WIRE_SHMEM_SIZE: usize = 4096;
+const CC_INPUT_TEXT: u32 = 0x05;
+const CC_INPUT_TEXT_CHUNK: usize = 20;
 const CC_REQ_SIZE: usize = 4 + 12 + CC_WIRE_SHMEM_SIZE;
 const CC_REPLY_SIZE: usize = 16 + CC_WIRE_SHMEM_SIZE;
 const CC_IO_TIMEOUT: Duration = Duration::from_secs(45);
@@ -37,6 +39,7 @@ const TRACE_PD_FREEBSD_VMM: u32 = 42;
 
 pub fn run(args: &TestArgs) -> anyhow::Result<()> {
     let repo_root = repo_root()?;
+    let ubuntu_live = args.assert_ubuntu_live || args.guest_os == "both";
 
     if args.assert_emulated_net
         || args.assert_emulated_blk
@@ -65,7 +68,7 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
             "[xtask:test] Building BOARD={} GUEST_OS={}...",
             args.board, args.guest_os
         );
-        if args.assert_ubuntu_live {
+        if ubuntu_live {
             run_make(
                 &[
                     "build",
@@ -100,6 +103,11 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
     let (_, log_path) = log_file
         .keep()
         .context("failed to persist build/tmp QEMU log file")?;
+    let dual_ssh_key = if args.guest_os == "both" {
+        Some(generate_ssh_test_key(&repo_root)?)
+    } else {
+        None
+    };
 
     let needs_ssh_probe = !matches!(args.guest_os.as_str(), "ubuntu" | "freebsd");
     let needs_host_net_stimulus = args.guest_os == "ubuntu" &&
@@ -124,7 +132,7 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
         &cc_sock,
         &args.guest_os,
         ssh_port,
-        args.assert_ubuntu_live,
+        ubuntu_live,
     )?;
     let _host_net_probe = if needs_host_net_stimulus {
         wait_for_all_markers(
@@ -160,7 +168,7 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
             wait_for_guest_console_login_via_cc(
                 &cc_sock,
                 0,
-                if args.assert_ubuntu_live {
+                if ubuntu_live {
                     "ubuntu-live"
                 } else {
                     "ubuntu"
@@ -191,6 +199,9 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
                 &cc_sock,
                 Duration::from_secs(args.timeout_secs),
                 &mut qemu,
+                dual_ssh_key
+                    .as_ref()
+                    .context("dual SSH key was not generated")?,
             )
         }
         _ => {
@@ -293,7 +304,7 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
 }
 
 fn effective_ssh_port(args: &TestArgs) -> u16 {
-    if args.guest_os == "ubuntu" && args.ssh_port == 0 {
+    if (args.guest_os == "ubuntu" || args.guest_os == "both") && args.ssh_port == 0 {
         UBUNTU_DEFAULT_SSH_PORT
     } else if args.guest_os == "freebsd" && args.ssh_port == 0 {
         FREEBSD_DEFAULT_SSH_PORT
@@ -305,6 +316,38 @@ fn effective_ssh_port(args: &TestArgs) -> u16 {
 struct SeedServer {
     child: std::process::Child,
     _dir: tempfile::TempDir,
+}
+
+struct SshTestKey {
+    _dir: tempfile::TempDir,
+    private_key: PathBuf,
+    public_key: String,
+}
+
+fn generate_ssh_test_key(repo_root: &Path) -> anyhow::Result<SshTestKey> {
+    let tmp_dir = repo_root.join("build/tmp");
+    std::fs::create_dir_all(&tmp_dir)
+        .with_context(|| format!("failed to create {}", tmp_dir.display()))?;
+    let dir = tempfile::Builder::new()
+        .prefix("agentos-dual-ssh-")
+        .tempdir_in(&tmp_dir)
+        .context("failed to create dual SSH key directory")?;
+    let private_key = dir.path().join("id_ed25519");
+    let status = std::process::Command::new("ssh-keygen")
+        .args(["-q", "-t", "ed25519", "-N", "", "-f"])
+        .arg(&private_key)
+        .status()
+        .context("failed to run ssh-keygen for dual SSH proof")?;
+    anyhow::ensure!(status.success(), "ssh-keygen failed with {status}");
+    let public_key = std::fs::read_to_string(private_key.with_extension("pub"))
+        .context("failed to read generated dual SSH public key")?
+        .trim()
+        .to_string();
+    Ok(SshTestKey {
+        _dir: dir,
+        private_key,
+        public_key,
+    })
 }
 
 impl Drop for SeedServer {
@@ -441,7 +484,7 @@ pub fn spawn_qemu_with_guest(
     ubuntu_live: bool,
 ) -> anyhow::Result<std::process::Child> {
     let log_file = std::fs::File::create(log_path).context("failed to create QEMU log file")?;
-    let netdev = qemu_netdev_arg(ssh_port)?;
+    let netdev = qemu_netdev_arg(ssh_port, guest_os)?;
 
     let build_image = repo_root.join("build").join(board).join("agentos.img");
 
@@ -692,15 +735,29 @@ fn freebsd_disk_image(repo_root: &Path) -> std::path::PathBuf {
     repo_root.join("build/guest-images/freebsd-15.0-aarch64.iso")
 }
 
-fn qemu_netdev_arg(ssh_port: u16) -> anyhow::Result<String> {
+fn qemu_netdev_arg(ssh_port: u16, guest_os: &str) -> anyhow::Result<String> {
     if ssh_port == 0 {
         return Ok("user,id=net0".to_string());
     }
     ensure_host_port_available(ssh_port)?;
+    if guest_os == "both" {
+        anyhow::ensure!(
+            ssh_port != FREEBSD_DEFAULT_SSH_PORT,
+            "dual guest Ubuntu and FreeBSD SSH ports must differ"
+        );
+        ensure_host_port_available(FREEBSD_DEFAULT_SSH_PORT)?;
+        return Ok(dual_qemu_netdev_arg(ssh_port));
+    }
     Ok(format!(
         "user,id=net0,hostfwd=tcp:127.0.0.1:{}-:22",
         ssh_port
     ))
+}
+
+fn dual_qemu_netdev_arg(ubuntu_port: u16) -> String {
+    format!(
+        "user,id=net0,hostfwd=tcp:127.0.0.1:{ubuntu_port}-10.0.2.15:22,hostfwd=tcp:127.0.0.1:{FREEBSD_DEFAULT_SSH_PORT}-10.0.2.16:22"
+    )
 }
 
 fn ensure_host_port_available(port: u16) -> anyhow::Result<()> {
@@ -1442,18 +1499,188 @@ fn create_guest_via_cc_wait(
     );
 }
 
-fn wait_for_dual_guest_consoles_via_cc(
+fn run_guest_console_command(
     cc_sock: &Path,
+    cc: &mut CcClient,
+    guest_handle: u32,
+    guest_os: &str,
+    command: &str,
+    marker: &str,
+    timeout: Duration,
+    qemu: &mut Child,
+) -> anyhow::Result<()> {
+    let _ = cc_log_stream_for_handle(cc, guest_handle, guest_os);
+    cc_send_raw_bytes(cc, guest_handle, command.as_bytes())?;
+    cc_send_raw_byte(cc, guest_handle, b'\r')?;
+
+    let start = Instant::now();
+    let mut output = String::new();
+    while start.elapsed() < timeout {
+        ensure_qemu_running(qemu, "waiting for guest provisioning command")?;
+        match cc_log_stream_for_handle(cc, guest_handle, guest_os) {
+            Ok(chunk) => {
+                output.push_str(&chunk);
+                if output.contains(marker) {
+                    return Ok(());
+                }
+            }
+            Err(err) if is_transient_cc_read_error(&err) => {}
+            Err(_) => {
+                if let Ok(next) = CcClient::connect(cc_sock) {
+                    *cc = next;
+                }
+            }
+        }
+        std::thread::sleep(Duration::from_millis(250));
+    }
+    anyhow::bail!(
+        "{guest_os} SSH provisioning command did not emit {marker:?}; tail:\n{}",
+        tail_chars(&output, 3000)
+    );
+}
+
+fn provision_dual_ssh(
+    cc_sock: &Path,
+    cc: &mut CcClient,
+    linux_handle: u32,
+    freebsd_handle: u32,
+    ssh_key: &SshTestKey,
+    qemu: &mut Child,
+) -> anyhow::Result<()> {
+    let ubuntu = ubuntu_ssh_provision_command(&ssh_key.public_key);
+    run_guest_console_command(
+        cc_sock,
+        cc,
+        linux_handle,
+        "ubuntu",
+        &ubuntu,
+        "agentos-ubuntu-ssh-ready",
+        Duration::from_secs(90),
+        qemu,
+    )?;
+
+    let freebsd = freebsd_ssh_provision_command(&ssh_key.public_key);
+    run_guest_console_command(
+        cc_sock,
+        cc,
+        freebsd_handle,
+        "freebsd",
+        &freebsd,
+        "agentos-freebsd-ssh-ready",
+        Duration::from_secs(90),
+        qemu,
+    )
+}
+
+fn ubuntu_ssh_provision_command(public_key: &str) -> String {
+    format!(
+        "sudo -n sh -c \"mkdir -p /home/ubuntu/.ssh /run/sshd; printf '%s\\\\n' '{}' > /home/ubuntu/.ssh/authorized_keys; chown -R ubuntu:ubuntu /home/ubuntu/.ssh; chmod 700 /home/ubuntu/.ssh; chmod 600 /home/ubuntu/.ssh/authorized_keys; ip link set eth0 up; ip addr flush dev eth0 scope global; ip addr add 10.0.2.15/24 dev eth0; ip route replace default via 10.0.2.2; ssh-keygen -A; /usr/sbin/sshd || true\"; printf 'agentos-ubuntu-ssh-%s\\\\n' ready",
+        public_key
+    )
+}
+
+fn freebsd_ssh_provision_command(public_key: &str) -> String {
+    format!(
+        "mkdir -p /tmp/agentos-ssh; printf '%s\\\\n' '{}' > /tmp/agentos-ssh/authorized_keys; chmod 600 /tmp/agentos-ssh/authorized_keys; ifconfig vtnet0 inet 10.0.2.16 netmask 255.255.255.0 up; route delete default >/dev/null 2>&1 || true; route add default 10.0.2.2 >/dev/null 2>&1 || true; ssh-keygen -q -t ed25519 -N '' -f /tmp/agentos-ssh/host_key; /usr/sbin/sshd -f /dev/null -o HostKey=/tmp/agentos-ssh/host_key -o AuthorizedKeysFile=/tmp/agentos-ssh/authorized_keys -o StrictModes=no -o PermitRootLogin=yes -o PasswordAuthentication=no -o UsePAM=no -o PidFile=/tmp/agentos-ssh/sshd.pid || true; printf 'agentos-freebsd-ssh-%s\\\\n' ready",
+        public_key
+    )
+}
+
+fn spawn_ssh_probe(
+    private_key: &Path,
+    port: u16,
+    user: &str,
+) -> anyhow::Result<std::process::Child> {
+    std::process::Command::new("ssh")
+        .args([
+            "-i",
+            private_key
+                .to_str()
+                .context("SSH private key path is not UTF-8")?,
+            "-p",
+            &port.to_string(),
+            "-o",
+            "BatchMode=yes",
+            "-o",
+            "ConnectTimeout=5",
+            "-o",
+            "StrictHostKeyChecking=no",
+            "-o",
+            "UserKnownHostsFile=/dev/null",
+            "-o",
+            "LogLevel=ERROR",
+            &format!("{user}@127.0.0.1"),
+            "uname -s",
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .with_context(|| format!("failed to launch SSH probe for {user} on port {port}"))
+}
+
+fn wait_for_dual_ssh(
+    ssh_key: &SshTestKey,
     timeout: Duration,
     qemu: &mut Child,
 ) -> anyhow::Result<String> {
     let start = Instant::now();
-    let create_timeout = timeout.min(Duration::from_secs(120));
+    let mut last = String::from("no SSH attempts completed");
+    while start.elapsed() < timeout {
+        ensure_qemu_running(qemu, "waiting for dual authenticated SSH")?;
+        let ubuntu = spawn_ssh_probe(
+            &ssh_key.private_key,
+            UBUNTU_DEFAULT_SSH_PORT,
+            "ubuntu",
+        )?;
+        let freebsd = spawn_ssh_probe(
+            &ssh_key.private_key,
+            FREEBSD_DEFAULT_SSH_PORT,
+            "root",
+        )?;
+        let ubuntu_out = ubuntu
+            .wait_with_output()
+            .context("failed to wait for Ubuntu SSH probe")?;
+        let freebsd_out = freebsd
+            .wait_with_output()
+            .context("failed to wait for FreeBSD SSH probe")?;
+        let ubuntu_stdout = String::from_utf8_lossy(&ubuntu_out.stdout);
+        let freebsd_stdout = String::from_utf8_lossy(&freebsd_out.stdout);
+        if ubuntu_out.status.success()
+            && freebsd_out.status.success()
+            && ubuntu_stdout.trim() == "Linux"
+            && freebsd_stdout.trim() == "FreeBSD"
+        {
+            return Ok(String::from(
+                "concurrent authenticated SSH returned Linux and FreeBSD",
+            ));
+        }
+        last = format!(
+            "ubuntu status={} stdout={:?} stderr={:?}; freebsd status={} stdout={:?} stderr={:?}",
+            ubuntu_out.status,
+            ubuntu_stdout.trim(),
+            String::from_utf8_lossy(&ubuntu_out.stderr).trim(),
+            freebsd_out.status,
+            freebsd_stdout.trim(),
+            String::from_utf8_lossy(&freebsd_out.stderr).trim(),
+        );
+        std::thread::sleep(Duration::from_secs(2));
+    }
+    anyhow::bail!("dual authenticated SSH did not become ready: {last}")
+}
+
+fn wait_for_dual_guest_consoles_via_cc(
+    cc_sock: &Path,
+    timeout: Duration,
+    qemu: &mut Child,
+    ssh_key: &SshTestKey,
+) -> anyhow::Result<String> {
+    let start = Instant::now();
+    let create_timeout = timeout;
 
     let freebsd_handle = create_guest_via_cc_wait(
         cc_sock,
         VIBEOS_TYPE_FREEBSD,
-        512,
+        256,
         "FreeBSD",
         create_timeout,
         qemu,
@@ -1463,7 +1690,7 @@ fn wait_for_dual_guest_consoles_via_cc(
     let linux_handle = create_guest_via_cc_wait(
         cc_sock,
         VIBEOS_TYPE_LINUX,
-        512,
+        1024,
         "Linux",
         create_timeout,
         qemu,
@@ -1477,54 +1704,43 @@ fn wait_for_dual_guest_consoles_via_cc(
         timeout.saturating_sub(start.elapsed()),
         qemu,
     )?;
+    let mut boot_cc = connect_cc_client(cc_sock, timeout.min(Duration::from_secs(30)), qemu)?;
+    let freebsd_boot_suspend = suspend_guest_via_cc(&mut boot_cc, freebsd_handle)
+        .context("failed to suspend ready FreeBSD guest while Ubuntu finishes booting")?;
+    println!(
+        "[xtask:test] suspended ready FreeBSD guest handle={freebsd_handle} state={freebsd_boot_suspend} while Ubuntu boots"
+    );
+    drop(boot_cc);
 
     let linux = wait_for_guest_console_login_via_cc(
         cc_sock,
         linux_handle,
-        "ubuntu",
+        "ubuntu-live",
         timeout.saturating_sub(start.elapsed()),
         qemu,
     )?;
-
-    let mut cc = connect_cc_client(cc_sock, timeout.min(Duration::from_secs(30)), qemu)?;
-    let linux_after_freebsd = verify_guest_console_input(
-        cc_sock,
-        &mut cc,
-        linux_handle,
-        "ubuntu",
-        Duration::from_secs(20),
-        qemu,
-    )?;
-    let freebsd_after_linux = verify_guest_console_input(
-        cc_sock,
-        &mut cc,
-        freebsd_handle,
-        "freebsd",
-        Duration::from_secs(20),
-        qemu,
-    )?;
-    let linux_suspend_state = suspend_guest_via_cc(&mut cc, linux_handle)
-        .context("failed to suspend Linux guest after dual console proof")?;
+    let mut resume_cc = connect_cc_client(cc_sock, timeout.min(Duration::from_secs(30)), qemu)?;
+    let freebsd_boot_resume = resume_guest_via_cc(&mut resume_cc, freebsd_handle)
+        .context("failed to resume FreeBSD guest for dual SSH proof")?;
     println!(
-        "[xtask:test] suspended Linux guest handle={linux_handle} state={linux_suspend_state}"
+        "[xtask:test] resumed FreeBSD guest handle={freebsd_handle} state={freebsd_boot_resume}"
     );
-    let linux_resume_state = resume_guest_via_cc(&mut cc, linux_handle)
-        .context("failed to resume Linux guest after dual console proof")?;
-    println!("[xtask:test] resumed Linux guest handle={linux_handle} state={linux_resume_state}");
-    let linux_after_resume = verify_guest_console_input(
+    let mut cc = resume_cc;
+    provision_dual_ssh(
         cc_sock,
         &mut cc,
         linux_handle,
-        "ubuntu",
-        Duration::from_secs(20),
+        freebsd_handle,
+        ssh_key,
         qemu,
     )?;
+    let ssh = wait_for_dual_ssh(ssh_key, Duration::from_secs(120), qemu)?;
 
     destroy_guest_via_cc(&mut cc, linux_handle).context("failed to destroy Linux guest")?;
     destroy_guest_via_cc(&mut cc, freebsd_handle).context("failed to destroy FreeBSD guest")?;
 
     Ok(format!(
-        "dual CC/vm_manager consoles ready: linux_handle={linux_handle} ({linux}; after_freebsd={linux_after_freebsd}; after_resume={linux_after_resume}); freebsd_handle={freebsd_handle} ({freebsd}; after_linux={freebsd_after_linux}); both destroyed"
+        "dual CC/vm_manager consoles ready: linux_handle={linux_handle} ({linux}); freebsd_handle={freebsd_handle} ({freebsd}); {ssh}; both destroyed"
     ))
 }
 
@@ -1660,9 +1876,25 @@ fn cc_send_raw_byte(cc: &mut CcClient, guest_handle: u32, byte: u8) -> anyhow::R
     Ok(())
 }
 
+fn cc_text_event(chunk: &[u8]) -> Vec<u8> {
+    let mut shmem = vec![0u8; 24 + chunk.len()];
+    wr32(&mut shmem, 0, CC_INPUT_TEXT);
+    wr32(&mut shmem, 4, chunk.len() as u32);
+    shmem[24..].copy_from_slice(chunk);
+    shmem
+}
+
 fn cc_send_raw_bytes(cc: &mut CcClient, guest_handle: u32, bytes: &[u8]) -> anyhow::Result<()> {
-    for byte in bytes {
-        cc_send_raw_byte(cc, guest_handle, *byte)?;
+    for chunk in bytes.chunks(CC_INPUT_TEXT_CHUNK) {
+        let shmem = cc_text_event(chunk);
+        let reply = cc
+            .call(MSG_CC_SEND_INPUT, guest_handle, 0, 0, &shmem)
+            .context("MSG_CC_SEND_INPUT text failed")?;
+        anyhow::ensure!(
+            reply.mr[0] == CC_OK,
+            "MSG_CC_SEND_INPUT text returned ok={}",
+            reply.mr[0]
+        );
     }
     Ok(())
 }
@@ -1733,4 +1965,56 @@ fn wr32(dst: &mut [u8], off: usize, value: u32) {
 fn tail_chars(s: &str, max_chars: usize) -> String {
     let len = s.chars().count();
     s.chars().skip(len.saturating_sub(max_chars)).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn text_events_fit_the_narrowest_relay_and_reassemble() {
+        let input = b"abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGHI";
+        let mut output = Vec::new();
+        let mut frame_count = 0;
+        for chunk in input.chunks(CC_INPUT_TEXT_CHUNK) {
+            let event = cc_text_event(chunk);
+            assert!(event.len() <= 44);
+            assert_eq!(rd32(&event, 0), CC_INPUT_TEXT);
+            assert_eq!(rd32(&event, 4) as usize, chunk.len());
+            output.extend_from_slice(&event[24..]);
+            frame_count += 1;
+        }
+        assert_eq!(frame_count, 3);
+        assert_eq!(output, input);
+    }
+
+    #[test]
+    fn dual_host_forwards_have_distinct_guest_addresses() {
+        let netdev = dual_qemu_netdev_arg(UBUNTU_DEFAULT_SSH_PORT);
+        assert!(netdev.contains("127.0.0.1:12222-10.0.2.15:22"));
+        assert!(netdev.contains("127.0.0.1:12223-10.0.2.16:22"));
+    }
+
+    #[test]
+    fn ssh_provisioning_commands_are_posix_shell_syntax() {
+        let key = "ssh-ed25519 AAAAC3NzaFocusedTest agentos-test";
+        for command in [
+            ubuntu_ssh_provision_command(key),
+            freebsd_ssh_provision_command(key),
+        ] {
+            let status = std::process::Command::new("sh")
+                .args(["-n", "-c", &command])
+                .status()
+                .expect("run sh syntax check");
+            assert!(status.success());
+            assert!(command.contains(key));
+        }
+    }
+
+    #[test]
+    fn provisioning_markers_cannot_match_command_echo() {
+        let key = "ssh-ed25519 AAAAC3NzaFocusedTest agentos-test";
+        assert!(!ubuntu_ssh_provision_command(key).contains("agentos-ubuntu-ssh-ready"));
+        assert!(!freebsd_ssh_provision_command(key).contains("agentos-freebsd-ssh-ready"));
+    }
 }

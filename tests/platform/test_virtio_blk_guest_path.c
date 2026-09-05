@@ -18,6 +18,7 @@
 #include <string.h>
 
 #include <platform/blk_layout.h>
+#include <platform/blk_host_layout.h>
 #include <platform/net_layout.h>
 #include "../../contracts/block-service/interface.h"
 
@@ -276,7 +277,7 @@ int main(void)
                                "{ .irq_number = 79u"),
                  "FreeBSD receives canonical block endpoint and no host block IRQ");
     (void)tap_ok(src_contains("platform/include/platform/blk_host_layout.h",
-                              "AGENTOS_BLK_MEDIA_STRIDE") &&
+                              "AGENTOS_BLK_MEDIA_DMA_OFF") &&
                  src_contains("platform/blk-virt/vmm_virtio_blk.c",
                               "AGENTOS_BLK_MEDIA_DMA_OFF(g_media_id)") &&
                  src_contains("kernel/agentos-root-task/src/linux_vmm.c",
@@ -286,10 +287,19 @@ int main(void)
                  src_contains("kernel/agentos-root-task/src/virtio_blk.c",
                               "AOS_HOST_BLK_MEDIA_FREEBSD"),
                  "canonical driver separates Ubuntu and FreeBSD queues and DMA");
-    (void)tap_ok(AOS_BLK_GUEST_MAX_SEGMENT_SIZE == 0x100000u &&
+    (void)tap_ok(AGENTOS_BLK_SHARED_DMA_MAX_SECTORS == 2047u &&
+                 AGENTOS_BLK_MEDIA_DMA_MAX_SECTORS(
+                    AOS_HOST_BLK_MEDIA_FREEBSD) == 63u &&
+                 AGENTOS_BLK_MEDIA_DMA_OFF(1u) +
+                    AGENTOS_BLK_MEDIA_DMA_SIZE(1u) <=
+                        AGENTOS_BLK_MEDIA_DMA_OFF(0u) &&
+                 AGENTOS_BLK_MEDIA_DMA_OFF(0u) +
+                    AGENTOS_BLK_MEDIA_DMA_SIZE(0u) <=
+                        AGENTOS_BLK_SHARED_SIZE &&
+                 AOS_BLK_GUEST_MAX_SEGMENT_SIZE == 0x100000u &&
                  AOS_BLK_DATA_CELLS == 257u &&
                  src_contains("platform/blk-virt/vmm_virtio_blk.c",
-                              "AGENTOS_BLK_SHARED_DMA_MAX_SECTORS") &&
+                              "AGENTOS_BLK_MEDIA_DMA_MAX_SECTORS") &&
                  src_contains("platform/blk-virt/vmm_virtio_blk.c",
                               "g_aos_blk.config.size_max ="),
                  "FreeBSD MAXPHYS requests are staged and chunked to host DMA");

@@ -27,6 +27,7 @@
 #include <stdbool.h>
 #include "sel4_boot.h"
 #include "contracts/guest_contract.h"
+#include "contracts/cc_contract.h"
 #include "contracts/freebsd_vmm_contract.h"
 #include "sel4_ipc.h"
 
@@ -101,8 +102,13 @@ uintptr_t guest_ram_vaddr;   /* VMM virtual address of guest_ram MR */
 
 #define FREEBSD_GUEST_RAM_VADDR 0x40000000UL
 #define FREEBSD_KERNEL_VADDR    0x40000000UL
+#if defined(AGENTOS_GUEST_BOTH)
+#define FREEBSD_FDT_VADDR       0x4f000000UL
+#define FREEBSD_GUEST_RAM_SIZE  0x10000000UL
+#else
 #define FREEBSD_FDT_VADDR       0x5f000000UL
 #define FREEBSD_GUEST_RAM_SIZE  0x20000000UL
+#endif
 #define FREEBSD_VTIMER_IRQ      27u
 
 #ifndef FREEBSD_IRQ_TRACE
@@ -119,20 +125,6 @@ static void freebsd_copy_to_guest(uintptr_t dst_addr, const void *src, size_t n)
     const uint8_t *s = (const uint8_t *)src;
     for (size_t i = 0; i < n; i++) {
         dst[i] = s[i];
-    }
-}
-
-static void freebsd_clear_guest_ram(uintptr_t base, size_t size)
-{
-    volatile uint64_t *p = (volatile uint64_t *)base;
-    size_t words = size / sizeof(*p);
-    for (size_t i = 0u; i < words; i++) {
-        p[i] = 0u;
-    }
-
-    volatile uint8_t *tail = (volatile uint8_t *)(base + words * sizeof(*p));
-    for (size_t i = words * sizeof(*p); i < size; i++) {
-        *tail++ = 0u;
     }
 }
 
@@ -757,7 +749,20 @@ static seL4_MessageInfo_t freebsd_vmm_rpc(seL4_MessageInfo_t info)
         uint8_t byte = 0u;
         uint32_t event_type = vmm_msg_rd32(req.data, 4u);
         uint32_t keycode = vmm_msg_rd32(req.data, 8u);
-        if (input_event_to_byte(event_type, keycode, &byte)) {
+        if (event_type == CC_INPUT_TEXT) {
+            if (keycode > CC_INPUT_TEXT_MAX || req.length < 28u + keycode) {
+                rep.opcode = GUEST_ERR_PROTOCOL_VIOLATION;
+                break;
+            }
+            for (uint32_t i = 0u; i < keycode; i++) {
+                if (!console_rx_push(req.data[28u + i])) {
+                    rep.opcode = GUEST_ERR_DEVICE_UNAVAILABLE;
+                    break;
+                }
+            }
+            if (rep.opcode != 0u) break;
+            pl011_maybe_inject_irq();
+        } else if (input_event_to_byte(event_type, keycode, &byte)) {
             if (byte == 0x1du) {
                 freebsd_dump_init_stack();
                 rep.opcode = GUEST_OK;
@@ -830,8 +835,7 @@ void init(void)
         return;
     }
 
-    LOG_VMM("  Clearing FreeBSD guest RAM window...\n");
-    freebsd_clear_guest_ram(guest_ram_vaddr, FREEBSD_GUEST_RAM_SIZE);
+    LOG_VMM("  FreeBSD guest RAM zeroed by seL4 retype\n");
 
     freebsd_copy_to_guest(kernel_dst, _guest_kernel_image, kernel_size);
     LOG_VMM("  FreeBSD kernel copied to guest phys 0x%lx\n",

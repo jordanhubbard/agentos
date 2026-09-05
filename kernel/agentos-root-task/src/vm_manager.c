@@ -674,15 +674,20 @@ static uint32_t h_send_input(sel4_badge_t ba, const sel4_msg_t *req,
         return SEL4_ERR_NOT_FOUND;
     }
 
-    uint8_t payload[4u + 24u];
+    if (req->length < 28u || req->length > SEL4_MSG_DATA_BYTES - 4u) {
+        rep_u32(rep, 0, VM_ERR);
+        rep->length = 4;
+        return SEL4_ERR_BAD_ARG;
+    }
+    uint8_t payload[SEL4_MSG_DATA_BYTES];
+    uint32_t input_len = req->length - 4u;
     payload[0] = 0u; payload[1] = 0u; payload[2] = 0u; payload[3] = 0u;
-    for (uint32_t i = 0; i < 24u; i++) {
-        uint32_t src = 4u + i;
-        payload[4u + i] = (src < req->length) ? req->data[src] : 0u;
+    for (uint32_t i = 0; i < input_len; i++) {
+        payload[4u + i] = req->data[4u + i];
     }
 
     uint32_t rc = dedicated_guest_rpc(slot_id, MSG_GUEST_SEND_INPUT,
-                                      payload, (uint32_t)sizeof(payload),
+                                      payload, 4u + input_len,
                                       (sel4_msg_t *)0);
     rep_u32(rep, 0, rc);
     rep->length = 4;

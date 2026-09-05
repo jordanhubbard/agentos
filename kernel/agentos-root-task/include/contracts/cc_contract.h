@@ -180,6 +180,8 @@ enum cc_error {
 #define CC_INPUT_KEY_UP     0x02u  /* key released */
 #define CC_INPUT_MOUSE_MOVE 0x03u  /* relative mouse movement */
 #define CC_INPUT_MOUSE_BTN  0x04u  /* mouse button press/release */
+#define CC_INPUT_TEXT       0x05u  /* keycode=length; UTF-8 bytes follow event */
+#define CC_INPUT_TEXT_MAX   20u   /* fits every 48-byte relay: handle + event + text */
 
 /* ─── Shmem layout: guest info entry (MSG_CC_LIST_GUESTS) ───────────────── */
 
@@ -214,12 +216,13 @@ typedef struct __attribute__((packed)) {
 
 typedef struct __attribute__((packed)) {
     uint32_t event_type;       /* CC_INPUT_* */
-    uint32_t keycode;          /* HID usage code (key events) */
+    uint32_t keycode;          /* HID usage code, or text byte length */
     int32_t  dx;               /* relative X (mouse move) */
     int32_t  dy;               /* relative Y (mouse move) */
     uint32_t btn_mask;         /* button bitmask (mouse button event) */
     uint32_t _reserved;
 } cc_input_event_t;
+/* CC_INPUT_TEXT appends keycode bytes immediately after cc_input_event_t. */
 
 /* ─── MSG_CC_LIST_GUESTS ─────────────────────────────────────────────────── */
 
