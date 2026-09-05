@@ -395,6 +395,10 @@ int main(void)
                               "seL4_CNode_Copy") &&
                  src_contains("kernel/agentos-root-task/src/main.c",
                               "pd_vspace_map_device_frame(guest_vspace") &&
+                 src_contains("kernel/agentos-root-task/src/main.c",
+                              "#define VMM_GUEST_PRIORITY        150u") &&
+                 src_contains("kernel/agentos-root-task/src/main.c",
+                              "VMM_GUEST_PRIORITY,") &&
                  src_contains("kernel/agentos-root-task/src/linux_vmm.c",
                               "aos_vmm_guest_ram_bind(LINUX_GUEST_RAM_GPA") &&
                  src_contains("kernel/agentos-root-task/src/freebsd_vmm.c",

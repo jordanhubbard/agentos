@@ -138,6 +138,12 @@ static seL4_Word g_cap_base;  /* set to bi->empty.start in root_task_main */
  */
 #define VMM_SC_BUDGET_US          25000u
 #define VMM_SC_PERIOD_US          100000u
+/*
+ * Guest fault senders share the VMM endpoint with vm_manager control calls.
+ * Keep guests below vm_manager (priority 155) so an always-faulting guest
+ * cannot starve CONSOLE_DRAIN, SUSPEND, or DESTROY requests indefinitely.
+ */
+#define VMM_GUEST_PRIORITY        150u
 
 /*
  * Number of PD slots reserved statically.  We size for SYSTEM_MAX_PDS
@@ -1088,7 +1094,7 @@ static seL4_Error setup_vmm_guest_vcpu(const pd_desc_t *pd,
     err = seL4_TCB_SetSchedParams((seL4_CPtr)guest_tcb_slot,
                                   seL4_CapInitThreadTCB,
                                   255u,
-                                  (seL4_Word)pd->priority,
+                                  VMM_GUEST_PRIORITY,
                                   (seL4_CPtr)guest_sc_slot,
                                   /* Guest faults must land on the VMM listen EP.
                                    * PD TCBs use a raw endpoint cap here (g_fault_ep).
@@ -1104,7 +1110,7 @@ static seL4_Error setup_vmm_guest_vcpu(const pd_desc_t *pd,
 #else
     err = seL4_TCB_SetPriority((seL4_CPtr)guest_tcb_slot,
                                seL4_CapInitThreadTCB,
-                               (seL4_Word)pd->priority);
+                               VMM_GUEST_PRIORITY);
     if (err != seL4_NoError) {
         return err;
     }
