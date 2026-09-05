@@ -125,6 +125,11 @@ int main(void)
        contains("xtask/src/cmd_test.rs",
                 "const CC_INPUT_TEXT_CHUNK: usize = 20;"),
        "bounded CC text input is forwarded through both guest VMM paths");
+    ok(contains("kernel/agentos-root-task/src/cc_pd.c",
+                "One downstream call per host frame keeps CC latency bounded") &&
+       contains("kernel/agentos-root-task/src/cc_pd.c",
+                "Do not monopolize the VMM with a 4 KiB loop"),
+       "CC console polls perform one bounded downstream IPC");
     ok(contains(vmm, "Guest console bytes belong to the per-guest virtual TTY") &&
        contains(vmm, "console_tx_push(byte);"),
        "guest virtual TTY is not synchronously mirrored to physical PL011");

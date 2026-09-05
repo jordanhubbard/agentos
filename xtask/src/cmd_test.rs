@@ -297,8 +297,8 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
             Ok(())
         }
         Err(e) => {
-            println!("FAIL [board={}]: {}", args.board, e);
-            anyhow::bail!("test failed for board {}: {}", args.board, e);
+            println!("FAIL [board={}]: {:#}", args.board, e);
+            anyhow::bail!("test failed for board {}: {:#}", args.board, e);
         }
     }
 }
@@ -1030,7 +1030,7 @@ pub struct CcReply {
 }
 
 struct CcClient {
-    stream: UnixStream,
+    stream: Option<UnixStream>,
 }
 
 impl CcClient {
@@ -1043,7 +1043,21 @@ impl CcClient {
         stream
             .set_write_timeout(Some(CC_IO_TIMEOUT))
             .context("failed to set CC socket write timeout")?;
-        Ok(Self { stream })
+        Ok(Self {
+            stream: Some(stream),
+        })
+    }
+
+    fn reconnect(&mut self, cc_sock: &Path) -> anyhow::Result<()> {
+        /*
+         * A timed-out framed request leaves the byte stream ambiguous: a late
+         * reply may still arrive, so the connection must never be reused.
+         * Close it before opening the replacement; QEMU's chardev accepts one
+         * host client at a time.
+         */
+        self.stream.take();
+        *self = Self::connect(cc_sock)?;
+        Ok(())
     }
 
     fn call(
@@ -1064,12 +1078,16 @@ impl CcClient {
             req[16..16 + copy_len].copy_from_slice(&shmem_in[..copy_len]);
         }
 
-        self.stream
+        let stream = self
+            .stream
+            .as_mut()
+            .context("CC connection is closed")?;
+        stream
             .write_all(&req)
             .context("failed to write CC frame")?;
 
         let mut raw = [0u8; CC_REPLY_SIZE];
-        self.stream
+        stream
             .read_exact(&mut raw)
             .context("failed to read CC frame")?;
         Ok(CcReply {
@@ -1099,9 +1117,11 @@ fn wait_for_guest_console_login_via_cc(
 
     while start.elapsed() < timeout {
         ensure_qemu_running(qemu, "waiting for guest login prompt via CC-PD API")?;
+        let mut drained_console = false;
         match cc_log_stream_for_handle(&mut cc, guest_handle, guest_os) {
             Ok(chunk) => {
                 if !chunk.is_empty() {
+                    drained_console = true;
                     transcript.push_str(&chunk);
                     reject_bad_guest_path(guest_os, &transcript)?;
                     if last_progress.elapsed() >= Duration::from_secs(30) {
@@ -1161,10 +1181,10 @@ fn wait_for_guest_console_login_via_cc(
             }
             Err(err) => {
                 println!("[xtask:test] CC console drain not ready yet: {err:#}");
-                if !is_transient_cc_read_error(&err) {
-                    if let Ok(next) = CcClient::connect(cc_sock) {
-                        cc = next;
-                    }
+                if let Err(reconnect_err) = cc.reconnect(cc_sock) {
+                    println!(
+                        "[xtask:test] CC console reconnect not ready yet: {reconnect_err:#}"
+                    );
                 }
             }
         }
@@ -1176,7 +1196,11 @@ fn wait_for_guest_console_login_via_cc(
             cc_send_raw_byte(&mut cc, guest_handle, 0x1d)?;
             freebsd_stack_requested = true;
         }
-        std::thread::sleep(Duration::from_secs(1));
+        std::thread::sleep(if drained_console {
+            Duration::from_millis(10)
+        } else {
+            Duration::from_millis(250)
+        });
     }
 
     let prompt = matched_prompt.ok_or_else(|| {
@@ -1289,11 +1313,7 @@ fn verify_guest_console_input(
             Ok(chunk) => chunk,
             Err(err) => {
                 println!("[xtask:test] CC console post-input drain not ready yet: {err:#}");
-                if !is_transient_cc_read_error(&err) {
-                    if let Ok(next) = CcClient::connect(cc_sock) {
-                        *cc = next;
-                    }
-                }
+                let _ = cc.reconnect(cc_sock);
                 String::new()
             }
         };
@@ -1336,11 +1356,7 @@ fn verify_ubuntu_live_console_and_net(
             Ok(chunk) => chunk,
             Err(err) => {
                 println!("[xtask:test] CC live-login drain not ready yet: {err:#}");
-                if !is_transient_cc_read_error(&err) {
-                    if let Ok(next) = CcClient::connect(cc_sock) {
-                        *cc = next;
-                    }
-                }
+                let _ = cc.reconnect(cc_sock);
                 String::new()
             }
         };
@@ -1494,9 +1510,7 @@ fn create_guest_via_cc_wait(
                         "[xtask:test] {label} guest create transport not ready yet: {last_err}"
                     );
                 }
-                if let Ok(next) = CcClient::connect(cc_sock) {
-                    cc = next;
-                }
+                let _ = cc.reconnect(cc_sock);
             }
         }
 
@@ -1534,11 +1548,11 @@ fn run_guest_console_command(
                     return Ok(());
                 }
             }
-            Err(err) if is_transient_cc_read_error(&err) => {}
-            Err(_) => {
-                if let Ok(next) = CcClient::connect(cc_sock) {
-                    *cc = next;
-                }
+            Err(err) => {
+                println!(
+                    "[xtask:test] CC provisioning poll failed; reconnecting: {err:#}"
+                );
+                let _ = cc.reconnect(cc_sock);
             }
         }
         std::thread::sleep(Duration::from_millis(250));
@@ -1752,13 +1766,6 @@ fn wait_for_dual_guest_consoles_via_cc(
     Ok(format!(
         "dual CC/vm_manager consoles ready: linux_handle={linux_handle} ({linux}); freebsd_handle={freebsd_handle} ({freebsd}); {ssh}; both destroyed"
     ))
-}
-
-fn is_transient_cc_read_error(err: &anyhow::Error) -> bool {
-    let rendered = format!("{err:#}");
-    rendered.contains("Resource temporarily unavailable")
-        || rendered.contains("timed out")
-        || rendered.contains("WouldBlock")
 }
 
 fn connect_cc_client(
@@ -2026,5 +2033,22 @@ mod tests {
         let key = "ssh-ed25519 AAAAC3NzaFocusedTest agentos-test";
         assert!(!ubuntu_ssh_provision_command(key).contains("agentos-ubuntu-ssh-ready"));
         assert!(!freebsd_ssh_provision_command(key).contains("agentos-freebsd-ssh-ready"));
+    }
+
+    #[test]
+    fn reconnect_closes_the_desynchronized_stream_first() {
+        use std::os::unix::net::UnixListener;
+
+        let dir = tempfile::tempdir().expect("create socket directory");
+        let socket = dir.path().join("cc.sock");
+        let listener = UnixListener::bind(&socket).expect("bind test socket");
+        let mut cc = CcClient::connect(&socket).expect("connect first client");
+        let (mut stale, _) = listener.accept().expect("accept first client");
+
+        cc.reconnect(&socket).expect("replace client");
+        let (_replacement, _) = listener.accept().expect("accept replacement client");
+
+        let mut byte = [0u8; 1];
+        assert_eq!(stale.read(&mut byte).expect("observe closed client"), 0);
     }
 }

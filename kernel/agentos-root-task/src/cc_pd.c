@@ -679,34 +679,24 @@ static bool cc_drain_boot_guest_console(uint8_t *dst, uint32_t max,
 {
     if (!g_boot_guest_present) return false;
 
-    uint32_t total = 0u;
+    /* One downstream call per host frame keeps CC latency bounded. */
+    uint8_t payload[8u];
+    uint32_t want = max;
+    if (want > SEL4_MSG_DATA_BYTES) want = SEL4_MSG_DATA_BYTES;
+    cc_msg_wr32(payload, 0u, CC_BOOT_GUEST_HANDLE);
+    cc_msg_wr32(payload, 4u, want);
 
-    while (total < max) {
-        uint8_t payload[8u];
-        uint32_t want = max - total;
-        if (want > SEL4_MSG_DATA_BYTES) want = SEL4_MSG_DATA_BYTES;
-
-        cc_msg_wr32(payload, 0u, CC_BOOT_GUEST_HANDLE);
-        cc_msg_wr32(payload, 4u, want);
-
-        sel4_msg_t reply = {0};
-        if (!cc_call_boot_guest(MSG_GUEST_CONSOLE_DRAIN, payload,
-                                (uint32_t)sizeof(payload), &reply)) {
-            return false;
-        }
-
-        uint32_t n = reply.length;
-        if (n > SEL4_MSG_DATA_BYTES) n = SEL4_MSG_DATA_BYTES;
-        if (n > (max - total)) n = max - total;
-        if (n == 0u) break;
-
-        __builtin_memcpy(dst + total, reply.data, n);
-        total += n;
-
-        if (n < SEL4_MSG_DATA_BYTES) break;
+    sel4_msg_t reply = {0};
+    if (!cc_call_boot_guest(MSG_GUEST_CONSOLE_DRAIN, payload,
+                            (uint32_t)sizeof(payload), &reply)) {
+        return false;
     }
 
-    *bytes_drained = total;
+    uint32_t n = reply.length;
+    if (n > SEL4_MSG_DATA_BYTES) n = SEL4_MSG_DATA_BYTES;
+    if (n > max) n = max;
+    if (n > 0u) __builtin_memcpy(dst, reply.data, n);
+    *bytes_drained = n;
     return true;
 }
 
@@ -733,32 +723,25 @@ static bool cc_forward_vibe_input(uint32_t handle,
 static bool cc_drain_vibe_console(uint32_t handle, uint8_t *dst,
                                   uint32_t max, uint32_t *bytes_drained)
 {
-    uint32_t total = 0u;
-    while (total < max) {
-        uint32_t want = max - total;
-        if (want > SEL4_MSG_DATA_BYTES - 8u)
-            want = SEL4_MSG_DATA_BYTES - 8u;
+    /* Do not monopolize the VMM with a 4 KiB loop of tiny inline IPCs. */
+    uint32_t want = max;
+    if (want > SEL4_MSG_DATA_BYTES - 8u)
+        want = SEL4_MSG_DATA_BYTES - 8u;
 
-        sel4_msg_t msg = {0}, reply = {0};
-        msg.opcode = MSG_VIBEOS_CONSOLE_DRAIN;
-        msg.length = 8u;
-        cc_msg_wr32(msg.data, 0u, handle);
-        cc_msg_wr32(msg.data, 4u, want);
-        sel4_call((seL4_CPtr)PD_CNODE_SLOT_VIBE_ENGINE_EP, &msg, &reply);
-        if (reply.opcode != SEL4_ERR_OK || cc_msg_rd32(reply.data, 0u) != 0u)
-            return false;
+    sel4_msg_t msg = {0}, reply = {0};
+    msg.opcode = MSG_VIBEOS_CONSOLE_DRAIN;
+    msg.length = 8u;
+    cc_msg_wr32(msg.data, 0u, handle);
+    cc_msg_wr32(msg.data, 4u, want);
+    sel4_call((seL4_CPtr)PD_CNODE_SLOT_VIBE_ENGINE_EP, &msg, &reply);
+    if (reply.opcode != SEL4_ERR_OK || cc_msg_rd32(reply.data, 0u) != 0u)
+        return false;
 
-        uint32_t n = cc_msg_rd32(reply.data, 4u);
-        if (n > SEL4_MSG_DATA_BYTES - 8u) n = SEL4_MSG_DATA_BYTES - 8u;
-        if (n > max - total) n = max - total;
-        if (n == 0u) break;
-
-        __builtin_memcpy(dst + total, reply.data + 8u, n);
-        total += n;
-        if (n < SEL4_MSG_DATA_BYTES - 8u) break;
-    }
-
-    *bytes_drained = total;
+    uint32_t n = cc_msg_rd32(reply.data, 4u);
+    if (n > SEL4_MSG_DATA_BYTES - 8u) n = SEL4_MSG_DATA_BYTES - 8u;
+    if (n > max) n = max;
+    if (n > 0u) __builtin_memcpy(dst, reply.data + 8u, n);
+    *bytes_drained = n;
     return true;
 }
 
