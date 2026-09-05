@@ -522,13 +522,11 @@ pub fn spawn_qemu_with_guest(
             } else {
                 "1"
             };
-            let (cpu, accel) = aarch64_qemu_execution_profile();
-
             let mut c = std::process::Command::new("qemu-system-aarch64");
             c.arg("-machine")
                 .arg(machine)
                 .arg("-cpu")
-                .arg(cpu)
+                .arg("cortex-a57")
                 .arg("-m")
                 .arg(memory)
                 .arg("-smp")
@@ -557,9 +555,6 @@ pub fn spawn_qemu_with_guest(
                     "loader,file={},addr=0x48000000",
                     build_image.display()
                 ));
-            if let Some(accel) = accel {
-                c.arg("-accel").arg(accel);
-            }
             /*
              * Page-isolated host transport owned by net_pd. Every guest sees
              * only its separately emulated device at IPA 0x0a010000.
@@ -709,20 +704,6 @@ pub fn spawn_qemu_with_guest(
     };
     println!("[xtask:test] QEMU pid={}", child.id());
     Ok(child)
-}
-
-fn aarch64_qemu_execution_profile() -> (&'static str, Option<&'static str>) {
-    if cfg!(target_os = "macos") {
-        /*
-         * HVF cannot expose the EL2 environment required by the seL4 VMM on
-         * current QEMU/macOS. The repository's run-fast path therefore uses
-         * TCG's max CPU model and multi-threaded translator; use the same
-         * profile for long guest and dual-SSH gates.
-         */
-        ("max", Some("tcg,thread=multi"))
-    } else {
-        ("cortex-a57", None)
-    }
 }
 
 fn ubuntu_disk_image(repo_root: &Path) -> std::path::PathBuf {
@@ -2077,18 +2058,6 @@ mod tests {
         let netdev = dual_qemu_netdev_arg(UBUNTU_DEFAULT_SSH_PORT);
         assert!(netdev.contains("127.0.0.1:12222-10.0.2.15:22"));
         assert!(netdev.contains("127.0.0.1:12223-10.0.2.16:22"));
-    }
-
-    #[test]
-    fn macos_aarch64_gate_uses_the_repository_fast_tcg_profile() {
-        let (cpu, accel) = aarch64_qemu_execution_profile();
-        if cfg!(target_os = "macos") {
-            assert_eq!(cpu, "max");
-            assert_eq!(accel, Some("tcg,thread=multi"));
-        } else {
-            assert_eq!(cpu, "cortex-a57");
-            assert_eq!(accel, None);
-        }
     }
 
     #[test]
