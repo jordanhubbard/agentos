@@ -393,6 +393,8 @@ int main(void)
                               "map_guest_ram_reservation") &&
                  src_contains("kernel/agentos-root-task/src/main.c",
                               "seL4_CNode_Copy") &&
+                 src_contains("kernel/agentos-root-task/src/main.c",
+                              "pd_vspace_map_device_frame(guest_vspace") &&
                  src_contains("kernel/agentos-root-task/src/linux_vmm.c",
                               "aos_vmm_guest_ram_bind(LINUX_GUEST_RAM_GPA") &&
                  src_contains("kernel/agentos-root-task/src/freebsd_vmm.c",

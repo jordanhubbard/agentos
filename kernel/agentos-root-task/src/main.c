@@ -1906,7 +1906,7 @@ void root_task_main(const seL4_BootInfo *bi)
             dbg_hex((seL4_Word)gic_err);
             dbg_puts("\n");
             if (gic_err == seL4_NoError) {
-                gic_err = pd_vspace_map_device_frame(vspace,
+                gic_err = pd_vspace_map_device_frame(guest_vspace,
                                                       (seL4_CPtr)gic_copy,
                                                       GIC_VCPU_IF_VA);
             }
