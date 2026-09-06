@@ -22,6 +22,7 @@ settings.cmake
 # IDE
 .vscode/
 .idea/
+.codegraph/
 *.swp
 *.swo
 
@@ -29,7 +30,7 @@ settings.cmake
 .DS_Store
 .AppleDouble
 
-# Microkit SDK (download separately via setup-dev.sh)
+# Microkit SDK (download with `make sdk`)
 microkit-sdk.tar.gz
 microkit-sdk-*/
 

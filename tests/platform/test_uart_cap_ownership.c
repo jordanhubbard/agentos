@@ -157,8 +157,10 @@ int main(void)
        source_contains("kernel/agentos-root-task/ubuntu-iso-overlay.dts.in",
                        "status = \"disabled\"") &&
        !source_contains("kernel/agentos-root-task/ubuntu-iso-overlay.dts.in",
-                        "stdout-path"),
-       "Ubuntu DT disables PL011 after address-based earlycon");
+                        "stdout-path") &&
+       !source_contains("kernel/agentos-root-task/vmm.mk",
+                        "earlycon=pl011"),
+       "Ubuntu DT and bootargs exclude guest PL011 access");
 
     printf("1..%d\n", tests);
     return failures ? 1 : 0;

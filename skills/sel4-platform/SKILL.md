@@ -17,8 +17,6 @@ You are composing agentOS **on-target topology**, not a Linux distro.
 
 ## Helper
 
-```sh
-python3 skills/sel4-platform/scripts/tcb_view.py
-```
-
-Prints HTML of the TCB vs the live `system_desc_aarch64.c` PD list.
+Run `make gate` to validate the generated topology and boot it on both
+supported QEMU architectures. The topology authority remains generated C and
+the documented TCB, with no rendered UI artifact.

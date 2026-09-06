@@ -17,9 +17,8 @@
     };
 
     /*
-     * Physical PL011 belongs to serial_pd.  Keep only the address-based
-     * earlycon from bootargs; suppress the normal AMBA tty driver so hvc0 is
-     * the sole usable Ubuntu console after early boot.
+     * Physical PL011 belongs to serial_pd. Suppress both the normal AMBA
+     * driver and address-based earlycon; hvc0 is the sole guest console.
      */
     pl011@9000000 {
         status = "disabled";
@@ -46,7 +45,7 @@
 
     /*
      * agentOS emulated virtio-console backed by sDDF serial queues.
-     * PL011 is earlycon only; hvc0 carries the usable console and login.
+     * hvc0 carries the guest console and login.
      * IRQ: SPI 21 -> INTID 53.
      */
     virtio_mmio@a030000 {

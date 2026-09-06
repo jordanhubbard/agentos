@@ -27,12 +27,14 @@ there must not be extended.
 
 ### 2. No human UI here
 
-No HTML/JS served by a process in this repo. Skill helpers may **print** HTML
-for LLM agents.
+No HTML, JavaScript, CSS, interactive terminal UI, or generated browser
+artifact belongs in this repository. External consumers may build UIs from
+the contracts; repository skills remain text-only.
 
-### 3. On-target: C / Rust / ASM. Host skills: Python.
+### 3. C / Rust / ASM only
 
-Python in `skills/` and `tools/` only. Never in `kernel/` live PDs.
+First-party target code, host tools, tests, and skill helpers use C, Rust, or
+Assembly. Python and other interpreted-language helpers are not exceptions.
 
 ### 4. Guests speak virtio that **we** emulate
 
@@ -65,8 +67,7 @@ Do not add `MSG_*_OPEN` opcode tables as a substitute for queues.
 ## How to Add a Skill
 
 ```
-skills/<block>/SKILL.md          # small: invariants, forbidden moves, helper
-skills/<block>/scripts/*.py      # compute; print HTML to stdout
+skills/<block>/SKILL.md  # small: invariants, forbidden moves, Make-based checks
 ```
 
 Blocks that should exist: `sel4-platform`, `sddf-net`, `sddf-blk`,

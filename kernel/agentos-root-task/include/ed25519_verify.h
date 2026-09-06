@@ -5,7 +5,7 @@
  * Based on the public domain ref10 algorithm by Daniel J. Bernstein et al.
  *
  * Only verification is implemented — signing happens offline via the host
- * toolchain (tools/sign_wasm.py or similar).
+ * Rust signing toolchain (`tools/sign-wasm`).
  *
  * API:
  *   int ed25519_verify(const uint8_t sig[64],

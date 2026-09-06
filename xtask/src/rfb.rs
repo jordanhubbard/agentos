@@ -85,10 +85,9 @@ pub fn verify_raw_frame<T: Read + Write>(stream: &mut T) -> anyhow::Result<RfbFr
     );
     let bytes_per_pixel = usize::from(bits_per_pixel / 8);
 
-    let name_len = usize::try_from(
-        read_u32_be(stream).context("failed to read RFB desktop-name length")?,
-    )
-    .context("RFB desktop-name length does not fit usize")?;
+    let name_len =
+        usize::try_from(read_u32_be(stream).context("failed to read RFB desktop-name length")?)
+            .context("RFB desktop-name length does not fit usize")?;
     anyhow::ensure!(
         name_len <= MAX_DESKTOP_NAME,
         "RFB desktop name exceeds {MAX_DESKTOP_NAME} bytes"
@@ -246,9 +245,7 @@ mod tests {
             input.extend_from_slice(&0u32.to_be_bytes());
             input.extend_from_slice(&2u16.to_be_bytes());
             input.extend_from_slice(&1u16.to_be_bytes());
-            input.extend_from_slice(&[
-                32, 24, 0, 1, 0, 255, 0, 255, 0, 255, 16, 8, 0, 0, 0, 0,
-            ]);
+            input.extend_from_slice(&[32, 24, 0, 1, 0, 255, 0, 255, 0, 255, 16, 8, 0, 0, 0, 0]);
             input.extend_from_slice(&4u32.to_be_bytes());
             input.extend_from_slice(b"test");
             input.extend_from_slice(&[0, 0]);
@@ -276,7 +273,10 @@ mod tests {
         assert_ne!(evidence.fnv1a64, 0);
         assert_eq!(evidence.desktop_name, "test");
         assert!(stream.output.starts_with(RFB_3_8));
-        assert!(stream.output.windows(8).any(|window| window == [2, 0, 0, 1, 0, 0, 0, 0]));
+        assert!(stream
+            .output
+            .windows(8)
+            .any(|window| window == [2, 0, 0, 1, 0, 0, 0, 0]));
     }
 
     #[test]

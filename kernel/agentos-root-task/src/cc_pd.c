@@ -378,7 +378,7 @@ static bool vio_serial_read(void *buf, uint32_t n)
 
 /* ─── Wire frame types ───────────────────────────────────────────────────── */
 /*
- * These match the layout used by agentctl-ng and agentos_gui exactly.
+ * These match the wire layout consumed by the non-interactive agentctl CLI.
  * The static_asserts enforce the 4112-byte invariant at compile time.
  */
 

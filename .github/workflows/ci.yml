@@ -109,7 +109,7 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             clang lld llvm \
             qemu-system-arm qemu-system-x86 \
-            python3 python3-pip curl
+            curl
 
       # -----------------------------------------------------------------------
       # Microkit SDK
@@ -132,7 +132,7 @@ jobs:
           rm /tmp/microkit-sdk.tar.gz
 
       # -----------------------------------------------------------------------
-      # Topology validation (gen_sdf.py)
+      # Topology validation (Rust gen-sdf)
       # Runs on every PR touching topology.yaml or agentos.system.
       # Fails if validation errors are found; shows SDF diff if regenerated.
       # -----------------------------------------------------------------------
@@ -151,7 +151,7 @@ jobs:
                      /tmp/agentos_generated.system > /tmp/sdf_diff.txt 2>&1; then
             echo "✓ agentos.system is up to date with topology.yaml"
           else
-            echo "⚠ agentos.system differs from what gen_sdf.py would generate:"
+            echo "⚠ agentos.system differs from what Rust gen-sdf would generate:"
             cat /tmp/sdf_diff.txt
             echo "(Note: diff is informational — CI does not fail on SDF content drift)"
           fi
@@ -192,7 +192,7 @@ jobs:
             clang lld llvm \
             qemu-system-arm \
             device-tree-compiler \
-            python3 curl
+            curl
 
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
@@ -244,7 +244,7 @@ jobs:
             clang lld llvm \
             qemu-system-arm \
             device-tree-compiler \
-            python3 curl
+            curl
 
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
@@ -297,7 +297,7 @@ jobs:
             qemu-system-arm \
             device-tree-compiler \
             libarchive-tools \
-            python3 curl
+            curl
 
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
@@ -360,7 +360,7 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             clang lld llvm \
             qemu-system-arm \
-            python3 curl
+            curl
 
       - name: Cache Microkit SDK
         id: cache-sdk-ct
@@ -411,7 +411,7 @@ jobs:
         run: |
           sudo apt-get update -q
           sudo apt-get install -y qemu-system-x86 \
-            clang lld llvm python3 device-tree-compiler curl
+            clang lld llvm device-tree-compiler curl
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Cache Microkit SDK
@@ -463,7 +463,7 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             clang lld llvm \
             qemu-system-arm qemu-system-x86 \
-            python3 curl
+            curl
 
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2

@@ -11,6 +11,6 @@ is not composition.
 
 ## Helper
 
-```sh
-python3 skills/compose/scripts/compose_view.py
-```
+Run `make channels`, then inspect
+`kernel/agentos-root-task/include/channels_generated.h` alongside the selected
+board descriptor. Composition remains text and generated C, never HTML.

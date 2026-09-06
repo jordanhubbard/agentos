@@ -8,7 +8,7 @@ tool connections, and expected first-boot output.
 ### macOS (Homebrew)
 
 ```bash
-brew install qemu llvm lld cmake ninja python3 dtc coreutils
+brew install qemu llvm lld cmake ninja dtc coreutils
 # Rust toolchain
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
 rustup target add wasm32-unknown-unknown
@@ -26,7 +26,7 @@ Minimum versions tested:
 ```bash
 sudo apt-get install -y \
     qemu-system-misc qemu-system-arm qemu-system-x86 \
-    clang lld cmake ninja-build python3 device-tree-compiler \
+    clang lld cmake ninja-build device-tree-compiler \
     curl xz-utils
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
 rustup target add wasm32-unknown-unknown

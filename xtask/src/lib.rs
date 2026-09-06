@@ -2,13 +2,17 @@
 // The binary entry point (src/main.rs) re-uses everything from here.
 
 pub mod cmd_ci_matrix;
+pub mod cmd_extract_freebsd_file;
 pub mod cmd_fault_inject;
 pub mod cmd_fetch_guest;
 pub mod cmd_gen_abi;
 pub mod cmd_gen_caps;
+pub mod cmd_gen_channels;
 pub mod cmd_gen_image;
 pub mod cmd_gen_pd_bundle;
+pub mod cmd_gen_policy;
 pub mod cmd_host_test;
+pub mod cmd_policy_check;
 pub mod cmd_release;
 pub mod cmd_run_tests;
 pub mod cmd_setup;
@@ -96,6 +100,34 @@ pub struct GenCapsArgs {
 }
 
 #[derive(clap::Args)]
+pub struct GenChannelsArgs {
+    #[arg(long, default_value = "kernel/agentos-root-task/agentos.system")]
+    pub system: std::path::PathBuf,
+    #[arg(
+        long,
+        default_value = "kernel/agentos-root-task/include/channels_generated.h"
+    )]
+    pub output: std::path::PathBuf,
+}
+
+#[derive(clap::Args)]
+pub struct GenPolicyArgs {
+    pub input: std::path::PathBuf,
+    #[arg(long)]
+    pub output: std::path::PathBuf,
+}
+
+#[derive(clap::Args)]
+pub struct ExtractFreebsdFileArgs {
+    pub image: std::path::PathBuf,
+    pub guest_path: String,
+    pub output: std::path::PathBuf,
+}
+
+#[derive(clap::Args)]
+pub struct PolicyCheckArgs {}
+
+#[derive(clap::Args)]
 pub struct RunTestsArgs {
     #[arg(long, default_value = "qemu_virt_aarch64")]
     pub board: String,
@@ -134,13 +166,76 @@ pub enum GuestOs {
 
 #[derive(clap::Args)]
 pub struct ReleaseArgs {
-    #[arg(long, value_enum, default_value_t = BumpKind::Patch)]
-    pub bump: BumpKind,
-    #[arg(long)]
-    pub dry_run: bool,
+    #[command(subcommand)]
+    pub action: ReleaseAction,
 }
 
-#[derive(clap::ValueEnum, Clone, Debug)]
+#[derive(clap::Subcommand)]
+pub enum ReleaseAction {
+    /// Print a read-only release plan.
+    Plan(ReleasePlanArgs),
+    /// Update declared versions and CHANGELOG on a release branch.
+    Prepare(ReleasePrepareArgs),
+    /// Run exact-revision gates and write an ignored receipt.
+    Check(ReleaseCheckArgs),
+    /// Publish an already checked main revision.
+    Publish(ReleasePublishArgs),
+    /// Verify the remote tag and GitHub release without mutation.
+    Verify(ReleaseVerifyArgs),
+}
+
+#[derive(clap::Args)]
+pub struct ReleasePlanArgs {
+    #[arg(long, value_enum, default_value_t = BumpKind::Patch)]
+    pub bump: BumpKind,
+    #[arg(long, value_enum, default_value_t = ReleaseClaim::Os)]
+    pub claim: ReleaseClaim,
+}
+
+#[derive(clap::Args)]
+pub struct ReleasePrepareArgs {
+    #[arg(long)]
+    pub version: String,
+    /// Reviewed release date in YYYY-MM-DD form.
+    #[arg(long)]
+    pub date: String,
+}
+
+#[derive(clap::Args)]
+pub struct ReleaseCheckArgs {
+    #[arg(long)]
+    pub version: String,
+    #[arg(long, value_enum, default_value_t = ReleaseClaim::Os)]
+    pub claim: ReleaseClaim,
+    #[arg(long = "artifact")]
+    pub artifacts: Vec<std::path::PathBuf>,
+}
+
+#[derive(clap::Args)]
+pub struct ReleasePublishArgs {
+    #[arg(long)]
+    pub version: String,
+    /// Must exactly equal `publish-vMAJOR.MINOR.PATCH`.
+    #[arg(long)]
+    pub authorize: String,
+}
+
+#[derive(clap::Args)]
+pub struct ReleaseVerifyArgs {
+    #[arg(long)]
+    pub version: String,
+}
+
+#[derive(clap::ValueEnum, Clone, Copy, Debug, serde::Serialize, serde::Deserialize, PartialEq)]
+#[serde(rename_all = "kebab-case")]
+pub enum ReleaseClaim {
+    Tooling,
+    Os,
+    Guests,
+    Desktop,
+}
+
+#[derive(clap::ValueEnum, Clone, Copy, Debug)]
 pub enum BumpKind {
     Patch,
     Minor,

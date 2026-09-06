@@ -26,7 +26,7 @@
 
 .DEFAULT_GOAL := help
 
-.PHONY: all setup sdk demo demo-check demo-smoke demo-test demo-desktop demo-desktop-test demo-clean install deps deps-tools submodules channels run run-fast run-dual-ssh test test-guest-login test-guest-net test-guest-blk test-guest-console test-ubuntu-virtio test-ubuntu-live sel4-test-image run-tests test-snapshot-sched test-power-mgr test-proc-server test-vibeos-contract test-integration test-host gate gate-aarch64 gate-x86_64 e2e e2e-guest e2e-contract e2e-dual-os e2e-ubuntu-amd64 e2e-ubuntu-arm64 e2e-nixos e2e-freebsd15 e2e-all bootstrap-guest clean clean-all clean-images help release release-minor release-major fetch-guest build-tools
+.PHONY: all setup sdk demo demo-check demo-smoke demo-test demo-desktop demo-desktop-test demo-clean install deps deps-tools submodules channels format policy-check run run-fast run-dual-ssh test test-guest-login test-guest-net test-guest-blk test-guest-console test-ubuntu-virtio test-ubuntu-live sel4-test-image run-tests test-snapshot-sched test-power-mgr test-proc-server test-vibeos-contract test-integration test-host gate gate-aarch64 gate-x86_64 e2e e2e-guest e2e-contract e2e-dual-os e2e-ubuntu-amd64 e2e-ubuntu-arm64 e2e-nixos e2e-freebsd15 e2e-all bootstrap-guest clean clean-all clean-images help release release-minor release-major release-prepare release-check release-publish release-verify fetch-guest build-tools
 
 # ─── Read config.yaml (if present) ───────────────────────────────────────────
 CONFIG_TARGET := $(shell grep '^target_arch:' config.yaml 2>/dev/null | sed 's/target_arch:[[:space:]]*//' | tr -d '[:space:]')
@@ -218,7 +218,14 @@ NATIVE_BUILD_DIR := $(ROOT_DIR)build/$(NATIVE_BOARD)
 NATIVE_IMAGE     := $(NATIVE_BUILD_DIR)/agentos.img
 
 channels:
-	python3 tools/gen-channels/gen_channels.py
+	@cargo xtask gen-channels
+
+format:
+	@cargo fmt --package xtask
+
+policy-check:
+	@cargo fmt --package xtask -- --check
+	@cargo xtask policy-check
 
 all: run
 
@@ -248,7 +255,6 @@ ifeq ($(UNAME_S),Darwin)
 		lld \
 		cmake \
 		ninja \
-		python3 \
 		dtc \
 		coreutils \
 		zstd
@@ -272,7 +278,6 @@ else ifeq ($(UNAME_S),Linux)
 		llvm \
 		cmake \
 		ninja-build \
-		python3 \
 		device-tree-compiler \
 		libarchive-tools \
 		openssh-client \
@@ -294,7 +299,6 @@ else ifeq ($(UNAME_S),FreeBSD)
 		dtc \
 		dtc-devel \
 		gmake \
-		python3 \
 		curl \
 		wget \
 		rust \
@@ -643,7 +647,7 @@ gate: test-host gate-aarch64 gate-x86_64
 
 # test-host: alias for the host-only integration suite.  Named explicitly so
 # callers and CI cannot mistake host-only coverage for target/QEMU proof.
-test-host: test-integration
+test-host: policy-check test-integration
 
 sel4-test-image:
 	@$(MAKE) build \
@@ -951,13 +955,9 @@ test-integration:
 	exit $$status
 
 # =============================================================================
-# e2e: End-to-end integration test suite (QEMU + guest VMs + SSH)
+# e2e: End-to-end integration test suite (agentOS + guests + SSH)
 # =============================================================================
-# Requires: make build BOARD=$(BOARD) && make fetch-guest
-# Exit code 2 = SKIP (prerequisites not met — QEMU or images missing)
-e2e: build
-	@chmod +x tests/e2e/run_e2e.sh tests/e2e/*.sh
-	@bash tests/e2e/run_e2e.sh
+e2e: e2e-dual-os
 
 e2e-guest:
 	@chmod +x tests/e2e/suite_common.sh
@@ -975,45 +975,21 @@ e2e-dual-os:
 run-dual-ssh:
 	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os both --timeout-secs $(DUAL_OS_TEST_TIMEOUT) --keep-running
 
-# Per-guest-OS E2E targets — run the full suite against a specific guest image.
-# Images must exist in build/guest-images/; create them with: make bootstrap-guest OS=<os>
+# Compatibility names for supported guest proofs.
 e2e-ubuntu-amd64:
-	@chmod +x tests/e2e/run_e2e.sh tests/e2e/*.sh
-	@E2E_GUEST_OS=ubuntu-amd64 bash tests/e2e/run_e2e.sh
+	@echo "ERROR: x86_64 guest execution is roadmap work; no release gate exists yet."
+	@exit 1
 
-e2e-ubuntu-arm64:
-	@chmod +x tests/e2e/run_e2e.sh tests/e2e/*.sh
-	@E2E_GUEST_OS=ubuntu-arm64 bash tests/e2e/run_e2e.sh
+e2e-ubuntu-arm64: test-ubuntu-live
 
 e2e-nixos:
-	@chmod +x tests/e2e/run_e2e.sh tests/e2e/*.sh
-	@E2E_GUEST_OS=nixos bash tests/e2e/run_e2e.sh
+	@echo "ERROR: NixOS is not a supported agentOS guest release target."
+	@exit 1
 
 e2e-freebsd15:
-	@chmod +x tests/e2e/run_e2e.sh tests/e2e/*.sh
-	@E2E_GUEST_OS=freebsd15 bash tests/e2e/run_e2e.sh
+	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os freebsd --timeout-secs $(QEMU_TEST_TIMEOUT)
 
-# e2e-all: run E2E suite for every guest image that exists in build/guest-images/
-e2e-all:
-	@chmod +x tests/e2e/run_e2e.sh tests/e2e/*.sh
-	@failed=0; \
-	for gos in freebsd ubuntu-amd64 ubuntu-arm64 nixos freebsd15; do \
-	    img=""; \
-	    case "$$gos" in \
-	        freebsd)       img="$(AGENTOS_IMAGES)/freebsd-15.0-aarch64.iso" ;; \
-	        ubuntu-amd64)  img="$(AGENTOS_IMAGES)/ubuntu-amd64.img" ;; \
-	        ubuntu-arm64)  img="$(AGENTOS_IMAGES)/ubuntu-26.04-aarch64.iso" ;; \
-	        nixos)         img="$(AGENTOS_IMAGES)/nixos.img" ;; \
-	        freebsd15)     img="$(AGENTOS_IMAGES)/freebsd15-amd64.img" ;; \
-	    esac; \
-	    if [ -f "$$img" ]; then \
-	        echo ""; echo "══ E2E: $$gos ══"; \
-	        E2E_GUEST_OS=$$gos E2E_GUEST_IMG=$$img bash tests/e2e/run_e2e.sh || failed=$$((failed+1)); \
-	    else \
-	        echo "[SKIP] $$gos: image not found ($$img)"; \
-	    fi; \
-	done; \
-	[ "$$failed" -eq 0 ] || (echo ""; echo "$$failed guest OS(es) failed E2E"; exit 1)
+e2e-all: demo-test
 
 # bootstrap-guest: create a guest disk image from installer ISOs.
 # ISOs are cached in $$AGENTOS_ISO_DIR (default ~/.cache/agentos/isos)
@@ -1055,16 +1031,37 @@ clean-images:
 	@echo "✓ Done. Re-fetch with: make fetch-guest GUEST_OS=ubuntu|freebsd"
 
 # =============================================================================
-# release: tag + GitHub release (requires gh CLI and clean working tree)
+# release: evidence-bound release workflow
 # =============================================================================
 release:
-	@cargo xtask release --bump patch
+	@cargo xtask release plan --bump patch --claim $(or $(RELEASE_CLAIM),os)
 
 release-minor:
-	@cargo xtask release --bump minor
+	@cargo xtask release plan --bump minor --claim $(or $(RELEASE_CLAIM),os)
 
 release-major:
-	@cargo xtask release --bump major
+	@cargo xtask release plan --bump major --claim $(or $(RELEASE_CLAIM),os)
+
+release-prepare:
+	@test -n "$(RELEASE_VERSION)" && test -n "$(RELEASE_DATE)" || \
+		(echo "Usage: make release-prepare RELEASE_VERSION=X.Y.Z RELEASE_DATE=YYYY-MM-DD" && exit 1)
+	@cargo xtask release prepare --version $(RELEASE_VERSION) --date $(RELEASE_DATE)
+
+release-check:
+	@test -n "$(RELEASE_VERSION)" || \
+		(echo "Usage: make release-check RELEASE_VERSION=X.Y.Z [RELEASE_CLAIM=tooling|os|guests|desktop]" && exit 1)
+	@cargo xtask release check --version $(RELEASE_VERSION) --claim $(or $(RELEASE_CLAIM),os) \
+		$(foreach artifact,$(RELEASE_ARTIFACTS),--artifact $(artifact))
+
+release-publish:
+	@test -n "$(RELEASE_VERSION)" && test -n "$(RELEASE_AUTHORIZE)" || \
+		(echo "Usage: make release-publish RELEASE_VERSION=X.Y.Z RELEASE_AUTHORIZE=publish-vX.Y.Z" && exit 1)
+	@cargo xtask release publish --version $(RELEASE_VERSION) --authorize $(RELEASE_AUTHORIZE)
+
+release-verify:
+	@test -n "$(RELEASE_VERSION)" || \
+		(echo "Usage: make release-verify RELEASE_VERSION=X.Y.Z" && exit 1)
+	@cargo xtask release verify --version $(RELEASE_VERSION)
 
 # =============================================================================
 # help
@@ -1148,6 +1145,9 @@ help:
 	@echo "  make clean-all        Remove all build artifacts under build/"
 	@echo "  make clean-images     Remove staged guest images"
 	@echo "  make build-tools      Build Rust host tools in release mode"
+	@echo "  make policy-check     Enforce language/UI policy and xtask formatting"
+	@echo "  make release          Print a read-only patch-release plan"
+	@echo "  make release-prepare/check/publish/verify  Advance explicit release states"
 	@echo ""
 	@echo "Quick start:"
 	@echo "  make setup"

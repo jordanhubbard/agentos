@@ -3,11 +3,9 @@
 An agentOS release is an evidence-bound transition of one exact repository
 revision. It is not a version bump followed by an optimistic tag.
 
-The repository currently has two overlapping mutating implementations:
-`scripts/release.sh` and `xtask release`. Neither is the long-term authority.
-Until `task_30b9bcb838654949b26fd30595c26c3e` is complete, release engineers must
-review every step manually and must not use either path to bypass protected
-branch review.
+The Rust `xtask release` state machine is the sole release authority.
+Top-level Make targets are thin entry points; the former mutating shell release
+script has been removed.
 
 ## Authority and states
 
@@ -17,21 +15,28 @@ release outcomes; MAC records work state and dependencies.
 
 A release moves through five deliberately separate states:
 
-1. **Plan** — read-only. Bind the proposed version, branch, source revision,
+1. **Plan** — `make release` (or `release-minor`/`release-major`) is read-only.
+   Bind the proposed version, branch, source revision,
    required gates, milestone, changelog authority, remote, and expected tag.
-2. **Prepare** — update only declared version and release-note paths. Do not
+2. **Prepare** — `make release-prepare RELEASE_VERSION=X.Y.Z
+   RELEASE_DATE=YYYY-MM-DD` runs only on `release/X.Y.x` and updates declared
+   version and release-note paths. Do not
    commit, tag, push, or publish.
-3. **Check** — from a clean prepared commit, revalidate the plan identity and
+3. **Check** — `make release-check RELEASE_VERSION=X.Y.Z
+   RELEASE_CLAIM=tooling|os|guests|desktop` runs from a clean prepared commit,
+   rejects open milestone tasks, revalidates identity, and
    run its exact gates. Write an ignored receipt beneath
    `build/release/<version>/`.
-4. **Publish** — after explicit authorization, create an annotated tag and
-   perform ordinary non-forced pushes. Publish provider artifacts only after
-   the tag exists remotely.
-5. **Verify published** — read-only. Confirm the remote tag, source revision,
+4. **Publish** — `make release-publish RELEASE_VERSION=X.Y.Z
+   RELEASE_AUTHORIZE=publish-vX.Y.Z` requires checked `main == origin/main`,
+   creates an annotated tag, and performs only a non-forced tag push. Provider
+   artifacts are published only after the tag exists remotely.
+5. **Verify published** — `make release-verify RELEASE_VERSION=X.Y.Z` is
+   read-only. Confirm the remote tag, source revision,
    checksums, release page, and attached evidence agree with the receipt.
 
-The final implementation belongs in Rust under `xtask`; top-level Make targets
-are thin entry points and shell is compatibility glue only.
+Publication is idempotent when an existing remote tag points to the checked
+commit and is a hard stop when it does not.
 
 ## Branch policy
 

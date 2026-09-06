@@ -61,10 +61,10 @@ UBUNTU_INITRD_START := 0x50000000
 endif
 ifeq ($(UBUNTU_BOOT_MODE),live)
 UBUNTU_INITRD := $(UBUNTU_LIVE_INITRD)
-UBUNTU_BOOTARGS := earlycon=pl011,0x9000000 console=hvc0 boot=casper noprompt systemd.unit=console-getty.service systemd.wants=systemd-user-sessions.service systemd.mask=ldconfig.service systemd.mask=systemd-udev-trigger.service panic=-1
+UBUNTU_BOOTARGS := console=hvc0 boot=casper noprompt systemd.unit=console-getty.service systemd.wants=systemd-user-sessions.service systemd.mask=ldconfig.service systemd.mask=systemd-udev-trigger.service panic=-1
 else
 UBUNTU_INITRD := $(UBUNTU_E2E_INITRD)
-UBUNTU_BOOTARGS := earlycon=pl011,0x9000000 console=hvc0 quiet loglevel=3 rdinit=/init panic=-1 ip=dhcp
+UBUNTU_BOOTARGS := console=hvc0 quiet loglevel=3 rdinit=/init panic=-1 ip=dhcp
 endif
 
 ifeq ($(GUEST_OS),ubuntu)
@@ -184,7 +184,7 @@ endif
 $(UBUNTU_DTS_OVERLAY): $(KERNEL_SRC_DIR)/ubuntu-iso-overlay.dts.in $(KERNEL_SRC_DIR)/vmm.mk $(UBUNTU_INITRD) $(VMM_CONFIG_STAMP)
 	@mkdir -p $(BUILD_DIR)
 	@echo "[VMM] Generating Ubuntu 26.04 live-ISO overlay..."
-	@initrd_size=$$(python3 -c 'import os,sys; print(os.path.getsize(sys.argv[1]))' "$(UBUNTU_INITRD)"); \
+	@initrd_size=$$(wc -c < "$(UBUNTU_INITRD)"); \
 	start=$$(( $(UBUNTU_INITRD_START) )); \
 	end=$$(( start + initrd_size )); \
 	end_hex=$$(printf "0x%08x" $$end); \
@@ -200,7 +200,7 @@ $(UBUNTU_DTS_OVERLAY): $(KERNEL_SRC_DIR)/ubuntu-iso-overlay.dts.in $(KERNEL_SRC_
 $(BUILD_DIR)/buildroot-overlay.dts: $(DTS_DIR)/overlay.dts $(KERNEL_SRC_DIR)/vmm.mk $(INITRD_IMAGE) $(VMM_CONFIG_STAMP)
 	@mkdir -p $(BUILD_DIR)
 	@echo "[VMM] Generating buildroot overlay (initrd at $(BUILDROOT_INITRD_START))..."
-	@initrd_size=$$(python3 -c 'import os,sys; print(os.path.getsize(sys.argv[1]))' "$(INITRD_IMAGE)"); \
+	@initrd_size=$$(wc -c < "$(INITRD_IMAGE)"); \
 	start=$$(( $(BUILDROOT_INITRD_START) )); \
 	end=$$(( start + initrd_size )); \
 	end_hex=$$(printf "0x%08x" $$end); \
@@ -397,7 +397,7 @@ $(FREEBSD_DTS_EFFECTIVE): $(FREEBSD_DTS) $(VMM_CONFIG_STAMP) $(lastword $(MAKEFI
 	@mkdir -p $(BUILD_DIR)
 	sed 's|0x00 0x40000000 0x00 0x20000000|0x00 0x40000000 0x00 0x10000000|' $< > $@
 endif
-FREEBSD_EXTRACT := $(AGENTOS_ROOT)/tools/extract_freebsd_file.py
+FREEBSD_EXTRACT := $(AGENTOS_ROOT)/xtask/src/cmd_extract_freebsd_file.rs
 
 $(FREEBSD_RAW_IMAGE):
 	@echo "[VMM] Fetching FreeBSD 15.0 ISO assets (via xtask fetch-guest)..."
@@ -409,8 +409,8 @@ $(FREEBSD_KERNEL_IMAGE): $(FREEBSD_RAW_IMAGE) $(FREEBSD_EXTRACT)
 	@case "$(FREEBSD_RAW_IMAGE)" in \
 		*.iso) cargo xtask fetch-guest --os freebsd --output-dir $(AGENTOS_IMAGES); \
 		       cp "$(AGENTOS_IMAGES)/freebsd-15.0-aarch64-kernel" $@ ;; \
-		*) python3 $(FREEBSD_EXTRACT) "$(FREEBSD_RAW_IMAGE)" /boot/kernel/kernel.bin $@ || \
-		   python3 $(FREEBSD_EXTRACT) "$(FREEBSD_RAW_IMAGE)" /boot/kernel/kernel $@ ;; \
+		*) cargo xtask extract-freebsd-file "$(FREEBSD_RAW_IMAGE)" /boot/kernel/kernel.bin $@ || \
+		   cargo xtask extract-freebsd-file "$(FREEBSD_RAW_IMAGE)" /boot/kernel/kernel $@ ;; \
 	esac
 
 $(BUILD_DIR)/freebsd-direct.dtb: $(FREEBSD_DTS_EFFECTIVE) $(VMM_CONFIG_STAMP) $(lastword $(MAKEFILE_LIST))

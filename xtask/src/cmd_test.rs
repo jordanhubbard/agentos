@@ -1,11 +1,16 @@
 use crate::{rfb, TestArgs};
 use anyhow::Context;
 use std::io::{Read, Seek, SeekFrom, Write};
-use std::net::{SocketAddr, TcpStream};
+use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::os::unix::net::UnixStream;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Stdio};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
+use std::thread::JoinHandle;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const UBUNTU_DEFAULT_SSH_PORT: u16 = 12222;
@@ -14,18 +19,30 @@ const UBUNTU_NOCLOUD_PORT: u16 = 18790;
 const UBUNTU_DESKTOP_PORT: u16 = 15901;
 const UBUNTU_VNC_GUEST_PORT: u16 = 5901;
 const SSH_PROBE_OPTIONS: &[&str] = &[
-    "-o", "BatchMode=yes",
-    "-o", "PreferredAuthentications=publickey",
-    "-o", "PasswordAuthentication=no",
-    "-o", "KbdInteractiveAuthentication=no",
-    "-o", "IdentitiesOnly=yes",
-    "-o", "ConnectTimeout=5",
-    "-o", "ConnectionAttempts=1",
-    "-o", "ServerAliveInterval=5",
-    "-o", "ServerAliveCountMax=1",
-    "-o", "StrictHostKeyChecking=no",
-    "-o", "UserKnownHostsFile=/dev/null",
-    "-o", "LogLevel=ERROR",
+    "-o",
+    "BatchMode=yes",
+    "-o",
+    "PreferredAuthentications=publickey",
+    "-o",
+    "PasswordAuthentication=no",
+    "-o",
+    "KbdInteractiveAuthentication=no",
+    "-o",
+    "IdentitiesOnly=yes",
+    "-o",
+    "ConnectTimeout=5",
+    "-o",
+    "ConnectionAttempts=1",
+    "-o",
+    "ServerAliveInterval=5",
+    "-o",
+    "ServerAliveCountMax=1",
+    "-o",
+    "StrictHostKeyChecking=no",
+    "-o",
+    "UserKnownHostsFile=/dev/null",
+    "-o",
+    "LogLevel=ERROR",
 ];
 const CC_WIRE_SHMEM_SIZE: usize = 4096;
 const CC_INPUT_TEXT: u32 = 0x05;
@@ -136,8 +153,8 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
     };
 
     let needs_ssh_probe = !matches!(args.guest_os.as_str(), "ubuntu" | "freebsd");
-    let needs_host_net_stimulus = args.guest_os == "ubuntu" &&
-        (args.assert_agentos_virtio || args.assert_ubuntu_live || args.assert_desktop);
+    let needs_host_net_stimulus = args.guest_os == "ubuntu"
+        && (args.assert_agentos_virtio || args.assert_ubuntu_live || args.assert_desktop);
     let ssh_port = if needs_ssh_probe || needs_host_net_stimulus {
         effective_ssh_port(args)
     } else {
@@ -186,67 +203,61 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
         wait_for_emulated_blk(&log_path, Duration::from_secs(args.timeout_secs))
     } else {
         match args.guest_os.as_str() {
-        "ubuntu" => {
-            println!(
-                "[xtask:test] Waiting for Ubuntu login prompt via CC-PD API ({})...",
-                cc_sock.display()
-            );
-            wait_for_guest_console_login_via_cc(
-                &cc_sock,
-                0,
-                if ubuntu_live {
-                    "ubuntu-live"
-                } else {
-                    "ubuntu"
-                },
-                Duration::from_secs(args.timeout_secs),
-                &mut qemu,
-            )
-        }
-        "freebsd" => {
-            println!(
-                "[xtask:test] Waiting for FreeBSD login prompt via CC-PD API ({})...",
-                cc_sock.display()
-            );
-            wait_for_guest_console_login_via_cc(
-                &cc_sock,
-                0,
-                "freebsd",
-                Duration::from_secs(args.timeout_secs),
-                &mut qemu,
-            )
-        }
-        "both" => {
-            println!(
-                "[xtask:test] Creating FreeBSD and Linux through CC-PD/vm_manager ({})...",
-                cc_sock.display()
-            );
-            wait_for_dual_guest_consoles_via_cc(
-                &cc_sock,
-                Duration::from_secs(args.timeout_secs),
-                &mut qemu,
-                ssh_key
-                    .as_ref()
-                    .context("dual SSH key was not generated")?,
-                args.keep_running,
-            )
-        }
-        _ => {
-            /* Success markers: any match is a pass.
-             * "agentOS boot complete" = root task + all PDs launched.
-             * "[rt] boot complete"    = x86 root-task smoke boot; service PD
-             *                           runtime health is tracked separately.
-             * "buildroot login:"      = Linux guest reached login prompt (buildroot). */
-            if args.board == "x86_64_generic" {
-                wait_for_x86_reduced_smoke(&log_path, Duration::from_secs(args.timeout_secs))
-            } else {
-                wait_for_markers(
-                    &log_path,
-                    &["agentOS boot complete", "buildroot login:"],
+            "ubuntu" => {
+                println!(
+                    "[xtask:test] Waiting for Ubuntu login prompt via CC-PD API ({})...",
+                    cc_sock.display()
+                );
+                wait_for_guest_console_login_via_cc(
+                    &cc_sock,
+                    0,
+                    if ubuntu_live { "ubuntu-live" } else { "ubuntu" },
                     Duration::from_secs(args.timeout_secs),
+                    &mut qemu,
                 )
             }
-        }
+            "freebsd" => {
+                println!(
+                    "[xtask:test] Waiting for FreeBSD login prompt via CC-PD API ({})...",
+                    cc_sock.display()
+                );
+                wait_for_guest_console_login_via_cc(
+                    &cc_sock,
+                    0,
+                    "freebsd",
+                    Duration::from_secs(args.timeout_secs),
+                    &mut qemu,
+                )
+            }
+            "both" => {
+                println!(
+                    "[xtask:test] Creating FreeBSD and Linux through CC-PD/vm_manager ({})...",
+                    cc_sock.display()
+                );
+                wait_for_dual_guest_consoles_via_cc(
+                    &cc_sock,
+                    Duration::from_secs(args.timeout_secs),
+                    &mut qemu,
+                    ssh_key.as_ref().context("dual SSH key was not generated")?,
+                    args.keep_running,
+                )
+            }
+            _ => {
+                /* Success markers: any match is a pass.
+                 * "agentOS boot complete" = root task + all PDs launched.
+                 * "[rt] boot complete"    = x86 root-task smoke boot; service PD
+                 *                           runtime health is tracked separately.
+                 * "buildroot login:"      = Linux guest reached login prompt (buildroot). */
+                if args.board == "x86_64_generic" {
+                    wait_for_x86_reduced_smoke(&log_path, Duration::from_secs(args.timeout_secs))
+                } else {
+                    wait_for_markers(
+                        &log_path,
+                        &["agentOS boot complete", "buildroot login:"],
+                        Duration::from_secs(args.timeout_secs),
+                    )
+                }
+            }
         }
     };
 
@@ -275,22 +286,18 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
                 "emulated virtio-blk: guest probed",
                 "emulated virtio-blk: guest DRIVER_OK",
                 "emulated virtio-blk: pumped",
-                    "emulated virtio-blk: agentOS host media 0 ready",
-                    "emulated virtio-blk: host-media read",
+                "emulated virtio-blk: agentOS host media 0 ready",
+                "emulated virtio-blk: host-media read",
             ]);
         }
-        let console = wait_for_all_markers(
-            &log_path,
-            &required,
-            Duration::from_secs(10),
-        );
+        let console = wait_for_all_markers(&log_path, &required, Duration::from_secs(10));
         let no_loopback = std::fs::read_to_string(&log_path)
             .map(|log| !log.contains("frame(s) TX->RX"))
             .unwrap_or(false);
         result = match (result, console) {
-            (Ok(_), Ok(_)) if !no_loopback => anyhow::bail!(
-                "Ubuntu network proof used the forbidden VMM-local TX->RX loopback"
-            ),
+            (Ok(_), Ok(_)) if !no_loopback => {
+                anyhow::bail!("Ubuntu network proof used the forbidden VMM-local TX->RX loopback")
+            }
             (Ok(login), Ok(_)) if args.assert_ubuntu_live || args.assert_desktop => Ok(format!(
                 "{login}; full Ubuntu Casper userspace uses agentOS virtio net + blk + console"
             )),
@@ -300,9 +307,10 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
             (Ok(login), Ok(_)) => Ok(format!(
                 "{login}; emulated virtio-console probed + DRIVER_OK + bidirectional I/O"
             )),
-            (_, Err(err)) => Err(err.context(
-                "Ubuntu login succeeded but host-backed virtio proof was incomplete",
-            )),
+            (_, Err(err)) => {
+                Err(err
+                    .context("Ubuntu login succeeded but host-backed virtio proof was incomplete"))
+            }
             (Err(err), _) => Err(err),
         };
     }
@@ -387,20 +395,14 @@ fn wait_for_manual_dual_ssh(ssh_key: &SshTestKey, qemu: &mut Child) -> anyhow::R
     let bytes = std::io::stdin()
         .read_line(&mut line)
         .context("failed to wait for manual SSH shutdown input")?;
-    anyhow::ensure!(
-        bytes != 0,
-        "manual SSH mode requires an interactive stdin"
-    );
+    anyhow::ensure!(bytes != 0, "manual SSH mode requires an interactive stdin");
     ensure_qemu_running(qemu, "leaving manual dual SSH mode")
 }
 
 fn wait_for_manual_desktop(ssh_key: &SshTestKey, qemu: &mut Child) -> anyhow::Result<()> {
     ensure_qemu_running(qemu, "entering manual Ubuntu desktop mode")?;
     println!("\nUbuntu is running a tunnel-confined VNC desktop:");
-    println!(
-        "  vncviewer 127.0.0.1:{}",
-        UBUNTU_DESKTOP_PORT
-    );
+    println!("  vncviewer 127.0.0.1:{}", UBUNTU_DESKTOP_PORT);
     println!(
         "  ssh -i '{}' -p {} -o IdentitiesOnly=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null ubuntu@127.0.0.1",
         ssh_key.private_key.display(),
@@ -412,7 +414,10 @@ fn wait_for_manual_desktop(ssh_key: &SshTestKey, qemu: &mut Child) -> anyhow::Re
     let bytes = std::io::stdin()
         .read_line(&mut line)
         .context("failed to wait for manual desktop shutdown input")?;
-    anyhow::ensure!(bytes != 0, "manual desktop mode requires an interactive stdin");
+    anyhow::ensure!(
+        bytes != 0,
+        "manual desktop mode requires an interactive stdin"
+    );
     ensure_qemu_running(qemu, "leaving manual Ubuntu desktop mode")
 }
 
@@ -442,7 +447,8 @@ fn effective_ssh_port(args: &TestArgs) -> u16 {
 }
 
 struct SeedServer {
-    child: std::process::Child,
+    stop: Arc<AtomicBool>,
+    thread: Option<JoinHandle<()>>,
     _dir: tempfile::TempDir,
 }
 
@@ -496,8 +502,11 @@ fn generate_ssh_test_key(repo_root: &Path, persistent: bool) -> anyhow::Result<S
 
 impl Drop for SeedServer {
     fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        self.stop.store(true, Ordering::Release);
+        let _ = TcpStream::connect(("127.0.0.1", UBUNTU_NOCLOUD_PORT));
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
     }
 }
 
@@ -564,34 +573,54 @@ write_files:
     std::fs::write(dir.path().join("vendor-data"), "")
         .context("failed to write NoCloud vendor-data")?;
 
-    let mut child = std::process::Command::new("python3")
-        .args([
-            "-m",
-            "http.server",
-            &UBUNTU_NOCLOUD_PORT.to_string(),
-            "--bind",
-            "127.0.0.1",
-            "--directory",
-            dir.path().to_str().unwrap(),
-        ])
-        .stdout(Stdio::inherit())
-        .stderr(Stdio::inherit())
-        .spawn()
-        .context("failed to start python3 NoCloud seed server")?;
-    std::thread::sleep(Duration::from_secs(1));
-    if let Some(status) = child
-        .try_wait()
-        .context("failed to poll NoCloud seed server")?
-    {
-        anyhow::bail!("Ubuntu NoCloud seed server exited early: {}", status);
-    }
+    let listener = TcpListener::bind(("127.0.0.1", UBUNTU_NOCLOUD_PORT))
+        .context("failed to bind Ubuntu NoCloud seed server")?;
+    let root = dir.path().to_path_buf();
+    let stop = Arc::new(AtomicBool::new(false));
+    let server_stop = Arc::clone(&stop);
+    let thread = std::thread::spawn(move || {
+        while !server_stop.load(Ordering::Acquire) {
+            let Ok((mut stream, _)) = listener.accept() else {
+                break;
+            };
+            if server_stop.load(Ordering::Acquire) {
+                break;
+            }
+            let mut request = [0u8; 1024];
+            let Ok(length) = stream.read(&mut request) else {
+                continue;
+            };
+            let first_line = String::from_utf8_lossy(&request[..length]);
+            let path = first_line
+                .lines()
+                .next()
+                .and_then(|line| line.split_whitespace().nth(1))
+                .and_then(|path| path.strip_prefix('/'));
+            let body = path
+                .filter(|path| matches!(*path, "meta-data" | "user-data" | "vendor-data"))
+                .and_then(|path| std::fs::read(root.join(path)).ok());
+            let (status, body) = body
+                .map(|body| ("200 OK", body))
+                .unwrap_or_else(|| ("404 Not Found", Vec::new()));
+            let header = format!(
+                "HTTP/1.1 {status}\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            let _ = stream.write_all(header.as_bytes());
+            let _ = stream.write_all(&body);
+        }
+    });
 
     println!(
         "[xtask:test] Ubuntu NoCloud-Net seed server: http://127.0.0.1:{}/",
         UBUNTU_NOCLOUD_PORT
     );
 
-    Ok(SeedServer { child, _dir: dir })
+    Ok(SeedServer {
+        stop,
+        thread: Some(thread),
+        _dir: dir,
+    })
 }
 
 pub fn run_make(args: &[&str], cwd: &Path) -> anyhow::Result<()> {
@@ -1050,9 +1079,7 @@ fn wait_for_emulated_blk(log_path: &Path, timeout: Duration) -> anyhow::Result<S
                 .copied()
                 .filter(|m| !accumulated.contains(m))
                 .collect();
-            let guest_ok = EMU_BLK_GUEST_ANY
-                .iter()
-                .any(|m| accumulated.contains(m));
+            let guest_ok = EMU_BLK_GUEST_ANY.iter().any(|m| accumulated.contains(m));
             anyhow::bail!(
                 "emulated virtio-blk proof timeout after {}s; missing VMM markers {:?}; guest IPA/disk observed={}",
                 timeout.as_secs(),
@@ -1068,14 +1095,13 @@ fn wait_for_emulated_blk(log_path: &Path, timeout: Duration) -> anyhow::Result<S
             offset += bytes_read as u64;
             accumulated.push_str(&String::from_utf8_lossy(&raw));
 
-            let vmm_ok = EMU_BLK_REQUIRED
-                .iter()
-                .all(|m| accumulated.contains(m));
-            let guest_ok = EMU_BLK_GUEST_ANY
-                .iter()
-                .any(|m| accumulated.contains(m));
+            let vmm_ok = EMU_BLK_REQUIRED.iter().all(|m| accumulated.contains(m));
+            let guest_ok = EMU_BLK_GUEST_ANY.iter().any(|m| accumulated.contains(m));
             if vmm_ok && guest_ok {
-                return Ok("emulated virtio-blk: guest probed + DRIVER_OK + pumped + guest IPA/disk".to_string());
+                return Ok(
+                    "emulated virtio-blk: guest probed + DRIVER_OK + pumped + guest IPA/disk"
+                        .to_string(),
+                );
             }
         }
 
@@ -1096,9 +1122,7 @@ fn wait_for_emulated_net(log_path: &Path, timeout: Duration) -> anyhow::Result<S
                 .copied()
                 .filter(|m| !accumulated.contains(m))
                 .collect();
-            let guest_ok = EMU_NET_GUEST_ANY
-                .iter()
-                .any(|m| accumulated.contains(m));
+            let guest_ok = EMU_NET_GUEST_ANY.iter().any(|m| accumulated.contains(m));
             anyhow::bail!(
                 "emulated virtio-net proof timeout after {}s; missing VMM markers {:?}; guest IPA/MAC observed={}",
                 timeout.as_secs(),
@@ -1114,14 +1138,13 @@ fn wait_for_emulated_net(log_path: &Path, timeout: Duration) -> anyhow::Result<S
             offset += bytes_read as u64;
             accumulated.push_str(&String::from_utf8_lossy(&raw));
 
-            let vmm_ok = EMU_NET_REQUIRED
-                .iter()
-                .all(|m| accumulated.contains(m));
-            let guest_ok = EMU_NET_GUEST_ANY
-                .iter()
-                .any(|m| accumulated.contains(m));
+            let vmm_ok = EMU_NET_REQUIRED.iter().all(|m| accumulated.contains(m));
+            let guest_ok = EMU_NET_GUEST_ANY.iter().any(|m| accumulated.contains(m));
             if vmm_ok && guest_ok {
-                return Ok("emulated virtio-net: guest probed + DRIVER_OK + pumped + guest IPA/MAC".to_string());
+                return Ok(
+                    "emulated virtio-net: guest probed + DRIVER_OK + pumped + guest IPA/MAC"
+                        .to_string(),
+                );
             }
         }
 
@@ -1190,10 +1213,7 @@ impl CcClient {
         }
 
         let result: anyhow::Result<CcReply> = (|| {
-            let stream = self
-                .stream
-                .as_mut()
-                .context("CC connection is closed")?;
+            let stream = self.stream.as_mut().context("CC connection is closed")?;
             write_cc_frame(stream, &req)?;
 
             let mut raw = [0u8; CC_REPLY_SIZE];
@@ -1228,10 +1248,7 @@ fn write_cc_frame(stream: &mut UnixStream, frame: &[u8]) -> anyhow::Result<()> {
             Ok(count) => written += count,
             Err(err) if retryable_cc_io(&err) && start.elapsed() < CC_FRAME_DEADLINE => {}
             Err(err) if retryable_cc_io(&err) => {
-                anyhow::bail!(
-                    "timed out writing CC frame after {} bytes",
-                    written
-                )
+                anyhow::bail!("timed out writing CC frame after {} bytes", written)
             }
             Err(err) => return Err(err).context("failed to write CC frame"),
         }
@@ -1327,16 +1344,13 @@ fn wait_for_guest_console_login_via_cc(
                         .iter()
                         .find(|marker| transcript.contains(**marker))
                     {
-                        if guest_os == "ubuntu-live"
-                            && !transcript.contains("Ubuntu 26.04")
-                        {
+                        if guest_os == "ubuntu-live" && !transcript.contains("Ubuntu 26.04") {
                             None
                         } else {
                             Some((*marker).to_string())
                         }
                     } else if guest_os == "freebsd"
-                        && (freebsd_installer_shell_requested
-                            || freebsd_rescue_shell_requested)
+                        && (freebsd_installer_shell_requested || freebsd_rescue_shell_requested)
                         && freebsd_shell_prompt_seen(&transcript)
                     {
                         Some(String::from("installer shell prompt"))
@@ -1445,8 +1459,7 @@ fn reject_bad_guest_path(guest_os: &str, transcript: &str) -> anyhow::Result<()>
 
 fn freebsd_static_rescue_needed(transcript: &str) -> bool {
     transcript.contains("Enter full pathname of shell")
-        && (transcript.contains("Unsupported version")
-            || transcript.contains("ld-elf.so.1:"))
+        && (transcript.contains("Unsupported version") || transcript.contains("ld-elf.so.1:"))
 }
 
 fn freebsd_shell_prompt_seen(transcript: &str) -> bool {
@@ -1462,13 +1475,7 @@ fn verify_guest_console_input(
     qemu: &mut Child,
 ) -> anyhow::Result<String> {
     if guest_os == "ubuntu-live" {
-        return verify_ubuntu_live_console_and_net(
-            cc_sock,
-            cc,
-            guest_handle,
-            timeout,
-            qemu,
-        );
+        return verify_ubuntu_live_console_and_net(cc_sock, cc, guest_handle, timeout, qemu);
     }
 
     let probe = if guest_os.starts_with("ubuntu") {
@@ -1540,8 +1547,7 @@ fn verify_ubuntu_live_console_and_net(
         if !chunk.is_empty() {
             transcript.push_str(&chunk);
             if transcript.contains("Login incorrect") {
-                if transcript.contains("pam_nologin")
-                    || transcript.contains("System is booting up")
+                if transcript.contains("pam_nologin") || transcript.contains("System is booting up")
                 {
                     anyhow::ensure!(
                         login_attempts < 5,
@@ -1578,17 +1584,12 @@ fn verify_ubuntu_live_console_and_net(
     );
 
     /* Split the token so terminal command echo cannot satisfy the proof. */
-    cc_send_raw_bytes(
-        cc,
-        guest_handle,
-        b"printf 'agentos-live-%s\\n' proof\r",
-    )?;
+    cc_send_raw_bytes(cc, guest_handle, b"printf 'agentos-live-%s\\n' proof\r")?;
     let proof_start = Instant::now();
     let mut output = String::new();
     while proof_start.elapsed() < phase_timeout {
         ensure_qemu_running(qemu, "waiting for Ubuntu live userspace proof")?;
-        let chunk =
-            cc_log_stream_for_handle(cc, guest_handle, "ubuntu-live").unwrap_or_default();
+        let chunk = cc_log_stream_for_handle(cc, guest_handle, "ubuntu-live").unwrap_or_default();
         if !chunk.is_empty() {
             output.push_str(&chunk);
             if output.contains("agentos-live-proof") {
@@ -1596,17 +1597,9 @@ fn verify_ubuntu_live_console_and_net(
                  * Link-up emits IPv6 control traffic; the bounded all-nodes
                  * ping guarantees a guest-originated frame without DHCP.
                  */
-                cc_send_raw_bytes(
-                    cc,
-                    guest_handle,
-                    b"sudo -n ip link set eth0 up\r",
-                )?;
+                cc_send_raw_bytes(cc, guest_handle, b"sudo -n ip link set eth0 up\r")?;
                 std::thread::sleep(Duration::from_secs(1));
-                cc_send_raw_bytes(
-                    cc,
-                    guest_handle,
-                    b"ping -6 -c1 -W1 ff02::1%eth0\r",
-                )?;
+                cc_send_raw_bytes(cc, guest_handle, b"ping -6 -c1 -W1 ff02::1%eth0\r")?;
                 return Ok(String::from(
                     "logged into Ubuntu live userspace, executed a command, and emitted a network probe",
                 ));
@@ -1683,9 +1676,7 @@ fn create_guest_via_cc_wait(
             Err(err) => {
                 last_err = format!("{err:#}");
                 if cc.is_closed() {
-                    return Err(err).context(format!(
-                        "{label} guest create transport closed"
-                    ));
+                    return Err(err).context(format!("{label} guest create transport closed"));
                 }
                 if attempts == 1 || attempts % 5 == 0 {
                     println!(
@@ -1740,9 +1731,7 @@ fn run_guest_console_command(
                 if cc.is_closed() {
                     return Err(err).context("CC provisioning transport closed");
                 }
-                println!(
-                    "[xtask:test] CC provisioning poll not ready yet: {err:#}"
-                );
+                println!("[xtask:test] CC provisioning poll not ready yet: {err:#}");
             }
         }
         std::thread::sleep(Duration::from_millis(250));
@@ -1839,10 +1828,7 @@ fn run_ssh_script(private_key: &Path, script: &str) -> anyhow::Result<()> {
         .arg(private_key)
         .args(["-p", &UBUNTU_DEFAULT_SSH_PORT.to_string()])
         .args(SSH_PROBE_OPTIONS)
-        .args([
-            "ubuntu@127.0.0.1",
-            "sudo -n timeout 1200 sh -s",
-        ])
+        .args(["ubuntu@127.0.0.1", "sudo -n timeout 1200 sh -s"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -1877,11 +1863,7 @@ fn wait_for_ubuntu_ssh(
     let mut last = String::from("no SSH attempt completed");
     while start.elapsed() < timeout {
         ensure_qemu_running(qemu, "waiting for Ubuntu desktop SSH")?;
-        let probe = spawn_ssh_probe(
-            &ssh_key.private_key,
-            UBUNTU_DEFAULT_SSH_PORT,
-            "ubuntu",
-        )?;
+        let probe = spawn_ssh_probe(&ssh_key.private_key, UBUNTU_DEFAULT_SSH_PORT, "ubuntu")?;
         let output = probe
             .wait_with_output()
             .context("failed to wait for Ubuntu desktop SSH probe")?;
@@ -1900,9 +1882,7 @@ fn wait_for_ubuntu_ssh(
 }
 
 fn desktop_tunnel_forward_spec() -> String {
-    format!(
-        "127.0.0.1:{UBUNTU_DESKTOP_PORT}:127.0.0.1:{UBUNTU_VNC_GUEST_PORT}"
-    )
+    format!("127.0.0.1:{UBUNTU_DESKTOP_PORT}:127.0.0.1:{UBUNTU_VNC_GUEST_PORT}")
 }
 
 fn spawn_desktop_tunnel(private_key: &Path) -> anyhow::Result<Child> {
@@ -2017,16 +1997,8 @@ fn wait_for_dual_ssh(
     let mut last = String::from("no SSH attempts completed");
     while start.elapsed() < timeout {
         ensure_qemu_running(qemu, "waiting for dual authenticated SSH")?;
-        let ubuntu = spawn_ssh_probe(
-            &ssh_key.private_key,
-            UBUNTU_DEFAULT_SSH_PORT,
-            "ubuntu",
-        )?;
-        let freebsd = spawn_ssh_probe(
-            &ssh_key.private_key,
-            FREEBSD_DEFAULT_SSH_PORT,
-            "root",
-        )?;
+        let ubuntu = spawn_ssh_probe(&ssh_key.private_key, UBUNTU_DEFAULT_SSH_PORT, "ubuntu")?;
+        let freebsd = spawn_ssh_probe(&ssh_key.private_key, FREEBSD_DEFAULT_SSH_PORT, "root")?;
         let ubuntu_out = ubuntu
             .wait_with_output()
             .context("failed to wait for Ubuntu SSH probe")?;
@@ -2129,8 +2101,7 @@ fn wait_for_dual_guest_consoles_via_cc(
 
     if !keep_running {
         destroy_guest_via_cc(&mut cc, linux_handle).context("failed to destroy Linux guest")?;
-        destroy_guest_via_cc(&mut cc, freebsd_handle)
-            .context("failed to destroy FreeBSD guest")?;
+        destroy_guest_via_cc(&mut cc, freebsd_handle).context("failed to destroy FreeBSD guest")?;
     }
 
     Ok(format!(
@@ -2215,16 +2186,12 @@ fn connect_host_net_stimulus(port: u16, qemu: &mut Child) -> Option<TcpStream> {
             return None;
         }
         if let Ok(stream) = TcpStream::connect_timeout(&addr, Duration::from_millis(250)) {
-            println!(
-                "[xtask:test] Host network stimulus connected through 127.0.0.1:{port}"
-            );
+            println!("[xtask:test] Host network stimulus connected through 127.0.0.1:{port}");
             return Some(stream);
         }
         std::thread::sleep(Duration::from_millis(100));
     }
-    println!(
-        "[xtask:test] WARN: host network stimulus could not connect to 127.0.0.1:{port}"
-    );
+    println!("[xtask:test] WARN: host network stimulus could not connect to 127.0.0.1:{port}");
     None
 }
 
@@ -2465,9 +2432,9 @@ mod tests {
     #[test]
     fn desktop_proof_is_lightweight_and_confined_to_ssh() {
         let script = ubuntu_desktop_provision_script();
-        assert!(script.contains(
-            "tigervnc-standalone-server openbox xterm dbus-x11 x11-xserver-utils"
-        ));
+        assert!(
+            script.contains("tigervnc-standalone-server openbox xterm dbus-x11 x11-xserver-utils")
+        );
         assert!(script.contains("openbox-session"));
         assert!(script.contains("xterm"));
         assert!(script.contains("-localhost yes"));
