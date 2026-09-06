@@ -3,8 +3,10 @@ name: agentOS CI
 on:
   push:
     branches: [main, master]
-  pull_request:
-    branches: [main, master]
+  # Stacked changes use topic branches as temporary PR bases. Run the same
+  # checks there instead of showing a misleading green PR with only external
+  # security checks.
+  pull_request: {}
 
 env:
   CARGO_TERM_COLOR: always
