@@ -251,7 +251,7 @@ ifeq ($(UNAME_S),Darwin)
 		python3 \
 		dtc \
 		coreutils \
-		2>/dev/null || true
+		zstd
 	@command -v cargo >/dev/null 2>&1 || \
 		(echo "[macOS] Installing Rust toolchain..." && \
 		 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --no-modify-path && \
@@ -262,18 +262,27 @@ else ifeq ($(UNAME_S),Linux)
 	@echo "[Linux] Installing dependencies via apt..."
 	@sudo apt-get update -qq
 	@sudo apt-get install -y --no-install-recommends \
+		build-essential \
+		git \
 		qemu-system-misc \
 		qemu-system-arm \
 		qemu-system-x86 \
 		clang \
 		lld \
+		llvm \
 		cmake \
 		ninja-build \
 		python3 \
 		device-tree-compiler \
+		libarchive-tools \
+		openssh-client \
 		curl \
+		zstd \
 		xz-utils \
-		2>/dev/null || true
+		pkg-config
+	@if apt-cache show qemu-system-riscv >/dev/null 2>&1; then \
+		sudo apt-get install -y --no-install-recommends qemu-system-riscv; \
+	fi
 	@command -v cargo >/dev/null 2>&1 || \
 		(curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --no-modify-path)
 	@rustup target add wasm32-unknown-unknown 2>/dev/null || true
@@ -312,8 +321,8 @@ else
 	@echo "  ld.lld:              $$(ld.lld --version 2>/dev/null | head -1 || echo 'NOT FOUND')"
 endif
 	@echo "[deps-tools] Building xtask..."
-	@cargo build -p xtask 2>/dev/null || true
-	@echo "  xtask:               $$(cargo run -p xtask -- --version 2>/dev/null || echo 'built')"
+	@cargo build -p xtask
+	@echo "  cargo:               $$(cargo --version)"
 
 # =============================================================================
 # setup/demo: two-command first-run path and one-command repeatable showcase
@@ -364,10 +373,18 @@ demo-check:
 		(echo "ERROR: ssh not found; install an OpenSSH client." && exit 1)
 	@command -v ssh-keygen >/dev/null 2>&1 || \
 		(echo "ERROR: ssh-keygen not found; install OpenSSH tools." && exit 1)
+	@command -v curl >/dev/null 2>&1 || \
+		(echo "ERROR: curl not found; run 'make setup'." && exit 1)
+	@command -v bsdtar >/dev/null 2>&1 || \
+		(echo "ERROR: bsdtar not found; run 'make setup'." && exit 1)
+	@command -v zstd >/dev/null 2>&1 || \
+		(echo "ERROR: zstd not found; run 'make setup'." && exit 1)
 	@test -x "$(LLVM_BIN)/clang" || \
 		(echo "ERROR: clang not found; run 'make setup'." && exit 1)
 	@test -x "$(LLD_BIN)/ld.lld" || \
 		(echo "ERROR: ld.lld not found; run 'make setup'." && exit 1)
+	@command -v llvm-objcopy >/dev/null 2>&1 || test -x "$(LLVM_BIN)/llvm-objcopy" || \
+		(echo "ERROR: llvm-objcopy not found; run 'make setup'." && exit 1)
 	@test -d "$(SEL4_SDK)/board" || \
 		(echo "ERROR: Microkit SDK not found at $(SEL4_SDK); run 'make sdk'." && exit 1)
 	@echo "✓ Demo prerequisites are available."

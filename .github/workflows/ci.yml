@@ -8,7 +8,10 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
-  SEL4_SDK: ${{ runner.temp }}/microkit-sdk-2.1.0
+  # runner.* contexts are not available at workflow scope. GitHub-hosted
+  # Ubuntu jobs are isolated, so a fixed temporary path is both valid here
+  # and consistent with every SDK cache/download step below.
+  SEL4_SDK: /tmp/microkit-sdk-2.1.0
 
 jobs:
   # ---------------------------------------------------------------------------
