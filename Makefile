@@ -18,7 +18,7 @@
 #   make test-ubuntu-live — boot the full Ubuntu Casper live filesystem
 #   make clean        — remove build artifacts for current board
 
-.PHONY: all install deps deps-tools submodules channels run run-fast test test-guest-login test-guest-net test-guest-blk test-guest-console test-ubuntu-virtio test-ubuntu-live sel4-test-image run-tests test-snapshot-sched test-power-mgr test-proc-server test-vibeos-contract test-integration test-host gate gate-aarch64 gate-x86_64 e2e e2e-guest e2e-contract e2e-dual-os e2e-ubuntu-amd64 e2e-ubuntu-arm64 e2e-nixos e2e-freebsd15 e2e-all bootstrap-guest clean clean-all clean-images help release release-minor release-major fetch-guest build-tools
+.PHONY: all install deps deps-tools submodules channels run run-fast run-dual-ssh test test-guest-login test-guest-net test-guest-blk test-guest-console test-ubuntu-virtio test-ubuntu-live sel4-test-image run-tests test-snapshot-sched test-power-mgr test-proc-server test-vibeos-contract test-integration test-host gate gate-aarch64 gate-x86_64 e2e e2e-guest e2e-contract e2e-dual-os e2e-ubuntu-amd64 e2e-ubuntu-arm64 e2e-nixos e2e-freebsd15 e2e-all bootstrap-guest clean clean-all clean-images help release release-minor release-major fetch-guest build-tools
 
 # ─── Read config.yaml (if present) ───────────────────────────────────────────
 CONFIG_TARGET := $(shell grep '^target_arch:' config.yaml 2>/dev/null | sed 's/target_arch:[[:space:]]*//' | tr -d '[:space:]')
@@ -841,6 +841,11 @@ e2e-contract:
 e2e-dual-os:
 	@cargo xtask qemu-test --board $(BOARD) --guest-os both --timeout-secs $(DUAL_OS_TEST_TIMEOUT)
 
+# Run the dual authenticated-SSH gate, retain both guests, and print commands
+# for manual sessions. Press Enter in this terminal to stop QEMU cleanly.
+run-dual-ssh:
+	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os both --timeout-secs $(DUAL_OS_TEST_TIMEOUT) --keep-running
+
 # Per-guest-OS E2E targets — run the full suite against a specific guest image.
 # Images must exist in build/guest-images/; create them with: make bootstrap-guest OS=<os>
 e2e-ubuntu-amd64:
@@ -997,6 +1002,7 @@ help:
 	@echo "  make test-integration Run host-side contract/integration tests"
 	@echo "  make e2e              Run the default QEMU/guest/CC end-to-end suite"
 	@echo "  make e2e-dual-os      Run Ubuntu and FreeBSD guest E2E coverage"
+	@echo "  make run-dual-ssh     Keep verified dual guests running for manual SSH"
 	@echo "  make e2e-all          Run E2E suites for every staged guest image"
 	@echo ""
 	@echo "Cleanup/tooling:"

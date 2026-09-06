@@ -158,6 +158,7 @@ make run                                      # build + QEMU + Ubuntu 26.04 gues
 make run GUEST_OS=freebsd                     # build + QEMU + FreeBSD 15.0 guest
 make run GUEST_OS=both                        # boot Linux and FreeBSD VMM PDs together
 make test-guest-login                         # prove Ubuntu and FreeBSD serial login via CC-PD
+make run-dual-ssh                             # verify SSH, then retain both guests for manual login
 ```
 
 `make run` creates the CC-PD Unix socket at `build/cc_pd.sock`, prints the
@@ -183,7 +184,13 @@ make fetch-guest GUEST_OS=both                    # stage both guest OS assets
 Guest images and temporary build artifacts stay under `build/`. Use
 `AGENTOS_IMAGES=/path/to/cache` only when intentionally overriding the default.
 `make run GUEST_OS=both` automatically uses `QEMU_RUN_MEM=3G` so Linux and
-FreeBSD can use independent identity-mapped guest RAM windows.
+FreeBSD can use independent guest RAM allocations with GPA-to-HVA translation.
+
+For manual SSH testing, run `make run-dual-ssh`. It first requires authenticated
+SSH to succeed for both guests, then prints commands for Ubuntu on host port
+12222 and FreeBSD on host port 12223. The generated key remains at
+`build/tmp/dual-ssh/id_ed25519` while QEMU runs. Press Enter in the original
+terminal to stop both guests and QEMU cleanly.
 
 ### FreeBSD host
 

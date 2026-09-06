@@ -34,6 +34,10 @@ pub struct TestArgs {
     pub timeout_secs: u64,
     #[arg(long)]
     pub no_build: bool,
+    /// After a successful dual-guest SSH gate, print manual SSH commands and
+    /// keep QEMU running until Enter is pressed.
+    #[arg(long)]
+    pub keep_running: bool,
     /// Require emulated virtio-net probe + DRIVER_OK + a pumped frame.
     /// Host tests are not this proof. GUEST_OS=none is a stub VMM.
     #[arg(long)]

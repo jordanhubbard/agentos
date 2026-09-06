@@ -56,6 +56,10 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
     let repo_root = repo_root()?;
     let ubuntu_live = args.assert_ubuntu_live || args.guest_os == "both";
 
+    anyhow::ensure!(
+        !args.keep_running || args.guest_os == "both",
+        "--keep-running is supported only with --guest-os both"
+    );
     if args.assert_emulated_net
         || args.assert_emulated_blk
         || args.assert_emulated_console
@@ -119,7 +123,7 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
         .keep()
         .context("failed to persist build/tmp QEMU log file")?;
     let dual_ssh_key = if args.guest_os == "both" {
-        Some(generate_ssh_test_key(&repo_root)?)
+        Some(generate_ssh_test_key(&repo_root, args.keep_running)?)
     } else {
         None
     };
@@ -217,6 +221,7 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
                 dual_ssh_key
                     .as_ref()
                     .context("dual SSH key was not generated")?,
+                args.keep_running,
             )
         }
         _ => {
@@ -294,6 +299,16 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
         };
     }
 
+    if args.keep_running && result.is_ok() {
+        result = wait_for_manual_dual_ssh(
+            dual_ssh_key
+                .as_ref()
+                .context("persistent dual SSH key was not generated")?,
+            &mut qemu,
+        )
+        .map(|()| String::from("manual dual SSH session completed"));
+    }
+
     let _ = qemu.kill();
     let _ = qemu.wait();
 
@@ -318,6 +333,40 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
     }
 }
 
+fn wait_for_manual_dual_ssh(ssh_key: &SshTestKey, qemu: &mut Child) -> anyhow::Result<()> {
+    ensure_qemu_running(qemu, "entering manual dual SSH mode")?;
+    println!("\nDual guests are running with authenticated SSH:");
+    for command in manual_ssh_commands(&ssh_key.private_key) {
+        println!("  {command}");
+    }
+    println!("Press Enter here to stop both guests and QEMU.");
+
+    let mut line = String::new();
+    let bytes = std::io::stdin()
+        .read_line(&mut line)
+        .context("failed to wait for manual SSH shutdown input")?;
+    anyhow::ensure!(
+        bytes != 0,
+        "manual SSH mode requires an interactive stdin"
+    );
+    ensure_qemu_running(qemu, "leaving manual dual SSH mode")
+}
+
+fn manual_ssh_commands(private_key: &Path) -> [String; 2] {
+    [
+        format!(
+            "ssh -i '{}' -p {} -o IdentitiesOnly=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null ubuntu@127.0.0.1",
+            private_key.display(),
+            UBUNTU_DEFAULT_SSH_PORT
+        ),
+        format!(
+            "ssh -i '{}' -p {} -o IdentitiesOnly=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null root@127.0.0.1",
+            private_key.display(),
+            FREEBSD_DEFAULT_SSH_PORT
+        ),
+    ]
+}
+
 fn effective_ssh_port(args: &TestArgs) -> u16 {
     if (args.guest_os == "ubuntu" || args.guest_os == "both") && args.ssh_port == 0 {
         UBUNTU_DEFAULT_SSH_PORT
@@ -334,32 +383,48 @@ struct SeedServer {
 }
 
 struct SshTestKey {
-    _dir: tempfile::TempDir,
+    _temporary_dir: Option<tempfile::TempDir>,
     private_key: PathBuf,
     public_key: String,
 }
 
-fn generate_ssh_test_key(repo_root: &Path) -> anyhow::Result<SshTestKey> {
+fn generate_ssh_test_key(repo_root: &Path, persistent: bool) -> anyhow::Result<SshTestKey> {
     let tmp_dir = repo_root.join("build/tmp");
     std::fs::create_dir_all(&tmp_dir)
         .with_context(|| format!("failed to create {}", tmp_dir.display()))?;
-    let dir = tempfile::Builder::new()
-        .prefix("agentos-dual-ssh-")
-        .tempdir_in(&tmp_dir)
-        .context("failed to create dual SSH key directory")?;
-    let private_key = dir.path().join("id_ed25519");
+    let (temporary_dir, key_dir) = if persistent {
+        let key_dir = tmp_dir.join("dual-ssh");
+        std::fs::create_dir_all(&key_dir)
+            .with_context(|| format!("failed to create {}", key_dir.display()))?;
+        (None, key_dir)
+    } else {
+        let dir = tempfile::Builder::new()
+            .prefix("agentos-dual-ssh-")
+            .tempdir_in(&tmp_dir)
+            .context("failed to create dual SSH key directory")?;
+        let key_dir = dir.path().to_path_buf();
+        (Some(dir), key_dir)
+    };
+    let private_key = key_dir.join("id_ed25519");
+    let public_key_path = private_key.with_extension("pub");
+    for path in [&private_key, &public_key_path] {
+        if path.exists() {
+            std::fs::remove_file(path)
+                .with_context(|| format!("failed to replace {}", path.display()))?;
+        }
+    }
     let status = std::process::Command::new("ssh-keygen")
         .args(["-q", "-t", "ed25519", "-N", "", "-f"])
         .arg(&private_key)
         .status()
         .context("failed to run ssh-keygen for dual SSH proof")?;
     anyhow::ensure!(status.success(), "ssh-keygen failed with {status}");
-    let public_key = std::fs::read_to_string(private_key.with_extension("pub"))
+    let public_key = std::fs::read_to_string(public_key_path)
         .context("failed to read generated dual SSH public key")?
         .trim()
         .to_string();
     Ok(SshTestKey {
-        _dir: dir,
+        _temporary_dir: temporary_dir,
         private_key,
         public_key,
     })
@@ -1748,6 +1813,7 @@ fn wait_for_dual_guest_consoles_via_cc(
     timeout: Duration,
     qemu: &mut Child,
     ssh_key: &SshTestKey,
+    keep_running: bool,
 ) -> anyhow::Result<String> {
     let start = Instant::now();
     let create_timeout = timeout;
@@ -1811,11 +1877,19 @@ fn wait_for_dual_guest_consoles_via_cc(
     )?;
     let ssh = wait_for_dual_ssh(ssh_key, Duration::from_secs(600), qemu)?;
 
-    destroy_guest_via_cc(&mut cc, linux_handle).context("failed to destroy Linux guest")?;
-    destroy_guest_via_cc(&mut cc, freebsd_handle).context("failed to destroy FreeBSD guest")?;
+    if !keep_running {
+        destroy_guest_via_cc(&mut cc, linux_handle).context("failed to destroy Linux guest")?;
+        destroy_guest_via_cc(&mut cc, freebsd_handle)
+            .context("failed to destroy FreeBSD guest")?;
+    }
 
     Ok(format!(
-        "dual CC/vm_manager consoles ready: linux_handle={linux_handle} ({linux}); freebsd_handle={freebsd_handle} ({freebsd}); {ssh}; both destroyed"
+        "dual CC/vm_manager consoles ready: linux_handle={linux_handle} ({linux}); freebsd_handle={freebsd_handle} ({freebsd}); {ssh}; {}",
+        if keep_running {
+            "both retained for manual SSH"
+        } else {
+            "both destroyed"
+        }
     ))
 }
 
@@ -2136,6 +2210,21 @@ mod tests {
         assert!(options.contains("ConnectTimeout=5"));
         assert!(options.contains("ServerAliveInterval=5"));
         assert!(options.contains("ServerAliveCountMax=1"));
+    }
+
+    #[test]
+    fn manual_dual_ssh_commands_use_persistent_key_and_distinct_ports() {
+        let commands = manual_ssh_commands(Path::new("build/tmp/dual-ssh/id_ed25519"));
+        assert!(commands[0].contains("-p 12222"));
+        assert!(commands[0].contains("ubuntu@127.0.0.1"));
+        assert!(commands[1].contains("-p 12223"));
+        assert!(commands[1].contains("root@127.0.0.1"));
+        for command in commands {
+            assert!(command.contains("build/tmp/dual-ssh/id_ed25519"));
+            assert!(command.contains("IdentitiesOnly=yes"));
+            assert!(command.contains("StrictHostKeyChecking=no"));
+            assert!(command.contains("UserKnownHostsFile=/dev/null"));
+        }
     }
 
     #[test]
