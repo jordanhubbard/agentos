@@ -35,11 +35,13 @@ rustup target add wasm32-unknown-unknown
 ### Microkit SDK and Artifacts
 
 The build uses one external seL4 Microkit 2.1.0 SDK, shared by every agentOS
-worktree. `SEL4_SDK` defaults to
+checkout. `SEL4_SDK` defaults to
 `$HOME/.cache/agentos/microkit-sdk-2.1.0`; set it explicitly to use another
 installation:
 
 ```bash
+make sdk
+# or:
 export SEL4_SDK=/absolute/path/to/microkit-sdk-2.1.0
 make build
 ```
@@ -47,26 +49,42 @@ make build
 Generated images, sockets, QEMU logs, guest images, and temporary files belong
 under `build/`; do not place binary artifacts in the repository root.
 
+## Demonstration path
+
+For a first-time setup and the complete dual-guest demonstration:
+
+```bash
+make setup
+make demo
+```
+
+`make demo` stages both guest images, builds one AArch64 agentOS image, boots
+Ubuntu and FreeBSD concurrently, provisions a generated Ed25519 key, and
+requires authenticated SSH to both guests. It prints the exact SSH commands
+only after the gate passes and retains QEMU until Enter is pressed in the
+original terminal.
+
+```bash
+make demo-test   # run the same acceptance proof non-interactively
+make demo-smoke  # host-only preflight; no QEMU and not a boot proof
+```
+
+See [`demo.md`](demo.md) for timing, ports, expected behavior, and
+troubleshooting.
+
 ## Build Steps
 
-```bash
-# Show maintained top-level targets and current defaults.
-make help
-
-# Install host dependencies with brew, apt, or pkg.
-make install
-
-# Build and launch the native board in QEMU.
-make run
-```
-
-`make run` builds the host-native board, stages the selected guest image under
-`build/guest-images`, starts QEMU, exposes the CC-PD Unix socket at
-`build/cc_pd.sock`, and prints the matching command for the external GUI:
+Use `make help` for the maintained target list. `make run` is the lower-level
+single-guest foreground entry point:
 
 ```bash
-cd ../agentos_gui && make run
+make run GUEST_OS=ubuntu
+make run GUEST_OS=freebsd
 ```
+
+It builds the host-native board, stages the selected guest image under
+`build/guest-images`, starts QEMU, and exposes the CC-PD Unix socket at
+`build/cc_pd.sock`.
 
 To build a specific architecture without launching:
 
@@ -134,12 +152,11 @@ the selected target. The important runtime interfaces are:
 
 | Interface | Default |
 |---|---|
-| agentOS foreground serial | QEMU stdio |
-| CC-PD Unix socket | `build/cc_pd.sock` |
-| host API forward | `127.0.0.1:8789` |
-| Ubuntu SSH forward | `localhost:2222` |
-| FreeBSD SSH forward | `localhost:2223` |
-| NixOS SSH forward | `localhost:2224` |
+| Lower-level `make run` serial | QEMU stdio |
+| Lower-level `make run` CC-PD socket | `build/cc_pd.sock` |
+| Lower-level `make run` host API | `127.0.0.1:8789` |
+| `make demo` Ubuntu SSH | `127.0.0.1:12222` |
+| `make demo` FreeBSD SSH | `127.0.0.1:12223` |
 
 Exit foreground QEMU with `Ctrl-A X`.
 
@@ -176,6 +193,10 @@ For guest tests, `make test-guest-login` waits through the CC-PD console API
 until Ubuntu 26.04 or FreeBSD 15.0 reaches a login or maintenance prompt, then
 injects input and verifies that the guest echoes it. The x86_64 smoke path
 checks the root-task marker `[rt] boot complete`.
+
+For the release-facing demonstration, `make demo` goes further: it requires
+both guests to be live concurrently and to complete key-only SSH commands
+before exposing manual login commands.
 
 On x86-64 the maintained scope is intentionally narrower than AArch64: the
 root task boots a reduced topology with no service PDs. This avoids running the
@@ -232,9 +253,9 @@ Important runtime contracts for external users:
   via the embedded wasm3 interpreter. Binaries must be signed with
   `tools/sign-wasm` before deployment.
 
-- **Network stack**: The `net_server` PD provides a TCP/IP stack stub. Full
-  network functionality requires a VirtIO NIC (provided by the QEMU `-netdev`
-  + `-device virtio-net-device` flags above).
+- **Network stack**: QEMU provides the host-side NIC hardware model. The
+  canonical agentOS network service owns that transport; guests see the
+  agentOS-emulated virtio-net device rather than the host QEMU device.
 
 - **Guest OS VMM selection**: Use `GUEST_OS=ubuntu` for the Linux path,
   `GUEST_OS=freebsd` for the FreeBSD path, or `GUEST_OS=both` to build a

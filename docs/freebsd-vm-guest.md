@@ -12,7 +12,9 @@ Boot FreeBSD 15.0 as a VM guest inside agentOS, running on the seL4
 microkernel as hypervisor. The active path stages FreeBSD assets into
 `build/guest-images`, builds the AArch64 agentOS image, exposes the guest
 through the CC-PD Unix socket at `build/cc_pd.sock`, and validates console
-boot/input through `make test-guest-login`.
+boot/input through `make test-guest-login`. The release-facing path is
+`make demo`, which boots FreeBSD beside Ubuntu and requires authenticated SSH
+to both guests before allowing manual sessions.
 
 ---
 
@@ -70,26 +72,30 @@ virtio-blk device so FreeBSD can mount the DVD root filesystem.
 
 ## Current Build and Test Flow
 
-The maintained top-level flow is:
+The maintained demonstration flow is:
 
 ```bash
-make help
-make install
+make setup
+make demo
+```
+
+This stages FreeBSD 15.0 and Ubuntu 26.04 assets, boots both guest VMMs, and
+prints the FreeBSD SSH command only after key-only authentication succeeds.
+Use `make demo-test` for the same non-interactive acceptance gate.
+
+For a lower-level standalone FreeBSD run:
+
+```bash
 make fetch-guest GUEST_OS=freebsd
 make build TARGET_ARCH=aarch64 GUEST_OS=freebsd
 make run GUEST_OS=freebsd
 make test-guest-login
 ```
 
-`make fetch-guest` stages FreeBSD 15.0 assets under `build/guest-images`.
-`make run` launches QEMU and creates `build/cc_pd.sock`, which is consumed by
-`agentctl`, E2E tests, and the external GUI in `../agentos_gui`.
-
-For dual Linux+FreeBSD VMM testing, use `make e2e-dual-os` or
-`make run GUEST_OS=both`. That mode runs one agentOS image with both
-dedicated VMM PDs and 3 GB of outer QEMU RAM. FreeBSD keeps the
-standalone-proven `0x40000000` identity-mapped guest RAM window; Linux uses
-`0xc0000000` in dual mode.
+The dual path runs one agentOS image with both dedicated VMM PDs and 3 GB of
+outer QEMU RAM. Both guests see RAM at GPA `0x40000000`; the VMMs map those
+frames at separate host virtual addresses, so guest addresses are never
+treated as host pointers.
 
 ## Contract Surface
 
@@ -130,7 +136,7 @@ seL4 boots → agentOS Microkit init
 | Top-level build/run targets | Wired | `make build TARGET_ARCH=aarch64 GUEST_OS=freebsd`; `make run GUEST_OS=freebsd` |
 | CC-PD host visibility | Wired | guest listing, console drain, and input path |
 | E2E login/input test | Wired | `make test-guest-login` includes FreeBSD |
-| Dual Linux+FreeBSD CC test | Wired | `make e2e-dual-os` exercises one agentOS with both VMM PDs |
+| Dual Linux+FreeBSD SSH demo | Wired | `make demo` retains both guests after key-only SSH succeeds; `make demo-test` is non-interactive |
 | Complete VM lifecycle operations | In progress | create/destroy/suspend/resume are relayed; snapshot/restore remain structured errors |
 
 ---
@@ -146,10 +152,10 @@ seL4 boots → agentOS Microkit init
 
 ## Remaining Work
 
-- Keep `make test-guest-login` and `make e2e-dual-os` as the acceptance gates
-  for serial output and input through CC-PD.
+- Keep `make test-guest-login` as the serial-console gate and `make demo-test`
+  as the concurrent authenticated-SSH acceptance gate.
 - Expand snapshot and restore beyond their current structured error path.
 - Keep all guest images, logs, sockets, and temporary artifacts under `build/`.
 
-Demo target: `make run GUEST_OS=freebsd` should bring up FreeBSD inside
-agentOS on QEMU AArch64 and expose the serial console through CC-PD.
+Demo target: `make demo` must bring up FreeBSD and Ubuntu together inside
+agentOS and prove both SSH endpoints before reporting success.

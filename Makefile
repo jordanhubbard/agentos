@@ -1,11 +1,15 @@
 # agentOS Top-Level Makefile
 #
 # Quick start:
-#   make help
-#   make install && make run
+#   make setup
+#   make demo
 #
 # Targets:
 #   make help         — show important top-level targets and defaults
+#   make setup        — install dependencies and the shared Microkit SDK
+#   make demo         — prove and retain Ubuntu + FreeBSD for authenticated SSH
+#   make demo-test    — run the same dual-guest proof non-interactively
+#   make demo-smoke   — run the fast host-only preflight suite
 #   make install      — install all build dependencies
 #   make build        — build the kernel image for BOARD/TARGET_ARCH
 #   make run          — build + boot agentOS with Unix guest support in QEMU
@@ -18,7 +22,7 @@
 #   make test-ubuntu-live — boot the full Ubuntu Casper live filesystem
 #   make clean        — remove build artifacts for current board
 
-.PHONY: all install deps deps-tools submodules channels run run-fast run-dual-ssh test test-guest-login test-guest-net test-guest-blk test-guest-console test-ubuntu-virtio test-ubuntu-live sel4-test-image run-tests test-snapshot-sched test-power-mgr test-proc-server test-vibeos-contract test-integration test-host gate gate-aarch64 gate-x86_64 e2e e2e-guest e2e-contract e2e-dual-os e2e-ubuntu-amd64 e2e-ubuntu-arm64 e2e-nixos e2e-freebsd15 e2e-all bootstrap-guest clean clean-all clean-images help release release-minor release-major fetch-guest build-tools
+.PHONY: all setup sdk demo demo-check demo-smoke demo-test install deps deps-tools submodules channels run run-fast run-dual-ssh test test-guest-login test-guest-net test-guest-blk test-guest-console test-ubuntu-virtio test-ubuntu-live sel4-test-image run-tests test-snapshot-sched test-power-mgr test-proc-server test-vibeos-contract test-integration test-host gate gate-aarch64 gate-x86_64 e2e e2e-guest e2e-contract e2e-dual-os e2e-ubuntu-amd64 e2e-ubuntu-arm64 e2e-nixos e2e-freebsd15 e2e-all bootstrap-guest clean clean-all clean-images help release release-minor release-major fetch-guest build-tools
 
 # ─── Read config.yaml (if present) ───────────────────────────────────────────
 CONFIG_TARGET := $(shell grep '^target_arch:' config.yaml 2>/dev/null | sed 's/target_arch:[[:space:]]*//' | tr -d '[:space:]')
@@ -123,10 +127,7 @@ ifeq ($(UNAME_S),Darwin)
     for d in $(LLVM_BIN) $(BREW_PREFIX)/opt/lld/bin $(BREW_PREFIX)/opt/lld@*/bin; do \
       [ -x "$$d/ld.lld" ] && echo "$$d" && break; \
     done 2>/dev/null)
-  BIOS := $(shell find $(BREW_PREFIX) -name "opensbi-riscv64-generic-fw_dynamic.bin" 2>/dev/null | head -1)
-  ifeq ($(BIOS),)
-    BIOS := $(BREW_PREFIX)/share/qemu/opensbi-riscv64-generic-fw_dynamic.bin
-  endif
+  BIOS ?= $(BREW_PREFIX)/share/qemu/opensbi-riscv64-generic-fw_dynamic.bin
 else ifeq ($(UNAME_S),Linux)
   LLVM_BIN     := /usr/bin
   LLD_BIN      := /usr/bin
@@ -140,6 +141,9 @@ else ifeq ($(UNAME_S),FreeBSD)
   LLD_BIN      := /usr/local/bin
   SDK_PLATFORM := unsupported-freebsd
 endif
+
+MICROKIT_SDK_ARCHIVE := microkit-sdk-$(SEL4_SDK_VERSION)-$(SDK_PLATFORM).tar.gz
+MICROKIT_SDK_URL := https://github.com/seL4/microkit/releases/download/$(SEL4_SDK_VERSION)/$(MICROKIT_SDK_ARCHIVE)
 
 # ─── Rust toolchain ──────────────────────────────────────────────────────────
 export PATH := $(HOME)/.cargo/bin:$(PATH)
@@ -218,7 +222,7 @@ all: run
 # =============================================================================
 install: deps-tools
 	@echo ""
-	@echo "✅ All dependencies installed! Run 'make run' to start."
+	@echo "✅ All dependencies installed! Run 'make sdk' or 'make setup' next."
 
 deps: install
 
@@ -305,6 +309,84 @@ endif
 	@echo "[deps-tools] Building xtask..."
 	@cargo build -p xtask 2>/dev/null || true
 	@echo "  xtask:               $$(cargo run -p xtask -- --version 2>/dev/null || echo 'built')"
+
+# =============================================================================
+# setup/demo: two-command first-run path and one-command repeatable showcase
+# =============================================================================
+sdk:
+	@if [ ! -d "$(SEL4_SDK)/board" ] && [ "$(SDK_PLATFORM)" = "unsupported-freebsd" ]; then \
+		echo "ERROR: the Microkit SDK does not publish a FreeBSD host archive."; \
+		echo "Use macOS or Linux for the guest demo, or set SEL4_SDK to a cross-build SDK."; \
+		exit 1; \
+	fi
+	@if [ -d "$(SEL4_SDK)/board" ]; then \
+		echo "✓ Microkit SDK $(SEL4_SDK_VERSION): $(SEL4_SDK)"; \
+	else \
+		echo "Downloading Microkit SDK $(SEL4_SDK_VERSION) for $(SDK_PLATFORM)..."; \
+		command -v curl >/dev/null 2>&1 || \
+			(echo "ERROR: curl is required; run 'make install' first." && exit 1); \
+		tmp="$$(mktemp -t agentos-microkit-sdk.XXXXXX)"; \
+		trap 'rm -f "$$tmp"' EXIT INT TERM; \
+		curl -fsSL "$(MICROKIT_SDK_URL)" -o "$$tmp"; \
+		mkdir -p "$$(dirname "$(SEL4_SDK)")"; \
+		tar -xzf "$$tmp" -C "$$(dirname "$(SEL4_SDK)")"; \
+		test -d "$(SEL4_SDK)/board" || \
+			(echo "ERROR: SDK archive did not create $(SEL4_SDK)" && exit 1); \
+		echo "✓ Microkit SDK installed: $(SEL4_SDK)"; \
+	fi
+
+setup:
+	@$(MAKE) install
+	@$(MAKE) sdk
+	@$(MAKE) demo-check
+	@echo ""
+	@echo "✓ agentOS demo environment is ready."
+	@echo "  Run: make demo"
+
+demo-check:
+	@echo "Checking the agentOS dual-guest demo environment..."
+	@command -v cargo >/dev/null 2>&1 || \
+		(echo "ERROR: cargo not found; run 'make setup'." && exit 1)
+	@command -v qemu-system-aarch64 >/dev/null 2>&1 || \
+		(echo "ERROR: qemu-system-aarch64 not found; run 'make setup'." && exit 1)
+	@command -v cmake >/dev/null 2>&1 || \
+		(echo "ERROR: cmake not found; run 'make setup'." && exit 1)
+	@command -v ninja >/dev/null 2>&1 || \
+		(echo "ERROR: ninja not found; run 'make setup'." && exit 1)
+	@command -v dtc >/dev/null 2>&1 || \
+		(echo "ERROR: dtc not found; run 'make setup'." && exit 1)
+	@command -v ssh >/dev/null 2>&1 || \
+		(echo "ERROR: ssh not found; install an OpenSSH client." && exit 1)
+	@command -v ssh-keygen >/dev/null 2>&1 || \
+		(echo "ERROR: ssh-keygen not found; install OpenSSH tools." && exit 1)
+	@test -x "$(LLVM_BIN)/clang" || \
+		(echo "ERROR: clang not found; run 'make setup'." && exit 1)
+	@test -x "$(LLD_BIN)/ld.lld" || \
+		(echo "ERROR: ld.lld not found; run 'make setup'." && exit 1)
+	@test -d "$(SEL4_SDK)/board" || \
+		(echo "ERROR: Microkit SDK not found at $(SEL4_SDK); run 'make sdk'." && exit 1)
+	@echo "✓ Demo prerequisites are available."
+
+demo-smoke: demo-check
+	@$(MAKE) test-host
+	@echo ""
+	@echo "✓ Host-only demo smoke tests passed (this is not a boot proof)."
+
+demo-test: demo-check
+	@echo ""
+	@echo "Running the non-interactive Ubuntu + FreeBSD authenticated-SSH proof..."
+	@$(MAKE) e2e-dual-os BOARD=qemu_virt_aarch64
+
+demo: demo-check
+	@test -t 0 || \
+		(echo "ERROR: 'make demo' requires an interactive terminal; use 'make demo-test' in automation." && exit 1)
+	@echo ""
+	@echo "Starting the agentOS dual-guest demonstration."
+	@echo "The gate boots Ubuntu and FreeBSD concurrently and proves key-only SSH."
+	@echo "After it passes, open the printed SSH commands in two other terminals."
+	@echo "Press Enter here when the demonstration is complete."
+	@echo ""
+	@$(MAKE) run-dual-ssh
 
 # =============================================================================
 # submodules: initialise any uninitialised git submodules
@@ -450,9 +532,8 @@ run:
 	@echo "CC-PD  : $(ROOT_DIR)build/cc_pd.sock"
 	@echo "GUI    : cd $(abspath $(ROOT_DIR)../agentos_gui) && make run"
 	@echo ""
-	@echo "Guest SSH: ssh -p 2222 ubuntu@localhost    (Ubuntu)"
-	@echo "           ssh -p 2223 root@localhost      (FreeBSD)"
-	@echo "           ssh -p 2224 root@localhost      (NixOS)"
+	@echo "Validated dual-guest SSH showcase: make demo"
+	@echo "Raw run port forwarding is guest-specific and is not an acceptance gate."
 	@echo "Buildroot: no outer ISO; Linux runs inside linux_vmm.elf → '#' shell on serial"
 	@echo "Exit QEMU: Ctrl-A X"
 	@echo "──────────────────────────────────────────────"
@@ -959,6 +1040,11 @@ help:
 	@echo ""
 	@echo "Primary targets:"
 	@echo "  make help             Show this help text"
+	@echo "  make setup            Install host dependencies + shared Microkit SDK"
+	@echo "  make demo             Boot, prove, and retain Ubuntu + FreeBSD for SSH"
+	@echo "  make demo-test        Run the dual authenticated-SSH proof and exit"
+	@echo "  make demo-smoke       Fast host-only checks; no QEMU and not a boot proof"
+	@echo "  make demo-check       Validate demo tools and SDK without building"
 	@echo "  make install          Install host build dependencies (alias: make deps)"
 	@echo "  make build            Fetch the selected guest image and build agentOS"
 	@echo "  make run              Build native agentOS and boot QEMU with CC-PD socket"
@@ -1012,9 +1098,13 @@ help:
 	@echo "  make build-tools      Build Rust host tools in release mode"
 	@echo ""
 	@echo "Quick start:"
-	@echo "  make install && make run"
+	@echo "  make setup"
+	@echo "  make demo"
 	@echo ""
 	@echo "Common examples:"
+	@echo "  make demo                         # interactive dual-guest SSH showcase"
+	@echo "  make demo-test                    # automated dual-guest SSH acceptance"
+	@echo "  make demo-smoke                   # fast host-only preflight"
 	@echo "  make build TARGET_ARCH=aarch64 GUEST_OS=ubuntu"
 	@echo "  make build TARGET_ARCH=aarch64 GUEST_OS=both"
 	@echo "  make run GUEST_OS=freebsd"
