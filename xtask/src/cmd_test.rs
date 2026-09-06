@@ -1645,7 +1645,7 @@ fn ubuntu_ssh_provision_command(public_key: &str) -> String {
 
 fn freebsd_ssh_provision_command(public_key: &str) -> String {
     format!(
-        "set -e; mkdir -p /tmp/agentos-ssh; rm -f /tmp/agentos-ssh/host_key /tmp/agentos-ssh/host_key.pub /tmp/agentos-ssh/sshd.pid; printf '%s\\\\n' '{}' > /tmp/agentos-ssh/authorized_keys; chmod 600 /tmp/agentos-ssh/authorized_keys; ifconfig vtnet0 inet 10.0.2.16 netmask 255.255.255.0 up; route delete default >/dev/null 2>&1 || true; route add default 10.0.2.2 >/dev/null 2>&1 || true; ssh-keygen -q -t ed25519 -N '' -f /tmp/agentos-ssh/host_key; /usr/sbin/sshd -t -f /dev/null -o HostKey=/tmp/agentos-ssh/host_key -o AuthorizedKeysFile=/tmp/agentos-ssh/authorized_keys -o StrictModes=no -o PermitRootLogin=yes -o PasswordAuthentication=no -o KbdInteractiveAuthentication=no -o PubkeyAuthentication=yes -o UsePAM=no -o PidFile=/tmp/agentos-ssh/sshd.pid; /usr/sbin/sshd -f /dev/null -o HostKey=/tmp/agentos-ssh/host_key -o AuthorizedKeysFile=/tmp/agentos-ssh/authorized_keys -o StrictModes=no -o PermitRootLogin=yes -o PasswordAuthentication=no -o KbdInteractiveAuthentication=no -o PubkeyAuthentication=yes -o UsePAM=no -o PidFile=/tmp/agentos-ssh/sshd.pid && printf 'agentos-freebsd-ssh-%s\\\\n' ready",
+        "set -e; if ! mkdir -p /tmp/agentos-ssh 2>/dev/null; then mount -t tmpfs tmpfs /tmp; mkdir -p /tmp/agentos-ssh; fi; rm -f /tmp/agentos-ssh/host_key /tmp/agentos-ssh/host_key.pub /tmp/agentos-ssh/sshd.pid; printf '%s\\\\n' '{}' > /tmp/agentos-ssh/authorized_keys; chmod 600 /tmp/agentos-ssh/authorized_keys; ifconfig vtnet0 inet 10.0.2.16 netmask 255.255.255.0 up; route delete default >/dev/null 2>&1 || true; route add default 10.0.2.2 >/dev/null 2>&1 || true; ssh-keygen -q -t ed25519 -N '' -f /tmp/agentos-ssh/host_key; /usr/sbin/sshd -t -f /dev/null -o HostKey=/tmp/agentos-ssh/host_key -o AuthorizedKeysFile=/tmp/agentos-ssh/authorized_keys -o StrictModes=no -o PermitRootLogin=yes -o PasswordAuthentication=no -o KbdInteractiveAuthentication=no -o PubkeyAuthentication=yes -o UsePAM=no -o PidFile=/tmp/agentos-ssh/sshd.pid; /usr/sbin/sshd -f /dev/null -o HostKey=/tmp/agentos-ssh/host_key -o AuthorizedKeysFile=/tmp/agentos-ssh/authorized_keys -o StrictModes=no -o PermitRootLogin=yes -o PasswordAuthentication=no -o KbdInteractiveAuthentication=no -o PubkeyAuthentication=yes -o UsePAM=no -o PidFile=/tmp/agentos-ssh/sshd.pid && printf 'agentos-freebsd-ssh-%s\\\\n' ready",
         public_key
     )
 }
@@ -2080,6 +2080,20 @@ mod tests {
             assert!(status.success());
             assert!(command.contains(key));
         }
+    }
+
+    #[test]
+    fn freebsd_provisioning_recovers_read_only_live_media_tmp() {
+        let command =
+            freebsd_ssh_provision_command("ssh-ed25519 AAAAC3NzaFocusedTest agentos-test");
+        let probe = command
+            .find("if ! mkdir -p /tmp/agentos-ssh 2>/dev/null")
+            .expect("writable directory probe");
+        let mount = command
+            .find("mount -t tmpfs tmpfs /tmp")
+            .expect("tmpfs fallback");
+        let keygen = command.find("ssh-keygen").expect("host key generation");
+        assert!(probe < mount && mount < keygen);
     }
 
     #[test]
