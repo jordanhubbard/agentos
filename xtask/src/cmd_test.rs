@@ -1577,6 +1577,7 @@ fn run_guest_console_command(
 
     let start = Instant::now();
     let mut output = String::new();
+    let failure_marker = format!("agentos-{guest_os}-ssh-failed");
     while start.elapsed() < timeout {
         ensure_qemu_running(qemu, "waiting for guest provisioning command")?;
         match cc_log_stream_for_handle(cc, guest_handle, guest_os) {
@@ -1584,6 +1585,12 @@ fn run_guest_console_command(
                 output.push_str(&chunk);
                 if output.contains(marker) {
                     return Ok(());
+                }
+                if output.contains(&failure_marker) {
+                    anyhow::bail!(
+                        "{guest_os} SSH provisioning reported failure; tail:\n{}",
+                        tail_chars(&output, 3000)
+                    );
                 }
             }
             Err(err) => {
@@ -1638,14 +1645,14 @@ fn provision_dual_ssh(
 
 fn ubuntu_ssh_provision_command(public_key: &str) -> String {
     format!(
-        "sudo -n sh -c \"set -e; mkdir -p /home/ubuntu/.ssh /run/sshd; printf '%s\\\\n' '{}' > /home/ubuntu/.ssh/authorized_keys; chown -R ubuntu:ubuntu /home/ubuntu/.ssh; chmod 700 /home/ubuntu/.ssh; chmod 600 /home/ubuntu/.ssh/authorized_keys; ip link set eth0 up; ip addr flush dev eth0 scope global; ip addr add 10.0.2.15/24 dev eth0; ip route replace default via 10.0.2.2; ssh-keygen -A; /usr/sbin/sshd -t; /usr/sbin/sshd -o PasswordAuthentication=no -o KbdInteractiveAuthentication=no -o PubkeyAuthentication=yes -o PermitRootLogin=no\" && printf 'agentos-ubuntu-ssh-%s\\\\n' ready",
+        "sudo -n sh -c \"set -e; mkdir -p /home/ubuntu/.ssh /run/sshd; printf '%s\\\\n' '{}' > /home/ubuntu/.ssh/authorized_keys; chown -R ubuntu:ubuntu /home/ubuntu/.ssh; chmod 700 /home/ubuntu/.ssh; chmod 600 /home/ubuntu/.ssh/authorized_keys; ip link set eth0 up; ip addr flush dev eth0 scope global; ip addr add 10.0.2.15/24 dev eth0; ip route replace default via 10.0.2.2; ssh-keygen -A; /usr/sbin/sshd -t; /usr/sbin/sshd -o PasswordAuthentication=no -o KbdInteractiveAuthentication=no -o PubkeyAuthentication=yes -o PermitRootLogin=no\" && printf 'agentos-ubuntu-ssh-%s\\\\n' ready || printf 'agentos-ubuntu-ssh-%s\\\\n' failed",
         public_key
     )
 }
 
 fn freebsd_ssh_provision_command(public_key: &str) -> String {
     format!(
-        "set -e; if ! mkdir -p /tmp/agentos-ssh 2>/dev/null; then mount -t tmpfs tmpfs /tmp; mkdir -p /tmp/agentos-ssh; fi; rm -f /tmp/agentos-ssh/host_key /tmp/agentos-ssh/host_key.pub /tmp/agentos-ssh/sshd.pid; printf '%s\\\\n' '{}' > /tmp/agentos-ssh/authorized_keys; chmod 600 /tmp/agentos-ssh/authorized_keys; ifconfig vtnet0 inet 10.0.2.16 netmask 255.255.255.0 up; route delete default >/dev/null 2>&1 || true; route add default 10.0.2.2 >/dev/null 2>&1 || true; ssh-keygen -q -t ed25519 -N '' -f /tmp/agentos-ssh/host_key; /usr/sbin/sshd -t -f /dev/null -o HostKey=/tmp/agentos-ssh/host_key -o AuthorizedKeysFile=/tmp/agentos-ssh/authorized_keys -o StrictModes=no -o PermitRootLogin=yes -o PasswordAuthentication=no -o KbdInteractiveAuthentication=no -o PubkeyAuthentication=yes -o UsePAM=no -o PidFile=/tmp/agentos-ssh/sshd.pid; /usr/sbin/sshd -f /dev/null -o HostKey=/tmp/agentos-ssh/host_key -o AuthorizedKeysFile=/tmp/agentos-ssh/authorized_keys -o StrictModes=no -o PermitRootLogin=yes -o PasswordAuthentication=no -o KbdInteractiveAuthentication=no -o PubkeyAuthentication=yes -o UsePAM=no -o PidFile=/tmp/agentos-ssh/sshd.pid && printf 'agentos-freebsd-ssh-%s\\\\n' ready",
+        "( mkdir -p /tmp/agentos-ssh 2>/dev/null || {{ mount -t tmpfs tmpfs /tmp && mkdir -p /tmp/agentos-ssh; }} ) && rm -f /tmp/agentos-ssh/host_key /tmp/agentos-ssh/host_key.pub /tmp/agentos-ssh/sshd.pid && printf '%s\\\\n' '{}' > /tmp/agentos-ssh/authorized_keys && chmod 600 /tmp/agentos-ssh/authorized_keys && ifconfig vtnet0 inet 10.0.2.16 netmask 255.255.255.0 up && ( route delete default >/dev/null 2>&1 || true ) && ( route add default 10.0.2.2 >/dev/null 2>&1 || true ) && ssh-keygen -q -t ed25519 -N '' -f /tmp/agentos-ssh/host_key && /usr/sbin/sshd -t -f /dev/null -o HostKey=/tmp/agentos-ssh/host_key -o AuthorizedKeysFile=/tmp/agentos-ssh/authorized_keys -o StrictModes=no -o PermitRootLogin=yes -o PasswordAuthentication=no -o KbdInteractiveAuthentication=no -o PubkeyAuthentication=yes -o UsePAM=no -o PidFile=/tmp/agentos-ssh/sshd.pid && /usr/sbin/sshd -f /dev/null -o HostKey=/tmp/agentos-ssh/host_key -o AuthorizedKeysFile=/tmp/agentos-ssh/authorized_keys -o StrictModes=no -o PermitRootLogin=yes -o PasswordAuthentication=no -o KbdInteractiveAuthentication=no -o PubkeyAuthentication=yes -o UsePAM=no -o PidFile=/tmp/agentos-ssh/sshd.pid && printf 'agentos-freebsd-ssh-%s\\\\n' ready || printf 'agentos-freebsd-ssh-%s\\\\n' failed",
         public_key
     )
 }
@@ -2087,7 +2094,7 @@ mod tests {
         let command =
             freebsd_ssh_provision_command("ssh-ed25519 AAAAC3NzaFocusedTest agentos-test");
         let probe = command
-            .find("if ! mkdir -p /tmp/agentos-ssh 2>/dev/null")
+            .find("mkdir -p /tmp/agentos-ssh 2>/dev/null")
             .expect("writable directory probe");
         let mount = command
             .find("mount -t tmpfs tmpfs /tmp")
@@ -2099,8 +2106,14 @@ mod tests {
     #[test]
     fn provisioning_markers_cannot_match_command_echo() {
         let key = "ssh-ed25519 AAAAC3NzaFocusedTest agentos-test";
-        assert!(!ubuntu_ssh_provision_command(key).contains("agentos-ubuntu-ssh-ready"));
-        assert!(!freebsd_ssh_provision_command(key).contains("agentos-freebsd-ssh-ready"));
+        let ubuntu = ubuntu_ssh_provision_command(key);
+        let freebsd = freebsd_ssh_provision_command(key);
+        assert!(!ubuntu.contains("agentos-ubuntu-ssh-ready"));
+        assert!(!ubuntu.contains("agentos-ubuntu-ssh-failed"));
+        assert!(!freebsd.contains("agentos-freebsd-ssh-ready"));
+        assert!(!freebsd.contains("agentos-freebsd-ssh-failed"));
+        assert!(ubuntu.contains("ssh-%s\\\\n' failed"));
+        assert!(freebsd.contains("ssh-%s\\\\n' failed"));
     }
 
     #[test]
