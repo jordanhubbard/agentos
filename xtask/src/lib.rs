@@ -14,6 +14,7 @@ pub mod cmd_run_tests;
 pub mod cmd_setup;
 pub mod cmd_test;
 pub mod cmd_test_api;
+pub mod rfb;
 
 // ── Re-exports for main.rs ────────────────────────────────────────────────
 pub use cmd_gen_image::GenImageArgs;
@@ -54,6 +55,10 @@ pub struct TestArgs {
     /// Boot Ubuntu's real Casper initrd and require live-filesystem login.
     #[arg(long)]
     pub assert_ubuntu_live: bool,
+    /// Start a desktop in the Ubuntu live guest and verify one raw RFB frame
+    /// through a key-authenticated SSH tunnel.
+    #[arg(long)]
+    pub assert_desktop: bool,
 }
 
 #[derive(clap::Args)]

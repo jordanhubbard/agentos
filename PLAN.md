@@ -1,13 +1,19 @@
 # agentOS — Platform Plan
 
-**Status:** Active  
-**Last updated:** 2026-09-03  
+**Status:** Active
+**Last updated:** 2026-09-06
 **Epic:** mac `task_a2c5cdc55f994af8bc9fc48b13c54d5a` (project `agentos`)
 
 QEMU is a hardware emulator so we can prototype quickly. agentOS is the
 platform that will run on bare metal. Guests (Linux, FreeBSD) consume
 **emulated virtio** served by user-mode virtualizers. Native agents consume
 the same virtualizers without a guest OS.
+
+This file sequences the active platform implementation. Release outcomes and
+cross-release dependencies, including the network desktop proof, canonical
+display path, x86 VMM, and stable qualification, live in
+[`docs/ROADMAP.md`](docs/ROADMAP.md). Release state and ownership remain in
+MAC; roadmap prose is not a substitute for task state.
 
 The previous 6-phase plan (UI deletion, opcode contracts, AgentFS `/devices`
 binding) described the wrong I/O model. It is superseded by this document.

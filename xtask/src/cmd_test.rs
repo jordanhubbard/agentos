@@ -1,4 +1,4 @@
-use crate::TestArgs;
+use crate::{rfb, TestArgs};
 use anyhow::Context;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::net::{SocketAddr, TcpStream};
@@ -11,6 +11,8 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 const UBUNTU_DEFAULT_SSH_PORT: u16 = 12222;
 const FREEBSD_DEFAULT_SSH_PORT: u16 = 12223;
 const UBUNTU_NOCLOUD_PORT: u16 = 18790;
+const UBUNTU_DESKTOP_PORT: u16 = 15901;
+const UBUNTU_VNC_GUEST_PORT: u16 = 5901;
 const SSH_PROBE_OPTIONS: &[&str] = &[
     "-o", "BatchMode=yes",
     "-o", "PreferredAuthentications=publickey",
@@ -54,17 +56,18 @@ const TRACE_PD_FREEBSD_VMM: u32 = 42;
 
 pub fn run(args: &TestArgs) -> anyhow::Result<()> {
     let repo_root = repo_root()?;
-    let ubuntu_live = args.assert_ubuntu_live || args.guest_os == "both";
+    let ubuntu_live = args.assert_ubuntu_live || args.assert_desktop || args.guest_os == "both";
 
     anyhow::ensure!(
-        !args.keep_running || args.guest_os == "both",
-        "--keep-running is supported only with --guest-os both"
+        !args.keep_running || args.guest_os == "both" || args.assert_desktop,
+        "--keep-running requires --guest-os both or --assert-desktop"
     );
     if args.assert_emulated_net
         || args.assert_emulated_blk
         || args.assert_emulated_console
         || args.assert_agentos_virtio
         || args.assert_ubuntu_live
+        || args.assert_desktop
     {
         anyhow::ensure!(
             args.board == "qemu_virt_aarch64",
@@ -75,7 +78,11 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
             "emulated VirtIO assertions need a real guest; GUEST_OS=none is a stub VMM"
         );
     }
-    if args.assert_emulated_console || args.assert_agentos_virtio || args.assert_ubuntu_live {
+    if args.assert_emulated_console
+        || args.assert_agentos_virtio
+        || args.assert_ubuntu_live
+        || args.assert_desktop
+    {
         anyhow::ensure!(
             args.guest_os == "ubuntu",
             "Ubuntu VirtIO assertions require --guest-os ubuntu"
@@ -122,7 +129,7 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
     let (_, log_path) = log_file
         .keep()
         .context("failed to persist build/tmp QEMU log file")?;
-    let dual_ssh_key = if args.guest_os == "both" {
+    let ssh_key = if args.guest_os == "both" || args.assert_desktop {
         Some(generate_ssh_test_key(&repo_root, args.keep_running)?)
     } else {
         None
@@ -130,7 +137,7 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
 
     let needs_ssh_probe = !matches!(args.guest_os.as_str(), "ubuntu" | "freebsd");
     let needs_host_net_stimulus = args.guest_os == "ubuntu" &&
-        (args.assert_agentos_virtio || args.assert_ubuntu_live);
+        (args.assert_agentos_virtio || args.assert_ubuntu_live || args.assert_desktop);
     let ssh_port = if needs_ssh_probe || needs_host_net_stimulus {
         effective_ssh_port(args)
     } else {
@@ -218,7 +225,7 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
                 &cc_sock,
                 Duration::from_secs(args.timeout_secs),
                 &mut qemu,
-                dual_ssh_key
+                ssh_key
                     .as_ref()
                     .context("dual SSH key was not generated")?,
                 args.keep_running,
@@ -246,7 +253,8 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
     if result.is_ok()
         && (args.assert_emulated_console
             || args.assert_agentos_virtio
-            || args.assert_ubuntu_live)
+            || args.assert_ubuntu_live
+            || args.assert_desktop)
     {
         let mut required = vec![
             "emulated virtio-console: guest probed",
@@ -254,7 +262,7 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
             "emulated virtio-console: pumped ",
             "emulated virtio-console: pumped input serial_virt->guest",
         ];
-        if args.assert_agentos_virtio || args.assert_ubuntu_live {
+        if args.assert_agentos_virtio || args.assert_ubuntu_live || args.assert_desktop {
             required.extend_from_slice(&[
                 "emulated virtio-net: guest probed",
                 "emulated virtio-net: guest DRIVER_OK",
@@ -283,7 +291,7 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
             (Ok(_), Ok(_)) if !no_loopback => anyhow::bail!(
                 "Ubuntu network proof used the forbidden VMM-local TX->RX loopback"
             ),
-            (Ok(login), Ok(_)) if args.assert_ubuntu_live => Ok(format!(
+            (Ok(login), Ok(_)) if args.assert_ubuntu_live || args.assert_desktop => Ok(format!(
                 "{login}; full Ubuntu Casper userspace uses agentOS virtio net + blk + console"
             )),
             (Ok(login), Ok(_)) if args.assert_agentos_virtio => Ok(format!(
@@ -299,16 +307,50 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
         };
     }
 
-    if args.keep_running && result.is_ok() {
-        result = wait_for_manual_dual_ssh(
-            dual_ssh_key
-                .as_ref()
-                .context("persistent dual SSH key was not generated")?,
+    let mut desktop_tunnel = None;
+    if result.is_ok() && args.assert_desktop {
+        let key = ssh_key
+            .as_ref()
+            .context("desktop SSH key was not generated")?;
+        match prove_ubuntu_desktop(
+            &cc_sock,
+            key,
+            Duration::from_secs(args.timeout_secs),
             &mut qemu,
-        )
-        .map(|()| String::from("manual dual SSH session completed"));
+        ) {
+            Ok((evidence, tunnel)) => {
+                result = Ok(format!(
+                    "{}; Ubuntu desktop RFB {}x{} bytes={} fnv1a64={:016x} name={:?}",
+                    result.as_deref().unwrap_or("Ubuntu live guest ready"),
+                    evidence.width,
+                    evidence.height,
+                    evidence.bytes_received,
+                    evidence.fnv1a64,
+                    evidence.desktop_name,
+                ));
+                desktop_tunnel = Some(tunnel);
+            }
+            Err(error) => result = Err(error),
+        }
     }
 
+    if args.keep_running && result.is_ok() {
+        let key = ssh_key
+            .as_ref()
+            .context("persistent SSH key was not generated")?;
+        result = if args.assert_desktop {
+            wait_for_manual_desktop(key, &mut qemu)
+                .map(|()| String::from("manual Ubuntu desktop session completed"))
+        } else {
+            wait_for_manual_dual_ssh(key, &mut qemu)
+                .map(|()| String::from("manual dual SSH session completed"))
+        };
+    }
+
+    if let Some(mut tunnel) = desktop_tunnel {
+        let _ = tunnel.kill();
+        let _ = tunnel.wait();
+    }
     let _ = qemu.kill();
     let _ = qemu.wait();
 
@@ -350,6 +392,28 @@ fn wait_for_manual_dual_ssh(ssh_key: &SshTestKey, qemu: &mut Child) -> anyhow::R
         "manual SSH mode requires an interactive stdin"
     );
     ensure_qemu_running(qemu, "leaving manual dual SSH mode")
+}
+
+fn wait_for_manual_desktop(ssh_key: &SshTestKey, qemu: &mut Child) -> anyhow::Result<()> {
+    ensure_qemu_running(qemu, "entering manual Ubuntu desktop mode")?;
+    println!("\nUbuntu is running a tunnel-confined VNC desktop:");
+    println!(
+        "  vncviewer 127.0.0.1:{}",
+        UBUNTU_DESKTOP_PORT
+    );
+    println!(
+        "  ssh -i '{}' -p {} -o IdentitiesOnly=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null ubuntu@127.0.0.1",
+        ssh_key.private_key.display(),
+        UBUNTU_DEFAULT_SSH_PORT
+    );
+    println!("Press Enter here to stop the guest, SSH tunnel, and QEMU.");
+
+    let mut line = String::new();
+    let bytes = std::io::stdin()
+        .read_line(&mut line)
+        .context("failed to wait for manual desktop shutdown input")?;
+    anyhow::ensure!(bytes != 0, "manual desktop mode requires an interactive stdin");
+    ensure_qemu_running(qemu, "leaving manual Ubuntu desktop mode")
 }
 
 fn manual_ssh_commands(private_key: &Path) -> [String; 2] {
@@ -1736,6 +1800,192 @@ fn freebsd_ssh_provision_command(public_key: &str) -> String {
     )
 }
 
+fn ubuntu_desktop_provision_script() -> &'static str {
+    r#"set -eu
+export DEBIAN_FRONTEND=noninteractive
+if ! command -v tigervncserver >/dev/null 2>&1; then
+    timeout 900 apt-get update
+    timeout 900 apt-get install -y --no-install-recommends tigervnc-standalone-server openbox xterm dbus-x11 x11-xserver-utils
+fi
+command -v tigervncserver >/dev/null
+command -v openbox-session >/dev/null
+command -v xterm >/dev/null
+install -d -o ubuntu -g ubuntu /home/ubuntu/.vnc
+cat >/home/ubuntu/.vnc/xstartup <<'AGENTOS_XSTARTUP'
+#!/bin/sh
+unset SESSION_MANAGER
+unset DBUS_SESSION_BUS_ADDRESS
+xsetroot -solid '#20242b'
+xterm -geometry 100x30+32+32 -title 'agentOS Ubuntu desktop proof' &
+exec dbus-run-session -- openbox-session
+AGENTOS_XSTARTUP
+chown ubuntu:ubuntu /home/ubuntu/.vnc/xstartup
+chmod 700 /home/ubuntu/.vnc/xstartup
+su -s /bin/sh ubuntu -c 'HOME=/home/ubuntu tigervncserver -kill :1 >/dev/null 2>&1 || true'
+rm -f /tmp/.X1-lock /tmp/.X11-unix/X1
+su -s /bin/sh ubuntu -c 'HOME=/home/ubuntu USER=ubuntu tigervncserver :1 -localhost yes -SecurityTypes None -geometry 1024x768 -depth 24 -xstartup /home/ubuntu/.vnc/xstartup'
+for attempt in 1 2 3 4 5 6 7 8 9 10; do
+    test -S /tmp/.X11-unix/X1 && exit 0
+    sleep 1
+done
+exit 1
+"#
+}
+
+fn run_ssh_script(private_key: &Path, script: &str) -> anyhow::Result<()> {
+    let mut child = std::process::Command::new("ssh");
+    child
+        .arg("-i")
+        .arg(private_key)
+        .args(["-p", &UBUNTU_DEFAULT_SSH_PORT.to_string()])
+        .args(SSH_PROBE_OPTIONS)
+        .args([
+            "ubuntu@127.0.0.1",
+            "sudo -n timeout 1200 sh -s",
+        ])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = child
+        .spawn()
+        .context("failed to launch Ubuntu desktop provisioning over SSH")?;
+    child
+        .stdin
+        .take()
+        .context("desktop provisioning SSH stdin was not piped")?
+        .write_all(script.as_bytes())
+        .context("failed to send Ubuntu desktop provisioning script")?;
+    let output = child
+        .wait_with_output()
+        .context("failed to wait for Ubuntu desktop provisioning")?;
+    anyhow::ensure!(
+        output.status.success(),
+        "Ubuntu desktop provisioning failed with {}: stdout={:?} stderr={:?}",
+        output.status,
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    Ok(())
+}
+
+fn wait_for_ubuntu_ssh(
+    ssh_key: &SshTestKey,
+    timeout: Duration,
+    qemu: &mut Child,
+) -> anyhow::Result<()> {
+    let start = Instant::now();
+    let mut last = String::from("no SSH attempt completed");
+    while start.elapsed() < timeout {
+        ensure_qemu_running(qemu, "waiting for Ubuntu desktop SSH")?;
+        let probe = spawn_ssh_probe(
+            &ssh_key.private_key,
+            UBUNTU_DEFAULT_SSH_PORT,
+            "ubuntu",
+        )?;
+        let output = probe
+            .wait_with_output()
+            .context("failed to wait for Ubuntu desktop SSH probe")?;
+        if output.status.success() && String::from_utf8_lossy(&output.stdout).trim() == "Linux" {
+            return Ok(());
+        }
+        last = format!(
+            "status={} stdout={:?} stderr={:?}",
+            output.status,
+            String::from_utf8_lossy(&output.stdout).trim(),
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+        std::thread::sleep(Duration::from_secs(2));
+    }
+    anyhow::bail!("Ubuntu desktop SSH did not become ready: {last}")
+}
+
+fn desktop_tunnel_forward_spec() -> String {
+    format!(
+        "127.0.0.1:{UBUNTU_DESKTOP_PORT}:127.0.0.1:{UBUNTU_VNC_GUEST_PORT}"
+    )
+}
+
+fn spawn_desktop_tunnel(private_key: &Path) -> anyhow::Result<Child> {
+    std::process::Command::new("ssh")
+        .arg("-i")
+        .arg(private_key)
+        .args(["-p", &UBUNTU_DEFAULT_SSH_PORT.to_string()])
+        .args(SSH_PROBE_OPTIONS)
+        .args([
+            "-o",
+            "ExitOnForwardFailure=yes",
+            "-N",
+            "-L",
+            &desktop_tunnel_forward_spec(),
+            "ubuntu@127.0.0.1",
+        ])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .context("failed to launch SSH tunnel for Ubuntu desktop")
+}
+
+fn prove_ubuntu_desktop(
+    cc_sock: &Path,
+    ssh_key: &SshTestKey,
+    timeout: Duration,
+    qemu: &mut Child,
+) -> anyhow::Result<(rfb::RfbFrameEvidence, Child)> {
+    let mut cc = connect_cc_client(cc_sock, timeout.min(Duration::from_secs(30)), qemu)?;
+    let provision_ssh = ubuntu_ssh_provision_command(&ssh_key.public_key);
+    run_guest_console_command(
+        cc_sock,
+        &mut cc,
+        0,
+        "ubuntu",
+        &provision_ssh,
+        "agentos-ubuntu-ssh-ready",
+        timeout.min(Duration::from_secs(600)),
+        qemu,
+    )?;
+    drop(cc);
+    wait_for_ubuntu_ssh(ssh_key, timeout.min(Duration::from_secs(600)), qemu)?;
+    run_ssh_script(&ssh_key.private_key, ubuntu_desktop_provision_script())?;
+
+    let mut tunnel = spawn_desktop_tunnel(&ssh_key.private_key)?;
+    let start = Instant::now();
+    let mut last = String::from("SSH tunnel did not accept a connection");
+    while start.elapsed() < timeout.min(Duration::from_secs(120)) {
+        ensure_qemu_running(qemu, "waiting for Ubuntu desktop RFB frame")?;
+        if let Some(status) = tunnel
+            .try_wait()
+            .context("failed to inspect Ubuntu desktop SSH tunnel")?
+        {
+            let mut stderr = String::new();
+            if let Some(mut pipe) = tunnel.stderr.take() {
+                let _ = pipe.read_to_string(&mut stderr);
+            }
+            anyhow::bail!("Ubuntu desktop SSH tunnel exited with {status}: {stderr}");
+        }
+        match TcpStream::connect(SocketAddr::from(([127, 0, 0, 1], UBUNTU_DESKTOP_PORT))) {
+            Ok(mut stream) => {
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(30)))
+                    .context("failed to bound desktop RFB reads")?;
+                stream
+                    .set_write_timeout(Some(Duration::from_secs(30)))
+                    .context("failed to bound desktop RFB writes")?;
+                match rfb::verify_raw_frame(&mut stream) {
+                    Ok(evidence) => return Ok((evidence, tunnel)),
+                    Err(error) => last = format!("{error:#}"),
+                }
+            }
+            Err(error) => last = error.to_string(),
+        }
+        std::thread::sleep(Duration::from_secs(1));
+    }
+
+    let _ = tunnel.kill();
+    let _ = tunnel.wait();
+    anyhow::bail!("Ubuntu desktop did not yield an RFB frame: {last}")
+}
+
 fn spawn_ssh_probe(
     private_key: &Path,
     port: u16,
@@ -2210,6 +2460,23 @@ mod tests {
         assert!(options.contains("ConnectTimeout=5"));
         assert!(options.contains("ServerAliveInterval=5"));
         assert!(options.contains("ServerAliveCountMax=1"));
+    }
+
+    #[test]
+    fn desktop_proof_is_lightweight_and_confined_to_ssh() {
+        let script = ubuntu_desktop_provision_script();
+        assert!(script.contains(
+            "tigervnc-standalone-server openbox xterm dbus-x11 x11-xserver-utils"
+        ));
+        assert!(script.contains("openbox-session"));
+        assert!(script.contains("xterm"));
+        assert!(script.contains("-localhost yes"));
+        assert!(script.contains("-SecurityTypes None"));
+        assert!(script.contains("timeout 900 apt-get"));
+        assert_eq!(
+            desktop_tunnel_forward_spec(),
+            "127.0.0.1:15901:127.0.0.1:5901"
+        );
     }
 
     #[test]

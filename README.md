@@ -44,7 +44,10 @@ runs on that hardware (and later on a real board): user-mode drivers,
 sDDF virtualizers, and a VMM that presents **emulated virtio** to Linux and
 FreeBSD. Native agents use the same virtualizers without a guest OS.
 
-See `docs/TCB.md` and `PLAN.md`.
+See [`docs/TCB.md`](docs/TCB.md) for the trust boundary,
+[`PLAN.md`](PLAN.md) for active implementation sequencing, and
+[`docs/ROADMAP.md`](docs/ROADMAP.md) for release milestones including the
+desktop and x86 guest paths.
 
 ```
  Hardware / QEMU
@@ -169,6 +172,20 @@ make demo-test   # same authenticated-SSH acceptance gate; exit afterward
 make demo-smoke  # fast host-only checks; no QEMU and not a boot proof
 make demo-clean  # remove demo runtime artifacts; preserve guest images
 make help        # lower-level build, run, and device-proof targets
+```
+
+### Experimental desktop proof
+
+`make demo-desktop` boots the Ubuntu ARM64 live guest, provisions a lightweight
+Openbox/TigerVNC session, verifies a raw RFB frame through key-authenticated
+SSH, and keeps the tunnel available to an external VNC viewer. It is not a
+framebuffer or virtio-gpu claim. Until the live gate is release-qualified,
+this remains an experimental path. See
+[`docs/desktop-demo.md`](docs/desktop-demo.md).
+
+```bash
+make demo-desktop-test  # automated RFB protocol/frame evidence; exit afterward
+make demo-desktop       # retain the verified guest and SSH tunnel
 ```
 
 ### Lower-level build and run examples
@@ -440,6 +457,18 @@ The repeated GPA does not overlap because each guest has its own VSpace.
 - bhyve inside FreeBSD = agents can *nest* hypervisors within agentOS
 
 See [`docs/freebsd-vm-guest.md`](docs/freebsd-vm-guest.md) for the full design doc.
+
+---
+
+## Roadmap and releases
+
+- [`docs/ROADMAP.md`](docs/ROADMAP.md) defines the 0.2 desktop proof, 0.3
+  graphics path, 0.4 x86 VMM, 0.5 x86 graphical guest, and 1.0 qualification
+  boundaries.
+- [`docs/RELEASES.md`](docs/RELEASES.md) defines the evidence-bound release
+  protocol and gate matrix.
+- [`docs/presentations/agentos-systems-security/deck.md`](docs/presentations/agentos-systems-security/deck.md)
+  is the editable, claim-labeled narrative for OS and security experts.
 
 ---
 

@@ -9,6 +9,8 @@
 #   make setup        — install dependencies and the shared Microkit SDK
 #   make demo         — prove and retain Ubuntu + FreeBSD for authenticated SSH
 #   make demo-test    — run the same dual-guest proof non-interactively
+#   make demo-desktop — prove and retain a tunnel-confined Ubuntu VNC desktop
+#   make demo-desktop-test — run the desktop protocol/frame proof and exit
 #   make demo-smoke   — run the fast host-only preflight suite
 #   make install      — install all build dependencies
 #   make build        — build the kernel image for BOARD/TARGET_ARCH
@@ -24,7 +26,7 @@
 
 .DEFAULT_GOAL := help
 
-.PHONY: all setup sdk demo demo-check demo-smoke demo-test demo-clean install deps deps-tools submodules channels run run-fast run-dual-ssh test test-guest-login test-guest-net test-guest-blk test-guest-console test-ubuntu-virtio test-ubuntu-live sel4-test-image run-tests test-snapshot-sched test-power-mgr test-proc-server test-vibeos-contract test-integration test-host gate gate-aarch64 gate-x86_64 e2e e2e-guest e2e-contract e2e-dual-os e2e-ubuntu-amd64 e2e-ubuntu-arm64 e2e-nixos e2e-freebsd15 e2e-all bootstrap-guest clean clean-all clean-images help release release-minor release-major fetch-guest build-tools
+.PHONY: all setup sdk demo demo-check demo-smoke demo-test demo-desktop demo-desktop-test demo-clean install deps deps-tools submodules channels run run-fast run-dual-ssh test test-guest-login test-guest-net test-guest-blk test-guest-console test-ubuntu-virtio test-ubuntu-live sel4-test-image run-tests test-snapshot-sched test-power-mgr test-proc-server test-vibeos-contract test-integration test-host gate gate-aarch64 gate-x86_64 e2e e2e-guest e2e-contract e2e-dual-os e2e-ubuntu-amd64 e2e-ubuntu-arm64 e2e-nixos e2e-freebsd15 e2e-all bootstrap-guest clean clean-all clean-images help release release-minor release-major fetch-guest build-tools
 
 # ─── Read config.yaml (if present) ───────────────────────────────────────────
 CONFIG_TARGET := $(shell grep '^target_arch:' config.yaml 2>/dev/null | sed 's/target_arch:[[:space:]]*//' | tr -d '[:space:]')
@@ -40,6 +42,7 @@ TARGET_ARCH ?= $(CONFIG_TARGET)
 GUEST_OS    ?= $(CONFIG_GUEST_OS)
 QEMU_TEST_TIMEOUT ?= 300
 DUAL_OS_TEST_TIMEOUT ?= 5400
+DESKTOP_TEST_TIMEOUT ?= 3600
 QEMU_TEST_GUEST_OS = $(if $(filter x86_64,$(ARCH)),none,$(GUEST_OS))
 
 # ─── Paths (computed FIRST, before any -include changes MAKEFILE_LIST) ───────
@@ -389,6 +392,24 @@ demo: demo-check
 	@echo "Press Enter here when the demonstration is complete."
 	@echo ""
 	@$(MAKE) run-dual-ssh
+
+demo-desktop-test: demo-check
+	@echo ""
+	@echo "Running the non-interactive Ubuntu desktop protocol/frame proof..."
+	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os ubuntu \
+		--assert-desktop --timeout-secs $(DESKTOP_TEST_TIMEOUT)
+
+demo-desktop: demo-check
+	@test -t 0 || \
+		(echo "ERROR: 'make demo-desktop' requires an interactive terminal; use 'make demo-desktop-test' in automation." && exit 1)
+	@echo ""
+	@echo "Starting the tunnel-confined Ubuntu desktop proof."
+	@echo "The guest installs a lightweight Openbox + TigerVNC session at runtime."
+	@echo "After the RFB frame gate passes, open the printed command in an external VNC viewer."
+	@echo "Press Enter here when the demonstration is complete."
+	@echo ""
+	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os ubuntu \
+		--assert-desktop --keep-running --timeout-secs $(DESKTOP_TEST_TIMEOUT)
 
 demo-clean:
 	@echo "Cleaning demo sockets, logs, and generated SSH keys..."
@@ -1053,6 +1074,8 @@ help:
 	@echo "  make setup            Install host dependencies + shared Microkit SDK"
 	@echo "  make demo             Boot, prove, and retain Ubuntu + FreeBSD for SSH"
 	@echo "  make demo-test        Run the dual authenticated-SSH proof and exit"
+	@echo "  make demo-desktop     Boot, prove, and retain an Ubuntu VNC desktop"
+	@echo "  make demo-desktop-test Run the Ubuntu RFB frame proof and exit"
 	@echo "  make demo-smoke       Fast host-only checks; no QEMU and not a boot proof"
 	@echo "  make demo-check       Validate demo tools and SDK without building"
 	@echo "  make demo-clean       Remove demo sockets, logs, and generated SSH keys"
@@ -1100,6 +1123,7 @@ help:
 	@echo "  make e2e              Run the default QEMU/guest/CC end-to-end suite"
 	@echo "  make e2e-dual-os      Run Ubuntu and FreeBSD guest E2E coverage"
 	@echo "  make run-dual-ssh     Keep verified dual guests running for manual SSH"
+	@echo "  make demo-desktop-test Prove a tunnel-confined Ubuntu RFB frame"
 	@echo "  make e2e-all          Run E2E suites for every staged guest image"
 	@echo ""
 	@echo "Cleanup/tooling:"
@@ -1115,6 +1139,8 @@ help:
 	@echo "Common examples:"
 	@echo "  make demo                         # interactive dual-guest SSH showcase"
 	@echo "  make demo-test                    # automated dual-guest SSH acceptance"
+	@echo "  make demo-desktop                 # interactive Ubuntu desktop over SSH/VNC"
+	@echo "  make demo-desktop-test            # automated RFB handshake + frame evidence"
 	@echo "  make demo-smoke                   # fast host-only preflight"
 	@echo "  make build TARGET_ARCH=aarch64 GUEST_OS=ubuntu"
 	@echo "  make build TARGET_ARCH=aarch64 GUEST_OS=both"
