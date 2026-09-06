@@ -1892,6 +1892,7 @@ void root_task_main(const seL4_BootInfo *bi)
         }
 
         /* ── 4g.4.6b: Map GICv2 vCPU interface for VMM guests ───────────── */
+#if defined(__aarch64__)
         /*
          * QEMU virt exposes a GICv2 CPU interface to the guest at 0x08010000.
          * On seL4 this is backed by the hardware virtual CPU interface frame
@@ -1920,6 +1921,7 @@ void root_task_main(const seL4_BootInfo *bi)
             dbg_hex((seL4_Word)gic_err);
             dbg_puts("\n");
         }
+#endif
 
         /* ── 4g.4.6c: Give virtio_blk sole access to host block hardware ─── */
 #if defined(__aarch64__)
