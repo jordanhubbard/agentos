@@ -67,6 +67,7 @@ Ports 12222 and 12223 must be free before the demo starts.
 make demo-test   # same dual-guest authenticated-SSH gate; exit afterward
 make demo-smoke  # host-only contract and logic checks; no QEMU
 make demo-check  # prerequisites only
+make demo-clean  # remove demo sockets, logs, and generated SSH keys
 ```
 
 `make demo-test` is the automated acceptance target. It destroys both guest
@@ -98,6 +99,8 @@ live migration.
 - Run `make demo-check` for a concise missing-tool or SDK diagnosis.
 - Run `make setup` again after changing hosts or toolchains.
 - QEMU and harness logs are retained under `build/tmp/`.
+- Run `make demo-clean` to remove runtime sockets, retained logs, and the
+  generated demo SSH key without deleting cached guest images.
 - Guest images are cached under `build/guest-images`; `make clean` keeps them.
 - `make clean-images` deliberately removes the staged guest media and forces a
   later download.

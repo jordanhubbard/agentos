@@ -147,7 +147,8 @@ aos_service_swap(proposal_id);
 - 8GB RAM, 20GB disk
 - QEMU for simulation (no hardware needed to start)
 - Rust, LLVM/Clang, LLD, and the seL4 Microkit 2.1.0 SDK
-- Optional ISO cache at `/Volumes/ISOs`; staged guest images live under `build/guest-images`
+- Vendor ISOs cache under `${AGENTOS_ISO_DIR:-$HOME/.cache/agentos/isos}`;
+  staged guest images live under `build/guest-images`
 - **FreeBSD hosts**: cross-compile from Linux/macOS (FreeBSD LLVM cross-compilation support is limited)
 
 ### Dual-guest demo
@@ -166,6 +167,7 @@ runtime, proof boundary, and troubleshooting.
 ```bash
 make demo-test   # same authenticated-SSH acceptance gate; exit afterward
 make demo-smoke  # fast host-only checks; no QEMU and not a boot proof
+make demo-clean  # remove demo runtime artifacts; preserve guest images
 make help        # lower-level build, run, and device-proof targets
 ```
 
@@ -265,8 +267,8 @@ below is labeled by **proof level**, not by "done / not done".
 |-----------|-------------|------------------|
 | Top-level Makefile (`setup`/`demo`/`build`/`test`/E2E) | host-tested | Build/run orchestration; not a runtime subsystem |
 | Raw seL4/Microkit boot (AArch64, x86_64) | boot-proven | `xtask qemu-test` and `tests/end_to_end_boot_test.sh` wait for boot markers; RISC-V build path exists but is not regularly boot-asserted |
-| Linux/Ubuntu guest boot | boot-proven | `tests/e2e/run_dual_os_e2e.sh` boots Ubuntu under QEMU and proves it via SSH; `make test-guest-login` waits for the login prompt via CC-PD |
-| FreeBSD 15.0 guest boot | boot-proven | Same dual-OS E2E boots FreeBSD and SSHes in; commit `3f5365a` "prove dual linux freebsd lifecycle" |
+| Linux/Ubuntu guest boot | boot-proven | `make demo-test` boots Ubuntu beside FreeBSD and proves authenticated SSH; `make test-guest-login` separately proves the CC-PD serial-console path |
+| FreeBSD 15.0 guest boot | boot-proven | `make demo-test` boots FreeBSD beside Ubuntu and proves authenticated SSH |
 | Guest VMM multiplexer (slot create/switch/list/status) | target-tested | VMM contract + slot lifecycle exercised; per-guest VMM slots coordinated (`470679f`) |
 | Guest snapshot / restore | stubbed | `vm_manager.c`: `SNAPSHOT/RESTORE: not implemented (Phase 1)`; `cc_pd.c` boot-guest snapshot returns `CC_ERR_RELAY_FAULT` |
 | Guest live-migrate | planned | `MSG_VIBEOS_MIGRATE` defined in contract; no target-validated implementation |
@@ -346,9 +348,10 @@ controller  (CH=51)    ──ppcall──► gpu_scheduler (CH_CTRL=1)
 ## FreeBSD VM Guest
 
 agentOS stages and boots **FreeBSD 15.0 AArch64** as a virtual machine guest
-under the seL4 hypervisor path (proof level: **boot-proven** — `run_dual_os_e2e.sh`
-boots it under QEMU and proves it over SSH). The same CC-PD API surface used by
-Ubuntu enumerates the guest, drains serial output, and injects console input.
+under the seL4 hypervisor path (proof level: **boot-proven** —
+`make demo-test` boots it beside Ubuntu and proves authenticated SSH). The same
+CC-PD API surface used by Ubuntu enumerates the guest, drains serial output,
+and injects console input.
 
 seL4 runs at **EL2** (ARM hypervisor mode) — it IS the hypervisor. No separate hypervisor layer needed.
 
@@ -357,9 +360,9 @@ seL4 runs at **EL2** (ARM hypervisor mode) — it IS the hypervisor. No separate
 ```
 seL4 (EL2)
   └─► freebsd_vmm PD (libvmm)
-        └─► EDK2 UEFI firmware @ guest phys 0x00000000
-              └─► bootaa64.efi → loader.efi
-                    └─► FreeBSD kernel (EL1)
+        ├─► FreeBSD kernel + agentOS FDT copied into guest RAM
+        └─► vCPU enters the FreeBSD kernel (EL1)
+              └─► virtio-blk mounts the staged 15.0 live media
 ```
 
 ### VM Multiplexer

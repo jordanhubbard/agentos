@@ -1,7 +1,7 @@
 # FreeBSD VM Guest on agentOS/seL4
 
-**Status:** Implementation in progress
-**Date:** 2026-05-05
+**Status:** Dual-guest SSH acceptance path wired; lifecycle extensions in progress
+**Date:** 2026-09-06
 **Target platform:** QEMU virt AArch64 (Sparky GB10)
 
 ---

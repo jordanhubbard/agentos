@@ -22,7 +22,9 @@
 #   make test-ubuntu-live — boot the full Ubuntu Casper live filesystem
 #   make clean        — remove build artifacts for current board
 
-.PHONY: all setup sdk demo demo-check demo-smoke demo-test install deps deps-tools submodules channels run run-fast run-dual-ssh test test-guest-login test-guest-net test-guest-blk test-guest-console test-ubuntu-virtio test-ubuntu-live sel4-test-image run-tests test-snapshot-sched test-power-mgr test-proc-server test-vibeos-contract test-integration test-host gate gate-aarch64 gate-x86_64 e2e e2e-guest e2e-contract e2e-dual-os e2e-ubuntu-amd64 e2e-ubuntu-arm64 e2e-nixos e2e-freebsd15 e2e-all bootstrap-guest clean clean-all clean-images help release release-minor release-major fetch-guest build-tools
+.DEFAULT_GOAL := help
+
+.PHONY: all setup sdk demo demo-check demo-smoke demo-test demo-clean install deps deps-tools submodules channels run run-fast run-dual-ssh test test-guest-login test-guest-net test-guest-blk test-guest-console test-ubuntu-virtio test-ubuntu-live sel4-test-image run-tests test-snapshot-sched test-power-mgr test-proc-server test-vibeos-contract test-integration test-host gate gate-aarch64 gate-x86_64 e2e e2e-guest e2e-contract e2e-dual-os e2e-ubuntu-amd64 e2e-ubuntu-arm64 e2e-nixos e2e-freebsd15 e2e-all bootstrap-guest clean clean-all clean-images help release release-minor release-major fetch-guest build-tools
 
 # ─── Read config.yaml (if present) ───────────────────────────────────────────
 CONFIG_TARGET := $(shell grep '^target_arch:' config.yaml 2>/dev/null | sed 's/target_arch:[[:space:]]*//' | tr -d '[:space:]')
@@ -387,6 +389,14 @@ demo: demo-check
 	@echo "Press Enter here when the demonstration is complete."
 	@echo ""
 	@$(MAKE) run-dual-ssh
+
+demo-clean:
+	@echo "Cleaning demo sockets, logs, and generated SSH keys..."
+	@rm -f $(ROOT_DIR)build/cc_pd.sock $(ROOT_DIR)build/agentos-serial.sock
+	@rm -rf $(ROOT_DIR)build/tmp/dual-ssh
+	@rm -f $(ROOT_DIR)build/tmp/agentos-qemu-*.log
+	@rm -f $(ROOT_DIR)build/tmp/agentos-qemu-*.cc_pd.sock
+	@echo "✓ Demo runtime artifacts removed; guest image caches were preserved."
 
 # =============================================================================
 # submodules: initialise any uninitialised git submodules
@@ -1045,6 +1055,7 @@ help:
 	@echo "  make demo-test        Run the dual authenticated-SSH proof and exit"
 	@echo "  make demo-smoke       Fast host-only checks; no QEMU and not a boot proof"
 	@echo "  make demo-check       Validate demo tools and SDK without building"
+	@echo "  make demo-clean       Remove demo sockets, logs, and generated SSH keys"
 	@echo "  make install          Install host build dependencies (alias: make deps)"
 	@echo "  make build            Fetch the selected guest image and build agentOS"
 	@echo "  make run              Build native agentOS and boot QEMU with CC-PD socket"

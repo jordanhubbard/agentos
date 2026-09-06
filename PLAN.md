@@ -30,13 +30,17 @@ binding) described the wrong I/O model. It is superseded by this document.
 ## Proof policy (unchanged)
 
 Host-only tests (`make test-host`) are a pre-filter. They are **not** proof of
-production IPC or I/O. OS-level claims require `make gate` (both target
-arches under QEMU) plus, for a device class, a guest I/O assertion through
-the virtualizer — not QEMU bus ownership.
+production IPC or I/O. Infrastructure claims require `make gate` (both target
+arches under QEMU). Guest release claims additionally require
+`make demo-test`, which boots Ubuntu and FreeBSD concurrently and proves
+key-only SSH to both. A device-class claim also needs its focused guest I/O
+assertion through the virtualizer — not QEMU bus ownership.
 
-Dual-guest E2E remains a **guest-boot** gate. Its Ubuntu half uses emulated
-virtio-blk backed by agentOS bus.8; FreeBSD still uses isolated bus.31
-passthrough. Buildroot already proves I/O through `net_virt` and `blk_virt`
+The canonical dual-guest gate is the root `make demo-test` target: one QEMU,
+one agentOS image, CC-PD/vm_manager guest creation, and authenticated SSH on
+ports 12222 and 12223. Host QEMU buses 8, 16, and 31 are owned by canonical
+agentOS driver services; neither guest receives those transport pages or IRQs.
+Buildroot provides focused I/O proofs through the net and block virtualizers
 (`make test-guest-net`, `make test-guest-blk`).
 
 Host tests for `aos_net_virt_pump` / `aos_blk_virt_pump` are a pre-filter.
@@ -66,8 +70,9 @@ services is out of scope until inspect and serial attach exist.
 2. Backend is sDDF-shaped queues + `aos_net_virt_pump` (loopback / hub).
 3. Buildroot and Ubuntu DTBs advertise only this emulated NIC; no Linux VMM
    maps the QEMU first virtio-mmio page.
-4. Next: host virtio-net MMIO moves to a driver PD and both guests share one
-   live `net_virt` instead of the current VMM-local loopback/hub.
+4. Full guests bridge the VMM-local queue adapter to the live `net_pd`
+   raw-frame contract and shared region. A future separate `net_virt` PD must
+   preserve that ABI and the single-owner host-device rule.
 
 ## First blk vertical slice (step 3)
 
@@ -75,15 +80,14 @@ services is out of scope until inspect and serial attach exist.
 2. Backend is sDDF-shaped queues + `aos_blk_virt_pump`. Single-guest Ubuntu
    routes those requests over seL4 IPC to the `virtio_blk` PD, which alone
    owns QEMU bus.8 and DMA memory. Buildroot retains the 256 KB RAM fallback.
-3. Buildroot and Ubuntu overlays advertise **only** emulated net + emulated
-   blk. This also holds for Ubuntu in dual-guest mode; only FreeBSD retains
-   its isolated QEMU bus.31 backend.
+3. Buildroot, Ubuntu, and FreeBSD advertise **only** emulated net + emulated
+   block devices. Host buses 8 and 31 remain private backing transports owned
+   by agentOS services.
 4. Linux `virtio_blk` probe + partition scan reads the real Ubuntu ISO through
    guest emulation → sDDF pump → `virtio_blk` → host device. The runtime gate
    requires an explicit host-media read marker.
-5. Payload copies in libvmm `block.c` use bounds-checked GPA translation.
-   Every Linux VMM now receives independently allocated, nonidentity guest
-   RAM. FreeBSD bus.31 and residual non-guest DMA users remain in step 6.
+5. Payload copies use bounds-checked GPA translation. Linux and FreeBSD guest
+   VSpaces both see GPA `0x40000000`, backed by disjoint VMM HVA windows.
 
 ## First serial vertical slice (step 4)
 
@@ -112,8 +116,7 @@ bounded guest network probe. The gate rejects initramfs unpack failures and
 requires probe, DRIVER_OK, and real I/O markers for net, block, and console.
 CI runs both the deterministic initramfs gate and this full-live gate.
 
-This closes the full Ubuntu live-filesystem proof. Ubuntu also retains the
-same emulated-only DTB, translated RAM, and agentOS-owned bus.8 backend in a
-dual image. Wider cleanup still requires exclusive `serial_pd` UART ownership,
-a host-network driver behind `net_virt`, and migration of FreeBSD bus.31 plus
-residual non-guest identity-DMA users.
+This closes the full Ubuntu live-filesystem proof. Ubuntu retains the same
+emulated-only DTB, translated RAM, and agentOS-owned bus.8 backend in a dual
+image. The dual authenticated-SSH acceptance path is `make demo-test`;
+`make demo` runs the same gate and retains both guests for manual sessions.

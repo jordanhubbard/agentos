@@ -19,9 +19,9 @@
 # Cross-compilation is fully supported: e.g. build for riscv64 on an arm64 Mac.
 #
 # Override from command line:
-#   make demo TARGET_ARCH=aarch64
-#   make demo TARGET_ARCH=x86_64
-#   make demo HOST_ARCH=x86_64
+#   make build TARGET_ARCH=aarch64
+#   make build TARGET_ARCH=x86_64 GUEST_OS=none
+# The dual-guest `make demo` target is intentionally fixed to AArch64.
 # ──────────────────────────────────────────────────────────────────────────────
 
 # Target architecture — the platform agentOS will execute on
@@ -43,13 +43,13 @@ host_arch: auto
 #             Requires aarch64 target. linux_vmm.elf built via vmm.mk.
 #
 #   freebsd — include FreeBSD VMM (aarch64 only)
-#             Boots FreeBSD 14 AArch64 via EDK2 UEFI + libvmm.
-#             Run `make fetch-freebsd-guest` first to download images.
-#             Requires aarch64 target. freebsd_vmm.elf built via kernel/freebsd-vmm/.
+#             Boots FreeBSD 15.0 AArch64 directly with an FDT + libvmm.
+#             `make run GUEST_OS=freebsd` stages the required image.
+#             Requires aarch64 target.
 #
 # Override from command line: make run GUEST_OS=ubuntu
-#                              make demo GUEST_OS=freebsd
-#                              make demo-freebsd
+#                              make run GUEST_OS=freebsd
+# The `make demo` target always boots Ubuntu and FreeBSD together.
 guest_os: ubuntu
 
 # Linux VMM: legacy key — superseded by guest_os above.
