@@ -317,11 +317,12 @@ bool virtio_mmio_fault_handle(size_t vcpu_id, size_t offset, size_t fsr, seL4_Us
     }
 }
 
-/*
- * If the guest acknowledges the virtual IRQ associated with the virtIO
- * device, there is nothing that we need to do.
- */
-static void virtio_virq_default_ack(size_t vcpu_id, int irq, void *cookie) {}
+static void virtio_virq_default_ack(size_t vcpu_id, int irq, void *cookie)
+{
+    (void)vcpu_id;
+    (void)irq;
+    (void)cookie;
+}
 
 bool virtio_mmio_register_device(virtio_device_t *dev,
                                  uintptr_t region_base,
@@ -343,7 +344,8 @@ bool virtio_mmio_register_device(virtio_device_t *dev,
     /* Register the virtual IRQ that will be used to communicate from the device
      * to the guest. This assumes that the interrupt controller is already setup. */
     // @ivanv: we should check that (on AArch64) the virq is an SPI.
-    success = virq_register(GUEST_BOOT_VCPU_ID, virq, &virtio_virq_default_ack, NULL);
+    success = virq_register(GUEST_BOOT_VCPU_ID, virq,
+                            &virtio_virq_default_ack, dev);
     assert(success);
 
     return success;

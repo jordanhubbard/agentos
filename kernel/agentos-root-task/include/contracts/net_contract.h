@@ -22,6 +22,10 @@
 
 #pragma once
 #include "../agentos.h"
+#include "../../../../contracts/net-service/interface.h"
+
+/* Version 2 documents the shmem offset already returned by MSG_NET_OPEN. */
+#define NET_PD_CONTRACT_VERSION  NET_SVC_INTERFACE_VERSION
 
 /* ─── Channel IDs ────────────────────────────────────────────────────────── */
 #define NET_PD_CH_CONTROLLER  CH_NET_PD
@@ -30,6 +34,10 @@
 #define NET_MAX_FRAME_BYTES   1514u
 #define NET_MAX_CLIENTS       16u
 #define NET_MAX_FILTERS       32u
+#define NET_SHMEM_BYTES       NET_SVC_SHMEM_TOTAL
+#define NET_SHMEM_SLOT_BASE   NET_SVC_SLOT_BASE
+#define NET_SHMEM_SLOT_BYTES  NET_SVC_SLOT_SIZE
+#define NET_SHMEM_DATA_OFFSET NET_SVC_HDR_SIZE
 
 /* ─── Protocol identifiers (MSG_NET_SOCKET_OPEN / MSG_NET_SOCKET_CONNECT) ── */
 #define NET_PROTO_TCP         0u
@@ -83,9 +91,10 @@ struct net_req_filter_remove {
 struct net_reply_open {
     uint32_t ok;
     uint32_t handle;
+    uint32_t shmem_offset;     /* handle's slot base in shared net memory */
     uint8_t  mac[6];            /* interface MAC address */
     uint8_t  _pad[2];
-};
+} __attribute__((packed));
 
 struct net_reply_close {
     uint32_t ok;

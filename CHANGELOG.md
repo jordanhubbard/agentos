@@ -25,6 +25,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Capability attenuation: OP_CAP_ATTENUATE for sub-delegation (`f3bb3f3`)
 
 ### Features
+- One-command dual-guest showcase: `make demo` boots Ubuntu and FreeBSD
+  concurrently, proves key-only SSH to both, and retains them for manual
+  sessions; `make demo-test` provides the non-interactive acceptance gate.
+- `make setup` installs host dependencies and the shared Microkit SDK;
+  `make demo-smoke` provides a fast host-only preflight.
 - Board abstraction system: `BOARD_NAME` variable selects `boards/<name>/board.mk`; auto-derived from `TARGET_ARCH` for QEMU dev builds (`make build BOARD_NAME=rpi5`, `make build BOARD_NAME=intel-nuc`)
 - boards/rpi5: full AArch64 system manifest with PL011 UART, GIC IRQ, linux_vmm native stub
 - boards/intel-nuc: x86_64 system manifest with NS16550 UART at MMIO 0xFE034000; console_shell ring-buffer RX path (Microkit 2.1.0 lacks x86_64 IRQ support)

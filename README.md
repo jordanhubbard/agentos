@@ -44,7 +44,10 @@ runs on that hardware (and later on a real board): user-mode drivers,
 sDDF virtualizers, and a VMM that presents **emulated virtio** to Linux and
 FreeBSD. Native agents use the same virtualizers without a guest OS.
 
-See `docs/TCB.md` and `PLAN.md`.
+See [`docs/TCB.md`](docs/TCB.md) for the trust boundary,
+[`PLAN.md`](PLAN.md) for active implementation sequencing, and
+[`docs/ROADMAP.md`](docs/ROADMAP.md) for release milestones including the
+desktop and x86 guest paths.
 
 ```
  Hardware / QEMU
@@ -146,31 +149,51 @@ aos_service_swap(proposal_id);
 - macOS with Homebrew, or Ubuntu 22.04+
 - 8GB RAM, 20GB disk
 - QEMU for simulation (no hardware needed to start)
-- Optional ISO cache at `/Volumes/ISOs`; staged guest images live under `build/guest-images`
+- Rust, LLVM/Clang, LLD, and the seL4 Microkit 2.1.0 SDK
+- Vendor ISOs cache under `${AGENTOS_ISO_DIR:-$HOME/.cache/agentos/isos}`;
+  staged guest images live under `build/guest-images`
 - **FreeBSD hosts**: cross-compile from Linux/macOS (FreeBSD LLVM cross-compilation support is limited)
 
-### Quick start
+### Dual-guest demo
 
 ```bash
-make help                                     # show supported top-level targets
-make install                                  # install host build dependencies
-make run                                      # build + QEMU + Ubuntu 26.04 guest
-make run GUEST_OS=freebsd                     # build + QEMU + FreeBSD 15.0 guest
-make run GUEST_OS=both                        # boot Linux and FreeBSD VMM PDs together
-make test-guest-login                         # prove Ubuntu and FreeBSD serial login via CC-PD
+make setup    # install dependencies, SDK, and validate the host
+make demo     # boot Ubuntu + FreeBSD, prove SSH, retain both for login
 ```
 
-`make run` creates the CC-PD Unix socket at `build/cc_pd.sock`, prints the
-matching GUI command, and leaves QEMU on the foreground serial console. The
-external GUI can be launched from the sibling project:
+The demo runs one agentOS image with both guest VMMs, proves key-only SSH to
+Ubuntu on port 12222 and FreeBSD on port 12223, then prints the exact commands
+for opening both sessions. Press Enter in the original terminal to stop QEMU.
+See [`docs/demo.md`](docs/demo.md) for the complete walkthrough, expected
+runtime, proof boundary, and troubleshooting.
 
 ```bash
-cd ../agentos_gui && make run
+make demo-test   # same authenticated-SSH acceptance gate; exit afterward
+make demo-smoke  # fast host-only checks; no QEMU and not a boot proof
+make demo-clean  # remove demo runtime artifacts; preserve guest images
+make help        # lower-level build, run, and device-proof targets
 ```
 
-### Build Examples
+### Experimental desktop proof
+
+`make demo-desktop` boots the Ubuntu ARM64 live guest, provisions a lightweight
+Openbox/TigerVNC session, verifies a raw RFB frame through key-authenticated
+SSH, and keeps the tunnel available to an external VNC viewer. It is not a
+framebuffer or virtio-gpu claim. Until the live gate is release-qualified,
+this remains an experimental path. See
+[`docs/desktop-demo.md`](docs/desktop-demo.md).
 
 ```bash
+make demo-desktop-test  # automated RFB protocol/frame evidence; exit afterward
+make demo-desktop       # retain the verified guest and SSH tunnel
+```
+
+### Lower-level build and run examples
+
+```bash
+make run GUEST_OS=ubuntu                         # foreground Ubuntu run
+make run GUEST_OS=freebsd                        # foreground FreeBSD run
+make test-guest-login                            # CC-PD console proof
 make build TARGET_ARCH=aarch64 GUEST_OS=ubuntu    # AArch64 + Ubuntu 26.04
 make build TARGET_ARCH=aarch64 GUEST_OS=freebsd   # AArch64 + FreeBSD 15.0
 make build TARGET_ARCH=aarch64 GUEST_OS=both      # Package both guest VMM PDs
@@ -182,8 +205,10 @@ make fetch-guest GUEST_OS=both                    # stage both guest OS assets
 
 Guest images and temporary build artifacts stay under `build/`. Use
 `AGENTOS_IMAGES=/path/to/cache` only when intentionally overriding the default.
-`make run GUEST_OS=both` automatically uses `QEMU_RUN_MEM=3G` so Linux and
-FreeBSD can use independent identity-mapped guest RAM windows.
+The dual-guest demo automatically uses 3 GB of outer QEMU RAM. Both guests see
+the conventional `0x40000000` GPA window while their VMMs map disjoint host
+virtual-address windows. `make run-dual-ssh` remains as the lower-level alias
+used by `make demo`.
 
 ### FreeBSD host
 
@@ -257,18 +282,18 @@ below is labeled by **proof level**, not by "done / not done".
 
 | Subsystem | Proof level | Evidence / notes |
 |-----------|-------------|------------------|
-| Top-level Makefile (`help`/`build`/`run`/`test`/E2E) | host-tested | Build/run orchestration; not a runtime subsystem |
+| Top-level Makefile (`setup`/`demo`/`build`/`test`/E2E) | host-tested | Build/run orchestration; not a runtime subsystem |
 | Raw seL4/Microkit boot (AArch64, x86_64) | boot-proven | `xtask qemu-test` and `tests/end_to_end_boot_test.sh` wait for boot markers; RISC-V build path exists but is not regularly boot-asserted |
-| Linux/Ubuntu guest boot | boot-proven | `tests/e2e/run_dual_os_e2e.sh` boots Ubuntu under QEMU and proves it via SSH; `make test-guest-login` waits for the login prompt via CC-PD |
-| FreeBSD 15.0 guest boot | boot-proven | Same dual-OS E2E boots FreeBSD and SSHes in; commit `3f5365a` "prove dual linux freebsd lifecycle" |
+| Linux/Ubuntu guest boot | boot-proven | `make demo-test` boots Ubuntu beside FreeBSD and proves authenticated SSH; `make test-guest-login` separately proves the CC-PD serial-console path |
+| FreeBSD 15.0 guest boot | boot-proven | `make demo-test` boots FreeBSD beside Ubuntu and proves authenticated SSH |
 | Guest VMM multiplexer (slot create/switch/list/status) | target-tested | VMM contract + slot lifecycle exercised; per-guest VMM slots coordinated (`470679f`) |
 | Guest snapshot / restore | stubbed | `vm_manager.c`: `SNAPSHOT/RESTORE: not implemented (Phase 1)`; `cc_pd.c` boot-guest snapshot returns `CC_ERR_RELAY_FAULT` |
 | Guest live-migrate | planned | `MSG_VIBEOS_MIGRATE` defined in contract; no target-validated implementation |
 | Guest virtual IRQ injection | stubbed | `vm_manager.c` `vmm_inject_irq` logs `(stub)`; real `virq_inject` via libvmm is a TODO |
 | Dynamic guest CREATE/LIST/DESTROY via vibe_engine | host-tested | On AArch64 the build links `vmm_mux_stub.c`; vibe_engine surfaces dynamic guests as "phantom" `RUNNING` because no real VM boots (`e70d955`). Lifecycle UX works end-to-end through CC-PD against stubbed VM backing only. |
 | serial-mux / serial PD | boot-proven | Guest console login flows through CC-PD over the serial path (`make test-guest-login`) |
-| net-service / net_isolator | host-tested | Contract + isolator logic covered by host tests (`tests/contracts/net_*`); not boot-asserted |
-| block-service / block PD | host-tested | Host contract tests (`tests/contracts/block_*`); VirtIO-blk path not independently boot-asserted |
+| Emulated virtio-net / net-service | target-tested | `make test-guest-net` boots Buildroot, reaches `DRIVER_OK`, and requires a guest packet through the agentOS virtualizer; host contract tests provide additional logic coverage |
+| Emulated virtio-blk / block-service | target-tested | `make test-guest-blk` boots Buildroot and requires a guest block request through the agentOS virtualizer; host contract tests provide additional logic coverage |
 | usb-service | stubbed | `usb_pd.c` runs in "stub mode" (simulated HID device) unless built with `AGENTOS_USB_PD` and real MMIO is wired |
 | timer-service | host-tested | Host contract tests (`tests/contracts/timer_test.c`) |
 | entropy-service | host-tested | `services/entropy-service/entropy_svc.c` + contract; not target-validated |
@@ -340,9 +365,10 @@ controller  (CH=51)    ──ppcall──► gpu_scheduler (CH_CTRL=1)
 ## FreeBSD VM Guest
 
 agentOS stages and boots **FreeBSD 15.0 AArch64** as a virtual machine guest
-under the seL4 hypervisor path (proof level: **boot-proven** — `run_dual_os_e2e.sh`
-boots it under QEMU and proves it over SSH). The same CC-PD API surface used by
-Ubuntu enumerates the guest, drains serial output, and injects console input.
+under the seL4 hypervisor path (proof level: **boot-proven** —
+`make demo-test` boots it beside Ubuntu and proves authenticated SSH). The same
+CC-PD API surface used by Ubuntu enumerates the guest, drains serial output,
+and injects console input.
 
 seL4 runs at **EL2** (ARM hypervisor mode) — it IS the hypervisor. No separate hypervisor layer needed.
 
@@ -351,9 +377,9 @@ seL4 runs at **EL2** (ARM hypervisor mode) — it IS the hypervisor. No separate
 ```
 seL4 (EL2)
   └─► freebsd_vmm PD (libvmm)
-        └─► EDK2 UEFI firmware @ guest phys 0x00000000
-              └─► bootaa64.efi → loader.efi
-                    └─► FreeBSD kernel (EL1)
+        ├─► FreeBSD kernel + agentOS FDT copied into guest RAM
+        └─► vCPU enters the FreeBSD kernel (EL1)
+              └─► virtio-blk mounts the staged 15.0 live media
 ```
 
 ### VM Multiplexer
@@ -383,8 +409,8 @@ Console focus follows the selected guest handle through CC-PD.
 ### Quick start
 
 ```bash
-# Install build deps
-make install
+# Install build dependencies and the shared Microkit SDK
+make setup
 
 # Stage FreeBSD 15.0 assets under build/guest-images
 make fetch-guest GUEST_OS=freebsd
@@ -406,21 +432,21 @@ make -C tools/agentctl
 
 ### Memory layout
 
-Each VM slot is modeled with isolated guest RAM:
+Each VMM has an isolated guest VSpace. In the dual demonstration both guests
+see the conventional RAM GPA at `0x40000000`, while their VMM aliases are
+disjoint:
 
 ```
-Guest physical address space (all slots):
-  0x00000000 - 0x03FFFFFF   UEFI flash (EDK2, shared read-only)
-  0x08010000                GIC CPU interface (vGIC emulation)
-  0x09000000                PL011 UART (console passthrough)
-  0x0a003000+               VirtIO MMIO (block device, per slot)
+Guest view:
+  FreeBSD GPA: 0x40000000 - 0x4fffffff  (256 MB)
+  Linux GPA:   0x40000000 - 0x7fffffff  (1 GB)
 
-Per-slot RAM:
-  Slot 0: 0x40000000 - 0x5FFFFFFF  (512MB)
-  Slot 1: 0x60000000 - 0x7FFFFFFF  (512MB)
-  Slot 2: 0x80000000 - 0x9FFFFFFF  (512MB)
-  Slot 3: 0xa0000000 - 0xBFFFFFFF  (512MB)
+VMM aliases:
+  FreeBSD HVA: 0x80000000 - 0x8fffffff
+  Linux HVA:   0xc0000000 - 0xffffffff
 ```
+
+The repeated GPA does not overlap because each guest has its own VSpace.
 
 ### Why FreeBSD?
 
@@ -431,6 +457,18 @@ Per-slot RAM:
 - bhyve inside FreeBSD = agents can *nest* hypervisors within agentOS
 
 See [`docs/freebsd-vm-guest.md`](docs/freebsd-vm-guest.md) for the full design doc.
+
+---
+
+## Roadmap and releases
+
+- [`docs/ROADMAP.md`](docs/ROADMAP.md) defines the 0.2 desktop proof, 0.3
+  graphics path, 0.4 x86 VMM, 0.5 x86 graphical guest, and 1.0 qualification
+  boundaries.
+- [`docs/RELEASES.md`](docs/RELEASES.md) defines the evidence-bound release
+  protocol and gate matrix.
+- [`docs/presentations/agentos-systems-security/deck.md`](docs/presentations/agentos-systems-security/deck.md)
+  is the editable, claim-labeled narrative for OS and security experts.
 
 ---
 

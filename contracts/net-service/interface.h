@@ -4,8 +4,7 @@
  * // STATUS: IMPLEMENTED
  *
  * This is the canonical contract for the net-service device service in agentOS.
- * The concrete implementation lives in kernel/agentos-root-task/src/net_server.c,
- * with the lwIP shim in lwip_shim.c.
+ * The generic device implementation lives in services/net-service/net_pd.c.
  *
  * The net-service provides virtual NIC (vNIC) creation, ACL-gated packet
  * send/receive, port binding, and TCP connection management for all agents and
@@ -37,12 +36,14 @@
 #include <stdint.h>
 
 /* ── Interface version ──────────────────────────────────────────────────── */
-#define NET_SVC_INTERFACE_VERSION       1
+#define NET_SVC_INTERFACE_VERSION       2
 
 /* ── Geometry / limits ──────────────────────────────────────────────────── */
 #define NET_SVC_MAX_VNICS               16u
 #define NET_SVC_MAX_BOUND_PORTS         8u
-#define NET_SVC_SHMEM_TOTAL             0x40000u   /* 256 KB */
+#define NET_SVC_MAX_FRAME_BYTES         1514u
+#define NET_SVC_SHMEM_TOTAL             0x200000u  /* 2 MB shared bridge */
+#define NET_SVC_SLOT_BASE               0x100000u  /* slots after guest queues */
 #define NET_SVC_SLOT_SIZE               0x4000u    /* 16 KB per vNIC slot */
 #define NET_SVC_HDR_SIZE                1024u      /* ring header bytes */
 #define NET_SVC_DATA_SIZE               (NET_SVC_SLOT_SIZE - NET_SVC_HDR_SIZE)
@@ -188,6 +189,58 @@ typedef struct __attribute__((packed)) {
  *   MR5 = tx_drops
  */
 #define NET_SVC_OP_GET_STATS            0xB7u
+
+/* ── Generic raw-device operations implemented by net_pd ─────────────────
+ *
+ * These preserve the established MSG_NET_* wire values. The opcode occupies
+ * sel4_msg_t.opcode; request/reply payload fields follow the packed structs
+ * below with the opcode member omitted from sel4_msg_t.data.
+ */
+#define NET_SVC_OP_RAW_OPEN             0x2101u
+#define NET_SVC_OP_RAW_CLOSE            0x2102u
+#define NET_SVC_OP_RAW_SEND             0x2103u
+#define NET_SVC_OP_RAW_RECV             0x2104u
+#define NET_SVC_OP_RAW_STATUS           0x2105u
+#define NET_SVC_OP_RAW_CONFIGURE        0x2106u
+#define NET_SVC_EVENT_RX_READY           0x2110u
+
+#define NET_SVC_RAW_OK                  0u
+#define NET_SVC_RAW_ERR_NO_SLOTS        1u
+#define NET_SVC_RAW_ERR_BAD_HANDLE      2u
+#define NET_SVC_RAW_ERR_BAD_IFACE       3u
+#define NET_SVC_RAW_ERR_LINK_DOWN       4u
+#define NET_SVC_RAW_ERR_FRAME_TOO_LARGE 5u
+
+typedef struct __attribute__((packed)) {
+    uint32_t opcode;          /* NET_SVC_OP_RAW_OPEN */
+    uint32_t iface_id;
+} net_svc_raw_open_req_t;
+
+typedef struct __attribute__((packed)) {
+    uint32_t status;
+    uint32_t handle;
+    uint32_t shmem_offset;    /* NET_SVC_SLOT_BASE + slot * SLOT_SIZE */
+    uint8_t mac[6];
+    uint8_t _pad[2];
+} net_svc_raw_open_reply_t;
+
+typedef struct __attribute__((packed)) {
+    uint32_t opcode;          /* NET_SVC_OP_RAW_SEND */
+    uint32_t handle;
+    uint32_t len;
+} net_svc_raw_send_req_t;
+
+typedef struct __attribute__((packed)) {
+    uint32_t opcode;          /* NET_SVC_OP_RAW_RECV */
+    uint32_t handle;
+    uint32_t max_len;
+} net_svc_raw_recv_req_t;
+
+typedef struct __attribute__((packed)) {
+    uint32_t status;
+    uint32_t len;
+    uint32_t shmem_offset;
+} net_svc_raw_recv_reply_t;
 
 /* ── Error / status codes (MR0 in replies) ──────────────────────────────── */
 #define NET_SVC_ERR_OK                  0u   /* success */

@@ -1,11 +1,17 @@
 # agentOS Top-Level Makefile
 #
 # Quick start:
-#   make help
-#   make install && make run
+#   make setup
+#   make demo
 #
 # Targets:
 #   make help         — show important top-level targets and defaults
+#   make setup        — install dependencies and the shared Microkit SDK
+#   make demo         — prove and retain Ubuntu + FreeBSD for authenticated SSH
+#   make demo-test    — run the same dual-guest proof non-interactively
+#   make demo-desktop — prove and retain a tunnel-confined Ubuntu VNC desktop
+#   make demo-desktop-test — run the desktop protocol/frame proof and exit
+#   make demo-smoke   — run the fast host-only preflight suite
 #   make install      — install all build dependencies
 #   make build        — build the kernel image for BOARD/TARGET_ARCH
 #   make run          — build + boot agentOS with Unix guest support in QEMU
@@ -13,9 +19,14 @@
 #   make test-guest-login — prove Ubuntu/FreeBSD serial login via CC-PD
 #   make test-guest-net   — prove one packet through emulated virtio-net
 #   make test-guest-blk   — prove one request through emulated virtio-blk
+#   make test-guest-console — prove Ubuntu login through emulated virtio-console
+#   make test-ubuntu-virtio — require Ubuntu on agentOS net + blk + console
+#   make test-ubuntu-live — boot the full Ubuntu Casper live filesystem
 #   make clean        — remove build artifacts for current board
 
-.PHONY: all install deps deps-tools submodules channels run run-fast test test-guest-login test-guest-net test-guest-blk sel4-test-image run-tests test-snapshot-sched test-power-mgr test-proc-server test-vibeos-contract test-integration test-host gate gate-aarch64 gate-x86_64 e2e e2e-guest e2e-contract e2e-dual-os e2e-ubuntu-amd64 e2e-ubuntu-arm64 e2e-nixos e2e-freebsd15 e2e-all bootstrap-guest clean clean-all clean-images help release release-minor release-major fetch-guest build-tools
+.DEFAULT_GOAL := help
+
+.PHONY: all setup sdk demo demo-check demo-smoke demo-test demo-desktop demo-desktop-test demo-clean install deps deps-tools submodules channels format policy-check run run-fast run-dual-ssh test test-guest-login test-guest-net test-guest-blk test-guest-console test-ubuntu-virtio test-ubuntu-live sel4-test-image run-tests test-snapshot-sched test-power-mgr test-proc-server test-vibeos-contract test-integration test-host gate gate-aarch64 gate-x86_64 e2e e2e-guest e2e-contract e2e-dual-os e2e-ubuntu-amd64 e2e-ubuntu-arm64 e2e-nixos e2e-freebsd15 e2e-all bootstrap-guest clean clean-all clean-images help release release-minor release-major release-prepare release-check release-publish release-verify fetch-guest build-tools
 
 # ─── Read config.yaml (if present) ───────────────────────────────────────────
 CONFIG_TARGET := $(shell grep '^target_arch:' config.yaml 2>/dev/null | sed 's/target_arch:[[:space:]]*//' | tr -d '[:space:]')
@@ -30,7 +41,8 @@ endif
 TARGET_ARCH ?= $(CONFIG_TARGET)
 GUEST_OS    ?= $(CONFIG_GUEST_OS)
 QEMU_TEST_TIMEOUT ?= 300
-DUAL_OS_TEST_TIMEOUT ?= 900
+DUAL_OS_TEST_TIMEOUT ?= 5400
+DESKTOP_TEST_TIMEOUT ?= 3600
 QEMU_TEST_GUEST_OS = $(if $(filter x86_64,$(ARCH)),none,$(GUEST_OS))
 
 # ─── Paths (computed FIRST, before any -include changes MAKEFILE_LIST) ───────
@@ -39,6 +51,9 @@ QEMU_TEST_GUEST_OS = $(if $(filter x86_64,$(ARCH)),none,$(GUEST_OS))
 # repo root.
 ROOT_DIR     := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
 KERNEL_DIR   := $(ROOT_DIR)kernel/agentos-root-task
+SEL4_SDK_VERSION ?= 2.1.0
+SEL4_SDK ?= $(HOME)/.cache/agentos/microkit-sdk-$(SEL4_SDK_VERSION)
+export SEL4_SDK
 
 # ─── BOARD_NAME: selects a boards/<name>/board.mk configuration ──────────────
 # Derive from TARGET_ARCH when not explicitly provided.  Override with
@@ -117,10 +132,7 @@ ifeq ($(UNAME_S),Darwin)
     for d in $(LLVM_BIN) $(BREW_PREFIX)/opt/lld/bin $(BREW_PREFIX)/opt/lld@*/bin; do \
       [ -x "$$d/ld.lld" ] && echo "$$d" && break; \
     done 2>/dev/null)
-  BIOS := $(shell find $(BREW_PREFIX) -name "opensbi-riscv64-generic-fw_dynamic.bin" 2>/dev/null | head -1)
-  ifeq ($(BIOS),)
-    BIOS := $(BREW_PREFIX)/share/qemu/opensbi-riscv64-generic-fw_dynamic.bin
-  endif
+  BIOS ?= $(BREW_PREFIX)/share/qemu/opensbi-riscv64-generic-fw_dynamic.bin
 else ifeq ($(UNAME_S),Linux)
   LLVM_BIN     := /usr/bin
   LLD_BIN      := /usr/bin
@@ -134,6 +146,9 @@ else ifeq ($(UNAME_S),FreeBSD)
   LLD_BIN      := /usr/local/bin
   SDK_PLATFORM := unsupported-freebsd
 endif
+
+MICROKIT_SDK_ARCHIVE := microkit-sdk-$(SEL4_SDK_VERSION)-$(SDK_PLATFORM).tar.gz
+MICROKIT_SDK_URL := https://github.com/seL4/microkit/releases/download/$(SEL4_SDK_VERSION)/$(MICROKIT_SDK_ARCHIVE)
 
 # ─── Rust toolchain ──────────────────────────────────────────────────────────
 export PATH := $(HOME)/.cargo/bin:$(PATH)
@@ -185,7 +200,7 @@ ifeq ($(NATIVE_ARCH),aarch64)
                         -device virtconsole,bus=vser0.0,chardev=cc_pd_char,name=cc.0 \
                         $(QEMU_ACCEL_NATIVE) \
                         -netdev user,id=net0,hostfwd=tcp:127.0.0.1:8789-:8789 \
-                        -device virtio-net-device,netdev=net0,bus=virtio-mmio-bus.0 \
+                        -device virtio-net-device,netdev=net0,bus=virtio-mmio-bus.16 \
                         -device loader,file=$(NATIVE_LOADER_ELF),cpu-num=0 \
                         -device loader,file=$(NATIVE_IMAGE),addr=0x48000000
 else
@@ -203,7 +218,14 @@ NATIVE_BUILD_DIR := $(ROOT_DIR)build/$(NATIVE_BOARD)
 NATIVE_IMAGE     := $(NATIVE_BUILD_DIR)/agentos.img
 
 channels:
-	python3 tools/gen-channels/gen_channels.py
+	@cargo xtask gen-channels
+
+format:
+	@cargo fmt --package xtask
+
+policy-check:
+	@cargo fmt --package xtask -- --check
+	@cargo xtask policy-check
 
 all: run
 
@@ -212,7 +234,7 @@ all: run
 # =============================================================================
 install: deps-tools
 	@echo ""
-	@echo "✅ All dependencies installed! Run 'make run' to start."
+	@echo "✅ All dependencies installed! Run 'make sdk' or 'make setup' next."
 
 deps: install
 
@@ -233,10 +255,9 @@ ifeq ($(UNAME_S),Darwin)
 		lld \
 		cmake \
 		ninja \
-		python3 \
 		dtc \
 		coreutils \
-		2>/dev/null || true
+		zstd
 	@command -v cargo >/dev/null 2>&1 || \
 		(echo "[macOS] Installing Rust toolchain..." && \
 		 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --no-modify-path && \
@@ -247,18 +268,26 @@ else ifeq ($(UNAME_S),Linux)
 	@echo "[Linux] Installing dependencies via apt..."
 	@sudo apt-get update -qq
 	@sudo apt-get install -y --no-install-recommends \
+		build-essential \
+		git \
 		qemu-system-misc \
 		qemu-system-arm \
 		qemu-system-x86 \
 		clang \
 		lld \
+		llvm \
 		cmake \
 		ninja-build \
-		python3 \
 		device-tree-compiler \
+		libarchive-tools \
+		openssh-client \
 		curl \
+		zstd \
 		xz-utils \
-		2>/dev/null || true
+		pkg-config
+	@if apt-cache show qemu-system-riscv >/dev/null 2>&1; then \
+		sudo apt-get install -y --no-install-recommends qemu-system-riscv; \
+	fi
 	@command -v cargo >/dev/null 2>&1 || \
 		(curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --no-modify-path)
 	@rustup target add wasm32-unknown-unknown 2>/dev/null || true
@@ -270,7 +299,6 @@ else ifeq ($(UNAME_S),FreeBSD)
 		dtc \
 		dtc-devel \
 		gmake \
-		python3 \
 		curl \
 		wget \
 		rust \
@@ -297,8 +325,120 @@ else
 	@echo "  ld.lld:              $$(ld.lld --version 2>/dev/null | head -1 || echo 'NOT FOUND')"
 endif
 	@echo "[deps-tools] Building xtask..."
-	@cargo build -p xtask 2>/dev/null || true
-	@echo "  xtask:               $$(cargo run -p xtask -- --version 2>/dev/null || echo 'built')"
+	@cargo build -p xtask
+	@echo "  cargo:               $$(cargo --version)"
+
+# =============================================================================
+# setup/demo: two-command first-run path and one-command repeatable showcase
+# =============================================================================
+sdk:
+	@if [ ! -d "$(SEL4_SDK)/board" ] && [ "$(SDK_PLATFORM)" = "unsupported-freebsd" ]; then \
+		echo "ERROR: the Microkit SDK does not publish a FreeBSD host archive."; \
+		echo "Use macOS or Linux for the guest demo, or set SEL4_SDK to a cross-build SDK."; \
+		exit 1; \
+	fi
+	@if [ -d "$(SEL4_SDK)/board" ]; then \
+		echo "✓ Microkit SDK $(SEL4_SDK_VERSION): $(SEL4_SDK)"; \
+	else \
+		echo "Downloading Microkit SDK $(SEL4_SDK_VERSION) for $(SDK_PLATFORM)..."; \
+		command -v curl >/dev/null 2>&1 || \
+			(echo "ERROR: curl is required; run 'make install' first." && exit 1); \
+		tmp="$$(mktemp -t agentos-microkit-sdk.XXXXXX)"; \
+		trap 'rm -f "$$tmp"' EXIT INT TERM; \
+		curl -fsSL "$(MICROKIT_SDK_URL)" -o "$$tmp"; \
+		mkdir -p "$$(dirname "$(SEL4_SDK)")"; \
+		tar -xzf "$$tmp" -C "$$(dirname "$(SEL4_SDK)")"; \
+		test -d "$(SEL4_SDK)/board" || \
+			(echo "ERROR: SDK archive did not create $(SEL4_SDK)" && exit 1); \
+		echo "✓ Microkit SDK installed: $(SEL4_SDK)"; \
+	fi
+
+setup:
+	@$(MAKE) install
+	@$(MAKE) sdk
+	@$(MAKE) demo-check
+	@echo ""
+	@echo "✓ agentOS demo environment is ready."
+	@echo "  Run: make demo"
+
+demo-check:
+	@echo "Checking the agentOS dual-guest demo environment..."
+	@command -v cargo >/dev/null 2>&1 || \
+		(echo "ERROR: cargo not found; run 'make setup'." && exit 1)
+	@command -v qemu-system-aarch64 >/dev/null 2>&1 || \
+		(echo "ERROR: qemu-system-aarch64 not found; run 'make setup'." && exit 1)
+	@command -v cmake >/dev/null 2>&1 || \
+		(echo "ERROR: cmake not found; run 'make setup'." && exit 1)
+	@command -v ninja >/dev/null 2>&1 || \
+		(echo "ERROR: ninja not found; run 'make setup'." && exit 1)
+	@command -v dtc >/dev/null 2>&1 || \
+		(echo "ERROR: dtc not found; run 'make setup'." && exit 1)
+	@command -v ssh >/dev/null 2>&1 || \
+		(echo "ERROR: ssh not found; install an OpenSSH client." && exit 1)
+	@command -v ssh-keygen >/dev/null 2>&1 || \
+		(echo "ERROR: ssh-keygen not found; install OpenSSH tools." && exit 1)
+	@command -v curl >/dev/null 2>&1 || \
+		(echo "ERROR: curl not found; run 'make setup'." && exit 1)
+	@command -v bsdtar >/dev/null 2>&1 || \
+		(echo "ERROR: bsdtar not found; run 'make setup'." && exit 1)
+	@command -v zstd >/dev/null 2>&1 || \
+		(echo "ERROR: zstd not found; run 'make setup'." && exit 1)
+	@test -x "$(LLVM_BIN)/clang" || \
+		(echo "ERROR: clang not found; run 'make setup'." && exit 1)
+	@test -x "$(LLD_BIN)/ld.lld" || \
+		(echo "ERROR: ld.lld not found; run 'make setup'." && exit 1)
+	@command -v llvm-objcopy >/dev/null 2>&1 || test -x "$(LLVM_BIN)/llvm-objcopy" || \
+		(echo "ERROR: llvm-objcopy not found; run 'make setup'." && exit 1)
+	@test -d "$(SEL4_SDK)/board" || \
+		(echo "ERROR: Microkit SDK not found at $(SEL4_SDK); run 'make sdk'." && exit 1)
+	@echo "✓ Demo prerequisites are available."
+
+demo-smoke: demo-check
+	@$(MAKE) test-host
+	@echo ""
+	@echo "✓ Host-only demo smoke tests passed (this is not a boot proof)."
+
+demo-test: demo-check
+	@echo ""
+	@echo "Running the non-interactive Ubuntu + FreeBSD authenticated-SSH proof..."
+	@$(MAKE) e2e-dual-os BOARD=qemu_virt_aarch64
+
+demo: demo-check
+	@test -t 0 || \
+		(echo "ERROR: 'make demo' requires an interactive terminal; use 'make demo-test' in automation." && exit 1)
+	@echo ""
+	@echo "Starting the agentOS dual-guest demonstration."
+	@echo "The gate boots Ubuntu and FreeBSD concurrently and proves key-only SSH."
+	@echo "After it passes, open the printed SSH commands in two other terminals."
+	@echo "Press Enter here when the demonstration is complete."
+	@echo ""
+	@$(MAKE) run-dual-ssh
+
+demo-desktop-test: demo-check
+	@echo ""
+	@echo "Running the non-interactive Ubuntu desktop protocol/frame proof..."
+	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os ubuntu \
+		--assert-desktop --timeout-secs $(DESKTOP_TEST_TIMEOUT)
+
+demo-desktop: demo-check
+	@test -t 0 || \
+		(echo "ERROR: 'make demo-desktop' requires an interactive terminal; use 'make demo-desktop-test' in automation." && exit 1)
+	@echo ""
+	@echo "Starting the tunnel-confined Ubuntu desktop proof."
+	@echo "The guest installs a lightweight Openbox + TigerVNC session at runtime."
+	@echo "After the RFB frame gate passes, open the printed command in an external VNC viewer."
+	@echo "Press Enter here when the demonstration is complete."
+	@echo ""
+	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os ubuntu \
+		--assert-desktop --keep-running --timeout-secs $(DESKTOP_TEST_TIMEOUT)
+
+demo-clean:
+	@echo "Cleaning demo sockets, logs, and generated SSH keys..."
+	@rm -f $(ROOT_DIR)build/cc_pd.sock $(ROOT_DIR)build/agentos-serial.sock
+	@rm -rf $(ROOT_DIR)build/tmp/dual-ssh
+	@rm -f $(ROOT_DIR)build/tmp/agentos-qemu-*.log
+	@rm -f $(ROOT_DIR)build/tmp/agentos-qemu-*.cc_pd.sock
+	@echo "✓ Demo runtime artifacts removed; guest image caches were preserved."
 
 # =============================================================================
 # submodules: initialise any uninitialised git submodules
@@ -358,9 +498,11 @@ endif
 		BUILD_DIR=$(BUILD_DIR) \
 		AGENTOS_BOARD=$(BOARD) \
 		AGENTOS_ARCH=$(ARCH) \
+		SEL4_SDK=$(SEL4_SDK) \
 		SEL4_PROFILE=$(SEL4_PROFILE) \
 		AGENTOS_FREEBSD_IMAGE=$(if $(AGENTOS_FREEBSD_IMAGE),$(AGENTOS_FREEBSD_IMAGE),$(FREEBSD_IMAGE)) \
 		GUEST_OS=$(GUEST_OS) \
+		UBUNTU_BOOT_MODE=$(UBUNTU_BOOT_MODE) \
 		BOARD_NAME=$(BOARD_NAME) \
 		BOARD_NATIVE=$(BOARD_NATIVE) \
 		BOARD_UART_PHYS=$(BOARD_UART_PHYS) \
@@ -394,16 +536,16 @@ else
   _QEMU_FAST_FLAGS :=
 endif
 FREEBSD_IMAGE ?= $(if $(AGENTOS_FREEBSD_IMAGE),$(AGENTOS_FREEBSD_IMAGE),$(AGENTOS_IMAGES)/freebsd-15.0-aarch64.iso)
-_UBUNTU_BLK = -drive file=$(AGENTOS_IMAGES)/ubuntu-26.04-aarch64.iso,format=raw,if=none,id=ubuntu_hd,readonly=on,file.locking=off \
-              -device virtio-blk-device,drive=ubuntu_hd,bus=virtio-mmio-bus.1
-_FREEBSD_BLK = -drive file=$(FREEBSD_IMAGE),format=raw,if=none,id=freebsd_hd,readonly=on,file.locking=off \
-               -device virtio-blk-device,drive=freebsd_hd,bus=virtio-mmio-bus.31
-# Outer QEMU block devices, selected by GUEST_OS.  Note: GUEST_OS=buildroot (and
-# GUEST_OS=none) intentionally attach NO outer disk — the buildroot Linux kernel
-# + initrd are packaged inside linux_vmm.elf by vmm.mk (BUILDROOT_LINUX_IMAGE /
-# BUILDROOT_INITRD_IMAGE), so the guest boots entirely from the inner libvmm
-# image with no host-provided ISO.  Only ubuntu/freebsd need an outer virtio-blk.
-_QEMU_BLK_FLAGS = $(if $(filter both,$(GUEST_OS)),$(_UBUNTU_BLK) $(_FREEBSD_BLK),$(if $(filter ubuntu,$(GUEST_OS)),$(_UBUNTU_BLK),$(if $(filter freebsd,$(GUEST_OS)),$(_FREEBSD_BLK),)))
+_UBUNTU_HOST_BLK = -drive file=$(AGENTOS_IMAGES)/ubuntu-26.04-aarch64.iso,format=raw,if=none,id=agentos_hd,readonly=on,file.locking=off \
+                   -device virtio-blk-device,drive=agentos_hd,bus=virtio-mmio-bus.8
+_FREEBSD_HOST_BLK = -drive file=$(FREEBSD_IMAGE),format=raw,if=none,id=freebsd_hd,readonly=on,file.locking=off \
+                    -device virtio-blk-device,drive=freebsd_hd,bus=virtio-mmio-bus.31
+_AGENTOS_HOST_NET = -netdev user,id=agentos_net0,hostfwd=tcp:127.0.0.1:8789-:8789,hostfwd=tcp:127.0.0.1:2222-10.0.2.15:22 \
+                    -device virtio-net-device,netdev=agentos_net0,bus=virtio-mmio-bus.16,mac=02:00:00:00:00:01,ctrl_vq=off,mq=off
+# Buses 8, 16, and 31 are host hardware owned only by canonical agentOS
+# driver PDs. No host transport is mapped or advertised to a guest.
+_QEMU_BLK_FLAGS = $(if $(filter both,$(GUEST_OS)),$(_UBUNTU_HOST_BLK) $(_FREEBSD_HOST_BLK),$(if $(filter ubuntu,$(GUEST_OS)),$(_UBUNTU_HOST_BLK),$(if $(filter freebsd,$(GUEST_OS)),$(_FREEBSD_HOST_BLK),)))
+_QEMU_NET_FLAGS = $(_AGENTOS_HOST_NET)
 QEMU_RUN_MEM ?= $(if $(filter both,$(GUEST_OS)),3G,2G)
 QEMU_RUN_SMP ?= $(if $(filter smp-% smp,$(SEL4_PROFILE)),4,1)
 comma := ,
@@ -419,8 +561,7 @@ QEMU_RUN_FLAGS = -machine $(QEMU_MACHINE_FLAGS) \
                  -chardev socket,id=cc_pd_char,path=$(ROOT_DIR)build/cc_pd.sock,server=on,wait=off \
                  -device virtio-serial-device,bus=virtio-mmio-bus.2,id=vser0 \
                  -device virtconsole,bus=vser0.0,chardev=cc_pd_char,name=cc.0 \
-                 -netdev user,id=net0,hostfwd=tcp:127.0.0.1:8789-:8789,hostfwd=tcp:127.0.0.1:2222-10.0.2.15:22,hostfwd=tcp:127.0.0.1:2223-10.0.2.15:2223,hostfwd=tcp:127.0.0.1:2224-10.0.2.15:2224 \
-                 -device virtio-net-device,netdev=net0,bus=virtio-mmio-bus.0,ctrl_vq=off,ctrl_rx=off,ctrl_vlan=off,guest_announce=off,mq=off,ctrl_mac_addr=off,ctrl_guest_offloads=off \
+                 $(_QEMU_NET_FLAGS) \
                  $(_QEMU_BLK_FLAGS) \
                  -device loader,file=$(NATIVE_LOADER_ELF),cpu-num=0 \
                  -device loader,file=$(NATIVE_IMAGE),addr=0x48000000
@@ -443,9 +584,8 @@ run:
 	@echo "CC-PD  : $(ROOT_DIR)build/cc_pd.sock"
 	@echo "GUI    : cd $(abspath $(ROOT_DIR)../agentos_gui) && make run"
 	@echo ""
-	@echo "Guest SSH: ssh -p 2222 ubuntu@localhost    (Ubuntu)"
-	@echo "           ssh -p 2223 root@localhost      (FreeBSD)"
-	@echo "           ssh -p 2224 root@localhost      (NixOS)"
+	@echo "Validated dual-guest SSH showcase: make demo"
+	@echo "Raw run port forwarding is guest-specific and is not an acceptance gate."
 	@echo "Buildroot: no outer ISO; Linux runs inside linux_vmm.elf → '#' shell on serial"
 	@echo "Exit QEMU: Ctrl-A X"
 	@echo "──────────────────────────────────────────────"
@@ -507,7 +647,7 @@ gate: test-host gate-aarch64 gate-x86_64
 
 # test-host: alias for the host-only integration suite.  Named explicitly so
 # callers and CI cannot mistake host-only coverage for target/QEMU proof.
-test-host: test-integration
+test-host: policy-check test-integration
 
 sel4-test-image:
 	@$(MAKE) build \
@@ -543,14 +683,41 @@ test-guest-net:
 # Guest I/O proof: boot buildroot Linux under linux_vmm and require the
 # emulated virtio-blk (IPA 0x0A020000) to probe, reach DRIVER_OK, and pump
 # at least one guest request (partition scan of the RAM disk). Host
-# tests/test_virtio_blk_guest_path.c is not this gate. Ubuntu still boots
-# from QEMU virtio-blk at 0x0A000200 — do not enable emulated blk there yet.
+# tests/test_virtio_blk_guest_path.c is not this gate. The combined Ubuntu
+# device proof is make test-ubuntu-virtio.
 test-guest-blk:
 	@if [ "$(BOARD)" != "qemu_virt_aarch64" ]; then \
 		echo "test-guest-blk requires BOARD=qemu_virt_aarch64 (got BOARD=$(BOARD))"; \
 		exit 1; \
 	fi
 	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os buildroot --timeout-secs $(QEMU_TEST_TIMEOUT) --assert-emulated-blk
+
+# Boot Ubuntu to its login prompt over agentOS's emulated virtio-console,
+# then inject input and require the guest to echo it back through sDDF queues.
+test-guest-console:
+	@if [ "$(BOARD)" != "qemu_virt_aarch64" ]; then \
+		echo "test-guest-console requires BOARD=qemu_virt_aarch64 (got BOARD=$(BOARD))"; \
+		exit 1; \
+	fi
+	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os ubuntu --timeout-secs $(QEMU_TEST_TIMEOUT) --assert-emulated-console
+
+# Deterministic initramfs device proof. Host media is owned by virtio_blk;
+# Ubuntu's DTB advertises agentOS emulated devices only.
+test-ubuntu-virtio:
+	@if [ "$(BOARD)" != "qemu_virt_aarch64" ]; then \
+		echo "test-ubuntu-virtio requires BOARD=qemu_virt_aarch64 (got BOARD=$(BOARD))"; \
+		exit 1; \
+	fi
+	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os ubuntu --timeout-secs $(QEMU_TEST_TIMEOUT) --assert-agentos-virtio
+
+# End-state proof: boot Ubuntu's real Casper initrd and ISO filesystem to a
+# serial login while requiring real I/O through every agentOS VirtIO class.
+test-ubuntu-live:
+	@if [ "$(BOARD)" != "qemu_virt_aarch64" ]; then \
+		echo "test-ubuntu-live requires BOARD=qemu_virt_aarch64 (got BOARD=$(BOARD))"; \
+		exit 1; \
+	fi
+	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os ubuntu --timeout-secs $(QEMU_TEST_TIMEOUT) --assert-ubuntu-live
 
 # =============================================================================
 # test-snapshot-sched: standalone unit test for the snapshot_sched PD
@@ -694,6 +861,47 @@ test-integration:
 	    echo "FAIL: tests/platform/test_gpa_translate.c"; \
 	    status=1; \
 	fi; \
+	if gcc -DAGENTOS_TEST_HOST \
+	        -I platform/include -I kernel/agentos-root-task/include \
+	        tests/platform/test_guest_vmm_runtime.c \
+	        platform/guest-vmm/runtime.c \
+	        -o $(BUILD_TMP_DIR)/test_guest_vmm_runtime 2>&1 \
+	    && $(BUILD_TMP_DIR)/test_guest_vmm_runtime; then \
+	    echo "PASS: tests/platform/test_guest_vmm_runtime.c"; \
+	else \
+	    echo "FAIL: tests/platform/test_guest_vmm_runtime.c"; \
+	    status=1; \
+	fi; \
+	if gcc -I kernel/agentos-root-task/include -I . \
+	        tests/platform/test_native_net_client.c \
+	        kernel/agentos-root-task/src/native_net_client.c \
+	        -o $(BUILD_TMP_DIR)/test_native_net_client 2>&1 \
+	    && $(BUILD_TMP_DIR)/test_native_net_client; then \
+	    echo "PASS: tests/platform/test_native_net_client.c"; \
+	else \
+	    echo "FAIL: tests/platform/test_native_net_client.c"; \
+	    status=1; \
+	fi; \
+	if gcc -I kernel/agentos-root-task/include \
+	        tests/platform/test_cc_retry_cache.c \
+	        kernel/agentos-root-task/src/cc_retry_cache.c \
+	        -o $(BUILD_TMP_DIR)/test_cc_retry_cache 2>&1 \
+	    && $(BUILD_TMP_DIR)/test_cc_retry_cache; then \
+	    echo "PASS: tests/platform/test_cc_retry_cache.c"; \
+	else \
+	    echo "FAIL: tests/platform/test_cc_retry_cache.c"; \
+	    status=1; \
+	fi; \
+	if gcc -DAGENTOS_GUEST_BOTH -DAGENTOS_GUEST_UBUNTU_LIVE \
+	        -I platform/include \
+	        tests/platform/test_guest_memory_layout.c \
+	        -o $(BUILD_TMP_DIR)/test_guest_memory_layout 2>&1 \
+	    && $(BUILD_TMP_DIR)/test_guest_memory_layout; then \
+	    echo "PASS: tests/platform/test_guest_memory_layout.c"; \
+	else \
+	    echo "FAIL: tests/platform/test_guest_memory_layout.c"; \
+	    status=1; \
+	fi; \
 	if gcc -I platform/include \
 	        tests/platform/test_blk_virt_pump.c \
 	        platform/blk-virt/blk_virt_pump.c \
@@ -714,19 +922,42 @@ test-integration:
 	    echo "FAIL: tests/platform/test_virtio_blk_guest_path.c"; \
 	    status=1; \
 	fi; \
+	if gcc -I platform/include \
+	        -DAOS_REPO_ROOT='"$(ROOT_DIR)"' \
+	        tests/platform/test_virtio_console_guest_path.c \
+	        -o $(BUILD_TMP_DIR)/test_virtio_console_guest_path 2>&1 \
+	    && $(BUILD_TMP_DIR)/test_virtio_console_guest_path; then \
+	    echo "PASS: tests/platform/test_virtio_console_guest_path.c"; \
+	else \
+	    echo "FAIL: tests/platform/test_virtio_console_guest_path.c"; \
+	    status=1; \
+	fi; \
+	if gcc -I platform/include -idirafter kernel/agentos-root-task/include \
+	        -DAOS_REPO_ROOT='"$(ROOT_DIR)"' \
+	        tests/platform/test_uart_cap_ownership.c \
+	        kernel/agentos-root-task/src/system_desc_aarch64.c \
+	        -o $(BUILD_TMP_DIR)/test_uart_cap_ownership 2>&1 \
+	    && $(BUILD_TMP_DIR)/test_uart_cap_ownership; then \
+	    echo "PASS: tests/platform/test_uart_cap_ownership.c"; \
+	else \
+	    echo "FAIL: tests/platform/test_uart_cap_ownership.c"; \
+	    status=1; \
+	fi; \
+	if cargo test -p xtask --lib --quiet; then \
+	    echo "PASS: xtask focused unit tests"; \
+	else \
+	    echo "FAIL: xtask focused unit tests"; \
+	    status=1; \
+	fi; \
 	echo ""; \
 	echo "Integration tests complete."; \
 	echo ""; \
 	exit $$status
 
 # =============================================================================
-# e2e: End-to-end integration test suite (QEMU + guest VMs + SSH)
+# e2e: End-to-end integration test suite (agentOS + guests + SSH)
 # =============================================================================
-# Requires: make build BOARD=$(BOARD) && make fetch-guest
-# Exit code 2 = SKIP (prerequisites not met — QEMU or images missing)
-e2e: build
-	@chmod +x tests/e2e/run_e2e.sh tests/e2e/*.sh
-	@bash tests/e2e/run_e2e.sh
+e2e: e2e-dual-os
 
 e2e-guest:
 	@chmod +x tests/e2e/suite_common.sh
@@ -739,45 +970,26 @@ e2e-contract:
 e2e-dual-os:
 	@cargo xtask qemu-test --board $(BOARD) --guest-os both --timeout-secs $(DUAL_OS_TEST_TIMEOUT)
 
-# Per-guest-OS E2E targets — run the full suite against a specific guest image.
-# Images must exist in build/guest-images/; create them with: make bootstrap-guest OS=<os>
-e2e-ubuntu-amd64:
-	@chmod +x tests/e2e/run_e2e.sh tests/e2e/*.sh
-	@E2E_GUEST_OS=ubuntu-amd64 bash tests/e2e/run_e2e.sh
+# Run the dual authenticated-SSH gate, retain both guests, and print commands
+# for manual sessions. Press Enter in this terminal to stop QEMU cleanly.
+run-dual-ssh:
+	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os both --timeout-secs $(DUAL_OS_TEST_TIMEOUT) --keep-running
 
-e2e-ubuntu-arm64:
-	@chmod +x tests/e2e/run_e2e.sh tests/e2e/*.sh
-	@E2E_GUEST_OS=ubuntu-arm64 bash tests/e2e/run_e2e.sh
+# Compatibility names for supported guest proofs.
+e2e-ubuntu-amd64:
+	@echo "ERROR: x86_64 guest execution is roadmap work; no release gate exists yet."
+	@exit 1
+
+e2e-ubuntu-arm64: test-ubuntu-live
 
 e2e-nixos:
-	@chmod +x tests/e2e/run_e2e.sh tests/e2e/*.sh
-	@E2E_GUEST_OS=nixos bash tests/e2e/run_e2e.sh
+	@echo "ERROR: NixOS is not a supported agentOS guest release target."
+	@exit 1
 
 e2e-freebsd15:
-	@chmod +x tests/e2e/run_e2e.sh tests/e2e/*.sh
-	@E2E_GUEST_OS=freebsd15 bash tests/e2e/run_e2e.sh
+	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os freebsd --timeout-secs $(QEMU_TEST_TIMEOUT)
 
-# e2e-all: run E2E suite for every guest image that exists in build/guest-images/
-e2e-all:
-	@chmod +x tests/e2e/run_e2e.sh tests/e2e/*.sh
-	@failed=0; \
-	for gos in freebsd ubuntu-amd64 ubuntu-arm64 nixos freebsd15; do \
-	    img=""; \
-	    case "$$gos" in \
-	        freebsd)       img="$(AGENTOS_IMAGES)/freebsd-15.0-aarch64.iso" ;; \
-	        ubuntu-amd64)  img="$(AGENTOS_IMAGES)/ubuntu-amd64.img" ;; \
-	        ubuntu-arm64)  img="$(AGENTOS_IMAGES)/ubuntu-26.04-aarch64.iso" ;; \
-	        nixos)         img="$(AGENTOS_IMAGES)/nixos.img" ;; \
-	        freebsd15)     img="$(AGENTOS_IMAGES)/freebsd15-amd64.img" ;; \
-	    esac; \
-	    if [ -f "$$img" ]; then \
-	        echo ""; echo "══ E2E: $$gos ══"; \
-	        E2E_GUEST_OS=$$gos E2E_GUEST_IMG=$$img bash tests/e2e/run_e2e.sh || failed=$$((failed+1)); \
-	    else \
-	        echo "[SKIP] $$gos: image not found ($$img)"; \
-	    fi; \
-	done; \
-	[ "$$failed" -eq 0 ] || (echo ""; echo "$$failed guest OS(es) failed E2E"; exit 1)
+e2e-all: demo-test
 
 # bootstrap-guest: create a guest disk image from installer ISOs.
 # ISOs are cached in $$AGENTOS_ISO_DIR (default ~/.cache/agentos/isos)
@@ -819,16 +1031,37 @@ clean-images:
 	@echo "✓ Done. Re-fetch with: make fetch-guest GUEST_OS=ubuntu|freebsd"
 
 # =============================================================================
-# release: tag + GitHub release (requires gh CLI and clean working tree)
+# release: evidence-bound release workflow
 # =============================================================================
 release:
-	@cargo xtask release --bump patch
+	@cargo xtask release plan --bump patch --claim $(or $(RELEASE_CLAIM),os)
 
 release-minor:
-	@cargo xtask release --bump minor
+	@cargo xtask release plan --bump minor --claim $(or $(RELEASE_CLAIM),os)
 
 release-major:
-	@cargo xtask release --bump major
+	@cargo xtask release plan --bump major --claim $(or $(RELEASE_CLAIM),os)
+
+release-prepare:
+	@test -n "$(RELEASE_VERSION)" && test -n "$(RELEASE_DATE)" || \
+		(echo "Usage: make release-prepare RELEASE_VERSION=X.Y.Z RELEASE_DATE=YYYY-MM-DD" && exit 1)
+	@cargo xtask release prepare --version $(RELEASE_VERSION) --date $(RELEASE_DATE)
+
+release-check:
+	@test -n "$(RELEASE_VERSION)" || \
+		(echo "Usage: make release-check RELEASE_VERSION=X.Y.Z [RELEASE_CLAIM=tooling|os|guests|desktop]" && exit 1)
+	@cargo xtask release check --version $(RELEASE_VERSION) --claim $(or $(RELEASE_CLAIM),os) \
+		$(foreach artifact,$(RELEASE_ARTIFACTS),--artifact $(artifact))
+
+release-publish:
+	@test -n "$(RELEASE_VERSION)" && test -n "$(RELEASE_AUTHORIZE)" || \
+		(echo "Usage: make release-publish RELEASE_VERSION=X.Y.Z RELEASE_AUTHORIZE=publish-vX.Y.Z" && exit 1)
+	@cargo xtask release publish --version $(RELEASE_VERSION) --authorize $(RELEASE_AUTHORIZE)
+
+release-verify:
+	@test -n "$(RELEASE_VERSION)" || \
+		(echo "Usage: make release-verify RELEASE_VERSION=X.Y.Z" && exit 1)
+	@cargo xtask release verify --version $(RELEASE_VERSION)
 
 # =============================================================================
 # help
@@ -846,11 +1079,20 @@ help:
 	@echo "  BOARD           $(BOARD)"
 	@echo "  GUEST_OS        $(GUEST_OS)"
 	@echo "  QEMU_RUN_MEM    $(QEMU_RUN_MEM)"
+	@echo "  SEL4_SDK        $(SEL4_SDK)"
 	@echo "  BUILD_DIR       $(BUILD_DIR)"
 	@echo "  AGENTOS_IMAGES  $(AGENTOS_IMAGES)"
 	@echo ""
 	@echo "Primary targets:"
 	@echo "  make help             Show this help text"
+	@echo "  make setup            Install host dependencies + shared Microkit SDK"
+	@echo "  make demo             Boot, prove, and retain Ubuntu + FreeBSD for SSH"
+	@echo "  make demo-test        Run the dual authenticated-SSH proof and exit"
+	@echo "  make demo-desktop     Boot, prove, and retain an Ubuntu VNC desktop"
+	@echo "  make demo-desktop-test Run the Ubuntu RFB frame proof and exit"
+	@echo "  make demo-smoke       Fast host-only checks; no QEMU and not a boot proof"
+	@echo "  make demo-check       Validate demo tools and SDK without building"
+	@echo "  make demo-clean       Remove demo sockets, logs, and generated SSH keys"
 	@echo "  make install          Install host build dependencies (alias: make deps)"
 	@echo "  make build            Fetch the selected guest image and build agentOS"
 	@echo "  make run              Build native agentOS and boot QEMU with CC-PD socket"
@@ -868,6 +1110,9 @@ help:
 	@echo "  make test-guest-login Boot Ubuntu and FreeBSD to an interactive serial prompt"
 	@echo "  make test-guest-net   Boot buildroot and prove one packet through emulated virtio-net"
 	@echo "  make test-guest-blk   Boot buildroot and prove one request through emulated virtio-blk"
+	@echo "  make test-guest-console Boot Ubuntu and prove login I/O through emulated virtio-console"
+	@echo "  make test-ubuntu-virtio Require Ubuntu login and I/O on agentOS net/blk/console only"
+	@echo "  make test-ubuntu-live Boot Ubuntu Casper userspace on agentOS VirtIO only"
 	@echo ""
 	@echo "Guest images:"
 	@echo "  make fetch-guest GUEST_OS=ubuntu     Stage Ubuntu 26.04 assets in build/guest-images"
@@ -885,9 +1130,14 @@ help:
 	@echo "  make test-host        Host-only suite (alias of test-integration; NOT OS proof)"
 	@echo "  make test-guest-net   Guest packet proof: emulated virtio-net (buildroot)"
 	@echo "  make test-guest-blk   Guest I/O proof: emulated virtio-blk (buildroot)"
+	@echo "  make test-guest-console Guest I/O proof: emulated virtio-console (Ubuntu)"
+	@echo "  make test-ubuntu-virtio End-state Ubuntu agentOS VirtIO proof"
+	@echo "  make test-ubuntu-live Full Ubuntu Casper filesystem/login proof"
 	@echo "  make test-integration Run host-side contract/integration tests"
 	@echo "  make e2e              Run the default QEMU/guest/CC end-to-end suite"
 	@echo "  make e2e-dual-os      Run Ubuntu and FreeBSD guest E2E coverage"
+	@echo "  make run-dual-ssh     Keep verified dual guests running for manual SSH"
+	@echo "  make demo-desktop-test Prove a tunnel-confined Ubuntu RFB frame"
 	@echo "  make e2e-all          Run E2E suites for every staged guest image"
 	@echo ""
 	@echo "Cleanup/tooling:"
@@ -895,11 +1145,20 @@ help:
 	@echo "  make clean-all        Remove all build artifacts under build/"
 	@echo "  make clean-images     Remove staged guest images"
 	@echo "  make build-tools      Build Rust host tools in release mode"
+	@echo "  make policy-check     Enforce language/UI policy and xtask formatting"
+	@echo "  make release          Print a read-only patch-release plan"
+	@echo "  make release-prepare/check/publish/verify  Advance explicit release states"
 	@echo ""
 	@echo "Quick start:"
-	@echo "  make install && make run"
+	@echo "  make setup"
+	@echo "  make demo"
 	@echo ""
 	@echo "Common examples:"
+	@echo "  make demo                         # interactive dual-guest SSH showcase"
+	@echo "  make demo-test                    # automated dual-guest SSH acceptance"
+	@echo "  make demo-desktop                 # interactive Ubuntu desktop over SSH/VNC"
+	@echo "  make demo-desktop-test            # automated RFB handshake + frame evidence"
+	@echo "  make demo-smoke                   # fast host-only preflight"
 	@echo "  make build TARGET_ARCH=aarch64 GUEST_OS=ubuntu"
 	@echo "  make build TARGET_ARCH=aarch64 GUEST_OS=both"
 	@echo "  make run GUEST_OS=freebsd"
@@ -908,5 +1167,8 @@ help:
 	@echo "  make test-guest-login QEMU_TEST_TIMEOUT=420"
 	@echo "  make test-guest-net QEMU_TEST_TIMEOUT=480"
 	@echo "  make test-guest-blk QEMU_TEST_TIMEOUT=480"
+	@echo "  make test-guest-console QEMU_TEST_TIMEOUT=480"
+	@echo "  make test-ubuntu-virtio QEMU_TEST_TIMEOUT=480"
+	@echo "  make test-ubuntu-live QEMU_TEST_TIMEOUT=900"
 	@echo "  cd ../agentos_gui && make run"
 	@echo ""

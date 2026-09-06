@@ -8,21 +8,12 @@
  *   1. VMM copies the FreeBSD kernel (_guest_kernel_image) to guest RAM.
  *   2. VMM copies freebsd-direct.dtb (_guest_dtb_image) near the top of RAM.
  *   3. guest_start(kernel, fdt, 0): vCPU PC = FreeBSD Image entry, x0 = FDT.
- *   4. FreeBSD mounts the 15.0 DVD ISO from the virtio-blk device and reaches
- *      the serial installer/login path.
+ *   4. FreeBSD mounts the 15.0 DVD ISO through agentOS's emulated virtio-blk
+ *      endpoint and reaches the emulated PL011/CC-PD console path.
  *
- * Memory layout (host phys -> guest phys):
- *   single-FreeBSD image: guest_ram at 0x40000000, FDT at 0x5f000000.
- *   dual Linux+FreeBSD image: FreeBSD keeps the standalone-proven
- *   0x40000000 guest RAM window while Linux uses a separate high window.
- *
- * IRQ passthrough:
- *   single-FreeBSD image: net INTID 48 at IRQ cap slot 64, block INTID 79 at 65
- *   dual Linux+FreeBSD image: Linux owns net INTID 48, FreeBSD owns only
- *   block INTID 79 at IRQ cap slot 64.
- *
- * QEMU bus assignment: QEMU assigns -device virtio-blk-device to the highest
- * available virtio-mmio bus (bus 31), at 0xa003e00, SPI 47 = INTID 79.
+ * Guest RAM is anonymous VMM memory, not identity-mapped host RAM. All
+ * emulated VirtIO queue and payload GPAs are translated before dereference.
+ * Host bus.31 is owned only by the canonical block-service PD.
  *
  * PSCI: FreeBSD uses SMC-based PSCI (psci { method = "smc"; }).
  *   seL4 intercepts HVC from VCPU EL1 as a seL4 UnknownSyscall, so we use SMC.
@@ -36,6 +27,7 @@
 #include <stdbool.h>
 #include "sel4_boot.h"
 #include "contracts/guest_contract.h"
+#include "contracts/cc_contract.h"
 #include "contracts/freebsd_vmm_contract.h"
 #include "sel4_ipc.h"
 
@@ -45,9 +37,17 @@
 #include <libvmm/vmm_caps.h>
 #include <libvmm/guest.h>
 #include <libvmm/arch/aarch64/vgic/vgic.h>
+#include <platform/blk_layout.h>
+#include <platform/guest_memory_layout.h>
+#include <platform/guest_ram.h>
+#include <platform/guest_vmm_runtime.h>
+#include <platform/vmm_virtio_net.h>
+#include <platform/vmm_virtio_blk.h>
+#include <platform/vmm_virtio_console.h>
+#include <contracts/net-service/interface.h>
+#include "serial_log.h"
 
 /* ── Raw agentOS CNode layout constants ─────────────────────────────────── */
-#define AGENTOS_IRQ_CAP_BASE     64u
 #define AGENTOS_VMM_TCB_CAP_BASE 266u
 #define AGENTOS_VMM_VCPU_CAP_BASE 330u
 
@@ -63,26 +63,26 @@ __attribute__((used)) seL4_Word    microkit_ioports       = 0;
 __attribute__((used)) seL4_Word    microkit_signal_cap    = 0;
 __attribute__((used)) seL4_Word    microkit_signal_msg    = 0;
 
-/* PL011 UART on QEMU virt — direct write, no seL4_DebugPutChar needed */
-#define FREEBSD_VMM_UART_VA 0x10001000UL
-static inline void _uart_putc(char c) {
-    volatile uint32_t *dr = (volatile uint32_t *)FREEBSD_VMM_UART_VA;
-    *dr = (uint32_t)(unsigned char)c;
-}
+/* FreeBSD VMM diagnostics are serialized by the generic serial driver. */
+static serial_log_t g_vmm_log = {
+    .ep = PD_CNODE_SLOT_SERIAL_EP,
+};
 
-void microkit_dbg_putc(char c) { _uart_putc(c); }
+void microkit_dbg_putc(char c) { serial_log_putc(&g_vmm_log, c); }
 
 void microkit_dbg_puts(const char *s)
 {
-    for (; s && *s; s++) _uart_putc(*s);
+    serial_log_puts(&g_vmm_log, s);
 }
 
 void microkit_dbg_put32(uint32_t v)
 {
     static const char hex[] = "0123456789abcdef";
-    _uart_putc('0'); _uart_putc('x');
+    serial_log_putc(&g_vmm_log, '0');
+    serial_log_putc(&g_vmm_log, 'x');
     for (int i = 28; i >= 0; i -= 4)
-        _uart_putc(hex[(v >> i) & 0xfu]);
+        serial_log_putc(&g_vmm_log, hex[(v >> i) & 0xfu]);
+    serial_log_flush(&g_vmm_log);
 }
 
 seL4_IPCBuffer *__sel4_ipc_buffer = NULL;
@@ -94,34 +94,6 @@ static uint32_t g_guest_state = GUEST_STATE_READY;
 static uint32_t g_guest_state = GUEST_STATE_RUNNING;
 #endif
 
-/* ── IRQ capabilities ────────────────────────────────────────────────────── */
-#if defined(AGENTOS_GUEST_BOTH)
-#define FREEBSD_VMM_HAS_NET_IRQ 0u
-#define FREEBSD_VMM_BLK_IRQ_CAP_INDEX 0u
-#else
-#define FREEBSD_VMM_HAS_NET_IRQ 1u
-#define FREEBSD_VMM_BLK_IRQ_CAP_INDEX 1u
-#endif
-
-static const seL4_CPtr g_virtio_blk_irq_cap =
-    (seL4_CPtr)(AGENTOS_IRQ_CAP_BASE + FREEBSD_VMM_BLK_IRQ_CAP_INDEX);
-#if FREEBSD_VMM_HAS_NET_IRQ
-static const seL4_CPtr g_virtio_net_irq_cap =
-    (seL4_CPtr)(AGENTOS_IRQ_CAP_BASE + 0u);    /* INTID 48, SPI 16 */
-#endif
-
-/* ── Notification badge bits from system_desc_aarch64.c ─────────────────── */
-#if FREEBSD_VMM_HAS_NET_IRQ
-#define VIRTIO_NET_NTFN_BADGE  0x1u
-#endif
-#define VIRTIO_BLK_NTFN_BADGE  0x2u
-
-/* ── GIC INTID values ────────────────────────────────────────────────────── */
-#define VIRTIO_BLK_IRQ  79u    /* QEMU virt bus 31 = 0xa003e00, SPI 47 */
-#if FREEBSD_VMM_HAS_NET_IRQ
-#define VIRTIO_NET_IRQ  48u    /* QEMU virt bus 0  = 0xa000000, SPI 16 */
-#endif
-
 /* ── Guest image symbols (kernel + FDT from package_guest_images.S) ─────── */
 extern char _guest_kernel_image[];
 extern char _guest_kernel_image_end[];
@@ -131,10 +103,11 @@ extern char _guest_dtb_image_end[];
 /* ── Guest memory map symbols ────────────────────────────────────────────── */
 uintptr_t guest_ram_vaddr;   /* VMM virtual address of guest_ram MR */
 
-#define FREEBSD_GUEST_RAM_VADDR 0x40000000UL
-#define FREEBSD_KERNEL_VADDR    0x40000000UL
-#define FREEBSD_FDT_VADDR       0x5f000000UL
-#define FREEBSD_GUEST_RAM_SIZE  0x20000000UL
+#define FREEBSD_GUEST_RAM_VADDR AOS_FREEBSD_GUEST_RAM_BASE
+#define FREEBSD_GUEST_RAM_GPA   AOS_FREEBSD_GUEST_GPA_BASE
+#define FREEBSD_KERNEL_VADDR    AOS_FREEBSD_GUEST_GPA_BASE
+#define FREEBSD_FDT_VADDR       AOS_FREEBSD_GUEST_DTB_BASE
+#define FREEBSD_GUEST_RAM_SIZE  AOS_FREEBSD_GUEST_RAM_SIZE
 #define FREEBSD_VTIMER_IRQ      27u
 
 #ifndef FREEBSD_IRQ_TRACE
@@ -153,36 +126,6 @@ static void freebsd_copy_to_guest(uintptr_t dst_addr, const void *src, size_t n)
         dst[i] = s[i];
     }
 }
-
-static void freebsd_clear_guest_ram(uintptr_t base, size_t size)
-{
-    volatile uint64_t *p = (volatile uint64_t *)base;
-    size_t words = size / sizeof(*p);
-    for (size_t i = 0u; i < words; i++) {
-        p[i] = 0u;
-    }
-
-    volatile uint8_t *tail = (volatile uint8_t *)(base + words * sizeof(*p));
-    for (size_t i = words * sizeof(*p); i < size; i++) {
-        *tail++ = 0u;
-    }
-}
-
-/* ── IRQ ack callbacks ───────────────────────────────────────────────────── */
-
-static void virtio_blk_ack(size_t vcpu_id, int irq, void *cookie)
-{
-    (void)vcpu_id; (void)irq; (void)cookie;
-    seL4_IRQHandler_Ack(g_virtio_blk_irq_cap);
-}
-
-#if FREEBSD_VMM_HAS_NET_IRQ
-static void virtio_net_ack(size_t vcpu_id, int irq, void *cookie)
-{
-    (void)vcpu_id; (void)irq; (void)cookie;
-    seL4_IRQHandler_Ack(g_virtio_net_irq_cap);
-}
-#endif
 
 static void uart_ack(size_t vcpu_id, int irq, void *cookie)
 {
@@ -217,7 +160,6 @@ static void uart_ack(size_t vcpu_id, int irq, void *cookie)
 #define FREEBSD_UART_IRQ 33u
 #define GUEST_CONSOLE_TX_RING_SIZE 8192u
 #define GUEST_CONSOLE_RX_RING_SIZE 1024u
-#define GUEST_INPUT_RAW_BYTE_BASE  0x100u
 
 static uint32_t pl011_rsr_ecr;
 static uint32_t pl011_ilpr;
@@ -239,22 +181,6 @@ static uint8_t console_rx_ring[GUEST_CONSOLE_RX_RING_SIZE];
 static uint32_t console_rx_head;
 static uint32_t console_rx_tail;
 static uint32_t console_rx_count;
-
-static uint32_t vmm_msg_rd32(const uint8_t *src, uint32_t off)
-{
-    return ((uint32_t)src[off + 0u]) |
-           ((uint32_t)src[off + 1u] << 8u) |
-           ((uint32_t)src[off + 2u] << 16u) |
-           ((uint32_t)src[off + 3u] << 24u);
-}
-
-static void vmm_msg_wr32(uint8_t *dst, uint32_t off, uint32_t value)
-{
-    dst[off + 0u] = (uint8_t)(value & 0xffu);
-    dst[off + 1u] = (uint8_t)((value >> 8u) & 0xffu);
-    dst[off + 2u] = (uint8_t)((value >> 16u) & 0xffu);
-    dst[off + 3u] = (uint8_t)((value >> 24u) & 0xffu);
-}
 
 static void console_tx_push(uint8_t byte)
 {
@@ -325,10 +251,10 @@ static void freebsd_log_irq_state(const char *where, unsigned count)
     if (count <= 8u || (count % 1000u) == 0u) {
         LOG_VMM("%s irq%u pending=%u enabled=%u inflight=%u irq%u pending=%u enabled=%u inflight=%u\n",
                 where,
-                VIRTIO_BLK_IRQ,
-                vgic_irq_is_pending(GUEST_BOOT_VCPU_ID, VIRTIO_BLK_IRQ) ? 1u : 0u,
-                vgic_irq_is_enabled(GUEST_BOOT_VCPU_ID, VIRTIO_BLK_IRQ) ? 1u : 0u,
-                vgic_irq_is_inflight(GUEST_BOOT_VCPU_ID, VIRTIO_BLK_IRQ) ? 1u : 0u,
+                AOS_VIRTIO_BLK_VIRQ,
+                vgic_irq_is_pending(GUEST_BOOT_VCPU_ID, AOS_VIRTIO_BLK_VIRQ) ? 1u : 0u,
+                vgic_irq_is_enabled(GUEST_BOOT_VCPU_ID, AOS_VIRTIO_BLK_VIRQ) ? 1u : 0u,
+                vgic_irq_is_inflight(GUEST_BOOT_VCPU_ID, AOS_VIRTIO_BLK_VIRQ) ? 1u : 0u,
                 FREEBSD_UART_IRQ,
                 vgic_irq_is_pending(GUEST_BOOT_VCPU_ID, FREEBSD_UART_IRQ) ? 1u : 0u,
                 vgic_irq_is_enabled(GUEST_BOOT_VCPU_ID, FREEBSD_UART_IRQ) ? 1u : 0u,
@@ -339,49 +265,8 @@ static void freebsd_log_irq_state(const char *where, unsigned count)
 
 static void guest_console_write(uint8_t byte)
 {
+    /* Guest PL011 output belongs to this guest's virtual TTY. */
     console_tx_push(byte);
-    _uart_putc((char)byte);
-}
-
-static bool input_event_to_byte(uint32_t event_type, uint32_t keycode,
-                                uint8_t *byte)
-{
-    if (event_type != 1u) return false; /* CC_INPUT_KEY_DOWN */
-
-    if ((keycode & 0xffffff00u) == GUEST_INPUT_RAW_BYTE_BASE) {
-        *byte = (uint8_t)(keycode & 0xffu);
-        return true;
-    }
-
-    if (keycode >= 0x04u && keycode <= 0x1du) {
-        *byte = (uint8_t)('a' + (keycode - 0x04u));
-        return true;
-    }
-    if (keycode >= 0x1eu && keycode <= 0x26u) {
-        *byte = (uint8_t)('1' + (keycode - 0x1eu));
-        return true;
-    }
-
-    switch (keycode) {
-    case 0x27u: *byte = '0'; return true;
-    case 0x28u: *byte = '\r'; return true;
-    case 0x29u: *byte = 0x1bu; return true;
-    case 0x2au: *byte = 0x7fu; return true;
-    case 0x2bu: *byte = '\t'; return true;
-    case 0x2cu: *byte = ' '; return true;
-    case 0x2du: *byte = '-'; return true;
-    case 0x2eu: *byte = '='; return true;
-    case 0x2fu: *byte = '['; return true;
-    case 0x30u: *byte = ']'; return true;
-    case 0x31u: *byte = '\\'; return true;
-    case 0x33u: *byte = ';'; return true;
-    case 0x34u: *byte = '\''; return true;
-    case 0x35u: *byte = '`'; return true;
-    case 0x36u: *byte = ','; return true;
-    case 0x37u: *byte = '.'; return true;
-    case 0x38u: *byte = '/'; return true;
-    default: return false;
-    }
 }
 
 static void pl011_store32(uint32_t *reg, size_t offset, uint64_t fsr,
@@ -530,24 +415,14 @@ static bool freebsd_vmm_prepare_runtime(void)
         return false;
     }
 
-#if FREEBSD_VMM_HAS_NET_IRQ
-    if (!virq_register(GUEST_BOOT_VCPU_ID, VIRTIO_NET_IRQ, &virtio_net_ack, NULL)) {
-        LOG_VMM_ERR("Failed to register virtio-net IRQ %u\n", VIRTIO_NET_IRQ);
-        return false;
-    }
-    seL4_IRQHandler_Ack(g_virtio_net_irq_cap);
-    LOG_VMM("  VirtIO-net IRQ %u registered\n", VIRTIO_NET_IRQ);
-#else
-    LOG_VMM("  VirtIO-net IRQ disabled; dual guest mode reserves it for Linux\n");
-#endif
-
-    /* VirtIO-blk: QEMU assigns to highest bus = bus 31 = 0xa003e00, SPI 47 = INTID 79 */
-    if (!virq_register(GUEST_BOOT_VCPU_ID, VIRTIO_BLK_IRQ, &virtio_blk_ack, NULL)) {
-        LOG_VMM_ERR("Failed to register virtio-blk IRQ %u\n", VIRTIO_BLK_IRQ);
-        return false;
-    }
-    seL4_IRQHandler_Ack(g_virtio_blk_irq_cap);
-    LOG_VMM("  VirtIO-blk IRQ %u registered\n", VIRTIO_BLK_IRQ);
+    /*
+     * Register the guest-only VirtIO endpoint after the vGIC exists.
+     * libvmm installs its MMIO fault handler and virtual IRQ here; no host
+     * transport or hardware IRQ capability enters this VMM.
+     */
+    aos_vmm_virtio_net_init(1u);
+    aos_vmm_virtio_blk_init(AOS_HOST_BLK_MEDIA_FREEBSD);
+    aos_vmm_virtio_console_init();
 
     if (!virq_register(GUEST_BOOT_VCPU_ID, FREEBSD_UART_IRQ, &uart_ack, NULL)) {
         LOG_VMM_ERR("Failed to register UART IRQ %u\n", FREEBSD_UART_IRQ);
@@ -596,6 +471,158 @@ static void freebsd_vmm_suspend_guest_tcb(void)
     }
 }
 
+static void freebsd_vmm_resume_guest_tcb(void)
+{
+    (void)seL4_TCB_Resume(
+        (seL4_CPtr)(AGENTOS_VMM_TCB_CAP_BASE + GUEST_BOOT_VCPU_ID));
+}
+
+static void freebsd_vmm_quiesce_timer(void)
+{
+    vmm_vcpu_arm_ack_vppi(GUEST_BOOT_VCPU_ID, FREEBSD_VTIMER_IRQ);
+}
+
+#define FREEBSD_KERNBASE         0xffff000000000000ull
+#define FREEBSD_DMAPBASE         0xffffa00000000000ull
+#define FREEBSD_ALLPROC_VA       0xffff000001088b00ull
+#define FREEBSD_PROC_THREADS_OFF 16u
+#define FREEBSD_PROC_PID_OFF     196u
+#define FREEBSD_THREAD_PCB_OFF   1152u
+#define FREEBSD_PCB_FP_OFF       80u
+#define FREEBSD_PCB_LR_OFF       88u
+#define FREEBSD_PCB_SP_OFF       96u
+
+static void *freebsd_debug_va(uint64_t va, size_t len)
+{
+    uint64_t off;
+    if (len > FREEBSD_GUEST_RAM_SIZE) {
+        return NULL;
+    }
+    if (va >= FREEBSD_DMAPBASE) {
+        off = va - FREEBSD_DMAPBASE;
+    } else if (va >= FREEBSD_KERNBASE) {
+        off = va - FREEBSD_KERNBASE;
+        if (off > FREEBSD_GUEST_RAM_SIZE - len) {
+            uint64_t table =
+                vmm_vcpu_arm_read_reg(
+                    GUEST_BOOT_VCPU_ID, seL4_VCPUReg_TTBR1) &
+                0x0000fffffffff000ull;
+            for (unsigned level = 0u; level < 4u; level++) {
+                unsigned shift = 39u - level * 9u;
+                uint64_t index = (va >> shift) & 0x1ffu;
+                uint64_t *entry = aos_gpa_to_hva_configured(
+                    table + index * sizeof(uint64_t), sizeof(uint64_t));
+                if (entry == NULL || ((*entry & 1u) == 0u)) {
+                    return NULL;
+                }
+                if (level < 3u && ((*entry & 2u) == 0u)) {
+                    uint64_t block_mask = (1ull << shift) - 1ull;
+                    uint64_t gpa =
+                        (*entry & 0x0000fffffffff000ull) & ~block_mask;
+                    return aos_gpa_to_hva_configured(
+                        gpa | (va & block_mask), len);
+                }
+                table = *entry & 0x0000fffffffff000ull;
+            }
+            return aos_gpa_to_hva_configured(
+                table | (va & 0xfffu), len);
+        }
+    } else {
+        return NULL;
+    }
+    if (off > FREEBSD_GUEST_RAM_SIZE - len) {
+        return NULL;
+    }
+    return aos_gpa_to_hva_configured(FREEBSD_GUEST_RAM_GPA + off, len);
+}
+
+static uint64_t freebsd_debug_u64(uint64_t va)
+{
+    uint64_t value = 0u;
+    uint8_t *src = freebsd_debug_va(va, sizeof(value));
+    if (src != NULL) {
+        for (size_t i = 0u; i < sizeof(value); i++) {
+            ((uint8_t *)&value)[i] = src[i];
+        }
+    }
+    return value;
+}
+
+static uint32_t freebsd_debug_u32(uint64_t va)
+{
+    uint32_t value = 0u;
+    uint8_t *src = freebsd_debug_va(va, sizeof(value));
+    if (src != NULL) {
+        for (size_t i = 0u; i < sizeof(value); i++) {
+            ((uint8_t *)&value)[i] = src[i];
+        }
+    }
+    return value;
+}
+
+static void freebsd_dump_init_stack(void)
+{
+    uint64_t proc = freebsd_debug_u64(FREEBSD_ALLPROC_VA);
+    for (unsigned n = 0u; proc != 0u && n < 256u; n++) {
+        if (freebsd_debug_u32(proc + FREEBSD_PROC_PID_OFF) == 1u) {
+            uint64_t td =
+                freebsd_debug_u64(proc + FREEBSD_PROC_THREADS_OFF);
+            uint64_t pcb =
+                freebsd_debug_u64(td + FREEBSD_THREAD_PCB_OFF);
+            uint64_t fp = freebsd_debug_u64(pcb + FREEBSD_PCB_FP_OFF);
+            LOG_VMM("FreeBSD pid1 td=0x%lx pcb=0x%lx fp=0x%lx lr=0x%lx sp=0x%lx\n",
+                    (unsigned long)td, (unsigned long)pcb,
+                    (unsigned long)fp,
+                    (unsigned long)freebsd_debug_u64(
+                        pcb + FREEBSD_PCB_LR_OFF),
+                    (unsigned long)freebsd_debug_u64(
+                        pcb + FREEBSD_PCB_SP_OFF));
+            for (unsigned frame = 0u;
+                 fp != 0u && frame < 24u; frame++) {
+                uint64_t next_fp = freebsd_debug_u64(fp);
+                uint64_t next_lr = freebsd_debug_u64(fp + 8u);
+                LOG_VMM("FreeBSD pid1 frame[%u] fp=0x%lx lr=0x%lx\n",
+                        frame, (unsigned long)fp,
+                        (unsigned long)next_lr);
+                if (next_fp <= fp) {
+                    break;
+                }
+                fp = next_fp;
+            }
+            return;
+        }
+        proc = freebsd_debug_u64(proc);
+    }
+    LOG_VMM_ERR("FreeBSD pid1 not found\n");
+}
+
+static bool freebsd_vmm_push_input(uint32_t event_type, const uint8_t *bytes,
+                                   uint32_t length)
+{
+    if (event_type != CC_INPUT_TEXT && length == 1u && bytes[0] == 0x1du) {
+        freebsd_dump_init_stack();
+        return true;
+    }
+    /*
+     * FreeBSD still boots on fault-emulated PL011, but mirror input to
+     * virtio-console once its driver is ready. This keeps recovery on ttyu0
+     * while allowing ttyV0 consumers to use the generic path.
+     */
+    if (length > GUEST_CONSOLE_RX_RING_SIZE - console_rx_count) return false;
+    (void)aos_vmm_virtio_console_push_rx_bytes(bytes, length);
+    for (uint32_t i = 0u; i < length; i++) {
+        if (!console_rx_push(bytes[i])) return false;
+    }
+    if (length != 0u) pl011_maybe_inject_irq();
+    return true;
+}
+
+static uint32_t freebsd_vmm_drain_console(uint8_t *bytes, uint32_t capacity)
+{
+    uint32_t length = aos_vmm_virtio_console_drain_tx(bytes, capacity);
+    return length + console_tx_drain(bytes + length, capacity - length);
+}
+
 static seL4_MessageInfo_t freebsd_vmm_rpc(seL4_MessageInfo_t info)
 {
     (void)info;
@@ -603,134 +630,26 @@ static seL4_MessageInfo_t freebsd_vmm_rpc(seL4_MessageInfo_t info)
     sel4_msg_t rep = {0};
     _sel4_mrs_to_msg(&req);
 
-    switch (req.opcode) {
-    case MSG_GUEST_CREATE: {
-        if (req.length >= 4u) {
-            uint32_t os_type = vmm_msg_rd32(req.data, 0u);
-            if (os_type != 0u && os_type != FREEBSD_VMM_OS_TYPE) {
-                rep.opcode = GUEST_ERR_BAD_OS_TYPE;
-                break;
-            }
-        }
-        if (g_guest_state == GUEST_STATE_DEAD) {
-            rep.opcode = GUEST_ERR_DEAD;
-            break;
-        }
-        vmm_msg_wr32(rep.data, 0u, GUEST_OK);
-        vmm_msg_wr32(rep.data, 4u, 0u);
-        rep.length = 8u;
-        rep.opcode = GUEST_OK;
-        break;
+    const aos_guest_vmm_runtime_t runtime = {
+        .os_type = FREEBSD_VMM_OS_TYPE,
+        .guest_id = 0u,
+        .state = &g_guest_state,
+        .started = &guest_started,
+        .start = freebsd_vmm_start_guest,
+        .suspend = freebsd_vmm_suspend_guest_tcb,
+        .resume = freebsd_vmm_resume_guest_tcb,
+        .quiesce_timer = freebsd_vmm_quiesce_timer,
+        .push_input = freebsd_vmm_push_input,
+        .drain_console = freebsd_vmm_drain_console,
+    };
+    if (aos_guest_vmm_lifecycle_rpc(&req, &rep, &runtime) ||
+        aos_guest_vmm_console_rpc(&req, &rep, &runtime)) {
+        _sel4_msg_to_mrs(&rep);
+        return seL4_MessageInfo_new((seL4_Word)rep.opcode, 0, 0,
+                                    (seL4_Word)_SEL4_MR_COUNT);
     }
-    case MSG_GUEST_BOOT: {
-        if (req.length < 4u || vmm_msg_rd32(req.data, 0u) != 0u) {
-            rep.opcode = GUEST_ERR_BAD_GUEST_ID;
-            break;
-        }
-        if (g_guest_state == GUEST_STATE_DEAD) {
-            rep.opcode = GUEST_ERR_DEAD;
-            break;
-        }
-        if (!guest_started && !freebsd_vmm_start_guest()) {
-            rep.opcode = GUEST_ERR_NOT_READY;
-            break;
-        }
-        g_guest_state = GUEST_STATE_RUNNING;
-        rep.opcode = GUEST_OK;
-        break;
-    }
-    case MSG_GUEST_SUSPEND: {
-        if (req.length < 4u || vmm_msg_rd32(req.data, 0u) != 0u) {
-            rep.opcode = GUEST_ERR_BAD_GUEST_ID;
-            break;
-        }
-        if (g_guest_state == GUEST_STATE_DEAD) {
-            rep.opcode = GUEST_ERR_DEAD;
-            break;
-        }
-        if (g_guest_state != GUEST_STATE_SUSPENDED) {
-            freebsd_vmm_suspend_guest_tcb();
-            vmm_vcpu_arm_ack_vppi(GUEST_BOOT_VCPU_ID, FREEBSD_VTIMER_IRQ);
-            g_guest_state = GUEST_STATE_SUSPENDED;
-        }
-        rep.opcode = GUEST_OK;
-        break;
-    }
-    case MSG_GUEST_RESUME: {
-        if (req.length < 4u || vmm_msg_rd32(req.data, 0u) != 0u) {
-            rep.opcode = GUEST_ERR_BAD_GUEST_ID;
-            break;
-        }
-        if (g_guest_state == GUEST_STATE_DEAD) {
-            rep.opcode = GUEST_ERR_DEAD;
-            break;
-        }
-        if (g_guest_state == GUEST_STATE_SUSPENDED) {
-            seL4_TCB_Resume((seL4_CPtr)(AGENTOS_VMM_TCB_CAP_BASE + GUEST_BOOT_VCPU_ID));
-        }
-        g_guest_state = GUEST_STATE_RUNNING;
-        rep.opcode = GUEST_OK;
-        break;
-    }
-    case MSG_GUEST_DESTROY: {
-        if (req.length < 4u || vmm_msg_rd32(req.data, 0u) != 0u) {
-            rep.opcode = GUEST_ERR_BAD_GUEST_ID;
-            break;
-        }
-        if (g_guest_state != GUEST_STATE_DEAD) {
-            freebsd_vmm_suspend_guest_tcb();
-            vmm_vcpu_arm_ack_vppi(GUEST_BOOT_VCPU_ID, FREEBSD_VTIMER_IRQ);
-            g_guest_state = GUEST_STATE_DEAD;
-        }
-        rep.opcode = GUEST_OK;
-        break;
-    }
-    case MSG_GUEST_SEND_INPUT: {
-        if (req.length < 28u || vmm_msg_rd32(req.data, 0u) != 0u) {
-            rep.opcode = GUEST_ERR_BAD_GUEST_ID;
-            break;
-        }
-        if (g_guest_state == GUEST_STATE_DEAD) {
-            rep.opcode = GUEST_ERR_DEAD;
-            break;
-        }
-        if (g_guest_state != GUEST_STATE_RUNNING) {
-            rep.opcode = GUEST_ERR_BAD_STATE;
-            break;
-        }
 
-        uint8_t byte = 0u;
-        uint32_t event_type = vmm_msg_rd32(req.data, 4u);
-        uint32_t keycode = vmm_msg_rd32(req.data, 8u);
-        if (input_event_to_byte(event_type, keycode, &byte)) {
-            if (!console_rx_push(byte)) {
-                rep.opcode = GUEST_ERR_DEVICE_UNAVAILABLE;
-                break;
-            }
-            pl011_maybe_inject_irq();
-        }
-        rep.opcode = GUEST_OK;
-        break;
-    }
-    case MSG_GUEST_CONSOLE_DRAIN: {
-        if (req.length < 8u || vmm_msg_rd32(req.data, 0u) != 0u) {
-            rep.opcode = GUEST_ERR_BAD_GUEST_ID;
-            break;
-        }
-        if (g_guest_state == GUEST_STATE_DEAD) {
-            rep.opcode = GUEST_ERR_DEAD;
-            break;
-        }
-        uint32_t max = vmm_msg_rd32(req.data, 4u);
-        if (max > SEL4_MSG_DATA_BYTES) max = SEL4_MSG_DATA_BYTES;
-        rep.length = console_tx_drain(rep.data, max);
-        rep.opcode = GUEST_OK;
-        break;
-    }
-    default:
-        rep.opcode = GUEST_ERR_PROTOCOL_VIOLATION;
-        break;
-    }
+    rep.opcode = GUEST_ERR_PROTOCOL_VIOLATION;
 
     _sel4_msg_to_mrs(&rep);
     return seL4_MessageInfo_new((seL4_Word)rep.opcode, 0, 0,
@@ -758,18 +677,19 @@ void init(void)
     if (guest_ram_vaddr == 0) {
         guest_ram_vaddr = FREEBSD_GUEST_RAM_VADDR;
     }
+    aos_vmm_guest_ram_bind(FREEBSD_GUEST_RAM_GPA, guest_ram_vaddr,
+                           FREEBSD_GUEST_RAM_SIZE);
 
     uintptr_t kernel_dst = guest_ram_vaddr +
-        (FREEBSD_KERNEL_VADDR - FREEBSD_GUEST_RAM_VADDR);
+        (FREEBSD_KERNEL_VADDR - FREEBSD_GUEST_RAM_GPA);
     uintptr_t fdt_dst = guest_ram_vaddr +
-        (FREEBSD_FDT_VADDR - FREEBSD_GUEST_RAM_VADDR);
+        (FREEBSD_FDT_VADDR - FREEBSD_GUEST_RAM_GPA);
     if ((FREEBSD_KERNEL_VADDR + kernel_size) >= FREEBSD_FDT_VADDR) {
         LOG_VMM_ERR("FreeBSD kernel overlaps FDT load address\n");
         return;
     }
 
-    LOG_VMM("  Clearing FreeBSD guest RAM window...\n");
-    freebsd_clear_guest_ram(guest_ram_vaddr, FREEBSD_GUEST_RAM_SIZE);
+    LOG_VMM("  FreeBSD guest RAM zeroed by seL4 retype\n");
 
     freebsd_copy_to_guest(kernel_dst, _guest_kernel_image, kernel_size);
     LOG_VMM("  FreeBSD kernel copied to guest phys 0x%lx\n",
@@ -782,7 +702,7 @@ void init(void)
     size_t dtb_size = (size_t)(_guest_dtb_image_end - _guest_dtb_image);
     if (dtb_size && guest_ram_vaddr &&
         (FREEBSD_FDT_VADDR + dtb_size) <=
-        (FREEBSD_GUEST_RAM_VADDR + FREEBSD_GUEST_RAM_SIZE)) {
+        (FREEBSD_GUEST_RAM_GPA + FREEBSD_GUEST_RAM_SIZE)) {
         freebsd_copy_to_guest(fdt_dst, _guest_dtb_image, dtb_size);
         LOG_VMM("  FDT (%zu bytes) copied to guest phys 0x%lx\n",
                 dtb_size, (unsigned long)FREEBSD_FDT_VADDR);
@@ -803,42 +723,9 @@ void init(void)
 
 static void freebsd_vmm_notified(seL4_Word badge)
 {
-    static uint64_t ntfn_count = 0;
-    ntfn_count++;
-    if (ntfn_count <= 10 || ntfn_count % 1000 == 0)
-        LOG_VMM("notified #%llu badge=0x%lx\n",
-                (unsigned long long)ntfn_count, (unsigned long)badge);
-
-    if (!g_freebsd_runtime_ready) {
-        return;
-    }
-
-    if (badge & (seL4_Word)VIRTIO_BLK_NTFN_BADGE) {
-        bool injected = virq_inject(VIRTIO_BLK_IRQ);
-        if (ntfn_count <= 10 || ntfn_count % 1000 == 0 || !injected)
-            LOG_VMM("virtio-blk IRQ %u: inject=%s\n",
-                    VIRTIO_BLK_IRQ, injected ? "ok" : "deferred");
-#if FREEBSD_IRQ_TRACE
-        freebsd_log_irq_state("virtio-blk state after inject", (unsigned)ntfn_count);
-#endif
-        if (!injected) {
-            LOG_VMM_ERR("virtio-blk IRQ %u dropped\n", VIRTIO_BLK_IRQ);
-            seL4_IRQHandler_Ack(g_virtio_blk_irq_cap);
-        }
-    }
-
-#if FREEBSD_VMM_HAS_NET_IRQ
-    if (badge & (seL4_Word)VIRTIO_NET_NTFN_BADGE) {
-        bool injected = virq_inject(VIRTIO_NET_IRQ);
-        if (ntfn_count <= 10 || ntfn_count % 1000 == 0 || !injected)
-            LOG_VMM("virtio-net IRQ %u: inject=%s\n",
-                    VIRTIO_NET_IRQ, injected ? "ok" : "deferred");
-        if (!injected) {
-            LOG_VMM_ERR("virtio-net IRQ %u dropped\n", VIRTIO_NET_IRQ);
-            seL4_IRQHandler_Ack(g_virtio_net_irq_cap);
-        }
-    }
-#endif
+    /* Emulated devices signal the guest vGIC directly from their VMM fault
+     * handlers. This PD intentionally owns no host device IRQ capability. */
+    (void)badge;
 }
 
 /* ── Fault handler ────────────────────────────────────────────────────────── */
@@ -846,6 +733,18 @@ static void freebsd_vmm_notified(seL4_Word badge)
 static seL4_MessageInfo_t freebsd_vmm_fault(seL4_Word badge,
                                             seL4_MessageInfo_t msginfo)
 {
+    seL4_Word fault_mrs[seL4_MsgMaxLength];
+    seL4_Word fault_length = seL4_MessageInfo_get_length(msginfo);
+
+    if (fault_length > seL4_MsgMaxLength) {
+        fault_length = seL4_MsgMaxLength;
+    }
+    /* serial_pd diagnostics use this thread's IPC buffer. Keep the guest
+     * fault payload intact until libvmm has decoded it. */
+    for (seL4_Word i = 0u; i < fault_length; i++) {
+        fault_mrs[i] = seL4_GetMR((int)i);
+    }
+
     /* Microkit 2.1 encodes VCPU fault badges as (1ULL<<62)|vcpu_id */
     size_t vcpu_id = badge & ~(1ULL << 62);
 
@@ -853,12 +752,32 @@ static seL4_MessageInfo_t freebsd_vmm_fault(seL4_Word badge,
     static uint64_t other_vcpu_count = 0;
     size_t label = seL4_MessageInfo_get_label(msginfo);
     if (label == seL4_Fault_VCPUFault) {
-        uint64_t hsr = seL4_GetMR(seL4_VCPUFault_HSR);
+        uint64_t hsr = fault_mrs[seL4_VCPUFault_HSR];
         uint64_t ec = (hsr >> 26) & 0x3f;
         if (ec == 0x01) { /* HSR_WFx = 0x01 */
             wfi_count++;
-            if (wfi_count <= 3)
+            if (wfi_count <= 3u)
                 LOG_VMM("WFI fault #%llu\n", (unsigned long long)wfi_count);
+            seL4_Word timer_ctl =
+                vmm_vcpu_arm_read_reg(vcpu_id, seL4_VCPUReg_CNTV_CTL);
+            if (!vgic_irq_is_pending(vcpu_id, FREEBSD_VTIMER_IRQ) &&
+                !vgic_irq_is_inflight(vcpu_id, FREEBSD_VTIMER_IRQ)) {
+                if ((timer_ctl & 0x5u) == 0x5u) {
+                    /*
+                     * The deadline expired while seL4's physical VPPI was
+                     * masked. Reflect the asserted architectural timer level
+                     * into the vGIC now that no delivery is outstanding.
+                     */
+                    (void)virq_inject_vcpu(vcpu_id, FREEBSD_VTIMER_IRQ);
+                } else if ((timer_ctl & 0x5u) == 0x1u) {
+                    /*
+                     * FreeBSD advanced CVAL after EOI. Release a physical
+                     * VPPI whose acknowledgement was deferred while the timer
+                     * level remained asserted.
+                     */
+                    vmm_vcpu_arm_ack_vppi(vcpu_id, FREEBSD_VTIMER_IRQ);
+                }
+            }
 #if FREEBSD_IRQ_TRACE
             freebsd_log_irq_state("WFI irq state", (unsigned)wfi_count);
 #endif
@@ -867,14 +786,14 @@ static seL4_MessageInfo_t freebsd_vmm_fault(seL4_Word badge,
             if (other_vcpu_count <= 5)
                 LOG_VMM("VCPUFault ec=0x%lx hsr=0x%lx\n",
                         (unsigned long)ec,
-                        (unsigned long)seL4_GetMR(seL4_VCPUFault_HSR));
+                        (unsigned long)hsr);
         }
     } else if (label == seL4_Fault_VMFault) {
         static uint64_t vmfault_count = 0;
         vmfault_count++;
-        uint64_t fault_addr = seL4_GetMR(seL4_VMFault_IP);
-        uint64_t fault_data_addr = seL4_GetMR(seL4_VMFault_Addr);
-        uint64_t fault_fsr = seL4_GetMR(seL4_VMFault_FSR);
+        uint64_t fault_addr = fault_mrs[seL4_VMFault_IP];
+        uint64_t fault_data_addr = fault_mrs[seL4_VMFault_Addr];
+        uint64_t fault_fsr = fault_mrs[seL4_VMFault_FSR];
         if (vmfault_count <= 8) {
             LOG_VMM("VMFault #%llu addr=0x%lx ip=0x%lx fsr=0x%lx\n",
                     (unsigned long long)vmfault_count,
@@ -900,37 +819,16 @@ static seL4_MessageInfo_t freebsd_vmm_fault(seL4_Word badge,
                     (unsigned long)label, (unsigned long)badge);
         }
     }
-    if (label == seL4_Fault_VPPIEvent) {
-        static uint64_t vppi_count = 0;
-        vppi_count++;
-        uint64_t ppi_irq = seL4_GetMR(seL4_VPPIEvent_IRQ);
-        seL4_UserContext regs = {0};
-        seL4_TCB_ReadRegisters(vmm_tcb_cap(vcpu_id), 0, 0,
-                               SEL4_USER_CONTEXT_SIZE, &regs);
-        seL4_Word cntv_ctl = vmm_vcpu_arm_read_reg(vcpu_id,
-                                                   seL4_VCPUReg_CNTV_CTL);
-        seL4_Word cntv_cval = vmm_vcpu_arm_read_reg(vcpu_id,
-                                                    seL4_VCPUReg_CNTV_CVAL);
-        bool injected = vgic_inject_irq(vcpu_id, ppi_irq);
-        if (!injected) {
-            vmm_vcpu_arm_ack_vppi(vcpu_id, ppi_irq);
-        }
-        if (vppi_count <= 4u) {
-            LOG_VMM("FreeBSD VPPI #%llu irq=%llu pc=0x%lx pstate=0x%lx ctl=0x%lx cval=0x%lx action=%s\n",
-                    (unsigned long long)vppi_count,
-                    (unsigned long long)ppi_irq,
-                    (unsigned long)regs.pc,
-                    (unsigned long)regs.spsr,
-                    (unsigned long)cntv_ctl,
-                    (unsigned long)cntv_cval,
-                    injected ? "inject" : "ack-drop");
-        }
-        return seL4_MessageInfo_new(0, 0, 0, 0);
+    for (seL4_Word i = 0u; i < fault_length; i++) {
+        seL4_SetMR((int)i, fault_mrs[i]);
     }
     bool success = fault_handle(vcpu_id, msginfo);
     if (!success)
         LOG_VMM_ERR("Unhandled fault: badge=0x%lx label=0x%lx\n",
                     (unsigned long)badge, (unsigned long)label);
+    aos_vmm_virtio_net_after_fault();
+    aos_vmm_virtio_blk_after_fault();
+    aos_vmm_virtio_console_after_fault();
     return seL4_MessageInfo_new(0, 0, 0, 0);
 }
 
@@ -966,6 +864,13 @@ void freebsd_vmm_main(seL4_CPtr ep, seL4_CPtr reply_cap)
             info = seL4_Recv(ep, &badge, reply_cap);
 #else
             seL4_Reply(reply);
+            info = seL4_Recv(ep, &badge);
+#endif
+        } else if (label == NET_SVC_EVENT_RX_READY) {
+            aos_vmm_virtio_net_rx_ready();
+#ifdef CONFIG_KERNEL_MCS
+            info = seL4_Recv(ep, &badge, reply_cap);
+#else
             info = seL4_Recv(ep, &badge);
 #endif
         } else if (label == seL4_Fault_NullFault) {

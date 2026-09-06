@@ -44,6 +44,10 @@
                                 cap_tree_verify_all_pds                            */
 #include "system_desc.h"     /* system_desc_t, pd_desc_t, SVC_ID_*, PD_IRQHANDLER_SLOT_BASE */
 #include "agentos.h"         /* sel4_dbg_puts                                    */
+#include "contracts/cc_contract.h" /* cc_pd VirtIO startup ABI                    */
+#include <platform/blk_host_layout.h> /* host block MMIO/shared DMA layout       */
+#include <platform/net_host_layout.h> /* host net MMIO/private DMA/shared bridge */
+#include <platform/guest_memory_layout.h> /* guest GPA and VMM HVA windows        */
 #include "pd_startup_record.h" /* pd_startup_record_t, PD_STARTUP_RECORD_VA      */
 #include <stdint.h>
 
@@ -134,6 +138,12 @@ static seL4_Word g_cap_base;  /* set to bi->empty.start in root_task_main */
  */
 #define VMM_SC_BUDGET_US          25000u
 #define VMM_SC_PERIOD_US          100000u
+/*
+ * Guest fault senders share the VMM endpoint with vm_manager control calls.
+ * Keep guests below vm_manager (priority 155) so an always-faulting guest
+ * cannot starve CONSOLE_DRAIN, SUSPEND, or DESTROY requests indefinitely.
+ */
+#define VMM_GUEST_PRIORITY        150u
 
 /*
  * Number of PD slots reserved statically.  We size for SYSTEM_MAX_PDS
@@ -148,6 +158,22 @@ static seL4_Word g_cap_base;  /* set to bi->empty.start in root_task_main */
  * Chosen to be above any typical ELF load region (0x10_0000_0000 on AArch64).
  */
 #define PD_IPC_BUF_VA    0x0000000010000000UL
+
+#define AOS_MAX_GUEST_RAM_REGIONS 4u
+#define AOS_MAX_GUEST_LARGE_FRAMES 1024u
+
+typedef struct guest_ram_reservation {
+    uint32_t pd_index;
+    uint8_t mr_index;
+    uint16_t frame_count;
+    uint16_t first_frame;
+} guest_ram_reservation_t;
+
+static seL4_CPtr g_guest_large_frames[AOS_MAX_GUEST_LARGE_FRAMES];
+static seL4_CPtr g_guest_large_frame_aliases[AOS_MAX_GUEST_LARGE_FRAMES];
+static guest_ram_reservation_t
+    g_guest_ram_reservations[AOS_MAX_GUEST_RAM_REGIONS];
+static uint32_t g_guest_ram_reservation_count;
 
 /* ut_alloc_init, ut_free_slot_base, ut_advance_slot_cursor are in ut_alloc.h */
 
@@ -444,9 +470,9 @@ static void dbg_hex(seL4_Word v);
  * boot_setup_irqs — bind hardware IRQ handler caps into a PD's CNode.
  *
  * Called once per PD after its CNode and TCB are created.  For each entry in
- * pd->irqs[], the root task calls seL4_IRQControl_Get to obtain an IRQ handler
- * capability from the kernel and places it into the PD's CNode at slot
- * (PD_IRQHANDLER_SLOT_BASE + i).
+ * pd->irqs[], the root task calls seL4_IRQControl_Get, binds the handler to
+ * the PD notification, and moves the cap into the PD's CNode at slot
+ * (PD_IRQHANDLER_SLOT_BASE + i).  No root handler-cap alias is retained.
  *
  * The PD then references these caps by their known slot offsets:
  *   seL4_CPtr irq_cap = PD_IRQHANDLER_SLOT_BASE + i;
@@ -490,26 +516,12 @@ static void boot_setup_irqs(const pd_desc_t *pd,
             continue;
         }
 
-        err = seL4_CNode_Copy(pd_cnode,
-                              dest_slot,
-                              (uint8_t)pd_cnode_depth,
-                              seL4_CapInitThreadCNode,
-                              root_irq_slot,
-                              64u,
-                              seL4_AllRights);
-        if (err != seL4_NoError) {
-            dbg_puts("[rt] WARN: IRQ cap copy failed irq=");
-            dbg_hex((seL4_Word)d->irq_number);
-            dbg_puts(" err=");
-            dbg_hex((seL4_Word)err);
-            dbg_puts("\n");
-            continue;
-        }
-
         if (notification_cap != seL4_CapNull) {
             seL4_Word badged_ntfn_slot = ut_alloc_slot();
             if (badged_ntfn_slot == seL4_CapNull) {
                 dbg_puts("[rt] WARN: no slot for badged IRQ notification\n");
+                (void)seL4_CNode_Delete(seL4_CapInitThreadCNode,
+                                        root_irq_slot, 64u);
                 continue;
             }
 
@@ -527,6 +539,8 @@ static void boot_setup_irqs(const pd_desc_t *pd,
                 dbg_puts(" err=");
                 dbg_hex((seL4_Word)err);
                 dbg_puts("\n");
+                (void)seL4_CNode_Delete(seL4_CapInitThreadCNode,
+                                        root_irq_slot, 64u);
                 continue;
             }
 
@@ -538,8 +552,32 @@ static void boot_setup_irqs(const pd_desc_t *pd,
                 dbg_puts(" err=");
                 dbg_hex((seL4_Word)err);
                 dbg_puts("\n");
+                (void)seL4_CNode_Delete(seL4_CapInitThreadCNode,
+                                        root_irq_slot, 64u);
                 continue;
             }
+        }
+
+        /*
+         * Transfer rather than copy the handler capability.  IRQControl is
+         * retained by the root task as initial authority, but the resulting
+         * IRQ handler cap exists only in the designated driver/VMM CSpace.
+         */
+        err = seL4_CNode_Move(pd_cnode,
+                              dest_slot,
+                              (uint8_t)pd_cnode_depth,
+                              seL4_CapInitThreadCNode,
+                              root_irq_slot,
+                              64u);
+        if (err != seL4_NoError) {
+            dbg_puts("[rt] WARN: IRQ cap move failed irq=");
+            dbg_hex((seL4_Word)d->irq_number);
+            dbg_puts(" err=");
+            dbg_hex((seL4_Word)err);
+            dbg_puts("\n");
+            (void)seL4_CNode_Delete(seL4_CapInitThreadCNode,
+                                    root_irq_slot, 64u);
+            continue;
         }
 
         /*
@@ -559,7 +597,7 @@ static void boot_setup_irqs(const pd_desc_t *pd,
  * Before init: dbg_puts falls back to sel4_dbg_puts (no-op on release kernel).
  */
 #define AGENTOS_UART_PA  0x09000000UL  /* PL011 UART0 physical address on QEMU virt */
-#define AGENTOS_UART_VA  0x10001000UL  /* VA in root + controller VSpaces           */
+#define AGENTOS_UART_VA  0x10001000UL  /* root bootstrap, then serial_pd driver VA   */
 
 /* QEMU virt GICv2 virtual CPU interface.
  *
@@ -572,31 +610,34 @@ static void boot_setup_irqs(const pd_desc_t *pd,
 
 /* QEMU virt virtio-mmio transports.
  *
- * Slots are 0x200-byte windows inside the 4 KB page at 0x0A000000. The VMM
- * guest sees that page at the same IPA for passthrough probing; cc_pd maps a
- * copy of the same frame at its private VA to drive slot 2 for the host relay.
+ * Slots are 0x200-byte windows inside the 4 KB page at 0x0A000000. Guest
+ * VMMs never map this host page; cc_pd maps a copy at its private VA to drive
+ * slot 2 for the host relay.
  *
  * Guest IPA 0x0A010000 (emulated virtio-net) is outside this page on purpose:
  * it must remain unmapped so accesses fault into linux_vmm.
  */
 #define VIRTIO_MMIO_PAGE_PA  0x0A000000UL
-#define VIRTIO_MMIO_PAGE_VA  0x0A000000UL
-#define FREEBSD_VIRTIO_MMIO_BUS31_PAGE_PA  0x0A003000UL
-#define FREEBSD_VIRTIO_MMIO_BUS31_PAGE_VA  0x0A003000UL
 
 /* VirtIO serial device for cc_pd ↔ host socket bridge.
  * QEMU flags: -device virtio-serial-device,bus=virtio-mmio-bus.2,id=vser0
  *             -device virtconsole,bus=vser0.0,chardev=cc_pd_char,name=cc.0
  * virtio-mmio-bus.2 = PA 0x0A000400, inside the first virtio-mmio page (PA 0x0A000000). */
-#define CC_PD_VIRTIO_VA       0x10002000UL  /* VA in cc_pd's VSpace for this device page */
-#define CC_PD_STARTUP_VA      0x10003000UL  /* VA in cc_pd's VSpace for startup record   */
-#define CC_PD_UART_DBG_VA     0x10004000UL  /* VA in cc_pd's VSpace for debug UART0      */
+#define SERIAL_SHMEM_VA       0x10005000UL  /* MSG_SERIAL_* transfer page in client PDs   */
 #define RT_VQ_SCRATCH_VA      0x60000000UL  /* Root-task scratch VA to write startup PAs */
+#define RT_BLK_SCRATCH_VA     0xA0000000UL  /* Above max embedded live-media PD bundle  */
 
-/* Frame cap in root task CNode; seL4_CNode_Copy'd per VSpace that needs output. */
+/* UART starts in the root CSpace for bounded bootstrap output, then is moved
+ * into serial_pd.  No root or non-driver copy survives that handoff. */
 static seL4_CPtr g_uart_frame_cap = seL4_CapNull;
+static seL4_CPtr g_serial_shmem_frame_cap = seL4_CapNull;
 static seL4_CPtr g_virtio_mmio_frame_cap = seL4_CapNull;
-static seL4_CPtr g_freebsd_virtio31_frame_cap = seL4_CapNull;
+static seL4_CPtr g_host_blk_mmio_frame_cap = seL4_CapNull;
+static seL4_CPtr g_blk_shared_frame_cap = seL4_CapNull;
+static seL4_CPtr g_host_net_mmio_frame_cap = seL4_CapNull;
+static seL4_CPtr g_net_shared_frame_cap = seL4_CapNull;
+static seL4_CPtr g_net_dma_frame_cap = seL4_CapNull;
+static seL4_CPtr g_host_freebsd_blk_mmio_frame_cap = seL4_CapNull;
 static seL4_CPtr g_gic_vcpu_frame_cap = seL4_CapNull;
 
 static volatile uint32_t *g_uart_dr;  /* PL011 UARTDR (offset 0x00) */
@@ -707,6 +748,96 @@ static int name_eq(const char *a, const char *b)
     while (*a && *b && *a == *b) { a++; b++; }
     return (*a == '\0' && *b == '\0');
 }
+
+#if defined(__aarch64__)
+static seL4_Error reserve_guest_ram_frames(const system_desc_t *sys)
+{
+    const size_t large_page = (size_t)1u << seL4_ARCH_LargePageBits;
+    uint32_t next_frame = 0u;
+
+    g_guest_ram_reservation_count = 0u;
+    for (uint32_t i = 0u; i < sys->pd_count; i++) {
+        const pd_desc_t *pd = &sys->pds[i];
+        if (!name_eq(pd->name, "linux_vmm") &&
+            !name_eq(pd->name, "freebsd_vmm")) {
+            continue;
+        }
+        for (uint8_t j = 0u; j < pd->mr_count; j++) {
+            const memory_region_desc_t *mr = &pd->memory_regions[j];
+            if (!name_eq(mr->name, "guest_ram")) continue;
+            if ((mr->size & (large_page - 1u)) != 0u ||
+                g_guest_ram_reservation_count >=
+                    AOS_MAX_GUEST_RAM_REGIONS) {
+                return seL4_InvalidArgument;
+            }
+            uint32_t count = (uint32_t)(mr->size / large_page);
+            if (count == 0u ||
+                count > AOS_MAX_GUEST_LARGE_FRAMES - next_frame) {
+                return seL4_NotEnoughMemory;
+            }
+
+            guest_ram_reservation_t *reservation =
+                &g_guest_ram_reservations[g_guest_ram_reservation_count];
+            reservation->pd_index = i;
+            reservation->mr_index = j;
+            reservation->first_frame = (uint16_t)next_frame;
+            reservation->frame_count = (uint16_t)count;
+            for (uint32_t frame = 0u; frame < count; frame++) {
+                seL4_Error err = ut_alloc_cap(
+                    (uint32_t)seL4_ARCH_LargePageObject, 0u,
+                    &g_guest_large_frames[next_frame]);
+                if (err != seL4_NoError) return err;
+                next_frame++;
+            }
+            g_guest_ram_reservation_count++;
+        }
+    }
+    return seL4_NoError;
+}
+
+static const guest_ram_reservation_t *
+guest_ram_reservation_for(uint32_t pd_index, uint8_t mr_index)
+{
+    for (uint32_t i = 0u; i < g_guest_ram_reservation_count; i++) {
+        const guest_ram_reservation_t *reservation =
+            &g_guest_ram_reservations[i];
+        if (reservation->pd_index == pd_index &&
+            reservation->mr_index == mr_index) {
+            return reservation;
+        }
+    }
+    return NULL;
+}
+
+static seL4_Error map_guest_ram_reservation(
+    const guest_ram_reservation_t *reservation,
+    seL4_CPtr vmm_vspace, seL4_CPtr guest_vspace,
+    seL4_Word hva_base, seL4_Word gpa_base, int writable)
+{
+    seL4_Error err = pd_vspace_map_reserved_region(
+        guest_vspace, gpa_base,
+        &g_guest_large_frames[reservation->first_frame],
+        reservation->frame_count, writable);
+    if (err != seL4_NoError) return err;
+
+    for (uint32_t i = 0u; i < reservation->frame_count; i++) {
+        seL4_Word alias_slot = ut_alloc_slot();
+        if (alias_slot == seL4_CapNull) return seL4_NotEnoughMemory;
+        err = seL4_CNode_Copy(
+            seL4_CapInitThreadCNode, alias_slot, 64u,
+            seL4_CapInitThreadCNode,
+            g_guest_large_frames[reservation->first_frame + i], 64u,
+            seL4_AllRights);
+        if (err != seL4_NoError) return err;
+        g_guest_large_frame_aliases[reservation->first_frame + i] =
+            (seL4_CPtr)alias_slot;
+    }
+    return pd_vspace_map_reserved_region(
+        vmm_vspace, hva_base,
+        &g_guest_large_frame_aliases[reservation->first_frame],
+        reservation->frame_count, writable);
+}
+#endif
 
 /* True iff name starts with prefix. */
 static int name_has_prefix(const char *name, const char *prefix)
@@ -841,46 +972,10 @@ static seL4_CPtr schedcontrol_for_node(const seL4_BootInfo *bi, seL4_Word node)
 #endif
 
 #if defined(__aarch64__)
-static seL4_Error map_vmm_guest_ram_identity(seL4_CPtr vspace,
-                                              seL4_Word  guest_pa,
-                                              size_t     size)
-{
-    const seL4_Word large_page = (seL4_Word)1u << seL4_ARCH_LargePageBits;
-
-    if ((guest_pa & (large_page - 1u)) != 0u ||
-        (((seL4_Word)size) & (large_page - 1u)) != 0u) {
-        return seL4_InvalidArgument;
-    }
-
-    for (seL4_Word off = 0u; off < (seL4_Word)size; off += large_page) {
-        seL4_CPtr frame = seL4_CapNull;
-        seL4_Error err = ut_alloc_device_cap_typed(guest_pa + off,
-                                                   (uint32_t)seL4_ARCH_LargePageObject,
-                                                   (uint8_t)seL4_ARCH_LargePageBits,
-                                                   &frame);
-        if (err == seL4_InvalidArgument) {
-            err = ut_alloc_phys_cap_typed(guest_pa + off,
-                                          (uint32_t)seL4_ARCH_LargePageObject,
-                                          (uint8_t)seL4_ARCH_LargePageBits,
-                                          &frame);
-        }
-        if (err != seL4_NoError) {
-            return err;
-        }
-
-        err = pd_vspace_map_device_frame(vspace, frame, guest_pa + off);
-        if (err != seL4_NoError) {
-            return err;
-        }
-    }
-
-    return seL4_NoError;
-}
-
 static seL4_Error setup_vmm_guest_vcpu(const pd_desc_t *pd,
                                         uint32_t         pd_index,
                                         seL4_CPtr        pd_cnode,
-                                        seL4_CPtr        vspace,
+                                        seL4_CPtr        guest_vspace,
                                         seL4_CPtr        ipc_buf_cap,
                                         seL4_Word        ipc_buf_va,
                                         seL4_CPtr        self_ep,
@@ -935,7 +1030,8 @@ static seL4_Error setup_vmm_guest_vcpu(const pd_desc_t *pd,
         dbg_puts("\n");
         return err;
     }
-    err = pd_vspace_map_device_frame(vspace, guest_ipc_cap, VMM_GUEST_IPC_BUF_VA);
+    err = pd_vspace_map_device_frame(guest_vspace, guest_ipc_cap,
+                                     VMM_GUEST_IPC_BUF_VA);
     if (err != seL4_NoError) {
         dbg_puts("[rt] VMM guest IPC map err=");
         dbg_hex((seL4_Word)err);
@@ -950,7 +1046,7 @@ static seL4_Error setup_vmm_guest_vcpu(const pd_desc_t *pd,
     err = seL4_TCB_Configure((seL4_CPtr)guest_tcb_slot,
                               pd_cnode,
                               cspace_root_data,
-                              vspace,
+                              guest_vspace,
                               0u,
                               VMM_GUEST_IPC_BUF_VA,
                               guest_ipc_cap);
@@ -998,7 +1094,7 @@ static seL4_Error setup_vmm_guest_vcpu(const pd_desc_t *pd,
     err = seL4_TCB_SetSchedParams((seL4_CPtr)guest_tcb_slot,
                                   seL4_CapInitThreadTCB,
                                   255u,
-                                  (seL4_Word)pd->priority,
+                                  VMM_GUEST_PRIORITY,
                                   (seL4_CPtr)guest_sc_slot,
                                   /* Guest faults must land on the VMM listen EP.
                                    * PD TCBs use a raw endpoint cap here (g_fault_ep).
@@ -1014,7 +1110,7 @@ static seL4_Error setup_vmm_guest_vcpu(const pd_desc_t *pd,
 #else
     err = seL4_TCB_SetPriority((seL4_CPtr)guest_tcb_slot,
                                seL4_CapInitThreadTCB,
-                               (seL4_Word)pd->priority);
+                               VMM_GUEST_PRIORITY);
     if (err != seL4_NoError) {
         return err;
     }
@@ -1196,6 +1292,15 @@ void root_task_main(const seL4_BootInfo *bi)
 #endif
 
     {
+        seL4_Error serial_shmem_err = ut_alloc_cap(seL4_ARM_SmallPageObject,
+                                                   0u,
+                                                   &g_serial_shmem_frame_cap);
+        dbg_puts("[rt] serial transfer frame cap err=");
+        dbg_hex((seL4_Word)serial_shmem_err);
+        dbg_puts("\n");
+    }
+
+    {
         seL4_Error gic_err = ut_alloc_device_cap(GIC_VCPU_IF_PA,
                                                  &g_gic_vcpu_frame_cap);
         dbg_puts("[rt] GIC vCPU frame cap err=");
@@ -1215,13 +1320,124 @@ void root_task_main(const seL4_BootInfo *bi)
         dbg_puts("\n");
     }
 
+#if defined(__aarch64__)
     {
-        seL4_Error v31_err = ut_alloc_device_cap(FREEBSD_VIRTIO_MMIO_BUS31_PAGE_PA,
-                                                 &g_freebsd_virtio31_frame_cap);
-        dbg_puts("[rt] freebsd virtio-mmio bus31 cap err=");
+        seL4_Error blk_err =
+            ut_alloc_device_cap(AGENTOS_HOST_BLK_MMIO_PA,
+                                &g_host_blk_mmio_frame_cap);
+        dbg_puts("[rt] host blk virtio-mmio frame cap err=");
+        dbg_hex((seL4_Word)blk_err);
+        dbg_puts(" cap=");
+        dbg_hex((seL4_Word)g_host_blk_mmio_frame_cap);
+        dbg_puts("\n");
+        if (blk_err == seL4_NoError) {
+            blk_err = pd_vspace_map_device_frame(
+                seL4_CapInitThreadVSpace, g_host_blk_mmio_frame_cap,
+                RT_VQ_SCRATCH_VA);
+            if (blk_err == seL4_NoError) {
+                volatile uint32_t *blk_regs =
+                    (volatile uint32_t *)RT_VQ_SCRATCH_VA;
+                dbg_puts("[rt] host blk magic=");
+                dbg_hex((seL4_Word)blk_regs[0]);
+                dbg_puts(" version=");
+                dbg_hex((seL4_Word)blk_regs[1]);
+                dbg_puts(" device=");
+                dbg_hex((seL4_Word)blk_regs[2]);
+                dbg_puts("\n");
+                seL4_ARCH_Page_Unmap(g_host_blk_mmio_frame_cap);
+            }
+        }
+    }
+
+    {
+        seL4_Error blk_err =
+            ut_alloc_cap(seL4_ARM_LargePageObject, 0u,
+                         &g_blk_shared_frame_cap);
+        seL4_Word blk_shared_pa = 0u;
+        if (blk_err == seL4_NoError) {
+            seL4_ARCH_Page_GetAddress_t r =
+                seL4_ARCH_Page_GetAddress(g_blk_shared_frame_cap);
+            blk_shared_pa = r.paddr;
+            blk_err = pd_vspace_map_device_frame(
+                seL4_CapInitThreadVSpace, g_blk_shared_frame_cap,
+                RT_BLK_SCRATCH_VA);
+        }
+        if (blk_err == seL4_NoError) {
+            agentos_blk_shared_meta_t *meta =
+                (agentos_blk_shared_meta_t *)RT_BLK_SCRATCH_VA;
+            meta->magic = AGENTOS_BLK_SHARED_MAGIC;
+            meta->version = 1u;
+            meta->paddr = (uint64_t)blk_shared_pa;
+            meta->size = AGENTOS_BLK_SHARED_SIZE;
+            AGENTOS_MEMORY_FENCE();
+            seL4_ARCH_Page_Unmap(g_blk_shared_frame_cap);
+        }
+        dbg_puts("[rt] blk shared frame pa=");
+        dbg_hex(blk_shared_pa);
+        dbg_puts(" err=");
+        dbg_hex((seL4_Word)blk_err);
+        dbg_puts("\n");
+    }
+
+    {
+        seL4_Error net_err =
+            ut_alloc_device_cap(AGENTOS_HOST_NET_MMIO_PA,
+                                &g_host_net_mmio_frame_cap);
+        dbg_puts("[rt] host net virtio-mmio bus16 frame cap err=");
+        dbg_hex((seL4_Word)net_err);
+        dbg_puts(" cap=");
+        dbg_hex((seL4_Word)g_host_net_mmio_frame_cap);
+        dbg_puts("\n");
+    }
+
+    {
+        seL4_Error net_err =
+            ut_alloc_cap(seL4_ARM_LargePageObject, 0u,
+                         &g_net_shared_frame_cap);
+        dbg_puts("[rt] net agentOS shared frame err=");
+        dbg_hex((seL4_Word)net_err);
+        dbg_puts("\n");
+    }
+
+    {
+        seL4_Error net_err =
+            ut_alloc_cap(seL4_ARM_LargePageObject, 0u,
+                         &g_net_dma_frame_cap);
+        seL4_Word net_dma_pa = 0u;
+        if (net_err == seL4_NoError) {
+            seL4_ARCH_Page_GetAddress_t r =
+                seL4_ARCH_Page_GetAddress(g_net_dma_frame_cap);
+            net_dma_pa = r.paddr;
+            net_err = pd_vspace_map_device_frame(
+                seL4_CapInitThreadVSpace, g_net_dma_frame_cap,
+                RT_BLK_SCRATCH_VA);
+        }
+        if (net_err == seL4_NoError) {
+            agentos_net_host_dma_meta_t *meta =
+                (agentos_net_host_dma_meta_t *)RT_BLK_SCRATCH_VA;
+            meta->magic = AGENTOS_NET_HOST_DMA_MAGIC;
+            meta->version = AGENTOS_NET_HOST_DMA_VERSION;
+            meta->paddr = (uint64_t)net_dma_pa;
+            meta->size = AGENTOS_NET_HOST_DMA_SIZE;
+            AGENTOS_MEMORY_FENCE();
+            seL4_ARCH_Page_Unmap(g_net_dma_frame_cap);
+        }
+        dbg_puts("[rt] net private DMA frame pa=");
+        dbg_hex(net_dma_pa);
+        dbg_puts(" err=");
+        dbg_hex((seL4_Word)net_err);
+        dbg_puts("\n");
+    }
+#endif
+
+    {
+        seL4_Error v31_err =
+            ut_alloc_device_cap(AGENTOS_HOST_FREEBSD_BLK_PAGE_PA,
+                                &g_host_freebsd_blk_mmio_frame_cap);
+        dbg_puts("[rt] host FreeBSD block page cap err=");
         dbg_hex((seL4_Word)v31_err);
         dbg_puts(" cap=");
-        dbg_hex((seL4_Word)g_freebsd_virtio31_frame_cap);
+        dbg_hex((seL4_Word)g_host_freebsd_blk_mmio_frame_cap);
         dbg_puts("\n");
     }
 
@@ -1249,8 +1465,23 @@ void root_task_main(const seL4_BootInfo *bi)
         dbg_puts("\n");
     }
 
-    /* ── Step 4: Load and start each PD ───────────────────────────────────── */
     const system_desc_t *sys = SYSTEM_DESC;
+
+#if defined(__aarch64__)
+    /*
+     * Reserve all guest RAM as 2 MiB frames before loading any PD ELF. Small
+     * boot objects fragment untyped watermarks; allocating guest RAM inside
+     * the late PD loop forced hundreds of thousands of 4 KiB retypes.
+     */
+    {
+        seL4_Error reserve_err = reserve_guest_ram_frames(sys);
+        dbg_puts("[rt] early guest RAM large-page reservation err=");
+        dbg_hex((seL4_Word)reserve_err);
+        dbg_puts("\n");
+    }
+#endif
+
+    /* ── Step 4: Load and start each PD ───────────────────────────────────── */
     dbg_puts("[rt] starting ");
     dbg_hex((seL4_Word)sys->pd_count);
     dbg_puts(" PDs\n");
@@ -1286,6 +1517,22 @@ void root_task_main(const seL4_BootInfo *bi)
             continue;
         }
         seL4_CPtr vspace = vr_create.vspace_cap;
+#if defined(__aarch64__)
+        seL4_CPtr guest_vspace = seL4_CapNull;
+        if (name_eq(pd->name, "linux_vmm") ||
+            name_eq(pd->name, "freebsd_vmm")) {
+            pd_vspace_result_t guest_vr =
+                pd_vspace_create(seL4_CapInitThreadCNode,
+                                 seL4_CapInitThreadASIDPool);
+            if (guest_vr.error != 0) {
+                dbg_puts("[rt] guest vspace_create fail err=");
+                dbg_hex((seL4_Word)guest_vr.error);
+                dbg_puts("\n");
+                continue;
+            }
+            guest_vspace = guest_vr.vspace_cap;
+        }
+#endif
 
         /* ── 4b: Allocate IPC buffer frame ──────────────────────────────── */
         seL4_Error err = ut_alloc(seL4_ARM_SmallPageObject,
@@ -1517,11 +1764,47 @@ void root_task_main(const seL4_BootInfo *bi)
          * directly into the PD's CNode at the specified slot.              */
         for (uint8_t j = 0u; j < pd->device_frame_count; j++) {
             const device_frame_desc_t *df = &pd->device_frames[j];
-            seL4_Error df_err = ut_alloc_device_frame(
-                (seL4_Word)df->paddr,
-                pd_cnode,
-                (seL4_Word)df->cnode_slot
-            );
+            seL4_Error df_err;
+
+            /*
+             * The root task already retyped and mapped PL011 for bounded
+             * bootstrap output.  Transfer that exact cap to serial_pd:
+             * unmap it from root, map it in the driver VSpace, then move the
+             * cap into the driver's CSpace.  Retyping a second frame would
+             * leave an illicit root alias and fail once the 4K device untyped
+             * is exhausted.
+             */
+            if (name_eq(pd->name, "serial_pd") &&
+                df->paddr == AGENTOS_UART_PA &&
+                g_uart_frame_cap != seL4_CapNull) {
+                (void)seL4_ARCH_Page_Unmap(g_uart_frame_cap);
+                g_uart_dr = (volatile uint32_t *)0;
+                g_uart_fr = (volatile uint32_t *)0;
+
+                df_err = pd_vspace_map_device_frame(vspace,
+                                                     g_uart_frame_cap,
+                                                     AGENTOS_UART_VA);
+                seL4_Error move_err = seL4_CNode_Move(
+                    pd_cnode,
+                    (seL4_Word)df->cnode_slot,
+                    (seL4_Word)pd->cnode_size_bits,
+                    seL4_CapInitThreadCNode,
+                    (seL4_Word)g_uart_frame_cap,
+                    64u);
+                if (move_err != seL4_NoError) {
+                    (void)seL4_CNode_Delete(seL4_CapInitThreadCNode,
+                                            (seL4_Word)g_uart_frame_cap,
+                                            64u);
+                    df_err = move_err;
+                }
+                g_uart_frame_cap = seL4_CapNull;
+            } else {
+                df_err = ut_alloc_device_frame(
+                    (seL4_Word)df->paddr,
+                    pd_cnode,
+                    (seL4_Word)df->cnode_slot
+                );
+            }
             if (df_err != seL4_NoError) {
                 dbg_puts("[root] WARN: device frame retype failed: ");
                 dbg_puts(df->name);
@@ -1541,17 +1824,27 @@ void root_task_main(const seL4_BootInfo *bi)
 #if defined(__aarch64__)
             if ((name_eq(pd->name, "linux_vmm") || name_eq(pd->name, "freebsd_vmm")) &&
                 name_eq(mr->name, "guest_ram")) {
-                /* KILL-DATED: QEMU virtio passthrough DMAs into guest GPA.
-                 * Only guest_ram is identity-mapped. net_virt is anonymous.
-                 *
-                 * Emulated virtio-net copies and MMIO queue rings now walk
-                 * GPA→HVA (aos_gpa_to_hva). Residual identity-map users:
-                 *   - QEMU virtio-mmio passthrough (net 0x0A000000 / blk)
-                 *   - libvmm virtio-blk, console, sound desc->addr casts
-                 * Remove this path when those are gone. */
-                mr_err = map_vmm_guest_ram_identity(vspace,
-                                                    (seL4_Word)mr->vaddr,
-                                                    (size_t)mr->size);
+                /*
+                 * Guest RAM frames were reserved before PD ELF loading, while
+                 * large aligned untypeds were still available. Fail fast if a
+                 * reservation is missing; never enter the hour-scale 4 KiB
+                 * fallback for GiB-sized guests.
+                 * Emulated VirtIO translates every queue and payload GPA.
+                 */
+                const guest_ram_reservation_t *reservation =
+                    guest_ram_reservation_for(i, j);
+                if (reservation == NULL) {
+                    mr_err = seL4_NotEnoughMemory;
+                } else {
+                    seL4_Word guest_gpa =
+                        name_eq(pd->name, "linux_vmm")
+                            ? AOS_LINUX_GUEST_GPA_BASE
+                            : AOS_FREEBSD_GUEST_GPA_BASE;
+                    mr_err = map_guest_ram_reservation(
+                        reservation, vspace, guest_vspace,
+                        (seL4_Word)mr->vaddr, guest_gpa,
+                        (int)mr->writable);
+                }
             } else
 #endif
             {
@@ -1565,61 +1858,41 @@ void root_task_main(const seL4_BootInfo *bi)
             if (mr_err != seL4_NoError) {
                 dbg_puts("[root] WARN: memory region map failed: ");
                 dbg_puts(mr->name);
+                dbg_puts(" err=");
+                dbg_hex((seL4_Word)mr_err);
                 dbg_puts("\n");
             }
         }
 
-        /* ── 4g.4.6: Map UART MMIO into debug-printing PD VSpaces ─────────── */
-        /*
-         * The controller and current VMM PDs still use direct early debug
-         * output at AGENTOS_UART_VA.  We copy the root task's UART frame cap
-         * (already mapped in the root VSpace) to a fresh slot and map it into
-         * those VSpaces.  seL4_CNode_Copy clears capFMappedASID in the copy,
-         * allowing independent re-mapping.
-         *
-         * The IPC buffer mapping (pd_vspace_load_elf, 0x10000000) already
-         * installed the L1 page table covering [0x10000000, 0x11FFFFF], so
-         * the map call for 0x10001000 succeeds without any PT retries.
-         */
-        if (g_uart_frame_cap != seL4_CapNull &&
-            (name_eq(pd->name, "controller") ||
+        /* Map the contract transfer page, never the UART frame, into serial
+         * clients that emit boot diagnostics or console proof markers. */
+        if (g_serial_shmem_frame_cap != seL4_CapNull &&
+            (name_eq(pd->name, "serial_pd") ||
+             name_eq(pd->name, "log_drain") ||
+             name_eq(pd->name, "controller") ||
              name_eq(pd->name, "linux_vmm") ||
-             name_eq(pd->name, "freebsd_vmm"))) {
-            seL4_Word uart_copy = ut_alloc_slot();
-            dbg_puts("[rt] debug UART: pd=");
-            dbg_puts(pd->name);
-            dbg_puts(" uart_copy=");
-            dbg_hex(uart_copy);
-            dbg_puts(" g_uart_frame_cap=");
-            dbg_hex((seL4_Word)g_uart_frame_cap);
-            dbg_puts("\n");
-            if (uart_copy != seL4_CapNull) {
-                seL4_Error cp_err = seL4_CNode_Copy(
-                    seL4_CapInitThreadCNode, uart_copy,         64u,
-                    seL4_CapInitThreadCNode, g_uart_frame_cap,  64u,
+             name_eq(pd->name, "freebsd_vmm") ||
+             name_eq(pd->name, "cc_pd") ||
+             name_eq(pd->name, "test_runner"))) {
+            seL4_Word serial_copy = ut_alloc_slot();
+            seL4_Error serial_err = seL4_NotEnoughMemory;
+            if (serial_copy != seL4_CapNull) {
+                serial_err = seL4_CNode_Copy(
+                    seL4_CapInitThreadCNode, serial_copy, 64u,
+                    seL4_CapInitThreadCNode, g_serial_shmem_frame_cap, 64u,
                     seL4_AllRights);
-                dbg_puts("[rt] debug UART CNode_Copy err=");
-                dbg_hex((seL4_Word)cp_err);
-                dbg_puts("\n");
-                if (cp_err == seL4_NoError) {
-                    cp_err = pd_vspace_map_device_frame(vspace,
-                                                         (seL4_CPtr)uart_copy,
-                                                         AGENTOS_UART_VA);
-                    dbg_puts("[rt] debug UART map err=");
-                    dbg_hex((seL4_Word)cp_err);
-                    dbg_puts("\n");
+                if (serial_err == seL4_NoError) {
+                    serial_err = pd_vspace_map_device_frame(
+                        vspace, (seL4_CPtr)serial_copy, SERIAL_SHMEM_VA);
                 }
-                if (cp_err != seL4_NoError) {
-                    dbg_puts("[rt] WARN: debug UART map failed\n");
-                } else {
-                    dbg_puts("[rt] debug UART mapped OK\n");
-                }
-            } else {
-                dbg_puts("[rt] WARN: no slot for debug UART copy\n");
             }
+            dbg_puts("[rt] serial transfer page map err=");
+            dbg_hex((seL4_Word)serial_err);
+            dbg_puts("\n");
         }
 
         /* ── 4g.4.6b: Map GICv2 vCPU interface for VMM guests ───────────── */
+#if defined(__aarch64__)
         /*
          * QEMU virt exposes a GICv2 CPU interface to the guest at 0x08010000.
          * On seL4 this is backed by the hardware virtual CPU interface frame
@@ -1640,7 +1913,7 @@ void root_task_main(const seL4_BootInfo *bi)
             dbg_hex((seL4_Word)gic_err);
             dbg_puts("\n");
             if (gic_err == seL4_NoError) {
-                gic_err = pd_vspace_map_device_frame(vspace,
+                gic_err = pd_vspace_map_device_frame(guest_vspace,
                                                       (seL4_CPtr)gic_copy,
                                                       GIC_VCPU_IF_VA);
             }
@@ -1648,54 +1921,141 @@ void root_task_main(const seL4_BootInfo *bi)
             dbg_hex((seL4_Word)gic_err);
             dbg_puts("\n");
         }
+#endif
 
-        /* ── 4g.4.6c: Map QEMU virtio-mmio transport page for VMM guests ─── */
-        /*
-         * The guest DTB exposes virtio-mmio slots under 0x0A000000. Map the
-         * single backing page into the guest execution VSpace so Linux can
-         * probe QEMU's virtio-net and virtio-blk transports directly while
-         * IRQ delivery still flows through the VMM/vGIC path.
-         */
-        if (g_virtio_mmio_frame_cap != seL4_CapNull &&
-            (name_eq(pd->name, "linux_vmm") || name_eq(pd->name, "freebsd_vmm"))) {
-            seL4_Word virtio_copy = ut_alloc_slot();
-            seL4_Error virtio_err = seL4_NotEnoughMemory;
-            if (virtio_copy != seL4_CapNull) {
-                virtio_err = seL4_CNode_Copy(
-                    seL4_CapInitThreadCNode, virtio_copy,              64u,
-                    seL4_CapInitThreadCNode, g_virtio_mmio_frame_cap,  64u,
+        /* ── 4g.4.6c: Give virtio_blk sole access to host block hardware ─── */
+#if defined(__aarch64__)
+        if (name_eq(pd->name, "virtio_blk") &&
+            g_host_blk_mmio_frame_cap != seL4_CapNull) {
+            seL4_Word blk_mmio_copy = ut_alloc_slot();
+            seL4_Error blk_err = seL4_NotEnoughMemory;
+            if (blk_mmio_copy != seL4_CapNull) {
+                blk_err = seL4_CNode_Copy(
+                    seL4_CapInitThreadCNode, blk_mmio_copy, 64u,
+                    seL4_CapInitThreadCNode, g_host_blk_mmio_frame_cap, 64u,
                     seL4_AllRights);
-                if (virtio_err == seL4_NoError) {
-                    virtio_err = pd_vspace_map_device_frame(vspace,
-                                                            (seL4_CPtr)virtio_copy,
-                                                            VIRTIO_MMIO_PAGE_VA);
+                if (blk_err == seL4_NoError) {
+                    blk_err = pd_vspace_map_device_frame(
+                        vspace, (seL4_CPtr)blk_mmio_copy,
+                        AGENTOS_HOST_BLK_MMIO_VA);
                 }
             }
-            dbg_puts("[rt] VMM virtio-mmio map err=");
-            dbg_hex((seL4_Word)virtio_err);
+            dbg_puts("[rt] virtio_blk host MMIO map err=");
+            dbg_hex((seL4_Word)blk_err);
             dbg_puts("\n");
         }
 
-        if (name_eq(pd->name, "freebsd_vmm")) {
-            if (g_freebsd_virtio31_frame_cap != seL4_CapNull) {
-                seL4_Word v31_copy = ut_alloc_slot();
-                seL4_Error v31_err = seL4_NotEnoughMemory;
-                if (v31_copy != seL4_CapNull) {
-                    v31_err = seL4_CNode_Copy(
-                        seL4_CapInitThreadCNode, v31_copy,                       64u,
-                        seL4_CapInitThreadCNode, g_freebsd_virtio31_frame_cap,    64u,
+        if (name_eq(pd->name, "virtio_blk") &&
+            g_host_freebsd_blk_mmio_frame_cap != seL4_CapNull) {
+            seL4_Word blk_mmio_copy = ut_alloc_slot();
+            seL4_Error blk_err = seL4_NotEnoughMemory;
+            if (blk_mmio_copy != seL4_CapNull) {
+                blk_err = seL4_CNode_Copy(
+                    seL4_CapInitThreadCNode, blk_mmio_copy, 64u,
+                    seL4_CapInitThreadCNode,
+                    g_host_freebsd_blk_mmio_frame_cap, 64u,
+                    seL4_AllRights);
+                if (blk_err == seL4_NoError) {
+                    blk_err = pd_vspace_map_device_frame(
+                        vspace, (seL4_CPtr)blk_mmio_copy,
+                        AGENTOS_HOST_FREEBSD_BLK_PAGE_VA);
+                }
+            }
+            dbg_puts("[rt] virtio_blk FreeBSD host MMIO map err=");
+            dbg_hex((seL4_Word)blk_err);
+            dbg_puts("\n");
+        }
+
+        if (g_blk_shared_frame_cap != seL4_CapNull &&
+            (name_eq(pd->name, "virtio_blk") ||
+             name_eq(pd->name, "linux_vmm") ||
+             name_eq(pd->name, "freebsd_vmm"))) {
+            seL4_Word blk_shared_copy = ut_alloc_slot();
+            seL4_Error blk_err = seL4_NotEnoughMemory;
+            if (blk_shared_copy != seL4_CapNull) {
+                blk_err = seL4_CNode_Copy(
+                    seL4_CapInitThreadCNode, blk_shared_copy, 64u,
+                    seL4_CapInitThreadCNode, g_blk_shared_frame_cap, 64u,
+                    seL4_AllRights);
+                if (blk_err == seL4_NoError) {
+                    blk_err = pd_vspace_map_device_frame(
+                        vspace, (seL4_CPtr)blk_shared_copy,
+                        AGENTOS_BLK_SHARED_VA);
+                }
+            }
+            dbg_puts("[rt] ");
+            dbg_puts(pd->name);
+            dbg_puts(" blk shared map err=");
+            dbg_hex((seL4_Word)blk_err);
+            dbg_puts("\n");
+        }
+
+        if (g_net_shared_frame_cap != seL4_CapNull &&
+            (name_eq(pd->name, "net_pd") ||
+             name_eq(pd->name, "init_agent") ||
+             name_eq(pd->name, "linux_vmm") ||
+             name_eq(pd->name, "freebsd_vmm"))) {
+            seL4_Word net_shared_copy = ut_alloc_slot();
+            seL4_Error net_err = seL4_NotEnoughMemory;
+            if (net_shared_copy != seL4_CapNull) {
+                net_err = seL4_CNode_Copy(
+                    seL4_CapInitThreadCNode, net_shared_copy, 64u,
+                    seL4_CapInitThreadCNode, g_net_shared_frame_cap, 64u,
+                    seL4_AllRights);
+                if (net_err == seL4_NoError) {
+                    net_err = pd_vspace_map_device_frame(
+                        vspace, (seL4_CPtr)net_shared_copy,
+                        AGENTOS_NET_SHARED_VA);
+                }
+            }
+            dbg_puts("[rt] ");
+            dbg_puts(pd->name);
+            dbg_puts(" agentOS net shared map err=");
+            dbg_hex((seL4_Word)net_err);
+            dbg_puts("\n");
+        }
+
+        if (name_eq(pd->name, "net_pd")) {
+            seL4_Error net_err = seL4_NotEnoughMemory;
+            if (g_host_net_mmio_frame_cap != seL4_CapNull) {
+                seL4_Word net_mmio_copy = ut_alloc_slot();
+                if (net_mmio_copy != seL4_CapNull) {
+                    net_err = seL4_CNode_Copy(
+                        seL4_CapInitThreadCNode, net_mmio_copy, 64u,
+                        seL4_CapInitThreadCNode,
+                        g_host_net_mmio_frame_cap, 64u,
                         seL4_AllRights);
-                    if (v31_err == seL4_NoError) {
-                        v31_err = pd_vspace_map_device_frame(vspace,
-                                                             (seL4_CPtr)v31_copy,
-                                                             FREEBSD_VIRTIO_MMIO_BUS31_PAGE_VA);
+                    if (net_err == seL4_NoError) {
+                        net_err = pd_vspace_map_device_frame(
+                            vspace, (seL4_CPtr)net_mmio_copy,
+                            AGENTOS_HOST_NET_MMIO_VA);
                     }
                 }
-                dbg_puts("[rt] FreeBSD virtio bus31 map err=");
-                dbg_hex((seL4_Word)v31_err);
-                dbg_puts("\n");
             }
+            dbg_puts("[rt] net_pd host MMIO map err=");
+            dbg_hex((seL4_Word)net_err);
+            dbg_puts("\n");
+
+            net_err = seL4_NotEnoughMemory;
+            if (g_net_dma_frame_cap != seL4_CapNull) {
+                seL4_Word net_dma_copy = ut_alloc_slot();
+                if (net_dma_copy != seL4_CapNull) {
+                    net_err = seL4_CNode_Copy(
+                        seL4_CapInitThreadCNode, net_dma_copy, 64u,
+                        seL4_CapInitThreadCNode, g_net_dma_frame_cap, 64u,
+                        seL4_AllRights);
+                    if (net_err == seL4_NoError) {
+                        net_err = pd_vspace_map_device_frame(
+                            vspace, (seL4_CPtr)net_dma_copy,
+                            AGENTOS_NET_HOST_DMA_VA);
+                    }
+                }
+            }
+            dbg_puts("[rt] net_pd private DMA map err=");
+            dbg_hex((seL4_Word)net_err);
+            dbg_puts("\n");
         }
+#endif
 
         /* ── 4g.4.7: Set up VirtIO serial transport for cc_pd ───────────────── */
         /*
@@ -1704,11 +2064,11 @@ void root_task_main(const seL4_BootInfo *bi)
          *
          * We map three resources into cc_pd's VSpace:
          *   1. Device page at PA 0x0A000000 (covers virtio-mmio slots 0-7) at
-         *      CC_PD_VIRTIO_VA.  cc_pd probes slot 2 (offset +0x400).
+         *      CC_VIRTIO_MMIO_VA.  cc_pd probes slot 2 (offset +0x400).
          *   2. Three normal frames for VirtIO queue memory (desc/avail/used
-         *      rings + TX/RX data buffers).  Each is mapped at VA = PA so cc_pd
-         *      can use the pointer value directly as the DMA physical address.
-         *   3. A startup record page at CC_PD_STARTUP_VA carrying the three PAs.
+         *      rings + TX/RX data buffers), mapped at fixed cc_pd CPU VAs.
+         *   3. A versioned startup record at CC_VIRTIO_STARTUP_VA carrying
+         *      only the three device-visible physical addresses.
          */
         if (name_eq(pd->name, "cc_pd")) {
             /* 1. Allocate + map VirtIO MMIO device page */
@@ -1730,23 +2090,30 @@ void root_task_main(const seL4_BootInfo *bi)
                     }
                 }
                 if (ve == seL4_NoError && cc_virtio_cap != seL4_CapNull) {
-                    ve = pd_vspace_map_device_frame(vspace, cc_virtio_cap, CC_PD_VIRTIO_VA);
+                    ve = pd_vspace_map_device_frame(vspace, cc_virtio_cap,
+                                                    CC_VIRTIO_MMIO_VA);
                 }
                 dbg_puts("[rt] cc_pd VirtIO page err=");
                 dbg_hex((seL4_Word)ve);
                 dbg_puts("\n");
             }
 
-            /* 2. Allocate 3 normal frames for queue structs + TX/RX buffers.
-             *    Each mapped at VA = PA (identity) so cc_pd uses ptr as DMA PA. */
+            /* 2. Allocate queue + buffer frames and map fixed CPU virtual
+             * addresses independently from their device-visible PAs. */
             seL4_Word vq_pas[3] = {0u, 0u, 0u};
+            static const seL4_Word vq_vas[3] = {
+                CC_VIRTIO_QUEUE_VA,
+                CC_VIRTIO_TX_BUFFER_VA,
+                CC_VIRTIO_RX_BUFFER_VA,
+            };
             for (uint32_t vqp = 0u; vqp < 3u; vqp++) {
                 seL4_CPtr vq_cap = seL4_CapNull;
                 seL4_Error ve = ut_alloc_cap(seL4_ARM_SmallPageObject, 0u, &vq_cap);
                 if (ve == seL4_NoError) {
                     seL4_ARCH_Page_GetAddress_t r = seL4_ARCH_Page_GetAddress(vq_cap);
                     vq_pas[vqp] = r.paddr;
-                    ve = pd_vspace_map_device_frame(vspace, vq_cap, vq_pas[vqp]);
+                    ve = pd_vspace_map_device_frame(vspace, vq_cap,
+                                                    vq_vas[vqp]);
                 }
                 dbg_puts("[rt] cc_pd vq[");
                 dbg_hex((seL4_Word)vqp);
@@ -1767,13 +2134,17 @@ void root_task_main(const seL4_BootInfo *bi)
                     ve = pd_vspace_map_device_frame(seL4_CapInitThreadVSpace,
                                                     cc_start_cap, RT_VQ_SCRATCH_VA);
                     if (ve == seL4_NoError) {
-                        volatile seL4_Word *sp = (volatile seL4_Word *)RT_VQ_SCRATCH_VA;
-                        sp[0] = vq_pas[0];
-                        sp[1] = vq_pas[1];
-                        sp[2] = vq_pas[2];
+                        volatile cc_virtio_startup_t *sp =
+                            (volatile cc_virtio_startup_t *)RT_VQ_SCRATCH_VA;
+                        sp->magic = CC_VIRTIO_STARTUP_MAGIC;
+                        sp->version = CC_VIRTIO_STARTUP_VERSION;
+                        sp->queue_pa = (uint64_t)vq_pas[0];
+                        sp->tx_buffer_pa = (uint64_t)vq_pas[1];
+                        sp->rx_buffer_pa = (uint64_t)vq_pas[2];
                         AGENTOS_MEMORY_FENCE();
                         seL4_ARCH_Page_Unmap(cc_start_cap);
-                        seL4_Error ve2 = pd_vspace_map_device_frame(vspace, cc_start_cap, CC_PD_STARTUP_VA);
+                        seL4_Error ve2 = pd_vspace_map_device_frame(
+                            vspace, cc_start_cap, CC_VIRTIO_STARTUP_VA);
                         dbg_puts("[rt] cc_pd startup PAs written remap_err=");
                         dbg_hex((seL4_Word)ve2);
                         dbg_puts("\n");
@@ -1785,50 +2156,7 @@ void root_task_main(const seL4_BootInfo *bi)
                 }
             }
 
-            /* 4. UART0 debug access: copy frame cap + map at CC_PD_UART_DBG_VA
-             * so cc_pd can print to the seL4 debug console even without
-             * CONFIG_PRINTING (which is disabled in the release SDK). */
-            if (g_uart_frame_cap != seL4_CapNull) {
-                seL4_Word cc_uart_copy = ut_alloc_slot();
-                if (cc_uart_copy != seL4_CapNull) {
-                    seL4_Error ce = seL4_CNode_Copy(
-                        seL4_CapInitThreadCNode, cc_uart_copy,        64u,
-                        seL4_CapInitThreadCNode, g_uart_frame_cap,    64u,
-                        seL4_AllRights);
-                    if (ce == seL4_NoError) {
-                        ce = pd_vspace_map_device_frame(vspace,
-                                                        (seL4_CPtr)cc_uart_copy,
-                                                        CC_PD_UART_DBG_VA);
-                    }
-                    dbg_puts("[rt] cc_pd UART map err=");
-                    dbg_hex((seL4_Word)ce);
-                    dbg_puts("\n");
-                }
-            }
         }
-
-#ifdef AGENTOS_SEL4_TEST_IMAGE
-        /* agentos-8f5: map UART0 into the contract-runner PD so it can emit TAP
-         * (release kernel has CONFIG_PRINTING disabled).  VA must match
-         * TEST_RUNNER_UART_VA in tests/harness/target_contract_runner.c. */
-        if (name_eq(pd->name, "test_runner") && g_uart_frame_cap != seL4_CapNull) {
-            seL4_Word tr_uart_copy = ut_alloc_slot();
-            if (tr_uart_copy != seL4_CapNull) {
-                seL4_Error ce = seL4_CNode_Copy(
-                    seL4_CapInitThreadCNode, tr_uart_copy,     64u,
-                    seL4_CapInitThreadCNode, g_uart_frame_cap, 64u,
-                    seL4_AllRights);
-                if (ce == seL4_NoError) {
-                    ce = pd_vspace_map_device_frame(vspace,
-                                                    (seL4_CPtr)tr_uart_copy,
-                                                    0x10006000UL /* TEST_RUNNER_UART_VA */);
-                }
-                dbg_puts("[rt] test_runner UART map err=");
-                dbg_hex((seL4_Word)ce);
-                dbg_puts("\n");
-            }
-        }
-#endif
 
         /* ── 4g.4.9: EventBus ring RAM region (agentos-gom) ─────────────────
          * Map a private 2 MB RAM region at EVENTBUS_RING_VA into the event_bus
@@ -1923,6 +2251,12 @@ void root_task_main(const seL4_BootInfo *bi)
         /* ── 4h: Record all new caps in the accounting tree ─────────────── */
         cap_acct_record(seL4_CapNull, pd_cnode, seL4_CapTableObject,   i, pd->name);
         cap_acct_record(seL4_CapNull, vspace,   seL4_ARM_VSpaceObject, i, pd->name);
+#if defined(__aarch64__)
+        if (guest_vspace != seL4_CapNull) {
+            cap_acct_record(seL4_CapNull, guest_vspace,
+                            seL4_ARM_VSpaceObject, i, pd->name);
+        }
+#endif
         cap_acct_record(seL4_CapNull, tr.tcb_cap, seL4_TCBObject,       i, pd->name);
         cap_acct_record(seL4_CapNull, ipc_frame,  seL4_ARM_SmallPageObject, i, pd->name);
 
@@ -1951,7 +2285,7 @@ void root_task_main(const seL4_BootInfo *bi)
             seL4_Error vm_err = setup_vmm_guest_vcpu(pd,
                                                       i,
                                                       pd_cnode,
-                                                      vspace,
+                                                      guest_vspace,
                                                       ipc_buf_cap,
                                                       ipc_buf_va,
                                                       self_ep,

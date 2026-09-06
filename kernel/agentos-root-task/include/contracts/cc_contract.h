@@ -64,6 +64,27 @@
 #define CC_MAX_CMD_BYTES        4096u
 #define CC_MAX_RESP_BYTES       4096u
 
+/*
+ * Root-task → cc_pd startup ABI for the host VirtIO-serial transport.
+ * Device-visible physical addresses and cc_pd CPU virtual addresses are
+ * deliberately distinct; DMA addresses must never be dereferenced as pointers.
+ */
+#define CC_VIRTIO_STARTUP_MAGIC   0x43435651u /* "CCVQ" */
+#define CC_VIRTIO_STARTUP_VERSION 1u
+#define CC_VIRTIO_MMIO_VA         0x10002000UL
+#define CC_VIRTIO_STARTUP_VA      0x10003000UL
+#define CC_VIRTIO_QUEUE_VA        0x10006000UL
+#define CC_VIRTIO_TX_BUFFER_VA    0x10007000UL
+#define CC_VIRTIO_RX_BUFFER_VA    0x10008000UL
+
+typedef struct __attribute__((packed)) cc_virtio_startup {
+    uint32_t magic;
+    uint32_t version;
+    uint64_t queue_pa;
+    uint64_t tx_buffer_pa;
+    uint64_t rx_buffer_pa;
+} cc_virtio_startup_t;
+
 /* ─── Command types ──────────────────────────────────────────────────────── */
 
 #define CC_CMD_TYPE_QUERY   0x01u   /* read-only status query */
@@ -180,6 +201,8 @@ enum cc_error {
 #define CC_INPUT_KEY_UP     0x02u  /* key released */
 #define CC_INPUT_MOUSE_MOVE 0x03u  /* relative mouse movement */
 #define CC_INPUT_MOUSE_BTN  0x04u  /* mouse button press/release */
+#define CC_INPUT_TEXT       0x05u  /* keycode=length; UTF-8 bytes follow event */
+#define CC_INPUT_TEXT_MAX   20u   /* fits every 48-byte relay: handle + event + text */
 
 /* ─── Shmem layout: guest info entry (MSG_CC_LIST_GUESTS) ───────────────── */
 
@@ -214,12 +237,13 @@ typedef struct __attribute__((packed)) {
 
 typedef struct __attribute__((packed)) {
     uint32_t event_type;       /* CC_INPUT_* */
-    uint32_t keycode;          /* HID usage code (key events) */
+    uint32_t keycode;          /* HID usage code, or text byte length */
     int32_t  dx;               /* relative X (mouse move) */
     int32_t  dy;               /* relative Y (mouse move) */
     uint32_t btn_mask;         /* button bitmask (mouse button event) */
     uint32_t _reserved;
 } cc_input_event_t;
+/* CC_INPUT_TEXT appends keycode bytes immediately after cc_input_event_t. */
 
 /* ─── MSG_CC_LIST_GUESTS ─────────────────────────────────────────────────── */
 

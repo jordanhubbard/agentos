@@ -3,11 +3,17 @@ name: agentOS CI
 on:
   push:
     branches: [main, master]
-  pull_request:
-    branches: [main, master]
+  # Stacked changes use topic branches as temporary PR bases. Run the same
+  # checks there instead of showing a misleading green PR with only external
+  # security checks.
+  pull_request: {}
 
 env:
   CARGO_TERM_COLOR: always
+  # runner.* contexts are not available at workflow scope. GitHub-hosted
+  # Ubuntu jobs are isolated, so a fixed temporary path is both valid here
+  # and consistent with every SDK cache/download step below.
+  SEL4_SDK: /tmp/microkit-sdk-2.1.0
 
 jobs:
   # ---------------------------------------------------------------------------
@@ -103,7 +109,7 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             clang lld llvm \
             qemu-system-arm qemu-system-x86 \
-            python3 python3-pip curl
+            curl
 
       # -----------------------------------------------------------------------
       # Microkit SDK
@@ -112,7 +118,7 @@ jobs:
         id: cache-sdk
         uses: actions/cache@v4
         with:
-          path: microkit-sdk-2.1.0
+          path: ${{ env.SEL4_SDK }}
           key: microkit-sdk-2.1.0-linux-x86-64
 
       - name: Download Microkit SDK
@@ -120,12 +126,13 @@ jobs:
         run: |
           curl -fsSL \
             https://github.com/seL4/microkit/releases/download/2.1.0/microkit-sdk-2.1.0-linux-x86-64.tar.gz \
-            -o microkit-sdk.tar.gz
-          tar -xzf microkit-sdk.tar.gz
-          rm microkit-sdk.tar.gz
+            -o /tmp/microkit-sdk.tar.gz
+          mkdir -p "$(dirname "$SEL4_SDK")"
+          tar -xzf /tmp/microkit-sdk.tar.gz -C "$(dirname "$SEL4_SDK")"
+          rm /tmp/microkit-sdk.tar.gz
 
       # -----------------------------------------------------------------------
-      # Topology validation (gen_sdf.py)
+      # Topology validation (Rust gen-sdf)
       # Runs on every PR touching topology.yaml or agentos.system.
       # Fails if validation errors are found; shows SDF diff if regenerated.
       # -----------------------------------------------------------------------
@@ -144,7 +151,7 @@ jobs:
                      /tmp/agentos_generated.system > /tmp/sdf_diff.txt 2>&1; then
             echo "✓ agentos.system is up to date with topology.yaml"
           else
-            echo "⚠ agentos.system differs from what gen_sdf.py would generate:"
+            echo "⚠ agentos.system differs from what Rust gen-sdf would generate:"
             cat /tmp/sdf_diff.txt
             echo "(Note: diff is informational — CI does not fail on SDF content drift)"
           fi
@@ -185,7 +192,7 @@ jobs:
             clang lld llvm \
             qemu-system-arm \
             device-tree-compiler \
-            python3 curl
+            curl
 
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
@@ -194,7 +201,7 @@ jobs:
         id: cache-sdk-net
         uses: actions/cache@v4
         with:
-          path: microkit-sdk-2.1.0
+          path: ${{ env.SEL4_SDK }}
           key: microkit-sdk-2.1.0-linux-x86-64
 
       - name: Download Microkit SDK
@@ -202,9 +209,10 @@ jobs:
         run: |
           curl -fsSL \
             https://github.com/seL4/microkit/releases/download/2.1.0/microkit-sdk-2.1.0-linux-x86-64.tar.gz \
-            -o microkit-sdk.tar.gz
-          tar -xzf microkit-sdk.tar.gz
-          rm microkit-sdk.tar.gz
+            -o /tmp/microkit-sdk.tar.gz
+          mkdir -p "$(dirname "$SEL4_SDK")"
+          tar -xzf /tmp/microkit-sdk.tar.gz -C "$(dirname "$SEL4_SDK")"
+          rm /tmp/microkit-sdk.tar.gz
 
       - name: Prove guest packet through emulated virtio-net
         timeout-minutes: 20
@@ -236,7 +244,7 @@ jobs:
             clang lld llvm \
             qemu-system-arm \
             device-tree-compiler \
-            python3 curl
+            curl
 
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
@@ -245,7 +253,7 @@ jobs:
         id: cache-sdk-blk
         uses: actions/cache@v4
         with:
-          path: microkit-sdk-2.1.0
+          path: ${{ env.SEL4_SDK }}
           key: microkit-sdk-2.1.0-linux-x86-64
 
       - name: Download Microkit SDK
@@ -253,9 +261,10 @@ jobs:
         run: |
           curl -fsSL \
             https://github.com/seL4/microkit/releases/download/2.1.0/microkit-sdk-2.1.0-linux-x86-64.tar.gz \
-            -o microkit-sdk.tar.gz
-          tar -xzf microkit-sdk.tar.gz
-          rm microkit-sdk.tar.gz
+            -o /tmp/microkit-sdk.tar.gz
+          mkdir -p "$(dirname "$SEL4_SDK")"
+          tar -xzf /tmp/microkit-sdk.tar.gz -C "$(dirname "$SEL4_SDK")"
+          rm /tmp/microkit-sdk.tar.gz
 
       - name: Prove guest I/O through emulated virtio-blk
         timeout-minutes: 20
@@ -266,6 +275,69 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: guest-blk-proof-logs
+          path: build/tmp/agentos-qemu-*
+          if-no-files-found: ignore
+
+  # ---------------------------------------------------------------------------
+  # End-state Ubuntu proof: no QEMU net/blk guest devices, agentOS VirtIO only
+  # ---------------------------------------------------------------------------
+  ubuntu-agentos-virtio-proof:
+    name: Ubuntu agentOS VirtIO net + blk + console proof
+    runs-on: ubuntu-24.04
+    needs: validate-topology
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install clang / lld / QEMU / dtc
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            clang lld llvm \
+            qemu-system-arm \
+            device-tree-compiler \
+            libarchive-tools \
+            curl
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Cache Microkit SDK
+        id: cache-sdk-ubuntu-virtio
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.SEL4_SDK }}
+          key: microkit-sdk-2.1.0-linux-x86-64
+
+      - name: Download Microkit SDK
+        if: steps.cache-sdk-ubuntu-virtio.outputs.cache-hit != 'true'
+        run: |
+          curl -fsSL \
+            https://github.com/seL4/microkit/releases/download/2.1.0/microkit-sdk-2.1.0-linux-x86-64.tar.gz \
+            -o /tmp/microkit-sdk.tar.gz
+          mkdir -p "$(dirname "$SEL4_SDK")"
+          tar -xzf /tmp/microkit-sdk.tar.gz -C "$(dirname "$SEL4_SDK")"
+          rm /tmp/microkit-sdk.tar.gz
+
+      - name: Cache Ubuntu ISO
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/agentos/isos/ubuntu-26.04-desktop-arm64.iso
+          key: ubuntu-26.04-desktop-arm64-iso
+
+      - name: Prove Ubuntu uses agentOS VirtIO devices
+        timeout-minutes: 30
+        run: make test-ubuntu-virtio QEMU_TEST_TIMEOUT=480
+
+      - name: Prove Ubuntu Casper userspace on agentOS VirtIO
+        timeout-minutes: 45
+        run: make test-ubuntu-live QEMU_TEST_TIMEOUT=1500
+
+      - name: Upload QEMU serial logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ubuntu-agentos-virtio-proof-logs
           path: build/tmp/agentos-qemu-*
           if-no-files-found: ignore
 
@@ -288,13 +360,13 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             clang lld llvm \
             qemu-system-arm \
-            python3 curl
+            curl
 
       - name: Cache Microkit SDK
         id: cache-sdk-ct
         uses: actions/cache@v4
         with:
-          path: microkit-sdk-2.1.0
+          path: ${{ env.SEL4_SDK }}
           key: microkit-sdk-2.1.0-linux-x86-64
 
       - name: Download Microkit SDK
@@ -302,9 +374,10 @@ jobs:
         run: |
           curl -fsSL \
             https://github.com/seL4/microkit/releases/download/2.1.0/microkit-sdk-2.1.0-linux-x86-64.tar.gz \
-            -o microkit-sdk.tar.gz
-          tar -xzf microkit-sdk.tar.gz
-          rm microkit-sdk.tar.gz
+            -o /tmp/microkit-sdk.tar.gz
+          mkdir -p "$(dirname "$SEL4_SDK")"
+          tar -xzf /tmp/microkit-sdk.tar.gz -C "$(dirname "$SEL4_SDK")"
+          rm /tmp/microkit-sdk.tar.gz
 
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
@@ -338,23 +411,24 @@ jobs:
         run: |
           sudo apt-get update -q
           sudo apt-get install -y qemu-system-x86 \
-            clang lld llvm python3 device-tree-compiler curl
+            clang lld llvm device-tree-compiler curl
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Cache Microkit SDK
         id: cache-sdk-bt
         uses: actions/cache@v4
         with:
-          path: microkit-sdk-2.1.0
+          path: ${{ env.SEL4_SDK }}
           key: microkit-sdk-2.1.0-linux-x86-64
       - name: Download Microkit SDK
         if: steps.cache-sdk-bt.outputs.cache-hit != 'true'
         run: |
           curl -fsSL \
             https://github.com/seL4/microkit/releases/download/2.1.0/microkit-sdk-2.1.0-linux-x86-64.tar.gz \
-            -o microkit-sdk.tar.gz
-          tar -xzf microkit-sdk.tar.gz
-          rm microkit-sdk.tar.gz
+            -o /tmp/microkit-sdk.tar.gz
+          mkdir -p "$(dirname "$SEL4_SDK")"
+          tar -xzf /tmp/microkit-sdk.tar.gz -C "$(dirname "$SEL4_SDK")"
+          rm /tmp/microkit-sdk.tar.gz
       - name: Boot test
         timeout-minutes: 8
         run: make test TARGET_ARCH=x86_64 GUEST_OS=none
@@ -389,7 +463,7 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             clang lld llvm \
             qemu-system-arm qemu-system-x86 \
-            python3 curl
+            curl
 
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
@@ -398,7 +472,7 @@ jobs:
         id: cache-sdk-gate
         uses: actions/cache@v4
         with:
-          path: microkit-sdk-2.1.0
+          path: ${{ env.SEL4_SDK }}
           key: microkit-sdk-2.1.0-linux-x86-64
 
       - name: Download Microkit SDK
@@ -406,9 +480,10 @@ jobs:
         run: |
           curl -fsSL \
             https://github.com/seL4/microkit/releases/download/2.1.0/microkit-sdk-2.1.0-linux-x86-64.tar.gz \
-            -o microkit-sdk.tar.gz
-          tar -xzf microkit-sdk.tar.gz
-          rm microkit-sdk.tar.gz
+            -o /tmp/microkit-sdk.tar.gz
+          mkdir -p "$(dirname "$SEL4_SDK")"
+          tar -xzf /tmp/microkit-sdk.tar.gz -C "$(dirname "$SEL4_SDK")"
+          rm /tmp/microkit-sdk.tar.gz
 
       # TARGET/QEMU test #1 — aarch64.  Required for any OS-level claim.
       - name: GATE — make test TARGET_ARCH=aarch64 GUEST_OS=none

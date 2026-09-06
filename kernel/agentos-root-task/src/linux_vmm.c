@@ -403,13 +403,19 @@ void pd_main(seL4_CPtr my_ep, seL4_CPtr ns_ep) { linux_vmm_main(my_ep, ns_ep); }
 
 #include <libvmm/libvmm.h>
 #include <libvmm/vmm_caps.h>   /* vmm_register_vcpu                           */
+#include <platform/guest_memory_layout.h>
+#include <platform/guest_vmm_runtime.h>
 #include <platform/vmm_virtio_net.h>
 #include <platform/vmm_virtio_blk.h>
+#include <platform/vmm_virtio_console.h>
+#include <contracts/net-service/interface.h>
 #include "gpu_shmem.h"
+#include "contracts/cc_contract.h"
 #include "contracts/linux_vmm_contract.h"
 #include "sel4_boot.h"    /* seL4_IRQHandler_Ack, seL4_CPtr               */
 #include "sel4_ipc.h"     /* sel4_call, sel4_msg_t                        */
 #include "sel4_client.h"  /* sel4_client_t, sel4_client_call              */
+#include "serial_log.h"   /* non-driver diagnostics through serial_pd      */
 
 /* Raw agentOS CNode layout constants.
  *
@@ -448,36 +454,31 @@ __attribute__((used)) seL4_Word    microkit_ioports       = 0;
 __attribute__((used)) seL4_Word    microkit_signal_cap    = 0;
 __attribute__((used)) seL4_Word    microkit_signal_msg    = 0;
 
-/* PL011 UART on QEMU virt — direct write, no seL4_DebugPutChar needed */
-#define LINUX_VMM_UART_VA 0x10001000UL
-#define LINUX_VMM_UARTFR_TXFF (1u << 5)
-static inline void _uart_putc(char c) {
-    volatile uint32_t *fr = (volatile uint32_t *)(LINUX_VMM_UART_VA + 0x18UL);
-    volatile uint32_t *dr = (volatile uint32_t *)LINUX_VMM_UART_VA;
-    while (*fr & LINUX_VMM_UARTFR_TXFF) {
-        /* wait until the TX FIFO has room */
-    }
-    *dr = (uint32_t)(unsigned char)c;
-}
+/* linux_vmm holds only serial_pd's endpoint and transfer-page mapping. */
+static serial_log_t g_vmm_log = {
+    .ep = PD_CNODE_SLOT_SERIAL_EP,
+};
 
 void _putchar(char character)
 {
-    _uart_putc(character);
+    serial_log_putc(&g_vmm_log, character);
 }
 
-void microkit_dbg_putc(char c) { _uart_putc(c); }
+void microkit_dbg_putc(char c) { serial_log_putc(&g_vmm_log, c); }
 
 void microkit_dbg_puts(const char *s)
 {
-    for (; s && *s; s++) _uart_putc(*s);
+    serial_log_puts(&g_vmm_log, s);
 }
 
 void microkit_dbg_put32(uint32_t v)
 {
     static const char hex[] = "0123456789abcdef";
-    _uart_putc('0'); _uart_putc('x');
+    serial_log_putc(&g_vmm_log, '0');
+    serial_log_putc(&g_vmm_log, 'x');
     for (int i = 28; i >= 0; i -= 4)
-        _uart_putc(hex[(v >> i) & 0xfu]);
+        serial_log_putc(&g_vmm_log, hex[(v >> i) & 0xfu]);
+    serial_log_flush(&g_vmm_log);
 }
 
 /* seL4 IPC buffer pointer. Compiled with -D__thread= (TLS suppressed) so
@@ -496,7 +497,7 @@ static uint32_t g_guest_state = GUEST_STATE_RUNNING;
 #endif
 
 /* ── Caps resolved at init time ──────────────────────────────────────── */
-static seL4_CPtr g_serial_ep        = 0;
+static seL4_CPtr g_serial_ep        = PD_CNODE_SLOT_SERIAL_EP;
 static seL4_CPtr g_controller_ntfn_cap = 0;
 
 /* ── Per-slot affinity (AArch64) ─────────────────────────────────────── */
@@ -511,21 +512,12 @@ static uint32_t vmm_affinity[VMM_MAX_SLOTS];
 
 /* ─── Guest Configuration ─────────────────────────────────────────────── */
 
-/* 512MB guest RAM is the largest mapping currently proven by the root-task
- * allocator for qemu_virt_aarch64. The Ubuntu 26.04 initrd still fits when
- * placed below the DTB. */
-#define GUEST_RAM_SIZE          0x20000000
-
 /* Guest RAM, DTB, and initrd placement addresses (must match DTS). */
-#if defined(AGENTOS_GUEST_BOTH)
-#define LINUX_GUEST_RAM_VADDR      0xc0000000UL
-#define GUEST_DTB_VADDR            0xdf000000UL
-#define GUEST_INIT_RAM_DISK_VADDR  0xd0000000UL
-#else
-#define LINUX_GUEST_RAM_VADDR      0x40000000UL
-#define GUEST_DTB_VADDR            0x5f000000UL
-#define GUEST_INIT_RAM_DISK_VADDR  0x50000000UL
-#endif
+#define GUEST_RAM_SIZE             AOS_LINUX_GUEST_RAM_SIZE
+#define LINUX_GUEST_RAM_VADDR      AOS_LINUX_GUEST_RAM_BASE
+#define LINUX_GUEST_RAM_GPA        AOS_LINUX_GUEST_GPA_BASE
+#define GUEST_DTB_VADDR            AOS_LINUX_GUEST_DTB_BASE
+#define GUEST_INIT_RAM_DISK_VADDR  AOS_LINUX_GUEST_INITRD_BASE
 
 /* ─── Channel IDs ────────────────────────────────────────────────────── */
 
@@ -543,52 +535,8 @@ static uint32_t vmm_affinity[VMM_MAX_SLOTS];
 #define GPU_SHMEM_NOTIFY_IN_CH  3   /* seL4 PD → linux_vmm: tensor ready */
 #define GPU_SHMEM_NOTIFY_OUT_CH 4   /* linux_vmm → seL4 PD: result ready */
 
-/*
- * Virtual IRQ numbers injected into the guest via the vGIC.
- * These match the QEMU virt board SPI assignments for virtio-mmio devices:
- *   virtio-mmio-bus.0 → GIC SPI 16 → INTID 48
- *   virtio-mmio-bus.1 → GIC SPI 17 → INTID 49
- */
-#define VIRTIO_NET_IRQ          48
-#define VIRTIO_BLK_IRQ          49
-#define VIRTIO_BLK2_IRQ         51  /* ubuntu cloud-init seed disk (slot 3) */
-
-/*
- * Notification badge bits for virtio IRQs.
- * The raw root task uses the explicit ntfn_badge values from
- * system_desc_aarch64.c:
- *   virtio-net   INTID 48 → badge 0x1
- *   virtio-blk0  INTID 49 → badge 0x2
- *   virtio-blk1  INTID 51 → badge 0x4
- */
-#define VIRTIO_NET_NTFN_BADGE    0x1u
-#define VIRTIO_BLK_NTFN_BADGE    0x2u
-#define VIRTIO_BLK2_NTFN_BADGE   0x4u
-/*
- * UART IRQ passthrough: id=6 in .system avoids the ids 1-5 used by channels
- * (serial_pd=1, controller=2) and virtio IRQs (3,4,5).
- * Active only in linux_vmm_test.system; in full agentOS.system id=6 is absent
- * so this badge never fires and the init guard below is a no-op.
- */
-#define UART_NTFN_BADGE          (1u << 6)
-#define VMM_IRQ_LOG_INTERVAL     100000u
 #define VMM_FAULT_BADGE_FLAG     (1ULL << 62)
 #define LINUX_VTIMER_IRQ         27u
-
-/*
- * IRQ handler capabilities placed by the raw root task at
- * AGENTOS_IRQ_CAP_BASE + irq_index.  system_desc_aarch64.c orders them as
- * virtio-net, virtio-blk0, virtio-blk1.
- */
-static const seL4_CPtr g_virtio_net_irq_cap =
-    (seL4_CPtr)(AGENTOS_IRQ_CAP_BASE + 0u);
-static const seL4_CPtr g_virtio_blk_irq_cap =
-    (seL4_CPtr)(AGENTOS_IRQ_CAP_BASE + 1u);
-static const seL4_CPtr g_virtio_blk2_irq_cap =
-    (seL4_CPtr)(AGENTOS_IRQ_CAP_BASE + 2u);
-static const seL4_CPtr g_uart_irq_cap =
-    (seL4_CPtr)(AGENTOS_IRQ_CAP_BASE + 3u);
-
 /* ─── Guest Image Symbols ────────────────────────────────────────────── */
 /* These are linked in by package_guest_images.S */
 
@@ -598,6 +546,16 @@ extern char _guest_dtb_image[];
 extern char _guest_dtb_image_end[];
 extern char _guest_initrd_image[];
 extern char _guest_initrd_image_end[];
+
+static uint32_t guest_image_checksum(const void *data, size_t size)
+{
+    const uint8_t *bytes = (const uint8_t *)data;
+    uint32_t hash = 2166136261u;
+    for (size_t i = 0; i < size; i++) {
+        hash = (hash ^ bytes[i]) * 16777619u;
+    }
+    return hash;
+}
 
 /* Microkit sets this to the start of guest_ram MR. */
 uintptr_t guest_ram_vaddr;
@@ -701,54 +659,11 @@ static void linux_vmm_binding_init(void)
     LOG_VMM("binding: EVENT_GUEST_READY publish deferred (EVENTBUS_VMM_CH not wired)\n");
 }
 
-static void virtio_net_ack(size_t vcpu_id, int irq, void *cookie)
-{
-    (void)vcpu_id; (void)irq; (void)cookie;
-    static uint64_t ack_count;
-    ack_count++;
-    if (ack_count <= 4u || (ack_count % VMM_IRQ_LOG_INTERVAL) == 0u) {
-        LOG_VMM("virtio-net guest EOI/ack #%llu\n",
-                (unsigned long long)ack_count);
-    }
-    seL4_IRQHandler_Ack(g_virtio_net_irq_cap);
-}
-
-static void virtio_blk_ack(size_t vcpu_id, int irq, void *cookie)
-{
-    (void)vcpu_id; (void)irq; (void)cookie;
-    static uint64_t ack_count;
-    ack_count++;
-    if (ack_count <= 4u || (ack_count % VMM_IRQ_LOG_INTERVAL) == 0u) {
-        LOG_VMM("virtio-blk0 guest EOI/ack #%llu\n",
-                (unsigned long long)ack_count);
-    }
-    seL4_IRQHandler_Ack(g_virtio_blk_irq_cap);
-}
-
-static void virtio_blk2_ack(size_t vcpu_id, int irq, void *cookie)
-{
-    (void)vcpu_id; (void)irq; (void)cookie;
-    static uint64_t ack_count;
-    ack_count++;
-    if (ack_count <= 4u || (ack_count % VMM_IRQ_LOG_INTERVAL) == 0u) {
-        LOG_VMM("virtio-blk1 guest EOI/ack #%llu\n",
-                (unsigned long long)ack_count);
-    }
-    seL4_IRQHandler_Ack(g_virtio_blk2_irq_cap);
-}
-
-static void uart_ack(size_t vcpu_id, int irq, void *cookie)
-{
-    (void)vcpu_id; (void)irq; (void)cookie;
-    seL4_IRQHandler_Ack(g_uart_irq_cap);
-}
-
 /* ─── PL011 UART MMIO Emulation ──────────────────────────────────────────
  *
- * Ubuntu uses the PL011 UART at 0x9000000 for earlycon and ttyAMA0.  The
- * VMM emulates enough PL011 state to expose a real byte stream over the
- * guest IPC contract: guest writes are buffered for MSG_GUEST_CONSOLE_DRAIN,
- * and MSG_GUEST_SEND_INPUT bytes are presented through DR/RX interrupts.
+ * Ubuntu uses the PL011 address only for bounded earlycon output.  The DT
+ * disables the device and console=hvc0 selects virtio-console for login.
+ * These virtual registers are not backed by a physical device capability.
  */
 #define PL011_BASE   0x9000000UL
 #define PL011_SIZE   0x1000UL
@@ -776,7 +691,6 @@ static void uart_ack(size_t vcpu_id, int irq, void *cookie)
 #define PL011_UART_IRQ 33u
 #define GUEST_CONSOLE_TX_RING_SIZE 8192u
 #define GUEST_CONSOLE_RX_RING_SIZE 1024u
-#define GUEST_INPUT_RAW_BYTE_BASE  0x100u
 
 static uint8_t console_tx_ring[GUEST_CONSOLE_TX_RING_SIZE];
 static uint32_t console_tx_head;
@@ -797,22 +711,6 @@ static uint32_t pl011_cr = PL011_CR_TXE | PL011_CR_RXE;
 static uint32_t pl011_ifls = 0x12u;
 static uint32_t pl011_imsc;
 static uint32_t pl011_dmacr;
-
-static uint32_t vmm_msg_rd32(const uint8_t *src, uint32_t off)
-{
-    return ((uint32_t)src[off + 0u]) |
-           ((uint32_t)src[off + 1u] << 8u) |
-           ((uint32_t)src[off + 2u] << 16u) |
-           ((uint32_t)src[off + 3u] << 24u);
-}
-
-static void vmm_msg_wr32(uint8_t *dst, uint32_t off, uint32_t value)
-{
-    dst[off + 0u] = (uint8_t)(value & 0xffu);
-    dst[off + 1u] = (uint8_t)((value >> 8u) & 0xffu);
-    dst[off + 2u] = (uint8_t)((value >> 16u) & 0xffu);
-    dst[off + 3u] = (uint8_t)((value >> 24u) & 0xffu);
-}
 
 static void console_tx_push(uint8_t byte)
 {
@@ -872,49 +770,13 @@ static void pl011_maybe_inject_irq(void)
 
 static void guest_console_write(uint8_t byte)
 {
+    /*
+     * Guest console bytes belong to the per-guest virtual TTY drained by
+     * CC-PD.  Do not mirror them synchronously to the physical PL011:
+     * serial_pd owns that UART for bounded agentOS diagnostics, and coupling
+     * guest printk throughput to a 115200-baud device can stall guest boot.
+     */
     console_tx_push(byte);
-    _uart_putc((char)byte);
-}
-
-static bool input_event_to_byte(uint32_t event_type, uint32_t keycode,
-                                uint8_t *byte)
-{
-    if (event_type != 1u) return false; /* CC_INPUT_KEY_DOWN */
-
-    if ((keycode & 0xffffff00u) == GUEST_INPUT_RAW_BYTE_BASE) {
-        *byte = (uint8_t)(keycode & 0xffu);
-        return true;
-    }
-
-    if (keycode >= 0x04u && keycode <= 0x1du) {
-        *byte = (uint8_t)('a' + (keycode - 0x04u));
-        return true;
-    }
-    if (keycode >= 0x1eu && keycode <= 0x26u) {
-        *byte = (uint8_t)('1' + (keycode - 0x1eu));
-        return true;
-    }
-
-    switch (keycode) {
-    case 0x27u: *byte = '0'; return true;
-    case 0x28u: *byte = '\r'; return true;
-    case 0x29u: *byte = 0x1bu; return true;
-    case 0x2au: *byte = 0x7fu; return true;
-    case 0x2bu: *byte = '\t'; return true;
-    case 0x2cu: *byte = ' '; return true;
-    case 0x2du: *byte = '-'; return true;
-    case 0x2eu: *byte = '='; return true;
-    case 0x2fu: *byte = '['; return true;
-    case 0x30u: *byte = ']'; return true;
-    case 0x31u: *byte = '\\'; return true;
-    case 0x33u: *byte = ';'; return true;
-    case 0x34u: *byte = '\''; return true;
-    case 0x35u: *byte = '`'; return true;
-    case 0x36u: *byte = ','; return true;
-    case 0x37u: *byte = '.'; return true;
-    case 0x38u: *byte = '/'; return true;
-    default: return false;
-    }
 }
 
 static void pl011_store32(uint32_t *reg, size_t offset, uint64_t fsr,
@@ -977,20 +839,6 @@ static uint32_t pl011_read(size_t offset)
         return 0xb1u; /* UARTPCellID3 */
     default:
         return 0u;
-    }
-}
-
-static void linux_clear_guest_ram(uintptr_t base, size_t size)
-{
-    volatile uint64_t *p = (volatile uint64_t *)base;
-    size_t words = size / sizeof(*p);
-    for (size_t i = 0u; i < words; i++) {
-        p[i] = 0u;
-    }
-
-    volatile uint8_t *tail = (volatile uint8_t *)(base + words * sizeof(*p));
-    for (size_t i = words * sizeof(*p); i < size; i++) {
-        *tail++ = 0u;
     }
 }
 
@@ -1074,6 +922,41 @@ static void linux_vmm_suspend_guest_tcb(void)
     }
 }
 
+static void linux_vmm_resume_guest_tcb(void)
+{
+    (void)seL4_TCB_Resume(
+        (seL4_CPtr)(AGENTOS_VMM_TCB_CAP_BASE + GUEST_BOOT_VCPU_ID));
+}
+
+static void linux_vmm_quiesce_timer(void)
+{
+    vmm_vcpu_arm_ack_vppi(GUEST_BOOT_VCPU_ID, LINUX_VTIMER_IRQ);
+}
+
+static bool linux_vmm_push_input(uint32_t event_type, const uint8_t *bytes,
+                                 uint32_t length)
+{
+    (void)event_type;
+    if (aos_vmm_virtio_console_push_rx_bytes(bytes, length)) return true;
+    if (length > GUEST_CONSOLE_RX_RING_SIZE - console_rx_count) return false;
+    for (uint32_t i = 0u; i < length; i++) {
+        if (!console_rx_push(bytes[i])) return false;
+    }
+    if (length != 0u) pl011_maybe_inject_irq();
+    return true;
+}
+
+static uint32_t linux_vmm_drain_console(uint8_t *bytes, uint32_t capacity)
+{
+    /*
+     * PL011 contains earlycon bytes. Once hvc0 is active, all usable
+     * console/login traffic comes from the sDDF-backed virtio-console.
+     */
+    uint32_t length = console_tx_drain(bytes, capacity);
+    return length + aos_vmm_virtio_console_drain_tx(
+        bytes + length, capacity - length);
+}
+
 static seL4_MessageInfo_t linux_vmm_rpc(seL4_MessageInfo_t info)
 {
     (void)info;
@@ -1081,134 +964,26 @@ static seL4_MessageInfo_t linux_vmm_rpc(seL4_MessageInfo_t info)
     sel4_msg_t rep = {0};
     _sel4_mrs_to_msg(&req);
 
-    switch (req.opcode) {
-    case MSG_GUEST_CREATE: {
-        if (req.length >= 4u) {
-            uint32_t os_type = vmm_msg_rd32(req.data, 0u);
-            if (os_type != 0u && os_type != LINUX_VMM_OS_TYPE) {
-                rep.opcode = GUEST_ERR_BAD_OS_TYPE;
-                break;
-            }
-        }
-        if (g_guest_state == GUEST_STATE_DEAD) {
-            rep.opcode = GUEST_ERR_DEAD;
-            break;
-        }
-        vmm_msg_wr32(rep.data, 0u, GUEST_OK);
-        vmm_msg_wr32(rep.data, 4u, 0u);
-        rep.length = 8u;
-        rep.opcode = GUEST_OK;
-        break;
+    const aos_guest_vmm_runtime_t runtime = {
+        .os_type = LINUX_VMM_OS_TYPE,
+        .guest_id = 0u,
+        .state = &g_guest_state,
+        .started = &guest_started,
+        .start = linux_vmm_start_guest,
+        .suspend = linux_vmm_suspend_guest_tcb,
+        .resume = linux_vmm_resume_guest_tcb,
+        .quiesce_timer = linux_vmm_quiesce_timer,
+        .push_input = linux_vmm_push_input,
+        .drain_console = linux_vmm_drain_console,
+    };
+    if (aos_guest_vmm_lifecycle_rpc(&req, &rep, &runtime) ||
+        aos_guest_vmm_console_rpc(&req, &rep, &runtime)) {
+        _sel4_msg_to_mrs(&rep);
+        return seL4_MessageInfo_new((seL4_Word)rep.opcode, 0, 0,
+                                    (seL4_Word)_SEL4_MR_COUNT);
     }
-    case MSG_GUEST_BOOT: {
-        if (req.length < 4u || vmm_msg_rd32(req.data, 0u) != 0u) {
-            rep.opcode = GUEST_ERR_BAD_GUEST_ID;
-            break;
-        }
-        if (g_guest_state == GUEST_STATE_DEAD) {
-            rep.opcode = GUEST_ERR_DEAD;
-            break;
-        }
-        if (!guest_started && !linux_vmm_start_guest()) {
-            rep.opcode = GUEST_ERR_NOT_READY;
-            break;
-        }
-        g_guest_state = GUEST_STATE_RUNNING;
-        rep.opcode = GUEST_OK;
-        break;
-    }
-    case MSG_GUEST_SUSPEND: {
-        if (req.length < 4u || vmm_msg_rd32(req.data, 0u) != 0u) {
-            rep.opcode = GUEST_ERR_BAD_GUEST_ID;
-            break;
-        }
-        if (g_guest_state == GUEST_STATE_DEAD) {
-            rep.opcode = GUEST_ERR_DEAD;
-            break;
-        }
-        if (g_guest_state != GUEST_STATE_SUSPENDED) {
-            linux_vmm_suspend_guest_tcb();
-            vmm_vcpu_arm_ack_vppi(GUEST_BOOT_VCPU_ID, LINUX_VTIMER_IRQ);
-            g_guest_state = GUEST_STATE_SUSPENDED;
-        }
-        rep.opcode = GUEST_OK;
-        break;
-    }
-    case MSG_GUEST_RESUME: {
-        if (req.length < 4u || vmm_msg_rd32(req.data, 0u) != 0u) {
-            rep.opcode = GUEST_ERR_BAD_GUEST_ID;
-            break;
-        }
-        if (g_guest_state == GUEST_STATE_DEAD) {
-            rep.opcode = GUEST_ERR_DEAD;
-            break;
-        }
-        if (g_guest_state == GUEST_STATE_SUSPENDED) {
-            seL4_TCB_Resume((seL4_CPtr)(AGENTOS_VMM_TCB_CAP_BASE + GUEST_BOOT_VCPU_ID));
-        }
-        g_guest_state = GUEST_STATE_RUNNING;
-        rep.opcode = GUEST_OK;
-        break;
-    }
-    case MSG_GUEST_DESTROY: {
-        if (req.length < 4u || vmm_msg_rd32(req.data, 0u) != 0u) {
-            rep.opcode = GUEST_ERR_BAD_GUEST_ID;
-            break;
-        }
-        if (g_guest_state != GUEST_STATE_DEAD) {
-            linux_vmm_suspend_guest_tcb();
-            vmm_vcpu_arm_ack_vppi(GUEST_BOOT_VCPU_ID, LINUX_VTIMER_IRQ);
-            g_guest_state = GUEST_STATE_DEAD;
-        }
-        rep.opcode = GUEST_OK;
-        break;
-    }
-    case MSG_GUEST_SEND_INPUT: {
-        if (req.length < 28u || vmm_msg_rd32(req.data, 0u) != 0u) {
-            rep.opcode = GUEST_ERR_BAD_GUEST_ID;
-            break;
-        }
-        if (g_guest_state == GUEST_STATE_DEAD) {
-            rep.opcode = GUEST_ERR_DEAD;
-            break;
-        }
-        if (g_guest_state != GUEST_STATE_RUNNING) {
-            rep.opcode = GUEST_ERR_BAD_STATE;
-            break;
-        }
 
-        uint8_t byte = 0u;
-        uint32_t event_type = vmm_msg_rd32(req.data, 4u);
-        uint32_t keycode = vmm_msg_rd32(req.data, 8u);
-        if (input_event_to_byte(event_type, keycode, &byte)) {
-            if (!console_rx_push(byte)) {
-                rep.opcode = GUEST_ERR_DEVICE_UNAVAILABLE;
-                break;
-            }
-            pl011_maybe_inject_irq();
-        }
-        rep.opcode = GUEST_OK;
-        break;
-    }
-    case MSG_GUEST_CONSOLE_DRAIN: {
-        if (req.length < 8u || vmm_msg_rd32(req.data, 0u) != 0u) {
-            rep.opcode = GUEST_ERR_BAD_GUEST_ID;
-            break;
-        }
-        if (g_guest_state == GUEST_STATE_DEAD) {
-            rep.opcode = GUEST_ERR_DEAD;
-            break;
-        }
-        uint32_t max = vmm_msg_rd32(req.data, 4u);
-        if (max > SEL4_MSG_DATA_BYTES) max = SEL4_MSG_DATA_BYTES;
-        rep.length = console_tx_drain(rep.data, max);
-        rep.opcode = GUEST_OK;
-        break;
-    }
-    default:
-        rep.opcode = GUEST_ERR_PROTOCOL_VIOLATION;
-        break;
-    }
+    rep.opcode = GUEST_ERR_PROTOCOL_VIOLATION;
 
     _sel4_msg_to_mrs(&rep);
     return seL4_MessageInfo_new((seL4_Word)rep.opcode, 0, 0,
@@ -1319,23 +1094,70 @@ void init(void)
     size_t kernel_size = _guest_kernel_image_end - _guest_kernel_image;
     size_t dtb_size    = _guest_dtb_image_end - _guest_dtb_image;
     size_t initrd_size = _guest_initrd_image_end - _guest_initrd_image;
+#if defined(AGENTOS_GUEST_UBUNTU_LIVE)
+    /* Casper is staged from the agentOS-owned ISO after blk backend init. */
+    initrd_size = 0u;
+#endif
 
     LOG_VMM("  Kernel: %zu bytes\n", kernel_size);
     LOG_VMM("  DTB:    %zu bytes\n", dtb_size);
     LOG_VMM("  Initrd: %zu bytes\n", initrd_size);
+    uint32_t kernel_source_checksum =
+        guest_image_checksum(_guest_kernel_image, kernel_size);
+    uint32_t dtb_source_checksum =
+        guest_image_checksum(_guest_dtb_image, dtb_size);
+    uint32_t initrd_source_checksum =
+        guest_image_checksum(_guest_initrd_image, initrd_size);
+    if (initrd_size > 0u) {
+        LOG_VMM("  Initrd source 0x%lx checksum: 0x%x\n",
+                (unsigned long)_guest_initrd_image, initrd_source_checksum);
+    }
 
-    LOG_VMM("  Clearing guest RAM window...\n");
-    linux_clear_guest_ram(guest_ram_vaddr, GUEST_RAM_SIZE);
+    /*
+     * Guest frames are non-device seL4 objects and are already zeroed by
+     * Untyped_Retype before this PD can map them. Do not clear the full
+     * window again here: under nested TCG that duplicate pass dominates boot.
+     */
+    LOG_VMM("  Guest RAM zeroed by seL4 retype\n");
+    if (initrd_size > 0u) {
+        LOG_VMM("  Initrd checksum after guest RAM setup: 0x%x\n",
+                guest_image_checksum(_guest_initrd_image, initrd_size));
+    }
 
-    uintptr_t kernel_pc = linux_setup_images(
+    uintptr_t dtb_hva = guest_ram_vaddr +
+        (GUEST_DTB_VADDR - LINUX_GUEST_RAM_GPA);
+    uintptr_t initrd_hva = guest_ram_vaddr +
+        (GUEST_INIT_RAM_DISK_VADDR - LINUX_GUEST_RAM_GPA);
+    uintptr_t kernel_hva = linux_setup_images(
         guest_ram_vaddr,
         (uintptr_t)_guest_kernel_image, kernel_size,
-        (uintptr_t)_guest_dtb_image, GUEST_DTB_VADDR, dtb_size,
-        (uintptr_t)_guest_initrd_image, GUEST_INIT_RAM_DISK_VADDR, initrd_size
+        (uintptr_t)_guest_dtb_image, dtb_hva, dtb_size,
+        (uintptr_t)_guest_initrd_image, initrd_hva, initrd_size
     );
 
-    if (!kernel_pc) {
+    if (!kernel_hva) {
         LOG_VMM_ERR("Failed to initialise guest images\n");
+        return;
+    }
+    uintptr_t kernel_pc = LINUX_GUEST_RAM_GPA +
+        (kernel_hva - guest_ram_vaddr);
+    uint32_t initrd_guest_checksum = guest_image_checksum(
+        (const void *)initrd_hva, initrd_size);
+    uint32_t kernel_guest_checksum =
+        guest_image_checksum((const void *)kernel_hva, kernel_size);
+    uint32_t dtb_guest_checksum =
+        guest_image_checksum((const void *)dtb_hva, dtb_size);
+    if (initrd_size > 0u) {
+        LOG_VMM("  Initrd guest checksum:  0x%x\n", initrd_guest_checksum);
+    }
+    LOG_VMM("  Kernel checksums: source=0x%x guest=0x%x\n",
+            kernel_source_checksum, kernel_guest_checksum);
+    LOG_VMM("  DTB checksums: source=0x%x guest=0x%x\n",
+            dtb_source_checksum, dtb_guest_checksum);
+    if (initrd_source_checksum != initrd_guest_checksum ||
+        kernel_source_checksum != kernel_guest_checksum ||
+        dtb_source_checksum != dtb_guest_checksum) {
+        LOG_VMM_ERR("Guest image copy checksum mismatch\n");
         return;
     }
 
@@ -1365,64 +1187,27 @@ void init(void)
 
     /*
      * Emulated virtio-net at IPA 0x0A010000 (unmapped; faults here, sDDF pump).
-     * QEMU virtio-mmio at 0x0A000000 / IRQ 48 is a kill-dated crutch.
-     * Bind guest RAM so desc->addr is translated GPA→HVA (identity today).
+     * Bind guest RAM so descriptor addresses are translated from guest
+     * physical addresses to this PD's independently allocated host mapping.
      */
-    aos_vmm_guest_ram_bind(LINUX_GUEST_RAM_VADDR, guest_ram_vaddr, GUEST_RAM_SIZE);
-    aos_vmm_virtio_net_init();
+    aos_vmm_guest_ram_bind(LINUX_GUEST_RAM_GPA, guest_ram_vaddr, GUEST_RAM_SIZE);
+    aos_vmm_virtio_net_init(0u);
 
-    /*
-     * Emulated virtio-blk at IPA 0x0A020000 (faults here, sDDF RAM pump).
-     * Buildroot DTB advertises only this disk. Ubuntu still has QEMU
-     * virtio-blk at 0x0A000200 / IRQ 49 as the boot-disk crutch.
-     */
-    aos_vmm_virtio_blk_init();
-
-    /* Register virtio-net IRQ passthrough (QEMU virt: SPI 16 → INTID 48) */
-    success = virq_register(GUEST_BOOT_VCPU_ID, VIRTIO_NET_IRQ, &virtio_net_ack, NULL);
-    if (!success) {
-        LOG_VMM_ERR("Failed to register virtio-net IRQ\n");
+    /* Emulated virtio-blk at IPA 0x0A020000 (faults here, sDDF pump). */
+    aos_vmm_virtio_blk_init(AOS_HOST_BLK_MEDIA_UBUNTU);
+#if defined(AGENTOS_GUEST_UBUNTU_LIVE)
+    size_t live_initrd_size = 0u;
+    if (!aos_vmm_virtio_blk_load_casper_initrd(
+            initrd_hva,
+            GUEST_DTB_VADDR - GUEST_INIT_RAM_DISK_VADDR,
+            &live_initrd_size)) {
+        LOG_VMM_ERR("Failed to stage casper/initrd from agentOS host media\n");
         return;
     }
-    /* Initial ack to prime the GIC for first delivery (seL4 native API) */
-    seL4_IRQHandler_Ack(g_virtio_net_irq_cap);
-
-    /* Register virtio-blk0 IRQ passthrough (QEMU virt: SPI 17 → INTID 49) */
-    success = virq_register(GUEST_BOOT_VCPU_ID, VIRTIO_BLK_IRQ, &virtio_blk_ack, NULL);
-    if (!success) {
-        LOG_VMM_ERR("Failed to register virtio-blk0 IRQ\n");
-        return;
-    }
-    /* Initial ack to prime the GIC for first delivery (seL4 native API) */
-    seL4_IRQHandler_Ack(g_virtio_blk_irq_cap);
-
-    /* Register virtio-blk1 IRQ passthrough (SPI 19 → INTID 51, ubuntu seed) */
-    success = virq_register(GUEST_BOOT_VCPU_ID, VIRTIO_BLK2_IRQ, &virtio_blk2_ack, NULL);
-    if (!success) {
-        LOG_VMM_ERR("Failed to register virtio-blk1 IRQ (ubuntu seed — may not be present)\n");
-        /* Non-fatal: buildroot guests do not use the seed disk slot */
-    } else {
-        seL4_IRQHandler_Ack(g_virtio_blk2_irq_cap);
-    }
-
-    /*
-     * Register UART IRQ passthrough (PL011 SPI 1 → INTID 33).
-     * Only active in linux_vmm_test.system where irq id=6 is assigned.
-     * In the full agentOS system serial_pd owns IRQ 33; id=6 is absent and
-     * g_uart_irq_cap (slot 144) holds no valid cap — so we guard with a
-     * seL4_IRQHandler_Ack only if virq_register succeeds.
-     * UART_IRQ = 33: QEMU virt aarch64 PL011 SPI 1 → GIC INTID 33.
-     */
-    {
-        /* UART_IRQ in the guest's GIC address space = INTID 33 (SPI 1) */
-        const uint32_t UART_IRQ = 33u;
-        bool uart_ok = virq_register(GUEST_BOOT_VCPU_ID, UART_IRQ, &uart_ack, NULL);
-        if (uart_ok) {
-            seL4_IRQHandler_Ack(g_uart_irq_cap);
-            LOG_VMM("UART IRQ 33 passthrough registered (direct PL011 mode)\n");
-        }
-        /* If not registered, PL011 uses fault-emulation path — non-fatal */
-    }
+    LOG_VMM("Ubuntu live initrd ready in guest RAM (%zu bytes)\n",
+            live_initrd_size);
+#endif
+    aos_vmm_virtio_console_init();
 
     g_linux_kernel_pc = kernel_pc;
     g_linux_startable = true;
@@ -1455,88 +1240,11 @@ void init(void)
 /*
  * notified — handle incoming notifications.
  *
- * seL4 delivers hardware IRQs as badged notifications on the PD's notification
- * object.  The badge value is the ntfn_badge from the irq_desc_t for that IRQ
- * (set up by the root task at boot via seL4_IRQHandler_SetNotification).
- *
- * Multiple IRQs may be coalesced into a single notification word (bitwise OR of
- * all pending badges).  We must therefore test each badge bit independently
- * with bitwise AND — not use a switch statement — so that all pending IRQs are
- * serviced in one notification delivery.
- *
- * Non-IRQ notifications (controller, GPU shmem) arrive on Microkit IPC
- * channels and are dispatched by channel number in the remaining cases.
+ * Host IRQs terminate in driver PDs. Emulated virtio injects guest IRQs from
+ * its MMIO/backend paths, so this handler receives only VMM control events.
  */
 static void linux_vmm_notified(seL4_Word badge)
 {
-    seL4_Word ch = badge;
-    (void)ch;
-    bool handled_irq = false;
-    /*
-     * Badge bits from seL4 notification delivery.  Multiple IRQs may be
-     * coalesced; test each bit independently.
-     */
-    if (badge & (seL4_Word)VIRTIO_NET_NTFN_BADGE) {
-        handled_irq = true;
-        static uint64_t irq_count;
-        irq_count++;
-        bool success = virq_inject(VIRTIO_NET_IRQ);
-        if (irq_count <= 4u || (irq_count % VMM_IRQ_LOG_INTERVAL) == 0u || !success) {
-            LOG_VMM("virtio-net host IRQ #%llu inject=%s\n",
-                    (unsigned long long)irq_count,
-                    success ? "ok" : "failed");
-        }
-        if (!success) {
-            LOG_VMM_ERR("virtio-net IRQ %d dropped on inject\n", VIRTIO_NET_IRQ);
-        }
-        /* IRQHandler_Ack is called by virtio_net_ack() registered via virq_register */
-    }
-
-    if (badge & (seL4_Word)VIRTIO_BLK_NTFN_BADGE) {
-        handled_irq = true;
-        static uint64_t irq_count;
-        irq_count++;
-        bool success = virq_inject(VIRTIO_BLK_IRQ);
-        if (irq_count <= 4u || (irq_count % VMM_IRQ_LOG_INTERVAL) == 0u || !success) {
-            LOG_VMM("virtio-blk0 host IRQ #%llu inject=%s\n",
-                    (unsigned long long)irq_count,
-                    success ? "ok" : "failed");
-        }
-        if (!success) {
-            LOG_VMM_ERR("virtio-blk0 IRQ %d dropped on inject\n", VIRTIO_BLK_IRQ);
-        }
-    }
-
-    if (badge & (seL4_Word)VIRTIO_BLK2_NTFN_BADGE) {
-        handled_irq = true;
-        static uint64_t irq_count;
-        irq_count++;
-        bool success = virq_inject(VIRTIO_BLK2_IRQ);
-        if (irq_count <= 4u || (irq_count % VMM_IRQ_LOG_INTERVAL) == 0u || !success) {
-            LOG_VMM("virtio-blk1 host IRQ #%llu inject=%s\n",
-                    (unsigned long long)irq_count,
-                    success ? "ok" : "failed");
-        }
-        if (!success) {
-            LOG_VMM_ERR("virtio-blk1 IRQ %d dropped on inject\n", VIRTIO_BLK2_IRQ);
-        }
-    }
-
-    if (badge & (seL4_Word)UART_NTFN_BADGE) {
-        handled_irq = true;
-        /* PL011 UART IRQ 33 — used in linux_vmm_test.system (direct serial mapping).
-         * Inject INTID 33 into the guest so the PL011 driver can process RX/TX. */
-        bool success = virq_inject(33u);
-        if (!success) {
-            LOG_VMM_ERR("UART IRQ 33 dropped on inject\n");
-        }
-    }
-
-    if (handled_irq) {
-        return;
-    }
-
-    /* Non-IRQ channel notifications — dispatch by badge/channel number */
     switch (badge) {
     case CONTROLLER_CH: {
         /*
@@ -1604,11 +1312,7 @@ static void linux_vmm_notified(seL4_Word badge)
     }
 
     default:
-        /* Only log if no badge bits were set (i.e. not a virtio IRQ notification) */
-        if (!(badge & (seL4_Word)(VIRTIO_NET_NTFN_BADGE | VIRTIO_BLK_NTFN_BADGE |
-                                   VIRTIO_BLK2_NTFN_BADGE))) {
-            LOG_VMM("Unexpected notification on badge 0x%lx\n", (unsigned long)badge);
-        }
+        LOG_VMM("Unexpected notification on badge 0x%lx\n", (unsigned long)badge);
         break;
     }
 }
@@ -1638,6 +1342,21 @@ static void linux_vmm_notified(seL4_Word badge)
 static seL4_MessageInfo_t linux_vmm_fault(seL4_Word badge,
                                           seL4_MessageInfo_t msginfo)
 {
+    seL4_Word fault_mrs[seL4_MsgMaxLength];
+    seL4_Word fault_length = seL4_MessageInfo_get_length(msginfo);
+
+    if (fault_length > seL4_MsgMaxLength) {
+        fault_length = seL4_MsgMaxLength;
+    }
+    /*
+     * serial_log uses a synchronous seL4 call and therefore shares this
+     * thread's IPC buffer. Preserve the incoming fault payload before any
+     * diagnostic output, then restore it for libvmm's fault decoder.
+     */
+    for (seL4_Word i = 0u; i < fault_length; i++) {
+        fault_mrs[i] = seL4_GetMR((int)i);
+    }
+
     /* Bit 62 is the Microkit VCPU-fault flag when present. Unbadged
      * deliveries (guest TCB fault handler = VMM listen EP) are vCPU 0. */
     size_t vcpu_id = badge & ~VMM_FAULT_BADGE_FLAG;
@@ -1652,18 +1371,21 @@ static seL4_MessageInfo_t linux_vmm_fault(seL4_Word badge,
                     (unsigned long)badge, (unsigned long)vcpu_id);
             if (label == seL4_Fault_VMFault) {
                 LOG_VMM("  VMFault ip=0x%lx addr=0x%lx fsr=0x%lx\n",
-                        (unsigned long)seL4_GetMR(seL4_VMFault_IP),
-                        (unsigned long)seL4_GetMR(seL4_VMFault_Addr),
-                        (unsigned long)seL4_GetMR(seL4_VMFault_FSR));
+                        (unsigned long)fault_mrs[seL4_VMFault_IP],
+                        (unsigned long)fault_mrs[seL4_VMFault_Addr],
+                        (unsigned long)fault_mrs[seL4_VMFault_FSR]);
             } else if (label == seL4_Fault_VCPUFault) {
                 LOG_VMM("  VCPUFault HSR=0x%lx\n",
-                        (unsigned long)seL4_GetMR(seL4_VCPUFault_HSR));
+                        (unsigned long)fault_mrs[seL4_VCPUFault_HSR]);
             } else {
                 LOG_VMM("\n");
             }
         }
     }
 
+    for (seL4_Word i = 0u; i < fault_length; i++) {
+        seL4_SetMR((int)i, fault_mrs[i]);
+    }
     bool success = fault_handle(vcpu_id, msginfo);
     if (!success) {
         LOG_VMM_ERR("fault_handle failed label=0x%lx\n", (unsigned long)label);
@@ -1672,6 +1394,7 @@ static seL4_MessageInfo_t linux_vmm_fault(seL4_Word badge,
     /* Guest virtio-net QueueNotify is an MMIO fault; pump sDDF → RX virtq. */
     aos_vmm_virtio_net_after_fault();
     aos_vmm_virtio_blk_after_fault();
+    aos_vmm_virtio_console_after_fault();
     /* UART MMIO fault compliance stub — silently accept, guest continues. */
     return seL4_MessageInfo_new(0, 0, 0, 0);
 }
@@ -1724,6 +1447,13 @@ void linux_vmm_main(seL4_CPtr ep, seL4_CPtr reply_cap)
             info = seL4_Recv(ep, &badge, reply_cap);
 #else
             seL4_Reply(reply);
+            info = seL4_Recv(ep, &badge);
+#endif
+        } else if (label == NET_SVC_EVENT_RX_READY) {
+            aos_vmm_virtio_net_rx_ready();
+#ifdef CONFIG_KERNEL_MCS
+            info = seL4_Recv(ep, &badge, reply_cap);
+#else
             info = seL4_Recv(ep, &badge);
 #endif
         } else if (label == seL4_Fault_NullFault) {

@@ -185,10 +185,16 @@ Important top-level targets:
 
 | Target | Purpose |
 |--------|---------|
+| `make setup` | Install host dependencies and the shared Microkit SDK, then validate demo prerequisites |
+| `make demo` | Boot Ubuntu and FreeBSD concurrently, prove key-only SSH to both, and retain them for manual sessions |
+| `make demo-test` | Run the same dual-guest authenticated-SSH acceptance gate non-interactively |
+| `make demo-smoke` | Run fast host-only checks; useful as a preflight but not a boot proof |
 | `make install` | Install host build dependencies; `make deps` is an alias |
 | `make build` | Stage the selected guest image and build `build/<board>/agentos.img` |
 | `make run` | Boot native QEMU, foreground serial on stdio, CC-PD at `build/cc_pd.sock` |
 | `make test` | QEMU boot/API smoke test for the selected board and guest |
 | `make test-guest-login` | Boot Ubuntu and FreeBSD and verify serial login/input via CC-PD |
 | `make test-integration` | Host-side contract and integration tests |
-| `make e2e-dual-os` | End-to-end Ubuntu/FreeBSD guest coverage |
+| `make e2e-dual-os` | Lower-level automated Ubuntu/FreeBSD guest coverage used by `make demo-test` |
+
+The user-facing walkthrough is [`demo.md`](demo.md).

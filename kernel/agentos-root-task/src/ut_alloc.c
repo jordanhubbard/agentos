@@ -185,13 +185,16 @@ seL4_Error ut_alloc(uint32_t   type,
             return seL4_NoError;
         }
 
-        if (err == seL4_NotEnoughMemory) {
-            /* Current untyped is exhausted; try the next one */
+        if (err == seL4_NotEnoughMemory || err == seL4_InvalidArgument) {
+            /*
+             * The current untyped is exhausted, too small, or no longer
+             * aligned for this object size. Try the remaining untypeds.
+             */
             g_ut_next = (idx + 1u) % g_ut_count;
             continue;
         }
 
-        /* Any other error (e.g. seL4_InvalidArgument) is non-recoverable */
+        /* Capability and invocation errors are non-recoverable. */
         return err;
     }
 

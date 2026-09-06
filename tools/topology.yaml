@@ -1,8 +1,8 @@
 # agentOS topology spec — machine-readable SDF source
-# Maintained here; run gen_sdf.py to regenerate agentos.system
+# Maintained here; the Rust gen-sdf tool regenerates agentos.system.
 #
 # Edit this file to add/remove PDs or channels.
-# Run: python3 tools/gen_sdf.py tools/topology.yaml -o kernel/agentos-root-task/agentos.system
+# Use the repository's Make-based generation/validation workflow.
 
 version: "0.3"
 

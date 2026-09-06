@@ -14,7 +14,8 @@ AGENTOS_BOARD ?= qemu_virt_riscv64
 # We use these headers only — libmicrokit is NOT linked.
 # The board package provides arch-specific seL4 API headers (sel4/sel4.h, etc.)
 REPO_ROOT_MK  := $(abspath $(dir $(lastword $(MAKEFILE_LIST)))/../..)
-SEL4_SDK      ?= $(REPO_ROOT_MK)/microkit-sdk-2.1.0
+SEL4_SDK_VERSION ?= 2.1.0
+SEL4_SDK      ?= $(HOME)/.cache/agentos/microkit-sdk-$(SEL4_SDK_VERSION)
 SEL4_PROFILE  ?= release
 SEL4_INC_DIR  := $(SEL4_SDK)/board/$(AGENTOS_BOARD)/$(SEL4_PROFILE)/include
 
@@ -40,7 +41,7 @@ else
 endif
 
 CFLAGS := -nostdlib -ffreestanding -g -O2 -Wall -Wextra -Werror -Wno-unused-function -Wno-unused-parameter -Wno-unused-variable -Wno-unused-but-set-variable \
-           -Iinclude -Ilwip/include -I$(SEL4_INC_DIR) \
+           -Iinclude -Ilwip/include -I$(REPO_ROOT_MK) -I$(REPO_ROOT_MK)/platform/include -I$(SEL4_INC_DIR) \
            $(CFLAGS_ARCH) \
            -DCONFIG_KERNEL_MCS \
            -D__thread= \
@@ -196,7 +197,7 @@ BOARD_UART_IRQ  ?=
 # m3_bare_metal.c provides memset/memcpy/memmove needed by compiler-generated code
 PD_MONITOR_SRCS   := src/monitor.c src/cap_broker.c src/agent_pool.c src/vibe_swap.c src/m3_bare_metal.c src/log.c src/boot_integrity.c src/ed25519_verify.c src/monocypher.c src/cap_policy.c src/verify.c src/pd_tcb.c src/ut_alloc.c
 PD_EVENTBUS_SRCS  := src/m3_bare_metal.c src/log.c   # event_bus.c → services/event-bus/ (E9-S1)
-PD_INITAGENT_SRCS := src/init_agent.c src/m3_bare_metal.c src/log.c
+PD_INITAGENT_SRCS := src/init_agent.c src/native_net_client.c src/m3_bare_metal.c src/log.c
 PD_WORKER_SRCS    := src/worker.c src/m3_bare_metal.c src/log.c
 # agentfs needs m3_bare_metal for memset/sqrtf (no wasm3 headers needed)
 PD_AGENTFS_SRCS      := src/m3_bare_metal.c src/log.c   # agentfs.c → services/agentfs/ (E9-S1)
@@ -232,7 +233,7 @@ PD_TERM_SERVER_SRCS      := src/term_server.c src/m3_bare_metal.c src/log.c
 PD_BLOCK_PD_SRCS         := src/block_pd.c src/m3_bare_metal.c src/log.c
 PD_FB_PD_SRCS            := src/framebuffer_pd.c src/m3_bare_metal.c src/log.c
 PD_USB_PD_SRCS           := src/usb_pd.c src/m3_bare_metal.c src/log.c
-PD_CC_PD_SRCS            := src/cc_pd.c src/m3_bare_metal.c src/log.c
+PD_CC_PD_SRCS            := src/cc_pd.c src/cc_retry_cache.c src/m3_bare_metal.c src/log.c
 PD_GPU_SCHED_SRCS        := src/gpu_sched.c src/gpu_shmem.c src/m3_bare_metal.c src/log.c
 PD_IRQ_PD_SRCS           := src/irq_pd.c src/m3_bare_metal.c src/log.c
 PD_TIMER_PD_SRCS         := src/timer_pd.c src/m3_bare_metal.c src/log.c
@@ -343,8 +344,12 @@ GUEST_CONFIG_STAMP := $(BUILD_DIR)/guest_config.stamp
 # AArch64: include VMM based on GUEST_OS
 ifeq ($(ARCH),aarch64)
   ifeq ($(GUEST_OS),both)
-    CFLAGS += -DAGENTOS_GUEST_LINUX=1 -DAGENTOS_GUEST_FREEBSD=1 -DAGENTOS_GUEST_BOTH=1
-    CFLAGS_ROOT_TASK += -DAGENTOS_GUEST_LINUX=1 -DAGENTOS_GUEST_FREEBSD=1 -DAGENTOS_GUEST_BOTH=1
+    CFLAGS += -DAGENTOS_GUEST_LINUX=1 -DAGENTOS_GUEST_FREEBSD=1 -DAGENTOS_GUEST_BOTH=1 -DAGENTOS_GUEST_UBUNTU=1
+    CFLAGS_ROOT_TASK += -DAGENTOS_GUEST_LINUX=1 -DAGENTOS_GUEST_FREEBSD=1 -DAGENTOS_GUEST_BOTH=1 -DAGENTOS_GUEST_UBUNTU=1
+    ifeq ($(UBUNTU_BOOT_MODE),live)
+      CFLAGS += -DAGENTOS_GUEST_UBUNTU_LIVE=1
+      CFLAGS_ROOT_TASK += -DAGENTOS_GUEST_UBUNTU_LIVE=1
+    endif
     IMAGES += linux_vmm.elf freebsd_vmm.elf
   else ifeq ($(GUEST_OS),freebsd)
     CFLAGS += -DAGENTOS_GUEST_FREEBSD=1
@@ -353,6 +358,15 @@ ifeq ($(ARCH),aarch64)
   else
     ifneq ($(GUEST_OS),none)
       CFLAGS += -DAGENTOS_GUEST_LINUX=1
+      CFLAGS_ROOT_TASK += -DAGENTOS_GUEST_LINUX=1
+    endif
+    ifeq ($(GUEST_OS),ubuntu)
+      CFLAGS += -DAGENTOS_GUEST_UBUNTU=1
+      CFLAGS_ROOT_TASK += -DAGENTOS_GUEST_UBUNTU=1
+      ifeq ($(UBUNTU_BOOT_MODE),live)
+        CFLAGS += -DAGENTOS_GUEST_UBUNTU_LIVE=1
+        CFLAGS_ROOT_TASK += -DAGENTOS_GUEST_UBUNTU_LIVE=1
+      endif
     endif
     # Default aarch64: include Linux VMM (stub or full)
     IMAGES += linux_vmm.elf
@@ -368,9 +382,10 @@ endif
 $(GUEST_CONFIG_STAMP): FORCE
 	@mkdir -p $(BUILD_DIR)
 	@tmp="$@.tmp"; \
-	printf 'ARCH=%s\nBOARD=%s\nGUEST_OS=%s\nFAULT_INJECT=%s\nSEL4_TEST_IMAGE=%s\n' \
-		'$(ARCH)' '$(AGENTOS_BOARD)' '$(GUEST_OS)' '$(FAULT_INJECT)' '$(SEL4_TEST_IMAGE)' > "$$tmp"; \
-	printf 'SEL4_PROFILE=%s\n' '$(SEL4_PROFILE)' >> "$$tmp"; \
+	printf 'ARCH=%s\nBOARD=%s\nGUEST_OS=%s\nUBUNTU_BOOT_MODE=%s\nFAULT_INJECT=%s\nSEL4_TEST_IMAGE=%s\n' \
+		'$(ARCH)' '$(AGENTOS_BOARD)' '$(GUEST_OS)' '$(UBUNTU_BOOT_MODE)' '$(FAULT_INJECT)' '$(SEL4_TEST_IMAGE)' > "$$tmp"; \
+	printf 'SEL4_PROFILE=%s\nCFLAGS=%s\nCFLAGS_ROOT_TASK=%s\n' \
+		'$(SEL4_PROFILE)' '$(CFLAGS)' '$(CFLAGS_ROOT_TASK)' >> "$$tmp"; \
 	if test -f "$@" && cmp -s "$$tmp" "$@"; then rm -f "$$tmp"; else mv "$$tmp" "$@"; fi
 
 $(BUILD_DIR)/rt_main.o: $(GUEST_CONFIG_STAMP)
@@ -384,7 +399,13 @@ $(BUILD_DIR)/vm_manager.o: $(GUEST_CONFIG_STAMP)
 
 IMAGE_FILE  := $(BUILD_DIR)/agentos.img
 
-build: $(IMAGE_FILE) $(BUILD_DIR)/root_task.elf
+.PHONY: check-sel4-sdk
+check-sel4-sdk:
+	@test -f "$(SEL4_INC_DIR)/sel4/sel4.h" -a \
+	      -f "$(SEL4_SDK)/board/$(AGENTOS_BOARD)/$(SEL4_PROFILE)/elf/sel4.elf" || \
+		{ echo "ERROR: SEL4_SDK=$(SEL4_SDK) is not a Microkit 2.1.0 SDK; set SEL4_SDK to the external SDK directory."; exit 1; }
+
+build: check-sel4-sdk $(IMAGE_FILE) $(BUILD_DIR)/root_task.elf
 
 # ─── Extracted service PDs (E9: sources live in services/, not src/) ─────────
 # CFLAGS already includes -Iinclude (kernel/agentos-root-task/include) so all
@@ -733,9 +754,11 @@ $(BUILD_DIR)/linux_vmm.elf: FORCE
 		BUILD_DIR=$(BUILD_DIR) \
 		AGENTOS_ARCH=$(AGENTOS_ARCH) \
 		AGENTOS_BOARD=$(AGENTOS_BOARD) \
+		SEL4_SDK=$(SEL4_SDK) \
 		SEL4_PROFILE=$(SEL4_PROFILE) \
 		GUEST_OS=$(if $(filter both,$(GUEST_OS)),ubuntu,$(GUEST_OS)) \
 		VMM_DUAL_GUEST=$(if $(filter both,$(GUEST_OS)),1,0) \
+		UBUNTU_BOOT_MODE=$(UBUNTU_BOOT_MODE) \
 		vmm-all
 endif
 endif
@@ -752,6 +775,7 @@ $(BUILD_DIR)/freebsd_vmm.elf: FORCE
 		BUILD_DIR=$(BUILD_DIR) \
 		AGENTOS_ARCH=$(AGENTOS_ARCH) \
 		AGENTOS_BOARD=$(AGENTOS_BOARD) \
+		SEL4_SDK=$(SEL4_SDK) \
 		SEL4_PROFILE=$(SEL4_PROFILE) \
 		GUEST_OS=freebsd \
 		VMM_DUAL_GUEST=$(if $(filter both,$(GUEST_OS)),1,0) \

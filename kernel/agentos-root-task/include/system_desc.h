@@ -252,3 +252,4 @@ typedef struct {
 #define PD_CNODE_SLOT_FREEBSD_VMM_EP  12u
 /* agentos-7j5: cc_pd → controller (monitor) endpoint for MSG_AGENTPOOL_STATUS. */
 #define PD_CNODE_SLOT_CONTROLLER_EP   13u
+#define PD_CNODE_SLOT_NET_PD_EP       14u

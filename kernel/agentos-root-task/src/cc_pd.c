@@ -37,7 +37,9 @@
 #include "contracts/fault_inject_contract.h"
 #include "contracts/log_drain_contract.h"
 #include "contracts/agent_pool_contract.h"
+#include "cc_retry_cache.h"
 #include "sel4_ipc.h"
+#include "serial_log.h"
 #include "system_desc.h"
 #include <stdint.h>
 #include <stdbool.h>
@@ -48,9 +50,9 @@
  * Transport: virtio-serial-device on QEMU virtio-mmio-bus.2 (PA 0x0A000400).
  * QEMU bridges the virtconsole named "cc.0" to build/cc_pd.sock.
  *
- * The root task allocates three 4K frames and identity-maps them (VA=PA) into
- * cc_pd's VSpace, then writes the three PAs into a shared startup record page
- * at CC_PD_STARTUP_VA before starting cc_pd.  The three pages are:
+ * The root task allocates three 4K frames and maps them at fixed CPU virtual
+ * addresses in cc_pd. A versioned startup record at CC_VIRTIO_STARTUP_VA
+ * separately carries their device-visible physical addresses:
  *   [0] VQ struct page — descriptor tables, avail/used rings for TX+RX queues
  *   [1] TX data buffer
  *   [2] RX data buffer
@@ -63,28 +65,20 @@
  * per request), so no RX overflow can occur across frame boundaries.
  */
 
-#define CC_PD_VIRTIO_VA   0x10002000UL   /* VirtIO MMIO page mapped by root task */
-#define CC_PD_STARTUP_VA  0x10003000UL   /* Startup record: VQ PAs from root task */
-#define CC_PD_UART_DBG_VA 0x10004000UL   /* PL011 UART0 for direct debug output */
 #define VMMIO_SLOT_OFF    (2u * 0x200u)  /* bus.2 → offset +0x400 within the page */
 
-/* ─── Direct UART0 debug output (bypasses CONFIG_PRINTING) ──────────────── */
+/* ─── Diagnostics through the generic serial driver ────────────────────── */
 
-#define CC_UART_DR   (*(volatile uint32_t *)(CC_PD_UART_DBG_VA + 0x000u))
-#define CC_UART_FR   (*(volatile uint32_t *)(CC_PD_UART_DBG_VA + 0x018u))
-#define CC_FR_TXFF   (1u << 5)
-
+static serial_log_t g_cc_log = {
+    .ep = PD_CNODE_SLOT_SERIAL_EP,
+};
 static void cc_dbg_putc(char c)
 {
-    /* No TXFF spin: with seL4 MCS 10ms budget, a tight spin exhausts the
-     * budget before QEMU's UART FIFO (16 bytes at 115200) gets a chance to
-     * drain.  Writing unconditionally is safe on QEMU TCG; worst case one
-     * character is silently dropped when the FIFO is momentarily full.   */
-    CC_UART_DR = (uint32_t)(unsigned char)c;
+    serial_log_putc(&g_cc_log, c);
 }
 static void cc_dbg_puts(const char *s)
 {
-    for (; *s; s++) cc_dbg_putc(*s);
+    serial_log_puts(&g_cc_log, s);
 }
 static void cc_dbg_hex(uint64_t v)
 {
@@ -146,8 +140,9 @@ static seL4_Word          g_vq_pa[3];       /* [0]=structs, [1]=TX buf, [2]=RX b
 static volatile uint32_t *g_virtio;         /* VirtIO MMIO base at bus.2 slot */
 static uint16_t           g_rx_used_last;   /* shadow of RX used ring consumer idx */
 
-/* VQ struct page is identity-mapped: virtual address == physical address */
-#define QP       ((uintptr_t)g_vq_pa[0])
+#define QP       ((uintptr_t)CC_VIRTIO_QUEUE_VA)
+#define TX_BUFFER ((void *)(uintptr_t)CC_VIRTIO_TX_BUFFER_VA)
+#define RX_BUFFER ((void *)(uintptr_t)CC_VIRTIO_RX_BUFFER_VA)
 #define TX_DESC  ((volatile vq_desc_t  *)(QP + TX_DESC_OFF))
 #define TX_AVAIL ((volatile vq_avail_t *)(QP + TX_AVAIL_OFF))
 #define TX_USED  ((volatile vq_used_t  *)(QP + TX_USED_OFF))
@@ -187,15 +182,22 @@ static void vio_queue_setup(uint32_t qidx,
     vio_wr(VMMIO_QUEUE_READY, 1u);
 }
 
-static void virtio_serial_init(void)
+static bool virtio_serial_init(void)
 {
-    /* VQ PAs written by root task into startup record before cc_pd started */
-    volatile seL4_Word *sp = (volatile seL4_Word *)CC_PD_STARTUP_VA;
-    g_vq_pa[0] = sp[0];
-    g_vq_pa[1] = sp[1];
-    g_vq_pa[2] = sp[2];
+    const volatile cc_virtio_startup_t *sp =
+        (const volatile cc_virtio_startup_t *)CC_VIRTIO_STARTUP_VA;
+    if (sp->magic != CC_VIRTIO_STARTUP_MAGIC ||
+        sp->version != CC_VIRTIO_STARTUP_VERSION ||
+        sp->queue_pa == 0u || sp->tx_buffer_pa == 0u ||
+        sp->rx_buffer_pa == 0u) {
+        cc_dbg_puts("[cc_pd] VirtIO init FAILED: bad startup record\n");
+        return false;
+    }
+    g_vq_pa[0] = (seL4_Word)sp->queue_pa;
+    g_vq_pa[1] = (seL4_Word)sp->tx_buffer_pa;
+    g_vq_pa[2] = (seL4_Word)sp->rx_buffer_pa;
 
-    g_virtio = (volatile uint32_t *)(CC_PD_VIRTIO_VA + VMMIO_SLOT_OFF);
+    g_virtio = (volatile uint32_t *)(CC_VIRTIO_MMIO_VA + VMMIO_SLOT_OFF);
 
     uint32_t magic   = vio_rd(VMMIO_MAGIC);
     uint32_t version = vio_rd(VMMIO_VERSION);
@@ -207,7 +209,7 @@ static void virtio_serial_init(void)
 
     if (magic != VIRTIO_MAGIC || devid != VIRTIO_ID_CONSOLE) {
         cc_dbg_puts("[cc_pd] VirtIO init FAILED: bad magic/devid\n");
-        return;
+        return false;
     }
 
     /* VirtIO 1.0 initialisation sequence */
@@ -232,9 +234,13 @@ static void virtio_serial_init(void)
     if (!(s_after & VSTATUS_FEAT_OK)) {
         cc_dbg_puts("[cc_pd] VirtIO FEAT_OK not set\n");
         vio_wr(VMMIO_STATUS, VSTATUS_FAILED);
-        return;
+        return false;
     }
 
+    /* Device reset invalidates every in-flight descriptor. Start both rings
+     * from a known epoch before making them ready again. */
+    __builtin_memset((void *)QP, 0, 4096u);
+    VQ_MB();
     vio_queue_setup(0u,
         g_vq_pa[0] + RX_DESC_OFF, g_vq_pa[0] + RX_AVAIL_OFF, g_vq_pa[0] + RX_USED_OFF);
     vio_queue_setup(1u,
@@ -257,6 +263,19 @@ static void virtio_serial_init(void)
     g_rx_used_last = 0u;
 
     cc_dbg_puts("[cc_pd] VirtIO serial ready\n");
+    return true;
+}
+
+static void virtio_serial_recover_tx(void)
+{
+    cc_dbg_puts("[cc_pd] resetting VirtIO serial after incomplete reply\n");
+    vio_wr(VMMIO_STATUS, VSTATUS_FAILED);
+    VQ_MB();
+    vio_wr(VMMIO_STATUS, 0u);
+    VQ_MB();
+    if (!virtio_serial_init()) {
+        cc_dbg_puts("[cc_pd] VirtIO serial recovery failed\n");
+    }
 }
 
 static bool vio_serial_write(const void *buf, uint32_t n)
@@ -264,7 +283,7 @@ static bool vio_serial_write(const void *buf, uint32_t n)
     const uint8_t *p = (const uint8_t *)buf;
     while (n > 0u) {
         uint32_t chunk = (n > 4096u) ? 4096u : n;
-        __builtin_memcpy((void *)g_vq_pa[1], p, chunk);
+        __builtin_memcpy(TX_BUFFER, p, chunk);
         VQ_MB();
         TX_DESC[0].addr  = (uint64_t)g_vq_pa[1];
         TX_DESC[0].len   = chunk;
@@ -338,7 +357,7 @@ static bool vio_serial_read(void *buf, uint32_t n)
         uint32_t got  = RX_USED->ring[g_rx_used_last & (uint16_t)(VQ_DEPTH - 1u)].len;
         VQ_MB();
         uint32_t take = (got > n) ? n : got;
-        __builtin_memcpy(p, (const void *)g_vq_pa[2], take);
+        __builtin_memcpy(p, RX_BUFFER, take);
         p += take;
         n -= take;
         g_rx_used_last++;
@@ -359,7 +378,7 @@ static bool vio_serial_read(void *buf, uint32_t n)
 
 /* ─── Wire frame types ───────────────────────────────────────────────────── */
 /*
- * These match the layout used by agentctl-ng and agentos_gui exactly.
+ * These match the wire layout consumed by the non-interactive agentctl CLI.
  * The static_asserts enforce the 4112-byte invariant at compile time.
  */
 
@@ -659,17 +678,24 @@ static bool cc_call_boot_guest(uint32_t opcode, const uint8_t *payload,
     return reply->opcode == GUEST_OK;
 }
 
-static bool cc_forward_boot_guest_input(const cc_input_event_t *event)
+static bool cc_forward_boot_guest_input(const cc_input_event_t *event,
+                                        const uint8_t *text,
+                                        uint32_t text_len)
 {
     if (!g_boot_guest_present) return false;
 
-    uint8_t payload[4u + sizeof(cc_input_event_t)];
+    uint8_t payload[SEL4_MSG_DATA_BYTES];
+    uint32_t payload_len = 4u + (uint32_t)sizeof(cc_input_event_t) + text_len;
+    if (payload_len > sizeof(payload)) return false;
     cc_msg_wr32(payload, 0u, CC_BOOT_GUEST_HANDLE);
     __builtin_memcpy(payload + 4u, event, sizeof(cc_input_event_t));
+    if (text_len > 0u) {
+        __builtin_memcpy(payload + 4u + sizeof(cc_input_event_t), text, text_len);
+    }
 
     sel4_msg_t reply = {0};
     return cc_call_boot_guest(MSG_GUEST_SEND_INPUT, payload,
-                              (uint32_t)sizeof(payload), &reply);
+                              payload_len, &reply);
 }
 
 static bool cc_drain_boot_guest_console(uint8_t *dst, uint32_t max,
@@ -677,45 +703,42 @@ static bool cc_drain_boot_guest_console(uint8_t *dst, uint32_t max,
 {
     if (!g_boot_guest_present) return false;
 
-    uint32_t total = 0u;
+    /* One downstream call per host frame keeps CC latency bounded. */
+    uint8_t payload[8u];
+    uint32_t want = max;
+    if (want > SEL4_MSG_DATA_BYTES) want = SEL4_MSG_DATA_BYTES;
+    cc_msg_wr32(payload, 0u, CC_BOOT_GUEST_HANDLE);
+    cc_msg_wr32(payload, 4u, want);
 
-    while (total < max) {
-        uint8_t payload[8u];
-        uint32_t want = max - total;
-        if (want > SEL4_MSG_DATA_BYTES) want = SEL4_MSG_DATA_BYTES;
-
-        cc_msg_wr32(payload, 0u, CC_BOOT_GUEST_HANDLE);
-        cc_msg_wr32(payload, 4u, want);
-
-        sel4_msg_t reply = {0};
-        if (!cc_call_boot_guest(MSG_GUEST_CONSOLE_DRAIN, payload,
-                                (uint32_t)sizeof(payload), &reply)) {
-            return false;
-        }
-
-        uint32_t n = reply.length;
-        if (n > SEL4_MSG_DATA_BYTES) n = SEL4_MSG_DATA_BYTES;
-        if (n > (max - total)) n = max - total;
-        if (n == 0u) break;
-
-        __builtin_memcpy(dst + total, reply.data, n);
-        total += n;
-
-        if (n < SEL4_MSG_DATA_BYTES) break;
+    sel4_msg_t reply = {0};
+    if (!cc_call_boot_guest(MSG_GUEST_CONSOLE_DRAIN, payload,
+                            (uint32_t)sizeof(payload), &reply)) {
+        return false;
     }
 
-    *bytes_drained = total;
+    uint32_t n = reply.length;
+    if (n > SEL4_MSG_DATA_BYTES) n = SEL4_MSG_DATA_BYTES;
+    if (n > max) n = max;
+    if (n > 0u) __builtin_memcpy(dst, reply.data, n);
+    *bytes_drained = n;
     return true;
 }
 
 static bool cc_forward_vibe_input(uint32_t handle,
-                                  const cc_input_event_t *event)
+                                  const cc_input_event_t *event,
+                                  const uint8_t *text,
+                                  uint32_t text_len)
 {
     sel4_msg_t msg = {0}, reply = {0};
+    uint32_t payload_len = (uint32_t)sizeof(cc_input_event_t) + text_len;
+    if (4u + payload_len > SEL4_MSG_DATA_BYTES) return false;
     msg.opcode = MSG_VIBEOS_SEND_INPUT;
-    msg.length = 4u + (uint32_t)sizeof(cc_input_event_t);
+    msg.length = 4u + payload_len;
     cc_msg_wr32(msg.data, 0u, handle);
     __builtin_memcpy(msg.data + 4u, event, sizeof(cc_input_event_t));
+    if (text_len > 0u) {
+        __builtin_memcpy(msg.data + 4u + sizeof(cc_input_event_t), text, text_len);
+    }
 
     sel4_call((seL4_CPtr)PD_CNODE_SLOT_VIBE_ENGINE_EP, &msg, &reply);
     return reply.opcode == SEL4_ERR_OK && cc_msg_rd32(reply.data, 0u) == 0u;
@@ -724,32 +747,25 @@ static bool cc_forward_vibe_input(uint32_t handle,
 static bool cc_drain_vibe_console(uint32_t handle, uint8_t *dst,
                                   uint32_t max, uint32_t *bytes_drained)
 {
-    uint32_t total = 0u;
-    while (total < max) {
-        uint32_t want = max - total;
-        if (want > SEL4_MSG_DATA_BYTES - 8u)
-            want = SEL4_MSG_DATA_BYTES - 8u;
+    /* Do not monopolize the VMM with a 4 KiB loop of tiny inline IPCs. */
+    uint32_t want = max;
+    if (want > SEL4_MSG_DATA_BYTES - 8u)
+        want = SEL4_MSG_DATA_BYTES - 8u;
 
-        sel4_msg_t msg = {0}, reply = {0};
-        msg.opcode = MSG_VIBEOS_CONSOLE_DRAIN;
-        msg.length = 8u;
-        cc_msg_wr32(msg.data, 0u, handle);
-        cc_msg_wr32(msg.data, 4u, want);
-        sel4_call((seL4_CPtr)PD_CNODE_SLOT_VIBE_ENGINE_EP, &msg, &reply);
-        if (reply.opcode != SEL4_ERR_OK || cc_msg_rd32(reply.data, 0u) != 0u)
-            return false;
+    sel4_msg_t msg = {0}, reply = {0};
+    msg.opcode = MSG_VIBEOS_CONSOLE_DRAIN;
+    msg.length = 8u;
+    cc_msg_wr32(msg.data, 0u, handle);
+    cc_msg_wr32(msg.data, 4u, want);
+    sel4_call((seL4_CPtr)PD_CNODE_SLOT_VIBE_ENGINE_EP, &msg, &reply);
+    if (reply.opcode != SEL4_ERR_OK || cc_msg_rd32(reply.data, 0u) != 0u)
+        return false;
 
-        uint32_t n = cc_msg_rd32(reply.data, 4u);
-        if (n > SEL4_MSG_DATA_BYTES - 8u) n = SEL4_MSG_DATA_BYTES - 8u;
-        if (n > max - total) n = max - total;
-        if (n == 0u) break;
-
-        __builtin_memcpy(dst + total, reply.data + 8u, n);
-        total += n;
-        if (n < SEL4_MSG_DATA_BYTES - 8u) break;
-    }
-
-    *bytes_drained = total;
+    uint32_t n = cc_msg_rd32(reply.data, 4u);
+    if (n > SEL4_MSG_DATA_BYTES - 8u) n = SEL4_MSG_DATA_BYTES - 8u;
+    if (n > max) n = max;
+    if (n > 0u) __builtin_memcpy(dst, reply.data + 8u, n);
+    *bytes_drained = n;
     return true;
 }
 
@@ -1259,13 +1275,21 @@ static void handle_send_input(const cc_req_wire_t *req, cc_reply_wire_t *rep)
 {
 #if defined(AGENTOS_GUEST_LINUX) || defined(AGENTOS_GUEST_FREEBSD)
     const cc_input_event_t *event = (const cc_input_event_t *)req->shmem;
+    uint32_t text_len = event->event_type == CC_INPUT_TEXT ? event->keycode : 0u;
+    if (text_len > CC_INPUT_TEXT_MAX ||
+        sizeof(cc_input_event_t) + text_len > sizeof(req->shmem)) {
+        rep->mr[0] = CC_ERR_BAD_HANDLE;
+        return;
+    }
+    const uint8_t *text = req->shmem + sizeof(cc_input_event_t);
     if (req->mr[0] == CC_BOOT_GUEST_HANDLE) {
-        rep->mr[0] = cc_forward_boot_guest_input(event) ? CC_OK : CC_ERR_RELAY_FAULT;
+        rep->mr[0] = cc_forward_boot_guest_input(event, text, text_len)
+                     ? CC_OK : CC_ERR_RELAY_FAULT;
         return;
     }
 
-    rep->mr[0] = cc_forward_vibe_input(req->mr[0], event)
-                 ? CC_OK : CC_ERR_BAD_HANDLE;
+    rep->mr[0] = cc_forward_vibe_input(req->mr[0], event, text, text_len)
+                 ? CC_OK : CC_ERR_RELAY_FAULT;
     return;
 #else
     (void)req;
@@ -1673,12 +1697,6 @@ void cc_pd_main(seL4_CPtr my_ep, seL4_CPtr ns_ep)
     (void)my_ep;
     (void)ns_ep;
 
-    /* Canary: unconditional DR write — appears iff cc_pd runs + UART mapped */
-    *(volatile uint32_t *)CC_PD_UART_DBG_VA = (uint32_t)'[';
-    *(volatile uint32_t *)CC_PD_UART_DBG_VA = (uint32_t)'@';
-    *(volatile uint32_t *)CC_PD_UART_DBG_VA = (uint32_t)']';
-    *(volatile uint32_t *)CC_PD_UART_DBG_VA = (uint32_t)'\n';
-
     /* Initialise session table */
     for (uint32_t i = 0u; i < CC_MAX_SESSIONS; i++) {
         g_sessions[i].active = false;
@@ -1688,20 +1706,32 @@ void cc_pd_main(seL4_CPtr my_ep, seL4_CPtr ns_ep)
     }
 
     /* Initialise VirtIO MMIO serial (mapped by root task; VQ PAs in startup record) */
-    virtio_serial_init();
+    (void)virtio_serial_init();
 
     /* Static buffers live in BSS — kept off the stack since each frame is
      * 4112 bytes, which would exhaust cc_pd's 16 KB stack otherwise.    */
     static cc_req_wire_t   g_req;
     static cc_reply_wire_t g_rep;
+    static cc_retry_cache_t g_retry;
+    cc_retry_cache_init(&g_retry);
 
     while (1) {
         if (!vio_serial_read(&g_req, sizeof(g_req))) {
             continue;
         }
-        __builtin_memset(&g_rep, 0, sizeof(g_rep));
-        cc_dispatch(&g_req, &g_rep);
-        (void)vio_serial_write(&g_rep, sizeof(g_rep));
+        if (!cc_retry_cache_replay(&g_retry, &g_req, &g_rep)) {
+            __builtin_memset(&g_rep, 0, sizeof(g_rep));
+            cc_dispatch(&g_req, &g_rep);
+        }
+        if (!vio_serial_write(&g_rep, sizeof(g_rep))) {
+            /*
+             * The operation may already have changed state. Save the exact
+             * request/reply pair before resetting the poisoned TX queue; a
+             * reconnecting host can retry without executing it twice.
+             */
+            cc_retry_cache_record(&g_retry, &g_req, &g_rep);
+            virtio_serial_recover_tx();
+        }
     }
 }
 

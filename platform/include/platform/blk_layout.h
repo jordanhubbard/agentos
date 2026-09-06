@@ -19,14 +19,17 @@
 
 #define AOS_BLK_TRANSFER_SIZE        4096u
 #define AOS_BLK_SECTOR_SIZE          512u
-#define AOS_BLK_QUEUE_CAPACITY       16u
-#define AOS_BLK_QUEUE_BYTES          0x1000u
+#define AOS_BLK_QUEUE_CAPACITY       128u
+#define AOS_BLK_QUEUE_BYTES          0x2000u
 #define AOS_BLK_MAX_CLIENTS          4u
 #define AOS_BLK_DISK_BLOCKS          64u    /* 256 KB RAM disk */
 #define AOS_BLK_DISK_BYTES           (AOS_BLK_DISK_BLOCKS * AOS_BLK_TRANSFER_SIZE)
-#define AOS_BLK_DATA_BYTES           (AOS_BLK_QUEUE_CAPACITY * AOS_BLK_TRANSFER_SIZE)
-#define AOS_BLK_CLIENT_STRIDE        0x20000u   /* 128 KB per client */
-#define AOS_BLK_SHMEM_SIZE           0x100000u  /* 1 MB */
+#define AOS_BLK_GUEST_MAX_SEGMENT_SIZE 0x100000u /* FreeBSD MAXPHYS: 1 MiB */
+#define AOS_BLK_DATA_CELLS           \
+    ((AOS_BLK_GUEST_MAX_SEGMENT_SIZE / AOS_BLK_TRANSFER_SIZE) + 1u)
+#define AOS_BLK_DATA_BYTES           (AOS_BLK_DATA_CELLS * AOS_BLK_TRANSFER_SIZE)
+#define AOS_BLK_CLIENT_STRIDE        0x110000u
+#define AOS_BLK_SHMEM_SIZE           0x500000u
 #define AOS_BLK_SHMEM_VA             0x20200000UL /* after net_virt; future MR */
 
 #define AOS_BLK_DISK_OFF             0x0000u
@@ -34,11 +37,19 @@
 
 #define AOS_BLK_STORAGE_INFO_OFF     0x0000u    /* within client stride */
 #define AOS_BLK_REQ_QUEUE_OFF        0x1000u
-#define AOS_BLK_RESP_QUEUE_OFF       0x2000u
-#define AOS_BLK_DATA_OFF             0x3000u
+#define AOS_BLK_RESP_QUEUE_OFF       0x3000u
+#define AOS_BLK_DATA_OFF             0x5000u
 
 #define AOS_BLK_STORAGE_INFO_BYTES   0x1000u
 #define AOS_BLK_MAX_SERIAL           63u
+
+_Static_assert(AOS_BLK_DATA_OFF + AOS_BLK_DATA_BYTES <=
+               AOS_BLK_CLIENT_STRIDE,
+               "block client data must fit in its stride");
+_Static_assert(AOS_BLK_CLIENT_BASE +
+               AOS_BLK_MAX_CLIENTS * AOS_BLK_CLIENT_STRIDE <=
+               AOS_BLK_SHMEM_SIZE,
+               "all block clients must fit in the private region");
 
 /*
  * Emulated virtio-mmio blk — must NOT overlap QEMU 0x0A000000 or net 0x0A010000.
@@ -117,11 +128,16 @@ typedef struct aos_blk_virt_client {
     uint32_t                capacity;
 } aos_blk_virt_client_t;
 
+typedef aos_blk_resp_status_t (*aos_blk_backend_fn)(
+    void *ctx, aos_blk_virt_client_t *client, const aos_blk_req_t *req);
+
 typedef struct aos_blk_virt {
     aos_blk_virt_client_t clients[AOS_BLK_MAX_CLIENTS];
     uint32_t num_clients;
     uint8_t *disk;
     uint32_t disk_blocks;
+    aos_blk_backend_fn backend;
+    void *backend_ctx;
 } aos_blk_virt_t;
 
 #endif /* AOS_PLATFORM_BLK_LAYOUT_H */

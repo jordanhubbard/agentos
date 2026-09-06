@@ -276,13 +276,11 @@ bool fault_handle_vcpu_exception(size_t vcpu_id)
     case HSR_HVC_64_EXCEPTION:
         return smc_handle(vcpu_id, hsr);
     case HSR_WFx_EXCEPTION:
-        /*
-         * seL4 delivers trapped WFI/WFE as a VCPU fault at the instruction
-         * itself.  Returning without advancing the PC re-executes the same
-         * WFI/WFE and can pin the VMM in a fault loop while the guest is idle.
-         * Treat it as a completed wait operation for now.
-         */
-        return fault_advance_vcpu(vcpu_id, &regs);
+        /* seL4 resumes trapped WFI/WFE without VMM-side PC adjustment. */
+        if (!vgic_flush_pending_irqs(vcpu_id)) {
+            LOG_VMM_ERR("failed to flush pending IRQs at trapped WFI/WFE\n");
+        }
+        return true;
     case HSR_SYSREG_64_EXCEPTION:
         return handle_sysreg_64_fault(vcpu_id, hsr, &regs);
     default:
@@ -320,50 +318,6 @@ bool fault_handle_vppi_event(size_t vcpu_id)
         LOG_VMM("VPPIEvent #%llu: CNTV_CTL=0x%lx CNTV_CVAL=0x%lx\n",
                 (unsigned long long)vppi_count,
                 (unsigned long)cntv_ctl, (unsigned long)cntv_cval);
-    }
-    /*
-     * I=masked + ISTATUS=1: VCPU is inside an ISR (I=masked) with the
-     * virtual timer expired.
-     *
-     * Root cause of the VPPIEvent flood: after VGICMaintenance clears the
-     * LR and calls AckVPPI (unmasking the physical GIC), CNTV_CVAL is still
-     * expired, so the hardware re-fires IRQ 27 before the guest can execute
-     * even one instruction.  The ISR fires at PC=0x57dc0b14, which is the
-     * `ret` at the end of MmioWrite32() called from EndOfInterrupt().  After
-     * that `ret` returns, the ISR checks `if (CNTV_CTL & ISTATUS)` and, if
-     * ISTATUS=1, calls the notify callbacks then advances CNTV_CVAL past
-     * CNTVCT with `do { cval += mTimerTicks; } while (cval < cntvct);`.
-     *
-     * Fix (v25): inject IRQ 27 into a fresh LR (pends silently while
-     * I=masked) and skip AckVPPI.  The GIC stays masked, so no new
-     * VPPIEvent can fire.  After `ret`, the ISR sees ISTATUS=1, runs its
-     * update body, and writes the correct near-future CNTV_CVAL.  On ERET
-     * with I=enabled the LR fires a second ISR invocation; that invocation's
-     * EndOfInterrupt → Maintenance → virq_ack → AckVPPI unmasks the GIC,
-     * restoring normal timer delivery with CVAL already set to the next tick.
-     *
-     * Prior failures:
-     *  v21: ENABLE=0 + AckVPPI → ISR sees ISTATUS=0 (ENABLE=0 clears it),
-     *       CVAL never updated, callbacks spin `while (!ISTATUS)` forever.
-     *  v22: AckVPPI only, CVAL unchanged → 134K VPPIEvents/s flood.
-     *  v23: MRS cntvct_el0 from EL0 → traps (seL4 does not set CNTHCTL_EL2
-     *       to allow EL0 virtual-counter access) → VMM crash.
-     *  v24: advance CVAL to far-future → ISR sees ISTATUS=0, skips its
-     *       update body, CVAL stays huge, timer dead for ~544 real seconds.
-     */
-    if (((regs.spsr >> 7) & 1) && (cntv_ctl & 4)) {
-        if (log_vppi) {
-            LOG_VMM("VPPIEvent #%llu: I=masked+ISTATUS=1 at PC=0x%lx -- inject+defer AckVPPI (CVAL unchanged)\n",
-                    (unsigned long long)vppi_count, (unsigned long)regs.pc);
-        }
-        bool ok = vgic_inject_irq(vcpu_id, ppi_irq);
-        if (!ok) {
-            LOG_VMM_ERR("VPPIEvent #%llu: no free LR, falling back to AckVPPI\n",
-                        (unsigned long long)vppi_count);
-            vmm_vcpu_arm_ack_vppi(vcpu_id, ppi_irq);
-        }
-        /* Skip AckVPPI: GIC stays masked until Maintenance → virq_ack. */
-        return true;
     }
     bool success = vgic_inject_irq(vcpu_id, ppi_irq);
     if (log_vppi) {

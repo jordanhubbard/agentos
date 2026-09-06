@@ -17,14 +17,15 @@ SDDF_ABS       := $(LIBVMM_ABS)/dep/sddf
 DTC            := dtc
 
 # BOARD_DIR: seL4 SDK board package containing include/ and lib/.
-# Default matches the SDK bundled in the repo; override when invoking vmm.mk
-# directly with a different SDK installation.
+SEL4_SDK_VERSION ?= 2.1.0
+SEL4_SDK ?= $(HOME)/.cache/agentos/microkit-sdk-$(SEL4_SDK_VERSION)
 SEL4_PROFILE ?= release
-BOARD_DIR ?= $(AGENTOS_ROOT)/microkit-sdk-2.1.0/board/$(AGENTOS_BOARD)/$(SEL4_PROFILE)
+BOARD_DIR ?= $(SEL4_SDK)/board/$(AGENTOS_BOARD)/$(SEL4_PROFILE)
 
 # Guest OS selection: buildroot (default) or ubuntu
 GUEST_OS ?= buildroot
 VMM_DUAL_GUEST ?= 0
+UBUNTU_BOOT_MODE ?= e2e
 AGENTOS_IMAGES ?= $(AGENTOS_ROOT)/build/guest-images
 
 # Buildroot guest: download libvmm example images (kernel + initrd)
@@ -34,22 +35,45 @@ IMAGES_URL             := https://trustworthy.systems/Downloads/libvmm/images
 
 # Ubuntu guest: local Ubuntu 26.04 live ISO assets staged by xtask fetch-guest.
 UBUNTU_KERNEL := $(AGENTOS_IMAGES)/ubuntu-26.04-aarch64-Image
-UBUNTU_INITRD := $(AGENTOS_IMAGES)/ubuntu-26.04-aarch64-initrd
+UBUNTU_E2E_INITRD := $(AGENTOS_IMAGES)/ubuntu-26.04-aarch64-initrd
+UBUNTU_LIVE_INITRD := $(AGENTOS_IMAGES)/ubuntu-26.04-aarch64-live-initrd
+UBUNTU_LIVE_PLACEHOLDER := $(BUILD_DIR)/ubuntu-26.04-live-initrd.placeholder
 UBUNTU_DTS_OVERLAY := $(BUILD_DIR)/ubuntu-26.04-overlay.dts
 ifeq ($(VMM_DUAL_GUEST),1)
-UBUNTU_RAM_BASE := 0xc0000000
-UBUNTU_RAM_NODE := c0000000
-UBUNTU_INITRD_START := 0xd0000000
+UBUNTU_RAM_BASE := 0x40000000
+UBUNTU_RAM_NODE := 40000000
+ifeq ($(UBUNTU_BOOT_MODE),live)
+UBUNTU_RAM_SIZE := 0x40000000
+else
+UBUNTU_RAM_SIZE := 0x20000000
+endif
+UBUNTU_INITRD_START := 0x50000000
+else ifeq ($(UBUNTU_BOOT_MODE),live)
+UBUNTU_RAM_BASE := 0x40000000
+UBUNTU_RAM_NODE := 40000000
+UBUNTU_RAM_SIZE := 0x40000000
+UBUNTU_INITRD_START := 0x50000000
 else
 UBUNTU_RAM_BASE := 0x40000000
 UBUNTU_RAM_NODE := 40000000
+UBUNTU_RAM_SIZE := 0x20000000
 UBUNTU_INITRD_START := 0x50000000
 endif
-UBUNTU_BOOTARGS := earlycon=pl011,0x9000000 console=ttyAMA0,115200n8 rdinit=/init panic=-1
+ifeq ($(UBUNTU_BOOT_MODE),live)
+UBUNTU_INITRD := $(UBUNTU_LIVE_INITRD)
+UBUNTU_BOOTARGS := console=hvc0 boot=casper noprompt systemd.unit=console-getty.service systemd.wants=systemd-user-sessions.service systemd.mask=ldconfig.service systemd.mask=systemd-udev-trigger.service panic=-1
+else
+UBUNTU_INITRD := $(UBUNTU_E2E_INITRD)
+UBUNTU_BOOTARGS := console=hvc0 quiet loglevel=3 rdinit=/init panic=-1 ip=dhcp
+endif
 
 ifeq ($(GUEST_OS),ubuntu)
 LINUX_IMAGE  := $(UBUNTU_KERNEL)
+ifeq ($(UBUNTU_BOOT_MODE),live)
+INITRD_IMAGE := $(UBUNTU_LIVE_PLACEHOLDER)
+else
 INITRD_IMAGE := $(UBUNTU_INITRD)
+endif
 DTS_OVERLAY_FILE := $(UBUNTU_DTS_OVERLAY)
 else
 LINUX_IMAGE  := $(BUILD_DIR)/$(BUILDROOT_LINUX_IMAGE)
@@ -68,7 +92,7 @@ $(LINUX_DTS_BASE): $(DTS_DIR)/linux.dts $(VMM_CONFIG_STAMP) $(lastword $(MAKEFIL
 	@echo "[VMM] Generating dual-guest Linux base device tree..."
 	sed \
 		-e 's|memory@40000000|memory@$(UBUNTU_RAM_NODE)|g' \
-		-e 's|0x00 0x40000000 0x00 0x80000000|0x00 $(UBUNTU_RAM_BASE) 0x00 0x20000000|g' \
+		-e 's|0x00 0x40000000 0x00 0x80000000|0x00 $(UBUNTU_RAM_BASE) 0x00 $(UBUNTU_RAM_SIZE)|g' \
 		$< > $@
 endif
 DTSCAT  := $(LIBVMM_ABS)/tools/dtscat
@@ -89,12 +113,22 @@ VMM_CFLAGS := \
     -I$(SDDF_ABS)/include/sddf/util/custom_libc \
     -I$(SDDF_ABS)/include/microkit \
     -I$(KERNEL_SRC_DIR)/include \
+    -I$(AGENTOS_ROOT) \
     -I$(AGENTOS_ROOT)/platform/include \
     -MD -MP \
     -target aarch64-none-elf
 
+ifeq ($(GUEST_OS),ubuntu)
+VMM_CFLAGS += -DAGENTOS_GUEST_UBUNTU=1
+endif
+ifeq ($(GUEST_OS),freebsd)
+VMM_CFLAGS += -DAGENTOS_GUEST_FREEBSD=1
+endif
 ifeq ($(VMM_DUAL_GUEST),1)
-VMM_CFLAGS += -DAGENTOS_GUEST_BOTH=1
+VMM_CFLAGS += -DAGENTOS_GUEST_BOTH=1 -DAGENTOS_GUEST_UBUNTU=1
+endif
+ifeq ($(UBUNTU_BOOT_MODE),live)
+VMM_CFLAGS += -DAGENTOS_GUEST_UBUNTU_LIVE=1
 endif
 
 VMM_CONFIG_STAMP := $(BUILD_DIR)/vmm-$(GUEST_OS).stamp
@@ -102,8 +136,8 @@ VMM_CONFIG_STAMP := $(BUILD_DIR)/vmm-$(GUEST_OS).stamp
 $(VMM_CONFIG_STAMP): FORCE
 	@mkdir -p $(BUILD_DIR)
 	@tmp="$@.tmp"; \
-	printf 'GUEST_OS=%s\nVMM_DUAL_GUEST=%s\nSEL4_PROFILE=%s\n' \
-		'$(GUEST_OS)' '$(VMM_DUAL_GUEST)' '$(SEL4_PROFILE)' > "$$tmp"; \
+	printf 'GUEST_OS=%s\nVMM_DUAL_GUEST=%s\nUBUNTU_BOOT_MODE=%s\nSEL4_PROFILE=%s\nVMM_CFLAGS=%s\n' \
+		'$(GUEST_OS)' '$(VMM_DUAL_GUEST)' '$(UBUNTU_BOOT_MODE)' '$(SEL4_PROFILE)' '$(VMM_CFLAGS)' > "$$tmp"; \
 	if test -f "$@" && cmp -s "$$tmp" "$@"; then rm -f "$$tmp"; else mv "$$tmp" "$@"; fi
 
 .PHONY: vmm-all vmm-clean FORCE
@@ -116,9 +150,13 @@ endif
 
 # ─── Ubuntu kernel/initrd: stage local ISO and extract boot assets ────────
 ifeq ($(GUEST_OS),ubuntu)
-$(UBUNTU_KERNEL) $(UBUNTU_INITRD):
+$(UBUNTU_KERNEL) $(UBUNTU_E2E_INITRD) $(UBUNTU_LIVE_INITRD):
 	@echo "[VMM] Fetching Ubuntu 26.04 boot assets (via xtask fetch-guest)..."
 	cargo xtask fetch-guest --os ubuntu --output-dir $(AGENTOS_IMAGES)
+
+$(UBUNTU_LIVE_PLACEHOLDER):
+	@mkdir -p $(BUILD_DIR)
+	@printf '\0' > $@
 endif
 
 # ─── Download buildroot guest images ─────────────────────────────────────
@@ -146,7 +184,7 @@ endif
 $(UBUNTU_DTS_OVERLAY): $(KERNEL_SRC_DIR)/ubuntu-iso-overlay.dts.in $(KERNEL_SRC_DIR)/vmm.mk $(UBUNTU_INITRD) $(VMM_CONFIG_STAMP)
 	@mkdir -p $(BUILD_DIR)
 	@echo "[VMM] Generating Ubuntu 26.04 live-ISO overlay..."
-	@initrd_size=$$(python3 -c 'import os,sys; print(os.path.getsize(sys.argv[1]))' "$(UBUNTU_INITRD)"); \
+	@initrd_size=$$(wc -c < "$(UBUNTU_INITRD)"); \
 	start=$$(( $(UBUNTU_INITRD_START) )); \
 	end=$$(( start + initrd_size )); \
 	end_hex=$$(printf "0x%08x" $$end); \
@@ -154,6 +192,7 @@ $(UBUNTU_DTS_OVERLAY): $(KERNEL_SRC_DIR)/ubuntu-iso-overlay.dts.in $(KERNEL_SRC_
 		-e 's|@UBUNTU_BOOTARGS@|$(UBUNTU_BOOTARGS)|g' \
 		-e 's|@UBUNTU_RAM_NODE@|$(UBUNTU_RAM_NODE)|g' \
 		-e 's|@UBUNTU_RAM_BASE@|0x00 $(UBUNTU_RAM_BASE)|g' \
+		-e 's|@UBUNTU_RAM_SIZE@|$(UBUNTU_RAM_SIZE)|g' \
 		-e 's|@UBUNTU_INITRD_START@|0x00 $(UBUNTU_INITRD_START)|g' \
 		-e "s|@UBUNTU_INITRD_END@|0x00 $$end_hex|g" \
 		$< > $@
@@ -161,7 +200,7 @@ $(UBUNTU_DTS_OVERLAY): $(KERNEL_SRC_DIR)/ubuntu-iso-overlay.dts.in $(KERNEL_SRC_
 $(BUILD_DIR)/buildroot-overlay.dts: $(DTS_DIR)/overlay.dts $(KERNEL_SRC_DIR)/vmm.mk $(INITRD_IMAGE) $(VMM_CONFIG_STAMP)
 	@mkdir -p $(BUILD_DIR)
 	@echo "[VMM] Generating buildroot overlay (initrd at $(BUILDROOT_INITRD_START))..."
-	@initrd_size=$$(python3 -c 'import os,sys; print(os.path.getsize(sys.argv[1]))' "$(INITRD_IMAGE)"); \
+	@initrd_size=$$(wc -c < "$(INITRD_IMAGE)"); \
 	start=$$(( $(BUILDROOT_INITRD_START) )); \
 	end=$$(( start + initrd_size )); \
 	end_hex=$$(printf "0x%08x" $$end); \
@@ -223,8 +262,11 @@ VMM_PD_ENTRY_OBJ   := $(BUILD_DIR)/pd_entry.vmm.o
 NET_VIRT_PUMP_OBJ  := $(BUILD_DIR)/net_virt_pump.o
 VMM_VIRTIO_NET_OBJ := $(BUILD_DIR)/vmm_virtio_net.o
 GPA_TRANSLATE_OBJ  := $(BUILD_DIR)/gpa_translate.o
+VMM_GUEST_RAM_OBJ  := $(BUILD_DIR)/vmm_guest_ram.o
+GUEST_VMM_RUNTIME_OBJ := $(BUILD_DIR)/guest_vmm_runtime.o
 BLK_VIRT_PUMP_OBJ  := $(BUILD_DIR)/blk_virt_pump.o
 VMM_VIRTIO_BLK_OBJ := $(BUILD_DIR)/vmm_virtio_blk.o
+VMM_VIRTIO_CONSOLE_OBJ := $(BUILD_DIR)/vmm_virtio_console.o
 
 # ─── Compile linux_vmm.c + gpu_shmem.c ──────────────────────────────────
 #
@@ -233,8 +275,11 @@ VMM_VIRTIO_BLK_OBJ := $(BUILD_DIR)/vmm_virtio_blk.o
 # reusing that path can silently link a stale object compiled with incompatible
 # flags.
 $(LINUX_VMM_FULL_OBJ): $(KERNEL_SRC_DIR)/src/linux_vmm.c $(VMM_CONFIG_STAMP) \
+                      $(AGENTOS_ROOT)/platform/include/platform/guest_memory_layout.h \
+                      $(AGENTOS_ROOT)/platform/include/platform/guest_vmm_runtime.h \
                       $(AGENTOS_ROOT)/platform/include/platform/vmm_virtio_net.h \
-                      $(AGENTOS_ROOT)/platform/include/platform/vmm_virtio_blk.h
+                      $(AGENTOS_ROOT)/platform/include/platform/vmm_virtio_blk.h \
+                      $(AGENTOS_ROOT)/platform/include/platform/vmm_virtio_console.h
 	@mkdir -p $(BUILD_DIR)
 	@echo "[VMM] Compiling linux_vmm.c..."
 	clang $(VMM_CFLAGS) -c -o $@ $<
@@ -258,6 +303,7 @@ $(NET_VIRT_PUMP_OBJ): $(AGENTOS_ROOT)/platform/net-virt/net_virt_pump.c \
 
 $(VMM_VIRTIO_NET_OBJ): $(AGENTOS_ROOT)/platform/net-virt/vmm_virtio_net.c \
                        $(AGENTOS_ROOT)/platform/include/platform/net_layout.h \
+                       $(AGENTOS_ROOT)/platform/include/platform/net_host_layout.h \
                        $(AGENTOS_ROOT)/platform/include/platform/net_virt_pump.h \
                        $(AGENTOS_ROOT)/platform/include/platform/vmm_virtio_net.h \
                        $(AGENTOS_ROOT)/platform/include/platform/guest_ram.h \
@@ -270,6 +316,19 @@ $(GPA_TRANSLATE_OBJ): $(AGENTOS_ROOT)/platform/guest-ram/gpa_translate.c \
                       $(AGENTOS_ROOT)/platform/include/platform/guest_ram.h
 	@mkdir -p $(BUILD_DIR)
 	@echo "[VMM] Compiling gpa_translate.c..."
+	clang $(VMM_CFLAGS) -c -o $@ $<
+
+$(VMM_GUEST_RAM_OBJ): $(AGENTOS_ROOT)/platform/guest-ram/vmm_guest_ram.c \
+                      $(AGENTOS_ROOT)/platform/include/platform/guest_ram.h \
+                      $(LIBVMM_ABS)/include/libvmm/virtio/gpa.h
+	@mkdir -p $(BUILD_DIR)
+	@echo "[VMM] Compiling vmm_guest_ram.c..."
+	clang $(VMM_CFLAGS) -c -o $@ $<
+
+$(GUEST_VMM_RUNTIME_OBJ): $(AGENTOS_ROOT)/platform/guest-vmm/runtime.c \
+                         $(AGENTOS_ROOT)/platform/include/platform/guest_vmm_runtime.h
+	@mkdir -p $(BUILD_DIR)
+	@echo "[VMM] Compiling shared guest VMM runtime..."
 	clang $(VMM_CFLAGS) -c -o $@ $<
 
 $(BLK_VIRT_PUMP_OBJ): $(AGENTOS_ROOT)/platform/blk-virt/blk_virt_pump.c \
@@ -287,6 +346,15 @@ $(VMM_VIRTIO_BLK_OBJ): $(AGENTOS_ROOT)/platform/blk-virt/vmm_virtio_blk.c \
 	@echo "[VMM] Compiling vmm_virtio_blk.c..."
 	clang $(VMM_CFLAGS) -c -o $@ $<
 
+$(VMM_VIRTIO_CONSOLE_OBJ): $(AGENTOS_ROOT)/platform/serial-virt/vmm_virtio_console.c \
+                           $(AGENTOS_ROOT)/platform/include/platform/serial_layout.h \
+                           $(AGENTOS_ROOT)/platform/include/platform/vmm_virtio_console.h \
+                           $(LIBVMM_ABS)/include/libvmm/virtio/console.h \
+                           $(LIBVMM_ABS)/include/libvmm/virtio/gpa.h
+	@mkdir -p $(BUILD_DIR)
+	@echo "[VMM] Compiling vmm_virtio_console.c..."
+	clang $(VMM_CFLAGS) -c -o $@ $<
+
 # ─── Link linux_vmm.elf ──────────────────────────────────────────────────
 $(BUILD_DIR)/linux_vmm.elf: FORCE \
 	                             $(LINUX_VMM_FULL_OBJ) \
@@ -295,8 +363,11 @@ $(BUILD_DIR)/linux_vmm.elf: FORCE \
 	                             $(NET_VIRT_PUMP_OBJ) \
 	                             $(VMM_VIRTIO_NET_OBJ) \
 	                             $(GPA_TRANSLATE_OBJ) \
+	                             $(VMM_GUEST_RAM_OBJ) \
+	                             $(GUEST_VMM_RUNTIME_OBJ) \
 	                             $(BLK_VIRT_PUMP_OBJ) \
 	                             $(VMM_VIRTIO_BLK_OBJ) \
+	                             $(VMM_VIRTIO_CONSOLE_OBJ) \
 	                             $(BUILD_DIR)/images.o \
 	                             $(BUILD_DIR)/libvmm.a \
 	                             $(BUILD_DIR)/libsddf_util_debug.a
@@ -304,8 +375,10 @@ $(BUILD_DIR)/linux_vmm.elf: FORCE \
 	ld.lld -T$(BOARD_DIR)/lib/microkit.ld \
 		-L$(BOARD_DIR)/lib \
 		$(VMM_PD_ENTRY_OBJ) $(LINUX_VMM_FULL_OBJ) $(GPU_SHMEM_FULL_OBJ) \
-		$(NET_VIRT_PUMP_OBJ) $(VMM_VIRTIO_NET_OBJ) $(GPA_TRANSLATE_OBJ) \
-		$(BLK_VIRT_PUMP_OBJ) $(VMM_VIRTIO_BLK_OBJ) $(BUILD_DIR)/images.o \
+		$(NET_VIRT_PUMP_OBJ) $(VMM_VIRTIO_NET_OBJ) $(GPA_TRANSLATE_OBJ) $(VMM_GUEST_RAM_OBJ) \
+		$(GUEST_VMM_RUNTIME_OBJ) \
+		$(BLK_VIRT_PUMP_OBJ) $(VMM_VIRTIO_BLK_OBJ) \
+		$(VMM_VIRTIO_CONSOLE_OBJ) $(BUILD_DIR)/images.o \
 		--start-group \
 		$(BUILD_DIR)/libvmm.a $(BUILD_DIR)/libsddf_util_debug.a \
 		--end-group \
@@ -318,7 +391,13 @@ FREEBSD_RAW_IMAGE ?= $(if $(AGENTOS_FREEBSD_IMAGE),$(AGENTOS_FREEBSD_IMAGE),$(if
 FREEBSD_KERNEL_IMAGE := $(BUILD_DIR)/freebsd-kernel.bin
 FREEBSD_DTS := $(KERNEL_SRC_DIR)/freebsd-direct.dts
 FREEBSD_DTS_EFFECTIVE := $(FREEBSD_DTS)
-FREEBSD_EXTRACT := $(AGENTOS_ROOT)/tools/extract_freebsd_file.py
+ifeq ($(VMM_DUAL_GUEST),1)
+FREEBSD_DTS_EFFECTIVE := $(BUILD_DIR)/freebsd-direct-dual.dts
+$(FREEBSD_DTS_EFFECTIVE): $(FREEBSD_DTS) $(VMM_CONFIG_STAMP) $(lastword $(MAKEFILE_LIST))
+	@mkdir -p $(BUILD_DIR)
+	sed 's|0x00 0x40000000 0x00 0x20000000|0x00 0x40000000 0x00 0x10000000|' $< > $@
+endif
+FREEBSD_EXTRACT := $(AGENTOS_ROOT)/xtask/src/cmd_extract_freebsd_file.rs
 
 $(FREEBSD_RAW_IMAGE):
 	@echo "[VMM] Fetching FreeBSD 15.0 ISO assets (via xtask fetch-guest)..."
@@ -330,8 +409,8 @@ $(FREEBSD_KERNEL_IMAGE): $(FREEBSD_RAW_IMAGE) $(FREEBSD_EXTRACT)
 	@case "$(FREEBSD_RAW_IMAGE)" in \
 		*.iso) cargo xtask fetch-guest --os freebsd --output-dir $(AGENTOS_IMAGES); \
 		       cp "$(AGENTOS_IMAGES)/freebsd-15.0-aarch64-kernel" $@ ;; \
-		*) python3 $(FREEBSD_EXTRACT) "$(FREEBSD_RAW_IMAGE)" /boot/kernel/kernel.bin $@ || \
-		   python3 $(FREEBSD_EXTRACT) "$(FREEBSD_RAW_IMAGE)" /boot/kernel/kernel $@ ;; \
+		*) cargo xtask extract-freebsd-file "$(FREEBSD_RAW_IMAGE)" /boot/kernel/kernel.bin $@ || \
+		   cargo xtask extract-freebsd-file "$(FREEBSD_RAW_IMAGE)" /boot/kernel/kernel $@ ;; \
 	esac
 
 $(BUILD_DIR)/freebsd-direct.dtb: $(FREEBSD_DTS_EFFECTIVE) $(VMM_CONFIG_STAMP) $(lastword $(MAKEFILE_LIST))
@@ -348,7 +427,10 @@ $(BUILD_DIR)/freebsd_images.o: $(PKG_IMG) $(FREEBSD_KERNEL_IMAGE) $(BUILD_DIR)/f
 		$(PKG_IMG) -o $@
 
 # ─── Compile freebsd_vmm.c ───────────────────────────────────────────────
-$(BUILD_DIR)/freebsd_vmm.o: $(KERNEL_SRC_DIR)/src/freebsd_vmm.c $(VMM_CONFIG_STAMP)
+$(BUILD_DIR)/freebsd_vmm.o: $(KERNEL_SRC_DIR)/src/freebsd_vmm.c $(VMM_CONFIG_STAMP) \
+                           $(AGENTOS_ROOT)/platform/include/platform/guest_memory_layout.h \
+                           $(AGENTOS_ROOT)/platform/include/platform/guest_vmm_runtime.h \
+                           $(AGENTOS_ROOT)/platform/include/platform/vmm_virtio_console.h
 	@mkdir -p $(BUILD_DIR)
 	@echo "[VMM] Compiling freebsd_vmm.c..."
 	clang $(VMM_CFLAGS) -c -o $@ $<
@@ -356,12 +438,25 @@ $(BUILD_DIR)/freebsd_vmm.o: $(KERNEL_SRC_DIR)/src/freebsd_vmm.c $(VMM_CONFIG_STA
 # ─── Link freebsd_vmm.elf ────────────────────────────────────────────────
 $(BUILD_DIR)/freebsd_vmm.elf: $(BUILD_DIR)/freebsd_vmm.o \
                                $(BUILD_DIR)/freebsd_images.o \
+                               $(NET_VIRT_PUMP_OBJ) \
+                               $(VMM_VIRTIO_NET_OBJ) \
+                               $(GPA_TRANSLATE_OBJ) \
+                               $(VMM_GUEST_RAM_OBJ) \
+                               $(GUEST_VMM_RUNTIME_OBJ) \
+                               $(BLK_VIRT_PUMP_OBJ) \
+                               $(VMM_VIRTIO_BLK_OBJ) \
+                               $(VMM_VIRTIO_CONSOLE_OBJ) \
                                $(BUILD_DIR)/libvmm.a \
                                $(BUILD_DIR)/libsddf_util_debug.a
 	@echo "[VMM] Linking freebsd_vmm.elf..."
 	ld.lld -T$(KERNEL_SRC_DIR)/freebsd_vmm.ld \
 		-L$(BOARD_DIR)/lib \
 		$(BUILD_DIR)/freebsd_vmm.o $(BUILD_DIR)/freebsd_images.o \
+		$(NET_VIRT_PUMP_OBJ) $(VMM_VIRTIO_NET_OBJ) \
+		$(GPA_TRANSLATE_OBJ) $(VMM_GUEST_RAM_OBJ) \
+		$(GUEST_VMM_RUNTIME_OBJ) \
+		$(BLK_VIRT_PUMP_OBJ) $(VMM_VIRTIO_BLK_OBJ) \
+		$(VMM_VIRTIO_CONSOLE_OBJ) \
 		--start-group \
 		$(BUILD_DIR)/libvmm.a $(BUILD_DIR)/libsddf_util_debug.a \
 		--end-group \
@@ -372,7 +467,10 @@ vmm-clean:
 	rm -f $(BUILD_DIR)/linux_vmm.full.o $(BUILD_DIR)/gpu_shmem.full.o $(BUILD_DIR)/pd_entry.vmm.o $(BUILD_DIR)/linux_vmm.elf
 	rm -f $(BUILD_DIR)/net_virt_pump.o $(BUILD_DIR)/vmm_virtio_net.o
 	rm -f $(BUILD_DIR)/gpa_translate.o
+	rm -f $(BUILD_DIR)/vmm_guest_ram.o
+	rm -f $(BUILD_DIR)/guest_vmm_runtime.o
 	rm -f $(BUILD_DIR)/blk_virt_pump.o $(BUILD_DIR)/vmm_virtio_blk.o
+	rm -f $(BUILD_DIR)/vmm_virtio_console.o
 	rm -f $(BUILD_DIR)/freebsd_vmm.o $(BUILD_DIR)/freebsd_images.o $(BUILD_DIR)/freebsd_vmm.elf
 	rm -f $(BUILD_DIR)/freebsd-direct.dtb
 	rm -f $(BUILD_DIR)/images.o $(BUILD_DIR)/vm.dts $(BUILD_DIR)/vm.dtb

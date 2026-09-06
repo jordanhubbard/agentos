@@ -31,9 +31,9 @@ label is chosen.
 | Subsystem | Proof level | Evidence / notes |
 |-----------|-------------|------------------|
 | seL4/Microkit boot (AArch64, x86_64) | boot-proven | `xtask qemu-test`, `tests/end_to_end_boot_test.sh` wait for boot markers; RISC-V builds but is not regularly boot-asserted |
-| Linux/Ubuntu guest boot | boot-proven | `tests/e2e/run_dual_os_e2e.sh` boots + SSHes in; `make test-guest-login` |
-| Emulated virtio-net (sDDF pump, IPA `0x0A010000`) | host-tested | `aos_net_virt_pump`; linux_vmm calls `virtio_mmio_net_init`; QEMU passthrough is still the SSH path |
-| FreeBSD 15.0 guest boot | boot-proven | Dual-OS E2E (`3f5365a` "prove dual linux freebsd lifecycle") |
+| Linux/Ubuntu guest boot | boot-proven | `make demo-test` requires concurrent guest boot and authenticated SSH; `make test-guest-login` proves the CC-PD console path |
+| Emulated virtio-net (sDDF pump, IPA `0x0A010000`) | target-tested | `make test-guest-net` boots Buildroot and requires `DRIVER_OK` plus a guest packet through the agentOS virtualizer; guests do not receive the host QEMU transport |
+| FreeBSD 15.0 guest boot | boot-proven | `make demo-test` requires concurrent FreeBSD boot and authenticated SSH |
 | Guest VMM slot mux (create/switch/list/status) | target-tested | Per-guest VMM slots (`470679f`); contract exercised |
 | Guest snapshot / restore | stubbed | `vm_manager.c`: "SNAPSHOT/RESTORE: not implemented (Phase 1)"; `cc_pd.c` returns `CC_ERR_RELAY_FAULT` |
 | Guest live-migrate (`MSG_VIBEOS_MIGRATE`) | planned | Contract defined; no target-validated implementation |
@@ -41,7 +41,7 @@ label is chosen.
 | Dynamic guest CREATE/LIST/DESTROY via vibe_engine | host-tested | AArch64 links `vmm_mux_stub.c`; vibe_engine surfaces "phantom" `RUNNING` guests (`e70d955`) — lifecycle UX works against stubbed VM backing only |
 | serial-mux / serial PD | boot-proven | Guest console login over the serial path |
 | net-service / net_isolator | host-tested | `tests/contracts/net_*`; not boot-asserted |
-| block-service / block PD | host-tested | `tests/contracts/block_*`; VirtIO-blk path not independently boot-asserted |
+| block-service / emulated virtio-blk | target-tested | `make test-guest-blk` boots Buildroot and requires a guest block request through the agentOS virtualizer; host contract tests provide additional logic coverage |
 | usb-service | stubbed | `usb_pd.c` "stub mode" unless built with `AGENTOS_USB_PD` and real MMIO |
 | timer-service | host-tested | `tests/contracts/timer_test.c` |
 | entropy-service | host-tested | `services/entropy-service/`; not target-validated |

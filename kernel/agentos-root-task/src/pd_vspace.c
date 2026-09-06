@@ -64,6 +64,27 @@
 static seL4_CPtr g_scratch_l2 = seL4_CapNull;
 static seL4_CPtr g_scratch_l1 = seL4_CapNull;
 
+/*
+ * Publish writes made through the root task's scratch alias before the frame
+ * is remapped into a PD. AArch64 requires explicit data-cache maintenance;
+ * x86-64 is cache coherent and RISC-V has no corresponding seL4 cache syscall
+ * in the supported SDK, so an architecture memory fence is sufficient there.
+ */
+static seL4_Error sync_scratch_frame(seL4_CPtr frame)
+{
+#if defined(__aarch64__)
+    seL4_Error err =
+        seL4_ARM_Page_CleanInvalidate_Data(frame, 0u, PAGE_SIZE);
+    if (err != seL4_NoError) {
+        return err;
+    }
+#else
+    (void)frame;
+#endif
+    AGENTOS_MEMORY_FENCE();
+    return seL4_NoError;
+}
+
 /* ── ELF64 types ─────────────────────────────────────────────────────────── */
 
 #define ELF_MAGIC0  0x7Fu
@@ -263,20 +284,68 @@ seL4_Error pd_vspace_map_region(seL4_CPtr vspace,
                                  int        writable)
 {
     const seL4_Word LARGE_PAGE = (1UL << seL4_ARCH_LargePageBits);  /* 2 MB */
+    const seL4_Word SMALL_PAGE = PAGE_SIZE;
     seL4_CapRights_t rights = writable ? seL4_AllRights : seL4_CanRead;
 
     for (seL4_Word va = va_start; va < va_start + (seL4_Word)size; va += LARGE_PAGE) {
         seL4_CPtr frame;
         seL4_Error err = ut_alloc_cap((uint32_t)seL4_ARCH_LargePageObject, 0u, &frame);
-        if (err != seL4_NoError) {
-            return err;
+        if (err == seL4_NoError) {
+            /* map_page handles FailedLookup by installing missing intermediate
+             * PTs. For 2 MB pages at most two PT installs are needed. */
+            err = map_page(frame, vspace, va, rights,
+                           seL4_ARM_Default_VMAttributes);
+            if (err == seL4_NoError) {
+                continue;
+            }
+            /*
+             * Some AArch64 VSpace locations cannot accept another block entry
+             * after the surrounding hierarchy has been populated. Drop the
+             * unused frame cap and retry this chunk with leaf pages.
+             */
+            (void)seL4_CNode_Delete(seL4_CapInitThreadCNode, frame, 64u);
         }
-        /* map_page handles FailedLookup by installing missing intermediate PTs.
-         * For 2 MB pages: at most 2 PT installs needed (L1 then L2 on AArch64). */
-        err = map_page(frame, vspace, va, rights, seL4_ARM_Default_VMAttributes);
-        if (err != seL4_NoError) {
-            return err;
+
+        /*
+         * The boot allocator can run out of 2 MB-aligned untyped memory while
+         * plenty of 4 KB untypeds remain.  Fill this chunk with small pages so
+         * large guest-RAM regions do not depend on physical contiguity.
+         */
+        for (seL4_Word off = 0u; off < LARGE_PAGE; off += SMALL_PAGE) {
+            err = ut_alloc_cap((uint32_t)seL4_ARM_SmallPageObject, 0u,
+                               &frame);
+            if (err != seL4_NoError) {
+                return err;
+            }
+            err = map_page(frame, vspace, va + off, rights,
+                           seL4_ARM_Default_VMAttributes);
+            if (err != seL4_NoError) {
+                return err;
+            }
         }
+    }
+    return seL4_NoError;
+}
+
+seL4_Error pd_vspace_map_reserved_region(seL4_CPtr vspace,
+                                          seL4_Word va_start,
+                                          const seL4_CPtr *frames,
+                                          size_t frame_count,
+                                          int writable)
+{
+    const seL4_Word large_page = (1UL << seL4_ARCH_LargePageBits);
+    seL4_CapRights_t rights = writable ? seL4_AllRights : seL4_CanRead;
+
+    if (frames == NULL || frame_count == 0u ||
+        (va_start & (large_page - 1u)) != 0u) {
+        return seL4_InvalidArgument;
+    }
+    for (size_t i = 0u; i < frame_count; i++) {
+        if (frames[i] == seL4_CapNull) return seL4_InvalidArgument;
+        seL4_Error err = map_page(frames[i], vspace,
+                                  va_start + (seL4_Word)i * large_page,
+                                  rights, seL4_ARM_Default_VMAttributes);
+        if (err != seL4_NoError) return err;
     }
     return seL4_NoError;
 }
@@ -332,8 +401,11 @@ static seL4_Error load_page(seL4_CPtr    vspace,
         }
     }
 
-    /* Ensure writes are visible before unmapping */
-    AGENTOS_MEMORY_FENCE();
+    /* Make scratch-alias writes visible through the PD's virtual mapping. */
+    err = sync_scratch_frame(frame);
+    if (err != seL4_NoError) {
+        return err;
+    }
 
     /* Unmap from root task VSpace */
     seL4_ARCH_Page_Unmap(frame);
@@ -453,7 +525,10 @@ static seL4_Error load_elf_segments(seL4_CPtr vspace,
             }
         }
 
-        AGENTOS_MEMORY_FENCE();
+        err = sync_scratch_frame(frame);
+        if (err != seL4_NoError) {
+            return err;
+        }
         seL4_ARCH_Page_Unmap(frame);
 
         err = map_page(frame, vspace, va,

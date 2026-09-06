@@ -281,7 +281,7 @@ void cap_broker_revoke_agent(uint32_t agent_pd, uint32_t reason_flags) {
  * Total (N=256): 32 + 5120 + 8 + 64 = 5224 bytes.
  *
  * The report is written to AgentFS under path-id derived from timestamp.
- * On-disk path convention (for attest_verify.py): agentos/attestation/<tick>.att
+ * On-disk path convention (for tools/attest-verify): agentos/attestation/<tick>.att
  *
  * Signing: sha512(report[0..len-64]) → report[len-64..len]
  *   key_id bytes [0:8] in sig slot hold a constant sentinel 0x4E415454_01000000.

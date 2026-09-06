@@ -5,7 +5,7 @@
 #
 # Prerequisites:
 #   - SEL4_BOARD_DIR pointing to the board package with seL4 headers
-#     (e.g. microkit-sdk-2.1.0/board/qemu_virt_aarch64; we use its seL4
+#     (e.g. $SEL4_SDK/board/qemu_virt_aarch64; we use its seL4
 #     headers and kernel API stubs — NOT libmicrokit)
 #   - LIBVMM_DIR pointing to the libvmm checkout
 #   - EDK2_FD pointing to the edk2-aarch64-code.fd firmware image
@@ -14,7 +14,9 @@
 
 BOARD           ?= qemu_virt_aarch64
 AGENTOS_ROOT    := $(abspath ../..)
-SEL4_BOARD_DIR  ?= $(AGENTOS_ROOT)/microkit-sdk-2.1.0/board/$(BOARD)/release
+SEL4_SDK_VERSION ?= 2.1.0
+SEL4_SDK        ?= $(HOME)/.cache/agentos/microkit-sdk-$(SEL4_SDK_VERSION)
+SEL4_BOARD_DIR  ?= $(SEL4_SDK)/board/$(BOARD)/release
 LIBVMM_DIR      ?= $(AGENTOS_ROOT)/libvmm
 BUILD_DIR       ?= build
 LIBVMM_LIB_DIR  ?= $(AGENTOS_ROOT)/build/$(BOARD)

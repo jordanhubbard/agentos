@@ -2,18 +2,23 @@
 // The binary entry point (src/main.rs) re-uses everything from here.
 
 pub mod cmd_ci_matrix;
+pub mod cmd_extract_freebsd_file;
 pub mod cmd_fault_inject;
 pub mod cmd_fetch_guest;
 pub mod cmd_gen_abi;
 pub mod cmd_gen_caps;
+pub mod cmd_gen_channels;
 pub mod cmd_gen_image;
 pub mod cmd_gen_pd_bundle;
+pub mod cmd_gen_policy;
 pub mod cmd_host_test;
+pub mod cmd_policy_check;
 pub mod cmd_release;
 pub mod cmd_run_tests;
 pub mod cmd_setup;
 pub mod cmd_test;
 pub mod cmd_test_api;
+pub mod rfb;
 
 // ── Re-exports for main.rs ────────────────────────────────────────────────
 pub use cmd_gen_image::GenImageArgs;
@@ -34,6 +39,10 @@ pub struct TestArgs {
     pub timeout_secs: u64,
     #[arg(long)]
     pub no_build: bool,
+    /// After a successful dual-guest SSH gate, print manual SSH commands and
+    /// keep QEMU running until Enter is pressed.
+    #[arg(long)]
+    pub keep_running: bool,
     /// Require emulated virtio-net probe + DRIVER_OK + a pumped frame.
     /// Host tests are not this proof. GUEST_OS=none is a stub VMM.
     #[arg(long)]
@@ -41,6 +50,19 @@ pub struct TestArgs {
     /// Require emulated virtio-blk probe + DRIVER_OK + a pumped request.
     #[arg(long)]
     pub assert_emulated_blk: bool,
+    /// Require Ubuntu login and bidirectional I/O through emulated virtio-console.
+    #[arg(long)]
+    pub assert_emulated_console: bool,
+    /// Require Ubuntu login plus real I/O through agentOS net, blk, and console.
+    #[arg(long)]
+    pub assert_agentos_virtio: bool,
+    /// Boot Ubuntu's real Casper initrd and require live-filesystem login.
+    #[arg(long)]
+    pub assert_ubuntu_live: bool,
+    /// Start a desktop in the Ubuntu live guest and verify one raw RFB frame
+    /// through a key-authenticated SSH tunnel.
+    #[arg(long)]
+    pub assert_desktop: bool,
 }
 
 #[derive(clap::Args)]
@@ -76,6 +98,34 @@ pub struct GenCapsArgs {
     #[arg(long)]
     pub out: std::path::PathBuf,
 }
+
+#[derive(clap::Args)]
+pub struct GenChannelsArgs {
+    #[arg(long, default_value = "kernel/agentos-root-task/agentos.system")]
+    pub system: std::path::PathBuf,
+    #[arg(
+        long,
+        default_value = "kernel/agentos-root-task/include/channels_generated.h"
+    )]
+    pub output: std::path::PathBuf,
+}
+
+#[derive(clap::Args)]
+pub struct GenPolicyArgs {
+    pub input: std::path::PathBuf,
+    #[arg(long)]
+    pub output: std::path::PathBuf,
+}
+
+#[derive(clap::Args)]
+pub struct ExtractFreebsdFileArgs {
+    pub image: std::path::PathBuf,
+    pub guest_path: String,
+    pub output: std::path::PathBuf,
+}
+
+#[derive(clap::Args)]
+pub struct PolicyCheckArgs {}
 
 #[derive(clap::Args)]
 pub struct RunTestsArgs {
@@ -116,13 +166,76 @@ pub enum GuestOs {
 
 #[derive(clap::Args)]
 pub struct ReleaseArgs {
-    #[arg(long, value_enum, default_value_t = BumpKind::Patch)]
-    pub bump: BumpKind,
-    #[arg(long)]
-    pub dry_run: bool,
+    #[command(subcommand)]
+    pub action: ReleaseAction,
 }
 
-#[derive(clap::ValueEnum, Clone, Debug)]
+#[derive(clap::Subcommand)]
+pub enum ReleaseAction {
+    /// Print a read-only release plan.
+    Plan(ReleasePlanArgs),
+    /// Update declared versions and CHANGELOG on a release branch.
+    Prepare(ReleasePrepareArgs),
+    /// Run exact-revision gates and write an ignored receipt.
+    Check(ReleaseCheckArgs),
+    /// Publish an already checked main revision.
+    Publish(ReleasePublishArgs),
+    /// Verify the remote tag and GitHub release without mutation.
+    Verify(ReleaseVerifyArgs),
+}
+
+#[derive(clap::Args)]
+pub struct ReleasePlanArgs {
+    #[arg(long, value_enum, default_value_t = BumpKind::Patch)]
+    pub bump: BumpKind,
+    #[arg(long, value_enum, default_value_t = ReleaseClaim::Os)]
+    pub claim: ReleaseClaim,
+}
+
+#[derive(clap::Args)]
+pub struct ReleasePrepareArgs {
+    #[arg(long)]
+    pub version: String,
+    /// Reviewed release date in YYYY-MM-DD form.
+    #[arg(long)]
+    pub date: String,
+}
+
+#[derive(clap::Args)]
+pub struct ReleaseCheckArgs {
+    #[arg(long)]
+    pub version: String,
+    #[arg(long, value_enum, default_value_t = ReleaseClaim::Os)]
+    pub claim: ReleaseClaim,
+    #[arg(long = "artifact")]
+    pub artifacts: Vec<std::path::PathBuf>,
+}
+
+#[derive(clap::Args)]
+pub struct ReleasePublishArgs {
+    #[arg(long)]
+    pub version: String,
+    /// Must exactly equal `publish-vMAJOR.MINOR.PATCH`.
+    #[arg(long)]
+    pub authorize: String,
+}
+
+#[derive(clap::Args)]
+pub struct ReleaseVerifyArgs {
+    #[arg(long)]
+    pub version: String,
+}
+
+#[derive(clap::ValueEnum, Clone, Copy, Debug, serde::Serialize, serde::Deserialize, PartialEq)]
+#[serde(rename_all = "kebab-case")]
+pub enum ReleaseClaim {
+    Tooling,
+    Os,
+    Guests,
+    Desktop,
+}
+
+#[derive(clap::ValueEnum, Clone, Copy, Debug)]
 pub enum BumpKind {
     Patch,
     Minor,
