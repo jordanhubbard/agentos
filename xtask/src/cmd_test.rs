@@ -11,6 +11,20 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 const UBUNTU_DEFAULT_SSH_PORT: u16 = 12222;
 const FREEBSD_DEFAULT_SSH_PORT: u16 = 12223;
 const UBUNTU_NOCLOUD_PORT: u16 = 18790;
+const SSH_PROBE_OPTIONS: &[&str] = &[
+    "-o", "BatchMode=yes",
+    "-o", "PreferredAuthentications=publickey",
+    "-o", "PasswordAuthentication=no",
+    "-o", "KbdInteractiveAuthentication=no",
+    "-o", "IdentitiesOnly=yes",
+    "-o", "ConnectTimeout=5",
+    "-o", "ConnectionAttempts=1",
+    "-o", "ServerAliveInterval=5",
+    "-o", "ServerAliveCountMax=1",
+    "-o", "StrictHostKeyChecking=no",
+    "-o", "UserKnownHostsFile=/dev/null",
+    "-o", "LogLevel=ERROR",
+];
 const CC_WIRE_SHMEM_SIZE: usize = 4096;
 const CC_INPUT_TEXT: u32 = 0x05;
 const CC_INPUT_TEXT_CHUNK: usize = 20;
@@ -1670,27 +1684,9 @@ fn spawn_ssh_probe(
                 .context("SSH private key path is not UTF-8")?,
             "-p",
             &port.to_string(),
-            "-o",
-            "BatchMode=yes",
-            "-o",
-            "PreferredAuthentications=publickey",
-            "-o",
-            "PasswordAuthentication=no",
-            "-o",
-            "KbdInteractiveAuthentication=no",
-            "-o",
-            "IdentitiesOnly=yes",
-            "-o",
-            "ConnectTimeout=5",
-            "-o",
-            "StrictHostKeyChecking=no",
-            "-o",
-            "UserKnownHostsFile=/dev/null",
-            "-o",
-            "LogLevel=ERROR",
-            &format!("{user}@127.0.0.1"),
-            "uname -s",
         ])
+        .args(SSH_PROBE_OPTIONS)
+        .args([&format!("{user}@127.0.0.1"), "uname -s"])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -2129,6 +2125,17 @@ mod tests {
             assert!(!command.contains("sshd || true"));
             assert!(command.contains("&& printf 'agentos-"));
         }
+    }
+
+    #[test]
+    fn ssh_probes_have_bounded_connection_and_session_liveness() {
+        let options = SSH_PROBE_OPTIONS.join(" ");
+        assert!(options.contains("BatchMode=yes"));
+        assert!(options.contains("PreferredAuthentications=publickey"));
+        assert!(options.contains("ConnectionAttempts=1"));
+        assert!(options.contains("ConnectTimeout=5"));
+        assert!(options.contains("ServerAliveInterval=5"));
+        assert!(options.contains("ServerAliveCountMax=1"));
     }
 
     #[test]
