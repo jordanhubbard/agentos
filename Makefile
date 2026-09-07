@@ -1034,13 +1034,16 @@ clean-images:
 # release: evidence-bound release workflow
 # =============================================================================
 release:
-	@cargo xtask release plan --bump patch --claim $(or $(RELEASE_CLAIM),os)
+	@cargo xtask release plan --bump patch --claim $(or $(RELEASE_CLAIM),os) \
+		$(foreach artifact,$(RELEASE_ARTIFACTS),--artifact $(artifact))
 
 release-minor:
-	@cargo xtask release plan --bump minor --claim $(or $(RELEASE_CLAIM),os)
+	@cargo xtask release plan --bump minor --claim $(or $(RELEASE_CLAIM),os) \
+		$(foreach artifact,$(RELEASE_ARTIFACTS),--artifact $(artifact))
 
 release-major:
-	@cargo xtask release plan --bump major --claim $(or $(RELEASE_CLAIM),os)
+	@cargo xtask release plan --bump major --claim $(or $(RELEASE_CLAIM),os) \
+		$(foreach artifact,$(RELEASE_ARTIFACTS),--artifact $(artifact))
 
 release-prepare:
 	@test -n "$(RELEASE_VERSION)" && test -n "$(RELEASE_DATE)" || \
@@ -1169,6 +1172,6 @@ help:
 	@echo "  make test-guest-blk QEMU_TEST_TIMEOUT=480"
 	@echo "  make test-guest-console QEMU_TEST_TIMEOUT=480"
 	@echo "  make test-ubuntu-virtio QEMU_TEST_TIMEOUT=480"
-	@echo "  make test-ubuntu-live QEMU_TEST_TIMEOUT=900"
+	@echo "  make test-ubuntu-live QEMU_TEST_TIMEOUT=3600"
 	@echo "  cd ../agentos_gui && make run"
 	@echo ""

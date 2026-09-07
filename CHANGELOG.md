@@ -25,6 +25,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Capability attenuation: OP_CAP_ATTENUATE for sub-delegation (`f3bb3f3`)
 
 ### Features
+- Evidence-bound release workflow with plan, prepare, check, publish, and
+  remote-asset verification phases
+- Authenticated Ubuntu desktop gate with deterministic RFB frame evidence and
+  packet capture
 - One-command dual-guest showcase: `make demo` boots Ubuntu and FreeBSD
   concurrently, proves key-only SSH to both, and retains them for manual
   sessions; `make demo-test` provides the non-interactive acceptance gate.
@@ -104,6 +108,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - agentOS v0.1.0-alpha: first boot (`8650b14`)
 
 ### Build
+- Correct modern virtio-net host headers so guest Ethernet and SSH traffic
+  remain byte-aligned
+- Enforce the repository-wide C/Rust/Assembly and no-UI policy in host gates
 - Kernel builds cleanly for riscv64 and aarch64 targets (`806be81`, `f319000`)
 - Fixed: duplicate opcode OP_CAP_POLICY_RELOAD in agentos.h (`806be81`)
 - Fixed: SWAP_SLOT_BASE_CH was 8, corrected to 30

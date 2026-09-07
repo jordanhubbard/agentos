@@ -554,33 +554,81 @@ static void net_host_offer_rx(void)
                  VIRTIO_NET_RX_QUEUE);
 }
 
-static void net_host_deliver(const uint8_t *frame, uint32_t len)
+static bool net_host_frame_for_client(const uint8_t *frame, uint32_t len,
+                                      const net_pd_client_t *c)
 {
-    for (uint32_t i = 0u; i < NET_MAX_CLIENTS; i++) {
-        net_pd_client_t *c = &clients[i];
-        if (!c->active || c->type != HANDLE_TYPE_NIC) {
-            continue;
-        }
-        volatile netpd_ring_t *ring = slot_ring(c->shmem_slot);
-        uint32_t data_off = NETPD_SLOT_OFFSET(c->shmem_slot) +
-                            NETPD_SLOT_HDR_SIZE;
-        if (ring->rx_head != ring->rx_tail) {
-            ring->rx_drops++;
-            c->rx_errors++;
-            continue;
-        }
+    if (len < 6u) return false;
+    if ((frame[0] & 1u) != 0u) return true; /* broadcast or multicast */
+    for (uint32_t i = 0u; i < 6u; i++) {
+        if (frame[i] != c->mac[i]) return false;
+    }
+    return true;
+}
+
+static bool net_host_ring_has_room(const net_pd_client_t *c, uint32_t needed)
+{
+    volatile netpd_ring_t *ring = slot_ring(c->shmem_slot);
+    uint32_t head = ring->rx_head == ring->rx_tail ? 0u : ring->rx_head;
+    return head <= NETPD_SLOT_DATA_SIZE &&
+           needed <= NETPD_SLOT_DATA_SIZE - head;
+}
+
+static void net_host_enqueue_frame(net_pd_client_t *c,
+                                   const uint8_t *frame, uint32_t len)
+{
+    volatile netpd_ring_t *ring = slot_ring(c->shmem_slot);
+    uint32_t data_off = NETPD_SLOT_OFFSET(c->shmem_slot) +
+                        NETPD_SLOT_HDR_SIZE;
+    uint32_t needed = 2u + len;
+    if (ring->rx_head == ring->rx_tail) {
         ring->rx_head = 0u;
         ring->rx_tail = 0u;
-        *(volatile uint16_t *)(net_pd_shmem_vaddr + data_off) =
-            (uint16_t)len;
-        volatile uint8_t *dst =
-            (volatile uint8_t *)(net_pd_shmem_vaddr + data_off + 2u);
-        for (uint32_t j = 0u; j < len; j++) {
-            dst[j] = frame[j];
-        }
-        net_host_fence();
-        ring->rx_head = 2u + len;
     }
+    uint32_t entry = ring->rx_head;
+    *(volatile uint16_t *)(net_pd_shmem_vaddr + data_off + entry) =
+        (uint16_t)len;
+    volatile uint8_t *dst =
+        (volatile uint8_t *)(net_pd_shmem_vaddr + data_off + entry + 2u);
+    for (uint32_t j = 0u; j < len; j++) {
+        dst[j] = frame[j];
+    }
+    net_host_fence();
+    ring->rx_head = entry + needed;
+}
+
+static bool net_host_deliver(const uint8_t *frame, uint32_t len)
+{
+    uint32_t needed = 2u + len;
+    if (len > NET_MAX_FRAME_BYTES || needed > NETPD_SLOT_DATA_SIZE) {
+        return true; /* malformed host frame: consume it rather than deadlock */
+    }
+
+    /*
+     * Check every destination before mutating any ring. This preserves exact
+     * multicast fanout when one guest is temporarily backpressured.
+     */
+    for (uint32_t i = 0u; i < NET_MAX_CLIENTS; i++) {
+        net_pd_client_t *c = &clients[i];
+        if (!c->active || c->type != HANDLE_TYPE_NIC ||
+            !net_host_frame_for_client(frame, len, c)) {
+            continue;
+        }
+        if (!net_host_ring_has_room(c, needed)) {
+            /*
+             * Leave the host descriptor pending. The VMM drains the queued
+             * frames and its next RAW_RECV call polls this descriptor again.
+             */
+            return false;
+        }
+    }
+    for (uint32_t i = 0u; i < NET_MAX_CLIENTS; i++) {
+        net_pd_client_t *c = &clients[i];
+        if (c->active && c->type == HANDLE_TYPE_NIC &&
+            net_host_frame_for_client(frame, len, c)) {
+            net_host_enqueue_frame(c, frame, len);
+        }
+    }
+    return true;
 }
 
 static uint32_t net_host_poll_rx(void)
@@ -609,7 +657,9 @@ static uint32_t net_host_poll_rx(void)
                     AGENTOS_NET_HOST_RX_DATA_OFF +
                     id * AGENTOS_NET_HOST_BUFFER_SIZE +
                     AGENTOS_NET_HOST_HEADER_SIZE);
-            net_host_deliver(frame, len);
+            if (!net_host_deliver(frame, len)) {
+                break;
+            }
             received++;
             iface_rx_pkts++;
             iface_rx_bytes += len;
@@ -1064,12 +1114,17 @@ static uint32_t handle_net_recv_nic(net_pd_client_t *c,
         return SEL4_ERR_OK;
     }
 
-    uint32_t frame_len = *(volatile uint16_t *)(net_pd_shmem_vaddr + data_off
-                          + ring->rx_tail);
+    uint32_t stored_len = *(volatile uint16_t *)(net_pd_shmem_vaddr + data_off
+                           + ring->rx_tail);
+    uint32_t frame_len = stored_len;
     if (frame_len > max_len) frame_len = max_len;
 
     uint32_t frame_off = data_off + ring->rx_tail + 2u;
-    ring->rx_tail = (ring->rx_tail + 2u + frame_len) % NETPD_SLOT_DATA_SIZE;
+    ring->rx_tail += 2u + stored_len;
+    if (ring->rx_tail == ring->rx_head) {
+        ring->rx_head = 0u;
+        ring->rx_tail = 0u;
+    }
     c->rx_pkts++;
     c->rx_bytes += frame_len;
 

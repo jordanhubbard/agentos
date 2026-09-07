@@ -61,7 +61,7 @@ UBUNTU_INITRD_START := 0x50000000
 endif
 ifeq ($(UBUNTU_BOOT_MODE),live)
 UBUNTU_INITRD := $(UBUNTU_LIVE_INITRD)
-UBUNTU_BOOTARGS := console=hvc0 boot=casper noprompt systemd.unit=console-getty.service systemd.wants=systemd-user-sessions.service systemd.mask=ldconfig.service systemd.mask=systemd-udev-trigger.service panic=-1
+UBUNTU_BOOTARGS := console=hvc0 boot=casper noprompt systemd.unit=console-getty.service systemd.wants=systemd-user-sessions.service systemd.mask=ldconfig.service systemd.mask=systemd-udev-trigger.service systemd.mask=systemd-resolved.service systemd.mask=netplan-configure.service panic=-1
 else
 UBUNTU_INITRD := $(UBUNTU_E2E_INITRD)
 UBUNTU_BOOTARGS := console=hvc0 quiet loglevel=3 rdinit=/init panic=-1 ip=dhcp

@@ -190,6 +190,9 @@ pub struct ReleasePlanArgs {
     pub bump: BumpKind,
     #[arg(long, value_enum, default_value_t = ReleaseClaim::Os)]
     pub claim: ReleaseClaim,
+    /// Repository-relative artifact paths expected from the release gates.
+    #[arg(long = "artifact")]
+    pub artifacts: Vec<std::path::PathBuf>,
 }
 
 #[derive(clap::Args)]

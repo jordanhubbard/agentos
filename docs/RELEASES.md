@@ -17,30 +17,38 @@ A release moves through five deliberately separate states:
 
 1. **Plan** — `make release` (or `release-minor`/`release-major`) is read-only.
    Bind the proposed version, branch, source revision,
-   required gates, milestone, changelog authority, remote, and expected tag.
+   required gates, milestone, changelog authority, remote, expected tag, and
+   repository-relative artifact paths supplied through `RELEASE_ARTIFACTS`.
 2. **Prepare** — `make release-prepare RELEASE_VERSION=X.Y.Z
    RELEASE_DATE=YYYY-MM-DD` runs only on `release/X.Y.x` and updates declared
    version and release-note paths. Do not
    commit, tag, push, or publish.
 3. **Check** — `make release-check RELEASE_VERSION=X.Y.Z
-   RELEASE_CLAIM=tooling|os|guests|desktop` runs from a clean prepared commit,
+   RELEASE_CLAIM=tooling|os|guests|desktop
+   RELEASE_ARTIFACTS="build/path/image ..."` runs from a clean prepared commit,
    rejects open milestone tasks, revalidates identity, and
-   run its exact gates. Write an ignored receipt beneath
+   runs its exact gates. It writes an ignored receipt beneath
    `build/release/<version>/`.
 4. **Publish** — `make release-publish RELEASE_VERSION=X.Y.Z
    RELEASE_AUTHORIZE=publish-vX.Y.Z` requires checked `main == origin/main`,
-   creates an annotated tag, and performs only a non-forced tag push. Provider
-   artifacts are published only after the tag exists remotely.
+   verifies branch protection and merged-PR integration, creates an annotated
+   tag, and performs only a non-forced tag push. Provider artifacts are
+   published only after the tag exists remotely.
 5. **Verify published** — `make release-verify RELEASE_VERSION=X.Y.Z` is
    read-only. Confirm the remote tag, source revision,
-   checksums, release page, and attached evidence agree with the receipt.
+   checksums, release page, and downloaded attached evidence agree with the
+   receipt. Extra, missing, renamed, resized, or byte-different assets fail.
 
 Publication is idempotent when an existing remote tag points to the checked
-commit and is a hard stop when it does not.
+commit and is a hard stop when it does not. An authorized replay reconciles
+the receipt-bound assets; verification still rejects every unrecorded asset.
 
 ## Branch policy
 
 - Product work lands on `main` through reviewed pull requests.
+- GitHub protects `main` for administrators and requires current
+  `Host-side TAP tests`, `Rust xtask check`, and
+  `Dual-arch OS-claim gate (aarch64 + x86_64, GUEST_OS=none)` checks.
 - A release preparation uses `release/<major>.<minor>.x`.
 - The release line contains release metadata and trunk-first backports, not
   unreviewed feature integration.
@@ -73,9 +81,9 @@ Every plan selects gates from the claims made by that release:
 Passing a narrower row does not prove a broader claim. A skipped gate must be
 recorded as a limitation and may block publication depending on release scope.
 
-## Required plan identity
+## Required release identity
 
-The future Rust planner records at least:
+The Rust plan and checked receipt together record:
 
 - proposed and previous version;
 - exact source commit and branch;
@@ -85,9 +93,8 @@ The future Rust planner records at least:
 - declared changelog and version paths;
 - exact Make gate commands;
 - expected annotated tag;
-- artifact names and checksums;
-- release engineer and explicit publication authorization;
-- presentation/narrative edition for major and minor releases.
+- planned artifact paths plus checked sizes and checksums;
+- explicit, version-bound publication authorization.
 
 Any change to the source revision, policy, gates, release metadata, or artifact
 set invalidates the prepared receipt and requires a fresh check.

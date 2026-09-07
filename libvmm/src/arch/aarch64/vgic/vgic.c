@@ -76,7 +76,8 @@ bool vgic_handle_fault_maintenance(size_t vcpu_id)
     int idx = seL4_GetMR(seL4_VGICMaintenance_IDX);
     static uint64_t maint_count = 0;
     maint_count++;
-    bool log_maintenance = maint_count <= 4 || (maint_count % 100000) == 0;
+    bool log_maintenance =
+        maint_count <= 4 || (maint_count & (maint_count - 1)) == 0;
     if (log_maintenance) {
         LOG_VMM("VGICMaintenance #%llu: IDX=%d on vCPU %zu\n",
                 (unsigned long long)maint_count, idx, vcpu_id);

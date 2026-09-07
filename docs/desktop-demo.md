@@ -20,7 +20,8 @@ The target:
 1. boots the Ubuntu ARM64 live guest;
 2. proves the agentOS virtio net, block, and console path;
 3. provisions an ephemeral SSH key and key-only `sshd`;
-4. installs TigerVNC, Openbox, xterm, and D-Bus support into the live overlay;
+4. downloads a pinned, checksum-verified TigerVNC server package and uses the
+   graphical utilities already present in the desktop live image;
 5. starts VNC on guest loopback only;
 6. forwards host `127.0.0.1:15901` through authenticated SSH to guest
    `127.0.0.1:5901`;
@@ -48,21 +49,21 @@ This runs the same proof and exits after the first bounded raw framebuffer
 update. Override the total budget only when diagnosing a slow mirror:
 
 ```bash
-make demo-desktop-test DESKTOP_TEST_TIMEOUT=5400
+make demo-desktop-test DESKTOP_TEST_TIMEOUT=7200
 ```
 
 ## Requirements and limits
 
-- Internet access from the Ubuntu guest is currently required to install the
-  lightweight desktop packages into its live overlay.
+- Internet access from the Ubuntu guest is currently required to fetch the
+  pinned 1.1 MiB TigerVNC package into its live overlay.
 - The guest filesystem changes are ephemeral because the staged Ubuntu media
   is read-only.
 - The VNC server accepts security type `None` only on guest loopback. It is
   reachable solely through the key-authenticated SSH tunnel; it is never
   forwarded directly by QEMU.
 - Port `15901` must be available on the host.
-- The proof intentionally uses Openbox instead of GNOME to stay inside the
-  current 1 GiB Ubuntu guest allocation.
+- The proof starts TigerVNC directly and renders a preinstalled GNOME
+  Calculator session; it does not boot the full GNOME shell.
 - A received RFB frame proves a graphical userspace workload and network
   transport. It does not prove hardware acceleration, virtual HDMI,
   framebuffer export, keyboard injection, pointer injection, or virtio-gpu.
@@ -78,5 +79,5 @@ Ubuntu desktop RFB <width>x<height> bytes=<count> fnv1a64=<checksum>
 
 The checksum is evidence that a bounded raw framebuffer payload crossed the
 RFB protocol. It is not an image-quality assertion. Release evidence must
-retain the command, source revision, serial log, dimensions, byte count, and
-checksum.
+retain the command, source revision, serial log, host-backed network packet
+capture, dimensions, byte count, and checksum.

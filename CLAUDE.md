@@ -39,18 +39,9 @@ seL4 PDs and were wrong. Guest userspace runs in the **guest** VSpace.
 
 ## Language Policy
 
-### On-target (PDs, libvmm backends, root task)
-
-**C, Rust, Assembly only.** Freestanding. No Python runtime in a PD.
-No JavaScript. No Go, Zig, or other languages unless the project owner
-approves in writing.
-
-### Host composition (`skills/`, `tools/`)
-
-**Python is required** for skill helpers and generators. Helpers must stay
-small: they compute (graphs, DTB/ELF/virtio inspection, topology) and print
-**HTML** (or another structured dump) for LLM agents. That HTML is not a
-product UI and must not be served by any PD.
+**C, Rust, Assembly only.** This applies to target code, host tools, tests,
+generators, and skill helpers. Python, JavaScript, HTML, CSS, Go, Zig, and
+other implementation languages are forbidden; vendored code is not exempt.
 
 CMake / Make orchestrate builds. Shell is CI glue and one-line wrappers.
 
@@ -61,13 +52,12 @@ not a NIC, disk, or UART.
 
 ## UI Policy
 
-No human UI in this repository: no dashboards, no HTML/JS served by a process
-in this repo, no WebSocket terminal emulators.
+No human UI in this repository: no dashboards, HTML, JavaScript, CSS,
+interactive terminal UI, or WebSocket terminal emulators.
 
 Exceptions:
 
 - `agentctl` — CLI, structured stdout, exits
-- `skills/*/scripts/*.py` — HTML **to the model**, not to a browser session
 - `../agentos_gui` — external consumer of CC-PD / contracts
 
 ---
@@ -122,14 +112,14 @@ virtualizer.
 4. Guest payloads and FDT (Linux, FreeBSD) — no custom guest drivers
 5. Optional native-agent **clients** of virtualizers
 6. Simulator / host tests
-7. `skills/` and `tools/` (Python helpers, generators)
+7. `skills/` and `tools/` (C/Rust helpers and generators)
 8. Documentation (`docs/TCB.md`, `DESIGN.md`, `PLAN.md`)
 
 ## What Must Not Be Added
 
 - UI served to humans
 - JavaScript
-- Python inside PDs
+- Python or another forbidden implementation language anywhere in the repository
 - Guest drivers for a class that already has a virtualizer
 - New museum PDs (`oom_killer`, POSIX spawn/vfs, vibe-swap as networking, …)
 - QEMU virtio passthrough as architecture
@@ -141,8 +131,8 @@ If you find a forbidden file: do not extend it. File a mac task.
 
 ## Checklist Before Merging
 
-- [ ] On-target files are C, Rust, or Assembly
-- [ ] Skills/tools Python does not run in a PD
+- [ ] First-party target code, host tools, tests, and skill helpers are C, Rust, or Assembly
+- [ ] No forbidden implementation language or human UI artifact is present
 - [ ] No new museum PDs
 - [ ] New I/O uses sDDF queues + emulated virtio for guests
 - [ ] No QEMU device passthrough for a class that has a virtualizer

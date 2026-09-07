@@ -1364,8 +1364,8 @@ static seL4_MessageInfo_t linux_vmm_fault(seL4_Word badge,
 
     {
         static uint32_t fault_log;
-        if (fault_log < 8u) {
-            fault_log++;
+        fault_log++;
+        if (fault_log <= 8u || (fault_log & (fault_log - 1u)) == 0u) {
             LOG_VMM("guest fault #%u label=0x%lx badge=0x%lx vcpu=%lu\n",
                     (unsigned)fault_log, (unsigned long)label,
                     (unsigned long)badge, (unsigned long)vcpu_id);

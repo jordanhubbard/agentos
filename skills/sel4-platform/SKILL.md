@@ -13,7 +13,7 @@ You are composing agentOS **on-target topology**, not a Linux distro.
 
 - Adding `oom_killer`, POSIX spawn/vfs, or vibe-swap-as-NIC.
 - Documenting "rings 1–5".
-- Python inside a PD.
+- Python or another forbidden implementation language anywhere in the repository.
 
 ## Helper
 

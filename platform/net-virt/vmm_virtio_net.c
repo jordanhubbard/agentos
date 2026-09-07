@@ -42,6 +42,7 @@ static uint32_t                 g_net_pd_slot;
 static int                      g_net_pd_ready;
 static int                      g_net_pd_tx_marked;
 static int                      g_net_pd_rx_marked;
+static uint32_t                 g_net_pd_rx_events;
 
 static uint32_t net_rd32(const uint8_t *p, uint32_t off)
 {
@@ -197,9 +198,13 @@ void aos_vmm_virtio_net_rx_ready(void)
     }
     uint32_t received = net_pd_bridge_rx();
     if (received > 0u) {
-        LOG_VMM("[net_pd] HOST_RX: QEMU bus.16 frame received\n");
-        LOG_VMM("emulated virtio-net: asynchronous net_pd RX event (%u frame(s))\n",
-                (unsigned)received);
+        g_net_pd_rx_events += received;
+        if (g_net_pd_rx_events <= received ||
+            (g_net_pd_rx_events & (g_net_pd_rx_events - 1u)) == 0u) {
+            LOG_VMM("[net_pd] HOST_RX: QEMU bus.16 frame received\n");
+            LOG_VMM("emulated virtio-net: asynchronous net_pd RX total=%u\n",
+                    (unsigned)g_net_pd_rx_events);
+        }
         (void)virtio_net_handle_rx(&g_aos_net);
     }
 #endif

@@ -233,6 +233,9 @@ static int test_host_backed_architecture(void)
     int isolated_page = src_contains(
         "platform/include/platform/net_host_layout.h",
         "AGENTOS_HOST_NET_MMIO_PA          0x0A002000UL");
+    int modern_header = src_contains(
+        "platform/include/platform/net_host_layout.h",
+        "AGENTOS_NET_HOST_HEADER_SIZE      12u");
     int private_dma = src_contains_in_order(
         "kernel/agentos-root-task/src/main.c",
         "if (name_eq(pd->name, \"net_pd\"))",
@@ -287,9 +290,10 @@ static int test_host_backed_architecture(void)
         src_contains("kernel/agentos-root-task/src/system_desc_aarch64.c",
                      "{ SVC_ID_NET_PD,     PD_CNODE_SLOT_NET_PD_EP     }");
 
-    return tap_ok(qemu_bus && test_qemu_bus && isolated_page && private_dma &&
-                  shared_bridge && ipc && contract && no_vmm_dma && async_rx &&
-                  no_guest_passthrough && native_client,
+    return tap_ok(qemu_bus && test_qemu_bus && isolated_page && modern_header &&
+                  private_dma && shared_bridge && ipc && contract &&
+                  no_vmm_dma && async_rx && no_guest_passthrough &&
+                  native_client,
                   "guests and native init agent share bus.16 net virtualizer");
 }
 

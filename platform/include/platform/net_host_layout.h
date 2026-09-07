@@ -22,7 +22,8 @@
 #define AGENTOS_NET_HOST_DMA_VERSION      1u
 
 #define AGENTOS_NET_HOST_QUEUE_SIZE       32u
-#define AGENTOS_NET_HOST_HEADER_SIZE      10u
+/* Modern virtio (VIRTIO_F_VERSION_1) always uses virtio_net_hdr_v1. */
+#define AGENTOS_NET_HOST_HEADER_SIZE      12u
 #define AGENTOS_NET_HOST_BUFFER_SIZE      2048u
 
 #define AGENTOS_NET_HOST_META_OFF         0x0000u

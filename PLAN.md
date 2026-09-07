@@ -30,7 +30,7 @@ binding) described the wrong I/O model. It is superseded by this document.
 | 5 | `task_7f6653b7dcc840b9ab7fa092685c9d57` | waiting on 4 | One VMM implementation; guest flavor is data |
 | 6 | `task_c03b1c0527de416fbcfcdfcb77787559` | in progress | Linux guest RAM is nonidentity; migrate FreeBSD and residual non-guest DMA users |
 | 7 | (done) | done (quarantine by docs) | Quarantine PD museum (no deletes this pass) |
-| 8 | (done) | done | Skills + Python HTML helpers |
+| 8 | (done) | done | Text-only skills + Rust helper tools |
 | 9 | `task_ec992e5743354a538d1c3235a2e2c0da` | waiting on 4 | Native agent services as virtualizer clients |
 
 ## Proof policy (unchanged)

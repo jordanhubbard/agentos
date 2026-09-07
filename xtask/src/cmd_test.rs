@@ -1,24 +1,19 @@
 use crate::{rfb, TestArgs};
 use anyhow::Context;
 use std::io::{Read, Seek, SeekFrom, Write};
-use std::net::{SocketAddr, TcpListener, TcpStream};
+use std::net::{SocketAddr, TcpStream};
+use std::ops::{Deref, DerefMut};
 use std::os::unix::net::UnixStream;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Stdio};
-use std::sync::{
-    atomic::{AtomicBool, Ordering},
-    Arc,
-};
-use std::thread::JoinHandle;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 const UBUNTU_DEFAULT_SSH_PORT: u16 = 12222;
 const FREEBSD_DEFAULT_SSH_PORT: u16 = 12223;
-const UBUNTU_NOCLOUD_PORT: u16 = 18790;
 const UBUNTU_DESKTOP_PORT: u16 = 15901;
 const UBUNTU_VNC_GUEST_PORT: u16 = 5901;
-const SSH_PROBE_OPTIONS: &[&str] = &[
+const SSH_AUTH_OPTIONS: &[&str] = &[
     "-o",
     "BatchMode=yes",
     "-o",
@@ -30,19 +25,23 @@ const SSH_PROBE_OPTIONS: &[&str] = &[
     "-o",
     "IdentitiesOnly=yes",
     "-o",
-    "ConnectTimeout=5",
+    "ConnectTimeout=30",
     "-o",
     "ConnectionAttempts=1",
-    "-o",
-    "ServerAliveInterval=5",
-    "-o",
-    "ServerAliveCountMax=1",
     "-o",
     "StrictHostKeyChecking=no",
     "-o",
     "UserKnownHostsFile=/dev/null",
     "-o",
     "LogLevel=ERROR",
+];
+const SSH_PROBE_LIVENESS_OPTIONS: &[&str] =
+    &["-o", "ServerAliveInterval=5", "-o", "ServerAliveCountMax=1"];
+const SSH_SESSION_LIVENESS_OPTIONS: &[&str] = &[
+    "-o",
+    "ServerAliveInterval=30",
+    "-o",
+    "ServerAliveCountMax=20",
 ];
 const CC_WIRE_SHMEM_SIZE: usize = 4096;
 const CC_INPUT_TEXT: u32 = 0x05;
@@ -153,22 +152,16 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
     };
 
     let needs_ssh_probe = !matches!(args.guest_os.as_str(), "ubuntu" | "freebsd");
-    let needs_host_net_stimulus = args.guest_os == "ubuntu"
-        && (args.assert_agentos_virtio || args.assert_ubuntu_live || args.assert_desktop);
-    let ssh_port = if needs_ssh_probe || needs_host_net_stimulus {
+    let needs_host_net_stimulus =
+        args.guest_os == "ubuntu" && (args.assert_agentos_virtio || args.assert_ubuntu_live);
+    let ssh_port = if needs_ssh_probe || needs_host_net_stimulus || args.assert_desktop {
         effective_ssh_port(args)
     } else {
         0
     };
-    let _seed_server = if args.guest_os == "ubuntu" && needs_ssh_probe {
-        Some(start_ubuntu_seed_server(&repo_root)?)
-    } else {
-        None
-    };
-
     println!("[xtask:test] Launching QEMU for board={}...", args.board);
     let cc_sock = log_path.with_extension("cc_pd.sock");
-    let mut qemu = spawn_qemu_with_guest(
+    let mut qemu = ChildGuard::new(spawn_qemu_with_guest(
         &args.board,
         &repo_root,
         &log_path,
@@ -176,31 +169,33 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
         &args.guest_os,
         ssh_port,
         ubuntu_live,
-    )?;
-    let _host_net_probe = if needs_host_net_stimulus {
+        args.assert_desktop && !args.keep_running,
+    )?);
+    if needs_host_net_stimulus {
         wait_for_all_markers(
             &log_path,
             &["emulated virtio-net: guest DRIVER_OK"],
             Duration::from_secs(args.timeout_secs),
+            &mut qemu,
         )
         .context("guest net driver did not become ready for host RX stimulus")?;
-        connect_host_net_stimulus(ssh_port, &mut qemu)
-    } else {
-        None
-    };
+        /* The SYN is sufficient evidence and RX stimulus. Holding this
+         * pre-sshd connection can consume the first daemon accept slot. */
+        drop(connect_host_net_stimulus(ssh_port, &mut qemu));
+    }
 
     let mut result = if args.assert_emulated_net {
         println!(
             "[xtask:test] Waiting for emulated virtio-net guest proof in {}...",
             log_path.display()
         );
-        wait_for_emulated_net(&log_path, Duration::from_secs(args.timeout_secs))
+        wait_for_emulated_net(&log_path, Duration::from_secs(args.timeout_secs), &mut qemu)
     } else if args.assert_emulated_blk {
         println!(
             "[xtask:test] Waiting for emulated virtio-blk guest proof in {}...",
             log_path.display()
         );
-        wait_for_emulated_blk(&log_path, Duration::from_secs(args.timeout_secs))
+        wait_for_emulated_blk(&log_path, Duration::from_secs(args.timeout_secs), &mut qemu)
     } else {
         match args.guest_os.as_str() {
             "ubuntu" => {
@@ -261,6 +256,32 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
         }
     };
 
+    /*
+     * Start the authenticated desktop path before checking host-backed network
+     * markers.  Its SSH connection is the RX stimulus.  Connecting to the
+     * forwarded port before sshd exists leaves a stale user-net flow that can
+     * accept later host sockets without ever completing an SSH banner.
+     */
+    let mut desktop_evidence = None;
+    let mut desktop_tunnel = None;
+    if result.is_ok() && args.assert_desktop {
+        let key = ssh_key
+            .as_ref()
+            .context("desktop SSH key was not generated")?;
+        match prove_ubuntu_desktop(
+            &cc_sock,
+            key,
+            Duration::from_secs(args.timeout_secs),
+            &mut qemu,
+        ) {
+            Ok((evidence, tunnel)) => {
+                desktop_evidence = Some(evidence);
+                desktop_tunnel = Some(tunnel);
+            }
+            Err(error) => result = Err(error),
+        }
+    }
+
     if result.is_ok()
         && (args.assert_emulated_console
             || args.assert_agentos_virtio
@@ -290,7 +311,8 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
                 "emulated virtio-blk: host-media read",
             ]);
         }
-        let console = wait_for_all_markers(&log_path, &required, Duration::from_secs(10));
+        let console =
+            wait_for_all_markers(&log_path, &required, Duration::from_secs(10), &mut qemu);
         let no_loopback = std::fs::read_to_string(&log_path)
             .map(|log| !log.contains("frame(s) TX->RX"))
             .unwrap_or(false);
@@ -315,30 +337,17 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
         };
     }
 
-    let mut desktop_tunnel = None;
-    if result.is_ok() && args.assert_desktop {
-        let key = ssh_key
-            .as_ref()
-            .context("desktop SSH key was not generated")?;
-        match prove_ubuntu_desktop(
-            &cc_sock,
-            key,
-            Duration::from_secs(args.timeout_secs),
-            &mut qemu,
-        ) {
-            Ok((evidence, tunnel)) => {
-                result = Ok(format!(
-                    "{}; Ubuntu desktop RFB {}x{} bytes={} fnv1a64={:016x} name={:?}",
-                    result.as_deref().unwrap_or("Ubuntu live guest ready"),
-                    evidence.width,
-                    evidence.height,
-                    evidence.bytes_received,
-                    evidence.fnv1a64,
-                    evidence.desktop_name,
-                ));
-                desktop_tunnel = Some(tunnel);
-            }
-            Err(error) => result = Err(error),
+    if result.is_ok() {
+        if let Some(evidence) = desktop_evidence {
+            result = Ok(format!(
+                "{}; Ubuntu desktop RFB {}x{} bytes={} fnv1a64={:016x} name={:?}",
+                result.as_deref().unwrap_or("Ubuntu live guest ready"),
+                evidence.width,
+                evidence.height,
+                evidence.bytes_received,
+                evidence.fnv1a64,
+                evidence.desktop_name,
+            ));
         }
     }
 
@@ -446,16 +455,43 @@ fn effective_ssh_port(args: &TestArgs) -> u16 {
     }
 }
 
-struct SeedServer {
-    stop: Arc<AtomicBool>,
-    thread: Option<JoinHandle<()>>,
-    _dir: tempfile::TempDir,
-}
-
 struct SshTestKey {
     _temporary_dir: Option<tempfile::TempDir>,
     private_key: PathBuf,
     public_key: String,
+}
+
+struct ChildGuard {
+    child: Child,
+}
+
+impl ChildGuard {
+    fn new(child: Child) -> Self {
+        Self { child }
+    }
+}
+
+impl Deref for ChildGuard {
+    type Target = Child;
+
+    fn deref(&self) -> &Self::Target {
+        &self.child
+    }
+}
+
+impl DerefMut for ChildGuard {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.child
+    }
+}
+
+impl Drop for ChildGuard {
+    fn drop(&mut self) {
+        if matches!(self.child.try_wait(), Ok(None)) {
+            let _ = self.child.kill();
+            let _ = self.child.wait();
+        }
+    }
 }
 
 fn generate_ssh_test_key(repo_root: &Path, persistent: bool) -> anyhow::Result<SshTestKey> {
@@ -497,129 +533,6 @@ fn generate_ssh_test_key(repo_root: &Path, persistent: bool) -> anyhow::Result<S
         _temporary_dir: temporary_dir,
         private_key,
         public_key,
-    })
-}
-
-impl Drop for SeedServer {
-    fn drop(&mut self) {
-        self.stop.store(true, Ordering::Release);
-        let _ = TcpStream::connect(("127.0.0.1", UBUNTU_NOCLOUD_PORT));
-        if let Some(thread) = self.thread.take() {
-            let _ = thread.join();
-        }
-    }
-}
-
-fn start_ubuntu_seed_server(repo_root: &Path) -> anyhow::Result<SeedServer> {
-    let pubkey_path = repo_root.join("tests/e2e/id_ed25519.pub");
-    let pubkey_raw = std::fs::read_to_string(&pubkey_path)
-        .with_context(|| format!("failed to read {}", pubkey_path.display()))?;
-    let pubkey = pubkey_raw.trim();
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .context("system clock is before UNIX_EPOCH")?
-        .as_secs();
-    let meta_data = format!(
-        "instance-id: agentos-linux-ubuntu-{}-{}\nlocal-hostname: agentos-linux\n",
-        std::process::id(),
-        now
-    );
-    let user_data = format!(
-        r#"#cloud-config
-disable_root: false
-ssh_pwauth: true
-ssh_authorized_keys:
-  - {pubkey}
-users:
-  - default
-  - name: ubuntu
-    lock_passwd: false
-    groups: [adm, sudo]
-    shell: /bin/bash
-    ssh_authorized_keys:
-      - {pubkey}
-  - name: root
-    lock_passwd: false
-    ssh_authorized_keys:
-      - {pubkey}
-chpasswd:
-  expire: false
-  users:
-    - name: root
-      password: agentos
-      type: text
-write_files:
-  - path: /root/.ssh/authorized_keys
-    owner: root:root
-    permissions: '0600'
-    content: |
-      {pubkey}
-"#,
-        pubkey = pubkey
-    );
-
-    ensure_host_port_available(UBUNTU_NOCLOUD_PORT)?;
-    let tmp_dir = repo_root.join("build/tmp");
-    std::fs::create_dir_all(&tmp_dir)
-        .with_context(|| format!("failed to create {}", tmp_dir.display()))?;
-    let dir = tempfile::Builder::new()
-        .prefix("agentos-nocloud-ubuntu-")
-        .tempdir_in(&tmp_dir)
-        .context("failed to create Ubuntu NoCloud tempdir")?;
-    std::fs::write(dir.path().join("meta-data"), meta_data)
-        .context("failed to write NoCloud meta-data")?;
-    std::fs::write(dir.path().join("user-data"), user_data)
-        .context("failed to write NoCloud user-data")?;
-    std::fs::write(dir.path().join("vendor-data"), "")
-        .context("failed to write NoCloud vendor-data")?;
-
-    let listener = TcpListener::bind(("127.0.0.1", UBUNTU_NOCLOUD_PORT))
-        .context("failed to bind Ubuntu NoCloud seed server")?;
-    let root = dir.path().to_path_buf();
-    let stop = Arc::new(AtomicBool::new(false));
-    let server_stop = Arc::clone(&stop);
-    let thread = std::thread::spawn(move || {
-        while !server_stop.load(Ordering::Acquire) {
-            let Ok((mut stream, _)) = listener.accept() else {
-                break;
-            };
-            if server_stop.load(Ordering::Acquire) {
-                break;
-            }
-            let mut request = [0u8; 1024];
-            let Ok(length) = stream.read(&mut request) else {
-                continue;
-            };
-            let first_line = String::from_utf8_lossy(&request[..length]);
-            let path = first_line
-                .lines()
-                .next()
-                .and_then(|line| line.split_whitespace().nth(1))
-                .and_then(|path| path.strip_prefix('/'));
-            let body = path
-                .filter(|path| matches!(*path, "meta-data" | "user-data" | "vendor-data"))
-                .and_then(|path| std::fs::read(root.join(path)).ok());
-            let (status, body) = body
-                .map(|body| ("200 OK", body))
-                .unwrap_or_else(|| ("404 Not Found", Vec::new()));
-            let header = format!(
-                "HTTP/1.1 {status}\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-                body.len()
-            );
-            let _ = stream.write_all(header.as_bytes());
-            let _ = stream.write_all(&body);
-        }
-    });
-
-    println!(
-        "[xtask:test] Ubuntu NoCloud-Net seed server: http://127.0.0.1:{}/",
-        UBUNTU_NOCLOUD_PORT
-    );
-
-    Ok(SeedServer {
-        stop,
-        thread: Some(thread),
-        _dir: dir,
     })
 }
 
@@ -666,6 +579,7 @@ pub fn spawn_qemu_with_guest(
     guest_os: &str,
     ssh_port: u16,
     ubuntu_live: bool,
+    capture_net: bool,
 ) -> anyhow::Result<std::process::Child> {
     let log_file = std::fs::File::create(log_path).context("failed to create QEMU log file")?;
     let netdev = qemu_netdev_arg(ssh_port, guest_os)?;
@@ -857,6 +771,18 @@ pub fn spawn_qemu_with_guest(
         }
     };
 
+    if capture_net {
+        let capture_path = log_path.with_extension("net.pcap");
+        println!(
+            "[xtask:test] Capturing host-backed guest packets in {}",
+            capture_path.display()
+        );
+        cmd.arg("-object").arg(format!(
+            "filter-dump,id=agentos_net_capture,netdev=net0,file={}",
+            capture_path.display()
+        ));
+    }
+
     let child = if board == "qemu_virt_aarch64" {
         let stderr_path = log_path.with_extension("qemu.stderr");
         let stderr_file = std::fs::File::create(&stderr_path)
@@ -1005,6 +931,7 @@ fn wait_for_all_markers(
     log_path: &Path,
     markers: &[&str],
     timeout: Duration,
+    qemu: &mut Child,
 ) -> anyhow::Result<String> {
     let start = Instant::now();
     let mut file = std::fs::File::open(log_path).context("failed to open log file")?;
@@ -1012,6 +939,7 @@ fn wait_for_all_markers(
     let mut accumulated = String::new();
 
     loop {
+        ensure_qemu_running(qemu, "waiting for required runtime evidence")?;
         if start.elapsed() >= timeout {
             let missing: Vec<&str> = markers
                 .iter()
@@ -1057,34 +985,31 @@ const EMU_BLK_REQUIRED: &[&str] = &[
     "emulated virtio-blk: guest probed",
     "emulated virtio-blk: guest DRIVER_OK",
     "emulated virtio-blk: pumped",
+    "emulated virtio-blk: drain=",
 ];
 
-const EMU_BLK_GUEST_ANY: &[&str] = &[
-    "0a020000.virtio_mmio",
-    "a020000.virtio_mmio",
-    "virtio_blk",
-    "[vda]",
-];
-
-fn wait_for_emulated_blk(log_path: &Path, timeout: Duration) -> anyhow::Result<String> {
+fn wait_for_emulated_blk(
+    log_path: &Path,
+    timeout: Duration,
+    qemu: &mut Child,
+) -> anyhow::Result<String> {
     let start = Instant::now();
     let mut file = std::fs::File::open(log_path).context("failed to open log file")?;
     let mut offset: u64 = 0;
     let mut accumulated = String::new();
 
     loop {
+        ensure_qemu_running(qemu, "waiting for emulated virtio-blk proof")?;
         if start.elapsed() >= timeout {
             let missing: Vec<&str> = EMU_BLK_REQUIRED
                 .iter()
                 .copied()
                 .filter(|m| !accumulated.contains(m))
                 .collect();
-            let guest_ok = EMU_BLK_GUEST_ANY.iter().any(|m| accumulated.contains(m));
             anyhow::bail!(
-                "emulated virtio-blk proof timeout after {}s; missing VMM markers {:?}; guest IPA/disk observed={}",
+                "emulated virtio-blk proof timeout after {}s; missing VMM markers {:?}",
                 timeout.as_secs(),
                 missing,
-                guest_ok
             );
         }
 
@@ -1096,10 +1021,9 @@ fn wait_for_emulated_blk(log_path: &Path, timeout: Duration) -> anyhow::Result<S
             accumulated.push_str(&String::from_utf8_lossy(&raw));
 
             let vmm_ok = EMU_BLK_REQUIRED.iter().all(|m| accumulated.contains(m));
-            let guest_ok = EMU_BLK_GUEST_ANY.iter().any(|m| accumulated.contains(m));
-            if vmm_ok && guest_ok {
+            if vmm_ok {
                 return Ok(
-                    "emulated virtio-blk: guest probed + DRIVER_OK + pumped + guest IPA/disk"
+                    "emulated virtio-blk: guest configured queue + DRIVER_OK + completed request"
                         .to_string(),
                 );
             }
@@ -1109,13 +1033,18 @@ fn wait_for_emulated_blk(log_path: &Path, timeout: Duration) -> anyhow::Result<S
     }
 }
 
-fn wait_for_emulated_net(log_path: &Path, timeout: Duration) -> anyhow::Result<String> {
+fn wait_for_emulated_net(
+    log_path: &Path,
+    timeout: Duration,
+    qemu: &mut Child,
+) -> anyhow::Result<String> {
     let start = Instant::now();
     let mut file = std::fs::File::open(log_path).context("failed to open log file")?;
     let mut offset: u64 = 0;
     let mut accumulated = String::new();
 
     loop {
+        ensure_qemu_running(qemu, "waiting for emulated virtio-net proof")?;
         if start.elapsed() >= timeout {
             let missing: Vec<&str> = EMU_NET_REQUIRED
                 .iter()
@@ -1777,7 +1706,7 @@ fn provision_dual_ssh(
 
 fn ubuntu_ssh_provision_command(public_key: &str) -> String {
     format!(
-        "sudo -n sh -c \"set -e; mkdir -p /home/ubuntu/.ssh /run/sshd; printf '%s\\\\n' '{}' > /home/ubuntu/.ssh/authorized_keys; chown -R ubuntu:ubuntu /home/ubuntu/.ssh; chmod 700 /home/ubuntu/.ssh; chmod 600 /home/ubuntu/.ssh/authorized_keys; ip link set eth0 up; ip addr flush dev eth0 scope global; ip addr add 10.0.2.15/24 dev eth0; ip route replace default via 10.0.2.2; ssh-keygen -A; /usr/sbin/sshd -t; /usr/sbin/sshd -o PasswordAuthentication=no -o KbdInteractiveAuthentication=no -o PubkeyAuthentication=yes -o PermitRootLogin=no\" && printf 'agentos-ubuntu-ssh-%s\\\\n' ready || printf 'agentos-ubuntu-ssh-%s\\\\n' failed",
+        "sudo -n sh -c \"set -e; ip link set eth0 up; ip addr flush dev eth0 scope global; ip addr add 10.0.2.15/24 dev eth0; ip route replace default via 10.0.2.2; rm -f /etc/resolv.conf; printf 'nameserver 10.0.2.3\\\\n' > /etc/resolv.conf; if ! command -v /usr/sbin/sshd >/dev/null 2>&1; then for deb in /cdrom/pool/main/o/openssh/openssh-sftp-server_*.deb /cdrom/pool/main/o/openssh/openssh-server_*.deb; do test -f \\\"\\$deb\\\"; dpkg-deb -x \\\"\\$deb\\\" /; done; getent passwd sshd >/dev/null || useradd --system --home /run/sshd --shell /usr/sbin/nologin sshd; fi; mkdir -p /home/ubuntu/.ssh /run/sshd; printf '%s\\\\n' '{}' > /home/ubuntu/.ssh/authorized_keys; chown -R ubuntu:ubuntu /home/ubuntu/.ssh; chmod 700 /home/ubuntu/.ssh; chmod 600 /home/ubuntu/.ssh/authorized_keys; rm -f /run/agentos-ssh-host-key /run/agentos-ssh-host-key.pub /run/agentos-sshd.pid; ssh-keygen -q -t ed25519 -N '' -f /run/agentos-ssh-host-key; /usr/sbin/sshd -t -f /dev/null -o HostKey=/run/agentos-ssh-host-key -o AuthorizedKeysFile=/home/ubuntu/.ssh/authorized_keys -o UsePAM=no -o PidFile=/run/agentos-sshd.pid; /usr/sbin/sshd -f /dev/null -o HostKey=/run/agentos-ssh-host-key -o AuthorizedKeysFile=/home/ubuntu/.ssh/authorized_keys -o UsePAM=no -o UseDNS=no -o GSSAPIAuthentication=no -o MaxStartups=100:100:100 -o PidFile=/run/agentos-sshd.pid -o PasswordAuthentication=no -o KbdInteractiveAuthentication=no -o PubkeyAuthentication=yes -o PermitRootLogin=no\" && printf 'agentos-ubuntu-ssh-%s\\\\n' ready || printf 'agentos-ubuntu-ssh-%s\\\\n' failed",
         public_key
     )
 }
@@ -1791,32 +1720,38 @@ fn freebsd_ssh_provision_command(public_key: &str) -> String {
 
 fn ubuntu_desktop_provision_script() -> &'static str {
     r#"set -eu
-export DEBIAN_FRONTEND=noninteractive
-if ! command -v tigervncserver >/dev/null 2>&1; then
-    timeout 900 apt-get update
-    timeout 900 apt-get install -y --no-install-recommends tigervnc-standalone-server openbox xterm dbus-x11 x11-xserver-utils
+TIGERVNC_DEB=/tmp/tigervnc-standalone-server.deb
+TIGERVNC_URL=http://archive.ubuntu.com/ubuntu/pool/universe/t/tigervnc/tigervnc-standalone-server_1.15.0+dfsg-2build1_arm64.deb
+TIGERVNC_SHA256=30e536f05a504ad817b294abee51394143e140c57e4b4cea43c149973cfba3b2
+if ! command -v Xtigervnc >/dev/null 2>&1; then
+    TIGERVNC_COMMON_DEB=/tmp/tigervnc-common.deb
+    TIGERVNC_COMMON_URL=http://archive.ubuntu.com/ubuntu/pool/universe/t/tigervnc/tigervnc-common_1.15.0+dfsg-2build1_arm64.deb
+    TIGERVNC_COMMON_SHA256=ee669c6253bde0b9f7b43c270607d560ea27285e88ba7dc379338e1cf91c3d1e
+    timeout 600 wget -q -O "$TIGERVNC_COMMON_DEB" "$TIGERVNC_COMMON_URL"
+    printf '%s  %s\n' "$TIGERVNC_COMMON_SHA256" "$TIGERVNC_COMMON_DEB" | sha256sum -c -
+    timeout 600 wget -q -O "$TIGERVNC_DEB" "$TIGERVNC_URL"
+    printf '%s  %s\n' "$TIGERVNC_SHA256" "$TIGERVNC_DEB" | sha256sum -c -
+    dpkg-deb -x "$TIGERVNC_COMMON_DEB" /
+    dpkg-deb -x "$TIGERVNC_DEB" /
 fi
-command -v tigervncserver >/dev/null
-command -v openbox-session >/dev/null
-command -v xterm >/dev/null
+command -v Xtigervnc >/dev/null
+command -v gnome-calculator >/dev/null
+command -v xsetroot >/dev/null
+command -v xwininfo >/dev/null
 install -d -o ubuntu -g ubuntu /home/ubuntu/.vnc
-cat >/home/ubuntu/.vnc/xstartup <<'AGENTOS_XSTARTUP'
-#!/bin/sh
-unset SESSION_MANAGER
-unset DBUS_SESSION_BUS_ADDRESS
-xsetroot -solid '#20242b'
-xterm -geometry 100x30+32+32 -title 'agentOS Ubuntu desktop proof' &
-exec dbus-run-session -- openbox-session
-AGENTOS_XSTARTUP
-chown ubuntu:ubuntu /home/ubuntu/.vnc/xstartup
-chmod 700 /home/ubuntu/.vnc/xstartup
-su -s /bin/sh ubuntu -c 'HOME=/home/ubuntu tigervncserver -kill :1 >/dev/null 2>&1 || true'
 rm -f /tmp/.X1-lock /tmp/.X11-unix/X1
-su -s /bin/sh ubuntu -c 'HOME=/home/ubuntu USER=ubuntu tigervncserver :1 -localhost yes -SecurityTypes None -geometry 1024x768 -depth 24 -xstartup /home/ubuntu/.vnc/xstartup'
+setsid -f su -s /bin/sh ubuntu -c 'exec env HOME=/home/ubuntu USER=ubuntu Xtigervnc :1 -ac -localhost yes -SecurityTypes None -geometry 1024x768 -depth 24' </dev/null >/tmp/agentos-xvnc.log 2>&1
 for attempt in 1 2 3 4 5 6 7 8 9 10; do
-    test -S /tmp/.X11-unix/X1 && exit 0
+    test -S /tmp/.X11-unix/X1 && break
     sleep 1
 done
+test -S /tmp/.X11-unix/X1
+setsid -f su -s /bin/sh ubuntu -c 'exec env HOME=/home/ubuntu USER=ubuntu DISPLAY=:1 dbus-run-session -- sh -c "xsetroot -solid #20242b; exec gnome-calculator"' </dev/null >/tmp/agentos-desktop.log 2>&1
+for attempt in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
+    DISPLAY=:1 xwininfo -root -tree 2>/dev/null | grep -Eq 'Calculator|gnome-calculator' && exit 0
+    sleep 1
+done
+cat /tmp/agentos-xvnc.log /tmp/agentos-desktop.log >&2
 exit 1
 "#
 }
@@ -1827,7 +1762,8 @@ fn run_ssh_script(private_key: &Path, script: &str) -> anyhow::Result<()> {
         .arg("-i")
         .arg(private_key)
         .args(["-p", &UBUNTU_DEFAULT_SSH_PORT.to_string()])
-        .args(SSH_PROBE_OPTIONS)
+        .args(SSH_AUTH_OPTIONS)
+        .args(SSH_SESSION_LIVENESS_OPTIONS)
         .args(["ubuntu@127.0.0.1", "sudo -n timeout 1200 sh -s"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -1890,7 +1826,8 @@ fn spawn_desktop_tunnel(private_key: &Path) -> anyhow::Result<Child> {
         .arg("-i")
         .arg(private_key)
         .args(["-p", &UBUNTU_DEFAULT_SSH_PORT.to_string()])
-        .args(SSH_PROBE_OPTIONS)
+        .args(SSH_AUTH_OPTIONS)
+        .args(SSH_SESSION_LIVENESS_OPTIONS)
         .args([
             "-o",
             "ExitOnForwardFailure=yes",
@@ -1980,7 +1917,8 @@ fn spawn_ssh_probe(
             "-p",
             &port.to_string(),
         ])
-        .args(SSH_PROBE_OPTIONS)
+        .args(SSH_AUTH_OPTIONS)
+        .args(SSH_PROBE_LIVENESS_OPTIONS)
         .args([&format!("{user}@127.0.0.1"), "uname -s"])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -2406,10 +2344,12 @@ mod tests {
     #[test]
     fn ssh_ready_markers_require_key_only_daemon_startup() {
         let key = "ssh-ed25519 AAAAC3NzaFocusedTest agentos-test";
-        for command in [
-            ubuntu_ssh_provision_command(key),
-            freebsd_ssh_provision_command(key),
-        ] {
+        let ubuntu = ubuntu_ssh_provision_command(key);
+        assert!(ubuntu.contains("/cdrom/pool/main/o/openssh/openssh-server_*.deb"));
+        assert!(ubuntu.contains("dpkg-deb -x"));
+        assert!(ubuntu.contains("ssh-keygen -q -t ed25519"));
+        assert!(ubuntu.contains("HostKey=/run/agentos-ssh-host-key"));
+        for command in [ubuntu, freebsd_ssh_provision_command(key)] {
             assert!(command.contains("PasswordAuthentication=no"));
             assert!(command.contains("KbdInteractiveAuthentication=no"));
             assert!(command.contains("PubkeyAuthentication=yes"));
@@ -2420,26 +2360,36 @@ mod tests {
 
     #[test]
     fn ssh_probes_have_bounded_connection_and_session_liveness() {
-        let options = SSH_PROBE_OPTIONS.join(" ");
-        assert!(options.contains("BatchMode=yes"));
-        assert!(options.contains("PreferredAuthentications=publickey"));
-        assert!(options.contains("ConnectionAttempts=1"));
-        assert!(options.contains("ConnectTimeout=5"));
-        assert!(options.contains("ServerAliveInterval=5"));
-        assert!(options.contains("ServerAliveCountMax=1"));
+        let auth = SSH_AUTH_OPTIONS.join(" ");
+        let probe = SSH_PROBE_LIVENESS_OPTIONS.join(" ");
+        let session = SSH_SESSION_LIVENESS_OPTIONS.join(" ");
+        assert!(auth.contains("BatchMode=yes"));
+        assert!(auth.contains("PreferredAuthentications=publickey"));
+        assert!(auth.contains("ConnectionAttempts=1"));
+        assert!(auth.contains("ConnectTimeout=30"));
+        assert!(probe.contains("ServerAliveInterval=5"));
+        assert!(probe.contains("ServerAliveCountMax=1"));
+        assert!(session.contains("ServerAliveInterval=30"));
+        assert!(session.contains("ServerAliveCountMax=20"));
     }
 
     #[test]
     fn desktop_proof_is_lightweight_and_confined_to_ssh() {
         let script = ubuntu_desktop_provision_script();
-        assert!(
-            script.contains("tigervnc-standalone-server openbox xterm dbus-x11 x11-xserver-utils")
-        );
-        assert!(script.contains("openbox-session"));
-        assert!(script.contains("xterm"));
+        assert!(std::process::Command::new("sh")
+            .args(["-n", "-c", script])
+            .status()
+            .expect("run desktop shell syntax check")
+            .success());
+        assert!(script.contains("tigervnc-standalone-server_1.15.0+dfsg-2build1_arm64.deb"));
+        assert!(script.contains("30e536f05a504ad817b294abee51394143"));
+        assert!(script.contains("sha256sum -c"));
+        assert!(script.contains("dpkg-deb -x"));
+        assert!(script.contains("Xtigervnc :1"));
+        assert!(script.contains("gnome-calculator"));
+        assert!(!script.contains("apt-get"));
         assert!(script.contains("-localhost yes"));
         assert!(script.contains("-SecurityTypes None"));
-        assert!(script.contains("timeout 900 apt-get"));
         assert_eq!(
             desktop_tunnel_forward_spec(),
             "127.0.0.1:15901:127.0.0.1:5901"

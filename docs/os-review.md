@@ -254,7 +254,7 @@ And in `vfs.h`:
 **Compare to seL4/CAMKES:** CAMKES generates C headers from the `.system` file, ensuring consistency.
 
 **Recommended Fix:**
-1. **Generate channel headers from the `.system` file** using a Python script or Rust build.rs macro.
+1. **Generate channel headers from the `.system` file** using the Rust `xtask gen-channels` command.
 2. Create a `channels.h` that is auto-generated with:
    ```c
    // AUTO-GENERATED from agentos.system

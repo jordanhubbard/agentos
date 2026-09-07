@@ -293,17 +293,23 @@ bool fault_handle_vppi_event(size_t vcpu_id)
 {
     static uint64_t vppi_count = 0;
     vppi_count++;
-    bool log_vppi = vppi_count <= 4 || (vppi_count % 100000) == 0;
+    bool log_vppi = vppi_count <= 4 || (vppi_count & (vppi_count - 1)) == 0;
     uint64_t ppi_irq = seL4_GetMR(seL4_VPPIEvent_IRQ);
 
-    /* Dump VCPU state to diagnose deadlocks */
-    seL4_UserContext regs = {0};
-    seL4_TCB_ReadRegisters(vmm_tcb_cap(vcpu_id), 0, 0, SEL4_USER_CONTEXT_SIZE, &regs);
-    seL4_Word spsr_el1   = vmm_vcpu_arm_read_reg(vcpu_id, seL4_VCPUReg_SPSR_EL1);
-    seL4_Word elr_el1    = vmm_vcpu_arm_read_reg(vcpu_id, seL4_VCPUReg_ELR_EL1);
-    seL4_Word cntv_ctl   = vmm_vcpu_arm_read_reg(vcpu_id, seL4_VCPUReg_CNTV_CTL);
-    seL4_Word cntv_cval  = vmm_vcpu_arm_read_reg(vcpu_id, seL4_VCPUReg_CNTV_CVAL);
     if (log_vppi) {
+        /* Register reads are diagnostic only; doing them on every timer event
+         * starves a live guest behind synchronous seL4 invocations. */
+        seL4_UserContext regs = {0};
+        seL4_TCB_ReadRegisters(vmm_tcb_cap(vcpu_id), 0, 0,
+                               SEL4_USER_CONTEXT_SIZE, &regs);
+        seL4_Word spsr_el1 =
+            vmm_vcpu_arm_read_reg(vcpu_id, seL4_VCPUReg_SPSR_EL1);
+        seL4_Word elr_el1 =
+            vmm_vcpu_arm_read_reg(vcpu_id, seL4_VCPUReg_ELR_EL1);
+        seL4_Word cntv_ctl =
+            vmm_vcpu_arm_read_reg(vcpu_id, seL4_VCPUReg_CNTV_CTL);
+        seL4_Word cntv_cval =
+            vmm_vcpu_arm_read_reg(vcpu_id, seL4_VCPUReg_CNTV_CVAL);
         LOG_VMM("VPPIEvent #%llu: IRQ %llu on vCPU %zu\n",
                 (unsigned long long)vppi_count,
                 (unsigned long long)ppi_irq,
