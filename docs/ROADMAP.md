@@ -81,6 +81,8 @@ MAC work:
 
 - `task_73b8e18d4e71424fb8223d7e555b1831` — finish the dual-guest authenticated
   SSH prerequisite.
+- `task_c0cd7e7648c348e3a72fd9d66dadc121` — sustain bidirectional virtio-net
+  traffic beyond one host RX descriptor cycle and shared-ring window.
 - `task_745e6c09bb5f4415ba8707c3d39192d0` — verify a bounded raw RFB frame
   without adding a viewer.
 - `task_c5135a55f029480a800796e2b4fe33df` — prove the network desktop session.
