@@ -1738,7 +1738,7 @@ command -v Xtigervnc >/dev/null
 command -v gnome-calculator >/dev/null
 install -d -o ubuntu -g ubuntu /home/ubuntu/.vnc
 rm -f /tmp/.X1-lock /tmp/.X11-unix/X1 /tmp/agentos-desktop.pid
-setsid -f su -s /bin/sh ubuntu -c 'exec env HOME=/home/ubuntu USER=ubuntu Xtigervnc :1 -rfbport 5901 -ac -localhost yes -SecurityTypes None -geometry 1024x768 -depth 24' </dev/null >/tmp/agentos-xvnc.log 2>&1
+setsid -f su -s /bin/sh ubuntu -c 'exec env HOME=/home/ubuntu USER=ubuntu Xtigervnc :1 -rfbport 5901 -rendernode "" -ac -localhost yes -SecurityTypes None -geometry 1024x768 -depth 24' </dev/null >/tmp/agentos-xvnc.log 2>&1
 for attempt in 1 2 3 4 5 6 7 8 9 10; do
     test -S /tmp/.X11-unix/X1 && ss -ltn | grep -q ':5901' && break
     sleep 1
@@ -2387,6 +2387,7 @@ mod tests {
         assert!(script.contains("sha256sum -c"));
         assert!(script.contains("dpkg-deb -x"));
         assert!(script.contains("Xtigervnc :1"));
+        assert!(script.contains("-rendernode \"\""));
         assert!(script.contains("gnome-calculator"));
         assert!(!script.contains("apt-get"));
         assert!(script.contains("-localhost yes"));
