@@ -1738,12 +1738,15 @@ command -v Xtigervnc >/dev/null
 command -v gnome-calculator >/dev/null
 install -d -o ubuntu -g ubuntu /home/ubuntu/.vnc
 rm -f /tmp/.X1-lock /tmp/.X11-unix/X1 /tmp/agentos-desktop.pid
-setsid -f su -s /bin/sh ubuntu -c 'exec env HOME=/home/ubuntu USER=ubuntu Xtigervnc :1 -ac -localhost yes -SecurityTypes None -geometry 1024x768 -depth 24' </dev/null >/tmp/agentos-xvnc.log 2>&1
+setsid -f su -s /bin/sh ubuntu -c 'exec env HOME=/home/ubuntu USER=ubuntu Xtigervnc :1 -rfbport 5901 -ac -localhost yes -SecurityTypes None -geometry 1024x768 -depth 24' </dev/null >/tmp/agentos-xvnc.log 2>&1
 for attempt in 1 2 3 4 5 6 7 8 9 10; do
-    test -S /tmp/.X11-unix/X1 && break
+    test -S /tmp/.X11-unix/X1 && ss -ltn | grep -q ':5901' && break
     sleep 1
 done
-test -S /tmp/.X11-unix/X1
+if ! test -S /tmp/.X11-unix/X1 || ! ss -ltn | grep -q ':5901'; then
+    cat /tmp/agentos-xvnc.log >&2
+    exit 1
+fi
 su -s /bin/sh ubuntu -c 'env HOME=/home/ubuntu USER=ubuntu DISPLAY=:1 dbus-run-session -- gnome-calculator >/tmp/agentos-desktop.log 2>&1 & echo $! >/tmp/agentos-desktop.pid'
 for attempt in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
     test -s /tmp/agentos-desktop.pid && kill -0 "$(cat /tmp/agentos-desktop.pid)" 2>/dev/null && exit 0
