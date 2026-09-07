@@ -16,7 +16,8 @@ changing the dependency order below.
 | **0.2** | Network desktop proof and release discipline | Ubuntu exposes a real desktop session over the already authenticated network path; releases become exact-revision, evidence-bound transitions; the first systems/security narrative is grounded in retained evidence. |
 | **0.3** | Guest graphics foundation | The canonical framebuffer is live on target, and generic virtio-gpu plus virtio-input virtualizers drive an AArch64 guest without host-device passthrough. |
 | **0.4** | x86 guest foundation | A real VMX-backed x86_64 VMM boots Linux and reuses canonical net, block, and console services with isolated GPA translation. |
-| **0.5** | x86 distribution and graphical guest | A persistent x86_64 distribution reaches key-only SSH; an official Omarchy image is supported only when reproducible, then reaches a graphical session through agentOS graphics and input. |
+| **0.5** | Persistent x86 desktop platform | A pinned Arch Linux x86_64 guest installs through UEFI, reboots from writable storage, reaches key-only SSH, and runs a Hyprland-class compositor through canonical graphics and input. |
+| **0.6** | Official Omarchy qualification | A reproducible official Omarchy artifact installs to encrypted persistent storage, reaches its normal Hyprland desktop, and survives evidence-bound update and recovery gates. |
 | **1.0** | Dual-architecture qualification | AArch64 and x86_64 claims, contracts, isolation, lifecycle, guest I/O, release evidence, and maintained technical narrative agree on one immutable revision. |
 
 Dependency order:
@@ -29,7 +30,7 @@ dual-guest SSH
       |                                  ^
       +---- 0.2 release workflow --------+
 
-0.3 framebuffer target proof
+0.3 framebuffer target proof ----- 0.3 Omarchy compatibility ledger
       |
       v
 0.3 virtio-gpu + virtio-input -------------------+
@@ -37,13 +38,21 @@ dual-guest SSH
 one data-driven VMM                               |
       |                                            |
       v                                            |
-0.4 VMX/x86 VMM -> 0.4 x86 canonical devices      |
-                         |                         |
-                         v                         |
-                  0.5 x86 Linux/Omarchy SSH -------+
+0.4 VMX/x86 VMM -> UEFI/ACPI -> x86 canonical devices
+                         |              |
+              resources + writable storage
                          |
                          v
-                  0.5 Omarchy desktop
+                0.5 persistent Arch SSH
+                         |
+                         v
+             0.5 x86 DRM/input/compositor <-------+
+                         |
+                         v
+       0.6 official artifact -> encrypted install
+                         |
+                         v
+            Omarchy desktop -> update/recovery
                          |
                          v
                   1.0 qualification
@@ -103,6 +112,8 @@ MAC work:
   framebuffer.
 - `task_cefc0f77327d4245ab9feb132cd1eb57` — implement guest virtio-gpu and
   virtio-input.
+- `task_93ddbd0f497e4209a162e0f5527fc7cf` — maintain an evidence ledger for
+  official Omarchy architecture, artifacts, repositories, and requirements.
 
 ## 0.4 — x86 guest foundation
 
@@ -117,8 +128,14 @@ Acceptance evidence:
 
 - `make gate` remains green for both root-task architectures.
 - A minimal x86_64 Linux guest executes userspace under the seL4 VMM.
+- The guest boots through UEFI with generated ACPI and a virtual interrupt
+  topology owned by the VMM.
 - Net, block, and console requests traverse the same canonical service
   contracts used by AArch64 guests.
+- Desktop-class RAM, vCPU, and CPU-feature profiles fail closed when resources
+  are unavailable and reclaim all capabilities at teardown.
+- Writable guest disks preserve flushed data across reboot and remain isolated
+  between concurrent guests.
 - Negative tests prove invalid GPA and capability use cannot escape the guest
   domain.
 
@@ -126,30 +143,67 @@ MAC work:
 
 - `task_7f6653b7dcc840b9ab7fa092685c9d57` — make guest flavor data-driven.
 - `task_ede60b058fc745d296bad77044a57420` — implement VMX guest execution.
+- `task_5870ef2f51974ffe95099c3032d0f077` — implement UEFI and ACPI guest
+  boot.
 - `task_3a5da27d553a475092d35a9fa1cb90e9` — port canonical guest devices.
+- `task_5a7af19b3d99497a8c13b1f7ac57b230` — add desktop-class resource
+  profiles.
+- `task_4090f05598f74a9cafbb571a6271b6e5` — provide persistent writable guest
+  storage.
 
-## 0.5 — x86 distribution and graphical guest
+## 0.5 — Persistent x86 desktop platform
 
-A conventional persistent x86_64 Linux image is the first distribution gate.
-Omarchy follows only after its official artifact, architecture, and
-installation requirements are reproducible. Until then, a pinned Arch Linux
-desktop may exercise the technical path, but agentOS must not claim Omarchy
-support.
+A pinned vanilla Arch Linux x86_64 image is the distribution gate. It
+separates reusable platform work from Omarchy's installer, package repository,
+and release cadence. Passing this milestone proves an Omarchy-class machine,
+not Omarchy itself.
 
 Acceptance evidence:
 
 - installation to writable block storage and successful reboot;
 - key-only SSH after reboot;
-- DRM/KMS and compositor session startup;
+- UEFI, ACPI, RAM, vCPU, and CPU-feature evidence;
+- DRM/KMS and Hyprland-class compositor session startup;
 - keyboard and pointer delivery through canonical services;
 - a non-empty frame captured through `framebuffer_pd`;
-- explicit RAM, disk, CPU-feature, and artifact provenance records.
+- explicit artifact and package-set provenance records.
 
 MAC work:
 
-- `task_0d6640b7822d4203b4f099fc66ad5aa9` — prove persistent x86 Linux and
-  conditional Omarchy SSH.
-- `task_656b748000c94294aaf2ddba22666a96` — prove the graphical Omarchy path.
+- `task_0d6640b7822d4203b4f099fc66ad5aa9` — boot persistent Arch Linux to
+  authenticated SSH.
+- `task_c683669084ad40078995b500d1934a59` — qualify x86 DRM, input, and a
+  Hyprland-class compositor.
+
+## 0.6 — Official Omarchy qualification
+
+Omarchy support begins only when upstream provides a reproducible official
+artifact and architecture-compatible package repository. Community AArch64
+ports may inform the compatibility ledger, but they do not satisfy this
+milestone and must not be presented as agentOS Omarchy support.
+
+Acceptance evidence:
+
+- checksummed official installation media, package repositories, installer
+  revision, and complete resource requirements;
+- installation through the canonical UEFI, network, and writable block paths;
+- Btrfs and LUKS behavior that does not bypass agentOS capability boundaries;
+- reboot to key-only SSH from the installed disk;
+- the normal Omarchy Hyprland session on canonical DRM/KMS and input devices;
+- injected keyboard and pointer input plus a non-uniform captured frame;
+- successful pinned update and reboot;
+- snapshot-backed rollback or recovery from an injected failed update;
+- exact guest release identity recorded in release evidence.
+
+MAC work:
+
+- `task_67e3fd4664c84a97a41531b1644339cd` — qualify an official reproducible
+  Omarchy artifact.
+- `task_a2fa1b6bafa34b3293c27279a359e864` — install to encrypted persistent
+  storage and reboot to SSH.
+- `task_656b748000c94294aaf2ddba22666a96` — prove the official Hyprland desktop.
+- `task_3c0aaeeeec54412f86dd69273755feef` — qualify update, rollback, and
+  recovery.
 
 ## 1.0 — Dual-architecture qualification
 

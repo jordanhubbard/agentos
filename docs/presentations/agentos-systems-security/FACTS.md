@@ -14,7 +14,7 @@ edition. “Planned” and “under qualification” are not synonyms for shippe
 | `framebuffer_pd` provides a live target display path | Planned for 0.3 | Target create/write/flip/read test | Current implementation is predominantly host-tested surface management. |
 | Guests receive canonical virtio-gpu and virtio-input devices | Planned for 0.3 | Linux DRM/input enumeration and captured frame | No host display MMIO or IRQ passthrough is permitted. |
 | x86_64 guest operating systems run under agentOS | Planned for 0.4 | VMX/EPT target evidence and Linux userspace execution | Current x86 work proves a reduced root-task topology, not guest support. |
-| Omarchy is a supported agentOS guest | Conditional 0.5 direction | Official reproducible artifact, persistent install, SSH, compositor, input, and frame gates | Do not claim support while official architecture/artifact requirements are unmet. |
+| Omarchy is a supported agentOS guest | Conditional 0.6 direction | Official reproducible artifact, encrypted persistent install, SSH, compositor, input, frame, update, and recovery gates | Do not claim support while official architecture/artifact requirements are unmet. |
 | Releases bind claims and gates to one exact revision | Planned for 0.2 | Checked release receipt and remote verification | Current shell and Rust release paths overlap and are not the final authority. |
 
 ## Evidence still required for the first edition

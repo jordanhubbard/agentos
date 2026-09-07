@@ -257,7 +257,7 @@ through a documented API.
 
 ## 12. x86 is a virtualization milestone, not a compiler flag
 
-**0.4 and 0.5 milestones — critical path**
+**0.4 through 0.6 milestones — critical path**
 
 The reduced x86_64 root-task topology already supports build and smoke work.
 Guest support still requires:
@@ -266,8 +266,10 @@ Guest support still requires:
 2. interrupt virtualization and x86 boot descriptions;
 3. architecture-neutral guest flavors;
 4. canonical virtio net, block, and console reuse;
-5. persistent x86 Linux and authenticated SSH;
-6. graphics/input before an Omarchy desktop claim.
+5. persistent Arch Linux, authenticated SSH, and desktop-class resources;
+6. graphics/input and a Hyprland-class compositor on the generic x86 path;
+7. an official reproducible Omarchy artifact, encrypted installation, desktop,
+   update, and recovery evidence before an Omarchy support claim.
 
 > Speaker notes: Do not call the present x86 target “guest support.” The
 > acceptance line is userspace execution plus device, lifecycle, and isolation
