@@ -13,6 +13,8 @@ const UBUNTU_DEFAULT_SSH_PORT: u16 = 12222;
 const FREEBSD_DEFAULT_SSH_PORT: u16 = 12223;
 const UBUNTU_DESKTOP_PORT: u16 = 15901;
 const UBUNTU_VNC_GUEST_PORT: u16 = 5901;
+const UBUNTU_DESKTOP_RFB_TIMEOUT: Duration = Duration::from_secs(600);
+const UBUNTU_DESKTOP_RFB_IO_TIMEOUT: Duration = Duration::from_secs(180);
 const SSH_AUTH_OPTIONS: &[&str] = &[
     "-o",
     "BatchMode=yes",
@@ -1754,20 +1756,36 @@ printf 'agentos-desktop-rfb-listener-ready\n'
 su -s /bin/sh ubuntu -c 'env HOME=/home/ubuntu USER=ubuntu DISPLAY=:1 dbus-run-session -- gnome-calculator >/tmp/agentos-desktop.log 2>&1 & echo $! >/tmp/agentos-desktop.pid'
 attempt=0
 while test "$attempt" -lt 120; do
-    if test -s /tmp/agentos-desktop.pid &&
+    if pgrep -x Xtigervnc >/dev/null &&
+       test -S /tmp/.X11-unix/X1 &&
+       ss -ltn | grep -q ':5901' &&
+       test -s /tmp/agentos-desktop.pid &&
        kill -0 "$(cat /tmp/agentos-desktop.pid)" 2>/dev/null; then
         printf 'agentos-desktop-app-ready\n'
-        exit 0
+        break
     fi
     attempt=$((attempt + 1))
     sleep 1
 done
-cat /tmp/agentos-xvnc.log /tmp/agentos-desktop.log >&2
-exit 1
+if ! pgrep -x Xtigervnc >/dev/null ||
+   ! test -S /tmp/.X11-unix/X1 ||
+   ! ss -ltn | grep -q ':5901' ||
+   ! test -s /tmp/agentos-desktop.pid ||
+   ! kill -0 "$(cat /tmp/agentos-desktop.pid)" 2>/dev/null; then
+    cat /tmp/agentos-xvnc.log /tmp/agentos-desktop.log >&2
+    exit 1
+fi
+RFB_VERSION="$(timeout 120 bash -c 'exec 3<>/dev/tcp/127.0.0.1/5901; IFS= read -r version <&3; printf "%s" "$version"')"
+if test "$RFB_VERSION" != 'RFB 003.008'; then
+    printf 'unexpected local RFB version: %s\n' "$RFB_VERSION" >&2
+    cat /tmp/agentos-xvnc.log /tmp/agentos-desktop.log >&2
+    exit 1
+fi
+printf 'agentos-desktop-local-rfb-ready\n'
 "#
 }
 
-fn run_ssh_script(private_key: &Path, script: &str) -> anyhow::Result<()> {
+fn run_ssh_script(private_key: &Path, script: &str) -> anyhow::Result<String> {
     let mut child = std::process::Command::new("ssh");
     child
         .arg("-i")
@@ -1798,7 +1816,7 @@ fn run_ssh_script(private_key: &Path, script: &str) -> anyhow::Result<()> {
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
-    Ok(())
+    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
 fn wait_for_ubuntu_ssh(
@@ -1874,12 +1892,13 @@ fn prove_ubuntu_desktop(
     )?;
     drop(cc);
     wait_for_ubuntu_ssh(ssh_key, timeout.min(Duration::from_secs(600)), qemu)?;
-    run_ssh_script(&ssh_key.private_key, ubuntu_desktop_provision_script())?;
+    let provisioning = run_ssh_script(&ssh_key.private_key, ubuntu_desktop_provision_script())?;
+    println!("[xtask:test] Ubuntu desktop provisioning:\n{provisioning}");
 
     let mut tunnel = spawn_desktop_tunnel(&ssh_key.private_key)?;
     let start = Instant::now();
     let mut last = String::from("SSH tunnel did not accept a connection");
-    while start.elapsed() < timeout.min(Duration::from_secs(120)) {
+    while start.elapsed() < timeout.min(UBUNTU_DESKTOP_RFB_TIMEOUT) {
         ensure_qemu_running(qemu, "waiting for Ubuntu desktop RFB frame")?;
         if let Some(status) = tunnel
             .try_wait()
@@ -1894,10 +1913,10 @@ fn prove_ubuntu_desktop(
         match TcpStream::connect(SocketAddr::from(([127, 0, 0, 1], UBUNTU_DESKTOP_PORT))) {
             Ok(mut stream) => {
                 stream
-                    .set_read_timeout(Some(Duration::from_secs(30)))
+                    .set_read_timeout(Some(UBUNTU_DESKTOP_RFB_IO_TIMEOUT))
                     .context("failed to bound desktop RFB reads")?;
                 stream
-                    .set_write_timeout(Some(Duration::from_secs(30)))
+                    .set_write_timeout(Some(UBUNTU_DESKTOP_RFB_IO_TIMEOUT))
                     .context("failed to bound desktop RFB writes")?;
                 match rfb::verify_raw_frame(&mut stream) {
                     Ok(evidence) => return Ok((evidence, tunnel)),
@@ -1911,7 +1930,14 @@ fn prove_ubuntu_desktop(
 
     let _ = tunnel.kill();
     let _ = tunnel.wait();
-    anyhow::bail!("Ubuntu desktop did not yield an RFB frame: {last}")
+    let mut tunnel_stderr = String::new();
+    if let Some(mut pipe) = tunnel.stderr.take() {
+        let _ = pipe.read_to_string(&mut tunnel_stderr);
+    }
+    anyhow::bail!(
+        "Ubuntu desktop did not yield an RFB frame: {last}; SSH tunnel stderr={:?}",
+        tunnel_stderr.trim()
+    )
 }
 
 fn spawn_ssh_probe(
@@ -2402,6 +2428,8 @@ mod tests {
         assert!(!script.contains("apt-get"));
         assert!(script.contains("-localhost yes"));
         assert!(script.contains("-SecurityTypes None"));
+        assert!(script.contains("agentos-desktop-local-rfb-ready"));
+        assert!(script.contains("/dev/tcp/127.0.0.1/5901"));
         assert_eq!(
             desktop_tunnel_forward_spec(),
             "127.0.0.1:15901:127.0.0.1:5901"
