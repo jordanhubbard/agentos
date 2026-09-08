@@ -336,8 +336,11 @@ jobs:
         run: make test-ubuntu-virtio QEMU_TEST_TIMEOUT=480
 
       - name: Prove Ubuntu Casper userspace on agentOS VirtIO
-        timeout-minutes: 75
-        run: make test-ubuntu-live QEMU_TEST_TIMEOUT=3600
+        # TCG throughput varies substantially across hosted runners.  Keep the
+        # assertion deadline aligned with the release/demo proof and leave an
+        # outer envelope for the build plus evidence upload.
+        timeout-minutes: 150
+        run: make test-ubuntu-live QEMU_TEST_TIMEOUT=7200
 
       - name: Upload QEMU serial logs
         if: always()
