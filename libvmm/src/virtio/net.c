@@ -36,8 +36,7 @@ static void virtio_net_reset(struct virtio_device *dev)
 {
     LOG_NET("operation: reset\n");
     for (int i = 0; i < dev->num_vqs; i++) {
-        dev->vqs[i].ready = false;
-        dev->vqs[i].last_idx = 0;
+        virtio_queue_reset_guest_rings(&dev->vqs[i]);
     }
 }
 

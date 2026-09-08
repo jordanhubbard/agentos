@@ -292,8 +292,7 @@ static inline struct virtio_blk_device *device_state(struct virtio_device *dev)
 
 static inline void virtio_blk_reset(struct virtio_device *dev)
 {
-    dev->vqs[VIRTIO_BLK_DEFAULT_VIRTQ].ready = false;
-    dev->vqs[VIRTIO_BLK_DEFAULT_VIRTQ].last_idx = 0;
+    virtio_queue_reset_guest_rings(&dev->vqs[VIRTIO_BLK_DEFAULT_VIRTQ]);
 }
 
 static inline bool virtio_blk_get_device_features(struct virtio_device *dev, uint32_t *features)

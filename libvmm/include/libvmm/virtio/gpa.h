@@ -12,7 +12,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 
-struct virtq;
+struct virtio_queue_handler;
 
 typedef void *(*virtio_gpa_translate_fn)(uint64_t gpa, size_t len);
 
@@ -24,8 +24,10 @@ int virtio_copy_from_gpa(uint64_t gpa, size_t off, void *dst, size_t len);
 int virtio_copy_to_gpa(uint64_t gpa, size_t off, const void *src, size_t len);
 
 /*
- * virtq->desc/avail/used currently hold the GPA bit-pattern written through
- * QueueDesc/Avail/Used. Map them to HVAs using virtq->num. Call once when
- * QueueReady/QueueEnable goes 0→1.
+ * Map the retained QueueDesc/Avail/Used GPAs to the host pointers used while
+ * servicing a queue. Call once when QueueReady/QueueEnable goes 0→1.
  */
-bool virtio_queue_map_guest_rings(struct virtq *virtq);
+bool virtio_queue_map_guest_rings(struct virtio_queue_handler *handler);
+
+/* Restore all queue register and mapping state after a device reset. */
+void virtio_queue_reset_guest_rings(struct virtio_queue_handler *handler);

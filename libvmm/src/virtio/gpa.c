@@ -5,7 +5,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <string.h>
-#include <libvmm/virtio/virtq.h>
+#include <libvmm/virtio/mmio.h>
 #include <libvmm/virtio/gpa.h>
 
 static void *virtio_gpa_identity(uint64_t gpa, size_t len)
@@ -75,11 +75,9 @@ int virtio_copy_to_gpa(uint64_t gpa, size_t off, const void *src, size_t len)
     return 0;
 }
 
-bool virtio_queue_map_guest_rings(struct virtq *virtq)
+bool virtio_queue_map_guest_rings(struct virtio_queue_handler *handler)
 {
-    uint64_t desc_gpa;
-    uint64_t avail_gpa;
-    uint64_t used_gpa;
+    struct virtq *virtq;
     void *desc;
     void *avail;
     void *used;
@@ -87,13 +85,13 @@ bool virtio_queue_map_guest_rings(struct virtq *virtq)
     size_t avail_len;
     size_t used_len;
 
-    if (virtq == NULL || virtq->num == 0u || virtq->num > 32768u) {
+    if (handler == NULL) {
         return false;
     }
-
-    desc_gpa = (uint64_t)(uintptr_t)virtq->desc;
-    avail_gpa = (uint64_t)(uintptr_t)virtq->avail;
-    used_gpa = (uint64_t)(uintptr_t)virtq->used;
+    virtq = &handler->virtq;
+    if (virtq->num == 0u || virtq->num > 32768u) {
+        return false;
+    }
 
     desc_len = (size_t)virtq->num * sizeof(struct virtq_desc);
     /* flags + idx + ring[num] + used_event */
@@ -102,9 +100,9 @@ bool virtio_queue_map_guest_rings(struct virtq *virtq)
     used_len = sizeof(uint16_t) * 3u
                + sizeof(struct virtq_used_elem) * (size_t)virtq->num;
 
-    desc = virtio_gpa_to_hva(desc_gpa, desc_len);
-    avail = virtio_gpa_to_hva(avail_gpa, avail_len);
-    used = virtio_gpa_to_hva(used_gpa, used_len);
+    desc = virtio_gpa_to_hva(handler->desc_gpa, desc_len);
+    avail = virtio_gpa_to_hva(handler->avail_gpa, avail_len);
+    used = virtio_gpa_to_hva(handler->used_gpa, used_len);
     if (desc == NULL || avail == NULL || used == NULL) {
         return false;
     }
@@ -113,4 +111,17 @@ bool virtio_queue_map_guest_rings(struct virtq *virtq)
     virtq->avail = (struct virtq_avail *)avail;
     virtq->used = (struct virtq_used *)used;
     return true;
+}
+
+void virtio_queue_reset_guest_rings(struct virtio_queue_handler *handler)
+{
+    if (handler == NULL) {
+        return;
+    }
+    memset(&handler->virtq, 0, sizeof(handler->virtq));
+    handler->desc_gpa = 0u;
+    handler->avail_gpa = 0u;
+    handler->used_gpa = 0u;
+    handler->ready = false;
+    handler->last_idx = 0u;
 }

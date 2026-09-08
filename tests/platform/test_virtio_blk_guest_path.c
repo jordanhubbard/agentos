@@ -376,6 +376,21 @@ int main(void)
                  src_contains("kernel/agentos-root-task/src/freebsd_vmm.c",
                               "aos_gpa_to_hva_configured"),
                  "sound and FreeBSD debug paths translate guest physical addresses");
+    (void)tap_ok(src_contains("libvmm/include/libvmm/virtio/mmio.h",
+                              "uint64_t desc_gpa;") &&
+                 src_contains("libvmm/include/libvmm/virtio/mmio.h",
+                              "uint64_t avail_gpa;") &&
+                 src_contains("libvmm/include/libvmm/virtio/mmio.h",
+                              "uint64_t used_gpa;") &&
+                 src_contains("libvmm/src/virtio/gpa.c",
+                              "virtio_queue_reset_guest_rings") &&
+                 src_contains("libvmm/src/virtio/mmio.c",
+                              "handler->desc_gpa = (handler->desc_gpa &") &&
+                 src_contains("libvmm/src/virtio/pci.c",
+                              "handler->desc_gpa = (handler->desc_gpa &") &&
+                 src_contains("libvmm/src/virtio/net.c",
+                              "virtio_queue_reset_guest_rings(&dev->vqs[i])"),
+                 "VirtIO queue reset retains GPAs separately from mapped host pointers");
     (void)tap_ok(src_contains_in_order(
                      "kernel/agentos-root-task/src/main.c",
                      "reserve_guest_ram_frames(sys)",
