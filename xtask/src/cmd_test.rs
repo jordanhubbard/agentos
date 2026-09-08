@@ -1467,7 +1467,7 @@ fn verify_ubuntu_live_console_and_net(
     timeout: Duration,
     qemu: &mut Child,
 ) -> anyhow::Result<String> {
-    cc_send_raw_bytes(cc, guest_handle, b"ubuntu\n")?;
+    cc_send_console_line(cc, guest_handle, b"ubuntu")?;
 
     let phase_timeout = timeout.min(Duration::from_secs(180));
     let login_start = Instant::now();
@@ -1488,6 +1488,20 @@ fn verify_ubuntu_live_console_and_net(
         };
         if !chunk.is_empty() {
             transcript.push_str(&chunk);
+            if transcript.contains("login: timed out")
+                && transcript.to_ascii_lowercase().contains("ubuntu login:")
+            {
+                anyhow::ensure!(
+                    login_attempts < 5,
+                    "Ubuntu live console repeatedly dropped the login terminator; tail:\n{}",
+                    tail_chars(&transcript, 2000)
+                );
+                cc_send_console_line(cc, guest_handle, b"ubuntu")?;
+                login_attempts += 1;
+                transcript.clear();
+                blank_password_sent = false;
+                continue;
+            }
             if transcript.contains("Login incorrect") {
                 if transcript.contains("pam_nologin") || transcript.contains("System is booting up")
                 {
@@ -1497,7 +1511,7 @@ fn verify_ubuntu_live_console_and_net(
                         tail_chars(&transcript, 2000)
                     );
                     std::thread::sleep(Duration::from_secs(5));
-                    cc_send_raw_bytes(cc, guest_handle, b"ubuntu\n")?;
+                    cc_send_console_line(cc, guest_handle, b"ubuntu")?;
                     login_attempts += 1;
                     transcript.clear();
                     blank_password_sent = false;
@@ -1509,7 +1523,7 @@ fn verify_ubuntu_live_console_and_net(
                 );
             }
             if !blank_password_sent && transcript.to_ascii_lowercase().contains("password:") {
-                cc_send_raw_byte(cc, guest_handle, b'\n')?;
+                cc_send_raw_byte(cc, guest_handle, b'\r')?;
                 blank_password_sent = true;
             }
             if transcript.contains("ubuntu@") && transcript.contains("$ ") {
@@ -1526,7 +1540,7 @@ fn verify_ubuntu_live_console_and_net(
     );
 
     /* Split the token so terminal command echo cannot satisfy the proof. */
-    cc_send_raw_bytes(cc, guest_handle, b"printf 'agentos-live-%s\\n' proof\r")?;
+    cc_send_console_line(cc, guest_handle, b"printf 'agentos-live-%s\\n' proof")?;
     let proof_start = Instant::now();
     let mut output = String::new();
     while proof_start.elapsed() < phase_timeout {
@@ -1539,9 +1553,9 @@ fn verify_ubuntu_live_console_and_net(
                  * Link-up emits IPv6 control traffic; the bounded all-nodes
                  * ping guarantees a guest-originated frame without DHCP.
                  */
-                cc_send_raw_bytes(cc, guest_handle, b"sudo -n ip link set eth0 up\r")?;
+                cc_send_console_line(cc, guest_handle, b"sudo -n ip link set eth0 up")?;
                 std::thread::sleep(Duration::from_secs(1));
-                cc_send_raw_bytes(cc, guest_handle, b"ping -6 -c1 -W1 ff02::1%eth0\r")?;
+                cc_send_console_line(cc, guest_handle, b"ping -6 -c1 -W1 ff02::1%eth0")?;
                 return Ok(String::from(
                     "logged into Ubuntu live userspace, executed a command, and emitted a network probe",
                 ));
@@ -1648,8 +1662,7 @@ fn run_guest_console_command(
     qemu: &mut Child,
 ) -> anyhow::Result<()> {
     let _ = cc_log_stream_for_handle(cc, guest_handle, guest_os);
-    cc_send_raw_bytes(cc, guest_handle, command.as_bytes())?;
-    cc_send_raw_byte(cc, guest_handle, b'\r')?;
+    cc_send_console_line(cc, guest_handle, command.as_bytes())?;
 
     let start = Instant::now();
     let mut output = String::new();
@@ -2318,6 +2331,11 @@ fn cc_send_raw_bytes(cc: &mut CcClient, guest_handle: u32, bytes: &[u8]) -> anyh
         std::thread::sleep(Duration::from_millis(50));
     }
     Ok(())
+}
+
+fn cc_send_console_line(cc: &mut CcClient, guest_handle: u32, line: &[u8]) -> anyhow::Result<()> {
+    cc_send_raw_bytes(cc, guest_handle, line)?;
+    cc_send_raw_byte(cc, guest_handle, b'\r')
 }
 
 fn cc_send_input_frame(
