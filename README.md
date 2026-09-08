@@ -146,7 +146,7 @@ aos_service_swap(proposal_id);
 
 ### Prerequisites
 
-- macOS with Homebrew, or Ubuntu 22.04+
+- macOS with Homebrew, or Ubuntu 24.04
 - 8GB RAM, 20GB disk
 - QEMU for simulation (no hardware needed to start)
 - Rust, LLVM/Clang, LLD, and the seL4 Microkit 2.1.0 SDK
@@ -469,6 +469,8 @@ See [`docs/freebsd-vm-guest.md`](docs/freebsd-vm-guest.md) for the full design d
   protocol and gate matrix.
 - [`docs/presentations/agentos-systems-security/deck.md`](docs/presentations/agentos-systems-security/deck.md)
   is the editable, claim-labeled narrative for OS and security experts.
+- `make presentation-render PRESENTATION_EDITION=X.Y.Z` renders that source as
+  a PDF plus checksum-bearing QA receipt under `build/presentations/`.
 
 ---
 
