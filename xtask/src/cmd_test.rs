@@ -2036,6 +2036,29 @@ fn wait_for_dual_guest_consoles_via_cc(
     )
     .context("failed to create FreeBSD guest through vm_manager")?;
 
+    let linux_handle = create_guest_via_cc_wait(
+        cc_sock,
+        VIBEOS_TYPE_LINUX,
+        1024,
+        "Linux",
+        create_timeout,
+        qemu,
+    )
+    .context("failed to create Linux guest through vm_manager")?;
+
+    /*
+     * Creating both guests establishes both clients of the shared host block
+     * path. Quiesce Ubuntu immediately so FreeBSD's ISO boot cannot lose the
+     * single emulated CPU to the much busier live-image boot.
+     */
+    let mut boot_cc = connect_cc_client(cc_sock, timeout.min(Duration::from_secs(30)), qemu)?;
+    let linux_boot_suspend = suspend_guest_via_cc(&mut boot_cc, linux_handle)
+        .context("failed to suspend Ubuntu while FreeBSD reaches its installer shell")?;
+    println!(
+        "[xtask:test] suspended Ubuntu guest handle={linux_handle} state={linux_boot_suspend} while FreeBSD boots"
+    );
+    drop(boot_cc);
+
     let freebsd = wait_for_guest_console_login_via_cc(
         cc_sock,
         freebsd_handle,
@@ -2043,31 +2066,16 @@ fn wait_for_dual_guest_consoles_via_cc(
         timeout.saturating_sub(start.elapsed()),
         qemu,
     )?;
-    let mut boot_cc = connect_cc_client(cc_sock, timeout.min(Duration::from_secs(30)), qemu)?;
-    let freebsd_boot_suspend = suspend_guest_via_cc(&mut boot_cc, freebsd_handle)
+    let mut swap_cc = connect_cc_client(cc_sock, timeout.min(Duration::from_secs(30)), qemu)?;
+    let freebsd_boot_suspend = suspend_guest_via_cc(&mut swap_cc, freebsd_handle)
         .context("failed to suspend ready FreeBSD guest while Ubuntu finishes booting")?;
     println!(
         "[xtask:test] suspended ready FreeBSD guest handle={freebsd_handle} state={freebsd_boot_suspend} while Ubuntu boots"
     );
-    drop(boot_cc);
-
-    /*
-     * QEMU gives both guests one emulated host CPU. Starting Ubuntu before
-     * FreeBSD reaches userland makes the ISO boot depend on host scheduling
-     * luck and can stretch a few seconds of guest time into tens of minutes.
-     * Establish the FreeBSD checkpoint first, then create Ubuntu while the
-     * ready FreeBSD guest is quiesced. Both run together after the resume
-     * below, where the authenticated SSH proof checks concurrent service.
-     */
-    let linux_handle = create_guest_via_cc_wait(
-        cc_sock,
-        VIBEOS_TYPE_LINUX,
-        1024,
-        "Linux",
-        timeout.saturating_sub(start.elapsed()),
-        qemu,
-    )
-    .context("failed to create Linux guest through vm_manager")?;
+    let linux_boot_resume = resume_guest_via_cc(&mut swap_cc, linux_handle)
+        .context("failed to resume Ubuntu after checkpointing FreeBSD")?;
+    println!("[xtask:test] resumed Ubuntu guest handle={linux_handle} state={linux_boot_resume}");
+    drop(swap_cc);
 
     let linux = wait_for_guest_console_login_via_cc(
         cc_sock,

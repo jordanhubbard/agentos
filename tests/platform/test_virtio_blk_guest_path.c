@@ -325,9 +325,12 @@ int main(void)
                  src_contains("xtask/src/cmd_test.rs",
                               "wait_for_dual_guest_consoles_via_cc") &&
                  src_contains_in_order("xtask/src/cmd_test.rs",
+                                       "let linux_boot_suspend =",
+                                       "let freebsd = wait_for_guest_console_login_via_cc(") &&
+                 src_contains_in_order("xtask/src/cmd_test.rs",
                                        "let freebsd_boot_suspend =",
-                                       "let linux_handle = create_guest_via_cc_wait("),
-                 "FreeBSD console proof is checkpointed before Ubuntu starts");
+                                       "let linux_boot_resume ="),
+                 "dual proof alternates boot checkpoints before concurrent service");
     (void)tap_ok(!src_contains("kernel/agentos-root-task/src/freebsd_vmm.c",
                                "if (label == seL4_Fault_VPPIEvent) {") &&
                  src_contains("libvmm/src/arch/aarch64/vgic/vgic.c",
