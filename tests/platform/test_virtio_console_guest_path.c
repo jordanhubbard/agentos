@@ -130,7 +130,9 @@ int main(void)
        contains("kernel/agentos-root-task/src/cc_pd.c",
                 "? CC_OK : CC_ERR_RELAY_FAULT;") &&
        contains("xtask/src/cmd_test.rs",
-                "const CC_INPUT_TEXT_CHUNK: usize = 20;") &&
+                "const CC_INPUT_TEXT_CHUNK: usize = 16;") &&
+       contains("xtask/src/cmd_test.rs",
+                "8 + event.len() <= VMM_RELAY_PAYLOAD_BYTES") &&
        contains("xtask/src/cmd_test.rs",
                 "CC_INPUT_RETRY_DEADLINE") &&
        contains("xtask/src/cmd_test.rs",

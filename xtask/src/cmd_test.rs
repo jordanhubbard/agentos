@@ -47,7 +47,12 @@ const SSH_SESSION_LIVENESS_OPTIONS: &[&str] = &[
 ];
 const CC_WIRE_SHMEM_SIZE: usize = 4096;
 const CC_INPUT_TEXT: u32 = 0x05;
-const CC_INPUT_TEXT_CHUNK: usize = 20;
+/*
+ * A text event crosses CC -> VibeEngine -> VM manager before reaching a
+ * dynamic guest.  The 24-byte event plus a 4-byte Vibe handle and a 4-byte VM
+ * slot must all fit the 48-byte seL4 payload, leaving 16 text bytes per frame.
+ */
+const CC_INPUT_TEXT_CHUNK: usize = 16;
 const CC_REQ_SIZE: usize = 4 + 12 + CC_WIRE_SHMEM_SIZE;
 const CC_REPLY_SIZE: usize = 16 + CC_WIRE_SHMEM_SIZE;
 const CC_IO_TIMEOUT: Duration = Duration::from_secs(5);
@@ -55,6 +60,8 @@ const CC_FRAME_DEADLINE: Duration = Duration::from_secs(180);
 const CC_INPUT_RETRY_DEADLINE: Duration = Duration::from_secs(120);
 const CC_OK: u32 = 0;
 const CC_ERR_RELAY_FAULT: u32 = 8;
+#[cfg(test)]
+const VMM_RELAY_PAYLOAD_BYTES: usize = 48;
 const MSG_CC_LOG_STREAM: u32 = 0x2610;
 const MSG_CC_CREATE_GUEST: u32 = 0x2611;
 const MSG_CC_SEND_INPUT: u32 = 0x260d;
@@ -2335,7 +2342,7 @@ mod tests {
         let mut frame_count = 0;
         for chunk in input.chunks(CC_INPUT_TEXT_CHUNK) {
             let event = cc_text_event(chunk);
-            assert!(event.len() <= 44);
+            assert!(8 + event.len() <= VMM_RELAY_PAYLOAD_BYTES);
             assert_eq!(rd32(&event, 0), CC_INPUT_TEXT);
             assert_eq!(rd32(&event, 4) as usize, chunk.len());
             output.extend_from_slice(&event[24..]);
