@@ -1470,6 +1470,10 @@ fn verify_guest_console_input(
     );
 }
 
+fn ubuntu_live_network_probe_command() -> &'static str {
+    "sudo -n ip link set eth0 up && { ping -6 -c1 -W1 ff02::1%eth0 >/dev/null 2>&1 || true; } && printf 'agentos-live-net-%s\\n' proof"
+}
+
 fn verify_ubuntu_live_console_and_net(
     _cc_sock: &Path,
     cc: &mut CcClient,
@@ -1553,19 +1557,55 @@ fn verify_ubuntu_live_console_and_net(
     cc_send_console_line(cc, guest_handle, b"printf 'agentos-live-%s\\n' proof")?;
     let proof_start = Instant::now();
     let mut output = String::new();
+    let mut userspace_proven = false;
     while proof_start.elapsed() < phase_timeout {
         ensure_qemu_running(qemu, "waiting for Ubuntu live userspace proof")?;
         let chunk = cc_log_stream_for_handle(cc, guest_handle, "ubuntu-live").unwrap_or_default();
         if !chunk.is_empty() {
             output.push_str(&chunk);
             if output.contains("agentos-live-proof") {
-                /*
-                 * Link-up emits IPv6 control traffic; the bounded all-nodes
-                 * ping guarantees a guest-originated frame without DHCP.
-                 */
-                cc_send_console_line(cc, guest_handle, b"sudo -n ip link set eth0 up")?;
-                std::thread::sleep(Duration::from_secs(1));
-                cc_send_console_line(cc, guest_handle, b"ping -6 -c1 -W1 ff02::1%eth0")?;
+                userspace_proven = true;
+                break;
+            }
+        }
+        std::thread::sleep(Duration::from_millis(500));
+    }
+
+    anyhow::ensure!(
+        userspace_proven,
+        "Ubuntu live shell did not complete the userspace proof; login tail:\n{}\ncommand tail:\n{}",
+        tail_chars(&transcript, 2000),
+        tail_chars(&output, 2000),
+    );
+
+    /*
+     * Link-up emits IPv6 control traffic; the bounded all-nodes ping guarantees
+     * a guest-originated frame without DHCP. Wait for a marker emitted after
+     * both operations so no probe bytes remain queued when SSH provisioning
+     * starts on the same console.
+     */
+    cc_send_console_line(
+        cc,
+        guest_handle,
+        ubuntu_live_network_probe_command().as_bytes(),
+    )?;
+    let network_start = Instant::now();
+    let mut network_output = String::new();
+    while network_start.elapsed() < phase_timeout {
+        ensure_qemu_running(qemu, "waiting for Ubuntu live network proof")?;
+        let chunk = match cc_log_stream_for_handle(cc, guest_handle, "ubuntu-live") {
+            Ok(chunk) => chunk,
+            Err(err) => {
+                if cc.is_closed() {
+                    return Err(err).context("CC live-network transport closed");
+                }
+                println!("[xtask:test] CC live-network drain not ready yet: {err:#}");
+                String::new()
+            }
+        };
+        if !chunk.is_empty() {
+            network_output.push_str(&chunk);
+            if network_output.contains("agentos-live-net-proof") {
                 return Ok(String::from(
                     "logged into Ubuntu live userspace, executed a command, and emitted a network probe",
                 ));
@@ -1575,9 +1615,8 @@ fn verify_ubuntu_live_console_and_net(
     }
 
     anyhow::bail!(
-        "Ubuntu live shell did not complete the userspace/network proof; login tail:\n{}\ncommand tail:\n{}",
-        tail_chars(&transcript, 2000),
-        tail_chars(&output, 2000)
+        "Ubuntu live shell did not complete the network proof; tail:\n{}",
+        tail_chars(&network_output, 2000)
     )
 }
 
@@ -2533,6 +2572,15 @@ mod tests {
             assert!(!wrapped.contains(&format!("agentos-{guest_os}-ssh-failed")));
             assert!(wrapped.contains(&format!("agentos-{guest_os}-ssh-%s\\n' failed")));
         }
+    }
+
+    #[test]
+    fn live_network_probe_waits_for_post_probe_marker() {
+        let command = ubuntu_live_network_probe_command();
+        assert!(command.contains("ip link set eth0 up"));
+        assert!(command.contains("ping -6 -c1 -W1 ff02::1%eth0"));
+        assert!(command.contains("printf 'agentos-live-net-%s\\n' proof"));
+        assert!(!command.contains("agentos-live-net-proof"));
     }
 
     #[test]
