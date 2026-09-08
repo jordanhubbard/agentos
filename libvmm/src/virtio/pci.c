@@ -325,7 +325,7 @@ static bool virtio_pci_common_reg_write(virtio_device_t *dev, size_t vcpu_id, si
                 break;
             }
             if (!dev->vqs[dev->regs.QueueSel].ready) {
-                if (!virtio_queue_map_guest_rings(&dev->vqs[dev->regs.QueueSel])) {
+                if (!virtio_queue_map_guest_rings(&dev->vqs[dev->regs.QueueSel].virtq)) {
                     LOG_PCI_ERR("virtq GPA→HVA map failed (QueueSel 0x%x)\n",
                                 dev->regs.QueueSel);
                     success = false;
@@ -337,8 +337,10 @@ static bool virtio_pci_common_reg_write(virtio_device_t *dev, size_t vcpu_id, si
         break;
     case REG_RANGE(VIRTIO_PCI_COMMON_Q_DESC_LO, VIRTIO_PCI_COMMON_Q_DESC_HI):
         if (dev->regs.QueueSel < dev->num_vqs) {
-            virtio_queue_handler_t *handler = &dev->vqs[dev->regs.QueueSel];
-            handler->desc_gpa = (handler->desc_gpa & UINT64_C(0xffffffff00000000)) | data;
+            struct virtq *virtq = &dev->vqs[dev->regs.QueueSel].virtq;
+            uintptr_t ptr = (uintptr_t)virtq->desc;
+            ptr = (ptr & UINT64_C(0xffffffff00000000)) | data;
+            virtq->desc = (struct virtq_desc *)ptr;
         } else {
             LOG_PCI_ERR("invalid virtq index 0x%lx (number of virtqs is 0x%lx) "
                         "given when accessing REG_VIRTIO_PCI_COMMAND_Q_DESC_LO\n",
@@ -348,8 +350,10 @@ static bool virtio_pci_common_reg_write(virtio_device_t *dev, size_t vcpu_id, si
         break;
     case REG_RANGE(VIRTIO_PCI_COMMON_Q_DESC_HI, VIRTIO_PCI_COMMON_Q_AVAIL_LO):
         if (dev->regs.QueueSel < dev->num_vqs) {
-            virtio_queue_handler_t *handler = &dev->vqs[dev->regs.QueueSel];
-            handler->desc_gpa = (handler->desc_gpa & UINT64_C(0xffffffff)) | ((uint64_t)data << 32);
+            struct virtq *virtq = &dev->vqs[dev->regs.QueueSel].virtq;
+            uintptr_t ptr = (uintptr_t)virtq->desc;
+            ptr = (ptr & UINT64_C(0xffffffff)) | ((uintptr_t)data << 32);
+            virtq->desc = (struct virtq_desc *)ptr;
         } else {
             LOG_PCI_ERR("invalid virtq index 0x%lx (number of virtqs is 0x%lx) "
                         "given when accessing REG_VIRTIO_MMIO_QUEUE_DESC_HIGH\n",
@@ -359,8 +363,10 @@ static bool virtio_pci_common_reg_write(virtio_device_t *dev, size_t vcpu_id, si
         break;
     case REG_RANGE(VIRTIO_PCI_COMMON_Q_AVAIL_LO, VIRTIO_PCI_COMMON_Q_AVAIL_HI):
         if (dev->regs.QueueSel < dev->num_vqs) {
-            virtio_queue_handler_t *handler = &dev->vqs[dev->regs.QueueSel];
-            handler->avail_gpa = (handler->avail_gpa & UINT64_C(0xffffffff00000000)) | data;
+            struct virtq *virtq = &dev->vqs[dev->regs.QueueSel].virtq;
+            uintptr_t ptr = (uintptr_t)virtq->avail;
+            ptr = (ptr & UINT64_C(0xffffffff00000000)) | data;
+            virtq->avail = (struct virtq_avail *)ptr;
         } else {
             LOG_PCI_ERR("invalid virtq index 0x%lx (number of virtqs is 0x%lx) "
                         "given when accessing REG_VIRTIO_PCI_COMMAND_Q_DESC_LO\n",
@@ -370,8 +376,10 @@ static bool virtio_pci_common_reg_write(virtio_device_t *dev, size_t vcpu_id, si
         break;
     case REG_RANGE(VIRTIO_PCI_COMMON_Q_AVAIL_HI, VIRTIO_PCI_COMMON_Q_USED_LO):
         if (dev->regs.QueueSel < dev->num_vqs) {
-            virtio_queue_handler_t *handler = &dev->vqs[dev->regs.QueueSel];
-            handler->avail_gpa = (handler->avail_gpa & UINT64_C(0xffffffff)) | ((uint64_t)data << 32);
+            struct virtq *virtq = &dev->vqs[dev->regs.QueueSel].virtq;
+            uintptr_t ptr = (uintptr_t)virtq->avail;
+            ptr = (ptr & UINT64_C(0xffffffff)) | ((uintptr_t)data << 32);
+            virtq->avail = (struct virtq_avail *)ptr;
         } else {
             LOG_PCI_ERR("invalid virtq index 0x%lx (number of virtqs is 0x%lx) "
                         "given when accessing REG_VIRTIO_PCI_COMMAND_Q_DESC_LO\n",
@@ -381,8 +389,10 @@ static bool virtio_pci_common_reg_write(virtio_device_t *dev, size_t vcpu_id, si
         break;
     case REG_RANGE(VIRTIO_PCI_COMMON_Q_USED_LO, VIRTIO_PCI_COMMON_Q_USED_HI):
         if (dev->regs.QueueSel < dev->num_vqs) {
-            virtio_queue_handler_t *handler = &dev->vqs[dev->regs.QueueSel];
-            handler->used_gpa = (handler->used_gpa & UINT64_C(0xffffffff00000000)) | data;
+            struct virtq *virtq = &dev->vqs[dev->regs.QueueSel].virtq;
+            uintptr_t ptr = (uintptr_t)virtq->used;
+            ptr = (ptr & UINT64_C(0xffffffff00000000)) | data;
+            virtq->used = (struct virtq_used *)ptr;
         } else {
             LOG_PCI_ERR("invalid virtq index 0x%lx (number of virtqs is 0x%lx) "
                         "given when accessing REG_VIRTIO_PCI_COMMAND_Q_DESC_LO\n",
@@ -392,8 +402,10 @@ static bool virtio_pci_common_reg_write(virtio_device_t *dev, size_t vcpu_id, si
         break;
     case REG_RANGE(VIRTIO_PCI_COMMON_Q_USED_HI, VIRTIO_PCI_COMMON_Q_NOTIF_DATA):
         if (dev->regs.QueueSel < dev->num_vqs) {
-            virtio_queue_handler_t *handler = &dev->vqs[dev->regs.QueueSel];
-            handler->used_gpa = (handler->used_gpa & UINT64_C(0xffffffff)) | ((uint64_t)data << 32);
+            struct virtq *virtq = &dev->vqs[dev->regs.QueueSel].virtq;
+            uintptr_t ptr = (uintptr_t)virtq->used;
+            ptr = (ptr & UINT64_C(0xffffffff)) | ((uintptr_t)data << 32);
+            virtq->used = (struct virtq_used *)ptr;
         } else {
             LOG_PCI_ERR("invalid virtq index 0x%lx (number of virtqs is 0x%lx) "
                         "given when accessing REG_VIRTIO_PCI_COMMAND_Q_DESC_LO\n",

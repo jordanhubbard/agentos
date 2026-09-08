@@ -58,11 +58,6 @@
 // @ivanv: we can pack/bitfield this struct
 typedef struct virtio_queue_handler {
     struct virtq virtq;
-    /* Guest-programmed queue addresses. Keep these separate from the mapped
-     * host pointers in virtq so a device reset can safely reinitialise them. */
-    uint64_t desc_gpa;
-    uint64_t avail_gpa;
-    uint64_t used_gpa;
     /* is this virtq fully initialised? */
     bool ready;
     /* the last index that the virtIO device processed */

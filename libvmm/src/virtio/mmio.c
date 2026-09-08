@@ -192,12 +192,12 @@ static bool handle_virtio_mmio_reg_write(virtio_device_t *dev, size_t vcpu_id, s
                 break;
             }
             /*
-             * Map the retained QueueDesc/Avail/Used GPAs to HVAs before
-             * walking the rings. Identity until
+             * Map QueueDesc/Avail/Used GPAs to HVAs before walking the rings.
+             * Identity until
              * the VMM installs virtio_gpa_set_translate().
              */
             if (!dev->vqs[dev->regs.QueueSel].ready) {
-                if (!virtio_queue_map_guest_rings(&dev->vqs[dev->regs.QueueSel])) {
+                if (!virtio_queue_map_guest_rings(&dev->vqs[dev->regs.QueueSel].virtq)) {
                     LOG_VMM_ERR("virtq GPA→HVA map failed (QueueSel 0x%x)\n",
                                 dev->regs.QueueSel);
                     success = false;
@@ -219,8 +219,10 @@ static bool handle_virtio_mmio_reg_write(virtio_device_t *dev, size_t vcpu_id, s
         break;
     case REG_RANGE(REG_VIRTIO_MMIO_QUEUE_DESC_LOW, REG_VIRTIO_MMIO_QUEUE_DESC_HIGH): {
         if (dev->regs.QueueSel < dev->num_vqs) {
-            virtio_queue_handler_t *handler = &dev->vqs[dev->regs.QueueSel];
-            handler->desc_gpa = (handler->desc_gpa & UINT64_C(0xffffffff00000000)) | data;
+            struct virtq *virtq = get_current_virtq_by_handler(dev);
+            uintptr_t ptr = (uintptr_t)virtq->desc;
+            ptr = (ptr & UINT64_C(0xffffffff00000000)) | data;
+            virtq->desc = (struct virtq_desc *)ptr;
         } else {
             LOG_VMM_ERR("invalid virtq index 0x%lx (number of virtqs is 0x%lx) "
                         "given when accessing REG_VIRTIO_MMIO_QUEUE_DESC_LOW\n", dev->regs.QueueSel, dev->num_vqs);
@@ -230,8 +232,10 @@ static bool handle_virtio_mmio_reg_write(virtio_device_t *dev, size_t vcpu_id, s
     }
     case REG_RANGE(REG_VIRTIO_MMIO_QUEUE_DESC_HIGH, REG_VIRTIO_MMIO_QUEUE_AVAIL_LOW): {
         if (dev->regs.QueueSel < dev->num_vqs) {
-            virtio_queue_handler_t *handler = &dev->vqs[dev->regs.QueueSel];
-            handler->desc_gpa = (handler->desc_gpa & UINT64_C(0xffffffff)) | ((uint64_t)data << 32);
+            struct virtq *virtq = get_current_virtq_by_handler(dev);
+            uintptr_t ptr = (uintptr_t)virtq->desc;
+            ptr = (ptr & UINT64_C(0xffffffff)) | ((uintptr_t)data << 32);
+            virtq->desc = (struct virtq_desc *)ptr;
         } else {
             LOG_VMM_ERR("invalid virtq index 0x%lx (number of virtqs is 0x%lx) "
                         "given when accessing REG_VIRTIO_MMIO_QUEUE_DESC_HIGH\n", dev->regs.QueueSel, dev->num_vqs);
@@ -241,8 +245,10 @@ static bool handle_virtio_mmio_reg_write(virtio_device_t *dev, size_t vcpu_id, s
     break;
     case REG_RANGE(REG_VIRTIO_MMIO_QUEUE_AVAIL_LOW, REG_VIRTIO_MMIO_QUEUE_AVAIL_HIGH): {
         if (dev->regs.QueueSel < dev->num_vqs) {
-            virtio_queue_handler_t *handler = &dev->vqs[dev->regs.QueueSel];
-            handler->avail_gpa = (handler->avail_gpa & UINT64_C(0xffffffff00000000)) | data;
+            struct virtq *virtq = get_current_virtq_by_handler(dev);
+            uintptr_t ptr = (uintptr_t)virtq->avail;
+            ptr = (ptr & UINT64_C(0xffffffff00000000)) | data;
+            virtq->avail = (struct virtq_avail *)ptr;
         } else {
             LOG_VMM_ERR("invalid virtq index 0x%lx (number of virtqs is 0x%lx) "
                         "given when accessing REG_VIRTIO_MMIO_QUEUE_AVAIL_LOW\n", dev->regs.QueueSel, dev->num_vqs);
@@ -252,8 +258,10 @@ static bool handle_virtio_mmio_reg_write(virtio_device_t *dev, size_t vcpu_id, s
     }
     case REG_RANGE(REG_VIRTIO_MMIO_QUEUE_AVAIL_HIGH, REG_VIRTIO_MMIO_QUEUE_USED_LOW): {
         if (dev->regs.QueueSel < dev->num_vqs) {
-            virtio_queue_handler_t *handler = &dev->vqs[dev->regs.QueueSel];
-            handler->avail_gpa = (handler->avail_gpa & UINT64_C(0xffffffff)) | ((uint64_t)data << 32);
+            struct virtq *virtq = get_current_virtq_by_handler(dev);
+            uintptr_t ptr = (uintptr_t)virtq->avail;
+            ptr = (ptr & UINT64_C(0xffffffff)) | ((uintptr_t)data << 32);
+            virtq->avail = (struct virtq_avail *)ptr;
         } else {
             LOG_VMM_ERR("invalid virtq index 0x%lx (number of virtqs is 0x%lx) "
                         "given when accessing REG_VIRTIO_MMIO_QUEUE_AVAIL_HIGH\n", dev->regs.QueueSel, dev->num_vqs);
@@ -263,8 +271,10 @@ static bool handle_virtio_mmio_reg_write(virtio_device_t *dev, size_t vcpu_id, s
     }
     case REG_RANGE(REG_VIRTIO_MMIO_QUEUE_USED_LOW, REG_VIRTIO_MMIO_QUEUE_USED_HIGH): {
         if (dev->regs.QueueSel < dev->num_vqs) {
-            virtio_queue_handler_t *handler = &dev->vqs[dev->regs.QueueSel];
-            handler->used_gpa = (handler->used_gpa & UINT64_C(0xffffffff00000000)) | data;
+            struct virtq *virtq = get_current_virtq_by_handler(dev);
+            uintptr_t ptr = (uintptr_t)virtq->used;
+            ptr = (ptr & UINT64_C(0xffffffff00000000)) | data;
+            virtq->used = (struct virtq_used *)ptr;
         } else {
             LOG_VMM_ERR("invalid virtq index 0x%lx (number of virtqs is 0x%lx) "
                         "given when accessing REG_VIRTIO_MMIO_QUEUE_USED_LOW\n", dev->regs.QueueSel, dev->num_vqs);
@@ -274,8 +284,10 @@ static bool handle_virtio_mmio_reg_write(virtio_device_t *dev, size_t vcpu_id, s
     }
     case REG_RANGE(REG_VIRTIO_MMIO_QUEUE_USED_HIGH, REG_VIRTIO_MMIO_CONFIG_GENERATION): {
         if (dev->regs.QueueSel < dev->num_vqs) {
-            virtio_queue_handler_t *handler = &dev->vqs[dev->regs.QueueSel];
-            handler->used_gpa = (handler->used_gpa & UINT64_C(0xffffffff)) | ((uint64_t)data << 32);
+            struct virtq *virtq = get_current_virtq_by_handler(dev);
+            uintptr_t ptr = (uintptr_t)virtq->used;
+            ptr = (ptr & UINT64_C(0xffffffff)) | ((uintptr_t)data << 32);
+            virtq->used = (struct virtq_used *)ptr;
         } else {
             LOG_VMM_ERR("invalid virtq index 0x%lx (number of virtqs is 0x%lx) "
                         "given when accessing REG_VIRTIO_MMIO_QUEUE_USED_HIGH\n", dev->regs.QueueSel, dev->num_vqs);
