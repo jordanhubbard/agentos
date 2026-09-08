@@ -136,8 +136,9 @@ int main(void)
        contains("xtask/src/cmd_test.rs",
                 "reply.mr[0] != CC_ERR_RELAY_FAULT"),
        "bounded CC text input is forwarded through both guest VMM paths");
-    ok(contains("platform/serial-virt/vmm_virtio_console.c",
-                "len > g_rx.capacity - serial_queue_length_producer(&g_rx)") &&
+    ok(contains_after("platform/serial-virt/vmm_virtio_console.c",
+                      "if (!virtio_console_handle_rx(&g_aos_console))",
+                      "len > g_rx.capacity - serial_queue_length_producer(&g_rx)") &&
        contains("platform/serial-virt/vmm_virtio_console.c",
                 "Successful enqueue transfers ownership to this device") &&
        contains("platform/serial-virt/vmm_virtio_console.c",

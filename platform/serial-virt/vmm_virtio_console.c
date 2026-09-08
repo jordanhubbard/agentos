@@ -124,6 +124,15 @@ bool aos_vmm_virtio_console_push_rx_bytes(const uint8_t *bytes, uint32_t len)
     if (!g_ready || !g_driver_ok || bytes == 0 || len == 0u) {
         return false;
     }
+    /*
+     * A prior enqueue can fill the bounded ingress queue before the guest
+     * replenishes its RX descriptors.  Pump first so a retry can observe and
+     * use those new descriptors; returning on capacity before this call turns
+     * temporary backpressure into a permanent full queue.
+     */
+    if (!virtio_console_handle_rx(&g_aos_console)) {
+        return false;
+    }
     if (len > g_rx.capacity - serial_queue_length_producer(&g_rx)) {
         return false;
     }

@@ -316,9 +316,12 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
         }
         let console =
             wait_for_all_markers(&log_path, &required, Duration::from_secs(10), &mut qemu);
-        let no_loopback = std::fs::read_to_string(&log_path)
-            .map(|log| !log.contains("frame(s) TX->RX"))
-            .unwrap_or(false);
+        let network_proof_required =
+            args.assert_agentos_virtio || args.assert_ubuntu_live || args.assert_desktop;
+        let no_loopback = !network_proof_required
+            || std::fs::read_to_string(&log_path)
+                .map(|log| !log.contains("frame(s) TX->RX"))
+                .unwrap_or(false);
         result = match (result, console) {
             (Ok(_), Ok(_)) if !no_loopback => {
                 anyhow::bail!("Ubuntu network proof used the forbidden VMM-local TX->RX loopback")
