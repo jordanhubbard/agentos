@@ -830,6 +830,15 @@ test-integration:
 	    status=1; \
 	fi; \
 	if gcc -I platform/include \
+	        tests/platform/test_net_rx_drain.c \
+	        -o $(BUILD_TMP_DIR)/test_net_rx_drain 2>&1 \
+	    && $(BUILD_TMP_DIR)/test_net_rx_drain; then \
+	    echo "PASS: tests/platform/test_net_rx_drain.c"; \
+	else \
+	    echo "FAIL: tests/platform/test_net_rx_drain.c"; \
+	    status=1; \
+	fi; \
+	if gcc -I platform/include \
 	        tests/platform/test_inspect_snapshot.c \
 	        platform/inspect/inspect_snapshot.c \
 	        -o $(BUILD_TMP_DIR)/test_inspect_snapshot 2>&1 \

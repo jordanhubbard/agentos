@@ -270,6 +270,14 @@ static int test_host_backed_architecture(void)
         src_contains(
         "kernel/agentos-root-task/src/linux_vmm.c",
         "label == NET_SVC_EVENT_RX_READY");
+    int sustained_rx = src_contains_in_order(
+        "platform/net-virt/vmm_virtio_net.c",
+        "net_dequeue_free(&g_rx, &buffer)",
+        "net_pd_call(NET_SVC_OP_RAW_RECV") &&
+        src_contains("platform/net-virt/vmm_virtio_net.c",
+                     "aos_net_rx_drain(") &&
+        src_contains("services/net-service/net_pd.c",
+                     "received > 0u || net_host_client_rx_pending()");
     int no_guest_passthrough =
         !src_contains("Makefile", "bus=virtio-mmio-bus.0") &&
         !src_contains("xtask/src/cmd_test.rs",
@@ -293,7 +301,7 @@ static int test_host_backed_architecture(void)
     return tap_ok(qemu_bus && test_qemu_bus && isolated_page && modern_header &&
                   private_dma && shared_bridge && ipc && contract &&
                   no_vmm_dma && async_rx && no_guest_passthrough &&
-                  native_client,
+                  native_client && sustained_rx,
                   "guests and native init agent share bus.16 net virtualizer");
 }
 

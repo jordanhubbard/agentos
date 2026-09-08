@@ -16,6 +16,7 @@
 #include <sddf/network/queue.h>
 #include <platform/net_layout.h>
 #include <platform/net_host_layout.h>
+#include <platform/net_rx_drain.h>
 #include <platform/net_virt_pump.h>
 #include <platform/vmm_virtio_net.h>
 #include <platform/guest_ram.h>
@@ -141,29 +142,38 @@ static uint32_t net_pd_bridge_tx(void)
     return sent;
 }
 
-static uint32_t net_pd_bridge_rx(void)
+static uint32_t net_pd_bridge_rx(uint32_t limit)
 {
     uint32_t received = 0u;
 
-    for (uint32_t attempt = 0u; attempt < 8u; attempt++) {
+    for (uint32_t attempt = 0u; attempt < limit; attempt++) {
+        net_buff_desc_t buffer;
         sel4_msg_t rep = {0};
+
+        /*
+         * Reserve the destination before RAW_RECV transfers ownership of a
+         * frame out of net_pd's shared ring.  Consuming first loses a frame
+         * whenever the guest has temporarily exhausted its RX descriptors.
+         */
+        if (net_dequeue_free(&g_rx, &buffer) != 0) {
+            break;
+        }
         if (!net_pd_call(NET_SVC_OP_RAW_RECV, g_net_pd_handle,
                          NET_SVC_MAX_FRAME_BYTES, &rep) ||
             rep.length < 12u) {
+            (void)net_enqueue_free(&g_rx, buffer);
             break;
         }
         uint32_t len = net_rd32(rep.data, 4u);
         uint32_t off = net_rd32(rep.data, 8u);
         if (len == 0u) {
+            (void)net_enqueue_free(&g_rx, buffer);
             break;
         }
         if (len > NET_SVC_MAX_FRAME_BYTES ||
             off + len > AGENTOS_NET_SHARED_SIZE) {
+            (void)net_enqueue_free(&g_rx, buffer);
             LOG_VMM_ERR("emulated virtio-net: backend RX bounds invalid\n");
-            break;
-        }
-        net_buff_desc_t buffer;
-        if (net_dequeue_free(&g_rx, &buffer) != 0) {
             break;
         }
         uint8_t *src = (uint8_t *)AGENTOS_NET_SHARED_VA + off;
@@ -188,6 +198,24 @@ static uint32_t net_pd_bridge_rx(void)
     }
     return received;
 }
+
+static uint32_t net_pd_receive_batch(void *ctx, uint32_t limit)
+{
+    (void)ctx;
+    return net_pd_bridge_rx(limit);
+}
+
+static void net_pd_flush_guest_rx(void *ctx)
+{
+    (void)ctx;
+    (void)virtio_net_handle_rx(&g_aos_net);
+}
+
+static uint32_t net_pd_drain_rx(void)
+{
+    return aos_net_rx_drain(net_pd_receive_batch, net_pd_flush_guest_rx,
+                            NULL, AOS_NET_CAPACITY);
+}
 #endif
 
 void aos_vmm_virtio_net_rx_ready(void)
@@ -196,7 +224,7 @@ void aos_vmm_virtio_net_rx_ready(void)
     if (!g_aos_net_ready || !g_net_pd_ready) {
         return;
     }
-    uint32_t received = net_pd_bridge_rx();
+    uint32_t received = net_pd_drain_rx();
     if (received > 0u) {
         g_net_pd_rx_events += received;
         if (g_net_pd_rx_events <= received ||
@@ -205,7 +233,6 @@ void aos_vmm_virtio_net_rx_ready(void)
             LOG_VMM("emulated virtio-net: asynchronous net_pd RX total=%u\n",
                     (unsigned)g_net_pd_rx_events);
         }
-        (void)virtio_net_handle_rx(&g_aos_net);
     }
 #endif
 }
@@ -302,7 +329,7 @@ void aos_vmm_virtio_net_after_fault(void)
     n = 0u;
     if (g_net_pd_ready) {
         n += net_pd_bridge_tx();
-        n += net_pd_bridge_rx();
+        n += net_pd_drain_rx();
     }
     if (!g_aos_net_pumped && n > 0u) {
         g_aos_net_pumped = 1;

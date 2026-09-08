@@ -692,6 +692,20 @@ static uint32_t net_host_poll_rx(void)
     return received;
 }
 
+static bool net_host_client_rx_pending(void)
+{
+    for (uint32_t i = 0u; i < NET_MAX_CLIENTS; i++) {
+        net_pd_client_t *c = &clients[i];
+        if (c->active && c->type == HANDLE_TYPE_NIC) {
+            volatile netpd_ring_t *ring = slot_ring(c->shmem_slot);
+            if (ring->rx_head != ring->rx_tail) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
 static bool net_host_send(const uint8_t *frame, uint32_t len)
 {
     volatile net_host_desc_t *desc =
@@ -1714,7 +1728,7 @@ static void net_pd_handle_host_irq(void)
     }
     seL4_IRQHandler_Ack(
         (seL4_CPtr)(PD_IRQHANDLER_SLOT_BASE + 0u));
-    if (received > 0u) {
+    if (received > 0u || net_host_client_rx_pending()) {
         net_pd_notify_vmm_rx();
     }
 }
