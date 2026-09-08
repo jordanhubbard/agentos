@@ -56,7 +56,12 @@ const CC_INPUT_TEXT_CHUNK: usize = 16;
 const CC_REQ_SIZE: usize = 4 + 12 + CC_WIRE_SHMEM_SIZE;
 const CC_REPLY_SIZE: usize = 16 + CC_WIRE_SHMEM_SIZE;
 const CC_IO_TIMEOUT: Duration = Duration::from_secs(5);
-const CC_FRAME_DEADLINE: Duration = Duration::from_secs(180);
+/*
+ * A console drain crosses the host virtconsole, CC-PD, vibe_engine,
+ * vm_manager, and a running VMM. Under single-vCPU TCG, a fault-heavy guest
+ * can legitimately delay that round trip beyond three host minutes.
+ */
+const CC_FRAME_DEADLINE: Duration = Duration::from_secs(600);
 const CC_INPUT_RETRY_DEADLINE: Duration = Duration::from_secs(120);
 const CC_OK: u32 = 0;
 const CC_ERR_RELAY_FAULT: u32 = 8;
@@ -2670,6 +2675,11 @@ mod tests {
             "mountroot>\nManual root filesystem specification:"
         )
         .is_err());
+    }
+
+    #[test]
+    fn cc_frame_deadline_covers_fault_heavy_guest_round_trip() {
+        assert!(CC_FRAME_DEADLINE >= Duration::from_secs(600));
     }
 
     #[test]
