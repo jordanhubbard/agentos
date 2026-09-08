@@ -425,6 +425,17 @@ int main(void)
                  src_contains("kernel/agentos-root-task/src/freebsd_vmm.c",
                               "aos_vmm_guest_ram_bind(FREEBSD_GUEST_RAM_GPA"),
                  "guest TCB VSpaces use GPA mappings distinct from VMM aliases");
+    (void)tap_ok(src_contains("libvmm/src/arch/aarch64/vcpu.c",
+                              "seL4_VCPUReg_CNTVOFF") &&
+                 src_contains("libvmm/src/arch/aarch64/vcpu.c",
+                              "offset + (seL4_Word)elapsed") &&
+                 src_contains_in_order("kernel/agentos-root-task/src/linux_vmm.c",
+                                       "vcpu_pause_time(GUEST_BOOT_VCPU_ID",
+                                       "vcpu_resume_time(GUEST_BOOT_VCPU_ID") &&
+                 src_contains_in_order("kernel/agentos-root-task/src/freebsd_vmm.c",
+                                       "vcpu_pause_time(GUEST_BOOT_VCPU_ID",
+                                       "vcpu_resume_time(GUEST_BOOT_VCPU_ID"),
+                 "guest architectural time stays frozen while each VCPU is suspended");
 
     printf("1..%d\n", g_testno);
     if (g_failed) {

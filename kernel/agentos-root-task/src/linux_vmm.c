@@ -572,6 +572,7 @@ uintptr_t serial_shmem_linux_vaddr __attribute__((weak));
 /* ─── State ──────────────────────────────────────────────────────────── */
 
 static bool     guest_started      = false;
+static vcpu_time_state_t g_linux_time_state;
 static bool     g_linux_startable  = false;
 static uintptr_t g_linux_kernel_pc = 0u;
 static bool     gpu_shmem_ready    = false;
@@ -920,10 +921,12 @@ static void linux_vmm_suspend_guest_tcb(void)
         LOG_VMM_ERR("Linux guest suspend/read-registers failed: %d\n", (int)err);
         seL4_TCB_Suspend((seL4_CPtr)(AGENTOS_VMM_TCB_CAP_BASE + GUEST_BOOT_VCPU_ID));
     }
+    vcpu_pause_time(GUEST_BOOT_VCPU_ID, &g_linux_time_state);
 }
 
 static void linux_vmm_resume_guest_tcb(void)
 {
+    vcpu_resume_time(GUEST_BOOT_VCPU_ID, &g_linux_time_state);
     (void)seL4_TCB_Resume(
         (seL4_CPtr)(AGENTOS_VMM_TCB_CAP_BASE + GUEST_BOOT_VCPU_ID));
 }

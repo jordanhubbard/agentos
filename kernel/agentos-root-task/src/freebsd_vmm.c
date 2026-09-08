@@ -115,6 +115,7 @@ uintptr_t guest_ram_vaddr;   /* VMM virtual address of guest_ram MR */
 #endif
 
 static bool guest_started = false;
+static vcpu_time_state_t g_freebsd_time_state;
 static bool g_freebsd_startable = false;
 static bool g_freebsd_runtime_ready = false;
 
@@ -469,10 +470,12 @@ static void freebsd_vmm_suspend_guest_tcb(void)
         LOG_VMM_ERR("FreeBSD guest suspend/read-registers failed: %d\n", (int)err);
         seL4_TCB_Suspend((seL4_CPtr)(AGENTOS_VMM_TCB_CAP_BASE + GUEST_BOOT_VCPU_ID));
     }
+    vcpu_pause_time(GUEST_BOOT_VCPU_ID, &g_freebsd_time_state);
 }
 
 static void freebsd_vmm_resume_guest_tcb(void)
 {
+    vcpu_resume_time(GUEST_BOOT_VCPU_ID, &g_freebsd_time_state);
     (void)seL4_TCB_Resume(
         (seL4_CPtr)(AGENTOS_VMM_TCB_CAP_BASE + GUEST_BOOT_VCPU_ID));
 }

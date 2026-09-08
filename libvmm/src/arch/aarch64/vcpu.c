@@ -28,6 +28,13 @@
 
 bool vcpu_on_state[GUEST_NUM_VCPUS];
 
+static inline uint64_t vcpu_host_counter(void)
+{
+    uint64_t counter;
+    __asm__ volatile("mrs %0, cntvct_el0" : "=r"(counter));
+    return counter;
+}
+
 bool vcpu_is_on(size_t vcpu_id)
 {
     assert(vcpu_id < GUEST_NUM_VCPUS);
@@ -88,6 +95,34 @@ void vcpu_reset(size_t vcpu_id)
     vmm_vcpu_arm_write_reg(vcpu_id, seL4_VCPUReg_CNTV_CVAL, 0);
     vmm_vcpu_arm_write_reg(vcpu_id, seL4_VCPUReg_CNTVOFF, 0);
     vmm_vcpu_arm_write_reg(vcpu_id, seL4_VCPUReg_CNTKCTL_EL1, 0);
+}
+
+void vcpu_pause_time(size_t vcpu_id, vcpu_time_state_t *state)
+{
+    assert(vcpu_id < GUEST_NUM_VCPUS);
+    assert(state != NULL);
+    if (vcpu_id >= GUEST_NUM_VCPUS || state == NULL || state->paused) {
+        return;
+    }
+
+    state->host_counter_at_pause = vcpu_host_counter();
+    state->paused = true;
+}
+
+void vcpu_resume_time(size_t vcpu_id, vcpu_time_state_t *state)
+{
+    assert(vcpu_id < GUEST_NUM_VCPUS);
+    assert(state != NULL);
+    if (vcpu_id >= GUEST_NUM_VCPUS || state == NULL || !state->paused) {
+        return;
+    }
+
+    const uint64_t elapsed = vcpu_host_counter() - state->host_counter_at_pause;
+    const seL4_Word offset =
+        vmm_vcpu_arm_read_reg(vcpu_id, seL4_VCPUReg_CNTVOFF);
+    vmm_vcpu_arm_write_reg(vcpu_id, seL4_VCPUReg_CNTVOFF,
+                           offset + (seL4_Word)elapsed);
+    state->paused = false;
 }
 
 void vcpu_print_regs(size_t vcpu_id)
