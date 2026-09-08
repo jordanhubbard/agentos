@@ -1684,6 +1684,48 @@ fn run_guest_console_command(
     );
 }
 
+fn run_guest_console_commands(
+    cc_sock: &Path,
+    cc: &mut CcClient,
+    guest_handle: u32,
+    guest_os: &str,
+    commands: &[String],
+    timeout: Duration,
+    qemu: &mut Child,
+) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        !commands.is_empty(),
+        "guest provisioning command list is empty"
+    );
+    for (index, command) in commands.iter().enumerate() {
+        let last = index + 1 == commands.len();
+        let success = if last {
+            "ready".to_string()
+        } else {
+            format!("step-{}", index + 1)
+        };
+        let marker = format!("agentos-{guest_os}-ssh-{success}");
+        let wrapped = guest_provision_command(command, guest_os, &success);
+        run_guest_console_command(
+            cc_sock,
+            cc,
+            guest_handle,
+            guest_os,
+            &wrapped,
+            &marker,
+            timeout,
+            qemu,
+        )?;
+    }
+    Ok(())
+}
+
+fn guest_provision_command(command: &str, guest_os: &str, success: &str) -> String {
+    format!(
+        "({command}) && printf 'agentos-{guest_os}-ssh-%s\\n' '{success}' || printf 'agentos-{guest_os}-ssh-%s\\n' failed"
+    )
+}
+
 fn provision_dual_ssh(
     cc_sock: &Path,
     cc: &mut CcClient,
@@ -1692,14 +1734,13 @@ fn provision_dual_ssh(
     ssh_key: &SshTestKey,
     qemu: &mut Child,
 ) -> anyhow::Result<()> {
-    let ubuntu = ubuntu_ssh_provision_command(&ssh_key.public_key);
-    run_guest_console_command(
+    let ubuntu = ubuntu_ssh_provision_commands(&ssh_key.public_key);
+    run_guest_console_commands(
         cc_sock,
         cc,
         linux_handle,
         "ubuntu",
         &ubuntu,
-        "agentos-ubuntu-ssh-ready",
         Duration::from_secs(600),
         qemu,
     )?;
@@ -1722,14 +1763,13 @@ fn provision_dual_ssh(
         "[xtask:test] resumed FreeBSD guest handle={freebsd_handle} state={freebsd_provision_resume} for SSH provisioning"
     );
 
-    let freebsd = freebsd_ssh_provision_command(&ssh_key.public_key);
-    run_guest_console_command(
+    let freebsd = freebsd_ssh_provision_commands(&ssh_key.public_key);
+    run_guest_console_commands(
         cc_sock,
         cc,
         freebsd_handle,
         "freebsd",
         &freebsd,
-        "agentos-freebsd-ssh-ready",
         Duration::from_secs(600),
         qemu,
     )?;
@@ -1742,18 +1782,28 @@ fn provision_dual_ssh(
     Ok(())
 }
 
-fn ubuntu_ssh_provision_command(public_key: &str) -> String {
-    format!(
-        "sudo -n sh -c \"set -e; ip link set eth0 up; ip addr flush dev eth0 scope global; ip addr add 10.0.2.15/24 dev eth0; ip route replace default via 10.0.2.2; rm -f /etc/resolv.conf; printf 'nameserver 10.0.2.3\\\\n' > /etc/resolv.conf; if ! command -v /usr/sbin/sshd >/dev/null 2>&1; then for deb in /cdrom/pool/main/o/openssh/openssh-sftp-server_*.deb /cdrom/pool/main/o/openssh/openssh-server_*.deb; do test -f \\\"\\$deb\\\"; dpkg-deb -x \\\"\\$deb\\\" /; done; getent passwd sshd >/dev/null || useradd --system --home /run/sshd --shell /usr/sbin/nologin sshd; fi; mkdir -p /home/ubuntu/.ssh /run/sshd; printf '%s\\\\n' '{}' > /home/ubuntu/.ssh/authorized_keys; chown -R ubuntu:ubuntu /home/ubuntu/.ssh; chmod 700 /home/ubuntu/.ssh; chmod 600 /home/ubuntu/.ssh/authorized_keys; rm -f /run/agentos-ssh-host-key /run/agentos-ssh-host-key.pub /run/agentos-sshd.pid; ssh-keygen -q -t ed25519 -N '' -f /run/agentos-ssh-host-key; /usr/sbin/sshd -t -f /dev/null -o HostKey=/run/agentos-ssh-host-key -o AuthorizedKeysFile=/home/ubuntu/.ssh/authorized_keys -o UsePAM=no -o PidFile=/run/agentos-sshd.pid; /usr/sbin/sshd -f /dev/null -o HostKey=/run/agentos-ssh-host-key -o AuthorizedKeysFile=/home/ubuntu/.ssh/authorized_keys -o UsePAM=no -o UseDNS=no -o GSSAPIAuthentication=no -o MaxStartups=100:100:100 -o PidFile=/run/agentos-sshd.pid -o PasswordAuthentication=no -o KbdInteractiveAuthentication=no -o PubkeyAuthentication=yes -o PermitRootLogin=no\" && printf 'agentos-ubuntu-ssh-%s\\\\n' ready || printf 'agentos-ubuntu-ssh-%s\\\\n' failed",
-        public_key
-    )
+fn ubuntu_ssh_provision_commands(public_key: &str) -> Vec<String> {
+    vec![
+        "sudo -n ip link set eth0 up && sudo -n ip addr flush dev eth0 scope global && sudo -n ip addr add 10.0.2.15/24 dev eth0 && sudo -n ip route replace default via 10.0.2.2".into(),
+        "sudo -n rm -f /etc/resolv.conf && printf 'nameserver 10.0.2.3\\n' | sudo -n tee /etc/resolv.conf >/dev/null".into(),
+        "if command -v /usr/sbin/sshd >/dev/null 2>&1; then true; else ok=1; for deb in /cdrom/pool/main/o/openssh/openssh-sftp-server_*.deb /cdrom/pool/main/o/openssh/openssh-server_*.deb; do test -f \"$deb\" && sudo -n dpkg-deb -x \"$deb\" / || ok=0; done; test \"$ok\" -eq 1 && command -v /usr/sbin/sshd >/dev/null; fi".into(),
+        "getent passwd sshd >/dev/null || sudo -n useradd --system --home /run/sshd --shell /usr/sbin/nologin sshd".into(),
+        format!("sudo -n mkdir -p /home/ubuntu/.ssh /run/sshd && printf '%s\\n' '{}' | sudo -n tee /home/ubuntu/.ssh/authorized_keys >/dev/null && sudo -n chown -R ubuntu:ubuntu /home/ubuntu/.ssh && sudo -n chmod 700 /home/ubuntu/.ssh && sudo -n chmod 600 /home/ubuntu/.ssh/authorized_keys", public_key),
+        "sudo -n rm -f /run/agentos-ssh-host-key /run/agentos-ssh-host-key.pub /run/agentos-sshd.pid && sudo -n ssh-keygen -q -t ed25519 -N '' -f /run/agentos-ssh-host-key".into(),
+        "sudo -n /usr/sbin/sshd -t -f /dev/null -o HostKey=/run/agentos-ssh-host-key -o AuthorizedKeysFile=/home/ubuntu/.ssh/authorized_keys -o UsePAM=no -o PidFile=/run/agentos-sshd.pid".into(),
+        "sudo -n /usr/sbin/sshd -f /dev/null -o HostKey=/run/agentos-ssh-host-key -o AuthorizedKeysFile=/home/ubuntu/.ssh/authorized_keys -o UsePAM=no -o UseDNS=no -o GSSAPIAuthentication=no -o MaxStartups=100:100:100 -o PidFile=/run/agentos-sshd.pid -o PasswordAuthentication=no -o KbdInteractiveAuthentication=no -o PubkeyAuthentication=yes -o PermitRootLogin=no".into(),
+    ]
 }
 
-fn freebsd_ssh_provision_command(public_key: &str) -> String {
-    format!(
-        "( mkdir -p /tmp/agentos-ssh 2>/dev/null || {{ mount -t tmpfs tmpfs /tmp && mkdir -p /tmp/agentos-ssh; }} ) && rm -f /tmp/agentos-ssh/host_key /tmp/agentos-ssh/host_key.pub /tmp/agentos-ssh/sshd.pid && printf '%s\\\\n' '{}' > /tmp/agentos-ssh/authorized_keys && chmod 600 /tmp/agentos-ssh/authorized_keys && ifconfig vtnet0 inet 10.0.2.16 netmask 255.255.255.0 up && ( route delete default >/dev/null 2>&1 || true ) && ( route add default 10.0.2.2 >/dev/null 2>&1 || true ) && ssh-keygen -q -t ed25519 -N '' -f /tmp/agentos-ssh/host_key && /usr/sbin/sshd -t -f /dev/null -o HostKey=/tmp/agentos-ssh/host_key -o AuthorizedKeysFile=/tmp/agentos-ssh/authorized_keys -o StrictModes=no -o PermitRootLogin=yes -o PasswordAuthentication=no -o KbdInteractiveAuthentication=no -o PubkeyAuthentication=yes -o UsePAM=no -o PidFile=/tmp/agentos-ssh/sshd.pid && /usr/sbin/sshd -f /dev/null -o HostKey=/tmp/agentos-ssh/host_key -o AuthorizedKeysFile=/tmp/agentos-ssh/authorized_keys -o StrictModes=no -o PermitRootLogin=yes -o PasswordAuthentication=no -o KbdInteractiveAuthentication=no -o PubkeyAuthentication=yes -o UsePAM=no -o PidFile=/tmp/agentos-ssh/sshd.pid && printf 'agentos-freebsd-ssh-%s\\\\n' ready || printf 'agentos-freebsd-ssh-%s\\\\n' failed",
-        public_key
-    )
+fn freebsd_ssh_provision_commands(public_key: &str) -> Vec<String> {
+    vec![
+        "mkdir -p /tmp/agentos-ssh 2>/dev/null || { mount -t tmpfs tmpfs /tmp && mkdir -p /tmp/agentos-ssh; }".into(),
+        format!("rm -f /tmp/agentos-ssh/host_key /tmp/agentos-ssh/host_key.pub /tmp/agentos-ssh/sshd.pid && printf '%s\\n' '{}' > /tmp/agentos-ssh/authorized_keys && chmod 600 /tmp/agentos-ssh/authorized_keys", public_key),
+        "ifconfig vtnet0 inet 10.0.2.16 netmask 255.255.255.0 up && ( route delete default >/dev/null 2>&1 || true ) && ( route add default 10.0.2.2 >/dev/null 2>&1 || true )".into(),
+        "ssh-keygen -q -t ed25519 -N '' -f /tmp/agentos-ssh/host_key".into(),
+        "/usr/sbin/sshd -t -f /dev/null -o HostKey=/tmp/agentos-ssh/host_key -o AuthorizedKeysFile=/tmp/agentos-ssh/authorized_keys -o StrictModes=no -o PermitRootLogin=yes -o PasswordAuthentication=no -o KbdInteractiveAuthentication=no -o PubkeyAuthentication=yes -o UsePAM=no -o PidFile=/tmp/agentos-ssh/sshd.pid".into(),
+        "/usr/sbin/sshd -f /dev/null -o HostKey=/tmp/agentos-ssh/host_key -o AuthorizedKeysFile=/tmp/agentos-ssh/authorized_keys -o StrictModes=no -o PermitRootLogin=yes -o PasswordAuthentication=no -o KbdInteractiveAuthentication=no -o PubkeyAuthentication=yes -o UsePAM=no -o PidFile=/tmp/agentos-ssh/sshd.pid".into(),
+    ]
 }
 
 fn ubuntu_desktop_provision_script() -> &'static str {
@@ -1915,14 +1965,13 @@ fn prove_ubuntu_desktop(
     qemu: &mut Child,
 ) -> anyhow::Result<(rfb::RfbFrameEvidence, Child)> {
     let mut cc = connect_cc_client(cc_sock, timeout.min(Duration::from_secs(30)), qemu)?;
-    let provision_ssh = ubuntu_ssh_provision_command(&ssh_key.public_key);
-    run_guest_console_command(
+    let provision_ssh = ubuntu_ssh_provision_commands(&ssh_key.public_key);
+    run_guest_console_commands(
         cc_sock,
         &mut cc,
         0,
         "ubuntu",
         &provision_ssh,
-        "agentos-ubuntu-ssh-ready",
         timeout.min(Duration::from_secs(600)),
         qemu,
     )?;
@@ -2397,23 +2446,29 @@ mod tests {
     #[test]
     fn ssh_provisioning_commands_are_posix_shell_syntax() {
         let key = "ssh-ed25519 AAAAC3NzaFocusedTest agentos-test";
-        for command in [
-            ubuntu_ssh_provision_command(key),
-            freebsd_ssh_provision_command(key),
-        ] {
+        let commands = ubuntu_ssh_provision_commands(key)
+            .into_iter()
+            .chain(freebsd_ssh_provision_commands(key));
+        for command in commands {
             let status = std::process::Command::new("sh")
                 .args(["-n", "-c", &command])
                 .status()
                 .expect("run sh syntax check");
             assert!(status.success());
-            assert!(command.contains(key));
         }
+        assert!(ubuntu_ssh_provision_commands(key)
+            .iter()
+            .any(|command| command.contains(key)));
+        assert!(freebsd_ssh_provision_commands(key)
+            .iter()
+            .any(|command| command.contains(key)));
     }
 
     #[test]
     fn freebsd_provisioning_recovers_read_only_live_media_tmp() {
         let command =
-            freebsd_ssh_provision_command("ssh-ed25519 AAAAC3NzaFocusedTest agentos-test");
+            freebsd_ssh_provision_commands("ssh-ed25519 AAAAC3NzaFocusedTest agentos-test")
+                .join("; ");
         let probe = command
             .find("mkdir -p /tmp/agentos-ssh 2>/dev/null")
             .expect("writable directory probe");
@@ -2427,30 +2482,29 @@ mod tests {
     #[test]
     fn provisioning_markers_cannot_match_command_echo() {
         let key = "ssh-ed25519 AAAAC3NzaFocusedTest agentos-test";
-        let ubuntu = ubuntu_ssh_provision_command(key);
-        let freebsd = freebsd_ssh_provision_command(key);
-        assert!(!ubuntu.contains("agentos-ubuntu-ssh-ready"));
-        assert!(!ubuntu.contains("agentos-ubuntu-ssh-failed"));
-        assert!(!freebsd.contains("agentos-freebsd-ssh-ready"));
-        assert!(!freebsd.contains("agentos-freebsd-ssh-failed"));
-        assert!(ubuntu.contains("ssh-%s\\\\n' failed"));
-        assert!(freebsd.contains("ssh-%s\\\\n' failed"));
+        let ubuntu = ubuntu_ssh_provision_commands(key).join("; ");
+        let freebsd = freebsd_ssh_provision_commands(key).join("; ");
+        for (guest_os, command) in [("ubuntu", ubuntu), ("freebsd", freebsd)] {
+            let wrapped = guest_provision_command(&command, guest_os, "ready");
+            assert!(!wrapped.contains(&format!("agentos-{guest_os}-ssh-ready")));
+            assert!(!wrapped.contains(&format!("agentos-{guest_os}-ssh-failed")));
+            assert!(wrapped.contains(&format!("agentos-{guest_os}-ssh-%s\\n' failed")));
+        }
     }
 
     #[test]
     fn ssh_ready_markers_require_key_only_daemon_startup() {
         let key = "ssh-ed25519 AAAAC3NzaFocusedTest agentos-test";
-        let ubuntu = ubuntu_ssh_provision_command(key);
+        let ubuntu = ubuntu_ssh_provision_commands(key).join("; ");
         assert!(ubuntu.contains("/cdrom/pool/main/o/openssh/openssh-server_*.deb"));
         assert!(ubuntu.contains("dpkg-deb -x"));
         assert!(ubuntu.contains("ssh-keygen -q -t ed25519"));
         assert!(ubuntu.contains("HostKey=/run/agentos-ssh-host-key"));
-        for command in [ubuntu, freebsd_ssh_provision_command(key)] {
+        for command in [ubuntu, freebsd_ssh_provision_commands(key).join("; ")] {
             assert!(command.contains("PasswordAuthentication=no"));
             assert!(command.contains("KbdInteractiveAuthentication=no"));
             assert!(command.contains("PubkeyAuthentication=yes"));
             assert!(!command.contains("sshd || true"));
-            assert!(command.contains("&& printf 'agentos-"));
         }
     }
 

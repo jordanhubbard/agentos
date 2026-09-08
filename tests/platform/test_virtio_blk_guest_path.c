@@ -334,7 +334,7 @@ int main(void)
                                        "let linux_provision_suspend =",
                                        "let freebsd_provision_resume =") &&
                  src_contains_in_order("xtask/src/cmd_test.rs",
-                                       "agentos-freebsd-ssh-ready",
+                                       "let freebsd = freebsd_ssh_provision_commands(",
                                        "let linux_provision_resume ="),
                  "dual proof alternates boot checkpoints before concurrent service");
     (void)tap_ok(!src_contains("kernel/agentos-root-task/src/freebsd_vmm.c",
