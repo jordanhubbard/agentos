@@ -329,7 +329,13 @@ int main(void)
                                        "let freebsd = wait_for_guest_console_login_via_cc(") &&
                  src_contains_in_order("xtask/src/cmd_test.rs",
                                        "let freebsd_boot_suspend =",
-                                       "let linux_boot_resume ="),
+                                       "let linux_boot_resume =") &&
+                 src_contains_in_order("xtask/src/cmd_test.rs",
+                                       "let linux_provision_suspend =",
+                                       "let freebsd_provision_resume =") &&
+                 src_contains_in_order("xtask/src/cmd_test.rs",
+                                       "agentos-freebsd-ssh-ready",
+                                       "let linux_provision_resume ="),
                  "dual proof alternates boot checkpoints before concurrent service");
     (void)tap_ok(!src_contains("kernel/agentos-root-task/src/freebsd_vmm.c",
                                "if (label == seL4_Fault_VPPIEvent) {") &&
