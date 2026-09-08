@@ -1597,7 +1597,7 @@ fn try_create_guest_via_cc(
 }
 
 fn create_guest_via_cc_wait(
-    cc_sock: &Path,
+    cc: &mut CcClient,
     os_type: u8,
     ram_mb: u32,
     label: &str,
@@ -1605,7 +1605,6 @@ fn create_guest_via_cc_wait(
     qemu: &mut Child,
 ) -> anyhow::Result<u32> {
     let start = Instant::now();
-    let mut cc = connect_cc_client(cc_sock, timeout.min(Duration::from_secs(30)), qemu)?;
     let mut attempts = 0u32;
     let mut last_err = String::from("no create attempt completed");
 
@@ -1613,7 +1612,7 @@ fn create_guest_via_cc_wait(
         attempts += 1;
         ensure_qemu_running(qemu, &format!("creating {label} guest through CC-PD"))?;
 
-        match try_create_guest_via_cc(&mut cc, os_type, ram_mb) {
+        match try_create_guest_via_cc(cc, os_type, ram_mb) {
             Ok(Ok(handle)) => {
                 println!(
                     "[xtask:test] created {label} guest handle={handle} after {attempts} attempt(s)"
@@ -2112,9 +2111,16 @@ fn wait_for_dual_guest_consoles_via_cc(
 ) -> anyhow::Result<String> {
     let start = Instant::now();
     let create_timeout = timeout;
+    /*
+     * VirtIO-console is a byte stream. Keep one connection across both
+     * CREATE replies and the first SUSPEND so QEMU cannot still be retiring
+     * a closed socket while the lifecycle request is already buffered on a
+     * replacement connection.
+     */
+    let mut boot_cc = connect_cc_client(cc_sock, timeout.min(Duration::from_secs(30)), qemu)?;
 
     let freebsd_handle = create_guest_via_cc_wait(
-        cc_sock,
+        &mut boot_cc,
         VIBEOS_TYPE_FREEBSD,
         256,
         "FreeBSD",
@@ -2124,7 +2130,7 @@ fn wait_for_dual_guest_consoles_via_cc(
     .context("failed to create FreeBSD guest through vm_manager")?;
 
     let linux_handle = create_guest_via_cc_wait(
-        cc_sock,
+        &mut boot_cc,
         VIBEOS_TYPE_LINUX,
         1024,
         "Linux",
@@ -2138,7 +2144,6 @@ fn wait_for_dual_guest_consoles_via_cc(
      * path. Quiesce Ubuntu immediately so FreeBSD's ISO boot cannot lose the
      * single emulated CPU to the much busier live-image boot.
      */
-    let mut boot_cc = connect_cc_client(cc_sock, timeout.min(Duration::from_secs(30)), qemu)?;
     let linux_boot_suspend = suspend_guest_via_cc(&mut boot_cc, linux_handle)
         .context("failed to suspend Ubuntu while FreeBSD reaches its installer shell")?;
     println!(
