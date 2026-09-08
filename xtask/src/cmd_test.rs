@@ -1670,7 +1670,12 @@ fn run_guest_console_command(
     timeout: Duration,
     qemu: &mut Child,
 ) -> anyhow::Result<()> {
-    let _ = cc_log_stream_for_handle(cc, guest_handle, guest_os);
+    /*
+     * Do not issue a speculative log drain here.  Immediately after a guest
+     * handoff that extra synchronous RPC can consume the entire frame deadline
+     * and close the retained CC session before any input is sent.  Each command
+     * has a fresh success marker, so stale console output cannot satisfy it.
+     */
     cc_send_console_line(cc, guest_handle, command.as_bytes())?;
 
     let start = Instant::now();
@@ -1720,6 +1725,11 @@ fn run_guest_console_commands(
         "guest provisioning command list is empty"
     );
     for (index, command) in commands.iter().enumerate() {
+        println!(
+            "[xtask:test] provisioning {guest_os} over CC console (step {}/{})",
+            index + 1,
+            commands.len()
+        );
         let last = index + 1 == commands.len();
         let success = if last {
             "ready".to_string()
