@@ -52,6 +52,7 @@ const CC_REQ_SIZE: usize = 4 + 12 + CC_WIRE_SHMEM_SIZE;
 const CC_REPLY_SIZE: usize = 16 + CC_WIRE_SHMEM_SIZE;
 const CC_IO_TIMEOUT: Duration = Duration::from_secs(5);
 const CC_FRAME_DEADLINE: Duration = Duration::from_secs(180);
+const CC_INPUT_RETRY_DEADLINE: Duration = Duration::from_secs(120);
 const CC_OK: u32 = 0;
 const CC_ERR_RELAY_FAULT: u32 = 8;
 const MSG_CC_LOG_STREAM: u32 = 0x2610;
@@ -2199,14 +2200,7 @@ fn cc_send_raw_byte(cc: &mut CcClient, guest_handle: u32, byte: u8) -> anyhow::R
     wr32(&mut shmem, 0, CC_INPUT_KEY_DOWN);
     wr32(&mut shmem, 4, CC_INPUT_RAW_BYTE_BASE | u32::from(byte));
 
-    let reply = cc
-        .call(MSG_CC_SEND_INPUT, guest_handle, 0, 0, &shmem)
-        .context("MSG_CC_SEND_INPUT failed")?;
-    anyhow::ensure!(
-        reply.mr[0] == CC_OK,
-        "MSG_CC_SEND_INPUT returned ok={}",
-        reply.mr[0]
-    );
+    cc_send_input_frame(cc, guest_handle, &shmem, "MSG_CC_SEND_INPUT")?;
     Ok(())
 }
 
@@ -2221,14 +2215,7 @@ fn cc_text_event(chunk: &[u8]) -> Vec<u8> {
 fn cc_send_raw_bytes(cc: &mut CcClient, guest_handle: u32, bytes: &[u8]) -> anyhow::Result<()> {
     for chunk in bytes.chunks(CC_INPUT_TEXT_CHUNK) {
         let shmem = cc_text_event(chunk);
-        let reply = cc
-            .call(MSG_CC_SEND_INPUT, guest_handle, 0, 0, &shmem)
-            .context("MSG_CC_SEND_INPUT text failed")?;
-        anyhow::ensure!(
-            reply.mr[0] == CC_OK,
-            "MSG_CC_SEND_INPUT text returned ok={}",
-            reply.mr[0]
-        );
+        cc_send_input_frame(cc, guest_handle, &shmem, "MSG_CC_SEND_INPUT text")?;
         /*
          * Let the lower-priority guest consume RX descriptors between frames.
          * Without this yield, a host can fill the VMM ingress queue while the
@@ -2237,6 +2224,33 @@ fn cc_send_raw_bytes(cc: &mut CcClient, guest_handle: u32, bytes: &[u8]) -> anyh
         std::thread::sleep(Duration::from_millis(50));
     }
     Ok(())
+}
+
+fn cc_send_input_frame(
+    cc: &mut CcClient,
+    guest_handle: u32,
+    shmem: &[u8],
+    operation: &str,
+) -> anyhow::Result<()> {
+    let deadline = Instant::now() + CC_INPUT_RETRY_DEADLINE;
+    loop {
+        let reply = cc
+            .call(MSG_CC_SEND_INPUT, guest_handle, 0, 0, shmem)
+            .with_context(|| format!("{operation} failed"))?;
+        if reply.mr[0] == CC_OK {
+            return Ok(());
+        }
+        /*
+         * CC currently folds a full downstream console queue into
+         * CC_ERR_RELAY_FAULT. The VMM rejects before enqueue, so retrying the
+         * same frame cannot duplicate input. Keep the retry bounded so a
+         * permanent relay failure still terminates the acceptance gate.
+         */
+        if reply.mr[0] != CC_ERR_RELAY_FAULT || Instant::now() >= deadline {
+            anyhow::bail!("{operation} returned ok={}", reply.mr[0]);
+        }
+        std::thread::sleep(Duration::from_millis(250));
+    }
 }
 
 fn destroy_guest_via_cc(cc: &mut CcClient, guest_handle: u32) -> anyhow::Result<()> {

@@ -111,6 +111,9 @@ int main(void)
     ok(contains(vmm, "aos_vmm_virtio_console_drain_tx") &&
        contains(vmm, "aos_vmm_virtio_console_push_rx"),
        "guest console contract bridges both TX and RX");
+    ok(contains(vmm, "aos_vmm_virtio_console_driver_ready()") &&
+       contains(vmm, "return aos_vmm_virtio_console_push_rx_bytes"),
+       "active hvc0 backpressure cannot fall through to the legacy PL011 ring");
     ok(contains("kernel/agentos-root-task/include/contracts/cc_contract.h",
                 "#define CC_INPUT_TEXT       0x05u") &&
        contains("kernel/agentos-root-task/src/cc_pd.c",
@@ -129,7 +132,9 @@ int main(void)
        contains("xtask/src/cmd_test.rs",
                 "const CC_INPUT_TEXT_CHUNK: usize = 20;") &&
        contains("xtask/src/cmd_test.rs",
-                "std::thread::sleep(Duration::from_millis(50));"),
+                "CC_INPUT_RETRY_DEADLINE") &&
+       contains("xtask/src/cmd_test.rs",
+                "reply.mr[0] != CC_ERR_RELAY_FAULT"),
        "bounded CC text input is forwarded through both guest VMM paths");
     ok(contains("platform/serial-virt/vmm_virtio_console.c",
                 "len > g_rx.capacity - serial_queue_length_producer(&g_rx)") &&

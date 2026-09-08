@@ -90,6 +90,11 @@ void aos_vmm_virtio_console_after_fault(void)
     (void)virtio_console_handle_rx(&g_aos_console);
 }
 
+bool aos_vmm_virtio_console_driver_ready(void)
+{
+    return g_ready && g_driver_ok;
+}
+
 uint32_t aos_vmm_virtio_console_drain_tx(uint8_t *dst, uint32_t max)
 {
     uint32_t n = 0u;

@@ -937,7 +937,14 @@ static bool linux_vmm_push_input(uint32_t event_type, const uint8_t *bytes,
                                  uint32_t length)
 {
     (void)event_type;
-    if (aos_vmm_virtio_console_push_rx_bytes(bytes, length)) return true;
+    /*
+     * Once hvc0 is active, its sDDF queue is the sole owner of new input.
+     * A full virtio ingress queue is retryable backpressure; falling through
+     * to the early PL011 ring would acknowledge bytes that hvc0 never reads.
+     */
+    if (aos_vmm_virtio_console_driver_ready()) {
+        return aos_vmm_virtio_console_push_rx_bytes(bytes, length);
+    }
     if (length > GUEST_CONSOLE_RX_RING_SIZE - console_rx_count) return false;
     for (uint32_t i = 0u; i < length; i++) {
         if (!console_rx_push(bytes[i])) return false;
