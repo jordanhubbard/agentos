@@ -326,7 +326,7 @@ int main(void)
                               "wait_for_dual_guest_consoles_via_cc") &&
                  src_contains_in_order("xtask/src/cmd_test.rs",
                                        "let linux_boot_suspend =",
-                                       "let freebsd = wait_for_guest_console_login_via_cc(") &&
+                                       "let freebsd = wait_for_guest_console_login_on_cc(") &&
                  src_contains_in_order("xtask/src/cmd_test.rs",
                                        "let freebsd_boot_suspend =",
                                        "let linux_boot_resume =") &&

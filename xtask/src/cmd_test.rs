@@ -1223,7 +1223,17 @@ fn wait_for_guest_console_login_via_cc(
     qemu: &mut Child,
 ) -> anyhow::Result<String> {
     let mut cc = connect_cc_client(cc_sock, timeout.min(Duration::from_secs(30)), qemu)?;
+    wait_for_guest_console_login_on_cc(cc_sock, &mut cc, guest_handle, guest_os, timeout, qemu)
+}
 
+fn wait_for_guest_console_login_on_cc(
+    cc_sock: &Path,
+    cc: &mut CcClient,
+    guest_handle: u32,
+    guest_os: &str,
+    timeout: Duration,
+    qemu: &mut Child,
+) -> anyhow::Result<String> {
     let start = Instant::now();
     let mut transcript = String::new();
     let mut matched_prompt = None;
@@ -1237,7 +1247,7 @@ fn wait_for_guest_console_login_via_cc(
     while start.elapsed() < timeout {
         ensure_qemu_running(qemu, "waiting for guest login prompt via CC-PD API")?;
         let mut drained_console = false;
-        match cc_log_stream_for_handle(&mut cc, guest_handle, guest_os) {
+        match cc_log_stream_for_handle(cc, guest_handle, guest_os) {
             Ok(chunk) => {
                 if !chunk.is_empty() {
                     drained_console = true;
@@ -1249,7 +1259,7 @@ fn wait_for_guest_console_login_via_cc(
                         println!(
                             "[xtask:test] FreeBSD dynamic shell unavailable; selecting /rescue/sh"
                         );
-                        cc_send_raw_bytes(&mut cc, guest_handle, b"/rescue/sh\r")?;
+                        cc_send_raw_bytes(cc, guest_handle, b"/rescue/sh\r")?;
                         freebsd_rescue_shell_requested = true;
                     }
                     reject_bad_guest_path(guest_os, &transcript)?;
@@ -1269,7 +1279,7 @@ fn wait_for_guest_console_login_via_cc(
                         println!(
                             "[xtask:test] FreeBSD console type prompt reached; accepting vt100"
                         );
-                        cc_send_raw_byte(&mut cc, guest_handle, b'\r')?;
+                        cc_send_raw_byte(cc, guest_handle, b'\r')?;
                         freebsd_console_type_accepted = true;
                     }
                     if guest_os == "freebsd"
@@ -1278,7 +1288,7 @@ fn wait_for_guest_console_login_via_cc(
                         && transcript.contains("begin an installation or use the live")
                     {
                         println!("[xtask:test] FreeBSD installer menu reached; selecting shell");
-                        cc_send_raw_bytes(&mut cc, guest_handle, b"\t\r")?;
+                        cc_send_raw_bytes(cc, guest_handle, b"\t\r")?;
                         freebsd_installer_shell_requested = true;
                     }
 
@@ -1318,7 +1328,7 @@ fn wait_for_guest_console_login_via_cc(
             && start.elapsed() >= Duration::from_secs(180)
         {
             println!("[xtask:test] requesting FreeBSD PID 1 stack");
-            cc_send_raw_byte(&mut cc, guest_handle, 0x1d)?;
+            cc_send_raw_byte(cc, guest_handle, 0x1d)?;
             freebsd_stack_requested = true;
         }
         std::thread::sleep(if drained_console {
@@ -1341,7 +1351,7 @@ fn wait_for_guest_console_login_via_cc(
 
     let proof = verify_guest_console_input(
         cc_sock,
-        &mut cc,
+        cc,
         guest_handle,
         guest_os,
         timeout
@@ -2149,37 +2159,35 @@ fn wait_for_dual_guest_consoles_via_cc(
     println!(
         "[xtask:test] suspended Ubuntu guest handle={linux_handle} state={linux_boot_suspend} while FreeBSD boots"
     );
-    drop(boot_cc);
 
-    let freebsd = wait_for_guest_console_login_via_cc(
+    let freebsd = wait_for_guest_console_login_on_cc(
         cc_sock,
+        &mut boot_cc,
         freebsd_handle,
         "freebsd",
         timeout.saturating_sub(start.elapsed()),
         qemu,
     )?;
-    let mut swap_cc = connect_cc_client(cc_sock, timeout.min(Duration::from_secs(30)), qemu)?;
-    let freebsd_boot_suspend = suspend_guest_via_cc(&mut swap_cc, freebsd_handle)
+    let freebsd_boot_suspend = suspend_guest_via_cc(&mut boot_cc, freebsd_handle)
         .context("failed to suspend ready FreeBSD guest while Ubuntu finishes booting")?;
     println!(
         "[xtask:test] suspended ready FreeBSD guest handle={freebsd_handle} state={freebsd_boot_suspend} while Ubuntu boots"
     );
-    let linux_boot_resume = resume_guest_via_cc(&mut swap_cc, linux_handle)
+    let linux_boot_resume = resume_guest_via_cc(&mut boot_cc, linux_handle)
         .context("failed to resume Ubuntu after checkpointing FreeBSD")?;
     println!("[xtask:test] resumed Ubuntu guest handle={linux_handle} state={linux_boot_resume}");
-    drop(swap_cc);
 
-    let linux = wait_for_guest_console_login_via_cc(
+    let linux = wait_for_guest_console_login_on_cc(
         cc_sock,
+        &mut boot_cc,
         linux_handle,
         "ubuntu-live",
         timeout.saturating_sub(start.elapsed()),
         qemu,
     )?;
-    let mut cc = connect_cc_client(cc_sock, timeout.min(Duration::from_secs(30)), qemu)?;
     provision_dual_ssh(
         cc_sock,
-        &mut cc,
+        &mut boot_cc,
         linux_handle,
         freebsd_handle,
         ssh_key,
@@ -2188,8 +2196,10 @@ fn wait_for_dual_guest_consoles_via_cc(
     let ssh = wait_for_dual_ssh(ssh_key, Duration::from_secs(600), qemu)?;
 
     if !keep_running {
-        destroy_guest_via_cc(&mut cc, linux_handle).context("failed to destroy Linux guest")?;
-        destroy_guest_via_cc(&mut cc, freebsd_handle).context("failed to destroy FreeBSD guest")?;
+        destroy_guest_via_cc(&mut boot_cc, linux_handle)
+            .context("failed to destroy Linux guest")?;
+        destroy_guest_via_cc(&mut boot_cc, freebsd_handle)
+            .context("failed to destroy FreeBSD guest")?;
     }
 
     Ok(format!(
