@@ -129,6 +129,8 @@ int main(void)
                 "freebsd_vmm_push_input") &&
        contains("kernel/agentos-root-task/src/cc_pd.c",
                 "? CC_OK : CC_ERR_RELAY_FAULT;") &&
+       contains("kernel/agentos-root-task/include/contracts/cc_contract.h",
+                "#define CC_INPUT_TEXT_MAX   16u") &&
        contains("xtask/src/cmd_test.rs",
                 "const CC_INPUT_TEXT_CHUNK: usize = 16;") &&
        contains("xtask/src/cmd_test.rs",

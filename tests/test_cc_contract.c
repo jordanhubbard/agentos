@@ -162,7 +162,7 @@ static int test_cc_input_event_types(void)
     CHECK(CC_INPUT_MOUSE_MOVE == 0x03u);
     CHECK(CC_INPUT_MOUSE_BTN  == 0x04u);
     CHECK(CC_INPUT_TEXT       == 0x05u);
-    CHECK(CC_INPUT_TEXT_MAX   == 20u);
+    CHECK(CC_INPUT_TEXT_MAX   == 16u);
 
     /* All distinct */
     CHECK(CC_INPUT_KEY_DOWN   != CC_INPUT_KEY_UP);

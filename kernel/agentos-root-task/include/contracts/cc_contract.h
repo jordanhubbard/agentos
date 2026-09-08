@@ -202,7 +202,7 @@ enum cc_error {
 #define CC_INPUT_MOUSE_MOVE 0x03u  /* relative mouse movement */
 #define CC_INPUT_MOUSE_BTN  0x04u  /* mouse button press/release */
 #define CC_INPUT_TEXT       0x05u  /* keycode=length; UTF-8 bytes follow event */
-#define CC_INPUT_TEXT_MAX   20u   /* fits every 48-byte relay: handle + event + text */
+#define CC_INPUT_TEXT_MAX   16u   /* fits 48-byte relay after Vibe + VM route headers */
 
 /* ─── Shmem layout: guest info entry (MSG_CC_LIST_GUESTS) ───────────────── */
 
