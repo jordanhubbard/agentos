@@ -41,7 +41,10 @@ endif
 TARGET_ARCH ?= $(CONFIG_TARGET)
 GUEST_OS    ?= $(CONFIG_GUEST_OS)
 QEMU_TEST_TIMEOUT ?= 300
-DUAL_OS_TEST_TIMEOUT ?= 5400
+# Correct suspend accounting freezes each guest's architectural time while it
+# is stopped.  A full vendor-live-media dual proof can therefore take longer
+# than the old 90-minute bound that accidentally included a clock jump.
+DUAL_OS_TEST_TIMEOUT ?= 7200
 DESKTOP_TEST_TIMEOUT ?= 3600
 QEMU_TEST_GUEST_OS = $(if $(filter x86_64,$(ARCH)),none,$(GUEST_OS))
 
