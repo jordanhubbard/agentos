@@ -911,6 +911,7 @@ static bool linux_vmm_start_guest(void)
 static void linux_vmm_suspend_guest_tcb(void)
 {
     seL4_UserContext regs = {0};
+    LOG_VMM("Linux guest suspend: reading and stopping TCB\n");
     seL4_Error err = seL4_TCB_ReadRegisters(
         (seL4_CPtr)(AGENTOS_VMM_TCB_CAP_BASE + GUEST_BOOT_VCPU_ID),
         true,
@@ -921,7 +922,9 @@ static void linux_vmm_suspend_guest_tcb(void)
         LOG_VMM_ERR("Linux guest suspend/read-registers failed: %d\n", (int)err);
         seL4_TCB_Suspend((seL4_CPtr)(AGENTOS_VMM_TCB_CAP_BASE + GUEST_BOOT_VCPU_ID));
     }
+    LOG_VMM("Linux guest suspend: pausing virtual time\n");
     vcpu_pause_time(GUEST_BOOT_VCPU_ID, &g_linux_time_state);
+    LOG_VMM("Linux guest suspend: complete\n");
 }
 
 static void linux_vmm_resume_guest_tcb(void)

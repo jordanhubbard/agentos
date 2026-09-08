@@ -31,7 +31,7 @@ bool vcpu_on_state[GUEST_NUM_VCPUS];
 static inline uint64_t vcpu_host_counter(void)
 {
     uint64_t counter;
-    __asm__ volatile("mrs %0, cntvct_el0" : "=r"(counter));
+    __asm__ volatile("mrs %0, cntpct_el0" : "=r"(counter));
     return counter;
 }
 
@@ -105,7 +105,9 @@ void vcpu_pause_time(size_t vcpu_id, vcpu_time_state_t *state)
         return;
     }
 
+    LOG_VMM("pausing vCPU %lu: reading host counter\n", vcpu_id);
     state->host_counter_at_pause = vcpu_host_counter();
+    LOG_VMM("pausing vCPU %lu: host counter read\n", vcpu_id);
     state->paused = true;
 }
 
