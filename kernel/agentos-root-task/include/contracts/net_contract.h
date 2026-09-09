@@ -24,7 +24,7 @@
 #include "../agentos.h"
 #include "../../../../contracts/net-service/interface.h"
 
-/* Version 2 documents the shmem offset already returned by MSG_NET_OPEN. */
+/* Version 3 separates raw TX staging from the length-prefixed RX FIFO. */
 #define NET_PD_CONTRACT_VERSION  NET_SVC_INTERFACE_VERSION
 
 /* ─── Channel IDs ────────────────────────────────────────────────────────── */

@@ -115,7 +115,7 @@ static uint32_t net_pd_bridge_tx(void)
         uint8_t *src = (uint8_t *)g_aos_net.tx_data +
                        (uint32_t)buffer.io_or_offset;
         uint8_t *dst = (uint8_t *)AGENTOS_NET_SHARED_VA + g_net_pd_slot +
-                       NET_SVC_HDR_SIZE;
+                       NET_SVC_TX_OFFSET;
         if (len > NET_SVC_MAX_FRAME_BYTES) {
             len = NET_SVC_MAX_FRAME_BYTES;
         }

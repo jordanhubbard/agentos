@@ -21,7 +21,7 @@
 #define AOS_NET_GUEST_CLIENTS        2u
 #define AOS_NET_CLIENT_STRIDE        0x80000u   /* 512 KB per client */
 #define AOS_NET_SHMEM_SIZE           0x200000u  /* 2 MB */
-#define AOS_NET_SHMEM_VA             0x20000000UL
+#define AOS_NET_SHMEM_VA             0x26000000UL
 
 #define AOS_NET_RX_FREE_OFF          0x0000u
 #define AOS_NET_RX_ACTIVE_OFF        0x1000u

@@ -72,4 +72,8 @@ SECTIONS
     .ipc_buffer (NOLOAD): {
         __sel4_ipc_buffer_obj = .;
     } :NONE
+
+    /* 0x22000000 begins the root-provisioned block-service shared window. */
+    ASSERT(. <= 0x22000000,
+           "freebsd_vmm image exceeds its reserved host virtual-address window")
 }

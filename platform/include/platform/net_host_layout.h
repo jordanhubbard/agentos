@@ -13,7 +13,14 @@
 #define AGENTOS_HOST_NET_MMIO_PA          0x0A002000UL
 #define AGENTOS_HOST_NET_MMIO_VA          0x06200000UL
 
-#define AGENTOS_NET_SHARED_VA             0x20000000UL
+/*
+ * Keep this above the FreeBSD VMM image reservation (0x20000000-0x22000000),
+ * block-service shared window (0x22000000-0x22200000), and net_pd's private
+ * host-DMA window (0x24000000-0x24200000).  Every client maps this same frame
+ * at the same VA, so a collision would otherwise degrade into private-memory
+ * traffic instead of a visible link failure.
+ */
+#define AGENTOS_NET_SHARED_VA             0x26000000UL
 #define AGENTOS_NET_SHARED_SIZE           0x00200000UL
 
 #define AGENTOS_NET_HOST_DMA_VA           0x24000000UL

@@ -89,7 +89,7 @@ bool native_net_client_send(native_net_client_t *client,
         length == 0u || length > NET_SVC_MAX_FRAME_BYTES) {
         return false;
     }
-    dst = client->shared + client->slot_offset + NET_SVC_HDR_SIZE;
+    dst = client->shared + client->slot_offset + NET_SVC_TX_OFFSET;
     for (uint32_t i = 0u; i < length; i++) dst[i] = src[i];
     __atomic_thread_fence(__ATOMIC_RELEASE);
     return invoke(client, NET_SVC_OP_RAW_SEND,

@@ -77,7 +77,7 @@ int main(void)
     failed += check(native_net_client_send(&client, "ping", 4u) &&
                     last_opcode == NET_SVC_OP_RAW_SEND &&
                     last_arg0 == 7u && last_arg1 == 4u &&
-                    memcmp(shared + client.slot_offset + NET_SVC_HDR_SIZE,
+                    memcmp(shared + client.slot_offset + NET_SVC_TX_OFFSET,
                            "ping", 4u) == 0,
                     "native agent sends through its shared slot");
     failed += check(native_net_client_recv(&client, frame, sizeof(frame)) == 4 &&

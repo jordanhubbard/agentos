@@ -23,6 +23,7 @@
  */
 
 #include <platform/net_host_layout.h>
+#include <contracts/net-service/interface.h>
 
 /* ── Conditional compilation ─────────────────────────────────────────────── */
 
@@ -254,7 +255,7 @@ uintptr_t log_drain_rings_vaddr;
 #define NETPD_SLOT_BASE        NET_SHMEM_SLOT_BASE
 #define NETPD_SLOT_SIZE        NET_SHMEM_SLOT_BYTES
 #define NETPD_SLOT_HDR_SIZE    NET_SHMEM_DATA_OFFSET
-#define NETPD_SLOT_DATA_SIZE   (NETPD_SLOT_SIZE - NETPD_SLOT_HDR_SIZE)
+#define NETPD_SLOT_DATA_SIZE   NET_SVC_RX_DATA_SIZE
 #define NETPD_SLOT_OFFSET(n)   (NETPD_SLOT_BASE + (n) * NETPD_SLOT_SIZE)
 
 /* ── Handle type discriminators ─────────────────────────────────────────── */
@@ -1102,14 +1103,13 @@ static uint32_t handle_net_send_nic(net_pd_client_t *c, uint32_t handle,
         return SEL4_ERR_BAD_ARG;
     }
 
-    uint32_t slot_off = NETPD_SLOT_OFFSET(c->shmem_slot) + NETPD_SLOT_HDR_SIZE;
+    uint32_t slot_off = NETPD_SLOT_OFFSET(c->shmem_slot) + NET_SVC_TX_OFFSET;
     if (slot_off + frame_len > NETPD_SHMEM_TOTAL) {
         c->tx_errors++;
         data_wr32(rep->data, 0, NET_ERR_FRAME_TOO_LARGE);
         rep->length = 4;
         return SEL4_ERR_BAD_ARG;
     }
-
     if (hw_present) {
 #ifndef AGENTOS_TEST_HOST
         const uint8_t *frame = (const uint8_t *)(net_pd_shmem_vaddr + slot_off);

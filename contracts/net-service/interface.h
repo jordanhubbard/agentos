@@ -20,7 +20,9 @@
  * Shared-memory packet ring layout (net_packet_shmem, 256 KB):
  *   Each vNIC occupies NET_SVC_SLOT_SIZE (16 KB) starting at
  *   slot_index * NET_SVC_SLOT_SIZE.  The first NET_SVC_HDR_SIZE bytes of each
- *   slot contain a net_svc_vnic_ring_t header followed by packet data.
+ *   slot contain a net_svc_vnic_ring_t header followed by an RX FIFO. The
+ *   final NET_SVC_TX_SIZE bytes are a disjoint synchronous raw-TX staging
+ *   area, beginning at NET_SVC_TX_OFFSET.
  *
  * Capability grant:
  *   vm_manager.c grants a PPC capability to the net-service endpoint and a
@@ -36,7 +38,7 @@
 #include <stdint.h>
 
 /* ── Interface version ──────────────────────────────────────────────────── */
-#define NET_SVC_INTERFACE_VERSION       2
+#define NET_SVC_INTERFACE_VERSION       3
 
 /* ── Geometry / limits ──────────────────────────────────────────────────── */
 #define NET_SVC_MAX_VNICS               16u
@@ -47,6 +49,10 @@
 #define NET_SVC_SLOT_SIZE               0x4000u    /* 16 KB per vNIC slot */
 #define NET_SVC_HDR_SIZE                1024u      /* ring header bytes */
 #define NET_SVC_DATA_SIZE               (NET_SVC_SLOT_SIZE - NET_SVC_HDR_SIZE)
+/* Keep synchronous raw-TX staging disjoint from the length-prefixed RX FIFO. */
+#define NET_SVC_TX_SIZE                 0x600u
+#define NET_SVC_TX_OFFSET               (NET_SVC_SLOT_SIZE - NET_SVC_TX_SIZE)
+#define NET_SVC_RX_DATA_SIZE            (NET_SVC_TX_OFFSET - NET_SVC_HDR_SIZE)
 
 /* ── Protocol identifiers (NET_SVC_OP_BIND / NET_SVC_OP_CONNECT) ────────── */
 #define NET_SVC_PROTO_TCP               0u

@@ -122,6 +122,13 @@ int main(void)
     failed += check(memcmp(freebsd_request, arp_request,
                            sizeof(arp_request)) == 0,
                     "QEMU ARP request preserves broadcast and empty target");
+    uint8_t *freebsd_tx =
+        net_shmem + NETPD_SLOT_OFFSET(clients[freebsd].shmem_slot) +
+        NET_SVC_TX_OFFSET;
+    memset(freebsd_tx, 0xa5, NET_SVC_MAX_FRAME_BYTES);
+    failed += check(memcmp(freebsd_request, arp_request,
+                           sizeof(arp_request)) == 0,
+                    "raw TX staging cannot overwrite queued RX frames");
 
     uint8_t arp_reply[42] = {0};
     memcpy(arp_reply, iface_mac, 6u);
@@ -172,6 +179,6 @@ int main(void)
                     memcmp(arp + 22u, iface_mac, 6u) == 0,
                     "QEMU egress rewrites Ethernet and ARP source identities");
 
-    printf("1..10\n");
+    printf("1..11\n");
     return failed == 0 ? 0 : 1;
 }

@@ -256,6 +256,15 @@ static int test_host_backed_architecture(void)
     int modern_header = src_contains(
         "platform/include/platform/net_host_layout.h",
         "AGENTOS_NET_HOST_HEADER_SIZE      12u");
+    int collision_free_shared_va = src_contains(
+        "platform/include/platform/net_host_layout.h",
+        "AGENTOS_NET_SHARED_VA             0x26000000UL") &&
+        src_contains(
+            "platform/include/platform/net_layout.h",
+            "AOS_NET_SHMEM_VA             0x26000000UL") &&
+        src_contains(
+            "kernel/agentos-root-task/freebsd_vmm.ld",
+            "ASSERT(. <= 0x22000000");
     int private_dma = src_contains_in_order(
         "kernel/agentos-root-task/src/main.c",
         "if (name_eq(pd->name, \"net_pd\"))",
@@ -274,10 +283,16 @@ static int test_host_backed_architecture(void)
         "net_pd_call(NET_SVC_OP_RAW_RECV");
     int contract = src_contains(
         "contracts/net-service/interface.h",
-        "NET_SVC_INTERFACE_VERSION       2") &&
+        "NET_SVC_INTERFACE_VERSION       3") &&
         src_contains(
         "contracts/net-service/interface.h",
-        "uint32_t shmem_offset");
+        "uint32_t shmem_offset") &&
+        src_contains(
+        "contracts/net-service/interface.h",
+        "NET_SVC_TX_OFFSET") &&
+        src_contains(
+        "services/net-service/net_pd.c",
+        "NET_SVC_RX_DATA_SIZE");
     int no_vmm_dma = !src_contains(
         "platform/net-virt/vmm_virtio_net.c",
         "AGENTOS_NET_HOST_DMA_VA");
@@ -319,6 +334,7 @@ static int test_host_backed_architecture(void)
                      "{ SVC_ID_NET_PD,     PD_CNODE_SLOT_NET_PD_EP     }");
 
     return tap_ok(qemu_bus && test_qemu_bus && isolated_page && modern_header &&
+                  collision_free_shared_va &&
                   private_dma && shared_bridge && ipc && contract &&
                   no_vmm_dma && async_rx && no_guest_passthrough &&
                   native_client && sustained_rx,
