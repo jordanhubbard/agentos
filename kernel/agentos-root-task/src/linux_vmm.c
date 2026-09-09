@@ -932,6 +932,8 @@ static void linux_vmm_resume_guest_tcb(void)
     vcpu_resume_time(GUEST_BOOT_VCPU_ID, &g_linux_time_state);
     (void)seL4_TCB_Resume(
         (seL4_CPtr)(AGENTOS_VMM_TCB_CAP_BASE + GUEST_BOOT_VCPU_ID));
+    /* Deliver frames retained by net_pd only after the guest is runnable. */
+    aos_vmm_virtio_net_rx_ready();
 }
 
 static void linux_vmm_quiesce_timer(void)
@@ -1463,7 +1465,9 @@ void linux_vmm_main(seL4_CPtr ep, seL4_CPtr reply_cap)
             info = seL4_Recv(ep, &badge);
 #endif
         } else if (label == NET_SVC_EVENT_RX_READY) {
-            aos_vmm_virtio_net_rx_ready();
+            if (g_guest_state == GUEST_STATE_RUNNING) {
+                aos_vmm_virtio_net_rx_ready();
+            }
 #ifdef CONFIG_KERNEL_MCS
             info = seL4_Recv(ep, &badge, reply_cap);
 #else

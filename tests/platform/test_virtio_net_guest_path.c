@@ -210,6 +210,26 @@ static int test_freebsd_vmm_fault_path(void)
                   "FreeBSD VMM uses isolated client 1 through shared net_pd");
 }
 
+static int test_suspended_guest_defers_rx(void)
+{
+    const char *linux = "kernel/agentos-root-task/src/linux_vmm.c";
+    const char *freebsd = "kernel/agentos-root-task/src/freebsd_vmm.c";
+    const char *running_guard =
+        "if (g_guest_state == GUEST_STATE_RUNNING) {\n"
+        "                aos_vmm_virtio_net_rx_ready();";
+
+    return tap_ok(
+        src_contains(linux, running_guard) &&
+        src_contains(freebsd, running_guard) &&
+        src_contains_in_order(linux,
+                              "seL4_TCB_Resume(",
+                              "aos_vmm_virtio_net_rx_ready();") &&
+        src_contains_in_order(freebsd,
+                              "seL4_TCB_Resume(",
+                              "aos_vmm_virtio_net_rx_ready();"),
+        "suspended guests retain host RX until their TCB resumes");
+}
+
 static int test_qemu_page_unmapped(void)
 {
     int page = src_contains("kernel/agentos-root-task/src/main.c",
@@ -627,6 +647,7 @@ int main(void)
     (void)test_dtb("kernel/agentos-root-task/freebsd-direct.dts",
                    "DTB FreeBSD has agentOS virtio_mmio@a010000");
     (void)test_freebsd_vmm_fault_path();
+    (void)test_suspended_guest_defers_rx();
     (void)tap_ok(src_contains("kernel/agentos-root-task/vmm_wrapper_template.mk",
                               "-D__thread="),
                  "libvmm.a CFLAGS suppress TLS so IPC buffer matches linux_vmm");
