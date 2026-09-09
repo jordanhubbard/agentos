@@ -476,8 +476,13 @@ static void freebsd_vmm_suspend_guest_tcb(void)
 static void freebsd_vmm_resume_guest_tcb(void)
 {
     vcpu_resume_time(GUEST_BOOT_VCPU_ID, &g_freebsd_time_state);
-    (void)seL4_TCB_Resume(
+    seL4_Error err = seL4_TCB_Resume(
         (seL4_CPtr)(AGENTOS_VMM_TCB_CAP_BASE + GUEST_BOOT_VCPU_ID));
+    if (err != seL4_NoError) {
+        LOG_VMM_ERR("FreeBSD guest resume failed: %d\n", (int)err);
+        return;
+    }
+    LOG_VMM("FreeBSD guest resume: TCB runnable\n");
     /* Deliver frames retained by net_pd only after the guest is runnable. */
     aos_vmm_virtio_net_rx_ready();
 }

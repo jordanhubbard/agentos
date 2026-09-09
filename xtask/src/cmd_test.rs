@@ -2131,6 +2131,34 @@ fn spawn_ssh_probe(
         .with_context(|| format!("failed to launch SSH probe for {user} on port {port}"))
 }
 
+fn wait_for_freebsd_ssh(
+    ssh_key: &SshTestKey,
+    timeout: Duration,
+    qemu: &mut Child,
+) -> anyhow::Result<()> {
+    let start = Instant::now();
+    let mut last = String::from("no SSH attempt completed");
+    while start.elapsed() < timeout {
+        ensure_qemu_running(qemu, "waiting for FreeBSD authenticated SSH")?;
+        let freebsd = spawn_ssh_probe(&ssh_key.private_key, FREEBSD_DEFAULT_SSH_PORT, "root")?;
+        let output = freebsd
+            .wait_with_output()
+            .context("failed to wait for FreeBSD SSH probe")?;
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        if output.status.success() && stdout.trim() == "FreeBSD" {
+            return Ok(());
+        }
+        last = format!(
+            "status={} stdout={:?} stderr={:?}",
+            output.status,
+            stdout.trim(),
+            String::from_utf8_lossy(&output.stderr).trim(),
+        );
+        std::thread::sleep(Duration::from_secs(2));
+    }
+    anyhow::bail!("FreeBSD authenticated SSH did not become ready: {last}")
+}
+
 fn wait_for_dual_ssh(
     ssh_key: &SshTestKey,
     timeout: Duration,
@@ -2244,6 +2272,22 @@ fn wait_for_dual_guest_consoles_via_cc(
         Duration::from_secs(600),
         qemu,
     )?;
+    wait_for_freebsd_ssh(ssh_key, Duration::from_secs(180), qemu)
+        .context("FreeBSD SSH was not live before its lifecycle checkpoint")?;
+    println!("[xtask:test] FreeBSD authenticated SSH live before suspend");
+    let freebsd_probe_suspend = suspend_guest_via_cc(&mut boot_cc, freebsd_handle)
+        .context("failed to suspend FreeBSD for the immediate resume checkpoint")?;
+    println!(
+        "[xtask:test] suspended FreeBSD guest handle={freebsd_handle} state={freebsd_probe_suspend} for immediate resume checkpoint"
+    );
+    let freebsd_probe_resume = resume_guest_via_cc(&mut boot_cc, freebsd_handle)
+        .context("failed to resume FreeBSD for the immediate SSH checkpoint")?;
+    println!(
+        "[xtask:test] resumed FreeBSD guest handle={freebsd_handle} state={freebsd_probe_resume} for immediate SSH checkpoint"
+    );
+    wait_for_freebsd_ssh(ssh_key, Duration::from_secs(180), qemu)
+        .context("FreeBSD SSH did not survive the immediate suspend/resume checkpoint")?;
+    println!("[xtask:test] FreeBSD authenticated SSH survived immediate resume");
     let freebsd_boot_suspend = suspend_guest_via_cc(&mut boot_cc, freebsd_handle)
         .context("failed to suspend provisioned FreeBSD guest while Ubuntu finishes booting")?;
     println!(
