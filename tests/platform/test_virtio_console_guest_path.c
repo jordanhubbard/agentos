@@ -187,6 +187,15 @@ int main(void)
        contains("xtask/src/cmd_test.rs",
                 "CC replay after incomplete reply failed"),
        "lost CC acknowledgements recover in place and replay after reconnect");
+    ok(contains("kernel/agentos-root-task/src/cc_pd.c",
+                "RX_DESC[0].flags = VQ_DESC_F_WRITE | VQ_DESC_F_NEXT") &&
+       contains("kernel/agentos-root-task/src/cc_pd.c",
+                "RX_DESC[1].addr  = (uint64_t)(g_vq_pa[0] + RX_TAIL_OFF)") &&
+       contains("kernel/agentos-root-task/src/cc_pd.c",
+                "TX_DESC[0].flags = tail > 0u ? VQ_DESC_F_NEXT : 0u") &&
+       contains("kernel/agentos-root-task/src/cc_pd.c",
+                "__builtin_memcpy(p, RX_TAIL_BUFFER, tail)"),
+       "CC wire frames use chained descriptors for the page tail");
     ok(contains("kernel/agentos-root-task/include/contracts/cc_contract.h",
                 "CC_VIRTIO_STARTUP_VERSION") &&
        contains("kernel/agentos-root-task/src/main.c",

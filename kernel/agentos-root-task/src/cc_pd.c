@@ -137,6 +137,12 @@ typedef struct { uint16_t flags; uint16_t idx; vq_used_elem_t ring[VQ_DEPTH]; ui
 #define RX_DESC_OFF   512u  /* 64 B; 16-byte aligned */
 #define RX_AVAIL_OFF  640u  /* 14 B; 2-byte aligned */
 #define RX_USED_OFF   768u  /* 38 B; 4-byte aligned */
+#define TX_TAIL_OFF   1024u /* second descriptor payload, within queue page */
+#define RX_TAIL_OFF   1088u /* second descriptor payload, within queue page */
+#define VQ_PAGE_BYTES 4096u
+#define VQ_TAIL_BYTES 64u
+#define VQ_DESC_F_NEXT  1u
+#define VQ_DESC_F_WRITE 2u
 
 static seL4_Word          g_vq_pa[3];       /* [0]=structs, [1]=TX buf, [2]=RX buf */
 static volatile uint32_t *g_virtio;         /* VirtIO MMIO base at bus.2 slot */
@@ -145,6 +151,8 @@ static uint16_t           g_rx_used_last;   /* shadow of RX used ring consumer i
 #define QP       ((uintptr_t)CC_VIRTIO_QUEUE_VA)
 #define TX_BUFFER ((void *)(uintptr_t)CC_VIRTIO_TX_BUFFER_VA)
 #define RX_BUFFER ((void *)(uintptr_t)CC_VIRTIO_RX_BUFFER_VA)
+#define TX_TAIL_BUFFER ((void *)(QP + TX_TAIL_OFF))
+#define RX_TAIL_BUFFER ((void *)(QP + RX_TAIL_OFF))
 #define TX_DESC  ((volatile vq_desc_t  *)(QP + TX_DESC_OFF))
 #define TX_AVAIL ((volatile vq_avail_t *)(QP + TX_AVAIL_OFF))
 #define TX_USED  ((volatile vq_used_t  *)(QP + TX_USED_OFF))
@@ -251,11 +259,20 @@ static bool virtio_serial_init(void)
     vio_wr(VMMIO_STATUS,
            VSTATUS_ACK | VSTATUS_DRIVER | VSTATUS_FEAT_OK | VSTATUS_DRIVER_OK);
 
-    /* Pre-post RX descriptor so the device can buffer incoming bytes */
+    /*
+     * A CC wire frame is 4112 bytes. Post the page and its 16-byte tail as
+     * one descriptor chain before the host writes anything; sequentially
+     * reposting a single 4096-byte descriptor can strand the already-buffered
+     * tail because a socket chardev does not emit another readability event.
+     */
     RX_DESC[0].addr  = (uint64_t)g_vq_pa[2];
-    RX_DESC[0].len   = 4096u;
-    RX_DESC[0].flags = 2u;  /* VIRTQ_DESC_F_WRITE: device writes into this buf */
-    RX_DESC[0].next  = 0u;
+    RX_DESC[0].len   = VQ_PAGE_BYTES;
+    RX_DESC[0].flags = VQ_DESC_F_WRITE | VQ_DESC_F_NEXT;
+    RX_DESC[0].next  = 1u;
+    RX_DESC[1].addr  = (uint64_t)(g_vq_pa[0] + RX_TAIL_OFF);
+    RX_DESC[1].len   = VQ_TAIL_BYTES;
+    RX_DESC[1].flags = VQ_DESC_F_WRITE;
+    RX_DESC[1].next  = 0u;
     VQ_MB();
     RX_AVAIL->ring[0] = 0u;
     VQ_MB();
@@ -284,13 +301,25 @@ static bool vio_serial_write(const void *buf, uint32_t n)
 {
     const uint8_t *p = (const uint8_t *)buf;
     while (n > 0u) {
-        uint32_t chunk = (n > 4096u) ? 4096u : n;
-        __builtin_memcpy(TX_BUFFER, p, chunk);
+        uint32_t frame = n;
+        if (frame > VQ_PAGE_BYTES + VQ_TAIL_BYTES) {
+            frame = VQ_PAGE_BYTES + VQ_TAIL_BYTES;
+        }
+        uint32_t first = frame > VQ_PAGE_BYTES ? VQ_PAGE_BYTES : frame;
+        uint32_t tail = frame - first;
+        __builtin_memcpy(TX_BUFFER, p, first);
+        if (tail > 0u) {
+            __builtin_memcpy(TX_TAIL_BUFFER, p + first, tail);
+        }
         VQ_MB();
         TX_DESC[0].addr  = (uint64_t)g_vq_pa[1];
-        TX_DESC[0].len   = chunk;
-        TX_DESC[0].flags = 0u;
-        TX_DESC[0].next  = 0u;
+        TX_DESC[0].len   = first;
+        TX_DESC[0].flags = tail > 0u ? VQ_DESC_F_NEXT : 0u;
+        TX_DESC[0].next  = tail > 0u ? 1u : 0u;
+        TX_DESC[1].addr  = (uint64_t)(g_vq_pa[0] + TX_TAIL_OFF);
+        TX_DESC[1].len   = tail;
+        TX_DESC[1].flags = 0u;
+        TX_DESC[1].next  = 0u;
         VQ_MB();
         uint16_t old_used = TX_USED->idx;
         TX_AVAIL->ring[TX_AVAIL->idx & (uint16_t)(VQ_DEPTH - 1u)] = 0u;
@@ -343,8 +372,8 @@ static bool vio_serial_write(const void *buf, uint32_t n)
 #ifdef CC_PD_TRACE_TX
         cc_dbg_puts("[cc_pd] TX done spin="); cc_dbg_hex(spin); cc_dbg_puts("\n");
 #endif
-        p += chunk;
-        n -= chunk;
+        p += frame;
+        n -= frame;
     }
     return true;
 }
@@ -368,16 +397,30 @@ static bool vio_serial_read(void *buf, uint32_t n)
         }
         uint32_t got  = RX_USED->ring[g_rx_used_last & (uint16_t)(VQ_DEPTH - 1u)].len;
         VQ_MB();
-        uint32_t take = (got > n) ? n : got;
-        __builtin_memcpy(p, RX_BUFFER, take);
-        p += take;
-        n -= take;
+        uint32_t first = got;
+        if (first > n) first = n;
+        if (first > VQ_PAGE_BYTES) first = VQ_PAGE_BYTES;
+        __builtin_memcpy(p, RX_BUFFER, first);
+        p += first;
+        n -= first;
+        uint32_t tail = got - first;
+        if (tail > n) tail = n;
+        if (tail > VQ_TAIL_BYTES) tail = VQ_TAIL_BYTES;
+        if (tail > 0u) {
+            __builtin_memcpy(p, RX_TAIL_BUFFER, tail);
+            p += tail;
+            n -= tail;
+        }
         g_rx_used_last++;
         /* Re-post RX buffer */
         RX_DESC[0].addr  = (uint64_t)g_vq_pa[2];
-        RX_DESC[0].len   = 4096u;
-        RX_DESC[0].flags = 2u;
-        RX_DESC[0].next  = 0u;
+        RX_DESC[0].len   = VQ_PAGE_BYTES;
+        RX_DESC[0].flags = VQ_DESC_F_WRITE | VQ_DESC_F_NEXT;
+        RX_DESC[0].next  = 1u;
+        RX_DESC[1].addr  = (uint64_t)(g_vq_pa[0] + RX_TAIL_OFF);
+        RX_DESC[1].len   = VQ_TAIL_BYTES;
+        RX_DESC[1].flags = VQ_DESC_F_WRITE;
+        RX_DESC[1].next  = 0u;
         VQ_MB();
         RX_AVAIL->ring[RX_AVAIL->idx & (uint16_t)(VQ_DEPTH - 1u)] = 0u;
         VQ_MB();
