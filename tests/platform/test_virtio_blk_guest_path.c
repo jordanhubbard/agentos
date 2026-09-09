@@ -328,15 +328,15 @@ int main(void)
                                        "let linux_boot_suspend =",
                                        "let freebsd = wait_for_guest_console_login_on_cc(") &&
                  src_contains_in_order("xtask/src/cmd_test.rs",
+                                       "let freebsd_ssh = freebsd_ssh_provision_commands(",
+                                       "let freebsd_boot_suspend =") &&
+                 src_contains_in_order("xtask/src/cmd_test.rs",
                                        "let freebsd_boot_suspend =",
                                        "let linux_boot_resume =") &&
                  src_contains_in_order("xtask/src/cmd_test.rs",
-                                       "let linux_provision_suspend =",
-                                       "let freebsd_provision_resume =") &&
-                 src_contains_in_order("xtask/src/cmd_test.rs",
-                                       "let freebsd = freebsd_ssh_provision_commands(",
-                                       "let linux_provision_resume ="),
-                 "dual proof alternates boot checkpoints before concurrent service");
+                                       "let ubuntu = ubuntu_ssh_provision_commands(",
+                                       "let freebsd_provision_resume ="),
+                 "dual proof provisions FreeBSD before its checkpoint and resumes both for concurrent service");
     (void)tap_ok(!src_contains("kernel/agentos-root-task/src/freebsd_vmm.c",
                                "if (label == seL4_Fault_VPPIEvent) {") &&
                  src_contains("libvmm/src/arch/aarch64/vgic/vgic.c",

@@ -1802,7 +1802,7 @@ fn guest_provision_command(command: &str, guest_os: &str, success: &str) -> Stri
     )
 }
 
-fn provision_dual_ssh(
+fn provision_ubuntu_and_resume_freebsd_ssh(
     cc_sock: &Path,
     cc: &mut CcClient,
     linux_handle: u32,
@@ -1822,38 +1822,14 @@ fn provision_dual_ssh(
     )?;
 
     /*
-     * Console provisioning sends a long command through a synchronous
-     * CC -> vibe_engine -> vm_manager -> VMM call chain. Keep only the guest
-     * being provisioned runnable so its high-rate VM exits cannot delay the
-     * other VMM's control RPC until the host-side frame deadline expires.
-     * Both guests are resumed before the concurrent SSH acceptance below.
+     * FreeBSD was provisioned before its boot checkpoint. Resume it only
+     * after Ubuntu provisioning is complete, then prove that its sshd and
+     * network configuration survived the suspend/resume boundary.
      */
-    let linux_provision_suspend = suspend_guest_via_cc(cc, linux_handle)
-        .context("failed to suspend provisioned Ubuntu while provisioning FreeBSD")?;
-    println!(
-        "[xtask:test] suspended provisioned Ubuntu guest handle={linux_handle} state={linux_provision_suspend} while FreeBSD is provisioned"
-    );
     let freebsd_provision_resume = resume_guest_via_cc(cc, freebsd_handle)
-        .context("failed to resume FreeBSD for SSH provisioning")?;
+        .context("failed to resume provisioned FreeBSD for concurrent SSH proof")?;
     println!(
-        "[xtask:test] resumed FreeBSD guest handle={freebsd_handle} state={freebsd_provision_resume} for SSH provisioning"
-    );
-
-    let freebsd = freebsd_ssh_provision_commands(&ssh_key.public_key);
-    run_guest_console_commands(
-        cc_sock,
-        cc,
-        freebsd_handle,
-        "freebsd",
-        &freebsd,
-        Duration::from_secs(600),
-        qemu,
-    )?;
-
-    let linux_provision_resume = resume_guest_via_cc(cc, linux_handle)
-        .context("failed to resume Ubuntu for concurrent SSH proof")?;
-    println!(
-        "[xtask:test] resumed Ubuntu guest handle={linux_handle} state={linux_provision_resume} for concurrent SSH proof"
+        "[xtask:test] resumed provisioned FreeBSD guest handle={freebsd_handle} state={freebsd_provision_resume} for concurrent SSH proof"
     );
     Ok(())
 }
@@ -2222,10 +2198,25 @@ fn wait_for_dual_guest_consoles_via_cc(
         timeout.saturating_sub(start.elapsed()),
         qemu,
     )?;
+    /*
+     * Provision FreeBSD while its installer shell is already responsive.
+     * The later authenticated SSH probe then verifies that both its service
+     * state and network configuration survive a real suspend/resume cycle.
+     */
+    let freebsd_ssh = freebsd_ssh_provision_commands(&ssh_key.public_key);
+    run_guest_console_commands(
+        cc_sock,
+        &mut boot_cc,
+        freebsd_handle,
+        "freebsd",
+        &freebsd_ssh,
+        Duration::from_secs(600),
+        qemu,
+    )?;
     let freebsd_boot_suspend = suspend_guest_via_cc(&mut boot_cc, freebsd_handle)
-        .context("failed to suspend ready FreeBSD guest while Ubuntu finishes booting")?;
+        .context("failed to suspend provisioned FreeBSD guest while Ubuntu finishes booting")?;
     println!(
-        "[xtask:test] suspended ready FreeBSD guest handle={freebsd_handle} state={freebsd_boot_suspend} while Ubuntu boots"
+        "[xtask:test] suspended provisioned FreeBSD guest handle={freebsd_handle} state={freebsd_boot_suspend} while Ubuntu boots"
     );
     let linux_boot_resume = resume_guest_via_cc(&mut boot_cc, linux_handle)
         .context("failed to resume Ubuntu after checkpointing FreeBSD")?;
@@ -2239,7 +2230,7 @@ fn wait_for_dual_guest_consoles_via_cc(
         timeout.saturating_sub(start.elapsed()),
         qemu,
     )?;
-    provision_dual_ssh(
+    provision_ubuntu_and_resume_freebsd_ssh(
         cc_sock,
         &mut boot_cc,
         linux_handle,
