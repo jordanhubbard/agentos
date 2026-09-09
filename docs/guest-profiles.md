@@ -59,13 +59,18 @@ QEMU machine and memory, per-profile RAM, host SSH forwarding, and guest
 addresses. It coordinates configured profile slots as one lifecycle test; it
 does not select different VMM implementations.
 
-Console automation is selected by the profile's `host.console.adapter` value,
-not by profile or distribution name. The executor currently exposes four
-closed adapters: a normal login prompt, the probe initramfs, a casper live
-session, and an installer shell. Provisioning commands are `send-console`
-recipe steps in the profile and permit only the bounded
-`{{ssh_public_key}}` substitution. Unknown adapters, recipe actions,
-arguments, and template variables fail closed.
+Console automation is a bounded declarative state machine under
+`host.console`, not a profile- or distribution-named code path. The only
+adapter is `expect`. A profile declares success markers, markers that must
+also be present, immediate rejection markers, and ordered interaction rules.
+Each interaction requires all of its `when` markers (or a bounded
+`after_secs` delay), sends one bounded byte string, and has an explicit retry
+ceiling. An optional command/marker pair proves that the reached prompt
+accepts input; its timeout is bounded too. The compiler limits marker sizes,
+rule counts, delays, retries, and probe sizes, and rejects incomplete or
+unknown fields. Provisioning commands remain `send-console` recipe steps and
+permit only the bounded `{{ssh_public_key}}` substitution. Unknown adapters,
+recipe actions, arguments, and template variables fail closed.
 
 Manifest version 2 can set `boot.media_initrd_path`. The shared block backend
 then walks that normalized relative path through ISO9660 and stages the file at

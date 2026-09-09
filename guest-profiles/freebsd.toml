@@ -64,7 +64,41 @@ account = "root"
 host_port = 12223
 
 [host.console]
-adapter = "installer-shell"
+adapter = "expect"
+success = ["\n# ", "\r# "]
+reject = ["mountroot>", "Manual root filesystem specification"]
+probe_line = "printf 'agentos-console-%s\\n' proof"
+probe_marker = "agentos-console-proof"
+
+[[host.console.interaction]]
+when = ["Console type [vt100]:"]
+send = "\r"
+
+[[host.console.interaction]]
+when = ["begin an installation or use the live"]
+send = "\t\r"
+
+[[host.console.interaction]]
+when = ["Enter full pathname of shell", "Unsupported version"]
+send = "/rescue/sh\r"
+
+[[host.console.interaction]]
+when = ["Enter full pathname of shell", "ld-elf.so.1:"]
+send = "/rescue/sh\r"
+
+[[host.console.interaction]]
+when = ["login:"]
+send = "root\r"
+max_fires = 4
+
+[[host.console.interaction]]
+when = ["Password:"]
+send = "\r"
+max_fires = 4
+
+[[host.console.interaction]]
+send = "\u001d"
+after_secs = 180
 
 [host.build]
 adapter = "fdt-template"
@@ -105,7 +139,7 @@ args = { text = "/usr/sbin/sshd -f /dev/null -o HostKey=/tmp/agentos-ssh/host_ke
 
 [[host.test]]
 action = "wait-console"
-args = { marker = "login:" }
+args = { marker = "# " }
 
 [[host.test]]
 action = "wait-ssh"

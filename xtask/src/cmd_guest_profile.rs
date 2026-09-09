@@ -144,6 +144,32 @@ struct HostBuild {
 #[serde(deny_unknown_fields)]
 struct HostConsole {
     adapter: String,
+    #[serde(default)]
+    success: Vec<String>,
+    #[serde(default)]
+    require: Vec<String>,
+    #[serde(default)]
+    reject: Vec<String>,
+    #[serde(default)]
+    interaction: Vec<ConsoleInteraction>,
+    probe_line: Option<String>,
+    probe_marker: Option<String>,
+    probe_timeout_secs: Option<u64>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ConsoleInteraction {
+    #[serde(default)]
+    when: Vec<String>,
+    send: String,
+    #[serde(default = "one_console_fire")]
+    max_fires: u8,
+    after_secs: Option<u64>,
+}
+
+fn one_console_fire() -> u8 {
+    1
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -193,9 +219,42 @@ pub(crate) struct HostProfilePlan {
     pub(crate) devices: Vec<String>,
     pub(crate) media_initrd_path: Option<String>,
     pub(crate) qemu: Option<QemuPlan>,
-    pub(crate) console_adapter: String,
+    pub(crate) console: ConsolePlan,
     pub(crate) provision: Vec<RecipeStep>,
     pub(crate) test: Vec<RecipeStep>,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct ConsolePlan {
+    pub(crate) success: Vec<String>,
+    pub(crate) require: Vec<String>,
+    pub(crate) reject: Vec<String>,
+    pub(crate) interaction: Vec<ConsoleInteractionPlan>,
+    pub(crate) probe_line: Option<String>,
+    pub(crate) probe_marker: Option<String>,
+    pub(crate) probe_timeout_secs: u64,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct ConsoleInteractionPlan {
+    pub(crate) when: Vec<String>,
+    pub(crate) send: String,
+    pub(crate) max_fires: u8,
+    pub(crate) after_secs: u64,
+}
+
+impl Default for ConsolePlan {
+    fn default() -> Self {
+        Self {
+            success: Vec::new(),
+            require: Vec::new(),
+            reject: Vec::new(),
+            interaction: Vec::new(),
+            probe_line: None,
+            probe_marker: None,
+            probe_timeout_secs: 20,
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -360,10 +419,27 @@ pub(crate) fn host_profile_plan(root: &Path, path: &Path) -> Result<HostProfileP
             .as_ref()
             .and_then(|boot| boot.media_initrd_path.clone()),
         qemu,
-        console_adapter: host
+        console: host
             .and_then(|value| value.console.as_ref())
-            .map(|console| console.adapter.clone())
-            .unwrap_or_else(|| String::from("login")),
+            .map(|console| ConsolePlan {
+                success: console.success.clone(),
+                require: console.require.clone(),
+                reject: console.reject.clone(),
+                interaction: console
+                    .interaction
+                    .iter()
+                    .map(|interaction| ConsoleInteractionPlan {
+                        when: interaction.when.clone(),
+                        send: interaction.send.clone(),
+                        max_fires: interaction.max_fires,
+                        after_secs: interaction.after_secs.unwrap_or(0),
+                    })
+                    .collect(),
+                probe_line: console.probe_line.clone(),
+                probe_marker: console.probe_marker.clone(),
+                probe_timeout_secs: console.probe_timeout_secs.unwrap_or(20),
+            })
+            .unwrap_or_default(),
         provision: host
             .map(|value| value.provision.clone())
             .unwrap_or_default(),
@@ -1053,10 +1129,75 @@ fn validate_host(host: Option<&Host>) -> Result<()> {
         validate_qemu(qemu)?;
     }
     if let Some(console) = &host.console {
-        enum_value(
-            &console.adapter,
-            &["login", "probe-initramfs", "casper-live", "installer-shell"],
-        )?;
+        enum_value(&console.adapter, &["expect"])?;
+        for (field, markers) in [
+            ("success", &console.success),
+            ("require", &console.require),
+            ("reject", &console.reject),
+        ] {
+            ensure!(
+                markers.len() <= 16,
+                "host.console.{field} exceeds 16 markers"
+            );
+            for marker in markers {
+                ensure!(
+                    !marker.is_empty() && marker.len() <= 255,
+                    "host.console.{field} contains an invalid marker"
+                );
+            }
+        }
+        ensure!(
+            console.interaction.len() <= 32,
+            "host.console.interaction exceeds 32 rules"
+        );
+        for interaction in &console.interaction {
+            ensure!(
+                interaction.when.len() <= 8
+                    && interaction
+                        .when
+                        .iter()
+                        .all(|marker| !marker.is_empty() && marker.len() <= 255),
+                "host.console.interaction.when is invalid"
+            );
+            ensure!(
+                !interaction.when.is_empty() || interaction.after_secs.is_some(),
+                "host.console.interaction needs when markers or after_secs"
+            );
+            ensure!(
+                !interaction.send.is_empty() && interaction.send.len() <= 1024,
+                "host.console.interaction.send is invalid"
+            );
+            ensure!(
+                (1..=8).contains(&interaction.max_fires),
+                "host.console.interaction.max_fires must be 1..8"
+            );
+            ensure!(
+                interaction.after_secs.is_none_or(|seconds| seconds <= 3600),
+                "host.console.interaction.after_secs exceeds 3600"
+            );
+        }
+        ensure!(
+            console.probe_line.is_some() == console.probe_marker.is_some(),
+            "host.console.probe_line and probe_marker must be set together"
+        );
+        if let Some(probe) = &console.probe_line {
+            ensure!(
+                !probe.is_empty() && probe.len() <= 1024,
+                "host.console.probe_line is invalid"
+            );
+        }
+        if let Some(marker) = &console.probe_marker {
+            ensure!(
+                !marker.is_empty() && marker.len() <= 255,
+                "host.console.probe_marker is invalid"
+            );
+        }
+        ensure!(
+            console
+                .probe_timeout_secs
+                .is_none_or(|seconds| (1..=3600).contains(&seconds)),
+            "host.console.probe_timeout_secs must be 1..3600"
+        );
     }
     if let Some(build) = &host.build {
         enum_value(&build.adapter, &["linux-merge", "fdt-template"])?;
@@ -1539,6 +1680,45 @@ mod tests {
             "http://example.invalid/guest.iso".to_string(),
         );
         assert!(validate_host_action(&insecure).is_err());
+    }
+
+    #[test]
+    fn console_expect_dsl_is_bounded_and_fail_closed() {
+        let console = HostConsole {
+            adapter: "expect".to_string(),
+            success: vec!["# ".to_string()],
+            require: Vec::new(),
+            reject: vec!["mountroot>".to_string()],
+            interaction: vec![ConsoleInteraction {
+                when: vec!["login:".to_string()],
+                send: "root\r".to_string(),
+                max_fires: 4,
+                after_secs: None,
+            }],
+            probe_line: Some("printf 'ready-%s\\n' proof".to_string()),
+            probe_marker: Some("ready-proof".to_string()),
+            probe_timeout_secs: Some(30),
+        };
+        let host = Host {
+            qemu: None,
+            console: Some(console.clone()),
+            build: None,
+            acquire: Vec::new(),
+            provision: Vec::new(),
+            test: Vec::new(),
+        };
+        assert!(validate_host(Some(&host)).is_ok());
+
+        let mut unbounded = console.clone();
+        unbounded.interaction[0].max_fires = 0;
+        let mut invalid = host.clone();
+        invalid.console = Some(unbounded);
+        assert!(validate_host(Some(&invalid)).is_err());
+
+        let mut named_adapter = console;
+        named_adapter.adapter = "installer-shell".to_string();
+        invalid.console = Some(named_adapter);
+        assert!(validate_host(Some(&invalid)).is_err());
     }
 
     #[test]

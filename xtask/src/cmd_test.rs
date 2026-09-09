@@ -1433,17 +1433,19 @@ fn wait_for_guest_console_login_on_cc(
     let start = Instant::now();
     let mut transcript = String::new();
     let mut matched_prompt = None;
-    let console_adapter = profile
-        .map(|value| value.console_adapter.as_str())
-        .unwrap_or("login");
-    let prompt_markers = profile
-        .map(profile_console_markers)
-        .filter(|markers| !markers.is_empty())
+    let console = profile.map(|value| &value.console);
+    let prompt_markers = console
+        .filter(|plan| !plan.success.is_empty())
+        .map(|plan| plan.success.clone())
+        .or_else(|| {
+            profile
+                .map(profile_console_markers)
+                .filter(|markers| !markers.is_empty())
+        })
         .unwrap_or_else(|| vec![String::from("login:")]);
-    let mut freebsd_console_type_accepted = false;
-    let mut freebsd_installer_shell_requested = false;
-    let mut freebsd_rescue_shell_requested = false;
-    let mut freebsd_stack_requested = false;
+    let mut interaction_fires = console
+        .map(|plan| vec![0u8; plan.interaction.len()])
+        .unwrap_or_default();
     let mut last_progress = Instant::now();
 
     while start.elapsed() < timeout {
@@ -1454,17 +1456,7 @@ fn wait_for_guest_console_login_on_cc(
                 if !chunk.is_empty() {
                     drained_console = true;
                     transcript.push_str(&chunk);
-                    if console_adapter == "installer-shell"
-                        && !freebsd_rescue_shell_requested
-                        && freebsd_static_rescue_needed(&transcript)
-                    {
-                        println!(
-                            "[xtask:test] FreeBSD dynamic shell unavailable; selecting /rescue/sh"
-                        );
-                        cc_send_raw_bytes(cc, guest_handle, b"/rescue/sh\r")?;
-                        freebsd_rescue_shell_requested = true;
-                    }
-                    reject_bad_guest_path(console_adapter, &transcript)?;
+                    reject_profile_console(console, &transcript)?;
                     if last_progress.elapsed() >= Duration::from_secs(30) {
                         println!(
                             "[xtask:test] {} console progress ({} bytes), tail:\n{}",
@@ -1474,44 +1466,28 @@ fn wait_for_guest_console_login_on_cc(
                         );
                         last_progress = Instant::now();
                     }
-                    if console_adapter == "installer-shell"
-                        && !freebsd_console_type_accepted
-                        && transcript.contains("Console type [vt100]:")
-                    {
-                        println!(
-                            "[xtask:test] FreeBSD console type prompt reached; accepting vt100"
-                        );
-                        cc_send_raw_byte(cc, guest_handle, b'\r')?;
-                        freebsd_console_type_accepted = true;
-                    }
-                    if console_adapter == "installer-shell"
-                        && !freebsd_installer_shell_requested
-                        && transcript.contains("FreeBSD Installer")
-                        && transcript.contains("begin an installation or use the live")
-                    {
-                        println!("[xtask:test] FreeBSD installer menu reached; selecting shell");
-                        cc_send_raw_bytes(cc, guest_handle, b"\t\r")?;
-                        freebsd_installer_shell_requested = true;
-                    }
+                    run_console_interactions(
+                        console,
+                        &transcript,
+                        start.elapsed(),
+                        &mut interaction_fires,
+                        cc,
+                        guest_handle,
+                    )?;
 
-                    let matched = if let Some(marker) = prompt_markers
-                        .iter()
-                        .find(|marker| transcript.contains(marker.as_str()))
-                    {
-                        if console_adapter == "casper-live" && !transcript.contains("Ubuntu 26.04")
-                        {
-                            None
-                        } else {
-                            Some((*marker).clone())
-                        }
-                    } else if console_adapter == "installer-shell"
-                        && (freebsd_installer_shell_requested || freebsd_rescue_shell_requested)
-                        && freebsd_shell_prompt_seen(&transcript)
-                    {
-                        Some(String::from("installer shell prompt"))
-                    } else {
-                        None
-                    };
+                    let requirements_met = console.is_none_or(|plan| {
+                        plan.require
+                            .iter()
+                            .all(|marker| transcript.contains(marker))
+                    });
+                    let matched = requirements_met
+                        .then(|| {
+                            prompt_markers
+                                .iter()
+                                .find(|marker| transcript.contains(marker.as_str()))
+                                .cloned()
+                        })
+                        .flatten();
 
                     if let Some(marker) = matched {
                         matched_prompt = Some(marker);
@@ -1526,14 +1502,14 @@ fn wait_for_guest_console_login_on_cc(
                 println!("[xtask:test] CC console drain not ready yet: {err:#}");
             }
         }
-        if console_adapter == "installer-shell"
-            && !freebsd_stack_requested
-            && start.elapsed() >= Duration::from_secs(180)
-        {
-            println!("[xtask:test] requesting FreeBSD PID 1 stack");
-            cc_send_raw_byte(cc, guest_handle, 0x1d)?;
-            freebsd_stack_requested = true;
-        }
+        run_console_interactions(
+            console,
+            &transcript,
+            start.elapsed(),
+            &mut interaction_fires,
+            cc,
+            guest_handle,
+        )?;
         std::thread::sleep(if drained_console {
             Duration::from_millis(10)
         } else {
@@ -1559,17 +1535,69 @@ fn wait_for_guest_console_login_on_cc(
         profile,
         timeout
             .saturating_sub(start.elapsed())
-            .min(Duration::from_secs(if console_adapter == "casper-live" {
-                360
-            } else {
-                20
-            })),
+            .min(Duration::from_secs(
+                console.map_or(20, |plan| plan.probe_timeout_secs),
+            )),
         qemu,
     )?;
     Ok(format!(
         "CC console API saw {guest_os} handle {guest_handle} prompt {:?} and {proof}",
         prompt
     ))
+}
+
+fn marker_occurrences(transcript: &str, marker: &str) -> usize {
+    transcript.match_indices(marker).count()
+}
+
+fn available_console_interactions(
+    interaction: &crate::cmd_guest_profile::ConsoleInteractionPlan,
+    transcript: &str,
+    elapsed: Duration,
+) -> usize {
+    if elapsed < Duration::from_secs(interaction.after_secs) {
+        return 0;
+    }
+    if interaction.when.is_empty() {
+        return 1;
+    }
+    interaction
+        .when
+        .iter()
+        .map(|marker| marker_occurrences(transcript, marker))
+        .min()
+        .unwrap_or(0)
+}
+
+fn run_console_interactions(
+    console: Option<&crate::cmd_guest_profile::ConsolePlan>,
+    transcript: &str,
+    elapsed: Duration,
+    fires: &mut [u8],
+    cc: &mut CcClient,
+    guest_handle: u32,
+) -> anyhow::Result<()> {
+    let Some(console) = console else {
+        return Ok(());
+    };
+    for (index, interaction) in console.interaction.iter().enumerate() {
+        if fires[index] >= interaction.max_fires {
+            continue;
+        }
+        let available = available_console_interactions(interaction, transcript, elapsed);
+        if available <= usize::from(fires[index]) {
+            continue;
+        }
+        cc_send_raw_bytes(cc, guest_handle, interaction.send.as_bytes())?;
+        fires[index] += 1;
+        println!(
+            "[xtask:test] console rule {} fired ({}/{})",
+            index + 1,
+            fires[index],
+            interaction.max_fires
+        );
+    }
+    Ok(())
 }
 
 fn profile_console_markers(profile: &HostProfilePlan) -> Vec<String> {
@@ -1581,74 +1609,41 @@ fn profile_console_markers(profile: &HostProfilePlan) -> Vec<String> {
         .collect()
 }
 
-fn reject_bad_guest_path(console_adapter: &str, transcript: &str) -> anyhow::Result<()> {
-    if console_adapter == "casper-live" && transcript.contains("Initramfs unpacking failed") {
-        anyhow::bail!(
-            "Ubuntu live initramfs did not unpack cleanly; tail:\n{}",
-            tail_chars(transcript, 4000)
-        );
-    }
-    if matches!(console_adapter, "casper-live" | "probe-initramfs")
-        && (transcript.contains("emergency mode")
-            || transcript.contains("Emergency Shell")
-            || transcript.contains("Press Enter for maintenance"))
+fn reject_profile_console(
+    console: Option<&crate::cmd_guest_profile::ConsolePlan>,
+    transcript: &str,
+) -> anyhow::Result<()> {
+    if let Some(marker) = console
+        .into_iter()
+        .flat_map(|plan| &plan.reject)
+        .find(|marker| transcript.contains(marker.as_str()))
     {
         anyhow::bail!(
-            "Ubuntu reached an emergency or maintenance path instead of multi-user login; tail:\n{}",
-            tail_chars(transcript, 4000)
-        );
-    }
-    if console_adapter == "installer-shell"
-        && (transcript.contains("mountroot>")
-            || transcript.contains("Manual root filesystem specification")
-            || transcript.contains("Mounting from cd9660:")
-                && transcript.contains("failed with error"))
-    {
-        anyhow::bail!(
-            "FreeBSD reached mountroot, maintenance, or single-user fallback instead of a normal login or configured installer shell; tail:\n{}",
+            "guest console reached profile rejection marker {marker:?}; tail:\n{}",
             tail_chars(transcript, 4000)
         );
     }
     Ok(())
 }
 
-fn freebsd_static_rescue_needed(transcript: &str) -> bool {
-    transcript.contains("Enter full pathname of shell")
-        && (transcript.contains("Unsupported version") || transcript.contains("ld-elf.so.1:"))
-}
-
-fn freebsd_shell_prompt_seen(transcript: &str) -> bool {
-    transcript.contains("\n# ") || transcript.contains("\r# ") || transcript.ends_with("# ")
-}
-
 fn verify_guest_console_input(
-    cc_sock: &Path,
+    _cc_sock: &Path,
     cc: &mut CcClient,
     guest_handle: u32,
     profile: Option<&HostProfilePlan>,
     timeout: Duration,
     qemu: &mut Child,
 ) -> anyhow::Result<String> {
-    let console_adapter = profile
-        .map(|value| value.console_adapter.as_str())
-        .unwrap_or("login");
-    if console_adapter == "casper-live" {
-        return verify_ubuntu_live_console_and_net(
-            cc_sock,
-            cc,
-            guest_handle,
-            profile,
-            timeout,
-            qemu,
-        );
-    }
-
-    let probe = if console_adapter == "probe-initramfs" {
-        "agentos-linux-proof\n"
+    let console = profile.map(|value| &value.console);
+    let (probe, marker, line_mode) = console
+        .and_then(|plan| plan.probe_line.as_ref().zip(plan.probe_marker.as_ref()))
+        .map(|(probe, marker)| (probe.as_str(), marker.as_str(), true))
+        .unwrap_or(("~", "~", false));
+    if line_mode {
+        cc_send_console_line(cc, guest_handle, probe.as_bytes())?;
     } else {
-        "~"
-    };
-    cc_send_raw_bytes(cc, guest_handle, probe.as_bytes())?;
+        cc_send_raw_bytes(cc, guest_handle, probe.as_bytes())?;
+    }
 
     let mut echo = String::new();
     let start = Instant::now();
@@ -1666,172 +1661,22 @@ fn verify_guest_console_input(
         };
         if !chunk.is_empty() {
             echo.push_str(&chunk);
-            if echo.contains(probe.trim_end()) {
-                if console_adapter != "probe-initramfs" {
+            if echo.contains(marker) {
+                if !line_mode {
                     let _ = cc_send_raw_byte(cc, guest_handle, 0x15); /* Ctrl-U */
                 }
-                return Ok(format!("guest echoed {:?}", probe.trim_end()));
+                return Ok(format!("guest completed console probe {marker:?}"));
             }
         }
         std::thread::sleep(Duration::from_millis(500));
     }
 
     anyhow::bail!(
-        "guest reached prompt, but did not echo input {:?}; post-input tail:\n{}",
-        probe.trim_end(),
+        "guest reached prompt, but console probe {:?} did not emit {:?}; post-input tail:\n{}",
+        probe,
+        marker,
         tail_chars(&echo, 2000)
     );
-}
-
-fn ubuntu_live_network_probe_command() -> &'static str {
-    "sudo -n ip link set eth0 up && { ping -6 -c1 -W1 ff02::1%eth0 >/dev/null 2>&1 || true; } && printf 'agentos-live-net-%s\\n' proof"
-}
-
-fn verify_ubuntu_live_console_and_net(
-    _cc_sock: &Path,
-    cc: &mut CcClient,
-    guest_handle: u32,
-    profile: Option<&HostProfilePlan>,
-    timeout: Duration,
-    qemu: &mut Child,
-) -> anyhow::Result<String> {
-    cc_send_console_line(cc, guest_handle, b"ubuntu")?;
-
-    let phase_timeout = timeout.min(Duration::from_secs(180));
-    let login_start = Instant::now();
-    let mut transcript = String::new();
-    let mut blank_password_sent = false;
-    let mut login_attempts = 1u32;
-    while login_start.elapsed() < phase_timeout {
-        ensure_qemu_running(qemu, "logging into Ubuntu live console")?;
-        let chunk = match cc_log_stream_for_handle(cc, guest_handle, profile) {
-            Ok(chunk) => chunk,
-            Err(err) => {
-                if cc.is_closed() {
-                    return Err(err).context("CC live-login transport closed");
-                }
-                println!("[xtask:test] CC live-login drain not ready yet: {err:#}");
-                String::new()
-            }
-        };
-        if !chunk.is_empty() {
-            transcript.push_str(&chunk);
-            if transcript.contains("login: timed out")
-                && transcript.to_ascii_lowercase().contains("ubuntu login:")
-            {
-                anyhow::ensure!(
-                    login_attempts < 5,
-                    "Ubuntu live console repeatedly dropped the login terminator; tail:\n{}",
-                    tail_chars(&transcript, 2000)
-                );
-                cc_send_console_line(cc, guest_handle, b"ubuntu")?;
-                login_attempts += 1;
-                transcript.clear();
-                blank_password_sent = false;
-                continue;
-            }
-            if transcript.contains("Login incorrect") {
-                if transcript.contains("pam_nologin") || transcript.contains("System is booting up")
-                {
-                    anyhow::ensure!(
-                        login_attempts < 5,
-                        "Ubuntu live user sessions never became available; tail:\n{}",
-                        tail_chars(&transcript, 2000)
-                    );
-                    std::thread::sleep(Duration::from_secs(5));
-                    cc_send_console_line(cc, guest_handle, b"ubuntu")?;
-                    login_attempts += 1;
-                    transcript.clear();
-                    blank_password_sent = false;
-                    continue;
-                }
-                anyhow::bail!(
-                    "Ubuntu live account rejected console login; tail:\n{}",
-                    tail_chars(&transcript, 2000)
-                );
-            }
-            if !blank_password_sent && transcript.to_ascii_lowercase().contains("password:") {
-                cc_send_raw_byte(cc, guest_handle, b'\r')?;
-                blank_password_sent = true;
-            }
-            if transcript.contains("ubuntu@") && transcript.contains("$ ") {
-                break;
-            }
-        }
-        std::thread::sleep(Duration::from_millis(500));
-    }
-
-    anyhow::ensure!(
-        transcript.contains("ubuntu@") && transcript.contains("$ "),
-        "Ubuntu live login did not reach a shell prompt; tail:\n{}",
-        tail_chars(&transcript, 2000)
-    );
-
-    /* Split the token so terminal command echo cannot satisfy the proof. */
-    cc_send_console_line(cc, guest_handle, b"printf 'agentos-live-%s\\n' proof")?;
-    let proof_start = Instant::now();
-    let mut output = String::new();
-    let mut userspace_proven = false;
-    while proof_start.elapsed() < phase_timeout {
-        ensure_qemu_running(qemu, "waiting for Ubuntu live userspace proof")?;
-        let chunk = cc_log_stream_for_handle(cc, guest_handle, profile).unwrap_or_default();
-        if !chunk.is_empty() {
-            output.push_str(&chunk);
-            if output.contains("agentos-live-proof") {
-                userspace_proven = true;
-                break;
-            }
-        }
-        std::thread::sleep(Duration::from_millis(500));
-    }
-
-    anyhow::ensure!(
-        userspace_proven,
-        "Ubuntu live shell did not complete the userspace proof; login tail:\n{}\ncommand tail:\n{}",
-        tail_chars(&transcript, 2000),
-        tail_chars(&output, 2000),
-    );
-
-    /*
-     * Link-up emits IPv6 control traffic; the bounded all-nodes ping guarantees
-     * a guest-originated frame without DHCP. Wait for a marker emitted after
-     * both operations so no probe bytes remain queued when SSH provisioning
-     * starts on the same console.
-     */
-    cc_send_console_line(
-        cc,
-        guest_handle,
-        ubuntu_live_network_probe_command().as_bytes(),
-    )?;
-    let network_start = Instant::now();
-    let mut network_output = String::new();
-    while network_start.elapsed() < phase_timeout {
-        ensure_qemu_running(qemu, "waiting for Ubuntu live network proof")?;
-        let chunk = match cc_log_stream_for_handle(cc, guest_handle, profile) {
-            Ok(chunk) => chunk,
-            Err(err) => {
-                if cc.is_closed() {
-                    return Err(err).context("CC live-network transport closed");
-                }
-                println!("[xtask:test] CC live-network drain not ready yet: {err:#}");
-                String::new()
-            }
-        };
-        if !chunk.is_empty() {
-            network_output.push_str(&chunk);
-            if network_output.contains("agentos-live-net-proof") {
-                return Ok(String::from(
-                    "logged into Ubuntu live userspace, executed a command, and emitted a network probe",
-                ));
-            }
-        }
-        std::thread::sleep(Duration::from_millis(500));
-    }
-
-    anyhow::bail!(
-        "Ubuntu live shell did not complete the network proof; tail:\n{}",
-        tail_chars(&network_output, 2000)
-    )
 }
 
 fn try_create_guest_via_cc(
@@ -2897,11 +2742,16 @@ mod tests {
 
     #[test]
     fn live_network_probe_waits_for_post_probe_marker() {
-        let command = ubuntu_live_network_probe_command();
+        let profile = test_profile("ubuntu-live");
+        let command = profile.console.probe_line.as_deref().unwrap();
         assert!(command.contains("ip link set eth0 up"));
         assert!(command.contains("ping -6 -c1 -W1 ff02::1%eth0"));
         assert!(command.contains("printf 'agentos-live-net-%s\\n' proof"));
         assert!(!command.contains("agentos-live-net-proof"));
+        assert_eq!(
+            profile.console.probe_marker.as_deref(),
+            Some("agentos-live-net-proof")
+        );
     }
 
     #[test]
@@ -2977,20 +2827,69 @@ mod tests {
     }
 
     #[test]
-    fn freebsd_dynamic_shell_failure_selects_static_rescue() {
+    fn console_recovery_and_rejection_policy_comes_from_profile() {
+        let profile = test_profile("freebsd");
         let transcript = "ld-elf.so.1: /lib/libedit.so.8: Unsupported version 0 \
                           of Elf_Verneed entry\nEnter full pathname of shell \
                           or RETURN for /bin/sh:";
-        assert!(freebsd_static_rescue_needed(transcript));
-        assert!(reject_bad_guest_path("installer-shell", transcript).is_ok());
-        assert!(!freebsd_static_rescue_needed(
-            "Enter full pathname of shell or RETURN for /bin/sh:"
-        ));
-        assert!(reject_bad_guest_path(
-            "installer-shell",
+        let rescue = profile.console.interaction.iter().any(|rule| {
+            rule.when.iter().all(|marker| transcript.contains(marker))
+                && rule.send == "/rescue/sh\r"
+        });
+        assert!(rescue);
+        assert!(reject_profile_console(Some(&profile.console), transcript).is_ok());
+        assert!(reject_profile_console(
+            Some(&profile.console),
             "mountroot>\nManual root filesystem specification:"
         )
         .is_err());
+    }
+
+    #[test]
+    fn console_rules_require_all_markers_and_bound_retries() {
+        let profile = test_profile("freebsd");
+        let rescue = profile
+            .console
+            .interaction
+            .iter()
+            .find(|rule| {
+                rule.when
+                    .iter()
+                    .any(|marker| marker == "Unsupported version")
+            })
+            .unwrap();
+        assert_eq!(
+            available_console_interactions(
+                rescue,
+                "Enter full pathname of shell",
+                Duration::from_secs(60)
+            ),
+            0
+        );
+        assert_eq!(
+            available_console_interactions(
+                rescue,
+                "Unsupported version\nEnter full pathname of shell",
+                Duration::from_secs(60)
+            ),
+            1
+        );
+
+        let login = profile
+            .console
+            .interaction
+            .iter()
+            .find(|rule| rule.when == ["login:"])
+            .unwrap();
+        assert_eq!(
+            available_console_interactions(
+                login,
+                "login: timed out\nlogin:",
+                Duration::from_secs(60)
+            ),
+            2
+        );
+        assert_eq!(login.max_fires, 4);
     }
 
     #[test]

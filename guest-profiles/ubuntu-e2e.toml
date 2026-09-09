@@ -35,7 +35,9 @@ account = "ubuntu"
 host_port = 12222
 
 [host.console]
-adapter = "probe-initramfs"
+adapter = "expect"
+probe_line = "agentos-linux-proof"
+probe_marker = "agentos-linux-proof"
 
 [host.build]
 adapter = "linux-merge"

@@ -117,11 +117,13 @@ Guest identity must also stop selecting target implementations. Versioned
 TOML source profiles are validated and compiled by the Rust host tooling into
 a compact, bounded runtime manifest. The target selects generic boot protocols
 and device capabilities from that manifest; artifact acquisition, console
-matchers, provisioning, and test recipes remain host-only profile data. If a
-recipe needs more than static fields, it uses a finite declarative state
-machine interpreted by Rust host tooling, never an arbitrary interpreter in a
-VMM or device-service PD. Debian and Omarchy extend reusable Linux/Arch
-profiles rather than introducing new VMM implementations.
+matchers, provisioning, and test recipes remain host-only profile data.
+Console interaction uses bounded `expect` rules: conjunctions of observed
+markers and optional elapsed-time thresholds trigger bounded byte strings with
+explicit retry ceilings. This finite declarative state machine is interpreted
+only by Rust host tooling, never by a VMM or device-service PD. Debian and
+Omarchy extend reusable Linux/Arch profiles rather than introducing new VMM
+implementations.
 
 Linux baseline acceptance evidence:
 
