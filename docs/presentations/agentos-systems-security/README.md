@@ -7,11 +7,21 @@ virtualization, and security audiences.
 - `FACTS.md` is the claim ledger that must be refreshed from current source and
   runtime evidence before a release edition is rendered.
 
-The portable baseline is Markdown. A future renderer must be implemented in C
-or Rust, write generated files beneath `build/`, preserve editable text and
-speaker notes, and have a top-level Make entry point. No JavaScript, Python,
-HTML, browser runtime, private Literate AI implementation, or mandatory cloud
-connector may be introduced.
+The portable baseline is Markdown. The repository-owned Rust renderer writes a
+PDF and a checksum-bearing QA receipt beneath `build/`, preserves editable text
+and speaker notes in the source, and excludes those notes from audience pages.
+Render a release edition with:
+
+```text
+make presentation-render PRESENTATION_EDITION=0.2.0
+```
+
+The first render leaves `visual_review=required` in the adjacent QA receipt.
+After reviewing the complete contact sheet and representative dense pages,
+rerun with `PRESENTATION_VISUAL_REVIEW=1` to record that manual check.
+
+No JavaScript, Python, HTML, browser runtime, private Literate AI
+implementation, or mandatory cloud connector is involved.
 
 ## Edition policy
 

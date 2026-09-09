@@ -5,134 +5,70 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-09-09
+
 ### Security
-- EventBus topic ownership prevents PD squatting (publish_as + Unauthorized error)
-- EventBus per-subscriber queue cap (256 events) for backpressure
-- CapabilitySet delegation chain recorded with SHA-256 attestation hash
-- WASM linear memory bounds capped at 4MB; host import bounds checked
-- SpawnServer ELF images hashed (SHA-256) and verified by app_slot on load
-- NameServer gated lookup (OP_NS_LOOKUP_GATED) with badge authorization
-- VFS path normalization: `..` resolution and inode cycle detection
-- WASM capability manifest SHA-256 verification before cap grants
-- Capability class annotations on all shared memory regions
-- ChaCha20-Poly1305 encrypted IPC between mesh PDs (`2adbe15`)
-- Ed25519 WASM module verification before slot allocation (`ec58583`, `f3f327e`)
-- cap_audit_log PD: seL4 capability grant/revoke audit trail (`1cfffeb`)
-- Boot integrity measurement chain wired into SDF CI gate (`4ae5153`)
-- net_isolator PD: per-agent outbound network firewall via seL4 capability model (`2489ef3`)
-- Priority inheritance for passive PD PPC calls to prevent inversion (`f91f026`)
-- Watchdog hardening with 4-tier escalation and restart throttling (`732c2ff`)
-- Capability attenuation: OP_CAP_ATTENUATE for sub-delegation (`f3bb3f3`)
 
-### Features
-- Evidence-bound release workflow with plan, prepare, check, publish, and
-  remote-asset verification phases
-- Authenticated Ubuntu desktop gate with deterministic RFB frame evidence and
-  packet capture
-- One-command dual-guest showcase: `make demo` boots Ubuntu and FreeBSD
-  concurrently, proves key-only SSH to both, and retains them for manual
-  sessions; `make demo-test` provides the non-interactive acceptance gate.
-- `make setup` installs host dependencies and the shared Microkit SDK;
-  `make demo-smoke` provides a fast host-only preflight.
-- Board abstraction system: `BOARD_NAME` variable selects `boards/<name>/board.mk`; auto-derived from `TARGET_ARCH` for QEMU dev builds (`make build BOARD_NAME=rpi5`, `make build BOARD_NAME=intel-nuc`)
-- boards/rpi5: full AArch64 system manifest with PL011 UART, GIC IRQ, linux_vmm native stub
-- boards/intel-nuc: x86_64 system manifest with NS16550 UART at MMIO 0xFE034000; console_shell ring-buffer RX path (Microkit 2.1.0 lacks x86_64 IRQ support)
-- linux_vmm native stub (`LINUX_VMM_NATIVE_STUB`): bare-metal AArch64 boards compile linux_vmm as a no-op PD without libvmm's QEMU-specific GIC addresses
-- console_shell PD added to aarch64 QEMU, rpi5, and intel-nuc system manifests (priority 49, channels 41/42)
-- Bridge: `GET /api/agentos/console/stream` SSE endpoint — streams serial log lines live with optional `?slot=N` filter and historical replay on connect
-- Bridge: `POST /api/agentos/console/cmd` — injects commands to seL4 console_shell via QEMU serial socket
-- Bridge: `GET /api/agentos/console/vms` — seL4 VM lifecycle registry distinct from QEMU-hosted VMs
-- Bridge serial reader: intercepts `\x01VM:start/stop:id` escape sequences from console_shell PD to track seL4 VM state
-- Multi-pane dashboard: Topology, Console, Profiler, Agents, Images, Docs panels (`270a825`)
-- Collapsible sidebar with mini topology SVG + system stat chips
-- Full SVG topology graph with live CPU/mem overlays and edge animation
-- WASM agent simulation layer (wasmi 0.31): SimEngine, SimCapStore, SimEventBus (`e74d6c1`)
-- run-agent CLI: load and execute signed WASM agents on the host
-- WASM agent signature verification (agentos.signature section, SHA-512)
-- Multi-agent orchestration via SimOrchestrator with channel routing
-- Console tab: default landing panel; Getting Started banner when offline
-- Agents panel: Spawn Agent modal with name + swap-slot selection
-- Topology: per-node title tooltips + status dot legend (`6680b7a`, `3e475f8`)
-- Sidebar nav: text labels always visible
-- Images panel: Import Image button + Download Buildroot shortcut
-- Profiler: CPU threshold legend (0-60% normal, 60-90% hot, 90%+ critical) (`63dc89e`)
-- Slot picker: grouped by category + View in Topology link
-- trace_recorder PD: full 512-entry circular ring with START/STOP/QUERY/DUMP (`81d2c36`)
-- Runtime capability policy loading from binary blob (cap_policy.bin)
-- Per-agent fault restart policy (max_restarts, escalation threshold) (`755ff96`)
-- tools/gen-channels: auto-generate typed channel enums from agentos.system
-- tools/gen-policy: compile policy.txt to binary cap_policy.bin
-- GitHub Actions CI: cargo test, trunk build, WASM examples, QEMU boot test (`4732120`)
-- WASM examples: health-monitor and log-aggregator agents
-- docs/ui-audit.md: expert UX evaluation against virt-manager/VMware Fusion (`bfda2ec`)
-- Fault injection framework + CI adversarial test suite (`8696592`)
-- Seeded ring buffer library with typed shared-memory channels (`814fdb9`)
-- seL4 secure inter-VM GPU zero-copy shared memory channel (`8434b1a`)
-- Capability attestation: cap_broker_attest() with SHA-256 signed snapshot (`cacf418`, `927564a`)
-- CAmkES-style SDF generator: gen_sdf.py + topology.yaml (`e9df40b`)
-- topology.yaml validation gate in GitHub Actions CI (`498b332`)
-- seL4 time-partitioning scheduler PD: fixed CPU budget per agent class (`8f581a0`)
-- OP_PUBLISH_BATCH: coalesce up to 16 MsgBus events per seL4_Call (`7d91ef4`, `f5f48dd`)
-- console_mux PD: session multiplexer ('tmux for agentOS') (`844d37c`)
-- VibeEngine hot-reload: zero-downtime WASM slot update (OP_VIBE_HOTRELOAD 0x47) (`6d33f96`)
-- VM multiplexer: create/destroy/switch 4 FreeBSD instances under seL4 (`5cf9a1d`)
-- mem_profiler PD: per-slot WASM heap tracking, leak detection, quota alerts (`3298a02`)
-- OOM killer PD: score-based WASM slot eviction under memory pressure (`6056ffa`)
-- snapshot_sched PD: periodic WASM slot checkpointing to AgentFS (`45aa96b`, `f93913d`)
-- cap_policy hot-reload: OP_CAP_POLICY_RELOAD updates grants without reboot (`fc75085`, `f5f3392`)
-- core_affinity PD: CPU affinity scheduling for WASM slots (`d9faecd`)
-- agentctl ncurses TUI for pre-boot menu and console session manager (`1b2918c`)
-- x86_64 Linux VMM stub and system manifest (`31226a7`)
-- FreeBSD VMM: boot FreeBSD AArch64 as VM guest under seL4 (`a7aaf13`)
-- power_mgr PD: DVFS thermal management for sparky GB10 (`1011c1e`)
-- dev_shell PD: interactive seL4 debug REPL for QEMU (`4b15330`, `3d4f2b7`)
-- Raft consensus for distributed agent mesh (`2adbe15`)
-- GPU scheduler PD for CUDA workload routing on Sparky (`0fe9d12`, `b1a5d3e`)
-- CUDA PTX compute offload via WASM custom sections (agentos.cuda) (`bfe77c0`)
-- Distributed agent mesh PD + SquirrelBus bridge (`e3518e5`)
-- WASM module registry cache + boot replay (`e683af6`)
-- Linux VMM integration via libvmm (AArch64) (`895f2fe`)
-- ARM64 (AArch64) port: builds and boots on QEMU virt (`90d0b5d`)
-- VibeEngine PD: WASM hot-swap pipeline (`fc4329f`)
-- quota_pd: per-agent CPU/memory quota enforcement with seL4 cap revocation (`18f8799`, `6a3ee67`)
-- debug_bridge_pd: seL4 debug channel for live WASM slot debugging (`93e59dc`)
-- IPC perf counters PD + wasm3 heap_stats hook (`de1fdb4`)
-- Multi-arch build system: riscv64, aarch64, x86_64 (`08d84fb`)
-- Profiler tab: live WASM slot flame graph on dashboard (`63dc89e`)
-- agentOS Python SDK (agentos_sdk) (`a1a7b9c`)
-- Release automation via `make release` (cargo xtask) (`26d72ac`)
-- Full-duplex console, trace_recorder PD, FreeBSD lazy loader, API tests (`7ef82d3`)
-- Idempotent guest OS fetch wired into make + GUI download buttons (`b23597d`)
-- xterm.js terminal console dashboard (`b472afb`)
-- Rust migration: all userspace and build tooling from Python/JS to Rust (`bd589c4`)
-- agentOS v0.1.0-alpha: first boot (`8650b14`)
+- Give each physical device frame and IRQ one agentOS driver PD owner; Linux
+  and FreeBSD guests receive no host MMIO or interrupt capabilities.
+- Translate and bounds-check guest physical addresses for VirtIO net, block,
+  console, sound, and diagnostic paths instead of identity-mapping guest RAM
+  into a VMM.
+- Isolate Linux and FreeBSD guest VSpaces and reserve their RAM before loading
+  ordinary PD images.
+- Preserve queue ownership under backpressure: receive traffic drains across
+  descriptor cycles, and rejected console frames are retried without silently
+  diverting bytes to an inactive early console.
+- Require distinct, ephemeral, key-only SSH identities for automated guest
+  access. The experimental desktop protocol is designed to remain confined to
+  an authenticated SSH tunnel.
+- Enforce the repository-wide C, Rust, and Assembly language policy and remove
+  the repository-owned interactive UI path.
 
-### Build
-- Correct modern virtio-net host headers so guest Ethernet and SSH traffic
-  remain byte-aligned
-- Enforce the repository-wide C/Rust/Assembly and no-UI policy in host gates
-- Kernel builds cleanly for riscv64 and aarch64 targets (`806be81`, `f319000`)
-- Fixed: duplicate opcode OP_CAP_POLICY_RELOAD in agentos.h (`806be81`)
-- Fixed: SWAP_SLOT_BASE_CH was 8, corrected to 30
-- Fixed: off-by-one in log.c hex buffer (buf[18]→buf[19]) (`fab13bb`)
-- Fixed: NULL and integer limit macro redefinition guards
-- Fixed: QEMU TCG flags on Apple Silicon (aarch64 cortex-a53, no HVF) (`fab13bb`)
-- Fixed: WASM bounds checking and priority inversion (`33c1531`, `08e512c`)
-- Fixed: ring buffer overflow signal (`33c1531`)
-- Fixed: five major OS security findings addressed in two passes (`c8dd3ea`, `0c5dbdd`)
-- Fixed: critical OS security findings from design review (`ec868f8`, `8e98874`)
-- channels_generated.h auto-generated from agentos.system XML
-- Fixed: console_log migration build breaks — missing includes, redef, invalid channel id (`1f1fb41`)
-- Fixed: controller PD crash and serial output wiring to console panes (`dc2fbda`)
-- Fixed: bridge-as-server socket so QEMU connects as client (`94c6af7`)
-- Fixed: duplicate res.writeHead() in /api/vm/images handler (`72ec0ba`)
-- Fixed: cortex-a72 CPU for TCG (host CPU requires KVM/HVF) (`d1b2d6e`)
-- Fixed: m3_bare_metal.c missing from PD_MONITOR_SRCS on ARM64 (`9f7224a`)
-- Fixed: Homebrew split llvm/lld formulae on macOS (`9133e82`)
-- Fixed: Microkit SDK download + Homebrew LLVM PATH for macOS (`c8f243e`)
-- Fixed: stale microkit-sdk symlink removed (`1415452`)
-- Fixed: git submodule auto-initialisation when missing (`08dca11`)
-- Fixed: console renamed to agentOS console with build error fixes (`c2da13e`)
-- Fixed: controller links, system file validity (`9fd898f`)
-- scripts/boot-test.sh: reusable QEMU serial banner verification with configurable timeout
-- .github/workflows/ci.yml: dedicated boot-test job (riscv64 + QEMU serial banner check)
+### Added
+
+- VMM-emulated VirtIO net, block, and console devices backed by agentOS-owned
+  driver and virtualizer queues. QEMU VirtIO transports are host-hardware
+  stand-ins only and are not advertised to guests.
+- Guest-visible packet, block-I/O, and bidirectional console proofs for the
+  Buildroot and Ubuntu AArch64 paths.
+- Ubuntu 26.04 and FreeBSD 15.0 AArch64 guest lifecycle paths with isolated
+  memory, separate network identities, independent block media, and a staged
+  concurrent authenticated-SSH acceptance gate.
+- An experimental Ubuntu software-desktop gate that starts the graphical
+  workload in the guest and can record a bounded RFB 3.8 raw-frame checksum
+  through SSH. It is not part of the v0.2 OS release claim.
+- A native agent sDDF network client alongside the VMM clients, demonstrating
+  that native components and compatibility guests share the same virtualizer
+  boundary.
+- An evidence-bound Rust release workflow with read-only planning, metadata
+  preparation, exact-revision gates, authorized publication, annotated tags,
+  receipts, and remote verification.
+- A repository-owned Rust PDF renderer for the release systems/security deck,
+  with source- and fact-ledger hashes plus structural QA evidence.
+- Executable GitHub Actions coverage for host contracts, both root-task
+  architectures, Buildroot guest I/O, and the Ubuntu agentOS-VirtIO path.
+
+### Changed
+
+- Make is the canonical setup, build, test, demo, and release interface.
+- Host setup fails closed when required guest-staging or target tools are
+  unavailable and uses one configurable external Microkit SDK.
+- Guest lifecycle and console handling share common flavor-neutral validation,
+  while Linux and FreeBSD retain separate VMM implementations for now.
+- Release claims are explicitly tiered: host tests, target tests, guest-visible
+  behavior, concurrent authenticated access, and desktop evidence are distinct
+  gates.
+
+### Known limitations
+
+- The agentOS target and emulated-device paths are qualified on QEMU AArch64.
+  The x86_64 target proves the reduced agentOS root-task topology only; it does
+  not yet execute an x86 guest.
+- Ubuntu live-media boot is not release-qualified: systemd 259.5 can stall
+  before login under QEMU TCG. Consequently, concurrent Ubuntu/FreeBSD SSH and
+  the software-desktop path remain experimental in v0.2.
+- Canonical VirtIO GPU and input devices are future work.
+- FreeBSD acceptance uses read-only live media and an ephemeral SSH setup.
+- The release is development evidence, not a completed production security,
+  availability, side-channel, or bare-metal qualification.

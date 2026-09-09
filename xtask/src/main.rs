@@ -2,10 +2,11 @@ use clap::{Parser, Subcommand};
 use xtask::{
     cmd_ci_matrix, cmd_extract_freebsd_file, cmd_fault_inject, cmd_fetch_guest, cmd_gen_abi,
     cmd_gen_caps, cmd_gen_channels, cmd_gen_image, cmd_gen_pd_bundle, cmd_gen_policy,
-    cmd_host_test, cmd_policy_check, cmd_release, cmd_run_tests, cmd_setup, cmd_test, cmd_test_api,
-    CiMatrixArgs, ExtractFreebsdFileArgs, FaultInjectArgs, FetchGuestArgs, GenAbiArgs, GenCapsArgs,
-    GenChannelsArgs, GenImageArgs, GenPdBundleArgs, GenPolicyArgs, HostTestArgs, PolicyCheckArgs,
-    ReleaseArgs, RunTestsArgs, SetupArgs, TestApiArgs, TestArgs,
+    cmd_host_test, cmd_policy_check, cmd_release, cmd_render_deck, cmd_run_tests, cmd_setup,
+    cmd_test, cmd_test_api, CiMatrixArgs, ExtractFreebsdFileArgs, FaultInjectArgs, FetchGuestArgs,
+    GenAbiArgs, GenCapsArgs, GenChannelsArgs, GenImageArgs, GenPdBundleArgs, GenPolicyArgs,
+    HostTestArgs, PolicyCheckArgs, ReleaseArgs, RenderDeckArgs, RunTestsArgs, SetupArgs,
+    TestApiArgs, TestArgs,
 };
 
 #[derive(Parser)]
@@ -30,6 +31,9 @@ enum Cmd {
     FetchGuest(FetchGuestArgs),
     /// Automated release (version bump + git tag)
     Release(ReleaseArgs),
+    /// Render the release presentation and its deterministic QA receipt.
+    #[command(name = "render-deck")]
+    RenderDeck(RenderDeckArgs),
     /// Run the libvmm CI test matrix
     CiMatrix(CiMatrixArgs),
     /// Compile and run the API test suite only (TAP output)
@@ -71,6 +75,7 @@ fn main() -> anyhow::Result<()> {
         Cmd::Setup(a) => cmd_setup::run(&a),
         Cmd::FetchGuest(a) => cmd_fetch_guest::run(&a),
         Cmd::Release(a) => cmd_release::run(&a),
+        Cmd::RenderDeck(a) => cmd_render_deck::run(&a),
         Cmd::CiMatrix(a) => cmd_ci_matrix::run(&a),
         Cmd::TestApi(a) => cmd_test_api::run(&a),
         Cmd::RunTests(a) => cmd_run_tests::run(&a),

@@ -14,6 +14,7 @@ pub mod cmd_gen_policy;
 pub mod cmd_host_test;
 pub mod cmd_policy_check;
 pub mod cmd_release;
+pub mod cmd_render_deck;
 pub mod cmd_run_tests;
 pub mod cmd_setup;
 pub mod cmd_test;
@@ -147,6 +148,31 @@ pub struct SetupArgs {
     /// Install missing tools automatically (macOS: brew, Linux: apt-get)
     #[arg(long)]
     pub install: bool,
+}
+
+#[derive(clap::Args)]
+pub struct RenderDeckArgs {
+    /// Editable Markdown slide source.
+    #[arg(
+        long,
+        default_value = "docs/presentations/agentos-systems-security/deck.md"
+    )]
+    pub input: std::path::PathBuf,
+    /// Factual claim ledger bound into the QA receipt.
+    #[arg(
+        long,
+        default_value = "docs/presentations/agentos-systems-security/FACTS.md"
+    )]
+    pub facts: std::path::PathBuf,
+    /// Generated PDF path. The QA receipt is written beside it.
+    #[arg(long)]
+    pub output: std::path::PathBuf,
+    /// Release or presentation edition recorded in the PDF footer and receipt.
+    #[arg(long)]
+    pub edition: String,
+    /// Record that the rendered contact sheet and representative full-size pages were reviewed.
+    #[arg(long)]
+    pub visual_review: bool,
 }
 
 #[derive(clap::Args)]

@@ -6,6 +6,10 @@ security reviewers.
 Central claim: a guest operating system should be a replaceable,
 least-authority component of the machine—not the machine's trusted center.
 
+For operating-systems implementers, virtualization engineers, and security
+reviewers: make each guest OS a replaceable, least-authority component rather
+than the machine's trusted center.
+
 > Speaker notes: This is a technical argument, not a product launch. Separate
 > source-backed current behavior from gates still under qualification and from
 > roadmap architecture on every page.
@@ -279,7 +283,7 @@ Guest support still requires:
 
 ## 13. Releases bind claims to one revision
 
-**0.2 release-engineering milestone**
+**Current release mechanism**
 
 ```text
 plan (read-only)
@@ -292,9 +296,9 @@ plan (read-only)
 The plan names the claims and their gates. Any change to code, policy, gate
 selection, or artifacts invalidates the checked receipt.
 
-> Speaker notes: Today the repository has overlapping shell and Rust release
-> mutation paths. `docs/RELEASES.md` records the replacement protocol; do not
-> present it as implemented until its MAC task closes.
+> Speaker notes: `xtask release` is the sole mutation authority and the Make
+> targets are thin entry points. The checked receipt and remote verification
+> for this edition are publication evidence created after the deck is frozen.
 
 ---
 

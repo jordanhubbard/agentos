@@ -26,7 +26,7 @@
 
 .DEFAULT_GOAL := help
 
-.PHONY: all setup sdk demo demo-check demo-smoke demo-test demo-desktop demo-desktop-test demo-clean install deps deps-tools submodules channels format policy-check run run-fast run-dual-ssh test test-guest-login test-guest-net test-guest-blk test-guest-console test-ubuntu-virtio test-ubuntu-live sel4-test-image run-tests test-snapshot-sched test-power-mgr test-proc-server test-vibeos-contract test-integration test-host gate gate-aarch64 gate-x86_64 e2e e2e-guest e2e-contract e2e-dual-os e2e-ubuntu-amd64 e2e-ubuntu-arm64 e2e-nixos e2e-freebsd15 e2e-all bootstrap-guest clean clean-all clean-images help release release-minor release-major release-prepare release-check release-publish release-verify fetch-guest build-tools
+.PHONY: all setup sdk demo demo-check demo-smoke demo-test demo-desktop demo-desktop-test demo-clean install deps deps-tools submodules channels format policy-check run run-fast run-dual-ssh test test-guest-login test-guest-net test-guest-blk test-guest-console test-ubuntu-virtio test-ubuntu-live sel4-test-image run-tests test-snapshot-sched test-power-mgr test-proc-server test-vibeos-contract test-integration test-host gate gate-aarch64 gate-x86_64 e2e e2e-guest e2e-contract e2e-dual-os e2e-ubuntu-amd64 e2e-ubuntu-arm64 e2e-nixos e2e-freebsd15 e2e-all bootstrap-guest clean clean-all clean-images help release release-minor release-major release-prepare release-check release-publish release-verify presentation-render fetch-guest build-tools
 
 # ─── Read config.yaml (if present) ───────────────────────────────────────────
 CONFIG_TARGET := $(shell grep '^target_arch:' config.yaml 2>/dev/null | sed 's/target_arch:[[:space:]]*//' | tr -d '[:space:]')
@@ -1087,6 +1087,13 @@ release-verify:
 		(echo "Usage: make release-verify RELEASE_VERSION=X.Y.Z" && exit 1)
 	@cargo xtask release verify --version $(RELEASE_VERSION)
 
+PRESENTATION_EDITION ?= dev
+PRESENTATION_PDF ?= build/presentations/agentos-systems-security-v$(PRESENTATION_EDITION).pdf
+
+presentation-render:
+	@cargo xtask render-deck --edition $(PRESENTATION_EDITION) --output $(PRESENTATION_PDF) \
+		$(if $(filter 1,$(PRESENTATION_VISUAL_REVIEW)),--visual-review,)
+
 # =============================================================================
 # help
 # =============================================================================
@@ -1172,6 +1179,7 @@ help:
 	@echo "  make policy-check     Enforce language/UI policy and xtask formatting"
 	@echo "  make release          Print a read-only patch-release plan"
 	@echo "  make release-prepare/check/publish/verify  Advance explicit release states"
+	@echo "  make presentation-render PRESENTATION_EDITION=X.Y.Z  Render and validate the release PDF"
 	@echo ""
 	@echo "Quick start:"
 	@echo "  make setup"
