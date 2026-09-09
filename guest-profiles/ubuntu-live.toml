@@ -32,6 +32,76 @@ dtb_sha256 = "eb6f1cd470687badf9988baa0210a56319f6ccce0f740078cf7a63740f457d8e"
 [host.qemu]
 memory = "3G"
 
+[host.desktop]
+adapter = "rfb-over-ssh"
+local_port = 15901
+guest_port = 5901
+provision_timeout_secs = 1200
+frame_timeout_secs = 600
+io_timeout_secs = 180
+provision_script = '''set -eu
+TIGERVNC_DEB=/tmp/tigervnc-standalone-server.deb
+TIGERVNC_URL=http://archive.ubuntu.com/ubuntu/pool/universe/t/tigervnc/tigervnc-standalone-server_1.15.0+dfsg-2build1_arm64.deb
+TIGERVNC_SHA256=30e536f05a504ad817b294abee51394143e140c57e4b4cea43c149973cfba3b2
+if ! command -v Xtigervnc >/dev/null 2>&1; then
+    TIGERVNC_COMMON_DEB=/tmp/tigervnc-common.deb
+    TIGERVNC_COMMON_URL=http://archive.ubuntu.com/ubuntu/pool/universe/t/tigervnc/tigervnc-common_1.15.0+dfsg-2build1_arm64.deb
+    TIGERVNC_COMMON_SHA256=ee669c6253bde0b9f7b43c270607d560ea27285e88ba7dc379338e1cf91c3d1e
+    timeout 600 wget -q -O "$TIGERVNC_COMMON_DEB" "$TIGERVNC_COMMON_URL"
+    printf '%s  %s\n' "$TIGERVNC_COMMON_SHA256" "$TIGERVNC_COMMON_DEB" | sha256sum -c -
+    timeout 600 wget -q -O "$TIGERVNC_DEB" "$TIGERVNC_URL"
+    printf '%s  %s\n' "$TIGERVNC_SHA256" "$TIGERVNC_DEB" | sha256sum -c -
+    dpkg-deb -x "$TIGERVNC_COMMON_DEB" /
+    dpkg-deb -x "$TIGERVNC_DEB" /
+fi
+command -v Xtigervnc >/dev/null
+command -v gnome-calculator >/dev/null
+printf 'agentos-desktop-binaries-ready\n'
+install -d -o ubuntu -g ubuntu /home/ubuntu/.vnc
+rm -f /tmp/.X1-lock /tmp/.X11-unix/X1 /tmp/agentos-desktop.pid
+setsid -f su -s /bin/sh ubuntu -c 'exec env HOME=/home/ubuntu USER=ubuntu Xtigervnc :1 -rfbport 5901 -rendernode "" -ac -localhost yes -SecurityTypes None -geometry 1024x768 -depth 24' </dev/null >/tmp/agentos-xvnc.log 2>&1
+attempt=0
+while test "$attempt" -lt 120; do
+    test -S /tmp/.X11-unix/X1 && ss -ltn | grep -q ':5901' && break
+    attempt=$((attempt + 1))
+    sleep 1
+done
+if ! test -S /tmp/.X11-unix/X1 || ! ss -ltn | grep -q ':5901'; then
+    cat /tmp/agentos-xvnc.log >&2
+    exit 1
+fi
+printf 'agentos-desktop-rfb-listener-ready\n'
+su -s /bin/sh ubuntu -c 'env HOME=/home/ubuntu USER=ubuntu DISPLAY=:1 dbus-run-session -- gnome-calculator >/tmp/agentos-desktop.log 2>&1 & echo $! >/tmp/agentos-desktop.pid'
+attempt=0
+while test "$attempt" -lt 120; do
+    if pgrep -x Xtigervnc >/dev/null &&
+       test -S /tmp/.X11-unix/X1 &&
+       ss -ltn | grep -q ':5901' &&
+       test -s /tmp/agentos-desktop.pid &&
+       kill -0 "$(cat /tmp/agentos-desktop.pid)" 2>/dev/null; then
+        printf 'agentos-desktop-app-ready\n'
+        break
+    fi
+    attempt=$((attempt + 1))
+    sleep 1
+done
+if ! pgrep -x Xtigervnc >/dev/null ||
+   ! test -S /tmp/.X11-unix/X1 ||
+   ! ss -ltn | grep -q ':5901' ||
+   ! test -s /tmp/agentos-desktop.pid ||
+   ! kill -0 "$(cat /tmp/agentos-desktop.pid)" 2>/dev/null; then
+    cat /tmp/agentos-xvnc.log /tmp/agentos-desktop.log >&2
+    exit 1
+fi
+RFB_VERSION="$(timeout 120 bash -c 'exec 3<>/dev/tcp/127.0.0.1/5901; IFS= read -r version <&3; printf "%s" "$version"')"
+if test "$RFB_VERSION" != 'RFB 003.008'; then
+    printf 'unexpected local RFB version: %s\n' "$RFB_VERSION" >&2
+    cat /tmp/agentos-xvnc.log /tmp/agentos-desktop.log >&2
+    exit 1
+fi
+printf 'agentos-desktop-local-rfb-ready\n'
+'''
+
 [host.console]
 adapter = "expect"
 success = ["$ "]

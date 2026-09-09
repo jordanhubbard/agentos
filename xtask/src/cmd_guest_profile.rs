@@ -130,6 +130,7 @@ struct Placement {
 struct Host {
     qemu: Option<Qemu>,
     console: Option<HostConsole>,
+    desktop: Option<HostDesktop>,
     build: Option<HostBuild>,
     #[serde(default)]
     acquire: Vec<RecipeStep>,
@@ -137,6 +138,18 @@ struct Host {
     provision: Vec<RecipeStep>,
     #[serde(default)]
     test: Vec<RecipeStep>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct HostDesktop {
+    adapter: String,
+    local_port: u16,
+    guest_port: u16,
+    provision_timeout_secs: u64,
+    frame_timeout_secs: u64,
+    io_timeout_secs: u64,
+    provision_script: String,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -229,8 +242,19 @@ pub(crate) struct HostProfilePlan {
     pub(crate) media_initrd_path: Option<String>,
     pub(crate) qemu: Option<QemuPlan>,
     pub(crate) console: ConsolePlan,
+    pub(crate) desktop: Option<DesktopPlan>,
     pub(crate) provision: Vec<RecipeStep>,
     pub(crate) test: Vec<RecipeStep>,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct DesktopPlan {
+    pub(crate) local_port: u16,
+    pub(crate) guest_port: u16,
+    pub(crate) provision_timeout_secs: u64,
+    pub(crate) frame_timeout_secs: u64,
+    pub(crate) io_timeout_secs: u64,
+    pub(crate) provision_script: String,
 }
 
 #[derive(Clone, Debug)]
@@ -449,6 +473,16 @@ pub(crate) fn host_profile_plan(root: &Path, path: &Path) -> Result<HostProfileP
                 probe_timeout_secs: console.probe_timeout_secs.unwrap_or(20),
             })
             .unwrap_or_default(),
+        desktop: host
+            .and_then(|value| value.desktop.as_ref())
+            .map(|desktop| DesktopPlan {
+                local_port: desktop.local_port,
+                guest_port: desktop.guest_port,
+                provision_timeout_secs: desktop.provision_timeout_secs,
+                frame_timeout_secs: desktop.frame_timeout_secs,
+                io_timeout_secs: desktop.io_timeout_secs,
+                provision_script: desktop.provision_script.clone(),
+            }),
         provision: host
             .map(|value| value.provision.clone())
             .unwrap_or_default(),
@@ -1270,6 +1304,38 @@ fn validate_host(host: Option<&Host>) -> Result<()> {
             "host.console.probe_timeout_secs must be 1..3600"
         );
     }
+    if let Some(desktop) = &host.desktop {
+        enum_value(&desktop.adapter, &["rfb-over-ssh"])?;
+        ensure!(
+            desktop.local_port != 0
+                && desktop.guest_port != 0
+                && desktop.local_port != desktop.guest_port,
+            "host.desktop ports must be nonzero and distinct"
+        );
+        for (field, seconds) in [
+            ("provision_timeout_secs", desktop.provision_timeout_secs),
+            ("frame_timeout_secs", desktop.frame_timeout_secs),
+            ("io_timeout_secs", desktop.io_timeout_secs),
+        ] {
+            ensure!(
+                (1..=3600).contains(&seconds),
+                "host.desktop.{field} must be 1..3600"
+            );
+        }
+        ensure!(
+            !desktop.provision_script.is_empty()
+                && desktop.provision_script.len() <= 16 * 1024
+                && !desktop.provision_script.contains('\0'),
+            "host.desktop.provision_script is invalid or exceeds 16 KiB"
+        );
+        ensure!(
+            host.qemu
+                .as_ref()
+                .and_then(|qemu| qemu.ssh.as_ref())
+                .is_some(),
+            "host.desktop requires host.qemu.ssh"
+        );
+    }
     if let Some(build) = &host.build {
         enum_value(&build.adapter, &["linux-merge", "fdt-template"])?;
         validate_repo_relative(&build.template, "host.build.template")?;
@@ -1715,6 +1781,7 @@ mod tests {
             host: Some(Host {
                 qemu: None,
                 console: None,
+                desktop: None,
                 build: None,
                 acquire: steps,
                 provision: Vec::new(),
@@ -1773,6 +1840,7 @@ mod tests {
         let host = Host {
             qemu: None,
             console: Some(console.clone()),
+            desktop: None,
             build: None,
             acquire: Vec::new(),
             provision: Vec::new(),
@@ -1803,6 +1871,25 @@ mod tests {
         assert_eq!(plan.qemu.as_ref().unwrap().media[0].bus, 8);
         assert!(plan.test.iter().any(|step| step.action == "assert-virtio"
             && step.args.get("scope").map(String::as_str) == Some("host-backed")));
+        assert_eq!(plan.desktop.as_ref().unwrap().local_port, 15901);
+    }
+
+    #[test]
+    fn desktop_profile_policy_is_bounded_and_fail_closed() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../guest-profiles");
+        let (mut profile, _) = resolve(&root, Path::new("ubuntu-live.toml"), &mut Vec::new())
+            .expect("resolve desktop profile");
+        assert!(validate(&profile, None).is_ok());
+
+        profile
+            .host
+            .as_mut()
+            .unwrap()
+            .desktop
+            .as_mut()
+            .unwrap()
+            .local_port = 0;
+        assert!(validate(&profile, None).is_err());
     }
 
     #[test]

@@ -1,4 +1,4 @@
-use crate::cmd_guest_profile::{self, HostProfilePlan};
+use crate::cmd_guest_profile::{self, DesktopPlan, HostProfilePlan};
 use crate::guest_scenario::{self, HostScenarioPlan, ScenarioGuestPlan};
 use crate::{rfb, TestArgs};
 use anyhow::Context;
@@ -11,12 +11,6 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Stdio};
 use std::time::{Duration, Instant};
 
-const UBUNTU_DEFAULT_SSH_PORT: u16 = 12222;
-const FREEBSD_DEFAULT_SSH_PORT: u16 = 12223;
-const UBUNTU_DESKTOP_PORT: u16 = 15901;
-const UBUNTU_VNC_GUEST_PORT: u16 = 5901;
-const UBUNTU_DESKTOP_RFB_TIMEOUT: Duration = Duration::from_secs(600);
-const UBUNTU_DESKTOP_RFB_IO_TIMEOUT: Duration = Duration::from_secs(180);
 const SSH_AUTH_OPTIONS: &[&str] = &[
     "-o",
     "BatchMode=yes",
@@ -98,7 +92,7 @@ fn requested_virtio_assertion(
     args: &TestArgs,
     profile: Option<&HostProfilePlan>,
 ) -> Option<VirtioAssertion> {
-    if args.assert_agentos_virtio || args.assert_ubuntu_live || args.assert_desktop {
+    if args.assert_agentos_virtio || args.assert_live || args.assert_desktop {
         return Some(VirtioAssertion {
             devices: vec!["net".into(), "block".into(), "console".into()],
             host_backed: true,
@@ -228,7 +222,7 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
     let large_guest = profile_plan
         .as_ref()
         .is_some_and(|profile| profile.media_initrd_path.is_some())
-        || args.assert_ubuntu_live
+        || args.assert_live
         || args.assert_desktop
         || args.guest_os == "both";
     let virtio_assertion = requested_virtio_assertion(args, profile_plan.as_ref());
@@ -251,7 +245,7 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
         || args.assert_emulated_blk
         || args.assert_emulated_console
         || args.assert_agentos_virtio
-        || args.assert_ubuntu_live
+        || args.assert_live
         || args.assert_desktop
     {
         anyhow::ensure!(
@@ -269,12 +263,20 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
             "VirtIO console assertions require one runtime guest profile"
         );
     }
-    if args.assert_ubuntu_live || args.assert_desktop {
+    if args.assert_live || args.assert_desktop {
         anyhow::ensure!(
             profile_plan
                 .as_ref()
                 .is_some_and(|profile| profile.media_initrd_path.is_some()),
             "live-media assertions require a profile with boot.media_initrd_path"
+        );
+    }
+    if args.assert_desktop {
+        anyhow::ensure!(
+            profile_plan
+                .as_ref()
+                .is_some_and(|profile| profile.desktop.is_some()),
+            "desktop assertion requires a profile with host.desktop policy"
         );
     }
 
@@ -415,7 +417,7 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
         let key = ssh_key
             .as_ref()
             .context("desktop SSH key was not generated")?;
-        match prove_ubuntu_desktop(
+        match prove_profile_desktop(
             &cc_sock,
             profile_plan
                 .as_ref()
@@ -464,8 +466,8 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
     if result.is_ok() {
         if let Some(evidence) = desktop_evidence {
             result = Ok(format!(
-                "{}; Ubuntu desktop RFB {}x{} bytes={} fnv1a64={:016x} name={:?}",
-                result.as_deref().unwrap_or("Ubuntu live guest ready"),
+                "{}; profile desktop RFB {}x{} bytes={} fnv1a64={:016x} name={:?}",
+                result.as_deref().unwrap_or("guest profile ready"),
                 evidence.width,
                 evidence.height,
                 evidence.bytes_received,
@@ -480,11 +482,23 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
             .as_ref()
             .context("persistent SSH key was not generated")?;
         result = if args.assert_desktop {
-            wait_for_manual_desktop(key, &mut qemu)
-                .map(|()| String::from("manual Ubuntu desktop session completed"))
+            wait_for_manual_desktop(
+                key,
+                profile_plan
+                    .as_ref()
+                    .context("desktop session requires a resolved profile")?,
+                &mut qemu,
+            )
+            .map(|()| String::from("manual profile desktop session completed"))
         } else {
-            wait_for_manual_dual_ssh(key, &mut qemu)
-                .map(|()| String::from("manual dual SSH session completed"))
+            wait_for_manual_dual_ssh(
+                key,
+                scenario_plan
+                    .as_ref()
+                    .context("manual scenario requires a resolved plan")?,
+                &mut qemu,
+            )
+            .map(|()| String::from("manual dual SSH session completed"))
         };
     }
 
@@ -516,10 +530,14 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
     }
 }
 
-fn wait_for_manual_dual_ssh(ssh_key: &SshTestKey, qemu: &mut Child) -> anyhow::Result<()> {
+fn wait_for_manual_dual_ssh(
+    ssh_key: &SshTestKey,
+    scenario: &HostScenarioPlan,
+    qemu: &mut Child,
+) -> anyhow::Result<()> {
     ensure_qemu_running(qemu, "entering manual dual SSH mode")?;
     println!("\nDual guests are running with authenticated SSH:");
-    for command in manual_ssh_commands(&ssh_key.private_key) {
+    for command in manual_ssh_commands(&ssh_key.private_key, scenario)? {
         println!("  {command}");
     }
     println!("Press Enter here to stop both guests and QEMU.");
@@ -532,14 +550,28 @@ fn wait_for_manual_dual_ssh(ssh_key: &SshTestKey, qemu: &mut Child) -> anyhow::R
     ensure_qemu_running(qemu, "leaving manual dual SSH mode")
 }
 
-fn wait_for_manual_desktop(ssh_key: &SshTestKey, qemu: &mut Child) -> anyhow::Result<()> {
-    ensure_qemu_running(qemu, "entering manual Ubuntu desktop mode")?;
-    println!("\nUbuntu is running a tunnel-confined VNC desktop:");
-    println!("  vncviewer 127.0.0.1:{}", UBUNTU_DESKTOP_PORT);
+fn wait_for_manual_desktop(
+    ssh_key: &SshTestKey,
+    profile: &HostProfilePlan,
+    qemu: &mut Child,
+) -> anyhow::Result<()> {
+    let desktop = profile
+        .desktop
+        .as_ref()
+        .context("profile has no host.desktop plan")?;
+    let ssh = profile
+        .qemu
+        .as_ref()
+        .and_then(|qemu| qemu.ssh.as_ref())
+        .context("desktop profile has no host.qemu.ssh plan")?;
+    ensure_qemu_running(qemu, "entering manual profile desktop mode")?;
+    println!("\n{} is running a tunnel-confined VNC desktop:", profile.id);
+    println!("  vncviewer 127.0.0.1:{}", desktop.local_port);
     println!(
-        "  ssh -i '{}' -p {} -o IdentitiesOnly=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null ubuntu@127.0.0.1",
+        "  ssh -i '{}' -p {} -o IdentitiesOnly=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null {}@127.0.0.1",
         ssh_key.private_key.display(),
-        UBUNTU_DEFAULT_SSH_PORT
+        ssh.host_port,
+        ssh.account,
     );
     println!("Press Enter here to stop the guest, SSH tunnel, and QEMU.");
 
@@ -551,22 +583,26 @@ fn wait_for_manual_desktop(ssh_key: &SshTestKey, qemu: &mut Child) -> anyhow::Re
         bytes != 0,
         "manual desktop mode requires an interactive stdin"
     );
-    ensure_qemu_running(qemu, "leaving manual Ubuntu desktop mode")
+    ensure_qemu_running(qemu, "leaving manual profile desktop mode")
 }
 
-fn manual_ssh_commands(private_key: &Path) -> [String; 2] {
-    [
-        format!(
-            "ssh -i '{}' -p {} -o IdentitiesOnly=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null ubuntu@127.0.0.1",
-            private_key.display(),
-            UBUNTU_DEFAULT_SSH_PORT
-        ),
-        format!(
-            "ssh -i '{}' -p {} -o IdentitiesOnly=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null root@127.0.0.1",
-            private_key.display(),
-            FREEBSD_DEFAULT_SSH_PORT
-        ),
-    ]
+fn manual_ssh_commands(
+    private_key: &Path,
+    scenario: &HostScenarioPlan,
+) -> anyhow::Result<Vec<String>> {
+    scenario
+        .guests
+        .iter()
+        .map(|guest| {
+            let (account, _) = profile_ssh_expectation(&guest.profile)?;
+            Ok(format!(
+                "ssh -i '{}' -p {} -o IdentitiesOnly=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null {}@127.0.0.1",
+                private_key.display(),
+                guest.ssh_host_port,
+                account
+            ))
+        })
+        .collect()
 }
 
 fn effective_ssh_port(
@@ -1876,98 +1912,42 @@ fn profile_provision_commands(
     Ok(commands)
 }
 
-fn ubuntu_desktop_provision_script() -> &'static str {
-    r#"set -eu
-TIGERVNC_DEB=/tmp/tigervnc-standalone-server.deb
-TIGERVNC_URL=http://archive.ubuntu.com/ubuntu/pool/universe/t/tigervnc/tigervnc-standalone-server_1.15.0+dfsg-2build1_arm64.deb
-TIGERVNC_SHA256=30e536f05a504ad817b294abee51394143e140c57e4b4cea43c149973cfba3b2
-if ! command -v Xtigervnc >/dev/null 2>&1; then
-    TIGERVNC_COMMON_DEB=/tmp/tigervnc-common.deb
-    TIGERVNC_COMMON_URL=http://archive.ubuntu.com/ubuntu/pool/universe/t/tigervnc/tigervnc-common_1.15.0+dfsg-2build1_arm64.deb
-    TIGERVNC_COMMON_SHA256=ee669c6253bde0b9f7b43c270607d560ea27285e88ba7dc379338e1cf91c3d1e
-    timeout 600 wget -q -O "$TIGERVNC_COMMON_DEB" "$TIGERVNC_COMMON_URL"
-    printf '%s  %s\n' "$TIGERVNC_COMMON_SHA256" "$TIGERVNC_COMMON_DEB" | sha256sum -c -
-    timeout 600 wget -q -O "$TIGERVNC_DEB" "$TIGERVNC_URL"
-    printf '%s  %s\n' "$TIGERVNC_SHA256" "$TIGERVNC_DEB" | sha256sum -c -
-    dpkg-deb -x "$TIGERVNC_COMMON_DEB" /
-    dpkg-deb -x "$TIGERVNC_DEB" /
-fi
-command -v Xtigervnc >/dev/null
-command -v gnome-calculator >/dev/null
-printf 'agentos-desktop-binaries-ready\n'
-install -d -o ubuntu -g ubuntu /home/ubuntu/.vnc
-rm -f /tmp/.X1-lock /tmp/.X11-unix/X1 /tmp/agentos-desktop.pid
-setsid -f su -s /bin/sh ubuntu -c 'exec env HOME=/home/ubuntu USER=ubuntu Xtigervnc :1 -rfbport 5901 -rendernode "" -ac -localhost yes -SecurityTypes None -geometry 1024x768 -depth 24' </dev/null >/tmp/agentos-xvnc.log 2>&1
-attempt=0
-while test "$attempt" -lt 120; do
-    test -S /tmp/.X11-unix/X1 && ss -ltn | grep -q ':5901' && break
-    attempt=$((attempt + 1))
-    sleep 1
-done
-if ! test -S /tmp/.X11-unix/X1 || ! ss -ltn | grep -q ':5901'; then
-    cat /tmp/agentos-xvnc.log >&2
-    exit 1
-fi
-printf 'agentos-desktop-rfb-listener-ready\n'
-su -s /bin/sh ubuntu -c 'env HOME=/home/ubuntu USER=ubuntu DISPLAY=:1 dbus-run-session -- gnome-calculator >/tmp/agentos-desktop.log 2>&1 & echo $! >/tmp/agentos-desktop.pid'
-attempt=0
-while test "$attempt" -lt 120; do
-    if pgrep -x Xtigervnc >/dev/null &&
-       test -S /tmp/.X11-unix/X1 &&
-       ss -ltn | grep -q ':5901' &&
-       test -s /tmp/agentos-desktop.pid &&
-       kill -0 "$(cat /tmp/agentos-desktop.pid)" 2>/dev/null; then
-        printf 'agentos-desktop-app-ready\n'
-        break
-    fi
-    attempt=$((attempt + 1))
-    sleep 1
-done
-if ! pgrep -x Xtigervnc >/dev/null ||
-   ! test -S /tmp/.X11-unix/X1 ||
-   ! ss -ltn | grep -q ':5901' ||
-   ! test -s /tmp/agentos-desktop.pid ||
-   ! kill -0 "$(cat /tmp/agentos-desktop.pid)" 2>/dev/null; then
-    cat /tmp/agentos-xvnc.log /tmp/agentos-desktop.log >&2
-    exit 1
-fi
-RFB_VERSION="$(timeout 120 bash -c 'exec 3<>/dev/tcp/127.0.0.1/5901; IFS= read -r version <&3; printf "%s" "$version"')"
-if test "$RFB_VERSION" != 'RFB 003.008'; then
-    printf 'unexpected local RFB version: %s\n' "$RFB_VERSION" >&2
-    cat /tmp/agentos-xvnc.log /tmp/agentos-desktop.log >&2
-    exit 1
-fi
-printf 'agentos-desktop-local-rfb-ready\n'
-"#
-}
-
-fn run_ssh_script(private_key: &Path, script: &str) -> anyhow::Result<String> {
+fn run_ssh_script(
+    private_key: &Path,
+    port: u16,
+    account: &str,
+    timeout: Duration,
+    script: &str,
+) -> anyhow::Result<String> {
     let mut child = std::process::Command::new("ssh");
     child
         .arg("-i")
         .arg(private_key)
-        .args(["-p", &UBUNTU_DEFAULT_SSH_PORT.to_string()])
+        .args(["-p", &port.to_string()])
         .args(SSH_AUTH_OPTIONS)
         .args(SSH_SESSION_LIVENESS_OPTIONS)
-        .args(["ubuntu@127.0.0.1", "sudo -n timeout 1200 sh -s"])
+        .args([
+            &format!("{account}@127.0.0.1"),
+            &format!("sudo -n timeout {} sh -s", timeout.as_secs()),
+        ])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     let mut child = child
         .spawn()
-        .context("failed to launch Ubuntu desktop provisioning over SSH")?;
+        .context("failed to launch profile desktop provisioning over SSH")?;
     child
         .stdin
         .take()
         .context("desktop provisioning SSH stdin was not piped")?
         .write_all(script.as_bytes())
-        .context("failed to send Ubuntu desktop provisioning script")?;
+        .context("failed to send profile desktop provisioning script")?;
     let output = child
         .wait_with_output()
-        .context("failed to wait for Ubuntu desktop provisioning")?;
+        .context("failed to wait for profile desktop provisioning")?;
     anyhow::ensure!(
         output.status.success(),
-        "Ubuntu desktop provisioning failed with {}: stdout={:?} stderr={:?}",
+        "profile desktop provisioning failed with {}: stdout={:?} stderr={:?}",
         output.status,
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
@@ -1975,20 +1955,29 @@ fn run_ssh_script(private_key: &Path, script: &str) -> anyhow::Result<String> {
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
-fn wait_for_ubuntu_ssh(
+fn wait_for_profile_ssh(
+    profile: &HostProfilePlan,
     ssh_key: &SshTestKey,
     timeout: Duration,
     qemu: &mut Child,
 ) -> anyhow::Result<()> {
+    let ssh = profile
+        .qemu
+        .as_ref()
+        .and_then(|qemu| qemu.ssh.as_ref())
+        .context("desktop profile has no host.qemu.ssh plan")?;
+    let (account, marker) = profile_ssh_expectation(profile)?;
     let start = Instant::now();
     let mut last = String::from("no SSH attempt completed");
     while start.elapsed() < timeout {
-        ensure_qemu_running(qemu, "waiting for Ubuntu desktop SSH")?;
-        let probe = spawn_ssh_probe(&ssh_key.private_key, UBUNTU_DEFAULT_SSH_PORT, "ubuntu")?;
+        ensure_qemu_running(qemu, "waiting for profile desktop SSH")?;
+        let probe = spawn_ssh_probe(&ssh_key.private_key, ssh.host_port, account)?;
         let output = probe
             .wait_with_output()
-            .context("failed to wait for Ubuntu desktop SSH probe")?;
-        if output.status.success() && String::from_utf8_lossy(&output.stdout).trim() == "Linux" {
+            .context("failed to wait for profile desktop SSH probe")?;
+        if output.status.success()
+            && (marker.is_empty() || String::from_utf8_lossy(&output.stdout).trim() == marker)
+        {
             return Ok(());
         }
         last = format!(
@@ -1999,18 +1988,26 @@ fn wait_for_ubuntu_ssh(
         );
         std::thread::sleep(Duration::from_secs(2));
     }
-    anyhow::bail!("Ubuntu desktop SSH did not become ready: {last}")
+    anyhow::bail!("profile desktop SSH did not become ready: {last}")
 }
 
-fn desktop_tunnel_forward_spec() -> String {
-    format!("127.0.0.1:{UBUNTU_DESKTOP_PORT}:127.0.0.1:{UBUNTU_VNC_GUEST_PORT}")
+fn desktop_tunnel_forward_spec(desktop: &DesktopPlan) -> String {
+    format!(
+        "127.0.0.1:{}:127.0.0.1:{}",
+        desktop.local_port, desktop.guest_port
+    )
 }
 
-fn spawn_desktop_tunnel(private_key: &Path) -> anyhow::Result<Child> {
+fn spawn_desktop_tunnel(
+    private_key: &Path,
+    port: u16,
+    account: &str,
+    desktop: &DesktopPlan,
+) -> anyhow::Result<Child> {
     std::process::Command::new("ssh")
         .arg("-i")
         .arg(private_key)
-        .args(["-p", &UBUNTU_DEFAULT_SSH_PORT.to_string()])
+        .args(["-p", &port.to_string()])
         .args(SSH_AUTH_OPTIONS)
         .args(SSH_SESSION_LIVENESS_OPTIONS)
         .args([
@@ -2018,23 +2015,32 @@ fn spawn_desktop_tunnel(private_key: &Path) -> anyhow::Result<Child> {
             "ExitOnForwardFailure=yes",
             "-N",
             "-L",
-            &desktop_tunnel_forward_spec(),
-            "ubuntu@127.0.0.1",
+            &desktop_tunnel_forward_spec(desktop),
+            &format!("{account}@127.0.0.1"),
         ])
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
         .spawn()
-        .context("failed to launch SSH tunnel for Ubuntu desktop")
+        .context("failed to launch SSH tunnel for profile desktop")
 }
 
-fn prove_ubuntu_desktop(
+fn prove_profile_desktop(
     cc_sock: &Path,
     profile: &HostProfilePlan,
     ssh_key: &SshTestKey,
     timeout: Duration,
     qemu: &mut Child,
 ) -> anyhow::Result<(rfb::RfbFrameEvidence, Child)> {
+    let desktop = profile
+        .desktop
+        .as_ref()
+        .context("profile has no host.desktop plan")?;
+    let ssh = profile
+        .qemu
+        .as_ref()
+        .and_then(|qemu| qemu.ssh.as_ref())
+        .context("desktop profile has no host.qemu.ssh plan")?;
     let mut cc = connect_cc_client(cc_sock, timeout.min(Duration::from_secs(30)), qemu)?;
     let provision_ssh = profile_provision_commands(profile, &ssh_key.public_key)?;
     run_guest_console_commands(
@@ -2048,32 +2054,44 @@ fn prove_ubuntu_desktop(
         qemu,
     )?;
     drop(cc);
-    wait_for_ubuntu_ssh(ssh_key, timeout.min(Duration::from_secs(600)), qemu)?;
-    let provisioning = run_ssh_script(&ssh_key.private_key, ubuntu_desktop_provision_script())?;
-    println!("[xtask:test] Ubuntu desktop provisioning:\n{provisioning}");
+    wait_for_profile_ssh(
+        profile,
+        ssh_key,
+        timeout.min(Duration::from_secs(600)),
+        qemu,
+    )?;
+    let provisioning = run_ssh_script(
+        &ssh_key.private_key,
+        ssh.host_port,
+        &ssh.account,
+        Duration::from_secs(desktop.provision_timeout_secs),
+        &desktop.provision_script,
+    )?;
+    println!("[xtask:test] profile desktop provisioning:\n{provisioning}");
 
-    let mut tunnel = spawn_desktop_tunnel(&ssh_key.private_key)?;
+    let mut tunnel =
+        spawn_desktop_tunnel(&ssh_key.private_key, ssh.host_port, &ssh.account, desktop)?;
     let start = Instant::now();
     let mut last = String::from("SSH tunnel did not accept a connection");
-    while start.elapsed() < timeout.min(UBUNTU_DESKTOP_RFB_TIMEOUT) {
-        ensure_qemu_running(qemu, "waiting for Ubuntu desktop RFB frame")?;
+    while start.elapsed() < timeout.min(Duration::from_secs(desktop.frame_timeout_secs)) {
+        ensure_qemu_running(qemu, "waiting for profile desktop RFB frame")?;
         if let Some(status) = tunnel
             .try_wait()
-            .context("failed to inspect Ubuntu desktop SSH tunnel")?
+            .context("failed to inspect profile desktop SSH tunnel")?
         {
             let mut stderr = String::new();
             if let Some(mut pipe) = tunnel.stderr.take() {
                 let _ = pipe.read_to_string(&mut stderr);
             }
-            anyhow::bail!("Ubuntu desktop SSH tunnel exited with {status}: {stderr}");
+            anyhow::bail!("profile desktop SSH tunnel exited with {status}: {stderr}");
         }
-        match TcpStream::connect(SocketAddr::from(([127, 0, 0, 1], UBUNTU_DESKTOP_PORT))) {
+        match TcpStream::connect(SocketAddr::from(([127, 0, 0, 1], desktop.local_port))) {
             Ok(mut stream) => {
                 stream
-                    .set_read_timeout(Some(UBUNTU_DESKTOP_RFB_IO_TIMEOUT))
+                    .set_read_timeout(Some(Duration::from_secs(desktop.io_timeout_secs)))
                     .context("failed to bound desktop RFB reads")?;
                 stream
-                    .set_write_timeout(Some(UBUNTU_DESKTOP_RFB_IO_TIMEOUT))
+                    .set_write_timeout(Some(Duration::from_secs(desktop.io_timeout_secs)))
                     .context("failed to bound desktop RFB writes")?;
                 match rfb::verify_raw_frame(&mut stream) {
                     Ok(evidence) => return Ok((evidence, tunnel)),
@@ -2092,7 +2110,7 @@ fn prove_ubuntu_desktop(
         let _ = pipe.read_to_string(&mut tunnel_stderr);
     }
     anyhow::bail!(
-        "Ubuntu desktop did not yield an RFB frame: {last}; SSH tunnel stderr={:?}",
+        "profile desktop did not yield an RFB frame: {last}; SSH tunnel stderr={:?}",
         tunnel_stderr.trim()
     )
 }
@@ -2248,8 +2266,8 @@ fn wait_for_dual_guest_consoles_via_cc(
 
     /*
      * Creating both guests establishes both clients of the shared host block
-     * path. Quiesce Ubuntu immediately so FreeBSD's ISO boot cannot lose the
-     * single emulated CPU to the much busier live-image boot.
+     * path. Quiesce the deferred profile immediately so the lead profile's
+     * media boot cannot lose the single emulated CPU to a busier guest.
      */
     let deferred_boot_suspend = suspend_guest_via_cc(&mut boot_cc, deferred_handle)
         .with_context(|| format!("failed to defer {} boot", deferred.profile.id))?;
@@ -2775,7 +2793,9 @@ mod tests {
 
     #[test]
     fn desktop_proof_is_lightweight_and_confined_to_ssh() {
-        let script = ubuntu_desktop_provision_script();
+        let profile = test_profile("ubuntu-live");
+        let desktop = profile.desktop.as_ref().unwrap();
+        let script = desktop.provision_script.as_str();
         assert!(std::process::Command::new("sh")
             .args(["-n", "-c", script])
             .status()
@@ -2794,18 +2814,28 @@ mod tests {
         assert!(script.contains("agentos-desktop-local-rfb-ready"));
         assert!(script.contains("/dev/tcp/127.0.0.1/5901"));
         assert_eq!(
-            desktop_tunnel_forward_spec(),
+            desktop_tunnel_forward_spec(desktop),
             "127.0.0.1:15901:127.0.0.1:5901"
         );
     }
 
     #[test]
     fn manual_dual_ssh_commands_use_persistent_key_and_distinct_ports() {
-        let commands = manual_ssh_commands(Path::new("build/tmp/dual-ssh/id_ed25519"));
-        assert!(commands[0].contains("-p 12222"));
-        assert!(commands[0].contains("ubuntu@127.0.0.1"));
-        assert!(commands[1].contains("-p 12223"));
-        assert!(commands[1].contains("root@127.0.0.1"));
+        let repo = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+        let scenario = guest_scenario::resolve_alias(
+            &repo.join("guest-scenarios"),
+            &repo.join("guest-profiles"),
+            "both",
+        )
+        .unwrap();
+        let commands =
+            manual_ssh_commands(Path::new("build/tmp/dual-ssh/id_ed25519"), &scenario).unwrap();
+        assert!(commands
+            .iter()
+            .any(|command| command.contains("-p 12222") && command.contains("ubuntu@127.0.0.1")));
+        assert!(commands
+            .iter()
+            .any(|command| command.contains("-p 12223") && command.contains("root@127.0.0.1")));
         for command in commands {
             assert!(command.contains("build/tmp/dual-ssh/id_ed25519"));
             assert!(command.contains("IdentitiesOnly=yes"));

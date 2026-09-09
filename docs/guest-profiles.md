@@ -72,6 +72,14 @@ unknown fields. Provisioning commands remain `send-console` recipe steps and
 permit only the bounded `{{ssh_public_key}}` substitution. Unknown adapters,
 recipe actions, arguments, and template variables fail closed.
 
+Optional desktop qualification is profile data under `host.desktop`. The
+closed `rfb-over-ssh` adapter consumes the profile's SSH account and port plus
+bounded local/guest RFB ports, provisioning and frame deadlines, I/O timeout,
+and a size-limited guest provisioning script. The runner provides only the
+generic authenticated SSH tunnel and raw-frame verifier. A future Wayland
+profile can supply a different recipe without adding a distribution branch to
+the runner.
+
 Manifest version 2 can set `boot.media_initrd_path`. The shared block backend
 then walks that normalized relative path through ISO9660 and stages the file at
 the profile's initrd address. No distribution name or fixed ISO pathname is

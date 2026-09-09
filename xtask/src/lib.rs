@@ -61,10 +61,10 @@ pub struct TestArgs {
     /// Require Ubuntu login plus real I/O through agentOS net, blk, and console.
     #[arg(long)]
     pub assert_agentos_virtio: bool,
-    /// Boot Ubuntu's real Casper initrd and require live-filesystem login.
-    #[arg(long)]
-    pub assert_ubuntu_live: bool,
-    /// Start a desktop in the Ubuntu live guest and verify one raw RFB frame
+    /// Require a live-media profile to reach userspace and its profile proof.
+    #[arg(long, visible_alias = "assert-ubuntu-live")]
+    pub assert_live: bool,
+    /// Start the profile-defined desktop and verify one raw RFB frame
     /// through a key-authenticated SSH tunnel.
     #[arg(long)]
     pub assert_desktop: bool,

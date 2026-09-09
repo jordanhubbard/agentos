@@ -799,7 +799,7 @@ test-ubuntu-live:
 		echo "test-ubuntu-live requires BOARD=qemu_virt_aarch64 (got BOARD=$(BOARD))"; \
 		exit 1; \
 	fi
-	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os ubuntu-live --timeout-secs $(QEMU_TEST_TIMEOUT) --assert-ubuntu-live
+	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os ubuntu-live --timeout-secs $(QEMU_TEST_TIMEOUT) --assert-live
 
 # =============================================================================
 # test-snapshot-sched: standalone unit test for the snapshot_sched PD
