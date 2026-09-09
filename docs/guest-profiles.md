@@ -107,11 +107,13 @@ The release dual-guest alias is data in
 `guest-scenarios/dual-release.toml`; `--guest-os both` is retained as its
 compatibility spelling.
 
-The canonical Make selectors are `GUEST_PROFILE` for one primary profile, or
+The canonical Make selector is `GUEST_PROFILE` for one profile,
+`GUEST_SCENARIO` for a data-defined composition, or
 `GUEST_PRIMARY_PROFILE` plus `GUEST_SECONDARY_PROFILE` for explicit slot
-composition. `GUEST_OS` and `UBUNTU_BOOT_MODE` are translated once by the
-repository Makefile for compatibility and are not passed into the root-task or
-VMM build.
+composition. The profile's `target.control_type` selects its configured slot,
+and its selected placement derives the slot RAM capacity. `GUEST_OS` is a
+compatibility spelling resolved through the profile's data-defined aliases and
+scenario aliases and is not passed into the root-task or VMM build.
 
 Adding a profile does not add a VMM personality. Buildroot and Ubuntu extend
 the AArch64 Linux Image profile; Debian is the planned stable integration

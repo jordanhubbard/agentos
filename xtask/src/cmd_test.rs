@@ -209,13 +209,7 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
     let profile_plan = if matches!(args.guest_os.as_str(), "none" | "both") {
         None
     } else {
-        let alias = if (args.assert_ubuntu_live || args.assert_desktop) && args.guest_os == "ubuntu"
-        {
-            "ubuntu-live"
-        } else {
-            args.guest_os.as_str()
-        };
-        let path = cmd_guest_profile::resolve_alias(&profile_root, alias)?;
+        let path = cmd_guest_profile::resolve_alias(&profile_root, &args.guest_os)?;
         Some(cmd_guest_profile::host_profile_plan(&profile_root, &path)?)
     };
     if let Some(profile) = &profile_plan {
@@ -231,7 +225,7 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
             profile.test.len()
         );
     }
-    let ubuntu_live = profile_plan
+    let large_guest = profile_plan
         .as_ref()
         .is_some_and(|profile| profile.media_initrd_path.is_some())
         || args.assert_ubuntu_live
@@ -269,44 +263,38 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
             "emulated VirtIO assertions need a real guest; GUEST_OS=none is a stub VMM"
         );
     }
-    if args.assert_emulated_console
-        || args.assert_agentos_virtio
-        || args.assert_ubuntu_live
-        || args.assert_desktop
-    {
+    if args.assert_emulated_console || args.assert_agentos_virtio {
         anyhow::ensure!(
-            args.guest_os == "ubuntu",
-            "Ubuntu VirtIO assertions require --guest-os ubuntu"
+            profile_plan.is_some(),
+            "VirtIO console assertions require one runtime guest profile"
+        );
+    }
+    if args.assert_ubuntu_live || args.assert_desktop {
+        anyhow::ensure!(
+            profile_plan
+                .as_ref()
+                .is_some_and(|profile| profile.media_initrd_path.is_some()),
+            "live-media assertions require a profile with boot.media_initrd_path"
         );
     }
 
     if !args.no_build {
         println!(
-            "[xtask:test] Building BOARD={} GUEST_OS={}...",
+            "[xtask:test] Building BOARD={} selection={}...",
             args.board, args.guest_os
         );
-        if ubuntu_live {
-            run_make(
-                &[
-                    "build",
-                    &format!("BOARD={}", args.board),
-                    &format!("GUEST_OS={}", args.guest_os),
-                    "UBUNTU_BOOT_MODE=live",
-                ],
-                &repo_root,
-            )
-            .context("live Ubuntu build step failed")?;
-        } else {
-            run_make(
-                &[
-                    "build",
-                    &format!("BOARD={}", args.board),
-                    &format!("GUEST_OS={}", args.guest_os),
-                ],
-                &repo_root,
-            )
-            .context("build step failed")?;
+        let mut make_args = vec![
+            String::from("build"),
+            format!("BOARD={}", args.board),
+            String::from("GUEST_OS=none"),
+        ];
+        if scenario_plan.is_some() {
+            make_args.push(format!("GUEST_SCENARIO={}", args.guest_os));
+        } else if let Some(profile) = &profile_plan {
+            make_args.push(format!("GUEST_PROFILE={}", profile.path.display()));
         }
+        let make_arg_refs = make_args.iter().map(String::as_str).collect::<Vec<_>>();
+        run_make(&make_arg_refs, &repo_root).context("profile-driven build step failed")?;
     }
 
     let tmp_dir = repo_root.join("build/tmp");
@@ -344,7 +332,7 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
         profile_plan.as_ref(),
         scenario_plan.as_ref(),
         ssh_port,
-        ubuntu_live,
+        large_guest,
         (args.guest_os == "both" || args.assert_desktop) && !args.keep_running,
     )?);
     if needs_host_net_stimulus {
@@ -763,7 +751,7 @@ pub(crate) fn spawn_qemu_with_guest(
     profile: Option<&HostProfilePlan>,
     scenario: Option<&HostScenarioPlan>,
     ssh_port: u16,
-    ubuntu_live: bool,
+    large_guest: bool,
     capture_net: bool,
 ) -> anyhow::Result<std::process::Child> {
     let log_file = std::fs::File::create(log_path).context("failed to create QEMU log file")?;
@@ -802,7 +790,7 @@ pub(crate) fn spawn_qemu_with_guest(
             let memory = scenario
                 .map(|plan| plan.memory.as_str())
                 .or_else(|| qemu_plan.map(|plan| plan.memory.as_str()))
-                .unwrap_or(if ubuntu_live { "3G" } else { "2G" });
+                .unwrap_or(if large_guest { "3G" } else { "2G" });
             let sel4_profile =
                 std::env::var("SEL4_PROFILE").unwrap_or_else(|_| String::from("release"));
             let smp = if sel4_profile.starts_with("smp-") || sel4_profile == "smp" {

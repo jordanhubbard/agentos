@@ -20,13 +20,14 @@ pub mod cmd_run_tests;
 pub mod cmd_setup;
 pub mod cmd_test;
 pub mod cmd_test_api;
-pub(crate) mod guest_scenario;
+pub mod guest_scenario;
 pub mod rfb;
 
 // ── Re-exports for main.rs ────────────────────────────────────────────────
 pub use cmd_gen_image::GenImageArgs;
 pub use cmd_gen_pd_bundle::GenPdBundleArgs;
 pub use cmd_guest_profile::GuestProfileArgs;
+pub use guest_scenario::GuestScenarioArgs;
 
 // ── Subcommand arg structs ──────────────────────────────────────────────────
 

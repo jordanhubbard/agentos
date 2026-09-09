@@ -242,6 +242,14 @@ int main(void)
                  src_contains("kernel/agentos-root-task/vmm.mk",
                               "VMM_CFLAGS=%s"),
                  "profile, placement, and flags invalidate stale root-task and VMM objects");
+    (void)tap_ok(src_contains("Makefile", "_profile_for_alias") &&
+                 src_contains("Makefile", "_profile_control_type") &&
+                 src_contains("Makefile", "_profile_ram_size") &&
+                 src_contains("Makefile", "_scenario_profile") &&
+                 !src_contains("Makefile", "else ifeq ($(GUEST_OS),ubuntu)") &&
+                 !src_contains("Makefile", "else ifeq ($(GUEST_OS),freebsd)") &&
+                 !src_contains("Makefile", "UBUNTU_BOOT_MODE"),
+                 "Make resolves guest aliases, slots, scenarios, and RAM from profile data");
     (void)tap_ok(src_contains("kernel/agentos-root-task/src/system_desc_aarch64.c",
                               "{ SVC_ID_VIRTIO_BLK, 12u }") &&
                  src_contains("platform/blk-virt/vmm_virtio_blk.c",

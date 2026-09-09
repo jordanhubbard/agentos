@@ -2,6 +2,7 @@
 
 use crate::cmd_guest_profile::{self, HostProfilePlan};
 use anyhow::{ensure, Context, Result};
+use clap::Args;
 use serde::Deserialize;
 use std::collections::BTreeSet;
 use std::fs;
@@ -9,6 +10,22 @@ use std::path::{Component, Path, PathBuf};
 
 const SCHEMA: u16 = 1;
 const MAX_GUESTS: usize = 8;
+
+#[derive(Args)]
+pub struct GuestScenarioArgs {
+    /// Directory containing scenario TOML files.
+    #[arg(long, default_value = "guest-scenarios")]
+    pub root: PathBuf,
+    /// Directory containing guest profile TOML files.
+    #[arg(long, default_value = "guest-profiles")]
+    pub profile_root: PathBuf,
+    /// Resolve this scenario alias.
+    #[arg(long)]
+    pub alias: String,
+    /// Print the profile assigned to this target control type.
+    #[arg(long)]
+    pub control_type: u32,
+}
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -77,6 +94,30 @@ pub(crate) fn resolve_alias(
         }
     }
     matched.with_context(|| format!("unknown guest scenario alias {alias:?}"))
+}
+
+pub fn run(args: &GuestScenarioArgs) -> Result<()> {
+    let plan = resolve_alias(&args.root, &args.profile_root, &args.alias)?;
+    let profile = plan
+        .guests
+        .iter()
+        .find(|guest| guest.profile.control_type == args.control_type)
+        .with_context(|| {
+            format!(
+                "scenario {} has no profile for control type {}",
+                plan.id, args.control_type
+            )
+        })?;
+    println!(
+        "{}",
+        profile
+            .profile
+            .path
+            .strip_prefix(&args.profile_root)
+            .unwrap_or(&profile.profile.path)
+            .display()
+    );
+    Ok(())
 }
 
 fn validate(scenario: &Scenario, profile_root: &Path) -> Result<()> {

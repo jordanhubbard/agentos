@@ -24,6 +24,9 @@ pub struct GuestProfileArgs {
     /// Profile path, relative to --root.
     #[arg(long)]
     pub profile: Option<PathBuf>,
+    /// Resolve a profile alias to its root-relative TOML path.
+    #[arg(long)]
+    pub resolve_alias: Option<String>,
     /// Placement name to compile into the target manifest.
     #[arg(long, default_value = "default")]
     pub placement: String,
@@ -42,6 +45,12 @@ pub struct GuestProfileArgs {
     /// Prepare a canonical build bundle instead of emitting only a manifest.
     #[arg(long)]
     pub prepare_dir: Option<PathBuf>,
+    /// Print the selected placement's RAM size in bytes without emitting.
+    #[arg(long)]
+    pub print_ram_size: bool,
+    /// Print the profile's target control type without emitting.
+    #[arg(long)]
+    pub print_control_type: bool,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq)]
@@ -453,6 +462,24 @@ pub fn run(args: &GuestProfileArgs) -> Result<()> {
         "profile root does not exist: {}",
         args.root.display()
     );
+    if let Some(alias) = &args.resolve_alias {
+        ensure!(
+            !args.check_all
+                && args.profile.is_none()
+                && args.output.is_none()
+                && args.prepare_dir.is_none()
+                && !args.verify_artifacts
+                && !args.print_ram_size
+                && !args.print_control_type,
+            "--resolve-alias cannot be combined with compilation options"
+        );
+        let path = resolve_alias(&args.root, alias)?;
+        println!(
+            "{}",
+            path.strip_prefix(&args.root).unwrap_or(&path).display()
+        );
+        return Ok(());
+    }
     if args.check_all {
         ensure!(
             args.profile.is_none(),
@@ -466,6 +493,14 @@ pub fn run(args: &GuestProfileArgs) -> Result<()> {
         ensure!(
             !args.verify_artifacts,
             "--check-all cannot verify artifacts for mutually exclusive profiles"
+        );
+        ensure!(
+            !args.print_ram_size,
+            "--check-all cannot print one placement's RAM size"
+        );
+        ensure!(
+            !args.print_control_type,
+            "--check-all cannot print one profile's control type"
         );
         let files = profile_files(&args.root)?;
         ensure!(
@@ -493,6 +528,42 @@ pub fn run(args: &GuestProfileArgs) -> Result<()> {
         .profile
         .as_ref()
         .context("--profile is required unless --check-all is used")?;
+    if args.print_ram_size || args.print_control_type {
+        ensure!(
+            !(args.print_ram_size && args.print_control_type)
+                && args.output.is_none()
+                && args.prepare_dir.is_none()
+                && !args.verify_artifacts,
+            "profile field queries cannot be combined with each other or emission options"
+        );
+        let (profile, _) = resolve(&args.root, profile_path, &mut Vec::new())?;
+        validate(
+            &profile,
+            args.print_ram_size.then_some(args.placement.as_str()),
+        )?;
+        ensure!(
+            profile.status == Some(Status::Runtime),
+            "only status=runtime profiles have an executable build plan"
+        );
+        if args.print_ram_size {
+            println!(
+                "{}",
+                profile.placements[&args.placement]
+                    .ram_size
+                    .context("placement.ram_size is required")?
+            );
+        } else {
+            println!(
+                "{}",
+                profile
+                    .target
+                    .as_ref()
+                    .and_then(|target| target.control_type)
+                    .context("target.control_type is required")?
+            );
+        }
+        return Ok(());
+    }
     if let Some(prepare_dir) = &args.prepare_dir {
         ensure!(
             args.output.is_none(),

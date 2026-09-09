@@ -5,8 +5,8 @@ use xtask::{
     cmd_guest_profile, cmd_host_test, cmd_policy_check, cmd_release, cmd_render_deck,
     cmd_run_tests, cmd_setup, cmd_test, cmd_test_api, CiMatrixArgs, ExtractFreebsdFileArgs,
     FaultInjectArgs, FetchGuestArgs, GenAbiArgs, GenCapsArgs, GenChannelsArgs, GenImageArgs,
-    GenPdBundleArgs, GenPolicyArgs, GuestProfileArgs, HostTestArgs, PolicyCheckArgs, ReleaseArgs,
-    RenderDeckArgs, RunTestsArgs, SetupArgs, TestApiArgs, TestArgs,
+    GenPdBundleArgs, GenPolicyArgs, GuestProfileArgs, GuestScenarioArgs, HostTestArgs,
+    PolicyCheckArgs, ReleaseArgs, RenderDeckArgs, RunTestsArgs, SetupArgs, TestApiArgs, TestArgs,
 };
 
 #[derive(Parser)]
@@ -67,6 +67,9 @@ enum Cmd {
     /// Validate source profiles or compile one bounded target manifest.
     #[command(name = "guest-profile")]
     GuestProfile(GuestProfileArgs),
+    /// Resolve a bounded multi-profile host scenario.
+    #[command(name = "guest-scenario")]
+    GuestScenario(GuestScenarioArgs),
 }
 
 fn main() -> anyhow::Result<()> {
@@ -91,5 +94,6 @@ fn main() -> anyhow::Result<()> {
         Cmd::GenImage(a) => cmd_gen_image::run(&a),
         Cmd::GenPdBundle(a) => cmd_gen_pd_bundle::run(&a),
         Cmd::GuestProfile(a) => cmd_guest_profile::run(&a),
+        Cmd::GuestScenario(a) => xtask::guest_scenario::run(&a),
     }
 }

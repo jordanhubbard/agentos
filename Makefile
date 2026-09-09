@@ -41,26 +41,65 @@ endif
 TARGET_ARCH ?= $(CONFIG_TARGET)
 GUEST_OS    ?= $(CONFIG_GUEST_OS)
 # Canonical build selectors. GUEST_OS remains a compatibility spelling and is
-# translated here; lower layers receive only profile paths and slot policy.
+# resolved through profile aliases; lower layers receive only profile paths and
+# slot policy. The legacy `both` spelling resolves the bounded release scenario.
 GUEST_PROFILE ?=
+GUEST_SCENARIO ?=
 GUEST_PRIMARY_PROFILE ?=
 GUEST_SECONDARY_PROFILE ?=
-GUEST_PRIMARY_LARGE ?= 0
-ifneq ($(strip $(GUEST_PROFILE)),)
-  GUEST_PRIMARY_PROFILE := $(GUEST_PROFILE)
-else ifeq ($(GUEST_OS),ubuntu)
-  GUEST_PRIMARY_PROFILE := $(if $(filter live,$(UBUNTU_BOOT_MODE)),ubuntu-live.toml,ubuntu-e2e.toml)
-  GUEST_PRIMARY_LARGE := $(if $(filter live,$(UBUNTU_BOOT_MODE)),1,0)
-else ifeq ($(GUEST_OS),buildroot)
-  GUEST_PRIMARY_PROFILE := buildroot.toml
-else ifeq ($(GUEST_OS),freebsd)
-  GUEST_SECONDARY_PROFILE := freebsd.toml
+_profile_for_alias = $(strip $(shell cargo xtask guest-profile --resolve-alias $(1)))
+_profile_control_type = $(strip $(shell cargo xtask guest-profile --profile $(1) --print-control-type))
+_profile_ram_size = $(strip $(shell cargo xtask guest-profile --profile $(1) --placement $(2) --print-ram-size))
+_scenario_profile = $(strip $(shell cargo xtask guest-scenario --alias $(1) --control-type $(2)))
+ifneq ($(strip $(GUEST_SCENARIO)),)
+  ifneq ($(strip $(GUEST_PROFILE)$(GUEST_PRIMARY_PROFILE)$(GUEST_SECONDARY_PROFILE)),)
+    $(error GUEST_SCENARIO cannot be combined with profile selectors)
+  endif
+  _SELECTED_GUEST_SCENARIO := $(GUEST_SCENARIO)
+else ifneq ($(strip $(GUEST_PROFILE)),)
+  ifneq ($(strip $(GUEST_PRIMARY_PROFILE)$(GUEST_SECONDARY_PROFILE)),)
+    $(error GUEST_PROFILE cannot be combined with explicit slot profiles)
+  endif
+  _SELECTED_GUEST_PROFILE := $(GUEST_PROFILE)
+else ifneq ($(strip $(GUEST_PRIMARY_PROFILE)$(GUEST_SECONDARY_PROFILE)),)
+  # Explicit slot composition is already canonical; ignore the legacy default.
 else ifeq ($(GUEST_OS),both)
-  GUEST_PRIMARY_PROFILE := $(if $(filter live,$(UBUNTU_BOOT_MODE)),ubuntu-live.toml,ubuntu-e2e.toml)
-  GUEST_SECONDARY_PROFILE := freebsd.toml
-  GUEST_PRIMARY_LARGE := $(if $(filter live,$(UBUNTU_BOOT_MODE)),1,0)
+  _SELECTED_GUEST_SCENARIO := both
 else ifneq ($(GUEST_OS),none)
-  $(error unknown legacy GUEST_OS=$(GUEST_OS); use GUEST_PROFILE=<profile.toml>)
+  _SELECTED_GUEST_PROFILE := $(call _profile_for_alias,$(GUEST_OS))
+  ifeq ($(_SELECTED_GUEST_PROFILE),)
+    $(error unknown guest profile alias GUEST_OS=$(GUEST_OS); use GUEST_PROFILE=<profile.toml>)
+  endif
+endif
+ifneq ($(strip $(_SELECTED_GUEST_SCENARIO)),)
+  GUEST_PRIMARY_PROFILE := $(call _scenario_profile,$(_SELECTED_GUEST_SCENARIO),1)
+  GUEST_SECONDARY_PROFILE := $(call _scenario_profile,$(_SELECTED_GUEST_SCENARIO),2)
+  ifeq ($(strip $(GUEST_PRIMARY_PROFILE)),)
+    $(error scenario $(_SELECTED_GUEST_SCENARIO) has no primary profile)
+  endif
+  ifeq ($(strip $(GUEST_SECONDARY_PROFILE)),)
+    $(error scenario $(_SELECTED_GUEST_SCENARIO) has no secondary profile)
+  endif
+endif
+ifneq ($(strip $(_SELECTED_GUEST_PROFILE)),)
+  _SELECTED_CONTROL_TYPE := $(call _profile_control_type,$(_SELECTED_GUEST_PROFILE))
+  ifeq ($(_SELECTED_CONTROL_TYPE),1)
+    GUEST_PRIMARY_PROFILE := $(_SELECTED_GUEST_PROFILE)
+  else ifeq ($(_SELECTED_CONTROL_TYPE),2)
+    GUEST_SECONDARY_PROFILE := $(_SELECTED_GUEST_PROFILE)
+  else
+    $(error profile $(_SELECTED_GUEST_PROFILE) has unsupported control type $(_SELECTED_CONTROL_TYPE))
+  endif
+endif
+ifneq ($(strip $(GUEST_PRIMARY_PROFILE)),)
+  _GUEST_PRIMARY_PLACEMENT := $(if $(strip $(GUEST_SECONDARY_PROFILE)),dual-primary,default)
+  _GUEST_PRIMARY_RAM_SIZE := $(call _profile_ram_size,$(GUEST_PRIMARY_PROFILE),$(_GUEST_PRIMARY_PLACEMENT))
+  ifeq ($(_GUEST_PRIMARY_RAM_SIZE),)
+    $(error profile $(GUEST_PRIMARY_PROFILE) has no executable $(_GUEST_PRIMARY_PLACEMENT) RAM plan)
+  endif
+  GUEST_PRIMARY_LARGE ?= $(shell test "$(_GUEST_PRIMARY_RAM_SIZE)" -gt 536870912 && echo 1 || echo 0)
+else
+  GUEST_PRIMARY_LARGE ?= 0
 endif
 QEMU_TEST_TIMEOUT ?= 300
 # Correct suspend accounting freezes each guest's architectural time while it
@@ -442,7 +481,7 @@ demo: demo-check
 demo-desktop-test: demo-check
 	@echo ""
 	@echo "Running the non-interactive Ubuntu desktop protocol/frame proof..."
-	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os ubuntu \
+	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os ubuntu-live \
 		--assert-desktop --timeout-secs $(DESKTOP_TEST_TIMEOUT)
 
 demo-desktop: demo-check
@@ -454,7 +493,7 @@ demo-desktop: demo-check
 	@echo "After the RFB frame gate passes, open the printed command in an external VNC viewer."
 	@echo "Press Enter here when the demonstration is complete."
 	@echo ""
-	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os ubuntu \
+	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os ubuntu-live \
 		--assert-desktop --keep-running --timeout-secs $(DESKTOP_TEST_TIMEOUT)
 
 demo-clean:
@@ -528,7 +567,6 @@ endif
 		GUEST_PRIMARY_PROFILE=$(GUEST_PRIMARY_PROFILE) \
 		GUEST_SECONDARY_PROFILE=$(GUEST_SECONDARY_PROFILE) \
 		GUEST_PRIMARY_LARGE=$(GUEST_PRIMARY_LARGE) \
-		UBUNTU_BOOT_MODE=$(UBUNTU_BOOT_MODE) \
 		BOARD_NAME=$(BOARD_NAME) \
 		BOARD_NATIVE=$(BOARD_NATIVE) \
 		BOARD_UART_PHYS=$(BOARD_UART_PHYS) \
@@ -761,7 +799,7 @@ test-ubuntu-live:
 		echo "test-ubuntu-live requires BOARD=qemu_virt_aarch64 (got BOARD=$(BOARD))"; \
 		exit 1; \
 	fi
-	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os ubuntu --timeout-secs $(QEMU_TEST_TIMEOUT) --assert-ubuntu-live
+	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os ubuntu-live --timeout-secs $(QEMU_TEST_TIMEOUT) --assert-ubuntu-live
 
 # =============================================================================
 # test-snapshot-sched: standalone unit test for the snapshot_sched PD
