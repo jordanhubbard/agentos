@@ -118,8 +118,9 @@ static void cc_dbg_hex(uint64_t v)
 #define VIRTIO_MAGIC      0x74726976u
 #define VIRTIO_ID_CONSOLE 3u
 #define VQ_DEPTH          4u
-#define CC_VIRTIO_WAIT_LIMIT 16384u
-#define CC_VIRTIO_RENOTIFY_INTERVAL 4096u
+#define CC_VIRTIO_RX_WAIT_LIMIT 16384u
+#define CC_VIRTIO_TX_WAIT_LIMIT 256u
+#define CC_VIRTIO_RENOTIFY_INTERVAL 64u
 
 typedef struct { uint64_t addr; uint32_t len; uint16_t flags; uint16_t next; }
     __attribute__((packed)) vq_desc_t;
@@ -326,7 +327,7 @@ static bool vio_serial_write(const void *buf, uint32_t n)
             if ((wait % CC_VIRTIO_RENOTIFY_INTERVAL) == 0u) {
                 vio_wr(VMMIO_QUEUE_NOTIFY, 1u);
             }
-            if (wait >= CC_VIRTIO_WAIT_LIMIT) {
+            if (wait >= CC_VIRTIO_TX_WAIT_LIMIT) {
                 cc_dbg_puts("[cc_pd] TX timeout waiting for used ring\n");
                 return false;
             }
@@ -360,7 +361,7 @@ static bool vio_serial_read(void *buf, uint32_t n)
             if (cur != g_rx_used_last) { break; }
             seL4_Yield();
             wait++;
-            if (wait >= CC_VIRTIO_WAIT_LIMIT) {
+            if (wait >= CC_VIRTIO_RX_WAIT_LIMIT) {
                 cc_dbg_puts("[cc_pd] RX timeout waiting for used ring\n");
                 return false;
             }
