@@ -101,12 +101,12 @@ int main(void)
        "Ubuntu DTB advertises agentOS net/blk and no QEMU passthrough");
     ok(contains("kernel/agentos-root-task/vmm.mk", "console=hvc0"),
        "Ubuntu primary console is hvc0");
-    ok(contains("kernel/agentos-root-task/vmm.mk",
-                "systemd.mask=systemd-udevd.service") &&
-       contains("kernel/agentos-root-task/vmm.mk",
-                "systemd.mask=systemd-sysusers.service") &&
-       contains("kernel/agentos-root-task/vmm.mk", "systemd.show_status=false"),
-       "Ubuntu live proof skips redundant boot daemons and status animation");
+    ok(contains("kernel/agentos-root-task/vmm.mk", "systemd.show_status=false") &&
+       !contains("kernel/agentos-root-task/vmm.mk",
+                 "systemd.mask=systemd-udevd.service") &&
+       !contains("kernel/agentos-root-task/vmm.mk",
+                 "systemd.mask=systemd-sysusers.service"),
+       "Ubuntu live proof retains required udev and sysusers services");
     ok(contains(overlay, "pl011@9000000") &&
        contains(overlay, "status = \"disabled\"") &&
        !contains(overlay, "stdout-path"),
