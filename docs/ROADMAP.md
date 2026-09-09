@@ -14,7 +14,7 @@ changing the dependency order below.
 | Release | Theme | Required outcome |
 | --- | --- | --- |
 | **0.2** | Network desktop proof and release discipline | Ubuntu exposes a real desktop session over the already authenticated network path; releases become exact-revision, evidence-bound transitions; the first systems/security narrative is grounded in retained evidence. |
-| **0.3** | Guest graphics foundation | The canonical framebuffer is live on target, generic virtio-gpu plus virtio-input virtualizers drive an AArch64 guest without host-device passthrough, and the official Omarchy compatibility ledger is kept current. |
+| **0.3** | Reproducible Linux and guest graphics | A pinned Debian guest replaces Ubuntu as the cross-architecture integration baseline, the canonical framebuffer is live on target, generic virtio-gpu plus virtio-input virtualizers drive an AArch64 guest without host-device passthrough, and the official Omarchy compatibility ledger is kept current. |
 | **0.4** | x86 guest foundation | A real VMX-backed x86_64 VMM boots Linux and reuses canonical net, block, and console services with isolated GPA translation. |
 | **0.5** | Persistent x86 desktop platform | A pinned Arch Linux x86_64 guest installs through UEFI, reboots from writable storage, reaches key-only SSH, and runs a Hyprland-class compositor through canonical graphics and input. |
 | **0.6** | Official Omarchy qualification | A reproducible official Omarchy artifact installs to encrypted persistent storage, reaches its normal Hyprland desktop, and survives evidence-bound update and recovery gates. |
@@ -30,7 +30,9 @@ dual-guest SSH
       |                                  ^
       +---- 0.2 release workflow --------+
 
-0.3 framebuffer target proof ----- 0.3 Omarchy compatibility ledger
+0.3 Debian integration baseline -- 0.3 framebuffer target proof
+              |                              |
+              +------------------------------+-- 0.3 Omarchy compatibility ledger
       |
       v
 0.3 virtio-gpu + virtio-input -------------------+
@@ -91,7 +93,43 @@ MAC work:
   evidence-backed systems/security narrative after the proof and release gate
   are true.
 
-## 0.3 — Guest graphics foundation
+## 0.3 — Reproducible Linux and guest graphics
+
+Ubuntu was the v0.2 proof-of-life guest. Its retained evidence remains valid,
+but it is not the long-term Linux acceptance baseline. The distribution roles
+from v0.3 onward are deliberately separate:
+
+- Buildroot remains the smallest deterministic per-device and boot proof.
+- A pinned Debian stable generic image is the cross-architecture integration
+  guest for net, block, console, lifecycle, provisioning, and release gates.
+- FreeBSD remains the second-kernel compatibility guest.
+- Official Arch Linux x86_64 is the desktop-platform precursor in v0.5.
+- Official Omarchy is qualified only after that reusable platform passes.
+
+Debian replaces Ubuntu in required gates only after it reaches parity on the
+same agentOS-owned VirtIO paths. No v0.2 receipt or historical claim is
+rewritten. The initial artifact decision and checksums are recorded in
+`docs/linux-guest-baseline.md`.
+
+Linux baseline acceptance evidence:
+
+- the dated Debian image, checksum manifest, provisioning input, extracted
+  boot artifacts, and conversion to agentOS block media are reproducible;
+- AArch64 reaches key-only SSH through agentOS VirtIO net, block, and console
+  without QEMU device passthrough or a guest-specific backend;
+- the boot contract is documented and tested rather than assuming that the
+  image's firmware environment exists in the current AArch64 VMM;
+- cold-boot time and failure diagnostics are retained beside the Ubuntu v0.2
+  measurement before Ubuntu leaves required gates;
+- the same Debian release and provisioning contract extend to amd64 when the
+  v0.4 x86 VMM is ready.
+
+MAC work:
+
+- `task_26e8b1157ffe449483d2fe1c44f2a8be` - replace Ubuntu live media with the
+  pinned Debian integration guest after parity is proven.
+
+### Guest graphics foundation
 
 This release turns display claims into an agentOS-owned path:
 
