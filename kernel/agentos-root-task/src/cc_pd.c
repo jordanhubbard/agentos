@@ -119,7 +119,10 @@ static void cc_dbg_hex(uint64_t v)
 #define VIRTIO_ID_CONSOLE 3u
 #define VQ_DEPTH          4u
 #define CC_VIRTIO_RX_WAIT_LIMIT 16384u
-#define CC_VIRTIO_TX_WAIT_LIMIT 256u
+/* A queue kick can be deferred while QEMU services a busy guest.  Keep TX
+ * bounded below the host's frame deadline, but do not reset a healthy queue
+ * after only a few hundred scheduler yields. */
+#define CC_VIRTIO_TX_WAIT_LIMIT 16384u
 #define CC_VIRTIO_RENOTIFY_INTERVAL 64u
 
 typedef struct { uint64_t addr; uint32_t len; uint16_t flags; uint16_t next; }

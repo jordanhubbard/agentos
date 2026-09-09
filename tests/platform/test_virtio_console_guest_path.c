@@ -169,7 +169,7 @@ int main(void)
     ok(contains("kernel/agentos-root-task/src/cc_pd.c",
                 "CC_VIRTIO_RENOTIFY_INTERVAL") &&
        contains("kernel/agentos-root-task/src/cc_pd.c",
-                "#define CC_VIRTIO_TX_WAIT_LIMIT 256u") &&
+                "#define CC_VIRTIO_TX_WAIT_LIMIT 16384u") &&
        contains_after("kernel/agentos-root-task/src/cc_pd.c",
                       "wait % CC_VIRTIO_RENOTIFY_INTERVAL",
                       "vio_wr(VMMIO_QUEUE_NOTIFY, 1u);") &&
