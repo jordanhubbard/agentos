@@ -14,7 +14,7 @@ changing the dependency order below.
 | Release | Theme | Required outcome |
 | --- | --- | --- |
 | **0.2** | Network desktop proof and release discipline | Ubuntu exposes a real desktop session over the already authenticated network path; releases become exact-revision, evidence-bound transitions; the first systems/security narrative is grounded in retained evidence. |
-| **0.3** | Guest graphics foundation | The canonical framebuffer is live on target, and generic virtio-gpu plus virtio-input virtualizers drive an AArch64 guest without host-device passthrough. |
+| **0.3** | Reproducible Linux and guest graphics | A pinned Debian guest replaces Ubuntu as the cross-architecture integration baseline, the canonical framebuffer is live on target, generic virtio-gpu plus virtio-input virtualizers drive an AArch64 guest without host-device passthrough, and the official Omarchy compatibility ledger is kept current. |
 | **0.4** | x86 guest foundation | A real VMX-backed x86_64 VMM boots Linux and reuses canonical net, block, and console services with isolated GPA translation. |
 | **0.5** | Persistent x86 desktop platform | A pinned Arch Linux x86_64 guest installs through UEFI, reboots from writable storage, reaches key-only SSH, and runs a Hyprland-class compositor through canonical graphics and input. |
 | **0.6** | Official Omarchy qualification | A reproducible official Omarchy artifact installs to encrypted persistent storage, reaches its normal Hyprland desktop, and survives evidence-bound update and recovery gates. |
@@ -30,7 +30,11 @@ dual-guest SSH
       |                                  ^
       +---- 0.2 release workflow --------+
 
-0.3 framebuffer target proof ----- 0.3 Omarchy compatibility ledger
+0.3 declarative guest profiles -> 0.3 Debian integration baseline
+              |                              |
+              |                    0.3 framebuffer target proof
+              |                              |
+              +------------------------------+-- 0.3 Omarchy compatibility ledger
       |
       v
 0.3 virtio-gpu + virtio-input -------------------+
@@ -91,7 +95,57 @@ MAC work:
   evidence-backed systems/security narrative after the proof and release gate
   are true.
 
-## 0.3 — Guest graphics foundation
+## 0.3 — Reproducible Linux and guest graphics
+
+Ubuntu was the v0.2 proof-of-life guest. Its retained evidence remains valid,
+but it is not the long-term Linux acceptance baseline. The distribution roles
+from v0.3 onward are deliberately separate:
+
+- Buildroot remains the smallest deterministic per-device and boot proof.
+- A pinned Debian stable generic image is the cross-architecture integration
+  guest for net, block, console, lifecycle, provisioning, and release gates.
+- FreeBSD remains the second-kernel compatibility guest.
+- Official Arch Linux x86_64 is the desktop-platform precursor in v0.5.
+- Official Omarchy is qualified only after that reusable platform passes.
+
+Debian replaces Ubuntu in required gates only after it reaches parity on the
+same agentOS-owned VirtIO paths. No v0.2 receipt or historical claim is
+rewritten. The initial artifact decision and checksums are recorded in
+`docs/linux-guest-baseline.md`.
+
+Guest identity must also stop selecting target implementations. Versioned
+TOML source profiles are validated and compiled by the Rust host tooling into
+a compact, bounded runtime manifest. The target selects generic boot protocols
+and device capabilities from that manifest; artifact acquisition, console
+matchers, provisioning, and test recipes remain host-only profile data. If a
+recipe needs more than static fields, it uses a finite declarative state
+machine interpreted by Rust host tooling, never an arbitrary interpreter in a
+VMM or device-service PD. Debian and Omarchy extend reusable Linux/Arch
+profiles rather than introducing new VMM implementations.
+
+Linux baseline acceptance evidence:
+
+- the dated Debian image, checksum manifest, provisioning input, extracted
+  boot artifacts, and conversion to agentOS block media are reproducible;
+- AArch64 reaches key-only SSH through agentOS VirtIO net, block, and console
+  without QEMU device passthrough or a guest-specific backend;
+- the boot contract is documented and tested rather than assuming that the
+  image's firmware environment exists in the current AArch64 VMM;
+- cold-boot time and failure diagnostics are retained beside the Ubuntu v0.2
+  measurement before Ubuntu leaves required gates;
+- the same Debian release and provisioning contract extend to amd64 when the
+  v0.4 x86 VMM is ready.
+
+MAC work:
+
+- `task_7f6653b7dcc840b9ab7fa092685c9d57` - collapse Linux and FreeBSD onto
+  one flavor-driven VMM implementation.
+- `task_a1d4e9d734e246c4a3807d614c2a6dc7` - compile declarative guest source
+  profiles into a guest-neutral runtime manifest and host-side test recipes.
+- `task_26e8b1157ffe449483d2fe1c44f2a8be` - replace Ubuntu live media with the
+  pinned Debian integration guest after parity is proven.
+
+### Guest graphics foundation
 
 This release turns display claims into an agentOS-owned path:
 
@@ -115,7 +169,8 @@ MAC work:
 - `task_cefc0f77327d4245ab9feb132cd1eb57` — implement guest virtio-gpu and
   virtio-input.
 - `task_93ddbd0f497e4209a162e0f5527fc7cf` — maintain an evidence ledger for
-  official Omarchy architecture, artifacts, repositories, and requirements.
+  official Omarchy architecture, artifacts, repositories, and requirements;
+  the maintained snapshot is `docs/omarchy-compatibility.md`.
 
 ## 0.4 — x86 guest foundation
 
@@ -143,7 +198,6 @@ Acceptance evidence:
 
 MAC work:
 
-- `task_7f6653b7dcc840b9ab7fa092685c9d57` — make guest flavor data-driven.
 - `task_ede60b058fc745d296bad77044a57420` — implement VMX guest execution.
 - `task_5870ef2f51974ffe95099c3032d0f077` — implement UEFI and ACPI guest
   boot.
@@ -195,6 +249,8 @@ Acceptance evidence:
 - injected keyboard and pointer input plus a non-uniform captured frame;
 - successful pinned update and reboot;
 - snapshot-backed rollback or recovery from an injected failed update;
+- retained cold-boot timing from vCPU start to key-only SSH and to the first
+  non-uniform compositor frame, compared with the pinned Ubuntu desktop proof;
 - exact guest release identity recorded in release evidence.
 
 MAC work:
