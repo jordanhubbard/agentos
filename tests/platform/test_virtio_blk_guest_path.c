@@ -425,6 +425,19 @@ int main(void)
                  src_contains("kernel/agentos-root-task/src/freebsd_vmm.c",
                               "aos_vmm_guest_ram_bind(FREEBSD_GUEST_RAM_GPA"),
                  "guest TCB VSpaces use GPA mappings distinct from VMM aliases");
+    (void)tap_ok(src_contains_in_order(
+                     "kernel/agentos-root-task/src/system_desc_aarch64.c",
+                     ".name           = \"vm_manager\"",
+                     ".priority       = 155u") &&
+                 src_contains_in_order(
+                     "kernel/agentos-root-task/agentos.toml",
+                     "name = \"vm_manager\"",
+                     "priority = 155") &&
+                 src_contains("kernel/agentos-root-task/agentos-aarch64.system",
+                              "name=\"vm_manager\" priority=\"155\"") &&
+                 src_contains("kernel/agentos-root-task/agentos.system",
+                              "name=\"vm_manager\" priority=\"155\""),
+                 "vm_manager priority stays above guest fault senders in every topology source");
     (void)tap_ok(src_contains("libvmm/src/arch/aarch64/vcpu.c",
                               "seL4_VCPUReg_CNTVOFF") &&
                  src_contains("libvmm/src/arch/aarch64/vcpu.c",
