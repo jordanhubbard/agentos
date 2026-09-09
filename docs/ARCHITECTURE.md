@@ -79,7 +79,7 @@ Legend: `[SYS]` = in system file | `[SRC]` = has source | `[CON]` = has contract
 | gpu_scheduler | — | ✓ | — | — | Scheduler impl (linked into gpu_sched?) |
 | gpu_shmem | — | ✓ | ✓ | — | GPU shared memory management |
 | framebuffer_pd | ✓ | ✓ | — | 90 | Framebuffer output (needs contract) |
-| cc_pd | ✓ | ✓ | — | 85 | Compute context (needs contract) |
+| cc_pd | ✓ | ✓ | — | 160 | External command-and-control transport and relay |
 
 ### Observability
 | PD | SYS | SRC | CON | Prio | Notes |

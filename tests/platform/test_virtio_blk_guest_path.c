@@ -443,6 +443,15 @@ int main(void)
                  "vibe_engine guest-control relay outranks guest fault senders");
     (void)tap_ok(src_contains_in_order(
                      "kernel/agentos-root-task/src/system_desc_aarch64.c",
+                     ".name           = \"cc_pd\"",
+                     ".priority       = 160u") &&
+                 src_contains_in_order(
+                     "kernel/agentos-root-task/agentos.toml",
+                     "name = \"cc_pd\"",
+                     "priority = 160"),
+                 "CC transport cannot be starved by a running guest");
+    (void)tap_ok(src_contains_in_order(
+                     "kernel/agentos-root-task/src/system_desc_aarch64.c",
                      ".name           = \"vm_manager\"",
                      ".priority       = 155u") &&
                  src_contains_in_order(

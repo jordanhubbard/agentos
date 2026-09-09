@@ -156,7 +156,7 @@ priority = 165
 
 [[pd]]
 name = "cc_pd"
-priority = 100
+priority = 160
 
 [[pd]]
 name = "gpu_sched"
