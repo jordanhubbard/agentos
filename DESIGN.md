@@ -497,6 +497,6 @@ CUDA/PyTorch workloads running in the Linux guest on sparky's GB10 GPU.
 ### Files
 - `kernel/agentos-root-task/src/gpu_shmem.c` — seL4 ring implementation
 - `kernel/agentos-root-task/include/gpu_shmem.h` — API header
-- `kernel/agentos-root-task/src/linux_vmm.c` — VMM notification handler
+- `kernel/agentos-root-task/src/guest_vmm.c` — VMM notification handler
 - `userspace/gpu_shmem_linux/gpu_shmem_linux.c` — Linux side daemon
 - `tools/topology.yaml` — MR, PD, and channel definitions

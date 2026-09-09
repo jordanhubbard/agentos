@@ -118,7 +118,7 @@ endif
 LINUX_GUEST_PROFILE_BIN := $(BUILD_DIR)/linux-guest-profile.bin
 FREEBSD_GUEST_PROFILE_BIN := $(BUILD_DIR)/freebsd-guest-profile.bin
 
-# ─── VMM CFLAGS (used for linux_vmm.c compilation) ───────────────────────
+# ─── VMM CFLAGS (used for guest_vmm.c compilation) ───────────────────────
 VMM_CFLAGS := \
     -mstrict-align \
     -ffreestanding \
@@ -138,17 +138,8 @@ VMM_CFLAGS := \
     -MD -MP \
     -target aarch64-none-elf
 
-ifeq ($(GUEST_OS),ubuntu)
-VMM_CFLAGS += -DAGENTOS_GUEST_UBUNTU=1
-endif
-ifeq ($(GUEST_OS),freebsd)
-VMM_CFLAGS += -DAGENTOS_GUEST_FREEBSD=1
-endif
 ifeq ($(VMM_DUAL_GUEST),1)
-VMM_CFLAGS += -DAGENTOS_GUEST_BOTH=1 -DAGENTOS_GUEST_UBUNTU=1
-endif
-ifeq ($(UBUNTU_BOOT_MODE),live)
-VMM_CFLAGS += -DAGENTOS_GUEST_UBUNTU_LIVE=1
+VMM_CFLAGS += -DAGENTOS_GUEST_BOTH=1
 endif
 
 VMM_CONFIG_STAMP := $(BUILD_DIR)/vmm-$(GUEST_OS).stamp
@@ -303,13 +294,13 @@ BLK_VIRT_PUMP_OBJ  := $(BUILD_DIR)/blk_virt_pump.o
 VMM_VIRTIO_BLK_OBJ := $(BUILD_DIR)/vmm_virtio_blk.o
 VMM_VIRTIO_CONSOLE_OBJ := $(BUILD_DIR)/vmm_virtio_console.o
 
-# ─── Compile linux_vmm.c + gpu_shmem.c ──────────────────────────────────
+# ─── Compile guest_vmm.c + gpu_shmem.c ──────────────────────────────────
 #
 # Use object names that are private to the libvmm build. The main kernel
 # Makefile also writes $(BUILD_DIR)/linux_vmm.o for the default stub build, and
 # reusing that path can silently link a stale object compiled with incompatible
 # flags.
-$(LINUX_VMM_FULL_OBJ): $(KERNEL_SRC_DIR)/src/linux_vmm.c $(VMM_CONFIG_STAMP) \
+$(LINUX_VMM_FULL_OBJ): $(KERNEL_SRC_DIR)/src/guest_vmm.c $(VMM_CONFIG_STAMP) \
                       $(AGENTOS_ROOT)/platform/include/platform/guest_memory_layout.h \
                       $(AGENTOS_ROOT)/platform/include/platform/guest_boot.h \
                       $(AGENTOS_ROOT)/platform/include/platform/guest_profile.h \
@@ -318,7 +309,7 @@ $(LINUX_VMM_FULL_OBJ): $(KERNEL_SRC_DIR)/src/linux_vmm.c $(VMM_CONFIG_STAMP) \
                       $(AGENTOS_ROOT)/platform/include/platform/vmm_virtio_blk.h \
                       $(AGENTOS_ROOT)/platform/include/platform/vmm_virtio_console.h
 	@mkdir -p $(BUILD_DIR)
-	@echo "[VMM] Compiling linux_vmm.c..."
+	@echo "[VMM] Compiling guest_vmm.c..."
 	clang $(VMM_CFLAGS) -c -o $@ $<
 
 $(GPU_SHMEM_FULL_OBJ): $(KERNEL_SRC_DIR)/src/gpu_shmem.c $(VMM_CONFIG_STAMP)
@@ -500,19 +491,21 @@ $(BUILD_DIR)/freebsd_guest_profile.o: $(PKG_PROFILE) $(FREEBSD_GUEST_PROFILE_BIN
 		-DGUEST_PROFILE_PATH=\"$(FREEBSD_GUEST_PROFILE_BIN)\" \
 		-target aarch64-none-elf $(PKG_PROFILE) -o $@
 
-# ─── Compile freebsd_vmm.c ───────────────────────────────────────────────
-$(BUILD_DIR)/freebsd_vmm.o: $(KERNEL_SRC_DIR)/src/freebsd_vmm.c $(VMM_CONFIG_STAMP) \
+# ─── Compile the same profile-backed VMM source for the secondary instance ─
+$(BUILD_DIR)/freebsd_vmm.o: $(KERNEL_SRC_DIR)/src/guest_vmm.c $(VMM_CONFIG_STAMP) \
                            $(AGENTOS_ROOT)/platform/include/platform/guest_memory_layout.h \
                            $(AGENTOS_ROOT)/platform/include/platform/guest_boot.h \
                            $(AGENTOS_ROOT)/platform/include/platform/guest_profile.h \
                            $(AGENTOS_ROOT)/platform/include/platform/guest_vmm_runtime.h \
                            $(AGENTOS_ROOT)/platform/include/platform/vmm_virtio_console.h
 	@mkdir -p $(BUILD_DIR)
-	@echo "[VMM] Compiling freebsd_vmm.c..."
+	@echo "[VMM] Compiling guest_vmm.c for secondary profile..."
 	clang $(VMM_CFLAGS) -c -o $@ $<
 
 # ─── Link freebsd_vmm.elf ────────────────────────────────────────────────
 $(BUILD_DIR)/freebsd_vmm.elf: $(BUILD_DIR)/freebsd_vmm.o \
+                               $(GPU_SHMEM_FULL_OBJ) \
+                               $(VMM_PD_ENTRY_OBJ) \
                                $(BUILD_DIR)/freebsd_images.o \
                                $(BUILD_DIR)/freebsd_guest_profile.o \
                                $(NET_VIRT_PUMP_OBJ) \
@@ -531,7 +524,8 @@ $(BUILD_DIR)/freebsd_vmm.elf: $(BUILD_DIR)/freebsd_vmm.o \
 	@echo "[VMM] Linking freebsd_vmm.elf..."
 	ld.lld -T$(KERNEL_SRC_DIR)/freebsd_vmm.ld \
 		-L$(BOARD_DIR)/lib \
-		$(BUILD_DIR)/freebsd_vmm.o $(BUILD_DIR)/freebsd_images.o \
+		$(VMM_PD_ENTRY_OBJ) $(BUILD_DIR)/freebsd_vmm.o $(GPU_SHMEM_FULL_OBJ) \
+		$(BUILD_DIR)/freebsd_images.o \
 		$(NET_VIRT_PUMP_OBJ) $(VMM_VIRTIO_NET_OBJ) \
 		$(GPA_TRANSLATE_OBJ) $(VMM_GUEST_RAM_OBJ) \
 		$(GUEST_VMM_RUNTIME_OBJ) \

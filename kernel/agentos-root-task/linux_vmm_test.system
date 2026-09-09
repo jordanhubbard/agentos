@@ -49,7 +49,7 @@
 
         <!--
           IRQ passthroughs: Microkit places caps at BASE_IRQ_CAP + id.
-          linux_vmm.c hardcodes BASE_IRQ_CAP=138, so:
+          guest_vmm.c hardcodes BASE_IRQ_CAP=138, so:
             id=3 => slot 141 = g_virtio_net_irq_cap  (SPI 16, INTID 48)
             id=4 => slot 142 = g_virtio_blk_irq_cap  (SPI 17, INTID 49)
             id=5 => slot 143 = g_virtio_blk2_irq_cap (SPI 18, INTID 50)

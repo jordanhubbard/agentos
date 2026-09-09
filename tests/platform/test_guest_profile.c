@@ -121,6 +121,22 @@ int main(int argc, char **argv)
     p.control_type = 0u;
     CHECK("zero lifecycle control type rejected",
           aos_guest_profile_validate(&p) == AOS_GUEST_PROFILE_ERR_ENUM);
+    p = valid_profile();
+    memcpy(p.media_initrd_path, "boot/initrd", 12u);
+    p.media_initrd_path_length = 11u;
+    p.flags |= AOS_GUEST_PROFILE_INITRD_FROM_MEDIA;
+    CHECK("bounded media initrd path accepted",
+          aos_guest_profile_validate(&p) == AOS_GUEST_PROFILE_OK);
+    p.device_flags &= ~AOS_GUEST_DEVICE_BLOCK;
+    p.block_media = UINT16_MAX;
+    CHECK("media initrd requires profile block device",
+          aos_guest_profile_validate(&p) == AOS_GUEST_PROFILE_ERR_ARTIFACT);
+    p = valid_profile();
+    memcpy(p.media_initrd_path, "../initrd", 10u);
+    p.media_initrd_path_length = 9u;
+    p.flags |= AOS_GUEST_PROFILE_INITRD_FROM_MEDIA;
+    CHECK("parent traversal in media path rejected",
+          aos_guest_profile_validate(&p) == AOS_GUEST_PROFILE_ERR_ARTIFACT);
     for (int i = 1; i < argc; i++) check_compiled_manifest(argv[i]);
     printf("1..%u\n", tests);
     return failures == 0u ? 0 : 1;

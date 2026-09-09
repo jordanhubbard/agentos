@@ -1,7 +1,7 @@
 # Guest profiles
 
 Guest identity is host data, not a target-code branch. Source profiles live in
-`guest-profiles/` and compile to a fixed 576-byte manifest consumed by the VMM
+`guest-profiles/` and compile to a fixed 640-byte manifest consumed by the VMM
 PD. Target code recognizes architecture, boot protocol, image format, bounded
 memory windows, and canonical device classes. It does not interpret TOML or run
 profile recipes.
@@ -31,7 +31,7 @@ The binary manifest contains only:
 - guest ID, vCPU count, lifecycle flags, control type, and canonical devices;
 - guest GPA, VMM HVA, RAM size, and bounded artifact placements;
 - profile and artifact SHA-256 identities;
-- a bounded command line.
+- a bounded command line and, when required, a normalized ISO initrd path.
 
 The `fetch-guest` host tool resolves the selected profile and executes only its
 bounded `host.acquire` recipe. Its implementation contains no distribution
@@ -43,9 +43,16 @@ artifacts before embedding the manifest. The VMM validates the fixed wire
 representation and checks embedded artifact sizes before the guest-neutral boot
 executor copies anything into guest RAM.
 
-Lifecycle RPC, device selection, boot preparation, and the seL4 receive loop
-are shared target components. The `control_type` value is data used only to
-match a create request to a profile; it does not select target code.
+Manifest version 2 can set `boot.media_initrd_path`. The shared block backend
+then walks that normalized relative path through ISO9660 and stages the file at
+the profile's initrd address. No distribution name or fixed ISO pathname is
+compiled into the VMM.
+
+Lifecycle RPC, device selection, boot preparation, the seL4 receive loop, and
+the AArch64 VMM itself are shared target components. Primary and secondary
+instances compile the same `guest_vmm.c`; a separate FreeBSD implementation no
+longer exists. The `control_type` value is data used only to match a create
+request to a profile; it does not select target code.
 
 ## Commands
 

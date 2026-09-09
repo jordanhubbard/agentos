@@ -1,4 +1,4 @@
-schema = 1
+schema = 2
 id = "omarchy-x86-64"
 status = "planned"
 extends = "arch.toml"

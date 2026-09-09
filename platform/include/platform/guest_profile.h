@@ -13,10 +13,11 @@
 #include <stdint.h>
 
 #define AOS_GUEST_PROFILE_MAGIC        UINT64_C(0x0046525047534f41)
-#define AOS_GUEST_PROFILE_VERSION      1u
-#define AOS_GUEST_PROFILE_SIZE         576u
+#define AOS_GUEST_PROFILE_VERSION      2u
+#define AOS_GUEST_PROFILE_SIZE         640u
 #define AOS_GUEST_PROFILE_ID_MAX       63u
 #define AOS_GUEST_PROFILE_CMDLINE_MAX  255u
+#define AOS_GUEST_PROFILE_MEDIA_PATH_MAX 63u
 #define AOS_GUEST_PROFILE_VCPU_MAX     8u
 
 enum aos_guest_architecture {
@@ -43,6 +44,7 @@ enum aos_guest_profile_flags {
     AOS_GUEST_PROFILE_HAS_INITRD       = 1u << 1,
     AOS_GUEST_PROFILE_ENTRY_FROM_IMAGE = 1u << 2,
     AOS_GUEST_PROFILE_HASHED_ARTIFACTS = 1u << 3,
+    AOS_GUEST_PROFILE_INITRD_FROM_MEDIA = 1u << 4,
 };
 
 enum aos_guest_device_flags {
@@ -86,9 +88,11 @@ typedef struct __attribute__((packed)) aos_guest_profile_manifest {
     uint16_t command_line_length;
     uint16_t profile_id_length;
     uint32_t control_type;
-    uint8_t reserved[8];
+    uint16_t media_initrd_path_length;
+    uint8_t reserved[6];
     char profile_id[64];
     char command_line[256];
+    char media_initrd_path[64];
 } aos_guest_profile_manifest_t;
 
 _Static_assert(sizeof(aos_guest_profile_manifest_t) == AOS_GUEST_PROFILE_SIZE,

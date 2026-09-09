@@ -1,7 +1,7 @@
 /*
  * Shared lifecycle state machine for guest VMM protection domains.
  *
- * Guest flavor is data (os_type plus callbacks); Linux and FreeBSD must not
+ * Guest behavior is profile data plus bounded callbacks; guest names must not
  * grow independent implementations of the common CREATE/BOOT/SUSPEND/
  * RESUME/DESTROY wire protocol.
  */

@@ -79,7 +79,7 @@ int main(void)
 {
     const char *overlay =
         "kernel/agentos-root-task/ubuntu-iso-overlay.dts.in";
-    const char *vmm = "kernel/agentos-root-task/src/linux_vmm.c";
+    const char *vmm = "kernel/agentos-root-task/src/guest_vmm.c";
     const char *console = "libvmm/src/virtio/console.c";
 
     printf("TAP version 14\n");
@@ -133,8 +133,9 @@ int main(void)
        contains("platform/guest-vmm/runtime.c",
                 "event_type == CC_INPUT_TEXT") &&
        contains(vmm, "aos_vmm_virtio_console_push_rx_bytes") &&
-       contains("kernel/agentos-root-task/src/freebsd_vmm.c",
-                "freebsd_vmm_push_input") &&
+       contains(vmm, "guest_vmm_push_input") &&
+       contains("kernel/agentos-root-task/vmm.mk",
+                "$(BUILD_DIR)/freebsd_vmm.o: $(KERNEL_SRC_DIR)/src/guest_vmm.c") &&
        contains("kernel/agentos-root-task/src/cc_pd.c",
                 "? CC_OK : CC_ERR_RELAY_FAULT;") &&
        contains("kernel/agentos-root-task/include/contracts/cc_contract.h",
@@ -213,12 +214,12 @@ int main(void)
     ok(contains(vmm, "Guest console bytes belong to the per-guest virtual TTY") &&
        contains(vmm, "console_tx_push(byte);"),
        "guest virtual TTY is not synchronously mirrored to physical PL011");
-    ok(contains("kernel/agentos-root-task/src/freebsd_vmm.c",
-                "Guest PL011 output belongs to this guest's virtual TTY") &&
-       !contains_after("kernel/agentos-root-task/src/freebsd_vmm.c",
-                       "static void guest_console_write(uint8_t byte)",
-                       "serial_log_putc(&g_vmm_log, (char)byte)"),
-       "FreeBSD virtual TTY is not synchronously mirrored to physical PL011");
+    ok(contains("kernel/agentos-root-task/vmm.mk",
+                "$(LINUX_VMM_FULL_OBJ): $(KERNEL_SRC_DIR)/src/guest_vmm.c") &&
+       contains("kernel/agentos-root-task/vmm.mk",
+                "$(BUILD_DIR)/freebsd_vmm.o: $(KERNEL_SRC_DIR)/src/guest_vmm.c") &&
+       !contains("kernel/agentos-root-task/Makefile", "src/freebsd_vmm.c"),
+       "primary and secondary guests compile the same profile-driven VMM source");
     ok(contains("xtask/src/cmd_test.rs", "TRACE_PD_FREEBSD_VMM") &&
        contains("xtask/src/cmd_test.rs",
                 ".call(MSG_CC_LOG_STREAM, guest_handle, pd_id, 0, &[])"),

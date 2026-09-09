@@ -693,7 +693,7 @@ $(BUILD_DIR)/fdt_builder.o: src/fdt_builder.c
 	@mkdir -p $(BUILD_DIR)
 	$(CC) -c $(CFLAGS) $< -o $@
 
-$(BUILD_DIR)/linux_vmm.o: src/linux_vmm.c
+$(BUILD_DIR)/linux_vmm.o: src/guest_vmm.c
 	@mkdir -p $(BUILD_DIR)
 	$(CC) -c $(CFLAGS) $< -o $@
 
@@ -702,7 +702,7 @@ $(BUILD_DIR)/linux_vmm.elf: $(BUILD_DIR)/linux_vmm.o $(BUILD_DIR)/fdt_builder.o 
                              $(BUILD_DIR)/log.o $(BUILD_DIR)/pd_entry.o
 	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
 
-$(BUILD_DIR)/freebsd_vmm.o: src/freebsd_vmm.c
+$(BUILD_DIR)/freebsd_vmm.o: src/guest_vmm.c
 	@mkdir -p $(BUILD_DIR)
 	$(CC) -c $(CFLAGS) $< -o $@
 
@@ -719,9 +719,9 @@ ifeq ($(GUEST_OS),none)
 # Default AArch64 build: keep a normal agentOS-linked placeholder VMM PD.
 # The libvmm Microkit ELF currently has entry 0 under the custom root-task
 # loader, so full VMM builds are opt-in via GUEST_OS=buildroot/ubuntu.
-$(BUILD_DIR)/linux_vmm.o: src/linux_vmm.c
+$(BUILD_DIR)/linux_vmm.o: src/guest_vmm.c
 	@mkdir -p $(BUILD_DIR)
-	$(CC) -c $(CFLAGS) -DARCH_AARCH64 -DLINUX_VMM_NATIVE_STUB=1 $< -o $@
+	$(CC) -c $(CFLAGS) -DARCH_AARCH64 -DGUEST_VMM_NATIVE_STUB=1 $< -o $@
 
 $(BUILD_DIR)/linux_vmm.elf: FORCE \
                              $(BUILD_DIR)/linux_vmm.o \
@@ -734,9 +734,9 @@ else
 ifeq ($(BOARD_NATIVE),1)
 # Native AArch64 board (e.g., RPi5): libvmm has QEMU-specific GIC addresses;
 # use a stub instead until board-specific VMM support is added.
-$(BUILD_DIR)/linux_vmm.o: src/linux_vmm.c
+$(BUILD_DIR)/linux_vmm.o: src/guest_vmm.c
 	@mkdir -p $(BUILD_DIR)
-	$(CC) -c $(CFLAGS) -DARCH_AARCH64 -DLINUX_VMM_NATIVE_STUB=1 $< -o $@
+	$(CC) -c $(CFLAGS) -DARCH_AARCH64 -DGUEST_VMM_NATIVE_STUB=1 $< -o $@
 
 $(BUILD_DIR)/linux_vmm.elf: FORCE \
                              $(BUILD_DIR)/linux_vmm.o \
@@ -785,12 +785,12 @@ endif
 endif
 
 # ─── Linux VMM stub (x86_64) ──────────────────────────────────────────────
-# Compiled directly from linux_vmm.c with -DARCH_X86_64.
+# Compiled directly from guest_vmm.c with -DARCH_X86_64.
 # No libvmm dependency — stub implementation only.
 ifeq ($(ARCH),x86_64)
-$(BUILD_DIR)/linux_vmm.o: src/linux_vmm.c
+$(BUILD_DIR)/linux_vmm.o: src/guest_vmm.c
 	@mkdir -p $(BUILD_DIR)
-	$(CC) -c $(CFLAGS) -DARCH_X86_64 -DLINUX_VMM_X86_STUB=1 $< -o $@
+	$(CC) -c $(CFLAGS) -DARCH_X86_64 -DGUEST_VMM_X86_STUB=1 $< -o $@
 
 $(BUILD_DIR)/linux_vmm.elf: $(BUILD_DIR)/linux_vmm.o \
                              $(BUILD_DIR)/sel4_crt.o \

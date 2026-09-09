@@ -1,4 +1,4 @@
-schema = 1
+schema = 2
 id = "buildroot-proof-aarch64"
 status = "runtime"
 extends = "linux-base.toml"

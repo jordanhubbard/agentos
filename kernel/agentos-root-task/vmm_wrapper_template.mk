@@ -16,7 +16,7 @@ RANLIB := $(shell command -v llvm-ranlib 2>/dev/null || command -v /opt/homebrew
 
 SDDF_CUSTOM_LIBC := 1
 
-# -D__thread= is mandatory and must match linux_vmm.c / pd_entry.c (VMM_CFLAGS).
+# -D__thread= is mandatory and must match guest_vmm.c / pd_entry.c (VMM_CFLAGS).
 # libsel4 declares __sel4_ipc_buffer as extern __thread. Without this, libvmm.a
 # (guest_start → seL4_TCB_WriteRegisters, 38 MRs) uses a TLS copy that stays
 # NULL and VMFaults at address 0. linux_vmm's global is a different symbol.

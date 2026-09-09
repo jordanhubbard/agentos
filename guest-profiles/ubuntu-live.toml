@@ -1,10 +1,11 @@
-schema = 1
+schema = 2
 id = "ubuntu-live-aarch64"
 status = "runtime"
 extends = "ubuntu-e2e.toml"
 
 [boot]
 command_line = "console=hvc0 quiet loglevel=3 boot=casper noprompt systemd.show_status=false systemd.unit=console-getty.service panic=-1"
+media_initrd_path = "casper/initrd"
 
 [artifacts.initrd]
 source = "ubuntu:26.04-live-server-arm64.iso:/casper/initrd"

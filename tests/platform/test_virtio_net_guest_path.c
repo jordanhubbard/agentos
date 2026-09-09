@@ -179,28 +179,28 @@ static int test_dtb(const char *rel, const char *name)
 
 static int test_vmm_fault_path(void)
 {
-    int init_ok = src_contains("kernel/agentos-root-task/src/linux_vmm.c",
+    int init_ok = src_contains("kernel/agentos-root-task/src/guest_vmm.c",
                                "aos_vmm_virtio_net_init");
     int after = src_contains_in_order(
-        "kernel/agentos-root-task/src/linux_vmm.c",
+        "kernel/agentos-root-task/src/guest_vmm.c",
         "fault_handle(vcpu_id, msginfo)",
         "aos_vmm_virtio_net_after_fault()");
-    int ipa = src_contains("kernel/agentos-root-task/src/linux_vmm.c",
+    int ipa = src_contains("kernel/agentos-root-task/src/guest_vmm.c",
                            "0x0A010000");
     return tap_ok(init_ok && after && ipa,
                   "linux_vmm: init + fault_handle then after_fault for IPA 0x0A010000");
 }
 
-static int test_freebsd_vmm_fault_path(void)
+static int test_secondary_profile_fault_path(void)
 {
-    int init_ok = src_contains("kernel/agentos-root-task/src/freebsd_vmm.c",
+    int init_ok = src_contains("kernel/agentos-root-task/src/guest_vmm.c",
                                ".net_init = aos_vmm_virtio_net_init") &&
                   src_contains("platform/guest-vmm/boot.c",
                                "ops->net_init(profile->network_client)") &&
                   src_contains("guest-profiles/freebsd.toml",
                                "network_client = 1");
     int after = src_contains_in_order(
-        "kernel/agentos-root-task/src/freebsd_vmm.c",
+        "kernel/agentos-root-task/src/guest_vmm.c",
         "fault_handle(vcpu_id, msginfo)",
         "aos_vmm_virtio_net_after_fault()");
     int rx_event = src_contains(
@@ -211,13 +211,12 @@ static int test_freebsd_vmm_fault_path(void)
         "name_eq(pd->name, \"linux_vmm\")",
         "name_eq(pd->name, \"freebsd_vmm\")");
     return tap_ok(init_ok && after && rx_event && shared,
-                  "profile selects FreeBSD isolated client through shared net_pd");
+                  "secondary profile selects isolated client through shared net_pd");
 }
 
 static int test_suspended_guest_defers_rx(void)
 {
-    const char *linux = "kernel/agentos-root-task/src/linux_vmm.c";
-    const char *freebsd = "kernel/agentos-root-task/src/freebsd_vmm.c";
+    const char *linux = "kernel/agentos-root-task/src/guest_vmm.c";
     const char *loop = "platform/guest-vmm/loop.c";
     const char *running_guard =
         "if (*ops->guest_state == GUEST_STATE_RUNNING) {\n"
@@ -228,9 +227,8 @@ static int test_suspended_guest_defers_rx(void)
         src_contains_in_order(linux,
                               "seL4_TCB_Resume(",
                               "aos_vmm_virtio_net_rx_ready();") &&
-        src_contains_in_order(freebsd,
-                              "seL4_TCB_Resume(",
-                              "aos_vmm_virtio_net_rx_ready();"),
+        src_contains("kernel/agentos-root-task/vmm.mk",
+                     "$(BUILD_DIR)/freebsd_vmm.o: $(KERNEL_SRC_DIR)/src/guest_vmm.c"),
         "suspended guests retain host RX until their TCB resumes");
 }
 
@@ -321,7 +319,7 @@ static int test_host_backed_architecture(void)
         !src_contains("Makefile", "bus=virtio-mmio-bus.0") &&
         !src_contains("xtask/src/cmd_test.rs",
                       "bus=virtio-mmio-bus.0") &&
-        !src_contains("kernel/agentos-root-task/src/linux_vmm.c",
+        !src_contains("kernel/agentos-root-task/src/guest_vmm.c",
                       "VIRTIO_NET_NTFN_BADGE") &&
         !src_contains("kernel/agentos-root-task/src/system_desc_aarch64.c",
                       ".irq_number = 48u");
@@ -689,12 +687,12 @@ int main(void)
     (void)test_vmm_fault_path();
     (void)test_dtb("kernel/agentos-root-task/freebsd-direct.dts",
                    "DTB FreeBSD has agentOS virtio_mmio@a010000");
-    (void)test_freebsd_vmm_fault_path();
+    (void)test_secondary_profile_fault_path();
     (void)test_suspended_guest_defers_rx();
     (void)tap_ok(src_contains("kernel/agentos-root-task/vmm_wrapper_template.mk",
                               "-D__thread="),
                  "libvmm.a CFLAGS suppress TLS so IPC buffer matches linux_vmm");
-    (void)tap_ok(src_contains("kernel/agentos-root-task/src/linux_vmm.c",
+    (void)tap_ok(src_contains("kernel/agentos-root-task/src/guest_vmm.c",
                               "seL4_SetIPCBuffer"),
                  "linux_vmm_main pins mapped IPC buffer before guest_start");
     (void)tap_ok(src_contains("platform/guest-vmm/loop.c",

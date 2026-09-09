@@ -1,4 +1,4 @@
-schema = 1
+schema = 2
 id = "arch-aarch64"
 status = "planned"
 extends = "linux-base.toml"

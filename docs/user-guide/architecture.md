@@ -13,7 +13,7 @@
 ┌────────────────────────────▼────────────────────────────────────────────┐
 │  VMM PDs (EL0) — vCPU, vGIC, emulated virtio                            │
 │                                                                         │
-│   linux_vmm.c          freebsd_vmm.c      (future guest VMMs)          │
+│   guest_vmm.c — one profile-driven implementation per guest instance   │
 │   ┌──────────────┐     ┌─────────────┐                                 │
 │   │ Linux guest  │     │ FreeBSD     │  virtio devices via seL4 shmem  │
 │   │ (EL1)        │     │ guest (EL1) │                                 │

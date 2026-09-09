@@ -2,7 +2,7 @@
 
 **Date:** 2026-04-15
 **Auditor:** Task 8 automated audit
-**Scope:** Linux VMM (`kernel/agentos-root-task/src/linux_vmm.c`) and FreeBSD VMM
+**Scope:** Linux VMM (`kernel/agentos-root-task/src/guest_vmm.c`) and FreeBSD VMM
 (`kernel/freebsd-vmm/vmm.c`, `kernel/freebsd-vmm/vmm_mux.c`) against the OS-neutral
 generic device services.
 
@@ -41,7 +41,7 @@ Before examining the VMMs, these generic services are confirmed to exist in the 
 
 ### 3.1 Linux VMM: Direct PL011 UART, no console_mux binding
 
-**Location:** `kernel/agentos-root-task/src/linux_vmm.c:207–211` (AArch64 full impl)
+**Location:** `kernel/agentos-root-task/src/guest_vmm.c:207–211` (AArch64 full impl)
 
 ```c
 /* Register UART IRQ passthrough */
@@ -50,7 +50,7 @@ success = virq_register(GUEST_BOOT_VCPU_ID, SERIAL_IRQ, &serial_ack, NULL);
 microkit_irq_ack(SERIAL_IRQ_CH);
 ```
 
-**Also:** `linux_vmm.c:369–373` (notified handler)
+**Also:** `guest_vmm.c:369–373` (notified handler)
 
 ```c
 case SERIAL_IRQ_CH: {
@@ -300,10 +300,10 @@ A sketch of the Phase 2 call site (not a code change — see task constraint):
 
 | Finding | File:Line | Severity | Disposition |
 |---|---|---|---|
-| Linux VMM bypasses console_mux (direct PL011 passthrough) | `linux_vmm.c:207–211, 367–373` | High | Defect — refactor Phase 2 |
+| Linux VMM bypasses console_mux (direct PL011 passthrough) | `guest_vmm.c:207–211, 367–373` | High | Defect — refactor Phase 2 |
 | FreeBSD VMM bypasses console_mux (raw DTS UART + vCPU suspend) | `freebsd-vmm.dts:65–72`, `vmm_mux.h:42–46` | High | Defect — refactor Phase 2 |
 | FreeBSD VMM bypasses block-service (in-VMM VirtIO blk emulation) | `vmm.h:37–38`, `freebsd-vmm.dts:74–79`, `vmm_mux.c:174` | High | Defect — refactor Phase 2 |
 | vm_manager OP_VM_CONSOLE doesn't notify console_mux | `vm_manager.c:419–424` | Medium | Defect — refactor Phase 2 |
-| Linux VMM has no block device (no block-service binding) | `linux_vmm.c` (absent) | Medium | Gap — add capability grant in Phase 2 |
+| Linux VMM has no block device (no block-service binding) | `guest_vmm.c` (absent) | Medium | Gap — add capability grant in Phase 2 |
 | Neither VMM uses net-service (no vNIC binding at VM creation) | `vm_manager.c:330–354` (absent) | Medium | Gap — add capability grant in Phase 2 |
-| GPU shmem channel used correctly in linux_vmm | `linux_vmm.c:346–438` | — | Approved exception (DEFECT-001) |
+| GPU shmem channel used correctly in linux_vmm | `guest_vmm.c:346–438` | — | Approved exception (DEFECT-001) |

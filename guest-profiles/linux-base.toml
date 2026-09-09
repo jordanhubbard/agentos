@@ -1,4 +1,4 @@
-schema = 1
+schema = 2
 id = "linux-aarch64-base"
 status = "abstract"
 

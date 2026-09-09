@@ -25,7 +25,7 @@ _Static_assert(sizeof(aos_blk_storage_info_t) == sizeof(blk_storage_info_t),
 
 /*
  * Private RAM disk + queues. Not a system_desc MR this pass — adding one
- * would consume linux_vmm's last PD_MAX_MEMORY_REGIONS slot. Future:
+ * would consume guest_vmm's last PD_MAX_MEMORY_REGIONS slot. Future:
  * map 2 MB at AOS_BLK_SHMEM_VA like net_virt.
  */
 static uint8_t g_blk_region[AOS_BLK_SHMEM_SIZE] __attribute__((aligned(4096)));
@@ -195,7 +195,7 @@ static bool iso_name_eq(const uint8_t *id, uint8_t id_len, const char *name)
 
 static bool iso_find_entry(uint32_t dir_lba, uint32_t dir_size,
                            const char *name, uint32_t *entry_lba,
-                           uint32_t *entry_size)
+                           uint32_t *entry_size, uint8_t *entry_flags)
 {
     uint32_t sectors =
         (dir_size + ISO9660_SECTOR_SIZE - 1u) / ISO9660_SECTOR_SIZE;
@@ -218,6 +218,7 @@ static bool iso_find_entry(uint32_t dir_lba, uint32_t dir_size,
                 iso_name_eq(&g_iso_sector[off + 33u], id_len, name)) {
                 *entry_lba = read_le32(&g_iso_sector[off + 2u]);
                 *entry_size = read_le32(&g_iso_sector[off + 10u]);
+                *entry_flags = g_iso_sector[off + 25u];
                 return true;
             }
             off += record_len;
@@ -226,16 +227,16 @@ static bool iso_find_entry(uint32_t dir_lba, uint32_t dir_size,
     return false;
 }
 
-bool aos_vmm_virtio_blk_load_casper_initrd(uintptr_t guest_dest,
-                                           size_t guest_capacity,
-                                           size_t *loaded_size)
+bool aos_vmm_virtio_blk_load_iso_file(const char *path,
+                                      uintptr_t guest_dest,
+                                      size_t guest_capacity,
+                                      size_t *loaded_size)
 {
     uint32_t root_lba;
     uint32_t root_size;
-    uint32_t casper_lba;
-    uint32_t casper_size;
-    uint32_t initrd_lba;
-    uint32_t initrd_size;
+    uint32_t file_lba;
+    uint32_t file_size;
+    uint8_t file_flags;
     uint8_t *dma = host_dma();
 
     if (!g_host_backend || !iso_read_sector(16u)) {
@@ -258,34 +259,71 @@ bool aos_vmm_virtio_blk_load_casper_initrd(uintptr_t guest_dest,
     root_size = read_le32(&g_iso_sector[166u]);
     LOG_VMM("emulated virtio-blk: ISO root lba=%u bytes=%u\n",
             (unsigned)root_lba, (unsigned)root_size);
-    if (!iso_find_entry(root_lba, root_size, "casper",
-                        &casper_lba, &casper_size)) {
-        LOG_VMM_ERR("emulated virtio-blk: ISO /casper not found\n");
+
+    if (path == NULL || path[0] == '\0' || path[0] == '/') {
+        LOG_VMM_ERR("emulated virtio-blk: invalid ISO file path\n");
         return false;
     }
-    LOG_VMM("emulated virtio-blk: ISO casper lba=%u bytes=%u\n",
-            (unsigned)casper_lba, (unsigned)casper_size);
-    if (!iso_find_entry(casper_lba, casper_size, "initrd",
-                        &initrd_lba, &initrd_size)) {
-        LOG_VMM_ERR("emulated virtio-blk: ISO /casper/initrd not found\n");
-        return false;
+    const char *cursor = path;
+    uint32_t parent_lba = root_lba;
+    uint32_t parent_size = root_size;
+    for (;;) {
+        char component[64];
+        uint32_t length = 0u;
+        while (*cursor != '\0' && *cursor != '/') {
+            if (length >= sizeof(component) - 1u) {
+                LOG_VMM_ERR("emulated virtio-blk: ISO path component too long\n");
+                return false;
+            }
+            component[length++] = *cursor++;
+        }
+        component[length] = '\0';
+        if (length == 0u ||
+            (length == 1u && component[0] == '.') ||
+            (length == 2u && component[0] == '.' && component[1] == '.')) {
+            LOG_VMM_ERR("emulated virtio-blk: invalid ISO path component\n");
+            return false;
+        }
+        if (!iso_find_entry(parent_lba, parent_size, component,
+                            &file_lba, &file_size, &file_flags)) {
+            LOG_VMM_ERR("emulated virtio-blk: ISO path component not found\n");
+            return false;
+        }
+        if (*cursor == '\0') {
+            if ((file_flags & 2u) != 0u) {
+                LOG_VMM_ERR("emulated virtio-blk: ISO path names a directory\n");
+                return false;
+            }
+            break;
+        }
+        if ((file_flags & 2u) == 0u) {
+            LOG_VMM_ERR("emulated virtio-blk: non-directory in ISO path\n");
+            return false;
+        }
+        cursor++;
+        if (*cursor == '\0') {
+            LOG_VMM_ERR("emulated virtio-blk: trailing slash in ISO path\n");
+            return false;
+        }
+        parent_lba = file_lba;
+        parent_size = file_size;
     }
-    if (initrd_size == 0u || (size_t)initrd_size > guest_capacity) {
-        LOG_VMM_ERR("emulated virtio-blk: casper initrd size invalid\n");
+    if (file_size == 0u || (size_t)file_size > guest_capacity) {
+        LOG_VMM_ERR("emulated virtio-blk: ISO file size invalid\n");
         return false;
     }
 
     size_t copied = 0u;
     uint32_t chunks = 0u;
-    while (copied < initrd_size) {
-        size_t remaining = (size_t)initrd_size - copied;
+    while (copied < file_size) {
+        size_t remaining = (size_t)file_size - copied;
         uint32_t bytes = remaining > AGENTOS_BLK_SHARED_DMA_DATA_SIZE
             ? AGENTOS_BLK_SHARED_DMA_DATA_SIZE : (uint32_t)remaining;
         uint32_t sectors =
             (bytes + AOS_HOST_BLK_SECTOR_SIZE - 1u) /
             AOS_HOST_BLK_SECTOR_SIZE;
         uint64_t host_sector =
-            (uint64_t)initrd_lba *
+            (uint64_t)file_lba *
             (ISO9660_SECTOR_SIZE / AOS_HOST_BLK_SECTOR_SIZE) +
             copied / AOS_HOST_BLK_SECTOR_SIZE;
         if (host_blk_call(AOS_HOST_BLK_OP_READ, host_sector, sectors, 0) !=
@@ -296,7 +334,7 @@ bool aos_vmm_virtio_blk_load_casper_initrd(uintptr_t guest_dest,
         copied += bytes;
         chunks++;
         if ((chunks & (chunks - 1u)) == 0u) {
-            LOG_VMM("emulated virtio-blk: casper initrd staging chunks=%u bytes=%u\n",
+            LOG_VMM("emulated virtio-blk: ISO file staging chunks=%u bytes=%u\n",
                     (unsigned)chunks, (unsigned)copied);
         }
         seL4_Yield();
@@ -304,13 +342,13 @@ bool aos_vmm_virtio_blk_load_casper_initrd(uintptr_t guest_dest,
 
     __atomic_thread_fence(__ATOMIC_SEQ_CST);
     g_host_read_pumped = 1;
-    LOG_VMM("emulated virtio-blk: loaded casper/initrd from host media bytes=%u\n",
-            (unsigned)initrd_size);
+    LOG_VMM("emulated virtio-blk: loaded profile ISO file bytes=%u\n",
+            (unsigned)file_size);
     LOG_VMM("emulated virtio-blk: host-media read sector=%lu count=%u\n",
-            (unsigned long)((uint64_t)initrd_lba * 4u),
-            (unsigned)((initrd_size + 511u) / 512u));
+            (unsigned long)((uint64_t)file_lba * 4u),
+            (unsigned)((file_size + 511u) / 512u));
     if (loaded_size) {
-        *loaded_size = initrd_size;
+        *loaded_size = file_size;
     }
     return true;
 }
@@ -464,11 +502,8 @@ void aos_vmm_virtio_blk_init(uint32_t media_id)
         LOG_VMM_ERR("emulated virtio-blk: virtio_mmio_blk_init failed\n");
         return;
     }
-    /*
-     * FreeBSD arm64 rejects VIRTIO_BLK_F_SIZE_MAX values below MAXPHYS.
-     * The extra transfer cell accommodates a MAXPHYS request beginning at a
-     * non-4K sector; host IPC then chunks it through the bounded DMA window.
-     */
+    /* The extra transfer cell accommodates a maximum-size request beginning
+     * at a non-4K sector; host IPC chunks it through the bounded DMA window. */
     g_aos_blk.config.size_max = AOS_BLK_GUEST_MAX_SEGMENT_SIZE;
 
     g_aos_blk_ready = 1;

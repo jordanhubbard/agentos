@@ -29,6 +29,29 @@ static bool bytes_are_zero(const void *buffer, size_t length)
     return aggregate == 0u;
 }
 
+static bool media_path_is_normalized(const char *path, uint16_t length)
+{
+    if (length == 0u || path[0] == '/' || path[length - 1u] == '/') {
+        return false;
+    }
+    uint16_t component_start = 0u;
+    for (uint16_t i = 0u; i <= length; i++) {
+        uint8_t byte = (uint8_t)path[i];
+        if (i < length && (byte == 0u || byte > 0x7fu)) return false;
+        if (i == length || byte == '/') {
+            uint16_t component_length = i - component_start;
+            if (component_length == 0u ||
+                (component_length == 1u && path[component_start] == '.') ||
+                (component_length == 2u && path[component_start] == '.' &&
+                 path[component_start + 1u] == '.')) {
+                return false;
+            }
+            component_start = i + 1u;
+        }
+    }
+    return true;
+}
+
 bool aos_guest_profile_region_contains(const aos_guest_profile_manifest_t *profile,
                                        uint64_t address, uint64_t length)
 {
@@ -58,14 +81,17 @@ aos_guest_profile_validate(const aos_guest_profile_manifest_t *profile)
     if ((profile->flags & ~(AOS_GUEST_PROFILE_AUTOSTART |
                             AOS_GUEST_PROFILE_HAS_INITRD |
                             AOS_GUEST_PROFILE_ENTRY_FROM_IMAGE |
-                            AOS_GUEST_PROFILE_HASHED_ARTIFACTS)) != 0u) {
+                            AOS_GUEST_PROFILE_HASHED_ARTIFACTS |
+                            AOS_GUEST_PROFILE_INITRD_FROM_MEDIA)) != 0u) {
         return AOS_GUEST_PROFILE_ERR_FLAGS;
     }
     if (profile->profile_id_length == 0u ||
         profile->profile_id_length > AOS_GUEST_PROFILE_ID_MAX ||
         profile->profile_id[profile->profile_id_length] != '\0' ||
         profile->command_line_length > AOS_GUEST_PROFILE_CMDLINE_MAX ||
-        profile->command_line[profile->command_line_length] != '\0') {
+        profile->command_line[profile->command_line_length] != '\0' ||
+        profile->media_initrd_path_length > AOS_GUEST_PROFILE_MEDIA_PATH_MAX ||
+        profile->media_initrd_path[profile->media_initrd_path_length] != '\0') {
         return AOS_GUEST_PROFILE_ERR_TEXT;
     }
     if (!bytes_are_zero(profile->reserved, sizeof(profile->reserved)) ||
@@ -74,7 +100,11 @@ aos_guest_profile_validate(const aos_guest_profile_manifest_t *profile)
                             profile->profile_id_length - 1u) ||
         !bytes_are_zero(&profile->command_line[profile->command_line_length + 1u],
                         sizeof(profile->command_line) -
-                            profile->command_line_length - 1u)) {
+                            profile->command_line_length - 1u) ||
+        !bytes_are_zero(&profile->media_initrd_path[
+                            profile->media_initrd_path_length + 1u],
+                        sizeof(profile->media_initrd_path) -
+                            profile->media_initrd_path_length - 1u)) {
         return AOS_GUEST_PROFILE_ERR_TEXT;
     }
     if (profile->vcpu_count == 0u ||
@@ -122,6 +152,16 @@ aos_guest_profile_validate(const aos_guest_profile_manifest_t *profile)
     } else if (profile->initrd_load_address != 0u ||
                profile->initrd_max_bytes != 0u ||
                hash_present(profile->initrd_sha256)) {
+        return AOS_GUEST_PROFILE_ERR_ARTIFACT;
+    }
+    bool initrd_from_media =
+        (profile->flags & AOS_GUEST_PROFILE_INITRD_FROM_MEDIA) != 0u;
+    if (initrd_from_media != (profile->media_initrd_path_length != 0u) ||
+        (initrd_from_media &&
+         (((profile->flags & AOS_GUEST_PROFILE_HAS_INITRD) == 0u) ||
+          ((profile->device_flags & AOS_GUEST_DEVICE_BLOCK) == 0u) ||
+          !media_path_is_normalized(profile->media_initrd_path,
+                                    profile->media_initrd_path_length)))) {
         return AOS_GUEST_PROFILE_ERR_ARTIFACT;
     }
     if ((profile->flags & AOS_GUEST_PROFILE_ENTRY_FROM_IMAGE) == 0u &&

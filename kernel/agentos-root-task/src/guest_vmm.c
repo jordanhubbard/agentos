@@ -1,10 +1,9 @@
 /*
- * agentOS Linux VMM — Virtual Machine Monitor
+ * agentOS profile-driven Virtual Machine Monitor
  *
- * Boots a Linux guest inside agentOS using libvmm on seL4/Microkit.
- * The VMM bridges IPC between native agentOS agents (via controller)
- * and the Linux guest, enabling agents to run on a full Linux userland
- * while remaining under seL4 capability isolation.
+ * Boots a profile-selected guest inside agentOS using libvmm on seL4.
+ * Kernel format, placement, lifecycle identity, devices, and boot arguments
+ * come from the compiled guest profile rather than a guest personality.
  *
  * Based on au-ts/libvmm examples/simple, extended with agentOS IPC.
  *
@@ -32,10 +31,10 @@
 /* ─── x86_64 stub ──────────────────────────────────────────────────────────
  *
  * libvmm does not yet provide x86_64 VMM support. This stub satisfies the
- * linker so linux_vmm.elf can be included in x86_64 images. The PD starts,
+ * linker so guest_vmm.elf can be included in x86_64 images. The PD starts,
  * logs that VMM is not available, then loops passively.
  *
- * Set LINUX_VMM_X86_STUB=1 so downstream code can detect the stub at
+ * Set GUEST_VMM_X86_STUB=1 so downstream code can detect the stub at
  * compile time.
  *
  * guest_contract.h compliance skeleton (x86_64):
@@ -43,7 +42,7 @@
  *   When libvmm gains x86_64 VMX support, the implementation MUST:
  *
  *   CPL3 Enforcement:
- *     Linux guest vCPUs operate in VMX non-root mode with EPT active.
+ *     Guest vCPUs operate in VMX non-root mode with EPT active.
  *     The guest kernel executes at guest CPL 0 (non-root) — it MUST NOT
  *     reach host CPL 0.  VMEXITs must be handled for: CPUID, MSR R/W,
  *     I/O port access, EPT violations, and all MMIO accesses.  Physical
@@ -60,9 +59,10 @@
  */
 #ifdef ARCH_X86_64
 
-#include "contracts/linux_vmm_contract.h"
+#include "contracts/vmm_contract.h"
+#include "contracts/guest_contract.h"
 
-#define LINUX_VMM_X86_STUB 1
+#define GUEST_VMM_X86_STUB 1
 
 /* Compliance type-check: binding state that the full impl must populate */
 static struct vmm_register_req  _stub_vmm_reg   __attribute__((unused));
@@ -89,7 +89,7 @@ int vmm_set_affinity(uint8_t slot_id, uint32_t cpu_mask)
 {
     if (slot_id >= VMM_MAX_SLOTS) return -1;
     vmm_affinity[slot_id] = cpu_mask;
-    sel4_dbg_puts("[linux_vmm] x86_64 stub: vmm_set_affinity stored\n");
+    sel4_dbg_puts("[guest_vmm] x86_64 stub: vmm_set_affinity stored\n");
     return 0;
 }
 
@@ -106,23 +106,23 @@ int vmm_inject_irq(uint8_t slot_id, uint32_t irq_num)
 {
     (void)slot_id;
     (void)irq_num;
-    sel4_dbg_puts("[linux_vmm] x86_64 stub: vmm_inject_irq (no-op)\n");
+    sel4_dbg_puts("[guest_vmm] x86_64 stub: vmm_inject_irq (no-op)\n");
     return 0;
 }
 
-static void linux_vmm_x86_init(void)
+static void guest_vmm_x86_init(void)
 {
     for (uint8_t i = 0; i < VMM_MAX_SLOTS; i++)
         vmm_affinity[i] = 0xFFFFFFFFu;  /* any core */
 
-    sel4_dbg_puts("[linux_vmm] x86_64: libvmm VMM support not yet implemented.\n");
-    sel4_dbg_puts("[linux_vmm] x86_64: PD running as passive stub.\n");
+    sel4_dbg_puts("[guest_vmm] x86_64: libvmm VMM support not yet implemented.\n");
+    sel4_dbg_puts("[guest_vmm] x86_64: PD running as passive stub.\n");
 }
 
-void linux_vmm_main(seL4_CPtr ep, seL4_CPtr ns_ep)
+void guest_vmm_main(seL4_CPtr ep, seL4_CPtr ns_ep)
 {
     (void)ns_ep;
-    linux_vmm_x86_init();
+    guest_vmm_x86_init();
     /* Passive stub — just spin; root task handles any faults. */
     seL4_Word badge;
     while (1) seL4_Wait(ep, &badge);
@@ -130,14 +130,14 @@ void linux_vmm_main(seL4_CPtr ep, seL4_CPtr ns_ep)
 
 void pd_main(seL4_CPtr my_ep, seL4_CPtr ns_ep)
 {
-    linux_vmm_main(my_ep, ns_ep);
+    guest_vmm_main(my_ep, ns_ep);
 }
 
 #endif /* ARCH_X86_64 */
 
 /* ─── RISC-V 64 process-in-PD VMM ──────────────────────────────────────────
  *
- * On RISC-V without the H-extension (hypervisor mode), Linux runs as a seL4
+ * On RISC-V without the H-extension (hypervisor mode), a payload runs as a seL4
  * PD at U-mode.  The VMM:
  *
  *   1. Checks for an embedded guest kernel (linked via package_guest_images.S
@@ -149,7 +149,7 @@ void pd_main(seL4_CPtr my_ep, seL4_CPtr ns_ep)
  *      mapped the guest RAM region into this PD's VSpace).
  *   4. Sets a0 = hart_id (0), a1 = FDT VA, and jumps to GUEST_IMAGE_BASE.
  *
- * NOTE: Full Linux boot requires the H-extension for S-mode guest isolation.
+ * NOTE: Full kernel boot requires the H-extension for S-mode guest isolation.
  * Without it this path boots bare-metal RISC-V programs only.  The FDT is
  * built correctly for future use; the jump path is enabled when the kernel
  * image weak symbol is provided by xtask gen-image.
@@ -177,7 +177,7 @@ void pd_main(seL4_CPtr my_ep, seL4_CPtr ns_ep)
 #define VIRTIO_BLK_IRQ    2u
 
 /*
- * Guest kernel image linked by package_guest_images.S.  Weak so linux_vmm.elf
+ * Guest kernel image linked by package_guest_images.S.  Weak so guest_vmm.elf
  * links without an embedded kernel; _guest_kernel_image == NULL in that case.
  */
 extern char _guest_kernel_image[]     __attribute__((weak));
@@ -319,25 +319,25 @@ jump_to_kernel(unsigned long entry, unsigned long hart_id, unsigned long dtb_va)
 
 /* ── Main entry ──────────────────────────────────────────────────────────── */
 
-void linux_vmm_main(seL4_CPtr ep, seL4_CPtr ns_ep)
+void guest_vmm_main(seL4_CPtr ep, seL4_CPtr ns_ep)
 {
     (void)ns_ep;
 
-    sel4_dbg_puts("[linux_vmm] RISC-V: process-in-PD VMM starting.\n");
+    sel4_dbg_puts("[guest_vmm] RISC-V: process-in-PD VMM starting.\n");
 
     /* ── Build FDT ─────────────────────────────────────────────────────── */
     size_t fdt_sz = build_guest_fdt();
     if (fdt_sz == 0u) {
-        sel4_dbg_puts("[linux_vmm] RISC-V: FDT build FAILED (buffer overflow).\n");
+        sel4_dbg_puts("[guest_vmm] RISC-V: FDT build FAILED (buffer overflow).\n");
         while (1) { seL4_Word b; seL4_Wait(ep, &b); }
     }
-    sel4_dbg_puts("[linux_vmm] RISC-V: FDT built OK.\n");
+    sel4_dbg_puts("[guest_vmm] RISC-V: FDT built OK.\n");
 
     /* ── Check for embedded kernel ─────────────────────────────────────── */
     if (!_guest_kernel_image || (_guest_kernel_image == _guest_kernel_image_end)) {
-        sel4_dbg_puts("[linux_vmm] RISC-V: no guest kernel linked"
+        sel4_dbg_puts("[guest_vmm] RISC-V: no guest kernel linked"
                       " (xtask gen-image step required).\n");
-        sel4_dbg_puts("[linux_vmm] RISC-V: running as passive stub.\n");
+        sel4_dbg_puts("[guest_vmm] RISC-V: running as passive stub.\n");
         while (1) { seL4_Word b; seL4_Wait(ep, &b); }
     }
 
@@ -352,19 +352,19 @@ void linux_vmm_main(seL4_CPtr ep, seL4_CPtr ns_ep)
         const uint8_t *src = (const uint8_t *)_guest_kernel_image;
         for (size_t i = 0u; i < ksize; i++) dst[i] = src[i];
     }
-    sel4_dbg_puts("[linux_vmm] RISC-V: kernel copied to 0x80200000.\n");
+    sel4_dbg_puts("[guest_vmm] RISC-V: kernel copied to 0x80200000.\n");
 
     /* ── Jump to kernel ─────────────────────────────────────────────────── */
     /* Pass the VA of the local FDT buffer as a1.  In the process-in-PD model
      * VA == PA only if seL4 identity-maps the VSpace; otherwise the kernel
      * will need to translate the DTB address through its own page tables. */
-    sel4_dbg_puts("[linux_vmm] RISC-V: jumping to kernel entry.\n");
+    sel4_dbg_puts("[guest_vmm] RISC-V: jumping to kernel entry.\n");
     jump_to_kernel(GUEST_IMAGE_BASE, 0UL, (unsigned long)s_fdt_buf);
 }
 
 void pd_main(seL4_CPtr my_ep, seL4_CPtr ns_ep)
 {
-    linux_vmm_main(my_ep, ns_ep);
+    guest_vmm_main(my_ep, ns_ep);
 }
 
 #endif /* __riscv */
@@ -374,34 +374,35 @@ void pd_main(seL4_CPtr my_ep, seL4_CPtr ns_ep)
  * Used when BOARD_NATIVE=1 on AArch64 (e.g., Raspberry Pi 5).  libvmm
  * is not used here because it hard-codes QEMU virt GIC addresses that are
  * incompatible with real hardware.  This stub allows the native board
- * system file to reference linux_vmm.elf while VM management is in early
+ * system file to reference guest_vmm.elf while VM management is in early
  * bring-up.  A production implementation would configure libvmm with the
  * board's actual GIC/UART addresses.
  */
-#ifdef LINUX_VMM_NATIVE_STUB
+#ifdef GUEST_VMM_NATIVE_STUB
 
-void linux_vmm_main(seL4_CPtr ep, seL4_CPtr ns_ep)
+void guest_vmm_main(seL4_CPtr ep, seL4_CPtr ns_ep)
 {
     (void)ns_ep;
-    sel4_dbg_puts("[linux_vmm] native AArch64 stub: VMM not yet configured for real hardware.\n");
-    sel4_dbg_puts("[linux_vmm] native stub: Use console_shell to manage VMs via controller.\n");
+    sel4_dbg_puts("[guest_vmm] native AArch64 stub: VMM not yet configured for real hardware.\n");
+    sel4_dbg_puts("[guest_vmm] native stub: Use console_shell to manage VMs via controller.\n");
     seL4_Word badge;
     while (1) seL4_Wait(ep, &badge);
 }
 
-void pd_main(seL4_CPtr my_ep, seL4_CPtr ns_ep) { linux_vmm_main(my_ep, ns_ep); }
+void pd_main(seL4_CPtr my_ep, seL4_CPtr ns_ep) { guest_vmm_main(my_ep, ns_ep); }
 
-#endif /* LINUX_VMM_NATIVE_STUB */
+#endif /* GUEST_VMM_NATIVE_STUB */
 
 /* ─── AArch64 full implementation ──────────────────────────────────────────
  *
- * Uses au-ts/libvmm to boot a Linux guest at EL1 under seL4 EL2.
+ * Uses au-ts/libvmm to boot a profile-selected guest at EL1 under seL4 EL2.
  * Compiled by vmm.mk which passes -DARCH_AARCH64 and links libvmm.a.
  */
-#if defined(ARCH_AARCH64) && !defined(LINUX_VMM_NATIVE_STUB)
+#if defined(ARCH_AARCH64) && !defined(GUEST_VMM_NATIVE_STUB)
 
 #include <libvmm/libvmm.h>
 #include <libvmm/vmm_caps.h>   /* vmm_register_vcpu                           */
+#include <libvmm/arch/aarch64/vgic/vgic.h>
 #include <platform/guest_boot.h>
 #include <platform/guest_memory_layout.h>
 #include <platform/guest_profile.h>
@@ -425,7 +426,7 @@ void pd_main(seL4_CPtr my_ep, seL4_CPtr ns_ep) { linux_vmm_main(my_ep, ns_ep); }
  * PD_IRQHANDLER_SLOT_BASE + irq_index (see system_desc.h/main.c).
  *
  * VMM_TCB/VCPU slots intentionally keep the old Microkit offsets because
- * they are high enough to avoid service caps and IRQ caps in linux_vmm's
+ * they are high enough to avoid service caps and IRQ caps in guest_vmm's
  * 1024-slot CNode, while letting libvmm keep a simple fixed-cap model.
  */
 #define AGENTOS_IRQ_CAP_BASE     64u
@@ -442,12 +443,12 @@ void pd_main(seL4_CPtr my_ep, seL4_CPtr ns_ep) { linux_vmm_main(my_ep, ns_ep); }
  * These are NOT Microkit: they are raw seL4 wrappers with the same ABI that
  * libvmm's LOG_VMM/virq code requires for debug output.
  */
-char microkit_name[64] = "linux_vmm";
-const char vmm_pd_name[] = "linux_vmm";     /* libvmm's LOG_VMM uses this */
+char microkit_name[64] = "guest_vmm";
+const char vmm_pd_name[] = "guest_vmm";     /* libvmm's LOG_VMM uses this */
 seL4_Word microkit_irqs          = 0;        /* libvmm virq_passthrough_ack guard */
 seL4_Word microkit_notifications = 0;        /* libvmm virq guard           */
 /* Microkit runtime stubs — required by the Microkit tool's ELF validator.
- * agentOS linux_vmm does not use the Microkit runtime; these are zero-valued
+ * agentOS guest_vmm does not use the Microkit runtime; these are zero-valued
  * placeholders that satisfy the image packer's symbol checks. */
 __attribute__((used)) volatile int microkit_passive       = 0;
 __attribute__((used)) seL4_Word    microkit_pps           = 0;
@@ -456,7 +457,7 @@ __attribute__((used)) seL4_Word    microkit_ioports       = 0;
 __attribute__((used)) seL4_Word    microkit_signal_cap    = 0;
 __attribute__((used)) seL4_Word    microkit_signal_msg    = 0;
 
-/* linux_vmm holds only serial_pd's endpoint and transfer-page mapping. */
+/* guest_vmm holds only serial_pd's endpoint and transfer-page mapping. */
 static serial_log_t g_vmm_log = {
     .ep = PD_CNODE_SLOT_SERIAL_EP,
 };
@@ -485,7 +486,7 @@ void microkit_dbg_put32(uint32_t v)
 
 /* seL4 IPC buffer pointer. Compiled with -D__thread= (TLS suppressed) so
  * this is a regular global matching libvmm.a (vmm_wrapper_template.mk).
- * linux_vmm_main() points it at the mapped page (0x10000000) before any
+ * guest_vmm_main() points it at the mapped page (0x10000000) before any
  * seL4 invocation that uses extra message registers. */
 seL4_IPCBuffer *__sel4_ipc_buffer = NULL;
 
@@ -514,31 +515,24 @@ static uint32_t vmm_affinity[VMM_MAX_SLOTS];
 
 /* ─── Guest Configuration ─────────────────────────────────────────────── */
 
-/* Guest RAM, DTB, and initrd placement addresses (must match DTS). */
-#define GUEST_RAM_SIZE             AOS_LINUX_GUEST_RAM_SIZE
-#define LINUX_GUEST_RAM_VADDR      AOS_LINUX_GUEST_RAM_BASE
-#define LINUX_GUEST_RAM_GPA        AOS_LINUX_GUEST_GPA_BASE
-#define GUEST_DTB_VADDR            AOS_LINUX_GUEST_DTB_BASE
-#define GUEST_INIT_RAM_DISK_VADDR  AOS_LINUX_GUEST_INITRD_BASE
-
 /* ─── Channel IDs ────────────────────────────────────────────────────── */
 
 /*
  * SERIAL_PD_CH replaces the former hardware UART IRQ channel (id=1).
- * serial_pd now owns PL011 IRQ 33 exclusively; linux_vmm reaches the
+ * serial_pd now owns PL011 IRQ 33 exclusively; guest_vmm reaches the
  * physical UART only via MSG_SERIAL_* IPC (guest_contract.h compliance).
  */
-#define SERIAL_PD_CH            1   /* linux_vmm → serial_pd (PPC) */
+#define SERIAL_PD_CH            1   /* guest_vmm → serial_pd (PPC) */
 
-/* IPC channel: controller <-> linux_vmm (agent-to-linux bridge) */
+/* IPC channel: controller <-> guest_vmm bridge */
 #define CONTROLLER_CH           2
 
 /* GPU shared memory notification channels (assigned when MR is mapped) */
-#define GPU_SHMEM_NOTIFY_IN_CH  3   /* seL4 PD → linux_vmm: tensor ready */
-#define GPU_SHMEM_NOTIFY_OUT_CH 4   /* linux_vmm → seL4 PD: result ready */
+#define GPU_SHMEM_NOTIFY_IN_CH  3   /* seL4 PD → guest_vmm: tensor ready */
+#define GPU_SHMEM_NOTIFY_OUT_CH 4   /* guest_vmm → seL4 PD: result ready */
 
 #define VMM_FAULT_BADGE_FLAG     (1ULL << 62)
-#define LINUX_VTIMER_IRQ         27u
+#define GUEST_VTIMER_IRQ         27u
 /* ─── Guest Image Symbols ────────────────────────────────────────────── */
 /* These are linked in by package_guest_images.S */
 
@@ -566,21 +560,17 @@ uintptr_t guest_ram_vaddr;
 
 /* ─── Vaddr variables (set by Microkit from manifest) ───────────────── */
 
-/* Weak so linux_vmm compiles without gpu_tensor_buf when MR not mapped. */
+/* Weak so guest_vmm compiles without gpu_tensor_buf when MR not mapped. */
 uintptr_t gpu_tensor_buf_vaddr     __attribute__((weak));
-
-/* Weak so linux_vmm compiles without serial_shmem when MR not mapped.
- * When non-zero, used by linux_vmm_binding_init() for MSG_SERIAL_WRITE. */
-uintptr_t serial_shmem_linux_vaddr __attribute__((weak));
 
 /* ─── State ──────────────────────────────────────────────────────────── */
 
 static bool     guest_started      = false;
 static const aos_guest_profile_manifest_t *g_guest_profile;
 static aos_guest_boot_plan_t g_guest_boot_plan;
-static vcpu_time_state_t g_linux_time_state;
-static bool     g_linux_startable  = false;
-static uintptr_t g_linux_kernel_pc = 0u;
+static vcpu_time_state_t g_guest_time_state;
+static bool     g_guest_startable  = false;
+static uintptr_t g_guest_kernel_pc = 0u;
 static bool     gpu_shmem_ready    = false;
 
 /* ─── Guest binding state (guest_contract.h compliance) ─────────────── */
@@ -593,7 +583,7 @@ static guest_capabilities_t guest_caps; /* cap tokens per bound device */
 /* ─── Guest Binding Protocol (guest_contract.h §3.1) ────────────────── */
 
 /*
- * linux_vmm_binding_init — complete the guest binding protocol before boot.
+ * guest_vmm_binding_init — complete the guest binding protocol before boot.
  *
  * Step 1: Register this VMM PD with the root-task (MSG_VMM_REGISTER).
  *         TODO: requires VMM_KERNEL_CH (CH_VMM_KERNEL=76) wired in manifest.
@@ -611,16 +601,15 @@ static guest_capabilities_t guest_caps; /* cap tokens per bound device */
  * Step 4: Publish EVENT_GUEST_READY to EventBus.
  *         TODO: requires EVENTBUS_VMM_CH wired in manifest.
  */
-static void linux_vmm_binding_init(void)
+static void guest_vmm_binding_init(void)
 {
     /* ── Step 1: MSG_VMM_REGISTER (root-task) ────────────────────────────
      * TODO: Wire VMM_KERNEL_CH to the Microkit kernel endpoint.
      * struct vmm_register_req req = {
-     *     .os_type    = VMM_OS_TYPE_LINUX,
+     *     .os_type    = g_guest_profile->control_type,
      *     .flags      = 0,
      *     .max_guests = 1,
      * };
-     * __builtin_memcpy((void *)serial_shmem_linux_vaddr, &req, sizeof req);
      * reply = microkit_ppcall(CH_VMM_KERNEL,
      *                         microkit_msginfo_new(MSG_VMM_REGISTER, 0));
      * vmm_token = microkit_mr_get(1);
@@ -655,7 +644,7 @@ static void linux_vmm_binding_init(void)
     /* ── Step 4: Publish EVENT_GUEST_READY ───────────────────────────────
      * TODO: Wire EVENTBUS_VMM_CH to event_bus in manifest.
      * guest_ready_event_t ev = {
-     *     .os_type  = VMM_OS_TYPE_LINUX,
+     *     .os_type  = g_guest_profile->control_type,
      *     .guest_id = guest_id,
      *     .pd_id    = 0,
      *     .caps     = guest_caps,
@@ -668,7 +657,7 @@ static void linux_vmm_binding_init(void)
 
 /* ─── PL011 UART MMIO Emulation ──────────────────────────────────────────
  *
- * Ubuntu uses the PL011 address only for bounded earlycon output.  The DT
+ * A guest may use the PL011 address for bounded early console output. The DT
  * disables the device and console=hvc0 selects virtio-console for login.
  * These virtual registers are not backed by a physical device capability.
  */
@@ -718,6 +707,13 @@ static uint32_t pl011_cr = PL011_CR_TXE | PL011_CR_RXE;
 static uint32_t pl011_ifls = 0x12u;
 static uint32_t pl011_imsc;
 static uint32_t pl011_dmacr;
+
+static void pl011_irq_ack(size_t vcpu_id, int irq, void *cookie)
+{
+    (void)vcpu_id;
+    (void)irq;
+    (void)cookie;
+}
 
 static void console_tx_push(uint8_t byte)
 {
@@ -896,29 +892,29 @@ static bool pl011_fault_handler(size_t vcpu_id, size_t offset, size_t fsr,
     return true;
 }
 
-static bool linux_vmm_start_guest(void)
+static bool guest_vmm_start_guest(void)
 {
     if (guest_started) {
         return true;
     }
-    if (!g_linux_startable || g_linux_kernel_pc == 0u) {
+    if (!g_guest_startable || g_guest_kernel_pc == 0u) {
         return false;
     }
 
-    LOG_VMM("  Starting Linux guest...\n");
+    LOG_VMM("  Starting profile guest...\n");
     vcpu_reset(GUEST_BOOT_VCPU_ID);
-    guest_start(g_linux_kernel_pc, g_guest_boot_plan.dtb_gpa,
+    guest_start(g_guest_kernel_pc, g_guest_boot_plan.dtb_gpa,
                 g_guest_boot_plan.initrd_gpa);
     guest_started = true;
     g_guest_state = GUEST_STATE_RUNNING;
-    LOG_VMM("  Linux guest started successfully\n");
+    LOG_VMM("  Profile guest started successfully\n");
     return true;
 }
 
-static void linux_vmm_suspend_guest_tcb(void)
+static void guest_vmm_suspend_guest_tcb(void)
 {
     seL4_UserContext regs = {0};
-    LOG_VMM("Linux guest suspend: reading and stopping TCB\n");
+    LOG_VMM("Profile guest suspend: reading and stopping TCB\n");
     seL4_Error err = seL4_TCB_ReadRegisters(
         (seL4_CPtr)(AGENTOS_VMM_TCB_CAP_BASE + GUEST_BOOT_VCPU_ID),
         true,
@@ -926,34 +922,34 @@ static void linux_vmm_suspend_guest_tcb(void)
         SEL4_USER_CONTEXT_SIZE,
         &regs);
     if (err != seL4_NoError) {
-        LOG_VMM_ERR("Linux guest suspend/read-registers failed: %d\n", (int)err);
+        LOG_VMM_ERR("Profile guest suspend/read-registers failed: %d\n", (int)err);
         seL4_TCB_Suspend((seL4_CPtr)(AGENTOS_VMM_TCB_CAP_BASE + GUEST_BOOT_VCPU_ID));
     }
-    LOG_VMM("Linux guest suspend: pausing virtual time\n");
-    vcpu_pause_time(GUEST_BOOT_VCPU_ID, &g_linux_time_state);
-    LOG_VMM("Linux guest suspend: complete\n");
+    LOG_VMM("Profile guest suspend: pausing virtual time\n");
+    vcpu_pause_time(GUEST_BOOT_VCPU_ID, &g_guest_time_state);
+    LOG_VMM("Profile guest suspend: complete\n");
 }
 
-static void linux_vmm_resume_guest_tcb(void)
+static void guest_vmm_resume_guest_tcb(void)
 {
-    vcpu_resume_time(GUEST_BOOT_VCPU_ID, &g_linux_time_state);
+    vcpu_resume_time(GUEST_BOOT_VCPU_ID, &g_guest_time_state);
     seL4_Error err = seL4_TCB_Resume(
         (seL4_CPtr)(AGENTOS_VMM_TCB_CAP_BASE + GUEST_BOOT_VCPU_ID));
     if (err != seL4_NoError) {
-        LOG_VMM_ERR("Linux guest resume failed: %d\n", (int)err);
+        LOG_VMM_ERR("Profile guest resume failed: %d\n", (int)err);
         return;
     }
-    LOG_VMM("Linux guest resume: TCB runnable\n");
+    LOG_VMM("Profile guest resume: TCB runnable\n");
     /* Deliver frames retained by net_pd only after the guest is runnable. */
     aos_vmm_virtio_net_rx_ready();
 }
 
-static void linux_vmm_quiesce_timer(void)
+static void guest_vmm_quiesce_timer(void)
 {
-    vmm_vcpu_arm_ack_vppi(GUEST_BOOT_VCPU_ID, LINUX_VTIMER_IRQ);
+    vmm_vcpu_arm_ack_vppi(GUEST_BOOT_VCPU_ID, GUEST_VTIMER_IRQ);
 }
 
-static bool linux_vmm_push_input(uint32_t event_type, const uint8_t *bytes,
+static bool guest_vmm_push_input(uint32_t event_type, const uint8_t *bytes,
                                  uint32_t length)
 {
     (void)event_type;
@@ -973,7 +969,7 @@ static bool linux_vmm_push_input(uint32_t event_type, const uint8_t *bytes,
     return true;
 }
 
-static uint32_t linux_vmm_drain_console(uint8_t *bytes, uint32_t capacity)
+static uint32_t guest_vmm_drain_console(uint8_t *bytes, uint32_t capacity)
 {
     /*
      * PL011 contains earlycon bytes. Once hvc0 is active, all usable
@@ -984,7 +980,7 @@ static uint32_t linux_vmm_drain_console(uint8_t *bytes, uint32_t capacity)
         bytes + length, capacity - length);
 }
 
-static seL4_MessageInfo_t linux_vmm_rpc(seL4_MessageInfo_t info)
+static seL4_MessageInfo_t guest_vmm_rpc(seL4_MessageInfo_t info)
 {
     (void)info;
     sel4_msg_t req = {0};
@@ -996,12 +992,12 @@ static seL4_MessageInfo_t linux_vmm_rpc(seL4_MessageInfo_t info)
         .guest_id = 0u,
         .state = &g_guest_state,
         .started = &guest_started,
-        .start = linux_vmm_start_guest,
-        .suspend = linux_vmm_suspend_guest_tcb,
-        .resume = linux_vmm_resume_guest_tcb,
-        .quiesce_timer = linux_vmm_quiesce_timer,
-        .push_input = linux_vmm_push_input,
-        .drain_console = linux_vmm_drain_console,
+        .start = guest_vmm_start_guest,
+        .suspend = guest_vmm_suspend_guest_tcb,
+        .resume = guest_vmm_resume_guest_tcb,
+        .quiesce_timer = guest_vmm_quiesce_timer,
+        .push_input = guest_vmm_push_input,
+        .drain_console = guest_vmm_drain_console,
     };
     if (aos_guest_vmm_lifecycle_rpc(&req, &rep, &runtime) ||
         aos_guest_vmm_console_rpc(&req, &rep, &runtime)) {
@@ -1052,12 +1048,12 @@ int vmm_set_affinity(uint8_t slot_id, uint32_t cpu_mask)
 /*
  * vmm_inject_irq — inject a virtual IRQ into a guest VM slot.
  *
- * In the single-VCPU Linux VMM (this PD manages one guest), slot_id must
+ * In the single-VCPU VMM (this PD manages one guest), slot_id must
  * be 0; other slot IDs are invalid.  The IRQ is injected via libvmm's
  * virq_inject() which posts it into the virtual GIC distributor.
  *
  * This stub can be extended to support per-slot VCPU contexts once the
- * multiplexer is wired to manage multiple Linux guests in a single VMM PD.
+ * multiplexer is wired to manage multiple guests in a single VMM PD.
  *
  * @param slot_id  VM slot index (must be 0 for this single-guest VMM)
  * @param irq_num  virtual IRQ number (e.g., 32 + virtio queue IRQ offset)
@@ -1103,7 +1099,8 @@ void init(void)
     if (aos_guest_profile_validate(g_guest_profile) != AOS_GUEST_PROFILE_OK ||
         g_guest_profile->architecture != AOS_GUEST_ARCH_AARCH64 ||
         g_guest_profile->boot_protocol != AOS_GUEST_BOOT_FDT_DIRECT ||
-        g_guest_profile->kernel_format != AOS_GUEST_KERNEL_LINUX_IMAGE) {
+        (g_guest_profile->kernel_format != AOS_GUEST_KERNEL_LINUX_IMAGE &&
+         g_guest_profile->kernel_format != AOS_GUEST_KERNEL_RAW)) {
         LOG_VMM_ERR("Guest profile is invalid for the AArch64 direct boot executor\n");
         return;
     }
@@ -1119,7 +1116,7 @@ void init(void)
         guest_ram_vaddr = g_guest_profile->vmm_hva_base;
     }
 
-    LOG_VMM("agentOS linux_vmm starting \"linux_vmm\"\n");
+    LOG_VMM("agentOS guest_vmm starting \"guest_vmm\"\n");
     LOG_VMM("  Guest RAM: 0x%lx (%d MB)\n",
             (unsigned long)guest_ram_vaddr,
             (int)(g_guest_profile->ram_size / (1024 * 1024)));
@@ -1127,7 +1124,7 @@ void init(void)
     /* Register VCPU and TCB caps with libvmm before any libvmm call that
      * uses vmm_vcpu_cap() or vmm_tcb_cap().  The raw root task copies the
      * guest execution TCB and VCPU caps into these fixed slots before it
-     * starts the linux_vmm PD. */
+     * starts the guest_vmm PD. */
     vmm_register_vcpu(GUEST_BOOT_VCPU_ID,
                       AGENTOS_VMM_VCPU_CAP_BASE + GUEST_BOOT_VCPU_ID,
                       AGENTOS_VMM_TCB_CAP_BASE  + GUEST_BOOT_VCPU_ID);
@@ -1136,10 +1133,9 @@ void init(void)
     size_t kernel_size = _guest_kernel_image_end - _guest_kernel_image;
     size_t dtb_size    = _guest_dtb_image_end - _guest_dtb_image;
     size_t initrd_size = _guest_initrd_image_end - _guest_initrd_image;
-#if defined(AGENTOS_GUEST_UBUNTU_LIVE)
-    /* Casper is staged from the agentOS-owned ISO after blk backend init. */
-    initrd_size = 0u;
-#endif
+    if ((g_guest_profile->flags & AOS_GUEST_PROFILE_INITRD_FROM_MEDIA) != 0u) {
+        initrd_size = 0u;
+    }
     if (kernel_size > g_guest_profile->kernel_max_bytes ||
         dtb_size > g_guest_profile->dtb_max_bytes ||
         initrd_size > g_guest_profile->initrd_max_bytes) {
@@ -1182,7 +1178,8 @@ void init(void)
     };
     enum aos_guest_boot_error boot_error = aos_guest_boot_prepare(
         &g_guest_boot_plan, g_guest_profile, guest_ram_vaddr, &images,
-        linux_setup_images);
+        g_guest_profile->kernel_format == AOS_GUEST_KERNEL_LINUX_IMAGE
+            ? linux_setup_images : NULL);
     if (boot_error != AOS_GUEST_BOOT_OK) {
         LOG_VMM_ERR("Failed to initialise guest images\n");
         return;
@@ -1221,19 +1218,25 @@ void init(void)
     }
 
     /* Register PL011 UART MMIO emulation (0x9000000 .. 0x9000FFF).
-     * Ubuntu kernel uses PL011 for earlycon/ttyAMA0; serial_pd owns the
+     * A guest may use PL011 for early console output; serial_pd owns the
      * physical IRQ.  Our handler returns FR=0x90 on reads so the kernel
      * does not spin waiting for TX-empty. */
     if (!fault_register_vm_exception_handler(PL011_BASE, PL011_SIZE,
                                              pl011_fault_handler, NULL)) {
         LOG_VMM_ERR("Failed to register PL011 UART fault handler\n");
+        return;
+    }
+    if (!virq_register(GUEST_BOOT_VCPU_ID, PL011_UART_IRQ,
+                       &pl011_irq_ack, NULL)) {
+        LOG_VMM_ERR("Failed to register PL011 UART IRQ\n");
+        return;
     }
 
     /*
      * Complete guest binding protocol (guest_contract.h §3.1) before boot.
      * UART IRQ 33 is no longer registered here — serial_pd owns it.
      */
-    linux_vmm_binding_init();
+    guest_vmm_binding_init();
 
     /*
      * Emulated virtio-net at IPA 0x0A010000 (unmapped; faults here, sDDF pump).
@@ -1253,27 +1256,27 @@ void init(void)
         return;
     }
 
-    /* Emulated virtio-blk at IPA 0x0A020000 (faults here, sDDF pump). */
-#if defined(AGENTOS_GUEST_UBUNTU_LIVE)
-    size_t live_initrd_size = 0u;
-    if (!aos_vmm_virtio_blk_load_casper_initrd(
-            initrd_hva,
+    /* Stage profile-selected boot data from agentOS-owned block media. */
+    if ((g_guest_profile->flags & AOS_GUEST_PROFILE_INITRD_FROM_MEDIA) != 0u) {
+        size_t media_initrd_size = 0u;
+        if (!aos_vmm_virtio_blk_load_iso_file(
+            g_guest_profile->media_initrd_path, initrd_hva,
             g_guest_profile->dtb_load_address -
                 g_guest_profile->initrd_load_address,
-            &live_initrd_size)) {
-        LOG_VMM_ERR("Failed to stage casper/initrd from agentOS host media\n");
-        return;
+            &media_initrd_size)) {
+            LOG_VMM_ERR("Failed to stage profile initrd from host media\n");
+            return;
+        }
+        LOG_VMM("Profile initrd ready in guest RAM (%zu bytes)\n",
+                media_initrd_size);
     }
-    LOG_VMM("Ubuntu live initrd ready in guest RAM (%zu bytes)\n",
-            live_initrd_size);
-#endif
-    g_linux_kernel_pc = kernel_pc;
-    g_linux_startable = true;
+    g_guest_kernel_pc = kernel_pc;
+    g_guest_startable = true;
 #if defined(AGENTOS_GUEST_BOTH)
     g_guest_state = GUEST_STATE_READY;
-    LOG_VMM("  Linux guest ready; waiting for lifecycle BOOT\n");
+    LOG_VMM("  Profile guest ready; waiting for lifecycle BOOT\n");
 #else
-    (void)linux_vmm_start_guest();
+    (void)guest_vmm_start_guest();
 #endif
 
     /* Initialise GPU shared memory channel (consumer role — receives from seL4 PDs) */
@@ -1301,12 +1304,12 @@ void init(void)
  * Host IRQs terminate in driver PDs. Emulated virtio injects guest IRQs from
  * its MMIO/backend paths, so this handler receives only VMM control events.
  */
-static void linux_vmm_notified(seL4_Word badge)
+static void guest_vmm_notified(seL4_Word badge)
 {
     switch (badge) {
     case CONTROLLER_CH: {
         /*
-         * Controller sent us a notification. This is the agent-to-linux
+         * Controller sent us a notification. This is the agent-to-guest
          * bridge channel. For now, we just log it. Future: read a command
          * from shared memory and forward to the guest via virtIO console.
          */
@@ -1318,9 +1321,8 @@ static void linux_vmm_notified(seL4_Word badge)
         /*
          * A seL4 PD (controller, worker, swap_slot) has enqueued a tensor
          * descriptor in the GPU shared memory ring.  Drain all pending
-         * descriptors and forward each to the Linux guest via a virtIO
-         * console write.  The Linux gpu_shmem kernel module on the guest
-         * side reads these notifications and dispatches CUDA/PyTorch ops.
+         * descriptors and forward each to the guest via a virtIO console
+         * write. A guest-side driver may consume these notifications.
          *
          * In this VMM implementation we relay notifications using the
          * guest's virtIO console injection path.  A production system
@@ -1340,8 +1342,7 @@ static void linux_vmm_notified(seL4_Word badge)
              * In a full implementation this would write a descriptor
              * notification into the guest's virtIO console or a dedicated
              * virtIO GPU device.  For this prototype we log the event;
-             * the Linux gpu_shmem_linux kernel module polls the shared MR
-             * directly via /dev/gpu_shmem after receiving a Linux IRQ
+             * a guest driver may poll the shared MR after receiving an IRQ
              * injected via virq_inject() (see DESIGN.md §GPU-shmem).
              */
             dispatched++;
@@ -1358,7 +1359,7 @@ static void linux_vmm_notified(seL4_Word badge)
 
     case GPU_SHMEM_NOTIFY_OUT_CH: {
         /*
-         * Linux guest has completed a GPU operation and written a result
+         * The guest has completed a GPU operation and written a result
          * descriptor back into the result ring.  Notify the originating
          * seL4 PD (controller) so it can dequeue the result.
          */
@@ -1397,7 +1398,7 @@ static void linux_vmm_notified(seL4_Word badge)
  *   dropped until the full proxy is wired.  The guest still boots because
  *   early serial writes do not require a response.
  */
-static seL4_MessageInfo_t linux_vmm_fault(seL4_Word badge,
+static seL4_MessageInfo_t guest_vmm_fault(seL4_Word badge,
                                           seL4_MessageInfo_t msginfo)
 {
     seL4_Word fault_mrs[seL4_MsgMaxLength];
@@ -1419,6 +1420,26 @@ static seL4_MessageInfo_t linux_vmm_fault(seL4_Word badge,
      * deliveries (guest TCB fault handler = VMM listen EP) are vCPU 0. */
     size_t vcpu_id = badge & ~VMM_FAULT_BADGE_FLAG;
     seL4_Word label = seL4_MessageInfo_get_label(msginfo);
+
+    /* Keep the architectural virtual timer level coherent across WFI for
+     * every AArch64 direct-boot guest. This is an architecture rule, not a
+     * guest personality hook. */
+    if (label == seL4_Fault_VCPUFault) {
+        uint64_t hsr = fault_mrs[seL4_VCPUFault_HSR];
+        uint64_t exception_class = (hsr >> 26) & 0x3fu;
+        if (exception_class == 0x01u) {
+            seL4_Word timer_ctl =
+                vmm_vcpu_arm_read_reg(vcpu_id, seL4_VCPUReg_CNTV_CTL);
+            if (!vgic_irq_is_pending(vcpu_id, GUEST_VTIMER_IRQ) &&
+                !vgic_irq_is_inflight(vcpu_id, GUEST_VTIMER_IRQ)) {
+                if ((timer_ctl & 0x5u) == 0x5u) {
+                    (void)virq_inject_vcpu(vcpu_id, GUEST_VTIMER_IRQ);
+                } else if ((timer_ctl & 0x5u) == 0x1u) {
+                    vmm_vcpu_arm_ack_vppi(vcpu_id, GUEST_VTIMER_IRQ);
+                }
+            }
+        }
+    }
 
     {
         static uint32_t fault_log;
@@ -1464,9 +1485,9 @@ static seL4_MessageInfo_t linux_vmm_fault(seL4_Word badge,
  *   my_ep:             passed in x0 by pd_entry.c
  *   AGENTOS_IPC_REPLY_CAP: reserved MCS reply object slot
  */
-void linux_vmm_main(seL4_CPtr ep, seL4_CPtr reply_cap)
+void guest_vmm_main(seL4_CPtr ep, seL4_CPtr reply_cap)
 {
-    /* Same as freebsd_vmm: pin the mapped IPC page before libvmm inlines
+    /* Pin the mapped IPC page before libvmm inlines
      * seL4_TCB_WriteRegisters (38 MRs through seL4_GetIPCBuffer). pd_entry
      * also assigns the global; this call is the one that must not be skipped. */
     seL4_SetIPCBuffer((seL4_IPCBuffer *)0x10000000UL);
@@ -1476,9 +1497,9 @@ void linux_vmm_main(seL4_CPtr ep, seL4_CPtr reply_cap)
 
     const aos_guest_vmm_loop_ops_t loop_ops = {
         .guest_state = &g_guest_state,
-        .rpc = linux_vmm_rpc,
-        .fault = linux_vmm_fault,
-        .notified = linux_vmm_notified,
+        .rpc = guest_vmm_rpc,
+        .fault = guest_vmm_fault,
+        .notified = guest_vmm_notified,
         .net_rx_ready = aos_vmm_virtio_net_rx_ready,
     };
     aos_guest_vmm_loop(ep, reply_cap, &loop_ops);
@@ -1487,7 +1508,7 @@ void linux_vmm_main(seL4_CPtr ep, seL4_CPtr reply_cap)
 void pd_main(seL4_CPtr my_ep, seL4_CPtr ns_ep)
 {
     (void)ns_ep;
-    linux_vmm_main(my_ep, AGENTOS_IPC_REPLY_CAP);
+    guest_vmm_main(my_ep, AGENTOS_IPC_REPLY_CAP);
 }
 
-#endif /* ARCH_AARCH64 && !LINUX_VMM_NATIVE_STUB */
+#endif /* ARCH_AARCH64 && !GUEST_VMM_NATIVE_STUB */

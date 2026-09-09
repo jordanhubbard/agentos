@@ -32,7 +32,7 @@
 
     /*
      * agentOS emulated virtio-net. Guest IPA 0xa010000 is not QEMU MMIO;
-     * accesses fault into linux_vmm and hit libvmm virtio_mmio_net_init.
+     * accesses fault into guest_vmm and hit libvmm virtio_mmio_net_init.
      * IRQ: SPI 18 → INTID 50.
      */
     virtio_mmio@a010000 {

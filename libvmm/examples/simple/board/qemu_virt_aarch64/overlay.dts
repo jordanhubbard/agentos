@@ -4,7 +4,7 @@
  * SPDX-License-Identifier: BSD-2-Clause
  *
  * Buildroot guest overlay. vmm.mk fills @BUILDROOT_INITRD_*@ from the
- * packaged initrd size. RAM / initrd IPA must match linux_vmm.c
+ * packaged initrd size. RAM / initrd IPA must match guest_vmm.c
  * (LINUX_GUEST_RAM_VADDR / GUEST_INIT_RAM_DISK_VADDR / GUEST_RAM_SIZE).
  *
  * Guest I/O is emulated virtio-mmio only:

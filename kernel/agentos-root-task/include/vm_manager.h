@@ -7,7 +7,7 @@
  *   - Scheduler tick (round-robin across active slots)
  *   - Per-slot CPU quota management
  *   - Per-slot runtime statistics
- *   - Affinity and IRQ injection stubs (linux_vmm.c)
+ *   - Affinity and IRQ injection stubs (guest_vmm.c)
  */
 
 #pragma once

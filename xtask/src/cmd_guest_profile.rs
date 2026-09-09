@@ -10,8 +10,8 @@ use std::io::Read;
 use std::path::{Component, Path, PathBuf};
 
 const MAGIC: u64 = 0x0046_5250_4753_4f41;
-const VERSION: u16 = 1;
-const MANIFEST_SIZE: usize = 576;
+const VERSION: u16 = 2;
+const MANIFEST_SIZE: usize = 640;
 const MAX_INHERITANCE_DEPTH: usize = 8;
 const MAX_RECIPE_STEPS: usize = 64;
 
@@ -83,6 +83,7 @@ struct Target {
 #[serde(deny_unknown_fields)]
 struct Boot {
     command_line: Option<String>,
+    media_initrd_path: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -439,6 +440,25 @@ fn validate(profile: &Profile, placement: Option<&str>) -> Result<()> {
         cmdline.len() <= 255 && cmdline.is_ascii(),
         "boot.command_line must be at most 255 ASCII bytes"
     );
+    let media_initrd_path = profile.boot.as_ref().unwrap().media_initrd_path.as_deref();
+    if let Some(path) = media_initrd_path {
+        ensure!(
+            !path.is_empty() && path.len() <= 63 && path.is_ascii(),
+            "boot.media_initrd_path must be 1..63 ASCII bytes"
+        );
+        ensure!(
+            !path.starts_with('/')
+                && !path.ends_with('/')
+                && path
+                    .split('/')
+                    .all(|part| !part.is_empty() && part != "." && part != ".."),
+            "boot.media_initrd_path must be a normalized relative path"
+        );
+        ensure!(
+            profile.artifacts.contains_key("initrd") && devices.iter().any(|d| d == "block"),
+            "boot.media_initrd_path requires initrd and block device"
+        );
+    }
 
     for name in ["kernel", "dtb"] {
         validate_artifact(profile, name, status == Status::Runtime)?;
@@ -670,6 +690,13 @@ fn compile(profile: &Profile, canonical: &str, placement_name: &str) -> Result<V
         .command_line
         .as_ref()
         .unwrap();
+    let media_initrd_path = profile
+        .boot
+        .as_ref()
+        .unwrap()
+        .media_initrd_path
+        .as_deref()
+        .unwrap_or("");
     let devices = target.devices.as_ref().unwrap();
     let mut flags = 1u8 << 3;
     if target.autostart.unwrap_or(false) {
@@ -680,6 +707,9 @@ fn compile(profile: &Profile, canonical: &str, placement_name: &str) -> Result<V
     }
     if target.entry_from_image.unwrap_or(false) {
         flags |= 1 << 2;
+    }
+    if !media_initrd_path.is_empty() {
+        flags |= 1 << 4;
     }
 
     let mut out = Vec::with_capacity(MANIFEST_SIZE);
@@ -737,9 +767,11 @@ fn compile(profile: &Profile, canonical: &str, placement_name: &str) -> Result<V
     push_u16(&mut out, command_line.len() as u16);
     push_u16(&mut out, id.len() as u16);
     push_u32(&mut out, target.control_type.unwrap());
-    out.extend_from_slice(&[0; 8]);
+    push_u16(&mut out, media_initrd_path.len() as u16);
+    out.extend_from_slice(&[0; 6]);
     push_text(&mut out, id, 64);
     push_text(&mut out, command_line, 256);
+    push_text(&mut out, media_initrd_path, 64);
     ensure!(
         out.len() == MANIFEST_SIZE,
         "internal manifest size mismatch: {}",

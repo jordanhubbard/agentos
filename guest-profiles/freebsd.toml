@@ -1,4 +1,4 @@
-schema = 1
+schema = 2
 id = "freebsd-15-aarch64"
 status = "runtime"
 
