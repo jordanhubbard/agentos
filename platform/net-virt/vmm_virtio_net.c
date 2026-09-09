@@ -112,8 +112,7 @@ static uint32_t net_pd_bridge_tx(void)
 
     while (net_dequeue_active(&g_tx, &buffer) == 0) {
         uint32_t len = buffer.len;
-        uint8_t *src = (uint8_t *)AOS_NET_SHMEM_VA +
-                       AOS_NET_TX_DATA_OFF +
+        uint8_t *src = (uint8_t *)g_aos_net.tx_data +
                        (uint32_t)buffer.io_or_offset;
         uint8_t *dst = (uint8_t *)AGENTOS_NET_SHARED_VA + g_net_pd_slot +
                        NET_SVC_HDR_SIZE;
@@ -177,8 +176,7 @@ static uint32_t net_pd_bridge_rx(uint32_t limit)
             break;
         }
         uint8_t *src = (uint8_t *)AGENTOS_NET_SHARED_VA + off;
-        uint8_t *dst = (uint8_t *)AOS_NET_SHMEM_VA +
-                       AOS_NET_RX_DATA_OFF +
+        uint8_t *dst = (uint8_t *)g_aos_net.rx_data +
                        (uint32_t)buffer.io_or_offset;
         __atomic_thread_fence(__ATOMIC_SEQ_CST);
         for (uint32_t i = 0u; i < len; i++) {

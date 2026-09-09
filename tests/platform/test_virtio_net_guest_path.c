@@ -325,6 +325,29 @@ static int test_host_backed_architecture(void)
                   "guests and native init agent share bus.16 net virtualizer");
 }
 
+static int test_bridge_uses_selected_client_data(void)
+{
+    const char *bridge = "platform/net-virt/vmm_virtio_net.c";
+    int selected_tx = src_contains(
+        bridge,
+        "uint8_t *src = (uint8_t *)g_aos_net.tx_data +");
+    int selected_rx = src_contains(
+        bridge,
+        "uint8_t *dst = (uint8_t *)g_aos_net.rx_data +");
+    int no_client_zero_tx = !src_contains_in_order(
+        bridge,
+        "static uint32_t net_pd_bridge_tx(void)",
+        "AOS_NET_TX_DATA_OFF +");
+    int no_client_zero_rx = !src_contains_in_order(
+        bridge,
+        "static uint32_t net_pd_bridge_rx(uint32_t limit)",
+        "AOS_NET_RX_DATA_OFF +");
+
+    return tap_ok(selected_tx && selected_rx && no_client_zero_tx &&
+                  no_client_zero_rx,
+                  "host bridge uses each selected client's RX/TX data window");
+}
+
 #define VQ_NUM 8u
 
 static uint8_t g_region[AOS_NET_CLIENT_STRIDE];
@@ -668,6 +691,7 @@ int main(void)
                  "VMM logs guest MAC 02:00:00:00:00:01 at DRIVER_OK");
     (void)test_qemu_page_unmapped();
     (void)test_host_backed_architecture();
+    (void)test_bridge_uses_selected_client_data();
     (void)test_mmio_probe();
     (void)test_guest_tx_rx_loopback();
     (void)test_chained_tx_desc();
