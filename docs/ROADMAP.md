@@ -30,7 +30,9 @@ dual-guest SSH
       |                                  ^
       +---- 0.2 release workflow --------+
 
-0.3 Debian integration baseline -- 0.3 framebuffer target proof
+0.3 declarative guest profiles -> 0.3 Debian integration baseline
+              |                              |
+              |                    0.3 framebuffer target proof
               |                              |
               +------------------------------+-- 0.3 Omarchy compatibility ledger
       |
@@ -111,6 +113,16 @@ same agentOS-owned VirtIO paths. No v0.2 receipt or historical claim is
 rewritten. The initial artifact decision and checksums are recorded in
 `docs/linux-guest-baseline.md`.
 
+Guest identity must also stop selecting target implementations. Versioned
+TOML source profiles are validated and compiled by the Rust host tooling into
+a compact, bounded runtime manifest. The target selects generic boot protocols
+and device capabilities from that manifest; artifact acquisition, console
+matchers, provisioning, and test recipes remain host-only profile data. If a
+recipe needs more than static fields, it uses a finite declarative state
+machine interpreted by Rust host tooling, never an arbitrary interpreter in a
+VMM or device-service PD. Debian and Omarchy extend reusable Linux/Arch
+profiles rather than introducing new VMM implementations.
+
 Linux baseline acceptance evidence:
 
 - the dated Debian image, checksum manifest, provisioning input, extracted
@@ -126,6 +138,10 @@ Linux baseline acceptance evidence:
 
 MAC work:
 
+- `task_7f6653b7dcc840b9ab7fa092685c9d57` - collapse Linux and FreeBSD onto
+  one flavor-driven VMM implementation.
+- `task_a1d4e9d734e246c4a3807d614c2a6dc7` - compile declarative guest source
+  profiles into a guest-neutral runtime manifest and host-side test recipes.
 - `task_26e8b1157ffe449483d2fe1c44f2a8be` - replace Ubuntu live media with the
   pinned Debian integration guest after parity is proven.
 
@@ -182,7 +198,6 @@ Acceptance evidence:
 
 MAC work:
 
-- `task_7f6653b7dcc840b9ab7fa092685c9d57` — make guest flavor data-driven.
 - `task_ede60b058fc745d296bad77044a57420` — implement VMX guest execution.
 - `task_5870ef2f51974ffe95099c3032d0f077` — implement UEFI and ACPI guest
   boot.
