@@ -841,6 +841,15 @@ test-integration:
 	    echo "FAIL: tests/platform/test_net_rx_drain.c"; \
 	    status=1; \
 	fi; \
+	if gcc -DAGENTOS_TEST_HOST -I platform/include \
+	        tests/platform/test_net_host_fanout.c \
+	        -o $(BUILD_TMP_DIR)/test_net_host_fanout 2>&1 \
+	    && $(BUILD_TMP_DIR)/test_net_host_fanout; then \
+	    echo "PASS: tests/platform/test_net_host_fanout.c"; \
+	else \
+	    echo "FAIL: tests/platform/test_net_host_fanout.c"; \
+	    status=1; \
+	fi; \
 	if gcc -I platform/include \
 	        tests/platform/test_inspect_snapshot.c \
 	        platform/inspect/inspect_snapshot.c \

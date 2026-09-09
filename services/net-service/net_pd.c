@@ -46,6 +46,7 @@ typedef struct {
 #define SEL4_ERR_PERM        3u
 #define SEL4_ERR_BAD_ARG     4u
 #define SEL4_ERR_NO_MEM      5u
+#define SEL4_ERR_INTERNAL    8u
 
 typedef uint32_t (*sel4_handler_fn)(sel4_badge_t badge,
                                      const sel4_msg_t *req,
@@ -604,8 +605,10 @@ static bool net_host_deliver(const uint8_t *frame, uint32_t len)
     }
 
     /*
-     * Check every destination before mutating any ring. This preserves exact
-     * multicast fanout when one guest is temporarily backpressured.
+     * Backpressure is per client. A suspended or abandoned client must not
+     * retain ownership of the physical RX descriptor and head-of-line block
+     * traffic for every other guest. Preserve delivery to clients that have
+     * room and account an explicit drop for each client that does not.
      */
     for (uint32_t i = 0u; i < NET_MAX_CLIENTS; i++) {
         net_pd_client_t *c = &clients[i];
@@ -614,19 +617,12 @@ static bool net_host_deliver(const uint8_t *frame, uint32_t len)
             continue;
         }
         if (!net_host_ring_has_room(c, needed)) {
-            /*
-             * Leave the host descriptor pending. The VMM drains the queued
-             * frames and its next RAW_RECV call polls this descriptor again.
-             */
-            return false;
+            volatile netpd_ring_t *ring = slot_ring(c->shmem_slot);
+            ring->rx_drops++;
+            c->rx_errors++;
+            continue;
         }
-    }
-    for (uint32_t i = 0u; i < NET_MAX_CLIENTS; i++) {
-        net_pd_client_t *c = &clients[i];
-        if (c->active && c->type == HANDLE_TYPE_NIC &&
-            net_host_frame_for_client(frame, len, c)) {
-            net_host_enqueue_frame(c, frame, len);
-        }
+        net_host_enqueue_frame(c, frame, len);
     }
     return true;
 }
