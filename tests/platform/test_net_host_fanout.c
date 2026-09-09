@@ -93,6 +93,37 @@ int main(void)
     failed += check(memcmp(freebsd_frame, clients[freebsd].mac, 6u) == 0,
                     "QEMU IPv4 demux rewrites the selected virtual MAC");
 
+    uint8_t arp_reply[42] = {0};
+    memcpy(arp_reply, iface_mac, 6u);
+    arp_reply[12] = 0x08u;
+    arp_reply[13] = 0x06u;
+    arp_reply[14] = 0x00u;
+    arp_reply[15] = 0x01u;
+    arp_reply[16] = 0x08u;
+    arp_reply[17] = 0x00u;
+    arp_reply[18] = 6u;
+    arp_reply[19] = 4u;
+    arp_reply[20] = 0x00u;
+    arp_reply[21] = 0x02u;
+    memcpy(arp_reply + 32u, iface_mac, 6u);
+    arp_reply[38] = 10u;
+    arp_reply[39] = 0u;
+    arp_reply[40] = 2u;
+    arp_reply[41] = 16u;
+    uint32_t freebsd_before_arp = freebsd_ring->rx_head;
+    uint32_t healthy_before_arp = healthy_ring->rx_head;
+    failed += check(net_host_deliver(arp_reply, sizeof(arp_reply)) &&
+                    freebsd_ring->rx_head ==
+                        freebsd_before_arp + sizeof(arp_reply) + 2u &&
+                    healthy_ring->rx_head == healthy_before_arp,
+                    "QEMU ARP reply reaches only its target-IP client");
+    const uint8_t *freebsd_arp =
+        net_shmem + NETPD_SLOT_OFFSET(clients[freebsd].shmem_slot) +
+        NETPD_SLOT_HDR_SIZE + freebsd_before_arp + 2u;
+    failed += check(memcmp(freebsd_arp, clients[freebsd].mac, 6u) == 0 &&
+                    memcmp(freebsd_arp + 32u, clients[freebsd].mac, 6u) == 0,
+                    "QEMU ARP demux rewrites Ethernet and target identities");
+
     uint8_t arp[42] = {0};
     for (uint32_t i = 0u; i < 6u; i++) {
         arp[6u + i] = clients[freebsd].mac[i];
@@ -111,6 +142,6 @@ int main(void)
                     memcmp(arp + 22u, iface_mac, 6u) == 0,
                     "QEMU egress rewrites Ethernet and ARP source identities");
 
-    printf("1..6\n");
+    printf("1..8\n");
     return failed == 0 ? 0 : 1;
 }

@@ -599,6 +599,38 @@ static net_pd_client_t *net_host_ipv4_client(const uint8_t *frame,
     return NULL;
 }
 
+static net_pd_client_t *net_host_arp_client(const uint8_t *frame,
+                                             uint32_t len)
+{
+    uint32_t target;
+    if (len < 42u || frame[12] != 0x08u || frame[13] != 0x06u ||
+        frame[14] != 0x00u || frame[15] != 0x01u ||
+        frame[16] != 0x08u || frame[17] != 0x00u ||
+        frame[18] != 6u || frame[19] != 4u) {
+        return NULL;
+    }
+    target = ((uint32_t)frame[38] << 24) |
+             ((uint32_t)frame[39] << 16) |
+             ((uint32_t)frame[40] << 8) |
+             (uint32_t)frame[41];
+    for (uint32_t i = 0u; i < NET_MAX_CLIENTS; i++) {
+        net_pd_client_t *c = &clients[i];
+        if (c->active && c->type == HANDLE_TYPE_NIC &&
+            c->iface_id <= 0xFFu - 15u &&
+            target == AGENTOS_NET_HOST_IPV4_CLIENT_BASE + c->iface_id) {
+            return c;
+        }
+    }
+    return NULL;
+}
+
+static net_pd_client_t *net_host_addressed_client(const uint8_t *frame,
+                                                   uint32_t len)
+{
+    net_pd_client_t *c = net_host_ipv4_client(frame, len);
+    return c != NULL ? c : net_host_arp_client(frame, len);
+}
+
 static bool net_host_ring_has_room(const net_pd_client_t *c, uint32_t needed)
 {
     volatile netpd_ring_t *ring = slot_ring(c->shmem_slot);
@@ -631,6 +663,14 @@ static void net_host_enqueue_frame(net_pd_client_t *c,
         for (uint32_t j = 0u; j < 6u; j++) {
             dst[j] = c->mac[j];
         }
+        if (len >= 42u && dst[12] == 0x08u && dst[13] == 0x06u &&
+            dst[14] == 0x00u && dst[15] == 0x01u &&
+            dst[16] == 0x08u && dst[17] == 0x00u &&
+            dst[18] == 6u && dst[19] == 4u) {
+            for (uint32_t j = 0u; j < 6u; j++) {
+                dst[32u + j] = c->mac[j];
+            }
+        }
     }
     net_host_fence();
     ring->rx_head = entry + needed;
@@ -639,12 +679,12 @@ static void net_host_enqueue_frame(net_pd_client_t *c,
 static bool net_host_deliver(const uint8_t *frame, uint32_t len)
 {
     uint32_t needed = 2u + len;
-    net_pd_client_t *ipv4_client;
+    net_pd_client_t *addressed_client;
     if (len > NET_MAX_FRAME_BYTES || needed > NETPD_SLOT_DATA_SIZE) {
         return true; /* malformed host frame: consume it rather than deadlock */
     }
 
-    ipv4_client = net_host_ipv4_client(frame, len);
+    addressed_client = net_host_addressed_client(frame, len);
 
     /*
      * Backpressure is per client. A suspended or abandoned client must not
@@ -654,10 +694,10 @@ static bool net_host_deliver(const uint8_t *frame, uint32_t len)
      */
     for (uint32_t i = 0u; i < NET_MAX_CLIENTS; i++) {
         net_pd_client_t *c = &clients[i];
-        bool rewrite_destination = ipv4_client == c;
+        bool rewrite_destination = addressed_client == c;
         if (!c->active || c->type != HANDLE_TYPE_NIC ||
-            (ipv4_client != NULL && !rewrite_destination) ||
-            (ipv4_client == NULL &&
+            (addressed_client != NULL && !rewrite_destination) ||
+            (addressed_client == NULL &&
              !net_host_frame_for_client(frame, len, c))) {
             continue;
         }

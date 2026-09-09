@@ -186,7 +186,7 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
         &args.guest_os,
         ssh_port,
         ubuntu_live,
-        args.assert_desktop && !args.keep_running,
+        (args.guest_os == "both" || args.assert_desktop) && !args.keep_running,
     )?);
     if needs_host_net_stimulus {
         wait_for_all_markers(
