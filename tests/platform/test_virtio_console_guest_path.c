@@ -166,6 +166,14 @@ int main(void)
        contains("kernel/agentos-root-task/src/cc_pd.c",
                 "virtio_serial_recover_tx"),
        "lost CC reply retries replay once after TX queue reset");
+    ok(contains("kernel/agentos-root-task/src/cc_pd.c",
+                "CC_VIRTIO_RENOTIFY_INTERVAL") &&
+       contains_after("kernel/agentos-root-task/src/cc_pd.c",
+                      "wait % CC_VIRTIO_RENOTIFY_INTERVAL",
+                      "vio_wr(VMMIO_QUEUE_NOTIFY, 1u);") &&
+       contains("kernel/agentos-root-task/src/cc_pd.c",
+                "re-notifying the same queue is idempotent"),
+       "socket-backed CC TX periodically re-kicks an outstanding descriptor");
     ok(contains("kernel/agentos-root-task/include/contracts/cc_contract.h",
                 "CC_VIRTIO_STARTUP_VERSION") &&
        contains("kernel/agentos-root-task/src/main.c",

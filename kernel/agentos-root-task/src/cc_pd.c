@@ -119,6 +119,7 @@ static void cc_dbg_hex(uint64_t v)
 #define VIRTIO_ID_CONSOLE 3u
 #define VQ_DEPTH          4u
 #define CC_VIRTIO_WAIT_LIMIT 1000000u
+#define CC_VIRTIO_RENOTIFY_INTERVAL 4096u
 
 typedef struct { uint64_t addr; uint32_t len; uint16_t flags; uint16_t next; }
     __attribute__((packed)) vq_desc_t;
@@ -315,6 +316,16 @@ static bool vio_serial_write(const void *buf, uint32_t n)
             VQ_MB();
             seL4_Yield();
             wait++;
+            /*
+             * A socket-backed virtconsole can transiently defer a queue kick
+             * while its chardev frontend changes writable state.  The
+             * descriptor remains owned by the device, so periodically
+             * re-notifying the same queue is idempotent and prompts QEMU to
+             * rescan it instead of leaving the caller blocked indefinitely.
+             */
+            if ((wait % CC_VIRTIO_RENOTIFY_INTERVAL) == 0u) {
+                vio_wr(VMMIO_QUEUE_NOTIFY, 1u);
+            }
             if (wait >= CC_VIRTIO_WAIT_LIMIT) {
                 cc_dbg_puts("[cc_pd] TX timeout waiting for used ring\n");
                 return false;
