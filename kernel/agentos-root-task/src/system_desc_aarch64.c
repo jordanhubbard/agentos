@@ -29,7 +29,7 @@
  *   175  agentfs            — content store; controller and vibe_engine use it
  *   170  vm_manager         — VM lifecycle; downstream of guest-control relays
  *   165  vibe_engine        — WASM hot-swap engine; called by controller
- *   160  cc_pd              — CC relay; passive, woken by PPC from callers
+ *   164  cc_pd              — CC relay; above active device-service pollers
  *   110  init_agent         — agent-ecosystem bootstrapper; calls most services
  *    50  controller         — policy coordinator; calls everything above it
  *
@@ -486,17 +486,17 @@ const system_desc_t system_desc_aarch64 = {
             },
         },
 
-        /* pd[17] — cc_pd (prio 160; command-and-control relay)
+        /* pd[17] — cc_pd (prio 164; command-and-control relay)
          * Pure IPC relay: receives MSG_CC_* from external callers and routes
          * each to the appropriate service PD.  Passive — woken by PPC.
-         * Priority 160: above guest vCPUs (150), below vibe_engine (165),
-         * vm_manager (170), and other providers it calls. */
+         * Priority 164: above guest vCPUs (150) and active device services
+         * (160), below vibe_engine (165), vm_manager (170), and the VMMs. */
         {
             .name           = "cc_pd",
             .elf_path       = "cc_pd.elf",
             .stack_size     = 0x4000u,
             .cnode_size_bits = 10u,
-            .priority       = 160u,
+            .priority       = 164u,
             .self_svc_id    = SVC_ID_CC_PD,
             .init_ep_count  = AOS_CC_INIT_EP_COUNT,
             .init_eps = {

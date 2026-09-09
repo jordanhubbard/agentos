@@ -140,7 +140,7 @@ static seL4_Word g_cap_base;  /* set to bi->empty.start in root_task_main */
 #define VMM_SC_PERIOD_US          100000u
 /*
  * Guest fault senders share the VMM endpoint with vm_manager control calls.
- * Keep the relay path monotonic above guests: cc_pd 160, vibe_engine 165,
+ * Keep the relay path monotonic above guests: cc_pd 164, vibe_engine 165,
  * vm_manager 170, then the VMM PD at 250.  This prevents active device
  * services at priority 160 from starving a downstream lifecycle call.
  * An always-faulting guest therefore cannot starve CONSOLE_DRAIN, SUSPEND,

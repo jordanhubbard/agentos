@@ -444,12 +444,12 @@ int main(void)
     (void)tap_ok(src_contains_in_order(
                      "kernel/agentos-root-task/src/system_desc_aarch64.c",
                      ".name           = \"cc_pd\"",
-                     ".priority       = 160u") &&
+                     ".priority       = 164u") &&
                  src_contains_in_order(
                      "kernel/agentos-root-task/agentos.toml",
                      "name = \"cc_pd\"",
-                     "priority = 160"),
-                 "CC transport cannot be starved by a running guest");
+                     "priority = 164"),
+                 "CC transport outranks guests and active device pollers");
     (void)tap_ok(src_contains_in_order(
                      "kernel/agentos-root-task/src/system_desc_aarch64.c",
                      ".name           = \"vm_manager\"",
