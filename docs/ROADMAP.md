@@ -14,7 +14,7 @@ changing the dependency order below.
 | Release | Theme | Required outcome |
 | --- | --- | --- |
 | **0.2** | Network desktop proof and release discipline | Ubuntu exposes a real desktop session over the already authenticated network path; releases become exact-revision, evidence-bound transitions; the first systems/security narrative is grounded in retained evidence. |
-| **0.3** | Guest graphics foundation | The canonical framebuffer is live on target, and generic virtio-gpu plus virtio-input virtualizers drive an AArch64 guest without host-device passthrough. |
+| **0.3** | Guest graphics foundation | The canonical framebuffer is live on target, generic virtio-gpu plus virtio-input virtualizers drive an AArch64 guest without host-device passthrough, and the official Omarchy compatibility ledger is kept current. |
 | **0.4** | x86 guest foundation | A real VMX-backed x86_64 VMM boots Linux and reuses canonical net, block, and console services with isolated GPA translation. |
 | **0.5** | Persistent x86 desktop platform | A pinned Arch Linux x86_64 guest installs through UEFI, reboots from writable storage, reaches key-only SSH, and runs a Hyprland-class compositor through canonical graphics and input. |
 | **0.6** | Official Omarchy qualification | A reproducible official Omarchy artifact installs to encrypted persistent storage, reaches its normal Hyprland desktop, and survives evidence-bound update and recovery gates. |
@@ -115,7 +115,8 @@ MAC work:
 - `task_cefc0f77327d4245ab9feb132cd1eb57` — implement guest virtio-gpu and
   virtio-input.
 - `task_93ddbd0f497e4209a162e0f5527fc7cf` — maintain an evidence ledger for
-  official Omarchy architecture, artifacts, repositories, and requirements.
+  official Omarchy architecture, artifacts, repositories, and requirements;
+  the maintained snapshot is `docs/omarchy-compatibility.md`.
 
 ## 0.4 — x86 guest foundation
 
@@ -195,6 +196,8 @@ Acceptance evidence:
 - injected keyboard and pointer input plus a non-uniform captured frame;
 - successful pinned update and reboot;
 - snapshot-backed rollback or recovery from an injected failed update;
+- retained cold-boot timing from vCPU start to key-only SSH and to the first
+  non-uniform compositor frame, compared with the pinned Ubuntu desktop proof;
 - exact guest release identity recorded in release evidence.
 
 MAC work:
