@@ -1422,7 +1422,7 @@ static void handle_restore(const cc_req_wire_t *req, cc_reply_wire_t *rep)
  * caller can re-address the same stream on subsequent polls.
  *
  *   slot 0,  pd_id TRACE_PD_CONTROLLER  → boot guest serial (guest_vmm drain)
- *   slot 0,  pd_id LINUX/FREEBSD_VMM    → vibe guest addressed by MR1==handle,
+ *   slot 0,  pd_id GUEST_VMM_PRIMARY/SECONDARY → vibe guest addressed by MR1==handle,
  *                                          assigned its own slot (1..N) on use
  *   slot N>0                            → previously assigned vibe guest slot
  *

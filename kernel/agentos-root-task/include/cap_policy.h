@@ -47,7 +47,6 @@ typedef struct __attribute__((packed)) {
 #define TRACE_PD_GUEST_VMM_PRIMARY    41u
 #define TRACE_PD_GUEST_VMM_SECONDARY  42u
 #define TRACE_PD_LINUX_VMM            TRACE_PD_GUEST_VMM_PRIMARY
-#define TRACE_PD_FREEBSD_VMM          TRACE_PD_GUEST_VMM_SECONDARY
 
 /*
  * cap_policy_is_ring0_channel(channel_id)

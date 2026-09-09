@@ -36,8 +36,6 @@
 #define VIRTIO_BLK_CONTRACT_VERSION 2u
 #define BLK_MEDIA_PRIMARY    0u
 #define BLK_MEDIA_SECONDARY   1u
-#define BLK_MEDIA_UBUNTU_INSTALL  BLK_MEDIA_PRIMARY
-#define BLK_MEDIA_FREEBSD_INSTALL BLK_MEDIA_SECONDARY
 #define BLK_MEDIA_COUNT             2u
 
 /* ─── Opcodes (placed in MR0) ────────────────────────────────────────────── */

@@ -36,7 +36,6 @@
 #define VM_PROFILE_PRIMARY              0u
 #define VM_PROFILE_SECONDARY            1u
 #define VM_TYPE_LINUX                   VM_PROFILE_PRIMARY
-#define VM_TYPE_FREEBSD                 VM_PROFILE_SECONDARY
 
 /* ── VM states ── */
 #define VM_STATE_CREATED           0u  /* resources allocated, not yet started */

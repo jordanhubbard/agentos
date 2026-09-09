@@ -31,7 +31,6 @@ typedef enum __attribute__((packed)) {
 } vos_os_type_t;
 
 #define VOS_OS_LINUX   VOS_PROFILE_PRIMARY
-#define VOS_OS_FREEBSD VOS_PROFILE_SECONDARY
 
 /* ── Instance state ──────────────────────────────────────────────────────────── */
 

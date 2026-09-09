@@ -159,8 +159,8 @@ static int test_abi(void)
 static int test_block_service_media_contract(void)
 {
     int ok = BLK_SVC_INTERFACE_VERSION == 2u
-          && BLK_SVC_MEDIA_UBUNTU_INSTALL == 0u
-          && BLK_SVC_MEDIA_FREEBSD_INSTALL == 1u
+          && BLK_SVC_MEDIA_PRIMARY == 0u
+          && BLK_SVC_MEDIA_SECONDARY == 1u
           && BLK_SVC_MEDIA_COUNT == 2u
           && sizeof(blk_svc_req_t) == 20u;
     return tap_ok(ok, "block-service v2 selects independent canonical media");
