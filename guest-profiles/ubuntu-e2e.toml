@@ -2,6 +2,7 @@ schema = 2
 id = "ubuntu-e2e-aarch64"
 status = "runtime"
 extends = "linux-base.toml"
+aliases = ["ubuntu"]
 
 [boot]
 command_line = "console=hvc0 quiet loglevel=3 rdinit=/init panic=-1 ip=dhcp"
@@ -23,6 +24,15 @@ sha256 = "d1cf143640f94d084995e2d4e21bdff58360e682bb4a18c0da1dd56b43674ff7"
 
 [placements.dual-primary]
 dtb_sha256 = "e759bfa8eaee0f4c10ad9c1849f5ec2b9f38423c3db2d563ffd2400824136272"
+
+[[host.qemu.media]]
+path = "build/guest-images/ubuntu-26.04-aarch64.iso"
+drive_id = "primary_media"
+bus = 8
+
+[host.qemu.ssh]
+account = "ubuntu"
+host_port = 12222
 
 [[host.acquire]]
 action = "stage-url"
@@ -46,4 +56,4 @@ args = { marker = "agentos-ubuntu-ready" }
 
 [[host.test]]
 action = "assert-virtio"
-args = { devices = "net,block,console" }
+args = { devices = "net,block,console", scope = "emulated" }

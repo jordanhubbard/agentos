@@ -2,6 +2,7 @@ schema = 2
 id = "ubuntu-live-aarch64"
 status = "runtime"
 extends = "ubuntu-e2e.toml"
+aliases = ["ubuntu-live"]
 
 [boot]
 command_line = "console=hvc0 quiet loglevel=3 boot=casper noprompt systemd.show_status=false systemd.unit=console-getty.service panic=-1"
@@ -25,6 +26,13 @@ ram_size = 0x40000000
 dtb_load_address = 0x7f000000
 dtb_sha256 = "eb6f1cd470687badf9988baa0210a56319f6ccce0f740078cf7a63740f457d8e"
 
+[host.qemu]
+memory = "3G"
+
 [[host.test]]
 action = "wait-console"
 args = { marker = "login:" }
+
+[[host.test]]
+action = "assert-virtio"
+args = { devices = "net,block,console", scope = "host-backed", console_io = "bidirectional" }

@@ -41,6 +41,7 @@ pub fn run(args: &FaultInjectArgs) -> Result<()> {
         &log_path,
         &cc_sock,
         "none",
+        None,
         0,
         false,
         false,

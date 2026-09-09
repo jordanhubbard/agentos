@@ -2,6 +2,7 @@ schema = 2
 id = "omarchy-x86-64"
 status = "planned"
 extends = "arch.toml"
+aliases = ["omarchy"]
 
 [target]
 architecture = "x86-64"
@@ -19,10 +20,15 @@ kernel_entry_address = 0x40000000
 [placements.dual-primary]
 kernel_entry_address = 0x40000000
 
+[host.qemu]
+board = "x86_64_generic"
+machine = "q35"
+memory = "2G"
+
 [[host.provision]]
 action = "run-ssh"
 args = { recipe = "omarchy-wayland" }
 
 [[host.test]]
 action = "assert-virtio"
-args = { devices = "net,block,console,gpu,input,sound" }
+args = { devices = "net,block,console,gpu,input,sound", scope = "host-backed", console_io = "bidirectional" }

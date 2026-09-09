@@ -2,6 +2,7 @@ schema = 2
 id = "arch-aarch64"
 status = "planned"
 extends = "linux-base.toml"
+aliases = ["arch"]
 
 [boot]
 command_line = "console=hvc0 root=/dev/vda1 rw"
@@ -17,4 +18,3 @@ args = { recipe = "arch-base" }
 [[host.test]]
 action = "wait-ssh"
 args = { account = "root" }
-

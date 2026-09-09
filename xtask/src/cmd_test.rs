@@ -1,3 +1,4 @@
+use crate::cmd_guest_profile::{self, HostProfilePlan};
 use crate::{rfb, TestArgs};
 use anyhow::Context;
 use std::io::{Read, Seek, SeekFrom, Write};
@@ -87,9 +88,158 @@ const VIBEOS_DEV_BLOCK: u32 = 1 << 2;
 const TRACE_PD_GUEST_VMM_PRIMARY: u32 = 41;
 const TRACE_PD_GUEST_VMM_SECONDARY: u32 = 42;
 
+#[derive(Clone, Debug)]
+struct VirtioAssertion {
+    devices: Vec<String>,
+    host_backed: bool,
+    bidirectional_console: bool,
+}
+
+fn requested_virtio_assertion(
+    args: &TestArgs,
+    profile: Option<&HostProfilePlan>,
+) -> Option<VirtioAssertion> {
+    if args.assert_agentos_virtio || args.assert_ubuntu_live || args.assert_desktop {
+        return Some(VirtioAssertion {
+            devices: vec!["net".into(), "block".into(), "console".into()],
+            host_backed: true,
+            bidirectional_console: true,
+        });
+    }
+    if args.assert_emulated_console {
+        return Some(VirtioAssertion {
+            devices: vec!["console".into()],
+            host_backed: false,
+            bidirectional_console: true,
+        });
+    }
+    if args.assert_emulated_net {
+        return Some(VirtioAssertion {
+            devices: vec!["net".into()],
+            host_backed: false,
+            bidirectional_console: false,
+        });
+    }
+    if args.assert_emulated_blk {
+        return Some(VirtioAssertion {
+            devices: vec!["block".into()],
+            host_backed: false,
+            bidirectional_console: false,
+        });
+    }
+    profile.and_then(|profile| {
+        profile
+            .test
+            .iter()
+            .find(|step| step.action == "assert-virtio")
+            .map(|step| VirtioAssertion {
+                devices: step.args["devices"].split(',').map(str::to_owned).collect(),
+                host_backed: step
+                    .args
+                    .get("scope")
+                    .is_some_and(|scope| scope == "host-backed"),
+                bidirectional_console: step
+                    .args
+                    .get("console_io")
+                    .is_some_and(|value| value == "bidirectional"),
+            })
+    })
+}
+
+fn virtio_markers(assertion: &VirtioAssertion) -> Vec<&'static str> {
+    let mut required = Vec::new();
+    for device in &assertion.devices {
+        match device.as_str() {
+            "net" => {
+                required.extend_from_slice(&[
+                    "emulated virtio-net: guest probed",
+                    "emulated virtio-net: guest DRIVER_OK",
+                    "emulated virtio-net: pumped",
+                ]);
+                if assertion.host_backed {
+                    required.extend_from_slice(&[
+                        "emulated virtio-net: backend TX accepted by net_pd",
+                        "emulated virtio-net: backend RX delivered from net_pd",
+                        "via host-backed net_pd",
+                        "[net_pd] HOST_READY: virtio-net bus.16",
+                        "[net_pd] HOST_TX: QEMU bus.16 completion observed",
+                    ]);
+                }
+            }
+            "block" => {
+                required.extend_from_slice(&[
+                    "emulated virtio-blk: guest probed",
+                    "emulated virtio-blk: guest DRIVER_OK",
+                    "emulated virtio-blk: pumped",
+                ]);
+                if assertion.host_backed {
+                    required.extend_from_slice(&[
+                        "emulated virtio-blk: agentOS host media",
+                        "emulated virtio-blk: host-media read",
+                    ]);
+                }
+            }
+            "console" => {
+                required.extend_from_slice(&[
+                    "emulated virtio-console: guest probed",
+                    "emulated virtio-console: guest DRIVER_OK",
+                    "emulated virtio-console: pumped",
+                ]);
+                if assertion.bidirectional_console {
+                    required.push("emulated virtio-console: pumped input serial_virt->guest");
+                }
+            }
+            _ => {}
+        }
+    }
+    required
+}
+
 pub fn run(args: &TestArgs) -> anyhow::Result<()> {
     let repo_root = repo_root()?;
-    let ubuntu_live = args.assert_ubuntu_live || args.assert_desktop || args.guest_os == "both";
+    let profile_root = repo_root.join("guest-profiles");
+    let profile_plan = if matches!(args.guest_os.as_str(), "none" | "both") {
+        None
+    } else {
+        let alias = if (args.assert_ubuntu_live || args.assert_desktop) && args.guest_os == "ubuntu"
+        {
+            "ubuntu-live"
+        } else {
+            args.guest_os.as_str()
+        };
+        let path = cmd_guest_profile::resolve_alias(&profile_root, alias)?;
+        Some(cmd_guest_profile::host_profile_plan(&profile_root, &path)?)
+    };
+    if let Some(profile) = &profile_plan {
+        println!(
+            "[xtask:test] resolved alias {:?} to {} ({}, architecture={}, control_type={}, guest_id={}, provision_steps={}, test_steps={})",
+            args.guest_os,
+            profile.id,
+            profile.path.display(),
+            profile.architecture,
+            profile.control_type,
+            profile.guest_id,
+            profile.provision.len(),
+            profile.test.len()
+        );
+    }
+    let ubuntu_live = profile_plan
+        .as_ref()
+        .is_some_and(|profile| profile.media_initrd_path.is_some())
+        || args.assert_ubuntu_live
+        || args.assert_desktop
+        || args.guest_os == "both";
+    let virtio_assertion = requested_virtio_assertion(args, profile_plan.as_ref());
+    if let (Some(profile), Some(assertion)) = (&profile_plan, &virtio_assertion) {
+        anyhow::ensure!(
+            assertion
+                .devices
+                .iter()
+                .all(|device| profile.devices.contains(device)),
+            "profile {} test requests a VirtIO device absent from target.devices",
+            profile.id
+        );
+    }
 
     anyhow::ensure!(
         !args.keep_running || args.guest_os == "both" || args.assert_desktop,
@@ -168,11 +318,11 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
         None
     };
 
-    let needs_ssh_probe = !matches!(args.guest_os.as_str(), "ubuntu" | "freebsd");
-    let needs_host_net_stimulus =
-        args.guest_os == "ubuntu" && (args.assert_agentos_virtio || args.assert_ubuntu_live);
-    let ssh_port = if needs_ssh_probe || needs_host_net_stimulus || args.assert_desktop {
-        effective_ssh_port(args)
+    let needs_host_net_stimulus = virtio_assertion.as_ref().is_some_and(|assertion| {
+        assertion.host_backed && assertion.devices.iter().any(|device| device == "net")
+    });
+    let ssh_port = if needs_host_net_stimulus || args.assert_desktop {
+        effective_ssh_port(args, profile_plan.as_ref())
     } else {
         0
     };
@@ -184,6 +334,7 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
         &log_path,
         &cc_sock,
         &args.guest_os,
+        profile_plan.as_ref(),
         ssh_port,
         ubuntu_live,
         (args.guest_os == "both" || args.assert_desktop) && !args.keep_running,
@@ -214,62 +365,44 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
         );
         wait_for_emulated_blk(&log_path, Duration::from_secs(args.timeout_secs), &mut qemu)
     } else {
-        match args.guest_os.as_str() {
-            "ubuntu" => {
-                println!(
-                    "[xtask:test] Waiting for Ubuntu login prompt via CC-PD API ({})...",
-                    cc_sock.display()
-                );
-                wait_for_guest_console_login_via_cc(
-                    &cc_sock,
-                    0,
-                    if ubuntu_live { "ubuntu-live" } else { "ubuntu" },
-                    Duration::from_secs(args.timeout_secs),
-                    &mut qemu,
-                )
-            }
-            "freebsd" => {
-                println!(
-                    "[xtask:test] Waiting for FreeBSD login prompt via CC-PD API ({})...",
-                    cc_sock.display()
-                );
-                wait_for_guest_console_login_via_cc(
-                    &cc_sock,
-                    0,
-                    "freebsd",
-                    Duration::from_secs(args.timeout_secs),
-                    &mut qemu,
-                )
-            }
-            "both" => {
-                println!(
-                    "[xtask:test] Creating FreeBSD and Linux through CC-PD/vm_manager ({})...",
-                    cc_sock.display()
-                );
-                wait_for_dual_guest_consoles_via_cc(
-                    &cc_sock,
-                    Duration::from_secs(args.timeout_secs),
-                    &mut qemu,
-                    ssh_key.as_ref().context("dual SSH key was not generated")?,
-                    args.keep_running,
-                )
-            }
-            _ => {
-                /* Success markers: any match is a pass.
-                 * "agentOS boot complete" = root task + all PDs launched.
-                 * "[rt] boot complete"    = x86 root-task smoke boot; service PD
-                 *                           runtime health is tracked separately.
-                 * "buildroot login:"      = Linux guest reached login prompt (buildroot). */
-                if args.board == "x86_64_generic" {
-                    wait_for_x86_reduced_smoke(&log_path, Duration::from_secs(args.timeout_secs))
-                } else {
-                    wait_for_markers(
-                        &log_path,
-                        &["agentOS boot complete", "buildroot login:"],
-                        Duration::from_secs(args.timeout_secs),
-                    )
-                }
-            }
+        if args.guest_os == "both" {
+            println!(
+                "[xtask:test] Creating both configured profiles through CC-PD/vm_manager ({})...",
+                cc_sock.display()
+            );
+            wait_for_dual_guest_consoles_via_cc(
+                &cc_sock,
+                Duration::from_secs(args.timeout_secs),
+                &mut qemu,
+                ssh_key.as_ref().context("dual SSH key was not generated")?,
+                args.keep_running,
+            )
+        } else if profile_plan
+            .as_ref()
+            .is_some_and(|profile| !profile_console_markers(profile).is_empty())
+        {
+            let profile = profile_plan.as_ref().unwrap();
+            println!(
+                "[xtask:test] Waiting for profile {} console evidence via CC-PD API ({})...",
+                profile.id,
+                cc_sock.display()
+            );
+            wait_for_guest_console_login_via_cc(
+                &cc_sock,
+                0,
+                args.guest_os.as_str(),
+                Some(profile),
+                Duration::from_secs(args.timeout_secs),
+                &mut qemu,
+            )
+        } else if args.board == "x86_64_generic" {
+            wait_for_x86_reduced_smoke(&log_path, Duration::from_secs(args.timeout_secs))
+        } else {
+            wait_for_markers(
+                &log_path,
+                &["agentOS boot complete", "buildroot login:"],
+                Duration::from_secs(args.timeout_secs),
+            )
         }
     };
 
@@ -299,62 +432,33 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
         }
     }
 
-    if result.is_ok()
-        && (args.assert_emulated_console
-            || args.assert_agentos_virtio
-            || args.assert_ubuntu_live
-            || args.assert_desktop)
-    {
-        let mut required = vec![
-            "emulated virtio-console: guest probed",
-            "emulated virtio-console: guest DRIVER_OK",
-            "emulated virtio-console: pumped ",
-            "emulated virtio-console: pumped input serial_virt->guest",
-        ];
-        if args.assert_agentos_virtio || args.assert_ubuntu_live || args.assert_desktop {
-            required.extend_from_slice(&[
-                "emulated virtio-net: guest probed",
-                "emulated virtio-net: guest DRIVER_OK",
-                "emulated virtio-net: backend TX accepted by net_pd",
-                "emulated virtio-net: backend RX delivered from net_pd",
-                "emulated virtio-net: pumped ",
-                "via host-backed net_pd",
-                "[net_pd] HOST_READY: virtio-net bus.16",
-                "[net_pd] HOST_TX: QEMU bus.16 completion observed",
-                "emulated virtio-blk: guest probed",
-                "emulated virtio-blk: guest DRIVER_OK",
-                "emulated virtio-blk: pumped",
-                "emulated virtio-blk: agentOS host media 0 ready",
-                "emulated virtio-blk: host-media read",
-            ]);
+    if result.is_ok() {
+        if let Some(assertion) = &virtio_assertion {
+            let required = virtio_markers(assertion);
+            let proof =
+                wait_for_all_markers(&log_path, &required, Duration::from_secs(10), &mut qemu);
+            let forbidden_loopback = assertion.host_backed
+                && assertion.devices.iter().any(|device| device == "net")
+                && std::fs::read_to_string(&log_path)
+                    .map(|log| log.contains("frame(s) TX->RX"))
+                    .unwrap_or(false);
+            result = match (result, proof) {
+                (Ok(_), Ok(_)) if forbidden_loopback => anyhow::bail!(
+                    "host-backed network proof used the forbidden VMM-local TX->RX loopback"
+                ),
+                (Ok(evidence), Ok(_)) => Ok(format!(
+                    "{evidence}; profile VirtIO {:?} scope={} satisfied",
+                    assertion.devices,
+                    if assertion.host_backed {
+                        "host-backed"
+                    } else {
+                        "emulated"
+                    }
+                )),
+                (_, Err(err)) => Err(err.context("profile VirtIO proof was incomplete")),
+                (Err(err), _) => Err(err),
+            };
         }
-        let console =
-            wait_for_all_markers(&log_path, &required, Duration::from_secs(10), &mut qemu);
-        let network_proof_required =
-            args.assert_agentos_virtio || args.assert_ubuntu_live || args.assert_desktop;
-        let no_loopback = !network_proof_required
-            || std::fs::read_to_string(&log_path)
-                .map(|log| !log.contains("frame(s) TX->RX"))
-                .unwrap_or(false);
-        result = match (result, console) {
-            (Ok(_), Ok(_)) if !no_loopback => {
-                anyhow::bail!("Ubuntu network proof used the forbidden VMM-local TX->RX loopback")
-            }
-            (Ok(login), Ok(_)) if args.assert_ubuntu_live || args.assert_desktop => Ok(format!(
-                "{login}; full Ubuntu Casper userspace uses agentOS virtio net + blk + console"
-            )),
-            (Ok(login), Ok(_)) if args.assert_agentos_virtio => Ok(format!(
-                "{login}; agentOS virtio net + blk + console probed, DRIVER_OK, and pumped real I/O"
-            )),
-            (Ok(login), Ok(_)) => Ok(format!(
-                "{login}; emulated virtio-console probed + DRIVER_OK + bidirectional I/O"
-            )),
-            (_, Err(err)) => {
-                Err(err
-                    .context("Ubuntu login succeeded but host-backed virtio proof was incomplete"))
-            }
-            (Err(err), _) => Err(err),
-        };
     }
 
     if result.is_ok() {
@@ -465,14 +569,18 @@ fn manual_ssh_commands(private_key: &Path) -> [String; 2] {
     ]
 }
 
-fn effective_ssh_port(args: &TestArgs) -> u16 {
-    if (args.guest_os == "ubuntu" || args.guest_os == "both") && args.ssh_port == 0 {
-        UBUNTU_DEFAULT_SSH_PORT
-    } else if args.guest_os == "freebsd" && args.ssh_port == 0 {
-        FREEBSD_DEFAULT_SSH_PORT
-    } else {
-        args.ssh_port
+fn effective_ssh_port(args: &TestArgs, profile: Option<&HostProfilePlan>) -> u16 {
+    if args.ssh_port != 0 {
+        return args.ssh_port;
     }
+    if args.guest_os == "both" {
+        return UBUNTU_DEFAULT_SSH_PORT;
+    }
+    profile
+        .and_then(|value| value.qemu.as_ref())
+        .and_then(|qemu| qemu.ssh.as_ref())
+        .map(|ssh| ssh.host_port)
+        .unwrap_or(0)
 }
 
 struct SshTestKey {
@@ -591,18 +699,19 @@ pub(crate) fn sel4_sdk_path() -> anyhow::Result<PathBuf> {
     Ok(PathBuf::from(home).join(".cache/agentos/microkit-sdk-2.1.0"))
 }
 
-pub fn spawn_qemu_with_guest(
+pub(crate) fn spawn_qemu_with_guest(
     board: &str,
     repo_root: &Path,
     log_path: &Path,
     cc_sock: &Path,
     guest_os: &str,
+    profile: Option<&HostProfilePlan>,
     ssh_port: u16,
     ubuntu_live: bool,
     capture_net: bool,
 ) -> anyhow::Result<std::process::Child> {
     let log_file = std::fs::File::create(log_path).context("failed to create QEMU log file")?;
-    let netdev = qemu_netdev_arg(ssh_port, guest_os)?;
+    let netdev = qemu_netdev_arg(ssh_port, guest_os, profile)?;
 
     let build_image = repo_root.join("build").join(board).join("agentos.img");
 
@@ -611,16 +720,32 @@ pub fn spawn_qemu_with_guest(
             let build_dir = repo_root.join("build").join(board);
             let loader = build_dir.join("loader.elf");
             let _ = std::fs::remove_file(&cc_sock);
-            let machine = if guest_os == "freebsd" || guest_os == "both" {
-                "virt,virtualization=on,highmem=off,secure=off,acpi=off"
-            } else {
-                "virt,virtualization=on,highmem=off,secure=off"
-            };
-            let memory = if guest_os == "both" || ubuntu_live {
-                "3G"
-            } else {
-                "2G"
-            };
+            let qemu_plan = profile.and_then(|value| value.qemu.as_ref());
+            if let Some(plan) = qemu_plan {
+                anyhow::ensure!(
+                    plan.board == board,
+                    "profile {} requires board {}, not {}",
+                    profile.unwrap().id,
+                    plan.board,
+                    board
+                );
+            }
+            let machine = qemu_plan
+                .map(|plan| plan.machine.as_str())
+                .unwrap_or_else(|| {
+                    if guest_os == "both" {
+                        "virt,virtualization=on,highmem=off,secure=off,acpi=off"
+                    } else {
+                        "virt,virtualization=on,highmem=off,secure=off"
+                    }
+                });
+            let memory = qemu_plan.map(|plan| plan.memory.as_str()).unwrap_or(
+                if guest_os == "both" || ubuntu_live {
+                    "3G"
+                } else {
+                    "2G"
+                },
+            );
             let sel4_profile =
                 std::env::var("SEL4_PROFILE").unwrap_or_else(|_| String::from("release"));
             let smp = if sel4_profile.starts_with("smp-") || sel4_profile == "smp" {
@@ -671,7 +796,7 @@ pub fn spawn_qemu_with_guest(
                 "-netdev",
                 &netdev,
             ]);
-            if guest_os == "ubuntu" || guest_os == "both" {
+            if guest_os == "both" {
                 /*
                  * Ubuntu media is host hardware on bus.8, owned only by the
                  * agentOS virtio_blk PD. The guest DTB advertises only the
@@ -694,7 +819,7 @@ pub fn spawn_qemu_with_guest(
                     ]);
                 }
             }
-            if guest_os == "freebsd" || guest_os == "both" {
+            if guest_os == "both" {
                 let freebsd_img = freebsd_disk_image(repo_root);
                 if freebsd_img.exists() {
                     println!(
@@ -715,6 +840,42 @@ pub fn spawn_qemu_with_guest(
                             freebsd_img.to_str().unwrap()
                         ),
                     ]);
+                }
+            }
+            if guest_os != "both" {
+                if let Some(plan) = qemu_plan {
+                    for media in &plan.media {
+                        let mut media_path = repo_root.join(&media.path);
+                        for env_name in &media.override_env {
+                            if let Some(value) = std::env::var_os(env_name) {
+                                let candidate = PathBuf::from(value);
+                                if candidate.exists() {
+                                    media_path = candidate;
+                                    break;
+                                }
+                            }
+                        }
+                        if media_path.exists() {
+                            println!(
+                                "[xtask:test] profile {} host block media: {}",
+                                profile.unwrap().id,
+                                media_path.display()
+                            );
+                            c.args([
+                                "-device",
+                                &format!(
+                                    "virtio-blk-device,drive={},bus=virtio-mmio-bus.{}",
+                                    media.drive_id, media.bus
+                                ),
+                                "-drive",
+                                &format!(
+                                    "file={},format=raw,id={},if=none,readonly=on,file.locking=off",
+                                    media_path.display(),
+                                    media.drive_id
+                                ),
+                            ]);
+                        }
+                    }
                 }
             }
             c
@@ -839,7 +1000,11 @@ fn freebsd_disk_image(repo_root: &Path) -> std::path::PathBuf {
     repo_root.join("build/guest-images/freebsd-15.0-aarch64.iso")
 }
 
-fn qemu_netdev_arg(ssh_port: u16, guest_os: &str) -> anyhow::Result<String> {
+fn qemu_netdev_arg(
+    ssh_port: u16,
+    guest_os: &str,
+    profile: Option<&HostProfilePlan>,
+) -> anyhow::Result<String> {
     if ssh_port == 0 {
         return Ok("user,id=net0".to_string());
     }
@@ -852,9 +1017,23 @@ fn qemu_netdev_arg(ssh_port: u16, guest_os: &str) -> anyhow::Result<String> {
         ensure_host_port_available(FREEBSD_DEFAULT_SSH_PORT)?;
         return Ok(dual_qemu_netdev_arg(ssh_port));
     }
+    let guest = profile
+        .and_then(|value| value.qemu.as_ref())
+        .and_then(|qemu| qemu.ssh.as_ref())
+        .and_then(|ssh| ssh.guest_address.as_deref())
+        .map(|address| format!("{address}:22"))
+        .unwrap_or_else(|| String::from(":22"));
+    if let Some(ssh) = profile
+        .and_then(|value| value.qemu.as_ref())
+        .and_then(|qemu| qemu.ssh.as_ref())
+    {
+        println!(
+            "[xtask:test] profile SSH forward: {}@127.0.0.1:{} -> {}",
+            ssh.account, ssh_port, guest
+        );
+    }
     Ok(format!(
-        "user,id=net0,hostfwd=tcp:127.0.0.1:{}-:22",
-        ssh_port
+        "user,id=net0,hostfwd=tcp:127.0.0.1:{ssh_port}-{guest}"
     ))
 }
 
@@ -1255,11 +1434,20 @@ fn wait_for_guest_console_login_via_cc(
     cc_sock: &Path,
     guest_handle: u32,
     guest_os: &str,
+    profile: Option<&HostProfilePlan>,
     timeout: Duration,
     qemu: &mut Child,
 ) -> anyhow::Result<String> {
     let mut cc = connect_cc_client(cc_sock, timeout.min(Duration::from_secs(30)), qemu)?;
-    wait_for_guest_console_login_on_cc(cc_sock, &mut cc, guest_handle, guest_os, timeout, qemu)
+    wait_for_guest_console_login_on_cc(
+        cc_sock,
+        &mut cc,
+        guest_handle,
+        guest_os,
+        profile,
+        timeout,
+        qemu,
+    )
 }
 
 fn wait_for_guest_console_login_on_cc(
@@ -1267,13 +1455,17 @@ fn wait_for_guest_console_login_on_cc(
     cc: &mut CcClient,
     guest_handle: u32,
     guest_os: &str,
+    profile: Option<&HostProfilePlan>,
     timeout: Duration,
     qemu: &mut Child,
 ) -> anyhow::Result<String> {
     let start = Instant::now();
     let mut transcript = String::new();
     let mut matched_prompt = None;
-    let prompt_markers = guest_prompt_markers(guest_os);
+    let prompt_markers = profile
+        .map(profile_console_markers)
+        .filter(|markers| !markers.is_empty())
+        .unwrap_or_else(|| vec![String::from("login:")]);
     let mut freebsd_console_type_accepted = false;
     let mut freebsd_installer_shell_requested = false;
     let mut freebsd_rescue_shell_requested = false;
@@ -1330,12 +1522,12 @@ fn wait_for_guest_console_login_on_cc(
 
                     let matched = if let Some(marker) = prompt_markers
                         .iter()
-                        .find(|marker| transcript.contains(**marker))
+                        .find(|marker| transcript.contains(marker.as_str()))
                     {
                         if guest_os == "ubuntu-live" && !transcript.contains("Ubuntu 26.04") {
                             None
                         } else {
-                            Some((*marker).to_string())
+                            Some((*marker).clone())
                         }
                     } else if guest_os == "freebsd"
                         && (freebsd_installer_shell_requested || freebsd_rescue_shell_requested)
@@ -1405,13 +1597,13 @@ fn wait_for_guest_console_login_on_cc(
     ))
 }
 
-fn guest_prompt_markers(guest_os: &str) -> &'static [&'static str] {
-    match guest_os {
-        "ubuntu" => &["agentos-linux login:", "ubuntu login:", "login:"],
-        "ubuntu-live" => &["ubuntu login:", "login:"],
-        "freebsd" => &["login:"],
-        _ => &["login:"],
-    }
+fn profile_console_markers(profile: &HostProfilePlan) -> Vec<String> {
+    profile
+        .test
+        .iter()
+        .filter(|step| matches!(step.action.as_str(), "wait-console" | "assert-console"))
+        .filter_map(|step| step.args.get("marker").cloned())
+        .collect()
 }
 
 fn reject_bad_guest_path(guest_os: &str, transcript: &str) -> anyhow::Result<()> {
@@ -2254,6 +2446,7 @@ fn wait_for_dual_guest_consoles_via_cc(
         &mut boot_cc,
         freebsd_handle,
         "freebsd",
+        None,
         timeout.saturating_sub(start.elapsed()),
         qemu,
     )?;
@@ -2302,6 +2495,7 @@ fn wait_for_dual_guest_consoles_via_cc(
         &mut boot_cc,
         linux_handle,
         "ubuntu-live",
+        None,
         timeout.saturating_sub(start.elapsed()),
         qemu,
     )?;

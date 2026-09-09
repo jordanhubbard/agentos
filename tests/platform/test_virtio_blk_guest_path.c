@@ -217,15 +217,17 @@ int main(void)
                  src_contains("kernel/agentos-root-task/include/virtio_blk.h",
                               "VIRTIO_BLK_QUEUE_SIZE           8u"),
                  "host driver uses explicit DMA PA and valid modern queue");
-    (void)tap_ok(src_contains("xtask/src/cmd_test.rs",
-                              "virtio-mmio-bus.8") &&
+    (void)tap_ok(src_contains("guest-profiles/ubuntu-e2e.toml",
+                              "bus = 8") &&
+                 src_contains("guest-profiles/ubuntu-e2e.toml",
+                              "drive_id = \"primary_media\"") &&
                  src_contains("xtask/src/cmd_test.rs",
-                              "drive=agentos_hd"),
-                 "Ubuntu QEMU launch attaches ISO only as agentOS host hardware");
+                              "for media in &plan.media"),
+                 "profile QEMU plan attaches primary media only as agentOS host hardware");
     (void)tap_ok(src_contains("Makefile",
                               "$(_UBUNTU_HOST_BLK) $(_FREEBSD_HOST_BLK)") &&
                  src_contains("xtask/src/cmd_test.rs",
-                              "guest_os == \"ubuntu\" || guest_os == \"both\"") &&
+                              "if guest_os == \"both\"") &&
                  !src_contains("xtask/src/cmd_test.rs",
                                "else if guest_os == \"both\" && ubuntu_img.exists()"),
                  "dual-image Ubuntu also uses agentOS bus.8, never guest bus.1");

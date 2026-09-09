@@ -1,6 +1,7 @@
 schema = 2
 id = "freebsd-15-aarch64"
 status = "runtime"
+aliases = ["freebsd"]
 
 [target]
 architecture = "aarch64"
@@ -46,6 +47,21 @@ kernel_load_address = 0x40000000
 kernel_entry_address = 0x40000000
 dtb_load_address = 0x4f000000
 dtb_sha256 = "0566bb2475eb421dc967d504eeff24be921c73853bdfad5d1cc1ae2ea4b90d2f"
+
+[host.qemu]
+board = "qemu_virt_aarch64"
+machine = "virt,virtualization=on,highmem=off,secure=off,acpi=off"
+memory = "2G"
+
+[[host.qemu.media]]
+path = "build/guest-images/freebsd-15.0-aarch64.iso"
+drive_id = "secondary_media"
+bus = 31
+override_env = ["AGENTOS_FREEBSD_IMAGE", "FREEBSD_IMAGE"]
+
+[host.qemu.ssh]
+account = "root"
+host_port = 12223
 
 [[host.acquire]]
 action = "stage-url"

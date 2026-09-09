@@ -54,6 +54,8 @@ struct Profile {
     schema: Option<u16>,
     id: Option<String>,
     status: Option<Status>,
+    #[serde(default)]
+    aliases: Vec<String>,
     target: Option<Target>,
     boot: Option<Boot>,
     #[serde(default)]
@@ -113,6 +115,7 @@ struct Placement {
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Host {
+    qemu: Option<Qemu>,
     #[serde(default)]
     acquire: Vec<RecipeStep>,
     #[serde(default)]
@@ -123,10 +126,77 @@ struct Host {
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
+struct Qemu {
+    board: String,
+    machine: String,
+    memory: String,
+    #[serde(default)]
+    media: Vec<QemuMedia>,
+    ssh: Option<QemuSsh>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct QemuMedia {
+    path: String,
+    drive_id: String,
+    bus: u8,
+    #[serde(default)]
+    override_env: Vec<String>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct QemuSsh {
+    account: String,
+    host_port: u16,
+    guest_address: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct RecipeStep {
     pub(crate) action: String,
     #[serde(default)]
     pub(crate) args: BTreeMap<String, String>,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct HostProfilePlan {
+    pub(crate) path: PathBuf,
+    pub(crate) id: String,
+    pub(crate) architecture: String,
+    pub(crate) control_type: u32,
+    pub(crate) guest_id: u32,
+    pub(crate) devices: Vec<String>,
+    pub(crate) media_initrd_path: Option<String>,
+    pub(crate) qemu: Option<QemuPlan>,
+    pub(crate) provision: Vec<RecipeStep>,
+    pub(crate) test: Vec<RecipeStep>,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct QemuPlan {
+    pub(crate) board: String,
+    pub(crate) machine: String,
+    pub(crate) memory: String,
+    pub(crate) media: Vec<QemuMediaPlan>,
+    pub(crate) ssh: Option<QemuSshPlan>,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct QemuMediaPlan {
+    pub(crate) path: String,
+    pub(crate) drive_id: String,
+    pub(crate) bus: u8,
+    pub(crate) override_env: Vec<String>,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct QemuSshPlan {
+    pub(crate) account: String,
+    pub(crate) host_port: u16,
+    pub(crate) guest_address: Option<String>,
 }
 
 const HOST_ACTIONS: &[&str] = &[
@@ -177,6 +247,86 @@ pub(crate) fn acquire_recipe(root: &Path, path: &Path) -> Result<(String, Vec<Re
     Ok((id, steps))
 }
 
+pub(crate) fn resolve_alias(root: &Path, alias: &str) -> Result<PathBuf> {
+    ensure!(
+        valid_alias(alias),
+        "guest profile alias must be 1..63 lowercase ASCII letters, digits, or hyphens"
+    );
+    let mut matched = None;
+    for path in profile_files(root)? {
+        let (profile, _) = resolve(root, &path, &mut Vec::new())?;
+        if profile.aliases.iter().any(|candidate| candidate == alias) {
+            ensure!(
+                matched.is_none(),
+                "guest profile alias {alias:?} is ambiguous"
+            );
+            matched = Some(path);
+        }
+    }
+    matched.with_context(|| format!("unknown guest profile alias {alias:?}"))
+}
+
+pub(crate) fn host_profile_plan(root: &Path, path: &Path) -> Result<HostProfilePlan> {
+    let (profile, _) = resolve(root, path, &mut Vec::new())?;
+    validate(&profile, None)?;
+    ensure!(
+        profile.status == Some(Status::Runtime),
+        "only status=runtime profiles can be executed by host tooling"
+    );
+    let target = profile
+        .target
+        .as_ref()
+        .context("target table is required")?;
+    let host = profile.host.as_ref();
+    let qemu = host
+        .and_then(|value| value.qemu.as_ref())
+        .map(|value| QemuPlan {
+            board: value.board.clone(),
+            machine: value.machine.clone(),
+            memory: value.memory.clone(),
+            media: value
+                .media
+                .iter()
+                .map(|media| QemuMediaPlan {
+                    path: media.path.clone(),
+                    drive_id: media.drive_id.clone(),
+                    bus: media.bus,
+                    override_env: media.override_env.clone(),
+                })
+                .collect(),
+            ssh: value.ssh.as_ref().map(|ssh| QemuSshPlan {
+                account: ssh.account.clone(),
+                host_port: ssh.host_port,
+                guest_address: ssh.guest_address.clone(),
+            }),
+        });
+    Ok(HostProfilePlan {
+        path: path.to_path_buf(),
+        id: profile.id.clone().context("id is required")?,
+        architecture: target
+            .architecture
+            .clone()
+            .context("target.architecture is required")?,
+        control_type: target
+            .control_type
+            .context("target.control_type is required")?,
+        guest_id: target.guest_id.context("target.guest_id is required")?,
+        devices: target
+            .devices
+            .clone()
+            .context("target.devices is required")?,
+        media_initrd_path: profile
+            .boot
+            .as_ref()
+            .and_then(|boot| boot.media_initrd_path.clone()),
+        qemu,
+        provision: host
+            .map(|value| value.provision.clone())
+            .unwrap_or_default(),
+        test: host.map(|value| value.test.clone()).unwrap_or_default(),
+    })
+}
+
 pub fn run(args: &GuestProfileArgs) -> Result<()> {
     ensure!(
         args.root.is_dir(),
@@ -199,10 +349,17 @@ pub fn run(args: &GuestProfileArgs) -> Result<()> {
             "no TOML profiles under {}",
             args.root.display()
         );
+        let mut aliases = BTreeMap::new();
         for path in &files {
             let (profile, _) = resolve(&args.root, path, &mut Vec::new())?;
             validate(&profile, None)
                 .with_context(|| format!("invalid profile {}", path.display()))?;
+            for alias in &profile.aliases {
+                ensure!(
+                    aliases.insert(alias.clone(), path.clone()).is_none(),
+                    "duplicate guest profile alias {alias:?}"
+                );
+            }
         }
         println!("[guest-profile] validated {} profiles", files.len());
         return Ok(());
@@ -360,6 +517,14 @@ fn merge(base: &mut toml::Value, overlay: toml::Value) {
     }
 }
 
+fn valid_alias(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 63
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+}
+
 fn validate(profile: &Profile, placement: Option<&str>) -> Result<()> {
     ensure!(profile.schema == Some(VERSION), "schema must be {VERSION}");
     let id = required(&profile.id, "id")?;
@@ -367,6 +532,14 @@ fn validate(profile: &Profile, placement: Option<&str>) -> Result<()> {
         !id.is_empty() && id.len() <= 63 && id.is_ascii(),
         "id must be 1..63 ASCII bytes"
     );
+    let mut aliases = BTreeSet::new();
+    for alias in &profile.aliases {
+        ensure!(valid_alias(alias), "invalid guest profile alias {alias:?}");
+        ensure!(
+            aliases.insert(alias),
+            "duplicate guest profile alias {alias:?}"
+        );
+    }
     let status = profile.status.context("status is required")?;
     validate_host(profile.host.as_ref())?;
     if status == Status::Abstract {
@@ -599,6 +772,9 @@ fn validate_placement(name: &str, p: &Placement) -> Result<()> {
 
 fn validate_host(host: Option<&Host>) -> Result<()> {
     let Some(host) = host else { return Ok(()) };
+    if let Some(qemu) = &host.qemu {
+        validate_qemu(qemu)?;
+    }
     for (recipe_name, recipe) in [
         ("acquire", &host.acquire),
         ("provision", &host.provision),
@@ -627,6 +803,91 @@ fn validate_host(host: Option<&Host>) -> Result<()> {
     Ok(())
 }
 
+fn validate_qemu(qemu: &Qemu) -> Result<()> {
+    enum_value(
+        &qemu.board,
+        &["qemu_virt_aarch64", "qemu_virt_riscv64", "x86_64_generic"],
+    )?;
+    ensure!(
+        !qemu.machine.is_empty()
+            && qemu.machine.len() <= 127
+            && qemu
+                .machine
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || b",=._-".contains(&byte)),
+        "host.qemu.machine contains unsupported characters"
+    );
+    ensure!(
+        qemu.memory.len() >= 2
+            && qemu.memory.len() <= 8
+            && matches!(qemu.memory.as_bytes().last(), Some(b'M' | b'G'))
+            && qemu.memory[..qemu.memory.len() - 1]
+                .parse::<u32>()
+                .is_ok_and(|value| value > 0),
+        "host.qemu.memory must be a positive MiB/GiB quantity"
+    );
+    ensure!(qemu.media.len() <= 8, "host.qemu.media exceeds 8 entries");
+    let mut buses = BTreeSet::new();
+    let mut drive_ids = BTreeSet::new();
+    for media in &qemu.media {
+        let path = Path::new(&media.path);
+        ensure!(
+            !path.is_absolute()
+                && path
+                    .components()
+                    .all(|part| matches!(part, Component::Normal(_))),
+            "host.qemu.media path must remain beneath the repository root"
+        );
+        ensure!(
+            valid_identifier(&media.drive_id),
+            "host.qemu.media drive_id is invalid"
+        );
+        ensure!(buses.insert(media.bus), "duplicate host.qemu.media bus");
+        ensure!(
+            drive_ids.insert(&media.drive_id),
+            "duplicate host.qemu.media drive_id"
+        );
+        ensure!(
+            media.override_env.len() <= 8
+                && media.override_env.iter().all(|value| valid_env_name(value)),
+            "host.qemu.media override_env contains an invalid name"
+        );
+    }
+    if let Some(ssh) = &qemu.ssh {
+        ensure!(
+            valid_identifier(&ssh.account),
+            "host.qemu.ssh account is invalid"
+        );
+        ensure!(
+            ssh.host_port != 0,
+            "host.qemu.ssh host_port must be nonzero"
+        );
+        if let Some(address) = &ssh.guest_address {
+            ensure!(
+                address.parse::<std::net::Ipv4Addr>().is_ok(),
+                "host.qemu.ssh guest_address must be IPv4"
+            );
+        }
+    }
+    Ok(())
+}
+
+fn valid_identifier(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 63
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-')
+}
+
+fn valid_env_name(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 63
+        && value.bytes().enumerate().all(|(index, byte)| {
+            byte == b'_' || byte.is_ascii_uppercase() || (index > 0 && byte.is_ascii_digit())
+        })
+}
+
 fn validate_host_action(step: &RecipeStep) -> Result<()> {
     let (required_args, optional_args): (&[&str], &[&str]) = match step.action.as_str() {
         "stage-url" => (&["cache_name", "output", "url"], &["override_env"]),
@@ -644,7 +905,7 @@ fn validate_host_action(step: &RecipeStep) -> Result<()> {
         "send-console" => (&["text"], &[]),
         "wait-ssh" => (&["account"], &[]),
         "run-ssh" => (&["recipe"], &[]),
-        "assert-virtio" => (&["devices"], &[]),
+        "assert-virtio" => (&["devices"], &["scope", "console_io"]),
         _ => return Ok(()),
     };
     for key in required_args {
@@ -672,6 +933,20 @@ fn validate_host_action(step: &RecipeStep) -> Result<()> {
             value.parse::<u64>().is_ok_and(|number| number > 0),
             "min_bytes must be a positive integer"
         );
+    }
+    if step.action == "assert-virtio" {
+        for device in step.args["devices"].split(',') {
+            enum_value(
+                device,
+                &["net", "block", "console", "gpu", "input", "sound"],
+            )?;
+        }
+        if let Some(scope) = step.args.get("scope") {
+            enum_value(scope, &["emulated", "host-backed"])?;
+        }
+        if let Some(console_io) = step.args.get("console_io") {
+            enum_value(console_io, &["activity", "bidirectional"])?;
+        }
     }
     Ok(())
 }
@@ -902,6 +1177,7 @@ mod tests {
             id: Some("bounded".to_string()),
             status: Some(Status::Abstract),
             host: Some(Host {
+                qemu: None,
                 acquire: steps,
                 provision: Vec::new(),
                 test: Vec::new(),
@@ -937,5 +1213,25 @@ mod tests {
             "http://example.invalid/guest.iso".to_string(),
         );
         assert!(validate_host_action(&insecure).is_err());
+    }
+
+    #[test]
+    fn aliases_resolve_to_bounded_host_plans() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../guest-profiles");
+        let path = resolve_alias(&root, "ubuntu-live").unwrap();
+        assert_eq!(path, PathBuf::from("ubuntu-live.toml"));
+        let plan = host_profile_plan(&root, &path).unwrap();
+        assert_eq!(plan.id, "ubuntu-live-aarch64");
+        assert_eq!(plan.qemu.as_ref().unwrap().memory, "3G");
+        assert_eq!(plan.qemu.as_ref().unwrap().media[0].bus, 8);
+        assert!(plan.test.iter().any(|step| step.action == "assert-virtio"
+            && step.args.get("scope").map(String::as_str) == Some("host-backed")));
+    }
+
+    #[test]
+    fn planned_profiles_cannot_execute_on_the_host() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../guest-profiles");
+        let path = resolve_alias(&root, "omarchy").unwrap();
+        assert!(host_profile_plan(&root, &path).is_err());
     }
 }
