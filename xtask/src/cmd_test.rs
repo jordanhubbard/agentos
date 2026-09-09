@@ -1123,10 +1123,19 @@ pub struct CcReply {
 
 struct CcClient {
     stream: Option<UnixStream>,
+    socket_path: PathBuf,
 }
 
 impl CcClient {
     fn connect(cc_sock: &Path) -> anyhow::Result<Self> {
+        let stream = Self::connect_stream(cc_sock)?;
+        Ok(Self {
+            stream: Some(stream),
+            socket_path: cc_sock.to_path_buf(),
+        })
+    }
+
+    fn connect_stream(cc_sock: &Path) -> anyhow::Result<UnixStream> {
         let stream = UnixStream::connect(cc_sock)
             .with_context(|| format!("failed to connect to {}", cc_sock.display()))?;
         stream
@@ -1135,9 +1144,7 @@ impl CcClient {
         stream
             .set_write_timeout(Some(CC_IO_TIMEOUT))
             .context("failed to set CC socket write timeout")?;
-        Ok(Self {
-            stream: Some(stream),
-        })
+        Ok(stream)
     }
 
     fn is_closed(&self) -> bool {
@@ -1162,9 +1169,31 @@ impl CcClient {
             req[16..16 + copy_len].copy_from_slice(&shmem_in[..copy_len]);
         }
 
+        let first_error = match self.call_frame(&req) {
+            Ok(reply) => return Ok(reply),
+            Err(error) => error,
+        };
+        self.stream.take();
+
+        /*
+         * A CC operation can complete before the socket-backed VirtIO reply
+         * becomes writable.  Dropping the old frontend lets QEMU accept a new
+         * connection; resending the identical frame is safe because CC-PD
+         * records state-changing replies before resetting a stalled TX queue.
+         */
+        let stream = Self::connect_stream(&self.socket_path).with_context(|| {
+            format!("CC reconnect after incomplete reply failed; first error: {first_error:#}")
+        })?;
+        self.stream = Some(stream);
+        self.call_frame(&req).with_context(|| {
+            format!("CC replay after incomplete reply failed; first error: {first_error:#}")
+        })
+    }
+
+    fn call_frame(&mut self, req: &[u8; CC_REQ_SIZE]) -> anyhow::Result<CcReply> {
         let result: anyhow::Result<CcReply> = (|| {
             let stream = self.stream.as_mut().context("CC connection is closed")?;
-            write_cc_frame(stream, &req).context("failed to write CC request")?;
+            write_cc_frame(stream, req).context("failed to write CC request")?;
 
             let mut raw = [0u8; CC_REPLY_SIZE];
             read_cc_frame(stream, &mut raw)?;
@@ -2499,6 +2528,7 @@ fn tail_chars(s: &str, max_chars: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::os::unix::net::UnixListener;
 
     #[test]
     fn text_events_fit_the_narrowest_relay_and_reassemble() {
@@ -2515,6 +2545,41 @@ mod tests {
         }
         assert_eq!(frame_count, 3);
         assert_eq!(output, input);
+    }
+
+    #[test]
+    fn cc_client_replays_identical_frame_after_lost_reply() {
+        let dir = tempfile::tempdir().expect("temporary CC socket directory");
+        let socket = dir.path().join("cc.sock");
+        let listener = UnixListener::bind(&socket).expect("bind CC test socket");
+        let server = std::thread::spawn(move || {
+            let (mut first, _) = listener.accept().expect("accept first CC connection");
+            let mut first_request = [0u8; CC_REQ_SIZE];
+            first
+                .read_exact(&mut first_request)
+                .expect("read first CC request");
+            drop(first);
+
+            let (mut replay, _) = listener.accept().expect("accept replay CC connection");
+            let mut replay_request = [0u8; CC_REQ_SIZE];
+            replay
+                .read_exact(&mut replay_request)
+                .expect("read replayed CC request");
+            assert_eq!(replay_request, first_request);
+
+            let mut reply = [0u8; CC_REPLY_SIZE];
+            wr32(&mut reply, 0, CC_OK);
+            wr32(&mut reply, 4, 0x51a7e);
+            replay.write_all(&reply).expect("write replayed CC reply");
+        });
+
+        let mut client = CcClient::connect(&socket).expect("connect CC test client");
+        let reply = client
+            .call(MSG_CC_SEND_INPUT, 7, 0, 0, b"lost-reply-regression")
+            .expect("replay CC call after lost reply");
+        assert_eq!(reply.mr[0], CC_OK);
+        assert_eq!(reply.mr[1], 0x51a7e);
+        server.join().expect("join CC test server");
     }
 
     #[test]

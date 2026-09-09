@@ -118,7 +118,7 @@ static void cc_dbg_hex(uint64_t v)
 #define VIRTIO_MAGIC      0x74726976u
 #define VIRTIO_ID_CONSOLE 3u
 #define VQ_DEPTH          4u
-#define CC_VIRTIO_WAIT_LIMIT 1000000u
+#define CC_VIRTIO_WAIT_LIMIT 16384u
 #define CC_VIRTIO_RENOTIFY_INTERVAL 4096u
 
 typedef struct { uint64_t addr; uint32_t len; uint16_t flags; uint16_t next; }
@@ -1737,11 +1737,19 @@ void cc_pd_main(seL4_CPtr my_ep, seL4_CPtr ns_ep)
         if (!vio_serial_write(&g_rep, sizeof(g_rep))) {
             /*
              * The operation may already have changed state. Save the exact
-             * request/reply pair before resetting the poisoned TX queue; a
-             * reconnecting host can retry without executing it twice.
+             * request/reply pair before resetting the poisoned TX queue.
+             * First retry the reply on the fresh queue so the still-connected
+             * host does not need to wait for its frame deadline.  Retain the
+             * cache either way: if the socket crossed its deadline at the
+             * same instant, a reconnecting host can repeat the request without
+             * executing it twice.
              */
             cc_retry_cache_record(&g_retry, &g_req, &g_rep);
             virtio_serial_recover_tx();
+            if (!vio_serial_write(&g_rep, sizeof(g_rep))) {
+                cc_dbg_puts("[cc_pd] recovered reply TX remained blocked\n");
+                virtio_serial_recover_tx();
+            }
         }
     }
 }

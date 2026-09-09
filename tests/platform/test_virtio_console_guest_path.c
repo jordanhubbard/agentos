@@ -174,6 +174,15 @@ int main(void)
        contains("kernel/agentos-root-task/src/cc_pd.c",
                 "re-notifying the same queue is idempotent"),
        "socket-backed CC TX periodically re-kicks an outstanding descriptor");
+    ok(contains("kernel/agentos-root-task/src/cc_pd.c",
+                "cc_retry_cache_record(&g_retry, &g_req, &g_rep);") &&
+       contains_after("kernel/agentos-root-task/src/cc_pd.c",
+                      "virtio_serial_recover_tx();",
+                      "vio_serial_write(&g_rep, sizeof(g_rep))") &&
+       contains("xtask/src/cmd_test.rs", "socket_path: PathBuf") &&
+       contains("xtask/src/cmd_test.rs",
+                "CC replay after incomplete reply failed"),
+       "lost CC acknowledgements recover in place and replay after reconnect");
     ok(contains("kernel/agentos-root-task/include/contracts/cc_contract.h",
                 "CC_VIRTIO_STARTUP_VERSION") &&
        contains("kernel/agentos-root-task/src/main.c",
