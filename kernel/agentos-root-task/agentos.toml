@@ -32,7 +32,7 @@ priority = 150
 
 [[pd]]
 name = "vibe_engine"
-priority = 140
+priority = 165
 
 [[pd]]
 name = "log_drain"

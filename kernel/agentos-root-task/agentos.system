@@ -383,7 +383,7 @@
                        mitigated by vibe_engine validation pass + controller manifest check. -->
     <memory_region name="vibe_staging" size="0x400000" />  <!-- 4MB staging -->
 
-    <protection_domain name="vibe_engine" priority="140" passive="true">
+    <protection_domain name="vibe_engine" priority="165" passive="true">
         <program_image path="vibe_engine.elf" />
         <!-- rw: vibe_engine reads staged WASM and writes metadata footer -->
         <map mr="vibe_staging" vaddr="0x4000000" perms="rw" setvar_vaddr="vibe_staging_vaddr" />

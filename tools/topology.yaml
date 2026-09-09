@@ -175,7 +175,7 @@ pds:
 
   # VibeEngine (passive)
   - name: vibe_engine
-    priority: 140
+    priority: 165
     passive: true
     program_image: vibe_engine.elf
 

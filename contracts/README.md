@@ -84,7 +84,7 @@ time_partition   (priority 250) — time budget enforcement
 oom_killer       (priority 245) — memory pressure response
 event_bus        (priority 200) — event routing (also MsgBus)
 snapshot_sched   (priority 180) — periodic WASM checkpoint
-vibe_engine      (priority 140) — hot-swap WASM execution engine
+vibe_engine      (priority 165) — hot-swap WASM execution engine and guest-control relay
 net_server / serial_pd (priority 160) — I/O services
 agentfs          (priority 150) — object store
 mem_profiler     (priority 108) — heap leak detection

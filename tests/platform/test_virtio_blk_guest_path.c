@@ -427,6 +427,22 @@ int main(void)
                  "guest TCB VSpaces use GPA mappings distinct from VMM aliases");
     (void)tap_ok(src_contains_in_order(
                      "kernel/agentos-root-task/src/system_desc_aarch64.c",
+                     ".name           = \"vibe_engine\"",
+                     ".priority       = 165u") &&
+                 src_contains_in_order(
+                     "kernel/agentos-root-task/agentos.toml",
+                     "name = \"vibe_engine\"",
+                     "priority = 165") &&
+                 src_contains("kernel/agentos-root-task/agentos-aarch64.system",
+                              "name=\"vibe_engine\" priority=\"165\"") &&
+                 src_contains("kernel/agentos-root-task/agentos.system",
+                              "name=\"vibe_engine\" priority=\"165\"") &&
+                 src_contains_in_order("tools/topology.yaml",
+                                       "- name: vibe_engine",
+                                       "priority: 165"),
+                 "vibe_engine guest-control relay outranks guest fault senders");
+    (void)tap_ok(src_contains_in_order(
+                     "kernel/agentos-root-task/src/system_desc_aarch64.c",
                      ".name           = \"vm_manager\"",
                      ".priority       = 155u") &&
                  src_contains_in_order(

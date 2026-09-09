@@ -140,8 +140,9 @@ static seL4_Word g_cap_base;  /* set to bi->empty.start in root_task_main */
 #define VMM_SC_PERIOD_US          100000u
 /*
  * Guest fault senders share the VMM endpoint with vm_manager control calls.
- * Keep guests below vm_manager (priority 155) so an always-faulting guest
- * cannot starve CONSOLE_DRAIN, SUSPEND, or DESTROY requests indefinitely.
+ * Keep guests below every active relay hop (vibe_engine 165, vm_manager 155)
+ * so an always-faulting guest cannot starve CONSOLE_DRAIN, SUSPEND, or DESTROY
+ * requests indefinitely.
  */
 #define VMM_GUEST_PRIORITY        150u
 
