@@ -11,5 +11,5 @@ Linux is a virtio client. The payload is a kernel + initrd + FDT.
 
 ## Helper
 
-Use `skills/virtio-device/scripts/guest_dtb.py` for the device list.
+Use the virtio-device skill and `make test-host` for the device-list checks.
 `make fetch-guest GUEST_OS=ubuntu` stages images via the Makefile.

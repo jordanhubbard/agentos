@@ -19,6 +19,5 @@ virtio-mmio, which is a physical device for a driver PD.
 
 ## Helper
 
-```sh
-python3 skills/virtio-device/scripts/guest_dtb.py
-```
+Run `make test-host`; the platform guest-path tests validate the effective
+device-tree inputs and reject host-device passthrough.

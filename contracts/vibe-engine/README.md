@@ -36,7 +36,11 @@ Controller redirects channel back to warm rollback slot
 
 ## Protection Domain
 
-`vibe_engine` is a passive PD (priority 140) defined in `tools/topology.yaml`.
+`vibe_engine` is a passive PD (priority 165) defined in `tools/topology.yaml`.
+The guest-control path is monotonic: guest vCPUs (150), CC-PD (164),
+`vibe_engine` (165), `vm_manager` (170), and the VMM PD (250). This prevents a
+fault-heavy guest or an active device service from starving console and
+lifecycle requests.
 It maps the `vibe_code` MR (4MB) and `vibe_state` MR (64KB).
 
 | Caller | Channel |

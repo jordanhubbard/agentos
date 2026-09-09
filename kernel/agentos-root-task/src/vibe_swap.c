@@ -258,7 +258,6 @@ typedef struct {
 /* ── Module state ───────────────────────────────────────────────────────── */
 static swap_slot_t    slots[MAX_SWAP_SLOTS];
 static service_desc_t services[VS_MAX_SERVICES];
-static int            service_count = 0;
 static uint64_t       swap_sequence = 0;
 
 static sel4_server_t  g_srv;
@@ -326,7 +325,6 @@ void vibe_swap_init(void)
         .active_ep = 0, .primary_ep = 0,
         .version = 1, .has_rollback = false,
     };
-    service_count = 6;
 
     vs_dbg_puts("[vibe_swap] Ready for vibe-coded service proposals\n");
 }

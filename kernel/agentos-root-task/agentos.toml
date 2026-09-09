@@ -32,7 +32,7 @@ priority = 150
 
 [[pd]]
 name = "vibe_engine"
-priority = 140
+priority = 165
 
 [[pd]]
 name = "log_drain"
@@ -112,7 +112,7 @@ priority = 140
 
 [[pd]]
 name = "vm_manager"
-priority = 145
+priority = 170
 
 [[pd]]
 name = "auth_server"
@@ -156,7 +156,7 @@ priority = 165
 
 [[pd]]
 name = "cc_pd"
-priority = 100
+priority = 164
 
 [[pd]]
 name = "gpu_sched"

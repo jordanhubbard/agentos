@@ -33,4 +33,7 @@ void *aos_gpa_to_hva(const aos_guest_ram_t *ram, uint64_t gpa, size_t len);
 void  aos_guest_ram_configure(uint64_t gpa_base, uintptr_t hva_base, size_t size);
 void *aos_gpa_to_hva_configured(uint64_t gpa, size_t len);
 
+/* Configure the window and install it as libvmm's process-wide GPA hook. */
+void aos_vmm_guest_ram_bind(uint64_t gpa_base, uintptr_t hva_base, size_t size);
+
 #endif /* AOS_PLATFORM_GUEST_RAM_H */

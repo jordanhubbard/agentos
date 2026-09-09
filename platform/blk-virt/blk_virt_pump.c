@@ -139,6 +139,16 @@ void aos_blk_virt_set_disk(aos_blk_virt_t *v, uint8_t *disk, uint32_t disk_block
     v->disk_blocks = disk_blocks;
 }
 
+void aos_blk_virt_set_backend(aos_blk_virt_t *v, aos_blk_backend_fn backend,
+                              void *ctx)
+{
+    if (!v) {
+        return;
+    }
+    v->backend = backend;
+    v->backend_ctx = ctx;
+}
+
 static aos_blk_resp_status_t serve_rw(aos_blk_virt_t *v, aos_blk_virt_client_t *c,
                                       const aos_blk_req_t *req, int writing)
 {
@@ -193,6 +203,20 @@ uint32_t aos_blk_virt_pump(aos_blk_virt_t *v)
             resp.id = req.id;
             resp.success_count = 0;
             resp.status = AOS_BLK_RESP_ERR_UNSPEC;
+
+            if (v->backend) {
+                resp.status = v->backend(v->backend_ctx, c, &req);
+                if (resp.status == AOS_BLK_RESP_OK &&
+                    (req.code == AOS_BLK_REQ_READ ||
+                     req.code == AOS_BLK_REQ_WRITE)) {
+                    resp.success_count = req.count;
+                }
+                if (enqueue_resp(c->resp, c->capacity, resp) != 0) {
+                    break;
+                }
+                completed++;
+                continue;
+            }
 
             switch (req.code) {
             case AOS_BLK_REQ_READ:

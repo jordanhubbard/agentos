@@ -1,5 +1,10 @@
 # P0 Guest E2E Gap Tasks
 
+> Historical bring-up record. Status entries below describe the repository at
+> the time each gap was investigated and are not the current operator guide.
+> Use [`demo.md`](demo.md) and the root `make demo` / `make demo-test` targets
+> for the canonical one-QEMU concurrent Ubuntu + FreeBSD SSH path.
+
 This file tracks the gaps found in the P0 guest proof audit. The original
 acceptance target is: multiple different OS environments boot to multi-user,
 accept an incoming SSH session, and use shared generic device PDs for networking,

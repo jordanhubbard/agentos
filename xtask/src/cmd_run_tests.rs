@@ -98,8 +98,8 @@ fn spawn_qemu_test_image(
             c
         }
         "x86_64_generic" => {
-            let kernel =
-                repo_root.join("microkit-sdk-2.1.0/board/x86_64_generic/release/elf/sel4_32.elf");
+            let kernel = crate::cmd_test::sel4_sdk_path()?
+                .join("board/x86_64_generic/release/elf/sel4_32.elf");
             let mut c = std::process::Command::new("qemu-system-x86_64");
             c.arg("-machine")
                 .arg("q35")

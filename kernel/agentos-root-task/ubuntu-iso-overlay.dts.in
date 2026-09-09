@@ -9,35 +9,25 @@
 
     memory@@UBUNTU_RAM_NODE@ {
         device_type = "memory";
-        reg = <@UBUNTU_RAM_BASE@ 0x00 0x20000000>;
+        reg = <@UBUNTU_RAM_BASE@ 0x00 @UBUNTU_RAM_SIZE@>;
     };
 
     flash@0 {
         status = "disabled";
     };
 
-    aliases {
-        serial0 = "/pl011@9000000";
+    /*
+     * Physical PL011 belongs to serial_pd. Suppress both the normal AMBA
+     * driver and address-based earlycon; hvc0 is the sole guest console.
+     */
+    pl011@9000000 {
+        status = "disabled";
     };
 
     chosen {
-        stdout-path = "serial0:115200n8";
         bootargs = "@UBUNTU_BOOTARGS@";
-        linux,stdout-path = "serial0:115200n8";
         linux,initrd-start = <@UBUNTU_INITRD_START@>;
         linux,initrd-end = <@UBUNTU_INITRD_END@>;
-    };
-
-    /*
-     * QEMU virtio-mmio slot 0 (kill-dated crutch). SSH E2E still uses this
-     * until packets are proven through the emulated device below.
-     */
-    virtio_mmio@a000000 {
-        compatible = "virtio,mmio";
-        dma-coherent;
-        reg = <0x00 0xa000000 0x00 0x200>;
-        interrupt-parent = <0x8001>;
-        interrupts = <0x00 0x10 0x01>;
     };
 
     /*
@@ -54,33 +44,24 @@
     };
 
     /*
-     * agentOS emulated virtio-blk — NOT LIVE this pass.
-     * IPA 0xa020000 / SPI 20 → INTID 52. Do not enable this node until
-     * the sDDF RAM/blk_virt backend can replace QEMU virtio-mmio@a000200
-     * (guest root / vda). Probe order would add a second disk or steal vda.
-     *
-     * virtio_mmio@a020000 {
-     *     compatible = "virtio,mmio";
-     *     dma-coherent;
-     *     reg = <0x00 0xa020000 0x00 0x1000>;
-     *     interrupt-parent = <0x8001>;
-     *     interrupts = <0x00 0x14 0x01>;
-     * };
+     * agentOS emulated virtio-console backed by sDDF serial queues.
+     * hvc0 carries the guest console and login.
+     * IRQ: SPI 21 -> INTID 53.
      */
-
-    virtio_mmio@a000200 {
+    virtio_mmio@a030000 {
         compatible = "virtio,mmio";
         dma-coherent;
-        reg = <0x00 0xa000200 0x00 0x200>;
+        reg = <0x00 0xa030000 0x00 0x1000>;
         interrupt-parent = <0x8001>;
-        interrupts = <0x00 0x11 0x01>;
+        interrupts = <0x00 0x15 0x01>;
     };
 
-    virtio_mmio@a000600 {
+    /* agentOS emulated virtio-blk RAM backend. SPI 20 -> INTID 52. */
+    virtio_mmio@a020000 {
         compatible = "virtio,mmio";
         dma-coherent;
-        reg = <0x00 0xa000600 0x00 0x200>;
+        reg = <0x00 0xa020000 0x00 0x1000>;
         interrupt-parent = <0x8001>;
-        interrupts = <0x00 0x13 0x01>;
+        interrupts = <0x00 0x14 0x01>;
     };
 };

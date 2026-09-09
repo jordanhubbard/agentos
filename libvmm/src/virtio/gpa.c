@@ -5,7 +5,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <string.h>
-#include <libvmm/virtio/virtq.h>
+#include <libvmm/virtio/mmio.h>
 #include <libvmm/virtio/gpa.h>
 
 static void *virtio_gpa_identity(uint64_t gpa, size_t len)
@@ -113,4 +113,14 @@ bool virtio_queue_map_guest_rings(struct virtq *virtq)
     virtq->avail = (struct virtq_avail *)avail;
     virtq->used = (struct virtq_used *)used;
     return true;
+}
+
+void virtio_queue_reset_guest_rings(struct virtio_queue_handler *handler)
+{
+    if (handler == NULL) {
+        return;
+    }
+    memset(&handler->virtq, 0, sizeof(handler->virtq));
+    handler->ready = false;
+    handler->last_idx = 0u;
 }

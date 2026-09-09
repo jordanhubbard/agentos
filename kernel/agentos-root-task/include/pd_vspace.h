@@ -99,6 +99,16 @@ seL4_Error pd_vspace_map_region(seL4_CPtr vspace,
                                  int        writable);
 
 /*
+ * Map a region from large-page caps reserved before PD ELF loading. This keeps
+ * guest RAM allocation out of the fragmented late-boot untyped path.
+ */
+seL4_Error pd_vspace_map_reserved_region(seL4_CPtr vspace,
+                                          seL4_Word va_start,
+                                          const seL4_CPtr *frames,
+                                          size_t frame_count,
+                                          int writable);
+
+/*
  * pd_vspace_map_device_frame — map a device MMIO frame into a VSpace.
  *
  * Maps frame_cap (a 4 KB device frame capability in the root task's CNode) at

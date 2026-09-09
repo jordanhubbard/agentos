@@ -88,27 +88,42 @@
 	};
 
 	/*
-	 * VirtIO-MMIO: only slot 31 (the actual virtio-blk-device).
-	 * QEMU assigns -device virtio-blk-device to bus 31 (highest available),
-	 * at 0xa003e00, SPI 47 = INTID 79, edge trigger.
-	 *
-	 * Only the occupied slot is listed, matching QEMU's auto-generated FDT
-	 * which omits empty slots.  VirtioFdtDxe creates one handle here;
-	 * VirtioBlkDxe connects to it.  The full virtio_mmio MR (0xa000000,
-	 * size 0x4000) is still mapped in the .system file.
-	 *
-	 * dma-coherent is required — without it VirtioMmioInstallDevice requires
-	 * gEdkiiIoMmuProtocolGuid (not available) and returns EFI_UNSUPPORTED.
+	 * Per-guest agentOS-emulated VirtIO network endpoint. FreeBSD uses client
+	 * slot 1 and MAC 02:00:00:00:00:02 behind the canonical net-service PD.
 	 */
-	virtio_mmio@a003e00 {
+	virtio_mmio@a010000 {
 		dma-coherent;
-		interrupts = <0x00 0x2f 0x01>;
-		reg = <0x00 0xa003e00 0x00 0x200>;
+		interrupts = <0x00 0x12 0x01>;
+		reg = <0x00 0xa010000 0x00 0x1000>;
+		compatible = "virtio,mmio";
+	};
+
+	/*
+	 * agentOS-emulated VirtIO block endpoint. The IPA is deliberately outside
+	 * QEMU's virtio-mmio transport window and remains unmapped so accesses
+	 * fault to freebsd_vmm. Host media is reachable only through BlockService.
+	 */
+	virtio_mmio@a020000 {
+		dma-coherent;
+		interrupts = <0x00 0x14 0x01>;
+		reg = <0x00 0xa020000 0x00 0x1000>;
+		compatible = "virtio,mmio";
+	};
+
+	/*
+	 * Generic agentOS virtio-console. PL011 remains the boot/recovery console
+	 * until FreeBSD can select this endpoint before its console subsystem starts.
+	 */
+	virtio_mmio@a030000 {
+		dma-coherent;
+		interrupts = <0x00 0x15 0x01>;
+		reg = <0x00 0xa030000 0x00 0x1000>;
 		compatible = "virtio,mmio";
 	};
 
 	chosen {
 		bootargs = "FreeBSD:vfs.root.mountfrom=cd9660:/dev/iso9660/15_0_RELEASE_AARCH64_DVD console=ttyu0 boot_serial=YES";
+		/* PL011 is fault-emulated and retained as the boot/recovery console. */
 		stdout-path = "/pl011@9000000";
 	};
 };

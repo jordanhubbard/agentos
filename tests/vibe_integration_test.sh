@@ -240,10 +240,7 @@ fi
 ESCAPED_SOURCE=$(printf '%s' "${MOCK_C_SOURCE}" | \
     sed 's/\\/\\\\/g' | \
     sed 's/"/\\"/g' | \
-    python3 -c 'import sys; s=sys.stdin.read(); print(s.replace(chr(10),"\\n").replace(chr(9),"\\t"), end="")' 2>/dev/null || \
-    printf '%s' "${MOCK_C_SOURCE}" | \
-    sed 's/\\/\\\\/g; s/"/\\"/g' | \
-    awk '{printf "%s\\n", $0}' | head -c 65536)
+    awk '{gsub(/\t/, "\\t"); printf "%s\\n", $0}')
 
 COMPILE_BODY="{\"source_c\": \"${ESCAPED_SOURCE}\", \"service_id\": \"storage.v1\"}"
 

@@ -13,12 +13,10 @@ You are composing agentOS **on-target topology**, not a Linux distro.
 
 - Adding `oom_killer`, POSIX spawn/vfs, or vibe-swap-as-NIC.
 - Documenting "rings 1–5".
-- Python inside a PD.
+- Python or another forbidden implementation language anywhere in the repository.
 
 ## Helper
 
-```sh
-python3 skills/sel4-platform/scripts/tcb_view.py
-```
-
-Prints HTML of the TCB vs the live `system_desc_aarch64.c` PD list.
+Run `make gate` to validate the generated topology and boot it on both
+supported QEMU architectures. The topology authority remains generated C and
+the documented TCB, with no rendered UI artifact.

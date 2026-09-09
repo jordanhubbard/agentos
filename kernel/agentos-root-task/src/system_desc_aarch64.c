@@ -27,9 +27,9 @@
  *   195  event_bus          — pub/sub backbone; init_agent and controller subscribe
  *   185  vfs_server         — VFS multiplexer; controller and init_agent use it
  *   175  agentfs            — content store; controller and vibe_engine use it
+ *   170  vm_manager         — VM lifecycle; downstream of guest-control relays
  *   165  vibe_engine        — WASM hot-swap engine; called by controller
- *   160  cc_pd              — CC relay; passive, woken by PPC from callers
- *   155  vm_manager         — VM lifecycle; called by controller
+ *   164  cc_pd              — CC relay; above active device-service pollers
  *   110  init_agent         — agent-ecosystem bootstrapper; calls most services
  *    50  controller         — policy coordinator; calls everything above it
  *
@@ -38,6 +38,7 @@
  */
 
 #include "system_desc.h"
+#include <platform/guest_memory_layout.h>
 
 /* agentos-8f5: a target contract-runner PD is appended only in test images. */
 #ifdef AGENTOS_SEL4_TEST_IMAGE
@@ -46,19 +47,19 @@
 #define AOS_TEST_PD_EXTRA 0u
 #endif
 
-/* CC init-ep counts include the agentos-7j5 controller endpoint (+1). */
+/* CC init-ep counts include controller and serial_pd endpoints. */
 #if defined(AGENTOS_FAULT_INJECT) && defined(AGENTOS_GUEST_BOTH)
 #define AOS_AARCH64_PD_COUNT (21u + AOS_TEST_PD_EXTRA)
-#define AOS_CC_INIT_EP_COUNT 7u
+#define AOS_CC_INIT_EP_COUNT 8u
 #elif defined(AGENTOS_FAULT_INJECT)
 #define AOS_AARCH64_PD_COUNT (20u + AOS_TEST_PD_EXTRA)
-#define AOS_CC_INIT_EP_COUNT 7u
+#define AOS_CC_INIT_EP_COUNT 8u
 #elif defined(AGENTOS_GUEST_BOTH)
 #define AOS_AARCH64_PD_COUNT (20u + AOS_TEST_PD_EXTRA)
-#define AOS_CC_INIT_EP_COUNT 6u
+#define AOS_CC_INIT_EP_COUNT 7u
 #else
 #define AOS_AARCH64_PD_COUNT (19u + AOS_TEST_PD_EXTRA)
-#define AOS_CC_INIT_EP_COUNT 6u
+#define AOS_CC_INIT_EP_COUNT 7u
 #endif
 
 #if defined(AGENTOS_GUEST_BOTH)
@@ -101,9 +102,10 @@ const system_desc_t system_desc_aarch64 = {
             .cnode_size_bits = 10u,
             .priority       = 235u,
             .self_svc_id    = SVC_ID_LOG_DRAIN,
-            .init_ep_count  = 1u,
+            .init_ep_count  = 2u,
             .init_eps = {
                 { SVC_ID_NAMESERVER, PD_CNODE_SLOT_NAMESERVER_EP },
+                { SVC_ID_SERIAL,     PD_CNODE_SLOT_SERIAL_EP     },
             },
         },
 
@@ -122,6 +124,15 @@ const system_desc_t system_desc_aarch64 = {
             .init_eps = {
                 { SVC_ID_NAMESERVER, PD_CNODE_SLOT_NAMESERVER_EP },
                 { SVC_ID_LOG_DRAIN,  PD_CNODE_SLOT_LOG_DRAIN_EP  },
+            },
+            .irq_count = 1u,
+            .irqs = {
+                { .irq_number = 33u, .ntfn_badge = 0x1u, .name = "pl011-uart" },
+            },
+            .device_frame_count = 1u,
+            .device_frames = {
+                { .paddr = 0x09000000ULL, .size_bits = 12u,
+                  .cnode_slot = 10u, .name = "pl011-mmio" },
             },
         },
 
@@ -156,11 +167,12 @@ const system_desc_t system_desc_aarch64 = {
              * task mints this EP at PD_CNODE_SLOT_SELF_EP and passes it as the
              * controller's my_ep (arg0), which sel4_server_run() listens on. */
             .self_svc_id    = SVC_ID_CONTROLLER,
-            .init_ep_count  = 3u,
+            .init_ep_count  = 4u,
             .init_eps = {
                 { SVC_ID_NAMESERVER, PD_CNODE_SLOT_NAMESERVER_EP },
                 { SVC_ID_EVENTBUS,   PD_CNODE_SLOT_EVENTBUS_EP   },
                 { SVC_ID_LOG_DRAIN,  PD_CNODE_SLOT_LOG_DRAIN_EP  },
+                { SVC_ID_SERIAL,     PD_CNODE_SLOT_SERIAL_EP     },
             },
         },
 
@@ -175,11 +187,12 @@ const system_desc_t system_desc_aarch64 = {
             .cnode_size_bits = 10u,
             .priority       = 110u,
             .self_svc_id    = SVC_ID_INIT_AGENT,
-            .init_ep_count  = 3u,
+            .init_ep_count  = 4u,
             .init_eps = {
                 { SVC_ID_NAMESERVER, PD_CNODE_SLOT_NAMESERVER_EP },
                 { SVC_ID_EVENTBUS,   PD_CNODE_SLOT_EVENTBUS_EP   },
                 { SVC_ID_LOG_DRAIN,  PD_CNODE_SLOT_LOG_DRAIN_EP  },
+                { SVC_ID_NET_PD,     PD_CNODE_SLOT_NET_PD_EP     },
             },
         },
 
@@ -298,10 +311,35 @@ const system_desc_t system_desc_aarch64 = {
             .cnode_size_bits = 10u,
             .priority       = 207u,
             .self_svc_id    = SVC_ID_NET_PD,
-            .init_ep_count  = 2u,
+            .init_ep_count  = 2u
+#if defined(AGENTOS_GUEST_UBUNTU)
+                              + 1u
+#endif
+#if defined(AGENTOS_GUEST_FREEBSD)
+                              + 1u
+#endif
+                              ,
             .init_eps = {
                 { SVC_ID_NAMESERVER, PD_CNODE_SLOT_NAMESERVER_EP },
                 { SVC_ID_LOG_DRAIN,  PD_CNODE_SLOT_LOG_DRAIN_EP  },
+#if defined(AGENTOS_GUEST_UBUNTU)
+                { SVC_ID_LINUX_VMM,  PD_CNODE_SLOT_LINUX_VMM_EP },
+#endif
+#if defined(AGENTOS_GUEST_FREEBSD)
+                { SVC_ID_FREEBSD_VMM, PD_CNODE_SLOT_FREEBSD_VMM_EP },
+#endif
+            },
+            .irq_count =
+#if defined(AGENTOS_GUEST_UBUNTU) || defined(AGENTOS_GUEST_FREEBSD)
+                              1u,
+#else
+                              0u,
+#endif
+            .irqs = {
+#if defined(AGENTOS_GUEST_UBUNTU) || defined(AGENTOS_GUEST_FREEBSD)
+                { .irq_number = 64u, .ntfn_badge = 0x80000000u,
+                  .name = "host-net-bus16" },
+#endif
             },
         },
 
@@ -335,17 +373,9 @@ const system_desc_t system_desc_aarch64 = {
             },
         },
 
-        /* pd[15] — guest VMM (prio 250; VM-exit latency is latency-critical)
-         *
-         * VM exits must be handled near-immediately to avoid guest stalls.
-         * Runs just below fault_handler (255) and above all services.
-         *
-         * IRQ assignments (QEMU virt AArch64 GIC SPI numbers):
-         *   virtio-net:  SPI 16 → INTID 48 → irq_number=48, badge 0x1
-         *   virtio-blk0: SPI 17 → INTID 49 → irq_number=49, badge 0x2
-         *   virtio-blk1: SPI 19 → INTID 51 → irq_number=51, badge 0x4
-         *                (used by ubuntu guest for cloud-init seed disk on bus.3)
-         */
+        /* pd[15] — guest VMM (prio 250; VM-exit latency is latency-critical).
+         * Host device IRQs belong exclusively to driver PDs. Guest virtio
+         * interrupts are generated by the emulated devices inside the VMM. */
         {
 #if defined(AGENTOS_GUEST_FREEBSD) && !defined(AGENTOS_GUEST_BOTH)
             .name           = "freebsd_vmm",
@@ -354,28 +384,20 @@ const system_desc_t system_desc_aarch64 = {
             .cnode_size_bits = 10u,
             .priority       = 250u,
             .self_svc_id    = SVC_ID_FREEBSD_VMM,
-            .init_ep_count  = 2u,
+            .init_ep_count  = 5u,
             .init_eps = {
                 { SVC_ID_NAMESERVER, PD_CNODE_SLOT_NAMESERVER_EP },
                 { SVC_ID_LOG_DRAIN,  PD_CNODE_SLOT_LOG_DRAIN_EP  },
+                { SVC_ID_VIRTIO_BLK, 12u },
+                { SVC_ID_NET_PD,     PD_CNODE_SLOT_NET_PD_EP },
+                { SVC_ID_SERIAL,     PD_CNODE_SLOT_SERIAL_EP     },
             },
-            .irq_count =
-#if defined(AGENTOS_GUEST_BOTH)
-                1u,
-#else
-                2u,
-#endif
-            .irqs = {
-#if !defined(AGENTOS_GUEST_BOTH)
-                { .irq_number = 48u, .ntfn_badge = 0x1u, .name = "virtio-net" },
-#endif
-                { .irq_number = 79u, .ntfn_badge = 0x2u, .name = "virtio-blk" },
-            },
+            .irq_count = 0u,
+            .irqs = { },
             .mr_count = 1u,
             .memory_regions = {
-                { .vaddr    =
-                              0x40000000ULL,
-                  .size     = 0x20000000u,  /* 512 MB FreeBSD guest RAM */
+                { .vaddr    = AOS_FREEBSD_GUEST_RAM_BASE,
+                  .size     = AOS_FREEBSD_GUEST_RAM_SIZE,
                   .writable = 1u,
                   .name     = "guest_ram" },
             },
@@ -386,33 +408,23 @@ const system_desc_t system_desc_aarch64 = {
             .cnode_size_bits = 10u,  /* 1024 slots — IRQ handler caps + microkit layout */
             .priority       = 250u,
             .self_svc_id    = SVC_ID_LINUX_VMM,
-            .init_ep_count  = 2u,
+            .init_ep_count  = 5u,
             .init_eps = {
                 { SVC_ID_NAMESERVER, PD_CNODE_SLOT_NAMESERVER_EP },
                 { SVC_ID_LOG_DRAIN,  PD_CNODE_SLOT_LOG_DRAIN_EP  },
+                { SVC_ID_VIRTIO_BLK, 12u },
+                { SVC_ID_NET_PD,     PD_CNODE_SLOT_NET_PD_EP },
+                { SVC_ID_SERIAL,     PD_CNODE_SLOT_SERIAL_EP     },
             },
-            .irq_count = 3u,
-            .irqs = {
-                { .irq_number = 48u, .ntfn_badge = 0x1u, .name = "virtio-net"  },
-                { .irq_number = 49u, .ntfn_badge = 0x2u, .name = "virtio-blk0" },
-                { .irq_number = 51u, .ntfn_badge = 0x4u, .name = "virtio-blk1" },
-            },
-            /* guest_ram + private net_virt queues (loopback until shared MR). */
-            .mr_count = 2u,
+            .irq_count = 0u,
+            .irqs = { },
+            /* Net queues are a root-provisioned frame shared only with net_pd. */
+            .mr_count = 1u,
             .memory_regions = {
-                { .vaddr    =
-#if defined(AGENTOS_GUEST_BOTH)
-                              0xc0000000ULL,
-#else
-                              0x40000000ULL,
-#endif
-                  .size     = 0x20000000u,  /* 512 MB */
+                { .vaddr    = AOS_LINUX_GUEST_RAM_BASE,
+                  .size     = AOS_LINUX_GUEST_RAM_SIZE,
                   .writable = 1u,
                   .name     = "guest_ram" },
-                { .vaddr    = 0x20000000ULL,
-                  .size     = 0x200000u,    /* 2 MB sDDF net queues */
-                  .writable = 1u,
-                  .name     = "net_virt" },
             },
 #endif
         },
@@ -430,19 +442,20 @@ const system_desc_t system_desc_aarch64 = {
             .cnode_size_bits = 10u,
             .priority       = 250u,
             .self_svc_id    = SVC_ID_FREEBSD_VMM,
-            .init_ep_count  = 2u,
+            .init_ep_count  = 5u,
             .init_eps = {
                 { SVC_ID_NAMESERVER, PD_CNODE_SLOT_NAMESERVER_EP },
                 { SVC_ID_LOG_DRAIN,  PD_CNODE_SLOT_LOG_DRAIN_EP  },
+                { SVC_ID_VIRTIO_BLK, 12u },
+                { SVC_ID_NET_PD,     PD_CNODE_SLOT_NET_PD_EP },
+                { SVC_ID_SERIAL,     PD_CNODE_SLOT_SERIAL_EP     },
             },
-            .irq_count = 1u,
-            .irqs = {
-                { .irq_number = 79u, .ntfn_badge = 0x2u, .name = "virtio-blk" },
-            },
+            .irq_count = 0u,
+            .irqs = { },
             .mr_count = 1u,
             .memory_regions = {
-                { .vaddr    = 0x40000000ULL,
-                  .size     = 0x20000000u,  /* 512 MB FreeBSD guest RAM */
+                { .vaddr    = AOS_FREEBSD_GUEST_RAM_BASE,
+                  .size     = AOS_FREEBSD_GUEST_RAM_SIZE,
                   .writable = 1u,
                   .name     = "guest_ram" },
             },
@@ -450,15 +463,15 @@ const system_desc_t system_desc_aarch64 = {
 
 #endif
 
-        /* pd[16] — vm_manager (prio 155; multi-VM lifecycle manager)
-         * Called by controller to create/destroy/snapshot VMs.  Runs above
-         * controller (50) but below all the services it calls. */
+        /* pd[16] — vm_manager (prio 170; multi-VM lifecycle manager)
+         * Guest-control calls arrive through cc_pd (160) and vibe_engine (165).
+         * Keep this final relay hop above both and below the VMMs (250). */
         {
             .name           = "vm_manager",
             .elf_path       = "vm_manager.elf",
             .stack_size     = 0x8000u,
             .cnode_size_bits = 10u,
-            .priority       = 155u,
+            .priority       = 170u,
             .self_svc_id    = SVC_ID_VM_MANAGER,
             .init_ep_count  = AOS_VM_MANAGER_INIT_EP_COUNT,
             .init_eps = {
@@ -473,22 +486,23 @@ const system_desc_t system_desc_aarch64 = {
             },
         },
 
-        /* pd[17] — cc_pd (prio 160; command-and-control relay)
+        /* pd[17] — cc_pd (prio 164; command-and-control relay)
          * Pure IPC relay: receives MSG_CC_* from external callers and routes
          * each to the appropriate service PD.  Passive — woken by PPC.
-         * Priority 160: above vm_manager (155) and controller (50) callers;
-         * below vibe_engine (165) and other providers it calls. */
+         * Priority 164: above guest vCPUs (150) and active device services
+         * (160), below vibe_engine (165), vm_manager (170), and the VMMs. */
         {
             .name           = "cc_pd",
             .elf_path       = "cc_pd.elf",
             .stack_size     = 0x4000u,
             .cnode_size_bits = 10u,
-            .priority       = 160u,
+            .priority       = 164u,
             .self_svc_id    = SVC_ID_CC_PD,
             .init_ep_count  = AOS_CC_INIT_EP_COUNT,
             .init_eps = {
                 { SVC_ID_NAMESERVER,  PD_CNODE_SLOT_NAMESERVER_EP },
                 { SVC_ID_LOG_DRAIN,   PD_CNODE_SLOT_LOG_DRAIN_EP  },
+                { SVC_ID_SERIAL,      PD_CNODE_SLOT_SERIAL_EP     },
 #if defined(AGENTOS_GUEST_FREEBSD) && !defined(AGENTOS_GUEST_BOTH)
                 { SVC_ID_FREEBSD_VMM, PD_CNODE_SLOT_GUEST_VMM_EP },
 #else

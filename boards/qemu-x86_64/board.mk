@@ -30,7 +30,7 @@ QEMU_NET_FLAGS := \
   -device e1000,netdev=net0
 
 QEMU_BOOT_FLAGS = \
-  -kernel microkit-sdk-2.1.0/board/x86_64_generic/release/elf/sel4_32.elf \
+  -kernel $(SEL4_SDK)/board/x86_64_generic/release/elf/sel4_32.elf \
   -initrd build/x86_64_generic/root_task.elf
 
 DEPLOY_SCRIPT :=

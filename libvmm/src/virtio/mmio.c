@@ -192,8 +192,8 @@ static bool handle_virtio_mmio_reg_write(virtio_device_t *dev, size_t vcpu_id, s
                 break;
             }
             /*
-             * QueueDesc/Avail/Used were accumulated as GPA bit-patterns.
-             * Map them to HVAs before walking the rings. Identity until
+             * Map QueueDesc/Avail/Used GPAs to HVAs before walking the rings.
+             * Identity until
              * the VMM installs virtio_gpa_set_translate().
              */
             if (!dev->vqs[dev->regs.QueueSel].ready) {
@@ -221,7 +221,7 @@ static bool handle_virtio_mmio_reg_write(virtio_device_t *dev, size_t vcpu_id, s
         if (dev->regs.QueueSel < dev->num_vqs) {
             struct virtq *virtq = get_current_virtq_by_handler(dev);
             uintptr_t ptr = (uintptr_t)virtq->desc;
-            ptr |= data;
+            ptr = (ptr & UINT64_C(0xffffffff00000000)) | data;
             virtq->desc = (struct virtq_desc *)ptr;
         } else {
             LOG_VMM_ERR("invalid virtq index 0x%lx (number of virtqs is 0x%lx) "
@@ -234,7 +234,7 @@ static bool handle_virtio_mmio_reg_write(virtio_device_t *dev, size_t vcpu_id, s
         if (dev->regs.QueueSel < dev->num_vqs) {
             struct virtq *virtq = get_current_virtq_by_handler(dev);
             uintptr_t ptr = (uintptr_t)virtq->desc;
-            ptr |= (uintptr_t)data << 32;
+            ptr = (ptr & UINT64_C(0xffffffff)) | ((uintptr_t)data << 32);
             virtq->desc = (struct virtq_desc *)ptr;
         } else {
             LOG_VMM_ERR("invalid virtq index 0x%lx (number of virtqs is 0x%lx) "
@@ -247,7 +247,7 @@ static bool handle_virtio_mmio_reg_write(virtio_device_t *dev, size_t vcpu_id, s
         if (dev->regs.QueueSel < dev->num_vqs) {
             struct virtq *virtq = get_current_virtq_by_handler(dev);
             uintptr_t ptr = (uintptr_t)virtq->avail;
-            ptr |= data;
+            ptr = (ptr & UINT64_C(0xffffffff00000000)) | data;
             virtq->avail = (struct virtq_avail *)ptr;
         } else {
             LOG_VMM_ERR("invalid virtq index 0x%lx (number of virtqs is 0x%lx) "
@@ -260,7 +260,7 @@ static bool handle_virtio_mmio_reg_write(virtio_device_t *dev, size_t vcpu_id, s
         if (dev->regs.QueueSel < dev->num_vqs) {
             struct virtq *virtq = get_current_virtq_by_handler(dev);
             uintptr_t ptr = (uintptr_t)virtq->avail;
-            ptr |= (uintptr_t)data << 32;
+            ptr = (ptr & UINT64_C(0xffffffff)) | ((uintptr_t)data << 32);
             virtq->avail = (struct virtq_avail *)ptr;
         } else {
             LOG_VMM_ERR("invalid virtq index 0x%lx (number of virtqs is 0x%lx) "
@@ -273,7 +273,7 @@ static bool handle_virtio_mmio_reg_write(virtio_device_t *dev, size_t vcpu_id, s
         if (dev->regs.QueueSel < dev->num_vqs) {
             struct virtq *virtq = get_current_virtq_by_handler(dev);
             uintptr_t ptr = (uintptr_t)virtq->used;
-            ptr |= data;
+            ptr = (ptr & UINT64_C(0xffffffff00000000)) | data;
             virtq->used = (struct virtq_used *)ptr;
         } else {
             LOG_VMM_ERR("invalid virtq index 0x%lx (number of virtqs is 0x%lx) "
@@ -286,7 +286,7 @@ static bool handle_virtio_mmio_reg_write(virtio_device_t *dev, size_t vcpu_id, s
         if (dev->regs.QueueSel < dev->num_vqs) {
             struct virtq *virtq = get_current_virtq_by_handler(dev);
             uintptr_t ptr = (uintptr_t)virtq->used;
-            ptr |= (uintptr_t)data << 32;
+            ptr = (ptr & UINT64_C(0xffffffff)) | ((uintptr_t)data << 32);
             virtq->used = (struct virtq_used *)ptr;
         } else {
             LOG_VMM_ERR("invalid virtq index 0x%lx (number of virtqs is 0x%lx) "
@@ -317,11 +317,12 @@ bool virtio_mmio_fault_handle(size_t vcpu_id, size_t offset, size_t fsr, seL4_Us
     }
 }
 
-/*
- * If the guest acknowledges the virtual IRQ associated with the virtIO
- * device, there is nothing that we need to do.
- */
-static void virtio_virq_default_ack(size_t vcpu_id, int irq, void *cookie) {}
+static void virtio_virq_default_ack(size_t vcpu_id, int irq, void *cookie)
+{
+    (void)vcpu_id;
+    (void)irq;
+    (void)cookie;
+}
 
 bool virtio_mmio_register_device(virtio_device_t *dev,
                                  uintptr_t region_base,
@@ -343,7 +344,8 @@ bool virtio_mmio_register_device(virtio_device_t *dev,
     /* Register the virtual IRQ that will be used to communicate from the device
      * to the guest. This assumes that the interrupt controller is already setup. */
     // @ivanv: we should check that (on AArch64) the virq is an SPI.
-    success = virq_register(GUEST_BOOT_VCPU_ID, virq, &virtio_virq_default_ack, NULL);
+    success = virq_register(GUEST_BOOT_VCPU_ID, virq,
+                            &virtio_virq_default_ack, dev);
     assert(success);
 
     return success;

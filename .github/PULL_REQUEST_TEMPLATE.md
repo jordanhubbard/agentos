@@ -14,7 +14,8 @@ Describe the user-visible behavior or API contract changed by this PR.
 - [ ] No UI code was added to this repository
 - [ ] No `.html`, `.css`, `.js`, `.mjs`, `.jsx`, `.tsx`, `.vue`, or `.svelte` files were added
 - [ ] No `package.json`, `node_modules`, `yarn.lock`, or `bun.lockb` files were added
-- [ ] No interpreted-language code was added under `kernel/`, `services/`, `libs/`, or `userspace/servers/`
+- [ ] First-party target code, host tools, tests, generators, and skill helpers use only C, Rust, or Assembly
+- [ ] No forbidden interpreted-language code was added anywhere in the repository
 
 ## Device Waiver
 

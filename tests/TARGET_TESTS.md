@@ -6,9 +6,10 @@ the IPC contract holds on real seL4.
 
 | Layer            | What runs                                   | seL4 IPC?        | How to run                                  |
 |------------------|---------------------------------------------|------------------|---------------------------------------------|
-| Host unit/mock   | `tests/**/*_test.c` under `-DAGENTOS_TEST_HOST` | **No** — `tests/microkit.h` stub echoes MR0 | `make test-integration`, `xtask host-test`  |
+| Host unit/mock   | `tests/**/*_test.c` under `-DAGENTOS_TEST_HOST` | **No** — `tests/microkit.h` stub echoes MR0 | `make test-host` |
 | Simulator        | `userspace/sim/` in-memory seL4 model       | Modeled, in-process | `cargo test -p agentos-sim`                 |
 | **Target proof** | seL4 root task + PDs in QEMU/hardware        | **Yes** — real `microkit_ppcall` | `make test-target`, `make run-tests`        |
+| **Dual-guest acceptance** | seL4 + Ubuntu + FreeBSD + agentOS virtualizers | **Yes** | `make demo-test` |
 
 > Rule of record (CLAUDE.md): never mock seL4 IPC for tests — the host stub is a
 > *compile/logic* check only. The simulator and the target proof are the real
@@ -24,9 +25,21 @@ fast compile gate and for pure-logic PDs (DVFS model, schedulers); useless as
 proof that a live PD honours its contract.
 
 Driven by:
-- `make test-integration` — compiles + runs the host `tests/*.c` set.
+- `make demo-smoke` — validates prerequisites and runs the host suite.
+- `make test-host` / `make test-integration` — compile and run the host
+  `tests/*.c` set.
 - `make test-snapshot-sched`, `make test-power-mgr`, `make test-proc-server`,
   `make test-vibeos-contract` — individual host suites.
+
+## Dual-guest authenticated-SSH acceptance
+
+`make demo-test` builds one AArch64 agentOS image containing the Ubuntu and
+FreeBSD VMM PDs, boots both guests concurrently, provisions a generated
+Ed25519 key, and requires key-only SSH commands to succeed on ports 12222 and
+12223. It is the non-interactive release-facing proof.
+
+`make demo` runs the same gate and then retains both guests for manual SSH.
+See `docs/demo.md` for the complete operator flow.
 
 ## Target proof layer (real seL4 IPC) — agentos-0h4
 

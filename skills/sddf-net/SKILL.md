@@ -18,6 +18,5 @@ as a stand-in), `net_virt` muxes, clients hold queue caps.
 
 ## Helper
 
-```sh
-python3 skills/sddf-net/scripts/queue_layout.py
-```
+Run `make test-guest-net` for target evidence or `make test-host` for the
+queue-layout and pump pre-filter.

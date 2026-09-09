@@ -339,7 +339,7 @@ static bool virtio_pci_common_reg_write(virtio_device_t *dev, size_t vcpu_id, si
         if (dev->regs.QueueSel < dev->num_vqs) {
             struct virtq *virtq = &dev->vqs[dev->regs.QueueSel].virtq;
             uintptr_t ptr = (uintptr_t)virtq->desc;
-            ptr |= data;
+            ptr = (ptr & UINT64_C(0xffffffff00000000)) | data;
             virtq->desc = (struct virtq_desc *)ptr;
         } else {
             LOG_PCI_ERR("invalid virtq index 0x%lx (number of virtqs is 0x%lx) "
@@ -352,7 +352,7 @@ static bool virtio_pci_common_reg_write(virtio_device_t *dev, size_t vcpu_id, si
         if (dev->regs.QueueSel < dev->num_vqs) {
             struct virtq *virtq = &dev->vqs[dev->regs.QueueSel].virtq;
             uintptr_t ptr = (uintptr_t)virtq->desc;
-            ptr |= (uintptr_t)data << 32;
+            ptr = (ptr & UINT64_C(0xffffffff)) | ((uintptr_t)data << 32);
             virtq->desc = (struct virtq_desc *)ptr;
         } else {
             LOG_PCI_ERR("invalid virtq index 0x%lx (number of virtqs is 0x%lx) "
@@ -365,7 +365,7 @@ static bool virtio_pci_common_reg_write(virtio_device_t *dev, size_t vcpu_id, si
         if (dev->regs.QueueSel < dev->num_vqs) {
             struct virtq *virtq = &dev->vqs[dev->regs.QueueSel].virtq;
             uintptr_t ptr = (uintptr_t)virtq->avail;
-            ptr |= data;
+            ptr = (ptr & UINT64_C(0xffffffff00000000)) | data;
             virtq->avail = (struct virtq_avail *)ptr;
         } else {
             LOG_PCI_ERR("invalid virtq index 0x%lx (number of virtqs is 0x%lx) "
@@ -378,7 +378,7 @@ static bool virtio_pci_common_reg_write(virtio_device_t *dev, size_t vcpu_id, si
         if (dev->regs.QueueSel < dev->num_vqs) {
             struct virtq *virtq = &dev->vqs[dev->regs.QueueSel].virtq;
             uintptr_t ptr = (uintptr_t)virtq->avail;
-            ptr |= (uintptr_t)data << 32;
+            ptr = (ptr & UINT64_C(0xffffffff)) | ((uintptr_t)data << 32);
             virtq->avail = (struct virtq_avail *)ptr;
         } else {
             LOG_PCI_ERR("invalid virtq index 0x%lx (number of virtqs is 0x%lx) "
@@ -391,7 +391,7 @@ static bool virtio_pci_common_reg_write(virtio_device_t *dev, size_t vcpu_id, si
         if (dev->regs.QueueSel < dev->num_vqs) {
             struct virtq *virtq = &dev->vqs[dev->regs.QueueSel].virtq;
             uintptr_t ptr = (uintptr_t)virtq->used;
-            ptr |= data;
+            ptr = (ptr & UINT64_C(0xffffffff00000000)) | data;
             virtq->used = (struct virtq_used *)ptr;
         } else {
             LOG_PCI_ERR("invalid virtq index 0x%lx (number of virtqs is 0x%lx) "
@@ -404,7 +404,7 @@ static bool virtio_pci_common_reg_write(virtio_device_t *dev, size_t vcpu_id, si
         if (dev->regs.QueueSel < dev->num_vqs) {
             struct virtq *virtq = &dev->vqs[dev->regs.QueueSel].virtq;
             uintptr_t ptr = (uintptr_t)virtq->used;
-            ptr |= (uintptr_t)data << 32;
+            ptr = (ptr & UINT64_C(0xffffffff)) | ((uintptr_t)data << 32);
             virtq->used = (struct virtq_used *)ptr;
         } else {
             LOG_PCI_ERR("invalid virtq index 0x%lx (number of virtqs is 0x%lx) "
@@ -611,12 +611,11 @@ static bool virtio_ecam_fault_handle(size_t vcpu_id, size_t offset, size_t fsr, 
     }
 }
 
-/*
- * If the guest acknowledges the virtual IRQ associated with the virtIO
- * device, there is nothing that we need to do.
- */
 static void virtio_virq_default_ack(size_t vcpu_id, int irq, void *cookie)
 {
+    (void)vcpu_id;
+    (void)irq;
+    (void)cookie;
 }
 
 bool virtio_pci_alloc_dev_cfg_space(virtio_device_t *dev, uint8_t dev_slot)
@@ -685,7 +684,8 @@ bool virtio_pci_register_device(virtio_device_t *dev, int virq)
 
     /* Register the virtual IRQ that will be used to communicate from the device
      * to the guest. This assumes that the interrupt controller is already setup. */
-    success = virq_register(GUEST_BOOT_VCPU_ID, virq, &virtio_virq_default_ack, NULL);
+    success = virq_register(GUEST_BOOT_VCPU_ID, virq,
+                            &virtio_virq_default_ack, dev);
     assert(success);
 
     return success;

@@ -45,7 +45,8 @@ They are not in the TCB.
    (under QEMU). Guests must see a **different**, emulated virtio device
    invented by the VMM. Collapsing those two virtio worlds is a defect.
 4. **Linux and FreeBSD are image + FDT.** No agentOS-specific guest drivers.
-5. **QEMU passthrough is a kill-dated crutch**, not the architecture.
+5. **No guest host-device passthrough.** A VMM must translate guest GPA and
+   relay through the canonical driver/virtualizer path.
 
 ## What is not TCB (museum)
 
@@ -62,8 +63,15 @@ as "core OS".
 They may remain in the tree until they are dropped from the image. Extending
 them is a bug.
 
-## Kill date: QEMU virtio passthrough
+## QEMU host transports
 
-Guest DTB nodes at `0x0a000000` / `0x0a000200` (QEMU virtio-mmio buses) and
-VMM `virq_register` of host INTIDs 48/49/51/79 exist only until the
-corresponding class is served by an emulated virtio device. Net is first.
+QEMU virtio devices are hardware stand-ins owned by canonical agentOS driver
+PDs. The current QEMU buses used for block media and networking are not mapped
+or advertised to either guest. Linux and FreeBSD see separate VMM-emulated
+virtio-net, virtio-blk, and virtio-console devices.
+
+Reintroducing host transport DTB nodes, host IRQ registration, or direct guest
+DMA against those QEMU devices is an architecture regression. `make demo-test`
+is the concurrent guest/SSH acceptance path; the focused target proofs are
+`make test-guest-net`, `make test-guest-blk`, and
+`make test-guest-console`.

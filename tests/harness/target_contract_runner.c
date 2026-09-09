@@ -61,6 +61,7 @@
 #include "../contracts/eventbus_test.c"
 #include "../contracts/serial_pd_test.c"
 #include "../contracts/log_drain_test.c"
+#include "../../kernel/agentos-root-task/include/serial_log.h"
 
 /* ── libmicrokit symbol shim (agentos-8f5) ───────────────────────────────────
  *
@@ -68,22 +69,23 @@
  * CONFIG_PRINTING (seL4_DebugPutChar is a no-op).  Two consequences:
  *  1. microkit.h's inline helpers reference a handful of libmicrokit externs
  *     (microkit_dbg_puts/_put32, microkit_name, microkit_pps) — we define them.
- *  2. test_framework emits via microkit_dbg_puts; route it to the PL011 UART0
- *     that the root task maps into this PD at TEST_RUNNER_UART_VA (see main.c),
- *     mirroring cc_pd's direct-UART debug path.
+ *  2. test_framework emits via microkit_dbg_puts; route it through serial_pd's
+ *     formal contract and the shared transfer page.
  *
  * microkit_pps is the bitmask of valid protected-procedure channels; if a
  * channel's bit is clear, microkit_ppcall() takes its invalid-channel branch
  * and never issues the seL4_Call.  We set all bits so every ppcall goes out.
  */
-#define TEST_RUNNER_UART_VA 0x10006000UL          /* MUST match main.c mapping */
-#define TR_UART_DR (*(volatile uint32_t *)(TEST_RUNNER_UART_VA + 0x000u))
-
 char      microkit_name[MICROKIT_PD_NAME_LENGTH] = "test_runner";
 seL4_Word microkit_pps = ~(seL4_Word)0;           /* all channels valid */
 
-void microkit_dbg_putc(int c) { TR_UART_DR = (uint32_t)(unsigned char)c; }
-void microkit_dbg_puts(const char *s) { for (; *s; s++) microkit_dbg_putc(*s); }
+#define TEST_RUNNER_SERIAL_EP ((seL4_CPtr)(74u + CH_SERIAL_PD))
+static serial_log_t g_test_log = {
+    .ep = TEST_RUNNER_SERIAL_EP,
+};
+
+void microkit_dbg_putc(int c) { serial_log_putc(&g_test_log, (char)c); }
+void microkit_dbg_puts(const char *s) { serial_log_puts(&g_test_log, s); }
 void microkit_dbg_put32(seL4_Uint32 x)
 {
     char buf[11];

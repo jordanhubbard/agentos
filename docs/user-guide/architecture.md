@@ -155,3 +155,15 @@ API-first rule):
   `kernel/agentos-root-task/include/contracts/` before anything may call it.
 - **Generic device rule:** serial, net, block, USB, timer, entropy each have exactly
   one canonical PD in `services/`. Custom implementations require an approved defect.
+
+## See the live architecture
+
+Run `make demo` to boot Ubuntu and FreeBSD concurrently on one agentOS image.
+The command requires authenticated, key-only SSH to both guests before it
+prints manual login commands and leaves them running. This exercises the path
+from QEMU hardware, through agentOS-owned driver and virtualizer PDs, into each
+guest's emulated virtio devices.
+
+Use `make demo-test` for the same non-interactive acceptance gate or
+`make demo-smoke` for host-only logic checks. The complete walkthrough and
+proof boundary are in [`../demo.md`](../demo.md).

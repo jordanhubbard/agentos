@@ -118,7 +118,7 @@
     </protection_domain>
 
     <!-- VibeEngine: passive hot-swap lifecycle server + vibeOS lifecycle API -->
-    <protection_domain name="vibe_engine" priority="140" passive="true">
+    <protection_domain name="vibe_engine" priority="165" passive="true">
         <program_image path="vibe_engine.elf" />
         <map mr="vibe_staging"  vaddr="0x4000000" perms="rw" setvar_vaddr="vibe_staging_vaddr" />
         <!-- vm_list_shmem (r): read vm_list_entry_t[] for VOS_STATUS / VOS_LIST -->
@@ -784,7 +784,7 @@
 
     <memory_region name="vm_list_shmem" size="0x1000" />
 
-    <protection_domain name="vm_manager" priority="145" passive="true">
+    <protection_domain name="vm_manager" priority="170" passive="true">
         <program_image path="vm_manager.elf" />
         <map mr="vm_list_shmem" vaddr="0x6000000" perms="rw"
              setvar_vaddr="vm_list_vaddr" />

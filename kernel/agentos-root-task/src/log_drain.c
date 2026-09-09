@@ -1,9 +1,9 @@
 /*
  * agentOS Log Drain Protection Domain — E5-S1: raw seL4 IPC
  *
- * Drains per-PD log ring buffers to the debug UART.  Each PD writes log
- * lines into its own 4KB ring in the shared log_drain_rings region and
- * calls log_drain via IPC to flush it.
+ * Drains per-PD log ring buffers through serial_pd.  Each PD writes log lines
+ * into its own 4KB ring in the shared log_drain_rings region and calls
+ * log_drain via IPC to flush it.
  *
  * Ring layout (per PD, 4KB each):
  *   [0..3]     magic (LOG_RING_MAGIC)
@@ -126,6 +126,7 @@ static inline void seL4_DebugPutChar(char c) { (void)c; }
 #include "sel4_server.h"    /* sel4_server_t, sel4_server_init/register/run */
 #include "sel4_client.h"    /* sel4_client_t, sel4_client_call */
 #include "sel4_ipc.h"       /* sel4_msg_t, sel4_badge_t, SEL4_ERR_* */
+#include "system_desc.h"
 #include <sel4/sel4.h>      /* seL4_DebugPutChar */
 
 #endif /* AGENTOS_TEST_HOST */
@@ -202,7 +203,11 @@ uintptr_t log_drain_rings_vaddr;
  * serial_shmem_vaddr — shared memory for serial_pd I/O transfer.
  * Set by the root task in production; in test builds set to 0 (unused).
  */
+#ifdef AGENTOS_TEST_HOST
 uintptr_t serial_shmem_vaddr;
+#else
+uintptr_t serial_shmem_vaddr = 0x10005000UL;
+#endif
 
 static log_ring_state_t ring_states[MAX_LOG_RINGS];
 static uint32_t         ring_count  = 0;
@@ -626,7 +631,7 @@ uint32_t log_drain_dispatch_one(sel4_badge_t badge,
  *
  * my_ep:     listen endpoint capability (seL4 endpoint cap slot).
  * ns_ep:     nameserver endpoint (0 = nameserver not yet available).
- * serial_ep: serial_pd endpoint for UART output (0 = debug-only mode).
+ * serial_ep: serial_pd endpoint for UART output (0 disables hardware output).
  *
  * This function NEVER RETURNS.
  */
@@ -660,6 +665,9 @@ void log_drain_main(seL4_CPtr my_ep, seL4_CPtr ns_ep, seL4_CPtr serial_ep)
     sel4_server_run(&g_srv);
 }
 
-void pd_main(seL4_CPtr my_ep, seL4_CPtr ns_ep) { log_drain_main(my_ep, ns_ep, 0u); }
+void pd_main(seL4_CPtr my_ep, seL4_CPtr ns_ep)
+{
+    log_drain_main(my_ep, ns_ep, PD_CNODE_SLOT_SERIAL_EP);
+}
 
 #endif /* AGENTOS_TEST_HOST */

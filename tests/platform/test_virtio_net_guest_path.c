@@ -191,6 +191,45 @@ static int test_vmm_fault_path(void)
                   "linux_vmm: init + fault_handle then after_fault for IPA 0x0A010000");
 }
 
+static int test_freebsd_vmm_fault_path(void)
+{
+    int init_ok = src_contains("kernel/agentos-root-task/src/freebsd_vmm.c",
+                               "aos_vmm_virtio_net_init(1u)");
+    int after = src_contains_in_order(
+        "kernel/agentos-root-task/src/freebsd_vmm.c",
+        "fault_handle(vcpu_id, msginfo)",
+        "aos_vmm_virtio_net_after_fault()");
+    int rx_event = src_contains(
+        "kernel/agentos-root-task/src/freebsd_vmm.c",
+        "label == NET_SVC_EVENT_RX_READY");
+    int shared = src_contains_in_order(
+        "kernel/agentos-root-task/src/main.c",
+        "name_eq(pd->name, \"linux_vmm\")",
+        "name_eq(pd->name, \"freebsd_vmm\")");
+    return tap_ok(init_ok && after && rx_event && shared,
+                  "FreeBSD VMM uses isolated client 1 through shared net_pd");
+}
+
+static int test_suspended_guest_defers_rx(void)
+{
+    const char *linux = "kernel/agentos-root-task/src/linux_vmm.c";
+    const char *freebsd = "kernel/agentos-root-task/src/freebsd_vmm.c";
+    const char *running_guard =
+        "if (g_guest_state == GUEST_STATE_RUNNING) {\n"
+        "                aos_vmm_virtio_net_rx_ready();";
+
+    return tap_ok(
+        src_contains(linux, running_guard) &&
+        src_contains(freebsd, running_guard) &&
+        src_contains_in_order(linux,
+                              "seL4_TCB_Resume(",
+                              "aos_vmm_virtio_net_rx_ready();") &&
+        src_contains_in_order(freebsd,
+                              "seL4_TCB_Resume(",
+                              "aos_vmm_virtio_net_rx_ready();"),
+        "suspended guests retain host RX until their TCB resumes");
+}
+
 static int test_qemu_page_unmapped(void)
 {
     int page = src_contains("kernel/agentos-root-task/src/main.c",
@@ -201,6 +240,128 @@ static int test_qemu_page_unmapped(void)
                                    "0x0A010000UL");
     return tap_ok(page && comment && not_mapped,
                   "root task maps QEMU 0x0A000000 page only; emulated IPA stays unmapped");
+}
+
+static int test_host_backed_architecture(void)
+{
+    int qemu_bus = src_contains(
+        "Makefile",
+        "virtio-net-device,netdev=agentos_net0,bus=virtio-mmio-bus.16");
+    int test_qemu_bus = src_contains(
+        "xtask/src/cmd_test.rs",
+        "virtio-net-device,netdev=net0,bus=virtio-mmio-bus.16");
+    int isolated_page = src_contains(
+        "platform/include/platform/net_host_layout.h",
+        "AGENTOS_HOST_NET_MMIO_PA          0x0A002000UL");
+    int modern_header = src_contains(
+        "platform/include/platform/net_host_layout.h",
+        "AGENTOS_NET_HOST_HEADER_SIZE      12u");
+    int collision_free_shared_va = src_contains(
+        "platform/include/platform/net_host_layout.h",
+        "AGENTOS_NET_SHARED_VA             0x26000000UL") &&
+        src_contains(
+            "platform/include/platform/net_layout.h",
+            "AOS_NET_SHMEM_VA             0x26000000UL") &&
+        src_contains(
+            "kernel/agentos-root-task/freebsd_vmm.ld",
+            "ASSERT(. <= 0x22000000");
+    int private_dma = src_contains_in_order(
+        "kernel/agentos-root-task/src/main.c",
+        "if (name_eq(pd->name, \"net_pd\"))",
+        "AGENTOS_NET_HOST_DMA_VA");
+    int shared_bridge = src_contains(
+        "kernel/agentos-root-task/src/main.c",
+        "name_eq(pd->name, \"linux_vmm\")") &&
+        src_contains(
+        "kernel/agentos-root-task/src/main.c",
+        "AGENTOS_NET_SHARED_VA");
+    int ipc = src_contains(
+        "platform/net-virt/vmm_virtio_net.c",
+        "net_pd_call(NET_SVC_OP_RAW_SEND") &&
+        src_contains(
+        "platform/net-virt/vmm_virtio_net.c",
+        "net_pd_call(NET_SVC_OP_RAW_RECV");
+    int contract = src_contains(
+        "contracts/net-service/interface.h",
+        "NET_SVC_INTERFACE_VERSION       3") &&
+        src_contains(
+        "contracts/net-service/interface.h",
+        "uint32_t shmem_offset") &&
+        src_contains(
+        "contracts/net-service/interface.h",
+        "NET_SVC_TX_OFFSET") &&
+        src_contains(
+        "services/net-service/net_pd.c",
+        "NET_SVC_RX_DATA_SIZE");
+    int no_vmm_dma = !src_contains(
+        "platform/net-virt/vmm_virtio_net.c",
+        "AGENTOS_NET_HOST_DMA_VA");
+    int async_rx = src_contains(
+        "kernel/agentos-root-task/src/system_desc_aarch64.c",
+        ".irq_number = 64u") &&
+        src_contains(
+        "services/net-service/net_pd.c",
+        "NET_SVC_EVENT_RX_READY") &&
+        src_contains(
+        "kernel/agentos-root-task/src/linux_vmm.c",
+        "label == NET_SVC_EVENT_RX_READY");
+    int sustained_rx = src_contains_in_order(
+        "platform/net-virt/vmm_virtio_net.c",
+        "net_dequeue_free(&g_rx, &buffer)",
+        "net_pd_call(NET_SVC_OP_RAW_RECV") &&
+        src_contains("platform/net-virt/vmm_virtio_net.c",
+                     "aos_net_rx_drain(") &&
+        src_contains("services/net-service/net_pd.c",
+                     "received > 0u || net_host_client_rx_pending()");
+    int no_guest_passthrough =
+        !src_contains("Makefile", "bus=virtio-mmio-bus.0") &&
+        !src_contains("xtask/src/cmd_test.rs",
+                      "bus=virtio-mmio-bus.0") &&
+        !src_contains("kernel/agentos-root-task/src/linux_vmm.c",
+                      "VIRTIO_NET_NTFN_BADGE") &&
+        !src_contains("kernel/agentos-root-task/src/system_desc_aarch64.c",
+                      ".irq_number = 48u");
+    int native_client =
+        src_contains("kernel/agentos-root-task/src/init_agent.c",
+                     "connect_native_net_client") &&
+        src_contains("kernel/agentos-root-task/src/native_net_client.c",
+                     "NET_SVC_OP_RAW_SEND") &&
+        src_contains("kernel/agentos-root-task/src/native_net_client.c",
+                     "NET_SVC_OP_RAW_RECV") &&
+        src_contains("kernel/agentos-root-task/src/main.c",
+                     "name_eq(pd->name, \"init_agent\")") &&
+        src_contains("kernel/agentos-root-task/src/system_desc_aarch64.c",
+                     "{ SVC_ID_NET_PD,     PD_CNODE_SLOT_NET_PD_EP     }");
+
+    return tap_ok(qemu_bus && test_qemu_bus && isolated_page && modern_header &&
+                  collision_free_shared_va &&
+                  private_dma && shared_bridge && ipc && contract &&
+                  no_vmm_dma && async_rx && no_guest_passthrough &&
+                  native_client && sustained_rx,
+                  "guests and native init agent share bus.16 net virtualizer");
+}
+
+static int test_bridge_uses_selected_client_data(void)
+{
+    const char *bridge = "platform/net-virt/vmm_virtio_net.c";
+    int selected_tx = src_contains(
+        bridge,
+        "uint8_t *src = (uint8_t *)g_aos_net.tx_data +");
+    int selected_rx = src_contains(
+        bridge,
+        "uint8_t *dst = (uint8_t *)g_aos_net.rx_data +");
+    int no_client_zero_tx = !src_contains_in_order(
+        bridge,
+        "static uint32_t net_pd_bridge_tx(void)",
+        "AOS_NET_TX_DATA_OFF +");
+    int no_client_zero_rx = !src_contains_in_order(
+        bridge,
+        "static uint32_t net_pd_bridge_rx(uint32_t limit)",
+        "AOS_NET_RX_DATA_OFF +");
+
+    return tap_ok(selected_tx && selected_rx && no_client_zero_tx &&
+                  no_client_zero_rx,
+                  "host bridge uses each selected client's RX/TX data window");
 }
 
 #define VQ_NUM 8u
@@ -516,10 +677,37 @@ int main(void)
                    "DTB ubuntu-iso-overlay.dts.in has virtio_mmio@a010000");
     (void)test_dtb("libvmm/examples/simple/board/qemu_virt_aarch64/overlay.dts",
                    "DTB buildroot overlay.dts has virtio_mmio@a010000");
+    (void)tap_ok(!src_contains("libvmm/examples/simple/board/qemu_virt_aarch64/overlay.dts",
+                               "virtio_mmio@a000000"),
+                 "buildroot overlay.dts has no QEMU virtio-net at 0xa000000");
     (void)test_dtb("libvmm/examples/simple/board/qemu_virt_aarch64/ubuntu-overlay.dts",
                    "DTB ubuntu-overlay.dts has virtio_mmio@a010000");
     (void)test_vmm_fault_path();
+    (void)test_dtb("kernel/agentos-root-task/freebsd-direct.dts",
+                   "DTB FreeBSD has agentOS virtio_mmio@a010000");
+    (void)test_freebsd_vmm_fault_path();
+    (void)test_suspended_guest_defers_rx();
+    (void)tap_ok(src_contains("kernel/agentos-root-task/vmm_wrapper_template.mk",
+                              "-D__thread="),
+                 "libvmm.a CFLAGS suppress TLS so IPC buffer matches linux_vmm");
+    (void)tap_ok(src_contains("kernel/agentos-root-task/src/linux_vmm.c",
+                              "seL4_SetIPCBuffer"),
+                 "linux_vmm_main pins mapped IPC buffer before guest_start");
+    (void)tap_ok(src_contains("kernel/agentos-root-task/src/linux_vmm.c",
+                              "} else if (label == seL4_Fault_NullFault) {"),
+                 "linux_vmm treats hypervisor faults as faults, not notifications");
+    (void)tap_ok(src_contains("kernel/agentos-root-task/vmm_wrapper_template.mk",
+                              "filter-out -fsanitize=undefined"),
+                 "libvmm.a is not built with UBSan trap-to-brk");
+    (void)tap_ok(src_contains("platform/blk-virt/vmm_virtio_blk.c",
+                              "vq->virtq.avail == NULL"),
+                 "virtio-blk skips avail->idx until the guest programs the virtq");
+    (void)tap_ok(src_contains("platform/net-virt/vmm_virtio_net.c",
+                              "guest DRIVER_OK virq %u MAC"),
+                 "VMM logs guest MAC 02:00:00:00:00:01 at DRIVER_OK");
     (void)test_qemu_page_unmapped();
+    (void)test_host_backed_architecture();
+    (void)test_bridge_uses_selected_client_data();
     (void)test_mmio_probe();
     (void)test_guest_tx_rx_loopback();
     (void)test_chained_tx_desc();

@@ -19,6 +19,7 @@ const UBUNTU_ISO_URL: &str =
 const UBUNTU_IMAGE_NAME: &str = "ubuntu-26.04-aarch64.iso";
 const UBUNTU_KERNEL_NAME: &str = "ubuntu-26.04-aarch64-Image";
 const UBUNTU_INITRD_NAME: &str = "ubuntu-26.04-aarch64-initrd";
+const UBUNTU_LIVE_INITRD_NAME: &str = "ubuntu-26.04-aarch64-live-initrd";
 
 const FREEBSD_VERSION: &str = "15.0";
 const FREEBSD_ISO_NAME: &str = "FreeBSD-15.0-RELEASE-arm64-aarch64-dvd1.iso";
@@ -128,6 +129,7 @@ fn fetch_ubuntu(output_dir: &Path) -> anyhow::Result<()> {
         UBUNTU_ISO_URL,
     )?;
     extract_ubuntu_initrd(&iso, &output_dir.join(UBUNTU_INITRD_NAME))?;
+    extract_ubuntu_live_initrd(&iso, &output_dir.join(UBUNTU_LIVE_INITRD_NAME))?;
     extract_ubuntu_kernel(&iso, &output_dir.join(UBUNTU_KERNEL_NAME))?;
     println!(
         "[fetch-guest] Ubuntu {} assets ready under {}",
@@ -135,6 +137,39 @@ fn fetch_ubuntu(output_dir: &Path) -> anyhow::Result<()> {
         output_dir.display()
     );
     Ok(())
+}
+
+fn extract_ubuntu_live_initrd(iso: &Path, initrd_dest: &Path) -> anyhow::Result<()> {
+    extract_iso_file(iso, "casper/initrd", initrd_dest)?;
+    anyhow::ensure!(
+        fs::metadata(initrd_dest).map(|m| m.len()).unwrap_or(0) > 1024 * 1024,
+        "Ubuntu casper initrd is unexpectedly small: {}",
+        initrd_dest.display()
+    );
+    println!(
+        "[fetch-guest] Ubuntu Casper initrd FNV-1a: 0x{:08x}",
+        file_fnv1a(initrd_dest)?
+    );
+    Ok(())
+}
+
+fn file_fnv1a(path: &Path) -> anyhow::Result<u32> {
+    let mut file =
+        fs::File::open(path).with_context(|| format!("failed to open {}", path.display()))?;
+    let mut hash = 2166136261u32;
+    let mut buf = [0u8; 64 * 1024];
+    loop {
+        let n = file
+            .read(&mut buf)
+            .with_context(|| format!("failed to read {}", path.display()))?;
+        if n == 0 {
+            break;
+        }
+        for byte in &buf[..n] {
+            hash = (hash ^ u32::from(*byte)).wrapping_mul(16777619u32);
+        }
+    }
+    Ok(hash)
 }
 
 fn extract_ubuntu_initrd(_iso: &Path, initrd_dest: &Path) -> anyhow::Result<()> {
@@ -172,7 +207,7 @@ fn ubuntu_e2e_initrd_ready(initrd: &Path) -> anyhow::Result<bool> {
         .any(|entry| entry == "init" || entry == "./init")
         && entries
             .iter()
-            .any(|entry| entry == "agentos-init-v2" || entry == "./agentos-init-v2"))
+            .any(|entry| entry == "agentos-init-v3" || entry == "./agentos-init-v3"))
 }
 
 fn build_linux_e2e_init(work_dir: &Path) -> anyhow::Result<Vec<u8>> {
@@ -231,7 +266,13 @@ fn create_ubuntu_e2e_initramfs(init_elf: &[u8]) -> anyhow::Result<Vec<u8>> {
     ino += 1;
     append_newc_file(&mut out, "init", ino, 0o755, init_elf)?;
     ino += 1;
-    append_newc_file(&mut out, "agentos-init-v2", ino, 0o444, b"console-open\n")?;
+    append_newc_file(
+        &mut out,
+        "agentos-init-v3",
+        ino,
+        0o444,
+        b"console-open\nvirtio-net-frame\n",
+    )?;
     ino += 1;
     append_newc_trailer(&mut out, ino)?;
     Ok(out)
@@ -307,6 +348,8 @@ const LINUX_E2E_INIT_ASM: &str = r#"
 .section .text
 .global _start
 _start:
+    bl   net_probe
+
     mov  x0, #-100
     adrp x1, dev_console
     add  x1, x1, :lo12:dev_console
@@ -361,6 +404,49 @@ _start:
     svc  #0
     b 1b
 
+/* Bring eth0 up and emit one Ethernet frame through the guest virtio NIC. */
+net_probe:
+    mov  x0, #2                  /* AF_INET */
+    mov  x1, #2                  /* SOCK_DGRAM */
+    mov  x2, #0
+    mov  x8, #198                /* socket */
+    svc  #0
+    cmp  x0, #0
+    b.lt 8f
+    mov  x20, x0
+    adrp x2, ifreq
+    add  x2, x2, :lo12:ifreq
+    mov  x1, #0x8914            /* SIOCSIFFLAGS */
+    mov  x0, x20
+    mov  x8, #29                 /* ioctl */
+    svc  #0
+    mov  x0, x20
+    mov  x8, #57                 /* close */
+    svc  #0
+
+    mov  x0, #17                 /* AF_PACKET */
+    mov  x1, #3                  /* SOCK_RAW */
+    mov  x2, #0xb588            /* htons(ETH_P_802_EX1 / 0x88b5) */
+    mov  x8, #198                /* socket */
+    svc  #0
+    cmp  x0, #0
+    b.lt 8f
+    mov  x20, x0
+    adrp x1, net_frame
+    add  x1, x1, :lo12:net_frame
+    mov  x2, #60
+    mov  x3, #0
+    adrp x4, sockaddr_ll
+    add  x4, x4, :lo12:sockaddr_ll
+    mov  x5, #20
+    mov  x8, #206                /* sendto */
+    svc  #0
+    mov  x0, x20
+    mov  x8, #57                 /* close */
+    svc  #0
+8:
+    ret
+
 .section .rodata
 banner:
     .ascii "agentOS Linux E2E init\nagentos-linux login: "
@@ -372,6 +458,28 @@ prompt_end:
 .equ prompt_len, prompt_end - prompt
 dev_console:
     .asciz "/dev/console"
+
+.section .data
+.balign 8
+ifreq:
+    .asciz "eth0"
+    .zero 11
+    .hword 1                     /* IFF_UP */
+    .zero 22
+sockaddr_ll:
+    .hword 17                    /* AF_PACKET */
+    .byte 0x88, 0xb5            /* protocol in network byte order */
+    .word 2                      /* eth0: loopback is ifindex 1 */
+    .hword 1                     /* ARPHRD_ETHER */
+    .byte 0
+    .byte 6
+    .byte 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0, 0
+net_frame:
+    .byte 0xff, 0xff, 0xff, 0xff, 0xff, 0xff
+    .byte 0x02, 0x00, 0x00, 0x00, 0x00, 0x01
+    .byte 0x88, 0xb5
+    .ascii "agentOS virtio-net guest proof"
+    .zero 17
 
 .section .bss
 .balign 16

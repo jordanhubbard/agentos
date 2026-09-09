@@ -29,7 +29,17 @@ void run_virtio_blk_tests(microkit_channel ch) {
 
     /* Verify error codes */
     ASSERT_TRUE(BLK_OK == 0, "blk ok == 0");
-    ASSERT_TRUE(BLK_ERR_NODEV == 1, "blk err nodev == 1");
-    ASSERT_TRUE(BLK_ERR_IO == 2, "blk err io == 2");
-    ASSERT_TRUE(BLK_ERR_OOB == 3, "blk err oob == 3");
+    ASSERT_TRUE(BLK_ERR_IO == 1, "blk err io == 1");
+    ASSERT_TRUE(BLK_ERR_OOB == 2, "blk err oob == 2");
+    ASSERT_TRUE(BLK_ERR_NODEV == 3, "blk err nodev == 3");
+
+    /* Version 2 selects canonical media without adding guest-specific ops. */
+    ASSERT_TRUE(VIRTIO_BLK_CONTRACT_VERSION == 2u, "virtio blk contract version 2");
+    ASSERT_TRUE(BLK_MEDIA_UBUNTU_INSTALL == 0u, "ubuntu media id is stable");
+    ASSERT_TRUE(BLK_MEDIA_FREEBSD_INSTALL == 1u, "freebsd media id is stable");
+    ASSERT_TRUE(BLK_MEDIA_COUNT == 2u, "two canonical install media endpoints");
+    ASSERT_TRUE(sizeof(struct virtio_blk_req_read) == 20u,
+                "read request carries media id");
+    ASSERT_TRUE(sizeof(struct virtio_blk_req_info) == 8u,
+                "info request carries media id");
 }
