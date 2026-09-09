@@ -34,6 +34,7 @@ static aos_guest_profile_manifest_t profile(uint8_t format)
     }
     p.guest_id = 1u;
     p.vcpu_count = 1u;
+    p.control_type = 1u;
     p.device_flags = AOS_GUEST_DEVICE_CONSOLE;
     p.network_client = UINT16_MAX;
     p.block_media = UINT16_MAX;

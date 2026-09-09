@@ -27,7 +27,7 @@ enum Cmd {
     FaultInject(FaultInjectArgs),
     /// Set up the development environment
     Setup(SetupArgs),
-    /// Fetch guest OS disk images
+    /// Execute a guest profile's bounded artifact acquisition recipe
     FetchGuest(FetchGuestArgs),
     /// Automated release (version bump + git tag)
     Release(ReleaseArgs),

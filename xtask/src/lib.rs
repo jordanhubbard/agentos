@@ -179,17 +179,15 @@ pub struct RenderDeckArgs {
 
 #[derive(clap::Args)]
 pub struct FetchGuestArgs {
-    #[arg(long, value_enum, default_value_t = GuestOs::Ubuntu)]
-    pub os: GuestOs,
+    /// Guest profile path, relative to --profile-root.
+    #[arg(long)]
+    pub profile: std::path::PathBuf,
+    /// Directory containing guest profile TOML files.
+    #[arg(long, default_value = "guest-profiles")]
+    pub profile_root: std::path::PathBuf,
     /// Destination directory; defaults to build/guest-images
     #[arg(long)]
     pub output_dir: Option<String>,
-}
-
-#[derive(clap::ValueEnum, Clone)]
-pub enum GuestOs {
-    Ubuntu,
-    Freebsd,
 }
 
 #[derive(clap::Args)]

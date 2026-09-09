@@ -6,6 +6,7 @@ status = "runtime"
 architecture = "aarch64"
 boot_protocol = "fdt-direct"
 kernel_format = "raw"
+control_type = 2
 guest_id = 1
 vcpus = 1
 devices = ["net", "block", "console"]
@@ -47,12 +48,12 @@ dtb_load_address = 0x4f000000
 dtb_sha256 = "0566bb2475eb421dc967d504eeff24be921c73853bdfad5d1cc1ae2ea4b90d2f"
 
 [[host.acquire]]
-action = "download"
-args = { artifact = "installer-iso" }
+action = "stage-url"
+args = { cache_name = "FreeBSD-15.0-RELEASE-arm64-aarch64-dvd1.iso", output = "freebsd-15.0-aarch64.iso", url = "https://download.freebsd.org/releases/arm64/aarch64/ISO-IMAGES/15.0/FreeBSD-15.0-RELEASE-arm64-aarch64-dvd1.iso", override_env = "AGENTOS_FREEBSD_IMAGE,FREEBSD_IMAGE" }
 
 [[host.acquire]]
-action = "extract-ufs-file"
-args = { member = "/boot/kernel/kernel", artifact = "kernel" }
+action = "extract-arm64-elf-image"
+args = { source = "freebsd-15.0-aarch64.iso", member = "boot/kernel/kernel", output = "freebsd-15.0-aarch64-kernel" }
 
 [[host.test]]
 action = "wait-console"

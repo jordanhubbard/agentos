@@ -85,7 +85,8 @@ typedef struct __attribute__((packed)) aos_guest_profile_manifest {
     uint8_t initrd_sha256[32];
     uint16_t command_line_length;
     uint16_t profile_id_length;
-    uint8_t reserved[12];
+    uint32_t control_type;
+    uint8_t reserved[8];
     char profile_id[64];
     char command_line[256];
 } aos_guest_profile_manifest_t;

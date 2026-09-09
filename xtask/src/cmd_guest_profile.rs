@@ -69,6 +69,7 @@ struct Target {
     architecture: Option<String>,
     boot_protocol: Option<String>,
     kernel_format: Option<String>,
+    control_type: Option<u32>,
     guest_id: Option<u32>,
     vcpus: Option<u32>,
     devices: Option<Vec<String>>,
@@ -121,20 +122,25 @@ struct Host {
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct RecipeStep {
-    action: String,
+pub(crate) struct RecipeStep {
+    pub(crate) action: String,
     #[serde(default)]
-    args: BTreeMap<String, String>,
+    pub(crate) args: BTreeMap<String, String>,
 }
 
 const HOST_ACTIONS: &[&str] = &[
     "download",
+    "stage-url",
+    "download-tar-member",
     "verify-sha256",
     "extract-iso-file",
     "extract-ufs-file",
+    "extract-arm64-linux-image",
+    "extract-arm64-elf-image",
     "decompress-gzip",
     "copy",
     "build-initramfs",
+    "build-linux-probe-initramfs",
     "wait-console",
     "send-console",
     "wait-ssh",
@@ -142,6 +148,33 @@ const HOST_ACTIONS: &[&str] = &[
     "assert-console",
     "assert-virtio",
 ];
+
+pub(crate) fn acquire_recipe(root: &Path, path: &Path) -> Result<(String, Vec<RecipeStep>)> {
+    let (profile, _) = resolve(root, path, &mut Vec::new())?;
+    validate(&profile, None)?;
+    ensure!(
+        profile.status == Some(Status::Runtime),
+        "only status=runtime profiles can acquire boot artifacts"
+    );
+    let id = profile.id.context("id is required")?;
+    let steps = profile.host.map(|host| host.acquire).unwrap_or_default();
+    for step in &steps {
+        ensure!(
+            matches!(
+                step.action.as_str(),
+                "stage-url"
+                    | "download-tar-member"
+                    | "extract-iso-file"
+                    | "extract-arm64-linux-image"
+                    | "extract-arm64-elf-image"
+                    | "build-linux-probe-initramfs"
+            ),
+            "runtime host.acquire action {:?} has no bounded executor",
+            step.action
+        );
+    }
+    Ok((id, steps))
+}
 
 pub fn run(args: &GuestProfileArgs) -> Result<()> {
     ensure!(
@@ -368,6 +401,10 @@ fn validate(profile: &Profile, placement: Option<&str>) -> Result<()> {
         target.vcpus.is_some_and(|n| (1..=8).contains(&n)),
         "target.vcpus must be 1..8"
     );
+    ensure!(
+        target.control_type.is_some_and(|value| value != 0),
+        "target.control_type must be nonzero"
+    );
     target.guest_id.context("target.guest_id is required")?;
     let devices = target
         .devices
@@ -564,7 +601,57 @@ fn validate_host(host: Option<&Host>) -> Result<()> {
                     "host action argument exceeds bounds"
                 );
             }
+            validate_host_action(step)?;
         }
+    }
+    Ok(())
+}
+
+fn validate_host_action(step: &RecipeStep) -> Result<()> {
+    let (required_args, optional_args): (&[&str], &[&str]) = match step.action.as_str() {
+        "stage-url" => (&["cache_name", "output", "url"], &["override_env"]),
+        "download-tar-member" => (&["url", "member", "output"], &[]),
+        "extract-iso-file" => (&["source", "member", "output"], &["min_bytes"]),
+        "extract-arm64-linux-image" | "extract-arm64-elf-image" => {
+            (&["source", "member", "output"], &[])
+        }
+        "build-linux-probe-initramfs" => (&["output"], &[]),
+        "download" | "verify-sha256" => (&["artifact"], &[]),
+        "extract-ufs-file" => (&["member", "artifact"], &[]),
+        "decompress-gzip" | "copy" => (&["source", "output"], &[]),
+        "build-initramfs" => (&["recipe", "artifact"], &[]),
+        "wait-console" | "assert-console" => (&["marker"], &[]),
+        "send-console" => (&["text"], &[]),
+        "wait-ssh" => (&["account"], &[]),
+        "run-ssh" => (&["recipe"], &[]),
+        "assert-virtio" => (&["devices"], &[]),
+        _ => return Ok(()),
+    };
+    for key in required_args {
+        ensure!(
+            step.args.get(*key).is_some_and(|value| !value.is_empty()),
+            "host action {:?} requires argument {key:?}",
+            step.action
+        );
+    }
+    for key in step.args.keys() {
+        ensure!(
+            required_args.contains(&key.as_str()) || optional_args.contains(&key.as_str()),
+            "host action {:?} has unknown argument {key:?}",
+            step.action
+        );
+    }
+    if matches!(step.action.as_str(), "stage-url" | "download-tar-member") {
+        ensure!(
+            step.args["url"].starts_with("https://"),
+            "host downloads must use HTTPS"
+        );
+    }
+    if let Some(value) = step.args.get("min_bytes") {
+        ensure!(
+            value.parse::<u64>().is_ok_and(|number| number > 0),
+            "min_bytes must be a positive integer"
+        );
     }
     Ok(())
 }
@@ -649,7 +736,8 @@ fn compile(profile: &Profile, canonical: &str, placement_name: &str) -> Result<V
     }
     push_u16(&mut out, command_line.len() as u16);
     push_u16(&mut out, id.len() as u16);
-    out.extend_from_slice(&[0; 12]);
+    push_u32(&mut out, target.control_type.unwrap());
+    out.extend_from_slice(&[0; 8]);
     push_text(&mut out, id, 64);
     push_text(&mut out, command_line, 256);
     ensure!(
@@ -789,5 +877,33 @@ mod tests {
             ..Profile::default()
         };
         assert!(validate(&profile, None).is_err());
+    }
+
+    #[test]
+    fn host_action_arguments_fail_closed() {
+        let valid = RecipeStep {
+            action: "stage-url".to_string(),
+            args: BTreeMap::from([
+                ("cache_name".to_string(), "guest.iso".to_string()),
+                ("output".to_string(), "guest.iso".to_string()),
+                (
+                    "url".to_string(),
+                    "https://example.invalid/guest.iso".to_string(),
+                ),
+            ]),
+        };
+        assert!(validate_host_action(&valid).is_ok());
+
+        let mut typo = valid.clone();
+        typo.args
+            .insert("cache_nam".to_string(), "guest.iso".to_string());
+        assert!(validate_host_action(&typo).is_err());
+
+        let mut insecure = valid;
+        insecure.args.insert(
+            "url".to_string(),
+            "http://example.invalid/guest.iso".to_string(),
+        );
+        assert!(validate_host_action(&insecure).is_err());
     }
 }

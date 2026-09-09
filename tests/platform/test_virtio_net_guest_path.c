@@ -204,7 +204,7 @@ static int test_freebsd_vmm_fault_path(void)
         "fault_handle(vcpu_id, msginfo)",
         "aos_vmm_virtio_net_after_fault()");
     int rx_event = src_contains(
-        "kernel/agentos-root-task/src/freebsd_vmm.c",
+        "platform/guest-vmm/loop.c",
         "label == NET_SVC_EVENT_RX_READY");
     int shared = src_contains_in_order(
         "kernel/agentos-root-task/src/main.c",
@@ -218,13 +218,13 @@ static int test_suspended_guest_defers_rx(void)
 {
     const char *linux = "kernel/agentos-root-task/src/linux_vmm.c";
     const char *freebsd = "kernel/agentos-root-task/src/freebsd_vmm.c";
+    const char *loop = "platform/guest-vmm/loop.c";
     const char *running_guard =
-        "if (g_guest_state == GUEST_STATE_RUNNING) {\n"
-        "                aos_vmm_virtio_net_rx_ready();";
+        "if (*ops->guest_state == GUEST_STATE_RUNNING) {\n"
+        "                ops->net_rx_ready();";
 
     return tap_ok(
-        src_contains(linux, running_guard) &&
-        src_contains(freebsd, running_guard) &&
+        src_contains(loop, running_guard) &&
         src_contains_in_order(linux,
                               "seL4_TCB_Resume(",
                               "aos_vmm_virtio_net_rx_ready();") &&
@@ -307,7 +307,7 @@ static int test_host_backed_architecture(void)
         "services/net-service/net_pd.c",
         "NET_SVC_EVENT_RX_READY") &&
         src_contains(
-        "kernel/agentos-root-task/src/linux_vmm.c",
+        "platform/guest-vmm/loop.c",
         "label == NET_SVC_EVENT_RX_READY");
     int sustained_rx = src_contains_in_order(
         "platform/net-virt/vmm_virtio_net.c",
@@ -697,7 +697,7 @@ int main(void)
     (void)tap_ok(src_contains("kernel/agentos-root-task/src/linux_vmm.c",
                               "seL4_SetIPCBuffer"),
                  "linux_vmm_main pins mapped IPC buffer before guest_start");
-    (void)tap_ok(src_contains("kernel/agentos-root-task/src/linux_vmm.c",
+    (void)tap_ok(src_contains("platform/guest-vmm/loop.c",
                               "} else if (label == seL4_Fault_NullFault) {"),
                  "linux_vmm treats hypervisor faults as faults, not notifications");
     (void)tap_ok(src_contains("kernel/agentos-root-task/vmm_wrapper_template.mk",

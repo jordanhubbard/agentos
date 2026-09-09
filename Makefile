@@ -464,16 +464,18 @@ build-tools:
 	@echo "✓ Tools built → target/release/"
 
 # =============================================================================
-# fetch-guest: download the guest OS image for GUEST_OS (idempotent)
+# fetch-guest: execute the bounded acquisition recipe for selected profiles
 # =============================================================================
 fetch-guest:
 ifeq ($(GUEST_OS),freebsd)
-	@cargo xtask fetch-guest --os freebsd --output-dir $(AGENTOS_IMAGES)
+	@cargo xtask fetch-guest --profile freebsd.toml --output-dir $(AGENTOS_IMAGES)
 else ifeq ($(GUEST_OS),ubuntu)
-	@cargo xtask fetch-guest --os ubuntu --output-dir $(AGENTOS_IMAGES)
+	@cargo xtask fetch-guest --profile $(if $(filter live,$(UBUNTU_BOOT_MODE)),ubuntu-live.toml,ubuntu-e2e.toml) --output-dir $(AGENTOS_IMAGES)
 else ifeq ($(GUEST_OS),both)
-	@cargo xtask fetch-guest --os ubuntu --output-dir $(AGENTOS_IMAGES)
-	@cargo xtask fetch-guest --os freebsd --output-dir $(AGENTOS_IMAGES)
+	@cargo xtask fetch-guest --profile $(if $(filter live,$(UBUNTU_BOOT_MODE)),ubuntu-live.toml,ubuntu-e2e.toml) --output-dir $(AGENTOS_IMAGES)
+	@cargo xtask fetch-guest --profile freebsd.toml --output-dir $(AGENTOS_IMAGES)
+else ifeq ($(GUEST_OS),buildroot)
+	@cargo xtask fetch-guest --profile buildroot.toml --output-dir $(BUILD_DIR)
 endif
 
 # =============================================================================

@@ -172,7 +172,7 @@ endif
 ifeq ($(GUEST_OS),ubuntu)
 $(UBUNTU_KERNEL) $(UBUNTU_E2E_INITRD) $(UBUNTU_LIVE_INITRD):
 	@echo "[VMM] Fetching Ubuntu 26.04 boot assets (via xtask fetch-guest)..."
-	cargo xtask fetch-guest --os ubuntu --output-dir $(AGENTOS_IMAGES)
+	cargo xtask fetch-guest --profile $(LINUX_GUEST_PROFILE) --output-dir $(AGENTOS_IMAGES)
 
 $(UBUNTU_LIVE_PLACEHOLDER):
 	@mkdir -p $(BUILD_DIR)
@@ -296,6 +296,7 @@ VMM_VIRTIO_NET_OBJ := $(BUILD_DIR)/vmm_virtio_net.o
 GPA_TRANSLATE_OBJ  := $(BUILD_DIR)/gpa_translate.o
 VMM_GUEST_RAM_OBJ  := $(BUILD_DIR)/vmm_guest_ram.o
 GUEST_VMM_RUNTIME_OBJ := $(BUILD_DIR)/guest_vmm_runtime.o
+GUEST_VMM_LOOP_OBJ := $(BUILD_DIR)/guest_vmm_loop.o
 GUEST_PROFILE_VALIDATE_OBJ := $(BUILD_DIR)/guest_profile_validate.o
 GUEST_BOOT_OBJ := $(BUILD_DIR)/guest_boot.o
 BLK_VIRT_PUMP_OBJ  := $(BUILD_DIR)/blk_virt_pump.o
@@ -367,6 +368,12 @@ $(GUEST_VMM_RUNTIME_OBJ): $(AGENTOS_ROOT)/platform/guest-vmm/runtime.c \
 	@echo "[VMM] Compiling shared guest VMM runtime..."
 	clang $(VMM_CFLAGS) -c -o $@ $<
 
+$(GUEST_VMM_LOOP_OBJ): $(AGENTOS_ROOT)/platform/guest-vmm/loop.c \
+			      $(AGENTOS_ROOT)/platform/include/platform/guest_vmm_loop.h
+	@mkdir -p $(BUILD_DIR)
+	@echo "[VMM] Compiling shared guest VMM receive loop..."
+	clang $(VMM_CFLAGS) -c -o $@ $<
+
 $(GUEST_PROFILE_VALIDATE_OBJ): $(AGENTOS_ROOT)/platform/guest-vmm/profile.c \
 				      $(AGENTOS_ROOT)/platform/include/platform/guest_profile.h
 	@mkdir -p $(BUILD_DIR)
@@ -414,6 +421,7 @@ $(BUILD_DIR)/linux_vmm.elf: FORCE \
 	                             $(GPA_TRANSLATE_OBJ) \
 	                             $(VMM_GUEST_RAM_OBJ) \
 	                             $(GUEST_VMM_RUNTIME_OBJ) \
+	                             $(GUEST_VMM_LOOP_OBJ) \
 	                             $(GUEST_PROFILE_VALIDATE_OBJ) \
 	                             $(GUEST_BOOT_OBJ) \
 	                             $(BLK_VIRT_PUMP_OBJ) \
@@ -429,6 +437,7 @@ $(BUILD_DIR)/linux_vmm.elf: FORCE \
 		$(VMM_PD_ENTRY_OBJ) $(LINUX_VMM_FULL_OBJ) $(GPU_SHMEM_FULL_OBJ) \
 		$(NET_VIRT_PUMP_OBJ) $(VMM_VIRTIO_NET_OBJ) $(GPA_TRANSLATE_OBJ) $(VMM_GUEST_RAM_OBJ) \
 		$(GUEST_VMM_RUNTIME_OBJ) \
+		$(GUEST_VMM_LOOP_OBJ) \
 		$(GUEST_PROFILE_VALIDATE_OBJ) \
 		$(GUEST_BOOT_OBJ) \
 		$(BLK_VIRT_PUMP_OBJ) $(VMM_VIRTIO_BLK_OBJ) \
@@ -455,13 +464,13 @@ FREEBSD_EXTRACT := $(AGENTOS_ROOT)/xtask/src/cmd_extract_freebsd_file.rs
 
 $(FREEBSD_RAW_IMAGE):
 	@echo "[VMM] Fetching FreeBSD 15.0 ISO assets (via xtask fetch-guest)..."
-	cargo xtask fetch-guest --os freebsd --output-dir $(AGENTOS_IMAGES)
+	cargo xtask fetch-guest --profile freebsd.toml --output-dir $(AGENTOS_IMAGES)
 
 $(FREEBSD_KERNEL_IMAGE): $(FREEBSD_RAW_IMAGE) $(FREEBSD_EXTRACT)
 	@mkdir -p $(BUILD_DIR)
 	@echo "[VMM] Extracting FreeBSD kernel..."
 	@case "$(FREEBSD_RAW_IMAGE)" in \
-		*.iso) cargo xtask fetch-guest --os freebsd --output-dir $(AGENTOS_IMAGES); \
+		*.iso) cargo xtask fetch-guest --profile freebsd.toml --output-dir $(AGENTOS_IMAGES); \
 		       cp "$(AGENTOS_IMAGES)/freebsd-15.0-aarch64-kernel" $@ ;; \
 		*) cargo xtask extract-freebsd-file "$(FREEBSD_RAW_IMAGE)" /boot/kernel/kernel.bin $@ || \
 		   cargo xtask extract-freebsd-file "$(FREEBSD_RAW_IMAGE)" /boot/kernel/kernel $@ ;; \
@@ -511,6 +520,7 @@ $(BUILD_DIR)/freebsd_vmm.elf: $(BUILD_DIR)/freebsd_vmm.o \
                                $(GPA_TRANSLATE_OBJ) \
                                $(VMM_GUEST_RAM_OBJ) \
                                $(GUEST_VMM_RUNTIME_OBJ) \
+                               $(GUEST_VMM_LOOP_OBJ) \
                                $(GUEST_PROFILE_VALIDATE_OBJ) \
                                $(GUEST_BOOT_OBJ) \
                                $(BLK_VIRT_PUMP_OBJ) \
@@ -525,6 +535,7 @@ $(BUILD_DIR)/freebsd_vmm.elf: $(BUILD_DIR)/freebsd_vmm.o \
 		$(NET_VIRT_PUMP_OBJ) $(VMM_VIRTIO_NET_OBJ) \
 		$(GPA_TRANSLATE_OBJ) $(VMM_GUEST_RAM_OBJ) \
 		$(GUEST_VMM_RUNTIME_OBJ) \
+		$(GUEST_VMM_LOOP_OBJ) \
 		$(GUEST_PROFILE_VALIDATE_OBJ) $(BUILD_DIR)/freebsd_guest_profile.o \
 		$(GUEST_BOOT_OBJ) \
 		$(BLK_VIRT_PUMP_OBJ) $(VMM_VIRTIO_BLK_OBJ) \

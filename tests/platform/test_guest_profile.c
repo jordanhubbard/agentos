@@ -30,6 +30,7 @@ static aos_guest_profile_manifest_t valid_profile(void)
               AOS_GUEST_PROFILE_HASHED_ARTIFACTS;
     p.guest_id = 7u;
     p.vcpu_count = 1u;
+    p.control_type = 1u;
     p.device_flags = AOS_GUEST_DEVICE_NET | AOS_GUEST_DEVICE_BLOCK |
                      AOS_GUEST_DEVICE_CONSOLE;
     p.network_client = 0u;
@@ -116,6 +117,10 @@ int main(int argc, char **argv)
     p.kernel_format = AOS_GUEST_KERNEL_RAW;
     CHECK("format and entry strategy mismatch rejected",
           aos_guest_profile_validate(&p) == AOS_GUEST_PROFILE_ERR_ARTIFACT);
+    p = valid_profile();
+    p.control_type = 0u;
+    CHECK("zero lifecycle control type rejected",
+          aos_guest_profile_validate(&p) == AOS_GUEST_PROFILE_ERR_ENUM);
     for (int i = 1; i < argc; i++) check_compiled_manifest(argv[i]);
     printf("1..%u\n", tests);
     return failures == 0u ? 0 : 1;

@@ -27,7 +27,6 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include "sel4_boot.h"
-#include "contracts/linux_vmm_contract.h"
 #include "sel4_ipc.h"
 
 /* ─── x86_64 stub ──────────────────────────────────────────────────────────
@@ -406,6 +405,7 @@ void pd_main(seL4_CPtr my_ep, seL4_CPtr ns_ep) { linux_vmm_main(my_ep, ns_ep); }
 #include <platform/guest_boot.h>
 #include <platform/guest_memory_layout.h>
 #include <platform/guest_profile.h>
+#include <platform/guest_vmm_loop.h>
 #include <platform/guest_vmm_runtime.h>
 #include <platform/vmm_virtio_net.h>
 #include <platform/vmm_virtio_blk.h>
@@ -413,7 +413,7 @@ void pd_main(seL4_CPtr my_ep, seL4_CPtr ns_ep) { linux_vmm_main(my_ep, ns_ep); }
 #include <contracts/net-service/interface.h>
 #include "gpu_shmem.h"
 #include "contracts/cc_contract.h"
-#include "contracts/linux_vmm_contract.h"
+#include "contracts/guest_contract.h"
 #include "sel4_boot.h"    /* seL4_IRQHandler_Ack, seL4_CPtr               */
 #include "sel4_ipc.h"     /* sel4_call, sel4_msg_t                        */
 #include "sel4_client.h"  /* sel4_client_t, sel4_client_call              */
@@ -992,7 +992,7 @@ static seL4_MessageInfo_t linux_vmm_rpc(seL4_MessageInfo_t info)
     _sel4_mrs_to_msg(&req);
 
     const aos_guest_vmm_runtime_t runtime = {
-        .os_type = LINUX_VMM_OS_TYPE,
+        .os_type = g_guest_profile->control_type,
         .guest_id = 0u,
         .state = &g_guest_state,
         .started = &guest_started,
@@ -1474,66 +1474,14 @@ void linux_vmm_main(seL4_CPtr ep, seL4_CPtr reply_cap)
     /* Run init() — sets up guest images, GIC, virtio IRQs, starts guest */
     init();
 
-    /* Main dispatch loop — receive notifications and faults.
-     *
-     * seL4 MCS mode (CONFIG_KERNEL_MCS=1):
-     *   seL4_Recv takes a reply cap slot as third argument; the kernel saves
-     *   the caller's reply context there.  seL4_Reply is not available in MCS;
-     *   use seL4_Send on the reply cap slot to complete the reply instead.
-     *
-     * seL4 non-MCS mode:
-     *   seL4_Recv takes two arguments; seL4_Reply completes the round-trip.
-     */
-    seL4_Word badge;
-#ifdef CONFIG_KERNEL_MCS
-    seL4_MessageInfo_t info = seL4_Recv(ep, &badge, reply_cap);
-#else
-    seL4_MessageInfo_t info = seL4_Recv(ep, &badge);
-#endif
-    while (1) {
-        seL4_Word label = seL4_MessageInfo_get_label(info);
-        if (label == MSG_GUEST_CREATE ||
-            label == MSG_GUEST_BOOT ||
-            label == MSG_GUEST_SEND_INPUT ||
-            label == MSG_GUEST_CONSOLE_DRAIN ||
-            label == MSG_GUEST_SUSPEND ||
-            label == MSG_GUEST_RESUME ||
-            label == MSG_GUEST_DESTROY) {
-            seL4_MessageInfo_t reply = linux_vmm_rpc(info);
-#ifdef CONFIG_KERNEL_MCS
-            seL4_Send(reply_cap, reply);
-            info = seL4_Recv(ep, &badge, reply_cap);
-#else
-            seL4_Reply(reply);
-            info = seL4_Recv(ep, &badge);
-#endif
-        } else if (label == NET_SVC_EVENT_RX_READY) {
-            if (g_guest_state == GUEST_STATE_RUNNING) {
-                aos_vmm_virtio_net_rx_ready();
-            }
-#ifdef CONFIG_KERNEL_MCS
-            info = seL4_Recv(ep, &badge, reply_cap);
-#else
-            info = seL4_Recv(ep, &badge);
-#endif
-        } else if (label == seL4_Fault_NullFault) {
-            linux_vmm_notified(badge);
-#ifdef CONFIG_KERNEL_MCS
-            info = seL4_Recv(ep, &badge, reply_cap);
-#else
-            info = seL4_Recv(ep, &badge);
-#endif
-        } else {
-            seL4_MessageInfo_t reply = linux_vmm_fault(badge, info);
-#ifdef CONFIG_KERNEL_MCS
-            seL4_Send(reply_cap, reply);
-            info = seL4_Recv(ep, &badge, reply_cap);
-#else
-            seL4_Reply(reply);
-            info = seL4_Recv(ep, &badge);
-#endif
-        }
-    }
+    const aos_guest_vmm_loop_ops_t loop_ops = {
+        .guest_state = &g_guest_state,
+        .rpc = linux_vmm_rpc,
+        .fault = linux_vmm_fault,
+        .notified = linux_vmm_notified,
+        .net_rx_ready = aos_vmm_virtio_net_rx_ready,
+    };
+    aos_guest_vmm_loop(ep, reply_cap, &loop_ops);
 }
 
 void pd_main(seL4_CPtr my_ep, seL4_CPtr ns_ep)

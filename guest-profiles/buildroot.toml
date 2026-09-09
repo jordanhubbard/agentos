@@ -22,12 +22,12 @@ cache = "build/qemu_virt_aarch64/6dcd1debf64e6d69b178cd0f46b8c4ae7cebe2a5-rootfs
 sha256 = "41cd53e6fb36d0f07607e20321d7af4a496a2adace0ac87b970b13e459e3f74e"
 
 [[host.acquire]]
-action = "download"
-args = { artifact = "kernel" }
+action = "download-tar-member"
+args = { url = "https://trustworthy.systems/Downloads/libvmm/images/85000f3f42a882e4476e57003d53f2bbec8262b0-linux.tar.gz", member = "85000f3f42a882e4476e57003d53f2bbec8262b0-linux/linux", output = "85000f3f42a882e4476e57003d53f2bbec8262b0-linux" }
 
 [[host.acquire]]
-action = "verify-sha256"
-args = { artifact = "kernel" }
+action = "download-tar-member"
+args = { url = "https://trustworthy.systems/Downloads/libvmm/images/6dcd1debf64e6d69b178cd0f46b8c4ae7cebe2a5-rootfs.cpio.gz.tar.gz", member = "6dcd1debf64e6d69b178cd0f46b8c4ae7cebe2a5-rootfs.cpio.gz/rootfs.cpio.gz", output = "6dcd1debf64e6d69b178cd0f46b8c4ae7cebe2a5-rootfs.cpio.gz" }
 
 [[host.test]]
 action = "assert-virtio"

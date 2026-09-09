@@ -51,7 +51,8 @@ aos_guest_profile_validate(const aos_guest_profile_manifest_t *profile)
         profile->boot_protocol < AOS_GUEST_BOOT_FDT_DIRECT ||
         profile->boot_protocol > AOS_GUEST_BOOT_PROCESS ||
         profile->kernel_format < AOS_GUEST_KERNEL_LINUX_IMAGE ||
-        profile->kernel_format > AOS_GUEST_KERNEL_UEFI) {
+        profile->kernel_format > AOS_GUEST_KERNEL_UEFI ||
+        profile->control_type == 0u) {
         return AOS_GUEST_PROFILE_ERR_ENUM;
     }
     if ((profile->flags & ~(AOS_GUEST_PROFILE_AUTOSTART |
