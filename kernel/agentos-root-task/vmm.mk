@@ -62,6 +62,14 @@ ifneq ($(filter dual-primary dual-secondary,$(GUEST_PLACEMENT)),)
 VMM_CFLAGS += -DAGENTOS_GUEST_DUAL=1
 endif
 
+ifeq ($(VMM_SLOT),primary)
+VMM_CFLAGS += -DAGENTOS_GUEST_PRIMARY=1
+else ifeq ($(VMM_SLOT),secondary)
+VMM_CFLAGS += -DAGENTOS_GUEST_SECONDARY=1
+else
+$(error VMM_SLOT must be primary or secondary, got '$(VMM_SLOT)')
+endif
+
 VMM_CONFIG_STAMP := $(BUILD_DIR)/vmm-$(VMM_SLOT).stamp
 
 $(VMM_CONFIG_STAMP): FORCE
@@ -135,19 +143,22 @@ $(BUILD_DIR)/guest_primary_profile.o: $(PKG_PROFILE) $(GUEST_PROFILE_BIN)
 		-target aarch64-none-elf $(PKG_PROFILE) -o $@
 
 GUEST_VMM_PRIMARY_OBJ := $(BUILD_DIR)/guest_vmm_primary.full.o
-GPU_SHMEM_FULL_OBJ := $(BUILD_DIR)/gpu_shmem.full.o
-VMM_PD_ENTRY_OBJ   := $(BUILD_DIR)/pd_entry.vmm.o
-NET_VIRT_PUMP_OBJ  := $(BUILD_DIR)/net_virt_pump.o
-VMM_VIRTIO_NET_OBJ := $(BUILD_DIR)/vmm_virtio_net.o
-GPA_TRANSLATE_OBJ  := $(BUILD_DIR)/gpa_translate.o
-VMM_GUEST_RAM_OBJ  := $(BUILD_DIR)/vmm_guest_ram.o
-GUEST_VMM_RUNTIME_OBJ := $(BUILD_DIR)/guest_vmm_runtime.o
-GUEST_VMM_LOOP_OBJ := $(BUILD_DIR)/guest_vmm_loop.o
-GUEST_PROFILE_VALIDATE_OBJ := $(BUILD_DIR)/guest_profile_validate.o
-GUEST_BOOT_OBJ := $(BUILD_DIR)/guest_boot.o
-BLK_VIRT_PUMP_OBJ  := $(BUILD_DIR)/blk_virt_pump.o
-VMM_VIRTIO_BLK_OBJ := $(BUILD_DIR)/vmm_virtio_blk.o
-VMM_VIRTIO_CONSOLE_OBJ := $(BUILD_DIR)/vmm_virtio_console.o
+# Every object compiled with VMM_CFLAGS is slot-private. A dual build invokes
+# this file twice in the same BUILD_DIR; sharing these paths would let the
+# second invocation silently reuse objects carrying the first slot's macros.
+GPU_SHMEM_FULL_OBJ := $(BUILD_DIR)/gpu_shmem.$(VMM_SLOT).full.o
+VMM_PD_ENTRY_OBJ   := $(BUILD_DIR)/pd_entry.$(VMM_SLOT).vmm.o
+NET_VIRT_PUMP_OBJ  := $(BUILD_DIR)/net_virt_pump.$(VMM_SLOT).o
+VMM_VIRTIO_NET_OBJ := $(BUILD_DIR)/vmm_virtio_net.$(VMM_SLOT).o
+GPA_TRANSLATE_OBJ  := $(BUILD_DIR)/gpa_translate.$(VMM_SLOT).o
+VMM_GUEST_RAM_OBJ  := $(BUILD_DIR)/vmm_guest_ram.$(VMM_SLOT).o
+GUEST_VMM_RUNTIME_OBJ := $(BUILD_DIR)/guest_vmm_runtime.$(VMM_SLOT).o
+GUEST_VMM_LOOP_OBJ := $(BUILD_DIR)/guest_vmm_loop.$(VMM_SLOT).o
+GUEST_PROFILE_VALIDATE_OBJ := $(BUILD_DIR)/guest_profile_validate.$(VMM_SLOT).o
+GUEST_BOOT_OBJ := $(BUILD_DIR)/guest_boot.$(VMM_SLOT).o
+BLK_VIRT_PUMP_OBJ  := $(BUILD_DIR)/blk_virt_pump.$(VMM_SLOT).o
+VMM_VIRTIO_BLK_OBJ := $(BUILD_DIR)/vmm_virtio_blk.$(VMM_SLOT).o
+VMM_VIRTIO_CONSOLE_OBJ := $(BUILD_DIR)/vmm_virtio_console.$(VMM_SLOT).o
 
 # ─── Compile guest_vmm.c + gpu_shmem.c ──────────────────────────────────
 #
@@ -177,14 +188,14 @@ $(VMM_PD_ENTRY_OBJ): $(KERNEL_SRC_DIR)/src/pd_entry.c $(VMM_CONFIG_STAMP)
 	@echo "[VMM] Compiling pd_entry.c..."
 	clang $(VMM_CFLAGS) -c -o $@ $<
 
-$(NET_VIRT_PUMP_OBJ): $(AGENTOS_ROOT)/platform/net-virt/net_virt_pump.c \
+$(NET_VIRT_PUMP_OBJ): $(AGENTOS_ROOT)/platform/net-virt/net_virt_pump.c $(VMM_CONFIG_STAMP) \
                       $(AGENTOS_ROOT)/platform/include/platform/net_layout.h \
                       $(AGENTOS_ROOT)/platform/include/platform/net_virt_pump.h
 	@mkdir -p $(BUILD_DIR)
 	@echo "[VMM] Compiling net_virt_pump.c..."
 	clang $(VMM_CFLAGS) -c -o $@ $<
 
-$(VMM_VIRTIO_NET_OBJ): $(AGENTOS_ROOT)/platform/net-virt/vmm_virtio_net.c \
+$(VMM_VIRTIO_NET_OBJ): $(AGENTOS_ROOT)/platform/net-virt/vmm_virtio_net.c $(VMM_CONFIG_STAMP) \
                        $(AGENTOS_ROOT)/platform/include/platform/net_layout.h \
                        $(AGENTOS_ROOT)/platform/include/platform/net_host_layout.h \
                        $(AGENTOS_ROOT)/platform/include/platform/net_virt_pump.h \
@@ -195,52 +206,52 @@ $(VMM_VIRTIO_NET_OBJ): $(AGENTOS_ROOT)/platform/net-virt/vmm_virtio_net.c \
 	@echo "[VMM] Compiling vmm_virtio_net.c..."
 	clang $(VMM_CFLAGS) -c -o $@ $<
 
-$(GPA_TRANSLATE_OBJ): $(AGENTOS_ROOT)/platform/guest-ram/gpa_translate.c \
+$(GPA_TRANSLATE_OBJ): $(AGENTOS_ROOT)/platform/guest-ram/gpa_translate.c $(VMM_CONFIG_STAMP) \
                       $(AGENTOS_ROOT)/platform/include/platform/guest_ram.h
 	@mkdir -p $(BUILD_DIR)
 	@echo "[VMM] Compiling gpa_translate.c..."
 	clang $(VMM_CFLAGS) -c -o $@ $<
 
-$(VMM_GUEST_RAM_OBJ): $(AGENTOS_ROOT)/platform/guest-ram/vmm_guest_ram.c \
+$(VMM_GUEST_RAM_OBJ): $(AGENTOS_ROOT)/platform/guest-ram/vmm_guest_ram.c $(VMM_CONFIG_STAMP) \
                       $(AGENTOS_ROOT)/platform/include/platform/guest_ram.h \
                       $(LIBVMM_ABS)/include/libvmm/virtio/gpa.h
 	@mkdir -p $(BUILD_DIR)
 	@echo "[VMM] Compiling vmm_guest_ram.c..."
 	clang $(VMM_CFLAGS) -c -o $@ $<
 
-$(GUEST_VMM_RUNTIME_OBJ): $(AGENTOS_ROOT)/platform/guest-vmm/runtime.c \
+$(GUEST_VMM_RUNTIME_OBJ): $(AGENTOS_ROOT)/platform/guest-vmm/runtime.c $(VMM_CONFIG_STAMP) \
                          $(AGENTOS_ROOT)/platform/include/platform/guest_vmm_runtime.h
 	@mkdir -p $(BUILD_DIR)
 	@echo "[VMM] Compiling shared guest VMM runtime..."
 	clang $(VMM_CFLAGS) -c -o $@ $<
 
-$(GUEST_VMM_LOOP_OBJ): $(AGENTOS_ROOT)/platform/guest-vmm/loop.c \
+$(GUEST_VMM_LOOP_OBJ): $(AGENTOS_ROOT)/platform/guest-vmm/loop.c $(VMM_CONFIG_STAMP) \
 			      $(AGENTOS_ROOT)/platform/include/platform/guest_vmm_loop.h
 	@mkdir -p $(BUILD_DIR)
 	@echo "[VMM] Compiling shared guest VMM receive loop..."
 	clang $(VMM_CFLAGS) -c -o $@ $<
 
-$(GUEST_PROFILE_VALIDATE_OBJ): $(AGENTOS_ROOT)/platform/guest-vmm/profile.c \
+$(GUEST_PROFILE_VALIDATE_OBJ): $(AGENTOS_ROOT)/platform/guest-vmm/profile.c $(VMM_CONFIG_STAMP) \
 				      $(AGENTOS_ROOT)/platform/include/platform/guest_profile.h
 	@mkdir -p $(BUILD_DIR)
 	@echo "[VMM] Compiling guest profile validator..."
 	clang $(VMM_CFLAGS) -c -o $@ $<
 
-$(GUEST_BOOT_OBJ): $(AGENTOS_ROOT)/platform/guest-vmm/boot.c \
+$(GUEST_BOOT_OBJ): $(AGENTOS_ROOT)/platform/guest-vmm/boot.c $(VMM_CONFIG_STAMP) \
 			  $(AGENTOS_ROOT)/platform/include/platform/guest_boot.h \
 			  $(AGENTOS_ROOT)/platform/include/platform/guest_profile.h
 	@mkdir -p $(BUILD_DIR)
 	@echo "[VMM] Compiling guest-neutral boot executor..."
 	clang $(VMM_CFLAGS) -c -o $@ $<
 
-$(BLK_VIRT_PUMP_OBJ): $(AGENTOS_ROOT)/platform/blk-virt/blk_virt_pump.c \
+$(BLK_VIRT_PUMP_OBJ): $(AGENTOS_ROOT)/platform/blk-virt/blk_virt_pump.c $(VMM_CONFIG_STAMP) \
                       $(AGENTOS_ROOT)/platform/include/platform/blk_layout.h \
                       $(AGENTOS_ROOT)/platform/include/platform/blk_virt_pump.h
 	@mkdir -p $(BUILD_DIR)
 	@echo "[VMM] Compiling blk_virt_pump.c..."
 	clang $(VMM_CFLAGS) -c -o $@ $<
 
-$(VMM_VIRTIO_BLK_OBJ): $(AGENTOS_ROOT)/platform/blk-virt/vmm_virtio_blk.c \
+$(VMM_VIRTIO_BLK_OBJ): $(AGENTOS_ROOT)/platform/blk-virt/vmm_virtio_blk.c $(VMM_CONFIG_STAMP) \
                        $(AGENTOS_ROOT)/platform/include/platform/blk_layout.h \
                        $(AGENTOS_ROOT)/platform/include/platform/blk_virt_pump.h \
                        $(AGENTOS_ROOT)/platform/include/platform/vmm_virtio_blk.h
@@ -248,7 +259,7 @@ $(VMM_VIRTIO_BLK_OBJ): $(AGENTOS_ROOT)/platform/blk-virt/vmm_virtio_blk.c \
 	@echo "[VMM] Compiling vmm_virtio_blk.c..."
 	clang $(VMM_CFLAGS) -c -o $@ $<
 
-$(VMM_VIRTIO_CONSOLE_OBJ): $(AGENTOS_ROOT)/platform/serial-virt/vmm_virtio_console.c \
+$(VMM_VIRTIO_CONSOLE_OBJ): $(AGENTOS_ROOT)/platform/serial-virt/vmm_virtio_console.c $(VMM_CONFIG_STAMP) \
                            $(AGENTOS_ROOT)/platform/include/platform/serial_layout.h \
                            $(AGENTOS_ROOT)/platform/include/platform/vmm_virtio_console.h \
                            $(LIBVMM_ABS)/include/libvmm/virtio/console.h \
@@ -360,15 +371,15 @@ $(BUILD_DIR)/guest_vmm_secondary.elf: $(BUILD_DIR)/guest_vmm_secondary.o \
 	@echo "[VMM] guest_vmm_secondary.elf ✓"
 
 vmm-clean:
-	rm -f $(BUILD_DIR)/guest_vmm_primary.full.o $(BUILD_DIR)/gpu_shmem.full.o $(BUILD_DIR)/pd_entry.vmm.o $(BUILD_DIR)/guest_vmm_primary.elf
-	rm -f $(BUILD_DIR)/net_virt_pump.o $(BUILD_DIR)/vmm_virtio_net.o
-	rm -f $(BUILD_DIR)/gpa_translate.o
-	rm -f $(BUILD_DIR)/vmm_guest_ram.o
-	rm -f $(BUILD_DIR)/guest_vmm_runtime.o
-	rm -f $(BUILD_DIR)/guest_profile_validate.o $(BUILD_DIR)/*guest_profile.o
-	rm -f $(BUILD_DIR)/guest_boot.o
-	rm -f $(BUILD_DIR)/blk_virt_pump.o $(BUILD_DIR)/vmm_virtio_blk.o
-	rm -f $(BUILD_DIR)/vmm_virtio_console.o
+	rm -f $(BUILD_DIR)/guest_vmm_primary.full.o $(BUILD_DIR)/gpu_shmem.full.o $(BUILD_DIR)/gpu_shmem.*.full.o $(BUILD_DIR)/pd_entry.vmm.o $(BUILD_DIR)/pd_entry.*.vmm.o $(BUILD_DIR)/guest_vmm_primary.elf
+	rm -f $(BUILD_DIR)/net_virt_pump.o $(BUILD_DIR)/net_virt_pump.*.o $(BUILD_DIR)/vmm_virtio_net.o $(BUILD_DIR)/vmm_virtio_net.*.o
+	rm -f $(BUILD_DIR)/gpa_translate.o $(BUILD_DIR)/gpa_translate.*.o
+	rm -f $(BUILD_DIR)/vmm_guest_ram.o $(BUILD_DIR)/vmm_guest_ram.*.o
+	rm -f $(BUILD_DIR)/guest_vmm_runtime.o $(BUILD_DIR)/guest_vmm_runtime.*.o $(BUILD_DIR)/guest_vmm_loop.*.o
+	rm -f $(BUILD_DIR)/guest_profile_validate.*.o $(BUILD_DIR)/*guest_profile.o
+	rm -f $(BUILD_DIR)/guest_profile_validate.o $(BUILD_DIR)/guest_boot.o $(BUILD_DIR)/guest_boot.*.o
+	rm -f $(BUILD_DIR)/blk_virt_pump.o $(BUILD_DIR)/blk_virt_pump.*.o $(BUILD_DIR)/vmm_virtio_blk.o $(BUILD_DIR)/vmm_virtio_blk.*.o
+	rm -f $(BUILD_DIR)/vmm_virtio_console.o $(BUILD_DIR)/vmm_virtio_console.*.o
 	rm -f $(BUILD_DIR)/guest_vmm_secondary.o $(BUILD_DIR)/guest_secondary_images.o $(BUILD_DIR)/guest_vmm_secondary.elf
 	rm -f $(BUILD_DIR)/images.o $(BUILD_DIR)/vm.dts $(BUILD_DIR)/vm.dtb
 	rm -rf $(BUILD_DIR)/guest-bundle-primary $(BUILD_DIR)/guest-bundle-secondary

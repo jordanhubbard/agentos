@@ -366,6 +366,24 @@ static int test_bridge_uses_selected_client_data(void)
                   "host bridge uses each selected client's RX/TX data window");
 }
 
+static int test_vmm_build_selects_slot_bridge(void)
+{
+    const char *vmm_make = "kernel/agentos-root-task/vmm.mk";
+    int primary = src_contains(vmm_make,
+                               "VMM_CFLAGS += -DAGENTOS_GUEST_PRIMARY=1");
+    int secondary = src_contains(vmm_make,
+                                 "VMM_CFLAGS += -DAGENTOS_GUEST_SECONDARY=1");
+    int slot_private = src_contains(
+        vmm_make,
+        "VMM_VIRTIO_NET_OBJ := $(BUILD_DIR)/vmm_virtio_net.$(VMM_SLOT).o");
+    int config_dependent = src_contains(
+        vmm_make,
+        "vmm_virtio_net.c $(VMM_CONFIG_STAMP)");
+
+    return tap_ok(primary && secondary && slot_private && config_dependent,
+                  "VMM compiles a cache-safe host bridge for each guest slot");
+}
+
 #define VQ_NUM 8u
 
 static uint8_t g_region[AOS_NET_CLIENT_STRIDE];
@@ -710,6 +728,7 @@ int main(void)
     (void)test_qemu_page_unmapped();
     (void)test_host_backed_architecture();
     (void)test_bridge_uses_selected_client_data();
+    (void)test_vmm_build_selects_slot_bridge();
     (void)test_mmio_probe();
     (void)test_guest_tx_rx_loopback();
     (void)test_chained_tx_desc();
