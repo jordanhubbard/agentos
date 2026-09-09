@@ -599,14 +599,19 @@ static net_pd_client_t *net_host_ipv4_client(const uint8_t *frame,
     return NULL;
 }
 
+static bool net_host_is_ipv4_arp(const uint8_t *frame, uint32_t len)
+{
+    return len >= 42u && frame[12] == 0x08u && frame[13] == 0x06u &&
+           frame[14] == 0x00u && frame[15] == 0x01u &&
+           frame[16] == 0x08u && frame[17] == 0x00u &&
+           frame[18] == 6u && frame[19] == 4u;
+}
+
 static net_pd_client_t *net_host_arp_client(const uint8_t *frame,
                                              uint32_t len)
 {
     uint32_t target;
-    if (len < 42u || frame[12] != 0x08u || frame[13] != 0x06u ||
-        frame[14] != 0x00u || frame[15] != 0x01u ||
-        frame[16] != 0x08u || frame[17] != 0x00u ||
-        frame[18] != 6u || frame[19] != 4u) {
+    if (!net_host_is_ipv4_arp(frame, len)) {
         return NULL;
     }
     target = ((uint32_t)frame[38] << 24) |
@@ -659,14 +664,13 @@ static void net_host_enqueue_frame(net_pd_client_t *c,
     for (uint32_t j = 0u; j < len; j++) {
         dst[j] = frame[j];
     }
-    if (rewrite_destination) {
+    bool arp = net_host_is_ipv4_arp(frame, len);
+    bool arp_reply = arp && frame[20] == 0x00u && frame[21] == 0x02u;
+    if (rewrite_destination && (!arp || arp_reply)) {
         for (uint32_t j = 0u; j < 6u; j++) {
             dst[j] = c->mac[j];
         }
-        if (len >= 42u && dst[12] == 0x08u && dst[13] == 0x06u &&
-            dst[14] == 0x00u && dst[15] == 0x01u &&
-            dst[16] == 0x08u && dst[17] == 0x00u &&
-            dst[18] == 6u && dst[19] == 4u) {
+        if (arp_reply) {
             for (uint32_t j = 0u; j < 6u; j++) {
                 dst[32u + j] = c->mac[j];
             }
