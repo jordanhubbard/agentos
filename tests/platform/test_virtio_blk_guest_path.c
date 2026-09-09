@@ -234,12 +234,14 @@ int main(void)
                               "attach_profile_media(&mut c, repo_root, &guest.profile)"),
                  "dual-image Ubuntu also uses agentOS bus.8, never guest bus.1");
     (void)tap_ok(src_contains("kernel/agentos-root-task/Makefile",
-                              "UBUNTU_BOOT_MODE=%s") &&
+                              "GUEST_PRIMARY_PROFILE=%s") &&
                  src_contains("kernel/agentos-root-task/Makefile",
-                              "CFLAGS_ROOT_TASK=%s") &&
+                              "GUEST_PRIMARY_LARGE=%s") &&
+                 src_contains("kernel/agentos-root-task/vmm.mk",
+                              "GUEST_PLACEMENT=%s") &&
                  src_contains("kernel/agentos-root-task/vmm.mk",
                               "VMM_CFLAGS=%s"),
-                 "Ubuntu mode and flags invalidate stale root-task and VMM objects");
+                 "profile, placement, and flags invalidate stale root-task and VMM objects");
     (void)tap_ok(src_contains("kernel/agentos-root-task/src/system_desc_aarch64.c",
                               "{ SVC_ID_VIRTIO_BLK, 12u }") &&
                  src_contains("platform/blk-virt/vmm_virtio_blk.c",

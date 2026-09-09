@@ -140,18 +140,21 @@ fn download_tar_member(url: &str, member: &str, dest: &Path) -> anyhow::Result<(
 
 pub fn run(args: &FetchGuestArgs) -> anyhow::Result<()> {
     let root = repo_root()?;
-    let output_dir = match &args.output_dir {
-        Some(d) => PathBuf::from(d),
-        None => root.join("build/guest-images"),
-    };
-    fs::create_dir_all(&output_dir)
-        .with_context(|| format!("failed to create output dir: {}", output_dir.display()))?;
-
     let profile_root = if args.profile_root.is_absolute() {
         args.profile_root.clone()
     } else {
         root.join(&args.profile_root)
     };
+    let output_dir = match &args.output_dir {
+        Some(d) => PathBuf::from(d),
+        None => root.join(cmd_guest_profile::acquire_output_dir(
+            &profile_root,
+            &args.profile,
+        )?),
+    };
+    fs::create_dir_all(&output_dir)
+        .with_context(|| format!("failed to create output dir: {}", output_dir.display()))?;
+
     let (id, recipe) = cmd_guest_profile::acquire_recipe(&profile_root, &args.profile)?;
     for step in &recipe {
         execute_acquire_step(step, &output_dir)?;

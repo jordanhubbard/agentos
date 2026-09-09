@@ -7,9 +7,9 @@
 / {
     dma-coherent;
 
-    memory@@UBUNTU_RAM_NODE@ {
+    memory@@GUEST_RAM_NODE@ {
         device_type = "memory";
-        reg = <@UBUNTU_RAM_BASE@ 0x00 @UBUNTU_RAM_SIZE@>;
+        reg = <0x00 @GUEST_RAM_BASE@ 0x00 @GUEST_RAM_SIZE@>;
     };
 
     flash@0 {
@@ -25,9 +25,9 @@
     };
 
     chosen {
-        bootargs = "@UBUNTU_BOOTARGS@";
-        linux,initrd-start = <@UBUNTU_INITRD_START@>;
-        linux,initrd-end = <@UBUNTU_INITRD_END@>;
+        bootargs = "@GUEST_BOOTARGS@";
+        linux,initrd-start = <0x00 @GUEST_INITRD_START@>;
+        linux,initrd-end = <0x00 @GUEST_INITRD_END@>;
     };
 
     /*

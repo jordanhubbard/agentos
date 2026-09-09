@@ -40,6 +40,28 @@ endif
 
 TARGET_ARCH ?= $(CONFIG_TARGET)
 GUEST_OS    ?= $(CONFIG_GUEST_OS)
+# Canonical build selectors. GUEST_OS remains a compatibility spelling and is
+# translated here; lower layers receive only profile paths and slot policy.
+GUEST_PROFILE ?=
+GUEST_PRIMARY_PROFILE ?=
+GUEST_SECONDARY_PROFILE ?=
+GUEST_PRIMARY_LARGE ?= 0
+ifneq ($(strip $(GUEST_PROFILE)),)
+  GUEST_PRIMARY_PROFILE := $(GUEST_PROFILE)
+else ifeq ($(GUEST_OS),ubuntu)
+  GUEST_PRIMARY_PROFILE := $(if $(filter live,$(UBUNTU_BOOT_MODE)),ubuntu-live.toml,ubuntu-e2e.toml)
+  GUEST_PRIMARY_LARGE := $(if $(filter live,$(UBUNTU_BOOT_MODE)),1,0)
+else ifeq ($(GUEST_OS),buildroot)
+  GUEST_PRIMARY_PROFILE := buildroot.toml
+else ifeq ($(GUEST_OS),freebsd)
+  GUEST_SECONDARY_PROFILE := freebsd.toml
+else ifeq ($(GUEST_OS),both)
+  GUEST_PRIMARY_PROFILE := $(if $(filter live,$(UBUNTU_BOOT_MODE)),ubuntu-live.toml,ubuntu-e2e.toml)
+  GUEST_SECONDARY_PROFILE := freebsd.toml
+  GUEST_PRIMARY_LARGE := $(if $(filter live,$(UBUNTU_BOOT_MODE)),1,0)
+else ifneq ($(GUEST_OS),none)
+  $(error unknown legacy GUEST_OS=$(GUEST_OS); use GUEST_PROFILE=<profile.toml>)
+endif
 QEMU_TEST_TIMEOUT ?= 300
 # Correct suspend accounting freezes each guest's architectural time while it
 # is stopped.  A full vendor-live-media dual proof can therefore take longer
@@ -467,15 +489,11 @@ build-tools:
 # fetch-guest: execute the bounded acquisition recipe for selected profiles
 # =============================================================================
 fetch-guest:
-ifeq ($(GUEST_OS),freebsd)
-	@cargo xtask fetch-guest --profile freebsd.toml --output-dir $(AGENTOS_IMAGES)
-else ifeq ($(GUEST_OS),ubuntu)
-	@cargo xtask fetch-guest --profile $(if $(filter live,$(UBUNTU_BOOT_MODE)),ubuntu-live.toml,ubuntu-e2e.toml) --output-dir $(AGENTOS_IMAGES)
-else ifeq ($(GUEST_OS),both)
-	@cargo xtask fetch-guest --profile $(if $(filter live,$(UBUNTU_BOOT_MODE)),ubuntu-live.toml,ubuntu-e2e.toml) --output-dir $(AGENTOS_IMAGES)
-	@cargo xtask fetch-guest --profile freebsd.toml --output-dir $(AGENTOS_IMAGES)
-else ifeq ($(GUEST_OS),buildroot)
-	@cargo xtask fetch-guest --profile buildroot.toml --output-dir $(BUILD_DIR)
+ifneq ($(strip $(GUEST_PRIMARY_PROFILE)),)
+	@cargo xtask fetch-guest --profile $(GUEST_PRIMARY_PROFILE)
+endif
+ifneq ($(strip $(GUEST_SECONDARY_PROFILE)),)
+	@cargo xtask fetch-guest --profile $(GUEST_SECONDARY_PROFILE)
 endif
 
 # =============================================================================
@@ -507,6 +525,9 @@ endif
 		SEL4_PROFILE=$(SEL4_PROFILE) \
 		AGENTOS_FREEBSD_IMAGE=$(if $(AGENTOS_FREEBSD_IMAGE),$(AGENTOS_FREEBSD_IMAGE),$(FREEBSD_IMAGE)) \
 		GUEST_OS=$(GUEST_OS) \
+		GUEST_PRIMARY_PROFILE=$(GUEST_PRIMARY_PROFILE) \
+		GUEST_SECONDARY_PROFILE=$(GUEST_SECONDARY_PROFILE) \
+		GUEST_PRIMARY_LARGE=$(GUEST_PRIMARY_LARGE) \
 		UBUNTU_BOOT_MODE=$(UBUNTU_BOOT_MODE) \
 		BOARD_NAME=$(BOARD_NAME) \
 		BOARD_NATIVE=$(BOARD_NATIVE) \

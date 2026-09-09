@@ -8,6 +8,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io::Read;
 use std::path::{Component, Path, PathBuf};
+use std::process::Command;
 
 const MAGIC: u64 = 0x0046_5250_4753_4f41;
 const VERSION: u16 = 2;
@@ -38,6 +39,9 @@ pub struct GuestProfileArgs {
     /// Base directory for relative artifact cache paths.
     #[arg(long, default_value = ".")]
     pub repo_root: PathBuf,
+    /// Prepare a canonical build bundle instead of emitting only a manifest.
+    #[arg(long)]
+    pub prepare_dir: Option<PathBuf>,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq)]
@@ -117,12 +121,23 @@ struct Placement {
 struct Host {
     qemu: Option<Qemu>,
     console: Option<HostConsole>,
+    build: Option<HostBuild>,
     #[serde(default)]
     acquire: Vec<RecipeStep>,
     #[serde(default)]
     provision: Vec<RecipeStep>,
     #[serde(default)]
     test: Vec<RecipeStep>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct HostBuild {
+    adapter: String,
+    template: String,
+    base: Option<String>,
+    bootargs: Option<String>,
+    acquire_dir: String,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -255,6 +270,23 @@ pub(crate) fn acquire_recipe(root: &Path, path: &Path) -> Result<(String, Vec<Re
     Ok((id, steps))
 }
 
+pub(crate) fn acquire_output_dir(root: &Path, path: &Path) -> Result<PathBuf> {
+    let (profile, _) = resolve(root, path, &mut Vec::new())?;
+    validate(&profile, None)?;
+    ensure!(
+        profile.status == Some(Status::Runtime),
+        "only status=runtime profiles can acquire boot artifacts"
+    );
+    let value = &profile
+        .host
+        .as_ref()
+        .and_then(|host| host.build.as_ref())
+        .context("runtime profile requires host.build metadata")?
+        .acquire_dir;
+    validate_repo_relative(value, "host.build.acquire_dir")?;
+    Ok(PathBuf::from(value))
+}
+
 pub(crate) fn resolve_alias(root: &Path, alias: &str) -> Result<PathBuf> {
     ensure!(
         valid_alias(alias),
@@ -352,6 +384,10 @@ pub fn run(args: &GuestProfileArgs) -> Result<()> {
         );
         ensure!(args.output.is_none(), "--check-all does not emit --output");
         ensure!(
+            args.prepare_dir.is_none(),
+            "--check-all does not prepare a build bundle"
+        );
+        ensure!(
             !args.verify_artifacts,
             "--check-all cannot verify artifacts for mutually exclusive profiles"
         );
@@ -381,6 +417,19 @@ pub fn run(args: &GuestProfileArgs) -> Result<()> {
         .profile
         .as_ref()
         .context("--profile is required unless --check-all is used")?;
+    if let Some(prepare_dir) = &args.prepare_dir {
+        ensure!(
+            args.output.is_none(),
+            "--prepare-dir and --output are mutually exclusive"
+        );
+        return prepare_bundle(
+            &args.root,
+            profile_path,
+            &args.placement,
+            &args.repo_root,
+            prepare_dir,
+        );
+    }
     let output = args
         .output
         .as_ref()
@@ -405,6 +454,220 @@ pub fn run(args: &GuestProfileArgs) -> Result<()> {
         output.display()
     );
     Ok(())
+}
+
+fn prepare_bundle(
+    root: &Path,
+    profile_path: &Path,
+    placement_name: &str,
+    repo_root: &Path,
+    output_dir: &Path,
+) -> Result<()> {
+    let (profile, canonical) = resolve(root, profile_path, &mut Vec::new())?;
+    validate(&profile, Some(placement_name))?;
+    ensure!(
+        profile.status == Some(Status::Runtime),
+        "only status=runtime profiles can enter a build bundle"
+    );
+    let host_build = profile
+        .host
+        .as_ref()
+        .and_then(|host| host.build.as_ref())
+        .context("runtime profile requires host.build metadata")?;
+    let placement = &profile.placements[placement_name];
+    let kernel = artifact_path(&profile, "kernel", repo_root)?;
+    let initrd = profile
+        .artifacts
+        .get("initrd")
+        .map(|_| artifact_path(&profile, "initrd", repo_root))
+        .transpose()?;
+    ensure!(
+        kernel.is_file(),
+        "guest kernel is not staged: {}",
+        kernel.display()
+    );
+    if let Some(path) = &initrd {
+        ensure!(
+            path.is_file(),
+            "guest initrd is not staged: {}",
+            path.display()
+        );
+    }
+
+    fs::create_dir_all(output_dir)
+        .with_context(|| format!("creating build bundle {}", output_dir.display()))?;
+    let dtb = render_profile_dtb(
+        &profile,
+        placement,
+        host_build,
+        initrd.as_deref(),
+        repo_root,
+        output_dir,
+    )?;
+    let dtb_cache = artifact_path(&profile, "dtb", repo_root)?;
+    if let Some(parent) = dtb_cache.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::copy(&dtb, &dtb_cache).with_context(|| {
+        format!(
+            "copying rendered DTB {} to {}",
+            dtb.display(),
+            dtb_cache.display()
+        )
+    })?;
+    verify_artifacts(&profile, placement_name, repo_root)?;
+
+    fs::copy(&kernel, output_dir.join("kernel.bin"))?;
+    fs::copy(&dtb, output_dir.join("guest.dtb"))?;
+    let packaged_initrd = output_dir.join("initrd.bin");
+    if profile
+        .boot
+        .as_ref()
+        .and_then(|boot| boot.media_initrd_path.as_ref())
+        .is_some()
+        || initrd.is_none()
+    {
+        fs::write(&packaged_initrd, [])?;
+    } else {
+        fs::copy(initrd.as_ref().unwrap(), &packaged_initrd)?;
+    }
+    fs::write(
+        output_dir.join("profile.bin"),
+        compile(&profile, &canonical, placement_name)?,
+    )?;
+    println!(
+        "[guest-profile] prepared {} in {}",
+        profile.id.as_deref().unwrap_or("unknown"),
+        output_dir.display()
+    );
+    Ok(())
+}
+
+fn artifact_path(profile: &Profile, name: &str, repo_root: &Path) -> Result<PathBuf> {
+    let cache = required(
+        &profile.artifacts[name].cache,
+        &format!("artifacts.{name}.cache"),
+    )?;
+    Ok(repo_root.join(cache))
+}
+
+fn render_profile_dtb(
+    profile: &Profile,
+    placement: &Placement,
+    build: &HostBuild,
+    initrd: Option<&Path>,
+    repo_root: &Path,
+    output_dir: &Path,
+) -> Result<PathBuf> {
+    let command_line = build
+        .bootargs
+        .as_deref()
+        .or_else(|| {
+            profile
+                .boot
+                .as_ref()
+                .and_then(|boot| boot.command_line.as_deref())
+        })
+        .context("boot.command_line is required")?;
+    ensure!(
+        !command_line
+            .chars()
+            .any(|ch| matches!(ch, '\0' | '\n' | '\r' | '"' | '\\')),
+        "boot.command_line contains characters unsafe for a DTS string"
+    );
+    let gpa = placement.guest_gpa_base.unwrap();
+    let ram = placement.ram_size.unwrap();
+    let initrd_start = placement.initrd_load_address.unwrap_or(0);
+    let initrd_size = initrd
+        .map(|path| fs::metadata(path).map(|metadata| metadata.len()))
+        .transpose()?
+        .unwrap_or(0);
+    let initrd_end = initrd_start
+        .checked_add(initrd_size)
+        .context("initrd end address overflow")?;
+    let substitutions = [
+        ("@GUEST_RAM_NODE@", format!("{gpa:x}")),
+        ("@GUEST_RAM_BASE@", format!("0x{gpa:x}")),
+        ("@GUEST_RAM_SIZE@", format!("0x{ram:x}")),
+        ("@GUEST_INITRD_START@", format!("0x{initrd_start:x}")),
+        ("@GUEST_INITRD_END@", format!("0x{initrd_end:x}")),
+        ("@GUEST_BOOTARGS@", command_line.to_string()),
+    ];
+    let template_path = confined_repo_path(repo_root, &build.template)?;
+    let template = render_dts_template(&fs::read_to_string(&template_path)?, &substitutions)?;
+    let overlay_path = output_dir.join("guest-overlay.dts");
+    fs::write(&overlay_path, template)?;
+
+    let dts_path = output_dir.join("guest.dts");
+    match build.adapter.as_str() {
+        "linux-merge" => {
+            let base_rel = build.base.as_deref().context("linux-merge requires base")?;
+            let base_path = confined_repo_path(repo_root, base_rel)?;
+            let original = fs::read_to_string(&base_path)?;
+            let old_memory = "memory@40000000";
+            let old_reg = "0x00 0x40000000 0x00 0x80000000";
+            ensure!(
+                original.contains(old_memory) && original.contains(old_reg),
+                "Linux base DTS does not contain its bounded memory placeholders"
+            );
+            let base = original
+                .replace(old_memory, &format!("memory@{gpa:x}"))
+                .replace(old_reg, &format!("0x00 0x{gpa:x} 0x00 0x{ram:x}"));
+            let base_rendered = output_dir.join("guest-base.dts");
+            fs::write(&base_rendered, base)?;
+            let output = Command::new(repo_root.join("libvmm/tools/dtscat"))
+                .arg(&base_rendered)
+                .arg(&overlay_path)
+                .output()
+                .context("running bounded Linux DTS merge")?;
+            ensure!(
+                output.status.success(),
+                "Linux DTS merge failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            fs::write(&dts_path, output.stdout)?;
+        }
+        "fdt-template" => fs::copy(&overlay_path, &dts_path).map(|_| ())?,
+        other => anyhow::bail!("unsupported host.build adapter {other:?}"),
+    }
+
+    let dtb_path = output_dir.join("rendered.dtb");
+    let output = Command::new("dtc")
+        .args(["-q", "-I", "dts", "-O", "dtb"])
+        .arg(&dts_path)
+        .output()
+        .context("running dtc for guest profile")?;
+    ensure!(
+        output.status.success(),
+        "guest DTB compilation failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    fs::write(&dtb_path, output.stdout)?;
+    Ok(dtb_path)
+}
+
+fn render_dts_template(source: &str, substitutions: &[(&str, String)]) -> Result<String> {
+    let mut rendered = source.to_string();
+    for (token, value) in substitutions {
+        rendered = rendered.replace(token, value);
+    }
+    ensure!(
+        !rendered.contains("@GUEST_"),
+        "guest DTS template contains an unresolved variable"
+    );
+    Ok(rendered)
+}
+
+fn confined_repo_path(repo_root: &Path, value: &str) -> Result<PathBuf> {
+    let path = Path::new(value);
+    ensure!(
+        !path.is_absolute()
+            && path
+                .components()
+                .all(|part| matches!(part, Component::Normal(_))),
+        "host.build paths must remain beneath --repo-root"
+    );
+    Ok(repo_root.join(path))
 }
 
 fn verify_artifacts(profile: &Profile, placement_name: &str, repo_root: &Path) -> Result<()> {
@@ -795,6 +1058,33 @@ fn validate_host(host: Option<&Host>) -> Result<()> {
             &["login", "probe-initramfs", "casper-live", "installer-shell"],
         )?;
     }
+    if let Some(build) = &host.build {
+        enum_value(&build.adapter, &["linux-merge", "fdt-template"])?;
+        validate_repo_relative(&build.template, "host.build.template")?;
+        validate_repo_relative(&build.acquire_dir, "host.build.acquire_dir")?;
+        match (build.adapter.as_str(), build.base.as_deref()) {
+            ("linux-merge", Some(base)) => {
+                validate_repo_relative(base, "host.build.base")?;
+            }
+            ("linux-merge", None) => anyhow::bail!("linux-merge requires host.build.base"),
+            ("fdt-template", None) => {}
+            ("fdt-template", Some(_)) => {
+                anyhow::bail!("fdt-template does not accept host.build.base")
+            }
+            _ => unreachable!(),
+        }
+        if let Some(bootargs) = &build.bootargs {
+            ensure!(
+                !bootargs.is_empty()
+                    && bootargs.len() <= 1024
+                    && bootargs.is_ascii()
+                    && !bootargs
+                        .chars()
+                        .any(|ch| matches!(ch, '\0' | '\n' | '\r' | '"' | '\\')),
+                "host.build.bootargs is not a bounded DTS string"
+            );
+        }
+    }
     for (recipe_name, recipe) in [
         ("acquire", &host.acquire),
         ("provision", &host.provision),
@@ -820,6 +1110,20 @@ fn validate_host(host: Option<&Host>) -> Result<()> {
             validate_host_action(step)?;
         }
     }
+    Ok(())
+}
+
+fn validate_repo_relative(value: &str, field: &str) -> Result<()> {
+    let path = Path::new(value);
+    ensure!(
+        !value.is_empty()
+            && value.len() <= 255
+            && !path.is_absolute()
+            && path
+                .components()
+                .all(|part| matches!(part, Component::Normal(_))),
+        "{field} must be a confined repository-relative path"
+    );
     Ok(())
 }
 
@@ -1199,6 +1503,7 @@ mod tests {
             host: Some(Host {
                 qemu: None,
                 console: None,
+                build: None,
                 acquire: steps,
                 provision: Vec::new(),
                 test: Vec::new(),

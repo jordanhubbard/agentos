@@ -20,12 +20,13 @@ arrays; tables merge recursively.
 
 ## Host and target boundary
 
-The TOML source may contain finite host recipes for acquisition, provisioning,
-and tests, plus bounded QEMU metadata. Profile aliases, machine options, RAM,
-host-media paths and bus numbers, SSH identity, console markers, requested
-VirtIO devices, and proof scope (`emulated` or `host-backed`) are data. Recipe
-actions come from a closed Rust whitelist and never appear in the binary
-manifest. There is no target scripting language or interpreter.
+The TOML source may contain finite host recipes for acquisition, build
+preparation, provisioning, and tests, plus bounded QEMU metadata. Profile
+aliases, machine options, RAM, host-media paths and bus numbers, SSH identity,
+console markers, requested VirtIO devices, DTB templates, and proof scope
+(`emulated` or `host-backed`) are data. Recipe actions and DTB adapters come
+from closed Rust whitelists and never appear in the binary manifest. There is
+no target scripting language or interpreter.
 
 The binary manifest contains only:
 
@@ -43,9 +44,12 @@ machine, memory, media, SSH, console, or VirtIO proof policy by distribution
 name. Runtime acquisition supports a closed set of semantic operations (HTTPS
 staging, archive/ISO extraction, arm64 image normalization, and deterministic
 probe-initramfs construction). Unknown actions and arguments fail closed. The
-build then hashes staged artifacts before embedding the manifest. The VMM
-validates the fixed wire representation and checks embedded artifact sizes
-before the guest-neutral boot executor copies anything into guest RAM.
+build executor renders a bounded FDT template, hashes all staged artifacts,
+and emits a canonical per-slot bundle containing `kernel.bin`, `guest.dtb`,
+`initrd.bin`, and `profile.bin`. `vmm.mk` packages only that bundle and has no
+distribution-specific artifact or DTB branches. The VMM validates the fixed
+wire representation and checks embedded artifact sizes before the
+guest-neutral boot executor copies anything into guest RAM.
 
 Legacy `--guest-os` and `GUEST_OS` spellings remain compatibility selectors.
 For a single guest, the value is resolved through the profile's `aliases`
@@ -90,11 +94,19 @@ cargo xtask guest-profile --profile buildroot.toml \
   --placement default --output build/tmp/buildroot.bin
 cargo xtask fetch-guest --profile ubuntu-e2e.toml \
   --output-dir build/guest-images
+cargo xtask guest-profile --profile ubuntu-e2e.toml \
+  --placement default --prepare-dir build/tmp/ubuntu-bundle
 ```
 
 The release dual-guest alias is data in
 `guest-scenarios/dual-release.toml`; `--guest-os both` is retained as its
 compatibility spelling.
+
+The canonical Make selectors are `GUEST_PROFILE` for one primary profile, or
+`GUEST_PRIMARY_PROFILE` plus `GUEST_SECONDARY_PROFILE` for explicit slot
+composition. `GUEST_OS` and `UBUNTU_BOOT_MODE` are translated once by the
+repository Makefile for compatibility and are not passed into the root-task or
+VMM build.
 
 Adding a profile does not add a VMM personality. Buildroot and Ubuntu extend
 the AArch64 Linux Image profile; Debian is the planned stable integration

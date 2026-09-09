@@ -8,6 +8,9 @@ aliases = ["ubuntu-live"]
 command_line = "console=hvc0 quiet loglevel=3 boot=casper noprompt systemd.show_status=false systemd.unit=console-getty.service panic=-1"
 media_initrd_path = "casper/initrd"
 
+[host.build]
+bootargs = "console=hvc0 quiet loglevel=3 boot=casper noprompt systemd.show_status=false systemd.unit=console-getty.service systemd.wants=systemd-user-sessions.service systemd.mask=ldconfig.service systemd.mask=systemd-udev-trigger.service systemd.mask=systemd-resolved.service systemd.mask=netplan-configure.service panic=-1"
+
 [artifacts.initrd]
 source = "ubuntu:26.04-live-server-arm64.iso:/casper/initrd"
 cache = "build/guest-images/ubuntu-26.04-aarch64-live-initrd"

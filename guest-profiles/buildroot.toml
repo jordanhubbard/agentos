@@ -15,7 +15,7 @@ sha256 = "014ed61d3fc5dfe8ebeb708b6e3c6d989df23f84ad9050675aeb674ca2c0f382"
 [artifacts.dtb]
 source = "generated:linux.dts+buildroot-overlay.dts"
 cache = "build/qemu_virt_aarch64/vm.dtb"
-sha256 = "4fdd74957639a76db0d534c7da1bbfb236169752ea39b20f38337a4fec0367e3"
+sha256 = "cf95f86766d41cc355b7544a91572b8a418f6db1b84facf1e29547ad50c6408d"
 
 [artifacts.initrd]
 source = "https://trustworthy.systems/Downloads/libvmm/images/6dcd1debf64e6d69b178cd0f46b8c4ae7cebe2a5-rootfs.cpio.gz.tar.gz"
@@ -36,3 +36,9 @@ args = { devices = "net,block,console", scope = "emulated" }
 
 [host.console]
 adapter = "login"
+
+[host.build]
+adapter = "linux-merge"
+base = "libvmm/examples/simple/board/qemu_virt_aarch64/linux.dts"
+template = "kernel/agentos-root-task/ubuntu-iso-overlay.dts.in"
+acquire_dir = "build/qemu_virt_aarch64"

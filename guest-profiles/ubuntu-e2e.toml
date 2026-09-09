@@ -37,6 +37,12 @@ host_port = 12222
 [host.console]
 adapter = "probe-initramfs"
 
+[host.build]
+adapter = "linux-merge"
+base = "libvmm/examples/simple/board/qemu_virt_aarch64/linux.dts"
+template = "kernel/agentos-root-task/ubuntu-iso-overlay.dts.in"
+acquire_dir = "build/guest-images"
+
 [[host.acquire]]
 action = "stage-url"
 args = { cache_name = "ubuntu-26.04-desktop-arm64.iso", output = "ubuntu-26.04-aarch64.iso", url = "https://cdimage.ubuntu.com/releases/26.04/release/ubuntu-26.04-desktop-arm64.iso" }

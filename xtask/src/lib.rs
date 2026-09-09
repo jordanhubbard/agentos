@@ -186,7 +186,7 @@ pub struct FetchGuestArgs {
     /// Directory containing guest profile TOML files.
     #[arg(long, default_value = "guest-profiles")]
     pub profile_root: std::path::PathBuf,
-    /// Destination directory; defaults to build/guest-images
+    /// Destination directory; defaults to host.build.acquire_dir from the profile.
     #[arg(long)]
     pub output_dir: Option<String>,
 }

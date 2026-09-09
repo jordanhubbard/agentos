@@ -17,7 +17,7 @@ autostart = true
 entry_from_image = false
 
 [boot]
-command_line = ""
+command_line = "FreeBSD:vfs.root.mountfrom=cd9660:/dev/iso9660/15_0_RELEASE_AARCH64_DVD console=ttyu0 boot_serial=YES"
 
 [artifacts.kernel]
 source = "freebsd:15.0-RELEASE-arm64-aarch64-disc1.iso:/boot/kernel/kernel"
@@ -65,6 +65,11 @@ host_port = 12223
 
 [host.console]
 adapter = "installer-shell"
+
+[host.build]
+adapter = "fdt-template"
+template = "kernel/agentos-root-task/freebsd-direct.dts"
+acquire_dir = "build/guest-images"
 
 [[host.acquire]]
 action = "stage-url"

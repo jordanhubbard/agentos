@@ -99,12 +99,12 @@ int main(void)
        !contains(overlay, "virtio_mmio@a000200") &&
        !contains(overlay, "virtio_mmio@a000600"),
        "Ubuntu DTB advertises agentOS net/blk and no QEMU passthrough");
-    ok(contains("kernel/agentos-root-task/vmm.mk", "console=hvc0"),
+    ok(contains("guest-profiles/ubuntu-e2e.toml", "console=hvc0"),
        "Ubuntu primary console is hvc0");
-    ok(contains("kernel/agentos-root-task/vmm.mk", "systemd.show_status=false") &&
-       !contains("kernel/agentos-root-task/vmm.mk",
+    ok(contains("guest-profiles/ubuntu-live.toml", "systemd.show_status=false") &&
+       !contains("guest-profiles/ubuntu-live.toml",
                  "systemd.mask=systemd-udevd.service") &&
-       !contains("kernel/agentos-root-task/vmm.mk",
+       !contains("guest-profiles/ubuntu-live.toml",
                  "systemd.mask=systemd-sysusers.service"),
        "Ubuntu live proof retains required udev and sysusers services");
     ok(contains(overlay, "pl011@9000000") &&

@@ -1,5 +1,5 @@
 #
-# agentOS Linux VMM Build — Sub-Makefile
+# agentOS profile-backed VMM build — sub-Makefile
 #
 # Invoked from the main kernel Makefile when ARCH=aarch64.
 # Uses the libvmm example pattern: generates a wrapper Makefile in BUILD_DIR,
@@ -22,101 +22,21 @@ SEL4_SDK ?= $(HOME)/.cache/agentos/microkit-sdk-$(SEL4_SDK_VERSION)
 SEL4_PROFILE ?= release
 BOARD_DIR ?= $(SEL4_SDK)/board/$(AGENTOS_BOARD)/$(SEL4_PROFILE)
 
-# Guest OS selection: buildroot (default) or ubuntu
-GUEST_OS ?= buildroot
-VMM_DUAL_GUEST ?= 0
-UBUNTU_BOOT_MODE ?= e2e
-AGENTOS_IMAGES ?= $(AGENTOS_ROOT)/build/guest-images
+# One invocation prepares one profile-backed slot. Distribution names and
+# artifact recipes are deliberately absent here; the bounded Rust executor
+# consumes guest profile data and emits a canonical bundle.
+VMM_SLOT ?= primary
+GUEST_PROFILE ?= buildroot.toml
+GUEST_PLACEMENT ?= default
+GUEST_BUNDLE := $(BUILD_DIR)/guest-bundle-$(VMM_SLOT)
+GUEST_BUNDLE_STAMP := $(GUEST_BUNDLE)/prepared.stamp
+GUEST_KERNEL_IMAGE := $(GUEST_BUNDLE)/kernel.bin
+GUEST_DTB_IMAGE := $(GUEST_BUNDLE)/guest.dtb
+GUEST_INITRD_IMAGE := $(GUEST_BUNDLE)/initrd.bin
+GUEST_PROFILE_BIN := $(GUEST_BUNDLE)/profile.bin
 
-# Buildroot guest: download libvmm example images (kernel + initrd)
-BUILDROOT_LINUX_IMAGE  := 85000f3f42a882e4476e57003d53f2bbec8262b0-linux
-BUILDROOT_INITRD_IMAGE := 6dcd1debf64e6d69b178cd0f46b8c4ae7cebe2a5-rootfs.cpio.gz
-IMAGES_URL             := https://trustworthy.systems/Downloads/libvmm/images
-
-# Ubuntu guest: local Ubuntu 26.04 live ISO assets staged by xtask fetch-guest.
-UBUNTU_KERNEL := $(AGENTOS_IMAGES)/ubuntu-26.04-aarch64-Image
-UBUNTU_E2E_INITRD := $(AGENTOS_IMAGES)/ubuntu-26.04-aarch64-initrd
-UBUNTU_LIVE_INITRD := $(AGENTOS_IMAGES)/ubuntu-26.04-aarch64-live-initrd
-UBUNTU_LIVE_PLACEHOLDER := $(BUILD_DIR)/ubuntu-26.04-live-initrd.placeholder
-UBUNTU_DTS_OVERLAY := $(BUILD_DIR)/ubuntu-26.04-overlay.dts
-ifeq ($(VMM_DUAL_GUEST),1)
-UBUNTU_RAM_BASE := 0x40000000
-UBUNTU_RAM_NODE := 40000000
-ifeq ($(UBUNTU_BOOT_MODE),live)
-UBUNTU_RAM_SIZE := 0x40000000
-else
-UBUNTU_RAM_SIZE := 0x20000000
-endif
-UBUNTU_INITRD_START := 0x50000000
-else ifeq ($(UBUNTU_BOOT_MODE),live)
-UBUNTU_RAM_BASE := 0x40000000
-UBUNTU_RAM_NODE := 40000000
-UBUNTU_RAM_SIZE := 0x40000000
-UBUNTU_INITRD_START := 0x50000000
-else
-UBUNTU_RAM_BASE := 0x40000000
-UBUNTU_RAM_NODE := 40000000
-UBUNTU_RAM_SIZE := 0x20000000
-UBUNTU_INITRD_START := 0x50000000
-endif
-ifeq ($(UBUNTU_BOOT_MODE),live)
-UBUNTU_INITRD := $(UBUNTU_LIVE_INITRD)
-UBUNTU_BOOTARGS := console=hvc0 quiet loglevel=3 boot=casper noprompt systemd.show_status=false systemd.unit=console-getty.service systemd.wants=systemd-user-sessions.service systemd.mask=ldconfig.service systemd.mask=systemd-udev-trigger.service systemd.mask=systemd-resolved.service systemd.mask=netplan-configure.service panic=-1
-else
-UBUNTU_INITRD := $(UBUNTU_E2E_INITRD)
-UBUNTU_BOOTARGS := console=hvc0 quiet loglevel=3 rdinit=/init panic=-1 ip=dhcp
-endif
-
-ifeq ($(GUEST_OS),ubuntu)
-LINUX_IMAGE  := $(UBUNTU_KERNEL)
-ifeq ($(UBUNTU_BOOT_MODE),live)
-INITRD_IMAGE := $(UBUNTU_LIVE_PLACEHOLDER)
-else
-INITRD_IMAGE := $(UBUNTU_INITRD)
-endif
-DTS_OVERLAY_FILE := $(UBUNTU_DTS_OVERLAY)
-else
-LINUX_IMAGE  := $(BUILD_DIR)/$(BUILDROOT_LINUX_IMAGE)
-INITRD_IMAGE := $(BUILD_DIR)/$(BUILDROOT_INITRD_IMAGE)
-DTS_OVERLAY_FILE := $(BUILD_DIR)/buildroot-overlay.dts
-BUILDROOT_INITRD_START := 0x50000000
-endif
-
-# DTS + tools
-DTS_DIR := $(LIBVMM_ABS)/examples/simple/board/qemu_virt_aarch64
-LINUX_DTS_BASE := $(DTS_DIR)/linux.dts
-ifeq ($(VMM_DUAL_GUEST),1)
-LINUX_DTS_BASE := $(BUILD_DIR)/linux-dual.dts
-$(LINUX_DTS_BASE): $(DTS_DIR)/linux.dts $(VMM_CONFIG_STAMP) $(lastword $(MAKEFILE_LIST))
-	@mkdir -p $(BUILD_DIR)
-	@echo "[VMM] Generating dual-guest Linux base device tree..."
-	sed \
-		-e 's|memory@40000000|memory@$(UBUNTU_RAM_NODE)|g' \
-		-e 's|0x00 0x40000000 0x00 0x80000000|0x00 $(UBUNTU_RAM_BASE) 0x00 $(UBUNTU_RAM_SIZE)|g' \
-		$< > $@
-endif
-DTSCAT  := $(LIBVMM_ABS)/tools/dtscat
 PKG_IMG := $(LIBVMM_ABS)/tools/package_guest_images.S
 PKG_PROFILE := $(AGENTOS_ROOT)/platform/guest-vmm/package_profile.S
-
-ifeq ($(GUEST_OS),ubuntu)
-ifeq ($(UBUNTU_BOOT_MODE),live)
-PRIMARY_GUEST_PROFILE := ubuntu-live.toml
-else
-PRIMARY_GUEST_PROFILE := ubuntu-e2e.toml
-endif
-else
-PRIMARY_GUEST_PROFILE := buildroot.toml
-endif
-ifeq ($(VMM_DUAL_GUEST),1)
-PRIMARY_GUEST_PLACEMENT := dual-primary
-SECONDARY_GUEST_PLACEMENT := dual-secondary
-else
-PRIMARY_GUEST_PLACEMENT := default
-SECONDARY_GUEST_PLACEMENT := default
-endif
-PRIMARY_GUEST_PROFILE_BIN := $(BUILD_DIR)/primary-guest-profile.bin
-SECONDARY_GUEST_PROFILE_BIN := $(BUILD_DIR)/secondary-guest-profile.bin
 
 # ─── VMM CFLAGS (used for guest_vmm.c compilation) ───────────────────────
 VMM_CFLAGS := \
@@ -138,94 +58,36 @@ VMM_CFLAGS := \
     -MD -MP \
     -target aarch64-none-elf
 
-ifeq ($(VMM_DUAL_GUEST),1)
+ifneq ($(filter dual-primary dual-secondary,$(GUEST_PLACEMENT)),)
 VMM_CFLAGS += -DAGENTOS_GUEST_DUAL=1
 endif
 
-VMM_CONFIG_STAMP := $(BUILD_DIR)/vmm-$(GUEST_OS).stamp
+VMM_CONFIG_STAMP := $(BUILD_DIR)/vmm-$(VMM_SLOT).stamp
 
 $(VMM_CONFIG_STAMP): FORCE
 	@mkdir -p $(BUILD_DIR)
 	@tmp="$@.tmp"; \
-	printf 'GUEST_OS=%s\nVMM_DUAL_GUEST=%s\nUBUNTU_BOOT_MODE=%s\nSEL4_PROFILE=%s\nVMM_CFLAGS=%s\n' \
-		'$(GUEST_OS)' '$(VMM_DUAL_GUEST)' '$(UBUNTU_BOOT_MODE)' '$(SEL4_PROFILE)' '$(VMM_CFLAGS)' > "$$tmp"; \
+	printf 'VMM_SLOT=%s\nGUEST_PROFILE=%s\nGUEST_PLACEMENT=%s\nSEL4_PROFILE=%s\nVMM_CFLAGS=%s\n' \
+		'$(VMM_SLOT)' '$(GUEST_PROFILE)' '$(GUEST_PLACEMENT)' '$(SEL4_PROFILE)' '$(VMM_CFLAGS)' > "$$tmp"; \
 	if test -f "$@" && cmp -s "$$tmp" "$@"; then rm -f "$$tmp"; else mv "$$tmp" "$@"; fi
 
 .PHONY: vmm-all vmm-clean FORCE
 
-ifeq ($(GUEST_OS),freebsd)
+ifeq ($(VMM_SLOT),secondary)
 vmm-all: $(BUILD_DIR)/guest_vmm_secondary.elf
 else
 vmm-all: $(BUILD_DIR)/guest_vmm_primary.elf
 endif
 
-# ─── Ubuntu kernel/initrd: stage local ISO and extract boot assets ────────
-ifeq ($(GUEST_OS),ubuntu)
-$(UBUNTU_KERNEL) $(UBUNTU_E2E_INITRD) $(UBUNTU_LIVE_INITRD):
-	@echo "[VMM] Fetching Ubuntu 26.04 boot assets (via xtask fetch-guest)..."
-	cargo xtask fetch-guest --profile $(PRIMARY_GUEST_PROFILE) --output-dir $(AGENTOS_IMAGES)
+$(GUEST_BUNDLE_STAMP): FORCE $(AGENTOS_ROOT)/guest-profiles/$(GUEST_PROFILE) \
+				       $(KERNEL_SRC_DIR)/vmm.mk
+	@cargo xtask fetch-guest --profile $(GUEST_PROFILE)
+	@cargo xtask guest-profile --root $(AGENTOS_ROOT)/guest-profiles \
+		--profile $(GUEST_PROFILE) --placement $(GUEST_PLACEMENT) \
+		--repo-root $(AGENTOS_ROOT) --prepare-dir $(GUEST_BUNDLE)
+	@touch $@
 
-$(UBUNTU_LIVE_PLACEHOLDER):
-	@mkdir -p $(BUILD_DIR)
-	@printf '\0' > $@
-endif
-
-# ─── Download buildroot guest images ─────────────────────────────────────
-ifneq ($(GUEST_OS),ubuntu)
-$(BUILD_DIR)/$(BUILDROOT_LINUX_IMAGE):
-	@echo "[VMM] Downloading Linux kernel image..."
-	@mkdir -p $(BUILD_DIR)
-	curl -fSL $(IMAGES_URL)/$(BUILDROOT_LINUX_IMAGE).tar.gz -o $(BUILD_DIR)/$(BUILDROOT_LINUX_IMAGE).tar.gz
-	mkdir -p $(BUILD_DIR)/linux_dl
-	tar -xf $(BUILD_DIR)/$(BUILDROOT_LINUX_IMAGE).tar.gz -C $(BUILD_DIR)/linux_dl
-	cp $(BUILD_DIR)/linux_dl/$(BUILDROOT_LINUX_IMAGE)/linux $(BUILD_DIR)/$(BUILDROOT_LINUX_IMAGE)
-	rm -rf $(BUILD_DIR)/linux_dl $(BUILD_DIR)/$(BUILDROOT_LINUX_IMAGE).tar.gz
-
-$(BUILD_DIR)/$(BUILDROOT_INITRD_IMAGE):
-	@echo "[VMM] Downloading initrd..."
-	@mkdir -p $(BUILD_DIR)
-	curl -fSL $(IMAGES_URL)/$(BUILDROOT_INITRD_IMAGE).tar.gz -o $(BUILD_DIR)/$(BUILDROOT_INITRD_IMAGE).tar.gz
-	mkdir -p $(BUILD_DIR)/initrd_dl
-	tar -xf $(BUILD_DIR)/$(BUILDROOT_INITRD_IMAGE).tar.gz -C $(BUILD_DIR)/initrd_dl
-	cp $(BUILD_DIR)/initrd_dl/$(BUILDROOT_INITRD_IMAGE)/rootfs.cpio.gz $(BUILD_DIR)/$(BUILDROOT_INITRD_IMAGE)
-	rm -rf $(BUILD_DIR)/initrd_dl $(BUILD_DIR)/$(BUILDROOT_INITRD_IMAGE).tar.gz
-endif
-
-# ─── Device tree ──────────────────────────────────────────────────────────
-$(UBUNTU_DTS_OVERLAY): $(KERNEL_SRC_DIR)/ubuntu-iso-overlay.dts.in $(KERNEL_SRC_DIR)/vmm.mk $(UBUNTU_INITRD) $(VMM_CONFIG_STAMP)
-	@mkdir -p $(BUILD_DIR)
-	@echo "[VMM] Generating Ubuntu 26.04 live-ISO overlay..."
-	@initrd_size=$$(wc -c < "$(UBUNTU_INITRD)"); \
-	start=$$(( $(UBUNTU_INITRD_START) )); \
-	end=$$(( start + initrd_size )); \
-	end_hex=$$(printf "0x%08x" $$end); \
-	sed \
-		-e 's|@UBUNTU_BOOTARGS@|$(UBUNTU_BOOTARGS)|g' \
-		-e 's|@UBUNTU_RAM_NODE@|$(UBUNTU_RAM_NODE)|g' \
-		-e 's|@UBUNTU_RAM_BASE@|0x00 $(UBUNTU_RAM_BASE)|g' \
-		-e 's|@UBUNTU_RAM_SIZE@|$(UBUNTU_RAM_SIZE)|g' \
-		-e 's|@UBUNTU_INITRD_START@|0x00 $(UBUNTU_INITRD_START)|g' \
-		-e "s|@UBUNTU_INITRD_END@|0x00 $$end_hex|g" \
-		$< > $@
-
-$(BUILD_DIR)/buildroot-overlay.dts: $(DTS_DIR)/overlay.dts $(KERNEL_SRC_DIR)/vmm.mk $(INITRD_IMAGE) $(VMM_CONFIG_STAMP)
-	@mkdir -p $(BUILD_DIR)
-	@echo "[VMM] Generating buildroot overlay (initrd at $(BUILDROOT_INITRD_START))..."
-	@initrd_size=$$(wc -c < "$(INITRD_IMAGE)"); \
-	start=$$(( $(BUILDROOT_INITRD_START) )); \
-	end=$$(( start + initrd_size )); \
-	end_hex=$$(printf "0x%08x" $$end); \
-	sed \
-		-e 's|@BUILDROOT_INITRD_START@|0x00 $(BUILDROOT_INITRD_START)|g' \
-		-e "s|@BUILDROOT_INITRD_END@|0x00 $$end_hex|g" \
-		$< > $@
-
-$(BUILD_DIR)/vm.dts: FORCE $(LINUX_DTS_BASE) $(DTS_OVERLAY_FILE)
-	@mkdir -p $(BUILD_DIR)
-	$(DTSCAT) $(filter-out FORCE,$^) > $@
-
-$(BUILD_DIR)/vm.dtb: FORCE $(BUILD_DIR)/vm.dts
-	$(DTC) -q -I dts -O dtb $(filter-out FORCE,$^) > $@
+$(GUEST_KERNEL_IMAGE) $(GUEST_DTB_IMAGE) $(GUEST_INITRD_IMAGE) $(GUEST_PROFILE_BIN): $(GUEST_BUNDLE_STAMP)
 
 # ─── Generate wrapper Makefile in BUILD_DIR ───────────────────────────────
 # vmm.mk uses vpath and is designed to be included, not invoked via -f.
@@ -256,27 +118,20 @@ $(BUILD_DIR)/libvmm.a $(BUILD_DIR)/libsddf_util_debug.a: $(BUILD_DIR)/vmm_wrappe
 # ─── Package guest images ─────────────────────────────────────────────────
 $(BUILD_DIR)/images.o: FORCE \
                        $(PKG_IMG) \
-                       $(LINUX_IMAGE) \
-                       $(INITRD_IMAGE) \
-                       $(BUILD_DIR)/vm.dtb
-	@echo "[VMM] Packaging guest images (GUEST_OS=$(GUEST_OS))..."
+                       $(GUEST_KERNEL_IMAGE) \
+                       $(GUEST_INITRD_IMAGE) \
+                       $(GUEST_DTB_IMAGE)
+	@echo "[VMM] Packaging primary guest profile $(GUEST_PROFILE)..."
 	clang -c -g3 -x assembler-with-cpp \
-		-DGUEST_KERNEL_IMAGE_PATH=\"$(LINUX_IMAGE)\" \
-		-DGUEST_DTB_IMAGE_PATH=\"$(BUILD_DIR)/vm.dtb\" \
-		-DGUEST_INITRD_IMAGE_PATH=\"$(INITRD_IMAGE)\" \
+		-DGUEST_KERNEL_IMAGE_PATH=\"$(GUEST_KERNEL_IMAGE)\" \
+		-DGUEST_DTB_IMAGE_PATH=\"$(GUEST_DTB_IMAGE)\" \
+		-DGUEST_INITRD_IMAGE_PATH=\"$(GUEST_INITRD_IMAGE)\" \
 		-target aarch64-none-elf \
 		$(PKG_IMG) -o $@
 
-$(PRIMARY_GUEST_PROFILE_BIN): FORCE $(AGENTOS_ROOT)/guest-profiles/$(PRIMARY_GUEST_PROFILE) \
-					$(AGENTOS_ROOT)/guest-profiles/linux-base.toml \
-					$(LINUX_IMAGE) $(INITRD_IMAGE) $(BUILD_DIR)/vm.dtb
-	@cargo xtask guest-profile --root $(AGENTOS_ROOT)/guest-profiles \
-		--profile $(PRIMARY_GUEST_PROFILE) --placement $(PRIMARY_GUEST_PLACEMENT) \
-		--repo-root $(AGENTOS_ROOT) --verify-artifacts --output $@
-
-$(BUILD_DIR)/guest_primary_profile.o: $(PKG_PROFILE) $(PRIMARY_GUEST_PROFILE_BIN)
+$(BUILD_DIR)/guest_primary_profile.o: $(PKG_PROFILE) $(GUEST_PROFILE_BIN)
 	clang -c -x assembler-with-cpp \
-		-DGUEST_PROFILE_PATH=\"$(PRIMARY_GUEST_PROFILE_BIN)\" \
+		-DGUEST_PROFILE_PATH=\"$(GUEST_PROFILE_BIN)\" \
 		-target aarch64-none-elf $(PKG_PROFILE) -o $@
 
 GUEST_VMM_PRIMARY_OBJ := $(BUILD_DIR)/guest_vmm_primary.full.o
@@ -439,56 +294,20 @@ $(BUILD_DIR)/guest_vmm_primary.elf: FORCE \
 		-o $@
 	@echo "[VMM] guest_vmm_primary.elf ✓"
 
-# ─── FreeBSD VMM: direct kernel + FDT packaging ───────────────────────────
-SECONDARY_DEFAULT_IMAGE := $(AGENTOS_IMAGES)/freebsd-15.0-aarch64.iso
-SECONDARY_RAW_IMAGE ?= $(if $(AGENTOS_FREEBSD_IMAGE),$(AGENTOS_FREEBSD_IMAGE),$(if $(FREEBSD_IMAGE),$(FREEBSD_IMAGE),$(SECONDARY_DEFAULT_IMAGE)))
-SECONDARY_KERNEL_IMAGE := $(BUILD_DIR)/freebsd-kernel.bin
-SECONDARY_DTS := $(KERNEL_SRC_DIR)/freebsd-direct.dts
-SECONDARY_DTS_EFFECTIVE := $(SECONDARY_DTS)
-ifeq ($(VMM_DUAL_GUEST),1)
-SECONDARY_DTS_EFFECTIVE := $(BUILD_DIR)/freebsd-direct-dual.dts
-$(SECONDARY_DTS_EFFECTIVE): $(SECONDARY_DTS) $(VMM_CONFIG_STAMP) $(lastword $(MAKEFILE_LIST))
-	@mkdir -p $(BUILD_DIR)
-	sed 's|0x00 0x40000000 0x00 0x20000000|0x00 0x40000000 0x00 0x10000000|' $< > $@
-endif
-SECONDARY_EXTRACT := $(AGENTOS_ROOT)/xtask/src/cmd_extract_freebsd_file.rs
-
-$(SECONDARY_RAW_IMAGE):
-	@echo "[VMM] Fetching FreeBSD 15.0 ISO assets (via xtask fetch-guest)..."
-	cargo xtask fetch-guest --profile freebsd.toml --output-dir $(AGENTOS_IMAGES)
-
-$(SECONDARY_KERNEL_IMAGE): $(SECONDARY_RAW_IMAGE) $(SECONDARY_EXTRACT)
-	@mkdir -p $(BUILD_DIR)
-	@echo "[VMM] Extracting FreeBSD kernel..."
-	@case "$(SECONDARY_RAW_IMAGE)" in \
-		*.iso) cargo xtask fetch-guest --profile freebsd.toml --output-dir $(AGENTOS_IMAGES); \
-		       cp "$(AGENTOS_IMAGES)/freebsd-15.0-aarch64-kernel" $@ ;; \
-		*) cargo xtask extract-freebsd-file "$(SECONDARY_RAW_IMAGE)" /boot/kernel/kernel.bin $@ || \
-		   cargo xtask extract-freebsd-file "$(SECONDARY_RAW_IMAGE)" /boot/kernel/kernel $@ ;; \
-	esac
-
-$(BUILD_DIR)/freebsd-direct.dtb: $(SECONDARY_DTS_EFFECTIVE) $(VMM_CONFIG_STAMP) $(lastword $(MAKEFILE_LIST))
-	@mkdir -p $(BUILD_DIR)
-	@echo "[VMM] Compiling FreeBSD device tree..."
-	$(DTC) -q -I dts -O dtb $< > $@
-
-$(BUILD_DIR)/guest_secondary_images.o: $(PKG_IMG) $(SECONDARY_KERNEL_IMAGE) $(BUILD_DIR)/freebsd-direct.dtb
-	@echo "[VMM] Packaging FreeBSD kernel + FDT images..."
+# ─── Package the same canonical bundle for a secondary slot ─────────────
+$(BUILD_DIR)/guest_secondary_images.o: $(PKG_IMG) $(GUEST_KERNEL_IMAGE) \
+					       $(GUEST_DTB_IMAGE) $(GUEST_INITRD_IMAGE)
+	@echo "[VMM] Packaging secondary guest profile $(GUEST_PROFILE)..."
 	clang -c -g3 -x assembler-with-cpp \
-		-DGUEST_KERNEL_IMAGE_PATH=\"$(SECONDARY_KERNEL_IMAGE)\" \
-		-DGUEST_DTB_IMAGE_PATH=\"$(BUILD_DIR)/freebsd-direct.dtb\" \
+		-DGUEST_KERNEL_IMAGE_PATH=\"$(GUEST_KERNEL_IMAGE)\" \
+		-DGUEST_DTB_IMAGE_PATH=\"$(GUEST_DTB_IMAGE)\" \
+		-DGUEST_INITRD_IMAGE_PATH=\"$(GUEST_INITRD_IMAGE)\" \
 		-target aarch64-none-elf \
 		$(PKG_IMG) -o $@
 
-$(SECONDARY_GUEST_PROFILE_BIN): FORCE $(AGENTOS_ROOT)/guest-profiles/freebsd.toml \
-					 $(SECONDARY_KERNEL_IMAGE) $(BUILD_DIR)/freebsd-direct.dtb
-	@cargo xtask guest-profile --root $(AGENTOS_ROOT)/guest-profiles \
-		--profile freebsd.toml --placement $(SECONDARY_GUEST_PLACEMENT) \
-		--repo-root $(AGENTOS_ROOT) --verify-artifacts --output $@
-
-$(BUILD_DIR)/guest_secondary_profile.o: $(PKG_PROFILE) $(SECONDARY_GUEST_PROFILE_BIN)
+$(BUILD_DIR)/guest_secondary_profile.o: $(PKG_PROFILE) $(GUEST_PROFILE_BIN)
 	clang -c -x assembler-with-cpp \
-		-DGUEST_PROFILE_PATH=\"$(SECONDARY_GUEST_PROFILE_BIN)\" \
+		-DGUEST_PROFILE_PATH=\"$(GUEST_PROFILE_BIN)\" \
 		-target aarch64-none-elf $(PKG_PROFILE) -o $@
 
 # ─── Compile the same profile-backed VMM source for the secondary instance ─
@@ -546,13 +365,13 @@ vmm-clean:
 	rm -f $(BUILD_DIR)/gpa_translate.o
 	rm -f $(BUILD_DIR)/vmm_guest_ram.o
 	rm -f $(BUILD_DIR)/guest_vmm_runtime.o
-	rm -f $(BUILD_DIR)/guest_profile_validate.o $(BUILD_DIR)/*guest_profile.o $(BUILD_DIR)/*guest-profile.bin
+	rm -f $(BUILD_DIR)/guest_profile_validate.o $(BUILD_DIR)/*guest_profile.o
 	rm -f $(BUILD_DIR)/guest_boot.o
 	rm -f $(BUILD_DIR)/blk_virt_pump.o $(BUILD_DIR)/vmm_virtio_blk.o
 	rm -f $(BUILD_DIR)/vmm_virtio_console.o
 	rm -f $(BUILD_DIR)/guest_vmm_secondary.o $(BUILD_DIR)/guest_secondary_images.o $(BUILD_DIR)/guest_vmm_secondary.elf
-	rm -f $(BUILD_DIR)/freebsd-direct.dtb
 	rm -f $(BUILD_DIR)/images.o $(BUILD_DIR)/vm.dts $(BUILD_DIR)/vm.dtb
+	rm -rf $(BUILD_DIR)/guest-bundle-primary $(BUILD_DIR)/guest-bundle-secondary
 	rm -f $(BUILD_DIR)/libvmm.a $(BUILD_DIR)/libsddf_util_debug.a
 	rm -f $(BUILD_DIR)/vmm_wrapper.mk
 
