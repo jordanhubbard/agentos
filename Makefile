@@ -591,7 +591,7 @@ run:
 	@echo ""
 	@echo "Validated dual-guest SSH showcase: make demo"
 	@echo "Raw run port forwarding is guest-specific and is not an acceptance gate."
-	@echo "Buildroot: no outer ISO; Linux runs inside linux_vmm.elf → '#' shell on serial"
+	@echo "Buildroot: no outer ISO; Linux runs inside guest_vmm_primary.elf → '#' shell on serial"
 	@echo "Exit QEMU: Ctrl-A X"
 	@echo "──────────────────────────────────────────────"
 	@$(NATIVE_QEMU) $(QEMU_RUN_FLAGS)
@@ -933,7 +933,7 @@ test-integration:
 	    echo "FAIL: tests/platform/test_cc_retry_cache.c"; \
 	    status=1; \
 	fi; \
-	if gcc -DAGENTOS_GUEST_BOTH -DAGENTOS_GUEST_UBUNTU_LIVE \
+	if gcc -DAGENTOS_GUEST_DUAL -DAGENTOS_GUEST_PRIMARY_LARGE \
 	        -I platform/include \
 	        tests/platform/test_guest_memory_layout.c \
 	        -o $(BUILD_TMP_DIR)/test_guest_memory_layout 2>&1 \
@@ -1150,7 +1150,7 @@ help:
 	@echo "                        Uses QEMU_RUN_MEM=3G automatically for GUEST_OS=both"
 	@echo "  make run GUEST_OS=buildroot"
 	@echo "                        Boot linux_vmm hosting buildroot Linux to a '#' prompt"
-	@echo "                        (no outer ISO; guest is packaged inside linux_vmm.elf)"
+	@echo "                        (no outer ISO; guest is packaged inside guest_vmm_primary.elf)"
 	@echo "  make run-fast         Same as run, plus TCG perf knobs (cpu max + multi-thread)"
 	@echo "                        No-op on Linux/KVM hosts where HW accel is already on"
 	@echo "                        Recommended dev loop on Apple Silicon:"

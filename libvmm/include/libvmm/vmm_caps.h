@@ -158,7 +158,7 @@ static inline void vmm_notify(seL4_CPtr ntfn_cap)
  * vmm_pd_name — null-terminated protection domain name.
  *
  * Each VMM PD must define this, e.g.:
- *   const char vmm_pd_name[] = "freebsd_vmm";
+ *   const char vmm_pd_name[] = "guest_vmm_secondary";
  */
 extern const char vmm_pd_name[];
 

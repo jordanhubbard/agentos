@@ -184,7 +184,7 @@ pds:
   - name: linux_vmm
     priority: 100
     passive: false
-    program_image: linux_vmm.elf
+    program_image: guest_vmm_primary.elf
     maps:
       - mr: gpu_tensor_buf
         vaddr: 0x60000000

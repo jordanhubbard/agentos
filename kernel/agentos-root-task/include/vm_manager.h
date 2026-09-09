@@ -16,9 +16,8 @@
 #include <stdbool.h>
 
 /*
- * vmm_mux.h is found via -I../../freebsd-vmm in the Makefile rule for
- * vm_manager.o.  It provides vm_mux_t, VM_MAX_SLOTS, vm_slot_state_t, etc.
- * Include it here so callers get the complete type.
+ * vmm_mux.h provides vm_mux_t, VM_MAX_SLOTS, vm_slot_state_t, etc. Include it
+ * here so callers get the complete type.
  */
 #include "vmm_mux.h"
 
@@ -95,7 +94,7 @@ int vm_set_quota(vm_mux_t *mux, uint8_t slot_id, uint8_t cpu_pct);
  */
 int vm_get_stats(const vm_mux_t *mux, uint8_t slot_id, vm_stats_t *out);
 
-/* ── linux_vmm affinity and IRQ injection API ────────────────────────────── */
+/* ── Guest VMM affinity and IRQ injection API ───────────────────────────── */
 
 /**
  * vmm_set_affinity — pin a guest VCPU to a specific host CPU.

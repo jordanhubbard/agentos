@@ -4,7 +4,7 @@
  * net_pd alone owns the page-isolated QEMU bus.16 transport and its DMA.
  */
 
-#if defined(AGENTOS_GUEST_UBUNTU) || defined(AGENTOS_GUEST_FREEBSD)
+#if defined(AGENTOS_GUEST_PRIMARY) || defined(AGENTOS_GUEST_SECONDARY)
 #include <contracts/net-service/interface.h>
 #include "sel4_ipc.h"
 #include "system_desc.h"
@@ -37,7 +37,7 @@ static int                      g_aos_net_ready;
 static int                      g_aos_net_probed;
 static int                      g_aos_net_driver_ok;
 static int                      g_aos_net_pumped;
-#if defined(AGENTOS_GUEST_UBUNTU) || defined(AGENTOS_GUEST_FREEBSD)
+#if defined(AGENTOS_GUEST_PRIMARY) || defined(AGENTOS_GUEST_SECONDARY)
 static uint32_t                 g_net_pd_handle;
 static uint32_t                 g_net_pd_slot;
 static int                      g_net_pd_ready;
@@ -218,7 +218,7 @@ static uint32_t net_pd_drain_rx(void)
 
 void aos_vmm_virtio_net_rx_ready(void)
 {
-#if defined(AGENTOS_GUEST_UBUNTU) || defined(AGENTOS_GUEST_FREEBSD)
+#if defined(AGENTOS_GUEST_PRIMARY) || defined(AGENTOS_GUEST_SECONDARY)
     if (!g_aos_net_ready || !g_net_pd_ready) {
         return;
     }
@@ -267,7 +267,7 @@ void aos_vmm_virtio_net_init(uint32_t client_id)
      */
     client.tx_active->consumer_signalled = 1u;
 
-#if defined(AGENTOS_GUEST_UBUNTU) || defined(AGENTOS_GUEST_FREEBSD)
+#if defined(AGENTOS_GUEST_PRIMARY) || defined(AGENTOS_GUEST_SECONDARY)
     net_pd_bridge_init(client_id);
 #endif
 
@@ -323,7 +323,7 @@ void aos_vmm_virtio_net_after_fault(void)
                 (unsigned)g_aos_net.config.mac[5]);
     }
 
-#if defined(AGENTOS_GUEST_UBUNTU) || defined(AGENTOS_GUEST_FREEBSD)
+#if defined(AGENTOS_GUEST_PRIMARY) || defined(AGENTOS_GUEST_SECONDARY)
     n = 0u;
     if (g_net_pd_ready) {
         n += net_pd_bridge_tx();

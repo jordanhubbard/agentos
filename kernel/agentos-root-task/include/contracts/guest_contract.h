@@ -5,7 +5,7 @@
  * a VMM Protection Domain.  This contract governs how guest OSes discover,
  * bind to, and use generic device PDs.
  *
- * All VMM PDs (linux_vmm, freebsd_vmm, future VMMs) must:
+ * All profile-backed VMM PDs must:
  *   1. Include this header.
  *   2. Complete the lifecycle protocol below before running guest code.
  *   3. Expose a VirtIO transport backed by the generic device PDs.

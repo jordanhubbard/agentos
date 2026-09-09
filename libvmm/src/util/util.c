@@ -8,7 +8,7 @@
 #include <libvmm/util/util.h>
 #include <libvmm/util/printf.h>
 
-/* Weak so linux_vmm can send printf to the mapped PL011 (release seL4 has
+/* Weak so the guest VMM can send printf to the mapped PL011 (release seL4 has
  * CONFIG_PRINTING off; seL4_DebugPutChar is then a no-op). */
 __attribute__((weak)) void _putchar(char character)
 {

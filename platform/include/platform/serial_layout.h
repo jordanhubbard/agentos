@@ -1,7 +1,7 @@
 /*
  * agentOS serial_virt queue ABI and guest virtio-console placement.
  *
- * The guest-visible device faults into linux_vmm. Its RX/TX byte queues use
+ * The guest-visible device faults into the guest VMM. Its RX/TX byte queues use
  * the sDDF serial queue ABI; no guest maps the physical PL011.
  */
 

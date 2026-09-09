@@ -42,9 +42,9 @@ void run_vm_manager_tests(microkit_channel ch)
     /* LIST — enumerate active slots; count returned in MR1. */
     ASSERT_IPC_OK(ch, OP_VM_LIST, "vm_manager: LIST returns ok");
 
-    /* CREATE — FreeBSD requests carry VM_TYPE_FREEBSD explicitly. */
+    /* CREATE — FreeBSD requests carry VM_PROFILE_SECONDARY explicitly. */
     microkit_mr_set(0, (uint64_t)OP_VM_CREATE);
-    microkit_mr_set(1, VM_TYPE_FREEBSD);
+    microkit_mr_set(1, VM_PROFILE_SECONDARY);
     microkit_mr_set(2, 128);  /* ram_mb */
     (void)microkit_ppcall(ch, microkit_msginfo_new(OP_VM_CREATE, 3));
     {
@@ -66,7 +66,7 @@ void run_vm_manager_tests(microkit_channel ch)
 
     /* CREATE — allocate a slot for a 128MB Linux guest. */
     microkit_mr_set(0, (uint64_t)OP_VM_CREATE);
-    microkit_mr_set(1, VM_TYPE_LINUX);
+    microkit_mr_set(1, VM_PROFILE_PRIMARY);
     microkit_mr_set(2, 128);  /* ram_mb */
     (void)microkit_ppcall(ch, microkit_msginfo_new(OP_VM_CREATE, 3));
     uint64_t create_rc  = microkit_mr_get(0);

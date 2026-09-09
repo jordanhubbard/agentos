@@ -244,7 +244,7 @@ int main(void)
                               "host-media read"),
                  "linux_vmm routes emulated block requests to virtio_blk");
     (void)tap_ok(src_contains("kernel/agentos-root-task/Makefile",
-                              "-DAGENTOS_GUEST_UBUNTU=1") &&
+                              "-DAGENTOS_GUEST_PRIMARY=1") &&
                  src_contains("kernel/agentos-root-task/src/main.c",
                               "Emulated VirtIO translates every queue and payload") &&
                  !src_contains("kernel/agentos-root-task/src/main.c",
@@ -291,11 +291,11 @@ int main(void)
                  src_contains("guest-profiles/freebsd.toml",
                               "block_media = 1") &&
                  src_contains("kernel/agentos-root-task/src/virtio_blk.c",
-                              "AOS_HOST_BLK_MEDIA_FREEBSD"),
+                              "AOS_HOST_BLK_MEDIA_SECONDARY"),
                  "profiles select separate guest queues over canonical block DMA");
     (void)tap_ok(AGENTOS_BLK_SHARED_DMA_MAX_SECTORS == 2047u &&
                  AGENTOS_BLK_MEDIA_DMA_MAX_SECTORS(
-                    AOS_HOST_BLK_MEDIA_FREEBSD) == 63u &&
+                    AOS_HOST_BLK_MEDIA_SECONDARY) == 63u &&
                  AGENTOS_BLK_MEDIA_DMA_OFF(1u) +
                     AGENTOS_BLK_MEDIA_DMA_SIZE(1u) <=
                         AGENTOS_BLK_MEDIA_DMA_OFF(0u) &&

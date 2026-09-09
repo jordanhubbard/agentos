@@ -301,8 +301,8 @@ const system_desc_t system_desc_riscv64 = {
          * Runs above init_agent (110) and controller (50) so that VM operations
          * requested by those orchestrators complete without starving. */
         {
-            .name            = "linux_vmm",
-            .elf_path        = "linux_vmm.elf",
+            .name            = "guest_vmm_primary",
+            .elf_path        = "guest_vmm_primary.elf",
             .stack_size      = 0x10000u,
             .cnode_size_bits = 10u,
             .priority        = 160u,
@@ -315,8 +315,8 @@ const system_desc_t system_desc_riscv64 = {
 
         /* pd[17] — freebsd_vmm (prio 155; FreeBSD guest VMM) */
         {
-            .name            = "freebsd_vmm",
-            .elf_path        = "freebsd_vmm.elf",
+            .name            = "guest_vmm_secondary",
+            .elf_path        = "guest_vmm_secondary.elf",
             .stack_size      = 0x10000u,
             .cnode_size_bits = 10u,
             .priority        = 155u,

@@ -2,7 +2,7 @@
  * vmm_mux_stub.c — no-op VM multiplexer stubs for non-AArch64 targets
  *
  * libvmm (and the real vmm_mux.c) is only available on AArch64 with a
- * FreeBSD guest.  On RISC-V / x86 builds vm_manager.c still compiles and
+ * profile-selected guest. On RISC-V / x86 builds vm_manager.c still compiles and
  * handles IPC; every vmm_mux_* call gracefully returns a "not supported"
  * result so the rest of the system is unaffected.
  *

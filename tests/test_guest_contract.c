@@ -130,7 +130,7 @@ static int test_guest_create_structs(void)
     struct guest_create_req req;
     memset(&req, 0, sizeof(req));
 
-    req.os_type      = VMM_OS_TYPE_LINUX;
+    req.os_type      = VMM_PROFILE_PRIMARY;
     req.device_flags = GUEST_DEV_FLAG_SERIAL | GUEST_DEV_FLAG_NET;
     req.limits.ram_mb          = 512u;
     req.limits.cpu_budget_us   = 5000u;
@@ -139,7 +139,7 @@ static int test_guest_create_structs(void)
     req.limits.block_iops      = 0u;
     memcpy(req.label, "test-guest", 10);
 
-    CHECK(req.os_type      == VMM_OS_TYPE_LINUX);
+    CHECK(req.os_type      == VMM_PROFILE_PRIMARY);
     CHECK(req.limits.ram_mb == 512u);
     CHECK(req.label[0]     == 't');
 
@@ -334,11 +334,11 @@ static int test_vm_management_structs(void)
 {
     struct vmm_req_create create_req;
     memset(&create_req, 0, sizeof(create_req));
-    create_req.os_type      = VMM_OS_TYPE_FREEBSD;
+    create_req.os_type      = VMM_PROFILE_SECONDARY;
     create_req.ram_mb       = 1024u;
     create_req.device_flags = GUEST_DEV_FLAG_SERIAL | GUEST_DEV_FLAG_BLOCK;
 
-    CHECK(create_req.os_type == VMM_OS_TYPE_FREEBSD);
+    CHECK(create_req.os_type == VMM_PROFILE_SECONDARY);
     CHECK(create_req.ram_mb  == 1024u);
 
     struct vmm_reply_create create_reply = { .ok = 1u, .vm_id = 0u };
@@ -362,7 +362,7 @@ static int test_vm_management_structs(void)
     CHECK(VM_STATE_DEAD     == 4);
 
     /* OS types must be distinct */
-    CHECK(VMM_OS_TYPE_LINUX   != VMM_OS_TYPE_FREEBSD);
+    CHECK(VMM_PROFILE_PRIMARY   != VMM_PROFILE_SECONDARY);
 
     /* vm_list_entry_t packed layout */
     CHECK(sizeof(vm_list_entry_t) == 6u * sizeof(uint32_t));
@@ -378,12 +378,12 @@ static int test_vmm_register_structs(void)
 {
     struct vmm_register_req req;
     memset(&req, 0, sizeof(req));
-    req.os_type    = VMM_OS_TYPE_LINUX;
+    req.os_type    = VMM_PROFILE_PRIMARY;
     req.flags      = VMM_FLAG_SMP;
     req.max_guests = 4u;
-    memcpy(req.name, "linux_vmm", 9);
+    memcpy(req.name, "guest_vmm_primary", 9);
 
-    CHECK(req.os_type    == VMM_OS_TYPE_LINUX);
+    CHECK(req.os_type    == VMM_PROFILE_PRIMARY);
     CHECK(req.flags      == VMM_FLAG_SMP);
     CHECK(req.max_guests == 4u);
 

@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
-  linux_vmm_test.system: minimal system to boot Ubuntu via linux_vmm.elf.
+  linux_vmm_test.system: minimal system to boot Ubuntu via guest_vmm_primary.elf.
 
   Purpose: debug the Ubuntu early kernel panic without the full agentOS stack.
   Only linux_vmm is present; no controller or other service PDs.  This legacy
@@ -21,8 +21,8 @@
     -->
     <memory_region name="virtio_mmio" size="0x1_000" phys_addr="0xa000000" />
 
-    <protection_domain name="linux_vmm" priority="254">
-        <program_image path="linux_vmm.elf" />
+    <protection_domain name="guest_vmm_primary" priority="254">
+        <program_image path="guest_vmm_primary.elf" />
 
         <!--
           VMM maps guest RAM to load kernel/DTB/initrd.

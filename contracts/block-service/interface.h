@@ -48,8 +48,10 @@
  * capability.  Separate IDs have independent VirtIO queues and DMA windows,
  * so simultaneous guest reads cannot change another guest's backing media.
  */
-#define BLK_SVC_MEDIA_UBUNTU_INSTALL    0u
-#define BLK_SVC_MEDIA_FREEBSD_INSTALL   1u
+#define BLK_SVC_MEDIA_PRIMARY           0u
+#define BLK_SVC_MEDIA_SECONDARY         1u
+#define BLK_SVC_MEDIA_UBUNTU_INSTALL    BLK_SVC_MEDIA_PRIMARY
+#define BLK_SVC_MEDIA_FREEBSD_INSTALL   BLK_SVC_MEDIA_SECONDARY
 #define BLK_SVC_MEDIA_COUNT             2u
 
 /* ── Geometry constants ─────────────────────────────────────────────────── */

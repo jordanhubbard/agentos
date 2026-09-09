@@ -75,7 +75,7 @@ name = "virtio_blk"
 priority = 175
 
 [[pd]]
-name = "linux_vmm"
+name = "guest_vmm_primary"
 priority = 250
 
 [[pd]]

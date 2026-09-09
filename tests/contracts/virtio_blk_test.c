@@ -35,8 +35,8 @@ void run_virtio_blk_tests(microkit_channel ch) {
 
     /* Version 2 selects canonical media without adding guest-specific ops. */
     ASSERT_TRUE(VIRTIO_BLK_CONTRACT_VERSION == 2u, "virtio blk contract version 2");
-    ASSERT_TRUE(BLK_MEDIA_UBUNTU_INSTALL == 0u, "ubuntu media id is stable");
-    ASSERT_TRUE(BLK_MEDIA_FREEBSD_INSTALL == 1u, "freebsd media id is stable");
+    ASSERT_TRUE(BLK_MEDIA_PRIMARY == 0u, "ubuntu media id is stable");
+    ASSERT_TRUE(BLK_MEDIA_SECONDARY == 1u, "freebsd media id is stable");
     ASSERT_TRUE(BLK_MEDIA_COUNT == 2u, "two canonical install media endpoints");
     ASSERT_TRUE(sizeof(struct virtio_blk_req_read) == 20u,
                 "read request carries media id");

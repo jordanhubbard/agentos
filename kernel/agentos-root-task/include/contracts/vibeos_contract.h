@@ -30,8 +30,10 @@
 
 /* ─── OS type and architecture constants ─────────────────────────────────── */
 
-#define VIBEOS_TYPE_FREEBSD   0x02u
-#define VIBEOS_TYPE_LINUX     0x01u
+#define VIBEOS_PROFILE_SECONDARY   0x02u
+#define VIBEOS_PROFILE_PRIMARY     0x01u
+#define VIBEOS_TYPE_FREEBSD        VIBEOS_PROFILE_SECONDARY
+#define VIBEOS_TYPE_LINUX          VIBEOS_PROFILE_PRIMARY
 
 #define VIBEOS_ARCH_AARCH64   0x01u
 #define VIBEOS_ARCH_X86_64    0x02u

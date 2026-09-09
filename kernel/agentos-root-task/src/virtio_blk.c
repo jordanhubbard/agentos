@@ -9,7 +9,7 @@
  * device page at AGENTOS_HOST_BLK_MMIO_VA and maps one shared large frame at
  * AGENTOS_BLK_SHARED_VA. Its physical base is carried in frame metadata.
  *
- * Queue and DMA memory live in a 2 MiB frame shared with linux_vmm. The root
+ * Queue and DMA memory live in a 2 MiB frame shared with the guest VMM. The root
  * task records the frame's physical address in its metadata, so this driver
  * never assumes that a virtual address is also a DMA address.
  * ────────────────────────────────────────────────────────────────────────────
@@ -475,17 +475,17 @@ static void virtio_blk_pd_init(void)
     g_blk_shared_paddr = shared->paddr;
 
     virtio_blk_device_init(
-        &dev[AOS_HOST_BLK_MEDIA_UBUNTU],
-        AOS_HOST_BLK_MEDIA_UBUNTU,
+        &dev[AOS_HOST_BLK_MEDIA_PRIMARY],
+        AOS_HOST_BLK_MEDIA_PRIMARY,
         blk_mmio_vaddr);
     virtio_blk_device_init(
-        &dev[AOS_HOST_BLK_MEDIA_FREEBSD],
-        AOS_HOST_BLK_MEDIA_FREEBSD,
-        AGENTOS_HOST_FREEBSD_BLK_PAGE_VA +
-            AGENTOS_HOST_FREEBSD_BLK_PAGE_OFF);
+        &dev[AOS_HOST_BLK_MEDIA_SECONDARY],
+        AOS_HOST_BLK_MEDIA_SECONDARY,
+        AGENTOS_HOST_SECONDARY_BLK_PAGE_VA +
+            AGENTOS_HOST_SECONDARY_BLK_PAGE_OFF);
 
-    if (dev[AOS_HOST_BLK_MEDIA_UBUNTU].initialized ||
-        dev[AOS_HOST_BLK_MEDIA_FREEBSD].initialized) {
+    if (dev[AOS_HOST_BLK_MEDIA_PRIMARY].initialized ||
+        dev[AOS_HOST_BLK_MEDIA_SECONDARY].initialized) {
         log_drain_write(17, 17, "[virtio_blk] READY\n");
     } else {
         log_drain_write(17, 17, "[virtio_blk] WARNING: device absent, all ops return BLK_ERR_NODEV\n");
@@ -534,7 +534,7 @@ static uint32_t virtio_blk_h_dispatch(sel4_badge_t b, const sel4_msg_t *req,
     (void)b; (void)ctx;
     uint32_t op = (uint32_t)msg_u32(req, 0);
     uint32_t media_id = blk_canonical_op(op) && req->length >= 20u
-        ? (uint32_t)msg_u32(req, 16) : AOS_HOST_BLK_MEDIA_UBUNTU;
+        ? (uint32_t)msg_u32(req, 16) : AOS_HOST_BLK_MEDIA_PRIMARY;
     blk_device_t *device;
 
     if (media_id >= AOS_HOST_BLK_MEDIA_COUNT) {

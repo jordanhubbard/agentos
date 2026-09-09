@@ -44,7 +44,7 @@
 #include "contracts/vm_manager_contract.h"
 #include "system_desc.h"
 #include <platform/guest_memory_layout.h>
-/* vm_manager.h includes vmm_mux.h (found via -I../../freebsd-vmm in Makefile) */
+/* vm_manager.h includes the guest-neutral slot multiplexer contract. */
 #include "vm_manager.h"
 
 /* ── Shared memory output region ─────────────────────────────────────────
@@ -56,8 +56,8 @@ uintptr_t vm_list_vaddr;   /* set by linker (setvar_vaddr) */
 static vm_mux_t g_mux;
 static uint8_t  g_vm_types[VM_MAX_SLOTS];
 static uint32_t g_vm_flags[VM_MAX_SLOTS];
-static seL4_CPtr g_linux_vmm_ep;
-static seL4_CPtr g_freebsd_vmm_ep;
+static seL4_CPtr g_primary_vmm_ep;
+static seL4_CPtr g_secondary_vmm_ep;
 static seL4_CPtr g_slot_vmm_ep[VM_MAX_SLOTS];
 
 /* ── Additional IPC opcodes (extend vmm_mux.h's OP_VM_* set) ──────────── */
@@ -125,18 +125,18 @@ static inline uint32_t vm_arg_u32(const sel4_msg_t *req, uint32_t arg)
 static inline uint32_t vm_create_vm_type(const sel4_msg_t *req)
 {
     uint32_t first = msg_u32(req, 0);
-    if (first == VM_TYPE_LINUX || first == VM_TYPE_FREEBSD)
+    if (first == VM_PROFILE_PRIMARY || first == VM_PROFILE_SECONDARY)
         return first;
 
     /* Legacy callers sent label_vaddr first.  There was no VM type field, so
      * preserve the old behavior by treating those requests as Linux. */
-    return VM_TYPE_LINUX;
+    return VM_PROFILE_PRIMARY;
 }
 
 static inline uint32_t vm_create_ram_mb(const sel4_msg_t *req)
 {
     uint32_t first = msg_u32(req, 0);
-    if (first == VM_TYPE_LINUX || first == VM_TYPE_FREEBSD)
+    if (first == VM_PROFILE_PRIMARY || first == VM_PROFILE_SECONDARY)
         return msg_u32(req, 4);
 
     /* Older tests encoded opcode,label,ram in data[0],data[4],data[8]. */
@@ -149,7 +149,7 @@ static inline uint32_t vm_create_ram_mb(const sel4_msg_t *req)
 static inline uint32_t vm_create_flags(const sel4_msg_t *req)
 {
     uint32_t first = msg_u32(req, 0);
-    if (first == VM_TYPE_LINUX || first == VM_TYPE_FREEBSD)
+    if (first == VM_PROFILE_PRIMARY || first == VM_PROFILE_SECONDARY)
         return msg_u32(req, 8);
     return 0u;
 }
@@ -165,26 +165,26 @@ static void vm_label_copy(char *dst, const char *src, uint32_t max)
 
 static seL4_CPtr vm_endpoint_for_type(uint32_t vm_type)
 {
-    return (vm_type == VM_TYPE_FREEBSD) ? g_freebsd_vmm_ep : g_linux_vmm_ep;
+    return (vm_type == VM_PROFILE_SECONDARY) ? g_secondary_vmm_ep : g_primary_vmm_ep;
 }
 
 static uint32_t vm_service_for_type(uint32_t vm_type)
 {
-    return (vm_type == VM_TYPE_FREEBSD) ? SVC_ID_FREEBSD_VMM : SVC_ID_LINUX_VMM;
+    return (vm_type == VM_PROFILE_SECONDARY) ? SVC_ID_GUEST_VMM_SECONDARY : SVC_ID_GUEST_VMM_PRIMARY;
 }
 
 static uint32_t dedicated_vmm_os_type(uint32_t vm_type)
 {
-    return (vm_type == VM_TYPE_FREEBSD) ? 0x02u : 0x01u;
+    return vm_type + 1u;
 }
 
 static uintptr_t dedicated_ram_base(uint32_t vm_type, uint8_t slot_id)
 {
-#if defined(AGENTOS_GUEST_BOTH)
-    if (vm_type == VM_TYPE_FREEBSD)
-        return AOS_FREEBSD_GUEST_RAM_BASE;
-    if (vm_type == VM_TYPE_LINUX)
-        return AOS_LINUX_GUEST_RAM_BASE;
+#if defined(AGENTOS_GUEST_DUAL)
+    if (vm_type == VM_PROFILE_SECONDARY)
+        return AOS_SECONDARY_GUEST_RAM_BASE;
+    if (vm_type == VM_PROFILE_PRIMARY)
+        return AOS_PRIMARY_GUEST_RAM_BASE;
 #else
     (void)vm_type;
 #endif
@@ -193,15 +193,15 @@ static uintptr_t dedicated_ram_base(uint32_t vm_type, uint8_t slot_id)
 
 static uint32_t dedicated_ram_capacity_mb(uint32_t vm_type)
 {
-    return vm_type == VM_TYPE_FREEBSD
-         ? AOS_FREEBSD_GUEST_RAM_MB
-         : AOS_LINUX_GUEST_RAM_MB;
+    return vm_type == VM_PROFILE_SECONDARY
+         ? AOS_SECONDARY_GUEST_RAM_MB
+         : AOS_PRIMARY_GUEST_RAM_MB;
 }
 
 static uint8_t dedicated_slot_for_type(uint32_t vm_type)
 {
-    if (g_linux_vmm_ep && g_freebsd_vmm_ep)
-        return (vm_type == VM_TYPE_LINUX) ? 0u : 1u;
+    if (g_primary_vmm_ep && g_secondary_vmm_ep)
+        return (vm_type == VM_PROFILE_PRIMARY) ? 0u : 1u;
     return 0u;
 }
 
@@ -272,7 +272,7 @@ static int dedicated_create(uint32_t vm_type, uint32_t ram_mb,
         return -2;
     }
 
-    /* Dedicated Linux/FreeBSD VMM PDs are single-guest services.  Their guest
+    /* Dedicated profile-backed VMM PDs are single-guest services. Their guest
      * image setup happens during VMM PD init, but the guest is not run until
      * vm_manager relays CREATE+BOOT.  That keeps dual-guest boots ordered and
      * makes the CC lifecycle call the real owner of guest startup.
@@ -288,7 +288,7 @@ static int dedicated_create(uint32_t vm_type, uint32_t ram_mb,
     slot->ram_paddr = ram_base;
     slot->vcpu_id = (uint32_t)slot_id;
     vm_label_copy(slot->label,
-                  vm_type == VM_TYPE_FREEBSD ? "freebsd" : "linux",
+                  vm_type == VM_PROFILE_SECONDARY ? "secondary" : "primary",
                   (uint32_t)sizeof(slot->label));
 
     g_vm_types[slot_id] = (uint8_t)vm_type;
@@ -310,7 +310,7 @@ static int dedicated_create(uint32_t vm_type, uint32_t ram_mb,
             dedicated_guest_call(slot_id, MSG_GUEST_BOOT,
                                  VM_SLOT_RUNNING) != VM_OK) {
             g_slot_vmm_ep[slot_id] = 0u;
-            g_vm_types[slot_id] = VM_TYPE_LINUX;
+            g_vm_types[slot_id] = VM_PROFILE_PRIMARY;
             g_vm_flags[slot_id] = 0u;
             slot->state = VM_SLOT_FREE;
             if (g_mux.slot_count > 0u)
@@ -331,7 +331,7 @@ static uint32_t dedicated_destroy(uint8_t slot_id)
 
     g_mux.slots[slot_id].state = VM_SLOT_FREE;
     g_slot_vmm_ep[slot_id] = 0u;
-    g_vm_types[slot_id] = VM_TYPE_LINUX;
+    g_vm_types[slot_id] = VM_PROFILE_PRIMARY;
     g_vm_flags[slot_id] = 0u;
     if (g_mux.slot_count > 0u)
         g_mux.slot_count--;
@@ -502,8 +502,8 @@ static uint32_t h_create(sel4_badge_t ba, const sel4_msg_t *req,
     uint32_t vm_type = vm_create_vm_type(req);
     uint32_t ram_mb  = vm_create_ram_mb(req);
     uint32_t flags   = vm_create_flags(req);
-    const char *label = (vm_type == VM_TYPE_FREEBSD) ? "freebsd" : "linux";
-    if (vm_type != VM_TYPE_LINUX && vm_type != VM_TYPE_FREEBSD) {
+    const char *label = vm_type == VM_PROFILE_SECONDARY ? "secondary" : "primary";
+    if (vm_type != VM_PROFILE_PRIMARY && vm_type != VM_PROFILE_SECONDARY) {
         rep_u32(rep, 0, VM_ERR);
         rep->length = 4;
         return SEL4_ERR_BAD_ARG;
@@ -586,7 +586,7 @@ static uint32_t h_destroy(sel4_badge_t ba, const sel4_msg_t *req,
     }
     int r = vmm_mux_destroy(&g_mux, slot_id);
     if (r == 0 && slot_id < VM_MAX_SLOTS) {
-        g_vm_types[slot_id] = VM_TYPE_LINUX;
+        g_vm_types[slot_id] = VM_PROFILE_PRIMARY;
         g_vm_flags[slot_id] = 0u;
     }
     rep_u32(rep, 0, r == 0 ? VM_OK : VM_ERR);
@@ -950,15 +950,15 @@ void vm_manager_main(seL4_CPtr my_ep, seL4_CPtr ns_ep)
 {
     vmm_mux_init(&g_mux);
 
-#if defined(AGENTOS_GUEST_LINUX)
-    g_linux_vmm_ep = (seL4_CPtr)PD_CNODE_SLOT_LINUX_VMM_EP;
+#if defined(AGENTOS_GUEST_PRIMARY)
+    g_primary_vmm_ep = (seL4_CPtr)PD_CNODE_SLOT_GUEST_VMM_PRIMARY_EP;
 #else
-    g_linux_vmm_ep = 0u;
+    g_primary_vmm_ep = 0u;
 #endif
-#if defined(AGENTOS_GUEST_FREEBSD)
-    g_freebsd_vmm_ep = (seL4_CPtr)PD_CNODE_SLOT_FREEBSD_VMM_EP;
+#if defined(AGENTOS_GUEST_SECONDARY)
+    g_secondary_vmm_ep = (seL4_CPtr)PD_CNODE_SLOT_GUEST_VMM_SECONDARY_EP;
 #else
-    g_freebsd_vmm_ep = 0u;
+    g_secondary_vmm_ep = 0u;
 #endif
 
     for (uint8_t i = 0; i < VM_MAX_SLOTS; i++) {
@@ -967,7 +967,7 @@ void vm_manager_main(seL4_CPtr my_ep, seL4_CPtr ns_ep)
         g_quotas[i].run_ticks     = 0;
         g_quotas[i].preempt_count = 0;
         g_affinity[i]             = 0xFFFFFFFFu;
-        g_vm_types[i]             = VM_TYPE_LINUX;
+        g_vm_types[i]             = VM_PROFILE_PRIMARY;
         g_vm_flags[i]             = 0u;
         g_slot_vmm_ep[i]          = 0u;
     }

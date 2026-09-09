@@ -46,8 +46,8 @@ static inline void agentos_wmb(void) {}
 
 /* ── Constants ──────────────────────────────────────────────────────── */
 
-#define VIBEOS_TYPE_LINUX     0x01u
-#define VIBEOS_TYPE_FREEBSD   0x02u
+#define VIBEOS_PROFILE_PRIMARY     0x01u
+#define VIBEOS_PROFILE_SECONDARY   0x02u
 #define VIBEOS_ARCH_AARCH64   0x01u
 #define VIBEOS_ARCH_X86_64    0x02u
 #define VIBEOS_DEV_SERIAL     (1u << 0)
@@ -174,7 +174,7 @@ static microkit_msginfo handle_vibeos_create(void) {
     const struct vibeos_create_req *req = (const struct vibeos_create_req *)vibe_staging_vaddr;
     vibeos_ctx_t *ctx = vibeos_alloc();
     if (!ctx) { microkit_mr_set(0, VIBEOS_ERR_NO_SLOTS); microkit_mr_set(1, 0); return microkit_msginfo_new(0,2); }
-    if (req->os_type != VIBEOS_TYPE_LINUX && req->os_type != VIBEOS_TYPE_FREEBSD) {
+    if (req->os_type != VIBEOS_PROFILE_PRIMARY && req->os_type != VIBEOS_PROFILE_SECONDARY) {
         microkit_mr_set(0, VIBEOS_ERR_BAD_OS_TYPE); microkit_mr_set(1, 0); return microkit_msginfo_new(0,2);
     }
     uint32_t h = g_next_vibeos_handle++;
@@ -403,13 +403,13 @@ static void test_create_linux(void) {
     TEST("vibeos_create_linux");
     reset_state();
 
-    uint32_t h = do_create(VIBEOS_TYPE_LINUX, VIBEOS_ARCH_X86_64, 512);
+    uint32_t h = do_create(VIBEOS_PROFILE_PRIMARY, VIBEOS_ARCH_X86_64, 512);
     ASSERT_EQ(_stub_mrs[0], VIBEOS_OK, "CREATE linux: ok");
     ASSERT_NE(h, 0, "handle non-zero");
 
     vibeos_ctx_t *ctx = vibeos_find(h);
     ASSERT_EQ(ctx != (void*)0, 1, "context found by handle");
-    ASSERT_EQ(ctx->os_type, VIBEOS_TYPE_LINUX, "os_type linux");
+    ASSERT_EQ(ctx->os_type, VIBEOS_PROFILE_PRIMARY, "os_type linux");
     ASSERT_EQ(ctx->ram_mb, 512u, "ram_mb stored");
     ASSERT_EQ(ctx->state, VIBEOS_STATE_CREATING, "initial state: CREATING");
 }
@@ -418,7 +418,7 @@ static void test_create_freebsd(void) {
     TEST("vibeos_create_freebsd");
     reset_state();
 
-    uint32_t h = do_create(VIBEOS_TYPE_FREEBSD, VIBEOS_ARCH_AARCH64, 256);
+    uint32_t h = do_create(VIBEOS_PROFILE_SECONDARY, VIBEOS_ARCH_AARCH64, 256);
     ASSERT_EQ(_stub_mrs[0], VIBEOS_OK, "CREATE freebsd: ok");
     ASSERT_NE(h, 0, "handle non-zero");
 }
@@ -437,9 +437,9 @@ static void test_create_exhausts_slots(void) {
     reset_state();
 
     for (int i = 0; i < MAX_VIBEOS_INSTANCES; i++)
-        do_create(VIBEOS_TYPE_LINUX, VIBEOS_ARCH_X86_64, 128);
+        do_create(VIBEOS_PROFILE_PRIMARY, VIBEOS_ARCH_X86_64, 128);
 
-    do_create(VIBEOS_TYPE_LINUX, VIBEOS_ARCH_X86_64, 128);
+    do_create(VIBEOS_PROFILE_PRIMARY, VIBEOS_ARCH_X86_64, 128);
     ASSERT_EQ(_stub_mrs[0], VIBEOS_ERR_NO_SLOTS, "CREATE beyond max: ERR_NO_SLOTS");
 }
 
@@ -451,7 +451,7 @@ static void test_bind_device_new(void) {
     TEST("vibeos_bind_device_new_registration");
     reset_state();
 
-    uint32_t h = do_create(VIBEOS_TYPE_LINUX, VIBEOS_ARCH_X86_64, 256);
+    uint32_t h = do_create(VIBEOS_PROFILE_PRIMARY, VIBEOS_ARCH_X86_64, 256);
     microkit_mr_set(1, h);
     microkit_mr_set(2, 0);  /* dev_type 0 = SERIAL */
     microkit_mr_set(3, 100);/* dev_handle */
@@ -472,14 +472,14 @@ static void test_bind_device_non_reinvention(void) {
     reset_state();
 
     /* First OS instance: registers serial PD with handle 100 */
-    uint32_t h1 = do_create(VIBEOS_TYPE_LINUX, VIBEOS_ARCH_X86_64, 256);
+    uint32_t h1 = do_create(VIBEOS_PROFILE_PRIMARY, VIBEOS_ARCH_X86_64, 256);
     microkit_mr_set(1, h1); microkit_mr_set(2, 0); microkit_mr_set(3, 100);
     handle_vibeos_bind_device();
     ASSERT_EQ(_stub_mrs[0], VIBEOS_OK, "first bind: ok");
     ASSERT_EQ(_stub_mrs[2], 0u, "first bind: new (preexisting=0)");
 
     /* Second OS instance: tries to bind a NEW serial PD with handle 200 */
-    uint32_t h2 = do_create(VIBEOS_TYPE_FREEBSD, VIBEOS_ARCH_X86_64, 128);
+    uint32_t h2 = do_create(VIBEOS_PROFILE_SECONDARY, VIBEOS_ARCH_X86_64, 128);
     microkit_mr_set(1, h2); microkit_mr_set(2, 0); microkit_mr_set(3, 200);
     handle_vibeos_bind_device();
 
@@ -505,7 +505,7 @@ static void test_bind_device_bad_dev_type(void) {
     TEST("vibeos_bind_device_bad_dev_type");
     reset_state();
 
-    uint32_t h = do_create(VIBEOS_TYPE_LINUX, VIBEOS_ARCH_X86_64, 128);
+    uint32_t h = do_create(VIBEOS_PROFILE_PRIMARY, VIBEOS_ARCH_X86_64, 128);
     microkit_mr_set(1, h); microkit_mr_set(2, VIBEOS_DEV_COUNT); microkit_mr_set(3, 1);
     handle_vibeos_bind_device();
     ASSERT_EQ(_stub_mrs[0], VIBEOS_ERR_DEVICE_UNAVAILABLE, "BIND_DEVICE bad dev_type: error");
@@ -519,7 +519,7 @@ static void test_boot_valid(void) {
     TEST("vibeos_boot_valid");
     reset_state();
 
-    uint32_t h = do_create(VIBEOS_TYPE_LINUX, VIBEOS_ARCH_X86_64, 512);
+    uint32_t h = do_create(VIBEOS_PROFILE_PRIMARY, VIBEOS_ARCH_X86_64, 512);
     ASSERT_EQ(vibeos_find(h)->state, VIBEOS_STATE_CREATING, "initial state CREATING");
 
     microkit_mr_set(1, h);
@@ -532,7 +532,7 @@ static void test_boot_wrong_state(void) {
     TEST("vibeos_boot_wrong_state");
     reset_state();
 
-    uint32_t h = do_create(VIBEOS_TYPE_LINUX, VIBEOS_ARCH_X86_64, 512);
+    uint32_t h = do_create(VIBEOS_PROFILE_PRIMARY, VIBEOS_ARCH_X86_64, 512);
     microkit_mr_set(1, h); handle_vibeos_boot();   /* transition to BOOTING */
 
     microkit_mr_set(1, h); handle_vibeos_boot();   /* BOOT again from BOOTING */
@@ -556,7 +556,7 @@ static void test_load_module_wasm(void) {
     TEST("vibeos_load_module_wasm");
     reset_state();
 
-    uint32_t h = do_create(VIBEOS_TYPE_LINUX, VIBEOS_ARCH_X86_64, 256);
+    uint32_t h = do_create(VIBEOS_PROFILE_PRIMARY, VIBEOS_ARCH_X86_64, 256);
     /* Write valid WASM magic to staging region */
     uint8_t *staging = (uint8_t *)vibe_staging_vaddr;
     staging[0] = 0x00; staging[1] = 0x61; staging[2] = 0x73; staging[3] = 0x6D;
@@ -575,7 +575,7 @@ static void test_load_module_bad_wasm_magic(void) {
     TEST("vibeos_load_module_bad_wasm_magic");
     reset_state();
 
-    uint32_t h = do_create(VIBEOS_TYPE_LINUX, VIBEOS_ARCH_X86_64, 256);
+    uint32_t h = do_create(VIBEOS_PROFILE_PRIMARY, VIBEOS_ARCH_X86_64, 256);
     /* Write invalid WASM magic */
     uint8_t *staging = (uint8_t *)vibe_staging_vaddr;
     staging[0] = 0xFF; staging[1] = 0xFF;
@@ -592,7 +592,7 @@ static void test_load_module_elf(void) {
     TEST("vibeos_load_module_elf");
     reset_state();
 
-    uint32_t h = do_create(VIBEOS_TYPE_LINUX, VIBEOS_ARCH_X86_64, 256);
+    uint32_t h = do_create(VIBEOS_PROFILE_PRIMARY, VIBEOS_ARCH_X86_64, 256);
     microkit_mr_set(1, h);
     microkit_mr_set(2, VIBEOS_MODULE_TYPE_ELF);
     microkit_mr_set(3, 128);
@@ -605,7 +605,7 @@ static void test_load_module_bad_type(void) {
     TEST("vibeos_load_module_bad_module_type");
     reset_state();
 
-    uint32_t h = do_create(VIBEOS_TYPE_LINUX, VIBEOS_ARCH_X86_64, 256);
+    uint32_t h = do_create(VIBEOS_PROFILE_PRIMARY, VIBEOS_ARCH_X86_64, 256);
     microkit_mr_set(1, h);
     microkit_mr_set(2, 0xFF);
     microkit_mr_set(3, 64);
@@ -635,7 +635,7 @@ static void test_check_service_registered(void) {
     reset_state();
 
     /* Register a serial service */
-    uint32_t h = do_create(VIBEOS_TYPE_LINUX, VIBEOS_ARCH_X86_64, 256);
+    uint32_t h = do_create(VIBEOS_PROFILE_PRIMARY, VIBEOS_ARCH_X86_64, 256);
     microkit_mr_set(1, h); microkit_mr_set(2, 0); microkit_mr_set(3, 77);
     handle_vibeos_bind_device();
 
@@ -667,7 +667,7 @@ static void test_check_service_bad_func_class(void) {
 static void test_destroy_valid(void) {
     TEST("vibeos_destroy_valid");
     reset_state();
-    uint32_t h = do_create(VIBEOS_TYPE_LINUX, VIBEOS_ARCH_AARCH64, 512);
+    uint32_t h = do_create(VIBEOS_PROFILE_PRIMARY, VIBEOS_ARCH_AARCH64, 512);
     ASSERT_NE(h, 0, "create succeeded");
     microkit_mr_set(1, h);
     handle_vos_destroy();
@@ -690,14 +690,14 @@ static void test_destroy_bad_handle(void) {
 static void test_status_valid(void) {
     TEST("vibeos_status_valid");
     reset_state();
-    uint32_t h = do_create(VIBEOS_TYPE_FREEBSD, VIBEOS_ARCH_AARCH64, 256);
+    uint32_t h = do_create(VIBEOS_PROFILE_SECONDARY, VIBEOS_ARCH_AARCH64, 256);
     ASSERT_NE(h, 0, "create succeeded");
     microkit_mr_set(1, h);
     handle_vos_status();
     ASSERT_EQ(_stub_mrs[0], VIBEOS_OK, "STATUS: ok");
     ASSERT_EQ(_stub_mrs[1], h, "STATUS: handle matches");
     ASSERT_EQ(_stub_mrs[2], VIBEOS_STATE_CREATING, "STATUS: state CREATING");
-    ASSERT_EQ(_stub_mrs[3], VIBEOS_TYPE_FREEBSD, "STATUS: os_type FreeBSD");
+    ASSERT_EQ(_stub_mrs[3], VIBEOS_PROFILE_SECONDARY, "STATUS: os_type FreeBSD");
     ASSERT_EQ(_stub_mrs[4], 256, "STATUS: ram_mb");
 }
 
@@ -725,8 +725,8 @@ static void test_list_empty(void) {
 static void test_list_two_instances(void) {
     TEST("vibeos_list_two_instances");
     reset_state();
-    uint32_t h1 = do_create(VIBEOS_TYPE_LINUX, VIBEOS_ARCH_AARCH64, 256);
-    uint32_t h2 = do_create(VIBEOS_TYPE_FREEBSD, VIBEOS_ARCH_AARCH64, 512);
+    uint32_t h1 = do_create(VIBEOS_PROFILE_PRIMARY, VIBEOS_ARCH_AARCH64, 256);
+    uint32_t h2 = do_create(VIBEOS_PROFILE_SECONDARY, VIBEOS_ARCH_AARCH64, 512);
     ASSERT_NE(h1, 0, "create h1");
     ASSERT_NE(h2, 0, "create h2");
     microkit_mr_set(1, 0);
@@ -742,7 +742,7 @@ static void test_list_two_instances(void) {
 static void test_unbind_device_valid(void) {
     TEST("vibeos_unbind_device_valid");
     reset_state();
-    uint32_t h = do_create(VIBEOS_TYPE_LINUX, VIBEOS_ARCH_AARCH64, 512);
+    uint32_t h = do_create(VIBEOS_PROFILE_PRIMARY, VIBEOS_ARCH_AARCH64, 512);
     /* Bind serial (dev_type index 0) first */
     microkit_mr_set(1, h);
     microkit_mr_set(2, 0);
@@ -776,7 +776,7 @@ static void test_unbind_device_bad_handle(void) {
 static void test_snapshot_wrong_state(void) {
     TEST("vibeos_snapshot_wrong_state");
     reset_state();
-    uint32_t h = do_create(VIBEOS_TYPE_LINUX, VIBEOS_ARCH_AARCH64, 512);
+    uint32_t h = do_create(VIBEOS_PROFILE_PRIMARY, VIBEOS_ARCH_AARCH64, 512);
     /* Default state is CREATING — snapshot should reject */
     microkit_mr_set(1, h);
     handle_vos_snapshot();
@@ -787,7 +787,7 @@ static void test_snapshot_wrong_state(void) {
 static void test_snapshot_from_running(void) {
     TEST("vibeos_snapshot_from_running");
     reset_state();
-    uint32_t h = do_create(VIBEOS_TYPE_LINUX, VIBEOS_ARCH_AARCH64, 512);
+    uint32_t h = do_create(VIBEOS_PROFILE_PRIMARY, VIBEOS_ARCH_AARCH64, 512);
     vibeos_ctx_t *ctx = vibeos_find(h);
     ctx->state = VIBEOS_STATE_RUNNING;
     microkit_mr_set(1, h);
@@ -799,7 +799,7 @@ static void test_snapshot_from_running(void) {
 static void test_snapshot_from_paused(void) {
     TEST("vibeos_snapshot_from_paused");
     reset_state();
-    uint32_t h = do_create(VIBEOS_TYPE_LINUX, VIBEOS_ARCH_AARCH64, 512);
+    uint32_t h = do_create(VIBEOS_PROFILE_PRIMARY, VIBEOS_ARCH_AARCH64, 512);
     vibeos_ctx_t *ctx = vibeos_find(h);
     ctx->state = VIBEOS_STATE_PAUSED;
     microkit_mr_set(1, h);
@@ -814,7 +814,7 @@ static void test_snapshot_from_paused(void) {
 static void test_restore_valid(void) {
     TEST("vibeos_restore_valid");
     reset_state();
-    uint32_t h = do_create(VIBEOS_TYPE_LINUX, VIBEOS_ARCH_AARCH64, 512);
+    uint32_t h = do_create(VIBEOS_PROFILE_PRIMARY, VIBEOS_ARCH_AARCH64, 512);
     microkit_mr_set(1, h);
     microkit_mr_set(2, 0xABCD1234u);
     microkit_mr_set(3, 0x00000001u);
@@ -841,7 +841,7 @@ static void test_restore_bad_handle(void) {
 static void test_migrate_not_impl(void) {
     TEST("vibeos_migrate_not_impl");
     reset_state();
-    uint32_t h = do_create(VIBEOS_TYPE_LINUX, VIBEOS_ARCH_AARCH64, 512);
+    uint32_t h = do_create(VIBEOS_PROFILE_PRIMARY, VIBEOS_ARCH_AARCH64, 512);
     microkit_mr_set(1, h);
     microkit_mr_set(2, 1);
     handle_vos_migrate();

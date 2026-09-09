@@ -263,8 +263,10 @@ typedef enum {
 #define TRACE_PD_APP_MANAGER  31u
 #define TRACE_PD_HTTP_SVC     32u
 #define TRACE_PD_APP_SLOT     33u
-#define TRACE_PD_LINUX_VMM    41u
-#define TRACE_PD_FREEBSD_VMM  42u
+#define TRACE_PD_GUEST_VMM_PRIMARY    41u
+#define TRACE_PD_GUEST_VMM_SECONDARY  42u
+#define TRACE_PD_LINUX_VMM            TRACE_PD_GUEST_VMM_PRIMARY
+#define TRACE_PD_FREEBSD_VMM          TRACE_PD_GUEST_VMM_SECONDARY
 #define TRACE_PD_CC_PD        43u
 
 /* vm_manager IPC opcodes (MR0 in PPCs to vm_manager PD, channel CH_VM_MANAGER)

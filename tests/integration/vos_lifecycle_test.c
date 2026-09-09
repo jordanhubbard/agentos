@@ -78,7 +78,7 @@ static void test_create_then_status_ok(void)
     SEL4_TEST_BEGIN("create_then_status_ok");
     setup();
 
-    vos_spec_t   spec = make_spec(VOS_OS_LINUX, "linux-a");
+    vos_spec_t   spec = make_spec(VOS_PROFILE_PRIMARY, "linux-a");
     vos_handle_t h    = VOS_HANDLE_INVALID;
 
     vos_err_t rc = vos_create(&spec, &h);
@@ -96,14 +96,14 @@ static void test_create_sets_correct_os_type(void)
     SEL4_TEST_BEGIN("create_sets_correct_os_type");
     setup();
 
-    vos_spec_t   spec = make_spec(VOS_OS_LINUX, "linux-b");
+    vos_spec_t   spec = make_spec(VOS_PROFILE_PRIMARY, "linux-b");
     vos_handle_t h    = VOS_HANDLE_INVALID;
 
     vos_create(&spec, &h);
 
     vos_status_t st;
     vos_get_status(h, &st);
-    SEL4_ASSERT_EQ(st.os_type, VOS_OS_LINUX, "os_type is VOS_OS_LINUX");
+    SEL4_ASSERT_EQ(st.os_type, VOS_PROFILE_PRIMARY, "os_type is VOS_PROFILE_PRIMARY");
 }
 
 static void test_create_freebsd_os_type(void)
@@ -111,14 +111,14 @@ static void test_create_freebsd_os_type(void)
     SEL4_TEST_BEGIN("create_freebsd_os_type");
     setup();
 
-    vos_spec_t   spec = make_spec(VOS_OS_FREEBSD, "freebsd-a");
+    vos_spec_t   spec = make_spec(VOS_PROFILE_SECONDARY, "freebsd-a");
     vos_handle_t h    = VOS_HANDLE_INVALID;
 
     vos_create(&spec, &h);
 
     vos_status_t st;
     vos_get_status(h, &st);
-    SEL4_ASSERT_EQ(st.os_type, VOS_OS_FREEBSD, "os_type is VOS_OS_FREEBSD");
+    SEL4_ASSERT_EQ(st.os_type, VOS_PROFILE_SECONDARY, "os_type is VOS_PROFILE_SECONDARY");
 }
 
 static void test_create_multiple_guests(void)
@@ -131,11 +131,11 @@ static void test_create_multiple_guests(void)
     vos_handle_t h2 = VOS_HANDLE_INVALID;
     vos_spec_t   spec;
 
-    spec = make_spec(VOS_OS_LINUX, "multi");
+    spec = make_spec(VOS_PROFILE_PRIMARY, "multi");
     SEL4_ASSERT_OK(vos_create(&spec, &h0), "guest 0 create ok");
-    spec = make_spec(VOS_OS_LINUX, "multi");
+    spec = make_spec(VOS_PROFILE_PRIMARY, "multi");
     SEL4_ASSERT_OK(vos_create(&spec, &h1), "guest 1 create ok");
-    spec = make_spec(VOS_OS_LINUX, "multi");
+    spec = make_spec(VOS_PROFILE_PRIMARY, "multi");
     SEL4_ASSERT_OK(vos_create(&spec, &h2), "guest 2 create ok");
 
     SEL4_ASSERT_NE(h0, (int64_t)VOS_HANDLE_INVALID, "handle 0 valid");
@@ -156,13 +156,13 @@ static void test_create_beyond_max(void)
 
     /* Fill all slots */
     for (i = 0; i < VOS_MAX_INSTANCES; i++) {
-        spec = make_spec(VOS_OS_LINUX, "fill");
+        spec = make_spec(VOS_PROFILE_PRIMARY, "fill");
         h    = VOS_HANDLE_INVALID;
         vos_create(&spec, &h);
     }
 
     /* One more must fail */
-    spec = make_spec(VOS_OS_LINUX, "extra");
+    spec = make_spec(VOS_PROFILE_PRIMARY, "extra");
     h    = VOS_HANDLE_INVALID;
     vos_err_t rc = vos_create(&spec, &h);
     SEL4_ASSERT_EQ(rc, VOS_ERR_OUT_OF_MEMORY,
@@ -180,7 +180,7 @@ static void test_snapshot_suspends_guest(void)
     SEL4_TEST_BEGIN("snapshot_suspends_guest");
     setup();
 
-    vos_spec_t   spec = make_spec(VOS_OS_LINUX, "snap-susp");
+    vos_spec_t   spec = make_spec(VOS_PROFILE_PRIMARY, "snap-susp");
     vos_handle_t h    = VOS_HANDLE_INVALID;
     uint32_t     lo   = 0;
     uint32_t     hi   = 0;
@@ -201,7 +201,7 @@ static void test_snapshot_returns_valid_token(void)
     SEL4_TEST_BEGIN("snapshot_returns_valid_token");
     setup();
 
-    vos_spec_t   spec = make_spec(VOS_OS_LINUX, "snap-tok");
+    vos_spec_t   spec = make_spec(VOS_PROFILE_PRIMARY, "snap-tok");
     vos_handle_t h    = VOS_HANDLE_INVALID;
     uint32_t     lo   = 0xFFFFFFFFu;
     uint32_t     hi   = 0xFFFFFFFFu;
@@ -235,7 +235,7 @@ static void test_restore_produces_running_guest(void)
     SEL4_TEST_BEGIN("restore_produces_running_guest");
     setup();
 
-    vos_spec_t   spec = make_spec(VOS_OS_LINUX, "rt-run");
+    vos_spec_t   spec = make_spec(VOS_PROFILE_PRIMARY, "rt-run");
     vos_handle_t h    = VOS_HANDLE_INVALID;
     uint32_t     lo   = 0;
     uint32_t     hi   = 0;
@@ -259,7 +259,7 @@ static void test_restore_gives_new_handle(void)
     SEL4_TEST_BEGIN("restore_gives_new_handle");
     setup();
 
-    vos_spec_t   spec = make_spec(VOS_OS_LINUX, "rt-newhd");
+    vos_spec_t   spec = make_spec(VOS_PROFILE_PRIMARY, "rt-newhd");
     vos_handle_t h    = VOS_HANDLE_INVALID;
     uint32_t     lo   = 0;
     uint32_t     hi   = 0;
@@ -279,7 +279,7 @@ static void test_restore_invalid_zero_token(void)
     SEL4_TEST_BEGIN("restore_invalid_zero_token");
     setup();
 
-    vos_spec_t   spec = make_spec(VOS_OS_LINUX, "rt-zero");
+    vos_spec_t   spec = make_spec(VOS_PROFILE_PRIMARY, "rt-zero");
     vos_handle_t h    = VOS_HANDLE_INVALID;
     vos_err_t    rc   = vos_restore(0u, 0u, &spec, &h);
     SEL4_ASSERT_EQ(rc, VOS_ERR_INVALID_HANDLE,
@@ -292,7 +292,7 @@ static void test_restore_corrupt_token(void)
     setup();
 
     /* snap index 13 has never been written */
-    vos_spec_t   spec = make_spec(VOS_OS_LINUX, "rt-crpt");
+    vos_spec_t   spec = make_spec(VOS_PROFILE_PRIMARY, "rt-crpt");
     vos_handle_t h    = VOS_HANDLE_INVALID;
     vos_err_t    rc   = vos_restore(13u, 0u, &spec, &h);
     SEL4_ASSERT_EQ(rc, VOS_ERR_SNAP_NOT_FOUND,
@@ -304,7 +304,7 @@ static void test_snapshot_restore_os_type_preserved(void)
     SEL4_TEST_BEGIN("snapshot_restore_os_type_preserved");
     setup();
 
-    vos_spec_t   spec = make_spec(VOS_OS_FREEBSD, "bsd-rt");
+    vos_spec_t   spec = make_spec(VOS_PROFILE_SECONDARY, "bsd-rt");
     vos_handle_t h    = VOS_HANDLE_INVALID;
     uint32_t     lo   = 0;
     uint32_t     hi   = 0;
@@ -317,8 +317,8 @@ static void test_snapshot_restore_os_type_preserved(void)
 
     vos_status_t st;
     vos_get_status(h2, &st);
-    SEL4_ASSERT_EQ(st.os_type, VOS_OS_FREEBSD,
-                   "restored FreeBSD guest retains VOS_OS_FREEBSD os_type");
+    SEL4_ASSERT_EQ(st.os_type, VOS_PROFILE_SECONDARY,
+                   "restored FreeBSD guest retains VOS_PROFILE_SECONDARY os_type");
 }
 
 /* ════════════════════════════════════════════════════════════════════════════════
@@ -330,7 +330,7 @@ static void test_destroy_after_snapshot_ok(void)
     SEL4_TEST_BEGIN("destroy_after_snapshot_ok");
     setup();
 
-    vos_spec_t   spec = make_spec(VOS_OS_LINUX, "ds-snap");
+    vos_spec_t   spec = make_spec(VOS_PROFILE_PRIMARY, "ds-snap");
     vos_handle_t h    = VOS_HANDLE_INVALID;
     uint32_t     lo   = 0;
     uint32_t     hi   = 0;
@@ -347,7 +347,7 @@ static void test_snapshot_of_destroyed_handle_fails(void)
     SEL4_TEST_BEGIN("snapshot_of_destroyed_handle_fails");
     setup();
 
-    vos_spec_t   spec = make_spec(VOS_OS_LINUX, "ds-ord");
+    vos_spec_t   spec = make_spec(VOS_PROFILE_PRIMARY, "ds-ord");
     vos_handle_t h    = VOS_HANDLE_INVALID;
 
     vos_create(&spec, &h);
@@ -365,7 +365,7 @@ static void test_snapshot_persists_after_destroy(void)
     SEL4_TEST_BEGIN("snapshot_persists_after_destroy");
     setup();
 
-    vos_spec_t   spec = make_spec(VOS_OS_LINUX, "ds-per");
+    vos_spec_t   spec = make_spec(VOS_PROFILE_PRIMARY, "ds-per");
     vos_handle_t h    = VOS_HANDLE_INVALID;
     uint32_t     lo   = 0;
     uint32_t     hi   = 0;
@@ -390,7 +390,7 @@ static void test_destroy_valid_handle(void)
     SEL4_TEST_BEGIN("destroy_valid_handle");
     setup();
 
-    vos_spec_t   spec = make_spec(VOS_OS_LINUX, "dest-ok");
+    vos_spec_t   spec = make_spec(VOS_PROFILE_PRIMARY, "dest-ok");
     vos_handle_t h    = VOS_HANDLE_INVALID;
 
     vos_create(&spec, &h);
@@ -414,7 +414,7 @@ static void test_destroy_same_handle_twice(void)
     SEL4_TEST_BEGIN("destroy_same_handle_twice");
     setup();
 
-    vos_spec_t   spec = make_spec(VOS_OS_LINUX, "dest-2x");
+    vos_spec_t   spec = make_spec(VOS_PROFILE_PRIMARY, "dest-2x");
     vos_handle_t h    = VOS_HANDLE_INVALID;
 
     vos_create(&spec, &h);
@@ -434,7 +434,7 @@ static void test_full_lifecycle(void)
     SEL4_TEST_BEGIN("full_lifecycle");
     setup();
 
-    vos_spec_t   spec = make_spec(VOS_OS_LINUX, "full");
+    vos_spec_t   spec = make_spec(VOS_PROFILE_PRIMARY, "full");
     vos_handle_t h1   = VOS_HANDLE_INVALID;
     uint32_t     lo1  = 0;
     uint32_t     hi1  = 0;
@@ -474,7 +474,7 @@ static void test_lifecycle_slot_reuse(void)
     SEL4_TEST_BEGIN("lifecycle_slot_reuse");
     setup();
 
-    vos_spec_t   spec = make_spec(VOS_OS_LINUX, "reuse");
+    vos_spec_t   spec = make_spec(VOS_PROFILE_PRIMARY, "reuse");
     vos_handle_t h1   = VOS_HANDLE_INVALID;
 
     vos_create(&spec, &h1);
@@ -511,8 +511,8 @@ static void test_two_guests_independent_snapshots(void)
     SEL4_TEST_BEGIN("two_guests_independent_snapshots");
     setup();
 
-    vos_spec_t   specA = make_spec(VOS_OS_LINUX,   "gs-a");
-    vos_spec_t   specB = make_spec(VOS_OS_FREEBSD, "gs-b");
+    vos_spec_t   specA = make_spec(VOS_PROFILE_PRIMARY,   "gs-a");
+    vos_spec_t   specB = make_spec(VOS_PROFILE_SECONDARY, "gs-b");
     vos_handle_t hA    = VOS_HANDLE_INVALID;
     vos_handle_t hB    = VOS_HANDLE_INVALID;
 
@@ -541,8 +541,8 @@ static void test_two_guests_independent_snapshots(void)
 
     SEL4_ASSERT_EQ(stA2.state, VOS_STATE_RUNNING, "restored A is RUNNING");
     SEL4_ASSERT_EQ(stB2.state, VOS_STATE_RUNNING, "restored B is RUNNING");
-    SEL4_ASSERT_EQ(stA2.os_type, VOS_OS_LINUX,   "restored A has Linux os_type");
-    SEL4_ASSERT_EQ(stB2.os_type, VOS_OS_FREEBSD, "restored B has FreeBSD os_type");
+    SEL4_ASSERT_EQ(stA2.os_type, VOS_PROFILE_PRIMARY,   "restored A has Linux os_type");
+    SEL4_ASSERT_EQ(stB2.os_type, VOS_PROFILE_SECONDARY, "restored B has FreeBSD os_type");
 }
 
 /* ════════════════════════════════════════════════════════════════════════════════

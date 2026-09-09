@@ -82,7 +82,7 @@ pd_vspace_result_t pd_vspace_load_elf(seL4_CPtr    vspace_cap,
  * Frame capabilities are retained in the root task's CNode to maintain the
  * mappings; they are never returned to the caller.
  *
- * This is used by the root task to give PDs like linux_vmm large private RAM
+ * This is used by the root task to give guest VMM PDs large private RAM
  * regions (e.g. 256 MB of guest RAM at 0x40000000 on AArch64).
  *
  * Parameters:

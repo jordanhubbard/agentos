@@ -40,7 +40,7 @@ host_arch: auto
 #
 #   linux   — legacy alias for Ubuntu Linux VMM (aarch64 only)
 #             Boots a Linux guest via au-ts/libvmm at seL4 EL2.
-#             Requires aarch64 target. linux_vmm.elf built via vmm.mk.
+#             Requires aarch64 target. guest_vmm_primary.elf built via vmm.mk.
 #
 #   freebsd — include FreeBSD VMM (aarch64 only)
 #             Boots FreeBSD 15.0 AArch64 directly with an FDT + libvmm.

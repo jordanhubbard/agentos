@@ -78,14 +78,14 @@ const MSG_CC_DESTROY_GUEST: u32 = 0x2615;
 const CC_INPUT_KEY_DOWN: u32 = 0x01;
 const CC_INPUT_RAW_BYTE_BASE: u32 = 0x100;
 const GUEST_DESTROY_NORMAL: u32 = 0;
-const VIBEOS_TYPE_LINUX: u8 = 0x01;
-const VIBEOS_TYPE_FREEBSD: u8 = 0x02;
+const VIBEOS_PROFILE_PRIMARY: u8 = 0x01;
+const VIBEOS_PROFILE_SECONDARY: u8 = 0x02;
 const VIBEOS_ARCH_AARCH64: u8 = 0x01;
 const VIBEOS_DEV_SERIAL: u32 = 1 << 0;
 const VIBEOS_DEV_NET: u32 = 1 << 1;
 const VIBEOS_DEV_BLOCK: u32 = 1 << 2;
-const TRACE_PD_LINUX_VMM: u32 = 41;
-const TRACE_PD_FREEBSD_VMM: u32 = 42;
+const TRACE_PD_GUEST_VMM_PRIMARY: u32 = 41;
+const TRACE_PD_GUEST_VMM_SECONDARY: u32 = 42;
 
 pub fn run(args: &TestArgs) -> anyhow::Result<()> {
     let repo_root = repo_root()?;
@@ -2220,7 +2220,7 @@ fn wait_for_dual_guest_consoles_via_cc(
 
     let freebsd_handle = create_guest_via_cc_wait(
         &mut boot_cc,
-        VIBEOS_TYPE_FREEBSD,
+        VIBEOS_PROFILE_SECONDARY,
         256,
         "FreeBSD",
         create_timeout,
@@ -2230,7 +2230,7 @@ fn wait_for_dual_guest_consoles_via_cc(
 
     let linux_handle = create_guest_via_cc_wait(
         &mut boot_cc,
-        VIBEOS_TYPE_LINUX,
+        VIBEOS_PROFILE_PRIMARY,
         1024,
         "Linux",
         create_timeout,
@@ -2421,9 +2421,9 @@ fn cc_log_stream_for_handle(
     let pd_id = if guest_handle == 0 {
         0
     } else if guest_os == "freebsd" {
-        TRACE_PD_FREEBSD_VMM
+        TRACE_PD_GUEST_VMM_SECONDARY
     } else {
-        TRACE_PD_LINUX_VMM
+        TRACE_PD_GUEST_VMM_PRIMARY
     };
     let reply = cc
         .call(MSG_CC_LOG_STREAM, guest_handle, pd_id, 0, &[])

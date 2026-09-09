@@ -1813,11 +1813,11 @@ static void net_pd_notify_vmm_rx(void)
 {
     seL4_MessageInfo_t event =
         seL4_MessageInfo_new(NET_SVC_EVENT_RX_READY, 0u, 0u, 0u);
-#if defined(AGENTOS_GUEST_UBUNTU)
-    seL4_NBSend((seL4_CPtr)PD_CNODE_SLOT_LINUX_VMM_EP, event);
+#if defined(AGENTOS_GUEST_PRIMARY)
+    seL4_NBSend((seL4_CPtr)PD_CNODE_SLOT_GUEST_VMM_PRIMARY_EP, event);
 #endif
-#if defined(AGENTOS_GUEST_FREEBSD)
-    seL4_NBSend((seL4_CPtr)PD_CNODE_SLOT_FREEBSD_VMM_EP, event);
+#if defined(AGENTOS_GUEST_SECONDARY)
+    seL4_NBSend((seL4_CPtr)PD_CNODE_SLOT_GUEST_VMM_SECONDARY_EP, event);
 #endif
     (void)event;
 }

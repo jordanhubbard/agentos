@@ -235,9 +235,9 @@ Important runtime contracts for external users:
   If riscv64 QEMU is not found after `make install`, check that Homebrew qemu
   is fully linked: `brew link qemu`.
 
-- **Guest VMMs (AArch64 only)**: The `linux_vmm.elf` and `freebsd_vmm.elf`
+- **Guest VMMs (AArch64 only)**: The `guest_vmm_primary.elf` and `guest_vmm_secondary.elf`
   protection domains are only built for `BOARD=qemu_virt_aarch64`. The
-  x86-64 board includes a stub `linux_vmm.elf` for compatibility with the
+  x86-64 board includes a stub `guest_vmm_primary.elf` for compatibility with the
   system description file.
 
 - **Guest image selection**: `make fetch-guest` stages Ubuntu 26.04 and

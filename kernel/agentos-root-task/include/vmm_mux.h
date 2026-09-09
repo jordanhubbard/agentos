@@ -4,7 +4,7 @@
  * SPDX-License-Identifier: BSD-2-Clause
  *
  * Manages a pool of VM slots, each capable of running an independent
- * FreeBSD (or other AArch64) guest. The multiplexer supports:
+ * profile-selected guest. The multiplexer supports:
  *
  *   - Creating VM instances (allocate slot, assign RAM region, boot)
  *   - Destroying VM instances (halt guest, free slot)
@@ -34,7 +34,7 @@
  * Architecture:
  *
  *   VM_MAX_SLOTS static RAM regions are pre-allocated in the .system file.
- *   Each slot gets its own 512MB RAM region (enough for a light FreeBSD).
+ *   Each slot gets its own bounded RAM region.
  *   The UEFI flash region is shared read-only (EDK2 firmware is identical).
  *
  *   Console multiplexing:
@@ -75,7 +75,7 @@ typedef struct { uint32_t _opaque; } vm_t;
 /* Maximum number of concurrent VM instances */
 #define VM_MAX_SLOTS        4
 
-/* Per-slot RAM size: 512MB (enough for a minimal FreeBSD) */
+/* Default per-slot RAM size: 512MB. */
 #define VM_SLOT_RAM_SIZE    0x20000000UL
 
 /* Guest physical base addresses for each slot's RAM */
@@ -149,7 +149,7 @@ typedef struct {
     size_t           ram_size;    /* size of RAM region */
     uintptr_t        ram_paddr;   /* guest physical base address */
     uint32_t         vcpu_id;     /* seL4 vCPU ID within Microkit */
-    char             label[16];   /* human-readable label e.g. "freebsd-0" */
+    char             label[16];   /* human-readable profile/instance label */
 
     /* ── Ring-0 service PD device handles (Phase 3c) ──────────────────── */
     uint32_t         guest_id;    /* guest_id from MSG_GUEST_CREATE */
@@ -189,7 +189,7 @@ void vmm_mux_init(vm_mux_t *mux);
  * vmm_mux_create — allocate a VM slot and boot a guest
  *
  * @param mux       multiplexer state
- * @param label     human-readable name (e.g. "freebsd-0")
+ * @param label     human-readable instance name
  * @returns slot_id on success, 0xFF if no free slots
  */
 uint8_t vmm_mux_create(vm_mux_t *mux, const char *label);
@@ -262,7 +262,7 @@ void vmm_mux_handle_notify(vm_mux_t *mux, seL4_Word badge);
 
 /**
  * vmm_mux_set_channel_ep — bind a channel number to a seL4 endpoint cap
- * Called by freebsd_vmm_main() before vmm_mux_init().
+ * Called by a VMM owner before vmm_mux_init().
  */
 void vmm_mux_set_channel_ep(uint32_t ch, seL4_CPtr ep);
 

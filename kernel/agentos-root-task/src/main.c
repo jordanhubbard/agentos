@@ -104,7 +104,7 @@ static seL4_Word g_cap_base;  /* set to bi->empty.start in root_task_main */
 #define PD_SLOT_SC(i)         (CAP_ROOT_INITIAL_BASE + (seL4_Word)(i) * SLOTS_PER_PD + 4u)
 #define PD_SLOT_NTFN(i)       (CAP_ROOT_INITIAL_BASE + (seL4_Word)(i) * SLOTS_PER_PD + 5u)
 
-/* VMM-private caps installed into linux_vmm/freebsd_vmm CSpaces.
+/* VMM-private caps installed into profile-backed VMM CSpaces.
  *
  * These slots deliberately match the fixed libvmm registration offsets used
  * by the VMM PDs.  They are well above the low service/IRQ slots and fit in
@@ -133,7 +133,7 @@ static seL4_Word g_cap_base;  /* set to bi->empty.start in root_task_main */
 /*
  * Each VMM gets one sched context for the VMM PD and one for the guest vCPU.
  * A 90% budget works for a single guest but overcommits the single-core QEMU
- * E2E path when Linux and FreeBSD run together.  Keep the pair small enough
+ * E2E path when both configured guests run together. Keep the pair small enough
  * that two guests can make forward progress concurrently.
  */
 #define VMM_SC_BUDGET_US          25000u
@@ -618,7 +618,7 @@ static void boot_setup_irqs(const pd_desc_t *pd,
  * slot 2 for the host relay.
  *
  * Guest IPA 0x0A010000 (emulated virtio-net) is outside this page on purpose:
- * it must remain unmapped so accesses fault into linux_vmm.
+ * it must remain unmapped so accesses fault into guest_vmm.
  */
 #define VIRTIO_MMIO_PAGE_PA  0x0A000000UL
 
@@ -640,7 +640,7 @@ static seL4_CPtr g_blk_shared_frame_cap = seL4_CapNull;
 static seL4_CPtr g_host_net_mmio_frame_cap = seL4_CapNull;
 static seL4_CPtr g_net_shared_frame_cap = seL4_CapNull;
 static seL4_CPtr g_net_dma_frame_cap = seL4_CapNull;
-static seL4_CPtr g_host_freebsd_blk_mmio_frame_cap = seL4_CapNull;
+static seL4_CPtr g_host_secondary_blk_mmio_frame_cap = seL4_CapNull;
 static seL4_CPtr g_gic_vcpu_frame_cap = seL4_CapNull;
 
 static volatile uint32_t *g_uart_dr;  /* PL011 UARTDR (offset 0x00) */
@@ -752,6 +752,17 @@ static int name_eq(const char *a, const char *b)
     return (*a == '\0' && *b == '\0');
 }
 
+static int pd_is_guest_vmm(const pd_desc_t *pd)
+{
+    return pd->self_svc_id == SVC_ID_GUEST_VMM_PRIMARY ||
+           pd->self_svc_id == SVC_ID_GUEST_VMM_SECONDARY;
+}
+
+static int pd_is_secondary_guest_vmm(const pd_desc_t *pd)
+{
+    return pd->self_svc_id == SVC_ID_GUEST_VMM_SECONDARY;
+}
+
 #if defined(__aarch64__)
 static seL4_Error reserve_guest_ram_frames(const system_desc_t *sys)
 {
@@ -761,8 +772,7 @@ static seL4_Error reserve_guest_ram_frames(const system_desc_t *sys)
     g_guest_ram_reservation_count = 0u;
     for (uint32_t i = 0u; i < sys->pd_count; i++) {
         const pd_desc_t *pd = &sys->pds[i];
-        if (!name_eq(pd->name, "linux_vmm") &&
-            !name_eq(pd->name, "freebsd_vmm")) {
+        if (!pd_is_guest_vmm(pd)) {
             continue;
         }
         for (uint8_t j = 0u; j < pd->mr_count; j++) {
@@ -956,7 +966,7 @@ static seL4_Error provision_pd_startup_record(const pd_desc_t *pd,
 #ifdef CONFIG_KERNEL_MCS
 static seL4_Word sched_node_for_pd(const pd_desc_t *pd)
 {
-    if (name_eq(pd->name, "freebsd_vmm")) {
+    if (pd_is_secondary_guest_vmm(pd)) {
         return 1u;
     }
     return 0u;
@@ -984,7 +994,7 @@ static seL4_Error setup_vmm_guest_vcpu(const pd_desc_t *pd,
                                         seL4_CPtr        self_ep,
                                         const seL4_BootInfo *bi)
 {
-    if (!name_eq(pd->name, "linux_vmm") && !name_eq(pd->name, "freebsd_vmm")) {
+    if (!pd_is_guest_vmm(pd)) {
         return seL4_NoError;
     }
 
@@ -1435,12 +1445,12 @@ void root_task_main(const seL4_BootInfo *bi)
 
     {
         seL4_Error v31_err =
-            ut_alloc_device_cap(AGENTOS_HOST_FREEBSD_BLK_PAGE_PA,
-                                &g_host_freebsd_blk_mmio_frame_cap);
-        dbg_puts("[rt] host FreeBSD block page cap err=");
+            ut_alloc_device_cap(AGENTOS_HOST_SECONDARY_BLK_PAGE_PA,
+                                &g_host_secondary_blk_mmio_frame_cap);
+        dbg_puts("[rt] host secondary block page cap err=");
         dbg_hex((seL4_Word)v31_err);
         dbg_puts(" cap=");
-        dbg_hex((seL4_Word)g_host_freebsd_blk_mmio_frame_cap);
+        dbg_hex((seL4_Word)g_host_secondary_blk_mmio_frame_cap);
         dbg_puts("\n");
     }
 
@@ -1522,8 +1532,7 @@ void root_task_main(const seL4_BootInfo *bi)
         seL4_CPtr vspace = vr_create.vspace_cap;
 #if defined(__aarch64__)
         seL4_CPtr guest_vspace = seL4_CapNull;
-        if (name_eq(pd->name, "linux_vmm") ||
-            name_eq(pd->name, "freebsd_vmm")) {
+        if (pd_is_guest_vmm(pd)) {
             pd_vspace_result_t guest_vr =
                 pd_vspace_create(seL4_CapInitThreadCNode,
                                  seL4_CapInitThreadASIDPool);
@@ -1668,7 +1677,7 @@ void root_task_main(const seL4_BootInfo *bi)
 
             seL4_Word sc_budget = PD_DEFAULT_SC_BUDGET_US;
             seL4_Word sc_period = PD_DEFAULT_SC_PERIOD_US;
-            if (name_eq(pd->name, "linux_vmm") || name_eq(pd->name, "freebsd_vmm")) {
+            if (pd_is_guest_vmm(pd)) {
                 sc_budget = VMM_SC_BUDGET_US;
                 sc_period = VMM_SC_PERIOD_US;
             }
@@ -1820,12 +1829,12 @@ void root_task_main(const seL4_BootInfo *bi)
          * For each memory_region_desc_t, allocate 2 MB large pages from the
          * untyped pool and map them at [mr->vaddr, mr->vaddr+mr->size) in the
          * PD's VSpace.  Frame caps are retained in the root task's CNode to
-         * maintain the mappings.  Used for linux_vmm guest RAM (256 MB).     */
+         * maintain mappings for each profile-backed VMM guest RAM window. */
         for (uint8_t j = 0u; j < pd->mr_count; j++) {
             const memory_region_desc_t *mr = &pd->memory_regions[j];
             seL4_Error mr_err;
 #if defined(__aarch64__)
-            if ((name_eq(pd->name, "linux_vmm") || name_eq(pd->name, "freebsd_vmm")) &&
+            if (pd_is_guest_vmm(pd) &&
                 name_eq(mr->name, "guest_ram")) {
                 /*
                  * Guest RAM frames were reserved before PD ELF loading, while
@@ -1840,9 +1849,9 @@ void root_task_main(const seL4_BootInfo *bi)
                     mr_err = seL4_NotEnoughMemory;
                 } else {
                     seL4_Word guest_gpa =
-                        name_eq(pd->name, "linux_vmm")
-                            ? AOS_LINUX_GUEST_GPA_BASE
-                            : AOS_FREEBSD_GUEST_GPA_BASE;
+                        !pd_is_secondary_guest_vmm(pd)
+                            ? AOS_PRIMARY_GUEST_GPA_BASE
+                            : AOS_SECONDARY_GUEST_GPA_BASE;
                     mr_err = map_guest_ram_reservation(
                         reservation, vspace, guest_vspace,
                         (seL4_Word)mr->vaddr, guest_gpa,
@@ -1873,8 +1882,7 @@ void root_task_main(const seL4_BootInfo *bi)
             (name_eq(pd->name, "serial_pd") ||
              name_eq(pd->name, "log_drain") ||
              name_eq(pd->name, "controller") ||
-             name_eq(pd->name, "linux_vmm") ||
-             name_eq(pd->name, "freebsd_vmm") ||
+             pd_is_guest_vmm(pd) ||
              name_eq(pd->name, "cc_pd") ||
              name_eq(pd->name, "test_runner"))) {
             seL4_Word serial_copy = ut_alloc_slot();
@@ -1899,11 +1907,11 @@ void root_task_main(const seL4_BootInfo *bi)
         /*
          * QEMU virt exposes a GICv2 CPU interface to the guest at 0x08010000.
          * On seL4 this is backed by the hardware virtual CPU interface frame
-         * at 0x08040000. Without this pass-through mapping Linux faults as
+         * at 0x08040000. Without this pass-through mapping the guest faults as
          * soon as it writes GICC_PMR during IRQ setup.
          */
         if (g_gic_vcpu_frame_cap != seL4_CapNull &&
-            (name_eq(pd->name, "linux_vmm") || name_eq(pd->name, "freebsd_vmm"))) {
+            pd_is_guest_vmm(pd)) {
             seL4_Word gic_copy = ut_alloc_slot();
             seL4_Error gic_err = seL4_NotEnoughMemory;
             if (gic_copy != seL4_CapNull) {
@@ -1949,30 +1957,29 @@ void root_task_main(const seL4_BootInfo *bi)
         }
 
         if (name_eq(pd->name, "virtio_blk") &&
-            g_host_freebsd_blk_mmio_frame_cap != seL4_CapNull) {
+            g_host_secondary_blk_mmio_frame_cap != seL4_CapNull) {
             seL4_Word blk_mmio_copy = ut_alloc_slot();
             seL4_Error blk_err = seL4_NotEnoughMemory;
             if (blk_mmio_copy != seL4_CapNull) {
                 blk_err = seL4_CNode_Copy(
                     seL4_CapInitThreadCNode, blk_mmio_copy, 64u,
                     seL4_CapInitThreadCNode,
-                    g_host_freebsd_blk_mmio_frame_cap, 64u,
+                    g_host_secondary_blk_mmio_frame_cap, 64u,
                     seL4_AllRights);
                 if (blk_err == seL4_NoError) {
                     blk_err = pd_vspace_map_device_frame(
                         vspace, (seL4_CPtr)blk_mmio_copy,
-                        AGENTOS_HOST_FREEBSD_BLK_PAGE_VA);
+                        AGENTOS_HOST_SECONDARY_BLK_PAGE_VA);
                 }
             }
-            dbg_puts("[rt] virtio_blk FreeBSD host MMIO map err=");
+            dbg_puts("[rt] virtio_blk secondary host MMIO map err=");
             dbg_hex((seL4_Word)blk_err);
             dbg_puts("\n");
         }
 
         if (g_blk_shared_frame_cap != seL4_CapNull &&
             (name_eq(pd->name, "virtio_blk") ||
-             name_eq(pd->name, "linux_vmm") ||
-             name_eq(pd->name, "freebsd_vmm"))) {
+             pd_is_guest_vmm(pd))) {
             seL4_Word blk_shared_copy = ut_alloc_slot();
             seL4_Error blk_err = seL4_NotEnoughMemory;
             if (blk_shared_copy != seL4_CapNull) {
@@ -1996,8 +2003,7 @@ void root_task_main(const seL4_BootInfo *bi)
         if (g_net_shared_frame_cap != seL4_CapNull &&
             (name_eq(pd->name, "net_pd") ||
              name_eq(pd->name, "init_agent") ||
-             name_eq(pd->name, "linux_vmm") ||
-             name_eq(pd->name, "freebsd_vmm"))) {
+             pd_is_guest_vmm(pd))) {
             seL4_Word net_shared_copy = ut_alloc_slot();
             seL4_Error net_err = seL4_NotEnoughMemory;
             if (net_shared_copy != seL4_CapNull) {
@@ -2284,7 +2290,7 @@ void root_task_main(const seL4_BootInfo *bi)
         }
 
 #if defined(__aarch64__)
-        if (name_eq(pd->name, "linux_vmm") || name_eq(pd->name, "freebsd_vmm")) {
+        if (pd_is_guest_vmm(pd)) {
             seL4_Error vm_err = setup_vmm_guest_vcpu(pd,
                                                       i,
                                                       pd_cnode,

@@ -135,7 +135,7 @@ int main(void)
        contains(vmm, "aos_vmm_virtio_console_push_rx_bytes") &&
        contains(vmm, "guest_vmm_push_input") &&
        contains("kernel/agentos-root-task/vmm.mk",
-                "$(BUILD_DIR)/freebsd_vmm.o: $(KERNEL_SRC_DIR)/src/guest_vmm.c") &&
+                "$(BUILD_DIR)/guest_vmm_secondary.o: $(KERNEL_SRC_DIR)/src/guest_vmm.c") &&
        contains("kernel/agentos-root-task/src/cc_pd.c",
                 "? CC_OK : CC_ERR_RELAY_FAULT;") &&
        contains("kernel/agentos-root-task/include/contracts/cc_contract.h",
@@ -215,12 +215,12 @@ int main(void)
        contains(vmm, "console_tx_push(byte);"),
        "guest virtual TTY is not synchronously mirrored to physical PL011");
     ok(contains("kernel/agentos-root-task/vmm.mk",
-                "$(LINUX_VMM_FULL_OBJ): $(KERNEL_SRC_DIR)/src/guest_vmm.c") &&
+                "$(GUEST_VMM_PRIMARY_OBJ): $(KERNEL_SRC_DIR)/src/guest_vmm.c") &&
        contains("kernel/agentos-root-task/vmm.mk",
-                "$(BUILD_DIR)/freebsd_vmm.o: $(KERNEL_SRC_DIR)/src/guest_vmm.c") &&
+                "$(BUILD_DIR)/guest_vmm_secondary.o: $(KERNEL_SRC_DIR)/src/guest_vmm.c") &&
        !contains("kernel/agentos-root-task/Makefile", "src/freebsd_vmm.c"),
        "primary and secondary guests compile the same profile-driven VMM source");
-    ok(contains("xtask/src/cmd_test.rs", "TRACE_PD_FREEBSD_VMM") &&
+    ok(contains("xtask/src/cmd_test.rs", "TRACE_PD_GUEST_VMM_SECONDARY") &&
        contains("xtask/src/cmd_test.rs",
                 ".call(MSG_CC_LOG_STREAM, guest_handle, pd_id, 0, &[])"),
        "dual guest console drain identifies the FreeBSD VMM stream");

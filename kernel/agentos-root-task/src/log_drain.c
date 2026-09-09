@@ -238,7 +238,7 @@ static const struct { uint32_t id; const char *name; } pd_names[] = {
     { 11, "swap_slot_2"},
     { 12, "swap_slot_3"},
     { 13, "log_drain"  },
-    { 14, "linux_vmm"  },
+    { 14, "guest_vmm_primary"  },
     { 15, "fault_hndlr"},
 };
 #define NUM_PD_NAMES (sizeof(pd_names) / sizeof(pd_names[0]))

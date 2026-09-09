@@ -2,7 +2,7 @@
  * Host virtio-net ownership and agentOS network bridge layout.
  *
  * QEMU bus.16 is host hardware. Only net_pd receives its MMIO and DMA
- * mappings. linux_vmm shares NET_SHARED with net_pd for contract payloads and
+ * mappings. The guest VMM shares NET_SHARED with net_pd for contract payloads and
  * guest-facing sDDF queues, but never maps NET_HOST_DMA.
  */
 #ifndef AOS_PLATFORM_NET_HOST_LAYOUT_H
@@ -14,7 +14,7 @@
 #define AGENTOS_HOST_NET_MMIO_VA          0x06200000UL
 
 /*
- * Keep this above the FreeBSD VMM image reservation (0x20000000-0x22000000),
+ * Keep this above the secondary VMM image reservation (0x20000000-0x22000000),
  * block-service shared window (0x22000000-0x22200000), and net_pd's private
  * host-DMA window (0x24000000-0x24200000).  Every client maps this same frame
  * at the same VA, so a collision would otherwise degrade into private-memory

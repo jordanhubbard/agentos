@@ -101,22 +101,22 @@ PKG_PROFILE := $(AGENTOS_ROOT)/platform/guest-vmm/package_profile.S
 
 ifeq ($(GUEST_OS),ubuntu)
 ifeq ($(UBUNTU_BOOT_MODE),live)
-LINUX_GUEST_PROFILE := ubuntu-live.toml
+PRIMARY_GUEST_PROFILE := ubuntu-live.toml
 else
-LINUX_GUEST_PROFILE := ubuntu-e2e.toml
+PRIMARY_GUEST_PROFILE := ubuntu-e2e.toml
 endif
 else
-LINUX_GUEST_PROFILE := buildroot.toml
+PRIMARY_GUEST_PROFILE := buildroot.toml
 endif
 ifeq ($(VMM_DUAL_GUEST),1)
-LINUX_GUEST_PLACEMENT := dual-primary
-FREEBSD_GUEST_PLACEMENT := dual-secondary
+PRIMARY_GUEST_PLACEMENT := dual-primary
+SECONDARY_GUEST_PLACEMENT := dual-secondary
 else
-LINUX_GUEST_PLACEMENT := default
-FREEBSD_GUEST_PLACEMENT := default
+PRIMARY_GUEST_PLACEMENT := default
+SECONDARY_GUEST_PLACEMENT := default
 endif
-LINUX_GUEST_PROFILE_BIN := $(BUILD_DIR)/linux-guest-profile.bin
-FREEBSD_GUEST_PROFILE_BIN := $(BUILD_DIR)/freebsd-guest-profile.bin
+PRIMARY_GUEST_PROFILE_BIN := $(BUILD_DIR)/primary-guest-profile.bin
+SECONDARY_GUEST_PROFILE_BIN := $(BUILD_DIR)/secondary-guest-profile.bin
 
 # ─── VMM CFLAGS (used for guest_vmm.c compilation) ───────────────────────
 VMM_CFLAGS := \
@@ -139,7 +139,7 @@ VMM_CFLAGS := \
     -target aarch64-none-elf
 
 ifeq ($(VMM_DUAL_GUEST),1)
-VMM_CFLAGS += -DAGENTOS_GUEST_BOTH=1
+VMM_CFLAGS += -DAGENTOS_GUEST_DUAL=1
 endif
 
 VMM_CONFIG_STAMP := $(BUILD_DIR)/vmm-$(GUEST_OS).stamp
@@ -154,16 +154,16 @@ $(VMM_CONFIG_STAMP): FORCE
 .PHONY: vmm-all vmm-clean FORCE
 
 ifeq ($(GUEST_OS),freebsd)
-vmm-all: $(BUILD_DIR)/freebsd_vmm.elf
+vmm-all: $(BUILD_DIR)/guest_vmm_secondary.elf
 else
-vmm-all: $(BUILD_DIR)/linux_vmm.elf
+vmm-all: $(BUILD_DIR)/guest_vmm_primary.elf
 endif
 
 # ─── Ubuntu kernel/initrd: stage local ISO and extract boot assets ────────
 ifeq ($(GUEST_OS),ubuntu)
 $(UBUNTU_KERNEL) $(UBUNTU_E2E_INITRD) $(UBUNTU_LIVE_INITRD):
 	@echo "[VMM] Fetching Ubuntu 26.04 boot assets (via xtask fetch-guest)..."
-	cargo xtask fetch-guest --profile $(LINUX_GUEST_PROFILE) --output-dir $(AGENTOS_IMAGES)
+	cargo xtask fetch-guest --profile $(PRIMARY_GUEST_PROFILE) --output-dir $(AGENTOS_IMAGES)
 
 $(UBUNTU_LIVE_PLACEHOLDER):
 	@mkdir -p $(BUILD_DIR)
@@ -267,19 +267,19 @@ $(BUILD_DIR)/images.o: FORCE \
 		-target aarch64-none-elf \
 		$(PKG_IMG) -o $@
 
-$(LINUX_GUEST_PROFILE_BIN): FORCE $(AGENTOS_ROOT)/guest-profiles/$(LINUX_GUEST_PROFILE) \
+$(PRIMARY_GUEST_PROFILE_BIN): FORCE $(AGENTOS_ROOT)/guest-profiles/$(PRIMARY_GUEST_PROFILE) \
 					$(AGENTOS_ROOT)/guest-profiles/linux-base.toml \
 					$(LINUX_IMAGE) $(INITRD_IMAGE) $(BUILD_DIR)/vm.dtb
 	@cargo xtask guest-profile --root $(AGENTOS_ROOT)/guest-profiles \
-		--profile $(LINUX_GUEST_PROFILE) --placement $(LINUX_GUEST_PLACEMENT) \
+		--profile $(PRIMARY_GUEST_PROFILE) --placement $(PRIMARY_GUEST_PLACEMENT) \
 		--repo-root $(AGENTOS_ROOT) --verify-artifacts --output $@
 
-$(BUILD_DIR)/linux_guest_profile.o: $(PKG_PROFILE) $(LINUX_GUEST_PROFILE_BIN)
+$(BUILD_DIR)/guest_primary_profile.o: $(PKG_PROFILE) $(PRIMARY_GUEST_PROFILE_BIN)
 	clang -c -x assembler-with-cpp \
-		-DGUEST_PROFILE_PATH=\"$(LINUX_GUEST_PROFILE_BIN)\" \
+		-DGUEST_PROFILE_PATH=\"$(PRIMARY_GUEST_PROFILE_BIN)\" \
 		-target aarch64-none-elf $(PKG_PROFILE) -o $@
 
-LINUX_VMM_FULL_OBJ := $(BUILD_DIR)/linux_vmm.full.o
+GUEST_VMM_PRIMARY_OBJ := $(BUILD_DIR)/guest_vmm_primary.full.o
 GPU_SHMEM_FULL_OBJ := $(BUILD_DIR)/gpu_shmem.full.o
 VMM_PD_ENTRY_OBJ   := $(BUILD_DIR)/pd_entry.vmm.o
 NET_VIRT_PUMP_OBJ  := $(BUILD_DIR)/net_virt_pump.o
@@ -297,10 +297,10 @@ VMM_VIRTIO_CONSOLE_OBJ := $(BUILD_DIR)/vmm_virtio_console.o
 # ─── Compile guest_vmm.c + gpu_shmem.c ──────────────────────────────────
 #
 # Use object names that are private to the libvmm build. The main kernel
-# Makefile also writes $(BUILD_DIR)/linux_vmm.o for the default stub build, and
+# Makefile also writes $(BUILD_DIR)/guest_vmm_primary.o for the default stub build, and
 # reusing that path can silently link a stale object compiled with incompatible
 # flags.
-$(LINUX_VMM_FULL_OBJ): $(KERNEL_SRC_DIR)/src/guest_vmm.c $(VMM_CONFIG_STAMP) \
+$(GUEST_VMM_PRIMARY_OBJ): $(KERNEL_SRC_DIR)/src/guest_vmm.c $(VMM_CONFIG_STAMP) \
                       $(AGENTOS_ROOT)/platform/include/platform/guest_memory_layout.h \
                       $(AGENTOS_ROOT)/platform/include/platform/guest_boot.h \
                       $(AGENTOS_ROOT)/platform/include/platform/guest_profile.h \
@@ -402,9 +402,9 @@ $(VMM_VIRTIO_CONSOLE_OBJ): $(AGENTOS_ROOT)/platform/serial-virt/vmm_virtio_conso
 	@echo "[VMM] Compiling vmm_virtio_console.c..."
 	clang $(VMM_CFLAGS) -c -o $@ $<
 
-# ─── Link linux_vmm.elf ──────────────────────────────────────────────────
-$(BUILD_DIR)/linux_vmm.elf: FORCE \
-	                             $(LINUX_VMM_FULL_OBJ) \
+# ─── Link guest_vmm_primary.elf ──────────────────────────────────────────────────
+$(BUILD_DIR)/guest_vmm_primary.elf: FORCE \
+	                             $(GUEST_VMM_PRIMARY_OBJ) \
 	                             $(GPU_SHMEM_FULL_OBJ) \
 	                             $(VMM_PD_ENTRY_OBJ) \
 	                             $(NET_VIRT_PUMP_OBJ) \
@@ -419,80 +419,80 @@ $(BUILD_DIR)/linux_vmm.elf: FORCE \
 	                             $(VMM_VIRTIO_BLK_OBJ) \
 	                             $(VMM_VIRTIO_CONSOLE_OBJ) \
 	                             $(BUILD_DIR)/images.o \
-	                             $(BUILD_DIR)/linux_guest_profile.o \
+	                             $(BUILD_DIR)/guest_primary_profile.o \
 	                             $(BUILD_DIR)/libvmm.a \
 	                             $(BUILD_DIR)/libsddf_util_debug.a
-	@echo "[VMM] Linking linux_vmm.elf..."
+	@echo "[VMM] Linking guest_vmm_primary.elf..."
 	ld.lld -T$(BOARD_DIR)/lib/microkit.ld \
 		-L$(BOARD_DIR)/lib \
-		$(VMM_PD_ENTRY_OBJ) $(LINUX_VMM_FULL_OBJ) $(GPU_SHMEM_FULL_OBJ) \
+		$(VMM_PD_ENTRY_OBJ) $(GUEST_VMM_PRIMARY_OBJ) $(GPU_SHMEM_FULL_OBJ) \
 		$(NET_VIRT_PUMP_OBJ) $(VMM_VIRTIO_NET_OBJ) $(GPA_TRANSLATE_OBJ) $(VMM_GUEST_RAM_OBJ) \
 		$(GUEST_VMM_RUNTIME_OBJ) \
 		$(GUEST_VMM_LOOP_OBJ) \
 		$(GUEST_PROFILE_VALIDATE_OBJ) \
 		$(GUEST_BOOT_OBJ) \
 		$(BLK_VIRT_PUMP_OBJ) $(VMM_VIRTIO_BLK_OBJ) \
-		$(VMM_VIRTIO_CONSOLE_OBJ) $(BUILD_DIR)/images.o $(BUILD_DIR)/linux_guest_profile.o \
+		$(VMM_VIRTIO_CONSOLE_OBJ) $(BUILD_DIR)/images.o $(BUILD_DIR)/guest_primary_profile.o \
 		--start-group \
 		$(BUILD_DIR)/libvmm.a $(BUILD_DIR)/libsddf_util_debug.a \
 		--end-group \
 		-o $@
-	@echo "[VMM] linux_vmm.elf ✓"
+	@echo "[VMM] guest_vmm_primary.elf ✓"
 
 # ─── FreeBSD VMM: direct kernel + FDT packaging ───────────────────────────
-FREEBSD_DEFAULT_IMAGE := $(AGENTOS_IMAGES)/freebsd-15.0-aarch64.iso
-FREEBSD_RAW_IMAGE ?= $(if $(AGENTOS_FREEBSD_IMAGE),$(AGENTOS_FREEBSD_IMAGE),$(if $(FREEBSD_IMAGE),$(FREEBSD_IMAGE),$(FREEBSD_DEFAULT_IMAGE)))
-FREEBSD_KERNEL_IMAGE := $(BUILD_DIR)/freebsd-kernel.bin
-FREEBSD_DTS := $(KERNEL_SRC_DIR)/freebsd-direct.dts
-FREEBSD_DTS_EFFECTIVE := $(FREEBSD_DTS)
+SECONDARY_DEFAULT_IMAGE := $(AGENTOS_IMAGES)/freebsd-15.0-aarch64.iso
+SECONDARY_RAW_IMAGE ?= $(if $(AGENTOS_FREEBSD_IMAGE),$(AGENTOS_FREEBSD_IMAGE),$(if $(FREEBSD_IMAGE),$(FREEBSD_IMAGE),$(SECONDARY_DEFAULT_IMAGE)))
+SECONDARY_KERNEL_IMAGE := $(BUILD_DIR)/freebsd-kernel.bin
+SECONDARY_DTS := $(KERNEL_SRC_DIR)/freebsd-direct.dts
+SECONDARY_DTS_EFFECTIVE := $(SECONDARY_DTS)
 ifeq ($(VMM_DUAL_GUEST),1)
-FREEBSD_DTS_EFFECTIVE := $(BUILD_DIR)/freebsd-direct-dual.dts
-$(FREEBSD_DTS_EFFECTIVE): $(FREEBSD_DTS) $(VMM_CONFIG_STAMP) $(lastword $(MAKEFILE_LIST))
+SECONDARY_DTS_EFFECTIVE := $(BUILD_DIR)/freebsd-direct-dual.dts
+$(SECONDARY_DTS_EFFECTIVE): $(SECONDARY_DTS) $(VMM_CONFIG_STAMP) $(lastword $(MAKEFILE_LIST))
 	@mkdir -p $(BUILD_DIR)
 	sed 's|0x00 0x40000000 0x00 0x20000000|0x00 0x40000000 0x00 0x10000000|' $< > $@
 endif
-FREEBSD_EXTRACT := $(AGENTOS_ROOT)/xtask/src/cmd_extract_freebsd_file.rs
+SECONDARY_EXTRACT := $(AGENTOS_ROOT)/xtask/src/cmd_extract_freebsd_file.rs
 
-$(FREEBSD_RAW_IMAGE):
+$(SECONDARY_RAW_IMAGE):
 	@echo "[VMM] Fetching FreeBSD 15.0 ISO assets (via xtask fetch-guest)..."
 	cargo xtask fetch-guest --profile freebsd.toml --output-dir $(AGENTOS_IMAGES)
 
-$(FREEBSD_KERNEL_IMAGE): $(FREEBSD_RAW_IMAGE) $(FREEBSD_EXTRACT)
+$(SECONDARY_KERNEL_IMAGE): $(SECONDARY_RAW_IMAGE) $(SECONDARY_EXTRACT)
 	@mkdir -p $(BUILD_DIR)
 	@echo "[VMM] Extracting FreeBSD kernel..."
-	@case "$(FREEBSD_RAW_IMAGE)" in \
+	@case "$(SECONDARY_RAW_IMAGE)" in \
 		*.iso) cargo xtask fetch-guest --profile freebsd.toml --output-dir $(AGENTOS_IMAGES); \
 		       cp "$(AGENTOS_IMAGES)/freebsd-15.0-aarch64-kernel" $@ ;; \
-		*) cargo xtask extract-freebsd-file "$(FREEBSD_RAW_IMAGE)" /boot/kernel/kernel.bin $@ || \
-		   cargo xtask extract-freebsd-file "$(FREEBSD_RAW_IMAGE)" /boot/kernel/kernel $@ ;; \
+		*) cargo xtask extract-freebsd-file "$(SECONDARY_RAW_IMAGE)" /boot/kernel/kernel.bin $@ || \
+		   cargo xtask extract-freebsd-file "$(SECONDARY_RAW_IMAGE)" /boot/kernel/kernel $@ ;; \
 	esac
 
-$(BUILD_DIR)/freebsd-direct.dtb: $(FREEBSD_DTS_EFFECTIVE) $(VMM_CONFIG_STAMP) $(lastword $(MAKEFILE_LIST))
+$(BUILD_DIR)/freebsd-direct.dtb: $(SECONDARY_DTS_EFFECTIVE) $(VMM_CONFIG_STAMP) $(lastword $(MAKEFILE_LIST))
 	@mkdir -p $(BUILD_DIR)
 	@echo "[VMM] Compiling FreeBSD device tree..."
 	$(DTC) -q -I dts -O dtb $< > $@
 
-$(BUILD_DIR)/freebsd_images.o: $(PKG_IMG) $(FREEBSD_KERNEL_IMAGE) $(BUILD_DIR)/freebsd-direct.dtb
+$(BUILD_DIR)/guest_secondary_images.o: $(PKG_IMG) $(SECONDARY_KERNEL_IMAGE) $(BUILD_DIR)/freebsd-direct.dtb
 	@echo "[VMM] Packaging FreeBSD kernel + FDT images..."
 	clang -c -g3 -x assembler-with-cpp \
-		-DGUEST_KERNEL_IMAGE_PATH=\"$(FREEBSD_KERNEL_IMAGE)\" \
+		-DGUEST_KERNEL_IMAGE_PATH=\"$(SECONDARY_KERNEL_IMAGE)\" \
 		-DGUEST_DTB_IMAGE_PATH=\"$(BUILD_DIR)/freebsd-direct.dtb\" \
 		-target aarch64-none-elf \
 		$(PKG_IMG) -o $@
 
-$(FREEBSD_GUEST_PROFILE_BIN): FORCE $(AGENTOS_ROOT)/guest-profiles/freebsd.toml \
-					 $(FREEBSD_KERNEL_IMAGE) $(BUILD_DIR)/freebsd-direct.dtb
+$(SECONDARY_GUEST_PROFILE_BIN): FORCE $(AGENTOS_ROOT)/guest-profiles/freebsd.toml \
+					 $(SECONDARY_KERNEL_IMAGE) $(BUILD_DIR)/freebsd-direct.dtb
 	@cargo xtask guest-profile --root $(AGENTOS_ROOT)/guest-profiles \
-		--profile freebsd.toml --placement $(FREEBSD_GUEST_PLACEMENT) \
+		--profile freebsd.toml --placement $(SECONDARY_GUEST_PLACEMENT) \
 		--repo-root $(AGENTOS_ROOT) --verify-artifacts --output $@
 
-$(BUILD_DIR)/freebsd_guest_profile.o: $(PKG_PROFILE) $(FREEBSD_GUEST_PROFILE_BIN)
+$(BUILD_DIR)/guest_secondary_profile.o: $(PKG_PROFILE) $(SECONDARY_GUEST_PROFILE_BIN)
 	clang -c -x assembler-with-cpp \
-		-DGUEST_PROFILE_PATH=\"$(FREEBSD_GUEST_PROFILE_BIN)\" \
+		-DGUEST_PROFILE_PATH=\"$(SECONDARY_GUEST_PROFILE_BIN)\" \
 		-target aarch64-none-elf $(PKG_PROFILE) -o $@
 
 # ─── Compile the same profile-backed VMM source for the secondary instance ─
-$(BUILD_DIR)/freebsd_vmm.o: $(KERNEL_SRC_DIR)/src/guest_vmm.c $(VMM_CONFIG_STAMP) \
+$(BUILD_DIR)/guest_vmm_secondary.o: $(KERNEL_SRC_DIR)/src/guest_vmm.c $(VMM_CONFIG_STAMP) \
                            $(AGENTOS_ROOT)/platform/include/platform/guest_memory_layout.h \
                            $(AGENTOS_ROOT)/platform/include/platform/guest_boot.h \
                            $(AGENTOS_ROOT)/platform/include/platform/guest_profile.h \
@@ -502,12 +502,12 @@ $(BUILD_DIR)/freebsd_vmm.o: $(KERNEL_SRC_DIR)/src/guest_vmm.c $(VMM_CONFIG_STAMP
 	@echo "[VMM] Compiling guest_vmm.c for secondary profile..."
 	clang $(VMM_CFLAGS) -c -o $@ $<
 
-# ─── Link freebsd_vmm.elf ────────────────────────────────────────────────
-$(BUILD_DIR)/freebsd_vmm.elf: $(BUILD_DIR)/freebsd_vmm.o \
+# ─── Link guest_vmm_secondary.elf ────────────────────────────────────────────────
+$(BUILD_DIR)/guest_vmm_secondary.elf: $(BUILD_DIR)/guest_vmm_secondary.o \
                                $(GPU_SHMEM_FULL_OBJ) \
                                $(VMM_PD_ENTRY_OBJ) \
-                               $(BUILD_DIR)/freebsd_images.o \
-                               $(BUILD_DIR)/freebsd_guest_profile.o \
+                               $(BUILD_DIR)/guest_secondary_images.o \
+                               $(BUILD_DIR)/guest_secondary_profile.o \
                                $(NET_VIRT_PUMP_OBJ) \
                                $(VMM_VIRTIO_NET_OBJ) \
                                $(GPA_TRANSLATE_OBJ) \
@@ -521,16 +521,16 @@ $(BUILD_DIR)/freebsd_vmm.elf: $(BUILD_DIR)/freebsd_vmm.o \
                                $(VMM_VIRTIO_CONSOLE_OBJ) \
                                $(BUILD_DIR)/libvmm.a \
                                $(BUILD_DIR)/libsddf_util_debug.a
-	@echo "[VMM] Linking freebsd_vmm.elf..."
-	ld.lld -T$(KERNEL_SRC_DIR)/freebsd_vmm.ld \
+	@echo "[VMM] Linking guest_vmm_secondary.elf..."
+	ld.lld -T$(KERNEL_SRC_DIR)/guest_vmm_secondary.ld \
 		-L$(BOARD_DIR)/lib \
-		$(VMM_PD_ENTRY_OBJ) $(BUILD_DIR)/freebsd_vmm.o $(GPU_SHMEM_FULL_OBJ) \
-		$(BUILD_DIR)/freebsd_images.o \
+		$(VMM_PD_ENTRY_OBJ) $(BUILD_DIR)/guest_vmm_secondary.o $(GPU_SHMEM_FULL_OBJ) \
+		$(BUILD_DIR)/guest_secondary_images.o \
 		$(NET_VIRT_PUMP_OBJ) $(VMM_VIRTIO_NET_OBJ) \
 		$(GPA_TRANSLATE_OBJ) $(VMM_GUEST_RAM_OBJ) \
 		$(GUEST_VMM_RUNTIME_OBJ) \
 		$(GUEST_VMM_LOOP_OBJ) \
-		$(GUEST_PROFILE_VALIDATE_OBJ) $(BUILD_DIR)/freebsd_guest_profile.o \
+		$(GUEST_PROFILE_VALIDATE_OBJ) $(BUILD_DIR)/guest_secondary_profile.o \
 		$(GUEST_BOOT_OBJ) \
 		$(BLK_VIRT_PUMP_OBJ) $(VMM_VIRTIO_BLK_OBJ) \
 		$(VMM_VIRTIO_CONSOLE_OBJ) \
@@ -538,10 +538,10 @@ $(BUILD_DIR)/freebsd_vmm.elf: $(BUILD_DIR)/freebsd_vmm.o \
 		$(BUILD_DIR)/libvmm.a $(BUILD_DIR)/libsddf_util_debug.a \
 		--end-group \
 		-o $@
-	@echo "[VMM] freebsd_vmm.elf ✓"
+	@echo "[VMM] guest_vmm_secondary.elf ✓"
 
 vmm-clean:
-	rm -f $(BUILD_DIR)/linux_vmm.full.o $(BUILD_DIR)/gpu_shmem.full.o $(BUILD_DIR)/pd_entry.vmm.o $(BUILD_DIR)/linux_vmm.elf
+	rm -f $(BUILD_DIR)/guest_vmm_primary.full.o $(BUILD_DIR)/gpu_shmem.full.o $(BUILD_DIR)/pd_entry.vmm.o $(BUILD_DIR)/guest_vmm_primary.elf
 	rm -f $(BUILD_DIR)/net_virt_pump.o $(BUILD_DIR)/vmm_virtio_net.o
 	rm -f $(BUILD_DIR)/gpa_translate.o
 	rm -f $(BUILD_DIR)/vmm_guest_ram.o
@@ -550,7 +550,7 @@ vmm-clean:
 	rm -f $(BUILD_DIR)/guest_boot.o
 	rm -f $(BUILD_DIR)/blk_virt_pump.o $(BUILD_DIR)/vmm_virtio_blk.o
 	rm -f $(BUILD_DIR)/vmm_virtio_console.o
-	rm -f $(BUILD_DIR)/freebsd_vmm.o $(BUILD_DIR)/freebsd_images.o $(BUILD_DIR)/freebsd_vmm.elf
+	rm -f $(BUILD_DIR)/guest_vmm_secondary.o $(BUILD_DIR)/guest_secondary_images.o $(BUILD_DIR)/guest_vmm_secondary.elf
 	rm -f $(BUILD_DIR)/freebsd-direct.dtb
 	rm -f $(BUILD_DIR)/images.o $(BUILD_DIR)/vm.dts $(BUILD_DIR)/vm.dtb
 	rm -f $(BUILD_DIR)/libvmm.a $(BUILD_DIR)/libsddf_util_debug.a

@@ -358,7 +358,7 @@ struct cc_reply_restore {
  *
  * Slot model:
  *   - slot 0 + pd_id == TRACE_PD_CONTROLLER : boot guest serial stream.
- *   - pd_id == TRACE_PD_LINUX_VMM / TRACE_PD_FREEBSD_VMM : a vibe_engine guest.
+ *   - pd_id == TRACE_PD_GUEST_VMM_PRIMARY / TRACE_PD_GUEST_VMM_SECONDARY : a vibe_engine guest.
  *     On first use, pass the vibe guest handle in `slot`; cc_pd assigns the
  *     guest its own log slot (1..N) and returns that slot in `log_slot`.
  *   - slot N>0 : re-address a previously assigned vibe guest stream directly.

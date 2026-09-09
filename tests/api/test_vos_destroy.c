@@ -415,7 +415,7 @@ static vos_spec_t make_spec(const char    *label,
 
 static vos_handle_t create_one(const char *label)
 {
-    vos_spec_t   spec = make_spec(label, VOS_OS_LINUX, VOS_SPEC_MIN_PAGES);
+    vos_spec_t   spec = make_spec(label, VOS_PROFILE_PRIMARY, VOS_SPEC_MIN_PAGES);
     vos_handle_t h    = VOS_HANDLE_INVALID;
     vos_create(&spec, &h);
     return h;
@@ -509,7 +509,7 @@ static void test_06_bytes_reclaimed_ge_pages(void)
     do_init();
 
     uint32_t     pages = VOS_SPEC_MIN_PAGES;
-    vos_spec_t   spec  = make_spec("vm4", VOS_OS_LINUX, pages);
+    vos_spec_t   spec  = make_spec("vm4", VOS_PROFILE_PRIMARY, pages);
     vos_handle_t h     = VOS_HANDLE_INVALID;
     vos_create(&spec, &h);
 
@@ -740,7 +740,7 @@ static void test_17_destroy_min_pages_spec(void)
     reset_stubs();
     do_init();
 
-    vos_spec_t   spec = make_spec("vm-zp", VOS_OS_LINUX, VOS_SPEC_MIN_PAGES);
+    vos_spec_t   spec = make_spec("vm-zp", VOS_PROFILE_PRIMARY, VOS_SPEC_MIN_PAGES);
     vos_handle_t h    = VOS_HANDLE_INVALID;
     vos_create(&spec, &h);
 
@@ -774,7 +774,7 @@ static void test_19_bytes_reclaimed_exact(void)
     do_init();
 
     uint32_t     pages = VOS_SPEC_MIN_PAGES;
-    vos_spec_t   spec  = make_spec("vm-ex", VOS_OS_LINUX, pages);
+    vos_spec_t   spec  = make_spec("vm-ex", VOS_PROFILE_PRIMARY, pages);
     vos_handle_t h     = VOS_HANDLE_INVALID;
     vos_create(&spec, &h);
 
@@ -819,7 +819,7 @@ static void test_21_slot_reuse_after_destroy(void)
     vos_destroy(h0, (uint64_t *)0);
 
     /* A new create should succeed (slot 0 is free again) */
-    vos_spec_t   spec = make_spec("new", VOS_OS_LINUX, VOS_SPEC_MIN_PAGES);
+    vos_spec_t   spec = make_spec("new", VOS_PROFILE_PRIMARY, VOS_SPEC_MIN_PAGES);
     vos_handle_t h1   = VOS_HANDLE_INVALID;
     vos_err_t    err  = vos_create(&spec, &h1);
 
@@ -873,7 +873,7 @@ static void test_24_destroy_creating_state(void)
     do_init();
 
     /* After vos_create(), state is VOS_STATE_CREATING */
-    vos_spec_t   spec = make_spec("cr", VOS_OS_LINUX, VOS_SPEC_MIN_PAGES);
+    vos_spec_t   spec = make_spec("cr", VOS_PROFILE_PRIMARY, VOS_SPEC_MIN_PAGES);
     vos_handle_t h    = VOS_HANDLE_INVALID;
     vos_create(&spec, &h);
 

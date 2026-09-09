@@ -206,10 +206,10 @@ static int test_secondary_profile_fault_path(void)
     int rx_event = src_contains(
         "platform/guest-vmm/loop.c",
         "label == NET_SVC_EVENT_RX_READY");
-    int shared = src_contains_in_order(
-        "kernel/agentos-root-task/src/main.c",
-        "name_eq(pd->name, \"linux_vmm\")",
-        "name_eq(pd->name, \"freebsd_vmm\")");
+    int shared = src_contains("kernel/agentos-root-task/src/main.c",
+                              "pd_is_guest_vmm(pd)") &&
+                 src_contains("kernel/agentos-root-task/src/main.c",
+                              "pd_is_secondary_guest_vmm(pd)");
     return tap_ok(init_ok && after && rx_event && shared,
                   "secondary profile selects isolated client through shared net_pd");
 }
@@ -228,7 +228,7 @@ static int test_suspended_guest_defers_rx(void)
                               "seL4_TCB_Resume(",
                               "aos_vmm_virtio_net_rx_ready();") &&
         src_contains("kernel/agentos-root-task/vmm.mk",
-                     "$(BUILD_DIR)/freebsd_vmm.o: $(KERNEL_SRC_DIR)/src/guest_vmm.c"),
+                     "$(BUILD_DIR)/guest_vmm_secondary.o: $(KERNEL_SRC_DIR)/src/guest_vmm.c"),
         "suspended guests retain host RX until their TCB resumes");
 }
 
@@ -265,7 +265,7 @@ static int test_host_backed_architecture(void)
             "platform/include/platform/net_layout.h",
             "AOS_NET_SHMEM_VA             0x26000000UL") &&
         src_contains(
-            "kernel/agentos-root-task/freebsd_vmm.ld",
+            "kernel/agentos-root-task/guest_vmm_secondary.ld",
             "ASSERT(. <= 0x22000000");
     int private_dma = src_contains_in_order(
         "kernel/agentos-root-task/src/main.c",
@@ -273,7 +273,7 @@ static int test_host_backed_architecture(void)
         "AGENTOS_NET_HOST_DMA_VA");
     int shared_bridge = src_contains(
         "kernel/agentos-root-task/src/main.c",
-        "name_eq(pd->name, \"linux_vmm\")") &&
+        "pd_is_guest_vmm(pd)") &&
         src_contains(
         "kernel/agentos-root-task/src/main.c",
         "AGENTOS_NET_SHARED_VA");

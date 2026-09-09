@@ -493,7 +493,7 @@ seL4_IPCBuffer *__sel4_ipc_buffer = NULL;
 /* vmm_caps.c is not included in libvmm.a — define g_vmm_vcpus here.
  * Populated by vmm_register_vcpu() calls in init() before any libvmm use. */
 vmm_vcpu_t g_vmm_vcpus[VMM_MAX_VCPUS];
-#if defined(AGENTOS_GUEST_BOTH)
+#if defined(AGENTOS_GUEST_DUAL)
 static uint32_t g_guest_state = GUEST_STATE_READY;
 #else
 static uint32_t g_guest_state = GUEST_STATE_RUNNING;
@@ -1272,7 +1272,7 @@ void init(void)
     }
     g_guest_kernel_pc = kernel_pc;
     g_guest_startable = true;
-#if defined(AGENTOS_GUEST_BOTH)
+#if defined(AGENTOS_GUEST_DUAL)
     g_guest_state = GUEST_STATE_READY;
     LOG_VMM("  Profile guest ready; waiting for lifecycle BOOT\n");
 #else

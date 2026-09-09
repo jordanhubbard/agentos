@@ -45,7 +45,7 @@ static void sample_view(aos_inspect_view_t *v)
     v->threads[1].pd_index = 1u;
     v->threads[1].prio = 250u;
     v->threads[1].state = AOS_INSPECT_THR_BLOCKED;
-    set_name(&v->threads[1], "linux_vmm");
+    set_name(&v->threads[1], "guest_vmm_primary");
     v->threads[2].pd_index = 2u;
     v->threads[2].prio = 225u;
     v->threads[2].state = AOS_INSPECT_THR_IDLE;
@@ -80,7 +80,7 @@ static int test_fill_report(void)
     CHECK(snap.hw.virtio_net_ipa == AOS_VIRTIO_NET_GUEST_IPA);
     CHECK(snap.thread_count == 3u);
 
-    CHECK(aos_inspect_thread_by_name(&snap, "linux_vmm", &thr) == AOS_INSPECT_OK);
+    CHECK(aos_inspect_thread_by_name(&snap, "guest_vmm_primary", &thr) == AOS_INSPECT_OK);
     CHECK(thr->prio == 250u);
     CHECK(thr->state == AOS_INSPECT_THR_BLOCKED);
     CHECK(aos_inspect_thread_by_name(&snap, "missing", &thr) == AOS_INSPECT_ERR_NOT_FOUND);
@@ -91,7 +91,7 @@ static int test_fill_report(void)
     CHECK(strstr(buf, "memory.ut_total_bytes=1073741824\n") != NULL);
     CHECK(strstr(buf, "hardware.arch=aarch64\n") != NULL);
     CHECK(strstr(buf, "hardware.virtio_net_ipa=0xa010000\n") != NULL);
-    CHECK(strstr(buf, "thread[1].name=linux_vmm\n") != NULL);
+    CHECK(strstr(buf, "thread[1].name=guest_vmm_primary\n") != NULL);
     CHECK(strstr(buf, "thread[1].state=blocked\n") != NULL);
     CHECK(strstr(buf, "thread[2].name=serial_pd\n") != NULL);
     PASS("test_fill_report");
