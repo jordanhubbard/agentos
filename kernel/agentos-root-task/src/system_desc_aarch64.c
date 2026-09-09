@@ -27,9 +27,9 @@
  *   195  event_bus          — pub/sub backbone; init_agent and controller subscribe
  *   185  vfs_server         — VFS multiplexer; controller and init_agent use it
  *   175  agentfs            — content store; controller and vibe_engine use it
+ *   170  vm_manager         — VM lifecycle; downstream of guest-control relays
  *   165  vibe_engine        — WASM hot-swap engine; called by controller
  *   160  cc_pd              — CC relay; passive, woken by PPC from callers
- *   155  vm_manager         — VM lifecycle; called by controller
  *   110  init_agent         — agent-ecosystem bootstrapper; calls most services
  *    50  controller         — policy coordinator; calls everything above it
  *
@@ -463,15 +463,15 @@ const system_desc_t system_desc_aarch64 = {
 
 #endif
 
-        /* pd[16] — vm_manager (prio 155; multi-VM lifecycle manager)
-         * Called by controller to create/destroy/snapshot VMs.  Runs above
-         * controller (50) but below all the services it calls. */
+        /* pd[16] — vm_manager (prio 170; multi-VM lifecycle manager)
+         * Guest-control calls arrive through cc_pd (160) and vibe_engine (165).
+         * Keep this final relay hop above both and below the VMMs (250). */
         {
             .name           = "vm_manager",
             .elf_path       = "vm_manager.elf",
             .stack_size     = 0x8000u,
             .cnode_size_bits = 10u,
-            .priority       = 155u,
+            .priority       = 170u,
             .self_svc_id    = SVC_ID_VM_MANAGER,
             .init_ep_count  = AOS_VM_MANAGER_INIT_EP_COUNT,
             .init_eps = {
@@ -489,8 +489,8 @@ const system_desc_t system_desc_aarch64 = {
         /* pd[17] — cc_pd (prio 160; command-and-control relay)
          * Pure IPC relay: receives MSG_CC_* from external callers and routes
          * each to the appropriate service PD.  Passive — woken by PPC.
-         * Priority 160: above vm_manager (155) and controller (50) callers;
-         * below vibe_engine (165) and other providers it calls. */
+         * Priority 160: above guest vCPUs (150), below vibe_engine (165),
+         * vm_manager (170), and other providers it calls. */
         {
             .name           = "cc_pd",
             .elf_path       = "cc_pd.elf",

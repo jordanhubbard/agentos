@@ -453,16 +453,16 @@ int main(void)
     (void)tap_ok(src_contains_in_order(
                      "kernel/agentos-root-task/src/system_desc_aarch64.c",
                      ".name           = \"vm_manager\"",
-                     ".priority       = 155u") &&
+                     ".priority       = 170u") &&
                  src_contains_in_order(
                      "kernel/agentos-root-task/agentos.toml",
                      "name = \"vm_manager\"",
-                     "priority = 155") &&
+                     "priority = 170") &&
                  src_contains("kernel/agentos-root-task/agentos-aarch64.system",
-                              "name=\"vm_manager\" priority=\"155\"") &&
+                              "name=\"vm_manager\" priority=\"170\"") &&
                  src_contains("kernel/agentos-root-task/agentos.system",
-                              "name=\"vm_manager\" priority=\"155\""),
-                 "vm_manager priority stays above guest fault senders in every topology source");
+                              "name=\"vm_manager\" priority=\"170\""),
+                 "guest-control priorities rise monotonically through vm_manager");
     (void)tap_ok(src_contains("libvmm/src/arch/aarch64/vcpu.c",
                               "seL4_VCPUReg_CNTVOFF") &&
                  src_contains("libvmm/src/arch/aarch64/vcpu.c",

@@ -1300,7 +1300,7 @@
                        mitigated by vm_manager-only write mapping. -->
     <memory_region name="vm_list_shmem" size="0x1000" />
 
-    <protection_domain name="vm_manager" priority="155" passive="true">
+    <protection_domain name="vm_manager" priority="170" passive="true">
         <program_image path="vm_manager.elf" />
         <!-- rw: vm_manager writes vm_list_entry_t[] on OP_VM_LIST -->
         <map mr="vm_list_shmem" vaddr="0x3100000" perms="rw" cached="true"

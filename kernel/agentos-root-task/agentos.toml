@@ -112,7 +112,7 @@ priority = 140
 
 [[pd]]
 name = "vm_manager"
-priority = 155
+priority = 170
 
 [[pd]]
 name = "auth_server"
