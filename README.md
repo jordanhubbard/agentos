@@ -45,6 +45,8 @@ sDDF virtualizers, and a VMM that presents **emulated virtio** to Linux and
 FreeBSD. Native agents use the same virtualizers without a guest OS.
 
 See [`docs/TCB.md`](docs/TCB.md) for the trust boundary,
+[`docs/guest-profiles.md`](docs/guest-profiles.md) for the data-driven guest
+contract,
 [`PLAN.md`](PLAN.md) for active implementation sequencing, and
 [`docs/ROADMAP.md`](docs/ROADMAP.md) for release milestones including the
 desktop and x86 guest paths.

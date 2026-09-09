@@ -1,0 +1,44 @@
+schema = 1
+id = "linux-aarch64-base"
+status = "abstract"
+
+[target]
+architecture = "aarch64"
+boot_protocol = "fdt-direct"
+kernel_format = "linux-image"
+guest_id = 0
+vcpus = 1
+devices = ["net", "block", "console"]
+network_client = 0
+block_media = 0
+autostart = true
+entry_from_image = true
+
+[boot]
+command_line = "console=hvc0 panic=-1"
+
+[artifacts.kernel]
+max_bytes = 134217728
+
+[artifacts.dtb]
+max_bytes = 1048576
+
+[artifacts.initrd]
+max_bytes = 134217728
+
+[placements.default]
+guest_gpa_base = 0x40000000
+vmm_hva_base = 0xc0000000
+ram_size = 0x20000000
+kernel_load_address = 0x40000000
+dtb_load_address = 0x5f000000
+initrd_load_address = 0x50000000
+
+[placements.dual-primary]
+guest_gpa_base = 0x40000000
+vmm_hva_base = 0xc0000000
+ram_size = 0x20000000
+kernel_load_address = 0x40000000
+dtb_load_address = 0x5f000000
+initrd_load_address = 0x50000000
+

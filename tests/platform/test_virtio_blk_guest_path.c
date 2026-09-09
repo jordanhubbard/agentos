@@ -281,12 +281,18 @@ int main(void)
                  src_contains("platform/blk-virt/vmm_virtio_blk.c",
                               "AGENTOS_BLK_MEDIA_DMA_OFF(g_media_id)") &&
                  src_contains("kernel/agentos-root-task/src/linux_vmm.c",
-                              "AOS_HOST_BLK_MEDIA_UBUNTU") &&
+                              ".block_init = aos_vmm_virtio_blk_init") &&
                  src_contains("kernel/agentos-root-task/src/freebsd_vmm.c",
-                              "AOS_HOST_BLK_MEDIA_FREEBSD") &&
+                              ".block_init = aos_vmm_virtio_blk_init") &&
+                 src_contains("platform/guest-vmm/boot.c",
+                              "ops->block_init(profile->block_media)") &&
+                 src_contains("guest-profiles/linux-base.toml",
+                              "block_media = 0") &&
+                 src_contains("guest-profiles/freebsd.toml",
+                              "block_media = 1") &&
                  src_contains("kernel/agentos-root-task/src/virtio_blk.c",
                               "AOS_HOST_BLK_MEDIA_FREEBSD"),
-                 "canonical driver separates Ubuntu and FreeBSD queues and DMA");
+                 "profiles select separate guest queues over canonical block DMA");
     (void)tap_ok(AGENTOS_BLK_SHARED_DMA_MAX_SECTORS == 2047u &&
                  AGENTOS_BLK_MEDIA_DMA_MAX_SECTORS(
                     AOS_HOST_BLK_MEDIA_FREEBSD) == 63u &&
@@ -421,9 +427,13 @@ int main(void)
                  src_contains("kernel/agentos-root-task/src/main.c",
                               "VMM_GUEST_PRIORITY,") &&
                  src_contains("kernel/agentos-root-task/src/linux_vmm.c",
-                              "aos_vmm_guest_ram_bind(LINUX_GUEST_RAM_GPA") &&
+                              "aos_vmm_guest_ram_bind(g_guest_profile->guest_gpa_base") &&
                  src_contains("kernel/agentos-root-task/src/freebsd_vmm.c",
-                              "aos_vmm_guest_ram_bind(FREEBSD_GUEST_RAM_GPA"),
+                              "aos_vmm_guest_ram_bind(g_guest_profile->guest_gpa_base") &&
+                 src_contains("guest-profiles/linux-base.toml",
+                              "vmm_hva_base = 0xc0000000") &&
+                 src_contains("guest-profiles/freebsd.toml",
+                              "vmm_hva_base = 0x80000000"),
                  "guest TCB VSpaces use GPA mappings distinct from VMM aliases");
     (void)tap_ok(src_contains_in_order(
                      "kernel/agentos-root-task/src/system_desc_aarch64.c",

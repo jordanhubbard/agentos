@@ -1,0 +1,16 @@
+schema = 1
+id = "debian-stable-aarch64"
+status = "planned"
+extends = "linux-base.toml"
+
+[boot]
+command_line = "console=hvc0 rdinit=/init panic=-1 ip=dhcp"
+
+[[host.acquire]]
+action = "download"
+args = { artifact = "debian-cloud-image" }
+
+[[host.test]]
+action = "assert-virtio"
+args = { devices = "net,block,console" }
+

@@ -1,0 +1,29 @@
+schema = 1
+id = "ubuntu-live-aarch64"
+status = "runtime"
+extends = "ubuntu-e2e.toml"
+
+[boot]
+command_line = "console=hvc0 quiet loglevel=3 boot=casper noprompt systemd.show_status=false systemd.unit=console-getty.service panic=-1"
+
+[artifacts.initrd]
+source = "ubuntu:26.04-live-server-arm64.iso:/casper/initrd"
+cache = "build/guest-images/ubuntu-26.04-aarch64-live-initrd"
+sha256 = "58398d8db91bd5649be79ea12eca1201034af7a04ec3cad136b71bc8a29be31a"
+max_bytes = 268435456
+
+[artifacts.dtb]
+sha256 = "eb6f1cd470687badf9988baa0210a56319f6ccce0f740078cf7a63740f457d8e"
+
+[placements.default]
+ram_size = 0x40000000
+dtb_load_address = 0x7f000000
+
+[placements.dual-primary]
+ram_size = 0x40000000
+dtb_load_address = 0x7f000000
+dtb_sha256 = "eb6f1cd470687badf9988baa0210a56319f6ccce0f740078cf7a63740f457d8e"
+
+[[host.test]]
+action = "wait-console"
+args = { marker = "login:" }

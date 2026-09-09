@@ -403,7 +403,9 @@ void pd_main(seL4_CPtr my_ep, seL4_CPtr ns_ep) { linux_vmm_main(my_ep, ns_ep); }
 
 #include <libvmm/libvmm.h>
 #include <libvmm/vmm_caps.h>   /* vmm_register_vcpu                           */
+#include <platform/guest_boot.h>
 #include <platform/guest_memory_layout.h>
+#include <platform/guest_profile.h>
 #include <platform/guest_vmm_runtime.h>
 #include <platform/vmm_virtio_net.h>
 #include <platform/vmm_virtio_blk.h>
@@ -546,6 +548,8 @@ extern char _guest_dtb_image[];
 extern char _guest_dtb_image_end[];
 extern char _guest_initrd_image[];
 extern char _guest_initrd_image_end[];
+extern char _guest_profile[];
+extern char _guest_profile_end[];
 
 static uint32_t guest_image_checksum(const void *data, size_t size)
 {
@@ -572,6 +576,8 @@ uintptr_t serial_shmem_linux_vaddr __attribute__((weak));
 /* ─── State ──────────────────────────────────────────────────────────── */
 
 static bool     guest_started      = false;
+static const aos_guest_profile_manifest_t *g_guest_profile;
+static aos_guest_boot_plan_t g_guest_boot_plan;
 static vcpu_time_state_t g_linux_time_state;
 static bool     g_linux_startable  = false;
 static uintptr_t g_linux_kernel_pc = 0u;
@@ -901,7 +907,8 @@ static bool linux_vmm_start_guest(void)
 
     LOG_VMM("  Starting Linux guest...\n");
     vcpu_reset(GUEST_BOOT_VCPU_ID);
-    guest_start(g_linux_kernel_pc, GUEST_DTB_VADDR, GUEST_INIT_RAM_DISK_VADDR);
+    guest_start(g_linux_kernel_pc, g_guest_boot_plan.dtb_gpa,
+                g_guest_boot_plan.initrd_gpa);
     guest_started = true;
     g_guest_state = GUEST_STATE_RUNNING;
     LOG_VMM("  Linux guest started successfully\n");
@@ -1087,6 +1094,20 @@ int vmm_inject_irq(uint8_t slot_id, uint32_t irq_num)
 
 void init(void)
 {
+    if ((size_t)(_guest_profile_end - _guest_profile) !=
+            sizeof(aos_guest_profile_manifest_t)) {
+        LOG_VMM_ERR("Guest profile has the wrong wire size\n");
+        return;
+    }
+    g_guest_profile = (const aos_guest_profile_manifest_t *)_guest_profile;
+    if (aos_guest_profile_validate(g_guest_profile) != AOS_GUEST_PROFILE_OK ||
+        g_guest_profile->architecture != AOS_GUEST_ARCH_AARCH64 ||
+        g_guest_profile->boot_protocol != AOS_GUEST_BOOT_FDT_DIRECT ||
+        g_guest_profile->kernel_format != AOS_GUEST_KERNEL_LINUX_IMAGE) {
+        LOG_VMM_ERR("Guest profile is invalid for the AArch64 direct boot executor\n");
+        return;
+    }
+
     /* Initialise per-slot affinity masks to "any core" */
     for (uint8_t i = 0; i < VMM_MAX_SLOTS; i++)
         vmm_affinity[i] = 0xFFFFFFFFu;
@@ -1095,12 +1116,13 @@ void init(void)
      * into this PD's VSpace and leaves guest_ram_vaddr uninitialised (0).
      * Use the fixed convention address as a fallback. */
     if (guest_ram_vaddr == 0u) {
-        guest_ram_vaddr = LINUX_GUEST_RAM_VADDR;
+        guest_ram_vaddr = g_guest_profile->vmm_hva_base;
     }
 
     LOG_VMM("agentOS linux_vmm starting \"linux_vmm\"\n");
     LOG_VMM("  Guest RAM: 0x%lx (%d MB)\n",
-            (unsigned long)guest_ram_vaddr, GUEST_RAM_SIZE / (1024 * 1024));
+            (unsigned long)guest_ram_vaddr,
+            (int)(g_guest_profile->ram_size / (1024 * 1024)));
 
     /* Register VCPU and TCB caps with libvmm before any libvmm call that
      * uses vmm_vcpu_cap() or vmm_tcb_cap().  The raw root task copies the
@@ -1118,6 +1140,12 @@ void init(void)
     /* Casper is staged from the agentOS-owned ISO after blk backend init. */
     initrd_size = 0u;
 #endif
+    if (kernel_size > g_guest_profile->kernel_max_bytes ||
+        dtb_size > g_guest_profile->dtb_max_bytes ||
+        initrd_size > g_guest_profile->initrd_max_bytes) {
+        LOG_VMM_ERR("Embedded guest artifact exceeds its profile bound\n");
+        return;
+    }
 
     LOG_VMM("  Kernel: %zu bytes\n", kernel_size);
     LOG_VMM("  DTB:    %zu bytes\n", dtb_size);
@@ -1144,23 +1172,25 @@ void init(void)
                 guest_image_checksum(_guest_initrd_image, initrd_size));
     }
 
-    uintptr_t dtb_hva = guest_ram_vaddr +
-        (GUEST_DTB_VADDR - LINUX_GUEST_RAM_GPA);
-    uintptr_t initrd_hva = guest_ram_vaddr +
-        (GUEST_INIT_RAM_DISK_VADDR - LINUX_GUEST_RAM_GPA);
-    uintptr_t kernel_hva = linux_setup_images(
-        guest_ram_vaddr,
-        (uintptr_t)_guest_kernel_image, kernel_size,
-        (uintptr_t)_guest_dtb_image, dtb_hva, dtb_size,
-        (uintptr_t)_guest_initrd_image, initrd_hva, initrd_size
-    );
-
-    if (!kernel_hva) {
+    aos_guest_boot_images_t images = {
+        .kernel = _guest_kernel_image,
+        .kernel_size = kernel_size,
+        .dtb = _guest_dtb_image,
+        .dtb_size = dtb_size,
+        .initrd = _guest_initrd_image,
+        .initrd_size = initrd_size,
+    };
+    enum aos_guest_boot_error boot_error = aos_guest_boot_prepare(
+        &g_guest_boot_plan, g_guest_profile, guest_ram_vaddr, &images,
+        linux_setup_images);
+    if (boot_error != AOS_GUEST_BOOT_OK) {
         LOG_VMM_ERR("Failed to initialise guest images\n");
         return;
     }
-    uintptr_t kernel_pc = LINUX_GUEST_RAM_GPA +
-        (kernel_hva - guest_ram_vaddr);
+    uintptr_t kernel_hva = g_guest_boot_plan.kernel_hva;
+    uintptr_t dtb_hva = g_guest_boot_plan.dtb_hva;
+    uintptr_t initrd_hva = g_guest_boot_plan.initrd_hva;
+    uintptr_t kernel_pc = g_guest_boot_plan.entry_gpa;
     uint32_t initrd_guest_checksum = guest_image_checksum(
         (const void *)initrd_hva, initrd_size);
     uint32_t kernel_guest_checksum =
@@ -1210,16 +1240,26 @@ void init(void)
      * Bind guest RAM so descriptor addresses are translated from guest
      * physical addresses to this PD's independently allocated host mapping.
      */
-    aos_vmm_guest_ram_bind(LINUX_GUEST_RAM_GPA, guest_ram_vaddr, GUEST_RAM_SIZE);
-    aos_vmm_virtio_net_init(0u);
+    aos_vmm_guest_ram_bind(g_guest_profile->guest_gpa_base, guest_ram_vaddr,
+                           g_guest_profile->ram_size);
+    aos_guest_device_ops_t device_ops = {
+        .net_init = aos_vmm_virtio_net_init,
+        .block_init = aos_vmm_virtio_blk_init,
+        .console_init = aos_vmm_virtio_console_init,
+    };
+    if (aos_guest_devices_init(g_guest_profile, &device_ops) !=
+            AOS_GUEST_BOOT_OK) {
+        LOG_VMM_ERR("Failed to initialise profile-selected guest devices\n");
+        return;
+    }
 
     /* Emulated virtio-blk at IPA 0x0A020000 (faults here, sDDF pump). */
-    aos_vmm_virtio_blk_init(AOS_HOST_BLK_MEDIA_UBUNTU);
 #if defined(AGENTOS_GUEST_UBUNTU_LIVE)
     size_t live_initrd_size = 0u;
     if (!aos_vmm_virtio_blk_load_casper_initrd(
             initrd_hva,
-            GUEST_DTB_VADDR - GUEST_INIT_RAM_DISK_VADDR,
+            g_guest_profile->dtb_load_address -
+                g_guest_profile->initrd_load_address,
             &live_initrd_size)) {
         LOG_VMM_ERR("Failed to stage casper/initrd from agentOS host media\n");
         return;
@@ -1227,8 +1267,6 @@ void init(void)
     LOG_VMM("Ubuntu live initrd ready in guest RAM (%zu bytes)\n",
             live_initrd_size);
 #endif
-    aos_vmm_virtio_console_init();
-
     g_linux_kernel_pc = kernel_pc;
     g_linux_startable = true;
 #if defined(AGENTOS_GUEST_BOTH)

@@ -111,8 +111,10 @@ int main(void)
        contains(overlay, "status = \"disabled\"") &&
        !contains(overlay, "stdout-path"),
        "PL011 is earlycon-only and not an advertised Ubuntu console");
-    ok(contains_after(vmm, "aos_vmm_virtio_console_init()",
-                     "aos_vmm_virtio_console_after_fault()"),
+    ok(contains_after(vmm, ".console_init = aos_vmm_virtio_console_init",
+                     "aos_vmm_virtio_console_after_fault()") &&
+       contains("platform/guest-vmm/boot.c",
+                "ops->console_init()"),
        "linux_vmm initializes and services virtio-console");
     ok(contains(vmm, "aos_vmm_virtio_console_drain_tx") &&
        contains(vmm, "aos_vmm_virtio_console_push_rx"),

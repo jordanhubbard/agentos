@@ -26,7 +26,7 @@
 
 .DEFAULT_GOAL := help
 
-.PHONY: all setup sdk demo demo-check demo-smoke demo-test demo-desktop demo-desktop-test demo-clean install deps deps-tools submodules channels format policy-check run run-fast run-dual-ssh test test-guest-login test-guest-net test-guest-blk test-guest-console test-ubuntu-virtio test-ubuntu-live sel4-test-image run-tests test-snapshot-sched test-power-mgr test-proc-server test-vibeos-contract test-integration test-host gate gate-aarch64 gate-x86_64 e2e e2e-guest e2e-contract e2e-dual-os e2e-ubuntu-amd64 e2e-ubuntu-arm64 e2e-nixos e2e-freebsd15 e2e-all bootstrap-guest clean clean-all clean-images help release release-minor release-major release-prepare release-check release-publish release-verify presentation-render fetch-guest build-tools
+.PHONY: all setup sdk demo demo-check demo-smoke demo-test demo-desktop demo-desktop-test demo-clean install deps deps-tools submodules channels format policy-check guest-profile-check run run-fast run-dual-ssh test test-guest-login test-guest-net test-guest-blk test-guest-console test-ubuntu-virtio test-ubuntu-live sel4-test-image run-tests test-snapshot-sched test-power-mgr test-proc-server test-vibeos-contract test-integration test-host gate gate-aarch64 gate-x86_64 e2e e2e-guest e2e-contract e2e-dual-os e2e-ubuntu-amd64 e2e-ubuntu-arm64 e2e-nixos e2e-freebsd15 e2e-all bootstrap-guest clean clean-all clean-images help release release-minor release-major release-prepare release-check release-publish release-verify presentation-render fetch-guest build-tools
 
 # ─── Read config.yaml (if present) ───────────────────────────────────────────
 CONFIG_TARGET := $(shell grep '^target_arch:' config.yaml 2>/dev/null | sed 's/target_arch:[[:space:]]*//' | tr -d '[:space:]')
@@ -650,7 +650,25 @@ gate: test-host gate-aarch64 gate-x86_64
 
 # test-host: alias for the host-only integration suite.  Named explicitly so
 # callers and CI cannot mistake host-only coverage for target/QEMU proof.
-test-host: policy-check test-integration
+test-host: policy-check guest-profile-check test-integration
+
+guest-profile-check:
+	@mkdir -p $(BUILD_TMP_DIR)/guest-profiles
+	@cargo xtask guest-profile --check-all
+	@cargo xtask guest-profile --profile buildroot.toml --output $(BUILD_TMP_DIR)/guest-profiles/buildroot.bin
+	@cargo xtask guest-profile --profile ubuntu-e2e.toml --output $(BUILD_TMP_DIR)/guest-profiles/ubuntu-e2e.bin
+	@cargo xtask guest-profile --profile freebsd.toml --output $(BUILD_TMP_DIR)/guest-profiles/freebsd.bin
+	@gcc -std=c11 -Wall -Wextra -Werror -I platform/include \
+		tests/platform/test_guest_profile.c \
+		-o $(BUILD_TMP_DIR)/test_guest_profile
+	@$(BUILD_TMP_DIR)/test_guest_profile \
+		$(BUILD_TMP_DIR)/guest-profiles/buildroot.bin \
+		$(BUILD_TMP_DIR)/guest-profiles/ubuntu-e2e.bin \
+		$(BUILD_TMP_DIR)/guest-profiles/freebsd.bin
+	@gcc -std=c11 -Wall -Wextra -Werror -I platform/include \
+		tests/platform/test_guest_boot.c \
+		-o $(BUILD_TMP_DIR)/test_guest_boot
+	@$(BUILD_TMP_DIR)/test_guest_boot
 
 sel4-test-image:
 	@$(MAKE) build \

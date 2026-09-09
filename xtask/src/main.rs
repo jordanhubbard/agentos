@@ -2,11 +2,11 @@ use clap::{Parser, Subcommand};
 use xtask::{
     cmd_ci_matrix, cmd_extract_freebsd_file, cmd_fault_inject, cmd_fetch_guest, cmd_gen_abi,
     cmd_gen_caps, cmd_gen_channels, cmd_gen_image, cmd_gen_pd_bundle, cmd_gen_policy,
-    cmd_host_test, cmd_policy_check, cmd_release, cmd_render_deck, cmd_run_tests, cmd_setup,
-    cmd_test, cmd_test_api, CiMatrixArgs, ExtractFreebsdFileArgs, FaultInjectArgs, FetchGuestArgs,
-    GenAbiArgs, GenCapsArgs, GenChannelsArgs, GenImageArgs, GenPdBundleArgs, GenPolicyArgs,
-    HostTestArgs, PolicyCheckArgs, ReleaseArgs, RenderDeckArgs, RunTestsArgs, SetupArgs,
-    TestApiArgs, TestArgs,
+    cmd_guest_profile, cmd_host_test, cmd_policy_check, cmd_release, cmd_render_deck,
+    cmd_run_tests, cmd_setup, cmd_test, cmd_test_api, CiMatrixArgs, ExtractFreebsdFileArgs,
+    FaultInjectArgs, FetchGuestArgs, GenAbiArgs, GenCapsArgs, GenChannelsArgs, GenImageArgs,
+    GenPdBundleArgs, GenPolicyArgs, GuestProfileArgs, HostTestArgs, PolicyCheckArgs, ReleaseArgs,
+    RenderDeckArgs, RunTestsArgs, SetupArgs, TestApiArgs, TestArgs,
 };
 
 #[derive(Parser)]
@@ -64,6 +64,9 @@ enum Cmd {
     /// Pack PD ELFs into a .pd_bundle blob for embedding into root_task.elf
     #[command(name = "gen-pd-bundle")]
     GenPdBundle(GenPdBundleArgs),
+    /// Validate source profiles or compile one bounded target manifest.
+    #[command(name = "guest-profile")]
+    GuestProfile(GuestProfileArgs),
 }
 
 fn main() -> anyhow::Result<()> {
@@ -87,5 +90,6 @@ fn main() -> anyhow::Result<()> {
         Cmd::PolicyCheck(a) => cmd_policy_check::run(&a),
         Cmd::GenImage(a) => cmd_gen_image::run(&a),
         Cmd::GenPdBundle(a) => cmd_gen_pd_bundle::run(&a),
+        Cmd::GuestProfile(a) => cmd_guest_profile::run(&a),
     }
 }

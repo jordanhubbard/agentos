@@ -38,7 +38,9 @@
 #include <libvmm/guest.h>
 #include <libvmm/arch/aarch64/vgic/vgic.h>
 #include <platform/blk_layout.h>
+#include <platform/guest_boot.h>
 #include <platform/guest_memory_layout.h>
+#include <platform/guest_profile.h>
 #include <platform/guest_ram.h>
 #include <platform/guest_vmm_runtime.h>
 #include <platform/vmm_virtio_net.h>
@@ -99,6 +101,8 @@ extern char _guest_kernel_image[];
 extern char _guest_kernel_image_end[];
 extern char _guest_dtb_image[];
 extern char _guest_dtb_image_end[];
+extern char _guest_profile[];
+extern char _guest_profile_end[];
 
 /* ── Guest memory map symbols ────────────────────────────────────────────── */
 uintptr_t guest_ram_vaddr;   /* VMM virtual address of guest_ram MR */
@@ -115,18 +119,11 @@ uintptr_t guest_ram_vaddr;   /* VMM virtual address of guest_ram MR */
 #endif
 
 static bool guest_started = false;
+static const aos_guest_profile_manifest_t *g_guest_profile;
+static aos_guest_boot_plan_t g_guest_boot_plan;
 static vcpu_time_state_t g_freebsd_time_state;
 static bool g_freebsd_startable = false;
 static bool g_freebsd_runtime_ready = false;
-
-static void freebsd_copy_to_guest(uintptr_t dst_addr, const void *src, size_t n)
-{
-    volatile uint8_t *dst = (volatile uint8_t *)dst_addr;
-    const uint8_t *s = (const uint8_t *)src;
-    for (size_t i = 0; i < n; i++) {
-        dst[i] = s[i];
-    }
-}
 
 static void uart_ack(size_t vcpu_id, int irq, void *cookie)
 {
@@ -421,9 +418,16 @@ static bool freebsd_vmm_prepare_runtime(void)
      * libvmm installs its MMIO fault handler and virtual IRQ here; no host
      * transport or hardware IRQ capability enters this VMM.
      */
-    aos_vmm_virtio_net_init(1u);
-    aos_vmm_virtio_blk_init(AOS_HOST_BLK_MEDIA_FREEBSD);
-    aos_vmm_virtio_console_init();
+    aos_guest_device_ops_t device_ops = {
+        .net_init = aos_vmm_virtio_net_init,
+        .block_init = aos_vmm_virtio_blk_init,
+        .console_init = aos_vmm_virtio_console_init,
+    };
+    if (aos_guest_devices_init(g_guest_profile, &device_ops) !=
+            AOS_GUEST_BOOT_OK) {
+        LOG_VMM_ERR("Failed to initialise profile-selected guest devices\n");
+        return false;
+    }
 
     if (!virq_register(GUEST_BOOT_VCPU_ID, FREEBSD_UART_IRQ, &uart_ack, NULL)) {
         LOG_VMM_ERR("Failed to register UART IRQ %u\n", FREEBSD_UART_IRQ);
@@ -448,9 +452,10 @@ static bool freebsd_vmm_start_guest(void)
     }
 
     LOG_VMM("  Starting FreeBSD kernel at guest phys 0x%lx with FDT 0x%lx...\n",
-            (unsigned long)FREEBSD_KERNEL_VADDR,
-            (unsigned long)FREEBSD_FDT_VADDR);
-    guest_start(FREEBSD_KERNEL_VADDR, FREEBSD_FDT_VADDR, 0UL);
+            (unsigned long)g_guest_boot_plan.entry_gpa,
+            (unsigned long)g_guest_boot_plan.dtb_gpa);
+    guest_start(g_guest_boot_plan.entry_gpa,
+                g_guest_boot_plan.dtb_gpa, g_guest_boot_plan.initrd_gpa);
     guest_started = true;
     g_guest_state = GUEST_STATE_RUNNING;
     LOG_VMM("  FreeBSD VMM: kernel running\n");
@@ -672,6 +677,20 @@ void init(void)
 {
     LOG_VMM("agentOS freebsd_vmm starting\n");
 
+    if ((size_t)(_guest_profile_end - _guest_profile) !=
+            sizeof(aos_guest_profile_manifest_t)) {
+        LOG_VMM_ERR("Guest profile has the wrong wire size\n");
+        return;
+    }
+    g_guest_profile = (const aos_guest_profile_manifest_t *)_guest_profile;
+    if (aos_guest_profile_validate(g_guest_profile) != AOS_GUEST_PROFILE_OK ||
+        g_guest_profile->architecture != AOS_GUEST_ARCH_AARCH64 ||
+        g_guest_profile->boot_protocol != AOS_GUEST_BOOT_FDT_DIRECT ||
+        g_guest_profile->kernel_format != AOS_GUEST_KERNEL_RAW) {
+        LOG_VMM_ERR("Guest profile is invalid for the AArch64 direct boot executor\n");
+        return;
+    }
+
     vmm_register_vcpu(GUEST_BOOT_VCPU_ID,
                       AGENTOS_VMM_VCPU_CAP_BASE + GUEST_BOOT_VCPU_ID,
                       AGENTOS_VMM_TCB_CAP_BASE  + GUEST_BOOT_VCPU_ID);
@@ -681,44 +700,40 @@ void init(void)
         LOG_VMM_ERR("FreeBSD kernel image not linked (run make fetch-guest GUEST_OS=freebsd)\n");
         return;
     }
+    size_t dtb_size = (size_t)(_guest_dtb_image_end - _guest_dtb_image);
     LOG_VMM("  FreeBSD kernel: %zu bytes (%.1f MB)\n",
             kernel_size, (double)kernel_size / (1024.0 * 1024.0));
 
     if (guest_ram_vaddr == 0) {
-        guest_ram_vaddr = FREEBSD_GUEST_RAM_VADDR;
+        guest_ram_vaddr = g_guest_profile->vmm_hva_base;
     }
-    aos_vmm_guest_ram_bind(FREEBSD_GUEST_RAM_GPA, guest_ram_vaddr,
-                           FREEBSD_GUEST_RAM_SIZE);
-
-    uintptr_t kernel_dst = guest_ram_vaddr +
-        (FREEBSD_KERNEL_VADDR - FREEBSD_GUEST_RAM_GPA);
-    uintptr_t fdt_dst = guest_ram_vaddr +
-        (FREEBSD_FDT_VADDR - FREEBSD_GUEST_RAM_GPA);
-    if ((FREEBSD_KERNEL_VADDR + kernel_size) >= FREEBSD_FDT_VADDR) {
-        LOG_VMM_ERR("FreeBSD kernel overlaps FDT load address\n");
-        return;
-    }
+    aos_vmm_guest_ram_bind(g_guest_profile->guest_gpa_base, guest_ram_vaddr,
+                           g_guest_profile->ram_size);
 
     LOG_VMM("  FreeBSD guest RAM zeroed by seL4 retype\n");
-
-    freebsd_copy_to_guest(kernel_dst, _guest_kernel_image, kernel_size);
+    aos_guest_boot_images_t images = {
+        .kernel = _guest_kernel_image,
+        .kernel_size = kernel_size,
+        .dtb = _guest_dtb_image,
+        .dtb_size = dtb_size,
+        .initrd = NULL,
+        .initrd_size = 0u,
+    };
+    enum aos_guest_boot_error boot_error = aos_guest_boot_prepare(
+        &g_guest_boot_plan, g_guest_profile, guest_ram_vaddr, &images, NULL);
+    if (boot_error != AOS_GUEST_BOOT_OK) {
+        LOG_VMM_ERR("Failed to initialise guest images from profile\n");
+        return;
+    }
     LOG_VMM("  FreeBSD kernel copied to guest phys 0x%lx\n",
-            (unsigned long)FREEBSD_KERNEL_VADDR);
+            (unsigned long)g_guest_profile->kernel_load_address);
 
     /*
      * Copy the FDT away from the kernel Image.  x0 carries this pointer per the
      * arm64 boot ABI, and the FreeBSD kernel reads /chosen/bootargs from it.
      */
-    size_t dtb_size = (size_t)(_guest_dtb_image_end - _guest_dtb_image);
-    if (dtb_size && guest_ram_vaddr &&
-        (FREEBSD_FDT_VADDR + dtb_size) <=
-        (FREEBSD_GUEST_RAM_GPA + FREEBSD_GUEST_RAM_SIZE)) {
-        freebsd_copy_to_guest(fdt_dst, _guest_dtb_image, dtb_size);
-        LOG_VMM("  FDT (%zu bytes) copied to guest phys 0x%lx\n",
-                dtb_size, (unsigned long)FREEBSD_FDT_VADDR);
-    } else {
-        LOG_VMM_ERR("FDT not embedded, guest_ram_vaddr unset, or FDT out of RAM\n");
-    }
+    LOG_VMM("  FDT (%zu bytes) copied to guest phys 0x%lx\n",
+            dtb_size, (unsigned long)g_guest_boot_plan.dtb_gpa);
 
     g_freebsd_startable = true;
 #if defined(AGENTOS_GUEST_BOTH)

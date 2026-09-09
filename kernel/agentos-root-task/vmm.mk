@@ -97,6 +97,26 @@ $(LINUX_DTS_BASE): $(DTS_DIR)/linux.dts $(VMM_CONFIG_STAMP) $(lastword $(MAKEFIL
 endif
 DTSCAT  := $(LIBVMM_ABS)/tools/dtscat
 PKG_IMG := $(LIBVMM_ABS)/tools/package_guest_images.S
+PKG_PROFILE := $(AGENTOS_ROOT)/platform/guest-vmm/package_profile.S
+
+ifeq ($(GUEST_OS),ubuntu)
+ifeq ($(UBUNTU_BOOT_MODE),live)
+LINUX_GUEST_PROFILE := ubuntu-live.toml
+else
+LINUX_GUEST_PROFILE := ubuntu-e2e.toml
+endif
+else
+LINUX_GUEST_PROFILE := buildroot.toml
+endif
+ifeq ($(VMM_DUAL_GUEST),1)
+LINUX_GUEST_PLACEMENT := dual-primary
+FREEBSD_GUEST_PLACEMENT := dual-secondary
+else
+LINUX_GUEST_PLACEMENT := default
+FREEBSD_GUEST_PLACEMENT := default
+endif
+LINUX_GUEST_PROFILE_BIN := $(BUILD_DIR)/linux-guest-profile.bin
+FREEBSD_GUEST_PROFILE_BIN := $(BUILD_DIR)/freebsd-guest-profile.bin
 
 # ─── VMM CFLAGS (used for linux_vmm.c compilation) ───────────────────────
 VMM_CFLAGS := \
@@ -256,6 +276,18 @@ $(BUILD_DIR)/images.o: FORCE \
 		-target aarch64-none-elf \
 		$(PKG_IMG) -o $@
 
+$(LINUX_GUEST_PROFILE_BIN): FORCE $(AGENTOS_ROOT)/guest-profiles/$(LINUX_GUEST_PROFILE) \
+					$(AGENTOS_ROOT)/guest-profiles/linux-base.toml \
+					$(LINUX_IMAGE) $(INITRD_IMAGE) $(BUILD_DIR)/vm.dtb
+	@cargo xtask guest-profile --root $(AGENTOS_ROOT)/guest-profiles \
+		--profile $(LINUX_GUEST_PROFILE) --placement $(LINUX_GUEST_PLACEMENT) \
+		--repo-root $(AGENTOS_ROOT) --verify-artifacts --output $@
+
+$(BUILD_DIR)/linux_guest_profile.o: $(PKG_PROFILE) $(LINUX_GUEST_PROFILE_BIN)
+	clang -c -x assembler-with-cpp \
+		-DGUEST_PROFILE_PATH=\"$(LINUX_GUEST_PROFILE_BIN)\" \
+		-target aarch64-none-elf $(PKG_PROFILE) -o $@
+
 LINUX_VMM_FULL_OBJ := $(BUILD_DIR)/linux_vmm.full.o
 GPU_SHMEM_FULL_OBJ := $(BUILD_DIR)/gpu_shmem.full.o
 VMM_PD_ENTRY_OBJ   := $(BUILD_DIR)/pd_entry.vmm.o
@@ -264,6 +296,8 @@ VMM_VIRTIO_NET_OBJ := $(BUILD_DIR)/vmm_virtio_net.o
 GPA_TRANSLATE_OBJ  := $(BUILD_DIR)/gpa_translate.o
 VMM_GUEST_RAM_OBJ  := $(BUILD_DIR)/vmm_guest_ram.o
 GUEST_VMM_RUNTIME_OBJ := $(BUILD_DIR)/guest_vmm_runtime.o
+GUEST_PROFILE_VALIDATE_OBJ := $(BUILD_DIR)/guest_profile_validate.o
+GUEST_BOOT_OBJ := $(BUILD_DIR)/guest_boot.o
 BLK_VIRT_PUMP_OBJ  := $(BUILD_DIR)/blk_virt_pump.o
 VMM_VIRTIO_BLK_OBJ := $(BUILD_DIR)/vmm_virtio_blk.o
 VMM_VIRTIO_CONSOLE_OBJ := $(BUILD_DIR)/vmm_virtio_console.o
@@ -276,6 +310,8 @@ VMM_VIRTIO_CONSOLE_OBJ := $(BUILD_DIR)/vmm_virtio_console.o
 # flags.
 $(LINUX_VMM_FULL_OBJ): $(KERNEL_SRC_DIR)/src/linux_vmm.c $(VMM_CONFIG_STAMP) \
                       $(AGENTOS_ROOT)/platform/include/platform/guest_memory_layout.h \
+                      $(AGENTOS_ROOT)/platform/include/platform/guest_boot.h \
+                      $(AGENTOS_ROOT)/platform/include/platform/guest_profile.h \
                       $(AGENTOS_ROOT)/platform/include/platform/guest_vmm_runtime.h \
                       $(AGENTOS_ROOT)/platform/include/platform/vmm_virtio_net.h \
                       $(AGENTOS_ROOT)/platform/include/platform/vmm_virtio_blk.h \
@@ -331,6 +367,19 @@ $(GUEST_VMM_RUNTIME_OBJ): $(AGENTOS_ROOT)/platform/guest-vmm/runtime.c \
 	@echo "[VMM] Compiling shared guest VMM runtime..."
 	clang $(VMM_CFLAGS) -c -o $@ $<
 
+$(GUEST_PROFILE_VALIDATE_OBJ): $(AGENTOS_ROOT)/platform/guest-vmm/profile.c \
+				      $(AGENTOS_ROOT)/platform/include/platform/guest_profile.h
+	@mkdir -p $(BUILD_DIR)
+	@echo "[VMM] Compiling guest profile validator..."
+	clang $(VMM_CFLAGS) -c -o $@ $<
+
+$(GUEST_BOOT_OBJ): $(AGENTOS_ROOT)/platform/guest-vmm/boot.c \
+			  $(AGENTOS_ROOT)/platform/include/platform/guest_boot.h \
+			  $(AGENTOS_ROOT)/platform/include/platform/guest_profile.h
+	@mkdir -p $(BUILD_DIR)
+	@echo "[VMM] Compiling guest-neutral boot executor..."
+	clang $(VMM_CFLAGS) -c -o $@ $<
+
 $(BLK_VIRT_PUMP_OBJ): $(AGENTOS_ROOT)/platform/blk-virt/blk_virt_pump.c \
                       $(AGENTOS_ROOT)/platform/include/platform/blk_layout.h \
                       $(AGENTOS_ROOT)/platform/include/platform/blk_virt_pump.h
@@ -365,10 +414,13 @@ $(BUILD_DIR)/linux_vmm.elf: FORCE \
 	                             $(GPA_TRANSLATE_OBJ) \
 	                             $(VMM_GUEST_RAM_OBJ) \
 	                             $(GUEST_VMM_RUNTIME_OBJ) \
+	                             $(GUEST_PROFILE_VALIDATE_OBJ) \
+	                             $(GUEST_BOOT_OBJ) \
 	                             $(BLK_VIRT_PUMP_OBJ) \
 	                             $(VMM_VIRTIO_BLK_OBJ) \
 	                             $(VMM_VIRTIO_CONSOLE_OBJ) \
 	                             $(BUILD_DIR)/images.o \
+	                             $(BUILD_DIR)/linux_guest_profile.o \
 	                             $(BUILD_DIR)/libvmm.a \
 	                             $(BUILD_DIR)/libsddf_util_debug.a
 	@echo "[VMM] Linking linux_vmm.elf..."
@@ -377,8 +429,10 @@ $(BUILD_DIR)/linux_vmm.elf: FORCE \
 		$(VMM_PD_ENTRY_OBJ) $(LINUX_VMM_FULL_OBJ) $(GPU_SHMEM_FULL_OBJ) \
 		$(NET_VIRT_PUMP_OBJ) $(VMM_VIRTIO_NET_OBJ) $(GPA_TRANSLATE_OBJ) $(VMM_GUEST_RAM_OBJ) \
 		$(GUEST_VMM_RUNTIME_OBJ) \
+		$(GUEST_PROFILE_VALIDATE_OBJ) \
+		$(GUEST_BOOT_OBJ) \
 		$(BLK_VIRT_PUMP_OBJ) $(VMM_VIRTIO_BLK_OBJ) \
-		$(VMM_VIRTIO_CONSOLE_OBJ) $(BUILD_DIR)/images.o \
+		$(VMM_VIRTIO_CONSOLE_OBJ) $(BUILD_DIR)/images.o $(BUILD_DIR)/linux_guest_profile.o \
 		--start-group \
 		$(BUILD_DIR)/libvmm.a $(BUILD_DIR)/libsddf_util_debug.a \
 		--end-group \
@@ -426,9 +480,22 @@ $(BUILD_DIR)/freebsd_images.o: $(PKG_IMG) $(FREEBSD_KERNEL_IMAGE) $(BUILD_DIR)/f
 		-target aarch64-none-elf \
 		$(PKG_IMG) -o $@
 
+$(FREEBSD_GUEST_PROFILE_BIN): FORCE $(AGENTOS_ROOT)/guest-profiles/freebsd.toml \
+					 $(FREEBSD_KERNEL_IMAGE) $(BUILD_DIR)/freebsd-direct.dtb
+	@cargo xtask guest-profile --root $(AGENTOS_ROOT)/guest-profiles \
+		--profile freebsd.toml --placement $(FREEBSD_GUEST_PLACEMENT) \
+		--repo-root $(AGENTOS_ROOT) --verify-artifacts --output $@
+
+$(BUILD_DIR)/freebsd_guest_profile.o: $(PKG_PROFILE) $(FREEBSD_GUEST_PROFILE_BIN)
+	clang -c -x assembler-with-cpp \
+		-DGUEST_PROFILE_PATH=\"$(FREEBSD_GUEST_PROFILE_BIN)\" \
+		-target aarch64-none-elf $(PKG_PROFILE) -o $@
+
 # ─── Compile freebsd_vmm.c ───────────────────────────────────────────────
 $(BUILD_DIR)/freebsd_vmm.o: $(KERNEL_SRC_DIR)/src/freebsd_vmm.c $(VMM_CONFIG_STAMP) \
                            $(AGENTOS_ROOT)/platform/include/platform/guest_memory_layout.h \
+                           $(AGENTOS_ROOT)/platform/include/platform/guest_boot.h \
+                           $(AGENTOS_ROOT)/platform/include/platform/guest_profile.h \
                            $(AGENTOS_ROOT)/platform/include/platform/guest_vmm_runtime.h \
                            $(AGENTOS_ROOT)/platform/include/platform/vmm_virtio_console.h
 	@mkdir -p $(BUILD_DIR)
@@ -438,11 +505,14 @@ $(BUILD_DIR)/freebsd_vmm.o: $(KERNEL_SRC_DIR)/src/freebsd_vmm.c $(VMM_CONFIG_STA
 # ─── Link freebsd_vmm.elf ────────────────────────────────────────────────
 $(BUILD_DIR)/freebsd_vmm.elf: $(BUILD_DIR)/freebsd_vmm.o \
                                $(BUILD_DIR)/freebsd_images.o \
+                               $(BUILD_DIR)/freebsd_guest_profile.o \
                                $(NET_VIRT_PUMP_OBJ) \
                                $(VMM_VIRTIO_NET_OBJ) \
                                $(GPA_TRANSLATE_OBJ) \
                                $(VMM_GUEST_RAM_OBJ) \
                                $(GUEST_VMM_RUNTIME_OBJ) \
+                               $(GUEST_PROFILE_VALIDATE_OBJ) \
+                               $(GUEST_BOOT_OBJ) \
                                $(BLK_VIRT_PUMP_OBJ) \
                                $(VMM_VIRTIO_BLK_OBJ) \
                                $(VMM_VIRTIO_CONSOLE_OBJ) \
@@ -455,6 +525,8 @@ $(BUILD_DIR)/freebsd_vmm.elf: $(BUILD_DIR)/freebsd_vmm.o \
 		$(NET_VIRT_PUMP_OBJ) $(VMM_VIRTIO_NET_OBJ) \
 		$(GPA_TRANSLATE_OBJ) $(VMM_GUEST_RAM_OBJ) \
 		$(GUEST_VMM_RUNTIME_OBJ) \
+		$(GUEST_PROFILE_VALIDATE_OBJ) $(BUILD_DIR)/freebsd_guest_profile.o \
+		$(GUEST_BOOT_OBJ) \
 		$(BLK_VIRT_PUMP_OBJ) $(VMM_VIRTIO_BLK_OBJ) \
 		$(VMM_VIRTIO_CONSOLE_OBJ) \
 		--start-group \
@@ -469,6 +541,8 @@ vmm-clean:
 	rm -f $(BUILD_DIR)/gpa_translate.o
 	rm -f $(BUILD_DIR)/vmm_guest_ram.o
 	rm -f $(BUILD_DIR)/guest_vmm_runtime.o
+	rm -f $(BUILD_DIR)/guest_profile_validate.o $(BUILD_DIR)/*guest_profile.o $(BUILD_DIR)/*guest-profile.bin
+	rm -f $(BUILD_DIR)/guest_boot.o
 	rm -f $(BUILD_DIR)/blk_virt_pump.o $(BUILD_DIR)/vmm_virtio_blk.o
 	rm -f $(BUILD_DIR)/vmm_virtio_console.o
 	rm -f $(BUILD_DIR)/freebsd_vmm.o $(BUILD_DIR)/freebsd_images.o $(BUILD_DIR)/freebsd_vmm.elf

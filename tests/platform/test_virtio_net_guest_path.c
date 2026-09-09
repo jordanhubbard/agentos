@@ -194,7 +194,11 @@ static int test_vmm_fault_path(void)
 static int test_freebsd_vmm_fault_path(void)
 {
     int init_ok = src_contains("kernel/agentos-root-task/src/freebsd_vmm.c",
-                               "aos_vmm_virtio_net_init(1u)");
+                               ".net_init = aos_vmm_virtio_net_init") &&
+                  src_contains("platform/guest-vmm/boot.c",
+                               "ops->net_init(profile->network_client)") &&
+                  src_contains("guest-profiles/freebsd.toml",
+                               "network_client = 1");
     int after = src_contains_in_order(
         "kernel/agentos-root-task/src/freebsd_vmm.c",
         "fault_handle(vcpu_id, msginfo)",
@@ -207,7 +211,7 @@ static int test_freebsd_vmm_fault_path(void)
         "name_eq(pd->name, \"linux_vmm\")",
         "name_eq(pd->name, \"freebsd_vmm\")");
     return tap_ok(init_ok && after && rx_event && shared,
-                  "FreeBSD VMM uses isolated client 1 through shared net_pd");
+                  "profile selects FreeBSD isolated client through shared net_pd");
 }
 
 static int test_suspended_guest_defers_rx(void)
