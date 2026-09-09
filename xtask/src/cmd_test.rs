@@ -58,10 +58,12 @@ const CC_REPLY_SIZE: usize = 16 + CC_WIRE_SHMEM_SIZE;
 const CC_IO_TIMEOUT: Duration = Duration::from_secs(5);
 /*
  * A console drain crosses the host virtconsole, CC-PD, vibe_engine,
- * vm_manager, and a running VMM. Under single-vCPU TCG, a fault-heavy guest
- * can legitimately delay that round trip beyond three host minutes.
+ * vm_manager, and a running VMM. Bound each transport attempt, then reconnect
+ * with the exact request so CC-PD's one-shot retry cache can replay a response
+ * lost while QEMU resets the host virtconsole queue.
  */
-const CC_FRAME_DEADLINE: Duration = Duration::from_secs(600);
+const CC_FRAME_DEADLINE: Duration = Duration::from_secs(180);
+const CC_CALL_ATTEMPTS: usize = 4;
 const CC_INPUT_RETRY_DEADLINE: Duration = Duration::from_secs(120);
 const CC_OK: u32 = 0;
 const CC_ERR_RELAY_FAULT: u32 = 8;
@@ -1119,11 +1121,20 @@ pub struct CcReply {
 }
 
 struct CcClient {
+    socket_path: PathBuf,
     stream: Option<UnixStream>,
 }
 
 impl CcClient {
     fn connect(cc_sock: &Path) -> anyhow::Result<Self> {
+        let stream = Self::open_stream(cc_sock)?;
+        Ok(Self {
+            socket_path: cc_sock.to_path_buf(),
+            stream: Some(stream),
+        })
+    }
+
+    fn open_stream(cc_sock: &Path) -> anyhow::Result<UnixStream> {
         let stream = UnixStream::connect(cc_sock)
             .with_context(|| format!("failed to connect to {}", cc_sock.display()))?;
         stream
@@ -1132,9 +1143,7 @@ impl CcClient {
         stream
             .set_write_timeout(Some(CC_IO_TIMEOUT))
             .context("failed to set CC socket write timeout")?;
-        Ok(Self {
-            stream: Some(stream),
-        })
+        Ok(stream)
     }
 
     fn is_closed(&self) -> bool {
@@ -1159,21 +1168,49 @@ impl CcClient {
             req[16..16 + copy_len].copy_from_slice(&shmem_in[..copy_len]);
         }
 
-        let result: anyhow::Result<CcReply> = (|| {
+        for attempt in 1..=CC_CALL_ATTEMPTS {
+            if self.stream.is_none() {
+                self.stream = Some(Self::open_stream(&self.socket_path).with_context(|| {
+                    format!("failed to reconnect CC transport for attempt {attempt}")
+                })?);
+            }
             let stream = self.stream.as_mut().context("CC connection is closed")?;
-            write_cc_frame(stream, &req)?;
+            if let Err(err) = write_cc_frame(stream, &req) {
+                self.stream.take();
+                return Err(err).context("failed to write CC request");
+            }
 
             let mut raw = [0u8; CC_REPLY_SIZE];
-            read_cc_frame(stream, &mut raw)?;
-            Ok(CcReply {
-                mr: [rd32(&raw, 0), rd32(&raw, 4), rd32(&raw, 8), rd32(&raw, 12)],
-                shmem: raw[16..].to_vec(),
-            })
-        })();
-        if result.is_err() {
+            match read_cc_frame(stream, &mut raw) {
+                Ok(()) => {
+                    return Ok(CcReply {
+                        mr: [rd32(&raw, 0), rd32(&raw, 4), rd32(&raw, 8), rd32(&raw, 12)],
+                        shmem: raw[16..].to_vec(),
+                    });
+                }
+                Err(err) if attempt < CC_CALL_ATTEMPTS => {
+                    self.stream.take();
+                    println!(
+                        "[xtask:test] CC reply lost ({err:#}); reconnecting exact request (attempt {}/{})",
+                        attempt + 1,
+                        CC_CALL_ATTEMPTS
+                    );
+                    std::thread::sleep(Duration::from_millis(250));
+                }
+                Err(err) => {
+                    self.stream.take();
+                    return Err(err).context(format!(
+                        "CC reply unavailable after {CC_CALL_ATTEMPTS} exact attempts"
+                    ));
+                }
+            }
+        }
+
+        /* The loop always returns on success or its final failure. */
+        if self.stream.is_some() {
             self.stream.take();
         }
-        result
+        anyhow::bail!("CC call exhausted without a reply")
     }
 }
 
@@ -2669,8 +2706,47 @@ mod tests {
     }
 
     #[test]
-    fn cc_frame_deadline_covers_fault_heavy_guest_round_trip() {
-        assert!(CC_FRAME_DEADLINE >= Duration::from_secs(600));
+    fn cc_recovery_budget_covers_fault_heavy_guest_round_trip() {
+        assert!(CC_FRAME_DEADLINE * CC_CALL_ATTEMPTS as u32 >= Duration::from_secs(600));
+    }
+
+    #[test]
+    fn cc_client_reconnects_with_exact_request_after_lost_reply() {
+        use std::os::unix::net::UnixListener;
+
+        let socket_path =
+            std::env::temp_dir().join(format!("agentos-cc-retry-{}.sock", std::process::id()));
+        let _ = std::fs::remove_file(&socket_path);
+        let listener = UnixListener::bind(&socket_path).expect("bind retry socket");
+        let server = std::thread::spawn(move || {
+            let (mut first, _) = listener.accept().expect("accept first connection");
+            let mut original = [0u8; CC_REQ_SIZE];
+            first
+                .read_exact(&mut original)
+                .expect("read original request");
+            drop(first);
+
+            let (mut retry, _) = listener.accept().expect("accept retry connection");
+            let mut replayed = [0u8; CC_REQ_SIZE];
+            retry
+                .read_exact(&mut replayed)
+                .expect("read replayed request");
+            assert_eq!(replayed, original);
+
+            let mut reply = [0u8; CC_REPLY_SIZE];
+            wr32(&mut reply, 0, CC_OK);
+            wr32(&mut reply, 4, 0xfeed_beef);
+            retry.write_all(&reply).expect("write replayed response");
+        });
+
+        let mut client = CcClient::connect(&socket_path).expect("connect retry client");
+        let reply = client
+            .call(MSG_CC_LOG_STREAM, 7, TRACE_PD_FREEBSD_VMM, 0, &[])
+            .expect("recover lost response");
+        assert_eq!(reply.mr[0], CC_OK);
+        assert_eq!(reply.mr[1], 0xfeed_beef);
+        server.join().expect("join retry server");
+        std::fs::remove_file(&socket_path).expect("remove retry socket");
     }
 
     #[test]
