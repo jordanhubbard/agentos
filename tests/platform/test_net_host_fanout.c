@@ -63,6 +63,36 @@ int main(void)
                     healthy_ring->rx_tail == 0u,
                     "healthy client receives the same unicast frame");
 
-    printf("1..3\n");
+    uint32_t freebsd = open_client(1u);
+    if (freebsd >= NET_MAX_CLIENTS) {
+        printf("not ok - opened routed FreeBSD client\n");
+        printf("1..4\n");
+        return 1;
+    }
+    volatile netpd_ring_t *freebsd_ring =
+        slot_ring(clients[freebsd].shmem_slot);
+    uint32_t healthy_head = healthy_ring->rx_head;
+    for (uint32_t i = 0u; i < 6u; i++) {
+        frame[i] = iface_mac[i];
+    }
+    frame[12] = 0x08u;
+    frame[13] = 0x00u;
+    frame[14] = 0x45u;
+    frame[30] = 10u;
+    frame[31] = 0u;
+    frame[32] = 2u;
+    frame[33] = 16u;
+
+    failed += check(net_host_deliver(frame, sizeof(frame)) &&
+                    freebsd_ring->rx_head == sizeof(frame) + 2u &&
+                    healthy_ring->rx_head == healthy_head,
+                    "QEMU host-forwarded IPv4 reaches only its assigned client");
+    const uint8_t *freebsd_frame =
+        net_shmem + NETPD_SLOT_OFFSET(clients[freebsd].shmem_slot) +
+        NETPD_SLOT_HDR_SIZE + 2u;
+    failed += check(memcmp(freebsd_frame, clients[freebsd].mac, 6u) == 0,
+                    "QEMU IPv4 demux rewrites the selected virtual MAC");
+
+    printf("1..5\n");
     return failed == 0 ? 0 : 1;
 }

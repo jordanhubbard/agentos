@@ -26,6 +26,16 @@
 #define AGENTOS_NET_HOST_HEADER_SIZE      12u
 #define AGENTOS_NET_HOST_BUFFER_SIZE      2048u
 
+/*
+ * QEMU's user-mode network addresses every host-forwarded Ethernet frame to
+ * the single physical stand-in MAC, even when the IPv4 destination belongs
+ * to a virtual client behind net_pd.  The test-board policy assigns iface N
+ * to 10.0.2.(15 + N); net_pd uses that immutable assignment to select one
+ * client and rewrites only its destination MAC.  A real board can replace
+ * this policy with hardware MAC filters or a native routing service.
+ */
+#define AGENTOS_NET_HOST_IPV4_CLIENT_BASE 0x0A00020Fu
+
 #define AGENTOS_NET_HOST_META_OFF         0x0000u
 #define AGENTOS_NET_HOST_RX_DESC_OFF      0x1000u
 #define AGENTOS_NET_HOST_RX_AVAIL_OFF     0x1800u
