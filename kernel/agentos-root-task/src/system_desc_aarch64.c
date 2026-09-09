@@ -18,7 +18,7 @@
  * DAG level → priority range:
  *
  *   255  fault_handler      — fault delivery must preempt everything
- *   250  linux_vmm          — VM-exit latency is latency-critical
+ *   250  guest_vmm          — VM-exit latency is latency-critical
  *   245  nameserver         — foundation: every PD does cap lookup at boot/runtime
  *   235  log_drain          — nearly every PD logs; must respond before callers time-out
  *   225  serial_pd          — UART hardware driver; log_drain and others may call it
@@ -430,10 +430,10 @@ const system_desc_t system_desc_aarch64 = {
         },
 
 #if defined(AGENTOS_GUEST_DUAL)
-        /* pd[16] — FreeBSD VMM in dual-guest images.
+        /* pd[16] — secondary VMM in dual-profile images.
          *
-         * FreeBSD remains in the standalone-proven 0x40000000 layout. Linux
-         * uses a separate high guest RAM window in dual images.
+         * Both profiles retain the conventional 0x40000000 guest GPA while
+         * their VMMs use non-overlapping host virtual windows.
          */
         {
             .name           = "guest_vmm_secondary",

@@ -214,7 +214,6 @@ typedef struct {
 #define SVC_ID_FB_PD          15u   /* framebuffer PD                        */
 #define SVC_ID_GUEST_VMM_PRIMARY      16u   /* primary profile-backed VMM PD          */
 #define SVC_ID_GUEST_VMM_SECONDARY    17u
-#define SVC_ID_LINUX_VMM              SVC_ID_GUEST_VMM_PRIMARY
 #define SVC_ID_AGENTFS        18u   /* agentfs content-addressed object store */
 #define SVC_ID_VIRTIO_BLK     19u   /* virtio block device driver PD          */
 #define SVC_ID_VM_MANAGER     20u   /* multi-VM lifecycle manager PD          */
@@ -251,7 +250,6 @@ typedef struct {
 #define PD_CNODE_SLOT_VM_MANAGER_EP   10u
 #define PD_CNODE_SLOT_GUEST_VMM_PRIMARY_EP    11u
 #define PD_CNODE_SLOT_GUEST_VMM_SECONDARY_EP  12u
-#define PD_CNODE_SLOT_LINUX_VMM_EP            PD_CNODE_SLOT_GUEST_VMM_PRIMARY_EP
 /* agentos-7j5: cc_pd → controller (monitor) endpoint for MSG_AGENTPOOL_STATUS. */
 #define PD_CNODE_SLOT_CONTROLLER_EP   13u
 #define PD_CNODE_SLOT_NET_PD_EP       14u

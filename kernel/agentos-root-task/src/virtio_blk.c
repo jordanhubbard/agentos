@@ -134,9 +134,8 @@ static uint64_t queue_paddr(const blk_device_t *device)
  * regions directly.  The header sits at shmem+0, the data at shmem+16, and
  * the status byte at shmem+16+data_len.
  *
- * The common layout assigns a large staging window to Ubuntu media loading
- * while retaining FreeBSD's proven 32 KB window. Per-medium limits keep data
- * and status inside the selected window.
+ * The common layout assigns each configured medium its own staging window.
+ * Per-medium limits keep data and status inside the selected window.
  * ──────────────────────────────────────────────────────────────────────────── */
 
 #define DMA_HDR_OFFSET          0u
