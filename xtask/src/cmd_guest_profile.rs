@@ -116,12 +116,19 @@ struct Placement {
 #[serde(deny_unknown_fields)]
 struct Host {
     qemu: Option<Qemu>,
+    console: Option<HostConsole>,
     #[serde(default)]
     acquire: Vec<RecipeStep>,
     #[serde(default)]
     provision: Vec<RecipeStep>,
     #[serde(default)]
     test: Vec<RecipeStep>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct HostConsole {
+    adapter: String,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -171,6 +178,7 @@ pub(crate) struct HostProfilePlan {
     pub(crate) devices: Vec<String>,
     pub(crate) media_initrd_path: Option<String>,
     pub(crate) qemu: Option<QemuPlan>,
+    pub(crate) console_adapter: String,
     pub(crate) provision: Vec<RecipeStep>,
     pub(crate) test: Vec<RecipeStep>,
 }
@@ -320,6 +328,10 @@ pub(crate) fn host_profile_plan(root: &Path, path: &Path) -> Result<HostProfileP
             .as_ref()
             .and_then(|boot| boot.media_initrd_path.clone()),
         qemu,
+        console_adapter: host
+            .and_then(|value| value.console.as_ref())
+            .map(|console| console.adapter.clone())
+            .unwrap_or_else(|| String::from("login")),
         provision: host
             .map(|value| value.provision.clone())
             .unwrap_or_default(),
@@ -576,8 +588,10 @@ fn validate(profile: &Profile, placement: Option<&str>) -> Result<()> {
         "target.vcpus must be 1..8"
     );
     ensure!(
-        target.control_type.is_some_and(|value| value != 0),
-        "target.control_type must be nonzero"
+        target
+            .control_type
+            .is_some_and(|value| (1..=u8::MAX as u32).contains(&value)),
+        "target.control_type must fit the nonzero control-plane wire field"
     );
     target.guest_id.context("target.guest_id is required")?;
     let devices = target
@@ -775,6 +789,12 @@ fn validate_host(host: Option<&Host>) -> Result<()> {
     if let Some(qemu) = &host.qemu {
         validate_qemu(qemu)?;
     }
+    if let Some(console) = &host.console {
+        enum_value(
+            &console.adapter,
+            &["login", "probe-initramfs", "casper-live", "installer-shell"],
+        )?;
+    }
     for (recipe_name, recipe) in [
         ("acquire", &host.acquire),
         ("provision", &host.provision),
@@ -903,7 +923,7 @@ fn validate_host_action(step: &RecipeStep) -> Result<()> {
         "build-initramfs" => (&["recipe", "artifact"], &[]),
         "wait-console" | "assert-console" => (&["marker"], &[]),
         "send-console" => (&["text"], &[]),
-        "wait-ssh" => (&["account"], &[]),
+        "wait-ssh" => (&["account"], &["marker"]),
         "run-ssh" => (&["recipe"], &[]),
         "assert-virtio" => (&["devices"], &["scope", "console_io"]),
         _ => return Ok(()),
@@ -1178,6 +1198,7 @@ mod tests {
             status: Some(Status::Abstract),
             host: Some(Host {
                 qemu: None,
+                console: None,
                 acquire: steps,
                 provision: Vec::new(),
                 test: Vec::new(),

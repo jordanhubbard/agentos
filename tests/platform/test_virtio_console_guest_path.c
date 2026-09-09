@@ -229,9 +229,10 @@ int main(void)
        "virtio-console payloads use bounds-checked GPA translation");
     ok(contains(console, "serial_dequeue(console->rxq, &c) == 0"),
        "empty pre-driver RX queue terminates instead of spinning");
-    ok(contains("xtask/src/cmd_test.rs", "if guest_os != \"ubuntu\"") &&
+    ok(contains("guest-profiles/ubuntu-e2e.toml", "bus = 8") &&
+       contains("xtask/src/cmd_test.rs", "for media in &plan.media") &&
        contains("xtask/src/cmd_test.rs",
-                "virtio-blk-device,drive=agentos_hd,bus=virtio-mmio-bus.8") &&
+                "virtio-blk-device,drive={},bus=virtio-mmio-bus.{}") &&
        contains("platform/include/platform/blk_host_layout.h",
                 "AGENTOS_HOST_BLK_MMIO_PA         0x0A001000UL"),
        "single Ubuntu host block device is owned by agentOS on isolated bus.8");

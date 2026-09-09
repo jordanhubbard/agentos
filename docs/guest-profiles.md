@@ -49,8 +49,19 @@ before the guest-neutral boot executor copies anything into guest RAM.
 
 Legacy `--guest-os` and `GUEST_OS` spellings remain compatibility selectors.
 For a single guest, the value is resolved through the profile's `aliases`
-array. The dual release scenario still coordinates two configured profile slots
-as one lifecycle test; it does not select different VMM implementations.
+array. Multi-guest tests resolve a separate bounded document under
+`guest-scenarios/`. A scenario names ordered profiles and supplies the board,
+QEMU machine and memory, per-profile RAM, host SSH forwarding, and guest
+addresses. It coordinates configured profile slots as one lifecycle test; it
+does not select different VMM implementations.
+
+Console automation is selected by the profile's `host.console.adapter` value,
+not by profile or distribution name. The executor currently exposes four
+closed adapters: a normal login prompt, the probe initramfs, a casper live
+session, and an installer shell. Provisioning commands are `send-console`
+recipe steps in the profile and permit only the bounded
+`{{ssh_public_key}}` substitution. Unknown adapters, recipe actions,
+arguments, and template variables fail closed.
 
 Manifest version 2 can set `boot.media_initrd_path`. The shared block backend
 then walks that normalized relative path through ISO9660 and stages the file at
@@ -80,6 +91,10 @@ cargo xtask guest-profile --profile buildroot.toml \
 cargo xtask fetch-guest --profile ubuntu-e2e.toml \
   --output-dir build/guest-images
 ```
+
+The release dual-guest alias is data in
+`guest-scenarios/dual-release.toml`; `--guest-os both` is retained as its
+compatibility spelling.
 
 Adding a profile does not add a VMM personality. Buildroot and Ubuntu extend
 the AArch64 Linux Image profile; Debian is the planned stable integration

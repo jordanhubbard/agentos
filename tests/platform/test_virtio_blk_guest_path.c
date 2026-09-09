@@ -224,12 +224,14 @@ int main(void)
                  src_contains("xtask/src/cmd_test.rs",
                               "for media in &plan.media"),
                  "profile QEMU plan attaches primary media only as agentOS host hardware");
-    (void)tap_ok(src_contains("Makefile",
-                              "$(_UBUNTU_HOST_BLK) $(_FREEBSD_HOST_BLK)") &&
+    (void)tap_ok(src_contains("guest-scenarios/dual-release.toml",
+                              "profile = \"ubuntu-live.toml\"") &&
+                 src_contains("guest-profiles/ubuntu-e2e.toml",
+                              "bus = 8") &&
                  src_contains("xtask/src/cmd_test.rs",
-                              "if guest_os == \"both\"") &&
-                 !src_contains("xtask/src/cmd_test.rs",
-                               "else if guest_os == \"both\" && ubuntu_img.exists()"),
+                              "for guest in &scenario.guests") &&
+                 src_contains("xtask/src/cmd_test.rs",
+                              "attach_profile_media(&mut c, repo_root, &guest.profile)"),
                  "dual-image Ubuntu also uses agentOS bus.8, never guest bus.1");
     (void)tap_ok(src_contains("kernel/agentos-root-task/Makefile",
                               "UBUNTU_BOOT_MODE=%s") &&
@@ -333,17 +335,17 @@ int main(void)
                  src_contains("xtask/src/cmd_test.rs",
                               "wait_for_dual_guest_consoles_via_cc") &&
                  src_contains_in_order("xtask/src/cmd_test.rs",
-                                       "let linux_boot_suspend =",
-                                       "let freebsd = wait_for_guest_console_login_on_cc(") &&
+                                       "let deferred_boot_suspend =",
+                                       "let lead_console = wait_for_guest_console_login_on_cc(") &&
                  src_contains_in_order("xtask/src/cmd_test.rs",
-                                       "let freebsd_ssh = freebsd_ssh_provision_commands(",
-                                       "let freebsd_boot_suspend =") &&
+                                       "let lead_provision = profile_provision_commands(",
+                                       "let lead_probe_suspend =") &&
                  src_contains_in_order("xtask/src/cmd_test.rs",
-                                       "let freebsd_boot_suspend =",
-                                       "let linux_boot_resume =") &&
+                                       "let lead_boot_suspend =",
+                                       "let deferred_boot_resume =") &&
                  src_contains_in_order("xtask/src/cmd_test.rs",
-                                       "let ubuntu = ubuntu_ssh_provision_commands(",
-                                       "let freebsd_provision_resume ="),
+                                       "let deferred_provision = profile_provision_commands(",
+                                       "let ssh = wait_for_scenario_ssh("),
                  "dual proof provisions FreeBSD before its checkpoint and resumes both for concurrent service");
     (void)tap_ok(!src_contains("kernel/agentos-root-task/src/guest_vmm.c",
                                "if (label == seL4_Fault_VPPIEvent) {") &&

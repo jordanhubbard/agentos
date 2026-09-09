@@ -29,6 +29,9 @@ dtb_sha256 = "eb6f1cd470687badf9988baa0210a56319f6ccce0f740078cf7a63740f457d8e"
 [host.qemu]
 memory = "3G"
 
+[host.console]
+adapter = "casper-live"
+
 [[host.test]]
 action = "wait-console"
 args = { marker = "login:" }
@@ -36,3 +39,7 @@ args = { marker = "login:" }
 [[host.test]]
 action = "assert-virtio"
 args = { devices = "net,block,console", scope = "host-backed", console_io = "bidirectional" }
+
+[[host.test]]
+action = "wait-ssh"
+args = { account = "ubuntu", marker = "Linux" }

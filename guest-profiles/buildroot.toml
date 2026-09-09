@@ -33,3 +33,6 @@ args = { url = "https://trustworthy.systems/Downloads/libvmm/images/6dcd1debf64e
 [[host.test]]
 action = "assert-virtio"
 args = { devices = "net,block,console", scope = "emulated" }
+
+[host.console]
+adapter = "login"

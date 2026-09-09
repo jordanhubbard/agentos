@@ -34,6 +34,9 @@ bus = 8
 account = "ubuntu"
 host_port = 12222
 
+[host.console]
+adapter = "probe-initramfs"
+
 [[host.acquire]]
 action = "stage-url"
 args = { cache_name = "ubuntu-26.04-desktop-arm64.iso", output = "ubuntu-26.04-aarch64.iso", url = "https://cdimage.ubuntu.com/releases/26.04/release/ubuntu-26.04-desktop-arm64.iso" }
@@ -49,6 +52,38 @@ args = { output = "ubuntu-26.04-aarch64-initrd" }
 [[host.acquire]]
 action = "extract-arm64-linux-image"
 args = { source = "ubuntu-26.04-aarch64.iso", member = "casper/vmlinuz", output = "ubuntu-26.04-aarch64-Image" }
+
+[[host.provision]]
+action = "send-console"
+args = { text = "sudo -n ip link set eth0 up && sudo -n ip addr flush dev eth0 scope global && sudo -n ip addr add 10.0.2.15/24 dev eth0 && sudo -n ip route replace default via 10.0.2.2" }
+
+[[host.provision]]
+action = "send-console"
+args = { text = "sudo -n rm -f /etc/resolv.conf && printf 'nameserver 10.0.2.3\\n' | sudo -n tee /etc/resolv.conf >/dev/null" }
+
+[[host.provision]]
+action = "send-console"
+args = { text = "if command -v /usr/sbin/sshd >/dev/null 2>&1; then true; else ok=1; for deb in /cdrom/pool/main/o/openssh/openssh-sftp-server_*.deb /cdrom/pool/main/o/openssh/openssh-server_*.deb; do test -f \"$deb\" && sudo -n dpkg-deb -x \"$deb\" / || ok=0; done; test \"$ok\" -eq 1 && command -v /usr/sbin/sshd >/dev/null; fi" }
+
+[[host.provision]]
+action = "send-console"
+args = { text = "getent passwd sshd >/dev/null || sudo -n useradd --system --home /run/sshd --shell /usr/sbin/nologin sshd" }
+
+[[host.provision]]
+action = "send-console"
+args = { text = "sudo -n mkdir -p /home/ubuntu/.ssh /run/sshd && printf '%s\\n' '{{ssh_public_key}}' | sudo -n tee /home/ubuntu/.ssh/authorized_keys >/dev/null && sudo -n chown -R ubuntu:ubuntu /home/ubuntu/.ssh && sudo -n chmod 700 /home/ubuntu/.ssh && sudo -n chmod 600 /home/ubuntu/.ssh/authorized_keys" }
+
+[[host.provision]]
+action = "send-console"
+args = { text = "sudo -n rm -f /run/agentos-ssh-host-key /run/agentos-ssh-host-key.pub /run/agentos-sshd.pid && sudo -n ssh-keygen -q -t ed25519 -N '' -f /run/agentos-ssh-host-key" }
+
+[[host.provision]]
+action = "send-console"
+args = { text = "sudo -n /usr/sbin/sshd -t -f /dev/null -o HostKey=/run/agentos-ssh-host-key -o AuthorizedKeysFile=/home/ubuntu/.ssh/authorized_keys -o UsePAM=no -o PidFile=/run/agentos-sshd.pid" }
+
+[[host.provision]]
+action = "send-console"
+args = { text = "sudo -n /usr/sbin/sshd -f /dev/null -o HostKey=/run/agentos-ssh-host-key -o AuthorizedKeysFile=/home/ubuntu/.ssh/authorized_keys -o UsePAM=no -o UseDNS=no -o GSSAPIAuthentication=no -o MaxStartups=100:100:100 -o PidFile=/run/agentos-sshd.pid -o PasswordAuthentication=no -o KbdInteractiveAuthentication=no -o PubkeyAuthentication=yes -o PermitRootLogin=no" }
 
 [[host.test]]
 action = "wait-console"
