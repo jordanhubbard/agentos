@@ -58,13 +58,12 @@ const CC_REPLY_SIZE: usize = 16 + CC_WIRE_SHMEM_SIZE;
 const CC_IO_TIMEOUT: Duration = Duration::from_secs(5);
 /*
  * A console drain crosses the host virtconsole, CC-PD, vibe_engine,
- * vm_manager, and a running VMM. Under single-vCPU TCG, a fault-heavy guest
- * can legitimately delay that round trip beyond three host minutes. Keep the
- * same QEMU server-side chardev connection for the whole frame: opening a new
- * Unix connection only queues it in the listen backlog and does not switch
- * QEMU away from the current frontend.
+ * vm_manager, and a running VMM. Those target components now have a strictly
+ * ascending priority chain, so a full minute without frame progress means the
+ * QEMU chardev lost the request or reply. Reconnect and replay the identical
+ * request; CC-PD's retry cache makes completed state changes exactly-once.
  */
-const CC_FRAME_DEADLINE: Duration = Duration::from_secs(600);
+const CC_FRAME_DEADLINE: Duration = Duration::from_secs(60);
 const CC_INPUT_RETRY_DEADLINE: Duration = Duration::from_secs(120);
 const CC_OK: u32 = 0;
 const CC_ERR_RELAY_FAULT: u32 = 8;
@@ -2737,8 +2736,8 @@ mod tests {
     }
 
     #[test]
-    fn cc_frame_deadline_covers_fault_heavy_guest_round_trip() {
-        assert!(CC_FRAME_DEADLINE >= Duration::from_secs(600));
+    fn cc_frame_deadline_bounds_lost_chardev_recovery() {
+        assert_eq!(CC_FRAME_DEADLINE, Duration::from_secs(60));
     }
 
     #[test]
