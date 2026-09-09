@@ -93,6 +93,24 @@ int main(void)
     failed += check(memcmp(freebsd_frame, clients[freebsd].mac, 6u) == 0,
                     "QEMU IPv4 demux rewrites the selected virtual MAC");
 
-    printf("1..5\n");
+    uint8_t arp[42] = {0};
+    for (uint32_t i = 0u; i < 6u; i++) {
+        arp[6u + i] = clients[freebsd].mac[i];
+        arp[22u + i] = clients[freebsd].mac[i];
+    }
+    arp[12] = 0x08u;
+    arp[13] = 0x06u;
+    arp[14] = 0x00u;
+    arp[15] = 0x01u;
+    arp[16] = 0x08u;
+    arp[17] = 0x00u;
+    arp[18] = 6u;
+    arp[19] = 4u;
+    net_host_translate_tx(arp, sizeof(arp));
+    failed += check(memcmp(arp + 6u, iface_mac, 6u) == 0 &&
+                    memcmp(arp + 22u, iface_mac, 6u) == 0,
+                    "QEMU egress rewrites Ethernet and ARP source identities");
+
+    printf("1..6\n");
     return failed == 0 ? 0 : 1;
 }

@@ -747,6 +747,24 @@ static bool net_host_client_rx_pending(void)
     return false;
 }
 
+static void net_host_translate_tx(volatile uint8_t *frame, uint32_t len)
+{
+    if (frame == NULL || len < 14u) {
+        return;
+    }
+    for (uint32_t i = 0u; i < 6u; i++) {
+        frame[6u + i] = iface_mac[i];
+    }
+    if (len >= 42u && frame[12] == 0x08u && frame[13] == 0x06u &&
+        frame[14] == 0x00u && frame[15] == 0x01u &&
+        frame[16] == 0x08u && frame[17] == 0x00u &&
+        frame[18] == 6u && frame[19] == 4u) {
+        for (uint32_t i = 0u; i < 6u; i++) {
+            frame[22u + i] = iface_mac[i];
+        }
+    }
+}
+
 static bool net_host_send(const uint8_t *frame, uint32_t len)
 {
     volatile net_host_desc_t *desc =
@@ -768,6 +786,7 @@ static bool net_host_send(const uint8_t *frame, uint32_t len)
     for (uint32_t i = 0u; i < len; i++) {
         buf[AGENTOS_NET_HOST_HEADER_SIZE + i] = frame[i];
     }
+    net_host_translate_tx(buf + AGENTOS_NET_HOST_HEADER_SIZE, len);
     desc[id].addr = net_host_dma_paddr + AGENTOS_NET_HOST_TX_DATA_OFF +
                     (uint32_t)id * AGENTOS_NET_HOST_BUFFER_SIZE;
     desc[id].len = AGENTOS_NET_HOST_HEADER_SIZE + len;
