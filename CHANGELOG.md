@@ -5,6 +5,29 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-09-09
+
+### Added
+
+- Versioned TOML guest-personality profiles with bounded validation and a Rust
+  compiler that emits compact target runtime manifests.
+- Data-driven host recipes for artifact acquisition, provisioning, console
+  matching, and guest tests, including planned Debian, Arch, and Omarchy
+  profiles alongside the qualified Buildroot and Ubuntu paths.
+
+### Changed
+
+- Select guest boot, memory placement, devices, lifecycle, and tests from
+  capabilities in compiled manifests instead of distribution-specific target
+  branches.
+- Share one guest-neutral VMM implementation across Linux and FreeBSD
+  personalities while retaining generic boot-protocol executors.
+
+### Known limitations
+
+- Debian, Arch, Omarchy, and the Ubuntu live-media login path are roadmap
+  profiles and are not qualified by the v0.2.1 OS release claim.
+
 ## [0.2.0] - 2026-09-09
 
 ### Security
