@@ -1,6 +1,6 @@
 use crate::cmd_guest_profile::{self, DesktopPlan, HostProfilePlan};
 use crate::guest_scenario::{self, HostScenarioPlan, ScenarioGuestPlan};
-use crate::{rfb, TestArgs};
+use crate::{rfb, QemuLaunchArgs, TestArgs};
 use anyhow::Context;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::net::{SocketAddr, TcpStream};
@@ -336,6 +336,8 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
         ssh_port,
         large_guest,
         (args.guest_os == "both" || args.assert_desktop) && !args.keep_running,
+        false,
+        false,
     )?);
     if needs_host_net_stimulus {
         wait_for_all_markers(
@@ -528,6 +530,96 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
             anyhow::bail!("test failed for board {}: {:#}", args.board, e);
         }
     }
+}
+
+pub fn launch(args: &QemuLaunchArgs) -> anyhow::Result<()> {
+    let repo_root = repo_root()?;
+    let profile_root = repo_root.join("guest-profiles");
+    let profile_plan = args
+        .profile
+        .as_ref()
+        .map(|path| cmd_guest_profile::host_profile_plan(&profile_root, path))
+        .transpose()?;
+    let scenario_plan = args
+        .scenario
+        .as_ref()
+        .map(|alias| {
+            guest_scenario::resolve_alias(&repo_root.join("guest-scenarios"), &profile_root, alias)
+        })
+        .transpose()?;
+
+    let selection = if let Some(profile) = &profile_plan {
+        format!("profile {}", profile.id)
+    } else if let Some(scenario) = &scenario_plan {
+        format!("scenario {}", scenario.id)
+    } else {
+        String::from("no guest profile")
+    };
+    println!(
+        "[xtask:launch] Building BOARD={} from {}...",
+        args.board, selection
+    );
+    let mut make_args = vec![
+        String::from("build"),
+        format!("BOARD={}", args.board),
+        String::from("GUEST_OS=none"),
+    ];
+    if let Some(profile) = &profile_plan {
+        make_args.push(format!("GUEST_PROFILE={}", profile.path.display()));
+    } else if let Some(alias) = &args.scenario {
+        make_args.push(format!("GUEST_SCENARIO={alias}"));
+    }
+    let make_arg_refs = make_args.iter().map(String::as_str).collect::<Vec<_>>();
+    run_make(&make_arg_refs, &repo_root).context("profile-driven build step failed")?;
+
+    let tmp_dir = repo_root.join("build/tmp");
+    std::fs::create_dir_all(&tmp_dir)
+        .with_context(|| format!("failed to create {}", tmp_dir.display()))?;
+    let log_path = tmp_dir.join("agentos-run.log");
+    let cc_sock = repo_root.join("build/cc_pd.sock");
+    let ssh_port = profile_plan
+        .as_ref()
+        .and_then(|profile| profile.qemu.as_ref())
+        .and_then(|qemu| qemu.ssh.as_ref())
+        .map(|ssh| ssh.host_port)
+        .unwrap_or(0);
+    let large_guest = profile_plan
+        .as_ref()
+        .is_some_and(|profile| profile.media_initrd_path.is_some())
+        || scenario_plan.is_some();
+
+    println!("\nagentOS interactive QEMU launch");
+    println!("  board:     {}", args.board);
+    println!("  selection: {selection}");
+    println!("  CC-PD:     {}", cc_sock.display());
+    println!(
+        "  accel:     {}",
+        if host_kvm_available(&args.board) {
+            "KVM"
+        } else if args.fast {
+            "multi-threaded TCG"
+        } else {
+            "TCG"
+        }
+    );
+    println!("  exit:      Ctrl-A X\n");
+
+    let mut qemu = spawn_qemu_with_guest(
+        &args.board,
+        &repo_root,
+        &log_path,
+        &cc_sock,
+        profile_plan.as_ref(),
+        scenario_plan.as_ref(),
+        ssh_port,
+        large_guest,
+        false,
+        true,
+        args.fast,
+    )?;
+    let status = qemu.wait().context("failed to wait for QEMU")?;
+    anyhow::ensure!(status.success(), "QEMU exited with {status}");
+    Ok(())
 }
 
 fn wait_for_manual_dual_ssh(
@@ -789,6 +881,8 @@ pub(crate) fn spawn_qemu_with_guest(
     ssh_port: u16,
     large_guest: bool,
     capture_net: bool,
+    interactive_serial: bool,
+    fast: bool,
 ) -> anyhow::Result<std::process::Child> {
     let log_file = std::fs::File::create(log_path).context("failed to create QEMU log file")?;
     let netdev = qemu_netdev_arg(ssh_port, profile, scenario)?;
@@ -834,11 +928,24 @@ pub(crate) fn spawn_qemu_with_guest(
             } else {
                 "1"
             };
+            let use_kvm = interactive_serial && host_kvm_available(board);
+            let cpu = if use_kvm {
+                "host"
+            } else if fast {
+                "max"
+            } else {
+                "cortex-a57"
+            };
+            let serial = if interactive_serial {
+                String::from("stdio")
+            } else {
+                format!("file:{}", log_path.display())
+            };
             let mut c = std::process::Command::new("qemu-system-aarch64");
             c.arg("-machine")
                 .arg(machine)
                 .arg("-cpu")
-                .arg("cortex-a57")
+                .arg(cpu)
                 .arg("-m")
                 .arg(memory)
                 .arg("-smp")
@@ -848,7 +955,7 @@ pub(crate) fn spawn_qemu_with_guest(
                 .arg("-monitor")
                 .arg("none")
                 .arg("-serial")
-                .arg(format!("file:{}", log_path.display()))
+                .arg(serial)
                 .arg("-global")
                 .arg("virtio-mmio.force-legacy=off")
                 .arg("-chardev")
@@ -867,6 +974,11 @@ pub(crate) fn spawn_qemu_with_guest(
                     "loader,file={},addr=0x48000000",
                     build_image.display()
                 ));
+            if use_kvm {
+                c.arg("-enable-kvm");
+            } else if fast {
+                c.args(["-accel", "tcg,thread=multi"]);
+            }
             /*
              * Page-isolated host transport owned by net_pd. Every guest sees
              * only its separately emulated device at IPA 0x0a010000.
@@ -971,7 +1083,14 @@ pub(crate) fn spawn_qemu_with_guest(
         ));
     }
 
-    let child = if board == "qemu_virt_aarch64" {
+    let child = if interactive_serial {
+        cmd.stdin(Stdio::inherit())
+            .stdout(Stdio::inherit())
+            .stderr(Stdio::inherit())
+            .process_group(0)
+            .spawn()
+            .context("failed to spawn interactive QEMU")?
+    } else if board == "qemu_virt_aarch64" {
         let stderr_path = log_path.with_extension("qemu.stderr");
         let stderr_file = std::fs::File::create(&stderr_path)
             .with_context(|| format!("failed to create {}", stderr_path.display()))?;
@@ -990,6 +1109,12 @@ pub(crate) fn spawn_qemu_with_guest(
     };
     println!("[xtask:test] QEMU pid={}", child.id());
     Ok(child)
+}
+
+fn host_kvm_available(board: &str) -> bool {
+    cfg!(all(target_os = "linux", target_arch = "aarch64"))
+        && board == "qemu_virt_aarch64"
+        && Path::new("/dev/kvm").exists()
 }
 
 fn qemu_netdev_arg(

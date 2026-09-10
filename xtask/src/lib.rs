@@ -71,6 +71,21 @@ pub struct TestArgs {
 }
 
 #[derive(clap::Args)]
+pub struct QemuLaunchArgs {
+    #[arg(long, default_value = "qemu_virt_aarch64")]
+    pub board: String,
+    /// Guest-profile-root-relative TOML to launch.
+    #[arg(long, conflicts_with = "scenario")]
+    pub profile: Option<std::path::PathBuf>,
+    /// Data-defined guest scenario alias to launch.
+    #[arg(long, conflicts_with = "profile")]
+    pub scenario: Option<String>,
+    /// Use the faster multi-threaded TCG development configuration.
+    #[arg(long)]
+    pub fast: bool,
+}
+
+#[derive(clap::Args)]
 pub struct FaultInjectArgs {
     #[arg(long, default_value = "qemu_virt_aarch64")]
     pub board: String,

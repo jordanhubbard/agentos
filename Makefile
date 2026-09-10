@@ -562,7 +562,6 @@ endif
 		AGENTOS_ARCH=$(ARCH) \
 		SEL4_SDK=$(SEL4_SDK) \
 		SEL4_PROFILE=$(SEL4_PROFILE) \
-		AGENTOS_FREEBSD_IMAGE=$(if $(AGENTOS_FREEBSD_IMAGE),$(AGENTOS_FREEBSD_IMAGE),$(FREEBSD_IMAGE)) \
 		GUEST_OS=$(GUEST_OS) \
 		GUEST_PRIMARY_PROFILE=$(GUEST_PRIMARY_PROFILE) \
 		GUEST_SECONDARY_PROFILE=$(GUEST_SECONDARY_PROFILE) \
@@ -577,63 +576,19 @@ endif
 	@echo "✓ Build complete: $(IMAGE)"
 	@echo ""
 
-# QEMU flags for interactive run: serial → stdio, SSH port forwarding per guest.
-#
-# QEMU_FAST=1 enables TCG-mode dev-iteration tweaks on Apple Silicon, where
-# HVF is not usable with seL4 and we are stuck on software emulation:
-#   -cpu max               richer feature set than cortex-a53; some hot paths
-#                          dispatch to faster TCG helpers
-#   -accel tcg,thread=multi  spread translation across host cores
-# These flags only kick in when no hardware accelerator is available
-# (QEMU_ACCEL_NATIVE empty), so passing QEMU_FAST=1 on a Linux/KVM host or
-# x86_64/HVF host is harmless.
-ifeq ($(QEMU_FAST),1)
-  ifeq ($(QEMU_ACCEL_NATIVE),)
-    _RUN_CPU := max
-    _QEMU_FAST_FLAGS := -accel tcg,thread=multi
-  else
-    _RUN_CPU := $(if $(filter aarch64,$(NATIVE_ARCH)),cortex-a53,qemu64)
-    _QEMU_FAST_FLAGS :=
-  endif
-else
-  _RUN_CPU := $(if $(filter aarch64,$(NATIVE_ARCH)),cortex-a53,qemu64)
-  _QEMU_FAST_FLAGS :=
-endif
-FREEBSD_IMAGE ?= $(if $(AGENTOS_FREEBSD_IMAGE),$(AGENTOS_FREEBSD_IMAGE),$(AGENTOS_IMAGES)/freebsd-15.0-aarch64.iso)
-_UBUNTU_HOST_BLK = -drive file=$(AGENTOS_IMAGES)/ubuntu-26.04-aarch64.iso,format=raw,if=none,id=agentos_hd,readonly=on,file.locking=off \
-                   -device virtio-blk-device,drive=agentos_hd,bus=virtio-mmio-bus.8
-_FREEBSD_HOST_BLK = -drive file=$(FREEBSD_IMAGE),format=raw,if=none,id=freebsd_hd,readonly=on,file.locking=off \
-                    -device virtio-blk-device,drive=freebsd_hd,bus=virtio-mmio-bus.31
-_AGENTOS_HOST_NET = -netdev user,id=agentos_net0,hostfwd=tcp:127.0.0.1:8789-:8789,hostfwd=tcp:127.0.0.1:2222-10.0.2.15:22 \
-                    -device virtio-net-device,netdev=agentos_net0,bus=virtio-mmio-bus.16,mac=02:00:00:00:00:01,ctrl_vq=off,mq=off
-# Buses 8, 16, and 31 are host hardware owned only by canonical agentOS
-# driver PDs. No host transport is mapped or advertised to a guest.
-_QEMU_BLK_FLAGS = $(if $(filter both,$(GUEST_OS)),$(_UBUNTU_HOST_BLK) $(_FREEBSD_HOST_BLK),$(if $(filter ubuntu,$(GUEST_OS)),$(_UBUNTU_HOST_BLK),$(if $(filter freebsd,$(GUEST_OS)),$(_FREEBSD_HOST_BLK),)))
-_QEMU_NET_FLAGS = $(_AGENTOS_HOST_NET)
-QEMU_RUN_MEM ?= $(if $(filter both,$(GUEST_OS)),3G,2G)
-QEMU_RUN_SMP ?= $(if $(filter smp-% smp,$(SEL4_PROFILE)),4,1)
-comma := ,
-QEMU_MACHINE_FLAGS_BASE := virt$(comma)virtualization=on$(comma)highmem=off$(comma)secure=off
-QEMU_MACHINE_FLAGS := $(QEMU_MACHINE_FLAGS_BASE)$(if $(filter freebsd both,$(GUEST_OS)),$(comma)acpi=off)
-QEMU_RUN_FLAGS = -machine $(QEMU_MACHINE_FLAGS) \
-                 -cpu $(_RUN_CPU) -m $(QEMU_RUN_MEM) \
-                 -smp $(QEMU_RUN_SMP) \
-                 $(_QEMU_FAST_FLAGS) \
-                 -display none -monitor none \
-                 -global virtio-mmio.force-legacy=off \
-                 -serial stdio \
-                 -chardev socket,id=cc_pd_char,path=$(ROOT_DIR)build/cc_pd.sock,server=on,wait=off \
-                 -device virtio-serial-device,bus=virtio-mmio-bus.2,id=vser0 \
-                 -device virtconsole,bus=vser0.0,chardev=cc_pd_char,name=cc.0 \
-                 $(_QEMU_NET_FLAGS) \
-                 $(_QEMU_BLK_FLAGS) \
-                 -device loader,file=$(NATIVE_LOADER_ELF),cpu-num=0 \
-                 -device loader,file=$(NATIVE_IMAGE),addr=0x48000000
+# Interactive runs use the same bounded profile/scenario interpreter as QA.
+# A two-slot composition requires a scenario so machine, memory, media, and
+# host-port policy remain declarative.
+_RUN_PROFILE := $(strip $(if $(_SELECTED_GUEST_PROFILE),$(_SELECTED_GUEST_PROFILE),$(if $(GUEST_PRIMARY_PROFILE),$(GUEST_PRIMARY_PROFILE),$(GUEST_SECONDARY_PROFILE))))
+_RUN_SELECTION_ARGS = $(if $(_SELECTED_GUEST_SCENARIO),--scenario $(_SELECTED_GUEST_SCENARIO),$(if $(_RUN_PROFILE),--profile $(_RUN_PROFILE),))
 
 # run (default): build native → QEMU with serial on stdout and a Unix guest
 # =============================================================================
 run:
-	@$(MAKE) build BOARD=$(NATIVE_BOARD) TARGET_ARCH=$(NATIVE_ARCH)
+	@if [ -z "$(_SELECTED_GUEST_SCENARIO)" ] && [ -n "$(GUEST_PRIMARY_PROFILE)" ] && [ -n "$(GUEST_SECONDARY_PROFILE)" ]; then \
+		echo "ERROR: interactive two-slot launch requires GUEST_SCENARIO=<alias>"; \
+		exit 2; \
+	fi
 	@echo ""
 	@echo "╔══════════════════════════════════════════╗"
 	@echo "║  agentOS — QEMU ($(NATIVE_ARCH))         ║"
@@ -641,19 +596,13 @@ run:
 	@echo ""
 	@echo "Arch   : $(NATIVE_ARCH)"
 	@echo "Board  : $(NATIVE_BOARD)"
-	@echo "Accel  : $(if $(QEMU_ACCEL_NATIVE),$(QEMU_ACCEL_NATIVE),$(if $(filter 1,$(QEMU_FAST)),tcg multi-thread + cpu max,none (TCG)))"
-	@echo "Memory : $(QEMU_RUN_MEM)"
-	@echo "Guest  : $(GUEST_OS)"
-	@echo "Image  : $(NATIVE_IMAGE)"
-	@echo "CC-PD  : $(ROOT_DIR)build/cc_pd.sock"
+	@echo "Config : $(if $(_SELECTED_GUEST_SCENARIO),scenario $(_SELECTED_GUEST_SCENARIO),$(if $(_RUN_PROFILE),profile $(_RUN_PROFILE),no guest profile))"
 	@echo "GUI    : cd $(abspath $(ROOT_DIR)../agentos_gui) && make run"
 	@echo ""
 	@echo "Validated dual-guest SSH showcase: make demo"
-	@echo "Raw run port forwarding is guest-specific and is not an acceptance gate."
-	@echo "Buildroot: no outer ISO; Linux runs inside guest_vmm_primary.elf → '#' shell on serial"
 	@echo "Exit QEMU: Ctrl-A X"
 	@echo "──────────────────────────────────────────────"
-	@$(NATIVE_QEMU) $(QEMU_RUN_FLAGS)
+	@cargo xtask qemu-launch --board $(NATIVE_BOARD) $(_RUN_SELECTION_ARGS) $(if $(filter 1,$(QEMU_FAST)),--fast,)
 
 # run-fast: same as run, with TCG-mode performance knobs enabled.
 # On Apple Silicon (TCG-only because HVF is incompatible with seL4) this
@@ -667,7 +616,7 @@ run-fast:
 # test: CI boot test (exits 0 on success, 1 on failure)
 # =============================================================================
 test: build
-	@AGENTOS_FREEBSD_IMAGE="$(FREEBSD_IMAGE)" cargo xtask qemu-test --board $(BOARD) --guest-os $(QEMU_TEST_GUEST_OS) --timeout-secs $(QEMU_TEST_TIMEOUT)
+	@cargo xtask qemu-test --board $(BOARD) --guest-os $(QEMU_TEST_GUEST_OS) --timeout-secs $(QEMU_TEST_TIMEOUT)
 
 # =============================================================================
 # gate: MANDATORY dual-arch target/QEMU quality gate.

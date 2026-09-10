@@ -6,7 +6,8 @@ use xtask::{
     cmd_run_tests, cmd_setup, cmd_test, cmd_test_api, CiMatrixArgs, ExtractFreebsdFileArgs,
     FaultInjectArgs, FetchGuestArgs, GenAbiArgs, GenCapsArgs, GenChannelsArgs, GenImageArgs,
     GenPdBundleArgs, GenPolicyArgs, GuestProfileArgs, GuestScenarioArgs, HostTestArgs,
-    PolicyCheckArgs, ReleaseArgs, RenderDeckArgs, RunTestsArgs, SetupArgs, TestApiArgs, TestArgs,
+    PolicyCheckArgs, QemuLaunchArgs, ReleaseArgs, RenderDeckArgs, RunTestsArgs, SetupArgs,
+    TestApiArgs, TestArgs,
 };
 
 #[derive(Parser)]
@@ -23,6 +24,9 @@ enum Cmd {
     /// Build the seL4 image and run a QEMU boot test
     #[command(name = "qemu-test")]
     QemuTest(TestArgs),
+    /// Build and launch QEMU interactively from profile or scenario data.
+    #[command(name = "qemu-launch")]
+    QemuLaunch(QemuLaunchArgs),
     /// Run fault injection tests
     FaultInject(FaultInjectArgs),
     /// Set up the development environment
@@ -77,6 +81,7 @@ fn main() -> anyhow::Result<()> {
     match cli.command {
         Cmd::Test(a) => cmd_host_test::run(&a),
         Cmd::QemuTest(a) => cmd_test::run(&a),
+        Cmd::QemuLaunch(a) => cmd_test::launch(&a),
         Cmd::FaultInject(a) => cmd_fault_inject::run(&a),
         Cmd::Setup(a) => cmd_setup::run(&a),
         Cmd::FetchGuest(a) => cmd_fetch_guest::run(&a),

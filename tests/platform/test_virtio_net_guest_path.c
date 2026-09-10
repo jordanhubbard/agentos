@@ -247,11 +247,11 @@ static int test_qemu_page_unmapped(void)
 static int test_host_backed_architecture(void)
 {
     int qemu_bus = src_contains(
-        "Makefile",
-        "virtio-net-device,netdev=agentos_net0,bus=virtio-mmio-bus.16");
-    int test_qemu_bus = src_contains(
         "xtask/src/cmd_test.rs",
         "virtio-net-device,netdev=net0,bus=virtio-mmio-bus.16");
+    int profile_netdev = src_contains(
+        "xtask/src/cmd_test.rs",
+        "qemu_netdev_arg(ssh_port, profile, scenario)");
     int isolated_page = src_contains(
         "platform/include/platform/net_host_layout.h",
         "AGENTOS_HOST_NET_MMIO_PA          0x0A002000UL");
@@ -335,7 +335,7 @@ static int test_host_backed_architecture(void)
         src_contains("kernel/agentos-root-task/src/system_desc_aarch64.c",
                      "{ SVC_ID_NET_PD,     PD_CNODE_SLOT_NET_PD_EP     }");
 
-    return tap_ok(qemu_bus && test_qemu_bus && isolated_page && modern_header &&
+    return tap_ok(qemu_bus && profile_netdev && isolated_page && modern_header &&
                   collision_free_shared_va &&
                   private_dma && shared_bridge && ipc && contract &&
                   no_vmm_dma && async_rx && no_guest_passthrough &&

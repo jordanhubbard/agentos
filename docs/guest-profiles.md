@@ -38,15 +38,16 @@ The binary manifest contains only:
 - a bounded command line and, when required, a normalized ISO initrd path.
 
 The `fetch-guest` host tool resolves the selected profile and executes only its
-bounded `host.acquire` recipe. The QEMU test runner resolves the same profile
-alias and consumes `host.qemu` plus `host.test`; it does not choose single-guest
-machine, memory, media, SSH, console, or VirtIO proof policy by distribution
-name. Runtime acquisition supports a closed set of semantic operations (HTTPS
-staging, archive/ISO extraction, arm64 image normalization, and deterministic
-probe-initramfs construction). Unknown actions and arguments fail closed. The
-build executor renders a bounded FDT template, hashes all staged artifacts,
-and emits a canonical per-slot bundle containing `kernel.bin`, `guest.dtb`,
-`initrd.bin`, and `profile.bin`. `vmm.mk` packages only that bundle and has no
+bounded `host.acquire` recipe. The interactive QEMU launcher and QEMU test
+runner resolve the same profile or scenario and consume `host.qemu`; QA also
+consumes `host.test`. Neither path chooses single-guest machine, memory, media,
+SSH, console, or VirtIO proof policy by distribution name. Runtime acquisition
+supports a closed set of semantic operations (HTTPS staging, archive/ISO
+extraction, arm64 image normalization, and deterministic probe-initramfs
+construction). Unknown actions and arguments fail closed. The build executor
+renders a bounded FDT template, hashes all staged artifacts, and emits a
+canonical per-slot bundle containing `kernel.bin`, `guest.dtb`, `initrd.bin`,
+and `profile.bin`. `vmm.mk` packages only that bundle and has no
 distribution-specific artifact or DTB branches. The VMM validates the fixed
 wire representation and checks embedded artifact sizes before the
 guest-neutral boot executor copies anything into guest RAM.
@@ -114,6 +115,14 @@ cargo xtask guest-profile --profile ubuntu-e2e.toml \
 The release dual-guest alias is data in
 `guest-scenarios/dual-release.toml`; `--guest-os both` is retained as its
 compatibility spelling.
+
+Interactive launch uses the same interpreter and attachment path:
+
+```text
+make run GUEST_PROFILE=ubuntu-e2e.toml
+make run GUEST_SCENARIO=both
+make run-fast GUEST_SCENARIO=both
+```
 
 The canonical Make selector is `GUEST_PROFILE` for one profile,
 `GUEST_SCENARIO` for a data-defined composition, or

@@ -250,6 +250,13 @@ int main(void)
                  !src_contains("Makefile", "else ifeq ($(GUEST_OS),freebsd)") &&
                  !src_contains("Makefile", "UBUNTU_BOOT_MODE"),
                  "Make resolves guest aliases, slots, scenarios, and RAM from profile data");
+    (void)tap_ok(src_contains("Makefile", "cargo xtask qemu-launch") &&
+                 src_contains("xtask/src/cmd_test.rs", "pub fn launch(") &&
+                 src_contains("xtask/src/cmd_test.rs", "attach_profile_media") &&
+                 !src_contains("Makefile", "_UBUNTU_HOST_BLK") &&
+                 !src_contains("Makefile", "_FREEBSD_HOST_BLK") &&
+                 !src_contains("Makefile", "QEMU_RUN_FLAGS"),
+                 "interactive QEMU launch interprets profile and scenario data");
     (void)tap_ok(src_contains("kernel/agentos-root-task/src/system_desc_aarch64.c",
                               "{ SVC_ID_VIRTIO_BLK, 12u }") &&
                  src_contains("platform/blk-virt/vmm_virtio_blk.c",

@@ -861,8 +861,8 @@
         QEMU virt AArch64 virtio-MMIO devices are at 0xa000000 + n*0x200.
         Slot 31 (0xa003e00) is not page-aligned; map the containing page
         (0xa003000) instead. The probe logic gracefully falls back to the
-        gpu_sched path if magic != ok — no virtio-gpu device is configured
-        in QEMU_RUN_FLAGS, so this path always falls back currently.
+        gpu_sched path if magic != ok — the current bounded QEMU launch plan
+        does not attach a host GPU device, so this path falls back currently.
       ══════════════════════════════════════════════════════════════════
     -->
     <memory_region name="fb_shmem" size="0x800000" />
