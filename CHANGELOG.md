@@ -5,6 +5,19 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.2.2] - 2026-09-09
+
+### Changed
+
+- Advance the workspace release after reconciling the duplicate GitHub issue
+  backlog into the canonical MAC task ledger and confirming that no stale
+  branches or worktrees remain.
+
+### Notes
+
+- This is an administrative maintenance checkpoint. Target and runtime code
+  are unchanged from v0.2.1, and the release retains the same OS claim.
+
 ## [0.2.1] - 2026-09-09
 
 ### Added
