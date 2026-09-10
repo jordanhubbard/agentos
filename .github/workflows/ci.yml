@@ -192,6 +192,7 @@ jobs:
             clang lld llvm \
             qemu-system-arm \
             device-tree-compiler \
+            libarchive-tools \
             curl
 
       - uses: dtolnay/rust-toolchain@stable
@@ -247,6 +248,7 @@ jobs:
             clang lld llvm \
             qemu-system-arm \
             device-tree-compiler \
+            libarchive-tools \
             curl
 
       - uses: dtolnay/rust-toolchain@stable
