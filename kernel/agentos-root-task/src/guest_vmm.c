@@ -28,6 +28,11 @@
 #include "sel4_boot.h"
 #include "sel4_ipc.h"
 
+/* Stub builds do not link the full VMM diagnostics adapter. */
+#if defined(ARCH_X86_64) || defined(__riscv) || defined(GUEST_VMM_NATIVE_STUB)
+#include "agentos.h"
+#endif
+
 /* ─── x86_64 stub ──────────────────────────────────────────────────────────
  *
  * libvmm does not yet provide x86_64 VMM support. This stub satisfies the
