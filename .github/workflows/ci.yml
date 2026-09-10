@@ -731,11 +731,17 @@ jobs:
           test -f "$f" || { echo "MISSING: $f"; exit 1; }
           echo "✓ vm_manager.c exists"
 
-      - name: Check vmm_mux.c exists
+      - name: Verify the shared profile-driven VMM
         run: |
-          f=kernel/freebsd-vmm/vmm_mux.c
-          test -f "$f" || { echo "MISSING: $f"; exit 1; }
-          echo "✓ vmm_mux.c exists"
+          runtime=platform/guest-vmm/runtime.c
+          vmm=kernel/agentos-root-task/src/guest_vmm.c
+          legacy=kernel/freebsd-vmm/vmm_mux.c
+          test -f "$runtime" || { echo "MISSING: $runtime"; exit 1; }
+          test -f "$vmm" || { echo "MISSING: $vmm"; exit 1; }
+          test ! -e "$legacy" || { echo "FAIL: legacy guest-specific VMM returned: $legacy"; exit 1; }
+          grep -q 'aos_guest_vmm_runtime_t' "$runtime" || \
+            { echo "FAIL: shared guest runtime contract missing"; exit 1; }
+          echo "✓ shared profile-driven VMM exists; legacy guest-specific VMM is absent"
 
       - name: Verify vm_manager opcodes and agentos.system entry
         run: |
