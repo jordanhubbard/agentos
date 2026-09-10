@@ -126,11 +126,11 @@ int main(void)
                         "IRQ cap copy failed"),
        "root moves IRQ handlers into owners without retaining aliases");
 
-    ok(!source_contains("kernel/agentos-root-task/src/linux_vmm.c",
+    ok(!source_contains("kernel/agentos-root-task/src/guest_vmm.c",
                         "LINUX_VMM_UART_VA") &&
-       !source_contains("kernel/agentos-root-task/src/linux_vmm.c",
+       !source_contains("kernel/agentos-root-task/src/guest_vmm.c",
                         "g_uart_irq_cap") &&
-       !source_contains("kernel/agentos-root-task/src/freebsd_vmm.c",
+       !source_contains("kernel/agentos-root-task/src/guest_vmm.c",
                         "FREEBSD_VMM_UART_VA") &&
        !source_contains("kernel/agentos-root-task/src/cc_pd.c",
                         "CC_PD_UART_DBG_VA"),
@@ -142,13 +142,13 @@ int main(void)
                         "irq=\"33\""),
        "standalone Linux VMM manifest grants no PL011 frame or IRQ");
 
-    ok(source_contains("kernel/agentos-root-task/src/linux_vmm.c",
+    ok(source_contains("kernel/agentos-root-task/src/guest_vmm.c",
                        "fault_mrs[seL4_MsgMaxLength]") &&
-       source_contains("kernel/agentos-root-task/src/linux_vmm.c",
+       source_contains("kernel/agentos-root-task/src/guest_vmm.c",
                        "seL4_SetMR((int)i, fault_mrs[i])") &&
-       source_contains("kernel/agentos-root-task/src/freebsd_vmm.c",
+       source_contains("kernel/agentos-root-task/src/guest_vmm.c",
                        "fault_mrs[seL4_MsgMaxLength]") &&
-       source_contains("kernel/agentos-root-task/src/freebsd_vmm.c",
+       source_contains("kernel/agentos-root-task/src/guest_vmm.c",
                        "seL4_SetMR((int)i, fault_mrs[i])"),
        "VMMs preserve fault MRs across serial_pd diagnostic IPC");
 

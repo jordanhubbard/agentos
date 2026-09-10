@@ -146,7 +146,7 @@ bool cap_policy_check(const PolicyEntry *policy, uint32_t requested_caps) {
 /* ── Ring-1: guest IPC enforcement ───────────────────────────────────────── */
 
 /*
- * Channels that guest VMM PDs (linux_vmm, freebsd_vmm) are permitted to use.
+ * Channels that guest VMM PDs are permitted to use.
  * These are the generic OS-neutral device PDs defined in guest_contract.h plus
  * the two VMM protocol channels.  Every other channel is ring-0 for guests.
  */
@@ -174,7 +174,7 @@ int cap_policy_is_ring0_channel(uint32_t channel_id)
 
 static int is_vmm_pd(uint32_t pd_id)
 {
-    return pd_id == TRACE_PD_LINUX_VMM || pd_id == TRACE_PD_FREEBSD_VMM;
+    return pd_id == TRACE_PD_GUEST_VMM_PRIMARY || pd_id == TRACE_PD_GUEST_VMM_SECONDARY;
 }
 
 int cap_policy_guest_ipc_check(uint32_t caller_pd_id, uint32_t target_channel)

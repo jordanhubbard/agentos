@@ -233,9 +233,9 @@ static inline uint64_t microkit_mr_get(uint32_t i) { (void)i; return 0; }
 #define VM_SLOT_ERROR     5u
 #endif
 
-#ifndef VM_TYPE_LINUX
-#define VM_TYPE_LINUX   0u
-#define VM_TYPE_FREEBSD 1u
+#ifndef VM_PROFILE_PRIMARY
+#define VM_PROFILE_PRIMARY   0u
+#define VM_PROFILE_SECONDARY 1u
 #endif
 
 #ifndef VM_CREATE_FLAG_VIRTIO_NET
@@ -871,7 +871,7 @@ static uint32_t handle_vos_create(sel4_badge_t badge, const sel4_msg_t *req,
     uint32_t ram_mb    = data_rd32(req->data, 4);
     uint32_t dev_flags = data_rd32(req->data, 8);
 
-    /* Accept VIBEOS_TYPE_LINUX (1) and VIBEOS_TYPE_FREEBSD (2). */
+    /* Accept VIBEOS_PROFILE_PRIMARY (1) and VIBEOS_PROFILE_SECONDARY (2). */
     if (os_type != 1u && os_type != 2u) {
         data_wr32(rep->data, 0, VIBEOS_ERR_BAD_TYPE);
         rep->length = 4;
@@ -900,7 +900,7 @@ static uint32_t handle_vos_create(sel4_badge_t badge, const sel4_msg_t *req,
     /* PPC to vm_manager: create VM slot */
     {
         sel4_msg_t vreq = {0}, vrep = {0};
-        uint32_t vm_type = (os_type == 2u) ? VM_TYPE_FREEBSD : VM_TYPE_LINUX;
+        uint32_t vm_type = (os_type == 2u) ? VM_PROFILE_SECONDARY : VM_PROFILE_PRIMARY;
         uint32_t vm_flags = 0u;
         if (dev_flags & VIBEOS_DEV_NET)    vm_flags |= VM_CREATE_FLAG_VIRTIO_NET;
         if (dev_flags & VIBEOS_DEV_BLOCK)  vm_flags |= VM_CREATE_FLAG_VIRTIO_BLK;

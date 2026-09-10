@@ -60,7 +60,7 @@
  *   first_child_idx  — index of the first child node; CAP_NODE_NONE if leaf
  *   next_sibling_idx — index of the next sibling node; CAP_NODE_NONE if last
  *   flags            — CAP_FLAG_* bitmask
- *   name             — optional NUL-terminated debug label (e.g. "linux_vmm/tcb")
+ *   name             — optional NUL-terminated debug label (e.g. "guest_vmm/tcb")
  */
 typedef struct cap_node {
     uint64_t  cap;               /* seL4 capability slot (CPtr) */

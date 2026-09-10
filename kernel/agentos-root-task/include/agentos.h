@@ -263,8 +263,8 @@ typedef enum {
 #define TRACE_PD_APP_MANAGER  31u
 #define TRACE_PD_HTTP_SVC     32u
 #define TRACE_PD_APP_SLOT     33u
-#define TRACE_PD_LINUX_VMM    41u
-#define TRACE_PD_FREEBSD_VMM  42u
+#define TRACE_PD_GUEST_VMM_PRIMARY    41u
+#define TRACE_PD_GUEST_VMM_SECONDARY  42u
 #define TRACE_PD_CC_PD        43u
 
 /* vm_manager IPC opcodes (MR0 in PPCs to vm_manager PD, channel CH_VM_MANAGER)
@@ -448,7 +448,7 @@ typedef enum {
 
 /* Log Drain channel IDs (from controller perspective) */
 #ifdef BOARD_qemu_virt_aarch64
-#define CH_LOG_DRAIN          55  /* aarch64: 50 is linux_vmm */
+#define CH_LOG_DRAIN          55  /* aarch64: 50 is guest_vmm_primary */
 #else
 #define CH_LOG_DRAIN          60  /* riscv64: after mem_profiler (50-58) */
 #endif

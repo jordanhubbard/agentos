@@ -44,8 +44,8 @@ typedef struct __attribute__((packed)) {
  * TRACE_PD_* identifiers for VMM protection domains.
  * Follow the sequence in agentos.h (CC PD is TRACE_PD_CC_PD = 43).
  */
-#define TRACE_PD_LINUX_VMM    41u
-#define TRACE_PD_FREEBSD_VMM  42u
+#define TRACE_PD_GUEST_VMM_PRIMARY    41u
+#define TRACE_PD_GUEST_VMM_SECONDARY  42u
 
 /*
  * cap_policy_is_ring0_channel(channel_id)
@@ -62,7 +62,7 @@ int cap_policy_is_ring0_channel(uint32_t channel_id);
  *
  * Ring-1 enforcement gate called from the root task IPC dispatch path before
  * any capability is granted.  If caller_pd_id is a VMM PD
- * (TRACE_PD_LINUX_VMM or TRACE_PD_FREEBSD_VMM) and target_channel is a
+ * (TRACE_PD_GUEST_VMM_PRIMARY or TRACE_PD_GUEST_VMM_SECONDARY) and target_channel is a
  * ring-0 channel, returns -1 (EPERM).  Returns 0 if permitted.
  */
 int cap_policy_guest_ipc_check(uint32_t caller_pd_id, uint32_t target_channel);

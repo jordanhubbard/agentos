@@ -2,10 +2,11 @@ use clap::{Parser, Subcommand};
 use xtask::{
     cmd_ci_matrix, cmd_extract_freebsd_file, cmd_fault_inject, cmd_fetch_guest, cmd_gen_abi,
     cmd_gen_caps, cmd_gen_channels, cmd_gen_image, cmd_gen_pd_bundle, cmd_gen_policy,
-    cmd_host_test, cmd_policy_check, cmd_release, cmd_render_deck, cmd_run_tests, cmd_setup,
-    cmd_test, cmd_test_api, CiMatrixArgs, ExtractFreebsdFileArgs, FaultInjectArgs, FetchGuestArgs,
-    GenAbiArgs, GenCapsArgs, GenChannelsArgs, GenImageArgs, GenPdBundleArgs, GenPolicyArgs,
-    HostTestArgs, PolicyCheckArgs, ReleaseArgs, RenderDeckArgs, RunTestsArgs, SetupArgs,
+    cmd_guest_profile, cmd_host_test, cmd_policy_check, cmd_release, cmd_render_deck,
+    cmd_run_tests, cmd_setup, cmd_test, cmd_test_api, CiMatrixArgs, ExtractFreebsdFileArgs,
+    FaultInjectArgs, FetchGuestArgs, GenAbiArgs, GenCapsArgs, GenChannelsArgs, GenImageArgs,
+    GenPdBundleArgs, GenPolicyArgs, GuestProfileArgs, GuestScenarioArgs, HostTestArgs,
+    PolicyCheckArgs, QemuLaunchArgs, ReleaseArgs, RenderDeckArgs, RunTestsArgs, SetupArgs,
     TestApiArgs, TestArgs,
 };
 
@@ -23,11 +24,14 @@ enum Cmd {
     /// Build the seL4 image and run a QEMU boot test
     #[command(name = "qemu-test")]
     QemuTest(TestArgs),
+    /// Build and launch QEMU interactively from profile or scenario data.
+    #[command(name = "qemu-launch")]
+    QemuLaunch(QemuLaunchArgs),
     /// Run fault injection tests
     FaultInject(FaultInjectArgs),
     /// Set up the development environment
     Setup(SetupArgs),
-    /// Fetch guest OS disk images
+    /// Execute a guest profile's bounded artifact acquisition recipe
     FetchGuest(FetchGuestArgs),
     /// Automated release (version bump + git tag)
     Release(ReleaseArgs),
@@ -64,6 +68,12 @@ enum Cmd {
     /// Pack PD ELFs into a .pd_bundle blob for embedding into root_task.elf
     #[command(name = "gen-pd-bundle")]
     GenPdBundle(GenPdBundleArgs),
+    /// Validate source profiles or compile one bounded target manifest.
+    #[command(name = "guest-profile")]
+    GuestProfile(GuestProfileArgs),
+    /// Resolve a bounded multi-profile host scenario.
+    #[command(name = "guest-scenario")]
+    GuestScenario(GuestScenarioArgs),
 }
 
 fn main() -> anyhow::Result<()> {
@@ -71,6 +81,7 @@ fn main() -> anyhow::Result<()> {
     match cli.command {
         Cmd::Test(a) => cmd_host_test::run(&a),
         Cmd::QemuTest(a) => cmd_test::run(&a),
+        Cmd::QemuLaunch(a) => cmd_test::launch(&a),
         Cmd::FaultInject(a) => cmd_fault_inject::run(&a),
         Cmd::Setup(a) => cmd_setup::run(&a),
         Cmd::FetchGuest(a) => cmd_fetch_guest::run(&a),
@@ -87,5 +98,7 @@ fn main() -> anyhow::Result<()> {
         Cmd::PolicyCheck(a) => cmd_policy_check::run(&a),
         Cmd::GenImage(a) => cmd_gen_image::run(&a),
         Cmd::GenPdBundle(a) => cmd_gen_pd_bundle::run(&a),
+        Cmd::GuestProfile(a) => cmd_guest_profile::run(&a),
+        Cmd::GuestScenario(a) => xtask::guest_scenario::run(&a),
     }
 }

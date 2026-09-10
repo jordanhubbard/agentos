@@ -128,7 +128,7 @@ static uint32_t alloc_running_instance(void)
     vos_instance_t *inst = vos_test_alloc_instance();
     if (!inst) return 0;
     inst->state   = VOS_STATE_RUNNING;
-    inst->os_type = VOS_OS_LINUX;
+    inst->os_type = VOS_PROFILE_PRIMARY;
     /* Fill registers with a recognisable pattern */
     for (uint32_t i = 0; i < 32; i++)
         inst->test_regs[i] = 0xA0000000u | (inst->handle << 8) | i;
@@ -554,7 +554,7 @@ static void test_restored_os_type(void)
     uint32_t orig = alloc_running_instance();
     vos_instance_t *orig_inst = vos_instance_get(orig);
     ASSERT_TRUE(orig_inst != NULL, "os_type: original instance found");
-    orig_inst->os_type = VOS_OS_FREEBSD;
+    orig_inst->os_type = VOS_PROFILE_SECONDARY;
 
     uint32_t sl = 0, sh = 0;
     vos_snapshot(orig, &sl, &sh);
@@ -564,7 +564,7 @@ static void test_restored_os_type(void)
 
     vos_instance_t *res = vos_instance_get(restored_h);
     ASSERT_TRUE(res != NULL, "os_type: restored instance found");
-    ASSERT_EQ((uint32_t)res->os_type, (uint32_t)VOS_OS_FREEBSD,
+    ASSERT_EQ((uint32_t)res->os_type, (uint32_t)VOS_PROFILE_SECONDARY,
               "restored os_type matches snapshot os_type");
 }
 

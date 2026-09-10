@@ -83,7 +83,7 @@ cap_broker_lookup("vibeos.v1", VOS_RIGHT_CREATE | VOS_RIGHT_INSPECT, &ep);
 
 /* 2. Populate a creation spec in the negotiated shared-memory region */
 vos_spec_t *spec = (vos_spec_t *)vos_shmem_base;
-spec->os_type      = VOS_OS_LINUX;
+spec->os_type      = VOS_PROFILE_PRIMARY;
 spec->vcpu_count   = 1;
 spec->cpu_quota_pct= 25;             /* up to 25% of one host CPU */
 spec->memory_pages = 65536;          /* 256 MiB guest RAM */
@@ -184,8 +184,8 @@ when a slot frees up, or fix the spec before retrying `VOS_ERR_INVALID_SPEC`.
 
 | os_type          | AArch64 (QEMU) | AArch64 (native) | x86_64 |
 |------------------|:--------------:|:----------------:|:------:|
-| VOS_OS_LINUX     | yes            | stub             | stub   |
-| VOS_OS_FREEBSD   | yes            | stub             | yes    |
+| VOS_PROFILE_PRIMARY     | yes            | stub             | stub   |
+| VOS_PROFILE_SECONDARY   | yes            | stub             | yes    |
 | VOS_OS_CUSTOM    | yes            | yes              | yes    |
 
 Platforms returning `VOS_ERR_UNSUPPORTED_OS` for a given combination indicate

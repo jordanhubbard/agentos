@@ -16,7 +16,7 @@
 
 void run_freebsd_vmm_tests(microkit_channel ch)
 {
-    TEST_SECTION("freebsd_vmm");
+    TEST_SECTION("guest_vmm_secondary");
 
     /* LIST — enumerate FreeBSD VMs (may be empty) */
     ASSERT_IPC_OK(ch, MSG_VM_LIST, "freebsd_vmm: LIST returns ok");

@@ -2,7 +2,7 @@
 
 **Status:** APPROVED EXCEPTION
 **Date filed:** 2026-04-15
-**Affected VMM:** Linux VMM (`kernel/agentos-root-task/src/linux_vmm.c`)
+**Affected VMM:** Linux VMM (`kernel/agentos-root-task/src/guest_vmm.c`)
 **Generic service rule:** Before any guest OS VMM implements its own device, it must
 use the generic device service. A custom implementation requires an approved defect task.
 
@@ -18,12 +18,12 @@ NVIDIA GB10 SoC's 128GB unified VRAM.
 
 The `linux_vmm` PD is wired into this channel as `GPU_SHMEM_ROLE_CONSUMER`:
 
-- At `linux_vmm.c:346–356`: `gpu_shmem_init()` is called when the `gpu_tensor_buf`
+- At `guest_vmm.c:346–356`: `gpu_shmem_init()` is called when the `gpu_tensor_buf`
   MR is mapped.
-- At `linux_vmm.c:386–426` (`GPU_SHMEM_NOTIFY_IN_CH` handler): Tensor descriptors
+- At `guest_vmm.c:386–426` (`GPU_SHMEM_NOTIFY_IN_CH` handler): Tensor descriptors
   are dequeued from the ring and forwarded to the Linux guest's `gpu_shmem_linux`
   kernel module via virtual IRQ injection.
-- At `linux_vmm.c:428–438` (`GPU_SHMEM_NOTIFY_OUT_CH` handler): Completion
+- At `guest_vmm.c:428–438` (`GPU_SHMEM_NOTIFY_OUT_CH` handler): Completion
   notifications from the Linux guest are relayed back to the controller.
 
 ---
@@ -93,14 +93,14 @@ This exception applies **only** to the `gpu_shmem` channel as implemented in:
 - `kernel/agentos-root-task/src/gpu_shmem.c`
 - `kernel/agentos-root-task/include/gpu_shmem.h`
 - The `GPU_SHMEM_NOTIFY_IN_CH` and `GPU_SHMEM_NOTIFY_OUT_CH` notification handlers
-  in `kernel/agentos-root-task/src/linux_vmm.c` (lines 386–438)
+  in `kernel/agentos-root-task/src/guest_vmm.c` (lines 386–438)
 
 The exception does **not** cover:
 
 - Any future VMM that uses `gpu_shmem` without the specific AArch64 GB10 / CUDA
   dispatch rationale. A RISC-V or x86 VMM targeting a different accelerator must file
   its own defect task.
-- The use of `virq_inject(SERIAL_IRQ)` at `linux_vmm.c:423` as the mechanism for
+- The use of `virq_inject(SERIAL_IRQ)` at `guest_vmm.c:423` as the mechanism for
   waking the Linux gpu_shmem driver. This is a known prototype shortcut (marked
   `TODO: dedicate a GPU shmem IRQ`) and must be replaced with a dedicated virtual IRQ
   before production. The `SERIAL_IRQ` reuse does not require a separate defect task
@@ -119,7 +119,7 @@ The exception does **not** cover:
 2. The ring protocol version (`gpu_shmem_ring_t.version == 1`) must be bumped and
    compatibility validation updated if the descriptor layout changes.
 
-3. Before production, `virq_inject(SERIAL_IRQ)` at `linux_vmm.c:423` must be
+3. Before production, `virq_inject(SERIAL_IRQ)` at `guest_vmm.c:423` must be
    replaced with a dedicated virtual IRQ allocated for the GPU shmem completion path.
 
 4. Any extension of the `gpu_shmem` channel to a FreeBSD VMM or a second Linux VMM

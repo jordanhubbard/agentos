@@ -7,9 +7,9 @@
 / {
     dma-coherent;
 
-    memory@@UBUNTU_RAM_NODE@ {
+    memory@@GUEST_RAM_NODE@ {
         device_type = "memory";
-        reg = <@UBUNTU_RAM_BASE@ 0x00 @UBUNTU_RAM_SIZE@>;
+        reg = <0x00 @GUEST_RAM_BASE@ 0x00 @GUEST_RAM_SIZE@>;
     };
 
     flash@0 {
@@ -25,14 +25,14 @@
     };
 
     chosen {
-        bootargs = "@UBUNTU_BOOTARGS@";
-        linux,initrd-start = <@UBUNTU_INITRD_START@>;
-        linux,initrd-end = <@UBUNTU_INITRD_END@>;
+        bootargs = "@GUEST_BOOTARGS@";
+        linux,initrd-start = <0x00 @GUEST_INITRD_START@>;
+        linux,initrd-end = <0x00 @GUEST_INITRD_END@>;
     };
 
     /*
      * agentOS emulated virtio-net. Guest IPA 0xa010000 is not QEMU MMIO;
-     * accesses fault into linux_vmm and hit libvmm virtio_mmio_net_init.
+     * accesses fault into guest_vmm and hit libvmm virtio_mmio_net_init.
      * IRQ: SPI 18 → INTID 50.
      */
     virtio_mmio@a010000 {

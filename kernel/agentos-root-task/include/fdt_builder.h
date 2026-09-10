@@ -6,7 +6,7 @@
  *
  * Subset implemented: properties (cells, strings, reg, ranges, compatible,
  * status), child nodes, and the /memory and /chosen nodes needed to boot
- * Linux or FreeBSD guests under agentOS VMMs.
+ * direct-boot guests under agentOS VMMs.
  *
  * Usage:
  *   uint8_t buf[4096];

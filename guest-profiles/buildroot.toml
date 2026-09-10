@@ -1,0 +1,44 @@
+schema = 2
+id = "buildroot-proof-aarch64"
+status = "runtime"
+extends = "linux-base.toml"
+aliases = ["buildroot", "linux"]
+
+[boot]
+command_line = "console=hvc0 panic=-1"
+
+[artifacts.kernel]
+source = "https://trustworthy.systems/Downloads/libvmm/images/85000f3f42a882e4476e57003d53f2bbec8262b0-linux.tar.gz"
+cache = "build/qemu_virt_aarch64/85000f3f42a882e4476e57003d53f2bbec8262b0-linux"
+sha256 = "014ed61d3fc5dfe8ebeb708b6e3c6d989df23f84ad9050675aeb674ca2c0f382"
+
+[artifacts.dtb]
+source = "generated:linux.dts+buildroot-overlay.dts"
+cache = "build/qemu_virt_aarch64/vm.dtb"
+sha256 = "cf95f86766d41cc355b7544a91572b8a418f6db1b84facf1e29547ad50c6408d"
+
+[artifacts.initrd]
+source = "https://trustworthy.systems/Downloads/libvmm/images/6dcd1debf64e6d69b178cd0f46b8c4ae7cebe2a5-rootfs.cpio.gz.tar.gz"
+cache = "build/qemu_virt_aarch64/6dcd1debf64e6d69b178cd0f46b8c4ae7cebe2a5-rootfs.cpio.gz"
+sha256 = "41cd53e6fb36d0f07607e20321d7af4a496a2adace0ac87b970b13e459e3f74e"
+
+[[host.acquire]]
+action = "download-tar-member"
+args = { url = "https://trustworthy.systems/Downloads/libvmm/images/85000f3f42a882e4476e57003d53f2bbec8262b0-linux.tar.gz", member = "85000f3f42a882e4476e57003d53f2bbec8262b0-linux/linux", output = "85000f3f42a882e4476e57003d53f2bbec8262b0-linux" }
+
+[[host.acquire]]
+action = "download-tar-member"
+args = { url = "https://trustworthy.systems/Downloads/libvmm/images/6dcd1debf64e6d69b178cd0f46b8c4ae7cebe2a5-rootfs.cpio.gz.tar.gz", member = "6dcd1debf64e6d69b178cd0f46b8c4ae7cebe2a5-rootfs.cpio.gz/rootfs.cpio.gz", output = "6dcd1debf64e6d69b178cd0f46b8c4ae7cebe2a5-rootfs.cpio.gz" }
+
+[[host.test]]
+action = "assert-virtio"
+args = { devices = "net,block,console", scope = "emulated" }
+
+[host.console]
+adapter = "expect"
+
+[host.build]
+adapter = "linux-merge"
+base = "libvmm/examples/simple/board/qemu_virt_aarch64/linux.dts"
+template = "kernel/agentos-root-task/ubuntu-iso-overlay.dts.in"
+acquire_dir = "build/qemu_virt_aarch64"

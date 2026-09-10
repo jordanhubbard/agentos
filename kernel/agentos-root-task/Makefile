@@ -337,53 +337,51 @@ ifdef SEL4_TEST_IMAGE
   IMAGES += test_runner.elf
 endif
 
-# Guest OS selection: none (default) | linux/ubuntu | freebsd | both
-GUEST_OS ?= none
+# Profile paths are the canonical build selection. The repository Makefile
+# owns the legacy GUEST_OS compatibility adapter.
+GUEST_PRIMARY_PROFILE ?=
+GUEST_SECONDARY_PROFILE ?=
+GUEST_PRIMARY_LARGE ?= 0
 GUEST_CONFIG_STAMP := $(BUILD_DIR)/guest_config.stamp
 
-# AArch64: include VMM based on GUEST_OS
+# AArch64: include the configured profile-backed VMM slots.
 ifeq ($(ARCH),aarch64)
-  ifeq ($(GUEST_OS),both)
-    CFLAGS += -DAGENTOS_GUEST_LINUX=1 -DAGENTOS_GUEST_FREEBSD=1 -DAGENTOS_GUEST_BOTH=1 -DAGENTOS_GUEST_UBUNTU=1
-    CFLAGS_ROOT_TASK += -DAGENTOS_GUEST_LINUX=1 -DAGENTOS_GUEST_FREEBSD=1 -DAGENTOS_GUEST_BOTH=1 -DAGENTOS_GUEST_UBUNTU=1
-    ifeq ($(UBUNTU_BOOT_MODE),live)
-      CFLAGS += -DAGENTOS_GUEST_UBUNTU_LIVE=1
-      CFLAGS_ROOT_TASK += -DAGENTOS_GUEST_UBUNTU_LIVE=1
-    endif
-    IMAGES += linux_vmm.elf freebsd_vmm.elf
-  else ifeq ($(GUEST_OS),freebsd)
-    CFLAGS += -DAGENTOS_GUEST_FREEBSD=1
-    CFLAGS_ROOT_TASK += -DAGENTOS_GUEST_FREEBSD=1
-    IMAGES += freebsd_vmm.elf
-  else
-    ifneq ($(GUEST_OS),none)
-      CFLAGS += -DAGENTOS_GUEST_LINUX=1
-      CFLAGS_ROOT_TASK += -DAGENTOS_GUEST_LINUX=1
-    endif
-    ifeq ($(GUEST_OS),ubuntu)
-      CFLAGS += -DAGENTOS_GUEST_UBUNTU=1
-      CFLAGS_ROOT_TASK += -DAGENTOS_GUEST_UBUNTU=1
-      ifeq ($(UBUNTU_BOOT_MODE),live)
-        CFLAGS += -DAGENTOS_GUEST_UBUNTU_LIVE=1
-        CFLAGS_ROOT_TASK += -DAGENTOS_GUEST_UBUNTU_LIVE=1
-      endif
-    endif
-    # Default aarch64: include Linux VMM (stub or full)
-    IMAGES += linux_vmm.elf
+  ifneq ($(strip $(GUEST_PRIMARY_PROFILE)),)
+    CFLAGS += -DAGENTOS_GUEST_PRIMARY=1
+    CFLAGS_ROOT_TASK += -DAGENTOS_GUEST_PRIMARY=1
+    IMAGES += guest_vmm_primary.elf
+  endif
+  ifneq ($(strip $(GUEST_SECONDARY_PROFILE)),)
+    CFLAGS += -DAGENTOS_GUEST_SECONDARY=1
+    CFLAGS_ROOT_TASK += -DAGENTOS_GUEST_SECONDARY=1
+    IMAGES += guest_vmm_secondary.elf
+  endif
+  ifneq ($(and $(strip $(GUEST_PRIMARY_PROFILE)),$(strip $(GUEST_SECONDARY_PROFILE))),)
+    CFLAGS += -DAGENTOS_GUEST_DUAL=1
+    CFLAGS_ROOT_TASK += -DAGENTOS_GUEST_DUAL=1
+  endif
+  ifeq ($(GUEST_PRIMARY_LARGE),1)
+    CFLAGS += -DAGENTOS_GUEST_PRIMARY_LARGE=1
+    CFLAGS_ROOT_TASK += -DAGENTOS_GUEST_PRIMARY_LARGE=1
+  endif
+  ifeq ($(strip $(GUEST_PRIMARY_PROFILE)$(GUEST_SECONDARY_PROFILE)),)
+    # No configured guest: retain the primary native stub referenced by the
+    # static system descriptor.
+    IMAGES += guest_vmm_primary.elf
   endif
 else ifeq ($(ARCH),x86_64)
   # Include linux_vmm stub so the image can reference it
-  IMAGES += linux_vmm.elf
+  IMAGES += guest_vmm_primary.elf
 else ifeq ($(ARCH),riscv64)
   # RISC-V 64: process-in-PD VMMs (no hypervisor extension)
-  IMAGES += linux_vmm.elf freebsd_vmm.elf
+  IMAGES += guest_vmm_primary.elf guest_vmm_secondary.elf
 endif
 
 $(GUEST_CONFIG_STAMP): FORCE
 	@mkdir -p $(BUILD_DIR)
 	@tmp="$@.tmp"; \
-	printf 'ARCH=%s\nBOARD=%s\nGUEST_OS=%s\nUBUNTU_BOOT_MODE=%s\nFAULT_INJECT=%s\nSEL4_TEST_IMAGE=%s\n' \
-		'$(ARCH)' '$(AGENTOS_BOARD)' '$(GUEST_OS)' '$(UBUNTU_BOOT_MODE)' '$(FAULT_INJECT)' '$(SEL4_TEST_IMAGE)' > "$$tmp"; \
+	printf 'ARCH=%s\nBOARD=%s\nGUEST_PRIMARY_PROFILE=%s\nGUEST_SECONDARY_PROFILE=%s\nGUEST_PRIMARY_LARGE=%s\nFAULT_INJECT=%s\nSEL4_TEST_IMAGE=%s\n' \
+		'$(ARCH)' '$(AGENTOS_BOARD)' '$(GUEST_PRIMARY_PROFILE)' '$(GUEST_SECONDARY_PROFILE)' '$(GUEST_PRIMARY_LARGE)' '$(FAULT_INJECT)' '$(SEL4_TEST_IMAGE)' > "$$tmp"; \
 	printf 'SEL4_PROFILE=%s\nCFLAGS=%s\nCFLAGS_ROOT_TASK=%s\n' \
 		'$(SEL4_PROFILE)' '$(CFLAGS)' '$(CFLAGS_ROOT_TASK)' >> "$$tmp"; \
 	if test -f "$@" && cmp -s "$$tmp" "$@"; then rm -f "$$tmp"; else mv "$$tmp" "$@"; fi
@@ -624,16 +622,14 @@ $(BUILD_DIR)/http_svc.elf: $(HTTP_SVC_OBJS)
 	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
 
 # vm_manager: multi-VM lifecycle manager (wraps vmm_mux; AArch64 libvmm optional)
-# Compiled with -I../freebsd-vmm so vmm_mux.h resolves, and -I../../libvmm/include
-# so the transitive <libvmm/guest.h> include resolves on AArch64 builds.
 $(BUILD_DIR)/vm_manager.o: src/vm_manager.c
 	@mkdir -p $(BUILD_DIR)
-	$(CC) -c $(CFLAGS) -I../freebsd-vmm -I../../libvmm/include $< -o $@
+	$(CC) -c $(CFLAGS) -I../../libvmm/include $< -o $@
 
-# vmm_mux_stub also needs both paths for the same reason
+# vmm_mux_stub shares the same generic contract.
 $(BUILD_DIR)/vmm_mux_stub.o: src/vmm_mux_stub.c
 	@mkdir -p $(BUILD_DIR)
-	$(CC) -c $(CFLAGS) -I../freebsd-vmm -I../../libvmm/include $< -o $@
+	$(CC) -c $(CFLAGS) -I../../libvmm/include $< -o $@
 
 $(BUILD_DIR)/vm_manager.elf: $(VM_MANAGER_OBJS)
 	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
@@ -693,38 +689,37 @@ $(BUILD_DIR)/fdt_builder.o: src/fdt_builder.c
 	@mkdir -p $(BUILD_DIR)
 	$(CC) -c $(CFLAGS) $< -o $@
 
-$(BUILD_DIR)/linux_vmm.o: src/linux_vmm.c
+$(BUILD_DIR)/guest_vmm_primary.o: src/guest_vmm.c
 	@mkdir -p $(BUILD_DIR)
 	$(CC) -c $(CFLAGS) $< -o $@
 
-$(BUILD_DIR)/linux_vmm.elf: $(BUILD_DIR)/linux_vmm.o $(BUILD_DIR)/fdt_builder.o \
+$(BUILD_DIR)/guest_vmm_primary.elf: $(BUILD_DIR)/guest_vmm_primary.o $(BUILD_DIR)/fdt_builder.o \
                              $(BUILD_DIR)/sel4_crt.o $(BUILD_DIR)/m3_bare_metal.o \
                              $(BUILD_DIR)/log.o $(BUILD_DIR)/pd_entry.o
 	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
 
-$(BUILD_DIR)/freebsd_vmm.o: src/freebsd_vmm.c
+$(BUILD_DIR)/guest_vmm_secondary.o: src/guest_vmm.c
 	@mkdir -p $(BUILD_DIR)
 	$(CC) -c $(CFLAGS) $< -o $@
 
-$(BUILD_DIR)/freebsd_vmm.elf: $(BUILD_DIR)/freebsd_vmm.o $(BUILD_DIR)/fdt_builder.o \
+$(BUILD_DIR)/guest_vmm_secondary.elf: $(BUILD_DIR)/guest_vmm_secondary.o $(BUILD_DIR)/fdt_builder.o \
                                $(BUILD_DIR)/sel4_crt.o $(BUILD_DIR)/m3_bare_metal.o \
                                $(BUILD_DIR)/log.o
 	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
 endif
 
-# ─── Linux VMM (AArch64 only) ─────────────────────────────────────────────
+# ─── Profile-backed VMM slots (AArch64 only) ──────────────────────────────
 ifeq ($(ARCH),aarch64)
-ifneq ($(GUEST_OS),freebsd)
-ifeq ($(GUEST_OS),none)
+ifeq ($(strip $(GUEST_PRIMARY_PROFILE)),)
 # Default AArch64 build: keep a normal agentOS-linked placeholder VMM PD.
 # The libvmm Microkit ELF currently has entry 0 under the custom root-task
-# loader, so full VMM builds are opt-in via GUEST_OS=buildroot/ubuntu.
-$(BUILD_DIR)/linux_vmm.o: src/linux_vmm.c
+# loader, so full VMM builds are opt-in via a primary guest profile.
+$(BUILD_DIR)/guest_vmm_primary.o: src/guest_vmm.c
 	@mkdir -p $(BUILD_DIR)
-	$(CC) -c $(CFLAGS) -DARCH_AARCH64 -DLINUX_VMM_NATIVE_STUB=1 $< -o $@
+	$(CC) -c $(CFLAGS) -DARCH_AARCH64 -DGUEST_VMM_NATIVE_STUB=1 $< -o $@
 
-$(BUILD_DIR)/linux_vmm.elf: FORCE \
-                             $(BUILD_DIR)/linux_vmm.o \
+$(BUILD_DIR)/guest_vmm_primary.elf: FORCE \
+                             $(BUILD_DIR)/guest_vmm_primary.o \
                              $(BUILD_DIR)/sel4_crt.o \
                              $(BUILD_DIR)/pd_entry.o \
                              $(BUILD_DIR)/m3_bare_metal.o \
@@ -734,65 +729,65 @@ else
 ifeq ($(BOARD_NATIVE),1)
 # Native AArch64 board (e.g., RPi5): libvmm has QEMU-specific GIC addresses;
 # use a stub instead until board-specific VMM support is added.
-$(BUILD_DIR)/linux_vmm.o: src/linux_vmm.c
+$(BUILD_DIR)/guest_vmm_primary.o: src/guest_vmm.c
 	@mkdir -p $(BUILD_DIR)
-	$(CC) -c $(CFLAGS) -DARCH_AARCH64 -DLINUX_VMM_NATIVE_STUB=1 $< -o $@
+	$(CC) -c $(CFLAGS) -DARCH_AARCH64 -DGUEST_VMM_NATIVE_STUB=1 $< -o $@
 
-$(BUILD_DIR)/linux_vmm.elf: FORCE \
-                             $(BUILD_DIR)/linux_vmm.o \
+$(BUILD_DIR)/guest_vmm_primary.elf: FORCE \
+                             $(BUILD_DIR)/guest_vmm_primary.o \
                              $(BUILD_DIR)/sel4_crt.o \
                              $(BUILD_DIR)/pd_entry.o \
                              $(BUILD_DIR)/m3_bare_metal.o \
                              $(BUILD_DIR)/log.o
 	$(LD) $(LDFLAGS) $(filter-out FORCE,$^) $(LIBS) -o $@
 else
-# QEMU AArch64: use libvmm for full Linux VM support
-$(BUILD_DIR)/linux_vmm.elf: FORCE
+# QEMU AArch64: use libvmm for a full profile-backed VM.
+$(BUILD_DIR)/guest_vmm_primary.elf: FORCE
 	@echo ""
-	@echo "═══ Building Linux VMM (libvmm) ═══"
+	@echo "═══ Building primary profile VMM (libvmm) ═══"
 	$(MAKE) -f vmm.mk \
 		BUILD_DIR=$(BUILD_DIR) \
 		AGENTOS_ARCH=$(AGENTOS_ARCH) \
 		AGENTOS_BOARD=$(AGENTOS_BOARD) \
 		SEL4_SDK=$(SEL4_SDK) \
 		SEL4_PROFILE=$(SEL4_PROFILE) \
-		GUEST_OS=$(if $(filter both,$(GUEST_OS)),ubuntu,$(GUEST_OS)) \
-		VMM_DUAL_GUEST=$(if $(filter both,$(GUEST_OS)),1,0) \
-		UBUNTU_BOOT_MODE=$(UBUNTU_BOOT_MODE) \
+		VMM_SLOT=primary \
+		GUEST_PROFILE=$(GUEST_PRIMARY_PROFILE) \
+		GUEST_PLACEMENT=$(if $(strip $(GUEST_SECONDARY_PROFILE)),dual-primary,default) \
 		vmm-all
 endif
 endif
 endif
-endif
 
-# ─── FreeBSD VMM (AArch64 + GUEST_OS=freebsd|both) ─────────────────────────
+# ─── Secondary profile-backed VMM slot ────────────────────────────────────
 ifeq ($(ARCH),aarch64)
-ifneq ($(filter freebsd both,$(GUEST_OS)),)
-$(BUILD_DIR)/freebsd_vmm.elf: FORCE
+ifneq ($(strip $(GUEST_SECONDARY_PROFILE)),)
+$(BUILD_DIR)/guest_vmm_secondary.elf: FORCE
 	@echo ""
-	@echo "═══ Building FreeBSD VMM (libvmm direct kernel) ═══"
+	@echo "═══ Building secondary profile VMM (libvmm) ═══"
 	$(MAKE) -f vmm.mk \
 		BUILD_DIR=$(BUILD_DIR) \
 		AGENTOS_ARCH=$(AGENTOS_ARCH) \
 		AGENTOS_BOARD=$(AGENTOS_BOARD) \
 		SEL4_SDK=$(SEL4_SDK) \
 		SEL4_PROFILE=$(SEL4_PROFILE) \
-		GUEST_OS=freebsd \
-		VMM_DUAL_GUEST=$(if $(filter both,$(GUEST_OS)),1,0) \
+		VMM_SLOT=secondary \
+		GUEST_PROFILE=$(GUEST_SECONDARY_PROFILE) \
+		GUEST_PLACEMENT=$(if $(strip $(GUEST_PRIMARY_PROFILE)),dual-secondary,default) \
 		vmm-all
-	@echo "═══ freebsd_vmm.elf ✓ ═══"
+	@echo "═══ guest_vmm_secondary.elf ✓ ═══"
 endif
 endif
 
-# ─── Linux VMM stub (x86_64) ──────────────────────────────────────────────
-# Compiled directly from linux_vmm.c with -DARCH_X86_64.
+# ─── Guest VMM stub (x86_64) ──────────────────────────────────────────────
+# Compiled directly from guest_vmm.c with -DARCH_X86_64.
 # No libvmm dependency — stub implementation only.
 ifeq ($(ARCH),x86_64)
-$(BUILD_DIR)/linux_vmm.o: src/linux_vmm.c
+$(BUILD_DIR)/guest_vmm_primary.o: src/guest_vmm.c
 	@mkdir -p $(BUILD_DIR)
-	$(CC) -c $(CFLAGS) -DARCH_X86_64 -DLINUX_VMM_X86_STUB=1 $< -o $@
+	$(CC) -c $(CFLAGS) -DARCH_X86_64 -DGUEST_VMM_X86_STUB=1 $< -o $@
 
-$(BUILD_DIR)/linux_vmm.elf: $(BUILD_DIR)/linux_vmm.o \
+$(BUILD_DIR)/guest_vmm_primary.elf: $(BUILD_DIR)/guest_vmm_primary.o \
                              $(BUILD_DIR)/sel4_crt.o \
                              $(BUILD_DIR)/pd_entry.o \
                              $(BUILD_DIR)/m3_bare_metal.o \
@@ -806,23 +801,23 @@ endif
 # A minimal fallback TOML is provided; board-specific overrides live in boards/.
 SYSTEM_TOML_DEFAULT := $(abspath $(CURDIR)/agentos.toml)
 ifdef SEL4_TEST_IMAGE
-# agentos-8f5: test images (always GUEST_OS=none) append the contract-runner PD
+# agentos-8f5: test images (with no guest profiles) append the contract-runner PD
 # so gen-pd-bundle embeds test_runner.elf and the root task can spawn it.
 SYSTEM_TOML_DEFAULT := $(abspath $(BUILD_DIR)/agentos-test.toml)
 $(SYSTEM_TOML_DEFAULT): $(abspath $(CURDIR)/agentos.toml)
 	@mkdir -p $(BUILD_DIR)
 	{ cat $<; printf '\n[[pd]]\nname = "test_runner"\npriority = 250\n'; } > $@
 else ifdef FAULT_INJECT
-ifeq ($(GUEST_OS),both)
+ifneq ($(and $(strip $(GUEST_PRIMARY_PROFILE)),$(strip $(GUEST_SECONDARY_PROFILE))),)
 SYSTEM_TOML_DEFAULT := $(abspath $(BUILD_DIR)/agentos-both-fault-inject.toml)
 $(SYSTEM_TOML_DEFAULT): $(abspath $(CURDIR)/agentos.toml)
 	@mkdir -p $(BUILD_DIR)
-	{ cat $<; printf '\n[[pd]]\nname = "freebsd_vmm"\npriority = 250\n'; printf '\n[[pd]]\nname = "fault_inject"\npriority = 254\n'; } > $@
-else ifeq ($(GUEST_OS),freebsd)
-SYSTEM_TOML_DEFAULT := $(abspath $(BUILD_DIR)/agentos-freebsd-fault-inject.toml)
+	{ cat $<; printf '\n[[pd]]\nname = "guest_vmm_secondary"\npriority = 250\n'; printf '\n[[pd]]\nname = "fault_inject"\npriority = 254\n'; } > $@
+else ifneq ($(strip $(GUEST_SECONDARY_PROFILE)),)
+SYSTEM_TOML_DEFAULT := $(abspath $(BUILD_DIR)/agentos-secondary-fault-inject.toml)
 $(SYSTEM_TOML_DEFAULT): $(abspath $(CURDIR)/agentos.toml)
 	@mkdir -p $(BUILD_DIR)
-	{ sed 's/name = "linux_vmm"/name = "freebsd_vmm"/' $<; printf '\n[[pd]]\nname = "fault_inject"\npriority = 254\n'; } > $@
+	{ sed 's/name = "guest_vmm_primary"/name = "guest_vmm_secondary"/' $<; printf '\n[[pd]]\nname = "fault_inject"\npriority = 254\n'; } > $@
 else
 SYSTEM_TOML_DEFAULT := $(abspath $(BUILD_DIR)/agentos-fault-inject.toml)
 $(SYSTEM_TOML_DEFAULT): $(abspath $(CURDIR)/agentos.toml)
@@ -830,16 +825,18 @@ $(SYSTEM_TOML_DEFAULT): $(abspath $(CURDIR)/agentos.toml)
 	{ cat $<; printf '\n[[pd]]\nname = "fault_inject"\npriority = 254\n'; } > $@
 endif
 else
-ifeq ($(GUEST_OS),freebsd)
-SYSTEM_TOML_DEFAULT := $(abspath $(BUILD_DIR)/agentos-freebsd.toml)
+ifeq ($(strip $(GUEST_PRIMARY_PROFILE)),)
+ifneq ($(strip $(GUEST_SECONDARY_PROFILE)),)
+SYSTEM_TOML_DEFAULT := $(abspath $(BUILD_DIR)/agentos-secondary.toml)
 $(SYSTEM_TOML_DEFAULT): $(abspath $(CURDIR)/agentos.toml)
 	@mkdir -p $(BUILD_DIR)
-	sed 's/name = "linux_vmm"/name = "freebsd_vmm"/' $< > $@
-else ifeq ($(GUEST_OS),both)
+	sed 's/name = "guest_vmm_primary"/name = "guest_vmm_secondary"/' $< > $@
+endif
+else ifneq ($(strip $(GUEST_SECONDARY_PROFILE)),)
 SYSTEM_TOML_DEFAULT := $(abspath $(BUILD_DIR)/agentos-both.toml)
 $(SYSTEM_TOML_DEFAULT): $(abspath $(CURDIR)/agentos.toml)
 	@mkdir -p $(BUILD_DIR)
-	{ cat $<; printf '\n[[pd]]\nname = "freebsd_vmm"\npriority = 250\n'; } > $@
+	{ cat $<; printf '\n[[pd]]\nname = "guest_vmm_secondary"\npriority = 250\n'; } > $@
 endif
 endif
 _BOARD_TOML := ../../boards/$(BOARD_NAME)/agentos.toml

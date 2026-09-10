@@ -334,8 +334,8 @@
         <end pd="serial_pd"  id="0" />
     </channel>
 
-    <protection_domain name="linux_vmm" priority="175">
-        <program_image path="linux_vmm.elf" />
+    <protection_domain name="guest_vmm_primary" priority="175">
+        <program_image path="guest_vmm_primary.elf" />
         <!--
             The VMM maps guest RAM at the same vaddr as the guest sees it
             (0x40000000). This is required by libvmm's current implementation.
@@ -383,7 +383,7 @@
     <!-- Channel 50: controller <-> linux_vmm (agent-to-linux bridge) -->
     <channel>
         <end pd="controller" id="50" />
-        <end pd="linux_vmm"  id="2" />
+        <end pd="guest_vmm_primary"  id="2" />
     </channel>
 
     <!--
@@ -392,7 +392,7 @@
       proxy guest UART MMIO accesses through serial_pd.
     -->
     <channel>
-        <end pd="linux_vmm"  id="1" pp="true" />
+        <end pd="guest_vmm_primary"  id="1" pp="true" />
         <end pd="serial_pd"  id="3" />
     </channel>
 
@@ -861,8 +861,8 @@
         QEMU virt AArch64 virtio-MMIO devices are at 0xa000000 + n*0x200.
         Slot 31 (0xa003e00) is not page-aligned; map the containing page
         (0xa003000) instead. The probe logic gracefully falls back to the
-        gpu_sched path if magic != ok — no virtio-gpu device is configured
-        in QEMU_RUN_FLAGS, so this path always falls back currently.
+        gpu_sched path if magic != ok — the current bounded QEMU launch plan
+        does not attach a host GPU device, so this path falls back currently.
       ══════════════════════════════════════════════════════════════════
     -->
     <memory_region name="fb_shmem" size="0x800000" />

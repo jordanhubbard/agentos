@@ -42,7 +42,7 @@
 
 /* ── OS image types ───────────────────────────────────────────────────────── */
 #define VOS_IMAGE_LINUX    0u
-#define VOS_IMAGE_FREEBSD  1u
+#define VOS_IMAGE_SECONDARY 1u
 #define VOS_IMAGE_CUSTOM   0xFFu
 
 /* ── Device kinds that can be attached ──────────────────────────────────── */
@@ -305,14 +305,14 @@ static void test_create_linux_ok(void) {
 
 static void test_create_freebsd_ok(void) {
     vos_reset();
-    uint32_t id = do_create("bsd-guest", VOS_IMAGE_FREEBSD, 256, 1);
+    uint32_t id = do_create("secondary-guest", VOS_IMAGE_SECONDARY, 256, 1);
     ASSERT_NE(id, 0u, "VOS_CREATE: FreeBSD image returns non-zero id");
 }
 
 static void test_create_ids_unique(void) {
     vos_reset();
     uint32_t id1 = do_create("a", VOS_IMAGE_LINUX,   128, 1);
-    uint32_t id2 = do_create("b", VOS_IMAGE_FREEBSD, 128, 1);
+    uint32_t id2 = do_create("b", VOS_IMAGE_SECONDARY, 128, 1);
     ASSERT_NE(id1, id2, "VOS_CREATE: two instances get distinct ids");
 }
 
@@ -402,7 +402,7 @@ static void test_destroy_removes_from_list(void) {
 
 static void test_status_ok(void) {
     vos_reset();
-    uint32_t id = do_create("s", VOS_IMAGE_FREEBSD, 512, 4);
+    uint32_t id = do_create("s", VOS_IMAGE_SECONDARY, 512, 4);
     mock_mr_clear();
     _mrs[0] = OP_VOS_STATUS; _mrs[1] = id;
     vos_dispatch(0, 0);
@@ -442,7 +442,7 @@ static void test_list_empty(void) {
 static void test_list_counts_instances(void) {
     vos_reset();
     do_create("a", VOS_IMAGE_LINUX,   128, 1);
-    do_create("b", VOS_IMAGE_FREEBSD, 256, 2);
+    do_create("b", VOS_IMAGE_SECONDARY, 256, 2);
     mock_mr_clear(); _mrs[0] = OP_VOS_LIST;
     vos_dispatch(0, 0);
     ASSERT_EQ(_mrs[1], 2u, "VOS_LIST: count == 2 after two creates");
@@ -566,7 +566,7 @@ static void test_configure_bad_id(void) {
 
 static void test_configure_noop_ok(void) {
     vos_reset();
-    uint32_t id = do_create("noop", VOS_IMAGE_FREEBSD, 128, 1);
+    uint32_t id = do_create("noop", VOS_IMAGE_SECONDARY, 128, 1);
     mock_mr_clear();
     _mrs[0] = OP_VOS_CONFIGURE; _mrs[1] = id;
     _mrs[2] = 0; _mrs[3] = 0; _mrs[4] = 0;  /* all-zero = no change */
@@ -669,7 +669,7 @@ int main(void) {
     /* Attach then re-attach after detach succeeds */
     {
         vos_reset();
-        uint32_t id = do_create("reattach", VOS_IMAGE_FREEBSD, 256, 2);
+        uint32_t id = do_create("reattach", VOS_IMAGE_SECONDARY, 256, 2);
         mock_mr_clear(); _mrs[0] = OP_VOS_ATTACH;
         _mrs[1] = id; _mrs[2] = VOS_DEV_BLOCK; _mrs[3] = 0;
         vos_dispatch(0, 0);

@@ -25,10 +25,12 @@ typedef uint32_t vos_handle_t;
 /* ── OS type ─────────────────────────────────────────────────────────────────── */
 
 typedef enum __attribute__((packed)) {
-    VOS_OS_LINUX   = 0,
-    VOS_OS_FREEBSD = 1,
+    VOS_PROFILE_PRIMARY   = 0,
+    VOS_PROFILE_SECONDARY = 1,
     VOS_OS_CUSTOM  = 2,
 } vos_os_type_t;
+
+#define VOS_OS_LINUX   VOS_PROFILE_PRIMARY
 
 /* ── Instance state ──────────────────────────────────────────────────────────── */
 

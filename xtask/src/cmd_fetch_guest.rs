@@ -1,32 +1,15 @@
-use crate::{FetchGuestArgs, GuestOs};
+use crate::cmd_guest_profile::{self, RecipeStep};
+use crate::FetchGuestArgs;
 use anyhow::Context;
 use std::ffi::OsString;
 use std::fs;
 use std::io::{ErrorKind, Read};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::process::Stdio;
 use std::time::UNIX_EPOCH;
 
 const ISO_DIR_ENV: &str = "AGENTOS_ISO_DIR";
 const COPY_ISOS_ENV: &str = "AGENTOS_COPY_ISOS";
-const FREEBSD_IMAGE_ENV: &str = "AGENTOS_FREEBSD_IMAGE";
-const FREEBSD_IMAGE_COMPAT_ENV: &str = "FREEBSD_IMAGE";
-
-const UBUNTU_VERSION: &str = "26.04";
-const UBUNTU_ISO_NAME: &str = "ubuntu-26.04-desktop-arm64.iso";
-const UBUNTU_ISO_URL: &str =
-    "https://cdimage.ubuntu.com/releases/26.04/release/ubuntu-26.04-desktop-arm64.iso";
-const UBUNTU_IMAGE_NAME: &str = "ubuntu-26.04-aarch64.iso";
-const UBUNTU_KERNEL_NAME: &str = "ubuntu-26.04-aarch64-Image";
-const UBUNTU_INITRD_NAME: &str = "ubuntu-26.04-aarch64-initrd";
-const UBUNTU_LIVE_INITRD_NAME: &str = "ubuntu-26.04-aarch64-live-initrd";
-
-const FREEBSD_VERSION: &str = "15.0";
-const FREEBSD_ISO_NAME: &str = "FreeBSD-15.0-RELEASE-arm64-aarch64-dvd1.iso";
-const FREEBSD_ISO_URL: &str =
-    "https://download.freebsd.org/releases/arm64/aarch64/ISO-IMAGES/15.0/FreeBSD-15.0-RELEASE-arm64-aarch64-dvd1.iso";
-const FREEBSD_IMAGE_NAME: &str = "freebsd-15.0-aarch64.iso";
-const FREEBSD_KERNEL_NAME: &str = "freebsd-15.0-aarch64-kernel";
 
 fn repo_root() -> anyhow::Result<PathBuf> {
     let out = std::process::Command::new("git")
@@ -39,10 +22,6 @@ fn repo_root() -> anyhow::Result<PathBuf> {
         .trim()
         .to_string();
     Ok(PathBuf::from(root))
-}
-
-fn default_image_dir() -> anyhow::Result<PathBuf> {
-    Ok(repo_root()?.join("build/guest-images"))
 }
 
 fn build_tmp_dir() -> anyhow::Result<PathBuf> {
@@ -107,75 +86,164 @@ fn ensure_cached_iso(iso_name: &str, url: &str) -> anyhow::Result<PathBuf> {
     Ok(cached)
 }
 
+fn download_tar_member(url: &str, member: &str, dest: &Path) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        url.starts_with("https://"),
+        "guest recipe downloads must use HTTPS"
+    );
+    if dest.exists() && fs::metadata(dest).map(|m| m.len()).unwrap_or(0) > 0 {
+        println!(
+            "[fetch-guest] tar member already staged: {}",
+            dest.display()
+        );
+        return Ok(());
+    }
+    if let Some(parent) = dest.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create {}", parent.display()))?;
+    }
+    let tmp_root = build_tmp_dir()?;
+    let tmp_dir = tempfile::Builder::new()
+        .prefix("agentos-guest-archive-")
+        .tempdir_in(&tmp_root)
+        .context("failed to create guest archive tempdir under build/tmp")?;
+    let archive = tmp_dir.path().join("download.tar");
+    let curl = find_tool(&["curl", "/opt/homebrew/bin/curl", "/usr/bin/curl"])?;
+    let status = std::process::Command::new(&curl)
+        .args(["--fail", "--location", "--progress-bar", "--output"])
+        .arg(&archive)
+        .arg(url)
+        .status()
+        .with_context(|| format!("failed to run {}", curl.display()))?;
+    anyhow::ensure!(status.success(), "archive download failed: {url}");
+
+    let tmp = dest.with_extension("tmp");
+    let _ = fs::remove_file(&tmp);
+    let out =
+        fs::File::create(&tmp).with_context(|| format!("failed to create {}", tmp.display()))?;
+    let status = std::process::Command::new("bsdtar")
+        .arg("-xOf")
+        .arg(&archive)
+        .arg(member)
+        .stdout(Stdio::from(out))
+        .status()
+        .context("failed to run bsdtar")?;
+    anyhow::ensure!(status.success(), "bsdtar failed extracting {member}");
+    anyhow::ensure!(
+        fs::metadata(&tmp).map(|m| m.len()).unwrap_or(0) > 0,
+        "archive member {member:?} was empty"
+    );
+    fs::rename(&tmp, dest)
+        .with_context(|| format!("failed to move {} to {}", tmp.display(), dest.display()))?;
+    Ok(())
+}
+
 pub fn run(args: &FetchGuestArgs) -> anyhow::Result<()> {
+    let root = repo_root()?;
+    let profile_root = if args.profile_root.is_absolute() {
+        args.profile_root.clone()
+    } else {
+        root.join(&args.profile_root)
+    };
     let output_dir = match &args.output_dir {
         Some(d) => PathBuf::from(d),
-        None => default_image_dir()?,
+        None => root.join(cmd_guest_profile::acquire_output_dir(
+            &profile_root,
+            &args.profile,
+        )?),
     };
     fs::create_dir_all(&output_dir)
         .with_context(|| format!("failed to create output dir: {}", output_dir.display()))?;
 
-    match args.os {
-        GuestOs::Ubuntu => fetch_ubuntu(&output_dir),
-        GuestOs::Freebsd => fetch_freebsd(&output_dir),
+    let (id, recipe) = cmd_guest_profile::acquire_recipe(&profile_root, &args.profile)?;
+    for step in &recipe {
+        execute_acquire_step(step, &output_dir)?;
     }
-}
-
-fn fetch_ubuntu(output_dir: &Path) -> anyhow::Result<()> {
-    let iso = stage_local_iso(
-        output_dir,
-        UBUNTU_ISO_NAME,
-        UBUNTU_IMAGE_NAME,
-        UBUNTU_ISO_URL,
-    )?;
-    extract_ubuntu_initrd(&iso, &output_dir.join(UBUNTU_INITRD_NAME))?;
-    extract_ubuntu_live_initrd(&iso, &output_dir.join(UBUNTU_LIVE_INITRD_NAME))?;
-    extract_ubuntu_kernel(&iso, &output_dir.join(UBUNTU_KERNEL_NAME))?;
     println!(
-        "[fetch-guest] Ubuntu {} assets ready under {}",
-        UBUNTU_VERSION,
+        "[fetch-guest] profile {id} assets ready under {}",
         output_dir.display()
     );
     Ok(())
 }
 
-fn extract_ubuntu_live_initrd(iso: &Path, initrd_dest: &Path) -> anyhow::Result<()> {
-    extract_iso_file(iso, "casper/initrd", initrd_dest)?;
+fn recipe_arg<'a>(step: &'a RecipeStep, key: &str) -> anyhow::Result<&'a str> {
+    step.args
+        .get(key)
+        .map(String::as_str)
+        .with_context(|| format!("host action {:?} requires argument {key:?}", step.action))
+}
+
+fn recipe_path(output_dir: &Path, value: &str) -> anyhow::Result<PathBuf> {
+    let relative = Path::new(value);
     anyhow::ensure!(
-        fs::metadata(initrd_dest).map(|m| m.len()).unwrap_or(0) > 1024 * 1024,
-        "Ubuntu casper initrd is unexpectedly small: {}",
-        initrd_dest.display()
+        !relative.as_os_str().is_empty()
+            && !relative.is_absolute()
+            && relative
+                .components()
+                .all(|c| matches!(c, Component::Normal(_))),
+        "guest recipe path must be a confined relative path: {value:?}"
     );
-    println!(
-        "[fetch-guest] Ubuntu Casper initrd FNV-1a: 0x{:08x}",
-        file_fnv1a(initrd_dest)?
-    );
+    Ok(output_dir.join(relative))
+}
+
+fn execute_acquire_step(step: &RecipeStep, output_dir: &Path) -> anyhow::Result<()> {
+    match step.action.as_str() {
+        "stage-url" => {
+            let output = recipe_arg(step, "output")?;
+            let dest = recipe_path(output_dir, output)?;
+            let override_path =
+                source_override(&dest, step.args.get("override_env").map(String::as_str))?;
+            if let Some(source) = override_path {
+                stage_existing_iso(output_dir, &source, output)?;
+            } else {
+                stage_local_iso(
+                    output_dir,
+                    recipe_arg(step, "cache_name")?,
+                    output,
+                    recipe_arg(step, "url")?,
+                )?;
+            }
+        }
+        "download-tar-member" => download_tar_member(
+            recipe_arg(step, "url")?,
+            recipe_arg(step, "member")?,
+            &recipe_path(output_dir, recipe_arg(step, "output")?)?,
+        )?,
+        "extract-iso-file" => {
+            let source = recipe_path(output_dir, recipe_arg(step, "source")?)?;
+            let output = recipe_path(output_dir, recipe_arg(step, "output")?)?;
+            extract_iso_file(&source, recipe_arg(step, "member")?, &output)?;
+            if let Some(minimum) = step.args.get("min_bytes") {
+                let minimum: u64 = minimum.parse().context("min_bytes must be an integer")?;
+                anyhow::ensure!(
+                    fs::metadata(&output).map(|m| m.len()).unwrap_or(0) >= minimum,
+                    "extracted artifact is smaller than min_bytes: {}",
+                    output.display()
+                );
+            }
+        }
+        "build-linux-probe-initramfs" => {
+            build_linux_probe_initramfs(&recipe_path(output_dir, recipe_arg(step, "output")?)?)?
+        }
+        "extract-arm64-linux-image" => extract_arm64_linux_image(
+            &recipe_path(output_dir, recipe_arg(step, "source")?)?,
+            recipe_arg(step, "member")?,
+            &recipe_path(output_dir, recipe_arg(step, "output")?)?,
+        )?,
+        "extract-arm64-elf-image" => extract_arm64_elf_image(
+            &recipe_path(output_dir, recipe_arg(step, "source")?)?,
+            recipe_arg(step, "member")?,
+            &recipe_path(output_dir, recipe_arg(step, "output")?)?,
+        )?,
+        other => anyhow::bail!("host acquire action {other:?} is not executable"),
+    }
     Ok(())
 }
 
-fn file_fnv1a(path: &Path) -> anyhow::Result<u32> {
-    let mut file =
-        fs::File::open(path).with_context(|| format!("failed to open {}", path.display()))?;
-    let mut hash = 2166136261u32;
-    let mut buf = [0u8; 64 * 1024];
-    loop {
-        let n = file
-            .read(&mut buf)
-            .with_context(|| format!("failed to read {}", path.display()))?;
-        if n == 0 {
-            break;
-        }
-        for byte in &buf[..n] {
-            hash = (hash ^ u32::from(*byte)).wrapping_mul(16777619u32);
-        }
-    }
-    Ok(hash)
-}
-
-fn extract_ubuntu_initrd(_iso: &Path, initrd_dest: &Path) -> anyhow::Result<()> {
-    if ubuntu_e2e_initrd_ready(initrd_dest)? {
+fn build_linux_probe_initramfs(initrd_dest: &Path) -> anyhow::Result<()> {
+    if linux_probe_initramfs_ready(initrd_dest)? {
         println!(
-            "[fetch-guest] Ubuntu E2E initrd already staged: {}",
+            "[fetch-guest] Linux probe initramfs already staged: {}",
             initrd_dest.display()
         );
         return Ok(());
@@ -183,21 +251,20 @@ fn extract_ubuntu_initrd(_iso: &Path, initrd_dest: &Path) -> anyhow::Result<()> 
 
     let tmp_root = build_tmp_dir()?;
     let tmp_dir = tempfile::Builder::new()
-        .prefix("agentos-ubuntu-initrd-")
+        .prefix("agentos-linux-probe-initrd-")
         .tempdir_in(&tmp_root)
-        .context("failed to create Ubuntu initrd tempdir under build/tmp")?;
+        .context("failed to create Linux probe initrd tempdir under build/tmp")?;
     let init = build_linux_e2e_init(tmp_dir.path())?;
-    let out = create_ubuntu_e2e_initramfs(&init)?;
+    let out = create_linux_probe_initramfs(&init)?;
     write_output(initrd_dest, &out)?;
     println!(
-        "[fetch-guest] Built Ubuntu {} deterministic E2E initrd -> {}",
-        UBUNTU_VERSION,
+        "[fetch-guest] Built deterministic Linux probe initramfs -> {}",
         initrd_dest.display()
     );
     Ok(())
 }
 
-fn ubuntu_e2e_initrd_ready(initrd: &Path) -> anyhow::Result<bool> {
+fn linux_probe_initramfs_ready(initrd: &Path) -> anyhow::Result<bool> {
     if !initrd.exists() || fs::metadata(initrd).map(|m| m.len()).unwrap_or(0) == 0 {
         return Ok(false);
     }
@@ -207,12 +274,13 @@ fn ubuntu_e2e_initrd_ready(initrd: &Path) -> anyhow::Result<bool> {
         .any(|entry| entry == "init" || entry == "./init")
         && entries
             .iter()
-            .any(|entry| entry == "agentos-init-v3" || entry == "./agentos-init-v3"))
+            .any(|entry| entry == "agentos-init-v4" || entry == "./agentos-init-v4"))
 }
 
 fn build_linux_e2e_init(work_dir: &Path) -> anyhow::Result<Vec<u8>> {
     let init_s = work_dir.join("agentos-linux-e2e-init.S");
     let init_elf = work_dir.join("init");
+    let normalized_elf = work_dir.join("init.normalized");
     fs::write(&init_s, LINUX_E2E_INIT_ASM)
         .with_context(|| format!("failed to write {}", init_s.display()))?;
 
@@ -244,8 +312,31 @@ fn build_linux_e2e_init(work_dir: &Path) -> anyhow::Result<Vec<u8>> {
         clang.display()
     );
 
-    let init =
-        fs::read(&init_elf).with_context(|| format!("failed to read {}", init_elf.display()))?;
+    // Clang and LLD identify their host toolchain in non-loadable ELF sections.
+    // Normalize those sections so the pinned initramfs and derived DTB hashes
+    // are identical on Linux and macOS without weakening artifact verification.
+    let objcopy = find_tool(&[
+        "llvm-objcopy",
+        "/opt/homebrew/opt/llvm/bin/llvm-objcopy",
+        "/opt/homebrew/opt/llvm@22/bin/llvm-objcopy",
+        "/opt/homebrew/opt/llvm@21/bin/llvm-objcopy",
+        "/usr/local/opt/llvm/bin/llvm-objcopy",
+        "/usr/bin/llvm-objcopy",
+    ])?;
+    let status = std::process::Command::new(&objcopy)
+        .args(["--strip-all", "--remove-section=.comment"])
+        .arg(&init_elf)
+        .arg(&normalized_elf)
+        .status()
+        .with_context(|| format!("failed to run {}", objcopy.display()))?;
+    anyhow::ensure!(
+        status.success(),
+        "{} failed normalizing E2E init",
+        objcopy.display()
+    );
+
+    let init = fs::read(&normalized_elf)
+        .with_context(|| format!("failed to read {}", normalized_elf.display()))?;
     anyhow::ensure!(
         init.starts_with(b"\x7fELF"),
         "built E2E init is not an ELF binary"
@@ -253,7 +344,7 @@ fn build_linux_e2e_init(work_dir: &Path) -> anyhow::Result<Vec<u8>> {
     Ok(init)
 }
 
-fn create_ubuntu_e2e_initramfs(init_elf: &[u8]) -> anyhow::Result<Vec<u8>> {
+fn create_linux_probe_initramfs(init_elf: &[u8]) -> anyhow::Result<Vec<u8>> {
     let mut out = Vec::new();
     let mut ino = 1u32;
     append_newc_dir(&mut out, ".", ino)?;
@@ -268,7 +359,7 @@ fn create_ubuntu_e2e_initramfs(init_elf: &[u8]) -> anyhow::Result<Vec<u8>> {
     ino += 1;
     append_newc_file(
         &mut out,
-        "agentos-init-v3",
+        "agentos-init-v4",
         ino,
         0o444,
         b"console-open\nvirtio-net-frame\n",
@@ -487,25 +578,6 @@ inbuf:
     .skip 1
 "#;
 
-fn fetch_freebsd(output_dir: &Path) -> anyhow::Result<()> {
-    let iso = match freebsd_source_override(output_dir)? {
-        Some(src) => stage_existing_iso(output_dir, &src, FREEBSD_IMAGE_NAME)?,
-        None => stage_local_iso(
-            output_dir,
-            FREEBSD_ISO_NAME,
-            FREEBSD_IMAGE_NAME,
-            FREEBSD_ISO_URL,
-        )?,
-    };
-    extract_freebsd_kernel(&iso, &output_dir.join(FREEBSD_KERNEL_NAME))?;
-    println!(
-        "[fetch-guest] FreeBSD {} assets ready under {}",
-        FREEBSD_VERSION,
-        output_dir.display()
-    );
-    Ok(())
-}
-
 fn archive_entries(archive: &Path) -> anyhow::Result<Vec<String>> {
     let out = std::process::Command::new("bsdtar")
         .arg("-tf")
@@ -521,7 +593,7 @@ fn archive_entries(archive: &Path) -> anyhow::Result<Vec<String>> {
     Ok(stdout.lines().map(|line| line.to_string()).collect())
 }
 
-fn extract_freebsd_kernel(iso: &Path, kernel_dest: &Path) -> anyhow::Result<()> {
+fn extract_arm64_elf_image(iso: &Path, member: &str, kernel_dest: &Path) -> anyhow::Result<()> {
     let source_id = source_file_identity(iso)?;
     let source_stamp = PathBuf::from(format!("{}.source", kernel_dest.display()));
     if kernel_dest.exists()
@@ -529,7 +601,7 @@ fn extract_freebsd_kernel(iso: &Path, kernel_dest: &Path) -> anyhow::Result<()> 
         && fs::read_to_string(&source_stamp).unwrap_or_default() == source_id
     {
         println!(
-            "[fetch-guest] FreeBSD kernel already extracted: {}",
+            "[fetch-guest] arm64 ELF image already extracted: {}",
             kernel_dest.display()
         );
         return Ok(());
@@ -537,12 +609,12 @@ fn extract_freebsd_kernel(iso: &Path, kernel_dest: &Path) -> anyhow::Result<()> 
 
     let tmp_root = build_tmp_dir()?;
     let tmp_dir = tempfile::Builder::new()
-        .prefix("agentos-freebsd-kernel-")
+        .prefix("agentos-arm64-elf-image-")
         .tempdir_in(&tmp_root)
-        .context("failed to create FreeBSD kernel tempdir under build/tmp")?;
+        .context("failed to create arm64 ELF image tempdir under build/tmp")?;
     let elf = tmp_dir.path().join("kernel.elf");
     let payload = tmp_dir.path().join("kernel.payload");
-    extract_iso_file(iso, "boot/kernel/kernel", &elf)?;
+    extract_iso_file(iso, member, &elf)?;
 
     let objcopy = find_tool(&[
         "llvm-objcopy",
@@ -560,7 +632,7 @@ fn extract_freebsd_kernel(iso: &Path, kernel_dest: &Path) -> anyhow::Result<()> 
         .with_context(|| format!("failed to run {}", objcopy.display()))?;
     anyhow::ensure!(status.success(), "{} failed", objcopy.display());
 
-    let image_size = freebsd_arm64_image_size(&elf)?;
+    let image_size = arm64_elf_image_size(&elf)?;
     let payload =
         fs::read(&payload).with_context(|| format!("failed to read {}", payload.display()))?;
     let mut image = vec![0u8; 0x800];
@@ -568,13 +640,13 @@ fn extract_freebsd_kernel(iso: &Path, kernel_dest: &Path) -> anyhow::Result<()> 
     wr32(&mut image, 0x04, 0);
     wr64(&mut image, 0x08, 0); /* text_offset: loader places at RAM base */
     wr64(&mut image, 0x10, image_size);
-    wr64(&mut image, 0x18, 0x8); /* flags used by FreeBSD arm64 kernel.bin */
+    wr64(&mut image, 0x18, 0x8); /* arm64 Image flags: little-endian, 4 KiB pages */
     image[0x38..0x3c].copy_from_slice(b"ARMd");
     image.extend_from_slice(&payload);
     write_output(kernel_dest, &image)?;
     write_output(&source_stamp, source_id.as_bytes())?;
     println!(
-        "[fetch-guest] Built FreeBSD arm64 kernel.bin image -> {}",
+        "[fetch-guest] Built arm64 Image wrapper from ELF -> {}",
         kernel_dest.display()
     );
     Ok(())
@@ -623,9 +695,20 @@ fn stage_local_iso(
     Ok(dest)
 }
 
-fn freebsd_source_override(output_dir: &Path) -> anyhow::Result<Option<PathBuf>> {
-    let staged = output_dir.join(FREEBSD_IMAGE_NAME);
-    for env in [FREEBSD_IMAGE_ENV, FREEBSD_IMAGE_COMPAT_ENV] {
+fn source_override(staged: &Path, variables: Option<&str>) -> anyhow::Result<Option<PathBuf>> {
+    let Some(variables) = variables else {
+        return Ok(None);
+    };
+    for env in variables
+        .split(',')
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+    {
+        anyhow::ensure!(
+            env.bytes()
+                .all(|byte| byte.is_ascii_uppercase() || byte.is_ascii_digit() || byte == b'_'),
+            "invalid override environment variable name {env:?}"
+        );
         let Some(value) = std::env::var_os(env) else {
             continue;
         };
@@ -647,13 +730,13 @@ fn freebsd_source_override(output_dir: &Path) -> anyhow::Result<Option<PathBuf>>
 
         anyhow::ensure!(
             path.exists(),
-            "{} points to missing FreeBSD image {}",
+            "{} points to missing guest image {}",
             env,
             path.display()
         );
         anyhow::ensure!(
             fs::metadata(&path).map(|m| m.len()).unwrap_or(0) > 0,
-            "{} points to empty FreeBSD image {}",
+            "{} points to empty guest image {}",
             env,
             path.display()
         );
@@ -838,10 +921,10 @@ fn extract_iso_file(iso: &Path, entry: &str, dest: &Path) -> anyhow::Result<()> 
     Ok(())
 }
 
-fn extract_ubuntu_kernel(iso: &Path, kernel_dest: &Path) -> anyhow::Result<()> {
+fn extract_arm64_linux_image(iso: &Path, member: &str, kernel_dest: &Path) -> anyhow::Result<()> {
     if kernel_dest.exists() && fs::metadata(kernel_dest).map(|m| m.len()).unwrap_or(0) > 0 {
         println!(
-            "[fetch-guest] Ubuntu kernel already extracted: {}",
+            "[fetch-guest] arm64 Linux Image already extracted: {}",
             kernel_dest.display()
         );
         return Ok(());
@@ -849,11 +932,11 @@ fn extract_ubuntu_kernel(iso: &Path, kernel_dest: &Path) -> anyhow::Result<()> {
 
     let tmp_root = build_tmp_dir()?;
     let tmp_dir = tempfile::Builder::new()
-        .prefix("agentos-ubuntu-kernel-")
+        .prefix("agentos-arm64-linux-image-")
         .tempdir_in(&tmp_root)
-        .context("failed to create Ubuntu kernel tempdir under build/tmp")?;
+        .context("failed to create arm64 Linux Image tempdir under build/tmp")?;
     let vmlinuz = tmp_dir.path().join("vmlinuz");
-    extract_iso_file(iso, "casper/vmlinuz", &vmlinuz)?;
+    extract_iso_file(iso, member, &vmlinuz)?;
     decode_arm64_kernel(&vmlinuz, kernel_dest, tmp_dir.path())
 }
 
@@ -1008,17 +1091,14 @@ fn write_output(dest: &Path, bytes: &[u8]) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn freebsd_arm64_image_size(elf_path: &Path) -> anyhow::Result<u64> {
+fn arm64_elf_image_size(elf_path: &Path) -> anyhow::Result<u64> {
     let elf =
         fs::read(elf_path).with_context(|| format!("failed to read {}", elf_path.display()))?;
-    anyhow::ensure!(elf.len() >= 64, "FreeBSD kernel ELF is too small");
-    anyhow::ensure!(
-        &elf[0..4] == b"\x7fELF",
-        "FreeBSD kernel is not an ELF file"
-    );
+    anyhow::ensure!(elf.len() >= 64, "arm64 kernel ELF is too small");
+    anyhow::ensure!(&elf[0..4] == b"\x7fELF", "arm64 kernel is not an ELF file");
     anyhow::ensure!(
         elf[4] == 2 && elf[5] == 1,
-        "FreeBSD kernel is not ELF64 little-endian"
+        "arm64 kernel is not ELF64 little-endian"
     );
 
     let phoff = rd64(&elf, 32)? as usize;
@@ -1051,7 +1131,7 @@ fn freebsd_arm64_image_size(elf_path: &Path) -> anyhow::Result<u64> {
 
     anyhow::ensure!(
         base != u64::MAX && end > base,
-        "FreeBSD ELF has no LOAD segments"
+        "arm64 ELF has no LOAD segments"
     );
     Ok(align_up(end - base, 0x1000))
 }

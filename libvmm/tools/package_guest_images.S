@@ -42,4 +42,9 @@ _guest_dtb_image_end:
 _guest_initrd_image:
 .incbin GUEST_INITRD_IMAGE_PATH
 _guest_initrd_image_end:
+#else
+.section .guest_initrd_image, "aw", @progbits
+.global _guest_initrd_image, _guest_initrd_image_end
+_guest_initrd_image:
+_guest_initrd_image_end:
 #endif

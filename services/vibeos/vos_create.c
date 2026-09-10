@@ -248,7 +248,7 @@ void vos_create_init(cap_tree_t *tree,
     for (i = 0u; i < VOS_MAX_INSTANCES; i++) {
         g_slots[i].handle           = VOS_HANDLE_INVALID;
         g_slots[i].state            = VOS_STATE_DESTROYED;
-        g_slots[i].os_type          = VOS_OS_LINUX;
+        g_slots[i].os_type          = VOS_PROFILE_PRIMARY;
         g_slots[i].vcpu_count       = 0u;
         g_slots[i].memory_pages     = 0u;
         g_slots[i].cap_subtree_root = CAP_NODE_NONE;
@@ -285,8 +285,8 @@ vos_err_t vos_create(const vos_spec_t *spec, vos_handle_t *handle_out)
 
     /* Validate os_type — only known enum values are accepted */
     switch ((uint32_t)spec->os_type) {
-    case (uint32_t)VOS_OS_LINUX:
-    case (uint32_t)VOS_OS_FREEBSD:
+    case (uint32_t)VOS_PROFILE_PRIMARY:
+    case (uint32_t)VOS_PROFILE_SECONDARY:
     case (uint32_t)VOS_OS_CUSTOM:
         break;
     default:

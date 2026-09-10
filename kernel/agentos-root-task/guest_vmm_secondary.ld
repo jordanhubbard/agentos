@@ -1,9 +1,9 @@
 /*
- * freebsd_vmm.ld - high-address linker script for the AArch64 FreeBSD VMM.
+ * guest_vmm_secondary.ld - high-address linker script for a secondary VMM.
  *
  * The raw root task currently gives the VMM host thread and guest VCPU the
  * same VSpace. Keep the VMM ELF out of the guest's low MMIO and direct-boot
- * layout so FreeBSD can own its expected IPA ranges.
+ * layout so the selected guest can own its expected IPA ranges.
  */
 
 PHDRS
@@ -75,5 +75,5 @@ SECTIONS
 
     /* 0x22000000 begins the root-provisioned block-service shared window. */
     ASSERT(. <= 0x22000000,
-           "freebsd_vmm image exceeds its reserved host virtual-address window")
+           "secondary guest VMM image exceeds its reserved host virtual-address window")
 }

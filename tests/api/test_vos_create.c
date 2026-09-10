@@ -224,7 +224,7 @@ static void test_03_create_valid_spec_ok(void)
 {
     reset_stubs();
     do_init();
-    vos_spec_t    spec = make_spec("testvm", VOS_OS_LINUX, VOS_SPEC_MIN_PAGES);
+    vos_spec_t    spec = make_spec("testvm", VOS_PROFILE_PRIMARY, VOS_SPEC_MIN_PAGES);
     vos_handle_t  h    = VOS_HANDLE_INVALID;
     vos_err_t     err  = vos_create(&spec, &h);
     ASSERT_EQ((uint64_t)err, (uint64_t)VOS_ERR_OK,
@@ -238,7 +238,7 @@ static void test_04_create_returns_valid_handle(void)
 {
     reset_stubs();
     do_init();
-    vos_spec_t    spec = make_spec("vm0", VOS_OS_LINUX, VOS_SPEC_MIN_PAGES);
+    vos_spec_t    spec = make_spec("vm0", VOS_PROFILE_PRIMARY, VOS_SPEC_MIN_PAGES);
     vos_handle_t  h    = VOS_HANDLE_INVALID;
     vos_create(&spec, &h);
     ASSERT_NE((uint64_t)h, (uint64_t)VOS_HANDLE_INVALID,
@@ -252,7 +252,7 @@ static void test_05_instance_get_non_null_after_create(void)
 {
     reset_stubs();
     do_init();
-    vos_spec_t    spec = make_spec("vm1", VOS_OS_LINUX, VOS_SPEC_MIN_PAGES);
+    vos_spec_t    spec = make_spec("vm1", VOS_PROFILE_PRIMARY, VOS_SPEC_MIN_PAGES);
     vos_handle_t  h    = VOS_HANDLE_INVALID;
     vos_create(&spec, &h);
     vos_instance_t *inst = vos_instance_get(h);
@@ -279,7 +279,7 @@ static void test_07_spec_min_pages_underflow(void)
 {
     reset_stubs();
     do_init();
-    vos_spec_t   spec = make_spec("vm", VOS_OS_LINUX, VOS_SPEC_MIN_PAGES - 1u);
+    vos_spec_t   spec = make_spec("vm", VOS_PROFILE_PRIMARY, VOS_SPEC_MIN_PAGES - 1u);
     vos_handle_t h    = VOS_HANDLE_INVALID;
     vos_err_t    err  = vos_create(&spec, &h);
     ASSERT_EQ((uint64_t)err, (uint64_t)VOS_ERR_INVALID_SPEC,
@@ -293,7 +293,7 @@ static void test_08_spec_max_pages_overflow(void)
 {
     reset_stubs();
     do_init();
-    vos_spec_t   spec = make_spec("vm", VOS_OS_LINUX, VOS_SPEC_MAX_PAGES + 1u);
+    vos_spec_t   spec = make_spec("vm", VOS_PROFILE_PRIMARY, VOS_SPEC_MAX_PAGES + 1u);
     vos_handle_t h    = VOS_HANDLE_INVALID;
     vos_err_t    err  = vos_create(&spec, &h);
     ASSERT_EQ((uint64_t)err, (uint64_t)VOS_ERR_INVALID_SPEC,
@@ -321,7 +321,7 @@ static void test_10_state_creating_after_create(void)
 {
     reset_stubs();
     do_init();
-    vos_spec_t   spec = make_spec("vm2", VOS_OS_LINUX, VOS_SPEC_MIN_PAGES);
+    vos_spec_t   spec = make_spec("vm2", VOS_PROFILE_PRIMARY, VOS_SPEC_MIN_PAGES);
     vos_handle_t h    = VOS_HANDLE_INVALID;
     vos_create(&spec, &h);
     vos_instance_t *inst = vos_instance_get(h);
@@ -337,12 +337,12 @@ static void test_11_instance_os_type_matches(void)
 {
     reset_stubs();
     do_init();
-    vos_spec_t   spec = make_spec("bsd0", VOS_OS_FREEBSD, VOS_SPEC_MIN_PAGES);
+    vos_spec_t   spec = make_spec("bsd0", VOS_PROFILE_SECONDARY, VOS_SPEC_MIN_PAGES);
     vos_handle_t h    = VOS_HANDLE_INVALID;
     vos_create(&spec, &h);
     vos_instance_t *inst = vos_instance_get(h);
     ASSERT_TRUE(inst != (vos_instance_t *)0, "create: instance found");
-    ASSERT_EQ((uint64_t)inst->os_type, (uint64_t)VOS_OS_FREEBSD,
+    ASSERT_EQ((uint64_t)inst->os_type, (uint64_t)VOS_PROFILE_SECONDARY,
               "create: os_type matches spec (FREEBSD)");
 }
 
@@ -354,7 +354,7 @@ static void test_12_instance_memory_pages_matches(void)
     reset_stubs();
     do_init();
     uint32_t     pages = 512u;
-    vos_spec_t   spec  = make_spec("vm3", VOS_OS_LINUX, pages);
+    vos_spec_t   spec  = make_spec("vm3", VOS_PROFILE_PRIMARY, pages);
     vos_handle_t h     = VOS_HANDLE_INVALID;
     vos_create(&spec, &h);
     vos_instance_t *inst = vos_instance_get(h);
@@ -370,7 +370,7 @@ static void test_13_ut_alloc_called_for_fixed_objects(void)
 {
     reset_stubs();
     do_init();
-    vos_spec_t   spec = make_spec("vm4", VOS_OS_LINUX, VOS_SPEC_MIN_PAGES);
+    vos_spec_t   spec = make_spec("vm4", VOS_PROFILE_PRIMARY, VOS_SPEC_MIN_PAGES);
     vos_handle_t h    = VOS_HANDLE_INVALID;
     vos_create(&spec, &h);
 
@@ -392,7 +392,7 @@ static void test_14_fill_all_slots(void)
     do_init();
     vos_err_t all_ok = VOS_ERR_OK;
     for (uint32_t i = 0u; i < VOS_MAX_INSTANCES; i++) {
-        vos_spec_t   spec = make_spec("vm", VOS_OS_LINUX, VOS_SPEC_MIN_PAGES);
+        vos_spec_t   spec = make_spec("vm", VOS_PROFILE_PRIMARY, VOS_SPEC_MIN_PAGES);
         vos_handle_t h    = VOS_HANDLE_INVALID;
         vos_err_t    err  = vos_create(&spec, &h);
         if (err != VOS_ERR_OK) {
@@ -411,12 +411,12 @@ static void test_15_exceed_max_instances(void)
     reset_stubs();
     do_init();
     for (uint32_t i = 0u; i < VOS_MAX_INSTANCES; i++) {
-        vos_spec_t   spec = make_spec("vm", VOS_OS_LINUX, VOS_SPEC_MIN_PAGES);
+        vos_spec_t   spec = make_spec("vm", VOS_PROFILE_PRIMARY, VOS_SPEC_MIN_PAGES);
         vos_handle_t h    = VOS_HANDLE_INVALID;
         vos_create(&spec, &h);
     }
     /* One more — must fail */
-    vos_spec_t   spec = make_spec("overflow", VOS_OS_LINUX, VOS_SPEC_MIN_PAGES);
+    vos_spec_t   spec = make_spec("overflow", VOS_PROFILE_PRIMARY, VOS_SPEC_MIN_PAGES);
     vos_handle_t h    = VOS_HANDLE_INVALID;
     vos_err_t    err  = vos_create(&spec, &h);
     ASSERT_EQ((uint64_t)err, (uint64_t)VOS_ERR_OUT_OF_MEMORY,
@@ -430,7 +430,7 @@ static void test_16_cap_tree_node_count(void)
 {
     reset_stubs();
     do_init();
-    vos_spec_t   spec = make_spec("vm5", VOS_OS_LINUX, VOS_SPEC_MIN_PAGES);
+    vos_spec_t   spec = make_spec("vm5", VOS_PROFILE_PRIMARY, VOS_SPEC_MIN_PAGES);
     vos_handle_t h    = VOS_HANDLE_INVALID;
     vos_create(&spec, &h);
 
@@ -455,7 +455,7 @@ static void test_17_cap_tree_pd_owner(void)
 {
     reset_stubs();
     do_init();
-    vos_spec_t   spec = make_spec("vm6", VOS_OS_LINUX, VOS_SPEC_MIN_PAGES);
+    vos_spec_t   spec = make_spec("vm6", VOS_PROFILE_PRIMARY, VOS_SPEC_MIN_PAGES);
     vos_handle_t h    = VOS_HANDLE_INVALID;
     vos_create(&spec, &h);
 
@@ -476,7 +476,7 @@ static void test_18_ut_alloc_failure_cnode(void)
     do_init();
     /* Fail on the very first call (CNode allocation) */
     g_ut_fail_on_call = 1;
-    vos_spec_t   spec = make_spec("vm", VOS_OS_LINUX, VOS_SPEC_MIN_PAGES);
+    vos_spec_t   spec = make_spec("vm", VOS_PROFILE_PRIMARY, VOS_SPEC_MIN_PAGES);
     vos_handle_t h    = VOS_HANDLE_INVALID;
     vos_err_t    err  = vos_create(&spec, &h);
     ASSERT_EQ((uint64_t)err, (uint64_t)VOS_ERR_OUT_OF_MEMORY,
@@ -494,7 +494,7 @@ static void test_19_ut_alloc_failure_vcpu(void)
     do_init();
     /* Fail on the 3rd call (VCPU) — CNode=1, VSpace=2, VCPU=3 */
     g_ut_fail_on_call = 3;
-    vos_spec_t   spec = make_spec("vm", VOS_OS_LINUX, VOS_SPEC_MIN_PAGES);
+    vos_spec_t   spec = make_spec("vm", VOS_PROFILE_PRIMARY, VOS_SPEC_MIN_PAGES);
     vos_handle_t h    = VOS_HANDLE_INVALID;
     vos_err_t    err  = vos_create(&spec, &h);
     ASSERT_EQ((uint64_t)err, (uint64_t)VOS_ERR_OUT_OF_MEMORY,
@@ -516,7 +516,7 @@ static void test_20_ut_alloc_failure_mid_frames(void)
      * Fail on call 6 → frame allocation #2 fails.
      */
     g_ut_fail_on_call = 6;
-    vos_spec_t   spec = make_spec("vm", VOS_OS_LINUX, VOS_SPEC_MIN_PAGES);
+    vos_spec_t   spec = make_spec("vm", VOS_PROFILE_PRIMARY, VOS_SPEC_MIN_PAGES);
     vos_handle_t h    = VOS_HANDLE_INVALID;
     vos_err_t    err  = vos_create(&spec, &h);
     ASSERT_EQ((uint64_t)err, (uint64_t)VOS_ERR_OUT_OF_MEMORY,
@@ -546,7 +546,7 @@ static void test_22_handle_is_slot_index(void)
 {
     reset_stubs();
     do_init();
-    vos_spec_t   spec = make_spec("vm7", VOS_OS_LINUX, VOS_SPEC_MIN_PAGES);
+    vos_spec_t   spec = make_spec("vm7", VOS_PROFILE_PRIMARY, VOS_SPEC_MIN_PAGES);
     vos_handle_t h    = VOS_HANDLE_INVALID;
     vos_create(&spec, &h);
     ASSERT_TRUE(h < VOS_MAX_INSTANCES,
@@ -569,8 +569,8 @@ static void test_24_two_creates_different_handles(void)
 {
     reset_stubs();
     do_init();
-    vos_spec_t   s0  = make_spec("vm-a", VOS_OS_LINUX, VOS_SPEC_MIN_PAGES);
-    vos_spec_t   s1  = make_spec("vm-b", VOS_OS_LINUX, VOS_SPEC_MIN_PAGES);
+    vos_spec_t   s0  = make_spec("vm-a", VOS_PROFILE_PRIMARY, VOS_SPEC_MIN_PAGES);
+    vos_spec_t   s1  = make_spec("vm-b", VOS_PROFILE_PRIMARY, VOS_SPEC_MIN_PAGES);
     vos_handle_t h0  = VOS_HANDLE_INVALID;
     vos_handle_t h1  = VOS_HANDLE_INVALID;
     vos_create(&s0, &h0);

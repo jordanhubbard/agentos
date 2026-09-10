@@ -1,7 +1,7 @@
 # agentOS — Platform Plan
 
 **Status:** Active
-**Last updated:** 2026-09-06
+**Last updated:** 2026-09-09
 **Epic:** mac `task_a2c5cdc55f994af8bc9fc48b13c54d5a` (project `agentos`)
 
 QEMU is a hardware emulator so we can prototype quickly. agentOS is the
@@ -27,7 +27,7 @@ binding) described the wrong I/O model. It is superseded by this document.
 | 2b | `task_0d44a94246554eeabc8d5bc8e36ab6d7` | done | `make test-guest-net`: boot buildroot, enumerate IPA `0x0A010000`, pump one frame |
 | 3 | `task_892273845b0949ce8be59f70c02bf644` | done | `make test-guest-blk`: boot buildroot, enumerate IPA `0x0A020000`, pump one request |
 | 4 | `task_9218737eb11a438b89552c599c25d012` | in progress | Ubuntu hvc0 uses emulated virtio-console + sDDF queues; remove residual direct UART ownership |
-| 5 | `task_7f6653b7dcc840b9ab7fa092685c9d57` | waiting on 4 | One VMM implementation; guest flavor is data |
+| 5 | `task_7f6653b7dcc840b9ab7fa092685c9d57` | done (host-tested; live gate waits on 4) | Versioned profiles drive artifact acquisition, lifecycle type, boot, devices, the receive loop, bounded console state machines, and interactive/QA host launch tooling |
 | 6 | `task_c03b1c0527de416fbcfcdfcb77787559` | in progress | Linux guest RAM is nonidentity; migrate FreeBSD and residual non-guest DMA users |
 | 7 | (done) | done (quarantine by docs) | Quarantine PD museum (no deletes this pass) |
 | 8 | (done) | done | Text-only skills + Rust helper tools |

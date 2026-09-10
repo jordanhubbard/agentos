@@ -66,16 +66,19 @@ typedef uint32_t vos_handle_t;
 /*
  * vos_os_type_t — identifies the guest operating system to boot.
  *
- * VOS_OS_LINUX    — Linux guest via libvmm (AArch64 EL1; x86_64 pending).
- * VOS_OS_FREEBSD  — FreeBSD guest via vmm_mux / freebsd-vmm layer.
+ * VOS_PROFILE_PRIMARY    — Linux guest via libvmm (AArch64 EL1; x86_64 pending).
+ * VOS_PROFILE_SECONDARY  — FreeBSD guest via vmm_mux / freebsd-vmm layer.
  * VOS_OS_CUSTOM   — Caller-supplied boot image; os_type ignored by the VMM,
  *                   boot behaviour determined entirely by boot_image_cap.
  */
 typedef enum __attribute__((packed)) {
-    VOS_OS_LINUX   = 0,
-    VOS_OS_FREEBSD = 1,
+    VOS_PROFILE_PRIMARY   = 0,
+    VOS_PROFILE_SECONDARY = 1,
     VOS_OS_CUSTOM  = 2,
 } vos_os_type_t;
+
+#define VOS_OS_LINUX   VOS_PROFILE_PRIMARY
+#define VOS_OS_FREEBSD VOS_PROFILE_SECONDARY
 
 /* ── Instance state enumeration ─────────────────────────────────────────── */
 
@@ -182,7 +185,7 @@ typedef uint32_t vos_err_t;
  *                     >1 is accepted for future SMP guests.
  *   boot_image_cap  — seL4 capability index pointing to the guest boot image
  *                     (kernel + optional initrd) in the caller's CSpace.
- *                     For VOS_OS_LINUX / VOS_OS_FREEBSD, the VMM layer
+ *                     For VOS_PROFILE_PRIMARY / VOS_PROFILE_SECONDARY, the VMM layer
  *                     expects a flat binary or ELF at offset 0.
  *   config_blob     — pointer (in caller address space) to an optional opaque
  *                     configuration blob. Interpreted per os_type:

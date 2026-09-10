@@ -51,8 +51,9 @@
 
 /* ─── OS type constants ──────────────────────────────────────────────────── */
 
-#define VMM_OS_TYPE_LINUX    0x01u
-#define VMM_OS_TYPE_FREEBSD  0x02u
+#define VMM_PROFILE_PRIMARY    0x01u
+#define VMM_PROFILE_SECONDARY  0x02u
+#define VMM_OS_TYPE_LINUX      VMM_PROFILE_PRIMARY
 
 /* ─── VMM flags ──────────────────────────────────────────────────────────── */
 

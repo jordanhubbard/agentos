@@ -1,0 +1,18 @@
+schema = 1
+id = "dual-release-aarch64"
+aliases = ["both"]
+board = "qemu_virt_aarch64"
+machine = "virt,virtualization=on,highmem=off,secure=off,acpi=off"
+memory = "3G"
+
+[[guests]]
+profile = "freebsd.toml"
+ram_mb = 256
+ssh_host_port = 12223
+ssh_guest_address = "10.0.2.16"
+
+[[guests]]
+profile = "ubuntu-live.toml"
+ram_mb = 1024
+ssh_host_port = 12222
+ssh_guest_address = "10.0.2.15"

@@ -72,7 +72,7 @@ void run_guest_binding_tests(void)
     /* ── Step 3: Create a VM slot ──────────────────────────────────────── */
 
     microkit_mr_set(0, (uint64_t)OP_VM_CREATE);
-    microkit_mr_set(1, VM_TYPE_LINUX);
+    microkit_mr_set(1, VM_PROFILE_PRIMARY);
     microkit_mr_set(2, 128);  /* ram_mb */
     (void)microkit_ppcall(ch_vm, microkit_msginfo_new(OP_VM_CREATE, 3));
     uint64_t create_rc = microkit_mr_get(0);

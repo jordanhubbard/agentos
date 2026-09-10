@@ -431,7 +431,7 @@ static void test_vos_create(microkit_channel ch)
     TEST_SECTION("vibe_engine:vos_create");
 
     microkit_mr_set(0, (uint64_t)VIBEOS_OP_CREATE);
-    microkit_mr_set(1, VIBEOS_TYPE_LINUX);
+    microkit_mr_set(1, VIBEOS_PROFILE_PRIMARY);
     microkit_mr_set(2, 128);  /* ram_mb */
     microkit_mr_set(3, GUEST_DEV_SERIAL | GUEST_DEV_NET);  /* dev_flags */
     (void)microkit_ppcall(ch, microkit_msginfo_new(VIBEOS_OP_CREATE, 4));
@@ -529,7 +529,7 @@ static void test_vos_status(microkit_channel ch)
         _tf_fail_point("VOS_STATUS: state is BOOTING or RUNNING",
                        "unexpected state after CREATE");
     }
-    if (os_type == VIBEOS_TYPE_LINUX && ram_mb == 128) {
+    if (os_type == VIBEOS_PROFILE_PRIMARY && ram_mb == 128) {
         _tf_ok("VOS_STATUS: os_type=linux, ram_mb=128 match CREATE args");
     } else {
         _tf_fail_point("VOS_STATUS: os_type=linux, ram_mb=128 match CREATE args",

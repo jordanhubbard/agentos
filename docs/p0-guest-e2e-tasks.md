@@ -17,7 +17,7 @@ Status values: `todo`, `in-progress`, `blocked`, `done`.
 Status: `done`
 
 Gap: the opt-in Linux/Ubuntu guest build can reuse a stale default-stub
-`linux_vmm.o` in `build/<board>/`, then link it through the full libvmm path.
+`guest_vmm_primary.o` in `build/<board>/`, then link it through the full libvmm path.
 Observed failure:
 
 ```text
@@ -27,7 +27,7 @@ ld.lld: error: undefined symbol: __sel4_ipc_buffer
 Acceptance:
 
 - `make build BOARD=qemu_virt_aarch64 TARGET_ARCH=aarch64 GUEST_OS=ubuntu`
-  builds `linux_vmm.elf` from a full libvmm object, not the default stub object.
+  builds `guest_vmm_primary.elf` from a full libvmm object, not the default stub object.
 - Rebuilding after a default `GUEST_OS=none` build does not reuse stale VMM
   objects compiled with incompatible flags.
 
@@ -36,7 +36,7 @@ Execution notes:
 - `make build BOARD=qemu_virt_aarch64 TARGET_ARCH=aarch64 GUEST_OS=ubuntu`
   passes.
 - A `GUEST_OS=none` build followed by `GUEST_OS=ubuntu` relinks
-  `linux_vmm.elf` from `linux_vmm.full.o` rather than the default stub object.
+  `guest_vmm_primary.elf` from `guest_vmm_primary.full.o` rather than the default stub object.
 - The full Linux VMM ELF now includes `_start` and reports start address
   `0x200000` instead of entry `0x0`.
 
@@ -45,7 +45,7 @@ Execution notes:
 Status: `blocked`
 
 Gap: the opt-in FreeBSD path currently fails before producing
-`freebsd_vmm.elf`. Observed failure:
+`guest_vmm_secondary.elf`. Observed failure:
 
 ```text
 kernel/freebsd-vmm/vmm.c:26:10: fatal error: 'sel4/sel4.h' file not found
@@ -54,7 +54,7 @@ kernel/freebsd-vmm/vmm.c:26:10: fatal error: 'sel4/sel4.h' file not found
 Acceptance:
 
 - `make build BOARD=qemu_virt_aarch64 TARGET_ARCH=aarch64 GUEST_OS=freebsd`
-  builds `freebsd_vmm.elf`.
+  builds `guest_vmm_secondary.elf`.
 - The FreeBSD build path is singular and documented. Competing FreeBSD VMM
   implementations must be reconciled or explicitly retired.
 
@@ -68,7 +68,7 @@ Execution notes:
   `kernel/agentos-root-task/src/freebsd_vmm.c`; the active top-level build path
   delegates to `kernel/freebsd-vmm`, so this remains blocked until the project
   picks one implementation and retires or ports the other.
-- The alternate `vmm.mk` path now clean-builds `freebsd_vmm.elf` directly:
+- The alternate `vmm.mk` path now clean-builds `guest_vmm_secondary.elf` directly:
   `make -B -f vmm.mk ... GUEST_OS=freebsd vmm-all` passes. It is not yet wired
   into the top-level image/runtime path, and the AArch64 system description
   still starts `linux_vmm` rather than `freebsd_vmm`.

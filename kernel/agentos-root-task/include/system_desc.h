@@ -57,7 +57,7 @@
  *
  * After mapping, the PD can read/write the region like normal RAM.  This is
  * used to give VMM PDs their guest RAM window (e.g. 256 MB at 0x40000000 on
- * AArch64 for linux_vmm's guest_ram_vaddr).
+ * AArch64 for the primary guest VMM's guest_ram_vaddr).
  *
  * Fields:
  *   vaddr     target virtual address in the PD VSpace (2 MB aligned)
@@ -212,8 +212,8 @@ typedef struct {
 #define SVC_ID_TIMER_PD       13u
 #define SVC_ID_NET_PD         14u   /* virtio-net driver PD                  */
 #define SVC_ID_FB_PD          15u   /* framebuffer PD                        */
-#define SVC_ID_LINUX_VMM      16u   /* Linux VMM PD                          */
-#define SVC_ID_FREEBSD_VMM    17u   /* FreeBSD VMM PD                        */
+#define SVC_ID_GUEST_VMM_PRIMARY      16u   /* primary profile-backed VMM PD          */
+#define SVC_ID_GUEST_VMM_SECONDARY    17u
 #define SVC_ID_AGENTFS        18u   /* agentfs content-addressed object store */
 #define SVC_ID_VIRTIO_BLK     19u   /* virtio block device driver PD          */
 #define SVC_ID_VM_MANAGER     20u   /* multi-VM lifecycle manager PD          */
@@ -248,8 +248,8 @@ typedef struct {
  * whose init_eps reference these slots receive the cap. */
 #define PD_CNODE_SLOT_VIBE_ENGINE_EP  8u
 #define PD_CNODE_SLOT_VM_MANAGER_EP   10u
-#define PD_CNODE_SLOT_LINUX_VMM_EP    11u
-#define PD_CNODE_SLOT_FREEBSD_VMM_EP  12u
+#define PD_CNODE_SLOT_GUEST_VMM_PRIMARY_EP    11u
+#define PD_CNODE_SLOT_GUEST_VMM_SECONDARY_EP  12u
 /* agentos-7j5: cc_pd → controller (monitor) endpoint for MSG_AGENTPOOL_STATUS. */
 #define PD_CNODE_SLOT_CONTROLLER_EP   13u
 #define PD_CNODE_SLOT_NET_PD_EP       14u

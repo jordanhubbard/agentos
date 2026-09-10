@@ -1,0 +1,20 @@
+schema = 2
+id = "arch-aarch64"
+status = "planned"
+extends = "linux-base.toml"
+aliases = ["arch"]
+
+[boot]
+command_line = "console=hvc0 root=/dev/vda1 rw"
+
+[[host.acquire]]
+action = "download"
+args = { artifact = "archlinuxarm-rootfs" }
+
+[[host.provision]]
+action = "run-ssh"
+args = { recipe = "arch-base" }
+
+[[host.test]]
+action = "wait-ssh"
+args = { account = "root" }

@@ -6,7 +6,7 @@
  * guest VM on sparky (GB10, 128GB unified VRAM).
  *
  * Architecture:
- *   seL4 MR (gpu_tensor_buf) ← mapped into both linux_vmm PD and controller
+ *   seL4 MR (gpu_tensor_buf) ← mapped into both guest VMM PD and controller
  *   A ring-buffer descriptor (gpu_shmem_ring_t) sits at the start of the MR.
  *   Producers write tensor descriptors; consumers read them.
  *   Notification channels signal ready/consumed events.
@@ -112,7 +112,7 @@ _Static_assert(offsetof(gpu_shmem_ring_t, slots) == 64,
 
 typedef enum {
     GPU_SHMEM_ROLE_PRODUCER = 0,  /* seL4 PD sending tensors to Linux */
-    GPU_SHMEM_ROLE_CONSUMER = 1,  /* linux_vmm PD receiving from Linux */
+    GPU_SHMEM_ROLE_CONSUMER = 1,  /* guest VMM PD receiving from its guest */
 } gpu_shmem_role_t;
 
 /* ── API ──────────────────────────────────────────────────────────────── */

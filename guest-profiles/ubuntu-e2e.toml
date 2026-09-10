@@ -1,0 +1,102 @@
+schema = 2
+id = "ubuntu-e2e-aarch64"
+status = "runtime"
+extends = "linux-base.toml"
+aliases = ["ubuntu"]
+
+[boot]
+command_line = "console=hvc0 quiet loglevel=3 rdinit=/init panic=-1 ip=dhcp"
+
+[artifacts.kernel]
+source = "ubuntu:26.04-live-server-arm64.iso:/casper/vmlinuz"
+cache = "build/guest-images/ubuntu-26.04-aarch64-Image"
+sha256 = "94e37ccd7694d894e0d21f3f7c2e964046c77ce1c9208e11aa62fc98eb621696"
+
+[artifacts.dtb]
+source = "generated:linux.dts+ubuntu-iso-overlay.dts.in"
+cache = "build/qemu_virt_aarch64/vm.dtb"
+sha256 = "648c783ff27803de4f92ac878396998dc92397d5b28888c78ed8f59a6028932f"
+
+[artifacts.initrd]
+source = "generated:ubuntu-e2e-initramfs"
+cache = "build/guest-images/ubuntu-26.04-aarch64-initrd"
+sha256 = "160590b3f0c3e247f8bb2c24ed778ee921f4a40971e025540c71bed3c3442831"
+
+[placements.dual-primary]
+dtb_sha256 = "648c783ff27803de4f92ac878396998dc92397d5b28888c78ed8f59a6028932f"
+
+[[host.qemu.media]]
+path = "build/guest-images/ubuntu-26.04-aarch64.iso"
+drive_id = "primary_media"
+bus = 8
+
+[host.qemu.ssh]
+account = "ubuntu"
+host_port = 12222
+
+[host.console]
+adapter = "expect"
+probe_line = "agentos-linux-proof"
+probe_marker = "agentos-linux-proof"
+
+[host.build]
+adapter = "linux-merge"
+base = "libvmm/examples/simple/board/qemu_virt_aarch64/linux.dts"
+template = "kernel/agentos-root-task/ubuntu-iso-overlay.dts.in"
+acquire_dir = "build/guest-images"
+
+[[host.acquire]]
+action = "stage-url"
+args = { cache_name = "ubuntu-26.04-desktop-arm64.iso", output = "ubuntu-26.04-aarch64.iso", url = "https://cdimage.ubuntu.com/releases/26.04/release/ubuntu-26.04-desktop-arm64.iso" }
+
+[[host.acquire]]
+action = "extract-iso-file"
+args = { source = "ubuntu-26.04-aarch64.iso", member = "casper/initrd", output = "ubuntu-26.04-aarch64-live-initrd", min_bytes = "1048576" }
+
+[[host.acquire]]
+action = "build-linux-probe-initramfs"
+args = { output = "ubuntu-26.04-aarch64-initrd" }
+
+[[host.acquire]]
+action = "extract-arm64-linux-image"
+args = { source = "ubuntu-26.04-aarch64.iso", member = "casper/vmlinuz", output = "ubuntu-26.04-aarch64-Image" }
+
+[[host.provision]]
+action = "send-console"
+args = { text = "sudo -n ip link set eth0 up && sudo -n ip addr flush dev eth0 scope global && sudo -n ip addr add 10.0.2.15/24 dev eth0 && sudo -n ip route replace default via 10.0.2.2" }
+
+[[host.provision]]
+action = "send-console"
+args = { text = "sudo -n rm -f /etc/resolv.conf && printf 'nameserver 10.0.2.3\\n' | sudo -n tee /etc/resolv.conf >/dev/null" }
+
+[[host.provision]]
+action = "send-console"
+args = { text = "if command -v /usr/sbin/sshd >/dev/null 2>&1; then true; else ok=1; for deb in /cdrom/pool/main/o/openssh/openssh-sftp-server_*.deb /cdrom/pool/main/o/openssh/openssh-server_*.deb; do test -f \"$deb\" && sudo -n dpkg-deb -x \"$deb\" / || ok=0; done; test \"$ok\" -eq 1 && command -v /usr/sbin/sshd >/dev/null; fi" }
+
+[[host.provision]]
+action = "send-console"
+args = { text = "getent passwd sshd >/dev/null || sudo -n useradd --system --home /run/sshd --shell /usr/sbin/nologin sshd" }
+
+[[host.provision]]
+action = "send-console"
+args = { text = "sudo -n mkdir -p /home/ubuntu/.ssh /run/sshd && printf '%s\\n' '{{ssh_public_key}}' | sudo -n tee /home/ubuntu/.ssh/authorized_keys >/dev/null && sudo -n chown -R ubuntu:ubuntu /home/ubuntu/.ssh && sudo -n chmod 700 /home/ubuntu/.ssh && sudo -n chmod 600 /home/ubuntu/.ssh/authorized_keys" }
+
+[[host.provision]]
+action = "send-console"
+args = { text = "sudo -n rm -f /run/agentos-ssh-host-key /run/agentos-ssh-host-key.pub /run/agentos-sshd.pid && sudo -n ssh-keygen -q -t ed25519 -N '' -f /run/agentos-ssh-host-key" }
+
+[[host.provision]]
+action = "send-console"
+args = { text = "sudo -n /usr/sbin/sshd -t -f /dev/null -o HostKey=/run/agentos-ssh-host-key -o AuthorizedKeysFile=/home/ubuntu/.ssh/authorized_keys -o UsePAM=no -o PidFile=/run/agentos-sshd.pid" }
+
+[[host.provision]]
+action = "send-console"
+args = { text = "sudo -n /usr/sbin/sshd -f /dev/null -o HostKey=/run/agentos-ssh-host-key -o AuthorizedKeysFile=/home/ubuntu/.ssh/authorized_keys -o UsePAM=no -o UseDNS=no -o GSSAPIAuthentication=no -o MaxStartups=100:100:100 -o PidFile=/run/agentos-sshd.pid -o PasswordAuthentication=no -o KbdInteractiveAuthentication=no -o PubkeyAuthentication=yes -o PermitRootLogin=no" }
+
+[[host.test]]
+action = "wait-console"
+args = { marker = "agentos-linux login:" }
+
+[[host.test]]
+action = "assert-virtio"
+args = { devices = "net,block,console", scope = "emulated" }

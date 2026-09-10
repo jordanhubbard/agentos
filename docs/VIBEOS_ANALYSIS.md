@@ -171,7 +171,7 @@ The model-proxy server (1,807 LOC) provides capability-gated LLM inference:
 2. **4 swap slots hardcoded** — swap_slot_0–3. May need dynamic allocation for serious workloads
 3. **ELF module type defined but not implemented** — MODULE_TYPE_ELF=2 exists in contract, no runtime support
 4. **wasm3 is a slow interpreter** — No JIT. Service performance ceiling is low. Consider WAMR or wasmtime for production
-5. **freebsd_vmm has contract but no source** — Only linux_vmm.c exists
+5. **freebsd_vmm has contract but no source** — Only guest_vmm.c exists
 6. **watchdog contract exists with no implementation** — Critical for production reliability
 7. **RISCV64 build excludes VM PDs** — The default system file has no VMM PDs at all; vibeOS OS creation would fail on riscv64
 8. **Rust sim models drift risk** — Rust vibe-engine and C vibe_engine could diverge since they're separate implementations

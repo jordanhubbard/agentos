@@ -59,8 +59,8 @@ static inline void microkit_dbg_puts(const char *s) { (void)s; }
  * Inline copy of the ring-1 enforcement logic from cap_policy.c
  * ══════════════════════════════════════════════════════════════════════════ */
 
-#define TRACE_PD_LINUX_VMM    41u
-#define TRACE_PD_FREEBSD_VMM  42u
+#define TRACE_PD_GUEST_VMM_PRIMARY    41u
+#define TRACE_PD_GUEST_VMM_SECONDARY  42u
 
 static const uint32_t g_guest_allowed_ch[] = {
     CH_SERIAL_PD,
@@ -86,7 +86,7 @@ static int cap_policy_is_ring0_channel(uint32_t channel_id)
 
 static int is_vmm_pd(uint32_t pd_id)
 {
-    return pd_id == TRACE_PD_LINUX_VMM || pd_id == TRACE_PD_FREEBSD_VMM;
+    return pd_id == TRACE_PD_GUEST_VMM_PRIMARY || pd_id == TRACE_PD_GUEST_VMM_SECONDARY;
 }
 
 static int cap_policy_guest_ipc_check(uint32_t caller_pd_id, uint32_t target_channel)
@@ -180,25 +180,25 @@ static void test_vmm_to_device_pd_allowed(void)
 {
     TEST("vmm_to_device_pd_allowed");
     /* linux_vmm → device PDs: all allowed */
-    ASSERT_EQ(cap_policy_guest_ipc_check(TRACE_PD_LINUX_VMM, CH_SERIAL_PD),  0,
+    ASSERT_EQ(cap_policy_guest_ipc_check(TRACE_PD_GUEST_VMM_PRIMARY, CH_SERIAL_PD),  0,
               "linux_vmm → serial_pd allowed");
-    ASSERT_EQ(cap_policy_guest_ipc_check(TRACE_PD_LINUX_VMM, CH_NET_PD),     0,
+    ASSERT_EQ(cap_policy_guest_ipc_check(TRACE_PD_GUEST_VMM_PRIMARY, CH_NET_PD),     0,
               "linux_vmm → net_pd allowed");
-    ASSERT_EQ(cap_policy_guest_ipc_check(TRACE_PD_LINUX_VMM, CH_BLOCK_PD),   0,
+    ASSERT_EQ(cap_policy_guest_ipc_check(TRACE_PD_GUEST_VMM_PRIMARY, CH_BLOCK_PD),   0,
               "linux_vmm → block_pd allowed");
-    ASSERT_EQ(cap_policy_guest_ipc_check(TRACE_PD_LINUX_VMM, CH_USB_PD),     0,
+    ASSERT_EQ(cap_policy_guest_ipc_check(TRACE_PD_GUEST_VMM_PRIMARY, CH_USB_PD),     0,
               "linux_vmm → usb_pd allowed");
-    ASSERT_EQ(cap_policy_guest_ipc_check(TRACE_PD_LINUX_VMM, CH_FB_PD),      0,
+    ASSERT_EQ(cap_policy_guest_ipc_check(TRACE_PD_GUEST_VMM_PRIMARY, CH_FB_PD),      0,
               "linux_vmm → fb_pd allowed");
-    ASSERT_EQ(cap_policy_guest_ipc_check(TRACE_PD_LINUX_VMM, CH_GUEST_PD),   0,
+    ASSERT_EQ(cap_policy_guest_ipc_check(TRACE_PD_GUEST_VMM_PRIMARY, CH_GUEST_PD),   0,
               "linux_vmm → guest_pd allowed");
-    ASSERT_EQ(cap_policy_guest_ipc_check(TRACE_PD_LINUX_VMM, CH_VMM_KERNEL), 0,
+    ASSERT_EQ(cap_policy_guest_ipc_check(TRACE_PD_GUEST_VMM_PRIMARY, CH_VMM_KERNEL), 0,
               "linux_vmm → vmm_kernel allowed");
 
     /* freebsd_vmm → device PDs: all allowed */
-    ASSERT_EQ(cap_policy_guest_ipc_check(TRACE_PD_FREEBSD_VMM, CH_SERIAL_PD), 0,
+    ASSERT_EQ(cap_policy_guest_ipc_check(TRACE_PD_GUEST_VMM_SECONDARY, CH_SERIAL_PD), 0,
               "freebsd_vmm → serial_pd allowed");
-    ASSERT_EQ(cap_policy_guest_ipc_check(TRACE_PD_FREEBSD_VMM, CH_BLOCK_PD),  0,
+    ASSERT_EQ(cap_policy_guest_ipc_check(TRACE_PD_GUEST_VMM_SECONDARY, CH_BLOCK_PD),  0,
               "freebsd_vmm → block_pd allowed");
 }
 
@@ -206,33 +206,33 @@ static void test_vmm_to_ring0_rejected(void)
 {
     TEST("vmm_to_ring0_channel_rejected");
     /* linux_vmm → ring-0 channels: all EPERM */
-    ASSERT_EQ(cap_policy_guest_ipc_check(TRACE_PD_LINUX_VMM, CH_AGENTFS),       -1,
+    ASSERT_EQ(cap_policy_guest_ipc_check(TRACE_PD_GUEST_VMM_PRIMARY, CH_AGENTFS),       -1,
               "linux_vmm → agentfs REJECTED");
-    ASSERT_EQ(cap_policy_guest_ipc_check(TRACE_PD_LINUX_VMM, CH_NAMESERVER),    -1,
+    ASSERT_EQ(cap_policy_guest_ipc_check(TRACE_PD_GUEST_VMM_PRIMARY, CH_NAMESERVER),    -1,
               "linux_vmm → nameserver REJECTED");
-    ASSERT_EQ(cap_policy_guest_ipc_check(TRACE_PD_LINUX_VMM, CH_VFS_SERVER),    -1,
+    ASSERT_EQ(cap_policy_guest_ipc_check(TRACE_PD_GUEST_VMM_PRIMARY, CH_VFS_SERVER),    -1,
               "linux_vmm → vfs_server REJECTED");
-    ASSERT_EQ(cap_policy_guest_ipc_check(TRACE_PD_LINUX_VMM, CH_SPAWN_SERVER),  -1,
+    ASSERT_EQ(cap_policy_guest_ipc_check(TRACE_PD_GUEST_VMM_PRIMARY, CH_SPAWN_SERVER),  -1,
               "linux_vmm → spawn_server REJECTED");
-    ASSERT_EQ(cap_policy_guest_ipc_check(TRACE_PD_LINUX_VMM, CH_NET_SERVER),    -1,
+    ASSERT_EQ(cap_policy_guest_ipc_check(TRACE_PD_GUEST_VMM_PRIMARY, CH_NET_SERVER),    -1,
               "linux_vmm → net_server REJECTED");
-    ASSERT_EQ(cap_policy_guest_ipc_check(TRACE_PD_LINUX_VMM, CH_VIBEENGINE),    -1,
+    ASSERT_EQ(cap_policy_guest_ipc_check(TRACE_PD_GUEST_VMM_PRIMARY, CH_VIBEENGINE),    -1,
               "linux_vmm → vibe_engine REJECTED");
-    ASSERT_EQ(cap_policy_guest_ipc_check(TRACE_PD_LINUX_VMM, CH_VM_MANAGER),    -1,
+    ASSERT_EQ(cap_policy_guest_ipc_check(TRACE_PD_GUEST_VMM_PRIMARY, CH_VM_MANAGER),    -1,
               "linux_vmm → vm_manager REJECTED");
-    ASSERT_EQ(cap_policy_guest_ipc_check(TRACE_PD_LINUX_VMM, CH_QUOTA_CTRL),    -1,
+    ASSERT_EQ(cap_policy_guest_ipc_check(TRACE_PD_GUEST_VMM_PRIMARY, CH_QUOTA_CTRL),    -1,
               "linux_vmm → quota_pd REJECTED");
-    ASSERT_EQ(cap_policy_guest_ipc_check(TRACE_PD_LINUX_VMM, CH_CAP_AUDIT_CTRL),-1,
+    ASSERT_EQ(cap_policy_guest_ipc_check(TRACE_PD_GUEST_VMM_PRIMARY, CH_CAP_AUDIT_CTRL),-1,
               "linux_vmm → cap_audit REJECTED");
-    ASSERT_EQ(cap_policy_guest_ipc_check(TRACE_PD_LINUX_VMM, CH_WATCHDOG_CTRL), -1,
+    ASSERT_EQ(cap_policy_guest_ipc_check(TRACE_PD_GUEST_VMM_PRIMARY, CH_WATCHDOG_CTRL), -1,
               "linux_vmm → watchdog REJECTED");
-    ASSERT_EQ(cap_policy_guest_ipc_check(TRACE_PD_LINUX_VMM, CH_GPU_SHMEM),     -1,
+    ASSERT_EQ(cap_policy_guest_ipc_check(TRACE_PD_GUEST_VMM_PRIMARY, CH_GPU_SHMEM),     -1,
               "linux_vmm → gpu_shmem REJECTED");
 
     /* freebsd_vmm → ring-0 channels: all EPERM */
-    ASSERT_EQ(cap_policy_guest_ipc_check(TRACE_PD_FREEBSD_VMM, CH_AGENTFS),    -1,
+    ASSERT_EQ(cap_policy_guest_ipc_check(TRACE_PD_GUEST_VMM_SECONDARY, CH_AGENTFS),    -1,
               "freebsd_vmm → agentfs REJECTED");
-    ASSERT_EQ(cap_policy_guest_ipc_check(TRACE_PD_FREEBSD_VMM, CH_VIBEENGINE), -1,
+    ASSERT_EQ(cap_policy_guest_ipc_check(TRACE_PD_GUEST_VMM_SECONDARY, CH_VIBEENGINE), -1,
               "freebsd_vmm → vibe_engine REJECTED");
 }
 

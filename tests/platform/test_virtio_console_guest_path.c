@@ -79,7 +79,7 @@ int main(void)
 {
     const char *overlay =
         "kernel/agentos-root-task/ubuntu-iso-overlay.dts.in";
-    const char *vmm = "kernel/agentos-root-task/src/linux_vmm.c";
+    const char *vmm = "kernel/agentos-root-task/src/guest_vmm.c";
     const char *console = "libvmm/src/virtio/console.c";
 
     printf("TAP version 14\n");
@@ -99,20 +99,22 @@ int main(void)
        !contains(overlay, "virtio_mmio@a000200") &&
        !contains(overlay, "virtio_mmio@a000600"),
        "Ubuntu DTB advertises agentOS net/blk and no QEMU passthrough");
-    ok(contains("kernel/agentos-root-task/vmm.mk", "console=hvc0"),
+    ok(contains("guest-profiles/ubuntu-e2e.toml", "console=hvc0"),
        "Ubuntu primary console is hvc0");
-    ok(contains("kernel/agentos-root-task/vmm.mk", "systemd.show_status=false") &&
-       !contains("kernel/agentos-root-task/vmm.mk",
+    ok(contains("guest-profiles/ubuntu-live.toml", "systemd.show_status=false") &&
+       !contains("guest-profiles/ubuntu-live.toml",
                  "systemd.mask=systemd-udevd.service") &&
-       !contains("kernel/agentos-root-task/vmm.mk",
+       !contains("guest-profiles/ubuntu-live.toml",
                  "systemd.mask=systemd-sysusers.service"),
        "Ubuntu live proof retains required udev and sysusers services");
     ok(contains(overlay, "pl011@9000000") &&
        contains(overlay, "status = \"disabled\"") &&
        !contains(overlay, "stdout-path"),
        "PL011 is earlycon-only and not an advertised Ubuntu console");
-    ok(contains_after(vmm, "aos_vmm_virtio_console_init()",
-                     "aos_vmm_virtio_console_after_fault()"),
+    ok(contains_after(vmm, ".console_init = aos_vmm_virtio_console_init",
+                     "aos_vmm_virtio_console_after_fault()") &&
+       contains("platform/guest-vmm/boot.c",
+                "ops->console_init()"),
        "linux_vmm initializes and services virtio-console");
     ok(contains(vmm, "aos_vmm_virtio_console_drain_tx") &&
        contains(vmm, "aos_vmm_virtio_console_push_rx"),
@@ -131,8 +133,9 @@ int main(void)
        contains("platform/guest-vmm/runtime.c",
                 "event_type == CC_INPUT_TEXT") &&
        contains(vmm, "aos_vmm_virtio_console_push_rx_bytes") &&
-       contains("kernel/agentos-root-task/src/freebsd_vmm.c",
-                "freebsd_vmm_push_input") &&
+       contains(vmm, "guest_vmm_push_input") &&
+       contains("kernel/agentos-root-task/vmm.mk",
+                "$(BUILD_DIR)/guest_vmm_secondary.o: $(KERNEL_SRC_DIR)/src/guest_vmm.c") &&
        contains("kernel/agentos-root-task/src/cc_pd.c",
                 "? CC_OK : CC_ERR_RELAY_FAULT;") &&
        contains("kernel/agentos-root-task/include/contracts/cc_contract.h",
@@ -211,13 +214,13 @@ int main(void)
     ok(contains(vmm, "Guest console bytes belong to the per-guest virtual TTY") &&
        contains(vmm, "console_tx_push(byte);"),
        "guest virtual TTY is not synchronously mirrored to physical PL011");
-    ok(contains("kernel/agentos-root-task/src/freebsd_vmm.c",
-                "Guest PL011 output belongs to this guest's virtual TTY") &&
-       !contains_after("kernel/agentos-root-task/src/freebsd_vmm.c",
-                       "static void guest_console_write(uint8_t byte)",
-                       "serial_log_putc(&g_vmm_log, (char)byte)"),
-       "FreeBSD virtual TTY is not synchronously mirrored to physical PL011");
-    ok(contains("xtask/src/cmd_test.rs", "TRACE_PD_FREEBSD_VMM") &&
+    ok(contains("kernel/agentos-root-task/vmm.mk",
+                "$(GUEST_VMM_PRIMARY_OBJ): $(KERNEL_SRC_DIR)/src/guest_vmm.c") &&
+       contains("kernel/agentos-root-task/vmm.mk",
+                "$(BUILD_DIR)/guest_vmm_secondary.o: $(KERNEL_SRC_DIR)/src/guest_vmm.c") &&
+       !contains("kernel/agentos-root-task/Makefile", "src/freebsd_vmm.c"),
+       "primary and secondary guests compile the same profile-driven VMM source");
+    ok(contains("xtask/src/cmd_test.rs", "TRACE_PD_GUEST_VMM_SECONDARY") &&
        contains("xtask/src/cmd_test.rs",
                 ".call(MSG_CC_LOG_STREAM, guest_handle, pd_id, 0, &[])"),
        "dual guest console drain identifies the FreeBSD VMM stream");
@@ -226,9 +229,10 @@ int main(void)
        "virtio-console payloads use bounds-checked GPA translation");
     ok(contains(console, "serial_dequeue(console->rxq, &c) == 0"),
        "empty pre-driver RX queue terminates instead of spinning");
-    ok(contains("xtask/src/cmd_test.rs", "if guest_os != \"ubuntu\"") &&
+    ok(contains("guest-profiles/ubuntu-e2e.toml", "bus = 8") &&
+       contains("xtask/src/cmd_test.rs", "for media in &plan.media") &&
        contains("xtask/src/cmd_test.rs",
-                "virtio-blk-device,drive=agentos_hd,bus=virtio-mmio-bus.8") &&
+                "virtio-blk-device,drive={},bus=virtio-mmio-bus.{}") &&
        contains("platform/include/platform/blk_host_layout.h",
                 "AGENTOS_HOST_BLK_MMIO_PA         0x0A001000UL"),
        "single Ubuntu host block device is owned by agentOS on isolated bus.8");

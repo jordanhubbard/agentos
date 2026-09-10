@@ -1,4 +1,6 @@
-use crate::{rfb, TestArgs};
+use crate::cmd_guest_profile::{self, DesktopPlan, HostProfilePlan};
+use crate::guest_scenario::{self, HostScenarioPlan, ScenarioGuestPlan};
+use crate::{rfb, QemuLaunchArgs, TestArgs};
 use anyhow::Context;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::net::{SocketAddr, TcpStream};
@@ -9,12 +11,6 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Stdio};
 use std::time::{Duration, Instant};
 
-const UBUNTU_DEFAULT_SSH_PORT: u16 = 12222;
-const FREEBSD_DEFAULT_SSH_PORT: u16 = 12223;
-const UBUNTU_DESKTOP_PORT: u16 = 15901;
-const UBUNTU_VNC_GUEST_PORT: u16 = 5901;
-const UBUNTU_DESKTOP_RFB_TIMEOUT: Duration = Duration::from_secs(600);
-const UBUNTU_DESKTOP_RFB_IO_TIMEOUT: Duration = Duration::from_secs(180);
 const SSH_AUTH_OPTIONS: &[&str] = &[
     "-o",
     "BatchMode=yes",
@@ -78,18 +74,169 @@ const MSG_CC_DESTROY_GUEST: u32 = 0x2615;
 const CC_INPUT_KEY_DOWN: u32 = 0x01;
 const CC_INPUT_RAW_BYTE_BASE: u32 = 0x100;
 const GUEST_DESTROY_NORMAL: u32 = 0;
-const VIBEOS_TYPE_LINUX: u8 = 0x01;
-const VIBEOS_TYPE_FREEBSD: u8 = 0x02;
 const VIBEOS_ARCH_AARCH64: u8 = 0x01;
 const VIBEOS_DEV_SERIAL: u32 = 1 << 0;
 const VIBEOS_DEV_NET: u32 = 1 << 1;
 const VIBEOS_DEV_BLOCK: u32 = 1 << 2;
-const TRACE_PD_LINUX_VMM: u32 = 41;
-const TRACE_PD_FREEBSD_VMM: u32 = 42;
+const TRACE_PD_GUEST_VMM_PRIMARY: u32 = 41;
+const TRACE_PD_GUEST_VMM_SECONDARY: u32 = 42;
+const FOCUSED_NET_STIMULUS_PORT: u16 = 12224;
+
+#[derive(Clone, Debug)]
+struct VirtioAssertion {
+    devices: Vec<String>,
+    host_backed: bool,
+    bidirectional_console: bool,
+}
+
+fn requested_virtio_assertion(
+    args: &TestArgs,
+    profile: Option<&HostProfilePlan>,
+) -> Option<VirtioAssertion> {
+    if args.assert_agentos_virtio || args.assert_live || args.assert_desktop {
+        return Some(VirtioAssertion {
+            devices: vec!["net".into(), "block".into(), "console".into()],
+            host_backed: true,
+            bidirectional_console: true,
+        });
+    }
+    if args.assert_emulated_console {
+        return Some(VirtioAssertion {
+            devices: vec!["console".into()],
+            host_backed: false,
+            bidirectional_console: true,
+        });
+    }
+    if args.assert_emulated_net {
+        return Some(VirtioAssertion {
+            devices: vec!["net".into()],
+            host_backed: false,
+            bidirectional_console: false,
+        });
+    }
+    if args.assert_emulated_blk {
+        return Some(VirtioAssertion {
+            devices: vec!["block".into()],
+            host_backed: false,
+            bidirectional_console: false,
+        });
+    }
+    profile.and_then(|profile| {
+        profile
+            .test
+            .iter()
+            .find(|step| step.action == "assert-virtio")
+            .map(|step| VirtioAssertion {
+                devices: step.args["devices"].split(',').map(str::to_owned).collect(),
+                host_backed: step
+                    .args
+                    .get("scope")
+                    .is_some_and(|scope| scope == "host-backed"),
+                bidirectional_console: step
+                    .args
+                    .get("console_io")
+                    .is_some_and(|value| value == "bidirectional"),
+            })
+    })
+}
+
+fn virtio_markers(assertion: &VirtioAssertion) -> Vec<&'static str> {
+    let mut required = Vec::new();
+    for device in &assertion.devices {
+        match device.as_str() {
+            "net" => {
+                required.extend_from_slice(&[
+                    "emulated virtio-net: guest probed",
+                    "emulated virtio-net: guest DRIVER_OK",
+                    "emulated virtio-net: pumped",
+                ]);
+                if assertion.host_backed {
+                    required.extend_from_slice(&[
+                        "emulated virtio-net: backend TX accepted by net_pd",
+                        "emulated virtio-net: backend RX delivered from net_pd",
+                        "via host-backed net_pd",
+                        "[net_pd] HOST_READY: virtio-net bus.16",
+                        "[net_pd] HOST_TX: QEMU bus.16 completion observed",
+                    ]);
+                }
+            }
+            "block" => {
+                required.extend_from_slice(&[
+                    "emulated virtio-blk: guest probed",
+                    "emulated virtio-blk: guest DRIVER_OK",
+                    "emulated virtio-blk: pumped",
+                ]);
+                if assertion.host_backed {
+                    required.extend_from_slice(&[
+                        "emulated virtio-blk: agentOS host media",
+                        "emulated virtio-blk: host-media read",
+                    ]);
+                }
+            }
+            "console" => {
+                required.extend_from_slice(&[
+                    "emulated virtio-console: guest probed",
+                    "emulated virtio-console: guest DRIVER_OK",
+                    "emulated virtio-console: pumped",
+                ]);
+                if assertion.bidirectional_console {
+                    required.push("emulated virtio-console: pumped input serial_virt->guest");
+                }
+            }
+            _ => {}
+        }
+    }
+    required
+}
 
 pub fn run(args: &TestArgs) -> anyhow::Result<()> {
     let repo_root = repo_root()?;
-    let ubuntu_live = args.assert_ubuntu_live || args.assert_desktop || args.guest_os == "both";
+    let profile_root = repo_root.join("guest-profiles");
+    let scenario_plan = if args.guest_os == "both" {
+        Some(guest_scenario::resolve_alias(
+            &repo_root.join("guest-scenarios"),
+            &profile_root,
+            &args.guest_os,
+        )?)
+    } else {
+        None
+    };
+    let profile_plan = if matches!(args.guest_os.as_str(), "none" | "both") {
+        None
+    } else {
+        let path = cmd_guest_profile::resolve_alias(&profile_root, &args.guest_os)?;
+        Some(cmd_guest_profile::host_profile_plan(&profile_root, &path)?)
+    };
+    if let Some(profile) = &profile_plan {
+        println!(
+            "[xtask:test] resolved alias {:?} to {} ({}, architecture={}, control_type={}, guest_id={}, provision_steps={}, test_steps={})",
+            args.guest_os,
+            profile.id,
+            profile.path.display(),
+            profile.architecture,
+            profile.control_type,
+            profile.guest_id,
+            profile.provision.len(),
+            profile.test.len()
+        );
+    }
+    let large_guest = profile_plan
+        .as_ref()
+        .is_some_and(|profile| profile.media_initrd_path.is_some())
+        || args.assert_live
+        || args.assert_desktop
+        || args.guest_os == "both";
+    let virtio_assertion = requested_virtio_assertion(args, profile_plan.as_ref());
+    if let (Some(profile), Some(assertion)) = (&profile_plan, &virtio_assertion) {
+        anyhow::ensure!(
+            assertion
+                .devices
+                .iter()
+                .all(|device| profile.devices.contains(device)),
+            "profile {} test requests a VirtIO device absent from target.devices",
+            profile.id
+        );
+    }
 
     anyhow::ensure!(
         !args.keep_running || args.guest_os == "both" || args.assert_desktop,
@@ -99,7 +246,7 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
         || args.assert_emulated_blk
         || args.assert_emulated_console
         || args.assert_agentos_virtio
-        || args.assert_ubuntu_live
+        || args.assert_live
         || args.assert_desktop
     {
         anyhow::ensure!(
@@ -111,44 +258,46 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
             "emulated VirtIO assertions need a real guest; GUEST_OS=none is a stub VMM"
         );
     }
-    if args.assert_emulated_console
-        || args.assert_agentos_virtio
-        || args.assert_ubuntu_live
-        || args.assert_desktop
-    {
+    if args.assert_emulated_console || args.assert_agentos_virtio {
         anyhow::ensure!(
-            args.guest_os == "ubuntu",
-            "Ubuntu VirtIO assertions require --guest-os ubuntu"
+            profile_plan.is_some(),
+            "VirtIO console assertions require one runtime guest profile"
+        );
+    }
+    if args.assert_live || args.assert_desktop {
+        anyhow::ensure!(
+            profile_plan
+                .as_ref()
+                .is_some_and(|profile| profile.media_initrd_path.is_some()),
+            "live-media assertions require a profile with boot.media_initrd_path"
+        );
+    }
+    if args.assert_desktop {
+        anyhow::ensure!(
+            profile_plan
+                .as_ref()
+                .is_some_and(|profile| profile.desktop.is_some()),
+            "desktop assertion requires a profile with host.desktop policy"
         );
     }
 
     if !args.no_build {
         println!(
-            "[xtask:test] Building BOARD={} GUEST_OS={}...",
+            "[xtask:test] Building BOARD={} selection={}...",
             args.board, args.guest_os
         );
-        if ubuntu_live {
-            run_make(
-                &[
-                    "build",
-                    &format!("BOARD={}", args.board),
-                    &format!("GUEST_OS={}", args.guest_os),
-                    "UBUNTU_BOOT_MODE=live",
-                ],
-                &repo_root,
-            )
-            .context("live Ubuntu build step failed")?;
-        } else {
-            run_make(
-                &[
-                    "build",
-                    &format!("BOARD={}", args.board),
-                    &format!("GUEST_OS={}", args.guest_os),
-                ],
-                &repo_root,
-            )
-            .context("build step failed")?;
+        let mut make_args = vec![
+            String::from("build"),
+            format!("BOARD={}", args.board),
+            String::from("GUEST_OS=none"),
+        ];
+        if scenario_plan.is_some() {
+            make_args.push(format!("GUEST_SCENARIO={}", args.guest_os));
+        } else if let Some(profile) = &profile_plan {
+            make_args.push(format!("GUEST_PROFILE={}", profile.path.display()));
         }
+        let make_arg_refs = make_args.iter().map(String::as_str).collect::<Vec<_>>();
+        run_make(&make_arg_refs, &repo_root).context("profile-driven build step failed")?;
     }
 
     let tmp_dir = repo_root.join("build/tmp");
@@ -162,17 +311,26 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
     let (_, log_path) = log_file
         .keep()
         .context("failed to persist build/tmp QEMU log file")?;
-    let ssh_key = if args.guest_os == "both" || args.assert_desktop {
+    let ssh_key = if scenario_plan.is_some() || args.assert_desktop {
         Some(generate_ssh_test_key(&repo_root, args.keep_running)?)
     } else {
         None
     };
 
-    let needs_ssh_probe = !matches!(args.guest_os.as_str(), "ubuntu" | "freebsd");
-    let needs_host_net_stimulus =
-        args.guest_os == "ubuntu" && (args.assert_agentos_virtio || args.assert_ubuntu_live);
-    let ssh_port = if needs_ssh_probe || needs_host_net_stimulus || args.assert_desktop {
-        effective_ssh_port(args)
+    // Every runtime profile reaches its emulated NIC through the slot's
+    // net_pd bridge. Stimulate RX even for the focused "emulated" assertion;
+    // otherwise a quiet guest can negotiate the device correctly and then
+    // wait forever without exercising a queue.
+    let needs_host_net_stimulus = virtio_assertion
+        .as_ref()
+        .is_some_and(|assertion| assertion.devices.iter().any(|device| device == "net"));
+    let ssh_port = if needs_host_net_stimulus || args.assert_desktop || scenario_plan.is_some() {
+        let configured = effective_ssh_port(args, profile_plan.as_ref(), scenario_plan.as_ref());
+        if needs_host_net_stimulus && configured == 0 {
+            FOCUSED_NET_STIMULUS_PORT
+        } else {
+            configured
+        }
     } else {
         0
     };
@@ -183,10 +341,13 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
         &repo_root,
         &log_path,
         &cc_sock,
-        &args.guest_os,
+        profile_plan.as_ref(),
+        scenario_plan.as_ref(),
         ssh_port,
-        ubuntu_live,
+        large_guest,
         (args.guest_os == "both" || args.assert_desktop) && !args.keep_running,
+        false,
+        false,
     )?);
     if needs_host_net_stimulus {
         wait_for_all_markers(
@@ -214,62 +375,45 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
         );
         wait_for_emulated_blk(&log_path, Duration::from_secs(args.timeout_secs), &mut qemu)
     } else {
-        match args.guest_os.as_str() {
-            "ubuntu" => {
-                println!(
-                    "[xtask:test] Waiting for Ubuntu login prompt via CC-PD API ({})...",
-                    cc_sock.display()
-                );
-                wait_for_guest_console_login_via_cc(
-                    &cc_sock,
-                    0,
-                    if ubuntu_live { "ubuntu-live" } else { "ubuntu" },
-                    Duration::from_secs(args.timeout_secs),
-                    &mut qemu,
-                )
-            }
-            "freebsd" => {
-                println!(
-                    "[xtask:test] Waiting for FreeBSD login prompt via CC-PD API ({})...",
-                    cc_sock.display()
-                );
-                wait_for_guest_console_login_via_cc(
-                    &cc_sock,
-                    0,
-                    "freebsd",
-                    Duration::from_secs(args.timeout_secs),
-                    &mut qemu,
-                )
-            }
-            "both" => {
-                println!(
-                    "[xtask:test] Creating FreeBSD and Linux through CC-PD/vm_manager ({})...",
-                    cc_sock.display()
-                );
-                wait_for_dual_guest_consoles_via_cc(
-                    &cc_sock,
-                    Duration::from_secs(args.timeout_secs),
-                    &mut qemu,
-                    ssh_key.as_ref().context("dual SSH key was not generated")?,
-                    args.keep_running,
-                )
-            }
-            _ => {
-                /* Success markers: any match is a pass.
-                 * "agentOS boot complete" = root task + all PDs launched.
-                 * "[rt] boot complete"    = x86 root-task smoke boot; service PD
-                 *                           runtime health is tracked separately.
-                 * "buildroot login:"      = Linux guest reached login prompt (buildroot). */
-                if args.board == "x86_64_generic" {
-                    wait_for_x86_reduced_smoke(&log_path, Duration::from_secs(args.timeout_secs))
-                } else {
-                    wait_for_markers(
-                        &log_path,
-                        &["agentOS boot complete", "buildroot login:"],
-                        Duration::from_secs(args.timeout_secs),
-                    )
-                }
-            }
+        if args.guest_os == "both" {
+            println!(
+                "[xtask:test] Creating both configured profiles through CC-PD/vm_manager ({})...",
+                cc_sock.display()
+            );
+            wait_for_dual_guest_consoles_via_cc(
+                &cc_sock,
+                scenario_plan.as_ref().unwrap(),
+                Duration::from_secs(args.timeout_secs),
+                &mut qemu,
+                ssh_key.as_ref().context("dual SSH key was not generated")?,
+                args.keep_running,
+            )
+        } else if profile_plan
+            .as_ref()
+            .is_some_and(|profile| !profile_console_markers(profile).is_empty())
+        {
+            let profile = profile_plan.as_ref().unwrap();
+            println!(
+                "[xtask:test] Waiting for profile {} console evidence via CC-PD API ({})...",
+                profile.id,
+                cc_sock.display()
+            );
+            wait_for_guest_console_login_via_cc(
+                &cc_sock,
+                0,
+                args.guest_os.as_str(),
+                Some(profile),
+                Duration::from_secs(args.timeout_secs),
+                &mut qemu,
+            )
+        } else if args.board == "x86_64_generic" {
+            wait_for_x86_reduced_smoke(&log_path, Duration::from_secs(args.timeout_secs))
+        } else {
+            wait_for_markers(
+                &log_path,
+                &["agentOS boot complete", "buildroot login:"],
+                Duration::from_secs(args.timeout_secs),
+            )
         }
     };
 
@@ -285,8 +429,11 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
         let key = ssh_key
             .as_ref()
             .context("desktop SSH key was not generated")?;
-        match prove_ubuntu_desktop(
+        match prove_profile_desktop(
             &cc_sock,
+            profile_plan
+                .as_ref()
+                .context("desktop test requires a resolved guest profile")?,
             key,
             Duration::from_secs(args.timeout_secs),
             &mut qemu,
@@ -299,69 +446,40 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
         }
     }
 
-    if result.is_ok()
-        && (args.assert_emulated_console
-            || args.assert_agentos_virtio
-            || args.assert_ubuntu_live
-            || args.assert_desktop)
-    {
-        let mut required = vec![
-            "emulated virtio-console: guest probed",
-            "emulated virtio-console: guest DRIVER_OK",
-            "emulated virtio-console: pumped ",
-            "emulated virtio-console: pumped input serial_virt->guest",
-        ];
-        if args.assert_agentos_virtio || args.assert_ubuntu_live || args.assert_desktop {
-            required.extend_from_slice(&[
-                "emulated virtio-net: guest probed",
-                "emulated virtio-net: guest DRIVER_OK",
-                "emulated virtio-net: backend TX accepted by net_pd",
-                "emulated virtio-net: backend RX delivered from net_pd",
-                "emulated virtio-net: pumped ",
-                "via host-backed net_pd",
-                "[net_pd] HOST_READY: virtio-net bus.16",
-                "[net_pd] HOST_TX: QEMU bus.16 completion observed",
-                "emulated virtio-blk: guest probed",
-                "emulated virtio-blk: guest DRIVER_OK",
-                "emulated virtio-blk: pumped",
-                "emulated virtio-blk: agentOS host media 0 ready",
-                "emulated virtio-blk: host-media read",
-            ]);
+    if result.is_ok() {
+        if let Some(assertion) = &virtio_assertion {
+            let required = virtio_markers(assertion);
+            let proof =
+                wait_for_all_markers(&log_path, &required, Duration::from_secs(10), &mut qemu);
+            let forbidden_loopback = assertion.host_backed
+                && assertion.devices.iter().any(|device| device == "net")
+                && std::fs::read_to_string(&log_path)
+                    .map(|log| log.contains("frame(s) TX->RX"))
+                    .unwrap_or(false);
+            result = match (result, proof) {
+                (Ok(_), Ok(_)) if forbidden_loopback => anyhow::bail!(
+                    "host-backed network proof used the forbidden VMM-local TX->RX loopback"
+                ),
+                (Ok(evidence), Ok(_)) => Ok(format!(
+                    "{evidence}; profile VirtIO {:?} scope={} satisfied",
+                    assertion.devices,
+                    if assertion.host_backed {
+                        "host-backed"
+                    } else {
+                        "emulated"
+                    }
+                )),
+                (_, Err(err)) => Err(err.context("profile VirtIO proof was incomplete")),
+                (Err(err), _) => Err(err),
+            };
         }
-        let console =
-            wait_for_all_markers(&log_path, &required, Duration::from_secs(10), &mut qemu);
-        let network_proof_required =
-            args.assert_agentos_virtio || args.assert_ubuntu_live || args.assert_desktop;
-        let no_loopback = !network_proof_required
-            || std::fs::read_to_string(&log_path)
-                .map(|log| !log.contains("frame(s) TX->RX"))
-                .unwrap_or(false);
-        result = match (result, console) {
-            (Ok(_), Ok(_)) if !no_loopback => {
-                anyhow::bail!("Ubuntu network proof used the forbidden VMM-local TX->RX loopback")
-            }
-            (Ok(login), Ok(_)) if args.assert_ubuntu_live || args.assert_desktop => Ok(format!(
-                "{login}; full Ubuntu Casper userspace uses agentOS virtio net + blk + console"
-            )),
-            (Ok(login), Ok(_)) if args.assert_agentos_virtio => Ok(format!(
-                "{login}; agentOS virtio net + blk + console probed, DRIVER_OK, and pumped real I/O"
-            )),
-            (Ok(login), Ok(_)) => Ok(format!(
-                "{login}; emulated virtio-console probed + DRIVER_OK + bidirectional I/O"
-            )),
-            (_, Err(err)) => {
-                Err(err
-                    .context("Ubuntu login succeeded but host-backed virtio proof was incomplete"))
-            }
-            (Err(err), _) => Err(err),
-        };
     }
 
     if result.is_ok() {
         if let Some(evidence) = desktop_evidence {
             result = Ok(format!(
-                "{}; Ubuntu desktop RFB {}x{} bytes={} fnv1a64={:016x} name={:?}",
-                result.as_deref().unwrap_or("Ubuntu live guest ready"),
+                "{}; profile desktop RFB {}x{} bytes={} fnv1a64={:016x} name={:?}",
+                result.as_deref().unwrap_or("guest profile ready"),
                 evidence.width,
                 evidence.height,
                 evidence.bytes_received,
@@ -376,11 +494,23 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
             .as_ref()
             .context("persistent SSH key was not generated")?;
         result = if args.assert_desktop {
-            wait_for_manual_desktop(key, &mut qemu)
-                .map(|()| String::from("manual Ubuntu desktop session completed"))
+            wait_for_manual_desktop(
+                key,
+                profile_plan
+                    .as_ref()
+                    .context("desktop session requires a resolved profile")?,
+                &mut qemu,
+            )
+            .map(|()| String::from("manual profile desktop session completed"))
         } else {
-            wait_for_manual_dual_ssh(key, &mut qemu)
-                .map(|()| String::from("manual dual SSH session completed"))
+            wait_for_manual_dual_ssh(
+                key,
+                scenario_plan
+                    .as_ref()
+                    .context("manual scenario requires a resolved plan")?,
+                &mut qemu,
+            )
+            .map(|()| String::from("manual dual SSH session completed"))
         };
     }
 
@@ -412,10 +542,104 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
     }
 }
 
-fn wait_for_manual_dual_ssh(ssh_key: &SshTestKey, qemu: &mut Child) -> anyhow::Result<()> {
+pub fn launch(args: &QemuLaunchArgs) -> anyhow::Result<()> {
+    let repo_root = repo_root()?;
+    let profile_root = repo_root.join("guest-profiles");
+    let profile_plan = args
+        .profile
+        .as_ref()
+        .map(|path| cmd_guest_profile::host_profile_plan(&profile_root, path))
+        .transpose()?;
+    let scenario_plan = args
+        .scenario
+        .as_ref()
+        .map(|alias| {
+            guest_scenario::resolve_alias(&repo_root.join("guest-scenarios"), &profile_root, alias)
+        })
+        .transpose()?;
+
+    let selection = if let Some(profile) = &profile_plan {
+        format!("profile {}", profile.id)
+    } else if let Some(scenario) = &scenario_plan {
+        format!("scenario {}", scenario.id)
+    } else {
+        String::from("no guest profile")
+    };
+    println!(
+        "[xtask:launch] Building BOARD={} from {}...",
+        args.board, selection
+    );
+    let mut make_args = vec![
+        String::from("build"),
+        format!("BOARD={}", args.board),
+        String::from("GUEST_OS=none"),
+    ];
+    if let Some(profile) = &profile_plan {
+        make_args.push(format!("GUEST_PROFILE={}", profile.path.display()));
+    } else if let Some(alias) = &args.scenario {
+        make_args.push(format!("GUEST_SCENARIO={alias}"));
+    }
+    let make_arg_refs = make_args.iter().map(String::as_str).collect::<Vec<_>>();
+    run_make(&make_arg_refs, &repo_root).context("profile-driven build step failed")?;
+
+    let tmp_dir = repo_root.join("build/tmp");
+    std::fs::create_dir_all(&tmp_dir)
+        .with_context(|| format!("failed to create {}", tmp_dir.display()))?;
+    let log_path = tmp_dir.join("agentos-run.log");
+    let cc_sock = repo_root.join("build/cc_pd.sock");
+    let ssh_port = profile_plan
+        .as_ref()
+        .and_then(|profile| profile.qemu.as_ref())
+        .and_then(|qemu| qemu.ssh.as_ref())
+        .map(|ssh| ssh.host_port)
+        .unwrap_or(0);
+    let large_guest = profile_plan
+        .as_ref()
+        .is_some_and(|profile| profile.media_initrd_path.is_some())
+        || scenario_plan.is_some();
+
+    println!("\nagentOS interactive QEMU launch");
+    println!("  board:     {}", args.board);
+    println!("  selection: {selection}");
+    println!("  CC-PD:     {}", cc_sock.display());
+    println!(
+        "  accel:     {}",
+        if host_kvm_available(&args.board) {
+            "KVM"
+        } else if args.fast {
+            "multi-threaded TCG"
+        } else {
+            "TCG"
+        }
+    );
+    println!("  exit:      Ctrl-A X\n");
+
+    let mut qemu = spawn_qemu_with_guest(
+        &args.board,
+        &repo_root,
+        &log_path,
+        &cc_sock,
+        profile_plan.as_ref(),
+        scenario_plan.as_ref(),
+        ssh_port,
+        large_guest,
+        false,
+        true,
+        args.fast,
+    )?;
+    let status = qemu.wait().context("failed to wait for QEMU")?;
+    anyhow::ensure!(status.success(), "QEMU exited with {status}");
+    Ok(())
+}
+
+fn wait_for_manual_dual_ssh(
+    ssh_key: &SshTestKey,
+    scenario: &HostScenarioPlan,
+    qemu: &mut Child,
+) -> anyhow::Result<()> {
     ensure_qemu_running(qemu, "entering manual dual SSH mode")?;
     println!("\nDual guests are running with authenticated SSH:");
-    for command in manual_ssh_commands(&ssh_key.private_key) {
+    for command in manual_ssh_commands(&ssh_key.private_key, scenario)? {
         println!("  {command}");
     }
     println!("Press Enter here to stop both guests and QEMU.");
@@ -428,14 +652,28 @@ fn wait_for_manual_dual_ssh(ssh_key: &SshTestKey, qemu: &mut Child) -> anyhow::R
     ensure_qemu_running(qemu, "leaving manual dual SSH mode")
 }
 
-fn wait_for_manual_desktop(ssh_key: &SshTestKey, qemu: &mut Child) -> anyhow::Result<()> {
-    ensure_qemu_running(qemu, "entering manual Ubuntu desktop mode")?;
-    println!("\nUbuntu is running a tunnel-confined VNC desktop:");
-    println!("  vncviewer 127.0.0.1:{}", UBUNTU_DESKTOP_PORT);
+fn wait_for_manual_desktop(
+    ssh_key: &SshTestKey,
+    profile: &HostProfilePlan,
+    qemu: &mut Child,
+) -> anyhow::Result<()> {
+    let desktop = profile
+        .desktop
+        .as_ref()
+        .context("profile has no host.desktop plan")?;
+    let ssh = profile
+        .qemu
+        .as_ref()
+        .and_then(|qemu| qemu.ssh.as_ref())
+        .context("desktop profile has no host.qemu.ssh plan")?;
+    ensure_qemu_running(qemu, "entering manual profile desktop mode")?;
+    println!("\n{} is running a tunnel-confined VNC desktop:", profile.id);
+    println!("  vncviewer 127.0.0.1:{}", desktop.local_port);
     println!(
-        "  ssh -i '{}' -p {} -o IdentitiesOnly=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null ubuntu@127.0.0.1",
+        "  ssh -i '{}' -p {} -o IdentitiesOnly=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null {}@127.0.0.1",
         ssh_key.private_key.display(),
-        UBUNTU_DEFAULT_SSH_PORT
+        ssh.host_port,
+        ssh.account,
     );
     println!("Press Enter here to stop the guest, SSH tunnel, and QEMU.");
 
@@ -447,32 +685,44 @@ fn wait_for_manual_desktop(ssh_key: &SshTestKey, qemu: &mut Child) -> anyhow::Re
         bytes != 0,
         "manual desktop mode requires an interactive stdin"
     );
-    ensure_qemu_running(qemu, "leaving manual Ubuntu desktop mode")
+    ensure_qemu_running(qemu, "leaving manual profile desktop mode")
 }
 
-fn manual_ssh_commands(private_key: &Path) -> [String; 2] {
-    [
-        format!(
-            "ssh -i '{}' -p {} -o IdentitiesOnly=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null ubuntu@127.0.0.1",
-            private_key.display(),
-            UBUNTU_DEFAULT_SSH_PORT
-        ),
-        format!(
-            "ssh -i '{}' -p {} -o IdentitiesOnly=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null root@127.0.0.1",
-            private_key.display(),
-            FREEBSD_DEFAULT_SSH_PORT
-        ),
-    ]
+fn manual_ssh_commands(
+    private_key: &Path,
+    scenario: &HostScenarioPlan,
+) -> anyhow::Result<Vec<String>> {
+    scenario
+        .guests
+        .iter()
+        .map(|guest| {
+            let (account, _) = profile_ssh_expectation(&guest.profile)?;
+            Ok(format!(
+                "ssh -i '{}' -p {} -o IdentitiesOnly=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null {}@127.0.0.1",
+                private_key.display(),
+                guest.ssh_host_port,
+                account
+            ))
+        })
+        .collect()
 }
 
-fn effective_ssh_port(args: &TestArgs) -> u16 {
-    if (args.guest_os == "ubuntu" || args.guest_os == "both") && args.ssh_port == 0 {
-        UBUNTU_DEFAULT_SSH_PORT
-    } else if args.guest_os == "freebsd" && args.ssh_port == 0 {
-        FREEBSD_DEFAULT_SSH_PORT
-    } else {
-        args.ssh_port
+fn effective_ssh_port(
+    args: &TestArgs,
+    profile: Option<&HostProfilePlan>,
+    scenario: Option<&HostScenarioPlan>,
+) -> u16 {
+    if args.ssh_port != 0 {
+        return args.ssh_port;
     }
+    if let Some(scenario) = scenario {
+        return scenario.guests[0].ssh_host_port;
+    }
+    profile
+        .and_then(|value| value.qemu.as_ref())
+        .and_then(|qemu| qemu.ssh.as_ref())
+        .map(|ssh| ssh.host_port)
+        .unwrap_or(0)
 }
 
 struct SshTestKey {
@@ -591,18 +841,61 @@ pub(crate) fn sel4_sdk_path() -> anyhow::Result<PathBuf> {
     Ok(PathBuf::from(home).join(".cache/agentos/microkit-sdk-2.1.0"))
 }
 
-pub fn spawn_qemu_with_guest(
+fn attach_profile_media(
+    command: &mut std::process::Command,
+    repo_root: &Path,
+    profile: &HostProfilePlan,
+) {
+    let Some(plan) = &profile.qemu else { return };
+    for media in &plan.media {
+        let mut media_path = repo_root.join(&media.path);
+        for env_name in &media.override_env {
+            if let Some(value) = std::env::var_os(env_name) {
+                let candidate = PathBuf::from(value);
+                if candidate.exists() {
+                    media_path = candidate;
+                    break;
+                }
+            }
+        }
+        if media_path.exists() {
+            println!(
+                "[xtask:test] profile {} host block media: {}",
+                profile.id,
+                media_path.display()
+            );
+            command.args([
+                "-device",
+                &format!(
+                    "virtio-blk-device,drive={},bus=virtio-mmio-bus.{}",
+                    media.drive_id, media.bus
+                ),
+                "-drive",
+                &format!(
+                    "file={},format=raw,id={},if=none,readonly=on,file.locking=off",
+                    media_path.display(),
+                    media.drive_id
+                ),
+            ]);
+        }
+    }
+}
+
+pub(crate) fn spawn_qemu_with_guest(
     board: &str,
     repo_root: &Path,
     log_path: &Path,
     cc_sock: &Path,
-    guest_os: &str,
+    profile: Option<&HostProfilePlan>,
+    scenario: Option<&HostScenarioPlan>,
     ssh_port: u16,
-    ubuntu_live: bool,
+    large_guest: bool,
     capture_net: bool,
+    interactive_serial: bool,
+    fast: bool,
 ) -> anyhow::Result<std::process::Child> {
     let log_file = std::fs::File::create(log_path).context("failed to create QEMU log file")?;
-    let netdev = qemu_netdev_arg(ssh_port, guest_os)?;
+    let netdev = qemu_netdev_arg(ssh_port, profile, scenario)?;
 
     let build_image = repo_root.join("build").join(board).join("agentos.img");
 
@@ -611,16 +904,33 @@ pub fn spawn_qemu_with_guest(
             let build_dir = repo_root.join("build").join(board);
             let loader = build_dir.join("loader.elf");
             let _ = std::fs::remove_file(&cc_sock);
-            let machine = if guest_os == "freebsd" || guest_os == "both" {
-                "virt,virtualization=on,highmem=off,secure=off,acpi=off"
-            } else {
-                "virt,virtualization=on,highmem=off,secure=off"
-            };
-            let memory = if guest_os == "both" || ubuntu_live {
-                "3G"
-            } else {
-                "2G"
-            };
+            let qemu_plan = profile.and_then(|value| value.qemu.as_ref());
+            if let Some(plan) = qemu_plan {
+                anyhow::ensure!(
+                    plan.board == board,
+                    "profile {} requires board {}, not {}",
+                    profile.unwrap().id,
+                    plan.board,
+                    board
+                );
+            }
+            if let Some(plan) = scenario {
+                anyhow::ensure!(
+                    plan.board == board,
+                    "scenario {} requires board {}, not {}",
+                    plan.id,
+                    plan.board,
+                    board
+                );
+            }
+            let machine = scenario
+                .map(|plan| plan.machine.as_str())
+                .or_else(|| qemu_plan.map(|plan| plan.machine.as_str()))
+                .unwrap_or("virt,virtualization=on,highmem=off,secure=off");
+            let memory = scenario
+                .map(|plan| plan.memory.as_str())
+                .or_else(|| qemu_plan.map(|plan| plan.memory.as_str()))
+                .unwrap_or(if large_guest { "3G" } else { "2G" });
             let sel4_profile =
                 std::env::var("SEL4_PROFILE").unwrap_or_else(|_| String::from("release"));
             let smp = if sel4_profile.starts_with("smp-") || sel4_profile == "smp" {
@@ -628,11 +938,24 @@ pub fn spawn_qemu_with_guest(
             } else {
                 "1"
             };
+            let use_kvm = interactive_serial && host_kvm_available(board);
+            let cpu = if use_kvm {
+                "host"
+            } else if fast {
+                "max"
+            } else {
+                "cortex-a57"
+            };
+            let serial = if interactive_serial {
+                String::from("stdio")
+            } else {
+                format!("file:{}", log_path.display())
+            };
             let mut c = std::process::Command::new("qemu-system-aarch64");
             c.arg("-machine")
                 .arg(machine)
                 .arg("-cpu")
-                .arg("cortex-a57")
+                .arg(cpu)
                 .arg("-m")
                 .arg(memory)
                 .arg("-smp")
@@ -642,7 +965,7 @@ pub fn spawn_qemu_with_guest(
                 .arg("-monitor")
                 .arg("none")
                 .arg("-serial")
-                .arg(format!("file:{}", log_path.display()))
+                .arg(serial)
                 .arg("-global")
                 .arg("virtio-mmio.force-legacy=off")
                 .arg("-chardev")
@@ -661,6 +984,11 @@ pub fn spawn_qemu_with_guest(
                     "loader,file={},addr=0x48000000",
                     build_image.display()
                 ));
+            if use_kvm {
+                c.arg("-enable-kvm");
+            } else if fast {
+                c.args(["-accel", "tcg,thread=multi"]);
+            }
             /*
              * Page-isolated host transport owned by net_pd. Every guest sees
              * only its separately emulated device at IPA 0x0a010000.
@@ -671,50 +999,12 @@ pub fn spawn_qemu_with_guest(
                 "-netdev",
                 &netdev,
             ]);
-            if guest_os == "ubuntu" || guest_os == "both" {
-                /*
-                 * Ubuntu media is host hardware on bus.8, owned only by the
-                 * agentOS virtio_blk PD. The guest DTB advertises only the
-                 * emulated device at 0x0a020000 in single and dual mode.
-                 */
-                let ubuntu_img = ubuntu_disk_image(repo_root);
-                if ubuntu_img.exists() {
-                    println!(
-                        "[xtask:test] agentOS host block media: {}",
-                        ubuntu_img.display()
-                    );
-                    c.args([
-                        "-device",
-                        "virtio-blk-device,drive=agentos_hd,bus=virtio-mmio-bus.8",
-                        "-drive",
-                        &format!(
-                            "file={},format=raw,id=agentos_hd,if=none,readonly=on,file.locking=off",
-                            ubuntu_img.to_str().unwrap()
-                        ),
-                    ]);
-                }
+            if let Some(plan) = profile {
+                attach_profile_media(&mut c, repo_root, plan);
             }
-            if guest_os == "freebsd" || guest_os == "both" {
-                let freebsd_img = freebsd_disk_image(repo_root);
-                if freebsd_img.exists() {
-                    println!(
-                        "[xtask:test] agentOS FreeBSD host block media: {}",
-                        freebsd_img.display()
-                    );
-                    /*
-                     * bus.31 is host hardware owned only by the canonical
-                     * block-service PD. FreeBSD sees the emulated endpoint at
-                     * 0x0a020000 and never receives this MMIO page.
-                     */
-                    c.args([
-                        "-device",
-                        "virtio-blk-device,drive=freebsd_hd,bus=virtio-mmio-bus.31",
-                        "-drive",
-                        &format!(
-                            "file={},format=raw,id=freebsd_hd,if=none,readonly=on,file.locking=off",
-                            freebsd_img.to_str().unwrap()
-                        ),
-                    ]);
+            if let Some(plan) = scenario {
+                for guest in &plan.guests {
+                    attach_profile_media(&mut c, repo_root, &guest.profile);
                 }
             }
             c
@@ -803,7 +1093,14 @@ pub fn spawn_qemu_with_guest(
         ));
     }
 
-    let child = if board == "qemu_virt_aarch64" {
+    let child = if interactive_serial {
+        cmd.stdin(Stdio::inherit())
+            .stdout(Stdio::inherit())
+            .stderr(Stdio::inherit())
+            .process_group(0)
+            .spawn()
+            .context("failed to spawn interactive QEMU")?
+    } else if board == "qemu_virt_aarch64" {
         let stderr_path = log_path.with_extension("qemu.stderr");
         let stderr_file = std::fs::File::create(&stderr_path)
             .with_context(|| format!("failed to create {}", stderr_path.display()))?;
@@ -824,44 +1121,56 @@ pub fn spawn_qemu_with_guest(
     Ok(child)
 }
 
-fn ubuntu_disk_image(repo_root: &Path) -> std::path::PathBuf {
-    repo_root.join("build/guest-images/ubuntu-26.04-aarch64.iso")
+fn host_kvm_available(board: &str) -> bool {
+    cfg!(all(target_os = "linux", target_arch = "aarch64"))
+        && board == "qemu_virt_aarch64"
+        && Path::new("/dev/kvm").exists()
 }
 
-fn freebsd_disk_image(repo_root: &Path) -> std::path::PathBuf {
-    if let Ok(path) = std::env::var("AGENTOS_FREEBSD_IMAGE") {
-        let override_path = std::path::PathBuf::from(path);
-        if override_path.exists() {
-            return override_path;
+fn qemu_netdev_arg(
+    ssh_port: u16,
+    profile: Option<&HostProfilePlan>,
+    scenario: Option<&HostScenarioPlan>,
+) -> anyhow::Result<String> {
+    if let Some(scenario) = scenario {
+        for guest in &scenario.guests {
+            ensure_host_port_available(guest.ssh_host_port)?;
         }
+        return Ok(scenario_qemu_netdev_arg(scenario));
     }
-
-    repo_root.join("build/guest-images/freebsd-15.0-aarch64.iso")
-}
-
-fn qemu_netdev_arg(ssh_port: u16, guest_os: &str) -> anyhow::Result<String> {
     if ssh_port == 0 {
         return Ok("user,id=net0".to_string());
     }
     ensure_host_port_available(ssh_port)?;
-    if guest_os == "both" {
-        anyhow::ensure!(
-            ssh_port != FREEBSD_DEFAULT_SSH_PORT,
-            "dual guest Ubuntu and FreeBSD SSH ports must differ"
+    let guest = profile
+        .and_then(|value| value.qemu.as_ref())
+        .and_then(|qemu| qemu.ssh.as_ref())
+        .and_then(|ssh| ssh.guest_address.as_deref())
+        .map(|address| format!("{address}:22"))
+        .unwrap_or_else(|| String::from(":22"));
+    if let Some(ssh) = profile
+        .and_then(|value| value.qemu.as_ref())
+        .and_then(|qemu| qemu.ssh.as_ref())
+    {
+        println!(
+            "[xtask:test] profile SSH forward: {}@127.0.0.1:{} -> {}",
+            ssh.account, ssh_port, guest
         );
-        ensure_host_port_available(FREEBSD_DEFAULT_SSH_PORT)?;
-        return Ok(dual_qemu_netdev_arg(ssh_port));
     }
     Ok(format!(
-        "user,id=net0,hostfwd=tcp:127.0.0.1:{}-:22",
-        ssh_port
+        "user,id=net0,hostfwd=tcp:127.0.0.1:{ssh_port}-{guest}"
     ))
 }
 
-fn dual_qemu_netdev_arg(ubuntu_port: u16) -> String {
-    format!(
-        "user,id=net0,hostfwd=tcp:127.0.0.1:{ubuntu_port}-10.0.2.15:22,hostfwd=tcp:127.0.0.1:{FREEBSD_DEFAULT_SSH_PORT}-10.0.2.16:22"
-    )
+fn scenario_qemu_netdev_arg(scenario: &HostScenarioPlan) -> String {
+    let mut value = String::from("user,id=net0");
+    for guest in &scenario.guests {
+        value.push_str(&format!(
+            ",hostfwd=tcp:127.0.0.1:{}-{}:22",
+            guest.ssh_host_port, guest.ssh_guest_address
+        ));
+    }
+    value
 }
 
 fn ensure_host_port_available(port: u16) -> anyhow::Result<()> {
@@ -1255,11 +1564,20 @@ fn wait_for_guest_console_login_via_cc(
     cc_sock: &Path,
     guest_handle: u32,
     guest_os: &str,
+    profile: Option<&HostProfilePlan>,
     timeout: Duration,
     qemu: &mut Child,
 ) -> anyhow::Result<String> {
     let mut cc = connect_cc_client(cc_sock, timeout.min(Duration::from_secs(30)), qemu)?;
-    wait_for_guest_console_login_on_cc(cc_sock, &mut cc, guest_handle, guest_os, timeout, qemu)
+    wait_for_guest_console_login_on_cc(
+        cc_sock,
+        &mut cc,
+        guest_handle,
+        guest_os,
+        profile,
+        timeout,
+        qemu,
+    )
 }
 
 fn wait_for_guest_console_login_on_cc(
@@ -1267,38 +1585,37 @@ fn wait_for_guest_console_login_on_cc(
     cc: &mut CcClient,
     guest_handle: u32,
     guest_os: &str,
+    profile: Option<&HostProfilePlan>,
     timeout: Duration,
     qemu: &mut Child,
 ) -> anyhow::Result<String> {
     let start = Instant::now();
     let mut transcript = String::new();
     let mut matched_prompt = None;
-    let prompt_markers = guest_prompt_markers(guest_os);
-    let mut freebsd_console_type_accepted = false;
-    let mut freebsd_installer_shell_requested = false;
-    let mut freebsd_rescue_shell_requested = false;
-    let mut freebsd_stack_requested = false;
+    let console = profile.map(|value| &value.console);
+    let prompt_markers = console
+        .filter(|plan| !plan.success.is_empty())
+        .map(|plan| plan.success.clone())
+        .or_else(|| {
+            profile
+                .map(profile_console_markers)
+                .filter(|markers| !markers.is_empty())
+        })
+        .unwrap_or_else(|| vec![String::from("login:")]);
+    let mut interaction_fires = console
+        .map(|plan| vec![0u8; plan.interaction.len()])
+        .unwrap_or_default();
     let mut last_progress = Instant::now();
 
     while start.elapsed() < timeout {
         ensure_qemu_running(qemu, "waiting for guest login prompt via CC-PD API")?;
         let mut drained_console = false;
-        match cc_log_stream_for_handle(cc, guest_handle, guest_os) {
+        match cc_log_stream_for_handle(cc, guest_handle, profile) {
             Ok(chunk) => {
                 if !chunk.is_empty() {
                     drained_console = true;
                     transcript.push_str(&chunk);
-                    if guest_os == "freebsd"
-                        && !freebsd_rescue_shell_requested
-                        && freebsd_static_rescue_needed(&transcript)
-                    {
-                        println!(
-                            "[xtask:test] FreeBSD dynamic shell unavailable; selecting /rescue/sh"
-                        );
-                        cc_send_raw_bytes(cc, guest_handle, b"/rescue/sh\r")?;
-                        freebsd_rescue_shell_requested = true;
-                    }
-                    reject_bad_guest_path(guest_os, &transcript)?;
+                    reject_profile_console(console, &transcript)?;
                     if last_progress.elapsed() >= Duration::from_secs(30) {
                         println!(
                             "[xtask:test] {} console progress ({} bytes), tail:\n{}",
@@ -1308,43 +1625,28 @@ fn wait_for_guest_console_login_on_cc(
                         );
                         last_progress = Instant::now();
                     }
-                    if guest_os == "freebsd"
-                        && !freebsd_console_type_accepted
-                        && transcript.contains("Console type [vt100]:")
-                    {
-                        println!(
-                            "[xtask:test] FreeBSD console type prompt reached; accepting vt100"
-                        );
-                        cc_send_raw_byte(cc, guest_handle, b'\r')?;
-                        freebsd_console_type_accepted = true;
-                    }
-                    if guest_os == "freebsd"
-                        && !freebsd_installer_shell_requested
-                        && transcript.contains("FreeBSD Installer")
-                        && transcript.contains("begin an installation or use the live")
-                    {
-                        println!("[xtask:test] FreeBSD installer menu reached; selecting shell");
-                        cc_send_raw_bytes(cc, guest_handle, b"\t\r")?;
-                        freebsd_installer_shell_requested = true;
-                    }
+                    run_console_interactions(
+                        console,
+                        &transcript,
+                        start.elapsed(),
+                        &mut interaction_fires,
+                        cc,
+                        guest_handle,
+                    )?;
 
-                    let matched = if let Some(marker) = prompt_markers
-                        .iter()
-                        .find(|marker| transcript.contains(**marker))
-                    {
-                        if guest_os == "ubuntu-live" && !transcript.contains("Ubuntu 26.04") {
-                            None
-                        } else {
-                            Some((*marker).to_string())
-                        }
-                    } else if guest_os == "freebsd"
-                        && (freebsd_installer_shell_requested || freebsd_rescue_shell_requested)
-                        && freebsd_shell_prompt_seen(&transcript)
-                    {
-                        Some(String::from("installer shell prompt"))
-                    } else {
-                        None
-                    };
+                    let requirements_met = console.is_none_or(|plan| {
+                        plan.require
+                            .iter()
+                            .all(|marker| transcript.contains(marker))
+                    });
+                    let matched = requirements_met
+                        .then(|| {
+                            prompt_markers
+                                .iter()
+                                .find(|marker| transcript.contains(marker.as_str()))
+                                .cloned()
+                        })
+                        .flatten();
 
                     if let Some(marker) = matched {
                         matched_prompt = Some(marker);
@@ -1359,14 +1661,14 @@ fn wait_for_guest_console_login_on_cc(
                 println!("[xtask:test] CC console drain not ready yet: {err:#}");
             }
         }
-        if guest_os == "freebsd"
-            && !freebsd_stack_requested
-            && start.elapsed() >= Duration::from_secs(180)
-        {
-            println!("[xtask:test] requesting FreeBSD PID 1 stack");
-            cc_send_raw_byte(cc, guest_handle, 0x1d)?;
-            freebsd_stack_requested = true;
-        }
+        run_console_interactions(
+            console,
+            &transcript,
+            start.elapsed(),
+            &mut interaction_fires,
+            cc,
+            guest_handle,
+        )?;
         std::thread::sleep(if drained_console {
             Duration::from_millis(10)
         } else {
@@ -1389,14 +1691,12 @@ fn wait_for_guest_console_login_on_cc(
         cc_sock,
         cc,
         guest_handle,
-        guest_os,
+        profile,
         timeout
             .saturating_sub(start.elapsed())
-            .min(Duration::from_secs(if guest_os == "ubuntu-live" {
-                360
-            } else {
-                20
-            })),
+            .min(Duration::from_secs(
+                console.map_or(20, |plan| plan.probe_timeout_secs),
+            )),
         qemu,
     )?;
     Ok(format!(
@@ -1405,79 +1705,110 @@ fn wait_for_guest_console_login_on_cc(
     ))
 }
 
-fn guest_prompt_markers(guest_os: &str) -> &'static [&'static str] {
-    match guest_os {
-        "ubuntu" => &["agentos-linux login:", "ubuntu login:", "login:"],
-        "ubuntu-live" => &["ubuntu login:", "login:"],
-        "freebsd" => &["login:"],
-        _ => &["login:"],
-    }
+fn marker_occurrences(transcript: &str, marker: &str) -> usize {
+    transcript.match_indices(marker).count()
 }
 
-fn reject_bad_guest_path(guest_os: &str, transcript: &str) -> anyhow::Result<()> {
-    if guest_os == "ubuntu-live" && transcript.contains("Initramfs unpacking failed") {
-        anyhow::bail!(
-            "Ubuntu live initramfs did not unpack cleanly; tail:\n{}",
-            tail_chars(transcript, 4000)
+fn available_console_interactions(
+    interaction: &crate::cmd_guest_profile::ConsoleInteractionPlan,
+    transcript: &str,
+    elapsed: Duration,
+) -> usize {
+    if elapsed < Duration::from_secs(interaction.after_secs) {
+        return 0;
+    }
+    if interaction.when.is_empty() {
+        return 1;
+    }
+    interaction
+        .when
+        .iter()
+        .map(|marker| marker_occurrences(transcript, marker))
+        .min()
+        .unwrap_or(0)
+}
+
+fn run_console_interactions(
+    console: Option<&crate::cmd_guest_profile::ConsolePlan>,
+    transcript: &str,
+    elapsed: Duration,
+    fires: &mut [u8],
+    cc: &mut CcClient,
+    guest_handle: u32,
+) -> anyhow::Result<()> {
+    let Some(console) = console else {
+        return Ok(());
+    };
+    for (index, interaction) in console.interaction.iter().enumerate() {
+        if fires[index] >= interaction.max_fires {
+            continue;
+        }
+        let available = available_console_interactions(interaction, transcript, elapsed);
+        if available <= usize::from(fires[index]) {
+            continue;
+        }
+        cc_send_raw_bytes(cc, guest_handle, interaction.send.as_bytes())?;
+        fires[index] += 1;
+        println!(
+            "[xtask:test] console rule {} fired ({}/{})",
+            index + 1,
+            fires[index],
+            interaction.max_fires
         );
     }
-    if guest_os.starts_with("ubuntu")
-        && (transcript.contains("emergency mode")
-            || transcript.contains("Emergency Shell")
-            || transcript.contains("Press Enter for maintenance"))
+    Ok(())
+}
+
+fn profile_console_markers(profile: &HostProfilePlan) -> Vec<String> {
+    profile
+        .test
+        .iter()
+        .filter(|step| matches!(step.action.as_str(), "wait-console" | "assert-console"))
+        .filter_map(|step| step.args.get("marker").cloned())
+        .collect()
+}
+
+fn reject_profile_console(
+    console: Option<&crate::cmd_guest_profile::ConsolePlan>,
+    transcript: &str,
+) -> anyhow::Result<()> {
+    if let Some(marker) = console
+        .into_iter()
+        .flat_map(|plan| &plan.reject)
+        .find(|marker| transcript.contains(marker.as_str()))
     {
         anyhow::bail!(
-            "Ubuntu reached an emergency or maintenance path instead of multi-user login; tail:\n{}",
-            tail_chars(transcript, 4000)
-        );
-    }
-    if guest_os == "freebsd"
-        && (transcript.contains("mountroot>")
-            || transcript.contains("Manual root filesystem specification")
-            || transcript.contains("Mounting from cd9660:")
-                && transcript.contains("failed with error"))
-    {
-        anyhow::bail!(
-            "FreeBSD reached mountroot, maintenance, or single-user fallback instead of a normal login or configured installer shell; tail:\n{}",
+            "guest console reached profile rejection marker {marker:?}; tail:\n{}",
             tail_chars(transcript, 4000)
         );
     }
     Ok(())
 }
 
-fn freebsd_static_rescue_needed(transcript: &str) -> bool {
-    transcript.contains("Enter full pathname of shell")
-        && (transcript.contains("Unsupported version") || transcript.contains("ld-elf.so.1:"))
-}
-
-fn freebsd_shell_prompt_seen(transcript: &str) -> bool {
-    transcript.contains("\n# ") || transcript.contains("\r# ") || transcript.ends_with("# ")
-}
-
 fn verify_guest_console_input(
-    cc_sock: &Path,
+    _cc_sock: &Path,
     cc: &mut CcClient,
     guest_handle: u32,
-    guest_os: &str,
+    profile: Option<&HostProfilePlan>,
     timeout: Duration,
     qemu: &mut Child,
 ) -> anyhow::Result<String> {
-    if guest_os == "ubuntu-live" {
-        return verify_ubuntu_live_console_and_net(cc_sock, cc, guest_handle, timeout, qemu);
-    }
-
-    let probe = if guest_os.starts_with("ubuntu") {
-        "agentos-linux-proof\n"
+    let console = profile.map(|value| &value.console);
+    let (probe, marker, line_mode) = console
+        .and_then(|plan| plan.probe_line.as_ref().zip(plan.probe_marker.as_ref()))
+        .map(|(probe, marker)| (probe.as_str(), marker.as_str(), true))
+        .unwrap_or(("~", "~", false));
+    if line_mode {
+        cc_send_console_line(cc, guest_handle, probe.as_bytes())?;
     } else {
-        "~"
-    };
-    cc_send_raw_bytes(cc, guest_handle, probe.as_bytes())?;
+        cc_send_raw_bytes(cc, guest_handle, probe.as_bytes())?;
+    }
 
     let mut echo = String::new();
     let start = Instant::now();
     while start.elapsed() < timeout {
         ensure_qemu_running(qemu, "waiting for guest console input echo via CC-PD API")?;
-        let chunk = match cc_log_stream_for_handle(cc, guest_handle, guest_os) {
+        let chunk = match cc_log_stream_for_handle(cc, guest_handle, profile) {
             Ok(chunk) => chunk,
             Err(err) => {
                 if cc.is_closed() {
@@ -1489,171 +1820,22 @@ fn verify_guest_console_input(
         };
         if !chunk.is_empty() {
             echo.push_str(&chunk);
-            if echo.contains(probe.trim_end()) {
-                if guest_os != "ubuntu" {
+            if echo.contains(marker) {
+                if !line_mode {
                     let _ = cc_send_raw_byte(cc, guest_handle, 0x15); /* Ctrl-U */
                 }
-                return Ok(format!("guest echoed {:?}", probe.trim_end()));
+                return Ok(format!("guest completed console probe {marker:?}"));
             }
         }
         std::thread::sleep(Duration::from_millis(500));
     }
 
     anyhow::bail!(
-        "guest reached prompt, but did not echo input {:?}; post-input tail:\n{}",
-        probe.trim_end(),
+        "guest reached prompt, but console probe {:?} did not emit {:?}; post-input tail:\n{}",
+        probe,
+        marker,
         tail_chars(&echo, 2000)
     );
-}
-
-fn ubuntu_live_network_probe_command() -> &'static str {
-    "sudo -n ip link set eth0 up && { ping -6 -c1 -W1 ff02::1%eth0 >/dev/null 2>&1 || true; } && printf 'agentos-live-net-%s\\n' proof"
-}
-
-fn verify_ubuntu_live_console_and_net(
-    _cc_sock: &Path,
-    cc: &mut CcClient,
-    guest_handle: u32,
-    timeout: Duration,
-    qemu: &mut Child,
-) -> anyhow::Result<String> {
-    cc_send_console_line(cc, guest_handle, b"ubuntu")?;
-
-    let phase_timeout = timeout.min(Duration::from_secs(180));
-    let login_start = Instant::now();
-    let mut transcript = String::new();
-    let mut blank_password_sent = false;
-    let mut login_attempts = 1u32;
-    while login_start.elapsed() < phase_timeout {
-        ensure_qemu_running(qemu, "logging into Ubuntu live console")?;
-        let chunk = match cc_log_stream_for_handle(cc, guest_handle, "ubuntu-live") {
-            Ok(chunk) => chunk,
-            Err(err) => {
-                if cc.is_closed() {
-                    return Err(err).context("CC live-login transport closed");
-                }
-                println!("[xtask:test] CC live-login drain not ready yet: {err:#}");
-                String::new()
-            }
-        };
-        if !chunk.is_empty() {
-            transcript.push_str(&chunk);
-            if transcript.contains("login: timed out")
-                && transcript.to_ascii_lowercase().contains("ubuntu login:")
-            {
-                anyhow::ensure!(
-                    login_attempts < 5,
-                    "Ubuntu live console repeatedly dropped the login terminator; tail:\n{}",
-                    tail_chars(&transcript, 2000)
-                );
-                cc_send_console_line(cc, guest_handle, b"ubuntu")?;
-                login_attempts += 1;
-                transcript.clear();
-                blank_password_sent = false;
-                continue;
-            }
-            if transcript.contains("Login incorrect") {
-                if transcript.contains("pam_nologin") || transcript.contains("System is booting up")
-                {
-                    anyhow::ensure!(
-                        login_attempts < 5,
-                        "Ubuntu live user sessions never became available; tail:\n{}",
-                        tail_chars(&transcript, 2000)
-                    );
-                    std::thread::sleep(Duration::from_secs(5));
-                    cc_send_console_line(cc, guest_handle, b"ubuntu")?;
-                    login_attempts += 1;
-                    transcript.clear();
-                    blank_password_sent = false;
-                    continue;
-                }
-                anyhow::bail!(
-                    "Ubuntu live account rejected console login; tail:\n{}",
-                    tail_chars(&transcript, 2000)
-                );
-            }
-            if !blank_password_sent && transcript.to_ascii_lowercase().contains("password:") {
-                cc_send_raw_byte(cc, guest_handle, b'\r')?;
-                blank_password_sent = true;
-            }
-            if transcript.contains("ubuntu@") && transcript.contains("$ ") {
-                break;
-            }
-        }
-        std::thread::sleep(Duration::from_millis(500));
-    }
-
-    anyhow::ensure!(
-        transcript.contains("ubuntu@") && transcript.contains("$ "),
-        "Ubuntu live login did not reach a shell prompt; tail:\n{}",
-        tail_chars(&transcript, 2000)
-    );
-
-    /* Split the token so terminal command echo cannot satisfy the proof. */
-    cc_send_console_line(cc, guest_handle, b"printf 'agentos-live-%s\\n' proof")?;
-    let proof_start = Instant::now();
-    let mut output = String::new();
-    let mut userspace_proven = false;
-    while proof_start.elapsed() < phase_timeout {
-        ensure_qemu_running(qemu, "waiting for Ubuntu live userspace proof")?;
-        let chunk = cc_log_stream_for_handle(cc, guest_handle, "ubuntu-live").unwrap_or_default();
-        if !chunk.is_empty() {
-            output.push_str(&chunk);
-            if output.contains("agentos-live-proof") {
-                userspace_proven = true;
-                break;
-            }
-        }
-        std::thread::sleep(Duration::from_millis(500));
-    }
-
-    anyhow::ensure!(
-        userspace_proven,
-        "Ubuntu live shell did not complete the userspace proof; login tail:\n{}\ncommand tail:\n{}",
-        tail_chars(&transcript, 2000),
-        tail_chars(&output, 2000),
-    );
-
-    /*
-     * Link-up emits IPv6 control traffic; the bounded all-nodes ping guarantees
-     * a guest-originated frame without DHCP. Wait for a marker emitted after
-     * both operations so no probe bytes remain queued when SSH provisioning
-     * starts on the same console.
-     */
-    cc_send_console_line(
-        cc,
-        guest_handle,
-        ubuntu_live_network_probe_command().as_bytes(),
-    )?;
-    let network_start = Instant::now();
-    let mut network_output = String::new();
-    while network_start.elapsed() < phase_timeout {
-        ensure_qemu_running(qemu, "waiting for Ubuntu live network proof")?;
-        let chunk = match cc_log_stream_for_handle(cc, guest_handle, "ubuntu-live") {
-            Ok(chunk) => chunk,
-            Err(err) => {
-                if cc.is_closed() {
-                    return Err(err).context("CC live-network transport closed");
-                }
-                println!("[xtask:test] CC live-network drain not ready yet: {err:#}");
-                String::new()
-            }
-        };
-        if !chunk.is_empty() {
-            network_output.push_str(&chunk);
-            if network_output.contains("agentos-live-net-proof") {
-                return Ok(String::from(
-                    "logged into Ubuntu live userspace, executed a command, and emitted a network probe",
-                ));
-            }
-        }
-        std::thread::sleep(Duration::from_millis(500));
-    }
-
-    anyhow::bail!(
-        "Ubuntu live shell did not complete the network proof; tail:\n{}",
-        tail_chars(&network_output, 2000)
-    )
 }
 
 fn try_create_guest_via_cc(
@@ -1740,6 +1922,7 @@ fn run_guest_console_command(
     cc: &mut CcClient,
     guest_handle: u32,
     guest_os: &str,
+    profile: Option<&HostProfilePlan>,
     command: &str,
     marker: &str,
     timeout: Duration,
@@ -1758,7 +1941,7 @@ fn run_guest_console_command(
     let failure_marker = format!("agentos-{guest_os}-ssh-failed");
     while start.elapsed() < timeout {
         ensure_qemu_running(qemu, "waiting for guest provisioning command")?;
-        match cc_log_stream_for_handle(cc, guest_handle, guest_os) {
+        match cc_log_stream_for_handle(cc, guest_handle, profile) {
             Ok(chunk) => {
                 output.push_str(&chunk);
                 if output.contains(marker) {
@@ -1791,6 +1974,7 @@ fn run_guest_console_commands(
     cc: &mut CcClient,
     guest_handle: u32,
     guest_os: &str,
+    profile: Option<&HostProfilePlan>,
     commands: &[String],
     timeout: Duration,
     qemu: &mut Child,
@@ -1818,6 +2002,7 @@ fn run_guest_console_commands(
             cc,
             guest_handle,
             guest_os,
+            profile,
             &wrapped,
             &marker,
             timeout,
@@ -1833,154 +2018,71 @@ fn guest_provision_command(command: &str, guest_os: &str, success: &str) -> Stri
     )
 }
 
-fn provision_ubuntu_and_resume_freebsd_ssh(
-    cc_sock: &Path,
-    cc: &mut CcClient,
-    linux_handle: u32,
-    freebsd_handle: u32,
-    ssh_key: &SshTestKey,
-    qemu: &mut Child,
-) -> anyhow::Result<()> {
-    let ubuntu = ubuntu_ssh_provision_commands(&ssh_key.public_key);
-    run_guest_console_commands(
-        cc_sock,
-        cc,
-        linux_handle,
-        "ubuntu",
-        &ubuntu,
-        Duration::from_secs(600),
-        qemu,
-    )?;
-
-    /*
-     * FreeBSD was provisioned before its boot checkpoint. Resume it only
-     * after Ubuntu provisioning is complete, then prove that its sshd and
-     * network configuration survived the suspend/resume boundary.
-     */
-    let freebsd_provision_resume = resume_guest_via_cc(cc, freebsd_handle)
-        .context("failed to resume provisioned FreeBSD for concurrent SSH proof")?;
-    println!(
-        "[xtask:test] resumed provisioned FreeBSD guest handle={freebsd_handle} state={freebsd_provision_resume} for concurrent SSH proof"
+fn profile_provision_commands(
+    profile: &HostProfilePlan,
+    public_key: &str,
+) -> anyhow::Result<Vec<String>> {
+    anyhow::ensure!(
+        !public_key
+            .chars()
+            .any(|ch| matches!(ch, '\n' | '\r' | '\'')),
+        "SSH public key contains shell-hostile characters"
     );
-    Ok(())
+    let commands: Vec<String> = profile
+        .provision
+        .iter()
+        .filter(|step| step.action == "send-console")
+        .map(|step| step.args["text"].replace("{{ssh_public_key}}", public_key))
+        .collect();
+    anyhow::ensure!(
+        !commands.is_empty(),
+        "profile {} has no send-console provisioning recipe",
+        profile.id
+    );
+    anyhow::ensure!(
+        commands.iter().all(|command| !command.contains("{{")),
+        "profile {} provisioning contains an unknown template variable",
+        profile.id
+    );
+    Ok(commands)
 }
 
-fn ubuntu_ssh_provision_commands(public_key: &str) -> Vec<String> {
-    vec![
-        "sudo -n ip link set eth0 up && sudo -n ip addr flush dev eth0 scope global && sudo -n ip addr add 10.0.2.15/24 dev eth0 && sudo -n ip route replace default via 10.0.2.2".into(),
-        "sudo -n rm -f /etc/resolv.conf && printf 'nameserver 10.0.2.3\\n' | sudo -n tee /etc/resolv.conf >/dev/null".into(),
-        "if command -v /usr/sbin/sshd >/dev/null 2>&1; then true; else ok=1; for deb in /cdrom/pool/main/o/openssh/openssh-sftp-server_*.deb /cdrom/pool/main/o/openssh/openssh-server_*.deb; do test -f \"$deb\" && sudo -n dpkg-deb -x \"$deb\" / || ok=0; done; test \"$ok\" -eq 1 && command -v /usr/sbin/sshd >/dev/null; fi".into(),
-        "getent passwd sshd >/dev/null || sudo -n useradd --system --home /run/sshd --shell /usr/sbin/nologin sshd".into(),
-        format!("sudo -n mkdir -p /home/ubuntu/.ssh /run/sshd && printf '%s\\n' '{}' | sudo -n tee /home/ubuntu/.ssh/authorized_keys >/dev/null && sudo -n chown -R ubuntu:ubuntu /home/ubuntu/.ssh && sudo -n chmod 700 /home/ubuntu/.ssh && sudo -n chmod 600 /home/ubuntu/.ssh/authorized_keys", public_key),
-        "sudo -n rm -f /run/agentos-ssh-host-key /run/agentos-ssh-host-key.pub /run/agentos-sshd.pid && sudo -n ssh-keygen -q -t ed25519 -N '' -f /run/agentos-ssh-host-key".into(),
-        "sudo -n /usr/sbin/sshd -t -f /dev/null -o HostKey=/run/agentos-ssh-host-key -o AuthorizedKeysFile=/home/ubuntu/.ssh/authorized_keys -o UsePAM=no -o PidFile=/run/agentos-sshd.pid".into(),
-        "sudo -n /usr/sbin/sshd -f /dev/null -o HostKey=/run/agentos-ssh-host-key -o AuthorizedKeysFile=/home/ubuntu/.ssh/authorized_keys -o UsePAM=no -o UseDNS=no -o GSSAPIAuthentication=no -o MaxStartups=100:100:100 -o PidFile=/run/agentos-sshd.pid -o PasswordAuthentication=no -o KbdInteractiveAuthentication=no -o PubkeyAuthentication=yes -o PermitRootLogin=no".into(),
-    ]
-}
-
-fn freebsd_ssh_provision_commands(public_key: &str) -> Vec<String> {
-    vec![
-        "mkdir -p /tmp/agentos-ssh 2>/dev/null || { mount -t tmpfs tmpfs /tmp && mkdir -p /tmp/agentos-ssh; }".into(),
-        format!("rm -f /tmp/agentos-ssh/host_key /tmp/agentos-ssh/host_key.pub /tmp/agentos-ssh/sshd.pid && printf '%s\\n' '{}' > /tmp/agentos-ssh/authorized_keys && chmod 600 /tmp/agentos-ssh/authorized_keys", public_key),
-        "ifconfig vtnet0 inet 10.0.2.16 netmask 255.255.255.0 up && ( route delete default >/dev/null 2>&1 || true ) && ( route add default 10.0.2.2 >/dev/null 2>&1 || true )".into(),
-        "ssh-keygen -q -t ed25519 -N '' -f /tmp/agentos-ssh/host_key".into(),
-        "/usr/sbin/sshd -t -f /dev/null -o HostKey=/tmp/agentos-ssh/host_key -o AuthorizedKeysFile=/tmp/agentos-ssh/authorized_keys -o StrictModes=no -o PermitRootLogin=yes -o PasswordAuthentication=no -o KbdInteractiveAuthentication=no -o PubkeyAuthentication=yes -o UsePAM=no -o PidFile=/tmp/agentos-ssh/sshd.pid".into(),
-        "/usr/sbin/sshd -f /dev/null -o HostKey=/tmp/agentos-ssh/host_key -o AuthorizedKeysFile=/tmp/agentos-ssh/authorized_keys -o StrictModes=no -o PermitRootLogin=yes -o PasswordAuthentication=no -o KbdInteractiveAuthentication=no -o PubkeyAuthentication=yes -o UsePAM=no -o PidFile=/tmp/agentos-ssh/sshd.pid".into(),
-    ]
-}
-
-fn ubuntu_desktop_provision_script() -> &'static str {
-    r#"set -eu
-TIGERVNC_DEB=/tmp/tigervnc-standalone-server.deb
-TIGERVNC_URL=http://archive.ubuntu.com/ubuntu/pool/universe/t/tigervnc/tigervnc-standalone-server_1.15.0+dfsg-2build1_arm64.deb
-TIGERVNC_SHA256=30e536f05a504ad817b294abee51394143e140c57e4b4cea43c149973cfba3b2
-if ! command -v Xtigervnc >/dev/null 2>&1; then
-    TIGERVNC_COMMON_DEB=/tmp/tigervnc-common.deb
-    TIGERVNC_COMMON_URL=http://archive.ubuntu.com/ubuntu/pool/universe/t/tigervnc/tigervnc-common_1.15.0+dfsg-2build1_arm64.deb
-    TIGERVNC_COMMON_SHA256=ee669c6253bde0b9f7b43c270607d560ea27285e88ba7dc379338e1cf91c3d1e
-    timeout 600 wget -q -O "$TIGERVNC_COMMON_DEB" "$TIGERVNC_COMMON_URL"
-    printf '%s  %s\n' "$TIGERVNC_COMMON_SHA256" "$TIGERVNC_COMMON_DEB" | sha256sum -c -
-    timeout 600 wget -q -O "$TIGERVNC_DEB" "$TIGERVNC_URL"
-    printf '%s  %s\n' "$TIGERVNC_SHA256" "$TIGERVNC_DEB" | sha256sum -c -
-    dpkg-deb -x "$TIGERVNC_COMMON_DEB" /
-    dpkg-deb -x "$TIGERVNC_DEB" /
-fi
-command -v Xtigervnc >/dev/null
-command -v gnome-calculator >/dev/null
-printf 'agentos-desktop-binaries-ready\n'
-install -d -o ubuntu -g ubuntu /home/ubuntu/.vnc
-rm -f /tmp/.X1-lock /tmp/.X11-unix/X1 /tmp/agentos-desktop.pid
-setsid -f su -s /bin/sh ubuntu -c 'exec env HOME=/home/ubuntu USER=ubuntu Xtigervnc :1 -rfbport 5901 -rendernode "" -ac -localhost yes -SecurityTypes None -geometry 1024x768 -depth 24' </dev/null >/tmp/agentos-xvnc.log 2>&1
-attempt=0
-while test "$attempt" -lt 120; do
-    test -S /tmp/.X11-unix/X1 && ss -ltn | grep -q ':5901' && break
-    attempt=$((attempt + 1))
-    sleep 1
-done
-if ! test -S /tmp/.X11-unix/X1 || ! ss -ltn | grep -q ':5901'; then
-    cat /tmp/agentos-xvnc.log >&2
-    exit 1
-fi
-printf 'agentos-desktop-rfb-listener-ready\n'
-su -s /bin/sh ubuntu -c 'env HOME=/home/ubuntu USER=ubuntu DISPLAY=:1 dbus-run-session -- gnome-calculator >/tmp/agentos-desktop.log 2>&1 & echo $! >/tmp/agentos-desktop.pid'
-attempt=0
-while test "$attempt" -lt 120; do
-    if pgrep -x Xtigervnc >/dev/null &&
-       test -S /tmp/.X11-unix/X1 &&
-       ss -ltn | grep -q ':5901' &&
-       test -s /tmp/agentos-desktop.pid &&
-       kill -0 "$(cat /tmp/agentos-desktop.pid)" 2>/dev/null; then
-        printf 'agentos-desktop-app-ready\n'
-        break
-    fi
-    attempt=$((attempt + 1))
-    sleep 1
-done
-if ! pgrep -x Xtigervnc >/dev/null ||
-   ! test -S /tmp/.X11-unix/X1 ||
-   ! ss -ltn | grep -q ':5901' ||
-   ! test -s /tmp/agentos-desktop.pid ||
-   ! kill -0 "$(cat /tmp/agentos-desktop.pid)" 2>/dev/null; then
-    cat /tmp/agentos-xvnc.log /tmp/agentos-desktop.log >&2
-    exit 1
-fi
-RFB_VERSION="$(timeout 120 bash -c 'exec 3<>/dev/tcp/127.0.0.1/5901; IFS= read -r version <&3; printf "%s" "$version"')"
-if test "$RFB_VERSION" != 'RFB 003.008'; then
-    printf 'unexpected local RFB version: %s\n' "$RFB_VERSION" >&2
-    cat /tmp/agentos-xvnc.log /tmp/agentos-desktop.log >&2
-    exit 1
-fi
-printf 'agentos-desktop-local-rfb-ready\n'
-"#
-}
-
-fn run_ssh_script(private_key: &Path, script: &str) -> anyhow::Result<String> {
+fn run_ssh_script(
+    private_key: &Path,
+    port: u16,
+    account: &str,
+    timeout: Duration,
+    script: &str,
+) -> anyhow::Result<String> {
     let mut child = std::process::Command::new("ssh");
     child
         .arg("-i")
         .arg(private_key)
-        .args(["-p", &UBUNTU_DEFAULT_SSH_PORT.to_string()])
+        .args(["-p", &port.to_string()])
         .args(SSH_AUTH_OPTIONS)
         .args(SSH_SESSION_LIVENESS_OPTIONS)
-        .args(["ubuntu@127.0.0.1", "sudo -n timeout 1200 sh -s"])
+        .args([
+            &format!("{account}@127.0.0.1"),
+            &format!("sudo -n timeout {} sh -s", timeout.as_secs()),
+        ])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     let mut child = child
         .spawn()
-        .context("failed to launch Ubuntu desktop provisioning over SSH")?;
+        .context("failed to launch profile desktop provisioning over SSH")?;
     child
         .stdin
         .take()
         .context("desktop provisioning SSH stdin was not piped")?
         .write_all(script.as_bytes())
-        .context("failed to send Ubuntu desktop provisioning script")?;
+        .context("failed to send profile desktop provisioning script")?;
     let output = child
         .wait_with_output()
-        .context("failed to wait for Ubuntu desktop provisioning")?;
+        .context("failed to wait for profile desktop provisioning")?;
     anyhow::ensure!(
         output.status.success(),
-        "Ubuntu desktop provisioning failed with {}: stdout={:?} stderr={:?}",
+        "profile desktop provisioning failed with {}: stdout={:?} stderr={:?}",
         output.status,
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
@@ -1988,20 +2090,29 @@ fn run_ssh_script(private_key: &Path, script: &str) -> anyhow::Result<String> {
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
-fn wait_for_ubuntu_ssh(
+fn wait_for_profile_ssh(
+    profile: &HostProfilePlan,
     ssh_key: &SshTestKey,
     timeout: Duration,
     qemu: &mut Child,
 ) -> anyhow::Result<()> {
+    let ssh = profile
+        .qemu
+        .as_ref()
+        .and_then(|qemu| qemu.ssh.as_ref())
+        .context("desktop profile has no host.qemu.ssh plan")?;
+    let (account, marker) = profile_ssh_expectation(profile)?;
     let start = Instant::now();
     let mut last = String::from("no SSH attempt completed");
     while start.elapsed() < timeout {
-        ensure_qemu_running(qemu, "waiting for Ubuntu desktop SSH")?;
-        let probe = spawn_ssh_probe(&ssh_key.private_key, UBUNTU_DEFAULT_SSH_PORT, "ubuntu")?;
+        ensure_qemu_running(qemu, "waiting for profile desktop SSH")?;
+        let probe = spawn_ssh_probe(&ssh_key.private_key, ssh.host_port, account)?;
         let output = probe
             .wait_with_output()
-            .context("failed to wait for Ubuntu desktop SSH probe")?;
-        if output.status.success() && String::from_utf8_lossy(&output.stdout).trim() == "Linux" {
+            .context("failed to wait for profile desktop SSH probe")?;
+        if output.status.success()
+            && (marker.is_empty() || String::from_utf8_lossy(&output.stdout).trim() == marker)
+        {
             return Ok(());
         }
         last = format!(
@@ -2012,18 +2123,26 @@ fn wait_for_ubuntu_ssh(
         );
         std::thread::sleep(Duration::from_secs(2));
     }
-    anyhow::bail!("Ubuntu desktop SSH did not become ready: {last}")
+    anyhow::bail!("profile desktop SSH did not become ready: {last}")
 }
 
-fn desktop_tunnel_forward_spec() -> String {
-    format!("127.0.0.1:{UBUNTU_DESKTOP_PORT}:127.0.0.1:{UBUNTU_VNC_GUEST_PORT}")
+fn desktop_tunnel_forward_spec(desktop: &DesktopPlan) -> String {
+    format!(
+        "127.0.0.1:{}:127.0.0.1:{}",
+        desktop.local_port, desktop.guest_port
+    )
 }
 
-fn spawn_desktop_tunnel(private_key: &Path) -> anyhow::Result<Child> {
+fn spawn_desktop_tunnel(
+    private_key: &Path,
+    port: u16,
+    account: &str,
+    desktop: &DesktopPlan,
+) -> anyhow::Result<Child> {
     std::process::Command::new("ssh")
         .arg("-i")
         .arg(private_key)
-        .args(["-p", &UBUNTU_DEFAULT_SSH_PORT.to_string()])
+        .args(["-p", &port.to_string()])
         .args(SSH_AUTH_OPTIONS)
         .args(SSH_SESSION_LIVENESS_OPTIONS)
         .args([
@@ -2031,60 +2150,83 @@ fn spawn_desktop_tunnel(private_key: &Path) -> anyhow::Result<Child> {
             "ExitOnForwardFailure=yes",
             "-N",
             "-L",
-            &desktop_tunnel_forward_spec(),
-            "ubuntu@127.0.0.1",
+            &desktop_tunnel_forward_spec(desktop),
+            &format!("{account}@127.0.0.1"),
         ])
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
         .spawn()
-        .context("failed to launch SSH tunnel for Ubuntu desktop")
+        .context("failed to launch SSH tunnel for profile desktop")
 }
 
-fn prove_ubuntu_desktop(
+fn prove_profile_desktop(
     cc_sock: &Path,
+    profile: &HostProfilePlan,
     ssh_key: &SshTestKey,
     timeout: Duration,
     qemu: &mut Child,
 ) -> anyhow::Result<(rfb::RfbFrameEvidence, Child)> {
+    let desktop = profile
+        .desktop
+        .as_ref()
+        .context("profile has no host.desktop plan")?;
+    let ssh = profile
+        .qemu
+        .as_ref()
+        .and_then(|qemu| qemu.ssh.as_ref())
+        .context("desktop profile has no host.qemu.ssh plan")?;
     let mut cc = connect_cc_client(cc_sock, timeout.min(Duration::from_secs(30)), qemu)?;
-    let provision_ssh = ubuntu_ssh_provision_commands(&ssh_key.public_key);
+    let provision_ssh = profile_provision_commands(profile, &ssh_key.public_key)?;
     run_guest_console_commands(
         cc_sock,
         &mut cc,
         0,
-        "ubuntu",
+        &profile.id,
+        Some(profile),
         &provision_ssh,
         timeout.min(Duration::from_secs(600)),
         qemu,
     )?;
     drop(cc);
-    wait_for_ubuntu_ssh(ssh_key, timeout.min(Duration::from_secs(600)), qemu)?;
-    let provisioning = run_ssh_script(&ssh_key.private_key, ubuntu_desktop_provision_script())?;
-    println!("[xtask:test] Ubuntu desktop provisioning:\n{provisioning}");
+    wait_for_profile_ssh(
+        profile,
+        ssh_key,
+        timeout.min(Duration::from_secs(600)),
+        qemu,
+    )?;
+    let provisioning = run_ssh_script(
+        &ssh_key.private_key,
+        ssh.host_port,
+        &ssh.account,
+        Duration::from_secs(desktop.provision_timeout_secs),
+        &desktop.provision_script,
+    )?;
+    println!("[xtask:test] profile desktop provisioning:\n{provisioning}");
 
-    let mut tunnel = spawn_desktop_tunnel(&ssh_key.private_key)?;
+    let mut tunnel =
+        spawn_desktop_tunnel(&ssh_key.private_key, ssh.host_port, &ssh.account, desktop)?;
     let start = Instant::now();
     let mut last = String::from("SSH tunnel did not accept a connection");
-    while start.elapsed() < timeout.min(UBUNTU_DESKTOP_RFB_TIMEOUT) {
-        ensure_qemu_running(qemu, "waiting for Ubuntu desktop RFB frame")?;
+    while start.elapsed() < timeout.min(Duration::from_secs(desktop.frame_timeout_secs)) {
+        ensure_qemu_running(qemu, "waiting for profile desktop RFB frame")?;
         if let Some(status) = tunnel
             .try_wait()
-            .context("failed to inspect Ubuntu desktop SSH tunnel")?
+            .context("failed to inspect profile desktop SSH tunnel")?
         {
             let mut stderr = String::new();
             if let Some(mut pipe) = tunnel.stderr.take() {
                 let _ = pipe.read_to_string(&mut stderr);
             }
-            anyhow::bail!("Ubuntu desktop SSH tunnel exited with {status}: {stderr}");
+            anyhow::bail!("profile desktop SSH tunnel exited with {status}: {stderr}");
         }
-        match TcpStream::connect(SocketAddr::from(([127, 0, 0, 1], UBUNTU_DESKTOP_PORT))) {
+        match TcpStream::connect(SocketAddr::from(([127, 0, 0, 1], desktop.local_port))) {
             Ok(mut stream) => {
                 stream
-                    .set_read_timeout(Some(UBUNTU_DESKTOP_RFB_IO_TIMEOUT))
+                    .set_read_timeout(Some(Duration::from_secs(desktop.io_timeout_secs)))
                     .context("failed to bound desktop RFB reads")?;
                 stream
-                    .set_write_timeout(Some(UBUNTU_DESKTOP_RFB_IO_TIMEOUT))
+                    .set_write_timeout(Some(Duration::from_secs(desktop.io_timeout_secs)))
                     .context("failed to bound desktop RFB writes")?;
                 match rfb::verify_raw_frame(&mut stream) {
                     Ok(evidence) => return Ok((evidence, tunnel)),
@@ -2103,7 +2245,7 @@ fn prove_ubuntu_desktop(
         let _ = pipe.read_to_string(&mut tunnel_stderr);
     }
     anyhow::bail!(
-        "Ubuntu desktop did not yield an RFB frame: {last}; SSH tunnel stderr={:?}",
+        "profile desktop did not yield an RFB frame: {last}; SSH tunnel stderr={:?}",
         tunnel_stderr.trim()
     )
 }
@@ -2131,21 +2273,35 @@ fn spawn_ssh_probe(
         .with_context(|| format!("failed to launch SSH probe for {user} on port {port}"))
 }
 
-fn wait_for_freebsd_ssh(
+fn profile_ssh_expectation(profile: &HostProfilePlan) -> anyhow::Result<(&str, &str)> {
+    let step = profile
+        .test
+        .iter()
+        .find(|step| step.action == "wait-ssh")
+        .with_context(|| format!("profile {} has no wait-ssh test step", profile.id))?;
+    Ok((
+        step.args["account"].as_str(),
+        step.args.get("marker").map(String::as_str).unwrap_or(""),
+    ))
+}
+
+fn wait_for_scenario_guest_ssh(
+    guest: &ScenarioGuestPlan,
     ssh_key: &SshTestKey,
     timeout: Duration,
     qemu: &mut Child,
 ) -> anyhow::Result<()> {
+    let (account, marker) = profile_ssh_expectation(&guest.profile)?;
     let start = Instant::now();
     let mut last = String::from("no SSH attempt completed");
     while start.elapsed() < timeout {
-        ensure_qemu_running(qemu, "waiting for FreeBSD authenticated SSH")?;
-        let freebsd = spawn_ssh_probe(&ssh_key.private_key, FREEBSD_DEFAULT_SSH_PORT, "root")?;
-        let output = freebsd
+        ensure_qemu_running(qemu, "waiting for profile authenticated SSH")?;
+        let probe = spawn_ssh_probe(&ssh_key.private_key, guest.ssh_host_port, account)?;
+        let output = probe
             .wait_with_output()
-            .context("failed to wait for FreeBSD SSH probe")?;
+            .with_context(|| format!("failed to wait for {} SSH probe", guest.profile.id))?;
         let stdout = String::from_utf8_lossy(&output.stdout);
-        if output.status.success() && stdout.trim() == "FreeBSD" {
+        if output.status.success() && (marker.is_empty() || stdout.trim() == marker) {
             return Ok(());
         }
         last = format!(
@@ -2156,53 +2312,46 @@ fn wait_for_freebsd_ssh(
         );
         std::thread::sleep(Duration::from_secs(2));
     }
-    anyhow::bail!("FreeBSD authenticated SSH did not become ready: {last}")
+    anyhow::bail!(
+        "profile {} authenticated SSH did not become ready: {last}",
+        guest.profile.id
+    )
 }
 
-fn wait_for_dual_ssh(
+fn wait_for_scenario_ssh(
+    scenario: &HostScenarioPlan,
     ssh_key: &SshTestKey,
     timeout: Duration,
     qemu: &mut Child,
 ) -> anyhow::Result<String> {
     let start = Instant::now();
-    let mut last = String::from("no SSH attempts completed");
     while start.elapsed() < timeout {
-        ensure_qemu_running(qemu, "waiting for dual authenticated SSH")?;
-        let ubuntu = spawn_ssh_probe(&ssh_key.private_key, UBUNTU_DEFAULT_SSH_PORT, "ubuntu")?;
-        let freebsd = spawn_ssh_probe(&ssh_key.private_key, FREEBSD_DEFAULT_SSH_PORT, "root")?;
-        let ubuntu_out = ubuntu
-            .wait_with_output()
-            .context("failed to wait for Ubuntu SSH probe")?;
-        let freebsd_out = freebsd
-            .wait_with_output()
-            .context("failed to wait for FreeBSD SSH probe")?;
-        let ubuntu_stdout = String::from_utf8_lossy(&ubuntu_out.stdout);
-        let freebsd_stdout = String::from_utf8_lossy(&freebsd_out.stdout);
-        if ubuntu_out.status.success()
-            && freebsd_out.status.success()
-            && ubuntu_stdout.trim() == "Linux"
-            && freebsd_stdout.trim() == "FreeBSD"
-        {
-            return Ok(String::from(
-                "concurrent authenticated SSH returned Linux and FreeBSD",
+        ensure_qemu_running(qemu, "waiting for scenario authenticated SSH")?;
+        let mut all_ready = true;
+        for guest in &scenario.guests {
+            if wait_for_scenario_guest_ssh(guest, ssh_key, Duration::from_secs(35), qemu).is_err() {
+                all_ready = false;
+                break;
+            }
+        }
+        if all_ready {
+            return Ok(format!(
+                "scenario {} has concurrent authenticated SSH for {} profiles",
+                scenario.id,
+                scenario.guests.len()
             ));
         }
-        last = format!(
-            "ubuntu status={} stdout={:?} stderr={:?}; freebsd status={} stdout={:?} stderr={:?}",
-            ubuntu_out.status,
-            ubuntu_stdout.trim(),
-            String::from_utf8_lossy(&ubuntu_out.stderr).trim(),
-            freebsd_out.status,
-            freebsd_stdout.trim(),
-            String::from_utf8_lossy(&freebsd_out.stderr).trim(),
-        );
         std::thread::sleep(Duration::from_secs(2));
     }
-    anyhow::bail!("dual authenticated SSH did not become ready: {last}")
+    anyhow::bail!(
+        "scenario {} authenticated SSH did not become ready",
+        scenario.id
+    )
 }
 
 fn wait_for_dual_guest_consoles_via_cc(
     cc_sock: &Path,
+    scenario: &HostScenarioPlan,
     timeout: Duration,
     qemu: &mut Child,
     ssh_key: &SshTestKey,
@@ -2218,116 +2367,147 @@ fn wait_for_dual_guest_consoles_via_cc(
      */
     let mut boot_cc = connect_cc_client(cc_sock, timeout.min(Duration::from_secs(30)), qemu)?;
 
-    let freebsd_handle = create_guest_via_cc_wait(
-        &mut boot_cc,
-        VIBEOS_TYPE_FREEBSD,
-        256,
-        "FreeBSD",
-        create_timeout,
-        qemu,
-    )
-    .context("failed to create FreeBSD guest through vm_manager")?;
+    anyhow::ensure!(
+        scenario.guests.len() == 2,
+        "the ordered suspend/resume scenario executor requires exactly two profiles"
+    );
+    let lead = &scenario.guests[0];
+    let deferred = &scenario.guests[1];
 
-    let linux_handle = create_guest_via_cc_wait(
+    let lead_handle = create_guest_via_cc_wait(
         &mut boot_cc,
-        VIBEOS_TYPE_LINUX,
-        1024,
-        "Linux",
+        lead.profile.control_type as u8,
+        lead.ram_mb,
+        &lead.profile.id,
         create_timeout,
         qemu,
     )
-    .context("failed to create Linux guest through vm_manager")?;
+    .with_context(|| format!("failed to create {} through vm_manager", lead.profile.id))?;
+
+    let deferred_handle = create_guest_via_cc_wait(
+        &mut boot_cc,
+        deferred.profile.control_type as u8,
+        deferred.ram_mb,
+        &deferred.profile.id,
+        create_timeout,
+        qemu,
+    )
+    .with_context(|| {
+        format!(
+            "failed to create {} through vm_manager",
+            deferred.profile.id
+        )
+    })?;
 
     /*
      * Creating both guests establishes both clients of the shared host block
-     * path. Quiesce Ubuntu immediately so FreeBSD's ISO boot cannot lose the
-     * single emulated CPU to the much busier live-image boot.
+     * path. Quiesce the deferred profile immediately so the lead profile's
+     * media boot cannot lose the single emulated CPU to a busier guest.
      */
-    let linux_boot_suspend = suspend_guest_via_cc(&mut boot_cc, linux_handle)
-        .context("failed to suspend Ubuntu while FreeBSD reaches its installer shell")?;
+    let deferred_boot_suspend = suspend_guest_via_cc(&mut boot_cc, deferred_handle)
+        .with_context(|| format!("failed to defer {} boot", deferred.profile.id))?;
     println!(
-        "[xtask:test] suspended Ubuntu guest handle={linux_handle} state={linux_boot_suspend} while FreeBSD boots"
+        "[xtask:test] suspended {} handle={} state={} while {} boots",
+        deferred.profile.id, deferred_handle, deferred_boot_suspend, lead.profile.id
     );
 
-    let freebsd = wait_for_guest_console_login_on_cc(
+    let lead_console = wait_for_guest_console_login_on_cc(
         cc_sock,
         &mut boot_cc,
-        freebsd_handle,
-        "freebsd",
+        lead_handle,
+        &lead.profile.id,
+        Some(&lead.profile),
         timeout.saturating_sub(start.elapsed()),
         qemu,
     )?;
-    /*
-     * Provision FreeBSD while its installer shell is already responsive.
-     * The later authenticated SSH probe then verifies that both its service
-     * state and network configuration survive a real suspend/resume cycle.
-     */
-    let freebsd_ssh = freebsd_ssh_provision_commands(&ssh_key.public_key);
+    let lead_provision = profile_provision_commands(&lead.profile, &ssh_key.public_key)?;
     run_guest_console_commands(
         cc_sock,
         &mut boot_cc,
-        freebsd_handle,
-        "freebsd",
-        &freebsd_ssh,
+        lead_handle,
+        &lead.profile.id,
+        Some(&lead.profile),
+        &lead_provision,
         Duration::from_secs(600),
         qemu,
     )?;
-    wait_for_freebsd_ssh(ssh_key, Duration::from_secs(180), qemu)
-        .context("FreeBSD SSH was not live before its lifecycle checkpoint")?;
-    println!("[xtask:test] FreeBSD authenticated SSH live before suspend");
-    let freebsd_probe_suspend = suspend_guest_via_cc(&mut boot_cc, freebsd_handle)
-        .context("failed to suspend FreeBSD for the immediate resume checkpoint")?;
+    wait_for_scenario_guest_ssh(lead, ssh_key, Duration::from_secs(180), qemu)
+        .with_context(|| format!("{} SSH was not live before checkpoint", lead.profile.id))?;
     println!(
-        "[xtask:test] suspended FreeBSD guest handle={freebsd_handle} state={freebsd_probe_suspend} for immediate resume checkpoint"
+        "[xtask:test] {} authenticated SSH live before suspend",
+        lead.profile.id
     );
-    let freebsd_probe_resume = resume_guest_via_cc(&mut boot_cc, freebsd_handle)
-        .context("failed to resume FreeBSD for the immediate SSH checkpoint")?;
+    let lead_probe_suspend = suspend_guest_via_cc(&mut boot_cc, lead_handle)
+        .with_context(|| format!("failed to suspend {} for checkpoint", lead.profile.id))?;
     println!(
-        "[xtask:test] resumed FreeBSD guest handle={freebsd_handle} state={freebsd_probe_resume} for immediate SSH checkpoint"
+        "[xtask:test] suspended {} handle={} state={} for immediate resume checkpoint",
+        lead.profile.id, lead_handle, lead_probe_suspend
     );
-    wait_for_freebsd_ssh(ssh_key, Duration::from_secs(180), qemu)
-        .context("FreeBSD SSH did not survive the immediate suspend/resume checkpoint")?;
-    println!("[xtask:test] FreeBSD authenticated SSH survived immediate resume");
-    let freebsd_boot_suspend = suspend_guest_via_cc(&mut boot_cc, freebsd_handle)
-        .context("failed to suspend provisioned FreeBSD guest while Ubuntu finishes booting")?;
+    let lead_probe_resume = resume_guest_via_cc(&mut boot_cc, lead_handle)
+        .with_context(|| format!("failed to resume {} after checkpoint", lead.profile.id))?;
     println!(
-        "[xtask:test] suspended provisioned FreeBSD guest handle={freebsd_handle} state={freebsd_boot_suspend} while Ubuntu boots"
+        "[xtask:test] resumed {} handle={} state={} for immediate SSH checkpoint",
+        lead.profile.id, lead_handle, lead_probe_resume
     );
-    let linux_boot_resume = resume_guest_via_cc(&mut boot_cc, linux_handle)
-        .context("failed to resume Ubuntu after checkpointing FreeBSD")?;
-    println!("[xtask:test] resumed Ubuntu guest handle={linux_handle} state={linux_boot_resume}");
+    wait_for_scenario_guest_ssh(lead, ssh_key, Duration::from_secs(180), qemu)
+        .with_context(|| format!("{} SSH did not survive checkpoint", lead.profile.id))?;
+    let lead_boot_suspend = suspend_guest_via_cc(&mut boot_cc, lead_handle)
+        .with_context(|| format!("failed to defer provisioned {}", lead.profile.id))?;
+    println!(
+        "[xtask:test] suspended provisioned {} handle={} state={} while {} boots",
+        lead.profile.id, lead_handle, lead_boot_suspend, deferred.profile.id
+    );
+    let deferred_boot_resume = resume_guest_via_cc(&mut boot_cc, deferred_handle)
+        .with_context(|| format!("failed to resume {}", deferred.profile.id))?;
+    println!(
+        "[xtask:test] resumed {} handle={} state={}",
+        deferred.profile.id, deferred_handle, deferred_boot_resume
+    );
 
-    let linux = wait_for_guest_console_login_on_cc(
+    let deferred_console = wait_for_guest_console_login_on_cc(
         cc_sock,
         &mut boot_cc,
-        linux_handle,
-        "ubuntu-live",
+        deferred_handle,
+        &deferred.profile.id,
+        Some(&deferred.profile),
         timeout.saturating_sub(start.elapsed()),
         qemu,
     )?;
-    provision_ubuntu_and_resume_freebsd_ssh(
+    let deferred_provision = profile_provision_commands(&deferred.profile, &ssh_key.public_key)?;
+    run_guest_console_commands(
         cc_sock,
         &mut boot_cc,
-        linux_handle,
-        freebsd_handle,
-        ssh_key,
+        deferred_handle,
+        &deferred.profile.id,
+        Some(&deferred.profile),
+        &deferred_provision,
+        Duration::from_secs(600),
         qemu,
     )?;
-    let ssh = wait_for_dual_ssh(ssh_key, Duration::from_secs(600), qemu)?;
+    resume_guest_via_cc(&mut boot_cc, lead_handle)
+        .with_context(|| format!("failed to resume provisioned {}", lead.profile.id))?;
+    let ssh = wait_for_scenario_ssh(scenario, ssh_key, Duration::from_secs(600), qemu)?;
 
     if !keep_running {
-        destroy_guest_via_cc(&mut boot_cc, linux_handle)
-            .context("failed to destroy Linux guest")?;
-        destroy_guest_via_cc(&mut boot_cc, freebsd_handle)
-            .context("failed to destroy FreeBSD guest")?;
+        destroy_guest_via_cc(&mut boot_cc, deferred_handle)
+            .with_context(|| format!("failed to destroy {}", deferred.profile.id))?;
+        destroy_guest_via_cc(&mut boot_cc, lead_handle)
+            .with_context(|| format!("failed to destroy {}", lead.profile.id))?;
     }
 
     Ok(format!(
-        "dual CC/vm_manager consoles ready: linux_handle={linux_handle} ({linux}); freebsd_handle={freebsd_handle} ({freebsd}); {ssh}; {}",
+        "scenario {} consoles ready: {} handle={} ({}); {} handle={} ({}); {ssh}; {}",
+        scenario.id,
+        lead.profile.id,
+        lead_handle,
+        lead_console,
+        deferred.profile.id,
+        deferred_handle,
+        deferred_console,
         if keep_running {
-            "both retained for manual SSH"
+            "profiles retained for manual SSH"
         } else {
-            "both destroyed"
+            "profiles destroyed"
         }
     ))
 }
@@ -2416,14 +2596,19 @@ fn connect_host_net_stimulus(port: u16, qemu: &mut Child) -> Option<TcpStream> {
 fn cc_log_stream_for_handle(
     cc: &mut CcClient,
     guest_handle: u32,
-    guest_os: &str,
+    profile: Option<&HostProfilePlan>,
 ) -> anyhow::Result<String> {
     let pd_id = if guest_handle == 0 {
         0
-    } else if guest_os == "freebsd" {
-        TRACE_PD_FREEBSD_VMM
     } else {
-        TRACE_PD_LINUX_VMM
+        match profile.map(|value| value.control_type) {
+            Some(1) => TRACE_PD_GUEST_VMM_PRIMARY,
+            Some(2) => TRACE_PD_GUEST_VMM_SECONDARY,
+            Some(value) => {
+                anyhow::bail!("profile control_type {value} has no configured trace-PD slot")
+            }
+            None => anyhow::bail!("dynamic guest log streaming requires a resolved profile"),
+        }
     };
     let reply = cc
         .call(MSG_CC_LOG_STREAM, guest_handle, pd_id, 0, &[])
@@ -2573,6 +2758,17 @@ mod tests {
     use super::*;
     use std::os::unix::net::UnixListener;
 
+    fn test_profile(alias: &str) -> HostProfilePlan {
+        let repo = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+        let root = repo.join("guest-profiles");
+        let path = cmd_guest_profile::resolve_alias(&root, alias).unwrap();
+        cmd_guest_profile::host_profile_plan(&root, &path).unwrap()
+    }
+
+    fn test_provision_commands(alias: &str, key: &str) -> Vec<String> {
+        profile_provision_commands(&test_profile(alias), key).unwrap()
+    }
+
     #[test]
     fn text_events_fit_the_narrowest_relay_and_reassemble() {
         let input = b"abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGHI";
@@ -2627,7 +2823,14 @@ mod tests {
 
     #[test]
     fn dual_host_forwards_have_distinct_guest_addresses() {
-        let netdev = dual_qemu_netdev_arg(UBUNTU_DEFAULT_SSH_PORT);
+        let repo = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+        let scenario = guest_scenario::resolve_alias(
+            &repo.join("guest-scenarios"),
+            &repo.join("guest-profiles"),
+            "both",
+        )
+        .unwrap();
+        let netdev = scenario_qemu_netdev_arg(&scenario);
         assert!(netdev.contains("127.0.0.1:12222-10.0.2.15:22"));
         assert!(netdev.contains("127.0.0.1:12223-10.0.2.16:22"));
     }
@@ -2635,9 +2838,9 @@ mod tests {
     #[test]
     fn ssh_provisioning_commands_are_posix_shell_syntax() {
         let key = "ssh-ed25519 AAAAC3NzaFocusedTest agentos-test";
-        let commands = ubuntu_ssh_provision_commands(key)
-            .into_iter()
-            .chain(freebsd_ssh_provision_commands(key));
+        let ubuntu = test_provision_commands("ubuntu-live", key);
+        let freebsd = test_provision_commands("freebsd", key);
+        let commands = ubuntu.clone().into_iter().chain(freebsd.clone());
         for command in commands {
             let status = std::process::Command::new("sh")
                 .args(["-n", "-c", &command])
@@ -2645,18 +2848,14 @@ mod tests {
                 .expect("run sh syntax check");
             assert!(status.success());
         }
-        assert!(ubuntu_ssh_provision_commands(key)
-            .iter()
-            .any(|command| command.contains(key)));
-        assert!(freebsd_ssh_provision_commands(key)
-            .iter()
-            .any(|command| command.contains(key)));
+        assert!(ubuntu.iter().any(|command| command.contains(key)));
+        assert!(freebsd.iter().any(|command| command.contains(key)));
     }
 
     #[test]
     fn freebsd_provisioning_recovers_read_only_live_media_tmp() {
         let command =
-            freebsd_ssh_provision_commands("ssh-ed25519 AAAAC3NzaFocusedTest agentos-test")
+            test_provision_commands("freebsd", "ssh-ed25519 AAAAC3NzaFocusedTest agentos-test")
                 .join("; ");
         let probe = command
             .find("mkdir -p /tmp/agentos-ssh 2>/dev/null")
@@ -2671,34 +2870,40 @@ mod tests {
     #[test]
     fn provisioning_markers_cannot_match_command_echo() {
         let key = "ssh-ed25519 AAAAC3NzaFocusedTest agentos-test";
-        let ubuntu = ubuntu_ssh_provision_commands(key).join("; ");
-        let freebsd = freebsd_ssh_provision_commands(key).join("; ");
-        for (guest_os, command) in [("ubuntu", ubuntu), ("freebsd", freebsd)] {
-            let wrapped = guest_provision_command(&command, guest_os, "ready");
-            assert!(!wrapped.contains(&format!("agentos-{guest_os}-ssh-ready")));
-            assert!(!wrapped.contains(&format!("agentos-{guest_os}-ssh-failed")));
-            assert!(wrapped.contains(&format!("agentos-{guest_os}-ssh-%s\\n' failed")));
+        for profile in [test_profile("ubuntu-live"), test_profile("freebsd")] {
+            let command = profile_provision_commands(&profile, key)
+                .unwrap()
+                .join("; ");
+            let wrapped = guest_provision_command(&command, &profile.id, "ready");
+            assert!(!wrapped.contains(&format!("agentos-{}-ssh-ready", profile.id)));
+            assert!(!wrapped.contains(&format!("agentos-{}-ssh-failed", profile.id)));
+            assert!(wrapped.contains(&format!("agentos-{}-ssh-%s\\n' failed", profile.id)));
         }
     }
 
     #[test]
     fn live_network_probe_waits_for_post_probe_marker() {
-        let command = ubuntu_live_network_probe_command();
+        let profile = test_profile("ubuntu-live");
+        let command = profile.console.probe_line.as_deref().unwrap();
         assert!(command.contains("ip link set eth0 up"));
         assert!(command.contains("ping -6 -c1 -W1 ff02::1%eth0"));
         assert!(command.contains("printf 'agentos-live-net-%s\\n' proof"));
         assert!(!command.contains("agentos-live-net-proof"));
+        assert_eq!(
+            profile.console.probe_marker.as_deref(),
+            Some("agentos-live-net-proof")
+        );
     }
 
     #[test]
     fn ssh_ready_markers_require_key_only_daemon_startup() {
         let key = "ssh-ed25519 AAAAC3NzaFocusedTest agentos-test";
-        let ubuntu = ubuntu_ssh_provision_commands(key).join("; ");
+        let ubuntu = test_provision_commands("ubuntu-live", key).join("; ");
         assert!(ubuntu.contains("/cdrom/pool/main/o/openssh/openssh-server_*.deb"));
         assert!(ubuntu.contains("dpkg-deb -x"));
         assert!(ubuntu.contains("ssh-keygen -q -t ed25519"));
         assert!(ubuntu.contains("HostKey=/run/agentos-ssh-host-key"));
-        for command in [ubuntu, freebsd_ssh_provision_commands(key).join("; ")] {
+        for command in [ubuntu, test_provision_commands("freebsd", key).join("; ")] {
             assert!(command.contains("PasswordAuthentication=no"));
             assert!(command.contains("KbdInteractiveAuthentication=no"));
             assert!(command.contains("PubkeyAuthentication=yes"));
@@ -2723,7 +2928,9 @@ mod tests {
 
     #[test]
     fn desktop_proof_is_lightweight_and_confined_to_ssh() {
-        let script = ubuntu_desktop_provision_script();
+        let profile = test_profile("ubuntu-live");
+        let desktop = profile.desktop.as_ref().unwrap();
+        let script = desktop.provision_script.as_str();
         assert!(std::process::Command::new("sh")
             .args(["-n", "-c", script])
             .status()
@@ -2742,18 +2949,28 @@ mod tests {
         assert!(script.contains("agentos-desktop-local-rfb-ready"));
         assert!(script.contains("/dev/tcp/127.0.0.1/5901"));
         assert_eq!(
-            desktop_tunnel_forward_spec(),
+            desktop_tunnel_forward_spec(desktop),
             "127.0.0.1:15901:127.0.0.1:5901"
         );
     }
 
     #[test]
     fn manual_dual_ssh_commands_use_persistent_key_and_distinct_ports() {
-        let commands = manual_ssh_commands(Path::new("build/tmp/dual-ssh/id_ed25519"));
-        assert!(commands[0].contains("-p 12222"));
-        assert!(commands[0].contains("ubuntu@127.0.0.1"));
-        assert!(commands[1].contains("-p 12223"));
-        assert!(commands[1].contains("root@127.0.0.1"));
+        let repo = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+        let scenario = guest_scenario::resolve_alias(
+            &repo.join("guest-scenarios"),
+            &repo.join("guest-profiles"),
+            "both",
+        )
+        .unwrap();
+        let commands =
+            manual_ssh_commands(Path::new("build/tmp/dual-ssh/id_ed25519"), &scenario).unwrap();
+        assert!(commands
+            .iter()
+            .any(|command| command.contains("-p 12222") && command.contains("ubuntu@127.0.0.1")));
+        assert!(commands
+            .iter()
+            .any(|command| command.contains("-p 12223") && command.contains("root@127.0.0.1")));
         for command in commands {
             assert!(command.contains("build/tmp/dual-ssh/id_ed25519"));
             assert!(command.contains("IdentitiesOnly=yes"));
@@ -2763,20 +2980,69 @@ mod tests {
     }
 
     #[test]
-    fn freebsd_dynamic_shell_failure_selects_static_rescue() {
+    fn console_recovery_and_rejection_policy_comes_from_profile() {
+        let profile = test_profile("freebsd");
         let transcript = "ld-elf.so.1: /lib/libedit.so.8: Unsupported version 0 \
                           of Elf_Verneed entry\nEnter full pathname of shell \
                           or RETURN for /bin/sh:";
-        assert!(freebsd_static_rescue_needed(transcript));
-        assert!(reject_bad_guest_path("freebsd", transcript).is_ok());
-        assert!(!freebsd_static_rescue_needed(
-            "Enter full pathname of shell or RETURN for /bin/sh:"
-        ));
-        assert!(reject_bad_guest_path(
-            "freebsd",
+        let rescue = profile.console.interaction.iter().any(|rule| {
+            rule.when.iter().all(|marker| transcript.contains(marker))
+                && rule.send == "/rescue/sh\r"
+        });
+        assert!(rescue);
+        assert!(reject_profile_console(Some(&profile.console), transcript).is_ok());
+        assert!(reject_profile_console(
+            Some(&profile.console),
             "mountroot>\nManual root filesystem specification:"
         )
         .is_err());
+    }
+
+    #[test]
+    fn console_rules_require_all_markers_and_bound_retries() {
+        let profile = test_profile("freebsd");
+        let rescue = profile
+            .console
+            .interaction
+            .iter()
+            .find(|rule| {
+                rule.when
+                    .iter()
+                    .any(|marker| marker == "Unsupported version")
+            })
+            .unwrap();
+        assert_eq!(
+            available_console_interactions(
+                rescue,
+                "Enter full pathname of shell",
+                Duration::from_secs(60)
+            ),
+            0
+        );
+        assert_eq!(
+            available_console_interactions(
+                rescue,
+                "Unsupported version\nEnter full pathname of shell",
+                Duration::from_secs(60)
+            ),
+            1
+        );
+
+        let login = profile
+            .console
+            .interaction
+            .iter()
+            .find(|rule| rule.when == ["login:"])
+            .unwrap();
+        assert_eq!(
+            available_console_interactions(
+                login,
+                "login: timed out\nlogin:",
+                Duration::from_secs(60)
+            ),
+            2
+        );
+        assert_eq!(login.max_fires, 4);
     }
 
     #[test]

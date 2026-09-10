@@ -11,6 +11,7 @@ pub mod cmd_gen_channels;
 pub mod cmd_gen_image;
 pub mod cmd_gen_pd_bundle;
 pub mod cmd_gen_policy;
+pub mod cmd_guest_profile;
 pub mod cmd_host_test;
 pub mod cmd_policy_check;
 pub mod cmd_release;
@@ -19,11 +20,14 @@ pub mod cmd_run_tests;
 pub mod cmd_setup;
 pub mod cmd_test;
 pub mod cmd_test_api;
+pub mod guest_scenario;
 pub mod rfb;
 
 // ── Re-exports for main.rs ────────────────────────────────────────────────
 pub use cmd_gen_image::GenImageArgs;
 pub use cmd_gen_pd_bundle::GenPdBundleArgs;
+pub use cmd_guest_profile::GuestProfileArgs;
+pub use guest_scenario::GuestScenarioArgs;
 
 // ── Subcommand arg structs ──────────────────────────────────────────────────
 
@@ -57,13 +61,28 @@ pub struct TestArgs {
     /// Require Ubuntu login plus real I/O through agentOS net, blk, and console.
     #[arg(long)]
     pub assert_agentos_virtio: bool,
-    /// Boot Ubuntu's real Casper initrd and require live-filesystem login.
-    #[arg(long)]
-    pub assert_ubuntu_live: bool,
-    /// Start a desktop in the Ubuntu live guest and verify one raw RFB frame
+    /// Require a live-media profile to reach userspace and its profile proof.
+    #[arg(long, visible_alias = "assert-ubuntu-live")]
+    pub assert_live: bool,
+    /// Start the profile-defined desktop and verify one raw RFB frame
     /// through a key-authenticated SSH tunnel.
     #[arg(long)]
     pub assert_desktop: bool,
+}
+
+#[derive(clap::Args)]
+pub struct QemuLaunchArgs {
+    #[arg(long, default_value = "qemu_virt_aarch64")]
+    pub board: String,
+    /// Guest-profile-root-relative TOML to launch.
+    #[arg(long, conflicts_with = "scenario")]
+    pub profile: Option<std::path::PathBuf>,
+    /// Data-defined guest scenario alias to launch.
+    #[arg(long, conflicts_with = "profile")]
+    pub scenario: Option<String>,
+    /// Use the faster multi-threaded TCG development configuration.
+    #[arg(long)]
+    pub fast: bool,
 }
 
 #[derive(clap::Args)]
@@ -177,17 +196,15 @@ pub struct RenderDeckArgs {
 
 #[derive(clap::Args)]
 pub struct FetchGuestArgs {
-    #[arg(long, value_enum, default_value_t = GuestOs::Ubuntu)]
-    pub os: GuestOs,
-    /// Destination directory; defaults to build/guest-images
+    /// Guest profile path, relative to --profile-root.
+    #[arg(long)]
+    pub profile: std::path::PathBuf,
+    /// Directory containing guest profile TOML files.
+    #[arg(long, default_value = "guest-profiles")]
+    pub profile_root: std::path::PathBuf,
+    /// Destination directory; defaults to host.build.acquire_dir from the profile.
     #[arg(long)]
     pub output_dir: Option<String>,
-}
-
-#[derive(clap::ValueEnum, Clone)]
-pub enum GuestOs {
-    Ubuntu,
-    Freebsd,
 }
 
 #[derive(clap::Args)]

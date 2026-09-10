@@ -159,8 +159,8 @@ static int test_abi(void)
 static int test_block_service_media_contract(void)
 {
     int ok = BLK_SVC_INTERFACE_VERSION == 2u
-          && BLK_SVC_MEDIA_UBUNTU_INSTALL == 0u
-          && BLK_SVC_MEDIA_FREEBSD_INSTALL == 1u
+          && BLK_SVC_MEDIA_PRIMARY == 0u
+          && BLK_SVC_MEDIA_SECONDARY == 1u
           && BLK_SVC_MEDIA_COUNT == 2u
           && sizeof(blk_svc_req_t) == 20u;
     return tap_ok(ok, "block-service v2 selects independent canonical media");
@@ -179,11 +179,11 @@ int main(void)
     (void)tap_ok(!src_contains("libvmm/examples/simple/board/qemu_virt_aarch64/overlay.dts",
                                "virtio_mmio@a000200"),
                  "buildroot overlay.dts has no QEMU virtio-blk at 0xa000200");
-    (void)tap_ok(src_contains("kernel/agentos-root-task/src/linux_vmm.c",
+    (void)tap_ok(src_contains("kernel/agentos-root-task/src/guest_vmm.c",
                               "aos_vmm_virtio_blk_init"),
                  "linux_vmm calls aos_vmm_virtio_blk_init");
     (void)tap_ok(src_contains_in_order(
-                     "kernel/agentos-root-task/src/linux_vmm.c",
+                     "kernel/agentos-root-task/src/guest_vmm.c",
                      "fault_handle(vcpu_id, msginfo)",
                      "aos_vmm_virtio_blk_after_fault()"),
                  "linux_vmm: fault_handle then virtio-blk after_fault");
@@ -217,25 +217,46 @@ int main(void)
                  src_contains("kernel/agentos-root-task/include/virtio_blk.h",
                               "VIRTIO_BLK_QUEUE_SIZE           8u"),
                  "host driver uses explicit DMA PA and valid modern queue");
-    (void)tap_ok(src_contains("xtask/src/cmd_test.rs",
-                              "virtio-mmio-bus.8") &&
+    (void)tap_ok(src_contains("guest-profiles/ubuntu-e2e.toml",
+                              "bus = 8") &&
+                 src_contains("guest-profiles/ubuntu-e2e.toml",
+                              "drive_id = \"primary_media\"") &&
                  src_contains("xtask/src/cmd_test.rs",
-                              "drive=agentos_hd"),
-                 "Ubuntu QEMU launch attaches ISO only as agentOS host hardware");
-    (void)tap_ok(src_contains("Makefile",
-                              "$(_UBUNTU_HOST_BLK) $(_FREEBSD_HOST_BLK)") &&
+                              "for media in &plan.media"),
+                 "profile QEMU plan attaches primary media only as agentOS host hardware");
+    (void)tap_ok(src_contains("guest-scenarios/dual-release.toml",
+                              "profile = \"ubuntu-live.toml\"") &&
+                 src_contains("guest-profiles/ubuntu-e2e.toml",
+                              "bus = 8") &&
                  src_contains("xtask/src/cmd_test.rs",
-                              "guest_os == \"ubuntu\" || guest_os == \"both\"") &&
-                 !src_contains("xtask/src/cmd_test.rs",
-                               "else if guest_os == \"both\" && ubuntu_img.exists()"),
+                              "for guest in &scenario.guests") &&
+                 src_contains("xtask/src/cmd_test.rs",
+                              "attach_profile_media(&mut c, repo_root, &guest.profile)"),
                  "dual-image Ubuntu also uses agentOS bus.8, never guest bus.1");
     (void)tap_ok(src_contains("kernel/agentos-root-task/Makefile",
-                              "UBUNTU_BOOT_MODE=%s") &&
+                              "GUEST_PRIMARY_PROFILE=%s") &&
                  src_contains("kernel/agentos-root-task/Makefile",
-                              "CFLAGS_ROOT_TASK=%s") &&
+                              "GUEST_PRIMARY_LARGE=%s") &&
+                 src_contains("kernel/agentos-root-task/vmm.mk",
+                              "GUEST_PLACEMENT=%s") &&
                  src_contains("kernel/agentos-root-task/vmm.mk",
                               "VMM_CFLAGS=%s"),
-                 "Ubuntu mode and flags invalidate stale root-task and VMM objects");
+                 "profile, placement, and flags invalidate stale root-task and VMM objects");
+    (void)tap_ok(src_contains("Makefile", "_profile_for_alias") &&
+                 src_contains("Makefile", "_profile_control_type") &&
+                 src_contains("Makefile", "_profile_ram_size") &&
+                 src_contains("Makefile", "_scenario_profile") &&
+                 !src_contains("Makefile", "else ifeq ($(GUEST_OS),ubuntu)") &&
+                 !src_contains("Makefile", "else ifeq ($(GUEST_OS),freebsd)") &&
+                 !src_contains("Makefile", "UBUNTU_BOOT_MODE"),
+                 "Make resolves guest aliases, slots, scenarios, and RAM from profile data");
+    (void)tap_ok(src_contains("Makefile", "cargo xtask qemu-launch") &&
+                 src_contains("xtask/src/cmd_test.rs", "pub fn launch(") &&
+                 src_contains("xtask/src/cmd_test.rs", "attach_profile_media") &&
+                 !src_contains("Makefile", "_UBUNTU_HOST_BLK") &&
+                 !src_contains("Makefile", "_FREEBSD_HOST_BLK") &&
+                 !src_contains("Makefile", "QEMU_RUN_FLAGS"),
+                 "interactive QEMU launch interprets profile and scenario data");
     (void)tap_ok(src_contains("kernel/agentos-root-task/src/system_desc_aarch64.c",
                               "{ SVC_ID_VIRTIO_BLK, 12u }") &&
                  src_contains("platform/blk-virt/vmm_virtio_blk.c",
@@ -244,7 +265,7 @@ int main(void)
                               "host-media read"),
                  "linux_vmm routes emulated block requests to virtio_blk");
     (void)tap_ok(src_contains("kernel/agentos-root-task/Makefile",
-                              "-DAGENTOS_GUEST_UBUNTU=1") &&
+                              "-DAGENTOS_GUEST_PRIMARY=1") &&
                  src_contains("kernel/agentos-root-task/src/main.c",
                               "Emulated VirtIO translates every queue and payload") &&
                  !src_contains("kernel/agentos-root-task/src/main.c",
@@ -257,12 +278,12 @@ int main(void)
                  !src_contains("kernel/agentos-root-task/freebsd-direct.dts",
                                "virtio_mmio@a003e00"),
                  "FreeBSD DTB advertises agentOS emulated block only");
-    (void)tap_ok(src_contains("kernel/agentos-root-task/src/freebsd_vmm.c",
+    (void)tap_ok(src_contains("kernel/agentos-root-task/src/guest_vmm.c",
                               "aos_vmm_guest_ram_bind") &&
-                 src_contains("kernel/agentos-root-task/src/freebsd_vmm.c",
+                 src_contains("kernel/agentos-root-task/src/guest_vmm.c",
                               "aos_vmm_virtio_blk_init") &&
                  src_contains_in_order(
-                     "kernel/agentos-root-task/src/freebsd_vmm.c",
+                     "kernel/agentos-root-task/src/guest_vmm.c",
                      "fault_handle(vcpu_id, msginfo)",
                      "aos_vmm_virtio_blk_after_fault()"),
                  "FreeBSD VMM binds translated RAM and pumps emulated block");
@@ -280,16 +301,22 @@ int main(void)
                               "AGENTOS_BLK_MEDIA_DMA_OFF") &&
                  src_contains("platform/blk-virt/vmm_virtio_blk.c",
                               "AGENTOS_BLK_MEDIA_DMA_OFF(g_media_id)") &&
-                 src_contains("kernel/agentos-root-task/src/linux_vmm.c",
-                              "AOS_HOST_BLK_MEDIA_UBUNTU") &&
-                 src_contains("kernel/agentos-root-task/src/freebsd_vmm.c",
-                              "AOS_HOST_BLK_MEDIA_FREEBSD") &&
+                 src_contains("kernel/agentos-root-task/src/guest_vmm.c",
+                              ".block_init = aos_vmm_virtio_blk_init") &&
+                 src_contains("kernel/agentos-root-task/src/guest_vmm.c",
+                              ".block_init = aos_vmm_virtio_blk_init") &&
+                 src_contains("platform/guest-vmm/boot.c",
+                              "ops->block_init(profile->block_media)") &&
+                 src_contains("guest-profiles/linux-base.toml",
+                              "block_media = 0") &&
+                 src_contains("guest-profiles/freebsd.toml",
+                              "block_media = 1") &&
                  src_contains("kernel/agentos-root-task/src/virtio_blk.c",
-                              "AOS_HOST_BLK_MEDIA_FREEBSD"),
-                 "canonical driver separates Ubuntu and FreeBSD queues and DMA");
+                              "AOS_HOST_BLK_MEDIA_SECONDARY"),
+                 "profiles select separate guest queues over canonical block DMA");
     (void)tap_ok(AGENTOS_BLK_SHARED_DMA_MAX_SECTORS == 2047u &&
                  AGENTOS_BLK_MEDIA_DMA_MAX_SECTORS(
-                    AOS_HOST_BLK_MEDIA_FREEBSD) == 63u &&
+                    AOS_HOST_BLK_MEDIA_SECONDARY) == 63u &&
                  AGENTOS_BLK_MEDIA_DMA_OFF(1u) +
                     AGENTOS_BLK_MEDIA_DMA_SIZE(1u) <=
                         AGENTOS_BLK_MEDIA_DMA_OFF(0u) &&
@@ -316,28 +343,28 @@ int main(void)
                      "kernel/agentos-root-task/freebsd-direct.dts") &&
                  src_contains("kernel/agentos-root-task/freebsd-direct.dts",
                               "virtio_mmio@a030000") &&
-                 src_contains("kernel/agentos-root-task/src/freebsd_vmm.c",
+                 src_contains("kernel/agentos-root-task/src/guest_vmm.c",
                               "aos_vmm_virtio_console_init") &&
-                 src_contains("kernel/agentos-root-task/src/freebsd_vmm.c",
+                 src_contains("kernel/agentos-root-task/src/guest_vmm.c",
                               "aos_vmm_virtio_console_after_fault") &&
-                 src_contains("kernel/agentos-root-task/src/freebsd_vmm.c",
+                 src_contains("kernel/agentos-root-task/src/guest_vmm.c",
                               "aos_vmm_virtio_console_drain_tx") &&
                  src_contains("xtask/src/cmd_test.rs",
                               "wait_for_dual_guest_consoles_via_cc") &&
                  src_contains_in_order("xtask/src/cmd_test.rs",
-                                       "let linux_boot_suspend =",
-                                       "let freebsd = wait_for_guest_console_login_on_cc(") &&
+                                       "let deferred_boot_suspend =",
+                                       "let lead_console = wait_for_guest_console_login_on_cc(") &&
                  src_contains_in_order("xtask/src/cmd_test.rs",
-                                       "let freebsd_ssh = freebsd_ssh_provision_commands(",
-                                       "let freebsd_boot_suspend =") &&
+                                       "let lead_provision = profile_provision_commands(",
+                                       "let lead_probe_suspend =") &&
                  src_contains_in_order("xtask/src/cmd_test.rs",
-                                       "let freebsd_boot_suspend =",
-                                       "let linux_boot_resume =") &&
+                                       "let lead_boot_suspend =",
+                                       "let deferred_boot_resume =") &&
                  src_contains_in_order("xtask/src/cmd_test.rs",
-                                       "let ubuntu = ubuntu_ssh_provision_commands(",
-                                       "let freebsd_provision_resume ="),
+                                       "let deferred_provision = profile_provision_commands(",
+                                       "let ssh = wait_for_scenario_ssh("),
                  "dual proof provisions FreeBSD before its checkpoint and resumes both for concurrent service");
-    (void)tap_ok(!src_contains("kernel/agentos-root-task/src/freebsd_vmm.c",
+    (void)tap_ok(!src_contains("kernel/agentos-root-task/src/guest_vmm.c",
                                "if (label == seL4_Fault_VPPIEvent) {") &&
                  src_contains("libvmm/src/arch/aarch64/vgic/vgic.c",
                               "virq_ack(vcpu_id, &lr_virq)") &&
@@ -349,10 +376,10 @@ int main(void)
                               "vgic_flush_pending_irqs(vcpu_id)") &&
                  src_contains("libvmm/include/libvmm/arch/aarch64/vgic/vdist.h",
                               "set_pending(vgic, virq->virq, false, vcpu_id)") &&
-                 src_contains("kernel/agentos-root-task/src/freebsd_vmm.c",
-                              "vmm_vcpu_arm_ack_vppi(vcpu_id, FREEBSD_VTIMER_IRQ)") &&
-                 src_contains("kernel/agentos-root-task/src/freebsd_vmm.c",
-                              "virq_inject_vcpu(vcpu_id, FREEBSD_VTIMER_IRQ)") &&
+                 src_contains("kernel/agentos-root-task/src/guest_vmm.c",
+                              "vmm_vcpu_arm_ack_vppi(vcpu_id, GUEST_VTIMER_IRQ)") &&
+                 src_contains("kernel/agentos-root-task/src/guest_vmm.c",
+                              "virq_inject_vcpu(vcpu_id, GUEST_VTIMER_IRQ)") &&
                  !src_contains("libvmm/src/arch/aarch64/fault.c",
                                "Treat it as a completed wait operation"),
                  "vGIC preserves and releases deferred level timer VPPI");
@@ -385,9 +412,9 @@ int main(void)
                               "virtio_copy_to_gpa") &&
                  !src_contains("libvmm/src/virtio/sound.c",
                                "(void *)desc->addr") &&
-                 src_contains("kernel/agentos-root-task/src/freebsd_vmm.c",
-                              "aos_gpa_to_hva_configured"),
-                 "sound and FreeBSD debug paths translate guest physical addresses");
+                 src_contains("platform/guest-ram/vmm_guest_ram.c",
+                              "virtio_gpa_set_translate(aos_gpa_to_hva_configured)"),
+                 "sound and shared guest paths translate guest physical addresses");
     (void)tap_ok(src_contains("libvmm/src/virtio/gpa.c",
                               "virtio_queue_reset_guest_rings") &&
                  src_contains("libvmm/src/virtio/mmio.c",
@@ -420,10 +447,14 @@ int main(void)
                               "#define VMM_GUEST_PRIORITY        150u") &&
                  src_contains("kernel/agentos-root-task/src/main.c",
                               "VMM_GUEST_PRIORITY,") &&
-                 src_contains("kernel/agentos-root-task/src/linux_vmm.c",
-                              "aos_vmm_guest_ram_bind(LINUX_GUEST_RAM_GPA") &&
-                 src_contains("kernel/agentos-root-task/src/freebsd_vmm.c",
-                              "aos_vmm_guest_ram_bind(FREEBSD_GUEST_RAM_GPA"),
+                 src_contains("kernel/agentos-root-task/src/guest_vmm.c",
+                              "aos_vmm_guest_ram_bind(g_guest_profile->guest_gpa_base") &&
+                 src_contains("kernel/agentos-root-task/src/guest_vmm.c",
+                              "aos_vmm_guest_ram_bind(g_guest_profile->guest_gpa_base") &&
+                 src_contains("guest-profiles/linux-base.toml",
+                              "vmm_hva_base = 0xc0000000") &&
+                 src_contains("guest-profiles/freebsd.toml",
+                              "vmm_hva_base = 0x80000000"),
                  "guest TCB VSpaces use GPA mappings distinct from VMM aliases");
     (void)tap_ok(src_contains_in_order(
                      "kernel/agentos-root-task/src/system_desc_aarch64.c",
@@ -467,10 +498,10 @@ int main(void)
                               "seL4_VCPUReg_CNTVOFF") &&
                  src_contains("libvmm/src/arch/aarch64/vcpu.c",
                               "offset + (seL4_Word)elapsed") &&
-                 src_contains_in_order("kernel/agentos-root-task/src/linux_vmm.c",
+                 src_contains_in_order("kernel/agentos-root-task/src/guest_vmm.c",
                                        "vcpu_pause_time(GUEST_BOOT_VCPU_ID",
                                        "vcpu_resume_time(GUEST_BOOT_VCPU_ID") &&
-                 src_contains_in_order("kernel/agentos-root-task/src/freebsd_vmm.c",
+                 src_contains_in_order("kernel/agentos-root-task/src/guest_vmm.c",
                                        "vcpu_pause_time(GUEST_BOOT_VCPU_ID",
                                        "vcpu_resume_time(GUEST_BOOT_VCPU_ID"),
                  "guest architectural time stays frozen while each VCPU is suspended");

@@ -26,7 +26,7 @@
 
 .DEFAULT_GOAL := help
 
-.PHONY: all setup sdk demo demo-check demo-smoke demo-test demo-desktop demo-desktop-test demo-clean install deps deps-tools submodules channels format policy-check run run-fast run-dual-ssh test test-guest-login test-guest-net test-guest-blk test-guest-console test-ubuntu-virtio test-ubuntu-live sel4-test-image run-tests test-snapshot-sched test-power-mgr test-proc-server test-vibeos-contract test-integration test-host gate gate-aarch64 gate-x86_64 e2e e2e-guest e2e-contract e2e-dual-os e2e-ubuntu-amd64 e2e-ubuntu-arm64 e2e-nixos e2e-freebsd15 e2e-all bootstrap-guest clean clean-all clean-images help release release-minor release-major release-prepare release-check release-publish release-verify presentation-render fetch-guest build-tools
+.PHONY: all setup sdk demo demo-check demo-smoke demo-test demo-desktop demo-desktop-test demo-clean install deps deps-tools submodules channels format policy-check guest-profile-check run run-fast run-dual-ssh test test-guest-login test-guest-net test-guest-blk test-guest-console test-ubuntu-virtio test-ubuntu-live sel4-test-image run-tests test-snapshot-sched test-power-mgr test-proc-server test-vibeos-contract test-integration test-host gate gate-aarch64 gate-x86_64 e2e e2e-guest e2e-contract e2e-dual-os e2e-ubuntu-amd64 e2e-ubuntu-arm64 e2e-nixos e2e-freebsd15 e2e-all bootstrap-guest clean clean-all clean-images help release release-minor release-major release-prepare release-check release-publish release-verify presentation-render fetch-guest build-tools
 
 # ─── Read config.yaml (if present) ───────────────────────────────────────────
 CONFIG_TARGET := $(shell grep '^target_arch:' config.yaml 2>/dev/null | sed 's/target_arch:[[:space:]]*//' | tr -d '[:space:]')
@@ -40,6 +40,67 @@ endif
 
 TARGET_ARCH ?= $(CONFIG_TARGET)
 GUEST_OS    ?= $(CONFIG_GUEST_OS)
+# Canonical build selectors. GUEST_OS remains a compatibility spelling and is
+# resolved through profile aliases; lower layers receive only profile paths and
+# slot policy. The legacy `both` spelling resolves the bounded release scenario.
+GUEST_PROFILE ?=
+GUEST_SCENARIO ?=
+GUEST_PRIMARY_PROFILE ?=
+GUEST_SECONDARY_PROFILE ?=
+_profile_for_alias = $(strip $(shell cargo xtask guest-profile --resolve-alias $(1)))
+_profile_control_type = $(strip $(shell cargo xtask guest-profile --profile $(1) --print-control-type))
+_profile_ram_size = $(strip $(shell cargo xtask guest-profile --profile $(1) --placement $(2) --print-ram-size))
+_scenario_profile = $(strip $(shell cargo xtask guest-scenario --alias $(1) --control-type $(2)))
+ifneq ($(strip $(GUEST_SCENARIO)),)
+  ifneq ($(strip $(GUEST_PROFILE)$(GUEST_PRIMARY_PROFILE)$(GUEST_SECONDARY_PROFILE)),)
+    $(error GUEST_SCENARIO cannot be combined with profile selectors)
+  endif
+  _SELECTED_GUEST_SCENARIO := $(GUEST_SCENARIO)
+else ifneq ($(strip $(GUEST_PROFILE)),)
+  ifneq ($(strip $(GUEST_PRIMARY_PROFILE)$(GUEST_SECONDARY_PROFILE)),)
+    $(error GUEST_PROFILE cannot be combined with explicit slot profiles)
+  endif
+  _SELECTED_GUEST_PROFILE := $(GUEST_PROFILE)
+else ifneq ($(strip $(GUEST_PRIMARY_PROFILE)$(GUEST_SECONDARY_PROFILE)),)
+  # Explicit slot composition is already canonical; ignore the legacy default.
+else ifeq ($(GUEST_OS),both)
+  _SELECTED_GUEST_SCENARIO := both
+else ifneq ($(GUEST_OS),none)
+  _SELECTED_GUEST_PROFILE := $(call _profile_for_alias,$(GUEST_OS))
+  ifeq ($(_SELECTED_GUEST_PROFILE),)
+    $(error unknown guest profile alias GUEST_OS=$(GUEST_OS); use GUEST_PROFILE=<profile.toml>)
+  endif
+endif
+ifneq ($(strip $(_SELECTED_GUEST_SCENARIO)),)
+  GUEST_PRIMARY_PROFILE := $(call _scenario_profile,$(_SELECTED_GUEST_SCENARIO),1)
+  GUEST_SECONDARY_PROFILE := $(call _scenario_profile,$(_SELECTED_GUEST_SCENARIO),2)
+  ifeq ($(strip $(GUEST_PRIMARY_PROFILE)),)
+    $(error scenario $(_SELECTED_GUEST_SCENARIO) has no primary profile)
+  endif
+  ifeq ($(strip $(GUEST_SECONDARY_PROFILE)),)
+    $(error scenario $(_SELECTED_GUEST_SCENARIO) has no secondary profile)
+  endif
+endif
+ifneq ($(strip $(_SELECTED_GUEST_PROFILE)),)
+  _SELECTED_CONTROL_TYPE := $(call _profile_control_type,$(_SELECTED_GUEST_PROFILE))
+  ifeq ($(_SELECTED_CONTROL_TYPE),1)
+    GUEST_PRIMARY_PROFILE := $(_SELECTED_GUEST_PROFILE)
+  else ifeq ($(_SELECTED_CONTROL_TYPE),2)
+    GUEST_SECONDARY_PROFILE := $(_SELECTED_GUEST_PROFILE)
+  else
+    $(error profile $(_SELECTED_GUEST_PROFILE) has unsupported control type $(_SELECTED_CONTROL_TYPE))
+  endif
+endif
+ifneq ($(strip $(GUEST_PRIMARY_PROFILE)),)
+  _GUEST_PRIMARY_PLACEMENT := $(if $(strip $(GUEST_SECONDARY_PROFILE)),dual-primary,default)
+  _GUEST_PRIMARY_RAM_SIZE := $(call _profile_ram_size,$(GUEST_PRIMARY_PROFILE),$(_GUEST_PRIMARY_PLACEMENT))
+  ifeq ($(_GUEST_PRIMARY_RAM_SIZE),)
+    $(error profile $(GUEST_PRIMARY_PROFILE) has no executable $(_GUEST_PRIMARY_PLACEMENT) RAM plan)
+  endif
+  GUEST_PRIMARY_LARGE ?= $(shell test "$(_GUEST_PRIMARY_RAM_SIZE)" -gt 536870912 && echo 1 || echo 0)
+else
+  GUEST_PRIMARY_LARGE ?= 0
+endif
 QEMU_TEST_TIMEOUT ?= 300
 # Correct suspend accounting freezes each guest's architectural time while it
 # is stopped.  A full vendor-live-media dual proof can therefore take longer
@@ -420,7 +481,7 @@ demo: demo-check
 demo-desktop-test: demo-check
 	@echo ""
 	@echo "Running the non-interactive Ubuntu desktop protocol/frame proof..."
-	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os ubuntu \
+	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os ubuntu-live \
 		--assert-desktop --timeout-secs $(DESKTOP_TEST_TIMEOUT)
 
 demo-desktop: demo-check
@@ -432,7 +493,7 @@ demo-desktop: demo-check
 	@echo "After the RFB frame gate passes, open the printed command in an external VNC viewer."
 	@echo "Press Enter here when the demonstration is complete."
 	@echo ""
-	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os ubuntu \
+	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os ubuntu-live \
 		--assert-desktop --keep-running --timeout-secs $(DESKTOP_TEST_TIMEOUT)
 
 demo-clean:
@@ -464,16 +525,14 @@ build-tools:
 	@echo "✓ Tools built → target/release/"
 
 # =============================================================================
-# fetch-guest: download the guest OS image for GUEST_OS (idempotent)
+# fetch-guest: execute the bounded acquisition recipe for selected profiles
 # =============================================================================
 fetch-guest:
-ifeq ($(GUEST_OS),freebsd)
-	@cargo xtask fetch-guest --os freebsd --output-dir $(AGENTOS_IMAGES)
-else ifeq ($(GUEST_OS),ubuntu)
-	@cargo xtask fetch-guest --os ubuntu --output-dir $(AGENTOS_IMAGES)
-else ifeq ($(GUEST_OS),both)
-	@cargo xtask fetch-guest --os ubuntu --output-dir $(AGENTOS_IMAGES)
-	@cargo xtask fetch-guest --os freebsd --output-dir $(AGENTOS_IMAGES)
+ifneq ($(strip $(GUEST_PRIMARY_PROFILE)),)
+	@cargo xtask fetch-guest --profile $(GUEST_PRIMARY_PROFILE)
+endif
+ifneq ($(strip $(GUEST_SECONDARY_PROFILE)),)
+	@cargo xtask fetch-guest --profile $(GUEST_SECONDARY_PROFILE)
 endif
 
 # =============================================================================
@@ -503,9 +562,10 @@ endif
 		AGENTOS_ARCH=$(ARCH) \
 		SEL4_SDK=$(SEL4_SDK) \
 		SEL4_PROFILE=$(SEL4_PROFILE) \
-		AGENTOS_FREEBSD_IMAGE=$(if $(AGENTOS_FREEBSD_IMAGE),$(AGENTOS_FREEBSD_IMAGE),$(FREEBSD_IMAGE)) \
 		GUEST_OS=$(GUEST_OS) \
-		UBUNTU_BOOT_MODE=$(UBUNTU_BOOT_MODE) \
+		GUEST_PRIMARY_PROFILE=$(GUEST_PRIMARY_PROFILE) \
+		GUEST_SECONDARY_PROFILE=$(GUEST_SECONDARY_PROFILE) \
+		GUEST_PRIMARY_LARGE=$(GUEST_PRIMARY_LARGE) \
 		BOARD_NAME=$(BOARD_NAME) \
 		BOARD_NATIVE=$(BOARD_NATIVE) \
 		BOARD_UART_PHYS=$(BOARD_UART_PHYS) \
@@ -516,63 +576,19 @@ endif
 	@echo "✓ Build complete: $(IMAGE)"
 	@echo ""
 
-# QEMU flags for interactive run: serial → stdio, SSH port forwarding per guest.
-#
-# QEMU_FAST=1 enables TCG-mode dev-iteration tweaks on Apple Silicon, where
-# HVF is not usable with seL4 and we are stuck on software emulation:
-#   -cpu max               richer feature set than cortex-a53; some hot paths
-#                          dispatch to faster TCG helpers
-#   -accel tcg,thread=multi  spread translation across host cores
-# These flags only kick in when no hardware accelerator is available
-# (QEMU_ACCEL_NATIVE empty), so passing QEMU_FAST=1 on a Linux/KVM host or
-# x86_64/HVF host is harmless.
-ifeq ($(QEMU_FAST),1)
-  ifeq ($(QEMU_ACCEL_NATIVE),)
-    _RUN_CPU := max
-    _QEMU_FAST_FLAGS := -accel tcg,thread=multi
-  else
-    _RUN_CPU := $(if $(filter aarch64,$(NATIVE_ARCH)),cortex-a53,qemu64)
-    _QEMU_FAST_FLAGS :=
-  endif
-else
-  _RUN_CPU := $(if $(filter aarch64,$(NATIVE_ARCH)),cortex-a53,qemu64)
-  _QEMU_FAST_FLAGS :=
-endif
-FREEBSD_IMAGE ?= $(if $(AGENTOS_FREEBSD_IMAGE),$(AGENTOS_FREEBSD_IMAGE),$(AGENTOS_IMAGES)/freebsd-15.0-aarch64.iso)
-_UBUNTU_HOST_BLK = -drive file=$(AGENTOS_IMAGES)/ubuntu-26.04-aarch64.iso,format=raw,if=none,id=agentos_hd,readonly=on,file.locking=off \
-                   -device virtio-blk-device,drive=agentos_hd,bus=virtio-mmio-bus.8
-_FREEBSD_HOST_BLK = -drive file=$(FREEBSD_IMAGE),format=raw,if=none,id=freebsd_hd,readonly=on,file.locking=off \
-                    -device virtio-blk-device,drive=freebsd_hd,bus=virtio-mmio-bus.31
-_AGENTOS_HOST_NET = -netdev user,id=agentos_net0,hostfwd=tcp:127.0.0.1:8789-:8789,hostfwd=tcp:127.0.0.1:2222-10.0.2.15:22 \
-                    -device virtio-net-device,netdev=agentos_net0,bus=virtio-mmio-bus.16,mac=02:00:00:00:00:01,ctrl_vq=off,mq=off
-# Buses 8, 16, and 31 are host hardware owned only by canonical agentOS
-# driver PDs. No host transport is mapped or advertised to a guest.
-_QEMU_BLK_FLAGS = $(if $(filter both,$(GUEST_OS)),$(_UBUNTU_HOST_BLK) $(_FREEBSD_HOST_BLK),$(if $(filter ubuntu,$(GUEST_OS)),$(_UBUNTU_HOST_BLK),$(if $(filter freebsd,$(GUEST_OS)),$(_FREEBSD_HOST_BLK),)))
-_QEMU_NET_FLAGS = $(_AGENTOS_HOST_NET)
-QEMU_RUN_MEM ?= $(if $(filter both,$(GUEST_OS)),3G,2G)
-QEMU_RUN_SMP ?= $(if $(filter smp-% smp,$(SEL4_PROFILE)),4,1)
-comma := ,
-QEMU_MACHINE_FLAGS_BASE := virt$(comma)virtualization=on$(comma)highmem=off$(comma)secure=off
-QEMU_MACHINE_FLAGS := $(QEMU_MACHINE_FLAGS_BASE)$(if $(filter freebsd both,$(GUEST_OS)),$(comma)acpi=off)
-QEMU_RUN_FLAGS = -machine $(QEMU_MACHINE_FLAGS) \
-                 -cpu $(_RUN_CPU) -m $(QEMU_RUN_MEM) \
-                 -smp $(QEMU_RUN_SMP) \
-                 $(_QEMU_FAST_FLAGS) \
-                 -display none -monitor none \
-                 -global virtio-mmio.force-legacy=off \
-                 -serial stdio \
-                 -chardev socket,id=cc_pd_char,path=$(ROOT_DIR)build/cc_pd.sock,server=on,wait=off \
-                 -device virtio-serial-device,bus=virtio-mmio-bus.2,id=vser0 \
-                 -device virtconsole,bus=vser0.0,chardev=cc_pd_char,name=cc.0 \
-                 $(_QEMU_NET_FLAGS) \
-                 $(_QEMU_BLK_FLAGS) \
-                 -device loader,file=$(NATIVE_LOADER_ELF),cpu-num=0 \
-                 -device loader,file=$(NATIVE_IMAGE),addr=0x48000000
+# Interactive runs use the same bounded profile/scenario interpreter as QA.
+# A two-slot composition requires a scenario so machine, memory, media, and
+# host-port policy remain declarative.
+_RUN_PROFILE := $(strip $(if $(_SELECTED_GUEST_PROFILE),$(_SELECTED_GUEST_PROFILE),$(if $(GUEST_PRIMARY_PROFILE),$(GUEST_PRIMARY_PROFILE),$(GUEST_SECONDARY_PROFILE))))
+_RUN_SELECTION_ARGS = $(if $(_SELECTED_GUEST_SCENARIO),--scenario $(_SELECTED_GUEST_SCENARIO),$(if $(_RUN_PROFILE),--profile $(_RUN_PROFILE),))
 
 # run (default): build native → QEMU with serial on stdout and a Unix guest
 # =============================================================================
 run:
-	@$(MAKE) build BOARD=$(NATIVE_BOARD) TARGET_ARCH=$(NATIVE_ARCH)
+	@if [ -z "$(_SELECTED_GUEST_SCENARIO)" ] && [ -n "$(GUEST_PRIMARY_PROFILE)" ] && [ -n "$(GUEST_SECONDARY_PROFILE)" ]; then \
+		echo "ERROR: interactive two-slot launch requires GUEST_SCENARIO=<alias>"; \
+		exit 2; \
+	fi
 	@echo ""
 	@echo "╔══════════════════════════════════════════╗"
 	@echo "║  agentOS — QEMU ($(NATIVE_ARCH))         ║"
@@ -580,19 +596,13 @@ run:
 	@echo ""
 	@echo "Arch   : $(NATIVE_ARCH)"
 	@echo "Board  : $(NATIVE_BOARD)"
-	@echo "Accel  : $(if $(QEMU_ACCEL_NATIVE),$(QEMU_ACCEL_NATIVE),$(if $(filter 1,$(QEMU_FAST)),tcg multi-thread + cpu max,none (TCG)))"
-	@echo "Memory : $(QEMU_RUN_MEM)"
-	@echo "Guest  : $(GUEST_OS)"
-	@echo "Image  : $(NATIVE_IMAGE)"
-	@echo "CC-PD  : $(ROOT_DIR)build/cc_pd.sock"
+	@echo "Config : $(if $(_SELECTED_GUEST_SCENARIO),scenario $(_SELECTED_GUEST_SCENARIO),$(if $(_RUN_PROFILE),profile $(_RUN_PROFILE),no guest profile))"
 	@echo "GUI    : cd $(abspath $(ROOT_DIR)../agentos_gui) && make run"
 	@echo ""
 	@echo "Validated dual-guest SSH showcase: make demo"
-	@echo "Raw run port forwarding is guest-specific and is not an acceptance gate."
-	@echo "Buildroot: no outer ISO; Linux runs inside linux_vmm.elf → '#' shell on serial"
 	@echo "Exit QEMU: Ctrl-A X"
 	@echo "──────────────────────────────────────────────"
-	@$(NATIVE_QEMU) $(QEMU_RUN_FLAGS)
+	@cargo xtask qemu-launch --board $(NATIVE_BOARD) $(_RUN_SELECTION_ARGS) $(if $(filter 1,$(QEMU_FAST)),--fast,)
 
 # run-fast: same as run, with TCG-mode performance knobs enabled.
 # On Apple Silicon (TCG-only because HVF is incompatible with seL4) this
@@ -606,7 +616,7 @@ run-fast:
 # test: CI boot test (exits 0 on success, 1 on failure)
 # =============================================================================
 test: build
-	@AGENTOS_FREEBSD_IMAGE="$(FREEBSD_IMAGE)" cargo xtask qemu-test --board $(BOARD) --guest-os $(QEMU_TEST_GUEST_OS) --timeout-secs $(QEMU_TEST_TIMEOUT)
+	@cargo xtask qemu-test --board $(BOARD) --guest-os $(QEMU_TEST_GUEST_OS) --timeout-secs $(QEMU_TEST_TIMEOUT)
 
 # =============================================================================
 # gate: MANDATORY dual-arch target/QEMU quality gate.
@@ -650,7 +660,25 @@ gate: test-host gate-aarch64 gate-x86_64
 
 # test-host: alias for the host-only integration suite.  Named explicitly so
 # callers and CI cannot mistake host-only coverage for target/QEMU proof.
-test-host: policy-check test-integration
+test-host: policy-check guest-profile-check test-integration
+
+guest-profile-check:
+	@mkdir -p $(BUILD_TMP_DIR)/guest-profiles
+	@cargo xtask guest-profile --check-all
+	@cargo xtask guest-profile --profile buildroot.toml --output $(BUILD_TMP_DIR)/guest-profiles/buildroot.bin
+	@cargo xtask guest-profile --profile ubuntu-e2e.toml --output $(BUILD_TMP_DIR)/guest-profiles/ubuntu-e2e.bin
+	@cargo xtask guest-profile --profile freebsd.toml --output $(BUILD_TMP_DIR)/guest-profiles/freebsd.bin
+	@gcc -std=c11 -Wall -Wextra -Werror -I platform/include \
+		tests/platform/test_guest_profile.c \
+		-o $(BUILD_TMP_DIR)/test_guest_profile
+	@$(BUILD_TMP_DIR)/test_guest_profile \
+		$(BUILD_TMP_DIR)/guest-profiles/buildroot.bin \
+		$(BUILD_TMP_DIR)/guest-profiles/ubuntu-e2e.bin \
+		$(BUILD_TMP_DIR)/guest-profiles/freebsd.bin
+	@gcc -std=c11 -Wall -Wextra -Werror -I platform/include \
+		tests/platform/test_guest_boot.c \
+		-o $(BUILD_TMP_DIR)/test_guest_boot
+	@$(BUILD_TMP_DIR)/test_guest_boot
 
 sel4-test-image:
 	@$(MAKE) build \
@@ -720,7 +748,7 @@ test-ubuntu-live:
 		echo "test-ubuntu-live requires BOARD=qemu_virt_aarch64 (got BOARD=$(BOARD))"; \
 		exit 1; \
 	fi
-	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os ubuntu --timeout-secs $(QEMU_TEST_TIMEOUT) --assert-ubuntu-live
+	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os ubuntu-live --timeout-secs $(QEMU_TEST_TIMEOUT) --assert-live
 
 # =============================================================================
 # test-snapshot-sched: standalone unit test for the snapshot_sched PD
@@ -913,7 +941,7 @@ test-integration:
 	    echo "FAIL: tests/platform/test_cc_retry_cache.c"; \
 	    status=1; \
 	fi; \
-	if gcc -DAGENTOS_GUEST_BOTH -DAGENTOS_GUEST_UBUNTU_LIVE \
+	if gcc -DAGENTOS_GUEST_DUAL -DAGENTOS_GUEST_PRIMARY_LARGE \
 	        -I platform/include \
 	        tests/platform/test_guest_memory_layout.c \
 	        -o $(BUILD_TMP_DIR)/test_guest_memory_layout 2>&1 \
@@ -1130,7 +1158,7 @@ help:
 	@echo "                        Uses QEMU_RUN_MEM=3G automatically for GUEST_OS=both"
 	@echo "  make run GUEST_OS=buildroot"
 	@echo "                        Boot linux_vmm hosting buildroot Linux to a '#' prompt"
-	@echo "                        (no outer ISO; guest is packaged inside linux_vmm.elf)"
+	@echo "                        (no outer ISO; guest is packaged inside guest_vmm_primary.elf)"
 	@echo "  make run-fast         Same as run, plus TCG perf knobs (cpu max + multi-thread)"
 	@echo "                        No-op on Linux/KVM hosts where HW accel is already on"
 	@echo "                        Recommended dev loop on Apple Silicon:"

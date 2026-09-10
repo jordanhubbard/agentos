@@ -33,8 +33,9 @@
 #define VM_MANAGER_OP_CONSOLE_DRAIN 0x20u /* drain serial console bytes from a VM */
 
 /* ── VM types ── */
-#define VM_TYPE_LINUX              0u  /* Linux guest (linux_vmm) */
-#define VM_TYPE_FREEBSD            1u  /* FreeBSD guest (freebsd_vmm) */
+#define VM_PROFILE_PRIMARY              0u
+#define VM_PROFILE_SECONDARY            1u
+#define VM_TYPE_LINUX                   VM_PROFILE_PRIMARY
 
 /* ── VM states ── */
 #define VM_STATE_CREATED           0u  /* resources allocated, not yet started */
@@ -237,9 +238,9 @@ typedef enum {
 } vm_manager_error_t;
 
 /* ── Invariants ──
- * - vm_manager dispatches to linux_vmm or freebsd_vmm based on VM_TYPE_*.
+ * - vm_manager dispatches to a configured VMM slot based on VM_PROFILE_*.
  * - Console input/drain is always addressed by vm_manager slot_id; callers
- *   never call a Linux/FreeBSD VMM endpoint directly.
+ *   never call a guest VMM endpoint directly.
  * - All VM operations are serialized per slot; concurrent ops on the same slot are rejected.
  * - SNAPSHOT pauses the VM during serialization; VM resumes after AgentFS write completes.
  * - RESTORE requires slot in STOPPED state; it replaces all state.

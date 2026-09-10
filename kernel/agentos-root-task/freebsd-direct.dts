@@ -29,8 +29,8 @@
 	};
 
 	/* 512 MB — matches guest_ram MR size in the aarch64 system descriptor. */
-	memory@40000000 {
-		reg = <0x00 0x40000000 0x00 0x20000000>;
+	memory@@GUEST_RAM_NODE@ {
+		reg = <0x00 @GUEST_RAM_BASE@ 0x00 @GUEST_RAM_SIZE@>;
 		device_type = "memory";
 	};
 
@@ -122,7 +122,7 @@
 	};
 
 	chosen {
-		bootargs = "FreeBSD:vfs.root.mountfrom=cd9660:/dev/iso9660/15_0_RELEASE_AARCH64_DVD console=ttyu0 boot_serial=YES";
+		bootargs = "@GUEST_BOOTARGS@";
 		/* PL011 is fault-emulated and retained as the boot/recovery console. */
 		stdout-path = "/pl011@9000000";
 	};

@@ -34,8 +34,8 @@
 #define VIRTIO_BLK_CH_CONTROLLER   0u   /* controller → virtio_blk (from virtio_blk's perspective) */
 
 #define VIRTIO_BLK_CONTRACT_VERSION 2u
-#define BLK_MEDIA_UBUNTU_INSTALL    0u
-#define BLK_MEDIA_FREEBSD_INSTALL   1u
+#define BLK_MEDIA_PRIMARY    0u
+#define BLK_MEDIA_SECONDARY   1u
 #define BLK_MEDIA_COUNT             2u
 
 /* ─── Opcodes (placed in MR0) ────────────────────────────────────────────── */

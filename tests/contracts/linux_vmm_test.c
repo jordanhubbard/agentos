@@ -16,7 +16,7 @@
 
 void run_linux_vmm_tests(microkit_channel ch)
 {
-    TEST_SECTION("linux_vmm");
+    TEST_SECTION("guest_vmm_primary");
 
     /* LIST — enumerate Linux VMs */
     ASSERT_IPC_OK(ch, MSG_VM_LIST, "linux_vmm: LIST returns ok");

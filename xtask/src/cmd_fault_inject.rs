@@ -40,8 +40,11 @@ pub fn run(args: &FaultInjectArgs) -> Result<()> {
         &repo_root,
         &log_path,
         &cc_sock,
-        "none",
+        None,
+        None,
         0,
+        false,
+        false,
         false,
         false,
     )?;

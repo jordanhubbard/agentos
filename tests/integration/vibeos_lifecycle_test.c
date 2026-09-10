@@ -47,7 +47,7 @@ void run_vibeos_lifecycle_tests(void)
     /* ── Step 1: CREATE ───────────────────────────────────────────────── */
 
     microkit_mr_set(0, (uint64_t)MSG_VIBEOS_CREATE);
-    microkit_mr_set(1, (uint64_t)VIBEOS_TYPE_LINUX);  /* os_type */
+    microkit_mr_set(1, (uint64_t)VIBEOS_PROFILE_PRIMARY);  /* os_type */
     microkit_mr_set(2, 128);                           /* ram_mb */
     microkit_mr_set(3, VIBEOS_DEV_SERIAL);             /* dev_flags */
     (void)microkit_ppcall(ch, microkit_msginfo_new(MSG_VIBEOS_CREATE, 4));

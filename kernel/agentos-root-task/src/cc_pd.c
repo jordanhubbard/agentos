@@ -540,10 +540,10 @@ static uint8_t cc_trace_target_pd(uint32_t opcode)
     case MSG_CC_SUSPEND_GUEST:
     case MSG_CC_RESUME_GUEST:
     case MSG_CC_DESTROY_GUEST:
-#if defined(AGENTOS_GUEST_FREEBSD)
-        return (uint8_t)TRACE_PD_FREEBSD_VMM;
-#elif defined(AGENTOS_GUEST_LINUX)
-        return (uint8_t)TRACE_PD_LINUX_VMM;
+#if defined(AGENTOS_GUEST_SECONDARY)
+        return (uint8_t)TRACE_PD_GUEST_VMM_SECONDARY;
+#elif defined(AGENTOS_GUEST_PRIMARY)
+        return (uint8_t)TRACE_PD_GUEST_VMM_PRIMARY;
 #else
         return (uint8_t)TRACE_PD_CC_PD;
 #endif
@@ -624,7 +624,7 @@ static void cc_trace_record(uint32_t opcode)
  * guest to external consumers.
  */
 
-#if defined(AGENTOS_GUEST_LINUX) || defined(AGENTOS_GUEST_FREEBSD)
+#if defined(AGENTOS_GUEST_PRIMARY) || defined(AGENTOS_GUEST_SECONDARY)
 #define CC_BOOT_GUEST_HANDLE 0u
 
 static bool     g_boot_guest_present = true;
@@ -664,14 +664,14 @@ static uint32_t cc_msg_rd32(const uint8_t *src, uint32_t off)
          | ((uint32_t)src[off + 3u] << 24u);
 }
 
-#if defined(AGENTOS_GUEST_LINUX) || defined(AGENTOS_GUEST_FREEBSD)
+#if defined(AGENTOS_GUEST_PRIMARY) || defined(AGENTOS_GUEST_SECONDARY)
 
 static uint32_t cc_boot_guest_os_type(void)
 {
-#if defined(AGENTOS_GUEST_FREEBSD) && !defined(AGENTOS_GUEST_BOTH)
-    return VIBEOS_TYPE_FREEBSD;
+#if defined(AGENTOS_GUEST_SECONDARY) && !defined(AGENTOS_GUEST_DUAL)
+    return VIBEOS_PROFILE_SECONDARY;
 #else
-    return VIBEOS_TYPE_LINUX;
+    return VIBEOS_PROFILE_PRIMARY;
 #endif
 }
 
@@ -1158,7 +1158,7 @@ static void handle_list_guests(cc_reply_wire_t *rep)
     uint32_t max_entries = (uint32_t)(CC_WIRE_SHMEM_SIZE / sizeof(cc_guest_info_t));
     uint32_t count = 0u;
 
-#if defined(AGENTOS_GUEST_LINUX) || defined(AGENTOS_GUEST_FREEBSD)
+#if defined(AGENTOS_GUEST_PRIMARY) || defined(AGENTOS_GUEST_SECONDARY)
     if (g_boot_guest_present && count < max_entries) {
         cc_fill_boot_guest_info(&out[count]);
         count++;
@@ -1180,7 +1180,7 @@ static void handle_list_devices(const cc_req_wire_t *req, cc_reply_wire_t *rep)
         return;
     }
 
-#if defined(AGENTOS_GUEST_LINUX) || defined(AGENTOS_GUEST_FREEBSD)
+#if defined(AGENTOS_GUEST_PRIMARY) || defined(AGENTOS_GUEST_SECONDARY)
     if (cc_boot_guest_has_device(dev_type)) {
         cc_device_info_t *out = (cc_device_info_t *)rep->shmem;
         out[0].dev_type   = dev_type;
@@ -1259,7 +1259,7 @@ static void handle_guest_status(const cc_req_wire_t *req, cc_reply_wire_t *rep)
 {
     uint32_t handle = req->mr[0];
 
-#if defined(AGENTOS_GUEST_LINUX) || defined(AGENTOS_GUEST_FREEBSD)
+#if defined(AGENTOS_GUEST_PRIMARY) || defined(AGENTOS_GUEST_SECONDARY)
     if (handle == CC_BOOT_GUEST_HANDLE) {
         cc_guest_status_t *out = (cc_guest_status_t *)rep->shmem;
         cc_fill_boot_guest_status(out);
@@ -1303,7 +1303,7 @@ static void handle_device_status(const cc_req_wire_t *req, cc_reply_wire_t *rep)
         return;
     }
 
-#if defined(AGENTOS_GUEST_LINUX) || defined(AGENTOS_GUEST_FREEBSD)
+#if defined(AGENTOS_GUEST_PRIMARY) || defined(AGENTOS_GUEST_SECONDARY)
     if (dev_handle == 0u && cc_boot_guest_has_device(dev_type)) {
         cc_device_info_t *out = (cc_device_info_t *)rep->shmem;
         out->dev_type = dev_type;
@@ -1331,7 +1331,7 @@ static void handle_attach_framebuffer(const cc_req_wire_t *req,
 
 static void handle_send_input(const cc_req_wire_t *req, cc_reply_wire_t *rep)
 {
-#if defined(AGENTOS_GUEST_LINUX) || defined(AGENTOS_GUEST_FREEBSD)
+#if defined(AGENTOS_GUEST_PRIMARY) || defined(AGENTOS_GUEST_SECONDARY)
     const cc_input_event_t *event = (const cc_input_event_t *)req->shmem;
     uint32_t text_len = event->event_type == CC_INPUT_TEXT ? event->keycode : 0u;
     if (text_len > CC_INPUT_TEXT_MAX ||
@@ -1359,7 +1359,7 @@ static void handle_snapshot(const cc_req_wire_t *req, cc_reply_wire_t *rep)
 {
     uint32_t handle = req->mr[0];
 
-#if defined(AGENTOS_GUEST_LINUX) || defined(AGENTOS_GUEST_FREEBSD)
+#if defined(AGENTOS_GUEST_PRIMARY) || defined(AGENTOS_GUEST_SECONDARY)
     if (handle == CC_BOOT_GUEST_HANDLE) {
         /* Boot guest snapshot is not implemented yet; surface a clear error
          * rather than the previous unconditional relay fault. */
@@ -1391,7 +1391,7 @@ static void handle_restore(const cc_req_wire_t *req, cc_reply_wire_t *rep)
 {
     uint32_t handle = req->mr[0];
 
-#if defined(AGENTOS_GUEST_LINUX) || defined(AGENTOS_GUEST_FREEBSD)
+#if defined(AGENTOS_GUEST_PRIMARY) || defined(AGENTOS_GUEST_SECONDARY)
     if (handle == CC_BOOT_GUEST_HANDLE) {
         rep->mr[0] = CC_ERR_RELAY_FAULT;
         return;
@@ -1422,7 +1422,7 @@ static void handle_restore(const cc_req_wire_t *req, cc_reply_wire_t *rep)
  * caller can re-address the same stream on subsequent polls.
  *
  *   slot 0,  pd_id TRACE_PD_CONTROLLER  → boot guest serial (guest_vmm drain)
- *   slot 0,  pd_id LINUX/FREEBSD_VMM    → vibe guest addressed by MR1==handle,
+ *   slot 0,  pd_id GUEST_VMM_PRIMARY/SECONDARY → vibe guest addressed by MR1==handle,
  *                                          assigned its own slot (1..N) on use
  *   slot N>0                            → previously assigned vibe guest slot
  *
@@ -1431,7 +1431,7 @@ static void handle_restore(const cc_req_wire_t *req, cc_reply_wire_t *rep)
  */
 static void handle_log_stream(const cc_req_wire_t *req, cc_reply_wire_t *rep)
 {
-#if defined(AGENTOS_GUEST_LINUX) || defined(AGENTOS_GUEST_FREEBSD)
+#if defined(AGENTOS_GUEST_PRIMARY) || defined(AGENTOS_GUEST_SECONDARY)
     uint32_t slot  = req->mr[0];
     uint32_t pd_id = req->mr[1];
 
@@ -1453,8 +1453,8 @@ static void handle_log_stream(const cc_req_wire_t *req, cc_reply_wire_t *rep)
     /* Vibe guest streams.  An already-allocated slot (slot>0, in_use) resolves
      * straight to its guest handle; otherwise treat MR1 as a vibe handle and
      * assign it a fresh slot. */
-    if (pd_id == TRACE_PD_LINUX_VMM ||
-        pd_id == TRACE_PD_FREEBSD_VMM ||
+    if (pd_id == TRACE_PD_GUEST_VMM_PRIMARY ||
+        pd_id == TRACE_PD_GUEST_VMM_SECONDARY ||
         (slot > 0u && slot < CC_LOG_SLOTS && g_log_slots[slot].in_use)) {
 
         uint32_t guest_handle;
@@ -1558,7 +1558,7 @@ static void handle_suspend_guest(const cc_req_wire_t *req, cc_reply_wire_t *rep)
 {
     uint32_t handle = req->mr[0];
 
-#if defined(AGENTOS_GUEST_LINUX) || defined(AGENTOS_GUEST_FREEBSD)
+#if defined(AGENTOS_GUEST_PRIMARY) || defined(AGENTOS_GUEST_SECONDARY)
     if (handle == CC_BOOT_GUEST_HANDLE) {
         if (!g_boot_guest_present) {
             rep->mr[0] = CC_ERR_BAD_HANDLE;
@@ -1591,7 +1591,7 @@ static void handle_resume_guest(const cc_req_wire_t *req, cc_reply_wire_t *rep)
 {
     uint32_t handle = req->mr[0];
 
-#if defined(AGENTOS_GUEST_LINUX) || defined(AGENTOS_GUEST_FREEBSD)
+#if defined(AGENTOS_GUEST_PRIMARY) || defined(AGENTOS_GUEST_SECONDARY)
     if (handle == CC_BOOT_GUEST_HANDLE) {
         if (!g_boot_guest_present) {
             rep->mr[0] = CC_ERR_BAD_HANDLE;
@@ -1624,7 +1624,7 @@ static void handle_destroy_guest(const cc_req_wire_t *req, cc_reply_wire_t *rep)
 {
     uint32_t handle = req->mr[0];
 
-#if defined(AGENTOS_GUEST_LINUX) || defined(AGENTOS_GUEST_FREEBSD)
+#if defined(AGENTOS_GUEST_PRIMARY) || defined(AGENTOS_GUEST_SECONDARY)
     if (handle == CC_BOOT_GUEST_HANDLE) {
         if (!g_boot_guest_present) {
             rep->mr[0] = CC_ERR_BAD_HANDLE;
