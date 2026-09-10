@@ -1384,13 +1384,15 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let source = dir.path().join("source.qcow2");
         let dest = dir.path().join("dest.raw");
-        let qemu_img = find_tool(&[
+        let Ok(qemu_img) = find_tool(&[
             "qemu-img",
             "/opt/homebrew/bin/qemu-img",
             "/usr/local/bin/qemu-img",
             "/usr/bin/qemu-img",
-        ])
-        .unwrap();
+        ]) else {
+            eprintln!("skipping: qemu-img not installed on this host");
+            return;
+        };
         let status = std::process::Command::new(qemu_img)
             .args(["create", "-f", "qcow2"])
             .arg(&source)
