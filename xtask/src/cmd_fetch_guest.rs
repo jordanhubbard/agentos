@@ -274,12 +274,13 @@ fn linux_probe_initramfs_ready(initrd: &Path) -> anyhow::Result<bool> {
         .any(|entry| entry == "init" || entry == "./init")
         && entries
             .iter()
-            .any(|entry| entry == "agentos-init-v3" || entry == "./agentos-init-v3"))
+            .any(|entry| entry == "agentos-init-v4" || entry == "./agentos-init-v4"))
 }
 
 fn build_linux_e2e_init(work_dir: &Path) -> anyhow::Result<Vec<u8>> {
     let init_s = work_dir.join("agentos-linux-e2e-init.S");
     let init_elf = work_dir.join("init");
+    let normalized_elf = work_dir.join("init.normalized");
     fs::write(&init_s, LINUX_E2E_INIT_ASM)
         .with_context(|| format!("failed to write {}", init_s.display()))?;
 
@@ -311,8 +312,31 @@ fn build_linux_e2e_init(work_dir: &Path) -> anyhow::Result<Vec<u8>> {
         clang.display()
     );
 
-    let init =
-        fs::read(&init_elf).with_context(|| format!("failed to read {}", init_elf.display()))?;
+    // Clang and LLD identify their host toolchain in non-loadable ELF sections.
+    // Normalize those sections so the pinned initramfs and derived DTB hashes
+    // are identical on Linux and macOS without weakening artifact verification.
+    let objcopy = find_tool(&[
+        "llvm-objcopy",
+        "/opt/homebrew/opt/llvm/bin/llvm-objcopy",
+        "/opt/homebrew/opt/llvm@22/bin/llvm-objcopy",
+        "/opt/homebrew/opt/llvm@21/bin/llvm-objcopy",
+        "/usr/local/opt/llvm/bin/llvm-objcopy",
+        "/usr/bin/llvm-objcopy",
+    ])?;
+    let status = std::process::Command::new(&objcopy)
+        .args(["--strip-all", "--remove-section=.comment"])
+        .arg(&init_elf)
+        .arg(&normalized_elf)
+        .status()
+        .with_context(|| format!("failed to run {}", objcopy.display()))?;
+    anyhow::ensure!(
+        status.success(),
+        "{} failed normalizing E2E init",
+        objcopy.display()
+    );
+
+    let init = fs::read(&normalized_elf)
+        .with_context(|| format!("failed to read {}", normalized_elf.display()))?;
     anyhow::ensure!(
         init.starts_with(b"\x7fELF"),
         "built E2E init is not an ELF binary"
@@ -335,7 +359,7 @@ fn create_linux_probe_initramfs(init_elf: &[u8]) -> anyhow::Result<Vec<u8>> {
     ino += 1;
     append_newc_file(
         &mut out,
-        "agentos-init-v3",
+        "agentos-init-v4",
         ino,
         0o444,
         b"console-open\nvirtio-net-frame\n",
