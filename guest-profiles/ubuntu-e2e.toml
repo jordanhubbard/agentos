@@ -95,7 +95,7 @@ args = { text = "sudo -n /usr/sbin/sshd -f /dev/null -o HostKey=/run/agentos-ssh
 
 [[host.test]]
 action = "wait-console"
-args = { marker = "agentos-ubuntu-ready" }
+args = { marker = "agentos-linux login:" }
 
 [[host.test]]
 action = "assert-virtio"

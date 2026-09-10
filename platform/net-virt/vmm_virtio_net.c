@@ -224,6 +224,11 @@ void aos_vmm_virtio_net_rx_ready(void)
     }
     uint32_t received = net_pd_drain_rx();
     if (received > 0u) {
+        if (!g_aos_net_pumped) {
+            g_aos_net_pumped = 1;
+            LOG_VMM("emulated virtio-net: pumped %u frame(s) via host-backed net_pd\n",
+                    (unsigned)received);
+        }
         g_net_pd_rx_events += received;
         if (g_net_pd_rx_events <= received ||
             (g_net_pd_rx_events & (g_net_pd_rx_events - 1u)) == 0u) {

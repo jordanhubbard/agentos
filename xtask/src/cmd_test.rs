@@ -80,6 +80,7 @@ const VIBEOS_DEV_NET: u32 = 1 << 1;
 const VIBEOS_DEV_BLOCK: u32 = 1 << 2;
 const TRACE_PD_GUEST_VMM_PRIMARY: u32 = 41;
 const TRACE_PD_GUEST_VMM_SECONDARY: u32 = 42;
+const FOCUSED_NET_STIMULUS_PORT: u16 = 12224;
 
 #[derive(Clone, Debug)]
 struct VirtioAssertion {
@@ -316,11 +317,20 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
         None
     };
 
-    let needs_host_net_stimulus = virtio_assertion.as_ref().is_some_and(|assertion| {
-        assertion.host_backed && assertion.devices.iter().any(|device| device == "net")
-    });
+    // Every runtime profile reaches its emulated NIC through the slot's
+    // net_pd bridge. Stimulate RX even for the focused "emulated" assertion;
+    // otherwise a quiet guest can negotiate the device correctly and then
+    // wait forever without exercising a queue.
+    let needs_host_net_stimulus = virtio_assertion
+        .as_ref()
+        .is_some_and(|assertion| assertion.devices.iter().any(|device| device == "net"));
     let ssh_port = if needs_host_net_stimulus || args.assert_desktop || scenario_plan.is_some() {
-        effective_ssh_port(args, profile_plan.as_ref(), scenario_plan.as_ref())
+        let configured = effective_ssh_port(args, profile_plan.as_ref(), scenario_plan.as_ref());
+        if needs_host_net_stimulus && configured == 0 {
+            FOCUSED_NET_STIMULUS_PORT
+        } else {
+            configured
+        }
     } else {
         0
     };

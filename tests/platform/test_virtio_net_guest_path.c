@@ -315,6 +315,10 @@ static int test_host_backed_architecture(void)
                      "aos_net_rx_drain(") &&
         src_contains("services/net-service/net_pd.c",
                      "received > 0u || net_host_client_rx_pending()");
+    int async_rx_proof = src_contains_in_order(
+        "platform/net-virt/vmm_virtio_net.c",
+        "uint32_t received = net_pd_drain_rx();",
+        "emulated virtio-net: pumped %u frame(s) via host-backed net_pd");
     int no_guest_passthrough =
         !src_contains("Makefile", "bus=virtio-mmio-bus.0") &&
         !src_contains("xtask/src/cmd_test.rs",
@@ -339,7 +343,7 @@ static int test_host_backed_architecture(void)
                   collision_free_shared_va &&
                   private_dma && shared_bridge && ipc && contract &&
                   no_vmm_dma && async_rx && no_guest_passthrough &&
-                  native_client && sustained_rx,
+                  native_client && sustained_rx && async_rx_proof,
                   "guests and native init agent share bus.16 net virtualizer");
 }
 
