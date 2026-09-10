@@ -9,7 +9,7 @@ use std::os::unix::net::UnixStream;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Stdio};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const SSH_AUTH_OPTIONS: &[&str] = &[
     "-o",
@@ -268,8 +268,8 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
         anyhow::ensure!(
             profile_plan
                 .as_ref()
-                .is_some_and(|profile| profile.media_initrd_path.is_some()),
-            "live-media assertions require a profile with boot.media_initrd_path"
+                .is_some_and(|profile| profile.has_initrd),
+            "full-userspace assertions require a profile with an initrd artifact"
         );
     }
     if args.assert_desktop {
@@ -311,7 +311,7 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
     let (_, log_path) = log_file
         .keep()
         .context("failed to persist build/tmp QEMU log file")?;
-    let ssh_key = if scenario_plan.is_some() || args.assert_desktop {
+    let ssh_key = if scenario_plan.is_some() || args.assert_live || args.assert_desktop {
         Some(generate_ssh_test_key(&repo_root, args.keep_running)?)
     } else {
         None
@@ -380,6 +380,13 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
                 "[xtask:test] Creating both configured profiles through CC-PD/vm_manager ({})...",
                 cc_sock.display()
             );
+            wait_for_all_markers(
+                &log_path,
+                &["[cc_pd] VirtIO serial ready"],
+                Duration::from_secs(args.timeout_secs),
+                &mut qemu,
+            )
+            .context("CC-PD did not become ready before dual guest creation")?;
             wait_for_dual_guest_consoles_via_cc(
                 &cc_sock,
                 scenario_plan.as_ref().unwrap(),
@@ -398,6 +405,13 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
                 profile.id,
                 cc_sock.display()
             );
+            wait_for_all_markers(
+                &log_path,
+                &["[cc_pd] VirtIO serial ready"],
+                Duration::from_secs(args.timeout_secs),
+                &mut qemu,
+            )
+            .context("CC-PD did not become ready before guest console probing")?;
             wait_for_guest_console_login_via_cc(
                 &cc_sock,
                 0,
@@ -423,6 +437,29 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
      * forwarded port before sshd exists leaves a stale user-net flow that can
      * accept later host sockets without ever completing an SSH banner.
      */
+    if result.is_ok() && args.assert_live && !args.assert_desktop {
+        let key = ssh_key
+            .as_ref()
+            .context("live-profile SSH key was not generated")?;
+        match prove_profile_ssh(
+            &cc_sock,
+            profile_plan
+                .as_ref()
+                .context("live test requires a resolved guest profile")?,
+            key,
+            Duration::from_secs(args.timeout_secs),
+            &mut qemu,
+        ) {
+            Ok(()) => {
+                result = Ok(format!(
+                    "{}; profile SSH reachable",
+                    result.as_deref().unwrap_or("guest profile ready")
+                ));
+            }
+            Err(error) => result = Err(error),
+        }
+    }
+
     let mut desktop_evidence = None;
     let mut desktop_tunnel = None;
     if result.is_ok() && args.assert_desktop {
@@ -882,9 +919,11 @@ fn attach_profile_media(
                 ),
                 "-drive",
                 &format!(
-                    "file={},format=raw,id={},if=none,readonly=on,file.locking=off",
+                    "file={},format=raw,id={},if=none,readonly={},snapshot={},file.locking=off",
                     media_path.display(),
-                    media.drive_id
+                    media.drive_id,
+                    if media.writable { "off" } else { "on" },
+                    if media.writable { "on" } else { "off" }
                 ),
             ]);
         }
@@ -1616,6 +1655,7 @@ fn wait_for_guest_console_login_on_cc(
         .map(|plan| vec![0u8; plan.interaction.len()])
         .unwrap_or_default();
     let mut last_progress = Instant::now();
+    let mut last_reported_len = 0usize;
 
     while start.elapsed() < timeout {
         ensure_qemu_running(qemu, "waiting for guest login prompt via CC-PD API")?;
@@ -1634,6 +1674,7 @@ fn wait_for_guest_console_login_on_cc(
                             tail_chars(&transcript, 800)
                         );
                         last_progress = Instant::now();
+                        last_reported_len = transcript.len();
                     }
                     run_console_interactions(
                         console,
@@ -1679,6 +1720,18 @@ fn wait_for_guest_console_login_on_cc(
             cc,
             guest_handle,
         )?;
+        if transcript.len() > last_reported_len
+            && last_progress.elapsed() >= Duration::from_secs(30)
+        {
+            println!(
+                "[xtask:test] {} console idle after {} bytes, tail:\n{}",
+                guest_os,
+                transcript.len(),
+                tail_chars(&transcript, 800)
+            );
+            last_progress = Instant::now();
+            last_reported_len = transcript.len();
+        }
         std::thread::sleep(if drained_console {
             Duration::from_millis(10)
         } else {
@@ -2064,6 +2117,11 @@ fn run_ssh_script(
     timeout: Duration,
     script: &str,
 ) -> anyhow::Result<String> {
+    let remote_shell = if account == "root" {
+        format!("timeout {} sh -s", timeout.as_secs())
+    } else {
+        format!("sudo -n timeout {} sh -s", timeout.as_secs())
+    };
     let mut child = std::process::Command::new("ssh");
     child
         .arg("-i")
@@ -2071,10 +2129,7 @@ fn run_ssh_script(
         .args(["-p", &port.to_string()])
         .args(SSH_AUTH_OPTIONS)
         .args(SSH_SESSION_LIVENESS_OPTIONS)
-        .args([
-            &format!("{account}@127.0.0.1"),
-            &format!("sudo -n timeout {} sh -s", timeout.as_secs()),
-        ])
+        .args([&format!("{account}@127.0.0.1"), &remote_shell])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -2100,6 +2155,15 @@ fn run_ssh_script(
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
+fn render_desktop_script(script: &str, host_unix_time: u64) -> anyhow::Result<String> {
+    let rendered = script.replace("{{host_unix_time}}", &host_unix_time.to_string());
+    anyhow::ensure!(
+        !rendered.contains("{{"),
+        "desktop provisioning contains an unknown template variable"
+    );
+    Ok(rendered)
+}
+
 fn wait_for_profile_ssh(
     profile: &HostProfilePlan,
     ssh_key: &SshTestKey,
@@ -2110,16 +2174,16 @@ fn wait_for_profile_ssh(
         .qemu
         .as_ref()
         .and_then(|qemu| qemu.ssh.as_ref())
-        .context("desktop profile has no host.qemu.ssh plan")?;
+        .context("profile has no host.qemu.ssh plan")?;
     let (account, marker) = profile_ssh_expectation(profile)?;
     let start = Instant::now();
     let mut last = String::from("no SSH attempt completed");
     while start.elapsed() < timeout {
-        ensure_qemu_running(qemu, "waiting for profile desktop SSH")?;
+        ensure_qemu_running(qemu, "waiting for profile SSH")?;
         let probe = spawn_ssh_probe(&ssh_key.private_key, ssh.host_port, account)?;
         let output = probe
             .wait_with_output()
-            .context("failed to wait for profile desktop SSH probe")?;
+            .context("failed to wait for profile SSH probe")?;
         if output.status.success()
             && (marker.is_empty() || String::from_utf8_lossy(&output.stdout).trim() == marker)
         {
@@ -2133,14 +2197,47 @@ fn wait_for_profile_ssh(
         );
         std::thread::sleep(Duration::from_secs(2));
     }
-    anyhow::bail!("profile desktop SSH did not become ready: {last}")
+    anyhow::bail!("profile SSH did not become ready: {last}")
+}
+
+fn prove_profile_ssh(
+    cc_sock: &Path,
+    profile: &HostProfilePlan,
+    ssh_key: &SshTestKey,
+    timeout: Duration,
+    qemu: &mut Child,
+) -> anyhow::Result<()> {
+    let mut cc = connect_cc_client(cc_sock, timeout.min(Duration::from_secs(30)), qemu)?;
+    let provision_ssh = profile_provision_commands(profile, &ssh_key.public_key)?;
+    run_guest_console_commands(
+        cc_sock,
+        &mut cc,
+        0,
+        &profile.id,
+        Some(profile),
+        &provision_ssh,
+        timeout.min(Duration::from_secs(600)),
+        qemu,
+    )?;
+    drop(cc);
+    wait_for_profile_ssh(
+        profile,
+        ssh_key,
+        timeout.min(Duration::from_secs(600)),
+        qemu,
+    )
 }
 
 fn desktop_tunnel_forward_spec(desktop: &DesktopPlan) -> String {
-    format!(
-        "127.0.0.1:{}:127.0.0.1:{}",
-        desktop.local_port, desktop.guest_port
-    )
+    if let Some(socket) = &desktop.guest_socket {
+        format!("127.0.0.1:{}:{socket}", desktop.local_port)
+    } else {
+        format!(
+            "127.0.0.1:{}:127.0.0.1:{}",
+            desktop.local_port,
+            desktop.guest_port.expect("validated desktop guest port")
+        )
+    }
 }
 
 fn spawn_desktop_tunnel(
@@ -2186,31 +2283,18 @@ fn prove_profile_desktop(
         .as_ref()
         .and_then(|qemu| qemu.ssh.as_ref())
         .context("desktop profile has no host.qemu.ssh plan")?;
-    let mut cc = connect_cc_client(cc_sock, timeout.min(Duration::from_secs(30)), qemu)?;
-    let provision_ssh = profile_provision_commands(profile, &ssh_key.public_key)?;
-    run_guest_console_commands(
-        cc_sock,
-        &mut cc,
-        0,
-        &profile.id,
-        Some(profile),
-        &provision_ssh,
-        timeout.min(Duration::from_secs(600)),
-        qemu,
-    )?;
-    drop(cc);
-    wait_for_profile_ssh(
-        profile,
-        ssh_key,
-        timeout.min(Duration::from_secs(600)),
-        qemu,
-    )?;
+    prove_profile_ssh(cc_sock, profile, ssh_key, timeout, qemu)?;
+    let host_unix_time = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .context("host clock is before the Unix epoch")?
+        .as_secs();
+    let provisioning_script = render_desktop_script(&desktop.provision_script, host_unix_time)?;
     let provisioning = run_ssh_script(
         &ssh_key.private_key,
         ssh.host_port,
         &ssh.account,
         Duration::from_secs(desktop.provision_timeout_secs),
-        &desktop.provision_script,
+        &provisioning_script,
     )?;
     println!("[xtask:test] profile desktop provisioning:\n{provisioning}");
 
@@ -2954,14 +3038,25 @@ mod tests {
         assert!(script.contains("-rendernode \"\""));
         assert!(script.contains("gnome-calculator"));
         assert!(!script.contains("apt-get"));
-        assert!(script.contains("-localhost yes"));
+        assert!(script.contains("-rfbunixpath /tmp/agentos-vnc.sock"));
         assert!(script.contains("-SecurityTypes None"));
         assert!(script.contains("agentos-desktop-local-rfb-ready"));
-        assert!(script.contains("/dev/tcp/127.0.0.1/5901"));
         assert_eq!(
             desktop_tunnel_forward_spec(desktop),
-            "127.0.0.1:15901:127.0.0.1:5901"
+            "127.0.0.1:15901:/tmp/agentos-vnc.sock"
         );
+        assert_eq!(
+            desktop_tunnel_forward_spec(test_profile("debian").desktop.as_ref().unwrap()),
+            "127.0.0.1:15902:127.0.0.1:5901"
+        );
+    }
+
+    #[test]
+    fn desktop_script_templates_host_time_without_guest_policy() {
+        let rendered =
+            render_desktop_script("guest-clock-command {{host_unix_time}}", 1_789_056_000).unwrap();
+        assert_eq!(rendered, "guest-clock-command 1789056000");
+        assert!(render_desktop_script("{{guest_specific}}", 1).is_err());
     }
 
     #[test]

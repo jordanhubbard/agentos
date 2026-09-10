@@ -321,6 +321,7 @@ ifeq ($(UNAME_S),Darwin)
 		ninja \
 		dtc \
 		coreutils \
+		e2fsprogs \
 		zstd
 	@command -v cargo >/dev/null 2>&1 || \
 		(echo "[macOS] Installing Rust toolchain..." && \
@@ -343,6 +344,7 @@ else ifeq ($(UNAME_S),Linux)
 		cmake \
 		ninja-build \
 		device-tree-compiler \
+		e2fsprogs \
 		libarchive-tools \
 		openssh-client \
 		curl \
@@ -362,6 +364,7 @@ else ifeq ($(UNAME_S),FreeBSD)
 		llvm \
 		dtc \
 		dtc-devel \
+		e2fsprogs \
 		gmake \
 		curl \
 		wget \

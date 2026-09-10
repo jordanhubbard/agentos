@@ -13,7 +13,7 @@ cache = "build/guest-images/ubuntu-26.04-aarch64-Image"
 sha256 = "94e37ccd7694d894e0d21f3f7c2e964046c77ce1c9208e11aa62fc98eb621696"
 
 [artifacts.dtb]
-source = "generated:linux.dts+ubuntu-iso-overlay.dts.in"
+source = "generated:linux.dts+linux-virtio-overlay.dts.in"
 cache = "build/qemu_virt_aarch64/vm.dtb"
 sha256 = "648c783ff27803de4f92ac878396998dc92397d5b28888c78ed8f59a6028932f"
 
@@ -42,7 +42,7 @@ probe_marker = "agentos-linux-proof"
 [host.build]
 adapter = "linux-merge"
 base = "libvmm/examples/simple/board/qemu_virt_aarch64/linux.dts"
-template = "kernel/agentos-root-task/ubuntu-iso-overlay.dts.in"
+template = "kernel/agentos-root-task/linux-virtio-overlay.dts.in"
 acquire_dir = "build/guest-images"
 
 [[host.acquire]]

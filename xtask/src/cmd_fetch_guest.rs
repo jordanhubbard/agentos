@@ -1,9 +1,10 @@
 use crate::cmd_guest_profile::{self, RecipeStep};
 use crate::FetchGuestArgs;
 use anyhow::Context;
+use sha2::{Digest, Sha512};
 use std::ffi::OsString;
-use std::fs;
-use std::io::{ErrorKind, Read};
+use std::fs::{self, OpenOptions};
+use std::io::{ErrorKind, Read, Seek, SeekFrom, Write};
 use std::path::{Component, Path, PathBuf};
 use std::process::Stdio;
 use std::time::UNIX_EPOCH;
@@ -203,6 +204,9 @@ fn execute_acquire_step(step: &RecipeStep, output_dir: &Path) -> anyhow::Result<
                     recipe_arg(step, "url")?,
                 )?;
             }
+            if let Some(expected) = step.args.get("sha512") {
+                verify_sha512(&dest, expected)?;
+            }
         }
         "download-tar-member" => download_tar_member(
             recipe_arg(step, "url")?,
@@ -235,8 +239,439 @@ fn execute_acquire_step(step: &RecipeStep, output_dir: &Path) -> anyhow::Result<
             recipe_arg(step, "member")?,
             &recipe_path(output_dir, recipe_arg(step, "output")?)?,
         )?,
+        "build-initramfs-file" => build_initramfs_file(
+            &recipe_path(output_dir, recipe_arg(step, "output")?)?,
+            recipe_arg(step, "path")?,
+            recipe_arg(step, "mode")?,
+            recipe_arg(step, "content")?.as_bytes(),
+            step.args.get("compression").map(String::as_str),
+        )?,
+        "append-initramfs-file" => append_initramfs_file(
+            &recipe_path(output_dir, recipe_arg(step, "source")?)?,
+            &recipe_path(output_dir, recipe_arg(step, "output")?)?,
+            recipe_arg(step, "path")?,
+            recipe_arg(step, "mode")?,
+            recipe_arg(step, "content")?.as_bytes(),
+            step.args.get("compression").map(String::as_str),
+        )?,
+        "convert-qcow2-raw" => convert_qcow2_to_raw(
+            &recipe_path(output_dir, recipe_arg(step, "source")?)?,
+            &recipe_path(output_dir, recipe_arg(step, "output")?)?,
+        )?,
+        "extract-gpt-partition" => extract_gpt_partition(
+            &recipe_path(output_dir, recipe_arg(step, "source")?)?,
+            &recipe_path(output_dir, recipe_arg(step, "output")?)?,
+            recipe_arg(step, "index")?,
+            step.args.get("sector_size").map(String::as_str),
+        )?,
+        "extract-ext4-file" => extract_ext4_file(
+            &recipe_path(output_dir, recipe_arg(step, "source")?)?,
+            &recipe_path(output_dir, recipe_arg(step, "output")?)?,
+            recipe_arg(step, "path")?,
+        )?,
+        "normalize-arm64-linux-image" => normalize_arm64_linux_image(
+            &recipe_path(output_dir, recipe_arg(step, "source")?)?,
+            &recipe_path(output_dir, recipe_arg(step, "output")?)?,
+        )?,
         other => anyhow::bail!("host acquire action {other:?} is not executable"),
     }
+    Ok(())
+}
+
+fn extract_gpt_partition(
+    source: &Path,
+    dest: &Path,
+    index: &str,
+    sector_size: Option<&str>,
+) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        source != dest,
+        "GPT source and partition output must differ"
+    );
+    let index = index
+        .parse::<u32>()
+        .context("GPT partition index must be a positive integer")?;
+    anyhow::ensure!(
+        (1..=128).contains(&index),
+        "GPT partition index must be 1..=128"
+    );
+    let sector_size = sector_size
+        .unwrap_or("512")
+        .parse::<u64>()
+        .context("GPT sector size must be an integer")?;
+    anyhow::ensure!(
+        matches!(sector_size, 512 | 4096),
+        "GPT sector size must be 512 or 4096"
+    );
+    let source_id = source_file_identity(source)?;
+    let source_stamp = PathBuf::from(format!("{}.source", dest.display()));
+    if dest.is_file()
+        && fs::metadata(dest).map(|meta| meta.len()).unwrap_or(0) > 0
+        && fs::read_to_string(&source_stamp).unwrap_or_default() == source_id
+    {
+        println!(
+            "[fetch-guest] GPT partition already extracted: {}",
+            dest.display()
+        );
+        return Ok(());
+    }
+
+    let source_len = fs::metadata(source)
+        .with_context(|| format!("failed to inspect GPT disk {}", source.display()))?
+        .len();
+    let mut input = fs::File::open(source)
+        .with_context(|| format!("failed to open GPT disk {}", source.display()))?;
+    let mut header = [0u8; 92];
+    input.seek(SeekFrom::Start(sector_size))?;
+    input
+        .read_exact(&mut header)
+        .context("failed to read GPT header")?;
+    anyhow::ensure!(
+        &header[..8] == b"EFI PART",
+        "disk has no primary GPT header"
+    );
+    let header_size = u32::from_le_bytes(header[12..16].try_into().unwrap());
+    anyhow::ensure!(
+        (92..=sector_size as u32).contains(&header_size),
+        "invalid GPT header size"
+    );
+    let entries_lba = u64::from_le_bytes(header[72..80].try_into().unwrap());
+    let entry_count = u32::from_le_bytes(header[80..84].try_into().unwrap());
+    let entry_size = u32::from_le_bytes(header[84..88].try_into().unwrap());
+    anyhow::ensure!(
+        index <= entry_count,
+        "GPT partition index exceeds table size"
+    );
+    anyhow::ensure!(
+        (128..=4096).contains(&entry_size) && entry_size % 8 == 0,
+        "invalid GPT entry size"
+    );
+    let entry_offset = entries_lba
+        .checked_mul(sector_size)
+        .and_then(|offset| offset.checked_add(u64::from(index - 1) * u64::from(entry_size)))
+        .context("GPT entry offset overflow")?;
+    let mut entry = vec![0u8; entry_size as usize];
+    input.seek(SeekFrom::Start(entry_offset))?;
+    input
+        .read_exact(&mut entry)
+        .context("failed to read GPT partition entry")?;
+    anyhow::ensure!(
+        entry[..16].iter().any(|byte| *byte != 0),
+        "GPT partition is unused"
+    );
+    let first_lba = u64::from_le_bytes(entry[32..40].try_into().unwrap());
+    let last_lba = u64::from_le_bytes(entry[40..48].try_into().unwrap());
+    anyhow::ensure!(last_lba >= first_lba, "GPT partition has inverted bounds");
+    let offset = first_lba
+        .checked_mul(sector_size)
+        .context("GPT partition offset overflow")?;
+    let length = last_lba
+        .checked_sub(first_lba)
+        .and_then(|sectors| sectors.checked_add(1))
+        .and_then(|sectors| sectors.checked_mul(sector_size))
+        .context("GPT partition length overflow")?;
+    anyhow::ensure!(
+        offset
+            .checked_add(length)
+            .is_some_and(|end| end <= source_len),
+        "GPT partition exceeds disk image"
+    );
+
+    if let Some(parent) = dest.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create {}", parent.display()))?;
+    }
+    let tmp = dest.with_extension("tmp");
+    let _ = fs::remove_file(&tmp);
+    let mut output = OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .open(&tmp)
+        .with_context(|| format!("failed to create {}", tmp.display()))?;
+    input.seek(SeekFrom::Start(offset))?;
+    let mut remaining = length;
+    let mut buffer = vec![0u8; 1024 * 1024];
+    while remaining > 0 {
+        let count = usize::try_from(remaining.min(buffer.len() as u64)).unwrap();
+        input.read_exact(&mut buffer[..count])?;
+        if buffer[..count].iter().all(|byte| *byte == 0) {
+            output.seek(SeekFrom::Current(count as i64))?;
+        } else {
+            output.write_all(&buffer[..count])?;
+        }
+        remaining -= count as u64;
+    }
+    output.set_len(length)?;
+    output.sync_all()?;
+    fs::rename(&tmp, dest)
+        .with_context(|| format!("failed to move {} to {}", tmp.display(), dest.display()))?;
+    write_output(&source_stamp, source_id.as_bytes())?;
+    println!(
+        "[fetch-guest] Extracted GPT partition {} ({} bytes) -> {}",
+        index,
+        length,
+        dest.display()
+    );
+    Ok(())
+}
+
+fn extract_ext4_file(source: &Path, dest: &Path, filesystem_path: &str) -> anyhow::Result<()> {
+    anyhow::ensure!(source != dest, "ext4 source and output must differ");
+    let path = Path::new(filesystem_path);
+    anyhow::ensure!(
+        path.is_absolute()
+            && path.components().all(|component| {
+                matches!(component, Component::RootDir | Component::Normal(_))
+            })
+            && filesystem_path
+                .bytes()
+                .all(|byte| { byte.is_ascii_alphanumeric() || b"/_+.-".contains(&byte) }),
+        "ext4 path must be a confined absolute path without shell syntax"
+    );
+    let source_id = source_file_identity(source)?;
+    let source_stamp = PathBuf::from(format!("{}.source", dest.display()));
+    if dest.is_file()
+        && fs::metadata(dest).map(|meta| meta.len()).unwrap_or(0) > 0
+        && fs::read_to_string(&source_stamp).unwrap_or_default() == source_id
+    {
+        println!(
+            "[fetch-guest] ext4 file already extracted: {}",
+            dest.display()
+        );
+        return Ok(());
+    }
+    let parent = dest
+        .parent()
+        .context("ext4 output has no parent directory")?;
+    fs::create_dir_all(parent).with_context(|| format!("failed to create {}", parent.display()))?;
+    let tmp = dest.with_extension("tmp");
+    let _ = fs::remove_file(&tmp);
+    let tmp_name = tmp
+        .file_name()
+        .and_then(|name| name.to_str())
+        .context("ext4 output name is not UTF-8")?;
+    anyhow::ensure!(
+        tmp_name
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || b"_+.-".contains(&byte)),
+        "ext4 output name contains unsupported characters"
+    );
+    let debugfs = find_tool(&[
+        "debugfs",
+        "/opt/homebrew/opt/e2fsprogs/sbin/debugfs",
+        "/usr/local/opt/e2fsprogs/sbin/debugfs",
+        "/usr/sbin/debugfs",
+        "/usr/bin/debugfs",
+    ])?;
+    let status = std::process::Command::new(&debugfs)
+        .args(["-R", &format!("dump -p {filesystem_path} {tmp_name}")])
+        .arg(source)
+        .current_dir(parent)
+        .status()
+        .with_context(|| format!("failed to run {}", debugfs.display()))?;
+    anyhow::ensure!(status.success(), "debugfs extraction failed with {status}");
+    anyhow::ensure!(
+        fs::metadata(&tmp).map(|meta| meta.len()).unwrap_or(0) > 0,
+        "debugfs produced an empty output"
+    );
+    fs::rename(&tmp, dest)
+        .with_context(|| format!("failed to move {} to {}", tmp.display(), dest.display()))?;
+    write_output(&source_stamp, source_id.as_bytes())?;
+    println!(
+        "[fetch-guest] Extracted ext4 file {} -> {}",
+        filesystem_path,
+        dest.display()
+    );
+    Ok(())
+}
+
+fn convert_qcow2_to_raw(source: &Path, dest: &Path) -> anyhow::Result<()> {
+    anyhow::ensure!(source != dest, "qcow2 source and raw output must differ");
+    anyhow::ensure!(
+        source.is_file() && fs::metadata(source).map(|meta| meta.len()).unwrap_or(0) > 0,
+        "qcow2 source is missing or empty: {}",
+        source.display()
+    );
+    let source_id = source_file_identity(source)?;
+    let source_stamp = PathBuf::from(format!("{}.source", dest.display()));
+    if dest.is_file()
+        && fs::metadata(dest).map(|meta| meta.len()).unwrap_or(0) > 0
+        && fs::read_to_string(&source_stamp).unwrap_or_default() == source_id
+    {
+        println!(
+            "[fetch-guest] raw image already converted: {}",
+            dest.display()
+        );
+        return Ok(());
+    }
+    if let Some(parent) = dest.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create {}", parent.display()))?;
+    }
+    let tmp = dest.with_extension("tmp");
+    let _ = fs::remove_file(&tmp);
+    let qemu_img = find_tool(&[
+        "qemu-img",
+        "/opt/homebrew/bin/qemu-img",
+        "/usr/local/bin/qemu-img",
+        "/usr/bin/qemu-img",
+    ])?;
+    let status = std::process::Command::new(&qemu_img)
+        .args(["convert", "-f", "qcow2", "-O", "raw", "-S", "4k"])
+        .arg(source)
+        .arg(&tmp)
+        .status()
+        .with_context(|| format!("failed to run {}", qemu_img.display()))?;
+    anyhow::ensure!(status.success(), "qemu-img convert failed with {status}");
+    anyhow::ensure!(
+        fs::metadata(&tmp).map(|meta| meta.len()).unwrap_or(0) > 0,
+        "qemu-img produced an empty raw image"
+    );
+    fs::rename(&tmp, dest)
+        .with_context(|| format!("failed to move {} to {}", tmp.display(), dest.display()))?;
+    write_output(&source_stamp, source_id.as_bytes())?;
+    println!("[fetch-guest] Converted qcow2 to raw: {}", dest.display());
+    Ok(())
+}
+
+fn verify_sha512(path: &Path, expected: &str) -> anyhow::Result<()> {
+    let mut input = fs::File::open(path)
+        .with_context(|| format!("failed to open {} for SHA-512", path.display()))?;
+    let mut digest = Sha512::new();
+    let mut buffer = [0u8; 64 * 1024];
+    loop {
+        let bytes = input
+            .read(&mut buffer)
+            .with_context(|| format!("failed to hash {}", path.display()))?;
+        if bytes == 0 {
+            break;
+        }
+        digest.update(&buffer[..bytes]);
+    }
+    let actual = format!("{:x}", digest.finalize());
+    anyhow::ensure!(
+        actual.eq_ignore_ascii_case(expected),
+        "SHA-512 mismatch for {}: expected {}, got {}",
+        path.display(),
+        expected,
+        actual
+    );
+    println!("[fetch-guest] SHA-512 verified: {}", path.display());
+    Ok(())
+}
+
+fn append_initramfs_file(
+    source: &Path,
+    dest: &Path,
+    archive_path: &str,
+    mode: &str,
+    content: &[u8],
+    compression: Option<&str>,
+) -> anyhow::Result<()> {
+    anyhow::ensure!(source != dest, "initramfs source and output must differ");
+    anyhow::ensure!(
+        source.is_file() && fs::metadata(source).map(|meta| meta.len()).unwrap_or(0) > 0,
+        "initramfs source is missing or empty: {}",
+        source.display()
+    );
+    if let Some(parent) = dest.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create {}", parent.display()))?;
+    }
+    let tmp = dest.with_extension("tmp");
+    let _ = fs::remove_file(&tmp);
+    fs::copy(source, &tmp).with_context(|| {
+        format!(
+            "failed to copy base initramfs {} to {}",
+            source.display(),
+            tmp.display()
+        )
+    })?;
+
+    let encoded = encode_initramfs_file(archive_path, mode, content, compression)?;
+
+    let mut out = OpenOptions::new()
+        .append(true)
+        .open(&tmp)
+        .with_context(|| format!("failed to append to {}", tmp.display()))?;
+    if compression.unwrap_or("none") == "none" {
+        let len = out.metadata()?.len();
+        let padding = (4 - len % 4) % 4;
+        if padding != 0 {
+            out.write_all(&[0u8; 3][..padding as usize])?;
+        }
+    }
+    out.write_all(&encoded)?;
+    out.flush()?;
+    drop(out);
+    fs::rename(&tmp, dest)
+        .with_context(|| format!("failed to move {} to {}", tmp.display(), dest.display()))?;
+    println!(
+        "[fetch-guest] Appended initramfs file {} -> {}",
+        archive_path,
+        dest.display()
+    );
+    Ok(())
+}
+
+fn encode_initramfs_file(
+    archive_path: &str,
+    mode: &str,
+    content: &[u8],
+    compression: Option<&str>,
+) -> anyhow::Result<Vec<u8>> {
+    let path = Path::new(archive_path);
+    anyhow::ensure!(
+        !archive_path.is_empty()
+            && !path.is_absolute()
+            && path
+                .components()
+                .all(|component| matches!(component, Component::Normal(_))),
+        "initramfs archive path must be confined and relative: {archive_path:?}"
+    );
+    let mode = u32::from_str_radix(mode, 8).context("initramfs mode must be octal")?;
+    anyhow::ensure!(mode <= 0o777, "initramfs mode exceeds 0777");
+
+    let mut overlay = Vec::new();
+    let mut ino = 1u32;
+    let mut parent = PathBuf::new();
+    if let Some(components) = path.parent() {
+        for component in components.components() {
+            let Component::Normal(name) = component else {
+                unreachable!("archive path was validated above")
+            };
+            parent.push(name);
+            append_newc_dir(&mut overlay, &parent.to_string_lossy(), ino)?;
+            ino += 1;
+        }
+    }
+    append_newc_file(&mut overlay, archive_path, ino, mode, content)?;
+    ino += 1;
+    append_newc_trailer(&mut overlay, ino)?;
+
+    let encoded = match compression.unwrap_or("none") {
+        "none" => overlay,
+        "zstd" => zstd::stream::encode_all(&overlay[..], 3)
+            .context("failed to compress initramfs overlay as zstd")?,
+        other => anyhow::bail!("unsupported initramfs overlay compression {other:?}"),
+    };
+    Ok(encoded)
+}
+
+fn build_initramfs_file(
+    dest: &Path,
+    archive_path: &str,
+    mode: &str,
+    content: &[u8],
+    compression: Option<&str>,
+) -> anyhow::Result<()> {
+    let encoded = encode_initramfs_file(archive_path, mode, content, compression)?;
+    write_output(dest, &encoded)?;
+    println!(
+        "[fetch-guest] Built initramfs file {} -> {}",
+        archive_path,
+        dest.display()
+    );
     Ok(())
 }
 
@@ -858,6 +1293,161 @@ mod tests {
     use super::*;
 
     #[test]
+    fn initramfs_overlay_is_aligned_bounded_newc() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("base.initrd");
+        let dest = dir.path().join("ready.initrd");
+        fs::write(&source, b"base!").unwrap();
+
+        append_initramfs_file(
+            &source,
+            &dest,
+            "scripts/casper-bottom/16console",
+            "0755",
+            b"#!/bin/sh\nexit 0\n",
+            None,
+        )
+        .unwrap();
+
+        let bytes = fs::read(&dest).unwrap();
+        assert_eq!(&bytes[..5], b"base!");
+        assert_eq!(&bytes[5..8], &[0, 0, 0]);
+        assert_eq!(&bytes[8..14], b"070701");
+        let overlay = String::from_utf8_lossy(&bytes[8..]);
+        assert!(overlay.contains("scripts/casper-bottom/16console"));
+        assert!(overlay.contains("#!/bin/sh\nexit 0\n"));
+        assert!(overlay.contains("TRAILER!!!"));
+    }
+
+    #[test]
+    fn standalone_initramfs_file_contains_only_the_bounded_overlay() {
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("overlay.initrd");
+
+        build_initramfs_file(
+            &dest,
+            "scripts/casper-bottom/25configure_init",
+            "0755",
+            b"#!/bin/sh\necho ready\n",
+            None,
+        )
+        .unwrap();
+
+        let bytes = fs::read(&dest).unwrap();
+        assert_eq!(&bytes[..6], b"070701");
+        let archive = String::from_utf8_lossy(&bytes);
+        assert!(archive.contains("scripts/casper-bottom/25configure_init"));
+        assert!(archive.contains("#!/bin/sh\necho ready\n"));
+        assert!(archive.contains("TRAILER!!!"));
+    }
+
+    #[test]
+    fn initramfs_overlay_rejects_escaping_paths_and_modes() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("base.initrd");
+        let dest = dir.path().join("ready.initrd");
+        fs::write(&source, b"base").unwrap();
+        assert!(append_initramfs_file(&source, &dest, "../init", "0755", b"x", None).is_err());
+        assert!(append_initramfs_file(&source, &dest, "init", "4755", b"x", None).is_err());
+    }
+
+    #[test]
+    fn zstd_initramfs_overlay_is_a_separate_reproducible_frame() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("base.initrd");
+        let dest = dir.path().join("ready.initrd");
+        fs::write(&source, b"base-zstd-frame").unwrap();
+        append_initramfs_file(&source, &dest, "init", "0755", b"payload", Some("zstd")).unwrap();
+
+        let bytes = fs::read(&dest).unwrap();
+        let compressed = &bytes[b"base-zstd-frame".len()..];
+        assert_eq!(&compressed[..4], &[0x28, 0xb5, 0x2f, 0xfd]);
+        let overlay = zstd::stream::decode_all(compressed).unwrap();
+        let overlay = String::from_utf8_lossy(&overlay);
+        assert!(overlay.contains("init"));
+        assert!(overlay.contains("payload"));
+        assert!(overlay.contains("TRAILER!!!"));
+    }
+
+    #[test]
+    fn sha512_verification_accepts_exact_content_and_rejects_drift() {
+        let dir = tempfile::tempdir().unwrap();
+        let artifact = dir.path().join("artifact");
+        fs::write(&artifact, b"agentOS\n").unwrap();
+        let expected = format!("{:x}", Sha512::digest(b"agentOS\n"));
+        verify_sha512(&artifact, &expected).unwrap();
+        assert!(verify_sha512(&artifact, &"0".repeat(128)).is_err());
+    }
+
+    #[test]
+    fn qcow2_conversion_produces_raw_image_and_reuses_matching_source() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("source.qcow2");
+        let dest = dir.path().join("dest.raw");
+        let qemu_img = find_tool(&[
+            "qemu-img",
+            "/opt/homebrew/bin/qemu-img",
+            "/usr/local/bin/qemu-img",
+            "/usr/bin/qemu-img",
+        ])
+        .unwrap();
+        let status = std::process::Command::new(qemu_img)
+            .args(["create", "-f", "qcow2"])
+            .arg(&source)
+            .arg("1M")
+            .status()
+            .unwrap();
+        assert!(status.success());
+
+        convert_qcow2_to_raw(&source, &dest).unwrap();
+        assert_eq!(fs::metadata(&dest).unwrap().len(), 1024 * 1024);
+        let stamp = PathBuf::from(format!("{}.source", dest.display()));
+        assert_eq!(
+            fs::read_to_string(stamp).unwrap(),
+            source_file_identity(&source).unwrap()
+        );
+        convert_qcow2_to_raw(&source, &dest).unwrap();
+        assert_eq!(fs::metadata(&dest).unwrap().len(), 1024 * 1024);
+    }
+
+    #[test]
+    fn gpt_partition_extraction_uses_declared_entry_and_exact_bounds() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("disk.raw");
+        let dest = dir.path().join("partition.raw");
+        let mut disk = vec![0u8; 64 * 512];
+        disk[512..520].copy_from_slice(b"EFI PART");
+        disk[524..528].copy_from_slice(&92u32.to_le_bytes());
+        disk[584..592].copy_from_slice(&2u64.to_le_bytes());
+        disk[592..596].copy_from_slice(&4u32.to_le_bytes());
+        disk[596..600].copy_from_slice(&128u32.to_le_bytes());
+        let entry = 2 * 512;
+        disk[entry] = 1;
+        disk[entry + 32..entry + 40].copy_from_slice(&8u64.to_le_bytes());
+        disk[entry + 40..entry + 48].copy_from_slice(&11u64.to_le_bytes());
+        disk[8 * 512..8 * 512 + 16].copy_from_slice(b"agentOS-GPT-data");
+        fs::write(&source, disk).unwrap();
+
+        extract_gpt_partition(&source, &dest, "1", None).unwrap();
+        let partition = fs::read(&dest).unwrap();
+        assert_eq!(partition.len(), 4 * 512);
+        assert_eq!(&partition[..16], b"agentOS-GPT-data");
+        assert!(extract_gpt_partition(&source, &dir.path().join("unused"), "2", None).is_err());
+    }
+
+    #[test]
+    fn arm64_image_normalization_accepts_a_raw_image() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("vmlinuz");
+        let dest = dir.path().join("Image");
+        let mut image = vec![0u8; 0x1000];
+        image[0x38..0x3c].copy_from_slice(b"ARMd");
+        fs::write(&source, &image).unwrap();
+        normalize_arm64_linux_image(&source, &dest).unwrap();
+        assert_eq!(fs::read(dest).unwrap(), image);
+    }
+
+    #[test]
     fn iso_dir_prefers_explicit_agentos_iso_dir() {
         let dir = iso_dir_from_env(
             Some(OsString::from("/tmp/agentos-isos")),
@@ -938,6 +1528,36 @@ fn extract_arm64_linux_image(iso: &Path, member: &str, kernel_dest: &Path) -> an
     let vmlinuz = tmp_dir.path().join("vmlinuz");
     extract_iso_file(iso, member, &vmlinuz)?;
     decode_arm64_kernel(&vmlinuz, kernel_dest, tmp_dir.path())
+}
+
+fn normalize_arm64_linux_image(source: &Path, kernel_dest: &Path) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        source != kernel_dest,
+        "arm64 kernel source and output must differ"
+    );
+    let source_id = source_file_identity(source)?;
+    let source_stamp = PathBuf::from(format!("{}.source", kernel_dest.display()));
+    if kernel_dest.is_file()
+        && fs::metadata(kernel_dest)
+            .map(|meta| meta.len())
+            .unwrap_or(0)
+            > 0
+        && fs::read_to_string(&source_stamp).unwrap_or_default() == source_id
+    {
+        println!(
+            "[fetch-guest] arm64 Linux Image already normalized: {}",
+            kernel_dest.display()
+        );
+        return Ok(());
+    }
+    let tmp_root = build_tmp_dir()?;
+    let tmp_dir = tempfile::Builder::new()
+        .prefix("agentos-arm64-linux-image-")
+        .tempdir_in(&tmp_root)
+        .context("failed to create arm64 Linux Image tempdir under build/tmp")?;
+    decode_arm64_kernel(source, kernel_dest, tmp_dir.path())?;
+    write_output(&source_stamp, source_id.as_bytes())?;
+    Ok(())
 }
 
 fn decode_arm64_kernel(vmlinuz: &Path, kernel_dest: &Path, work_dir: &Path) -> anyhow::Result<()> {

@@ -452,7 +452,6 @@ void aos_vmm_virtio_blk_init(uint32_t media_id)
             host_blocks = UINT32_MAX;
         }
         aos_blk_storage_init(g_aos_client.info, (uint32_t)host_blocks);
-        g_aos_client.info->read_only = true;
         /*
          * ISO9660 requires a logical sector no larger than 2048 bytes.
          * The backend still batches requests through 4 KiB sDDF transfer
@@ -502,8 +501,10 @@ void aos_vmm_virtio_blk_init(uint32_t media_id)
         LOG_VMM_ERR("emulated virtio-blk: virtio_mmio_blk_init failed\n");
         return;
     }
-    /* The extra transfer cell accommodates a maximum-size request beginning
-     * at a non-4K sector; host IPC chunks it through the bounded DMA window. */
+    /* FreeBSD 64-bit requires size_max >= its 1 MiB MAXPHYS even when a
+     * request is split across descriptors. The request body remains bounded
+     * to 1 MiB; the extra transfer cell accommodates a non-4K sector start,
+     * and host IPC chunks it through the bounded DMA window. */
     g_aos_blk.config.size_max = AOS_BLK_GUEST_MAX_SEGMENT_SIZE;
 
     g_aos_blk_ready = 1;

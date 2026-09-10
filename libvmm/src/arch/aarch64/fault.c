@@ -276,11 +276,13 @@ bool fault_handle_vcpu_exception(size_t vcpu_id)
     case HSR_HVC_64_EXCEPTION:
         return smc_handle(vcpu_id, hsr);
     case HSR_WFx_EXCEPTION:
-        /* seL4 resumes trapped WFI/WFE without VMM-side PC adjustment. */
+        /* A trapped WFI/WFE is an executed guest instruction. Advance past
+         * it before replying, otherwise the guest immediately traps the same
+         * instruction again and never reaches its idle-loop condition check. */
         if (!vgic_flush_pending_irqs(vcpu_id)) {
             LOG_VMM_ERR("failed to flush pending IRQs at trapped WFI/WFE\n");
         }
-        return true;
+        return fault_advance_vcpu(vcpu_id, &regs);
     case HSR_SYSREG_64_EXCEPTION:
         return handle_sysreg_64_fault(vcpu_id, hsr, &regs);
     default:
@@ -296,18 +298,32 @@ bool fault_handle_vppi_event(size_t vcpu_id)
     bool log_vppi = vppi_count <= 4 || (vppi_count & (vppi_count - 1)) == 0;
     uint64_t ppi_irq = seL4_GetMR(seL4_VPPIEvent_IRQ);
 
+    /*
+     * A level virtual timer can fire again before a guest that EOIs with IRQs
+     * masked has advanced CNTV_CVAL. In that state AckVPPI would unmask the
+     * still-asserted physical VPPI and starve the guest in an immediate
+     * VPPI/maintenance loop. Queue one virtual IRQ and leave the physical
+     * VPPI masked until that queued IRQ is EOI'd instead.
+     */
+    seL4_UserContext regs = {0};
+    seL4_Error regs_err =
+        seL4_TCB_ReadRegisters(vmm_tcb_cap(vcpu_id), false, 0,
+                               SEL4_USER_CONTEXT_SIZE, &regs);
+    assert(regs_err == seL4_NoError);
+    if (regs_err != seL4_NoError) {
+        vmm_vcpu_arm_ack_vppi(vcpu_id, ppi_irq);
+        return false;
+    }
+    seL4_Word cntv_ctl =
+        vmm_vcpu_arm_read_reg(vcpu_id, seL4_VCPUReg_CNTV_CTL);
+
     if (log_vppi) {
         /* Register reads are diagnostic only; doing them on every timer event
          * starves a live guest behind synchronous seL4 invocations. */
-        seL4_UserContext regs = {0};
-        seL4_TCB_ReadRegisters(vmm_tcb_cap(vcpu_id), 0, 0,
-                               SEL4_USER_CONTEXT_SIZE, &regs);
         seL4_Word spsr_el1 =
             vmm_vcpu_arm_read_reg(vcpu_id, seL4_VCPUReg_SPSR_EL1);
         seL4_Word elr_el1 =
             vmm_vcpu_arm_read_reg(vcpu_id, seL4_VCPUReg_ELR_EL1);
-        seL4_Word cntv_ctl =
-            vmm_vcpu_arm_read_reg(vcpu_id, seL4_VCPUReg_CNTV_CTL);
         seL4_Word cntv_cval =
             vmm_vcpu_arm_read_reg(vcpu_id, seL4_VCPUReg_CNTV_CVAL);
         LOG_VMM("VPPIEvent #%llu: IRQ %llu on vCPU %zu\n",
@@ -324,6 +340,15 @@ bool fault_handle_vppi_event(size_t vcpu_id)
         LOG_VMM("VPPIEvent #%llu: CNTV_CTL=0x%lx CNTV_CVAL=0x%lx\n",
                 (unsigned long long)vppi_count,
                 (unsigned long)cntv_ctl, (unsigned long)cntv_cval);
+    }
+    if (((regs.spsr >> 7) & 1u) != 0u && (cntv_ctl & 0x4u) != 0u) {
+        bool success = vgic_inject_irq(vcpu_id, ppi_irq);
+        if (!success) {
+            LOG_VMM_ERR("VPPI IRQ %lu could not be deferred -- acking VPPI to unmask\n",
+                        ppi_irq);
+            vmm_vcpu_arm_ack_vppi(vcpu_id, ppi_irq);
+        }
+        return true;
     }
     bool success = vgic_inject_irq(vcpu_id, ppi_irq);
     if (log_vppi) {

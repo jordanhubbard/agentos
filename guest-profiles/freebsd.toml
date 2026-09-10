@@ -17,7 +17,7 @@ autostart = true
 entry_from_image = false
 
 [boot]
-command_line = "FreeBSD:vfs.root.mountfrom=cd9660:/dev/iso9660/15_0_RELEASE_AARCH64_DVD console=ttyu0 boot_serial=YES"
+command_line = "FreeBSD:vfs.root.mountfrom=cd9660:/dev/iso9660/15_0_RELEASE_AARCH64_DVD -s console=ttyu0 boot_serial=YES"
 
 [artifacts.kernel]
 source = "freebsd:15.0-RELEASE-arm64-aarch64-disc1.iso:/boot/kernel/kernel"
@@ -28,7 +28,7 @@ max_bytes = 134217728
 [artifacts.dtb]
 source = "generated:freebsd-direct.dts"
 cache = "build/qemu_virt_aarch64/freebsd-direct.dtb"
-sha256 = "546bc1ce041ca00e52bedc4bcfe28b9729a0d9271e310ba441ae36dae2d1ea54"
+sha256 = "87f3626cf198e457da0d51b3b8bc356fe902704437cb1b33f2bd043d5cbb781e"
 max_bytes = 1048576
 
 [placements.default]
@@ -46,7 +46,7 @@ ram_size = 0x10000000
 kernel_load_address = 0x40000000
 kernel_entry_address = 0x40000000
 dtb_load_address = 0x4f000000
-dtb_sha256 = "0566bb2475eb421dc967d504eeff24be921c73853bdfad5d1cc1ae2ea4b90d2f"
+dtb_sha256 = "c81a2082156f52c3f2ceeaf57578fac62978cf75bde5fb7308e286dca39de4a4"
 
 [host.qemu]
 board = "qemu_virt_aarch64"
@@ -79,12 +79,16 @@ when = ["begin an installation or use the live"]
 send = "\t\r"
 
 [[host.console.interaction]]
-when = ["Enter full pathname of shell", "Unsupported version"]
+when = ["Enter full pathname of s", "Unsupported version"]
 send = "/rescue/sh\r"
 
 [[host.console.interaction]]
-when = ["Enter full pathname of shell", "ld-elf.so.1:"]
+when = ["Enter full pathname of s", "ld-elf.so.1:"]
 send = "/rescue/sh\r"
+
+[[host.console.interaction]]
+when = ["Enter full pathname of s"]
+send = "\r"
 
 [[host.console.interaction]]
 when = ["login:"]
@@ -95,10 +99,6 @@ max_fires = 4
 when = ["Password:"]
 send = "\r"
 max_fires = 4
-
-[[host.console.interaction]]
-send = "\u001d"
-after_secs = 180
 
 [host.build]
 adapter = "fdt-template"

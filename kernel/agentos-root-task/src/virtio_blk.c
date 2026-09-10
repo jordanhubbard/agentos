@@ -199,37 +199,26 @@ static uint32_t virtio_blk_do_io(blk_device_t *device, uint32_t type,
 
     /* ── Step 2: Build the descriptor chain in queue_mem ──
      *
-     * We use a 3-descriptor chain:
+     * Reads and writes use a 3-descriptor chain:
      *   desc[0]: header (read-only to device, NEXT→1)
-     *   desc[1]: data   (write if read, read-only if write/flush; NEXT→2)
-     *            For flush (count==0) we still include a zero-length data
-     *            descriptor to keep the chain uniform.
+     *   desc[1]: data   (write if read, read-only if write; NEXT→2)
      *   desc[2]: status (write-only, device fills 1 byte, no NEXT)
      *
-     * With queue size 1 we always use descriptor indices 0, 1, 2 — but
-     * since queue_num is 1, we embed all three within the same queue slot
-     * by chaining them.  The head descriptor index placed in the available
-     * ring is always 0.
-     *
-     * NOTE: Because QUEUE_SIZE==1 the descriptor table technically has only
-     * one slot per the spec.  In practice QEMU virtio-MMIO accepts a chain
-     * starting at index 0 with .next values pointing beyond the formal
-     * QueueNum as long as the physical pages are accessible.  For a true
-     * production driver you would either set QueueNum=4 (minimum power-of-2
-     * that fits a 3-descriptor chain) or use indirect descriptors.  For the
-     * MVP polling path this works reliably on QEMU.
+     * Flush has no data payload and therefore uses desc[0] → desc[2]. VirtIO
+     * forbids zero-length descriptors, so it must not pass through desc[1].
+     * The head descriptor index placed in the available ring is always 0.
      */
     /* Descriptor 0 — request header (device reads) */
     desc[0].addr  = dma_pa + DMA_HDR_OFFSET;
     desc[0].len   = sizeof(virtio_blk_req_hdr_t);
     desc[0].flags = VIRTQ_DESC_F_NEXT;
-    desc[0].next  = 1;
+    desc[0].next  = (type == VIRTIO_BLK_T_FLUSH) ? 2u : 1u;
 
     /* Descriptor 1 — data buffer */
     desc[1].addr  = dma_pa + DMA_DATA_OFFSET;
-    desc[1].len   = (data_len > 0) ? data_len : 0u;
-    /* For reads the device writes into this buffer; for writes/flush the
-     * device reads from it. */
+    desc[1].len   = data_len;
+    /* For reads the device writes into this buffer; for writes the device
+     * reads from it. Flush skips this descriptor. */
     desc[1].flags = VIRTQ_DESC_F_NEXT |
                     ((type == VIRTIO_BLK_T_IN) ? VIRTQ_DESC_F_WRITE : 0u);
     desc[1].next  = 2;
@@ -383,7 +372,7 @@ static void virtio_blk_device_init(blk_device_t *device, uint32_t media_id,
         return;
     }
 
-    /* Set our chosen queue size (1 for MVP polling mode) */
+    /* Set the bounded queue size; one descriptor chain is in flight. */
     mmio_write(device->mmio, VIRTIO_MMIO_QUEUE_NUM, VIRTIO_BLK_QUEUE_SIZE);
 
     /* Zero the queue memory so all fields start clean */

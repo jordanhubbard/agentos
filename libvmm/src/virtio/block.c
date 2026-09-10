@@ -255,7 +255,9 @@ static bool virtio_virtq_peek_avail(virtio_queue_handler_t *vq_handler,
                                     uint16_t *desc_head)
 {
     struct virtq *virtq = &vq_handler->virtq;
-    if (vq_handler->last_idx == virtq->avail->idx) {
+    uint16_t avail_idx =
+        __atomic_load_n(&virtq->avail->idx, __ATOMIC_ACQUIRE);
+    if (vq_handler->last_idx == avail_idx) {
         return false;
     }
     *desc_head = virtq->avail->ring[vq_handler->last_idx % virtq->num];
@@ -281,8 +283,9 @@ static void virtio_virtq_add_used(virtio_queue_handler_t *vq_handler,
 
     used->id = desc_head;
     used->len = len;
-    __atomic_thread_fence(__ATOMIC_RELEASE);
-    virtq->used->idx++;
+    __atomic_store_n(&virtq->used->idx,
+                     (uint16_t)(virtq->used->idx + 1u),
+                     __ATOMIC_RELEASE);
 }
 
 static inline struct virtio_blk_device *device_state(struct virtio_device *dev)
@@ -409,17 +412,17 @@ static inline bool sddf_make_req_check(struct virtio_blk_device *state, uint16_t
     /* Check if ialloc is full, if data region is full, if req queue is full.
        If these all pass then this request can be handled successfully */
     if (ialloc_full(&state->ialloc)) {
-        LOG_BLOCK_WARN("Request bookkeeping array is full\n");
+        LOG_BLOCK("Request bookkeeping array is full\n");
         return false;
     }
 
     if (blk_queue_full_req(&state->queue_h)) {
-        LOG_BLOCK_WARN("Request queue is full\n");
+        LOG_BLOCK("Request queue is full\n");
         return false;
     }
 
     if (fsmalloc_full(&state->fsmalloc, sddf_count)) {
-        LOG_BLOCK_WARN("Data region is full\n");
+        LOG_BLOCK("Data region is full\n");
         return false;
     }
 
@@ -477,8 +480,19 @@ bool decode_virtio_block_request(virtio_queue_handler_t *vq_handler, uint16_t de
     uint64_t payload_len = virtio_desc_chain_payload_len(vq_handler, desc_head);
     if (payload_len < sizeof(struct virtio_blk_outhdr) + 1u) {
         /* Malicious guest driver */
-        LOG_BLOCK_ERR("decode_virtio_block_request(): desc head %u, payload length %lu bytes too short\n", desc_head,
-                      payload_len);
+        struct virtq *virtq = &vq_handler->virtq;
+        if (desc_head < virtq->num) {
+            LOG_BLOCK_ERR("decode_virtio_block_request(): desc head %u, payload length %lu bytes too short "
+                          "(queue size %u, first addr 0x%lx len %u flags 0x%x next %u)\n",
+                          desc_head, payload_len, virtq->num,
+                          virtq->desc[desc_head].addr,
+                          virtq->desc[desc_head].len,
+                          virtq->desc[desc_head].flags,
+                          virtq->desc[desc_head].next);
+        } else {
+            LOG_BLOCK_ERR("decode_virtio_block_request(): desc head %u outside queue size %u\n",
+                          desc_head, virtq->num);
+        }
         return false;
     }
 
@@ -506,6 +520,10 @@ bool decode_virtio_block_request(virtio_queue_handler_t *vq_handler, uint16_t de
             body_size == 0u ||
             body_size % VIRTIO_BLK_SECTOR_SIZE != 0u ||
             body_size > UINT32_MAX) {
+            LOG_BLOCK_ERR("decode_virtio_block_request(): desc head %u has invalid type %u sector %lu "
+                          "payload %lu body %lu\n",
+                          desc_head, header.type, header.sector,
+                          payload_len, body_size);
             return false;
         }
         byte_offset =
@@ -521,6 +539,9 @@ bool decode_virtio_block_request(virtio_queue_handler_t *vq_handler, uint16_t de
             (ret->sddf_data_offset + body_size +
              BLK_TRANSFER_SIZE - 1u) / BLK_TRANSFER_SIZE;
         if (sddf_count == 0u || sddf_count > SDDF_MAX_DATA_CELLS) {
+            LOG_BLOCK_ERR("decode_virtio_block_request(): desc head %u needs %lu transfer cells "
+                          "(maximum %u)\n",
+                          desc_head, sddf_count, SDDF_MAX_DATA_CELLS);
             return false;
         }
         ret->sddf_count = (uint16_t)sddf_count;
@@ -570,10 +591,10 @@ static bool handle_client_requests(struct virtio_device *dev, int *num_reqs_cons
         case VIRTIO_BLK_T_IN:
         case VIRTIO_BLK_T_OUT: {
             if (!sddf_make_req_check(state, state->reqsbk[req_id].sddf_count)) {
-                LOG_BLOCK_WARN("out of resource for request at sector %lu, body bytes %lu, sddf count %u\n",
-                               state->reqsbk[req_id].virtio_sector,
-                               request_bytes_to_body_bytes(state->reqsbk[req_id].total_req_size),
-                               state->reqsbk[req_id].sddf_count);
+                LOG_BLOCK("out of resource for request at sector %lu, body bytes %lu, sddf count %u\n",
+                          state->reqsbk[req_id].virtio_sector,
+                          request_bytes_to_body_bytes(state->reqsbk[req_id].total_req_size),
+                          state->reqsbk[req_id].sddf_count);
 
                 /* Create backpressure, don't consume this request until the block virtualiser gives us
                  * responses to free up resources */

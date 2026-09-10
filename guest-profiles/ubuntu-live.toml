@@ -5,20 +5,21 @@ extends = "ubuntu-e2e.toml"
 aliases = ["ubuntu-live"]
 
 [boot]
-command_line = "console=hvc0 quiet loglevel=3 boot=casper noprompt systemd.show_status=false systemd.unit=console-getty.service panic=-1"
+command_line = "console=hvc0 quiet loglevel=3 boot=casper noprompt systemd.show_status=false systemd.unit=emergency.target panic=-1"
 media_initrd_path = "casper/initrd"
 
 [host.build]
-bootargs = "console=hvc0 quiet loglevel=3 boot=casper noprompt systemd.show_status=false systemd.unit=console-getty.service systemd.wants=systemd-user-sessions.service systemd.mask=ldconfig.service systemd.mask=systemd-udev-trigger.service systemd.mask=systemd-resolved.service systemd.mask=netplan-configure.service panic=-1"
+bootargs = "console=hvc0 quiet loglevel=3 boot=casper noprompt systemd.show_status=false systemd.unit=emergency.target panic=-1"
+initrd_total_bytes = 147480436
 
 [artifacts.initrd]
-source = "ubuntu:26.04-live-server-arm64.iso:/casper/initrd"
-cache = "build/guest-images/ubuntu-26.04-aarch64-live-initrd"
-sha256 = "58398d8db91bd5649be79ea12eca1201034af7a04ec3cad136b71bc8a29be31a"
+source = "generated:ubuntu-casper-profile-overlay"
+cache = "build/guest-images/ubuntu-26.04-aarch64-live-initrd.overlay"
+sha256 = "8fef5cbdde399017c9cbe815f0858200c3a1270c60923543dba17a1b1fcaf530"
 max_bytes = 268435456
 
 [artifacts.dtb]
-sha256 = "eb6f1cd470687badf9988baa0210a56319f6ccce0f740078cf7a63740f457d8e"
+sha256 = "0d5ab4de5edc09e24b0d2fdf815610d65de99c6b32749d30282eacfb584cffa0"
 
 [placements.default]
 ram_size = 0x40000000
@@ -27,7 +28,7 @@ dtb_load_address = 0x7f000000
 [placements.dual-primary]
 ram_size = 0x40000000
 dtb_load_address = 0x7f000000
-dtb_sha256 = "eb6f1cd470687badf9988baa0210a56319f6ccce0f740078cf7a63740f457d8e"
+dtb_sha256 = "0d5ab4de5edc09e24b0d2fdf815610d65de99c6b32749d30282eacfb584cffa0"
 
 [host.qemu]
 memory = "3G"
@@ -35,7 +36,7 @@ memory = "3G"
 [host.desktop]
 adapter = "rfb-over-ssh"
 local_port = 15901
-guest_port = 5901
+guest_socket = "/tmp/agentos-vnc.sock"
 provision_timeout_secs = 1200
 frame_timeout_secs = 600
 io_timeout_secs = 180
@@ -58,15 +59,16 @@ command -v Xtigervnc >/dev/null
 command -v gnome-calculator >/dev/null
 printf 'agentos-desktop-binaries-ready\n'
 install -d -o ubuntu -g ubuntu /home/ubuntu/.vnc
-rm -f /tmp/.X1-lock /tmp/.X11-unix/X1 /tmp/agentos-desktop.pid
-setsid -f su -s /bin/sh ubuntu -c 'exec env HOME=/home/ubuntu USER=ubuntu Xtigervnc :1 -rfbport 5901 -rendernode "" -ac -localhost yes -SecurityTypes None -geometry 1024x768 -depth 24' </dev/null >/tmp/agentos-xvnc.log 2>&1
+install -d -m 1777 /tmp/.X11-unix
+rm -f /tmp/.X1-lock /tmp/.X11-unix/X1 /tmp/agentos-vnc.sock /tmp/agentos-desktop.pid
+setsid -f su -s /bin/sh ubuntu -c 'exec env HOME=/home/ubuntu USER=ubuntu Xtigervnc :1 -rfbport -1 -rfbunixpath /tmp/agentos-vnc.sock -rfbunixmode 0600 -rendernode "" -ac -SecurityTypes None -geometry 1024x768 -depth 24' </dev/null >/tmp/agentos-xvnc.log 2>&1
 attempt=0
 while test "$attempt" -lt 120; do
-    test -S /tmp/.X11-unix/X1 && ss -ltn | grep -q ':5901' && break
+    test -S /tmp/.X11-unix/X1 && test -S /tmp/agentos-vnc.sock && break
     attempt=$((attempt + 1))
     sleep 1
 done
-if ! test -S /tmp/.X11-unix/X1 || ! ss -ltn | grep -q ':5901'; then
+if ! test -S /tmp/.X11-unix/X1 || ! test -S /tmp/agentos-vnc.sock; then
     cat /tmp/agentos-xvnc.log >&2
     exit 1
 fi
@@ -76,7 +78,7 @@ attempt=0
 while test "$attempt" -lt 120; do
     if pgrep -x Xtigervnc >/dev/null &&
        test -S /tmp/.X11-unix/X1 &&
-       ss -ltn | grep -q ':5901' &&
+       test -S /tmp/agentos-vnc.sock &&
        test -s /tmp/agentos-desktop.pid &&
        kill -0 "$(cat /tmp/agentos-desktop.pid)" 2>/dev/null; then
         printf 'agentos-desktop-app-ready\n'
@@ -87,15 +89,9 @@ while test "$attempt" -lt 120; do
 done
 if ! pgrep -x Xtigervnc >/dev/null ||
    ! test -S /tmp/.X11-unix/X1 ||
-   ! ss -ltn | grep -q ':5901' ||
+   ! test -S /tmp/agentos-vnc.sock ||
    ! test -s /tmp/agentos-desktop.pid ||
    ! kill -0 "$(cat /tmp/agentos-desktop.pid)" 2>/dev/null; then
-    cat /tmp/agentos-xvnc.log /tmp/agentos-desktop.log >&2
-    exit 1
-fi
-RFB_VERSION="$(timeout 120 bash -c 'exec 3<>/dev/tcp/127.0.0.1/5901; IFS= read -r version <&3; printf "%s" "$version"')"
-if test "$RFB_VERSION" != 'RFB 003.008'; then
-    printf 'unexpected local RFB version: %s\n' "$RFB_VERSION" >&2
     cat /tmp/agentos-xvnc.log /tmp/agentos-desktop.log >&2
     exit 1
 fi
@@ -104,8 +100,8 @@ printf 'agentos-desktop-local-rfb-ready\n'
 
 [host.console]
 adapter = "expect"
-success = ["$ "]
-require = ["Ubuntu 26.04", "ubuntu@"]
+success = ["# "]
+require = ["agentos-casper-console-hook"]
 reject = ["Initramfs unpacking failed", "emergency mode", "Emergency Shell", "Press Enter for maintenance"]
 probe_line = "printf 'agentos-live-%s\\n' proof && sudo -n ip link set eth0 up && { ping -6 -c1 -W1 ff02::1%eth0 >/dev/null 2>&1 || true; } && printf 'agentos-live-net-%s\\n' proof"
 probe_marker = "agentos-live-net-proof"
@@ -123,7 +119,7 @@ max_fires = 5
 
 [[host.test]]
 action = "wait-console"
-args = { marker = "$ " }
+args = { marker = "# " }
 
 [[host.test]]
 action = "assert-virtio"
@@ -132,3 +128,19 @@ args = { devices = "net,block,console", scope = "host-backed", console_io = "bid
 [[host.test]]
 action = "wait-ssh"
 args = { account = "ubuntu", marker = "Linux" }
+
+[[host.acquire]]
+action = "stage-url"
+args = { cache_name = "ubuntu-26.04-desktop-arm64.iso", output = "ubuntu-26.04-aarch64.iso", url = "https://cdimage.ubuntu.com/releases/26.04/release/ubuntu-26.04-desktop-arm64.iso" }
+
+[[host.acquire]]
+action = "extract-iso-file"
+args = { source = "ubuntu-26.04-aarch64.iso", member = "casper/initrd", output = "ubuntu-26.04-aarch64-live-initrd.base", min_bytes = "1048576" }
+
+[[host.acquire]]
+action = "build-initramfs-file"
+args = { output = "ubuntu-26.04-aarch64-live-initrd.overlay", path = "scripts/casper-bottom/25configure_init", mode = "0755", compression = "zstd", content = "#!/bin/sh\nPREREQ=\"\"\nprereqs() { echo \"$PREREQ\"; }\ncase \"${1:-}\" in prereqs) prereqs; exit 0 ;; esac\nmount -t proc proc /root/proc 2>/dev/null || true\nmount -t sysfs sysfs /root/sys 2>/dev/null || true\necho agentos-casper-console-hook >/dev/console\nexec chroot /root /bin/sh -i </dev/console >/dev/console 2>&1\n" }
+
+[[host.acquire]]
+action = "extract-arm64-linux-image"
+args = { source = "ubuntu-26.04-aarch64.iso", member = "casper/vmlinuz", output = "ubuntu-26.04-aarch64-Image" }

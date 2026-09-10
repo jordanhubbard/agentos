@@ -43,8 +43,10 @@ runner resolve the same profile or scenario and consume `host.qemu`; QA also
 consumes `host.test`. Neither path chooses single-guest machine, memory, media,
 SSH, console, or VirtIO proof policy by distribution name. Runtime acquisition
 supports a closed set of semantic operations (HTTPS staging, archive/ISO
-extraction, arm64 image normalization, and deterministic probe-initramfs
-construction). Unknown actions and arguments fail closed. The build executor
+extraction, SHA-512 verification, qcow2-to-raw conversion, bounded GPT
+partition extraction, ext4 file extraction, arm64 image normalization,
+deterministic probe-initramfs construction, and confined initramfs file
+overlays). Unknown actions and arguments fail closed. The build executor
 renders a bounded FDT template, hashes all staged artifacts, and emits a
 canonical per-slot bundle containing `kernel.bin`, `guest.dtb`, `initrd.bin`,
 and `profile.bin`. `vmm.mk` packages only that bundle and has no
@@ -75,8 +77,9 @@ recipe actions, arguments, and template variables fail closed.
 
 Optional desktop qualification is profile data under `host.desktop`. The
 closed `rfb-over-ssh` adapter consumes the profile's SSH account and port plus
-bounded local/guest RFB ports, provisioning and frame deadlines, I/O timeout,
-and a size-limited guest provisioning script. The runner provides only the
+a bounded local RFB port, exactly one guest TCP port or absolute Unix-socket
+path, provisioning and frame deadlines, I/O timeout, and a size-limited guest
+provisioning script. The runner provides only the
 generic authenticated SSH tunnel and raw-frame verifier. A future Wayland
 profile can supply a different recipe without adding a distribution branch to
 the runner.
@@ -133,7 +136,8 @@ compatibility spelling resolved through the profile's data-defined aliases and
 scenario aliases and is not passed into the root-task or VMM build.
 
 Adding a profile does not add a VMM personality. Buildroot and Ubuntu extend
-the AArch64 Linux Image profile; Debian is the planned stable integration
-profile; Omarchy extends the planned Arch profile and selects the future x86-64
-UEFI machine. FreeBSD selects the raw AArch64 direct-boot format. Those are data
-choices over the same bounded boot and canonical VirtIO contracts.
+the AArch64 Linux Image profile; Debian is the pinned stable integration
+profile under qualification; Omarchy extends the planned Arch profile and
+selects the future x86-64 UEFI machine. FreeBSD selects the raw AArch64
+direct-boot format. Those are data choices over the same bounded boot and
+canonical VirtIO contracts.
