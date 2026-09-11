@@ -149,7 +149,6 @@ GUEST_VMM_PRIMARY_OBJ := $(BUILD_DIR)/guest_vmm_primary.full.o
 # second invocation silently reuse objects carrying the first slot's macros.
 GPU_SHMEM_FULL_OBJ := $(BUILD_DIR)/gpu_shmem.$(VMM_SLOT).full.o
 VMM_PD_ENTRY_OBJ   := $(BUILD_DIR)/pd_entry.$(VMM_SLOT).vmm.o
-NET_VIRT_PUMP_OBJ  := $(BUILD_DIR)/net_virt_pump.$(VMM_SLOT).o
 VMM_VIRTIO_NET_OBJ := $(BUILD_DIR)/vmm_virtio_net.$(VMM_SLOT).o
 GPA_TRANSLATE_OBJ  := $(BUILD_DIR)/gpa_translate.$(VMM_SLOT).o
 VMM_GUEST_RAM_OBJ  := $(BUILD_DIR)/vmm_guest_ram.$(VMM_SLOT).o
@@ -187,13 +186,6 @@ $(GPU_SHMEM_FULL_OBJ): $(KERNEL_SRC_DIR)/src/gpu_shmem.c $(VMM_CONFIG_STAMP)
 $(VMM_PD_ENTRY_OBJ): $(KERNEL_SRC_DIR)/src/pd_entry.c $(VMM_CONFIG_STAMP)
 	@mkdir -p $(BUILD_DIR)
 	@echo "[VMM] Compiling pd_entry.c..."
-	clang $(VMM_CFLAGS) -c -o $@ $<
-
-$(NET_VIRT_PUMP_OBJ): $(AGENTOS_ROOT)/platform/net-virt/net_virt_pump.c $(VMM_CONFIG_STAMP) \
-                      $(AGENTOS_ROOT)/platform/include/platform/net_layout.h \
-                      $(AGENTOS_ROOT)/platform/include/platform/net_virt_pump.h
-	@mkdir -p $(BUILD_DIR)
-	@echo "[VMM] Compiling net_virt_pump.c..."
 	clang $(VMM_CFLAGS) -c -o $@ $<
 
 $(VMM_VIRTIO_NET_OBJ): $(AGENTOS_ROOT)/platform/net-virt/vmm_virtio_net.c $(VMM_CONFIG_STAMP) \
@@ -275,7 +267,6 @@ $(BUILD_DIR)/guest_vmm_primary.elf: FORCE \
 	                             $(GUEST_VMM_PRIMARY_OBJ) \
 	                             $(GPU_SHMEM_FULL_OBJ) \
 	                             $(VMM_PD_ENTRY_OBJ) \
-	                             $(NET_VIRT_PUMP_OBJ) \
 	                             $(VMM_VIRTIO_NET_OBJ) \
 	                             $(GPA_TRANSLATE_OBJ) \
 	                             $(VMM_GUEST_RAM_OBJ) \
@@ -294,7 +285,7 @@ $(BUILD_DIR)/guest_vmm_primary.elf: FORCE \
 	ld.lld -T$(BOARD_DIR)/lib/microkit.ld \
 		-L$(BOARD_DIR)/lib \
 		$(VMM_PD_ENTRY_OBJ) $(GUEST_VMM_PRIMARY_OBJ) $(GPU_SHMEM_FULL_OBJ) \
-		$(NET_VIRT_PUMP_OBJ) $(VMM_VIRTIO_NET_OBJ) $(GPA_TRANSLATE_OBJ) $(VMM_GUEST_RAM_OBJ) \
+		$(VMM_VIRTIO_NET_OBJ) $(GPA_TRANSLATE_OBJ) $(VMM_GUEST_RAM_OBJ) \
 		$(GUEST_VMM_RUNTIME_OBJ) \
 		$(GUEST_VMM_LOOP_OBJ) \
 		$(GUEST_PROFILE_VALIDATE_OBJ) \
@@ -340,7 +331,6 @@ $(BUILD_DIR)/guest_vmm_secondary.elf: $(BUILD_DIR)/guest_vmm_secondary.o \
                                $(VMM_PD_ENTRY_OBJ) \
                                $(BUILD_DIR)/guest_secondary_images.o \
                                $(BUILD_DIR)/guest_secondary_profile.o \
-                               $(NET_VIRT_PUMP_OBJ) \
                                $(VMM_VIRTIO_NET_OBJ) \
                                $(GPA_TRANSLATE_OBJ) \
                                $(VMM_GUEST_RAM_OBJ) \
@@ -358,7 +348,7 @@ $(BUILD_DIR)/guest_vmm_secondary.elf: $(BUILD_DIR)/guest_vmm_secondary.o \
 		-L$(BOARD_DIR)/lib \
 		$(VMM_PD_ENTRY_OBJ) $(BUILD_DIR)/guest_vmm_secondary.o $(GPU_SHMEM_FULL_OBJ) \
 		$(BUILD_DIR)/guest_secondary_images.o \
-		$(NET_VIRT_PUMP_OBJ) $(VMM_VIRTIO_NET_OBJ) \
+		$(VMM_VIRTIO_NET_OBJ) \
 		$(GPA_TRANSLATE_OBJ) $(VMM_GUEST_RAM_OBJ) \
 		$(GUEST_VMM_RUNTIME_OBJ) \
 		$(GUEST_VMM_LOOP_OBJ) \

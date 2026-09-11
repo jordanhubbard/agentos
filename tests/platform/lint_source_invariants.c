@@ -546,6 +546,57 @@ int main(void)
        AOS_BLK_GUEST_MAX_SEGMENT_SIZE <= AOS_BLK_DATA_BYTES,
        "inv2: per-media block DMA windows are disjoint, bounded by their sector limits, and fit the shared region");
 
+    /* ── TCB invariant 2 (network): net_virt is a separate PD, is the only
+     *    mux, owns no hardware, and no VMM holds a driver (net_pd) endpoint.
+     *    The mux talks to the driver at a lower priority than the driver so
+     *    its Calls never invert; the VMM reaches it only by notification. ── */
+    {
+        const pd_desc_t *virt = find_pd("net_virt");
+        const pd_desc_t *drv = find_pd("net_pd");
+        uint32_t p, e;
+        int vmm_holds_net_pd_ep = 0;
+        int drv_holds_vmm_ep = 0;
+        int virt_holds_drv_ep = 0;
+
+        for (p = 0u; p < system_desc_aarch64.pd_count; p++) {
+            const pd_desc_t *pd = &system_desc_aarch64.pds[p];
+            int is_vmm = pd->self_svc_id == SVC_ID_GUEST_VMM_PRIMARY ||
+                         pd->self_svc_id == SVC_ID_GUEST_VMM_SECONDARY;
+
+            for (e = 0u; e < pd->init_ep_count && e < PD_MAX_INIT_EPS; e++) {
+                uint16_t svc = pd->init_eps[e].service_id;
+
+                if (is_vmm && svc == SVC_ID_NET_PD) {
+                    vmm_holds_net_pd_ep = 1;
+                }
+                if (pd == drv && (svc == SVC_ID_GUEST_VMM_PRIMARY ||
+                                  svc == SVC_ID_GUEST_VMM_SECONDARY)) {
+                    drv_holds_vmm_ep = 1;
+                }
+                if (pd == virt && svc == SVC_ID_NET_PD) {
+                    virt_holds_drv_ep = 1;
+                }
+            }
+        }
+
+        ok(virt != NULL && drv != NULL &&
+           strcmp(virt->elf_path, "net_virt.elf") == 0 &&
+           contains("kernel/agentos-root-task/agentos.toml", "name = \"net_virt\""),
+           "inv2: net_virt is a PD of its own in the AArch64 topology and the boot manifest");
+        ok(virt && virt->device_frame_count == 0u && virt->irq_count == 0u,
+           "inv2: net_virt owns no device frame and no IRQ (net_pd stays the only NIC owner)");
+        ok(virt && drv && virt_holds_drv_ep && virt->priority < drv->priority,
+           "inv2: net_virt is the driver's client: it holds the net_pd EP and runs below net_pd");
+        ok(!vmm_holds_net_pd_ep,
+           "inv2: no guest VMM holds a net_pd endpoint; frames cannot leave a VMM by IPC");
+        ok(!drv_holds_vmm_ep,
+           "inv2: net_pd holds no VMM endpoint; RX wakes the virtualizer, not a VMM");
+        ok(!contains("platform/net-virt/vmm_virtio_net.c", "NET_SVC_OP_RAW_SEND") &&
+           !contains("platform/net-virt/vmm_virtio_net.c", "NET_SVC_OP_RAW_RECV") &&
+           !contains("platform/net-virt/vmm_virtio_net.c", "PD_CNODE_SLOT_NET_PD_EP"),
+           "inv2: the VMM-side emulated virtio-net never speaks the net_pd RAW frame contract");
+    }
+
     /* ── Guest-control liveness: the control relay chain outranks the guests
      *    it services (vm_manager > vibe_engine > cc_pd). Not a TCB.md item;
      *    kept because a regression deadlocks guest create/attach. ──────── */

@@ -98,48 +98,6 @@ void aos_net_virt_reset(aos_net_virt_t *v)
     aos_bzero(v, (uint32_t)sizeof(*v));
 }
 
-void aos_net_client_bind(uint8_t *region, uint32_t client_index,
-                         aos_net_virt_client_t *out)
-{
-    uint8_t *base;
-
-    if (!region || !out || client_index >= AOS_NET_MAX_CLIENTS) {
-        return;
-    }
-
-    base = region + (client_index * AOS_NET_CLIENT_STRIDE);
-    out->rx_free   = (aos_net_queue_t *)(base + AOS_NET_RX_FREE_OFF);
-    out->rx_active = (aos_net_queue_t *)(base + AOS_NET_RX_ACTIVE_OFF);
-    out->tx_free   = (aos_net_queue_t *)(base + AOS_NET_TX_FREE_OFF);
-    out->tx_active = (aos_net_queue_t *)(base + AOS_NET_TX_ACTIVE_OFF);
-    out->rx_data   = base + AOS_NET_RX_DATA_OFF;
-    out->tx_data   = base + AOS_NET_TX_DATA_OFF;
-    out->capacity  = AOS_NET_CAPACITY;
-}
-
-void aos_net_client_init_buffers(aos_net_virt_client_t *c)
-{
-    uint32_t i;
-    aos_net_buff_desc_t buf;
-
-    if (!c || !c->rx_free || !c->tx_free) {
-        return;
-    }
-
-    aos_bzero(c->rx_free, AOS_NET_QUEUE_BYTES);
-    aos_bzero(c->rx_active, AOS_NET_QUEUE_BYTES);
-    aos_bzero(c->tx_free, AOS_NET_QUEUE_BYTES);
-    aos_bzero(c->tx_active, AOS_NET_QUEUE_BYTES);
-
-    aos_bzero(&buf, (uint32_t)sizeof(buf));
-    for (i = 0; i < c->capacity; i++) {
-        buf.io_or_offset = (uint64_t)i * (uint64_t)AOS_NET_BUFFER_SIZE;
-        buf.len = 0;
-        (void)enqueue(c->rx_free, c->capacity, buf);
-        (void)enqueue(c->tx_free, c->capacity, buf);
-    }
-}
-
 int aos_net_virt_add_client(aos_net_virt_t *v, const aos_net_virt_client_t *c)
 {
     if (!v || !c || v->num_clients >= AOS_NET_MAX_CLIENTS) {
