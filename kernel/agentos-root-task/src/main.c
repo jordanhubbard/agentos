@@ -1881,7 +1881,6 @@ void root_task_main(const seL4_BootInfo *bi)
         if (g_serial_shmem_frame_cap != seL4_CapNull &&
             (name_eq(pd->name, "serial_pd") ||
              name_eq(pd->name, "log_drain") ||
-             name_eq(pd->name, "controller") ||
              pd_is_guest_vmm(pd) ||
              name_eq(pd->name, "cc_pd") ||
              name_eq(pd->name, "test_runner"))) {

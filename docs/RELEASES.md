@@ -49,6 +49,11 @@ the receipt-bound assets; verification still rejects every unrecorded asset.
 - GitHub protects `main` for administrators and requires current
   `Host-side TAP tests`, `Rust xtask check`, and
   `Dual-arch OS-claim gate (aarch64 + x86_64, GUEST_OS=none)` checks.
+  The last of these is a boot gate only (`GUEST_OS=none` is a stub VMM). The
+  honest OS-claim check is the `OS-claim gate (boot + guest net/blk/console
+  proofs)` job, which also requires the Buildroot net and blk proofs and the
+  Ubuntu initramfs console proof. Admin action pending: switch the required
+  check to that job, then rename the boot job in `ci.yml`.
 - A release preparation uses `release/<major>.<minor>.x`.
 - The release line contains release metadata and trunk-first backports, not
   unreviewed feature integration.

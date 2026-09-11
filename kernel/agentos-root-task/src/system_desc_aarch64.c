@@ -10,9 +10,15 @@
  * This table is the complete set of PDs the root task spawns.  agentos.toml
  * (consumed by xtask gen-pd-bundle) must list exactly these names plus the
  * Makefile-appended variants (guest_vmm_secondary, fault_inject,
- * test_runner); a bundle entry with no row here is never started, and a row
- * here with no bundle entry fails at ELF load.  Museum PDs (docs/TCB.md) are
- * intentionally absent from both (MAC task_56eae59d9aa94d2d9d047f03fc9d22ad).
+ * test_runner + event_bus); a bundle entry with no row here is never started,
+ * and a row here with no bundle entry fails at ELF load.  Museum PDs
+ * (docs/TCB.md) are intentionally absent from both
+ * (MAC task_56eae59d9aa94d2d9d047f03fc9d22ad), and the non-TCB service PDs
+ * that used to ride along (controller, event_bus, init_agent, agentfs,
+ * vfs_server, net_server, framebuffer_pd, usb_pd) were dropped by MAC
+ * task_f95d118416a24fa484c2c43f0d955b56.  The only non-TCB PD left is
+ * vibe_engine: cc_pd relays dynamic-guest create/lifecycle/console to it and
+ * it is the hop that reaches vm_manager (`make demo-test` depends on it).
  *
  * ── Priority DAG ──────────────────────────────────────────────────────────────
  *
@@ -29,16 +35,12 @@
  *   245  nameserver         — foundation: every PD does cap lookup at boot/runtime
  *   235  log_drain          — nearly every PD logs; must respond before callers time-out
  *   225  serial_pd          — UART hardware driver; log_drain and others may call it
- *   215  virtio_blk         — block device driver; agentfs/vfs_server depend on it
- *   205  net_server         — TCP/IP stack; vfs_server calls it for network FS
- *   195  event_bus          — pub/sub backbone; init_agent and controller subscribe
- *   185  vfs_server         — VFS multiplexer; controller and init_agent use it
- *   175  agentfs            — content store; controller and vibe_engine use it
+ *   215  virtio_blk         — host block device driver; guest_vmm relays to it
+ *   213  block_pd           — OS-neutral block contract
+ *   207  net_pd             — host virtio-net driver; guest_vmm relays to it
  *   170  vm_manager         — VM lifecycle; downstream of guest-control relays
- *   165  vibe_engine        — WASM hot-swap engine; called by controller
- *   164  cc_pd              — CC relay; above active device-service pollers
- *   110  init_agent         — agent-ecosystem bootstrapper; calls most services
- *    50  controller         — policy coordinator; calls everything above it
+ *   165  vibe_engine        — dynamic-guest relay between cc_pd and vm_manager
+ *   164  cc_pd              — CC relay; lowest PD, so it announces boot complete
  *
  * Copyright (c) 2026 The agentOS Project
  * SPDX-License-Identifier: BSD-2-Clause
@@ -47,26 +49,28 @@
 #include "system_desc.h"
 #include <platform/guest_memory_layout.h>
 
-/* agentos-8f5: a target contract-runner PD is appended only in test images. */
+/* agentos-8f5: a target contract-runner PD is appended only in test images,
+ * together with the event_bus PD whose contract it exercises. */
 #ifdef AGENTOS_SEL4_TEST_IMAGE
-#define AOS_TEST_PD_EXTRA 1u
+#define AOS_TEST_PD_EXTRA 2u
 #else
 #define AOS_TEST_PD_EXTRA 0u
 #endif
 
-/* CC init-ep counts include controller and serial_pd endpoints. */
+/* Default image: nameserver, log_drain, serial_pd, vibe_engine, virtio_blk,
+ * block_pd, net_pd, guest_vmm_primary, vm_manager, cc_pd, fault_handler. */
 #if defined(AGENTOS_FAULT_INJECT) && defined(AGENTOS_GUEST_DUAL)
-#define AOS_AARCH64_PD_COUNT (21u + AOS_TEST_PD_EXTRA)
-#define AOS_CC_INIT_EP_COUNT 8u
+#define AOS_AARCH64_PD_COUNT (13u + AOS_TEST_PD_EXTRA)
+#define AOS_CC_INIT_EP_COUNT 7u
 #elif defined(AGENTOS_FAULT_INJECT)
-#define AOS_AARCH64_PD_COUNT (20u + AOS_TEST_PD_EXTRA)
-#define AOS_CC_INIT_EP_COUNT 8u
+#define AOS_AARCH64_PD_COUNT (12u + AOS_TEST_PD_EXTRA)
+#define AOS_CC_INIT_EP_COUNT 7u
 #elif defined(AGENTOS_GUEST_DUAL)
-#define AOS_AARCH64_PD_COUNT (20u + AOS_TEST_PD_EXTRA)
-#define AOS_CC_INIT_EP_COUNT 7u
+#define AOS_AARCH64_PD_COUNT (12u + AOS_TEST_PD_EXTRA)
+#define AOS_CC_INIT_EP_COUNT 6u
 #else
-#define AOS_AARCH64_PD_COUNT (19u + AOS_TEST_PD_EXTRA)
-#define AOS_CC_INIT_EP_COUNT 7u
+#define AOS_AARCH64_PD_COUNT (11u + AOS_TEST_PD_EXTRA)
+#define AOS_CC_INIT_EP_COUNT 6u
 #endif
 
 #if defined(AGENTOS_GUEST_DUAL)
@@ -143,87 +147,11 @@ const system_desc_t system_desc_aarch64 = {
             },
         },
 
-        /* pd[3] — event_bus (prio 195; pub/sub backbone)
-         * Receives events from and dispatches to init_agent and controller.
-         * Sits above those consumers so event delivery is not starved. */
-        {
-            .name           = "event_bus",
-            .elf_path       = "event_bus.elf",
-            .stack_size     = 0x4000u,
-            .cnode_size_bits = 10u,
-            .priority       = 195u,
-            .self_svc_id    = SVC_ID_EVENTBUS,
-            .init_ep_count  = 2u,
-            .init_eps = {
-                { SVC_ID_NAMESERVER, PD_CNODE_SLOT_NAMESERVER_EP },
-                { SVC_ID_LOG_DRAIN,  PD_CNODE_SLOT_LOG_DRAIN_EP  },
-            },
-        },
-
-        /* pd[4] — controller (prio 50; policy coordinator)
-         * Calls every service above it.  Lowest-priority PD so that any
-         * service it is waiting for can preempt and respond. */
-        {
-            .name           = "controller",
-            .elf_path       = "controller.elf",
-            .stack_size     = 0x10000u,  /* 64 KB — larger stack for policy work */
-            .cnode_size_bits = 10u,
-            .priority       = 50u,
-            /* agentos-7j5: expose the controller's inbound server endpoint so
-             * peer PDs (cc_pd) can relay MSG_AGENTPOOL_STATUS to it.  The root
-             * task mints this EP at PD_CNODE_SLOT_SELF_EP and passes it as the
-             * controller's my_ep (arg0), which sel4_server_run() listens on. */
-            .self_svc_id    = SVC_ID_CONTROLLER,
-            .init_ep_count  = 4u,
-            .init_eps = {
-                { SVC_ID_NAMESERVER, PD_CNODE_SLOT_NAMESERVER_EP },
-                { SVC_ID_EVENTBUS,   PD_CNODE_SLOT_EVENTBUS_EP   },
-                { SVC_ID_LOG_DRAIN,  PD_CNODE_SLOT_LOG_DRAIN_EP  },
-                { SVC_ID_SERIAL,     PD_CNODE_SLOT_SERIAL_EP     },
-            },
-        },
-
-        /* pd[5] — init_agent (prio 110; agent-ecosystem bootstrapper)
-         * Calls nameserver, event_bus, and log_drain.  Runs above controller
-         * since controller may delegate spawn operations through it, but below
-         * all the services it calls. */
-        {
-            .name           = "init_agent",
-            .elf_path       = "init_agent.elf",
-            .stack_size     = 0x8000u,
-            .cnode_size_bits = 10u,
-            .priority       = 110u,
-            .self_svc_id    = SVC_ID_INIT_AGENT,
-            .init_ep_count  = 4u,
-            .init_eps = {
-                { SVC_ID_NAMESERVER, PD_CNODE_SLOT_NAMESERVER_EP },
-                { SVC_ID_EVENTBUS,   PD_CNODE_SLOT_EVENTBUS_EP   },
-                { SVC_ID_LOG_DRAIN,  PD_CNODE_SLOT_LOG_DRAIN_EP  },
-                { SVC_ID_NET_PD,     PD_CNODE_SLOT_NET_PD_EP     },
-            },
-        },
-
-        /* pd[6] — agentfs (prio 175; content-addressed object store)
-         * Called by controller and vibe_engine.  Runs above both callers;
-         * depends on virtio_blk (215) for persistence so virtio_blk can
-         * preempt agentfs I/O requests. */
-        {
-            .name           = "agentfs",
-            .elf_path       = "agentfs.elf",
-            .stack_size     = 0x8000u,
-            .cnode_size_bits = 10u,
-            .priority       = 175u,
-            .self_svc_id    = SVC_ID_AGENTFS,
-            .init_ep_count  = 2u,
-            .init_eps = {
-                { SVC_ID_NAMESERVER, PD_CNODE_SLOT_NAMESERVER_EP },
-                { SVC_ID_LOG_DRAIN,  PD_CNODE_SLOT_LOG_DRAIN_EP  },
-            },
-        },
-
-        /* pd[7] — vibe_engine (prio 165; WASM hot-swap lifecycle)
-         * Called by controller for WASM component validation and install.
-         * Calls agentfs (175) for object retrieval, which can preempt it. */
+        /* pd[3] — vibe_engine (prio 165; dynamic-guest relay; not TCB)
+         * Kept only because cc_pd relays MSG_CC_CREATE_GUEST and the
+         * dynamic-guest lifecycle/console opcodes to it, and it is the hop
+         * that issues OP_VM_CREATE/START to vm_manager (170), which can
+         * preempt it.  Nothing else in the image calls it. */
         {
             .name           = "vibe_engine",
             .elf_path       = "vibe_engine.elf",
@@ -239,43 +167,8 @@ const system_desc_t system_desc_aarch64 = {
             },
         },
 
-        /* pd[8] — vfs_server (prio 185; virtual filesystem multiplexer)
-         * Called by controller and init_agent.  Depends on virtio_blk (215)
-         * and net_server (205) for backing storage, both of which run above it. */
-        {
-            .name           = "vfs_server",
-            .elf_path       = "vfs_server.elf",
-            .stack_size     = 0x8000u,
-            .cnode_size_bits = 10u,
-            .priority       = 185u,
-            .self_svc_id    = SVC_ID_VFS_SERVER,
-            .init_ep_count  = 2u,
-            .init_eps = {
-                { SVC_ID_NAMESERVER, PD_CNODE_SLOT_NAMESERVER_EP },
-                { SVC_ID_LOG_DRAIN,  PD_CNODE_SLOT_LOG_DRAIN_EP  },
-            },
-        },
-
-        /* pd[9] — net_server (prio 205; lwIP-based network stack)
-         * Called by vfs_server for network filesystems and by controller.
-         * Runs above both callers; depends on virtio_blk (215) indirectly
-         * via the network device (virtio-net). */
-        {
-            .name           = "net_server",
-            .elf_path       = "net_server.elf",
-            .stack_size     = 0x8000u,
-            .cnode_size_bits = 10u,
-            .priority       = 205u,
-            .self_svc_id    = SVC_ID_NET_SERVER,
-            .init_ep_count  = 2u,
-            .init_eps = {
-                { SVC_ID_NAMESERVER, PD_CNODE_SLOT_NAMESERVER_EP },
-                { SVC_ID_LOG_DRAIN,  PD_CNODE_SLOT_LOG_DRAIN_EP  },
-            },
-        },
-
-        /* pd[10] — virtio_blk (prio 215; virtio block device driver)
-         * Lowest-level I/O provider; agentfs and vfs_server call it.
+        /* pd[4] — virtio_blk (prio 215; virtio block device driver)
+         * Lowest-level I/O provider; guest_vmm relays block requests to it.
          * Runs above all storage consumers so block I/O completions are
          * processed before the callers time out. */
         {
@@ -292,7 +185,7 @@ const system_desc_t system_desc_aarch64 = {
             },
         },
 
-        /* pd[11] — block_pd (prio 213; OS-neutral block API)
+        /* pd[5] — block_pd (prio 213; OS-neutral block API)
          * Exposes the block contract to VMMs and native services. */
         {
             .name           = "block_pd",
@@ -308,8 +201,8 @@ const system_desc_t system_desc_aarch64 = {
             },
         },
 
-        /* pd[12] — net_pd (prio 207; OS-neutral network API)
-         * Starts alongside net_server so guest bindings can target a generic
+        /* pd[6] — net_pd (prio 207; OS-neutral network API)
+         * Owns the host virtio-net device; guest bindings target this generic
          * device PD rather than a per-guest driver path. */
         {
             .name           = "net_pd",
@@ -350,37 +243,7 @@ const system_desc_t system_desc_aarch64 = {
             },
         },
 
-        /* pd[13] — framebuffer_pd (prio 206; OS-neutral framebuffer API) */
-        {
-            .name           = "framebuffer_pd",
-            .elf_path       = "framebuffer_pd.elf",
-            .stack_size     = 0x8000u,
-            .cnode_size_bits = 10u,
-            .priority       = 206u,
-            .self_svc_id    = SVC_ID_FB_PD,
-            .init_ep_count  = 2u,
-            .init_eps = {
-                { SVC_ID_NAMESERVER, PD_CNODE_SLOT_NAMESERVER_EP },
-                { SVC_ID_LOG_DRAIN,  PD_CNODE_SLOT_LOG_DRAIN_EP  },
-            },
-        },
-
-        /* pd[14] — usb_pd (prio 204; OS-neutral USB API) */
-        {
-            .name           = "usb_pd",
-            .elf_path       = "usb_pd.elf",
-            .stack_size     = 0x4000u,
-            .cnode_size_bits = 10u,
-            .priority       = 204u,
-            .self_svc_id    = SVC_ID_USB_PD,
-            .init_ep_count  = 2u,
-            .init_eps = {
-                { SVC_ID_NAMESERVER, PD_CNODE_SLOT_NAMESERVER_EP },
-                { SVC_ID_LOG_DRAIN,  PD_CNODE_SLOT_LOG_DRAIN_EP  },
-            },
-        },
-
-        /* pd[15] — guest VMM (prio 250; VM-exit latency is latency-critical).
+        /* pd[7] — guest VMM (prio 250; VM-exit latency is latency-critical).
          * Host device IRQs belong exclusively to driver PDs. Guest virtio
          * interrupts are generated by the emulated devices inside the VMM. */
         {
@@ -437,7 +300,7 @@ const system_desc_t system_desc_aarch64 = {
         },
 
 #if defined(AGENTOS_GUEST_DUAL)
-        /* pd[16] — secondary VMM in dual-profile images.
+        /* pd[8] — secondary VMM in dual-profile images.
          *
          * Both profiles retain the conventional 0x40000000 guest GPA while
          * their VMMs use non-overlapping host virtual windows.
@@ -470,8 +333,8 @@ const system_desc_t system_desc_aarch64 = {
 
 #endif
 
-        /* pd[16] — vm_manager (prio 170; multi-VM lifecycle manager)
-         * Guest-control calls arrive through cc_pd (160) and vibe_engine (165).
+        /* pd[8/9] — vm_manager (prio 170; multi-VM lifecycle manager)
+         * Guest-control calls arrive through cc_pd (164) and vibe_engine (165).
          * Keep this final relay hop above both and below the VMMs (250). */
         {
             .name           = "vm_manager",
@@ -493,11 +356,14 @@ const system_desc_t system_desc_aarch64 = {
             },
         },
 
-        /* pd[17] — cc_pd (prio 164; command-and-control relay)
+        /* pd[9/10] — cc_pd (prio 164; command-and-control relay)
          * Pure IPC relay: receives MSG_CC_* from external callers and routes
          * each to the appropriate service PD.  Passive — woken by PPC.
          * Priority 164: above guest vCPUs (150) and active device services
-         * (160), below vibe_engine (165), vm_manager (170), and the VMMs. */
+         * (160), below vibe_engine (165), vm_manager (170), and the VMMs.
+         * It is the lowest-priority PD in the image, so it reaches its poll
+         * loop only once every other PD has blocked; that is where the
+         * "agentOS boot complete" harness marker is printed. */
         {
             .name           = "cc_pd",
             .elf_path       = "cc_pd.elf",
@@ -517,8 +383,8 @@ const system_desc_t system_desc_aarch64 = {
 #endif
                 { SVC_ID_VIBE_ENGINE, PD_CNODE_SLOT_VIBE_ENGINE_EP },
                 { SVC_ID_VM_MANAGER,  PD_CNODE_SLOT_VM_MANAGER_EP  },
-                /* agentos-7j5: controller EP for live MSG_AGENTPOOL_STATUS. */
-                { SVC_ID_CONTROLLER,  PD_CNODE_SLOT_CONTROLLER_EP },
+                /* No controller EP: the controller PD is not in the image and
+                 * an EP with no server would block cc_pd forever. */
 #if defined(AGENTOS_FAULT_INJECT)
                 { SVC_ID_FAULT_INJECT, PD_CNODE_SLOT_FAULT_INJECT_EP },
 #endif
@@ -542,7 +408,7 @@ const system_desc_t system_desc_aarch64 = {
         },
 #endif
 
-        /* pd[18/19] — fault_handler (prio 255; highest priority for fault recovery)
+        /* pd[10..12] — fault_handler (prio 255; highest priority for fault recovery)
          * Must preempt every other PD to handle seL4 fault IPC promptly.
          * No self_svc_id: receives fault IPC via TCB fault endpoint, not a
          * registered service endpoint. */
@@ -561,6 +427,24 @@ const system_desc_t system_desc_aarch64 = {
         },
 
 #ifdef AGENTOS_SEL4_TEST_IMAGE
+        /* event_bus (prio 195) — test image only.  Not TCB; it is spawned
+         * here solely so the contract runner below can exercise the EventBus
+         * contract against a live server (an EP with no server would block
+         * the runner forever). */
+        {
+            .name           = "event_bus",
+            .elf_path       = "event_bus.elf",
+            .stack_size     = 0x4000u,
+            .cnode_size_bits = 10u,
+            .priority       = 195u,
+            .self_svc_id    = SVC_ID_EVENTBUS,
+            .init_ep_count  = 2u,
+            .init_eps = {
+                { SVC_ID_NAMESERVER, PD_CNODE_SLOT_NAMESERVER_EP },
+                { SVC_ID_LOG_DRAIN,  PD_CNODE_SLOT_LOG_DRAIN_EP  },
+            },
+        },
+
         /* agentos-8f5 / agentos-0h4: on-target contract TAP runner.  Test image
          * only.  Pure client PD: it issues microkit_ppcall(ch) — i.e.
          * seL4_Call(BASE_ENDPOINT_CAP[74] + ch) — to the live service PDs, so it
