@@ -5,6 +5,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-09-11
+
 ### Changed
 
 - `make gate` is now an honest OS-claim gate: it runs the host suite, the
@@ -16,16 +18,17 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - The two-hour Ubuntu Casper live-media proof moved out of per-push CI into a
   scheduled `ubuntu-live-nightly.yml` workflow. It had never passed on `main`
   since it was added and turned every push red.
-- The default aarch64 image boots 11 PDs (nameserver, log_drain, serial_pd,
-  vibe_engine, virtio_blk, block_pd, net_pd, guest_vmm_primary, vm_manager,
-  cc_pd, fault_handler). The manifest previously bundled 39 ELFs, 20 of which
-  the root task never started; the descriptor also dropped controller,
-  event_bus, init_agent, agentfs, vfs_server, net_server, framebuffer_pd, and
-  usb_pd. `cc_pd` now prints the `agentOS boot complete` marker.
+- The default aarch64 image boots 13 PDs (nameserver, log_drain, serial_pd,
+  vibe_engine, virtio_blk, block_pd, net_pd, net_virt, blk_virt,
+  guest_vmm_primary, vm_manager, cc_pd, fault_handler). The v0.2.2 manifest
+  bundled 39 ELFs, 20 of which the root task never started; the descriptor
+  also dropped controller, event_bus, init_agent, agentfs, vfs_server,
+  net_server, framebuffer_pd, and usb_pd. `cc_pd` now prints the
+  `agentOS boot complete` marker.
 - `docs/TCB.md` describes what boots today separately from the target shape,
-  names `cc_pd` as the console driver, and records that the virtualizer is a
-  library inside `guest_vmm` bridging to driver PDs by IPC (invariant 2 not yet
-  held; tracked as a MAC task).
+  names `cc_pd` as the console driver, and states per invariant whether it is
+  held. Invariant 2 (the virtualizer is the only mux) is held for net and
+  block and not yet for console.
 - Host tests under `tests/platform` no longer assert by grepping source text.
   Of 95 assertions, 4 behavioral tests remain, 26 architecture invariants moved
   to `tests/platform/lint_source_invariants.c` (run by `make lint-source`
