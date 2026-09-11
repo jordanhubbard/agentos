@@ -79,6 +79,7 @@ required before any 0.3 claim is made. Each is a MAC task in project
 | 7 | `task_b5a2798062024bd2b34632b1cbc1b664` | Replace source-grep assertions in `tests/platform` with behavioral tests or delete them | no `grep`-style source assertions remain |
 | 8 | `task_4fccd3eabf844e8f8a244aaacea87a6a` | PR #117 review items: remove `guest_vmm\|DIAG` printfs, `read_only` follows `media.writable`, reconcile `fault.c` per-tick reads with its comment, FreeBSD boot evidence for the vgic change | PR #117 checks green plus FreeBSD console log |
 | 9 | `task_2895878a309f431da2d082d75c93e20d` | Build `net_virt` and `blk_virt` as real PDs owning the sDDF queue regions; remove per-frame IPC to `net_pd`/`block_pd` | `test-guest-net`/`blk` pass through the new PD boundary; TCB.md diagram and manifest agree |
+| 10 | `task_f95d118416a24fa484c2c43f0d955b56` | Descriptor trim: drop the 9 non-TCB PDs from `system_desc_aarch64.c` (move the `agentOS boot complete` marker to a TCB PD), relocate non-root-task PD sources out of `kernel/agentos-root-task/src`, retire `linux_vmm_test.system` and the passthrough `ubuntu-overlay.dts` examples | `make gate` and `make demo-test` green with a TCB-only descriptor |
 
 ## 0.2 — Network desktop proof and release discipline
 
