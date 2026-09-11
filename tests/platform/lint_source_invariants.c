@@ -559,6 +559,30 @@ int main(void)
            "liveness: guest-control priorities are strictly ordered vm_manager > vibe_engine > cc_pd");
     }
 
+    /* ── TCB.md museum: the default image spawns TCB PDs plus vibe_engine
+     *    only.  The non-TCB service PDs dropped by MAC
+     *    task_f95d118416a24fa484c2c43f0d955b56 must not creep back into the
+     *    descriptor (event_bus is test-image-only). ─────────────────────── */
+    {
+        static const char *const dropped[] = {
+            "controller", "event_bus", "init_agent", "agentfs", "vfs_server",
+            "net_server", "framebuffer_pd", "usb_pd",
+        };
+        size_t d;
+
+        for (d = 0; d < sizeof(dropped) / sizeof(dropped[0]); d++) {
+            char name[128];
+
+            snprintf(name, sizeof(name),
+                     "museum: %s is not spawned by the default aarch64 descriptor",
+                     dropped[d]);
+            ok(find_pd(dropped[d]) == NULL, name);
+        }
+        ok(find_pd("cc_pd") != NULL && contains("kernel/agentos-root-task/src/cc_pd.c",
+                                                "agentOS boot complete"),
+           "museum: cc_pd prints the harness boot-complete marker (controller is gone)");
+    }
+
     printf("1..%d\n", g_checkno);
     if (g_failed) {
         printf("# %d invariant(s) not visible in source (lint, not proof)\n",

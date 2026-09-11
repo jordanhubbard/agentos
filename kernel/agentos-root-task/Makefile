@@ -802,11 +802,13 @@ endif
 SYSTEM_TOML_DEFAULT := $(abspath $(CURDIR)/agentos.toml)
 ifdef SEL4_TEST_IMAGE
 # agentos-8f5: test images (with no guest profiles) append the contract-runner PD
-# so gen-pd-bundle embeds test_runner.elf and the root task can spawn it.
+# so gen-pd-bundle embeds test_runner.elf and the root task can spawn it, plus
+# the event_bus PD whose contract the runner exercises (not in the default
+# image; see system_desc_aarch64.c AGENTOS_SEL4_TEST_IMAGE).
 SYSTEM_TOML_DEFAULT := $(abspath $(BUILD_DIR)/agentos-test.toml)
 $(SYSTEM_TOML_DEFAULT): $(abspath $(CURDIR)/agentos.toml)
 	@mkdir -p $(BUILD_DIR)
-	{ cat $<; printf '\n[[pd]]\nname = "test_runner"\npriority = 250\n'; } > $@
+	{ cat $<; printf '\n[[pd]]\nname = "event_bus"\npriority = 195\n'; printf '\n[[pd]]\nname = "test_runner"\npriority = 250\n'; } > $@
 else ifdef FAULT_INJECT
 ifneq ($(and $(strip $(GUEST_PRIMARY_PROFILE)),$(strip $(GUEST_SECONDARY_PROFILE))),)
 SYSTEM_TOML_DEFAULT := $(abspath $(BUILD_DIR)/agentos-both-fault-inject.toml)

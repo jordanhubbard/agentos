@@ -32,7 +32,8 @@ seL4
         ├── serial_pd      owns the PL011 UART frame + IRQ
         ├── cc_pd          owns QEMU virtio-serial (bus.2): the console the
         │                  test harness and agentctl drive; guest console TX/RX
-        │                  relays through it
+        │                  relays through it; prints `agentOS boot complete`
+        │                  as the lowest-priority PD in the image
         ├── net_pd         owns QEMU virtio-net (bus.16, IPA 0x0A002000)
         ├── virtio_blk     owns QEMU virtio-blk (bus.8, IPA 0x0A001000) and
         │   / block_pd     the bounded DMA window
@@ -102,19 +103,29 @@ guest channel before virtio-net is a backend, CapStore/MsgBus/ModelSvc/ToolSvc
 as "core OS".
 
 **Status:** as of 2026-09-10 none of these is bundled or booted. The root task
-spawns exactly the PDs in `src/system_desc_aarch64.c` (19 in the default
-image; `guest_vmm_secondary`, `fault_inject`, and `test_runner` are added only
-to the image variants that use them), and `agentos.toml` now lists that same
-set and nothing else (MAC `task_56eae59d9aa94d2d9d047f03fc9d22ad`; it
-previously bundled 39 ELFs, 20 of which the root task never started). Museum
-sources are still compiled by the root-task Makefile `IMAGES` list so they keep
-building, but they are not in the image. Of the 19 booted PDs, `agentfs`,
-`vibe_engine`, `vfs_server`, `net_server`, `framebuffer_pd`, `usb_pd`,
-`event_bus`, `init_agent`, and `controller` are not TCB: they stay because the
-descriptor, `cc_pd` (which relays dynamic-guest control to `vibe_engine`), and
-the `controller` boot sequence that prints `agentOS boot complete` still
-resolve them. Removing them from the descriptor is a follow-up, not part of
-this manifest trim.
+spawns exactly the PDs in `src/system_desc_aarch64.c` (11 in the default
+image: `nameserver`, `log_drain`, `serial_pd`, `vibe_engine`, `virtio_blk`,
+`block_pd`, `net_pd`, `guest_vmm_primary`, `vm_manager`, `cc_pd`,
+`fault_handler`; `guest_vmm_secondary`, `fault_inject`, and `test_runner` +
+`event_bus` are added only to the image variants that use them), and
+`agentos.toml` lists that same set and nothing else (MAC
+`task_56eae59d9aa94d2d9d047f03fc9d22ad` trimmed the manifest from 39 ELFs;
+MAC `task_f95d118416a24fa484c2c43f0d955b56` then dropped `controller`,
+`event_bus`, `init_agent`, `agentfs`, `vfs_server`, `net_server`,
+`framebuffer_pd`, and `usb_pd` from the descriptor). Museum sources are still
+compiled by the root-task Makefile `IMAGES` list so they keep building, but
+they are not in the image. The one booted PD that is not TCB is
+`vibe_engine`: `cc_pd` relays `MSG_CC_CREATE_GUEST` and the dynamic-guest
+lifecycle/console opcodes to it, and it is the hop that issues
+`OP_VM_CREATE`/`OP_VM_START` to `vm_manager`, so the dual-guest proof
+(`make demo-test`) needs it. The boot-guest console path (`test-guest-console`,
+`test-ubuntu-virtio`) does not: `cc_pd` forwards boot-guest input and drains
+its console straight to `guest_vmm`. Teaching `cc_pd` to call `vm_manager`
+directly, and retiring `vibe_engine`, is the remaining follow-up. The
+`agentOS boot complete` marker the `GUEST_OS=none` harness waits for is now
+printed by `cc_pd`, the lowest-priority PD in the image, right before it enters
+its request loop. `tests/platform/lint_source_invariants.c` fails if any of
+the dropped PDs reappears in the default descriptor.
 
 ## QEMU host transports
 

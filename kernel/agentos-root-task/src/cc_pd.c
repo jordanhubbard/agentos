@@ -1218,41 +1218,18 @@ static void handle_list_devices(const cc_req_wire_t *req, cc_reply_wire_t *rep)
  * with no relay there is no observed load, and the moment wiring lands the
  * live busy count flows through unchanged.
  */
-/* agentos-7j5: PD_CNODE_SLOT_CONTROLLER_EP is defined in system_desc.h (slot
- * 13) and the root task mints the controller's inbound server endpoint there
- * for cc_pd (see system_desc_aarch64.c: cc_pd init_eps + controller
- * self_svc_id = SVC_ID_CONTROLLER).  The #ifndef fallback below keeps the
- * relay compiling (and inert) on builds/arches that do not wire the slot. */
-#ifndef PD_CNODE_SLOT_CONTROLLER_EP
-#define PD_CNODE_SLOT_CONTROLLER_EP 0xFFFFFFFFu  /* unwired placeholder */
-#endif
-
+/* MAC task_f95d118416a24fa484c2c43f0d955b56: the controller (monitor) PD is
+ * no longer in the boot image, so cc_pd holds no controller endpoint
+ * (system_desc_aarch64.c: cc_pd init_eps).  Calling an endpoint with no
+ * server would block cc_pd forever, so the relay is gone and the reply is
+ * the correct-by-construction fallback: no controller, no observed agent
+ * load, pool fully idle. */
 static void handle_list_polecats(cc_reply_wire_t *rep)
 {
-    uint32_t total = WORKER_POOL_SIZE;
-    uint32_t busy  = 0u;
-    uint32_t idle  = WORKER_POOL_SIZE;
-    uint32_t faulted = 0u;
-
-    if (PD_CNODE_SLOT_CONTROLLER_EP != 0xFFFFFFFFu) {
-        sel4_msg_t req = {0};
-        sel4_msg_t srep = {0};
-        req.opcode = MSG_AGENTPOOL_STATUS;
-        req.length = 0u;
-        sel4_call((seL4_CPtr)PD_CNODE_SLOT_CONTROLLER_EP, &req, &srep);
-        if (srep.opcode == SEL4_ERR_OK) {
-            total   = cc_wire_rd32(srep.data, 0u);
-            busy    = cc_wire_rd32(srep.data, 4u);
-            idle    = cc_wire_rd32(srep.data, 8u);
-            faulted = cc_wire_rd32(srep.data, 12u);
-        }
-    }
-
     rep->mr[0] = CC_OK;
-    rep->mr[1] = total;
-    rep->mr[2] = busy;
-    rep->mr[3] = idle;
-    (void)faulted;  /* contract MR slots carry total/busy/idle; faulted folds into busy upstream */
+    rep->mr[1] = WORKER_POOL_SIZE;  /* total */
+    rep->mr[2] = 0u;                /* busy  */
+    rep->mr[3] = WORKER_POOL_SIZE;  /* idle  */
 }
 
 static void handle_guest_status(const cc_req_wire_t *req, cc_reply_wire_t *rep)
@@ -1772,6 +1749,15 @@ void cc_pd_main(seL4_CPtr my_ep, seL4_CPtr ns_ep)
     static cc_reply_wire_t g_rep;
     static cc_retry_cache_t g_retry;
     cc_retry_cache_init(&g_retry);
+
+    /*
+     * Canonical boot-complete marker — must match xtask/src/cmd_test.rs and
+     * xtask/src/cmd_ci_matrix.rs.  cc_pd is the lowest-priority PD in the
+     * image (system_desc_aarch64.c), so reaching this point means every
+     * other PD has run to its blocking point and the control console is
+     * ready to accept requests.  The controller PD used to print this.
+     */
+    cc_dbg_puts("agentOS boot complete\n");
 
     while (1) {
         if (!vio_serial_read(&g_req, sizeof(g_req))) {
