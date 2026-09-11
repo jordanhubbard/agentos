@@ -5,6 +5,59 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- `make gate` is now an honest OS-claim gate: it runs the host suite, the
+  aarch64 and x86_64 `GUEST_OS=none` boot tests, and `gate-guest-io` (the
+  Buildroot virtio-net and virtio-blk proofs and the Ubuntu virtio-console
+  proof). CI gains an `OS-claim gate (boot + guest net/blk/console proofs)`
+  summary job that passes only when all of those pass. `GUEST_OS=none` alone
+  is documented as a stub VMM that proves PD load only.
+- The two-hour Ubuntu Casper live-media proof moved out of per-push CI into a
+  scheduled `ubuntu-live-nightly.yml` workflow. It had never passed on `main`
+  since it was added and turned every push red.
+- The default aarch64 image boots 11 PDs (nameserver, log_drain, serial_pd,
+  vibe_engine, virtio_blk, block_pd, net_pd, guest_vmm_primary, vm_manager,
+  cc_pd, fault_handler). The manifest previously bundled 39 ELFs, 20 of which
+  the root task never started; the descriptor also dropped controller,
+  event_bus, init_agent, agentfs, vfs_server, net_server, framebuffer_pd, and
+  usb_pd. `cc_pd` now prints the `agentOS boot complete` marker.
+- `docs/TCB.md` describes what boots today separately from the target shape,
+  names `cc_pd` as the console driver, and records that the virtualizer is a
+  library inside `guest_vmm` bridging to driver PDs by IPC (invariant 2 not yet
+  held; tracked as a MAC task).
+- Host tests under `tests/platform` no longer assert by grepping source text.
+  Of 95 assertions, 4 behavioral tests remain, 26 architecture invariants moved
+  to `tests/platform/lint_source_invariants.c` (run by `make lint-source`
+  inside `make test-host`), and 65 implementation-pinning checks were deleted.
+
+### Removed
+
+- About 15,400 lines of code compiled by nothing: `libs/libvmm` (duplicate),
+  `libs/libraft`, `libs/libagent`, six unreferenced `services/` trees, five
+  `userspace/` trees, five `agents/` trees, twelve orphan root-task sources,
+  the root `CMakeLists.txt`, and `sdk/python`. `services/msgbus` and
+  `services/capstore` were among them; their endpoint-pool and cascading
+  revocation logic is recoverable from commit `08ae7f37`.
+- The vestigial Python setup in the `validate-topology` CI job.
+
+### Fixed
+
+- `xtask qemu-test` honors `AGENTOS_TMP_DIR` for QEMU logs and control
+  sockets, so guest proofs run from a git worktree on macOS (104-byte Unix
+  socket path limit).
+- The qcow2 conversion unit test skips instead of failing when `qemu-img` is
+  not installed.
+
+### Known limitations
+
+- `net_virt` and `blk_virt` are not yet separate PDs; frames and block
+  requests reach the driver PDs by per-request IPC from the VMM.
+- `vibe_engine` remains in the image because `cc_pd` relays dynamic-guest
+  creation through it to `vm_manager`.
+- The `main` branch protection still names the boot-only gate job as its
+  required check; switching it to the OS-claim summary job is an admin action.
+
 ## [0.2.2] - 2026-09-09
 
 ### Changed
