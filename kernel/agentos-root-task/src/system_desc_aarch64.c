@@ -37,7 +37,10 @@
  *   225  serial_pd          — UART hardware driver; log_drain and others may call it
  *   215  virtio_blk         — host block device driver; guest_vmm relays to it
  *   213  block_pd           — OS-neutral block contract
- *   207  net_pd             — host virtio-net driver; guest_vmm relays to it
+ *   207  net_pd             — host virtio-net driver; net_virt calls into it
+ *   205  net_virt           — network virtualizer: the only net mux; calls net_pd,
+ *                            is kicked (NBSend) by the VMMs, never called by them
+ *                            per frame
  *   170  vm_manager         — VM lifecycle; downstream of guest-control relays
  *   165  vibe_engine        — dynamic-guest relay between cc_pd and vm_manager
  *   164  cc_pd              — CC relay; lowest PD, so it announces boot complete
@@ -58,19 +61,31 @@
 #endif
 
 /* Default image: nameserver, log_drain, serial_pd, vibe_engine, virtio_blk,
- * block_pd, net_pd, guest_vmm_primary, vm_manager, cc_pd, fault_handler. */
+ * block_pd, net_pd, net_virt, guest_vmm_primary, vm_manager, cc_pd,
+ * fault_handler. */
 #if defined(AGENTOS_FAULT_INJECT) && defined(AGENTOS_GUEST_DUAL)
-#define AOS_AARCH64_PD_COUNT (13u + AOS_TEST_PD_EXTRA)
+#define AOS_AARCH64_PD_COUNT (14u + AOS_TEST_PD_EXTRA)
 #define AOS_CC_INIT_EP_COUNT 7u
 #elif defined(AGENTOS_FAULT_INJECT)
-#define AOS_AARCH64_PD_COUNT (12u + AOS_TEST_PD_EXTRA)
+#define AOS_AARCH64_PD_COUNT (13u + AOS_TEST_PD_EXTRA)
 #define AOS_CC_INIT_EP_COUNT 7u
 #elif defined(AGENTOS_GUEST_DUAL)
-#define AOS_AARCH64_PD_COUNT (12u + AOS_TEST_PD_EXTRA)
+#define AOS_AARCH64_PD_COUNT (13u + AOS_TEST_PD_EXTRA)
 #define AOS_CC_INIT_EP_COUNT 6u
 #else
-#define AOS_AARCH64_PD_COUNT (11u + AOS_TEST_PD_EXTRA)
+#define AOS_AARCH64_PD_COUNT (12u + AOS_TEST_PD_EXTRA)
 #define AOS_CC_INIT_EP_COUNT 6u
+#endif
+
+/* net_virt holds: nameserver, log_drain, serial (diagnostics through
+ * serial_pd), net_pd, plus one listen EP per configured VMM so it can NBSend
+ * NET_SVC_EVENT_RX_READY to the client whose RX queue it filled. */
+#if defined(AGENTOS_GUEST_PRIMARY) && defined(AGENTOS_GUEST_SECONDARY)
+#define AOS_NET_VIRT_INIT_EP_COUNT 6u
+#elif defined(AGENTOS_GUEST_PRIMARY) || defined(AGENTOS_GUEST_SECONDARY)
+#define AOS_NET_VIRT_INIT_EP_COUNT 5u
+#else
+#define AOS_NET_VIRT_INIT_EP_COUNT 4u
 #endif
 
 #if defined(AGENTOS_GUEST_DUAL)
@@ -201,9 +216,10 @@ const system_desc_t system_desc_aarch64 = {
             },
         },
 
-        /* pd[6] — net_pd (prio 207; OS-neutral network API)
-         * Owns the host virtio-net device; guest bindings target this generic
-         * device PD rather than a per-guest driver path. */
+        /* pd[6] — net_pd (prio 207; host virtio-net driver)
+         * Owns the host virtio-net device (frame + IRQ).  Its only client is
+         * net_virt, whose listen EP it holds to NBSend RX_READY; it never
+         * talks to a VMM. */
         {
             .name           = "net_pd",
             .elf_path       = "net_pd.elf",
@@ -211,23 +227,11 @@ const system_desc_t system_desc_aarch64 = {
             .cnode_size_bits = 10u,
             .priority       = 207u,
             .self_svc_id    = SVC_ID_NET_PD,
-            .init_ep_count  = 2u
-#if defined(AGENTOS_GUEST_PRIMARY)
-                              + 1u
-#endif
-#if defined(AGENTOS_GUEST_SECONDARY)
-                              + 1u
-#endif
-                              ,
+            .init_ep_count  = 3u,
             .init_eps = {
                 { SVC_ID_NAMESERVER, PD_CNODE_SLOT_NAMESERVER_EP },
                 { SVC_ID_LOG_DRAIN,  PD_CNODE_SLOT_LOG_DRAIN_EP  },
-#if defined(AGENTOS_GUEST_PRIMARY)
-                { SVC_ID_GUEST_VMM_PRIMARY,  PD_CNODE_SLOT_GUEST_VMM_PRIMARY_EP },
-#endif
-#if defined(AGENTOS_GUEST_SECONDARY)
-                { SVC_ID_GUEST_VMM_SECONDARY, PD_CNODE_SLOT_GUEST_VMM_SECONDARY_EP },
-#endif
+                { SVC_ID_NET_VIRT,   PD_CNODE_SLOT_NET_VIRT_EP   },
             },
             .irq_count =
 #if defined(AGENTOS_GUEST_PRIMARY) || defined(AGENTOS_GUEST_SECONDARY)
@@ -243,7 +247,40 @@ const system_desc_t system_desc_aarch64 = {
             },
         },
 
-        /* pd[7] — guest VMM (prio 250; VM-exit latency is latency-critical).
+        /* pd[7] — net_virt (prio 205; network virtualizer, the only net mux)
+         * Owns no device frame and no IRQ (docs/TCB.md invariant 1 stays with
+         * net_pd).  Moves frames between the guest sDDF queues in the shared
+         * net frame and net_pd's RAW contract.  Sits just below net_pd because
+         * it Calls into it, and above every guest-control PD.  VMMs reach it
+         * only by ATTACH (once) and NBSend kicks; it reaches them by NBSend
+         * RX_READY on the listen EPs below. */
+        {
+            .name           = "net_virt",
+            .elf_path       = "net_virt.elf",
+            .stack_size     = 0x8000u,
+            .cnode_size_bits = 10u,
+            .priority       = 205u,
+            .self_svc_id    = SVC_ID_NET_VIRT,
+            .init_ep_count  = AOS_NET_VIRT_INIT_EP_COUNT,
+            .init_eps = {
+                { SVC_ID_NAMESERVER, PD_CNODE_SLOT_NAMESERVER_EP },
+                { SVC_ID_LOG_DRAIN,  PD_CNODE_SLOT_LOG_DRAIN_EP  },
+                { SVC_ID_SERIAL,     PD_CNODE_SLOT_SERIAL_EP     },
+                { SVC_ID_NET_PD,     PD_CNODE_SLOT_NET_PD_EP     },
+#if defined(AGENTOS_GUEST_PRIMARY)
+                { SVC_ID_GUEST_VMM_PRIMARY,   PD_CNODE_SLOT_GUEST_VMM_PRIMARY_EP },
+#endif
+#if defined(AGENTOS_GUEST_SECONDARY)
+                { SVC_ID_GUEST_VMM_SECONDARY, PD_CNODE_SLOT_GUEST_VMM_SECONDARY_EP },
+#endif
+            },
+            .irq_count = 0u,
+            .irqs = { },
+            .device_frame_count = 0u,
+            .device_frames = { },
+        },
+
+        /* pd[8] — guest VMM (prio 250; VM-exit latency is latency-critical).
          * Host device IRQs belong exclusively to driver PDs. Guest virtio
          * interrupts are generated by the emulated devices inside the VMM. */
         {
@@ -254,13 +291,15 @@ const system_desc_t system_desc_aarch64 = {
             .cnode_size_bits = 10u,
             .priority       = 250u,
             .self_svc_id    = SVC_ID_GUEST_VMM_SECONDARY,
+            /* No net_pd EP: the VMM reaches the network only through net_virt
+             * (docs/TCB.md invariant 2). */
             .init_ep_count  = 5u,
             .init_eps = {
                 { SVC_ID_NAMESERVER, PD_CNODE_SLOT_NAMESERVER_EP },
                 { SVC_ID_LOG_DRAIN,  PD_CNODE_SLOT_LOG_DRAIN_EP  },
                 { SVC_ID_VIRTIO_BLK, 12u },
-                { SVC_ID_NET_PD,     PD_CNODE_SLOT_NET_PD_EP },
                 { SVC_ID_SERIAL,     PD_CNODE_SLOT_SERIAL_EP     },
+                { SVC_ID_NET_VIRT,   PD_CNODE_SLOT_NET_VIRT_EP },
             },
             .irq_count = 0u,
             .irqs = { },
@@ -278,17 +317,20 @@ const system_desc_t system_desc_aarch64 = {
             .cnode_size_bits = 10u,  /* 1024 slots — IRQ handler caps + microkit layout */
             .priority       = 250u,
             .self_svc_id    = SVC_ID_GUEST_VMM_PRIMARY,
+            /* No net_pd EP: the VMM reaches the network only through net_virt
+             * (docs/TCB.md invariant 2). */
             .init_ep_count  = 5u,
             .init_eps = {
                 { SVC_ID_NAMESERVER, PD_CNODE_SLOT_NAMESERVER_EP },
                 { SVC_ID_LOG_DRAIN,  PD_CNODE_SLOT_LOG_DRAIN_EP  },
                 { SVC_ID_VIRTIO_BLK, 12u },
-                { SVC_ID_NET_PD,     PD_CNODE_SLOT_NET_PD_EP },
                 { SVC_ID_SERIAL,     PD_CNODE_SLOT_SERIAL_EP     },
+                { SVC_ID_NET_VIRT,   PD_CNODE_SLOT_NET_VIRT_EP },
             },
             .irq_count = 0u,
             .irqs = { },
-            /* Net queues are a root-provisioned frame shared only with net_pd. */
+            /* Net queues are a root-provisioned frame shared with net_virt (and
+             * net_pd's slots live in the same frame above NET_SVC_SLOT_BASE). */
             .mr_count = 1u,
             .memory_regions = {
                 { .vaddr    = AOS_PRIMARY_GUEST_RAM_BASE,
@@ -300,7 +342,7 @@ const system_desc_t system_desc_aarch64 = {
         },
 
 #if defined(AGENTOS_GUEST_DUAL)
-        /* pd[8] — secondary VMM in dual-profile images.
+        /* pd[9] — secondary VMM in dual-profile images.
          *
          * Both profiles retain the conventional 0x40000000 guest GPA while
          * their VMMs use non-overlapping host virtual windows.
@@ -312,13 +354,15 @@ const system_desc_t system_desc_aarch64 = {
             .cnode_size_bits = 10u,
             .priority       = 250u,
             .self_svc_id    = SVC_ID_GUEST_VMM_SECONDARY,
+            /* No net_pd EP: the VMM reaches the network only through net_virt
+             * (docs/TCB.md invariant 2). */
             .init_ep_count  = 5u,
             .init_eps = {
                 { SVC_ID_NAMESERVER, PD_CNODE_SLOT_NAMESERVER_EP },
                 { SVC_ID_LOG_DRAIN,  PD_CNODE_SLOT_LOG_DRAIN_EP  },
                 { SVC_ID_VIRTIO_BLK, 12u },
-                { SVC_ID_NET_PD,     PD_CNODE_SLOT_NET_PD_EP },
                 { SVC_ID_SERIAL,     PD_CNODE_SLOT_SERIAL_EP     },
+                { SVC_ID_NET_VIRT,   PD_CNODE_SLOT_NET_VIRT_EP },
             },
             .irq_count = 0u,
             .irqs = { },
@@ -333,7 +377,7 @@ const system_desc_t system_desc_aarch64 = {
 
 #endif
 
-        /* pd[8/9] — vm_manager (prio 170; multi-VM lifecycle manager)
+        /* pd[9/10] — vm_manager (prio 170; multi-VM lifecycle manager)
          * Guest-control calls arrive through cc_pd (164) and vibe_engine (165).
          * Keep this final relay hop above both and below the VMMs (250). */
         {
@@ -356,7 +400,7 @@ const system_desc_t system_desc_aarch64 = {
             },
         },
 
-        /* pd[9/10] — cc_pd (prio 164; command-and-control relay)
+        /* pd[10/11] — cc_pd (prio 164; command-and-control relay)
          * Pure IPC relay: receives MSG_CC_* from external callers and routes
          * each to the appropriate service PD.  Passive — woken by PPC.
          * Priority 164: above guest vCPUs (150) and active device services
@@ -408,7 +452,7 @@ const system_desc_t system_desc_aarch64 = {
         },
 #endif
 
-        /* pd[10..12] — fault_handler (prio 255; highest priority for fault recovery)
+        /* pd[11..13] — fault_handler (prio 255; highest priority for fault recovery)
          * Must preempt every other PD to handle seL4 fault IPC promptly.
          * No self_svc_id: receives fault IPC via TCB fault endpoint, not a
          * registered service endpoint. */

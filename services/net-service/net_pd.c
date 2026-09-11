@@ -1809,17 +1809,17 @@ static uint32_t net_pd_dispatch_one(sel4_badge_t badge,
 #ifndef AGENTOS_TEST_HOST
 #define NET_HOST_IRQ_BADGE  0x80000000u
 
-static void net_pd_notify_vmm_rx(void)
+/*
+ * Host RX landed in a client slot ring: wake the virtualizer.  net_virt is
+ * the only consumer of the RAW contract (docs/TCB.md invariant 2); it pulls
+ * frames with RAW_RECV into the guest sDDF queues and notifies the VMM.
+ * NBSend never blocks the driver; net_virt re-probes before it sleeps.
+ */
+static void net_pd_notify_net_virt_rx(void)
 {
     seL4_MessageInfo_t event =
         seL4_MessageInfo_new(NET_SVC_EVENT_RX_READY, 0u, 0u, 0u);
-#if defined(AGENTOS_GUEST_PRIMARY)
-    seL4_NBSend((seL4_CPtr)PD_CNODE_SLOT_GUEST_VMM_PRIMARY_EP, event);
-#endif
-#if defined(AGENTOS_GUEST_SECONDARY)
-    seL4_NBSend((seL4_CPtr)PD_CNODE_SLOT_GUEST_VMM_SECONDARY_EP, event);
-#endif
-    (void)event;
+    seL4_NBSend((seL4_CPtr)PD_CNODE_SLOT_NET_VIRT_EP, event);
 }
 
 static void net_pd_handle_host_irq(void)
@@ -1833,7 +1833,7 @@ static void net_pd_handle_host_irq(void)
     seL4_IRQHandler_Ack(
         (seL4_CPtr)(PD_IRQHANDLER_SLOT_BASE + 0u));
     if (received > 0u || net_host_client_rx_pending()) {
-        net_pd_notify_vmm_rx();
+        net_pd_notify_net_virt_rx();
     }
 }
 

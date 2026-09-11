@@ -28,6 +28,18 @@
 #define SERIAL_MAX_WRITE_BYTES  256u
 #define SERIAL_MAX_CLIENTS      8u
 
+/*
+ * The transfer page (one 4 KB frame the root task maps into every serial
+ * client and into serial_pd) is partitioned per client slot: slot s moves
+ * its TX/RX bytes through [s * STRIDE, (s + 1) * STRIDE).  Clients at
+ * different priorities flush concurrently (a VMM can preempt a lower PD
+ * between its copy-in and serial_pd's copy-out), so a shared offset 0 would
+ * interleave their lines.  8 slots x 512 B = 4096 B; writes are bounded by
+ * SERIAL_MAX_WRITE_BYTES and reads by the stride.
+ */
+#define SERIAL_SHMEM_SLOT_STRIDE 512u
+#define SERIAL_SHMEM_SLOT_OFFSET(slot) ((uint32_t)(slot) * SERIAL_SHMEM_SLOT_STRIDE)
+
 /* ─── Request structs ────────────────────────────────────────────────────── */
 
 struct serial_req_open {
