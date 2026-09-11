@@ -4,8 +4,8 @@
  * // STATUS: IMPLEMENTED
  *
  * This is the canonical contract for the entropy-service device service in agentOS.
- * The concrete implementation is backed by the monocypher-based crypto primitives
- * in kernel/agentos-root-task/src/monocypher.c and crypto_ipc.c.  The entropy
+ * No PD implements this contract yet (the crypto_ipc.c prototype was removed as
+ * never-built code); primitives live in kernel/agentos-root-task/src/monocypher.c.  The entropy
  * source is the hardware RNG (platform-specific: ARM TRNG via MRS S3_3_C2_C4_0,
  * x86 RDRAND, or a seeded ChaCha20 DRBG when hardware is unavailable).
  *

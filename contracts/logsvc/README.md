@@ -73,6 +73,4 @@ structured log interface:
 
 ## Source Files
 
-- `services/logsvc/logsvc.c` — implementation (write, query, JSON export)
-- `kernel/agentos-root-task/src/cap_audit_log.c` — capability event streaming
 - `kernel/agentos-root-task/include/agentos.h` — OP_CAP_LOG_* constants

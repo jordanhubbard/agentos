@@ -99,8 +99,10 @@ A museum PD with a contract and no boot-time caller is not an API.
 
 No untested TCB path. Host-only tests (`-DAGENTOS_TEST_HOST`) are a pre-filter
 and **cannot** be cited as proof of I/O or IPC. `make gate` is the OS-claim
-gate. Device-class claims also need a guest I/O assertion through the
-virtualizer.
+gate: it runs the host suite, the aarch64 and x86_64 `GUEST_OS=none` boot
+tests, **and** the guest I/O proofs (`test-guest-net`, `test-guest-blk`,
+`test-guest-console`). `GUEST_OS=none` alone is a stub VMM and proves only
+that PDs load. Tests that grep source text for function names are not tests.
 
 ---
 

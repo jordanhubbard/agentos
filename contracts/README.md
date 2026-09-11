@@ -139,5 +139,4 @@ is no conflict at the seL4 channel level.
 - `tools/topology.yaml` — authoritative PD and channel definitions
 - `kernel/agentos-root-task/include/agentos.h` — system-wide opcode constants
 - `kernel/agentos-root-task/include/net_server.h` — NetServer OP_NET_* values
-- `services/abi/agentos_service_abi.h` — WASM hot-swap service ABI
 - `userspace/servers/*/src/lib.rs` — Rust userspace server implementations

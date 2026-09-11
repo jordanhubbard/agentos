@@ -36,8 +36,13 @@ binding) described the wrong I/O model. It is superseded by this document.
 ## Proof policy (unchanged)
 
 Host-only tests (`make test-host`) are a pre-filter. They are **not** proof of
-production IPC or I/O. Infrastructure claims require `make gate` (both target
-arches under QEMU). Guest release claims additionally require
+production IPC or I/O. `make test-host` also runs `make lint-source`, a source
+lint over headers, the compiled topology, and guest FDTs (see
+`tests/TARGET_TESTS.md`); it is a policy check, not a test, and is not counted
+as guest-path coverage. Infrastructure claims require `make gate` (both target
+arches under QEMU with `GUEST_OS=none`, plus `gate-guest-io`: the buildroot
+net and blk proofs and the Ubuntu console proof). `GUEST_OS=none` on its own
+is a stub VMM and proves PD load only. Guest release claims additionally require
 `make demo-test`, which boots Ubuntu and FreeBSD concurrently and proves
 key-only SSH to both. A device-class claim also needs its focused guest I/O
 assertion through the virtualizer — not QEMU bus ownership.
@@ -120,7 +125,9 @@ Casper initrd from the agentOS-owned ISO, mounts the live filesystem, reaches
 an authenticated `ubuntu` shell over emulated virtio-console, and emits a
 bounded guest network probe. The gate rejects initramfs unpack failures and
 requires probe, DRIVER_OK, and real I/O markers for net, block, and console.
-CI runs both the deterministic initramfs gate and this full-live gate.
+CI runs the deterministic initramfs gate on every push; the full-live gate
+runs nightly and on demand (`ubuntu-live-nightly.yml`) because it takes up to
+two hours under TCG on hosted runners.
 
 This closes the full Ubuntu live-filesystem proof. Ubuntu retains the same
 emulated-only DTB, translated RAM, and agentOS-owned bus.8 backend in a dual

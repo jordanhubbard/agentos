@@ -62,6 +62,25 @@ one data-driven VMM                               |
                   1.0 qualification
 ```
 
+## Trust baseline — corrective actions from the 2026-09-10 audit
+
+These are not release features. They make existing claims truthful and are
+required before any 0.3 claim is made. Each is a MAC task in project
+`agentos`; this list records ordering only.
+
+| Order | MAC task | Corrective action | Proof |
+| --- | --- | --- | --- |
+| 1 | `task_1421a495334a4d94a21c0ad0e33720dd` | CI hygiene: drop the vestigial Python setup from `validate-topology`; decide whether cargo-test jobs install `qemu-utils` | ci.yml has no `setup-python`; `cargo test --workspace` green |
+| 2 | `task_4896bf7d46fc4fc9ad372fa998e46384` | Move the two-hour Casper live proof to a scheduled workflow; keep the 30-minute initramfs proof per push | `ubuntu-live-nightly.yml` runs it; `ci.yml` does not |
+| 3 | `task_04ea7ea3cec743609d45a01a6f09c6c9` | `make gate` includes `test-guest-net`, `test-guest-blk`, `test-guest-console`; CI has one `os-claim-summary` job that needs boot + all guest proofs | `make gate` output names guest I/O; CI job graph |
+| 4 | `task_596d6578cd3d4b72a6a7cf33f124e314` | ubuntu-live overlay replaces casper-bottom `ORDER` so the agentOS console hook runs before the stalling stock scripts (depends on PR #117) | nightly `test-ubuntu-live` passes well inside 7200 s |
+| 5 | `task_f79b23354fce40b0a988bf845ee9f604` | Delete never-compiled code (`libs/libvmm` duplicate, orphan root-task sources, unreferenced `services/`, `userspace/`, `agents/` trees, stale `.system` files, root `CMakeLists.txt`, empty `sdk/python`); move non-root-task PD sources out of `kernel/agentos-root-task/src` | `make gate` green after deletion; root task directory holds only root-task sources |
+| 6 | `task_56eae59d9aa94d2d9d047f03fc9d22ad` | Trim `agentos.toml` to TCB PDs plus what `demo-test` needs; rewrite `docs/TCB.md` to name `cc_pd` and describe the real I/O path (virtualizer library in `guest_vmm`, IPC to driver PDs) with the PD split marked as target | booted PD list matches TCB.md; `make gate` and `make demo-test` green |
+| 7 | `task_b5a2798062024bd2b34632b1cbc1b664` | Replace source-grep assertions in `tests/platform` with behavioral tests or delete them | no `grep`-style source assertions remain |
+| 8 | `task_4fccd3eabf844e8f8a244aaacea87a6a` | PR #117 review items: remove `guest_vmm\|DIAG` printfs, `read_only` follows `media.writable`, reconcile `fault.c` per-tick reads with its comment, FreeBSD boot evidence for the vgic change | PR #117 checks green plus FreeBSD console log |
+| 9 | `task_2895878a309f431da2d082d75c93e20d` | Build `net_virt` and `blk_virt` as real PDs owning the sDDF queue regions; remove per-frame IPC to `net_pd`/`block_pd` | `test-guest-net`/`blk` pass through the new PD boundary; TCB.md diagram and manifest agree |
+| 10 | `task_f95d118416a24fa484c2c43f0d955b56` | Descriptor trim: drop the 9 non-TCB PDs from `system_desc_aarch64.c` (move the `agentOS boot complete` marker to a TCB PD), relocate non-root-task PD sources out of `kernel/agentos-root-task/src`, retire `linux_vmm_test.system` and the passthrough `ubuntu-overlay.dts` examples | `make gate` and `make demo-test` green with a TCB-only descriptor |
+
 ## 0.2 — Network desktop proof and release discipline
 
 The fastest desktop proof deliberately does not wait for a virtual display

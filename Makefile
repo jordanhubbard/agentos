@@ -26,7 +26,7 @@
 
 .DEFAULT_GOAL := help
 
-.PHONY: all setup sdk demo demo-check demo-smoke demo-test demo-desktop demo-desktop-test demo-clean install deps deps-tools submodules channels format policy-check guest-profile-check run run-fast run-dual-ssh test test-guest-login test-guest-net test-guest-blk test-guest-console test-ubuntu-virtio test-ubuntu-live sel4-test-image run-tests test-snapshot-sched test-power-mgr test-proc-server test-vibeos-contract test-integration test-host gate gate-aarch64 gate-x86_64 e2e e2e-guest e2e-contract e2e-dual-os e2e-ubuntu-amd64 e2e-ubuntu-arm64 e2e-nixos e2e-freebsd15 e2e-all bootstrap-guest clean clean-all clean-images help release release-minor release-major release-prepare release-check release-publish release-verify presentation-render fetch-guest build-tools
+.PHONY: all setup sdk demo demo-check demo-smoke demo-test demo-desktop demo-desktop-test demo-clean install deps deps-tools submodules channels format policy-check guest-profile-check lint-source run run-fast run-dual-ssh test test-guest-login test-guest-net test-guest-blk test-guest-console test-ubuntu-virtio test-ubuntu-live sel4-test-image run-tests test-snapshot-sched test-proc-server test-vibeos-contract test-integration test-host gate gate-aarch64 gate-x86_64 e2e e2e-guest e2e-contract e2e-dual-os e2e-ubuntu-amd64 e2e-ubuntu-arm64 e2e-nixos e2e-freebsd15 e2e-all bootstrap-guest clean clean-all clean-images help release release-minor release-major release-prepare release-check release-publish release-verify presentation-render fetch-guest build-tools
 
 # ─── Read config.yaml (if present) ───────────────────────────────────────────
 CONFIG_TARGET := $(shell grep '^target_arch:' config.yaml 2>/dev/null | sed 's/target_arch:[[:space:]]*//' | tr -d '[:space:]')
@@ -649,18 +649,47 @@ gate-x86_64:
 	@echo "── [GATE] TARGET/QEMU test: x86_64 (GUEST_OS=none) ───────────"
 	@$(MAKE) test TARGET_ARCH=x86_64 GUEST_OS=none
 
-gate: test-host gate-aarch64 gate-x86_64
+# gate-guest-io: guest I/O proofs through the virtualizer path. GUEST_OS=none
+# is a stub VMM, so the boot gates above prove PD load and root-task parking
+# only; these three targets are what make "the OS does I/O" a true claim.
+gate-guest-io:
+	@echo ""
+	@echo "── [GATE] GUEST I/O: buildroot virtio-net / virtio-blk, Ubuntu virtio-console ──"
+	@$(MAKE) test-guest-net BOARD=qemu_virt_aarch64
+	@$(MAKE) test-guest-blk BOARD=qemu_virt_aarch64
+	@$(MAKE) test-guest-console BOARD=qemu_virt_aarch64
+
+gate: test-host gate-aarch64 gate-x86_64 gate-guest-io
 	@echo ""
 	@echo "╔══════════════════════════════════════════════════════════╗"
-	@echo "║  ✅ DUAL-ARCH GATE PASSED                                 ║"
-	@echo "║  Host-only suite + aarch64 + x86_64 QEMU boot tests OK.   ║"
+	@echo "║  ✅ OS-CLAIM GATE PASSED                                  ║"
+	@echo "║  Host suite + aarch64/x86_64 boot + guest net/blk/console ║"
+	@echo "║  proofs through the virtualizer path all OK.             ║"
 	@echo "║  OS-level completion claims are now permitted.           ║"
 	@echo "╚══════════════════════════════════════════════════════════╝"
 	@echo ""
 
 # test-host: alias for the host-only integration suite.  Named explicitly so
 # callers and CI cannot mistake host-only coverage for target/QEMU proof.
-test-host: policy-check guest-profile-check test-integration
+# lint-source is a source lint (policy-check's sibling), not a test; it is
+# listed here so the invariants it protects are checked on every host run,
+# but it is not counted among the host tests below.
+test-host: policy-check guest-profile-check lint-source test-integration
+
+# lint-source: architecture-invariant lint over checked-in artifacts (headers,
+# the compiled AArch64 topology, guest FDT templates, guest profiles, QEMU
+# launch tooling).  See tests/platform/lint_source_invariants.c.  It proves no
+# behaviour and is NOT a guest-path test; it fails when docs/TCB.md I/O
+# invariants 1-5 stop being visible in the tree.
+lint-source:
+	@mkdir -p $(BUILD_TMP_DIR)
+	@gcc -std=c11 -Wall -Wextra -Werror -D_POSIX_C_SOURCE=200809L \
+		-I platform/include -I . -idirafter kernel/agentos-root-task/include \
+		-DAOS_REPO_ROOT='"$(ROOT_DIR)"' \
+		tests/platform/lint_source_invariants.c \
+		kernel/agentos-root-task/src/system_desc_aarch64.c \
+		-o $(BUILD_TMP_DIR)/lint_source_invariants
+	@$(BUILD_TMP_DIR)/lint_source_invariants
 
 guest-profile-check:
 	@mkdir -p $(BUILD_TMP_DIR)/guest-profiles
@@ -703,7 +732,9 @@ test-guest-login:
 # Guest I/O proof: boot buildroot Linux under linux_vmm and require the
 # emulated virtio-net (IPA 0x0A010000) to probe, reach DRIVER_OK, and pump
 # at least one guest TX frame back onto RX. GUEST_OS=none is a stub VMM and
-# cannot prove this. Host tests/test_virtio_net_guest_path.c is not this gate.
+# cannot prove this. The host-side tests/platform/test_virtio_net_guest_path.c
+# (simulated virtq pump) and tests/platform/lint_source_invariants.c (source
+# lint) are not this gate.
 test-guest-net:
 	@if [ "$(BOARD)" != "qemu_virt_aarch64" ]; then \
 		echo "test-guest-net requires BOARD=qemu_virt_aarch64 (got BOARD=$(BOARD))"; \
@@ -713,9 +744,9 @@ test-guest-net:
 
 # Guest I/O proof: boot buildroot Linux under linux_vmm and require the
 # emulated virtio-blk (IPA 0x0A020000) to probe, reach DRIVER_OK, and pump
-# at least one guest request (partition scan of the RAM disk). Host
-# tests/test_virtio_blk_guest_path.c is not this gate. The combined Ubuntu
-# device proof is make test-ubuntu-virtio.
+# at least one guest request (partition scan of the RAM disk). The host-side
+# tests/platform/test_blk_virt_pump.c and the source lint are not this gate.
+# The combined Ubuntu device proof is make test-ubuntu-virtio.
 test-guest-blk:
 	@if [ "$(BOARD)" != "qemu_virt_aarch64" ]; then \
 		echo "test-guest-blk requires BOARD=qemu_virt_aarch64 (got BOARD=$(BOARD))"; \
@@ -766,21 +797,6 @@ test-snapshot-sched:
 	@echo ""
 
 # =============================================================================
-# test-power-mgr: standalone unit test for the power_mgr DVFS thermal model
-# =============================================================================
-test-power-mgr:
-	@echo ""
-	@echo "╔══════════════════════════════════════════╗"
-	@echo "║   agentOS — power_mgr unit tests         ║"
-	@echo "╚══════════════════════════════════════════╝"
-	@echo ""
-	@mkdir -p $(BUILD_TMP_DIR)
-	cc tests/test_power_mgr.c -o $(BUILD_TMP_DIR)/test_power_mgr -I kernel/agentos-root-task/include -DAGENTOS_TEST_HOST
-	@$(BUILD_TMP_DIR)/test_power_mgr
-	@echo "✓ power_mgr tests passed"
-	@echo ""
-
-# =============================================================================
 # test-proc-server: standalone unit test for the proc_server PD (Track F)
 # =============================================================================
 test-proc-server:
@@ -814,7 +830,8 @@ test-vibeos-contract:
 # test-integration: compile and run C integration tests on the host
 #
 # Each test file is self-contained: all seL4/Microkit primitives are stubbed
-# via #ifdef AGENTOS_TEST_HOST.  No QEMU required.
+# via #ifdef AGENTOS_TEST_HOST.  No QEMU required.  Every suite here must
+# exercise code; source-text checks belong in `make lint-source`, not here.
 # =============================================================================
 test-integration:
 	@echo ""
@@ -826,9 +843,6 @@ test-integration:
 	@mkdir -p $(BUILD_TMP_DIR)
 	@status=0; \
 	for test in \
-	    tests/test_quota.c \
-	    tests/test_cap_policy_hotreload.c \
-	    tests/test_power_mgr.c \
 	    tests/test_snapshot_sched.c \
 	    tests/test_proc_server.c \
 	    tests/test_serial_pd.c \
@@ -889,7 +903,6 @@ test-integration:
 	    status=1; \
 	fi; \
 	if gcc -I platform/include -I tests/platform \
-	        -DAOS_REPO_ROOT='"$(ROOT_DIR)"' \
 	        tests/platform/test_virtio_net_guest_path.c \
 	        tests/platform/virtio_mmio_net_emu.c \
 	        platform/net-virt/net_virt_pump.c \
@@ -959,37 +972,6 @@ test-integration:
 	    echo "PASS: tests/platform/test_blk_virt_pump.c"; \
 	else \
 	    echo "FAIL: tests/platform/test_blk_virt_pump.c"; \
-	    status=1; \
-	fi; \
-	if gcc -I platform/include \
-	        -DAOS_REPO_ROOT='"$(ROOT_DIR)"' \
-	        tests/platform/test_virtio_blk_guest_path.c \
-	        -o $(BUILD_TMP_DIR)/test_virtio_blk_guest_path 2>&1 \
-	    && $(BUILD_TMP_DIR)/test_virtio_blk_guest_path; then \
-	    echo "PASS: tests/platform/test_virtio_blk_guest_path.c"; \
-	else \
-	    echo "FAIL: tests/platform/test_virtio_blk_guest_path.c"; \
-	    status=1; \
-	fi; \
-	if gcc -I platform/include \
-	        -DAOS_REPO_ROOT='"$(ROOT_DIR)"' \
-	        tests/platform/test_virtio_console_guest_path.c \
-	        -o $(BUILD_TMP_DIR)/test_virtio_console_guest_path 2>&1 \
-	    && $(BUILD_TMP_DIR)/test_virtio_console_guest_path; then \
-	    echo "PASS: tests/platform/test_virtio_console_guest_path.c"; \
-	else \
-	    echo "FAIL: tests/platform/test_virtio_console_guest_path.c"; \
-	    status=1; \
-	fi; \
-	if gcc -I platform/include -idirafter kernel/agentos-root-task/include \
-	        -DAOS_REPO_ROOT='"$(ROOT_DIR)"' \
-	        tests/platform/test_uart_cap_ownership.c \
-	        kernel/agentos-root-task/src/system_desc_aarch64.c \
-	        -o $(BUILD_TMP_DIR)/test_uart_cap_ownership 2>&1 \
-	    && $(BUILD_TMP_DIR)/test_uart_cap_ownership; then \
-	    echo "PASS: tests/platform/test_uart_cap_ownership.c"; \
-	else \
-	    echo "FAIL: tests/platform/test_uart_cap_ownership.c"; \
 	    status=1; \
 	fi; \
 	if cargo test -p xtask --lib --quiet; then \
@@ -1205,6 +1187,7 @@ help:
 	@echo "  make clean-images     Remove staged guest images"
 	@echo "  make build-tools      Build Rust host tools in release mode"
 	@echo "  make policy-check     Enforce language/UI policy and xtask formatting"
+	@echo "  make lint-source      Source lint for docs/TCB.md I/O invariants (not a test)"
 	@echo "  make release          Print a read-only patch-release plan"
 	@echo "  make release-prepare/check/publish/verify  Advance explicit release states"
 	@echo "  make presentation-render PRESENTATION_EDITION=X.Y.Z  Render and validate the release PDF"

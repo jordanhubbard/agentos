@@ -56,7 +56,7 @@ The Rust validator is strictly a superset. Nothing unique was lost.
 
 ## Pending Actions: services/ C Prototypes
 
-### `services/msgbus/` — REDESIGN, do not delete yet
+### `services/msgbus/` — DELETED 2026-09-10 (never built; recover from 08ae7f37 if the endpoint-pool logic is ported)
 
 **Contains unique logic:**
 - `msgbus_seL4.c` has a real endpoint pool allocator (`alloc_endpoint`, `free_endpoint`,
@@ -81,7 +81,7 @@ absorbed into the NameServer or a dedicated RPC-broker PD, not discarded.
 
 ---
 
-### `services/capstore/capstore.c` — REDESIGN, do not delete yet
+### `services/capstore/capstore.c` — DELETED 2026-09-10 (never built; recover from 08ae7f37 if cascading revocation is ported)
 
 **Contains unique logic:**
 - Cascading revocation via parent-chain walk (`capstore_revoke` iterates until no more

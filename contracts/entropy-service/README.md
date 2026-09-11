@@ -17,8 +17,7 @@ The implementation uses monocypher primitives from
 
 ## Status
 
-**IMPLEMENTED.** The backing implementation is in `crypto_ipc.c` (the
-`crypto_ipc` kernel module).
+**NOT IMPLEMENTED.** The former `crypto_ipc.c` prototype was removed as dead code (never built); no PD backs this contract yet.
 
 ## Protection Domain
 
@@ -38,6 +37,4 @@ a PPC capability to its endpoint at initialization time.
 ## Source Files
 
 - `contracts/entropy-service/interface.h` — canonical IPC contract
-- `kernel/agentos-root-task/src/crypto_ipc.c` — implementation
-- `kernel/agentos-root-task/include/crypto_ipc.h` — internal header
 - `kernel/agentos-root-task/include/monocypher.h` — crypto primitives

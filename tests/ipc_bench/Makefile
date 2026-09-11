@@ -6,8 +6,7 @@
 #   clean            remove build artefacts
 #
 # The host build defines AGENTOS_TEST_HOST so seL4 headers are not required.
-# The bare-metal AArch64 build is driven by the top-level CMake/seL4 build
-# system — see the CMakeLists.txt in the repo root.
+# The bare-metal AArch64 build is driven by kernel/agentos-root-task/Makefile.
 
 CC      ?= cc
 CFLAGS  = -std=c11 -Wall -Wextra -Wpedantic \

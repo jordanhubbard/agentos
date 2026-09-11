@@ -83,7 +83,4 @@ payload before sending the reply.
 
 ## Source Files
 
-- `services/msgbus/msgbus.h` — internal service header
-- `services/msgbus/msgbus.c` — service implementation
-- `services/msgbus/msgbus_seL4.c` — seL4-specific IPC dispatch loop
-- `services/msgbus/MsgBus.camkes` — CAmkES component definition
+- (no C implementation in tree; the `services/msgbus/` prototype was removed as never-built code, see history at 08ae7f37)

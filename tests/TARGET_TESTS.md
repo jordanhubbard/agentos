@@ -7,6 +7,7 @@ the IPC contract holds on real seL4.
 | Layer            | What runs                                   | seL4 IPC?        | How to run                                  |
 |------------------|---------------------------------------------|------------------|---------------------------------------------|
 | Host unit/mock   | `tests/**/*_test.c` under `-DAGENTOS_TEST_HOST` | **No** — `tests/microkit.h` stub echoes MR0 | `make test-host` |
+| Source lint (not a test) | `tests/platform/lint_source_invariants.c` reads headers, the compiled topology, guest FDTs, profiles | **No** — no code under test runs | `make lint-source` (part of `make test-host`) |
 | Simulator        | `userspace/sim/` in-memory seL4 model       | Modeled, in-process | `cargo test -p agentos-sim`                 |
 | **Target proof** | seL4 root task + PDs in QEMU/hardware        | **Yes** — real `microkit_ppcall` | `make test-target`, `make run-tests`        |
 | **Dual-guest acceptance** | seL4 + Ubuntu + FreeBSD + agentOS virtualizers | **Yes** | `make demo-test` |
@@ -28,8 +29,21 @@ Driven by:
 - `make demo-smoke` — validates prerequisites and runs the host suite.
 - `make test-host` / `make test-integration` — compile and run the host
   `tests/*.c` set.
-- `make test-snapshot-sched`, `make test-power-mgr`, `make test-proc-server`,
+- `make test-snapshot-sched`, `make test-proc-server`,
   `make test-vibeos-contract` — individual host suites.
+
+## Source lint layer (NOT a test)
+
+`tests/platform/lint_source_invariants.c` (`make lint-source`, run by
+`make test-host` next to `policy-check`) reads checked-in artifacts and fails
+when a docs/TCB.md I/O invariant stops being visible in the tree: one owner
+per device frame and IRQ (from the compiled `system_desc_aarch64`), guest VMM
+PDs holding no hardware, emulated virtio IPAs outside the QEMU host window,
+guest FDT templates advertising only the emulated devices, libvmm device
+models reaching guest memory through the GPA API, and disjoint block DMA
+windows. It never runs the code it reads. A green lint is not a guest-path
+test and may not be cited as I/O coverage; it exists so an architecture
+regression is caught before anyone boots QEMU.
 
 ## Dual-guest authenticated-SSH acceptance
 

@@ -60,14 +60,6 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
-      - name: Install gen_sdf dependencies
-        run: pip install pyyaml
-
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
 
@@ -337,12 +329,9 @@ jobs:
         timeout-minutes: 30
         run: make test-ubuntu-virtio QEMU_TEST_TIMEOUT=480
 
-      - name: Prove Ubuntu Casper userspace on agentOS VirtIO
-        # TCG throughput varies substantially across hosted runners.  Keep the
-        # assertion deadline aligned with the release/demo proof and leave an
-        # outer envelope for the build plus evidence upload.
-        timeout-minutes: 150
-        run: make test-ubuntu-live QEMU_TEST_TIMEOUT=7200
+      # The full Casper live-media proof (make test-ubuntu-live) takes up to
+      # two hours under TCG on hosted runners and is a release qualification,
+      # not a per-push check.  It runs in ubuntu-live-nightly.yml.
 
       - name: Upload QEMU serial logs
         if: always()
@@ -464,6 +453,8 @@ jobs:
   # arch fails, OS-level completion claims are blocked.
   # ---------------------------------------------------------------------------
   os-claim-gate:
+    # Keep the protected check's established name. The aggregate OS-claim job
+    # below adds stronger evidence without invalidating branch protection.
     name: Dual-arch OS-claim gate (aarch64 + x86_64, GUEST_OS=none)
     runs-on: ubuntu-24.04
     needs: validate-topology
@@ -509,11 +500,32 @@ jobs:
         timeout-minutes: 10
         run: make test TARGET_ARCH=x86_64 GUEST_OS=none
 
-      - name: GATE summary
+      - name: Boot gate summary
         run: |
-          echo "✅ Dual-arch OS-claim gate passed:"
+          echo "✅ Dual-arch boot gate passed:"
           echo "   - aarch64 GUEST_OS=none (target/QEMU)"
           echo "   - x86_64  GUEST_OS=none (target/QEMU)"
+          echo "GUEST_OS=none is a stub VMM: this proves PD load and root-task"
+          echo "parking only. Guest I/O is proven by the guest proof jobs; the"
+          echo "os-claim-summary job combines them."
+
+  # ---------------------------------------------------------------------------
+  # OS-claim summary — the only job whose success means "OS-level completion
+  # claims are permitted".  It requires the dual-arch boot gate AND every
+  # guest I/O proof through the virtualizer path (net, blk, console).
+  # ---------------------------------------------------------------------------
+  os-claim-summary:
+    name: OS-claim gate (boot + guest net/blk/console proofs)
+    runs-on: ubuntu-latest
+    needs: [os-claim-gate, guest-net-proof, guest-blk-proof, ubuntu-agentos-virtio-proof]
+    steps:
+      - name: Summary
+        run: |
+          echo "✅ OS-claim gate passed:"
+          echo "   - aarch64 + x86_64 boot (GUEST_OS=none)"
+          echo "   - buildroot guest packet through emulated virtio-net"
+          echo "   - buildroot guest request through emulated virtio-blk"
+          echo "   - Ubuntu initramfs net + blk + console through agentOS VirtIO"
           echo "OS-level completion claims are permitted for this commit."
 
   # ── Track P: HURD-parity service CI jobs ────────────────────────────────
