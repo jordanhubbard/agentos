@@ -300,7 +300,7 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
         run_make(&make_arg_refs, &repo_root).context("profile-driven build step failed")?;
     }
 
-    let tmp_dir = repo_root.join("build/tmp");
+    let tmp_dir = qemu_tmp_dir(&repo_root);
     std::fs::create_dir_all(&tmp_dir)
         .with_context(|| format!("failed to create {}", tmp_dir.display()))?;
     let log_file = tempfile::Builder::new()
@@ -582,7 +582,7 @@ pub fn launch(args: &QemuLaunchArgs) -> anyhow::Result<()> {
     let make_arg_refs = make_args.iter().map(String::as_str).collect::<Vec<_>>();
     run_make(&make_arg_refs, &repo_root).context("profile-driven build step failed")?;
 
-    let tmp_dir = repo_root.join("build/tmp");
+    let tmp_dir = qemu_tmp_dir(&repo_root);
     std::fs::create_dir_all(&tmp_dir)
         .with_context(|| format!("failed to create {}", tmp_dir.display()))?;
     let log_path = tmp_dir.join("agentos-run.log");
@@ -765,7 +765,7 @@ impl Drop for ChildGuard {
 }
 
 fn generate_ssh_test_key(repo_root: &Path, persistent: bool) -> anyhow::Result<SshTestKey> {
-    let tmp_dir = repo_root.join("build/tmp");
+    let tmp_dir = qemu_tmp_dir(&repo_root);
     std::fs::create_dir_all(&tmp_dir)
         .with_context(|| format!("failed to create {}", tmp_dir.display()))?;
     let (temporary_dir, key_dir) = if persistent {
@@ -804,6 +804,16 @@ fn generate_ssh_test_key(repo_root: &Path, persistent: bool) -> anyhow::Result<S
         private_key,
         public_key,
     })
+}
+
+/// Directory for QEMU logs and control sockets. Defaults to `build/tmp`
+/// under the repo root; `AGENTOS_TMP_DIR` overrides it. The override exists
+/// because QEMU binds Unix sockets here and macOS caps socket paths at 104
+/// bytes, which a repo checked out under `.claude/worktrees/<name>/` exceeds.
+pub fn qemu_tmp_dir(repo_root: &Path) -> PathBuf {
+    std::env::var_os("AGENTOS_TMP_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| repo_root.join("build/tmp"))
 }
 
 pub fn run_make(args: &[&str], cwd: &Path) -> anyhow::Result<()> {
