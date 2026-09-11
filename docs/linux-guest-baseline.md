@@ -1,6 +1,6 @@
 # Linux Guest Baseline
 
-Status: accepted roadmap decision, implementation pending
+Status: accepted roadmap decision, implementation in progress
 
 Snapshot date: 2026-09-08
 
@@ -80,3 +80,10 @@ Debian becomes the required integration guest only when the full parity suite
 passes at one immutable revision. Until then, Ubuntu remains the required v0.2
 gate and Debian is additive. Buildroot continues to own low-level device proof
 regardless of the integration distribution.
+
+The executable Debian profile now stages and verifies the pinned qcow2,
+converts it to writable raw media, extracts its bounded ARM64 root partition,
+and obtains the kernel and initrd through generic host recipe actions. Boot,
+authenticated SSH, desktop, lifecycle, and cross-architecture evidence remain
+qualification work; `status = "runtime"` means the profile is executable, not
+that those release claims have passed.

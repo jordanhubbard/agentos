@@ -8,6 +8,7 @@
 void aos_vmm_virtio_console_init(void);
 void aos_vmm_virtio_console_after_fault(void);
 bool aos_vmm_virtio_console_driver_ready(void);
+bool aos_vmm_virtio_console_tx_active(void);
 
 /* CC-PD / serial_virt bridge used by the guest lifecycle contract. */
 uint32_t aos_vmm_virtio_console_drain_tx(uint8_t *dst, uint32_t max);

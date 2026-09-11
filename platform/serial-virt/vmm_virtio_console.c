@@ -95,6 +95,11 @@ bool aos_vmm_virtio_console_driver_ready(void)
     return g_ready && g_driver_ok;
 }
 
+bool aos_vmm_virtio_console_tx_active(void)
+{
+    return aos_vmm_virtio_console_driver_ready() && g_tx_pumped;
+}
+
 uint32_t aos_vmm_virtio_console_drain_tx(uint8_t *dst, uint32_t max)
 {
     uint32_t n = 0u;

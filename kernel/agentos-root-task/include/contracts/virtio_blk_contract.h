@@ -111,12 +111,14 @@ struct __attribute__((packed)) virtio_blk_reply_flush {
     uint32_t status;
 };
 
-/* OP_BLK_INFO reply: MR0=status, MR1=capacity_lo, MR2=capacity_hi, MR3=block_size */
+/* OP_BLK_INFO reply: MR0=status, MR1=capacity_lo, MR2=capacity_hi,
+ * MR3=block_size, MR4=AOS_HOST_BLK_INFO_* flags. */
 struct __attribute__((packed)) virtio_blk_reply_info {
     uint32_t status;
     uint32_t capacity_lo;  /* low 32 bits of total sector count */
     uint32_t capacity_hi;  /* high 32 bits of total sector count */
     uint32_t block_size;   /* bytes per sector (typically 512) */
+    uint32_t flags;        /* AOS_HOST_BLK_INFO_* */
 };
 
 /* OP_BLK_HEALTH reply: MR0=ok, MR1=initialized, MR2=error_count */

@@ -145,7 +145,8 @@ struct Host {
 struct HostDesktop {
     adapter: String,
     local_port: u16,
-    guest_port: u16,
+    guest_port: Option<u16>,
+    guest_socket: Option<String>,
     provision_timeout_secs: u64,
     frame_timeout_secs: u64,
     io_timeout_secs: u64,
@@ -159,6 +160,8 @@ struct HostBuild {
     template: String,
     base: Option<String>,
     bootargs: Option<String>,
+    initrd_total_bytes: Option<u64>,
+    media_initrd_cache: Option<String>,
     acquire_dir: String,
 }
 
@@ -212,6 +215,8 @@ struct QemuMedia {
     drive_id: String,
     bus: u8,
     #[serde(default)]
+    writable: bool,
+    #[serde(default)]
     override_env: Vec<String>,
 }
 
@@ -250,7 +255,8 @@ pub(crate) struct HostProfilePlan {
 #[derive(Clone, Debug)]
 pub(crate) struct DesktopPlan {
     pub(crate) local_port: u16,
-    pub(crate) guest_port: u16,
+    pub(crate) guest_port: Option<u16>,
+    pub(crate) guest_socket: Option<String>,
     pub(crate) provision_timeout_secs: u64,
     pub(crate) frame_timeout_secs: u64,
     pub(crate) io_timeout_secs: u64,
@@ -304,6 +310,7 @@ pub(crate) struct QemuMediaPlan {
     pub(crate) path: String,
     pub(crate) drive_id: String,
     pub(crate) bus: u8,
+    pub(crate) writable: bool,
     pub(crate) override_env: Vec<String>,
 }
 
@@ -323,6 +330,12 @@ const HOST_ACTIONS: &[&str] = &[
     "extract-ufs-file",
     "extract-arm64-linux-image",
     "extract-arm64-elf-image",
+    "build-initramfs-file",
+    "append-initramfs-file",
+    "convert-qcow2-raw",
+    "extract-gpt-partition",
+    "extract-ext4-file",
+    "normalize-arm64-linux-image",
     "decompress-gzip",
     "copy",
     "build-initramfs",
@@ -353,6 +366,12 @@ pub(crate) fn acquire_recipe(root: &Path, path: &Path) -> Result<(String, Vec<Re
                     | "extract-iso-file"
                     | "extract-arm64-linux-image"
                     | "extract-arm64-elf-image"
+                    | "build-initramfs-file"
+                    | "append-initramfs-file"
+                    | "convert-qcow2-raw"
+                    | "extract-gpt-partition"
+                    | "extract-ext4-file"
+                    | "normalize-arm64-linux-image"
                     | "build-linux-probe-initramfs"
             ),
             "runtime host.acquire action {:?} has no bounded executor",
@@ -423,6 +442,7 @@ pub(crate) fn host_profile_plan(root: &Path, path: &Path) -> Result<HostProfileP
                     path: media.path.clone(),
                     drive_id: media.drive_id.clone(),
                     bus: media.bus,
+                    writable: media.writable,
                     override_env: media.override_env.clone(),
                 })
                 .collect(),
@@ -478,6 +498,7 @@ pub(crate) fn host_profile_plan(root: &Path, path: &Path) -> Result<HostProfileP
             .map(|desktop| DesktopPlan {
                 local_port: desktop.local_port,
                 guest_port: desktop.guest_port,
+                guest_socket: desktop.guest_socket.clone(),
                 provision_timeout_secs: desktop.provision_timeout_secs,
                 frame_timeout_secs: desktop.frame_timeout_secs,
                 io_timeout_secs: desktop.io_timeout_secs,
@@ -675,6 +696,33 @@ fn prepare_bundle(
         );
     }
 
+    let checked_initrd_total = match host_build.initrd_total_bytes {
+        Some(expected) => {
+            let media_cache = host_build
+                .media_initrd_cache
+                .as_deref()
+                .context("host.build.initrd_total_bytes requires media_initrd_cache")?;
+            let media_path = confined_repo_path(repo_root, media_cache)?;
+            let media_bytes = fs::metadata(&media_path)
+                .with_context(|| format!("reading media initrd {}", media_path.display()))?
+                .len();
+            let overlay_bytes = initrd
+                .as_ref()
+                .map(|path| fs::metadata(path).map(|metadata| metadata.len()))
+                .transpose()?
+                .unwrap_or(0);
+            let actual = media_bytes
+                .checked_add(overlay_bytes)
+                .context("media initrd plus overlay size overflow")?;
+            ensure!(
+                actual == expected,
+                "host.build.initrd_total_bytes mismatch: declared {expected}, media {media_bytes} + overlay {overlay_bytes} = {actual}"
+            );
+            Some(actual)
+        }
+        None => None,
+    };
+
     fs::create_dir_all(output_dir)
         .with_context(|| format!("creating build bundle {}", output_dir.display()))?;
     let dtb = render_profile_dtb(
@@ -682,6 +730,7 @@ fn prepare_bundle(
         placement,
         host_build,
         initrd.as_deref(),
+        checked_initrd_total,
         repo_root,
         output_dir,
     )?;
@@ -701,13 +750,7 @@ fn prepare_bundle(
     fs::copy(&kernel, output_dir.join("kernel.bin"))?;
     fs::copy(&dtb, output_dir.join("guest.dtb"))?;
     let packaged_initrd = output_dir.join("initrd.bin");
-    if profile
-        .boot
-        .as_ref()
-        .and_then(|boot| boot.media_initrd_path.as_ref())
-        .is_some()
-        || initrd.is_none()
-    {
+    if initrd.is_none() {
         fs::write(&packaged_initrd, [])?;
     } else {
         fs::copy(initrd.as_ref().unwrap(), &packaged_initrd)?;
@@ -715,6 +758,13 @@ fn prepare_bundle(
     fs::write(
         output_dir.join("profile.bin"),
         compile(&profile, &canonical, placement_name)?,
+    )?;
+    fs::write(
+        output_dir.join("profile_build.h"),
+        format!(
+            "#ifndef AGENTOS_GUEST_PROFILE_BUILD_H\n#define AGENTOS_GUEST_PROFILE_BUILD_H\n#include <stdint.h>\n#define AGENTOS_GUEST_INITRD_TOTAL_BYTES UINT64_C({})\n#endif\n",
+            checked_initrd_total.unwrap_or(0)
+        ),
     )?;
     println!(
         "[guest-profile] prepared {} in {}",
@@ -737,6 +787,7 @@ fn render_profile_dtb(
     placement: &Placement,
     build: &HostBuild,
     initrd: Option<&Path>,
+    checked_initrd_total: Option<u64>,
     repo_root: &Path,
     output_dir: &Path,
 ) -> Result<PathBuf> {
@@ -759,10 +810,11 @@ fn render_profile_dtb(
     let gpa = placement.guest_gpa_base.unwrap();
     let ram = placement.ram_size.unwrap();
     let initrd_start = placement.initrd_load_address.unwrap_or(0);
-    let initrd_size = initrd
+    let packaged_initrd_size = initrd
         .map(|path| fs::metadata(path).map(|metadata| metadata.len()))
         .transpose()?
         .unwrap_or(0);
+    let initrd_size = checked_initrd_total.unwrap_or(packaged_initrd_size);
     let initrd_end = initrd_start
         .checked_add(initrd_size)
         .context("initrd end address overflow")?;
@@ -1097,6 +1149,22 @@ fn validate(profile: &Profile, placement: Option<&str>) -> Result<()> {
     if profile.artifacts.contains_key("initrd") {
         validate_artifact(profile, "initrd", status == Status::Runtime)?;
     }
+    if let Some(total) = profile
+        .host
+        .as_ref()
+        .and_then(|host| host.build.as_ref())
+        .and_then(|build| build.initrd_total_bytes)
+    {
+        let initrd_bound = profile
+            .artifacts
+            .get("initrd")
+            .and_then(|artifact| artifact.max_bytes)
+            .context("host.build.initrd_total_bytes requires a bounded initrd artifact")?;
+        ensure!(
+            total <= initrd_bound,
+            "host.build.initrd_total_bytes must fit artifacts.initrd.max_bytes"
+        );
+    }
     ensure!(
         profile
             .artifacts
@@ -1306,12 +1374,38 @@ fn validate_host(host: Option<&Host>) -> Result<()> {
     }
     if let Some(desktop) = &host.desktop {
         enum_value(&desktop.adapter, &["rfb-over-ssh"])?;
+        let has_guest_port = desktop.guest_port.is_some();
+        let has_guest_socket = desktop.guest_socket.is_some();
         ensure!(
-            desktop.local_port != 0
-                && desktop.guest_port != 0
-                && desktop.local_port != desktop.guest_port,
-            "host.desktop ports must be nonzero and distinct"
+            has_guest_port != has_guest_socket,
+            "host.desktop requires exactly one of guest_port or guest_socket"
         );
+        ensure!(
+            desktop.local_port != 0,
+            "host.desktop.local_port must be nonzero"
+        );
+        if let Some(guest_port) = desktop.guest_port {
+            ensure!(
+                guest_port != 0 && desktop.local_port != guest_port,
+                "host.desktop ports must be nonzero and distinct"
+            );
+        }
+        if let Some(guest_socket) = &desktop.guest_socket {
+            ensure!(
+                guest_socket.starts_with('/')
+                    && guest_socket.len() <= 100
+                    && !guest_socket
+                        .chars()
+                        .any(|ch| matches!(ch, ':' | '\n' | '\r' | '\0'))
+                    && Path::new(guest_socket)
+                        .components()
+                        .all(|component| matches!(
+                            component,
+                            std::path::Component::RootDir | std::path::Component::Normal(_)
+                        )),
+                "host.desktop.guest_socket must be a bounded absolute path"
+            );
+        }
         for (field, seconds) in [
             ("provision_timeout_secs", desktop.provision_timeout_secs),
             ("frame_timeout_secs", desktop.frame_timeout_secs),
@@ -1361,6 +1455,21 @@ fn validate_host(host: Option<&Host>) -> Result<()> {
                         .any(|ch| matches!(ch, '\0' | '\n' | '\r' | '"' | '\\')),
                 "host.build.bootargs is not a bounded DTS string"
             );
+        }
+        if let Some(total) = build.initrd_total_bytes {
+            ensure!(total > 0, "host.build.initrd_total_bytes must be nonzero");
+            ensure!(
+                build.media_initrd_cache.is_some(),
+                "host.build.initrd_total_bytes requires media_initrd_cache"
+            );
+        } else {
+            ensure!(
+                build.media_initrd_cache.is_none(),
+                "host.build.media_initrd_cache requires initrd_total_bytes"
+            );
+        }
+        if let Some(path) = &build.media_initrd_cache {
+            validate_repo_relative(path, "host.build.media_initrd_cache")?;
         }
     }
     for (recipe_name, recipe) in [
@@ -1492,12 +1601,24 @@ fn valid_env_name(value: &str) -> bool {
 
 fn validate_host_action(step: &RecipeStep) -> Result<()> {
     let (required_args, optional_args): (&[&str], &[&str]) = match step.action.as_str() {
-        "stage-url" => (&["cache_name", "output", "url"], &["override_env"]),
+        "stage-url" => (
+            &["cache_name", "output", "url"],
+            &["override_env", "sha512"],
+        ),
         "download-tar-member" => (&["url", "member", "output"], &[]),
         "extract-iso-file" => (&["source", "member", "output"], &["min_bytes"]),
         "extract-arm64-linux-image" | "extract-arm64-elf-image" => {
             (&["source", "member", "output"], &[])
         }
+        "build-initramfs-file" => (&["output", "path", "mode", "content"], &["compression"]),
+        "append-initramfs-file" => (
+            &["source", "output", "path", "mode", "content"],
+            &["compression"],
+        ),
+        "convert-qcow2-raw" => (&["source", "output"], &[]),
+        "extract-gpt-partition" => (&["source", "output", "index"], &["sector_size"]),
+        "extract-ext4-file" => (&["source", "output", "path"], &[]),
+        "normalize-arm64-linux-image" => (&["source", "output"], &[]),
         "build-linux-probe-initramfs" => (&["output"], &[]),
         "download" | "verify-sha256" => (&["artifact"], &[]),
         "extract-ufs-file" => (&["member", "artifact"], &[]),
@@ -1530,10 +1651,76 @@ fn validate_host_action(step: &RecipeStep) -> Result<()> {
             "host downloads must use HTTPS"
         );
     }
+    if let Some(value) = step.args.get("sha512") {
+        ensure!(
+            value.len() == 128
+                && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+                && value.bytes().any(|byte| byte != b'0'),
+            "sha512 must be a nonzero 128-digit hexadecimal digest"
+        );
+    }
     if let Some(value) = step.args.get("min_bytes") {
         ensure!(
             value.parse::<u64>().is_ok_and(|number| number > 0),
             "min_bytes must be a positive integer"
+        );
+    }
+    if matches!(
+        step.action.as_str(),
+        "build-initramfs-file"
+            | "append-initramfs-file"
+            | "convert-qcow2-raw"
+            | "extract-gpt-partition"
+            | "extract-ext4-file"
+            | "normalize-arm64-linux-image"
+    ) {
+        let keys: &[&str] = match step.action.as_str() {
+            "build-initramfs-file" => &["output", "path"],
+            "append-initramfs-file" => &["source", "output", "path"],
+            "extract-ext4-file" => &["source", "output"],
+            _ => &["source", "output"],
+        };
+        for key in keys {
+            validate_repo_relative(
+                &step.args[*key],
+                &format!("host action {:?} argument {key:?}", step.action),
+            )?;
+        }
+    }
+    if matches!(
+        step.action.as_str(),
+        "build-initramfs-file" | "append-initramfs-file"
+    ) {
+        ensure!(
+            u32::from_str_radix(&step.args["mode"], 8).is_ok_and(|mode| mode <= 0o777),
+            "initramfs file mode must be octal and at most 0777"
+        );
+        if let Some(compression) = step.args.get("compression") {
+            enum_value(compression, &["none", "zstd"])?;
+        }
+    }
+    if step.action == "extract-gpt-partition" {
+        ensure!(
+            step.args["index"]
+                .parse::<u32>()
+                .is_ok_and(|index| (1..=128).contains(&index)),
+            "extract-gpt-partition index must be 1..=128"
+        );
+        if let Some(sector_size) = step.args.get("sector_size") {
+            enum_value(sector_size, &["512", "4096"])?;
+        }
+    }
+    if step.action == "extract-ext4-file" {
+        let path = Path::new(&step.args["path"]);
+        ensure!(
+            path.is_absolute()
+                && path.components().all(|component| {
+                    matches!(component, Component::RootDir | Component::Normal(_))
+                })
+                && step.args["path"]
+                    .bytes()
+                    .all(|byte| { byte.is_ascii_alphanumeric() || b"/_+.-".contains(&byte) }),
+            "extract-ext4-file path must be confined and absolute"
         );
     }
     if step.action == "assert-virtio" {
@@ -1872,6 +2059,13 @@ mod tests {
         assert!(plan.test.iter().any(|step| step.action == "assert-virtio"
             && step.args.get("scope").map(String::as_str) == Some("host-backed")));
         assert_eq!(plan.desktop.as_ref().unwrap().local_port, 15901);
+
+        let (_, acquire) = acquire_recipe(&root, &path).unwrap();
+        assert_eq!(acquire.first().unwrap().action, "stage-url");
+        assert!(acquire
+            .iter()
+            .any(|step| step.action == "build-initramfs-file"));
+        assert_eq!(acquire.last().unwrap().action, "extract-arm64-linux-image");
     }
 
     #[test]
@@ -1889,6 +2083,34 @@ mod tests {
             .as_mut()
             .unwrap()
             .local_port = 0;
+        assert!(validate(&profile, None).is_err());
+
+        let desktop = profile.host.as_mut().unwrap().desktop.as_mut().unwrap();
+        desktop.local_port = 15901;
+        desktop.guest_port = Some(5901);
+        assert!(validate(&profile, None).is_err());
+
+        let desktop = profile.host.as_mut().unwrap().desktop.as_mut().unwrap();
+        desktop.guest_port = None;
+        desktop.guest_socket = Some("/tmp/../escape.sock".to_string());
+        assert!(validate(&profile, None).is_err());
+    }
+
+    #[test]
+    fn media_initrd_exact_size_requires_a_bounded_cache_path() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../guest-profiles");
+        let (mut profile, _) = resolve(&root, Path::new("ubuntu-live.toml"), &mut Vec::new())
+            .expect("resolve live profile");
+        assert!(validate(&profile, None).is_ok());
+
+        profile
+            .host
+            .as_mut()
+            .unwrap()
+            .build
+            .as_mut()
+            .unwrap()
+            .media_initrd_cache = None;
         assert!(validate(&profile, None).is_err());
     }
 

@@ -73,7 +73,8 @@
 
 /* Features we will request from the device */
 #define VIRTIO_BLK_FEATURES_WANTED \
-    (VIRTIO_BLK_F_SIZE_MAX | VIRTIO_BLK_F_SEG_MAX | VIRTIO_BLK_F_BLK_SIZE)
+    (VIRTIO_BLK_F_SIZE_MAX | VIRTIO_BLK_F_SEG_MAX | VIRTIO_BLK_F_BLK_SIZE | \
+     VIRTIO_BLK_F_RO | VIRTIO_BLK_F_FLUSH)
 
 /* ─────────────────────────────────────────────────────────────────────────────
  * virtio-blk device configuration space (at VIRTIO_MMIO_CONFIG offset 0x100)

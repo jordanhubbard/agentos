@@ -35,6 +35,7 @@
 #include <stdint.h>
 #include <sel4/sel4.h>
 #include <libvmm/virtio/virtio.h>
+#include <libvmm/virtio/block_chunk.h>
 #include <sddf/util/fsmalloc.h>
 #include <sddf/util/ialloc.h>
 #include <sddf/blk/queue.h>
@@ -147,16 +148,6 @@ struct virtio_blk_outhdr {
 #define VIRTIO_BLK_NUM_VIRTQ 1
 #define VIRTIO_BLK_DEFAULT_VIRTQ 0
 
-typedef enum {
-    VIRTIO_BLK_REQ_STATE_INVALID = 0,
-    VIRTIO_BLK_REQ_STATE_FLUSHING,
-    VIRTIO_BLK_REQ_STATE_READING,
-    VIRTIO_BLK_REQ_STATE_WRITING_ALIGNED,
-    VIRTIO_BLK_REQ_STATE_RMW_QUEUEING,
-    VIRTIO_BLK_REQ_STATE_RMW_READING,
-    VIRTIO_BLK_REQ_STATE_RMW_WRITING,
-} request_state_t;
-
 /* This struct exists to bookkeep request metadata when converting sddf requests
  * from a virtio request so that it can be later retrieved when converting a
  * virtio response from sddf response.
@@ -173,6 +164,10 @@ typedef struct reqbk {
     uint32_t virtio_req_type;
     uint64_t virtio_sector;
     uint64_t total_req_size;
+    /* A guest request may be larger than the shared sDDF data region. Stream
+     * it through that bounded region one transfer-cell chunk at a time. */
+    uint32_t body_bytes_completed;
+    uint32_t body_bytes_current;
     /* For enqueuing sddf req/resp */
     uint32_t sddf_block_number;
     uintptr_t sddf_data_cell_base;
@@ -199,6 +194,7 @@ struct virtio_blk_device {
     blk_queue_handle_t queue_h;
     uint32_t queue_capacity;
     uintptr_t data_region;
+    uint16_t data_region_cells;
     /* Cap to notify sDDF server serving this client */
     seL4_CPtr server_ch;
 };

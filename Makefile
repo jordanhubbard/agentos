@@ -321,6 +321,7 @@ ifeq ($(UNAME_S),Darwin)
 		ninja \
 		dtc \
 		coreutils \
+		e2fsprogs \
 		zstd
 	@command -v cargo >/dev/null 2>&1 || \
 		(echo "[macOS] Installing Rust toolchain..." && \
@@ -343,6 +344,7 @@ else ifeq ($(UNAME_S),Linux)
 		cmake \
 		ninja-build \
 		device-tree-compiler \
+		e2fsprogs \
 		libarchive-tools \
 		openssh-client \
 		curl \
@@ -362,6 +364,7 @@ else ifeq ($(UNAME_S),FreeBSD)
 		llvm \
 		dtc \
 		dtc-devel \
+		e2fsprogs \
 		gmake \
 		curl \
 		wget \
@@ -974,6 +977,15 @@ test-integration:
 	    echo "FAIL: tests/platform/test_blk_virt_pump.c"; \
 	    status=1; \
 	fi; \
+	if gcc -I libvmm/include \
+	        tests/platform/test_virtio_blk_chunk.c \
+	        -o $(BUILD_TMP_DIR)/test_virtio_blk_chunk 2>&1 \
+	    && $(BUILD_TMP_DIR)/test_virtio_blk_chunk; then \
+	    echo "PASS: tests/platform/test_virtio_blk_chunk.c"; \
+	else \
+	    echo "FAIL: tests/platform/test_virtio_blk_chunk.c"; \
+	    status=1; \
+	fi; \
 	if cargo test -p xtask --lib --quiet; then \
 	    echo "PASS: xtask focused unit tests"; \
 	else \
@@ -1018,7 +1030,7 @@ e2e-nixos:
 	@exit 1
 
 e2e-freebsd15:
-	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os freebsd --timeout-secs $(QEMU_TEST_TIMEOUT)
+	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os freebsd --assert-live --timeout-secs $(QEMU_TEST_TIMEOUT)
 
 e2e-all: demo-test
 

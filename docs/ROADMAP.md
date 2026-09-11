@@ -5,7 +5,7 @@ acceptance. MAC is the execution authority: task state, ownership, and
 dependencies live in `mac task`. Releases are integration boundaries, not date
 promises, and close only when their runtime evidence matches their claims.
 
-The current published line is `v0.1.x`. New work lands on the default branch
+The current published line is `v0.2.x`. New work lands on the default branch
 first. Patch releases may carry bounded correctness and security fixes without
 changing the dependency order below.
 

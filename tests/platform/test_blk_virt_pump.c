@@ -170,6 +170,25 @@ static int test_flush_and_oob(void)
     PASS("test_flush_and_oob");
 }
 
+static int test_read_only_media_rejects_write(void)
+{
+    aos_blk_virt_t v;
+    aos_blk_virt_client_t c;
+    aos_blk_resp_t resp;
+
+    if (setup_one(&v, &c) != 0) {
+        return 1;
+    }
+    c.info->read_only = true;
+    memset(c.data, 0x5a, AOS_BLK_TRANSFER_SIZE);
+    CHECK(enqueue_req(&c, AOS_BLK_REQ_WRITE, 0, 0, 1, 4) == 0);
+    CHECK(aos_blk_virt_pump(&v) == 1u);
+    CHECK(dequeue_resp(&c, &resp) == 0);
+    CHECK(resp.status == AOS_BLK_RESP_ERR_IO);
+    CHECK(resp.success_count == 0u);
+    PASS("test_read_only_media_rejects_write");
+}
+
 static int test_two_clients_share_disk(void)
 {
     aos_blk_virt_t v;
@@ -298,6 +317,7 @@ int main(void)
     failed += test_empty_pump();
     failed += test_write_read_roundtrip();
     failed += test_flush_and_oob();
+    failed += test_read_only_media_rejects_write();
     failed += test_two_clients_share_disk();
     failed += test_drop_when_resp_full();
     failed += test_external_backend();

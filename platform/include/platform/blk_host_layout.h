@@ -51,6 +51,9 @@ typedef struct __attribute__((packed)) {
 #define AOS_HOST_BLK_OP_INFO             0xF3u
 #define AOS_HOST_BLK_OP_HEALTH           0xF5u
 
+/* OP_INFO flags returned after capacity and block size. */
+#define AOS_HOST_BLK_INFO_READ_ONLY      (1u << 0)
+
 #define AOS_HOST_BLK_MEDIA_PRIMARY        0u
 #define AOS_HOST_BLK_MEDIA_SECONDARY       1u
 #define AOS_HOST_BLK_MEDIA_COUNT         2u

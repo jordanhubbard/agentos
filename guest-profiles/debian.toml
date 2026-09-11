@@ -1,16 +1,196 @@
 schema = 2
 id = "debian-stable-aarch64"
-status = "planned"
+status = "runtime"
 extends = "linux-base.toml"
 aliases = ["debian"]
 
 [boot]
-command_line = "console=hvc0 rdinit=/init panic=-1 ip=dhcp"
+command_line = "console=hvc0 quiet loglevel=3 root=UUID=eeb673b7-002d-483a-ba22-a4b6cad94540 rw rootwait systemd.unit=multi-user.target systemd.getty_auto=no cloud-init=disabled panic=0"
+
+[artifacts.kernel]
+source = "debian-cloud:13/20260831-2587:/boot/vmlinuz-6.12.107+deb13-arm64"
+cache = "build/guest-images/debian-13-arm64-Image"
+sha256 = "9c37ace54ef7e1919411fd912e9f34d6982ddd7f4c8ef3c8aee56f4c4d70db67"
+
+[artifacts.initrd]
+source = "generated:debian-cloud-initrd+profile-overlay"
+cache = "build/guest-images/debian-13-arm64-initrd"
+sha256 = "7366300afc76d50b336cd87955caecdee6c3de96b9e757b1293c907cc0219704"
+
+[artifacts.dtb]
+source = "generated:linux.dts+linux-virtio-overlay.dts.in"
+cache = "build/qemu_virt_aarch64/debian-vm.dtb"
+sha256 = "99efdfb5d3d043ab21012fb54d1cb6d157dd776faa96192aaf2bb5e0d3aded45"
+
+[placements.default]
+ram_size = 0x40000000
+dtb_load_address = 0x7f000000
+
+[placements.dual-primary]
+ram_size = 0x40000000
+dtb_load_address = 0x7f000000
+dtb_sha256 = "99efdfb5d3d043ab21012fb54d1cb6d157dd776faa96192aaf2bb5e0d3aded45"
+
+[host.build]
+adapter = "linux-merge"
+base = "libvmm/examples/simple/board/qemu_virt_aarch64/linux.dts"
+template = "kernel/agentos-root-task/linux-virtio-overlay.dts.in"
+acquire_dir = "build/guest-images"
 
 [[host.acquire]]
-action = "download"
-args = { artifact = "debian-cloud-image" }
+action = "stage-url"
+args = { cache_name = "debian-13-generic-arm64-20260831-2587.qcow2", output = "debian-13-generic-arm64-20260831-2587.qcow2", url = "https://cloud.debian.org/images/cloud/trixie/20260831-2587/debian-13-generic-arm64-20260831-2587.qcow2", sha512 = "27287048285224e662722b54c77849c9bd1a2fd60ccea5f2e75c644fbd638fad7e32a97e8e3d628c8bbfdb9cf757951c8300f3c21758647c8906359d9c892b42" }
+
+[[host.acquire]]
+action = "convert-qcow2-raw"
+args = { source = "debian-13-generic-arm64-20260831-2587.qcow2", output = "debian-13-generic-arm64-20260831-2587.raw" }
+
+[[host.acquire]]
+action = "extract-gpt-partition"
+args = { source = "debian-13-generic-arm64-20260831-2587.raw", output = "debian-13-arm64-root.ext4", index = "1" }
+
+[[host.acquire]]
+action = "extract-ext4-file"
+args = { source = "debian-13-arm64-root.ext4", output = "debian-13-arm64-vmlinuz", path = "/boot/vmlinuz-6.12.107+deb13-arm64" }
+
+[[host.acquire]]
+action = "normalize-arm64-linux-image"
+args = { source = "debian-13-arm64-vmlinuz", output = "debian-13-arm64-Image" }
+
+[[host.acquire]]
+action = "extract-ext4-file"
+args = { source = "debian-13-arm64-root.ext4", output = "debian-13-arm64-initrd.base", path = "/boot/initrd.img-6.12.107+deb13-arm64" }
+
+[[host.acquire]]
+action = "append-initramfs-file"
+args = { source = "debian-13-arm64-initrd.base", output = "debian-13-arm64-initrd.with-virtio", path = "scripts/init-top/agentos-virtio", mode = "0755", compression = "zstd", content = "#!/bin/sh\nset -eu\n/usr/sbin/modprobe virtio_mmio\n/usr/sbin/modprobe virtio_blk\n/usr/sbin/modprobe virtio_net\n" }
+
+[[host.acquire]]
+action = "append-initramfs-file"
+args = { source = "debian-13-arm64-initrd.with-virtio", output = "debian-13-arm64-initrd.with-virtio-order", path = "scripts/init-top/ORDER", mode = "0755", compression = "zstd", content = "/scripts/init-top/all_generic_ide \"$@\"\n[ -e /conf/param.conf ] && . /conf/param.conf\n/scripts/init-top/blacklist \"$@\"\n[ -e /conf/param.conf ] && . /conf/param.conf\n/scripts/init-top/keymap \"$@\"\n[ -e /conf/param.conf ] && . /conf/param.conf\n/scripts/init-top/udev \"$@\"\n[ -e /conf/param.conf ] && . /conf/param.conf\n/scripts/init-top/agentos-virtio \"$@\"\n[ -e /conf/param.conf ] && . /conf/param.conf\n" }
+
+[[host.acquire]]
+action = "append-initramfs-file"
+args = { source = "debian-13-arm64-initrd.with-virtio-order", output = "debian-13-arm64-initrd.with-console", path = "scripts/local-bottom/agentos-console", mode = "0755", compression = "zstd", content = "#!/bin/sh\nset -eu\nunit_dir=\"${rootmnt}/etc/systemd/system\"\nmkdir -p \"${unit_dir}/multi-user.target.wants\"\nln -sf /dev/null \"${unit_dir}/systemd-resolved.service\"\nln -sf /dev/null \"${unit_dir}/systemd-timesyncd.service\"\nln -sf /dev/null \"${unit_dir}/systemd-networkd-wait-online.service\"\ncat >\"${unit_dir}/agentos-console.service\" <<'EOF'\n[Unit]\nDescription=agentOS virtio console login\n\n[Service]\nExecStartPre=/bin/echo Debian GNU/Linux 13 agentOS console\nExecStart=/bin/sh -i\nStandardInput=tty-force\nStandardOutput=tty\nStandardError=tty\nTTYPath=/dev/hvc0\nRestart=always\n\n[Install]\nWantedBy=multi-user.target\nEOF\nln -sf ../agentos-console.service \"${unit_dir}/multi-user.target.wants/agentos-console.service\"\ncat >\"${rootmnt}/etc/fstab\" <<'EOF'\n# The profile initramfs mounts the writable root; no firmware partition is needed.\nEOF\necho agentos-debian-console-hook-ready >/dev/console\n" }
+
+[[host.acquire]]
+action = "append-initramfs-file"
+args = { source = "debian-13-arm64-initrd.with-console", output = "debian-13-arm64-initrd.with-init-bottom", path = "scripts/init-bottom/agentos-ready", mode = "0755", compression = "zstd", content = "#!/bin/sh\nset -eu\necho agentos-debian-init-bottom >/dev/console\n[ -f \"${rootmnt}/etc/systemd/system/agentos-console.service\" ] || echo agentos-debian-console-config-missing >/dev/console\n[ -x \"${rootmnt}/sbin/init\" ] || echo agentos-debian-systemd-missing >/dev/console\n[ -c \"${rootmnt}/dev/hvc0\" ] || mknod \"${rootmnt}/dev/hvc0\" c 229 0\nrm -f \"${rootmnt}/dev/console\"\nmknod \"${rootmnt}/dev/console\" c 5 1\nif run-init -n \"${rootmnt}\" /sbin/init >/dev/console 2>&1; then\n    echo agentos-debian-init-validate-ok >/dev/console\nelse\n    echo agentos-debian-init-validate-failed >/dev/console\nfi\n" }
+
+[[host.acquire]]
+action = "append-initramfs-file"
+args = { source = "debian-13-arm64-initrd.with-init-bottom", output = "debian-13-arm64-initrd.with-init-bottom-order", path = "scripts/init-bottom/ORDER", mode = "0755", compression = "zstd", content = "/scripts/init-bottom/udev \"$@\"\n[ -e /conf/param.conf ] && . /conf/param.conf\n/scripts/init-bottom/agentos-ready \"$@\"\n[ -e /conf/param.conf ] && . /conf/param.conf\n" }
+
+[[host.acquire]]
+action = "append-initramfs-file"
+args = { source = "debian-13-arm64-initrd.with-init-bottom-order", output = "debian-13-arm64-initrd", path = "scripts/local-bottom/ORDER", mode = "0755", compression = "zstd", content = "/scripts/local-bottom/growroot \"$@\"\n/scripts/local-bottom/agentos-console \"$@\"\n[ -e /conf/param.conf ] && . /conf/param.conf\n" }
+
+[[host.qemu.media]]
+path = "build/guest-images/debian-13-generic-arm64-20260831-2587.raw"
+drive_id = "primary_media"
+bus = 8
+writable = true
+
+[host.qemu.ssh]
+account = "root"
+host_port = 12222
+
+[host.desktop]
+adapter = "rfb-over-ssh"
+local_port = 15902
+guest_port = 5901
+provision_timeout_secs = 3600
+frame_timeout_secs = 600
+io_timeout_secs = 180
+provision_script = '''set -eu
+export DEBIAN_FRONTEND=noninteractive
+# agentOS does not expose a guest RTC yet; the generic host runner supplies
+# this value, while the profile owns the guest-specific clock command.
+date -u -s '@{{host_unix_time}}'
+if ! command -v Xtigervnc >/dev/null 2>&1 ||
+   ! command -v twm >/dev/null 2>&1 ||
+   ! command -v xterm >/dev/null 2>&1; then
+    apt-get -o Acquire::Retries=3 update
+    apt-get -o Acquire::Retries=3 install -y --no-install-recommends tigervnc-standalone-server twm xterm
+fi
+command -v Xtigervnc >/dev/null
+command -v twm >/dev/null
+command -v xterm >/dev/null
+printf 'agentos-desktop-binaries-ready\n'
+rm -f /tmp/.X1-lock /tmp/.X11-unix/X1 /tmp/agentos-desktop.pid
+setsid -f env HOME=/root USER=root Xtigervnc :1 -rfbport 5901 -rendernode "" -ac -localhost yes -SecurityTypes None -geometry 1024x768 -depth 24 </dev/null >/tmp/agentos-xvnc.log 2>&1
+attempt=0
+while test "$attempt" -lt 120; do
+    test -S /tmp/.X11-unix/X1 && ss -ltn | grep -q ':5901' && break
+    attempt=$((attempt + 1))
+    sleep 1
+done
+if ! test -S /tmp/.X11-unix/X1 || ! ss -ltn | grep -q ':5901'; then
+    cat /tmp/agentos-xvnc.log >&2
+    exit 1
+fi
+printf 'agentos-desktop-rfb-listener-ready\n'
+env HOME=/root USER=root DISPLAY=:1 sh -c 'twm >/tmp/agentos-twm.log 2>&1 & exec xterm -geometry 80x24+80+80 -title "agentOS Debian desktop"' >/tmp/agentos-desktop.log 2>&1 &
+echo $! >/tmp/agentos-desktop.pid
+attempt=0
+while test "$attempt" -lt 120; do
+    if test -s /tmp/agentos-desktop.pid && kill -0 "$(cat /tmp/agentos-desktop.pid)" 2>/dev/null; then
+        printf 'agentos-desktop-app-ready\n'
+        break
+    fi
+    attempt=$((attempt + 1))
+    sleep 1
+done
+if ! test -s /tmp/agentos-desktop.pid || ! kill -0 "$(cat /tmp/agentos-desktop.pid)" 2>/dev/null; then
+    cat /tmp/agentos-xvnc.log /tmp/agentos-twm.log /tmp/agentos-desktop.log >&2
+    exit 1
+fi
+RFB_VERSION="$(timeout 120 bash -c 'exec 3<>/dev/tcp/127.0.0.1/5901; IFS= read -r version <&3; printf "%s" "$version"')"
+test "$RFB_VERSION" = 'RFB 003.008'
+printf 'agentos-desktop-local-rfb-ready\n'
+'''
+
+[host.console]
+adapter = "expect"
+success = ["# "]
+require = ["Debian GNU/Linux 13"]
+reject = ["Initramfs unpacking failed", "emergency mode", "Emergency Shell", "Press Enter for maintenance", "System halted"]
+probe_line = "printf 'agentos-debian-%s\\n' proof && ip link set eth0 up && printf 'agentos-debian-net-%s\\n' proof"
+probe_marker = "agentos-debian-net-proof"
+probe_timeout_secs = 180
+
+[[host.provision]]
+action = "send-console"
+args = { text = "ip link set eth0 up && ip addr flush dev eth0 scope global && ip addr add 10.0.2.15/24 dev eth0 && ip route replace default via 10.0.2.2" }
+
+[[host.provision]]
+action = "send-console"
+args = { text = "rm -f /etc/resolv.conf && printf 'nameserver 10.0.2.3\\n' > /etc/resolv.conf" }
+
+[[host.provision]]
+action = "send-console"
+args = { text = "mkdir -p /root/.ssh /run/sshd && printf '%s\\n' '{{ssh_public_key}}' > /root/.ssh/authorized_keys && chmod 700 /root/.ssh && chmod 600 /root/.ssh/authorized_keys" }
+
+[[host.provision]]
+action = "send-console"
+args = { text = "rm -f /run/agentos-ssh-host-key /run/agentos-ssh-host-key.pub /run/agentos-sshd.pid && ssh-keygen -q -t ed25519 -N '' -f /run/agentos-ssh-host-key" }
+
+[[host.provision]]
+action = "send-console"
+args = { text = "/usr/sbin/sshd -t -f /dev/null -o HostKey=/run/agentos-ssh-host-key -o AuthorizedKeysFile=/root/.ssh/authorized_keys -o UsePAM=no -o PidFile=/run/agentos-sshd.pid" }
+
+[[host.provision]]
+action = "send-console"
+args = { text = "/usr/sbin/sshd -f /dev/null -o HostKey=/run/agentos-ssh-host-key -o AuthorizedKeysFile=/root/.ssh/authorized_keys -o UsePAM=no -o UseDNS=no -o GSSAPIAuthentication=no -o MaxStartups=100:100:100 -o PidFile=/run/agentos-sshd.pid -o PasswordAuthentication=no -o KbdInteractiveAuthentication=no -o PubkeyAuthentication=yes -o PermitRootLogin=prohibit-password" }
+
+[[host.test]]
+action = "wait-console"
+args = { marker = "# " }
 
 [[host.test]]
 action = "assert-virtio"
-args = { devices = "net,block,console" }
+args = { devices = "console", scope = "host-backed", console_io = "bidirectional" }
+
+[[host.test]]
+action = "wait-ssh"
+args = { account = "root", marker = "Linux" }
