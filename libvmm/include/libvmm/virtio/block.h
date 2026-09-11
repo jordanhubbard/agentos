@@ -173,6 +173,10 @@ typedef struct reqbk {
     uint32_t virtio_req_type;
     uint64_t virtio_sector;
     uint64_t total_req_size;
+    /* A guest request may be larger than the shared sDDF data region. Stream
+     * it through that bounded region one transfer-cell chunk at a time. */
+    uint32_t body_bytes_completed;
+    uint32_t body_bytes_current;
     /* For enqueuing sddf req/resp */
     uint32_t sddf_block_number;
     uintptr_t sddf_data_cell_base;
@@ -199,6 +203,7 @@ struct virtio_blk_device {
     blk_queue_handle_t queue_h;
     uint32_t queue_capacity;
     uintptr_t data_region;
+    uint16_t data_region_cells;
     /* Cap to notify sDDF server serving this client */
     seL4_CPtr server_ch;
 };
