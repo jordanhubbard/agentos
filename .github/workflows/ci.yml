@@ -453,7 +453,9 @@ jobs:
   # arch fails, OS-level completion claims are blocked.
   # ---------------------------------------------------------------------------
   os-claim-gate:
-    name: Dual-arch boot gate (aarch64 + x86_64, GUEST_OS=none)
+    # Keep the protected check's established name. The aggregate OS-claim job
+    # below adds stronger evidence without invalidating branch protection.
+    name: Dual-arch OS-claim gate (aarch64 + x86_64, GUEST_OS=none)
     runs-on: ubuntu-24.04
     needs: validate-topology
     steps:
