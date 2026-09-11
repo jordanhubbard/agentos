@@ -43,15 +43,27 @@ frame_timeout_secs = 600
 io_timeout_secs = 180
 provision_script = '''set -eu
 TIGERVNC_DEB=/tmp/tigervnc-standalone-server.deb
-TIGERVNC_URL=http://archive.ubuntu.com/ubuntu/pool/universe/t/tigervnc/tigervnc-standalone-server_1.15.0+dfsg-2build1_arm64.deb
 TIGERVNC_SHA256=30e536f05a504ad817b294abee51394143e140c57e4b4cea43c149973cfba3b2
+fetch_tigervnc_deb() {
+    output=$1
+    package=$2
+    for mirror in http://archive.ubuntu.com/ubuntu http://ports.ubuntu.com/ubuntu-ports; do
+        for attempt in 1 2; do
+            rm -f "$output"
+            printf 'fetching %s from %s (attempt %s)\n' "$package" "$mirror" "$attempt"
+            if timeout 60 wget -nv -O "$output" "$mirror/pool/universe/t/tigervnc/$package"; then
+                return 0
+            fi
+        done
+    done
+    return 1
+}
 if ! command -v Xtigervnc >/dev/null 2>&1; then
     TIGERVNC_COMMON_DEB=/tmp/tigervnc-common.deb
-    TIGERVNC_COMMON_URL=http://archive.ubuntu.com/ubuntu/pool/universe/t/tigervnc/tigervnc-common_1.15.0+dfsg-2build1_arm64.deb
     TIGERVNC_COMMON_SHA256=ee669c6253bde0b9f7b43c270607d560ea27285e88ba7dc379338e1cf91c3d1e
-    timeout 600 wget -q -O "$TIGERVNC_COMMON_DEB" "$TIGERVNC_COMMON_URL"
+    fetch_tigervnc_deb "$TIGERVNC_COMMON_DEB" tigervnc-common_1.15.0+dfsg-2build1_arm64.deb
     printf '%s  %s\n' "$TIGERVNC_COMMON_SHA256" "$TIGERVNC_COMMON_DEB" | sha256sum -c -
-    timeout 600 wget -q -O "$TIGERVNC_DEB" "$TIGERVNC_URL"
+    fetch_tigervnc_deb "$TIGERVNC_DEB" tigervnc-standalone-server_1.15.0+dfsg-2build1_arm64.deb
     printf '%s  %s\n' "$TIGERVNC_SHA256" "$TIGERVNC_DEB" | sha256sum -c -
     dpkg-deb -x "$TIGERVNC_COMMON_DEB" /
     dpkg-deb -x "$TIGERVNC_DEB" /
