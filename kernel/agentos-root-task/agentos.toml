@@ -63,6 +63,15 @@ priority = 165
 name = "net_pd"
 priority = 160
 
+# ── Virtualizer PDs (docs/TCB.md "TCB target": the only mux per class) ───────
+# net_virt owns no device frame or IRQ; it moves frames between the guest
+# sDDF queues and net_pd.  The descriptor keeps it just below net_pd (207),
+# which it calls into.
+
+[[pd]]
+name = "net_virt"
+priority = 205
+
 # ── Guest execution and control ──────────────────────────────────────────────
 
 [[pd]]
