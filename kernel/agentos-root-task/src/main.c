@@ -2005,10 +2005,12 @@ void root_task_main(const seL4_BootInfo *bi)
             dbg_puts("\n");
         }
 
+        /* The driver DMA window is shared by virtio_blk and blk_virt only.
+         * No VMM maps it: guest block data reaches the driver through the
+         * blk_virt queues (docs/TCB.md invariant 2). */
         if (g_blk_shared_frame_cap != seL4_CapNull &&
             (name_eq(pd->name, "virtio_blk") ||
-             name_eq(pd->name, "blk_virt") ||
-             pd_is_guest_vmm(pd))) {
+             name_eq(pd->name, "blk_virt"))) {
             seL4_Word blk_shared_copy = ut_alloc_slot();
             seL4_Error blk_err = seL4_NotEnoughMemory;
             if (blk_shared_copy != seL4_CapNull) {
