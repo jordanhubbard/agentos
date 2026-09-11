@@ -34,7 +34,11 @@ seL4
         │                  test harness and agentctl drive; guest console TX/RX
         │                  relays through it; prints `agentOS boot complete`
         │                  as the lowest-priority PD in the image
-        ├── net_pd         owns QEMU virtio-net (bus.16, IPA 0x0A002000)
+        ├── net_pd         owns QEMU virtio-net (bus.16, IPA 0x0A002000); its
+        │                  only client is net_virt
+        ├── net_virt       network virtualizer: no device frame, no IRQ; the
+        │                  only net mux (sDDF queues in the shared net frame
+        │                  + NBSend notifications, RAW contract into net_pd)
         ├── virtio_blk     owns QEMU virtio-blk (bus.8, IPA 0x0A001000) and
         │   / block_pd     the bounded DMA window
         ├── vm_manager     guest lifecycle control (create, bind, status)
@@ -44,19 +48,35 @@ seL4
               └── FreeBSD guest  in-tree virtio drivers
 ```
 
-**How I/O flows today.** The virtualizer is a *library* linked into each
-`guest_vmm` PD (`platform/net-virt/vmm_virtio_net.c`,
-`platform/blk-virt/vmm_virtio_blk.c`, `platform/serial-virt/vmm_virtio_console.c`).
-The sDDF-shaped queues sit between the emulated device and a pump inside the
-VMM address space. From the pump, net frames reach `net_pd` by per-frame seL4
-IPC with a shared data slot, block requests reach `virtio_blk` by IPC chunked
-through the DMA window, and console bytes reach `cc_pd` by IPC. There is no
-`serial_virt`, `net_virt`, or `blk_virt` PD in the image;
-`platform/net-virt/net_virt.c` and `platform/blk-virt/blk_virt.c` are not
-compiled by any build rule.
+**How I/O flows today.**
 
-That per-request IPC violates invariant 2 below. It is recorded here so the
-gap is visible, not to license it. Closing it is MAC
+*Network* (invariant 2 held). `net_virt` (`platform/net-virt/net_virt.c`) is
+a PD of its own, spawned at priority 205 with no device frame and no IRQ. The
+emulated virtio-net inside each `guest_vmm` (`platform/net-virt/vmm_virtio_net.c`,
+libvmm `src/virtio/net.c`) produces and consumes sDDF-shaped queues in the
+2 MB shared net frame (`AGENTOS_NET_SHARED_VA`, one 512 KB stride per guest
+client) that the root task maps into every VMM and into `net_virt`. Control
+is one `NET_VIRT_OP_ATTACH` Call per client; after that the VMM only
+`seL4_NBSend`s `NET_VIRT_EVENT_KICK` when `tx_active` is non-empty (and
+`net_virt` asked for kicks through the sDDF `consumer_signalled` flag), and
+`net_virt` NBSends `NET_SVC_EVENT_RX_READY` when it filled `rx_active`.
+`net_virt` alone speaks `net_pd`'s RAW contract (`RAW_SEND` / `RAW_RECV`
+over a per-client slot in the same frame); `net_pd` NBSends `RX_READY` to
+`net_virt`, never to a VMM, and no VMM holds a `net_pd` endpoint. When
+`net_pd` reports no host NIC, `net_virt` wires the clients into the
+sDDF-shaped hub/loopback pump instead. Contract:
+`include/contracts/net_virt_contract.h`. Lint: `tests/platform/lint_source_invariants.c`
+(`inv2:` network checks).
+
+*Block and console* (invariant 2 not yet held). The virtualizer is still a
+*library* linked into each `guest_vmm` PD (`platform/blk-virt/vmm_virtio_blk.c`,
+`platform/serial-virt/vmm_virtio_console.c`). The sDDF-shaped queues sit
+between the emulated device and a pump inside the VMM address space; from
+the pump, block requests reach `virtio_blk` by IPC chunked through the DMA
+window and console bytes reach `cc_pd` by IPC. There is no `serial_virt` or
+`blk_virt` PD in the image; `platform/blk-virt/blk_virt.c` is not compiled
+by any build rule. That per-request IPC is recorded here so the gap is
+visible, not to license it. Closing it is the BLK half of MAC
 `task_2895878a309f431da2d082d75c93e20d`.
 
 ## TCB target — the shape the platform is converging on
@@ -79,7 +99,11 @@ They are not in the TCB.
 
 1. **One owner per device frame and IRQ.** Held today.
 2. **Virtualizer is the only mux.** Shared-memory queues + notifications, not
-   `MSG_NET_SEND` through IPC registers. *Not yet held* (see above).
+   `MSG_NET_SEND` through IPC registers. *Held for network* (`net_virt` PD;
+   enforced by the `inv2:` network lint checks and the host-backed
+   `[net_virt] TX accepted by net_pd` / `[net_virt] RX delivered from net_pd`
+   markers in `make test-ubuntu-virtio`). *Not yet held for block and
+   console* (see above).
 3. **Virtio is the guest ABI.** Host may use virtio as the *physical* device
    (under QEMU). Guests must see a **different**, emulated virtio device
    invented by the VMM. Collapsing those two virtio worlds is a defect. Held

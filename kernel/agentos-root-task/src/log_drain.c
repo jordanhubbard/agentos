@@ -164,6 +164,11 @@ static inline void seL4_DebugPutChar(char c) { (void)c; }
 #ifndef SERIAL_MAX_WRITE_BYTES
 #define SERIAL_MAX_WRITE_BYTES 256u
 #endif
+/* Per-slot transfer-page layout; mirrors contracts/serial_contract.h. */
+#ifndef SERIAL_SHMEM_SLOT_STRIDE
+#define SERIAL_SHMEM_SLOT_STRIDE 512u
+#define SERIAL_SHMEM_SLOT_OFFSET(slot) ((uint32_t)(slot) * SERIAL_SHMEM_SLOT_STRIDE)
+#endif
 
 /* ── Ring buffer constants ─────────────────────────────────────────────────── */
 
@@ -370,7 +375,8 @@ static void uart_puts(const char *s)
         return;
     }
 
-    uint8_t *shmem = (uint8_t *)serial_shmem_vaddr;
+    uint8_t *shmem = (uint8_t *)serial_shmem_vaddr +
+                     SERIAL_SHMEM_SLOT_OFFSET(serial_slot);
     while (*s) {
         uint32_t n = 0;
         while (n < SERIAL_MAX_WRITE_BYTES && s[n]) n++;

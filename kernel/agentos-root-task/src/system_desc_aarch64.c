@@ -291,12 +291,13 @@ const system_desc_t system_desc_aarch64 = {
             .cnode_size_bits = 10u,
             .priority       = 250u,
             .self_svc_id    = SVC_ID_GUEST_VMM_SECONDARY,
-            .init_ep_count  = 6u,
+            /* No net_pd EP: the VMM reaches the network only through net_virt
+             * (docs/TCB.md invariant 2). */
+            .init_ep_count  = 5u,
             .init_eps = {
                 { SVC_ID_NAMESERVER, PD_CNODE_SLOT_NAMESERVER_EP },
                 { SVC_ID_LOG_DRAIN,  PD_CNODE_SLOT_LOG_DRAIN_EP  },
                 { SVC_ID_VIRTIO_BLK, 12u },
-                { SVC_ID_NET_PD,     PD_CNODE_SLOT_NET_PD_EP },
                 { SVC_ID_SERIAL,     PD_CNODE_SLOT_SERIAL_EP     },
                 { SVC_ID_NET_VIRT,   PD_CNODE_SLOT_NET_VIRT_EP },
             },
@@ -316,18 +317,20 @@ const system_desc_t system_desc_aarch64 = {
             .cnode_size_bits = 10u,  /* 1024 slots — IRQ handler caps + microkit layout */
             .priority       = 250u,
             .self_svc_id    = SVC_ID_GUEST_VMM_PRIMARY,
-            .init_ep_count  = 6u,
+            /* No net_pd EP: the VMM reaches the network only through net_virt
+             * (docs/TCB.md invariant 2). */
+            .init_ep_count  = 5u,
             .init_eps = {
                 { SVC_ID_NAMESERVER, PD_CNODE_SLOT_NAMESERVER_EP },
                 { SVC_ID_LOG_DRAIN,  PD_CNODE_SLOT_LOG_DRAIN_EP  },
                 { SVC_ID_VIRTIO_BLK, 12u },
-                { SVC_ID_NET_PD,     PD_CNODE_SLOT_NET_PD_EP },
                 { SVC_ID_SERIAL,     PD_CNODE_SLOT_SERIAL_EP     },
                 { SVC_ID_NET_VIRT,   PD_CNODE_SLOT_NET_VIRT_EP },
             },
             .irq_count = 0u,
             .irqs = { },
-            /* Net queues are a root-provisioned frame shared only with net_pd. */
+            /* Net queues are a root-provisioned frame shared with net_virt (and
+             * net_pd's slots live in the same frame above NET_SVC_SLOT_BASE). */
             .mr_count = 1u,
             .memory_regions = {
                 { .vaddr    = AOS_PRIMARY_GUEST_RAM_BASE,
@@ -351,12 +354,13 @@ const system_desc_t system_desc_aarch64 = {
             .cnode_size_bits = 10u,
             .priority       = 250u,
             .self_svc_id    = SVC_ID_GUEST_VMM_SECONDARY,
-            .init_ep_count  = 6u,
+            /* No net_pd EP: the VMM reaches the network only through net_virt
+             * (docs/TCB.md invariant 2). */
+            .init_ep_count  = 5u,
             .init_eps = {
                 { SVC_ID_NAMESERVER, PD_CNODE_SLOT_NAMESERVER_EP },
                 { SVC_ID_LOG_DRAIN,  PD_CNODE_SLOT_LOG_DRAIN_EP  },
                 { SVC_ID_VIRTIO_BLK, 12u },
-                { SVC_ID_NET_PD,     PD_CNODE_SLOT_NET_PD_EP },
                 { SVC_ID_SERIAL,     PD_CNODE_SLOT_SERIAL_EP     },
                 { SVC_ID_NET_VIRT,   PD_CNODE_SLOT_NET_VIRT_EP },
             },

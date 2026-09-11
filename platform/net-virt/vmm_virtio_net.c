@@ -4,14 +4,13 @@
  * net_virt PD (platform/net-virt/net_virt.c).  The VMM never moves a frame
  * over IPC: it enqueues/dequeues the shared queues and exchanges
  * notifications with net_virt (contracts/net_virt_contract.h).  net_pd alone
- * owns the page-isolated QEMU bus.16 transport and its DMA.
+ * owns the page-isolated QEMU bus.16 transport and its DMA; this file holds
+ * no net_pd endpoint.
  */
 
-#if defined(AGENTOS_GUEST_PRIMARY) || defined(AGENTOS_GUEST_SECONDARY)
 #include <contracts/net_virt_contract.h>
 #include "sel4_ipc.h"
 #include "system_desc.h"
-#endif
 #include <libvmm/libvmm.h>
 #include <libvmm/virtio/config.h>
 #include <libvmm/virtio/net.h>
@@ -32,14 +31,12 @@ _Static_assert(AOS_NET_GUEST_CLIENTS * AOS_NET_CLIENT_STRIDE <=
                "guest net queues must not overlap net-service slots");
 
 static struct virtio_net_device g_aos_net;
-static aos_net_virt_t           g_aos_virt;
 static net_queue_handle_t       g_rx;
 static net_queue_handle_t       g_tx;
 static int                      g_aos_net_ready;
 static int                      g_aos_net_probed;
 static int                      g_aos_net_driver_ok;
 static int                      g_aos_net_pumped;
-#if defined(AGENTOS_GUEST_PRIMARY) || defined(AGENTOS_GUEST_SECONDARY)
 static int                      g_net_virt_attached;
 static uint32_t                 g_net_virt_hw;
 static int                      g_tx_kicked;
@@ -154,16 +151,13 @@ static void net_virt_service(void)
         net_virt_kick();
     }
 }
-#endif
 
 void aos_vmm_virtio_net_rx_ready(void)
 {
-#if defined(AGENTOS_GUEST_PRIMARY) || defined(AGENTOS_GUEST_SECONDARY)
     if (!g_aos_net_ready) {
         return;
     }
     net_virt_service();
-#endif
 }
 
 void aos_vmm_virtio_net_init(uint32_t client_id)
@@ -177,30 +171,20 @@ void aos_vmm_virtio_net_init(uint32_t client_id)
                     (unsigned)client_id);
         return;
     }
-    aos_net_virt_reset(&g_aos_virt);
     aos_net_client_bind(region, client_id, &client);
     aos_net_client_init_buffers(&client);
-    if (aos_net_virt_add_client(&g_aos_virt, &client) != 0) {
-        LOG_VMM_ERR("emulated virtio-net: add client failed\n");
-        return;
-    }
 
     net_queue_init(&g_rx, (net_queue_t *)client.rx_free,
                    (net_queue_t *)client.rx_active, AOS_NET_CAPACITY);
     net_queue_init(&g_tx, (net_queue_t *)client.tx_free,
                    (net_queue_t *)client.tx_active, AOS_NET_CAPACITY);
 
-#if defined(AGENTOS_GUEST_PRIMARY) || defined(AGENTOS_GUEST_SECONDARY)
     /*
      * Buffers are initialised (above) before net_virt binds the queues.
      * tx_cap stays 0: libvmm does not signal on TX; the kick is issued from
      * net_virt_service() under the contract's consumer_signalled rules.
      */
     net_virt_attach(client_id);
-#else
-    /* No virtualizer in this build: keep the in-process pump silent. */
-    client.tx_active->consumer_signalled = 1u;
-#endif
 
     mac[0] = AOS_VIRTIO_NET_MAC0;
     mac[1] = AOS_VIRTIO_NET_MAC1;
@@ -253,19 +237,5 @@ void aos_vmm_virtio_net_after_fault(void)
                 (unsigned)g_aos_net.config.mac[5]);
     }
 
-#if defined(AGENTOS_GUEST_PRIMARY) || defined(AGENTOS_GUEST_SECONDARY)
     net_virt_service();
-#else
-    {
-        uint32_t n = aos_net_virt_pump(&g_aos_virt);
-        if (!g_aos_net_pumped && n > 0u) {
-            g_aos_net_pumped = 1;
-            LOG_VMM("emulated virtio-net: pumped %u frame(s) TX->RX\n", n);
-        }
-        (void)virtio_net_handle_rx(&g_aos_net);
-        if (g_tx.active) {
-            g_tx.active->consumer_signalled = 1u;
-        }
-    }
-#endif
 }

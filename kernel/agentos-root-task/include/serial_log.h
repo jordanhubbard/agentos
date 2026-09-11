@@ -67,12 +67,15 @@ static inline void serial_log_flush(serial_log_t *log)
 {
     sel4_msg_t req = {0};
     sel4_msg_t rep = {0};
-    volatile uint8_t *shared = (volatile uint8_t *)AGENTOS_SERIAL_SHMEM_VA;
+    volatile uint8_t *shared;
 
     if (log->used == 0u || !serial_log_open(log)) {
         log->used = 0u;
         return;
     }
+    /* Own slot region only: clients at other priorities flush concurrently. */
+    shared = (volatile uint8_t *)AGENTOS_SERIAL_SHMEM_VA +
+             SERIAL_SHMEM_SLOT_OFFSET(log->slot);
 
     for (uint32_t i = 0u; i < log->used; i++) {
         shared[i] = log->buffer[i];

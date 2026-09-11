@@ -161,6 +161,12 @@ static inline void seL4_DebugPutChar(char c) { (void)c; }
 #define SERIAL_MAX_WRITE_BYTES 256u
 #endif
 
+/* Per-slot transfer-page layout; mirrors contracts/serial_contract.h. */
+#ifndef SERIAL_SHMEM_SLOT_STRIDE
+#define SERIAL_SHMEM_SLOT_STRIDE 512u
+#define SERIAL_SHMEM_SLOT_OFFSET(slot) ((uint32_t)(slot) * SERIAL_SHMEM_SLOT_STRIDE)
+#endif
+
 #ifndef SERIAL_ERR_OVERRUN
 #define SERIAL_ERR_OVERRUN (1u << 0)
 #define SERIAL_ERR_FRAMING (1u << 1)
@@ -521,7 +527,8 @@ static uint32_t handle_write(sel4_badge_t badge, const sel4_msg_t *req,
 
     if (len > SERIAL_MAX_WRITE_BYTES) len = SERIAL_MAX_WRITE_BYTES;
 
-    const uint8_t *data = (const uint8_t *)serial_shmem_vaddr;
+    const uint8_t *data = (const uint8_t *)serial_shmem_vaddr +
+                          SERIAL_SHMEM_SLOT_OFFSET(slot);
 
     if (hw_ready && serial_shmem_vaddr) {
         pl011_put_banner(clients[slot].port_id);
@@ -565,10 +572,14 @@ static uint32_t handle_read(sel4_badge_t badge, const sel4_msg_t *req,
     poll_hw_rx();
 
     if (max > RX_BUF_SIZE) max = RX_BUF_SIZE;
+    if (max > SERIAL_SHMEM_SLOT_STRIDE) max = SERIAL_SHMEM_SLOT_STRIDE;
 
     uint8_t *shmem = (uint8_t *)serial_shmem_vaddr;
     uint32_t n     = 0;
-    if (shmem) n = rx_drain(&clients[slot].rx, shmem, max);
+    if (shmem) {
+        n = rx_drain(&clients[slot].rx, shmem + SERIAL_SHMEM_SLOT_OFFSET(slot),
+                     max);
+    }
 
     data_wr32(rep->data, 0, SERIAL_OK);
     data_wr32(rep->data, 4, n);
