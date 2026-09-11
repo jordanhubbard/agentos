@@ -218,6 +218,7 @@ PD_SPAWN_SERVER_SRCS     := src/spawn_server.c src/sha256_mini.c src/m3_bare_met
 PD_APP_SLOT_SRCS         := src/app_slot.c src/sha256_mini.c src/m3_bare_metal.c src/log.c
 PD_NET_SERVER_SRCS       := src/lwip_sys.c src/lwip_shim.c src/m3_bare_metal.c src/log.c   # net_server.c → services/net-server/ (E9-S3)
 PD_NET_PD_SRCS           := src/lwip_sys.c src/lwip_shim.c src/m3_bare_metal.c src/log.c   # net_pd.c → services/net-service/ (E9-S3)
+PD_NET_VIRT_SRCS         := src/m3_bare_metal.c src/log.c   # net_virt.c + net_virt_pump.c → platform/net-virt/
 PD_WG_NET_SRCS           := src/wg_net.c src/monocypher.c src/m3_bare_metal.c src/log.c
 PD_APP_MANAGER_SRCS      := src/app_manager.c src/m3_bare_metal.c src/log.c
 PD_HTTP_SVC_SRCS         := src/http_svc.c src/m3_bare_metal.c src/log.c
@@ -249,7 +250,7 @@ _PD_SRC_VARS := \
     PD_SERIAL_PD_SRCS PD_MEMPROFILER_SRCS PD_NETISOLATOR_SRCS PD_SNAPSHOTSCHED_SRCS \
     PD_PERFCOUNTERS_SRCS PD_TIMEPARTITION_SRCS PD_TRACERECORDER_SRCS PD_NAMESERVER_SRCS \
     PD_VIRTIO_BLK_SRCS PD_VFS_SERVER_SRCS PD_SPAWN_SERVER_SRCS PD_APP_SLOT_SRCS \
-    PD_NET_SERVER_SRCS PD_NET_PD_SRCS PD_WG_NET_SRCS PD_APP_MANAGER_SRCS \
+    PD_NET_SERVER_SRCS PD_NET_PD_SRCS PD_NET_VIRT_SRCS PD_WG_NET_SRCS PD_APP_MANAGER_SRCS \
     PD_HTTP_SVC_SRCS PD_VM_MANAGER_SRCS PD_AUTH_SERVER_SRCS PD_EXT2FS_SRCS \
     PD_PROC_SERVER_SRCS PD_VM_SNAPSHOT_SRCS PD_PFLOCAL_SERVER_SRCS PD_PFLOCAL_SRCS \
     PD_EXEC_SERVER_SRCS PD_TERM_SERVER_SRCS PD_BLOCK_PD_SRCS PD_FB_PD_SRCS \
@@ -294,6 +295,8 @@ NET_SERVER_OBJS       := $(BUILD_DIR)/net_server.o \
                     $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_NET_SERVER_SRCS))
 NET_PD_OBJS           := $(BUILD_DIR)/net_pd.o \
                     $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_NET_PD_SRCS))
+NET_VIRT_OBJS         := $(BUILD_DIR)/net_virt.o $(BUILD_DIR)/net_virt_pump.pd.o \
+                    $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_NET_VIRT_SRCS))
 WG_NET_OBJS           := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_WG_NET_SRCS))
 APP_MANAGER_OBJS      := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_APP_MANAGER_SRCS))
 HTTP_SVC_OBJS         := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_HTTP_SVC_SRCS))
@@ -317,7 +320,7 @@ TIMER_PD_OBJS         := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_TIMER_PD_SRC
 FAULT_HANDLER_OBJS    := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_FAULT_HANDLER_SRCS))
 FAULT_INJECT_OBJS     := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_FAULT_INJECT_SRCS))
 
-IMAGES := controller.elf event_bus.elf init_agent.elf worker.elf agentfs.elf vibe_engine.elf vibeos.elf log_drain.elf serial_pd.elf swap_slot.elf mem_profiler.elf net_isolator.elf perf_counters.elf time_partition.elf trace_recorder.elf nameserver.elf virtio_blk.elf vfs_server.elf spawn_server.elf app_slot.elf net_server.elf net_pd.elf wg_net.elf app_manager.elf http_svc.elf vm_manager.elf auth_server.elf ext2fs.elf proc_server.elf vm_snapshot.elf pflocal_server.elf exec_server.elf term_server.elf block_pd.elf framebuffer_pd.elf usb_pd.elf cc_pd.elf gpu_sched.elf timer_svc.elf entropy_svc.elf block_svc.elf usb_svc.elf model_svc.elf tool_svc.elf irq_pd.elf timer_pd.elf fault_handler.elf
+IMAGES := controller.elf event_bus.elf init_agent.elf worker.elf agentfs.elf vibe_engine.elf vibeos.elf log_drain.elf serial_pd.elf swap_slot.elf mem_profiler.elf net_isolator.elf perf_counters.elf time_partition.elf trace_recorder.elf nameserver.elf virtio_blk.elf vfs_server.elf spawn_server.elf app_slot.elf net_server.elf net_pd.elf net_virt.elf wg_net.elf app_manager.elf http_svc.elf vm_manager.elf auth_server.elf ext2fs.elf proc_server.elf vm_snapshot.elf pflocal_server.elf exec_server.elf term_server.elf block_pd.elf framebuffer_pd.elf usb_pd.elf cc_pd.elf gpu_sched.elf timer_svc.elf entropy_svc.elf block_svc.elf usb_svc.elf model_svc.elf tool_svc.elf irq_pd.elf timer_pd.elf fault_handler.elf
 
 # Optional: periodic WASM slot snapshot scheduler
 ifdef AGENTOS_SNAPSHOT_SCHED
@@ -436,6 +439,17 @@ $(BUILD_DIR)/net_server.o: $(SERVICES_DIR)/net-server/net_server.c
 	$(CC) -c $(CFLAGS) $< -o $@
 
 $(BUILD_DIR)/net_pd.o: $(SERVICES_DIR)/net-service/net_pd.c
+	@mkdir -p $(BUILD_DIR)
+	$(CC) -c $(CFLAGS) $< -o $@
+
+# net_virt PD: the network virtualizer (docs/TCB.md invariant 2).  Built from
+# platform/net-virt/ with the plain PD toolchain; the .pd.o suffix keeps the
+# queue pump object apart from the VMM-slot copies vmm.mk compiles.
+$(BUILD_DIR)/net_virt.o: $(REPO_ROOT_MK)/platform/net-virt/net_virt.c
+	@mkdir -p $(BUILD_DIR)
+	$(CC) -c $(CFLAGS) $< -o $@
+
+$(BUILD_DIR)/net_virt_pump.pd.o: $(REPO_ROOT_MK)/platform/net-virt/net_virt_pump.c
 	@mkdir -p $(BUILD_DIR)
 	$(CC) -c $(CFLAGS) $< -o $@
 
@@ -610,6 +624,9 @@ $(BUILD_DIR)/net_server.elf: $(NET_SERVER_OBJS)
 	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
 
 $(BUILD_DIR)/net_pd.elf: $(NET_PD_OBJS)
+	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
+
+$(BUILD_DIR)/net_virt.elf: $(NET_VIRT_OBJS)
 	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
 
 $(BUILD_DIR)/wg_net.elf: $(WG_NET_OBJS)

@@ -1883,6 +1883,7 @@ void root_task_main(const seL4_BootInfo *bi)
              name_eq(pd->name, "log_drain") ||
              pd_is_guest_vmm(pd) ||
              name_eq(pd->name, "cc_pd") ||
+             name_eq(pd->name, "net_virt") ||
              name_eq(pd->name, "test_runner"))) {
             seL4_Word serial_copy = ut_alloc_slot();
             seL4_Error serial_err = seL4_NotEnoughMemory;
@@ -2001,7 +2002,7 @@ void root_task_main(const seL4_BootInfo *bi)
 
         if (g_net_shared_frame_cap != seL4_CapNull &&
             (name_eq(pd->name, "net_pd") ||
-             name_eq(pd->name, "init_agent") ||
+             name_eq(pd->name, "net_virt") ||
              pd_is_guest_vmm(pd))) {
             seL4_Word net_shared_copy = ut_alloc_slot();
             seL4_Error net_err = seL4_NotEnoughMemory;
