@@ -36,7 +36,10 @@ binding) described the wrong I/O model. It is superseded by this document.
 ## Proof policy (unchanged)
 
 Host-only tests (`make test-host`) are a pre-filter. They are **not** proof of
-production IPC or I/O. Infrastructure claims require `make gate` (both target
+production IPC or I/O. `make test-host` also runs `make lint-source`, a source
+lint over headers, the compiled topology, and guest FDTs (see
+`tests/TARGET_TESTS.md`); it is a policy check, not a test, and is not counted
+as guest-path coverage. Infrastructure claims require `make gate` (both target
 arches under QEMU with `GUEST_OS=none`, plus `gate-guest-io`: the buildroot
 net and blk proofs and the Ubuntu console proof). `GUEST_OS=none` on its own
 is a stub VMM and proves PD load only. Guest release claims additionally require
