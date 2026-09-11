@@ -67,5 +67,4 @@ writes into that region before replying.
 
 ## Source Files
 
-- `services/memfs/memfs.c` — implementation
-- `services/abi/agentos_service_abi.h` — WASM ABI compatibility opcodes
+- (no C implementation in tree; the `services/memfs/` prototype was removed as never-built code, see history at 08ae7f37)

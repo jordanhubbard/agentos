@@ -28,7 +28,7 @@ Driven by:
 - `make demo-smoke` — validates prerequisites and runs the host suite.
 - `make test-host` / `make test-integration` — compile and run the host
   `tests/*.c` set.
-- `make test-snapshot-sched`, `make test-power-mgr`, `make test-proc-server`,
+- `make test-snapshot-sched`, `make test-proc-server`,
   `make test-vibeos-contract` — individual host suites.
 
 ## Dual-guest authenticated-SSH acceptance

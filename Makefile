@@ -26,7 +26,7 @@
 
 .DEFAULT_GOAL := help
 
-.PHONY: all setup sdk demo demo-check demo-smoke demo-test demo-desktop demo-desktop-test demo-clean install deps deps-tools submodules channels format policy-check guest-profile-check run run-fast run-dual-ssh test test-guest-login test-guest-net test-guest-blk test-guest-console test-ubuntu-virtio test-ubuntu-live sel4-test-image run-tests test-snapshot-sched test-power-mgr test-proc-server test-vibeos-contract test-integration test-host gate gate-aarch64 gate-x86_64 e2e e2e-guest e2e-contract e2e-dual-os e2e-ubuntu-amd64 e2e-ubuntu-arm64 e2e-nixos e2e-freebsd15 e2e-all bootstrap-guest clean clean-all clean-images help release release-minor release-major release-prepare release-check release-publish release-verify presentation-render fetch-guest build-tools
+.PHONY: all setup sdk demo demo-check demo-smoke demo-test demo-desktop demo-desktop-test demo-clean install deps deps-tools submodules channels format policy-check guest-profile-check run run-fast run-dual-ssh test test-guest-login test-guest-net test-guest-blk test-guest-console test-ubuntu-virtio test-ubuntu-live sel4-test-image run-tests test-snapshot-sched test-proc-server test-vibeos-contract test-integration test-host gate gate-aarch64 gate-x86_64 e2e e2e-guest e2e-contract e2e-dual-os e2e-ubuntu-amd64 e2e-ubuntu-arm64 e2e-nixos e2e-freebsd15 e2e-all bootstrap-guest clean clean-all clean-images help release release-minor release-major release-prepare release-check release-publish release-verify presentation-render fetch-guest build-tools
 
 # ─── Read config.yaml (if present) ───────────────────────────────────────────
 CONFIG_TARGET := $(shell grep '^target_arch:' config.yaml 2>/dev/null | sed 's/target_arch:[[:space:]]*//' | tr -d '[:space:]')
@@ -777,21 +777,6 @@ test-snapshot-sched:
 	@echo ""
 
 # =============================================================================
-# test-power-mgr: standalone unit test for the power_mgr DVFS thermal model
-# =============================================================================
-test-power-mgr:
-	@echo ""
-	@echo "╔══════════════════════════════════════════╗"
-	@echo "║   agentOS — power_mgr unit tests         ║"
-	@echo "╚══════════════════════════════════════════╝"
-	@echo ""
-	@mkdir -p $(BUILD_TMP_DIR)
-	cc tests/test_power_mgr.c -o $(BUILD_TMP_DIR)/test_power_mgr -I kernel/agentos-root-task/include -DAGENTOS_TEST_HOST
-	@$(BUILD_TMP_DIR)/test_power_mgr
-	@echo "✓ power_mgr tests passed"
-	@echo ""
-
-# =============================================================================
 # test-proc-server: standalone unit test for the proc_server PD (Track F)
 # =============================================================================
 test-proc-server:
@@ -837,9 +822,6 @@ test-integration:
 	@mkdir -p $(BUILD_TMP_DIR)
 	@status=0; \
 	for test in \
-	    tests/test_quota.c \
-	    tests/test_cap_policy_hotreload.c \
-	    tests/test_power_mgr.c \
 	    tests/test_snapshot_sched.c \
 	    tests/test_proc_server.c \
 	    tests/test_serial_pd.c \

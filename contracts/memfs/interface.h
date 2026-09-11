@@ -6,7 +6,7 @@
  * tagging.  It is the reference storage service; agents may vibe-code a
  * replacement (e.g. the storage.v1 service which provides identical opcodes).
  *
- * The storage.v1 ABI (in services/abi/agentos_service_abi.h) reuses the
+ * The storage.v1 ABI (formerly services/abi/agentos_service_abi.h, removed) reused the
  * same STORAGE_OP_* opcode space; MemFS implements those same semantics.
  *
  * IPC mechanism: seL4_Call / seL4_Reply.
