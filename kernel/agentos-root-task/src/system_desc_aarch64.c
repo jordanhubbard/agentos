@@ -197,7 +197,7 @@ const system_desc_t system_desc_aarch64 = {
         },
 
         /* pd[4] — virtio_blk (prio 215; virtio block device driver)
-         * Lowest-level I/O provider; guest_vmm relays block requests to it.
+         * Lowest-level I/O provider; blk_virt relays block requests to it.
          * Runs above all storage consumers so block I/O completions are
          * processed before the callers time out. */
         {
@@ -339,13 +339,13 @@ const system_desc_t system_desc_aarch64 = {
             .cnode_size_bits = 10u,
             .priority       = 250u,
             .self_svc_id    = SVC_ID_GUEST_VMM_SECONDARY,
-            /* No net_pd EP: the VMM reaches the network only through net_virt
+            /* No net_pd or virtio_blk EP: the VMM reaches the network only
+             * through net_virt and block media only through blk_virt
              * (docs/TCB.md invariant 2). */
-            .init_ep_count  = 6u,
+            .init_ep_count  = 5u,
             .init_eps = {
                 { SVC_ID_NAMESERVER, PD_CNODE_SLOT_NAMESERVER_EP },
                 { SVC_ID_LOG_DRAIN,  PD_CNODE_SLOT_LOG_DRAIN_EP  },
-                { SVC_ID_VIRTIO_BLK, 12u },
                 { SVC_ID_SERIAL,     PD_CNODE_SLOT_SERIAL_EP     },
                 { SVC_ID_NET_VIRT,   PD_CNODE_SLOT_NET_VIRT_EP },
                 { SVC_ID_BLK_VIRT,   PD_CNODE_SLOT_BLK_VIRT_EP },
@@ -366,13 +366,13 @@ const system_desc_t system_desc_aarch64 = {
             .cnode_size_bits = 10u,  /* 1024 slots — IRQ handler caps + microkit layout */
             .priority       = 250u,
             .self_svc_id    = SVC_ID_GUEST_VMM_PRIMARY,
-            /* No net_pd EP: the VMM reaches the network only through net_virt
+            /* No net_pd or virtio_blk EP: the VMM reaches the network only
+             * through net_virt and block media only through blk_virt
              * (docs/TCB.md invariant 2). */
-            .init_ep_count  = 6u,
+            .init_ep_count  = 5u,
             .init_eps = {
                 { SVC_ID_NAMESERVER, PD_CNODE_SLOT_NAMESERVER_EP },
                 { SVC_ID_LOG_DRAIN,  PD_CNODE_SLOT_LOG_DRAIN_EP  },
-                { SVC_ID_VIRTIO_BLK, 12u },
                 { SVC_ID_SERIAL,     PD_CNODE_SLOT_SERIAL_EP     },
                 { SVC_ID_NET_VIRT,   PD_CNODE_SLOT_NET_VIRT_EP },
                 { SVC_ID_BLK_VIRT,   PD_CNODE_SLOT_BLK_VIRT_EP },
@@ -404,13 +404,13 @@ const system_desc_t system_desc_aarch64 = {
             .cnode_size_bits = 10u,
             .priority       = 250u,
             .self_svc_id    = SVC_ID_GUEST_VMM_SECONDARY,
-            /* No net_pd EP: the VMM reaches the network only through net_virt
+            /* No net_pd or virtio_blk EP: the VMM reaches the network only
+             * through net_virt and block media only through blk_virt
              * (docs/TCB.md invariant 2). */
-            .init_ep_count  = 6u,
+            .init_ep_count  = 5u,
             .init_eps = {
                 { SVC_ID_NAMESERVER, PD_CNODE_SLOT_NAMESERVER_EP },
                 { SVC_ID_LOG_DRAIN,  PD_CNODE_SLOT_LOG_DRAIN_EP  },
-                { SVC_ID_VIRTIO_BLK, 12u },
                 { SVC_ID_SERIAL,     PD_CNODE_SLOT_SERIAL_EP     },
                 { SVC_ID_NET_VIRT,   PD_CNODE_SLOT_NET_VIRT_EP },
                 { SVC_ID_BLK_VIRT,   PD_CNODE_SLOT_BLK_VIRT_EP },

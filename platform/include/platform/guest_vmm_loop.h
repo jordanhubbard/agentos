@@ -13,7 +13,11 @@ typedef struct aos_guest_vmm_loop_ops {
                                 seL4_MessageInfo_t info);
     void (*notified)(seL4_Word badge);
     void (*net_rx_ready)(void);
+    void (*blk_resp_ready)(void);
 } aos_guest_vmm_loop_ops_t;
+
+/* True for the guest-control RPC labels the loop answers with ops->rpc. */
+bool aos_guest_vmm_loop_is_rpc(seL4_Word label);
 
 __attribute__((noreturn))
 void aos_guest_vmm_loop(seL4_CPtr endpoint, seL4_CPtr reply_cap,
