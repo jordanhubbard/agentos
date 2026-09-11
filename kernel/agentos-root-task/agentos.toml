@@ -72,6 +72,14 @@ priority = 160
 name = "net_virt"
 priority = 205
 
+# blk_virt owns no device frame or IRQ; it moves block requests between the
+# guest sDDF queues in the shared block region and virtio_blk.  The
+# descriptor keeps it just below virtio_blk (215) / block_pd (213).
+
+[[pd]]
+name = "blk_virt"
+priority = 210
+
 # ── Guest execution and control ──────────────────────────────────────────────
 
 [[pd]]
