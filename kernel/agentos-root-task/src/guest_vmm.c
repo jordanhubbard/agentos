@@ -945,8 +945,10 @@ static void guest_vmm_resume_guest_tcb(void)
         return;
     }
     LOG_VMM("Profile guest resume: TCB runnable\n");
-    /* Deliver frames retained by net_pd only after the guest is runnable. */
+    /* Deliver frames retained by net_pd and block responses queued by
+     * blk_virt only after the guest is runnable. */
     aos_vmm_virtio_net_rx_ready();
+    aos_vmm_virtio_blk_resp_ready();
 }
 
 static void guest_vmm_quiesce_timer(void)
@@ -1016,6 +1018,39 @@ static seL4_MessageInfo_t guest_vmm_rpc(seL4_MessageInfo_t info)
     _sel4_msg_to_mrs(&rep);
     return seL4_MessageInfo_new((seL4_Word)rep.opcode, 0, 0,
                                 (seL4_Word)_SEL4_MR_COUNT);
+}
+
+/* The VMM listen endpoint, recorded before init() so pre-boot media staging
+ * can block on it (see guest_vmm_wait_blk_event). */
+static seL4_CPtr g_vmm_listen_ep;
+
+/*
+ * One blocking receive on the VMM endpoint while the guest is not running.
+ * Used by the profile-initrd staging path, which issues its own sDDF block
+ * requests and must wait for blk_virt (a lower-priority PD) to answer.  A
+ * guest-control RPC that lands meanwhile is answered normally; other
+ * labels (RESP_READY, stray notifications) just return to the caller, which
+ * re-checks its response queue.
+ */
+static void guest_vmm_wait_blk_event(void)
+{
+    seL4_Word badge = 0u;
+#ifdef CONFIG_KERNEL_MCS
+    seL4_MessageInfo_t info =
+        seL4_Recv(g_vmm_listen_ep, &badge, AGENTOS_IPC_REPLY_CAP);
+#else
+    seL4_MessageInfo_t info = seL4_Recv(g_vmm_listen_ep, &badge);
+#endif
+    seL4_Word label = seL4_MessageInfo_get_label(info);
+
+    if (aos_guest_vmm_loop_is_rpc(label)) {
+        seL4_MessageInfo_t reply = guest_vmm_rpc(info);
+#ifdef CONFIG_KERNEL_MCS
+        seL4_Send(AGENTOS_IPC_REPLY_CAP, reply);
+#else
+        seL4_Reply(reply);
+#endif
+    }
 }
 
 /* ─── VCPU Affinity ──────────────────────────────────────────────────── */
@@ -1268,7 +1303,7 @@ void init(void)
             g_guest_profile->media_initrd_path, initrd_hva,
             g_guest_profile->dtb_load_address -
                 g_guest_profile->initrd_load_address,
-            &media_initrd_size)) {
+            &media_initrd_size, guest_vmm_wait_blk_event)) {
             LOG_VMM_ERR("Failed to stage profile initrd from host media\n");
             return;
         }
@@ -1497,6 +1532,7 @@ void guest_vmm_main(seL4_CPtr ep, seL4_CPtr reply_cap)
      * also assigns the global; this call is the one that must not be skipped. */
     seL4_SetIPCBuffer((seL4_IPCBuffer *)0x10000000UL);
 
+    g_vmm_listen_ep = ep;
     /* Run init() — sets up guest images, GIC, virtio IRQs, starts guest */
     init();
 
@@ -1506,6 +1542,7 @@ void guest_vmm_main(seL4_CPtr ep, seL4_CPtr reply_cap)
         .fault = guest_vmm_fault,
         .notified = guest_vmm_notified,
         .net_rx_ready = aos_vmm_virtio_net_rx_ready,
+        .blk_resp_ready = aos_vmm_virtio_blk_resp_ready,
     };
     aos_guest_vmm_loop(ep, reply_cap, &loop_ops);
 }

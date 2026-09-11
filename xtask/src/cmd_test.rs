@@ -168,8 +168,8 @@ fn virtio_markers(assertion: &VirtioAssertion) -> Vec<&'static str> {
                 ]);
                 if assertion.host_backed {
                     required.extend_from_slice(&[
-                        "emulated virtio-blk: agentOS host media",
-                        "emulated virtio-blk: host-media read",
+                        "[blk_virt] host media",
+                        "[blk_virt] host-media read",
                     ]);
                 }
             }
