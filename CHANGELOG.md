@@ -57,11 +57,21 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   NBSend kicks and `RX_READY` notifications. The VMM does one ATTACH call and
   never carries a frame over IPC. TCB.md invariant 2 now holds for networking
   (contract: `include/contracts/net_virt_contract.h`, version 1).
+- `blk_virt` is a real protection domain: the block virtualizer owns no
+  device frame or IRQ, is the only PD holding the `virtio_blk` endpoint or
+  (besides the driver) mapping its bounded DMA window, and moves requests
+  through the sDDF queues in a root-provisioned 4 MB shared block region with
+  NBSend kicks and `RESP_READY` notifications. The VMM does one ATTACH call
+  and never carries a block request over IPC; two guests can no longer race
+  in the driver's DMA window. TCB.md invariant 2 now holds for block
+  (contract: `include/contracts/blk_virt_contract.h`, version 1). The shared
+  block region moved from `0x20200000`, which collided with the secondary VMM
+  image reservation, to `0x28000000`.
 
 ### Known limitations
 
-- `blk_virt` is not yet a separate PD; block requests still reach `virtio_blk`
-  by per-request IPC from the VMM through the bounded DMA window.
+- `serial_virt` is not yet a separate PD; console bytes still reach `cc_pd`
+  by IPC from the VMM.
 - `log_drain`'s `MSG_SERIAL_WRITE` request layout does not match `serial_pd`'s
   handler, so generic PD log output is silent on the release kernel; PDs that
   must emit markers use the serial transfer page directly.

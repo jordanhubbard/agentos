@@ -40,7 +40,11 @@ seL4
         │                  only net mux (sDDF queues in the shared net frame
         │                  + NBSend notifications, RAW contract into net_pd)
         ├── virtio_blk     owns QEMU virtio-blk (bus.8, IPA 0x0A001000) and
-        │   / block_pd     the bounded DMA window
+        │   / block_pd     the bounded DMA window; its only client is blk_virt
+        ├── blk_virt       block virtualizer: no device frame, no IRQ; the
+        │                  only blk mux (sDDF queues in the shared block
+        │                  region + NBSend notifications, chunked DMA-window
+        │                  Calls into virtio_blk)
         ├── vm_manager     guest lifecycle control (create, bind, status)
         └── guest_vmm_*    vCPU, vGIC, emulated virtio-mmio net/blk/console,
               │            GPA-translated payload copies
@@ -68,16 +72,34 @@ sDDF-shaped hub/loopback pump instead. Contract:
 `include/contracts/net_virt_contract.h`. Lint: `tests/platform/lint_source_invariants.c`
 (`inv2:` network checks).
 
-*Block and console* (invariant 2 not yet held). The virtualizer is still a
-*library* linked into each `guest_vmm` PD (`platform/blk-virt/vmm_virtio_blk.c`,
-`platform/serial-virt/vmm_virtio_console.c`). The sDDF-shaped queues sit
-between the emulated device and a pump inside the VMM address space; from
-the pump, block requests reach `virtio_blk` by IPC chunked through the DMA
-window and console bytes reach `cc_pd` by IPC. There is no `serial_virt` or
-`blk_virt` PD in the image; `platform/blk-virt/blk_virt.c` is not compiled
-by any build rule. That per-request IPC is recorded here so the gap is
-visible, not to license it. Closing it is the BLK half of MAC
-`task_2895878a309f431da2d082d75c93e20d`.
+*Block* (invariant 2 held). `blk_virt` (`platform/blk-virt/blk_virt.c`) is a
+PD of its own, spawned at priority 210 with no device frame and no IRQ. The
+emulated virtio-blk inside each `guest_vmm` (`platform/blk-virt/vmm_virtio_blk.c`,
+libvmm `src/virtio/block.c`) produces and consumes sDDF-shaped request and
+response queues in the 4 MB shared block region (`AOS_BLK_SHMEM_VA`, one
+stride per VMM slot) that the root task maps into every VMM and into
+`blk_virt` and nothing else. Control is one `BLK_VIRT_OP_ATTACH` Call per
+client, during which `blk_virt` probes the media and fills the client's sDDF
+`storage_info`; after that the VMM only `seL4_NBSend`s `BLK_VIRT_EVENT_KICK`
+when its request queue is non-empty (and `blk_virt` asked for kicks through
+the `req_consumer_signalled` word), and `blk_virt` NBSends
+`BLK_VIRT_EVENT_RESP_READY` when it queued responses. `blk_virt` alone holds
+the `virtio_blk` endpoint and alone (besides the driver) maps the driver's
+bounded DMA window, through which it chunks each request by Call; the VMM
+maps no DMA window and holds no `virtio_blk` endpoint, so two guests cannot
+race in that window. A profile that stages its initrd from media
+(`INITRD_FROM_MEDIA`) has the VMM act as its own queue client before the
+guest runs. When `virtio_blk` reports no media, `blk_virt` serves a
+per-client RAM disk instead. Contract: `include/contracts/blk_virt_contract.h`.
+Lint: `tests/platform/lint_source_invariants.c` (`inv2:` block checks).
+
+*Console* (invariant 2 not yet held). The console virtualizer is still a
+*library* linked into each `guest_vmm` PD
+(`platform/serial-virt/vmm_virtio_console.c`): the sDDF-shaped queues sit
+between the emulated device and a pump inside the VMM address space, and
+console bytes reach `cc_pd` by IPC. There is no `serial_virt` PD in the
+image. That per-byte IPC is recorded here so the gap is visible, not to
+license it.
 
 ## TCB target — the shape the platform is converging on
 
@@ -102,8 +124,10 @@ They are not in the TCB.
    `MSG_NET_SEND` through IPC registers. *Held for network* (`net_virt` PD;
    enforced by the `inv2:` network lint checks and the host-backed
    `[net_virt] TX accepted by net_pd` / `[net_virt] RX delivered from net_pd`
-   markers in `make test-ubuntu-virtio`). *Not yet held for block and
-   console* (see above).
+   markers in `make test-ubuntu-virtio`) *and for block* (`blk_virt` PD;
+   enforced by the `inv2:` block lint checks and the host-backed
+   `[blk_virt] host media` / `[blk_virt] host-media read` markers in
+   `make test-ubuntu-virtio`). *Not yet held for console* (see above).
 3. **Virtio is the guest ABI.** Host may use virtio as the *physical* device
    (under QEMU). Guests must see a **different**, emulated virtio device
    invented by the VMM. Collapsing those two virtio worlds is a defect. Held
@@ -130,8 +154,9 @@ as "core OS".
 spawns exactly the PDs in `src/system_desc_aarch64.c` (13 in the default
 image: `nameserver`, `log_drain`, `serial_pd`, `vibe_engine`, `virtio_blk`,
 `block_pd`, `blk_virt`, `net_pd`, `net_virt`, `guest_vmm_primary`,
-`vm_manager`, `cc_pd`, `fault_handler`; `guest_vmm_secondary`, `fault_inject`, and `test_runner` +
-`event_bus` are added only to the image variants that use them), and
+`vm_manager`, `cc_pd`, `fault_handler`; `guest_vmm_secondary`, `fault_inject`,
+and `test_runner` + `event_bus` are added only to the image variants that use
+them), and
 `agentos.toml` lists that same set and nothing else (MAC
 `task_56eae59d9aa94d2d9d047f03fc9d22ad` trimmed the manifest from 39 ELFs;
 MAC `task_f95d118416a24fa484c2c43f0d955b56` then dropped `controller`,
