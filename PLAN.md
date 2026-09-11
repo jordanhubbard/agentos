@@ -125,7 +125,9 @@ Casper initrd from the agentOS-owned ISO, mounts the live filesystem, reaches
 an authenticated `ubuntu` shell over emulated virtio-console, and emits a
 bounded guest network probe. The gate rejects initramfs unpack failures and
 requires probe, DRIVER_OK, and real I/O markers for net, block, and console.
-CI runs both the deterministic initramfs gate and this full-live gate.
+CI runs the deterministic initramfs gate on every push; the full-live gate
+runs nightly and on demand (`ubuntu-live-nightly.yml`) because it takes up to
+two hours under TCG on hosted runners.
 
 This closes the full Ubuntu live-filesystem proof. Ubuntu retains the same
 emulated-only DTB, translated RAM, and agentOS-owned bus.8 backend in a dual
