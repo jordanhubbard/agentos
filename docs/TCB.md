@@ -101,11 +101,20 @@ Do not extend these. Do not add opcodes. Do not "finish" them.
 guest channel before virtio-net is a backend, CapStore/MsgBus/ModelSvc/ToolSvc
 as "core OS".
 
-**Status:** as of 2026-09-10 most of these are still in `agentos.toml` and
-boot in every image. The manifest boots 39 PDs; roughly 32 are on this list or
-its spirit. Dropping them from the image is MAC
-`task_56eae59d9aa94d2d9d047f03fc9d22ad`. Until then, "museum" means
-"unsupported and not to be extended", not "not running".
+**Status:** as of 2026-09-10 none of these is bundled or booted. The root task
+spawns exactly the PDs in `src/system_desc_aarch64.c` (19 in the default
+image; `guest_vmm_secondary`, `fault_inject`, and `test_runner` are added only
+to the image variants that use them), and `agentos.toml` now lists that same
+set and nothing else (MAC `task_56eae59d9aa94d2d9d047f03fc9d22ad`; it
+previously bundled 39 ELFs, 20 of which the root task never started). Museum
+sources are still compiled by the root-task Makefile `IMAGES` list so they keep
+building, but they are not in the image. Of the 19 booted PDs, `agentfs`,
+`vibe_engine`, `vfs_server`, `net_server`, `framebuffer_pd`, `usb_pd`,
+`event_bus`, `init_agent`, and `controller` are not TCB: they stay because the
+descriptor, `cc_pd` (which relays dynamic-guest control to `vibe_engine`), and
+the `controller` boot sequence that prints `agentOS boot complete` still
+resolve them. Removing them from the descriptor is a follow-up, not part of
+this manifest trim.
 
 ## QEMU host transports
 

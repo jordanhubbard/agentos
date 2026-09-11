@@ -7,6 +7,13 @@
  * PD ordering is critical: the nameserver MUST be first so that subsequent
  * PDs can register themselves with it before any inter-PD communication.
  *
+ * This table is the complete set of PDs the root task spawns.  agentos.toml
+ * (consumed by xtask gen-pd-bundle) must list exactly these names plus the
+ * Makefile-appended variants (guest_vmm_secondary, fault_inject,
+ * test_runner); a bundle entry with no row here is never started, and a row
+ * here with no bundle entry fails at ELF load.  Museum PDs (docs/TCB.md) are
+ * intentionally absent from both (MAC task_56eae59d9aa94d2d9d047f03fc9d22ad).
+ *
  * ── Priority DAG ──────────────────────────────────────────────────────────────
  *
  * Priorities follow the dependency DAG: a service that is called by others
