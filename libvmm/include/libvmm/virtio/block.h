@@ -35,6 +35,7 @@
 #include <stdint.h>
 #include <sel4/sel4.h>
 #include <libvmm/virtio/virtio.h>
+#include <libvmm/virtio/block_chunk.h>
 #include <sddf/util/fsmalloc.h>
 #include <sddf/util/ialloc.h>
 #include <sddf/blk/queue.h>

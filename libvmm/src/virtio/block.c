@@ -434,18 +434,12 @@ static inline bool sddf_make_req_check(struct virtio_blk_device *state, uint16_t
  * still overlap because both require read-modify-write. */
 static bool do_requests_overlap(reqbk_t *req1, reqbk_t *req2)
 {
-    uint64_t start_byte1 = req1->virtio_sector * (uint64_t)VIRTIO_BLK_SECTOR_SIZE;
-    uint64_t end_byte1 = start_byte1 + req1->total_req_size
-                       - sizeof(struct virtio_blk_outhdr) - 2u;
-    uint64_t start_byte2 = req2->virtio_sector * (uint64_t)VIRTIO_BLK_SECTOR_SIZE;
-    uint64_t end_byte2 = start_byte2 + req2->total_req_size
-                       - sizeof(struct virtio_blk_outhdr) - 2u;
-    uint64_t start_block1 = start_byte1 / BLK_TRANSFER_SIZE;
-    uint64_t end_block1 = end_byte1 / BLK_TRANSFER_SIZE;
-    uint64_t start_block2 = start_byte2 / BLK_TRANSFER_SIZE;
-    uint64_t end_block2 = end_byte2 / BLK_TRANSFER_SIZE;
-
-    return start_block1 <= end_block2 && start_block2 <= end_block1;
+    return virtio_blk_requests_overlap(
+        req1->virtio_sector * (uint64_t)VIRTIO_BLK_SECTOR_SIZE,
+        (uint32_t)(req1->total_req_size - sizeof(struct virtio_blk_outhdr) - 1u),
+        req2->virtio_sector * (uint64_t)VIRTIO_BLK_SECTOR_SIZE,
+        (uint32_t)(req2->total_req_size - sizeof(struct virtio_blk_outhdr) - 1u),
+        BLK_TRANSFER_SIZE);
 }
 
 static bool request_is_write(reqbk_t *req)
@@ -555,25 +549,17 @@ bool decode_virtio_block_request(virtio_queue_handler_t *vq_handler, uint16_t de
 
 static void virtio_blk_prepare_chunk(struct virtio_blk_device *state, reqbk_t *reqbk)
 {
-    uint64_t body_size = request_bytes_to_body_bytes(reqbk->total_req_size);
-    assert(reqbk->body_bytes_completed < body_size);
+    virtio_blk_chunk_t chunk;
+    assert(virtio_blk_chunk_plan(
+        reqbk->virtio_sector * (uint64_t)VIRTIO_BLK_SECTOR_SIZE,
+        (uint32_t)request_bytes_to_body_bytes(reqbk->total_req_size),
+        reqbk->body_bytes_completed, BLK_TRANSFER_SIZE,
+        state->data_region_cells, &chunk));
 
-    uint64_t byte_offset = reqbk->virtio_sector * (uint64_t)VIRTIO_BLK_SECTOR_SIZE
-                         + reqbk->body_bytes_completed;
-    reqbk->sddf_block_number = (uint32_t)(byte_offset / BLK_TRANSFER_SIZE);
-    reqbk->sddf_data_offset = (uint32_t)(byte_offset % BLK_TRANSFER_SIZE);
-
-    uint64_t chunk_capacity = (uint64_t)state->data_region_cells * BLK_TRANSFER_SIZE
-                            - reqbk->sddf_data_offset;
-    uint64_t remaining = body_size - reqbk->body_bytes_completed;
-    uint64_t chunk_size = remaining < chunk_capacity ? remaining : chunk_capacity;
-    uint64_t sddf_count = (reqbk->sddf_data_offset + chunk_size
-                         + BLK_TRANSFER_SIZE - 1u) / BLK_TRANSFER_SIZE;
-
-    assert(chunk_size > 0u && chunk_size <= UINT32_MAX);
-    assert(sddf_count > 0u && sddf_count <= state->data_region_cells);
-    reqbk->body_bytes_current = (uint32_t)chunk_size;
-    reqbk->sddf_count = (uint16_t)sddf_count;
+    reqbk->sddf_block_number = chunk.block_number;
+    reqbk->sddf_data_offset = chunk.data_offset;
+    reqbk->body_bytes_current = chunk.body_bytes;
+    reqbk->sddf_count = chunk.cell_count;
 }
 
 static bool virtio_blk_start_chunk(struct virtio_device *dev, uint32_t req_id)

@@ -977,6 +977,15 @@ test-integration:
 	    echo "FAIL: tests/platform/test_blk_virt_pump.c"; \
 	    status=1; \
 	fi; \
+	if gcc -I libvmm/include \
+	        tests/platform/test_virtio_blk_chunk.c \
+	        -o $(BUILD_TMP_DIR)/test_virtio_blk_chunk 2>&1 \
+	    && $(BUILD_TMP_DIR)/test_virtio_blk_chunk; then \
+	    echo "PASS: tests/platform/test_virtio_blk_chunk.c"; \
+	else \
+	    echo "FAIL: tests/platform/test_virtio_blk_chunk.c"; \
+	    status=1; \
+	fi; \
 	if cargo test -p xtask --lib --quiet; then \
 	    echo "PASS: xtask focused unit tests"; \
 	else \
