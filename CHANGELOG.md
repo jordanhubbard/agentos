@@ -71,6 +71,17 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   and publishes it in the client storage_info page, so writable media and
   `VIRTIO_BLK_F_FLUSH` (#117) reach the guest through the virtualizer.
 
+### Documentation
+
+- `README.md` rewritten for the post-audit platform (what is proven today vs.
+  target, the booted PD set, quick start, current tree, proof levels).
+- New `docs/QUICKSTART.md` (clone to boot, guest proofs, demo, logs,
+  troubleshooting), `docs/DEVELOPER_GUIDE.md` (boot flow, declaring a PD,
+  contracts, notifications, adding a virtualizer or driver PD using `net_virt`
+  as the template, guest profiles, testing policy), and `docs/README.md`
+  (index marking current vs. historical documents). `DESIGN.md` carries a
+  banner pointing at `docs/TCB.md` and the README as current truth.
+
 ### Known limitations
 
 - `serial_virt` is not yet a separate PD; console bytes still reach `cc_pd`
