@@ -1021,7 +1021,7 @@ e2e-nixos:
 	@exit 1
 
 e2e-freebsd15:
-	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os freebsd --timeout-secs $(QEMU_TEST_TIMEOUT)
+	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os freebsd --assert-live --timeout-secs $(QEMU_TEST_TIMEOUT)
 
 e2e-all: demo-test
 

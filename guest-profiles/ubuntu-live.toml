@@ -11,6 +11,7 @@ media_initrd_path = "casper/initrd"
 [host.build]
 bootargs = "console=hvc0 quiet loglevel=3 boot=casper noprompt systemd.show_status=false systemd.unit=emergency.target panic=-1"
 initrd_total_bytes = 147480436
+media_initrd_cache = "build/guest-images/ubuntu-26.04-aarch64-live-initrd.base"
 
 [artifacts.initrd]
 source = "generated:ubuntu-casper-profile-overlay"

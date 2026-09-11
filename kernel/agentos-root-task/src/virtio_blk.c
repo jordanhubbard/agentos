@@ -69,6 +69,7 @@ typedef struct {
     uint32_t           dma_off;       /* offset in shared large frame */
     uint64_t           capacity;     /* total 512-byte sectors on the device */
     uint32_t           block_size;   /* logical block size reported by device (bytes) */
+    bool               read_only;    /* VIRTIO_BLK_F_RO advertised by the medium */
     uint32_t           error_count;  /* cumulative I/O errors since boot */
     uint32_t           init_error;   /* non-zero initialization stage */
 } blk_device_t;
@@ -336,6 +337,7 @@ static void virtio_blk_device_init(blk_device_t *device, uint32_t media_id,
     mmio_write(device->mmio, VIRTIO_MMIO_DEVICE_FEATURES_SEL, 0);
     uint32_t dev_features = mmio_read(device->mmio, VIRTIO_MMIO_DEVICE_FEATURES);
     uint32_t drv_features = dev_features & VIRTIO_BLK_FEATURES_WANTED;
+    device->read_only = (dev_features & VIRTIO_BLK_F_RO) != 0u;
 
     mmio_write(device->mmio, VIRTIO_MMIO_DRIVER_FEATURES_SEL, 0);
     mmio_write(device->mmio, VIRTIO_MMIO_DRIVER_FEATURES, drv_features);
@@ -579,6 +581,11 @@ static uint32_t virtio_blk_h_dispatch(sel4_badge_t b, const sel4_msg_t *req,
             rep->length = 4;
             return SEL4_ERR_OK;
         }
+        if (device->read_only) {
+            rep_u32(rep, 0, blk_wire_status(op, BLK_ERR_IO));
+            rep->length = 4;
+            return SEL4_ERR_OK;
+        }
 
         uint32_t block_lo = (uint32_t)msg_u32(req, 4);
         uint32_t block_hi = (uint32_t)msg_u32(req, 8);
@@ -637,7 +644,8 @@ static uint32_t virtio_blk_h_dispatch(sel4_badge_t b, const sel4_msg_t *req,
         rep_u32(rep, 4, (uint32_t)(device->capacity & 0xFFFFFFFFu));
         rep_u32(rep, 8, (uint32_t)(device->capacity >> 32));
         rep_u32(rep, 12, device->block_size);
-        rep->length = 16;
+        rep_u32(rep, 16, device->read_only ? AOS_HOST_BLK_INFO_READ_ONLY : 0u);
+        rep->length = 20;
         return SEL4_ERR_OK;
     }
 

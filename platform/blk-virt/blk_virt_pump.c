@@ -204,6 +204,15 @@ uint32_t aos_blk_virt_pump(aos_blk_virt_t *v)
             resp.success_count = 0;
             resp.status = AOS_BLK_RESP_ERR_UNSPEC;
 
+            if (req.code == AOS_BLK_REQ_WRITE && c->info->read_only) {
+                resp.status = AOS_BLK_RESP_ERR_IO;
+                if (enqueue_resp(c->resp, c->capacity, resp) != 0) {
+                    break;
+                }
+                completed++;
+                continue;
+            }
+
             if (v->backend) {
                 resp.status = v->backend(v->backend_ctx, c, &req);
                 if (resp.status == AOS_BLK_RESP_OK &&

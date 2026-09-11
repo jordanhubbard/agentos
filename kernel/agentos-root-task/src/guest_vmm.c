@@ -417,6 +417,10 @@ void pd_main(seL4_CPtr my_ep, seL4_CPtr ns_ep) { guest_vmm_main(my_ep, ns_ep); }
 #include <platform/vmm_virtio_net.h>
 #include <platform/vmm_virtio_blk.h>
 #include <platform/vmm_virtio_console.h>
+
+#ifndef AGENTOS_GUEST_INITRD_TOTAL_BYTES
+#define AGENTOS_GUEST_INITRD_TOTAL_BYTES UINT64_C(0)
+#endif
 #include <contracts/net-service/interface.h>
 #include "gpu_shmem.h"
 #include "contracts/cc_contract.h"
@@ -764,6 +768,14 @@ static bool console_rx_pop(uint8_t *byte)
 static uint32_t pl011_pending_irqs(void)
 {
     uint32_t pending = 0u;
+    /* The backend has no transmit FIFO: every DR write is consumed
+     * immediately, so the PL011 TX threshold is continuously satisfied while
+     * transmission is enabled.  FreeBSD switches from polled boot output to
+     * interrupt-driven tty output after init and otherwise blocks after its
+     * first software chunk. */
+    if ((pl011_cr & PL011_CR_TXE) != 0u) {
+        pending |= PL011_TXIS;
+    }
     if (console_rx_count > 0u) {
         pending |= PL011_RXIS | PL011_RTIS;
     }
@@ -1291,6 +1303,12 @@ void init(void)
             LOG_VMM_ERR("Profile initrd plus overlay exceeds its bound\n");
             return;
         }
+        if (AGENTOS_GUEST_INITRD_TOTAL_BYTES != 0u &&
+            media_initrd_size + embedded_initrd_size !=
+                AGENTOS_GUEST_INITRD_TOTAL_BYTES) {
+            LOG_VMM_ERR("Profile initrd exact size does not match its checked build metadata\n");
+            return;
+        }
         volatile uint8_t *overlay_dest =
             (volatile uint8_t *)(initrd_hva + media_initrd_size);
         const volatile uint8_t *overlay_src =
@@ -1467,40 +1485,6 @@ static seL4_MessageInfo_t guest_vmm_fault(seL4_Word badge,
                     (void)virq_inject_vcpu(vcpu_id, GUEST_VTIMER_IRQ);
                 } else if ((timer_ctl & 0x5u) == 0x1u) {
                     vmm_vcpu_arm_ack_vppi(vcpu_id, GUEST_VTIMER_IRQ);
-                }
-            }
-        }
-    }
-
-    {
-        static uint32_t fault_log;
-        fault_log++;
-        if (fault_log <= 8u || (fault_log & (fault_log - 1u)) == 0u) {
-            printf("guest_vmm|DIAG: guest fault #%u label=0x%lx badge=0x%lx vcpu=%lu\n",
-                   (unsigned)fault_log, (unsigned long)label,
-                   (unsigned long)badge, (unsigned long)vcpu_id);
-            if (label == seL4_Fault_VMFault) {
-                printf("guest_vmm|DIAG: VMFault ip=0x%lx addr=0x%lx fsr=0x%lx\n",
-                       (unsigned long)fault_mrs[seL4_VMFault_IP],
-                       (unsigned long)fault_mrs[seL4_VMFault_Addr],
-                       (unsigned long)fault_mrs[seL4_VMFault_FSR]);
-            } else if (label == seL4_Fault_VCPUFault) {
-                seL4_Word hsr = fault_mrs[seL4_VCPUFault_HSR];
-                printf("guest_vmm|DIAG: VCPUFault HSR=0x%lx\n",
-                       (unsigned long)hsr);
-                if (((hsr >> 26) & 0x3fu) == 0x01u) {
-                    seL4_UserContext regs = {0};
-                    seL4_TCB_ReadRegisters(vmm_tcb_cap(vcpu_id), false, 0,
-                                           SEL4_USER_CONTEXT_SIZE, &regs);
-                    seL4_Word timer_ctl =
-                        vmm_vcpu_arm_read_reg(vcpu_id, seL4_VCPUReg_CNTV_CTL);
-                    seL4_Word timer_cval =
-                        vmm_vcpu_arm_read_reg(vcpu_id, seL4_VCPUReg_CNTV_CVAL);
-                    printf("guest_vmm|DIAG: WFx pc=0x%lx ctl=0x%lx cval=0x%lx pending=%u inflight=%u\n",
-                           (unsigned long)regs.pc, (unsigned long)timer_ctl,
-                           (unsigned long)timer_cval,
-                           vgic_irq_is_pending(vcpu_id, GUEST_VTIMER_IRQ) ? 1u : 0u,
-                           vgic_irq_is_inflight(vcpu_id, GUEST_VTIMER_IRQ) ? 1u : 0u);
                 }
             }
         }

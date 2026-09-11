@@ -161,6 +161,7 @@ struct HostBuild {
     base: Option<String>,
     bootargs: Option<String>,
     initrd_total_bytes: Option<u64>,
+    media_initrd_cache: Option<String>,
     acquire_dir: String,
 }
 
@@ -243,7 +244,6 @@ pub(crate) struct HostProfilePlan {
     pub(crate) control_type: u32,
     pub(crate) guest_id: u32,
     pub(crate) devices: Vec<String>,
-    pub(crate) has_initrd: bool,
     pub(crate) media_initrd_path: Option<String>,
     pub(crate) qemu: Option<QemuPlan>,
     pub(crate) console: ConsolePlan,
@@ -467,7 +467,6 @@ pub(crate) fn host_profile_plan(root: &Path, path: &Path) -> Result<HostProfileP
             .devices
             .clone()
             .context("target.devices is required")?,
-        has_initrd: profile.artifacts.contains_key("initrd"),
         media_initrd_path: profile
             .boot
             .as_ref()
@@ -697,6 +696,33 @@ fn prepare_bundle(
         );
     }
 
+    let checked_initrd_total = match host_build.initrd_total_bytes {
+        Some(expected) => {
+            let media_cache = host_build
+                .media_initrd_cache
+                .as_deref()
+                .context("host.build.initrd_total_bytes requires media_initrd_cache")?;
+            let media_path = confined_repo_path(repo_root, media_cache)?;
+            let media_bytes = fs::metadata(&media_path)
+                .with_context(|| format!("reading media initrd {}", media_path.display()))?
+                .len();
+            let overlay_bytes = initrd
+                .as_ref()
+                .map(|path| fs::metadata(path).map(|metadata| metadata.len()))
+                .transpose()?
+                .unwrap_or(0);
+            let actual = media_bytes
+                .checked_add(overlay_bytes)
+                .context("media initrd plus overlay size overflow")?;
+            ensure!(
+                actual == expected,
+                "host.build.initrd_total_bytes mismatch: declared {expected}, media {media_bytes} + overlay {overlay_bytes} = {actual}"
+            );
+            Some(actual)
+        }
+        None => None,
+    };
+
     fs::create_dir_all(output_dir)
         .with_context(|| format!("creating build bundle {}", output_dir.display()))?;
     let dtb = render_profile_dtb(
@@ -704,6 +730,7 @@ fn prepare_bundle(
         placement,
         host_build,
         initrd.as_deref(),
+        checked_initrd_total,
         repo_root,
         output_dir,
     )?;
@@ -732,6 +759,13 @@ fn prepare_bundle(
         output_dir.join("profile.bin"),
         compile(&profile, &canonical, placement_name)?,
     )?;
+    fs::write(
+        output_dir.join("profile_build.h"),
+        format!(
+            "#ifndef AGENTOS_GUEST_PROFILE_BUILD_H\n#define AGENTOS_GUEST_PROFILE_BUILD_H\n#include <stdint.h>\n#define AGENTOS_GUEST_INITRD_TOTAL_BYTES UINT64_C({})\n#endif\n",
+            checked_initrd_total.unwrap_or(0)
+        ),
+    )?;
     println!(
         "[guest-profile] prepared {} in {}",
         profile.id.as_deref().unwrap_or("unknown"),
@@ -753,6 +787,7 @@ fn render_profile_dtb(
     placement: &Placement,
     build: &HostBuild,
     initrd: Option<&Path>,
+    checked_initrd_total: Option<u64>,
     repo_root: &Path,
     output_dir: &Path,
 ) -> Result<PathBuf> {
@@ -779,7 +814,7 @@ fn render_profile_dtb(
         .map(|path| fs::metadata(path).map(|metadata| metadata.len()))
         .transpose()?
         .unwrap_or(0);
-    let initrd_size = build.initrd_total_bytes.unwrap_or(packaged_initrd_size);
+    let initrd_size = checked_initrd_total.unwrap_or(packaged_initrd_size);
     let initrd_end = initrd_start
         .checked_add(initrd_size)
         .context("initrd end address overflow")?;
@@ -1423,6 +1458,18 @@ fn validate_host(host: Option<&Host>) -> Result<()> {
         }
         if let Some(total) = build.initrd_total_bytes {
             ensure!(total > 0, "host.build.initrd_total_bytes must be nonzero");
+            ensure!(
+                build.media_initrd_cache.is_some(),
+                "host.build.initrd_total_bytes requires media_initrd_cache"
+            );
+        } else {
+            ensure!(
+                build.media_initrd_cache.is_none(),
+                "host.build.media_initrd_cache requires initrd_total_bytes"
+            );
+        }
+        if let Some(path) = &build.media_initrd_cache {
+            validate_repo_relative(path, "host.build.media_initrd_cache")?;
         }
     }
     for (recipe_name, recipe) in [
@@ -2046,6 +2093,24 @@ mod tests {
         let desktop = profile.host.as_mut().unwrap().desktop.as_mut().unwrap();
         desktop.guest_port = None;
         desktop.guest_socket = Some("/tmp/../escape.sock".to_string());
+        assert!(validate(&profile, None).is_err());
+    }
+
+    #[test]
+    fn media_initrd_exact_size_requires_a_bounded_cache_path() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../guest-profiles");
+        let (mut profile, _) = resolve(&root, Path::new("ubuntu-live.toml"), &mut Vec::new())
+            .expect("resolve live profile");
+        assert!(validate(&profile, None).is_ok());
+
+        profile
+            .host
+            .as_mut()
+            .unwrap()
+            .build
+            .as_mut()
+            .unwrap()
+            .media_initrd_cache = None;
         assert!(validate(&profile, None).is_err());
     }
 

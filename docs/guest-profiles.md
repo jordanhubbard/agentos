@@ -87,7 +87,11 @@ the runner.
 Manifest version 2 can set `boot.media_initrd_path`. The shared block backend
 then walks that normalized relative path through ISO9660 and stages the file at
 the profile's initrd address. No distribution name or fixed ISO pathname is
-compiled into the VMM.
+compiled into the VMM. Profiles that append a packaged overlay to that media
+initrd pair `host.build.initrd_total_bytes` with a confined
+`host.build.media_initrd_cache` path. Bundle preparation verifies the cached
+media initrd plus overlay byte count exactly, emits the checked total as build
+metadata, and the guest-neutral VMM rejects a different runtime media size.
 
 Lifecycle RPC, device selection, boot preparation, the seL4 receive loop, and
 the AArch64 VMM itself are shared target components. Primary and secondary

@@ -62,7 +62,7 @@ static void aos_copy(void *dst, const void *src, uint32_t n)
 }
 
 static uint32_t host_blk_call(uint32_t op, uint64_t sector, uint32_t count,
-                              uint64_t *capacity)
+                              uint64_t *capacity, bool *read_only)
 {
     seL4_Word payload0 = (seL4_Word)op |
                          ((seL4_Word)(uint32_t)sector << 32);
@@ -94,6 +94,11 @@ static uint32_t host_blk_call(uint32_t op, uint64_t sector, uint32_t count,
         *capacity = ((uint64_t)(uint32_t)payload1 << 32) |
                     (uint64_t)(uint32_t)(payload0 >> 32);
     }
+    if (read_only && (uint32_t)payload0 == AOS_HOST_BLK_OK &&
+        seL4_GetMR(1) >= 20u && seL4_MessageInfo_get_length(reply) >= 5u) {
+        *read_only = ((uint32_t)seL4_GetMR(4) &
+                      AOS_HOST_BLK_INFO_READ_ONLY) != 0u;
+    }
     return (uint32_t)payload0;
 }
 
@@ -118,7 +123,7 @@ static uint32_t host_blk_transfer(uint32_t op, uint64_t sector,
         if (op == AOS_HOST_BLK_OP_WRITE) {
             aos_copy(dma, client_data + byte_offset, bytes);
         }
-        rc = host_blk_call(op, sector, sectors, 0);
+        rc = host_blk_call(op, sector, sectors, 0, 0);
         if (rc != AOS_HOST_BLK_OK) {
             return rc;
         }
@@ -150,7 +155,7 @@ static bool iso_read_sector(uint32_t lba)
     uint64_t host_sector =
         (uint64_t)lba * (ISO9660_SECTOR_SIZE / AOS_HOST_BLK_SECTOR_SIZE);
     uint32_t count = ISO9660_SECTOR_SIZE / AOS_HOST_BLK_SECTOR_SIZE;
-    uint32_t rc = host_blk_call(AOS_HOST_BLK_OP_READ, host_sector, count, 0);
+    uint32_t rc = host_blk_call(AOS_HOST_BLK_OP_READ, host_sector, count, 0, 0);
     if (rc != AOS_HOST_BLK_OK) {
         LOG_VMM_ERR("emulated virtio-blk: ISO sector read failed lba=%u rc=%u\n",
                     (unsigned)lba, (unsigned)rc);
@@ -326,7 +331,7 @@ bool aos_vmm_virtio_blk_load_iso_file(const char *path,
             (uint64_t)file_lba *
             (ISO9660_SECTOR_SIZE / AOS_HOST_BLK_SECTOR_SIZE) +
             copied / AOS_HOST_BLK_SECTOR_SIZE;
-        if (host_blk_call(AOS_HOST_BLK_OP_READ, host_sector, sectors, 0) !=
+        if (host_blk_call(AOS_HOST_BLK_OP_READ, host_sector, sectors, 0, 0) !=
             AOS_HOST_BLK_OK) {
             return false;
         }
@@ -399,7 +404,7 @@ static aos_blk_resp_status_t host_blk_backend(
         break;
     case AOS_BLK_REQ_FLUSH:
     case AOS_BLK_REQ_BARRIER:
-        rc = host_blk_call(AOS_HOST_BLK_OP_FLUSH, 0u, 0u, 0);
+        rc = host_blk_call(AOS_HOST_BLK_OP_FLUSH, 0u, 0u, 0, 0);
         break;
     default:
         return AOS_BLK_RESP_ERR_INVALID_PARAM;
@@ -424,6 +429,7 @@ void aos_vmm_virtio_blk_init(uint32_t media_id)
     uint8_t *region = g_blk_region;
     uint32_t i;
     uint64_t host_sectors = 0u;
+    bool host_read_only = true;
     uint32_t host_info_rc;
 
     if (media_id >= AOS_HOST_BLK_MEDIA_COUNT) {
@@ -442,7 +448,7 @@ void aos_vmm_virtio_blk_init(uint32_t media_id)
     aos_blk_client_bind(region, 0u, &g_aos_client);
     aos_blk_client_init_queues(&g_aos_client);
     host_info_rc = host_blk_call(AOS_HOST_BLK_OP_INFO, 0u, 0u,
-                                 &host_sectors);
+                                 &host_sectors, &host_read_only);
     if (host_info_rc == AOS_HOST_BLK_OK &&
         host_sectors >=
             (AOS_BLK_TRANSFER_SIZE / AOS_HOST_BLK_SECTOR_SIZE)) {
@@ -452,6 +458,7 @@ void aos_vmm_virtio_blk_init(uint32_t media_id)
             host_blocks = UINT32_MAX;
         }
         aos_blk_storage_init(g_aos_client.info, (uint32_t)host_blocks);
+        g_aos_client.info->read_only = host_read_only;
         /*
          * ISO9660 requires a logical sector no larger than 2048 bytes.
          * The backend still batches requests through 4 KiB sDDF transfer

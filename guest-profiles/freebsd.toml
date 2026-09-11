@@ -62,10 +62,11 @@ override_env = ["AGENTOS_FREEBSD_IMAGE", "FREEBSD_IMAGE"]
 [host.qemu.ssh]
 account = "root"
 host_port = 12223
+guest_address = "10.0.2.16"
 
 [host.console]
 adapter = "expect"
-success = ["\n# ", "\r# "]
+success = ["root@:~ # ", "\n# ", "\r# "]
 reject = ["mountroot>", "Manual root filesystem specification"]
 probe_line = "printf 'agentos-console-%s\\n' proof"
 probe_marker = "agentos-console-proof"
@@ -79,16 +80,16 @@ when = ["begin an installation or use the live"]
 send = "\t\r"
 
 [[host.console.interaction]]
-when = ["Enter full pathname of s", "Unsupported version"]
+when = ["Enter full pathname of shell", "Unsupported version"]
 send = "/rescue/sh\r"
 
 [[host.console.interaction]]
-when = ["Enter full pathname of s", "ld-elf.so.1:"]
+when = ["Enter full pathname of shell", "ld-elf.so.1:"]
 send = "/rescue/sh\r"
 
 [[host.console.interaction]]
-when = ["Enter full pathname of s"]
-send = "\r"
+when = ["Enter full pathname of shell"]
+send = "\n"
 
 [[host.console.interaction]]
 when = ["login:"]
@@ -144,3 +145,7 @@ args = { marker = "# " }
 [[host.test]]
 action = "wait-ssh"
 args = { account = "root", marker = "FreeBSD" }
+
+[[host.test]]
+action = "assert-virtio"
+args = { devices = "net,block", scope = "host-backed" }

@@ -93,7 +93,7 @@ fn requested_virtio_assertion(
     args: &TestArgs,
     profile: Option<&HostProfilePlan>,
 ) -> Option<VirtioAssertion> {
-    if args.assert_agentos_virtio || args.assert_live || args.assert_desktop {
+    if args.assert_agentos_virtio {
         return Some(VirtioAssertion {
             devices: vec!["net".into(), "block".into(), "console".into()],
             host_backed: true,
@@ -266,10 +266,8 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
     }
     if args.assert_live || args.assert_desktop {
         anyhow::ensure!(
-            profile_plan
-                .as_ref()
-                .is_some_and(|profile| profile.has_initrd),
-            "full-userspace assertions require a profile with an initrd artifact"
+            profile_plan.is_some(),
+            "full-userspace assertions require one runtime guest profile"
         );
     }
     if args.assert_desktop {
