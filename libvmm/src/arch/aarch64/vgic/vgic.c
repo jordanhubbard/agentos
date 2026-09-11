@@ -24,26 +24,6 @@
 /* The driver expects the VGIC state to be initialised before calling any of the driver functionality. */
 extern vgic_t vgic;
 
-#define PPI_VTIMER_IRQ 27
-
-static bool vgic_maintenance_reinject(size_t vcpu_id, int irq)
-{
-    if (irq != PPI_VTIMER_IRQ) {
-        return false;
-    }
-
-    /*
-     * FreeBSD EOIs before advancing CVAL. Keep the physical VPPI masked and
-     * inject one more virtual timer IRQ while the level remains asserted.
-     * The subsequent EOI observes the deasserted level and acknowledges the
-     * physical VPPI. vdist clears pending when loading the LR, so this
-     * reinjection cannot be silently discarded.
-     */
-    seL4_Word ctl =
-        vmm_vcpu_arm_read_reg(vcpu_id, seL4_VCPUReg_CNTV_CTL);
-    return (ctl & 0x5u) == 0x5u;
-}
-
 bool vgic_flush_pending_irqs(size_t vcpu_id)
 {
 #if defined(GIC_V2)
@@ -108,28 +88,6 @@ bool vgic_handle_fault_maintenance(size_t vcpu_id)
     /* Clear pending */
     LOG_IRQ("Maintenance IRQ %d\n", lr_virq.virq);
     set_pending(&vgic, lr_virq.virq, false, vcpu_id);
-    bool reinject = vgic_maintenance_reinject(vcpu_id, lr_virq.virq);
-#if defined(GIC_V2)
-    int group = 0;
-#elif defined(GIC_V3)
-    int group = 1;
-#else
-#error "Unknown GIC version"
-#endif
-    if (reinject) {
-        set_pending(&vgic, lr_virq.virq, true, vcpu_id);
-        success = vgic_vcpu_load_list_reg(&vgic, vcpu_id, idx, group, &lr_virq);
-        if (success) {
-            set_pending(&vgic, lr_virq.virq, false, vcpu_id);
-        } else {
-            set_pending(&vgic, lr_virq.virq, false, vcpu_id);
-            virq_ack(vcpu_id, &lr_virq);
-        }
-        if (!vgic_flush_pending_irqs(vcpu_id)) {
-            LOG_VMM_ERR("vGIC timer maintenance queue flush failed\n");
-        }
-        return true;
-    }
     virq_ack(vcpu_id, &lr_virq);
     success = vgic_flush_pending_irqs(vcpu_id);
 

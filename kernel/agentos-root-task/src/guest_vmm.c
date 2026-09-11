@@ -405,6 +405,7 @@ void pd_main(seL4_CPtr my_ep, seL4_CPtr ns_ep) { guest_vmm_main(my_ep, ns_ep); }
  */
 #if defined(ARCH_AARCH64) && !defined(GUEST_VMM_NATIVE_STUB)
 
+#include <stdio.h>
 #include <libvmm/libvmm.h>
 #include <libvmm/vmm_caps.h>   /* vmm_register_vcpu                           */
 #include <libvmm/arch/aarch64/vgic/vgic.h>
@@ -416,6 +417,10 @@ void pd_main(seL4_CPtr my_ep, seL4_CPtr ns_ep) { guest_vmm_main(my_ep, ns_ep); }
 #include <platform/vmm_virtio_net.h>
 #include <platform/vmm_virtio_blk.h>
 #include <platform/vmm_virtio_console.h>
+
+#ifndef AGENTOS_GUEST_INITRD_TOTAL_BYTES
+#define AGENTOS_GUEST_INITRD_TOTAL_BYTES UINT64_C(0)
+#endif
 #include <contracts/net-service/interface.h>
 #include "gpu_shmem.h"
 #include "contracts/cc_contract.h"
@@ -763,6 +768,14 @@ static bool console_rx_pop(uint8_t *byte)
 static uint32_t pl011_pending_irqs(void)
 {
     uint32_t pending = 0u;
+    /* The backend has no transmit FIFO: every DR write is consumed
+     * immediately, so the PL011 TX threshold is continuously satisfied while
+     * transmission is enabled.  FreeBSD switches from polled boot output to
+     * interrupt-driven tty output after init and otherwise blocks after its
+     * first software chunk. */
+    if ((pl011_cr & PL011_CR_TXE) != 0u) {
+        pending |= PL011_TXIS;
+    }
     if (console_rx_count > 0u) {
         pending |= PL011_RXIS | PL011_RTIS;
     }
@@ -959,18 +972,25 @@ static bool guest_vmm_push_input(uint32_t event_type, const uint8_t *bytes,
 {
     (void)event_type;
     /*
-     * Once hvc0 is active, its sDDF queue is the sole owner of new input.
-     * A full virtio ingress queue is retryable backpressure; falling through
-     * to the early PL011 ring would acknowledge bytes that hvc0 never reads.
+     * A probed virtio-console is not necessarily the guest's system console:
+     * FreeBSD attaches the transport while retaining PL011.  Select virtio
+     * only after the guest has emitted traffic through it.  Once selected, a
+     * full ingress queue remains retryable backpressure and must not fall
+     * through to PL011.
      */
-    if (aos_vmm_virtio_console_driver_ready()) {
+    if (aos_vmm_virtio_console_tx_active()) {
         return aos_vmm_virtio_console_push_rx_bytes(bytes, length);
     }
     if (length > GUEST_CONSOLE_RX_RING_SIZE - console_rx_count) return false;
     for (uint32_t i = 0u; i < length; i++) {
         if (!console_rx_push(bytes[i])) return false;
     }
-    if (length != 0u) pl011_maybe_inject_irq();
+    if (length != 0u) {
+        LOG_VMM("PL011 console input: queued %u byte(s), imsc=0x%x pending=0x%x\n",
+                (unsigned)length, (unsigned)pl011_imsc,
+                (unsigned)pl011_pending_irqs());
+        pl011_maybe_inject_irq();
+    }
     return true;
 }
 
@@ -1137,7 +1157,9 @@ void init(void)
     /* Place guest images in RAM */
     size_t kernel_size = _guest_kernel_image_end - _guest_kernel_image;
     size_t dtb_size    = _guest_dtb_image_end - _guest_dtb_image;
-    size_t initrd_size = _guest_initrd_image_end - _guest_initrd_image;
+    size_t embedded_initrd_size =
+        _guest_initrd_image_end - _guest_initrd_image;
+    size_t initrd_size = embedded_initrd_size;
     if ((g_guest_profile->flags & AOS_GUEST_PROFILE_INITRD_FROM_MEDIA) != 0u) {
         initrd_size = 0u;
     }
@@ -1264,16 +1286,38 @@ void init(void)
     /* Stage profile-selected boot data from agentOS-owned block media. */
     if ((g_guest_profile->flags & AOS_GUEST_PROFILE_INITRD_FROM_MEDIA) != 0u) {
         size_t media_initrd_size = 0u;
+        size_t initrd_capacity =
+            g_guest_profile->dtb_load_address -
+            g_guest_profile->initrd_load_address;
         if (!aos_vmm_virtio_blk_load_iso_file(
             g_guest_profile->media_initrd_path, initrd_hva,
-            g_guest_profile->dtb_load_address -
-                g_guest_profile->initrd_load_address,
+            initrd_capacity,
             &media_initrd_size)) {
             LOG_VMM_ERR("Failed to stage profile initrd from host media\n");
             return;
         }
-        LOG_VMM("Profile initrd ready in guest RAM (%zu bytes)\n",
-                media_initrd_size);
+        if (media_initrd_size > initrd_capacity ||
+            embedded_initrd_size > initrd_capacity - media_initrd_size ||
+            media_initrd_size + embedded_initrd_size >
+                g_guest_profile->initrd_max_bytes) {
+            LOG_VMM_ERR("Profile initrd plus overlay exceeds its bound\n");
+            return;
+        }
+        if (AGENTOS_GUEST_INITRD_TOTAL_BYTES != 0u &&
+            media_initrd_size + embedded_initrd_size !=
+                AGENTOS_GUEST_INITRD_TOTAL_BYTES) {
+            LOG_VMM_ERR("Profile initrd exact size does not match its checked build metadata\n");
+            return;
+        }
+        volatile uint8_t *overlay_dest =
+            (volatile uint8_t *)(initrd_hva + media_initrd_size);
+        const volatile uint8_t *overlay_src =
+            (const volatile uint8_t *)_guest_initrd_image;
+        for (size_t i = 0u; i < embedded_initrd_size; i++) {
+            overlay_dest[i] = overlay_src[i];
+        }
+        LOG_VMM("Profile initrd ready in guest RAM (%zu media + %zu overlay bytes)\n",
+                media_initrd_size, embedded_initrd_size);
     }
     g_guest_kernel_pc = kernel_pc;
     g_guest_startable = true;
@@ -1442,27 +1486,6 @@ static seL4_MessageInfo_t guest_vmm_fault(seL4_Word badge,
                 } else if ((timer_ctl & 0x5u) == 0x1u) {
                     vmm_vcpu_arm_ack_vppi(vcpu_id, GUEST_VTIMER_IRQ);
                 }
-            }
-        }
-    }
-
-    {
-        static uint32_t fault_log;
-        fault_log++;
-        if (fault_log <= 8u || (fault_log & (fault_log - 1u)) == 0u) {
-            LOG_VMM("guest fault #%u label=0x%lx badge=0x%lx vcpu=%lu\n",
-                    (unsigned)fault_log, (unsigned long)label,
-                    (unsigned long)badge, (unsigned long)vcpu_id);
-            if (label == seL4_Fault_VMFault) {
-                LOG_VMM("  VMFault ip=0x%lx addr=0x%lx fsr=0x%lx\n",
-                        (unsigned long)fault_mrs[seL4_VMFault_IP],
-                        (unsigned long)fault_mrs[seL4_VMFault_Addr],
-                        (unsigned long)fault_mrs[seL4_VMFault_FSR]);
-            } else if (label == seL4_Fault_VCPUFault) {
-                LOG_VMM("  VCPUFault HSR=0x%lx\n",
-                        (unsigned long)fault_mrs[seL4_VCPUFault_HSR]);
-            } else {
-                LOG_VMM("\n");
             }
         }
     }

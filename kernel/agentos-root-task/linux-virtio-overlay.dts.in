@@ -1,8 +1,8 @@
 /*
- * agentOS Ubuntu live-ISO guest overlay DTS — QEMU virt AArch64.
+ * agentOS Linux VirtIO guest overlay DTS — QEMU virt AArch64.
  *
  * Generated through vmm.mk so linux,initrd-end matches the extracted initrd
- * size from the staged Ubuntu ISO.
+ * size from the staged profile artifact.
  */
 / {
     dma-coherent;
