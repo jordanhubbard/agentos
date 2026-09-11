@@ -37,7 +37,9 @@ binding) described the wrong I/O model. It is superseded by this document.
 
 Host-only tests (`make test-host`) are a pre-filter. They are **not** proof of
 production IPC or I/O. Infrastructure claims require `make gate` (both target
-arches under QEMU). Guest release claims additionally require
+arches under QEMU with `GUEST_OS=none`, plus `gate-guest-io`: the buildroot
+net and blk proofs and the Ubuntu console proof). `GUEST_OS=none` on its own
+is a stub VMM and proves PD load only. Guest release claims additionally require
 `make demo-test`, which boots Ubuntu and FreeBSD concurrently and proves
 key-only SSH to both. A device-class claim also needs its focused guest I/O
 assertion through the virtualizer — not QEMU bus ownership.

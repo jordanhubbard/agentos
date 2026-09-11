@@ -1,0 +1,78 @@
+name: Ubuntu live-media qualification
+
+# The full Casper live-filesystem proof boots Ubuntu's real initrd and ISO
+# through agentOS-emulated virtio net, blk, and console.  Under TCG on a hosted
+# x86 runner it takes up to two hours, so it is a release qualification that
+# runs nightly and on demand, not a per-push gate (ci.yml).  Release evidence
+# cites this workflow's retained artifact.
+
+on:
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch: {}
+
+env:
+  CARGO_TERM_COLOR: always
+  SEL4_SDK: /tmp/microkit-sdk-2.1.0
+
+jobs:
+  ubuntu-live:
+    name: Ubuntu Casper userspace on agentOS VirtIO
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install clang / lld / QEMU / dtc
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            clang lld llvm \
+            qemu-system-arm qemu-utils \
+            device-tree-compiler \
+            libarchive-tools e2fsprogs \
+            curl
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Cache Microkit SDK
+        id: cache-sdk-ubuntu-live
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.SEL4_SDK }}
+          key: microkit-sdk-2.1.0-linux-x86-64
+
+      - name: Download Microkit SDK
+        if: steps.cache-sdk-ubuntu-live.outputs.cache-hit != 'true'
+        run: |
+          curl -fsSL \
+            https://github.com/seL4/microkit/releases/download/2.1.0/microkit-sdk-2.1.0-linux-x86-64.tar.gz \
+            -o /tmp/microkit-sdk.tar.gz
+          mkdir -p "$(dirname "$SEL4_SDK")"
+          tar -xzf /tmp/microkit-sdk.tar.gz -C "$(dirname "$SEL4_SDK")"
+          rm /tmp/microkit-sdk.tar.gz
+
+      - name: Cache Ubuntu ISO
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/agentos/isos/ubuntu-26.04-desktop-arm64.iso
+          key: ubuntu-26.04-desktop-arm64-iso
+
+      - name: Prove Ubuntu Casper userspace on agentOS VirtIO
+        # TCG throughput varies substantially across hosted runners.  Keep the
+        # assertion deadline aligned with the release/demo proof and leave an
+        # outer envelope for the build plus evidence upload.
+        timeout-minutes: 150
+        run: make test-ubuntu-live QEMU_TEST_TIMEOUT=7200
+
+      - name: Upload QEMU serial logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ubuntu-live-qualification-logs
+          path: |
+            build/tmp/agentos-qemu-*.log
+            build/tmp/agentos-qemu-*.qemu.stderr
+            build/tmp/agentos-qemu-*.net.pcap
+          if-no-files-found: ignore

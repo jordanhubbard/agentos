@@ -649,11 +649,22 @@ gate-x86_64:
 	@echo "── [GATE] TARGET/QEMU test: x86_64 (GUEST_OS=none) ───────────"
 	@$(MAKE) test TARGET_ARCH=x86_64 GUEST_OS=none
 
-gate: test-host gate-aarch64 gate-x86_64
+# gate-guest-io: guest I/O proofs through the virtualizer path. GUEST_OS=none
+# is a stub VMM, so the boot gates above prove PD load and root-task parking
+# only; these three targets are what make "the OS does I/O" a true claim.
+gate-guest-io:
+	@echo ""
+	@echo "── [GATE] GUEST I/O: buildroot virtio-net / virtio-blk, Ubuntu virtio-console ──"
+	@$(MAKE) test-guest-net BOARD=qemu_virt_aarch64
+	@$(MAKE) test-guest-blk BOARD=qemu_virt_aarch64
+	@$(MAKE) test-guest-console BOARD=qemu_virt_aarch64
+
+gate: test-host gate-aarch64 gate-x86_64 gate-guest-io
 	@echo ""
 	@echo "╔══════════════════════════════════════════════════════════╗"
-	@echo "║  ✅ DUAL-ARCH GATE PASSED                                 ║"
-	@echo "║  Host-only suite + aarch64 + x86_64 QEMU boot tests OK.   ║"
+	@echo "║  ✅ OS-CLAIM GATE PASSED                                  ║"
+	@echo "║  Host suite + aarch64/x86_64 boot + guest net/blk/console ║"
+	@echo "║  proofs through the virtualizer path all OK.             ║"
 	@echo "║  OS-level completion claims are now permitted.           ║"
 	@echo "╚══════════════════════════════════════════════════════════╝"
 	@echo ""
