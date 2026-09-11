@@ -5,6 +5,16 @@
 **Date:** 2026-03-28
 **Status:** DESIGN PHASE
 
+> **Current truth lives elsewhere.** This is the March 2026 vision document.
+> The implementation status table below predates the 2026-09 trust-baseline
+> audit and still names services (CapStore, MsgBus, VibeOS, usb-service,
+> trace_recorder, the WASM hot-swap path) that are museum code and not in the
+> booted image. For what agentOS is and what is proven today, read
+> [`docs/TCB.md`](docs/TCB.md) (binding), then [`README.md`](README.md),
+> [`docs/ROADMAP.md`](docs/ROADMAP.md), and
+> [`docs/DEVELOPER_GUIDE.md`](docs/DEVELOPER_GUIDE.md). Where this file and
+> `docs/TCB.md` disagree, `docs/TCB.md` is correct.
+
 > **Read this first — design vs. proof.** This document describes the *intended*
 > architecture. Much of it is aspirational. The implementation status of each
 > subsystem is tracked by **proof level** in the table below; do not read prose
