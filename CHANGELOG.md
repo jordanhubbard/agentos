@@ -49,10 +49,22 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - The qcow2 conversion unit test skips instead of failing when `qemu-img` is
   not installed.
 
+### Added
+
+- `net_virt` is a real protection domain: the network virtualizer owns no
+  device frame or IRQ, is the only PD speaking `net_pd`'s raw-frame contract,
+  and moves frames through the sDDF queues in the shared net frame with
+  NBSend kicks and `RX_READY` notifications. The VMM does one ATTACH call and
+  never carries a frame over IPC. TCB.md invariant 2 now holds for networking
+  (contract: `include/contracts/net_virt_contract.h`, version 1).
+
 ### Known limitations
 
-- `net_virt` and `blk_virt` are not yet separate PDs; frames and block
-  requests reach the driver PDs by per-request IPC from the VMM.
+- `blk_virt` is not yet a separate PD; block requests still reach `virtio_blk`
+  by per-request IPC from the VMM through the bounded DMA window.
+- `log_drain`'s `MSG_SERIAL_WRITE` request layout does not match `serial_pd`'s
+  handler, so generic PD log output is silent on the release kernel; PDs that
+  must emit markers use the serial transfer page directly.
 - `vibe_engine` remains in the image because `cc_pd` relays dynamic-guest
   creation through it to `vm_manager`.
 - The `main` branch protection still names the boot-only gate job as its
