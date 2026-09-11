@@ -16,6 +16,24 @@ typedef struct virtio_blk_chunk {
     uint16_t cell_count;
 } virtio_blk_chunk_t;
 
+typedef enum {
+    VIRTIO_BLK_REQ_STATE_INVALID = 0,
+    VIRTIO_BLK_REQ_STATE_FLUSHING,
+    VIRTIO_BLK_REQ_STATE_READING,
+    VIRTIO_BLK_REQ_STATE_WRITING_ALIGNED,
+    VIRTIO_BLK_REQ_STATE_RMW_QUEUEING,
+    VIRTIO_BLK_REQ_STATE_RMW_READING,
+    VIRTIO_BLK_REQ_STATE_RMW_WRITING,
+} request_state_t;
+
+static inline bool
+virtio_blk_req_state_is_active_write(request_state_t state)
+{
+    return state == VIRTIO_BLK_REQ_STATE_WRITING_ALIGNED
+        || state == VIRTIO_BLK_REQ_STATE_RMW_READING
+        || state == VIRTIO_BLK_REQ_STATE_RMW_WRITING;
+}
+
 static inline bool virtio_blk_requests_overlap(uint64_t request_byte_offset1,
                                                uint32_t body_bytes1,
                                                uint64_t request_byte_offset2,

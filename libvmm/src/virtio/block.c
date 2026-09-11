@@ -444,7 +444,9 @@ static bool do_requests_overlap(reqbk_t *req1, reqbk_t *req2)
 
 static bool request_is_write(reqbk_t *req)
 {
-    return req->state >= VIRTIO_BLK_REQ_STATE_WRITING_ALIGNED;
+    /* A queued RMW write is waiting for the active overlapping writer. It
+     * must not itself block that owner from advancing to its next chunk. */
+    return virtio_blk_req_state_is_active_write(req->state);
 }
 
 static inline void virtio_blk_set_req_fail(virtio_queue_handler_t *vq_handler, reqbk_t *reqbk)

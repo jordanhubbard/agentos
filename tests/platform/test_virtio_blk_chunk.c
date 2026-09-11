@@ -73,12 +73,27 @@ static void test_overlap_uses_backend_windows(void)
                                        CELL_SIZE));
 }
 
+static void test_only_active_writes_block_overlapping_requests(void)
+{
+    assert(virtio_blk_req_state_is_active_write(
+        VIRTIO_BLK_REQ_STATE_WRITING_ALIGNED));
+    assert(virtio_blk_req_state_is_active_write(
+        VIRTIO_BLK_REQ_STATE_RMW_READING));
+    assert(virtio_blk_req_state_is_active_write(
+        VIRTIO_BLK_REQ_STATE_RMW_WRITING));
+    assert(!virtio_blk_req_state_is_active_write(
+        VIRTIO_BLK_REQ_STATE_RMW_QUEUEING));
+    assert(!virtio_blk_req_state_is_active_write(
+        VIRTIO_BLK_REQ_STATE_READING));
+}
+
 int main(void)
 {
     test_large_aligned_request();
     test_unaligned_request_ends_chunks_on_cell_boundary();
     test_invalid_inputs_fail_closed();
     test_overlap_uses_backend_windows();
+    test_only_active_writes_block_overlapping_requests();
     puts("virtio_blk_chunk: all tests passed");
     return 0;
 }

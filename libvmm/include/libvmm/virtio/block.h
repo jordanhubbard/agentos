@@ -148,16 +148,6 @@ struct virtio_blk_outhdr {
 #define VIRTIO_BLK_NUM_VIRTQ 1
 #define VIRTIO_BLK_DEFAULT_VIRTQ 0
 
-typedef enum {
-    VIRTIO_BLK_REQ_STATE_INVALID = 0,
-    VIRTIO_BLK_REQ_STATE_FLUSHING,
-    VIRTIO_BLK_REQ_STATE_READING,
-    VIRTIO_BLK_REQ_STATE_WRITING_ALIGNED,
-    VIRTIO_BLK_REQ_STATE_RMW_QUEUEING,
-    VIRTIO_BLK_REQ_STATE_RMW_READING,
-    VIRTIO_BLK_REQ_STATE_RMW_WRITING,
-} request_state_t;
-
 /* This struct exists to bookkeep request metadata when converting sddf requests
  * from a virtio request so that it can be later retrieved when converting a
  * virtio response from sddf response.
