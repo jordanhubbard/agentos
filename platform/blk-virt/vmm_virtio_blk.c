@@ -24,11 +24,17 @@ _Static_assert(sizeof(aos_blk_storage_info_t) == sizeof(blk_storage_info_t),
                "aos_blk_storage_info_t must match sDDF blk_storage_info_t");
 
 /*
- * Private RAM disk + queues. Not a system_desc MR this pass — adding one
- * would consume guest_vmm's last PD_MAX_MEMORY_REGIONS slot. Future:
- * map 2 MB at AOS_BLK_SHMEM_VA like net_virt.
+ * The sDDF queues and data cells live in the root-provisioned shared block
+ * region at AOS_BLK_SHMEM_VA (mapped into every VMM and into blk_virt); this
+ * VMM owns the stride for its slot.  The RAM-disk fallback for a host with no
+ * block media stays VMM-private until blk_virt takes over the pump.
  */
-static uint8_t g_blk_region[AOS_BLK_SHMEM_SIZE] __attribute__((aligned(4096)));
+#if defined(AGENTOS_GUEST_SECONDARY)
+#define AOS_BLK_VMM_CLIENT 1u
+#else
+#define AOS_BLK_VMM_CLIENT 0u
+#endif
+static uint8_t g_ram_disk[AOS_BLK_DISK_BYTES] __attribute__((aligned(4096)));
 
 static struct virtio_blk_device g_aos_blk;
 static aos_blk_virt_t           g_aos_virt;
@@ -426,7 +432,7 @@ static aos_blk_resp_status_t host_blk_backend(
 
 void aos_vmm_virtio_blk_init(uint32_t media_id)
 {
-    uint8_t *region = g_blk_region;
+    uint8_t *region = (uint8_t *)AOS_BLK_SHMEM_VA;
     uint32_t i;
     uint64_t host_sectors = 0u;
     bool host_read_only = true;
@@ -440,13 +446,16 @@ void aos_vmm_virtio_blk_init(uint32_t media_id)
     g_media_id = media_id;
     g_host_request_count = 0u;
 
-    for (i = 0; i < AOS_BLK_SHMEM_SIZE; i++) {
-        region[i] = 0;
+    for (i = 0; i < AOS_BLK_DISK_BYTES; i++) {
+        g_ram_disk[i] = 0;
     }
 
     aos_blk_virt_reset(&g_aos_virt);
-    aos_blk_client_bind(region, 0u, &g_aos_client);
+    aos_blk_client_bind(region, AOS_BLK_VMM_CLIENT, &g_aos_client);
     aos_blk_client_init_queues(&g_aos_client);
+    for (i = 0; i < AOS_BLK_STORAGE_INFO_BYTES; i++) {
+        ((volatile uint8_t *)g_aos_client.info)[i] = 0u;
+    }
     host_info_rc = host_blk_call(AOS_HOST_BLK_OP_INFO, 0u, 0u,
                                  &host_sectors, &host_read_only);
     if (host_info_rc == AOS_HOST_BLK_OK &&
@@ -475,9 +484,7 @@ void aos_vmm_virtio_blk_init(uint32_t media_id)
         LOG_VMM("emulated virtio-blk: host unavailable rc=%u; using RAM backend\n",
                 (unsigned)host_info_rc);
         aos_blk_storage_init(g_aos_client.info, AOS_BLK_DISK_BLOCKS);
-        aos_blk_virt_set_disk(&g_aos_virt,
-                              region + AOS_BLK_DISK_OFF,
-                              AOS_BLK_DISK_BLOCKS);
+        aos_blk_virt_set_disk(&g_aos_virt, g_ram_disk, AOS_BLK_DISK_BLOCKS);
     }
     if (aos_blk_virt_add_client(&g_aos_virt, &g_aos_client) != 0) {
         LOG_VMM_ERR("emulated virtio-blk: add client failed\n");

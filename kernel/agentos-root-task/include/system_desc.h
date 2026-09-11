@@ -222,6 +222,7 @@ typedef struct {
 #define SVC_ID_FAULT_INJECT   23u   /* fault-injection test PD                */
 #define SVC_ID_CONTROLLER     24u   /* controller (monitor) inbound server EP  */
 #define SVC_ID_NET_VIRT       25u   /* network virtualizer PD (the only net mux) */
+#define SVC_ID_BLK_VIRT       26u   /* block virtualizer PD (the only blk mux)   */
 
 /* Standard per-PD CNode slot assignments for well-known capabilities.
  * These are the slots at which each PD finds its initial endpoint caps. */
@@ -256,3 +257,7 @@ typedef struct {
 #define PD_CNODE_SLOT_NET_PD_EP       14u
 /* VMM -> net_virt (ATTACH Call, KICK NBSend); net_pd -> net_virt (RX_READY). */
 #define PD_CNODE_SLOT_NET_VIRT_EP     15u
+/* blk_virt -> virtio_blk (chunked host I/O through the driver DMA window). */
+#define PD_CNODE_SLOT_VIRTIO_BLK_EP   16u
+/* VMM -> blk_virt (ATTACH Call, KICK NBSend). */
+#define PD_CNODE_SLOT_BLK_VIRT_EP     17u

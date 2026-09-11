@@ -127,10 +127,10 @@ guest channel before virtio-net is a backend, CapStore/MsgBus/ModelSvc/ToolSvc
 as "core OS".
 
 **Status:** as of 2026-09-10 none of these is bundled or booted. The root task
-spawns exactly the PDs in `src/system_desc_aarch64.c` (12 in the default
+spawns exactly the PDs in `src/system_desc_aarch64.c` (13 in the default
 image: `nameserver`, `log_drain`, `serial_pd`, `vibe_engine`, `virtio_blk`,
-`block_pd`, `net_pd`, `net_virt`, `guest_vmm_primary`, `vm_manager`, `cc_pd`,
-`fault_handler`; `guest_vmm_secondary`, `fault_inject`, and `test_runner` +
+`block_pd`, `blk_virt`, `net_pd`, `net_virt`, `guest_vmm_primary`,
+`vm_manager`, `cc_pd`, `fault_handler`; `guest_vmm_secondary`, `fault_inject`, and `test_runner` +
 `event_bus` are added only to the image variants that use them), and
 `agentos.toml` lists that same set and nothing else (MAC
 `task_56eae59d9aa94d2d9d047f03fc9d22ad` trimmed the manifest from 39 ELFs;
