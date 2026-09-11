@@ -66,7 +66,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   in the driver's DMA window. TCB.md invariant 2 now holds for block
   (contract: `include/contracts/blk_virt_contract.h`, version 1). The shared
   block region moved from `0x20200000`, which collided with the secondary VMM
-  image reservation, to `0x28000000`.
+  image reservation, to `0x28000000`. `blk_virt` reads the media write
+  policy (`AOS_HOST_BLK_INFO_READ_ONLY`) from the driver INFO reply at ATTACH
+  and publishes it in the client storage_info page, so writable media and
+  `VIRTIO_BLK_F_FLUSH` (#117) reach the guest through the virtualizer.
 
 ### Known limitations
 
