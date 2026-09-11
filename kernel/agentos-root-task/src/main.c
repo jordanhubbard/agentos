@@ -46,6 +46,7 @@
 #include "agentos.h"         /* sel4_dbg_puts                                    */
 #include "contracts/cc_contract.h" /* cc_pd VirtIO startup ABI                    */
 #include <platform/blk_host_layout.h> /* host block MMIO/shared DMA layout       */
+#include <platform/blk_layout.h>      /* shared sDDF block region (VMMs + blk_virt) */
 #include <platform/net_host_layout.h> /* host net MMIO/private DMA/shared bridge */
 #include <platform/guest_memory_layout.h> /* guest GPA and VMM HVA windows        */
 #include "pd_startup_record.h" /* pd_startup_record_t, PD_STARTUP_RECORD_VA      */
@@ -637,6 +638,9 @@ static seL4_CPtr g_serial_shmem_frame_cap = seL4_CapNull;
 static seL4_CPtr g_virtio_mmio_frame_cap = seL4_CapNull;
 static seL4_CPtr g_host_blk_mmio_frame_cap = seL4_CapNull;
 static seL4_CPtr g_blk_shared_frame_cap = seL4_CapNull;
+/* Shared sDDF block region: guest request/response queues and data cells,
+ * mapped at AOS_BLK_SHMEM_VA into every guest VMM and into blk_virt only. */
+static seL4_CPtr g_blk_virt_frame_caps[AOS_BLK_SHMEM_FRAMES];
 static seL4_CPtr g_host_net_mmio_frame_cap = seL4_CapNull;
 static seL4_CPtr g_net_shared_frame_cap = seL4_CapNull;
 static seL4_CPtr g_net_dma_frame_cap = seL4_CapNull;
@@ -1393,6 +1397,29 @@ void root_task_main(const seL4_BootInfo *bi)
     }
 
     {
+        /* Shared sDDF block region (AOS_BLK_SHMEM_VA): one large page per
+         * AOS_BLK_SHMEM_FRAMES, zero-filled by retype, mapped below into the
+         * guest VMMs and blk_virt.  A failed frame leaves the whole array
+         * null so no PD gets a partial region. */
+        seL4_Error blk_err = seL4_NoError;
+        for (uint32_t f = 0u; f < AOS_BLK_SHMEM_FRAMES; f++) {
+            blk_err = ut_alloc_cap(seL4_ARM_LargePageObject, 0u,
+                                   &g_blk_virt_frame_caps[f]);
+            if (blk_err != seL4_NoError) {
+                for (uint32_t g = 0u; g < AOS_BLK_SHMEM_FRAMES; g++) {
+                    g_blk_virt_frame_caps[g] = seL4_CapNull;
+                }
+                break;
+            }
+        }
+        dbg_puts("[rt] blk_virt shared region frames=");
+        dbg_hex((seL4_Word)AOS_BLK_SHMEM_FRAMES);
+        dbg_puts(" err=");
+        dbg_hex((seL4_Word)blk_err);
+        dbg_puts("\n");
+    }
+
+    {
         seL4_Error net_err =
             ut_alloc_device_cap(AGENTOS_HOST_NET_MMIO_PA,
                                 &g_host_net_mmio_frame_cap);
@@ -1884,6 +1911,7 @@ void root_task_main(const seL4_BootInfo *bi)
              pd_is_guest_vmm(pd) ||
              name_eq(pd->name, "cc_pd") ||
              name_eq(pd->name, "net_virt") ||
+             name_eq(pd->name, "blk_virt") ||
              name_eq(pd->name, "test_runner"))) {
             seL4_Word serial_copy = ut_alloc_slot();
             seL4_Error serial_err = seL4_NotEnoughMemory;
@@ -1977,9 +2005,12 @@ void root_task_main(const seL4_BootInfo *bi)
             dbg_puts("\n");
         }
 
+        /* The driver DMA window is shared by virtio_blk and blk_virt only.
+         * No VMM maps it: guest block data reaches the driver through the
+         * blk_virt queues (docs/TCB.md invariant 2). */
         if (g_blk_shared_frame_cap != seL4_CapNull &&
             (name_eq(pd->name, "virtio_blk") ||
-             pd_is_guest_vmm(pd))) {
+             name_eq(pd->name, "blk_virt"))) {
             seL4_Word blk_shared_copy = ut_alloc_slot();
             seL4_Error blk_err = seL4_NotEnoughMemory;
             if (blk_shared_copy != seL4_CapNull) {
@@ -1996,6 +2027,36 @@ void root_task_main(const seL4_BootInfo *bi)
             dbg_puts("[rt] ");
             dbg_puts(pd->name);
             dbg_puts(" blk shared map err=");
+            dbg_hex((seL4_Word)blk_err);
+            dbg_puts("\n");
+        }
+
+        /* Shared sDDF block region: the guest VMMs (queue clients) and
+         * blk_virt (the only consumer).  Each frame cap is copied per PD
+         * because a frame cap maps exactly once. */
+        if (g_blk_virt_frame_caps[0] != seL4_CapNull &&
+            (name_eq(pd->name, "blk_virt") || pd_is_guest_vmm(pd))) {
+            seL4_Error blk_err = seL4_NoError;
+            for (uint32_t f = 0u; f < AOS_BLK_SHMEM_FRAMES &&
+                                  blk_err == seL4_NoError; f++) {
+                seL4_Word frame_copy = ut_alloc_slot();
+                blk_err = seL4_NotEnoughMemory;
+                if (frame_copy != seL4_CapNull) {
+                    blk_err = seL4_CNode_Copy(
+                        seL4_CapInitThreadCNode, frame_copy, 64u,
+                        seL4_CapInitThreadCNode, g_blk_virt_frame_caps[f],
+                        64u, seL4_AllRights);
+                    if (blk_err == seL4_NoError) {
+                        blk_err = pd_vspace_map_device_frame(
+                            vspace, (seL4_CPtr)frame_copy,
+                            AOS_BLK_SHMEM_VA +
+                                (seL4_Word)f * AOS_BLK_SHMEM_FRAME_SIZE);
+                    }
+                }
+            }
+            dbg_puts("[rt] ");
+            dbg_puts(pd->name);
+            dbg_puts(" blk_virt shared region map err=");
             dbg_hex((seL4_Word)blk_err);
             dbg_puts("\n");
         }

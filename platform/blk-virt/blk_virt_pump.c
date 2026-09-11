@@ -1,10 +1,10 @@
 /*
- * blk_virt pump — sDDF-shaped RAM disk with no seL4 dependency.
+ * blk_virt pump — sDDF-shaped block request pump with no seL4 dependency.
  *
- * Each client posts READ/WRITE/FLUSH/BARRIER on its request queue. The
- * pump applies them to a shared RAM image and posts responses.
- * blk_drv / a real blk_virt PD replace this local pump later; the queue
- * ABI stays.
+ * Each client posts READ/WRITE/FLUSH/BARRIER on its request queue.  The pump
+ * serves them from a backend callback (blk_virt: the virtio_blk driver) or
+ * from a RAM image, and posts responses.  The rings are shared between PDs:
+ * indices are read as volatile and every hand-over is fenced.
  */
 
 #include <platform/blk_virt_pump.h>
@@ -26,14 +26,31 @@ static void aos_copy(void *dst, const void *src, uint32_t n)
     }
 }
 
+static void aos_fence(void)
+{
+    __atomic_thread_fence(__ATOMIC_SEQ_CST);
+}
+
 static uint32_t req_len(const aos_blk_req_queue_t *q)
 {
-    return q->tail - q->head;
+    return *(volatile const uint32_t *)&q->tail -
+           *(volatile const uint32_t *)&q->head;
 }
 
 static uint32_t resp_len(const aos_blk_resp_queue_t *q)
 {
-    return q->tail - q->head;
+    return *(volatile const uint32_t *)&q->tail -
+           *(volatile const uint32_t *)&q->head;
+}
+
+uint32_t aos_blk_queue_req_length(const aos_blk_req_queue_t *q)
+{
+    return q ? req_len(q) : 0u;
+}
+
+uint32_t aos_blk_queue_resp_length(const aos_blk_resp_queue_t *q)
+{
+    return q ? resp_len(q) : 0u;
 }
 
 static int req_empty(const aos_blk_req_queue_t *q)
@@ -51,8 +68,10 @@ static int dequeue_req(aos_blk_req_queue_t *q, uint32_t capacity, aos_blk_req_t 
     if (req_empty(q)) {
         return -1;
     }
-    *out = q->buffers[q->head % capacity];
-    q->head++;
+    aos_fence();
+    *out = q->buffers[*(volatile uint32_t *)&q->head % capacity];
+    aos_fence();
+    (*(volatile uint32_t *)&q->head)++;
     return 0;
 }
 
@@ -61,8 +80,10 @@ static int enqueue_resp(aos_blk_resp_queue_t *q, uint32_t capacity, aos_blk_resp
     if (resp_full(q, capacity)) {
         return -1;
     }
-    q->buffers[q->tail % capacity] = r;
-    q->tail++;
+    q->buffers[*(volatile uint32_t *)&q->tail % capacity] = r;
+    aos_fence();
+    (*(volatile uint32_t *)&q->tail)++;
+    aos_fence();
     return 0;
 }
 
@@ -72,32 +93,6 @@ void aos_blk_virt_reset(aos_blk_virt_t *v)
         return;
     }
     aos_bzero(v, (uint32_t)sizeof(*v));
-}
-
-void aos_blk_client_bind(uint8_t *region, uint32_t client_index,
-                         aos_blk_virt_client_t *out)
-{
-    uint8_t *base;
-
-    if (!region || !out || client_index >= AOS_BLK_MAX_CLIENTS) {
-        return;
-    }
-
-    base = region + AOS_BLK_CLIENT_BASE + (client_index * AOS_BLK_CLIENT_STRIDE);
-    out->info     = (aos_blk_storage_info_t *)(base + AOS_BLK_STORAGE_INFO_OFF);
-    out->req      = (aos_blk_req_queue_t *)(base + AOS_BLK_REQ_QUEUE_OFF);
-    out->resp     = (aos_blk_resp_queue_t *)(base + AOS_BLK_RESP_QUEUE_OFF);
-    out->data     = base + AOS_BLK_DATA_OFF;
-    out->capacity = AOS_BLK_QUEUE_CAPACITY;
-}
-
-void aos_blk_client_init_queues(aos_blk_virt_client_t *c)
-{
-    if (!c || !c->req || !c->resp) {
-        return;
-    }
-    aos_bzero(c->req, AOS_BLK_QUEUE_BYTES);
-    aos_bzero(c->resp, AOS_BLK_QUEUE_BYTES);
 }
 
 void aos_blk_storage_init(aos_blk_storage_info_t *info, uint32_t disk_blocks)

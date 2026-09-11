@@ -14,8 +14,8 @@ changing the dependency order below.
 | Release | Theme | Required outcome |
 | --- | --- | --- |
 | **0.2** | Network desktop proof and release discipline | Ubuntu exposes a real desktop session over the already authenticated network path; releases become exact-revision, evidence-bound transitions; the first systems/security narrative is grounded in retained evidence. |
-| **0.3** | Reproducible Linux and guest graphics | A pinned Debian guest replaces Ubuntu as the cross-architecture integration baseline, the canonical framebuffer is live on target, generic virtio-gpu plus virtio-input virtualizers drive an AArch64 guest without host-device passthrough, and the official Omarchy compatibility ledger is kept current. |
-| **0.4** | x86 guest foundation | A real VMX-backed x86_64 VMM boots Linux and reuses canonical net, block, and console services with isolated GPA translation. |
+| **0.3** | Trust baseline and virtualizer tier | The OS-claim gate proves guest I/O, the image boots only the PDs the root task spawns, `net_virt` and `blk_virt` are real protection domains so TCB invariant 2 holds for net and block, dead code is gone, and TCB.md describes what boots. |
+| **0.4** | Reproducible Linux, guest graphics, and x86 guest foundation | A pinned Debian guest replaces Ubuntu as the cross-architecture integration baseline, the canonical framebuffer is live on target, generic virtio-gpu plus virtio-input virtualizers drive an AArch64 guest without host-device passthrough, the official Omarchy compatibility ledger is kept current, and a real VMX-backed x86_64 VMM boots Linux reusing canonical net, block, and console services with isolated GPA translation. |
 | **0.5** | Persistent x86 desktop platform | A pinned Arch Linux x86_64 guest installs through UEFI, reboots from writable storage, reaches key-only SSH, and runs a Hyprland-class compositor through canonical graphics and input. |
 | **0.6** | Official Omarchy qualification | A reproducible official Omarchy artifact installs to encrypted persistent storage, reaches its normal Hyprland desktop, and survives evidence-bound update and recovery gates. |
 | **1.0** | Dual-architecture qualification | AArch64 and x86_64 claims, contracts, isolation, lifecycle, guest I/O, release evidence, and maintained technical narrative agree on one immutable revision. |
@@ -30,14 +30,14 @@ dual-guest SSH
       |                                  ^
       +---- 0.2 release workflow --------+
 
-0.3 declarative guest profiles -> 0.3 Debian integration baseline
+0.4 declarative guest profiles -> 0.4 Debian integration baseline
               |                              |
-              |                    0.3 framebuffer target proof
+              |                    0.4 framebuffer target proof
               |                              |
-              +------------------------------+-- 0.3 Omarchy compatibility ledger
+              +------------------------------+-- 0.4 Omarchy compatibility ledger
       |
       v
-0.3 virtio-gpu + virtio-input -------------------+
+0.4 virtio-gpu + virtio-input -------------------+
                                                    |
 one data-driven VMM                               |
       |                                            |
@@ -64,9 +64,9 @@ one data-driven VMM                               |
 
 ## Trust baseline — corrective actions from the 2026-09-10 audit
 
-These are not release features. They make existing claims truthful and are
-required before any 0.3 claim is made. Each is a MAC task in project
-`agentos`; this list records ordering only.
+These make existing claims truthful. Items 1 through 10 ship as release 0.3
+("Trust baseline and virtualizer tier"); items 11 and 12 follow. Each is a MAC
+task in project `agentos`; this list records ordering only.
 
 | Order | MAC task | Corrective action | Proof |
 | --- | --- | --- | --- |
@@ -79,7 +79,9 @@ required before any 0.3 claim is made. Each is a MAC task in project
 | 7 | `task_b5a2798062024bd2b34632b1cbc1b664` | Replace source-grep assertions in `tests/platform` with behavioral tests or delete them | no `grep`-style source assertions remain |
 | 8 | `task_4fccd3eabf844e8f8a244aaacea87a6a` | PR #117 review items: remove `guest_vmm\|DIAG` printfs, `read_only` follows `media.writable`, reconcile `fault.c` per-tick reads with its comment, FreeBSD boot evidence for the vgic change | PR #117 checks green plus FreeBSD console log |
 | 9 | `task_2895878a309f431da2d082d75c93e20d` | Build `net_virt` and `blk_virt` as real PDs owning the sDDF queue regions; remove per-frame IPC to `net_pd`/`block_pd` | `test-guest-net`/`blk` pass through the new PD boundary; TCB.md diagram and manifest agree |
-| 10 | `task_f95d118416a24fa484c2c43f0d955b56` | Descriptor trim: drop the 9 non-TCB PDs from `system_desc_aarch64.c` (move the `agentOS boot complete` marker to a TCB PD), relocate non-root-task PD sources out of `kernel/agentos-root-task/src`, retire `linux_vmm_test.system` and the passthrough `ubuntu-overlay.dts` examples | `make gate` and `make demo-test` green with a TCB-only descriptor |
+| 10 | `task_f95d118416a24fa484c2c43f0d955b56` | Descriptor trim: drop the non-TCB PDs from `system_desc_aarch64.c` (move the `agentOS boot complete` marker to a TCB PD); relocation of non-root-task PD sources and retiring `linux_vmm_test.system` / the passthrough `ubuntu-overlay.dts` examples remain open | `make gate` and `make demo-test` green with a TCB-only descriptor |
+| 11 | `task_c2558424db0541b18c486fc7960013fe` | `serial_virt` as a real PD following the `net_virt`/`blk_virt` pattern; `cc_pd` becomes its client for guest consoles | `test-guest-console` and `test-ubuntu-virtio` pass through the new PD boundary; TCB.md invariant 2 held for console |
+| 12 | `task_d41eae5495924820bc2defa15750d4e8` | Fix the `log_drain` MSG_SERIAL_WRITE layout mismatch with `serial_pd`; resolve the VA overlap at `0x10005000` | generic PD log output visible on the release kernel; host round-trip test |
 
 ## 0.2 — Network desktop proof and release discipline
 
@@ -114,11 +116,21 @@ MAC work:
   evidence-backed systems/security narrative after the proof and release gate
   are true.
 
-## 0.3 — Reproducible Linux and guest graphics
+## 0.3 — Trust baseline and virtualizer tier
+
+Release 0.3 is the trust-baseline table above: an OS-claim gate that proves
+guest I/O, an image that boots only the 13 PDs the root task spawns, `net_virt`
+and `blk_virt` as real protection domains (TCB invariant 2 held for net and
+block), the never-compiled code removed, and a TCB page that describes what
+boots. Remaining virtualizer work (`serial_virt`) is item 11. The former 0.3
+outcomes below moved to 0.4 when this release was scoped; their MAC tasks are
+titled `v0.4:`.
+
+## 0.4 — Reproducible Linux and guest graphics
 
 Ubuntu was the v0.2 proof-of-life guest. Its retained evidence remains valid,
 but it is not the long-term Linux acceptance baseline. The distribution roles
-from v0.3 onward are deliberately separate:
+from v0.4 onward are deliberately separate:
 
 - Buildroot remains the smallest deterministic per-device and boot proof.
 - A pinned Debian stable generic image is the cross-architecture integration
@@ -193,7 +205,7 @@ MAC work:
   official Omarchy architecture, artifacts, repositories, and requirements;
   the maintained snapshot is `docs/omarchy-compatibility.md`.
 
-## 0.4 — x86 guest foundation
+## 0.4 — x86 guest foundation (same release as the Linux and graphics work above)
 
 x86 support means guest execution, not merely compiling or booting the reduced
 root-task topology. The architecture-neutral VMM runtime and guest-flavor

@@ -597,6 +597,66 @@ int main(void)
            "inv2: the VMM-side emulated virtio-net never speaks the net_pd RAW frame contract");
     }
 
+    /* ── TCB invariant 2 (block): blk_virt is a separate PD, is the only
+     *    mux, owns no hardware, and no VMM holds the driver (virtio_blk)
+     *    endpoint.  The mux talks to the driver at a lower priority than the
+     *    driver so its Calls never invert; the VMM reaches it only by
+     *    notification.  The guest queues live in a region distinct from the
+     *    driver's DMA window, and only the mux bridges the two. ─────────── */
+    {
+        const pd_desc_t *virt = find_pd("blk_virt");
+        const pd_desc_t *drv = find_pd("virtio_blk");
+        uint32_t p, e;
+        int vmm_holds_drv_ep = 0;
+        int drv_holds_vmm_ep = 0;
+        int virt_holds_drv_ep = 0;
+
+        for (p = 0u; p < system_desc_aarch64.pd_count; p++) {
+            const pd_desc_t *pd = &system_desc_aarch64.pds[p];
+            int is_vmm = pd->self_svc_id == SVC_ID_GUEST_VMM_PRIMARY ||
+                         pd->self_svc_id == SVC_ID_GUEST_VMM_SECONDARY;
+
+            for (e = 0u; e < pd->init_ep_count && e < PD_MAX_INIT_EPS; e++) {
+                uint16_t svc = pd->init_eps[e].service_id;
+
+                if (is_vmm && svc == SVC_ID_VIRTIO_BLK) {
+                    vmm_holds_drv_ep = 1;
+                }
+                if (pd == drv && (svc == SVC_ID_GUEST_VMM_PRIMARY ||
+                                  svc == SVC_ID_GUEST_VMM_SECONDARY)) {
+                    drv_holds_vmm_ep = 1;
+                }
+                if (pd == virt && svc == SVC_ID_VIRTIO_BLK) {
+                    virt_holds_drv_ep = 1;
+                }
+            }
+        }
+
+        ok(virt != NULL && drv != NULL &&
+           strcmp(virt->elf_path, "blk_virt.elf") == 0 &&
+           contains("kernel/agentos-root-task/agentos.toml", "name = \"blk_virt\""),
+           "inv2: blk_virt is a PD of its own in the AArch64 topology and the boot manifest");
+        ok(virt && virt->device_frame_count == 0u && virt->irq_count == 0u,
+           "inv2: blk_virt owns no device frame and no IRQ (virtio_blk stays the only disk owner)");
+        ok(virt && drv && virt_holds_drv_ep && virt->priority < drv->priority,
+           "inv2: blk_virt is the driver's client: it holds the virtio_blk EP and runs below virtio_blk");
+        ok(!vmm_holds_drv_ep,
+           "inv2: no guest VMM holds a virtio_blk endpoint; block requests cannot leave a VMM by IPC");
+        ok(!drv_holds_vmm_ep,
+           "inv2: virtio_blk holds no VMM endpoint; completions wake the virtualizer, not a VMM");
+        ok(AOS_BLK_SHMEM_VA != AGENTOS_BLK_SHARED_VA &&
+           (AOS_BLK_SHMEM_VA >= AGENTOS_BLK_SHARED_VA + AGENTOS_BLK_SHARED_SIZE ||
+            AOS_BLK_SHMEM_VA + AOS_BLK_SHMEM_SIZE <= AGENTOS_BLK_SHARED_VA) &&
+           AOS_BLK_CLIENT_BASE + AOS_BLK_MAX_CLIENTS * AOS_BLK_CLIENT_STRIDE <=
+               AOS_BLK_SHMEM_SIZE,
+           "inv2: the shared guest block region is disjoint from the driver DMA window and holds every client stride");
+        ok(!contains("platform/blk-virt/vmm_virtio_blk.c", "AGENTOS_BLK_SHARED_VA") &&
+           !contains("platform/blk-virt/vmm_virtio_blk.c", "AOS_HOST_BLK_OP_READ") &&
+           !contains("platform/blk-virt/vmm_virtio_blk.c", "AOS_HOST_BLK_OP_WRITE") &&
+           !contains("platform/blk-virt/vmm_virtio_blk.c", "PD_CNODE_SLOT_VIRTIO_BLK_EP"),
+           "inv2: the VMM-side emulated virtio-blk never touches the driver DMA window or speaks the virtio_blk block contract");
+    }
+
     /* ── Guest-control liveness: the control relay chain outranks the guests
      *    it services (vm_manager > vibe_engine > cc_pd). Not a TCB.md item;
      *    kept because a regression deadlocks guest create/attach. ──────── */
