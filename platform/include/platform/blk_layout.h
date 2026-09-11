@@ -21,7 +21,8 @@
 #define AOS_BLK_SECTOR_SIZE          512u
 #define AOS_BLK_QUEUE_CAPACITY       128u
 #define AOS_BLK_QUEUE_BYTES          0x2000u
-#define AOS_BLK_MAX_CLIENTS          4u
+/* One client stride per guest VMM slot (primary, secondary). */
+#define AOS_BLK_MAX_CLIENTS          2u
 #define AOS_BLK_DISK_BLOCKS          64u    /* 256 KB RAM disk */
 #define AOS_BLK_DISK_BYTES           (AOS_BLK_DISK_BLOCKS * AOS_BLK_TRANSFER_SIZE)
 #define AOS_BLK_GUEST_MAX_SEGMENT_SIZE 0x100000u /* bounded 1 MiB segment */
@@ -29,13 +30,26 @@
     ((AOS_BLK_GUEST_MAX_SEGMENT_SIZE / AOS_BLK_TRANSFER_SIZE) + 1u)
 #define AOS_BLK_DATA_BYTES           (AOS_BLK_DATA_CELLS * AOS_BLK_TRANSFER_SIZE)
 #define AOS_BLK_CLIENT_STRIDE        0x110000u
-#define AOS_BLK_SHMEM_SIZE           0x500000u
-#define AOS_BLK_SHMEM_VA             0x20200000UL /* after net_virt; future MR */
 
-#define AOS_BLK_DISK_OFF             0x0000u
+/*
+ * Shared sDDF block region: root-task-provisioned large pages mapped at the
+ * same VA into every guest VMM and into blk_virt (the block virtualizer PD).
+ * Nothing else maps it.  0x28000000 sits above the secondary VMM image
+ * reservation (0x20000000-0x22000000), the block-service DMA window
+ * (0x22000000), net_pd's private DMA window (0x24000000) and the shared net
+ * frame (0x26000000); see net_host_layout.h for the same rule.
+ */
+#define AOS_BLK_SHMEM_FRAME_BITS     21u        /* seL4 AArch64 large page */
+#define AOS_BLK_SHMEM_FRAME_SIZE     (1u << AOS_BLK_SHMEM_FRAME_BITS)
+#define AOS_BLK_SHMEM_FRAMES         2u
+#define AOS_BLK_SHMEM_SIZE           (AOS_BLK_SHMEM_FRAMES * AOS_BLK_SHMEM_FRAME_SIZE)
+#define AOS_BLK_SHMEM_VA             0x28000000UL
+
+#define AOS_BLK_DISK_OFF             0x0000u    /* host-test RAM disk image */
 #define AOS_BLK_CLIENT_BASE          0x40000u   /* after 256 KB disk */
 
 #define AOS_BLK_STORAGE_INFO_OFF     0x0000u    /* within client stride */
+#define AOS_BLK_SIGNAL_OFF           0x0800u    /* agentOS kick-suppression word */
 #define AOS_BLK_REQ_QUEUE_OFF        0x1000u
 #define AOS_BLK_RESP_QUEUE_OFF       0x3000u
 #define AOS_BLK_DATA_OFF             0x5000u
@@ -49,7 +63,11 @@ _Static_assert(AOS_BLK_DATA_OFF + AOS_BLK_DATA_BYTES <=
 _Static_assert(AOS_BLK_CLIENT_BASE +
                AOS_BLK_MAX_CLIENTS * AOS_BLK_CLIENT_STRIDE <=
                AOS_BLK_SHMEM_SIZE,
-               "all block clients must fit in the private region");
+               "all block clients must fit in the shared region");
+_Static_assert((AOS_BLK_SHMEM_VA & (AOS_BLK_SHMEM_FRAME_SIZE - 1u)) == 0u,
+               "shared block region must be large-page aligned");
+_Static_assert(AOS_BLK_SHMEM_VA >= 0x26000000UL + 0x00200000UL,
+               "shared block region must sit above the shared net frame");
 
 /*
  * Emulated virtio-mmio blk — must NOT overlap QEMU 0x0A000000 or net 0x0A010000.
@@ -120,8 +138,22 @@ typedef struct aos_blk_storage_info {
     uint64_t capacity;
 } aos_blk_storage_info_t;
 
+/*
+ * agentOS extension, not sDDF ABI: kick suppression between a queue client
+ * (the VMM's emulated virtio-blk) and blk_virt.  Lives in the spare half of
+ * the storage-info page.  Owner is blk_virt: it writes 1 while it drains the
+ * request queue and 0 before it blocks.  The client kicks only while the
+ * word is 0 and its request queue is non-empty, and never writes the word,
+ * so a lost NBSend is repeated on the guest's next exit.
+ */
+typedef struct aos_blk_signal {
+    uint32_t req_consumer_signalled;
+    uint32_t _reserved;
+} aos_blk_signal_t;
+
 typedef struct aos_blk_virt_client {
     aos_blk_storage_info_t *info;
+    aos_blk_signal_t       *signal;
     aos_blk_req_queue_t    *req;
     aos_blk_resp_queue_t   *resp;
     uint8_t                *data;

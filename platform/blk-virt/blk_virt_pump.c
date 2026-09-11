@@ -85,6 +85,7 @@ void aos_blk_client_bind(uint8_t *region, uint32_t client_index,
 
     base = region + AOS_BLK_CLIENT_BASE + (client_index * AOS_BLK_CLIENT_STRIDE);
     out->info     = (aos_blk_storage_info_t *)(base + AOS_BLK_STORAGE_INFO_OFF);
+    out->signal   = (aos_blk_signal_t *)(base + AOS_BLK_SIGNAL_OFF);
     out->req      = (aos_blk_req_queue_t *)(base + AOS_BLK_REQ_QUEUE_OFF);
     out->resp     = (aos_blk_resp_queue_t *)(base + AOS_BLK_RESP_QUEUE_OFF);
     out->data     = base + AOS_BLK_DATA_OFF;
@@ -98,6 +99,9 @@ void aos_blk_client_init_queues(aos_blk_virt_client_t *c)
     }
     aos_bzero(c->req, AOS_BLK_QUEUE_BYTES);
     aos_bzero(c->resp, AOS_BLK_QUEUE_BYTES);
+    if (c->signal) {
+        aos_bzero(c->signal, (uint32_t)sizeof(*c->signal));
+    }
 }
 
 void aos_blk_storage_init(aos_blk_storage_info_t *info, uint32_t disk_blocks)
