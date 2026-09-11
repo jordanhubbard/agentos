@@ -196,6 +196,7 @@ $(NET_VIRT_PUMP_OBJ): $(AGENTOS_ROOT)/platform/net-virt/net_virt_pump.c $(VMM_CO
 	clang $(VMM_CFLAGS) -c -o $@ $<
 
 $(VMM_VIRTIO_NET_OBJ): $(AGENTOS_ROOT)/platform/net-virt/vmm_virtio_net.c $(VMM_CONFIG_STAMP) \
+                       $(KERNEL_SRC_DIR)/include/contracts/net_virt_contract.h \
                        $(AGENTOS_ROOT)/platform/include/platform/net_layout.h \
                        $(AGENTOS_ROOT)/platform/include/platform/net_host_layout.h \
                        $(AGENTOS_ROOT)/platform/include/platform/net_virt_pump.h \

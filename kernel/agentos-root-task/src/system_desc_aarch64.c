@@ -216,9 +216,10 @@ const system_desc_t system_desc_aarch64 = {
             },
         },
 
-        /* pd[6] — net_pd (prio 207; OS-neutral network API)
-         * Owns the host virtio-net device; guest bindings target this generic
-         * device PD rather than a per-guest driver path. */
+        /* pd[6] — net_pd (prio 207; host virtio-net driver)
+         * Owns the host virtio-net device (frame + IRQ).  Its only client is
+         * net_virt, whose listen EP it holds to NBSend RX_READY; it never
+         * talks to a VMM. */
         {
             .name           = "net_pd",
             .elf_path       = "net_pd.elf",
@@ -226,23 +227,11 @@ const system_desc_t system_desc_aarch64 = {
             .cnode_size_bits = 10u,
             .priority       = 207u,
             .self_svc_id    = SVC_ID_NET_PD,
-            .init_ep_count  = 2u
-#if defined(AGENTOS_GUEST_PRIMARY)
-                              + 1u
-#endif
-#if defined(AGENTOS_GUEST_SECONDARY)
-                              + 1u
-#endif
-                              ,
+            .init_ep_count  = 3u,
             .init_eps = {
                 { SVC_ID_NAMESERVER, PD_CNODE_SLOT_NAMESERVER_EP },
                 { SVC_ID_LOG_DRAIN,  PD_CNODE_SLOT_LOG_DRAIN_EP  },
-#if defined(AGENTOS_GUEST_PRIMARY)
-                { SVC_ID_GUEST_VMM_PRIMARY,  PD_CNODE_SLOT_GUEST_VMM_PRIMARY_EP },
-#endif
-#if defined(AGENTOS_GUEST_SECONDARY)
-                { SVC_ID_GUEST_VMM_SECONDARY, PD_CNODE_SLOT_GUEST_VMM_SECONDARY_EP },
-#endif
+                { SVC_ID_NET_VIRT,   PD_CNODE_SLOT_NET_VIRT_EP   },
             },
             .irq_count =
 #if defined(AGENTOS_GUEST_PRIMARY) || defined(AGENTOS_GUEST_SECONDARY)

@@ -152,9 +152,9 @@ fn virtio_markers(assertion: &VirtioAssertion) -> Vec<&'static str> {
                 ]);
                 if assertion.host_backed {
                     required.extend_from_slice(&[
-                        "emulated virtio-net: backend TX accepted by net_pd",
-                        "emulated virtio-net: backend RX delivered from net_pd",
-                        "via host-backed net_pd",
+                        "[net_virt] TX accepted by net_pd",
+                        "[net_virt] RX delivered from net_pd",
+                        "via net_virt",
                         "[net_pd] HOST_READY: virtio-net bus.16",
                         "[net_pd] HOST_TX: QEMU bus.16 completion observed",
                     ]);
@@ -317,8 +317,8 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
         None
     };
 
-    // Every runtime profile reaches its emulated NIC through the slot's
-    // net_pd bridge. Stimulate RX even for the focused "emulated" assertion;
+    // Every runtime profile reaches its emulated NIC through net_virt and
+    // net_pd. Stimulate RX even for the focused "emulated" assertion;
     // otherwise a quiet guest can negotiate the device correctly and then
     // wait forever without exercising a queue.
     let needs_host_net_stimulus = virtio_assertion

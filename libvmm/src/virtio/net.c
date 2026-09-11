@@ -253,7 +253,13 @@ static bool virtio_net_queue_notify(struct virtio_device *dev)
 
     vq->last_idx = idx;
 
-    if (notify_tx_server && net_require_signal_active(&state->tx)) {
+    /*
+     * With no TX notification cap the platform kicks the virtualizer itself
+     * (agentOS net_virt contract): the consumer owns consumer_signalled, so
+     * do not cancel it here or a dropped kick could never be repeated.
+     */
+    if (notify_tx_server && state->tx_cap != 0 &&
+        net_require_signal_active(&state->tx)) {
         net_cancel_signal_active(&state->tx);
         vmm_notify(state->tx_cap);
     }

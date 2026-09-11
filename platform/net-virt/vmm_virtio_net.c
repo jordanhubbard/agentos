@@ -1,11 +1,14 @@
 /*
  * Guest-facing virtio-net: libvmm device at AOS_VIRTIO_NET_GUEST_IPA,
- * backend = sDDF guest queues bridged through the formal net_pd contract.
- * net_pd alone owns the page-isolated QEMU bus.16 transport and its DMA.
+ * backend = sDDF guest queues in the shared net frame, serviced by the
+ * net_virt PD (platform/net-virt/net_virt.c).  The VMM never moves a frame
+ * over IPC: it enqueues/dequeues the shared queues and exchanges
+ * notifications with net_virt (contracts/net_virt_contract.h).  net_pd alone
+ * owns the page-isolated QEMU bus.16 transport and its DMA.
  */
 
 #if defined(AGENTOS_GUEST_PRIMARY) || defined(AGENTOS_GUEST_SECONDARY)
-#include <contracts/net-service/interface.h>
+#include <contracts/net_virt_contract.h>
 #include "sel4_ipc.h"
 #include "system_desc.h"
 #endif
@@ -16,7 +19,6 @@
 #include <sddf/network/queue.h>
 #include <platform/net_layout.h>
 #include <platform/net_host_layout.h>
-#include <platform/net_rx_drain.h>
 #include <platform/net_virt_pump.h>
 #include <platform/vmm_virtio_net.h>
 #include <platform/guest_ram.h>
@@ -38,12 +40,10 @@ static int                      g_aos_net_probed;
 static int                      g_aos_net_driver_ok;
 static int                      g_aos_net_pumped;
 #if defined(AGENTOS_GUEST_PRIMARY) || defined(AGENTOS_GUEST_SECONDARY)
-static uint32_t                 g_net_pd_handle;
-static uint32_t                 g_net_pd_slot;
-static int                      g_net_pd_ready;
-static int                      g_net_pd_tx_marked;
-static int                      g_net_pd_rx_marked;
-static uint32_t                 g_net_pd_rx_events;
+static int                      g_net_virt_attached;
+static uint32_t                 g_net_virt_hw;
+static int                      g_tx_kicked;
+static uint32_t                 g_rx_events;
 
 static uint32_t net_rd32(const uint8_t *p, uint32_t off)
 {
@@ -61,182 +61,108 @@ static void net_wr32(uint8_t *p, uint32_t off, uint32_t value)
     p[off + 3u] = (uint8_t)(value >> 24);
 }
 
-static int net_pd_call(uint32_t opcode, uint32_t arg0, uint32_t arg1,
-                       sel4_msg_t *rep)
+static void net_virt_attach(uint32_t client_id)
 {
     sel4_msg_t req = {0};
-    req.opcode = opcode;
-    req.length = 8u;
-    net_wr32(req.data, 0u, arg0);
-    net_wr32(req.data, 4u, arg1);
-    sel4_call((seL4_CPtr)PD_CNODE_SLOT_NET_PD_EP, &req, rep);
-    return rep->opcode == SEL4_ERR_OK &&
-           net_rd32(rep->data, 0u) == NET_SVC_RAW_OK;
-}
-
-static void net_pd_bridge_init(uint32_t client_id)
-{
     sel4_msg_t rep = {0};
+    uint32_t status;
 
-    if (!net_pd_call(NET_SVC_OP_RAW_OPEN, client_id, 0u, &rep) ||
-        rep.length < 18u) {
-        LOG_VMM_ERR("emulated virtio-net: net_pd OPEN failed rc=%u\n",
-                    (unsigned)rep.opcode);
+    req.opcode = NET_VIRT_OP_ATTACH;
+    req.length = (uint32_t)sizeof(net_virt_attach_req_t);
+    net_wr32(req.data, 0u, NET_VIRT_CONTRACT_VERSION);
+    net_wr32(req.data, 4u, client_id);
+#if defined(AGENTOS_GUEST_SECONDARY)
+    net_wr32(req.data, 8u, NET_VIRT_VMM_SLOT_SECONDARY);
+#else
+    net_wr32(req.data, 8u, NET_VIRT_VMM_SLOT_PRIMARY);
+#endif
+    sel4_call((seL4_CPtr)PD_CNODE_SLOT_NET_VIRT_EP, &req, &rep);
+    status = net_rd32(rep.data, 0u);
+    if (rep.opcode != SEL4_ERR_OK || status != NET_VIRT_OK ||
+        rep.length < sizeof(net_virt_attach_reply_t)) {
+        LOG_VMM_ERR("emulated virtio-net: net_virt ATTACH failed rc=%u status=%u\n",
+                    (unsigned)rep.opcode, (unsigned)status);
         return;
     }
-    g_net_pd_handle = net_rd32(rep.data, 4u);
-    g_net_pd_slot = net_rd32(rep.data, 8u);
-    if (g_net_pd_slot < NET_SVC_SLOT_BASE ||
-        g_net_pd_slot + NET_SVC_SLOT_SIZE > AGENTOS_NET_SHARED_SIZE) {
-        LOG_VMM_ERR("emulated virtio-net: invalid net_pd shmem slot 0x%x\n",
-                    (unsigned)g_net_pd_slot);
+    g_net_virt_hw = net_rd32(rep.data, 8u);
+    g_net_virt_attached = 1;
+    LOG_VMM("emulated virtio-net: attached to net_virt contract v%u client %u hw=%u\n",
+            (unsigned)net_rd32(rep.data, 4u), (unsigned)client_id,
+            (unsigned)g_net_virt_hw);
+}
+
+static void net_virt_kick(void)
+{
+    seL4_NBSend((seL4_CPtr)PD_CNODE_SLOT_NET_VIRT_EP,
+                seL4_MessageInfo_new(NET_VIRT_EVENT_KICK, 0u, 0u, 0u));
+}
+
+static void net_mark_pumped(uint32_t n, const char *how)
+{
+    if (!g_aos_net_pumped && n > 0u) {
+        g_aos_net_pumped = 1;
+        LOG_VMM("emulated virtio-net: pumped %u frame(s) via net_virt (%s)\n",
+                (unsigned)n, how);
+    }
+}
+
+/*
+ * Service the shared queues against net_virt.  Called after every guest
+ * MMIO exit and on every RX_READY event:
+ *   - push frames net_virt put on rx_active into the guest RX virtq;
+ *   - kick net_virt if the guest queued TX and net_virt asked for kicks
+ *     (tx_active.consumer_signalled == 0), or if we just recycled RX buffers
+ *     while net_virt is backpressured (rx_free.consumer_signalled == 0).
+ * NBSend kicks are lossy; the flag stays 0 until net_virt drains, so a lost
+ * kick is repeated on the next exit.
+ */
+static void net_virt_service(void)
+{
+    uint32_t rx_n;
+    int kick = 0;
+
+    if (!g_net_virt_attached) {
         return;
     }
-    g_net_pd_ready = 1;
-    LOG_VMM("emulated virtio-net: backend net_pd contract v%u handle=%u\n",
-            (unsigned)NET_SVC_INTERFACE_VERSION,
-            (unsigned)g_net_pd_handle);
-    rep = (sel4_msg_t){0};
-    if (net_pd_call(NET_SVC_OP_RAW_STATUS, g_net_pd_handle, 0u, &rep) &&
-        net_rd32(rep.data, 4u) != 0u) {
-        LOG_VMM("[net_pd] HOST_READY: virtio-net bus.16\n");
-    } else {
-        LOG_VMM_ERR("emulated virtio-net: net_pd host transport unavailable\n");
-    }
-}
 
-static uint32_t net_pd_bridge_tx(void)
-{
-    uint32_t sent = 0u;
-    net_buff_desc_t buffer;
-
-    while (net_dequeue_active(&g_tx, &buffer) == 0) {
-        uint32_t len = buffer.len;
-        uint8_t *src = (uint8_t *)g_aos_net.tx_data +
-                       (uint32_t)buffer.io_or_offset;
-        uint8_t *dst = (uint8_t *)AGENTOS_NET_SHARED_VA + g_net_pd_slot +
-                       NET_SVC_TX_OFFSET;
-        if (len > NET_SVC_MAX_FRAME_BYTES) {
-            len = NET_SVC_MAX_FRAME_BYTES;
-        }
-        for (uint32_t i = 0u; i < len; i++) {
-            dst[i] = src[i];
-        }
-        __atomic_thread_fence(__ATOMIC_SEQ_CST);
-        sel4_msg_t rep = {0};
-        if (net_pd_call(NET_SVC_OP_RAW_SEND, g_net_pd_handle, len, &rep)) {
-            sent++;
-            if (!g_net_pd_tx_marked) {
-                g_net_pd_tx_marked = 1;
-                LOG_VMM("emulated virtio-net: backend TX accepted by net_pd\n");
-                LOG_VMM("[net_pd] HOST_TX: QEMU bus.16 completion observed\n");
-            }
-        } else {
-            LOG_VMM_ERR("emulated virtio-net: backend TX failed rc=%u\n",
-                        (unsigned)rep.opcode);
-        }
-        buffer.len = 0u;
-        (void)net_enqueue_free(&g_tx, buffer);
-    }
-    return sent;
-}
-
-static uint32_t net_pd_bridge_rx(uint32_t limit)
-{
-    uint32_t received = 0u;
-
-    for (uint32_t attempt = 0u; attempt < limit; attempt++) {
-        net_buff_desc_t buffer;
-        sel4_msg_t rep = {0};
-
-        /*
-         * Reserve the destination before RAW_RECV transfers ownership of a
-         * frame out of net_pd's shared ring.  Consuming first loses a frame
-         * whenever the guest has temporarily exhausted its RX descriptors.
-         */
-        if (net_dequeue_free(&g_rx, &buffer) != 0) {
-            break;
-        }
-        if (!net_pd_call(NET_SVC_OP_RAW_RECV, g_net_pd_handle,
-                         NET_SVC_MAX_FRAME_BYTES, &rep) ||
-            rep.length < 12u) {
-            (void)net_enqueue_free(&g_rx, buffer);
-            break;
-        }
-        uint32_t len = net_rd32(rep.data, 4u);
-        uint32_t off = net_rd32(rep.data, 8u);
-        if (len == 0u) {
-            (void)net_enqueue_free(&g_rx, buffer);
-            break;
-        }
-        if (len > NET_SVC_MAX_FRAME_BYTES ||
-            off + len > AGENTOS_NET_SHARED_SIZE) {
-            (void)net_enqueue_free(&g_rx, buffer);
-            LOG_VMM_ERR("emulated virtio-net: backend RX bounds invalid\n");
-            break;
-        }
-        uint8_t *src = (uint8_t *)AGENTOS_NET_SHARED_VA + off;
-        uint8_t *dst = (uint8_t *)g_aos_net.rx_data +
-                       (uint32_t)buffer.io_or_offset;
-        __atomic_thread_fence(__ATOMIC_SEQ_CST);
-        for (uint32_t i = 0u; i < len; i++) {
-            dst[i] = src[i];
-        }
-        buffer.len = (uint16_t)len;
-        if (net_enqueue_active(&g_rx, buffer) != 0) {
-            buffer.len = 0u;
-            (void)net_enqueue_free(&g_rx, buffer);
-            break;
-        }
-        received++;
-        if (!g_net_pd_rx_marked) {
-            g_net_pd_rx_marked = 1;
-            LOG_VMM("emulated virtio-net: backend RX delivered from net_pd\n");
+    rx_n = net_queue_length(g_rx.active);
+    if (rx_n > 0u) {
+        net_mark_pumped(rx_n, "RX delivered to guest");
+        g_rx_events += rx_n;
+        if (g_rx_events <= rx_n ||
+            (g_rx_events & (g_rx_events - 1u)) == 0u) {
+            LOG_VMM("emulated virtio-net: RX %u frame(s) from net_virt total=%u\n",
+                    (unsigned)rx_n, (unsigned)g_rx_events);
         }
     }
-    return received;
-}
-
-static uint32_t net_pd_receive_batch(void *ctx, uint32_t limit)
-{
-    (void)ctx;
-    return net_pd_bridge_rx(limit);
-}
-
-static void net_pd_flush_guest_rx(void *ctx)
-{
-    (void)ctx;
     (void)virtio_net_handle_rx(&g_aos_net);
-}
 
-static uint32_t net_pd_drain_rx(void)
-{
-    return aos_net_rx_drain(net_pd_receive_batch, net_pd_flush_guest_rx,
-                            NULL, AOS_NET_CAPACITY);
+    if (!net_queue_empty_active(&g_tx)) {
+        if (net_require_signal_active(&g_tx)) {
+            kick = 1;
+            g_tx_kicked = 1;
+        }
+    } else if (g_tx_kicked) {
+        g_tx_kicked = 0;
+        net_mark_pumped(1u, "TX consumed");
+    }
+    if (rx_n > 0u && net_require_signal_free(&g_rx) &&
+        !net_queue_empty_free(&g_rx)) {
+        kick = 1;
+    }
+    if (kick) {
+        net_virt_kick();
+    }
 }
 #endif
 
 void aos_vmm_virtio_net_rx_ready(void)
 {
 #if defined(AGENTOS_GUEST_PRIMARY) || defined(AGENTOS_GUEST_SECONDARY)
-    if (!g_aos_net_ready || !g_net_pd_ready) {
+    if (!g_aos_net_ready) {
         return;
     }
-    uint32_t received = net_pd_drain_rx();
-    if (received > 0u) {
-        if (!g_aos_net_pumped) {
-            g_aos_net_pumped = 1;
-            LOG_VMM("emulated virtio-net: pumped %u frame(s) via host-backed net_pd\n",
-                    (unsigned)received);
-        }
-        g_net_pd_rx_events += received;
-        if (g_net_pd_rx_events <= received ||
-            (g_net_pd_rx_events & (g_net_pd_rx_events - 1u)) == 0u) {
-            LOG_VMM("[net_pd] HOST_RX: QEMU bus.16 frame received\n");
-            LOG_VMM("emulated virtio-net: asynchronous net_pd RX total=%u\n",
-                    (unsigned)g_net_pd_rx_events);
-        }
-    }
+    net_virt_service();
 #endif
 }
 
@@ -264,16 +190,16 @@ void aos_vmm_virtio_net_init(uint32_t client_id)
     net_queue_init(&g_tx, (net_queue_t *)client.tx_free,
                    (net_queue_t *)client.tx_active, AOS_NET_CAPACITY);
 
-    /*
-     * libvmm calls vmm_notify(tx_cap) when the guest TX virtq is kicked.
-     * tx_cap is 0 (no net_virt PD yet). Keep consumer_signalled set so
-     * net_require_signal_active is false and seL4_Signal(0) is skipped.
-     * We pump after every VM MMIO fault instead.
-     */
-    client.tx_active->consumer_signalled = 1u;
-
 #if defined(AGENTOS_GUEST_PRIMARY) || defined(AGENTOS_GUEST_SECONDARY)
-    net_pd_bridge_init(client_id);
+    /*
+     * Buffers are initialised (above) before net_virt binds the queues.
+     * tx_cap stays 0: libvmm does not signal on TX; the kick is issued from
+     * net_virt_service() under the contract's consumer_signalled rules.
+     */
+    net_virt_attach(client_id);
+#else
+    /* No virtualizer in this build: keep the in-process pump silent. */
+    client.tx_active->consumer_signalled = 1u;
 #endif
 
     mac[0] = AOS_VIRTIO_NET_MAC0;
@@ -296,7 +222,7 @@ void aos_vmm_virtio_net_init(uint32_t client_id)
     }
 
     g_aos_net_ready = 1;
-    LOG_VMM("emulated virtio-net IPA 0x%lx IRQ %u (sDDF pump, not QEMU)\n",
+    LOG_VMM("emulated virtio-net IPA 0x%lx IRQ %u (sDDF queues to net_virt, not QEMU)\n",
             (unsigned long)AOS_VIRTIO_NET_GUEST_IPA,
             (unsigned)AOS_VIRTIO_NET_VIRQ);
 }
@@ -304,7 +230,6 @@ void aos_vmm_virtio_net_init(uint32_t client_id)
 void aos_vmm_virtio_net_after_fault(void)
 {
     uint32_t status;
-    uint32_t n;
 
     if (!g_aos_net_ready) {
         return;
@@ -329,25 +254,18 @@ void aos_vmm_virtio_net_after_fault(void)
     }
 
 #if defined(AGENTOS_GUEST_PRIMARY) || defined(AGENTOS_GUEST_SECONDARY)
-    n = 0u;
-    if (g_net_pd_ready) {
-        n += net_pd_bridge_tx();
-        n += net_pd_drain_rx();
-    }
-    if (!g_aos_net_pumped && n > 0u) {
-        g_aos_net_pumped = 1;
-        LOG_VMM("emulated virtio-net: pumped %u frame(s) via host-backed net_pd\n",
-                n);
-    }
+    net_virt_service();
 #else
-    n = aos_net_virt_pump(&g_aos_virt);
-    if (!g_aos_net_pumped && n > 0u) {
-        g_aos_net_pumped = 1;
-        LOG_VMM("emulated virtio-net: pumped %u frame(s) TX->RX\n", n);
+    {
+        uint32_t n = aos_net_virt_pump(&g_aos_virt);
+        if (!g_aos_net_pumped && n > 0u) {
+            g_aos_net_pumped = 1;
+            LOG_VMM("emulated virtio-net: pumped %u frame(s) TX->RX\n", n);
+        }
+        (void)virtio_net_handle_rx(&g_aos_net);
+        if (g_tx.active) {
+            g_tx.active->consumer_signalled = 1u;
+        }
     }
 #endif
-    (void)virtio_net_handle_rx(&g_aos_net);
-    if (g_tx.active) {
-        g_tx.active->consumer_signalled = 1u;
-    }
 }
