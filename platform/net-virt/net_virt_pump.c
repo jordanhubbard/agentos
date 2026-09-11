@@ -25,9 +25,24 @@ static void aos_copy(void *dst, const void *src, uint32_t n)
     }
 }
 
+/*
+ * Queue ops mirror sDDF net_queue.h: the producer publishes a descriptor,
+ * then a release fence, then the index; the consumer reads the index, then
+ * the descriptor.  The rings are shared between PDs, so the fences are not
+ * optional even though the in-process host tests never needed them.
+ */
+#define AOS_NET_FENCE() __atomic_thread_fence(__ATOMIC_SEQ_CST)
+
+uint16_t aos_net_queue_length(const aos_net_queue_t *q)
+{
+    uint16_t tail = *(const volatile uint16_t *)&q->tail;
+    uint16_t head = *(const volatile uint16_t *)&q->head;
+    return (uint16_t)(tail - head);
+}
+
 static uint16_t q_len(const aos_net_queue_t *q)
 {
-    return (uint16_t)(q->tail - q->head);
+    return aos_net_queue_length(q);
 }
 
 static int q_empty(const aos_net_queue_t *q)
@@ -40,24 +55,39 @@ static int q_full(const aos_net_queue_t *q, uint32_t capacity)
     return q_len(q) == (uint16_t)capacity;
 }
 
-static int dequeue(aos_net_queue_t *q, uint32_t capacity, aos_net_buff_desc_t *out)
+int aos_net_queue_dequeue(aos_net_queue_t *q, uint32_t capacity,
+                          aos_net_buff_desc_t *out)
 {
     if (q_empty(q)) {
         return -1;
     }
+    AOS_NET_FENCE();
     *out = q->buffers[q->head % capacity];
-    q->head++;
+    AOS_NET_FENCE();
+    *(volatile uint16_t *)&q->head = (uint16_t)(q->head + 1u);
     return 0;
 }
 
-static int enqueue(aos_net_queue_t *q, uint32_t capacity, aos_net_buff_desc_t buf)
+int aos_net_queue_enqueue(aos_net_queue_t *q, uint32_t capacity,
+                          aos_net_buff_desc_t buf)
 {
     if (q_full(q, capacity)) {
         return -1;
     }
     q->buffers[q->tail % capacity] = buf;
-    q->tail++;
+    AOS_NET_FENCE();
+    *(volatile uint16_t *)&q->tail = (uint16_t)(q->tail + 1u);
     return 0;
+}
+
+static int dequeue(aos_net_queue_t *q, uint32_t capacity, aos_net_buff_desc_t *out)
+{
+    return aos_net_queue_dequeue(q, capacity, out);
+}
+
+static int enqueue(aos_net_queue_t *q, uint32_t capacity, aos_net_buff_desc_t buf)
+{
+    return aos_net_queue_enqueue(q, capacity, buf);
 }
 
 void aos_net_virt_reset(aos_net_virt_t *v)

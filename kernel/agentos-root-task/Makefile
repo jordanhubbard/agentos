@@ -397,6 +397,11 @@ $(BUILD_DIR)/rt_system_desc_x86_64.o: $(GUEST_CONFIG_STAMP)
 endif
 $(BUILD_DIR)/cc_pd.o: $(GUEST_CONFIG_STAMP)
 $(BUILD_DIR)/vm_manager.o: $(GUEST_CONFIG_STAMP)
+# net_pd (host IRQ ownership) and net_virt (which VMM listen EPs exist) both
+# read the AGENTOS_GUEST_* macros, so a GUEST_OS=none object must not be
+# reused for a guest image.
+$(BUILD_DIR)/net_pd.o: $(GUEST_CONFIG_STAMP)
+$(BUILD_DIR)/net_virt.o: $(GUEST_CONFIG_STAMP)
 
 IMAGE_FILE  := $(BUILD_DIR)/agentos.img
 

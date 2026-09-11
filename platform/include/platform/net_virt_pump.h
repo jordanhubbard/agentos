@@ -3,6 +3,17 @@
 
 #include <platform/net_layout.h>
 
+/*
+ * Raw ring ops on the sDDF-compatible queues.  Safe across PDs: fenced, and
+ * the head/tail indices are accessed as volatile.  Used by the VMM-side
+ * emulated device (through libvmm), by net_virt, and by the host tests.
+ */
+uint16_t aos_net_queue_length(const aos_net_queue_t *q);
+int aos_net_queue_dequeue(aos_net_queue_t *q, uint32_t capacity,
+                          aos_net_buff_desc_t *out);
+int aos_net_queue_enqueue(aos_net_queue_t *q, uint32_t capacity,
+                          aos_net_buff_desc_t buf);
+
 void aos_net_virt_reset(aos_net_virt_t *v);
 
 /* Bind client_index's stride inside region. Does not touch buffers. */

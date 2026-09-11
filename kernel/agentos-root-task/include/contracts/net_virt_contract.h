@@ -50,7 +50,9 @@
 
 /* ── Opcodes / labels ─────────────────────────────────────────────────── */
 
-/* Call, VMM -> net_virt: bind guest client `client_id` to the virtualizer. */
+/* Call, VMM -> net_virt: bind guest client `client_id` to the virtualizer.
+ * `vmm_slot` names the caller so net_virt knows which listen EP to NBSend
+ * RX_READY to; `client_id` selects the queue stride (profile network_client). */
 #define NET_VIRT_OP_ATTACH              0x2201u
 /* NBSend, VMM -> net_virt: guest queues changed (see header comment). */
 #define NET_VIRT_EVENT_KICK             0x2210u
@@ -66,9 +68,14 @@
 #define NET_VIRT_HW_NONE                0u   /* no host NIC: hub/loopback pump */
 #define NET_VIRT_HW_NET_PD              1u   /* frames reach net_pd's host NIC */
 
+/* net_virt_attach_req_t.vmm_slot */
+#define NET_VIRT_VMM_SLOT_PRIMARY       0u
+#define NET_VIRT_VMM_SLOT_SECONDARY     1u
+
 typedef struct __attribute__((packed)) {
     uint32_t version;    /* NET_VIRT_CONTRACT_VERSION */
     uint32_t client_id;  /* 0 .. AOS_NET_GUEST_CLIENTS-1 (queue stride index) */
+    uint32_t vmm_slot;   /* NET_VIRT_VMM_SLOT_* of the calling VMM */
 } net_virt_attach_req_t;
 
 typedef struct __attribute__((packed)) {
