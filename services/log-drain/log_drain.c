@@ -201,6 +201,9 @@ typedef struct {
 typedef struct {
     bool     active;
     uint32_t pd_id;
+    uint32_t slot;
+    uint32_t line_pos;
+    char     line_buf[256];
     uint64_t bytes_total;
 } log_ring_state_t;
 
@@ -316,14 +319,16 @@ static log_ring_state_t *find_ring_state(uint32_t pd_id)
     return NULL;
 }
 
-static log_ring_state_t *get_or_create_ring_state(uint32_t pd_id)
+static log_ring_state_t *get_or_create_ring_state(uint32_t pd_id, uint32_t slot)
 {
     log_ring_state_t *s = find_ring_state(pd_id);
-    if (s) return s;
+    if (s) return s->slot == slot ? s : NULL;
     if (ring_count >= MAX_LOG_RINGS) return NULL;
     s = &ring_states[ring_count++];
     s->active      = true;
     s->pd_id       = pd_id;
+    s->slot        = slot;
+    s->line_pos    = 0;
     s->bytes_total = 0;
     return s;
 }
@@ -421,12 +426,10 @@ static uint32_t drain_ring(uint32_t slot, log_ring_state_t *rs)
 
     if (hdr->magic != LOG_RING_MAGIC) return 0;
 
-    uint32_t head    = hdr->head;
-    uint32_t tail    = hdr->tail;
+    uint32_t head    = __atomic_load_n(&hdr->head, __ATOMIC_ACQUIRE);
+    uint32_t tail    = __atomic_load_n(&hdr->tail, __ATOMIC_RELAXED);
     uint32_t drained = 0;
-
-    static char line_buf[256];
-    static uint32_t line_pos = 0;
+    if (head >= RING_BUF_SIZE || tail >= RING_BUF_SIZE) return 0;
 
     const char *name = pd_name_for(rs->pd_id);
 
@@ -435,16 +438,15 @@ static uint32_t drain_ring(uint32_t slot, log_ring_state_t *rs)
         tail = (tail + 1) % RING_BUF_SIZE;
         drained++;
 
-        if (c == '\n' || line_pos >= (uint32_t)(sizeof(line_buf) - 1)) {
-            line_buf[line_pos] = '\0';
-            uart_tagged_line(name, line_buf);
-            line_pos = 0;
-        } else {
-            line_buf[line_pos++] = c;
+        if (c != '\n') rs->line_buf[rs->line_pos++] = c;
+        if (c == '\n' || rs->line_pos == sizeof(rs->line_buf) - 1) {
+            rs->line_buf[rs->line_pos] = '\0';
+            uart_tagged_line(name, rs->line_buf);
+            rs->line_pos = 0;
         }
     }
 
-    hdr->tail        = tail;
+    __atomic_store_n(&hdr->tail, tail, __ATOMIC_RELEASE);
     rs->bytes_total += drained;
     total_bytes     += drained;
     return drained;
@@ -454,7 +456,7 @@ static void drain_all(void)
 {
     for (uint32_t i = 0; i < ring_count; i++) {
         if (ring_states[i].active)
-            drain_ring(i, &ring_states[i]);
+            drain_ring(ring_states[i].slot, &ring_states[i]);
     }
 }
 
@@ -479,7 +481,7 @@ static void register_ring(uint32_t slot, uint32_t pd_id)
     hdr->head  = 0;
     hdr->tail  = 0;
 
-    get_or_create_ring_state(pd_id);
+    get_or_create_ring_state(pd_id, slot);
 
     uart_puts("\033[32m[+] log_drain: ");
     uart_puts(pd_name_for(pd_id));
@@ -534,11 +536,15 @@ static uint32_t handle_log_write(sel4_badge_t badge,
          * we have a ring_state entry for this pd_id even when we skip the
          * full register_ring path.
          */
-        get_or_create_ring_state(pd_id);
+        get_or_create_ring_state(pd_id, slot);
     }
 
     log_ring_state_t *rs = find_ring_state(pd_id);
-    if (rs) drain_ring(slot, rs);
+    if (!rs || rs->slot != slot || hdr->head >= RING_BUF_SIZE || hdr->tail >= RING_BUF_SIZE) {
+        data_wr32(rep->data, 0, 1u);
+        return SEL4_ERR_BAD_ARG;
+    }
+    drain_ring(slot, rs);
 
     data_wr32(rep->data, 0, 0u); /* ok */
     return SEL4_ERR_OK;
