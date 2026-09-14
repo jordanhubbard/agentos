@@ -892,6 +892,14 @@ test-integration:
 	    echo "FAIL: tests/platform/test_net_virt_pump.c"; \
 	    status=1; \
 	fi; \
+	if gcc -I platform/include tests/platform/test_arm_vtimer.c \
+	        -o $(BUILD_TMP_DIR)/test_arm_vtimer 2>&1 \
+	    && $(BUILD_TMP_DIR)/test_arm_vtimer; then \
+	    echo "PASS: tests/platform/test_arm_vtimer.c"; \
+	else \
+	    echo "FAIL: tests/platform/test_arm_vtimer.c"; \
+	    status=1; \
+	fi; \
 	if gcc -I platform/include \
 	        tests/platform/test_net_rx_drain.c \
 	        -o $(BUILD_TMP_DIR)/test_net_rx_drain 2>&1 \
