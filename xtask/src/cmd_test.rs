@@ -63,10 +63,12 @@ const CC_FRAME_DEADLINE: Duration = Duration::from_secs(60);
 const CC_INPUT_RETRY_DEADLINE: Duration = Duration::from_secs(120);
 const CC_OK: u32 = 0;
 const CC_ERR_RELAY_FAULT: u32 = 8;
+const CC_ERR_BAD_HANDLE: u32 = 6;
 #[cfg(test)]
 const VMM_RELAY_PAYLOAD_BYTES: usize = 48;
 const MSG_CC_LOG_STREAM: u32 = 0x2610;
 const MSG_CC_CREATE_GUEST: u32 = 0x2611;
+const MSG_CC_GUEST_STATUS: u32 = 0x260a;
 const MSG_CC_SEND_INPUT: u32 = 0x260d;
 const MSG_CC_SUSPEND_GUEST: u32 = 0x2613;
 const MSG_CC_RESUME_GUEST: u32 = 0x2614;
@@ -2563,6 +2565,16 @@ fn wait_for_dual_guest_consoles_via_cc(
      * path. Quiesce the deferred profile immediately so the lead profile's
      * media boot cannot lose the single emulated CPU to a busier guest.
      */
+    for guest in [lead, deferred] {
+        let result =
+            try_create_guest_via_cc(&mut boot_cc, guest.profile.control_type as u8, guest.ram_mb)?;
+        anyhow::ensure!(
+            matches!(result, Err((CC_ERR_RELAY_FAULT, _))),
+            "duplicate profile {} creation was not rejected: {result:?}",
+            guest.profile.id
+        );
+    }
+    println!("[xtask:test] duplicate profile creates rejected without alias handles");
     let deferred_boot_suspend = suspend_guest_via_cc(&mut boot_cc, deferred_handle)
         .with_context(|| format!("failed to defer {} boot", deferred.profile.id))?;
     println!(
@@ -2652,6 +2664,15 @@ fn wait_for_dual_guest_consoles_via_cc(
             .with_context(|| format!("failed to destroy {}", deferred.profile.id))?;
         destroy_guest_via_cc(&mut boot_cc, lead_handle)
             .with_context(|| format!("failed to destroy {}", lead.profile.id))?;
+        for handle in [lead_handle, deferred_handle, u32::MAX] {
+            let reply = boot_cc.call(MSG_CC_GUEST_STATUS, handle, 0, 0, &[])?;
+            anyhow::ensure!(
+                reply.mr[0] == CC_ERR_BAD_HANDLE,
+                "stale/invalid guest handle {handle} returned status {}",
+                reply.mr[0]
+            );
+        }
+        println!("[xtask:test] destroyed and invalid guest handles rejected");
     }
 
     Ok(format!(
