@@ -53,6 +53,7 @@
  */
 
 #include "system_desc.h"
+#include "contracts/native_rust_probe.h"
 #include <platform/guest_memory_layout.h>
 
 /* agentos-8f5: a target contract-runner PD is appended only in test images,
@@ -467,7 +468,11 @@ const system_desc_t system_desc_aarch64 = {
             .cnode_size_bits = 10u,
             .priority       = 164u,
             .self_svc_id    = SVC_ID_CC_PD,
-            .init_ep_count  = AOS_CC_INIT_EP_COUNT,
+            .init_ep_count  = AOS_CC_INIT_EP_COUNT
+#ifdef AGENTOS_NATIVE_RUST_TEST
+                + 1u
+#endif
+                ,
             .init_eps = {
                 { SVC_ID_NAMESERVER,  PD_CNODE_SLOT_NAMESERVER_EP },
                 { SVC_ID_LOG_DRAIN,   PD_CNODE_SLOT_LOG_DRAIN_EP  },
@@ -483,6 +488,9 @@ const system_desc_t system_desc_aarch64 = {
                  * an EP with no server would block cc_pd forever. */
 #if defined(AGENTOS_FAULT_INJECT)
                 { SVC_ID_FAULT_INJECT, PD_CNODE_SLOT_FAULT_INJECT_EP },
+#endif
+#ifdef AGENTOS_NATIVE_RUST_TEST
+                { SVC_ID_NATIVE_RUST_PROBE, NATIVE_RUST_CC_ENDPOINT },
 #endif
             },
         },

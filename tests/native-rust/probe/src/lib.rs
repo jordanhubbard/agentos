@@ -155,12 +155,9 @@ fn heap_proof(seed: u8) -> Option<u64> {
     Some(checksum)
 }
 
-fn network_proof() -> Option<[u64; 3]> {
+fn network_proof(queue: &mut agentos_pd::network::Client<'_>,
+    attachment: agentos_pd::network::Attachment) -> Option<[u64; 3]> {
     use agentos_pd::network;
-    let (mut queue, attachment) = unsafe {
-        network::initialize_and_attach(0x26400000usize as *mut u8,
-            network::PAGE_BYTES, 15, 2, 2).ok()?
-    };
     if attachment.hardware != 1 { return None; }
     let mut wakes = 0;
     for _ in 0..3u8 {
@@ -204,7 +201,12 @@ fn network_proof() -> Option<[u64; 3]> {
 
 #[no_mangle]
 pub extern "C" fn pd_main(endpoint: u64, _nameserver: u64) -> ! {
-    let network_result = network_proof();
+    let mut network = unsafe {
+        agentos_pd::network::initialize_and_attach(0x26400000usize as *mut u8,
+            agentos_pd::network::PAGE_BYTES, 15, 2, 2).ok()
+    };
+    let network_result = network.as_mut().and_then(|(queue, attachment)| network_proof(queue, *attachment));
+    let mut network_sequence = 0;
     extern "C" { fn agentos_pd_net_isolation_probe(); }
     // Enabled only in a dedicated probe image, after proving the owned path.
     if network_result.is_some() { unsafe { agentos_pd_net_isolation_probe() }; }
@@ -214,10 +216,12 @@ pub extern "C" fn pd_main(endpoint: u64, _nameserver: u64) -> ! {
         let (status, count) = match request.info.label() {
             0x2e05 if request.info.count() != 1 => (2, 0),
             0x2e05 if get_mr(0) != 1 => (3, 0),
-            0x2e05 => match network_result {
+            0x2e05 => match network.as_mut().and_then(|(queue, attachment)| network_proof(queue, *attachment)) {
                 Some(words) => {
                     for (index, value) in words.iter().enumerate() { set_mr(index as u32, *value); }
-                    (0, 3)
+                    network_sequence += 1;
+                    set_mr(3, network_sequence);
+                    (0, 4)
                 }
                 None => (6, 0),
             },

@@ -694,6 +694,10 @@ test-native-rust:
 	cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os none --assert-native-rust --timeout-secs $(QEMU_TEST_TIMEOUT)
 
 .PHONY: test-native-network-isolation
+.PHONY: test-native-with-guest
+test-native-with-guest:
+	cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os ubuntu-live --assert-live --assert-native-guest --timeout-secs $(QEMU_TEST_TIMEOUT) --ssh-port $(QEMU_TEST_SSH_PORT)
+
 test-native-network-isolation:
 	@mkdir -p build/evidence/native-network-isolation
 	@set -e; for mode in 1 2 3 4 5 6 7 8 9 10; do \

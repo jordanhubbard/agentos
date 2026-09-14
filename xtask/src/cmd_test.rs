@@ -202,6 +202,15 @@ fn virtio_markers(assertion: &VirtioAssertion) -> Vec<&'static str> {
 
 pub fn run(args: &TestArgs) -> anyhow::Result<()> {
     anyhow::ensure!(
+        !args.assert_native_guest
+            || (args.board == "qemu_virt_aarch64"
+                && args.guest_os == "ubuntu-live"
+                && args.assert_live
+                && !args.no_build
+                && !args.assert_desktop),
+        "native/guest qualification requires a fresh Ubuntu live userspace image"
+    );
+    anyhow::ensure!(
         !args.assert_native_rust
             || (args.board == "qemu_virt_aarch64" && args.guest_os == "none" && !args.no_build),
         "--assert-native-rust requires a fresh qemu_virt_aarch64 GUEST_OS=none image"
@@ -350,7 +359,7 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
         if let Some(mode) = args.block_isolation_probe {
             make_args.push(format!("BLK_ISOLATION_PROBE={mode}"));
         }
-        if args.assert_native_rust {
+        if args.assert_native_rust || args.assert_native_guest {
             make_args.push(String::from("NATIVE_RUST_TEST=1"));
         }
         if let Some(mode) = args.native_network_isolation_probe {
@@ -591,6 +600,17 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
             }
             Err(error) => result = Err(error),
         }
+    }
+
+    // Live-profile provisioning above establishes the guest's network and
+    // shell before interleaving fresh native exchanges with guest traffic.
+    if result.is_ok() && args.assert_native_guest {
+        result = verify_native_guest_network(
+            &cc_sock,
+            profile_plan.as_ref(),
+            Duration::from_secs(args.timeout_secs),
+            &mut qemu,
+        );
     }
 
     // Every AArch64 image includes log_drain and the serial driver. Require
@@ -2963,6 +2983,62 @@ fn connect_host_net_stimulus(port: u16, qemu: &mut Child) -> Option<TcpStream> {
     }
     println!("[xtask:test] WARN: host network stimulus could not connect to 127.0.0.1:{port}");
     None
+}
+
+fn verify_native_guest_network(
+    cc_sock: &Path,
+    profile: Option<&HostProfilePlan>,
+    timeout: Duration,
+    qemu: &mut Child,
+) -> anyhow::Result<String> {
+    let mut cc = connect_cc_client(cc_sock, timeout.min(Duration::from_secs(30)), qemu)?;
+    anyhow::ensure!(
+        cc.call(0x2e80, 2, 0, 0, &[])?.mr[0] == CC_ERR_RELAY_FAULT,
+        "native test relay accepted an invalid contract version"
+    );
+    let mut previous_sequence = None;
+    for round in 1..=3 {
+        let reply = cc.call(0x2e80, 1, 0, 0, &[])?;
+        anyhow::ensure!(
+            reply.mr[0] == CC_OK && reply.mr[1] == 1 && reply.mr[2] == 3,
+            "native live NIC exchange failed: {:?}",
+            reply.mr
+        );
+        if let Some(previous) = previous_sequence {
+            anyhow::ensure!(
+                reply.mr[3] == previous + 1,
+                "native reply was not a fresh exchange"
+            );
+        }
+        previous_sequence = Some(reply.mr[3]);
+        let marker = format!("NATIVE_COEXIST_GUEST_{round}");
+        let command = format!(
+            "ping -c 1 -W 5 10.0.2.2 >/dev/null && printf 'NATIVE_COEXIST_%s\\n' 'GUEST_{round}'"
+        );
+        cc_send_console_line(&mut cc, 0, command.as_bytes())?;
+        let start = Instant::now();
+        let mut output = String::new();
+        loop {
+            ensure_qemu_running(qemu, "checking live native/guest network traffic")?;
+            output.push_str(&cc_log_stream_for_handle(&mut cc, 0, profile)?);
+            if output.contains(&marker) {
+                break;
+            }
+            anyhow::ensure!(
+                start.elapsed() < timeout.min(Duration::from_secs(60)),
+                "guest network response missing after native exchange: {output}"
+            );
+            output = tail_chars(&output, 4096);
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        println!(
+            "[xtask:test] native NIC exchange {} and live guest ping round {round} verified",
+            reply.mr[3]
+        );
+    }
+    Ok(String::from(
+        "native NIC exchanges interleaved with three live guest network responses",
+    ))
 }
 
 fn cc_log_stream_for_handle(

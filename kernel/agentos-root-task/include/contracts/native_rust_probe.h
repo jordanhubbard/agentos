@@ -25,9 +25,14 @@
  * Failure returns ERR_EXECUTOR with no words. */
 #define NATIVE_RUST_EXECUTOR UINT64_C(0x2e04)
 /* NETWORK request: one word VERSION. Reply: hardware state=1, verified ARP
- * replies=3, notification wake count >=3. Each request uses the assigned source
+ * replies=3, notification wake count >=3, successful exchange sequence.
+ * Each call performs fresh NIC exchanges. Each request uses the assigned source
  * IP and waits on its receive-only notification before reading queue data. */
 #define NATIVE_RUST_NETWORK UINT64_C(0x2e05)
+/* Test-image-only CC relay: MR1 VERSION; reply CC status, hardware=1,
+ * replies=3, increasing exchange sequence. No packet payload crosses CC IPC. */
+#define NATIVE_RUST_CC_NETWORK 0x2e80u
+#define NATIVE_RUST_CC_ENDPOINT 25u
 #define NATIVE_RUST_OK UINT64_C(0)
 #define NATIVE_RUST_ERR_OPCODE UINT64_C(1)
 #define NATIVE_RUST_ERR_LENGTH UINT64_C(2)

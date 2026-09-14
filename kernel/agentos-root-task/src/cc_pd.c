@@ -1572,6 +1572,25 @@ static void handle_trace_dump(const cc_req_wire_t *req, cc_reply_wire_t *rep)
 
 /* ─── Dispatch ───────────────────────────────────────────────────────────── */
 
+#ifdef AGENTOS_NATIVE_RUST_TEST
+#include "contracts/native_rust_probe.h"
+static void handle_native_network(const cc_req_wire_t *req, cc_reply_wire_t *rep)
+{
+    rep->mr[0] = CC_ERR_RELAY_FAULT;
+    if (req->mr[0] != NATIVE_RUST_VERSION) return;
+    seL4_SetMR(0, NATIVE_RUST_VERSION);
+    seL4_MessageInfo_t response = seL4_Call(NATIVE_RUST_CC_ENDPOINT,
+        seL4_MessageInfo_new(NATIVE_RUST_NETWORK, 0, 0, 1));
+    if (seL4_MessageInfo_get_label(response) != NATIVE_RUST_OK ||
+        seL4_MessageInfo_get_length(response) != 4 ||
+        seL4_GetMR(0) != 1 || seL4_GetMR(1) != 3 || seL4_GetMR(2) < 3) return;
+    rep->mr[0] = CC_OK;
+    rep->mr[1] = seL4_GetMR(0);
+    rep->mr[2] = seL4_GetMR(1);
+    rep->mr[3] = seL4_GetMR(3);
+}
+#endif
+
 static void cc_dispatch(const cc_req_wire_t *req, cc_reply_wire_t *rep)
 {
     /* Age active sessions before dispatch.  Handlers that touch a specific
@@ -1582,6 +1601,9 @@ static void cc_dispatch(const cc_req_wire_t *req, cc_reply_wire_t *rep)
     cc_age_sessions();
 
     switch (req->opcode) {
+#ifdef AGENTOS_NATIVE_RUST_TEST
+    case NATIVE_RUST_CC_NETWORK: handle_native_network(req, rep); break;
+#endif
     /* Session management */
     case MSG_CC_CONNECT:    handle_connect(req, rep);          break;
     case MSG_CC_DISCONNECT: handle_disconnect(req, rep);       break;

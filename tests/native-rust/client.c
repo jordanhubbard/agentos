@@ -97,7 +97,7 @@ void pd_main(seL4_CPtr endpoint, seL4_CPtr nameserver)
     seL4_SetMR(0, NATIVE_RUST_VERSION);
     seL4_MessageInfo_t network = invoke(NATIVE_RUST_NETWORK, 1);
     check(seL4_MessageInfo_get_label(network) == NATIVE_RUST_OK &&
-          seL4_MessageInfo_get_length(network) == 3 &&
+          seL4_MessageInfo_get_length(network) == 4 &&
           seL4_GetMR(0) == 1 && seL4_GetMR(1) == 3 && seL4_GetMR(2) >= 3,
           "native queue NIC traffic and persistent wakeups");
     serial_log_puts(&log_channel,
