@@ -129,7 +129,15 @@ Result: `make test-target TARGET_ARCH=aarch64 GUEST_OS=none` boots the image and
 the runner emits real-IPC TAP (`ok 1..14`, `TAP_DONE:0`). On x86_64 (reduced
 smoke, no runner) the root task still emits the boot-proof stub TAP.
 
-### Block client mapping isolation
+### Virtualizer client mapping isolation
+
+`make test-serial-isolation` runs eight AArch64 fault probes. Each VMM first
+writes and reads its own serial page, then attempts a read or write of the
+other VMM's page or the CC frontend page. Root accepts only the expected
+badged data fault, exact address, and access direction. These probes stop
+before guest initialization: they prove mapping isolation, not console
+delivery. `SERIAL_ISOLATION_PROBE` is included in root and VMM build flags
+so configuration stamps force rebuilding when the selected case changes.
 
 `make test-network-isolation` runs the corresponding eight network probes:
 both VMM slots attempt reads/writes of the other client's queue page and

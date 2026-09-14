@@ -98,6 +98,7 @@ fn requested_virtio_assertion(
     if args.block_isolation_probe.is_some()
         || args.virtualizer_authority_probe.is_some()
         || args.network_isolation_probe.is_some()
+        || args.serial_isolation_probe.is_some()
     {
         return None;
     }
@@ -231,6 +232,7 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
     if let Some(mode) = args
         .block_isolation_probe
         .or(args.network_isolation_probe)
+        .or(args.serial_isolation_probe)
         .or(args
             .virtualizer_authority_probe
             .map(|slot| if slot == 1 { 1 } else { 5 }))
@@ -328,6 +330,9 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
         if let Some(mode) = args.network_isolation_probe {
             make_args.push(format!("NET_ISOLATION_PROBE={mode}"));
         }
+        if let Some(mode) = args.serial_isolation_probe {
+            make_args.push(format!("SERIAL_ISOLATION_PROBE={mode}"));
+        }
         if let Some(slot) = args.virtualizer_authority_probe {
             make_args.push(format!("VIRT_AUTHORITY_PROBE={slot}"));
         }
@@ -401,6 +406,13 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
         wait_for_all_markers(&log_path,
             &["[authority-test] spoofed attachments rejected; assigned net/block clients accepted"],
             Duration::from_secs(args.timeout_secs), &mut qemu)
+    } else if args.serial_isolation_probe.is_some() {
+        wait_for_all_markers(
+            &log_path,
+            &["[rt] serial isolation: expected VMM data fault verified"],
+            Duration::from_secs(args.timeout_secs),
+            &mut qemu,
+        )
     } else if args.network_isolation_probe.is_some() {
         wait_for_all_markers(
             &log_path,
