@@ -31,7 +31,7 @@ binding) described the wrong I/O model. It is superseded by this document.
 | 6 | `task_c03b1c0527de416fbcfcdfcb77787559` (historical; retired in MAC) | implemented for Linux and FreeBSD guest RAM | Bounds-checked GPA translation into disjoint VMM memory windows; guest resource reclamation remains separate work |
 | 7 | (done) | done (quarantine by docs) | Quarantine PD museum (no deletes this pass) |
 | 8 | (done) | done | Text-only skills + Rust helper tools |
-| 9 | `task_ec992e5743354a538d1c3235a2e2c0da` | in development; target networking pending | Native agent services as virtualizer clients |
+| 9 | `task_ec992e5743354a538d1c3235a2e2c0da` | implemented; PR #140; target proof retained | Native Rust execution and isolated raw-network virtualizer client |
 
 PR #138 merged as `e1d4ba611d2ae84c168096f58268a1774d7dcd5b`.
 Its retained dual-guest qualification and remaining lifecycle limits are
@@ -41,6 +41,17 @@ not qualify new features. Native runtime task
 integrated virtualizer networking; the migrated external RCC service-port
 requirement was removed following the user's scope correction. No TokenHub or
 SquirrelBus port is part of this plan.
+
+PR #140 merged as `09fa6e40777fd81d5e87701acecfe2ec84d5935b`.
+Its reviewed head `dda2421` passed the native seL4 runtime/NIC proof, the
+full local gate, and all hosted checks, including native network isolation
+fault probes. The retained live-Ubuntu image at `39c4f8bb` passed authenticated
+SSH and three fresh native ARP batches interleaved with guest network probes.
+The runtime provides bounded allocation, cooperative execution and raw Ethernet
+queues; a bidirectional application service bridge and a native TCP/IP stack
+are not established by that proof. MAC retains the publication evidence;
+normal task closure is currently rejected while the tasks remain open and
+fleet dispatch stays paused.
 
 ## Proof policy (unchanged)
 
