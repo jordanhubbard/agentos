@@ -11,6 +11,7 @@
 #include <libvmm/virtio/config.h>
 #include <libvmm/virtio/mmio.h>
 #include <libvmm/virtio/console.h>
+#include <libvmm/virtio/console_tx_ring.h>
 #include <libvmm/virtio/gpa.h>
 #include <sddf/serial/queue.h>
 
@@ -113,26 +114,10 @@ static bool virtio_console_set_device_config(struct virtio_device *dev, uint32_t
     return false;
 }
 
-typedef struct {
-    struct virtio_console_device *console;
-    uint32_t copied;
-} console_tx_context_t;
-
-static bool console_tx_descriptor(void *ctx, uint16_t index,
-                                  virtio_console_tx_descriptor_t *out)
-{
-    console_tx_context_t *context = ctx;
-    struct virtq_desc descriptor = context->console->vqs[TX_QUEUE].virtq.desc[index];
-    *out = (virtio_console_tx_descriptor_t) {
-        descriptor.addr, descriptor.len, descriptor.flags, descriptor.next
-    };
-    return true;
-}
-
 static uint32_t console_tx_copy(void *ctx, uint64_t address, uint32_t offset, uint32_t length)
 {
-    console_tx_context_t *context = ctx;
-    serial_queue_handle_t *queue = context->console->txq;
+    struct virtio_console_device *console = ctx;
+    serial_queue_handle_t *queue = console->txq;
     uint32_t free = serial_queue_contiguous_free(queue);
     uint32_t count = length < free ? length : free;
     if (!count) return 0;
@@ -140,7 +125,6 @@ static uint32_t console_tx_copy(void *ctx, uint64_t address, uint32_t offset, ui
             queue->data_region + queue->queue->tail % queue->capacity, count) != 0)
         return UINT32_MAX;
     serial_update_shared_tail(queue, queue->queue->tail + count);
-    context->copied += count;
     return count;
 }
 
@@ -150,43 +134,19 @@ bool virtio_console_handle_pending_tx(struct virtio_console_device *console)
     struct virtio_queue_handler *vq = &console->vqs[TX_QUEUE];
     if (!vq->ready) return true;
     if (console->tx_progress.failed) return false;
-    uint32_t size = vq->virtq.num;
-    if (!size || size > QUEUE_SIZE || !vq->virtq.avail || !vq->virtq.used || !vq->virtq.desc)
-        goto invalid;
-    uint16_t available = __atomic_load_n(&vq->virtq.avail->idx, __ATOMIC_ACQUIRE);
-    uint16_t pending = (uint16_t)(available - vq->last_idx);
-    if (pending > size) goto invalid;
-    console_tx_context_t context = {.console = console};
-    const virtio_console_tx_ops_t ops = {
-        console_tx_descriptor, console_tx_copy, &context
-    };
-    bool completed = false;
-    while (pending && context.copied < console->txq->capacity) {
-        if (!console->tx_progress.active)
-            console->tx_head = vq->virtq.avail->ring[vq->last_idx % size];
-        virtio_console_tx_result_t result = virtio_console_tx_step(
-            &console->tx_progress, console->tx_head, size,
-            console->txq->capacity - context.copied, &ops);
-        if (result == VIRTIO_CONSOLE_TX_INVALID) goto invalid;
-        if (result == VIRTIO_CONSOLE_TX_WAIT) break;
-        struct virtq_used_elem used = {console->tx_head, 0};
-        uint16_t used_index = vq->virtq.used->idx;
-        vq->virtq.used->ring[used_index % size] = used;
-        __atomic_store_n(&vq->virtq.used->idx, (uint16_t)(used_index + 1u), __ATOMIC_RELEASE);
-        vq->last_idx++;
-        pending--;
-        completed = true;
+    virtio_console_tx_ring_result_t result = virtio_console_tx_ring_run(
+        &vq->virtq, QUEUE_SIZE, &vq->last_idx, &console->tx_head,
+        &console->tx_progress, console->txq->capacity, console_tx_copy, console);
+    if (!result.valid) {
+        LOG_CONSOLE_ERR("invalid transmit descriptor chain or ring\n");
+        return false;
     }
-    if (context.copied && console->tx_cap) vmm_notify(console->tx_cap);
-    if (completed) {
+    if (result.bytes && console->tx_cap) vmm_notify(console->tx_cap);
+    if (result.completed) {
         dev->regs.InterruptStatus |= BIT_LOW(0);
         return virq_inject(dev->virq);
     }
     return true;
-invalid:
-    console->tx_progress.failed = true;
-    LOG_CONSOLE_ERR("invalid transmit descriptor chain or ring\n");
-    return false;
 }
 
 static bool virtio_console_handle_tx(struct virtio_device *dev)

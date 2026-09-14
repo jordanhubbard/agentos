@@ -12,7 +12,7 @@ typedef struct {
 } virtio_console_tx_descriptor_t;
 typedef struct {
     virtio_console_tx_descriptor_t descriptor;
-    uint32_t offset, traversed;
+    uint32_t offset, traversed, transferred;
     uint16_t index;
     bool active, loaded, failed;
 } virtio_console_tx_state_t;
@@ -34,6 +34,7 @@ static inline virtio_console_tx_result_t virtio_console_tx_step(
     virtio_console_tx_state_t *state, uint16_t head, uint32_t queue_size,
     uint32_t budget, const virtio_console_tx_ops_t *ops)
 {
+    state->transferred = 0;
     if (state->failed) return VIRTIO_CONSOLE_TX_INVALID;
     if (!state->active) {
         state->active = true;
@@ -58,6 +59,7 @@ static inline virtio_console_tx_result_t virtio_console_tx_step(
             if (copied > request) goto invalid;
             if (!copied) return VIRTIO_CONSOLE_TX_WAIT;
             state->offset += copied;
+            state->transferred += copied;
             budget -= copied;
             if (state->offset != state->descriptor.length) continue;
         }

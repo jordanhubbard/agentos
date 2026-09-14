@@ -144,6 +144,12 @@ full, retries preserve the exact stream, and invalid or cyclic chains fail
 without completion. The existing Ubuntu echo gate checks the integrated
 backend, but a deliberate stalled-frontend stress gate is still required for
 sustained-output qualification.
+`test_virtio_console_tx_ring` additionally executes the production available/
+used-ring handler. It checks deferred acknowledgement, exactly one used entry
+for a completed chain, retained head identity, both cursor rollovers, bounded
+multi-head copying, invalid chains and a retracted available entry. These
+are host checks of the actual ring writer, not substitutes for the target
+stalled-frontend checksum test.
 
 `test_guest_vmm_notifications` runs the production receive loop with a mocked
 receive returning the serial notification badge and nonzero stale labels,

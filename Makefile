@@ -1033,6 +1033,10 @@ test-integration:
 	        tests/platform/test_virtio_console_tx.c -o $(BUILD_TMP_DIR)/test_virtio_console_tx \
 	    && $(BUILD_TMP_DIR)/test_virtio_console_tx; then :; \
 	else status=1; fi; \
+	if gcc -std=c11 -Wall -Wextra -Werror -I libvmm/include \
+	        tests/platform/test_virtio_console_tx_ring.c -o $(BUILD_TMP_DIR)/test_virtio_console_tx_ring \
+	    && $(BUILD_TMP_DIR)/test_virtio_console_tx_ring; then :; \
+	else status=1; fi; \
 	if gcc -I kernel/agentos-root-task/include -I . \
 	        tests/platform/test_native_net_client.c \
 	        kernel/agentos-root-task/src/native_net_client.c \

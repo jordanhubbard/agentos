@@ -118,6 +118,8 @@ and each copy are bounded. Host tests cover oversized/chained descriptors,
 full-queue retry, metadata mutation, invalid indices/flags, cyclic chains and
 GPA failure. MAC `task_f0be9d2f86204aa6bf06c34f6464fc0c` still requires the
 stalled-frontend target checksum proof before sustained output is qualified.
+The production available/used-ring handler also has host coverage for deferred
+and exact-once completion, retained heads, cursor wrap and invalid availability.
 
 ## TCB target — the shape the platform is converging on
 
