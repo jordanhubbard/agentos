@@ -53,6 +53,14 @@ directory. A later implementation may advance this pin through a reviewed
 change that updates the artifact, manifest, and retained boot evidence
 together.
 
+The acquisition recipe also retains and pins the complete `SHA512SUMS`
+manifest from `cdimage.debian.org`. On 2026-09-14, the cloud download alias
+redirected the image to `chuangtzu.ftp.acc.umu.se`, whose TLS certificate
+verification failed as expired. The recipe now uses the same dated image on
+`laotzu.ftp.acc.umu.se`, with valid TLS and the unchanged SHA-512 pin. Its
+manifest was byte-identical to the primary server's manifest. Certificate
+verification remains enabled; no moving release alias is introduced.
+
 ## Delivery contract
 
 The Debian artifact is guest media, not a reason to map QEMU devices into the
@@ -87,3 +95,9 @@ and obtains the kernel and initrd through generic host recipe actions. Boot,
 authenticated SSH, desktop, lifecycle, and cross-architecture evidence remain
 qualification work; `status = "runtime"` means the profile is executable, not
 that those release claims have passed.
+
+`make test-debian-live QEMU_TEST_TIMEOUT=1800` is the additive single-guest
+qualification command. It requires the real Debian console, key-only SSH,
+and host-backed network, block and bidirectional console traffic through
+agentOS. It does not by itself prove lifecycle parity, persistence across a
+second boot, or the required comparison with Ubuntu; Ubuntu remains required.

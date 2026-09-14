@@ -39,7 +39,11 @@ acquire_dir = "build/guest-images"
 
 [[host.acquire]]
 action = "stage-url"
-args = { cache_name = "debian-13-generic-arm64-20260831-2587.qcow2", output = "debian-13-generic-arm64-20260831-2587.qcow2", url = "https://cloud.debian.org/images/cloud/trixie/20260831-2587/debian-13-generic-arm64-20260831-2587.qcow2", sha512 = "27287048285224e662722b54c77849c9bd1a2fd60ccea5f2e75c644fbd638fad7e32a97e8e3d628c8bbfdb9cf757951c8300f3c21758647c8906359d9c892b42" }
+args = { cache_name = "debian-13-20260831-2587-SHA512SUMS", output = "debian-13-20260831-2587-SHA512SUMS", url = "https://cdimage.debian.org/cdimage/cloud/trixie/20260831-2587/SHA512SUMS", sha512 = "458aada8d6c6c9b15bdc4ee41505b6eeb7facda11411040882b3a74af51d9d87dcca8e68559e7c8dfd7362627d817f9694ab3f243358779ad009f9b8593d1ee2" }
+
+[[host.acquire]]
+action = "stage-url"
+args = { cache_name = "debian-13-generic-arm64-20260831-2587.qcow2", output = "debian-13-generic-arm64-20260831-2587.qcow2", url = "https://laotzu.ftp.acc.umu.se/images/cloud/trixie/20260831-2587/debian-13-generic-arm64-20260831-2587.qcow2", sha512 = "27287048285224e662722b54c77849c9bd1a2fd60ccea5f2e75c644fbd638fad7e32a97e8e3d628c8bbfdb9cf757951c8300f3c21758647c8906359d9c892b42" }
 
 [[host.acquire]]
 action = "convert-qcow2-raw"
@@ -189,7 +193,7 @@ args = { marker = "# " }
 
 [[host.test]]
 action = "assert-virtio"
-args = { devices = "console", scope = "host-backed", console_io = "bidirectional" }
+args = { devices = "net,block,console", scope = "host-backed", console_io = "bidirectional" }
 
 [[host.test]]
 action = "wait-ssh"
