@@ -225,12 +225,15 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
     } else {
         None
     };
-    let profile_plan = if matches!(args.guest_os.as_str(), "none" | "both") {
+    let mut profile_plan = if matches!(args.guest_os.as_str(), "none" | "both") {
         None
     } else {
         let path = cmd_guest_profile::resolve_alias(&profile_root, &args.guest_os)?;
         Some(cmd_guest_profile::host_profile_plan(&profile_root, &path)?)
     };
+    if let Some(profile) = &mut profile_plan {
+        apply_profile_ssh_port(profile, args.ssh_port);
+    }
     if let Some(profile) = &profile_plan {
         println!(
             "[xtask:test] resolved alias {:?} to {} ({}, architecture={}, control_type={}, guest_id={}, provision_steps={}, test_steps={})",
@@ -379,7 +382,11 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
     let needs_host_net_stimulus = virtio_assertion
         .as_ref()
         .is_some_and(|assertion| assertion.devices.iter().any(|device| device == "net"));
-    let ssh_port = if needs_host_net_stimulus || args.assert_desktop || scenario_plan.is_some() {
+    let ssh_port = if needs_host_net_stimulus
+        || args.assert_live
+        || args.assert_desktop
+        || scenario_plan.is_some()
+    {
         let configured = effective_ssh_port(args, profile_plan.as_ref(), scenario_plan.as_ref());
         if needs_host_net_stimulus && configured == 0 {
             FOCUSED_NET_STIMULUS_PORT
@@ -846,6 +853,17 @@ fn manual_ssh_commands(
             ))
         })
         .collect()
+}
+
+// Keep the resolved host plan consistent with QEMU's forwarding port. All
+// later SSH probes, provisioning and manual instructions consume this plan.
+// Scenario guests retain their explicitly assigned individual ports.
+fn apply_profile_ssh_port(profile: &mut HostProfilePlan, port: u16) {
+    if port != 0 {
+        if let Some(ssh) = profile.qemu.as_mut().and_then(|qemu| qemu.ssh.as_mut()) {
+            ssh.host_port = port;
+        }
+    }
 }
 
 fn effective_ssh_port(
@@ -3133,6 +3151,41 @@ mod tests {
 
     fn test_provision_commands(alias: &str, key: &str) -> Vec<String> {
         profile_provision_commands(&test_profile(alias), key).unwrap()
+    }
+
+    #[test]
+    fn profile_ssh_override_matches_qemu_forwarding_and_preserves_guest_identity() {
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+        let mut profile = test_profile("freebsd");
+        apply_profile_ssh_port(&mut profile, port);
+        let ssh = profile.qemu.as_ref().unwrap().ssh.as_ref().unwrap();
+        assert_eq!(ssh.host_port, port);
+        assert_eq!(ssh.account, "root");
+        assert_eq!(ssh.guest_address.as_deref(), Some("10.0.2.16"));
+        let netdev = qemu_netdev_arg(ssh.host_port, Some(&profile), None).unwrap();
+        assert_eq!(
+            netdev,
+            format!("user,id=net0,hostfwd=tcp:127.0.0.1:{port}-10.0.2.16:22")
+        );
+    }
+
+    #[test]
+    fn zero_ssh_override_preserves_profile_default() {
+        let mut profile = test_profile("freebsd");
+        apply_profile_ssh_port(&mut profile, 0);
+        assert_eq!(
+            profile
+                .qemu
+                .as_ref()
+                .unwrap()
+                .ssh
+                .as_ref()
+                .unwrap()
+                .host_port,
+            12223
+        );
     }
 
     #[test]
