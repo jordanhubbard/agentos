@@ -3,7 +3,8 @@
 agentOS puts device ownership, I/O multiplexing, and guest execution in
 separate seL4 user-mode protection domains (PDs). Linux and FreeBSD consume
 devices emulated by agentOS. Their kernels do not own the host NIC, disk, or
-UART. Native agents are intended to use the same virtualizers directly.
+UART. A native Rust PD now uses the network virtualizer directly, with an
+isolated queue page and target-qualified coexistence with Ubuntu.
 
 This diagram describes the AArch64 topology after the direct CC-to-VM-manager
 lifecycle change (`task_d2cfd8f55cb64e4b91e4c45ead3df6f7`). It is an implementation snapshot,
@@ -21,7 +22,8 @@ flowchart TB
   subgraph userspace[agentOS user-mode protection domains — EL0]
     primary[guest_vmm_primary PD<br/>vCPU and vGIC<br/>libvmm emulated virtio<br/>descriptor checks and GPA translation]
     secondary[guest_vmm_secondary PD<br/>optional second guest<br/>same VMM implementation]
-    netq[Shared network region<br/>sDDF queues and notifications<br/>software-assigned client strides]
+    native[Native Rust client PD — test image<br/>no guest kernel<br/>private heap and bounded executor]
+    netq[Isolated network client pages<br/>VMM 0, VMM 1, native 2<br/>separate driver-transfer page]
     blkq[Isolated block client pages<br/>sDDF requests and responses]
     nv[net_virt PD<br/>network multiplexing]
     bv[blk_virt PD<br/>block multiplexing]
@@ -43,6 +45,7 @@ flowchart TB
   freebsd -->|emulated virtio MMIO faults| secondary
   primary --> netq
   secondary --> netq
+  native -->|own queue page and attach badge<br/>persistent notification| netq
   primary --> blkq
   secondary --> blkq
   netq --> nv
@@ -68,7 +71,8 @@ flowchart TB
 The diagram omits auxiliary nameserver/fault-handler PDs and compatibility
 `block_pd` from the I/O paths. The generated system descriptor and manifest
 remain the complete topology authority. A second VMM is included only in image
-variants that configure it.
+variants that configure it. The native PD appears only in the native test
+image; ordinary images do not include it.
 
 ## How the approach differs
 
@@ -78,7 +82,7 @@ variants that configure it.
 | Drivers execute outside the kernel | Driver PDs have separate VSpaces and explicit capabilities | A driver bug does not inherently gain kernel execution. Its granted device/DMA authority still matters; this is not an IOMMU isolation proof. |
 | Multiplexing is a service boundary | Separate `net_virt`, `blk_virt` and `serial_virt` PDs consume bounded queues | Device access crosses a named service boundary. VMM client pages are isolated; resource exhaustion still requires auditing. |
 | A guest address is not a host pointer | VMM code validates descriptors and translates GPA to its mapped guest RAM | Invalid descriptors can be rejected before copying. Correctness of every translation and length calculation remains userspace TCB work. |
-| Native work need not inherit a Linux kernel | Native PD clients are planned to attach to canonical virtualizers | The architecture can remove an entire guest kernel from a workload's dependency set. Live native virtualizer attachment is not yet qualified. |
+| Native work need not inherit a Linux kernel | A no_std Rust PD uses the canonical network queues with scoped attach and notification capabilities | Native ARP exchanges interleaved with guest pings passed after Ubuntu SSH provisioning. This qualifies raw queue access and coexistence, not a production TCP/IP stack. |
 | Control and bulk data have different contracts | seL4 IPC for attach/lifecycle; shared-memory queues for net/block/console payloads | Root-minted badges constrain attachment. Console queues and descriptor progress remain bounded; shared metadata does not grant lifecycle authority. The sustained-output target proof recovered 262,144 bytes after backpressure; scope and evidence are detailed in TCB.md. |
 
 These choices differ from a host-kernel driver path and from assigning a host
@@ -119,7 +123,7 @@ side channels, malicious DMA, and recovery need their own evidence.
 flowchart LR
   guest[Guest virtio drivers] --> vmm[VMM PD<br/>validated emulation]
   vmm --> mux[Separate net / block / serial virtualizer PDs]
-  native[Native agent PD clients] -.-> mux
+  native[Native agent PD clients] -->|network qualified<br/>other classes require evidence| mux
   mux --> drv[Driver PDs<br/>one device class owner]
   drv --> hw[Physical device frames and IRQs]
   cc[CC-PD lifecycle API] --> manager[vm_manager]
@@ -132,8 +136,11 @@ input. The dual-guest test also passed concurrent Ubuntu/FreeBSD authenticated
 SSH and FreeBSD suspend/resume; the tested image is identified in `TCB.md`.
 Destroyed slots cannot yet be recreated in the same image. Dynamic lifecycle
 calls `vm_manager` directly; `vibe_engine` is retired from the image.
-Attaching native clients remains implementation work. Physical
-board execution and x86 guest execution require independent target evidence.
+The native Rust network client also passed ten fault probes denying reads and
+writes to both guest queue pages, driver transfers, NIC MMIO and driver DMA.
+The combined Ubuntu/native image and its three fresh traffic rounds are
+identified in `TCB.md`. Other native device classes, physical boards, and x86
+guest execution require independent target evidence.
 
 ## Evidence and source map
 
@@ -144,6 +151,7 @@ board execution and x86 guest execution require independent target evidence.
 | Allowed device owners and qualification limits | [`TCB.md`](TCB.md) |
 | Network and block queue contracts | [`platform/include/platform/`](../platform/include/platform/), [`contracts/`](../kernel/agentos-root-task/include/contracts/) |
 | Guest-visible device proofs | `make gate`: host tests, both stub-boot architectures, guest net/block/console proofs |
+| Native runtime, denied mappings, and live guest coexistence | `make test-native-rust`, `make test-native-network-isolation`, `make test-native-with-guest`; exact image and scope in [`TCB.md`](TCB.md) |
 | Concurrent authenticated Linux/FreeBSD acceptance | `make demo-test` passed at `d3da13e1`; retained image hash and qualification scope in [`TCB.md`](TCB.md) |
 | Release-level claims | [`RELEASES.md`](RELEASES.md): exact revision, gate receipt, checksums and remote verification |
 
