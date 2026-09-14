@@ -18,6 +18,8 @@ edition. “Planned” and “under qualification” are not synonyms for shippe
 | Releases bind claims and gates to one exact revision | Current implementation | `xtask release`, `docs/RELEASES.md`, host tests | This edition's checked receipt and remote verification are produced during publication, after its PDF is frozen. |
 | Queue client pages are isolated against a compromised VMM | Implemented with target fault probes | Root-task network/block/serial mapping branches in `main.c`; eight forbidden-mapping probes per class | Each VMM maps only its own page. Virtualizers retain broader authority; this is not protection against a compromised virtualizer. |
 | Console uses a separate virtualizer PD | Implemented and target-qualified | `docs/TCB.md`, console gate, 262,144-byte backpressure proof and dual-guest transcript | CC and VMM exchange payloads through separate pages muxed by serial_virt. Lifecycle control still uses IPC. |
+| Native Rust can use the canonical NIC beside a live guest | Target-qualified at `39c4f8bb` | Three fresh native ARP batches interleaved with guest pings after real Ubuntu userspace and authenticated SSH; exact image in `docs/TCB.md` | Raw queues/ARP only; no production TCP/IP stack claim. Native test PDs are absent from default images. |
+| The native client cannot map guest queues or driver resources | Ten target fault probes passed | `make test-native-network-isolation`; root checks fault identity, address and access direction | Covers both guest pages, driver transfer page, NIC MMIO and driver DMA; does not prove physical IOMMU confinement. |
 
 ## Evidence still required for a fully qualified edition
 

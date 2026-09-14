@@ -224,6 +224,7 @@ typedef struct {
 #define SVC_ID_NET_VIRT       25u   /* network virtualizer PD (the only net mux) */
 #define SVC_ID_BLK_VIRT       26u   /* block virtualizer PD (the only blk mux)   */
 #define SVC_ID_SERIAL_VIRT    27u   /* serial queue virtualizer PD */
+#define SVC_ID_NATIVE_RUST_PROBE 28u /* test-only Rust IPC service */
 
 /* Standard per-PD CNode slot assignments for well-known capabilities.
  * These are the slots at which each PD finds its initial endpoint caps. */
@@ -260,7 +261,7 @@ typedef struct {
 #define PD_CNODE_SLOT_NET_VIRT_EP     15u
 /* blk_virt -> virtio_blk (chunked host I/O through the driver DMA window). */
 #define PD_CNODE_SLOT_VIRTIO_BLK_EP   16u
-/* VMM -> blk_virt (ATTACH Call only; kicks use the notification below). */
+/* VMM -> blk_virt (ATTACH Call, KICK NBSend). */
 #define PD_CNODE_SLOT_BLK_VIRT_EP     17u
 /* Serial control uses an endpoint; data wakeups use persistent notifications.
  * Root distribution and live client integration are being added separately. */
@@ -268,6 +269,9 @@ typedef struct {
 #define PD_CNODE_SLOT_SERIAL_VIRT_NOTIFY 19u
 #define PD_CNODE_SLOT_SERIAL_PRIMARY_NOTIFY 20u
 #define PD_CNODE_SLOT_SERIAL_SECONDARY_NOTIFY 21u
+#define PD_CNODE_SLOT_NET_VIRT_NOTIFY 22u
+#define PD_CNODE_SLOT_NET_NATIVE_NOTIFY 23u
+#define PD_CNODE_SLOT_NATIVE_NET_WAIT 24u
 #define PD_CNODE_SLOT_BLK_VIRT_NOTIFY 26u
 #define PD_CNODE_SLOT_BLK_PRIMARY_NOTIFY 27u
 #define PD_CNODE_SLOT_BLK_SECONDARY_NOTIFY 28u

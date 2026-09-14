@@ -60,9 +60,9 @@ seL4
 a PD of its own, spawned at priority 205 with no device frame and no IRQ. The
 emulated virtio-net inside each `guest_vmm` (`platform/net-virt/vmm_virtio_net.c`,
 libvmm `src/virtio/net.c`) produces and consumes sDDF-shaped queues in the
-6 MB network region (`AGENTOS_NET_SHARED_VA`). Each VMM maps only its own
-2 MB client page. `net_pd` maps only the third, driver-transfer page, and
-`net_virt` maps all three. Control
+8 MB network region (`AGENTOS_NET_SHARED_VA`). Each VMM maps only its own
+2 MB client page. A third page is reserved for the native client; `net_pd`
+maps only the fourth, driver-transfer page, and `net_virt` maps all four. Control
 is one `NET_VIRT_OP_ATTACH` Call per client; after that the VMM only
 `seL4_NBSend`s `NET_VIRT_EVENT_KICK` when `tx_active` is non-empty (and
 `net_virt` asked for kicks through the sDDF `consumer_signalled` flag), and
@@ -158,6 +158,36 @@ seL4
 
 Native agents are **clients of the virtualizers**, same as a VMM backend.
 They are not in the TCB.
+
+The `NATIVE_RUST_TEST` image additionally includes `native_rust_probe` and
+`native_rust_client`. Neither owns a device frame, IRQ or guest-execution cap.
+The client receives only the test service endpoint and serial diagnostic
+transport. The Rust service uses the normal `pd_entry.c` / `pd_main` entry
+path and a C bridge to seL4 IPC. `make test-native-rust` checks reply payloads
+from a separate C PD, including `alloc::Vec` data, alignment, exhaustion and
+reuse of the Rust PD's private 64 KiB heap. The Rust service also receives only
+network client 2's page, its network-only attach badge, a send-only virtualizer
+notification and a receive-only capability for its own notification. Three
+sequential ARP exchanges at the assigned address traverse `net_virt` and the
+host NIC; each waits for notification delivery before reading the RX queue.
+`make test-native-with-guest` additionally boots Ubuntu's real Casper userspace,
+provisions authenticated SSH, and alternates three fresh native ARP batches
+with guest pings. A test-only CC relay returns a sequence number for each new
+batch; packet payloads still travel through the native client's queues.
+The proof passed at `39c4f8bb` with image SHA-256
+`3667077c178c9a61f9125c71ad022d108b44e0a8cb108e7f13ca7d601240b8f0`.
+It qualifies this native/guest coexistence case, not a production network stack.
+These test PDs are absent from the default image. Both the normal live-media
+proof and the coexistence proof run nightly and on demand with retained images.
+Ten `make test-native-network-isolation` images verify that reads and writes
+from the native PD fault on both guest queue pages, the driver-transfer page,
+NIC MMIO and driver DMA. Only the root task emits the success marker after
+matching the exact fault badge, address and access direction. Every probe first
+exercises the native client's authorized NIC path.
+The same proof checks real async functions, executor capacity, poll budgets
+and cancellation before verifying complete heap reuse. Its cooperative poll
+budget does not preempt arbitrary future code; seL4 scheduling remains the
+protection-domain CPU authority.
 
 ## I/O invariant
 

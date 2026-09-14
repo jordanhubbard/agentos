@@ -4,7 +4,7 @@
 int main(void)
 {
     const uint64_t badges[] = {0, VIRT_CLIENT_BADGE_PRIMARY,
-        VIRT_CLIENT_BADGE_SECONDARY, UINT64_MAX,
+        VIRT_CLIENT_BADGE_SECONDARY, VIRT_NET_BADGE_NATIVE, UINT64_MAX,
         VIRT_CLIENT_BADGE_PRIMARY | (UINT64_C(1) << 32)};
     unsigned checked = 0;
     for (unsigned b = 0; b < sizeof(badges) / sizeof(badges[0]); ++b) {
@@ -15,6 +15,10 @@ int main(void)
                 if (virt_client_authorized(badges[b], client, slot) != expected)
                     return fprintf(stderr, "FAIL client authority b=%u c=%u s=%u\n",
                                    b, client, slot), 1;
+                bool net_expected = expected ||
+                    (badges[b] == VIRT_NET_BADGE_NATIVE && client == 2 && slot == 2);
+                if (virt_net_authorized(badges[b], client, slot) != net_expected)
+                    return fprintf(stderr, "FAIL network authority\n"), 1;
                 for (uint32_t media = 0; media < 4; ++media) {
                     if (virt_media_authorized(badges[b], client, slot, media) !=
                         (expected && media == slot))

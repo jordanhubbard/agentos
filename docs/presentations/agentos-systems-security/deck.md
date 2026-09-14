@@ -121,14 +121,18 @@ agentOS-owned host backend
 The guest sees a standard virtual device. The VMM validates descriptors and
 translates guest physical addresses. A generic service owns the real backend.
 Console uses a separate serial_virt PD, with one isolated page per VMM and
-a separate CC frontend page. Live native virtualizer clients remain planned.
+a separate CC frontend page. The native Rust PD uses its own network client
+page and scoped notification/attach capabilities. Its ARP exchanges coexist
+with a live Ubuntu guest using the same canonical NIC path.
 
 > Speaker notes: The key security distinction is emulation versus passthrough.
 > Cite the virtio host tests and target evidence specifically. Do not imply the
 > future display path is already at this maturity.
 > Detailed current and target diagrams: `docs/security-architecture.md`.
-> Current shared network and block regions are writable by every VMM;
-> per-client strides are software routing, not isolation after VMM compromise.
+> Each VMM maps only its own network and block client pages. The native client
+> maps a third network page; driver transfers use a fourth. Target fault probes
+> verify forbidden accesses. Virtualizers retain broader mapping authority.
+> The native proof qualifies raw Ethernet/ARP, not a production network stack.
 
 ---
 

@@ -1,5 +1,27 @@
 # agentOS Tests: Host Unit Tests vs Target Proof
 
+`make test-native-rust` builds a dedicated AArch64 image with a `no_std` Rust
+service and separate C client. Its success marker is emitted only after the
+client validates root badge delivery, all 120 IPC words, error replies for
+invalid opcode/length/version, and valid calls after errors. Both PDs use the
+normal root-task entry and capability setup and own no hardware. This proves
+the native Rust entry/link and synchronous IPC path. The client also checks
+seeded `alloc::Vec` contents, 4096-byte alignment, exhaustion and complete reuse
+of a private 64 KiB heap. Real async functions additionally exercise executor
+capacity, poll budgets, cancellation and memory release. This is cooperative
+scheduling proof, not preemption of arbitrary future code. The Rust PD also
+attaches network client 2 and checks three NIC ARP replies after persistent
+notification waits. The harness additionally requires driver-path TX/RX markers.
+This proves the raw network path, not a production network stack or concurrent
+native/guest service operation. No external RCC port is required.
+
+`make test-native-network-isolation` runs ten fresh native images covering
+reads and writes of both guest network pages, the driver-transfer page, NIC
+MMIO and driver DMA. The root task checks the exact fault badge, address and
+direction after the native service exercised its assigned NIC path. A timeout,
+unrelated fault or normal native success marker cannot satisfy this oracle.
+CI retains each image alongside the native runtime proof.
+
 agentOS has **two distinct layers** of automated test, and they prove different
 things. Conflating them is a category error: a green host run does **not** mean
 the IPC contract holds on real seL4.

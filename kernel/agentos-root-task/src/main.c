@@ -52,8 +52,27 @@
 #include <contracts/serial_virt_contract.h>
 #include <contracts/blk_virt_contract.h>
 #include <platform/vmm_isolation_probe.h>
+#include <platform/native_net_isolation_probe.h>
 #include <contracts/virtualizer_authority.h>
-#ifdef AOS_VMM_ISOLATION_PROBE
+#include <contracts/net_virt_contract.h>
+#if defined(AGENTOS_NATIVE_NET_ISOLATION_PROBE)
+#define ROOT_FAULT_PROBE 1
+#define ROOT_PROBE_NATIVE 1
+#define ROOT_PROBE_CLIENT 2u
+#define ROOT_PROBE_BADGE AOS_NATIVE_NET_PROBE_BADGE
+#define ROOT_PROBE_ADDRESS AOS_NATIVE_NET_PROBE_ADDRESS
+#define ROOT_PROBE_WRITE AOS_NATIVE_NET_PROBE_WRITE
+#define ROOT_PROBE_MESSAGE AOS_NATIVE_NET_PROBE_MESSAGE
+#elif defined(AOS_VMM_ISOLATION_PROBE)
+#define ROOT_FAULT_PROBE 1
+#define ROOT_PROBE_NATIVE 0
+#define ROOT_PROBE_CLIENT AOS_VMM_PROBE_CLIENT
+#define ROOT_PROBE_BADGE AOS_VMM_PROBE_BADGE
+#define ROOT_PROBE_ADDRESS AOS_VMM_PROBE_ADDRESS
+#define ROOT_PROBE_WRITE AOS_VMM_PROBE_WRITE
+#define ROOT_PROBE_MESSAGE AOS_VMM_PROBE_MESSAGE
+#endif
+#ifdef ROOT_FAULT_PROBE
 #include "serial_log.h"
 #endif
 #include <platform/net_host_layout.h> /* host net MMIO/private DMA/shared bridge */
@@ -1558,13 +1577,19 @@ void root_task_main(const seL4_BootInfo *bi)
      * capabilities to VMM notifications even when those VMMs spawn later. */
     uint32_t serial_virt_index = SYSTEM_MAX_PDS;
     uint32_t blk_virt_index = SYSTEM_MAX_PDS;
+    uint32_t net_virt_index = SYSTEM_MAX_PDS;
+    uint32_t native_net_index = SYSTEM_MAX_PDS;
     for (uint32_t i = 0; i < sys->pd_count; i++) {
         const pd_desc_t *pd = &sys->pds[i];
         if (pd->self_svc_id == SVC_ID_SERIAL_VIRT) serial_virt_index = i;
         if (pd->self_svc_id == SVC_ID_BLK_VIRT) blk_virt_index = i;
+        if (pd->self_svc_id == SVC_ID_NET_VIRT) net_virt_index = i;
+        if (pd->self_svc_id == SVC_ID_NATIVE_RUST_PROBE) native_net_index = i;
         if (pd->irq_count || pd_is_guest_vmm(pd) ||
-            pd->self_svc_id == SVC_ID_SERIAL_VIRT ||
-            pd->self_svc_id == SVC_ID_BLK_VIRT) {
+            pd->self_svc_id == SVC_ID_NET_VIRT ||
+            pd->self_svc_id == SVC_ID_NATIVE_RUST_PROBE ||
+            pd->self_svc_id == SVC_ID_BLK_VIRT ||
+            pd->self_svc_id == SVC_ID_SERIAL_VIRT) {
             seL4_Error err = ut_alloc(seL4_NotificationObject,
                 seL4_NotificationBits, seL4_CapInitThreadCNode,
                 PD_SLOT_NTFN(i), 64u);
@@ -1799,14 +1824,15 @@ void root_task_main(const seL4_BootInfo *bi)
              * MRs  = [mcp, priority]
              */
             seL4_CPtr pd_fault_ep = g_fault_ep;
-#ifdef AOS_VMM_ISOLATION_PROBE
-            if (pd_is_guest_vmm(pd) &&
-                (uint32_t)pd_is_secondary_guest_vmm(pd) == AOS_VMM_PROBE_CLIENT) {
+#ifdef ROOT_FAULT_PROBE
+            if ((ROOT_PROBE_NATIVE && pd->self_svc_id == SVC_ID_NATIVE_RUST_PROBE) ||
+                (!ROOT_PROBE_NATIVE && pd_is_guest_vmm(pd) &&
+                 (uint32_t)pd_is_secondary_guest_vmm(pd) == ROOT_PROBE_CLIENT)) {
                 pd_fault_ep = ut_alloc_slot();
                 if (pd_fault_ep == seL4_CapNull ||
                     seL4_CNode_Mint(seL4_CapInitThreadCNode, pd_fault_ep, 64u,
                                    seL4_CapInitThreadCNode, g_fault_ep, 64u,
-                                   seL4_AllRights, AOS_VMM_PROBE_BADGE) != seL4_NoError) {
+                                   seL4_AllRights, ROOT_PROBE_BADGE) != seL4_NoError) {
                     dbg_puts("[rt] block isolation probe endpoint failed\n");
                     continue;
                 }
@@ -1867,6 +1893,26 @@ void root_task_main(const seL4_BootInfo *bi)
             }
         }
 
+        if (native_net_index != SYSTEM_MAX_PDS && net_virt_index != SYSTEM_MAX_PDS &&
+            (i == native_net_index || i == net_virt_index)) {
+            uint32_t peer = i == native_net_index ? net_virt_index : native_net_index;
+            seL4_Word slot = i == native_net_index ? PD_CNODE_SLOT_NET_VIRT_NOTIFY :
+                PD_CNODE_SLOT_NET_NATIVE_NOTIFY;
+            if (seL4_CNode_Mint(pd_cnode, slot, pd->cnode_size_bits,
+                    seL4_CapInitThreadCNode, g_pd_notifications[peer], 64u,
+                    seL4_CapRights_new(0, 0, 0, 1), NET_VIRT_NATIVE_WAKE_BADGE) != seL4_NoError) {
+                dbg_puts("[rt] native network wake grant failed; refusing PD start\n");
+                continue;
+            }
+            if (i == native_net_index &&
+                seL4_CNode_Copy(pd_cnode, PD_CNODE_SLOT_NATIVE_NET_WAIT, pd->cnode_size_bits,
+                    seL4_CapInitThreadCNode, g_pd_notifications[i], 64u,
+                    seL4_CapRights_new(0, 0, 1, 0)) != seL4_NoError) {
+                dbg_puts("[rt] native network wait grant failed; refusing PD start\n");
+                continue;
+            }
+        }
+
         if (blk_virt_index != SYSTEM_MAX_PDS) {
             seL4_Error signal_err = seL4_NoError;
             if (pd_is_guest_vmm(pd)) {
@@ -1914,6 +1960,9 @@ void root_task_main(const seL4_BootInfo *bi)
                  ep_spec->service_id == SVC_ID_BLK_VIRT ||
                  ep_spec->service_id == SVC_ID_SERIAL_VIRT)) {
                 badge = virt_client_badge(pd_is_secondary_guest_vmm(pd) ? 1u : 0u);
+            } else if (pd->self_svc_id == SVC_ID_NATIVE_RUST_PROBE &&
+                       ep_spec->service_id == SVC_ID_NET_VIRT) {
+                badge = VIRT_NET_BADGE_NATIVE;
             } else if (pd->self_svc_id == SVC_ID_CC_PD &&
                        ep_spec->service_id == SVC_ID_SERIAL_VIRT) {
                 badge = SERIAL_VIRT_FRONTEND_BADGE;
@@ -2039,6 +2088,7 @@ void root_task_main(const seL4_BootInfo *bi)
              name_eq(pd->name, "net_virt") ||
              name_eq(pd->name, "blk_virt") ||
              name_eq(pd->name, "serial_virt") ||
+             name_eq(pd->name, "native_rust_client") ||
              name_eq(pd->name, "test_runner"))) {
             seL4_Word serial_copy = ut_alloc_slot();
             seL4_Error serial_err = seL4_NotEnoughMemory;
@@ -2223,12 +2273,14 @@ void root_task_main(const seL4_BootInfo *bi)
         if (g_net_shared_frame_caps[0] != seL4_CapNull &&
             (name_eq(pd->name, "net_pd") ||
              name_eq(pd->name, "net_virt") ||
+             pd->self_svc_id == SVC_ID_NATIVE_RUST_PROBE ||
              pd_is_guest_vmm(pd))) {
             seL4_Error net_err = seL4_NoError;
             for (uint32_t f = 0u; f < AOS_NET_SHMEM_FRAMES && net_err == seL4_NoError; ++f) {
                 if (pd_is_guest_vmm(pd) &&
                     f != (pd_is_secondary_guest_vmm(pd) ? 1u : 0u)) continue;
                 if (name_eq(pd->name, "net_pd") && f != AOS_NET_DRIVER_FRAME) continue;
+                if (pd->self_svc_id == SVC_ID_NATIVE_RUST_PROBE && f != AOS_NET_NATIVE_CLIENT) continue;
                 seL4_Word net_shared_copy = ut_alloc_slot();
                 net_err = seL4_NotEnoughMemory;
                 if (net_shared_copy != seL4_CapNull) {
@@ -2248,6 +2300,7 @@ void root_task_main(const seL4_BootInfo *bi)
             dbg_puts(" agentOS net shared map err=");
             dbg_hex((seL4_Word)net_err);
             dbg_puts("\n");
+            if (net_err != seL4_NoError) continue;
         }
 
         if (name_eq(pd->name, "net_pd")) {
@@ -2608,7 +2661,7 @@ void root_task_main(const seL4_BootInfo *bi)
      * not regain it if its SC budget was consumed during init.
      */
     if (g_fault_ep != seL4_CapNull) {
-#ifdef AOS_VMM_ISOLATION_PROBE
+#ifdef ROOT_FAULT_PROBE
         serial_log_t probe_log = {0};
         seL4_CPtr probe_serial_frame = ut_alloc_slot();
         if (probe_serial_frame != seL4_CapNull &&
@@ -2625,13 +2678,13 @@ void root_task_main(const seL4_BootInfo *bi)
             seL4_Word badge = 0u;
             seL4_MessageInfo_t tag = seL4_Wait(g_fault_ep, &badge);
             seL4_Word label = seL4_MessageInfo_get_label(tag);
-#ifdef AOS_VMM_ISOLATION_PROBE
-            if (badge == AOS_VMM_PROBE_BADGE && label == seL4_Fault_VMFault &&
+#ifdef ROOT_FAULT_PROBE
+            if (badge == ROOT_PROBE_BADGE && label == seL4_Fault_VMFault &&
                 seL4_MessageInfo_get_length(tag) >= seL4_VMFault_Length &&
-                seL4_GetMR(seL4_VMFault_Addr) == AOS_VMM_PROBE_ADDRESS &&
+                seL4_GetMR(seL4_VMFault_Addr) == ROOT_PROBE_ADDRESS &&
                 seL4_GetMR(seL4_VMFault_PrefetchFault) == 0u &&
-                ((seL4_GetMR(seL4_VMFault_FSR) >> 6u) & 1u) == AOS_VMM_PROBE_WRITE) {
-                serial_log_puts(&probe_log, AOS_VMM_PROBE_MESSAGE);
+                ((seL4_GetMR(seL4_VMFault_FSR) >> 6u) & 1u) == ROOT_PROBE_WRITE) {
+                serial_log_puts(&probe_log, ROOT_PROBE_MESSAGE);
             }
 #endif
             dbg_puts("[rt] FAULT label=");

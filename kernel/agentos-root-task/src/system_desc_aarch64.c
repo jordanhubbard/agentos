@@ -53,11 +53,14 @@
  */
 
 #include "system_desc.h"
+#include "contracts/native_rust_probe.h"
 #include <platform/guest_memory_layout.h>
 
 /* agentos-8f5: a target contract-runner PD is appended only in test images,
  * together with the event_bus PD whose contract it exercises. */
 #ifdef AGENTOS_SEL4_TEST_IMAGE
+#define AOS_TEST_PD_EXTRA 2u
+#elif defined(AGENTOS_NATIVE_RUST_TEST)
 #define AOS_TEST_PD_EXTRA 2u
 #else
 #define AOS_TEST_PD_EXTRA 0u
@@ -452,7 +455,11 @@ const system_desc_t system_desc_aarch64 = {
             .cnode_size_bits = 10u,
             .priority       = 164u,
             .self_svc_id    = SVC_ID_CC_PD,
-            .init_ep_count  = AOS_CC_INIT_EP_COUNT,
+            .init_ep_count  = AOS_CC_INIT_EP_COUNT
+#ifdef AGENTOS_NATIVE_RUST_TEST
+                + 1u
+#endif
+                ,
             .init_eps = {
                 { SVC_ID_NAMESERVER,  PD_CNODE_SLOT_NAMESERVER_EP },
                 { SVC_ID_LOG_DRAIN,   PD_CNODE_SLOT_LOG_DRAIN_EP  },
@@ -468,6 +475,9 @@ const system_desc_t system_desc_aarch64 = {
                  * an EP with no server would block cc_pd forever. */
 #if defined(AGENTOS_FAULT_INJECT)
                 { SVC_ID_FAULT_INJECT, PD_CNODE_SLOT_FAULT_INJECT_EP },
+#endif
+#ifdef AGENTOS_NATIVE_RUST_TEST
+                { SVC_ID_NATIVE_RUST_PROBE, NATIVE_RUST_CC_ENDPOINT },
 #endif
             },
         },
@@ -506,6 +516,34 @@ const system_desc_t system_desc_aarch64 = {
                 { SVC_ID_LOG_DRAIN,  PD_CNODE_SLOT_LOG_DRAIN_EP  },
             },
         },
+
+#ifdef AGENTOS_NATIVE_RUST_TEST
+        /* No device frames, IRQs or guest capabilities in either test PD. */
+        {
+            .name = "native_rust_probe",
+            .elf_path = "native_rust_probe.elf",
+            .stack_size = 0x4000u,
+            .cnode_size_bits = 8u,
+            .priority = 245u,
+            .self_svc_id = SVC_ID_NATIVE_RUST_PROBE,
+            .init_ep_count = 1u,
+            .init_eps = {
+                { SVC_ID_NET_VIRT, PD_CNODE_SLOT_NET_VIRT_EP },
+            },
+        },
+        {
+            .name = "native_rust_client",
+            .elf_path = "native_rust_client.elf",
+            .stack_size = 0x4000u,
+            .cnode_size_bits = 8u,
+            .priority = 250u,
+            .init_ep_count = 2u,
+            .init_eps = {
+                { SVC_ID_SERIAL, PD_CNODE_SLOT_SERIAL_EP },
+                { SVC_ID_NATIVE_RUST_PROBE, 16u },
+            },
+        },
+#endif
 
 #ifdef AGENTOS_SEL4_TEST_IMAGE
         /* event_bus (prio 195) — test image only.  Not TCB; it is spawned

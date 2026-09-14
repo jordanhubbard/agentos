@@ -3,6 +3,12 @@
 //! This crate provides the building blocks for writing seL4 Microkit Protection
 //! Domains (PDs) in Rust for the agentOS kernel.
 //!
+//! The callback template below targets the Microkit ABI. The current agentOS
+//! root task instead starts services through `pd_main(endpoint, nameserver)`;
+//! see `tests/native-rust/probe` and [`runtime`] for that native entry path.
+//! `make test-native-rust` exercises its target IPC from a separate C PD.
+//! Host unit tests and `make test-rust-pd-abi` alone are not boot proof.
+//!
 //! ## Quick start
 //!
 //! ```rust,ignore
@@ -41,10 +47,16 @@
 // for host-side unit testing (see tests/rust_pd_unit_test.rs).
 #![cfg_attr(not(feature = "std"), no_std)]
 
+extern crate alloc;
+
 pub mod console;
+pub mod executor;
 pub mod ffi;
+pub mod heap;
 pub mod ipc;
+pub mod network;
 pub mod pd;
+pub mod runtime;
 
 // `export_pd!` is automatically available at the crate root via `#[macro_export]`
 // in pd.rs; no explicit re-export is needed.

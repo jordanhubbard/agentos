@@ -2,12 +2,14 @@
 name = "agentos-pd"
 version = "0.3.0"
 edition = "2021"
-description = "Rust Protection Domain runtime for seL4 Microkit on agentOS"
+description = "Native Rust Protection Domain runtime for agentOS on seL4"
 license = "Apache-2.0"
 authors = ["The agentOS Project"]
 
 [lib]
-crate-type = ["staticlib", "rlib"]
+# The final PD crate owns its allocator and emits the static library. A
+# standalone runtime staticlib cannot resolve that downstream allocator.
+crate-type = ["rlib"]
 
 [features]
 default = []

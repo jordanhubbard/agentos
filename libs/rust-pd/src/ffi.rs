@@ -1,40 +1,26 @@
-//! Raw seL4 Microkit FFI bindings.
+//! Raw bindings to the agentOS seL4 C bridge.
 //!
-//! These mirror the C declarations in `microkit.h` that every Protection Domain
-//! compiled against the Microkit SDK sees.  In a real PD build the linker resolves
-//! these symbols from the Microkit runtime; in host-side tests they are replaced by
-//! the mock implementations in `tests/rust_pd_unit_test.rs`.
+//! seL4 message-register helpers are static inline C functions, not exported
+//! library symbols. Native target callers must link `runtime/ipc.c` and
+//! initialize the IPC buffer through the agentOS PD entry point. Host tests
+//! provide bridge mocks.
 
 // ── Message-register bank ─────────────────────────────────────────────────────
 //
-// The Microkit ABI exposes up to 64 message registers (MRs) numbered 0..63.
+// The supported 64-bit seL4 ABI exposes 120 message words numbered 0..119.
 // The kernel stores them in seL4_GetMR / seL4_SetMR which are themselves thin
 // wrappers around the IPC buffer in the thread's TLS region.
 
 extern "C" {
+    pub fn agentos_pd_receive(endpoint: u64, badge: *mut u64) -> u64;
+    pub fn agentos_pd_reply(info: u64);
+    pub fn agentos_pd_call(endpoint: u64, info: u64) -> u64;
     /// Read message register `idx`.
+    #[link_name = "agentos_pd_get_mr"]
     pub fn seL4_GetMR(idx: i32) -> u64;
     /// Write message register `idx` with `val`.
+    #[link_name = "agentos_pd_set_mr"]
     pub fn seL4_SetMR(idx: i32, val: u64);
-
-    /// Construct a `microkit_msginfo` word from its fields.
-    ///
-    /// `label`      — caller-defined opcode (52 bits)
-    /// `caps_unwrapped` — number of unwrapped caps in the message
-    /// `extra_caps` — number of extra caps transferred
-    /// `length`     — number of message-register words populated
-    pub fn microkit_msginfo_new(
-        label: u64,
-        caps_unwrapped: u64,
-        extra_caps: u64,
-        length: u64,
-    ) -> u64;
-
-    /// Extract the label field from a `microkit_msginfo` word.
-    pub fn microkit_msginfo_get_label(info: u64) -> u64;
-
-    /// Extract the MR count field from a `microkit_msginfo` word.
-    pub fn microkit_msginfo_get_length(info: u64) -> u64;
 
     /// Log a NUL-terminated string via the Microkit debug console.
     ///

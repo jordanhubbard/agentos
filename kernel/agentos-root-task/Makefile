@@ -349,6 +349,22 @@ ifdef SEL4_TEST_IMAGE
   IMAGES += test_runner.elf
 endif
 
+ifdef NATIVE_RUST_TEST
+  ifneq ($(ARCH),aarch64)
+    $(error NATIVE_RUST_TEST currently requires aarch64)
+  endif
+  ifdef SEL4_TEST_IMAGE
+    $(error NATIVE_RUST_TEST and SEL4_TEST_IMAGE are separate image variants)
+  endif
+  CFLAGS_ROOT_TASK += -DAGENTOS_NATIVE_RUST_TEST=1
+  CFLAGS += -DAGENTOS_NATIVE_RUST_TEST=1
+  ifdef NATIVE_NET_ISOLATION_PROBE
+    CFLAGS_ROOT_TASK += -DAGENTOS_NATIVE_NET_ISOLATION_PROBE=$(NATIVE_NET_ISOLATION_PROBE)
+    CFLAGS += -DAGENTOS_NATIVE_NET_ISOLATION_PROBE=$(NATIVE_NET_ISOLATION_PROBE)
+  endif
+  IMAGES += native_rust_probe.elf native_rust_client.elf
+endif
+
 ifdef BLK_ISOLATION_PROBE
   CFLAGS_ROOT_TASK += -DAGENTOS_BLK_ISOLATION_PROBE=$(BLK_ISOLATION_PROBE)
 endif
@@ -606,6 +622,29 @@ $(BUILD_DIR)/%.o: $(REPO_ROOT_MK)/tests/fault-inject/%.c
 $(BUILD_DIR)/%.o: src/%.c
 	@mkdir -p $(BUILD_DIR)
 	$(CC) -c $(CFLAGS) $< -o $@
+
+$(BUILD_DIR)/rust_pd_ipc.o: $(REPO_ROOT)/libs/rust-pd/runtime/ipc.c
+	@mkdir -p $(BUILD_DIR)
+	$(CC) -c $(CFLAGS) $< -o $@
+
+$(BUILD_DIR)/rust_pd_memory.o: $(REPO_ROOT)/libs/rust-pd/runtime/memory.c
+	@mkdir -p $(BUILD_DIR)
+	$(CC) -c $(CFLAGS) $< -o $@
+
+$(BUILD_DIR)/rust_pd_network.o: $(REPO_ROOT)/libs/rust-pd/runtime/network.c $(GUEST_CONFIG_STAMP)
+	@mkdir -p $(BUILD_DIR)
+	$(CC) -c $(CFLAGS) $< -o $@
+
+$(BUILD_DIR)/native_rust_probe.elf: FORCE $(BUILD_DIR)/rust_pd_ipc.o $(BUILD_DIR)/pd_entry.o $(BUILD_DIR)/sel4_crt.o $(BUILD_DIR)/rust_pd_memory.o $(BUILD_DIR)/rust_pd_network.o
+	cd $(REPO_ROOT) && cargo build -p agentos-native-rust-probe --release --target aarch64-unknown-none
+	$(LD) --gc-sections $(LDFLAGS) $(filter-out FORCE,$^) $(REPO_ROOT)/target/aarch64-unknown-none/release/libagentos_native_rust_probe.a $(LIBS) -o $@
+
+$(BUILD_DIR)/native_rust_client.o: $(REPO_ROOT)/tests/native-rust/client.c
+	@mkdir -p $(BUILD_DIR)
+	$(CC) -c $(CFLAGS) $< -o $@
+
+$(BUILD_DIR)/native_rust_client.elf: $(BUILD_DIR)/native_rust_client.o $(BUILD_DIR)/pd_entry.o $(BUILD_DIR)/sel4_crt.o $(BUILD_DIR)/rust_pd_memory.o
+	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
 
 # Swap slot sources need wasm3 headers + bare-metal shim
 $(BUILD_DIR)/swap_slot.o: $(REPO_ROOT_MK)/services/legacy-pds/swap_slot.c
@@ -920,7 +959,12 @@ endif
 # memory-region / channel details (handled by the root task at runtime).
 # A minimal fallback TOML is provided; board-specific overrides live in boards/.
 SYSTEM_TOML_DEFAULT := $(abspath $(CURDIR)/agentos.toml)
-ifdef SEL4_TEST_IMAGE
+ifdef NATIVE_RUST_TEST
+SYSTEM_TOML_DEFAULT := $(abspath $(BUILD_DIR)/agentos-native-rust-test.toml)
+$(SYSTEM_TOML_DEFAULT): $(abspath $(CURDIR)/agentos.toml)
+	@mkdir -p $(BUILD_DIR)
+	{ cat $<; printf '\n[[pd]]\nname = "native_rust_probe"\npriority = 245\n'; printf '\n[[pd]]\nname = "native_rust_client"\npriority = 250\n'; } > $@
+else ifdef SEL4_TEST_IMAGE
 # agentos-8f5: test images (with no guest profiles) append the contract-runner PD
 # so gen-pd-bundle embeds test_runner.elf and the root task can spawn it, plus
 # the event_bus PD whose contract the runner exercises (not in the default

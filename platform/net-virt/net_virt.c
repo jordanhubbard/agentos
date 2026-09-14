@@ -46,7 +46,7 @@ _Static_assert(AOS_NET_SHMEM_VA == AGENTOS_NET_SHARED_VA,
 _Static_assert(NET_SVC_SLOT_BASE == AOS_NET_DRIVER_SLOT_BASE &&
                NET_SVC_SHMEM_TOTAL == AOS_NET_SHMEM_SIZE,
                "network driver contract must match mapped frame layout");
-_Static_assert(AOS_NET_GUEST_CLIENTS * AOS_NET_CLIENT_STRIDE <= NET_SVC_SLOT_BASE,
+_Static_assert(AOS_NET_QUEUE_CLIENTS * AOS_NET_CLIENT_STRIDE <= NET_SVC_SLOT_BASE,
                "guest net queues must not overlap net-service slots");
 _Static_assert(sizeof(net_virt_attach_req_t) == 12u,
                "net_virt ATTACH request wire size");
@@ -72,7 +72,7 @@ typedef struct {
     aos_net_virt_client_t q;
 } nv_client_t;
 
-static nv_client_t     g_clients[AOS_NET_GUEST_CLIENTS];
+static nv_client_t     g_clients[AOS_NET_QUEUE_CLIENTS];
 static aos_net_virt_t  g_hub;          /* loopback/hub pump for hw-less runs */
 static int             g_hub_marked;
 static serial_log_t    g_log = { .ep = PD_CNODE_SLOT_SERIAL_EP };
@@ -168,6 +168,10 @@ static void register_with_nameserver(seL4_CPtr ns_ep)
 
 static void nv_notify_vmm(const nv_client_t *c)
 {
+    if (c->client_id == AOS_NET_NATIVE_CLIENT) {
+        seL4_Signal(PD_CNODE_SLOT_NET_NATIVE_NOTIFY);
+        return;
+    }
     seL4_MessageInfo_t event =
         seL4_MessageInfo_new(NET_SVC_EVENT_RX_READY, 0u, 0u, 0u);
 
@@ -178,6 +182,9 @@ static void nv_notify_vmm(const nv_client_t *c)
 
 static seL4_CPtr vmm_ep_for_slot(uint32_t vmm_slot)
 {
+#ifdef AGENTOS_NATIVE_RUST_TEST
+    if (vmm_slot == NET_VIRT_SLOT_NATIVE) return PD_CNODE_SLOT_NET_NATIVE_NOTIFY;
+#endif
 #if defined(AGENTOS_GUEST_PRIMARY)
     if (vmm_slot == NET_VIRT_VMM_SLOT_PRIMARY) {
         return (seL4_CPtr)PD_CNODE_SLOT_GUEST_VMM_PRIMARY_EP;
@@ -304,7 +311,7 @@ static uint32_t nv_rx_from_net_pd(nv_client_t *c)
 
 static int nv_rescan_needed(void)
 {
-    for (uint32_t i = 0u; i < AOS_NET_GUEST_CLIENTS; i++) {
+    for (uint32_t i = 0u; i < AOS_NET_QUEUE_CLIENTS; i++) {
         const nv_client_t *c = &g_clients[i];
 
         if (!c->attached) {
@@ -324,18 +331,18 @@ static int nv_rescan_needed(void)
 static void nv_service(void)
 {
     for (uint32_t pass = 0u; pass < 4u; pass++) {
-        uint32_t deliver[AOS_NET_GUEST_CLIENTS] = {0};
+        uint32_t deliver[AOS_NET_QUEUE_CLIENTS] = {0};
         int any_hub = 0;
 
         /* Draining: kicks are redundant until we ask for them again. */
-        for (uint32_t i = 0u; i < AOS_NET_GUEST_CLIENTS; i++) {
+        for (uint32_t i = 0u; i < AOS_NET_QUEUE_CLIENTS; i++) {
             if (g_clients[i].attached) {
                 g_clients[i].q.tx_active->consumer_signalled = 1u;
             }
         }
         nv_fence();
 
-        for (uint32_t i = 0u; i < AOS_NET_GUEST_CLIENTS; i++) {
+        for (uint32_t i = 0u; i < AOS_NET_QUEUE_CLIENTS; i++) {
             nv_client_t *c = &g_clients[i];
 
             if (!c->attached) {
@@ -363,7 +370,7 @@ static void nv_service(void)
                 nv_dec(moved);
                 nv_puts(" frame(s) TX->RX (hub/loopback: net_pd reports no host NIC)\n");
             }
-            for (uint32_t i = 0u; i < AOS_NET_GUEST_CLIENTS; i++) {
+            for (uint32_t i = 0u; i < AOS_NET_QUEUE_CLIENTS; i++) {
                 nv_client_t *c = &g_clients[i];
 
                 if (c->attached && !c->hw &&
@@ -373,7 +380,7 @@ static void nv_service(void)
             }
         }
 
-        for (uint32_t i = 0u; i < AOS_NET_GUEST_CLIENTS; i++) {
+        for (uint32_t i = 0u; i < AOS_NET_QUEUE_CLIENTS; i++) {
             if (deliver[i] != 0u) {
                 nv_notify_vmm(&g_clients[i]);
             }
@@ -381,7 +388,7 @@ static void nv_service(void)
 
         /* Ask for kicks again, then rescan so nothing enqueued meanwhile
          * waits for the next kick. */
-        for (uint32_t i = 0u; i < AOS_NET_GUEST_CLIENTS; i++) {
+        for (uint32_t i = 0u; i < AOS_NET_QUEUE_CLIENTS; i++) {
             if (g_clients[i].attached) {
                 g_clients[i].q.tx_active->consumer_signalled = 0u;
             }
@@ -408,8 +415,8 @@ static void handle_attach(uint64_t badge, const sel4_msg_t *req, sel4_msg_t *rep
 
     if (version != NET_VIRT_CONTRACT_VERSION || req->length < 12u) {
         status = NET_VIRT_ERR_VERSION;
-    } else if (!virt_client_authorized(badge, client_id, vmm_slot) ||
-               client_id >= AOS_NET_GUEST_CLIENTS || vmm_ep == 0u) {
+    } else if (!virt_net_authorized(badge, client_id, vmm_slot) ||
+               client_id >= AOS_NET_QUEUE_CLIENTS || vmm_ep == 0u) {
         status = NET_VIRT_ERR_BAD_CLIENT;
     } else if (g_clients[client_id].attached) {
         status = NET_VIRT_ERR_BUSY;
@@ -498,7 +505,10 @@ static void net_virt_run(seL4_CPtr ep)
         seL4_MessageInfo_t info = seL4_Recv(ep, &badge);
 #endif
         seL4_Word label = seL4_MessageInfo_get_label(info);
-        (void)badge;
+        if (badge == NET_VIRT_NATIVE_WAKE_BADGE) {
+            nv_service();
+            continue;
+        }
 
         if (label == NET_VIRT_OP_ATTACH) {
             _sel4_mrs_to_msg(&req);
@@ -526,6 +536,6 @@ void pd_main(seL4_CPtr my_ep, seL4_CPtr ns_ep)
     agentos_log_boot("net_virt");
     aos_net_virt_reset(&g_hub);
     register_with_nameserver(ns_ep);
-    nv_puts("[net_virt] READY: contract v3, isolated capability-bound clients, no device caps\n");
+    nv_puts("[net_virt] READY: contract v4, isolated capability-bound clients, no device caps\n");
     net_virt_run(my_ep);
 }
