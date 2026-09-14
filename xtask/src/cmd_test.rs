@@ -438,6 +438,7 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
             &[
                 "[native-rust] PASS: IPC version, all 120 MRs, invalid requests, recovery",
                 "[native-rust] PASS: alloc Vec, alignment, exhaustion, heap reuse",
+                "[native-rust] PASS: async tasks, poll budgets, capacity, cancellation",
             ],
             Duration::from_secs(args.timeout_secs),
             &mut qemu,

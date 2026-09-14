@@ -153,6 +153,10 @@ path and a C bridge to seL4 IPC. `make test-native-rust` checks reply payloads
 from a separate C PD, including `alloc::Vec` data, alignment, exhaustion and
 reuse of the Rust PD's private 64 KiB heap. It does not qualify networking or
 an RCC service. These test PDs are absent from the default image.
+The same proof checks real async functions, executor capacity, poll budgets
+and cancellation before verifying complete heap reuse. Its cooperative poll
+budget does not preempt arbitrary future code; seL4 scheduling remains the
+protection-domain CPU authority.
 
 ## I/O invariant
 

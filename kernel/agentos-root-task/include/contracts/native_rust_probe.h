@@ -18,11 +18,18 @@
  * The service must use alloc::Vec, free it, verify 4096-byte alignment and
  * exhaust/reuse its private 64 KiB heap. Failure returns ERR_HEAP, no words. */
 #define NATIVE_RUST_HEAP UINT64_C(0x2e03)
+/* EXECUTOR request: one word VERSION. Reply: eight words VERSION,
+ * polls_for_two_yielding_tasks=6, initial_completions=2, full_rejected=1,
+ * zero_budget_polls=0, stale_cancel_rejected=1, final_completions=3,
+ * remaining_tasks=0. Each task yields twice via its waker before completing.
+ * Failure returns ERR_EXECUTOR with no words. */
+#define NATIVE_RUST_EXECUTOR UINT64_C(0x2e04)
 #define NATIVE_RUST_OK UINT64_C(0)
 #define NATIVE_RUST_ERR_OPCODE UINT64_C(1)
 #define NATIVE_RUST_ERR_LENGTH UINT64_C(2)
 #define NATIVE_RUST_ERR_VERSION UINT64_C(3)
 #define NATIVE_RUST_ERR_HEAP UINT64_C(4)
+#define NATIVE_RUST_ERR_EXECUTOR UINT64_C(5)
 #define NATIVE_RUST_WORDS 120u
 #define NATIVE_RUST_SALT UINT64_C(0x5a5a5a5a5a5a5a5a)
 #define NATIVE_RUST_PROBE_ENDPOINT 16u

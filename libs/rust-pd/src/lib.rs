@@ -47,7 +47,10 @@
 // for host-side unit testing (see tests/rust_pd_unit_test.rs).
 #![cfg_attr(not(feature = "std"), no_std)]
 
+extern crate alloc;
+
 pub mod console;
+pub mod executor;
 pub mod ffi;
 pub mod heap;
 pub mod ipc;

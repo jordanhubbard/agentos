@@ -61,6 +61,18 @@ void pd_main(seL4_CPtr endpoint, seL4_CPtr nameserver)
         expect_error(NATIVE_RUST_ECHO, NATIVE_RUST_WORDS, NATIVE_RUST_ERR_VERSION);
     }
     for (unsigned seed = 17; seed <= 93; seed += 76) {
+        expect_error(NATIVE_RUST_EXECUTOR, 0, NATIVE_RUST_ERR_LENGTH);
+        seL4_SetMR(0, NATIVE_RUST_VERSION + 1);
+        expect_error(NATIVE_RUST_EXECUTOR, 1, NATIVE_RUST_ERR_VERSION);
+        seL4_SetMR(0, NATIVE_RUST_VERSION);
+        seL4_MessageInfo_t execution = invoke(NATIVE_RUST_EXECUTOR, 1);
+        check(seL4_MessageInfo_get_label(execution) == NATIVE_RUST_OK &&
+              seL4_MessageInfo_get_length(execution) == 8, "executor response");
+        const uint64_t expected[] = {NATIVE_RUST_VERSION, 6, 2, 1, 0, 1, 3, 0};
+        for (unsigned i = 0; i < 8; i++)
+            check(seL4_GetMR(i) == expected[i], "executor budgets, capacity or cancellation");
+        /* Full-heap reuse below also checks that executor-owned allocations
+         * were released after its async tasks completed or were cancelled. */
         expect_error(NATIVE_RUST_HEAP, 0, NATIVE_RUST_ERR_LENGTH);
         seL4_SetMR(0, NATIVE_RUST_VERSION + 1);
         seL4_SetMR(1, seed);
@@ -81,6 +93,8 @@ void pd_main(seL4_CPtr endpoint, seL4_CPtr nameserver)
               seL4_GetMR(4) == 1 && seL4_GetMR(5) == 1,
               "heap payload, alignment, exhaustion or reuse");
     }
+    serial_log_puts(&log_channel,
+        "[native-rust] PASS: async tasks, poll budgets, capacity, cancellation\n");
     serial_log_puts(&log_channel,
         "[native-rust] PASS: alloc Vec, alignment, exhaustion, heap reuse\n");
     serial_log_puts(&log_channel,

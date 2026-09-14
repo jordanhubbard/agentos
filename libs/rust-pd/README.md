@@ -23,8 +23,7 @@ seeded `alloc::Vec` contents, page alignment, exhaustion and complete reuse
 of the probe's private 64 KiB heap. Install Rust's
 `aarch64-unknown-none` standard-library target before running the target build.
 The full runtime task, `task_3d190486ab18c12663a2d724bb602778`, also requires
-bounded asynchronous execution
-where needed, virtualizer network bindings and a real native RCC service.
+virtualizer network bindings and a real native RCC service.
 
 `heap::BoundedHeap<N>` supplies a fixed-capacity global allocator with `N`
 64-byte blocks. Declare it at a stable static address using `#[global_allocator]`.
@@ -38,3 +37,22 @@ occurs inside the allocator.
 Bare-metal AArch64 Rust compilation uses baseline instructions rather than
 assuming Cortex-A55 features. The target proof runs on the harness's Cortex-A57,
 including the allocator's atomic locking operations.
+
+`executor::Executor<N>` owns at most `N` boxed futures. Each `run_ready(budget)`
+examines at most `N` slots and polls each ready task at most once, up to the
+budget. A rotating cursor prevents a repeatedly waking task from monopolizing
+small budgets. Capacity rejection returns the unpolled future to its owner.
+Task IDs are scoped to their originating executor and never wrap into reused
+IDs. Cancellation drops the future; retained old wakers cannot mark a later
+slot occupant ready.
+
+This is cooperative scheduling: futures must return promptly from `poll`.
+The poll budget cannot preempt a blocking or malicious future, and wakers only
+mark readiness. The embedding IPC/notification loop must provide platform
+wakeups and drive the executor. Task/waker allocations use the PD's global heap.
+The runtime crate emits an `rlib`; the final PD crate owns its allocator and
+emits the static library linked with the C entry and IPC bridge.
+
+The target proof runs real `async` functions that yield twice, checks admission
+and poll budgets, rejects stale cancellation, and then exhausts/reuses the
+whole heap to verify executor-owned allocations were released.

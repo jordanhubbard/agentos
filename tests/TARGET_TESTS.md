@@ -7,8 +7,10 @@ invalid opcode/length/version, and valid calls after errors. Both PDs use the
 normal root-task entry and capability setup and own no hardware. This proves
 the native Rust entry/link and synchronous IPC path. The client also checks
 seeded `alloc::Vec` contents, 4096-byte alignment, exhaustion and complete reuse
-of a private 64 KiB heap. It does not prove asynchronous execution, networking
-or a native RCC service.
+of a private 64 KiB heap. Real async functions additionally exercise executor
+capacity, poll budgets, cancellation and memory release. This is cooperative
+scheduling proof, not preemption of arbitrary future code. Networking and a
+native RCC service remain separate qualifications.
 
 agentOS has **two distinct layers** of automated test, and they prove different
 things. Conflating them is a category error: a green host run does **not** mean
