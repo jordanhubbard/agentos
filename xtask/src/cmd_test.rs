@@ -200,7 +200,82 @@ fn virtio_markers(assertion: &VirtioAssertion) -> Vec<&'static str> {
     required
 }
 
+fn persistence_script(token: &str, second_boot: bool) -> anyhow::Result<String> {
+    anyhow::ensure!(
+        !token.is_empty()
+            && token.len() <= 128
+            && token
+                .bytes()
+                .all(|c| c.is_ascii_alphanumeric() || c == b'-'),
+        "invalid persistence witness token"
+    );
+    let file = "/var/lib/agentos/persistence-proof";
+    let write = if second_boot {
+        String::new()
+    } else {
+        format!("test ! -e {file}\nmkdir -p /var/lib/agentos\numask 077\nprintf '%s\\n' '{token}' >{file}\nsync\n")
+    };
+    Ok(format!(
+        "set -eu\n{write}test \"$(cat {file})\" = '{token}'\nprintf '%s\\n' '{token}'\n"
+    ))
+}
+
+fn run_persistent_boots(args: &TestArgs) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        args.assert_live
+            && !args.no_build
+            && !args.keep_running
+            && !args.assert_desktop
+            && args.guest_os != "both"
+            && args.guest_os != "none",
+        "persistent proof requires one freshly built live guest profile"
+    );
+    let root = repo_root()?;
+    let evidence = root.join("build/evidence");
+    std::fs::create_dir_all(&evidence)?;
+    let directory = tempfile::Builder::new()
+        .prefix("persistent-boot-")
+        .tempdir_in(&evidence)?
+        .keep();
+    println!(
+        "[xtask:test] Persistent boot evidence: {}",
+        directory.display()
+    );
+    let mut round = args.clone();
+    round.assert_persistent_boots = false;
+    round.persistent_directory = Some(directory.clone());
+    round.persistent_token = directory
+        .file_name()
+        .unwrap()
+        .to_string_lossy()
+        .into_owned();
+    let mut status = serde_json::json!({"schema":"agentos.persistent_boot.v1", "profile":args.guest_os,
+        "status":"running", "first_boot":false, "second_boot":false,
+        "scope":"two QEMU cold boots; not guest-slot recreation or orderly shutdown"});
+    let receipt = directory.join("result.json");
+    std::fs::write(&receipt, serde_json::to_vec_pretty(&status)?)?;
+    for second in [false, true] {
+        round.persistent_second_boot = second;
+        round.no_build = second;
+        if let Err(error) = run(&round) {
+            status["status"] = serde_json::json!("failed");
+            status["error"] = serde_json::json!(format!("{error:#}"));
+            std::fs::write(&receipt, serde_json::to_vec_pretty(&status)?)?;
+            return Err(error);
+        }
+        status[if second { "second_boot" } else { "first_boot" }] = serde_json::json!(true);
+        std::fs::write(&receipt, serde_json::to_vec_pretty(&status)?)?;
+    }
+    status["status"] = serde_json::json!("pass");
+    std::fs::write(receipt, serde_json::to_vec_pretty(&status)?)?;
+    println!("PASS: persistent disk witness survived two authenticated guest cold boots");
+    Ok(())
+}
+
 pub fn run(args: &TestArgs) -> anyhow::Result<()> {
+    if args.assert_persistent_boots {
+        return run_persistent_boots(args);
+    }
     anyhow::ensure!(
         !(args.assert_inspect
             || args.inspect_write_probe
@@ -403,6 +478,65 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
         run_make(&make_arg_refs, &repo_root).context("profile-driven build step failed")?;
     }
 
+    if let Some(directory) = &args.persistent_directory {
+        let profile = profile_plan
+            .as_mut()
+            .context("persistent proof needs one profile")?;
+        let resolved = format!("{profile:#?}\n");
+        let plan_receipt = directory.join("profile-plan.txt");
+        if args.persistent_second_boot {
+            anyhow::ensure!(
+                std::fs::read_to_string(&plan_receipt)? == resolved,
+                "resolved guest profile changed between cold boots"
+            );
+        } else {
+            std::fs::write(plan_receipt, resolved)?;
+        }
+        let media = &mut profile
+            .qemu
+            .as_mut()
+            .context("profile has no QEMU plan")?
+            .media;
+        anyhow::ensure!(
+            media.iter().filter(|disk| disk.writable).count() == 1,
+            "persistent proof requires exactly one writable disk"
+        );
+        let disk = media.iter_mut().find(|disk| disk.writable).unwrap();
+        anyhow::ensure!(
+            disk.override_env
+                .iter()
+                .all(|key| std::env::var_os(key).is_none()),
+            "persistent proof requires the pinned profile media, without overrides"
+        );
+        let copy = crate::persistent_media::prepare(
+            &repo_root.join(&disk.path),
+            directory,
+            args.persistent_second_boot,
+        )?;
+        disk.path = copy
+            .to_str()
+            .context("persistent copy path is not UTF-8")?
+            .to_owned();
+        disk.override_env.clear();
+        disk.managed_persistent = true;
+        if !args.persistent_second_boot {
+            std::fs::copy(
+                repo_root
+                    .join("build")
+                    .join(&args.board)
+                    .join("agentos.img"),
+                directory.join("agentos.img"),
+            )?;
+        } else {
+            crate::persistent_media::require_same_image(
+                &directory.join("agentos.img"),
+                &repo_root
+                    .join("build")
+                    .join(&args.board)
+                    .join("agentos.img"),
+            )?;
+        }
+    }
     let tmp_dir = qemu_tmp_dir(&repo_root);
     std::fs::create_dir_all(&tmp_dir)
         .with_context(|| format!("failed to create {}", tmp_dir.display()))?;
@@ -414,6 +548,14 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
     let (_, log_path) = log_file
         .keep()
         .context("failed to persist build/tmp QEMU log file")?;
+    if let Some(directory) = &args.persistent_directory {
+        let name = if args.persistent_second_boot {
+            "second-log-path.txt"
+        } else {
+            "first-log-path.txt"
+        };
+        std::fs::write(directory.join(name), format!("{}\n", log_path.display()))?;
+    }
     let ssh_key = if scenario_plan.is_some() || args.assert_live || args.assert_desktop {
         Some(generate_ssh_test_key(&repo_root, args.keep_running)?)
     } else {
@@ -758,6 +900,42 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
         }
     }
 
+    if result.is_ok() && args.persistent_directory.is_some() {
+        let profile = profile_plan
+            .as_ref()
+            .context("persistent proof lost its profile")?;
+        let ssh = profile
+            .qemu
+            .as_ref()
+            .and_then(|plan| plan.ssh.as_ref())
+            .context("persistent proof requires profile SSH")?;
+        let key = ssh_key
+            .as_ref()
+            .context("persistent proof requires authenticated SSH")?;
+        let script = persistence_script(&args.persistent_token, args.persistent_second_boot)?;
+        result = run_ssh_script(
+            &key.private_key,
+            ssh.host_port,
+            &ssh.account,
+            Duration::from_secs(120),
+            &script,
+        )
+        .and_then(|output| {
+            anyhow::ensure!(
+                output.trim() == args.persistent_token,
+                "persistent disk witness did not match"
+            );
+            Ok(format!(
+                "{}; persistent disk witness {}",
+                result.as_deref().unwrap_or("profile ready"),
+                if args.persistent_second_boot {
+                    "read after cold boot"
+                } else {
+                    "written and synced"
+                }
+            ))
+        });
+    }
     if args.keep_running && result.is_ok() {
         let key = ssh_key
             .as_ref()
@@ -789,6 +967,22 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
     }
     let _ = qemu.kill();
     let _ = qemu.wait();
+
+    if let Some(directory) = &args.persistent_directory {
+        let phase = if args.persistent_second_boot {
+            "second"
+        } else {
+            "first"
+        };
+        std::fs::copy(&log_path, directory.join(format!("{phase}-serial.log")))?;
+        std::fs::write(
+            directory.join(format!("{phase}-result.txt")),
+            match &result {
+                Ok(value) => format!("pass: {value}\n"),
+                Err(error) => format!("fail: {error:#}\n"),
+            },
+        )?;
+    }
 
     // Print captured serial output
     println!("\n=== Serial output ===");
@@ -1166,7 +1360,11 @@ fn attach_profile_media(
                     media_path.display(),
                     media.drive_id,
                     if media.writable { "off" } else { "on" },
-                    if media.writable { "on" } else { "off" }
+                    if media.writable && !media.managed_persistent {
+                        "on"
+                    } else {
+                        "off"
+                    }
                 ),
             ]);
         }
