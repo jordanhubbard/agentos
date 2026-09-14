@@ -173,7 +173,7 @@ args = { text = "rm -f /etc/resolv.conf && printf 'nameserver 10.0.2.3\\n' > /et
 
 [[host.provision]]
 action = "send-console"
-args = { text = "mkdir -p /root/.ssh /run/sshd && printf '%s\\n' '{{ssh_public_key}}' > /root/.ssh/authorized_keys && chmod 700 /root/.ssh && chmod 600 /root/.ssh/authorized_keys" }
+args = { text = "systemctl mask --runtime --now ssh.service ssh.socket && mkdir -p /root/.ssh /run/sshd && printf '%s\\n' '{{ssh_public_key}}' > /root/.ssh/authorized_keys && chmod 700 /root/.ssh && chmod 600 /root/.ssh/authorized_keys" }
 
 [[host.provision]]
 action = "send-console"
