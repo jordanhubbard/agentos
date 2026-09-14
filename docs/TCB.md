@@ -75,6 +75,16 @@ sDDF-shaped hub/loopback pump instead. Contract:
 `include/contracts/net_virt_contract.h`. Lint: `tests/platform/lint_source_invariants.c`
 (`inv2:` network checks).
 
+Network descriptors remain untrusted even within an isolated client page.
+The virtualizer validates fixed-buffer alignment, offset and packet length
+before constructing payload pointers in both hardware and fallback paths.
+Invalid descriptors are consumed without recycling; recovery requires valid
+remaining buffers or a separately coordinated client reset. Ring operations
+snapshot indices, reject occupancy above the private capacity, and each pump
+pass processes at most that capacity. Host tests cover wrapping offsets,
+misalignment, oversized packets, corrupt occupancy and valid traffic after a
+malformed descriptor; they do not constitute an on-target malicious-client proof.
+
 *Block* (invariant 2 held). `blk_virt` (`platform/blk-virt/blk_virt.c`) is a
 PD of its own, spawned at priority 210 with no device frame and no IRQ. The
 emulated virtio-blk inside each `guest_vmm` (`platform/blk-virt/vmm_virtio_blk.c`,
