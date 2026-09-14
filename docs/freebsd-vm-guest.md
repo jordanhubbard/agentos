@@ -1,5 +1,13 @@
 # FreeBSD VM Guest on agentOS/seL4
 
+**Historical reference:** the diagram, dedicated FreeBSD VMM names, and
+controller/event-bus inventory below predate the shared profile-driven VMM
+and v0.3 virtualizer PDs. Current guests run in `guest_vmm_primary` or
+`guest_vmm_secondary`, with devices served through agentOS virtualizers.
+Use [Quick start](QUICKSTART.md), [the TCB](TCB.md), and
+[the platform plan](../PLAN.md) for current commands, topology, and required
+runtime evidence. This historical page is not release qualification evidence.
+
 **Status:** Dual-guest SSH acceptance path wired; lifecycle extensions in progress
 **Date:** 2026-09-06
 **Target platform:** QEMU virt AArch64 (Sparky GB10)
