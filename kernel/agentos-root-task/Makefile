@@ -597,7 +597,7 @@ $(BUILD_DIR)/native_rust_client.o: $(REPO_ROOT)/tests/native-rust/client.c
 	@mkdir -p $(BUILD_DIR)
 	$(CC) -c $(CFLAGS) $< -o $@
 
-$(BUILD_DIR)/native_rust_client.elf: $(BUILD_DIR)/native_rust_client.o $(BUILD_DIR)/pd_entry.o $(BUILD_DIR)/sel4_crt.o
+$(BUILD_DIR)/native_rust_client.elf: $(BUILD_DIR)/native_rust_client.o $(BUILD_DIR)/pd_entry.o $(BUILD_DIR)/sel4_crt.o $(BUILD_DIR)/rust_pd_memory.o
 	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
 
 # Swap slot sources need wasm3 headers + bare-metal shim
