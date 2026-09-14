@@ -585,6 +585,9 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
     };
     println!("[xtask:test] Launching QEMU for board={}...", args.board);
     let cc_sock = log_path.with_extension("cc_pd.sock");
+    // Measure the host-observed launch-to-authentication interval. Acquisition,
+    // compilation and persistent-disk preparation have already completed.
+    let boot_clock = Instant::now();
     let mut qemu = ChildGuard::new(spawn_qemu_with_guest(
         &args.board,
         &repo_root,
@@ -784,6 +787,27 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
             &mut qemu,
         ) {
             Ok(()) => {
+                let elapsed_ms = boot_clock.elapsed().as_millis();
+                let timing_path = log_path.with_extension("boot-timing.json");
+                let timing = serde_json::json!({
+                    "schema": "agentos.guest_boot_timing.v1",
+                    "status": "ssh_authenticated",
+                    "boundary": "host QEMU launch request to completed authenticated SSH proof",
+                    "elapsed_ms": elapsed_ms,
+                    "board": args.board,
+                    "profile": profile_plan.as_ref().unwrap().id,
+                    "host_os": std::env::consts::OS,
+                    "host_arch": std::env::consts::ARCH,
+                    "persistent_second_boot": args.persistent_second_boot,
+                    "serial_log": log_path,
+                    "excludes": ["artifact acquisition", "build", "persistent media preparation"],
+                    "includes": ["host scheduling", "QEMU startup", "agentOS boot", "guest boot", "console provisioning", "SSH authentication"],
+                });
+                std::fs::write(&timing_path, serde_json::to_vec_pretty(&timing)?)?;
+                println!(
+                    "[xtask:test] Authenticated boot timing: {elapsed_ms} ms ({})",
+                    timing_path.display()
+                );
                 result = Ok(format!(
                     "{}; profile SSH reachable",
                     result.as_deref().unwrap_or("guest profile ready")
@@ -975,6 +999,13 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
             "first"
         };
         std::fs::copy(&log_path, directory.join(format!("{phase}-serial.log")))?;
+        let timing_path = log_path.with_extension("boot-timing.json");
+        if timing_path.exists() {
+            std::fs::copy(
+                timing_path,
+                directory.join(format!("{phase}-boot-timing.json")),
+            )?;
+        }
         std::fs::write(
             directory.join(format!("{phase}-result.txt")),
             match &result {
