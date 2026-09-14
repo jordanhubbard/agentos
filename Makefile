@@ -398,6 +398,12 @@ endif
 # =============================================================================
 # setup/demo: two-command first-run path and one-command repeatable showcase
 # =============================================================================
+.PHONY: sdk-check
+sdk-check:
+	@test -d "$(SEL4_SDK)/board" || \
+		(echo "ERROR: Microkit SDK missing at $(SEL4_SDK); run 'make sdk'." && exit 1)
+	@echo "✓ Microkit SDK $(SEL4_SDK_VERSION): $(SEL4_SDK)"
+
 sdk:
 	@if [ ! -d "$(SEL4_SDK)/board" ] && [ "$(SDK_PLATFORM)" = "unsupported-freebsd" ]; then \
 		echo "ERROR: the Microkit SDK does not publish a FreeBSD host archive."; \

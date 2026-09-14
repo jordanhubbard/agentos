@@ -162,9 +162,10 @@ pub struct RunTestsArgs {
 
 #[derive(clap::Args)]
 pub struct SetupArgs {
+    /// Check only the shared Microkit SDK; with --install, download it via make sdk.
     #[arg(long)]
     pub sdk_only: bool,
-    /// Install missing tools automatically (macOS: brew, Linux: apt-get)
+    /// Install platform prerequisites and the SDK via make setup.
     #[arg(long)]
     pub install: bool,
 }

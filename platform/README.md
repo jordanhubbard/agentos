@@ -15,18 +15,21 @@ QEMU virtio-mmio. Native agents attach to the same virtualizers as a VMM.
 | `guest-ram/gpa_translate.c` | Bounds-checked `aos_gpa_to_hva` |
 | `net-virt/net_virt_pump.c` | Hub / loopback (host-testable) |
 | `net-virt/vmm_virtio_net.c` | libvmm `virtio_mmio_net_init` + after-fault pump + RAM bind |
-| `net-virt/net_virt.c` | Future `net_virt` PD — **not in the live image** |
+| `net-virt/net_virt.c` | Live network virtualizer PD; sole client of `net_pd` |
 | `include/platform/blk_layout.h` | sDDF-shaped blk queue ABI (no seL4) |
 | `blk-virt/blk_virt_pump.c` | RAM-disk pump (host-testable) |
 | `blk-virt/vmm_virtio_blk.c` | libvmm `virtio_mmio_blk_init` + after-fault pump |
-| `blk-virt/blk_virt.c` | Future `blk_virt` PD — **not in the live image** |
+| `blk-virt/blk_virt.c` | Live block virtualizer PD; sole client of the block driver |
 | `include/platform/serial_layout.h` | sDDF serial queue sizes + guest virtio-console ABI |
 | `serial-virt/vmm_virtio_console.c` | libvmm virtio-console + CC-PD queue bridge |
 
-`net_virt` is not yet a separate live PD. The VMM-local queue adapter bridges
-guest traffic to the live `net_pd` through the versioned raw-frame contract
-and shared region. Moving that adapter into its own PD must preserve the same
-guest ABI and single-owner host-device rule.
+`net_virt` and `blk_virt` are separate protection domains in the live image.
+VMMs attach shared sDDF queues once, then exchange notifications with the
+virtualizers. Only the virtualizers invoke the host driver contracts; VMMs
+hold no direct network or block driver endpoint. Console virtualization is
+still a VMM-local library bridging to `cc_pd`; a separate `serial_virt` PD
+remains roadmap work. See [the TCB](../docs/TCB.md) for device ownership and
+the current boot topology.
 
 Buildroot uses the local RAM fallback behind the emulated device at
 `0x0A020000` (SPI 20 / INTID 52). Ubuntu and FreeBSD installation media attach

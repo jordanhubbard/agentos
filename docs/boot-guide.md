@@ -1,5 +1,11 @@
 # agentOS Boot Guide
 
+**Historical reference:** parts of this guide predate the v0.3 trust baseline,
+including the controller boot markers, PD inventory, and WASM deployment
+sections below. They do not describe the current release image. Use
+[Quick start](QUICKSTART.md) for supported commands, [the developer guide](DEVELOPER_GUIDE.md)
+for build and boot behavior, and [the TCB](TCB.md) for current device ownership.
+
 This guide covers prerequisites, build steps, the QEMU boot command, external
 tool connections, and expected first-boot output.
 

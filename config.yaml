@@ -34,9 +34,9 @@ host_arch: auto
 #
 #   ubuntu  — include the Ubuntu Linux guest (default)
 #
-#   none    — native agentOS protection domains only
-#             controller, event_bus, init_agent, workers, vibe_engine,
-#             agentfs, console_mux, net_isolator
+#   none    — no guest kernel; AArch64 boots the current TCB/service topology
+#             with a stub VMM (see docs/TCB.md). x86_64 boots the reduced
+#             root-task smoke topology. Neither proves guest execution or I/O.
 #
 #   linux   — legacy alias for Ubuntu Linux VMM (aarch64 only)
 #             Boots a Linux guest via au-ts/libvmm at seL4 EL2.
