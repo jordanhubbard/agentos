@@ -392,7 +392,27 @@ GUEST_PRIMARY_PROFILE ?=
 GUEST_SECONDARY_PROFILE ?=
 GUEST_PRIMARY_LARGE ?= 0
 IMAGES += serial_virt.elf
+# The shared manifest also bundles this ELF for x86; only the AArch64
+# descriptor starts it and provisions its queue/observation capabilities.
+IMAGES += operator_session.elf
+
+$(BUILD_DIR)/operator_session.o: $(REPO_ROOT_MK)/platform/operator-session/operator_pd.c $(GUEST_CONFIG_STAMP)
+	@mkdir -p $(BUILD_DIR)
+	$(CC) -c $(CFLAGS) $< -o $@
+$(BUILD_DIR)/operator_protocol.o: $(REPO_ROOT_MK)/platform/operator-session/session.c
+	@mkdir -p $(BUILD_DIR)
+	$(CC) -c $(CFLAGS) $< -o $@
+$(BUILD_DIR)/operator_session.elf: $(BUILD_DIR)/operator_session.o $(BUILD_DIR)/operator_protocol.o $(BUILD_DIR)/inspect_snapshot.pd.o $(BUILD_DIR)/serial_pump.pd.o $(BUILD_DIR)/sel4_crt.o $(BUILD_DIR)/pd_entry.o $(BUILD_DIR)/m3_bare_metal.o $(BUILD_DIR)/log.o
+	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
 GUEST_CONFIG_STAMP := $(BUILD_DIR)/guest_config.stamp
+ifeq ($(OPERATOR_TEST),1)
+  CFLAGS += -DAGENTOS_OPERATOR_TEST=1
+endif
+ifdef OPERATOR_ISOLATION_PROBE
+  CFLAGS += -DAGENTOS_OPERATOR_ISOLATION_PROBE=$(OPERATOR_ISOLATION_PROBE)
+  CFLAGS_ROOT_TASK += -DAGENTOS_OPERATOR_ISOLATION_PROBE=$(OPERATOR_ISOLATION_PROBE)
+endif
+$(BUILD_DIR)/operator_session.o: $(GUEST_CONFIG_STAMP)
 ifeq ($(INSPECT_WRITE_PROBE),1)
   CFLAGS += -DAGENTOS_INSPECT_WRITE_PROBE=1
   CFLAGS_ROOT_TASK += -DAGENTOS_INSPECT_WRITE_PROBE=1

@@ -16,9 +16,8 @@
  * (MAC task_56eae59d9aa94d2d9d047f03fc9d22ad), and the non-TCB service PDs
  * that used to ride along (controller, event_bus, init_agent, agentfs,
  * vfs_server, net_server, framebuffer_pd, usb_pd) were dropped by MAC
- * task_f95d118416a24fa484c2c43f0d955b56.  The only non-TCB PD left is
- * vibe_engine: cc_pd relays dynamic-guest create/lifecycle/console to it and
- * it is the hop that reaches vm_manager (`make demo-test` depends on it).
+ * task_f95d118416a24fa484c2c43f0d955b56. CC now calls vm_manager directly.
+ * The native operator session is a bounded read-only serial client.
  *
  * ── Priority DAG ──────────────────────────────────────────────────────────────
  *
@@ -45,7 +44,7 @@
  *                            is kicked (NBSend) by the VMMs, never called by them
  *                            per frame
  *   170  vm_manager         — VM lifecycle; downstream of guest-control relays
- *   165  vibe_engine        — dynamic-guest relay between cc_pd and vm_manager
+ *   180  operator_session   — read-only native serial client
  *   164  cc_pd              — CC relay; lowest PD, so it announces boot complete
  *
  * Copyright (c) 2026 The agentOS Project
@@ -70,16 +69,16 @@
  * block_pd, blk_virt, net_pd, net_virt, serial_virt, guest_vmm_primary, vm_manager,
  * cc_pd, fault_handler. */
 #if defined(AGENTOS_FAULT_INJECT) && defined(AGENTOS_GUEST_DUAL)
-#define AOS_AARCH64_PD_COUNT (15u + AOS_TEST_PD_EXTRA)
+#define AOS_AARCH64_PD_COUNT (16u + AOS_TEST_PD_EXTRA)
 #define AOS_CC_INIT_EP_COUNT 7u
 #elif defined(AGENTOS_FAULT_INJECT)
-#define AOS_AARCH64_PD_COUNT (14u + AOS_TEST_PD_EXTRA)
+#define AOS_AARCH64_PD_COUNT (15u + AOS_TEST_PD_EXTRA)
 #define AOS_CC_INIT_EP_COUNT 7u
 #elif defined(AGENTOS_GUEST_DUAL)
-#define AOS_AARCH64_PD_COUNT (14u + AOS_TEST_PD_EXTRA)
+#define AOS_AARCH64_PD_COUNT (15u + AOS_TEST_PD_EXTRA)
 #define AOS_CC_INIT_EP_COUNT 6u
 #else
-#define AOS_AARCH64_PD_COUNT (13u + AOS_TEST_PD_EXTRA)
+#define AOS_AARCH64_PD_COUNT (14u + AOS_TEST_PD_EXTRA)
 #define AOS_CC_INIT_EP_COUNT 6u
 #endif
 
@@ -298,7 +297,18 @@ const system_desc_t system_desc_aarch64 = {
             .device_frames = { },
         },
 
-        /* Serial queue virtualizer. Client adapter migration is in progress. */
+        /* Native client of serial_virt; no device, guest or lifecycle caps. */
+        {
+            .name = "operator_session",
+            .elf_path = "operator_session.elf",
+            .stack_size = 0x8000u,
+            .cnode_size_bits = 10u,
+            .priority = 180u,
+            .self_svc_id = SVC_ID_OPERATOR_SESSION,
+            .init_ep_count = 1u,
+            .init_eps = {{ SVC_ID_SERIAL_VIRT, PD_CNODE_SLOT_SERIAL_VIRT_EP }},
+        },
+        /* Serial queue virtualizer. */
         {
             .name = "serial_virt",
             .elf_path = "serial_virt.elf",
@@ -418,8 +428,8 @@ const system_desc_t system_desc_aarch64 = {
 #endif
 
         /* pd[10/11] — vm_manager (prio 170; multi-VM lifecycle manager)
-         * Guest-control calls arrive through cc_pd (164) and vibe_engine (165).
-         * Keep this final relay hop above both and below the VMMs (250). */
+         * Guest-control calls arrive directly from cc_pd (164).
+         * Keep this service above CC and below the VMMs (250). */
         {
             .name           = "vm_manager",
             .elf_path       = "vm_manager.elf",
@@ -444,7 +454,7 @@ const system_desc_t system_desc_aarch64 = {
          * Pure IPC relay: receives MSG_CC_* from external callers and routes
          * each to the appropriate service PD.  Passive — woken by PPC.
          * Priority 164: above guest vCPUs (150) and active device services
-         * (160), below vibe_engine (165), vm_manager (170), and the VMMs.
+         * (160), below vm_manager (170) and the VMMs.
          * It is the lowest-priority PD in the image, so it reaches its poll
          * loop only once every other PD has blocked; that is where the
          * "agentOS boot complete" harness marker is printed. */

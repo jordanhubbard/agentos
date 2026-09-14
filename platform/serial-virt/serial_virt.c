@@ -19,14 +19,20 @@ static void service_queues(void)
      * when the consumer signals that it freed space. No unbounded rescans. */
     aos_serial_virt_result_t result = aos_serial_virt_service_pump(
         &service, AOS_SERIAL_TX_CAPACITY);
-    if (result.input_clients & ~input_reported) {
+    if (result.input_clients & 3u & ~input_reported) {
         serial_log_puts(&diagnostic, "[serial_virt] frontend input delivered to VMM queue\n");
         input_reported |= result.input_clients;
     }
-    if (result.output_clients & ~output_reported) {
+    if (result.output_clients & 3u & ~output_reported) {
         serial_log_puts(&diagnostic, "[serial_virt] VMM output delivered to frontend queue\n");
         output_reported |= result.output_clients;
     }
+    if (result.input_clients & 4u & ~input_reported)
+        serial_log_puts(&diagnostic, "[serial_virt] operator input transferred\n");
+    if (result.output_clients & 4u & ~output_reported)
+        serial_log_puts(&diagnostic, "[serial_virt] operator output transferred\n");
+    input_reported |= result.input_clients;
+    output_reported |= result.output_clients;
     if (result.invalid_clients & ~fault_reported) {
         serial_log_puts(&diagnostic, "[serial_virt] malformed client queue rejected\n");
         fault_reported |= result.invalid_clients;
@@ -38,6 +44,10 @@ static void service_queues(void)
 #if defined(AGENTOS_GUEST_SECONDARY)
     if (result.wake_vmm & 2u)
         seL4_Signal(PD_CNODE_SLOT_SERIAL_SECONDARY_NOTIFY);
+#endif
+#if defined(__aarch64__)
+    if (result.wake_vmm & SERIAL_VIRT_OPERATOR_WAKE_BADGE)
+        seL4_Signal(PD_CNODE_SLOT_SERIAL_OPERATOR_NOTIFY);
 #endif
 }
 
@@ -51,7 +61,7 @@ void pd_main(seL4_CPtr endpoint, seL4_CPtr nameserver)
             AOS_SERIAL_FRONTEND_FRAME * AOS_SERIAL_FRAME_SIZE +
             i * AOS_SERIAL_FRONTEND_STRIDE);
     }
-    serial_log_puts(&diagnostic, "[serial_virt] READY: isolated serial queue service v1\n");
+    serial_log_puts(&diagnostic, "[serial_virt] READY: isolated serial queue service v2\n");
     for (;;) {
         seL4_Word badge = 0;
 #ifdef CONFIG_KERNEL_MCS

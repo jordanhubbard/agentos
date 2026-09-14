@@ -75,6 +75,10 @@ priority = 210
 name = "serial_virt"
 priority = 203
 
+[[pd]]
+name = "operator_session"
+priority = 180
+
 # ── Guest execution and control ──────────────────────────────────────────────
 
 [[pd]]

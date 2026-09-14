@@ -62,6 +62,15 @@
  * It grants no TCB, VSpace, memory-allocation or device authority to the caller.
  * Layout: platform/include/platform/inspect.h. */
 
+/* Operator serial channel, one externally serialized stream. WRITE/READ:
+ * MR1=AOS_OPERATOR_VERSION, MR2=length/max (0..4096), MR3=0.
+ * WRITE bytes are in shmem; full queues accept nothing (WOULD_BLOCK).
+ * READ returns available bytes in shmem and does not wait for a whole line.
+ * Both replies: MR0=status, MR1=accepted/returned bytes; others zero.
+ * Data flows through serial_virt and a separate native client, never through
+ * a guest console. Requests/replies: platform/operator_session.h. This is
+ * the existing privileged CC transport, not a per-client credential system. */
+
 /* ─── Channel IDs ────────────────────────────────────────────────────────── */
 #define CC_PD_CH_CONTROLLER  CH_CC_PD
 
@@ -192,6 +201,7 @@ enum cc_error {
     CC_ERR_BAD_DEV_TYPE     = 7,  /* dev_type not one of CC_DEV_TYPE_* */
     CC_ERR_RELAY_FAULT      = 8,  /* downstream PPC returned error */
     CC_ERR_INVALID_ARG     = 9,  /* unsupported version or reserved arguments */
+    CC_ERR_WOULD_BLOCK     = 10, /* bounded queue has no input space */
 };
 
 /* ─── Device type constants (mirrors GUEST_DEV_* from guest_contract.h) ─── */

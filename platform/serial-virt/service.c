@@ -9,7 +9,7 @@ uint32_t aos_serial_virt_attach(aos_serial_virt_service_t *service,
         return SERIAL_VIRT_ERR_VERSION;
     if (!serial_virt_authorized(badge, request->client, request->role))
         return SERIAL_VIRT_ERR_AUTHORITY;
-    uint8_t *attached = request->role == SERIAL_VIRT_ROLE_VMM ?
+    uint8_t *attached = request->role != SERIAL_VIRT_ROLE_FRONTEND ?
         &service->guest_attached[request->client] :
         &service->frontend_attached[request->client];
     if (*attached) return SERIAL_VIRT_ERR_BUSY;

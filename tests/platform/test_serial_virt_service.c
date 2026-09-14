@@ -2,7 +2,7 @@
 #include <stdio.h>
 #include <string.h>
 
-_Alignas(8) static uint8_t pages[4][AOS_SERIAL_FRONTEND_STRIDE];
+_Alignas(8) static uint8_t pages[2 * AOS_SERIAL_CLIENTS][AOS_SERIAL_FRONTEND_STRIDE];
 static unsigned checks, failures;
 static void check(int result, const char *name)
 {
@@ -15,7 +15,8 @@ int main(void)
     aos_serial_virt_service_t service = {0};
     for (unsigned i = 0; i < AOS_SERIAL_CLIENTS; i++) {
         service.guest[i] = aos_serial_channel_at((uintptr_t)pages[i]);
-        service.frontend[i] = aos_serial_channel_at((uintptr_t)pages[i + 2]);
+        service.frontend[i] = aos_serial_channel_at((uintptr_t)pages[i + AOS_SERIAL_CLIENTS]);
+        if (i >= 2) continue;
         memcpy(service.guest[i].from_guest.data, i ? "XYZ" : "abc", 3);
         service.guest[i].from_guest.queue->tail = 3;
         memcpy(service.frontend[i].to_guest.data, i ? "12" : "34", 2);
@@ -34,7 +35,7 @@ int main(void)
     req.version = SERIAL_VIRT_CONTRACT_VERSION;
     check(aos_serial_virt_service_pump(&service, 8).bytes == 0 &&
           service.guest[0].from_guest.queue->head == 0, "unattached queues remain untouched");
-    for (unsigned i = 0; i < AOS_SERIAL_CLIENTS; i++) {
+    for (unsigned i = 0; i < 2; i++) {
         req.client = i; req.role = SERIAL_VIRT_ROLE_VMM;
         check(aos_serial_virt_attach(&service, virt_client_badge(i), &req, sizeof(req)) ==
               SERIAL_VIRT_OK && service.guest[i].from_guest.queue->tail == 3,
@@ -67,6 +68,27 @@ int main(void)
           service.guest[0].from_guest.queue->head == 2 &&
           !memcmp(service.frontend[1].from_guest.data, "XYZ", 3),
           "malformed client zero does not block client one");
+    req.client = 0; req.role = SERIAL_VIRT_ROLE_OPERATOR;
+    check(aos_serial_virt_attach(&service, SERIAL_VIRT_OPERATOR_BADGE, &req, sizeof(req)) ==
+          SERIAL_VIRT_ERR_AUTHORITY, "operator authority cannot attach a guest page");
+    req.client = SERIAL_VIRT_OPERATOR_CLIENT; req.role = SERIAL_VIRT_ROLE_VMM;
+    check(aos_serial_virt_attach(&service, VIRT_CLIENT_BADGE_PRIMARY, &req, sizeof(req)) ==
+          SERIAL_VIRT_ERR_AUTHORITY, "guest authority cannot attach the operator page");
+    req.role = SERIAL_VIRT_ROLE_OPERATOR;
+    check(aos_serial_virt_attach(&service, SERIAL_VIRT_OPERATOR_BADGE, &req, sizeof(req)) ==
+          SERIAL_VIRT_OK, "operator attaches only its native client page");
+    req.role = SERIAL_VIRT_ROLE_FRONTEND;
+    check(aos_serial_virt_attach(&service, SERIAL_VIRT_FRONTEND_BADGE, &req, sizeof(req)) ==
+          SERIAL_VIRT_OK, "frontend attaches the distinct operator channel");
+    memcpy(service.guest[2].from_guest.data, "reply", 5);
+    service.guest[2].from_guest.queue->tail = 5;
+    memcpy(service.frontend[2].to_guest.data, "insp", 4);
+    service.frontend[2].to_guest.queue->tail = 4;
+    result = aos_serial_virt_service_pump(&service, 8);
+    check(result.bytes == 9 && result.wake_vmm == 4 && result.invalid_clients == 1 &&
+          !memcmp(service.frontend[2].from_guest.data, "reply", 5) &&
+          !memcmp(service.guest[2].to_guest.data, "insp", 4),
+          "operator exchange is isolated and survives a malformed guest queue");
     printf("1..%u\n", checks);
     return failures ? 1 : 0;
 }

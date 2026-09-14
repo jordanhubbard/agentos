@@ -967,6 +967,8 @@ static inline void log_drain_write(uint32_t slot, uint32_t pd_id, const char *ms
 #define MSG_CC_TRACE_QUERY              0x2618  /* → MR0=ok MR1=count MR2=bytes MR3=overflow */
 #define MSG_CC_TRACE_DUMP               0x2619  /* MR1=max_events → MR0=ok MR1=count MR2=bytes MR3=overflow */
 #define MSG_CC_INSPECT                  0x261A  /* versioned read-only boot snapshot; cc_contract.h */
+#define MSG_CC_OPERATOR_WRITE           0x261B  /* operator serial input, cc_contract.h */
+#define MSG_CC_OPERATOR_READ            0x261C  /* operator serial output, cc_contract.h */
 
 /* ─── Guest OS lifecycle opcodes (0x2A00) ───────────────────────────────── */
 #define MSG_GUEST_CREATE                0x2A01  /* guest_create_req in shmem → MR0=ok MR1=guest_id */

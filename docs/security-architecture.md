@@ -32,6 +32,7 @@ flowchart TB
     bd[virtio_blk PD<br/>host block MMIO, IRQ and DMA window]
     cc[cc_pd PD<br/>control API and console relay<br/>owns host virtio-serial transport]
     observation[Immutable boot snapshot page<br/>CC read-only mapping]
+    session[Native operator client PD<br/>bounded inspect.snapshot protocol<br/>own serial page, no device or lifecycle caps]
     manager[vm_manager PD<br/>guest lifecycle control]
     serial[serial_pd PD<br/>owns PL011 UART]
     logs[log_drain PD<br/>serial encoder repaired<br/>generic log provisioning incomplete]
@@ -68,6 +69,8 @@ flowchart TB
   root -.->|initial capability distribution| userspace
   root -.->|publishes once before parking| observation
   observation -->|validated boot facts| cc
+  observation -->|read-only mapping| session
+  session -->|isolated serial queues| sv
   sel4 -.->|enforces configured authority| userspace
 ```
 

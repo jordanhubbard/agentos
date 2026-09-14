@@ -5,15 +5,15 @@
 #include <platform/serial_virt_pump.h>
 #include <platform/blk_layout.h>
 
-/* Each VMM maps only its own large page. CC-PD maps only the frontend
- * page. serial_virt maps all three and is the only inter-client mux.
+/* Each VMM and the operator map only their own large page. CC-PD maps only
+ * the frontend page. serial_virt maps all four and is the only inter-client mux.
  * Queues are zero-initialized by root retype, never reset by ATTACH. */
-#define AOS_SERIAL_CLIENTS 2u
+#define AOS_SERIAL_CLIENTS 3u
 #define AOS_SERIAL_FRAME_SIZE 0x200000u
-#define AOS_SERIAL_FRAMES 3u
+#define AOS_SERIAL_FRAMES 4u
 #define AOS_SERIAL_SHMEM_VA 0x2a000000UL
 #define AOS_SERIAL_SHMEM_SIZE (AOS_SERIAL_FRAMES * AOS_SERIAL_FRAME_SIZE)
-#define AOS_SERIAL_FRONTEND_FRAME 2u
+#define AOS_SERIAL_FRONTEND_FRAME 3u
 #define AOS_SERIAL_FRONTEND_STRIDE 0x20000u
 
 #define AOS_SERIAL_META_OFF 0u

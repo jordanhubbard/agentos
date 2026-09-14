@@ -53,9 +53,18 @@
 #include <contracts/blk_virt_contract.h>
 #include <platform/vmm_isolation_probe.h>
 #include <platform/native_net_isolation_probe.h>
+#include <platform/operator_isolation_probe.h>
 #include <contracts/virtualizer_authority.h>
 #include <contracts/net_virt_contract.h>
-#if defined(AGENTOS_INSPECT_WRITE_PROBE)
+#if defined(AGENTOS_OPERATOR_ISOLATION_PROBE)
+#define ROOT_FAULT_PROBE 1
+#define ROOT_PROBE_NATIVE 3
+#define ROOT_PROBE_CLIENT 0u
+#define ROOT_PROBE_BADGE AOS_OPERATOR_PROBE_BADGE
+#define ROOT_PROBE_ADDRESS AOS_OPERATOR_PROBE_ADDRESS
+#define ROOT_PROBE_WRITE AOS_OPERATOR_PROBE_WRITE
+#define ROOT_PROBE_MESSAGE AOS_OPERATOR_PROBE_MESSAGE
+#elif defined(AGENTOS_INSPECT_WRITE_PROBE)
 #define ROOT_FAULT_PROBE 1
 #define ROOT_PROBE_NATIVE 2
 #define ROOT_PROBE_CLIENT 0u
@@ -1569,6 +1578,7 @@ void root_task_main(const seL4_BootInfo *bi)
     const system_desc_t *sys = SYSTEM_DESC;
     static aos_inspect_view_t inspect_view;
     seL4_CPtr inspect_cc_vspace = seL4_CapNull;
+    seL4_CPtr inspect_operator_vspace = seL4_CapNull;
     inspect_view.flags = AOS_INSPECT_FLAG_BOOT | AOS_INSPECT_FLAG_PARTIAL |
                          AOS_INSPECT_FLAG_USED_LOWER_BOUND;
 
@@ -1599,6 +1609,7 @@ void root_task_main(const seL4_BootInfo *bi)
         if (pd->self_svc_id == SVC_ID_NET_VIRT) net_virt_index = i;
         if (pd->self_svc_id == SVC_ID_NATIVE_RUST_PROBE) native_net_index = i;
         if (pd->irq_count || pd_is_guest_vmm(pd) ||
+            pd->self_svc_id == SVC_ID_OPERATOR_SESSION ||
             pd->self_svc_id == SVC_ID_NET_VIRT ||
             pd->self_svc_id == SVC_ID_NATIVE_RUST_PROBE ||
             pd->self_svc_id == SVC_ID_BLK_VIRT ||
@@ -1838,7 +1849,8 @@ void root_task_main(const seL4_BootInfo *bi)
              */
             seL4_CPtr pd_fault_ep = g_fault_ep;
 #ifdef ROOT_FAULT_PROBE
-            if ((ROOT_PROBE_NATIVE == 2 && pd->self_svc_id == SVC_ID_CC_PD) ||
+            if ((ROOT_PROBE_NATIVE == 3 && pd->self_svc_id == SVC_ID_OPERATOR_SESSION) ||
+                (ROOT_PROBE_NATIVE == 2 && pd->self_svc_id == SVC_ID_CC_PD) ||
                 (ROOT_PROBE_NATIVE == 1 && pd->self_svc_id == SVC_ID_NATIVE_RUST_PROBE) ||
                 (ROOT_PROBE_NATIVE == 0 && pd_is_guest_vmm(pd) &&
                  (uint32_t)pd_is_secondary_guest_vmm(pd) == ROOT_PROBE_CLIENT)) {
@@ -1882,18 +1894,22 @@ void root_task_main(const seL4_BootInfo *bi)
 
         if (serial_virt_index != SYSTEM_MAX_PDS) {
             seL4_Error signal_err = seL4_NoError;
-            if (pd_is_guest_vmm(pd) || pd->self_svc_id == SVC_ID_CC_PD) {
+            if (pd_is_guest_vmm(pd) || pd->self_svc_id == SVC_ID_CC_PD ||
+                pd->self_svc_id == SVC_ID_OPERATOR_SESSION) {
                 seL4_Word badge = pd_is_guest_vmm(pd) ?
                     (1u << (pd_is_secondary_guest_vmm(pd) ? 1u : 0u)) :
-                    SERIAL_VIRT_FRONTEND_WAKE_BADGE;
+                    pd->self_svc_id == SVC_ID_OPERATOR_SESSION ?
+                    SERIAL_VIRT_OPERATOR_WAKE_BADGE : SERIAL_VIRT_FRONTEND_WAKE_BADGE;
                 signal_err = seL4_CNode_Mint(pd_cnode,
                     PD_CNODE_SLOT_SERIAL_VIRT_NOTIFY, pd->cnode_size_bits,
                     seL4_CapInitThreadCNode, g_pd_notifications[serial_virt_index],
                     64u, seL4_CapRights_new(0, 0, 0, 1), badge);
             } else if (pd->self_svc_id == SVC_ID_SERIAL_VIRT) {
                 for (uint32_t v = 0; v < sys->pd_count && signal_err == seL4_NoError; v++) {
-                    if (!pd_is_guest_vmm(&sys->pds[v])) continue;
-                    seL4_Word slot = pd_is_secondary_guest_vmm(&sys->pds[v]) ?
+                    if (!pd_is_guest_vmm(&sys->pds[v]) &&
+                        sys->pds[v].self_svc_id != SVC_ID_OPERATOR_SESSION) continue;
+                    seL4_Word slot = sys->pds[v].self_svc_id == SVC_ID_OPERATOR_SESSION ?
+                        PD_CNODE_SLOT_SERIAL_OPERATOR_NOTIFY : pd_is_secondary_guest_vmm(&sys->pds[v]) ?
                         PD_CNODE_SLOT_SERIAL_SECONDARY_NOTIFY :
                         PD_CNODE_SLOT_SERIAL_PRIMARY_NOTIFY;
                     signal_err = seL4_CNode_Mint(pd_cnode, slot, pd->cnode_size_bits,
@@ -1903,6 +1919,13 @@ void root_task_main(const seL4_BootInfo *bi)
             }
             if (signal_err != seL4_NoError) {
                 dbg_puts("[rt] serial signal grant failed; refusing PD start\n");
+                continue;
+            }
+            if (pd->self_svc_id == SVC_ID_OPERATOR_SESSION &&
+                seL4_CNode_Copy(pd_cnode, PD_CNODE_SLOT_OPERATOR_WAIT, pd->cnode_size_bits,
+                    seL4_CapInitThreadCNode, g_pd_notifications[i], 64u,
+                    seL4_CapRights_new(0, 0, 1, 0)) != seL4_NoError) {
+                dbg_puts("[rt] operator receive grant failed; refusing PD start\n");
                 continue;
             }
         }
@@ -1980,6 +2003,9 @@ void root_task_main(const seL4_BootInfo *bi)
             } else if (pd->self_svc_id == SVC_ID_CC_PD &&
                        ep_spec->service_id == SVC_ID_SERIAL_VIRT) {
                 badge = SERIAL_VIRT_FRONTEND_BADGE;
+            } else if (pd->self_svc_id == SVC_ID_OPERATOR_SESSION &&
+                       ep_spec->service_id == SVC_ID_SERIAL_VIRT) {
+                badge = SERIAL_VIRT_OPERATOR_BADGE;
             }
             ep_mint_badge(service_ep, badge,
                            pd_cnode, ep_spec->cnode_slot,
@@ -2257,15 +2283,17 @@ void root_task_main(const seL4_BootInfo *bi)
             dbg_puts("\n");
         }
 
-        /* Only serial_virt sees both guest pages and the frontend page. */
+        /* Only serial_virt sees both guest pages, operator and frontend. */
         if (serial_virt_index != SYSTEM_MAX_PDS &&
             (pd_is_guest_vmm(pd) || pd->self_svc_id == SVC_ID_CC_PD ||
+             pd->self_svc_id == SVC_ID_OPERATOR_SESSION ||
              pd->self_svc_id == SVC_ID_SERIAL_VIRT)) {
             seL4_Error serial_err = seL4_NoError;
             for (uint32_t f = 0; f < AOS_SERIAL_FRAMES && serial_err == seL4_NoError; f++) {
                 if (pd_is_guest_vmm(pd) &&
                     f != (pd_is_secondary_guest_vmm(pd) ? 1u : 0u)) continue;
                 if (pd->self_svc_id == SVC_ID_CC_PD && f != AOS_SERIAL_FRONTEND_FRAME) continue;
+                if (pd->self_svc_id == SVC_ID_OPERATOR_SESSION && f != SERIAL_VIRT_OPERATOR_CLIENT) continue;
                 seL4_Word copy = ut_alloc_slot();
                 serial_err = seL4_NotEnoughMemory;
                 if (copy != seL4_CapNull) {
@@ -2634,6 +2662,7 @@ void root_task_main(const seL4_BootInfo *bi)
                     for (uint32_t n = 0; n + 1 < AOS_INSPECT_NAME_LEN && pd->name[n]; n++)
                         t->name[n] = (uint8_t)pd->name[n];
                     if (pd->self_svc_id == SVC_ID_CC_PD) inspect_cc_vspace = vspace;
+                    if (pd->self_svc_id == SVC_ID_OPERATOR_SESSION) inspect_operator_vspace = vspace;
                 }
             }
         }
@@ -2643,18 +2672,23 @@ void root_task_main(const seL4_BootInfo *bi)
      * the frame capability stays in root, and no inspection server is added. */
     if (inspect_cc_vspace != seL4_CapNull) {
         seL4_CPtr frame = seL4_CapNull;
-        seL4_CPtr reader = ut_alloc_slot();
-        if (reader == seL4_CapNull ||
-            ut_alloc_cap(seL4_ARM_SmallPageObject, 0u, &frame) != seL4_NoError ||
+        if (ut_alloc_cap(seL4_ARM_SmallPageObject, 0u, &frame) != seL4_NoError ||
             pd_vspace_map_device_frame(seL4_CapInitThreadVSpace, frame,
-                                      RT_VQ_SCRATCH_VA) != seL4_NoError ||
-            seL4_CNode_Copy(seL4_CapInitThreadCNode, reader, 64u,
-                           seL4_CapInitThreadCNode, frame, 64u,
-                           seL4_CapRights_new(0, 0, 1, 0)) != seL4_NoError ||
-            pd_vspace_map_device_frame(inspect_cc_vspace, reader,
-                                      AOS_INSPECT_BOOT_VA) != seL4_NoError) {
+                                      RT_VQ_SCRATCH_VA) != seL4_NoError) {
             dbg_puts("[rt] inspect mapping failed; refusing partial boot\n");
             return;
+        }
+        seL4_CPtr readers[] = {inspect_cc_vspace, inspect_operator_vspace};
+        for (unsigned i = 0; i < 2; i++) {
+            if (!readers[i]) continue;
+            seL4_CPtr reader = ut_alloc_slot();
+            if (!reader || seL4_CNode_Copy(seL4_CapInitThreadCNode, reader, 64u,
+                    seL4_CapInitThreadCNode, frame, 64u,
+                    seL4_CapRights_new(0, 0, 1, 0)) != seL4_NoError ||
+                pd_vspace_map_device_frame(readers[i], reader, AOS_INSPECT_BOOT_VA) != seL4_NoError) {
+                dbg_puts("[rt] inspect reader mapping failed; refusing partial boot\n");
+                return;
+            }
         }
         ut_alloc_observe(&inspect_view.ut_total_bytes, &inspect_view.ut_used_bytes);
 #if defined(__aarch64__)

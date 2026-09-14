@@ -5,6 +5,7 @@
  * CC frame, prints structured output, and exits. No interactive UI.
  */
 
+#define _POSIX_C_SOURCE 200809L
 #include <errno.h>
 #include <inttypes.h>
 #include <stdbool.h>
@@ -15,10 +16,14 @@
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <unistd.h>
+#include <poll.h>
+#include <time.h>
+#include <sys/time.h>
 
 #include "contracts/cc_contract.h"
 #include "contracts/guest_contract.h"
 #include <platform/inspect.h>
+#include <platform/operator_session.h>
 
 #define AGENTCTL_VERSION "0.2.0"
 #define DEFAULT_CC_SOCK "build/cc_pd.sock"
@@ -37,6 +42,7 @@ typedef struct {
 } cc_reply_wire_t;
 
 static const char *g_sock_path = DEFAULT_CC_SOCK;
+static int g_stream_fd = -1;
 
 static void usage(FILE *out)
 {
@@ -45,6 +51,7 @@ static void usage(FILE *out)
             "Usage: agentctl [--socket PATH] [--batch] COMMAND [ARGS...]\n\n"
             "Commands:\n"
             "  inspect\n"
+            "  session-inspect\n"
             "  list-guests\n"
             "  guest-status HANDLE\n"
             "  list-devices TYPE [MAX]\n"
@@ -149,11 +156,11 @@ static bool cc_call(uint32_t opcode, uint32_t mr1, uint32_t mr2, uint32_t mr3,
         memcpy(req.shmem, shmem, shmem_len);
     }
 
-    int fd = connect_cc();
+    int fd = g_stream_fd >= 0 ? g_stream_fd : connect_cc();
     if (fd < 0) return false;
     bool ok = write_full(fd, &req, sizeof(req)) &&
               read_full(fd, reply, sizeof(*reply));
-    close(fd);
+    if (g_stream_fd < 0) close(fd);
     if (!ok) {
         fprintf(stderr, "agentctl: CC frame I/O failed\n");
     }
@@ -184,6 +191,55 @@ static int cmd_inspect(void)
     }
     fputs(report, stdout);
     return 0;
+}
+
+static int cmd_session_inspect(void)
+{
+    static const char command[] = "inspect.snapshot\n";
+    uint8_t bytes[AOS_OPERATOR_REPLY_MAX + 1];
+    size_t used = 0;
+    cc_reply_wire_t reply;
+    int result = 1;
+    g_stream_fd = connect_cc();
+    if (g_stream_fd < 0) return 1;
+    struct timeval timeout = {5, 0};
+    if (setsockopt(g_stream_fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) ||
+        setsockopt(g_stream_fd, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout))) goto done;
+    if (!cc_call(MSG_CC_OPERATOR_WRITE, AOS_OPERATOR_VERSION, sizeof(command) - 1, 0,
+                 command, sizeof(command) - 1, &reply) || reply.mr[0] != CC_OK ||
+        reply.mr[1] != sizeof(command) - 1) goto done;
+    struct timespec start, now;
+    if (clock_gettime(CLOCK_MONOTONIC, &start)) goto done;
+    for (;;) {
+        if (clock_gettime(CLOCK_MONOTONIC, &now) || now.tv_sec - start.tv_sec >= 30) break;
+        uint32_t max = sizeof(bytes) - 1 - used;
+        if (max > CC_WIRE_SHMEM_SIZE) max = CC_WIRE_SHMEM_SIZE;
+        if (!max || !cc_call(MSG_CC_OPERATOR_READ, AOS_OPERATOR_VERSION, max, 0,
+                            NULL, 0, &reply) || reply.mr[0] != CC_OK || reply.mr[1] > max) break;
+        memcpy(bytes + used, reply.shmem, reply.mr[1]); used += reply.mr[1]; bytes[used] = 0;
+        uint8_t *newline = memchr(bytes, '\n', used);
+        if (newline) {
+            if (used < 4 || memcmp(bytes, "ok ", 3) || bytes[3] < '0' || bytes[3] > '9') break;
+            char *end; errno = 0;
+            unsigned long count = strtoul((char *)bytes + 3, &end, 10);
+            size_t header = (size_t)(newline - bytes) + 1;
+            if (errno || end != (char *)newline || !count || count > sizeof(bytes) - 1 - header) break;
+            if (used > header + count) break;
+            if (used == header + count) {
+                bool valid = true;
+                for (size_t i = header; i < used; i++)
+                    if (bytes[i] != '\n' && (bytes[i] < 32 || bytes[i] > 126)) valid = false;
+                if (!valid) break;
+                result = fwrite(bytes + header, 1, count, stdout) == count ? 0 : 1;
+                break;
+            }
+        }
+        if (!reply.mr[1]) (void)poll(NULL, 0, 10);
+    }
+done:
+    close(g_stream_fd); g_stream_fd = -1;
+    if (result) fprintf(stderr, "agentctl: incomplete or invalid operator session response\n");
+    return result;
 }
 
 static int cmd_connect(void)
@@ -354,6 +410,7 @@ int main(int argc, char **argv)
     char **args = &argv[i];
 
     if (strcmp(cmd, "inspect") == 0) return n == 0 ? cmd_inspect() : 2;
+    if (strcmp(cmd, "session-inspect") == 0) return n == 0 ? cmd_session_inspect() : 2;
     if (strcmp(cmd, "connect") == 0) return cmd_connect();
     if (strcmp(cmd, "status") == 0) return cmd_status(n, args);
     if (strcmp(cmd, "list-guests") == 0) return cmd_list_guests();

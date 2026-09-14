@@ -92,6 +92,12 @@ pre-filter. They are not a live seL4 query.
 | A2 | `task_0981068853cc4881886a6483f1583733` | waiting on A1 | Line protocol on `serial_virt` |
 | A3 | `task_1ab2cbb61c374bd99b43bbfbebf05bdc` | waiting on A1 | Guest/external Hermes; user API key; never in-tree |
 
+A1 landed in PR #146 with target report and read-only mapping proofs. Its
+ledger closure remains blocked by the paused-dispatch state transition.
+A2 is implemented on `platform/operator-serial-session`; target round-trip
+and seven operator fault probes pass locally, with integration review pending.
+The snapshot describes boot facts; it does not expose live scheduler state.
+
 Session context: `skills/hermes-session/SKILL.md`. Compose/mutate of
 services is out of scope until inspect and serial attach exist.
 

@@ -36,6 +36,12 @@ pub struct TestArgs {
     /// Query the root-provisioned boot snapshot through CC and agentctl.
     #[arg(long)]
     pub assert_inspect: bool,
+    /// Exercise the native read-only operator protocol through serial_virt.
+    #[arg(long)]
+    pub assert_operator_session: bool,
+    /// Native operator denied reads/writes of guest and frontend pages, and snapshot writes.
+    #[arg(long, conflicts_with_all = ["assert_operator_session", "assert_inspect", "inspect_write_probe", "assert_native_rust", "assert_native_guest", "serial_isolation_probe", "network_isolation_probe", "block_isolation_probe", "virtualizer_authority_probe"], value_parser = clap::value_parser!(u8).range(1..=7))]
+    pub operator_isolation_probe: Option<u8>,
     /// Verify CC faults when attempting to write its read-only boot snapshot.
     #[arg(long, conflicts_with_all = ["assert_inspect", "assert_native_rust", "assert_native_guest", "serial_isolation_probe", "network_isolation_probe", "block_isolation_probe", "virtualizer_authority_probe"])]
     pub inspect_write_probe: bool,

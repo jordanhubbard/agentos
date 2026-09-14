@@ -686,7 +686,24 @@ gate: test-host gate-aarch64 gate-x86_64 gate-guest-io
 # lint-source is a source lint (policy-check's sibling), not a test; it is
 # listed here so the invariants it protects are checked on every host run,
 # but it is not counted among the host tests below.
-test-host: policy-check guest-profile-check lint-source test-integration
+test-host: policy-check guest-profile-check lint-source test-integration test-operator-host
+
+.PHONY: test-operator-host test-operator-session
+test-operator-host:
+	@mkdir -p $(BUILD_TMP_DIR)
+	$(CC) -std=c11 -Wall -Wextra -Werror -I platform/include tests/platform/test_operator_session.c platform/operator-session/session.c platform/inspect/inspect_snapshot.c platform/serial-virt/pump.c -o $(BUILD_TMP_DIR)/test_operator_session
+	$(BUILD_TMP_DIR)/test_operator_session
+test-operator-session:
+	$(MAKE) -C tools/agentctl
+	cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os none --assert-operator-session --timeout-secs $(QEMU_TEST_TIMEOUT)
+.PHONY: test-operator-isolation
+test-operator-isolation:
+	@mkdir -p build/evidence/operator-isolation
+	@set -e; for mode in 1 2 3 4 5 6 7; do \
+	    cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os none \
+	        --operator-isolation-probe $$mode --timeout-secs $(QEMU_TEST_TIMEOUT); \
+	    cp build/qemu_virt_aarch64/agentos.img build/evidence/operator-isolation/mode-$$mode.img; \
+	done
 
 # Host behavior plus real SDK compilation; this is not a native-PD boot proof.
 .PHONY: test-rust-pd-abi test-native-rust
@@ -1313,6 +1330,8 @@ help:
 	@echo "  make demo-desktop-test Run the Ubuntu RFB frame proof and exit"
 	@echo "  make demo-smoke       Fast host-only checks; no QEMU and not a boot proof"
 	@echo "  make demo-check       Validate demo tools and SDK without building"
+	@echo "  make test-operator-session   Verify native inspection over serial queues"
+	@echo "  make test-operator-isolation Verify operator page-access restrictions"
 	@echo "  make demo-clean       Remove demo sockets, logs, and generated SSH keys"
 	@echo "  make install          Install host build dependencies (alias: make deps)"
 	@echo "  make build            Fetch the selected guest image and build agentOS"
