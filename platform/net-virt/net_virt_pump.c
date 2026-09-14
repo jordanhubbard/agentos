@@ -40,43 +40,41 @@ uint16_t aos_net_queue_length(const aos_net_queue_t *q)
     return (uint16_t)(tail - head);
 }
 
-static uint16_t q_len(const aos_net_queue_t *q)
-{
-    return aos_net_queue_length(q);
-}
-
-static int q_empty(const aos_net_queue_t *q)
-{
-    return q_len(q) == 0;
-}
-
-static int q_full(const aos_net_queue_t *q, uint32_t capacity)
-{
-    return q_len(q) == (uint16_t)capacity;
-}
-
 int aos_net_queue_dequeue(aos_net_queue_t *q, uint32_t capacity,
                           aos_net_buff_desc_t *out)
 {
-    if (q_empty(q)) {
+    uint16_t head, tail, length;
+    if (!q || !out || capacity == 0u || capacity > AOS_NET_CAPACITY) {
+        return -1;
+    }
+    tail = *(const volatile uint16_t *)&q->tail;
+    head = *(const volatile uint16_t *)&q->head;
+    length = (uint16_t)(tail - head);
+    if (length == 0u || length > capacity) {
         return -1;
     }
     AOS_NET_FENCE();
-    *out = q->buffers[q->head % capacity];
+    *out = *(const volatile aos_net_buff_desc_t *)&q->buffers[head % capacity];
     AOS_NET_FENCE();
-    *(volatile uint16_t *)&q->head = (uint16_t)(q->head + 1u);
+    *(volatile uint16_t *)&q->head = (uint16_t)(head + 1u);
     return 0;
 }
 
 int aos_net_queue_enqueue(aos_net_queue_t *q, uint32_t capacity,
                           aos_net_buff_desc_t buf)
 {
-    if (q_full(q, capacity)) {
+    uint16_t head, tail;
+    if (!q || capacity == 0u || capacity > AOS_NET_CAPACITY) {
         return -1;
     }
-    q->buffers[q->tail % capacity] = buf;
+    tail = *(const volatile uint16_t *)&q->tail;
+    head = *(const volatile uint16_t *)&q->head;
+    if ((uint16_t)(tail - head) >= capacity) {
+        return -1;
+    }
+    *(volatile aos_net_buff_desc_t *)&q->buffers[tail % capacity] = buf;
     AOS_NET_FENCE();
-    *(volatile uint16_t *)&q->tail = (uint16_t)(q->tail + 1u);
+    *(volatile uint16_t *)&q->tail = (uint16_t)(tail + 1u);
     return 0;
 }
 
@@ -100,7 +98,10 @@ void aos_net_virt_reset(aos_net_virt_t *v)
 
 int aos_net_virt_add_client(aos_net_virt_t *v, const aos_net_virt_client_t *c)
 {
-    if (!v || !c || v->num_clients >= AOS_NET_MAX_CLIENTS) {
+    if (!v || !c || v->num_clients >= AOS_NET_MAX_CLIENTS ||
+        !c->rx_free || !c->rx_active || !c->tx_free || !c->tx_active ||
+        !c->rx_data || !c->tx_data || c->capacity == 0u ||
+        c->capacity > AOS_NET_CAPACITY) {
         return -1;
     }
     v->clients[v->num_clients] = *c;
@@ -117,10 +118,9 @@ static int deliver_one(aos_net_virt_client_t *dst, const uint8_t *src,
     if (dequeue(dst->rx_free, dst->capacity, &rx) != 0) {
         return -1;
     }
+    /* Quarantine a malformed free descriptor instead of recycling it. */
+    if (!aos_net_buffer_valid(rx.io_or_offset, len) || len == 0u) return -1;
     copy = len;
-    if (copy > AOS_NET_BUFFER_SIZE) {
-        copy = AOS_NET_BUFFER_SIZE;
-    }
     aos_copy(dst->rx_data + (uint32_t)rx.io_or_offset, src, copy);
     rx.len = (uint16_t)copy;
     if (enqueue(dst->rx_active, dst->capacity, rx) != 0) {
@@ -143,7 +143,7 @@ uint32_t aos_net_virt_pump(aos_net_virt_t *v)
     for (src_i = 0; src_i < v->num_clients; src_i++) {
         aos_net_virt_client_t *src = &v->clients[src_i];
 
-        while (!q_empty(src->tx_active)) {
+        for (uint32_t attempt = 0u; attempt < src->capacity; attempt++) {
             aos_net_buff_desc_t tx;
             const uint8_t *payload;
             uint32_t dst_i;
@@ -151,6 +151,9 @@ uint32_t aos_net_virt_pump(aos_net_virt_t *v)
 
             if (dequeue(src->tx_active, src->capacity, &tx) != 0) {
                 break;
+            }
+            if (!aos_net_buffer_valid(tx.io_or_offset, tx.len) || tx.len == 0u) {
+                continue;
             }
             payload = src->tx_data + (uint32_t)tx.io_or_offset;
 

@@ -156,6 +156,68 @@ static int test_drop_when_rx_full(void)
     PASS("test_drop_when_rx_full");
 }
 
+static int test_untrusted_descriptors(void)
+{
+    const uint64_t bad_offsets[] = { UINT64_MAX, UINT64_MAX - 31u,
+        UINT64_C(0x100000000), AOS_NET_RX_DATA_BYTES, 1u };
+    aos_net_virt_t v;
+    aos_net_virt_client_t c;
+    uint8_t frame[64];
+    memset(frame, 0x5a, sizeof(frame));
+    for (uint32_t i = 0; i < sizeof(bad_offsets) / sizeof(bad_offsets[0]); i++) {
+        for (uint32_t rx = 0; rx < 2u; rx++) {
+            memset(g_region, 0, sizeof(g_region));
+            aos_net_virt_reset(&v);
+            aos_net_client_bind(g_region, 0u, &c);
+            aos_net_client_init_buffers(&c);
+            CHECK(aos_net_virt_add_client(&v, &c) == 0);
+            CHECK(enqueue_tx(&c, frame, sizeof(frame)) == 0);
+            if (rx) c.rx_free->buffers[0].io_or_offset = bad_offsets[i];
+            else c.tx_active->buffers[0].io_or_offset = bad_offsets[i];
+            memset(c.rx_data, 0xa5, AOS_NET_RX_DATA_BYTES);
+            CHECK(aos_net_virt_pump(&v) == 0u);
+            CHECK(aos_net_queue_length(c.rx_active) == 0u);
+            for (uint32_t b = 0; b < AOS_NET_RX_DATA_BYTES; b++) CHECK(c.rx_data[b] == 0xa5);
+            /* The malformed buffer is quarantined. The next valid packet
+             * still works rather than inheriting the malicious offset. */
+            CHECK(enqueue_tx(&c, frame, sizeof(frame)) == 0);
+            CHECK(aos_net_virt_pump(&v) == 1u);
+        }
+    }
+    memset(g_region, 0, sizeof(g_region));
+    aos_net_virt_reset(&v);
+    aos_net_client_bind(g_region, 0u, &c);
+    aos_net_client_init_buffers(&c);
+    CHECK(aos_net_virt_add_client(&v, &c) == 0);
+    CHECK(enqueue_tx(&c, frame, sizeof(frame)) == 0);
+    c.tx_active->buffers[0].len = AOS_NET_BUFFER_SIZE + 1u;
+    CHECK(aos_net_virt_pump(&v) == 0u);
+    CHECK(aos_net_queue_length(c.rx_active) == 0u);
+    PASS("test_untrusted_descriptors");
+}
+
+static int test_corrupt_queue_and_wrap(void)
+{
+    aos_net_virt_client_t c;
+    aos_net_buff_desc_t buf = { .io_or_offset = 2048, .len = 64 };
+    aos_net_buff_desc_t out = {0};
+    memset(g_region, 0, sizeof(g_region));
+    aos_net_client_bind(g_region, 0u, &c);
+    c.tx_active->tail = 33u;
+    CHECK(aos_net_queue_dequeue(c.tx_active, 32u, &out) == -1);
+    CHECK(aos_net_queue_enqueue(c.tx_active, 32u, buf) == -1);
+    CHECK(c.tx_active->head == 0u && c.tx_active->tail == 33u);
+    CHECK(aos_net_queue_enqueue(c.tx_active, 0u, buf) == -1);
+    CHECK(aos_net_queue_dequeue(c.tx_active, 33u, &out) == -1);
+    c.tx_active->head = c.tx_active->tail = UINT16_MAX;
+    CHECK(aos_net_queue_enqueue(c.tx_active, 32u, buf) == 0);
+    CHECK(c.tx_active->tail == 0u);
+    CHECK(aos_net_queue_dequeue(c.tx_active, 32u, &out) == 0);
+    CHECK(c.tx_active->head == 0u);
+    CHECK(out.io_or_offset == buf.io_or_offset && out.len == buf.len);
+    PASS("test_corrupt_queue_and_wrap");
+}
+
 int main(void)
 {
     int failed = 0;
@@ -166,6 +228,8 @@ int main(void)
     failed += test_loopback();
     failed += test_hub_two_clients();
     failed += test_drop_when_rx_full();
+    failed += test_untrusted_descriptors();
+    failed += test_corrupt_queue_and_wrap();
     if (failed) {
         printf("%d test(s) failed\n", failed);
         return 1;

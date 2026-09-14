@@ -199,17 +199,17 @@ static uint32_t nv_tx_to_net_pd(nv_client_t *c)
     uint32_t sent = 0u;
     aos_net_buff_desc_t buf;
 
-    while (aos_net_queue_dequeue(c->q.tx_active, c->q.capacity, &buf) == 0) {
+    for (uint32_t attempt = 0u; attempt < c->q.capacity; attempt++) {
+        if (aos_net_queue_dequeue(c->q.tx_active, c->q.capacity, &buf) != 0) break;
         uint32_t len = buf.len;
-        const uint8_t *src = c->q.tx_data + (uint32_t)buf.io_or_offset;
         uint8_t *dst = (uint8_t *)AGENTOS_NET_SHARED_VA + c->slot_off +
                        NET_SVC_TX_OFFSET;
         sel4_msg_t rep = {0};
 
-        if (len > NET_SVC_MAX_FRAME_BYTES) {
-            len = NET_SVC_MAX_FRAME_BYTES;
-        }
-        if (buf.io_or_offset + len <= AOS_NET_TX_DATA_BYTES && len > 0u) {
+        if (!aos_net_buffer_valid(buf.io_or_offset, len) ||
+            len == 0u || len > NET_SVC_MAX_FRAME_BYTES) continue;
+        {
+            const uint8_t *src = c->q.tx_data + (uint32_t)buf.io_or_offset;
             nv_copy(dst, src, len);
             nv_fence();
             if (net_pd_call(NET_SVC_OP_RAW_SEND, c->handle, len, &rep)) {
@@ -258,6 +258,7 @@ static uint32_t nv_rx_from_net_pd(nv_client_t *c)
             nv_fence();
             break;
         }
+        if (!aos_net_buffer_valid(buf.io_or_offset, 0u)) continue;
         if (!net_pd_call(NET_SVC_OP_RAW_RECV, c->handle,
                          NET_SVC_MAX_FRAME_BYTES, &rep) ||
             rep.length < 12u) {
@@ -273,8 +274,9 @@ static uint32_t nv_rx_from_net_pd(nv_client_t *c)
             break;
         }
         if (len > NET_SVC_MAX_FRAME_BYTES || len > AOS_NET_BUFFER_SIZE ||
-            off < NET_SVC_SLOT_BASE || off + len > AGENTOS_NET_SHARED_SIZE ||
-            buf.io_or_offset + len > AOS_NET_RX_DATA_BYTES) {
+            off < NET_SVC_SLOT_BASE || off > AGENTOS_NET_SHARED_SIZE ||
+            len > AGENTOS_NET_SHARED_SIZE - off ||
+            !aos_net_buffer_valid(buf.io_or_offset, len)) {
             (void)aos_net_queue_enqueue(c->q.rx_free, c->q.capacity, buf);
             nv_puts("[net_virt] RX bounds invalid from net_pd\n");
             break;
