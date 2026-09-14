@@ -46,6 +46,8 @@ seL4
         │                  region + NBSend notifications, chunked DMA-window
         │                  Calls into virtio_blk)
         ├── vm_manager     guest lifecycle control (create, bind, status)
+        ├── serial_virt    serial queue mux, no device frame or hardware IRQ;
+        │                  isolated VMM pages and separate CC frontend page
         └── guest_vmm_*    vCPU, vGIC, emulated virtio-mmio net/blk/console,
               │            GPA-translated payload copies
               ├── Linux guest    in-tree virtio drivers
@@ -95,13 +97,37 @@ guest runs. When `virtio_blk` reports no media, `blk_virt` serves a
 per-client RAM disk instead. Contract: `include/contracts/blk_virt_contract.h`.
 Lint: `tests/platform/lint_source_invariants.c` (`inv2:` block checks).
 
-*Console* (invariant 2 not yet held). The console virtualizer is still a
-*library* linked into each `guest_vmm` PD
-(`platform/serial-virt/vmm_virtio_console.c`): the sDDF-shaped queues sit
-between the emulated device and a pump inside the VMM address space, and
-console bytes reach `cc_pd` by IPC. There is no `serial_virt` PD in the
-image. That per-byte IPC is recorded here so the gap is visible, not to
-license it.
+*Console*. `serial_virt` is a separate PD with three root-provisioned pages:
+one per VMM and a separate CC frontend page. Only the virtualizer maps all
+three. Root grants send-only notification capabilities for persistent wakeups
+and role-bound attach endpoints. The VMM's emulated virtio-console and PL011
+feed a bounded endpoint adapter; it retains bytes during backpressure and
+exports them over shared sDDF byte queues. CC uses its frontend queues after
+resolving the public handle and checking lifecycle authority. Input remains
+queued while the guest is paused. Console bytes no longer travel through
+VMM or vm_manager IPC. Only attachment and lifecycle control use IPC.
+
+The Ubuntu bidirectional console gate requires both actual serial-PD transfer
+markers and guest-echo evidence. Eight seL4 fault probes verify that neither
+VMM maps the other VMM's page or CC's frontend page. The dual-guest test at
+`d3da13e1` passed FreeBSD's immediate and extended suspend/resume SSH checks,
+concurrent Ubuntu/FreeBSD authenticated SSH, destruction and stale-handle
+rejection. Its retained image SHA-256 is
+`68cf76ce00bb5ff04c60a393973c4cd241a39f0fe1d73cd7f28cc0d0656cdbd5`.
+The libvmm TX backend now
+retains a private descriptor snapshot and offset across full queues and retries
+when the adapter frees space. It acknowledges only complete chains; traversal
+and each copy are bounded. Host tests cover oversized/chained descriptors,
+full-queue retry, metadata mutation, invalid indices/flags, cyclic chains and
+GPA failure. At revision `8920f31e`, `make test-console-backpressure` stopped
+the host drain until the backend was full with a pending descriptor, then
+recovered all 262,144 position-dependent bytes exactly. Payload SHA-256:
+`3d01ad5a6b80788d4152bd2e9bcd2cd86b6a340ace5d8d3f9a00e57a2b56deda`.
+This qualifies that bounded sustained-output case; it does not qualify
+dual-guest lifecycle behavior. MAC `task_f0be9d2f86204aa6bf06c34f6464fc0c`
+retains the target and full-gate evidence.
+The production available/used-ring handler also has host coverage for deferred
+and exact-once completion, retained heads, cursor wrap and invalid availability.
 
 ## TCB target — the shape the platform is converging on
 
@@ -129,7 +155,8 @@ They are not in the TCB.
    markers in `make test-ubuntu-virtio`) *and for block* (`blk_virt` PD;
    enforced by the `inv2:` block lint checks and the host-backed
    `[blk_virt] host media` / `[blk_virt] host-media read` markers in
-   `make test-ubuntu-virtio`). *Not yet held for console* (see above).
+   `make test-ubuntu-virtio`). Console now uses the separate `serial_virt` mux;
+   its Ubuntu gate requires transfer markers from that PD (see above).
 3. **Virtio is the guest ABI.** Host may use virtio as the *physical* device
    (under QEMU). Guests must see a **different**, emulated virtio device
    invented by the VMM. Collapsing those two virtio worlds is a defect. Held
@@ -152,11 +179,10 @@ Do not extend these. Do not add opcodes. Do not "finish" them.
 guest channel before virtio-net is a backend, CapStore/MsgBus/ModelSvc/ToolSvc
 as "core OS".
 
-**Status:** most museum PDs are no longer bundled or booted; the live
-`vibe_engine` exception is described below. The root task
+**Status:** museum PDs are no longer bundled or booted. The root task
 spawns exactly the PDs in `src/system_desc_aarch64.c` (13 in the default
-image: `nameserver`, `log_drain`, `serial_pd`, `vibe_engine`, `virtio_blk`,
-`block_pd`, `blk_virt`, `net_pd`, `net_virt`, `guest_vmm_primary`,
+image: `nameserver`, `log_drain`, `serial_pd`, `virtio_blk`,
+`block_pd`, `blk_virt`, `net_pd`, `net_virt`, `serial_virt`, `guest_vmm_primary`,
 `vm_manager`, `cc_pd`, `fault_handler`; `guest_vmm_secondary`, `fault_inject`,
 and `test_runner` + `event_bus` are added only to the image variants that use
 them), and
@@ -166,20 +192,29 @@ MAC `task_f95d118416a24fa484c2c43f0d955b56` then dropped `controller`,
 `event_bus`, `init_agent`, `agentfs`, `vfs_server`, `net_server`,
 `framebuffer_pd`, and `usb_pd` from the descriptor). Museum sources are still
 compiled by the root-task Makefile `IMAGES` list so they keep building, but
-they are not in the image. The one booted PD that is not TCB is
-`vibe_engine`: `cc_pd` relays `MSG_CC_CREATE_GUEST` and the dynamic-guest
-lifecycle/console opcodes to it, and it is the hop that issues
-`OP_VM_CREATE`/`OP_VM_START` to `vm_manager`, so the dual-guest proof
-(`make demo-test`) needs it. The boot-guest console path (`test-guest-console`,
-`test-ubuntu-virtio`) does not: `cc_pd` forwards boot-guest input and drains
-its console straight to `guest_vmm`. Teaching `cc_pd` to call `vm_manager`
-directly, and retiring `vibe_engine`, is the remaining follow-up. The
+they are not in the image. CC-PD now calls `vm_manager` directly for dynamic
+creation, status, lifecycle and console control. Its bounded handle registry
+keeps public handles separate from backend slots, validates replies and
+propagates start/destroy failures. `vibe_engine` is no longer a boot dependency.
+The boot-guest console path (`test-guest-console`, `test-ubuntu-virtio`)
+also uses the separate serial virtualizer and CC frontend queues. The
 `agentOS boot complete` marker the `GUEST_OS=none` harness waits for is now
 printed by `cc_pd`, the lowest-priority PD in the image, right before it enters
 its request loop. `tests/platform/lint_source_invariants.c` fails if any of
 the dropped PDs reappears in the default descriptor.
 
 ## QEMU host transports
+
+On the MCS target, each VMM also holds a capability to its own guest's
+scheduling context, installed by the root task using
+`contracts/guest_execution_caps.h`. Suspend detaches that context from the
+guest TCB; resume reattaches it. This preserves queued guest fault IPC while
+removing execution budget. Failed execution transitions return an error and
+retain the prior lifecycle state. This authority does not include another
+VMM's guest or the driver scheduling contexts. The dual-guest qualification
+above verifies resume for the configured slots. Destroy is terminal for a
+slot in the current image: RAM/capability reclamation and clean guest recreation
+remain work under `task_e58e8c20b539a258fc1f0ec28aeb5308`.
 
 QEMU virtio devices are hardware stand-ins owned by canonical agentOS driver
 PDs. The QEMU buses used for block media (8), networking (16), and the control

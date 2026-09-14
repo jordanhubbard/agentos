@@ -47,6 +47,14 @@
 /* vm_manager.h includes the guest-neutral slot multiplexer contract. */
 #include "vm_manager.h"
 
+_Static_assert(VM_SLOT_FREE == VM_WIRE_SLOT_FREE &&
+               VM_SLOT_BOOTING == VM_WIRE_SLOT_BOOTING &&
+               VM_SLOT_RUNNING == VM_WIRE_SLOT_RUNNING &&
+               VM_SLOT_SUSPENDED == VM_WIRE_SLOT_SUSPENDED &&
+               VM_SLOT_HALTED == VM_WIRE_SLOT_HALTED &&
+               VM_SLOT_ERROR == VM_WIRE_SLOT_ERROR,
+               "INFO/LIST state encoding must match the public contract");
+
 /* ── Shared memory output region ─────────────────────────────────────────
  * vm_list_shmem (4KB) is mapped rw into this PD and r into controller.
  */
@@ -265,10 +273,6 @@ static int dedicated_create(uint32_t vm_type, uint32_t ram_mb,
         return -2;
 
     if (g_mux.slots[slot_id].state != VM_SLOT_FREE) {
-        if (g_slot_vmm_ep[slot_id] == ep && g_vm_types[slot_id] == vm_type) {
-            *slot_out = slot_id;
-            return 0;
-        }
         return -2;
     }
 
@@ -692,7 +696,7 @@ static uint32_t h_send_input(sel4_badge_t ba, const sel4_msg_t *req,
         return SEL4_ERR_NOT_FOUND;
     }
 
-    if (req->length < 28u || req->length > SEL4_MSG_DATA_BYTES - 4u) {
+    if (req->length < 28u || req->length > SEL4_MSG_DATA_BYTES) {
         rep_u32(rep, 0, VM_ERR);
         rep->length = 4;
         return SEL4_ERR_BAD_ARG;

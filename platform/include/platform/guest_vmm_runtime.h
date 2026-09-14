@@ -19,8 +19,10 @@ typedef struct aos_guest_vmm_runtime {
     uint32_t *state;
     bool *started;
     bool (*start)(void);
-    void (*suspend)(void);
-    void (*resume)(void);
+    /* Return false without changing execution state on failure. The wire
+     * state advances only after the execution transition succeeds. */
+    bool (*suspend)(void);
+    bool (*resume)(void);
     void (*quiesce_timer)(void);
     bool (*push_input)(uint32_t event_type, const uint8_t *bytes,
                        uint32_t length);

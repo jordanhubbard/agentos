@@ -66,6 +66,7 @@
 
 #include "contracts/vmm_contract.h"
 #include "contracts/guest_contract.h"
+#include "contracts/guest_execution_caps.h"
 
 #define GUEST_VMM_X86_STUB 1
 
@@ -416,6 +417,7 @@ void pd_main(seL4_CPtr my_ep, seL4_CPtr ns_ep) { guest_vmm_main(my_ep, ns_ep); }
 #include <platform/guest_vmm_loop.h>
 #include <platform/guest_vmm_runtime.h>
 #include <platform/vmm_virtio_net.h>
+#include <platform/net_layout.h>
 #include <platform/vmm_virtio_blk.h>
 #include <platform/vmm_virtio_console.h>
 
@@ -430,6 +432,7 @@ void pd_main(seL4_CPtr my_ep, seL4_CPtr ns_ep) { guest_vmm_main(my_ep, ns_ep); }
 #include "sel4_ipc.h"     /* sel4_call, sel4_msg_t                        */
 #include "sel4_client.h"  /* sel4_client_t, sel4_client_call              */
 #include "serial_log.h"   /* non-driver diagnostics through serial_pd      */
+#include "contracts/guest_execution_caps.h"
 
 /* Raw agentOS CNode layout constants.
  *
@@ -441,8 +444,8 @@ void pd_main(seL4_CPtr my_ep, seL4_CPtr ns_ep) { guest_vmm_main(my_ep, ns_ep); }
  * 1024-slot CNode, while letting libvmm keep a simple fixed-cap model.
  */
 #define AGENTOS_IRQ_CAP_BASE     64u
-#define AGENTOS_VMM_TCB_CAP_BASE 266u
-#define AGENTOS_VMM_VCPU_CAP_BASE 330u
+#define AGENTOS_VMM_TCB_CAP_BASE AOS_GUEST_TCB_CAP_BASE
+#define AGENTOS_VMM_VCPU_CAP_BASE AOS_GUEST_VCPU_CAP_BASE
 
 /* ── Microkit shim ───────────────────────────────────────────────────────
  *
@@ -576,6 +579,10 @@ uintptr_t gpu_tensor_buf_vaddr     __attribute__((weak));
 
 /* ─── State ──────────────────────────────────────────────────────────── */
 
+#include <platform/serial_endpoint.h>
+#include "serial_virt_client.h"
+static aos_serial_endpoint_t serial_endpoint;
+static bool serial_attached;
 static bool     guest_started      = false;
 static const aos_guest_profile_manifest_t *g_guest_profile;
 static aos_guest_boot_plan_t g_guest_boot_plan;
@@ -689,6 +696,7 @@ static void guest_vmm_binding_init(void)
 #define PL011_ICR    0x44u
 #define PL011_DMACR  0x48u
 #define PL011_FR_TXFE (1u << 7) /* TX FIFO empty */
+#define PL011_FR_TXFF (1u << 5) /* TX FIFO full */
 #define PL011_FR_RXFE (1u << 4) /* RX FIFO empty */
 #define PL011_CR_TXE  (1u << 8)
 #define PL011_CR_RXE  (1u << 9)
@@ -729,8 +737,9 @@ static void pl011_irq_ack(size_t vcpu_id, int irq, void *cookie)
 static void console_tx_push(uint8_t byte)
 {
     if (console_tx_count == GUEST_CONSOLE_TX_RING_SIZE) {
-        console_tx_tail = (console_tx_tail + 1u) % GUEST_CONSOLE_TX_RING_SIZE;
-        console_tx_count--;
+        /* A guest ignoring TXFF may lose its new write, as with a hardware
+         * FIFO. It cannot overwrite bytes already accepted for delivery. */
+        return;
     }
     console_tx_ring[console_tx_head] = byte;
     console_tx_head = (console_tx_head + 1u) % GUEST_CONSOLE_TX_RING_SIZE;
@@ -769,12 +778,10 @@ static bool console_rx_pop(uint8_t *byte)
 static uint32_t pl011_pending_irqs(void)
 {
     uint32_t pending = 0u;
-    /* The backend has no transmit FIFO: every DR write is consumed
-     * immediately, so the PL011 TX threshold is continuously satisfied while
-     * transmission is enabled.  FreeBSD switches from polled boot output to
-     * interrupt-driven tty output after init and otherwise blocks after its
-     * first software chunk. */
-    if ((pl011_cr & PL011_CR_TXE) != 0u) {
+    /* Model backpressure from the bounded output FIFO. Wake the guest tty
+     * again when the shared-queue adapter has made room for more output. */
+    if ((pl011_cr & PL011_CR_TXE) != 0u &&
+        console_tx_count <= GUEST_CONSOLE_TX_RING_SIZE / 2u) {
         pending |= PL011_TXIS;
     }
     if (console_rx_count > 0u) {
@@ -785,7 +792,8 @@ static uint32_t pl011_pending_irqs(void)
 
 static void pl011_maybe_inject_irq(void)
 {
-    if (guest_started && ((pl011_pending_irqs() & pl011_imsc) != 0u)) {
+    if (guest_started && g_guest_state == GUEST_STATE_RUNNING &&
+        ((pl011_pending_irqs() & pl011_imsc) != 0u)) {
         (void)virq_inject(PL011_UART_IRQ);
     }
 }
@@ -821,7 +829,8 @@ static uint32_t pl011_read(size_t offset)
     case PL011_RSR_ECR:
         return pl011_rsr_ecr;
     case PL011_FR:
-        return PL011_FR_TXFE |
+        return (console_tx_count == 0u ? PL011_FR_TXFE : 0u) |
+               (console_tx_count == GUEST_CONSOLE_TX_RING_SIZE ? PL011_FR_TXFF : 0u) |
                (console_rx_count == 0u ? PL011_FR_RXFE : 0u);
     case PL011_ILPR:
         return pl011_ilpr;
@@ -930,39 +939,79 @@ static bool guest_vmm_start_guest(void)
     return true;
 }
 
-static void guest_vmm_suspend_guest_tcb(void)
+static void guest_vmm_lifecycle_timer_snapshot(const char *phase)
 {
+    const seL4_Word ctl = vmm_vcpu_arm_read_reg(GUEST_BOOT_VCPU_ID, seL4_VCPUReg_CNTV_CTL);
+    const seL4_Word cval = vmm_vcpu_arm_read_reg(GUEST_BOOT_VCPU_ID, seL4_VCPUReg_CNTV_CVAL);
+    const seL4_Word offset = vmm_vcpu_arm_read_reg(GUEST_BOOT_VCPU_ID, seL4_VCPUReg_CNTVOFF);
+    uint64_t physical;
+    __asm__ volatile("isb; mrs %0, cntpct_el0" : "=r"(physical));
+    /* One bounded snapshot per lifecycle transition, never a per-tick log.
+     * Capture registers before serial IPC can reuse the thread's MRs. */
+    printf("[guest lifecycle] profile=%u phase=%s ctl=0x%lx cval=0x%lx offset=0x%lx physical=0x%lx timer_pending=%u timer_inflight=%u net_pending=%u net_inflight=%u\n",
+           (unsigned)g_guest_profile->control_type, phase,
+           (unsigned long)ctl, (unsigned long)cval, (unsigned long)offset,
+           (unsigned long)physical,
+           (unsigned)vgic_irq_is_pending(GUEST_BOOT_VCPU_ID, GUEST_VTIMER_IRQ),
+           (unsigned)vgic_irq_is_inflight(GUEST_BOOT_VCPU_ID, GUEST_VTIMER_IRQ),
+           (unsigned)vgic_irq_is_pending(GUEST_BOOT_VCPU_ID, AOS_VIRTIO_NET_VIRQ),
+           (unsigned)vgic_irq_is_inflight(GUEST_BOOT_VCPU_ID, AOS_VIRTIO_NET_VIRQ));
+}
+
+static bool guest_vmm_suspend_guest_tcb(void)
+{
+#ifdef CONFIG_KERNEL_MCS
+    /* TCB_Suspend (including ReadRegisters with suspend=true) cancels IPC.
+     * A queued VGIC maintenance fault must survive the pause, otherwise
+     * libvmm can retain an in-flight IRQ whose completion was discarded.
+     * Remove only execution budget; the VMM can still handle and reply to
+     * faults while the guest has no SC and cannot execute. */
+    seL4_Error err = seL4_SchedContext_UnbindObject(
+        (seL4_SchedContext)(AOS_GUEST_SC_CAP_BASE + GUEST_BOOT_VCPU_ID),
+        (seL4_CPtr)(AGENTOS_VMM_TCB_CAP_BASE + GUEST_BOOT_VCPU_ID));
+#else
     seL4_UserContext regs = {0};
-    LOG_VMM("Profile guest suspend: reading and stopping TCB\n");
     seL4_Error err = seL4_TCB_ReadRegisters(
         (seL4_CPtr)(AGENTOS_VMM_TCB_CAP_BASE + GUEST_BOOT_VCPU_ID),
         true,
         0,
         SEL4_USER_CONTEXT_SIZE,
         &regs);
+#endif
     if (err != seL4_NoError) {
-        LOG_VMM_ERR("Profile guest suspend/read-registers failed: %d\n", (int)err);
-        seL4_TCB_Suspend((seL4_CPtr)(AGENTOS_VMM_TCB_CAP_BASE + GUEST_BOOT_VCPU_ID));
+        LOG_VMM_ERR("Profile guest suspend failed: %d\n", (int)err);
+        return false;
     }
     LOG_VMM("Profile guest suspend: pausing virtual time\n");
     vcpu_pause_time(GUEST_BOOT_VCPU_ID, &g_guest_time_state);
+    guest_vmm_lifecycle_timer_snapshot("suspended");
     LOG_VMM("Profile guest suspend: complete\n");
+    return true;
 }
 
-static void guest_vmm_resume_guest_tcb(void)
+static bool guest_vmm_resume_guest_tcb(void)
 {
     vcpu_resume_time(GUEST_BOOT_VCPU_ID, &g_guest_time_state);
+    guest_vmm_lifecycle_timer_snapshot("resuming");
+#ifdef CONFIG_KERNEL_MCS
+    seL4_Error err = seL4_SchedContext_Bind(
+        (seL4_SchedContext)(AOS_GUEST_SC_CAP_BASE + GUEST_BOOT_VCPU_ID),
+        (seL4_CPtr)(AGENTOS_VMM_TCB_CAP_BASE + GUEST_BOOT_VCPU_ID));
+#else
     seL4_Error err = seL4_TCB_Resume(
         (seL4_CPtr)(AGENTOS_VMM_TCB_CAP_BASE + GUEST_BOOT_VCPU_ID));
+#endif
     if (err != seL4_NoError) {
         LOG_VMM_ERR("Profile guest resume failed: %d\n", (int)err);
-        return;
+        vcpu_pause_time(GUEST_BOOT_VCPU_ID, &g_guest_time_state);
+        return false;
     }
     LOG_VMM("Profile guest resume: TCB runnable\n");
     /* Deliver frames retained by net_pd and block responses queued by
      * blk_virt only after the guest is runnable. */
     aos_vmm_virtio_net_rx_ready();
     aos_vmm_virtio_blk_resp_ready();
+    return true;
 }
 
 static void guest_vmm_quiesce_timer(void)
@@ -1008,6 +1057,41 @@ static uint32_t guest_vmm_drain_console(uint8_t *bytes, uint32_t capacity)
         bytes + length, capacity - length);
 }
 
+static uint32_t guest_serial_output(uint8_t *bytes, uint32_t capacity, void *ctx)
+{
+    (void)ctx;
+    return guest_vmm_drain_console(bytes, capacity);
+}
+
+static bool guest_serial_input(const uint8_t *bytes, uint32_t length, void *ctx)
+{
+    (void)ctx;
+    bool accepted = guest_vmm_push_input(CC_INPUT_TEXT, bytes, length);
+    static bool reported;
+    if (accepted && length && !reported) {
+        LOG_VMM("serial_virt: input accepted by guest console adapter\n");
+        reported = true;
+    }
+    return accepted;
+}
+
+static void guest_serial_service(void)
+{
+    if (!serial_attached) return;
+    const aos_serial_endpoint_ops_t ops = {
+        .output = guest_serial_output, .input = guest_serial_input,
+    };
+    uint32_t old_state = __atomic_load_n(&serial_endpoint.channel.meta->guest_state,
+                                        __ATOMIC_RELAXED);
+    __atomic_store_n(&serial_endpoint.channel.meta->guest_state, g_guest_state,
+                     __ATOMIC_RELEASE);
+    bool changed = aos_serial_endpoint_step(&serial_endpoint, &ops,
+        guest_started && g_guest_state == GUEST_STATE_RUNNING);
+    pl011_maybe_inject_irq();
+    if (changed || old_state != g_guest_state)
+        seL4_Signal(PD_CNODE_SLOT_SERIAL_VIRT_NOTIFY);
+}
+
 static seL4_MessageInfo_t guest_vmm_rpc(seL4_MessageInfo_t info)
 {
     (void)info;
@@ -1027,8 +1111,8 @@ static seL4_MessageInfo_t guest_vmm_rpc(seL4_MessageInfo_t info)
         .push_input = guest_vmm_push_input,
         .drain_console = guest_vmm_drain_console,
     };
-    if (aos_guest_vmm_lifecycle_rpc(&req, &rep, &runtime) ||
-        aos_guest_vmm_console_rpc(&req, &rep, &runtime)) {
+    if (aos_guest_vmm_lifecycle_rpc(&req, &rep, &runtime)) {
+        guest_serial_service();
         _sel4_msg_to_mrs(&rep);
         return seL4_MessageInfo_new((seL4_Word)rep.opcode, 0, 0,
                                     (seL4_Word)_SEL4_MR_COUNT);
@@ -1151,6 +1235,20 @@ int vmm_inject_irq(uint8_t slot_id, uint32_t irq_num)
 
 void init(void)
 {
+    const uint32_t serial_slot =
+#if defined(AGENTOS_GUEST_SECONDARY)
+        1u;
+#else
+        0u;
+#endif
+    serial_endpoint.channel = aos_serial_channel_at(AOS_SERIAL_SHMEM_VA +
+        serial_slot * AOS_SERIAL_FRAME_SIZE);
+    serial_attached = serial_virt_client_attach(serial_slot, SERIAL_VIRT_ROLE_VMM);
+    if (!serial_attached) {
+        LOG_VMM_ERR("serial_virt attach failed; refusing guest start\n");
+        return;
+    }
+    LOG_VMM("serial_virt: VMM attached to isolated queue page\n");
     if ((size_t)(_guest_profile_end - _guest_profile) !=
             sizeof(aos_guest_profile_manifest_t)) {
         LOG_VMM_ERR("Guest profile has the wrong wire size\n");
@@ -1391,6 +1489,11 @@ void init(void)
  */
 static void guest_vmm_notified(seL4_Word badge)
 {
+    if (badge & SERIAL_VIRT_VMM_WAKE_BADGE) {
+        guest_serial_service();
+        badge &= ~SERIAL_VIRT_VMM_WAKE_BADGE;
+        if (!badge) return;
+    }
     switch (badge) {
     case CONTROLLER_CH: {
         /*
@@ -1538,6 +1641,7 @@ static seL4_MessageInfo_t guest_vmm_fault(seL4_Word badge,
     aos_vmm_virtio_net_after_fault();
     aos_vmm_virtio_blk_after_fault();
     aos_vmm_virtio_console_after_fault();
+    guest_serial_service();
     /* UART MMIO fault compliance stub — silently accept, guest continues. */
     return seL4_MessageInfo_new(0, 0, 0, 0);
 }

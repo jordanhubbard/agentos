@@ -33,6 +33,9 @@ pub use guest_scenario::GuestScenarioArgs;
 
 #[derive(clap::Args)]
 pub struct TestArgs {
+    /// Test serial mapping isolation: primary cases 1..4, secondary cases 5..8.
+    #[arg(long, conflicts_with_all = ["network_isolation_probe", "block_isolation_probe", "virtualizer_authority_probe"], value_parser = clap::value_parser!(u8).range(1..=8))]
+    pub serial_isolation_probe: Option<u8>,
     /// Test network mapping isolation: primary cases 1..4, secondary cases 5..8.
     #[arg(long, conflicts_with_all = ["block_isolation_probe", "virtualizer_authority_probe"], value_parser = clap::value_parser!(u8).range(1..=8))]
     pub network_isolation_probe: Option<u8>,
@@ -67,6 +70,9 @@ pub struct TestArgs {
     /// Require Ubuntu login and bidirectional I/O through emulated virtio-console.
     #[arg(long)]
     pub assert_emulated_console: bool,
+    /// Stall console consumption, then verify the deterministic probe stream.
+    #[arg(long, requires = "assert_emulated_console")]
+    pub assert_console_backpressure: bool,
     /// Require Ubuntu login plus real I/O through agentOS net, blk, and console.
     #[arg(long)]
     pub assert_agentos_virtio: bool,

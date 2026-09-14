@@ -138,7 +138,54 @@ ordinary endpoint requests must preserve their badge and reply. This guards
 against missing the hardware IRQ acknowledgement because of a stale label.
 The guest network gate remains the target proof of actual NIC I/O.
 
-### Block client mapping isolation
+### Virtualizer client mapping isolation
+
+The bidirectional Ubuntu console assertion also requires both actual
+`serial_virt` transfer markers, in addition to the emulated device markers
+and echoed guest input. CC resolves guest handles and uses only its frontend
+page; guest console bytes no longer use the VMM console IPC operations.
+`test_serial_endpoint` exercises paused input, full queues, staged retries,
+ordered output, exact-once input delivery, cursor rollover and malformed
+shared indices.
+`test_virtio_console_tx` runs the production descriptor-progress engine with
+a bounded output fixture: oversized/chained descriptors remain pending while
+full, retries preserve the exact stream, and invalid or cyclic chains fail
+without completion. The existing Ubuntu echo gate checks the integrated
+backend; the separate stalled-frontend stress gate below qualifies bounded
+sustained output.
+`test_virtio_console_tx_ring` additionally executes the production available/
+used-ring handler. It checks deferred acknowledgement, exactly one used entry
+for a completed chain, retained head identity, both cursor rollovers, bounded
+multi-head copying, invalid chains and a retracted available entry. These
+are host checks of the actual ring writer, not substitutes for the target
+stalled-frontend checksum test.
+
+`make test-console-backpressure` runs the deterministic Ubuntu probe initramfs
+and requests a 262,144-byte position-dependent ASCII stream. The host stops
+draining CC output until the backend reports a full local TX queue with an
+uncompleted descriptor. It then resumes draining and compares every payload
+byte, rejects missing or extra bytes, and records its SHA-256. This tests
+backpressure through the guest virtio driver, libvmm, both serial queue pages,
+the virtualizer and CC. Host validator tests reject truncation, duplication,
+corruption and malformed framing. A successful target result is required;
+the existence of the harness is not sustained-output evidence.
+
+`test_guest_vmm_notifications` runs the production receive loop with a mocked
+receive returning the serial notification badge and nonzero stale labels,
+including a guest RPC opcode. It asserts one notification callback and no
+fault handler or reply. Actual RPC and VCPU fault deliveries retain their
+normal paths. Bound notifications are identified by badge, as specified in
+the [seL4 notification manual](https://sel4.systems/Info/Docs/seL4-manual-latest.pdf).
+The serial PD likewise recognizes its combined notification bits before
+interpreting message registers as an ATTACH request.
+
+`make test-serial-isolation` runs eight AArch64 fault probes. Each VMM first
+writes and reads its own serial page, then attempts a read or write of the
+other VMM's page or the CC frontend page. Root accepts only the expected
+badged data fault, exact address, and access direction. These probes stop
+before guest initialization: they prove mapping isolation, not console
+delivery. `SERIAL_ISOLATION_PROBE` is included in root and VMM build flags
+so configuration stamps force rebuilding when the selected case changes.
 
 `make test-network-isolation` runs the corresponding eight network probes:
 both VMM slots attempt reads/writes of the other client's queue page and

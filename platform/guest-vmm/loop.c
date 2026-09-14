@@ -3,6 +3,7 @@
 #include <contracts/guest_contract.h>
 #include <contracts/net-service/interface.h>
 #include <contracts/blk_virt_contract.h>
+#include <contracts/serial_virt_contract.h>
 
 bool aos_guest_vmm_loop_is_rpc(seL4_Word label)
 {
@@ -28,7 +29,14 @@ void aos_guest_vmm_loop(seL4_CPtr endpoint, seL4_CPtr reply_cap,
 #endif
     for (;;) {
         seL4_Word label = seL4_MessageInfo_get_label(info);
-        if (aos_guest_vmm_loop_is_rpc(label)) {
+        if (serial_virt_vmm_notification(badge)) {
+            ops->notified(badge);
+#ifdef CONFIG_KERNEL_MCS
+            info = seL4_Recv(endpoint, &badge, reply_cap);
+#else
+            info = seL4_Recv(endpoint, &badge);
+#endif
+        } else if (aos_guest_vmm_loop_is_rpc(label)) {
             seL4_MessageInfo_t reply = ops->rpc(info);
 #ifdef CONFIG_KERNEL_MCS
             seL4_Send(reply_cap, reply);

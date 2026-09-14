@@ -34,6 +34,7 @@
  */
 
 #include "boot_info.h"       /* seL4_BootInfo, seL4_Yield, object type constants */
+#include "contracts/guest_execution_caps.h"
 #include "sel4_boot.h"       /* seL4_IRQControl_Get, seL4_IRQHandler_Ack, etc.   */
 #include "ut_alloc.h"        /* ut_alloc_init, ut_alloc                          */
 #include "pd_vspace.h"       /* pd_vspace_create, pd_vspace_load_elf              */
@@ -47,6 +48,8 @@
 #include "contracts/cc_contract.h" /* cc_pd VirtIO startup ABI                    */
 #include <platform/blk_host_layout.h> /* host block MMIO/shared DMA layout       */
 #include <platform/blk_layout.h>      /* shared sDDF block region (VMMs + blk_virt) */
+#include <platform/serial_virt_layout.h>
+#include <contracts/serial_virt_contract.h>
 #include <platform/vmm_isolation_probe.h>
 #include <contracts/virtualizer_authority.h>
 #ifdef AOS_VMM_ISOLATION_PROBE
@@ -116,8 +119,8 @@ static seL4_Word g_cap_base;  /* set to bi->empty.start in root_task_main */
  * by the VMM PDs.  They are well above the low service/IRQ slots and fit in
  * the VMM PDs' 1024-slot CNodes.
  */
-#define VMM_GUEST_TCB_SLOT_BASE   266u
-#define VMM_GUEST_VCPU_SLOT_BASE  330u
+#define VMM_GUEST_TCB_SLOT_BASE   AOS_GUEST_TCB_CAP_BASE
+#define VMM_GUEST_VCPU_SLOT_BASE  AOS_GUEST_VCPU_CAP_BASE
 #define VMM_FAULT_BADGE_BASE      (1ULL << 62)
 /* Guest TCB IPC buffer: next 4K after the debug UART page. Must not share
  * the VMM thread's buffer — seL4 forbids two TCBs on one IPC page, and a
@@ -646,6 +649,8 @@ static seL4_CPtr g_blk_shared_frame_cap = seL4_CapNull;
 /* Shared sDDF block region: guest request/response queues and data cells,
  * mapped wholly into blk_virt, with one client frame mapped into each VMM. */
 static seL4_CPtr g_blk_virt_frame_caps[AOS_BLK_SHMEM_FRAMES];
+static seL4_CPtr g_serial_virt_frames[AOS_SERIAL_FRAMES];
+static seL4_CPtr g_pd_notifications[SYSTEM_MAX_PDS];
 static seL4_CPtr g_host_net_mmio_frame_cap = seL4_CapNull;
 static seL4_CPtr g_net_shared_frame_caps[AOS_NET_SHMEM_FRAMES];
 static seL4_CPtr g_net_dma_frame_cap = seL4_CapNull;
@@ -1180,6 +1185,21 @@ static seL4_Error setup_vmm_guest_vcpu(const pd_desc_t *pd,
     cap_acct_record(seL4_CapNull, (seL4_CPtr)guest_vcpu_slot,
                     seL4_ARM_VCPUObject, pd_index, pd->name);
 #ifdef CONFIG_KERNEL_MCS
+    /* The VMM pauses execution by detaching this SC from its guest TCB.
+     * Unlike TCB_Suspend, that preserves queued guest fault IPC. */
+    err = seL4_CNode_Copy(pd_cnode,
+                          AOS_GUEST_SC_CAP_BASE,
+                          (uint8_t)pd->cnode_size_bits,
+                          seL4_CapInitThreadCNode,
+                          guest_sc_slot,
+                          64u,
+                          seL4_AllRights);
+    if (err != seL4_NoError) {
+        dbg_puts("[rt] VMM guest SC copy err=");
+        dbg_hex((seL4_Word)err);
+        dbg_puts("\n");
+        return err;
+    }
     cap_acct_record(seL4_CapNull, (seL4_CPtr)guest_sc_slot,
                     seL4_SchedContextObject, pd_index, pd->name);
 #endif
@@ -1533,6 +1553,36 @@ void root_task_main(const seL4_BootInfo *bi)
     }
 #endif
 
+    /* Allocate notifications before spawning: serial_virt needs send-only
+     * capabilities to VMM notifications even when those VMMs spawn later. */
+    uint32_t serial_virt_index = SYSTEM_MAX_PDS;
+    for (uint32_t i = 0; i < sys->pd_count; i++) {
+        const pd_desc_t *pd = &sys->pds[i];
+        if (pd->self_svc_id == SVC_ID_SERIAL_VIRT) serial_virt_index = i;
+        if (pd->irq_count || pd_is_guest_vmm(pd) ||
+            pd->self_svc_id == SVC_ID_SERIAL_VIRT) {
+            seL4_Error err = ut_alloc(seL4_NotificationObject,
+                seL4_NotificationBits, seL4_CapInitThreadCNode,
+                PD_SLOT_NTFN(i), 64u);
+            if (err != seL4_NoError) {
+                dbg_puts("[rt] notification allocation failed; refusing partial boot\n");
+                return;
+            }
+            g_pd_notifications[i] = (seL4_CPtr)PD_SLOT_NTFN(i);
+        }
+    }
+#if defined(__aarch64__)
+    if (serial_virt_index != SYSTEM_MAX_PDS) {
+        for (uint32_t f = 0; f < AOS_SERIAL_FRAMES; f++) {
+            if (ut_alloc_cap(seL4_ARM_LargePageObject, 0u,
+                             &g_serial_virt_frames[f]) != seL4_NoError) {
+                dbg_puts("[rt] serial queue allocation failed; refusing partial boot\n");
+                return;
+            }
+        }
+    }
+#endif
+
     /* ── Step 4: Load and start each PD ───────────────────────────────────── */
     dbg_puts("[rt] starting ");
     dbg_hex((seL4_Word)sys->pd_count);
@@ -1777,26 +1827,39 @@ void root_task_main(const seL4_BootInfo *bi)
 
         dbg_puts("[rt] pd SC bound, starting\n");
 
-        seL4_CPtr pd_ntfn_cap = seL4_CapNull;
-        if (pd->irq_count > 0u) {
-            seL4_Error ntfn_err = ut_alloc(seL4_NotificationObject,
-                                           seL4_NotificationBits,
-                                           seL4_CapInitThreadCNode,
-                                           PD_SLOT_NTFN(i),
-                                           64u);
+        seL4_CPtr pd_ntfn_cap = g_pd_notifications[i];
+        if (pd_ntfn_cap != seL4_CapNull) {
+            seL4_Error ntfn_err = seL4_TCB_BindNotification(tr.tcb_cap, pd_ntfn_cap);
             if (ntfn_err != seL4_NoError) {
-                dbg_puts("[rt] WARN: notification alloc failed err=");
-                dbg_hex((seL4_Word)ntfn_err);
-                dbg_puts("\n");
-            } else {
-                pd_ntfn_cap = (seL4_CPtr)PD_SLOT_NTFN(i);
-                ntfn_err = seL4_TCB_BindNotification(tr.tcb_cap, pd_ntfn_cap);
-                dbg_puts("[rt] notification bind err=");
-                dbg_hex((seL4_Word)ntfn_err);
-                dbg_puts("\n");
-                if (ntfn_err != seL4_NoError) {
-                    pd_ntfn_cap = seL4_CapNull;
+                dbg_puts("[rt] notification bind failed; refusing PD start\n");
+                continue;
+            }
+        }
+
+        if (serial_virt_index != SYSTEM_MAX_PDS) {
+            seL4_Error signal_err = seL4_NoError;
+            if (pd_is_guest_vmm(pd) || pd->self_svc_id == SVC_ID_CC_PD) {
+                seL4_Word badge = pd_is_guest_vmm(pd) ?
+                    (1u << (pd_is_secondary_guest_vmm(pd) ? 1u : 0u)) :
+                    SERIAL_VIRT_FRONTEND_WAKE_BADGE;
+                signal_err = seL4_CNode_Mint(pd_cnode,
+                    PD_CNODE_SLOT_SERIAL_VIRT_NOTIFY, pd->cnode_size_bits,
+                    seL4_CapInitThreadCNode, g_pd_notifications[serial_virt_index],
+                    64u, seL4_CapRights_new(0, 0, 0, 1), badge);
+            } else if (pd->self_svc_id == SVC_ID_SERIAL_VIRT) {
+                for (uint32_t v = 0; v < sys->pd_count && signal_err == seL4_NoError; v++) {
+                    if (!pd_is_guest_vmm(&sys->pds[v])) continue;
+                    seL4_Word slot = pd_is_secondary_guest_vmm(&sys->pds[v]) ?
+                        PD_CNODE_SLOT_SERIAL_SECONDARY_NOTIFY :
+                        PD_CNODE_SLOT_SERIAL_PRIMARY_NOTIFY;
+                    signal_err = seL4_CNode_Mint(pd_cnode, slot, pd->cnode_size_bits,
+                        seL4_CapInitThreadCNode, g_pd_notifications[v], 64u,
+                        seL4_CapRights_new(0, 0, 0, 1), SERIAL_VIRT_VMM_WAKE_BADGE);
                 }
+            }
+            if (signal_err != seL4_NoError) {
+                dbg_puts("[rt] serial signal grant failed; refusing PD start\n");
+                continue;
             }
         }
 
@@ -1820,8 +1883,12 @@ void root_task_main(const seL4_BootInfo *bi)
                               ((uint64_t)i                   << 32u);
             if (pd_is_guest_vmm(pd) &&
                 (ep_spec->service_id == SVC_ID_NET_VIRT ||
-                 ep_spec->service_id == SVC_ID_BLK_VIRT)) {
+                 ep_spec->service_id == SVC_ID_BLK_VIRT ||
+                 ep_spec->service_id == SVC_ID_SERIAL_VIRT)) {
                 badge = virt_client_badge(pd_is_secondary_guest_vmm(pd) ? 1u : 0u);
+            } else if (pd->self_svc_id == SVC_ID_CC_PD &&
+                       ep_spec->service_id == SVC_ID_SERIAL_VIRT) {
+                badge = SERIAL_VIRT_FRONTEND_BADGE;
             }
             ep_mint_badge(service_ep, badge,
                            pd_cnode, ep_spec->cnode_slot,
@@ -1943,6 +2010,7 @@ void root_task_main(const seL4_BootInfo *bi)
              name_eq(pd->name, "cc_pd") ||
              name_eq(pd->name, "net_virt") ||
              name_eq(pd->name, "blk_virt") ||
+             name_eq(pd->name, "serial_virt") ||
              name_eq(pd->name, "test_runner"))) {
             seL4_Word serial_copy = ut_alloc_slot();
             seL4_Error serial_err = seL4_NotEnoughMemory;
@@ -2095,6 +2163,31 @@ void root_task_main(const seL4_BootInfo *bi)
             dbg_puts(" blk_virt shared region map err=");
             dbg_hex((seL4_Word)blk_err);
             dbg_puts("\n");
+        }
+
+        /* Only serial_virt sees both guest pages and the frontend page. */
+        if (serial_virt_index != SYSTEM_MAX_PDS &&
+            (pd_is_guest_vmm(pd) || pd->self_svc_id == SVC_ID_CC_PD ||
+             pd->self_svc_id == SVC_ID_SERIAL_VIRT)) {
+            seL4_Error serial_err = seL4_NoError;
+            for (uint32_t f = 0; f < AOS_SERIAL_FRAMES && serial_err == seL4_NoError; f++) {
+                if (pd_is_guest_vmm(pd) &&
+                    f != (pd_is_secondary_guest_vmm(pd) ? 1u : 0u)) continue;
+                if (pd->self_svc_id == SVC_ID_CC_PD && f != AOS_SERIAL_FRONTEND_FRAME) continue;
+                seL4_Word copy = ut_alloc_slot();
+                serial_err = seL4_NotEnoughMemory;
+                if (copy != seL4_CapNull) {
+                    serial_err = seL4_CNode_Copy(seL4_CapInitThreadCNode, copy, 64u,
+                        seL4_CapInitThreadCNode, g_serial_virt_frames[f], 64u, seL4_AllRights);
+                    if (serial_err == seL4_NoError)
+                        serial_err = pd_vspace_map_device_frame(vspace, copy,
+                            AOS_SERIAL_SHMEM_VA + f * AOS_SERIAL_FRAME_SIZE);
+                }
+            }
+            if (serial_err != seL4_NoError) {
+                dbg_puts("[rt] serial page mapping failed; refusing PD start\n");
+                continue;
+            }
         }
 
         /* VMMs map their own queue page, the NIC driver maps its transfer

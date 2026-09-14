@@ -15,15 +15,15 @@ sha256 = "94e37ccd7694d894e0d21f3f7c2e964046c77ce1c9208e11aa62fc98eb621696"
 [artifacts.dtb]
 source = "generated:linux.dts+linux-virtio-overlay.dts.in"
 cache = "build/qemu_virt_aarch64/vm.dtb"
-sha256 = "648c783ff27803de4f92ac878396998dc92397d5b28888c78ed8f59a6028932f"
+sha256 = "f6f6a5c97a4e247fdbdc1fd6ac96edfebe396546441e1103f207739170f69f49"
 
 [artifacts.initrd]
 source = "generated:ubuntu-e2e-initramfs"
 cache = "build/guest-images/ubuntu-26.04-aarch64-initrd"
-sha256 = "160590b3f0c3e247f8bb2c24ed778ee921f4a40971e025540c71bed3c3442831"
+sha256 = "b0c67f7fcc9dad67b61997a53ee2a5f9ef16cf73b0b57cb4529524bd36784a17"
 
 [placements.dual-primary]
-dtb_sha256 = "648c783ff27803de4f92ac878396998dc92397d5b28888c78ed8f59a6028932f"
+dtb_sha256 = "f6f6a5c97a4e247fdbdc1fd6ac96edfebe396546441e1103f207739170f69f49"
 
 [[host.qemu.media]]
 path = "build/guest-images/ubuntu-26.04-aarch64.iso"

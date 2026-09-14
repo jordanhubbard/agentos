@@ -45,15 +45,15 @@ const CC_WIRE_SHMEM_SIZE: usize = 4096;
 const CC_INPUT_TEXT: u32 = 0x05;
 /*
  * A text event crosses CC -> VibeEngine -> VM manager before reaching a
- * dynamic guest.  The 24-byte event plus a 4-byte Vibe handle and a 4-byte VM
- * slot must all fit the 48-byte seL4 payload, leaving 16 text bytes per frame.
+ * dynamic guest. The 24-byte event and 4-byte VM slot fit the 48-byte seL4
+ * payload. Retain the existing bounded 16-byte host chunks for compatibility.
  */
 const CC_INPUT_TEXT_CHUNK: usize = 16;
 const CC_REQ_SIZE: usize = 4 + 12 + CC_WIRE_SHMEM_SIZE;
 const CC_REPLY_SIZE: usize = 16 + CC_WIRE_SHMEM_SIZE;
 const CC_IO_TIMEOUT: Duration = Duration::from_secs(5);
 /*
- * A console drain crosses the host virtconsole, CC-PD, vibe_engine,
+ * A console drain crosses the host virtconsole, CC-PD,
  * vm_manager, and a running VMM. Those target components now have a strictly
  * ascending priority chain, so a full minute without frame progress means the
  * QEMU chardev lost the request or reply. Reconnect and replay the identical
@@ -63,10 +63,12 @@ const CC_FRAME_DEADLINE: Duration = Duration::from_secs(60);
 const CC_INPUT_RETRY_DEADLINE: Duration = Duration::from_secs(120);
 const CC_OK: u32 = 0;
 const CC_ERR_RELAY_FAULT: u32 = 8;
+const CC_ERR_BAD_HANDLE: u32 = 6;
 #[cfg(test)]
 const VMM_RELAY_PAYLOAD_BYTES: usize = 48;
 const MSG_CC_LOG_STREAM: u32 = 0x2610;
 const MSG_CC_CREATE_GUEST: u32 = 0x2611;
+const MSG_CC_GUEST_STATUS: u32 = 0x260a;
 const MSG_CC_SEND_INPUT: u32 = 0x260d;
 const MSG_CC_SUSPEND_GUEST: u32 = 0x2613;
 const MSG_CC_RESUME_GUEST: u32 = 0x2614;
@@ -96,6 +98,7 @@ fn requested_virtio_assertion(
     if args.block_isolation_probe.is_some()
         || args.virtualizer_authority_probe.is_some()
         || args.network_isolation_probe.is_some()
+        || args.serial_isolation_probe.is_some()
     {
         return None;
     }
@@ -187,6 +190,8 @@ fn virtio_markers(assertion: &VirtioAssertion) -> Vec<&'static str> {
                 ]);
                 if assertion.bidirectional_console {
                     required.push("emulated virtio-console: pumped input serial_virt->guest");
+                    required.push("[serial_virt] frontend input delivered to VMM queue");
+                    required.push("[serial_virt] VMM output delivered to frontend queue");
                 }
             }
             _ => {}
@@ -196,6 +201,19 @@ fn virtio_markers(assertion: &VirtioAssertion) -> Vec<&'static str> {
 }
 
 pub fn run(args: &TestArgs) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        !args.assert_console_backpressure
+            || (args.board == "qemu_virt_aarch64"
+                && args.guest_os == "ubuntu"
+                && !args.assert_live
+                && !args.assert_desktop
+                && !args.no_build
+                && args.serial_isolation_probe.is_none()
+                && args.network_isolation_probe.is_none()
+                && args.block_isolation_probe.is_none()
+                && args.virtualizer_authority_probe.is_none()),
+        "console backpressure requires a freshly built Ubuntu deterministic probe image"
+    );
     let repo_root = repo_root()?;
     let profile_root = repo_root.join("guest-profiles");
     let scenario_plan = if args.guest_os == "both" {
@@ -207,12 +225,15 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
     } else {
         None
     };
-    let profile_plan = if matches!(args.guest_os.as_str(), "none" | "both") {
+    let mut profile_plan = if matches!(args.guest_os.as_str(), "none" | "both") {
         None
     } else {
         let path = cmd_guest_profile::resolve_alias(&profile_root, &args.guest_os)?;
         Some(cmd_guest_profile::host_profile_plan(&profile_root, &path)?)
     };
+    if let Some(profile) = &mut profile_plan {
+        apply_profile_ssh_port(profile, args.ssh_port);
+    }
     if let Some(profile) = &profile_plan {
         println!(
             "[xtask:test] resolved alias {:?} to {} ({}, architecture={}, control_type={}, guest_id={}, provision_steps={}, test_steps={})",
@@ -229,6 +250,7 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
     if let Some(mode) = args
         .block_isolation_probe
         .or(args.network_isolation_probe)
+        .or(args.serial_isolation_probe)
         .or(args
             .virtualizer_authority_probe
             .map(|slot| if slot == 1 { 1 } else { 5 }))
@@ -326,6 +348,9 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
         if let Some(mode) = args.network_isolation_probe {
             make_args.push(format!("NET_ISOLATION_PROBE={mode}"));
         }
+        if let Some(mode) = args.serial_isolation_probe {
+            make_args.push(format!("SERIAL_ISOLATION_PROBE={mode}"));
+        }
         if let Some(slot) = args.virtualizer_authority_probe {
             make_args.push(format!("VIRT_AUTHORITY_PROBE={slot}"));
         }
@@ -357,7 +382,11 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
     let needs_host_net_stimulus = virtio_assertion
         .as_ref()
         .is_some_and(|assertion| assertion.devices.iter().any(|device| device == "net"));
-    let ssh_port = if needs_host_net_stimulus || args.assert_desktop || scenario_plan.is_some() {
+    let ssh_port = if needs_host_net_stimulus
+        || args.assert_live
+        || args.assert_desktop
+        || scenario_plan.is_some()
+    {
         let configured = effective_ssh_port(args, profile_plan.as_ref(), scenario_plan.as_ref());
         if needs_host_net_stimulus && configured == 0 {
             FOCUSED_NET_STIMULUS_PORT
@@ -399,6 +428,13 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
         wait_for_all_markers(&log_path,
             &["[authority-test] spoofed attachments rejected; assigned net/block clients accepted"],
             Duration::from_secs(args.timeout_secs), &mut qemu)
+    } else if args.serial_isolation_probe.is_some() {
+        wait_for_all_markers(
+            &log_path,
+            &["[rt] serial isolation: expected VMM data fault verified"],
+            Duration::from_secs(args.timeout_secs),
+            &mut qemu,
+        )
     } else if args.network_isolation_probe.is_some() {
         wait_for_all_markers(
             &log_path,
@@ -481,6 +517,16 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
             )
         }
     };
+
+    if result.is_ok() && args.assert_console_backpressure {
+        result = verify_console_backpressure(
+            &cc_sock,
+            &log_path,
+            profile_plan.as_ref(),
+            Duration::from_secs(args.timeout_secs),
+            &mut qemu,
+        );
+    }
 
     /*
      * Start the authenticated desktop path before checking host-backed network
@@ -807,6 +853,17 @@ fn manual_ssh_commands(
             ))
         })
         .collect()
+}
+
+// Keep the resolved host plan consistent with QEMU's forwarding port. All
+// later SSH probes, provisioning and manual instructions consume this plan.
+// Scenario guests retain their explicitly assigned individual ports.
+fn apply_profile_ssh_port(profile: &mut HostProfilePlan, port: u16) {
+    if port != 0 {
+        if let Some(ssh) = profile.qemu.as_mut().and_then(|qemu| qemu.ssh.as_mut()) {
+            ssh.host_port = port;
+        }
+    }
 }
 
 fn effective_ssh_port(
@@ -1913,6 +1970,98 @@ fn reject_profile_console(
     Ok(())
 }
 
+const CONSOLE_STRESS_BYTES: usize = 0x40000;
+const CONSOLE_BACKPRESSURE_MARKER: &str =
+    "VIRTIO(CONSOLE): TX backpressure retained pending descriptor";
+
+fn verify_console_stress_stream(stream: &[u8]) -> anyhow::Result<String> {
+    use sha2::{Digest, Sha256};
+    let begin = b"AOS_STRESS_BEGIN";
+    let end = b"AOS_STRESS_END";
+    let start = stream
+        .windows(begin.len())
+        .position(|value| value == begin)
+        .context("stress stream has no begin marker")?
+        + begin.len();
+    let newline = stream[start..]
+        .iter()
+        .position(|value| *value == b'\n')
+        .context("stress begin marker has no newline")?;
+    anyhow::ensure!(
+        newline <= 1 && (newline == 0 || stream[start] == b'\r'),
+        "unexpected bytes after stress begin marker"
+    );
+    let payload = &stream[start + newline + 1..];
+    let end_offset = payload
+        .windows(end.len())
+        .position(|value| value == end)
+        .context("stress stream has no end marker")?;
+    anyhow::ensure!(
+        end_offset >= CONSOLE_STRESS_BYTES,
+        "stress payload was truncated"
+    );
+    let separator = &payload[CONSOLE_STRESS_BYTES..end_offset];
+    anyhow::ensure!(
+        separator == b"\n" || separator == b"\r\n",
+        "stress payload has unexpected length or trailing bytes"
+    );
+    let payload = &payload[..CONSOLE_STRESS_BYTES];
+    for (index, value) in payload.iter().enumerate() {
+        let expected = b'A' + ((index ^ (index >> 8) ^ (index >> 16)) & 15) as u8;
+        anyhow::ensure!(*value == expected, "stress byte mismatch at offset {index}");
+    }
+    Ok(format!("{:x}", Sha256::digest(payload)))
+}
+
+fn verify_console_backpressure(
+    cc_sock: &Path,
+    log_path: &Path,
+    profile: Option<&HostProfilePlan>,
+    timeout: Duration,
+    qemu: &mut Child,
+) -> anyhow::Result<String> {
+    let mut cc = connect_cc_client(cc_sock, Duration::from_secs(30), qemu)?;
+    anyhow::ensure!(
+        !std::fs::read_to_string(log_path)?.contains(CONSOLE_BACKPRESSURE_MARKER),
+        "console was already backpressured before the deliberate stress trigger"
+    );
+    cc_send_console_line(&mut cc, 0, b"!")?;
+    println!("[xtask:test] Console drain paused until actual backend backpressure is observed");
+    wait_for_all_markers(
+        log_path,
+        &[CONSOLE_BACKPRESSURE_MARKER],
+        timeout.min(Duration::from_secs(30)),
+        qemu,
+    )?;
+    println!("[xtask:test] Backend full with pending descriptor; resuming console drain");
+    let start = Instant::now();
+    let mut stream = Vec::new();
+    while start.elapsed() < timeout {
+        ensure_qemu_running(qemu, "draining the backpressured console stream")?;
+        let chunk = cc_log_stream_for_handle(&mut cc, 0, profile)?;
+        stream.extend_from_slice(chunk.as_bytes());
+        anyhow::ensure!(
+            stream.len() <= CONSOLE_STRESS_BYTES + 65536,
+            "stress console exceeded its bounded receive buffer"
+        );
+        if stream
+            .windows(b"AOS_STRESS_END".len())
+            .any(|value| value == b"AOS_STRESS_END")
+        {
+            let checksum = verify_console_stress_stream(&stream)?;
+            return Ok(format!(
+                "console backpressure: {} exact bytes recovered, sha256={checksum}",
+                CONSOLE_STRESS_BYTES
+            ));
+        }
+        std::thread::sleep(Duration::from_millis(if chunk.is_empty() { 20 } else { 1 }));
+    }
+    anyhow::bail!(
+        "backpressured console did not complete; received {} bytes",
+        stream.len()
+    )
+}
+
 fn verify_guest_console_input(
     _cc_sock: &Path,
     cc: &mut CcClient,
@@ -2484,16 +2633,24 @@ fn wait_for_scenario_ssh(
     qemu: &mut Child,
 ) -> anyhow::Result<String> {
     let start = Instant::now();
+    let mut failures = Vec::new();
     while start.elapsed() < timeout {
         ensure_qemu_running(qemu, "waiting for scenario authenticated SSH")?;
-        let mut all_ready = true;
+        failures.clear();
         for guest in &scenario.guests {
-            if wait_for_scenario_guest_ssh(guest, ssh_key, Duration::from_secs(35), qemu).is_err() {
-                all_ready = false;
-                break;
+            match wait_for_scenario_guest_ssh(guest, ssh_key, Duration::from_secs(35), qemu) {
+                Ok(()) => println!(
+                    "[xtask:test] {} authenticated SSH ready in concurrent probe",
+                    guest.profile.id
+                ),
+                Err(error) => {
+                    let detail = format!("{error:#}");
+                    eprintln!("[xtask:test] concurrent SSH retry: {detail}");
+                    failures.push(detail);
+                }
             }
         }
-        if all_ready {
+        if failures.is_empty() {
             return Ok(format!(
                 "scenario {} has concurrent authenticated SSH for {} profiles",
                 scenario.id,
@@ -2503,8 +2660,9 @@ fn wait_for_scenario_ssh(
         std::thread::sleep(Duration::from_secs(2));
     }
     anyhow::bail!(
-        "scenario {} authenticated SSH did not become ready",
-        scenario.id
+        "scenario {} authenticated SSH did not become ready: {}",
+        scenario.id,
+        failures.join("; ")
     )
 }
 
@@ -2563,6 +2721,16 @@ fn wait_for_dual_guest_consoles_via_cc(
      * path. Quiesce the deferred profile immediately so the lead profile's
      * media boot cannot lose the single emulated CPU to a busier guest.
      */
+    for guest in [lead, deferred] {
+        let result =
+            try_create_guest_via_cc(&mut boot_cc, guest.profile.control_type as u8, guest.ram_mb)?;
+        anyhow::ensure!(
+            matches!(result, Err((CC_ERR_RELAY_FAULT, _))),
+            "duplicate profile {} creation was not rejected: {result:?}",
+            guest.profile.id
+        );
+    }
+    println!("[xtask:test] duplicate profile creates rejected without alias handles");
     let deferred_boot_suspend = suspend_guest_via_cc(&mut boot_cc, deferred_handle)
         .with_context(|| format!("failed to defer {} boot", deferred.profile.id))?;
     println!(
@@ -2652,6 +2820,15 @@ fn wait_for_dual_guest_consoles_via_cc(
             .with_context(|| format!("failed to destroy {}", deferred.profile.id))?;
         destroy_guest_via_cc(&mut boot_cc, lead_handle)
             .with_context(|| format!("failed to destroy {}", lead.profile.id))?;
+        for handle in [lead_handle, deferred_handle, u32::MAX] {
+            let reply = boot_cc.call(MSG_CC_GUEST_STATUS, handle, 0, 0, &[])?;
+            anyhow::ensure!(
+                reply.mr[0] == CC_ERR_BAD_HANDLE,
+                "stale/invalid guest handle {handle} returned status {}",
+                reply.mr[0]
+            );
+        }
+        println!("[xtask:test] destroyed and invalid guest handles rejected");
     }
 
     Ok(format!(
@@ -2917,6 +3094,54 @@ mod tests {
     use super::*;
     use std::os::unix::net::UnixListener;
 
+    fn console_stress_fixture(newline: &[u8]) -> Vec<u8> {
+        let mut stream = b"prior console output\nAOS_STRESS_BEGIN".to_vec();
+        stream.extend_from_slice(newline);
+        stream.extend(
+            (0..CONSOLE_STRESS_BYTES)
+                .map(|index| b'A' + ((index ^ (index >> 8) ^ (index >> 16)) & 15) as u8),
+        );
+        stream.extend_from_slice(newline);
+        stream.extend_from_slice(b"AOS_STRESS_END\n");
+        stream
+    }
+
+    #[test]
+    fn console_stress_accepts_exact_payload_with_lf_or_crlf() {
+        let lf = verify_console_stress_stream(&console_stress_fixture(b"\n")).unwrap();
+        let crlf = verify_console_stress_stream(&console_stress_fixture(b"\r\n")).unwrap();
+        assert_eq!(lf.len(), 64);
+        assert_eq!(lf, crlf);
+    }
+
+    #[test]
+    fn console_stress_rejects_truncation_duplication_and_corruption() {
+        let stream = console_stress_fixture(b"\n");
+        let mut truncated = stream.clone();
+        truncated.remove(4096);
+        assert!(verify_console_stress_stream(&truncated).is_err());
+        let mut duplicated = stream.clone();
+        duplicated.insert(4096, stream[4096]);
+        assert!(verify_console_stress_stream(&duplicated).is_err());
+        let mut corrupted = stream;
+        corrupted[65536] ^= 1;
+        assert!(verify_console_stress_stream(&corrupted).is_err());
+    }
+
+    #[test]
+    fn console_stress_rejects_missing_or_malformed_framing() {
+        for stream in [
+            b"".as_slice(),
+            b"AOS_STRESS_BEGIN",
+            b"AOS_STRESS_BEGINjunk\nAOS_STRESS_END",
+        ] {
+            assert!(verify_console_stress_stream(stream).is_err());
+        }
+        let mut stream = console_stress_fixture(b"\n");
+        stream.truncate(stream.len() - b"AOS_STRESS_END\n".len());
+        assert!(verify_console_stress_stream(&stream).is_err());
+    }
+
     fn test_profile(alias: &str) -> HostProfilePlan {
         let repo = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
         let root = repo.join("guest-profiles");
@@ -2926,6 +3151,41 @@ mod tests {
 
     fn test_provision_commands(alias: &str, key: &str) -> Vec<String> {
         profile_provision_commands(&test_profile(alias), key).unwrap()
+    }
+
+    #[test]
+    fn profile_ssh_override_matches_qemu_forwarding_and_preserves_guest_identity() {
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+        let mut profile = test_profile("freebsd");
+        apply_profile_ssh_port(&mut profile, port);
+        let ssh = profile.qemu.as_ref().unwrap().ssh.as_ref().unwrap();
+        assert_eq!(ssh.host_port, port);
+        assert_eq!(ssh.account, "root");
+        assert_eq!(ssh.guest_address.as_deref(), Some("10.0.2.16"));
+        let netdev = qemu_netdev_arg(ssh.host_port, Some(&profile), None).unwrap();
+        assert_eq!(
+            netdev,
+            format!("user,id=net0,hostfwd=tcp:127.0.0.1:{port}-10.0.2.16:22")
+        );
+    }
+
+    #[test]
+    fn zero_ssh_override_preserves_profile_default() {
+        let mut profile = test_profile("freebsd");
+        apply_profile_ssh_port(&mut profile, 0);
+        assert_eq!(
+            profile
+                .qemu
+                .as_ref()
+                .unwrap()
+                .ssh
+                .as_ref()
+                .unwrap()
+                .host_port,
+            12223
+        );
     }
 
     #[test]

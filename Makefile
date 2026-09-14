@@ -102,6 +102,9 @@ else
   GUEST_PRIMARY_LARGE ?= 0
 endif
 QEMU_TEST_TIMEOUT ?= 300
+# Focused console proofs may run beside a retained dual-guest instance.
+# Zero keeps the profile's normal forwarding port.
+QEMU_TEST_SSH_PORT ?= 0
 # Correct suspend accounting freezes each guest's architectural time while it
 # is stopped.  A full vendor-live-media dual proof can therefore take longer
 # than the old 90-minute bound that accidentally included a clock jump.
@@ -757,6 +760,17 @@ test-guest-net:
 # tests/platform/test_blk_virt_pump.c and the source lint are not this gate.
 # The combined Ubuntu device proof is make test-ubuntu-virtio.
 .PHONY: test-block-isolation
+.PHONY: test-serial-isolation
+test-serial-isolation:
+	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os buildroot --timeout-secs $(QEMU_TEST_TIMEOUT) --serial-isolation-probe 1
+	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os buildroot --timeout-secs $(QEMU_TEST_TIMEOUT) --serial-isolation-probe 2
+	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os buildroot --timeout-secs $(QEMU_TEST_TIMEOUT) --serial-isolation-probe 3
+	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os buildroot --timeout-secs $(QEMU_TEST_TIMEOUT) --serial-isolation-probe 4
+	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os freebsd --timeout-secs $(QEMU_TEST_TIMEOUT) --serial-isolation-probe 5
+	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os freebsd --timeout-secs $(QEMU_TEST_TIMEOUT) --serial-isolation-probe 6
+	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os freebsd --timeout-secs $(QEMU_TEST_TIMEOUT) --serial-isolation-probe 7
+	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os freebsd --timeout-secs $(QEMU_TEST_TIMEOUT) --serial-isolation-probe 8
+
 .PHONY: test-network-isolation
 test-network-isolation:
 	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os buildroot --timeout-secs $(QEMU_TEST_TIMEOUT) --network-isolation-probe 1
@@ -797,7 +811,11 @@ test-guest-console:
 		echo "test-guest-console requires BOARD=qemu_virt_aarch64 (got BOARD=$(BOARD))"; \
 		exit 1; \
 	fi
-	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os ubuntu --timeout-secs $(QEMU_TEST_TIMEOUT) --assert-emulated-console
+	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os ubuntu --timeout-secs $(QEMU_TEST_TIMEOUT) --assert-emulated-console --ssh-port $(QEMU_TEST_SSH_PORT)
+
+.PHONY: test-console-backpressure
+test-console-backpressure:
+	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os ubuntu --timeout-secs $(QEMU_TEST_TIMEOUT) --assert-emulated-console --assert-console-backpressure --ssh-port $(QEMU_TEST_SSH_PORT)
 
 # Deterministic initramfs device proof. Host media is owned by virtio_blk;
 # Ubuntu's DTB advertises agentOS emulated devices only.
@@ -992,6 +1010,42 @@ test-integration:
 	    echo "FAIL: tests/platform/test_guest_vmm_runtime.c"; \
 	    status=1; \
 	fi; \
+	if gcc -std=c11 -Wall -Wextra -Werror -I platform/include \
+	        tests/platform/test_serial_virt_pump.c platform/serial-virt/pump.c \
+	        -o $(BUILD_TMP_DIR)/test_serial_virt_pump \
+	    && $(BUILD_TMP_DIR)/test_serial_virt_pump; then :; \
+	else status=1; fi; \
+	if gcc -std=c11 -Wall -Wextra -Werror -I platform/include \
+	        -iquote kernel/agentos-root-task/include \
+	        tests/platform/test_serial_virt_authority.c \
+	        -o $(BUILD_TMP_DIR)/test_serial_virt_authority \
+	    && $(BUILD_TMP_DIR)/test_serial_virt_authority; then :; \
+	else status=1; fi; \
+	if gcc -std=c11 -Wall -Wextra -Werror -I platform/include \
+	        -iquote kernel/agentos-root-task/include \
+	        tests/platform/test_serial_virt_service.c platform/serial-virt/service.c \
+	        platform/serial-virt/pump.c -o $(BUILD_TMP_DIR)/test_serial_virt_service \
+	    && $(BUILD_TMP_DIR)/test_serial_virt_service; then :; \
+	else status=1; fi; \
+	if gcc -std=c11 -Wall -Wextra -Werror -I platform/include \
+	        tests/platform/test_serial_endpoint.c platform/serial-virt/endpoint.c \
+	        platform/serial-virt/pump.c -o $(BUILD_TMP_DIR)/test_serial_endpoint \
+	    && $(BUILD_TMP_DIR)/test_serial_endpoint; then :; \
+	else status=1; fi; \
+	if gcc -std=c11 -Wall -Wextra -Werror -DCONFIG_KERNEL_MCS -DAGENTOS_TEST_HOST \
+	        -I tests/platform/loop-stubs -I platform/include -I . -idirafter kernel/agentos-root-task/include \
+	        tests/platform/test_guest_vmm_notifications.c platform/guest-vmm/loop.c \
+	        -o $(BUILD_TMP_DIR)/test_guest_vmm_notifications \
+	    && $(BUILD_TMP_DIR)/test_guest_vmm_notifications; then :; \
+	else status=1; fi; \
+	if gcc -std=c11 -Wall -Wextra -Werror -I libvmm/include \
+	        tests/platform/test_virtio_console_tx.c -o $(BUILD_TMP_DIR)/test_virtio_console_tx \
+	    && $(BUILD_TMP_DIR)/test_virtio_console_tx; then :; \
+	else status=1; fi; \
+	if gcc -std=c11 -Wall -Wextra -Werror -I libvmm/include \
+	        tests/platform/test_virtio_console_tx_ring.c -o $(BUILD_TMP_DIR)/test_virtio_console_tx_ring \
+	    && $(BUILD_TMP_DIR)/test_virtio_console_tx_ring; then :; \
+	else status=1; fi; \
 	if gcc -I kernel/agentos-root-task/include -I . \
 	        tests/platform/test_native_net_client.c \
 	        kernel/agentos-root-task/src/native_net_client.c \
@@ -1019,6 +1073,17 @@ test-integration:
 	        -o $(BUILD_TMP_DIR)/test_virtualizer_authority \
 	    && $(BUILD_TMP_DIR)/test_virtualizer_authority; then :; \
 	else status=1; fi; \
+	if gcc -DAGENTOS_TEST_HOST -include tests/microkit.h \
+	        -iquote kernel/agentos-root-task/include \
+	        tests/platform/test_cc_vm_client.c \
+	        kernel/agentos-root-task/src/cc_vm_client.c \
+	        -o $(BUILD_TMP_DIR)/test_cc_vm_client 2>&1 \
+	    && $(BUILD_TMP_DIR)/test_cc_vm_client; then \
+	    echo "PASS: tests/platform/test_cc_vm_client.c"; \
+	else \
+	    echo "FAIL: tests/platform/test_cc_vm_client.c"; \
+	    status=1; \
+	fi; \
 	if gcc -DAGENTOS_GUEST_DUAL -DAGENTOS_GUEST_PRIMARY_LARGE \
 	        -I platform/include \
 	        tests/platform/test_guest_memory_layout.c \

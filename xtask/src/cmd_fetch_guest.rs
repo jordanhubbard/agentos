@@ -709,7 +709,7 @@ fn linux_probe_initramfs_ready(initrd: &Path) -> anyhow::Result<bool> {
         .any(|entry| entry == "init" || entry == "./init")
         && entries
             .iter()
-            .any(|entry| entry == "agentos-init-v4" || entry == "./agentos-init-v4"))
+            .any(|entry| entry == "agentos-init-v5" || entry == "./agentos-init-v5"))
 }
 
 fn build_linux_e2e_init(work_dir: &Path) -> anyhow::Result<Vec<u8>> {
@@ -794,7 +794,7 @@ fn create_linux_probe_initramfs(init_elf: &[u8]) -> anyhow::Result<Vec<u8>> {
     ino += 1;
     append_newc_file(
         &mut out,
-        "agentos-init-v4",
+        "agentos-init-v5",
         ino,
         0o444,
         b"console-open\nvirtio-net-frame\n",
@@ -919,6 +919,8 @@ _start:
     svc  #0
 
     ldrb w3, [x1]
+    cmp  w3, #33                 /* '!' requests the bounded stress stream. */
+    b.eq stress_emit
     cmp  w3, #10
     b.ne 1b
 
@@ -929,6 +931,48 @@ _start:
     mov  x8, #64
     svc  #0
     b 1b
+
+/* Emit more bytes than all serial queues combined. Printable payload avoids
+ * tty newline translation; each byte depends on its stream position. */
+stress_emit:
+    adrp x6, stress_payload
+    add  x6, x6, :lo12:stress_payload
+    mov  x5, #0
+    mov  x4, #0x40000
+stress_fill:
+    eor  w7, w5, w5, lsr #8
+    eor  w7, w7, w5, lsr #16
+    and  w7, w7, #15
+    add  w7, w7, #65
+    strb w7, [x6, x5]
+    add  x5, x5, #1
+    cmp  x5, x4
+    b.lo stress_fill
+    adrp x21, stress_begin
+    add  x21, x21, :lo12:stress_begin
+    mov  x20, #stress_begin_len
+    bl stress_write_all
+    adrp x21, stress_payload
+    add  x21, x21, :lo12:stress_payload
+    mov  x20, #0x40000
+    bl stress_write_all
+    adrp x21, stress_end
+    add  x21, x21, :lo12:stress_end
+    mov  x20, #stress_end_len
+    bl stress_write_all
+    b 1b
+stress_write_all:
+    mov  x0, #1
+    mov  x1, x21
+    mov  x2, x20
+    mov  x8, #64
+    svc  #0
+    cmp  x0, #0
+    b.le stress_write_all
+    add  x21, x21, x0
+    sub  x20, x20, x0
+    cbnz x20, stress_write_all
+    ret
 
 /* Bring eth0 up and emit one Ethernet frame through the guest virtio NIC. */
 net_probe:
@@ -984,6 +1028,12 @@ prompt_end:
 .equ prompt_len, prompt_end - prompt
 dev_console:
     .asciz "/dev/console"
+stress_begin:
+    .ascii "\nAOS_STRESS_BEGIN\n"
+.equ stress_begin_len, . - stress_begin
+stress_end:
+    .ascii "\nAOS_STRESS_END\n"
+.equ stress_end_len, . - stress_end
 
 .section .data
 .balign 8
@@ -1011,6 +1061,9 @@ net_frame:
 .balign 16
 inbuf:
     .skip 1
+.balign 16
+stress_payload:
+    .skip 0x40000
 "#;
 
 fn archive_entries(archive: &Path) -> anyhow::Result<Vec<String>> {

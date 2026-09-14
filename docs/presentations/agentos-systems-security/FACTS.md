@@ -7,7 +7,7 @@ edition. “Planned” and “under qualification” are not synonyms for shippe
 | --- | --- | --- | --- |
 | seL4 is the only kernel-mode component | Current invariant | `CLAUDE.md`, `AGENTS.md`, root-task architecture | Does not make all userspace code formally verified. |
 | Services and VMMs communicate through explicit capability-bearing IPC | Current architecture | System descriptions, contract headers, PD implementations | Audit individual shared-memory channels and capability rights before making a least-authority claim. |
-| Linux and FreeBSD guest lifecycle paths exist on AArch64 | Current, release gate under qualification | `vm_manager`, both VMMs, `make demo-test` transcript | Concurrent key-only SSH remains the acceptance boundary. |
+| Linux and FreeBSD guest lifecycle paths exist on AArch64 | Target-qualified at `d3da13e1` | Retained `make demo-test` transcript and image hash in `docs/TCB.md` | Concurrent key-only SSH and suspend/resume passed; destroyed slots cannot yet be recreated. A new release requires its own exact-revision proof. |
 | Guest GPA and VMM HVA are distinct | Current implementation | Guest memory layout, guest RAM mapper, GPA helpers, host tests | Verify every virtio device before claiming complete elimination of identity assumptions. |
 | Net, block, and console use agentOS-owned emulation paths | Current architecture with target-specific proof levels | Service contracts, VMM device implementations, focused target tests | Do not include display in this claim. |
 | A desktop workload runs over the authenticated network path | Ubuntu 0.2 scope deferred; pinned Debian follow-on | `make demo-desktop-test` transcript and retained non-empty-frame evidence | Does not prove framebuffer, GPU, keyboard, or pointer virtualization. |
@@ -16,8 +16,8 @@ edition. “Planned” and “under qualification” are not synonyms for shippe
 | x86_64 guest operating systems run under agentOS | Planned for 0.4 | VMX/EPT target evidence and Linux userspace execution | Current x86 work proves a reduced root-task topology, not guest support. |
 | Omarchy is a supported agentOS guest | Conditional 0.6 direction | Official reproducible artifact, encrypted persistent install, SSH, compositor, input, frame, update, and recovery gates | Do not claim support while official architecture/artifact requirements are unmet. |
 | Releases bind claims and gates to one exact revision | Current implementation | `xtask release`, `docs/RELEASES.md`, host tests | This edition's checked receipt and remote verification are produced during publication, after its PDF is frozen. |
-| Queue client strides are isolated against a compromised VMM | Not established | Root-task network/block mapping branches in `main.c` map whole regions writable into each VMM | Software client separation is not page-level isolation; see `docs/security-architecture.md`. |
-| Console uses a separate virtualizer PD | Planned | `docs/TCB.md`, `serial_virt` task | Today the console queues are a VMM library and CC-PD relays bytes by IPC. |
+| Queue client pages are isolated against a compromised VMM | Implemented with target fault probes | Root-task network/block/serial mapping branches in `main.c`; eight forbidden-mapping probes per class | Each VMM maps only its own page. Virtualizers retain broader authority; this is not protection against a compromised virtualizer. |
+| Console uses a separate virtualizer PD | Implemented and target-qualified | `docs/TCB.md`, console gate, 262,144-byte backpressure proof and dual-guest transcript | CC and VMM exchange payloads through separate pages muxed by serial_virt. Lifecycle control still uses IPC. |
 
 ## Evidence still required for a fully qualified edition
 

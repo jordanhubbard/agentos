@@ -71,6 +71,10 @@ ifdef NET_ISOLATION_PROBE
 VMM_CFLAGS += -DAGENTOS_NET_ISOLATION_PROBE=$(NET_ISOLATION_PROBE)
 endif
 
+ifdef SERIAL_ISOLATION_PROBE
+VMM_CFLAGS += -DAGENTOS_SERIAL_ISOLATION_PROBE=$(SERIAL_ISOLATION_PROBE)
+endif
+
 ifdef VIRT_AUTHORITY_PROBE
 VMM_CFLAGS += -DAGENTOS_VIRT_AUTHORITY_PROBE=$(VIRT_AUTHORITY_PROBE)
 endif
@@ -165,6 +169,7 @@ VMM_VIRTIO_NET_OBJ := $(BUILD_DIR)/vmm_virtio_net.$(VMM_SLOT).o
 GPA_TRANSLATE_OBJ  := $(BUILD_DIR)/gpa_translate.$(VMM_SLOT).o
 VMM_GUEST_RAM_OBJ  := $(BUILD_DIR)/vmm_guest_ram.$(VMM_SLOT).o
 GUEST_VMM_RUNTIME_OBJ := $(BUILD_DIR)/guest_vmm_runtime.$(VMM_SLOT).o
+GUEST_SERIAL_OBJS := $(BUILD_DIR)/serial_pump.$(VMM_SLOT).o $(BUILD_DIR)/serial_endpoint.$(VMM_SLOT).o
 GUEST_VMM_LOOP_OBJ := $(BUILD_DIR)/guest_vmm_loop.$(VMM_SLOT).o
 GUEST_PROFILE_VALIDATE_OBJ := $(BUILD_DIR)/guest_profile_validate.$(VMM_SLOT).o
 GUEST_BOOT_OBJ := $(BUILD_DIR)/guest_boot.$(VMM_SLOT).o
@@ -230,6 +235,12 @@ $(GUEST_VMM_RUNTIME_OBJ): $(AGENTOS_ROOT)/platform/guest-vmm/runtime.c $(VMM_CON
 	@echo "[VMM] Compiling shared guest VMM runtime..."
 	clang $(VMM_CFLAGS) -c -o $@ $<
 
+$(BUILD_DIR)/serial_pump.$(VMM_SLOT).o: $(AGENTOS_ROOT)/platform/serial-virt/pump.c $(VMM_CONFIG_STAMP)
+	clang $(VMM_CFLAGS) -c -o $@ $<
+
+$(BUILD_DIR)/serial_endpoint.$(VMM_SLOT).o: $(AGENTOS_ROOT)/platform/serial-virt/endpoint.c $(VMM_CONFIG_STAMP)
+	clang $(VMM_CFLAGS) -c -o $@ $<
+
 $(GUEST_VMM_LOOP_OBJ): $(AGENTOS_ROOT)/platform/guest-vmm/loop.c $(VMM_CONFIG_STAMP) \
 			      $(AGENTOS_ROOT)/platform/include/platform/guest_vmm_loop.h \
 			      $(KERNEL_SRC_DIR)/include/contracts/blk_virt_contract.h
@@ -276,7 +287,7 @@ $(BUILD_DIR)/guest_vmm_primary.elf: FORCE \
 	                             $(VMM_VIRTIO_NET_OBJ) \
 	                             $(GPA_TRANSLATE_OBJ) \
 	                             $(VMM_GUEST_RAM_OBJ) \
-	                             $(GUEST_VMM_RUNTIME_OBJ) \
+	                             $(GUEST_VMM_RUNTIME_OBJ) $(GUEST_SERIAL_OBJS) \
 	                             $(GUEST_VMM_LOOP_OBJ) \
 	                             $(GUEST_PROFILE_VALIDATE_OBJ) \
 	                             $(GUEST_BOOT_OBJ) \
@@ -291,7 +302,7 @@ $(BUILD_DIR)/guest_vmm_primary.elf: FORCE \
 		-L$(BOARD_DIR)/lib \
 		$(VMM_PD_ENTRY_OBJ) $(GUEST_VMM_PRIMARY_OBJ) $(GPU_SHMEM_FULL_OBJ) \
 		$(VMM_VIRTIO_NET_OBJ) $(GPA_TRANSLATE_OBJ) $(VMM_GUEST_RAM_OBJ) \
-		$(GUEST_VMM_RUNTIME_OBJ) \
+		$(GUEST_VMM_RUNTIME_OBJ) $(GUEST_SERIAL_OBJS) \
 		$(GUEST_VMM_LOOP_OBJ) \
 		$(GUEST_PROFILE_VALIDATE_OBJ) \
 		$(GUEST_BOOT_OBJ) \
@@ -339,7 +350,7 @@ $(BUILD_DIR)/guest_vmm_secondary.elf: $(BUILD_DIR)/guest_vmm_secondary.o \
                                $(VMM_VIRTIO_NET_OBJ) \
                                $(GPA_TRANSLATE_OBJ) \
                                $(VMM_GUEST_RAM_OBJ) \
-                               $(GUEST_VMM_RUNTIME_OBJ) \
+                               $(GUEST_VMM_RUNTIME_OBJ) $(GUEST_SERIAL_OBJS) \
                                $(GUEST_VMM_LOOP_OBJ) \
                                $(GUEST_PROFILE_VALIDATE_OBJ) \
                                $(GUEST_BOOT_OBJ) \
@@ -354,7 +365,7 @@ $(BUILD_DIR)/guest_vmm_secondary.elf: $(BUILD_DIR)/guest_vmm_secondary.o \
 		$(BUILD_DIR)/guest_secondary_images.o \
 		$(VMM_VIRTIO_NET_OBJ) \
 		$(GPA_TRANSLATE_OBJ) $(VMM_GUEST_RAM_OBJ) \
-		$(GUEST_VMM_RUNTIME_OBJ) \
+		$(GUEST_VMM_RUNTIME_OBJ) $(GUEST_SERIAL_OBJS) \
 		$(GUEST_VMM_LOOP_OBJ) \
 		$(GUEST_PROFILE_VALIDATE_OBJ) $(BUILD_DIR)/guest_secondary_profile.o \
 		$(GUEST_BOOT_OBJ) \
@@ -367,6 +378,7 @@ $(BUILD_DIR)/guest_vmm_secondary.elf: $(BUILD_DIR)/guest_vmm_secondary.o \
 	@echo "[VMM] guest_vmm_secondary.elf ✓"
 
 vmm-clean:
+	rm -f $(BUILD_DIR)/serial_pump.*.o $(BUILD_DIR)/serial_endpoint.*.o
 	rm -f $(BUILD_DIR)/guest_vmm_primary.full.o $(BUILD_DIR)/gpu_shmem.full.o $(BUILD_DIR)/gpu_shmem.*.full.o $(BUILD_DIR)/pd_entry.vmm.o $(BUILD_DIR)/pd_entry.*.vmm.o $(BUILD_DIR)/guest_vmm_primary.elf
 	rm -f $(BUILD_DIR)/net_virt_pump.o $(BUILD_DIR)/net_virt_pump.*.o $(BUILD_DIR)/vmm_virtio_net.o $(BUILD_DIR)/vmm_virtio_net.*.o
 	rm -f $(BUILD_DIR)/gpa_translate.o $(BUILD_DIR)/gpa_translate.*.o
@@ -383,3 +395,6 @@ vmm-clean:
 	rm -f $(BUILD_DIR)/vmm_wrapper.mk
 
 FORCE:
+
+# Include compiler-generated dependencies for shared queue and contract headers.
+-include $(wildcard $(BUILD_DIR)/*.d)
