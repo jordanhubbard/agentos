@@ -349,8 +349,13 @@ static void pl011_init(void)
 
 static void pl011_putc(char c)
 {
+#if defined(AGENTOS_TEST_HOST) && defined(SERIAL_PD_TEST_PUTC)
+    extern void SERIAL_PD_TEST_PUTC(char c);
+    SERIAL_PD_TEST_PUTC(c);
+#else
     while (pl011_rd(UART_FR) & UART_FR_TXFF) {}
     pl011_wr(UART_DR, (uint32_t)(uint8_t)c);
+#endif
 }
 
 static void pl011_puts(const char *s)
