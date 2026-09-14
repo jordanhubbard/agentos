@@ -690,6 +690,14 @@ test-host: policy-check guest-profile-check lint-source test-integration
 
 # Host behavior plus real SDK compilation; this is not a native-PD boot proof.
 .PHONY: test-rust-pd-abi test-native-rust
+.PHONY: test-inspect
+test-inspect:
+	$(MAKE) -C tools/agentctl
+	cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os none --assert-inspect --timeout-secs $(QEMU_TEST_TIMEOUT)
+.PHONY: test-inspect-readonly
+test-inspect-readonly:
+	cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os none --inspect-write-probe --timeout-secs $(QEMU_TEST_TIMEOUT)
+
 test-native-rust:
 	cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os none --assert-native-rust --timeout-secs $(QEMU_TEST_TIMEOUT)
 

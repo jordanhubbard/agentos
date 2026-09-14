@@ -12,18 +12,18 @@ PREFIX ?= /usr/local
 
 CC      ?= cc
 CFLAGS  := -O2 -Wall -Wextra -std=c11 -DAGENTOS_TEST_HOST \
-           -I../../kernel/agentos-root-task/include
+           -I../../kernel/agentos-root-task/include -I../../platform/include
 LDFLAGS :=
 
 TARGET  := agentctl
-SRC     := agentctl.c
+SRC     := agentctl.c ../../platform/inspect/inspect_snapshot.c
 
 .PHONY: all test install clean
 
 all: $(TARGET)
 
-$(TARGET): $(SRC)
-	$(CC) $(CFLAGS) -o $@ $< $(LDFLAGS)
+$(TARGET): $(SRC) ../../platform/include/platform/inspect.h ../../kernel/agentos-root-task/include/contracts/cc_contract.h
+	$(CC) $(CFLAGS) -o $@ $(SRC) $(LDFLAGS)
 	@echo "Built: $(TARGET)"
 
 # Unit test: verify binary compiles and --help exits 0

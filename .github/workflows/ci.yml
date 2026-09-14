@@ -406,6 +406,21 @@ jobs:
             build/qemu_virt_aarch64/agentos.img
             build/qemu_virt_aarch64/native_rust_probe.elf
             build/qemu_virt_aarch64/native_rust_client.elf
+      - name: Verify read-only boot inspection
+        run: |
+          mkdir -p build/evidence/inspect
+          make test-inspect QEMU_TEST_TIMEOUT=120 2>&1 | tee build/evidence/inspect/report.log
+          cp build/qemu_virt_aarch64/agentos.img build/evidence/inspect/report.img
+          make test-inspect-readonly QEMU_TEST_TIMEOUT=120 2>&1 | tee build/evidence/inspect/readonly.log
+          cp build/qemu_virt_aarch64/agentos.img build/evidence/inspect/readonly.img
+      - name: Retain inspection proof
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: inspect-proof
+          path: |
+            build/evidence/inspect/
+            build/tmp/agentos-qemu-*
           if-no-files-found: error
 
   contract-tests:

@@ -270,6 +270,28 @@ DMA against those QEMU devices is an architecture regression.
 
 ## Proof
 
+### Read-only boot inspection
+
+Root publishes one 4 KiB observation page after starting the configured PDs
+and before parking. Only CC maps it, with read-only rights; the frame capability
+remains in root. `MSG_CC_INSPECT` returns the versioned packed snapshot, and
+`agentctl inspect` validates it before printing structured `key=value` output.
+This adds no inspection PD, runtime root-policy loop, or device authority.
+
+The snapshot records successfully started PD identities and priorities. It
+does not query live thread state: those fields remain `unknown`. Memory fields
+describe the managed non-device untyped pool, its accounted-page lower bound,
+and boot-reserved guest RAM. Alignment loss and sub-page kernel objects are
+not included in the usage counter; subtracting it from total does not yield
+free memory. Hardware fields describe the configured board and emulated guest
+ABI, not proof of current device health.
+
+`make test-inspect` checks the actual CC/CLI response and malformed-request
+rejection. `make test-inspect-readonly` reads the valid page and then attempts
+a write from CC; only root emits success after matching the CC fault badge,
+page address, data-access kind and write direction. Neither test establishes
+live scheduler inspection or serial-session attachment.
+
 `make gate` is the OS-claim gate: host suite, aarch64 and x86_64 boot with
 `GUEST_OS=none`, and `gate-guest-io` (`make test-guest-net`,
 `make test-guest-blk`, `make test-guest-console`). `GUEST_OS=none` alone is a

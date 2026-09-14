@@ -31,6 +31,7 @@ flowchart TB
     nd[net_pd PD<br/>host NIC MMIO and IRQ]
     bd[virtio_blk PD<br/>host block MMIO, IRQ and DMA window]
     cc[cc_pd PD<br/>control API and console relay<br/>owns host virtio-serial transport]
+    observation[Immutable boot snapshot page<br/>CC read-only mapping]
     manager[vm_manager PD<br/>guest lifecycle control]
     serial[serial_pd PD<br/>owns PL011 UART]
     logs[log_drain PD<br/>serial encoder repaired<br/>generic log provisioning incomplete]
@@ -65,6 +66,8 @@ flowchart TB
   cc --> hardware
   serial --> hardware
   root -.->|initial capability distribution| userspace
+  root -.->|publishes once before parking| observation
+  observation -->|validated boot facts| cc
   sel4 -.->|enforces configured authority| userspace
 ```
 
@@ -83,6 +86,7 @@ image; ordinary images do not include it.
 | Multiplexing is a service boundary | Separate `net_virt`, `blk_virt` and `serial_virt` PDs consume bounded queues | Device access crosses a named service boundary. VMM client pages are isolated; resource exhaustion still requires auditing. |
 | A guest address is not a host pointer | VMM code validates descriptors and translates GPA to its mapped guest RAM | Invalid descriptors can be rejected before copying. Correctness of every translation and length calculation remains userspace TCB work. |
 | Native work need not inherit a Linux kernel | A no_std Rust PD uses the canonical network queues with scoped attach and notification capabilities | Native ARP exchanges interleaved with guest pings passed after Ubuntu SSH provisioning. This qualifies raw queue access and coexistence, not a production TCP/IP stack. |
+| Inspection need not acquire new runtime authority | Root publishes immutable boot observations through a read-only CC mapping | A target fault probe verifies that CC cannot write this page. The report does not expose root capabilities or claim live thread state. The existing CC socket remains a privileged control channel; the read-only operation is not a separate authorization boundary. |
 | Control and bulk data have different contracts | seL4 IPC for attach/lifecycle; shared-memory queues for net/block/console payloads | Root-minted badges constrain attachment. Console queues and descriptor progress remain bounded; shared metadata does not grant lifecycle authority. The sustained-output target proof recovered 262,144 bytes after backpressure; scope and evidence are detailed in TCB.md. |
 
 These choices differ from a host-kernel driver path and from assigning a host

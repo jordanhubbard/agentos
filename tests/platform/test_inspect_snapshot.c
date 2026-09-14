@@ -125,6 +125,41 @@ static int test_errors(void)
     PASS("test_errors");
 }
 
+static int test_untrusted_snapshot(void)
+{
+    aos_inspect_view_t view;
+    aos_inspect_snapshot_t snap;
+    char report[8192];
+    const aos_inspect_thread_t *found = (void *)1;
+    sample_view(&view);
+    view.flags = AOS_INSPECT_FLAG_BOOT | AOS_INSPECT_FLAG_PARTIAL | AOS_INSPECT_FLAG_USED_LOWER_BOUND;
+    for (unsigned i = 0; i < view.thread_count; i++) view.threads[i].state = AOS_INSPECT_THR_UNKNOWN;
+    CHECK(aos_inspect_fill(&snap, &view) == 0);
+    CHECK(aos_inspect_format(&snap, report, sizeof(report)) > 0);
+    CHECK(strstr(report, "inspect.observation=boot\n"));
+    CHECK(strstr(report, "memory.ut_used_kind=accounted_pages_lower_bound\n"));
+    CHECK(strstr(report, "thread[0].state=unknown\n"));
+    snap.thread_count = UINT32_MAX;
+    CHECK(aos_inspect_format(&snap, report, sizeof(report)) == AOS_INSPECT_ERR_TOO_MANY);
+    CHECK(report[0] == 0);
+    CHECK(aos_inspect_thread_by_name(&snap, "nameserver", &found) == AOS_INSPECT_ERR_TOO_MANY);
+    CHECK(found == NULL);
+    CHECK(aos_inspect_fill(&snap, &view) == 0);
+    snap.threads[0].name[0] = '\n';
+    CHECK(aos_inspect_format(&snap, report, sizeof(report)) == AOS_INSPECT_ERR_INVALID);
+    CHECK(report[0] == 0);
+    CHECK(aos_inspect_fill(&snap, &view) == 0);
+    snap.threads[1].pd_index = snap.threads[0].pd_index;
+    CHECK(aos_inspect_validate(&snap) == AOS_INSPECT_ERR_INVALID);
+    CHECK(aos_inspect_fill(&snap, &view) == 0);
+    snap.threads[0].state = AOS_INSPECT_THR_RUNNING;
+    CHECK(aos_inspect_validate(&snap) == AOS_INSPECT_ERR_INVALID);
+    CHECK(aos_inspect_fill(&snap, &view) == 0);
+    snap.mem.ut_used_bytes = snap.mem.ut_total_bytes + 1;
+    CHECK(aos_inspect_validate(&snap) == AOS_INSPECT_ERR_INVALID);
+    PASS("test_untrusted_snapshot");
+}
+
 int main(void)
 {
     int fails = 0;
@@ -133,5 +168,6 @@ int main(void)
     fails += test_abi();
     fails += test_fill_report();
     fails += test_errors();
+    fails += test_untrusted_snapshot();
     return fails == 0 ? 0 : 1;
 }

@@ -202,6 +202,11 @@ fn virtio_markers(assertion: &VirtioAssertion) -> Vec<&'static str> {
 
 pub fn run(args: &TestArgs) -> anyhow::Result<()> {
     anyhow::ensure!(
+        !(args.assert_inspect || args.inspect_write_probe)
+            || (args.board == "qemu_virt_aarch64" && args.guest_os == "none"),
+        "inspect qualification requires AArch64 with guest-os none"
+    );
+    anyhow::ensure!(
         !args.assert_native_guest
             || (args.board == "qemu_virt_aarch64"
                 && args.guest_os == "ubuntu-live"
@@ -359,6 +364,9 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
         if let Some(mode) = args.block_isolation_probe {
             make_args.push(format!("BLK_ISOLATION_PROBE={mode}"));
         }
+        if args.inspect_write_probe {
+            make_args.push(String::from("INSPECT_WRITE_PROBE=1"));
+        }
         if args.assert_native_rust || args.assert_native_guest {
             make_args.push(String::from("NATIVE_RUST_TEST=1"));
         }
@@ -444,7 +452,17 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
         drop(connect_host_net_stimulus(ssh_port, &mut qemu));
     }
 
-    let mut result = if args.native_network_isolation_probe.is_some() {
+    let mut result = if args.inspect_write_probe {
+        wait_for_all_markers(
+            &log_path,
+            &[
+                "[cc_pd] inspect: valid boot page read before write probe",
+                "[rt] inspect: expected read-only page write fault verified",
+            ],
+            Duration::from_secs(args.timeout_secs),
+            &mut qemu,
+        )
+    } else if args.native_network_isolation_probe.is_some() {
         wait_for_all_markers(
             &log_path,
             &[
@@ -611,6 +629,10 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
             Duration::from_secs(args.timeout_secs),
             &mut qemu,
         );
+    }
+
+    if result.is_ok() && args.assert_inspect {
+        result = verify_inspect(&cc_sock, &repo_root);
     }
 
     // Every AArch64 image includes log_drain and the serial driver. Require
@@ -1649,6 +1671,72 @@ fn wait_for_x86_reduced_smoke(log_path: &Path, timeout: Duration) -> anyhow::Res
     Ok(format!(
         "{marker} (x86 reduced smoke, no fault endpoint reports)"
     ))
+}
+
+fn verify_inspect(socket: &Path, root: &Path) -> anyhow::Result<String> {
+    let first;
+    {
+        let mut client = CcClient::connect(socket)?;
+        for version in [0, 2, u32::MAX] {
+            let bad = client.call(0x261a, version, 0, 0, &[])?;
+            anyhow::ensure!(
+                bad.mr == [9, 0, 0, 0] && bad.shmem.iter().all(|b| *b == 0),
+                "inspect invalid version returned data or wrong error"
+            );
+        }
+        let bad = client.call(0x261a, 1, 1, 0, &[])?;
+        anyhow::ensure!(bad.mr == [9, 0, 0, 0], "inspect accepted reserved argument");
+        first = client.call(0x261a, 1, 0, 0, &[])?;
+        anyhow::ensure!(
+            first.mr == [0, 1488, 7, 1],
+            "inspect header: {:?}",
+            first.mr
+        );
+        let count = rd32(&first.shmem, 72);
+        anyhow::ensure!(
+            count == 13 && rd32(&first.shmem, 32) == count,
+            "inspect did not report the 13 successfully started default PDs"
+        );
+        for i in 0..count as usize {
+            anyhow::ensure!(
+                rd32(&first.shmem, 80 + i * 44 + 8) == 0,
+                "boot snapshot advertised live thread state"
+            );
+        }
+    }
+    let out = std::process::Command::new(root.join("tools/agentctl/agentctl"))
+        .arg("--socket")
+        .arg(socket)
+        .arg("inspect")
+        .output()
+        .context("run make -C tools/agentctl before inspect qualification")?;
+    anyhow::ensure!(
+        out.status.success(),
+        "agentctl inspect failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let report = String::from_utf8(out.stdout)?;
+    for expected in [
+        "inspect.observation=boot\n",
+        "memory.ut_used_kind=accounted_pages_lower_bound\n",
+        "hardware.arch=aarch64\n",
+        "hardware.virtio_net_ipa=0xa010000\n",
+        "hardware.virtio_net_virq=50\n",
+        "memory.pd_count=13\n",
+        ".name=cc_pd\n",
+        ".name=net_virt\n",
+        ".name=serial_virt\n",
+    ] {
+        anyhow::ensure!(report.contains(expected), "inspect missing {expected}");
+    }
+    println!("{report}");
+    let mut client = CcClient::connect(socket)?;
+    let second = client.call(0x261a, 1, 0, 0, &[])?;
+    anyhow::ensure!(
+        first.mr == second.mr && first.shmem == second.shmem,
+        "boot snapshot changed after reconnect and intervening requests"
+    );
+    Ok("root boot observations returned by CC and agentctl; invalid requests rejected; repeat stable".into())
 }
 
 pub struct CcReply {

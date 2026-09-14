@@ -18,6 +18,7 @@
 
 #include "contracts/cc_contract.h"
 #include "contracts/guest_contract.h"
+#include <platform/inspect.h>
 
 #define AGENTCTL_VERSION "0.2.0"
 #define DEFAULT_CC_SOCK "build/cc_pd.sock"
@@ -43,6 +44,7 @@ static void usage(FILE *out)
             "agentctl v%s\n"
             "Usage: agentctl [--socket PATH] [--batch] COMMAND [ARGS...]\n\n"
             "Commands:\n"
+            "  inspect\n"
             "  list-guests\n"
             "  guest-status HANDLE\n"
             "  list-devices TYPE [MAX]\n"
@@ -162,6 +164,26 @@ static void print_raw_reply(const cc_reply_wire_t *r)
 {
     printf("{\"mr\":[%" PRIu32 ",%" PRIu32 ",%" PRIu32 ",%" PRIu32 "]}\n",
            r->mr[0], r->mr[1], r->mr[2], r->mr[3]);
+}
+
+static int cmd_inspect(void)
+{
+    cc_reply_wire_t r;
+    aos_inspect_snapshot_t snap;
+    char report[8192];
+    if (!cc_call(MSG_CC_INSPECT, AOS_INSPECT_VERSION, 0, 0, NULL, 0, &r)) return 1;
+    if (r.mr[0] != CC_OK || r.mr[1] != sizeof(snap) || r.mr[3] != AOS_INSPECT_VERSION) {
+        fprintf(stderr, "agentctl: invalid or unavailable inspect reply\n");
+        return 1;
+    }
+    memcpy(&snap, r.shmem, sizeof(snap));
+    if (snap.flags != r.mr[2] || !(snap.flags & AOS_INSPECT_FLAG_BOOT) ||
+        aos_inspect_format(&snap, report, sizeof(report)) < 0) {
+        fprintf(stderr, "agentctl: invalid inspect snapshot\n");
+        return 1;
+    }
+    fputs(report, stdout);
+    return 0;
 }
 
 static int cmd_connect(void)
@@ -331,6 +353,7 @@ int main(int argc, char **argv)
     int n = argc - i;
     char **args = &argv[i];
 
+    if (strcmp(cmd, "inspect") == 0) return n == 0 ? cmd_inspect() : 2;
     if (strcmp(cmd, "connect") == 0) return cmd_connect();
     if (strcmp(cmd, "status") == 0) return cmd_status(n, args);
     if (strcmp(cmd, "list-guests") == 0) return cmd_list_guests();

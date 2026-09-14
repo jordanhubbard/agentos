@@ -59,7 +59,7 @@ int aos_inspect_fill(aos_inspect_snapshot_t *snap, const aos_inspect_view_t *vie
 
     memset(snap, 0, sizeof(*snap));
     snap->version = AOS_INSPECT_VERSION;
-    snap->flags = 0u;
+    snap->flags = view->flags;
     snap->mem.ut_total_bytes = view->ut_total_bytes;
     snap->mem.ut_used_bytes = view->ut_used_bytes;
     snap->mem.guest_ram_bytes = view->guest_ram_bytes;
@@ -82,6 +82,34 @@ int aos_inspect_fill(aos_inspect_snapshot_t *snap, const aos_inspect_view_t *vie
         snap->flags |= AOS_INSPECT_FLAG_PARTIAL;
     }
 
+    return aos_inspect_validate(snap);
+}
+
+int aos_inspect_validate(const aos_inspect_snapshot_t *snap)
+{
+    if (!snap) return AOS_INSPECT_ERR_NULL;
+    if (snap->version != AOS_INSPECT_VERSION) return AOS_INSPECT_ERR_VERSION;
+    if (snap->thread_count > AOS_INSPECT_MAX_THREADS) return AOS_INSPECT_ERR_TOO_MANY;
+    if ((snap->flags & ~AOS_INSPECT_FLAG_KNOWN) || snap->reserved ||
+        snap->mem.reserved || snap->mem.pd_count != snap->thread_count ||
+        (snap->mem.ut_total_bytes && snap->mem.ut_used_bytes > snap->mem.ut_total_bytes) ||
+        snap->hw.arch > AOS_INSPECT_ARCH_RISCV64) return AOS_INSPECT_ERR_INVALID;
+    for (uint32_t i = 0; i < snap->thread_count; i++) {
+        const aos_inspect_thread_t *t = &snap->threads[i];
+        if (t->prio > 255 || t->state > AOS_INSPECT_THR_IDLE ||
+            ((snap->flags & AOS_INSPECT_FLAG_BOOT) && t->state != AOS_INSPECT_THR_UNKNOWN))
+            return AOS_INSPECT_ERR_INVALID;
+        uint32_t n = 0;
+        for (; n < AOS_INSPECT_NAME_LEN && t->name[n]; n++) {
+            uint8_t c = t->name[n];
+            if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+                  (c >= '0' && c <= '9') || c == '_' || c == '-' || c == '.'))
+                return AOS_INSPECT_ERR_INVALID;
+        }
+        if (!n || n == AOS_INSPECT_NAME_LEN) return AOS_INSPECT_ERR_INVALID;
+        for (uint32_t j = 0; j < i; j++)
+            if (snap->threads[j].pd_index == t->pd_index) return AOS_INSPECT_ERR_INVALID;
+    }
     return AOS_INSPECT_OK;
 }
 
@@ -94,9 +122,9 @@ int aos_inspect_thread_by_name(const aos_inspect_snapshot_t *snap,
     if (snap == NULL || name == NULL || out == NULL) {
         return AOS_INSPECT_ERR_NULL;
     }
-    if (snap->version != AOS_INSPECT_VERSION) {
-        return AOS_INSPECT_ERR_VERSION;
-    }
+    *out = NULL;
+    int valid = aos_inspect_validate(snap);
+    if (valid != AOS_INSPECT_OK) return valid;
     for (i = 0u; i < snap->thread_count && i < AOS_INSPECT_MAX_THREADS; i++) {
         if (names_equal(snap->threads[i].name, name)) {
             *out = &snap->threads[i];
@@ -253,9 +281,10 @@ int aos_inspect_format(const aos_inspect_snapshot_t *snap, char *buf, size_t buf
     if (buflen < 1u) {
         return AOS_INSPECT_ERR_TRUNC;
     }
-    if (snap->version != AOS_INSPECT_VERSION) {
+    int valid = aos_inspect_validate(snap);
+    if (valid != AOS_INSPECT_OK) {
         buf[0] = '\0';
-        return AOS_INSPECT_ERR_VERSION;
+        return valid;
     }
 
     p = buf;
@@ -263,6 +292,9 @@ int aos_inspect_format(const aos_inspect_snapshot_t *snap, char *buf, size_t buf
 
     if (line_u64(&p, end, "inspect.version", snap->version) != 0
         || line_u64(&p, end, "inspect.flags", snap->flags) != 0
+        || line_str(&p, end, "inspect.observation", (snap->flags & AOS_INSPECT_FLAG_BOOT) ? "boot" : "supplied") != 0
+        || line_str(&p, end, "memory.ut_used_kind", (snap->flags & AOS_INSPECT_FLAG_USED_LOWER_BOUND) ? "accounted_pages_lower_bound" : "supplied") != 0
+        || line_str(&p, end, "memory.guest_ram_kind", (snap->flags & AOS_INSPECT_FLAG_BOOT) ? "boot_reserved" : "supplied") != 0
         || line_u64(&p, end, "memory.ut_total_bytes", snap->mem.ut_total_bytes) != 0
         || line_u64(&p, end, "memory.ut_used_bytes", snap->mem.ut_used_bytes) != 0
         || line_u64(&p, end, "memory.guest_ram_bytes", snap->mem.guest_ram_bytes) != 0
