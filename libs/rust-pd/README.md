@@ -23,7 +23,8 @@ seeded `alloc::Vec` contents, page alignment, exhaustion and complete reuse
 of the probe's private 64 KiB heap. Install Rust's
 `aarch64-unknown-none` standard-library target before running the target build.
 The full runtime task, `task_3d190486ab18c12663a2d724bb602778`, also requires
-virtualizer network bindings and a real native RCC service.
+virtualizer network bindings and integrated on-target validation in an agentOS
+native PD. The migrated requirement to port an external RCC service is obsolete.
 
 `heap::BoundedHeap<N>` supplies a fixed-capacity global allocator with `N`
 64-byte blocks. Declare it at a stable static address using `#[global_allocator]`.
