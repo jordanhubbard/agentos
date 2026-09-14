@@ -179,6 +179,15 @@ the dropped PDs reappears in the default descriptor.
 
 ## QEMU host transports
 
+On the MCS target, each VMM also holds a capability to its own guest's
+scheduling context, installed by the root task using
+`contracts/guest_execution_caps.h`. Suspend detaches that context from the
+guest TCB; resume reattaches it. This preserves queued guest fault IPC while
+removing execution budget. Failed execution transitions return an error and
+retain the prior lifecycle state. This authority does not include another
+VMM's guest or the driver scheduling contexts. Dual-guest resume qualification
+for this implementation remains pending.
+
 QEMU virtio devices are hardware stand-ins owned by canonical agentOS driver
 PDs. The QEMU buses used for block media (8), networking (16), and the control
 console (2) are not mapped or advertised to either guest. Linux and FreeBSD see

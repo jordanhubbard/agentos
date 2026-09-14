@@ -13,6 +13,8 @@ static unsigned starts;
 static unsigned suspends;
 static unsigned resumes;
 static unsigned timer_quiesces;
+static bool suspend_fails;
+static bool resume_fails;
 static uint32_t pushed_event;
 static uint32_t pushed_length;
 static uint8_t pushed_bytes[CC_INPUT_TEXT_MAX];
@@ -24,8 +26,8 @@ static bool start_guest(void)
     return true;
 }
 
-static void suspend_guest(void) { suspends++; }
-static void resume_guest(void) { resumes++; }
+static bool suspend_guest(void) { suspends++; return !suspend_fails; }
+static bool resume_guest(void) { resumes++; return !resume_fails; }
 static void quiesce_timer(void) { timer_quiesces++; }
 static bool push_input(uint32_t event_type, const uint8_t *bytes,
                        uint32_t length)
@@ -173,6 +175,69 @@ int main(void)
                         "shared HID and raw-byte decoding is stable");
     }
 
-    printf("1..12\n");
+    state = GUEST_STATE_RUNNING;
+    unsigned quiesces_before = timer_quiesces;
+    suspend_fails = true;
+    request(&req, MSG_GUEST_SUSPEND, 0u);
+    (void)aos_guest_vmm_lifecycle_rpc(&req, &rep, &runtime);
+    failed += check(rep.opcode == GUEST_ERR_NOT_READY &&
+                    state == GUEST_STATE_RUNNING &&
+                    timer_quiesces == quiesces_before,
+                    "failed suspend preserves running state and timer");
+
+    request(&req, MSG_GUEST_DESTROY, 0u);
+    (void)aos_guest_vmm_lifecycle_rpc(&req, &rep, &runtime);
+    failed += check(rep.opcode == GUEST_ERR_NOT_READY &&
+                    state == GUEST_STATE_RUNNING &&
+                    timer_quiesces == quiesces_before,
+                    "failed destroy cannot report a live guest as dead");
+
+    runtime.suspend = NULL;
+    request(&req, MSG_GUEST_SUSPEND, 0u);
+    (void)aos_guest_vmm_lifecycle_rpc(&req, &rep, &runtime);
+    failed += check(rep.opcode == GUEST_ERR_NOT_READY &&
+                    state == GUEST_STATE_RUNNING,
+                    "missing suspend callback fails closed");
+    runtime.suspend = suspend_guest;
+    suspend_fails = false;
+    (void)aos_guest_vmm_lifecycle_rpc(&req, &rep, &runtime);
+    failed += check(rep.opcode == GUEST_OK && state == GUEST_STATE_SUSPENDED,
+                    "suspend can be retried after failure");
+
+    unsigned suspends_before = suspends;
+    quiesces_before = timer_quiesces;
+    (void)aos_guest_vmm_lifecycle_rpc(&req, &rep, &runtime);
+    failed += check(rep.opcode == GUEST_OK && suspends == suspends_before &&
+                    timer_quiesces == quiesces_before,
+                    "repeated suspend does not repeat execution transition");
+
+    resume_fails = true;
+    request(&req, MSG_GUEST_RESUME, 0u);
+    (void)aos_guest_vmm_lifecycle_rpc(&req, &rep, &runtime);
+    failed += check(rep.opcode == GUEST_ERR_NOT_READY &&
+                    state == GUEST_STATE_SUSPENDED,
+                    "failed resume preserves suspended state");
+    runtime.resume = NULL;
+    (void)aos_guest_vmm_lifecycle_rpc(&req, &rep, &runtime);
+    failed += check(rep.opcode == GUEST_ERR_NOT_READY &&
+                    state == GUEST_STATE_SUSPENDED,
+                    "missing resume callback fails closed");
+    runtime.resume = resume_guest;
+    resume_fails = false;
+    (void)aos_guest_vmm_lifecycle_rpc(&req, &rep, &runtime);
+    failed += check(rep.opcode == GUEST_OK && state == GUEST_STATE_RUNNING,
+                    "resume can be retried after failure");
+
+    request(&req, MSG_GUEST_SUSPEND, 0u);
+    (void)aos_guest_vmm_lifecycle_rpc(&req, &rep, &runtime);
+    suspends_before = suspends;
+    suspend_fails = true;
+    request(&req, MSG_GUEST_DESTROY, 0u);
+    (void)aos_guest_vmm_lifecycle_rpc(&req, &rep, &runtime);
+    failed += check(rep.opcode == GUEST_OK && state == GUEST_STATE_DEAD &&
+                    suspends == suspends_before,
+                    "destroy of suspended guest needs no second suspend");
+
+    printf("1..21\n");
     return failed == 0 ? 0 : 1;
 }

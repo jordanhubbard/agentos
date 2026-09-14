@@ -61,7 +61,10 @@ bool aos_guest_vmm_lifecycle_rpc(const sel4_msg_t *req, sel4_msg_t *rep,
             rep->opcode = GUEST_ERR_DEAD;
         } else {
             if (*runtime->state != GUEST_STATE_SUSPENDED) {
-                if (runtime->suspend != NULL) runtime->suspend();
+                if (runtime->suspend == NULL || !runtime->suspend()) {
+                    rep->opcode = GUEST_ERR_NOT_READY;
+                    return true;
+                }
                 if (runtime->quiesce_timer != NULL) runtime->quiesce_timer();
                 *runtime->state = GUEST_STATE_SUSPENDED;
             }
@@ -75,8 +78,9 @@ bool aos_guest_vmm_lifecycle_rpc(const sel4_msg_t *req, sel4_msg_t *rep,
             rep->opcode = GUEST_ERR_DEAD;
         } else {
             if (*runtime->state == GUEST_STATE_SUSPENDED &&
-                runtime->resume != NULL) {
-                runtime->resume();
+                (runtime->resume == NULL || !runtime->resume())) {
+                rep->opcode = GUEST_ERR_NOT_READY;
+                return true;
             }
             *runtime->state = GUEST_STATE_RUNNING;
             rep->opcode = GUEST_OK;
@@ -87,7 +91,11 @@ bool aos_guest_vmm_lifecycle_rpc(const sel4_msg_t *req, sel4_msg_t *rep,
             rep->opcode = GUEST_ERR_BAD_GUEST_ID;
         } else {
             if (*runtime->state != GUEST_STATE_DEAD) {
-                if (runtime->suspend != NULL) runtime->suspend();
+                if (*runtime->state != GUEST_STATE_SUSPENDED &&
+                    (runtime->suspend == NULL || !runtime->suspend())) {
+                    rep->opcode = GUEST_ERR_NOT_READY;
+                    return true;
+                }
                 if (runtime->quiesce_timer != NULL) runtime->quiesce_timer();
                 *runtime->state = GUEST_STATE_DEAD;
             }

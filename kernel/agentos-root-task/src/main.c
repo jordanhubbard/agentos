@@ -34,6 +34,7 @@
  */
 
 #include "boot_info.h"       /* seL4_BootInfo, seL4_Yield, object type constants */
+#include "contracts/guest_execution_caps.h"
 #include "sel4_boot.h"       /* seL4_IRQControl_Get, seL4_IRQHandler_Ack, etc.   */
 #include "ut_alloc.h"        /* ut_alloc_init, ut_alloc                          */
 #include "pd_vspace.h"       /* pd_vspace_create, pd_vspace_load_elf              */
@@ -116,8 +117,8 @@ static seL4_Word g_cap_base;  /* set to bi->empty.start in root_task_main */
  * by the VMM PDs.  They are well above the low service/IRQ slots and fit in
  * the VMM PDs' 1024-slot CNodes.
  */
-#define VMM_GUEST_TCB_SLOT_BASE   266u
-#define VMM_GUEST_VCPU_SLOT_BASE  330u
+#define VMM_GUEST_TCB_SLOT_BASE   AOS_GUEST_TCB_CAP_BASE
+#define VMM_GUEST_VCPU_SLOT_BASE  AOS_GUEST_VCPU_CAP_BASE
 #define VMM_FAULT_BADGE_BASE      (1ULL << 62)
 /* Guest TCB IPC buffer: next 4K after the debug UART page. Must not share
  * the VMM thread's buffer — seL4 forbids two TCBs on one IPC page, and a
@@ -1180,6 +1181,21 @@ static seL4_Error setup_vmm_guest_vcpu(const pd_desc_t *pd,
     cap_acct_record(seL4_CapNull, (seL4_CPtr)guest_vcpu_slot,
                     seL4_ARM_VCPUObject, pd_index, pd->name);
 #ifdef CONFIG_KERNEL_MCS
+    /* The VMM pauses execution by detaching this SC from its guest TCB.
+     * Unlike TCB_Suspend, that preserves queued guest fault IPC. */
+    err = seL4_CNode_Copy(pd_cnode,
+                          AOS_GUEST_SC_CAP_BASE,
+                          (uint8_t)pd->cnode_size_bits,
+                          seL4_CapInitThreadCNode,
+                          guest_sc_slot,
+                          64u,
+                          seL4_AllRights);
+    if (err != seL4_NoError) {
+        dbg_puts("[rt] VMM guest SC copy err=");
+        dbg_hex((seL4_Word)err);
+        dbg_puts("\n");
+        return err;
+    }
     cap_acct_record(seL4_CapNull, (seL4_CPtr)guest_sc_slot,
                     seL4_SchedContextObject, pd_index, pd->name);
 #endif
