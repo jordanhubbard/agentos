@@ -55,6 +55,26 @@ static void reserve_slot(void)
            == SEL4_ERR_OK);
 }
 
+static void append_ring(unsigned slot, const char *text)
+{
+    ld_ring_header_t *hdr = (ld_ring_header_t *)(rings + slot * RING_SIZE);
+    hdr->magic = LOG_RING_MAGIC;
+    while (*text) {
+        rings[slot * RING_SIZE + RING_HEADER_SIZE + hdr->head] = (uint8_t)*text++;
+        hdr->head = (hdr->head + 1) % RING_BUF_SIZE;
+    }
+}
+
+static uint32_t flush_ring(unsigned slot, unsigned id)
+{
+    sel4_msg_t req = {0}, rep = {0};
+    req.opcode = OP_LOG_WRITE;
+    req.length = 8;
+    data_wr32(req.data, 0, slot);
+    data_wr32(req.data, 4, id);
+    return log_drain_dispatch_one(0, &req, &rep);
+}
+
 int main(void)
 {
     setup();
@@ -91,10 +111,49 @@ int main(void)
     assert(memcmp(output, expected, output_len) == 0);
     assert(hdr->tail == hdr->head);
 
+    /* Partial lines stay with their owner, even when slots register out of order. */
+    setup();
+    append_ring(7, "first-");
+    assert(flush_ring(7, 13) == SEL4_ERR_OK && output_len == 0);
+    append_ring(2, "second\n");
+    assert(flush_ring(2, 999) == SEL4_ERR_OK);
+    append_ring(7, "line\n");
+    drain_all();
+    const char interleaved[] = "\033[36m[unknown]\033[0m second\n"
+                               "\033[36m[log_drain]\033[0m first-line\n";
+    assert(output_len == sizeof(interleaved) - 1);
+    assert(!memcmp(output, interleaved, output_len));
+
+    /* Bad cursors are rejected without output or blocking a healthy client. */
+    setup();
+    hdr = (ld_ring_header_t *)(rings + 7 * RING_SIZE);
+    hdr->magic = LOG_RING_MAGIC;
+    hdr->head = UINT32_MAX;
+    assert(flush_ring(7, 13) == SEL4_ERR_BAD_ARG);
+    assert(output_len == 0 && hdr->head == UINT32_MAX && hdr->tail == 0);
+    hdr->head = 0; hdr->tail = RING_BUF_SIZE;
+    assert(flush_ring(7, 13) == SEL4_ERR_BAD_ARG && output_len == 0);
+    append_ring(2, "healthy\n");
+    assert(flush_ring(2, 999) == SEL4_ERR_OK);
+    const char healthy[] = "\033[36m[unknown]\033[0m healthy\n";
+    assert(output_len == sizeof(healthy) - 1 && !memcmp(output, healthy, output_len));
+
+    /* Chunk boundaries preserve every input byte. */
+    setup();
+    char chunk[257]; memset(chunk, 'x', 255); chunk[255] = 'y'; chunk[256] = 0;
+    append_ring(0, chunk);
+    append_ring(0, "\n");
+    assert(flush_ring(0, 13) == SEL4_ERR_OK);
+    const char tag[] = "\033[36m[log_drain]\033[0m ";
+    assert(output_len == 2 * (sizeof(tag) - 1) + 258);
+    assert(!memcmp(output, tag, sizeof(tag) - 1));
+    for (size_t i = sizeof(tag) - 1; i < sizeof(tag) - 1 + 255; i++) assert(output[i] == 'x');
+    assert(output[output_len - 2] == 'y' && output[output_len - 1] == '\n');
+
     setup();
     for (unsigned i = 0; i < SERIAL_MAX_CLIENTS; i++) reserve_slot();
     uart_puts("no free slot\n");
     assert(!serial_ready && output_len == 0 && write_calls == 0);
-    puts("PASS: log_drain to serial_pd UART round-trip, slot isolation, chunking, ring drain, exhaustion");
+    puts("PASS: log UART round-trip, slot isolation, chunking, per-client lines, bounded corrupt rings, exhaustion");
     return 0;
 }
