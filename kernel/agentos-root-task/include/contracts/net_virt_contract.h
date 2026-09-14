@@ -49,7 +49,11 @@
 
 /* Version 3 isolates queue clients and driver transfers on separate pages.
  * Version 2 requires root-minted virtualizer_authority.h badges. */
-#define NET_VIRT_CONTRACT_VERSION       3u
+#define NET_VIRT_CONTRACT_VERSION       4u
+/* Version 4 adds an isolated native client page before the driver page.
+ * The native lane uses root-provisioned persistent notifications, not
+ * dropped endpoint events. A wake badge takes precedence over message info. */
+#define NET_VIRT_NATIVE_WAKE_BADGE UINT64_C(0x40000000)
 
 /* ── Opcodes / labels ─────────────────────────────────────────────────── */
 
@@ -74,11 +78,12 @@
 /* net_virt_attach_req_t.vmm_slot */
 #define NET_VIRT_VMM_SLOT_PRIMARY       0u
 #define NET_VIRT_VMM_SLOT_SECONDARY     1u
+#define NET_VIRT_SLOT_NATIVE            2u
 
 typedef struct __attribute__((packed)) {
     uint32_t version;    /* NET_VIRT_CONTRACT_VERSION */
-    uint32_t client_id;  /* 0 .. AOS_NET_GUEST_CLIENTS-1 (queue stride index) */
-    uint32_t vmm_slot;   /* NET_VIRT_VMM_SLOT_* of the calling VMM */
+    uint32_t client_id;  /* 0 .. AOS_NET_QUEUE_CLIENTS-1 (queue stride index) */
+    uint32_t vmm_slot;   /* root assignment: VMM slot 0/1 or native slot 2 */
 } net_virt_attach_req_t;
 
 typedef struct __attribute__((packed)) {

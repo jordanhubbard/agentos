@@ -705,6 +705,8 @@ test-rust-pd-abi:
 	$(BUILD_TMP_DIR)/rust_memory_test
 	$(MAKE) -C kernel/agentos-root-task BUILD_DIR=$(abspath build/rust-pd-abi-aarch64) AGENTOS_ARCH=aarch64 AGENTOS_BOARD=qemu_virt_aarch64 $(abspath build/rust-pd-abi-aarch64/rust_pd_ipc.o)
 	$(MAKE) -C kernel/agentos-root-task BUILD_DIR=$(abspath build/rust-pd-abi-x86_64) AGENTOS_ARCH=x86_64 AGENTOS_BOARD=x86_64_generic $(abspath build/rust-pd-abi-x86_64/rust_pd_ipc.o)
+	$(MAKE) -C kernel/agentos-root-task BUILD_DIR=$(abspath build/rust-pd-abi-aarch64) AGENTOS_ARCH=aarch64 AGENTOS_BOARD=qemu_virt_aarch64 $(abspath build/rust-pd-abi-aarch64/rust_pd_network.o)
+	$(MAKE) -C kernel/agentos-root-task BUILD_DIR=$(abspath build/rust-pd-abi-x86_64) AGENTOS_ARCH=x86_64 AGENTOS_BOARD=x86_64_generic $(abspath build/rust-pd-abi-x86_64/rust_pd_network.o)
 
 # lint-source: architecture-invariant lint over checked-in artifacts (headers,
 # the compiled AArch64 topology, guest FDT templates, guest profiles, QEMU

@@ -52,6 +52,7 @@
 #include <contracts/serial_virt_contract.h>
 #include <platform/vmm_isolation_probe.h>
 #include <contracts/virtualizer_authority.h>
+#include <contracts/net_virt_contract.h>
 #ifdef AOS_VMM_ISOLATION_PROBE
 #include "serial_log.h"
 #endif
@@ -1556,10 +1557,16 @@ void root_task_main(const seL4_BootInfo *bi)
     /* Allocate notifications before spawning: serial_virt needs send-only
      * capabilities to VMM notifications even when those VMMs spawn later. */
     uint32_t serial_virt_index = SYSTEM_MAX_PDS;
+    uint32_t net_virt_index = SYSTEM_MAX_PDS;
+    uint32_t native_net_index = SYSTEM_MAX_PDS;
     for (uint32_t i = 0; i < sys->pd_count; i++) {
         const pd_desc_t *pd = &sys->pds[i];
         if (pd->self_svc_id == SVC_ID_SERIAL_VIRT) serial_virt_index = i;
+        if (pd->self_svc_id == SVC_ID_NET_VIRT) net_virt_index = i;
+        if (pd->self_svc_id == SVC_ID_NATIVE_RUST_PROBE) native_net_index = i;
         if (pd->irq_count || pd_is_guest_vmm(pd) ||
+            pd->self_svc_id == SVC_ID_NET_VIRT ||
+            pd->self_svc_id == SVC_ID_NATIVE_RUST_PROBE ||
             pd->self_svc_id == SVC_ID_SERIAL_VIRT) {
             seL4_Error err = ut_alloc(seL4_NotificationObject,
                 seL4_NotificationBits, seL4_CapInitThreadCNode,
@@ -1863,6 +1870,26 @@ void root_task_main(const seL4_BootInfo *bi)
             }
         }
 
+        if (native_net_index != SYSTEM_MAX_PDS && net_virt_index != SYSTEM_MAX_PDS &&
+            (i == native_net_index || i == net_virt_index)) {
+            uint32_t peer = i == native_net_index ? net_virt_index : native_net_index;
+            seL4_Word slot = i == native_net_index ? PD_CNODE_SLOT_NET_VIRT_NOTIFY :
+                PD_CNODE_SLOT_NET_NATIVE_NOTIFY;
+            if (seL4_CNode_Mint(pd_cnode, slot, pd->cnode_size_bits,
+                    seL4_CapInitThreadCNode, g_pd_notifications[peer], 64u,
+                    seL4_CapRights_new(0, 0, 0, 1), NET_VIRT_NATIVE_WAKE_BADGE) != seL4_NoError) {
+                dbg_puts("[rt] native network wake grant failed; refusing PD start\n");
+                continue;
+            }
+            if (i == native_net_index &&
+                seL4_CNode_Copy(pd_cnode, PD_CNODE_SLOT_NATIVE_NET_WAIT, pd->cnode_size_bits,
+                    seL4_CapInitThreadCNode, g_pd_notifications[i], 64u,
+                    seL4_CapRights_new(0, 0, 1, 0)) != seL4_NoError) {
+                dbg_puts("[rt] native network wait grant failed; refusing PD start\n");
+                continue;
+            }
+        }
+
         /* ── 4g: Distribute initial endpoint caps into PD's CNode ──────── */
         /*
          * For each endpoint spec in pd->init_eps, look up (or lazily
@@ -1886,6 +1913,9 @@ void root_task_main(const seL4_BootInfo *bi)
                  ep_spec->service_id == SVC_ID_BLK_VIRT ||
                  ep_spec->service_id == SVC_ID_SERIAL_VIRT)) {
                 badge = virt_client_badge(pd_is_secondary_guest_vmm(pd) ? 1u : 0u);
+            } else if (pd->self_svc_id == SVC_ID_NATIVE_RUST_PROBE &&
+                       ep_spec->service_id == SVC_ID_NET_VIRT) {
+                badge = VIRT_NET_BADGE_NATIVE;
             } else if (pd->self_svc_id == SVC_ID_CC_PD &&
                        ep_spec->service_id == SVC_ID_SERIAL_VIRT) {
                 badge = SERIAL_VIRT_FRONTEND_BADGE;
@@ -2196,12 +2226,14 @@ void root_task_main(const seL4_BootInfo *bi)
         if (g_net_shared_frame_caps[0] != seL4_CapNull &&
             (name_eq(pd->name, "net_pd") ||
              name_eq(pd->name, "net_virt") ||
+             pd->self_svc_id == SVC_ID_NATIVE_RUST_PROBE ||
              pd_is_guest_vmm(pd))) {
             seL4_Error net_err = seL4_NoError;
             for (uint32_t f = 0u; f < AOS_NET_SHMEM_FRAMES && net_err == seL4_NoError; ++f) {
                 if (pd_is_guest_vmm(pd) &&
                     f != (pd_is_secondary_guest_vmm(pd) ? 1u : 0u)) continue;
                 if (name_eq(pd->name, "net_pd") && f != AOS_NET_DRIVER_FRAME) continue;
+                if (pd->self_svc_id == SVC_ID_NATIVE_RUST_PROBE && f != AOS_NET_NATIVE_CLIENT) continue;
                 seL4_Word net_shared_copy = ut_alloc_slot();
                 net_err = seL4_NotEnoughMemory;
                 if (net_shared_copy != seL4_CapNull) {
@@ -2221,6 +2253,7 @@ void root_task_main(const seL4_BootInfo *bi)
             dbg_puts(" agentOS net shared map err=");
             dbg_hex((seL4_Word)net_err);
             dbg_puts("\n");
+            if (net_err != seL4_NoError) continue;
         }
 
         if (name_eq(pd->name, "net_pd")) {

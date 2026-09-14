@@ -9,8 +9,11 @@ the native Rust entry/link and synchronous IPC path. The client also checks
 seeded `alloc::Vec` contents, 4096-byte alignment, exhaustion and complete reuse
 of a private 64 KiB heap. Real async functions additionally exercise executor
 capacity, poll budgets, cancellation and memory release. This is cooperative
-scheduling proof, not preemption of arbitrary future code. Networking and a
-native RCC service remain separate qualifications.
+scheduling proof, not preemption of arbitrary future code. The Rust PD also
+attaches network client 2 and checks three NIC ARP replies after persistent
+notification waits. The harness additionally requires driver-path TX/RX markers.
+This proves the raw network path, not a production network stack or concurrent
+native/guest service operation. No external RCC port is required.
 
 agentOS has **two distinct layers** of automated test, and they prove different
 things. Conflating them is a category error: a green host run does **not** mean

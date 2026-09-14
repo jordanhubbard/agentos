@@ -23,6 +23,38 @@ struct Descriptor { offset: u64, len: u16, pad0: u16, pad1: u32 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Error { InvalidMapping, InvalidLength, CorruptQueue, InvalidDescriptor, WouldBlock, BufferTooSmall(usize) }
 
+extern "C" {
+    fn agentos_pd_net_attach(page: *mut u8, endpoint: usize, client: u32,
+        slot: u32, mac: *mut u8, hardware: *mut u32) -> i32;
+    fn agentos_pd_net_signal(notification: usize);
+    fn agentos_pd_net_wait(notification: usize) -> usize;
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct Attachment { pub mac: [u8; 6], pub hardware: u32 }
+
+/// Initialize an exclusively owned page and attach using root-issued authority.
+/// # Safety
+/// All `Client::from_mapping` requirements apply. In addition, the virtualizer
+/// must not yet be attached or accessing this page: initialization resets queues.
+/// The page must be the assignment granted by `endpoint` for `client`/`slot`.
+pub unsafe fn initialize_and_attach<'a>(page: *mut u8, bytes: usize,
+    endpoint: usize, client: u32, slot: u32) -> Result<(Client<'a>, Attachment), Error> {
+    let queue = Client::from_mapping(page, bytes)?;
+    let mut attached = Attachment { mac: [0; 6], hardware: 0 };
+    if agentos_pd_net_attach(page, endpoint, client, slot,
+        attached.mac.as_mut_ptr(), &mut attached.hardware) != 0 {
+        return Err(Error::InvalidMapping);
+    }
+    Ok((queue, attached))
+}
+
+/// Signal the send-only notification capability provisioned by the root task.
+pub fn signal(notification: usize) { unsafe { agentos_pd_net_signal(notification) } }
+
+/// Wait on a receive-only notification capability without consuming an IPC call.
+pub fn wait(notification: usize) -> usize { unsafe { agentos_pd_net_wait(notification) } }
+
 /// One exclusively owned client-side endpoint; not Send or Sync.
 pub struct Client<'a> {
     page: *mut u8,

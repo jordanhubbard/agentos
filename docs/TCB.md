@@ -60,9 +60,9 @@ seL4
 a PD of its own, spawned at priority 205 with no device frame and no IRQ. The
 emulated virtio-net inside each `guest_vmm` (`platform/net-virt/vmm_virtio_net.c`,
 libvmm `src/virtio/net.c`) produces and consumes sDDF-shaped queues in the
-6 MB network region (`AGENTOS_NET_SHARED_VA`). Each VMM maps only its own
-2 MB client page. `net_pd` maps only the third, driver-transfer page, and
-`net_virt` maps all three. Control
+8 MB network region (`AGENTOS_NET_SHARED_VA`). Each VMM maps only its own
+2 MB client page. A third page is reserved for the native client; `net_pd`
+maps only the fourth, driver-transfer page, and `net_virt` maps all four. Control
 is one `NET_VIRT_OP_ATTACH` Call per client; after that the VMM only
 `seL4_NBSend`s `NET_VIRT_EVENT_KICK` when `tx_active` is non-empty (and
 `net_virt` asked for kicks through the sDDF `consumer_signalled` flag), and
@@ -161,8 +161,13 @@ The client receives only the test service endpoint and serial diagnostic
 transport. The Rust service uses the normal `pd_entry.c` / `pd_main` entry
 path and a C bridge to seL4 IPC. `make test-native-rust` checks reply payloads
 from a separate C PD, including `alloc::Vec` data, alignment, exhaustion and
-reuse of the Rust PD's private 64 KiB heap. It does not qualify networking or
-a production native service. These test PDs are absent from the default image.
+reuse of the Rust PD's private 64 KiB heap. The Rust service also receives only
+network client 2's page, its network-only attach badge, a send-only virtualizer
+notification and a receive-only capability for its own notification. Three
+sequential ARP exchanges at the assigned address traverse `net_virt` and the
+host NIC; each waits for notification delivery before reading the RX queue.
+This does not qualify a production network stack or a native service running
+concurrently with live guests. These test PDs are absent from the default image.
 The same proof checks real async functions, executor capacity, poll budgets
 and cancellation before verifying complete heap reuse. Its cooperative poll
 budget does not preempt arbitrary future code; seL4 scheduling remains the

@@ -93,6 +93,15 @@ void pd_main(seL4_CPtr endpoint, seL4_CPtr nameserver)
               seL4_GetMR(4) == 1 && seL4_GetMR(5) == 1,
               "heap payload, alignment, exhaustion or reuse");
     }
+    expect_error(NATIVE_RUST_NETWORK, 0, NATIVE_RUST_ERR_LENGTH);
+    seL4_SetMR(0, NATIVE_RUST_VERSION);
+    seL4_MessageInfo_t network = invoke(NATIVE_RUST_NETWORK, 1);
+    check(seL4_MessageInfo_get_label(network) == NATIVE_RUST_OK &&
+          seL4_MessageInfo_get_length(network) == 3 &&
+          seL4_GetMR(0) == 1 && seL4_GetMR(1) == 3 && seL4_GetMR(2) >= 3,
+          "native queue NIC traffic and persistent wakeups");
+    serial_log_puts(&log_channel,
+        "[native-rust] PASS: isolated network queues, NIC ARP replies, persistent wakeups\n");
     serial_log_puts(&log_channel,
         "[native-rust] PASS: async tasks, poll budgets, capacity, cancellation\n");
     serial_log_puts(&log_channel,

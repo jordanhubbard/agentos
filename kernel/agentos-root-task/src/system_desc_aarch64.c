@@ -531,6 +531,10 @@ const system_desc_t system_desc_aarch64 = {
             .cnode_size_bits = 8u,
             .priority = 245u,
             .self_svc_id = SVC_ID_NATIVE_RUST_PROBE,
+            .init_ep_count = 1u,
+            .init_eps = {
+                { SVC_ID_NET_VIRT, PD_CNODE_SLOT_NET_VIRT_EP },
+            },
         },
         {
             .name = "native_rust_client",

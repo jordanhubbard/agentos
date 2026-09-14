@@ -64,5 +64,15 @@ and queue occupancy before accessing payloads. Full queues return `WouldBlock`;
 a short receive buffer preserves the pending packet. `make test-rust-pd-abi`
 exchanges full queues with the production C virtualizer pump, including exact
 payload comparison and repeated buffer recycling. This is host interoperability
-evidence. Root provisioning, capability-bound attachment, notification delivery
-and a live NIC path for the Rust PD remain to be integrated and target-tested.
+evidence. `make test-native-rust` additionally assigns client 2 its own page and
+network-only attach authority, then verifies three NIC ARP replies at its
+assigned address. The service sleeps on a receive-only notification between
+requests; queue kicks use a send-only notification, preserving wakeups while
+the peer is busy. No guest page, driver-transfer page, MMIO or hardware IRQ is
+granted to the Rust client. Link `runtime/network.c` for control and notification
+bridges. `initialize_and_attach` requires an exclusively owned, quiescent page;
+it must never reset a page already in use by the virtualizer.
+
+The proof covers raw Ethernet and ARP through the real driver. A production
+network stack, native/guest concurrent traffic and negative mapping probes for
+the new native page remain separate qualification work.

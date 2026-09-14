@@ -155,11 +155,69 @@ fn heap_proof(seed: u8) -> Option<u64> {
     Some(checksum)
 }
 
+fn network_proof() -> Option<[u64; 3]> {
+    use agentos_pd::network;
+    let (mut queue, attachment) = unsafe {
+        network::initialize_and_attach(0x26400000usize as *mut u8,
+            network::PAGE_BYTES, 15, 2, 2).ok()?
+    };
+    if attachment.hardware != 1 { return None; }
+    let mut wakes = 0;
+    for _ in 0..3u8 {
+        // The driver assigns 10.0.2.(15 + client_id), not arbitrary aliases.
+        let ip = [10, 0, 2, 17];
+        let mut arp = [0u8; 42];
+        arp[..6].fill(255);
+        arp[6..12].copy_from_slice(&attachment.mac);
+        arp[12..22].copy_from_slice(&[8, 6, 0, 1, 8, 0, 6, 4, 0, 1]);
+        arp[22..28].copy_from_slice(&attachment.mac);
+        arp[28..32].copy_from_slice(&ip);
+        arp[38..42].copy_from_slice(&[10, 0, 2, 2]);
+        queue.send(&arp).ok()?;
+        network::signal(22);
+        let mut matched = false;
+        for _ in 0..64 {
+            if network::wait(24) != 0x40000000 { return None; }
+            wakes += 1;
+            for _ in 0..network::CAPACITY {
+                let mut packet = [0; network::BUFFER_SIZE];
+                let len = match queue.receive(&mut packet) {
+                    Ok(len) => len,
+                    Err(network::Error::WouldBlock) => break,
+                    Err(_) => return None,
+                };
+                if len >= 42 && packet[..6] == attachment.mac &&
+                    packet[12..22] == [8, 6, 0, 1, 8, 0, 6, 4, 0, 2] &&
+                    packet[6..12] == packet[22..28] &&
+                    packet[28..32] == [10, 0, 2, 2] &&
+                    packet[32..38] == attachment.mac && packet[38..42] == ip {
+                    matched = true;
+                }
+            }
+            if queue.needs_kick().ok()? { network::signal(22); }
+            if matched { break; }
+        }
+        if !matched { return None; }
+    }
+    Some([attachment.hardware as u64, 3, wakes])
+}
+
 #[no_mangle]
 pub extern "C" fn pd_main(endpoint: u64, _nameserver: u64) -> ! {
+    let network_result = network_proof();
     loop {
         let request = runtime::receive(endpoint);
+        if request.badge == 0x40000000 { continue; }
         let (status, count) = match request.info.label() {
+            0x2e05 if request.info.count() != 1 => (2, 0),
+            0x2e05 if get_mr(0) != 1 => (3, 0),
+            0x2e05 => match network_result {
+                Some(words) => {
+                    for (index, value) in words.iter().enumerate() { set_mr(index as u32, *value); }
+                    (0, 3)
+                }
+                None => (6, 0),
+            },
             0x2e04 if request.info.count() != 1 => (2, 0),
             0x2e04 if get_mr(0) != 1 => (3, 0),
             0x2e04 => match executor_proof() {

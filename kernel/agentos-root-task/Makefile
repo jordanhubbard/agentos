@@ -355,6 +355,7 @@ ifdef NATIVE_RUST_TEST
     $(error NATIVE_RUST_TEST and SEL4_TEST_IMAGE are separate image variants)
   endif
   CFLAGS_ROOT_TASK += -DAGENTOS_NATIVE_RUST_TEST=1
+  CFLAGS += -DAGENTOS_NATIVE_RUST_TEST=1
   IMAGES += native_rust_probe.elf native_rust_client.elf
 endif
 
@@ -580,7 +581,11 @@ $(BUILD_DIR)/rust_pd_memory.o: $(REPO_ROOT)/libs/rust-pd/runtime/memory.c
 	@mkdir -p $(BUILD_DIR)
 	$(CC) -c $(CFLAGS) $< -o $@
 
-$(BUILD_DIR)/native_rust_probe.elf: FORCE $(BUILD_DIR)/rust_pd_ipc.o $(BUILD_DIR)/pd_entry.o $(BUILD_DIR)/sel4_crt.o $(BUILD_DIR)/rust_pd_memory.o
+$(BUILD_DIR)/rust_pd_network.o: $(REPO_ROOT)/libs/rust-pd/runtime/network.c
+	@mkdir -p $(BUILD_DIR)
+	$(CC) -c $(CFLAGS) $< -o $@
+
+$(BUILD_DIR)/native_rust_probe.elf: FORCE $(BUILD_DIR)/rust_pd_ipc.o $(BUILD_DIR)/pd_entry.o $(BUILD_DIR)/sel4_crt.o $(BUILD_DIR)/rust_pd_memory.o $(BUILD_DIR)/rust_pd_network.o
 	cd $(REPO_ROOT) && cargo build -p agentos-native-rust-probe --release --target aarch64-unknown-none
 	$(LD) --gc-sections $(LDFLAGS) $(filter-out FORCE,$^) $(REPO_ROOT)/target/aarch64-unknown-none/release/libagentos_native_rust_probe.a $(LIBS) -o $@
 
