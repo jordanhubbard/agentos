@@ -311,6 +311,8 @@ pub(crate) struct QemuMediaPlan {
     pub(crate) drive_id: String,
     pub(crate) bus: u8,
     pub(crate) writable: bool,
+    /// Set only by the managed two-boot proof, never by profile input.
+    pub(crate) managed_persistent: bool,
     pub(crate) override_env: Vec<String>,
 }
 
@@ -443,6 +445,7 @@ pub(crate) fn host_profile_plan(root: &Path, path: &Path) -> Result<HostProfileP
                     drive_id: media.drive_id.clone(),
                     bus: media.bus,
                     writable: media.writable,
+                    managed_persistent: false,
                     override_env: media.override_env.clone(),
                 })
                 .collect(),

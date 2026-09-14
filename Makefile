@@ -906,6 +906,10 @@ test-ubuntu-virtio:
 test-debian-live:
 	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os debian --timeout-secs $(QEMU_TEST_TIMEOUT) --assert-live --assert-agentos-virtio --ssh-port $(QEMU_TEST_SSH_PORT)
 
+.PHONY: test-debian-persistence
+test-debian-persistence:
+	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os debian --timeout-secs $(QEMU_TEST_TIMEOUT) --assert-live --assert-agentos-virtio --assert-persistent-boots --ssh-port $(QEMU_TEST_SSH_PORT)
+
 test-ubuntu-live:
 	@if [ "$(BOARD)" != "qemu_virt_aarch64" ]; then \
 		echo "test-ubuntu-live requires BOARD=qemu_virt_aarch64 (got BOARD=$(BOARD))"; \

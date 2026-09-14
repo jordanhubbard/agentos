@@ -101,3 +101,13 @@ qualification command. It requires the real Debian console, key-only SSH,
 and host-backed network, block and bidirectional console traffic through
 agentOS. It does not by itself prove lifecycle parity, persistence across a
 second boot, or the required comparison with Ubuntu; Ubuntu remains required.
+
+`make test-debian-persistence QEMU_TEST_TIMEOUT=1800` additionally boots twice
+with a managed copy of the writable disk. The first boot writes and syncs a
+fresh witness through authenticated SSH; the second reads it after a new QEMU
+boot. Both rounds require the console/SSH/VirtIO proofs. The pinned base disk
+is never opened for persistent writes. The runner retains the working disk,
+source digest, resolved profile, agentOS image, serial logs and result under
+`build/evidence/persistent-boot-*`, including failures. It rejects a changed
+source disk, image or resolved profile between rounds. This is a cold-boot
+storage test, not proof of guest-slot recreation or orderly guest shutdown.

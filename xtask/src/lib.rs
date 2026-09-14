@@ -21,6 +21,7 @@ pub mod cmd_setup;
 pub mod cmd_test;
 pub mod cmd_test_api;
 pub mod guest_scenario;
+mod persistent_media;
 pub mod rfb;
 
 // ── Re-exports for main.rs ────────────────────────────────────────────────
@@ -31,8 +32,17 @@ pub use guest_scenario::GuestScenarioArgs;
 
 // ── Subcommand arg structs ──────────────────────────────────────────────────
 
-#[derive(clap::Args)]
+#[derive(Clone, clap::Args)]
 pub struct TestArgs {
+    /// Prove a disk witness survives two fresh QEMU boots of one live profile.
+    #[arg(long, requires = "assert_live", conflicts_with_all = ["no_build", "keep_running", "assert_desktop"])]
+    pub assert_persistent_boots: bool,
+    #[arg(skip)]
+    pub persistent_directory: Option<std::path::PathBuf>,
+    #[arg(skip)]
+    pub persistent_second_boot: bool,
+    #[arg(skip)]
+    pub persistent_token: String,
     /// Query the root-provisioned boot snapshot through CC and agentctl.
     #[arg(long)]
     pub assert_inspect: bool,
