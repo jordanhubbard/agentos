@@ -416,6 +416,7 @@ void pd_main(seL4_CPtr my_ep, seL4_CPtr ns_ep) { guest_vmm_main(my_ep, ns_ep); }
 #include <platform/guest_vmm_loop.h>
 #include <platform/guest_vmm_runtime.h>
 #include <platform/vmm_virtio_net.h>
+#include <platform/net_layout.h>
 #include <platform/vmm_virtio_blk.h>
 #include <platform/vmm_virtio_console.h>
 
@@ -930,6 +931,25 @@ static bool guest_vmm_start_guest(void)
     return true;
 }
 
+static void guest_vmm_lifecycle_timer_snapshot(const char *phase)
+{
+    const seL4_Word ctl = vmm_vcpu_arm_read_reg(GUEST_BOOT_VCPU_ID, seL4_VCPUReg_CNTV_CTL);
+    const seL4_Word cval = vmm_vcpu_arm_read_reg(GUEST_BOOT_VCPU_ID, seL4_VCPUReg_CNTV_CVAL);
+    const seL4_Word offset = vmm_vcpu_arm_read_reg(GUEST_BOOT_VCPU_ID, seL4_VCPUReg_CNTVOFF);
+    uint64_t physical;
+    __asm__ volatile("isb; mrs %0, cntpct_el0" : "=r"(physical));
+    /* One bounded snapshot per lifecycle transition, never a per-tick log.
+     * Capture registers before serial IPC can reuse the thread's MRs. */
+    printf("[guest lifecycle] profile=%u phase=%s ctl=0x%lx cval=0x%lx offset=0x%lx physical=0x%lx timer_pending=%u timer_inflight=%u net_pending=%u net_inflight=%u\n",
+           (unsigned)g_guest_profile->control_type, phase,
+           (unsigned long)ctl, (unsigned long)cval, (unsigned long)offset,
+           (unsigned long)physical,
+           (unsigned)vgic_irq_is_pending(GUEST_BOOT_VCPU_ID, GUEST_VTIMER_IRQ),
+           (unsigned)vgic_irq_is_inflight(GUEST_BOOT_VCPU_ID, GUEST_VTIMER_IRQ),
+           (unsigned)vgic_irq_is_pending(GUEST_BOOT_VCPU_ID, AOS_VIRTIO_NET_VIRQ),
+           (unsigned)vgic_irq_is_inflight(GUEST_BOOT_VCPU_ID, AOS_VIRTIO_NET_VIRQ));
+}
+
 static void guest_vmm_suspend_guest_tcb(void)
 {
     seL4_UserContext regs = {0};
@@ -946,12 +966,14 @@ static void guest_vmm_suspend_guest_tcb(void)
     }
     LOG_VMM("Profile guest suspend: pausing virtual time\n");
     vcpu_pause_time(GUEST_BOOT_VCPU_ID, &g_guest_time_state);
+    guest_vmm_lifecycle_timer_snapshot("suspended");
     LOG_VMM("Profile guest suspend: complete\n");
 }
 
 static void guest_vmm_resume_guest_tcb(void)
 {
     vcpu_resume_time(GUEST_BOOT_VCPU_ID, &g_guest_time_state);
+    guest_vmm_lifecycle_timer_snapshot("resuming");
     seL4_Error err = seL4_TCB_Resume(
         (seL4_CPtr)(AGENTOS_VMM_TCB_CAP_BASE + GUEST_BOOT_VCPU_ID));
     if (err != seL4_NoError) {
