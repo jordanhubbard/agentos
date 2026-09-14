@@ -76,9 +76,10 @@ sDDF-shaped hub/loopback pump instead. Contract:
 PD of its own, spawned at priority 210 with no device frame and no IRQ. The
 emulated virtio-blk inside each `guest_vmm` (`platform/blk-virt/vmm_virtio_blk.c`,
 libvmm `src/virtio/block.c`) produces and consumes sDDF-shaped request and
-response queues in the 4 MB shared block region (`AOS_BLK_SHMEM_VA`, one
-stride per VMM slot) that the root task maps into every VMM and into
-`blk_virt` and nothing else. Control is one `BLK_VIRT_OP_ATTACH` Call per
+response queues in the 6 MB block region (`AOS_BLK_SHMEM_VA`). The root task
+maps the whole region into `blk_virt`, but only one separate 2 MB client page
+into each VMM. The first page holds the virtualizer's private RAM disk;
+neither VMM maps it or the other client's page. Control is one `BLK_VIRT_OP_ATTACH` Call per
 client, during which `blk_virt` probes the media and fills the client's sDDF
 `storage_info`; after that the VMM only `seL4_NBSend`s `BLK_VIRT_EVENT_KICK`
 when its request queue is non-empty (and `blk_virt` asked for kicks through

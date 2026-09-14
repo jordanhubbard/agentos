@@ -639,7 +639,7 @@ static seL4_CPtr g_virtio_mmio_frame_cap = seL4_CapNull;
 static seL4_CPtr g_host_blk_mmio_frame_cap = seL4_CapNull;
 static seL4_CPtr g_blk_shared_frame_cap = seL4_CapNull;
 /* Shared sDDF block region: guest request/response queues and data cells,
- * mapped at AOS_BLK_SHMEM_VA into every guest VMM and into blk_virt only. */
+ * mapped wholly into blk_virt, with one client frame mapped into each VMM. */
 static seL4_CPtr g_blk_virt_frame_caps[AOS_BLK_SHMEM_FRAMES];
 static seL4_CPtr g_host_net_mmio_frame_cap = seL4_CapNull;
 static seL4_CPtr g_net_shared_frame_cap = seL4_CapNull;
@@ -2031,14 +2031,19 @@ void root_task_main(const seL4_BootInfo *bi)
             dbg_puts("\n");
         }
 
-        /* Shared sDDF block region: the guest VMMs (queue clients) and
-         * blk_virt (the only consumer).  Each frame cap is copied per PD
-         * because a frame cap maps exactly once. */
+        /* blk_virt maps the region; each VMM maps only its client page.
+         * Keep the private RAM disk and other clients out of its VSpace.
+         * Each frame cap is copied because a frame cap maps exactly once. */
         if (g_blk_virt_frame_caps[0] != seL4_CapNull &&
             (name_eq(pd->name, "blk_virt") || pd_is_guest_vmm(pd))) {
             seL4_Error blk_err = seL4_NoError;
             for (uint32_t f = 0u; f < AOS_BLK_SHMEM_FRAMES &&
                                   blk_err == seL4_NoError; f++) {
+                if (pd_is_guest_vmm(pd) &&
+                    f != AOS_BLK_CLIENT_BASE / AOS_BLK_SHMEM_FRAME_SIZE +
+                             (pd_is_secondary_guest_vmm(pd) ? 1u : 0u)) {
+                    continue;
+                }
                 seL4_Word frame_copy = ut_alloc_slot();
                 blk_err = seL4_NotEnoughMemory;
                 if (frame_copy != seL4_CapNull) {

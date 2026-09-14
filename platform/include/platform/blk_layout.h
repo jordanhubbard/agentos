@@ -29,24 +29,25 @@
 #define AOS_BLK_DATA_CELLS           \
     ((AOS_BLK_GUEST_MAX_SEGMENT_SIZE / AOS_BLK_TRANSFER_SIZE) + 1u)
 #define AOS_BLK_DATA_BYTES           (AOS_BLK_DATA_CELLS * AOS_BLK_TRANSFER_SIZE)
-#define AOS_BLK_CLIENT_STRIDE        0x110000u
+#define AOS_BLK_CLIENT_STRIDE        0x200000u
 
 /*
  * Shared sDDF block region: root-task-provisioned large pages mapped at the
- * same VA into every guest VMM and into blk_virt (the block virtualizer PD).
- * Nothing else maps it.  0x28000000 sits above the secondary VMM image
+ * same VA into blk_virt (the block virtualizer PD). Each guest VMM maps only
+ * its own client page; the RAM disk and other clients are absent from its
+ * VSpace. Nothing else maps it. 0x28000000 sits above the secondary VMM image
  * reservation (0x20000000-0x22000000), the block-service DMA window
  * (0x22000000), net_pd's private DMA window (0x24000000) and the shared net
  * frame (0x26000000); see net_host_layout.h for the same rule.
  */
 #define AOS_BLK_SHMEM_FRAME_BITS     21u        /* seL4 AArch64 large page */
 #define AOS_BLK_SHMEM_FRAME_SIZE     (1u << AOS_BLK_SHMEM_FRAME_BITS)
-#define AOS_BLK_SHMEM_FRAMES         2u
+#define AOS_BLK_SHMEM_FRAMES         (1u + AOS_BLK_MAX_CLIENTS)
 #define AOS_BLK_SHMEM_SIZE           (AOS_BLK_SHMEM_FRAMES * AOS_BLK_SHMEM_FRAME_SIZE)
 #define AOS_BLK_SHMEM_VA             0x28000000UL
 
 #define AOS_BLK_DISK_OFF             0x0000u    /* host-test RAM disk image */
-#define AOS_BLK_CLIENT_BASE          0x40000u   /* after 256 KB disk */
+#define AOS_BLK_CLIENT_BASE          AOS_BLK_SHMEM_FRAME_SIZE /* private disk page first */
 
 #define AOS_BLK_STORAGE_INFO_OFF     0x0000u    /* within client stride */
 #define AOS_BLK_SIGNAL_OFF           0x0800u    /* agentOS kick-suppression word */
@@ -60,6 +61,10 @@
 _Static_assert(AOS_BLK_DATA_OFF + AOS_BLK_DATA_BYTES <=
                AOS_BLK_CLIENT_STRIDE,
                "block client data must fit in its stride");
+_Static_assert(AOS_BLK_CLIENT_STRIDE == AOS_BLK_SHMEM_FRAME_SIZE,
+               "each block client must own a separate mapping frame");
+_Static_assert(AOS_BLK_CLIENT_BASE % AOS_BLK_SHMEM_FRAME_SIZE == 0u,
+               "block clients must begin on a mapping boundary");
 _Static_assert(AOS_BLK_CLIENT_BASE +
                AOS_BLK_MAX_CLIENTS * AOS_BLK_CLIENT_STRIDE <=
                AOS_BLK_SHMEM_SIZE,

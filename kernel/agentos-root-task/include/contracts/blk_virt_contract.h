@@ -6,8 +6,8 @@
  * blk_virt is the only block mux (docs/TCB.md, I/O invariant 2).  It owns no
  * device frame and no IRQ.  Requests and responses move through the
  * sDDF-shaped guest queues in the shared block region
- * (platform/include/platform/blk_layout.h, mapped at AOS_BLK_SHMEM_VA in
- * every guest VMM and in blk_virt); this contract carries only control
+ * (platform/include/platform/blk_layout.h; blk_virt maps the whole region,
+ * each guest VMM maps only its client page); this contract carries only control
  * (attach) and notifications (kicks).  There is no per-request IPC between a
  * VMM and blk_virt, and no VMM holds the virtio_blk driver endpoint or the
  * driver's DMA window.
@@ -44,7 +44,8 @@
 
 #include <stdint.h>
 
-#define BLK_VIRT_CONTRACT_VERSION       1u
+/* Version 2 gives every client a separately mapped large-page stride. */
+#define BLK_VIRT_CONTRACT_VERSION       2u
 
 /* ── Opcodes / labels ─────────────────────────────────────────────────── */
 

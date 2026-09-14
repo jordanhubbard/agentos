@@ -90,11 +90,13 @@ agentOS.
 
 Guest compromise and VMM compromise are different threats. Guest kernels do
 not receive the host sDDF queue mappings. Their VMMs do. At this revision the
-root maps the **whole network shared frame into every VMM** and the **whole
-block shared region into every VMM**, with writable rights. Per-client strides
-and queue validation separate normal traffic in software; they do not provide
-page-level protection between compromised VMMs. Do not describe these queues
-as mutually inaccessible per-guest memory.
+root maps the **whole network shared frame into every VMM**, with writable
+rights. Network strides and queue validation separate normal traffic in software;
+they do not provide page-level protection between compromised VMMs. Block
+clients now occupy separate 2 MB frames, and each VMM maps only its own frame.
+The virtualizer alone maps all block client frames and the RAM-disk page.
+Target fault-injection qualification of that boundary remains pending; do not
+describe the network queues as mutually inaccessible per-guest memory.
 
 The root task, VMMs, virtualizers, and drivers therefore remain consequential
 TCB components. seL4 enforces the authority they are given; its verification
