@@ -2486,16 +2486,24 @@ fn wait_for_scenario_ssh(
     qemu: &mut Child,
 ) -> anyhow::Result<String> {
     let start = Instant::now();
+    let mut failures = Vec::new();
     while start.elapsed() < timeout {
         ensure_qemu_running(qemu, "waiting for scenario authenticated SSH")?;
-        let mut all_ready = true;
+        failures.clear();
         for guest in &scenario.guests {
-            if wait_for_scenario_guest_ssh(guest, ssh_key, Duration::from_secs(35), qemu).is_err() {
-                all_ready = false;
-                break;
+            match wait_for_scenario_guest_ssh(guest, ssh_key, Duration::from_secs(35), qemu) {
+                Ok(()) => println!(
+                    "[xtask:test] {} authenticated SSH ready in concurrent probe",
+                    guest.profile.id
+                ),
+                Err(error) => {
+                    let detail = format!("{error:#}");
+                    eprintln!("[xtask:test] concurrent SSH retry: {detail}");
+                    failures.push(detail);
+                }
             }
         }
-        if all_ready {
+        if failures.is_empty() {
             return Ok(format!(
                 "scenario {} has concurrent authenticated SSH for {} profiles",
                 scenario.id,
@@ -2505,8 +2513,9 @@ fn wait_for_scenario_ssh(
         std::thread::sleep(Duration::from_secs(2));
     }
     anyhow::bail!(
-        "scenario {} authenticated SSH did not become ready",
-        scenario.id
+        "scenario {} authenticated SSH did not become ready: {}",
+        scenario.id,
+        failures.join("; ")
     )
 }
 
