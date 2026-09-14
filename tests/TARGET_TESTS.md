@@ -140,6 +140,13 @@ The guest network gate remains the target proof of actual NIC I/O.
 
 ### Virtualizer client mapping isolation
 
+`make test-freebsd-dynamic-console` creates a nonzero public handle in a
+single-secondary image and requires echoed input through that handle before
+the ordinary authenticated SSH qualification. It catches confusing vm_manager's
+lone backend slot zero with the secondary VMM's root-assigned serial page one.
+The host service suite covers all supported topology/slot combinations and
+rejects missing, out-of-range or ambiguous mappings.
+
 The bidirectional Ubuntu console assertion also requires both actual
 `serial_virt` transfer markers, in addition to the emulated device markers
 and echoed guest input. CC resolves guest handles and uses only its frontend

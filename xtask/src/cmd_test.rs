@@ -518,6 +518,17 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
         }
     };
 
+    if result.is_ok() && args.assert_dynamic_console {
+        result = verify_dynamic_console(
+            &cc_sock,
+            profile_plan
+                .as_ref()
+                .context("dynamic console requires one profile")?,
+            Duration::from_secs(args.timeout_secs),
+            &mut qemu,
+        );
+    }
+
     if result.is_ok() && args.assert_console_backpressure {
         result = verify_console_backpressure(
             &cc_sock,
@@ -2412,6 +2423,43 @@ fn wait_for_profile_ssh(
         std::thread::sleep(Duration::from_secs(2));
     }
     anyhow::bail!("profile SSH did not become ready: {last}")
+}
+
+fn verify_dynamic_console(
+    cc_sock: &Path,
+    profile: &HostProfilePlan,
+    timeout: Duration,
+    qemu: &mut Child,
+) -> anyhow::Result<String> {
+    let mut cc = connect_cc_client(cc_sock, Duration::from_secs(30), qemu)?;
+    let handle = create_guest_via_cc_wait(
+        &mut cc,
+        u8::try_from(profile.control_type)?,
+        profile
+            .default_ram_mb
+            .context("dynamic console requires default profile RAM")?,
+        &profile.id,
+        timeout,
+        qemu,
+    )?;
+    anyhow::ensure!(
+        handle != 0,
+        "dynamic create returned the reserved boot handle"
+    );
+    run_guest_console_command(
+        cc_sock,
+        &mut cc,
+        handle,
+        &profile.id,
+        Some(profile),
+        "echo agentos-dynamic-console-proof",
+        "agentos-dynamic-console-proof",
+        timeout,
+        qemu,
+    )?;
+    Ok(format!(
+        "dynamic console handle {handle} completed bidirectional guest I/O"
+    ))
 }
 
 fn prove_profile_ssh(
