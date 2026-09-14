@@ -49,7 +49,14 @@
 /*
  * Virtual address at which the root task maps each parameterized PD's startup
  * record frame.  Chosen above the existing fixed PD VAs (IPC buffer 0x10000000,
- * cc_pd device pages 0x10001000..0x10004000) to avoid collisions.
+ * cc_pd device pages 0x10001000..0x10004000).
+ *
+ * This address is also used for the serial transfer page in DIFFERENT
+ * VSpaces. main.c provisions startup records only for swap_slot*, app_slot*,
+ * wg_net and vibe_swap; none receives the serial transfer page. Serial
+ * clients (serial_pd, log_drain, guest VMMs, cc_pd, net_virt, blk_virt and
+ * test_runner) receive no parameterized startup record. If those sets ever
+ * intersect, allocate a distinct VA before mapping both frames into a PD.
  *
  * NOTE: this VA is local to the parameterized-PD startup contract.  If a future
  * change wants a project-wide constant in agentos.h, that addition is tracked

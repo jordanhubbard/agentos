@@ -105,7 +105,12 @@ static inline uint32_t sel4_server_dispatch(sel4_server_t *srv,
     return SEL4_ERR_INVALID_OP;
 }
 
-/* Stub: sel4_call is a no-op in test builds; serial_ep calls do nothing */
+/* A linked driver harness can exercise the actual serial request/reply path. */
+#ifdef LOG_DRAIN_TEST_CALL
+void LOG_DRAIN_TEST_CALL(seL4_CPtr ep, const sel4_msg_t *req, sel4_msg_t *rep);
+#define sel4_call LOG_DRAIN_TEST_CALL
+#else
+/* Default stub for ring-only host tests. */
 static inline void sel4_call(seL4_CPtr ep, const sel4_msg_t *req, sel4_msg_t *rep)
 {
     (void)ep; (void)req;
@@ -115,6 +120,7 @@ static inline void sel4_call(seL4_CPtr ep, const sel4_msg_t *req, sel4_msg_t *re
     rep->data[4] = 1; rep->data[5] = 0; rep->data[6] = 0; rep->data[7] = 0; /* slot=1 */
     rep->length = 8;
 }
+#endif
 
 /* seL4_DebugPutChar stub */
 static inline void seL4_DebugPutChar(char c) { (void)c; }
@@ -163,6 +169,9 @@ static inline void seL4_DebugPutChar(char c) { (void)c; }
 #endif
 #ifndef SERIAL_MAX_WRITE_BYTES
 #define SERIAL_MAX_WRITE_BYTES 256u
+#endif
+#ifndef SERIAL_MAX_CLIENTS
+#define SERIAL_MAX_CLIENTS 8u
 #endif
 /* Per-slot transfer-page layout; mirrors contracts/serial_contract.h. */
 #ifndef SERIAL_SHMEM_SLOT_STRIDE
@@ -343,19 +352,18 @@ static void try_serial_init(void)
 {
     if (serial_ready || !g_serial_ep || !serial_shmem_vaddr) return;
 
-    sel4_msg_t req, rep;
+    sel4_msg_t req = {0}, rep = {0};
     req.opcode = MSG_SERIAL_OPEN;
-    req.length = 8;
-    data_wr32(req.data, 0, MSG_SERIAL_OPEN);
-    data_wr32(req.data, 4, 0);   /* port_id 0 */
-    for (uint32_t i = 8; i < 48; i++) req.data[i] = 0;
+    req.length = 4;
+    data_wr32(req.data, 0, 0);   /* port_id 0; opcode is not part of data */
 
     sel4_call(g_serial_ep, &req, &rep);
 
     uint32_t ok   = data_rd32(rep.data, 0);
     uint32_t slot = data_rd32(rep.data, 4);
 
-    if (ok == SERIAL_OK) {
+    if (rep.opcode == SEL4_ERR_OK && rep.length >= 8u &&
+        ok == SERIAL_OK && slot < SERIAL_MAX_CLIENTS) {
         serial_slot  = slot;
         serial_ready = true;
     }
@@ -384,13 +392,11 @@ static void uart_puts(const char *s)
         for (uint32_t i = 0; i < n; i++)
             shmem[i] = (uint8_t)s[i];
 
-        sel4_msg_t req, rep;
+        sel4_msg_t req = {0}, rep = {0};
         req.opcode = MSG_SERIAL_WRITE;
-        req.length = 12;
-        data_wr32(req.data, 0, MSG_SERIAL_WRITE);
-        data_wr32(req.data, 4, serial_slot);
-        data_wr32(req.data, 8, n);
-        for (uint32_t i = 12; i < 48; i++) req.data[i] = 0;
+        req.length = 8;
+        data_wr32(req.data, 0, serial_slot);
+        data_wr32(req.data, 4, n);
         sel4_call(g_serial_ep, &req, &rep);
 
         s += n;

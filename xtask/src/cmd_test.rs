@@ -458,6 +458,20 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
         }
     }
 
+    // Every AArch64 image includes log_drain and the serial driver. Require
+    // actual driver-backed output even on release kernels with debug printing
+    // disabled; PD load alone missed malformed serial requests in log_drain.
+    if result.is_ok() && args.board == "qemu_virt_aarch64" {
+        if let Err(error) = wait_for_all_markers(
+            &log_path,
+            &["[log_drain] ready"],
+            Duration::from_secs(10),
+            &mut qemu,
+        ) {
+            result = Err(error.context("log_drain did not emit through serial_pd"));
+        }
+    }
+
     let mut desktop_evidence = None;
     let mut desktop_tunnel = None;
     if result.is_ok() && args.assert_desktop {
