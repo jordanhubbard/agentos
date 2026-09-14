@@ -112,6 +112,7 @@ make test  TARGET_ARCH=aarch64 GUEST_OS=none   # boot in QEMU, wait for "agentOS
 make test-host                 # host-only suite + policy check + source lint
 make test-inspect              # real boot snapshot through CC and agentctl
 make test-inspect-readonly     # seL4 rejects a CC write to the snapshot page
+make test-operator-session     # native text protocol through serial_virt
 make test-guest-net            # Buildroot: one frame through emulated virtio-net
 make test-guest-blk            # Buildroot: one request through emulated virtio-blk
 make test-guest-console        # Ubuntu initramfs: login over emulated virtio-console
@@ -129,6 +130,10 @@ The structured report describes boot observations; current thread state is
 unknown and memory usage is an accounted-page lower bound. The CC socket
 remains a privileged control channel; `inspect` is a read-only operation,
 not a separate read-only credential.
+`tools/agentctl/agentctl --socket PATH session-inspect` obtains the same report
+through a separate native serial client. It uses a single serialized stream:
+`inspect.snapshot` returns `ok N` followed by exactly N report bytes. There is
+no interactive shell or mutation command in this protocol.
 
 The dual-guest demonstration (`make demo`, `make demo-test`) boots Ubuntu and
 FreeBSD concurrently and proves key-only SSH to both. See

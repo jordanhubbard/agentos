@@ -423,6 +423,23 @@ jobs:
             build/tmp/agentos-qemu-*
           if-no-files-found: error
 
+      - name: Verify operator serial session and isolation
+        run: |
+          mkdir -p build/evidence/operator
+          make test-operator-session QEMU_TEST_TIMEOUT=300 2>&1 | tee build/evidence/operator/session.log
+          cp build/qemu_virt_aarch64/agentos.img build/evidence/operator/session.img
+          make test-operator-isolation QEMU_TEST_TIMEOUT=120 2>&1 | tee build/evidence/operator/isolation.log
+      - name: Retain operator proof
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: operator-proof
+          path: |
+            build/evidence/operator/
+            build/evidence/operator-isolation/
+            build/tmp/agentos-qemu-*
+          if-no-files-found: error
+
   contract-tests:
     name: Phase 5 contract tests (qemu_virt_aarch64)
     runs-on: ubuntu-24.04

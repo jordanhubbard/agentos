@@ -21,6 +21,12 @@ but current thread states are unknown. Guest RAM is the boot reservation;
 untyped usage is an accounted-page lower bound, not a free-memory estimate.
 No root endpoint or device capability is granted to the consumer.
 
+`agentctl --socket PATH session-inspect` routes `inspect.snapshot` through
+serial_virt to the native `operator_session` client. The client has its own
+queue page and scoped attach/notification capabilities. This is one externally
+serialized stream; callers must not interleave requests. The transport remains
+privileged CC, and this protocol offers no PTY, shell, mutation or API-key storage.
+
 - Header: `platform/include/platform/inspect.h`
 - Fill: `aos_inspect_fill`
 - Structured text: `aos_inspect_format` (`key=value` lines)

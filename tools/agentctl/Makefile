@@ -22,7 +22,7 @@ SRC     := agentctl.c ../../platform/inspect/inspect_snapshot.c
 
 all: $(TARGET)
 
-$(TARGET): $(SRC) ../../platform/include/platform/inspect.h ../../kernel/agentos-root-task/include/contracts/cc_contract.h
+$(TARGET): $(SRC) ../../platform/include/platform/inspect.h ../../platform/include/platform/operator_session.h ../../kernel/agentos-root-task/include/contracts/cc_contract.h
 	$(CC) $(CFLAGS) -o $@ $(SRC) $(LDFLAGS)
 	@echo "Built: $(TARGET)"
 

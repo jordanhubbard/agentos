@@ -6,10 +6,13 @@
 
 /* Only ATTACH uses IPC. Console bytes use the shared sDDF byte queues.
  * Notifications are persistent seL4 Signals, not endpoint NBSends. */
-#define SERIAL_VIRT_CONTRACT_VERSION 1u
+#define SERIAL_VIRT_CONTRACT_VERSION 2u
 #define SERIAL_VIRT_OP_ATTACH 0x2d01u
 #define SERIAL_VIRT_ROLE_VMM 0u
 #define SERIAL_VIRT_ROLE_FRONTEND 1u
+#define SERIAL_VIRT_ROLE_OPERATOR 2u
+#define SERIAL_VIRT_OPERATOR_CLIENT 2u
+#define SERIAL_VIRT_OPERATOR_BADGE UINT64_C(0xa0510101)
 #define SERIAL_VIRT_OK 0u
 #define SERIAL_VIRT_ERR_VERSION 1u
 #define SERIAL_VIRT_ERR_AUTHORITY 2u
@@ -18,16 +21,17 @@
 #define SERIAL_VIRT_FRONTEND_BADGE UINT64_C(0xa0510100)
 
 /* Signals to a VMM use a bit distinct from legacy control notifications.
- * Signals to serial_virt use bits 0/1 for VMM clients and bit 2 for CC-PD.
+ * Signals to serial_virt use bits 0/1 for VMMs, 2 for operator and 3 for CC-PD.
  * Consumers rescan queues; combined notification bits lose no work. */
 #define SERIAL_VIRT_VMM_WAKE_BADGE (UINT64_C(1) << 61)
-#define SERIAL_VIRT_FRONTEND_WAKE_BADGE (UINT64_C(1) << 2)
+#define SERIAL_VIRT_FRONTEND_WAKE_BADGE (UINT64_C(1) << 3)
+#define SERIAL_VIRT_OPERATOR_WAKE_BADGE (UINT64_C(1) << 2)
 
 /* Bound notifications carry a notification word, not an IPC message tag.
  * Classify these badges before inspecting a receive's label or registers. */
 static inline int serial_virt_service_notification(uint64_t badge)
 {
-    return badge != 0 && (badge & ~UINT64_C(7)) == 0;
+    return badge != 0 && (badge & ~UINT64_C(15)) == 0;
 }
 static inline int serial_virt_vmm_notification(uint64_t badge)
 {
@@ -48,9 +52,11 @@ typedef struct __attribute__((packed)) {
 static inline int serial_virt_authorized(uint64_t badge, uint32_t client,
                                          uint32_t role)
 {
-    if (client >= 2u) return 0;
+    if (client >= 3u) return 0;
+    if (role == SERIAL_VIRT_ROLE_OPERATOR)
+        return client == SERIAL_VIRT_OPERATOR_CLIENT && badge == SERIAL_VIRT_OPERATOR_BADGE;
     if (role == SERIAL_VIRT_ROLE_VMM)
-        return virt_client_authorized(badge, client, client);
+        return client < 2u && virt_client_authorized(badge, client, client);
     return role == SERIAL_VIRT_ROLE_FRONTEND &&
            badge == SERIAL_VIRT_FRONTEND_BADGE;
 }

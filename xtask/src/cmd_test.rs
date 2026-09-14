@@ -202,7 +202,10 @@ fn virtio_markers(assertion: &VirtioAssertion) -> Vec<&'static str> {
 
 pub fn run(args: &TestArgs) -> anyhow::Result<()> {
     anyhow::ensure!(
-        !(args.assert_inspect || args.inspect_write_probe)
+        !(args.assert_inspect
+            || args.inspect_write_probe
+            || args.assert_operator_session
+            || args.operator_isolation_probe.is_some())
             || (args.board == "qemu_virt_aarch64" && args.guest_os == "none"),
         "inspect qualification requires AArch64 with guest-os none"
     );
@@ -367,6 +370,12 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
         if args.inspect_write_probe {
             make_args.push(String::from("INSPECT_WRITE_PROBE=1"));
         }
+        if args.assert_operator_session || args.operator_isolation_probe.is_some() {
+            make_args.push(String::from("OPERATOR_TEST=1"));
+        }
+        if let Some(mode) = args.operator_isolation_probe {
+            make_args.push(format!("OPERATOR_ISOLATION_PROBE={mode}"));
+        }
         if args.assert_native_rust || args.assert_native_guest {
             make_args.push(String::from("NATIVE_RUST_TEST=1"));
         }
@@ -452,7 +461,14 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
         drop(connect_host_net_stimulus(ssh_port, &mut qemu));
     }
 
-    let mut result = if args.inspect_write_probe {
+    let mut result = if args.operator_isolation_probe.is_some() {
+        wait_for_all_markers(
+            &log_path,
+            &["[rt] operator isolation: expected client data fault verified"],
+            Duration::from_secs(args.timeout_secs),
+            &mut qemu,
+        )
+    } else if args.inspect_write_probe {
         wait_for_all_markers(
             &log_path,
             &[
@@ -633,6 +649,10 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
 
     if result.is_ok() && args.assert_inspect {
         result = verify_inspect(&cc_sock, &repo_root);
+    }
+    if result.is_ok() && args.assert_operator_session {
+        result =
+            verify_operator_session(&cc_sock, &repo_root, Duration::from_secs(args.timeout_secs));
     }
 
     // Every AArch64 image includes log_drain and the serial driver. Require
@@ -1694,8 +1714,8 @@ fn verify_inspect(socket: &Path, root: &Path) -> anyhow::Result<String> {
         );
         let count = rd32(&first.shmem, 72);
         anyhow::ensure!(
-            count == 13 && rd32(&first.shmem, 32) == count,
-            "inspect did not report the 13 successfully started default PDs"
+            count == 14 && rd32(&first.shmem, 32) == count,
+            "inspect did not report the 14 successfully started default PDs"
         );
         for i in 0..count as usize {
             anyhow::ensure!(
@@ -1722,7 +1742,7 @@ fn verify_inspect(socket: &Path, root: &Path) -> anyhow::Result<String> {
         "hardware.arch=aarch64\n",
         "hardware.virtio_net_ipa=0xa010000\n",
         "hardware.virtio_net_virq=50\n",
-        "memory.pd_count=13\n",
+        "memory.pd_count=14\n",
         ".name=cc_pd\n",
         ".name=net_virt\n",
         ".name=serial_virt\n",
@@ -1737,6 +1757,115 @@ fn verify_inspect(socket: &Path, root: &Path) -> anyhow::Result<String> {
         "boot snapshot changed after reconnect and intervening requests"
     );
     Ok("root boot observations returned by CC and agentctl; invalid requests rejected; repeat stable".into())
+}
+
+fn operator_read_exact(
+    client: &mut CcClient,
+    expected: &[u8],
+    timeout: Duration,
+) -> anyhow::Result<()> {
+    let deadline = Instant::now() + timeout;
+    let mut received = Vec::new();
+    while received.len() < expected.len() && Instant::now() < deadline {
+        let reply = client.call(0x261c, 1, 4096, 0, &[])?;
+        anyhow::ensure!(
+            reply.mr[0] == 0 && reply.mr[1] <= 4096,
+            "operator read failed"
+        );
+        received.extend_from_slice(&reply.shmem[..reply.mr[1] as usize]);
+        anyhow::ensure!(
+            received.len() <= expected.len() && expected.starts_with(&received),
+            "operator response bytes differ at offset {}",
+            received.len()
+        );
+        if reply.mr[1] == 0 {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+    anyhow::ensure!(
+        received == expected,
+        "operator response timed out at {}/{} bytes",
+        received.len(),
+        expected.len()
+    );
+    Ok(())
+}
+
+fn verify_operator_session(
+    socket: &Path,
+    root: &Path,
+    timeout: Duration,
+) -> anyhow::Result<String> {
+    verify_inspect(socket, root)?;
+    let tool = root.join("tools/agentctl/agentctl");
+    let direct = std::process::Command::new(&tool)
+        .arg("--socket")
+        .arg(socket)
+        .arg("inspect")
+        .output()?;
+    anyhow::ensure!(direct.status.success(), "reference boot inspection failed");
+    let mut expected = format!("ok {}\n", direct.stdout.len()).into_bytes();
+    expected.extend_from_slice(&direct.stdout);
+    {
+        let mut client = CcClient::connect(socket)?;
+        for (version, length, reserved) in [(0, 0, 0), (1, 4097, 0), (1, 0, 1)] {
+            let reply = client.call(0x261b, version, length, reserved, &[])?;
+            anyhow::ensure!(
+                reply.mr == [9, 0, 0, 0],
+                "invalid operator request accepted"
+            );
+        }
+        for chunk in [b"inspect.".as_slice(), b"snapshot\r\n".as_slice()] {
+            let reply = client.call(0x261b, 1, chunk.len() as u32, 0, chunk)?;
+            anyhow::ensure!(
+                reply.mr == [0, chunk.len() as u32, 0, 0],
+                "fragment write failed"
+            );
+        }
+        operator_read_exact(&mut client, &expected, timeout)?;
+        for (line, error) in [
+            (b"bad\n".as_slice(), b"error unknown-command\n".as_slice()),
+            (
+                b"bad\0line\n".as_slice(),
+                b"error invalid-line\n".as_slice(),
+            ),
+        ] {
+            let reply = client.call(0x261b, 1, line.len() as u32, 0, line)?;
+            anyhow::ensure!(reply.mr[0] == 0, "invalid-line transport failed");
+            operator_read_exact(&mut client, error, timeout)?;
+        }
+        let mut long = vec![b'x'; 1024];
+        long.push(b'\n');
+        anyhow::ensure!(
+            client.call(0x261b, 1, long.len() as u32, 0, &long)?.mr[0] == 0,
+            "long-line transport failed"
+        );
+        operator_read_exact(&mut client, b"error line-too-long\n", timeout)?;
+        // Replies exceed both 64 KiB output queues, forcing retained output
+        // and input backpressure. Recover every framed response exactly.
+        let burst = b"inspect.snapshot\n".repeat(128);
+        anyhow::ensure!(
+            expected.len() * 128 > 2 * 65536,
+            "burst does not fill output queues"
+        );
+        anyhow::ensure!(
+            client.call(0x261b, 1, burst.len() as u32, 0, &burst)?.mr[0] == 0,
+            "burst rejected"
+        );
+        std::thread::sleep(Duration::from_millis(100));
+        operator_read_exact(&mut client, &expected.repeat(128), timeout)?;
+    }
+    let reply = std::process::Command::new(&tool)
+        .arg("--socket")
+        .arg(socket)
+        .arg("session-inspect")
+        .output()?;
+    anyhow::ensure!(
+        reply.status.success() && reply.stdout == direct.stdout,
+        "public serial session CLI differs from the root snapshot: {}",
+        String::from_utf8_lossy(&reply.stderr)
+    );
+    Ok("operator serial_virt round trip: fragmentation, error recovery, 128 exact reports after backpressure, public CLI".into())
 }
 
 pub struct CcReply {

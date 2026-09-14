@@ -111,9 +111,9 @@ guest runs. When `virtio_blk` reports no media, `blk_virt` serves a
 per-client RAM disk instead. Contract: `include/contracts/blk_virt_contract.h`.
 Lint: `tests/platform/lint_source_invariants.c` (`inv2:` block checks).
 
-*Console*. `serial_virt` is a separate PD with three root-provisioned pages:
-one per VMM and a separate CC frontend page. Only the virtualizer maps all
-three. Root grants send-only notification capabilities for persistent wakeups
+*Console*. `serial_virt` is a separate PD with four root-provisioned pages:
+one per VMM, one for the native operator client and a separate CC frontend
+page. Only the virtualizer maps all four. Root grants send-only notification capabilities for persistent wakeups
 and role-bound attach endpoints. The VMM's emulated virtio-console and PL011
 feed a bounded endpoint adapter; it retains bytes during backpressure and
 exports them over shared sDDF byte queues. CC uses its frontend queues after
@@ -224,10 +224,10 @@ guest channel before virtio-net is a backend, CapStore/MsgBus/ModelSvc/ToolSvc
 as "core OS".
 
 **Status:** museum PDs are no longer bundled or booted. The root task
-spawns exactly the PDs in `src/system_desc_aarch64.c` (13 in the default
+spawns exactly the PDs in `src/system_desc_aarch64.c` (14 in the default
 image: `nameserver`, `log_drain`, `serial_pd`, `virtio_blk`,
 `block_pd`, `blk_virt`, `net_pd`, `net_virt`, `serial_virt`, `guest_vmm_primary`,
-`vm_manager`, `cc_pd`, `fault_handler`; `guest_vmm_secondary`, `fault_inject`,
+`vm_manager`, `cc_pd`, `fault_handler`, `operator_session`; `guest_vmm_secondary`, `fault_inject`,
 and `test_runner` + `event_bus` are added only to the image variants that use
 them), and
 `agentos.toml` lists that same set and nothing else (MAC
@@ -273,10 +273,10 @@ DMA against those QEMU devices is an architecture regression.
 ### Read-only boot inspection
 
 Root publishes one 4 KiB observation page after starting the configured PDs
-and before parking. Only CC maps it, with read-only rights; the frame capability
-remains in root. `MSG_CC_INSPECT` returns the versioned packed snapshot, and
+and before parking. CC and the native operator client map it read-only; the
+frame capabilities remain in root. `MSG_CC_INSPECT` returns the versioned packed snapshot, and
 `agentctl inspect` validates it before printing structured `key=value` output.
-This adds no inspection PD, runtime root-policy loop, or device authority.
+The direct request adds no runtime root-policy loop or device authority.
 
 The snapshot records successfully started PD identities and priorities. It
 does not query live thread state: those fields remain `unknown`. Memory fields
@@ -290,7 +290,29 @@ ABI, not proof of current device health.
 rejection. `make test-inspect-readonly` reads the valid page and then attempts
 a write from CC; only root emits success after matching the CC fault badge,
 page address, data-access kind and write direction. Neither test establishes
-live scheduler inspection or serial-session attachment.
+live scheduler inspection.
+
+The separate `operator_session` PD is a native client, outside the TCB. It has
+one serial queue page, serial-virtualizer attach/send capabilities, its own
+receive-only notification and the read-only boot snapshot. It has no driver,
+guest lifecycle, guest-memory or CC frontend authority. Serial contract v2
+binds operator role/client 2 to its own badge, independently of the two VMM
+identities and CC's frontend identity.
+
+The line protocol accepts `inspect.snapshot` and emits a length-delimited
+structured report. It retains one bounded response under backpressure,
+rejects invalid lines, and drains oversized lines through their newline.
+`agentctl session-inspect` uses that queue path. This remains a single,
+externally serialized operator stream on the privileged CC transport; it
+does not introduce independent user credentials, a PTY, an LLM or mutation.
+
+`make test-operator-session` verifies fragmented requests, invalid-line
+recovery, 128 exact reports after backpressure, and the public CLI over the
+actual serial queue path. `make test-operator-isolation` runs seven images:
+operator reads and writes to both guest pages and the CC frontend must fault,
+as must a write to the boot snapshot. Root checks the fault identity, address
+and access direction. Each image first rejects three unauthorized attach
+requests and successfully attaches the operator's own channel.
 
 `make gate` is the OS-claim gate: host suite, aarch64 and x86_64 boot with
 `GUEST_OS=none`, and `gate-guest-io` (`make test-guest-net`,

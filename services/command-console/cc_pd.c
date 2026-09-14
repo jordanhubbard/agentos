@@ -43,6 +43,7 @@
 #include <platform/serial_virt_layout.h>
 #include <platform/console_input.h>
 #include <platform/inspect.h>
+#include <platform/operator_session.h>
 #include "system_desc.h"
 #include <stdint.h>
 #include <stdbool.h>
@@ -745,6 +746,8 @@ static bool cc_call_boot_guest(uint32_t opcode, const uint8_t *payload,
     return reply->opcode == GUEST_OK;
 }
 
+#endif /* configured guest helpers */
+
 static aos_serial_channel_t cc_serial_channels[AOS_SERIAL_CLIENTS];
 static bool cc_serial_attached[AOS_SERIAL_CLIENTS];
 static uint32_t cc_serial_input_reported;
@@ -769,6 +772,7 @@ static void cc_serial_init(void)
 
 /* Public handles never become array indices. Check live lifecycle authority
  * before queue access; the mirrored shared state is advisory only. */
+#if defined(AGENTOS_GUEST_PRIMARY) || defined(AGENTOS_GUEST_SECONDARY)
 static bool cc_serial_slot(uint32_t handle, bool input, uint32_t *slot)
 {
     uint32_t state;
@@ -1607,6 +1611,24 @@ static void handle_inspect(const cc_req_wire_t *req, cc_reply_wire_t *rep)
     rep->mr[3] = snap->version;
 }
 
+static void handle_operator(const cc_req_wire_t *req, cc_reply_wire_t *rep, bool write)
+{
+    rep->mr[0] = CC_ERR_INVALID_ARG;
+    if (req->mr[0] != AOS_OPERATOR_VERSION || req->mr[1] > sizeof(req->shmem) || req->mr[2]) return;
+    uint32_t slot = SERIAL_VIRT_OPERATOR_CLIENT, count = 0;
+    if (!cc_serial_attached[slot]) { rep->mr[0] = CC_ERR_RELAY_FAULT; return; }
+    aos_serial_pump_status_t status;
+    if (write) {
+        status = aos_serial_queue_write(&cc_serial_channels[slot].to_guest, req->shmem, req->mr[1]);
+        if (status == AOS_SERIAL_PUMP_OK) count = req->mr[1];
+    } else status = aos_serial_queue_read(&cc_serial_channels[slot].from_guest,
+                                          rep->shmem, req->mr[1], &count);
+    rep->mr[0] = status == AOS_SERIAL_PUMP_OK ? CC_OK :
+                 status == AOS_SERIAL_PUMP_FULL ? CC_ERR_WOULD_BLOCK : CC_ERR_RELAY_FAULT;
+    rep->mr[1] = count;
+    if (count) seL4_Signal(PD_CNODE_SLOT_SERIAL_VIRT_NOTIFY);
+}
+
 static void cc_dispatch(const cc_req_wire_t *req, cc_reply_wire_t *rep)
 {
     /* Age active sessions before dispatch.  Handlers that touch a specific
@@ -1630,6 +1652,8 @@ static void cc_dispatch(const cc_req_wire_t *req, cc_reply_wire_t *rep)
 
     /* Relay API */
     case MSG_CC_INSPECT:            handle_inspect(req, rep);           break;
+    case MSG_CC_OPERATOR_WRITE:     handle_operator(req, rep, true);    break;
+    case MSG_CC_OPERATOR_READ:      handle_operator(req, rep, false);   break;
     case MSG_CC_LIST_GUESTS:        handle_list_guests(rep);             break;
     case MSG_CC_LIST_DEVICES:       handle_list_devices(req, rep);       break;
     case MSG_CC_LIST_POLECATS:      handle_list_polecats(rep);           break;
@@ -1684,7 +1708,7 @@ void cc_pd_main(seL4_CPtr my_ep, seL4_CPtr ns_ep)
     static cc_retry_cache_t g_retry;
     cc_retry_cache_init(&g_retry);
     cc_vm_client_init(&g_vm_client, cc_vm_rpc, NULL);
-#if defined(AGENTOS_GUEST_PRIMARY) || defined(AGENTOS_GUEST_SECONDARY)
+#if defined(__aarch64__)
     cc_serial_init();
 #endif
 

@@ -225,6 +225,7 @@ typedef struct {
 #define SVC_ID_BLK_VIRT       26u   /* block virtualizer PD (the only blk mux)   */
 #define SVC_ID_SERIAL_VIRT    27u   /* serial queue virtualizer PD */
 #define SVC_ID_NATIVE_RUST_PROBE 28u /* test-only Rust IPC service */
+#define SVC_ID_OPERATOR_SESSION 29u /* native read-only serial client */
 
 /* Standard per-PD CNode slot assignments for well-known capabilities.
  * These are the slots at which each PD finds its initial endpoint caps. */
@@ -275,3 +276,5 @@ typedef struct {
 #define PD_CNODE_SLOT_BLK_VIRT_NOTIFY 26u
 #define PD_CNODE_SLOT_BLK_PRIMARY_NOTIFY 27u
 #define PD_CNODE_SLOT_BLK_SECONDARY_NOTIFY 28u
+#define PD_CNODE_SLOT_SERIAL_OPERATOR_NOTIFY 29u
+#define PD_CNODE_SLOT_OPERATOR_WAIT 30u
