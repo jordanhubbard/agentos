@@ -19,22 +19,19 @@
  *     On success blk_virt has filled the client's storage_info page (sDDF
  *     blk_storage_info_t at AOS_BLK_STORAGE_INFO_OFF) from the host media,
  *     or from its RAM disk when the driver reports no media.
- *   - KICK is a seL4_NBSend from a VMM to blk_virt with label
- *     BLK_VIRT_EVENT_KICK and no payload: "my request queue is non-empty".
- *     The sender never blocks; a kick that lands while blk_virt is not in
- *     Recv is dropped, which is why the req_consumer_signalled word below
- *     makes every kick re-sendable and blk_virt rescans before blocking.
- *   - RESP_READY is a seL4_NBSend from blk_virt to the owning VMM's listen
- *     endpoint with label BLK_VIRT_EVENT_RESP_READY: "your response queue is
- *     non-empty".  A VMM also drains its response queue after every guest
- *     exit, so a dropped RESP_READY costs latency, never a response.
+ *   - KICK is a seL4_Signal on a send-only capability to blk_virt's bound
+ *     notification, badged with the client's bit (0 or 1).
+ *   - RESP_READY is a seL4_Signal to the owning VMM's bound notification,
+ *     badged BLK_VIRT_VMM_WAKE_BADGE. Signals remain pending until received;
+ *     the receiver scans queues after waking. This also works before the
+ *     guest starts, when no guest exit can retry a dropped endpoint event.
  *
  * Signalling protocol (per client, aos_blk_signal_t at AOS_BLK_SIGNAL_OFF):
  *   req_consumer_signalled  consumer = blk_virt.  blk_virt sets it to 1
  *                           while draining and to 0 before it blocks.  A VMM
  *                           kicks when its request queue is non-empty and
  *                           the word is 0.  The VMM never writes the word, so
- *                           a lost kick is repeated on the guest's next exit.
+ *                           notification delivery does not depend on guest exits.
  *
  * Copyright (c) 2026 The agentOS Project
  * SPDX-License-Identifier: BSD-2-Clause
@@ -44,19 +41,31 @@
 
 #include <stdint.h>
 
-/* Version 3 binds client/media assignment to virtualizer_authority.h badges;
+/* Version 4 uses persistent queue notifications in both directions.
+ * Version 3 binds client/media assignment to virtualizer_authority.h badges;
  * version 2 introduced separately mapped large-page client strides. */
-#define BLK_VIRT_CONTRACT_VERSION       3u
+#define BLK_VIRT_CONTRACT_VERSION       4u
+
+/* Persistent notification caps; only queue ownership conveys data authority.
+ * Client bits coalesce at the virtualizer, which scans all attached queues.
+ * VMMs classify this bit before interpreting stale IPC message registers. */
+#define BLK_VIRT_VMM_WAKE_BADGE (UINT64_C(1) << 60)
+static inline int blk_virt_service_notification(uint64_t badge)
+{
+    return badge != 0 && (badge & ~UINT64_C(3)) == 0;
+}
 
 /* ── Opcodes / labels ─────────────────────────────────────────────────── */
 
 /* Call, VMM -> blk_virt: bind guest client `client_id` (queue stride) to
  * host media `media_id`; `vmm_slot` names the caller so blk_virt knows which
- * listen EP receives RESP_READY. */
+ * notification receives RESP_READY. */
 #define BLK_VIRT_OP_ATTACH              0x2C01u
-/* NBSend, VMM -> blk_virt: request queue is non-empty. */
+/* Legacy endpoint labels retained for diagnostics/compatibility; version 4
+ * clients use the notification capabilities, not these labels. */
+/* VMM -> blk_virt: request queue is non-empty. */
 #define BLK_VIRT_EVENT_KICK             0x2C10u
-/* NBSend, blk_virt -> VMM: response queue is non-empty. */
+/* blk_virt -> VMM: response queue is non-empty. */
 #define BLK_VIRT_EVENT_RESP_READY       0x2C11u
 
 /* ── VMM slots (blk_virt_attach_req_t.vmm_slot) ───────────────────────── */

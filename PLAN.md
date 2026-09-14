@@ -1,7 +1,7 @@
 # agentOS — Platform Plan
 
 **Status:** Active
-**Last updated:** 2026-09-09
+**Last updated:** 2026-09-14
 **Epic:** mac `task_a2c5cdc55f994af8bc9fc48b13c54d5a` (project `agentos`)
 
 QEMU is a hardware emulator so we can prototype quickly. agentOS is the
@@ -26,12 +26,21 @@ binding) described the wrong I/O model. It is superseded by this document.
 | 2 | (done) | done (host-tested) | sDDF net under VMM (`virtio_mmio_net_init`), not QEMU passthrough |
 | 2b | `task_0d44a94246554eeabc8d5bc8e36ab6d7` | done | `make test-guest-net`: boot buildroot, enumerate IPA `0x0A010000`, pump one frame |
 | 3 | `task_892273845b0949ce8be59f70c02bf644` | done | `make test-guest-blk`: boot buildroot, enumerate IPA `0x0A020000`, pump one request |
-| 4 | `task_9218737eb11a438b89552c599c25d012` | in progress | Ubuntu hvc0 uses emulated virtio-console + sDDF queues; remove residual direct UART ownership |
-| 5 | `task_7f6653b7dcc840b9ab7fa092685c9d57` | done (host-tested; live gate waits on 4) | Versioned profiles drive artifact acquisition, lifecycle type, boot, devices, the receive loop, bounded console state machines, and interactive/QA host launch tooling |
-| 6 | `task_c03b1c0527de416fbcfcdfcb77787559` | in progress | Linux guest RAM is nonidentity; migrate FreeBSD and residual non-guest DMA users |
+| 4 | `task_9218737eb11a438b89552c599c25d012` (historical; retired in MAC) | implemented; PR #138 | Separate `serial_virt` PD, isolated client pages and bidirectional virtio-console; `serial_pd` owns the UART |
+| 5 | `task_7f6653b7dcc840b9ab7fa092685c9d57` | implemented; dual-guest proof retained | Versioned profiles drive artifact acquisition, lifecycle type, boot, devices, the receive loop, bounded console state machines, and host launch tooling |
+| 6 | `task_c03b1c0527de416fbcfcdfcb77787559` (historical; retired in MAC) | implemented for Linux and FreeBSD guest RAM | Bounds-checked GPA translation into disjoint VMM memory windows; guest resource reclamation remains separate work |
 | 7 | (done) | done (quarantine by docs) | Quarantine PD museum (no deletes this pass) |
 | 8 | (done) | done | Text-only skills + Rust helper tools |
-| 9 | `task_ec992e5743354a538d1c3235a2e2c0da` | waiting on 4 | Native agent services as virtualizer clients |
+| 9 | `task_ec992e5743354a538d1c3235a2e2c0da` | in development; target networking pending | Native agent services as virtualizer clients |
+
+PR #138 merged as `e1d4ba611d2ae84c168096f58268a1774d7dcd5b`.
+Its retained dual-guest qualification and remaining lifecycle limits are
+documented in [`docs/TCB.md`](docs/TCB.md). Historical task retirement does
+not qualify new features. Native runtime task
+`task_3d190486ab18c12663a2d724bb602778` covers agentOS Rust PD execution and
+integrated virtualizer networking; the migrated external RCC service-port
+requirement was removed following the user's scope correction. No TokenHub or
+SquirrelBus port is part of this plan.
 
 ## Proof policy (unchanged)
 
@@ -81,16 +90,17 @@ services is out of scope until inspect and serial attach exist.
 2. Backend is sDDF-shaped queues + `aos_net_virt_pump` (loopback / hub).
 3. Buildroot and Ubuntu DTBs advertise only this emulated NIC; no Linux VMM
    maps the QEMU first virtio-mmio page.
-4. Full guests bridge the VMM-local queue adapter to the live `net_pd`
-   raw-frame contract and shared region. A future separate `net_virt` PD must
-   preserve that ABI and the single-owner host-device rule.
+4. Full guests use the separate `net_virt` PD over isolated client queue pages.
+   Only `net_virt` holds the `net_pd` raw-frame endpoint and driver-transfer
+   page. VMMs hold neither direct driver authority nor another client's page.
 
 ## First blk vertical slice (step 3)
 
 1. Guest IPA `0x0A020000` is an **emulated** virtio-mmio blk device (fault to VMM).
-2. Backend is sDDF-shaped queues + `aos_blk_virt_pump`. Single-guest Ubuntu
-   routes those requests over seL4 IPC to the `virtio_blk` PD, which alone
-   owns QEMU bus.8 and DMA memory. Buildroot retains the 256 KB RAM fallback.
+2. Backend is sDDF-shaped queues into the separate `blk_virt` PD. Only that
+   virtualizer calls `virtio_blk`, the driver that owns QEMU bus.8 and DMA
+   memory. VMMs map only their own queue page. Buildroot retains the 256 KB
+   RAM fallback.
 3. Buildroot, Ubuntu, and FreeBSD advertise **only** emulated net + emulated
    block devices. Host buses 8 and 31 remain private backing transports owned
    by agentOS services.
@@ -109,13 +119,15 @@ services is out of scope until inspect and serial attach exist.
 3. `make test-guest-console` requires Ubuntu's login prompt plus echoed
    input over CC-PD and VMM probe / DRIVER_OK / bidirectional pump markers.
 4. Virtio-console descriptor payloads use bounds-checked GPA translation.
-5. Remaining before step 4 closes: remove direct UART mappings from every
-   non-driver PD so `serial_pd` is the sole post-bootstrap hardware owner.
+5. `serial_virt` now multiplexes separate VMM pages and a CC frontend page.
+   Persistent notifications wake queue consumers. `serial_pd` is the sole
+   post-bootstrap UART owner; generic log-ring provisioning remains separate
+   work under `task_d41eae5495924820bc2defa15750d4e8`.
 
 ## Ubuntu all-VirtIO gate
 
-`make test-ubuntu-virtio` launches no QEMU net or block device for the single
-Ubuntu guest. The DTB advertises only agentOS emulated net (`0x0A010000`),
+`make test-ubuntu-virtio` uses QEMU NIC and block devices as hardware stand-ins
+owned by agentOS driver PDs. The guest DTB advertises only agentOS emulated net (`0x0A010000`),
 block (`0x0A020000`), and console (`0x0A030000`). The gate requires all three
 to probe, reach DRIVER_OK, and transfer real guest I/O before accepting a login
 and echoed input over CC-PD. CI runs the same gate.

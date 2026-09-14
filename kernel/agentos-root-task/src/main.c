@@ -50,6 +50,7 @@
 #include <platform/blk_layout.h>      /* shared sDDF block region (VMMs + blk_virt) */
 #include <platform/serial_virt_layout.h>
 #include <contracts/serial_virt_contract.h>
+#include <contracts/blk_virt_contract.h>
 #include <platform/vmm_isolation_probe.h>
 #include <platform/native_net_isolation_probe.h>
 #include <contracts/virtualizer_authority.h>
@@ -1575,16 +1576,19 @@ void root_task_main(const seL4_BootInfo *bi)
     /* Allocate notifications before spawning: serial_virt needs send-only
      * capabilities to VMM notifications even when those VMMs spawn later. */
     uint32_t serial_virt_index = SYSTEM_MAX_PDS;
+    uint32_t blk_virt_index = SYSTEM_MAX_PDS;
     uint32_t net_virt_index = SYSTEM_MAX_PDS;
     uint32_t native_net_index = SYSTEM_MAX_PDS;
     for (uint32_t i = 0; i < sys->pd_count; i++) {
         const pd_desc_t *pd = &sys->pds[i];
         if (pd->self_svc_id == SVC_ID_SERIAL_VIRT) serial_virt_index = i;
+        if (pd->self_svc_id == SVC_ID_BLK_VIRT) blk_virt_index = i;
         if (pd->self_svc_id == SVC_ID_NET_VIRT) net_virt_index = i;
         if (pd->self_svc_id == SVC_ID_NATIVE_RUST_PROBE) native_net_index = i;
         if (pd->irq_count || pd_is_guest_vmm(pd) ||
             pd->self_svc_id == SVC_ID_NET_VIRT ||
             pd->self_svc_id == SVC_ID_NATIVE_RUST_PROBE ||
+            pd->self_svc_id == SVC_ID_BLK_VIRT ||
             pd->self_svc_id == SVC_ID_SERIAL_VIRT) {
             seL4_Error err = ut_alloc(seL4_NotificationObject,
                 seL4_NotificationBits, seL4_CapInitThreadCNode,
@@ -1905,6 +1909,30 @@ void root_task_main(const seL4_BootInfo *bi)
                     seL4_CapInitThreadCNode, g_pd_notifications[i], 64u,
                     seL4_CapRights_new(0, 0, 1, 0)) != seL4_NoError) {
                 dbg_puts("[rt] native network wait grant failed; refusing PD start\n");
+                continue;
+            }
+        }
+
+        if (blk_virt_index != SYSTEM_MAX_PDS) {
+            seL4_Error signal_err = seL4_NoError;
+            if (pd_is_guest_vmm(pd)) {
+                signal_err = seL4_CNode_Mint(pd_cnode,
+                    PD_CNODE_SLOT_BLK_VIRT_NOTIFY, pd->cnode_size_bits,
+                    seL4_CapInitThreadCNode, g_pd_notifications[blk_virt_index],
+                    64u, seL4_CapRights_new(0, 0, 0, 1),
+                    1u << (pd_is_secondary_guest_vmm(pd) ? 1u : 0u));
+            } else if (pd->self_svc_id == SVC_ID_BLK_VIRT) {
+                for (uint32_t v = 0; v < sys->pd_count && signal_err == seL4_NoError; v++) {
+                    if (!pd_is_guest_vmm(&sys->pds[v])) continue;
+                    seL4_Word slot = pd_is_secondary_guest_vmm(&sys->pds[v]) ?
+                        PD_CNODE_SLOT_BLK_SECONDARY_NOTIFY : PD_CNODE_SLOT_BLK_PRIMARY_NOTIFY;
+                    signal_err = seL4_CNode_Mint(pd_cnode, slot, pd->cnode_size_bits,
+                        seL4_CapInitThreadCNode, g_pd_notifications[v], 64u,
+                        seL4_CapRights_new(0, 0, 0, 1), BLK_VIRT_VMM_WAKE_BADGE);
+                }
+            }
+            if (signal_err != seL4_NoError) {
+                dbg_puts("[rt] block signal grant failed; refusing PD start\n");
                 continue;
             }
         }

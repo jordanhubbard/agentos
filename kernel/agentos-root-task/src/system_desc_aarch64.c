@@ -83,16 +83,9 @@
 #define AOS_CC_INIT_EP_COUNT 6u
 #endif
 
-/* blk_virt holds: nameserver, log_drain, serial (diagnostics through
- * serial_pd), virtio_blk, plus one listen EP per configured VMM so it can
- * NBSend BLK_VIRT_EVENT_RESP_READY to the client whose responses it queued. */
-#if defined(AGENTOS_GUEST_PRIMARY) && defined(AGENTOS_GUEST_SECONDARY)
-#define AOS_BLK_VIRT_INIT_EP_COUNT 6u
-#elif defined(AGENTOS_GUEST_PRIMARY) || defined(AGENTOS_GUEST_SECONDARY)
-#define AOS_BLK_VIRT_INIT_EP_COUNT 5u
-#else
+/* VMM wakeups use send-only notifications granted by root, not their
+ * lifecycle endpoints. */
 #define AOS_BLK_VIRT_INIT_EP_COUNT 4u
-#endif
 
 /* net_virt holds: nameserver, log_drain, serial (diagnostics through
  * serial_pd), net_pd, plus one listen EP per configured VMM so it can NBSend
@@ -219,8 +212,8 @@ const system_desc_t system_desc_aarch64 = {
          * shared block region and virtio_blk's chunked DMA-window contract.
          * Sits just below virtio_blk / block_pd because it Calls into the
          * driver, and above every guest-control PD.  VMMs reach it only by
-         * ATTACH (once) and NBSend kicks; it reaches them by NBSend
-         * RESP_READY on the listen EPs below. */
+         * ATTACH (once) and persistent kicks; root grants send-only
+         * notification caps for responses to each configured VMM. */
         {
             .name           = "blk_virt",
             .elf_path       = "blk_virt.elf",
@@ -234,12 +227,6 @@ const system_desc_t system_desc_aarch64 = {
                 { SVC_ID_LOG_DRAIN,  PD_CNODE_SLOT_LOG_DRAIN_EP  },
                 { SVC_ID_SERIAL,     PD_CNODE_SLOT_SERIAL_EP     },
                 { SVC_ID_VIRTIO_BLK, PD_CNODE_SLOT_VIRTIO_BLK_EP },
-#if defined(AGENTOS_GUEST_PRIMARY)
-                { SVC_ID_GUEST_VMM_PRIMARY,   PD_CNODE_SLOT_GUEST_VMM_PRIMARY_EP },
-#endif
-#if defined(AGENTOS_GUEST_SECONDARY)
-                { SVC_ID_GUEST_VMM_SECONDARY, PD_CNODE_SLOT_GUEST_VMM_SECONDARY_EP },
-#endif
             },
             .irq_count = 0u,
             .irqs = { },
