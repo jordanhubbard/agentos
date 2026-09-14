@@ -8,8 +8,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Route dynamic guest control from CC-PD directly to `vm_manager` and remove
   `vibe_engine` from the boot image. Public handles remain distinct from backend
   slots, backend failures propagate, and failed-start rollback retains a
-  recoverable handle when cleanup fails. Console remains an inline IPC path
-  until the separate serial virtualizer is implemented.
+  recoverable handle when cleanup fails.
+- Route guest consoles through a separate `serial_virt` PD with isolated
+  VMM/frontend pages, authenticated attachment and bounded byte queues.
+  Retain descriptor progress during backpressure. Qualify sustained output
+  and concurrent Ubuntu/FreeBSD SSH, including FreeBSD suspend/resume.
 
 ### Fixed
 

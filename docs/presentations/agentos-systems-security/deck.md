@@ -112,7 +112,7 @@ guest virtio queue
 VMM queue validation + GPA translation
       |
       v
-separate net_virt / blk_virt PDs over shared queues
+separate net_virt / blk_virt / serial_virt PDs over shared queues
       |
       v
 agentOS-owned host backend
@@ -120,8 +120,8 @@ agentOS-owned host backend
 
 The guest sees a standard virtual device. The VMM validates descriptors and
 translates guest physical addresses. A generic service owns the real backend.
-Console still uses VMM-local queues plus IPC to CC-PD; a separate serial_virt
-PD and live native virtualizer clients remain planned.
+Console uses a separate serial_virt PD, with one isolated page per VMM and
+a separate CC frontend page. Live native virtualizer clients remain planned.
 
 > Speaker notes: The key security distinction is emulation versus passthrough.
 > Cite the virtio host tests and target evidence specifically. Do not imply the
@@ -213,8 +213,9 @@ concurrent authenticated acceptance
 
 `make test-host` is a fast filter. `make gate` proves both stub-boot targets
 and guest network, block, and console behavior. `make demo-test` must pass
-before claiming concurrent authenticated dual-guest SSH; it remains under
-qualification. A broader statement requires the broader gate.
+before claiming concurrent authenticated dual-guest SSH. It passed at
+`d3da13e1`, including FreeBSD suspend/resume; `docs/TCB.md` records the retained
+image hash. A release still requires evidence for its exact revision.
 
 > Speaker notes: This page is deliberately about epistemology. “Tests pass”
 > means little unless the audience knows what layer the tests execute.

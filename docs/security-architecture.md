@@ -79,7 +79,7 @@ variants that configure it.
 | Multiplexing is a service boundary | Separate `net_virt`, `blk_virt` and `serial_virt` PDs consume bounded queues | Device access crosses a named service boundary. VMM client pages are isolated; resource exhaustion still requires auditing. |
 | A guest address is not a host pointer | VMM code validates descriptors and translates GPA to its mapped guest RAM | Invalid descriptors can be rejected before copying. Correctness of every translation and length calculation remains userspace TCB work. |
 | Native work need not inherit a Linux kernel | Native PD clients are planned to attach to canonical virtualizers | The architecture can remove an entire guest kernel from a workload's dependency set. Live native virtualizer attachment is not yet qualified. |
-| Control and bulk data have different contracts | seL4 IPC for attach/lifecycle; shared-memory queues for net/block/console payloads | Root-minted badges constrain attachment. Console queues and descriptor progress remain bounded; shared metadata does not grant lifecycle authority. Sustained-output target qualification remains pending, detailed in TCB.md. |
+| Control and bulk data have different contracts | seL4 IPC for attach/lifecycle; shared-memory queues for net/block/console payloads | Root-minted badges constrain attachment. Console queues and descriptor progress remain bounded; shared metadata does not grant lifecycle authority. The sustained-output target proof recovered 262,144 bytes after backpressure; scope and evidence are detailed in TCB.md. |
 
 These choices differ from a host-kernel driver path and from assigning a host
 device directly to a guest. They are not a claim that every other hypervisor
@@ -128,7 +128,9 @@ flowchart LR
 
 Network, block and console now have separate virtualizer boundaries. The
 Ubuntu console gate proves transfer through `serial_virt` and echoed guest
-input; FreeBSD dual-guest qualification remains pending. Dynamic lifecycle
+input. The dual-guest test also passed concurrent Ubuntu/FreeBSD authenticated
+SSH and FreeBSD suspend/resume; the tested image is identified in `TCB.md`.
+Destroyed slots cannot yet be recreated in the same image. Dynamic lifecycle
 calls `vm_manager` directly; `vibe_engine` is retired from the image.
 Attaching native clients remains implementation work. Physical
 board execution and x86 guest execution require independent target evidence.
@@ -142,7 +144,7 @@ board execution and x86 guest execution require independent target evidence.
 | Allowed device owners and qualification limits | [`TCB.md`](TCB.md) |
 | Network and block queue contracts | [`platform/include/platform/`](../platform/include/platform/), [`contracts/`](../kernel/agentos-root-task/include/contracts/) |
 | Guest-visible device proofs | `make gate`: host tests, both stub-boot architectures, guest net/block/console proofs |
-| Concurrent authenticated Linux/FreeBSD acceptance | `make demo-test`; remains under qualification after the retained FreeBSD SSH timeout |
+| Concurrent authenticated Linux/FreeBSD acceptance | `make demo-test` passed at `d3da13e1`; retained image hash and qualification scope in [`TCB.md`](TCB.md) |
 | Release-level claims | [`RELEASES.md`](RELEASES.md): exact revision, gate receipt, checksums and remote verification |
 
 The detailed diagram is an evidence-backed snapshot, not a generated
