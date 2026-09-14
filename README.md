@@ -110,6 +110,8 @@ make setup                     # build xtask, download Microkit SDK 2.1.0, check
 make build TARGET_ARCH=aarch64 GUEST_OS=none
 make test  TARGET_ARCH=aarch64 GUEST_OS=none   # boot in QEMU, wait for "agentOS boot complete"
 make test-host                 # host-only suite + policy check + source lint
+make test-inspect              # real boot snapshot through CC and agentctl
+make test-inspect-readonly     # seL4 rejects a CC write to the snapshot page
 make test-guest-net            # Buildroot: one frame through emulated virtio-net
 make test-guest-blk            # Buildroot: one request through emulated virtio-blk
 make test-guest-console        # Ubuntu initramfs: login over emulated virtio-console
@@ -120,6 +122,13 @@ The Microkit SDK lands in `$HOME/.cache/agentos/microkit-sdk-2.1.0` unless
 `SEL4_SDK` points elsewhere. QEMU logs and control sockets go to `build/tmp/`;
 set `AGENTOS_TMP_DIR` to a short path when the checkout path is long (macOS
 caps Unix socket paths at 104 bytes). `make help` lists every target.
+
+For a running AArch64 image, build with `make -C tools/agentctl` and run
+`tools/agentctl/agentctl --socket PATH inspect` using its control socket.
+The structured report describes boot observations; current thread state is
+unknown and memory usage is an accounted-page lower bound. The CC socket
+remains a privileged control channel; `inspect` is a read-only operation,
+not a separate read-only credential.
 
 The dual-guest demonstration (`make demo`, `make demo-test`) boots Ubuntu and
 FreeBSD concurrently and proves key-only SSH to both. See
