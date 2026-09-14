@@ -17,8 +17,16 @@ env:
 
 jobs:
   ubuntu-live:
-    name: Ubuntu Casper userspace on agentOS VirtIO
+    name: Ubuntu live qualification (${{ matrix.target }})
     runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: test-ubuntu-live
+            artifact: ubuntu-live-qualification-logs
+          - target: test-native-with-guest
+            artifact: native-ubuntu-live-qualification-logs
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -34,6 +42,8 @@ jobs:
             curl
 
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-unknown-none
       - uses: Swatinem/rust-cache@v2
 
       - name: Cache Microkit SDK
@@ -64,15 +74,16 @@ jobs:
         # assertion deadline aligned with the release/demo proof and leave an
         # outer envelope for the build plus evidence upload.
         timeout-minutes: 150
-        run: make test-ubuntu-live QEMU_TEST_TIMEOUT=7200
+        run: make ${{ matrix.target }} QEMU_TEST_TIMEOUT=7200
 
       - name: Upload QEMU serial logs
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: ubuntu-live-qualification-logs
+          name: ${{ matrix.artifact }}
           path: |
             build/tmp/agentos-qemu-*.log
             build/tmp/agentos-qemu-*.qemu.stderr
             build/tmp/agentos-qemu-*.net.pcap
+            build/qemu_virt_aarch64/agentos.img
           if-no-files-found: ignore
