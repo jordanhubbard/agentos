@@ -33,6 +33,9 @@ pub use guest_scenario::GuestScenarioArgs;
 
 #[derive(clap::Args)]
 pub struct TestArgs {
+    /// Test network mapping isolation: primary cases 1..4, secondary cases 5..8.
+    #[arg(long, conflicts_with_all = ["block_isolation_probe", "virtualizer_authority_probe"], value_parser = clap::value_parser!(u8).range(1..=8))]
+    pub network_isolation_probe: Option<u8>,
     /// Test VMM attachment authority: 1 primary, 2 secondary.
     #[arg(long, conflicts_with = "block_isolation_probe", value_parser = clap::value_parser!(u8).range(1..=2))]
     pub virtualizer_authority_probe: Option<u8>,

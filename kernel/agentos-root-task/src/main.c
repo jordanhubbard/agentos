@@ -47,9 +47,9 @@
 #include "contracts/cc_contract.h" /* cc_pd VirtIO startup ABI                    */
 #include <platform/blk_host_layout.h> /* host block MMIO/shared DMA layout       */
 #include <platform/blk_layout.h>      /* shared sDDF block region (VMMs + blk_virt) */
-#include <platform/blk_isolation_probe.h>
+#include <platform/vmm_isolation_probe.h>
 #include <contracts/virtualizer_authority.h>
-#ifdef AGENTOS_BLK_ISOLATION_PROBE
+#ifdef AOS_VMM_ISOLATION_PROBE
 #include "serial_log.h"
 #endif
 #include <platform/net_host_layout.h> /* host net MMIO/private DMA/shared bridge */
@@ -1745,14 +1745,14 @@ void root_task_main(const seL4_BootInfo *bi)
              * MRs  = [mcp, priority]
              */
             seL4_CPtr pd_fault_ep = g_fault_ep;
-#ifdef AGENTOS_BLK_ISOLATION_PROBE
+#ifdef AOS_VMM_ISOLATION_PROBE
             if (pd_is_guest_vmm(pd) &&
-                (uint32_t)pd_is_secondary_guest_vmm(pd) == AOS_BLK_PROBE_CLIENT) {
+                (uint32_t)pd_is_secondary_guest_vmm(pd) == AOS_VMM_PROBE_CLIENT) {
                 pd_fault_ep = ut_alloc_slot();
                 if (pd_fault_ep == seL4_CapNull ||
                     seL4_CNode_Mint(seL4_CapInitThreadCNode, pd_fault_ep, 64u,
                                    seL4_CapInitThreadCNode, g_fault_ep, 64u,
-                                   seL4_AllRights, AOS_BLK_PROBE_BADGE) != seL4_NoError) {
+                                   seL4_AllRights, AOS_VMM_PROBE_BADGE) != seL4_NoError) {
                     dbg_puts("[rt] block isolation probe endpoint failed\n");
                     continue;
                 }
@@ -2487,7 +2487,7 @@ void root_task_main(const seL4_BootInfo *bi)
      * not regain it if its SC budget was consumed during init.
      */
     if (g_fault_ep != seL4_CapNull) {
-#ifdef AGENTOS_BLK_ISOLATION_PROBE
+#ifdef AOS_VMM_ISOLATION_PROBE
         serial_log_t probe_log = {0};
         seL4_CPtr probe_serial_frame = ut_alloc_slot();
         if (probe_serial_frame != seL4_CapNull &&
@@ -2504,14 +2504,13 @@ void root_task_main(const seL4_BootInfo *bi)
             seL4_Word badge = 0u;
             seL4_MessageInfo_t tag = seL4_Wait(g_fault_ep, &badge);
             seL4_Word label = seL4_MessageInfo_get_label(tag);
-#ifdef AGENTOS_BLK_ISOLATION_PROBE
-            if (badge == AOS_BLK_PROBE_BADGE && label == seL4_Fault_VMFault &&
+#ifdef AOS_VMM_ISOLATION_PROBE
+            if (badge == AOS_VMM_PROBE_BADGE && label == seL4_Fault_VMFault &&
                 seL4_MessageInfo_get_length(tag) >= seL4_VMFault_Length &&
-                seL4_GetMR(seL4_VMFault_Addr) == AOS_BLK_PROBE_ADDRESS &&
+                seL4_GetMR(seL4_VMFault_Addr) == AOS_VMM_PROBE_ADDRESS &&
                 seL4_GetMR(seL4_VMFault_PrefetchFault) == 0u &&
-                ((seL4_GetMR(seL4_VMFault_FSR) >> 6u) & 1u) == AOS_BLK_PROBE_WRITE) {
-                serial_log_puts(&probe_log,
-                    "[rt] block isolation: expected VMM data fault verified\n");
+                ((seL4_GetMR(seL4_VMFault_FSR) >> 6u) & 1u) == AOS_VMM_PROBE_WRITE) {
+                serial_log_puts(&probe_log, AOS_VMM_PROBE_MESSAGE);
             }
 #endif
             dbg_puts("[rt] FAULT label=");

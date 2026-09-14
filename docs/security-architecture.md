@@ -92,12 +92,12 @@ Guest compromise and VMM compromise are different threats. Guest kernels do
 not receive the host sDDF queue mappings. Their VMMs do. At this revision the
 root maps each VMM's network and block client onto separate 2 MB frames; each
 VMM maps only its own client frames. net_pd maps only a separate transfer page,
-which net_virt also maps. Network negative mapping tests remain pending. Block
+which net_virt also maps. `make test-network-isolation` verifies foreign-client
+and driver-page read/write faults from both VMM slots. Block
 clients occupy separate 2 MB frames, and each VMM maps only its own frame.
 The virtualizer alone maps all block client frames and the RAM-disk page.
 `make test-block-isolation` checks read/write faults from both VMM slots at
-foreign block-client and RAM-disk addresses. These tests do not cover network
-queues; do not describe those as mutually inaccessible per-guest memory.
+foreign block-client and RAM-disk addresses. Each class is qualified separately.
 
 Device selection is independently capability-bound. Root mints each VMM's
 net/block endpoint with its assigned slot badge; ATTACH checks that badge
