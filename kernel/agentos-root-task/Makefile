@@ -195,53 +195,53 @@ BOARD_UART_IRQ  ?=
 # Protection Domain ELFs
 # monitor/controller: includes vibe_swap for the hot-swap controller-side logic
 # m3_bare_metal.c provides memset/memcpy/memmove needed by compiler-generated code
-PD_MONITOR_SRCS   := src/monitor.c src/cap_broker.c src/agent_pool.c src/vibe_swap.c src/m3_bare_metal.c src/log.c src/boot_integrity.c src/ed25519_verify.c src/monocypher.c src/cap_policy.c src/verify.c src/pd_tcb.c src/ut_alloc.c
+PD_MONITOR_SRCS   := $(REPO_ROOT_MK)/services/legacy-pds/monitor.c $(REPO_ROOT_MK)/services/legacy-pds/cap_broker.c $(REPO_ROOT_MK)/services/legacy-pds/agent_pool.c $(REPO_ROOT_MK)/services/legacy-pds/vibe_swap.c src/m3_bare_metal.c src/log.c $(REPO_ROOT_MK)/services/legacy-pds/boot_integrity.c $(REPO_ROOT_MK)/libs/pd-support/ed25519_verify.c $(REPO_ROOT_MK)/libs/pd-support/monocypher.c $(REPO_ROOT_MK)/services/legacy-pds/cap_policy.c $(REPO_ROOT_MK)/services/legacy-pds/verify.c src/pd_tcb.c src/ut_alloc.c
 PD_EVENTBUS_SRCS  := src/m3_bare_metal.c src/log.c   # event_bus.c → services/event-bus/ (E9-S1)
-PD_INITAGENT_SRCS := src/init_agent.c src/native_net_client.c src/m3_bare_metal.c src/log.c
-PD_WORKER_SRCS    := src/worker.c src/m3_bare_metal.c src/log.c
+PD_INITAGENT_SRCS := $(REPO_ROOT_MK)/services/legacy-pds/init_agent.c $(REPO_ROOT_MK)/services/legacy-pds/native_net_client.c src/m3_bare_metal.c src/log.c
+PD_WORKER_SRCS    := $(REPO_ROOT_MK)/services/legacy-pds/worker.c src/m3_bare_metal.c src/log.c
 # agentfs needs m3_bare_metal for memset/sqrtf (no wasm3 headers needed)
 PD_AGENTFS_SRCS      := src/m3_bare_metal.c src/log.c   # agentfs.c → services/agentfs/ (E9-S1)
-PD_VIBEENGINE_SRCS   := src/cap_policy.c src/m3_bare_metal.c src/log.c   # vibe_engine.c → services/vibe-engine/ (E9-S1)
-PD_SWAPSLOT_SRCS     := src/swap_slot.c src/wasm3_host.c src/m3_bare_metal.c src/log.c
-PD_LOG_DRAIN_SRCS    := src/log_drain.c src/m3_bare_metal.c src/log.c
+PD_VIBEENGINE_SRCS   := $(REPO_ROOT_MK)/services/legacy-pds/cap_policy.c src/m3_bare_metal.c src/log.c   # vibe_engine.c → services/vibe-engine/ (E9-S1)
+PD_SWAPSLOT_SRCS     := $(REPO_ROOT_MK)/services/legacy-pds/swap_slot.c $(REPO_ROOT_MK)/services/legacy-pds/wasm3_host.c src/m3_bare_metal.c src/log.c
+PD_LOG_DRAIN_SRCS    := $(REPO_ROOT_MK)/services/log-drain/log_drain.c src/m3_bare_metal.c src/log.c
 PD_SERIAL_PD_SRCS    := src/m3_bare_metal.c src/log.c   # serial_pd.c → services/serial-mux/ (E9-S3)
-PD_MEMPROFILER_SRCS  := src/mem_profiler.c src/m3_bare_metal.c src/log.c
-PD_NETISOLATOR_SRCS      := src/net_isolator.c src/m3_bare_metal.c src/log.c
-PD_SNAPSHOTSCHED_SRCS    := src/snapshot_sched.c src/m3_bare_metal.c src/log.c
-PD_PERFCOUNTERS_SRCS     := src/perf_counters.c src/m3_bare_metal.c src/log.c
-PD_TIMEPARTITION_SRCS    := src/time_partition.c src/m3_bare_metal.c src/log.c
-PD_TRACERECORDER_SRCS    := src/trace_recorder.c src/m3_bare_metal.c src/log.c
-PD_NAMESERVER_SRCS       := src/nameserver.c src/m3_bare_metal.c src/log.c
-PD_VIRTIO_BLK_SRCS       := src/virtio_blk.c src/m3_bare_metal.c src/log.c
-PD_VFS_SERVER_SRCS       := src/vfs_server.c src/m3_bare_metal.c src/log.c
-PD_SPAWN_SERVER_SRCS     := src/spawn_server.c src/sha256_mini.c src/m3_bare_metal.c src/log.c
-PD_APP_SLOT_SRCS         := src/app_slot.c src/sha256_mini.c src/m3_bare_metal.c src/log.c
-PD_NET_SERVER_SRCS       := src/lwip_sys.c src/lwip_shim.c src/m3_bare_metal.c src/log.c   # net_server.c → services/net-server/ (E9-S3)
-PD_NET_PD_SRCS           := src/lwip_sys.c src/lwip_shim.c src/m3_bare_metal.c src/log.c   # net_pd.c → services/net-service/ (E9-S3)
+PD_MEMPROFILER_SRCS  := $(REPO_ROOT_MK)/services/legacy-pds/mem_profiler.c src/m3_bare_metal.c src/log.c
+PD_NETISOLATOR_SRCS      := $(REPO_ROOT_MK)/services/legacy-pds/net_isolator.c src/m3_bare_metal.c src/log.c
+PD_SNAPSHOTSCHED_SRCS    := $(REPO_ROOT_MK)/services/legacy-pds/snapshot_sched.c src/m3_bare_metal.c src/log.c
+PD_PERFCOUNTERS_SRCS     := $(REPO_ROOT_MK)/services/legacy-pds/perf_counters.c src/m3_bare_metal.c src/log.c
+PD_TIMEPARTITION_SRCS    := $(REPO_ROOT_MK)/services/legacy-pds/time_partition.c src/m3_bare_metal.c src/log.c
+PD_TRACERECORDER_SRCS    := $(REPO_ROOT_MK)/services/legacy-pds/trace_recorder.c src/m3_bare_metal.c src/log.c
+PD_NAMESERVER_SRCS       := $(REPO_ROOT_MK)/services/nameserver/nameserver.c src/m3_bare_metal.c src/log.c
+PD_VIRTIO_BLK_SRCS       := $(REPO_ROOT_MK)/services/block-driver/virtio_blk.c src/m3_bare_metal.c src/log.c
+PD_VFS_SERVER_SRCS       := $(REPO_ROOT_MK)/services/legacy-pds/vfs_server.c src/m3_bare_metal.c src/log.c
+PD_SPAWN_SERVER_SRCS     := $(REPO_ROOT_MK)/services/legacy-pds/spawn_server.c $(REPO_ROOT_MK)/libs/pd-support/sha256_mini.c src/m3_bare_metal.c src/log.c
+PD_APP_SLOT_SRCS         := $(REPO_ROOT_MK)/services/legacy-pds/app_slot.c $(REPO_ROOT_MK)/libs/pd-support/sha256_mini.c src/m3_bare_metal.c src/log.c
+PD_NET_SERVER_SRCS       := $(REPO_ROOT_MK)/services/net-service/lwip_sys.c $(REPO_ROOT_MK)/services/net-service/lwip_shim.c src/m3_bare_metal.c src/log.c   # net_server.c → services/net-server/ (E9-S3)
+PD_NET_PD_SRCS           := $(REPO_ROOT_MK)/services/net-service/lwip_sys.c $(REPO_ROOT_MK)/services/net-service/lwip_shim.c src/m3_bare_metal.c src/log.c   # net_pd.c → services/net-service/ (E9-S3)
 PD_NET_VIRT_SRCS         := src/m3_bare_metal.c src/log.c   # net_virt.c + net_virt_pump.c → platform/net-virt/
 PD_BLK_VIRT_SRCS         := src/m3_bare_metal.c src/log.c   # blk_virt.c + blk_virt_pump.c → platform/blk-virt/
 PD_SERIAL_VIRT_SRCS      := src/m3_bare_metal.c src/log.c
-PD_WG_NET_SRCS           := src/wg_net.c src/monocypher.c src/m3_bare_metal.c src/log.c
-PD_APP_MANAGER_SRCS      := src/app_manager.c src/m3_bare_metal.c src/log.c
-PD_HTTP_SVC_SRCS         := src/http_svc.c src/m3_bare_metal.c src/log.c
-PD_VM_MANAGER_SRCS       := src/vm_manager.c src/vmm_mux_stub.c src/m3_bare_metal.c src/log.c
-PD_AUTH_SERVER_SRCS      := src/auth_server.c src/m3_bare_metal.c src/log.c
-PD_EXT2FS_SRCS           := src/ext2fs.c src/m3_bare_metal.c src/log.c
-PD_PROC_SERVER_SRCS      := src/proc_server.c src/m3_bare_metal.c src/log.c
-PD_VM_SNAPSHOT_SRCS      := src/vm_snapshot.c src/m3_bare_metal.c src/log.c
-PD_PFLOCAL_SERVER_SRCS   := src/pflocal_server.c src/m3_bare_metal.c src/log.c
-PD_PFLOCAL_SRCS          := src/pflocal_server.c src/m3_bare_metal.c src/log.c
-PD_EXEC_SERVER_SRCS      := src/exec_server.c src/m3_bare_metal.c src/log.c
-PD_TERM_SERVER_SRCS      := src/term_server.c src/m3_bare_metal.c src/log.c
-PD_BLOCK_PD_SRCS         := src/block_pd.c src/m3_bare_metal.c src/log.c
-PD_FB_PD_SRCS            := src/framebuffer_pd.c src/m3_bare_metal.c src/log.c
-PD_USB_PD_SRCS           := src/usb_pd.c src/m3_bare_metal.c src/log.c
-PD_CC_PD_SRCS            := src/cc_pd.c src/cc_vm_client.c src/cc_retry_cache.c src/m3_bare_metal.c src/log.c
-PD_GPU_SCHED_SRCS        := src/gpu_sched.c src/gpu_shmem.c src/m3_bare_metal.c src/log.c
-PD_IRQ_PD_SRCS           := src/irq_pd.c src/m3_bare_metal.c src/log.c
-PD_TIMER_PD_SRCS         := src/timer_pd.c src/m3_bare_metal.c src/log.c
-PD_FAULT_HANDLER_SRCS    := src/fault_handler.c src/m3_bare_metal.c src/log.c
-PD_FAULT_INJECT_SRCS     := src/fault_inject.c src/m3_bare_metal.c src/log.c
+PD_WG_NET_SRCS           := $(REPO_ROOT_MK)/services/legacy-pds/wg_net.c $(REPO_ROOT_MK)/libs/pd-support/monocypher.c src/m3_bare_metal.c src/log.c
+PD_APP_MANAGER_SRCS      := $(REPO_ROOT_MK)/services/legacy-pds/app_manager.c src/m3_bare_metal.c src/log.c
+PD_HTTP_SVC_SRCS         := $(REPO_ROOT_MK)/services/legacy-pds/http_svc.c src/m3_bare_metal.c src/log.c
+PD_VM_MANAGER_SRCS       := $(REPO_ROOT_MK)/services/vm-manager/vm_manager.c $(REPO_ROOT_MK)/platform/guest-vmm/vmm_mux_stub.c src/m3_bare_metal.c src/log.c
+PD_AUTH_SERVER_SRCS      := $(REPO_ROOT_MK)/services/legacy-pds/auth_server.c src/m3_bare_metal.c src/log.c
+PD_EXT2FS_SRCS           := $(REPO_ROOT_MK)/services/legacy-pds/ext2fs.c src/m3_bare_metal.c src/log.c
+PD_PROC_SERVER_SRCS      := $(REPO_ROOT_MK)/services/legacy-pds/proc_server.c src/m3_bare_metal.c src/log.c
+PD_VM_SNAPSHOT_SRCS      := $(REPO_ROOT_MK)/services/legacy-pds/vm_snapshot.c src/m3_bare_metal.c src/log.c
+PD_PFLOCAL_SERVER_SRCS   := $(REPO_ROOT_MK)/services/legacy-pds/pflocal_server.c src/m3_bare_metal.c src/log.c
+PD_PFLOCAL_SRCS          := $(REPO_ROOT_MK)/services/legacy-pds/pflocal_server.c src/m3_bare_metal.c src/log.c
+PD_EXEC_SERVER_SRCS      := $(REPO_ROOT_MK)/services/legacy-pds/exec_server.c src/m3_bare_metal.c src/log.c
+PD_TERM_SERVER_SRCS      := $(REPO_ROOT_MK)/services/legacy-pds/term_server.c src/m3_bare_metal.c src/log.c
+PD_BLOCK_PD_SRCS         := $(REPO_ROOT_MK)/services/block-driver/block_pd.c src/m3_bare_metal.c src/log.c
+PD_FB_PD_SRCS            := $(REPO_ROOT_MK)/services/legacy-pds/framebuffer_pd.c src/m3_bare_metal.c src/log.c
+PD_USB_PD_SRCS           := $(REPO_ROOT_MK)/services/legacy-pds/usb_pd.c src/m3_bare_metal.c src/log.c
+PD_CC_PD_SRCS            := $(REPO_ROOT_MK)/services/command-console/cc_pd.c $(REPO_ROOT_MK)/services/command-console/cc_vm_client.c $(REPO_ROOT_MK)/services/command-console/cc_retry_cache.c src/m3_bare_metal.c src/log.c
+PD_GPU_SCHED_SRCS        := $(REPO_ROOT_MK)/services/legacy-pds/gpu_sched.c $(REPO_ROOT_MK)/services/legacy-pds/gpu_shmem.c src/m3_bare_metal.c src/log.c
+PD_IRQ_PD_SRCS           := $(REPO_ROOT_MK)/services/legacy-pds/irq_pd.c src/m3_bare_metal.c src/log.c
+PD_TIMER_PD_SRCS         := $(REPO_ROOT_MK)/services/legacy-pds/timer_pd.c src/m3_bare_metal.c src/log.c
+PD_FAULT_HANDLER_SRCS    := $(REPO_ROOT_MK)/services/fault-handler/fault_handler.c src/m3_bare_metal.c src/log.c
+PD_FAULT_INJECT_SRCS     := $(REPO_ROOT_MK)/tests/fault-inject/fault_inject.c src/m3_bare_metal.c src/log.c
 
 # ─── Inject seL4 CRT into every service PD ────────────────────────────────────
 # sel4_crt.c provides __sel4_ipc_buffer (libmicrokit replacement) needed by
@@ -262,70 +262,72 @@ $(foreach v,$(_PD_SRC_VARS),$(eval $(v) += src/sel4_crt.c))
 # pd_entry.c provides _start (ELF entry) + IPC buffer fix for all service PDs.
 # It is NOT added to ROOT_TASK_SRCS — the root task has its own _start in
 # start_aarch64.S.
-$(foreach v,$(_PD_SRC_VARS),$(eval $(v) += src/pd_entry.c))
+$(foreach v,$(_PD_SRC_VARS),$(eval $(v) += $(REPO_ROOT_MK)/libs/pd-support/pd_entry.c))
 
 # wasm3 vendored sources (core interpreter only)
 WASM3_SRCS := wasm3/m3_core.c wasm3/m3_env.c wasm3/m3_code.c wasm3/m3_compile.c \
               wasm3/m3_exec.c wasm3/m3_bind.c wasm3/m3_parse.c wasm3/m3_module.c \
               wasm3/m3_function.c wasm3/m3_info.c
 
-CONTROLLER_OBJS   := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_MONITOR_SRCS))
+pd_objects = $(addprefix $(BUILD_DIR)/,$(notdir $(patsubst %.c,%.o,$(1))))
+
+CONTROLLER_OBJS   := $(call pd_objects,$(PD_MONITOR_SRCS))
 EVENTBUS_OBJS     := $(BUILD_DIR)/event_bus.o \
-                    $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_EVENTBUS_SRCS))
-INITAGENT_OBJS    := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_INITAGENT_SRCS))
-WORKER_OBJS       := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_WORKER_SRCS))
+                    $(call pd_objects,$(PD_EVENTBUS_SRCS))
+INITAGENT_OBJS    := $(call pd_objects,$(PD_INITAGENT_SRCS))
+WORKER_OBJS       := $(call pd_objects,$(PD_WORKER_SRCS))
 AGENTFS_OBJS      := $(BUILD_DIR)/agentfs.o \
-                    $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_AGENTFS_SRCS))
+                    $(call pd_objects,$(PD_AGENTFS_SRCS))
 VIBEENGINE_OBJS   := $(BUILD_DIR)/vibe_engine.o \
-                    $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_VIBEENGINE_SRCS))
-LOG_DRAIN_OBJS     := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_LOG_DRAIN_SRCS))
+                    $(call pd_objects,$(PD_VIBEENGINE_SRCS))
+LOG_DRAIN_OBJS     := $(call pd_objects,$(PD_LOG_DRAIN_SRCS))
 SERIAL_PD_OBJS     := $(BUILD_DIR)/serial_pd.o \
-                    $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_SERIAL_PD_SRCS))
-SWAPSLOT_OBJS      := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_SWAPSLOT_SRCS))
-MEMPROFILER_OBJS   := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_MEMPROFILER_SRCS))
-NETISOLATOR_OBJS      := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_NETISOLATOR_SRCS))
-SNAPSHOTSCHED_OBJS    := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_SNAPSHOTSCHED_SRCS))
-PERFCOUNTERS_OBJS     := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_PERFCOUNTERS_SRCS))
-TIMEPARTITION_OBJS    := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_TIMEPARTITION_SRCS))
-TRACERECORDER_OBJS    := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_TRACERECORDER_SRCS))
-NAMESERVER_OBJS       := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_NAMESERVER_SRCS))
-VIRTIO_BLK_OBJS       := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_VIRTIO_BLK_SRCS))
-VFS_SERVER_OBJS       := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_VFS_SERVER_SRCS))
-SPAWN_SERVER_OBJS     := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_SPAWN_SERVER_SRCS))
-APP_SLOT_OBJS         := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_APP_SLOT_SRCS))
+                    $(call pd_objects,$(PD_SERIAL_PD_SRCS))
+SWAPSLOT_OBJS      := $(call pd_objects,$(PD_SWAPSLOT_SRCS))
+MEMPROFILER_OBJS   := $(call pd_objects,$(PD_MEMPROFILER_SRCS))
+NETISOLATOR_OBJS      := $(call pd_objects,$(PD_NETISOLATOR_SRCS))
+SNAPSHOTSCHED_OBJS    := $(call pd_objects,$(PD_SNAPSHOTSCHED_SRCS))
+PERFCOUNTERS_OBJS     := $(call pd_objects,$(PD_PERFCOUNTERS_SRCS))
+TIMEPARTITION_OBJS    := $(call pd_objects,$(PD_TIMEPARTITION_SRCS))
+TRACERECORDER_OBJS    := $(call pd_objects,$(PD_TRACERECORDER_SRCS))
+NAMESERVER_OBJS       := $(call pd_objects,$(PD_NAMESERVER_SRCS))
+VIRTIO_BLK_OBJS       := $(call pd_objects,$(PD_VIRTIO_BLK_SRCS))
+VFS_SERVER_OBJS       := $(call pd_objects,$(PD_VFS_SERVER_SRCS))
+SPAWN_SERVER_OBJS     := $(call pd_objects,$(PD_SPAWN_SERVER_SRCS))
+APP_SLOT_OBJS         := $(call pd_objects,$(PD_APP_SLOT_SRCS))
 NET_SERVER_OBJS       := $(BUILD_DIR)/net_server.o \
-                    $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_NET_SERVER_SRCS))
+                    $(call pd_objects,$(PD_NET_SERVER_SRCS))
 NET_PD_OBJS           := $(BUILD_DIR)/net_pd.o \
-                    $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_NET_PD_SRCS))
+                    $(call pd_objects,$(PD_NET_PD_SRCS))
 NET_VIRT_OBJS         := $(BUILD_DIR)/net_virt.o $(BUILD_DIR)/net_virt_pump.pd.o \
-                    $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_NET_VIRT_SRCS))
+                    $(call pd_objects,$(PD_NET_VIRT_SRCS))
 BLK_VIRT_OBJS         := $(BUILD_DIR)/blk_virt.o $(BUILD_DIR)/blk_virt_pump.pd.o \
-                    $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_BLK_VIRT_SRCS))
+                    $(call pd_objects,$(PD_BLK_VIRT_SRCS))
 SERIAL_VIRT_OBJS      := $(BUILD_DIR)/serial_virt.pd.o $(BUILD_DIR)/serial_pump.pd.o \
                        $(BUILD_DIR)/serial_service.pd.o \
-                       $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_SERIAL_VIRT_SRCS))
-WG_NET_OBJS           := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_WG_NET_SRCS))
-APP_MANAGER_OBJS      := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_APP_MANAGER_SRCS))
-HTTP_SVC_OBJS         := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_HTTP_SVC_SRCS))
-VM_MANAGER_OBJS       := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_VM_MANAGER_SRCS))
-AUTH_SERVER_OBJS      := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_AUTH_SERVER_SRCS))
-EXT2FS_OBJS           := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_EXT2FS_SRCS))
-PROC_SERVER_OBJS      := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_PROC_SERVER_SRCS))
-VM_SNAPSHOT_OBJS      := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_VM_SNAPSHOT_SRCS))
-PFLOCAL_SERVER_OBJS   := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_PFLOCAL_SERVER_SRCS))
-PFLOCAL_OBJS          := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_PFLOCAL_SRCS))
-EXEC_SERVER_OBJS      := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_EXEC_SERVER_SRCS))
-TERM_SERVER_OBJS      := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_TERM_SERVER_SRCS))
+                       $(call pd_objects,$(PD_SERIAL_VIRT_SRCS))
+WG_NET_OBJS           := $(call pd_objects,$(PD_WG_NET_SRCS))
+APP_MANAGER_OBJS      := $(call pd_objects,$(PD_APP_MANAGER_SRCS))
+HTTP_SVC_OBJS         := $(call pd_objects,$(PD_HTTP_SVC_SRCS))
+VM_MANAGER_OBJS       := $(call pd_objects,$(PD_VM_MANAGER_SRCS))
+AUTH_SERVER_OBJS      := $(call pd_objects,$(PD_AUTH_SERVER_SRCS))
+EXT2FS_OBJS           := $(call pd_objects,$(PD_EXT2FS_SRCS))
+PROC_SERVER_OBJS      := $(call pd_objects,$(PD_PROC_SERVER_SRCS))
+VM_SNAPSHOT_OBJS      := $(call pd_objects,$(PD_VM_SNAPSHOT_SRCS))
+PFLOCAL_SERVER_OBJS   := $(call pd_objects,$(PD_PFLOCAL_SERVER_SRCS))
+PFLOCAL_OBJS          := $(call pd_objects,$(PD_PFLOCAL_SRCS))
+EXEC_SERVER_OBJS      := $(call pd_objects,$(PD_EXEC_SERVER_SRCS))
+TERM_SERVER_OBJS      := $(call pd_objects,$(PD_TERM_SERVER_SRCS))
 WASM3_OBJS            := $(patsubst wasm3/%.c, $(BUILD_DIR)/wasm3_%.o, $(WASM3_SRCS))
-BLOCK_PD_OBJS         := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_BLOCK_PD_SRCS))
-FB_PD_OBJS            := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_FB_PD_SRCS))
-USB_PD_OBJS           := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_USB_PD_SRCS))
-CC_PD_OBJS            := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_CC_PD_SRCS))
-GPU_SCHED_OBJS        := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_GPU_SCHED_SRCS))
-IRQ_PD_OBJS           := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_IRQ_PD_SRCS))
-TIMER_PD_OBJS         := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_TIMER_PD_SRCS))
-FAULT_HANDLER_OBJS    := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_FAULT_HANDLER_SRCS))
-FAULT_INJECT_OBJS     := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_FAULT_INJECT_SRCS))
+BLOCK_PD_OBJS         := $(call pd_objects,$(PD_BLOCK_PD_SRCS))
+FB_PD_OBJS            := $(call pd_objects,$(PD_FB_PD_SRCS))
+USB_PD_OBJS           := $(call pd_objects,$(PD_USB_PD_SRCS))
+CC_PD_OBJS            := $(call pd_objects,$(PD_CC_PD_SRCS))
+GPU_SCHED_OBJS        := $(call pd_objects,$(PD_GPU_SCHED_SRCS))
+IRQ_PD_OBJS           := $(call pd_objects,$(PD_IRQ_PD_SRCS))
+TIMER_PD_OBJS         := $(call pd_objects,$(PD_TIMER_PD_SRCS))
+FAULT_HANDLER_OBJS    := $(call pd_objects,$(PD_FAULT_HANDLER_SRCS))
+FAULT_INJECT_OBJS     := $(call pd_objects,$(PD_FAULT_INJECT_SRCS))
 
 IMAGES := controller.elf event_bus.elf init_agent.elf worker.elf agentfs.elf vibe_engine.elf vibeos.elf log_drain.elf serial_pd.elf swap_slot.elf mem_profiler.elf net_isolator.elf perf_counters.elf time_partition.elf trace_recorder.elf nameserver.elf virtio_blk.elf vfs_server.elf spawn_server.elf app_slot.elf net_server.elf net_pd.elf net_virt.elf blk_virt.elf wg_net.elf app_manager.elf http_svc.elf vm_manager.elf auth_server.elf ext2fs.elf proc_server.elf vm_snapshot.elf pflocal_server.elf exec_server.elf term_server.elf block_pd.elf framebuffer_pd.elf usb_pd.elf cc_pd.elf gpu_sched.elf timer_svc.elf entropy_svc.elf block_svc.elf usb_svc.elf model_svc.elf tool_svc.elf irq_pd.elf timer_pd.elf fault_handler.elf
 
@@ -557,16 +559,60 @@ VIBEOS_OBJS := $(BUILD_DIR)/vibeos_main.o \
                $(BUILD_DIR)/sel4_crt.o \
                $(BUILD_DIR)/pd_entry.o
 
+$(BUILD_DIR)/%.o: $(REPO_ROOT_MK)/libs/pd-support/%.c
+	@mkdir -p $(BUILD_DIR)
+	$(CC) -c $(CFLAGS) $< -o $@
+
+$(BUILD_DIR)/%.o: $(REPO_ROOT_MK)/platform/guest-vmm/%.c
+	@mkdir -p $(BUILD_DIR)
+	$(CC) -c $(CFLAGS) $< -o $@
+
+$(BUILD_DIR)/%.o: $(REPO_ROOT_MK)/services/block-driver/%.c
+	@mkdir -p $(BUILD_DIR)
+	$(CC) -c $(CFLAGS) $< -o $@
+
+$(BUILD_DIR)/%.o: $(REPO_ROOT_MK)/services/command-console/%.c
+	@mkdir -p $(BUILD_DIR)
+	$(CC) -c $(CFLAGS) $< -o $@
+
+$(BUILD_DIR)/%.o: $(REPO_ROOT_MK)/services/fault-handler/%.c
+	@mkdir -p $(BUILD_DIR)
+	$(CC) -c $(CFLAGS) $< -o $@
+
+$(BUILD_DIR)/%.o: $(REPO_ROOT_MK)/services/legacy-pds/%.c
+	@mkdir -p $(BUILD_DIR)
+	$(CC) -c $(CFLAGS) $< -o $@
+
+$(BUILD_DIR)/%.o: $(REPO_ROOT_MK)/services/log-drain/%.c
+	@mkdir -p $(BUILD_DIR)
+	$(CC) -c $(CFLAGS) $< -o $@
+
+$(BUILD_DIR)/%.o: $(REPO_ROOT_MK)/services/nameserver/%.c
+	@mkdir -p $(BUILD_DIR)
+	$(CC) -c $(CFLAGS) $< -o $@
+
+$(BUILD_DIR)/%.o: $(REPO_ROOT_MK)/services/net-service/%.c
+	@mkdir -p $(BUILD_DIR)
+	$(CC) -c $(CFLAGS) $< -o $@
+
+$(BUILD_DIR)/%.o: $(REPO_ROOT_MK)/services/vm-manager/%.c
+	@mkdir -p $(BUILD_DIR)
+	$(CC) -c $(CFLAGS) $< -o $@
+
+$(BUILD_DIR)/%.o: $(REPO_ROOT_MK)/tests/fault-inject/%.c
+	@mkdir -p $(BUILD_DIR)
+	$(CC) -c $(CFLAGS) $< -o $@
+
 $(BUILD_DIR)/%.o: src/%.c
 	@mkdir -p $(BUILD_DIR)
 	$(CC) -c $(CFLAGS) $< -o $@
 
 # Swap slot sources need wasm3 headers + bare-metal shim
-$(BUILD_DIR)/swap_slot.o: src/swap_slot.c
+$(BUILD_DIR)/swap_slot.o: $(REPO_ROOT_MK)/services/legacy-pds/swap_slot.c
 	@mkdir -p $(BUILD_DIR)
 	$(CC) -c $(CFLAGS_SWAPSLOT) $< -o $@
 
-$(BUILD_DIR)/wasm3_host.o: src/wasm3_host.c
+$(BUILD_DIR)/wasm3_host.o: $(REPO_ROOT_MK)/services/legacy-pds/wasm3_host.c
 	@mkdir -p $(BUILD_DIR)
 	$(CC) -c $(CFLAGS_SWAPSLOT) $< -o $@
 
@@ -696,12 +742,12 @@ $(BUILD_DIR)/http_svc.elf: $(HTTP_SVC_OBJS)
 	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
 
 # vm_manager: multi-VM lifecycle manager (wraps vmm_mux; AArch64 libvmm optional)
-$(BUILD_DIR)/vm_manager.o: src/vm_manager.c
+$(BUILD_DIR)/vm_manager.o: $(REPO_ROOT_MK)/services/vm-manager/vm_manager.c
 	@mkdir -p $(BUILD_DIR)
 	$(CC) -c $(CFLAGS) -I../../libvmm/include $< -o $@
 
 # vmm_mux_stub shares the same generic contract.
-$(BUILD_DIR)/vmm_mux_stub.o: src/vmm_mux_stub.c
+$(BUILD_DIR)/vmm_mux_stub.o: $(REPO_ROOT_MK)/platform/guest-vmm/vmm_mux_stub.c
 	@mkdir -p $(BUILD_DIR)
 	$(CC) -c $(CFLAGS) -I../../libvmm/include $< -o $@
 
@@ -759,11 +805,11 @@ $(BUILD_DIR)/fault_inject.elf: $(FAULT_INJECT_OBJS)
 
 # ─── RISC-V 64 VMMs (process-in-PD, no hypervisor extension) ─────────────
 ifeq ($(ARCH),riscv64)
-$(BUILD_DIR)/fdt_builder.o: src/fdt_builder.c
+$(BUILD_DIR)/fdt_builder.o: $(REPO_ROOT_MK)/platform/guest-vmm/fdt_builder.c
 	@mkdir -p $(BUILD_DIR)
 	$(CC) -c $(CFLAGS) $< -o $@
 
-$(BUILD_DIR)/guest_vmm_primary.o: src/guest_vmm.c
+$(BUILD_DIR)/guest_vmm_primary.o: $(REPO_ROOT_MK)/platform/guest-vmm/guest_vmm.c
 	@mkdir -p $(BUILD_DIR)
 	$(CC) -c $(CFLAGS) $< -o $@
 
@@ -772,7 +818,7 @@ $(BUILD_DIR)/guest_vmm_primary.elf: $(BUILD_DIR)/guest_vmm_primary.o $(BUILD_DIR
                              $(BUILD_DIR)/log.o $(BUILD_DIR)/pd_entry.o
 	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
 
-$(BUILD_DIR)/guest_vmm_secondary.o: src/guest_vmm.c
+$(BUILD_DIR)/guest_vmm_secondary.o: $(REPO_ROOT_MK)/platform/guest-vmm/guest_vmm.c
 	@mkdir -p $(BUILD_DIR)
 	$(CC) -c $(CFLAGS) $< -o $@
 
@@ -788,7 +834,7 @@ ifeq ($(strip $(GUEST_PRIMARY_PROFILE)),)
 # Default AArch64 build: keep a normal agentOS-linked placeholder VMM PD.
 # The libvmm Microkit ELF currently has entry 0 under the custom root-task
 # loader, so full VMM builds are opt-in via a primary guest profile.
-$(BUILD_DIR)/guest_vmm_primary.o: src/guest_vmm.c
+$(BUILD_DIR)/guest_vmm_primary.o: $(REPO_ROOT_MK)/platform/guest-vmm/guest_vmm.c
 	@mkdir -p $(BUILD_DIR)
 	$(CC) -c $(CFLAGS) -DARCH_AARCH64 -DGUEST_VMM_NATIVE_STUB=1 $< -o $@
 
@@ -803,7 +849,7 @@ else
 ifeq ($(BOARD_NATIVE),1)
 # Native AArch64 board (e.g., RPi5): libvmm has QEMU-specific GIC addresses;
 # use a stub instead until board-specific VMM support is added.
-$(BUILD_DIR)/guest_vmm_primary.o: src/guest_vmm.c
+$(BUILD_DIR)/guest_vmm_primary.o: $(REPO_ROOT_MK)/platform/guest-vmm/guest_vmm.c
 	@mkdir -p $(BUILD_DIR)
 	$(CC) -c $(CFLAGS) -DARCH_AARCH64 -DGUEST_VMM_NATIVE_STUB=1 $< -o $@
 
@@ -857,7 +903,7 @@ endif
 # Compiled directly from guest_vmm.c with -DARCH_X86_64.
 # No libvmm dependency — stub implementation only.
 ifeq ($(ARCH),x86_64)
-$(BUILD_DIR)/guest_vmm_primary.o: src/guest_vmm.c
+$(BUILD_DIR)/guest_vmm_primary.o: $(REPO_ROOT_MK)/platform/guest-vmm/guest_vmm.c
 	@mkdir -p $(BUILD_DIR)
 	$(CC) -c $(CFLAGS) -DARCH_X86_64 -DGUEST_VMM_X86_STUB=1 $< -o $@
 
@@ -986,6 +1032,7 @@ clean:
 .PHONY: build clean FORCE
 
 # ─── Auto-generated header dependency files ───────────────────────────────────
+include source_migration.mk
 # -MMD -MP in CFLAGS causes clang to emit a .d file alongside each .o.
 # Including them here makes 'make' recompile any .o whose headers changed.
 -include $(wildcard $(BUILD_DIR)/*.d)

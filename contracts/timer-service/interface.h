@@ -5,7 +5,7 @@
  *
  * This is the canonical contract for the timer-service device service in agentOS.
  * The concrete implementation is provided through seL4 MCS scheduling contexts,
- * managed by kernel/agentos-root-task/src/time_partition.c (policy enforcement)
+ * managed by services/legacy-pds/time_partition.c (policy enforcement)
  * and the controller's tick mechanism (periodic notification on CH_TIMER).
  *
  * The timer service provides wall-clock reads, one-shot alarms, cancellation,

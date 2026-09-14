@@ -6,7 +6,7 @@
  *   agentos-vsi  cc_pd log-stream slot allocation: the boot guest owns slot 0
  *                and each vibe guest gets its own addressable slot.
  *
- * The agent_pool half links the REAL kernel/agentos-root-task/src/agent_pool.c
+ * The agent_pool half links the REAL services/legacy-pds/agent_pool.c
  * (host-compiled under AGENTOS_TEST_HOST) and drives it through its public
  * spawn/done API, asserting the occupancy snapshot tracks state transitions.
  *
@@ -16,7 +16,7 @@
  *
  * Build:  cc -o /tmp/test_cc_pd_metrics \
  *             tests/test_cc_pd_metrics.c \
- *             kernel/agentos-root-task/src/agent_pool.c \
+ *             services/legacy-pds/agent_pool.c \
  *             -DAGENTOS_TEST_HOST -include tests/microkit.h \
  *             -I tests -I kernel/agentos-root-task/include
  * Run:    /tmp/test_cc_pd_metrics

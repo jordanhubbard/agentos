@@ -38,7 +38,7 @@
  * contract (opcode numbers, data layout, error codes) that the real PD
  * implementations honour.
  */
-#include "../../kernel/agentos-root-task/src/init_agent.c"
+#include "../../services/legacy-pds/init_agent.c"
 
 /* ────────────────────────────────────────────────────────────────────────── */
 /*  Helper: little-endian read/write (defined before use to avoid shadowing   */

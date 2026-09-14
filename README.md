@@ -67,19 +67,19 @@ descriptor row with no bundle entry fails at ELF load.
 
 | PD | Role | Source |
 |----|------|--------|
-| `nameserver` | Service name registry; spawned first | `kernel/agentos-root-task/src/nameserver.c` |
-| `log_drain` | Log ring drain | `kernel/agentos-root-task/src/log_drain.c` |
+| `nameserver` | Service name registry; spawned first | `services/nameserver/nameserver.c` |
+| `log_drain` | Log ring drain | `services/log-drain/log_drain.c` |
 | `serial_pd` | Owns the PL011 UART frame + IRQ | `services/serial-mux/serial_pd.c` |
 | `vibe_engine` | Dynamic-guest relay hop (not TCB) | `services/vibe-engine/vibe_engine.c` |
-| `virtio_blk` | Owns QEMU virtio-blk (bus.8) and the bounded DMA window | `kernel/agentos-root-task/src/virtio_blk.c` |
-| `block_pd` | Block service | `kernel/agentos-root-task/src/block_pd.c` |
+| `virtio_blk` | Owns QEMU virtio-blk (bus.8) and the bounded DMA window | `services/block-driver/virtio_blk.c` |
+| `block_pd` | Block service | `services/block-driver/block_pd.c` |
 | `net_pd` | Owns QEMU virtio-net (bus.16) | `services/net-service/net_pd.c` |
 | `net_virt` | Network virtualizer; no device, no IRQ | `platform/net-virt/net_virt.c` |
 | `blk_virt` | Block virtualizer; no device, no IRQ | `platform/blk-virt/blk_virt.c` |
-| `guest_vmm_primary` | vCPU, vGIC, emulated virtio for the primary guest | `kernel/agentos-root-task/src/guest_vmm.c` |
-| `vm_manager` | Guest lifecycle control (create, bind, status) | `kernel/agentos-root-task/src/vm_manager.c` |
-| `cc_pd` | Owns QEMU virtio-serial (bus.2): the harness/`agentctl` console; prints `agentOS boot complete` | `kernel/agentos-root-task/src/cc_pd.c` |
-| `fault_handler` | Fault endpoint for the other PDs | `kernel/agentos-root-task/src/fault_handler.c` |
+| `guest_vmm_primary` | vCPU, vGIC, emulated virtio for the primary guest | `platform/guest-vmm/guest_vmm.c` |
+| `vm_manager` | Guest lifecycle control (create, bind, status) | `services/vm-manager/vm_manager.c` |
+| `cc_pd` | Owns QEMU virtio-serial (bus.2): the harness/`agentctl` console; prints `agentOS boot complete` | `services/command-console/cc_pd.c` |
+| `fault_handler` | Fault endpoint for the other PDs | `services/fault-handler/fault_handler.c` |
 
 `guest_vmm_secondary`, `fault_inject`, `test_runner`, and `event_bus` are added
 only to the image variants that use them (dual-guest, fault-injection, and TAP
@@ -182,7 +182,7 @@ image asserted by an automated QEMU test can.
 | Concurrent Ubuntu + FreeBSD with key-only SSH | acceptance gate, run on demand | `make demo-test` |
 | Ubuntu desktop over an SSH tunnel (RFB frame) | experimental | `make demo-desktop-test`; `docs/desktop-demo.md` |
 | Console virtualizer as its own PD | target | `docs/TCB.md` |
-| Native agent attached to `net_virt`/`blk_virt` queues | target | `kernel/agentos-root-task/src/native_net_client.c` is a host-tested client of the older `net_pd` raw contract; nothing native attaches to a virtualizer yet |
+| Native agent attached to `net_virt`/`blk_virt` queues | target | `services/legacy-pds/native_net_client.c` is a host-tested client of the older `net_pd` raw contract; nothing native attaches to a virtualizer yet |
 | x86_64 guest execution, virtio-gpu/input, Debian baseline | target | `docs/ROADMAP.md` 0.4 |
 | Guest snapshot/restore, live migration | not implemented | `vm_manager.c` returns not-implemented |
 | WASM agents, capability hot-swap, agent-facing services (CapStore, MsgBus, ToolSvc, ModelSvc) | museum / host models only | Not in the booted image; see `docs/TCB.md` |

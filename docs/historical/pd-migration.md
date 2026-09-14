@@ -1,5 +1,9 @@
 # agentOS PD Migration Template: Microkit to Raw seL4 IPC
 
+Historical migration record. Current source locations and entry conventions
+are defined by the repository Makefiles, `CLAUDE.md`, and `docs/TCB.md`.
+Do not use the old paths or duplicated opcode advice below for new code.
+
 This document is the canonical reference for the E5 migration track.
 E5-S1 migrated `log_drain.c` and `event_bus.c` as the first two examples.
 E5-S2 through E5-S8 follow this template.

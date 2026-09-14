@@ -589,10 +589,13 @@ jobs:
         run: |
           rc=0
           for f in \
-            auth_server.c proc_server.c pflocal_server.c exec_server.c \
-            term_server.c vm_manager.c vm_snapshot.c ext2fs.c \
-            lwip_sys.c lwip_shim.c monocypher.c; do
-            if test -f kernel/agentos-root-task/src/$f; then
+            services/legacy-pds/auth_server.c services/legacy-pds/proc_server.c \
+            services/legacy-pds/pflocal_server.c services/legacy-pds/exec_server.c \
+            services/legacy-pds/term_server.c services/vm-manager/vm_manager.c \
+            services/legacy-pds/vm_snapshot.c services/legacy-pds/ext2fs.c \
+            services/net-service/lwip_sys.c services/net-service/lwip_shim.c \
+            libs/pd-support/monocypher.c; do
+            if test -f "$f"; then
               echo "✓ $f"
             else
               echo "✗ $f MISSING"
@@ -693,7 +696,7 @@ jobs:
 
       - name: Check lwip_sys.c is non-trivial (> 100 lines)
         run: |
-          f=kernel/agentos-root-task/src/lwip_sys.c
+          f=services/net-service/lwip_sys.c
           test -f "$f" || { echo "MISSING: $f"; exit 1; }
           lines=$(wc -l < "$f")
           echo "lwip_sys.c: $lines lines"
@@ -723,7 +726,7 @@ jobs:
 
       - name: Check monocypher.c exists and is non-trivial (> 500 lines)
         run: |
-          f=kernel/agentos-root-task/src/monocypher.c
+          f=libs/pd-support/monocypher.c
           test -f "$f" || { echo "MISSING: $f"; exit 1; }
           lines=$(wc -l < "$f")
           echo "monocypher.c: $lines lines"
@@ -732,7 +735,7 @@ jobs:
 
       - name: Check ed25519_verify.c has no stubs
         run: |
-          f=kernel/agentos-root-task/src/ed25519_verify.c
+          f=libs/pd-support/ed25519_verify.c
           test -f "$f" || { echo "MISSING: $f"; exit 1; }
           if grep -qiE '\bTODO\b|\bstub\b' "$f"; then
             echo "FAIL: $f still contains TODO or stub markers"
@@ -749,7 +752,7 @@ jobs:
 
       - name: Verify monocypher implementation present
         run: |
-          if grep -q "crypto_ed25519_check\|fe25519_mul\|ge25519" kernel/agentos-root-task/src/monocypher.c; then
+          if grep -q "crypto_ed25519_check\|fe25519_mul\|ge25519" libs/pd-support/monocypher.c; then
             echo "OK: Ed25519 field arithmetic found in monocypher.c"
           else
             echo "FAIL: expected Ed25519 functions not found in monocypher.c"
@@ -764,14 +767,14 @@ jobs:
 
       - name: Check vm_manager.c exists
         run: |
-          f=kernel/agentos-root-task/src/vm_manager.c
+          f=services/vm-manager/vm_manager.c
           test -f "$f" || { echo "MISSING: $f"; exit 1; }
           echo "✓ vm_manager.c exists"
 
       - name: Verify the shared profile-driven VMM
         run: |
           runtime=platform/guest-vmm/runtime.c
-          vmm=kernel/agentos-root-task/src/guest_vmm.c
+          vmm=platform/guest-vmm/guest_vmm.c
           legacy=kernel/freebsd-vmm/vmm_mux.c
           test -f "$runtime" || { echo "MISSING: $runtime"; exit 1; }
           test -f "$vmm" || { echo "MISSING: $vmm"; exit 1; }

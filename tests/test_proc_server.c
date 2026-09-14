@@ -68,7 +68,7 @@ static inline void sel4_dbg_puts(const char *s) { (void)s; }
 #define OP_PROC_SETCAP  0xD6u
 
 /* ── Pull in the implementation ─────────────────────────────────────────── */
-#include "../kernel/agentos-root-task/src/proc_server.c"
+#include "../services/legacy-pds/proc_server.c"
 
 /* ── Microkit→seL4 IPC shims ─────────────────────────────────────────────── *
  * proc_server.c was migrated from Microkit to raw seL4 IPC; the test still
