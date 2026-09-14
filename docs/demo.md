@@ -16,7 +16,7 @@ make setup
 make demo
 ```
 
-`make setup` installs host packages, downloads the shared Microkit 2.1.0 SDK
+`make setup` runs `make install` for host packages, downloads the shared Microkit 2.1.0 SDK
 to `$HOME/.cache/agentos`, and validates the demo toolchain. It is idempotent.
 Set `SEL4_SDK=/absolute/path/to/microkit-sdk-2.1.0` before invoking it to use
 an existing SDK.

@@ -24,8 +24,8 @@ else.
 | [`linux-guest-baseline.md`](linux-guest-baseline.md) | Roadmap decision: pinned Debian replaces Ubuntu as the Linux integration baseline; artifact and checksum record. |
 | [`omarchy-compatibility.md`](omarchy-compatibility.md) | Compatibility ledger for official Omarchy artifacts (roadmap 0.6 input). Facts only, no support claim. |
 | [`sel4-loader-format.md`](sel4-loader-format.md) | The `agentos.img` flat image format produced by `cargo xtask gen-image` and parsed by the root task. |
-| [`freebsd-vm-guest.md`](freebsd-vm-guest.md) | FreeBSD 15.0 guest: commands are current (`make fetch-guest GUEST_OS=freebsd`, `make run GUEST_OS=freebsd`); the architecture diagram predates the current PD set (names a `freebsd_vm` PD and `controller`/`event_bus`). |
-| [`boot-guide.md`](boot-guide.md) | Prerequisites, build steps, target architectures, QEMU interfaces. Partly stale: the "Expected First-Boot Output" markers (`[controller] ... boot complete`) and the "Agent Signing" section describe PDs no longer in the image; use `QUICKSTART.md` for markers. |
+| [`freebsd-vm-guest.md`](freebsd-vm-guest.md) | Historical FreeBSD bring-up reference, explicitly marked as predating the shared VMM and current PD topology. Use `QUICKSTART.md` and `TCB.md` for current behavior. |
+| [`boot-guide.md`](boot-guide.md) | Historical boot reference. Controller markers, PD inventory, and agent signing sections do not describe the release image; use `QUICKSTART.md` and `DEVELOPER_GUIDE.md`. |
 | [`presentations/agentos-systems-security/`](presentations/agentos-systems-security/README.md) | Source for the release systems/security deck (`deck.md`) and its claim ledger (`FACTS.md`); rendered by `make presentation-render`. |
 | [`defects/`](defects/) | Filed defects. `DEFECT-001` (gpu_shmem, approved exception, now museum) and `DEFECT-002` (js_runtime removal, resolved). |
 

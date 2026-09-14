@@ -5,7 +5,7 @@ acceptance. MAC is the execution authority: task state, ownership, and
 dependencies live in `mac task`. Releases are integration boundaries, not date
 promises, and close only when their runtime evidence matches their claims.
 
-The current published line is `v0.2.x`. New work lands on the default branch
+The current published line is `v0.3.x`. New work lands on the default branch
 first. Patch releases may carry bounded correctness and security fixes without
 changing the dependency order below.
 
@@ -13,7 +13,7 @@ changing the dependency order below.
 
 | Release | Theme | Required outcome |
 | --- | --- | --- |
-| **0.2** | Network desktop proof and release discipline | Ubuntu exposes a real desktop session over the already authenticated network path; releases become exact-revision, evidence-bound transitions; the first systems/security narrative is grounded in retained evidence. |
+| **0.2** | Initial platform evidence and release discipline | Releases become exact-revision, evidence-bound transitions and the systems/security narrative is grounded in retained evidence. The originally planned Ubuntu network desktop proof was deferred to the pinned Debian path. |
 | **0.3** | Trust baseline and virtualizer tier | The OS-claim gate proves guest I/O, the image boots only the PDs the root task spawns, `net_virt` and `blk_virt` are real protection domains so TCB invariant 2 holds for net and block, dead code is gone, and TCB.md describes what boots. |
 | **0.4** | Reproducible Linux, guest graphics, and x86 guest foundation | A pinned Debian guest replaces Ubuntu as the cross-architecture integration baseline, the canonical framebuffer is live on target, generic virtio-gpu plus virtio-input virtualizers drive an AArch64 guest without host-device passthrough, the official Omarchy compatibility ledger is kept current, and a real VMX-backed x86_64 VMM boots Linux reusing canonical net, block, and console services with isolated GPA translation. |
 | **0.5** | Persistent x86 desktop platform | A pinned Arch Linux x86_64 guest installs through UEFI, reboots from writable storage, reaches key-only SSH, and runs a Hyprland-class compositor through canonical graphics and input. |
@@ -84,6 +84,13 @@ task in project `agentos`; this list records ordering only.
 | 12 | `task_d41eae5495924820bc2defa15750d4e8` | Fix the `log_drain` MSG_SERIAL_WRITE layout mismatch with `serial_pd`; resolve the VA overlap at `0x10005000` | generic PD log output visible on the release kernel; host round-trip test |
 
 ## 0.2 — Network desktop proof and release discipline
+
+**Historical scope change:** MAC cancelled `task_c5135a55f029480a800796e2b4fe33df`
+with disposition `deferred` on 2026-09-09 because Ubuntu systemd stalled before
+login under QEMU TCG. The published v0.2 release excludes desktop qualification;
+that work moves to the pinned Debian guest path. The release workflow and
+systems/security narrative tasks are completed. The desktop acceptance design
+below is retained for that follow-on work, not as evidence of a shipped desktop.
 
 The fastest desktop proof deliberately does not wait for a virtual display
 device. It starts a graphical session inside the existing Ubuntu ARM64 guest
