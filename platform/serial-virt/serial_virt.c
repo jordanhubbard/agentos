@@ -10,6 +10,7 @@ uintptr_t log_drain_rings_vaddr;
 static aos_serial_virt_service_t service;
 static serial_log_t diagnostic = {.ep = PD_CNODE_SLOT_SERIAL_EP};
 static uint32_t fault_reported;
+static uint32_t input_reported, output_reported;
 
 static void service_queues(void)
 {
@@ -18,6 +19,14 @@ static void service_queues(void)
      * when the consumer signals that it freed space. No unbounded rescans. */
     aos_serial_virt_result_t result = aos_serial_virt_service_pump(
         &service, AOS_SERIAL_TX_CAPACITY);
+    if (result.input_clients & ~input_reported) {
+        serial_log_puts(&diagnostic, "[serial_virt] frontend input delivered to VMM queue\n");
+        input_reported |= result.input_clients;
+    }
+    if (result.output_clients & ~output_reported) {
+        serial_log_puts(&diagnostic, "[serial_virt] VMM output delivered to frontend queue\n");
+        output_reported |= result.output_clients;
+    }
     if (result.invalid_clients & ~fault_reported) {
         serial_log_puts(&diagnostic, "[serial_virt] malformed client queue rejected\n");
         fault_reported |= result.invalid_clients;

@@ -50,6 +50,7 @@ int main(void)
     service.guest[1].meta->guest_state = 4;
     aos_serial_virt_result_t result = aos_serial_virt_service_pump(&service, 2);
     check(result.bytes == 8 && result.wake_vmm == 3 && !result.invalid_clients &&
+          result.input_clients == 3 && result.output_clients == 3 &&
           !memcmp(service.frontend[0].from_guest.data, "ab", 2) &&
           !memcmp(service.frontend[1].from_guest.data, "XY", 2) &&
           !memcmp(service.guest[0].to_guest.data, "34", 2) &&
@@ -62,6 +63,7 @@ int main(void)
     service.guest[0].from_guest.queue->tail = AOS_SERIAL_TX_CAPACITY + 3;
     result = aos_serial_virt_service_pump(&service, 8);
     check(result.invalid_clients == 1 && result.bytes == 1 && result.wake_vmm == 2 &&
+          result.input_clients == 0 && result.output_clients == 2 &&
           service.guest[0].from_guest.queue->head == 2 &&
           !memcmp(service.frontend[1].from_guest.data, "XYZ", 3),
           "malformed client zero does not block client one");

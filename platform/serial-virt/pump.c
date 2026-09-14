@@ -6,6 +6,40 @@ static int valid_handle(const aos_serial_queue_handle_t *handle)
            !(handle->capacity & (handle->capacity - 1u));
 }
 
+aos_serial_pump_status_t aos_serial_queue_write(
+    const aos_serial_queue_handle_t *handle, const uint8_t *bytes, uint32_t length)
+{
+    if (!valid_handle(handle) || (!bytes && length)) return AOS_SERIAL_PUMP_INVALID;
+    uint32_t tail = __atomic_load_n(&handle->queue->tail, __ATOMIC_RELAXED);
+    uint32_t head = __atomic_load_n(&handle->queue->head, __ATOMIC_ACQUIRE);
+    uint32_t occupied = tail - head;
+    if (occupied > handle->capacity) return AOS_SERIAL_PUMP_INVALID;
+    if (length > handle->capacity - occupied) return AOS_SERIAL_PUMP_FULL;
+    for (uint32_t i = 0; i < length; i++)
+        handle->data[(tail + i) & (handle->capacity - 1u)] = bytes[i];
+    if (length) __atomic_store_n(&handle->queue->tail, tail + length, __ATOMIC_RELEASE);
+    return AOS_SERIAL_PUMP_OK;
+}
+
+aos_serial_pump_status_t aos_serial_queue_read(
+    const aos_serial_queue_handle_t *handle, uint8_t *bytes, uint32_t capacity,
+    uint32_t *length)
+{
+    if (!length) return AOS_SERIAL_PUMP_INVALID;
+    *length = 0;
+    if (!valid_handle(handle) || (!bytes && capacity)) return AOS_SERIAL_PUMP_INVALID;
+    uint32_t head = __atomic_load_n(&handle->queue->head, __ATOMIC_RELAXED);
+    uint32_t tail = __atomic_load_n(&handle->queue->tail, __ATOMIC_ACQUIRE);
+    uint32_t available = tail - head;
+    if (available > handle->capacity) return AOS_SERIAL_PUMP_INVALID;
+    uint32_t count = available < capacity ? available : capacity;
+    for (uint32_t i = 0; i < count; i++)
+        bytes[i] = handle->data[(head + i) & (handle->capacity - 1u)];
+    if (count) __atomic_store_n(&handle->queue->head, head + count, __ATOMIC_RELEASE);
+    *length = count;
+    return AOS_SERIAL_PUMP_OK;
+}
+
 aos_serial_pump_status_t aos_serial_virt_transfer(
     const aos_serial_queue_handle_t *source,
     const aos_serial_queue_handle_t *destination,

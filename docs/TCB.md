@@ -46,8 +46,8 @@ seL4
         │                  region + NBSend notifications, chunked DMA-window
         │                  Calls into virtio_blk)
         ├── vm_manager     guest lifecycle control (create, bind, status)
-        ├── serial_virt    serial queue service, no device frame or IRQ;
-        │                  client adapter migration remains in progress
+        ├── serial_virt    serial queue mux, no device frame or hardware IRQ;
+        │                  isolated VMM pages and separate CC frontend page
         └── guest_vmm_*    vCPU, vGIC, emulated virtio-mmio net/blk/console,
               │            GPA-translated payload copies
               ├── Linux guest    in-tree virtio drivers
@@ -97,16 +97,25 @@ guest runs. When `virtio_blk` reports no media, `blk_virt` serves a
 per-client RAM disk instead. Contract: `include/contracts/blk_virt_contract.h`.
 Lint: `tests/platform/lint_source_invariants.c` (`inv2:` block checks).
 
-*Console* (invariant 2 not yet held). The console virtualizer is still a
-*library* linked into each `guest_vmm` PD
-(`platform/serial-virt/vmm_virtio_console.c`): the sDDF-shaped queues sit
-between the emulated device and a pump inside the VMM address space, and
-console bytes still reach `cc_pd` by IPC. The new `serial_virt` PD is now
-in the topology, with three root-provisioned pages: one per VMM and a separate
-CC frontend page. Only the virtualizer maps all three. Root grants send-only
-notification capabilities for persistent wakeups and role-bound attach
-endpoints. VMM and CC adapters still need migration, so this boot topology
-alone does not close invariant 2 or prove the new console path.
+*Console*. `serial_virt` is a separate PD with three root-provisioned pages:
+one per VMM and a separate CC frontend page. Only the virtualizer maps all
+three. Root grants send-only notification capabilities for persistent wakeups
+and role-bound attach endpoints. The VMM's emulated virtio-console and PL011
+feed a bounded endpoint adapter; it retains bytes during backpressure and
+exports them over shared sDDF byte queues. CC uses its frontend queues after
+resolving the public handle and checking lifecycle authority. Input remains
+queued while the guest is paused. Console bytes no longer travel through
+VMM or vm_manager IPC. Only attachment and lifecycle control use IPC.
+
+The Ubuntu bidirectional console gate requires both actual serial-PD transfer
+markers and guest-echo evidence. Eight seL4 fault probes verify that neither
+VMM maps the other VMM's page or CC's frontend page. Dual-guest FreeBSD console
+and suspend/resume qualification remain pending on this integration branch.
+Sustained-output qualification is also pending: the libvmm console TX backend
+can acknowledge a partially copied descriptor when its local queue fills.
+MAC `task_f0be9d2f86204aa6bf06c34f6464fc0c` tracks retained descriptor progress,
+retry on freed space, and a stalled-frontend checksum proof. The bounded
+adapter preserves bytes it receives, but does not repair that backend defect.
 
 ## TCB target — the shape the platform is converging on
 
@@ -134,7 +143,8 @@ They are not in the TCB.
    markers in `make test-ubuntu-virtio`) *and for block* (`blk_virt` PD;
    enforced by the `inv2:` block lint checks and the host-backed
    `[blk_virt] host media` / `[blk_virt] host-media read` markers in
-   `make test-ubuntu-virtio`). *Not yet held for console* (see above).
+   `make test-ubuntu-virtio`). Console now uses the separate `serial_virt` mux;
+   its Ubuntu gate requires transfer markers from that PD (see above).
 3. **Virtio is the guest ABI.** Host may use virtio as the *physical* device
    (under QEMU). Guests must see a **different**, emulated virtio device
    invented by the VMM. Collapsing those two virtio worlds is a defect. Held

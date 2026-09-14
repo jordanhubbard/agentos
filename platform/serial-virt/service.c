@@ -41,6 +41,8 @@ aos_serial_virt_result_t aos_serial_virt_service_pump(
             result.frontend_changed |= 1u << i;
         }
         result.bytes += input + output;
+        if (input) result.input_clients |= 1u << i;
+        if (output) result.output_clients |= 1u << i;
     }
     return result;
 }

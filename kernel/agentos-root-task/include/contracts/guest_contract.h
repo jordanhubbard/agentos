@@ -235,6 +235,11 @@ struct guest_destroy_reply {
 
 /* ─── MSG_GUEST_SEND_INPUT ───────────────────────────────────────────────── */
 
+/* Legacy wire definitions retained for compatibility helpers. The active
+ * VMM rejects these byte IPC operations: CC translates input events through
+ * platform/console_input.h and exchanges bytes with serial_virt queues.
+ * Public CC SEND_INPUT / CONSOLE_DRAIN operations remain supported. */
+
 /*
  * Deliver one input event to the guest console.  The relaying caller provides
  * guest_id in MR1 and the input event payload in the request data/shmem.
@@ -242,7 +247,7 @@ struct guest_destroy_reply {
  * Key events use the same wire layout as cc_input_event_t:
  *   event_type, keycode, dx, dy, btn_mask, reserved.
  *
- * VMMs must accept HID key codes for compatibility with agentctl and may also
+ * Frontends accept HID key codes for compatibility with agentctl and also
  * accept 0x100|byte as a raw terminal byte encoding for GUI terminal input.
  */
 

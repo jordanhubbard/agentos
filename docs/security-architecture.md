@@ -22,9 +22,10 @@ flowchart TB
     primary[guest_vmm_primary PD<br/>vCPU and vGIC<br/>libvmm emulated virtio<br/>descriptor checks and GPA translation]
     secondary[guest_vmm_secondary PD<br/>optional second guest<br/>same VMM implementation]
     netq[Shared network region<br/>sDDF queues and notifications<br/>software-assigned client strides]
-    blkq[Shared block region<br/>sDDF requests and responses<br/>software-assigned client strides]
+    blkq[Isolated block client pages<br/>sDDF requests and responses]
     nv[net_virt PD<br/>network multiplexing]
     bv[blk_virt PD<br/>block multiplexing]
+    sv[serial_virt PD<br/>bounded byte queues<br/>only mux maps all serial pages]
     nd[net_pd PD<br/>host NIC MMIO and IRQ]
     bd[virtio_blk PD<br/>host block MMIO, IRQ and DMA window]
     cc[cc_pd PD<br/>control API and console relay<br/>owns host virtio-serial transport]
@@ -48,8 +49,9 @@ flowchart TB
   blkq --> bv
   nv -->|RAW control calls and shared slots| nd
   bv -->|bounded chunk calls and DMA window| bd
-  primary <-->|VMM-local console queues plus IPC| cc
-  secondary <-->|VMM-local console queues plus IPC| cc
+  primary <-->|own serial page<br/>persistent notifications| sv
+  secondary <-->|own serial page<br/>persistent notifications| sv
+  sv <-->|separate frontend page| cc
   operator <-->|framed control and console API| cc
   cc -->|public handle to VM slot<br/>dynamic create and lifecycle| manager
   manager --> primary
@@ -74,10 +76,10 @@ variants that configure it.
 | --- | --- | --- |
 | A workload OS does not own the machine's devices | Guest virtio MMIO faults into a VMM; only designated driver PDs receive host device frames and IRQs | A compromised guest cannot simply program the host device. It can still attack its VMM's parser and virtual-device implementation. |
 | Drivers execute outside the kernel | Driver PDs have separate VSpaces and explicit capabilities | A driver bug does not inherently gain kernel execution. Its granted device/DMA authority still matters; this is not an IOMMU isolation proof. |
-| Multiplexing is a service boundary | Separate `net_virt` and `blk_virt` PDs consume bounded queues | Device access crosses a named service boundary. Shared-region mapping and resource exhaustion still require auditing. |
+| Multiplexing is a service boundary | Separate `net_virt`, `blk_virt` and `serial_virt` PDs consume bounded queues | Device access crosses a named service boundary. VMM client pages are isolated; resource exhaustion still requires auditing. |
 | A guest address is not a host pointer | VMM code validates descriptors and translates GPA to its mapped guest RAM | Invalid descriptors can be rejected before copying. Correctness of every translation and length calculation remains userspace TCB work. |
 | Native work need not inherit a Linux kernel | Native PD clients are planned to attach to canonical virtualizers | The architecture can remove an entire guest kernel from a workload's dependency set. Live native virtualizer attachment is not yet qualified. |
-| Control and bulk data have different contracts | seL4 IPC for attach/lifecycle; shared-memory queues for net/block payloads | Authority checks and data movement have explicit boundaries. Console still needs migration to a separate virtualizer PD. |
+| Control and bulk data have different contracts | seL4 IPC for attach/lifecycle; shared-memory queues for net/block/console payloads | Root-minted badges constrain attachment. The console adapter retains copied bytes in bounded staging buffers; shared metadata does not grant lifecycle authority. Sustained TX descriptor backpressure remains an open libvmm defect, detailed in TCB.md. |
 
 These choices differ from a host-kernel driver path and from assigning a host
 device directly to a guest. They are not a claim that every other hypervisor
@@ -124,10 +126,11 @@ flowchart LR
   manager --> vmm
 ```
 
-Network and block already have the separate virtualizer boundary. Console is
-still a library inside each VMM. Dynamic lifecycle now calls `vm_manager`
-directly; `vibe_engine` is retired from the image. Separating `serial_virt`
-and attaching native clients remain implementation tasks. Physical
+Network, block and console now have separate virtualizer boundaries. The
+Ubuntu console gate proves transfer through `serial_virt` and echoed guest
+input; FreeBSD dual-guest qualification remains pending. Dynamic lifecycle
+calls `vm_manager` directly; `vibe_engine` is retired from the image.
+Attaching native clients remains implementation work. Physical
 board execution and x86 guest execution require independent target evidence.
 
 ## Evidence and source map
@@ -136,7 +139,7 @@ board execution and x86 guest execution require independent target evidence.
 | --- | --- |
 | Booted PDs, endpoints and device assignments | [`system_desc_aarch64.c`](../kernel/agentos-root-task/src/system_desc_aarch64.c), [`agentos.toml`](../kernel/agentos-root-task/agentos.toml) |
 | Shared network/block mapping rights | [`main.c`](../kernel/agentos-root-task/src/main.c), block and network mapping branches in the PD spawn path |
-| Allowed device owners and remaining console gap | [`TCB.md`](TCB.md) |
+| Allowed device owners and qualification limits | [`TCB.md`](TCB.md) |
 | Network and block queue contracts | [`platform/include/platform/`](../platform/include/platform/), [`contracts/`](../kernel/agentos-root-task/include/contracts/) |
 | Guest-visible device proofs | `make gate`: host tests, both stub-boot architectures, guest net/block/console proofs |
 | Concurrent authenticated Linux/FreeBSD acceptance | `make demo-test`; remains under qualification after the retained FreeBSD SSH timeout |

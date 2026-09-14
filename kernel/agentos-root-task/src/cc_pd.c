@@ -39,6 +39,9 @@
 #include "contracts/vm_manager_contract.h"
 #include "sel4_ipc.h"
 #include "serial_log.h"
+#include "serial_virt_client.h"
+#include <platform/serial_virt_layout.h>
+#include <platform/console_input.h>
 #include "system_desc.h"
 #include <stdint.h>
 #include <stdbool.h>
@@ -618,9 +621,8 @@ static void cc_trace_record(uint32_t opcode)
 /* ─── Boot guest inventory ─────────────────────────────────────────────────
  *
  * The default QEMU image starts one Unix guest VMM at boot when GUEST_OS is
- * set.  Full VibeOS relay wiring is still Phase 5 work, but the published CC
- * contract already requires LIST_GUESTS/GUEST_STATUS to expose the running
- * guest to external consumers.
+ * set. LIST_GUESTS/GUEST_STATUS expose that running guest independently of
+ * the monotonic registry used for explicitly created guests.
  */
 
 #if defined(AGENTOS_GUEST_PRIMARY) || defined(AGENTOS_GUEST_SECONDARY)
@@ -742,90 +744,108 @@ static bool cc_call_boot_guest(uint32_t opcode, const uint8_t *payload,
     return reply->opcode == GUEST_OK;
 }
 
-static bool cc_forward_boot_guest_input(const cc_input_event_t *event,
-                                        const uint8_t *text,
-                                        uint32_t text_len)
+static aos_serial_channel_t cc_serial_channels[AOS_SERIAL_CLIENTS];
+static bool cc_serial_attached[AOS_SERIAL_CLIENTS];
+
+static void cc_serial_init(void)
 {
-    if (!g_boot_guest_present) return false;
-
-    uint8_t payload[SEL4_MSG_DATA_BYTES];
-    uint32_t payload_len = 4u + (uint32_t)sizeof(cc_input_event_t) + text_len;
-    if (payload_len > sizeof(payload)) return false;
-    cc_msg_wr32(payload, 0u, CC_BOOT_GUEST_HANDLE);
-    __builtin_memcpy(payload + 4u, event, sizeof(cc_input_event_t));
-    if (text_len > 0u) {
-        __builtin_memcpy(payload + 4u + sizeof(cc_input_event_t), text, text_len);
+    for (uint32_t slot = 0; slot < AOS_SERIAL_CLIENTS; slot++) {
+#if !defined(AGENTOS_GUEST_PRIMARY)
+        if (slot == 0u) continue;
+#endif
+#if !defined(AGENTOS_GUEST_SECONDARY)
+        if (slot == 1u) continue;
+#endif
+        cc_serial_channels[slot] = aos_serial_channel_at(AOS_SERIAL_SHMEM_VA +
+            AOS_SERIAL_FRONTEND_FRAME * AOS_SERIAL_FRAME_SIZE +
+            slot * AOS_SERIAL_FRONTEND_STRIDE);
+        cc_serial_attached[slot] = serial_virt_client_attach(slot, SERIAL_VIRT_ROLE_FRONTEND);
+        if (!cc_serial_attached[slot])
+            cc_dbg_puts("[cc_pd] serial_virt frontend attachment failed\n");
     }
+}
 
-    sel4_msg_t reply = {0};
-    return cc_call_boot_guest(MSG_GUEST_SEND_INPUT, payload,
-                              payload_len, &reply);
+/* Public handles never become array indices. Check live lifecycle authority
+ * before queue access; the mirrored shared state is advisory only. */
+static bool cc_serial_slot(uint32_t handle, bool input, uint32_t *slot)
+{
+    uint32_t state;
+    if (handle == CC_BOOT_GUEST_HANDLE) {
+        if (!g_boot_guest_present) return false;
+        *slot = cc_boot_guest_os_type() == VIBEOS_PROFILE_SECONDARY ? 1u : 0u;
+        state = g_boot_guest_state;
+    } else {
+        const cc_vm_entry_t *entry = NULL;
+        for (uint32_t i = 0; i < CC_VM_CLIENT_SLOTS; i++) {
+            if (g_vm_client.entries[i].active && g_vm_client.entries[i].handle == handle) {
+                entry = &g_vm_client.entries[i];
+                break;
+            }
+        }
+        if (!entry || entry->slot >= AOS_SERIAL_CLIENTS ||
+            !(entry->devices & VIBEOS_DEV_SERIAL)) return false;
+        cc_guest_status_t status;
+        if (cc_vm_status(&g_vm_client, handle, &status) != CC_OK) return false;
+        *slot = entry->slot;
+        state = status.state;
+    }
+    return cc_serial_attached[*slot] && state != GUEST_STATE_DEAD &&
+           (!input || state == GUEST_STATE_RUNNING);
+}
+
+static bool cc_serial_input(uint32_t handle, const cc_input_event_t *event,
+                            const uint8_t *text, uint32_t text_len)
+{
+    uint32_t slot;
+    if (!event || !cc_serial_slot(handle, true, &slot)) return false;
+    uint8_t byte;
+    const uint8_t *bytes = text;
+    uint32_t length = text_len;
+    if (event->event_type != CC_INPUT_TEXT) {
+        if (!aos_console_input_event_to_byte(event->event_type, event->keycode, &byte))
+            return true;
+        bytes = &byte;
+        length = 1;
+    } else if (length != event->keycode || length > CC_INPUT_TEXT_MAX) return false;
+    if (aos_serial_queue_write(&cc_serial_channels[slot].to_guest, bytes, length) !=
+        AOS_SERIAL_PUMP_OK) return false;
+    if (length) seL4_Signal(PD_CNODE_SLOT_SERIAL_VIRT_NOTIFY);
+    return true;
+}
+
+static bool cc_serial_drain(uint32_t handle, uint8_t *dst, uint32_t max,
+                            uint32_t *bytes_drained)
+{
+    uint32_t slot;
+    if (!cc_serial_slot(handle, false, &slot)) return false;
+    if (aos_serial_queue_read(&cc_serial_channels[slot].from_guest, dst, max,
+                             bytes_drained) != AOS_SERIAL_PUMP_OK) return false;
+    if (*bytes_drained) seL4_Signal(PD_CNODE_SLOT_SERIAL_VIRT_NOTIFY);
+    return true;
+}
+
+static bool cc_forward_boot_guest_input(const cc_input_event_t *event,
+                                        const uint8_t *text, uint32_t text_len)
+{
+    return cc_serial_input(CC_BOOT_GUEST_HANDLE, event, text, text_len);
 }
 
 static bool cc_drain_boot_guest_console(uint8_t *dst, uint32_t max,
                                         uint32_t *bytes_drained)
 {
-    if (!g_boot_guest_present) return false;
-
-    /* One downstream call per host frame keeps CC latency bounded. */
-    uint8_t payload[8u];
-    uint32_t want = max;
-    if (want > SEL4_MSG_DATA_BYTES) want = SEL4_MSG_DATA_BYTES;
-    cc_msg_wr32(payload, 0u, CC_BOOT_GUEST_HANDLE);
-    cc_msg_wr32(payload, 4u, want);
-
-    sel4_msg_t reply = {0};
-    if (!cc_call_boot_guest(MSG_GUEST_CONSOLE_DRAIN, payload,
-                            (uint32_t)sizeof(payload), &reply)) {
-        return false;
-    }
-
-    uint32_t n = reply.length;
-    if (n > SEL4_MSG_DATA_BYTES) n = SEL4_MSG_DATA_BYTES;
-    if (n > max) n = max;
-    if (n > 0u) __builtin_memcpy(dst, reply.data, n);
-    *bytes_drained = n;
-    return true;
+    return cc_serial_drain(CC_BOOT_GUEST_HANDLE, dst, max, bytes_drained);
 }
 
-static bool cc_forward_vm_input(uint32_t handle,
-                                  const cc_input_event_t *event,
-                                  const uint8_t *text,
-                                  uint32_t text_len)
+static bool cc_forward_vm_input(uint32_t handle, const cc_input_event_t *event,
+                                const uint8_t *text, uint32_t text_len)
 {
-    cc_vm_reply_t reply = {0};
-    uint8_t payload[CC_VM_PAYLOAD_BYTES];
-    uint32_t payload_len = (uint32_t)sizeof(cc_input_event_t) + text_len;
-    if (4u + payload_len > SEL4_MSG_DATA_BYTES) return false;
-    __builtin_memcpy(payload, event, sizeof(cc_input_event_t));
-    if (text_len > 0u) {
-        __builtin_memcpy(payload + sizeof(cc_input_event_t), text, text_len);
-    }
-
-    return cc_vm_request(&g_vm_client, VM_MANAGER_OP_SEND_INPUT, handle,
-                          payload, payload_len, &reply) == CC_OK;
+    return cc_serial_input(handle, event, text, text_len);
 }
 
 static bool cc_drain_vm_console(uint32_t handle, uint8_t *dst,
-                                  uint32_t max, uint32_t *bytes_drained)
+                                uint32_t max, uint32_t *bytes_drained)
 {
-    /* Do not monopolize the VMM with a 4 KiB loop of tiny inline IPCs. */
-    uint32_t want = max;
-    if (want > SEL4_MSG_DATA_BYTES - 8u)
-        want = SEL4_MSG_DATA_BYTES - 8u;
-
-    cc_vm_reply_t reply = {0};
-    uint8_t payload[4u];
-    cc_msg_wr32(payload, 0u, want);
-    if (cc_vm_request(&g_vm_client, VM_MANAGER_OP_CONSOLE_DRAIN, handle,
-                      payload, sizeof(payload), &reply) != CC_OK || reply.length < 8u)
-        return false;
-
-    uint32_t n = cc_msg_rd32(reply.data, 4u);
-    if (n > want || n > reply.length - 8u) return false;
-    if (n > 0u) __builtin_memcpy(dst, reply.data + 8u, n);
-    *bytes_drained = n;
-    return true;
+    return cc_serial_drain(handle, dst, max, bytes_drained);
 }
 
 static bool cc_lifecycle_boot_guest(uint32_t opcode, uint32_t reason,
@@ -1617,6 +1637,9 @@ void cc_pd_main(seL4_CPtr my_ep, seL4_CPtr ns_ep)
     static cc_retry_cache_t g_retry;
     cc_retry_cache_init(&g_retry);
     cc_vm_client_init(&g_vm_client, cc_vm_rpc, NULL);
+#if defined(AGENTOS_GUEST_PRIMARY) || defined(AGENTOS_GUEST_SECONDARY)
+    cc_serial_init();
+#endif
 
     /*
      * Canonical boot-complete marker — must match xtask/src/cmd_test.rs and

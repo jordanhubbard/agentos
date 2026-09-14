@@ -131,6 +131,14 @@ smoke, no runner) the root task still emits the boot-proof stub TAP.
 
 ### Virtualizer client mapping isolation
 
+The bidirectional Ubuntu console assertion also requires both actual
+`serial_virt` transfer markers, in addition to the emulated device markers
+and echoed guest input. CC resolves guest handles and uses only its frontend
+page; guest console bytes no longer use the VMM console IPC operations.
+`test_serial_endpoint` exercises paused input, full queues, staged retries,
+ordered output, exact-once input delivery, cursor rollover and malformed
+shared indices.
+
 `make test-serial-isolation` runs eight AArch64 fault probes. Each VMM first
 writes and reads its own serial page, then attempts a read or write of the
 other VMM's page or the CC frontend page. Root accepts only the expected

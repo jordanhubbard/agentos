@@ -579,6 +579,10 @@ uintptr_t gpu_tensor_buf_vaddr     __attribute__((weak));
 
 /* ─── State ──────────────────────────────────────────────────────────── */
 
+#include <platform/serial_endpoint.h>
+#include "serial_virt_client.h"
+static aos_serial_endpoint_t serial_endpoint;
+static bool serial_attached;
 static bool     guest_started      = false;
 static const aos_guest_profile_manifest_t *g_guest_profile;
 static aos_guest_boot_plan_t g_guest_boot_plan;
@@ -692,6 +696,7 @@ static void guest_vmm_binding_init(void)
 #define PL011_ICR    0x44u
 #define PL011_DMACR  0x48u
 #define PL011_FR_TXFE (1u << 7) /* TX FIFO empty */
+#define PL011_FR_TXFF (1u << 5) /* TX FIFO full */
 #define PL011_FR_RXFE (1u << 4) /* RX FIFO empty */
 #define PL011_CR_TXE  (1u << 8)
 #define PL011_CR_RXE  (1u << 9)
@@ -732,8 +737,9 @@ static void pl011_irq_ack(size_t vcpu_id, int irq, void *cookie)
 static void console_tx_push(uint8_t byte)
 {
     if (console_tx_count == GUEST_CONSOLE_TX_RING_SIZE) {
-        console_tx_tail = (console_tx_tail + 1u) % GUEST_CONSOLE_TX_RING_SIZE;
-        console_tx_count--;
+        /* A guest ignoring TXFF may lose its new write, as with a hardware
+         * FIFO. It cannot overwrite bytes already accepted for delivery. */
+        return;
     }
     console_tx_ring[console_tx_head] = byte;
     console_tx_head = (console_tx_head + 1u) % GUEST_CONSOLE_TX_RING_SIZE;
@@ -772,12 +778,10 @@ static bool console_rx_pop(uint8_t *byte)
 static uint32_t pl011_pending_irqs(void)
 {
     uint32_t pending = 0u;
-    /* The backend has no transmit FIFO: every DR write is consumed
-     * immediately, so the PL011 TX threshold is continuously satisfied while
-     * transmission is enabled.  FreeBSD switches from polled boot output to
-     * interrupt-driven tty output after init and otherwise blocks after its
-     * first software chunk. */
-    if ((pl011_cr & PL011_CR_TXE) != 0u) {
+    /* Model backpressure from the bounded output FIFO. Wake the guest tty
+     * again when the shared-queue adapter has made room for more output. */
+    if ((pl011_cr & PL011_CR_TXE) != 0u &&
+        console_tx_count <= GUEST_CONSOLE_TX_RING_SIZE / 2u) {
         pending |= PL011_TXIS;
     }
     if (console_rx_count > 0u) {
@@ -788,7 +792,8 @@ static uint32_t pl011_pending_irqs(void)
 
 static void pl011_maybe_inject_irq(void)
 {
-    if (guest_started && ((pl011_pending_irqs() & pl011_imsc) != 0u)) {
+    if (guest_started && g_guest_state == GUEST_STATE_RUNNING &&
+        ((pl011_pending_irqs() & pl011_imsc) != 0u)) {
         (void)virq_inject(PL011_UART_IRQ);
     }
 }
@@ -824,7 +829,8 @@ static uint32_t pl011_read(size_t offset)
     case PL011_RSR_ECR:
         return pl011_rsr_ecr;
     case PL011_FR:
-        return PL011_FR_TXFE |
+        return (console_tx_count == 0u ? PL011_FR_TXFE : 0u) |
+               (console_tx_count == GUEST_CONSOLE_TX_RING_SIZE ? PL011_FR_TXFF : 0u) |
                (console_rx_count == 0u ? PL011_FR_RXFE : 0u);
     case PL011_ILPR:
         return pl011_ilpr;
@@ -1051,6 +1057,35 @@ static uint32_t guest_vmm_drain_console(uint8_t *bytes, uint32_t capacity)
         bytes + length, capacity - length);
 }
 
+static uint32_t guest_serial_output(uint8_t *bytes, uint32_t capacity, void *ctx)
+{
+    (void)ctx;
+    return guest_vmm_drain_console(bytes, capacity);
+}
+
+static bool guest_serial_input(const uint8_t *bytes, uint32_t length, void *ctx)
+{
+    (void)ctx;
+    return guest_vmm_push_input(CC_INPUT_TEXT, bytes, length);
+}
+
+static void guest_serial_service(void)
+{
+    if (!serial_attached) return;
+    const aos_serial_endpoint_ops_t ops = {
+        .output = guest_serial_output, .input = guest_serial_input,
+    };
+    uint32_t old_state = __atomic_load_n(&serial_endpoint.channel.meta->guest_state,
+                                        __ATOMIC_RELAXED);
+    __atomic_store_n(&serial_endpoint.channel.meta->guest_state, g_guest_state,
+                     __ATOMIC_RELEASE);
+    bool changed = aos_serial_endpoint_step(&serial_endpoint, &ops,
+        guest_started && g_guest_state == GUEST_STATE_RUNNING);
+    pl011_maybe_inject_irq();
+    if (changed || old_state != g_guest_state)
+        seL4_Signal(PD_CNODE_SLOT_SERIAL_VIRT_NOTIFY);
+}
+
 static seL4_MessageInfo_t guest_vmm_rpc(seL4_MessageInfo_t info)
 {
     (void)info;
@@ -1070,8 +1105,8 @@ static seL4_MessageInfo_t guest_vmm_rpc(seL4_MessageInfo_t info)
         .push_input = guest_vmm_push_input,
         .drain_console = guest_vmm_drain_console,
     };
-    if (aos_guest_vmm_lifecycle_rpc(&req, &rep, &runtime) ||
-        aos_guest_vmm_console_rpc(&req, &rep, &runtime)) {
+    if (aos_guest_vmm_lifecycle_rpc(&req, &rep, &runtime)) {
+        guest_serial_service();
         _sel4_msg_to_mrs(&rep);
         return seL4_MessageInfo_new((seL4_Word)rep.opcode, 0, 0,
                                     (seL4_Word)_SEL4_MR_COUNT);
@@ -1194,6 +1229,20 @@ int vmm_inject_irq(uint8_t slot_id, uint32_t irq_num)
 
 void init(void)
 {
+    const uint32_t serial_slot =
+#if defined(AGENTOS_GUEST_SECONDARY)
+        1u;
+#else
+        0u;
+#endif
+    serial_endpoint.channel = aos_serial_channel_at(AOS_SERIAL_SHMEM_VA +
+        serial_slot * AOS_SERIAL_FRAME_SIZE);
+    serial_attached = serial_virt_client_attach(serial_slot, SERIAL_VIRT_ROLE_VMM);
+    if (!serial_attached) {
+        LOG_VMM_ERR("serial_virt attach failed; refusing guest start\n");
+        return;
+    }
+    LOG_VMM("serial_virt: VMM attached to isolated queue page\n");
     if ((size_t)(_guest_profile_end - _guest_profile) !=
             sizeof(aos_guest_profile_manifest_t)) {
         LOG_VMM_ERR("Guest profile has the wrong wire size\n");
@@ -1434,6 +1483,11 @@ void init(void)
  */
 static void guest_vmm_notified(seL4_Word badge)
 {
+    if (badge & SERIAL_VIRT_VMM_WAKE_BADGE) {
+        guest_serial_service();
+        badge &= ~SERIAL_VIRT_VMM_WAKE_BADGE;
+        if (!badge) return;
+    }
     switch (badge) {
     case CONTROLLER_CH: {
         /*
@@ -1581,6 +1635,7 @@ static seL4_MessageInfo_t guest_vmm_fault(seL4_Word badge,
     aos_vmm_virtio_net_after_fault();
     aos_vmm_virtio_blk_after_fault();
     aos_vmm_virtio_console_after_fault();
+    guest_serial_service();
     /* UART MMIO fault compliance stub — silently accept, guest continues. */
     return seL4_MessageInfo_new(0, 0, 0, 0);
 }

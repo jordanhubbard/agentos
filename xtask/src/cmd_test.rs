@@ -190,6 +190,8 @@ fn virtio_markers(assertion: &VirtioAssertion) -> Vec<&'static str> {
                 ]);
                 if assertion.bidirectional_console {
                     required.push("emulated virtio-console: pumped input serial_virt->guest");
+                    required.push("[serial_virt] frontend input delivered to VMM queue");
+                    required.push("[serial_virt] VMM output delivered to frontend queue");
                 }
             }
             _ => {}

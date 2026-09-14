@@ -20,6 +20,7 @@ typedef struct {
 typedef enum {
     AOS_SERIAL_PUMP_OK = 0,
     AOS_SERIAL_PUMP_INVALID = 1,
+    AOS_SERIAL_PUMP_FULL = 2,
 } aos_serial_pump_status_t;
 
 /* One bounded transfer. The caller is the source consumer and destination
@@ -32,5 +33,13 @@ aos_serial_pump_status_t aos_serial_virt_transfer(
     const aos_serial_queue_handle_t *source,
     const aos_serial_queue_handle_t *destination,
     uint32_t budget, uint32_t *transferred);
+
+/* Single-producer write is atomic at the byte-message boundary: FULL leaves
+ * all bytes and cursors untouched. Read transfers ownership to the caller,
+ * which must retain bytes itself if its downstream consumer is blocked. */
+aos_serial_pump_status_t aos_serial_queue_write(
+    const aos_serial_queue_handle_t *, const uint8_t *, uint32_t length);
+aos_serial_pump_status_t aos_serial_queue_read(
+    const aos_serial_queue_handle_t *, uint8_t *, uint32_t capacity, uint32_t *length);
 
 #endif

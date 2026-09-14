@@ -15,6 +15,8 @@ typedef struct {
     uint32_t frontend_changed;
     uint32_t invalid_clients;
     uint32_t bytes;
+    uint32_t input_clients;  /* actual byte transfers, not state mirroring */
+    uint32_t output_clients;
 } aos_serial_virt_result_t;
 
 /* Handles are supplied by the trusted PD from the root-owned layout.

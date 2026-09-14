@@ -1,8 +1,8 @@
 /*
  * Guest-facing virtio-console backed by sDDF serial byte queues.
  *
- * The physical UART remains owned by serial_pd. CC-PD and future native
- * serial_virt clients drain/fill these queues through the VMM contract.
+ * The physical UART remains owned by serial_pd. A bounded VMM endpoint
+ * adapter connects these device-local queues to the separate serial_virt PD.
  */
 
 #include <libvmm/libvmm.h>
@@ -45,8 +45,8 @@ void aos_vmm_virtio_console_init(void)
     serial_queue_init(&g_tx, &g_tx_queue, AOS_SERIAL_TX_CAPACITY, g_tx_data);
 
     /*
-     * There is no separate serial_virt PD notification in this vertical
-     * slice. QueueNotify is the VM fault that drives TX, and CC-PD drains it.
+     * QueueNotify drives device-local TX. The VMM endpoint adapter exports
+     * it to shared queues and signals serial_virt with a persistent wakeup.
      */
     g_tx_queue.producer_signalled = 1u;
     g_rx_queue.producer_signalled = 1u;

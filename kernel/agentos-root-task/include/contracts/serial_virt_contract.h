@@ -4,8 +4,7 @@
 #include <stdint.h>
 #include "virtualizer_authority.h"
 
-/* Draft implementation: root/VMM/CC integration and target proof pending.
- * Only ATTACH uses IPC. Console bytes use the shared sDDF byte queues.
+/* Only ATTACH uses IPC. Console bytes use the shared sDDF byte queues.
  * Notifications are persistent seL4 Signals, not endpoint NBSends. */
 #define SERIAL_VIRT_CONTRACT_VERSION 1u
 #define SERIAL_VIRT_OP_ATTACH 0x2d01u
