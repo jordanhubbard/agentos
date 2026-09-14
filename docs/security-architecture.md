@@ -90,22 +90,22 @@ agentOS.
 
 Guest compromise and VMM compromise are different threats. Guest kernels do
 not receive the host sDDF queue mappings. Their VMMs do. At this revision the
-root maps the **whole network shared frame into every VMM**, with writable
-rights. Network strides and queue validation separate normal traffic in software;
-they do not provide page-level protection between compromised VMMs. Block
-clients now occupy separate 2 MB frames, and each VMM maps only its own frame.
+root maps each VMM's network and block client onto separate 2 MB frames; each
+VMM maps only its own client frames. net_pd maps only a separate transfer page,
+which net_virt also maps. `make test-network-isolation` verifies foreign-client
+and driver-page read/write faults from both VMM slots. Block
+clients occupy separate 2 MB frames, and each VMM maps only its own frame.
 The virtualizer alone maps all block client frames and the RAM-disk page.
 `make test-block-isolation` checks read/write faults from both VMM slots at
-foreign block-client and RAM-disk addresses. These tests do not cover network
-queues; do not describe those as mutually inaccessible per-guest memory.
+foreign block-client and RAM-disk addresses. Each class is qualified separately.
 
 Device selection is independently capability-bound. Root mints each VMM's
 net/block endpoint with its assigned slot badge; ATTACH checks that badge
 against the requested client, VMM slot, and block media before changing state
 or calling a driver. `make test-virtualizer-authority` rejects spoofed
 attachments from both VMM slots and then accepts their legitimate assignments.
-This closes the request-based media-selection gap, but the shared network
-mapping still permits cross-client queue access by a compromised VMM.
+This closes the request-based media-selection gap independently of the page
+mapping boundaries.
 
 The root task, VMMs, virtualizers, and drivers therefore remain consequential
 TCB components. seL4 enforces the authority they are given; its verification

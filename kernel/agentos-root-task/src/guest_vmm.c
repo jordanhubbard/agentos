@@ -1549,7 +1549,7 @@ static seL4_MessageInfo_t guest_vmm_fault(seL4_Word badge,
  *   my_ep:             passed in x0 by pd_entry.c
  *   AGENTOS_IPC_REPLY_CAP: reserved MCS reply object slot
  */
-#include <platform/blk_isolation_probe.h>
+#include <platform/vmm_isolation_probe.h>
 #ifdef AGENTOS_VIRT_AUTHORITY_PROBE
 #include "tests/harness/virtualizer_authority_probe.h"
 #endif
@@ -1564,17 +1564,16 @@ void guest_vmm_main(seL4_CPtr ep, seL4_CPtr reply_cap)
     virtualizer_authority_probe();
 #endif
 
-#ifdef AGENTOS_BLK_ISOLATION_PROBE
+#ifdef AOS_VMM_ISOLATION_PROBE
     /* Test image: first prove our client frame is writable, then deliberately
      * fault on a foreign frame. Root checks the badged fault and address. */
-    volatile uint32_t *own = (volatile uint32_t *)(AOS_BLK_SHMEM_VA +
-                         AOS_BLK_CLIENT_BASE + AOS_BLK_PROBE_CLIENT * AOS_BLK_CLIENT_STRIDE);
+    volatile uint32_t *own = (volatile uint32_t *)AOS_VMM_PROBE_OWN_ADDRESS;
     *own = 0xa051a7eu;
     if (*own != 0xa051a7eu) {
         for (;;) seL4_Yield();
     }
-    volatile uint32_t *foreign = (volatile uint32_t *)AOS_BLK_PROBE_ADDRESS;
-    if (AOS_BLK_PROBE_WRITE) *foreign = 0xbad;
+    volatile uint32_t *foreign = (volatile uint32_t *)AOS_VMM_PROBE_ADDRESS;
+    if (AOS_VMM_PROBE_WRITE) *foreign = 0xbad;
     else (void)*foreign;
     /* Reaching here is failure. Never boot a guest from a probe image. */
     for (;;) seL4_Yield();

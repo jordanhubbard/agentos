@@ -27,7 +27,7 @@ _Static_assert(AOS_NET_BUFFER_SIZE == NET_BUFFER_SIZE,
 _Static_assert(sizeof(aos_net_buff_desc_t) == sizeof(net_buff_desc_t),
                "aos_net_buff_desc_t must match sDDF net_buff_desc_t");
 _Static_assert(AOS_NET_GUEST_CLIENTS * AOS_NET_CLIENT_STRIDE <=
-               AOS_NET_SHMEM_SIZE / 2u,
+               AOS_NET_DRIVER_SLOT_BASE,
                "guest net queues must not overlap net-service slots");
 
 static struct virtio_net_device g_aos_net;

@@ -347,6 +347,10 @@ ifdef BLK_ISOLATION_PROBE
   CFLAGS_ROOT_TASK += -DAGENTOS_BLK_ISOLATION_PROBE=$(BLK_ISOLATION_PROBE)
 endif
 
+ifdef NET_ISOLATION_PROBE
+  CFLAGS_ROOT_TASK += -DAGENTOS_NET_ISOLATION_PROBE=$(NET_ISOLATION_PROBE)
+endif
+
 # Profile paths are the canonical build selection. The repository Makefile
 # owns the legacy GUEST_OS compatibility adapter.
 GUEST_PRIMARY_PROFILE ?=

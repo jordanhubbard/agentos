@@ -38,14 +38,14 @@
 #include <stdint.h>
 
 /* ── Interface version ──────────────────────────────────────────────────── */
-#define NET_SVC_INTERFACE_VERSION       3
+#define NET_SVC_INTERFACE_VERSION       4
 
 /* ── Geometry / limits ──────────────────────────────────────────────────── */
 #define NET_SVC_MAX_VNICS               16u
 #define NET_SVC_MAX_BOUND_PORTS         8u
 #define NET_SVC_MAX_FRAME_BYTES         1514u
-#define NET_SVC_SHMEM_TOTAL             0x200000u  /* 2 MB shared bridge */
-#define NET_SVC_SLOT_BASE               0x100000u  /* slots after guest queues */
+#define NET_SVC_SHMEM_TOTAL             0x600000u  /* separate client and driver pages */
+#define NET_SVC_SLOT_BASE               0x400000u  /* driver-only transfer page */
 #define NET_SVC_SLOT_SIZE               0x4000u    /* 16 KB per vNIC slot */
 #define NET_SVC_HDR_SIZE                1024u      /* ring header bytes */
 #define NET_SVC_DATA_SIZE               (NET_SVC_SLOT_SIZE - NET_SVC_HDR_SIZE)

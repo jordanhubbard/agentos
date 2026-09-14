@@ -1,0 +1,34 @@
+/* Test-only fault probe contract. No production image enables this macro. */
+#ifndef AOS_VMM_ISOLATION_PROBE_H
+#define AOS_VMM_ISOLATION_PROBE_H
+#include <platform/blk_layout.h>
+#if defined(AGENTOS_BLK_ISOLATION_PROBE) && defined(AGENTOS_NET_ISOLATION_PROBE)
+#error "select one isolation probe class"
+#endif
+#if defined(AGENTOS_BLK_ISOLATION_PROBE)
+#define AOS_VMM_ISOLATION_PROBE AGENTOS_BLK_ISOLATION_PROBE
+#define AOS_VMM_PROBE_MESSAGE "[rt] block isolation: expected VMM data fault verified\n"
+#define AOS_VMM_PROBE_OWN_ADDRESS (AOS_BLK_SHMEM_VA + AOS_BLK_CLIENT_BASE + AOS_VMM_PROBE_CLIENT * AOS_BLK_CLIENT_STRIDE)
+#define AOS_VMM_PROBE_ADDRESS \
+    (AOS_BLK_SHMEM_VA + (AOS_VMM_PROBE_OPERATION < 2 \
+        ? AOS_BLK_CLIENT_BASE + (1u - AOS_VMM_PROBE_CLIENT) * AOS_BLK_CLIENT_STRIDE \
+        : AOS_BLK_DISK_OFF))
+#elif defined(AGENTOS_NET_ISOLATION_PROBE)
+#define AOS_VMM_ISOLATION_PROBE AGENTOS_NET_ISOLATION_PROBE
+#define AOS_VMM_PROBE_MESSAGE "[rt] network isolation: expected VMM data fault verified\n"
+#define AOS_VMM_PROBE_OWN_ADDRESS (AOS_NET_SHMEM_VA + AOS_VMM_PROBE_CLIENT * AOS_NET_CLIENT_STRIDE)
+#define AOS_VMM_PROBE_ADDRESS \
+    (AOS_NET_SHMEM_VA + (AOS_VMM_PROBE_OPERATION < 2 \
+        ? (1u - AOS_VMM_PROBE_CLIENT) * AOS_NET_CLIENT_STRIDE \
+        : AOS_NET_DRIVER_SLOT_BASE))
+#endif
+#ifdef AOS_VMM_ISOLATION_PROBE
+#if AOS_VMM_ISOLATION_PROBE < 1 || AOS_VMM_ISOLATION_PROBE > 8
+#error "isolation probe must be 1..8"
+#endif
+#define AOS_VMM_PROBE_BADGE 0xa05u
+#define AOS_VMM_PROBE_CLIENT (AOS_VMM_ISOLATION_PROBE > 4 ? 1u : 0u)
+#define AOS_VMM_PROBE_OPERATION ((AOS_VMM_ISOLATION_PROBE - 1) % 4)
+#define AOS_VMM_PROBE_WRITE ((AOS_VMM_ISOLATION_PROBE % 2) == 0)
+#endif
+#endif

@@ -131,6 +131,13 @@ smoke, no runner) the root task still emits the boot-proof stub TAP.
 
 ### Block client mapping isolation
 
+`make test-network-isolation` runs the corresponding eight network probes:
+both VMM slots attempt reads/writes of the other client's queue page and
+the driver-transfer page. It uses the same badged seL4 data-fault checks as
+the block probes, after a write/read check on the caller's own page.
+The probe images never start a guest kernel. Network I/O remains separately
+qualified by `make test-guest-net` and `make test-ubuntu-virtio`.
+
 `make test-virtualizer-authority` exercises actual net/block ATTACH calls from
 both VMM slots. Each attempts spoofed client/slot/media values (including
 out-of-range identifiers), requires BAD_CLIENT, then requires successful

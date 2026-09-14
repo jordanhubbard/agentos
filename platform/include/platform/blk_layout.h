@@ -16,6 +16,7 @@
 
 #include <stdint.h>
 #include <stdbool.h>
+#include <platform/net_layout.h>
 
 #define AOS_BLK_TRANSFER_SIZE        4096u
 #define AOS_BLK_SECTOR_SIZE          512u
@@ -71,7 +72,7 @@ _Static_assert(AOS_BLK_CLIENT_BASE +
                "all block clients must fit in the shared region");
 _Static_assert((AOS_BLK_SHMEM_VA & (AOS_BLK_SHMEM_FRAME_SIZE - 1u)) == 0u,
                "shared block region must be large-page aligned");
-_Static_assert(AOS_BLK_SHMEM_VA >= 0x26000000UL + 0x00200000UL,
+_Static_assert(AOS_BLK_SHMEM_VA >= AOS_NET_SHMEM_VA + AOS_NET_SHMEM_SIZE,
                "shared block region must sit above the shared net frame");
 
 /*

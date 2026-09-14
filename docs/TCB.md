@@ -58,8 +58,9 @@ seL4
 a PD of its own, spawned at priority 205 with no device frame and no IRQ. The
 emulated virtio-net inside each `guest_vmm` (`platform/net-virt/vmm_virtio_net.c`,
 libvmm `src/virtio/net.c`) produces and consumes sDDF-shaped queues in the
-2 MB shared net frame (`AGENTOS_NET_SHARED_VA`, one 512 KB stride per guest
-client) that the root task maps into every VMM and into `net_virt`. Control
+6 MB network region (`AGENTOS_NET_SHARED_VA`). Each VMM maps only its own
+2 MB client page. `net_pd` maps only the third, driver-transfer page, and
+`net_virt` maps all three. Control
 is one `NET_VIRT_OP_ATTACH` Call per client; after that the VMM only
 `seL4_NBSend`s `NET_VIRT_EVENT_KICK` when `tx_active` is non-empty (and
 `net_virt` asked for kicks through the sDDF `consumer_signalled` flag), and

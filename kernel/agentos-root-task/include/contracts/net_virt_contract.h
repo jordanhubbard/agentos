@@ -5,8 +5,9 @@
  *
  * net_virt is the only network mux (docs/TCB.md, I/O invariant 2).  It owns
  * no device frame and no IRQ.  Frames move through the sDDF-shaped guest
- * queues in the shared net frame (platform/include/platform/net_layout.h,
- * mapped at AOS_NET_SHMEM_VA in every client and in net_virt); this contract
+ * queues in separate client pages (platform/include/platform/net_layout.h).
+ * Each VMM maps its own page, net_pd maps a separate transfer page, and
+ * net_virt maps the complete region at AOS_NET_SHMEM_VA. This contract
  * carries only control (attach) and notifications (kicks).  There is no
  * per-frame IPC between a VMM and net_virt.
  *
@@ -46,8 +47,9 @@
 
 #include <stdint.h>
 
-/* Version 2 requires root-minted virtualizer_authority.h badges. */
-#define NET_VIRT_CONTRACT_VERSION       2u
+/* Version 3 isolates queue clients and driver transfers on separate pages.
+ * Version 2 requires root-minted virtualizer_authority.h badges. */
+#define NET_VIRT_CONTRACT_VERSION       3u
 
 /* ── Opcodes / labels ─────────────────────────────────────────────────── */
 

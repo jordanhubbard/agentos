@@ -93,7 +93,10 @@ fn requested_virtio_assertion(
     args: &TestArgs,
     profile: Option<&HostProfilePlan>,
 ) -> Option<VirtioAssertion> {
-    if args.block_isolation_probe.is_some() || args.virtualizer_authority_probe.is_some() {
+    if args.block_isolation_probe.is_some()
+        || args.virtualizer_authority_probe.is_some()
+        || args.network_isolation_probe.is_some()
+    {
         return None;
     }
     if args.assert_agentos_virtio {
@@ -223,9 +226,12 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
             profile.test.len()
         );
     }
-    if let Some(mode) = args.block_isolation_probe.or(args
-        .virtualizer_authority_probe
-        .map(|slot| if slot == 1 { 1 } else { 5 }))
+    if let Some(mode) = args
+        .block_isolation_probe
+        .or(args.network_isolation_probe)
+        .or(args
+            .virtualizer_authority_probe
+            .map(|slot| if slot == 1 { 1 } else { 5 }))
     {
         anyhow::ensure!(
             args.board == "qemu_virt_aarch64"
@@ -317,6 +323,9 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
         if let Some(mode) = args.block_isolation_probe {
             make_args.push(format!("BLK_ISOLATION_PROBE={mode}"));
         }
+        if let Some(mode) = args.network_isolation_probe {
+            make_args.push(format!("NET_ISOLATION_PROBE={mode}"));
+        }
         if let Some(slot) = args.virtualizer_authority_probe {
             make_args.push(format!("VIRT_AUTHORITY_PROBE={slot}"));
         }
@@ -390,6 +399,13 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
         wait_for_all_markers(&log_path,
             &["[authority-test] spoofed attachments rejected; assigned net/block clients accepted"],
             Duration::from_secs(args.timeout_secs), &mut qemu)
+    } else if args.network_isolation_probe.is_some() {
+        wait_for_all_markers(
+            &log_path,
+            &["[rt] network isolation: expected VMM data fault verified"],
+            Duration::from_secs(args.timeout_secs),
+            &mut qemu,
+        )
     } else if args.block_isolation_probe.is_some() {
         wait_for_all_markers(
             &log_path,
