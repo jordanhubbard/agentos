@@ -5,8 +5,9 @@
 //!
 //! The callback template below targets the Microkit ABI. The current agentOS
 //! root task instead starts services through `pd_main(endpoint, nameserver)`;
-//! wiring a Rust service into that entry path is still required. Host unit
-//! tests and `make test-rust-pd-abi` do not establish native PD boot support.
+//! see `tests/native-rust/probe` and [`runtime`] for that native entry path.
+//! `make test-native-rust` exercises its target IPC from a separate C PD.
+//! Host unit tests and `make test-rust-pd-abi` alone are not boot proof.
 //!
 //! ## Quick start
 //!
@@ -50,6 +51,7 @@ pub mod console;
 pub mod ffi;
 pub mod ipc;
 pub mod pd;
+pub mod runtime;
 
 // `export_pd!` is automatically available at the crate root via `#[macro_export]`
 // in pd.rs; no explicit re-export is needed.

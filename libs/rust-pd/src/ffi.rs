@@ -12,6 +12,9 @@
 // wrappers around the IPC buffer in the thread's TLS region.
 
 extern "C" {
+    pub fn agentos_pd_receive(endpoint: u64, badge: *mut u64) -> u64;
+    pub fn agentos_pd_reply(info: u64);
+    pub fn agentos_pd_call(endpoint: u64, info: u64) -> u64;
     /// Read message register `idx`.
     #[link_name = "agentos_pd_get_mr"]
     pub fn seL4_GetMR(idx: i32) -> u64;

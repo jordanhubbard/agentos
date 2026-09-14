@@ -44,6 +44,7 @@ thread_local! {
     /// Simulated message-register bank (120 registers, matching seL4 ABI).
     static MR_BANK: RefCell<[u64; 120]> = RefCell::new([0u64; 120]);
     static MR_CALLS: RefCell<usize> = const { RefCell::new(0) };
+    static IPC_CALLS: RefCell<Vec<(u32, u64, u64)>> = const { RefCell::new(Vec::new()) };
 
     /// Accumulator for everything written via console_log (for assertion).
     static CONSOLE_OUTPUT: RefCell<String> = RefCell::new(String::new());
@@ -73,6 +74,24 @@ extern "C" fn agentos_pd_set_mr(idx: i32, val: u64) {
 }
 
 #[no_mangle]
+extern "C" fn agentos_pd_receive(endpoint: u64, badge: *mut u64) -> u64 {
+    IPC_CALLS.with(|calls| calls.borrow_mut().push((0, endpoint, 0)));
+    unsafe { *badge = 0xabc0_0000_1234_0000; }
+    MsgInfo::new(0x1234, 0, 0, 2).raw()
+}
+
+#[no_mangle]
+extern "C" fn agentos_pd_reply(info: u64) {
+    IPC_CALLS.with(|calls| calls.borrow_mut().push((1, 0, info)));
+}
+
+#[no_mangle]
+extern "C" fn agentos_pd_call(endpoint: u64, info: u64) -> u64 {
+    IPC_CALLS.with(|calls| calls.borrow_mut().push((2, endpoint, info)));
+    MsgInfo::new(0x4321, 0, 0, 1).raw()
+}
+
+#[no_mangle]
 extern "C" fn console_log(_level: u32, _color: u32, s: *const u8) {
     // Walk the NUL-terminated C string and append to the capture buffer.
     if s.is_null() {
@@ -97,6 +116,7 @@ extern "C" fn console_log(_level: u32, _color: u32, s: *const u8) {
 fn reset_state() {
     MR_BANK.with(|b| *b.borrow_mut() = [0u64; 120]);
     MR_CALLS.with(|n| *n.borrow_mut() = 0);
+    IPC_CALLS.with(|calls| calls.borrow_mut().clear());
     CONSOLE_OUTPUT.with(|c| c.borrow_mut().clear());
 }
 
@@ -256,6 +276,31 @@ fn invalid_registers_never_reach_ffi() {
     }
     MR_CALLS.with(|n| assert_eq!(*n.borrow(), 0));
     MR_BANK.with(|b| assert!(b.borrow().iter().all(|word| *word == 0)));
+}
+
+#[test]
+fn native_ipc_preserves_endpoint_badge_and_message_shape() {
+    use agentos_pd::runtime;
+    reset_state();
+    let request = runtime::receive(16);
+    assert_eq!(request.badge, 0xabc0_0000_1234_0000);
+    assert_eq!(request.info, MsgInfo::new(0x1234, 0, 0, 2));
+    let outgoing = MsgInfo::new(0x5678, 0, 0, 120);
+    runtime::reply(outgoing);
+    assert_eq!(runtime::call(17, outgoing), MsgInfo::new(0x4321, 0, 0, 1));
+    IPC_CALLS.with(|calls| assert_eq!(*calls.borrow(),
+        vec![(0, 16, 0), (1, 0, outgoing.raw()), (2, 17, outgoing.raw())]));
+}
+
+#[test]
+fn invalid_native_ipc_never_reaches_ffi() {
+    use agentos_pd::runtime;
+    reset_state();
+    for info in [MsgInfo::new(1, 0, 0, 121), MsgInfo::new(1, 0, 1, 0)] {
+        assert!(std::panic::catch_unwind(|| runtime::reply(info)).is_err());
+        assert!(std::panic::catch_unwind(|| runtime::call(16, info)).is_err());
+    }
+    IPC_CALLS.with(|calls| assert!(calls.borrow().is_empty()));
 }
 
 #[test]

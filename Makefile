@@ -689,7 +689,10 @@ gate: test-host gate-aarch64 gate-x86_64 gate-guest-io
 test-host: policy-check guest-profile-check lint-source test-integration
 
 # Host behavior plus real SDK compilation; this is not a native-PD boot proof.
-.PHONY: test-rust-pd-abi
+.PHONY: test-rust-pd-abi test-native-rust
+test-native-rust:
+	cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os none --assert-native-rust --timeout-secs $(QEMU_TEST_TIMEOUT)
+
 test-rust-pd-abi:
 	cargo test -p agentos-pd --features std
 	$(MAKE) -C kernel/agentos-root-task BUILD_DIR=$(abspath build/rust-pd-abi-aarch64) AGENTOS_ARCH=aarch64 AGENTOS_BOARD=qemu_virt_aarch64 $(abspath build/rust-pd-abi-aarch64/rust_pd_ipc.o)

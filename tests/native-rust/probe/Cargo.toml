@@ -1,0 +1,13 @@
+[package]
+name = "agentos-native-rust-probe"
+version = "0.3.0"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["staticlib"]
+test = false
+doctest = false
+
+[dependencies]
+agentos-pd = { path = "../../../libs/rust-pd" }

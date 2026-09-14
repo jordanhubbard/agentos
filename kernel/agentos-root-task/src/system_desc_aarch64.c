@@ -59,6 +59,8 @@
  * together with the event_bus PD whose contract it exercises. */
 #ifdef AGENTOS_SEL4_TEST_IMAGE
 #define AOS_TEST_PD_EXTRA 2u
+#elif defined(AGENTOS_NATIVE_RUST_TEST)
+#define AOS_TEST_PD_EXTRA 2u
 #else
 #define AOS_TEST_PD_EXTRA 0u
 #endif
@@ -519,6 +521,30 @@ const system_desc_t system_desc_aarch64 = {
                 { SVC_ID_LOG_DRAIN,  PD_CNODE_SLOT_LOG_DRAIN_EP  },
             },
         },
+
+#ifdef AGENTOS_NATIVE_RUST_TEST
+        /* No device frames, IRQs or guest capabilities in either test PD. */
+        {
+            .name = "native_rust_probe",
+            .elf_path = "native_rust_probe.elf",
+            .stack_size = 0x4000u,
+            .cnode_size_bits = 8u,
+            .priority = 245u,
+            .self_svc_id = SVC_ID_NATIVE_RUST_PROBE,
+        },
+        {
+            .name = "native_rust_client",
+            .elf_path = "native_rust_client.elf",
+            .stack_size = 0x4000u,
+            .cnode_size_bits = 8u,
+            .priority = 250u,
+            .init_ep_count = 2u,
+            .init_eps = {
+                { SVC_ID_SERIAL, PD_CNODE_SLOT_SERIAL_EP },
+                { SVC_ID_NATIVE_RUST_PROBE, 16u },
+            },
+        },
+#endif
 
 #ifdef AGENTOS_SEL4_TEST_IMAGE
         /* event_bus (prio 195) — test image only.  Not TCB; it is spawned

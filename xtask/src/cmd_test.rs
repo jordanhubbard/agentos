@@ -202,6 +202,11 @@ fn virtio_markers(assertion: &VirtioAssertion) -> Vec<&'static str> {
 
 pub fn run(args: &TestArgs) -> anyhow::Result<()> {
     anyhow::ensure!(
+        !args.assert_native_rust || (args.board == "qemu_virt_aarch64"
+            && args.guest_os == "none" && !args.no_build),
+        "--assert-native-rust requires a fresh qemu_virt_aarch64 GUEST_OS=none image"
+    );
+    anyhow::ensure!(
         !args.assert_console_backpressure
             || (args.board == "qemu_virt_aarch64"
                 && args.guest_os == "ubuntu"
@@ -345,6 +350,9 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
         if let Some(mode) = args.block_isolation_probe {
             make_args.push(format!("BLK_ISOLATION_PROBE={mode}"));
         }
+        if args.assert_native_rust {
+            make_args.push(String::from("NATIVE_RUST_TEST=1"));
+        }
         if let Some(mode) = args.network_isolation_probe {
             make_args.push(format!("NET_ISOLATION_PROBE={mode}"));
         }
@@ -424,7 +432,11 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
         drop(connect_host_net_stimulus(ssh_port, &mut qemu));
     }
 
-    let mut result = if args.virtualizer_authority_probe.is_some() {
+    let mut result = if args.assert_native_rust {
+        wait_for_all_markers(&log_path,
+            &["[native-rust] PASS: IPC version, all 120 MRs, invalid requests, recovery"],
+            Duration::from_secs(args.timeout_secs), &mut qemu)
+    } else if args.virtualizer_authority_probe.is_some() {
         wait_for_all_markers(&log_path,
             &["[authority-test] spoofed attachments rejected; assigned net/block clients accepted"],
             Duration::from_secs(args.timeout_secs), &mut qemu)

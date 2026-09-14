@@ -1,5 +1,13 @@
 # agentOS Tests: Host Unit Tests vs Target Proof
 
+`make test-native-rust` builds a dedicated AArch64 image with a `no_std` Rust
+service and separate C client. Its success marker is emitted only after the
+client validates root badge delivery, all 120 IPC words, error replies for
+invalid opcode/length/version, and valid calls after errors. Both PDs use the
+normal root-task entry and capability setup and own no hardware. This proves
+the native Rust entry/link and synchronous IPC path; it does not prove heap
+allocation, asynchronous execution, networking or a native RCC service.
+
 agentOS has **two distinct layers** of automated test, and they prove different
 things. Conflating them is a category error: a green host run does **not** mean
 the IPC contract holds on real seL4.

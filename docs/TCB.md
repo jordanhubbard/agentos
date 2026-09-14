@@ -145,6 +145,14 @@ seL4
 Native agents are **clients of the virtualizers**, same as a VMM backend.
 They are not in the TCB.
 
+The `NATIVE_RUST_TEST` image additionally includes `native_rust_probe` and
+`native_rust_client`. Neither owns a device frame, IRQ or guest-execution cap.
+The client receives only the test service endpoint and serial diagnostic
+transport. The Rust service uses the normal `pd_entry.c` / `pd_main` entry
+path and a C bridge to seL4 IPC. `make test-native-rust` checks reply payloads
+from a separate C PD; it does not qualify allocation, networking or an RCC
+service. These test PDs are absent from the default image.
+
 ## I/O invariant
 
 1. **One owner per device frame and IRQ.** Held today.

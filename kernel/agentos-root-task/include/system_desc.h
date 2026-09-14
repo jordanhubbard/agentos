@@ -224,6 +224,7 @@ typedef struct {
 #define SVC_ID_NET_VIRT       25u   /* network virtualizer PD (the only net mux) */
 #define SVC_ID_BLK_VIRT       26u   /* block virtualizer PD (the only blk mux)   */
 #define SVC_ID_SERIAL_VIRT    27u   /* serial queue virtualizer PD */
+#define SVC_ID_NATIVE_RUST_PROBE 28u /* test-only Rust IPC service */
 
 /* Standard per-PD CNode slot assignments for well-known capabilities.
  * These are the slots at which each PD finds its initial endpoint caps. */

@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     # Kernel-side Rust PD runtime library
     "libs/rust-pd",
+    "tests/native-rust/probe",
     # Userspace SDK + agents
     "userspace/sdk",
     "userspace/agents/init-agent",

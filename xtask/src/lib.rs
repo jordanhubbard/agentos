@@ -33,6 +33,9 @@ pub use guest_scenario::GuestScenarioArgs;
 
 #[derive(clap::Args)]
 pub struct TestArgs {
+    /// Boot a no_std Rust PD and verify its IPC contract from a separate C PD.
+    #[arg(long, conflicts_with_all = ["serial_isolation_probe", "network_isolation_probe", "block_isolation_probe", "virtualizer_authority_probe"])]
+    pub assert_native_rust: bool,
     /// Test serial mapping isolation: primary cases 1..4, secondary cases 5..8.
     #[arg(long, conflicts_with_all = ["network_isolation_probe", "block_isolation_probe", "virtualizer_authority_probe"], value_parser = clap::value_parser!(u8).range(1..=8))]
     pub serial_isolation_probe: Option<u8>,
