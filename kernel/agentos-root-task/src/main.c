@@ -54,9 +54,21 @@
 #include <platform/vmm_isolation_probe.h>
 #include <platform/native_net_isolation_probe.h>
 #include <platform/operator_isolation_probe.h>
+#include <platform/log_isolation_probe.h>
+#ifdef AGENTOS_LOG_RINGS
+#include <platform/log_ring.h>
+#endif
 #include <contracts/virtualizer_authority.h>
 #include <contracts/net_virt_contract.h>
-#if defined(AGENTOS_OPERATOR_ISOLATION_PROBE)
+#if defined(AGENTOS_LOG_ISOLATION_PROBE)
+#define ROOT_FAULT_PROBE 1
+#define ROOT_PROBE_NATIVE 3
+#define ROOT_PROBE_CLIENT 0u
+#define ROOT_PROBE_BADGE AOS_LOG_PROBE_BADGE
+#define ROOT_PROBE_ADDRESS AOS_LOG_PROBE_ADDRESS
+#define ROOT_PROBE_WRITE AOS_LOG_PROBE_WRITE
+#define ROOT_PROBE_MESSAGE AOS_LOG_PROBE_MESSAGE
+#elif defined(AGENTOS_OPERATOR_ISOLATION_PROBE)
 #define ROOT_FAULT_PROBE 1
 #define ROOT_PROBE_NATIVE 3
 #define ROOT_PROBE_CLIENT 0u
@@ -689,6 +701,57 @@ static seL4_CPtr g_blk_shared_frame_cap = seL4_CapNull;
 static seL4_CPtr g_blk_virt_frame_caps[AOS_BLK_SHMEM_FRAMES];
 static seL4_CPtr g_serial_virt_frames[AOS_SERIAL_FRAMES];
 static seL4_CPtr g_pd_notifications[SYSTEM_MAX_PDS];
+#ifdef AGENTOS_LOG_RINGS
+static seL4_CPtr g_log_frames[AOS_LOG_CLIENTS];
+static aos_log_config_t g_log_config;
+
+static seL4_Error log_map_copy(seL4_CPtr vspace, seL4_CPtr frame,
+                              seL4_Word va, int writable)
+{
+    seL4_CPtr copy = ut_alloc_slot();
+    if (!copy) return seL4_NotEnoughMemory;
+    seL4_Error err = seL4_CNode_Copy(seL4_CapInitThreadCNode, copy, 64u,
+        seL4_CapInitThreadCNode, frame, 64u, seL4_CapRights_new(0, 0, 1, writable));
+    if (err) return err;
+    return pd_vspace_map_device_frame(vspace, copy, va);
+}
+
+static seL4_Error provision_log_config(const pd_desc_t *pd, uint32_t index,
+                                       seL4_CPtr vspace, seL4_CPtr cnode,
+                                       uint32_t drain_index)
+{
+    uint32_t role = pd->self_svc_id == SVC_ID_LOG_DRAIN ? AOS_LOG_SERVER :
+        g_log_config.clients[index].enabled ? AOS_LOG_CLIENT : AOS_LOG_DISABLED;
+    seL4_Error err;
+    if (role == AOS_LOG_CLIENT) {
+        err = log_map_copy(vspace, g_log_frames[index], AOS_LOG_CLIENT_VA, 1);
+        if (err) return err;
+        err = seL4_CNode_Mint(cnode, AOS_LOG_NOTIFY_CAP, pd->cnode_size_bits,
+            seL4_CapInitThreadCNode, g_pd_notifications[drain_index], 64u,
+            seL4_CapRights_new(0, 0, 0, 1), AOS_LOG_WAKE);
+        if (err) return err;
+    } else if (role == AOS_LOG_SERVER) {
+        for (uint32_t i = 0; i < g_log_config.count; i++) {
+            if (!g_log_frames[i]) continue;
+            err = log_map_copy(vspace, g_log_frames[i],
+                AOS_LOG_SERVER_VA + i * AOS_LOG_PAGE, 1);
+            if (err) return err;
+        }
+    }
+    seL4_CPtr frame = seL4_CapNull;
+    err = ut_alloc_cap(seL4_ARM_SmallPageObject, 0u, &frame);
+    if (err) return err;
+    err = pd_vspace_map_device_frame(seL4_CapInitThreadVSpace, frame, RT_VQ_SCRATCH_VA);
+    if (err) return err;
+    aos_log_config_t *config = (void *)RT_VQ_SCRATCH_VA;
+    *config = g_log_config;
+    config->role = role;
+    config->slot = index;
+    AGENTOS_MEMORY_FENCE();
+    seL4_ARCH_Page_Unmap(frame);
+    return log_map_copy(vspace, frame, AOS_LOG_CONFIG_VA, 0);
+}
+#endif
 static seL4_CPtr g_host_net_mmio_frame_cap = seL4_CapNull;
 static seL4_CPtr g_net_shared_frame_caps[AOS_NET_SHMEM_FRAMES];
 static seL4_CPtr g_net_dma_frame_cap = seL4_CapNull;
@@ -1602,14 +1665,17 @@ void root_task_main(const seL4_BootInfo *bi)
     uint32_t blk_virt_index = SYSTEM_MAX_PDS;
     uint32_t net_virt_index = SYSTEM_MAX_PDS;
     uint32_t native_net_index = SYSTEM_MAX_PDS;
+    uint32_t log_drain_index = SYSTEM_MAX_PDS;
     for (uint32_t i = 0; i < sys->pd_count; i++) {
         const pd_desc_t *pd = &sys->pds[i];
         if (pd->self_svc_id == SVC_ID_SERIAL_VIRT) serial_virt_index = i;
         if (pd->self_svc_id == SVC_ID_BLK_VIRT) blk_virt_index = i;
         if (pd->self_svc_id == SVC_ID_NET_VIRT) net_virt_index = i;
         if (pd->self_svc_id == SVC_ID_NATIVE_RUST_PROBE) native_net_index = i;
+        if (pd->self_svc_id == SVC_ID_LOG_DRAIN) log_drain_index = i;
         if (pd->irq_count || pd_is_guest_vmm(pd) ||
             pd->self_svc_id == SVC_ID_OPERATOR_SESSION ||
+            pd->self_svc_id == SVC_ID_LOG_DRAIN ||
             pd->self_svc_id == SVC_ID_NET_VIRT ||
             pd->self_svc_id == SVC_ID_NATIVE_RUST_PROBE ||
             pd->self_svc_id == SVC_ID_BLK_VIRT ||
@@ -1633,6 +1699,34 @@ void root_task_main(const seL4_BootInfo *bi)
                 return;
             }
         }
+    }
+#endif
+
+#ifdef AGENTOS_LOG_RINGS
+    if (log_drain_index == SYSTEM_MAX_PDS || sys->pd_count > AOS_LOG_CLIENTS) {
+        dbg_puts("[rt] missing log drain or excessive clients; refusing boot\n");
+        return;
+    }
+    g_log_config.magic = AOS_LOG_CONFIG_MAGIC;
+    g_log_config.version = AOS_LOG_VERSION;
+    g_log_config.count = sys->pd_count;
+    for (uint32_t i = 0; i < sys->pd_count; i++) {
+        const pd_desc_t *pd = &sys->pds[i];
+        aos_log_identity_t *id = &g_log_config.clients[i];
+        id->enabled = pd->self_svc_id != SVC_ID_LOG_DRAIN && pd->self_svc_id != SVC_ID_SERIAL;
+        id->service_id = pd->self_svc_id;
+        for (uint32_t n = 0; n + 1 < sizeof(id->name) && pd->name[n]; n++) id->name[n] = pd->name[n];
+        if (!id->enabled) continue;
+        if (ut_alloc_cap(seL4_ARM_SmallPageObject, 0u, &g_log_frames[i]) != seL4_NoError ||
+            pd_vspace_map_device_frame(seL4_CapInitThreadVSpace, g_log_frames[i], RT_VQ_SCRATCH_VA) != seL4_NoError) {
+            dbg_puts("[rt] log ring allocation failed; refusing boot\n");
+            return;
+        }
+        aos_log_ring_t *ring = (void *)RT_VQ_SCRATCH_VA;
+        ring->magic = AOS_LOG_MAGIC;
+        ring->pd_id = i;
+        AGENTOS_MEMORY_FENCE();
+        seL4_ARCH_Page_Unmap(g_log_frames[i]);
     }
 #endif
 
@@ -2504,6 +2598,12 @@ void root_task_main(const seL4_BootInfo *bi)
             dbg_puts("\n");
         }
 
+#ifdef AGENTOS_LOG_RINGS
+        if (provision_log_config(pd, i, vspace, pd_cnode, log_drain_index) != seL4_NoError) {
+            dbg_puts("[rt] log provisioning failed; refusing PD start\n");
+            return;
+        }
+#endif
         /* ── 4g.4.8: Startup record for parameterized PDs (agentos-3ev) ────── */
         /*
          * swap_slot, app_slot, wg_net, and (standalone) vibe_swap each read a

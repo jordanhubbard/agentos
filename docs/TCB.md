@@ -270,6 +270,38 @@ DMA against those QEMU devices is an architecture regression.
 
 ## Proof
 
+### Generic PD logging
+
+On AArch64, root provisions a separate 4 KiB log ring for each client and a
+read-only configuration page containing its role and the boot identities.
+Clients map only their own ring at `0x1000b000`; `log_drain` maps the client
+rings at `0x2b000000`. Configuration lives at `0x1000a000`, separate from
+the role-specific startup/serial-transfer address `0x10005000`.
+Frame capabilities remain in root. The UART owner and drain do not log through
+this client path, avoiding recursion through the diagnostic transport.
+
+A client appends bounded bytes and signals a send-only notification capability.
+It never calls the drain synchronously. Pending wakeups survive boot ordering
+and a busy consumer, avoiding nameserver/drain call cycles. The drain scans
+only configured slots and uses root-supplied identities, ignoring legacy
+caller-selected slot and PD identifiers. Its configuration is read-only and
+the old registration opcode is rejected on this path. Per-client partial lines
+and bounded cursor validation keep a malformed ring from mixing another
+client's output or trapping the drain in an unbounded scan.
+
+Logs remain best effort: full rings drop new bytes, and a client controls its
+own log contents. Logging is diagnostic evidence, not authorization or an
+independent claim that a client is healthy. This does not establish fair CPU
+service under arbitrary notification flooding.
+
+`make test-log-rings` verifies native fragmented output through the real UART
+with a root-derived identity despite invalid caller-supplied legacy IDs.
+`make test-log-isolation` verifies native read/write faults on the drain's
+ring region and a write fault on the read-only configuration, after successful
+client logging. Root matches each fault's identity, address and direction.
+Host tests additionally assert ring wrap, bounded scans, drop behavior, exact
+UART bytes and interleaved partial lines. x86 remains on its reduced boot path.
+
 ### Read-only boot inspection
 
 Root publishes one 4 KiB observation page after starting the configured PDs

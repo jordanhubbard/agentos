@@ -3,11 +3,24 @@
 #include <platform/operator_session.h>
 #include <platform/serial_virt_layout.h>
 #include <platform/operator_isolation_probe.h>
+#include <platform/log_isolation_probe.h>
+#include "agentos.h"
 
 static aos_operator_session_t session;
 void pd_main(seL4_CPtr endpoint, seL4_CPtr nameserver)
 {
     (void)endpoint; (void)nameserver;
+#ifdef AGENTOS_LOG_RING_TEST
+    /* Legacy caller-controlled IDs must not affect the root-owned identity. */
+    log_drain_write(UINT32_MAX, UINT32_MAX, "native log proof: first fragment");
+    log_drain_write(UINT32_MAX, UINT32_MAX, " + second\n");
+#endif
+#ifdef AGENTOS_LOG_ISOLATION_PROBE
+    volatile uint8_t *forbidden = (void *)(uintptr_t)AOS_LOG_PROBE_ADDRESS;
+    if (AOS_LOG_PROBE_WRITE) *forbidden = 0x5a;
+    else { volatile uint8_t value = *forbidden; (void)value; }
+    for (;;) { seL4_Word badge; seL4_Wait(PD_CNODE_SLOT_OPERATOR_WAIT, &badge); }
+#endif
     aos_serial_channel_t channel = aos_serial_channel_at(AOS_SERIAL_SHMEM_VA +
         SERIAL_VIRT_OPERATOR_CLIENT * AOS_SERIAL_FRAME_SIZE);
     const aos_inspect_snapshot_t *snapshot = (const void *)AOS_INSPECT_BOOT_VA;

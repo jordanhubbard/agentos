@@ -112,6 +112,8 @@ make test  TARGET_ARCH=aarch64 GUEST_OS=none   # boot in QEMU, wait for "agentOS
 make test-host                 # host-only suite + policy check + source lint
 make test-inspect              # real boot snapshot through CC and agentctl
 make test-inspect-readonly     # seL4 rejects a CC write to the snapshot page
+make test-log-rings            # native generic logs through isolated rings and UART
+make test-log-isolation        # native ring-region/configuration access faults
 make test-operator-session     # native text protocol through serial_virt
 make test-guest-net            # Buildroot: one frame through emulated virtio-net
 make test-guest-blk            # Buildroot: one request through emulated virtio-blk

@@ -39,6 +39,12 @@ pub struct TestArgs {
     /// Exercise the native read-only operator protocol through serial_virt.
     #[arg(long)]
     pub assert_operator_session: bool,
+    /// Verify native generic logs through root-provisioned rings and serial_pd.
+    #[arg(long, conflicts_with_all = ["operator_isolation_probe", "inspect_write_probe"])]
+    pub assert_log_rings: bool,
+    /// Native log client access faults: server ring read/write, config write.
+    #[arg(long, value_parser = clap::value_parser!(u8).range(1..=3), conflicts_with_all = ["assert_log_rings", "operator_isolation_probe", "inspect_write_probe", "assert_operator_session", "assert_native_rust", "assert_native_guest", "serial_isolation_probe", "network_isolation_probe", "block_isolation_probe"])]
+    pub log_isolation_probe: Option<u8>,
     /// Native operator denied reads/writes of guest and frontend pages, and snapshot writes.
     #[arg(long, conflicts_with_all = ["assert_operator_session", "assert_inspect", "inspect_write_probe", "assert_native_rust", "assert_native_guest", "serial_isolation_probe", "network_isolation_probe", "block_isolation_probe", "virtualizer_authority_probe"], value_parser = clap::value_parser!(u8).range(1..=7))]
     pub operator_isolation_probe: Option<u8>,

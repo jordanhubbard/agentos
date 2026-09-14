@@ -686,7 +686,23 @@ gate: test-host gate-aarch64 gate-x86_64 gate-guest-io
 # lint-source is a source lint (policy-check's sibling), not a test; it is
 # listed here so the invariants it protects are checked on every host run,
 # but it is not counted among the host tests below.
-test-host: policy-check guest-profile-check lint-source test-integration test-operator-host
+test-host: policy-check guest-profile-check lint-source test-integration test-operator-host test-log-ring-host
+
+.PHONY: test-log-ring-host
+test-log-ring-host:
+	@mkdir -p $(BUILD_TMP_DIR)
+	$(CC) -std=c11 -Wall -Wextra -Werror -I platform/include tests/platform/test_log_ring.c -o $(BUILD_TMP_DIR)/test_log_ring
+	$(BUILD_TMP_DIR)/test_log_ring
+
+.PHONY: test-log-rings test-log-isolation
+test-log-rings: test-log-ring-host
+	cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os none --assert-log-rings --timeout-secs $(QEMU_TEST_TIMEOUT)
+test-log-isolation:
+	@mkdir -p build/evidence/log-isolation
+	@set -e; for mode in 1 2 3; do \
+	    cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os none --log-isolation-probe $$mode --timeout-secs $(QEMU_TEST_TIMEOUT); \
+	    cp build/qemu_virt_aarch64/agentos.img build/evidence/log-isolation/mode-$$mode.img; \
+	done
 
 .PHONY: test-operator-host test-operator-session
 test-operator-host:

@@ -205,7 +205,9 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
         !(args.assert_inspect
             || args.inspect_write_probe
             || args.assert_operator_session
-            || args.operator_isolation_probe.is_some())
+            || args.operator_isolation_probe.is_some()
+            || args.assert_log_rings
+            || args.log_isolation_probe.is_some())
             || (args.board == "qemu_virt_aarch64" && args.guest_os == "none"),
         "inspect qualification requires AArch64 with guest-os none"
     );
@@ -373,6 +375,12 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
         if args.assert_operator_session || args.operator_isolation_probe.is_some() {
             make_args.push(String::from("OPERATOR_TEST=1"));
         }
+        if args.assert_log_rings || args.log_isolation_probe.is_some() {
+            make_args.push(String::from("LOG_RING_TEST=1"));
+        }
+        if let Some(mode) = args.log_isolation_probe {
+            make_args.push(format!("LOG_ISOLATION_PROBE={mode}"));
+        }
         if let Some(mode) = args.operator_isolation_probe {
             make_args.push(format!("OPERATOR_ISOLATION_PROBE={mode}"));
         }
@@ -461,7 +469,14 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
         drop(connect_host_net_stimulus(ssh_port, &mut qemu));
     }
 
-    let mut result = if args.operator_isolation_probe.is_some() {
+    let mut result = if args.log_isolation_probe.is_some() {
+        wait_for_all_markers(
+            &log_path,
+            &["[rt] log isolation: expected client data fault verified"],
+            Duration::from_secs(args.timeout_secs),
+            &mut qemu,
+        )
+    } else if args.operator_isolation_probe.is_some() {
         wait_for_all_markers(
             &log_path,
             &["[rt] operator isolation: expected client data fault verified"],
@@ -647,6 +662,14 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
         );
     }
 
+    if result.is_ok() && (args.assert_log_rings || args.log_isolation_probe.is_some()) {
+        result = wait_for_all_markers(
+            &log_path,
+            &["[operator_session]\x1b[0m native log proof: first fragment + second\n"],
+            Duration::from_secs(args.timeout_secs),
+            &mut qemu,
+        );
+    }
     if result.is_ok() && args.assert_inspect {
         result = verify_inspect(&cc_sock, &repo_root);
     }

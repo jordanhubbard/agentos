@@ -94,8 +94,9 @@ pre-filter. They are not a live seL4 query.
 
 A1 landed in PR #146 with target report and read-only mapping proofs. Its
 ledger closure remains blocked by the paused-dispatch state transition.
-A2 is implemented on `platform/operator-serial-session`; target round-trip
-and seven operator fault probes pass locally, with integration review pending.
+A2 landed in PR #147 as `0ba7b3bd5bf8c3583460e9d892c7a5aedda1a2f4`;
+target round-trip, seven operator fault probes and all hosted checks passed.
+Normal ledger closure is still rejected while its state remains waiting.
 The snapshot describes boot facts; it does not expose live scheduler state.
 
 Session context: `skills/hermes-session/SKILL.md`. Compose/mutate of
@@ -138,8 +139,11 @@ services is out of scope until inspect and serial attach exist.
 4. Virtio-console descriptor payloads use bounds-checked GPA translation.
 5. `serial_virt` now multiplexes separate VMM pages and a CC frontend page.
    Persistent notifications wake queue consumers. `serial_pd` is the sole
-   post-bootstrap UART owner; generic log-ring provisioning remains separate
-   work under `task_d41eae5495924820bc2defa15750d4e8`.
+   post-bootstrap UART owner. Root-provisioned generic log rings, immutable
+   identities and nonblocking wakeups are implemented on
+   `platform/log-ring-provisioning` under `task_d41eae5495924820bc2defa15750d4e8`;
+   native output and three access-fault probes pass locally, with integration
+   qualification pending.
 
 ## Ubuntu all-VirtIO gate
 

@@ -1,7 +1,17 @@
 /*
- * LogDrain IPC Contract
+ * LogDrain contract: root-provisioned AArch64 rings and legacy IPC declarations
  *
- * The LogDrain PD drains per-PD log ring buffers to the debug UART.
+ * AArch64: platform/log_ring.h is the canonical version-2 layout. Root maps
+ * one writable ring per client and read-only identities/configuration.
+ * Clients signal a send-only notification; no synchronous flush Call occurs.
+ * Full rings drop new bytes. The drain rejects OP_LOG_WRITE registration and
+ * derives identities/slots from root, not the legacy arguments below.
+ * OP_LOG_STATUS remains a read-only IPC operation on the installed endpoint.
+ * This path is verified by make test-log-rings and make test-log-isolation.
+ *
+ * The declarations below describe legacy host/reduced-target compatibility;
+ * they must not be used to grant a client another client's ring or identity.
+ * The LogDrain PD drains per-PD log ring buffers through the serial driver.
  * Each PD writes into a 4KB slot in the shared log_drain_rings region,
  * then notifies LogDrain to flush it.
  *
@@ -12,7 +22,7 @@
  *   - OP_LOG_WRITE registers the ring slot on first use and drains it.
  *   - OP_LOG_STATUS is read-only.
  *   - Drop semantics: if the ring is full, new log data is silently dropped.
- *     LogDrain never blocks the calling PD.
+ *     Only the new notification path avoids blocking the calling PD.
  *   - The log_drain_rings_vaddr extern must be mapped before calling
  *     log_drain_write() (via the setvar_vaddr Microkit mechanism).
  *   - This contract is a Phase 0 result; MSG_CONSOLE_* opcodes are removed.
