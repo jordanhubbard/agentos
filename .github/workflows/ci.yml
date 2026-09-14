@@ -365,6 +365,44 @@ jobs:
   # Phase 5 contract tests — run all PD contract test suites via xtask
   # Mirrors the build-and-test job structure; runs on qemu_virt_aarch64 only.
   # ---------------------------------------------------------------------------
+  native-rust-proof:
+    name: Native Rust PD boot and IPC proof
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install target build tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends clang lld llvm qemu-system-arm device-tree-compiler curl
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-unknown-none
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/cache@v4
+        with:
+          path: ${{ env.SEL4_SDK }}
+          key: microkit-sdk-2.1.0-linux-x86-64
+      - name: Prepare SDK
+        run: make sdk
+      - name: Verify Rust IPC bridge and native target
+        run: |
+          mkdir -p build/evidence/native-rust
+          make test-rust-pd-abi 2>&1 | tee build/evidence/native-rust/abi.log
+          make test-native-rust QEMU_TEST_TIMEOUT=120 2>&1 | tee build/evidence/native-rust/target.log
+      - name: Retain native Rust proof
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-rust-proof
+          path: |
+            build/evidence/native-rust/
+            build/tmp/agentos-qemu-*
+            build/qemu_virt_aarch64/agentos.img
+            build/qemu_virt_aarch64/native_rust_probe.elf
+            build/qemu_virt_aarch64/native_rust_client.elf
+          if-no-files-found: error
+
   contract-tests:
     name: Phase 5 contract tests (qemu_virt_aarch64)
     runs-on: ubuntu-24.04
@@ -534,7 +572,7 @@ jobs:
   os-claim-summary:
     name: OS-claim gate (boot + guest net/blk/console proofs)
     runs-on: ubuntu-latest
-    needs: [os-claim-gate, guest-net-proof, guest-blk-proof, ubuntu-agentos-virtio-proof]
+    needs: [os-claim-gate, guest-net-proof, guest-blk-proof, ubuntu-agentos-virtio-proof, native-rust-proof]
     steps:
       - name: Summary
         run: |
@@ -543,6 +581,7 @@ jobs:
           echo "   - buildroot guest packet through emulated virtio-net"
           echo "   - buildroot guest request through emulated virtio-blk"
           echo "   - Ubuntu initramfs net + blk + console through agentOS VirtIO"
+          echo "   - native Rust PD boot and checked seL4 IPC"
           echo "OS-level completion claims are permitted for this commit."
 
   # ── Track P: HURD-parity service CI jobs ────────────────────────────────
