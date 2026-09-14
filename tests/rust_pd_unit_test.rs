@@ -7,7 +7,7 @@
 //! * `console::log` truncation and NUL-termination behaviour
 //! * The health-check opcode path from `example-rust-pd`
 //!
-//! No seL4 kernel is required; the FFI symbols `seL4_GetMR`, `seL4_SetMR`, and
+//! No seL4 kernel is required; the FFI symbols `agentos_pd_get_mr`, `agentos_pd_set_mr`, and
 //! `console_log` are provided by the `#[no_mangle]` mock implementations below.
 //!
 //! # Running
@@ -35,14 +35,15 @@ use agentos_pd::ipc::{self, MsgInfo};
 // ── Mock FFI back-end ─────────────────────────────────────────────────────────
 //
 // The real FFI calls into the seL4 IPC buffer.  In tests we redirect them to a
-// thread-local array of 64 u64 registers so tests can run in parallel without
+// thread-local array of 120 u64 registers so tests can run in parallel without
 // interference.
 
 use std::cell::RefCell;
 
 thread_local! {
-    /// Simulated message-register bank (64 registers, matching seL4 ABI).
-    static MR_BANK: RefCell<[u64; 64]> = RefCell::new([0u64; 64]);
+    /// Simulated message-register bank (120 registers, matching seL4 ABI).
+    static MR_BANK: RefCell<[u64; 120]> = RefCell::new([0u64; 120]);
+    static MR_CALLS: RefCell<usize> = const { RefCell::new(0) };
 
     /// Accumulator for everything written via console_log (for assertion).
     static CONSOLE_OUTPUT: RefCell<String> = RefCell::new(String::new());
@@ -54,16 +55,18 @@ thread_local! {
 // to call — that's on the caller side.
 
 #[no_mangle]
-extern "C" fn seL4_GetMR(idx: i32) -> u64 {
-    if idx < 0 || idx >= 64 {
+extern "C" fn agentos_pd_get_mr(idx: i32) -> u64 {
+    MR_CALLS.with(|n| *n.borrow_mut() += 1);
+    if idx < 0 || idx >= 120 {
         return 0;
     }
     MR_BANK.with(|b| b.borrow()[idx as usize])
 }
 
 #[no_mangle]
-extern "C" fn seL4_SetMR(idx: i32, val: u64) {
-    if idx < 0 || idx >= 64 {
+extern "C" fn agentos_pd_set_mr(idx: i32, val: u64) {
+    MR_CALLS.with(|n| *n.borrow_mut() += 1);
+    if idx < 0 || idx >= 120 {
         return;
     }
     MR_BANK.with(|b| b.borrow_mut()[idx as usize] = val);
@@ -92,7 +95,8 @@ extern "C" fn console_log(_level: u32, _color: u32, s: *const u8) {
 
 /// Helper: reset the MR bank and console log for a fresh test.
 fn reset_state() {
-    MR_BANK.with(|b| *b.borrow_mut() = [0u64; 64]);
+    MR_BANK.with(|b| *b.borrow_mut() = [0u64; 120]);
+    MR_CALLS.with(|n| *n.borrow_mut() = 0);
     CONSOLE_OUTPUT.with(|c| c.borrow_mut().clear());
 }
 
@@ -222,7 +226,7 @@ fn msginfo_error_reply_opcode() {
 fn mr_get_set_round_trip_all_registers() {
     reset_state();
     // Write a distinct value to each register and read it back.
-    for idx in 0u32..64 {
+    for idx in 0u32..120 {
         let val = 0xA5A5_0000_0000_0000u64 | (idx as u64);
         ipc::set_mr(idx, val);
         assert_eq!(
@@ -244,9 +248,20 @@ fn mr_registers_are_independent() {
 }
 
 #[test]
+fn invalid_registers_never_reach_ffi() {
+    reset_state();
+    for index in [120, 127, i32::MAX as u32, u32::MAX] {
+        assert!(std::panic::catch_unwind(|| ipc::get_mr(index)).is_err());
+        assert!(std::panic::catch_unwind(|| ipc::set_mr(index, 42)).is_err());
+    }
+    MR_CALLS.with(|n| assert_eq!(*n.borrow(), 0));
+    MR_BANK.with(|b| assert!(b.borrow().iter().all(|word| *word == 0)));
+}
+
+#[test]
 fn mr_default_value_is_zero() {
     reset_state();
-    for idx in 0u32..64 {
+    for idx in 0u32..120 {
         assert_eq!(ipc::get_mr(idx), 0, "MR[{idx}] should default to 0 after reset");
     }
 }
@@ -255,7 +270,7 @@ fn mr_default_value_is_zero() {
 fn mr_overwrite_preserves_other_registers() {
     reset_state();
     // Set all registers to a sentinel value, then overwrite one.
-    for idx in 0u32..64 {
+    for idx in 0u32..120 {
         ipc::set_mr(idx, 0xFFFF_FFFF_FFFF_FFFFu64);
     }
     ipc::set_mr(7, 42);

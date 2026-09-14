@@ -96,14 +96,18 @@ impl MsgInfo {
 // seL4_SetMR).  In unit-test builds (feature = "std") they hit the mock
 // implementation provided by the test harness.
 
+/// Number of message words in the supported 64-bit seL4 IPC buffer.
+/// The target C bridge asserts this against the SDK's seL4_MsgMaxLength.
+pub const MESSAGE_REGISTERS: u32 = 120;
+
 /// Read message register `idx` (0-based).
 ///
 /// # Safety
-/// Caller must ensure `idx` < 64 and that the IPC buffer is valid for the
-/// current thread.  In seL4 this is always true inside `protected()` /
-/// `notified()`.
+/// The runtime must initialize the current thread's IPC buffer before calling
+/// Rust. An out-of-range index panics before entering the C bridge.
 #[inline]
 pub fn get_mr(idx: u32) -> u64 {
+    assert!(idx < MESSAGE_REGISTERS, "message register index out of range");
     unsafe { crate::ffi::seL4_GetMR(idx as i32) }
 }
 
@@ -113,6 +117,7 @@ pub fn get_mr(idx: u32) -> u64 {
 /// Same constraints as `get_mr`.
 #[inline]
 pub fn set_mr(idx: u32, val: u64) {
+    assert!(idx < MESSAGE_REGISTERS, "message register index out of range");
     unsafe { crate::ffi::seL4_SetMR(idx as i32, val) }
 }
 

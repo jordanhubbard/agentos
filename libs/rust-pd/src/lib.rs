@@ -3,6 +3,11 @@
 //! This crate provides the building blocks for writing seL4 Microkit Protection
 //! Domains (PDs) in Rust for the agentOS kernel.
 //!
+//! The callback template below targets the Microkit ABI. The current agentOS
+//! root task instead starts services through `pd_main(endpoint, nameserver)`;
+//! wiring a Rust service into that entry path is still required. Host unit
+//! tests and `make test-rust-pd-abi` do not establish native PD boot support.
+//!
 //! ## Quick start
 //!
 //! ```rust,ignore

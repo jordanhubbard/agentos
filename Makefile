@@ -688,6 +688,13 @@ gate: test-host gate-aarch64 gate-x86_64 gate-guest-io
 # but it is not counted among the host tests below.
 test-host: policy-check guest-profile-check lint-source test-integration
 
+# Host behavior plus real SDK compilation; this is not a native-PD boot proof.
+.PHONY: test-rust-pd-abi
+test-rust-pd-abi:
+	cargo test -p agentos-pd --features std
+	$(MAKE) -C kernel/agentos-root-task BUILD_DIR=$(abspath build/rust-pd-abi-aarch64) AGENTOS_ARCH=aarch64 AGENTOS_BOARD=qemu_virt_aarch64 $(abspath build/rust-pd-abi-aarch64/rust_pd_ipc.o)
+	$(MAKE) -C kernel/agentos-root-task BUILD_DIR=$(abspath build/rust-pd-abi-x86_64) AGENTOS_ARCH=x86_64 AGENTOS_BOARD=x86_64_generic $(abspath build/rust-pd-abi-x86_64/rust_pd_ipc.o)
+
 # lint-source: architecture-invariant lint over checked-in artifacts (headers,
 # the compiled AArch64 topology, guest FDT templates, guest profiles, QEMU
 # launch tooling).  See tests/platform/lint_source_invariants.c.  It proves no

@@ -561,6 +561,10 @@ $(BUILD_DIR)/%.o: src/%.c
 	@mkdir -p $(BUILD_DIR)
 	$(CC) -c $(CFLAGS) $< -o $@
 
+$(BUILD_DIR)/rust_pd_ipc.o: $(REPO_ROOT)/libs/rust-pd/runtime/ipc.c
+	@mkdir -p $(BUILD_DIR)
+	$(CC) -c $(CFLAGS) $< -o $@
+
 # Swap slot sources need wasm3 headers + bare-metal shim
 $(BUILD_DIR)/swap_slot.o: src/swap_slot.c
 	@mkdir -p $(BUILD_DIR)
