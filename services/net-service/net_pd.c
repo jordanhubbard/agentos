@@ -1807,7 +1807,7 @@ static uint32_t net_pd_dispatch_one(sel4_badge_t badge,
 }
 
 #ifndef AGENTOS_TEST_HOST
-#define NET_HOST_IRQ_BADGE  0x80000000u
+#include <platform/net_server_loop.h>
 
 /*
  * Host RX landed in a client slot ring: wake the virtualizer.  net_virt is
@@ -1837,36 +1837,20 @@ static void net_pd_handle_host_irq(void)
     }
 }
 
+static seL4_MessageInfo_t net_pd_handle_request(seL4_Word badge)
+{
+    sel4_msg_t req = {0}, rep = {0};
+    _sel4_mrs_to_msg(&req);
+    (void)net_pd_dispatch_one((sel4_badge_t)badge, &req, &rep);
+    _sel4_msg_to_mrs(&rep);
+    return seL4_MessageInfo_new((seL4_Word)rep.opcode, 0u, 0u,
+                               (seL4_Word)_SEL4_MR_COUNT);
+}
+
 static void net_pd_server_run(seL4_CPtr ep)
 {
-    for (;;) {
-        sel4_msg_t req = {0};
-        sel4_msg_t rep = {0};
-        seL4_Word badge = 0u;
-#ifdef CONFIG_KERNEL_MCS
-        seL4_MessageInfo_t info =
-            seL4_Recv(ep, &badge, AGENTOS_IPC_REPLY_CAP);
-#else
-        seL4_MessageInfo_t info = seL4_Recv(ep, &badge);
-#endif
-        if (seL4_MessageInfo_get_label(info) == seL4_Fault_NullFault &&
-            (badge & NET_HOST_IRQ_BADGE) != 0u) {
-            net_pd_handle_host_irq();
-            continue;
-        }
-
-        _sel4_mrs_to_msg(&req);
-        (void)net_pd_dispatch_one((sel4_badge_t)badge, &req, &rep);
-        _sel4_msg_to_mrs(&rep);
-        seL4_MessageInfo_t reply =
-            seL4_MessageInfo_new((seL4_Word)rep.opcode, 0u, 0u,
-                                 (seL4_Word)_SEL4_MR_COUNT);
-#ifdef CONFIG_KERNEL_MCS
-        seL4_Send(AGENTOS_IPC_REPLY_CAP, reply);
-#else
-        seL4_Reply(reply);
-#endif
-    }
+    aos_net_server_loop(ep, AGENTOS_IPC_REPLY_CAP,
+                        net_pd_handle_host_irq, net_pd_handle_request);
 }
 #endif
 
