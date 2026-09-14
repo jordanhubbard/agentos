@@ -93,6 +93,9 @@ fn requested_virtio_assertion(
     args: &TestArgs,
     profile: Option<&HostProfilePlan>,
 ) -> Option<VirtioAssertion> {
+    if args.block_isolation_probe.is_some() {
+        return None;
+    }
     if args.assert_agentos_virtio {
         return Some(VirtioAssertion {
             devices: vec!["net".into(), "block".into(), "console".into()],
@@ -220,6 +223,20 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
             profile.test.len()
         );
     }
+    if let Some(mode) = args.block_isolation_probe {
+        anyhow::ensure!(
+            args.board == "qemu_virt_aarch64"
+                && args.guest_os == if mode <= 4 { "buildroot" } else { "freebsd" }
+                && !args.no_build
+                && !args.assert_emulated_net
+                && !args.assert_emulated_blk
+                && !args.assert_emulated_console
+                && !args.assert_agentos_virtio
+                && !args.assert_live
+                && !args.assert_desktop,
+            "block isolation probe requires a fresh AArch64 image: Buildroot for primary, FreeBSD for secondary"
+        );
+    }
     let large_guest = profile_plan
         .as_ref()
         .is_some_and(|profile| profile.media_initrd_path.is_some())
@@ -294,6 +311,9 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
         } else if let Some(profile) = &profile_plan {
             make_args.push(format!("GUEST_PROFILE={}", profile.path.display()));
         }
+        if let Some(mode) = args.block_isolation_probe {
+            make_args.push(format!("BLK_ISOLATION_PROBE={mode}"));
+        }
         let make_arg_refs = make_args.iter().map(String::as_str).collect::<Vec<_>>();
         run_make(&make_arg_refs, &repo_root).context("profile-driven build step failed")?;
     }
@@ -360,7 +380,14 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
         drop(connect_host_net_stimulus(ssh_port, &mut qemu));
     }
 
-    let mut result = if args.assert_emulated_net {
+    let mut result = if args.block_isolation_probe.is_some() {
+        wait_for_all_markers(
+            &log_path,
+            &["[rt] block isolation: expected VMM data fault verified"],
+            Duration::from_secs(args.timeout_secs),
+            &mut qemu,
+        )
+    } else if args.assert_emulated_net {
         println!(
             "[xtask:test] Waiting for emulated virtio-net guest proof in {}...",
             log_path.display()

@@ -546,6 +546,6 @@ void pd_main(seL4_CPtr my_ep, seL4_CPtr ns_ep)
 {
     agentos_log_boot("blk_virt");
     register_with_nameserver(ns_ep);
-    bv_puts("[blk_virt] READY: contract v1, shared block region + driver DMA window mapped, no device caps\n");
+    bv_puts("[blk_virt] READY: contract v2, isolated client pages + driver DMA window mapped, no device caps\n");
     blk_virt_run(my_ep);
 }

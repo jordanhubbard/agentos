@@ -343,6 +343,10 @@ ifdef SEL4_TEST_IMAGE
   IMAGES += test_runner.elf
 endif
 
+ifdef BLK_ISOLATION_PROBE
+  CFLAGS_ROOT_TASK += -DAGENTOS_BLK_ISOLATION_PROBE=$(BLK_ISOLATION_PROBE)
+endif
+
 # Profile paths are the canonical build selection. The repository Makefile
 # owns the legacy GUEST_OS compatibility adapter.
 GUEST_PRIMARY_PROFILE ?=

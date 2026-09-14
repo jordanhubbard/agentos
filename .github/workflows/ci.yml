@@ -272,6 +272,10 @@ jobs:
         timeout-minutes: 20
         run: make test-guest-blk QEMU_TEST_TIMEOUT=480
 
+      - name: Prove VMM block mapping isolation with seL4 faults
+        timeout-minutes: 30
+        run: make test-block-isolation QEMU_TEST_TIMEOUT=120
+
       - name: Upload QEMU serial logs
         if: always()
         uses: actions/upload-artifact@v4
