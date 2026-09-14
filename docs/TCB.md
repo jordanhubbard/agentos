@@ -43,7 +43,7 @@ seL4
         │   / block_pd     the bounded DMA window; its only client is blk_virt
         ├── blk_virt       block virtualizer: no device frame, no IRQ; the
         │                  only blk mux (sDDF queues in the shared block
-        │                  region + NBSend notifications, chunked DMA-window
+        │                  region + persistent notifications, chunked DMA-window
         │                  Calls into virtio_blk)
         ├── vm_manager     guest lifecycle control (create, bind, status)
         ├── serial_virt    serial queue mux, no device frame or hardware IRQ;
@@ -94,10 +94,14 @@ maps the whole region into `blk_virt`, but only one separate 2 MB client page
 into each VMM. The first page holds the virtualizer's private RAM disk;
 neither VMM maps it or the other client's page. Control is one `BLK_VIRT_OP_ATTACH` Call per
 client, during which `blk_virt` probes the media and fills the client's sDDF
-`storage_info`; after that the VMM only `seL4_NBSend`s `BLK_VIRT_EVENT_KICK`
+`storage_info`; after that the VMM signals the virtualizer's bound notification
 when its request queue is non-empty (and `blk_virt` asked for kicks through
-the `req_consumer_signalled` word), and `blk_virt` NBSends
-`BLK_VIRT_EVENT_RESP_READY` when it queued responses. `blk_virt` alone holds
+the `req_consumer_signalled` word), and `blk_virt` signals the owning VMM's
+bound notification when it queued responses. Both directions use send-only
+capabilities and retain pending wakeups until received. Preboot media staging
+therefore does not depend on a later guest exit to retry a dropped event.
+Receivers classify notification badges before interpreting IPC message tags.
+`blk_virt` alone holds
 the `virtio_blk` endpoint and alone (besides the driver) maps the driver's
 bounded DMA window, through which it chunks each request by Call; the VMM
 maps no DMA window and holds no `virtio_blk` endpoint, so two guests cannot

@@ -102,7 +102,7 @@ else
   GUEST_PRIMARY_LARGE ?= 0
 endif
 QEMU_TEST_TIMEOUT ?= 300
-# Focused console proofs may run beside a retained dual-guest instance.
+# Console and live-media proofs may run beside a retained guest instance.
 # Zero keeps the profile's normal forwarding port.
 QEMU_TEST_SSH_PORT ?= 0
 # Correct suspend accounting freezes each guest's architectural time while it
@@ -833,7 +833,7 @@ test-ubuntu-live:
 		echo "test-ubuntu-live requires BOARD=qemu_virt_aarch64 (got BOARD=$(BOARD))"; \
 		exit 1; \
 	fi
-	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os ubuntu-live --timeout-secs $(QEMU_TEST_TIMEOUT) --assert-live
+	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os ubuntu-live --timeout-secs $(QEMU_TEST_TIMEOUT) --assert-live --ssh-port $(QEMU_TEST_SSH_PORT)
 
 # =============================================================================
 # test-snapshot-sched: standalone unit test for the snapshot_sched PD

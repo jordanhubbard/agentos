@@ -29,7 +29,7 @@ void aos_guest_vmm_loop(seL4_CPtr endpoint, seL4_CPtr reply_cap,
 #endif
     for (;;) {
         seL4_Word label = seL4_MessageInfo_get_label(info);
-        if (serial_virt_vmm_notification(badge)) {
+        if (serial_virt_vmm_notification(badge) || (badge & BLK_VIRT_VMM_WAKE_BADGE)) {
             ops->notified(badge);
 #ifdef CONFIG_KERNEL_MCS
             info = seL4_Recv(endpoint, &badge, reply_cap);

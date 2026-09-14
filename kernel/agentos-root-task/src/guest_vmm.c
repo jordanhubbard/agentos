@@ -27,6 +27,7 @@
 #include <stdbool.h>
 #include "sel4_boot.h"
 #include "sel4_ipc.h"
+#include "contracts/blk_virt_contract.h"
 
 /* Stub builds do not link the full VMM diagnostics adapter. */
 #if defined(ARCH_X86_64) || defined(__riscv) || defined(GUEST_VMM_NATIVE_STUB)
@@ -1146,6 +1147,9 @@ static void guest_vmm_wait_blk_event(void)
 #else
     seL4_MessageInfo_t info = seL4_Recv(g_vmm_listen_ep, &badge);
 #endif
+    /* Bound notifications do not carry a fresh IPC tag. In particular a
+     * block completion may arrive before this receive begins. */
+    if (badge & (BLK_VIRT_VMM_WAKE_BADGE | SERIAL_VIRT_VMM_WAKE_BADGE)) return;
     seL4_Word label = seL4_MessageInfo_get_label(info);
 
     if (aos_guest_vmm_loop_is_rpc(label)) {
@@ -1489,6 +1493,11 @@ void init(void)
  */
 static void guest_vmm_notified(seL4_Word badge)
 {
+    if (badge & BLK_VIRT_VMM_WAKE_BADGE) {
+        if (g_guest_state == GUEST_STATE_RUNNING) aos_vmm_virtio_blk_resp_ready();
+        badge &= ~BLK_VIRT_VMM_WAKE_BADGE;
+        if (!badge) return;
+    }
     if (badge & SERIAL_VIRT_VMM_WAKE_BADGE) {
         guest_serial_service();
         badge &= ~SERIAL_VIRT_VMM_WAKE_BADGE;
