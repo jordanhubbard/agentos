@@ -59,11 +59,13 @@ static inline int blk_virt_service_notification(uint64_t badge)
 
 /* Call, VMM -> blk_virt: bind guest client `client_id` (queue stride) to
  * host media `media_id`; `vmm_slot` names the caller so blk_virt knows which
- * listen EP receives RESP_READY. */
+ * notification receives RESP_READY. */
 #define BLK_VIRT_OP_ATTACH              0x2C01u
-/* NBSend, VMM -> blk_virt: request queue is non-empty. */
+/* Legacy endpoint labels retained for diagnostics/compatibility; version 4
+ * clients use the notification capabilities, not these labels. */
+/* VMM -> blk_virt: request queue is non-empty. */
 #define BLK_VIRT_EVENT_KICK             0x2C10u
-/* NBSend, blk_virt -> VMM: response queue is non-empty. */
+/* blk_virt -> VMM: response queue is non-empty. */
 #define BLK_VIRT_EVENT_RESP_READY       0x2C11u
 
 /* ── VMM slots (blk_virt_attach_req_t.vmm_slot) ───────────────────────── */

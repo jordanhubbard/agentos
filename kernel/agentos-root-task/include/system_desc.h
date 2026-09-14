@@ -260,7 +260,7 @@ typedef struct {
 #define PD_CNODE_SLOT_NET_VIRT_EP     15u
 /* blk_virt -> virtio_blk (chunked host I/O through the driver DMA window). */
 #define PD_CNODE_SLOT_VIRTIO_BLK_EP   16u
-/* VMM -> blk_virt (ATTACH Call, KICK NBSend). */
+/* VMM -> blk_virt (ATTACH Call only; kicks use the notification below). */
 #define PD_CNODE_SLOT_BLK_VIRT_EP     17u
 /* Serial control uses an endpoint; data wakeups use persistent notifications.
  * Root distribution and live client integration are being added separately. */

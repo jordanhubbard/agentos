@@ -9,10 +9,10 @@
  * Contract: include/contracts/blk_virt_contract.h.
  *
  * Data path (per attached client):
- *   request    VMM enqueues on its request queue, NBSends KICK  ->  blk_virt
+ *   request    VMM enqueues on its request queue, signals KICK -> blk_virt
  *              dequeues, moves the data cells through virtio_blk's bounded
  *              per-media DMA window by seL4 Call (chunked to the window's
- *              sector limit), enqueues the response, NBSends RESP_READY to
+ *              sector limit), enqueues the response, signals RESP_READY to
  *              the owning VMM, which completes the guest virtq descriptor.
  *   attach     one Call: blk_virt probes the media (OP_INFO) and fills the
  *              client's sDDF storage_info; with no host media it serves a
@@ -59,7 +59,7 @@ typedef struct {
     uint8_t               read_marked;
     uint32_t              client_id;
     uint32_t              media_id;
-    seL4_CPtr             vmm_ep;       /* send-only owning VMM notification */
+    seL4_CPtr             vmm_notify;   /* send-only owning VMM notification */
     uint32_t              requests;
     uint32_t              responses;
     aos_blk_virt_client_t q;
@@ -305,12 +305,12 @@ static aos_blk_resp_status_t host_blk_backend(
 
 static void bv_notify_vmm(const bv_client_t *c)
 {
-    if (c->vmm_ep != 0u) {
-        seL4_Signal(c->vmm_ep);
+    if (c->vmm_notify != 0u) {
+        seL4_Signal(c->vmm_notify);
     }
 }
 
-static seL4_CPtr vmm_ep_for_slot(uint32_t vmm_slot)
+static seL4_CPtr vmm_notify_for_slot(uint32_t vmm_slot)
 {
 #if defined(AGENTOS_GUEST_PRIMARY)
     if (vmm_slot == BLK_VIRT_VMM_SLOT_PRIMARY) {
@@ -400,13 +400,13 @@ static void handle_attach(uint64_t badge, const sel4_msg_t *req, sel4_msg_t *rep
     uint32_t status = BLK_VIRT_OK;
     uint32_t hw_state = BLK_VIRT_HW_NONE;
     uint64_t capacity = 0u;
-    seL4_CPtr vmm_ep = vmm_ep_for_slot(vmm_slot);
+    seL4_CPtr vmm_notify = vmm_notify_for_slot(vmm_slot);
 
     if (version != BLK_VIRT_CONTRACT_VERSION || req->length < 16u) {
         status = BLK_VIRT_ERR_VERSION;
     } else if (!virt_media_authorized(badge, client_id, vmm_slot, media_id) ||
                client_id >= AOS_BLK_MAX_CLIENTS ||
-               media_id >= AOS_HOST_BLK_MEDIA_COUNT || vmm_ep == 0u) {
+               media_id >= AOS_HOST_BLK_MEDIA_COUNT || vmm_notify == 0u) {
         status = BLK_VIRT_ERR_BAD_CLIENT;
     } else if (g_clients[client_id].attached) {
         status = BLK_VIRT_ERR_BUSY;
@@ -420,7 +420,7 @@ static void handle_attach(uint64_t badge, const sel4_msg_t *req, sel4_msg_t *rep
 
         c->client_id = client_id;
         c->media_id = media_id;
-        c->vmm_ep = vmm_ep;
+        c->vmm_notify = vmm_notify;
         c->hw = 0u;
         /* The VMM zeroed its queues before attaching; only bind. */
         aos_blk_client_bind((uint8_t *)AOS_BLK_SHMEM_VA, client_id, &c->q);

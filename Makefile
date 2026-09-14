@@ -102,8 +102,7 @@ else
   GUEST_PRIMARY_LARGE ?= 0
 endif
 QEMU_TEST_TIMEOUT ?= 300
-QEMU_TEST_SSH_PORT ?= 0
-# Focused console proofs may run beside a retained dual-guest instance.
+# Console and live-media proofs may run beside a retained guest instance.
 # Zero keeps the profile's normal forwarding port.
 QEMU_TEST_SSH_PORT ?= 0
 # Correct suspend accounting freezes each guest's architectural time while it
