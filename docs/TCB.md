@@ -189,8 +189,7 @@ creation, status, lifecycle and console control. Its bounded handle registry
 keeps public handles separate from backend slots, validates replies and
 propagates start/destroy failures. `vibe_engine` is no longer a boot dependency.
 The boot-guest console path (`test-guest-console`, `test-ubuntu-virtio`)
-continues to call `guest_vmm` directly. Console data still uses inline IPC;
-the separate `serial_virt` PD remains required. The
+also uses the separate serial virtualizer and CC frontend queues. The
 `agentOS boot complete` marker the `GUEST_OS=none` harness waits for is now
 printed by `cc_pd`, the lowest-priority PD in the image, right before it enters
 its request loop. `tests/platform/lint_source_invariants.c` fails if any of

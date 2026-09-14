@@ -813,6 +813,10 @@ test-guest-console:
 	fi
 	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os ubuntu --timeout-secs $(QEMU_TEST_TIMEOUT) --assert-emulated-console --ssh-port $(QEMU_TEST_SSH_PORT)
 
+.PHONY: test-console-backpressure
+test-console-backpressure:
+	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os ubuntu --timeout-secs $(QEMU_TEST_TIMEOUT) --assert-emulated-console --assert-console-backpressure --ssh-port $(QEMU_TEST_SSH_PORT)
+
 # Deterministic initramfs device proof. Host media is owned by virtio_blk;
 # Ubuntu's DTB advertises agentOS emulated devices only.
 test-ubuntu-virtio:

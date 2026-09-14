@@ -99,6 +99,7 @@ struct virtio_console_device {
     seL4_CPtr tx_cap;
     virtio_console_tx_state_t tx_progress;
     uint16_t tx_head;
+    bool tx_backpressure_reported;
 };
 
 bool virtio_mmio_console_init(struct virtio_console_device *console,

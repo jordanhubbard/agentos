@@ -201,6 +201,19 @@ fn virtio_markers(assertion: &VirtioAssertion) -> Vec<&'static str> {
 }
 
 pub fn run(args: &TestArgs) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        !args.assert_console_backpressure
+            || (args.board == "qemu_virt_aarch64"
+                && args.guest_os == "ubuntu"
+                && !args.assert_live
+                && !args.assert_desktop
+                && !args.no_build
+                && args.serial_isolation_probe.is_none()
+                && args.network_isolation_probe.is_none()
+                && args.block_isolation_probe.is_none()
+                && args.virtualizer_authority_probe.is_none()),
+        "console backpressure requires a freshly built Ubuntu deterministic probe image"
+    );
     let repo_root = repo_root()?;
     let profile_root = repo_root.join("guest-profiles");
     let scenario_plan = if args.guest_os == "both" {
@@ -497,6 +510,16 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
             )
         }
     };
+
+    if result.is_ok() && args.assert_console_backpressure {
+        result = verify_console_backpressure(
+            &cc_sock,
+            &log_path,
+            profile_plan.as_ref(),
+            Duration::from_secs(args.timeout_secs),
+            &mut qemu,
+        );
+    }
 
     /*
      * Start the authenticated desktop path before checking host-backed network
@@ -1929,6 +1952,98 @@ fn reject_profile_console(
     Ok(())
 }
 
+const CONSOLE_STRESS_BYTES: usize = 0x40000;
+const CONSOLE_BACKPRESSURE_MARKER: &str =
+    "VIRTIO(CONSOLE): TX backpressure retained pending descriptor";
+
+fn verify_console_stress_stream(stream: &[u8]) -> anyhow::Result<String> {
+    use sha2::{Digest, Sha256};
+    let begin = b"AOS_STRESS_BEGIN";
+    let end = b"AOS_STRESS_END";
+    let start = stream
+        .windows(begin.len())
+        .position(|value| value == begin)
+        .context("stress stream has no begin marker")?
+        + begin.len();
+    let newline = stream[start..]
+        .iter()
+        .position(|value| *value == b'\n')
+        .context("stress begin marker has no newline")?;
+    anyhow::ensure!(
+        newline <= 1 && (newline == 0 || stream[start] == b'\r'),
+        "unexpected bytes after stress begin marker"
+    );
+    let payload = &stream[start + newline + 1..];
+    let end_offset = payload
+        .windows(end.len())
+        .position(|value| value == end)
+        .context("stress stream has no end marker")?;
+    anyhow::ensure!(
+        end_offset >= CONSOLE_STRESS_BYTES,
+        "stress payload was truncated"
+    );
+    let separator = &payload[CONSOLE_STRESS_BYTES..end_offset];
+    anyhow::ensure!(
+        separator == b"\n" || separator == b"\r\n",
+        "stress payload has unexpected length or trailing bytes"
+    );
+    let payload = &payload[..CONSOLE_STRESS_BYTES];
+    for (index, value) in payload.iter().enumerate() {
+        let expected = b'A' + ((index ^ (index >> 8) ^ (index >> 16)) & 15) as u8;
+        anyhow::ensure!(*value == expected, "stress byte mismatch at offset {index}");
+    }
+    Ok(format!("{:x}", Sha256::digest(payload)))
+}
+
+fn verify_console_backpressure(
+    cc_sock: &Path,
+    log_path: &Path,
+    profile: Option<&HostProfilePlan>,
+    timeout: Duration,
+    qemu: &mut Child,
+) -> anyhow::Result<String> {
+    let mut cc = connect_cc_client(cc_sock, Duration::from_secs(30), qemu)?;
+    anyhow::ensure!(
+        !std::fs::read_to_string(log_path)?.contains(CONSOLE_BACKPRESSURE_MARKER),
+        "console was already backpressured before the deliberate stress trigger"
+    );
+    cc_send_console_line(&mut cc, 0, b"!")?;
+    println!("[xtask:test] Console drain paused until actual backend backpressure is observed");
+    wait_for_all_markers(
+        log_path,
+        &[CONSOLE_BACKPRESSURE_MARKER],
+        timeout.min(Duration::from_secs(30)),
+        qemu,
+    )?;
+    println!("[xtask:test] Backend full with pending descriptor; resuming console drain");
+    let start = Instant::now();
+    let mut stream = Vec::new();
+    while start.elapsed() < timeout {
+        ensure_qemu_running(qemu, "draining the backpressured console stream")?;
+        let chunk = cc_log_stream_for_handle(&mut cc, 0, profile)?;
+        stream.extend_from_slice(chunk.as_bytes());
+        anyhow::ensure!(
+            stream.len() <= CONSOLE_STRESS_BYTES + 65536,
+            "stress console exceeded its bounded receive buffer"
+        );
+        if stream
+            .windows(b"AOS_STRESS_END".len())
+            .any(|value| value == b"AOS_STRESS_END")
+        {
+            let checksum = verify_console_stress_stream(&stream)?;
+            return Ok(format!(
+                "console backpressure: {} exact bytes recovered, sha256={checksum}",
+                CONSOLE_STRESS_BYTES
+            ));
+        }
+        std::thread::sleep(Duration::from_millis(if chunk.is_empty() { 20 } else { 1 }));
+    }
+    anyhow::bail!(
+        "backpressured console did not complete; received {} bytes",
+        stream.len()
+    )
+}
+
 fn verify_guest_console_input(
     _cc_sock: &Path,
     cc: &mut CcClient,
@@ -2960,6 +3075,54 @@ fn tail_chars(s: &str, max_chars: usize) -> String {
 mod tests {
     use super::*;
     use std::os::unix::net::UnixListener;
+
+    fn console_stress_fixture(newline: &[u8]) -> Vec<u8> {
+        let mut stream = b"prior console output\nAOS_STRESS_BEGIN".to_vec();
+        stream.extend_from_slice(newline);
+        stream.extend(
+            (0..CONSOLE_STRESS_BYTES)
+                .map(|index| b'A' + ((index ^ (index >> 8) ^ (index >> 16)) & 15) as u8),
+        );
+        stream.extend_from_slice(newline);
+        stream.extend_from_slice(b"AOS_STRESS_END\n");
+        stream
+    }
+
+    #[test]
+    fn console_stress_accepts_exact_payload_with_lf_or_crlf() {
+        let lf = verify_console_stress_stream(&console_stress_fixture(b"\n")).unwrap();
+        let crlf = verify_console_stress_stream(&console_stress_fixture(b"\r\n")).unwrap();
+        assert_eq!(lf.len(), 64);
+        assert_eq!(lf, crlf);
+    }
+
+    #[test]
+    fn console_stress_rejects_truncation_duplication_and_corruption() {
+        let stream = console_stress_fixture(b"\n");
+        let mut truncated = stream.clone();
+        truncated.remove(4096);
+        assert!(verify_console_stress_stream(&truncated).is_err());
+        let mut duplicated = stream.clone();
+        duplicated.insert(4096, stream[4096]);
+        assert!(verify_console_stress_stream(&duplicated).is_err());
+        let mut corrupted = stream;
+        corrupted[65536] ^= 1;
+        assert!(verify_console_stress_stream(&corrupted).is_err());
+    }
+
+    #[test]
+    fn console_stress_rejects_missing_or_malformed_framing() {
+        for stream in [
+            b"".as_slice(),
+            b"AOS_STRESS_BEGIN",
+            b"AOS_STRESS_BEGINjunk\nAOS_STRESS_END",
+        ] {
+            assert!(verify_console_stress_stream(stream).is_err());
+        }
+        let mut stream = console_stress_fixture(b"\n");
+        stream.truncate(stream.len() - b"AOS_STRESS_END\n".len());
+        assert!(verify_console_stress_stream(&stream).is_err());
+    }
 
     fn test_profile(alias: &str) -> HostProfilePlan {
         let repo = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();

@@ -46,6 +46,7 @@ static void virtio_console_features_print(uint32_t features)
 static void virtio_console_reset(struct virtio_device *dev)
 {
     device_state(dev)->tx_progress = (virtio_console_tx_state_t){0};
+    device_state(dev)->tx_backpressure_reported = false;
     LOG_CONSOLE("operation: reset device\n");
 
     for (int i = 0; i < dev->num_vqs; i++) {
@@ -140,6 +141,11 @@ bool virtio_console_handle_pending_tx(struct virtio_console_device *console)
     if (!result.valid) {
         LOG_CONSOLE_ERR("invalid transmit descriptor chain or ring\n");
         return false;
+    }
+    if (console->tx_progress.active && !console->tx_backpressure_reported &&
+        serial_queue_full(console->txq, console->txq->queue->tail)) {
+        printf("VIRTIO(CONSOLE): TX backpressure retained pending descriptor\n");
+        console->tx_backpressure_reported = true;
     }
     if (result.bytes && console->tx_cap) vmm_notify(console->tx_cap);
     if (result.completed) {
@@ -239,6 +245,7 @@ static struct virtio_device *virtio_console_init(struct virtio_console_device *c
     console->txq = txq;
     console->tx_cap = tx_cap;
     console->tx_progress = (virtio_console_tx_state_t){0};
+    console->tx_backpressure_reported = false;
 
     return dev;
 }

@@ -151,6 +151,16 @@ multi-head copying, invalid chains and a retracted available entry. These
 are host checks of the actual ring writer, not substitutes for the target
 stalled-frontend checksum test.
 
+`make test-console-backpressure` runs the deterministic Ubuntu probe initramfs
+and requests a 262,144-byte position-dependent ASCII stream. The host stops
+draining CC output until the backend reports a full local TX queue with an
+uncompleted descriptor. It then resumes draining and compares every payload
+byte, rejects missing or extra bytes, and records its SHA-256. This tests
+backpressure through the guest virtio driver, libvmm, both serial queue pages,
+the virtualizer and CC. Host validator tests reject truncation, duplication,
+corruption and malformed framing. A successful target result is required;
+the existence of the harness is not sustained-output evidence.
+
 `test_guest_vmm_notifications` runs the production receive loop with a mocked
 receive returning the serial notification badge and nonzero stale labels,
 including a guest RPC opcode. It asserts one notification callback and no
