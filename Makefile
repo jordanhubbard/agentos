@@ -995,6 +995,18 @@ test-integration:
 	        -o $(BUILD_TMP_DIR)/test_serial_virt_pump \
 	    && $(BUILD_TMP_DIR)/test_serial_virt_pump; then :; \
 	else status=1; fi; \
+	if gcc -std=c11 -Wall -Wextra -Werror -I platform/include \
+	        -iquote kernel/agentos-root-task/include \
+	        tests/platform/test_serial_virt_authority.c \
+	        -o $(BUILD_TMP_DIR)/test_serial_virt_authority \
+	    && $(BUILD_TMP_DIR)/test_serial_virt_authority; then :; \
+	else status=1; fi; \
+	if gcc -std=c11 -Wall -Wextra -Werror -I platform/include \
+	        -iquote kernel/agentos-root-task/include \
+	        tests/platform/test_serial_virt_service.c platform/serial-virt/service.c \
+	        platform/serial-virt/pump.c -o $(BUILD_TMP_DIR)/test_serial_virt_service \
+	    && $(BUILD_TMP_DIR)/test_serial_virt_service; then :; \
+	else status=1; fi; \
 	if gcc -I kernel/agentos-root-task/include -I . \
 	        tests/platform/test_native_net_client.c \
 	        kernel/agentos-root-task/src/native_net_client.c \
