@@ -59,11 +59,11 @@ void pd_main(seL4_CPtr endpoint, seL4_CPtr nameserver)
 #else
         seL4_MessageInfo_t info = seL4_Recv(endpoint, &badge);
 #endif
-        seL4_Word label = seL4_MessageInfo_get_label(info);
-        if (label == seL4_Fault_NullFault) {
+        if (serial_virt_service_notification(badge)) {
             service_queues();
             continue;
         }
+        seL4_Word label = seL4_MessageInfo_get_label(info);
         sel4_msg_t request = {0}, reply = {0};
         /* A short IPC must not reuse stale message registers from an earlier
          * caller. The canonical sel4_call wrapper sends this exact size. */

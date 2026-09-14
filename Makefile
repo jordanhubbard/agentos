@@ -1023,6 +1023,12 @@ test-integration:
 	        platform/serial-virt/pump.c -o $(BUILD_TMP_DIR)/test_serial_endpoint \
 	    && $(BUILD_TMP_DIR)/test_serial_endpoint; then :; \
 	else status=1; fi; \
+	if gcc -std=c11 -Wall -Wextra -Werror -DCONFIG_KERNEL_MCS -DAGENTOS_TEST_HOST \
+	        -I tests/platform/loop-stubs -I platform/include -I . -idirafter kernel/agentos-root-task/include \
+	        tests/platform/test_guest_vmm_notifications.c platform/guest-vmm/loop.c \
+	        -o $(BUILD_TMP_DIR)/test_guest_vmm_notifications \
+	    && $(BUILD_TMP_DIR)/test_guest_vmm_notifications; then :; \
+	else status=1; fi; \
 	if gcc -std=c11 -Wall -Wextra -Werror -I libvmm/include \
 	        tests/platform/test_virtio_console_tx.c -o $(BUILD_TMP_DIR)/test_virtio_console_tx \
 	    && $(BUILD_TMP_DIR)/test_virtio_console_tx; then :; \

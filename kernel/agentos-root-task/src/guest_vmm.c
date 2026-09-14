@@ -1066,7 +1066,13 @@ static uint32_t guest_serial_output(uint8_t *bytes, uint32_t capacity, void *ctx
 static bool guest_serial_input(const uint8_t *bytes, uint32_t length, void *ctx)
 {
     (void)ctx;
-    return guest_vmm_push_input(CC_INPUT_TEXT, bytes, length);
+    bool accepted = guest_vmm_push_input(CC_INPUT_TEXT, bytes, length);
+    static bool reported;
+    if (accepted && length && !reported) {
+        LOG_VMM("serial_virt: input accepted by guest console adapter\n");
+        reported = true;
+    }
+    return accepted;
 }
 
 static void guest_serial_service(void)

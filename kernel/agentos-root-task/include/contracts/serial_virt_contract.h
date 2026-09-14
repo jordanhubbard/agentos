@@ -23,6 +23,17 @@
 #define SERIAL_VIRT_VMM_WAKE_BADGE (UINT64_C(1) << 61)
 #define SERIAL_VIRT_FRONTEND_WAKE_BADGE (UINT64_C(1) << 2)
 
+/* Bound notifications carry a notification word, not an IPC message tag.
+ * Classify these badges before inspecting a receive's label or registers. */
+static inline int serial_virt_service_notification(uint64_t badge)
+{
+    return badge != 0 && (badge & ~UINT64_C(7)) == 0;
+}
+static inline int serial_virt_vmm_notification(uint64_t badge)
+{
+    return (badge & SERIAL_VIRT_VMM_WAKE_BADGE) != 0;
+}
+
 typedef struct __attribute__((packed)) {
     uint32_t version;
     uint32_t client;

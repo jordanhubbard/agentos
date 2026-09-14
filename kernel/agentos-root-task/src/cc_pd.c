@@ -746,6 +746,7 @@ static bool cc_call_boot_guest(uint32_t opcode, const uint8_t *payload,
 
 static aos_serial_channel_t cc_serial_channels[AOS_SERIAL_CLIENTS];
 static bool cc_serial_attached[AOS_SERIAL_CLIENTS];
+static uint32_t cc_serial_input_reported;
 
 static void cc_serial_init(void)
 {
@@ -809,7 +810,14 @@ static bool cc_serial_input(uint32_t handle, const cc_input_event_t *event,
     } else if (length != event->keycode || length > CC_INPUT_TEXT_MAX) return false;
     if (aos_serial_queue_write(&cc_serial_channels[slot].to_guest, bytes, length) !=
         AOS_SERIAL_PUMP_OK) return false;
-    if (length) seL4_Signal(PD_CNODE_SLOT_SERIAL_VIRT_NOTIFY);
+    if (length) {
+        seL4_Signal(PD_CNODE_SLOT_SERIAL_VIRT_NOTIFY);
+        if (!(cc_serial_input_reported & (1u << slot))) {
+            cc_dbg_puts(slot ? "[cc_pd] input accepted into serial client 1 queue\n" :
+                               "[cc_pd] input accepted into serial client 0 queue\n");
+            cc_serial_input_reported |= 1u << slot;
+        }
+    }
     return true;
 }
 

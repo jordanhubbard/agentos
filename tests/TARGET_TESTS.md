@@ -145,6 +145,15 @@ without completion. The existing Ubuntu echo gate checks the integrated
 backend, but a deliberate stalled-frontend stress gate is still required for
 sustained-output qualification.
 
+`test_guest_vmm_notifications` runs the production receive loop with a mocked
+receive returning the serial notification badge and nonzero stale labels,
+including a guest RPC opcode. It asserts one notification callback and no
+fault handler or reply. Actual RPC and VCPU fault deliveries retain their
+normal paths. Bound notifications are identified by badge, as specified in
+the [seL4 notification manual](https://sel4.systems/Info/Docs/seL4-manual-latest.pdf).
+The serial PD likewise recognizes its combined notification bits before
+interpreting message registers as an ATTACH request.
+
 `make test-serial-isolation` runs eight AArch64 fault probes. Each VMM first
 writes and reads its own serial page, then attempts a read or write of the
 other VMM's page or the CC frontend page. Root accepts only the expected
