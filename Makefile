@@ -1033,6 +1033,11 @@ test-integration:
 	        -o $(BUILD_TMP_DIR)/test_guest_vmm_notifications \
 	    && $(BUILD_TMP_DIR)/test_guest_vmm_notifications; then :; \
 	else status=1; fi; \
+	if gcc -std=c11 -Wall -Wextra -Werror -DCONFIG_KERNEL_MCS \
+	        -I tests/platform/loop-stubs -I platform/include \
+	        tests/platform/test_net_server_loop.c -o $(BUILD_TMP_DIR)/test_net_server_loop \
+	    && $(BUILD_TMP_DIR)/test_net_server_loop; then :; \
+	else status=1; fi; \
 	if gcc -std=c11 -Wall -Wextra -Werror -I libvmm/include \
 	        tests/platform/test_virtio_console_tx.c -o $(BUILD_TMP_DIR)/test_virtio_console_tx \
 	    && $(BUILD_TMP_DIR)/test_virtio_console_tx; then :; \

@@ -131,6 +131,13 @@ smoke, no runner) the root task still emits the boot-proof stub TAP.
 
 ### Virtualizer client mapping isolation
 
+`test_net_server_loop` executes the NIC driver's production receive loop
+with injected notification badges and stale IPC labels. It requires one IRQ
+callback and no request dispatch or reply for each hardware notification;
+ordinary endpoint requests must preserve their badge and reply. This guards
+against missing the hardware IRQ acknowledgement because of a stale label.
+The guest network gate remains the target proof of actual NIC I/O.
+
 The bidirectional Ubuntu console assertion also requires both actual
 `serial_virt` transfer markers, in addition to the emulated device markers
 and echoed guest input. CC resolves guest handles and uses only its frontend
