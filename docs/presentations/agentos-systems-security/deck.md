@@ -16,7 +16,7 @@ than the machine's trusted center.
 
 ---
 
-## 1. The unit of isolation is an operating system
+## 1. Protection domains separate workloads and device authority
 
 **Current architecture**
 
@@ -24,9 +24,9 @@ agentOS boots on seL4 and places the root task, system services, VMMs, and
 agents in separate protection domains. Linux and FreeBSD are workloads above
 that boundary.
 
-The design question is not “how do we put agents in containers?” It is “what
-authority does each agent, service, and guest OS need, and how is every
-delegation revoked?”
+Each agent, service and VMM receives explicit authority. Revocation and resource
+reclamation must also be implemented and tested; destroyed guest slots cannot
+yet be recreated in the same image.
 
 > Speaker notes: Do not use numbered rings. On AArch64, seL4 is EL2,
 > agentOS PDs are EL0, and guest kernels are EL1 in guest VSpaces.
@@ -199,7 +199,44 @@ capabilities and resources remain recoverable?
 
 ---
 
-## 9. Evidence has levels
+## 9. Observation can use a client with limited authority
+
+**Implemented and target-qualified**
+
+The native operator reads a root-published, immutable boot snapshot and answers
+through its own serial queue page. It receives no guest lifecycle, guest memory
+or device capabilities.
+
+Seven target fault probes reject access to guest console pages, the CC frontend
+page and writes to the snapshot. A bounded roundtrip test returns 128 exact
+reports while exercising backpressure.
+
+> Speaker notes: PR #147 and `docs/TCB.md` retain the proof. Snapshot fields
+> describe boot observations, not current thread health or free memory. The
+> external CC socket still exposes privileged control operations; a read-only
+> command on that socket is not a separate authorization boundary.
+
+---
+
+## 10. Diagnostic identity is assigned outside the producer
+
+**Implemented on AArch64**
+
+Root gives each logging client a private ring and read-only configuration.
+The drain assigns identities from that configuration and keeps partial lines
+separate. Clients notify the drain without a synchronous call chain.
+
+Malformed cursors are rejected, scans are bounded, and full rings drop new
+bytes. The producer still controls its own message contents.
+
+> Speaker notes: PRs #148–149 qualify bounded drain behavior, exact UART output,
+> and three native access faults. This makes diagnostics more attributable;
+> it does not make client statements trustworthy or prove availability under
+> notification flooding. x86 logging remains on its reduced boot path.
+
+---
+
+## 11. Evidence has levels
 
 ```text
 source contract
@@ -226,13 +263,14 @@ image hash. A release still requires evidence for its exact revision.
 
 ---
 
-## 10. Fast desktop proof: workload first
+## 12. Fast desktop proof: workload first
 
 **Deferred workload proof — pinned Debian follow-on**
 
 The original Ubuntu desktop milestone was deferred before v0.2 shipped.
-The pinned Debian path must first qualify authenticated SSH, then a real
-graphical session carried through that network path.
+The pinned Debian path now passes console, authenticated SSH and agentOS-owned
+VirtIO net/block/console checks. A graphical session carried through that
+network path needs separate retained evidence.
 
 Required proof:
 
@@ -247,7 +285,7 @@ Required proof:
 
 ---
 
-## 11. Real display virtualization follows the service boundary
+## 13. Real display virtualization follows the service boundary
 
 **0.4 milestone — planned**
 
@@ -270,7 +308,7 @@ through a documented API.
 
 ---
 
-## 12. x86 is a virtualization milestone, not a compiler flag
+## 14. x86 is a virtualization milestone, not a compiler flag
 
 **0.4 through 0.6 milestones — critical path**
 
@@ -292,7 +330,7 @@ Guest support still requires:
 
 ---
 
-## 13. Releases bind claims to one revision
+## 15. Releases bind claims to one revision
 
 **Current release mechanism**
 
@@ -313,7 +351,7 @@ selection, or artifacts invalidates the checked receipt.
 
 ---
 
-## 14. What expert review can change
+## 16. What expert review can change
 
 Near-term review questions:
 
