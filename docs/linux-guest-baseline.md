@@ -111,3 +111,14 @@ source digest, resolved profile, agentOS image, serial logs and result under
 `build/evidence/persistent-boot-*`, including failures. It rejects a changed
 source disk, image or resolved profile between rounds. This is a cold-boot
 storage test, not proof of guest-slot recreation or orderly guest shutdown.
+
+Successful single-profile live tests also write an
+`agentos-qemu-*.boot-timing.json` receipt beside the serial log. The monotonic
+host clock measures the QEMU launch request through completed authenticated
+SSH proof. It excludes acquisition, compilation and persistent-media copying;
+it includes host scheduling, QEMU and agentOS startup, guest boot, console
+provisioning and SSH authentication. It is not guest CPU time or an exact
+vCPU-start timestamp. Persistent tests retain one receipt per successful boot.
+Compare Ubuntu and Debian on the same runner, image revision and test settings;
+keep first and subsequent persistent boots separate. A timing receipt records
+SSH readiness, not the success of assertions that run afterward.

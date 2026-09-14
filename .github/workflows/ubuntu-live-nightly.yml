@@ -85,5 +85,6 @@ jobs:
             build/tmp/agentos-qemu-*.log
             build/tmp/agentos-qemu-*.qemu.stderr
             build/tmp/agentos-qemu-*.net.pcap
+            build/tmp/agentos-qemu-*.boot-timing.json
             build/qemu_virt_aarch64/agentos.img
           if-no-files-found: ignore
