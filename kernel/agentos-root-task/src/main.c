@@ -48,6 +48,7 @@
 #include <platform/blk_host_layout.h> /* host block MMIO/shared DMA layout       */
 #include <platform/blk_layout.h>      /* shared sDDF block region (VMMs + blk_virt) */
 #include <platform/blk_isolation_probe.h>
+#include <contracts/virtualizer_authority.h>
 #ifdef AGENTOS_BLK_ISOLATION_PROBE
 #include "serial_log.h"
 #endif
@@ -1810,6 +1811,11 @@ void root_task_main(const seL4_BootInfo *bi)
             }
             seL4_Word badge = ((uint64_t)ep_spec->service_id << 48u) |
                               ((uint64_t)i                   << 32u);
+            if (pd_is_guest_vmm(pd) &&
+                (ep_spec->service_id == SVC_ID_NET_VIRT ||
+                 ep_spec->service_id == SVC_ID_BLK_VIRT)) {
+                badge = virt_client_badge(pd_is_secondary_guest_vmm(pd) ? 1u : 0u);
+            }
             ep_mint_badge(service_ep, badge,
                            pd_cnode, ep_spec->cnode_slot,
                            pd->cnode_size_bits);

@@ -44,8 +44,9 @@
 
 #include <stdint.h>
 
-/* Version 2 gives every client a separately mapped large-page stride. */
-#define BLK_VIRT_CONTRACT_VERSION       2u
+/* Version 3 binds client/media assignment to virtualizer_authority.h badges;
+ * version 2 introduced separately mapped large-page client strides. */
+#define BLK_VIRT_CONTRACT_VERSION       3u
 
 /* ── Opcodes / labels ─────────────────────────────────────────────────── */
 

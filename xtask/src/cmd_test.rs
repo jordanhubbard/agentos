@@ -93,7 +93,7 @@ fn requested_virtio_assertion(
     args: &TestArgs,
     profile: Option<&HostProfilePlan>,
 ) -> Option<VirtioAssertion> {
-    if args.block_isolation_probe.is_some() {
+    if args.block_isolation_probe.is_some() || args.virtualizer_authority_probe.is_some() {
         return None;
     }
     if args.assert_agentos_virtio {
@@ -223,7 +223,10 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
             profile.test.len()
         );
     }
-    if let Some(mode) = args.block_isolation_probe {
+    if let Some(mode) = args.block_isolation_probe.or(args
+        .virtualizer_authority_probe
+        .map(|slot| if slot == 1 { 1 } else { 5 }))
+    {
         anyhow::ensure!(
             args.board == "qemu_virt_aarch64"
                 && args.guest_os == if mode <= 4 { "buildroot" } else { "freebsd" }
@@ -314,6 +317,9 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
         if let Some(mode) = args.block_isolation_probe {
             make_args.push(format!("BLK_ISOLATION_PROBE={mode}"));
         }
+        if let Some(slot) = args.virtualizer_authority_probe {
+            make_args.push(format!("VIRT_AUTHORITY_PROBE={slot}"));
+        }
         let make_arg_refs = make_args.iter().map(String::as_str).collect::<Vec<_>>();
         run_make(&make_arg_refs, &repo_root).context("profile-driven build step failed")?;
     }
@@ -380,7 +386,11 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
         drop(connect_host_net_stimulus(ssh_port, &mut qemu));
     }
 
-    let mut result = if args.block_isolation_probe.is_some() {
+    let mut result = if args.virtualizer_authority_probe.is_some() {
+        wait_for_all_markers(&log_path,
+            &["[authority-test] spoofed attachments rejected; assigned net/block clients accepted"],
+            Duration::from_secs(args.timeout_secs), &mut qemu)
+    } else if args.block_isolation_probe.is_some() {
         wait_for_all_markers(
             &log_path,
             &["[rt] block isolation: expected VMM data fault verified"],

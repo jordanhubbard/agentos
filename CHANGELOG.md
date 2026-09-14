@@ -7,6 +7,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Bind virtualizer ATTACH client, VMM slot, and block-media selection to
+  root-minted capability badges. Reject spoofed assignments before state or
+  driver operations. Net attach is contract v2; block attach is contract v3.
+
 - Give each block virtualizer client its own mapped large page. VMMs no
   longer map the other client's queues and payloads or the RAM-disk page.
   Bump the block attach contract to version 2 for the changed queue layout.

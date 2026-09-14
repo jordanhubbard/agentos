@@ -46,7 +46,8 @@
 
 #include <stdint.h>
 
-#define NET_VIRT_CONTRACT_VERSION       1u
+/* Version 2 requires root-minted virtualizer_authority.h badges. */
+#define NET_VIRT_CONTRACT_VERSION       2u
 
 /* ── Opcodes / labels ─────────────────────────────────────────────────── */
 

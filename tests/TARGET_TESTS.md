@@ -131,6 +131,13 @@ smoke, no runner) the root task still emits the boot-proof stub TAP.
 
 ### Block client mapping isolation
 
+`make test-virtualizer-authority` exercises actual net/block ATTACH calls from
+both VMM slots. Each attempts spoofed client/slot/media values (including
+out-of-range identifiers), requires BAD_CLIENT, then requires successful
+legitimate attachments. Host tests independently cover unbadged, forged,
+high-bit-modified, and overflowing authority values. The production root
+mints the endpoint badges; the target probe uses those normal capabilities.
+
 `make test-block-isolation` builds eight AArch64 test images. Each VMM slot
 first writes and reads its own block client frame, then attempts a read or
 write of the other client's frame or the virtualizer's private RAM-disk frame.

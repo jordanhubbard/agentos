@@ -1550,6 +1550,9 @@ static seL4_MessageInfo_t guest_vmm_fault(seL4_Word badge,
  *   AGENTOS_IPC_REPLY_CAP: reserved MCS reply object slot
  */
 #include <platform/blk_isolation_probe.h>
+#ifdef AGENTOS_VIRT_AUTHORITY_PROBE
+#include "tests/harness/virtualizer_authority_probe.h"
+#endif
 
 void guest_vmm_main(seL4_CPtr ep, seL4_CPtr reply_cap)
 {
@@ -1557,6 +1560,9 @@ void guest_vmm_main(seL4_CPtr ep, seL4_CPtr reply_cap)
      * seL4_TCB_WriteRegisters (38 MRs through seL4_GetIPCBuffer). pd_entry
      * also assigns the global; this call is the one that must not be skipped. */
     seL4_SetIPCBuffer((seL4_IPCBuffer *)0x10000000UL);
+#ifdef AGENTOS_VIRT_AUTHORITY_PROBE
+    virtualizer_authority_probe();
+#endif
 
 #ifdef AGENTOS_BLK_ISOLATION_PROBE
     /* Test image: first prove our client frame is writable, then deliberately
