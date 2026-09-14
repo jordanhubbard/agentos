@@ -28,9 +28,9 @@ The design question is not “how do we put agents in containers?” It is “wh
 authority does each agent, service, and guest OS need, and how is every
 delegation revoked?”
 
-> Speaker notes: Do not call the ring labels hardware rings. seL4 is the only
-> kernel-mode component; the numbered outer rings in project diagrams describe
-> decreasing authority. Source authority: `CLAUDE.md`, `AGENTS.md`, and
+> Speaker notes: Do not use numbered rings. On AArch64, seL4 is EL2,
+> agentOS PDs are EL0, and guest kernels are EL1 in guest VSpaces.
+> Source authority: `CLAUDE.md`, `AGENTS.md`, and
 > `kernel/agentos-root-task/`.
 
 ---
@@ -112,7 +112,7 @@ guest virtio queue
 VMM queue validation + GPA translation
       |
       v
-generic serial / net / block service contract
+separate net_virt / blk_virt PDs over shared queues
       |
       v
 agentOS-owned host backend
@@ -120,11 +120,15 @@ agentOS-owned host backend
 
 The guest sees a standard virtual device. The VMM validates descriptors and
 translates guest physical addresses. A generic service owns the real backend.
-The same service boundary can serve native agents.
+Console still uses VMM-local queues plus IPC to CC-PD; a separate serial_virt
+PD and live native virtualizer clients remain planned.
 
 > Speaker notes: The key security distinction is emulation versus passthrough.
 > Cite the virtio host tests and target evidence specifically. Do not imply the
 > future display path is already at this maturity.
+> Detailed current and target diagrams: `docs/security-architecture.md`.
+> Current shared network and block regions are writable by every VMM;
+> per-client strides are software routing, not isolation after VMM compromise.
 
 ---
 
@@ -207,9 +211,10 @@ concurrent authenticated acceptance
 
 **Current policy**
 
-`make test-host` is a fast filter. `make gate` supports root-task and service
-claims. `make demo-test` supports the dual-guest SSH claim. A broader statement
-requires the broader gate.
+`make test-host` is a fast filter. `make gate` proves both stub-boot targets
+and guest network, block, and console behavior. `make demo-test` must pass
+before claiming concurrent authenticated dual-guest SSH; it remains under
+qualification. A broader statement requires the broader gate.
 
 > Speaker notes: This page is deliberately about epistemology. “Tests pass”
 > means little unless the audience knows what layer the tests execute.
@@ -218,10 +223,11 @@ requires the broader gate.
 
 ## 10. Fast desktop proof: workload first
 
-**0.2 milestone — not yet a framebuffer claim**
+**Deferred workload proof — pinned Debian follow-on**
 
-Start a real graphical session in the Ubuntu ARM64 guest and carry its
-remote-display protocol through the existing authenticated SSH path.
+The original Ubuntu desktop milestone was deferred before v0.2 shipped.
+The pinned Debian path must first qualify authenticated SSH, then a real
+graphical session carried through that network path.
 
 Required proof:
 
@@ -238,7 +244,7 @@ Required proof:
 
 ## 11. Real display virtualization follows the service boundary
 
-**0.3 milestone — planned**
+**0.4 milestone — planned**
 
 ```text
 guest DRM / input drivers

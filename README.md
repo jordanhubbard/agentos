@@ -183,7 +183,7 @@ image asserted by an automated QEMU test can.
 | Ubuntu desktop over an SSH tunnel (RFB frame) | experimental | `make demo-desktop-test`; `docs/desktop-demo.md` |
 | Console virtualizer as its own PD | target | `docs/TCB.md` |
 | Native agent attached to `net_virt`/`blk_virt` queues | target | `kernel/agentos-root-task/src/native_net_client.c` is a host-tested client of the older `net_pd` raw contract; nothing native attaches to a virtualizer yet |
-| x86_64 guest execution, virtio-gpu/input, Debian baseline | target | `docs/ROADMAP.md` 0.3 and 0.4 |
+| x86_64 guest execution, virtio-gpu/input, Debian baseline | target | `docs/ROADMAP.md` 0.4 |
 | Guest snapshot/restore, live migration | not implemented | `vm_manager.c` returns not-implemented |
 | WASM agents, capability hot-swap, agent-facing services (CapStore, MsgBus, ToolSvc, ModelSvc) | museum / host models only | Not in the booted image; see `docs/TCB.md` |
 
@@ -192,21 +192,26 @@ image asserted by an automated QEMU test can.
 
 ## Roadmap and releases
 
-- [`docs/ROADMAP.md`](docs/ROADMAP.md): 0.3 Debian baseline and guest
-  graphics, 0.4 x86 VMM, 0.5 persistent x86 desktop, 0.6 Omarchy, 1.0
+- [`docs/ROADMAP.md`](docs/ROADMAP.md): 0.3 trust baseline, 0.4 Debian,
+  guest graphics and x86 VMM, 0.5 persistent x86 desktop, 0.6 Omarchy, 1.0
   dual-architecture qualification, and the trust-baseline corrective actions.
 - [`docs/RELEASES.md`](docs/RELEASES.md): evidence-bound release protocol
   (`make release`, `release-prepare`, `release-check`, `release-publish`,
   `release-verify`).
-- [`CHANGELOG.md`](CHANGELOG.md): release notes; current line is v0.2.x.
+- [`CHANGELOG.md`](CHANGELOG.md): release notes; current line is v0.3.x.
 - [`PLAN.md`](PLAN.md): active implementation sequencing.
+- [`docs/security-architecture.md`](docs/security-architecture.md): detailed
+  architecture diagrams, capability boundaries, and current security limits.
+- [Systems and security presentation](docs/presentations/agentos-systems-security/README.md):
+  editable narrative and claim ledger; native Google Slides publication is pending.
 
 ## FreeBSD guest
 
 FreeBSD 15.0 AArch64 boots as a guest with the same emulated virtio devices
-and the same VMM as Linux; `make demo-test` proves it beside Ubuntu.
-[`docs/freebsd-vm-guest.md`](docs/freebsd-vm-guest.md) has the standalone
-commands; its architecture diagram predates the current PD set.
+and the same VMM as Linux. `make demo-test` is the acceptance gate for
+concurrent authenticated SSH beside Linux; that qualification remains open.
+Use [`docs/demo.md`](docs/demo.md) for current commands.
+[`docs/freebsd-vm-guest.md`](docs/freebsd-vm-guest.md) is historical.
 
 ## Contributing
 

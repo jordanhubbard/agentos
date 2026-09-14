@@ -6,6 +6,12 @@ virtualization, and security audiences.
 - `deck.md` is the editable slide sequence and speaker notes.
 - `FACTS.md` is the claim ledger that must be refreshed from current source and
   runtime evidence before a release edition is rendered.
+- [`../../security-architecture.md`](../../security-architecture.md) contains
+  detailed current and target diagrams and their security boundaries.
+
+Native Google Slides publication is pending. The local narrative and rendered
+PDF do not substitute for the requested native deck. The published URL will be
+linked here and in the root README after import and verification.
 
 The portable baseline is Markdown. The repository-owned Rust renderer writes a
 PDF and a checksum-bearing QA receipt beneath `build/`, preserves editable text

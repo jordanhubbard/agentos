@@ -150,7 +150,8 @@ Do not extend these. Do not add opcodes. Do not "finish" them.
 guest channel before virtio-net is a backend, CapStore/MsgBus/ModelSvc/ToolSvc
 as "core OS".
 
-**Status:** as of 2026-09-10 none of these is bundled or booted. The root task
+**Status:** most museum PDs are no longer bundled or booted; the live
+`vibe_engine` exception is described below. The root task
 spawns exactly the PDs in `src/system_desc_aarch64.c` (13 in the default
 image: `nameserver`, `log_drain`, `serial_pd`, `vibe_engine`, `virtio_blk`,
 `block_pd`, `blk_virt`, `net_pd`, `net_virt`, `guest_vmm_primary`,
