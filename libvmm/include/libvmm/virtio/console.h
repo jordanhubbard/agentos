@@ -39,6 +39,7 @@
 #include <sel4/sel4.h>
 #include <sddf/serial/queue.h>
 #include <libvmm/virtio/virtio.h>
+#include <libvmm/virtio/console_tx.h>
 
 #define RX_QUEUE 0
 #define TX_QUEUE 1
@@ -96,6 +97,8 @@ struct virtio_console_device {
     serial_queue_handle_t *rxq;
     serial_queue_handle_t *txq;
     seL4_CPtr tx_cap;
+    virtio_console_tx_state_t tx_progress;
+    uint16_t tx_head;
 };
 
 bool virtio_mmio_console_init(struct virtio_console_device *console,
@@ -107,6 +110,8 @@ bool virtio_mmio_console_init(struct virtio_console_device *console,
                               seL4_CPtr tx_cap);
 
 bool virtio_console_handle_rx(struct virtio_console_device *console);
+/* Retry pending transmit data after the backend consumer frees queue space. */
+bool virtio_console_handle_pending_tx(struct virtio_console_device *console);
 
 bool virtio_pci_console_init(struct virtio_console_device *console, uint32_t dev_slot, size_t virq,
                              serial_queue_handle_t *rxq, serial_queue_handle_t *txq, seL4_CPtr tx_cap);

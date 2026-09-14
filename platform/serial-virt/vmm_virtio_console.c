@@ -111,6 +111,9 @@ uint32_t aos_vmm_virtio_console_drain_tx(uint8_t *dst, uint32_t max)
     while (n < max && serial_dequeue(&g_tx, &byte) == 0) {
         dst[n++] = (uint8_t)byte;
     }
+    /* Retain pending descriptors while full, then retry when space returns.
+     * No second guest QueueNotify is required for an already-published head. */
+    (void)virtio_console_handle_pending_tx(&g_aos_console);
     if (!g_tx_pumped && n > 0u) {
         g_tx_pumped = 1;
         LOG_VMM("emulated virtio-console: pumped %u byte(s) guest->serial_virt\n",

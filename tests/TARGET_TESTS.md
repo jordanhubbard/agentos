@@ -138,6 +138,12 @@ page; guest console bytes no longer use the VMM console IPC operations.
 `test_serial_endpoint` exercises paused input, full queues, staged retries,
 ordered output, exact-once input delivery, cursor rollover and malformed
 shared indices.
+`test_virtio_console_tx` runs the production descriptor-progress engine with
+a bounded output fixture: oversized/chained descriptors remain pending while
+full, retries preserve the exact stream, and invalid or cyclic chains fail
+without completion. The existing Ubuntu echo gate checks the integrated
+backend, but a deliberate stalled-frontend stress gate is still required for
+sustained-output qualification.
 
 `make test-serial-isolation` runs eight AArch64 fault probes. Each VMM first
 writes and reads its own serial page, then attempts a read or write of the

@@ -79,7 +79,7 @@ variants that configure it.
 | Multiplexing is a service boundary | Separate `net_virt`, `blk_virt` and `serial_virt` PDs consume bounded queues | Device access crosses a named service boundary. VMM client pages are isolated; resource exhaustion still requires auditing. |
 | A guest address is not a host pointer | VMM code validates descriptors and translates GPA to its mapped guest RAM | Invalid descriptors can be rejected before copying. Correctness of every translation and length calculation remains userspace TCB work. |
 | Native work need not inherit a Linux kernel | Native PD clients are planned to attach to canonical virtualizers | The architecture can remove an entire guest kernel from a workload's dependency set. Live native virtualizer attachment is not yet qualified. |
-| Control and bulk data have different contracts | seL4 IPC for attach/lifecycle; shared-memory queues for net/block/console payloads | Root-minted badges constrain attachment. The console adapter retains copied bytes in bounded staging buffers; shared metadata does not grant lifecycle authority. Sustained TX descriptor backpressure remains an open libvmm defect, detailed in TCB.md. |
+| Control and bulk data have different contracts | seL4 IPC for attach/lifecycle; shared-memory queues for net/block/console payloads | Root-minted badges constrain attachment. Console queues and descriptor progress remain bounded; shared metadata does not grant lifecycle authority. Sustained-output target qualification remains pending, detailed in TCB.md. |
 
 These choices differ from a host-kernel driver path and from assigning a host
 device directly to a guest. They are not a claim that every other hypervisor

@@ -44,6 +44,7 @@ static void virtio_console_features_print(uint32_t features)
 
 static void virtio_console_reset(struct virtio_device *dev)
 {
+    device_state(dev)->tx_progress = (virtio_console_tx_state_t){0};
     LOG_CONSOLE("operation: reset device\n");
 
     for (int i = 0; i < dev->num_vqs; i++) {
@@ -112,73 +113,85 @@ static bool virtio_console_set_device_config(struct virtio_device *dev, uint32_t
     return false;
 }
 
+typedef struct {
+    struct virtio_console_device *console;
+    uint32_t copied;
+} console_tx_context_t;
+
+static bool console_tx_descriptor(void *ctx, uint16_t index,
+                                  virtio_console_tx_descriptor_t *out)
+{
+    console_tx_context_t *context = ctx;
+    struct virtq_desc descriptor = context->console->vqs[TX_QUEUE].virtq.desc[index];
+    *out = (virtio_console_tx_descriptor_t) {
+        descriptor.addr, descriptor.len, descriptor.flags, descriptor.next
+    };
+    return true;
+}
+
+static uint32_t console_tx_copy(void *ctx, uint64_t address, uint32_t offset, uint32_t length)
+{
+    console_tx_context_t *context = ctx;
+    serial_queue_handle_t *queue = context->console->txq;
+    uint32_t free = serial_queue_contiguous_free(queue);
+    uint32_t count = length < free ? length : free;
+    if (!count) return 0;
+    if (virtio_copy_from_gpa(address, offset,
+            queue->data_region + queue->queue->tail % queue->capacity, count) != 0)
+        return UINT32_MAX;
+    serial_update_shared_tail(queue, queue->queue->tail + count);
+    context->copied += count;
+    return count;
+}
+
+bool virtio_console_handle_pending_tx(struct virtio_console_device *console)
+{
+    struct virtio_device *dev = &console->virtio_device;
+    struct virtio_queue_handler *vq = &console->vqs[TX_QUEUE];
+    if (!vq->ready) return true;
+    if (console->tx_progress.failed) return false;
+    uint32_t size = vq->virtq.num;
+    if (!size || size > QUEUE_SIZE || !vq->virtq.avail || !vq->virtq.used || !vq->virtq.desc)
+        goto invalid;
+    uint16_t available = __atomic_load_n(&vq->virtq.avail->idx, __ATOMIC_ACQUIRE);
+    uint16_t pending = (uint16_t)(available - vq->last_idx);
+    if (pending > size) goto invalid;
+    console_tx_context_t context = {.console = console};
+    const virtio_console_tx_ops_t ops = {
+        console_tx_descriptor, console_tx_copy, &context
+    };
+    bool completed = false;
+    while (pending && context.copied < console->txq->capacity) {
+        if (!console->tx_progress.active)
+            console->tx_head = vq->virtq.avail->ring[vq->last_idx % size];
+        virtio_console_tx_result_t result = virtio_console_tx_step(
+            &console->tx_progress, console->tx_head, size,
+            console->txq->capacity - context.copied, &ops);
+        if (result == VIRTIO_CONSOLE_TX_INVALID) goto invalid;
+        if (result == VIRTIO_CONSOLE_TX_WAIT) break;
+        struct virtq_used_elem used = {console->tx_head, 0};
+        uint16_t used_index = vq->virtq.used->idx;
+        vq->virtq.used->ring[used_index % size] = used;
+        __atomic_store_n(&vq->virtq.used->idx, (uint16_t)(used_index + 1u), __ATOMIC_RELEASE);
+        vq->last_idx++;
+        pending--;
+        completed = true;
+    }
+    if (context.copied && console->tx_cap) vmm_notify(console->tx_cap);
+    if (completed) {
+        dev->regs.InterruptStatus |= BIT_LOW(0);
+        return virq_inject(dev->virq);
+    }
+    return true;
+invalid:
+    console->tx_progress.failed = true;
+    LOG_CONSOLE_ERR("invalid transmit descriptor chain or ring\n");
+    return false;
+}
+
 static bool virtio_console_handle_tx(struct virtio_device *dev)
 {
-    LOG_CONSOLE("operation: handle transmit\n");
-    // @ivanv: we need to check the pre-conditions before doing anything. e.g check
-    // TX_QUEUE is ready?
-    assert(dev->num_vqs > TX_QUEUE);
-    struct virtio_queue_handler *vq = &dev->vqs[TX_QUEUE];
-    struct virtio_console_device *console = device_state(dev);
-
-    /* Transmit all available descriptors possible */
-    LOG_CONSOLE("processing available buffers from index [0x%lx..0x%lx)\n", vq->last_idx, vq->virtq.avail->idx);
-    bool transferred = false;
-    while (vq->last_idx != vq->virtq.avail->idx && !serial_queue_full(console->txq, console->txq->queue->head)) {
-        uint16_t desc_idx = vq->virtq.avail->ring[vq->last_idx % vq->virtq.num];
-        struct virtq_desc desc;
-        /* Traverse chained descriptors */
-        do {
-            desc = vq->virtq.desc[desc_idx];
-            // @ivanv: to the debug logging, we should actually print out the buffer contents
-            LOG_CONSOLE("processing descriptor (0x%lx) with buffer [0x%lx..0x%lx)\n", desc_idx, desc.addr, desc.addr + desc.len);
-
-            uint32_t bytes_remain = desc.len;
-            /* Copy all contiguous data */
-            while (bytes_remain > 0 && !serial_queue_full(console->txq, console->txq->queue->head)) {
-                uint32_t free = serial_queue_contiguous_free(console->txq);
-                uint32_t to_transfer = (bytes_remain < free) ? bytes_remain : free;
-                if (to_transfer) {
-                    transferred = true;
-                }
-
-                if (virtio_copy_from_gpa(
-                        desc.addr, desc.len - bytes_remain,
-                        console->txq->data_region +
-                            (console->txq->queue->tail % console->txq->capacity),
-                        to_transfer) != 0) {
-                    LOG_CONSOLE_ERR("TX descriptor GPA is outside guest RAM\n");
-                    return false;
-                }
-
-                serial_update_shared_tail(console->txq, console->txq->queue->tail + to_transfer);
-                bytes_remain -= to_transfer;
-            }
-
-            desc_idx = desc.next;
-
-        } while (desc.flags & VIRTQ_DESC_F_NEXT && !serial_queue_full(console->txq, console->txq->queue->head));
-
-        struct virtq_used_elem used_elem = {vq->virtq.avail->ring[vq->last_idx % vq->virtq.num], 0};
-        vq->virtq.used->ring[vq->virtq.used->idx % vq->virtq.num] = used_elem;
-        vq->virtq.used->idx++;
-
-        vq->last_idx++;
-    }
-
-    /* While unlikely, it is possible that we could not consume any of the
-     * available data. In this case we do not set the IRQ status. */
-    if (transferred) {
-        dev->regs.InterruptStatus = BIT_LOW(0);
-        bool success = virq_inject(dev->virq);
-        assert(success);
-
-        vmm_notify(console->tx_cap);
-
-        return success;
-    }
-
-    return true;
+    return virtio_console_handle_pending_tx(device_state(dev));
 }
 
 bool virtio_console_handle_rx(struct virtio_console_device *console)
@@ -265,6 +278,7 @@ static struct virtio_device *virtio_console_init(struct virtio_console_device *c
     console->rxq = rxq;
     console->txq = txq;
     console->tx_cap = tx_cap;
+    console->tx_progress = (virtio_console_tx_state_t){0};
 
     return dev;
 }

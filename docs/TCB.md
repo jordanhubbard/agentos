@@ -111,11 +111,13 @@ The Ubuntu bidirectional console gate requires both actual serial-PD transfer
 markers and guest-echo evidence. Eight seL4 fault probes verify that neither
 VMM maps the other VMM's page or CC's frontend page. Dual-guest FreeBSD console
 and suspend/resume qualification remain pending on this integration branch.
-Sustained-output qualification is also pending: the libvmm console TX backend
-can acknowledge a partially copied descriptor when its local queue fills.
-MAC `task_f0be9d2f86204aa6bf06c34f6464fc0c` tracks retained descriptor progress,
-retry on freed space, and a stalled-frontend checksum proof. The bounded
-adapter preserves bytes it receives, but does not repair that backend defect.
+Sustained-output qualification is also pending. The libvmm TX backend now
+retains a private descriptor snapshot and offset across full queues and retries
+when the adapter frees space. It acknowledges only complete chains; traversal
+and each copy are bounded. Host tests cover oversized/chained descriptors,
+full-queue retry, metadata mutation, invalid indices/flags, cyclic chains and
+GPA failure. MAC `task_f0be9d2f86204aa6bf06c34f6464fc0c` still requires the
+stalled-frontend target checksum proof before sustained output is qualified.
 
 ## TCB target — the shape the platform is converging on
 
