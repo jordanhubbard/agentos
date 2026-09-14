@@ -33,6 +33,9 @@ pub use guest_scenario::GuestScenarioArgs;
 
 #[derive(clap::Args)]
 pub struct TestArgs {
+    /// Test VMM attachment authority: 1 primary, 2 secondary.
+    #[arg(long, conflicts_with = "block_isolation_probe", value_parser = clap::value_parser!(u8).range(1..=2))]
+    pub virtualizer_authority_probe: Option<u8>,
     /// Test-only VMM fault probe: 1..4 primary foreign/disk read/write; 5..8 secondary.
     #[arg(long, value_parser = clap::value_parser!(u8).range(1..=8))]
     pub block_isolation_probe: Option<u8>,

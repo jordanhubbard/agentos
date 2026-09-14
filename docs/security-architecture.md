@@ -99,12 +99,13 @@ The virtualizer alone maps all block client frames and the RAM-disk page.
 foreign block-client and RAM-disk addresses. These tests do not cover network
 queues; do not describe those as mutually inaccessible per-guest memory.
 
-Page isolation also does not authorize device selection. The current net/block
-ATTACH handlers discard the caller badge and accept client/slot identifiers
-from the request; block accepts an in-range media identifier. Binding those
-choices to caller capabilities is tracked as
-`task_0a4a3098c5804410a40c31cf5715d261`. Until that closes, do not claim that a
-compromised VMM cannot select another guest's backing media.
+Device selection is independently capability-bound. Root mints each VMM's
+net/block endpoint with its assigned slot badge; ATTACH checks that badge
+against the requested client, VMM slot, and block media before changing state
+or calling a driver. `make test-virtualizer-authority` rejects spoofed
+attachments from both VMM slots and then accepts their legitimate assignments.
+This closes the request-based media-selection gap, but the shared network
+mapping still permits cross-client queue access by a compromised VMM.
 
 The root task, VMMs, virtualizers, and drivers therefore remain consequential
 TCB components. seL4 enforces the authority they are given; its verification

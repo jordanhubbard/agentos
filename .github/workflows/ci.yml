@@ -276,6 +276,10 @@ jobs:
         timeout-minutes: 30
         run: make test-block-isolation QEMU_TEST_TIMEOUT=120
 
+      - name: Reject spoofed virtualizer attachments through seL4 IPC
+        timeout-minutes: 10
+        run: make test-virtualizer-authority QEMU_TEST_TIMEOUT=120
+
       - name: Upload QEMU serial logs
         if: always()
         uses: actions/upload-artifact@v4

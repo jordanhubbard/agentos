@@ -35,6 +35,7 @@
 #include "system_desc.h"
 #include "nameserver.h"
 #include <contracts/net_virt_contract.h>
+#include <contracts/virtualizer_authority.h>
 #include <contracts/net-service/interface.h>
 #include <platform/net_layout.h>
 #include <platform/net_host_layout.h>
@@ -389,7 +390,7 @@ static void nv_service(void)
 
 /* ── ATTACH ─────────────────────────────────────────────────────────────── */
 
-static void handle_attach(const sel4_msg_t *req, sel4_msg_t *rep)
+static void handle_attach(uint64_t badge, const sel4_msg_t *req, sel4_msg_t *rep)
 {
     uint32_t version = rd32(req->data, 0u);
     uint32_t client_id = rd32(req->data, 4u);
@@ -402,7 +403,8 @@ static void handle_attach(const sel4_msg_t *req, sel4_msg_t *rep)
 
     if (version != NET_VIRT_CONTRACT_VERSION || req->length < 12u) {
         status = NET_VIRT_ERR_VERSION;
-    } else if (client_id >= AOS_NET_GUEST_CLIENTS || vmm_ep == 0u) {
+    } else if (!virt_client_authorized(badge, client_id, vmm_slot) ||
+               client_id >= AOS_NET_GUEST_CLIENTS || vmm_ep == 0u) {
         status = NET_VIRT_ERR_BAD_CLIENT;
     } else if (g_clients[client_id].attached) {
         status = NET_VIRT_ERR_BUSY;
@@ -495,7 +497,7 @@ static void net_virt_run(seL4_CPtr ep)
 
         if (label == NET_VIRT_OP_ATTACH) {
             _sel4_mrs_to_msg(&req);
-            handle_attach(&req, &rep);
+            handle_attach(badge, &req, &rep);
             _sel4_msg_to_mrs(&rep);
             seL4_MessageInfo_t reply = seL4_MessageInfo_new(
                 (seL4_Word)rep.opcode, 0u, 0u, (seL4_Word)_SEL4_MR_COUNT);
@@ -519,6 +521,6 @@ void pd_main(seL4_CPtr my_ep, seL4_CPtr ns_ep)
     agentos_log_boot("net_virt");
     aos_net_virt_reset(&g_hub);
     register_with_nameserver(ns_ep);
-    nv_puts("[net_virt] READY: contract v1, shared net frame mapped, no device caps\n");
+    nv_puts("[net_virt] READY: contract v2, capability-bound clients, no device caps\n");
     net_virt_run(my_ep);
 }

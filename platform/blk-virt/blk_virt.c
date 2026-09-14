@@ -36,6 +36,7 @@
 #include "system_desc.h"
 #include "nameserver.h"
 #include <contracts/blk_virt_contract.h>
+#include <contracts/virtualizer_authority.h>
 #include <platform/blk_layout.h>
 #include <platform/blk_host_layout.h>
 #include <platform/blk_virt_pump.h>
@@ -395,7 +396,7 @@ static void bv_service(void)
 
 /* ── ATTACH ─────────────────────────────────────────────────────────────── */
 
-static void handle_attach(const sel4_msg_t *req, sel4_msg_t *rep)
+static void handle_attach(uint64_t badge, const sel4_msg_t *req, sel4_msg_t *rep)
 {
     uint32_t version = rd32(req->data, 0u);
     uint32_t client_id = rd32(req->data, 4u);
@@ -408,7 +409,8 @@ static void handle_attach(const sel4_msg_t *req, sel4_msg_t *rep)
 
     if (version != BLK_VIRT_CONTRACT_VERSION || req->length < 16u) {
         status = BLK_VIRT_ERR_VERSION;
-    } else if (client_id >= AOS_BLK_MAX_CLIENTS ||
+    } else if (!virt_media_authorized(badge, client_id, vmm_slot, media_id) ||
+               client_id >= AOS_BLK_MAX_CLIENTS ||
                media_id >= AOS_HOST_BLK_MEDIA_COUNT || vmm_ep == 0u) {
         status = BLK_VIRT_ERR_BAD_CLIENT;
     } else if (g_clients[client_id].attached) {
@@ -520,7 +522,7 @@ static void blk_virt_run(seL4_CPtr ep)
 
         if (label == BLK_VIRT_OP_ATTACH) {
             _sel4_mrs_to_msg(&req);
-            handle_attach(&req, &rep);
+            handle_attach(badge, &req, &rep);
             _sel4_msg_to_mrs(&rep);
             seL4_MessageInfo_t reply = seL4_MessageInfo_new(
                 (seL4_Word)rep.opcode, 0u, 0u, (seL4_Word)_SEL4_MR_COUNT);
@@ -546,6 +548,6 @@ void pd_main(seL4_CPtr my_ep, seL4_CPtr ns_ep)
 {
     agentos_log_boot("blk_virt");
     register_with_nameserver(ns_ep);
-    bv_puts("[blk_virt] READY: contract v2, isolated client pages + driver DMA window mapped, no device caps\n");
+    bv_puts("[blk_virt] READY: contract v3, capability-bound clients/media, no device caps\n");
     blk_virt_run(my_ep);
 }

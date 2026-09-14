@@ -757,6 +757,11 @@ test-guest-net:
 # tests/platform/test_blk_virt_pump.c and the source lint are not this gate.
 # The combined Ubuntu device proof is make test-ubuntu-virtio.
 .PHONY: test-block-isolation
+.PHONY: test-virtualizer-authority
+test-virtualizer-authority:
+	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os buildroot --timeout-secs $(QEMU_TEST_TIMEOUT) --virtualizer-authority-probe 1
+	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os freebsd --timeout-secs $(QEMU_TEST_TIMEOUT) --virtualizer-authority-probe 2
+
 test-block-isolation:
 	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os buildroot --timeout-secs $(QEMU_TEST_TIMEOUT) --block-isolation-probe 1
 	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os buildroot --timeout-secs $(QEMU_TEST_TIMEOUT) --block-isolation-probe 2
@@ -991,6 +996,13 @@ test-integration:
 	    echo "FAIL: tests/platform/test_cc_retry_cache.c"; \
 	    status=1; \
 	fi; \
+	if gcc -std=c11 -Wall -Wextra -Werror -iquote kernel/agentos-root-task/include \
+	        -I kernel/agentos-root-task/include/contracts \
+	        -idirafter kernel/agentos-root-task/include \
+	        tests/platform/test_virtualizer_authority.c \
+	        -o $(BUILD_TMP_DIR)/test_virtualizer_authority \
+	    && $(BUILD_TMP_DIR)/test_virtualizer_authority; then :; \
+	else status=1; fi; \
 	if gcc -DAGENTOS_GUEST_DUAL -DAGENTOS_GUEST_PRIMARY_LARGE \
 	        -I platform/include \
 	        tests/platform/test_guest_memory_layout.c \
