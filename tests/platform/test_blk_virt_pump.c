@@ -308,6 +308,43 @@ static int test_maxphys_backend_request(void)
     PASS("test_maxphys_backend_request");
 }
 
+static int test_cross_client_payload_rejected(void)
+{
+    aos_blk_virt_t v;
+    aos_blk_virt_client_t first, second;
+    aos_blk_resp_t resp;
+    backend_probe_t probe = {0};
+
+    if (setup_one(&v, &first) != 0) return 1;
+    aos_blk_client_bind(g_region, 1u, &second);
+    aos_blk_client_init_queues(&second);
+    memset(second.data, 0x6d, AOS_BLK_DATA_BYTES);
+    aos_blk_virt_set_backend(&v, probe_backend, &probe);
+    /* A hostile offset that resolves into the next client's payload must
+     * fail before the backend can read or overwrite that payload. */
+    uint64_t foreign = (uint64_t)(second.data - first.data);
+    CHECK(enqueue_req(&first, AOS_BLK_REQ_READ, foreign, 0u, 1u, 301u) == 0);
+    CHECK(aos_blk_virt_pump(&v) == 1u);
+    CHECK(dequeue_resp(&first, &resp) == 0);
+    CHECK(resp.status == AOS_BLK_RESP_ERR_INVALID_PARAM);
+    CHECK(probe.calls == 0u);
+    CHECK(enqueue_req(&first, AOS_BLK_REQ_WRITE, foreign, 0u, 1u, 302u) == 0);
+    CHECK(aos_blk_virt_pump(&v) == 1u);
+    CHECK(dequeue_resp(&first, &resp) == 0);
+    CHECK(resp.status == AOS_BLK_RESP_ERR_INVALID_PARAM);
+    CHECK(probe.calls == 0u);
+    CHECK(enqueue_req(&first, AOS_BLK_REQ_READ, UINT64_MAX - 4095u,
+                      0u, 1u, 303u) == 0);
+    CHECK(aos_blk_virt_pump(&v) == 1u);
+    CHECK(dequeue_resp(&first, &resp) == 0);
+    CHECK(resp.status == AOS_BLK_RESP_ERR_INVALID_PARAM);
+    CHECK(probe.calls == 0u);
+    for (size_t i = 0u; i < AOS_BLK_DATA_BYTES; ++i) {
+        CHECK(second.data[i] == 0x6d);
+    }
+    PASS("test_cross_client_payload_rejected");
+}
+
 int main(void)
 {
     int failed = 0;
@@ -322,6 +359,7 @@ int main(void)
     failed += test_drop_when_resp_full();
     failed += test_external_backend();
     failed += test_maxphys_backend_request();
+    failed += test_cross_client_payload_rejected();
     if (failed) {
         printf("%d test(s) failed\n", failed);
         return 1;

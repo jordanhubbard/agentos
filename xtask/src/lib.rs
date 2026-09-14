@@ -33,6 +33,9 @@ pub use guest_scenario::GuestScenarioArgs;
 
 #[derive(clap::Args)]
 pub struct TestArgs {
+    /// Test-only VMM fault probe: 1..4 primary foreign/disk read/write; 5..8 secondary.
+    #[arg(long, value_parser = clap::value_parser!(u8).range(1..=8))]
+    pub block_isolation_probe: Option<u8>,
     #[arg(long, default_value = "qemu_virt_aarch64")]
     pub board: String,
     #[arg(long, default_value = "buildroot")]

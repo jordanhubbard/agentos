@@ -90,11 +90,21 @@ agentOS.
 
 Guest compromise and VMM compromise are different threats. Guest kernels do
 not receive the host sDDF queue mappings. Their VMMs do. At this revision the
-root maps the **whole network shared frame into every VMM** and the **whole
-block shared region into every VMM**, with writable rights. Per-client strides
-and queue validation separate normal traffic in software; they do not provide
-page-level protection between compromised VMMs. Do not describe these queues
-as mutually inaccessible per-guest memory.
+root maps the **whole network shared frame into every VMM**, with writable
+rights. Network strides and queue validation separate normal traffic in software;
+they do not provide page-level protection between compromised VMMs. Block
+clients now occupy separate 2 MB frames, and each VMM maps only its own frame.
+The virtualizer alone maps all block client frames and the RAM-disk page.
+`make test-block-isolation` checks read/write faults from both VMM slots at
+foreign block-client and RAM-disk addresses. These tests do not cover network
+queues; do not describe those as mutually inaccessible per-guest memory.
+
+Page isolation also does not authorize device selection. The current net/block
+ATTACH handlers discard the caller badge and accept client/slot identifiers
+from the request; block accepts an in-range media identifier. Binding those
+choices to caller capabilities is tracked as
+`task_0a4a3098c5804410a40c31cf5715d261`. Until that closes, do not claim that a
+compromised VMM cannot select another guest's backing media.
 
 The root task, VMMs, virtualizers, and drivers therefore remain consequential
 TCB components. seL4 enforces the authority they are given; its verification

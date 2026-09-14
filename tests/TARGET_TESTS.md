@@ -129,6 +129,22 @@ Result: `make test-target TARGET_ARCH=aarch64 GUEST_OS=none` boots the image and
 the runner emits real-IPC TAP (`ok 1..14`, `TAP_DONE:0`). On x86_64 (reduced
 smoke, no runner) the root task still emits the boot-proof stub TAP.
 
+### Block client mapping isolation
+
+`make test-block-isolation` builds eight AArch64 test images. Each VMM slot
+first writes and reads its own block client frame, then attempts a read or
+write of the other client's frame or the virtualizer's private RAM-disk frame.
+The root task requires a badged `seL4_Fault_VMFault` from that VMM with the
+exact address, data-access flag, and read/write syndrome. It reports success
+through `serial_pd`; it never regains UART ownership. An accessible foreign
+page, a wrong-address fault, or a fault in another PD cannot satisfy the test.
+
+The probes stop before guest initialization. They prove VMM mapping isolation,
+not guest I/O; `make test-guest-blk` separately proves the usable block path.
+The `BLK_ISOLATION_PROBE` build setting participates in build configuration
+stamps and is absent from production images. The guest block CI job requires
+both the I/O proof and these negative probes.
+
 ### Not yet covered (tracked in agentos-yni)
 
 - **cc_pd** — speaks its protocol over virtio-serial, not a seL4 endpoint, so a

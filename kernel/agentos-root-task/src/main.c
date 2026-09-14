@@ -47,6 +47,10 @@
 #include "contracts/cc_contract.h" /* cc_pd VirtIO startup ABI                    */
 #include <platform/blk_host_layout.h> /* host block MMIO/shared DMA layout       */
 #include <platform/blk_layout.h>      /* shared sDDF block region (VMMs + blk_virt) */
+#include <platform/blk_isolation_probe.h>
+#ifdef AGENTOS_BLK_ISOLATION_PROBE
+#include "serial_log.h"
+#endif
 #include <platform/net_host_layout.h> /* host net MMIO/private DMA/shared bridge */
 #include <platform/guest_memory_layout.h> /* guest GPA and VMM HVA windows        */
 #include "pd_startup_record.h" /* pd_startup_record_t, PD_STARTUP_RECORD_VA      */
@@ -639,7 +643,7 @@ static seL4_CPtr g_virtio_mmio_frame_cap = seL4_CapNull;
 static seL4_CPtr g_host_blk_mmio_frame_cap = seL4_CapNull;
 static seL4_CPtr g_blk_shared_frame_cap = seL4_CapNull;
 /* Shared sDDF block region: guest request/response queues and data cells,
- * mapped at AOS_BLK_SHMEM_VA into every guest VMM and into blk_virt only. */
+ * mapped wholly into blk_virt, with one client frame mapped into each VMM. */
 static seL4_CPtr g_blk_virt_frame_caps[AOS_BLK_SHMEM_FRAMES];
 static seL4_CPtr g_host_net_mmio_frame_cap = seL4_CapNull;
 static seL4_CPtr g_net_shared_frame_cap = seL4_CapNull;
@@ -1732,13 +1736,27 @@ void root_task_main(const seL4_BootInfo *bi)
              * caps = [authority, sched_context, fault_ep]
              * MRs  = [mcp, priority]
              */
+            seL4_CPtr pd_fault_ep = g_fault_ep;
+#ifdef AGENTOS_BLK_ISOLATION_PROBE
+            if (pd_is_guest_vmm(pd) &&
+                (uint32_t)pd_is_secondary_guest_vmm(pd) == AOS_BLK_PROBE_CLIENT) {
+                pd_fault_ep = ut_alloc_slot();
+                if (pd_fault_ep == seL4_CapNull ||
+                    seL4_CNode_Mint(seL4_CapInitThreadCNode, pd_fault_ep, 64u,
+                                   seL4_CapInitThreadCNode, g_fault_ep, 64u,
+                                   seL4_AllRights, AOS_BLK_PROBE_BADGE) != seL4_NoError) {
+                    dbg_puts("[rt] block isolation probe endpoint failed\n");
+                    continue;
+                }
+            }
+#endif
             sc_err = seL4_TCB_SetSchedParams(
                          tr.tcb_cap,
                          seL4_CapInitThreadTCB, /* authority: root TCB, MCP=255 */
                          255u,                  /* mcp */
                          (seL4_Word)pd->priority,
                          (seL4_CPtr)PD_SLOT_SC(i),
-                         g_fault_ep);
+                         pd_fault_ep);
             if (sc_err != seL4_NoError) {
                 dbg_puts("[rt] pd SetSchedParams fail err=");
                 dbg_hex((seL4_Word)sc_err);
@@ -2031,14 +2049,19 @@ void root_task_main(const seL4_BootInfo *bi)
             dbg_puts("\n");
         }
 
-        /* Shared sDDF block region: the guest VMMs (queue clients) and
-         * blk_virt (the only consumer).  Each frame cap is copied per PD
-         * because a frame cap maps exactly once. */
+        /* blk_virt maps the region; each VMM maps only its client page.
+         * Keep the private RAM disk and other clients out of its VSpace.
+         * Each frame cap is copied because a frame cap maps exactly once. */
         if (g_blk_virt_frame_caps[0] != seL4_CapNull &&
             (name_eq(pd->name, "blk_virt") || pd_is_guest_vmm(pd))) {
             seL4_Error blk_err = seL4_NoError;
             for (uint32_t f = 0u; f < AOS_BLK_SHMEM_FRAMES &&
                                   blk_err == seL4_NoError; f++) {
+                if (pd_is_guest_vmm(pd) &&
+                    f != AOS_BLK_CLIENT_BASE / AOS_BLK_SHMEM_FRAME_SIZE +
+                             (pd_is_secondary_guest_vmm(pd) ? 1u : 0u)) {
+                    continue;
+                }
                 seL4_Word frame_copy = ut_alloc_slot();
                 blk_err = seL4_NotEnoughMemory;
                 if (frame_copy != seL4_CapNull) {
@@ -2443,11 +2466,33 @@ void root_task_main(const seL4_BootInfo *bi)
      * not regain it if its SC budget was consumed during init.
      */
     if (g_fault_ep != seL4_CapNull) {
+#ifdef AGENTOS_BLK_ISOLATION_PROBE
+        serial_log_t probe_log = {0};
+        seL4_CPtr probe_serial_frame = ut_alloc_slot();
+        if (probe_serial_frame != seL4_CapNull &&
+            seL4_CNode_Copy(seL4_CapInitThreadCNode, probe_serial_frame, 64u,
+                           seL4_CapInitThreadCNode, g_serial_shmem_frame_cap,
+                           64u, seL4_AllRights) == seL4_NoError &&
+            pd_vspace_map_device_frame(seL4_CapInitThreadVSpace,
+                                      probe_serial_frame, AGENTOS_SERIAL_SHMEM_VA) == seL4_NoError) {
+            probe_log.ep = ep_alloc_for_service(SVC_ID_SERIAL);
+        }
+#endif
         dbg_puts("[rt] parking on fault_ep\n");
         for (;;) {
             seL4_Word badge = 0u;
             seL4_MessageInfo_t tag = seL4_Wait(g_fault_ep, &badge);
             seL4_Word label = seL4_MessageInfo_get_label(tag);
+#ifdef AGENTOS_BLK_ISOLATION_PROBE
+            if (badge == AOS_BLK_PROBE_BADGE && label == seL4_Fault_VMFault &&
+                seL4_MessageInfo_get_length(tag) >= seL4_VMFault_Length &&
+                seL4_GetMR(seL4_VMFault_Addr) == AOS_BLK_PROBE_ADDRESS &&
+                seL4_GetMR(seL4_VMFault_PrefetchFault) == 0u &&
+                ((seL4_GetMR(seL4_VMFault_FSR) >> 6u) & 1u) == AOS_BLK_PROBE_WRITE) {
+                serial_log_puts(&probe_log,
+                    "[rt] block isolation: expected VMM data fault verified\n");
+            }
+#endif
             dbg_puts("[rt] FAULT label=");
             dbg_hex(label);
             dbg_puts(" badge=");

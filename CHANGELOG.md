@@ -7,6 +7,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Give each block virtualizer client its own mapped large page. VMMs no
+  longer map the other client's queues and payloads or the RAM-disk page.
+  Bump the block attach contract to version 2 for the changed queue layout.
+
 - Honor the guest's virtual-timer interrupt mask during AArch64 WFI recovery;
   an expired masked timer no longer causes a synthetic interrupt. Preserve
   pending/inflight IRQ guards and rearm the independent seL4 VPPI when the

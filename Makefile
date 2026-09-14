@@ -756,6 +756,17 @@ test-guest-net:
 # at least one guest request (partition scan of the RAM disk). The host-side
 # tests/platform/test_blk_virt_pump.c and the source lint are not this gate.
 # The combined Ubuntu device proof is make test-ubuntu-virtio.
+.PHONY: test-block-isolation
+test-block-isolation:
+	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os buildroot --timeout-secs $(QEMU_TEST_TIMEOUT) --block-isolation-probe 1
+	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os buildroot --timeout-secs $(QEMU_TEST_TIMEOUT) --block-isolation-probe 2
+	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os buildroot --timeout-secs $(QEMU_TEST_TIMEOUT) --block-isolation-probe 3
+	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os buildroot --timeout-secs $(QEMU_TEST_TIMEOUT) --block-isolation-probe 4
+	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os freebsd --timeout-secs $(QEMU_TEST_TIMEOUT) --block-isolation-probe 5
+	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os freebsd --timeout-secs $(QEMU_TEST_TIMEOUT) --block-isolation-probe 6
+	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os freebsd --timeout-secs $(QEMU_TEST_TIMEOUT) --block-isolation-probe 7
+	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os freebsd --timeout-secs $(QEMU_TEST_TIMEOUT) --block-isolation-probe 8
+
 test-guest-blk:
 	@if [ "$(BOARD)" != "qemu_virt_aarch64" ]; then \
 		echo "test-guest-blk requires BOARD=qemu_virt_aarch64 (got BOARD=$(BOARD))"; \

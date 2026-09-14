@@ -63,6 +63,10 @@ ifneq ($(filter dual-primary dual-secondary,$(GUEST_PLACEMENT)),)
 VMM_CFLAGS += -DAGENTOS_GUEST_DUAL=1
 endif
 
+ifdef BLK_ISOLATION_PROBE
+VMM_CFLAGS += -DAGENTOS_BLK_ISOLATION_PROBE=$(BLK_ISOLATION_PROBE)
+endif
+
 ifeq ($(VMM_SLOT),primary)
 VMM_CFLAGS += -DAGENTOS_GUEST_PRIMARY=1
 else ifeq ($(VMM_SLOT),secondary)

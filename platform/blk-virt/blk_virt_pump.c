@@ -148,17 +148,17 @@ static aos_blk_resp_status_t serve_rw(aos_blk_virt_t *v, aos_blk_virt_client_t *
                                       const aos_blk_req_t *req, int writing)
 {
     uint32_t nbytes;
-    uint64_t data_end;
 
     if (!v->disk || req->count == 0u) {
         return AOS_BLK_RESP_ERR_INVALID_PARAM;
     }
-    if ((uint64_t)req->block_number + (uint64_t)req->count > (uint64_t)v->disk_blocks) {
+    if (req->block_number > v->disk_blocks ||
+        req->count > v->disk_blocks - req->block_number) {
         return AOS_BLK_RESP_ERR_INVALID_PARAM;
     }
     nbytes = (uint32_t)req->count * AOS_BLK_TRANSFER_SIZE;
-    data_end = req->io_or_offset + (uint64_t)nbytes;
-    if (data_end > (uint64_t)AOS_BLK_DATA_BYTES) {
+    if (req->io_or_offset > AOS_BLK_DATA_BYTES ||
+        nbytes > AOS_BLK_DATA_BYTES - req->io_or_offset) {
         return AOS_BLK_RESP_ERR_INVALID_PARAM;
     }
 
@@ -208,7 +208,14 @@ uint32_t aos_blk_virt_pump(aos_blk_virt_t *v)
                 continue;
             }
 
-            if (v->backend) {
+            /* Validate client-relative payloads before calling any backend.
+             * Subtraction keeps hostile offsets from wrapping into range. */
+            if ((req.code == AOS_BLK_REQ_READ || req.code == AOS_BLK_REQ_WRITE) &&
+                (req.count == 0u || req.io_or_offset > AOS_BLK_DATA_BYTES ||
+                 (uint64_t)req.count * AOS_BLK_TRANSFER_SIZE >
+                     AOS_BLK_DATA_BYTES - req.io_or_offset)) {
+                resp.status = AOS_BLK_RESP_ERR_INVALID_PARAM;
+            } else if (v->backend) {
                 resp.status = v->backend(v->backend_ctx, c, &req);
                 if (resp.status == AOS_BLK_RESP_OK &&
                     (req.code == AOS_BLK_REQ_READ ||
