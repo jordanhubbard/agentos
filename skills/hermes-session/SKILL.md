@@ -13,6 +13,14 @@ kernel-mode code. Native agents are not TCB.
 
 **Read and report.** Call the inspect snapshot ABI:
 
+On the AArch64 target, `make -C tools/agentctl` builds the public consumer.
+Run `tools/agentctl/agentctl --socket PATH inspect` against the CC socket.
+CC returns the immutable root boot observation with `MSG_CC_INSPECT`.
+The report labels its observation as `boot`: listed PDs successfully started,
+but current thread states are unknown. Guest RAM is the boot reservation;
+untyped usage is an accounted-page lower bound, not a free-memory estimate.
+No root endpoint or device capability is granted to the consumer.
+
 - Header: `platform/include/platform/inspect.h`
 - Fill: `aos_inspect_fill`
 - Structured text: `aos_inspect_format` (`key=value` lines)
@@ -25,6 +33,9 @@ The snapshot covers:
 
 Host tests: `tests/platform/test_inspect_snapshot.c` (via `make test-host`).
 Those tests are a pre-filter. They do not prove a live seL4 query.
+`make test-inspect` verifies the real CC and CLI path, malformed request
+rejection and repeat stability. `make test-inspect-readonly` separately
+requires a root-verified CC write fault after a successful snapshot read.
 
 ## What this session must not do
 

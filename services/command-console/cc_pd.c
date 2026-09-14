@@ -42,6 +42,7 @@
 #include "serial_virt_client.h"
 #include <platform/serial_virt_layout.h>
 #include <platform/console_input.h>
+#include <platform/inspect.h>
 #include "system_desc.h"
 #include <stdint.h>
 #include <stdbool.h>
@@ -1591,6 +1592,21 @@ static void handle_native_network(const cc_req_wire_t *req, cc_reply_wire_t *rep
 }
 #endif
 
+static void handle_inspect(const cc_req_wire_t *req, cc_reply_wire_t *rep)
+{
+    rep->mr[0] = CC_ERR_INVALID_ARG;
+    if (req->mr[0] != AOS_INSPECT_VERSION || req->mr[1] || req->mr[2]) return;
+    const aos_inspect_snapshot_t *snap = (const void *)AOS_INSPECT_BOOT_VA;
+    if (aos_inspect_validate(snap) != AOS_INSPECT_OK ||
+        !(snap->flags & AOS_INSPECT_FLAG_BOOT)) return;
+    for (size_t i = 0; i < sizeof(*snap); i++)
+        rep->shmem[i] = ((const uint8_t *)snap)[i];
+    rep->mr[0] = CC_OK;
+    rep->mr[1] = sizeof(*snap);
+    rep->mr[2] = snap->flags;
+    rep->mr[3] = snap->version;
+}
+
 static void cc_dispatch(const cc_req_wire_t *req, cc_reply_wire_t *rep)
 {
     /* Age active sessions before dispatch.  Handlers that touch a specific
@@ -1613,6 +1629,7 @@ static void cc_dispatch(const cc_req_wire_t *req, cc_reply_wire_t *rep)
     case MSG_CC_LIST:       handle_list_sessions(rep);         break;
 
     /* Relay API */
+    case MSG_CC_INSPECT:            handle_inspect(req, rep);           break;
     case MSG_CC_LIST_GUESTS:        handle_list_guests(rep);             break;
     case MSG_CC_LIST_DEVICES:       handle_list_devices(req, rep);       break;
     case MSG_CC_LIST_POLECATS:      handle_list_polecats(rep);           break;
@@ -1679,6 +1696,13 @@ void cc_pd_main(seL4_CPtr my_ep, seL4_CPtr ns_ep)
      * ready to accept requests.  The controller PD used to print this.
      */
     cc_dbg_puts("agentOS boot complete\n");
+#ifdef AGENTOS_INSPECT_WRITE_PROBE
+    if (aos_inspect_validate((const void *)AOS_INSPECT_BOOT_VA) == AOS_INSPECT_OK) {
+        cc_dbg_puts("[cc_pd] inspect: valid boot page read before write probe\n");
+        *(volatile uint32_t *)AOS_INSPECT_BOOT_VA = 0;
+        cc_dbg_puts("[cc_pd] FAIL: inspect page was writable\n");
+    }
+#endif
 
     while (1) {
         if (!vio_serial_read(&g_req, sizeof(g_req))) {

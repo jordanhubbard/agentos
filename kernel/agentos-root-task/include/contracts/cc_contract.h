@@ -55,6 +55,13 @@
 #pragma once
 #include "../agentos.h"
 
+/* MSG_CC_INSPECT: MR1=AOS_INSPECT_VERSION, MR2=MR3=0; no input payload.
+ * Reply MR0=CC_OK, MR1=sizeof(aos_inspect_snapshot_t), MR2=flags, MR3=version;
+ * the packed snapshot is in shmem. On error, no payload is returned.
+ * This observes immutable boot facts, not live scheduler state or free RAM.
+ * It grants no TCB, VSpace, memory-allocation or device authority to the caller.
+ * Layout: platform/include/platform/inspect.h. */
+
 /* ─── Channel IDs ────────────────────────────────────────────────────────── */
 #define CC_PD_CH_CONTROLLER  CH_CC_PD
 
@@ -184,6 +191,7 @@ enum cc_error {
     CC_ERR_BAD_HANDLE       = 6,  /* guest_handle / dev_handle invalid */
     CC_ERR_BAD_DEV_TYPE     = 7,  /* dev_type not one of CC_DEV_TYPE_* */
     CC_ERR_RELAY_FAULT      = 8,  /* downstream PPC returned error */
+    CC_ERR_INVALID_ARG     = 9,  /* unsupported version or reserved arguments */
 };
 
 /* ─── Device type constants (mirrors GUEST_DEV_* from guest_contract.h) ─── */

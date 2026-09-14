@@ -21,6 +21,10 @@
 #include "boot_info.h"
 #include <stdint.h>
 
+/* Managed non-device pool and accounted-page lower bound. Excludes sub-page
+ * objects and alignment loss; never use this observation to allocate memory. */
+void ut_alloc_observe(uint64_t *total, uint64_t *accounted_pages);
+
 /*
  * ut_alloc_init — seed the allocator from seL4 BootInfo.
  *

@@ -46,6 +46,16 @@ static seL4_Word  g_slot_base;  /* bi->empty.start saved at init time */
 static seL4_Word  g_slot_cur;   /* next slot to hand out via ut_alloc_slot() */
 static seL4_Word  g_slot_end;   /* bi->empty.end (exclusive) */
 
+void ut_alloc_observe(uint64_t *total, uint64_t *accounted_pages)
+{
+    *total = 0;
+    *accounted_pages = 0;
+    for (uint32_t i = 0; i < g_ut_count; i++) {
+        *total += UINT64_C(1) << g_ut[i].size_bits;
+        *accounted_pages += (uint64_t)g_ut[i].pages_used << 12;
+    }
+}
+
 void ut_alloc_init(const seL4_BootInfo *bi)
 {
     g_ut_count     = 0u;

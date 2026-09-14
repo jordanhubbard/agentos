@@ -55,7 +55,15 @@
 #include <platform/native_net_isolation_probe.h>
 #include <contracts/virtualizer_authority.h>
 #include <contracts/net_virt_contract.h>
-#if defined(AGENTOS_NATIVE_NET_ISOLATION_PROBE)
+#if defined(AGENTOS_INSPECT_WRITE_PROBE)
+#define ROOT_FAULT_PROBE 1
+#define ROOT_PROBE_NATIVE 2
+#define ROOT_PROBE_CLIENT 0u
+#define ROOT_PROBE_BADGE 0xa0540001u
+#define ROOT_PROBE_ADDRESS AOS_INSPECT_BOOT_VA
+#define ROOT_PROBE_WRITE 1u
+#define ROOT_PROBE_MESSAGE "[rt] inspect: expected read-only page write fault verified\n"
+#elif defined(AGENTOS_NATIVE_NET_ISOLATION_PROBE)
 #define ROOT_FAULT_PROBE 1
 #define ROOT_PROBE_NATIVE 1
 #define ROOT_PROBE_CLIENT 2u
@@ -78,6 +86,7 @@
 #include <platform/net_host_layout.h> /* host net MMIO/private DMA/shared bridge */
 #include <platform/guest_memory_layout.h> /* guest GPA and VMM HVA windows        */
 #include "pd_startup_record.h" /* pd_startup_record_t, PD_STARTUP_RECORD_VA      */
+#include <platform/inspect.h>
 #include <stdint.h>
 
 /*
@@ -1558,6 +1567,10 @@ void root_task_main(const seL4_BootInfo *bi)
     }
 
     const system_desc_t *sys = SYSTEM_DESC;
+    static aos_inspect_view_t inspect_view;
+    seL4_CPtr inspect_cc_vspace = seL4_CapNull;
+    inspect_view.flags = AOS_INSPECT_FLAG_BOOT | AOS_INSPECT_FLAG_PARTIAL |
+                         AOS_INSPECT_FLAG_USED_LOWER_BOUND;
 
 #if defined(__aarch64__)
     /*
@@ -1825,8 +1838,9 @@ void root_task_main(const seL4_BootInfo *bi)
              */
             seL4_CPtr pd_fault_ep = g_fault_ep;
 #ifdef ROOT_FAULT_PROBE
-            if ((ROOT_PROBE_NATIVE && pd->self_svc_id == SVC_ID_NATIVE_RUST_PROBE) ||
-                (!ROOT_PROBE_NATIVE && pd_is_guest_vmm(pd) &&
+            if ((ROOT_PROBE_NATIVE == 2 && pd->self_svc_id == SVC_ID_CC_PD) ||
+                (ROOT_PROBE_NATIVE == 1 && pd->self_svc_id == SVC_ID_NATIVE_RUST_PROBE) ||
+                (ROOT_PROBE_NATIVE == 0 && pd_is_guest_vmm(pd) &&
                  (uint32_t)pd_is_secondary_guest_vmm(pd) == ROOT_PROBE_CLIENT)) {
                 pd_fault_ep = ut_alloc_slot();
                 if (pd_fault_ep == seL4_CapNull ||
@@ -2612,8 +2626,58 @@ void root_task_main(const seL4_BootInfo *bi)
                 dbg_puts("\n");
             } else {
                 dbg_puts("[rt] pd started ok\n");
+                if (reg_err == seL4_NoError && inspect_view.thread_count < AOS_INSPECT_MAX_THREADS) {
+                    aos_inspect_thread_t *t = &inspect_view.threads[inspect_view.thread_count++];
+                    t->pd_index = i;
+                    t->prio = pd->priority;
+                    t->state = AOS_INSPECT_THR_UNKNOWN;
+                    for (uint32_t n = 0; n + 1 < AOS_INSPECT_NAME_LEN && pd->name[n]; n++)
+                        t->name[n] = (uint8_t)pd->name[n];
+                    if (pd->self_svc_id == SVC_ID_CC_PD) inspect_cc_vspace = vspace;
+                }
             }
         }
+    }
+
+    /* Publish once, before yielding to PDs. CC receives only a read mapping;
+     * the frame capability stays in root, and no inspection server is added. */
+    if (inspect_cc_vspace != seL4_CapNull) {
+        seL4_CPtr frame = seL4_CapNull;
+        seL4_CPtr reader = ut_alloc_slot();
+        if (reader == seL4_CapNull ||
+            ut_alloc_cap(seL4_ARM_SmallPageObject, 0u, &frame) != seL4_NoError ||
+            pd_vspace_map_device_frame(seL4_CapInitThreadVSpace, frame,
+                                      RT_VQ_SCRATCH_VA) != seL4_NoError ||
+            seL4_CNode_Copy(seL4_CapInitThreadCNode, reader, 64u,
+                           seL4_CapInitThreadCNode, frame, 64u,
+                           seL4_CapRights_new(0, 0, 1, 0)) != seL4_NoError ||
+            pd_vspace_map_device_frame(inspect_cc_vspace, reader,
+                                      AOS_INSPECT_BOOT_VA) != seL4_NoError) {
+            dbg_puts("[rt] inspect mapping failed; refusing partial boot\n");
+            return;
+        }
+        ut_alloc_observe(&inspect_view.ut_total_bytes, &inspect_view.ut_used_bytes);
+#if defined(__aarch64__)
+        inspect_view.arch = AOS_INSPECT_ARCH_AARCH64;
+        inspect_view.uart_pa = AGENTOS_UART_PA;
+        inspect_view.virtio_net_ipa = AOS_VIRTIO_NET_GUEST_IPA;
+        inspect_view.virtio_net_virq = AOS_VIRTIO_NET_VIRQ;
+        inspect_view.gic_dist_pa = 0x08000000u;
+        for (uint32_t i = 0; i < g_guest_ram_reservation_count; i++)
+            inspect_view.guest_ram_bytes +=
+                (uint64_t)g_guest_ram_reservations[i].frame_count << seL4_ARCH_LargePageBits;
+#elif defined(__x86_64__)
+        inspect_view.arch = AOS_INSPECT_ARCH_X86_64;
+#elif defined(__riscv)
+        inspect_view.arch = AOS_INSPECT_ARCH_RISCV64;
+#endif
+        _Static_assert(sizeof(aos_inspect_snapshot_t) <= 4096, "inspect fits one page");
+        if (aos_inspect_fill((aos_inspect_snapshot_t *)RT_VQ_SCRATCH_VA,
+                             &inspect_view) != AOS_INSPECT_OK) {
+            dbg_puts("[rt] inspect observation invalid; refusing partial boot\n");
+            return;
+        }
+        if (seL4_ARCH_Page_Unmap(frame) != seL4_NoError) return;
     }
 
     /* ── Step 4.5: Capability audit baseline ─────────────────────────────── */

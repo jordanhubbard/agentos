@@ -119,6 +119,15 @@ ROOT_TASK_ASM_OBJS :=
 endif
 
 ROOT_TASK_OBJS := $(patsubst src/%.c, $(BUILD_DIR)/rt_%.o, $(ROOT_TASK_SRCS))
+ROOT_TASK_OBJS += $(BUILD_DIR)/rt_inspect_snapshot.o
+
+$(BUILD_DIR)/rt_inspect_snapshot.o: $(REPO_ROOT_MK)/platform/inspect/inspect_snapshot.c
+	@mkdir -p $(BUILD_DIR)
+	$(CC) $(CFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/inspect_snapshot.pd.o: $(REPO_ROOT_MK)/platform/inspect/inspect_snapshot.c
+	@mkdir -p $(BUILD_DIR)
+	$(CC) $(CFLAGS) -c $< -o $@
 
 # Compile root task objects with rt_ prefix to avoid colliding with PD objects
 $(BUILD_DIR)/rt_%.o: src/%.c
@@ -384,6 +393,10 @@ GUEST_SECONDARY_PROFILE ?=
 GUEST_PRIMARY_LARGE ?= 0
 IMAGES += serial_virt.elf
 GUEST_CONFIG_STAMP := $(BUILD_DIR)/guest_config.stamp
+ifeq ($(INSPECT_WRITE_PROBE),1)
+  CFLAGS += -DAGENTOS_INSPECT_WRITE_PROBE=1
+  CFLAGS_ROOT_TASK += -DAGENTOS_INSPECT_WRITE_PROBE=1
+endif
 
 # AArch64: include the configured profile-backed VMM slots.
 ifeq ($(ARCH),aarch64)
@@ -824,7 +837,7 @@ $(BUILD_DIR)/framebuffer_pd.elf: $(FB_PD_OBJS)
 $(BUILD_DIR)/usb_pd.elf: $(USB_PD_OBJS)
 	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
 
-$(BUILD_DIR)/cc_pd.elf: $(CC_PD_OBJS) $(BUILD_DIR)/serial_pump.pd.o
+$(BUILD_DIR)/cc_pd.elf: $(CC_PD_OBJS) $(BUILD_DIR)/serial_pump.pd.o $(BUILD_DIR)/inspect_snapshot.pd.o
 	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
 
 $(BUILD_DIR)/gpu_sched.elf: $(GPU_SCHED_OBJS)

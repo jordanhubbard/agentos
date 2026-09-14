@@ -33,6 +33,12 @@ pub use guest_scenario::GuestScenarioArgs;
 
 #[derive(clap::Args)]
 pub struct TestArgs {
+    /// Query the root-provisioned boot snapshot through CC and agentctl.
+    #[arg(long)]
+    pub assert_inspect: bool,
+    /// Verify CC faults when attempting to write its read-only boot snapshot.
+    #[arg(long, conflicts_with_all = ["assert_inspect", "assert_native_rust", "assert_native_guest", "serial_isolation_probe", "network_isolation_probe", "block_isolation_probe", "virtualizer_authority_probe"])]
+    pub inspect_write_probe: bool,
     /// Boot a no_std Rust PD and verify its IPC contract from a separate C PD.
     #[arg(long, conflicts_with_all = ["serial_isolation_probe", "network_isolation_probe", "block_isolation_probe", "virtualizer_authority_probe"])]
     pub assert_native_rust: bool,
