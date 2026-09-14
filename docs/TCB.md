@@ -150,8 +150,9 @@ The `NATIVE_RUST_TEST` image additionally includes `native_rust_probe` and
 The client receives only the test service endpoint and serial diagnostic
 transport. The Rust service uses the normal `pd_entry.c` / `pd_main` entry
 path and a C bridge to seL4 IPC. `make test-native-rust` checks reply payloads
-from a separate C PD; it does not qualify allocation, networking or an RCC
-service. These test PDs are absent from the default image.
+from a separate C PD, including `alloc::Vec` data, alignment, exhaustion and
+reuse of the Rust PD's private 64 KiB heap. It does not qualify networking or
+an RCC service. These test PDs are absent from the default image.
 
 ## I/O invariant
 

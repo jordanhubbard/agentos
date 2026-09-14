@@ -10,7 +10,9 @@ xtask = "run --package xtask --"
 rustflags = [
     "-C", "link-arg=-nostdlib",
     "-C", "link-arg=-static",
-    "-C", "target-cpu=cortex-a55",
+    # The QEMU board uses Cortex-A57. Baseline ARMv8-A also avoids silently
+    # requiring newer LSE atomics in freestanding services on other boards.
+    "-C", "target-cpu=generic",
 ]
 
 # RISC-V 64 fallback

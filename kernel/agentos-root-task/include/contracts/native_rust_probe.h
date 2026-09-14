@@ -11,10 +11,18 @@
 #define NATIVE_RUST_VERSION UINT64_C(1)
 #define NATIVE_RUST_ECHO  UINT64_C(0x2e01)
 #define NATIVE_RUST_BADGE UINT64_C(0x2e02)
+/* HEAP request: two words VERSION, seed (0..255).
+ * Reply: six words VERSION, length=2049, checksum, alignment remainder=0,
+ * exhaustion_rejected=1, whole_heap_reused=1. Checksum starts at zero and
+ * folds each byte ((index*37+seed)&255) with rotate-left-5 then XOR.
+ * The service must use alloc::Vec, free it, verify 4096-byte alignment and
+ * exhaust/reuse its private 64 KiB heap. Failure returns ERR_HEAP, no words. */
+#define NATIVE_RUST_HEAP UINT64_C(0x2e03)
 #define NATIVE_RUST_OK UINT64_C(0)
 #define NATIVE_RUST_ERR_OPCODE UINT64_C(1)
 #define NATIVE_RUST_ERR_LENGTH UINT64_C(2)
 #define NATIVE_RUST_ERR_VERSION UINT64_C(3)
+#define NATIVE_RUST_ERR_HEAP UINT64_C(4)
 #define NATIVE_RUST_WORDS 120u
 #define NATIVE_RUST_SALT UINT64_C(0x5a5a5a5a5a5a5a5a)
 #define NATIVE_RUST_PROBE_ENDPOINT 16u

@@ -435,7 +435,10 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
     let mut result = if args.assert_native_rust {
         wait_for_all_markers(
             &log_path,
-            &["[native-rust] PASS: IPC version, all 120 MRs, invalid requests, recovery"],
+            &[
+                "[native-rust] PASS: IPC version, all 120 MRs, invalid requests, recovery",
+                "[native-rust] PASS: alloc Vec, alignment, exhaustion, heap reuse",
+            ],
             Duration::from_secs(args.timeout_secs),
             &mut qemu,
         )

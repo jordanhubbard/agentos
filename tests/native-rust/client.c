@@ -60,6 +60,29 @@ void pd_main(seL4_CPtr endpoint, seL4_CPtr nameserver)
         seL4_SetMR(0, NATIVE_RUST_VERSION + 1);
         expect_error(NATIVE_RUST_ECHO, NATIVE_RUST_WORDS, NATIVE_RUST_ERR_VERSION);
     }
+    for (unsigned seed = 17; seed <= 93; seed += 76) {
+        expect_error(NATIVE_RUST_HEAP, 0, NATIVE_RUST_ERR_LENGTH);
+        seL4_SetMR(0, NATIVE_RUST_VERSION + 1);
+        seL4_SetMR(1, seed);
+        expect_error(NATIVE_RUST_HEAP, 2, NATIVE_RUST_ERR_VERSION);
+        seL4_SetMR(0, NATIVE_RUST_VERSION);
+        seL4_SetMR(1, 256);
+        expect_error(NATIVE_RUST_HEAP, 2, NATIVE_RUST_ERR_HEAP);
+        seL4_SetMR(0, NATIVE_RUST_VERSION);
+        seL4_SetMR(1, seed);
+        seL4_MessageInfo_t reply = invoke(NATIVE_RUST_HEAP, 2);
+        check(seL4_MessageInfo_get_label(reply) == NATIVE_RUST_OK &&
+              seL4_MessageInfo_get_length(reply) == 6, "heap proof response");
+        uint64_t checksum = 0;
+        for (unsigned i = 0; i < 2049; i++)
+            checksum = ((checksum << 5) | (checksum >> 59)) ^ ((i * 37 + seed) & 255u);
+        check(seL4_GetMR(0) == NATIVE_RUST_VERSION && seL4_GetMR(1) == 2049 &&
+              seL4_GetMR(2) == checksum && seL4_GetMR(3) == 0 &&
+              seL4_GetMR(4) == 1 && seL4_GetMR(5) == 1,
+              "heap payload, alignment, exhaustion or reuse");
+    }
+    serial_log_puts(&log_channel,
+        "[native-rust] PASS: alloc Vec, alignment, exhaustion, heap reuse\n");
     serial_log_puts(&log_channel,
         "[native-rust] PASS: IPC version, all 120 MRs, invalid requests, recovery\n");
     for (;;) seL4_Yield();

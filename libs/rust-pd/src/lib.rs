@@ -49,6 +49,7 @@
 
 pub mod console;
 pub mod ffi;
+pub mod heap;
 pub mod ipc;
 pub mod pd;
 pub mod runtime;

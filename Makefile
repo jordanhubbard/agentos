@@ -695,6 +695,9 @@ test-native-rust:
 
 test-rust-pd-abi:
 	cargo test -p agentos-pd --features std
+	@mkdir -p $(BUILD_TMP_DIR)
+	$(CC) -std=c11 -Wall -Wextra -Werror -fno-builtin -DAGENTOS_TEST_HOST libs/rust-pd/runtime/memory.c tests/native-rust/memory_test.c -o $(BUILD_TMP_DIR)/rust_memory_test
+	$(BUILD_TMP_DIR)/rust_memory_test
 	$(MAKE) -C kernel/agentos-root-task BUILD_DIR=$(abspath build/rust-pd-abi-aarch64) AGENTOS_ARCH=aarch64 AGENTOS_BOARD=qemu_virt_aarch64 $(abspath build/rust-pd-abi-aarch64/rust_pd_ipc.o)
 	$(MAKE) -C kernel/agentos-root-task BUILD_DIR=$(abspath build/rust-pd-abi-x86_64) AGENTOS_ARCH=x86_64 AGENTOS_BOARD=x86_64_generic $(abspath build/rust-pd-abi-x86_64/rust_pd_ipc.o)
 

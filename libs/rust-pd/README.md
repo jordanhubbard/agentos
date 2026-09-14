@@ -18,8 +18,23 @@ the current thread's IPC-buffer pointer before any access.
 the AArch64 and x86_64 SDKs. It proves neither target IPC delivery nor PD boot.
 `make test-native-rust` builds and boots the native AArch64 example, then a
 separate C PD checks its root-minted caller badge, all 120 message words,
-version/length/opcode errors and valid calls after errors. Install Rust's
+version/length/opcode errors and valid calls after errors. It also validates
+seeded `alloc::Vec` contents, page alignment, exhaustion and complete reuse
+of the probe's private 64 KiB heap. Install Rust's
 `aarch64-unknown-none` standard-library target before running the target build.
 The full runtime task, `task_3d190486ab18c12663a2d724bb602778`, also requires
-allocation, bounded asynchronous execution
+bounded asynchronous execution
 where needed, virtualizer network bindings and a real native RCC service.
+
+`heap::BoundedHeap<N>` supplies a fixed-capacity global allocator with `N`
+64-byte blocks. Declare it at a stable static address using `#[global_allocator]`.
+Metadata is separate from payloads, freed adjacent spans can be reused, and
+unsupported sizes or unavailable aligned spans return null. Search work and
+memory are bounded; contention wait on the metadata spin lock is not a
+real-time guarantee. The current PD runtime is single-threaded and must not
+reenter allocation from an interrupt. No page allocation, IPC or device access
+occurs inside the allocator.
+
+Bare-metal AArch64 Rust compilation uses baseline instructions rather than
+assuming Cortex-A55 features. The target proof runs on the harness's Cortex-A57,
+including the allocator's atomic locking operations.
