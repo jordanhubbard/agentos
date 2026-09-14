@@ -92,6 +92,8 @@ image; ordinary images do not include it.
 | A guest address is not a host pointer | VMM code validates descriptors and translates GPA to its mapped guest RAM | Invalid descriptors can be rejected before copying. Correctness of every translation and length calculation remains userspace TCB work. |
 | Native work need not inherit a Linux kernel | A no_std Rust PD uses the canonical network queues with scoped attach and notification capabilities | Native ARP exchanges interleaved with guest pings passed after Ubuntu SSH provisioning. This qualifies raw queue access and coexistence, not a production TCP/IP stack. |
 | Inspection need not acquire new runtime authority | Root publishes immutable boot observations through a read-only CC mapping | A target fault probe verifies that CC cannot write this page. The report does not expose root capabilities or claim live thread state. The existing CC socket remains a privileged control channel; the read-only operation is not a separate authorization boundary. |
+| A native observation client can omit lifecycle authority | `operator_session` has its own serial page and read-only snapshot, with no guest-memory, driver or lifecycle caps | Seven target fault probes reject guest/CC page accesses and snapshot writes. This confines the operator; it does not reduce the existing CC transport's control authority. |
+| Diagnostic identities need not be chosen by the writer | Root provisions separate log rings and read-only identities; `log_drain` validates cursors and preserves per-client partial lines | A producer cannot select another client's configured identity through the logging API. It can still emit false statements under its own identity, fill its ring and consume CPU. Logs are not authorization evidence. |
 | Control and bulk data have different contracts | seL4 IPC for attach/lifecycle; shared-memory queues for net/block/console payloads | Root-minted badges constrain attachment. Console queues and descriptor progress remain bounded; shared metadata does not grant lifecycle authority. The sustained-output target proof recovered 262,144 bytes after backpressure; scope and evidence are detailed in TCB.md. |
 
 These choices differ from a host-kernel driver path and from assigning a host
@@ -119,6 +121,20 @@ or calling a driver. `make test-virtualizer-authority` rejects spoofed
 attachments from both VMM slots and then accepts their legitimate assignments.
 This closes the request-based media-selection gap independently of the page
 mapping boundaries.
+
+Serial contract v2 separates four client pages: primary VMM 0, secondary VMM 1,
+native operator 2 and CC frontend 3. Each client maps its own page; only
+`serial_virt` maps all four. The operator's observation page is separately
+read-only. This distinguishes compromise of a console client from compromise
+of the mux, which retains access to every serial client's data.
+
+Logging has a separate mapping boundary. Each AArch64 client maps one 4 KiB
+ring; only `log_drain` maps the combined ring region. Root retains frame caps
+and supplies read-only configuration. A send-only notification wakes the drain
+without granting access to its other rings. Native probes first log normally,
+then fault on reads/writes to the drain region and writes to configuration.
+These tests establish the probed access restrictions, not truthful messages,
+lossless delivery or fair service under a malicious producer's load.
 
 The root task, VMMs, virtualizers, and drivers therefore remain consequential
 TCB components. seL4 enforces the authority they are given; its verification
