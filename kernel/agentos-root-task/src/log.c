@@ -9,9 +9,9 @@
 #include "agentos.h"
 
 /*
- * Weak fallback: PDs that don't map the console_rings MR get value 0,
- * causing log_drain_write() to fall back to microkit_dbg_puts.
- * log_drain.c provides the strong definition (with setvar_vaddr).
+ * Root and unprovisioned architectures retain the debug fallback. AArch64
+ * PD entry initializes the base from its root-mapped read-only log config.
+ * A service may provide a strong definition of this compatibility symbol.
  */
 __attribute__((weak)) uintptr_t log_drain_rings_vaddr = 0;
 

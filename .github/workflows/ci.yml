@@ -440,6 +440,23 @@ jobs:
             build/tmp/agentos-qemu-*
           if-no-files-found: error
 
+      - name: Verify generic native logs and isolation
+        run: |
+          mkdir -p build/evidence/log-native
+          make test-log-rings QEMU_TEST_TIMEOUT=120 2>&1 | tee build/evidence/log-native/output.log
+          cp build/qemu_virt_aarch64/agentos.img build/evidence/log-native/output.img
+          make test-log-isolation QEMU_TEST_TIMEOUT=120 2>&1 | tee build/evidence/log-native/isolation.log
+      - name: Retain native log proof
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-log-proof
+          path: |
+            build/evidence/log-native/
+            build/evidence/log-isolation/
+            build/tmp/agentos-qemu-*
+          if-no-files-found: error
+
   contract-tests:
     name: Phase 5 contract tests (qemu_virt_aarch64)
     runs-on: ubuntu-24.04

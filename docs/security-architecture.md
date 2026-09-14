@@ -31,11 +31,11 @@ flowchart TB
     nd[net_pd PD<br/>host NIC MMIO and IRQ]
     bd[virtio_blk PD<br/>host block MMIO, IRQ and DMA window]
     cc[cc_pd PD<br/>control API and console relay<br/>owns host virtio-serial transport]
-    observation[Immutable boot snapshot page<br/>CC read-only mapping]
+    observation[Immutable boot snapshot page<br/>CC and operator read-only mappings]
     session[Native operator client PD<br/>bounded inspect.snapshot protocol<br/>own serial page, no device or lifecycle caps]
     manager[vm_manager PD<br/>guest lifecycle control]
     serial[serial_pd PD<br/>owns PL011 UART]
-    logs[log_drain PD<br/>serial encoder repaired<br/>generic log provisioning incomplete]
+    logs[log_drain PD<br/>bounded per-client log rings<br/>root-owned identities]
   end
   subgraph kernel[Only kernel-mode code]
     sel4[seL4 at EL2<br/>capability checks, address spaces,<br/>IPC, scheduling and vCPU mechanisms]
@@ -62,6 +62,8 @@ flowchart TB
   manager --> primary
   manager --> secondary
   logs -->|serial control and shared payload| serial
+  session -->|own log page only<br/>send-only notification| logs
+  root -.->|read-only log configuration<br/>separate writable ring per client| logs
   nd --> hardware
   bd --> hardware
   cc --> hardware

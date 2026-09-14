@@ -680,15 +680,20 @@ typedef struct __attribute__((packed)) {
 } log_ring_header_t;
 
 /*
- * log_drain_rings_vaddr — seL4cp setvar, declared in each PD that maps
- * the log_drain_rings MR.  We extern it here so log_drain_write() can use it.
+ * log_drain_rings_vaddr — initialized by AArch64 PD entry from root's log
+ * configuration; legacy host/reduced-target callers may set it explicitly.
  */
 extern uintptr_t log_drain_rings_vaddr;
+#ifdef AGENTOS_LOG_RINGS
+#include <platform/log_ring.h>
+#endif
 
 /*
  * log_drain_write(slot, pd_id, msg)
  *
  * Write msg into the per-PD ring buffer and notify log_drain to drain it.
+ * AArch64 ignores the legacy slot/pd_id arguments: mapping and attribution
+ * come from root. A bounded append and send-only Signal never Call the drain.
  * Falls back to microkit_dbg_puts if the ring base is not yet mapped
  * (log_drain_rings_vaddr == 0).
  *
@@ -696,6 +701,16 @@ extern uintptr_t log_drain_rings_vaddr;
  */
 static inline void log_drain_write(uint32_t slot, uint32_t pd_id, const char *msg)
 {
+#ifdef AGENTOS_LOG_RINGS
+    (void)slot; (void)pd_id;
+    const aos_log_config_t *config = (const void *)AOS_LOG_CONFIG_VA;
+    if (!log_drain_rings_vaddr || config->role != AOS_LOG_CLIENT) {
+        sel4_dbg_puts(msg);
+        return;
+    }
+    aos_log_ring_write((aos_log_ring_t *)log_drain_rings_vaddr, msg);
+    seL4_Signal(AOS_LOG_NOTIFY_CAP);
+#else
     if (!log_drain_rings_vaddr) {
         sel4_dbg_puts(msg);
         return;
@@ -735,6 +750,7 @@ static inline void log_drain_write(uint32_t slot, uint32_t pd_id, const char *ms
     seL4_SetMR(1, slot);
     seL4_SetMR(2, pd_id);
     seL4_Call((seL4_CPtr)CH_LOG_DRAIN, _logi);
+#endif
 #endif
 }
 

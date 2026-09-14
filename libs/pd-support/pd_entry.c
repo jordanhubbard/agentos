@@ -24,6 +24,11 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#ifdef AGENTOS_LOG_RINGS
+#include <platform/log_ring.h>
+/* Some minimal PDs do not link log.c; a service's strong definition wins. */
+__attribute__((weak)) uintptr_t log_drain_rings_vaddr;
+#endif
 
 /*
  * seL4 IPC buffer pointer — defined in sel4_crt.c.
@@ -54,6 +59,12 @@ void _start(seL4_CPtr my_ep, seL4_CPtr ns_ep)
 {
     /* Redirect __sel4_ipc_buffer to the seL4-mapped page. */
     __sel4_ipc_buffer = (seL4_IPCBuffer *)(uintptr_t)PD_IPC_BUF_VA;
+#ifdef AGENTOS_LOG_RINGS
+    const aos_log_config_t *logs = (const void *)AOS_LOG_CONFIG_VA;
+    if (logs->magic == AOS_LOG_CONFIG_MAGIC && logs->version == AOS_LOG_VERSION)
+        log_drain_rings_vaddr = logs->role == AOS_LOG_CLIENT ? AOS_LOG_CLIENT_VA :
+            logs->role == AOS_LOG_SERVER ? AOS_LOG_SERVER_VA : 0;
+#endif
 
     pd_main(my_ep, ns_ep);
 

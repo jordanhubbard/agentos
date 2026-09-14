@@ -105,6 +105,7 @@ ROOT_TASK_SRCS := src/main.c src/ep_alloc.c src/cap_accounting.c \
                   src/vos_create.c src/pd_bundle_stub.c
 
 ifeq ($(ARCH),aarch64)
+CFLAGS += -DAGENTOS_LOG_RINGS=1
 ROOT_TASK_SRCS += src/system_desc_aarch64.c
 CFLAGS_ROOT_TASK := $(CFLAGS) -DBOARD_$(AGENTOS_BOARD)
 ROOT_TASK_ASM_OBJS := $(BUILD_DIR)/rt_start_aarch64.o
@@ -405,6 +406,13 @@ $(BUILD_DIR)/operator_protocol.o: $(REPO_ROOT_MK)/platform/operator-session/sess
 $(BUILD_DIR)/operator_session.elf: $(BUILD_DIR)/operator_session.o $(BUILD_DIR)/operator_protocol.o $(BUILD_DIR)/inspect_snapshot.pd.o $(BUILD_DIR)/serial_pump.pd.o $(BUILD_DIR)/sel4_crt.o $(BUILD_DIR)/pd_entry.o $(BUILD_DIR)/m3_bare_metal.o $(BUILD_DIR)/log.o
 	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
 GUEST_CONFIG_STAMP := $(BUILD_DIR)/guest_config.stamp
+ifeq ($(LOG_RING_TEST),1)
+  CFLAGS += -DAGENTOS_LOG_RING_TEST=1
+endif
+ifdef LOG_ISOLATION_PROBE
+  CFLAGS += -DAGENTOS_LOG_ISOLATION_PROBE=$(LOG_ISOLATION_PROBE)
+  CFLAGS_ROOT_TASK += -DAGENTOS_LOG_ISOLATION_PROBE=$(LOG_ISOLATION_PROBE)
+endif
 ifeq ($(OPERATOR_TEST),1)
   CFLAGS += -DAGENTOS_OPERATOR_TEST=1
 endif

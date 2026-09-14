@@ -2,8 +2,8 @@
  * agentOS Log Drain Protection Domain — E5-S1: raw seL4 IPC
  *
  * Drains per-PD log ring buffers through serial_pd.  Each PD writes log lines
- * into its own 4KB ring in the shared log_drain_rings region and calls
- * log_drain via IPC to flush it.
+ * into its own 4KB ring. AArch64 root-provisioned clients Signal the drain;
+ * legacy host/reduced-target tests retain the old IPC registration path.
  *
  * Ring layout (per PD, 4KB each):
  *   [0..3]     magic (LOG_RING_MAGIC)
@@ -134,6 +134,9 @@ static inline void seL4_DebugPutChar(char c) { (void)c; }
 #include "sel4_ipc.h"       /* sel4_msg_t, sel4_badge_t, SEL4_ERR_* */
 #include "system_desc.h"
 #include <sel4/sel4.h>      /* seL4_DebugPutChar */
+#ifdef AGENTOS_LOG_RINGS
+#include <platform/log_ring.h>
+#endif
 
 #endif /* AGENTOS_TEST_HOST */
 
@@ -182,7 +185,11 @@ static inline void seL4_DebugPutChar(char c) { (void)c; }
 /* ── Ring buffer constants ─────────────────────────────────────────────────── */
 
 #define LOG_RING_MAGIC    0xC0DE4D55u
+#ifdef AGENTOS_LOG_RINGS
+#define MAX_LOG_RINGS     AOS_LOG_CLIENTS
+#else
 #define MAX_LOG_RINGS     16
+#endif
 #define RING_SIZE         4096
 #define RING_HEADER_SIZE  16
 #define RING_BUF_SIZE     (RING_SIZE - RING_HEADER_SIZE)
@@ -302,10 +309,15 @@ static volatile char *get_ring_buf(uint32_t slot)
 
 static const char *pd_name_for(uint32_t pd_id)
 {
+#ifdef AGENTOS_LOG_RINGS
+    const aos_log_config_t *config = (const void *)AOS_LOG_CONFIG_VA;
+    return pd_id < config->count ? config->clients[pd_id].name : "unknown";
+#else
     for (uint32_t i = 0; i < NUM_PD_NAMES; i++) {
         if (pd_names[i].id == pd_id) return pd_names[i].name;
     }
     return "unknown";
+#endif
 }
 
 /* ── Ring state helpers ─────────────────────────────────────────────────────── */
@@ -410,11 +422,14 @@ static void uart_puts(const char *s)
 
 static void uart_tagged_line(const char *pd_name, const char *line)
 {
-    uart_puts("\033[36m[");
-    uart_puts(pd_name);
-    uart_puts("]\033[0m ");
-    uart_puts(line);
-    uart_puts("\n");
+    char output[320];
+    const char *parts[] = {"\033[36m[", pd_name, "]\033[0m ", line, "\n"};
+    uint32_t used = 0;
+    for (unsigned p = 0; p < 5; p++)
+        for (const char *s = parts[p]; *s && used + 1 < sizeof(output); s++)
+            output[used++] = *s;
+    output[used] = 0;
+    uart_puts(output);
 }
 
 /* ── Ring drain ─────────────────────────────────────────────────────────────── */
@@ -509,6 +524,11 @@ static uint32_t handle_log_write(sel4_badge_t badge,
                                   sel4_msg_t *rep,
                                   void *ctx)
 {
+#ifdef AGENTOS_LOG_RINGS
+    (void)badge; (void)req; (void)ctx;
+    rep->length = 0;
+    return SEL4_ERR_INVALID_OP; /* Identities/slots come only from root. */
+#else
     (void)badge; (void)ctx;
 
     uint32_t slot  = data_rd32(req->data, 0);
@@ -548,6 +568,7 @@ static uint32_t handle_log_write(sel4_badge_t badge,
 
     data_wr32(rep->data, 0, 0u); /* ok */
     return SEL4_ERR_OK;
+#endif
 }
 
 static uint32_t handle_log_status(sel4_badge_t badge,
@@ -665,8 +686,15 @@ void log_drain_main(seL4_CPtr my_ep, seL4_CPtr ns_ep, seL4_CPtr serial_ep)
         ring_states[i].bytes_total = 0;
     }
 
-    if (log_drain_rings_vaddr)
-        init_rings();
+#ifdef AGENTOS_LOG_RINGS
+    const aos_log_config_t *config = (const void *)AOS_LOG_CONFIG_VA;
+    if (config->magic != AOS_LOG_CONFIG_MAGIC || config->version != AOS_LOG_VERSION ||
+        config->role != AOS_LOG_SERVER || config->count > MAX_LOG_RINGS) return;
+    for (uint32_t i = 0; i < config->count; i++)
+        if (config->clients[i].enabled) get_or_create_ring_state(i, i);
+#else
+    if (log_drain_rings_vaddr) init_rings();
+#endif
 
     uart_puts("[log_drain] starting — agentOS log drain\n");
 
@@ -679,8 +707,33 @@ void log_drain_main(seL4_CPtr my_ep, seL4_CPtr ns_ep, seL4_CPtr serial_ep)
     sel4_server_register(&g_srv, OP_LOG_WRITE,  handle_log_write,  (void *)0);
     sel4_server_register(&g_srv, OP_LOG_STATUS, handle_log_status, (void *)0);
 
-    /* Enter the recv/dispatch/reply loop — never returns */
+    /* Notifications carry no caller/reply object. Classify before decoding
+     * registers and never reply to a notification as if it were an IPC call. */
+#ifdef AGENTOS_LOG_RINGS
+    drain_all();
+    for (;;) {
+        seL4_Word badge = 0;
+#ifdef CONFIG_KERNEL_MCS
+        seL4_MessageInfo_t info = seL4_Recv(my_ep, &badge, AGENTOS_IPC_REPLY_CAP);
+#else
+        seL4_MessageInfo_t info = seL4_Recv(my_ep, &badge);
+#endif
+        if (badge == AOS_LOG_WAKE) { drain_all(); continue; }
+        sel4_msg_t req = {0}, rep = {0};
+        if (seL4_MessageInfo_get_length(info) == _SEL4_MR_COUNT)
+            _sel4_mrs_to_msg(&req);
+        sel4_server_dispatch(&g_srv, badge, &req, &rep);
+        _sel4_msg_to_mrs(&rep);
+        seL4_MessageInfo_t result = seL4_MessageInfo_new(rep.opcode, 0, 0, _SEL4_MR_COUNT);
+#ifdef CONFIG_KERNEL_MCS
+        seL4_Send(AGENTOS_IPC_REPLY_CAP, result);
+#else
+        seL4_Reply(result);
+#endif
+    }
+#else
     sel4_server_run(&g_srv);
+#endif
 }
 
 void pd_main(seL4_CPtr my_ep, seL4_CPtr ns_ep)
