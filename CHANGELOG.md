@@ -5,6 +5,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+- Route dynamic guest control from CC-PD directly to `vm_manager` and remove
+  `vibe_engine` from the boot image. Public handles remain distinct from backend
+  slots, backend failures propagate, and failed-start rollback retains a
+  recoverable handle when cleanup fails. Console remains an inline IPC path
+  until the separate serial virtualizer is implemented.
+
 ### Fixed
 
 - Map each VMM's network queues in its own large page, and keep the driver's

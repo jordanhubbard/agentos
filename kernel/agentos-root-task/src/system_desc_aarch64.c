@@ -63,21 +63,21 @@
 #define AOS_TEST_PD_EXTRA 0u
 #endif
 
-/* Default image: nameserver, log_drain, serial_pd, vibe_engine, virtio_blk,
+/* Default image: nameserver, log_drain, serial_pd, virtio_blk,
  * block_pd, blk_virt, net_pd, net_virt, guest_vmm_primary, vm_manager,
  * cc_pd, fault_handler. */
 #if defined(AGENTOS_FAULT_INJECT) && defined(AGENTOS_GUEST_DUAL)
-#define AOS_AARCH64_PD_COUNT (15u + AOS_TEST_PD_EXTRA)
-#define AOS_CC_INIT_EP_COUNT 7u
-#elif defined(AGENTOS_FAULT_INJECT)
-#define AOS_AARCH64_PD_COUNT (14u + AOS_TEST_PD_EXTRA)
-#define AOS_CC_INIT_EP_COUNT 7u
-#elif defined(AGENTOS_GUEST_DUAL)
 #define AOS_AARCH64_PD_COUNT (14u + AOS_TEST_PD_EXTRA)
 #define AOS_CC_INIT_EP_COUNT 6u
-#else
+#elif defined(AGENTOS_FAULT_INJECT)
 #define AOS_AARCH64_PD_COUNT (13u + AOS_TEST_PD_EXTRA)
 #define AOS_CC_INIT_EP_COUNT 6u
+#elif defined(AGENTOS_GUEST_DUAL)
+#define AOS_AARCH64_PD_COUNT (13u + AOS_TEST_PD_EXTRA)
+#define AOS_CC_INIT_EP_COUNT 5u
+#else
+#define AOS_AARCH64_PD_COUNT (12u + AOS_TEST_PD_EXTRA)
+#define AOS_CC_INIT_EP_COUNT 5u
 #endif
 
 /* blk_virt holds: nameserver, log_drain, serial (diagnostics through
@@ -173,26 +173,6 @@ const system_desc_t system_desc_aarch64 = {
             .device_frames = {
                 { .paddr = 0x09000000ULL, .size_bits = 12u,
                   .cnode_slot = 10u, .name = "pl011-mmio" },
-            },
-        },
-
-        /* pd[3] — vibe_engine (prio 165; dynamic-guest relay; not TCB)
-         * Kept only because cc_pd relays MSG_CC_CREATE_GUEST and the
-         * dynamic-guest lifecycle/console opcodes to it, and it is the hop
-         * that issues OP_VM_CREATE/START to vm_manager (170), which can
-         * preempt it.  Nothing else in the image calls it. */
-        {
-            .name           = "vibe_engine",
-            .elf_path       = "vibe_engine.elf",
-            .stack_size     = 0x8000u,
-            .cnode_size_bits = 10u,
-            .priority       = 165u,
-            .self_svc_id    = SVC_ID_VIBE_ENGINE,
-            .init_ep_count  = 3u,
-            .init_eps = {
-                { SVC_ID_NAMESERVER, PD_CNODE_SLOT_NAMESERVER_EP },
-                { SVC_ID_LOG_DRAIN,  PD_CNODE_SLOT_LOG_DRAIN_EP  },
-                { SVC_ID_VM_MANAGER, PD_CNODE_SLOT_VM_MANAGER_EP },
             },
         },
 
@@ -476,7 +456,6 @@ const system_desc_t system_desc_aarch64 = {
 #else
                 { SVC_ID_GUEST_VMM_PRIMARY,   PD_CNODE_SLOT_GUEST_VMM_EP },
 #endif
-                { SVC_ID_VIBE_ENGINE, PD_CNODE_SLOT_VIBE_ENGINE_EP },
                 { SVC_ID_VM_MANAGER,  PD_CNODE_SLOT_VM_MANAGER_EP  },
                 /* No controller EP: the controller PD is not in the image and
                  * an EP with no server would block cc_pd forever. */

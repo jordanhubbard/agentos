@@ -102,6 +102,9 @@ else
   GUEST_PRIMARY_LARGE ?= 0
 endif
 QEMU_TEST_TIMEOUT ?= 300
+# Focused console proofs may run beside a retained dual-guest instance.
+# Zero keeps the profile's normal forwarding port.
+QEMU_TEST_SSH_PORT ?= 0
 # Correct suspend accounting freezes each guest's architectural time while it
 # is stopped.  A full vendor-live-media dual proof can therefore take longer
 # than the old 90-minute bound that accidentally included a clock jump.
@@ -797,7 +800,7 @@ test-guest-console:
 		echo "test-guest-console requires BOARD=qemu_virt_aarch64 (got BOARD=$(BOARD))"; \
 		exit 1; \
 	fi
-	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os ubuntu --timeout-secs $(QEMU_TEST_TIMEOUT) --assert-emulated-console
+	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os ubuntu --timeout-secs $(QEMU_TEST_TIMEOUT) --assert-emulated-console --ssh-port $(QEMU_TEST_SSH_PORT)
 
 # Deterministic initramfs device proof. Host media is owned by virtio_blk;
 # Ubuntu's DTB advertises agentOS emulated devices only.
@@ -1014,6 +1017,17 @@ test-integration:
 	        -o $(BUILD_TMP_DIR)/test_virtualizer_authority \
 	    && $(BUILD_TMP_DIR)/test_virtualizer_authority; then :; \
 	else status=1; fi; \
+	if gcc -DAGENTOS_TEST_HOST -include tests/microkit.h \
+	        -iquote kernel/agentos-root-task/include \
+	        tests/platform/test_cc_vm_client.c \
+	        kernel/agentos-root-task/src/cc_vm_client.c \
+	        -o $(BUILD_TMP_DIR)/test_cc_vm_client 2>&1 \
+	    && $(BUILD_TMP_DIR)/test_cc_vm_client; then \
+	    echo "PASS: tests/platform/test_cc_vm_client.c"; \
+	else \
+	    echo "FAIL: tests/platform/test_cc_vm_client.c"; \
+	    status=1; \
+	fi; \
 	if gcc -DAGENTOS_GUEST_DUAL -DAGENTOS_GUEST_PRIMARY_LARGE \
 	        -I platform/include \
 	        tests/platform/test_guest_memory_layout.c \

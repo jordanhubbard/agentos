@@ -49,6 +49,15 @@
 #define VM_STATE_MIGRATING         8u  /* live migration in progress */
 #define VM_STATE_ERROR             9u  /* VM encountered unrecoverable error */
 
+/* Actual INFO/LIST wire values (v3). VM_STATE_* above is the historical
+ * lifecycle vocabulary and is not the current slot-state encoding. */
+#define VM_WIRE_SLOT_FREE       0u
+#define VM_WIRE_SLOT_BOOTING    1u
+#define VM_WIRE_SLOT_RUNNING    2u
+#define VM_WIRE_SLOT_SUSPENDED  3u
+#define VM_WIRE_SLOT_HALTED     4u
+#define VM_WIRE_SLOT_ERROR      5u
+
 /* ── Device service types for ATTACH/DETACH ── */
 #define VM_DEV_SERIAL              0u  /* serial-mux (canonical UART service) */
 #define VM_DEV_NET                 1u  /* net-service (virtio-net backend) */
@@ -115,7 +124,7 @@ typedef struct __attribute__((packed)) {
 
 typedef struct __attribute__((packed)) {
     uint32_t status;          /* 0 = ok */
-    uint32_t state;           /* VM_STATE_* */
+    uint32_t state;           /* VM_WIRE_SLOT_* */
     uint32_t vm_type;         /* VM_TYPE_* */
     uint32_t ram_mb;
     uint32_t vcpu_count;

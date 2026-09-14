@@ -658,26 +658,24 @@ int main(void)
     }
 
     /* ── Guest-control liveness: the control relay chain outranks the guests
-     *    it services (vm_manager > vibe_engine > cc_pd). Not a TCB.md item;
+     *    it services (vm_manager > cc_pd). Not a TCB.md item;
      *    kept because a regression deadlocks guest create/attach. ──────── */
     {
         const pd_desc_t *vmm = find_pd("vm_manager");
-        const pd_desc_t *vibe = find_pd("vibe_engine");
         const pd_desc_t *cc = find_pd("cc_pd");
 
-        ok(vmm && vibe && cc &&
-           vmm->priority > vibe->priority && vibe->priority > cc->priority,
-           "liveness: guest-control priorities are strictly ordered vm_manager > vibe_engine > cc_pd");
+        ok(vmm && cc && vmm->priority > cc->priority,
+           "liveness: guest-control priorities are strictly ordered vm_manager > cc_pd");
     }
 
-    /* ── TCB.md museum: the default image spawns TCB PDs plus vibe_engine
-     *    only.  The non-TCB service PDs dropped by MAC
+    /* ── TCB.md museum: the default image excludes museum PDs.
+     *    The non-TCB service PDs dropped by MAC
      *    task_f95d118416a24fa484c2c43f0d955b56 must not creep back into the
      *    descriptor (event_bus is test-image-only). ─────────────────────── */
     {
         static const char *const dropped[] = {
             "controller", "event_bus", "init_agent", "agentfs", "vfs_server",
-            "net_server", "framebuffer_pd", "usb_pd",
+            "net_server", "framebuffer_pd", "usb_pd", "vibe_engine",
         };
         size_t d;
 

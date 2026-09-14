@@ -4,7 +4,7 @@
  * The CC PD is a pure IPC relay and multiplexer.  External agents (via mesh
  * or agentctl) use MSG_CC_* opcodes to query and control the agentOS stack.
  * cc_pd routes each call to the appropriate service PD (serial_pd, net_pd,
- * block_pd, usb_pd, framebuffer_pd, vibe_engine, guest_pd, agent_pool,
+ * block_pd, usb_pd, framebuffer_pd, vm_manager, guest_pd, agent_pool,
  * log_drain) and forwards the result.  cc_pd contains ZERO policy.
  *
  * Channel: CH_CC_PD (see agentos.h)
@@ -25,28 +25,28 @@
  *   - The CC PD does not initiate communication; it only responds to PPCs.
  *
  * Direct relay API (Phase 5a):
- *   MSG_CC_LIST_GUESTS       → vibe_engine (MSG_VIBEOS_LIST)
+ *   MSG_CC_LIST_GUESTS       → CC handle registry + vm_manager INFO
  *   MSG_CC_LIST_DEVICES      → device PD selected by dev_type
  *   MSG_CC_LIST_POLECATS     → agent_pool (MSG_AGENTPOOL_STATUS)
- *   MSG_CC_GUEST_STATUS      → vibe_engine (MSG_VIBEOS_STATUS)
+ *   MSG_CC_GUEST_STATUS      → vm_manager INFO (boot guest direct)
  *   MSG_CC_DEVICE_STATUS     → device PD selected by dev_type
  *   MSG_CC_ATTACH_FRAMEBUFFER→ framebuffer_pd (MSG_FB_FLIP handle validation)
  *   MSG_CC_SEND_INPUT        → guest_pd (MSG_GUEST_SEND_INPUT)
- *   MSG_CC_SNAPSHOT          → vibe_engine (MSG_VIBEOS_SNAPSHOT)
- *   MSG_CC_RESTORE           → vibe_engine (MSG_VIBEOS_RESTORE)
+ *   MSG_CC_SNAPSHOT          → vm_manager (currently not implemented)
+ *   MSG_CC_RESTORE           → vm_manager (currently not implemented)
  *   MSG_CC_LOG_STREAM        → log_drain (OP_LOG_WRITE)
- *   MSG_CC_CREATE_GUEST      → vibe_engine (MSG_VIBEOS_CREATE)
+ *   MSG_CC_CREATE_GUEST      → vm_manager CREATE + START
  *   MSG_CC_FAULT_INJECT      → fault_inject (OP_FAULT_INJECT)
- *   MSG_CC_SUSPEND_GUEST     → vibe_engine (MSG_VIBEOS_SUSPEND) or boot guest_pd
- *   MSG_CC_RESUME_GUEST      → vibe_engine (MSG_VIBEOS_RESUME) or boot guest_pd
- *   MSG_CC_DESTROY_GUEST     → vibe_engine (MSG_VIBEOS_DESTROY) or boot guest_pd
+ *   MSG_CC_SUSPEND_GUEST     → vm_manager STOP or boot guest_pd
+ *   MSG_CC_RESUME_GUEST      → vm_manager RESUME or boot guest_pd
+ *   MSG_CC_DESTROY_GUEST     → vm_manager DESTROY or boot guest_pd
  *   MSG_CC_TRACE_START       → trace_recorder (OP_TRACE_START)
  *   MSG_CC_TRACE_STOP        → trace_recorder (OP_TRACE_STOP)
  *   MSG_CC_TRACE_QUERY       → trace_recorder (OP_TRACE_QUERY)
  *   MSG_CC_TRACE_DUMP        → trace_recorder (OP_TRACE_DUMP)
  *
  * Invariants:
- *   - cc_pd relays MR arguments verbatim; it does not interpret payload.
+ *   - cc_pd translates public handles to backend slots and validates replies.
  *   - Shmem data is copied between caller shmem and downstream PD shmem.
  *   - All routing decisions are purely based on the opcode and dev_type field.
  *   - cc_pd returns CC_ERR_RELAY_FAULT if the downstream PPC fails.
@@ -382,8 +382,13 @@ struct cc_reply_log_stream {
 
 /*
  * Create a new guest OS instance.  The request shmem contains a
- * vibeos_create_req.  cc_pd relays it to VibeOS unchanged and returns the
- * created guest handle in MR1 when MR0 == CC_OK.
+ * vibeos_create_req (the public compatibility layout). CC validates native
+ * architecture and supported device bits and calls vm_manager directly.
+ * MR1 contains the created public handle when MR0 == CC_OK. Handles are
+ * independent of reusable backend slots and are never reused. If START and
+ * rollback both fail, MR0 is CC_ERR_RELAY_FAULT and MR2 contains a retained
+ * recovery handle, also visible through LIST. No guest is reported started
+ * until the backend START reply succeeds.
  */
 
 struct cc_req_create_guest {

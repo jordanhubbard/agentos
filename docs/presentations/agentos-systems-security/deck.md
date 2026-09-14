@@ -137,7 +137,7 @@ PD and live native virtualizer clients remain planned.
 **Current release gate under qualification**
 
 One AArch64 agentOS instance can create Linux and FreeBSD guests through
-CC-PD, `vibe-engine`, and `vm_manager`. The acceptance gate requires both to
+CC-PD and `vm_manager`. The acceptance gate requires both to
 remain live and accept distinct key-only SSH sessions concurrently.
 
 **Why two guests matter**

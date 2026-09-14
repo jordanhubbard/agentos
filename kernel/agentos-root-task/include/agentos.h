@@ -266,6 +266,7 @@ typedef enum {
 #define TRACE_PD_GUEST_VMM_PRIMARY    41u
 #define TRACE_PD_GUEST_VMM_SECONDARY  42u
 #define TRACE_PD_CC_PD        43u
+#define TRACE_PD_VM_MANAGER   44u
 
 /* vm_manager IPC opcodes (MR0 in PPCs to vm_manager PD, channel CH_VM_MANAGER)
  * NOTE: 0x15/0x16 are shared with OP_CAP_BROKER_RELOAD/OP_CAP_STATUS but those

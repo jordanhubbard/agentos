@@ -5,8 +5,8 @@ separate seL4 user-mode protection domains (PDs). Linux and FreeBSD consume
 devices emulated by agentOS. Their kernels do not own the host NIC, disk, or
 UART. Native agents are intended to use the same virtualizers directly.
 
-This diagram describes the AArch64 topology at main revision
-`ff1837c3e2dda7dff32e36e7a90a43a9c0c33b5b`. It is an implementation snapshot,
+This diagram describes the AArch64 topology after the direct CC-to-VM-manager
+lifecycle change (`task_d2cfd8f55cb64e4b91e4c45ead3df6f7`). It is an implementation snapshot,
 not evidence of bare-metal or x86 guest qualification. Solid arrows show
 current paths; dashed arrows show bootstrap authority or planned paths.
 
@@ -28,7 +28,6 @@ flowchart TB
     nd[net_pd PD<br/>host NIC MMIO and IRQ]
     bd[virtio_blk PD<br/>host block MMIO, IRQ and DMA window]
     cc[cc_pd PD<br/>control API and console relay<br/>owns host virtio-serial transport]
-    legacy[vibe_engine PD<br/>current legacy dynamic-lifecycle relay<br/>scheduled for retirement]
     manager[vm_manager PD<br/>guest lifecycle control]
     serial[serial_pd PD<br/>owns PL011 UART]
     logs[log_drain PD<br/>serial encoder repaired<br/>generic log provisioning incomplete]
@@ -52,8 +51,7 @@ flowchart TB
   primary <-->|VMM-local console queues plus IPC| cc
   secondary <-->|VMM-local console queues plus IPC| cc
   operator <-->|framed control and console API| cc
-  cc -->|dynamic create and lifecycle| legacy
-  legacy --> manager
+  cc -->|public handle to VM slot<br/>dynamic create and lifecycle| manager
   manager --> primary
   manager --> secondary
   logs -->|serial control and shared payload| serial
@@ -122,14 +120,14 @@ flowchart LR
   native[Native agent PD clients] -.-> mux
   mux --> drv[Driver PDs<br/>one device class owner]
   drv --> hw[Physical device frames and IRQs]
-  cc[CC-PD lifecycle API] -.-> manager[vm_manager]
+  cc[CC-PD lifecycle API] --> manager[vm_manager]
   manager --> vmm
 ```
 
 Network and block already have the separate virtualizer boundary. Console is
-still a library inside each VMM, and dynamic lifecycle still passes through
-`vibe_engine`. Removing that relay, separating `serial_virt`, and attaching
-native clients are implementation tasks, not merely diagram changes. Physical
+still a library inside each VMM. Dynamic lifecycle now calls `vm_manager`
+directly; `vibe_engine` is retired from the image. Separating `serial_virt`
+and attaching native clients remain implementation tasks. Physical
 board execution and x86 guest execution require independent target evidence.
 
 ## Evidence and source map

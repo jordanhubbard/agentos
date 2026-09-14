@@ -40,15 +40,6 @@ priority = 160
 name = "serial_pd"
 priority = 100
 
-# ── Dynamic-guest relay (not TCB) ────────────────────────────────────────────
-# vibe_engine sits in the cc_pd guest-control relay path (MSG_CC_CREATE_GUEST,
-# dynamic guest list/lifecycle/console) and is the hop that reaches vm_manager;
-# the source lint asserts vm_manager > vibe_engine > cc_pd.
-
-[[pd]]
-name = "vibe_engine"
-priority = 165
-
 # ── Device-owning driver PDs (docs/TCB.md "TCB today") ───────────────────────
 
 [[pd]]

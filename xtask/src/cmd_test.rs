@@ -45,15 +45,15 @@ const CC_WIRE_SHMEM_SIZE: usize = 4096;
 const CC_INPUT_TEXT: u32 = 0x05;
 /*
  * A text event crosses CC -> VibeEngine -> VM manager before reaching a
- * dynamic guest.  The 24-byte event plus a 4-byte Vibe handle and a 4-byte VM
- * slot must all fit the 48-byte seL4 payload, leaving 16 text bytes per frame.
+ * dynamic guest. The 24-byte event and 4-byte VM slot fit the 48-byte seL4
+ * payload. Retain the existing bounded 16-byte host chunks for compatibility.
  */
 const CC_INPUT_TEXT_CHUNK: usize = 16;
 const CC_REQ_SIZE: usize = 4 + 12 + CC_WIRE_SHMEM_SIZE;
 const CC_REPLY_SIZE: usize = 16 + CC_WIRE_SHMEM_SIZE;
 const CC_IO_TIMEOUT: Duration = Duration::from_secs(5);
 /*
- * A console drain crosses the host virtconsole, CC-PD, vibe_engine,
+ * A console drain crosses the host virtconsole, CC-PD,
  * vm_manager, and a running VMM. Those target components now have a strictly
  * ascending priority chain, so a full minute without frame progress means the
  * QEMU chardev lost the request or reply. Reconnect and replay the identical

@@ -152,10 +152,9 @@ Do not extend these. Do not add opcodes. Do not "finish" them.
 guest channel before virtio-net is a backend, CapStore/MsgBus/ModelSvc/ToolSvc
 as "core OS".
 
-**Status:** most museum PDs are no longer bundled or booted; the live
-`vibe_engine` exception is described below. The root task
-spawns exactly the PDs in `src/system_desc_aarch64.c` (13 in the default
-image: `nameserver`, `log_drain`, `serial_pd`, `vibe_engine`, `virtio_blk`,
+**Status:** museum PDs are no longer bundled or booted. The root task
+spawns exactly the PDs in `src/system_desc_aarch64.c` (12 in the default
+image: `nameserver`, `log_drain`, `serial_pd`, `virtio_blk`,
 `block_pd`, `blk_virt`, `net_pd`, `net_virt`, `guest_vmm_primary`,
 `vm_manager`, `cc_pd`, `fault_handler`; `guest_vmm_secondary`, `fault_inject`,
 and `test_runner` + `event_bus` are added only to the image variants that use
@@ -166,14 +165,13 @@ MAC `task_f95d118416a24fa484c2c43f0d955b56` then dropped `controller`,
 `event_bus`, `init_agent`, `agentfs`, `vfs_server`, `net_server`,
 `framebuffer_pd`, and `usb_pd` from the descriptor). Museum sources are still
 compiled by the root-task Makefile `IMAGES` list so they keep building, but
-they are not in the image. The one booted PD that is not TCB is
-`vibe_engine`: `cc_pd` relays `MSG_CC_CREATE_GUEST` and the dynamic-guest
-lifecycle/console opcodes to it, and it is the hop that issues
-`OP_VM_CREATE`/`OP_VM_START` to `vm_manager`, so the dual-guest proof
-(`make demo-test`) needs it. The boot-guest console path (`test-guest-console`,
-`test-ubuntu-virtio`) does not: `cc_pd` forwards boot-guest input and drains
-its console straight to `guest_vmm`. Teaching `cc_pd` to call `vm_manager`
-directly, and retiring `vibe_engine`, is the remaining follow-up. The
+they are not in the image. CC-PD now calls `vm_manager` directly for dynamic
+creation, status, lifecycle and console control. Its bounded handle registry
+keeps public handles separate from backend slots, validates replies and
+propagates start/destroy failures. `vibe_engine` is no longer a boot dependency.
+The boot-guest console path (`test-guest-console`, `test-ubuntu-virtio`)
+continues to call `guest_vmm` directly. Console data still uses inline IPC;
+the separate `serial_virt` PD remains required. The
 `agentOS boot complete` marker the `GUEST_OS=none` harness waits for is now
 printed by `cc_pd`, the lowest-priority PD in the image, right before it enters
 its request loop. `tests/platform/lint_source_invariants.c` fails if any of
