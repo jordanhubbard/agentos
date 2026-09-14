@@ -867,6 +867,15 @@ test-integration:
 	        status=1; \
 	    fi; \
 	done; \
+	if gcc -DAGENTOS_TEST_HOST -I kernel/agentos-root-task/include \
+	        tests/platform/test_log_serial.c tests/platform/log_serial_driver.c \
+	        -o $(BUILD_TMP_DIR)/test_log_serial 2>&1 \
+	    && $(BUILD_TMP_DIR)/test_log_serial; then \
+	    echo "PASS: tests/platform/test_log_serial.c"; \
+	else \
+	    echo "FAIL: tests/platform/test_log_serial.c"; \
+	    status=1; \
+	fi; \
 	if gcc -I platform/include \
 	        tests/platform/test_net_virt_pump.c \
 	        platform/net-virt/net_virt_pump.c \

@@ -5,6 +5,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Correct `log_drain` serial OPEN and WRITE payloads so its output reaches
+  `serial_pd` on release kernels. A host round-trip test checks UART bytes,
+  nonzero slot isolation, chunked writes, and ring draining; AArch64 QEMU
+  tests now require the driver's log-drain readiness output.
+
 ## [0.3.0] - 2026-09-11
 
 ### Changed
