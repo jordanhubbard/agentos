@@ -291,8 +291,8 @@ uintptr_t log_drain_rings_vaddr;
 #define NET_PROTO_UDP  1u
 #endif
 #ifndef NET_SHMEM_BYTES
-#define NET_SHMEM_BYTES        0x200000u
-#define NET_SHMEM_SLOT_BASE    0x100000u
+#define NET_SHMEM_BYTES        NET_SVC_SHMEM_TOTAL
+#define NET_SHMEM_SLOT_BASE    NET_SVC_SLOT_BASE
 #define NET_SHMEM_SLOT_BYTES   0x4000u
 #define NET_SHMEM_DATA_OFFSET  1024u
 #endif

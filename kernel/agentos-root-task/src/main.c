@@ -647,7 +647,7 @@ static seL4_CPtr g_blk_shared_frame_cap = seL4_CapNull;
  * mapped wholly into blk_virt, with one client frame mapped into each VMM. */
 static seL4_CPtr g_blk_virt_frame_caps[AOS_BLK_SHMEM_FRAMES];
 static seL4_CPtr g_host_net_mmio_frame_cap = seL4_CapNull;
-static seL4_CPtr g_net_shared_frame_cap = seL4_CapNull;
+static seL4_CPtr g_net_shared_frame_caps[AOS_NET_SHMEM_FRAMES];
 static seL4_CPtr g_net_dma_frame_cap = seL4_CapNull;
 static seL4_CPtr g_host_secondary_blk_mmio_frame_cap = seL4_CapNull;
 static seL4_CPtr g_gic_vcpu_frame_cap = seL4_CapNull;
@@ -1436,9 +1436,16 @@ void root_task_main(const seL4_BootInfo *bi)
     }
 
     {
-        seL4_Error net_err =
-            ut_alloc_cap(seL4_ARM_LargePageObject, 0u,
-                         &g_net_shared_frame_cap);
+        seL4_Error net_err = seL4_NoError;
+        for (uint32_t f = 0u; f < AOS_NET_SHMEM_FRAMES; ++f) {
+            net_err = ut_alloc_cap(seL4_ARM_LargePageObject, 0u,
+                                   &g_net_shared_frame_caps[f]);
+            if (net_err != seL4_NoError) {
+                for (uint32_t n = 0u; n < AOS_NET_SHMEM_FRAMES; ++n)
+                    g_net_shared_frame_caps[n] = seL4_CapNull;
+                break;
+            }
+        }
         dbg_puts("[rt] net agentOS shared frame err=");
         dbg_hex((seL4_Word)net_err);
         dbg_puts("\n");
@@ -2090,21 +2097,29 @@ void root_task_main(const seL4_BootInfo *bi)
             dbg_puts("\n");
         }
 
-        if (g_net_shared_frame_cap != seL4_CapNull &&
+        /* VMMs map their own queue page, the NIC driver maps its transfer
+         * page, and only net_virt maps both tiers. */
+        if (g_net_shared_frame_caps[0] != seL4_CapNull &&
             (name_eq(pd->name, "net_pd") ||
              name_eq(pd->name, "net_virt") ||
              pd_is_guest_vmm(pd))) {
-            seL4_Word net_shared_copy = ut_alloc_slot();
-            seL4_Error net_err = seL4_NotEnoughMemory;
-            if (net_shared_copy != seL4_CapNull) {
-                net_err = seL4_CNode_Copy(
-                    seL4_CapInitThreadCNode, net_shared_copy, 64u,
-                    seL4_CapInitThreadCNode, g_net_shared_frame_cap, 64u,
-                    seL4_AllRights);
-                if (net_err == seL4_NoError) {
-                    net_err = pd_vspace_map_device_frame(
-                        vspace, (seL4_CPtr)net_shared_copy,
-                        AGENTOS_NET_SHARED_VA);
+            seL4_Error net_err = seL4_NoError;
+            for (uint32_t f = 0u; f < AOS_NET_SHMEM_FRAMES && net_err == seL4_NoError; ++f) {
+                if (pd_is_guest_vmm(pd) &&
+                    f != (pd_is_secondary_guest_vmm(pd) ? 1u : 0u)) continue;
+                if (name_eq(pd->name, "net_pd") && f != AOS_NET_DRIVER_FRAME) continue;
+                seL4_Word net_shared_copy = ut_alloc_slot();
+                net_err = seL4_NotEnoughMemory;
+                if (net_shared_copy != seL4_CapNull) {
+                    net_err = seL4_CNode_Copy(
+                        seL4_CapInitThreadCNode, net_shared_copy, 64u,
+                        seL4_CapInitThreadCNode, g_net_shared_frame_caps[f], 64u,
+                        seL4_AllRights);
+                    if (net_err == seL4_NoError) {
+                        net_err = pd_vspace_map_device_frame(
+                            vspace, (seL4_CPtr)net_shared_copy,
+                            AGENTOS_NET_SHARED_VA + (seL4_Word)f * AOS_NET_SHMEM_FRAME_SIZE);
+                    }
                 }
             }
             dbg_puts("[rt] ");

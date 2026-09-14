@@ -43,6 +43,9 @@
 
 _Static_assert(AOS_NET_SHMEM_VA == AGENTOS_NET_SHARED_VA,
                "guest net queues and net_pd slots share one frame");
+_Static_assert(NET_SVC_SLOT_BASE == AOS_NET_DRIVER_SLOT_BASE &&
+               NET_SVC_SHMEM_TOTAL == AOS_NET_SHMEM_SIZE,
+               "network driver contract must match mapped frame layout");
 _Static_assert(AOS_NET_GUEST_CLIENTS * AOS_NET_CLIENT_STRIDE <= NET_SVC_SLOT_BASE,
                "guest net queues must not overlap net-service slots");
 _Static_assert(sizeof(net_virt_attach_req_t) == 12u,
@@ -521,6 +524,6 @@ void pd_main(seL4_CPtr my_ep, seL4_CPtr ns_ep)
     agentos_log_boot("net_virt");
     aos_net_virt_reset(&g_hub);
     register_with_nameserver(ns_ep);
-    nv_puts("[net_virt] READY: contract v2, capability-bound clients, no device caps\n");
+    nv_puts("[net_virt] READY: contract v3, isolated capability-bound clients, no device caps\n");
     net_virt_run(my_ep);
 }

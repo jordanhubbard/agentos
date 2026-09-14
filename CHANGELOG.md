@@ -7,6 +7,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Map each VMM's network queues in its own large page, and keep the driver's
+  transfer page out of VMM address spaces. net_virt alone maps both tiers.
+
 - Bind virtualizer ATTACH client, VMM slot, and block-media selection to
   root-minted capability badges. Reject spoofed assignments before state or
   driver operations. Net attach is contract v2; block attach is contract v3.
