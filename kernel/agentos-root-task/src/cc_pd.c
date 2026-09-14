@@ -626,7 +626,13 @@ static void cc_trace_record(uint32_t opcode)
 #if defined(AGENTOS_GUEST_PRIMARY) || defined(AGENTOS_GUEST_SECONDARY)
 #define CC_BOOT_GUEST_HANDLE 0u
 
+/* Dual images defer both vCPUs to explicit vm_manager CREATE calls. They
+ * have no pre-existing handle-zero guest to reserve in the inventory. */
+#if defined(AGENTOS_GUEST_DUAL)
+static bool     g_boot_guest_present = false;
+#else
 static bool     g_boot_guest_present = true;
+#endif
 static uint32_t g_boot_guest_state = GUEST_STATE_RUNNING;
 #endif
 
