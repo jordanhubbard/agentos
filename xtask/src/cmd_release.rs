@@ -17,6 +17,7 @@ const REQUIRED_MAIN_CHECKS: &[&str] = &[
     "Host-side TAP tests",
     "Rust xtask check",
     "Dual-arch OS-claim gate (aarch64 + x86_64, GUEST_OS=none)",
+    "OS-claim gate (boot + guest net/blk/console proofs)",
 ];
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -976,6 +977,14 @@ mod tests {
         let mut unsafe_policy = protected.clone();
         unsafe_policy["allow_force_pushes"]["enabled"] = serde_json::json!(true);
         assert!(validate_branch_protection(&unsafe_policy).is_err());
+
+        let mut boot_only = protected.clone();
+        boot_only["required_status_checks"]["contexts"] = serde_json::json!([
+            "Host-side TAP tests",
+            "Rust xtask check",
+            "Dual-arch OS-claim gate (aarch64 + x86_64, GUEST_OS=none)"
+        ]);
+        assert!(validate_branch_protection(&boot_only).is_err());
 
         let mut no_checks = protected;
         no_checks["required_status_checks"]["contexts"] = serde_json::json!([]);
