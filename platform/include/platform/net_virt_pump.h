@@ -9,6 +9,14 @@
  * emulated device (through libvmm), by net_virt, and by the host tests.
  */
 uint16_t aos_net_queue_length(const aos_net_queue_t *q);
+/* A descriptor names exactly one aligned fixed-size buffer in its client's
+ * data region. Validate before forming a pointer; addition can overflow. */
+static inline int aos_net_buffer_valid(uint64_t offset, uint32_t length)
+{
+    return offset < AOS_NET_RX_DATA_BYTES &&
+           offset % AOS_NET_BUFFER_SIZE == 0u &&
+           length <= AOS_NET_BUFFER_SIZE;
+}
 int aos_net_queue_dequeue(aos_net_queue_t *q, uint32_t capacity,
                           aos_net_buff_desc_t *out);
 int aos_net_queue_enqueue(aos_net_queue_t *q, uint32_t capacity,
