@@ -10,14 +10,16 @@ edition. “Planned” and “under qualification” are not synonyms for shippe
 | Linux and FreeBSD guest lifecycle paths exist on AArch64 | Current, release gate under qualification | `vm_manager`, both VMMs, `make demo-test` transcript | Concurrent key-only SSH remains the acceptance boundary. |
 | Guest GPA and VMM HVA are distinct | Current implementation | Guest memory layout, guest RAM mapper, GPA helpers, host tests | Verify every virtio device before claiming complete elimination of identity assumptions. |
 | Net, block, and console use agentOS-owned emulation paths | Current architecture with target-specific proof levels | Service contracts, VMM device implementations, focused target tests | Do not include display in this claim. |
-| A desktop workload runs inside Ubuntu over the authenticated network path | Planned for 0.2 | `make demo-desktop-test` transcript and retained non-empty-frame evidence | Does not prove framebuffer, GPU, keyboard, or pointer virtualization. |
-| `framebuffer_pd` provides a live target display path | Planned for 0.3 | Target create/write/flip/read test | Current implementation is predominantly host-tested surface management. |
-| Guests receive canonical virtio-gpu and virtio-input devices | Planned for 0.3 | Linux DRM/input enumeration and captured frame | No host display MMIO or IRQ passthrough is permitted. |
+| A desktop workload runs over the authenticated network path | Ubuntu 0.2 scope deferred; pinned Debian follow-on | `make demo-desktop-test` transcript and retained non-empty-frame evidence | Does not prove framebuffer, GPU, keyboard, or pointer virtualization. |
+| `framebuffer_pd` provides a live target display path | Planned for 0.4 | Target create/write/flip/read test | Current implementation is predominantly host-tested surface management. |
+| Guests receive canonical virtio-gpu and virtio-input devices | Planned for 0.4 | Linux DRM/input enumeration and captured frame | No host display MMIO or IRQ passthrough is permitted. |
 | x86_64 guest operating systems run under agentOS | Planned for 0.4 | VMX/EPT target evidence and Linux userspace execution | Current x86 work proves a reduced root-task topology, not guest support. |
 | Omarchy is a supported agentOS guest | Conditional 0.6 direction | Official reproducible artifact, encrypted persistent install, SSH, compositor, input, frame, update, and recovery gates | Do not claim support while official architecture/artifact requirements are unmet. |
 | Releases bind claims and gates to one exact revision | Current implementation | `xtask release`, `docs/RELEASES.md`, host tests | This edition's checked receipt and remote verification are produced during publication, after its PDF is frozen. |
+| Queue client strides are isolated against a compromised VMM | Not established | Root-task network/block mapping branches in `main.c` map whole regions writable into each VMM | Software client separation is not page-level isolation; see `docs/security-architecture.md`. |
+| Console uses a separate virtualizer PD | Planned | `docs/TCB.md`, `serial_virt` task | Today the console queues are a VMM library and CC-PD relays bytes by IPC. |
 
-## Evidence still required for the first edition
+## Evidence still required for a fully qualified edition
 
 - A retained successful `make demo-test` transcript from the release revision.
 - Desktop process, protocol-handshake, and non-empty-frame evidence.
