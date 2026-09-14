@@ -990,6 +990,11 @@ test-integration:
 	    echo "FAIL: tests/platform/test_guest_vmm_runtime.c"; \
 	    status=1; \
 	fi; \
+	if gcc -std=c11 -Wall -Wextra -Werror -I platform/include \
+	        tests/platform/test_serial_virt_pump.c platform/serial-virt/pump.c \
+	        -o $(BUILD_TMP_DIR)/test_serial_virt_pump \
+	    && $(BUILD_TMP_DIR)/test_serial_virt_pump; then :; \
+	else status=1; fi; \
 	if gcc -I kernel/agentos-root-task/include -I . \
 	        tests/platform/test_native_net_client.c \
 	        kernel/agentos-root-task/src/native_net_client.c \
