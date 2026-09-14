@@ -7,6 +7,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Require the guest-I/O summary in protected-main release validation, alongside
+  the existing boot and host checks. Boot-only branch protection no longer
+  satisfies publication policy.
+
 - Correct `log_drain` serial OPEN and WRITE payloads so its output reaches
   `serial_pd` on release kernels. A host round-trip test checks UART bytes,
   nonzero slot isolation, chunked writes, and ring draining; AArch64 QEMU
