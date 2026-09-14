@@ -220,6 +220,7 @@ PD_NET_SERVER_SRCS       := src/lwip_sys.c src/lwip_shim.c src/m3_bare_metal.c s
 PD_NET_PD_SRCS           := src/lwip_sys.c src/lwip_shim.c src/m3_bare_metal.c src/log.c   # net_pd.c → services/net-service/ (E9-S3)
 PD_NET_VIRT_SRCS         := src/m3_bare_metal.c src/log.c   # net_virt.c + net_virt_pump.c → platform/net-virt/
 PD_BLK_VIRT_SRCS         := src/m3_bare_metal.c src/log.c   # blk_virt.c + blk_virt_pump.c → platform/blk-virt/
+PD_SERIAL_VIRT_SRCS      := src/m3_bare_metal.c src/log.c
 PD_WG_NET_SRCS           := src/wg_net.c src/monocypher.c src/m3_bare_metal.c src/log.c
 PD_APP_MANAGER_SRCS      := src/app_manager.c src/m3_bare_metal.c src/log.c
 PD_HTTP_SVC_SRCS         := src/http_svc.c src/m3_bare_metal.c src/log.c
@@ -251,7 +252,7 @@ _PD_SRC_VARS := \
     PD_SERIAL_PD_SRCS PD_MEMPROFILER_SRCS PD_NETISOLATOR_SRCS PD_SNAPSHOTSCHED_SRCS \
     PD_PERFCOUNTERS_SRCS PD_TIMEPARTITION_SRCS PD_TRACERECORDER_SRCS PD_NAMESERVER_SRCS \
     PD_VIRTIO_BLK_SRCS PD_VFS_SERVER_SRCS PD_SPAWN_SERVER_SRCS PD_APP_SLOT_SRCS \
-    PD_NET_SERVER_SRCS PD_NET_PD_SRCS PD_NET_VIRT_SRCS PD_BLK_VIRT_SRCS PD_WG_NET_SRCS PD_APP_MANAGER_SRCS \
+    PD_NET_SERVER_SRCS PD_NET_PD_SRCS PD_NET_VIRT_SRCS PD_BLK_VIRT_SRCS PD_SERIAL_VIRT_SRCS PD_WG_NET_SRCS PD_APP_MANAGER_SRCS \
     PD_HTTP_SVC_SRCS PD_VM_MANAGER_SRCS PD_AUTH_SERVER_SRCS PD_EXT2FS_SRCS \
     PD_PROC_SERVER_SRCS PD_VM_SNAPSHOT_SRCS PD_PFLOCAL_SERVER_SRCS PD_PFLOCAL_SRCS \
     PD_EXEC_SERVER_SRCS PD_TERM_SERVER_SRCS PD_BLOCK_PD_SRCS PD_FB_PD_SRCS \
@@ -300,6 +301,9 @@ NET_VIRT_OBJS         := $(BUILD_DIR)/net_virt.o $(BUILD_DIR)/net_virt_pump.pd.o
                     $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_NET_VIRT_SRCS))
 BLK_VIRT_OBJS         := $(BUILD_DIR)/blk_virt.o $(BUILD_DIR)/blk_virt_pump.pd.o \
                     $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_BLK_VIRT_SRCS))
+SERIAL_VIRT_OBJS      := $(BUILD_DIR)/serial_virt.pd.o $(BUILD_DIR)/serial_pump.pd.o \
+                       $(BUILD_DIR)/serial_service.pd.o \
+                       $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_SERIAL_VIRT_SRCS))
 WG_NET_OBJS           := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_WG_NET_SRCS))
 APP_MANAGER_OBJS      := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_APP_MANAGER_SRCS))
 HTTP_SVC_OBJS         := $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(PD_HTTP_SVC_SRCS))
@@ -415,6 +419,7 @@ $(BUILD_DIR)/net_pd.o: $(GUEST_CONFIG_STAMP)
 $(BUILD_DIR)/net_virt.o: $(GUEST_CONFIG_STAMP)
 # blk_virt likewise selects which VMM listen EPs it can notify.
 $(BUILD_DIR)/blk_virt.o: $(GUEST_CONFIG_STAMP)
+$(BUILD_DIR)/serial_virt.pd.o: $(GUEST_CONFIG_STAMP)
 
 IMAGE_FILE  := $(BUILD_DIR)/agentos.img
 
@@ -478,6 +483,19 @@ $(BUILD_DIR)/blk_virt.o: $(REPO_ROOT_MK)/platform/blk-virt/blk_virt.c
 	$(CC) -c $(CFLAGS) $< -o $@
 
 $(BUILD_DIR)/blk_virt_pump.pd.o: $(REPO_ROOT_MK)/platform/blk-virt/blk_virt_pump.c
+	@mkdir -p $(BUILD_DIR)
+	$(CC) -c $(CFLAGS) $< -o $@
+
+# Serial virtualizer: explicit build target until root/client integration lands.
+$(BUILD_DIR)/serial_virt.pd.o: $(REPO_ROOT_MK)/platform/serial-virt/serial_virt.c
+	@mkdir -p $(BUILD_DIR)
+	$(CC) -c $(CFLAGS) $< -o $@
+
+$(BUILD_DIR)/serial_pump.pd.o: $(REPO_ROOT_MK)/platform/serial-virt/pump.c
+	@mkdir -p $(BUILD_DIR)
+	$(CC) -c $(CFLAGS) $< -o $@
+
+$(BUILD_DIR)/serial_service.pd.o: $(REPO_ROOT_MK)/platform/serial-virt/service.c
 	@mkdir -p $(BUILD_DIR)
 	$(CC) -c $(CFLAGS) $< -o $@
 
@@ -658,6 +676,9 @@ $(BUILD_DIR)/net_virt.elf: $(NET_VIRT_OBJS)
 	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
 
 $(BUILD_DIR)/blk_virt.elf: $(BLK_VIRT_OBJS)
+	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
+
+$(BUILD_DIR)/serial_virt.elf: $(SERIAL_VIRT_OBJS)
 	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
 
 $(BUILD_DIR)/wg_net.elf: $(WG_NET_OBJS)

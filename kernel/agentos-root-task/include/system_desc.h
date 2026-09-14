@@ -223,6 +223,7 @@ typedef struct {
 #define SVC_ID_CONTROLLER     24u   /* controller (monitor) inbound server EP  */
 #define SVC_ID_NET_VIRT       25u   /* network virtualizer PD (the only net mux) */
 #define SVC_ID_BLK_VIRT       26u   /* block virtualizer PD (the only blk mux)   */
+#define SVC_ID_SERIAL_VIRT    27u   /* serial queue virtualizer PD */
 
 /* Standard per-PD CNode slot assignments for well-known capabilities.
  * These are the slots at which each PD finds its initial endpoint caps. */
@@ -261,3 +262,9 @@ typedef struct {
 #define PD_CNODE_SLOT_VIRTIO_BLK_EP   16u
 /* VMM -> blk_virt (ATTACH Call, KICK NBSend). */
 #define PD_CNODE_SLOT_BLK_VIRT_EP     17u
+/* Serial control uses an endpoint; data wakeups use persistent notifications.
+ * Root distribution and live client integration are being added separately. */
+#define PD_CNODE_SLOT_SERIAL_VIRT_EP 18u
+#define PD_CNODE_SLOT_SERIAL_VIRT_NOTIFY 19u
+#define PD_CNODE_SLOT_SERIAL_PRIMARY_NOTIFY 20u
+#define PD_CNODE_SLOT_SERIAL_SECONDARY_NOTIFY 21u
