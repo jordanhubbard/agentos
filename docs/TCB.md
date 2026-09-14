@@ -168,6 +168,11 @@ sequential ARP exchanges at the assigned address traverse `net_virt` and the
 host NIC; each waits for notification delivery before reading the RX queue.
 This does not qualify a production network stack or a native service running
 concurrently with live guests. These test PDs are absent from the default image.
+Ten `make test-native-network-isolation` images verify that reads and writes
+from the native PD fault on both guest queue pages, the driver-transfer page,
+NIC MMIO and driver DMA. Only the root task emits the success marker after
+matching the exact fault badge, address and access direction. Every probe first
+exercises the native client's authorized NIC path.
 The same proof checks real async functions, executor capacity, poll budgets
 and cancellation before verifying complete heap reuse. Its cooperative poll
 budget does not preempt arbitrary future code; seL4 scheduling remains the

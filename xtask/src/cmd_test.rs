@@ -353,6 +353,9 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
         if args.assert_native_rust {
             make_args.push(String::from("NATIVE_RUST_TEST=1"));
         }
+        if let Some(mode) = args.native_network_isolation_probe {
+            make_args.push(format!("NATIVE_NET_ISOLATION_PROBE={mode}"));
+        }
         if let Some(mode) = args.network_isolation_probe {
             make_args.push(format!("NET_ISOLATION_PROBE={mode}"));
         }
@@ -432,7 +435,18 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
         drop(connect_host_net_stimulus(ssh_port, &mut qemu));
     }
 
-    let mut result = if args.assert_native_rust {
+    let mut result = if args.native_network_isolation_probe.is_some() {
+        wait_for_all_markers(
+            &log_path,
+            &[
+                "[rt] native network isolation: expected client data fault verified",
+                "[net_virt] TX accepted by net_pd",
+                "[net_virt] RX delivered from net_pd",
+            ],
+            Duration::from_secs(args.timeout_secs),
+            &mut qemu,
+        )
+    } else if args.assert_native_rust {
         wait_for_all_markers(
             &log_path,
             &[

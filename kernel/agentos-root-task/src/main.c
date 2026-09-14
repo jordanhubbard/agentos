@@ -51,9 +51,27 @@
 #include <platform/serial_virt_layout.h>
 #include <contracts/serial_virt_contract.h>
 #include <platform/vmm_isolation_probe.h>
+#include <platform/native_net_isolation_probe.h>
 #include <contracts/virtualizer_authority.h>
 #include <contracts/net_virt_contract.h>
-#ifdef AOS_VMM_ISOLATION_PROBE
+#if defined(AGENTOS_NATIVE_NET_ISOLATION_PROBE)
+#define ROOT_FAULT_PROBE 1
+#define ROOT_PROBE_NATIVE 1
+#define ROOT_PROBE_CLIENT 2u
+#define ROOT_PROBE_BADGE AOS_NATIVE_NET_PROBE_BADGE
+#define ROOT_PROBE_ADDRESS AOS_NATIVE_NET_PROBE_ADDRESS
+#define ROOT_PROBE_WRITE AOS_NATIVE_NET_PROBE_WRITE
+#define ROOT_PROBE_MESSAGE AOS_NATIVE_NET_PROBE_MESSAGE
+#elif defined(AOS_VMM_ISOLATION_PROBE)
+#define ROOT_FAULT_PROBE 1
+#define ROOT_PROBE_NATIVE 0
+#define ROOT_PROBE_CLIENT AOS_VMM_PROBE_CLIENT
+#define ROOT_PROBE_BADGE AOS_VMM_PROBE_BADGE
+#define ROOT_PROBE_ADDRESS AOS_VMM_PROBE_ADDRESS
+#define ROOT_PROBE_WRITE AOS_VMM_PROBE_WRITE
+#define ROOT_PROBE_MESSAGE AOS_VMM_PROBE_MESSAGE
+#endif
+#ifdef ROOT_FAULT_PROBE
 #include "serial_log.h"
 #endif
 #include <platform/net_host_layout.h> /* host net MMIO/private DMA/shared bridge */
@@ -1802,14 +1820,15 @@ void root_task_main(const seL4_BootInfo *bi)
              * MRs  = [mcp, priority]
              */
             seL4_CPtr pd_fault_ep = g_fault_ep;
-#ifdef AOS_VMM_ISOLATION_PROBE
-            if (pd_is_guest_vmm(pd) &&
-                (uint32_t)pd_is_secondary_guest_vmm(pd) == AOS_VMM_PROBE_CLIENT) {
+#ifdef ROOT_FAULT_PROBE
+            if ((ROOT_PROBE_NATIVE && pd->self_svc_id == SVC_ID_NATIVE_RUST_PROBE) ||
+                (!ROOT_PROBE_NATIVE && pd_is_guest_vmm(pd) &&
+                 (uint32_t)pd_is_secondary_guest_vmm(pd) == ROOT_PROBE_CLIENT)) {
                 pd_fault_ep = ut_alloc_slot();
                 if (pd_fault_ep == seL4_CapNull ||
                     seL4_CNode_Mint(seL4_CapInitThreadCNode, pd_fault_ep, 64u,
                                    seL4_CapInitThreadCNode, g_fault_ep, 64u,
-                                   seL4_AllRights, AOS_VMM_PROBE_BADGE) != seL4_NoError) {
+                                   seL4_AllRights, ROOT_PROBE_BADGE) != seL4_NoError) {
                     dbg_puts("[rt] block isolation probe endpoint failed\n");
                     continue;
                 }
@@ -2614,7 +2633,7 @@ void root_task_main(const seL4_BootInfo *bi)
      * not regain it if its SC budget was consumed during init.
      */
     if (g_fault_ep != seL4_CapNull) {
-#ifdef AOS_VMM_ISOLATION_PROBE
+#ifdef ROOT_FAULT_PROBE
         serial_log_t probe_log = {0};
         seL4_CPtr probe_serial_frame = ut_alloc_slot();
         if (probe_serial_frame != seL4_CapNull &&
@@ -2631,13 +2650,13 @@ void root_task_main(const seL4_BootInfo *bi)
             seL4_Word badge = 0u;
             seL4_MessageInfo_t tag = seL4_Wait(g_fault_ep, &badge);
             seL4_Word label = seL4_MessageInfo_get_label(tag);
-#ifdef AOS_VMM_ISOLATION_PROBE
-            if (badge == AOS_VMM_PROBE_BADGE && label == seL4_Fault_VMFault &&
+#ifdef ROOT_FAULT_PROBE
+            if (badge == ROOT_PROBE_BADGE && label == seL4_Fault_VMFault &&
                 seL4_MessageInfo_get_length(tag) >= seL4_VMFault_Length &&
-                seL4_GetMR(seL4_VMFault_Addr) == AOS_VMM_PROBE_ADDRESS &&
+                seL4_GetMR(seL4_VMFault_Addr) == ROOT_PROBE_ADDRESS &&
                 seL4_GetMR(seL4_VMFault_PrefetchFault) == 0u &&
-                ((seL4_GetMR(seL4_VMFault_FSR) >> 6u) & 1u) == AOS_VMM_PROBE_WRITE) {
-                serial_log_puts(&probe_log, AOS_VMM_PROBE_MESSAGE);
+                ((seL4_GetMR(seL4_VMFault_FSR) >> 6u) & 1u) == ROOT_PROBE_WRITE) {
+                serial_log_puts(&probe_log, ROOT_PROBE_MESSAGE);
             }
 #endif
             dbg_puts("[rt] FAULT label=");

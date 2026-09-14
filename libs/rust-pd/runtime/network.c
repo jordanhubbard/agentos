@@ -3,6 +3,20 @@
 #include "sel4_ipc.h"
 #include "contracts/net_virt_contract.h"
 #include <platform/net_virt_pump.h>
+#include <platform/native_net_isolation_probe.h>
+
+void agentos_pd_net_isolation_probe(void)
+{
+#ifdef AGENTOS_NATIVE_NET_ISOLATION_PROBE
+    volatile uint64_t *foreign = (volatile uint64_t *)AOS_NATIVE_NET_PROBE_ADDRESS;
+#if AOS_NATIVE_NET_PROBE_WRITE
+    *foreign = UINT64_C(0xdeadbeef);
+#else
+    uint64_t observed = *foreign;
+    __asm__ volatile("" : : "r"(observed) : "memory");
+#endif
+#endif
+}
 
 int agentos_pd_net_attach(void *page, uintptr_t endpoint, uint32_t client_id,
                          uint32_t slot, uint8_t *mac, uint32_t *hardware)

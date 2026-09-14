@@ -366,7 +366,7 @@ jobs:
   # Mirrors the build-and-test job structure; runs on qemu_virt_aarch64 only.
   # ---------------------------------------------------------------------------
   native-rust-proof:
-    name: Native Rust PD boot and IPC proof
+    name: Native Rust PD runtime and network isolation proof
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -390,6 +390,10 @@ jobs:
           mkdir -p build/evidence/native-rust
           make test-rust-pd-abi 2>&1 | tee build/evidence/native-rust/abi.log
           make test-native-rust QEMU_TEST_TIMEOUT=120 2>&1 | tee build/evidence/native-rust/target.log
+          cp build/qemu_virt_aarch64/agentos.img build/evidence/native-rust/runtime.img
+          cp build/qemu_virt_aarch64/native_rust_probe.elf build/evidence/native-rust/
+          cp build/qemu_virt_aarch64/native_rust_client.elf build/evidence/native-rust/
+          make test-native-network-isolation QEMU_TEST_TIMEOUT=120 2>&1 | tee build/evidence/native-rust/isolation.log
       - name: Retain native Rust proof
         if: always()
         uses: actions/upload-artifact@v4
@@ -397,6 +401,7 @@ jobs:
           name: native-rust-proof
           path: |
             build/evidence/native-rust/
+            build/evidence/native-network-isolation/
             build/tmp/agentos-qemu-*
             build/qemu_virt_aarch64/agentos.img
             build/qemu_virt_aarch64/native_rust_probe.elf

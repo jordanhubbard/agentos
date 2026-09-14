@@ -15,6 +15,13 @@ notification waits. The harness additionally requires driver-path TX/RX markers.
 This proves the raw network path, not a production network stack or concurrent
 native/guest service operation. No external RCC port is required.
 
+`make test-native-network-isolation` runs ten fresh native images covering
+reads and writes of both guest network pages, the driver-transfer page, NIC
+MMIO and driver DMA. The root task checks the exact fault badge, address and
+direction after the native service exercised its assigned NIC path. A timeout,
+unrelated fault or normal native success marker cannot satisfy this oracle.
+CI retains each image alongside the native runtime proof.
+
 agentOS has **two distinct layers** of automated test, and they prove different
 things. Conflating them is a category error: a green host run does **not** mean
 the IPC contract holds on real seL4.

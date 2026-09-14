@@ -205,6 +205,9 @@ fn network_proof() -> Option<[u64; 3]> {
 #[no_mangle]
 pub extern "C" fn pd_main(endpoint: u64, _nameserver: u64) -> ! {
     let network_result = network_proof();
+    extern "C" { fn agentos_pd_net_isolation_probe(); }
+    // Enabled only in a dedicated probe image, after proving the owned path.
+    if network_result.is_some() { unsafe { agentos_pd_net_isolation_probe() }; }
     loop {
         let request = runtime::receive(endpoint);
         if request.badge == 0x40000000 { continue; }

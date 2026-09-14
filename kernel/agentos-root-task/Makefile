@@ -356,6 +356,10 @@ ifdef NATIVE_RUST_TEST
   endif
   CFLAGS_ROOT_TASK += -DAGENTOS_NATIVE_RUST_TEST=1
   CFLAGS += -DAGENTOS_NATIVE_RUST_TEST=1
+  ifdef NATIVE_NET_ISOLATION_PROBE
+    CFLAGS_ROOT_TASK += -DAGENTOS_NATIVE_NET_ISOLATION_PROBE=$(NATIVE_NET_ISOLATION_PROBE)
+    CFLAGS += -DAGENTOS_NATIVE_NET_ISOLATION_PROBE=$(NATIVE_NET_ISOLATION_PROBE)
+  endif
   IMAGES += native_rust_probe.elf native_rust_client.elf
 endif
 
@@ -581,7 +585,7 @@ $(BUILD_DIR)/rust_pd_memory.o: $(REPO_ROOT)/libs/rust-pd/runtime/memory.c
 	@mkdir -p $(BUILD_DIR)
 	$(CC) -c $(CFLAGS) $< -o $@
 
-$(BUILD_DIR)/rust_pd_network.o: $(REPO_ROOT)/libs/rust-pd/runtime/network.c
+$(BUILD_DIR)/rust_pd_network.o: $(REPO_ROOT)/libs/rust-pd/runtime/network.c $(GUEST_CONFIG_STAMP)
 	@mkdir -p $(BUILD_DIR)
 	$(CC) -c $(CFLAGS) $< -o $@
 

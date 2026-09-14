@@ -693,6 +693,15 @@ test-host: policy-check guest-profile-check lint-source test-integration
 test-native-rust:
 	cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os none --assert-native-rust --timeout-secs $(QEMU_TEST_TIMEOUT)
 
+.PHONY: test-native-network-isolation
+test-native-network-isolation:
+	@mkdir -p build/evidence/native-network-isolation
+	@set -e; for mode in 1 2 3 4 5 6 7 8 9 10; do \
+	    cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os none --assert-native-rust \
+	        --native-network-isolation-probe $$mode --timeout-secs $(QEMU_TEST_TIMEOUT); \
+	    cp build/qemu_virt_aarch64/agentos.img build/evidence/native-network-isolation/mode-$$mode.img; \
+	done
+
 test-rust-pd-abi:
 	cargo test -p agentos-pd --features std
 	@mkdir -p $(BUILD_TMP_DIR)
