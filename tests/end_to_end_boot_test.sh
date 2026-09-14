@@ -89,7 +89,7 @@ SERIAL_SOCK="/tmp/agentos-e2e-boot-test-$$.sock"
 #   [net_server]    kernel/agentos-root-task/src/net_server.c:863
 #   [vibe_engine]   kernel/agentos-root-task/src/vibe_engine.c:718 (starting) +
 #                   the controller ack path
-#   [controller]    kernel/agentos-root-task/src/monitor.c:572
+#   [controller]    services/legacy-pds/monitor.c:572
 
 REQUIRED_MARKERS=(
     "[event_bus] READY"

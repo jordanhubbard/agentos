@@ -687,7 +687,7 @@ int main(void)
                      dropped[d]);
             ok(find_pd(dropped[d]) == NULL, name);
         }
-        ok(find_pd("cc_pd") != NULL && contains("kernel/agentos-root-task/src/cc_pd.c",
+        ok(find_pd("cc_pd") != NULL && contains("services/command-console/cc_pd.c",
                                                 "agentOS boot complete"),
            "museum: cc_pd prints the harness boot-complete marker (controller is gone)");
     }

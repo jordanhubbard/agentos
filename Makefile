@@ -1081,7 +1081,7 @@ test-integration:
 	else status=1; fi; \
 	if gcc -I kernel/agentos-root-task/include -I . \
 	        tests/platform/test_native_net_client.c \
-	        kernel/agentos-root-task/src/native_net_client.c \
+	        services/legacy-pds/native_net_client.c \
 	        -o $(BUILD_TMP_DIR)/test_native_net_client 2>&1 \
 	    && $(BUILD_TMP_DIR)/test_native_net_client; then \
 	    echo "PASS: tests/platform/test_native_net_client.c"; \
@@ -1091,7 +1091,7 @@ test-integration:
 	fi; \
 	if gcc -I kernel/agentos-root-task/include \
 	        tests/platform/test_cc_retry_cache.c \
-	        kernel/agentos-root-task/src/cc_retry_cache.c \
+	        services/command-console/cc_retry_cache.c \
 	        -o $(BUILD_TMP_DIR)/test_cc_retry_cache 2>&1 \
 	    && $(BUILD_TMP_DIR)/test_cc_retry_cache; then \
 	    echo "PASS: tests/platform/test_cc_retry_cache.c"; \
@@ -1109,7 +1109,7 @@ test-integration:
 	if gcc -DAGENTOS_TEST_HOST -include tests/microkit.h \
 	        -iquote kernel/agentos-root-task/include \
 	        tests/platform/test_cc_vm_client.c \
-	        kernel/agentos-root-task/src/cc_vm_client.c \
+	        services/command-console/cc_vm_client.c \
 	        -o $(BUILD_TMP_DIR)/test_cc_vm_client 2>&1 \
 	    && $(BUILD_TMP_DIR)/test_cc_vm_client; then \
 	    echo "PASS: tests/platform/test_cc_vm_client.c"; \

@@ -10,13 +10,13 @@ void agentos_log_boot(const char *pd_name) { (void)pd_name; }
 void agentos_log_channel(const char *pd, uint32_t ch) { (void)pd; (void)ch; }
 
 #define pd_main block_pd_entry
-#include "../../kernel/agentos-root-task/src/block_pd.c"
+#include "../../services/block-driver/block_pd.c"
 #undef pd_main
 
 #define blk_dma_shmem_vaddr virtio_blk_dma_shmem_vaddr
 #define log_drain_rings_vaddr virtio_log_drain_rings_vaddr
 #define pd_main virtio_blk_entry
-#include "../../kernel/agentos-root-task/src/virtio_blk.c"
+#include "../../services/block-driver/virtio_blk.c"
 #undef pd_main
 #undef log_drain_rings_vaddr
 #undef blk_dma_shmem_vaddr
@@ -26,7 +26,7 @@ void agentos_log_channel(const char *pd, uint32_t ch) { (void)pd; (void)ch; }
 #define blk_dma_shmem_vaddr vfs_blk_dma_shmem_vaddr
 #define log_drain_rings_vaddr vfs_log_drain_rings_vaddr
 #define pd_main vfs_server_entry
-#include "../../kernel/agentos-root-task/src/vfs_server.c"
+#include "../../services/legacy-pds/vfs_server.c"
 #undef pd_main
 #undef log_drain_rings_vaddr
 #undef blk_dma_shmem_vaddr

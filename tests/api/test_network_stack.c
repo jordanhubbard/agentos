@@ -158,7 +158,7 @@ static inline void dw32(uint8_t *d, int off, uint32_t v)
 #define wg_net_test_init      _wg_net_test_init_fn
 #define wg_net_timer_tick     _wg_net_timer_tick_fn
 
-#include "../../kernel/agentos-root-task/src/wg_net.c"
+#include "../../services/legacy-pds/wg_net.c"
 
 #undef peers
 #undef active_peer_count

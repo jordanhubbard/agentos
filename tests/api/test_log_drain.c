@@ -27,7 +27,7 @@
 
 /* Pull in the PD implementation.  The AGENTOS_TEST_HOST guard inside
  * log_drain.c replaces all seL4/Microkit references with stubs. */
-#include "../../kernel/agentos-root-task/src/log_drain.c"
+#include "../../services/log-drain/log_drain.c"
 
 /* ── Ring buffer backing store ──────────────────────────────────────────────── */
 

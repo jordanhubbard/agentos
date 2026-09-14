@@ -4,7 +4,7 @@
 #include "log_serial_driver.h"
 
 #define LOG_DRAIN_TEST_CALL log_serial_call
-#include "../../kernel/agentos-root-task/src/log_drain.c"
+#include "../../services/log-drain/log_drain.c"
 
 static uint8_t shared[4096];
 static uint8_t rings[MAX_LOG_RINGS * RING_SIZE];
