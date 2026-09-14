@@ -71,6 +71,10 @@ priority = 205
 name = "blk_virt"
 priority = 210
 
+[[pd]]
+name = "serial_virt"
+priority = 203
+
 # ── Guest execution and control ──────────────────────────────────────────────
 
 [[pd]]

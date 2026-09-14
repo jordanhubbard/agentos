@@ -46,6 +46,8 @@ seL4
         │                  region + NBSend notifications, chunked DMA-window
         │                  Calls into virtio_blk)
         ├── vm_manager     guest lifecycle control (create, bind, status)
+        ├── serial_virt    serial queue service, no device frame or IRQ;
+        │                  client adapter migration remains in progress
         └── guest_vmm_*    vCPU, vGIC, emulated virtio-mmio net/blk/console,
               │            GPA-translated payload copies
               ├── Linux guest    in-tree virtio drivers
@@ -99,9 +101,12 @@ Lint: `tests/platform/lint_source_invariants.c` (`inv2:` block checks).
 *library* linked into each `guest_vmm` PD
 (`platform/serial-virt/vmm_virtio_console.c`): the sDDF-shaped queues sit
 between the emulated device and a pump inside the VMM address space, and
-console bytes reach `cc_pd` by IPC. There is no `serial_virt` PD in the
-image. That per-byte IPC is recorded here so the gap is visible, not to
-license it.
+console bytes still reach `cc_pd` by IPC. The new `serial_virt` PD is now
+in the topology, with three root-provisioned pages: one per VMM and a separate
+CC frontend page. Only the virtualizer maps all three. Root grants send-only
+notification capabilities for persistent wakeups and role-bound attach
+endpoints. VMM and CC adapters still need migration, so this boot topology
+alone does not close invariant 2 or prove the new console path.
 
 ## TCB target — the shape the platform is converging on
 
@@ -153,9 +158,9 @@ guest channel before virtio-net is a backend, CapStore/MsgBus/ModelSvc/ToolSvc
 as "core OS".
 
 **Status:** museum PDs are no longer bundled or booted. The root task
-spawns exactly the PDs in `src/system_desc_aarch64.c` (12 in the default
+spawns exactly the PDs in `src/system_desc_aarch64.c` (13 in the default
 image: `nameserver`, `log_drain`, `serial_pd`, `virtio_blk`,
-`block_pd`, `blk_virt`, `net_pd`, `net_virt`, `guest_vmm_primary`,
+`block_pd`, `blk_virt`, `net_pd`, `net_virt`, `serial_virt`, `guest_vmm_primary`,
 `vm_manager`, `cc_pd`, `fault_handler`; `guest_vmm_secondary`, `fault_inject`,
 and `test_runner` + `event_bus` are added only to the image variants that use
 them), and

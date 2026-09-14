@@ -360,6 +360,7 @@ endif
 GUEST_PRIMARY_PROFILE ?=
 GUEST_SECONDARY_PROFILE ?=
 GUEST_PRIMARY_LARGE ?= 0
+IMAGES += serial_virt.elf
 GUEST_CONFIG_STAMP := $(BUILD_DIR)/guest_config.stamp
 
 # AArch64: include the configured profile-backed VMM slots.
@@ -486,7 +487,7 @@ $(BUILD_DIR)/blk_virt_pump.pd.o: $(REPO_ROOT_MK)/platform/blk-virt/blk_virt_pump
 	@mkdir -p $(BUILD_DIR)
 	$(CC) -c $(CFLAGS) $< -o $@
 
-# Serial virtualizer: explicit build target until root/client integration lands.
+# Serial virtualizer PD and bounded queue service.
 $(BUILD_DIR)/serial_virt.pd.o: $(REPO_ROOT_MK)/platform/serial-virt/serial_virt.c
 	@mkdir -p $(BUILD_DIR)
 	$(CC) -c $(CFLAGS) $< -o $@
