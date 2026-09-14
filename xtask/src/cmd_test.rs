@@ -202,8 +202,8 @@ fn virtio_markers(assertion: &VirtioAssertion) -> Vec<&'static str> {
 
 pub fn run(args: &TestArgs) -> anyhow::Result<()> {
     anyhow::ensure!(
-        !args.assert_native_rust || (args.board == "qemu_virt_aarch64"
-            && args.guest_os == "none" && !args.no_build),
+        !args.assert_native_rust
+            || (args.board == "qemu_virt_aarch64" && args.guest_os == "none" && !args.no_build),
         "--assert-native-rust requires a fresh qemu_virt_aarch64 GUEST_OS=none image"
     );
     anyhow::ensure!(
@@ -433,9 +433,12 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
     }
 
     let mut result = if args.assert_native_rust {
-        wait_for_all_markers(&log_path,
+        wait_for_all_markers(
+            &log_path,
             &["[native-rust] PASS: IPC version, all 120 MRs, invalid requests, recovery"],
-            Duration::from_secs(args.timeout_secs), &mut qemu)
+            Duration::from_secs(args.timeout_secs),
+            &mut qemu,
+        )
     } else if args.virtualizer_authority_probe.is_some() {
         wait_for_all_markers(&log_path,
             &["[authority-test] spoofed attachments rejected; assigned net/block clients accepted"],
