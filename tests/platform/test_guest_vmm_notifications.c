@@ -1,5 +1,6 @@
 #include <platform/guest_vmm_loop.h>
 #include <contracts/serial_virt_contract.h>
+#include <contracts/blk_virt_contract.h>
 #include <contracts/guest_contract.h>
 #include <setjmp.h>
 #include <stdio.h>
@@ -50,6 +51,19 @@ int main(void)
     dispatch(0, MSG_GUEST_CREATE);
     check(rpcs == 1 && sends == 1 && !notifications && !faults,
           "real lifecycle IPC retains its normal reply path");
+    dispatch(BLK_VIRT_VMM_WAKE_BADGE, MSG_GUEST_DESTROY);
+    check(notifications == 1 && !rpcs && !faults && !sends &&
+          observed_badge == BLK_VIRT_VMM_WAKE_BADGE,
+          "block wake cannot execute stale destroy RPC");
+    dispatch(BLK_VIRT_VMM_WAKE_BADGE | SERIAL_VIRT_VMM_WAKE_BADGE, 7);
+    check(notifications == 1 && !rpcs && !faults && !sends &&
+          observed_badge == (BLK_VIRT_VMM_WAKE_BADGE | SERIAL_VIRT_VMM_WAKE_BADGE),
+          "coalesced serial and block bits both reach notification handler");
+    check(blk_virt_service_notification(1) && blk_virt_service_notification(2) &&
+          blk_virt_service_notification(3) && !blk_virt_service_notification(0) &&
+          !blk_virt_service_notification(virt_client_badge(0)) &&
+          !blk_virt_service_notification(virt_client_badge(1)),
+          "block client wake bits cannot alias attachment authority");
     dispatch(UINT64_C(1) << 62, 7);
     check(faults == 1 && sends == 1 && !notifications && !rpcs,
           "real VCPU fault badge remains on the fault path");

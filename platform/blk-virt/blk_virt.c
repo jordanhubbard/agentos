@@ -23,11 +23,9 @@
  * window, so two guests can no longer race each other in that window: their
  * requests are serialised here.
  *
- * Notifications are NBSend on endpoints and can be dropped when the target
- * is not blocked in Recv.  Every drop is recoverable: the VMM re-kicks on
- * the next guest exit while its request queue is non-empty and our
- * req_consumer_signalled word is 0, and the VMM drains its response queue
- * after every guest exit, so a dropped RESP_READY only costs latency.
+ * Queue wakeups use persistent bound notifications in both directions.
+ * Receivers scan queues after waking; no retry depends on a guest exit,
+ * including the preboot initrd staging path.
  */
 
 #include "agentos.h"
@@ -61,7 +59,7 @@ typedef struct {
     uint8_t               read_marked;
     uint32_t              client_id;
     uint32_t              media_id;
-    seL4_CPtr             vmm_ep;       /* owning VMM listen EP (RESP_READY) */
+    seL4_CPtr             vmm_ep;       /* send-only owning VMM notification */
     uint32_t              requests;
     uint32_t              responses;
     aos_blk_virt_client_t q;
@@ -307,11 +305,8 @@ static aos_blk_resp_status_t host_blk_backend(
 
 static void bv_notify_vmm(const bv_client_t *c)
 {
-    seL4_MessageInfo_t event =
-        seL4_MessageInfo_new(BLK_VIRT_EVENT_RESP_READY, 0u, 0u, 0u);
-
     if (c->vmm_ep != 0u) {
-        seL4_NBSend(c->vmm_ep, event);
+        seL4_Signal(c->vmm_ep);
     }
 }
 
@@ -319,12 +314,12 @@ static seL4_CPtr vmm_ep_for_slot(uint32_t vmm_slot)
 {
 #if defined(AGENTOS_GUEST_PRIMARY)
     if (vmm_slot == BLK_VIRT_VMM_SLOT_PRIMARY) {
-        return (seL4_CPtr)PD_CNODE_SLOT_GUEST_VMM_PRIMARY_EP;
+        return (seL4_CPtr)PD_CNODE_SLOT_BLK_PRIMARY_NOTIFY;
     }
 #endif
 #if defined(AGENTOS_GUEST_SECONDARY)
     if (vmm_slot == BLK_VIRT_VMM_SLOT_SECONDARY) {
-        return (seL4_CPtr)PD_CNODE_SLOT_GUEST_VMM_SECONDARY_EP;
+        return (seL4_CPtr)PD_CNODE_SLOT_BLK_SECONDARY_NOTIFY;
     }
 #endif
     (void)vmm_slot;
@@ -517,6 +512,10 @@ static void blk_virt_run(seL4_CPtr ep)
 #else
         seL4_MessageInfo_t info = seL4_Recv(ep, &badge);
 #endif
+        if (blk_virt_service_notification(badge)) {
+            bv_service();
+            continue;
+        }
         seL4_Word label = seL4_MessageInfo_get_label(info);
         (void)badge;
 
@@ -548,6 +547,6 @@ void pd_main(seL4_CPtr my_ep, seL4_CPtr ns_ep)
 {
     agentos_log_boot("blk_virt");
     register_with_nameserver(ns_ep);
-    bv_puts("[blk_virt] READY: contract v3, capability-bound clients/media, no device caps\n");
+    bv_puts("[blk_virt] READY: contract v4, persistent wakeups, capability-bound clients/media, no device caps\n");
     blk_virt_run(my_ep);
 }

@@ -116,8 +116,7 @@ static void blk_virt_attach(uint32_t media_id)
 
 static void blk_virt_kick(void)
 {
-    seL4_NBSend((seL4_CPtr)PD_CNODE_SLOT_BLK_VIRT_EP,
-                seL4_MessageInfo_new(BLK_VIRT_EVENT_KICK, 0u, 0u, 0u));
+    seL4_Signal((seL4_CPtr)PD_CNODE_SLOT_BLK_VIRT_NOTIFY);
 }
 
 /* Kick only while blk_virt asked for kicks (contract: it owns the word). */
