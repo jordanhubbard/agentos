@@ -129,7 +129,7 @@ Result: `make test-target TARGET_ARCH=aarch64 GUEST_OS=none` boots the image and
 the runner emits real-IPC TAP (`ok 1..14`, `TAP_DONE:0`). On x86_64 (reduced
 smoke, no runner) the root task still emits the boot-proof stub TAP.
 
-### Virtualizer client mapping isolation
+### NIC IRQ receive dispatch
 
 `test_net_server_loop` executes the NIC driver's production receive loop
 with injected notification badges and stale IPC labels. It requires one IRQ
@@ -137,6 +137,8 @@ callback and no request dispatch or reply for each hardware notification;
 ordinary endpoint requests must preserve their badge and reply. This guards
 against missing the hardware IRQ acknowledgement because of a stale label.
 The guest network gate remains the target proof of actual NIC I/O.
+
+### Virtualizer client mapping isolation
 
 The bidirectional Ubuntu console assertion also requires both actual
 `serial_virt` transfer markers, in addition to the emulated device markers

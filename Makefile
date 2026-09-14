@@ -937,6 +937,11 @@ test-integration:
 	    echo "FAIL: tests/platform/test_net_virt_pump.c"; \
 	    status=1; \
 	fi; \
+	if gcc -std=c11 -Wall -Wextra -Werror -DCONFIG_KERNEL_MCS \
+	        -I tests/platform/loop-stubs -I platform/include \
+	        tests/platform/test_net_server_loop.c -o $(BUILD_TMP_DIR)/test_net_server_loop \
+	    && $(BUILD_TMP_DIR)/test_net_server_loop; then :; \
+	else status=1; fi; \
 	if gcc -I platform/include tests/platform/test_arm_vtimer.c \
 	        -o $(BUILD_TMP_DIR)/test_arm_vtimer 2>&1 \
 	    && $(BUILD_TMP_DIR)/test_arm_vtimer; then \
@@ -1032,11 +1037,6 @@ test-integration:
 	        tests/platform/test_guest_vmm_notifications.c platform/guest-vmm/loop.c \
 	        -o $(BUILD_TMP_DIR)/test_guest_vmm_notifications \
 	    && $(BUILD_TMP_DIR)/test_guest_vmm_notifications; then :; \
-	else status=1; fi; \
-	if gcc -std=c11 -Wall -Wextra -Werror -DCONFIG_KERNEL_MCS \
-	        -I tests/platform/loop-stubs -I platform/include \
-	        tests/platform/test_net_server_loop.c -o $(BUILD_TMP_DIR)/test_net_server_loop \
-	    && $(BUILD_TMP_DIR)/test_net_server_loop; then :; \
 	else status=1; fi; \
 	if gcc -std=c11 -Wall -Wextra -Werror -I libvmm/include \
 	        tests/platform/test_virtio_console_tx.c -o $(BUILD_TMP_DIR)/test_virtio_console_tx \
