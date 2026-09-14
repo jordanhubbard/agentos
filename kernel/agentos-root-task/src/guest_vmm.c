@@ -410,6 +410,7 @@ void pd_main(seL4_CPtr my_ep, seL4_CPtr ns_ep) { guest_vmm_main(my_ep, ns_ep); }
 #include <libvmm/vmm_caps.h>   /* vmm_register_vcpu                           */
 #include <libvmm/arch/aarch64/vgic/vgic.h>
 #include <platform/guest_boot.h>
+#include <platform/arm_vtimer.h>
 #include <platform/guest_memory_layout.h>
 #include <platform/guest_profile.h>
 #include <platform/guest_vmm_loop.h>
@@ -1514,13 +1515,13 @@ static seL4_MessageInfo_t guest_vmm_fault(seL4_Word badge,
         if (exception_class == 0x01u) {
             seL4_Word timer_ctl =
                 vmm_vcpu_arm_read_reg(vcpu_id, seL4_VCPUReg_CNTV_CTL);
-            if (!vgic_irq_is_pending(vcpu_id, GUEST_VTIMER_IRQ) &&
-                !vgic_irq_is_inflight(vcpu_id, GUEST_VTIMER_IRQ)) {
-                if ((timer_ctl & 0x5u) == 0x5u) {
-                    (void)virq_inject_vcpu(vcpu_id, GUEST_VTIMER_IRQ);
-                } else if ((timer_ctl & 0x5u) == 0x1u) {
-                    vmm_vcpu_arm_ack_vppi(vcpu_id, GUEST_VTIMER_IRQ);
-                }
+            aos_vtimer_action_t action = aos_vtimer_wfi_action(
+                timer_ctl, vgic_irq_is_pending(vcpu_id, GUEST_VTIMER_IRQ),
+                vgic_irq_is_inflight(vcpu_id, GUEST_VTIMER_IRQ));
+            if (action == AOS_VTIMER_INJECT) {
+                (void)virq_inject_vcpu(vcpu_id, GUEST_VTIMER_IRQ);
+            } else if (action == AOS_VTIMER_REARM_VPPI) {
+                vmm_vcpu_arm_ack_vppi(vcpu_id, GUEST_VTIMER_IRQ);
             }
         }
     }

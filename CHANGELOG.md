@@ -7,6 +7,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Honor the guest's virtual-timer interrupt mask during AArch64 WFI recovery;
+  an expired masked timer no longer causes a synthetic interrupt. Preserve
+  pending/inflight IRQ guards and rearm the independent seL4 VPPI when the
+  timer output is deasserted.
+
 - Require the guest-I/O summary in protected-main release validation, alongside
   the existing boot and host checks. Boot-only branch protection no longer
   satisfies publication policy.
