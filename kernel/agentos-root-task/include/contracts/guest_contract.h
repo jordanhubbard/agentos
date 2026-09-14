@@ -67,6 +67,11 @@ typedef uint32_t guest_cap_token_t;
 #define GUEST_STATE_SUSPENDED  5u  /* suspended by MSG_GUEST_SUSPEND */
 #define GUEST_STATE_DEAD       6u  /* terminated; no restart */
 
+/* Live profile VMM lifecycle: BOOT accepts READY (or an already RUNNING
+ * guest); a SUSPENDED guest must use RESUME. SUSPEND/RESUME require a booted
+ * guest in RUNNING/SUSPENDED state. Invalid transitions return BAD_STATE;
+ * failed execution callbacks return NOT_READY without advancing the state. */
+
 /* ─── Guest capabilities structure ──────────────────────────────────────── */
 
 typedef struct __attribute__((packed)) {

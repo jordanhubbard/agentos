@@ -238,6 +238,31 @@ int main(void)
                     suspends == suspends_before,
                     "destroy of suspended guest needs no second suspend");
 
-    printf("1..21\n");
+    state = GUEST_STATE_SUSPENDED;
+    unsigned starts_before = starts;
+    unsigned resumes_before = resumes;
+    request(&req, MSG_GUEST_BOOT, 0u);
+    (void)aos_guest_vmm_lifecycle_rpc(&req, &rep, &runtime);
+    failed += check(rep.opcode == GUEST_ERR_BAD_STATE &&
+                    state == GUEST_STATE_SUSPENDED &&
+                    starts == starts_before && resumes == resumes_before,
+                    "BOOT cannot bypass a suspended execution context");
+
+    state = GUEST_STATE_READY;
+    started = false;
+    request(&req, MSG_GUEST_RESUME, 0u);
+    (void)aos_guest_vmm_lifecycle_rpc(&req, &rep, &runtime);
+    failed += check(rep.opcode == GUEST_ERR_BAD_STATE &&
+                    state == GUEST_STATE_READY && !started &&
+                    resumes == resumes_before,
+                    "RESUME cannot report an unbooted guest as running");
+    suspends_before = suspends;
+    request(&req, MSG_GUEST_SUSPEND, 0u);
+    (void)aos_guest_vmm_lifecycle_rpc(&req, &rep, &runtime);
+    failed += check(rep.opcode == GUEST_ERR_BAD_STATE &&
+                    state == GUEST_STATE_READY && suspends == suspends_before,
+                    "SUSPEND cannot detach an unbooted guest context");
+
+    printf("1..24\n");
     return failed == 0 ? 0 : 1;
 }

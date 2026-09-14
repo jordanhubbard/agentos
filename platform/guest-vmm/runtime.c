@@ -46,6 +46,9 @@ bool aos_guest_vmm_lifecycle_rpc(const sel4_msg_t *req, sel4_msg_t *rep,
             rep->opcode = GUEST_ERR_BAD_GUEST_ID;
         } else if (*runtime->state == GUEST_STATE_DEAD) {
             rep->opcode = GUEST_ERR_DEAD;
+        } else if (*runtime->state != GUEST_STATE_READY &&
+                   *runtime->state != GUEST_STATE_RUNNING) {
+            rep->opcode = GUEST_ERR_BAD_STATE;
         } else if (!*runtime->started &&
                    (runtime->start == NULL || !runtime->start())) {
             rep->opcode = GUEST_ERR_NOT_READY;
@@ -59,6 +62,10 @@ bool aos_guest_vmm_lifecycle_rpc(const sel4_msg_t *req, sel4_msg_t *rep,
             rep->opcode = GUEST_ERR_BAD_GUEST_ID;
         } else if (*runtime->state == GUEST_STATE_DEAD) {
             rep->opcode = GUEST_ERR_DEAD;
+        } else if (!*runtime->started ||
+                   (*runtime->state != GUEST_STATE_RUNNING &&
+                    *runtime->state != GUEST_STATE_SUSPENDED)) {
+            rep->opcode = GUEST_ERR_BAD_STATE;
         } else {
             if (*runtime->state != GUEST_STATE_SUSPENDED) {
                 if (runtime->suspend == NULL || !runtime->suspend()) {
@@ -76,6 +83,10 @@ bool aos_guest_vmm_lifecycle_rpc(const sel4_msg_t *req, sel4_msg_t *rep,
             rep->opcode = GUEST_ERR_BAD_GUEST_ID;
         } else if (*runtime->state == GUEST_STATE_DEAD) {
             rep->opcode = GUEST_ERR_DEAD;
+        } else if (!*runtime->started ||
+                   (*runtime->state != GUEST_STATE_RUNNING &&
+                    *runtime->state != GUEST_STATE_SUSPENDED)) {
+            rep->opcode = GUEST_ERR_BAD_STATE;
         } else {
             if (*runtime->state == GUEST_STATE_SUSPENDED &&
                 (runtime->resume == NULL || !runtime->resume())) {
