@@ -12,6 +12,7 @@
 # ─── Paths ────────────────────────────────────────────────────────────────
 KERNEL_SRC_DIR := $(abspath $(dir $(lastword $(MAKEFILE_LIST))))
 AGENTOS_ROOT   := $(abspath $(KERNEL_SRC_DIR)/../..)
+include $(KERNEL_SRC_DIR)/source_migration.mk
 LIBVMM_ABS     := $(AGENTOS_ROOT)/libvmm
 SDDF_ABS       := $(LIBVMM_ABS)/dep/sddf
 DTC            := dtc
@@ -182,7 +183,7 @@ VMM_VIRTIO_CONSOLE_OBJ := $(BUILD_DIR)/vmm_virtio_console.$(VMM_SLOT).o
 # Makefile also writes $(BUILD_DIR)/guest_vmm_primary.o for the default stub build, and
 # reusing that path can silently link a stale object compiled with incompatible
 # flags.
-$(GUEST_VMM_PRIMARY_OBJ): $(KERNEL_SRC_DIR)/src/guest_vmm.c $(VMM_CONFIG_STAMP) $(GUEST_PROFILE_BUILD_HEADER) \
+$(GUEST_VMM_PRIMARY_OBJ): $(AGENTOS_ROOT)/platform/guest-vmm/guest_vmm.c $(VMM_CONFIG_STAMP) $(GUEST_PROFILE_BUILD_HEADER) \
                       $(AGENTOS_ROOT)/platform/include/platform/guest_memory_layout.h \
                       $(AGENTOS_ROOT)/platform/include/platform/guest_boot.h \
                       $(AGENTOS_ROOT)/platform/include/platform/guest_profile.h \
@@ -194,12 +195,12 @@ $(GUEST_VMM_PRIMARY_OBJ): $(KERNEL_SRC_DIR)/src/guest_vmm.c $(VMM_CONFIG_STAMP) 
 	@echo "[VMM] Compiling guest_vmm.c..."
 	clang $(VMM_CFLAGS) -include $(GUEST_PROFILE_BUILD_HEADER) -c -o $@ $<
 
-$(GPU_SHMEM_FULL_OBJ): $(KERNEL_SRC_DIR)/src/gpu_shmem.c $(VMM_CONFIG_STAMP)
+$(GPU_SHMEM_FULL_OBJ): $(AGENTOS_ROOT)/services/legacy-pds/gpu_shmem.c $(VMM_CONFIG_STAMP)
 	@mkdir -p $(BUILD_DIR)
 	@echo "[VMM] Compiling gpu_shmem.c..."
 	clang $(VMM_CFLAGS) -c -o $@ $<
 
-$(VMM_PD_ENTRY_OBJ): $(KERNEL_SRC_DIR)/src/pd_entry.c $(VMM_CONFIG_STAMP)
+$(VMM_PD_ENTRY_OBJ): $(AGENTOS_ROOT)/libs/pd-support/pd_entry.c $(VMM_CONFIG_STAMP)
 	@mkdir -p $(BUILD_DIR)
 	@echo "[VMM] Compiling pd_entry.c..."
 	clang $(VMM_CFLAGS) -c -o $@ $<
@@ -331,7 +332,7 @@ $(BUILD_DIR)/guest_secondary_profile.o: $(PKG_PROFILE) $(GUEST_PROFILE_BIN)
 		-target aarch64-none-elf $(PKG_PROFILE) -o $@
 
 # ─── Compile the same profile-backed VMM source for the secondary instance ─
-$(BUILD_DIR)/guest_vmm_secondary.o: $(KERNEL_SRC_DIR)/src/guest_vmm.c $(VMM_CONFIG_STAMP) $(GUEST_PROFILE_BUILD_HEADER) \
+$(BUILD_DIR)/guest_vmm_secondary.o: $(AGENTOS_ROOT)/platform/guest-vmm/guest_vmm.c $(VMM_CONFIG_STAMP) $(GUEST_PROFILE_BUILD_HEADER) \
                            $(AGENTOS_ROOT)/platform/include/platform/guest_memory_layout.h \
                            $(AGENTOS_ROOT)/platform/include/platform/guest_boot.h \
                            $(AGENTOS_ROOT)/platform/include/platform/guest_profile.h \

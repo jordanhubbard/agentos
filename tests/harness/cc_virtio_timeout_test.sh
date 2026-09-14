@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # cc_virtio_timeout_test.sh — QEMU/target proof of CC-PD VirtIO timeout (agentos-45b)
 #
-# CC-PD (kernel/agentos-root-task/src/cc_pd.c) talks to its host-side controller
+# CC-PD (services/command-console/cc_pd.c) talks to its host-side controller
 # over a VirtIO-MMIO serial console (QEMU virtconsole on a unix-socket chardev,
 # build/cc_pd.sock).  vio_serial_write() and vio_serial_read() each spin on the
 # VirtIO *used* ring with a bounded wait (CC_VIRTIO_WAIT_LIMIT).  If the used

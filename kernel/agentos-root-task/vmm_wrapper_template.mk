@@ -42,6 +42,7 @@ vpath %.c $(LIBVMM)
 
 include $(LIBVMM)/vmm.mk
 include $(SDDF)/util/util.mk
+include @KERNEL_SRC_DIR@/source_migration.mk
 
 # libvmm.mk adds -fsanitize-trap=undefined (brk). In this PD that trap is a
 # VCPUFault/UserException with no handler: the guest dies after the first
@@ -51,9 +52,9 @@ CFLAGS := $(filter-out -fsanitize=undefined -fsanitize-trap=undefined,$(CFLAGS))
 # smc.c calls seL4_ARM_SMC() which is a typedef (not a function) in Microkit SDK 2.1.
 # Override the pattern rule with a stub that compiles cleanly.  On QEMU virt,
 # PSCI is handled by QEMU's built-in emulation; no ARM_SMC_CAP is needed.
-SMC_STUB := @KERNEL_SRC_DIR@/src/smc_stub.c
+SMC_STUB := @KERNEL_SRC_DIR@/../../platform/guest-vmm/smc_stub.c
 libvmm/arch/aarch64/smc.o: $(SMC_STUB)
-	${CC} ${CFLAGS} -c -o $@ $<
+	${CC} ${CFLAGS} -c -o $@ $(SMC_STUB)
 
 .PHONY: vmm-libs
 vmm-libs: libvmm.a libsddf_util_debug.a

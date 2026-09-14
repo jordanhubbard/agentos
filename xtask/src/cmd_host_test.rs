@@ -77,9 +77,9 @@ const SUITES: &[Suite] = &[
         name: "test_crypto_selftest",
         sources: &[
             "tests/test_crypto_selftest.c",
-            "kernel/agentos-root-task/src/verify.c",
-            "kernel/agentos-root-task/src/ed25519_verify.c",
-            "kernel/agentos-root-task/src/monocypher.c",
+            "services/legacy-pds/verify.c",
+            "libs/pd-support/ed25519_verify.c",
+            "libs/pd-support/monocypher.c",
         ],
         extra_args: &[],
     },
@@ -90,7 +90,7 @@ const SUITES: &[Suite] = &[
         name: "test_cc_pd_metrics",
         sources: &[
             "tests/test_cc_pd_metrics.c",
-            "kernel/agentos-root-task/src/agent_pool.c",
+            "services/legacy-pds/agent_pool.c",
         ],
         extra_args: &["-include", "tests/microkit.h"],
     },

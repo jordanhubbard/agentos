@@ -9,15 +9,15 @@
  *      when the gate fails — mirroring the boot-time hard-fail behaviour.
  *
  * The selftest gate exercised here is the SAME function the controller calls
- * at boot (kernel/agentos-root-task/src/verify.c :: crypto_selftest), which on
+ * at boot (services/legacy-pds/verify.c :: crypto_selftest), which on
  * the target panics via crypto_selftest_panic() if any vector fails.
  *
  * Build:
  *   cc -o /tmp/test_crypto_selftest \
  *       tests/test_crypto_selftest.c \
- *       kernel/agentos-root-task/src/verify.c \
- *       kernel/agentos-root-task/src/ed25519_verify.c \
- *       kernel/agentos-root-task/src/monocypher.c \
+ *       services/legacy-pds/verify.c \
+ *       libs/pd-support/ed25519_verify.c \
+ *       libs/pd-support/monocypher.c \
  *       -I tests -I kernel/agentos-root-task/include \
  *       -DAGENTOS_TEST_HOST
  * Run:

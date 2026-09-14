@@ -43,7 +43,7 @@
  * All seL4/Microkit references inside monitor.c are replaced by stubs
  * defined in monitor.c itself when AGENTOS_TEST_HOST is set.
  */
-#include "../../kernel/agentos-root-task/src/monitor.c"
+#include "../../services/legacy-pds/monitor.c"
 
 /* ─────────────────────────────────────────────────────────────────────────────
  * Stub implementations required by monitor.c that are elsewhere in the tree

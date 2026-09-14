@@ -4,7 +4,7 @@
  * // STATUS: IMPLEMENTED
  *
  * This is the canonical contract for the block-service device service in agentOS.
- * The concrete implementation lives in kernel/agentos-root-task/src/virtio_blk.c,
+ * The concrete implementation lives in services/block-driver/virtio_blk.c,
  * with the VFS layer in vfs_server.c.
  *
  * The block-service provides sector-granularity read/write access to the virtio-blk

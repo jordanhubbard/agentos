@@ -11,7 +11,7 @@ uintptr_t log_drain_rings_vaddr;
 void agentos_log_boot(const char *pd_name) { (void)pd_name; }
 void agentos_log_channel(const char *pd, uint32_t ch) { (void)pd; (void)ch; }
 
-#include "../../kernel/agentos-root-task/src/nameserver.c"
+#include "../../services/nameserver/nameserver.c"
 
 static void req_set(sel4_msg_t *req, uint32_t off, uint32_t value)
 {
