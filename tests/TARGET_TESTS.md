@@ -142,8 +142,8 @@ shared indices.
 a bounded output fixture: oversized/chained descriptors remain pending while
 full, retries preserve the exact stream, and invalid or cyclic chains fail
 without completion. The existing Ubuntu echo gate checks the integrated
-backend, but a deliberate stalled-frontend stress gate is still required for
-sustained-output qualification.
+backend; the separate stalled-frontend stress gate below qualifies bounded
+sustained output.
 `test_virtio_console_tx_ring` additionally executes the production available/
 used-ring handler. It checks deferred acknowledgement, exactly one used entry
 for a completed chain, retained head identity, both cursor rollovers, bounded
