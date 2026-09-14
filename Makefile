@@ -1159,10 +1159,6 @@ e2e-nixos:
 e2e-freebsd15:
 	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os freebsd --assert-live --timeout-secs $(QEMU_TEST_TIMEOUT)
 
-.PHONY: test-freebsd-dynamic-console
-test-freebsd-dynamic-console:
-	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os freebsd --assert-live --assert-dynamic-console --timeout-secs $(QEMU_TEST_TIMEOUT) --ssh-port $(QEMU_TEST_SSH_PORT)
-
 e2e-all: demo-test
 
 # bootstrap-guest: create a guest disk image from installer ISOs.

@@ -73,9 +73,6 @@ pub struct TestArgs {
     /// Stall console consumption, then verify the deterministic probe stream.
     #[arg(long, requires = "assert_emulated_console")]
     pub assert_console_backpressure: bool,
-    /// Verify console I/O through a dynamically created single-guest handle.
-    #[arg(long, requires = "assert_live")]
-    pub assert_dynamic_console: bool,
     /// Require Ubuntu login plus real I/O through agentOS net, blk, and console.
     #[arg(long)]
     pub assert_agentos_virtio: bool,

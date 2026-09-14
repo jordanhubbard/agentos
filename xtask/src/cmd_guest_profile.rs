@@ -238,7 +238,6 @@ pub(crate) struct RecipeStep {
 
 #[derive(Clone, Debug)]
 pub(crate) struct HostProfilePlan {
-    pub(crate) default_ram_mb: Option<u32>,
     pub(crate) path: PathBuf,
     pub(crate) id: String,
     pub(crate) architecture: String,
@@ -454,11 +453,6 @@ pub(crate) fn host_profile_plan(root: &Path, path: &Path) -> Result<HostProfileP
             }),
         });
     Ok(HostProfilePlan {
-        default_ram_mb: profile
-            .placements
-            .get("default")
-            .and_then(|placement| placement.ram_size)
-            .and_then(|bytes| u32::try_from(bytes / (1024 * 1024)).ok()),
         path: path.to_path_buf(),
         id: profile.id.clone().context("id is required")?,
         architecture: target

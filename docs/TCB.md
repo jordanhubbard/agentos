@@ -109,13 +109,8 @@ VMM or vm_manager IPC. Only attachment and lifecycle control use IPC.
 
 The Ubuntu bidirectional console gate requires both actual serial-PD transfer
 markers and guest-echo evidence. Eight seL4 fault probes verify that neither
-VMM maps the other VMM's page or CC's frontend page. The dual-guest test at
-`d3da13e1` passed FreeBSD's immediate and extended suspend/resume SSH checks,
-concurrent Ubuntu/FreeBSD authenticated SSH, destruction and stale-handle
-rejection. Its retained image SHA-256 is
-`68cf76ce00bb5ff04c60a393973c4cd241a39f0fe1d73cd7f28cc0d0656cdbd5`.
-The subsequent single-secondary dynamic-console mapping correction requires
-its focused target qualification before this integration branch is ready.
+VMM maps the other VMM's page or CC's frontend page. Dual-guest FreeBSD console
+and suspend/resume qualification remain pending on this integration branch.
 The libvmm TX backend now
 retains a private descriptor snapshot and offset across full queues and retries
 when the adapter frees space. It acknowledges only complete chains; traversal
@@ -213,10 +208,8 @@ scheduling context, installed by the root task using
 guest TCB; resume reattaches it. This preserves queued guest fault IPC while
 removing execution budget. Failed execution transitions return an error and
 retain the prior lifecycle state. This authority does not include another
-VMM's guest or the driver scheduling contexts. The dual-guest qualification
-above verifies resume for the configured slots. Destroy is terminal for a
-slot in the current image: RAM/capability reclamation and clean guest recreation
-remain work under `task_e58e8c20b539a258fc1f0ec28aeb5308`.
+VMM's guest or the driver scheduling contexts. Dual-guest resume qualification
+for this implementation remains pending.
 
 QEMU virtio devices are hardware stand-ins owned by canonical agentOS driver
 PDs. The QEMU buses used for block media (8), networking (16), and the control

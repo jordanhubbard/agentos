@@ -9,21 +9,6 @@
  * page. serial_virt maps all three and is the only inter-client mux.
  * Queues are zero-initialized by root retype, never reset by ATTACH. */
 #define AOS_SERIAL_CLIENTS 2u
-/* vm_manager numbers a lone configured VMM as backend slot zero, while
- * shared pages keep their root-assigned primary/secondary client identity. */
-static inline int aos_serial_client_for_backend(uint32_t slot,
-    uint32_t configured, uint32_t *client)
-{
-    if (!client || !configured || (configured & ~3u)) return 0;
-    if (configured == 3u) {
-        if (slot >= AOS_SERIAL_CLIENTS) return 0;
-        *client = slot;
-    } else {
-        if (slot != 0u) return 0;
-        *client = configured == 2u ? 1u : 0u;
-    }
-    return 1;
-}
 #define AOS_SERIAL_FRAME_SIZE 0x200000u
 #define AOS_SERIAL_FRAMES 3u
 #define AOS_SERIAL_SHMEM_VA 0x2a000000UL

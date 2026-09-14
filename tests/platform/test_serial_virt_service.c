@@ -12,18 +12,6 @@ static void check(int result, const char *name)
 
 int main(void)
 {
-    for (uint32_t configured = 0; configured < 8; configured++) {
-        for (uint32_t slot = 0; slot < 4; slot++) {
-            uint32_t client = 99;
-            int valid = aos_serial_client_for_backend(slot, configured, &client);
-            int expected = (configured == 1 || configured == 2) ? slot == 0 :
-                           configured == 3 && slot < 2;
-            check(valid == expected && (!valid ? client == 99 :
-                  client == (configured == 2 ? 1u : slot)),
-                  "backend slots resolve only to configured serial pages");
-        }
-    }
-    check(!aos_serial_client_for_backend(0, 1, NULL), "null client output rejected");
     aos_serial_virt_service_t service = {0};
     for (unsigned i = 0; i < AOS_SERIAL_CLIENTS; i++) {
         service.guest[i] = aos_serial_channel_at((uintptr_t)pages[i]);

@@ -747,14 +747,6 @@ static bool cc_call_boot_guest(uint32_t opcode, const uint8_t *payload,
 static aos_serial_channel_t cc_serial_channels[AOS_SERIAL_CLIENTS];
 static bool cc_serial_attached[AOS_SERIAL_CLIENTS];
 static uint32_t cc_serial_input_reported;
-static const uint32_t cc_serial_configured = 0u
-#ifdef AGENTOS_GUEST_PRIMARY
-    | 1u
-#endif
-#ifdef AGENTOS_GUEST_SECONDARY
-    | 2u
-#endif
-    ;
 
 static void cc_serial_init(void)
 {
@@ -781,7 +773,7 @@ static bool cc_serial_slot(uint32_t handle, bool input, uint32_t *slot)
     uint32_t state;
     if (handle == CC_BOOT_GUEST_HANDLE) {
         if (!g_boot_guest_present) return false;
-        if (!aos_serial_client_for_backend(0u, cc_serial_configured, slot)) return false;
+        *slot = cc_boot_guest_os_type() == VIBEOS_PROFILE_SECONDARY ? 1u : 0u;
         state = g_boot_guest_state;
     } else {
         const cc_vm_entry_t *entry = NULL;
@@ -795,8 +787,7 @@ static bool cc_serial_slot(uint32_t handle, bool input, uint32_t *slot)
             !(entry->devices & VIBEOS_DEV_SERIAL)) return false;
         cc_guest_status_t status;
         if (cc_vm_status(&g_vm_client, handle, &status) != CC_OK) return false;
-        if (!aos_serial_client_for_backend(entry->slot, cc_serial_configured, slot))
-            return false;
+        *slot = entry->slot;
         state = status.state;
     }
     return cc_serial_attached[*slot] && state != GUEST_STATE_DEAD &&
