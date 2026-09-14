@@ -54,6 +54,7 @@ pub mod executor;
 pub mod ffi;
 pub mod heap;
 pub mod ipc;
+pub mod network;
 pub mod pd;
 pub mod runtime;
 

@@ -56,3 +56,12 @@ emits the static library linked with the C entry and IPC bridge.
 The target proof runs real `async` functions that yield twice, checks admission
 and poll budgets, rejects stale cancellation, and then exhausts/reuses the
 whole heap to verify executor-owned allocations were released.
+
+`network::Client` copies packets through the existing sDDF free/active queues
+in one isolated client page. It checks snapshotted descriptor offsets, lengths
+and queue occupancy before accessing payloads. Full queues return `WouldBlock`;
+a short receive buffer preserves the pending packet. `make test-rust-pd-abi`
+exchanges full queues with the production C virtualizer pump, including exact
+payload comparison and repeated buffer recycling. This is host interoperability
+evidence. Root provisioning, capability-bound attachment, notification delivery
+and a live NIC path for the Rust PD remain to be integrated and target-tested.

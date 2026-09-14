@@ -696,6 +696,11 @@ test-native-rust:
 test-rust-pd-abi:
 	cargo test -p agentos-pd --features std
 	@mkdir -p $(BUILD_TMP_DIR)
+	$(CC) -std=c11 -Wall -Wextra -Werror -Iplatform/include -c tests/native-rust/network_peer.c -o $(BUILD_TMP_DIR)/rust_net_peer.o
+	$(CC) -std=c11 -Wall -Wextra -Werror -Iplatform/include -c platform/net-virt/net_virt_pump.c -o $(BUILD_TMP_DIR)/rust_net_pump.o
+	$(AR) rcs $(BUILD_TMP_DIR)/librust_net_peer.a $(BUILD_TMP_DIR)/rust_net_peer.o $(BUILD_TMP_DIR)/rust_net_pump.o
+	rustc --edition=2021 --test tests/native-rust/network_interop.rs -L native=$(BUILD_TMP_DIR) -l static=rust_net_peer -o $(BUILD_TMP_DIR)/rust_net_interop
+	$(BUILD_TMP_DIR)/rust_net_interop
 	$(CC) -std=c11 -Wall -Wextra -Werror -fno-builtin -DAGENTOS_TEST_HOST libs/rust-pd/runtime/memory.c tests/native-rust/memory_test.c -o $(BUILD_TMP_DIR)/rust_memory_test
 	$(BUILD_TMP_DIR)/rust_memory_test
 	$(MAKE) -C kernel/agentos-root-task BUILD_DIR=$(abspath build/rust-pd-abi-aarch64) AGENTOS_ARCH=aarch64 AGENTOS_BOARD=qemu_virt_aarch64 $(abspath build/rust-pd-abi-aarch64/rust_pd_ipc.o)
