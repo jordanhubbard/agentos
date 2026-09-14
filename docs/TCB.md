@@ -170,8 +170,15 @@ network client 2's page, its network-only attach badge, a send-only virtualizer
 notification and a receive-only capability for its own notification. Three
 sequential ARP exchanges at the assigned address traverse `net_virt` and the
 host NIC; each waits for notification delivery before reading the RX queue.
-This does not qualify a production network stack or a native service running
-concurrently with live guests. These test PDs are absent from the default image.
+`make test-native-with-guest` additionally boots Ubuntu's real Casper userspace,
+provisions authenticated SSH, and alternates three fresh native ARP batches
+with guest pings. A test-only CC relay returns a sequence number for each new
+batch; packet payloads still travel through the native client's queues.
+The proof passed at `39c4f8bb` with image SHA-256
+`3667077c178c9a61f9125c71ad022d108b44e0a8cb108e7f13ca7d601240b8f0`.
+It qualifies this native/guest coexistence case, not a production network stack.
+These test PDs are absent from the default image. Both the normal live-media
+proof and the coexistence proof run nightly and on demand with retained images.
 Ten `make test-native-network-isolation` images verify that reads and writes
 from the native PD fault on both guest queue pages, the driver-transfer page,
 NIC MMIO and driver DMA. Only the root task emits the success marker after
