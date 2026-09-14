@@ -170,3 +170,11 @@ Also: EventBus STATUS/INIT return `AOS_ERR_INVAL` on target because its ring is
 never mapped there (`eventbus_ring_vaddr` is only set by the host unit test) —
 defect **agentos-gom**. The eventbus assertions accept that and tighten to strict
 `OK` once the ring is wired.
+## Guest resume clock diagnostic
+
+`make demo-test GUEST_RESUME_CLOCK_PROBE=1` retains the normal dual-guest
+creation, suspend/resume and authenticated-SSH assertions, but leaves CNTVOFF
+unchanged on resume. It isolates clock-offset handling from MCS scheduling
+context detachment. The serial log explicitly marks this diagnostic policy.
+Results from this configuration are investigative evidence, not release
+qualification; the normal `make demo-test` remains required.

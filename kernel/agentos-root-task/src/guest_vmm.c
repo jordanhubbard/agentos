@@ -985,7 +985,17 @@ static bool guest_vmm_suspend_guest_tcb(void)
 
 static bool guest_vmm_resume_guest_tcb(void)
 {
+#if defined(AGENTOS_GUEST_RESUME_CLOCK_PROBE)
+#if AGENTOS_GUEST_RESUME_CLOCK_PROBE != 1
+#error "GUEST_RESUME_CLOCK_PROBE must be 1"
+#endif
+    /* Diagnostic: isolate the CNTVOFF adjustment while retaining exactly
+     * the same SC transition and dual-guest acceptance assertions. */
+    g_guest_time_state.paused = false;
+    printf("[guest lifecycle] DIAGNOSTIC: guest clock continued during pause\n");
+#else
     vcpu_resume_time(GUEST_BOOT_VCPU_ID, &g_guest_time_state);
+#endif
     guest_vmm_lifecycle_timer_snapshot("resuming");
 #ifdef CONFIG_KERNEL_MCS
     seL4_Error err = seL4_SchedContext_Bind(

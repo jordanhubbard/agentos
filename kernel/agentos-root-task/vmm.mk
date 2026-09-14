@@ -75,6 +75,12 @@ ifdef VIRT_AUTHORITY_PROBE
 VMM_CFLAGS += -DAGENTOS_VIRT_AUTHORITY_PROBE=$(VIRT_AUTHORITY_PROBE)
 endif
 
+# Diagnostic only: compare resume with a continuous guest clock. This is not
+# a release configuration and does not weaken the dual SSH assertions.
+ifdef GUEST_RESUME_CLOCK_PROBE
+VMM_CFLAGS += -DAGENTOS_GUEST_RESUME_CLOCK_PROBE=$(GUEST_RESUME_CLOCK_PROBE)
+endif
+
 ifeq ($(VMM_SLOT),primary)
 VMM_CFLAGS += -DAGENTOS_GUEST_PRIMARY=1
 else ifeq ($(VMM_SLOT),secondary)
