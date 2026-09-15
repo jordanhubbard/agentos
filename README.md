@@ -247,6 +247,40 @@ Use [`docs/demo.md`](docs/demo.md) for current commands.
   TODO lists. See `AGENTS.md`.
 - Developer guide: [`docs/DEVELOPER_GUIDE.md`](docs/DEVELOPER_GUIDE.md).
 
+<!-- ai-template:narrative:start -->
+## The Totally True and Not At All Embellished History of agentOS
+
+### The continuing adventures of Jordan Hubbard and Sir Reginald von Fluffington III
+
+> *Part 13 of an ongoing chronicle. [← Part 12: Theseus](https://github.com/jordanhubbard/Theseus#the-totally-true-and-not-at-all-embellished-history-of-theseus) | [Part 14: Artlab →](https://github.com/jordanhubbard/artlab#the-totally-true-and-not-at-all-embellished-history-of-artlab)*
+> *[Chronicle index](https://github.com/jordanhubbard/ai-template/blob/main/CHRONICLE.md) · Ordered by first recorded AI-assisted commit.*
+
+The programmer had decided that an operating system for agents should begin with a question of ownership.
+
+“Who owns the device?” he asked.
+
+Sir Reginald von Fluffington III was lying across the keyboard. The answer seemed settled.
+
+The programmer meant the device frame, the interrupt, and the authority to use them. He wanted one owner per device class, separate components to share access, and guests that saw a defined interface rather than whatever happened to be underneath. Sir Reginald already operated a capability system in which everyone possessed the ability to request the chair and only he possessed the ability to occupy it.
+
+seL4 supplied the microkernel. The root task distributed memory and capabilities, started the protection domains, and then parked. The programmer considered this a model of responsible management: establish clear authority and cease interfering. Sir Reginald had practiced the second half for years.
+
+Drivers would own devices. Virtualizers would multiplex them. Virtual-machine monitors would present virtio devices to Linux and FreeBSD guests. Native agents would use the shared contracts too, without becoming trusted merely because they described themselves as helpful.
+
+“That part matters,” the programmer told the cat. “Being an agent does not make you part of the trusted computing base.”
+
+Sir Reginald opened one eye. Being a cat apparently did.
+
+The README acquired a table separating what booted today from the intended architecture. A console virtualizer still embedded as a library was described as such. QEMU was the prototype hardware, not proof that every real board already worked. The programmer resisted the temptation to let the diagram outrun the machine, which required more restraint than drawing the diagram.
+
+There would be no human user interface inside the platform. Human-facing applications could live elsewhere and speak its contracts. Sir Reginald approved of this separation in principle by moving to another chair, though the official record continued to show no endorsement.
+
+“Elegant,” the programmer concluded.
+
+Sir Reginald withheld access to the keyboard pending a satisfactory explanation of the food-bowl interrupt policy.
+
+<!-- ai-template:narrative:end -->
+
 ## License
 
 BSD 2-Clause. See [LICENSE](LICENSE). `libvmm/` carries its own licenses
