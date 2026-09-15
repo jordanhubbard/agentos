@@ -11,6 +11,8 @@
  */
 uint32_t aos_blk_queue_req_length(const aos_blk_req_queue_t *q);
 uint32_t aos_blk_queue_resp_length(const aos_blk_resp_queue_t *q);
+int aos_blk_queue_req_valid(const aos_blk_req_queue_t *q, uint32_t capacity);
+int aos_blk_queue_resp_valid(const aos_blk_resp_queue_t *q, uint32_t capacity);
 
 void aos_blk_virt_reset(aos_blk_virt_t *v);
 
@@ -64,14 +66,23 @@ void aos_blk_storage_init(aos_blk_storage_info_t *info, uint32_t disk_blocks);
 
 int aos_blk_virt_add_client(aos_blk_virt_t *v, const aos_blk_virt_client_t *c);
 
-void aos_blk_virt_set_disk(aos_blk_virt_t *v, uint8_t *disk, uint32_t disk_blocks);
+/*
+ * Set one client's selected medium.  This is deliberately per-client:
+ * client-relative queues alone must not make RAM fallback media shared.
+ */
+void aos_blk_client_set_media(aos_blk_virt_client_t *c, uint32_t media_blocks);
+void aos_blk_client_set_ram_disk(aos_blk_virt_client_t *c, uint8_t *disk,
+                                 uint32_t disk_blocks);
 
 /* Replace the RAM disk with a synchronous agentOS block backend. */
 void aos_blk_virt_set_backend(aos_blk_virt_t *v, aos_blk_backend_fn backend,
                               void *ctx);
 
 /*
- * Serve every pending request against the configured backend or RAM disk.
+ * Serve at most one queue capacity of pending requests per client against the
+ * configured backend or selected RAM disk.  Invalid ring occupancy is
+ * discarded by resetting that ring; an invalid request receives
+ * ERR_INVALID_PARAM and does not prevent later valid requests from running.
  * Returns I/O operations that produced a response (including invalid-param).
  */
 uint32_t aos_blk_virt_pump(aos_blk_virt_t *v);

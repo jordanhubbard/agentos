@@ -15,6 +15,12 @@ const VERSION: u16 = 2;
 const MANIFEST_SIZE: usize = 640;
 const MAX_INHERITANCE_DEPTH: usize = 8;
 const MAX_RECIPE_STEPS: usize = 64;
+const MAX_VCPUS: u32 = 8;
+const RAM_MIN: u64 = 0x20_0000;
+const RAM_MAX: u64 = 0x2_0000_0000;
+const RAM_ALIGN: u64 = 0x20_0000;
+const MAX_SELECTED_PLACEMENTS: usize = 4;
+const CPU_FEATURES_VERSION: u8 = 1;
 
 #[derive(Args)]
 pub struct GuestProfileArgs {
@@ -87,11 +93,22 @@ struct Target {
     control_type: Option<u32>,
     guest_id: Option<u32>,
     vcpus: Option<u32>,
+    cpu_features: Option<CpuFeatures>,
     devices: Option<Vec<String>>,
     network_client: Option<u16>,
     block_media: Option<u16>,
     autostart: Option<bool>,
     entry_from_image: Option<bool>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CpuFeatures {
+    version: Option<u8>,
+    #[serde(default)]
+    required: Vec<String>,
+    #[serde(default)]
+    prohibited: Vec<String>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -110,7 +127,7 @@ struct Artifact {
     max_bytes: Option<u64>,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Placement {
     guest_gpa_base: Option<u64>,
@@ -1083,9 +1100,10 @@ fn validate(profile: &Profile, placement: Option<&str>) -> Result<()> {
     );
     target.autostart.context("target.autostart is required")?;
     ensure!(
-        target.vcpus.is_some_and(|n| (1..=8).contains(&n)),
+        target.vcpus.is_some_and(|n| (1..=MAX_VCPUS).contains(&n)),
         "target.vcpus must be 1..8"
     );
+    validate_cpu_features(target.cpu_features.as_ref())?;
     ensure!(
         target
             .control_type
@@ -1188,6 +1206,81 @@ fn validate(profile: &Profile, placement: Option<&str>) -> Result<()> {
             profile.placements.contains_key(name),
             "placement {name:?} is not defined"
         );
+        validate_selected_placements([(
+            name,
+            profile.placements.get(name).expect("placement was checked"),
+        )])?;
+    }
+    Ok(())
+}
+
+fn validate_cpu_features(features: Option<&CpuFeatures>) -> Result<()> {
+    let Some(features) = features else {
+        return Ok(());
+    };
+    ensure!(
+        features.version == Some(CPU_FEATURES_VERSION),
+        "target.cpu_features.version must be {CPU_FEATURES_VERSION}"
+    );
+    let mut required = BTreeSet::new();
+    let mut prohibited = BTreeSet::new();
+    for feature in &features.required {
+        enum_value(
+            feature,
+            &["fp", "simd", "crypto", "rng", "vector", "nested-virt"],
+        )?;
+        ensure!(
+            required.insert(feature),
+            "duplicate required CPU feature {feature}"
+        );
+    }
+    for feature in &features.prohibited {
+        enum_value(
+            feature,
+            &["fp", "simd", "crypto", "rng", "vector", "nested-virt"],
+        )?;
+        ensure!(
+            prohibited.insert(feature),
+            "duplicate prohibited CPU feature {feature}"
+        );
+        ensure!(
+            !required.contains(feature),
+            "CPU feature {feature} cannot be both required and prohibited"
+        );
+    }
+    Ok(())
+}
+
+fn validate_selected_placements<'a>(
+    placements: impl IntoIterator<Item = (&'a str, &'a Placement)>,
+) -> Result<()> {
+    let placements: Vec<_> = placements.into_iter().collect();
+    ensure!(
+        !placements.is_empty() && placements.len() <= MAX_SELECTED_PLACEMENTS,
+        "selected placement count must be 1..={MAX_SELECTED_PLACEMENTS}"
+    );
+    let mut total_ram = 0u64;
+    for (index, (name, placement)) in placements.iter().enumerate() {
+        let gpa = placement.guest_gpa_base.expect("placement validated");
+        let hva = placement.vmm_hva_base.expect("placement validated");
+        let ram = placement.ram_size.expect("placement validated");
+        total_ram = total_ram
+            .checked_add(ram)
+            .filter(|total| *total <= RAM_MAX)
+            .with_context(|| "selected placement RAM exceeds resource bound")?;
+        for (other_name, other) in &placements[..index] {
+            let other_gpa = other.guest_gpa_base.expect("placement validated");
+            let other_hva = other.vmm_hva_base.expect("placement validated");
+            let other_ram = other.ram_size.expect("placement validated");
+            ensure!(
+                !ranges_overlap(gpa, ram, other_gpa, other_ram),
+                "selected placements {name:?} and {other_name:?} GPA ranges overlap"
+            );
+            ensure!(
+                !ranges_overlap(hva, ram, other_hva, other_ram),
+                "selected placements {name:?} and {other_name:?} HVA ranges overlap"
+            );
+        }
     }
     Ok(())
 }
@@ -1273,8 +1366,8 @@ fn validate_placement(name: &str, p: &Placement) -> Result<()> {
         "placement bases must be page aligned"
     );
     ensure!(
-        ram >= 0x20_0000 && ram & 0x1f_ffff == 0,
-        "placement RAM must be >=2 MiB and 2 MiB aligned"
+        (RAM_MIN..=RAM_MAX).contains(&ram) && ram & (RAM_ALIGN - 1) == 0,
+        "placement RAM must be 2 MiB..=8 GiB and 2 MiB aligned"
     );
     ensure!(
         gpa.checked_add(ram).is_some() && hva.checked_add(ram).is_some(),
@@ -1778,6 +1871,8 @@ fn compile(profile: &Profile, canonical: &str, placement_name: &str) -> Result<V
     if !media_initrd_path.is_empty() {
         flags |= 1 << 4;
     }
+    let (cpu_feature_version, cpu_required, cpu_prohibited) =
+        compile_cpu_features(target.cpu_features.as_ref())?;
 
     let mut out = Vec::with_capacity(MANIFEST_SIZE);
     push_u64(&mut out, MAGIC);
@@ -1835,7 +1930,10 @@ fn compile(profile: &Profile, canonical: &str, placement_name: &str) -> Result<V
     push_u16(&mut out, id.len() as u16);
     push_u32(&mut out, target.control_type.unwrap());
     push_u16(&mut out, media_initrd_path.len() as u16);
-    out.extend_from_slice(&[0; 6]);
+    out.push(cpu_feature_version);
+    out.push(0);
+    push_u16(&mut out, cpu_required);
+    push_u16(&mut out, cpu_prohibited);
     push_text(&mut out, id, 64);
     push_text(&mut out, command_line, 256);
     push_text(&mut out, media_initrd_path, 64);
@@ -1845,6 +1943,33 @@ fn compile(profile: &Profile, canonical: &str, placement_name: &str) -> Result<V
         out.len()
     );
     Ok(out)
+}
+
+fn compile_cpu_features(features: Option<&CpuFeatures>) -> Result<(u8, u16, u16)> {
+    let Some(features) = features else {
+        return Ok((CPU_FEATURES_VERSION, 0, 0));
+    };
+    let feature_mask = |names: &[String]| -> Result<u16> {
+        let mut mask = 0u16;
+        for name in names {
+            let bit = match name.as_str() {
+                "fp" => 1u16 << 0,
+                "simd" => 1u16 << 1,
+                "crypto" => 1u16 << 2,
+                "rng" => 1u16 << 3,
+                "vector" => 1u16 << 4,
+                "nested-virt" => 1u16 << 5,
+                _ => anyhow::bail!("unsupported CPU feature {name:?}"),
+            };
+            mask |= bit;
+        }
+        Ok(mask)
+    };
+    Ok((
+        features.version.unwrap_or(CPU_FEATURES_VERSION),
+        feature_mask(&features.required)?,
+        feature_mask(&features.prohibited)?,
+    ))
 }
 
 fn artifact_hash(artifact: &Artifact, placement: &Placement, name: &str) -> Result<[u8; 32]> {
@@ -1935,6 +2060,68 @@ mod tests {
         assert!(parse_hash(&"a5".repeat(32)).is_ok());
         assert!(parse_hash(&"00".repeat(32)).is_err());
         assert!(parse_hash("1234").is_err());
+    }
+
+    #[test]
+    fn cpu_features_and_selected_resources_fail_closed() {
+        let valid_features = CpuFeatures {
+            version: Some(CPU_FEATURES_VERSION),
+            required: vec!["fp".to_string(), "simd".to_string()],
+            prohibited: vec!["nested-virt".to_string()],
+        };
+        assert!(validate_cpu_features(Some(&valid_features)).is_ok());
+        let mut conflicting = valid_features.clone();
+        conflicting.prohibited.push("fp".to_string());
+        assert!(validate_cpu_features(Some(&conflicting)).is_err());
+        let mut unknown_version = valid_features;
+        unknown_version.version = Some(CPU_FEATURES_VERSION + 1);
+        assert!(validate_cpu_features(Some(&unknown_version)).is_err());
+
+        let first = Placement {
+            guest_gpa_base: Some(0x4000_0000),
+            vmm_hva_base: Some(0x8000_0000),
+            ram_size: Some(0x2000_0000),
+            ..Placement::default()
+        };
+        let second = Placement {
+            guest_gpa_base: Some(0x6000_0000),
+            vmm_hva_base: Some(0xa000_0000),
+            ram_size: Some(0x2000_0000),
+            ..Placement::default()
+        };
+        assert!(validate_selected_placements([("first", &first), ("second", &second)]).is_ok());
+        let gpa_overlap = Placement {
+            guest_gpa_base: Some(0x5fff_f000),
+            ..second.clone()
+        };
+        assert!(
+            validate_selected_placements([("first", &first), ("second", &gpa_overlap)]).is_err()
+        );
+        let hva_overlap = Placement {
+            vmm_hva_base: Some(0x9fff_f000),
+            ..second
+        };
+        assert!(
+            validate_selected_placements([("first", &first), ("second", &hva_overlap)]).is_err()
+        );
+
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../guest-profiles");
+        let (mut desktop, _) =
+            resolve(&root, Path::new("ubuntu-live.toml"), &mut Vec::new()).unwrap();
+        desktop.placements.get_mut("default").unwrap().ram_size = Some(RAM_MAX);
+        assert!(validate(&desktop, Some("default")).is_ok());
+        let desktop_placement = desktop.placements.get("default").unwrap();
+        let overflow = Placement {
+            guest_gpa_base: Some(0x2_4000_0000),
+            vmm_hva_base: Some(0x2_8000_0000),
+            ram_size: Some(RAM_ALIGN),
+            ..Placement::default()
+        };
+        assert!(validate_selected_placements([
+            ("desktop", desktop_placement),
+            ("small", &overflow),
+        ])
+        .is_err());
     }
 
     #[test]

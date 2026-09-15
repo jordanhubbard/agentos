@@ -13,8 +13,12 @@ static unsigned starts;
 static unsigned suspends;
 static unsigned resumes;
 static unsigned timer_quiesces;
+static unsigned teardowns;
+static unsigned resets;
 static bool suspend_fails;
 static bool resume_fails;
+static bool teardown_fails;
+static bool reset_fails;
 static uint32_t pushed_event;
 static uint32_t pushed_length;
 static uint8_t pushed_bytes[CC_INPUT_TEXT_MAX];
@@ -29,6 +33,8 @@ static bool start_guest(void)
 static bool suspend_guest(void) { suspends++; return !suspend_fails; }
 static bool resume_guest(void) { resumes++; return !resume_fails; }
 static void quiesce_timer(void) { timer_quiesces++; }
+static bool teardown_guest(void) { teardowns++; return !teardown_fails; }
+static bool reset_guest(void) { resets++; return !reset_fails; }
 static bool push_input(uint32_t event_type, const uint8_t *bytes,
                        uint32_t length)
 {
@@ -73,6 +79,8 @@ int main(void)
         .suspend = suspend_guest,
         .resume = resume_guest,
         .quiesce_timer = quiesce_timer,
+        .teardown = teardown_guest,
+        .reset = reset_guest,
         .push_input = push_input,
         .drain_console = drain_console,
     };
@@ -151,8 +159,23 @@ int main(void)
     request(&req, MSG_GUEST_DESTROY, 0u);
     (void)aos_guest_vmm_lifecycle_rpc(&req, &rep, &runtime);
     failed += check(rep.opcode == GUEST_OK && state == GUEST_STATE_DEAD &&
-                    suspends == 2u && timer_quiesces == 2u,
-                    "destroy quiesces and makes state terminal");
+                    !started && suspends == 2u && timer_quiesces == 2u &&
+                    teardowns == 1u,
+                    "destroy quiesces tears down and makes state terminal");
+
+    runtime.reset = NULL;
+    request(&req, MSG_GUEST_CREATE, 2u);
+    (void)aos_guest_vmm_lifecycle_rpc(&req, &rep, &runtime);
+    failed += check(rep.opcode == GUEST_ERR_DEAD &&
+                    state == GUEST_STATE_DEAD && !started,
+                    "destroy remains terminal without reset support");
+
+    runtime.reset = reset_guest;
+    request(&req, MSG_GUEST_CREATE, 2u);
+    (void)aos_guest_vmm_lifecycle_rpc(&req, &rep, &runtime);
+    failed += check(rep.opcode == GUEST_OK && state == GUEST_STATE_READY &&
+                    !started && resets == 1u,
+                    "reset callback prepares dead slot for later boot");
 
     rep = (sel4_msg_t){0};
     request(&req, MSG_GUEST_BOOT, 1u);
@@ -176,6 +199,7 @@ int main(void)
     }
 
     state = GUEST_STATE_RUNNING;
+    started = true;
     unsigned quiesces_before = timer_quiesces;
     suspend_fails = true;
     request(&req, MSG_GUEST_SUSPEND, 0u);
@@ -228,6 +252,40 @@ int main(void)
     failed += check(rep.opcode == GUEST_OK && state == GUEST_STATE_RUNNING,
                     "resume can be retried after failure");
 
+    teardown_fails = true;
+    request(&req, MSG_GUEST_DESTROY, 0u);
+    (void)aos_guest_vmm_lifecycle_rpc(&req, &rep, &runtime);
+    failed += check(rep.opcode == GUEST_ERR_NOT_READY &&
+                    state == GUEST_STATE_SUSPENDED && started &&
+                    teardowns == 2u,
+                    "failed teardown retains the quiesced guest state");
+
+    teardown_fails = false;
+    (void)aos_guest_vmm_lifecycle_rpc(&req, &rep, &runtime);
+    failed += check(rep.opcode == GUEST_OK && state == GUEST_STATE_DEAD &&
+                    !started && teardowns == 3u,
+                    "teardown can be retried from suspended state");
+
+    reset_fails = true;
+    request(&req, MSG_GUEST_CREATE, 2u);
+    (void)aos_guest_vmm_lifecycle_rpc(&req, &rep, &runtime);
+    failed += check(rep.opcode == GUEST_ERR_NOT_READY &&
+                    state == GUEST_STATE_DEAD && !started &&
+                    resets == 2u,
+                    "failed reset preserves the terminal slot");
+
+    reset_fails = false;
+    (void)aos_guest_vmm_lifecycle_rpc(&req, &rep, &runtime);
+    failed += check(rep.opcode == GUEST_OK && state == GUEST_STATE_READY &&
+                    !started && resets == 3u,
+                    "reset can be retried without entering running");
+
+    request(&req, MSG_GUEST_BOOT, 0u);
+    (void)aos_guest_vmm_lifecycle_rpc(&req, &rep, &runtime);
+    failed += check(rep.opcode == GUEST_OK && state == GUEST_STATE_RUNNING &&
+                    started,
+                    "reset slot boots only after a separate boot request");
+
     request(&req, MSG_GUEST_SUSPEND, 0u);
     (void)aos_guest_vmm_lifecycle_rpc(&req, &rep, &runtime);
     suspends_before = suspends;
@@ -235,7 +293,7 @@ int main(void)
     request(&req, MSG_GUEST_DESTROY, 0u);
     (void)aos_guest_vmm_lifecycle_rpc(&req, &rep, &runtime);
     failed += check(rep.opcode == GUEST_OK && state == GUEST_STATE_DEAD &&
-                    suspends == suspends_before,
+                    !started && suspends == suspends_before,
                     "destroy of suspended guest needs no second suspend");
 
     state = GUEST_STATE_SUSPENDED;
@@ -263,6 +321,6 @@ int main(void)
                     state == GUEST_STATE_READY && suspends == suspends_before,
                     "SUSPEND cannot detach an unbooted guest context");
 
-    printf("1..24\n");
+    printf("1..31\n");
     return failed == 0 ? 0 : 1;
 }

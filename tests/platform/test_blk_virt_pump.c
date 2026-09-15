@@ -27,7 +27,8 @@ static int setup_one(aos_blk_virt_t *v, aos_blk_virt_client_t *c)
     aos_blk_client_bind(g_region, 0u, c);
     aos_blk_client_init_queues(c);
     aos_blk_storage_init(c->info, AOS_BLK_DISK_BLOCKS);
-    aos_blk_virt_set_disk(v, g_region + AOS_BLK_DISK_OFF, AOS_BLK_DISK_BLOCKS);
+    aos_blk_client_set_ram_disk(c, g_region + AOS_BLK_DISK_OFF,
+                                AOS_BLK_DISK_BLOCKS);
     CHECK(aos_blk_virt_add_client(v, c) == 0);
     return 0;
 }
@@ -101,7 +102,8 @@ static int test_empty_pump(void)
     aos_blk_client_bind(g_region, 0u, &c);
     aos_blk_client_init_queues(&c);
     aos_blk_storage_init(c.info, AOS_BLK_DISK_BLOCKS);
-    aos_blk_virt_set_disk(&v, g_region + AOS_BLK_DISK_OFF, AOS_BLK_DISK_BLOCKS);
+    aos_blk_client_set_ram_disk(&c, g_region + AOS_BLK_DISK_OFF,
+                                AOS_BLK_DISK_BLOCKS);
     CHECK(aos_blk_virt_add_client(&v, &c) == 0);
     CHECK(aos_blk_virt_pump(&v) == 0u);
     CHECK(c.info->ready == true);
@@ -189,7 +191,7 @@ static int test_read_only_media_rejects_write(void)
     PASS("test_read_only_media_rejects_write");
 }
 
-static int test_two_clients_share_disk(void)
+static int test_two_clients_select_independent_media(void)
 {
     aos_blk_virt_t v;
     aos_blk_virt_client_t a;
@@ -206,7 +208,10 @@ static int test_two_clients_share_disk(void)
     aos_blk_client_init_queues(&b);
     aos_blk_storage_init(a.info, AOS_BLK_DISK_BLOCKS);
     aos_blk_storage_init(b.info, AOS_BLK_DISK_BLOCKS);
-    aos_blk_virt_set_disk(&v, g_region + AOS_BLK_DISK_OFF, AOS_BLK_DISK_BLOCKS);
+    aos_blk_client_set_ram_disk(&a, g_region + AOS_BLK_DISK_OFF,
+                                AOS_BLK_DISK_BLOCKS);
+    aos_blk_client_set_ram_disk(&b, g_region + AOS_BLK_DISK_OFF +
+                                AOS_BLK_DISK_BYTES, AOS_BLK_DISK_BLOCKS);
     CHECK(aos_blk_virt_add_client(&v, &a) == 0);
     CHECK(aos_blk_virt_add_client(&v, &b) == 0);
 
@@ -220,8 +225,8 @@ static int test_two_clients_share_disk(void)
     CHECK(aos_blk_virt_pump(&v) == 1u);
     CHECK(dequeue_resp(&b, &resp) == 0);
     CHECK(resp.status == AOS_BLK_RESP_OK);
-    CHECK(memcmp(b.data, frame, sizeof(frame)) == 0);
-    PASS("test_two_clients_share_disk");
+    CHECK(memcmp(b.data, frame, sizeof(frame)) != 0);
+    PASS("test_two_clients_select_independent_media");
 }
 
 static int test_drop_when_resp_full(void)
@@ -273,6 +278,9 @@ static int test_external_backend(void)
     if (setup_one(&v, &c) != 0) {
         return 1;
     }
+    /* The external medium is larger than the RAM fallback image. */
+    aos_blk_client_set_media(&c, 512u);
+    v.clients[0].media_blocks = 512u;
     aos_blk_virt_set_backend(&v, probe_backend, &probe);
     CHECK(enqueue_req(&c, AOS_BLK_REQ_READ, 0, 42, 1, 123) == 0);
     CHECK(aos_blk_virt_pump(&v) == 1u);
@@ -295,6 +303,8 @@ static int test_maxphys_backend_request(void)
     if (setup_one(&v, &c) != 0) {
         return 1;
     }
+    aos_blk_client_set_media(&c, 512u);
+    v.clients[0].media_blocks = 512u;
     aos_blk_virt_set_backend(&v, probe_backend, &probe);
     CHECK(enqueue_req(&c, AOS_BLK_REQ_READ, 0, 42,
                       AOS_BLK_DATA_CELLS, 124) == 0);
@@ -345,6 +355,118 @@ static int test_cross_client_payload_rejected(void)
     PASS("test_cross_client_payload_rejected");
 }
 
+static int test_unsupported_request_and_recovery(void)
+{
+    aos_blk_virt_t v;
+    aos_blk_virt_client_t c;
+    aos_blk_resp_t resp;
+    backend_probe_t probe = {0};
+
+    if (setup_one(&v, &c) != 0) {
+        return 1;
+    }
+    aos_blk_virt_set_backend(&v, probe_backend, &probe);
+    /* v4 does not expose DISCARD.  An unrecognised code must fail closed,
+     * never reach the backend, and not poison the following request. */
+    CHECK(enqueue_req(&c, (aos_blk_req_code_t)4u, 0u, 0u, 0u, 401u) == 0);
+    CHECK(enqueue_req(&c, AOS_BLK_REQ_READ, 0u, 0u, 1u, 402u) == 0);
+    CHECK(aos_blk_virt_pump(&v) == 2u);
+    CHECK(dequeue_resp(&c, &resp) == 0);
+    CHECK(resp.id == 401u);
+    CHECK(resp.status == AOS_BLK_RESP_ERR_INVALID_PARAM);
+    CHECK(dequeue_resp(&c, &resp) == 0);
+    CHECK(resp.id == 402u);
+    CHECK(resp.status == AOS_BLK_RESP_OK);
+    CHECK(probe.calls == 1u);
+    PASS("test_unsupported_request_and_recovery");
+}
+
+static aos_blk_resp_status_t failing_flush_backend(
+    void *ctx, aos_blk_virt_client_t *client, const aos_blk_req_t *req)
+{
+    uint32_t *calls = (uint32_t *)ctx;
+
+    (void)client;
+    (*calls)++;
+    return req->code == AOS_BLK_REQ_FLUSH ? AOS_BLK_RESP_ERR_IO :
+           AOS_BLK_RESP_OK;
+}
+
+static int test_flush_failure_and_malformed_flush(void)
+{
+    aos_blk_virt_t v;
+    aos_blk_virt_client_t c;
+    aos_blk_resp_t resp;
+    uint32_t calls = 0u;
+
+    if (setup_one(&v, &c) != 0) {
+        return 1;
+    }
+    aos_blk_virt_set_backend(&v, failing_flush_backend, &calls);
+    CHECK(enqueue_req(&c, AOS_BLK_REQ_FLUSH, 0u, 0u, 0u, 501u) == 0);
+    CHECK(aos_blk_virt_pump(&v) == 1u);
+    CHECK(dequeue_resp(&c, &resp) == 0);
+    CHECK(resp.status == AOS_BLK_RESP_ERR_IO);
+    CHECK(calls == 1u);
+
+    CHECK(enqueue_req(&c, AOS_BLK_REQ_FLUSH, 1u, 0u, 0u, 502u) == 0);
+    CHECK(aos_blk_virt_pump(&v) == 1u);
+    CHECK(dequeue_resp(&c, &resp) == 0);
+    CHECK(resp.status == AOS_BLK_RESP_ERR_INVALID_PARAM);
+    CHECK(calls == 1u);
+    PASS("test_flush_failure_and_malformed_flush");
+}
+
+static int test_media_range_checked_before_backend(void)
+{
+    aos_blk_virt_t v;
+    aos_blk_virt_client_t c;
+    aos_blk_resp_t resp;
+    backend_probe_t probe = {0};
+
+    if (setup_one(&v, &c) != 0) {
+        return 1;
+    }
+    aos_blk_client_set_media(&c, 2u);
+    v.clients[0].media_blocks = 2u;
+    aos_blk_virt_set_backend(&v, probe_backend, &probe);
+    CHECK(enqueue_req(&c, AOS_BLK_REQ_READ, 0u, 2u, 1u, 601u) == 0);
+    CHECK(aos_blk_virt_pump(&v) == 1u);
+    CHECK(dequeue_resp(&c, &resp) == 0);
+    CHECK(resp.status == AOS_BLK_RESP_ERR_INVALID_PARAM);
+    CHECK(probe.calls == 0u);
+    PASS("test_media_range_checked_before_backend");
+}
+
+static int test_corrupt_ring_recovery(void)
+{
+    aos_blk_virt_t v;
+    aos_blk_virt_client_t c;
+    aos_blk_resp_t resp;
+
+    if (setup_one(&v, &c) != 0) {
+        return 1;
+    }
+    c.req->tail = c.req->head + c.capacity + 1u;
+    CHECK(!aos_blk_queue_req_valid(c.req, c.capacity));
+    CHECK(aos_blk_virt_pump(&v) == 0u);
+    CHECK(c.req->head == c.req->tail);
+    CHECK(enqueue_req(&c, AOS_BLK_REQ_FLUSH, 0u, 0u, 0u, 701u) == 0);
+    CHECK(aos_blk_virt_pump(&v) == 1u);
+    CHECK(dequeue_resp(&c, &resp) == 0);
+    CHECK(resp.id == 701u && resp.status == AOS_BLK_RESP_OK);
+
+    c.resp->tail = c.resp->head + c.capacity + 1u;
+    CHECK(!aos_blk_queue_resp_valid(c.resp, c.capacity));
+    CHECK(enqueue_req(&c, AOS_BLK_REQ_FLUSH, 0u, 0u, 0u, 702u) == 0);
+    CHECK(aos_blk_virt_pump(&v) == 0u);
+    CHECK(c.resp->head == c.resp->tail);
+    CHECK(aos_blk_virt_pump(&v) == 1u);
+    CHECK(dequeue_resp(&c, &resp) == 0);
+    CHECK(resp.id == 702u && resp.status == AOS_BLK_RESP_OK);
+    PASS("test_corrupt_ring_recovery");
+}
+
 int main(void)
 {
     int failed = 0;
@@ -355,11 +477,15 @@ int main(void)
     failed += test_write_read_roundtrip();
     failed += test_flush_and_oob();
     failed += test_read_only_media_rejects_write();
-    failed += test_two_clients_share_disk();
+    failed += test_two_clients_select_independent_media();
     failed += test_drop_when_resp_full();
     failed += test_external_backend();
     failed += test_maxphys_backend_request();
     failed += test_cross_client_payload_rejected();
+    failed += test_unsupported_request_and_recovery();
+    failed += test_flush_failure_and_malformed_flush();
+    failed += test_media_range_checked_before_backend();
+    failed += test_corrupt_ring_recovery();
     if (failed) {
         printf("%d test(s) failed\n", failed);
         return 1;

@@ -19,6 +19,41 @@
 #define AOS_GUEST_PROFILE_CMDLINE_MAX  255u
 #define AOS_GUEST_PROFILE_MEDIA_PATH_MAX 63u
 #define AOS_GUEST_PROFILE_VCPU_MAX     8u
+#define AOS_GUEST_PROFILE_RAM_MIN      UINT64_C(0x200000)
+#define AOS_GUEST_PROFILE_RAM_MAX      UINT64_C(0x200000000)
+#define AOS_GUEST_PROFILE_RAM_ALIGN    UINT64_C(0x200000)
+#define AOS_GUEST_PROFILE_SELECTED_MAX 4u
+
+/*
+ * CPU feature requests are a bounded profile property, not host CPUID data.
+ * Version zero with an all-zero payload is accepted solely for v2 manifests
+ * produced before this field was assigned.  New compilers emit version one.
+ *
+ * The VMM currently validates this envelope but does not negotiate or expose
+ * a CPU feature mask to a guest; that requires a target-side implementation.
+ */
+#define AOS_GUEST_CPU_FEATURES_VERSION 1u
+
+enum aos_guest_cpu_feature_flags {
+    AOS_GUEST_CPU_FEATURE_FP          = 1u << 0,
+    AOS_GUEST_CPU_FEATURE_SIMD        = 1u << 1,
+    AOS_GUEST_CPU_FEATURE_CRYPTO      = 1u << 2,
+    AOS_GUEST_CPU_FEATURE_RNG         = 1u << 3,
+    AOS_GUEST_CPU_FEATURE_VECTOR      = 1u << 4,
+    AOS_GUEST_CPU_FEATURE_NESTED_VIRT = 1u << 5,
+};
+
+#define AOS_GUEST_CPU_FEATURE_ALL ((1u << 6) - 1u)
+
+typedef struct __attribute__((packed)) aos_guest_cpu_features {
+    uint8_t version;
+    uint8_t reserved;
+    uint16_t required;
+    uint16_t prohibited;
+} aos_guest_cpu_features_t;
+
+_Static_assert(sizeof(aos_guest_cpu_features_t) == 6u,
+               "guest CPU feature wire size changed");
 
 enum aos_guest_architecture {
     AOS_GUEST_ARCH_AARCH64 = 1u,
@@ -89,7 +124,11 @@ typedef struct __attribute__((packed)) aos_guest_profile_manifest {
     uint16_t profile_id_length;
     uint32_t control_type;
     uint16_t media_initrd_path_length;
-    uint8_t reserved[6];
+    union {
+        aos_guest_cpu_features_t cpu_features;
+        /* Deprecated source-compatible name for the v2 reserved bytes. */
+        uint8_t reserved[sizeof(aos_guest_cpu_features_t)];
+    };
     char profile_id[64];
     char command_line[256];
     char media_initrd_path[64];
@@ -108,10 +147,21 @@ enum aos_guest_profile_error {
     AOS_GUEST_PROFILE_ERR_MEMORY,
     AOS_GUEST_PROFILE_ERR_ARTIFACT,
     AOS_GUEST_PROFILE_ERR_DEVICE,
+    AOS_GUEST_PROFILE_ERR_CPU,
+    AOS_GUEST_PROFILE_ERR_RESOURCE,
 };
 
 enum aos_guest_profile_error
 aos_guest_profile_validate(const aos_guest_profile_manifest_t *profile);
+
+/*
+ * Validate selected, concurrently mapped profiles.  Individual profiles are
+ * validated first; guest GPA and VMM HVA ranges must then be disjoint, guest
+ * IDs unique, and aggregate RAM bounded by the profile resource budget.
+ */
+enum aos_guest_profile_error
+aos_guest_profile_validate_selected(
+    const aos_guest_profile_manifest_t *const profiles[], size_t count);
 
 bool aos_guest_profile_region_contains(const aos_guest_profile_manifest_t *profile,
                                        uint64_t address, uint64_t length);

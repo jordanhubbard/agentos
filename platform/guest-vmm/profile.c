@@ -29,6 +29,19 @@ static bool bytes_are_zero(const void *buffer, size_t length)
     return aggregate == 0u;
 }
 
+static bool cpu_features_valid(const aos_guest_cpu_features_t *features)
+{
+    if (features->version == 0u) {
+        return features->reserved == 0u && features->required == 0u &&
+               features->prohibited == 0u;
+    }
+    return features->version == AOS_GUEST_CPU_FEATURES_VERSION &&
+           features->reserved == 0u &&
+           (features->required & ~AOS_GUEST_CPU_FEATURE_ALL) == 0u &&
+           (features->prohibited & ~AOS_GUEST_CPU_FEATURE_ALL) == 0u &&
+           (features->required & features->prohibited) == 0u;
+}
+
 static bool media_path_is_normalized(const char *path, uint16_t length)
 {
     if (length == 0u || path[0] == '/' || path[length - 1u] == '/') {
@@ -94,8 +107,7 @@ aos_guest_profile_validate(const aos_guest_profile_manifest_t *profile)
         profile->media_initrd_path[profile->media_initrd_path_length] != '\0') {
         return AOS_GUEST_PROFILE_ERR_TEXT;
     }
-    if (!bytes_are_zero(profile->reserved, sizeof(profile->reserved)) ||
-        !bytes_are_zero(&profile->profile_id[profile->profile_id_length + 1u],
+    if (!bytes_are_zero(&profile->profile_id[profile->profile_id_length + 1u],
                         sizeof(profile->profile_id) -
                             profile->profile_id_length - 1u) ||
         !bytes_are_zero(&profile->command_line[profile->command_line_length + 1u],
@@ -107,10 +119,14 @@ aos_guest_profile_validate(const aos_guest_profile_manifest_t *profile)
                             profile->media_initrd_path_length - 1u)) {
         return AOS_GUEST_PROFILE_ERR_TEXT;
     }
+    if (!cpu_features_valid(&profile->cpu_features)) {
+        return AOS_GUEST_PROFILE_ERR_CPU;
+    }
     if (profile->vcpu_count == 0u ||
         profile->vcpu_count > AOS_GUEST_PROFILE_VCPU_MAX ||
-        profile->ram_size < UINT64_C(0x200000) ||
-        (profile->ram_size & UINT64_C(0x1fffff)) != 0u ||
+        profile->ram_size < AOS_GUEST_PROFILE_RAM_MIN ||
+        profile->ram_size > AOS_GUEST_PROFILE_RAM_MAX ||
+        (profile->ram_size & (AOS_GUEST_PROFILE_RAM_ALIGN - 1u)) != 0u ||
         (profile->guest_gpa_base & UINT64_C(0xfff)) != 0u ||
         (profile->vmm_hva_base & UINT64_C(0xfff)) != 0u ||
         !add_fits(profile->guest_gpa_base, profile->ram_size, UINT64_MAX) ||
@@ -188,6 +204,42 @@ aos_guest_profile_validate(const aos_guest_profile_manifest_t *profile)
         (((profile->device_flags & AOS_GUEST_DEVICE_NET) == 0u) &&
          profile->network_client != UINT16_MAX)) {
         return AOS_GUEST_PROFILE_ERR_DEVICE;
+    }
+    return AOS_GUEST_PROFILE_OK;
+}
+
+enum aos_guest_profile_error
+aos_guest_profile_validate_selected(
+    const aos_guest_profile_manifest_t *const profiles[], size_t count)
+{
+    if (profiles == NULL || count == 0u ||
+        count > AOS_GUEST_PROFILE_SELECTED_MAX) {
+        return AOS_GUEST_PROFILE_ERR_RESOURCE;
+    }
+
+    uint64_t total_ram = 0u;
+    for (size_t i = 0u; i < count; i++) {
+        enum aos_guest_profile_error result =
+            aos_guest_profile_validate(profiles[i]);
+        if (result != AOS_GUEST_PROFILE_OK) return result;
+        if (profiles[i]->ram_size > AOS_GUEST_PROFILE_RAM_MAX - total_ram) {
+            return AOS_GUEST_PROFILE_ERR_RESOURCE;
+        }
+        total_ram += profiles[i]->ram_size;
+
+        for (size_t j = 0u; j < i; j++) {
+            if (profiles[i]->guest_id == profiles[j]->guest_id ||
+                region_overlaps(profiles[i]->guest_gpa_base,
+                                profiles[i]->ram_size,
+                                profiles[j]->guest_gpa_base,
+                                profiles[j]->ram_size) ||
+                region_overlaps(profiles[i]->vmm_hva_base,
+                                profiles[i]->ram_size,
+                                profiles[j]->vmm_hva_base,
+                                profiles[j]->ram_size)) {
+                return AOS_GUEST_PROFILE_ERR_RESOURCE;
+            }
+        }
     }
     return AOS_GUEST_PROFILE_OK;
 }
