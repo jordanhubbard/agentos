@@ -107,23 +107,15 @@ treating a header as runtime proof.
 
 ```text
 guest virtio queue
-      |
-      v
-VMM queue validation + GPA translation
-      |
-      v
-separate net_virt / blk_virt / serial_virt PDs over shared queues
-      |
-      v
-agentOS-owned host backend
+   -> VMM queue validation + GPA translation
+   -> net_virt / blk_virt / serial_virt PDs over shared queues
+   -> agentOS-owned host backend
 ```
 
 The guest sees a standard virtual device. The VMM validates descriptors and
 translates guest physical addresses. A generic service owns the real backend.
-Console uses a separate serial_virt PD, with one isolated page per VMM and
-a separate CC frontend page. The native Rust PD uses its own network client
-page and scoped notification/attach capabilities. Its ARP exchanges coexist
-with a live Ubuntu guest using the same canonical NIC path.
+Console uses a separate serial_virt PD. A native Rust PD reaches the same
+canonical NIC through its own client page beside a live Ubuntu guest.
 
 > Speaker notes: The key security distinction is emulation versus passthrough.
 > Cite the virtio host tests and target evidence specifically. Do not imply the
@@ -240,14 +232,10 @@ bytes. The producer still controls its own message contents.
 
 ```text
 source contract
-      |
-host unit test
-      |
-seL4 target test
-      |
-guest-visible behavior
-      |
-concurrent authenticated acceptance
+   -> host unit test
+   -> seL4 target test
+   -> guest-visible behavior
+   -> concurrent authenticated acceptance
 ```
 
 **Current policy**
