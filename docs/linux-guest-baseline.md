@@ -119,6 +119,35 @@ SSH proof. It excludes acquisition, compilation and persistent-media copying;
 it includes host scheduling, QEMU and agentOS startup, guest boot, console
 provisioning and SSH authentication. It is not guest CPU time or an exact
 vCPU-start timestamp. Persistent tests retain one receipt per successful boot.
-Compare Ubuntu and Debian on the same runner, image revision and test settings;
-keep first and subsequent persistent boots separate. A timing receipt records
-SSH readiness, not the success of assertions that run afterward.
+Compare Ubuntu and Debian on the same runner, clean agentOS Git revision and
+QEMU configuration. The canonical live commands both require the same
+host-backed VirtIO assertion and use 3 GiB guest memory. Keep first and
+subsequent persistent boots separate. A timing receipt records SSH readiness,
+not the success of assertions that run afterward. New receipts require a clean
+source tree for the full run and bind the agentOS image plus guest-bundle
+SHA-256 values. The expected Ubuntu and Debian guest bundle digests differ, so
+they are recorded rather than compared for equality. Older v1 receipts are
+deliberately not comparable.
+
+Use the receipt-only comparison after retaining one successful Ubuntu live and
+one successful Debian live run on the same recorded host platform:
+
+```sh
+make test-guest-boot-timing-compare \
+  UBUNTU_BOOT_TIMING_RECEIPT=/absolute/path/agentos-qemu-ubuntu.boot-timing.json \
+  DEBIAN_BOOT_TIMING_RECEIPT=/absolute/path/agentos-qemu-debian.boot-timing.json \
+  GUEST_BOOT_TIMING_COMPARISON=build/evidence/guest-boot-timing-comparison.json
+```
+
+The command fails closed for missing or malformed receipts, a non-authenticated
+SSH status or different timing boundary, wrong Ubuntu/Debian profile,
+agentOS revision, board, recorded host OS/architecture, timing scope, or
+persistent-boot phase, clean source-tree status, or QEMU configuration. It
+writes a deterministic comparison receipt containing both receipt hashes,
+the immutable image and guest-bundle digests, elapsed times and their unsigned
+difference. It sets no performance threshold: a generated receipt is
+measurement evidence only, not a target-success or guest-performance claim.
+The existing host fields establish a matching recorded host platform; they do
+not independently identify a physical runner. No comparison claim exists until
+both underlying authenticated SSH runs have completed their full qualification
+successfully.

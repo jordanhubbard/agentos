@@ -12,6 +12,7 @@ pub mod cmd_gen_image;
 pub mod cmd_gen_pd_bundle;
 pub mod cmd_gen_policy;
 pub mod cmd_guest_profile;
+pub mod cmd_guest_timing;
 pub mod cmd_host_test;
 pub mod cmd_policy_check;
 pub mod cmd_release;
@@ -28,6 +29,7 @@ pub mod rfb;
 pub use cmd_gen_image::GenImageArgs;
 pub use cmd_gen_pd_bundle::GenPdBundleArgs;
 pub use cmd_guest_profile::GuestProfileArgs;
+pub use cmd_guest_timing::GuestTimingCompareArgs;
 pub use guest_scenario::GuestScenarioArgs;
 
 // ── Subcommand arg structs ──────────────────────────────────────────────────
