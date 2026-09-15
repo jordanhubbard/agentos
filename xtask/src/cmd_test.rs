@@ -302,6 +302,14 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
         "--assert-native-rust requires a fresh qemu_virt_aarch64 GUEST_OS=none image"
     );
     anyhow::ensure!(
+        !args.assert_vmx_exit
+            || (args.board == "x86_64_generic_vtx"
+                && args.guest_os == "none"
+                && !args.no_build
+                && !args.keep_running),
+        "--assert-vmx-exit requires a fresh x86_64_generic_vtx GUEST_OS=none image"
+    );
+    anyhow::ensure!(
         !args.assert_console_backpressure
             || (args.board == "qemu_virt_aarch64"
                 && args.guest_os == "ubuntu"
@@ -439,6 +447,13 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
             format!("BOARD={}", args.board),
             String::from("GUEST_OS=none"),
         ];
+        if args.board == "x86_64_generic" {
+            make_args.push(String::from("TARGET_ARCH=x86_64"));
+            make_args.push(String::from("BOARD_NAME=qemu-x86_64"));
+        } else if args.board == "x86_64_generic_vtx" {
+            make_args.push(String::from("TARGET_ARCH=x86_64"));
+            make_args.push(String::from("BOARD_NAME=qemu-x86_64-vtx"));
+        }
         if scenario_plan.is_some() {
             make_args.push(format!("GUEST_SCENARIO={}", args.guest_os));
         } else if let Some(profile) = &profile_plan {
@@ -763,6 +778,8 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
                 Duration::from_secs(args.timeout_secs),
                 &mut qemu,
             )
+        } else if args.assert_vmx_exit {
+            wait_for_x86_vtx_proof(&log_path, Duration::from_secs(args.timeout_secs), &mut qemu)
         } else if args.board == "x86_64_generic" {
             wait_for_x86_reduced_smoke(&log_path, Duration::from_secs(args.timeout_secs))
         } else {
@@ -1118,6 +1135,13 @@ pub fn launch(args: &QemuLaunchArgs) -> anyhow::Result<()> {
         format!("BOARD={}", args.board),
         String::from("GUEST_OS=none"),
     ];
+    if args.board == "x86_64_generic" {
+        make_args.push(String::from("TARGET_ARCH=x86_64"));
+        make_args.push(String::from("BOARD_NAME=qemu-x86_64"));
+    } else if args.board == "x86_64_generic_vtx" {
+        make_args.push(String::from("TARGET_ARCH=x86_64"));
+        make_args.push(String::from("BOARD_NAME=qemu-x86_64-vtx"));
+    }
     if let Some(profile) = &profile_plan {
         make_args.push(format!("GUEST_PROFILE={}", profile.path.display()));
     } else if let Some(alias) = &args.scenario {
@@ -1742,6 +1766,33 @@ pub(crate) fn spawn_qemu_with_guest(
                 .arg("e1000,netdev=net0");
             c
         }
+        "x86_64_generic_vtx" => {
+            anyhow::ensure!(
+                host_kvm_available(board),
+                "x86_64_generic_vtx requires Linux x86_64 with accessible /dev/kvm"
+            );
+            let kernel = sel4_sdk_path()?.join("board/x86_64_generic_vtx/release/elf/sel4_32.elf");
+            let root_task = repo_root.join("build/x86_64_generic_vtx/root_task.elf");
+            let mut c = std::process::Command::new("qemu-system-x86_64");
+            c.arg("-machine")
+                .arg("q35")
+                .arg("-enable-kvm")
+                .arg("-cpu")
+                .arg("host")
+                .arg("-m")
+                .arg("2G")
+                .arg("-display")
+                .arg("none")
+                .arg("-monitor")
+                .arg("none")
+                .arg("-serial")
+                .arg("stdio")
+                .arg("-kernel")
+                .arg(kernel)
+                .arg("-initrd")
+                .arg(root_task);
+            c
+        }
         other => {
             anyhow::bail!(
                 "unknown board: {} — add QEMU invocation to cmd_test.rs",
@@ -1791,9 +1842,12 @@ pub(crate) fn spawn_qemu_with_guest(
 }
 
 fn host_kvm_available(board: &str) -> bool {
-    cfg!(all(target_os = "linux", target_arch = "aarch64"))
+    (cfg!(all(target_os = "linux", target_arch = "aarch64"))
         && board == "qemu_virt_aarch64"
-        && Path::new("/dev/kvm").exists()
+        && Path::new("/dev/kvm").exists())
+        || (cfg!(all(target_os = "linux", target_arch = "x86_64"))
+            && board == "x86_64_generic_vtx"
+            && Path::new("/dev/kvm").exists())
 }
 
 fn qemu_netdev_arg(
@@ -2091,6 +2145,28 @@ fn wait_for_x86_reduced_smoke(log_path: &Path, timeout: Duration) -> anyhow::Res
     Ok(format!(
         "{marker} (x86 reduced smoke, no fault endpoint reports)"
     ))
+}
+
+fn wait_for_x86_vtx_proof(
+    log_path: &Path,
+    timeout: Duration,
+    qemu: &mut Child,
+) -> anyhow::Result<String> {
+    let marker = wait_for_all_markers(
+        log_path,
+        &[
+            "[rt] x86 VMX EPT proof provisioned",
+            "[rt] x86 VMX EPT HLT exit verified",
+        ],
+        timeout,
+        qemu,
+    )?;
+    let output = std::fs::read_to_string(log_path).unwrap_or_default();
+    anyhow::ensure!(
+        !output.contains("[rt] x86 VMX EPT proof FAILED") && !output.contains("[rt] FAULT"),
+        "x86 VMX/EPT proof emitted a failure or root-task fault report"
+    );
+    Ok(format!("{marker} (x86 VMX/EPT HLT exit proof)"))
 }
 
 fn verify_inspect(socket: &Path, root: &Path) -> anyhow::Result<String> {

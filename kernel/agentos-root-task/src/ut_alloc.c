@@ -144,6 +144,18 @@ static uint8_t ut_object_bits(uint32_t type, uint32_t size_bits)
     case seL4_ARM_VCPUObject:
         return (uint8_t)seL4_ARM_VCPUBits;
 #endif
+#if defined(AGENTOS_X86_VTX)
+    case seL4_X86_VCPUObject:
+        return (uint8_t)seL4_X86_VCPUBits;
+    case seL4_X86_EPTPML4Object:
+        return (uint8_t)seL4_X86_EPTPML4Bits;
+    case seL4_X86_EPTPDPTObject:
+        return (uint8_t)seL4_X86_EPTPDPTBits;
+    case seL4_X86_EPTPDObject:
+        return (uint8_t)seL4_X86_EPTPDBits;
+    case seL4_X86_EPTPTObject:
+        return (uint8_t)seL4_X86_EPTPTBits;
+#endif
     case seL4_ARM_SmallPageObject:
         return 12u;
     case seL4_ARCH_LargePageObject:

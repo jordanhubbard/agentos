@@ -35,6 +35,9 @@
 
 #include "boot_info.h"       /* seL4_BootInfo, seL4_Yield, object type constants */
 #include "contracts/guest_execution_caps.h"
+#if defined(__x86_64__) && defined(AGENTOS_X86_VTX)
+#include "contracts/x86_vtx_proof.h"
+#endif
 #include "sel4_boot.h"       /* seL4_IRQControl_Get, seL4_IRQHandler_Ack, etc.   */
 #include "ut_alloc.h"        /* ut_alloc_init, ut_alloc                          */
 #include "pd_vspace.h"       /* pd_vspace_create, pd_vspace_load_elf              */
@@ -701,6 +704,9 @@ static seL4_CPtr g_blk_shared_frame_cap = seL4_CapNull;
 static seL4_CPtr g_blk_virt_frame_caps[AOS_BLK_SHMEM_FRAMES];
 static seL4_CPtr g_serial_virt_frames[AOS_SERIAL_FRAMES];
 static seL4_CPtr g_pd_notifications[SYSTEM_MAX_PDS];
+#if defined(__x86_64__) && defined(AGENTOS_X86_VTX)
+static seL4_CPtr g_x86_vtx_proof_endpoint = seL4_CapNull;
+#endif
 #ifdef AGENTOS_LOG_RINGS
 static seL4_CPtr g_log_frames[AOS_LOG_CLIENTS];
 static aos_log_config_t g_log_config;
@@ -1312,6 +1318,153 @@ static seL4_Error setup_vmm_guest_vcpu(const pd_desc_t *pd,
     dbg_puts(" ipc_va=");
     dbg_hex((seL4_Word)VMM_GUEST_IPC_BUF_VA);
     dbg_puts("\n");
+    return seL4_NoError;
+}
+#endif
+
+#if defined(__x86_64__) && defined(AGENTOS_X86_VTX)
+/*
+ * Provision the deliberately small VMX/EPT qualification guest.  On x86 a
+ * SysVMEnter call runs the VCPU bound to the calling VMM TCB, unlike the
+ * AArch64 guest-TCB model above. The first frame contains HLT at GPA 0x1000;
+ * four further frames form its long-mode guest page-table walk. Their EPT
+ * mappings have no host-device capability or guest I/O authority.
+ */
+static seL4_Error setup_x86_vtx_proof(const pd_desc_t *pd, uint32_t pd_index,
+                                      seL4_CPtr pd_cnode, seL4_CPtr vmm_tcb)
+{
+    seL4_CPtr vcpu = seL4_CapNull;
+    seL4_CPtr ept_pml4 = seL4_CapNull;
+    seL4_CPtr ept_pdpt = seL4_CapNull;
+    seL4_CPtr ept_pd = seL4_CapNull;
+    seL4_CPtr ept_pt = seL4_CapNull;
+    seL4_CPtr guest_page = seL4_CapNull;
+    seL4_CPtr guest_pml4 = seL4_CapNull;
+    seL4_CPtr guest_pdpt = seL4_CapNull;
+    seL4_CPtr guest_pd = seL4_CapNull;
+    seL4_CPtr guest_pt = seL4_CapNull;
+    const seL4_X86_VMAttributes ept_attr =
+        (seL4_X86_VMAttributes)seL4_X86_EPT_Default_VMAttributes;
+
+    if (!pd_is_guest_vmm(pd) || pd->self_svc_id != SVC_ID_GUEST_VMM_PRIMARY) {
+        return seL4_InvalidArgument;
+    }
+    if (pd->cnode_size_bits < 10u) {
+        return seL4_InvalidArgument;
+    }
+
+    seL4_Error err = ut_alloc_cap(seL4_X86_VCPUObject, 0u, &vcpu);
+    if (err != seL4_NoError) return err;
+    err = ut_alloc_cap(seL4_X86_EPTPML4Object, 0u, &ept_pml4);
+    if (err != seL4_NoError) return err;
+    err = ut_alloc_cap(seL4_X86_EPTPDPTObject, 0u, &ept_pdpt);
+    if (err != seL4_NoError) return err;
+    err = ut_alloc_cap(seL4_X86_EPTPDObject, 0u, &ept_pd);
+    if (err != seL4_NoError) return err;
+    err = ut_alloc_cap(seL4_X86_EPTPTObject, 0u, &ept_pt);
+    if (err != seL4_NoError) return err;
+    err = ut_alloc_cap(seL4_X86_4K, 0u, &guest_page);
+    if (err != seL4_NoError) return err;
+    err = ut_alloc_cap(seL4_X86_4K, 0u, &guest_pml4);
+    if (err != seL4_NoError) return err;
+    err = ut_alloc_cap(seL4_X86_4K, 0u, &guest_pdpt);
+    if (err != seL4_NoError) return err;
+    err = ut_alloc_cap(seL4_X86_4K, 0u, &guest_pd);
+    if (err != seL4_NoError) return err;
+    err = ut_alloc_cap(seL4_X86_4K, 0u, &guest_pt);
+    if (err != seL4_NoError) return err;
+
+    err = pd_vspace_map_device_frame(seL4_CapInitThreadVSpace, guest_page,
+                                     0x60000000u);
+    if (err != seL4_NoError) return err;
+    volatile uint8_t *guest_code = (volatile uint8_t *)0x60000000u;
+    for (uint32_t i = 0u; i < 4096u; i++) {
+        guest_code[i] = 0u;
+    }
+    guest_code[0] = 0xf4u; /* HLT */
+    AGENTOS_MEMORY_FENCE();
+    err = seL4_X86_Page_Unmap((seL4_X86_Page)guest_page);
+    if (err != seL4_NoError) return err;
+    const struct {
+        seL4_CPtr page;
+        seL4_Word entry;
+    } page_tables[] = {
+        { guest_pml4, AOS_X86_VTX_GUEST_PDPT_GPA | 3u },
+        { guest_pdpt, AOS_X86_VTX_GUEST_PD_GPA | 3u },
+        { guest_pd, AOS_X86_VTX_GUEST_PT_GPA | 3u },
+        { guest_pt, AOS_X86_VTX_GUEST_RIP | 3u },
+    };
+    for (uint32_t i = 0u; i < sizeof(page_tables) / sizeof(page_tables[0]); i++) {
+        err = pd_vspace_map_device_frame(seL4_CapInitThreadVSpace,
+                                         page_tables[i].page, 0x60000000u);
+        if (err != seL4_NoError) return err;
+        volatile seL4_Word *entries = (volatile seL4_Word *)0x60000000u;
+        for (uint32_t j = 0u; j < 512u; j++) {
+            entries[j] = 0u;
+        }
+        entries[i == 3u ? 1u : 0u] = page_tables[i].entry;
+        AGENTOS_MEMORY_FENCE();
+        err = seL4_X86_Page_Unmap((seL4_X86_Page)page_tables[i].page);
+        if (err != seL4_NoError) return err;
+    }
+
+    err = seL4_X86_ASIDPool_Assign((seL4_X86_ASIDPool)seL4_CapInitThreadASIDPool,
+                                   ept_pml4);
+    if (err != seL4_NoError) return err;
+    err = seL4_X86_EPTPDPT_Map(ept_pdpt, ept_pml4, 0u, ept_attr);
+    if (err != seL4_NoError) return err;
+    err = seL4_X86_EPTPD_Map(ept_pd, ept_pml4, 0u, ept_attr);
+    if (err != seL4_NoError) return err;
+    err = seL4_X86_EPTPT_Map(ept_pt, ept_pml4, 0u, ept_attr);
+    if (err != seL4_NoError) return err;
+    err = seL4_X86_Page_MapEPT(guest_page, ept_pml4, AOS_X86_VTX_GUEST_RIP,
+                               seL4_AllRights, ept_attr);
+    if (err != seL4_NoError) return err;
+    err = seL4_X86_Page_MapEPT(guest_pml4, ept_pml4,
+                               AOS_X86_VTX_GUEST_PML4_GPA,
+                               seL4_AllRights, ept_attr);
+    if (err != seL4_NoError) return err;
+    err = seL4_X86_Page_MapEPT(guest_pdpt, ept_pml4,
+                               AOS_X86_VTX_GUEST_PDPT_GPA,
+                               seL4_AllRights, ept_attr);
+    if (err != seL4_NoError) return err;
+    err = seL4_X86_Page_MapEPT(guest_pd, ept_pml4, AOS_X86_VTX_GUEST_PD_GPA,
+                               seL4_AllRights, ept_attr);
+    if (err != seL4_NoError) return err;
+    err = seL4_X86_Page_MapEPT(guest_pt, ept_pml4, AOS_X86_VTX_GUEST_PT_GPA,
+                               seL4_AllRights, ept_attr);
+    if (err != seL4_NoError) return err;
+
+    err = seL4_X86_VCPU_SetTCB((seL4_X86_VCPU)vcpu, (seL4_TCB)vmm_tcb);
+    if (err != seL4_NoError) return err;
+    err = seL4_TCB_SetEPTRoot((seL4_TCB)vmm_tcb, ept_pml4);
+    if (err != seL4_NoError) return err;
+    err = seL4_CNode_Copy(pd_cnode, AOS_GUEST_VCPU_CAP_BASE,
+                          (uint8_t)pd->cnode_size_bits,
+                          seL4_CapInitThreadCNode, vcpu, 64u, seL4_AllRights);
+    if (err != seL4_NoError) return err;
+
+    (void)cap_acct_record(seL4_CapNull, vcpu, seL4_X86_VCPUObject,
+                          pd_index, pd->name);
+    (void)cap_acct_record(seL4_CapNull, ept_pml4, seL4_X86_EPTPML4Object,
+                          pd_index, pd->name);
+    (void)cap_acct_record(seL4_CapNull, ept_pdpt, seL4_X86_EPTPDPTObject,
+                          pd_index, pd->name);
+    (void)cap_acct_record(seL4_CapNull, ept_pd, seL4_X86_EPTPDObject,
+                          pd_index, pd->name);
+    (void)cap_acct_record(seL4_CapNull, ept_pt, seL4_X86_EPTPTObject,
+                          pd_index, pd->name);
+    (void)cap_acct_record(seL4_CapNull, guest_page, seL4_X86_4K,
+                          pd_index, pd->name);
+    (void)cap_acct_record(seL4_CapNull, guest_pml4, seL4_X86_4K,
+                          pd_index, pd->name);
+    (void)cap_acct_record(seL4_CapNull, guest_pdpt, seL4_X86_4K,
+                          pd_index, pd->name);
+    (void)cap_acct_record(seL4_CapNull, guest_pd, seL4_X86_4K,
+                          pd_index, pd->name);
+    (void)cap_acct_record(seL4_CapNull, guest_pt, seL4_X86_4K,
+                          pd_index, pd->name);
+    dbg_puts("[rt] x86 VMX EPT proof provisioned\n");
     return seL4_NoError;
 }
 #endif
@@ -2729,6 +2882,19 @@ void root_task_main(const seL4_BootInfo *bi)
             }
         }
 #endif
+#if defined(__x86_64__) && defined(AGENTOS_X86_VTX)
+        if (pd_is_guest_vmm(pd)) {
+            seL4_Error vm_err = setup_x86_vtx_proof(pd, i, pd_cnode,
+                                                     tr.tcb_cap);
+            if (vm_err != seL4_NoError) {
+                dbg_puts("[rt] x86 VMX EPT proof provisioning FAILED err=");
+                dbg_hex((seL4_Word)vm_err);
+                dbg_puts("\n");
+                return;
+            }
+            g_x86_vtx_proof_endpoint = self_ep;
+        }
+#endif
         {
             dbg_puts("[rt] pd entry=");
             dbg_hex(vr.entry_point);
@@ -2848,6 +3014,46 @@ void root_task_main(const seL4_BootInfo *bi)
 #endif
 
     dbg_puts("[rt] boot complete — yielding to PDs\n");
+
+#if defined(__x86_64__) && defined(AGENTOS_X86_VTX)
+    /*
+     * The VMM uses its self endpoint to report the exact exit observed after
+     * VM entry.  Validate the complete small protocol before emitting the
+     * qualification marker, then resume normal root fault handling.
+     */
+    if (g_x86_vtx_proof_endpoint == seL4_CapNull) {
+        dbg_puts("[rt] x86 VMX EPT proof FAILED: endpoint unavailable\n");
+        return;
+    }
+    {
+        seL4_Word badge = 0u;
+        seL4_MessageInfo_t tag =
+            seL4_Wait(g_x86_vtx_proof_endpoint, &badge);
+        seL4_Word status = seL4_GetMR(0);
+        seL4_Word reason = seL4_GetMR(1);
+        seL4_Word rip = seL4_GetMR(2);
+        seL4_Word instruction_len = seL4_GetMR(3);
+        if (seL4_MessageInfo_get_label(tag) == AOS_X86_VTX_PROOF_LABEL &&
+            seL4_MessageInfo_get_length(tag) == 4u &&
+            status == AOS_X86_VTX_PROOF_PASS &&
+            (reason & 0xffffu) == AOS_X86_VTX_HLT_EXIT_REASON &&
+            rip == AOS_X86_VTX_GUEST_RIP &&
+            instruction_len == AOS_X86_VTX_HLT_INSTRUCTION_LEN) {
+            dbg_puts("[rt] x86 VMX EPT HLT exit verified\n");
+        } else {
+            dbg_puts("[rt] x86 VMX EPT proof FAILED status=");
+            dbg_hex(status);
+            dbg_puts(" reason=");
+            dbg_hex(reason);
+            dbg_puts(" rip=");
+            dbg_hex(rip);
+            dbg_puts(" len=");
+            dbg_hex(instruction_len);
+            dbg_puts("\n");
+            return;
+        }
+    }
+#endif
 
     /* ── Step 5: Yield CPU to PDs via IPC block ───────────────────────────── */
     /*

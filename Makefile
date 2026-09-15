@@ -26,7 +26,7 @@
 
 .DEFAULT_GOAL := help
 
-.PHONY: all setup sdk demo demo-check demo-smoke demo-test demo-desktop demo-desktop-test demo-clean install deps deps-tools submodules channels format policy-check guest-profile-check lint-source run run-fast run-dual-ssh test test-guest-login test-guest-net test-guest-blk test-guest-console test-ubuntu-virtio test-ubuntu-live test-guest-boot-timing-compare sel4-test-image run-tests test-snapshot-sched test-proc-server test-vibeos-contract test-integration test-host gate gate-aarch64 gate-x86_64 e2e e2e-guest e2e-contract e2e-dual-os e2e-ubuntu-amd64 e2e-ubuntu-arm64 e2e-nixos e2e-freebsd15 e2e-all bootstrap-guest clean clean-all clean-images help release release-minor release-major release-prepare release-check release-publish release-verify presentation-render fetch-guest build-tools
+.PHONY: all setup sdk demo demo-check demo-smoke demo-test demo-desktop demo-desktop-test demo-clean install deps deps-tools submodules channels format policy-check guest-profile-check lint-source run run-fast run-dual-ssh test test-guest-login test-guest-net test-guest-blk test-guest-console test-ubuntu-virtio test-ubuntu-live test-guest-boot-timing-compare sel4-test-image run-tests test-snapshot-sched test-proc-server test-vibeos-contract test-integration test-host gate gate-aarch64 gate-x86_64 gate-x86_64-vtx e2e e2e-guest e2e-contract e2e-dual-os e2e-ubuntu-amd64 e2e-ubuntu-arm64 e2e-nixos e2e-freebsd15 e2e-all bootstrap-guest clean clean-all clean-images help release release-minor release-major release-prepare release-check release-publish release-verify presentation-render fetch-guest build-tools
 
 # ─── Read config.yaml (if present) ───────────────────────────────────────────
 CONFIG_TARGET := $(shell grep '^target_arch:' config.yaml 2>/dev/null | sed 's/target_arch:[[:space:]]*//' | tr -d '[:space:]')
@@ -660,6 +660,15 @@ gate-x86_64:
 	@echo ""
 	@echo "── [GATE] TARGET/QEMU test: x86_64 (GUEST_OS=none) ───────────"
 	@$(MAKE) test TARGET_ARCH=x86_64 GUEST_OS=none
+
+# Dedicated KVM/VMX proof.  This is intentionally outside make gate: generic
+# x86 coverage remains a portable reduced smoke test, while this target
+# requires a host exposing /dev/kvm and nested Intel VMX.
+gate-x86_64-vtx:
+	@echo ""
+	@echo "── [GATE] TARGET/KVM test: x86_64 VMX/EPT HLT exit ───────────"
+	@cargo xtask qemu-test --board x86_64_generic_vtx --guest-os none \
+		--assert-vmx-exit --timeout-secs $(QEMU_TEST_TIMEOUT)
 
 # gate-guest-io: guest I/O proofs through the virtualizer path. GUEST_OS=none
 # is a stub VMM, so the boot gates above prove PD load and root-task parking

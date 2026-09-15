@@ -122,6 +122,11 @@ endif
 ROOT_TASK_OBJS := $(patsubst src/%.c, $(BUILD_DIR)/rt_%.o, $(ROOT_TASK_SRCS))
 ROOT_TASK_OBJS += $(BUILD_DIR)/rt_inspect_snapshot.o
 
+ifeq ($(AGENTOS_BOARD),x86_64_generic_vtx)
+  CFLAGS += -DAGENTOS_X86_VTX=1
+  CFLAGS_ROOT_TASK += -DAGENTOS_X86_VTX=1
+endif
+
 $(BUILD_DIR)/rt_inspect_snapshot.o: $(REPO_ROOT_MK)/platform/inspect/inspect_snapshot.c
 	@mkdir -p $(BUILD_DIR)
 	$(CC) $(CFLAGS) -c $< -o $@
@@ -979,13 +984,19 @@ $(BUILD_DIR)/guest_vmm_secondary.elf: FORCE
 endif
 endif
 
-# ─── Guest VMM stub (x86_64) ──────────────────────────────────────────────
-# Compiled directly from guest_vmm.c with -DARCH_X86_64.
-# No libvmm dependency — stub implementation only.
+# ─── Guest VMM x86_64 paths ────────────────────────────────────────────────
+# The regular board retains its passive stub. The distinct VTX board builds
+# only the narrow VMX/EPT HLT-exit proof, not a general guest VMM.
 ifeq ($(ARCH),x86_64)
+ifeq ($(AGENTOS_BOARD),x86_64_generic_vtx)
+$(BUILD_DIR)/guest_vmm_primary.o: $(REPO_ROOT_MK)/platform/guest-vmm/x86_vtx_proof.c
+	@mkdir -p $(BUILD_DIR)
+	$(CC) -c $(CFLAGS) -DARCH_X86_64 $< -o $@
+else
 $(BUILD_DIR)/guest_vmm_primary.o: $(REPO_ROOT_MK)/platform/guest-vmm/guest_vmm.c
 	@mkdir -p $(BUILD_DIR)
 	$(CC) -c $(CFLAGS) -DARCH_X86_64 -DGUEST_VMM_X86_STUB=1 $< -o $@
+endif
 
 $(BUILD_DIR)/guest_vmm_primary.elf: $(BUILD_DIR)/guest_vmm_primary.o \
                              $(BUILD_DIR)/sel4_crt.o \
