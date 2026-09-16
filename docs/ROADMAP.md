@@ -74,14 +74,21 @@ task in project `agentos`; this list records ordering only.
 | 2 | `task_4896bf7d46fc4fc9ad372fa998e46384` | Move the two-hour Casper live proof to a scheduled workflow; keep the 30-minute initramfs proof per push | `ubuntu-live-nightly.yml` runs it; `ci.yml` does not |
 | 3 | `task_04ea7ea3cec743609d45a01a6f09c6c9` | `make gate` includes `test-guest-net`, `test-guest-blk`, `test-guest-console`; CI has one `os-claim-summary` job that needs boot + all guest proofs | `make gate` output names guest I/O; CI job graph |
 | 4 | `task_596d6578cd3d4b72a6a7cf33f124e314` | ubuntu-live overlay replaces casper-bottom `ORDER` so the agentOS console hook runs before the stalling stock scripts (depends on PR #117) | nightly `test-ubuntu-live` passes well inside 7200 s |
-| 5 | `task_f79b23354fce40b0a988bf845ee9f604` | PR #118 removed the unused trees; retire obsolete passthrough examples and move non-root-task PD sources out of `kernel/agentos-root-task/src`. Retain the compiled SMC adapter and active SDK/simulator workspace crates. | `make gate` green after cleanup; root task directory holds only root-task sources |
+| 5 | `task_f79b23354fce40b0a988bf845ee9f604` | PR #118 removed unused trees; PR #144 moved 57 PD implementation/support sources out of `kernel/agentos-root-task/src` and removed the obsolete passthrough examples. The compiled SMC adapter and active SDK/simulator workspace crates remain. | PR #144 records the full gate after relocation; final release qualification must still run on the release revision |
 | 6 | `task_56eae59d9aa94d2d9d047f03fc9d22ad` | Trim `agentos.toml` to TCB PDs plus what `demo-test` needs; rewrite `docs/TCB.md` to name `cc_pd` and describe the real I/O path (virtualizer library in `guest_vmm`, IPC to driver PDs) with the PD split marked as target | booted PD list matches TCB.md; `make gate` and `make demo-test` green |
 | 7 | `task_b5a2798062024bd2b34632b1cbc1b664` | Replace source-grep assertions in `tests/platform` with behavioral tests or delete them | no `grep`-style source assertions remain |
 | 8 | `task_4fccd3eabf844e8f8a244aaacea87a6a` | PR #117 review items: remove `guest_vmm\|DIAG` printfs, `read_only` follows `media.writable`, reconcile `fault.c` per-tick reads with its comment, FreeBSD boot evidence for the vgic change | PR #117 checks green plus FreeBSD console log |
 | 9 | `task_2895878a309f431da2d082d75c93e20d` | Build `net_virt` and `blk_virt` as real PDs owning the sDDF queue regions; remove per-frame IPC to `net_pd`/`block_pd` | `test-guest-net`/`blk` pass through the new PD boundary; TCB.md diagram and manifest agree |
-| 10 | `task_f95d118416a24fa484c2c43f0d955b56` | The default descriptor now boots the TCB services and CC emits `agentOS boot complete`. The unreferenced `linux_vmm_test.system` and passthrough `ubuntu-overlay.dts` are retired; relocation of non-root-task PD sources remains open. | `make gate` and `make demo-test` green with a TCB-only descriptor |
+| 10 | `task_f95d118416a24fa484c2c43f0d955b56` | The default descriptor boots the TCB services and native operator client; CC emits `agentOS boot complete`. PR #144 retired `linux_vmm_test.system` and passthrough `ubuntu-overlay.dts`, and relocated non-root-task PD sources. | `make gate` and `make demo-test` must qualify the final release descriptor |
 | 11 | `task_c2558424db0541b18c486fc7960013fe` | `serial_virt` as a real PD following the `net_virt`/`blk_virt` pattern; `cc_pd` becomes its client for guest consoles | `test-guest-console` and `test-ubuntu-virtio` pass through the new PD boundary; TCB.md invariant 2 held for console |
-| 12 | `task_d41eae5495924820bc2defa15750d4e8` | Fix the `log_drain` MSG_SERIAL_WRITE layout mismatch with `serial_pd`; resolve the VA overlap at `0x10005000` | generic PD log output visible on the release kernel; host round-trip test |
+| 12 | `task_d41eae5495924820bc2defa15750d4e8` | PR #149 provisioned isolated generic log rings, read-only identity/configuration pages and persistent notification wakeups; configuration no longer overlaps `0x10005000`. | Recorded full gate, real UART output, three access-fault probes, native runtime/NIC proof and host byte-level tests; requalify at release |
+
+Implementation and ledger completion are distinct. PR #144 merged as
+`3f08ed106e13d90ee49d9815f4e7ed87c94e2ac7`; PR #149 merged as
+`915afd6356cb01aca1bf78d75cc268c67c456cd9`. Their MAC entries remain open as
+of 2026-09-16 and require reconciliation through the authorized ledger
+workflow. The merged changes must not be implemented a second time merely
+because those task states are stale.
 
 ## 0.2 — Network desktop proof and release discipline
 
