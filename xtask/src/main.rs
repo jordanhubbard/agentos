@@ -2,12 +2,12 @@ use clap::{Parser, Subcommand};
 use xtask::{
     cmd_ci_matrix, cmd_extract_freebsd_file, cmd_fault_inject, cmd_fetch_guest, cmd_gen_abi,
     cmd_gen_caps, cmd_gen_channels, cmd_gen_image, cmd_gen_pd_bundle, cmd_gen_policy,
-    cmd_guest_profile, cmd_host_test, cmd_policy_check, cmd_release, cmd_render_deck,
-    cmd_run_tests, cmd_setup, cmd_test, cmd_test_api, CiMatrixArgs, ExtractFreebsdFileArgs,
-    FaultInjectArgs, FetchGuestArgs, GenAbiArgs, GenCapsArgs, GenChannelsArgs, GenImageArgs,
-    GenPdBundleArgs, GenPolicyArgs, GuestProfileArgs, GuestScenarioArgs, HostTestArgs,
-    PolicyCheckArgs, QemuLaunchArgs, ReleaseArgs, RenderDeckArgs, RunTestsArgs, SetupArgs,
-    TestApiArgs, TestArgs,
+    cmd_guest_profile, cmd_guest_timing, cmd_host_test, cmd_policy_check, cmd_release,
+    cmd_render_deck, cmd_run_tests, cmd_setup, cmd_test, cmd_test_api, CiMatrixArgs,
+    ExtractFreebsdFileArgs, FaultInjectArgs, FetchGuestArgs, GenAbiArgs, GenCapsArgs,
+    GenChannelsArgs, GenImageArgs, GenPdBundleArgs, GenPolicyArgs, GuestProfileArgs,
+    GuestScenarioArgs, GuestTimingCompareArgs, HostTestArgs, PolicyCheckArgs, QemuLaunchArgs,
+    ReleaseArgs, RenderDeckArgs, RunTestsArgs, SetupArgs, TestApiArgs, TestArgs,
 };
 
 #[derive(Parser)]
@@ -74,6 +74,9 @@ enum Cmd {
     /// Resolve a bounded multi-profile host scenario.
     #[command(name = "guest-scenario")]
     GuestScenario(GuestScenarioArgs),
+    /// Compare successful Ubuntu and pinned-Debian boot timing receipts.
+    #[command(name = "guest-boot-timing-compare")]
+    GuestBootTimingCompare(GuestTimingCompareArgs),
 }
 
 fn main() -> anyhow::Result<()> {
@@ -100,5 +103,6 @@ fn main() -> anyhow::Result<()> {
         Cmd::GenPdBundle(a) => cmd_gen_pd_bundle::run(&a),
         Cmd::GuestProfile(a) => cmd_guest_profile::run(&a),
         Cmd::GuestScenario(a) => xtask::guest_scenario::run(&a),
+        Cmd::GuestBootTimingCompare(a) => cmd_guest_timing::run(&a),
     }
 }

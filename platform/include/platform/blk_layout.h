@@ -164,6 +164,14 @@ typedef struct aos_blk_virt_client {
     aos_blk_resp_queue_t   *resp;
     uint8_t                *data;
     uint32_t                capacity;
+    /*
+     * Selected media bounds.  This is virtualizer-private state, never a
+     * client-supplied range: every READ/WRITE is checked against it before a
+     * backend sees the request.  RAM clients also use disk/disk_blocks.
+     */
+    uint8_t                *disk;
+    uint32_t                disk_blocks;
+    uint32_t                media_blocks;
 } aos_blk_virt_client_t;
 
 typedef aos_blk_resp_status_t (*aos_blk_backend_fn)(
@@ -172,8 +180,6 @@ typedef aos_blk_resp_status_t (*aos_blk_backend_fn)(
 typedef struct aos_blk_virt {
     aos_blk_virt_client_t clients[AOS_BLK_MAX_CLIENTS];
     uint32_t num_clients;
-    uint8_t *disk;
-    uint32_t disk_blocks;
     aos_blk_backend_fn backend;
     void *backend_ctx;
 } aos_blk_virt_t;

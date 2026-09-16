@@ -2,6 +2,7 @@ use crate::cmd_guest_profile::{self, DesktopPlan, HostProfilePlan};
 use crate::guest_scenario::{self, HostScenarioPlan, ScenarioGuestPlan};
 use crate::{rfb, QemuLaunchArgs, TestArgs};
 use anyhow::Context;
+use sha2::{Digest, Sha256};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::net::{SocketAddr, TcpStream};
 use std::ops::{Deref, DerefMut};
@@ -301,6 +302,14 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
         "--assert-native-rust requires a fresh qemu_virt_aarch64 GUEST_OS=none image"
     );
     anyhow::ensure!(
+        !args.assert_vmx_exit
+            || (args.board == "x86_64_generic_vtx"
+                && args.guest_os == "none"
+                && !args.no_build
+                && !args.keep_running),
+        "--assert-vmx-exit requires a fresh x86_64_generic_vtx GUEST_OS=none image"
+    );
+    anyhow::ensure!(
         !args.assert_console_backpressure
             || (args.board == "qemu_virt_aarch64"
                 && args.guest_os == "ubuntu"
@@ -314,6 +323,8 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
         "console backpressure requires a freshly built Ubuntu deterministic probe image"
     );
     let repo_root = repo_root()?;
+    let initial_agentos_revision = agentos_revision(&repo_root)?;
+    let timing_source_tree_clean = agentos_worktree_clean(&repo_root)?;
     let profile_root = repo_root.join("guest-profiles");
     let scenario_plan = if args.guest_os == "both" {
         Some(guest_scenario::resolve_alias(
@@ -436,6 +447,13 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
             format!("BOARD={}", args.board),
             String::from("GUEST_OS=none"),
         ];
+        if args.board == "x86_64_generic" {
+            make_args.push(String::from("TARGET_ARCH=x86_64"));
+            make_args.push(String::from("BOARD_NAME=qemu-x86_64"));
+        } else if args.board == "x86_64_generic_vtx" {
+            make_args.push(String::from("TARGET_ARCH=x86_64"));
+            make_args.push(String::from("BOARD_NAME=qemu-x86_64-vtx"));
+        }
         if scenario_plan.is_some() {
             make_args.push(format!("GUEST_SCENARIO={}", args.guest_os));
         } else if let Some(profile) = &profile_plan {
@@ -585,6 +603,19 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
     };
     println!("[xtask:test] Launching QEMU for board={}...", args.board);
     let cc_sock = log_path.with_extension("cc_pd.sock");
+    let timing_artifact_digests = if args.assert_live && !args.assert_desktop {
+        Some((
+            sha256_file(
+                &repo_root
+                    .join("build")
+                    .join(&args.board)
+                    .join("agentos.img"),
+            )?,
+            guest_bundle_sha256(&repo_root, &args.board)?,
+        ))
+    } else {
+        None
+    };
     // Measure the host-observed launch-to-authentication interval. Acquisition,
     // compilation and persistent-disk preparation have already completed.
     let boot_clock = Instant::now();
@@ -614,6 +645,7 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
         drop(connect_host_net_stimulus(ssh_port, &mut qemu));
     }
 
+    let mut timing_receipt = None;
     let mut result = if args.log_isolation_probe.is_some() {
         wait_for_all_markers(
             &log_path,
@@ -746,6 +778,8 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
                 Duration::from_secs(args.timeout_secs),
                 &mut qemu,
             )
+        } else if args.assert_vmx_exit {
+            wait_for_x86_vtx_proof(&log_path, Duration::from_secs(args.timeout_secs), &mut qemu)
         } else if args.board == "x86_64_generic" {
             wait_for_x86_reduced_smoke(&log_path, Duration::from_secs(args.timeout_secs))
         } else {
@@ -789,25 +823,42 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
             Ok(()) => {
                 let elapsed_ms = boot_clock.elapsed().as_millis();
                 let timing_path = log_path.with_extension("boot-timing.json");
-                let timing = serde_json::json!({
-                    "schema": "agentos.guest_boot_timing.v1",
-                    "status": "ssh_authenticated",
-                    "boundary": "host QEMU launch request to completed authenticated SSH proof",
-                    "elapsed_ms": elapsed_ms,
-                    "board": args.board,
-                    "profile": profile_plan.as_ref().unwrap().id,
-                    "host_os": std::env::consts::OS,
-                    "host_arch": std::env::consts::ARCH,
-                    "persistent_second_boot": args.persistent_second_boot,
-                    "serial_log": log_path,
-                    "excludes": ["artifact acquisition", "build", "persistent media preparation"],
-                    "includes": ["host scheduling", "QEMU startup", "agentOS boot", "guest boot", "console provisioning", "SSH authentication"],
-                });
-                std::fs::write(&timing_path, serde_json::to_vec_pretty(&timing)?)?;
-                println!(
-                    "[xtask:test] Authenticated boot timing: {elapsed_ms} ms ({})",
-                    timing_path.display()
-                );
+                let timing_source_tree_clean = timing_source_tree_clean
+                    && agentos_worktree_clean(&repo_root)?
+                    && initial_agentos_revision == agentos_revision(&repo_root)?;
+                let timing_qemu_config = timing_qemu_config(
+                    args,
+                    profile_plan
+                        .as_ref()
+                        .context("live test requires a resolved guest profile")?,
+                )?;
+                let (agentos_image_sha256, guest_bundle_sha256) = timing_artifact_digests
+                    .as_ref()
+                    .context("live test lost its pre-launch timing artifact digests")?;
+                timing_receipt = Some((
+                    timing_path,
+                    serde_json::json!({
+                        "schema": "agentos.guest_boot_timing.v2",
+                        "status": "ssh_authenticated",
+                        "qualification_status": "pending",
+                        "boundary": "host QEMU launch request to completed authenticated SSH proof",
+                        "elapsed_ms": elapsed_ms,
+                        "board": args.board,
+                        "profile": profile_plan.as_ref().unwrap().id,
+                        "agentos_revision": initial_agentos_revision,
+                        "source_tree_clean": timing_source_tree_clean,
+                        "agentos_image_sha256": agentos_image_sha256,
+                        "guest_bundle_sha256": guest_bundle_sha256,
+                        "qemu_config_sha256": sha256_bytes(timing_qemu_config.as_bytes()),
+                        "host_backed_virtio": args.assert_agentos_virtio,
+                        "host_os": std::env::consts::OS,
+                        "host_arch": std::env::consts::ARCH,
+                        "persistent_second_boot": args.persistent_second_boot,
+                        "serial_log": log_path,
+                        "excludes": ["artifact acquisition", "build", "persistent media preparation"],
+                        "includes": ["host scheduling", "QEMU startup", "agentOS boot", "guest boot", "console provisioning", "SSH authentication"],
+                    }),
+                ));
                 result = Ok(format!(
                     "{}; profile SSH reachable",
                     result.as_deref().unwrap_or("guest profile ready")
@@ -985,6 +1036,22 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
         };
     }
 
+    if result.is_ok() {
+        if let Some((timing_path, mut timing)) = timing_receipt {
+            let source_tree_clean = timing["source_tree_clean"].as_bool().unwrap_or(false)
+                && agentos_worktree_clean(&repo_root)?
+                && timing["agentos_revision"].as_str() == Some(&agentos_revision(&repo_root)?);
+            timing["source_tree_clean"] = serde_json::json!(source_tree_clean);
+            timing["qualification_status"] = serde_json::json!("passed");
+            std::fs::write(&timing_path, serde_json::to_vec_pretty(&timing)?)?;
+            println!(
+                "[xtask:test] Authenticated boot timing: {} ms ({})",
+                timing["elapsed_ms"],
+                timing_path.display()
+            );
+        }
+    }
+
     if let Some(mut tunnel) = desktop_tunnel {
         let _ = tunnel.kill();
         let _ = tunnel.wait();
@@ -1068,6 +1135,13 @@ pub fn launch(args: &QemuLaunchArgs) -> anyhow::Result<()> {
         format!("BOARD={}", args.board),
         String::from("GUEST_OS=none"),
     ];
+    if args.board == "x86_64_generic" {
+        make_args.push(String::from("TARGET_ARCH=x86_64"));
+        make_args.push(String::from("BOARD_NAME=qemu-x86_64"));
+    } else if args.board == "x86_64_generic_vtx" {
+        make_args.push(String::from("TARGET_ARCH=x86_64"));
+        make_args.push(String::from("BOARD_NAME=qemu-x86_64-vtx"));
+    }
     if let Some(profile) = &profile_plan {
         make_args.push(format!("GUEST_PROFILE={}", profile.path.display()));
     } else if let Some(alias) = &args.scenario {
@@ -1345,6 +1419,104 @@ fn repo_root() -> anyhow::Result<std::path::PathBuf> {
     Ok(std::path::PathBuf::from(root))
 }
 
+fn agentos_revision(repo_root: &Path) -> anyhow::Result<String> {
+    let output = std::process::Command::new("git")
+        .args(["rev-parse", "HEAD"])
+        .current_dir(repo_root)
+        .output()
+        .context("failed to read agentOS revision")?;
+    anyhow::ensure!(
+        output.status.success(),
+        "failed to resolve agentOS revision"
+    );
+    let revision = String::from_utf8(output.stdout)
+        .context("agentOS revision is not UTF-8")?
+        .trim()
+        .to_owned();
+    anyhow::ensure!(
+        revision.len() == 40 && revision.bytes().all(|byte| byte.is_ascii_hexdigit()),
+        "agentOS revision is not a full Git object ID"
+    );
+    Ok(revision)
+}
+
+fn agentos_worktree_clean(repo_root: &Path) -> anyhow::Result<bool> {
+    let status = std::process::Command::new("git")
+        .args(["status", "--porcelain=v1", "--untracked-files=all"])
+        .current_dir(repo_root)
+        .output()
+        .context("failed to inspect agentOS worktree")?;
+    anyhow::ensure!(
+        status.status.success(),
+        "failed to inspect agentOS worktree"
+    );
+    Ok(status.stdout.is_empty())
+}
+
+fn timing_qemu_config(args: &TestArgs, profile: &HostProfilePlan) -> anyhow::Result<String> {
+    let qemu = profile
+        .qemu
+        .as_ref()
+        .context("live timing receipt requires a QEMU profile")?;
+    let sel4_profile = std::env::var("SEL4_PROFILE").unwrap_or_else(|_| String::from("release"));
+    let smp = if sel4_profile.starts_with("smp-") || sel4_profile == "smp" {
+        4
+    } else {
+        1
+    };
+    Ok(format!(
+        "board={}\nmachine={}\nmemory={}\ncpu=cortex-a57\nsmp={smp}\nsel4_profile={sel4_profile}\naccel=tcg\nvirtio_mmio_force_legacy=off\nassert_live={}\nassert_agentos_virtio={}\n",
+        args.board, qemu.machine, qemu.memory, args.assert_live, args.assert_agentos_virtio
+    ))
+}
+
+fn sha256_file(path: &Path) -> anyhow::Result<String> {
+    let mut file = std::fs::File::open(path)
+        .with_context(|| format!("open {} for SHA-256", path.display()))?;
+    let mut digest = Sha256::new();
+    let mut buffer = [0u8; 64 * 1024];
+    loop {
+        let bytes = file
+            .read(&mut buffer)
+            .with_context(|| format!("read {} for SHA-256", path.display()))?;
+        if bytes == 0 {
+            break;
+        }
+        digest.update(&buffer[..bytes]);
+    }
+    Ok(format!("{:x}", digest.finalize()))
+}
+
+fn guest_bundle_sha256(repo_root: &Path, board: &str) -> anyhow::Result<String> {
+    let bundle = repo_root
+        .join("build")
+        .join(board)
+        .join("guest-bundle-primary");
+    let mut digest = Sha256::new();
+    for name in ["kernel.bin", "guest.dtb", "initrd.bin", "profile.bin"] {
+        digest.update(name.as_bytes());
+        digest.update([0]);
+        let path = bundle.join(name);
+        let mut file = std::fs::File::open(&path)
+            .with_context(|| format!("open {} for guest bundle SHA-256", path.display()))?;
+        let mut buffer = [0u8; 64 * 1024];
+        loop {
+            let bytes = file
+                .read(&mut buffer)
+                .with_context(|| format!("read {} for guest bundle SHA-256", path.display()))?;
+            if bytes == 0 {
+                break;
+            }
+            digest.update(&buffer[..bytes]);
+        }
+    }
+    Ok(format!("{:x}", digest.finalize()))
+}
+
+fn sha256_bytes(bytes: &[u8]) -> String {
+    format!("{:x}", Sha256::digest(bytes))
+}
+
 pub(crate) fn sel4_sdk_path() -> anyhow::Result<PathBuf> {
     if let Some(path) = std::env::var_os("SEL4_SDK") {
         return Ok(PathBuf::from(path));
@@ -1594,6 +1766,33 @@ pub(crate) fn spawn_qemu_with_guest(
                 .arg("e1000,netdev=net0");
             c
         }
+        "x86_64_generic_vtx" => {
+            anyhow::ensure!(
+                host_kvm_available(board),
+                "x86_64_generic_vtx requires Linux x86_64 with accessible /dev/kvm"
+            );
+            let kernel = sel4_sdk_path()?.join("board/x86_64_generic_vtx/release/elf/sel4_32.elf");
+            let root_task = repo_root.join("build/x86_64_generic_vtx/root_task.elf");
+            let mut c = std::process::Command::new("qemu-system-x86_64");
+            c.arg("-machine")
+                .arg("q35")
+                .arg("-enable-kvm")
+                .arg("-cpu")
+                .arg("host")
+                .arg("-m")
+                .arg("2G")
+                .arg("-display")
+                .arg("none")
+                .arg("-monitor")
+                .arg("none")
+                .arg("-serial")
+                .arg("stdio")
+                .arg("-kernel")
+                .arg(kernel)
+                .arg("-initrd")
+                .arg(root_task);
+            c
+        }
         other => {
             anyhow::bail!(
                 "unknown board: {} — add QEMU invocation to cmd_test.rs",
@@ -1643,9 +1842,12 @@ pub(crate) fn spawn_qemu_with_guest(
 }
 
 fn host_kvm_available(board: &str) -> bool {
-    cfg!(all(target_os = "linux", target_arch = "aarch64"))
+    (cfg!(all(target_os = "linux", target_arch = "aarch64"))
         && board == "qemu_virt_aarch64"
-        && Path::new("/dev/kvm").exists()
+        && Path::new("/dev/kvm").exists())
+        || (cfg!(all(target_os = "linux", target_arch = "x86_64"))
+            && board == "x86_64_generic_vtx"
+            && Path::new("/dev/kvm").exists())
 }
 
 fn qemu_netdev_arg(
@@ -1943,6 +2145,28 @@ fn wait_for_x86_reduced_smoke(log_path: &Path, timeout: Duration) -> anyhow::Res
     Ok(format!(
         "{marker} (x86 reduced smoke, no fault endpoint reports)"
     ))
+}
+
+fn wait_for_x86_vtx_proof(
+    log_path: &Path,
+    timeout: Duration,
+    qemu: &mut Child,
+) -> anyhow::Result<String> {
+    let marker = wait_for_all_markers(
+        log_path,
+        &[
+            "[rt] x86 VMX EPT proof provisioned",
+            "[rt] x86 VMX EPT HLT exit verified",
+        ],
+        timeout,
+        qemu,
+    )?;
+    let output = std::fs::read_to_string(log_path).unwrap_or_default();
+    anyhow::ensure!(
+        !output.contains("[rt] x86 VMX EPT proof FAILED") && !output.contains("[rt] FAULT"),
+        "x86 VMX/EPT proof emitted a failure or root-task fault report"
+    );
+    Ok(format!("{marker} (x86 VMX/EPT HLT exit proof)"))
 }
 
 fn verify_inspect(socket: &Path, root: &Path) -> anyhow::Result<String> {

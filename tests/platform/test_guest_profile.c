@@ -55,6 +55,18 @@ static aos_guest_profile_manifest_t valid_profile(void)
     return p;
 }
 
+static void move_profile(aos_guest_profile_manifest_t *p,
+                         uint64_t gpa_base, uint64_t hva_base)
+{
+    uint64_t offset = gpa_base - p->guest_gpa_base;
+    p->guest_gpa_base = gpa_base;
+    p->vmm_hva_base = hva_base;
+    p->kernel_load_address += offset;
+    p->kernel_entry_address += offset;
+    p->dtb_load_address += offset;
+    p->initrd_load_address += offset;
+}
+
 static void check_compiled_manifest(const char *path)
 {
     aos_guest_profile_manifest_t p;
@@ -86,6 +98,13 @@ int main(int argc, char **argv)
     CHECK("unaligned RAM size rejected",
           aos_guest_profile_validate(&p) == AOS_GUEST_PROFILE_ERR_MEMORY);
     p = valid_profile();
+    p.vcpu_count = 0u;
+    CHECK("zero vCPU count rejected",
+          aos_guest_profile_validate(&p) == AOS_GUEST_PROFILE_ERR_MEMORY);
+    p.vcpu_count = AOS_GUEST_PROFILE_VCPU_MAX + 1u;
+    CHECK("vCPU count above bound rejected",
+          aos_guest_profile_validate(&p) == AOS_GUEST_PROFILE_ERR_MEMORY);
+    p = valid_profile();
     p.dtb_load_address = p.guest_gpa_base + p.ram_size - 16u;
     CHECK("out-of-range DTB rejected",
           aos_guest_profile_validate(&p) == AOS_GUEST_PROFILE_ERR_ARTIFACT);
@@ -106,9 +125,27 @@ int main(int argc, char **argv)
     CHECK("overlapping maximum artifact windows rejected",
           aos_guest_profile_validate(&p) == AOS_GUEST_PROFILE_ERR_ARTIFACT);
     p = valid_profile();
-    p.reserved[0] = 1u;
-    CHECK("noncanonical reserved payload rejected",
-          aos_guest_profile_validate(&p) == AOS_GUEST_PROFILE_ERR_TEXT);
+    p.cpu_features.version = AOS_GUEST_CPU_FEATURES_VERSION + 1u;
+    CHECK("unknown CPU feature version rejected",
+          aos_guest_profile_validate(&p) == AOS_GUEST_PROFILE_ERR_CPU);
+    p = valid_profile();
+    p.cpu_features.version = AOS_GUEST_CPU_FEATURES_VERSION;
+    p.cpu_features.required =
+        AOS_GUEST_CPU_FEATURE_FP | AOS_GUEST_CPU_FEATURE_SIMD;
+    CHECK("versioned bounded CPU features accepted",
+          aos_guest_profile_validate(&p) == AOS_GUEST_PROFILE_OK);
+    p.cpu_features.prohibited = AOS_GUEST_CPU_FEATURE_FP;
+    CHECK("conflicting CPU feature policy rejected",
+          aos_guest_profile_validate(&p) == AOS_GUEST_PROFILE_ERR_CPU);
+    p = valid_profile();
+    p.vcpu_count = AOS_GUEST_PROFILE_VCPU_MAX;
+    p.ram_size = AOS_GUEST_PROFILE_RAM_MAX;
+    p.dtb_load_address = p.guest_gpa_base + p.ram_size - p.dtb_max_bytes;
+    CHECK("maximum bounded vCPU and multi-GiB RAM accepted",
+          aos_guest_profile_validate(&p) == AOS_GUEST_PROFILE_OK);
+    p.ram_size += AOS_GUEST_PROFILE_RAM_ALIGN;
+    CHECK("RAM above resource bound rejected",
+          aos_guest_profile_validate(&p) == AOS_GUEST_PROFILE_ERR_MEMORY);
     p = valid_profile();
     p.profile_id[p.profile_id_length + 1u] = 'x';
     CHECK("hidden text after terminator rejected",
@@ -137,6 +174,49 @@ int main(int argc, char **argv)
     p.flags |= AOS_GUEST_PROFILE_INITRD_FROM_MEDIA;
     CHECK("parent traversal in media path rejected",
           aos_guest_profile_validate(&p) == AOS_GUEST_PROFILE_ERR_ARTIFACT);
+    {
+        aos_guest_profile_manifest_t first = valid_profile();
+        aos_guest_profile_manifest_t second = valid_profile();
+        const aos_guest_profile_manifest_t *selected[] = { &first, &second };
+        second.guest_id = first.guest_id + 1u;
+        move_profile(&second, first.guest_gpa_base + first.ram_size,
+                     first.vmm_hva_base + first.ram_size);
+        CHECK("disjoint selected profile placements accepted",
+              aos_guest_profile_validate_selected(selected, 2u) ==
+                  AOS_GUEST_PROFILE_OK);
+        move_profile(&second, first.guest_gpa_base + first.ram_size - 0x1000u,
+                     second.vmm_hva_base);
+        CHECK("selected profile GPA overlap rejected",
+              aos_guest_profile_validate_selected(selected, 2u) ==
+                  AOS_GUEST_PROFILE_ERR_RESOURCE);
+        move_profile(&second, first.guest_gpa_base + first.ram_size,
+                     first.vmm_hva_base + first.ram_size - 0x1000u);
+        CHECK("selected profile HVA overlap rejected",
+              aos_guest_profile_validate_selected(selected, 2u) ==
+                  AOS_GUEST_PROFILE_ERR_RESOURCE);
+    }
+    {
+        aos_guest_profile_manifest_t desktop = valid_profile();
+        aos_guest_profile_manifest_t small = valid_profile();
+        const aos_guest_profile_manifest_t *selected[] = { &desktop, &small };
+        desktop.ram_size = AOS_GUEST_PROFILE_RAM_MAX;
+        desktop.dtb_load_address =
+            desktop.guest_gpa_base + desktop.ram_size - desktop.dtb_max_bytes;
+        small.guest_id = desktop.guest_id + 1u;
+        small.ram_size = AOS_GUEST_PROFILE_RAM_ALIGN;
+        small.kernel_max_bytes = UINT64_C(0x80000);
+        small.initrd_max_bytes = UINT64_C(0x80000);
+        small.dtb_max_bytes = UINT64_C(0x1000);
+        move_profile(&small, desktop.guest_gpa_base + desktop.ram_size,
+                     desktop.vmm_hva_base + desktop.ram_size);
+        small.initrd_load_address = small.guest_gpa_base + UINT64_C(0x100000);
+        small.dtb_load_address = small.guest_gpa_base + UINT64_C(0x1ff000);
+        CHECK("8 GiB aligned desktop profile accepted",
+              aos_guest_profile_validate(&desktop) == AOS_GUEST_PROFILE_OK);
+        CHECK("8 GiB plus 2 MiB selected RAM exceeds aggregate budget",
+              aos_guest_profile_validate_selected(selected, 2u) ==
+                  AOS_GUEST_PROFILE_ERR_RESOURCE);
+    }
     for (int i = 1; i < argc; i++) check_compiled_manifest(argv[i]);
     printf("1..%u\n", tests);
     return failures == 0u ? 0 : 1;

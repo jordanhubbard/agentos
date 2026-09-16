@@ -1,0 +1,9 @@
+# Dedicated x86 VMX/EPT qualification image.
+#
+# The descriptor starts only this VMM PD.  It enters a single EPT-mapped HLT
+# instruction and reports the expected VM exit.  No Linux, firmware, device,
+# guest-I/O, lifecycle, or isolation claim follows from this image.
+
+[[pd]]
+name = "guest_vmm_primary"
+priority = 250

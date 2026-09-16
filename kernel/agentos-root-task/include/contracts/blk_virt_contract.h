@@ -33,6 +33,11 @@
  *                           the word is 0.  The VMM never writes the word, so
  *                           notification delivery does not depend on guest exits.
  *
+ * Queue request ABI: version 4 exposes only READ, WRITE, FLUSH and BARRIER
+ * (the sDDF values in aos_blk_req_code_t).  It does not negotiate DISCARD.
+ * Any unrecognised request code, including a discard-shaped code, completes
+ * with BLK_RESP_ERR_INVALID_PARAM and is never sent to the backend.
+ *
  * Copyright (c) 2026 The agentOS Project
  * SPDX-License-Identifier: BSD-2-Clause
  */

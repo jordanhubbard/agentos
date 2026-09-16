@@ -24,6 +24,19 @@ typedef struct aos_guest_vmm_runtime {
     bool (*suspend)(void);
     bool (*resume)(void);
     void (*quiesce_timer)(void);
+    /*
+     * Release every per-guest execution resource after a successful suspend.
+     * A failed teardown leaves the guest suspended so it cannot be reported
+     * as either runnable or dead. NULL is a successful no-op for existing
+     * terminal-only VMMs that have no resources to release here.
+     */
+    bool (*teardown)(void);
+    /*
+     * Rebuild resources released by teardown. CREATE calls this only for a
+     * DEAD slot; success returns the slot to READY with no guest executing.
+     * A NULL callback preserves terminal DESTROY behavior.
+     */
+    bool (*reset)(void);
     bool (*push_input)(uint32_t event_type, const uint8_t *bytes,
                        uint32_t length);
     uint32_t (*drain_console)(uint8_t *bytes, uint32_t capacity);

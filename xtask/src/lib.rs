@@ -12,6 +12,7 @@ pub mod cmd_gen_image;
 pub mod cmd_gen_pd_bundle;
 pub mod cmd_gen_policy;
 pub mod cmd_guest_profile;
+pub mod cmd_guest_timing;
 pub mod cmd_host_test;
 pub mod cmd_policy_check;
 pub mod cmd_release;
@@ -28,6 +29,7 @@ pub mod rfb;
 pub use cmd_gen_image::GenImageArgs;
 pub use cmd_gen_pd_bundle::GenPdBundleArgs;
 pub use cmd_guest_profile::GuestProfileArgs;
+pub use cmd_guest_timing::GuestTimingCompareArgs;
 pub use guest_scenario::GuestScenarioArgs;
 
 // ── Subcommand arg structs ──────────────────────────────────────────────────
@@ -116,6 +118,9 @@ pub struct TestArgs {
     /// Require a live-media profile to reach userspace and its profile proof.
     #[arg(long, visible_alias = "assert-ubuntu-live")]
     pub assert_live: bool,
+    /// Require the dedicated x86 VMX/EPT one-instruction HLT-exit proof.
+    #[arg(long)]
+    pub assert_vmx_exit: bool,
     /// Start the profile-defined desktop and verify one raw RFB frame
     /// through a key-authenticated SSH tunnel.
     #[arg(long)]

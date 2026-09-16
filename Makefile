@@ -26,7 +26,7 @@
 
 .DEFAULT_GOAL := help
 
-.PHONY: all setup sdk demo demo-check demo-smoke demo-test demo-desktop demo-desktop-test demo-clean install deps deps-tools submodules channels format policy-check guest-profile-check lint-source run run-fast run-dual-ssh test test-guest-login test-guest-net test-guest-blk test-guest-console test-ubuntu-virtio test-ubuntu-live sel4-test-image run-tests test-snapshot-sched test-proc-server test-vibeos-contract test-integration test-host gate gate-aarch64 gate-x86_64 e2e e2e-guest e2e-contract e2e-dual-os e2e-ubuntu-amd64 e2e-ubuntu-arm64 e2e-nixos e2e-freebsd15 e2e-all bootstrap-guest clean clean-all clean-images help release release-minor release-major release-prepare release-check release-publish release-verify presentation-render fetch-guest build-tools
+.PHONY: all setup sdk demo demo-check demo-smoke demo-test demo-desktop demo-desktop-test demo-clean install deps deps-tools submodules channels format policy-check guest-profile-check lint-source run run-fast run-dual-ssh test test-guest-login test-guest-net test-guest-blk test-guest-console test-ubuntu-virtio test-ubuntu-live test-guest-boot-timing-compare sel4-test-image run-tests test-snapshot-sched test-proc-server test-vibeos-contract test-integration test-host gate gate-aarch64 gate-x86_64 gate-x86_64-vtx e2e e2e-guest e2e-contract e2e-dual-os e2e-ubuntu-amd64 e2e-ubuntu-arm64 e2e-nixos e2e-freebsd15 e2e-all bootstrap-guest clean clean-all clean-images help release release-minor release-major release-prepare release-check release-publish release-verify presentation-render fetch-guest build-tools
 
 # ─── Read config.yaml (if present) ───────────────────────────────────────────
 CONFIG_TARGET := $(shell grep '^target_arch:' config.yaml 2>/dev/null | sed 's/target_arch:[[:space:]]*//' | tr -d '[:space:]')
@@ -661,6 +661,15 @@ gate-x86_64:
 	@echo "── [GATE] TARGET/QEMU test: x86_64 (GUEST_OS=none) ───────────"
 	@$(MAKE) test TARGET_ARCH=x86_64 GUEST_OS=none
 
+# Dedicated KVM/VMX proof.  This is intentionally outside make gate: generic
+# x86 coverage remains a portable reduced smoke test, while this target
+# requires a host exposing /dev/kvm and nested Intel VMX.
+gate-x86_64-vtx:
+	@echo ""
+	@echo "── [GATE] TARGET/KVM test: x86_64 VMX/EPT HLT exit ───────────"
+	@cargo xtask qemu-test --board x86_64_generic_vtx --guest-os none \
+		--assert-vmx-exit --timeout-secs $(QEMU_TEST_TIMEOUT)
+
 # gate-guest-io: guest I/O proofs through the virtualizer path. GUEST_OS=none
 # is a stub VMM, so the boot gates above prove PD load and root-task parking
 # only; these three targets are what make "the OS does I/O" a true claim.
@@ -910,12 +919,24 @@ test-debian-live:
 test-debian-persistence:
 	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os debian --timeout-secs $(QEMU_TEST_TIMEOUT) --assert-live --assert-agentos-virtio --assert-persistent-boots --ssh-port $(QEMU_TEST_SSH_PORT)
 
+UBUNTU_BOOT_TIMING_RECEIPT ?=
+DEBIAN_BOOT_TIMING_RECEIPT ?=
+GUEST_BOOT_TIMING_COMPARISON ?= build/evidence/guest-boot-timing-comparison.json
+.PHONY: test-guest-boot-timing-compare
+# Compare existing successful launch-to-SSH receipts. This does not run guests
+# or impose a performance threshold; it rejects incompatible evidence.
+test-guest-boot-timing-compare:
+	@test -n "$(UBUNTU_BOOT_TIMING_RECEIPT)" || { echo "set UBUNTU_BOOT_TIMING_RECEIPT to an Ubuntu boot-timing receipt"; exit 2; }
+	@test -n "$(DEBIAN_BOOT_TIMING_RECEIPT)" || { echo "set DEBIAN_BOOT_TIMING_RECEIPT to a Debian boot-timing receipt"; exit 2; }
+	@mkdir -p "$(dir $(GUEST_BOOT_TIMING_COMPARISON))"
+	@cargo xtask guest-boot-timing-compare --ubuntu-receipt "$(UBUNTU_BOOT_TIMING_RECEIPT)" --debian-receipt "$(DEBIAN_BOOT_TIMING_RECEIPT)" --output "$(GUEST_BOOT_TIMING_COMPARISON)"
+
 test-ubuntu-live:
 	@if [ "$(BOARD)" != "qemu_virt_aarch64" ]; then \
 		echo "test-ubuntu-live requires BOARD=qemu_virt_aarch64 (got BOARD=$(BOARD))"; \
 		exit 1; \
 	fi
-	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os ubuntu-live --timeout-secs $(QEMU_TEST_TIMEOUT) --assert-live --ssh-port $(QEMU_TEST_SSH_PORT)
+	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os ubuntu-live --timeout-secs $(QEMU_TEST_TIMEOUT) --assert-live --assert-agentos-virtio --ssh-port $(QEMU_TEST_SSH_PORT)
 
 # =============================================================================
 # test-snapshot-sched: standalone unit test for the snapshot_sched PD

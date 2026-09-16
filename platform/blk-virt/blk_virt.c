@@ -334,8 +334,10 @@ static int bv_rescan_needed(void)
         const bv_client_t *c = &g_clients[i];
 
         if (c->attached &&
-            aos_blk_queue_req_length(c->q.req) != 0u &&
-            aos_blk_queue_resp_length(c->q.resp) < c->q.capacity) {
+            (!aos_blk_queue_req_valid(c->q.req, c->q.capacity) ||
+             !aos_blk_queue_resp_valid(c->q.resp, c->q.capacity) ||
+             (aos_blk_queue_req_length(c->q.req) != 0u &&
+              aos_blk_queue_resp_length(c->q.resp) < c->q.capacity))) {
             return 1;
         }
     }
@@ -446,14 +448,15 @@ static void handle_attach(uint64_t badge, const sel4_msg_t *req, sel4_msg_t *rep
              */
             c->q.info->sector_size = AOS_HOST_BLK_SECTOR_SIZE;
             c->q.info->block_size = 0u;
+            aos_blk_client_set_media(&c->q, (uint32_t)host_blocks);
             aos_blk_virt_set_backend(&c->virt, host_blk_backend, c);
             c->hw = 1u;
             hw_state = BLK_VIRT_HW_VIRTIO_BLK;
             capacity = host_blocks;
         } else {
             aos_blk_storage_init(c->q.info, AOS_BLK_DISK_BLOCKS);
-            aos_blk_virt_set_disk(&c->virt, g_ram_disk[client_id],
-                                  AOS_BLK_DISK_BLOCKS);
+            aos_blk_client_set_ram_disk(&c->q, g_ram_disk[client_id],
+                                        AOS_BLK_DISK_BLOCKS);
             capacity = AOS_BLK_DISK_BLOCKS;
         }
         (void)aos_blk_virt_add_client(&c->virt, &c->q);

@@ -302,6 +302,14 @@ client logging. Root matches each fault's identity, address and direction.
 Host tests additionally assert ring wrap, bounded scans, drop behavior, exact
 UART bytes and interleaved partial lines. x86 remains on its reduced boot path.
 
+`make gate-x86_64-vtx` is a separate KVM-only hardware-virtualisation
+qualification. It starts one VMM PD with a VCPU bound to that PD's TCB, gives it
+five EPT-mapped 4 KiB pages (a long-mode page-table walk and `HLT`), and
+requires the exact HLT VM exit, guest RIP, and one-byte instruction length.
+This proves only that VMX non-root entry, EPT translation, and one VM exit work
+on that host. It does not qualify x86 Linux, UEFI/ACPI, guest devices, guest
+I/O, persistence, lifecycle, desktop, or isolation.
+
 ### Read-only boot inspection
 
 Root publishes one 4 KiB observation page after starting the configured PDs

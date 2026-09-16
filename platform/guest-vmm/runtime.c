@@ -33,8 +33,21 @@ bool aos_guest_vmm_lifecycle_rpc(const sel4_msg_t *req, sel4_msg_t *rep,
             return true;
         }
         if (*runtime->state == GUEST_STATE_DEAD) {
-            rep->opcode = GUEST_ERR_DEAD;
-            return true;
+            /*
+             * A VMM remains terminal unless it explicitly supplies reset
+             * support.  Do not expose a reusable target slot merely because
+             * its lifecycle word was DEAD.
+             */
+            if (runtime->reset == NULL) {
+                rep->opcode = GUEST_ERR_DEAD;
+                return true;
+            }
+            if (!runtime->reset()) {
+                rep->opcode = GUEST_ERR_NOT_READY;
+                return true;
+            }
+            *runtime->started = false;
+            *runtime->state = GUEST_STATE_READY;
         }
         rep_u32(rep, 0u, GUEST_OK);
         rep_u32(rep, 4u, runtime->guest_id);
@@ -108,7 +121,22 @@ bool aos_guest_vmm_lifecycle_rpc(const sel4_msg_t *req, sel4_msg_t *rep,
                     rep->opcode = GUEST_ERR_NOT_READY;
                     return true;
                 }
-                if (runtime->quiesce_timer != NULL) runtime->quiesce_timer();
+                if (*runtime->state != GUEST_STATE_SUSPENDED) {
+                    if (runtime->quiesce_timer != NULL) {
+                        runtime->quiesce_timer();
+                    }
+                    /*
+                     * Suspend has already detached the execution context.
+                     * If teardown then fails, retain that truthful state
+                     * rather than falsely reporting RUNNING or READY.
+                     */
+                    *runtime->state = GUEST_STATE_SUSPENDED;
+                }
+                if (runtime->teardown != NULL && !runtime->teardown()) {
+                    rep->opcode = GUEST_ERR_NOT_READY;
+                    return true;
+                }
+                *runtime->started = false;
                 *runtime->state = GUEST_STATE_DEAD;
             }
             rep->opcode = GUEST_OK;
