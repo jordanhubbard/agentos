@@ -5,9 +5,37 @@ roadmap. It records facts about an official artifact separately from agentOS
 implementation choices and unproven expectations. An entry here is not a
 support claim. `docs/ROADMAP.md` defines the gates for such a claim.
 
-Current snapshot: **2026-09-08**, upstream **Omarchy v4.0.3**.
+Current release observation: **2026-09-16**, upstream **Omarchy v4.0.4**.
+The detailed compatibility baseline below remains the explicitly dated v4.0.3
+study; this update records newly verified facts without implying that the new
+ISO has been installed or qualified on agentOS.
 
-## Pinned official artifact
+## Current official release observation
+
+| Field | Observed value | Evidence |
+| --- | --- | --- |
+| Release | `v4.0.4`, published 2026-09-15 | [upstream release](https://github.com/omacom/omarchy/releases/tag/v4.0.4) |
+| Runtime tag commit | `c668141e9c42b13c80c9ca4ea108e11708c5e8a5` | [tagged commit](https://github.com/omacom/omarchy/commit/c668141e9c42b13c80c9ca4ea108e11708c5e8a5) |
+| Installation media | `https://iso.omarchy.org/omarchy-4.0.4.iso` | upstream release |
+| Published ISO SHA-256 | `ddeded2758c48318d201dfdac905ecb28f570441883f0c052ea3cd5d05acf92d` | release and [matching sidecar](https://iso.omarchy.org/omarchy-4.0.4.iso.sha256) |
+| ISO size | `6,185,304,064` bytes | HTTP Content-Length, observed 2026-09-16 |
+| ISO source observed | `7cfb7111a06873d61c45d37034577d4ba08d3f4f` on `quattro` | [observed source](https://github.com/omacom/omarchy-iso/commit/7cfb7111a06873d61c45d37034577d4ba08d3f4f) |
+| ISO architecture and firmware | `x86_64`; BIOS and UEFI boot modes | [source profile](https://github.com/omacom/omarchy-iso/blob/7cfb7111a06873d61c45d37034577d4ba08d3f4f/configs/profiledef.sh) |
+
+The release changes the default kernel to `linux-omarchy`. Future qualification
+must retain the actual installed kernel identity and configuration; the prior
+kernel's device support cannot be assumed. The [v4.0.4 installation manual](https://github.com/omacom/omarchy/blob/v4.0.4/manual/02-getting-started.md)
+still describes ISO installation, encryption by default and unattended
+configuration on a second drive.
+
+The checksum above is the published digest, cross-checked against its sidecar;
+this observation did not download or hash the complete ISO. The source commit
+is an observation of the ISO repository, not a provenance binding to the
+published binary. No new AArch64 support or agentOS guest qualification is
+established by these facts. The v0.4 VMX, UEFI/ACPI, graphics and input work
+remains required before the v0.6 official-Omarchy gate.
+
+## Previous pinned artifact (2026-09-08)
 
 | Field | Pinned value | Evidence |
 | --- | --- | --- |
@@ -24,7 +52,7 @@ context, not a claimed build provenance link. agentOS must retain the ISO
 bytes and verify the published digest; it must not rebuild an artifact and
 call that the official image.
 
-## Upstream compatibility facts
+## Compatibility baseline (v4.0.3, observed 2026-09-08)
 
 | Area | Official v4.0.3 fact | Consequence for agentOS |
 | --- | --- | --- |
@@ -93,7 +121,8 @@ and acceleration mode with every result.
 
 ## Known gaps at this snapshot
 
-- No VMX-backed x86_64 guest execution exists in agentOS yet.
+- The VMX/EPT HLT-exit probe exists, but does not establish x86_64 Linux
+  guest execution. See `docs/TCB.md` for its proof boundary.
 - No agentOS UEFI/ACPI path exists for a full x86 guest yet.
 - Writable guest storage has not been qualified for an installer, LUKS,
   Btrfs, flush, reboot, or snapshot recovery.
