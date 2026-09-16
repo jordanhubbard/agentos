@@ -139,11 +139,13 @@ services is out of scope until inspect and serial attach exist.
 4. Virtio-console descriptor payloads use bounds-checked GPA translation.
 5. `serial_virt` now multiplexes separate VMM pages and a CC frontend page.
    Persistent notifications wake queue consumers. `serial_pd` is the sole
-   post-bootstrap UART owner. Root-provisioned generic log rings, immutable
-   identities and nonblocking wakeups are implemented on
-   `platform/log-ring-provisioning` under `task_d41eae5495924820bc2defa15750d4e8`;
-   native output and three access-fault probes pass locally, with integration
-   qualification pending.
+   post-bootstrap UART owner. PR #149 merged root-provisioned generic log
+   rings, immutable identities and nonblocking wakeups as
+   `915afd6356cb01aca1bf78d75cc268c67c456cd9`, under
+   `task_d41eae5495924820bc2defa15750d4e8`. Its recorded qualification covers
+   the full gate, native UART output, three access-fault probes and the native
+   Rust runtime/NIC proof. These are revision-specific results; a new release
+   still requires its own integration qualification.
 
 ## Ubuntu all-VirtIO gate
 
