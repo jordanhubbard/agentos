@@ -86,7 +86,7 @@ jobs:
           path: |
             ~/.cache/agentos/isos/debian-13-generic-arm64-20260831-2587.qcow2
             ~/.cache/agentos/isos/debian-13-20260831-2587-SHA512SUMS
-          key: *************************************
+          key: debian-13-generic-arm64-20260831-2587
 
       - name: Prove guest userspace on agentOS VirtIO
         # TCG throughput varies substantially across hosted runners.  Keep the
