@@ -66,6 +66,12 @@ pub struct TestArgs {
     /// Boot a no_std Rust PD and verify its IPC contract from a separate C PD.
     #[arg(long, conflicts_with_all = ["serial_isolation_probe", "network_isolation_probe", "block_isolation_probe", "virtualizer_authority_probe"])]
     pub assert_native_rust: bool,
+    /// Qualify framebuffer queue transactions from two isolated native clients.
+    #[arg(long, conflicts_with_all = ["assert_native_rust", "assert_native_guest", "assert_inspect", "inspect_write_probe", "assert_operator_session", "operator_isolation_probe", "assert_log_rings", "log_isolation_probe", "serial_isolation_probe", "network_isolation_probe", "block_isolation_probe", "virtualizer_authority_probe", "assert_vmx_exit"])]
+    pub assert_framebuffer: bool,
+    /// Verify either framebuffer client's denied queue/arena reads and writes.
+    #[arg(long, requires = "assert_framebuffer", value_parser = clap::value_parser!(u8).range(1..=8))]
+    pub framebuffer_isolation_probe: Option<u8>,
     /// Qualify fresh native NIC traffic interleaved with a live Ubuntu guest.
     #[arg(long, conflicts_with_all = ["assert_native_rust", "serial_isolation_probe", "network_isolation_probe", "block_isolation_probe", "virtualizer_authority_probe"])]
     pub assert_native_guest: bool,

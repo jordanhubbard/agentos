@@ -226,6 +226,9 @@ typedef struct {
 #define SVC_ID_SERIAL_VIRT    27u   /* serial queue virtualizer PD */
 #define SVC_ID_NATIVE_RUST_PROBE 28u /* test-only Rust IPC service */
 #define SVC_ID_OPERATOR_SESSION 29u /* native read-only serial client */
+#define SVC_ID_FRAMEBUFFER_QUEUE 30u /* isolated surface queue service */
+#define SVC_ID_FRAMEBUFFER_TEST0 31u
+#define SVC_ID_FRAMEBUFFER_TEST1 32u
 
 /* Standard per-PD CNode slot assignments for well-known capabilities.
  * These are the slots at which each PD finds its initial endpoint caps. */
@@ -278,3 +281,6 @@ typedef struct {
 #define PD_CNODE_SLOT_BLK_SECONDARY_NOTIFY 28u
 #define PD_CNODE_SLOT_SERIAL_OPERATOR_NOTIFY 29u
 #define PD_CNODE_SLOT_OPERATOR_WAIT 30u
+/* Slot 31 belongs to the generic log-ring notification in every client PD. */
+#define PD_CNODE_SLOT_FB_WAIT 32u
+#define PD_CNODE_SLOT_FB_PEER_NOTIFY 33u /* service uses 33/34 for clients */

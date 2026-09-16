@@ -1,0 +1,26 @@
+#include <platform/framebuffer.h>
+#include "system_desc.h"
+#include <sel4/sel4.h>
+
+static aos_fb_client_t clients[AOS_FB_CLIENTS];
+
+void pd_main(seL4_CPtr endpoint, seL4_CPtr nameserver)
+{
+    (void)endpoint;
+    (void)nameserver;
+    for (unsigned i = 0; i < AOS_FB_CLIENTS; ++i)
+        if (aos_fb_client_init(&clients[i], (void *)(AOS_FB_SHMEM_VA +
+                i * AOS_FB_CLIENT_STRIDE),
+                (void *)(AOS_FB_ARENA_VA + i * AOS_FB_ARENA_BYTES), AOS_FB_ARENA_BYTES) != 0)
+            for (;;) seL4_Yield();
+    for (;;) {
+        unsigned progress = 0;
+        for (unsigned i = 0; i < AOS_FB_CLIENTS; ++i) {
+            unsigned count = aos_fb_pump(&clients[i]);
+            if (count) seL4_Signal(PD_CNODE_SLOT_FB_PEER_NOTIFY + i);
+            progress += count;
+        }
+        if (progress) seL4_Yield();
+        else { seL4_Word badge; seL4_Wait(PD_CNODE_SLOT_FB_WAIT, &badge); }
+    }
+}

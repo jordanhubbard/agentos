@@ -270,6 +270,36 @@ DMA against those QEMU devices is an architecture regression.
 
 ## Proof
 
+### Framebuffer queue qualification image
+
+`make test-framebuffer` adds `framebuffer_queue` and two native test clients
+to an AArch64 image. The service owns private staging/committed surfaces and
+maps two separate root-provisioned client queue pages. Each client maps only
+its own page, with a send-only service notification and a receive-only local
+notification; only the service can signal both clients. No component in this
+variant receives a display device frame, IRQ or guest execution capability.
+
+Root reserves the service's private surface arena as large pages before ELF
+loading. Clients receive no arena mapping or frame capability. The queue
+contract is `platform/include/platform/framebuffer.h`. It supports
+bounded XRGB8888 surface creation, rectangular writes, committed-frame reads,
+flip sequencing, status and destruction. Bulk pixels remain in shared queue
+payloads, never IPC registers. Four surfaces per client and a maximum of
+1024 by 768 pixels bound memory and work. Responses apply backpressure, and
+both producers and consumers signal persistent wakeups when releasing work.
+The host test asserts exact pixel placement, committed/staging separation,
+stale-handle rejection and recovery after invalid bounds or ring occupancy.
+
+This is a new queue service, not an extension of the retired framebuffer PD.
+Its focused target test asserts real create/write/flip/status/read/destroy
+transactions from both native clients. `make test-framebuffer-isolation`
+boots eight images covering each client's read/write access to the other
+queue page and the private arena. Each client first completes its authorized
+pixel transactions; only root emits the isolation marker after matching the
+fault badge, address and access direction. Both focused tests passed locally
+on Spark. They do not establish hardware scanout, guest DRM/input or an
+external export client. Those remain required for the v0.4 graphics outcome.
+
 ### Generic PD logging
 
 On AArch64, root provisions a separate 4 KiB log ring for each client and a

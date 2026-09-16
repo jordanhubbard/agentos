@@ -457,6 +457,23 @@ jobs:
             build/tmp/agentos-qemu-*
           if-no-files-found: error
 
+      - name: Verify native framebuffer queues
+        run: |
+          mkdir -p build/evidence/framebuffer
+          make test-framebuffer QEMU_TEST_TIMEOUT=180 2>&1 | tee build/evidence/framebuffer/target.log
+          cp build/qemu_virt_aarch64/agentos.img build/evidence/framebuffer/agentos.img
+          make test-framebuffer-isolation QEMU_TEST_TIMEOUT=180 2>&1 | tee build/evidence/framebuffer/isolation.log
+      - name: Retain framebuffer queue proof
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: framebuffer-queue-proof
+          path: |
+            build/evidence/framebuffer/
+            build/evidence/framebuffer-isolation/
+            build/tmp/agentos-qemu-*
+          if-no-files-found: error
+
   contract-tests:
     name: Phase 5 contract tests (qemu_virt_aarch64)
     runs-on: ubuntu-24.04
