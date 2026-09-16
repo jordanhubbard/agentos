@@ -364,6 +364,22 @@ ifdef SEL4_TEST_IMAGE
   IMAGES += test_runner.elf
 endif
 
+ifdef FRAMEBUFFER_TEST
+  ifneq ($(ARCH),aarch64)
+    $(error FRAMEBUFFER_TEST requires aarch64)
+  endif
+  ifneq ($(strip $(NATIVE_RUST_TEST)$(SEL4_TEST_IMAGE)),)
+    $(error FRAMEBUFFER_TEST is a separate image variant)
+  endif
+  CFLAGS_ROOT_TASK += -DAGENTOS_FRAMEBUFFER_TEST=1
+  CFLAGS += -DAGENTOS_FRAMEBUFFER_TEST=1
+  ifdef FRAMEBUFFER_ISOLATION_PROBE
+    CFLAGS_ROOT_TASK += -DAGENTOS_FRAMEBUFFER_ISOLATION_PROBE=$(FRAMEBUFFER_ISOLATION_PROBE)
+    CFLAGS += -DAGENTOS_FRAMEBUFFER_ISOLATION_PROBE=$(FRAMEBUFFER_ISOLATION_PROBE)
+  endif
+  IMAGES += framebuffer_queue.elf framebuffer_client0.elf framebuffer_client1.elf
+endif
+
 ifdef NATIVE_RUST_TEST
   ifneq ($(ARCH),aarch64)
     $(error NATIVE_RUST_TEST currently requires aarch64)
@@ -676,6 +692,21 @@ $(BUILD_DIR)/rust_pd_ipc.o: $(REPO_ROOT)/libs/rust-pd/runtime/ipc.c
 $(BUILD_DIR)/rust_pd_memory.o: $(REPO_ROOT)/libs/rust-pd/runtime/memory.c
 	@mkdir -p $(BUILD_DIR)
 	$(CC) -c $(CFLAGS) $< -o $@
+
+$(BUILD_DIR)/framebuffer_service.o: $(REPO_ROOT)/platform/framebuffer/service.c
+	$(CC) $(CFLAGS) -c $< -o $@
+$(BUILD_DIR)/framebuffer_queue.o: $(REPO_ROOT)/platform/framebuffer/framebuffer_pd.c
+	$(CC) $(CFLAGS) -c $< -o $@
+$(BUILD_DIR)/framebuffer_queue.elf: $(BUILD_DIR)/framebuffer_queue.o $(BUILD_DIR)/framebuffer_service.o $(BUILD_DIR)/pd_entry.o $(BUILD_DIR)/sel4_crt.o $(BUILD_DIR)/rust_pd_memory.o
+	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
+$(BUILD_DIR)/framebuffer_client0.o: $(REPO_ROOT)/tests/platform/framebuffer_client_pd.c $(GUEST_CONFIG_STAMP)
+	$(CC) $(CFLAGS) -DFB_TEST_CLIENT=0 -c $< -o $@
+$(BUILD_DIR)/framebuffer_client1.o: $(REPO_ROOT)/tests/platform/framebuffer_client_pd.c $(GUEST_CONFIG_STAMP)
+	$(CC) $(CFLAGS) -DFB_TEST_CLIENT=1 -c $< -o $@
+$(BUILD_DIR)/framebuffer_client0.elf: $(BUILD_DIR)/framebuffer_client0.o $(BUILD_DIR)/framebuffer_service.o $(BUILD_DIR)/pd_entry.o $(BUILD_DIR)/sel4_crt.o $(BUILD_DIR)/rust_pd_memory.o
+	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
+$(BUILD_DIR)/framebuffer_client1.elf: $(BUILD_DIR)/framebuffer_client1.o $(BUILD_DIR)/framebuffer_service.o $(BUILD_DIR)/pd_entry.o $(BUILD_DIR)/sel4_crt.o $(BUILD_DIR)/rust_pd_memory.o
+	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
 
 $(BUILD_DIR)/rust_pd_network.o: $(REPO_ROOT)/libs/rust-pd/runtime/network.c $(GUEST_CONFIG_STAMP)
 	@mkdir -p $(BUILD_DIR)
@@ -1011,7 +1042,12 @@ endif
 # memory-region / channel details (handled by the root task at runtime).
 # A minimal fallback TOML is provided; board-specific overrides live in boards/.
 SYSTEM_TOML_DEFAULT := $(abspath $(CURDIR)/agentos.toml)
-ifdef NATIVE_RUST_TEST
+ifdef FRAMEBUFFER_TEST
+SYSTEM_TOML_DEFAULT := $(abspath $(BUILD_DIR)/agentos-framebuffer-test.toml)
+$(SYSTEM_TOML_DEFAULT): $(abspath $(CURDIR)/agentos.toml)
+	@mkdir -p $(BUILD_DIR)
+	{ cat $<; printf '\n[[pd]]\nname = "framebuffer_queue"\npriority = 215\n'; printf '\n[[pd]]\nname = "framebuffer_client0"\npriority = 214\n'; printf '\n[[pd]]\nname = "framebuffer_client1"\npriority = 214\n'; } > $@
+else ifdef NATIVE_RUST_TEST
 SYSTEM_TOML_DEFAULT := $(abspath $(BUILD_DIR)/agentos-native-rust-test.toml)
 $(SYSTEM_TOML_DEFAULT): $(abspath $(CURDIR)/agentos.toml)
 	@mkdir -p $(BUILD_DIR)

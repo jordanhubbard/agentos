@@ -695,7 +695,26 @@ gate: test-host gate-aarch64 gate-x86_64 gate-guest-io
 # lint-source is a source lint (policy-check's sibling), not a test; it is
 # listed here so the invariants it protects are checked on every host run,
 # but it is not counted among the host tests below.
-test-host: policy-check guest-profile-check lint-source test-integration test-operator-host test-log-ring-host
+test-host: policy-check guest-profile-check lint-source test-integration test-operator-host test-log-ring-host test-framebuffer-host
+
+.PHONY: test-framebuffer-host
+test-framebuffer-host:
+	@mkdir -p $(ROOT_DIR)build/tmp
+	$(CC) -std=c11 -Wall -Wextra -Werror -I platform/include tests/platform/test_framebuffer_queue.c platform/framebuffer/service.c -o $(ROOT_DIR)build/tmp/test_framebuffer_queue
+	$(ROOT_DIR)build/tmp/test_framebuffer_queue
+
+.PHONY: test-framebuffer
+test-framebuffer: test-framebuffer-host
+	cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os none --assert-framebuffer --timeout-secs $(QEMU_TEST_TIMEOUT)
+
+.PHONY: test-framebuffer-isolation
+test-framebuffer-isolation:
+	@mkdir -p build/evidence/framebuffer-isolation
+	@set -e; for mode in 1 2 3 4 5 6 7 8; do \
+	    cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os none --assert-framebuffer \
+	        --framebuffer-isolation-probe $$mode --timeout-secs $(QEMU_TEST_TIMEOUT); \
+	    cp build/qemu_virt_aarch64/agentos.img build/evidence/framebuffer-isolation/mode-$$mode.img; \
+	done
 
 .PHONY: test-log-ring-host
 test-log-ring-host:

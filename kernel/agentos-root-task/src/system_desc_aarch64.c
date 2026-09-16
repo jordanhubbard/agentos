@@ -57,7 +57,9 @@
 
 /* agentos-8f5: a target contract-runner PD is appended only in test images,
  * together with the event_bus PD whose contract it exercises. */
-#ifdef AGENTOS_SEL4_TEST_IMAGE
+#ifdef AGENTOS_FRAMEBUFFER_TEST
+#define AOS_TEST_PD_EXTRA 3u
+#elif defined(AGENTOS_SEL4_TEST_IMAGE)
 #define AOS_TEST_PD_EXTRA 2u
 #elif defined(AGENTOS_NATIVE_RUST_TEST)
 #define AOS_TEST_PD_EXTRA 2u
@@ -526,6 +528,37 @@ const system_desc_t system_desc_aarch64 = {
                 { SVC_ID_LOG_DRAIN,  PD_CNODE_SLOT_LOG_DRAIN_EP  },
             },
         },
+
+#ifdef AGENTOS_FRAMEBUFFER_TEST
+        {
+            .name = "framebuffer_queue",
+            .elf_path = "framebuffer_queue.elf",
+            .stack_size = 0x4000u,
+            .cnode_size_bits = 8u,
+            .priority = 215u,
+            .self_svc_id = SVC_ID_FRAMEBUFFER_QUEUE,
+        },
+        {
+            .name = "framebuffer_client0",
+            .elf_path = "framebuffer_client0.elf",
+            .stack_size = 0x4000u,
+            .cnode_size_bits = 8u,
+            .priority = 214u,
+            .self_svc_id = SVC_ID_FRAMEBUFFER_TEST0,
+            .init_ep_count = 1u,
+            .init_eps = {{ SVC_ID_SERIAL, PD_CNODE_SLOT_SERIAL_EP }},
+        },
+        {
+            .name = "framebuffer_client1",
+            .elf_path = "framebuffer_client1.elf",
+            .stack_size = 0x4000u,
+            .cnode_size_bits = 8u,
+            .priority = 214u,
+            .self_svc_id = SVC_ID_FRAMEBUFFER_TEST1,
+            .init_ep_count = 1u,
+            .init_eps = {{ SVC_ID_SERIAL, PD_CNODE_SLOT_SERIAL_EP }},
+        },
+#endif
 
 #ifdef AGENTOS_NATIVE_RUST_TEST
         /* No device frames, IRQs or guest capabilities in either test PD. */

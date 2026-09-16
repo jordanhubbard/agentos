@@ -52,6 +52,12 @@
 #include <platform/blk_host_layout.h> /* host block MMIO/shared DMA layout       */
 #include <platform/blk_layout.h>      /* shared sDDF block region (VMMs + blk_virt) */
 #include <platform/serial_virt_layout.h>
+#ifdef AGENTOS_FRAMEBUFFER_TEST
+#include <platform/framebuffer.h>
+#include <platform/framebuffer_isolation_probe.h>
+static seL4_CPtr g_framebuffer_frames[AOS_FB_CLIENTS];
+static seL4_CPtr g_framebuffer_arena[AOS_FB_ARENA_FRAMES];
+#endif
 #include <contracts/serial_virt_contract.h>
 #include <contracts/blk_virt_contract.h>
 #include <platform/vmm_isolation_probe.h>
@@ -60,10 +66,24 @@
 #include <platform/log_isolation_probe.h>
 #ifdef AGENTOS_LOG_RINGS
 #include <platform/log_ring.h>
+#ifdef AGENTOS_FRAMEBUFFER_TEST
+_Static_assert(PD_CNODE_SLOT_FB_WAIT != AOS_LOG_NOTIFY_CAP &&
+               PD_CNODE_SLOT_FB_PEER_NOTIFY > AOS_LOG_NOTIFY_CAP &&
+               PD_CNODE_SLOT_FB_PEER_NOTIFY + AOS_FB_CLIENTS <= PD_IRQHANDLER_SLOT_BASE,
+               "framebuffer caps must not overlap logs or IRQ handlers");
+#endif
 #endif
 #include <contracts/virtualizer_authority.h>
 #include <contracts/net_virt_contract.h>
-#if defined(AGENTOS_LOG_ISOLATION_PROBE)
+#if defined(AGENTOS_FRAMEBUFFER_ISOLATION_PROBE)
+#define ROOT_FAULT_PROBE 1
+#define ROOT_PROBE_NATIVE 4
+#define ROOT_PROBE_CLIENT AOS_FB_PROBE_CLIENT
+#define ROOT_PROBE_BADGE AOS_FB_PROBE_BADGE
+#define ROOT_PROBE_ADDRESS AOS_FB_PROBE_ADDRESS
+#define ROOT_PROBE_WRITE AOS_FB_PROBE_WRITE
+#define ROOT_PROBE_MESSAGE AOS_FB_PROBE_MESSAGE
+#elif defined(AGENTOS_LOG_ISOLATION_PROBE)
 #define ROOT_FAULT_PROBE 1
 #define ROOT_PROBE_NATIVE 3
 #define ROOT_PROBE_CLIENT 0u
@@ -1819,6 +1839,10 @@ void root_task_main(const seL4_BootInfo *bi)
     uint32_t net_virt_index = SYSTEM_MAX_PDS;
     uint32_t native_net_index = SYSTEM_MAX_PDS;
     uint32_t log_drain_index = SYSTEM_MAX_PDS;
+#ifdef AGENTOS_FRAMEBUFFER_TEST
+    uint32_t fb_service = SYSTEM_MAX_PDS;
+    uint32_t fb_clients[AOS_FB_CLIENTS] = { SYSTEM_MAX_PDS, SYSTEM_MAX_PDS };
+#endif
     for (uint32_t i = 0; i < sys->pd_count; i++) {
         const pd_desc_t *pd = &sys->pds[i];
         if (pd->self_svc_id == SVC_ID_SERIAL_VIRT) serial_virt_index = i;
@@ -1826,7 +1850,17 @@ void root_task_main(const seL4_BootInfo *bi)
         if (pd->self_svc_id == SVC_ID_NET_VIRT) net_virt_index = i;
         if (pd->self_svc_id == SVC_ID_NATIVE_RUST_PROBE) native_net_index = i;
         if (pd->self_svc_id == SVC_ID_LOG_DRAIN) log_drain_index = i;
+#ifdef AGENTOS_FRAMEBUFFER_TEST
+        if (pd->self_svc_id == SVC_ID_FRAMEBUFFER_QUEUE) fb_service = i;
+        if (pd->self_svc_id == SVC_ID_FRAMEBUFFER_TEST0) fb_clients[0] = i;
+        if (pd->self_svc_id == SVC_ID_FRAMEBUFFER_TEST1) fb_clients[1] = i;
+#endif
         if (pd->irq_count || pd_is_guest_vmm(pd) ||
+#ifdef AGENTOS_FRAMEBUFFER_TEST
+            pd->self_svc_id == SVC_ID_FRAMEBUFFER_QUEUE ||
+            pd->self_svc_id == SVC_ID_FRAMEBUFFER_TEST0 ||
+            pd->self_svc_id == SVC_ID_FRAMEBUFFER_TEST1 ||
+#endif
             pd->self_svc_id == SVC_ID_OPERATOR_SESSION ||
             pd->self_svc_id == SVC_ID_LOG_DRAIN ||
             pd->self_svc_id == SVC_ID_NET_VIRT ||
@@ -1843,6 +1877,24 @@ void root_task_main(const seL4_BootInfo *bi)
             g_pd_notifications[i] = (seL4_CPtr)PD_SLOT_NTFN(i);
         }
     }
+#ifdef AGENTOS_FRAMEBUFFER_TEST
+    if (fb_service == SYSTEM_MAX_PDS || fb_clients[0] == SYSTEM_MAX_PDS ||
+        fb_clients[1] == SYSTEM_MAX_PDS) return;
+    for (uint32_t f = 0; f < AOS_FB_ARENA_FRAMES; ++f) {
+        if (ut_alloc_cap(seL4_ARM_LargePageObject, 0u,
+                         &g_framebuffer_arena[f]) != seL4_NoError) {
+            dbg_puts("[rt] framebuffer arena allocation failed; refusing boot\n");
+            return;
+        }
+    }
+    for (uint32_t f = 0; f < AOS_FB_CLIENTS; ++f) {
+        if (ut_alloc_cap(seL4_ARM_LargePageObject, 0u,
+                         &g_framebuffer_frames[f]) != seL4_NoError) {
+            dbg_puts("[rt] framebuffer queue allocation failed; refusing boot\n");
+            return;
+        }
+    }
+#endif
 #if defined(__aarch64__)
     if (serial_virt_index != SYSTEM_MAX_PDS) {
         for (uint32_t f = 0; f < AOS_SERIAL_FRAMES; f++) {
@@ -2096,7 +2148,8 @@ void root_task_main(const seL4_BootInfo *bi)
              */
             seL4_CPtr pd_fault_ep = g_fault_ep;
 #ifdef ROOT_FAULT_PROBE
-            if ((ROOT_PROBE_NATIVE == 3 && pd->self_svc_id == SVC_ID_OPERATOR_SESSION) ||
+            if ((ROOT_PROBE_NATIVE == 4 && pd->self_svc_id == SVC_ID_FRAMEBUFFER_TEST0 + ROOT_PROBE_CLIENT) ||
+                (ROOT_PROBE_NATIVE == 3 && pd->self_svc_id == SVC_ID_OPERATOR_SESSION) ||
                 (ROOT_PROBE_NATIVE == 2 && pd->self_svc_id == SVC_ID_CC_PD) ||
                 (ROOT_PROBE_NATIVE == 1 && pd->self_svc_id == SVC_ID_NATIVE_RUST_PROBE) ||
                 (ROOT_PROBE_NATIVE == 0 && pd_is_guest_vmm(pd) &&
@@ -2139,6 +2192,38 @@ void root_task_main(const seL4_BootInfo *bi)
             }
         }
 
+#ifdef AGENTOS_FRAMEBUFFER_TEST
+        if (i == fb_service || i == fb_clients[0] || i == fb_clients[1]) {
+            seL4_Error err = seL4_CNode_Copy(pd_cnode, PD_CNODE_SLOT_FB_WAIT,
+                pd->cnode_size_bits, seL4_CapInitThreadCNode, g_pd_notifications[i],
+                64u, seL4_CapRights_new(0, 0, 1, 0));
+            for (uint32_t f = 0; f < AOS_FB_CLIENTS && err == seL4_NoError; ++f) {
+                if (i != fb_service && i != fb_clients[f]) continue;
+                uint32_t peer = i == fb_service ? fb_clients[f] : fb_service;
+                seL4_Word slot = PD_CNODE_SLOT_FB_PEER_NOTIFY + (i == fb_service ? f : 0);
+                err = seL4_CNode_Mint(pd_cnode, slot, pd->cnode_size_bits,
+                    seL4_CapInitThreadCNode, g_pd_notifications[peer], 64u,
+                    seL4_CapRights_new(0, 0, 0, 1), (seL4_Word)1u << f);
+                if (err != seL4_NoError) break;
+                seL4_Word copy = ut_alloc_slot();
+                if (copy == seL4_CapNull) { err = seL4_NotEnoughMemory; break; }
+                err = seL4_CNode_Copy(seL4_CapInitThreadCNode, copy, 64u,
+                    seL4_CapInitThreadCNode, g_framebuffer_frames[f], 64u, seL4_AllRights);
+                if (err == seL4_NoError)
+                    err = pd_vspace_map_device_frame(vspace, copy,
+                        AOS_FB_SHMEM_VA + f * AOS_FB_CLIENT_STRIDE);
+            }
+            if (i == fb_service) {
+                for (uint32_t f = 0; f < AOS_FB_ARENA_FRAMES && err == seL4_NoError; ++f)
+                    err = pd_vspace_map_device_frame(vspace, g_framebuffer_arena[f],
+                        AOS_FB_ARENA_VA + f * AOS_FB_CLIENT_STRIDE);
+            }
+            if (err != seL4_NoError) {
+                dbg_puts("[rt] framebuffer queue/capability grant failed; refusing PD start\n");
+                continue;
+            }
+        }
+#endif
         if (serial_virt_index != SYSTEM_MAX_PDS) {
             seL4_Error signal_err = seL4_NoError;
             if (pd_is_guest_vmm(pd) || pd->self_svc_id == SVC_ID_CC_PD ||
@@ -2376,6 +2461,8 @@ void root_task_main(const seL4_BootInfo *bi)
              name_eq(pd->name, "blk_virt") ||
              name_eq(pd->name, "serial_virt") ||
              name_eq(pd->name, "native_rust_client") ||
+             name_eq(pd->name, "framebuffer_client0") ||
+             name_eq(pd->name, "framebuffer_client1") ||
              name_eq(pd->name, "test_runner"))) {
             seL4_Word serial_copy = ut_alloc_slot();
             seL4_Error serial_err = seL4_NotEnoughMemory;

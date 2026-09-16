@@ -297,9 +297,9 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
         "native/guest qualification requires a fresh Ubuntu live userspace image"
     );
     anyhow::ensure!(
-        !args.assert_native_rust
+        !(args.assert_native_rust || args.assert_framebuffer)
             || (args.board == "qemu_virt_aarch64" && args.guest_os == "none" && !args.no_build),
-        "--assert-native-rust requires a fresh qemu_virt_aarch64 GUEST_OS=none image"
+        "native Rust/framebuffer qualification requires a fresh qemu_virt_aarch64 GUEST_OS=none image"
     );
     anyhow::ensure!(
         !args.assert_vmx_exit
@@ -479,6 +479,12 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
         }
         if args.assert_native_rust || args.assert_native_guest {
             make_args.push(String::from("NATIVE_RUST_TEST=1"));
+        }
+        if args.assert_framebuffer {
+            make_args.push(String::from("FRAMEBUFFER_TEST=1"));
+        }
+        if let Some(mode) = args.framebuffer_isolation_probe {
+            make_args.push(format!("FRAMEBUFFER_ISOLATION_PROBE={mode}"));
         }
         if let Some(mode) = args.native_network_isolation_probe {
             make_args.push(format!("NATIVE_NET_ISOLATION_PROBE={mode}"));
@@ -678,6 +684,20 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
                 "[net_virt] TX accepted by net_pd",
                 "[net_virt] RX delivered from net_pd",
             ],
+            Duration::from_secs(args.timeout_secs),
+            &mut qemu,
+        )
+    } else if args.assert_framebuffer {
+        let mut markers = vec![
+            "[framebuffer] PASS: client 0 create/write/flip/status/read/destroy exact pixels",
+            "[framebuffer] PASS: client 1 create/write/flip/status/read/destroy exact pixels",
+        ];
+        if args.framebuffer_isolation_probe.is_some() {
+            markers.push("[rt] framebuffer isolation: expected client data fault verified");
+        }
+        wait_for_all_markers(
+            &log_path,
+            &markers,
             Duration::from_secs(args.timeout_secs),
             &mut qemu,
         )
