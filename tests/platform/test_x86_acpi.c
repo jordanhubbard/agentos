@@ -16,9 +16,12 @@ static void rejects(aos_x86_acpi_topology_t t, size_t capacity)
     memset(bytes, 0xa5, sizeof(bytes));
     assert(aos_x86_madt_write(bytes + 1, capacity, &t) == 0);
     for (size_t i = 0; i < sizeof(bytes); ++i) assert(bytes[i] == 0xa5);
+    assert(aos_x86_cpu_ssdt_write(bytes + 1, capacity, &t) == 0);
+    for (size_t i = 0; i < sizeof(bytes); ++i) assert(bytes[i] == 0xa5);
 }
-int main(void)
+int main(int argc, char **argv)
 {
+    if (argc > 2) return 2;
     aos_x86_acpi_topology_t t = {
         .lapic_gpa = 0xfee00000u, .ioapic_gpa = 0xfec00000u,
         .gsi_base = 32, .ioapic_id = 7, .cpu_count = 2,
@@ -29,6 +32,31 @@ int main(void)
     assert(aos_x86_madt_write(bytes + 1, sizeof(expected), &t) == sizeof(expected));
     assert(memcmp(bytes + 1, expected, sizeof(expected)) == 0);
     assert(bytes[0] == 0xa5 && bytes[sizeof(expected) + 1] == 0xa5);
+    uint8_t ssdt[AOS_X86_CPU_SSDT_MAX_BYTES + 2];
+    memset(ssdt, 0xa5, sizeof(ssdt));
+    size_t sn = aos_x86_cpu_ssdt_write(ssdt + 1, sizeof(ssdt) - 2, &t);
+    static const uint8_t aml[] = {
+        0x10,0x41,0x04,'\\','_','S','B','_',
+        0x5b,0x82,27,'C','0','0','0',
+        0x08,'_','H','I','D',0x0d,'A','C','P','I','0','0','0','7',0,
+        0x08,'_','U','I','D',0x0a,3,
+        0x5b,0x82,27,'C','0','0','1',
+        0x08,'_','H','I','D',0x0d,'A','C','P','I','0','0','0','7',0,
+        0x08,'_','U','I','D',0x0a,9
+    };
+    assert(sn == 36 + sizeof(aml));
+    assert(memcmp(ssdt + 1, "SSDT", 4) == 0 && ssdt[9] == 2);
+    assert(memcmp(ssdt + 37, aml, sizeof(aml)) == 0);
+    assert(ssdt[0] == 0xa5 && ssdt[sn + 1] == 0xa5);
+    uint8_t ss = 0;
+    for (size_t i = 1; i <= sn; ++i) ss = (uint8_t)(ss + ssdt[i]);
+    assert(ss == 0);
+    uint8_t saved[AOS_X86_CPU_SSDT_MAX_BYTES + 2];
+    memcpy(saved, ssdt, sizeof(saved));
+    assert(aos_x86_cpu_ssdt_write(ssdt + 1, sn - 1, &t) == 0);
+    assert(memcmp(saved, ssdt, sizeof(saved)) == 0);
+    assert(aos_x86_cpu_ssdt_write(NULL, sizeof(ssdt), &t) == 0);
+    assert(aos_x86_cpu_ssdt_write(ssdt, sizeof(ssdt), NULL) == 0);
     rejects(t, sizeof(expected) - 1);
     aos_x86_acpi_topology_t bad = t;
     bad.cpu_count = 0; rejects(bad, sizeof(bytes) - 2);
@@ -58,6 +86,18 @@ int main(void)
         assert(entry[0] == 0 && entry[1] == 8 && entry[2] == i && entry[3] == i + 16);
         assert(entry[4] == 1 && entry[5] == 0 && entry[6] == 0 && entry[7] == 0);
     }
-    puts("PASS: x86 MADT exact bytes, capacity, topology and checksum");
+    sn = aos_x86_cpu_ssdt_write(ssdt + 1, sizeof(ssdt) - 2, &t);
+    assert(sn == AOS_X86_CPU_SSDT_MAX_BYTES);
+    ss = 0;
+    for (size_t i = 1; i <= sn; ++i) ss = (uint8_t)(ss + ssdt[i]);
+    assert(ss == 0 && ssdt[0] == 0xa5 && ssdt[sn + 1] == 0xa5);
+    for (unsigned i = 0; i < t.cpu_count; ++i)
+        assert(ssdt[1 + 44 + 29 * i + 28] == t.cpus[i].uid);
+    if (argc == 2) {
+        FILE *file = fopen(argv[1], "wb");
+        assert(file && fwrite(ssdt + 1, 1, sn, file) == sn);
+        assert(fclose(file) == 0);
+    }
+    puts("PASS: x86 MADT/SSDT exact bytes, capacity, CPU identities and checksums");
     return 0;
 }
