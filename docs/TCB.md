@@ -92,6 +92,15 @@ backend, the canonical loopback pump and IOAPIC assertion/acknowledgment.
 Both architecture SDK builds compile the adapter; these checks do not prove an
 Intel host NIC, root network grants or a Linux x86 network interface.
 
+The NIC driver uses the shared host virtio transport for feature negotiation,
+status, configuration and independent RX/TX queue handles. Its current binding
+is still MMIO. MMIO interrupt status and acknowledgment also go through that
+transport; PCI bindings have no ISR mapping and require polling. The driver
+requires offered MAC and VERSION_1 features and waits for reset completion
+before configuring queues. The x86 link check includes the actual NIC driver,
+but PCI root grants and asynchronous receive service are still required before
+it can provide Intel networking.
+
 `net_virt` emits complete bounded diagnostic messages through the common log
 ring and send-only drain notification. It holds no serial service endpoint,
 serial transfer page or log-drain Call endpoint. Nameserver, NIC-driver and

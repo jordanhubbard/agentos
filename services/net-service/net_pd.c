@@ -23,6 +23,7 @@
  */
 
 #include <platform/net_host_layout.h>
+#include <platform/virtio_host_transport.h>
 #include <contracts/net-service/interface.h>
 
 /* ── Conditional compilation ─────────────────────────────────────────────── */
@@ -209,30 +210,7 @@ static inline void data_wr32(uint8_t *d, int off, uint32_t v)
 #define NET_ERR_BAD_FILTER_ID 7u
 #endif
 
-/* ── virtio-MMIO register offsets ───────────────────────────────────────── */
-#define VIRTIO_MMIO_MAGIC_VALUE  0x000u
-#define VIRTIO_MMIO_VERSION      0x004u
-#define VIRTIO_MMIO_DEVICE_ID    0x008u
-#define VIRTIO_MMIO_DEVICE_FEATURES     0x010u
-#define VIRTIO_MMIO_DEVICE_FEATURES_SEL 0x014u
-#define VIRTIO_MMIO_DRIVER_FEATURES     0x020u
-#define VIRTIO_MMIO_DRIVER_FEATURES_SEL 0x024u
-#define VIRTIO_MMIO_QUEUE_SEL           0x030u
-#define VIRTIO_MMIO_QUEUE_NUM_MAX       0x034u
-#define VIRTIO_MMIO_QUEUE_NUM           0x038u
-#define VIRTIO_MMIO_QUEUE_READY         0x044u
-#define VIRTIO_MMIO_QUEUE_NOTIFY        0x050u
-#define VIRTIO_MMIO_INTERRUPT_STATUS    0x060u
-#define VIRTIO_MMIO_INTERRUPT_ACK       0x064u
-#define VIRTIO_MMIO_STATUS       0x070u
-#define VIRTIO_MMIO_QUEUE_DESC_LOW      0x080u
-#define VIRTIO_MMIO_QUEUE_DESC_HIGH     0x084u
-#define VIRTIO_MMIO_QUEUE_AVAIL_LOW     0x090u
-#define VIRTIO_MMIO_QUEUE_AVAIL_HIGH    0x094u
-#define VIRTIO_MMIO_QUEUE_USED_LOW      0x0a0u
-#define VIRTIO_MMIO_QUEUE_USED_HIGH     0x0a4u
-#define VIRTIO_MMIO_CONFIG              0x100u
-#define VIRTIO_MMIO_MAGIC        0x74726976u
+/* Driver feature and queue selections. */
 #define VIRTIO_STATUS_ACKNOWLEDGE (1u << 0)
 #define VIRTIO_STATUS_DRIVER      (1u << 1)
 #define VIRTIO_STATUS_DRIVER_OK   (1u << 2)
@@ -249,6 +227,8 @@ uintptr_t net_pd_shmem_vaddr;
 uintptr_t net_pd_mmio_vaddr;
 uintptr_t net_pd_dma_vaddr;
 uintptr_t log_drain_rings_vaddr;
+static aos_virtio_host_t net_host_transport;
+static aos_virtio_host_queue_t net_host_queues[2];
 
 /* ── Shmem layout ────────────────────────────────────────────────────────── */
 #define NETPD_SHMEM_TOTAL      NET_SHMEM_BYTES
@@ -412,17 +392,6 @@ static void log_hex(uint32_t v)
     log_drain_write(17, 17, buf);
 }
 
-/* ── MMIO helpers ────────────────────────────────────────────────────────── */
-static inline uint32_t mmio_read32(uintptr_t base, uint32_t off)
-{
-    return *(volatile uint32_t *)(base + off);
-}
-static inline void mmio_write32(uintptr_t base, uint32_t off, uint32_t val)
-{
-    *(volatile uint32_t *)(base + off) = val;
-    __atomic_thread_fence(__ATOMIC_SEQ_CST);
-}
-
 static inline void net_host_fence(void)
 {
     __atomic_thread_fence(__ATOMIC_SEQ_CST);
@@ -511,27 +480,11 @@ static void net_host_zero(uint32_t off, uint32_t bytes)
 static bool net_host_setup_queue(uint32_t queue, uint32_t desc_off,
                                  uint32_t avail_off, uint32_t used_off)
 {
-    mmio_write32(net_pd_mmio_vaddr, VIRTIO_MMIO_QUEUE_SEL, queue);
-    if (mmio_read32(net_pd_mmio_vaddr, VIRTIO_MMIO_QUEUE_NUM_MAX) <
-        AGENTOS_NET_HOST_QUEUE_SIZE) {
-        return false;
-    }
-    mmio_write32(net_pd_mmio_vaddr, VIRTIO_MMIO_QUEUE_NUM,
-                 AGENTOS_NET_HOST_QUEUE_SIZE);
-    mmio_write32(net_pd_mmio_vaddr, VIRTIO_MMIO_QUEUE_DESC_LOW,
-                 (uint32_t)(net_host_dma_paddr + desc_off));
-    mmio_write32(net_pd_mmio_vaddr, VIRTIO_MMIO_QUEUE_DESC_HIGH,
-                 (uint32_t)((net_host_dma_paddr + desc_off) >> 32));
-    mmio_write32(net_pd_mmio_vaddr, VIRTIO_MMIO_QUEUE_AVAIL_LOW,
-                 (uint32_t)(net_host_dma_paddr + avail_off));
-    mmio_write32(net_pd_mmio_vaddr, VIRTIO_MMIO_QUEUE_AVAIL_HIGH,
-                 (uint32_t)((net_host_dma_paddr + avail_off) >> 32));
-    mmio_write32(net_pd_mmio_vaddr, VIRTIO_MMIO_QUEUE_USED_LOW,
-                 (uint32_t)(net_host_dma_paddr + used_off));
-    mmio_write32(net_pd_mmio_vaddr, VIRTIO_MMIO_QUEUE_USED_HIGH,
-                 (uint32_t)((net_host_dma_paddr + used_off) >> 32));
-    mmio_write32(net_pd_mmio_vaddr, VIRTIO_MMIO_QUEUE_READY, 1u);
-    return true;
+    if (queue >= 2u) return false;
+    return aos_virtio_host_queue_bind(&net_host_transport,
+        &net_host_queues[queue], (uint16_t)queue, AGENTOS_NET_HOST_QUEUE_SIZE,
+        net_host_dma_paddr + desc_off, net_host_dma_paddr + avail_off,
+        net_host_dma_paddr + used_off);
 }
 
 static void net_host_offer_rx(void)
@@ -552,8 +505,8 @@ static void net_host_offer_rx(void)
     net_host_fence();
     avail->idx = AGENTOS_NET_HOST_QUEUE_SIZE;
     net_host_fence();
-    mmio_write32(net_pd_mmio_vaddr, VIRTIO_MMIO_QUEUE_NOTIFY,
-                 VIRTIO_NET_RX_QUEUE);
+    (void)aos_virtio_host_queue_notify(&net_host_transport,
+            &net_host_queues[VIRTIO_NET_RX_QUEUE]);
 }
 
 static bool net_host_frame_for_client(const uint8_t *frame, uint32_t len,
@@ -769,11 +722,10 @@ static uint32_t net_host_poll_rx(void)
     }
     if (received > 0u) {
         net_host_fence();
-        mmio_write32(net_pd_mmio_vaddr, VIRTIO_MMIO_QUEUE_NOTIFY,
-                     VIRTIO_NET_RX_QUEUE);
-        mmio_write32(net_pd_mmio_vaddr, VIRTIO_MMIO_INTERRUPT_ACK,
-                     mmio_read32(net_pd_mmio_vaddr,
-                                 VIRTIO_MMIO_INTERRUPT_STATUS));
+        (void)aos_virtio_host_queue_notify(&net_host_transport,
+            &net_host_queues[VIRTIO_NET_RX_QUEUE]);
+        aos_virtio_host_interrupt_ack(&net_host_transport,
+                     aos_virtio_host_interrupt_status(&net_host_transport));
     }
     return received;
 }
@@ -842,8 +794,8 @@ static bool net_host_send(const uint8_t *frame, uint32_t len)
     avail->idx = (uint16_t)(net_host_tx_avail + 1u);
     net_host_tx_avail++;
     net_host_fence();
-    mmio_write32(net_pd_mmio_vaddr, VIRTIO_MMIO_QUEUE_NOTIFY,
-                 VIRTIO_NET_TX_QUEUE);
+    (void)aos_virtio_host_queue_notify(&net_host_transport,
+            &net_host_queues[VIRTIO_NET_TX_QUEUE]);
 
     for (uint32_t i = 0u; i < NET_HOST_POLL_ITERS; i++) {
         net_host_fence();
@@ -883,36 +835,35 @@ static void probe_virtio_net(void)
     }
     net_host_dma_paddr = meta->paddr;
 
-    uint32_t magic     = mmio_read32(net_pd_mmio_vaddr, VIRTIO_MMIO_MAGIC_VALUE);
-    uint32_t version   = mmio_read32(net_pd_mmio_vaddr, VIRTIO_MMIO_VERSION);
-    uint32_t device_id = mmio_read32(net_pd_mmio_vaddr, VIRTIO_MMIO_DEVICE_ID);
-
-    if (magic != VIRTIO_MMIO_MAGIC || version != 2u
-            || device_id != VIRTIO_NET_DEVICE_ID) {
-        log_drain_write(17, 17, "[net_pd] virtio-net not detected (magic=");
-        log_hex(magic);
-        log_drain_write(17, 17, "), stub mode\n");
+    if (!aos_virtio_host_mmio(&net_host_transport, net_pd_mmio_vaddr,
+                             0x1000u, VIRTIO_NET_DEVICE_ID)) {
+        log_drain_write(17, 17, "[net_pd] virtio-net not detected, stub mode\n");
         return;
     }
 
-    mmio_write32(net_pd_mmio_vaddr, VIRTIO_MMIO_STATUS, 0u);
+    aos_virtio_host_set_status(&net_host_transport, 0u);
+    unsigned reset_wait = 100000u;
+    while (aos_virtio_host_status(&net_host_transport) && --reset_wait) {}
+    if (!reset_wait) {
+        log_drain_write(17, 17, "[net_pd] virtio-net: reset timed out\n");
+        return;
+    }
     status = VIRTIO_STATUS_ACKNOWLEDGE;
-    mmio_write32(net_pd_mmio_vaddr, VIRTIO_MMIO_STATUS, status);
+    aos_virtio_host_set_status(&net_host_transport, status);
     status |= VIRTIO_STATUS_DRIVER;
-    mmio_write32(net_pd_mmio_vaddr, VIRTIO_MMIO_STATUS,
-                 status);
+    aos_virtio_host_set_status(&net_host_transport, status);
 
-    mmio_write32(net_pd_mmio_vaddr, VIRTIO_MMIO_DEVICE_FEATURES_SEL, 0u);
-    uint32_t features =
-        mmio_read32(net_pd_mmio_vaddr, VIRTIO_MMIO_DEVICE_FEATURES);
-    mmio_write32(net_pd_mmio_vaddr, VIRTIO_MMIO_DRIVER_FEATURES_SEL, 0u);
-    mmio_write32(net_pd_mmio_vaddr, VIRTIO_MMIO_DRIVER_FEATURES,
-                 features & VIRTIO_NET_F_MAC);
-    mmio_write32(net_pd_mmio_vaddr, VIRTIO_MMIO_DRIVER_FEATURES_SEL, 1u);
-    mmio_write32(net_pd_mmio_vaddr, VIRTIO_MMIO_DRIVER_FEATURES, 1u);
+    uint32_t features = aos_virtio_host_features(&net_host_transport, 0u);
+    if (!(features & VIRTIO_NET_F_MAC) ||
+        !(aos_virtio_host_features(&net_host_transport, 1u) & 1u)) {
+        log_drain_write(17, 17, "[net_pd] virtio-net: MAC or VERSION_1 missing\n");
+        return;
+    }
+    aos_virtio_host_set_features(&net_host_transport, 0u, VIRTIO_NET_F_MAC);
+    aos_virtio_host_set_features(&net_host_transport, 1u, 1u);
     status |= VIRTIO_STATUS_FEATURES_OK;
-    mmio_write32(net_pd_mmio_vaddr, VIRTIO_MMIO_STATUS, status);
-    if (!(mmio_read32(net_pd_mmio_vaddr, VIRTIO_MMIO_STATUS) &
+    aos_virtio_host_set_status(&net_host_transport, status);
+    if (!(aos_virtio_host_status(&net_host_transport) &
           VIRTIO_STATUS_FEATURES_OK)) {
         log_drain_write(17, 17,
             "[net_pd] virtio-net: device rejected features\n");
@@ -934,16 +885,18 @@ static void probe_virtio_net(void)
         return;
     }
 
-    for (uint32_t i = 0u; i < 6u; i++) {
-        iface_mac[i] =
-            *(volatile uint8_t *)(net_pd_mmio_vaddr + VIRTIO_MMIO_CONFIG + i);
+    uint64_t mac_config;
+    if (!aos_virtio_host_config64(&net_host_transport, 0u, &mac_config)) {
+        log_drain_write(17, 17, "[net_pd] virtio-net: unstable MAC config\n");
+        return;
     }
+    for (uint32_t i = 0u; i < 6u; i++)
+        iface_mac[i] = (uint8_t)(mac_config >> (i * 8u));
     status |= VIRTIO_STATUS_DRIVER_OK;
-    mmio_write32(net_pd_mmio_vaddr, VIRTIO_MMIO_STATUS, status);
+    aos_virtio_host_set_status(&net_host_transport, status);
     net_host_offer_rx();
-    mmio_write32(net_pd_mmio_vaddr, VIRTIO_MMIO_INTERRUPT_ACK,
-                 mmio_read32(net_pd_mmio_vaddr,
-                             VIRTIO_MMIO_INTERRUPT_STATUS));
+    aos_virtio_host_interrupt_ack(&net_host_transport,
+                 aos_virtio_host_interrupt_status(&net_host_transport));
 
     hw_present    = true;
     iface_link_up = true;
@@ -1825,10 +1778,10 @@ static void net_pd_notify_net_virt_rx(void)
 static void net_pd_handle_host_irq(void)
 {
     uint32_t status =
-        mmio_read32(net_pd_mmio_vaddr, VIRTIO_MMIO_INTERRUPT_STATUS);
+        aos_virtio_host_interrupt_status(&net_host_transport);
     uint32_t received = net_host_poll_rx();
     if (status != 0u) {
-        mmio_write32(net_pd_mmio_vaddr, VIRTIO_MMIO_INTERRUPT_ACK, status);
+        aos_virtio_host_interrupt_ack(&net_host_transport, status);
     }
     seL4_IRQHandler_Ack(
         (seL4_CPtr)(PD_IRQHANDLER_SLOT_BASE + 0u));

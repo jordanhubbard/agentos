@@ -725,6 +725,7 @@ test-x86-firmware-build:
 		$(abspath $(BUILD_TMP_DIR)/x86-firmware-link)/serial_pd.elf \
 		$(abspath $(BUILD_TMP_DIR)/x86-firmware-link)/blk_virt.elf \
 		$(abspath $(BUILD_TMP_DIR)/x86-firmware-link)/net_virt.elf \
+		$(abspath $(BUILD_TMP_DIR)/x86-firmware-link)/net_pd.elf \
 		$(abspath $(BUILD_TMP_DIR)/x86-firmware-link)/virtio_blk.elf \
 		$(abspath $(BUILD_TMP_DIR)/x86-firmware-link)/rt_main.o \
 		$(abspath $(BUILD_TMP_DIR)/x86-firmware-link)/rt_x86_host_block.o \
@@ -1363,7 +1364,9 @@ test-integration:
 	    status=1; \
 	fi; \
 	if gcc -DAGENTOS_TEST_HOST -I platform/include -I . \
+	        -idirafter kernel/agentos-root-task/include \
 	        tests/platform/test_net_host_fanout.c \
+	        services/block-driver/virtio_host_transport.c \
 	        -o $(BUILD_TMP_DIR)/test_net_host_fanout 2>&1 \
 	    && $(BUILD_TMP_DIR)/test_net_host_fanout; then \
 	    echo "PASS: tests/platform/test_net_host_fanout.c"; \

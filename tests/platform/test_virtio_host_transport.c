@@ -23,6 +23,14 @@ static void test_mmio(void)
     assert(!aos_virtio_host_mmio(&t, (uintptr_t)mmio, 0xff, 2));
     assert(!aos_virtio_host_mmio(&t, (uintptr_t)mmio, sizeof(mmio), 1));
     assert(aos_virtio_host_mmio(&t, (uintptr_t)mmio, sizeof(mmio), 2));
+    MMIO(VIRTIO_MMIO_INTERRUPT_STATUS) = 3;
+    MMIO(VIRTIO_MMIO_INTERRUPT_ACK) = 0;
+    assert(aos_virtio_host_interrupt_status(&t) == 3);
+    aos_virtio_host_interrupt_ack(&t, 2);
+    assert(MMIO(VIRTIO_MMIO_INTERRUPT_ACK) == 2);
+    assert(MMIO(VIRTIO_MMIO_INTERRUPT_STATUS) == 3);
+    aos_virtio_host_interrupt_ack(&t, 0);
+    assert(MMIO(VIRTIO_MMIO_INTERRUPT_ACK) == 2);
     MMIO(VIRTIO_MMIO_DEVICE_FEATURES) = 0x42;
     assert(aos_virtio_host_features(&t, 1) == 0x42);
     assert(MMIO(VIRTIO_MMIO_DEVICE_FEATURES_SEL) == 1);
@@ -81,6 +89,11 @@ static void test_pci(void)
                                  (uintptr_t)config, sizeof(config),
                                  (uintptr_t)notify, sizeof(notify), 4));
     assert(bind_pci(&t, 4));
+    unsigned char saved_common[sizeof(common_mem)];
+    memcpy(saved_common, common_mem, sizeof(common_mem));
+    assert(aos_virtio_host_interrupt_status(&t) == 0);
+    aos_virtio_host_interrupt_ack(&t, 3);
+    assert(memcmp(saved_common, common_mem, sizeof(common_mem)) == 0);
     c->device_feature = 0x55;
     assert(aos_virtio_host_features(&t, 1) == 0x55);
     assert(c->device_feature_select == 1);
