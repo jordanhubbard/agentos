@@ -110,7 +110,7 @@ ROOT_TASK_SRCS += src/system_desc_aarch64.c
 CFLAGS_ROOT_TASK := $(CFLAGS) -DBOARD_$(AGENTOS_BOARD)
 ROOT_TASK_ASM_OBJS := $(BUILD_DIR)/rt_start_aarch64.o
 else ifeq ($(ARCH),x86_64)
-ROOT_TASK_SRCS += src/system_desc_x86_64.c
+ROOT_TASK_SRCS += src/system_desc_x86_64.c src/x86_host_block.c
 CFLAGS_ROOT_TASK := $(CFLAGS)
 ROOT_TASK_ASM_OBJS := $(BUILD_DIR)/rt_start_x86_64.o
 else
@@ -121,6 +121,9 @@ endif
 
 ROOT_TASK_OBJS := $(patsubst src/%.c, $(BUILD_DIR)/rt_%.o, $(ROOT_TASK_SRCS))
 ROOT_TASK_OBJS += $(BUILD_DIR)/rt_inspect_snapshot.o
+ifeq ($(ARCH),x86_64)
+ROOT_TASK_OBJS += $(BUILD_DIR)/rt_virtio_pci_caps.o
+endif
 
 ifeq ($(AGENTOS_BOARD),x86_64_generic_vtx)
   CFLAGS += -DAGENTOS_X86_VTX=1
@@ -299,6 +302,10 @@ endif
 $(BUILD_DIR)/rt_inspect_snapshot.o: $(REPO_ROOT_MK)/platform/inspect/inspect_snapshot.c
 	@mkdir -p $(BUILD_DIR)
 	$(CC) $(CFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/rt_virtio_pci_caps.o: $(REPO_ROOT_MK)/platform/blk-virt/virtio_pci_caps.c
+	@mkdir -p $(BUILD_DIR)
+	$(CC) $(CFLAGS_ROOT_TASK) -c $< -o $@
 
 $(BUILD_DIR)/inspect_snapshot.pd.o: $(REPO_ROOT_MK)/platform/inspect/inspect_snapshot.c
 	@mkdir -p $(BUILD_DIR)
