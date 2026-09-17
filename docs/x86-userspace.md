@@ -29,3 +29,10 @@ not qualify canonical console/network/block services, disk persistence,
 multi-guest isolation, or desktop profiles. The completion trap is not a
 production console or other service ABI. Target success must be established
 by the gate; building the archive alone proves no guest execution.
+
+At `accaafe`, the Intel target gate passed. A second run with deliberately
+wrong PID assertions produced the explicit failure result from ring 3 and
+did not pass the gate. Spark's full `make gate` also passed. The
+[receipt](evidence/2026-09-17-spark/x86-userspace.json) records exact inputs,
+artifacts and the negative-control construction. Required GitHub checks and
+the other v0.4 acceptance items remain outstanding.
