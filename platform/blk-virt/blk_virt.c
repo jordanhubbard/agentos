@@ -30,7 +30,7 @@
 
 #include "agentos.h"
 #include "sel4_ipc.h"
-#include "serial_log.h"
+#include <stdio.h>
 #include "system_desc.h"
 #include "nameserver.h"
 #include <contracts/blk_virt_contract.h>
@@ -48,8 +48,7 @@ _Static_assert(AOS_BLK_SHMEM_VA != AGENTOS_BLK_SHARED_VA,
 _Static_assert(AOS_BLK_TRANSFER_SIZE % AOS_HOST_BLK_SECTOR_SIZE == 0u,
                "sDDF transfer unit must be whole host sectors");
 
-/* Unmapped: log_drain_write falls back to the (release-silent) debug putc.
- * Visible diagnostics go through serial_pd via serial_log_t. */
+/* Root-provisioned log ring on ARM; the common debug fallback elsewhere. */
 uintptr_t log_drain_rings_vaddr;
 
 typedef struct {
@@ -69,29 +68,19 @@ typedef struct {
 static bv_client_t  g_clients[AOS_BLK_MAX_CLIENTS];
 static uint8_t      g_ram_disk[AOS_BLK_MAX_CLIENTS][AOS_BLK_DISK_BYTES]
                         __attribute__((aligned(4096)));
-static serial_log_t g_log = { .ep = PD_CNODE_SLOT_SERIAL_EP };
 
 /* ── diagnostics ────────────────────────────────────────────────────────── */
 
-static void bv_puts(const char *s)
+static void bv_log(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
+static void bv_log(const char *fmt, ...)
 {
-    serial_log_puts(&g_log, s);
-}
-
-static void bv_dec(uint64_t v)
-{
-    char buf[24];
-    int i = 23;
-
-    buf[i] = '\0';
-    if (v == 0u) {
-        buf[--i] = '0';
-    }
-    while (v > 0u && i > 0) {
-        buf[--i] = (char)('0' + (v % 10u));
-        v /= 10u;
-    }
-    bv_puts(&buf[i]);
+    /* Leave room for the common logger's PD prefix and trailing newline. */
+    char buf[160];
+    va_list args;
+    va_start(args, fmt);
+    (void)vsnprintf(buf, sizeof(buf), fmt, args);
+    va_end(args);
+    agentos_log_info("blk_virt", buf);
 }
 
 static uint32_t rd32(const uint8_t *p, uint32_t off)
@@ -251,7 +240,7 @@ static aos_blk_resp_status_t host_blk_backend(
 
     c->requests++;
     if (data_end > AOS_BLK_DATA_BYTES) {
-        bv_puts("[blk_virt] request exceeds the client data cells\n");
+        bv_log("request exceeds the client data cells");
         return AOS_BLK_RESP_ERR_INVALID_PARAM;
     }
 
@@ -262,13 +251,8 @@ static aos_blk_resp_status_t host_blk_backend(
                                nbytes);
         if (rc == AOS_HOST_BLK_OK && !c->read_marked) {
             c->read_marked = 1u;
-            bv_puts("[blk_virt] host-media read sector=");
-            bv_dec(sector);
-            bv_puts(" count=");
-            bv_dec(sectors);
-            bv_puts(" client=");
-            bv_dec(c->client_id);
-            bv_puts("\n");
+            bv_log("host-media read sector=%lu count=%u client=%u",
+                   (unsigned long)sector, sectors, c->client_id);
         }
         break;
     case AOS_BLK_REQ_WRITE:
@@ -287,11 +271,7 @@ static aos_blk_resp_status_t host_blk_backend(
     if (rc == AOS_HOST_BLK_OK) {
         return AOS_BLK_RESP_OK;
     }
-    bv_puts("[blk_virt] host request failed media=");
-    bv_dec(c->media_id);
-    bv_puts(" rc=");
-    bv_dec(rc);
-    bv_puts("\n");
+    bv_log("host request failed media=%u rc=%u", c->media_id, rc);
     if (rc == AOS_HOST_BLK_ERR_NODEV) {
         return AOS_BLK_RESP_ERR_NO_DEVICE;
     }
@@ -367,11 +347,8 @@ static void bv_service(void)
                 c->responses += n;
                 if (!c->pumped_marked) {
                     c->pumped_marked = 1u;
-                    bv_puts("[blk_virt] pumped ");
-                    bv_dec(n);
-                    bv_puts(" request(s) for client ");
-                    bv_dec(c->client_id);
-                    bv_puts(c->hw ? " via virtio_blk\n" : " via RAM disk\n");
+                    bv_log("pumped %u request(s) for client %u via %s",
+                           n, c->client_id, c->hw ? "virtio_blk" : "RAM disk");
                 }
                 bv_notify_vmm(c);
             }
@@ -465,31 +442,19 @@ static void handle_attach(uint64_t badge, const sel4_msg_t *req, sel4_msg_t *rep
         bv_fence();
         c->attached = 1u;
 
-        bv_puts("[blk_virt] ATTACH client=");
-        bv_dec(client_id);
-        bv_puts(" vmm_slot=");
-        bv_dec(vmm_slot);
-        bv_puts(" media=");
-        bv_dec(media_id);
-        bv_puts(c->hw ? " hw=1\n" : " hw=0 (RAM disk backend)\n");
+        bv_log("ATTACH client=%u vmm_slot=%u media=%u %s",
+               client_id, vmm_slot, media_id,
+               c->hw ? "hw=1" : "hw=0 (RAM disk backend)");
         if (c->hw) {
-            bv_puts("[blk_virt] host media ");
-            bv_dec(media_id);
-            bv_puts(" ready sectors=");
-            bv_dec(host_sectors);
-            bv_puts(host_read_only ? " read-only" : " writable");
-            bv_puts("\n");
+            bv_log("host media %u ready sectors=%lu %s", media_id,
+                   (unsigned long)host_sectors,
+                   host_read_only ? "read-only" : "writable");
         } else {
-            bv_puts("[blk_virt] host unavailable rc=");
-            bv_dec(rc);
-            bv_puts("; serving ");
-            bv_dec(AOS_BLK_DISK_BLOCKS);
-            bv_puts("-block RAM disk\n");
+            bv_log("host unavailable rc=%u; serving %u-block RAM disk",
+                   rc, AOS_BLK_DISK_BLOCKS);
         }
     } else {
-        bv_puts("[blk_virt] ATTACH rejected status=");
-        bv_dec(status);
-        bv_puts("\n");
+        bv_log("ATTACH rejected status=%u", status);
     }
 
     wr32(rep->data, 0u, status);
@@ -550,6 +515,6 @@ void pd_main(seL4_CPtr my_ep, seL4_CPtr ns_ep)
 {
     agentos_log_boot("blk_virt");
     register_with_nameserver(ns_ep);
-    bv_puts("[blk_virt] READY: contract v4, persistent wakeups, capability-bound clients/media, no device caps\n");
+    bv_log("READY: contract v4, persistent wakeups, capability-bound clients/media, no device caps");
     blk_virt_run(my_ep);
 }

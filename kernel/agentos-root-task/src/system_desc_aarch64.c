@@ -86,7 +86,7 @@
 
 /* VMM wakeups use send-only notifications granted by root, not their
  * lifecycle endpoints. */
-#define AOS_BLK_VIRT_INIT_EP_COUNT 4u
+#define AOS_BLK_VIRT_INIT_EP_COUNT 2u
 
 /* net_virt holds: nameserver, log_drain, serial (diagnostics through
  * serial_pd), net_pd, plus one listen EP per configured VMM so it can NBSend
@@ -225,8 +225,6 @@ const system_desc_t system_desc_aarch64 = {
             .init_ep_count  = AOS_BLK_VIRT_INIT_EP_COUNT,
             .init_eps = {
                 { SVC_ID_NAMESERVER, PD_CNODE_SLOT_NAMESERVER_EP },
-                { SVC_ID_LOG_DRAIN,  PD_CNODE_SLOT_LOG_DRAIN_EP  },
-                { SVC_ID_SERIAL,     PD_CNODE_SLOT_SERIAL_EP     },
                 { SVC_ID_VIRTIO_BLK, PD_CNODE_SLOT_VIRTIO_BLK_EP },
             },
             .irq_count = 0u,
