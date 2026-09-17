@@ -34,7 +34,7 @@ the VMM. No physical APIC page or I/O capability is delegated.
 The firmware variant uses the existing single-VMM qualification topology.
 Allocation failure aborts boot; this is not a runtime guest-create path and
 does not qualify capability reclamation or retry.
-Supplying an [EFI boot payload](x86-boot-payload.md) selects 128 MiB private
+Supplying an [EFI boot payload](x86-boot-payload.md) selects 256 MiB private
 guest RAM; the ordinary firmware-only variant retains 32 MiB.
 
 The VMM starts at architectural reset address `0xfffffff0`, using the special

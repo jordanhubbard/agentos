@@ -85,6 +85,31 @@ entered and returned. Diagnose that earlier result before changing boot
 inputs or treating a longer exit budget as progress. Spark's full gate also
 passed at this runtime revision.
 
+The [memory and Linux-entry receipt](evidence/2026-09-17-spark/ovmf-linux-entry.json)
+supersedes that endpoint. Stock QEMU with the same firmware and kernel reports
+EFI decompression failure at 128 MiB and reaches Linux initialization at
+256 MiB (then panics because no root filesystem was supplied). These are
+controls, not agentOS qualification. Increasing this composition to 256 MiB
+also moved the seL4 run into the decompressed Linux kernel: runtime `7570527`
+stopped on Linux's EFER write enabling SCE. Runtime `0d5c3ae` accepts that
+architectural state and reaches the kernel's legacy PIT calibration read at
+port `0x61`. Its exact instruction matches the extracted, pinned kernel ELF.
+The Intel gate still fails because that port is unimplemented; userspace,
+generated ACPI and canonical guest I/O remain outstanding.
+
+EFER writes now validate SCE/LME/NXE while preserving derived LMA and rejecting
+LME transitions during paging. CPUID admits and advertises SYSCALL support.
+STAR/LSTAR/CSTAR/FMASK access uses seL4's existing per-VCPU MSR API, with
+canonical 48-bit entry-address and FMASK validation. This adds no host MSR
+passthrough. Host tests cover valid transitions, unchanged rejected state and
+noncanonical addresses; the target result proves progress past EFER.SCE,
+not a userspace syscall or per-guest syscall-state isolation proof.
+
+The temporary first-post-transfer wait snapshot at `d835ca4` identified TLS
+driver initialization, since QemuKernelLoaderFsDxe fetches blobs before BDS
+loads Linux. That diagnostic selection was removed; normal bounded wait
+snapshots remain. No exit limit or test success condition was relaxed.
+
 `make test-x86-config-host test-x86-string-host` checks exact blob sizes and
 bytes, data beyond the old 80-byte stream boundary, reselect/EOF behavior,
 per-guest isolation, invalid descriptor rollback, bounded cross-page transfers,

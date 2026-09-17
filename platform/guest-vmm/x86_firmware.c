@@ -25,7 +25,6 @@
 #define PAE (1u << 5)
 #define LME (1u << 8)
 #define LMA (1u << 10)
-#define NXE (1u << 11)
 #define ENTRY_LONG (1u << 9)
 #define PIN_CONTROLS 0x4000u
 #define PREEMPTION_COUNTER 0x482eu
