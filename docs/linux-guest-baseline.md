@@ -151,3 +151,34 @@ The existing host fields establish a matching recorded host platform; they do
 not independently identify a physical runner. No comparison claim exists until
 both underlying authenticated SSH runs have completed their full qualification
 successfully.
+
+The comparator accepts both historical CLI aliases and the canonical IDs
+resolved from the current repository guest profiles. It preserves the original
+receipt bytes and their hashes; it does not rewrite historical measurements.
+
+### Spark qualification, 2026-09-16
+
+On Spark (Linux AArch64), both guest qualifications passed at clean revision
+`522bd024d934ce3688dfd75e03c5ded204807927` with matching recorded QEMU
+configuration. The commands were `make test-debian-persistence
+QEMU_TEST_TIMEOUT=1800` and `make test-ubuntu-live QEMU_TEST_TIMEOUT=1800`.
+Both proved authenticated SSH and host-backed agentOS VirtIO net/block/console.
+Debian also read its disk witness after a second cold boot. This does not prove
+guest-slot recreation, orderly guest shutdown, x86 parity or bare-metal Spark
+device support.
+
+| First authenticated boot | Elapsed time |
+|---|---:|
+| Debian stable AArch64 | 643,015 ms |
+| Ubuntu live AArch64 | 1,124,868 ms |
+
+These are individual end-to-end observations including provisioning and host
+scheduling, with no performance threshold. The receipt-only comparison passed
+after correcting the comparator's old-alias-only profile check. The unmodified
+input receipts, second Debian boot receipt, persistence result and comparison
+are retained in [the evidence directory](evidence/2026-09-16-spark/).
+Their image and bundle hashes bind the original runs, not a later release.
+The full local artifacts are under `build/evidence/persistent-boot-aaumdV/`
+and `build/evidence/v04-spark-ubuntu/`; serial log paths in the receipts refer
+to the original runner. The JSON files alone are not substitutes for those
+runtime artifacts. Final release qualification must run at the release revision.

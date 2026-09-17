@@ -1,0 +1,46 @@
+{
+  "schema": "agentos.manual-qualification.v1",
+  "source_revision": "4f45ea1bdb3939486eeee8ac930d9bd0e25bb93d",
+  "source_clean": true,
+  "source_pull_request": 175,
+  "host": "sparky",
+  "host_architecture": "aarch64",
+  "board": "qemu_virt_aarch64",
+  "profile": "debian-graphics-input-aarch64",
+  "commands": [
+    "make test-host",
+    "make test-framebuffer QEMU_TEST_TIMEOUT=120",
+    "make gate QEMU_TEST_SSH_PORT=12238",
+    "make test-guest-graphics-input QEMU_TEST_TIMEOUT=1800 QEMU_TEST_SSH_PORT=12239"
+  ],
+  "result": "pass",
+  "ssh_authenticated_elapsed_ms": 511204,
+  "frame_transfer_bytes": 3145728,
+  "frame_transfer_elapsed_seconds": 59,
+  "proven": [
+    "Full local OS gate: host suite, both root-task architectures and focused guest net/block/console proofs",
+    "Same Debian guest: graphics capture, authenticated SSH and exact input delivery",
+    "1024x768 immutable framebuffer at sequence 87, with two exact profile-declared RGB pixels",
+    "Four public agentctl batches reaching Linux evdev: four keyboard events and seven pointer events",
+    "Exact packet boundaries and no trailing input; helper exited successfully with empty stderr"
+  ],
+  "not_proven": [
+    "Physical input or display ownership",
+    "Interactive display latency",
+    "Peer guest input isolation on target",
+    "Guest recreation or RAM/capability reclamation",
+    "Bare-metal Spark or x86 VMX Linux execution",
+    "Final merged v0.4 release revision qualification"
+  ],
+  "retained_local_directory": "/tmp/agentos-v04-control-scheduling/build/evidence/graphics-input-4f45ea1",
+  "sha256": {
+    "agentos.img": "c91983bc037885cd3fe8bb43be6c673a74d60728ed40ca333408170039348ea0",
+    "boot-timing.json": "8cc6bc4b3fc3236546e7377a5fa78100d9ec5bab2ec24b34917bb63669599790",
+    "frame.json": "737eb85b79058e8072ad408e24eaef980d524429956eae12eeeab7741c28b614",
+    "frame.ppm": "c4f6ce4a156cccf2c7eb65378744291b2361264c420351dfeb4b3e53d73874a8",
+    "gate.log": "a306f57f85864e9c1a14ecc3e4a4997121a78f6c93d62cda05d0484010ada0ea",
+    "input.json": "9c983c61ccb64a249da147973b5dae608904ba58303097725bc8a90525dc8768",
+    "qualification.log": "1c2bfaea3b41de46ffdac61dc5d25dc877d30e13ccff4614fa4e1e1bd4030ddf",
+    "serial.log": "b9fe060d0f700b282c10f9de61e151c125077b29fce65aa103fb26804527e304"
+  }
+}
