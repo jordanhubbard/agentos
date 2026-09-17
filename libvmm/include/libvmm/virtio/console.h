@@ -40,6 +40,7 @@
 #include <sddf/serial/queue.h>
 #include <libvmm/virtio/virtio.h>
 #include <libvmm/virtio/console_tx.h>
+#include <libvmm/virtio/console_rx_ring.h>
 
 #define RX_QUEUE 0
 #define TX_QUEUE 1
@@ -98,6 +99,7 @@ struct virtio_console_device {
     serial_queue_handle_t *txq;
     seL4_CPtr tx_cap;
     virtio_console_tx_state_t tx_progress;
+    virtio_console_rx_state_t rx_progress;
     uint16_t tx_head;
     bool tx_backpressure_reported;
 };

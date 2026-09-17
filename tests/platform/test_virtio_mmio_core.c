@@ -84,6 +84,12 @@ int main(void)
     CHECK(virtio_mmio_reg_write(&d,REG_VIRTIO_MMIO_QUEUE_READY,1));
     CHECK(queues[0].virtq.desc==(void *)memory && queues[0].virtq.avail==(void *)(memory+512));
     CHECK(queues[0].virtq.used==(void *)(memory+1024));
+    CHECK(!virtio_mmio_reg_write(&d,REG_VIRTIO_MMIO_QUEUE_NUM,16));
+    CHECK(!virtio_mmio_reg_write(&d,REG_VIRTIO_MMIO_QUEUE_DESC_LOW,0));
+    CHECK(!virtio_mmio_reg_write(&d,REG_VIRTIO_MMIO_QUEUE_AVAIL_HIGH,0));
+    CHECK(!virtio_mmio_reg_write(&d,REG_VIRTIO_MMIO_QUEUE_USED_LOW,0));
+    CHECK(queues[0].virtq.num==8 && queues[0].virtq.desc==(void *)memory);
+    CHECK(queues[0].virtq.avail==(void *)(memory+512) && queues[0].virtq.used==(void *)(memory+1024));
     CHECK(virtio_mmio_reg_write(&d,REG_VIRTIO_MMIO_QUEUE_READY,1));
     CHECK(virtio_mmio_reg_write(&d,REG_VIRTIO_MMIO_QUEUE_NOTIFY,0) && notifications==1);
     CHECK(!virtio_mmio_reg_write(&d,REG_VIRTIO_MMIO_QUEUE_NOTIFY,2) && notifications==1);
@@ -99,6 +105,11 @@ int main(void)
     CHECK(virtio_mmio_reg_write(&d,REG_VIRTIO_MMIO_QUEUE_NUM,8));
     address(&d,REG_VIRTIO_MMIO_QUEUE_DESC_LOW,UINT64_MAX-3);
     CHECK(!virtio_mmio_reg_write(&d,REG_VIRTIO_MMIO_QUEUE_READY,1) && !queues[1].ready);
+    address(&d,REG_VIRTIO_MMIO_QUEUE_DESC_LOW,GPA_BASE+1);
+    address(&d,REG_VIRTIO_MMIO_QUEUE_AVAIL_LOW,GPA_BASE+512);
+    address(&d,REG_VIRTIO_MMIO_QUEUE_USED_LOW,GPA_BASE+1024);
+    CHECK(!virtio_mmio_reg_write(&d,REG_VIRTIO_MMIO_QUEUE_READY,1) && !queues[1].ready);
+    CHECK((uintptr_t)queues[1].virtq.desc==GPA_BASE+1);
     CHECK(!virtio_mmio_reg_write(&d,0x200,0));
     puts("PASS: shared libvmm register negotiation, GPA mapping, IRQ ack, reset and rejection");
     return 0;

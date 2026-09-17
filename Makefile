@@ -761,6 +761,15 @@ test-host: test-x86-ioapic-host
 test-host: test-x86-acpi-loader-host
 test-host: test-x86-event-host
 test-host: test-virtio-mmio-core-host
+test-host: test-virtio-console-rx-host
+
+.PHONY: test-virtio-console-rx-host
+test-virtio-console-rx-host:
+	@mkdir -p $(BUILD_TMP_DIR)
+	gcc -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -g \
+		-I libvmm/include tests/platform/test_virtio_console_rx_ring.c \
+		-o $(BUILD_TMP_DIR)/test_virtio_console_rx_ring
+	@$(BUILD_TMP_DIR)/test_virtio_console_rx_ring
 
 .PHONY: test-virtio-mmio-core-host
 test-virtio-mmio-core-host:

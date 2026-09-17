@@ -95,6 +95,11 @@ bool virtio_queue_map_guest_rings(struct virtq *virtq)
     avail_gpa = (uint64_t)(uintptr_t)virtq->avail;
     used_gpa = (uint64_t)(uintptr_t)virtq->used;
 
+    /* Split-ring ABI alignment also keeps typed host accesses well-defined. */
+    if ((desc_gpa & 15u) || (avail_gpa & 1u) || (used_gpa & 3u)) {
+        return false;
+    }
+
     desc_len = (size_t)virtq->num * sizeof(struct virtq_desc);
     /* flags + idx + ring[num] + used_event */
     avail_len = sizeof(uint16_t) * (3u + (size_t)virtq->num);

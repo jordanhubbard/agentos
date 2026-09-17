@@ -138,6 +138,12 @@ bool virtio_mmio_reg_read(virtio_device_t *dev, size_t offset, uint32_t *value)
 bool virtio_mmio_reg_write(virtio_device_t *dev, size_t offset, uint32_t data)
 {
     if (dev == NULL) return false;
+    /* Mapped ring pointers and lengths are immutable until device reset.
+     * Reprogramming a ready queue would mix GPAs with translated pointers. */
+    if (dev->regs.QueueSel<dev->num_vqs && dev->vqs[dev->regs.QueueSel].ready &&
+        ((offset>=REG_VIRTIO_MMIO_QUEUE_NUM && offset<REG_VIRTIO_MMIO_QUEUE_READY) ||
+         (offset>=REG_VIRTIO_MMIO_QUEUE_DESC_LOW && offset<REG_VIRTIO_MMIO_CONFIG_GENERATION)))
+        return false;
     bool success = true;
 
     switch (offset) {
