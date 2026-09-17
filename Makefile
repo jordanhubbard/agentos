@@ -821,7 +821,7 @@ test-virtio-mmio-core-host:
 # seL4 headers. Host stubs cannot detect accidental ARM VCPU dependencies.
 # This is a build check, not a guest I/O qualification.
 .PHONY: test-virtio-backends-build
-test-virtio-backends-build:
+test-virtio-backends-build: test-x86-vmenter-host
 	@set -eu; for arch in aarch64 x86_64; do \
 		case $$arch in aarch64) board=qemu_virt_aarch64 ;; x86_64) board=x86_64_generic ;; esac; \
 		out="$(BUILD_TMP_DIR)/virtio-backends-$$arch"; mkdir -p "$$out"; \
@@ -847,6 +847,15 @@ test-virtio-backends-build:
 		fi; \
 		echo "PASS: production virtio console/net/block compile for $$arch"; \
 	done
+
+.PHONY: test-x86-vmenter-host
+test-x86-vmenter-host:
+	@mkdir -p $(BUILD_TMP_DIR)
+	$(CC) -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -g \
+		-Itests/platform/virtio-stubs -Iplatform/include \
+		-I$(SEL4_SDK)/board/x86_64_generic/release/include \
+		tests/platform/test_x86_vmenter.c -o $(BUILD_TMP_DIR)/test_x86_vmenter
+	$(BUILD_TMP_DIR)/test_x86_vmenter
 
 .PHONY: test-x86-event-host
 test-x86-event-host:

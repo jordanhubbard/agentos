@@ -99,25 +99,16 @@ static uint64_t timestamp(void)
     return ((uint64_t)hi << 32) | lo;
 }
 
-static seL4_VCPUContext save_registers(void)
+static seL4_VCPUContext save_registers(const aos_x86_vmenter_return_t *returned)
 {
+#define REG(name) returned->words[SEL4_VMENTER_FAULT_##name]
     return (seL4_VCPUContext){
-        .eax = seL4_GetMR(SEL4_VMENTER_FAULT_EAX),
-        .ebx = seL4_GetMR(SEL4_VMENTER_FAULT_EBX),
-        .ecx = seL4_GetMR(SEL4_VMENTER_FAULT_ECX),
-        .edx = seL4_GetMR(SEL4_VMENTER_FAULT_EDX),
-        .esi = seL4_GetMR(SEL4_VMENTER_FAULT_ESI),
-        .edi = seL4_GetMR(SEL4_VMENTER_FAULT_EDI),
-        .ebp = seL4_GetMR(SEL4_VMENTER_FAULT_EBP),
-        .r8 = seL4_GetMR(SEL4_VMENTER_FAULT_R8),
-        .r9 = seL4_GetMR(SEL4_VMENTER_FAULT_R9),
-        .r10 = seL4_GetMR(SEL4_VMENTER_FAULT_R10),
-        .r11 = seL4_GetMR(SEL4_VMENTER_FAULT_R11),
-        .r12 = seL4_GetMR(SEL4_VMENTER_FAULT_R12),
-        .r13 = seL4_GetMR(SEL4_VMENTER_FAULT_R13),
-        .r14 = seL4_GetMR(SEL4_VMENTER_FAULT_R14),
-        .r15 = seL4_GetMR(SEL4_VMENTER_FAULT_R15),
+        .eax = REG(EAX), .ebx = REG(EBX), .ecx = REG(ECX), .edx = REG(EDX),
+        .esi = REG(ESI), .edi = REG(EDI), .ebp = REG(EBP),
+        .r8 = REG(R8), .r9 = REG(R9), .r10 = REG(R10), .r11 = REG(R11),
+        .r12 = REG(R12), .r13 = REG(R13), .r14 = REG(R14), .r15 = REG(R15),
     };
+#undef REG
 }
 
 static seL4_Word operand(seL4_CPtr ep, const seL4_VCPUContext *r, unsigned index)
@@ -185,7 +176,7 @@ static void diagnostic_chain(const aos_x86_memory_t *m, uint64_t cr3, uint64_t r
     }
 }
 
-void aos_x86_firmware_run(seL4_CPtr ep, seL4_Word result)
+void aos_x86_firmware_run(seL4_CPtr ep, aos_x86_vmenter_return_t returned)
 {
     /* CPUID is unprivileged. Admit a fixed baseline, never pass host identity
      * or optional hardware facilities through to the guest. */
@@ -239,14 +230,18 @@ void aos_x86_firmware_run(seL4_CPtr ep, seL4_Word result)
         .rom_size=AOS_X86_FIRMWARE_BYTES,
     };
     for (unsigned exits = 0; ; exits++) {
-        seL4_Word reason = seL4_GetMR(SEL4_VMENTER_FAULT_REASON_MR);
-        seL4_Word rip = seL4_GetMR(SEL4_VMENTER_CALL_EIP_MR);
-        seL4_Word len = seL4_GetMR(SEL4_VMENTER_FAULT_INSTRUCTION_LEN_MR);
-        seL4_Word qual = seL4_GetMR(SEL4_VMENTER_FAULT_QUALIFICATION_MR);
-        seL4_Word fault_gpa = seL4_GetMR(SEL4_VMENTER_FAULT_GUEST_PHYSICAL_MR);
-        seL4_Word guest_cr3 = seL4_GetMR(SEL4_VMENTER_FAULT_CR3_MR);
-        seL4_Word guest_flags = seL4_GetMR(SEL4_VMENTER_FAULT_RFLAGS_MR);
-        seL4_VCPUContext regs = save_registers();
+        seL4_Word rip = returned.words[SEL4_VMENTER_CALL_EIP_MR];
+        /* No service wake sources are provisioned in this topology yet.
+         * Reject unexpected returns using defined metadata, never stale GPRs. */
+        if (returned.result != SEL4_VMENTER_RESULT_FAULT)
+            stop(ep, AOS_X86_VTX_PROOF_FAIL, 0x4e5446u, rip, returned.badge);
+        seL4_Word reason = returned.words[SEL4_VMENTER_FAULT_REASON_MR];
+        seL4_Word len = returned.words[SEL4_VMENTER_FAULT_INSTRUCTION_LEN_MR];
+        seL4_Word qual = returned.words[SEL4_VMENTER_FAULT_QUALIFICATION_MR];
+        seL4_Word fault_gpa = returned.words[SEL4_VMENTER_FAULT_GUEST_PHYSICAL_MR];
+        seL4_Word guest_cr3 = returned.words[SEL4_VMENTER_FAULT_CR3_MR];
+        seL4_Word guest_flags = returned.words[SEL4_VMENTER_FAULT_RFLAGS_MR];
+        seL4_VCPUContext regs = save_registers(&returned);
         for (unsigned i=0; i<3; i++) boot_reads[i]=config.boot_reads[i];
         last_qualification=qual;
         if (exits == 65536u) {
@@ -261,7 +256,7 @@ void aos_x86_firmware_run(seL4_CPtr ep, seL4_Word result)
         }
         /* Non-instruction exits do not define an instruction length. */
         if (reason == 52u || reason == 7u) len=0;
-        if (result != SEL4_VMENTER_RESULT_FAULT || len > 15u) {
+        if (len > 15u) {
             stop(ep, AOS_X86_VTX_PROOF_FAIL, reason, rip, len);
         }
         if (read_field(ep, IDT_VECTORING) & (1u << 31))
@@ -505,6 +500,6 @@ void aos_x86_firmware_run(seL4_CPtr ep, seL4_Word result)
         seL4_SetMR(SEL4_VMENTER_CALL_EIP_MR, rip + event.advance);
         seL4_SetMR(SEL4_VMENTER_CALL_CONTROL_PPC_MR, controls);
         seL4_SetMR(SEL4_VMENTER_CALL_INTERRUPT_INFO_MR, event.interruption_info);
-        result = seL4_VMEnter(NULL);
+        returned = aos_x86_vm_enter();
     }
 }

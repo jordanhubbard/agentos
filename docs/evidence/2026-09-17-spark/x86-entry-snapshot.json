@@ -1,0 +1,41 @@
+{
+  "qualification": "Defined VM-entry return snapshots and Intel boot regression",
+  "runtime_revision": "dbe40aa3a0db744e3f9f94220925f2fcd5f8b53e",
+  "task": "task_ede60b058fc745d296bad77044a57420",
+  "tests": [
+    {
+      "command": "make test-x86-vmenter-host SEL4_SDK_VERSION=2.1.0",
+      "result": "PASS exit 0",
+      "log_sha256": "7a285bb5101ff8a4bc10a5253fc0d1079cd9c7dee7aa11ebacd79b9a9cefdd97",
+      "scope": "SDK return lengths, fault snapshot, notification read boundary, badge preservation, independence from later IPC and unknown-result rejection; ASan/UBSan"
+    },
+    {
+      "command": "make test-x86-firmware-build SEL4_SDK_VERSION=2.3.0",
+      "result": "PASS exit 0",
+      "log_sha256": "e7a3c2af80145b4525663542048c00e2fb17717c37d540cd44bddaf6484fab95"
+    },
+    {
+      "command": "make -C kernel/agentos-root-task BUILD_DIR=/tmp/agentos-entry-sdk21 AGENTOS_ARCH=x86_64 AGENTOS_BOARD=x86_64_generic_vtx SEL4_SDK_VERSION=2.1.0 /tmp/agentos-entry-sdk21/guest_vmm_primary.elf",
+      "result": "PASS exit 0",
+      "log_sha256": "c4745cdb889211f3197d042fe0889eb36749751e051cd4b1c3b855601afa0591"
+    },
+    {
+      "command": "make gate SEL4_SDK_VERSION=2.3.0",
+      "host": "sparky",
+      "result": "PASS exit 0",
+      "log_sha256": "f4b4679c907e3264da3c0247337debb5e90bde50bde9a641a5a80f15ebebffe9"
+    },
+    {
+      "command": "make gate-x86_64-userspace SEL4_SDK_VERSION=2.3.0 with the pinned firmware, kernel and initrd arguments retained in x86-virtio-firmware.json",
+      "host": "madmax Intel Linux nested KVM",
+      "result": "PASS exit 0; Linux ring3 initramfs syscall proof verified",
+      "log_sha256": "20b2a6e7dea7b827362d715e60dcf1dca15c577cc829f059ab71367c83b9ff59"
+    }
+  ],
+  "retained_directory": "build/evidence/x86-entry-dbe40aa",
+  "limitations": [
+    "The notification boundary is tested with instrumented host syscall functions using the SDK constants, not a target-injected service notification.",
+    "Current firmware still rejects unexpected notifications; canonical service wake handling is not implemented.",
+    "Intel userspace regression does not qualify virtio device traffic or lifecycle teardown."
+  ]
+}
