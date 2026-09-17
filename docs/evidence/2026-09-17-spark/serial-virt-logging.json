@@ -1,0 +1,31 @@
+{
+  "qualification": "Serial virtualizer diagnostics without UART service calls",
+  "runtime_revision": "95abc1449bf31ccacb19e1a5a098a1947e348f3e",
+  "host": "sparky aarch64 Linux",
+  "task": "task_ede60b058fc745d296bad77044a57420",
+  "tests": [
+    {
+      "command": "make -C kernel/agentos-root-task BUILD_DIR=/tmp/agentos-serial-virt-x86-sdk21 AGENTOS_ARCH=x86_64 AGENTOS_BOARD=x86_64_generic_vtx SEL4_SDK_VERSION=2.1.0 /tmp/agentos-serial-virt-x86-sdk21/serial_virt.elf",
+      "result": "PASS exit 0",
+      "log_sha256": "8cbce7bc665a51e1bd555b993ae5d8ed3126af13678ed0fa7b945ba60306da06",
+      "scope": "Production x86 serial_virt service compilation and link, not target execution"
+    },
+    {
+      "command": "make gate SEL4_SDK_VERSION=2.3.0",
+      "result": "PASS exit 0",
+      "log_sha256": "84b54ab24e3efb904f413a046efa65bb8c3a1a2fd670afb354483e3fd59a614f",
+      "scope": "Full Spark gate including ARM guest console traffic and serial_virt readiness/input/output messages through the log drain"
+    },
+    {
+      "command": "make test-operator-session SEL4_SDK_VERSION=2.3.0",
+      "result": "PASS exit 0",
+      "log_sha256": "23327cd4553593a59eb945acc67169aa14bba259471ea9449af8563c823b388d",
+      "scope": "Target serial queue fragmentation, invalid-line recovery, 128 exact reports after backpressure and public CLI comparison"
+    }
+  ],
+  "retained_directory": "build/evidence/serial-virt-logging-95abc14",
+  "limitations": [
+    "Runtime evidence is ARM-only. The x86 topology still does not instantiate serial_virt.",
+    "The generic logger's existing debug fallback remains on builds without log rings; no x86 physical console or device I/O claim is made."
+  ]
+}
