@@ -3200,12 +3200,12 @@ void root_task_main(const seL4_BootInfo *bi)
         if (seL4_MessageInfo_get_label(tag) == AOS_X86_VTX_PROOF_LABEL &&
             seL4_MessageInfo_get_length(tag) == 4u &&
 #ifdef AGENTOS_X86_FIRMWARE_RESET
-            status == AOS_X86_VTX_RESET_EXIT &&
-            reason == 10u && instruction_len == 2u &&
-            rip >= AOS_X86_FIRMWARE_BASE && rip <= 0xffffffffu) {
-            dbg_puts("[rt] x86 OVMF protected-mode execution verified\n");
+            status == AOS_X86_VTX_FIRMWARE_LONG &&
+            reason == 30u && rip <= 0xffffffffu) {
+            dbg_puts("[rt] x86 OVMF long-mode I/O exit verified\n");
             dbg_puts("[rt] firmware exit reason="); dbg_hex(reason);
-            dbg_puts(" linear RIP="); dbg_hex(rip); dbg_puts("\n");
+            dbg_puts(" linear RIP="); dbg_hex(rip);
+            dbg_puts(" qualification="); dbg_hex(instruction_len); dbg_puts("\n");
 #else
 #ifdef AGENTOS_X86_FIRMWARE_MODES
             status == AOS_X86_VTX_MODES_PASS &&

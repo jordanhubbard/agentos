@@ -2192,7 +2192,7 @@ fn wait_for_x86_vtx_proof(
     firmware_reset: bool,
 ) -> anyhow::Result<String> {
     let expected = if firmware_reset {
-        "[rt] x86 OVMF protected-mode execution verified"
+        "[rt] x86 OVMF long-mode I/O exit verified"
     } else if firmware_modes {
         "[rt] x86 VMX real protected long entry modes verified"
     } else {

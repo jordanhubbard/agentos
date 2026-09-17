@@ -1,8 +1,8 @@
 # x86 firmware bring-up
 
 The opt-in reset variant runs a real, externally supplied OVMF image under
-the seL4 VMM. It currently resumes the firmware's initial `MOV CR0,EAX`
-transition into unpaged protected mode and stops at the next CPUID exit.
+the seL4 VMM. It handles bootstrap CPU exits through the firmware's own
+protected- and long-mode transitions, then stops at the first long-mode I/O exit.
 This is firmware bring-up, not a completed UEFI boot or Linux qualification.
 
 ## Reproduce
@@ -31,22 +31,36 @@ Allocation failure aborts boot; this is not a runtime guest-create path and
 does not qualify capability reclamation or retry.
 
 The VMM starts at architectural reset address `0xfffffff0`, using the special
-high CS cache and unrestricted real-address entry. It accepts only the initial
-unpaged `MOV CR0,EAX` transition, updates CR0 and its read shadow, then resumes
-at the following instruction. The firmware executes its own far jump and
-segment setup. Success requires a subsequent two-byte CPUID exit inside the
-firmware region, with a flat 32-bit code segment. Unsupported exits stop with
-diagnostics; they are not skipped or reported as completed firmware boot.
+high CS cache and unrestricted real-address entry. It explicitly enables
+VM-entry EFER loading so all guest EFER bits use the supplied state. A bounded
+loop preserves all guest general registers across emulation and implements
+CPUID, EFER reads/writes, and MOV-to-CR0/CR4 transitions. Paging activation
+updates EFER.LMA and the IA-32e entry control together. Other exits stop with
+diagnostics; at most 1,024 exits are processed before stopping.
+
+The fixed bootstrap CPUID policy first checks the physical CPU for its
+required instruction and address-width baseline. It advertises one virtual
+processor, 36 physical/48 linear address bits, PAE, long mode, NX and the
+baseline floating-point/SSE facilities. It does not expose host identity or
+advertise APIC, VMX, XSAVE/AVX, MTRR, PAT, SEV or TDX. Unsupported leaves return
+zero. This is a bootstrap policy, not a qualified desktop CPU profile.
+
+Success now requires an I/O exit after CPUID handling, with EFER.LMA,
+CR0.PG and a 64-bit code segment. The pinned image reached a four-byte read
+of PCI configuration address port `0xcf8` at linear RIP `0xfffcdf76`.
+That I/O is observed but not emulated or forwarded to the host.
 
 The [upstream EDK II transition](https://github.com/tianocore/edk2/blob/edk2-stable202402/UefiCpuPkg/ResetVector/Vtf0/Ia16/Real16ToFlat32.asm)
 provides the source context for this early execution path. The
 [qualification receipt](evidence/2026-09-17-spark/ovmf-reset.json) records the
-actual image, source revisions and retained evidence.
+earlier reset/protected-mode evidence. The
+[long-mode receipt](evidence/2026-09-17-spark/ovmf-long-mode.json) records the
+current CPU-exit path and retained evidence.
 
 ## Remaining boot implementation
 
-CPUID policy and additional VM-exit handling must continue this execution
-into long mode and firmware initialization. UEFI also requires an emulated
+PCI configuration and additional device/VM-exit handling must continue this
+execution through firmware initialization. UEFI also requires an emulated
 machine description, generated ACPI and interrupt topology, boot media over
 canonical agentOS services, and actual Linux userspace evidence. The current
 read-only firmware mapping does not implement persistent UEFI variables.

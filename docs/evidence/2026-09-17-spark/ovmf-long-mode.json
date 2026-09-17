@@ -1,0 +1,40 @@
+{
+  "qualification": "OVMF CPU exits and firmware-driven long-mode entry",
+  "date": "2026-09-17",
+  "task": "task_e575c510a7c442b595eb635c33d9dc2c",
+  "firmware_sha256": "101afad5f520753224b60b9555df60add435cf50c7a82b781d7d7d8c60db7eb5",
+  "firmware_provenance": "ovmf-reset.json",
+  "intel": {
+    "host": "madmax",
+    "runtime_revision": "d0e0279c95bf1e2e17294f1222e07395bd3d53e1",
+    "command": "make gate-x86_64-firmware-reset SEL4_SDK_VERSION=2.3.0 X86_FIRMWARE_IMAGE=/tmp/agentos-ovmf-2024.02-2ubuntu0.9.fd X86_FIRMWARE_SHA256=101afad5f520753224b60b9555df60add435cf50c7a82b781d7d7d8c60db7eb5",
+    "result": "PASS",
+    "final_exit_reason": 30,
+    "final_linear_rip": "0xfffcdf76",
+    "io_qualification": "0x0cf8000b",
+    "io_operation": "four-byte read from PCI configuration address port 0xcf8",
+    "assertions": ["CPUID handled", "CS.L set and CS.D/B clear", "EFER.LMA set", "CR0.PG set"],
+    "log_sha256": "e5f31bdf87d880413d930bfe9992c4b30775ab7b185298673d10f85535ae467e",
+    "image_sha256": "9cd0944d1ccf3be6dce3d0d4f44fa4e98a4dc405d6922ca603e761ac60b65d6c",
+    "retained_directory": "/tmp/agentos-v04-intel-exits/build/evidence/ovmf-long-d0e0279"
+  },
+  "spark": {
+    "runtime_revision": "c4ca3a63c8a40efe9b3ff4c5774caad524fe3ae6",
+    "command": "make gate SEL4_SDK_VERSION=2.3.0 QEMU_TEST_SSH_PORT=12261",
+    "result": "PASS",
+    "host_cpu_policy_tests": "Baseline admission, missing required features, address-width rejection, advertised feature bounds and unsupported CPUID leaves",
+    "log_sha256": "d9be0779a1b260e9eec4d0028d13c374bdde49109c1b605c96dcfe71e78ced6d",
+    "last_gate_image_sha256": "ff7052bf4d9b3f31b77f389f23ec3d6b3f6e3a2e95288959f95b99f359f52634",
+    "retained_directory": "/tmp/agentos-v04-x86-exits/build/evidence/ovmf-exits-c4ca3a6"
+  },
+  "finding": "The first Intel run stopped at EFER write 0x101. Explicit VM-entry EFER loading was missing; d0e0279 installs the intended guest EFER state and the firmware reaches long-mode I/O.",
+  "revision_scope": "After c4ca3a6 only the opt-in firmware reset VM-entry control changes. The ordinary gate behavior and CPU host tests are unchanged. Later documentation commits do not alter runtime behavior.",
+  "limits": [
+    "PCI I/O is observed and stopped, not emulated or forwarded",
+    "No completed UEFI boot, ACPI installation or Linux userspace",
+    "No canonical x86 guest network, block or console qualification",
+    "Bootstrap CPU policy is not a desktop feature profile",
+    "No runtime reclamation or persistent UEFI variables",
+    "1024-exit budget bounds dispatch count, not guest execution time"
+  ]
+}
