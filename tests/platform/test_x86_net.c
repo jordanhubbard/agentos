@@ -16,6 +16,7 @@
 const char vmm_pd_name[] = "x86-net-test";
 static unsigned attachments, kicks;
 static bool reject_attach = true;
+static bool host_fixture;
 static const uintptr_t base = AOS_X86_VIRTIO_BASE + 2u*AOS_X86_VIRTIO_STRIDE;
 static _Alignas(4096) unsigned char ram[0x20000];
 static _Alignas(4096) unsigned char region[AOS_NET_SHMEM_SIZE];
@@ -38,10 +39,13 @@ void sel4_call(seL4_CPtr cap, const sel4_msg_t *request, sel4_msg_t *reply)
            attach.vmm_slot==NET_VIRT_VMM_SLOT_PRIMARY);
     attachments++;
     net_virt_attach_reply_t result={.status=reject_attach ? NET_VIRT_ERR_UNAVAILABLE : NET_VIRT_OK,
-        .version=NET_VIRT_CONTRACT_VERSION,.hw_state=NET_VIRT_HW_NONE};
+        .version=NET_VIRT_CONTRACT_VERSION,
+        .hw_state=host_fixture ? NET_VIRT_HW_NET_PD : NET_VIRT_HW_NONE};
     memset(reply,0,sizeof(*reply));
     reply->length=sizeof(result);
     memcpy(reply->data,&result,sizeof(result));
+    const uint8_t assigned_mac[6] = {0x52,0x54,0,0x12,0x34,0x56};
+    memcpy(reply->data+12,assigned_mac,sizeof(assigned_mac));
 }
 static void write_reg(unsigned offset, uint32_t value)
 { assert(aos_x86_virtio_access(base+offset,4,true,&value)); }
@@ -58,8 +62,10 @@ static void queue(unsigned index, unsigned address)
     write_reg(REG_VIRTIO_MMIO_QUEUE_USED_LOW,address+0x3000);
     write_reg(REG_VIRTIO_MMIO_QUEUE_READY,1);
 }
-int main(void)
+int main(int argc, char **argv)
 {
+    assert(argc==1 || (argc==2 && !strcmp(argv[1],"host-fixture")));
+    host_fixture=argc==2;
     aos_x86_ioapic_t ioapic;
     assert(aos_x86_ioapic_init(&ioapic,1));
     assert(aos_x86_virtio_init(&ioapic,ram,sizeof(ram)));
@@ -73,9 +79,11 @@ int main(void)
     assert(!aos_x86_virtio_contains(base));
     reject_attach=false;
     assert(aos_vmm_virtio_net_init_at(0,base,18,region) && attachments==2);
-    assert(!aos_vmm_virtio_net_host_ready()); /* loopback is not host NIC proof */
+    assert(aos_vmm_virtio_net_host_ready()==host_fixture);
+    assert(!aos_vmm_virtio_net_guest_io_completed());
     assert(read_reg(REG_VIRTIO_MMIO_DEVICE_ID)==VIRTIO_DEVICE_ID_NET);
-    assert(read_reg(0x100)==2 && (read_reg(0x104)&0xffff)==0x100);
+    assert(read_reg(0x100)==(host_fixture ? 0x12005452u : 2u));
+    assert((read_reg(0x104)&0xffff)==(host_fixture ? 0x5634u : 0x100u));
     write_reg(REG_VIRTIO_MMIO_STATUS,1); write_reg(REG_VIRTIO_MMIO_STATUS,3);
     write_reg(REG_VIRTIO_MMIO_DRIVER_FEATURES_SEL,0);
     write_reg(REG_VIRTIO_MMIO_DRIVER_FEATURES,(1u<<5)|(1u<<15));
@@ -122,6 +130,7 @@ int main(void)
     assert(!memcmp(ram+0x1100c,packet,sizeof(packet)));
     assert(ioapic.asserted==(1u<<18));
     assert(!aos_net_queue_length(client.rx_active));
+    assert(aos_vmm_virtio_net_guest_io_completed()==host_fixture);
     write_reg(REG_VIRTIO_MMIO_INTERRUPT_ACK,1);
     assert(!ioapic.asserted);
     puts("PASS: network adapter placement and exact TX/RX through x86 MMIO, canonical queues and IOAPIC");

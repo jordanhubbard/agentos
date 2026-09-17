@@ -1,0 +1,96 @@
+{
+  "qualification": "Intel Linux guest Ethernet packet roundtrip through canonical PDs",
+  "runtime_revision": "d3540a39ee226e14aff3dbcea6c7818655ef111e",
+  "sdk_version": "2.3.0",
+  "checks": [
+    {
+      "host": "Spark ARM64",
+      "revision": "4c58f6fafbb4d8533e5bde5f5e6501622371c17c",
+      "command": "make test-x86-acpi-aml test-x86-net-host test-x86-firmware-build x86-userspace-initramfs SEL4_SDK_VERSION=2.3.0 IASL=/tmp/agentos-acpica-tools/extracted/usr/bin/iasl ACPIEXEC=/tmp/agentos-acpica-tools/extracted/usr/bin/acpiexec",
+      "result": "PASS",
+      "log": "build/evidence/x86-network-packets/focused.log",
+      "sha256": "fe73a9d561ab57fed5f2f0bdb5b4d274872e892e013654666ac74587d67f9d0a"
+    },
+    {
+      "host": "Spark ARM64",
+      "command": "make test-x86-net-host test-x86-firmware-build SEL4_SDK_VERSION=2.3.0",
+      "result": "PASS",
+      "log": "build/evidence/x86-network-packets/fix-build.log",
+      "sha256": "0cf4fdd5e75553d3a98660710c2e0fd764970dadad1b94122bc7b113103fb75f"
+    },
+    {
+      "host": "Spark ARM64",
+      "command": "make gate SEL4_SDK_VERSION=2.3.0",
+      "result": "PASS",
+      "log": "build/evidence/x86-network-packets/gate-fixed.log",
+      "sha256": "e35a090fcb9e22a84464de86d340590fd23caa1c8205f3909517870d803d76ac"
+    },
+    {
+      "host": "madmax Intel Linux via puck.local",
+      "command": "make gate-x86_64-storage SEL4_SDK_VERSION=2.3.0 X86_FIRMWARE_IMAGE=/tmp/agentos-ovmf-2024.02-2ubuntu0.9.fd X86_FIRMWARE_SHA256=101afad5f520753224b60b9555df60add435cf50c7a82b781d7d7d8c60db7eb5 X86_BOOT_KERNEL=/tmp/agentos-linux-7.0.0-30.efi X86_BOOT_KERNEL_SHA256=0ad39b13e289e1a5cf806d14541ac8f221eefe849017f5915e0846917ed67785",
+      "result": "PASS",
+      "log": "build/evidence/x86-network-packets/intel-fixed.log",
+      "sha256": "a3fd8e372ec69755fc32e1b410b24678a19ebef4e34161cf0826c22e6e83b0c2"
+    }
+  ],
+  "captures": [
+    {
+      "phase": "write",
+      "path": "build/evidence/x86-network-packets/write.pcap",
+      "remote_path": "/tmp/agentos-v04-intel-discovery/build/tmp/agentos-qemu-hTKDWE.pcap",
+      "sha256": "7f58c093d516d9e2370dbfca323bf7bb29a50ab0225f890d0b7c39c49bac2a68"
+    },
+    {
+      "phase": "verify",
+      "path": "build/evidence/x86-network-packets/verify.pcap",
+      "remote_path": "/tmp/agentos-v04-intel-discovery/build/tmp/agentos-qemu-CAvDUG.pcap",
+      "sha256": "204905cc8e800d9e7ae694a463b958c102cc200bf64d2ce5bd9d7ce1fb097f78"
+    }
+  ],
+  "scope": [
+    "Generated guest ACPI enumerates VNET at 0xf0002000, GSI 18, UID 2. AML roundtrip validation passed; that AML implementation is unchanged from the focused revision.",
+    "Linux PID 1 verifies eth0 MAC 52:54:00:12:34:56, raises the interface, sends a 42-byte ARP request and compares all 42 reply protocol bytes under a 20-second receive bound. Ethernet padding is allowed.",
+    "Both Intel cold boots passed guest packet, console, userspace and block checks. The full-disk comparison also passed after write/fsync and a fresh platform boot.",
+    "Both NIC captures show the broadcast request for 10.0.2.2 from 10.0.2.15 and a reply from gateway MAC 52:55:0a:00:02:02 to the guest MAC.",
+    "A PCI raw-send admission regression test failed before the IRQ guard correction and passed afterward. Host admission tests omit device I/O; Intel boot proofs supply that evidence.",
+    "This does not qualify IP configuration, DHCP, SSH, Internet connectivity, sustained throughput, receive latency, multiple guests or the final Debian baseline."
+  ],
+  "intel_receipt": {
+    "disk": "/tmp/agentos-v04-intel-discovery/build/tmp/x86-storage-ShsxyA/disk.img",
+    "phases": [
+      {
+        "artifacts": {
+          "agentos.img": {
+            "path": "/tmp/agentos-v04-intel-discovery/build/tmp/x86-storage-ShsxyA/write/agentos.img",
+            "sha256": "c84bfc525a7b5e404d117948f332c7958d1ed197432c433eec164900d398f250"
+          },
+          "root_task.elf": {
+            "path": "/tmp/agentos-v04-intel-discovery/build/tmp/x86-storage-ShsxyA/write/root_task.elf",
+            "sha256": "e30258c2e759c3e5623cbe96151e150523756ca32e735a5c4d8ac977ec131cd2"
+          }
+        },
+        "disk_sha256": "e5617c82288dc536b1b6d18642aa98b33546a26d53dd01626da22b8f6976865f",
+        "initrd_sha256": "9fc6592f3b1d95f6de4b302c42340de8efde12ed413c7444171d9d915aa37139",
+        "phase": "write",
+        "result": "PASS"
+      },
+      {
+        "artifacts": {
+          "agentos.img": {
+            "path": "/tmp/agentos-v04-intel-discovery/build/tmp/x86-storage-ShsxyA/verify/agentos.img",
+            "sha256": "75c8213877917c8191bd1c57438630a385e241c18e1602022a37e41b30a3011b"
+          },
+          "root_task.elf": {
+            "path": "/tmp/agentos-v04-intel-discovery/build/tmp/x86-storage-ShsxyA/verify/root_task.elf",
+            "sha256": "ca04f32b72742f75dc3d38000c2ad750eb9d40cab6ad37924780ceb12bdf2f01"
+          }
+        },
+        "disk_sha256": "e5617c82288dc536b1b6d18642aa98b33546a26d53dd01626da22b8f6976865f",
+        "initrd_sha256": "d799e0bd693322a36c6430ed19d3d1f37e2e4f026dc11fbfb95a779233a3b33d",
+        "phase": "verify",
+        "result": "PASS"
+      }
+    ],
+    "scope": "Single guest, two complete platform cold boots; no concurrent isolation or guest lifecycle reset claim"
+  }
+}

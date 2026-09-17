@@ -137,7 +137,7 @@ static void io_gas(uint8_t *p, unsigned width, unsigned access, unsigned port)
 bool aos_x86_acpi_bundle_init(aos_x86_acpi_bundle_t *bundle)
 {
     if (!bundle) return false;
-    enum { FACS=0, DSDT=64, DSDT_BYTES=184, FADT=DSDT+DSDT_BYTES,
+    enum { FACS=0, DSDT=64, DSDT_BYTES=261, FADT=DSDT+DSDT_BYTES,
            MADT=FADT+276, SSDT=MADT+64, RSDT=SSDT+73, XSDT=RSDT+48 };
     _Static_assert(XSDT + 60 == AOS_X86_ACPI_TABLE_BYTES, "ACPI bundle size");
     const aos_x86_acpi_topology_t t={.lapic_gpa=AOS_X86_APIC_BASE,
@@ -146,29 +146,29 @@ bool aos_x86_acpi_bundle_init(aos_x86_acpi_bundle_t *bundle)
     memset(bundle,0,sizeof(*bundle));
     uint8_t *b=bundle->tables;
     memcpy(b+FACS,"FACS",4); le32(b+FACS+4,64); b[FACS+32]=2;
-    /* Scope(_SB) Device(VCON/VBLK): LNRO0005, unique UID, coherent DMA, and a
+    /* Scope(_SB) Device(VCON/VBLK/VNET): LNRO0005, unique UID, coherent DMA, and a
      * fixed read/write MMIO resource with one level/high exclusive GSI.
      * These describe VMM-emulated devices, never host registers. Each Scope
      * reopens the same namespace, so its package length stays independent. */
     static const uint8_t device_aml[] = {
-        0x10,0x49,0x04,'_','S','B','_',0x5b,0x82,0x41,0x04,'V','C','O','N',
+        0x10,0x4a,0x04,'_','S','B','_',0x5b,0x82,0x42,0x04,'V','C','O','N',
         0x08,'_','H','I','D',0x0d,'L','N','R','O','0','0','0','5',0,
-        0x08,'_','U','I','D',0,0x08,'_','C','C','A',1,
+        0x08,'_','U','I','D',0x0a,0,0x08,'_','C','C','A',1,
         0x08,'_','C','R','S',0x11,0x1a,0x0a,0x17,
         0x86,9,0,1,0,0,0,0,0,0,0,0,
         0x89,6,0,1,1,0,0,0,0,0x79,0
     };
-    _Static_assert(sizeof(device_aml)==74, "virtio DSDT device AML size");
+    _Static_assert(sizeof(device_aml)==75, "virtio DSDT device AML size");
     header(b+DSDT,DSDT_BYTES,"DSDT",2,"AOSDSDT ");
-    const char *names[] = {"VCON", "VBLK"};
-    for (unsigned i = 0; i < 2; i++) {
+    const char *names[] = {"VCON", "VBLK", "VNET"};
+    for (unsigned i = 0; i < 3; i++) {
         uint8_t *d = b + DSDT + 36u + i * sizeof(device_aml);
         memcpy(d, device_aml, sizeof(device_aml));
         memcpy(d + 11u, names[i], 4u);
-        d[35] = (uint8_t)i; /* AML ZeroOp / OneOp, not a byte immediate */
-        le32(d + 55u, AOS_X86_VIRTIO_BASE + i * AOS_X86_VIRTIO_STRIDE);
-        le32(d + 59u, AOS_X86_VIRTIO_STRIDE);
-        le32(d + 68u, AOS_X86_VIRTIO_GSI_BASE + i);
+        d[36] = (uint8_t)i; /* BytePrefix permits UID 2 as an integer. */
+        le32(d + 56u, AOS_X86_VIRTIO_BASE + i * AOS_X86_VIRTIO_STRIDE);
+        le32(d + 60u, AOS_X86_VIRTIO_STRIDE);
+        le32(d + 69u, AOS_X86_VIRTIO_GSI_BASE + i);
     }
     checksum(b+DSDT,DSDT_BYTES);
     header(b+FADT,276,"FACP",6,"AOSFADT ");

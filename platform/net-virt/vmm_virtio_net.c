@@ -43,10 +43,29 @@ static int                      g_tx_kicked;
 static uint32_t                 g_rx_events;
 static uintptr_t                g_guest_base;
 static unsigned                 g_virq;
+static bool                     g_tx_consumed;
+static uint8_t                  g_host_mac[6];
 
 bool aos_vmm_virtio_net_host_ready(void)
 {
     return g_aos_net_ready && g_net_virt_attached && g_net_virt_hw == 1u;
+}
+
+bool aos_vmm_virtio_net_guest_io_completed(void)
+{
+    return aos_vmm_virtio_net_host_ready() &&
+        (g_aos_net.virtio_device.regs.Status & VIRTIO_CONFIG_S_DRIVER_OK) &&
+        g_tx_consumed && g_rx_events != 0u;
+}
+
+uint32_t aos_vmm_virtio_net_diagnostic(void)
+{
+    if (!g_aos_net_ready) return 0;
+    return (g_aos_net.virtio_device.regs.Status & 255u) |
+        ((net_queue_length(g_tx.active) & 255u) << 8) |
+        ((uint32_t)g_tx_consumed << 16) | ((uint32_t)!!g_tx_kicked << 17) |
+        ((uint32_t)!!g_rx_events << 18) |
+        ((net_queue_length(g_rx.active) & 255u) << 24);
 }
 
 static uint32_t net_rd32(const uint8_t *p, uint32_t off)
@@ -89,6 +108,7 @@ static void net_virt_attach(uint32_t client_id)
         return;
     }
     g_net_virt_hw = net_rd32(rep.data, 8u);
+    for (unsigned i = 0; i < sizeof(g_host_mac); i++) g_host_mac[i] = rep.data[12u + i];
     g_net_virt_attached = 1;
     LOG_VMM("emulated virtio-net: attached to net_virt contract v%u client %u hw=%u\n",
             (unsigned)net_rd32(rep.data, 4u), (unsigned)client_id,
@@ -147,6 +167,7 @@ static void net_virt_service(void)
         }
     } else if (g_tx_kicked) {
         g_tx_kicked = 0;
+        g_tx_consumed = true;
         net_mark_pumped(1u, "TX consumed");
     }
     if (rx_n > 0u && net_require_signal_free(&g_rx) &&
@@ -204,6 +225,8 @@ bool aos_vmm_virtio_net_init_at(uint32_t client_id, uintptr_t guest_base,
     mac[3] = AOS_VIRTIO_NET_MAC3;
     mac[4] = AOS_VIRTIO_NET_MAC4;
     mac[5] = (uint8_t)(AOS_VIRTIO_NET_MAC5 + client_id);
+    if (g_net_virt_hw == NET_VIRT_HW_NET_PD)
+        for (unsigned i = 0; i < sizeof(g_host_mac); i++) mac[i] = g_host_mac[i];
 
     if (!virtio_mmio_net_init(&g_aos_net,
                               guest_base,
@@ -249,11 +272,11 @@ void aos_vmm_virtio_net_after_fault(void)
         g_aos_net_driver_ok = 1;
         LOG_VMM("emulated virtio-net: guest DRIVER_OK virq %u MAC %02x:%02x:%02x:%02x:%02x:%02x\n",
                 g_virq,
-                (unsigned)AOS_VIRTIO_NET_MAC0,
-                (unsigned)AOS_VIRTIO_NET_MAC1,
-                (unsigned)AOS_VIRTIO_NET_MAC2,
-                (unsigned)AOS_VIRTIO_NET_MAC3,
-                (unsigned)AOS_VIRTIO_NET_MAC4,
+                (unsigned)g_aos_net.config.mac[0],
+                (unsigned)g_aos_net.config.mac[1],
+                (unsigned)g_aos_net.config.mac[2],
+                (unsigned)g_aos_net.config.mac[3],
+                (unsigned)g_aos_net.config.mac[4],
                 (unsigned)g_aos_net.config.mac[5]);
     }
 

@@ -179,6 +179,18 @@ int main(void)
                     memcmp(arp + 22u, iface_mac, 6u) == 0,
                     "QEMU egress rewrites Ethernet and ARP source identities");
 
-    printf("1..11\n");
+    /* Host mode omits device I/O; this checks send admission and accounting.
+     * A PCI binding must not be rejected merely because it uses no IRQ. */
+    sel4_msg_t sent = {0};
+    data_wr32(sent.data, 4, sizeof(arp));
+    uint32_t tx_before = clients[healthy].tx_pkts;
+    hw_present = true;
+    net_host_transport.pci = true;
+    failed += check(handle_net_send_nic(&clients[healthy], healthy, &sent) == SEL4_ERR_OK &&
+                    clients[healthy].tx_pkts == tx_before + 1u &&
+                    data_rd32(sent.data, 0) == NET_OK,
+                    "initialized PCI NIC accepts a bounded raw send");
+
+    printf("1..12\n");
     return failed == 0 ? 0 : 1;
 }

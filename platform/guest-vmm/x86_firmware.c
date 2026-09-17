@@ -394,6 +394,7 @@ void aos_x86_firmware_run(seL4_CPtr ep, aos_x86_vmenter_return_t returned)
                 seL4_Word cs=read_field(ep,0x0802u);
                 bool passed=serial_wake_received && aos_vmm_virtio_console_driver_ready() &&
                     aos_vmm_virtio_blk_guest_io_completed() &&
+                    aos_vmm_virtio_net_guest_io_completed() &&
                     regs.ebx == 1u && regs.ecx == AOS_X86_USERSPACE_INIT &&
                     regs.edx == AOS_X86_USERSPACE_PASS && (cs & 3u) == 3u &&
                     ((read_field(ep,CS_RIGHTS) >> 5) & 3u) == 3u &&
@@ -402,7 +403,8 @@ void aos_x86_firmware_run(seL4_CPtr ep, aos_x86_vmenter_return_t returned)
                     boot_reads[0] && boot_reads[1];
                 stop(ep,passed ? AOS_X86_VTX_USERSPACE_PASS : AOS_X86_VTX_PROOF_FAIL,
                      reason,rip,passed ? (cs & 3u) :
-                         (regs.edx == AOS_X86_USERSPACE_PASS ? 0x100u : regs.edx));
+                         ((regs.edx == AOS_X86_USERSPACE_PASS ? 0x100u : regs.edx) |
+                          ((uint64_t)aos_vmm_virtio_net_diagnostic() << 32)));
             }
 #endif
             aos_x86_cpuid_t r = aos_x86_cpu_id((uint32_t)regs.eax, (uint32_t)regs.ecx,hz);
