@@ -47,10 +47,18 @@ diagnostics; at most 65,536 exits are processed before stopping.
 
 The fixed bootstrap CPUID policy first checks the physical CPU for its
 required instruction and address-width baseline. It advertises one virtual
-processor, 36 physical/48 linear address bits, PAE, long mode, NX and the
-baseline floating-point/SSE facilities. It does not expose host identity or
-advertise APIC, VMX, XSAVE/AVX, MTRR, PAT, SEV or TDX. Unsupported leaves return
+processor, 36 physical/48 linear address bits, PAE, long mode, NX, SYSCALL,
+the private local xAPIC and baseline floating-point/SSE facilities.
+It does not expose host identity or advertise VMX, XSAVE/AVX, MTRR, PAT,
+SEV or TDX. Unsupported leaves return
 zero. This is a bootstrap policy, not a qualified desktop CPU profile.
+
+The admitted invariant TSC is exposed through CPUID leaf `0x15`, with a
+1:1 TSC/crystal ratio matching the private APIC bus clock. Leaf `0x16` supplies
+nominal virtual CPU MHz; it makes no maximum or bus-frequency claim. The
+clock profile requires 1 MHz through `UINT32_MAX` Hz, so crystal Hz fits its
+architectural field without truncation. Unknown or out-of-profile clocks
+fail admission. The invariant-TSC bit is supplied only for an admitted clock.
 
 Scalar I/O now uses private PCI configuration state for an i440FX host bridge
 and PIIX4 power-management function. The PM timer requires enabled decode and
@@ -86,7 +94,13 @@ asynchronous wakeups, using the rate obtained through the VCPU capability.
 Private IRR/ISR state retains pending vectors, applies priority and handles
 EOI. Injection checks IF and STI/MOVSS blocking, requests interrupt-window
 exits when needed, and clears halt state only for an eligible interrupt.
-IPIs, other LVT sources, base relocation and x2APIC are not implemented.
+Fixed edge-triggered IPIs route only to the sole provisioned vCPU through
+the same private IRR/ISR state. Physical, flat/cluster logical and shorthand
+destinations are supported; absent destinations deliver nothing. NMI/INIT/SIPI
+delivery, base relocation and x2APIC remain rejected. LDR/DFR, ESR clearing
+and thermal/performance/error LVT readback are private controller state;
+there are no connected thermal or performance sources. Host tests cover
+these paths; dedicated guest IPI/handler assertions remain required.
 Live divider changes preserve
 the remaining countdown and restart the fractional prescaler phase. Expiries
 while masked do not create pending interrupts; unmasked expiries are retained.

@@ -400,9 +400,15 @@ The subsequent [PM1 model](x86-pm.md) retains private mode/control and polled
 timer status, without additional caps or hardware authority. SCI enables,
 SMI and sleep requests are rejected; this is not a power-management lifecycle
 implementation or a proof of guest ACPI table installation.
-PIC unmasking and unsupported device accesses stop
-explicitly. This remains firmware bring-up; it does not prove UEFI boot,
-Linux, runtime resource management or persistent firmware variables.
+There is no legacy PIC or ISA interrupt source. Its absent command/mask
+ports return all ones and discard byte writes without mutable IRQ state.
+Other widths and unknown ports remain rejected. CPUID now describes the
+admitted invariant clock and private local xAPIC. Fixed edge IPIs can set
+pending bits only in the sole provisioned vCPU's private controller; no
+host APIC access, AP creation or additional capability is involved.
+Linux kernel entry is observed, but userspace, dedicated guest interrupt
+handler proofs, runtime resource management and persistent firmware variables
+remain unqualified.
 
 ### Read-only boot inspection
 

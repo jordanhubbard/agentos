@@ -110,6 +110,17 @@ driver initialization, since QemuKernelLoaderFsDxe fetches blobs before BDS
 loads Linux. That diagnostic selection was removed; normal bounded wait
 snapshots remain. No exit limit or test success condition was relaxed.
 
+The [clock and LAPIC receipt](evidence/2026-09-17-spark/ovmf-linux-clock.json)
+records further progress at `7f61656`: architectural clock discovery passes
+the initial PIT calibration, absent-PIC probes select no writable legacy
+controller, and Linux proceeds through local APIC setup. The next rejected
+operation is still a PIT request, now programming channel 0 in periodic mode
+(`0x34` to port `0x43`), not calibration or shutdown. Do not discard it as an
+unused-device write. Linux's `apic_needs_pit` also requires configured
+interrupt topology and the always-running APIC-timer declaration; generated
+ACPI and the complete guest timer contract are the next integration step.
+The 32-vCPU-capable ACPI serializers in PR #178 remain separate and host-only.
+
 `make test-x86-config-host test-x86-string-host` checks exact blob sizes and
 bytes, data beyond the old 80-byte stream boundary, reselect/EOF behavior,
 per-guest isolation, invalid descriptor rollback, bounded cross-page transfers,
