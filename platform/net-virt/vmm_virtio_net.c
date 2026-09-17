@@ -58,6 +58,16 @@ bool aos_vmm_virtio_net_guest_io_completed(void)
         g_tx_consumed && g_rx_events != 0u;
 }
 
+uint32_t aos_vmm_virtio_net_diagnostic(void)
+{
+    if (!g_aos_net_ready) return 0;
+    return (g_aos_net.virtio_device.regs.Status & 255u) |
+        ((net_queue_length(g_tx.active) & 255u) << 8) |
+        ((uint32_t)g_tx_consumed << 16) | ((uint32_t)!!g_tx_kicked << 17) |
+        ((uint32_t)!!g_rx_events << 18) |
+        ((net_queue_length(g_rx.active) & 255u) << 24);
+}
+
 static uint32_t net_rd32(const uint8_t *p, uint32_t off)
 {
     return (uint32_t)p[off] |

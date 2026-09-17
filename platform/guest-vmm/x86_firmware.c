@@ -403,7 +403,8 @@ void aos_x86_firmware_run(seL4_CPtr ep, aos_x86_vmenter_return_t returned)
                     boot_reads[0] && boot_reads[1];
                 stop(ep,passed ? AOS_X86_VTX_USERSPACE_PASS : AOS_X86_VTX_PROOF_FAIL,
                      reason,rip,passed ? (cs & 3u) :
-                         (regs.edx == AOS_X86_USERSPACE_PASS ? 0x100u : regs.edx));
+                         ((regs.edx == AOS_X86_USERSPACE_PASS ? 0x100u : regs.edx) |
+                          ((uint64_t)aos_vmm_virtio_net_diagnostic() << 32)));
             }
 #endif
             aos_x86_cpuid_t r = aos_x86_cpu_id((uint32_t)regs.eax, (uint32_t)regs.ecx,hz);
