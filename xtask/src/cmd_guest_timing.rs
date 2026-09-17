@@ -1,5 +1,6 @@
 //! Compare authenticated guest boot timing receipts without making a threshold claim.
 
+use crate::cmd_guest_profile::{host_profile_plan, resolve_alias};
 use anyhow::{ensure, Context, Result};
 use clap::Args;
 use serde::{Deserialize, Serialize};
@@ -195,8 +196,14 @@ fn validate_receipt(receipt: &BootTimingReceipt, expected_profile: &str) -> Resu
         "receipt has a different timing boundary"
     );
     ensure!(receipt.elapsed_ms > 0, "receipt has a zero elapsed time");
+    // Older receipts used the CLI alias; the declarative profile executor
+    // emits the resolved profile ID. Resolve the same data as the producer
+    // instead of maintaining a second hard-coded distribution-ID mapping.
+    let profile_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../guest-profiles");
+    let profile_path = resolve_alias(&profile_root, expected_profile)?;
+    let profile = host_profile_plan(&profile_root, &profile_path)?;
     ensure!(
-        receipt.profile == expected_profile,
+        receipt.profile == expected_profile || receipt.profile == profile.id,
         "unexpected guest profile"
     );
     ensure!(!receipt.board.trim().is_empty(), "receipt has no board");
@@ -345,6 +352,60 @@ mod tests {
             output["performance_threshold"],
             "none; this receipt records measurements and does not pass or fail a performance threshold"
         );
+    }
+
+    #[test]
+    fn comparison_accepts_producer_profile_ids_and_preserves_receipt_hashes() {
+        let directory = tempfile::tempdir().unwrap();
+        let profile_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../guest-profiles");
+        let ubuntu_id = host_profile_plan(
+            &profile_root,
+            &resolve_alias(&profile_root, "ubuntu-live").unwrap(),
+        )
+        .unwrap()
+        .id;
+        let debian_id = host_profile_plan(
+            &profile_root,
+            &resolve_alias(&profile_root, "debian").unwrap(),
+        )
+        .unwrap()
+        .id;
+        let ubuntu_path = directory.path().join("ubuntu.json");
+        let debian_path = directory.path().join("debian.json");
+        let output_path = directory.path().join("comparison.json");
+        write_receipt(&ubuntu_path, receipt(&ubuntu_id));
+        write_receipt(&debian_path, receipt(&debian_id));
+        let ubuntu_bytes = fs::read(&ubuntu_path).unwrap();
+        let debian_bytes = fs::read(&debian_path).unwrap();
+        run(&GuestTimingCompareArgs {
+            ubuntu_receipt: ubuntu_path.clone(),
+            debian_receipt: debian_path.clone(),
+            output: output_path.clone(),
+        })
+        .unwrap();
+        let output: serde_json::Value =
+            serde_json::from_slice(&fs::read(output_path).unwrap()).unwrap();
+        assert_eq!(output["ubuntu"]["profile"], ubuntu_id);
+        assert_eq!(output["debian"]["profile"], debian_id);
+        assert_eq!(
+            output["ubuntu"]["receipt_sha256"],
+            hex_digest(&ubuntu_bytes)
+        );
+        assert_eq!(
+            output["debian"]["receipt_sha256"],
+            hex_digest(&debian_bytes)
+        );
+        assert_eq!(fs::read(&ubuntu_path).unwrap(), ubuntu_bytes);
+        assert_eq!(fs::read(&debian_path).unwrap(), debian_bytes);
+
+        write_receipt(&debian_path, receipt(&ubuntu_id));
+        let error = run(&GuestTimingCompareArgs {
+            ubuntu_receipt: ubuntu_path,
+            debian_receipt: debian_path,
+            output: directory.path().join("wrong-profile.json"),
+        })
+        .unwrap_err();
+        assert!(format!("{error:#}").contains("unexpected guest profile"));
     }
 
     #[test]

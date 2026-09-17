@@ -1,0 +1,8 @@
+{
+  "first_boot": true,
+  "profile": "debian",
+  "schema": "agentos.persistent_boot.v1",
+  "scope": "two QEMU cold boots; not guest-slot recreation or orderly shutdown",
+  "second_boot": true,
+  "status": "pass"
+}
