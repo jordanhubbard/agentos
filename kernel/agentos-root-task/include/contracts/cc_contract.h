@@ -94,6 +94,18 @@
 
 #define CC_PD_CH_CONTROLLER  CH_CC_PD
 
+/* MSG_CC_INPUT_SUBMIT, GUEST_INPUT images only:
+ * MR1=public live guest handle, MR2=MR3=0. Shmem contains the 544-byte
+ * aos_input_request_t from platform/input.h; id=client=reserved=0. CC resolves
+ * the public handle to a private client and assigns a request ID. The service
+ * validates the complete keyboard/pointer batch and accepts all or none.
+ * Reply MR0=CC_OK for a valid service response, MR1=16, MR2=input status,
+ * MR3=version 1; shmem contains aos_input_response_t with id=0. WOULD_BLOCK
+ * accepts zero events and allows a retry. Transport failure is not an input
+ * acknowledgment and must not be retried blindly (key transitions matter).
+ * Absent service: CC_ERR_RELAY_FAULT; invalid/dead handle: CC_ERR_BAD_HANDLE.
+ * This uses the existing privileged CC transport, not a new credential API. */
+
 /* ─── Configuration ──────────────────────────────────────────────────────── */
 #define CC_MAX_SESSIONS         8u
 #define CC_SESSION_TIMEOUT_TICKS  5000u  /* ~50 seconds at 100 Hz */

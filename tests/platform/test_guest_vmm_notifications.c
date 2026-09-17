@@ -1,4 +1,5 @@
 #include <platform/guest_vmm_loop.h>
+#include <platform/input.h>
 #include <contracts/serial_virt_contract.h>
 #include <contracts/blk_virt_contract.h>
 #include <contracts/guest_contract.h>
@@ -51,6 +52,14 @@ int main(void)
     dispatch(0, MSG_GUEST_CREATE);
     check(rpcs == 1 && sends == 1 && !notifications && !faults,
           "real lifecycle IPC retains its normal reply path");
+    dispatch(AOS_INPUT_VMM_WAKE_BADGE, MSG_GUEST_DESTROY);
+    check(notifications == 1 && !rpcs && !faults && !sends &&
+          observed_badge == AOS_INPUT_VMM_WAKE_BADGE,
+          "input wake cannot execute a stale lifecycle RPC");
+    dispatch(AOS_INPUT_VMM_WAKE_BADGE | SERIAL_VIRT_VMM_WAKE_BADGE, 7);
+    check(notifications == 1 && !rpcs && !faults && !sends &&
+          observed_badge == (AOS_INPUT_VMM_WAKE_BADGE | SERIAL_VIRT_VMM_WAKE_BADGE),
+          "coalesced input and serial notifications retain both bits");
     dispatch(BLK_VIRT_VMM_WAKE_BADGE, MSG_GUEST_DESTROY);
     check(notifications == 1 && !rpcs && !faults && !sends &&
           observed_badge == BLK_VIRT_VMM_WAKE_BADGE,

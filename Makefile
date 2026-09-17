@@ -957,6 +957,10 @@ test-ubuntu-virtio:
 # serial login while requiring real I/O through every agentOS VirtIO class.
 .PHONY: test-debian-live
 .PHONY: test-guest-gpu
+.PHONY: test-guest-input
+test-guest-input:
+	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os debian-input --timeout-secs $(QEMU_TEST_TIMEOUT) --assert-live --assert-agentos-virtio --ssh-port $(QEMU_TEST_SSH_PORT)
+
 test-guest-gpu:
 	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os debian-gpu --timeout-secs $(QEMU_TEST_TIMEOUT) --assert-live --assert-agentos-virtio --ssh-port $(QEMU_TEST_GPU_SSH_PORT)
 

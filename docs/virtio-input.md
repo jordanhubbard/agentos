@@ -39,9 +39,28 @@ its output copy failed; it does not clear the live virtualizer queue. The
 source callback and drains run serially in the VMM. Device behavior follows
 [VirtIO 1.2 section 5.8](https://docs.oasis-open.org/virtio/virtio/v1.2/virtio-v1.2.html).
 
-The service and backend are currently host-tested only. Root mappings,
-persistent notifications, the target input PD, CC routing, and guest
-enumeration/delivery proof remain required.
+The `GUEST_INPUT` AArch64 image wires `input_virt` to root-provisioned pages:
+each VMM receives its own keyboard/pointer event page, CC receives a separate
+frontend page, and only the virtualizer maps all three. VMM wakeups use a
+dedicated bit on their bound notification; CC and the service have separate
+wait objects. All peer notification caps are send-only. The service owns no
+device frame or IRQ.
+
+Profiles selecting `input` initialize two faulting MMIO devices at guest IPAs
+`0x0a050000` and `0x0a060000`, with virtual IRQs 55 and 56. Device initialization
+fails closed if the backend is absent or fails. `debian-input.toml` selects
+this path independently of GPU support. `make test-guest-input` requires both
+Linux input device names as part of the live guest probe.
+
+`MSG_CC_INPUT_SUBMIT` accepts a public guest handle and a complete event batch.
+CC resolves the handle before passing a private client index to the service,
+validates the returned count/status, and reports whole-batch backpressure.
+The exact wire contract is in `contracts/cc_contract.h`. A failed transport
+must not cause blind retries of stateful key/button transitions.
+
+The target variant builds and the host tests pass. Target enumeration,
+event delivery through Linux evdev, and mapping-isolation proofs remain
+required; this implementation is not yet qualified as working guest input.
 The common MMIO dispatcher has host regression coverage for all four byte
 lanes of device configuration: input's selector and subselector are separate
 byte fields. Reset also clears interrupt status before invoking backend reset,

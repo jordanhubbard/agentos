@@ -52,6 +52,16 @@
 #include <platform/blk_host_layout.h> /* host block MMIO/shared DMA layout       */
 #include <platform/blk_layout.h>      /* shared sDDF block region (VMMs + blk_virt) */
 #include <platform/serial_virt_layout.h>
+#ifdef AGENTOS_GUEST_INPUT
+#include <platform/input.h>
+#define INPUT_PEERS (AOS_INPUT_CLIENTS + 1u)
+static seL4_CPtr g_input_frames[INPUT_PEERS];
+/* CC and service wait independently; VMM input wakes use their bound objects. */
+static seL4_CPtr g_input_notify[2];
+_Static_assert(PD_CNODE_SLOT_INPUT_WAIT > PD_CNODE_SLOT_FB_PEER_NOTIFY + 2u &&
+               PD_CNODE_SLOT_INPUT_PEER_NOTIFY + INPUT_PEERS <= PD_IRQHANDLER_SLOT_BASE,
+               "input caps must not overlap framebuffer or IRQ slots");
+#endif
 #if defined(AGENTOS_FRAMEBUFFER_TEST) || defined(AGENTOS_GUEST_GRAPHICS)
 #define AGENTOS_FRAMEBUFFER_ENABLED 1
 #include <platform/framebuffer.h>
@@ -1846,6 +1856,11 @@ void root_task_main(const seL4_BootInfo *bi)
     uint32_t net_virt_index = SYSTEM_MAX_PDS;
     uint32_t native_net_index = SYSTEM_MAX_PDS;
     uint32_t log_drain_index = SYSTEM_MAX_PDS;
+#ifdef AGENTOS_GUEST_INPUT
+    uint32_t input_service=SYSTEM_MAX_PDS;
+    uint32_t input_clients[INPUT_PEERS];
+    for (uint32_t f=0;f<INPUT_PEERS;++f) input_clients[f]=SYSTEM_MAX_PDS;
+#endif
 #ifdef AGENTOS_FRAMEBUFFER_ENABLED
     uint32_t fb_service = SYSTEM_MAX_PDS;
     uint32_t fb_clients[FB_PEERS];
@@ -1858,6 +1873,11 @@ void root_task_main(const seL4_BootInfo *bi)
         if (pd->self_svc_id == SVC_ID_NET_VIRT) net_virt_index = i;
         if (pd->self_svc_id == SVC_ID_NATIVE_RUST_PROBE) native_net_index = i;
         if (pd->self_svc_id == SVC_ID_LOG_DRAIN) log_drain_index = i;
+#ifdef AGENTOS_GUEST_INPUT
+        if (pd->self_svc_id == SVC_ID_INPUT_VIRT) input_service=i;
+        if (pd_is_guest_vmm(pd)) input_clients[pd_is_secondary_guest_vmm(pd) ? 1u : 0u]=i;
+        if (pd->self_svc_id == SVC_ID_CC_PD) input_clients[AOS_INPUT_CLIENTS]=i;
+#endif
 #ifdef AGENTOS_FRAMEBUFFER_ENABLED
         if (pd->self_svc_id == SVC_ID_FRAMEBUFFER_QUEUE) fb_service = i;
 #ifdef AGENTOS_FRAMEBUFFER_TEST
@@ -1885,6 +1905,21 @@ void root_task_main(const seL4_BootInfo *bi)
             g_pd_notifications[i] = (seL4_CPtr)PD_SLOT_NTFN(i);
         }
     }
+#ifdef AGENTOS_GUEST_INPUT
+    if (input_service==SYSTEM_MAX_PDS || input_clients[AOS_INPUT_CLIENTS]==SYSTEM_MAX_PDS ||
+        (input_clients[0]==SYSTEM_MAX_PDS && input_clients[1]==SYSTEM_MAX_PDS)) return;
+    for (uint32_t f=0;f<2;++f)
+        if (ut_alloc_cap(seL4_NotificationObject,seL4_NotificationBits,
+                         &g_input_notify[f])!=seL4_NoError) {
+            dbg_puts("[rt] input notification allocation failed; refusing boot\n");
+            return;
+        }
+    for (uint32_t f=0;f<INPUT_PEERS;++f)
+        if (ut_alloc_cap(seL4_ARM_LargePageObject,0u,&g_input_frames[f])!=seL4_NoError) {
+            dbg_puts("[rt] input queue allocation failed; refusing boot\n");
+            return;
+        }
+#endif
 #ifdef AGENTOS_FRAMEBUFFER_ENABLED
     if (fb_service == SYSTEM_MAX_PDS ||
         (fb_clients[0] == SYSTEM_MAX_PDS && fb_clients[1] == SYSTEM_MAX_PDS)) return;
@@ -2207,6 +2242,45 @@ void root_task_main(const seL4_BootInfo *bi)
             }
         }
 
+#ifdef AGENTOS_GUEST_INPUT
+        uint32_t input_own=INPUT_PEERS+1u;
+        if (i==input_service) input_own=INPUT_PEERS;
+        for (uint32_t f=0;f<INPUT_PEERS;++f)
+            if (i==input_clients[f]) input_own=f;
+        if (input_own<=INPUT_PEERS) {
+            seL4_Error err=seL4_NoError;
+            if (input_own>=AOS_INPUT_CLIENTS)
+                err=seL4_CNode_Copy(pd_cnode,PD_CNODE_SLOT_INPUT_WAIT,pd->cnode_size_bits,
+                    seL4_CapInitThreadCNode,g_input_notify[input_own==INPUT_PEERS ? 0 : 1],
+                    64u,seL4_CapRights_new(0,0,1,0));
+            for (uint32_t f=0;f<INPUT_PEERS && err==seL4_NoError;++f) {
+                if (i!=input_service && i!=input_clients[f]) continue;
+                seL4_CPtr notify=g_input_notify[0];
+                seL4_Word badge=(seL4_Word)1u<<f;
+                seL4_Word slot=PD_CNODE_SLOT_INPUT_PEER_NOTIFY;
+                if (i==input_service) {
+                    slot+=f;
+                    notify=f==AOS_INPUT_CLIENTS ? g_input_notify[1] :
+                        (input_clients[f]==SYSTEM_MAX_PDS ? seL4_CapNull : g_pd_notifications[input_clients[f]]);
+                    badge=f==AOS_INPUT_CLIENTS ? 1u : AOS_INPUT_VMM_WAKE_BADGE;
+                }
+                if (notify!=seL4_CapNull)
+                    err=seL4_CNode_Mint(pd_cnode,slot,pd->cnode_size_bits,
+                        seL4_CapInitThreadCNode,notify,64u,seL4_CapRights_new(0,0,0,1),badge);
+                if (err!=seL4_NoError) break;
+                seL4_Word copy=ut_alloc_slot();
+                if (copy==seL4_CapNull) { err=seL4_NotEnoughMemory; break; }
+                err=seL4_CNode_Copy(seL4_CapInitThreadCNode,copy,64u,
+                    seL4_CapInitThreadCNode,g_input_frames[f],64u,seL4_AllRights);
+                if (err==seL4_NoError)
+                    err=pd_vspace_map_device_frame(vspace,copy,AOS_INPUT_SHMEM_VA+f*AOS_INPUT_FRAME_SIZE);
+            }
+            if (err!=seL4_NoError) {
+                dbg_puts("[rt] input queue/capability grant failed; refusing PD start\n");
+                continue;
+            }
+        }
+#endif
 #ifdef AGENTOS_FRAMEBUFFER_ENABLED
         uint32_t fb_own = FB_PEERS + 1u;
         if (i == fb_service) fb_own = FB_PEERS;

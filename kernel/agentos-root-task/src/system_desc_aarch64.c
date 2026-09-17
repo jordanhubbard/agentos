@@ -54,19 +54,24 @@
 #include "system_desc.h"
 #include "contracts/native_rust_probe.h"
 #include <platform/guest_memory_layout.h>
+#ifdef AGENTOS_GUEST_INPUT
+#define AOS_INPUT_PD_EXTRA 1u
+#else
+#define AOS_INPUT_PD_EXTRA 0u
+#endif
 
 /* agentos-8f5: a target contract-runner PD is appended only in test images,
  * together with the event_bus PD whose contract it exercises. */
 #ifdef AGENTOS_FRAMEBUFFER_TEST
-#define AOS_TEST_PD_EXTRA 3u
+#define AOS_TEST_PD_EXTRA (3u + AOS_INPUT_PD_EXTRA)
 #elif defined(AGENTOS_GUEST_GRAPHICS)
-#define AOS_TEST_PD_EXTRA 1u
+#define AOS_TEST_PD_EXTRA (1u + AOS_INPUT_PD_EXTRA)
 #elif defined(AGENTOS_SEL4_TEST_IMAGE)
-#define AOS_TEST_PD_EXTRA 2u
+#define AOS_TEST_PD_EXTRA (2u + AOS_INPUT_PD_EXTRA)
 #elif defined(AGENTOS_NATIVE_RUST_TEST)
-#define AOS_TEST_PD_EXTRA 2u
+#define AOS_TEST_PD_EXTRA (2u + AOS_INPUT_PD_EXTRA)
 #else
-#define AOS_TEST_PD_EXTRA 0u
+#define AOS_TEST_PD_EXTRA AOS_INPUT_PD_EXTRA
 #endif
 
 /* Default image: nameserver, log_drain, serial_pd, virtio_blk,
@@ -531,6 +536,16 @@ const system_desc_t system_desc_aarch64 = {
             },
         },
 
+#ifdef AGENTOS_GUEST_INPUT
+        {
+            .name = "input_virt",
+            .elf_path = "input_virt.elf",
+            .stack_size = 0x4000u,
+            .cnode_size_bits = 8u,
+            .priority = 215u,
+            .self_svc_id = SVC_ID_INPUT_VIRT,
+        },
+#endif
 #if defined(AGENTOS_FRAMEBUFFER_TEST) || defined(AGENTOS_GUEST_GRAPHICS)
         {
             .name = "framebuffer_queue",
