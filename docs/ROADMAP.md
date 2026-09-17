@@ -209,6 +209,14 @@ Acceptance evidence is a target-tested create/write/flip/read cycle followed
 by Linux DRM/KMS, keyboard, and pointer enumeration and a captured non-empty
 guest frame.
 
+The [Spark guest-frame checkpoint](evidence/2026-09-16-spark/guest-frame.json)
+records a 1024x768 frame captured from Debian at `9769cefb` on the pending
+graphics branch (PR #166). Two exact guest-written pixels survived the
+virtio-gpu, framebuffer and CC observer path. This is a revision-specific
+frame-transfer result; SSH qualification was still running at capture time.
+Input delivery, physical scanout, interactive latency and release integration
+remain outside that result.
+
 MAC work:
 
 - `task_9cc7b9d4fbd14601b6b0851de4d300b8` — target-test the canonical

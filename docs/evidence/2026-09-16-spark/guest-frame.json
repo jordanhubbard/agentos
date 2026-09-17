@@ -1,0 +1,46 @@
+{
+  "schema": "agentos.manual-qualification.v1",
+  "source_revision": "9769cefb2664e6a7076a43e326f63e44fe509712",
+  "source_clean": true,
+  "source_branch": "fix/framebuffer-progress",
+  "source_pull_request": 166,
+  "host": "sparky",
+  "host_architecture": "aarch64",
+  "board": "qemu_virt_aarch64",
+  "profile": "debian-gpu-aarch64",
+  "command": "make test-guest-gpu QEMU_TEST_TIMEOUT=1800 QEMU_TEST_GPU_SSH_PORT=12226",
+  "result": "frame_capture_pass",
+  "overall_qualification_at_capture": "pending SSH provisioning and authentication",
+  "proven": [
+    "Linux virtio_gpu loaded with DRM card0 and framebuffer fb0",
+    "Guest framebuffer writes reached the canonical framebuffer through emulated virtio-gpu",
+    "Immutable 1024x768 RGB frame exported through CC observer queues",
+    "Captured frame contains the exact two pixels written by the guest console probe"
+  ],
+  "pixel_check": {
+    "guest_fb_byte_offset": 819200,
+    "guest_fb_bytes": [17, 34, 51, 0, 68, 85, 102, 0],
+    "ppm_byte_offset_including_header": 614416,
+    "observed_rgb_bytes": [51, 34, 17, 102, 85, 68],
+    "width": 1024,
+    "height": 768,
+    "sequence": 19,
+    "ppm_size_bytes": 2359312
+  },
+  "not_proven": [
+    "Full live-profile qualification or authenticated SSH on this run",
+    "Keyboard or pointer delivery",
+    "Desktop compositor or physical display scanout",
+    "Acceptable interactive latency",
+    "Bare-metal Spark support or final v0.4 release qualification"
+  ],
+  "retained_local_directory": "/tmp/agentos-v04-gpu-diagnostics/build/evidence/guest-frame-9769cefb",
+  "logs_are": "checkpoints copied after capture while the remaining qualification continued",
+  "sha256": {
+    "agentos.img": "264858397173e6f385bd99b7fe9513ca118e3209985475dfd3e9cc51551c884a",
+    "frame.json": "7d64e151ae33ec3814f353ee91620548e3efd3f7ab3b6e46b6fac9179340ab2e",
+    "frame.ppm": "cb9b1f94595564c62a17a1e987f5e8b3877467efcf4510191e78261c25de9643",
+    "qualification-at-capture.log": "415b043ab2034aa640259379439bc9f64924690f558f23cb11b94ea723086300",
+    "serial-at-capture.log": "0f914d0f0cdf548195cf226c3e830720837beb1701b6729a8d97e974e3461ecb"
+  }
+}
