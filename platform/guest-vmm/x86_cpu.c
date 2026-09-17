@@ -69,6 +69,9 @@ aos_x86_cpuid_t aos_x86_cpu_id(uint32_t leaf, uint32_t subleaf, uint64_t tsc_hz)
         r.ecx = 1u << 31; /* hypervisor present */
         r.edx = AOS_X86_BASIC_EDX;
         break;
+    case 6u:
+        if (clock) r.eax=1u<<2; /* ARAT: private LAPIC follows TSC through HLT */
+        break;
     case 0x40000000u:
         r.eax = 0x40000000u;
         r.ebx = 0x6e656761u; r.ecx = 0x20534f74u; r.edx = 0x204d4d56u;

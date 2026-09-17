@@ -119,7 +119,15 @@ operation is still a PIT request, now programming channel 0 in periodic mode
 unused-device write. Linux's `apic_needs_pit` also requires configured
 interrupt topology and the always-running APIC-timer declaration; generated
 ACPI and the complete guest timer contract are the next integration step.
-The 32-vCPU-capable ACPI serializers in PR #178 remain separate and host-only.
+That was the state at `7f61656`. The later
+[ACPI integration](x86-acpi.md) installs the generated tables for the one
+provisioned CPU and adds a private I/O APIC. With ARAT advertised for the
+admitted clock, the pinned kernel calls `clockevent_i8253_disable` instead
+of requesting periodic PIT timing. Its bounded shutdown writes and legacy
+I/O-delay writes are accepted; PIT calibration and periodic setup still fail.
+The latest [ACPI receipt](evidence/2026-09-17-spark/ovmf-linux-acpi.json)
+records continuation to an unsupported IA32_FEATURE_CONTROL MSR read, not
+Linux userspace or a successful Intel gate.
 
 `make test-x86-config-host test-x86-string-host` checks exact blob sizes and
 bytes, data beyond the old 80-byte stream boundary, reselect/EOF behavior,

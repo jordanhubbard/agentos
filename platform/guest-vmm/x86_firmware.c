@@ -7,6 +7,7 @@
 #include "platform/x86_cpu.h"
 #include "platform/x86_config.h"
 #include "platform/x86_apic.h"
+#include "platform/x86_ioapic.h"
 #include "platform/x86_memory.h"
 #include "platform/x86_string.h"
 
@@ -192,6 +193,9 @@ void aos_x86_firmware_run(seL4_CPtr ep, seL4_Word result)
     aos_x86_config_t config;
     if (!aos_x86_config_init(&config, AOS_X86_FIRMWARE_RAM))
         stop(ep, AOS_X86_VTX_PROOF_FAIL, 0x434647u, 0, 0);
+    static aos_x86_acpi_bundle_t acpi;
+    if (!aos_x86_acpi_bundle_init(&acpi) || !aos_x86_config_acpi(&config,&acpi))
+        stop(ep, AOS_X86_VTX_PROOF_FAIL, 0x41435049u, 0, 0);
 #ifdef AGENTOS_X86_BOOT_KERNEL
     const aos_x86_boot_blobs_t boot={
         .kernel=_binary_x86_boot_kernel_bin_start,
@@ -218,6 +222,9 @@ void aos_x86_firmware_run(seL4_CPtr ep, seL4_Word result)
     uint64_t started = timestamp();
     aos_x86_apic_t apic;
     aos_x86_apic_init(&apic, started);
+    aos_x86_ioapic_t ioapic;
+    if (!aos_x86_ioapic_init(&ioapic, 1u))
+        stop(ep, AOS_X86_VTX_PROOF_FAIL, 0x494f4150u, 0, 1u);
     uint32_t timer_quantum=0;
     const aos_x86_memory_t memory = {
         .ram=(const uint8_t *)AOS_X86_FIRMWARE_RAM_VA, .ram_size=AOS_X86_FIRMWARE_RAM,
@@ -344,6 +351,7 @@ void aos_x86_firmware_run(seL4_CPtr ep, seL4_Word result)
             if (reason == 31u) { regs.eax=(uint32_t)value; regs.edx=value >> 32; }
         } else if (reason == 48u &&
                    ((fault_gpa >= AOS_X86_APIC_BASE && fault_gpa < AOS_X86_APIC_BASE+4096) ||
+                    (fault_gpa >= AOS_X86_IOAPIC_BASE && fault_gpa < AOS_X86_IOAPIC_BASE+4096) ||
                     (fault_gpa >= 0xfed40000u && fault_gpa < 0xfed45000u) ||
                     (fault_gpa >= memory.rom_base && fault_gpa-memory.rom_base < memory.rom_size)) &&
                    (qual & 0x180u) == 0x180u &&
@@ -365,13 +373,18 @@ void aos_x86_firmware_run(seL4_CPtr ep, seL4_Word result)
                 physical != fault_gpa)
                 stop(ep, AOS_X86_VTX_PROOF_FAIL, reason, rip, fault_gpa);
             uint32_t value=op.value;
+            unsigned eoi_vector = physical == AOS_X86_APIC_BASE+0xb0u && op.write ?
+                aos_x86_apic_eoi_vector(&apic) : 0u;
             bool handled = physical >= AOS_X86_APIC_BASE && physical < AOS_X86_APIC_BASE+4096 ?
                 op.width == 4 && aos_x86_apic_io(&apic, (unsigned)(physical-AOS_X86_APIC_BASE), op.write, &value, now) :
+                physical >= AOS_X86_IOAPIC_BASE && physical < AOS_X86_IOAPIC_BASE+4096 ?
+                op.width == 4 && aos_x86_ioapic_io(&ioapic, (unsigned)(physical-AOS_X86_IOAPIC_BASE), op.write, &value) :
                 op.write ? aos_x86_rom_store(&memory, physical, op.width) :
                 aos_x86_absent_mmio(physical, op.width, false, &value);
             if (!handled)
                 stop(ep, AOS_X86_VTX_PROOF_FAIL, reason, rip, physical);
             if (physical == AOS_X86_APIC_BASE+0xb0u && op.write) eois++;
+            if (eoi_vector) aos_x86_ioapic_eoi(&ioapic, eoi_vector);
             if (!op.write) assign(ep, &regs, op.reg, aos_x86_mov_result(&op, values[op.reg], value));
             len=op.length;
         } else if (reason == 30u && qual == 0x05110038u && len == 2u) {
@@ -433,6 +446,15 @@ void aos_x86_firmware_run(seL4_CPtr ep, seL4_Word result)
         }
         seL4_Error err = seL4_X86_VCPU_WriteRegisters(VCPU, &regs);
         if (err) stop(ep, AOS_X86_VTX_PROOF_FAIL, reason, rip, err);
+        /* Only VMM-owned emulated sources may assert these inputs. No host
+         * device or physical IRQ capability is exposed to the guest. */
+        for (unsigned input=0; input<AOS_X86_IOAPIC_INPUTS; input++) {
+            aos_x86_ioapic_route_t route;
+            if (aos_x86_ioapic_route(&ioapic, input, &route) &&
+                aos_x86_apic_route(&apic, route.vector, route.destination,
+                                   route.logical, route.level))
+                aos_x86_ioapic_accept(&ioapic, input);
+        }
         unsigned vector=aos_x86_apic_pending(&apic,timestamp());
         if (vector == AOS_X86_APIC_INVALID_VECTOR)
             stop(ep,AOS_X86_VTX_PROOF_FAIL,0x495256u,rip,apic.lvt_timer);

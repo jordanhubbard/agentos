@@ -22,6 +22,16 @@ int main(void)
     assert(io(&r,7,false,0,0)==1 && io(&r,8,false,0,0)==1);
     assert(io(&r,9,false,0,0)==0 && io(&r,0x32,false,0,0)==0x20);
     uint64_t h=AOS_X86_RTC_HZ;
+    io(&r,0x32,true,0x20,h/2); /* firmware century write without SET */
+    assert(io(&r,0,false,0,h)==1); /* write preserved subsecond phase */
+    io(&r,0x32,true,0x21,h);
+    assert(io(&r,0x32,false,0,h)==0x21 && io(&r,9,false,0,h)==0);
+    assert(io(&r,6,false,0,h)==7); /* independent weekday register */
+    reject(&r,0x32,true,0x1a,h); reject(&r,0x32,true,0x19,h);
+    init(&r);
+    assert(io(&r,7,false,0,59*86400*h)==0x29);
+    reject(&r,0x32,true,0x21,59*86400*h); /* 2100-02-29 is invalid */
+    init(&r);
     assert(io(&r,0xa,false,0,h-875)==0x26);
     assert(io(&r,0xa,false,0,h-874)==0xa6);
     assert(io(&r,0xa,false,0,h)==0x26);

@@ -97,6 +97,15 @@ int main(void)
     assert(!aos_x86_config_init(&a, 0x80010000));
     assert(aos_x86_config_init(&a, 0x2000000));
     assert(aos_x86_config_init(&b, 0x80000000));
+    aos_x86_config_t unchanged=a;
+    assert(io(&a,0x80,1,true,0xa5)==0xa5);
+    assert(io(&a,0xed,1,true,0x5a)==0x5a);
+    assert(!memcmp(&a,&unchanged,sizeof(a)));
+    uint32_t delay=0;
+    assert(!aos_x86_config_io(&a,0xed,1,false,&delay,0));
+    assert(!aos_x86_config_io(&a,0xed,2,true,&delay,0));
+    assert(!aos_x86_config_io(&a,0xec,1,true,&delay,0));
+    assert(!memcmp(&a,&unchanged,sizeof(a)));
     io(&a, 0xaf00, 4, true, 0);
     io(&a, 0xaf05, 1, true, 0);
     assert(io(&a, 0xaf00, 4, false, 0) == 0);

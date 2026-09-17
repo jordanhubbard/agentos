@@ -78,6 +78,7 @@ int main(void)
     for (unsigned i=0; i<sizeof(clocks)/sizeof(clocks[0]); i++) {
         assert(aos_x86_cpu_clock_supported(clocks[i]));
         r=aos_x86_cpu_id(0,0,clocks[i]); assert(r.eax==0x16u);
+        r=aos_x86_cpu_id(6,0,clocks[i]); assert(r.eax==4u && !(r.ebx|r.ecx|r.edx));
         r=aos_x86_cpu_id(0x15,0,clocks[i]);
         assert(r.eax && r.ebx && (uint64_t)r.ecx*r.ebx/r.eax==clocks[i]);
         assert(r.ecx==clocks[i] && !r.edx); /* same undivided APIC clock */
@@ -86,7 +87,7 @@ int main(void)
         r=aos_x86_cpu_id(0x80000007,0,clocks[i]); assert(r.edx==0x100u);
     }
     const uint64_t bad_clocks[]={0,999999u,UINT64_C(1)<<32,UINT64_MAX};
-    const uint32_t clock_leaves[]={0x15,0x16,0x80000007};
+    const uint32_t clock_leaves[]={6,0x15,0x16,0x80000007};
     for (unsigned i=0; i<sizeof(bad_clocks)/sizeof(bad_clocks[0]); i++) {
         assert(!aos_x86_cpu_clock_supported(bad_clocks[i]));
         r=aos_x86_cpu_id(0,0,bad_clocks[i]); assert(r.eax==1u);

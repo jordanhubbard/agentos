@@ -119,7 +119,7 @@ bool aos_x86_rtc_io(aos_x86_rtc_t *r, unsigned reg, bool write,
     if (n>=0) {
         bool binary=(next.b&4)!=0, twelve=n==2 && !(next.b&2);
         if (write) {
-            if (!(next.b&0x80)) return false;
+            if (!(next.b&0x80) && n!=7) return false;
             unsigned d;
             if (!input(twelve ? v&0x7f : v,binary,&d)) return false;
             if (twelve) {
@@ -128,7 +128,17 @@ bool aos_x86_rtc_io(aos_x86_rtc_t *r, unsigned reg, bool write,
             }
             static const uint8_t max[8]={59,59,23,7,31,12,99,99};
             if (d>max[n] || ((n==3 || n==4 || n==5) && !d)) return false;
-            next.staged[n]=d;
+            if (next.b&0x80) next.staged[n]=d;
+            else {
+                /* The ACPI century byte is CMOS RAM; firmware writes it
+                 * without SET. Preserve time-of-day, weekday and tick phase
+                 * while rejecting a century that makes the date invalid. */
+                f[7]=(uint8_t)d;
+                if (!encode(f,&next.epoch)) return false;
+                uint8_t canonical[8]; decode(next.epoch,canonical);
+                next.weekday_bias=(f[3]+7-canonical[3])%7;
+                next.base=ticks-(ticks-next.base)%AOS_X86_RTC_HZ;
+            }
         } else {
             unsigned d=f[n], pm=0;
             if (twelve) { pm=d>=12 ? 0x80 : 0; d=d%12 ? d%12 : 12; }

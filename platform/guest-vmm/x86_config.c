@@ -40,6 +40,16 @@ bool aos_x86_config_boot(aos_x86_config_t *s, const aos_x86_boot_blobs_t *b)
     return true;
 }
 
+bool aos_x86_config_acpi(aos_x86_config_t *s, const aos_x86_acpi_bundle_t *acpi)
+{
+    if (!s || !s->ram_bytes || !acpi || s->acpi || s->fw_reads) return false;
+    s->acpi=acpi;
+    /* ACPI-only mode: no SMI handler or legacy-to-ACPI transition. */
+    s->pm_control=1;
+    put(s->pm+0x40,0xb001,2); s->pm[0x80]=1;
+    return true;
+}
+
 static uint8_t fw_byte(const aos_x86_config_t *s, uint32_t off)
 {
     const uint8_t *data=0;
@@ -51,6 +61,9 @@ static uint8_t fw_byte(const aos_x86_config_t *s, uint32_t off)
     case 0x11u: data=s->boot.kernel; size=s->boot.kernel_size; break;
     case 0x12u: data=s->boot.initrd; size=s->boot.initrd_size; break;
     case 0x15u: data=s->boot.cmdline; size=s->boot.cmdline_size; break;
+    case 0x21u: if (s->acpi) { data=s->acpi->tables; size=sizeof(s->acpi->tables); } break;
+    case 0x22u: if (s->acpi) { data=s->acpi->rsdp; size=sizeof(s->acpi->rsdp); } break;
+    case 0x23u: if (s->acpi) { data=s->acpi->loader; size=sizeof(s->acpi->loader); } break;
     default: break;
     }
     if (data) return off<size ? data[off] : 0;
@@ -64,12 +77,17 @@ static uint8_t fw_byte(const aos_x86_config_t *s, uint32_t off)
         return off < 4u ? (uint8_t)(s->ram_bytes >> (8u*off)) : 0;
     if (s->fw_selector == 5u || s->fw_selector == 0xfu) return off == 0u ? 1u : 0u;
     if (s->fw_selector == 0x19u) {
-        /* One directory entry, big-endian size/select; all reserved/name tail zero. */
-        static const char name[] = "etc/e820";
-        if (off == 3u) return 1;
-        if (off == 7u) return 80;
-        if (off == 9u) return 0x20;
-        if (off >= 12u && off < 12u + sizeof(name)) return (uint8_t)name[off-12u];
+        /* Directory fields are big-endian, unlike the table contents. */
+        static const char names[4][56]={"etc/e820","etc/acpi/tables",
+                                       "etc/acpi/rsdp","etc/table-loader"};
+        const uint32_t sizes[]={80,AOS_X86_ACPI_TABLE_BYTES,36,AOS_X86_ACPI_LOADER_BYTES};
+        unsigned count=s->acpi ? 4u : 1u;
+        if (off<4u) return off==3u ? (uint8_t)count : 0;
+        unsigned entry=(off-4u)/64u, col=(off-4u)%64u;
+        if (entry>=count) return 0;
+        if (col<4u) return (uint8_t)(sizes[entry] >> (8u*(3u-col)));
+        if (col==5u) return (uint8_t)(0x20u+entry);
+        if (col>=8u) return (uint8_t)names[entry][col-8u];
         return 0;
     }
     if (s->fw_selector == 0x20u && off < 80u) {
@@ -121,6 +139,19 @@ bool aos_x86_config_io(aos_x86_config_t *s, uint16_t port, unsigned width,
                        bool write, uint32_t *value, uint64_t timer_ticks)
 {
     if (!s || !value || (width != 1u && width != 2u && width != 4u)) return false;
+    /* Legacy I/O-delay writes have no device state. All emulated register
+     * operations complete synchronously before the guest resumes. */
+    if (write && width==1u && (port==0x80u || port==0xedu)) return true;
+    /* No PIT clock or IRQ0 source is advertised. Linux still writes its
+     * channel-0 shutdown sequence after selecting the LAPIC clockevent.
+     * Accept only mode-0 reset and its two zero count bytes; do not pretend
+     * to supply PIT calibration, periodic interrupts or a running counter. */
+    if (write && width==1u && port==0x43u && *value==0x30u) {
+        s->pit_disable_remaining=2; return true;
+    }
+    if (write && width==1u && port==0x40u && !*value && s->pit_disable_remaining) {
+        s->pit_disable_remaining--; return true;
+    }
     /* Fixed one-vCPU topology discovery. No insertion/removal events or
      * hotplug commands are supported. Mirrors the fw_cfg boot CPU count. */
     if (port == 0xaf00u && width == 4u) {

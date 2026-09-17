@@ -3,6 +3,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include "platform/x86_rtc.h"
+#include "platform/x86_acpi.h"
 
 #define AOS_X86_BOOT_BLOB_LIMIT (64u*1024u*1024u)
 #define AOS_X86_BOOT_CMDLINE_LIMIT 4096u
@@ -21,12 +22,14 @@ typedef struct {
     uint32_t pci_reads, timer_reads, fw_reads;
     uint32_t cpu_selector;
     uint8_t cpu_command;
+    uint8_t pit_disable_remaining;
     aos_x86_rtc_t rtc;
     /* Private ACPI PM1: polled TMR_STS/W1C, no enabled SCI sources; control
      * retains SCI_EN, BM_RLD and SLP_TYP but rejects sleep/SMI requests. */
     uint16_t pm_status, pm_control;
     uint64_t pm_last_ticks;
     aos_x86_boot_blobs_t boot;
+    const aos_x86_acpi_bundle_t *acpi;
     uint32_t boot_reads[3]; /* bytes consumed in kernel/initrd/cmdline, saturating */
 } aos_x86_config_t;
 
@@ -37,6 +40,9 @@ bool aos_x86_config_init(aos_x86_config_t *s, uint32_t ram_bytes);
  * and printable ASCII command line (size includes final NUL). Rejects all
  * invalid descriptors without changing state. This does not prove EFI entry. */
 bool aos_x86_config_boot(aos_x86_config_t *s, const aos_x86_boot_blobs_t *boot);
+/* Bind a bundle produced by aos_x86_acpi_bundle_init before fw_cfg reads.
+ * Storage remains immutable and alive until guest teardown. */
+bool aos_x86_config_acpi(aos_x86_config_t *s, const aos_x86_acpi_bundle_t *acpi);
 bool aos_x86_config_io(aos_x86_config_t *s, uint16_t port, unsigned width,
                        bool write, uint32_t *value, uint64_t timer_ticks);
 #endif
