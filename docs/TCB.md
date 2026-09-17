@@ -372,7 +372,13 @@ Bounded reads in the declared absent TPM aperture return all ones; writes
 are rejected. Validated firmware ROM stores are ignored without granting
 write authority or changing ROM bytes. Live APIC divider changes preserve
 the private countdown; no host APIC access or timer IRQ authority is added.
-PIC unmasking, APIC interrupt delivery and unsupported device accesses stop
+The optional firmware VMM now enables VMX preemption-timer exits through its
+existing VCPU cap and reads the timer rate through the kernel's restricted MSR
+interface. It maintains private IRR/ISR state, checks CPU interruptibility,
+injects eligible timer vectors and handles guest EOI. No new hardware authority
+is granted. The [timer receipt](evidence/2026-09-17-spark/ovmf-timer.json)
+records partial OVMF delivery evidence; halt/window qualification remains open.
+PIC unmasking and unsupported device accesses stop
 explicitly. This remains firmware bring-up; it does not prove UEFI boot,
 Linux, runtime resource management or persistent firmware variables.
 

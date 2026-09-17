@@ -52,8 +52,8 @@ zero. This is a bootstrap policy, not a qualified desktop CPU profile.
 
 Scalar I/O now uses private PCI configuration state for an i440FX host bridge
 and PIIX4 power-management function. The PM timer requires enabled decode and
-an invariant TSC with a nonzero CPUID.15H frequency; no clock frequency is
-guessed. Host tests cover its wrap and enable semantics. The guest-owned
+an invariant TSC with an architectural ratio or identified KVM timing leaf;
+no clock frequency is guessed. Host tests cover its wrap and enable semantics. The guest-owned
 `fw_cfg` data supplies RAM/CPU counts and an E820 directory entry; CMOS supplies
 RAM-size fields. The legacy PICs accept mask-all only: unmasking and commands
 remain unsupported until interrupt routing and injection are implemented.
@@ -70,9 +70,13 @@ SVR/TPR and timer registers. Timer counts derive from invariant host TSC ticks,
 with one virtual APIC bus tick per TSC tick and the programmed divider. Both
 one-shot and periodic counting are covered by host tests. The fixed-host KVM
 qualification uses `host,migratable=off` so QEMU does not hide `invtsc`; the
-VMM still checks that capability. A due unmasked timer stops explicitly:
-asynchronous timer scheduling, interrupt injection, IPIs, other LVT sources,
-base relocation and x2APIC are not implemented. Live divider changes preserve
+VMM still checks that capability. The VMX preemption timer now supplies
+asynchronous wakeups, using the rate obtained through the VCPU capability.
+Private IRR/ISR state retains pending vectors, applies priority and handles
+EOI. Injection checks IF and STI/MOVSS blocking, requests interrupt-window
+exits when needed, and clears halt state only for an eligible interrupt.
+IPIs, other LVT sources, base relocation and x2APIC are not implemented.
+Live divider changes preserve
 the remaining countdown and restart the fractional prescaler phase. Expiries
 while masked do not create pending interrupts; unmasked expiries are retained.
 LINT0/LINT1 configuration is private and retained for firmware virtual-wire
@@ -106,11 +110,15 @@ Validated stores within firmware ROM complete without changing its bytes,
 allowing firmware to distinguish ROM from writable flash. Both ROM mappings
 remain read-only; this does not implement persistent variables.
 
-The [discovery receipt](evidence/2026-09-17-spark/ovmf-discovery.json) records
+The historical [discovery receipt](evidence/2026-09-17-spark/ovmf-discovery.json) records
 execution through these probes and APIC divider changes to the first unmasked
 periodic timer expiry, vector `0x20`. The VMM stops with reason `0x495251`
-at RIP `0x00168bf5`; asynchronous scheduling and interrupt injection remain
-required before firmware can continue.
+at RIP `0x00168bf5`. The later
+[timer receipt](evidence/2026-09-17-spark/ovmf-timer.json) records 139 timer
+exits, three injections and three guest EOI writes before an unsupported
+RTC register-A write of `0x26`, at RIP `0x01acd70c`. The firmware gate still
+fails. Dedicated halt and interrupt-window target assertions remain required;
+these counters do not qualify all interrupt delivery cases or complete UEFI.
 
 The [upstream EDK II transition](https://github.com/tianocore/edk2/blob/edk2-stable202402/UefiCpuPkg/ResetVector/Vtf0/Ia16/Real16ToFlat32.asm)
 provides the source context for this early execution path. The

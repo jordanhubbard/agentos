@@ -1,8 +1,10 @@
 # x86 timer delivery: SDK interface qualification
 
-Status: source/API investigation complete; target implementation and execution
-qualification remain outstanding. OVMF still stops at its first unmasked APIC
-timer expiry. This document is not evidence of interrupt delivery.
+Status: implementation now runs OVMF past its first unmasked APIC timer expiry.
+At revision `21f6a0a`, Intel diagnostics record 139 preemption exits, three
+injections and three guest EOI writes before unsupported RTC register-A setup.
+The [receipt](evidence/2026-09-17-spark/ovmf-timer.json) retains the exact run.
+Dedicated running-loop, halt and interrupt-window assertions remain outstanding.
 
 ## Pinned upstream interfaces
 
@@ -35,6 +37,14 @@ and calculate bounded countdowns from the admitted TSC frequency. Do not
 assume that a raw timer count denotes microseconds. Re-arm on each entry;
 advance the emulated APIC from elapsed TSC time when handling the exit.
 Unsupported capability, frequency or control must produce a diagnostic failure.
+
+The Intel QEMU board omits architectural CPUID leaf `0x15`. The implementation
+also admits an invariant TSC frequency from an identified KVM namespace that
+advertises leaf `0x40000010`. EAX reports kHz; the measured board advertises
+3,187,200,000 Hz and VMX rate shift 5. See QEMU 10.2.1
+[KVM clock publication](https://github.com/qemu/qemu/blob/v10.2.1/target/i386/kvm/kvm.c#L2347).
+Unknown identity, missing timing leaf, zero frequency and rates above 10 GHz
+are rejected. Guest CPUID remains the VMM's synthetic policy.
 
 No physical timer frame, I/O port, IRQ capability, root-task runtime policy,
 or seL4 kernel modification is required by this approach. Pending/in-service
