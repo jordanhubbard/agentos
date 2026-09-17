@@ -11,7 +11,7 @@
 #include <contracts/net_virt_contract.h>
 #include "sel4_ipc.h"
 #include "system_desc.h"
-#include <libvmm/libvmm.h>
+#include <libvmm/util/util.h>
 #include <libvmm/virtio/config.h>
 #include <libvmm/virtio/net.h>
 #include <libvmm/virtio/gpa.h>
@@ -41,6 +41,8 @@ static int                      g_net_virt_attached;
 static uint32_t                 g_net_virt_hw;
 static int                      g_tx_kicked;
 static uint32_t                 g_rx_events;
+static uintptr_t                g_guest_base;
+static unsigned                 g_virq;
 
 static uint32_t net_rd32(const uint8_t *p, uint32_t off)
 {
@@ -160,16 +162,21 @@ void aos_vmm_virtio_net_rx_ready(void)
     net_virt_service();
 }
 
-void aos_vmm_virtio_net_init(uint32_t client_id)
+bool aos_vmm_virtio_net_init_at(uint32_t client_id, uintptr_t guest_base,
+                              unsigned virq, void *shared_region)
 {
-    uint8_t *region = (uint8_t *)AOS_NET_SHMEM_VA;
+    uint8_t *region = shared_region;
     aos_net_virt_client_t client;
     uint8_t mac[VIRTIO_NET_CONFIG_MAC_SZ];
 
+    if (g_aos_net_ready || g_net_virt_attached || !region || !guest_base ||
+        ((uintptr_t)region & (AOS_NET_QUEUE_BYTES-1u)) ||
+        (uintptr_t)region > UINTPTR_MAX-AOS_NET_SHMEM_SIZE ||
+        (guest_base & (AOS_VIRTIO_NET_MMIO_SIZE-1u))) return false;
     if (client_id >= AOS_NET_GUEST_CLIENTS) {
         LOG_VMM_ERR("emulated virtio-net: invalid client %u\n",
                     (unsigned)client_id);
-        return;
+        return false;
     }
     aos_net_client_bind(region, client_id, &client);
     aos_net_client_init_buffers(&client);
@@ -185,6 +192,7 @@ void aos_vmm_virtio_net_init(uint32_t client_id)
      * net_virt_service() under the contract's consumer_signalled rules.
      */
     net_virt_attach(client_id);
+    if (!g_net_virt_attached) return false;
 
     mac[0] = AOS_VIRTIO_NET_MAC0;
     mac[1] = AOS_VIRTIO_NET_MAC1;
@@ -194,21 +202,29 @@ void aos_vmm_virtio_net_init(uint32_t client_id)
     mac[5] = (uint8_t)(AOS_VIRTIO_NET_MAC5 + client_id);
 
     if (!virtio_mmio_net_init(&g_aos_net,
-                              AOS_VIRTIO_NET_GUEST_IPA,
+                              guest_base,
                               AOS_VIRTIO_NET_MMIO_SIZE,
-                              AOS_VIRTIO_NET_VIRQ,
+                              virq,
                               &g_rx, &g_tx,
                               (uintptr_t)client.rx_data,
                               (uintptr_t)client.tx_data,
                               0, 0, mac)) {
         LOG_VMM_ERR("emulated virtio-net: virtio_mmio_net_init failed\n");
-        return;
+        return false;
     }
 
     g_aos_net_ready = 1;
+    g_guest_base = guest_base;
+    g_virq = virq;
     LOG_VMM("emulated virtio-net IPA 0x%lx IRQ %u (sDDF queues to net_virt, not QEMU)\n",
-            (unsigned long)AOS_VIRTIO_NET_GUEST_IPA,
-            (unsigned)AOS_VIRTIO_NET_VIRQ);
+            (unsigned long)g_guest_base, g_virq);
+    return true;
+}
+
+void aos_vmm_virtio_net_init(uint32_t client_id)
+{
+    (void)aos_vmm_virtio_net_init_at(client_id, AOS_VIRTIO_NET_GUEST_IPA,
+                                   AOS_VIRTIO_NET_VIRQ, (void *)AOS_NET_SHMEM_VA);
 }
 
 void aos_vmm_virtio_net_after_fault(void)
@@ -223,12 +239,12 @@ void aos_vmm_virtio_net_after_fault(void)
     if (!g_aos_net_probed && (status & VIRTIO_CONFIG_S_ACKNOWLEDGE)) {
         g_aos_net_probed = 1;
         LOG_VMM("emulated virtio-net: guest probed IPA 0x%lx (status=0x%x)\n",
-                (unsigned long)AOS_VIRTIO_NET_GUEST_IPA, (unsigned)status);
+                (unsigned long)g_guest_base, (unsigned)status);
     }
     if (!g_aos_net_driver_ok && (status & VIRTIO_CONFIG_S_DRIVER_OK)) {
         g_aos_net_driver_ok = 1;
         LOG_VMM("emulated virtio-net: guest DRIVER_OK virq %u MAC %02x:%02x:%02x:%02x:%02x:%02x\n",
-                (unsigned)AOS_VIRTIO_NET_VIRQ,
+                g_virq,
                 (unsigned)AOS_VIRTIO_NET_MAC0,
                 (unsigned)AOS_VIRTIO_NET_MAC1,
                 (unsigned)AOS_VIRTIO_NET_MAC2,

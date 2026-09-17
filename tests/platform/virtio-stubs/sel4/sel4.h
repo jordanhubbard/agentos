@@ -7,6 +7,15 @@ typedef struct seL4_UserContext seL4_UserContext;
  * Real architecture builds use the SDK rather than this host-test header. */
 typedef uintptr_t seL4_CPtr;
 typedef int seL4_Error;
+typedef struct { seL4_Word label; } seL4_MessageInfo_t;
+static inline seL4_MessageInfo_t seL4_MessageInfo_new(seL4_Word label,
+    seL4_Word caps, seL4_Word extra, seL4_Word length)
+{
+    (void)caps; (void)extra; (void)length;
+    return (seL4_MessageInfo_t){label};
+}
+void seL4_NBSend(seL4_CPtr cap, seL4_MessageInfo_t message);
+seL4_MessageInfo_t seL4_Call(seL4_CPtr cap, seL4_MessageInfo_t message);
 enum { seL4_NoError = 0 };
 seL4_Error seL4_TCB_Suspend(seL4_CPtr cap);
 seL4_Error seL4_IRQHandler_Ack(seL4_CPtr cap);

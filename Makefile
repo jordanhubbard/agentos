@@ -808,6 +808,23 @@ test-host: test-virtio-console-rx-host
 test-host: test-x86-virtio-host
 test-host: test-x86-console-host
 test-host: test-x86-block-host
+test-host: test-x86-net-host
+
+.PHONY: test-x86-net-host
+test-x86-net-host:
+	@mkdir -p $(BUILD_TMP_DIR)
+	$(CC) -std=c11 -Wall -Wextra -Werror -Wno-unused-function -Wno-unused-parameter -Wno-sign-compare \
+		-fsanitize=address,undefined -g -ffunction-sections \
+		-Xlinker $(if $(filter Darwin,$(UNAME_S)),-dead_strip,--gc-sections) \
+		-Itests/platform/block-stubs -Itests/platform/virtio-stubs -Ilibvmm/include \
+		-Ilibvmm/dep/sddf/include -Ilibvmm/dep/sddf/include/microkit \
+		-Iplatform/include -idirafter kernel/agentos-root-task/include \
+		tests/platform/test_x86_net.c platform/net-virt/vmm_virtio_net.c \
+		platform/net-virt/net_virt_pump.c \
+		platform/guest-vmm/x86_virtio.c platform/guest-vmm/x86_ioapic.c \
+		libvmm/src/virtio/net.c libvmm/src/virtio/mmio.c libvmm/src/virtio/gpa.c \
+		-o $(BUILD_TMP_DIR)/test_x86_net
+	$(BUILD_TMP_DIR)/test_x86_net
 
 .PHONY: test-x86-block-host
 test-x86-block-host:
@@ -893,6 +910,13 @@ test-virtio-backends-build: test-x86-vmenter-host
 			-Ilibvmm/dep/sddf/include/sddf/util/custom_libc -Iplatform/include \
 			-Ikernel/agentos-root-task/include \
 			-c platform/blk-virt/vmm_virtio_blk.c -o "$$out/vmm_virtio_blk.o"; \
+		clang -target $$arch-unknown-elf -ffreestanding -O2 -Wall -Werror -Wno-unused-function \
+			-I"$(SEL4_SDK)/board/$$board/release/include" \
+			-Ilibvmm/include -Ilibvmm/dep/sddf/include \
+			-Ilibvmm/dep/sddf/include/sddf/util/custom_libc -Iplatform/include \
+			-Ikernel/agentos-root-task/include \
+			-Ilibvmm/dep/sddf/include/microkit \
+			-c platform/net-virt/vmm_virtio_net.c -o "$$out/vmm_virtio_net.o"; \
 		if test "$$arch" = x86_64; then \
 			clang -target x86_64-unknown-elf -ffreestanding -O2 -Wall -Werror -Wno-unused-function \
 				-I"$(SEL4_SDK)/board/$$board/release/include" \
