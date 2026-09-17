@@ -6,6 +6,8 @@
  * at guest linear/physical address 0x1000, and four EPT-mapped guest
  * page-table pages. We initialise minimum long-mode VMCS state, enter
  * non-root mode once, and report the expected HLT VM exit to the root task.
+ * The optional firmware-mode variant repeats the HLT proof with explicit
+ * real-address, unpaged protected and long-mode entry states.
  */
 
 #include <stddef.h>

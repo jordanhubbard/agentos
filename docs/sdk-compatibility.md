@@ -34,3 +34,20 @@ Long-mode HLT success does not qualify real-mode reset, protected-mode
 transitions, UEFI, Linux, installed ACPI tables or guest device emulation.
 Those require their own implementation and target evidence before changing
 the default SDK or making a v0.4 release claim.
+
+The separate `make gate-x86_64-firmware-modes SEL4_SDK_VERSION=2.3.0`
+qualification enters real-address, unpaged protected and long mode in order
+on an Intel KVM host. Each entry resets the VCPU state, preserves unrelated
+control bits, enables unrestricted guest execution and checks relevant VMCS
+readback before requiring the exact EPT-backed HLT exit. The harness requires
+a fresh build and a distinct success marker; SDK 2.1 cannot compile this
+variant. Switching back to `make gate-x86_64-vtx SEL4_SDK_VERSION=2.1.0`
+rebuilds the VMM and root for the original long-mode-only proof.
+
+These are VMM-selected entry states at GPA `0x1000`, not execution from the
+architectural reset vector or guest-driven mode transitions. Firmware payload
+loading, reset-vector mappings, exit emulation, virtual interrupts and actual
+UEFI/Linux boot remain required. No new device ownership is introduced.
+
+The [entry-mode receipt](evidence/2026-09-17-spark/firmware-entry-modes.json)
+records the Intel mode tests, cross-SDK rebuild regression and Spark full gate.
