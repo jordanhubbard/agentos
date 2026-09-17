@@ -13,8 +13,11 @@ _start:
     lea dev_path(%rip), %rdi
     mov $0755, %esi
     syscall
+    cmp $-17, %rax                /* Linux's built-in initramfs may supply /dev */
+    je dev_directory_ready
     test %rax, %rax
     jne failed
+dev_directory_ready:
     mov $3, %r13d
     mov $165, %eax                /* mount devtmpfs: native driver nodes */
     lea devfs(%rip), %rdi
