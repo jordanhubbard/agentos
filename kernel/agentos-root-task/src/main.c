@@ -242,14 +242,14 @@ static seL4_Word g_cap_base;  /* set to bi->empty.start in root_task_main */
  * Keep a finite 10% CPU ceiling with a short replenishment period. */
 #define FRAMEBUFFER_SC_BUDGET_US  1000u
 #define FRAMEBUFFER_SC_PERIOD_US  10000u
-/* CC polls its host VirtIO transport with Yield. A one-second period turns
- * each empty-ring observation into a one-second stall. Preserve its 1% CPU
- * ceiling while replenishing frequently enough for bounded control traffic. */
-#define CC_SC_BUDGET_US           100u
+/* CC relays bulk framebuffer data as well as control traffic. At 100 us per
+ * 10 ms, repeated 4 KiB request/reply copies exhaust its budget and stall
+ * transfers across replenishments. Give it the same finite 10% ceiling as
+ * framebuffer services; it remains the lowest-priority active PD. */
+#define CC_SC_BUDGET_US           1000u
 #define CC_SC_PERIOD_US           10000u
-_Static_assert(CC_SC_BUDGET_US * PD_DEFAULT_SC_PERIOD_US ==
-               PD_DEFAULT_SC_BUDGET_US * CC_SC_PERIOD_US,
-               "CC scheduling must retain the default CPU ceiling");
+_Static_assert(CC_SC_BUDGET_US * 10u == CC_SC_PERIOD_US,
+               "CC scheduling must retain a finite 10 percent CPU ceiling");
 /*
  * Each VMM gets one sched context for the VMM PD and one for the guest vCPU.
  * A 90% budget works for a single guest but overcommits the single-core QEMU
