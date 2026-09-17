@@ -137,6 +137,14 @@ ifeq ($(AGENTOS_BOARD),x86_64_generic_vtx)
 endif
 
 ifeq ($(X86_FIRMWARE_RESET),1)
+$(BUILD_DIR)/x86_cpu.o: $(REPO_ROOT_MK)/platform/guest-vmm/x86_cpu.c
+	@mkdir -p $(BUILD_DIR)
+	$(CC) -c $(CFLAGS) $< -o $@
+$(BUILD_DIR)/guest_vmm_primary.elf: $(BUILD_DIR)/x86_cpu.o
+$(BUILD_DIR)/x86_firmware_vmm.o: $(REPO_ROOT_MK)/platform/guest-vmm/x86_firmware.c
+	@mkdir -p $(BUILD_DIR)
+	$(CC) -c $(CFLAGS) $< -o $@
+$(BUILD_DIR)/guest_vmm_primary.elf: $(BUILD_DIR)/x86_firmware_vmm.o
 .PHONY: verify-x86-firmware
 verify-x86-firmware:
 	@test -n "$(X86_FIRMWARE_IMAGE)" -a -n "$(X86_FIRMWARE_SHA256)" || \

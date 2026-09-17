@@ -17,6 +17,9 @@
 #include <sel4/arch/vmenter.h>
 #include "contracts/guest_execution_caps.h"
 #include "contracts/x86_vtx_proof.h"
+#ifdef AGENTOS_X86_FIRMWARE_RESET
+#include "x86_firmware.h"
+#endif
 
 #ifndef CONFIG_VTX
 #error "x86_vtx_proof.c requires a CONFIG_VTX seL4 SDK"
@@ -341,36 +344,7 @@ static void qualify_firmware_modes(seL4_CPtr endpoint)
         seL4_Word rip = seL4_GetMR(SEL4_VMENTER_CALL_EIP_MR);
         seL4_Word length = seL4_GetMR(SEL4_VMENTER_FAULT_INSTRUCTION_LEN_MR);
 #ifdef AGENTOS_X86_FIRMWARE_RESET
-        /* OVMF's first transition is MOV CR0,EAX. Support the unpaged PE
-         * transition here; reject other CR accesses until their semantics
-         * are implemented. Save exit operands before VMCS calls use MRs. */
-        seL4_Word qualification = seL4_GetMR(SEL4_VMENTER_FAULT_QUALIFICATION_MR);
-        seL4_Word cr0 = seL4_GetMR(SEL4_VMENTER_FAULT_EAX);
-        if (result != SEL4_VMENTER_RESULT_FAULT || reason != 28u ||
-            qualification != 0u || length != 3u ||
-            (cr0 & (VMX_GUEST_CR0_PE | VMX_GUEST_CR0_PG)) != VMX_GUEST_CR0_PE) {
-            report_and_wait(endpoint, AOS_X86_VTX_PROOF_FAIL, reason, rip, length);
-        }
-        mode_field(endpoint, VMX_GUEST_CR0, cr0, VMX_GUEST_CR0_PE | VMX_GUEST_CR0_PG);
-        mode_field(endpoint, VMX_CONTROL_CR0_READ_SHADOW, cr0, 0xffffffffu);
-        seL4_SetMR(SEL4_VMENTER_CALL_EIP_MR, rip + length);
-        seL4_SetMR(SEL4_VMENTER_CALL_CONTROL_PPC_MR, VMX_CONTROL_PPC_HLT_EXITING);
-        seL4_SetMR(AOS_VMENTER_INTERRUPT_INFO_MR, 0u);
-        result = seL4_VMEnter(NULL);
-        reason = seL4_GetMR(SEL4_VMENTER_FAULT_REASON_MR);
-        rip = seL4_GetMR(SEL4_VMENTER_CALL_EIP_MR);
-        length = seL4_GetMR(SEL4_VMENTER_FAULT_INSTRUCTION_LEN_MR);
-        seL4_X86_VCPU_ReadVMCS_t cs =
-            seL4_X86_VCPU_ReadVMCS(AOS_GUEST_VCPU_CAP_BASE, VMX_GUEST_CS_BASE);
-        seL4_X86_VCPU_ReadVMCS_t rights =
-            seL4_X86_VCPU_ReadVMCS(AOS_GUEST_VCPU_CAP_BASE, VMX_GUEST_CS_ACCESS_RIGHTS);
-        if (result != SEL4_VMENTER_RESULT_FAULT || cs.error != seL4_NoError ||
-            rights.error != seL4_NoError || cs.value != 0u ||
-            (rights.value & 0x6000u) != 0x4000u) {
-            report_and_wait(endpoint, AOS_X86_VTX_PROOF_FAIL, reason, rip, length);
-        }
-        report_and_wait(endpoint, AOS_X86_VTX_RESET_EXIT, reason,
-                        cs.value + rip, length);
+        aos_x86_firmware_run(endpoint, result);
 #endif
         if (result != SEL4_VMENTER_RESULT_FAULT ||
             reason != AOS_X86_VTX_HLT_EXIT_REASON ||
