@@ -686,6 +686,14 @@ gate-x86_64-userspace:
 		--assert-vmx-exit --assert-firmware-reset --assert-x86-userspace \
 		--timeout-secs $(QEMU_TEST_TIMEOUT)
 
+.PHONY: gate-x86_64-linux-login
+gate-x86_64-linux-login:
+	@test -n "$(X86_ROOT_DISK)" || { echo 'Set X86_ROOT_DISK to a disposable raw root disk'; exit 1; }
+	@cargo xtask qemu-test --board x86_64_generic_vtx --guest-os none \
+		--assert-vmx-exit --assert-firmware-reset --assert-x86-linux-login \
+		--x86-block-image "$(X86_ROOT_DISK)" --x86-block-write \
+		--timeout-secs $(QEMU_TEST_TIMEOUT)
+
 .PHONY: gate-x86_64-storage
 gate-x86_64-storage:
 	@cargo xtask x86-storage --timeout-secs $(QEMU_TEST_TIMEOUT)

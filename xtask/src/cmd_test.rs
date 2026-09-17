@@ -611,6 +611,10 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
                 u8::from(args.assert_x86_userspace)
             ));
             make_args.push(format!(
+                "X86_LINUX_LOGIN={}",
+                u8::from(args.assert_x86_linux_login)
+            ));
+            make_args.push(format!(
                 "X86_FIRMWARE_RESET={}",
                 u8::from(args.assert_firmware_reset)
             ));
@@ -930,38 +934,42 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
                     &mut qemu,
                 )?;
             }
-            if args.assert_x86_userspace {
-                x86_console_roundtrip(&cc_sock, Duration::from_secs(args.timeout_secs))?;
-            }
-            wait_for_x86_vtx_proof(
-                &log_path,
-                Duration::from_secs(args.timeout_secs),
-                &mut qemu,
-                args.assert_firmware_modes,
-                args.assert_firmware_reset,
-                args.assert_guest_faults,
-                args.assert_x86_userspace,
-            )
-            .and_then(|proof| {
-                if args.assert_firmware_reset {
-                    let required: &[&str] = if args.assert_x86_userspace {
-                        &[
-                            "[rt] x86 host block queue read verified",
-                            "[rt] x86 Linux guest block read verified",
-                            "[rt] x86 Linux guest network packet roundtrip verified",
-                        ]
-                    } else {
-                        &["[rt] x86 host block queue read verified"]
-                    };
-                    wait_for_all_markers(
-                        &log_path,
-                        required,
-                        Duration::from_secs(args.timeout_secs),
-                        &mut qemu,
-                    )?;
+            if args.assert_x86_linux_login {
+                x86_linux_login(&cc_sock, &log_path, Duration::from_secs(args.timeout_secs))
+            } else {
+                if args.assert_x86_userspace {
+                    x86_console_roundtrip(&cc_sock, Duration::from_secs(args.timeout_secs))?;
                 }
-                Ok(proof)
-            })
+                wait_for_x86_vtx_proof(
+                    &log_path,
+                    Duration::from_secs(args.timeout_secs),
+                    &mut qemu,
+                    args.assert_firmware_modes,
+                    args.assert_firmware_reset,
+                    args.assert_guest_faults,
+                    args.assert_x86_userspace,
+                )
+                .and_then(|proof| {
+                    if args.assert_firmware_reset {
+                        let required: &[&str] = if args.assert_x86_userspace {
+                            &[
+                                "[rt] x86 host block queue read verified",
+                                "[rt] x86 Linux guest block read verified",
+                                "[rt] x86 Linux guest network packet roundtrip verified",
+                            ]
+                        } else {
+                            &["[rt] x86 host block queue read verified"]
+                        };
+                        wait_for_all_markers(
+                            &log_path,
+                            required,
+                            Duration::from_secs(args.timeout_secs),
+                            &mut qemu,
+                        )?;
+                    }
+                    Ok(proof)
+                })
+            }
         } else if args.board == "x86_64_generic" {
             wait_for_x86_reduced_smoke(&log_path, Duration::from_secs(args.timeout_secs))
         } else {
@@ -2071,6 +2079,64 @@ pub(crate) fn spawn_qemu_with_guest(
     };
     println!("[xtask:test] QEMU pid={}", child.id());
     Ok(child)
+}
+
+fn x86_linux_login(socket: &Path, log_path: &Path, timeout: Duration) -> anyhow::Result<String> {
+    let deadline = Instant::now() + timeout;
+    let mut stream = loop {
+        match UnixStream::connect(socket) {
+            Ok(stream) => break stream,
+            Err(error) if Instant::now() >= deadline => return Err(error.into()),
+            Err(_) => std::thread::sleep(Duration::from_millis(20)),
+        }
+    };
+    stream.set_read_timeout(Some(Duration::from_millis(200)))?;
+    let transcript_path = log_path.with_extension("console.log");
+    let mut transcript_file = std::fs::File::create(&transcript_path)?;
+    println!(
+        "[xtask:test] Intel Linux console transcript: {}",
+        transcript_path.display()
+    );
+    let mut transcript = Vec::new();
+    while Instant::now() < deadline {
+        let mut chunk = [0u8; 4096];
+        match stream.read(&mut chunk) {
+            Ok(0) => anyhow::bail!("Intel Linux console closed before login"),
+            Ok(count) => {
+                transcript_file.write_all(&chunk[..count])?;
+                transcript.extend_from_slice(&chunk[..count]);
+                anyhow::ensure!(
+                    transcript.len() <= 1024 * 1024,
+                    "Intel Linux console exceeds 1 MiB"
+                );
+                let text = String::from_utf8_lossy(&transcript);
+                anyhow::ensure!(
+                    !text.contains("Kernel panic") && !text.contains("Entering emergency mode"),
+                    "Intel Linux boot failed; see {}",
+                    transcript_path.display()
+                );
+                if text
+                    .lines()
+                    .any(|line| line.trim_end().ends_with(" login:"))
+                {
+                    return Ok(
+                        "Linux login prompt through canonical virtio-console and serial_virt"
+                            .into(),
+                    );
+                }
+            }
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                ) => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
+    anyhow::bail!(
+        "Intel Linux login timed out; see {}",
+        transcript_path.display()
+    )
 }
 
 fn x86_console_roundtrip(socket: &Path, timeout: Duration) -> anyhow::Result<()> {
@@ -4172,6 +4238,42 @@ fn tail_chars(s: &str, max_chars: usize) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn intel_login_requires_prompt_and_retains_console_failures() {
+        use std::os::unix::net::UnixListener;
+        for (bytes, expected) in [
+            (
+                b"Debian GNU/Linux 13 debian hvc0\r\ndebian login: ".as_slice(),
+                true,
+            ),
+            (b"Debian GNU/Linux 13\r\ndebian log".as_slice(), false),
+            (
+                b"Kernel panic - not syncing\r\ndebian login: ".as_slice(),
+                false,
+            ),
+            (
+                b"Entering emergency mode\r\ndebian login: ".as_slice(),
+                false,
+            ),
+        ] {
+            let temp = tempfile::tempdir().unwrap();
+            let socket = temp.path().join("console.sock");
+            let log = temp.path().join("qemu.log");
+            let listener = UnixListener::bind(&socket).unwrap();
+            let sender = std::thread::spawn(move || {
+                let (mut stream, _) = listener.accept().unwrap();
+                std::io::Write::write_all(&mut stream, bytes).unwrap();
+            });
+            let result = super::x86_linux_login(&socket, &log, std::time::Duration::from_secs(2));
+            sender.join().unwrap();
+            assert_eq!(result.is_ok(), expected, "{result:?}");
+            assert_eq!(
+                std::fs::read(log.with_extension("console.log")).unwrap(),
+                bytes
+            );
+        }
+    }
+
     use super::*;
     use std::os::unix::net::UnixListener;
 

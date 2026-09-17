@@ -128,6 +128,24 @@ endif
 ifeq ($(AGENTOS_BOARD),x86_64_generic_vtx)
   CFLAGS += -DAGENTOS_X86_VTX=1
   CFLAGS_ROOT_TASK += -DAGENTOS_X86_VTX=1
+  ifeq ($(X86_LINUX_LOGIN),1)
+    ifneq ($(X86_FIRMWARE_RESET),1)
+      $(error X86_LINUX_LOGIN requires X86_FIRMWARE_RESET=1)
+    endif
+    ifeq ($(strip $(X86_BOOT_KERNEL)),)
+      $(error X86_LINUX_LOGIN requires X86_BOOT_KERNEL)
+    endif
+    ifeq ($(strip $(X86_BOOT_INITRD)),)
+      $(error X86_LINUX_LOGIN requires X86_BOOT_INITRD)
+    endif
+    ifeq ($(strip $(X86_BOOT_CMDLINE_FILE)),)
+      $(error X86_LINUX_LOGIN requires X86_BOOT_CMDLINE_FILE)
+    endif
+    ifeq ($(X86_USERSPACE_PROOF),1)
+      $(error X86_LINUX_LOGIN conflicts with X86_USERSPACE_PROOF)
+    endif
+    CFLAGS += -DAGENTOS_X86_LINUX_LOGIN=1
+  endif
   ifeq ($(X86_USERSPACE_PROOF),1)
     ifneq ($(X86_FIRMWARE_RESET),1)
       $(error X86_USERSPACE_PROOF requires X86_FIRMWARE_RESET=1)

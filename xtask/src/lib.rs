@@ -147,8 +147,12 @@ pub struct TestArgs {
         conflicts_with = "assert_guest_faults"
     )]
     pub assert_x86_userspace: bool,
-    /// Reuse a qualification disk; writable only with --x86-block-write.
-    #[arg(long, requires = "assert_x86_userspace")]
+    /// Require a Linux login prompt over the canonical Intel virtio console.
+    #[arg(long, requires = "assert_firmware_reset", requires = "x86_block_image",
+          conflicts_with_all = ["assert_x86_userspace", "assert_guest_faults"])]
+    pub assert_x86_linux_login: bool,
+    /// Reuse a root or qualification disk; writable only with --x86-block-write.
+    #[arg(long, requires = "assert_firmware_reset")]
     pub x86_block_image: Option<std::path::PathBuf>,
     #[arg(long, requires = "x86_block_image")]
     pub x86_block_write: bool,

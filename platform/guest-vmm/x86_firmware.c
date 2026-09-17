@@ -299,12 +299,16 @@ void aos_x86_firmware_run(seL4_CPtr ep, aos_x86_vmenter_return_t returned)
     if (!aos_vmm_virtio_blk_read_boot(0u, 1u, block_boot_data,
                                      sizeof(block_boot_data), block_wait))
         stop(ep, AOS_X86_VTX_PROOF_FAIL, 0x424c4bu, 0, 2u);
+#ifndef AGENTOS_X86_LINUX_LOGIN
+    /* Qualification gates retain their exact fixture check. A distribution
+     * root disk has its own partition table and filesystem in this block. */
     static const char expected[] = "agentos-host-block-qualification-v1\n";
     for (unsigned i = 0; i < sizeof(block_boot_data); i++) {
         uint8_t want = i < sizeof(expected) - 1u ? (uint8_t)expected[i] : 0u;
         if (block_boot_data[i] != want)
             stop(ep, AOS_X86_VTX_PROOF_FAIL, 0x424c4bu, 0, 0x100u + i);
     }
+#endif
     uint32_t timer_quantum=0;
     const aos_x86_memory_t memory = {
         .ram=(const uint8_t *)AOS_X86_FIRMWARE_RAM_VA, .ram_size=AOS_X86_FIRMWARE_RAM,
