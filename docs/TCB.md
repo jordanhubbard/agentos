@@ -121,6 +121,15 @@ resolving the public handle and checking lifecycle authority. Input remains
 queued while the guest is paused. Console bytes no longer travel through
 VMM or vm_manager IPC. Only attachment and lifecycle control use IPC.
 
+The shared virtio GPA layer requires an explicitly installed guest RAM
+translator. Before binding, translation, nonempty payload copies and queue
+activation fail; there is no identity-address fallback. Clearing the hook
+disables subsequent translations but does not revoke cached ring aliases.
+Teardown must separately quiesce devices, reset rings and revoke RAM authority.
+The [GPA binding receipt](evidence/2026-09-17-spark/virtio-gpa-required.json)
+records host rejection checks and the full Spark gate; it does not establish
+Intel device integration or target-side teardown qualification.
+
 The Ubuntu bidirectional console gate requires both actual serial-PD transfer
 markers and guest-echo evidence. Eight seL4 fault probes verify that neither
 VMM maps the other VMM's page or CC's frontend page. The dual-guest test at
