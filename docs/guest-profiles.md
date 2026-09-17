@@ -135,7 +135,7 @@ Launch and qualification builds derive `GUEST_GRAPHICS` and `GUEST_INPUT`
 from the selected profiles' device lists, including every guest in a scenario.
 For example, `make run GUEST_PROFILE=debian-input.toml` builds the input
 virtualizer and guest backends automatically. Absent capabilities are passed
-as zero so inherited environment settings cannot add an unrequested backend.
+as empty values so inherited environment settings cannot add an unrequested backend.
 Direct `make build` still requires the corresponding optional build flags.
 
 The canonical Make selector is `GUEST_PROFILE` for one profile,
