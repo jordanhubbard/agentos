@@ -742,6 +742,13 @@ test-x86-cpu-host:
 	@mkdir -p $(BUILD_TMP_DIR)
 	$(CC) -std=c11 -Wall -Wextra -Werror -I platform/include tests/platform/test_x86_cpu.c platform/guest-vmm/x86_cpu.c -o $(BUILD_TMP_DIR)/test_x86_cpu
 	$(BUILD_TMP_DIR)/test_x86_cpu
+test-host: test-x86-acpi-host
+
+.PHONY: test-x86-acpi-host
+test-x86-acpi-host:
+	@mkdir -p $(BUILD_TMP_DIR)
+	$(CC) -std=c11 -Wall -Wextra -Werror -I platform/include tests/platform/test_x86_acpi.c platform/guest-vmm/x86_acpi.c -o $(BUILD_TMP_DIR)/test_x86_acpi
+	$(BUILD_TMP_DIR)/test_x86_acpi
 
 .PHONY: test-framebuffer-host
 test-framebuffer-host:
