@@ -18,8 +18,8 @@
  * guest handles to vm_manager slots, validates wire requests and replies, and
  * propagates lifecycle failures. It owns no guest device allocation policy.
  *
- * Priority: 160
- * Mode: VirtIO polled loop; seL4_Yield while used ring empty to avoid starving PDs
+ * Priority: 164
+ * Mode: IRQ wait for idle AArch64 RX; bounded polling for TX/partial RX.
  *
  * Copyright (c) 2026 The agentOS Project
  * SPDX-License-Identifier: BSD-2-Clause
@@ -38,6 +38,7 @@
 #include "cc_vm_client.h"
 #include "contracts/vm_manager_contract.h"
 #include "sel4_ipc.h"
+#include "sel4_boot.h"
 #include "serial_log.h"
 #include "serial_virt_client.h"
 #include <platform/serial_virt_layout.h>
@@ -63,12 +64,12 @@
  *   [1] TX data buffer
  *   [2] RX data buffer
  *
- * We use a single descriptor per queue (VQ_DEPTH=4 slots, one in flight at a
- * time) and poll the used ring with seL4_Yield so other PDs can run.
+ * We use one descriptor chain per queue (VQ_DEPTH=4 slots, one in flight at a
+ * time). Idle AArch64 RX waits for the owned device IRQ; TX and partial RX
+ * poll with bounded seL4_Yield retries.
  *
- * Wire frame sizes (4112 bytes) exceed the 4096-byte buffer page, so TX and RX
- * loop in ≤4096-byte chunks.  The protocol is strictly sequential (one reply
- * per request), so no RX overflow can occur across frame boundaries.
+ * Each 4112-byte wire frame uses a 4096-byte descriptor plus a 16-byte tail.
+ * The protocol is strictly sequential (one reply per request).
  */
 
 #define VMMIO_SLOT_OFF    (2u * 0x200u)  /* bus.2 → offset +0x400 within the page */
@@ -108,6 +109,8 @@ static void cc_dbg_hex(uint64_t v)
 #define VMMIO_QUEUE_NUM       0x038u
 #define VMMIO_QUEUE_READY     0x044u
 #define VMMIO_QUEUE_NOTIFY    0x050u
+#define VMMIO_INTERRUPT_STATUS 0x060u
+#define VMMIO_INTERRUPT_ACK    0x064u
 #define VMMIO_STATUS          0x070u
 #define VMMIO_Q_DESC_LO       0x080u
 #define VMMIO_Q_DESC_HI       0x084u
@@ -235,18 +238,19 @@ static bool virtio_serial_init(void)
     vio_wr(VMMIO_STATUS, 0u);
     vio_wr(VMMIO_STATUS, VSTATUS_ACK);
     vio_wr(VMMIO_STATUS, VSTATUS_ACK | VSTATUS_DRIVER);
-    /* Negotiate features: read both 32-bit words, accept them with MULTIPORT
-     * cleared (bit 1 of word 0) and VIRTIO_F_VERSION_1 set (bit 0 of word 1).
-     * Without VIRTIO_F_VERSION_1 the device falls back to legacy mode where
-     * QueueDescLow/High and QueueReady do not exist. */
-    vio_wr(VMMIO_DEV_FEAT_SEL, 0u);
-    uint32_t feat0 = vio_rd(VMMIO_DEV_FEAT);
+    /* Only VERSION_1 is implemented. In particular, EVENT_IDX requires
+     * publishing used_event thresholds; accepting it with a fixed zero
+     * threshold suppresses completion interrupts after the first event. */
     vio_wr(VMMIO_DEV_FEAT_SEL, 1u);
     uint32_t feat1 = vio_rd(VMMIO_DEV_FEAT);
+    if (!(feat1 & 1u)) {
+        vio_wr(VMMIO_STATUS, VSTATUS_FAILED);
+        return false;
+    }
     vio_wr(VMMIO_DRV_FEAT_SEL, 0u);
-    vio_wr(VMMIO_DRV_FEAT, feat0 & ~(1u << 1u));  /* clear MULTIPORT */
+    vio_wr(VMMIO_DRV_FEAT, 0u);
     vio_wr(VMMIO_DRV_FEAT_SEL, 1u);
-    vio_wr(VMMIO_DRV_FEAT, feat1);                /* accepts VIRTIO_F_VERSION_1 */
+    vio_wr(VMMIO_DRV_FEAT, 1u); /* VIRTIO_F_VERSION_1 */
     vio_wr(VMMIO_STATUS, VSTATUS_ACK | VSTATUS_DRIVER | VSTATUS_FEAT_OK);
     uint32_t s_after = vio_rd(VMMIO_STATUS);
     cc_dbg_puts("[cc_pd] STATUS after FEAT_OK write="); cc_dbg_hex(s_after); cc_dbg_puts("\n");
@@ -390,6 +394,7 @@ static bool vio_serial_write(const void *buf, uint32_t n)
 static bool vio_serial_read(void *buf, uint32_t n)
 {
     uint8_t *p = (uint8_t *)buf;
+    const uint32_t total = n;
     while (n > 0u) {
         uint16_t cur;
         uint32_t wait = 0u;
@@ -397,6 +402,28 @@ static bool vio_serial_read(void *buf, uint32_t n)
             VQ_MB();
             cur = RX_USED->idx;
             if (cur != g_rx_used_last) { break; }
+#if defined(__aarch64__)
+            if (n == total) {
+                /* No request has begun: sleep on the driver's persistent IRQ
+                 * notification instead of forfeiting the MCS budget. Clear
+                 * the device cause, unmask the IRQ, then recheck the ring;
+                 * an arrival after that check leaves a pending notification.
+                 * Partial frames retain the bounded polling recovery below. */
+                uint32_t irq = vio_rd(VMMIO_INTERRUPT_STATUS);
+                if (irq) vio_wr(VMMIO_INTERRUPT_ACK, irq);
+                VQ_MB();
+                if (seL4_IRQHandler_Ack(PD_IRQHANDLER_SLOT_BASE) == seL4_NoError) {
+                    VQ_MB();
+                    if (RX_USED->idx == g_rx_used_last) {
+                        seL4_Word badge;
+                        seL4_Wait(PD_CNODE_SLOT_CC_IRQ_WAIT, &badge);
+                    }
+                    continue;
+                }
+            }
+#else
+            (void)total;
+#endif
             seL4_Yield();
             wait++;
             if (wait >= CC_VIRTIO_RX_WAIT_LIMIT) {

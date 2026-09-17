@@ -290,3 +290,7 @@ typedef struct {
 #define PD_CNODE_SLOT_INPUT_PEER_NOTIFY 37u /* service: two VMMs and CC */
 #define PD_CNODE_SLOT_DISPLAY_WAIT 40u
 #define PD_CNODE_SLOT_DISPLAY_PEER_NOTIFY 41u
+#define PD_CNODE_SLOT_CC_IRQ_WAIT 42u /* receive-only CC transport IRQ */
+_Static_assert(PD_CNODE_SLOT_CC_IRQ_WAIT > PD_CNODE_SLOT_DISPLAY_PEER_NOTIFY &&
+               PD_CNODE_SLOT_CC_IRQ_WAIT < PD_IRQHANDLER_SLOT_BASE,
+               "CC IRQ wait slot must not overlap device peer or handler slots");

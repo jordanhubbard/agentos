@@ -2339,6 +2339,15 @@ void root_task_main(const seL4_BootInfo *bi)
         dbg_puts("[rt] pd SC bound, starting\n");
 
         seL4_CPtr pd_ntfn_cap = g_pd_notifications[i];
+        if (pd->self_svc_id == SVC_ID_CC_PD && pd->irq_count > 0u) {
+            if (pd_ntfn_cap == seL4_CapNull ||
+                seL4_CNode_Copy(pd_cnode, PD_CNODE_SLOT_CC_IRQ_WAIT,
+                    pd->cnode_size_bits, seL4_CapInitThreadCNode, pd_ntfn_cap,
+                    64u, seL4_CapRights_new(0, 0, 1, 0)) != seL4_NoError) {
+                dbg_puts("[rt] CC IRQ wait grant failed; refusing PD start\n");
+                continue;
+            }
+        }
         if (pd_ntfn_cap != seL4_CapNull) {
             seL4_Error ntfn_err = seL4_TCB_BindNotification(tr.tcb_cap, pd_ntfn_cap);
             if (ntfn_err != seL4_NoError) {
