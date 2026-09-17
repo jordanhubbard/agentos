@@ -117,6 +117,8 @@ int main(void)
     for (unsigned i = 0; i < 100; ++i) assert(data[i] == 0);
     io(&a, 0x70, 1, true, 0xb4); assert(io(&a, 0x71, 1, false, 0) == 0);
     io(&a, 0x70, 1, true, 0x35); assert(io(&a, 0x71, 1, false, 0) == 1);
+    assert(io(&a,0x70,1,false,0)==0xff);
+    assert(io(&a,0x71,1,false,0)==1); /* index read does not change selection */
     io(&a, 0x70, 1, true, 0xf); assert(io(&a, 0x71, 1, false, 0) == 0);
     io(&a, 0x71, 1, true, 0);
     reject(&a, 0x71, 1, true);
