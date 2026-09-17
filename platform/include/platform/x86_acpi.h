@@ -42,7 +42,7 @@ size_t aos_x86_cpu_ssdt_write(void *output, size_t capacity,
  * OVMF allocates guest copies, relocates pointers and installs the tables.
  * The PM register block is the VMM's private PIIX4 model at I/O 0xb000.
  * No sleep state, hotplug, PCI endpoint or host resource is advertised. */
-#define AOS_X86_ACPI_TABLE_BYTES 769u
+#define AOS_X86_ACPI_TABLE_BYTES 846u
 #define AOS_X86_ACPI_LOADER_BYTES (19u * 128u)
 typedef struct {
     uint8_t tables[AOS_X86_ACPI_TABLE_BYTES];

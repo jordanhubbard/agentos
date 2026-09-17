@@ -106,6 +106,18 @@ does not meet that condition. Pending network wakes share the VMM notification
 path with block and serial. This attachment proves driver initialization, not
 guest packet I/O or a Linux network interface.
 
+The generated guest DSDT advertises console, block and network as separate
+LNRO0005 devices with integer UIDs 0/1/2, MMIO pages at 0xf0000000/1000/2000
+and GSIs 16/17/18. Hardware attachments advertise the MAC returned by
+`net_virt`, matching the NIC driver's client address; loopback retains the
+platform default MAC. The Intel userspace qualification opens Linux `eth0`,
+checks its MAC, raises the interface and performs a packet-socket ARP exchange
+with the local QEMU gateway. It checks all 42 protocol bytes in the reply and
+bounds the wait to 20 seconds. VMM completion additionally requires host
+attachment, guest DRIVER_OK and observed TX consumption and RX activity.
+This qualifies Ethernet packet I/O, not IP configuration, DHCP, SSH, Internet
+connectivity or receive-latency guarantees.
+
 The Intel firmware qualification machine assigns modern virtio block to PCI
 00:05.0 and network to 00:06.0. Root discovers both through the same bounded
 configuration-port path: validate the device identity, disable decoding and

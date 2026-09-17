@@ -3456,6 +3456,7 @@ void root_task_main(const seL4_BootInfo *bi)
             dbg_puts("[rt] x86 canonical host network attachment verified\n");
             dbg_puts("[rt] x86 host block queue read verified\n");
             dbg_puts("[rt] x86 Linux guest block read verified\n");
+            dbg_puts("[rt] x86 Linux guest network packet roundtrip verified\n");
 #else
             status == AOS_X86_VTX_FIRMWARE_CONFIG &&
             reason == 30u && rip <= 0xffffffffu &&

@@ -827,6 +827,7 @@ test-x86-net-host:
 		libvmm/src/virtio/net.c libvmm/src/virtio/mmio.c libvmm/src/virtio/gpa.c \
 		-o $(BUILD_TMP_DIR)/test_x86_net
 	$(BUILD_TMP_DIR)/test_x86_net
+	$(BUILD_TMP_DIR)/test_x86_net host-fixture
 
 .PHONY: test-x86-block-host
 test-x86-block-host:

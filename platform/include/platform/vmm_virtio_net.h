@@ -16,5 +16,7 @@ void aos_vmm_virtio_net_after_fault(void);
 void aos_vmm_virtio_net_rx_ready(void);
 /* The canonical virtualizer reported an initialized host NIC at attachment. */
 bool aos_vmm_virtio_net_host_ready(void);
+/* Qualification requires a host NIC, guest DRIVER_OK, and TX/RX activity. */
+bool aos_vmm_virtio_net_guest_io_completed(void);
 
 #endif /* AOS_PLATFORM_VMM_VIRTIO_NET_H */

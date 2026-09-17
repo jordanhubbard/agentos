@@ -223,6 +223,8 @@ storage_write:
     test %rax, %rax
     jne failed
     mov $6, %r13d
+    call network_probe
+    mov $6, %r13d
     mov $2, %eax                  /* open a file on the initramfs */
     lea path(%rip), %rdi
     mov $0x242, %esi              /* O_CREAT | O_TRUNC | O_RDWR */
@@ -279,6 +281,118 @@ failed:
     mov %r13d, %edx
     cpuid
     jmp failed
+/* Native Linux packet socket over the in-tree virtio-net driver. The fixture
+ * sends one ARP request to the local QEMU gateway and verifies its reply.
+ * No host-forwarded port, Internet access or guest custom driver is used. */
+network_probe:
+    mov $20, %r13d
+    mov $41, %eax                 /* socket(AF_PACKET, SOCK_RAW, ETH_P_ARP) */
+    mov $17, %edi
+    mov $3, %esi
+    mov $0x0608, %edx             /* htons(0x0806) */
+    syscall
+    test %rax, %rax
+    js failed
+    mov %rax, %r12
+    mov $21, %r13d
+    mov $16, %eax                 /* SIOCGIFHWADDR: verify guest MAC */
+    mov %r12, %rdi
+    mov $0x8927, %esi
+    lea net_ifreq(%rip), %rdx
+    syscall
+    test %rax, %rax
+    jne failed
+    cmpw $1, net_ifreq+16(%rip)   /* ARPHRD_ETHER */
+    jne failed
+    lea net_ifreq+18(%rip), %rsi
+    lea arp_request+6(%rip), %rdi
+    mov $6, %ecx
+    cld
+    repe cmpsb
+    jne failed
+    mov $22, %r13d
+    mov $16, %eax                 /* SIOCGIFINDEX */
+    mov %r12, %rdi
+    mov $0x8933, %esi
+    lea net_ifreq(%rip), %rdx
+    syscall
+    test %rax, %rax
+    jne failed
+    mov net_ifreq+16(%rip), %eax
+    test %eax, %eax
+    jle failed
+    mov %eax, net_address+4(%rip)
+    mov $23, %r13d
+    mov $16, %eax                 /* SIOCGIFFLAGS */
+    mov %r12, %rdi
+    mov $0x8913, %esi
+    lea net_ifreq(%rip), %rdx
+    syscall
+    test %rax, %rax
+    jne failed
+    orw $1, net_ifreq+16(%rip)    /* IFF_UP */
+    mov $16, %eax
+    mov %r12, %rdi
+    mov $0x8914, %esi             /* SIOCSIFFLAGS */
+    lea net_ifreq(%rip), %rdx
+    syscall
+    test %rax, %rax
+    jne failed
+    mov $24, %r13d
+    mov $49, %eax                 /* bind packet socket to eth0 */
+    mov %r12, %rdi
+    lea net_address(%rip), %rsi
+    mov $20, %edx
+    syscall
+    test %rax, %rax
+    jne failed
+    mov $25, %r13d
+    mov $44, %eax                 /* sendto: exact Ethernet + ARP request */
+    mov %r12, %rdi
+    lea arp_request(%rip), %rsi
+    mov $42, %edx
+    xor %r10d, %r10d
+    lea net_address(%rip), %r8
+    mov $20, %r9d
+    syscall
+    cmp $42, %rax
+    jne failed
+    mov $26, %r13d
+    mov %r12d, net_poll(%rip)
+    mov $7, %eax                  /* poll: bounded guest receive wait */
+    lea net_poll(%rip), %rdi
+    mov $1, %esi
+    mov $20000, %edx
+    syscall
+    cmp $1, %rax
+    jne failed
+    cmpw $1, net_poll+6(%rip)
+    jne failed
+    mov $27, %r13d
+    mov $45, %eax                 /* recvfrom(MSG_DONTWAIT) */
+    mov %r12, %rdi
+    lea net_buffer(%rip), %rsi
+    mov $2048, %edx
+    mov $0x40, %r10d
+    xor %r8d, %r8d
+    xor %r9d, %r9d
+    syscall
+    cmp $42, %rax
+    jl failed
+    /* Ethernet padding is permitted; all 42 protocol bytes must match. */
+    lea net_buffer(%rip), %rsi
+    lea arp_reply(%rip), %rdi
+    mov $42, %ecx
+    cld
+    repe cmpsb
+    jne failed
+    mov $28, %r13d
+    mov $3, %eax
+    mov %r12, %rdi
+    syscall
+    test %rax, %rax
+    jne failed
+    ret
 console_write:
     mov %rsi, %r15
     mov %rdx, %rbp
@@ -310,6 +424,26 @@ reply: .ascii "agentos-uart-reply\n"
 reply_end:
 data: .ascii "agentOS x86 Linux syscall roundtrip\n"
 data_end:
+arp_request:
+    .byte 0xff,0xff,0xff,0xff,0xff,0xff, 0x52,0x54,0,0x12,0x34,0x56, 8,6
+    .byte 0,1,8,0,6,4,0,1, 0x52,0x54,0,0x12,0x34,0x56, 10,0,2,15
+    .byte 0,0,0,0,0,0, 10,0,2,2
+arp_reply:
+    .byte 0x52,0x54,0,0x12,0x34,0x56, 0x52,0x55,10,0,2,2, 8,6
+    .byte 0,1,8,0,6,4,0,2, 0x52,0x55,10,0,2,2, 10,0,2,2
+    .byte 0x52,0x54,0,0x12,0x34,0x56, 10,0,2,15
+.section .data
+.balign 8
+net_ifreq: .asciz "eth0"
+    .zero 35                     /* IFNAMSIZ 16 + 24-byte ifreq union */
+net_address:
+    .short 17, 0x0608
+    .long 0
+    .short 0
+    .byte 0,6
+    .byte 0xff,0xff,0xff,0xff,0xff,0xff,0,0
+net_poll: .long 0
+    .short 1,0
 .section .bss
 .balign 16
 buffer: .skip data_end-data
@@ -318,4 +452,5 @@ console_buffer: .skip request_end-request
 .balign 8
 disk_capacity: .skip 8
 disk_buffer: .skip 4096
+net_buffer: .skip 2048
 .section .note.GNU-stack,"",@progbits
