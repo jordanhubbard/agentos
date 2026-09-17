@@ -14,6 +14,7 @@ bool aos_x86_config_init(aos_x86_config_t *s, uint32_t ram_bytes)
     if (!s || ram_bytes < 32u*1024u*1024u || ram_bytes > 0x80000000u ||
         (ram_bytes & 0xffffu)) return false;
     *s = (aos_x86_config_t){.ram_bytes = ram_bytes};
+    if (!aos_x86_rtc_init(&s->rtc,AOS_X86_RTC_BOOT_EPOCH,0)) return false;
     put(s->host, 0x12378086u, 4); /* virtual i440FX host bridge */
     s->host[8] = 2; s->host[11] = 6;
     put(s->pm, 0x71138086u, 4); /* virtual PIIX4 PM, bus 0 slot 1 function 3 */
@@ -139,6 +140,8 @@ bool aos_x86_config_io(aos_x86_config_t *s, uint16_t port, unsigned width,
     }
     if (port == 0x71u && width == 1u && write && s->cmos_index == 0x0fu)
         return (*value & 0xffu) == 0; /* acknowledge cold boot; no S3 resume */
+    if (port == 0x71u && width == 1u && (s->cmos_index<=0x0du || s->cmos_index==0x32u))
+        return aos_x86_rtc_io(&s->rtc,s->cmos_index,write,value,timer_ticks);
     if (port == 0x71u && width == 1u && !write) {
         uint32_t above16 = (s->ram_bytes - 0x1000000u) >> 16;
         if (s->cmos_index == 0x0fu) *value = 0; /* cold boot; no S3 resume state */

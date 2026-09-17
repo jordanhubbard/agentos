@@ -2,6 +2,7 @@
 #define AOS_X86_CONFIG_H
 #include <stdbool.h>
 #include <stdint.h>
+#include "platform/x86_rtc.h"
 
 typedef struct {
     uint32_t pci_address, ram_bytes, fw_offset;
@@ -10,6 +11,7 @@ typedef struct {
     uint32_t pci_reads, timer_reads, fw_reads;
     uint32_t cpu_selector;
     uint8_t cpu_command;
+    aos_x86_rtc_t rtc;
 } aos_x86_config_t;
 
 /* One state per guest; timer_ticks is supplied by the VMM's virtual clock.
