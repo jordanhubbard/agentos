@@ -133,6 +133,12 @@ int main(void)
     assert(!aos_x86_absent_mmio(0xfed45000,1,false,&absent));
     assert(!aos_x86_absent_mmio(0xfed40000,1,true,&absent));
     assert(!aos_x86_absent_mmio(0xfee00000,4,false,&absent));
+    assert(aos_x86_rom_store(&m,0xffc00010,1));
+    assert(aos_x86_rom_store(&m,0xffc00ffc,4));
+    assert(!aos_x86_rom_store(&m,0xffc01000,1));
+    assert(!aos_x86_rom_store(&m,0xffc00fff,2));
+    assert(!aos_x86_rom_store(&m,0x5000,1));
+    assert(!aos_x86_rom_store(&m,UINT64_MAX,4));
     puts("PASS: private APIC timer, bounded page walks and 32-bit MMIO MOV decoding");
     return 0;
 }

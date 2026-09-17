@@ -189,7 +189,8 @@ void aos_x86_firmware_run(seL4_CPtr ep, seL4_Word result)
             if (reason == 31u) { regs.eax=(uint32_t)value; regs.edx=value >> 32; }
         } else if (reason == 48u &&
                    ((fault_gpa >= AOS_X86_APIC_BASE && fault_gpa < AOS_X86_APIC_BASE+4096) ||
-                    (fault_gpa >= 0xfed40000u && fault_gpa < 0xfed45000u)) &&
+                    (fault_gpa >= 0xfed40000u && fault_gpa < 0xfed45000u) ||
+                    (fault_gpa >= memory.rom_base && fault_gpa-memory.rom_base < memory.rom_size)) &&
                    (qual & 0x180u) == 0x180u &&
                    ((qual & 7u) == 1u || (qual & 7u) == 2u)) {
             if ((read_field(ep, CS_RIGHTS) & 0x6000u) != 0x2000u ||
@@ -211,7 +212,8 @@ void aos_x86_firmware_run(seL4_CPtr ep, seL4_Word result)
             uint32_t value=op.value;
             bool handled = physical >= AOS_X86_APIC_BASE && physical < AOS_X86_APIC_BASE+4096 ?
                 op.width == 4 && aos_x86_apic_io(&apic, (unsigned)(physical-AOS_X86_APIC_BASE), op.write, &value, now) :
-                aos_x86_absent_mmio(physical, op.width, op.write, &value);
+                op.write ? aos_x86_rom_store(&memory, physical, op.width) :
+                aos_x86_absent_mmio(physical, op.width, false, &value);
             if (!handled)
                 stop(ep, AOS_X86_VTX_PROOF_FAIL, reason, rip, physical);
             if (!op.write) assign(ep, &regs, op.reg, aos_x86_mov_result(&op, values[op.reg], value));

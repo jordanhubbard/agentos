@@ -43,4 +43,7 @@ uint64_t aos_x86_mov_result(const aos_x86_mov_t *op, uint64_t previous, uint32_t
 /* This machine has no TPM. Only its declared absent MMIO aperture returns
  * all-one read data; writes and unknown device apertures are rejected. */
 bool aos_x86_absent_mmio(uint64_t gpa, unsigned width, bool write, uint32_t *value);
+/* ROM bus stores complete without changing bytes. EPT and the VMM alias
+ * remain read-only; this does not claim programmable flash or persistence. */
+bool aos_x86_rom_store(const aos_x86_memory_t *memory, uint64_t gpa, unsigned width);
 #endif

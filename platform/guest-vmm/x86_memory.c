@@ -141,3 +141,10 @@ bool aos_x86_absent_mmio(uint64_t gpa, unsigned width, bool write, uint32_t *val
     *value=width == 4 ? UINT32_MAX : (1u << (8*width))-1;
     return true;
 }
+
+bool aos_x86_rom_store(const aos_x86_memory_t *m, uint64_t gpa, unsigned width)
+{
+    return m && m->rom && (width == 1 || width == 2 || width == 4) &&
+           !(gpa & (width-1)) && gpa >= m->rom_base && m->rom_size >= width &&
+           gpa-m->rom_base <= m->rom_size-width;
+}
