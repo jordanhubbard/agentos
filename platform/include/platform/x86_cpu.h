@@ -12,4 +12,7 @@ typedef struct { uint32_t eax, ebx, ecx, edx; } aos_x86_cpuid_t;
 #define AOS_X86_EXT_EDX ((1u<<20)|(1u<<29))
 bool aos_x86_cpu_supported(uint32_t basic_edx, uint32_t ext_edx, uint32_t widths);
 aos_x86_cpuid_t aos_x86_cpu_id(uint32_t leaf, uint32_t subleaf);
+/* Synthetic platform ID zero and no guest-loaded microcode. Host MSRs are
+ * never read or written; update triggers and unknown registers are rejected. */
+bool aos_x86_cpu_identity_msr(uint32_t msr, bool write, uint64_t *value);
 #endif

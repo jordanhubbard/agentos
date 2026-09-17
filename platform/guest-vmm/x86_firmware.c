@@ -165,6 +165,12 @@ void aos_x86_firmware_run(seL4_CPtr ep, seL4_Word result)
                 write_field(ep, ENTRY, entry);
             }
         } else if ((reason == 31u || reason == 32u) && len == 2u &&
+                   ((uint32_t)regs.ecx == 0x17u || (uint32_t)regs.ecx == 0x8bu)) {
+            uint64_t value = ((uint64_t)(uint32_t)regs.edx << 32) | (uint32_t)regs.eax;
+            if (!aos_x86_cpu_identity_msr((uint32_t)regs.ecx, reason == 32u, &value))
+                stop(ep, AOS_X86_VTX_PROOF_FAIL, reason, rip, regs.ecx);
+            if (reason == 31u) { regs.eax=(uint32_t)value; regs.edx=value >> 32; }
+        } else if ((reason == 31u || reason == 32u) && len == 2u &&
                    (uint32_t)regs.ecx == 0xc0000080u) {
             seL4_Word efer = read_field(ep, EFER);
             if (reason == 31u) { regs.eax = (uint32_t)efer; regs.edx = efer >> 32; }

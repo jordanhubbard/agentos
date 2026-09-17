@@ -1,5 +1,13 @@
 #include "platform/x86_cpu.h"
 
+bool aos_x86_cpu_identity_msr(uint32_t msr, bool write, uint64_t *value)
+{
+    if (!value || (msr != 0x17u && msr != 0x8bu)) return false;
+    if (write) return msr == 0x8bu && *value == 0;
+    *value=0;
+    return true;
+}
+
 bool aos_x86_cpu_supported(uint32_t basic_edx, uint32_t ext_edx, uint32_t widths)
 {
     return (basic_edx & AOS_X86_BASIC_EDX) == AOS_X86_BASIC_EDX &&

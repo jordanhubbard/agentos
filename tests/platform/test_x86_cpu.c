@@ -4,6 +4,15 @@
 
 int main(void)
 {
+    uint64_t value=UINT64_MAX;
+    assert(aos_x86_cpu_identity_msr(0x17,false,&value) && value==0);
+    assert(!aos_x86_cpu_identity_msr(0x17,true,&value));
+    assert(aos_x86_cpu_identity_msr(0x8b,true,&value));
+    value=1;
+    assert(!aos_x86_cpu_identity_msr(0x8b,true,&value) && value==1);
+    assert(aos_x86_cpu_identity_msr(0x8b,false,&value) && value==0);
+    assert(!aos_x86_cpu_identity_msr(0x79,true,&value));
+    assert(!aos_x86_cpu_identity_msr(0x1a0,false,&value));
     assert(aos_x86_cpu_supported(AOS_X86_BASIC_EDX, AOS_X86_EXT_EDX, 0x3024u));
     for (unsigned i = 0; i < 32; i++) {
         if (AOS_X86_BASIC_EDX & (1u << i))
