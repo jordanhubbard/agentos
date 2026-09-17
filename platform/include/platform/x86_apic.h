@@ -5,7 +5,9 @@
 #define AOS_X86_APIC_BASE UINT64_C(0xfee00000)
 typedef struct {
     uint32_t svr, tpr, lvt_timer, initial, divide, lint0, lint1;
-    uint64_t start, now;
+    uint64_t now, phase;
+    uint32_t counter;
+    bool timer_pending;
 } aos_x86_apic_t;
 /* One virtual APIC bus tick per invariant host TSC tick. Clock never advances
  * from exit counts. No external interrupt sources or host APIC access. */

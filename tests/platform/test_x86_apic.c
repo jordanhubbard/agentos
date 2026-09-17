@@ -46,16 +46,21 @@ int main(void)
     assert(!aos_x86_apic_interrupt_due(&a,1099));
     assert(aos_x86_apic_interrupt_due(&a,1100));
     assert(apic_io(&a,0x390,false,0,1100)==0);
+    assert(a.timer_pending);
+    aos_x86_apic_init(&a,1100);
+    apic_io(&a,0x3e0,true,0xb,1100);
     apic_io(&a,0x320,true,0x30040,1100); /* periodic, masked */
     apic_io(&a,0x380,true,10,1100);
     assert(apic_io(&a,0x390,false,0,1123)==7);
-    rejected(&a,0x3e0,true,0,1123); /* no live divider phase change */
-    rejected(&a,0x320,true,0x40040,1123); /* no deadline mode */
-    rejected(&a,0x390,true,1,1123);
-    rejected(&a,0x321,false,0,1123);
-    rejected(&a,0x300,true,0,1123); /* IPI delivery unsupported */
+    apic_io(&a,0x3e0,true,0,1123); /* preserve 7 ticks, now divide by 2 */
+    assert(apic_io(&a,0x390,false,0,1124)==7);
+    assert(apic_io(&a,0x390,false,0,1125)==6);
+    rejected(&a,0x320,true,0x40040,1125); /* no deadline mode */
+    rejected(&a,0x390,true,1,1125);
+    rejected(&a,0x321,false,0,1125);
+    rejected(&a,0x300,true,0,1125); /* IPI delivery unsupported */
     rejected(&a,0x390,false,0,1122); /* clock reversal */
-    apic_io(&a,0x380,true,0,1123);
+    apic_io(&a,0x380,true,0,1125);
     assert(!aos_x86_apic_interrupt_due(&a,UINT64_MAX));
     for (unsigned i=0; i<8; i++) {
         unsigned enc=(i&3)|((i&4)<<1), div=1u<<((i+1)&7);
@@ -64,6 +69,14 @@ int main(void)
         assert(apic_io(&a,0x390,false,0,1200+i*1000+div*2)==98);
         apic_io(&a,0x380,true,0,1200+i*1000+div*2);
     }
+    aos_x86_apic_init(&b,0);
+    apic_io(&b,0xf0,true,0x1ff,0);
+    apic_io(&b,0x3e0,true,0xb,0);
+    apic_io(&b,0x320,true,0x30040,0);
+    apic_io(&b,0x380,true,10,0);
+    apic_io(&b,0x320,true,0x20040,25); /* masked expiries do not become pending */
+    assert(!aos_x86_apic_interrupt_due(&b,29));
+    assert(aos_x86_apic_interrupt_due(&b,30));
 
     aos_x86_memory_t m={.ram=ram,.ram_size=sizeof(ram),.rom=rom,.rom_base=0xffc00000,.rom_size=sizeof(rom)};
     pte(0x1000,0x2003); pte(0x2000,0x3003); pte(0x3000,0x4003); pte(0x4000,0x5003);
