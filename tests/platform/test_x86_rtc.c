@@ -89,6 +89,16 @@ int main(void)
     assert((io(&r,0xc,false,0,12*3600*h)&0x20)==0x20);
     init(&r);
     reject(&r,0,false,0,UINT64_MAX);
+    assert(io(&r,8,false,0,59*86400*h)==2);
+    assert(io(&r,7,false,0,59*86400*h)==0x29); /* year 2000 is a leap century */
+    assert(io(&r,8,false,0,60*86400*h)==3);
+    assert(io(&r,7,false,0,60*86400*h)==1);
+    init(&r);
+    io(&r,0xa,true,0x20,0); /* periodic disabled, update still runs */
+    assert(io(&r,0xc,false,0,h)==0x10);
+    assert(aos_x86_rtc_init(&r,UINT64_C(253402300799),0));
+    assert(io(&r,9,false,0,0)==0x99 && io(&r,0x32,false,0,0)==0x99);
+    reject(&r,0,false,0,h); /* never run decode beyond bounded year range */
     assert(!aos_x86_rtc_init(&r,UINT64_MAX,0));
     puts("PASS: RTC elapsed calendar, SET transactions, formats, leap years, flags and rejection");
 }
