@@ -1,0 +1,51 @@
+{
+  "qualification": "Intel host-backed preboot block read through the canonical driver and virtualizer",
+  "runtime_revision": "340b83a4695fb314118b02dc876513cfad37f210",
+  "sdk_version": "2.3.0",
+  "checks": [
+    {
+      "host": "Spark ARM64",
+      "command": "make gate SEL4_SDK_VERSION=2.3.0",
+      "result": "PASS",
+      "log": "build/evidence/x86-block-340b83a/gate.log",
+      "sha256": "60feceb5cf63949ef2f29ddf563d42aaf906ef233882f7f3e1e3fc17354816bc"
+    },
+    {
+      "host": "Spark ARM64",
+      "command": "make test-x86-firmware-build SEL4_SDK_VERSION=2.3.0",
+      "result": "PASS",
+      "log": "build/evidence/x86-block-340b83a/x86-link.log",
+      "sha256": "62fd2a8852a899e80c9645044500cd1bf9ce1f8ba4adb02936fd3da87bf959bf"
+    },
+    {
+      "host": "madmax Intel Linux via puck.local",
+      "command": "make gate-x86_64-userspace SEL4_SDK_VERSION=2.3.0 X86_FIRMWARE_IMAGE=/tmp/agentos-ovmf-2024.02-2ubuntu0.9.fd X86_FIRMWARE_SHA256=101afad5f520753224b60b9555df60add435cf50c7a82b781d7d7d8c60db7eb5 X86_BOOT_KERNEL=/tmp/agentos-linux-7.0.0-30.efi X86_BOOT_KERNEL_SHA256=0ad39b13e289e1a5cf806d14541ac8f221eefe849017f5915e0846917ed67785 X86_BOOT_INITRD=/tmp/agentos-v04-intel-discovery/build/x86-userspace/initrd.bin X86_BOOT_INITRD_SHA256=4ca368d8cf181ba151f6e4cbc79ca312e14c9822970db0c3292a5c5d616f7745",
+      "result": "PASS",
+      "log": "build/evidence/x86-block-340b83a/intel.log",
+      "sha256": "e04cd78c143b0fc2b4b306207ad569b67e2108eab68058843c7a37a257b9dfce"
+    }
+  ],
+  "intel_artifacts": {
+    "root_task": "/tmp/agentos-v04-intel-discovery/build/evidence/x86-block-340b83a/root_task.elf",
+    "root_task_sha256": "389ac7fc9db1a49ab3c657d3631b65460bffdc76d13e101a42dd03c48c18832c",
+    "sel4_32_sha256": "09f8bf3c0398027a60cd88f5d5cbc437de8083bd227c3f3761796348a8c5f5a1",
+    "image": "/tmp/agentos-v04-intel-discovery/build/evidence/x86-block-340b83a/agentos.img",
+    "image_sha256": "911d5b0fea18d927174304e6d8e1582047862bbbbdb28a48f8bb246587dc5890",
+    "medium": "/tmp/agentos-v04-intel-discovery/build/tmp/agentos-qemu-j30CYq.block.img",
+    "medium_sha256": "c234615b45917cdbfe7f9d03b5d8e1ebfb42581633022e37edab9ec474a89467"
+  },
+  "observations": [
+    "Root mapped the PCI register pages uncached into virtio_blk, and the coherent DMA frame into virtio_blk and blk_virt. The VMM retained only its own block queue page.",
+    "Before continuing firmware execution, the VMM submitted a 4096-byte read through its queue, required host-backed attachment and compared every returned byte against the test prefix and zero padding.",
+    "Root reported x86 host block queue read verified; the Intel run also passed Linux ring3 initramfs syscalls and the bidirectional console exchange.",
+    "The full Spark gate includes ASan/UBSan boot-read tests with the canonical queue pump: block offset, bounds, error response without output modification, and refusal after guest DRIVER_OK.",
+    "The initial Intel attempt refused startup because capability order allocated a later physical page first. Ascending, deduplicated frame allocation fixed that failure; the retained successful run uses the corrected revision."
+  ],
+  "limitations": [
+    "This is preboot VMM media staging, not a block request submitted by the Linux guest. Guest block enumeration remains incomplete.",
+    "The 32 MiB medium is a fresh read-only qualification fixture. Pinned Debian and writable flush/reboot persistence are not qualified.",
+    "Intel denial probes, multi-client isolation and resource reclamation were not exercised by this run.",
+    "PCI reset timeout and mapping-failure injection were not exercised.",
+    "Canonical integration, GUI qualification and the v0.4 release remain incomplete."
+  ]
+}
