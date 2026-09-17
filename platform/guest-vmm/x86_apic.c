@@ -3,7 +3,8 @@
 void aos_x86_apic_init(aos_x86_apic_t *a, uint64_t ticks)
 {
     *a = (aos_x86_apic_t){.svr=0xff, .lvt_timer=0x10000,
-        .lint0=0x10000, .lint1=0x10000, .now=ticks};
+        .lint0=0x10000, .lint1=0x10000, .dfr=UINT32_MAX,
+        .lvt_thermal=0x10000, .lvt_perf=0x10000, .lvt_error=0x10000, .now=ticks};
 }
 bool aos_x86_apic_msr(bool write, uint64_t *value)
 {
@@ -79,13 +80,50 @@ bool aos_x86_apic_io(aos_x86_apic_t *a, unsigned off, bool write,
     case 0x20: if (write) return false; *value=0; break; /* APIC ID 0 */
     case 0x30: if (write) return false; *value=0x00050014; break;
     case 0x80: reg=&next.tpr; mask=0xff; break;
+    case 0xd0: reg=&next.ldr; mask=0xff000000u; break;
+    case 0xe0:
+        if (write) {
+            if ((*value >> 28)!=0u && (*value >> 28)!=15u) return false;
+            next.dfr=*value | 0x0fffffffu;
+        } else *value=next.dfr;
+        break;
     case 0xa0: if (write) return false; *value=priority(&next); break;
     case 0xb0:
         if (!write || *value) return false;
         { unsigned v=highest(next.isr); if (v) next.isr[v/32] &= ~(1u << (v%32)); }
         break;
-    case 0xf0: reg=&next.svr; mask=0x1ff; break;
+    /* Focus checking only affects lowest-priority arbitration, which this
+     * single-CPU fixed-delivery profile does not implement. Retain bit9. */
+    case 0xf0: reg=&next.svr; mask=0x3ff; break;
+    case 0x280:
+        if (write && *value) return false;
+        if (!write) *value=0; /* unsupported/error operations fail atomically */
+        break;
+    case 0x300:
+        if (!write) { *value=next.icr_low; break; }
+        /* One provisioned CPU: fixed, edge-triggered IPIs only. No host
+         * APIC access, NMI injection, AP startup or hidden vCPU creation. */
+        if ((*value & ~0x000c48ffu) || (*value & 0xffu)<16u) return false;
+        {
+            unsigned shortcut=(*value >> 18)&3u, dest=next.icr_high >> 24;
+            unsigned logical=next.ldr >> 24;
+            bool target=shortcut==1u || shortcut==2u;
+            if (!shortcut) {
+                if (*value & 0x800u)
+                    target=dest==0xffu || (next.dfr==UINT32_MAX ? (dest & logical)!=0u :
+                        (dest >> 4)==(logical >> 4) && (dest & logical & 15u)!=0u);
+                else target=dest==0u || dest==0xffu;
+            }
+            if (target && (next.svr & 0x100u))
+                next.irr[(*value & 0xffu)/32] |= 1u << (*value & 31u);
+            next.icr_low=*value; /* delivery completes synchronously */
+        }
+        break;
+    case 0x310: reg=&next.icr_high; mask=0xff000000u; break;
     case 0x320: reg=&next.lvt_timer; mask=0x300ff; break; /* no deadline mode */
+    case 0x330: reg=&next.lvt_thermal; mask=0x107ff; break;
+    case 0x340: reg=&next.lvt_perf; mask=0x107ff; break;
+    case 0x370: reg=&next.lvt_error; mask=0x100ff; break;
     /* No external LINT sources are connected during bootstrap. Retain their
      * vector/mode/polarity/trigger/mask state; status and remote IRR stay zero. */
     case 0x350: reg=&next.lint0; mask=0x1a7ff; break;

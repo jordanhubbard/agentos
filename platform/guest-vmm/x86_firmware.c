@@ -25,7 +25,6 @@
 #define PAE (1u << 5)
 #define LME (1u << 8)
 #define LMA (1u << 10)
-#define NXE (1u << 11)
 #define ENTRY_LONG (1u << 9)
 #define PIN_CONTROLS 0x4000u
 #define PREEMPTION_COUNTER 0x482eu
@@ -35,6 +34,17 @@
 static seL4_Word timer_exits, injections, eois, timer_shift, tsc_hz, halt_exits;
 static seL4_Word snapshot[AOS_X86_FIRMWARE_SNAPSHOT_WORDS];
 static seL4_Word halt_chain[AOS_X86_FIRMWARE_CHAIN_WORDS];
+static seL4_Word boot_reads[3], last_qualification;
+static bool have_wait_snapshot;
+#ifdef AGENTOS_X86_BOOT_KERNEL
+extern const uint8_t _binary_x86_boot_kernel_bin_start[], _binary_x86_boot_kernel_bin_end[];
+#ifdef AGENTOS_X86_BOOT_INITRD
+extern const uint8_t _binary_x86_boot_initrd_bin_start[], _binary_x86_boot_initrd_bin_end[];
+#endif
+#ifdef AGENTOS_X86_BOOT_CMDLINE
+extern const uint8_t _binary_x86_boot_cmdline_bin_start[], _binary_x86_boot_cmdline_bin_end[];
+#endif
+#endif
 _Static_assert(AOS_X86_FIRMWARE_REPORT_WORDS <= seL4_MsgMaxLength,
                "firmware diagnostics must fit in one IPC message");
 
@@ -50,6 +60,8 @@ static _Noreturn void stop(seL4_CPtr endpoint, seL4_Word status, seL4_Word reaso
     for (unsigned i=0; i<AOS_X86_FIRMWARE_CHAIN_WORDS; i++)
         seL4_SetMR(10+AOS_X86_FIRMWARE_SNAPSHOT_WORDS+i,
                    reason == 0x425544u ? halt_chain[i] : 0);
+    for (unsigned i=0; i<3; i++) seL4_SetMR(116+i,boot_reads[i]);
+    seL4_SetMR(119,last_qualification);
     seL4_Send(endpoint, seL4_MessageInfo_new(AOS_X86_VTX_PROOF_LABEL, 0, 0, AOS_X86_FIRMWARE_REPORT_WORDS));
     for (;;) { seL4_Word badge; (void)seL4_Wait(endpoint, &badge); }
 }
@@ -157,7 +169,7 @@ static void diagnostic_chain(const aos_x86_memory_t *m, uint64_t cr3, uint64_t r
 {
     for (unsigned i=0; i<AOS_X86_FIRMWARE_CHAIN_WORDS; i++) halt_chain[i]=0;
     halt_chain[0]=rbp;
-    for (unsigned i=0; i<4 && !(rbp & 7u); i++) {
+    for (unsigned i=0; i<AOS_X86_FIRMWARE_CHAIN_FRAMES && !(rbp & 7u); i++) {
         seL4_Word pair[2]={0}, valid=0;
         diagnostic_words(m,cr3,rbp,2,pair,&valid);
         if (valid != 3u) break;
@@ -180,6 +192,22 @@ void aos_x86_firmware_run(seL4_CPtr ep, seL4_Word result)
     aos_x86_config_t config;
     if (!aos_x86_config_init(&config, AOS_X86_FIRMWARE_RAM))
         stop(ep, AOS_X86_VTX_PROOF_FAIL, 0x434647u, 0, 0);
+#ifdef AGENTOS_X86_BOOT_KERNEL
+    const aos_x86_boot_blobs_t boot={
+        .kernel=_binary_x86_boot_kernel_bin_start,
+        .kernel_size=(uint32_t)(_binary_x86_boot_kernel_bin_end-_binary_x86_boot_kernel_bin_start),
+#ifdef AGENTOS_X86_BOOT_INITRD
+        .initrd=_binary_x86_boot_initrd_bin_start,
+        .initrd_size=(uint32_t)(_binary_x86_boot_initrd_bin_end-_binary_x86_boot_initrd_bin_start),
+#endif
+#ifdef AGENTOS_X86_BOOT_CMDLINE
+        .cmdline=_binary_x86_boot_cmdline_bin_start,
+        .cmdline_size=(uint32_t)(_binary_x86_boot_cmdline_bin_end-_binary_x86_boot_cmdline_bin_start),
+#endif
+    };
+    if (!aos_x86_config_boot(&config,&boot))
+        stop(ep,AOS_X86_VTX_PROOF_FAIL,0x424f4fu,0,boot.kernel_size);
+#endif
     /* Admit the architectural ratio or an identified KVM board's explicit
      * clock leaf. A missing frequency cannot be replaced by invented time. */
     aos_x86_cpuid_t clock = host_id(0).eax >= 0x15u ? host_id(0x15u) : (aos_x86_cpuid_t){0};
@@ -205,11 +233,14 @@ void aos_x86_firmware_run(seL4_CPtr ep, seL4_Word result)
         seL4_Word guest_cr3 = seL4_GetMR(SEL4_VMENTER_FAULT_CR3_MR);
         seL4_Word guest_flags = seL4_GetMR(SEL4_VMENTER_FAULT_RFLAGS_MR);
         seL4_VCPUContext regs = save_registers();
+        for (unsigned i=0; i<3; i++) boot_reads[i]=config.boot_reads[i];
+        last_qualification=qual;
         if (exits == 65536u) {
             /* Observe the returned exit before any emulation or re-entry.
              * The processed-exit budget and its failure status are unchanged. */
             if ((read_field(ep,EFER) & LMA) && (read_field(ep,CR0) & PG)) {
                 diagnostic_snapshot(&memory,guest_cr3,rip,read_field(ep,RSP),snapshot);
+                if (!have_wait_snapshot) diagnostic_chain(&memory,guest_cr3,regs.ebp);
             }
             stop(ep,AOS_X86_VTX_PROOF_FAIL,0x425544u,rip,
                  (UINT64_C(65536) << 32) | (uint32_t)reason);
@@ -227,7 +258,7 @@ void aos_x86_firmware_run(seL4_CPtr ep, seL4_Word result)
             seL4_X86_VCPU_ReadMSR_t misc=seL4_X86_VCPU_ReadMSR(VCPU,0x485u);
             uint64_t tick=UINT64_C(1) << (misc.value & 31u);
             timer_shift=misc.value & 31u;
-            if (!hz)
+            if (!aos_x86_cpu_clock_supported(hz))
                 stop(ep,AOS_X86_VTX_PROOF_FAIL,0x434c4bu,rip,
                      ((uint64_t)clock.ecx << 32) | ((clock.eax & 0xffffu) << 16) | (clock.ebx & 0xffffu));
             if (misc.error || tick > hz/1000u || !(misc.value & (1u << 6)))
@@ -246,13 +277,14 @@ void aos_x86_firmware_run(seL4_CPtr ep, seL4_Word result)
                 diagnostic_snapshot(&memory,guest_cr3,rip,read_field(ep,RSP),
                     snapshot+AOS_X86_FIRMWARE_SNAPSHOT_SET_WORDS);
                 diagnostic_chain(&memory,guest_cr3,regs.ebp);
+                have_wait_snapshot=true;
             }
             /* Retain architectural halt until an eligible interrupt arrives.
              * VMX's preemption timer still wakes this VMM from halted state. */
             write_field(ep,ACTIVITY,1u);
             halt_exits++;
         } else if (reason == 10u && len == 2u) {
-            aos_x86_cpuid_t r = aos_x86_cpu_id((uint32_t)regs.eax, (uint32_t)regs.ecx);
+            aos_x86_cpuid_t r = aos_x86_cpu_id((uint32_t)regs.eax, (uint32_t)regs.ecx,hz);
             regs.eax = r.eax; regs.ebx = r.ebx; regs.ecx = r.ecx; regs.edx = r.edx;
         } else if (reason == 28u && len == 3u && (qual & ~0xf0fu) == 0u &&
                    ((qual & 15u) == 0u || (qual & 15u) == 4u)) {
@@ -281,15 +313,28 @@ void aos_x86_firmware_run(seL4_CPtr ep, seL4_Word result)
                 stop(ep, AOS_X86_VTX_PROOF_FAIL, reason, rip, regs.ecx);
             if (reason == 31u) { regs.eax=(uint32_t)value; regs.edx=value >> 32; }
         } else if ((reason == 31u || reason == 32u) && len == 2u &&
+                   (uint32_t)regs.ecx>=0xc0000081u && (uint32_t)regs.ecx<=0xc0000084u) {
+            uint64_t value=((uint64_t)(uint32_t)regs.edx << 32) | (uint32_t)regs.eax;
+            if (!aos_x86_cpu_syscall_msr((uint32_t)regs.ecx,reason==32u,value))
+                stop(ep,AOS_X86_VTX_PROOF_FAIL,reason,rip,regs.ecx);
+            if (reason==32u) {
+                seL4_X86_VCPU_WriteMSR_t r=seL4_X86_VCPU_WriteMSR(VCPU,(uint32_t)regs.ecx,value);
+                if (r.error) stop(ep,AOS_X86_VTX_PROOF_FAIL,reason,rip,r.error);
+            } else {
+                seL4_X86_VCPU_ReadMSR_t r=seL4_X86_VCPU_ReadMSR(VCPU,(uint32_t)regs.ecx);
+                if (r.error) stop(ep,AOS_X86_VTX_PROOF_FAIL,reason,rip,r.error);
+                regs.eax=(uint32_t)r.value; regs.edx=r.value >> 32;
+            }
+        } else if ((reason == 31u || reason == 32u) && len == 2u &&
                    (uint32_t)regs.ecx == 0xc0000080u) {
             seL4_Word efer = read_field(ep, EFER);
             if (reason == 31u) { regs.eax = (uint32_t)efer; regs.edx = efer >> 32; }
             else {
                 uint64_t value = ((uint64_t)(uint32_t)regs.edx << 32) | (uint32_t)regs.eax;
-                if ((value & ~(uint64_t)(LME | LMA | NXE)) ||
-                    ((read_field(ep, CR0) & PG) && ((value ^ efer) & LME)))
+                uint64_t next;
+                if (!aos_x86_cpu_efer(efer,value,read_field(ep,CR0) & PG,&next))
                     stop(ep, AOS_X86_VTX_PROOF_FAIL, reason, rip, value);
-                write_field(ep, EFER, (value & ~LMA) | (efer & LMA));
+                write_field(ep, EFER, next);
             }
         } else if ((reason == 31u || reason == 32u) && len == 2u &&
                    (uint32_t)regs.ecx == 0x1bu) {
@@ -356,6 +401,16 @@ void aos_x86_firmware_run(seL4_CPtr ep, seL4_Word result)
             }
             /* PM timer reads require a known clock; other ports do not. */
             uint16_t pm_base = ((uint16_t)config.pm[0x41] << 8) | (config.pm[0x40] & 0xc0u);
+            /* A terminal interrupt may hide the caller of a firmware delay.
+             * Before the first HLT, retain the PM polling site's own stack. */
+            if (!halt_exits && pm_base && port==(uint32_t)pm_base+8u &&
+                width==4u && !write && (read_field(ep,EFER) & LMA) &&
+                (read_field(ep,CR0) & PG)) {
+                diagnostic_snapshot(&memory,guest_cr3,rip,read_field(ep,RSP),
+                    snapshot+AOS_X86_FIRMWARE_SNAPSHOT_SET_WORDS);
+                diagnostic_chain(&memory,guest_cr3,regs.ebp);
+                have_wait_snapshot=true;
+            }
             if (!hz && pm_base && port == (uint32_t)pm_base + 8u)
                 stop(ep, AOS_X86_VTX_PROOF_FAIL, 0x434c4bu, rip, port);
             if (!aos_x86_config_io(&config, port, width, write, &value, ticks)) {

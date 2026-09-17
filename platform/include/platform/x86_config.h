@@ -4,6 +4,16 @@
 #include <stdint.h>
 #include "platform/x86_rtc.h"
 
+#define AOS_X86_BOOT_BLOB_LIMIT (64u*1024u*1024u)
+#define AOS_X86_BOOT_CMDLINE_LIMIT 4096u
+/* Immutable VMM-owned sources, not guest pointers. Keep storage alive until
+ * guest teardown. The kernel is a complete EFI image; setup/legacy addresses
+ * are not supplied. OVMF validates and loads the image through its EFI path. */
+typedef struct {
+    const uint8_t *kernel, *initrd, *cmdline;
+    uint32_t kernel_size, initrd_size, cmdline_size;
+} aos_x86_boot_blobs_t;
+
 typedef struct {
     uint32_t pci_address, ram_bytes, fw_offset;
     uint16_t fw_selector;
@@ -16,11 +26,17 @@ typedef struct {
      * retains SCI_EN, BM_RLD and SLP_TYP but rejects sleep/SMI requests. */
     uint16_t pm_status, pm_control;
     uint64_t pm_last_ticks;
+    aos_x86_boot_blobs_t boot;
+    uint32_t boot_reads[3]; /* bytes consumed in kernel/initrd/cmdline, saturating */
 } aos_x86_config_t;
 
 /* One state per guest; timer_ticks is supplied by the VMM's virtual clock.
  * False rejects unsupported ports/widths without mutating state or value. */
 bool aos_x86_config_init(aos_x86_config_t *s, uint32_t ram_bytes);
+/* Bind once, before the first fw_cfg read. Kernel required; optional initrd
+ * and printable ASCII command line (size includes final NUL). Rejects all
+ * invalid descriptors without changing state. This does not prove EFI entry. */
+bool aos_x86_config_boot(aos_x86_config_t *s, const aos_x86_boot_blobs_t *boot);
 bool aos_x86_config_io(aos_x86_config_t *s, uint16_t port, unsigned width,
                        bool write, uint32_t *value, uint64_t timer_ticks);
 #endif

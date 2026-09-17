@@ -23,8 +23,38 @@ bool aos_x86_config_init(aos_x86_config_t *s, uint32_t ram_bytes)
     return true;
 }
 
+bool aos_x86_config_boot(aos_x86_config_t *s, const aos_x86_boot_blobs_t *b)
+{
+    if (!s || !b || !s->ram_bytes || s->fw_reads || s->boot.kernel ||
+        !b->kernel || !b->kernel_size || b->kernel_size>AOS_X86_BOOT_BLOB_LIMIT ||
+        b->initrd_size>AOS_X86_BOOT_BLOB_LIMIT ||
+        b->cmdline_size>AOS_X86_BOOT_CMDLINE_LIMIT ||
+        (!!b->initrd != !!b->initrd_size) || (!!b->cmdline != !!b->cmdline_size))
+        return false;
+    if (b->cmdline_size) {
+        if (b->cmdline[b->cmdline_size-1]) return false;
+        for (uint32_t i=0; i+1<b->cmdline_size; i++)
+            if (b->cmdline[i]<0x20u || b->cmdline[i]>0x7eu) return false;
+    }
+    s->boot=*b;
+    return true;
+}
+
 static uint8_t fw_byte(const aos_x86_config_t *s, uint32_t off)
 {
+    const uint8_t *data=0;
+    uint32_t size=0;
+    switch (s->fw_selector) {
+    case 8u: size=s->boot.kernel_size; break;
+    case 0xbu: size=s->boot.initrd_size; break;
+    case 0x14u: size=s->boot.cmdline_size; break;
+    case 0x11u: data=s->boot.kernel; size=s->boot.kernel_size; break;
+    case 0x12u: data=s->boot.initrd; size=s->boot.initrd_size; break;
+    case 0x15u: data=s->boot.cmdline; size=s->boot.cmdline_size; break;
+    default: break;
+    }
+    if (data) return off<size ? data[off] : 0;
+    if (size) return off<4u ? (uint8_t)(size >> (8u*off)) : 0;
     if (s->fw_selector == 0u) {
         static const uint8_t sig[] = {'Q','E','M','U'};
         return off < sizeof(sig) ? sig[off] : 0;
@@ -114,10 +144,12 @@ bool aos_x86_config_io(aos_x86_config_t *s, uint16_t port, unsigned width,
         if (write) return (*value & 0xffu) == 2u;
         *value=2; return true;
     }
-    /* Bootstrap has no interrupt sources yet. Keep both legacy PICs fully
-     * masked; reject unmasking until routing and injection are implemented. */
-    if ((port == 0x21u || port == 0xa1u) && width == 1u) {
-        if (write) return (*value & 0xffu) == 0xffu;
+    /* No legacy PIC or ISA interrupt sources exist in this machine.
+     * Absent command/mask ports read all ones and discard byte writes.
+     * In particular, a mask probe must not echo a writable PIC register. */
+    if ((port == 0x20u || port == 0x21u || port == 0xa0u || port == 0xa1u) &&
+        width == 1u) {
+        if (write) return true;
         *value = 0xffu;
         return true;
     }
@@ -161,8 +193,15 @@ bool aos_x86_config_io(aos_x86_config_t *s, uint16_t port, unsigned width,
     }
     if (port == 0x511u && width == 1u && !write) {
         *value = fw_byte(s, s->fw_offset);
-        if (s->fw_offset < 80u) s->fw_offset++;
-        s->fw_reads++;
+        unsigned blob=3;
+        uint32_t size=0;
+        if (s->fw_selector==0x11u) { blob=0; size=s->boot.kernel_size; }
+        if (s->fw_selector==0x12u) { blob=1; size=s->boot.initrd_size; }
+        if (s->fw_selector==0x15u) { blob=2; size=s->boot.cmdline_size; }
+        if (blob<3 && s->fw_offset<size && s->boot_reads[blob]<UINT32_MAX)
+            s->boot_reads[blob]++;
+        if (s->fw_offset < UINT32_MAX) s->fw_offset++;
+        if (s->fw_reads<UINT32_MAX) s->fw_reads++;
         return true;
     }
     if (port == 0x70u && width == 1u) {

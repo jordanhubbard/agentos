@@ -3,7 +3,7 @@
 #include "platform/x86_memory.h"
 #include "platform/x86_config.h"
 
-#define AOS_X86_STRING_BATCH 256u
+#define AOS_X86_STRING_BATCH 1024u
 /* One bounded chunk of long-mode REP INSB from fw_cfg. All destinations are
  * checked before advancing device state or touching RAM. The caller resumes
  * the same instruction when count remains nonzero. False changes nothing. */

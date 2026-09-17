@@ -35,13 +35,13 @@ int main(void)
     setup(&c); a=0x1001; n=4;
     assert(aos_x86_fw_insb(&memory,ram,0x1000,&c,&a,&n,true));
     assert(a==0xffd && !n && !memcmp(ram+0x5ffe,"UMEQ",4));
-    setup(&c); a=0; n=300;
+    setup(&c); a=0; n=1100;
     assert(aos_x86_fw_insb(&memory,ram,0x1000,&c,&a,&n,false));
-    assert(a==256 && n==44 && c.fw_reads==256);
+    assert(a==1024 && n==76 && c.fw_reads==1024);
     assert(!memcmp(ram+0x5000,"QEMU",4));
     assert(aos_x86_fw_insb(&memory,ram,0x1000,&c,&a,&n,false));
-    assert(a==300 && !n && c.fw_reads==300);
-    for (unsigned i=4;i<300;i++) assert(ram[0x5000+i]==0);
+    assert(a==1100 && !n && c.fw_reads==1100);
+    for (unsigned i=4;i<1100;i++) assert(ram[0x5000+i]==0);
     setup(&c); a=UINT64_MAX; n=0;
     assert(aos_x86_fw_insb(&memory,ram,0x1000,&c,&a,&n,false));
     assert(a==UINT64_MAX && !n && !c.fw_reads);
@@ -61,6 +61,23 @@ int main(void)
     assert(aos_x86_fw_insb(&memory,ram,0x1000,&c,&a,&n,false));
     assert(!n && ram[0x510a]==0x0a && ram[0x5110]==1); /* first E820 length/type */
     assert(ram[0x5138]==1 && ram[0x514c]==2); /* remaining RAM / ROM types */
+    static uint8_t kernel[1537];
+    for (unsigned i=0;i<sizeof(kernel);i++) kernel[i]=(uint8_t)(i^(i>>8)^0x5a);
+    setup(&c);
+    aos_x86_boot_blobs_t blobs={.kernel=kernel,.kernel_size=sizeof(kernel)};
+    assert(aos_x86_config_boot(&c,&blobs));
+    selector=0x11;
+    assert(aos_x86_config_io(&c,0x510,2,true,&selector,0));
+    a=0xe00; n=sizeof(kernel);
+    assert(aos_x86_fw_insb(&memory,ram,0x1000,&c,&a,&n,false));
+    assert(a==0x1200 && n==513 && c.fw_offset==1024);
+    assert(!memcmp(ram+0x5e00,kernel,1024));
+    assert(aos_x86_fw_insb(&memory,ram,0x1000,&c,&a,&n,false));
+    assert(!n && !memcmp(ram+0x5e00,kernel,sizeof(kernel)));
+    selector=0x11;
+    assert(aos_x86_config_io(&c,0x510,2,true,&selector,0));
+    pte(0x4008,0x6001);
+    reject(&c,0xe00,1024,false); /* no blob bytes consumed on partial translation */
     puts("PASS: bounded fw_cfg REP input, cross-page and reverse delivery, A/D bits and atomic rejection");
     return 0;
 }

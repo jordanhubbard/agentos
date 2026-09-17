@@ -1,5 +1,24 @@
 #include "platform/x86_cpu.h"
 
+bool aos_x86_cpu_efer(uint64_t current, uint64_t requested, bool paging,
+                      uint64_t *next)
+{
+    const uint64_t lme=UINT64_C(1)<<8, lma=UINT64_C(1)<<10;
+    const uint64_t allowed=1u | lme | lma | (UINT64_C(1)<<11);
+    if (!next || (requested & ~allowed) ||
+        (paging && ((requested ^ current) & lme))) return false;
+    *next=(requested & ~lma) | (current & lma);
+    return true;
+}
+
+bool aos_x86_cpu_syscall_msr(uint32_t msr, bool write, uint64_t value)
+{
+    if (msr<0xc0000081u || msr>0xc0000084u) return false;
+    if (!write || msr==0xc0000081u) return true; /* STAR selectors */
+    if (msr==0xc0000084u) return value<=UINT32_MAX; /* FMASK */
+    return (value >> 48)==((value & (UINT64_C(1)<<47)) ? 0xffffu : 0u);
+}
+
 uint64_t aos_x86_tsc_frequency(bool invariant, aos_x86_cpuid_t ratio,
                               aos_x86_cpuid_t hypervisor, aos_x86_cpuid_t timing)
 {
@@ -29,13 +48,19 @@ bool aos_x86_cpu_supported(uint32_t basic_edx, uint32_t ext_edx, uint32_t widths
            (widths & 0xffu) >= 36u && ((widths >> 8) & 0xffu) >= 48u;
 }
 
-aos_x86_cpuid_t aos_x86_cpu_id(uint32_t leaf, uint32_t subleaf)
+bool aos_x86_cpu_clock_supported(uint64_t tsc_hz)
+{
+    return tsc_hz>=1000000u && tsc_hz<=UINT32_MAX;
+}
+
+aos_x86_cpuid_t aos_x86_cpu_id(uint32_t leaf, uint32_t subleaf, uint64_t tsc_hz)
 {
     (void)subleaf; /* These legacy leaves do not use a subleaf index. */
     aos_x86_cpuid_t r = {0};
+    bool clock=aos_x86_cpu_clock_supported(tsc_hz);
     switch (leaf) {
     case 0u:
-        r.eax = 1u;
+        r.eax = clock ? 0x16u : 1u;
         r.ebx = 0x756e6547u; r.edx = 0x49656e69u; r.ecx = 0x6c65746eu;
         break; /* GenuineIntel, virtual model below; no host identity copied. */
     case 1u:
@@ -48,8 +73,15 @@ aos_x86_cpuid_t aos_x86_cpu_id(uint32_t leaf, uint32_t subleaf)
         r.eax = 0x40000000u;
         r.ebx = 0x6e656761u; r.ecx = 0x20534f74u; r.edx = 0x204d4d56u;
         break; /* "agentOS VMM " */
+    case 0x15u:
+        if (clock) { r.eax=1; r.ebx=1; r.ecx=(uint32_t)tsc_hz; }
+        break; /* virtual TSC:crystal ratio 1:1; also matches APIC bus ticks */
+    case 0x16u:
+        if (clock) r.eax=(uint32_t)(tsc_hz/1000000u);
+        break; /* nominal virtual CPU MHz; no maximum/bus-frequency claim */
     case 0x80000000u: r.eax = 0x80000008u; break;
     case 0x80000001u: r.edx = AOS_X86_EXT_EDX; break;
+    case 0x80000007u: if (clock) r.edx=1u << 8; break;
     case 0x80000008u: r.eax = 36u | (48u << 8); break;
     default: break;
     }

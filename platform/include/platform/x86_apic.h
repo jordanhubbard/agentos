@@ -6,6 +6,7 @@
 #define AOS_X86_APIC_INVALID_VECTOR 256u
 typedef struct {
     uint32_t svr, tpr, lvt_timer, initial, divide, lint0, lint1;
+    uint32_t ldr, dfr, icr_low, icr_high, lvt_thermal, lvt_perf, lvt_error;
     uint64_t now, phase;
     uint32_t counter;
     uint32_t irr[8], isr[8];
@@ -17,7 +18,7 @@ void aos_x86_apic_init(aos_x86_apic_t *a, uint64_t ticks);
 bool aos_x86_apic_msr(bool write, uint64_t *value);
 bool aos_x86_apic_io(aos_x86_apic_t *a, unsigned offset, bool write,
                      uint32_t *value, uint64_t ticks);
-/* Observational expiry check; does not advance state. */
+/* Observational pending-interrupt check; does not advance state. */
 bool aos_x86_apic_interrupt_due(const aos_x86_apic_t *a, uint64_t ticks);
 /* Advance time and return the highest eligible vector, zero, or INVALID_VECTOR
  * for an unsupported illegal-vector expiry. The caller

@@ -29,8 +29,67 @@ static void reject(aos_x86_config_t *s, unsigned port, unsigned width, bool writ
     assert(!aos_x86_config_io(s, port, width, write, &value, 0x12345678u));
     assert(value == 0xabcdef01 && !memcmp(s, &before, sizeof(before)));
 }
+static void boot_tests(void)
+{
+    static uint8_t kernel[1537], initrd[257];
+    for (unsigned i=0; i<sizeof(kernel); i++) kernel[i]=(uint8_t)(i^(i>>8)^0x5a);
+    for (unsigned i=0; i<sizeof(initrd); i++) initrd[i]=(uint8_t)(i+7);
+    static const uint8_t cmd[]="console=hvc0 rdinit=/init";
+    aos_x86_boot_blobs_t blobs={kernel,initrd,cmd,sizeof(kernel),sizeof(initrd),sizeof(cmd)};
+    aos_x86_config_t a,b;
+    assert(aos_x86_config_init(&a,0x8000000));
+    assert(aos_x86_config_init(&b,0x8000000));
+    assert(!aos_x86_config_boot(NULL,&blobs));
+    assert(!aos_x86_config_boot(&a,NULL));
+    aos_x86_config_t original=a;
+    for (unsigned kind=0; kind<9; kind++) {
+        aos_x86_boot_blobs_t bad=blobs;
+        switch (kind) {
+        case 0: bad.kernel=NULL; break;
+        case 1: bad.kernel_size=0; break;
+        case 2: bad.kernel_size=AOS_X86_BOOT_BLOB_LIMIT+1; break;
+        case 3: bad.initrd_size=AOS_X86_BOOT_BLOB_LIMIT+1; break;
+        case 4: bad.initrd=NULL; break;
+        case 5: bad.cmdline_size=AOS_X86_BOOT_CMDLINE_LIMIT+1; break;
+        case 6: bad.cmdline=NULL; break;
+        case 7: bad.cmdline_size--; break; /* missing final NUL */
+        case 8: bad.cmdline=(const uint8_t *)"x\ny"; bad.cmdline_size=4; break;
+        }
+        assert(!aos_x86_config_boot(&a,&bad));
+        assert(!memcmp(&a,&original,sizeof(a)));
+    }
+    assert(aos_x86_config_boot(&a,&blobs));
+    original=a;
+    assert(!aos_x86_config_boot(&a,&blobs));
+    assert(!memcmp(&a,&original,sizeof(a)));
+    uint8_t bytes[1541];
+    fw(&a,8,bytes,8);
+    assert(read_le(bytes,8)==sizeof(kernel));
+    fw(&a,0xb,bytes,8); assert(read_le(bytes,8)==sizeof(initrd));
+    fw(&a,0x14,bytes,8); assert(read_le(bytes,8)==sizeof(cmd));
+    fw(&a,0x11,bytes,sizeof(bytes));
+    assert(!memcmp(bytes,kernel,sizeof(kernel)));
+    for (unsigned i=sizeof(kernel); i<sizeof(bytes); i++) assert(!bytes[i]);
+    fw(&a,0x11,bytes,97); assert(!memcmp(bytes,kernel,97)); /* reselect resets */
+    fw(&a,0x12,bytes,sizeof(initrd)); assert(!memcmp(bytes,initrd,sizeof(initrd)));
+    fw(&a,0x15,bytes,sizeof(cmd)); assert(!memcmp(bytes,cmd,sizeof(cmd)));
+    assert(a.boot_reads[0]==sizeof(kernel)+97 && a.boot_reads[1]==sizeof(initrd) &&
+           a.boot_reads[2]==sizeof(cmd));
+    fw(&a,0x17,bytes,8); assert(read_le(bytes,8)==0); /* EFI only, no setup */
+    fw(&b,8,bytes,8); assert(read_le(bytes,8)==0); /* isolation */
+    assert(!aos_x86_config_boot(&b,&blobs)); /* cannot bind after first read */
+    a.fw_offset=UINT32_MAX; a.fw_reads=UINT32_MAX;
+    assert(io(&a,0x511,1,false,0)==0 && a.fw_offset==UINT32_MAX && a.fw_reads==UINT32_MAX);
+    assert(aos_x86_config_init(&b,0x8000000));
+    blobs.initrd=NULL; blobs.initrd_size=0; blobs.cmdline=NULL; blobs.cmdline_size=0;
+    assert(aos_x86_config_boot(&b,&blobs));
+    fw(&b,0xb,bytes,8); assert(read_le(bytes,8)==0);
+    fw(&b,0x14,bytes,8); assert(read_le(bytes,8)==0);
+}
+
 int main(void)
 {
+    boot_tests();
     aos_x86_config_t a, b;
     assert(!aos_x86_config_init(NULL, 0x2000000));
     assert(!aos_x86_config_init(&a, 0x1000000));
@@ -59,8 +118,21 @@ int main(void)
     io(&a, 0xa1, 1, true, 0xff);
     assert(io(&a, 0x21, 1, false, 0) == 0xff);
     assert(io(&a, 0xa1, 1, false, 0) == 0xff);
-    reject(&a, 0x21, 1, true);
-    reject(&a, 0x20, 1, true);
+    /* Linux's presence probe must observe no PIC, not a writable mask. */
+    aos_x86_config_t before_pic=a;
+    io(&a, 0x21, 1, true, 0xfb);
+    assert(io(&a, 0x21, 1, false, 0) == 0xff);
+    const unsigned pic_ports[]={0x20,0x21,0xa0,0xa1};
+    for (unsigned p=0; p<4; p++) {
+        for (unsigned v=0; v<256; v++) {
+            io(&a,pic_ports[p],1,true,v);
+            assert(io(&a,pic_ports[p],1,false,0)==0xff);
+        }
+        reject(&a,pic_ports[p],2,true);
+        reject(&a,pic_ports[p],4,false);
+    }
+    assert(!memcmp(&a,&before_pic,sizeof(a))); /* no hidden IRQ/controller state */
+    reject(&a, 0x22, 1, true);
     reject(&a, 0xa1, 2, false);
     assert(io(&a, 0xcfc, 4, false, 0) == 0xffffffff);
     select_pci(&a, 0x80000000);
