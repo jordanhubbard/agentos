@@ -181,8 +181,8 @@ bool virtio_mmio_reg_write(virtio_device_t *dev, size_t offset, uint32_t data)
             }
             /*
              * Map QueueDesc/Avail/Used GPAs to HVAs before walking the rings.
-             * Identity until
-             * the VMM installs virtio_gpa_set_translate().
+             * This fails until the VMM installs a translator with
+             * virtio_gpa_set_translate().
              */
             if (!dev->vqs[dev->regs.QueueSel].ready) {
                 if (!virtio_queue_map_guest_rings(&dev->vqs[dev->regs.QueueSel].virtq)) {
