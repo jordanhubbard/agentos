@@ -112,6 +112,15 @@ static void relocate(uint64_t base)
     uint32_t v=0;
     assert(aos_x86_config_io(&c,0xb004,2,false,&v,0) && v==1);
     assert(aos_x86_config_io(&c,0xb008,4,false,&v,12345) && v==12345);
+    v=0x30; assert(aos_x86_config_io(&c,0x43,1,true,&v,12345));
+    v=0; assert(aos_x86_config_io(&c,0x40,1,true,&v,12345));
+    assert(aos_x86_config_io(&c,0x40,1,true,&v,12345));
+    before=c;
+    assert(!aos_x86_config_io(&c,0x40,1,true,&v,12345));
+    v=0x34; assert(!aos_x86_config_io(&c,0x43,1,true,&v,12345));
+    v=0xa9; assert(!aos_x86_config_io(&c,0x40,1,true,&v,12345));
+    assert(!aos_x86_config_io(&c,0x40,1,false,&v,12345));
+    assert(!memcmp(&c,&before,sizeof(c)));
     assert(!aos_x86_acpi_bundle_init(NULL));
     assert(aos_x86_config_init(&c,256u*1024u*1024u));
     fw(&c,0,dir,1); before=c;

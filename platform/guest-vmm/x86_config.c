@@ -139,6 +139,16 @@ bool aos_x86_config_io(aos_x86_config_t *s, uint16_t port, unsigned width,
                        bool write, uint32_t *value, uint64_t timer_ticks)
 {
     if (!s || !value || (width != 1u && width != 2u && width != 4u)) return false;
+    /* No PIT clock or IRQ0 source is advertised. Linux still writes its
+     * channel-0 shutdown sequence after selecting the LAPIC clockevent.
+     * Accept only mode-0 reset and its two zero count bytes; do not pretend
+     * to supply PIT calibration, periodic interrupts or a running counter. */
+    if (write && width==1u && port==0x43u && *value==0x30u) {
+        s->pit_disable_remaining=2; return true;
+    }
+    if (write && width==1u && port==0x40u && !*value && s->pit_disable_remaining) {
+        s->pit_disable_remaining--; return true;
+    }
     /* Fixed one-vCPU topology discovery. No insertion/removal events or
      * hotplug commands are supported. Mirrors the fw_cfg boot CPU count. */
     if (port == 0xaf00u && width == 4u) {
