@@ -8,6 +8,8 @@ typedef struct {
     uint16_t fw_selector;
     uint8_t host[256], pm[256], cmos_index;
     uint32_t pci_reads, timer_reads, fw_reads;
+    uint32_t cpu_selector;
+    uint8_t cpu_command;
 } aos_x86_config_t;
 
 /* One state per guest; timer_ticks is supplied by the VMM's virtual clock.

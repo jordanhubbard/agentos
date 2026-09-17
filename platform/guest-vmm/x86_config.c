@@ -56,6 +56,29 @@ bool aos_x86_config_io(aos_x86_config_t *s, uint16_t port, unsigned width,
                        bool write, uint32_t *value, uint64_t timer_ticks)
 {
     if (!s || !value || (width != 1u && width != 2u && width != 4u)) return false;
+    /* Fixed one-vCPU topology discovery. No insertion/removal events or
+     * hotplug commands are supported. Mirrors the fw_cfg boot CPU count. */
+    if (port == 0xaf00u && width == 4u) {
+        if (write) s->cpu_selector=*value;
+        else *value=0; /* command data high: APIC ID zero, no pending events */
+        return true;
+    }
+    if (port == 0xaf05u && width == 1u && write &&
+        ((*value & 0xffu) == 0u || (*value & 0xffu) == 3u)) {
+        s->cpu_command=(uint8_t)*value; return true;
+    }
+    if (port == 0xaf04u && width == 1u && !write) {
+        *value=s->cpu_selector == 0u ? 1u : 0u; return true;
+    }
+    if (port == 0xaf08u && width == 4u && !write) {
+        *value=0; /* selected CPU/APIC ID zero; invalid selectors also read zero */
+        return true;
+    }
+    /* A20 is enabled by the guest's address model; reset/disable unsupported. */
+    if (port == 0x92u && width == 1u) {
+        if (write) return (*value & 0xffu) == 2u;
+        *value=2; return true;
+    }
     /* Bootstrap has no interrupt sources yet. Keep both legacy PICs fully
      * masked; reject unmasking until routing and injection are implemented. */
     if ((port == 0x21u || port == 0xa1u) && width == 1u) {
