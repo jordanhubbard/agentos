@@ -431,12 +431,13 @@ $(BUILD_DIR)/operator_protocol.o: $(REPO_ROOT_MK)/platform/operator-session/sess
 $(BUILD_DIR)/operator_session.elf: $(BUILD_DIR)/operator_session.o $(BUILD_DIR)/operator_protocol.o $(BUILD_DIR)/inspect_snapshot.pd.o $(BUILD_DIR)/serial_pump.pd.o $(BUILD_DIR)/sel4_crt.o $(BUILD_DIR)/pd_entry.o $(BUILD_DIR)/m3_bare_metal.o $(BUILD_DIR)/log.o
 	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
 GUEST_CONFIG_STAMP := $(BUILD_DIR)/guest_config.stamp
-# SDK paths and compile definitions are part of this stamp. Every object
-# using this Makefile must rebuild when they change: otherwise an SDK switch
-# can link old syscall/object-type definitions into a new root task.
+# SDK paths and compile definitions are part of this stamp. Invalidate all
+# existing objects when they change; new objects already compile from source.
+# Otherwise an SDK switch can link old syscall/object-type definitions into
+# a new root task. EXTRA_PREREQS needs concrete targets, not a pattern binding.
 # EXTRA_PREREQS preserves recipes' $< / $^ source lists; private prevents the
 # dependency from being inherited by the stamp's own recipe.
-$(BUILD_DIR)/%.o: private .EXTRA_PREREQS = $(GUEST_CONFIG_STAMP)
+$(ROOT_TASK_OBJS) $(wildcard $(BUILD_DIR)/*.o): private .EXTRA_PREREQS = $(GUEST_CONFIG_STAMP)
 ifeq ($(LOG_RING_TEST),1)
   CFLAGS += -DAGENTOS_LOG_RING_TEST=1
 endif
