@@ -1992,17 +1992,17 @@ void root_task_main(const seL4_BootInfo *bi)
         }
     }
 #endif
-#if defined(__aarch64__)
+    _Static_assert(AOS_SERIAL_FRAME_SIZE == (1UL << seL4_ARCH_LargePageBits),
+                   "serial queue pages must match the architecture large-page object");
     if (serial_virt_index != SYSTEM_MAX_PDS) {
         for (uint32_t f = 0; f < AOS_SERIAL_FRAMES; f++) {
-            if (ut_alloc_cap(seL4_ARM_LargePageObject, 0u,
+            if (ut_alloc_cap(seL4_ARCH_LargePageObject, 0u,
                              &g_serial_virt_frames[f]) != seL4_NoError) {
                 dbg_puts("[rt] serial queue allocation failed; refusing partial boot\n");
                 return;
             }
         }
     }
-#endif
 
 #ifdef AGENTOS_LOG_RINGS
     if (log_drain_index == SYSTEM_MAX_PDS || sys->pd_count > AOS_LOG_CLIENTS) {
@@ -2578,6 +2578,34 @@ void root_task_main(const seL4_BootInfo *bi)
             dbg_puts("\n");
         }
 
+        /* Queue ownership is architecture-independent. Only serial_virt
+         * sees every client page; no client receives another client's page. */
+        if (serial_virt_index != SYSTEM_MAX_PDS &&
+            (pd_is_guest_vmm(pd) || pd->self_svc_id == SVC_ID_CC_PD ||
+             pd->self_svc_id == SVC_ID_OPERATOR_SESSION ||
+             pd->self_svc_id == SVC_ID_SERIAL_VIRT)) {
+            seL4_Error serial_err = seL4_NoError;
+            for (uint32_t f = 0; f < AOS_SERIAL_FRAMES && serial_err == seL4_NoError; f++) {
+                if (pd_is_guest_vmm(pd) &&
+                    f != (pd_is_secondary_guest_vmm(pd) ? 1u : 0u)) continue;
+                if (pd->self_svc_id == SVC_ID_CC_PD && f != AOS_SERIAL_FRONTEND_FRAME) continue;
+                if (pd->self_svc_id == SVC_ID_OPERATOR_SESSION && f != SERIAL_VIRT_OPERATOR_CLIENT) continue;
+                seL4_Word copy = ut_alloc_slot();
+                serial_err = seL4_NotEnoughMemory;
+                if (copy != seL4_CapNull) {
+                    serial_err = seL4_CNode_Copy(seL4_CapInitThreadCNode, copy, 64u,
+                        seL4_CapInitThreadCNode, g_serial_virt_frames[f], 64u, seL4_AllRights);
+                    if (serial_err == seL4_NoError)
+                        serial_err = pd_vspace_map_device_frame(vspace, copy,
+                            AOS_SERIAL_SHMEM_VA + f * AOS_SERIAL_FRAME_SIZE);
+                }
+            }
+            if (serial_err != seL4_NoError) {
+                dbg_puts("[rt] serial page mapping failed; refusing PD start\n");
+                continue;
+            }
+        }
+
         /* ── 4g.4.6b: Map GICv2 vCPU interface for VMM guests ───────────── */
 #if defined(__aarch64__)
         /*
@@ -2712,33 +2740,6 @@ void root_task_main(const seL4_BootInfo *bi)
             dbg_puts(" blk_virt shared region map err=");
             dbg_hex((seL4_Word)blk_err);
             dbg_puts("\n");
-        }
-
-        /* Only serial_virt sees both guest pages, operator and frontend. */
-        if (serial_virt_index != SYSTEM_MAX_PDS &&
-            (pd_is_guest_vmm(pd) || pd->self_svc_id == SVC_ID_CC_PD ||
-             pd->self_svc_id == SVC_ID_OPERATOR_SESSION ||
-             pd->self_svc_id == SVC_ID_SERIAL_VIRT)) {
-            seL4_Error serial_err = seL4_NoError;
-            for (uint32_t f = 0; f < AOS_SERIAL_FRAMES && serial_err == seL4_NoError; f++) {
-                if (pd_is_guest_vmm(pd) &&
-                    f != (pd_is_secondary_guest_vmm(pd) ? 1u : 0u)) continue;
-                if (pd->self_svc_id == SVC_ID_CC_PD && f != AOS_SERIAL_FRONTEND_FRAME) continue;
-                if (pd->self_svc_id == SVC_ID_OPERATOR_SESSION && f != SERIAL_VIRT_OPERATOR_CLIENT) continue;
-                seL4_Word copy = ut_alloc_slot();
-                serial_err = seL4_NotEnoughMemory;
-                if (copy != seL4_CapNull) {
-                    serial_err = seL4_CNode_Copy(seL4_CapInitThreadCNode, copy, 64u,
-                        seL4_CapInitThreadCNode, g_serial_virt_frames[f], 64u, seL4_AllRights);
-                    if (serial_err == seL4_NoError)
-                        serial_err = pd_vspace_map_device_frame(vspace, copy,
-                            AOS_SERIAL_SHMEM_VA + f * AOS_SERIAL_FRAME_SIZE);
-                }
-            }
-            if (serial_err != seL4_NoError) {
-                dbg_puts("[rt] serial page mapping failed; refusing PD start\n");
-                continue;
-            }
         }
 
         /* VMMs map their own queue page, the NIC driver maps its transfer
