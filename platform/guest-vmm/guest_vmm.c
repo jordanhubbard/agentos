@@ -421,6 +421,9 @@ void pd_main(seL4_CPtr my_ep, seL4_CPtr ns_ep) { guest_vmm_main(my_ep, ns_ep); }
 #include <platform/net_layout.h>
 #include <platform/vmm_virtio_blk.h>
 #include <platform/vmm_virtio_console.h>
+#ifdef AGENTOS_GUEST_GRAPHICS
+#include <platform/vmm_virtio_gpu.h>
+#endif
 
 #ifndef AGENTOS_GUEST_INITRD_TOTAL_BYTES
 #define AGENTOS_GUEST_INITRD_TOTAL_BYTES UINT64_C(0)
@@ -1414,6 +1417,9 @@ void init(void)
         .net_init = aos_vmm_virtio_net_init,
         .block_init = aos_vmm_virtio_blk_init,
         .console_init = aos_vmm_virtio_console_init,
+#ifdef AGENTOS_GUEST_GRAPHICS
+        .gpu_init = aos_vmm_virtio_gpu_init,
+#endif
     };
     if (aos_guest_devices_init(g_guest_profile, &device_ops) !=
             AOS_GUEST_BOOT_OK) {

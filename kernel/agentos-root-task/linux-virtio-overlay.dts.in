@@ -6,6 +6,7 @@
  */
 / {
     dma-coherent;
+    @GUEST_GPU_NODE@
 
     memory@@GUEST_RAM_NODE@ {
         device_type = "memory";

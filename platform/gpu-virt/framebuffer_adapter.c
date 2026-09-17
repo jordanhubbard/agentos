@@ -5,6 +5,7 @@
 static bool call(aos_gpu_framebuffer_t *a, aos_fb_request_t q, aos_fb_response_t *p)
 {
     q.version = AOS_FB_VERSION;
+    q.id = ++a->next_id;
     return a->exchange(a->context, &q, p) && p->version == AOS_FB_VERSION &&
            p->status == AOS_FB_OK && p->id == q.id;
 }
@@ -85,6 +86,7 @@ bool aos_gpu_framebuffer_init(aos_gpu_framebuffer_t *a, virtio_gpu_2d_t *g)
 {
     if (!a || !a->region || !a->exchange || !a->validate_gpa || !a->read_gpa) return false;
     a->scanout_handle = 0;
+    a->next_id = 0;
     a->scanout_rect = (virtio_gpu_rect_t){0};
     a->cursor_handle = 0;
     a->cursor_x = a->cursor_y = a->cursor_hot_x = a->cursor_hot_y = 0;

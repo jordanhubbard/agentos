@@ -59,6 +59,8 @@
  * together with the event_bus PD whose contract it exercises. */
 #ifdef AGENTOS_FRAMEBUFFER_TEST
 #define AOS_TEST_PD_EXTRA 3u
+#elif defined(AGENTOS_GUEST_GRAPHICS)
+#define AOS_TEST_PD_EXTRA 1u
 #elif defined(AGENTOS_SEL4_TEST_IMAGE)
 #define AOS_TEST_PD_EXTRA 2u
 #elif defined(AGENTOS_NATIVE_RUST_TEST)
@@ -529,7 +531,7 @@ const system_desc_t system_desc_aarch64 = {
             },
         },
 
-#ifdef AGENTOS_FRAMEBUFFER_TEST
+#if defined(AGENTOS_FRAMEBUFFER_TEST) || defined(AGENTOS_GUEST_GRAPHICS)
         {
             .name = "framebuffer_queue",
             .elf_path = "framebuffer_queue.elf",
@@ -538,6 +540,8 @@ const system_desc_t system_desc_aarch64 = {
             .priority = 215u,
             .self_svc_id = SVC_ID_FRAMEBUFFER_QUEUE,
         },
+#endif
+#ifdef AGENTOS_FRAMEBUFFER_TEST
         {
             .name = "framebuffer_client0",
             .elf_path = "framebuffer_client0.elf",

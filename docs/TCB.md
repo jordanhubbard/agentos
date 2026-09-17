@@ -303,12 +303,17 @@ external export client. Those remain required for the v0.4 graphics outcome.
 The in-progress libvmm GPU backend (`libvmm/src/virtio/gpu*.c`) implements
 bounded 2D resource commands and direct control/cursor virtqueues, with
 `platform/gpu-virt/framebuffer_adapter.c` translating backend operations to
-the framebuffer queue contract. It is compiled into libvmm but is not yet
-registered by the VMM boot path, advertised in a guest DTB, or granted a
-framebuffer queue by root. Host tests verify exact pixels through the real
-framebuffer queue implementation; cross-compilation is not a guest DRM proof.
-This code adds no physical display ownership. Root wiring, guest proof,
-input, hardware scanout and external export remain required.
+the framebuffer queue contract. The AArch64 `GUEST_GRAPHICS=1` variant adds
+`framebuffer_queue` and grants each VMM only its own client page and dedicated
+read/send notification capabilities. These notifications are separate from the
+VMM's bound network/block/console notification. Only the framebuffer service
+maps private surface storage and both client pages. The guest profile's GPU
+flag selects VMM initialization and the faulting DTB window at `0x0a040000`,
+virtual INTID 54. No physical GPU frame or IRQ is granted to either VMM or the
+framebuffer service. The `debian-gpu` profile exercises this variant.
+Host tests verify exact pixels through the real framebuffer queue implementation;
+guest DRM/frame-capture qualification is still pending. Input, a physical
+display driver and authorized external export remain required.
 
 The retired `services/legacy-pds/framebuffer_pd.c` rejects `HW_DIRECT`
 creation with `FB_ERR_BAD_BACKEND`. Its former MMIO probe and successful

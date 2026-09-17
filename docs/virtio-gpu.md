@@ -3,8 +3,12 @@
 This work implements the unaccelerated 2D command engine and libvmm MMIO
 registration entry point for the v0.4 guest graphics path. The protocol is
 [VirtIO 1.2 section 5.7](https://docs.oasis-open.org/virtio/virtio/v1.2/virtio-v1.2.html).
-It is not yet a booted guest device: root queue grants, VMM initialization,
-the faulting guest DTB window and a guest DRM/frame-capture test are absent.
+The `GUEST_GRAPHICS=1` AArch64 variant adds root queue grants and VMM
+initialization. A GPU device flag in the guest profile adds the faulting DTB
+window at `0x0a040000` with virtual INTID 54. `make test-guest-gpu` selects the
+inherited Debian GPU profile, enables this variant and requires a successful
+`modprobe virtio_gpu` plus `/dev/dri/card0` before its authenticated SSH proof.
+This boot qualification is in progress; captured guest frames are not yet proven.
 The MAC task remains `task_cefc0f77327d4245ab9feb132cd1eb57`.
 
 `virtio_gpu_2d_execute` consumes a private command snapshot. It supports
@@ -44,6 +48,7 @@ need to consume that state. No VMM receives a physical device frame or IRQ.
 the queue adapter and the actual framebuffer service together. It asserts
 exact pixels, noncontiguous backing, transfer/flush ordering, cursor shape
 commit, fences, queue wrap, malformed requests, capacity and resource reset.
-`make test-host` includes this suite. `make build GUEST_OS=buildroot` compiles
-the libvmm device code for AArch64; neither check proves guest DRM enumeration
-or physical scanout.
+`make test-host` includes this suite.
+`make build GUEST_OS=debian-gpu GUEST_GRAPHICS=1` compiles the graphics variant
+for AArch64. Compilation and host tests do not prove guest DRM enumeration or
+physical scanout; that requires runtime evidence.

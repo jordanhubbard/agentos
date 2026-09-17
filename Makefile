@@ -937,6 +937,10 @@ test-ubuntu-virtio:
 # End-state proof: boot Ubuntu's real Casper initrd and ISO filesystem to a
 # serial login while requiring real I/O through every agentOS VirtIO class.
 .PHONY: test-debian-live
+.PHONY: test-guest-gpu
+test-guest-gpu:
+	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os debian-gpu --timeout-secs $(QEMU_TEST_TIMEOUT) --assert-live --assert-agentos-virtio --ssh-port 12224
+
 test-debian-live:
 	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os debian --timeout-secs $(QEMU_TEST_TIMEOUT) --assert-live --assert-agentos-virtio --ssh-port $(QEMU_TEST_SSH_PORT)
 

@@ -14,6 +14,7 @@ typedef struct {
     bool (*validate_gpa)(void *, uint64_t, uint32_t);
     bool (*read_gpa)(void *, uint64_t, void *, uint32_t);
     void *context;
+    uint32_t next_id;
     uint64_t scanout_handle;
     virtio_gpu_rect_t scanout_rect;
     uint64_t cursor_handle;

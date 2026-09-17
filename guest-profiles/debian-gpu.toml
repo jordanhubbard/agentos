@@ -1,0 +1,24 @@
+schema = 2
+id = "debian-gpu-aarch64"
+status = "runtime"
+extends = "debian.toml"
+aliases = ["debian-gpu"]
+
+[target]
+devices = ["net", "block", "console", "gpu"]
+
+[artifacts.dtb]
+source = "generated:linux.dts+profile-selected-virtio-gpu"
+cache = "build/qemu_virt_aarch64/debian-gpu-vm.dtb"
+sha256 = "e1efbd0e3fced7eb1785d4ef2a086e0c031d58881a3dbc001bb626f425ffa181"
+
+[placements.dual-primary]
+dtb_sha256 = "e1efbd0e3fced7eb1785d4ef2a086e0c031d58881a3dbc001bb626f425ffa181"
+
+[host.qemu.ssh]
+host_port = 12224
+
+[host.console]
+probe_line = "modprobe virtio_gpu && test -e /dev/dri/card0 && printf 'agentos-debian-gpu-%s\\n' ready"
+probe_marker = "agentos-debian-gpu-ready"
+probe_timeout_secs = 180

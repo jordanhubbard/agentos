@@ -52,11 +52,15 @@
 #include <platform/blk_host_layout.h> /* host block MMIO/shared DMA layout       */
 #include <platform/blk_layout.h>      /* shared sDDF block region (VMMs + blk_virt) */
 #include <platform/serial_virt_layout.h>
-#ifdef AGENTOS_FRAMEBUFFER_TEST
+#if defined(AGENTOS_FRAMEBUFFER_TEST) || defined(AGENTOS_GUEST_GRAPHICS)
+#define AGENTOS_FRAMEBUFFER_ENABLED 1
 #include <platform/framebuffer.h>
 #include <platform/framebuffer_isolation_probe.h>
 static seL4_CPtr g_framebuffer_frames[AOS_FB_CLIENTS];
 static seL4_CPtr g_framebuffer_arena[AOS_FB_ARENA_FRAMES];
+/* Dedicated objects: a framebuffer wait must not consume a VMM's bound
+ * network/block/console wakeups while servicing a synchronous GPU command. */
+static seL4_CPtr g_framebuffer_notify[AOS_FB_CLIENTS + 1u];
 #endif
 #include <contracts/serial_virt_contract.h>
 #include <contracts/blk_virt_contract.h>
@@ -66,7 +70,7 @@ static seL4_CPtr g_framebuffer_arena[AOS_FB_ARENA_FRAMES];
 #include <platform/log_isolation_probe.h>
 #ifdef AGENTOS_LOG_RINGS
 #include <platform/log_ring.h>
-#ifdef AGENTOS_FRAMEBUFFER_TEST
+#ifdef AGENTOS_FRAMEBUFFER_ENABLED
 _Static_assert(PD_CNODE_SLOT_FB_WAIT != AOS_LOG_NOTIFY_CAP &&
                PD_CNODE_SLOT_FB_PEER_NOTIFY > AOS_LOG_NOTIFY_CAP &&
                PD_CNODE_SLOT_FB_PEER_NOTIFY + AOS_FB_CLIENTS <= PD_IRQHANDLER_SLOT_BASE,
@@ -1839,7 +1843,7 @@ void root_task_main(const seL4_BootInfo *bi)
     uint32_t net_virt_index = SYSTEM_MAX_PDS;
     uint32_t native_net_index = SYSTEM_MAX_PDS;
     uint32_t log_drain_index = SYSTEM_MAX_PDS;
-#ifdef AGENTOS_FRAMEBUFFER_TEST
+#ifdef AGENTOS_FRAMEBUFFER_ENABLED
     uint32_t fb_service = SYSTEM_MAX_PDS;
     uint32_t fb_clients[AOS_FB_CLIENTS] = { SYSTEM_MAX_PDS, SYSTEM_MAX_PDS };
 #endif
@@ -1850,17 +1854,16 @@ void root_task_main(const seL4_BootInfo *bi)
         if (pd->self_svc_id == SVC_ID_NET_VIRT) net_virt_index = i;
         if (pd->self_svc_id == SVC_ID_NATIVE_RUST_PROBE) native_net_index = i;
         if (pd->self_svc_id == SVC_ID_LOG_DRAIN) log_drain_index = i;
-#ifdef AGENTOS_FRAMEBUFFER_TEST
+#ifdef AGENTOS_FRAMEBUFFER_ENABLED
         if (pd->self_svc_id == SVC_ID_FRAMEBUFFER_QUEUE) fb_service = i;
+#ifdef AGENTOS_FRAMEBUFFER_TEST
         if (pd->self_svc_id == SVC_ID_FRAMEBUFFER_TEST0) fb_clients[0] = i;
         if (pd->self_svc_id == SVC_ID_FRAMEBUFFER_TEST1) fb_clients[1] = i;
+#else
+        if (pd_is_guest_vmm(pd)) fb_clients[pd_is_secondary_guest_vmm(pd) ? 1u : 0u] = i;
+#endif
 #endif
         if (pd->irq_count || pd_is_guest_vmm(pd) ||
-#ifdef AGENTOS_FRAMEBUFFER_TEST
-            pd->self_svc_id == SVC_ID_FRAMEBUFFER_QUEUE ||
-            pd->self_svc_id == SVC_ID_FRAMEBUFFER_TEST0 ||
-            pd->self_svc_id == SVC_ID_FRAMEBUFFER_TEST1 ||
-#endif
             pd->self_svc_id == SVC_ID_OPERATOR_SESSION ||
             pd->self_svc_id == SVC_ID_LOG_DRAIN ||
             pd->self_svc_id == SVC_ID_NET_VIRT ||
@@ -1877,9 +1880,16 @@ void root_task_main(const seL4_BootInfo *bi)
             g_pd_notifications[i] = (seL4_CPtr)PD_SLOT_NTFN(i);
         }
     }
-#ifdef AGENTOS_FRAMEBUFFER_TEST
-    if (fb_service == SYSTEM_MAX_PDS || fb_clients[0] == SYSTEM_MAX_PDS ||
-        fb_clients[1] == SYSTEM_MAX_PDS) return;
+#ifdef AGENTOS_FRAMEBUFFER_ENABLED
+    if (fb_service == SYSTEM_MAX_PDS ||
+        (fb_clients[0] == SYSTEM_MAX_PDS && fb_clients[1] == SYSTEM_MAX_PDS)) return;
+    for (uint32_t f = 0; f <= AOS_FB_CLIENTS; ++f) {
+        if (ut_alloc_cap(seL4_NotificationObject, seL4_NotificationBits,
+                         &g_framebuffer_notify[f]) != seL4_NoError) {
+            dbg_puts("[rt] framebuffer notification allocation failed; refusing boot\n");
+            return;
+        }
+    }
     for (uint32_t f = 0; f < AOS_FB_ARENA_FRAMES; ++f) {
         if (ut_alloc_cap(seL4_ARM_LargePageObject, 0u,
                          &g_framebuffer_arena[f]) != seL4_NoError) {
@@ -2192,18 +2202,20 @@ void root_task_main(const seL4_BootInfo *bi)
             }
         }
 
-#ifdef AGENTOS_FRAMEBUFFER_TEST
+#ifdef AGENTOS_FRAMEBUFFER_ENABLED
         if (i == fb_service || i == fb_clients[0] || i == fb_clients[1]) {
+            uint32_t own = i == fb_service ? AOS_FB_CLIENTS : i == fb_clients[0] ? 0u : 1u;
             seL4_Error err = seL4_CNode_Copy(pd_cnode, PD_CNODE_SLOT_FB_WAIT,
-                pd->cnode_size_bits, seL4_CapInitThreadCNode, g_pd_notifications[i],
+                pd->cnode_size_bits, seL4_CapInitThreadCNode, g_framebuffer_notify[own],
                 64u, seL4_CapRights_new(0, 0, 1, 0));
             for (uint32_t f = 0; f < AOS_FB_CLIENTS && err == seL4_NoError; ++f) {
                 if (i != fb_service && i != fb_clients[f]) continue;
-                uint32_t peer = i == fb_service ? fb_clients[f] : fb_service;
+                uint32_t peer = i == fb_service ? f : AOS_FB_CLIENTS;
                 seL4_Word slot = PD_CNODE_SLOT_FB_PEER_NOTIFY + (i == fb_service ? f : 0);
-                err = seL4_CNode_Mint(pd_cnode, slot, pd->cnode_size_bits,
-                    seL4_CapInitThreadCNode, g_pd_notifications[peer], 64u,
-                    seL4_CapRights_new(0, 0, 0, 1), (seL4_Word)1u << f);
+                if (i != fb_service || fb_clients[f] != SYSTEM_MAX_PDS)
+                    err = seL4_CNode_Mint(pd_cnode, slot, pd->cnode_size_bits,
+                        seL4_CapInitThreadCNode, g_framebuffer_notify[peer], 64u,
+                        seL4_CapRights_new(0, 0, 0, 1), (seL4_Word)1u << f);
                 if (err != seL4_NoError) break;
                 seL4_Word copy = ut_alloc_slot();
                 if (copy == seL4_CapNull) { err = seL4_NotEnoughMemory; break; }
