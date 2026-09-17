@@ -23,10 +23,9 @@ int printf_(const char *fmt, ...)
 {
     va_list ap; va_start(ap,fmt); int n=vprintf(fmt,ap); va_end(ap); return n;
 }
-void seL4_Signal(seL4_CPtr cap) { (void)cap; assert(!"unexpected notification cap"); }
-void seL4_NBSend(seL4_CPtr cap, seL4_MessageInfo_t message)
+void seL4_Signal(seL4_CPtr cap)
 {
-    assert(cap==PD_CNODE_SLOT_NET_VIRT_EP && message.label==NET_VIRT_EVENT_KICK);
+    assert(cap==PD_CNODE_SLOT_NET_VIRT_NOTIFY);
     kicks++;
 }
 void sel4_call(seL4_CPtr cap, const sel4_msg_t *request, sel4_msg_t *reply)

@@ -88,16 +88,8 @@
  * lifecycle endpoints. */
 #define AOS_BLK_VIRT_INIT_EP_COUNT 2u
 
-/* net_virt holds: nameserver, net_pd, plus one listen EP per configured VMM
- * so it can NBSend
- * NET_SVC_EVENT_RX_READY to the client whose RX queue it filled. */
-#if defined(AGENTOS_GUEST_PRIMARY) && defined(AGENTOS_GUEST_SECONDARY)
-#define AOS_NET_VIRT_INIT_EP_COUNT 4u
-#elif defined(AGENTOS_GUEST_PRIMARY) || defined(AGENTOS_GUEST_SECONDARY)
-#define AOS_NET_VIRT_INIT_EP_COUNT 3u
-#else
+/* Guest data wakeups use root-minted send-only notification caps. */
 #define AOS_NET_VIRT_INIT_EP_COUNT 2u
-#endif
 
 #if defined(AGENTOS_GUEST_DUAL)
 #define AOS_VM_MANAGER_INIT_EP_COUNT 4u
@@ -269,8 +261,8 @@ const system_desc_t system_desc_aarch64 = {
          * net_pd).  Moves frames between the guest sDDF queues in the shared
          * net frame and net_pd's RAW contract.  Sits just below net_pd because
          * it Calls into it, and above every guest-control PD.  VMMs reach it
-         * only by ATTACH (once) and NBSend kicks; it reaches them by NBSend
-         * RX_READY on the listen EPs below. */
+         * by ATTACH (once); data wakeups use root-granted send-only
+         * notification capabilities in both directions. */
         {
             .name           = "net_virt",
             .elf_path       = "net_virt.elf",
@@ -282,12 +274,6 @@ const system_desc_t system_desc_aarch64 = {
             .init_eps = {
                 { SVC_ID_NAMESERVER, PD_CNODE_SLOT_NAMESERVER_EP },
                 { SVC_ID_NET_PD,     PD_CNODE_SLOT_NET_PD_EP     },
-#if defined(AGENTOS_GUEST_PRIMARY)
-                { SVC_ID_GUEST_VMM_PRIMARY,   PD_CNODE_SLOT_GUEST_VMM_PRIMARY_EP },
-#endif
-#if defined(AGENTOS_GUEST_SECONDARY)
-                { SVC_ID_GUEST_VMM_SECONDARY, PD_CNODE_SLOT_GUEST_VMM_SECONDARY_EP },
-#endif
             },
             .irq_count = 0u,
             .irqs = { },

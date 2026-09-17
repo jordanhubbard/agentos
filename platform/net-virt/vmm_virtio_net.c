@@ -92,8 +92,7 @@ static void net_virt_attach(uint32_t client_id)
 
 static void net_virt_kick(void)
 {
-    seL4_NBSend((seL4_CPtr)PD_CNODE_SLOT_NET_VIRT_EP,
-                seL4_MessageInfo_new(NET_VIRT_EVENT_KICK, 0u, 0u, 0u));
+    seL4_Signal((seL4_CPtr)PD_CNODE_SLOT_NET_VIRT_NOTIFY);
 }
 
 static void net_mark_pumped(uint32_t n, const char *how)
@@ -112,8 +111,8 @@ static void net_mark_pumped(uint32_t n, const char *how)
  *   - kick net_virt if the guest queued TX and net_virt asked for kicks
  *     (tx_active.consumer_signalled == 0), or if we just recycled RX buffers
  *     while net_virt is backpressured (rx_free.consumer_signalled == 0).
- * NBSend kicks are lossy; the flag stays 0 until net_virt drains, so a lost
- * kick is repeated on the next exit.
+ * Persistent notification kicks coalesce; the flag stays 0 until net_virt
+ * drains. Packet bytes remain in the shared queues.
  */
 static void net_virt_service(void)
 {

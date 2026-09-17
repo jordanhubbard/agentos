@@ -2443,6 +2443,30 @@ void root_task_main(const seL4_BootInfo *bi)
             }
         }
 
+        if (net_virt_index != SYSTEM_MAX_PDS) {
+            seL4_Error signal_err = seL4_NoError;
+            if (pd_is_guest_vmm(pd)) {
+                signal_err = seL4_CNode_Mint(pd_cnode,
+                    PD_CNODE_SLOT_NET_VIRT_NOTIFY, pd->cnode_size_bits,
+                    seL4_CapInitThreadCNode, g_pd_notifications[net_virt_index],
+                    64u, seL4_CapRights_new(0, 0, 0, 1),
+                    1u << (pd_is_secondary_guest_vmm(pd) ? 1u : 0u));
+            } else if (pd->self_svc_id == SVC_ID_NET_VIRT) {
+                for (uint32_t v = 0; v < sys->pd_count && signal_err == seL4_NoError; v++) {
+                    if (!pd_is_guest_vmm(&sys->pds[v])) continue;
+                    seL4_Word slot = pd_is_secondary_guest_vmm(&sys->pds[v]) ?
+                        PD_CNODE_SLOT_NET_SECONDARY_NOTIFY : PD_CNODE_SLOT_NET_PRIMARY_NOTIFY;
+                    signal_err = seL4_CNode_Mint(pd_cnode, slot, pd->cnode_size_bits,
+                        seL4_CapInitThreadCNode, g_pd_notifications[v], 64u,
+                        seL4_CapRights_new(0, 0, 0, 1), NET_VIRT_VMM_WAKE_BADGE);
+                }
+            }
+            if (signal_err != seL4_NoError) {
+                dbg_puts("[rt] network signal grant failed; refusing PD start\n");
+                continue;
+            }
+        }
+
         if (blk_virt_index != SYSTEM_MAX_PDS) {
             seL4_Error signal_err = seL4_NoError;
             if (pd_is_guest_vmm(pd)) {

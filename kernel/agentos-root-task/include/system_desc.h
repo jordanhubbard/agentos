@@ -284,3 +284,5 @@ typedef struct {
 /* Slot 31 belongs to the generic log-ring notification in every client PD. */
 #define PD_CNODE_SLOT_FB_WAIT 32u
 #define PD_CNODE_SLOT_FB_PEER_NOTIFY 33u /* service uses 33/34 for clients */
+#define PD_CNODE_SLOT_NET_PRIMARY_NOTIFY 35u
+#define PD_CNODE_SLOT_NET_SECONDARY_NOTIFY 36u

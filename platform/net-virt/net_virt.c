@@ -9,24 +9,21 @@
  * Contract: include/contracts/net_virt_contract.h.
  *
  * Data path (per attached client):
- *   guest TX   VMM enqueues tx_active, NBSends KICK  ->  net_virt dequeues,
+ *   guest TX   VMM enqueues tx_active, signals KICK -> net_virt dequeues,
  *              copies the frame into net_pd's per-client slot, Calls
  *              NET_SVC_OP_RAW_SEND, recycles the buffer to tx_free.
  *   guest RX   net_pd NBSends NET_SVC_EVENT_RX_READY  ->  net_virt reserves
  *              an rx_free buffer, Calls NET_SVC_OP_RAW_RECV, copies the frame
- *              in, enqueues rx_active, NBSends NET_SVC_EVENT_RX_READY to the
+ *              in, enqueues rx_active, signals the bound notification of the
  *              owning VMM, which pushes it into the guest virtq.
  *
  * When net_pd reports no host NIC (hw=0) the clients are wired into the
  * sDDF-shaped hub pump instead (one client: loopback; several: hub), which
  * is what the emulated-scope proof exercises on a board with no NIC.
  *
- * Notifications are NBSend on endpoints and can be dropped when the target
- * is not blocked in Recv.  Every drop is recoverable: the VMM re-kicks on
- * the next guest MMIO exit while tx_active is non-empty and our
- * consumer_signalled flag is 0, and before blocking we rescan every queue
- * and probe net_pd once more (RAW_RECV polls the host ring), so a lost
- * RX_READY from net_pd only costs latency until the next event.
+ * Guest and native queue notifications remain pending until received.
+ * Driver RX_READY still uses endpoint events; before blocking we rescan
+ * queues and probe net_pd once more (RAW_RECV polls the host ring).
  */
 
 #include "agentos.h"
@@ -160,11 +157,8 @@ static void nv_notify_vmm(const nv_client_t *c)
         seL4_Signal(PD_CNODE_SLOT_NET_NATIVE_NOTIFY);
         return;
     }
-    seL4_MessageInfo_t event =
-        seL4_MessageInfo_new(NET_SVC_EVENT_RX_READY, 0u, 0u, 0u);
-
     if (c->vmm_ep != 0u) {
-        seL4_NBSend(c->vmm_ep, event);
+        seL4_Signal(c->vmm_ep);
     }
 }
 
@@ -173,14 +167,14 @@ static seL4_CPtr vmm_ep_for_slot(uint32_t vmm_slot)
 #ifdef AGENTOS_NATIVE_RUST_TEST
     if (vmm_slot == NET_VIRT_SLOT_NATIVE) return PD_CNODE_SLOT_NET_NATIVE_NOTIFY;
 #endif
-#if defined(AGENTOS_GUEST_PRIMARY)
+#if defined(AGENTOS_GUEST_PRIMARY) || defined(AGENTOS_X86_FIRMWARE_RESET)
     if (vmm_slot == NET_VIRT_VMM_SLOT_PRIMARY) {
-        return (seL4_CPtr)PD_CNODE_SLOT_GUEST_VMM_PRIMARY_EP;
+        return (seL4_CPtr)PD_CNODE_SLOT_NET_PRIMARY_NOTIFY;
     }
 #endif
 #if defined(AGENTOS_GUEST_SECONDARY)
     if (vmm_slot == NET_VIRT_VMM_SLOT_SECONDARY) {
-        return (seL4_CPtr)PD_CNODE_SLOT_GUEST_VMM_SECONDARY_EP;
+        return (seL4_CPtr)PD_CNODE_SLOT_NET_SECONDARY_NOTIFY;
     }
 #endif
     (void)vmm_slot;
@@ -484,7 +478,7 @@ static void net_virt_run(seL4_CPtr ep)
         seL4_MessageInfo_t info = seL4_Recv(ep, &badge);
 #endif
         seL4_Word label = seL4_MessageInfo_get_label(info);
-        if (badge == NET_VIRT_NATIVE_WAKE_BADGE) {
+        if (badge && !(badge & ~(NET_VIRT_NATIVE_WAKE_BADGE | NET_VIRT_GUEST_WAKE_MASK))) {
             nv_service();
             continue;
         }
@@ -515,6 +509,6 @@ void pd_main(seL4_CPtr my_ep, seL4_CPtr ns_ep)
     agentos_log_boot("net_virt");
     aos_net_virt_reset(&g_hub);
     register_with_nameserver(ns_ep);
-    nv_log("READY: contract v4, isolated capability-bound clients, no device caps");
+    nv_log("READY: contract v5, isolated capability-bound clients, no device caps");
     net_virt_run(my_ep);
 }
