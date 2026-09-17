@@ -154,7 +154,7 @@ $(BUILD_DIR)/x86_fault_guest_code.o: $(REPO_ROOT_MK)/tests/platform/x86_fault_gu
 	@mkdir -p $(BUILD_DIR)
 	$(CC) -c -target x86_64-unknown-elf $< -o $@
 $(BUILD_DIR)/x86_fault_guest.bin: $(BUILD_DIR)/x86_fault_guest_code.o
-	$(LD) -Ttext=0x1000 --oformat=binary $< -o $@
+	$(LD) --image-base=0 -Ttext=0x1000 --oformat=binary $< -o $@
 $(BUILD_DIR)/x86_fault_guest_blob.o: $(BUILD_DIR)/x86_fault_guest.bin
 	cd $(BUILD_DIR) && $(OBJCOPY) -I binary -O elf64-x86-64 -B i386:x86-64 --rename-section .data=.rodata,alloc,load,readonly,data,contents x86_fault_guest.bin x86_fault_guest_blob.o
 endif
