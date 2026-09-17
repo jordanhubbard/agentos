@@ -1,0 +1,33 @@
+{
+  "qualification": "Persistent guest network queue wakeups",
+  "runtime_revision": "13f299c3e17e50dcded7fb4f20193f91f8edf4f3",
+  "sdk_version": "2.3.0",
+  "checks": [
+    {
+      "host": "Spark ARM64",
+      "command": "make test-x86-net-host test-x86-firmware-build SEL4_SDK_VERSION=2.3.0",
+      "result": "PASS",
+      "log": "build/evidence/network-wake-13f299c/focused.log",
+      "sha256": "3df6da8858ad3c4b52e26c3853042bcf031bfcc8bbad5b39b0f1b6a001c8518e"
+    },
+    {
+      "host": "Spark ARM64",
+      "command": "make gate SEL4_SDK_VERSION=2.3.0",
+      "result": "PASS",
+      "log": "build/evidence/network-wake-13f299c/gate.log",
+      "sha256": "d9143ca1a38e40eee9c20a1fdfcc53f771a234861b86e31771106eee2ea1daaa"
+    }
+  ],
+  "observations": [
+    "Contract v5 uses root-minted send-only notifications for guest queue kicks and RX wakeups. Attachment remains an endpoint Call.",
+    "The receive-loop tests passed for a pending network wake with a stale IPC tag and for combined network, block and serial wake bits, without an RPC, fault callback or reply.",
+    "The real packet-path host test passed through the updated notification boundary, canonical queues and x86 IOAPIC adapter.",
+    "The full target gate passed ARM network, block and console I/O. Boot logs identify net_virt contract v5 and successful hardware-backed attachment."
+  ],
+  "limitations": [
+    "Coalescing tests mock the receive boundary; no claim is made that all wake combinations were forced on target.",
+    "The NIC driver's RX endpoint events are unchanged. Intel NIC integration and firmware network PD wiring remain outstanding.",
+    "The Intel network receive path is not yet qualified; x86 link and host packet tests are not target network evidence.",
+    "Canonical integration, Debian, GUI and v0.4 release remain incomplete."
+  ]
+}
