@@ -102,6 +102,14 @@ int main(void)
     assert(io(&a,0xed,1,true,0x5a)==0x5a);
     assert(!memcmp(&a,&unchanged,sizeof(a)));
     uint32_t delay=0;
+    const unsigned dma_pages[]={0x81,0x82,0x83,0x87,0x89,0x8a,0x8b,0x8f};
+    for (unsigned i=0;i<sizeof(dma_pages)/sizeof(dma_pages[0]);i++) {
+        assert(io(&a,dma_pages[i],1,false,0)==0xff);
+        reject(&a,dma_pages[i],2,false);
+        reject(&a,dma_pages[i],1,true);
+    }
+    reject(&a,0x84,1,false);
+    assert(!memcmp(&a,&unchanged,sizeof(a)));
     assert(!aos_x86_config_io(&a,0xed,1,false,&delay,0));
     assert(!aos_x86_config_io(&a,0xed,2,true,&delay,0));
     assert(!aos_x86_config_io(&a,0xec,1,true,&delay,0));

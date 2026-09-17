@@ -145,6 +145,12 @@ bool aos_x86_config_io(aos_x86_config_t *s, uint16_t port, unsigned width,
     /* Legacy I/O-delay writes have no device state. All emulated register
      * operations complete synchronously before the guest resumes. */
     if (write && width==1u && (port==0x80u || port==0xedu)) return true;
+    /* Removed legacy DMA page registers read all ones. Linux probes 0x87
+     * before registering 8237A support. No DMA programming path is exposed. */
+    if (!write && width==1u && ((port>=0x81u && port<=0x83u) || port==0x87u ||
+        (port>=0x89u && port<=0x8bu) || port==0x8fu)) {
+        *value=0xffu; return true;
+    }
     /* No PIT clock or IRQ0 source is advertised. Linux still writes its
      * channel-0 shutdown sequence after selecting the LAPIC clockevent.
      * Accept only mode-0 reset and its two zero count bytes; do not pretend
