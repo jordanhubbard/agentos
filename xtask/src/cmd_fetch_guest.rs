@@ -269,6 +269,14 @@ fn execute_acquire_step(step: &RecipeStep, output_dir: &Path) -> anyhow::Result<
             &recipe_path(output_dir, recipe_arg(step, "output")?)?,
             recipe_arg(step, "path")?,
         )?,
+        "install-gpt-ext4-file" => install_gpt_ext4_file(
+            &recipe_path(output_dir, recipe_arg(step, "source")?)?,
+            &recipe_path(output_dir, recipe_arg(step, "output")?)?,
+            recipe_arg(step, "index")?,
+            step.args.get("sector_size").map(String::as_str),
+            recipe_arg(step, "path")?,
+            recipe_arg(step, "content")?.as_bytes(),
+        )?,
         "normalize-arm64-linux-image" => normalize_arm64_linux_image(
             &recipe_path(output_dir, recipe_arg(step, "source")?)?,
             &recipe_path(output_dir, recipe_arg(step, "output")?)?,
@@ -278,16 +286,11 @@ fn execute_acquire_step(step: &RecipeStep, output_dir: &Path) -> anyhow::Result<
     Ok(())
 }
 
-fn extract_gpt_partition(
+fn gpt_partition_range(
     source: &Path,
-    dest: &Path,
     index: &str,
     sector_size: Option<&str>,
-) -> anyhow::Result<()> {
-    anyhow::ensure!(
-        source != dest,
-        "GPT source and partition output must differ"
-    );
+) -> anyhow::Result<(u64, u64)> {
     let index = index
         .parse::<u32>()
         .context("GPT partition index must be a positive integer")?;
@@ -303,19 +306,6 @@ fn extract_gpt_partition(
         matches!(sector_size, 512 | 4096),
         "GPT sector size must be 512 or 4096"
     );
-    let source_id = source_file_identity(source)?;
-    let source_stamp = PathBuf::from(format!("{}.source", dest.display()));
-    if dest.is_file()
-        && fs::metadata(dest).map(|meta| meta.len()).unwrap_or(0) > 0
-        && fs::read_to_string(&source_stamp).unwrap_or_default() == source_id
-    {
-        println!(
-            "[fetch-guest] GPT partition already extracted: {}",
-            dest.display()
-        );
-        return Ok(());
-    }
-
     let source_len = fs::metadata(source)
         .with_context(|| format!("failed to inspect GPT disk {}", source.display()))?
         .len();
@@ -376,6 +366,29 @@ fn extract_gpt_partition(
             .is_some_and(|end| end <= source_len),
         "GPT partition exceeds disk image"
     );
+    Ok((offset, length))
+}
+
+fn extract_gpt_partition(
+    source: &Path,
+    dest: &Path,
+    index: &str,
+    sector_size: Option<&str>,
+) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        source != dest,
+        "GPT source and partition output must differ"
+    );
+    let (offset, length) = gpt_partition_range(source, index, sector_size)?;
+    let source_id = source_file_identity(source)?;
+    let source_stamp = PathBuf::from(format!("{}.source", dest.display()));
+    if dest.is_file()
+        && fs::metadata(dest).map(|meta| meta.len()).unwrap_or(0) == length
+        && fs::read_to_string(&source_stamp).unwrap_or_default() == source_id
+    {
+        return Ok(());
+    }
+    let mut input = fs::File::open(source)?;
 
     if let Some(parent) = dest.parent() {
         fs::create_dir_all(parent)
@@ -412,6 +425,123 @@ fn extract_gpt_partition(
         length,
         dest.display()
     );
+    Ok(())
+}
+
+/// Install configuration in a private disk copy, never the acquired base image.
+/// Guest executables are not run on the host and host keys are not generated here.
+fn install_gpt_ext4_file(
+    source: &Path,
+    dest: &Path,
+    index: &str,
+    sector_size: Option<&str>,
+    filesystem_path: &str,
+    content: &[u8],
+) -> anyhow::Result<()> {
+    anyhow::ensure!(source != dest, "disk source and output must differ");
+    let path = Path::new(filesystem_path);
+    anyhow::ensure!(
+        path.is_absolute()
+            && path.file_name().is_some()
+            && path
+                .components()
+                .all(|c| matches!(c, Component::RootDir | Component::Normal(_)))
+            && filesystem_path
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b"/_+.-".contains(&b)),
+        "installed ext4 path must be confined and absolute"
+    );
+    anyhow::ensure!(
+        !content.is_empty() && content.len() <= 65536,
+        "installed configuration must contain 1..65536 bytes"
+    );
+    let (offset, length) = gpt_partition_range(source, index, sector_size)?;
+    let source_id = source_file_identity(source)?;
+    let recipe = serde_json::to_vec(&(
+        "gpt-ext4-file-v1",
+        &source_id,
+        index,
+        sector_size.unwrap_or("512"),
+        filesystem_path,
+        content,
+    ))?;
+    let identity = format!("{:x}", Sha512::digest(&recipe));
+    let stamp = PathBuf::from(format!("{}.source", dest.display()));
+    if dest.is_file()
+        && fs::metadata(dest)?.len() == fs::metadata(source)?.len()
+        && fs::read_to_string(&stamp).unwrap_or_default() == identity
+    {
+        return Ok(());
+    }
+    anyhow::ensure!(!dest.exists(),
+        "configured disk already exists with a different source/recipe; choose a new output path to preserve guest data");
+    let parent = dest.parent().context("disk output has no parent")?;
+    fs::create_dir_all(parent)?;
+    let work = tempfile::Builder::new()
+        .prefix("guest-config-")
+        .tempdir_in(parent)?;
+    let partition = work.path().join("partition.ext4");
+    extract_gpt_partition(source, &partition, index, sector_size)?;
+    let partition = fs::canonicalize(partition)?;
+    fs::write(work.path().join("content"), content)?;
+    let debugfs = find_tool(&[
+        "debugfs",
+        "/opt/homebrew/opt/e2fsprogs/sbin/debugfs",
+        "/usr/local/opt/e2fsprogs/sbin/debugfs",
+        "/usr/sbin/debugfs",
+        "/usr/bin/debugfs",
+    ])?;
+    let mut commands = String::new();
+    let mut directory = String::new();
+    for component in path
+        .parent()
+        .context("configuration has no parent")?
+        .components()
+    {
+        if let Component::Normal(name) = component {
+            directory.push('/');
+            directory.push_str(name.to_str().context("non-UTF8 configuration path")?);
+            commands.push_str(&format!("mkdir {directory}\n"));
+        }
+    }
+    // mkdir of an existing directory and rm of an absent file are harmless.
+    // debugfs can exit successfully after a command error, so verify data below.
+    commands.push_str(&format!(
+        "rm {filesystem_path}\nwrite content {filesystem_path}\nset_inode_field {filesystem_path} mode 0100644\nset_inode_field {filesystem_path} uid 0\nset_inode_field {filesystem_path} gid 0\ndump {filesystem_path} readback\n"
+    ));
+    fs::write(work.path().join("commands"), commands)?;
+    let output = std::process::Command::new(debugfs)
+        .args(["-w", "-f", "commands"])
+        .arg(&partition)
+        .current_dir(work.path())
+        .output()?;
+    anyhow::ensure!(
+        output.status.success(),
+        "debugfs configuration install failed"
+    );
+    anyhow::ensure!(
+        fs::read(work.path().join("readback"))? == content,
+        "debugfs configuration readback differs"
+    );
+    anyhow::ensure!(
+        fs::metadata(&partition)?.len() == length,
+        "configuration installation changed partition length"
+    );
+    let disk = work.path().join("disk.raw");
+    fs::copy(source, &disk)?;
+    let mut output = OpenOptions::new().write(true).open(&disk)?;
+    output.seek(SeekFrom::Start(offset))?;
+    let copied = std::io::copy(&mut fs::File::open(partition)?.take(length), &mut output)?;
+    anyhow::ensure!(copied == length, "short configured partition copy");
+    output.sync_all()?;
+    anyhow::ensure!(
+        source_file_identity(source)? == source_id,
+        "base disk changed during configuration install"
+    );
+    // Atomic no-clobber publication on the same filesystem. A competing
+    // preparation must not replace a writable disk created since our check.
+    fs::hard_link(disk, dest)?;
+    write_output(&stamp, identity.as_bytes())?;
     Ok(())
 }
 
@@ -1488,6 +1618,88 @@ mod tests {
         assert_eq!(partition.len(), 4 * 512);
         assert_eq!(&partition[..16], b"agentOS-GPT-data");
         assert!(extract_gpt_partition(&source, &dir.path().join("unused"), "2", None).is_err());
+    }
+
+    #[test]
+    fn gpt_ext4_configuration_is_private_verified_and_preserves_writable_disk() {
+        let Ok(mkfs) = find_tool(&[
+            "mkfs.ext4",
+            "/usr/sbin/mkfs.ext4",
+            "/opt/homebrew/opt/e2fsprogs/sbin/mkfs.ext4",
+        ]) else {
+            eprintln!("skipping: mkfs.ext4 is unavailable");
+            return;
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let partition = dir.path().join("root.ext4");
+        let length = 8 * 1024 * 1024;
+        fs::File::create(&partition)
+            .unwrap()
+            .set_len(length as u64)
+            .unwrap();
+        assert!(std::process::Command::new(mkfs)
+            .args(["-q", "-F", "-O", "^has_journal"])
+            .arg(&partition)
+            .status()
+            .unwrap()
+            .success());
+        let offset = 1024 * 1024;
+        let mut original = vec![0x5au8; offset + length + 512];
+        original[512..520].copy_from_slice(b"EFI PART");
+        original[524..528].copy_from_slice(&92u32.to_le_bytes());
+        original[584..592].copy_from_slice(&2u64.to_le_bytes());
+        original[592..596].copy_from_slice(&1u32.to_le_bytes());
+        original[596..600].copy_from_slice(&128u32.to_le_bytes());
+        original[1056..1064].copy_from_slice(&(offset as u64 / 512).to_le_bytes());
+        original[1064..1072].copy_from_slice(&((offset + length) as u64 / 512 - 1).to_le_bytes());
+        original[offset..offset + length].copy_from_slice(&fs::read(&partition).unwrap());
+        let source = dir.path().join("base.raw");
+        let output = dir.path().join("configured.raw");
+        fs::write(&source, &original).unwrap();
+        let path = "/etc/systemd/system/ssh.service.d/agentos-hostkeys.conf";
+        let config = b"[Service]\nExecStartPre=/usr/bin/ssh-keygen -A\n";
+        install_gpt_ext4_file(&source, &output, "1", None, path, config).unwrap();
+        assert_eq!(
+            fs::read(&source).unwrap(),
+            original,
+            "base image must not change"
+        );
+        let configured = fs::read(&output).unwrap();
+        assert_eq!(&configured[..offset], &original[..offset]);
+        assert_eq!(&configured[offset + length..], &original[offset + length..]);
+        let extracted = dir.path().join("configured.ext4");
+        extract_gpt_partition(&output, &extracted, "1", None).unwrap();
+        let readback = dir.path().join("config");
+        extract_ext4_file(&extracted, &readback, path).unwrap();
+        assert_eq!(fs::read(&readback).unwrap(), config);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                fs::metadata(&readback).unwrap().permissions().mode() & 0o777,
+                0o644
+            );
+        }
+        let before = fs::metadata(&output).unwrap().modified().unwrap();
+        install_gpt_ext4_file(&source, &output, "1", None, path, config).unwrap();
+        assert_eq!(fs::metadata(&output).unwrap().modified().unwrap(), before);
+        assert!(install_gpt_ext4_file(&source, &output, "1", None, path, b"changed").is_err());
+        assert_eq!(
+            fs::read(&output).unwrap(),
+            configured,
+            "recipe changes must not erase guest data"
+        );
+        assert!(install_gpt_ext4_file(&source, &source, "1", None, path, config).is_err());
+        assert!(install_gpt_ext4_file(
+            &source,
+            &dir.path().join("bad.raw"),
+            "1",
+            None,
+            "/etc/../bad",
+            config
+        )
+        .is_err());
+        assert!(!dir.path().join("bad.raw").exists());
     }
 
     #[test]

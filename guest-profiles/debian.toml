@@ -49,6 +49,12 @@ args = { cache_name = "debian-13-generic-arm64-20260831-2587.qcow2", output = "d
 action = "convert-qcow2-raw"
 args = { source = "debian-13-generic-arm64-20260831-2587.qcow2", output = "debian-13-generic-arm64-20260831-2587.raw" }
 
+# Cloud-init is disabled by this profile. Generate unique host keys inside
+# the guest before sshd validates its configuration, preserving existing keys.
+[[host.acquire]]
+action = "install-gpt-ext4-file"
+args = { source = "debian-13-generic-arm64-20260831-2587.raw", output = "debian-13-generic-arm64-20260831-2587.configured.raw", index = "1", path = "/etc/systemd/system/ssh.service.d/agentos-hostkeys.conf", content = "[Service]\nExecStartPre=\nExecStartPre=/usr/bin/ssh-keygen -A\nExecStartPre=/usr/sbin/sshd -t\n" }
+
 [[host.acquire]]
 action = "extract-gpt-partition"
 args = { source = "debian-13-generic-arm64-20260831-2587.raw", output = "debian-13-arm64-root.ext4", index = "1" }
@@ -93,7 +99,7 @@ args = { source = "debian-13-arm64-initrd.with-init-bottom-order", output = "deb
 memory = "3G"
 
 [[host.qemu.media]]
-path = "build/guest-images/debian-13-generic-arm64-20260831-2587.raw"
+path = "build/guest-images/debian-13-generic-arm64-20260831-2587.configured.raw"
 drive_id = "primary_media"
 bus = 8
 writable = true
