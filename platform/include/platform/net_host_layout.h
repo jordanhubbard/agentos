@@ -60,4 +60,19 @@ typedef struct __attribute__((packed)) {
     uint64_t size;
 } agentos_net_host_dma_meta_t;
 
+/* Root-provisioned metadata version 2 selects modern PCI. Version 1 retains
+ * the ARM MMIO binding. This record is outside the DMA queue/data windows. */
+#define AOS_NET_PCI_INFO_OFF           0x40u
+#define AOS_NET_PCI_INFO_MAGIC         0x504e4f41u
+#define AOS_NET_PCI_REGION_VA(index)   (0x06200000UL + (index) * 0x1000UL)
+typedef struct {
+    uint32_t magic, version;
+    uint32_t offset[3]; /* common, notification, device configuration */
+    uint32_t length[3];
+    uint32_t notify_multiplier;
+    uint32_t reserved;
+} aos_net_pci_info_t;
+_Static_assert(AOS_NET_PCI_INFO_OFF + sizeof(aos_net_pci_info_t) <
+               AGENTOS_NET_HOST_RX_DESC_OFF, "PCI metadata precedes queues");
+
 #endif /* AOS_PLATFORM_NET_HOST_LAYOUT_H */

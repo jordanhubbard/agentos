@@ -19,6 +19,9 @@
 #include <platform/vmm_virtio_blk.h>
 #include <platform/blk_layout.h>
 #include <contracts/blk_virt_contract.h>
+#include <contracts/net_virt_contract.h>
+#include <platform/vmm_virtio_net.h>
+#include <platform/net_host_layout.h>
 
 #define VCPU AOS_GUEST_VCPU_CAP_BASE
 const char vmm_pd_name[] = "guest_vmm_x86";
@@ -107,9 +110,11 @@ static void block_wait(void)
 #else
     (void)seL4_Recv(PD_CNODE_SLOT_SELF_EP, &badge);
 #endif
-    if (!badge || (badge & ~(BLK_VIRT_VMM_WAKE_BADGE | SERIAL_VIRT_VMM_WAKE_BADGE)))
+    if (!badge || (badge & ~(BLK_VIRT_VMM_WAKE_BADGE | SERIAL_VIRT_VMM_WAKE_BADGE |
+                            NET_VIRT_VMM_WAKE_BADGE)))
         stop(block_proof_ep, AOS_X86_VTX_PROOF_FAIL, 0x424c4bu, 0, badge);
     if (badge & SERIAL_VIRT_VMM_WAKE_BADGE) serial_wake_received = true;
+    if (badge & NET_VIRT_VMM_WAKE_BADGE) aos_vmm_virtio_net_rx_ready();
 }
 
 static seL4_Word read_field(seL4_CPtr ep, seL4_Word field)
@@ -286,6 +291,11 @@ void aos_x86_firmware_run(seL4_CPtr ep, aos_x86_vmenter_return_t returned)
                                    AOS_X86_VIRTIO_GSI_BASE + 1u, (void *)AOS_BLK_SHMEM_VA))
         stop(ep, AOS_X86_VTX_PROOF_FAIL, 0x424c4bu, 0, 1u);
     block_proof_ep = ep;
+    if (!aos_vmm_virtio_net_init_at(0u, AOS_X86_VIRTIO_BASE + 2u * AOS_X86_VIRTIO_STRIDE,
+                                   AOS_X86_VIRTIO_GSI_BASE + 2u,
+                                   (void *)AGENTOS_NET_SHARED_VA) ||
+        !aos_vmm_virtio_net_host_ready())
+        stop(ep, AOS_X86_VTX_PROOF_FAIL, 0x4e4554u, 0, 1u);
     if (!aos_vmm_virtio_blk_read_boot(0u, 1u, block_boot_data,
                                      sizeof(block_boot_data), block_wait))
         stop(ep, AOS_X86_VTX_PROOF_FAIL, 0x424c4bu, 0, 2u);
@@ -305,12 +315,14 @@ void aos_x86_firmware_run(seL4_CPtr ep, aos_x86_vmenter_return_t returned)
     for (;;) {
         seL4_Word rip = returned.words[SEL4_VMENTER_CALL_EIP_MR];
         if (returned.result == SEL4_VMENTER_RESULT_NOTIF && returned.badge &&
-            !(returned.badge & ~(SERIAL_VIRT_VMM_WAKE_BADGE | BLK_VIRT_VMM_WAKE_BADGE))) {
+            !(returned.badge & ~(SERIAL_VIRT_VMM_WAKE_BADGE | BLK_VIRT_VMM_WAKE_BADGE |
+                                 NET_VIRT_VMM_WAKE_BADGE))) {
             if (returned.badge & SERIAL_VIRT_VMM_WAKE_BADGE) {
                 service_serial(&serial_endpoint);
                 serial_wake_received = true;
             }
             if (returned.badge & BLK_VIRT_VMM_WAKE_BADGE) aos_vmm_virtio_blk_resp_ready();
+            if (returned.badge & NET_VIRT_VMM_WAKE_BADGE) aos_vmm_virtio_net_rx_ready();
             /* Queue completion leaves its IOAPIC line pending. The next
              * bounded VMX timer exit routes it through the common event path. */
             returned = aos_x86_vm_resume_notification(&returned);
@@ -558,6 +570,7 @@ void aos_x86_firmware_run(seL4_CPtr ep, aos_x86_vmenter_return_t returned)
         }
         service_serial(&serial_endpoint);
         aos_vmm_virtio_blk_after_fault();
+        aos_vmm_virtio_net_after_fault();
         seL4_Error err = seL4_X86_VCPU_WriteRegisters(VCPU, &regs);
         if (err) stop(ep, AOS_X86_VTX_PROOF_FAIL, reason, rip, err);
         /* Only VMM-owned emulated sources may assert these inputs. No host

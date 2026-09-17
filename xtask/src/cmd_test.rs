@@ -923,6 +923,7 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
                     &log_path,
                     &[
                         "[rt] x86 host network PCI discovery verified",
+                        "[rt] x86 host network driver resources mapped",
                         "[rt] x86 host block PCI resources verified",
                     ],
                     Duration::from_secs(args.timeout_secs),

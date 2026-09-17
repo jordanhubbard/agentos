@@ -255,6 +255,7 @@ $(BUILD_DIR)/guest_vmm_primary.elf: LDFLAGS += --defsym=printf_=printf
 X86_SERIAL_CFLAGS = $(CFLAGS) -Wno-sign-compare \
     -I$(REPO_ROOT_MK)/libvmm/include \
     -I$(REPO_ROOT_MK)/libvmm/dep/sddf/include \
+    -I$(REPO_ROOT_MK)/libvmm/dep/sddf/include/microkit \
     -I$(REPO_ROOT_MK)/libvmm/dep/sddf/include/sddf/util/custom_libc
 $(BUILD_DIR)/x86_console_backend.o: $(REPO_ROOT_MK)/libvmm/src/virtio/console.c
 	@mkdir -p $(BUILD_DIR)
@@ -272,6 +273,13 @@ $(BUILD_DIR)/x86_block_backend.o: $(REPO_ROOT_MK)/libvmm/src/virtio/block.c
 $(BUILD_DIR)/x86_vmm_block.o: $(REPO_ROOT_MK)/platform/blk-virt/vmm_virtio_blk.c
 	@mkdir -p $(BUILD_DIR)
 	$(CC) -c $(X86_SERIAL_CFLAGS) -ffunction-sections -fdata-sections $< -o $@
+$(BUILD_DIR)/x86_net_backend.o: $(REPO_ROOT_MK)/libvmm/src/virtio/net.c
+	@mkdir -p $(BUILD_DIR)
+	$(CC) -c $(X86_SERIAL_CFLAGS) -ffunction-sections -fdata-sections $< -o $@
+$(BUILD_DIR)/x86_vmm_net.o: $(REPO_ROOT_MK)/platform/net-virt/vmm_virtio_net.c
+	@mkdir -p $(BUILD_DIR)
+	$(CC) -c $(X86_SERIAL_CFLAGS) -ffunction-sections -fdata-sections $< -o $@
+$(BUILD_DIR)/guest_vmm_primary.elf: $(BUILD_DIR)/x86_net_backend.o $(BUILD_DIR)/x86_vmm_net.o
 $(BUILD_DIR)/x86_fsmalloc.o: $(REPO_ROOT_MK)/libvmm/dep/sddf/util/fsmalloc.c
 	@mkdir -p $(BUILD_DIR)
 	$(CC) -c $(X86_SERIAL_CFLAGS) $< -o $@

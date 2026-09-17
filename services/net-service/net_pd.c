@@ -827,7 +827,7 @@ static void probe_virtio_net(void)
     }
     meta = (const agentos_net_host_dma_meta_t *)net_pd_dma_vaddr;
     if (meta->magic != AGENTOS_NET_HOST_DMA_MAGIC ||
-        meta->version != AGENTOS_NET_HOST_DMA_VERSION ||
+        (meta->version != AGENTOS_NET_HOST_DMA_VERSION && meta->version != 2u) ||
         meta->size != AGENTOS_NET_HOST_DMA_SIZE) {
         log_drain_write(17, 17,
             "[net_pd] virtio-net: host DMA metadata invalid\n");
@@ -835,8 +835,24 @@ static void probe_virtio_net(void)
     }
     net_host_dma_paddr = meta->paddr;
 
-    if (!aos_virtio_host_mmio(&net_host_transport, net_pd_mmio_vaddr,
-                             0x1000u, VIRTIO_NET_DEVICE_ID)) {
+    bool bound = false;
+    if (meta->version == 2u) {
+        const aos_net_pci_info_t *pci = (const void *)(net_pd_dma_vaddr + AOS_NET_PCI_INFO_OFF);
+        if (pci->magic != AOS_NET_PCI_INFO_MAGIC || pci->version != 1u || pci->reserved)
+            return;
+        for (unsigned r = 0; r < 3u; r++)
+            if (pci->offset[r] >= 4096u || !pci->length[r] ||
+                pci->length[r] > 4096u - pci->offset[r]) return;
+        bound = aos_virtio_host_pci(&net_host_transport,
+            AOS_NET_PCI_REGION_VA(0) + pci->offset[0], pci->length[0],
+            AOS_NET_PCI_REGION_VA(2) + pci->offset[2], pci->length[2],
+            AOS_NET_PCI_REGION_VA(1) + pci->offset[1], pci->length[1],
+            pci->notify_multiplier);
+    } else {
+        bound = aos_virtio_host_mmio(&net_host_transport, net_pd_mmio_vaddr,
+                                    0x1000u, VIRTIO_NET_DEVICE_ID);
+    }
+    if (!bound) {
         log_drain_write(17, 17, "[net_pd] virtio-net not detected, stub mode\n");
         return;
     }
@@ -1063,7 +1079,7 @@ static uint32_t handle_net_send_nic(net_pd_client_t *c, uint32_t handle,
         rep->length = 4;
         return SEL4_ERR_BAD_ARG;
     }
-    if (hw_present) {
+    if (hw_present && !net_host_transport.pci) {
 #ifndef AGENTOS_TEST_HOST
         const uint8_t *frame = (const uint8_t *)(net_pd_shmem_vaddr + slot_off);
         if (!net_host_send(frame, frame_len)) {
@@ -1802,6 +1818,30 @@ static seL4_MessageInfo_t net_pd_handle_request(seL4_Word badge)
 
 static void net_pd_server_run(seL4_CPtr ep)
 {
+    if (net_host_transport.pci) {
+        /* PCI has no IRQ grant. Root bounds this driver to 1 ms / 10 ms.
+         * Endpoint badges are nonzero service identities; zero means no IPC.
+         * Handle IPC before polling, which may send notifications. */
+        for (;;) {
+            seL4_Word badge = 0;
+#ifdef CONFIG_KERNEL_MCS
+            (void)seL4_NBRecv(ep, &badge, AGENTOS_IPC_REPLY_CAP);
+#else
+            (void)seL4_NBRecv(ep, &badge);
+#endif
+            if (badge) {
+                seL4_MessageInfo_t reply = net_pd_handle_request(badge);
+#ifdef CONFIG_KERNEL_MCS
+                seL4_Send(AGENTOS_IPC_REPLY_CAP, reply);
+#else
+                seL4_Reply(reply);
+#endif
+            }
+            if (net_host_poll_rx() || net_host_client_rx_pending())
+                net_pd_notify_net_virt_rx();
+            seL4_Yield();
+        }
+    }
     aos_net_server_loop(ep, AGENTOS_IPC_REPLY_CAP,
                         net_pd_handle_host_irq, net_pd_handle_request);
 }
