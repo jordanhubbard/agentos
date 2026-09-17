@@ -1298,7 +1298,7 @@ void init(void)
         LOG_VMM_ERR("guest RAM recycle: FAIL\n");
         return;
     }
-    LOG_VMM("guest RAM recycle: PASS two full overwrite/revoke/rebuild/zero cycles\n");
+    microkit_dbg_puts("guest RAM recycle: PASS two full overwrite/revoke/rebuild/zero cycles\n");
 #endif
 
     /* Place guest images in RAM */
