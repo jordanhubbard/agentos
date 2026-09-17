@@ -53,6 +53,23 @@ directory. A later implementation may advance this pin through a reviewed
 change that updates the artifact, manifest, and retained boot evidence
 together.
 
+The pinned amd64 image was acquired and its SHA-512 verified on Spark on
+2026-09-17. Its GPT partition 1 begins at sector 262144 and spans 6027264
+512-byte sectors. The ext4 filesystem UUID is
+`df4df5bb-613a-4382-8cf9-653304605a1f`. Read-only extraction from that filesystem
+produced these unmodified artifacts:
+
+| File under `/boot` | SHA-256 |
+|---|---|
+| `vmlinuz-6.12.107+deb13-amd64` | `2b2358b37674d2505350528875bb17afae2a36522a9e8a9417eaca65a7da0e08` |
+| `initrd.img-6.12.107+deb13-amd64` | `52c4b03c086ad3843dac011f5c09b3d41751543fd7270ec6500269cc4338fd2a` |
+| `config-6.12.107+deb13-amd64` | `9b460f1003db4d417288e9c14caecfa14245dab07186df948fef0f3661e38ceb` |
+
+The kernel config enables EFI stub, ACPI, and virtio console as built-ins.
+Virtio MMIO, network, block, and ext4 are modules; all four corresponding
+modules are present in the stock initrd. This establishes acquisition and
+boot-artifact inputs, not an agentOS Debian amd64 boot or SSH qualification.
+
 The acquisition recipe also retains and pins the complete `SHA512SUMS`
 manifest from `cdimage.debian.org`. On 2026-09-14, the cloud download alias
 redirected the image to `chuangtzu.ftp.acc.umu.se`, whose TLS certificate

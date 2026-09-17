@@ -691,6 +691,10 @@ fn prepare_bundle(
         profile.status == Some(Status::Runtime),
         "only status=runtime profiles can enter a build bundle"
     );
+    ensure!(
+        profile.target.as_ref().unwrap().boot_protocol.as_deref() == Some("fdt-direct"),
+        "build bundles currently require the fdt-direct boot protocol"
+    );
     let host_build = profile
         .host
         .as_ref()
@@ -1164,8 +1168,9 @@ fn validate(profile: &Profile, placement: Option<&str>) -> Result<()> {
         );
     }
 
-    for name in ["kernel", "dtb"] {
-        validate_artifact(profile, name, status == Status::Runtime)?;
+    validate_artifact(profile, "kernel", status == Status::Runtime)?;
+    if profile.artifacts.contains_key("dtb") || target.boot_protocol.as_deref() != Some("uefi") {
+        validate_artifact(profile, "dtb", status == Status::Runtime)?;
     }
     if profile.artifacts.contains_key("initrd") {
         validate_artifact(profile, "initrd", status == Status::Runtime)?;
@@ -1198,7 +1203,7 @@ fn validate(profile: &Profile, placement: Option<&str>) -> Result<()> {
         "at least one placement is required"
     );
     for (name, value) in &profile.placements {
-        validate_placement(name, value)?;
+        validate_placement(name, value, profile.artifacts.contains_key("dtb"))?;
         validate_artifact_windows(profile, name, value)?;
     }
     if let Some(name) = placement {
@@ -1287,9 +1292,13 @@ fn validate_selected_placements<'a>(
 
 fn validate_artifact_windows(profile: &Profile, name: &str, p: &Placement) -> Result<()> {
     let kernel_address = p.kernel_load_address.unwrap();
-    let dtb_address = p.dtb_load_address.unwrap();
+    let dtb_address = p.dtb_load_address.unwrap_or(0);
     let kernel_size = profile.artifacts["kernel"].max_bytes.unwrap();
-    let dtb_size = profile.artifacts["dtb"].max_bytes.unwrap();
+    let dtb_size = profile
+        .artifacts
+        .get("dtb")
+        .and_then(|a| a.max_bytes)
+        .unwrap_or(0);
     ensure!(
         !ranges_overlap(kernel_address, kernel_size, dtb_address, dtb_size),
         "placement {name:?} kernel and DTB maximum windows overlap"
@@ -1309,6 +1318,9 @@ fn validate_artifact_windows(profile: &Profile, name: &str, p: &Placement) -> Re
 }
 
 fn ranges_overlap(a: u64, a_size: u64, b: u64, b_size: u64) -> bool {
+    if a_size == 0 || b_size == 0 {
+        return false;
+    }
     match (a.checked_add(a_size), b.checked_add(b_size)) {
         (Some(a_end), Some(b_end)) => a < b_end && b < a_end,
         _ => true,
@@ -1349,7 +1361,7 @@ fn validate_artifact(profile: &Profile, name: &str, pinned: bool) -> Result<()> 
     Ok(())
 }
 
-fn validate_placement(name: &str, p: &Placement) -> Result<()> {
+fn validate_placement(name: &str, p: &Placement, has_dtb: bool) -> Result<()> {
     ensure!(
         !name.is_empty() && name.len() <= 63,
         "invalid placement name"
@@ -1377,6 +1389,13 @@ fn validate_placement(name: &str, p: &Placement) -> Result<()> {
         ("kernel_load_address", p.kernel_load_address),
         ("dtb_load_address", p.dtb_load_address),
     ] {
+        if field == "dtb_load_address" && !has_dtb {
+            ensure!(
+                address.unwrap_or(0) == 0 && p.dtb_sha256.is_none(),
+                "placement without a DTB must not specify its address or hash"
+            );
+            continue;
+        }
         let address = address.with_context(|| format!("placement.{field} is required"))?;
         ensure!(
             address >= gpa && address < gpa + ram,
@@ -1840,7 +1859,7 @@ fn compile(profile: &Profile, canonical: &str, placement_name: &str) -> Result<V
     let target = profile.target.as_ref().unwrap();
     let placement = &profile.placements[placement_name];
     let kernel = &profile.artifacts["kernel"];
-    let dtb = &profile.artifacts["dtb"];
+    let dtb = profile.artifacts.get("dtb");
     let initrd = profile.artifacts.get("initrd");
     let id = profile.id.as_ref().unwrap();
     let command_line = profile
@@ -1910,17 +1929,21 @@ fn compile(profile: &Profile, canonical: &str, placement_name: &str) -> Result<V
         placement.ram_size.unwrap(),
         placement.kernel_load_address.unwrap(),
         placement.kernel_entry_address.unwrap_or(0),
-        placement.dtb_load_address.unwrap(),
+        placement.dtb_load_address.unwrap_or(0),
         placement.initrd_load_address.unwrap_or(0),
         kernel.max_bytes.unwrap(),
-        dtb.max_bytes.unwrap(),
+        dtb.and_then(|a| a.max_bytes).unwrap_or(0),
         initrd.and_then(|a| a.max_bytes).unwrap_or(0),
     ] {
         push_u64(&mut out, value);
     }
     out.extend_from_slice(&Sha256::digest(canonical.as_bytes()));
     out.extend_from_slice(&artifact_hash(kernel, placement, "kernel")?);
-    out.extend_from_slice(&artifact_hash(dtb, placement, "dtb")?);
+    if let Some(dtb) = dtb {
+        out.extend_from_slice(&artifact_hash(dtb, placement, "dtb")?);
+    } else {
+        out.extend_from_slice(&[0; 32]);
+    }
     if let Some(initrd) = initrd {
         out.extend_from_slice(&artifact_hash(initrd, placement, "initrd")?);
     } else {
@@ -2038,6 +2061,77 @@ fn push_text(out: &mut Vec<u8>, value: &str, width: usize) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn uefi_is_not_silently_prepared_as_an_fdt_bundle() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../guest-profiles");
+        let (_, canonical) =
+            resolve(&root, Path::new("ubuntu-live.toml"), &mut Vec::new()).unwrap();
+        let mut source: toml::Value = toml::from_str(&canonical).unwrap();
+        source["target"]["boot_protocol"] = toml::Value::String("uefi".into());
+        let temp = tempfile::tempdir().unwrap();
+        fs::write(
+            temp.path().join("uefi.toml"),
+            toml::to_string(&source).unwrap(),
+        )
+        .unwrap();
+        let output = temp.path().join("bundle");
+        let error = prepare_bundle(
+            temp.path(),
+            Path::new("uefi.toml"),
+            "default",
+            temp.path(),
+            &output,
+        )
+        .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("require the fdt-direct boot protocol"),
+            "{error:#}"
+        );
+        assert!(!output.exists());
+    }
+
+    #[test]
+    fn uefi_without_dtb_has_canonical_absent_fields() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../guest-profiles");
+        let (mut profile, _) =
+            resolve(&root, Path::new("ubuntu-live.toml"), &mut Vec::new()).unwrap();
+        let target = profile.target.as_mut().unwrap();
+        target.architecture = Some("x86-64".into());
+        target.boot_protocol = Some("uefi".into());
+        target.kernel_format = Some("uefi".into());
+        target.entry_from_image = Some(false);
+        profile.artifacts.remove("dtb");
+        for p in profile.placements.values_mut() {
+            p.dtb_load_address = None;
+            p.dtb_sha256 = None;
+            p.kernel_entry_address = p.kernel_load_address;
+        }
+        validate(&profile, Some("default")).unwrap();
+        let manifest = compile(&profile, "uefi-without-dtb-test", "default").unwrap();
+        assert_eq!(manifest.len(), MANIFEST_SIZE);
+        assert_eq!(&manifest[72..80], &[0; 8]); // DTB load address
+        assert_eq!(&manifest[96..104], &[0; 8]); // DTB maximum bytes
+        assert_eq!(&manifest[176..208], &[0; 32]); // DTB hash
+        profile
+            .placements
+            .get_mut("default")
+            .unwrap()
+            .dtb_load_address = Some(0x4000_0000);
+        assert!(validate(&profile, None).is_err());
+        profile
+            .placements
+            .get_mut("default")
+            .unwrap()
+            .dtb_load_address = None;
+        profile.placements.get_mut("default").unwrap().dtb_sha256 = Some("a5".repeat(32));
+        assert!(validate(&profile, None).is_err());
+        profile.placements.get_mut("default").unwrap().dtb_sha256 = None;
+        profile.target.as_mut().unwrap().boot_protocol = Some("fdt-direct".into());
+        assert!(validate(&profile, None).is_err());
+    }
 
     #[test]
     fn merge_replaces_scalars_and_preserves_tables() {

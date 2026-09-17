@@ -133,16 +133,22 @@ aos_guest_profile_validate(const aos_guest_profile_manifest_t *profile)
         !add_fits(profile->vmm_hva_base, profile->ram_size, UINT64_MAX)) {
         return AOS_GUEST_PROFILE_ERR_MEMORY;
     }
-    if (profile->kernel_max_bytes == 0u || profile->dtb_max_bytes == 0u ||
+    bool has_dtb = profile->dtb_max_bytes != 0u;
+    if (!has_dtb &&
+        (profile->boot_protocol != AOS_GUEST_BOOT_UEFI ||
+         profile->dtb_load_address != 0u || hash_present(profile->dtb_sha256))) {
+        return AOS_GUEST_PROFILE_ERR_ARTIFACT;
+    }
+    if (profile->kernel_max_bytes == 0u ||
         !aos_guest_profile_region_contains(profile,
                                            profile->kernel_load_address,
                                            profile->kernel_max_bytes) ||
-        !aos_guest_profile_region_contains(profile,
+        (has_dtb && !aos_guest_profile_region_contains(profile,
                                            profile->dtb_load_address,
-                                           profile->dtb_max_bytes)) {
+                                           profile->dtb_max_bytes))) {
         return AOS_GUEST_PROFILE_ERR_ARTIFACT;
     }
-    if (region_overlaps(profile->kernel_load_address,
+    if (has_dtb && region_overlaps(profile->kernel_load_address,
                         profile->kernel_max_bytes,
                         profile->dtb_load_address,
                         profile->dtb_max_bytes)) {
@@ -159,10 +165,10 @@ aos_guest_profile_validate(const aos_guest_profile_manifest_t *profile)
                             profile->kernel_max_bytes,
                             profile->initrd_load_address,
                             profile->initrd_max_bytes) ||
-            region_overlaps(profile->dtb_load_address,
+            (has_dtb && region_overlaps(profile->dtb_load_address,
                             profile->dtb_max_bytes,
                             profile->initrd_load_address,
-                            profile->initrd_max_bytes)) {
+                            profile->initrd_max_bytes))) {
             return AOS_GUEST_PROFILE_ERR_ARTIFACT;
         }
     } else if (profile->initrd_load_address != 0u ||
@@ -192,7 +198,7 @@ aos_guest_profile_validate(const aos_guest_profile_manifest_t *profile)
     if ((profile->flags & AOS_GUEST_PROFILE_HASHED_ARTIFACTS) != 0u &&
         (!hash_present(profile->profile_sha256) ||
          !hash_present(profile->kernel_sha256) ||
-         !hash_present(profile->dtb_sha256) ||
+         (has_dtb && !hash_present(profile->dtb_sha256)) ||
          (((profile->flags & AOS_GUEST_PROFILE_HAS_INITRD) != 0u) &&
           !hash_present(profile->initrd_sha256)))) {
         return AOS_GUEST_PROFILE_ERR_ARTIFACT;
