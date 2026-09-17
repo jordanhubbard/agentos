@@ -112,6 +112,70 @@ int main(void)
     regions[0].devices[0].tail=regions[0].devices[0].head+AOS_INPUT_EVENT_CAPACITY+1;
     submit(keyboard,AOS_INPUT_WOULD_BLOCK);
     assert(aos_input_event_receive(&regions[0].devices[0],&event)==-1);
-    puts("PASS: isolated keyboard/pointer batches, exact events, validation, atomic backpressure and wrapping queues");
+    /* Release acceptance is asynchronous: preserve queued presses and retain
+     * the release privately until the guest makes room. */
+    setup();
+    keyboard.count=2; keyboard.events[1]=(aos_input_event_t){0,0,0};
+    for (unsigned i=0;i<128;i++) submit(keyboard,AOS_INPUT_OK);
+    aos_input_request_t release={.version=AOS_INPUT_RELEASE_VERSION,.id=99,.client=0,.device=0};
+    uint32_t ready=99;
+    assert(aos_input_submit(&frontend,&release)==0);
+    assert(aos_input_pump(&service,&ready)==1 && ready==0);
+    assert(aos_input_receive(&frontend,&response)==0);
+    assert(response.version==AOS_INPUT_RELEASE_VERSION && response.id==99 &&
+        response.status==AOS_INPUT_OK && response.accepted==0);
+    assert(service.releasing[0]==1 && regions[0].devices[0].tail==256);
+    submit(keyboard,AOS_INPUT_WOULD_BLOCK);
+    for (unsigned i=0;i<2;i++) assert(aos_input_event_receive(&regions[0].devices[0],&event)==0);
+    assert(aos_input_pump(&service,&ready)>0 && ready==1 && service.releasing[0]==0);
+    for (unsigned i=0;i<254;i++) assert(aos_input_event_receive(&regions[0].devices[0],&event)==0);
+    assert(aos_input_event_receive(&regions[0].devices[0],&event)==0 &&
+        event.type==1 && event.code==30 && event.value==0);
+    assert(aos_input_event_receive(&regions[0].devices[0],&event)==0 && event.type==0);
+    assert(aos_input_pump(&service,&ready)==0 && ready==0);
+    assert(regions[1].devices[0].tail==0 && regions[0].devices[1].tail==0);
+    submit(keyboard,AOS_INPUT_OK);
+
+    /* Pointer cleanup is isolated; repeats alone do not invent held keys. */
+    setup(); submit(pointer,AOS_INPUT_OK); expect_batch(pointer);
+    release.client=1; release.device=AOS_INPUT_POINTER;
+    assert(aos_input_submit(&frontend,&release)==0);
+    assert(aos_input_pump(&service,&ready)>0 && ready==2);
+    assert(aos_input_receive(&frontend,&response)==0 && response.status==AOS_INPUT_OK);
+    assert(aos_input_event_receive(&regions[1].devices[1],&event)==0 &&
+        event.type==1 && event.code==0x110 && event.value==0);
+    assert(aos_input_event_receive(&regions[1].devices[1],&event)==0 && event.type==0);
+    keyboard.events[0].value=2; submit(keyboard,AOS_INPUT_OK); expect_batch(keyboard);
+    release.client=0; release.device=AOS_INPUT_KEYBOARD;
+    assert(aos_input_submit(&frontend,&release)==0);
+    assert(aos_input_pump(&service,&ready)>0 && ready==0);
+    assert(aos_input_receive(&frontend,&response)==0 && response.status==AOS_INPUT_OK);
+    assert(aos_input_event_receive(&regions[0].devices[0],&event)==-1);
+    setup();
+    for (unsigned start=1;start<=255;start+=63) {
+        keyboard=key(0); keyboard.count=0;
+        for (unsigned code=start;code<=255 && code<start+63;code++)
+            keyboard.events[keyboard.count++]=(aos_input_event_t){1,(uint16_t)code,1};
+        keyboard.events[keyboard.count++]=(aos_input_event_t){0,0,0};
+        submit(keyboard,AOS_INPUT_OK); expect_batch(keyboard);
+    }
+    assert(aos_input_submit(&frontend,&release)==0);
+    assert(aos_input_pump(&service,&ready)>0);
+    assert(aos_input_receive(&frontend,&response)==0 && response.status==AOS_INPUT_OK);
+    while (aos_input_pump(&service,&ready)) {}
+    assert(service.releasing[0]==1);
+    unsigned released=0, packets=0;
+    while (aos_input_event_receive(&regions[0].devices[0],&event)==0) {
+        if (event.type==1) { assert(event.code==++released && event.value==0); }
+        else { assert(event.type==0 && event.code==0 && event.value==0); packets++; }
+    }
+    assert(released==252 && packets==4);
+    assert(aos_input_pump(&service,&ready)>0 && ready==1 && !service.releasing[0]);
+    while (aos_input_event_receive(&regions[0].devices[0],&event)==0) {
+        if (event.type==1) { assert(event.code==++released && event.value==0); }
+        else packets++;
+    }
+    assert(released==255 && packets==5 && aos_input_pump(&service,&ready)==0);
+    puts("PASS: isolated input batches, held-state release, retained backpressure, repeats and queue wrap");
     return 0;
 }
