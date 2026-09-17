@@ -1,0 +1,41 @@
+{
+  "qualification": "OVMF private APIC setup through firmware-data string I/O",
+  "date": "2026-09-17",
+  "task": "task_233c5dbce1a2443e93d17150066101e5",
+  "firmware_sha256": "101afad5f520753224b60b9555df60add435cf50c7a82b781d7d7d8c60db7eb5",
+  "firmware_provenance": "ovmf-reset.json",
+  "intel": {
+    "host": "madmax",
+    "runtime_revision": "a87fc26254e82c40f98a5e7cbbe642bc1c5aec42",
+    "command": "make gate-x86_64-firmware-reset SEL4_SDK_VERSION=2.3.0 X86_FIRMWARE_IMAGE=/tmp/agentos-ovmf-2024.02-2ubuntu0.9.fd X86_FIRMWARE_SHA256=101afad5f520753224b60b9555df60add435cf50c7a82b781d7d7d8c60db7eb5",
+    "result": "PASS",
+    "final_exit_reason": 30,
+    "final_linear_rip": "0x0082f9e0",
+    "io_qualification": "0x05110038",
+    "io_operation": "REP INSB from fw_cfg data port 0x511, observed and stopped",
+    "assertions": ["PCI reads handled", "CPUID handled", "CS.L set and CS.D/B clear", "EFER.LMA set", "CR0.PG set"],
+    "log_sha256": "ba4e31502b08a4c9fd4af1dfa924c91b3a118ccc44784f32328549bf6bffe806",
+    "image_sha256": "3dd1d558721effafb92a87190d163dc32a290641b40e318f150db92312af3c14",
+    "retained_directory": "/tmp/agentos-v04-intel-apic/build/evidence/apic-a87fc26"
+  },
+  "spark": {
+    "runtime_revision": "cfee7521b1c4c8c556371a82ef6078c0d8998d0a",
+    "command": "make gate SEL4_SDK_VERSION=2.3.0 QEMU_TEST_SSH_PORT=12263",
+    "result": "PASS",
+    "log_sha256": "87efd99d907870ce44278556caaca7d1dcb95c300ff14e36651da74ea9197a58",
+    "last_gate_image_sha256": "a1d94984c49eb508f3cdd94ed7742991b1ac7c2d726c2091cc7c36be5fa2fa19",
+    "retained_directory": "/tmp/agentos-v04-x86-apic/build/evidence/apic-cfee752",
+    "host_tests": "Private APIC timer count/divide/periodic/mask/expiry/rejection, private 4 KiB/2 MiB page walks and permissions, ROM fetch, MMIO non-dereference, MOV register/immediate/SIB/RIP-relative decoding and truncation",
+    "additional_checks": ["APIC host tests passed with ASan and UBSan", "cargo test -p xtask: 84 unit and 2 integration tests passed", "CMOS cold-boot host output test passed on a87fc26"]
+  },
+  "clock_finding": "QMP full CPU expansion on madmax reports invtsc=false with default host migratable=true and invtsc=true with migratable=false. The fixed-host VTX harness now disables migration filtering; the VMM retains invariant-clock admission.",
+  "revision_scope": "After cfee752 only opt-in VTX firmware behavior, its QEMU CPU argument and a CMOS host test changed. Ordinary gate runtime behavior is unchanged. Later documentation commits do not change runtime code.",
+  "limits": [
+    "String I/O is not yet emulated; writable guest-memory authority is not delegated",
+    "No full UEFI boot, installed ACPI or Linux userspace qualification",
+    "No asynchronous timer scheduling, interrupt injection, IPIs or other LVT sources",
+    "No target PM timer/fw_cfg payload consumption proof",
+    "No runtime cap reclamation, persistent firmware variables or canonical x86 guest I/O",
+    "Guest CPU profile remains a bootstrap subset, not a desktop feature promise"
+  ]
+}

@@ -27,6 +27,10 @@ Root provisions 32 MiB of zeroed private guest RAM at GPA zero and 4 MiB
 of read-only firmware at `0xffc00000`. These are newly allocated frames,
 not host MMIO or passthrough devices. Root drops each temporary initialization
 mapping before installing its EPT mapping and gives the VMM its VCPU cap.
+The VMM also receives read-only aliases of its private RAM at `0x80000000`
+and ROM at `0x90000000`. These aliases permit instruction fetch and page-table
+inspection; they cannot modify guest memory. Mapping caps remain accounted to
+the VMM. No physical APIC page or I/O capability is delegated.
 The firmware variant uses the existing single-VMM qualification topology.
 Allocation failure aborts boot; this is not a runtime guest-create path and
 does not qualify capability reclamation or retry.
@@ -53,14 +57,32 @@ guessed. Host tests cover its wrap and enable semantics. The guest-owned
 `fw_cfg` data supplies RAM/CPU counts and an E820 directory entry; CMOS supplies
 RAM-size fields. The legacy PICs accept mask-all only: unmasking and commands
 remain unsupported until interrupt routing and injection are implemented.
-No operation forwards a host port or grants a hardware I/O capability.
+No operation forwards a host port or grants a hardware I/O capability. CMOS
+shutdown status reports a cold boot; there is no S3 resume image.
+
+The bootstrap xAPIC has a fixed enabled BSP base at `0xfee00000`, APIC ID zero,
+SVR/TPR and timer registers. Timer counts derive from invariant host TSC ticks,
+with one virtual APIC bus tick per TSC tick and the programmed divider. Both
+one-shot and periodic counting are covered by host tests. The fixed-host KVM
+qualification uses `host,migratable=off` so QEMU does not hide `invtsc`; the
+VMM still checks that capability. A due unmasked timer stops explicitly:
+asynchronous timer scheduling, interrupt injection, IPIs, other LVT sources,
+base relocation, x2APIC and live divider changes are not implemented.
+
+APIC MMIO faults use the hardware-reported GPA and a bounded decoder for
+32-bit MOV register/immediate memory forms in a 64-bit code segment. A
+four-level guest page-table walk checks the advertised 36-bit physical width,
+permissions and supported 4 KiB/2 MiB leaves. Instruction bytes may come only
+from this guest's RAM or ROM; the decoded operand must translate to the fault
+GPA. Unknown instructions and other mappings stop without accessing host
+memory. This is not a general x86 instruction emulator.
 
 The configuration gate requires reaching a firmware-data string I/O exit
-after PCI reads, CPUID handling and the long-mode transition. **This gate is
-not yet passing.** Intel execution advances through PCI access and PIC masking
-and stops at RDMSR of `IA32_APIC_BASE` (`0x1b`) at `0xfffcc525`. The next
-dependency is a guest-owned local APIC and timer model. String I/O still needs
-bounded guest-memory access; scalar firmware
+after PCI reads, CPUID handling and the long-mode transition. **This narrow
+gate passes on Intel.** The pinned OVMF image reaches REP INSB from `0x511`
+at linear RIP `0x0082f9e0`, after its initial APIC setup and cold-boot check.
+The string transfer is observed, not emulated. It still needs bounded writable
+guest-memory access; scalar firmware
 data and PM timer tests alone do not prove firmware consumption on target.
 
 The [upstream EDK II transition](https://github.com/tianocore/edk2/blob/edk2-stable202402/UefiCpuPkg/ResetVector/Vtf0/Ia16/Real16ToFlat32.asm)
@@ -70,7 +92,9 @@ earlier reset/protected-mode evidence. The
 [long-mode receipt](evidence/2026-09-17-spark/ovmf-long-mode.json) records the
 earlier CPU-exit path and retained evidence. The
 [configuration receipt](evidence/2026-09-17-spark/ovmf-config.json) records the
-new host tests, ordinary Spark gate and incomplete Intel run.
+initial host tests, ordinary Spark gate and incomplete Intel run. The
+[APIC receipt](evidence/2026-09-17-spark/ovmf-apic.json) records the later passing
+Intel gate, private-memory/MMIO tests and another full Spark gate.
 
 ## Remaining boot implementation
 
