@@ -273,7 +273,105 @@ fn run_persistent_boots(args: &TestArgs) -> anyhow::Result<()> {
     Ok(())
 }
 
+pub fn run_x86_storage(timeout_secs: u64) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        host_kvm_available("x86_64_generic_vtx"),
+        "Intel storage qualification requires nested VMX/KVM"
+    );
+    let root = repo_root()?;
+    crate::cmd_fetch_guest::build_x86_initramfs()?;
+    let evidence = tempfile::Builder::new()
+        .prefix("x86-storage-")
+        .tempdir_in(root.join("build/tmp"))?
+        .keep();
+    let disk = evidence.join("disk.img");
+    let mut expected = vec![0u8; 32 * 1024 * 1024];
+    let boot = b"agentos-host-block-qualification-v1\n";
+    let guest = b"agentos-guest-block-qualification-v1\n";
+    expected[..boot.len()].copy_from_slice(boot);
+    expected[4096..4096 + guest.len()].copy_from_slice(guest);
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&disk)?;
+    file.write_all(&expected)?;
+    file.sync_all()?;
+    drop(file);
+    println!(
+        "[x86-storage] Retaining disk and boot artifacts in {}",
+        evidence.display()
+    );
+    expected[8192..12288].fill(0x5a);
+    let mut phases = Vec::new();
+    for phase in ["write", "verify"] {
+        let initrd = root.join(format!("build/x86-userspace/initrd-{phase}.bin"));
+        let initrd_sha = format!("{:x}", Sha256::digest(std::fs::read(&initrd)?));
+        let mut command = std::process::Command::new(std::env::current_exe()?);
+        command
+            .current_dir(&root)
+            .args([
+                "qemu-test",
+                "--board",
+                "x86_64_generic_vtx",
+                "--guest-os",
+                "none",
+                "--assert-vmx-exit",
+                "--assert-firmware-reset",
+                "--assert-x86-userspace",
+                "--timeout-secs",
+                &timeout_secs.to_string(),
+                "--x86-block-image",
+            ])
+            .arg(&disk)
+            .env("X86_BOOT_INITRD", &initrd)
+            .env("X86_BOOT_INITRD_SHA256", &initrd_sha);
+        if phase == "write" {
+            command.arg("--x86-block-write");
+        }
+        println!("[x86-storage] Starting {phase} cold boot; initrd SHA256={initrd_sha}");
+        let status = command.status()?;
+        anyhow::ensure!(
+            status.success(),
+            "{phase} cold boot failed; retained {}",
+            evidence.display()
+        );
+        let actual = std::fs::read(&disk)?;
+        anyhow::ensure!(
+            actual == expected,
+            "{phase} disk contents differ from the exact expected image"
+        );
+        let directory = evidence.join(phase);
+        std::fs::create_dir(&directory)?;
+        let mut artifacts = serde_json::Map::new();
+        for name in ["root_task.elf", "agentos.img"] {
+            let source = root.join("build/x86_64_generic_vtx").join(name);
+            let destination = directory.join(name);
+            std::fs::copy(&source, &destination)?;
+            artifacts.insert(name.into(), serde_json::json!({
+                "path": destination, "sha256": format!("{:x}", Sha256::digest(std::fs::read(source)?))
+            }));
+        }
+        phases.push(
+            serde_json::json!({"phase":phase, "result":"PASS", "initrd_sha256":initrd_sha,
+            "disk_sha256":format!("{:x}", Sha256::digest(&actual)), "artifacts":artifacts}),
+        );
+        std::fs::write(
+            evidence.join("receipt.json"),
+            serde_json::to_vec_pretty(&serde_json::json!({
+                "disk":disk, "phases":phases,
+                "scope":"Single guest, two complete platform cold boots; no concurrent isolation or guest lifecycle reset claim"
+            }))?,
+        )?;
+    }
+    println!("PASS: Intel guest write and fsync survived a fresh platform cold boot; entire disk verified");
+    Ok(())
+}
+
 pub fn run(args: &TestArgs) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        args.x86_block_image.is_none() || args.board == "x86_64_generic_vtx",
+        "qualification block image requires the Intel VMX board"
+    );
     if args.assert_persistent_boots {
         return run_persistent_boots(args);
     }
@@ -656,6 +754,8 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
         (args.guest_os == "both" || args.assert_desktop) && !args.keep_running,
         false,
         false,
+        args.x86_block_image.as_deref(),
+        args.x86_block_write,
     )?);
     if needs_host_net_stimulus {
         wait_for_all_markers(
@@ -1271,6 +1371,8 @@ pub fn launch(args: &QemuLaunchArgs) -> anyhow::Result<()> {
         false,
         true,
         args.fast,
+        None,
+        false,
     )?;
     let status = qemu.wait().context("failed to wait for QEMU")?;
     anyhow::ensure!(status.success(), "QEMU exited with {status}");
@@ -1663,6 +1765,8 @@ pub(crate) fn spawn_qemu_with_guest(
     capture_net: bool,
     interactive_serial: bool,
     fast: bool,
+    x86_block_image: Option<&Path>,
+    x86_block_write: bool,
 ) -> anyhow::Result<std::process::Child> {
     let log_file = std::fs::File::create(log_path).context("failed to create QEMU log file")?;
     let netdev = qemu_netdev_arg(ssh_port, profile, scenario)?;
@@ -1850,19 +1954,23 @@ pub(crate) fn spawn_qemu_with_guest(
             );
             let kernel = sel4_sdk_path()?.join("board/x86_64_generic_vtx/release/elf/sel4_32.elf");
             let root_task = repo_root.join("build/x86_64_generic_vtx/root_task.elf");
-            // A fresh, retained medium for this qualification run. Never
-            // open a user disk or reuse another run's writable image.
-            let block_path = log_path.with_extension("block.img");
-            let mut block = std::fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(&block_path)
-                .context("create Intel block qualification medium")?;
-            block.set_len(32 * 1024 * 1024)?;
-            block.write_all(b"agentos-host-block-qualification-v1\n")?;
-            block.seek(SeekFrom::Start(4096))?;
-            block.write_all(b"agentos-guest-block-qualification-v1\n")?;
-            block.sync_all()?;
+            // Default to a fresh read-only fixture. The storage gate passes
+            // its own retained disk explicitly for its two cold boots.
+            let block_path = x86_block_image
+                .map(Path::to_path_buf)
+                .unwrap_or_else(|| log_path.with_extension("block.img"));
+            if x86_block_image.is_none() {
+                let mut block = std::fs::OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .open(&block_path)
+                    .context("create Intel block qualification medium")?;
+                block.set_len(32 * 1024 * 1024)?;
+                block.write_all(b"agentos-host-block-qualification-v1\n")?;
+                block.seek(SeekFrom::Start(4096))?;
+                block.write_all(b"agentos-guest-block-qualification-v1\n")?;
+                block.sync_all()?;
+            }
             println!("[xtask:test] Intel block medium: {}", block_path.display());
             let mut c = std::process::Command::new("qemu-system-x86_64");
             let _ = std::fs::remove_file(&cc_sock);
@@ -1887,8 +1995,9 @@ pub(crate) fn spawn_qemu_with_guest(
                 .arg(root_task);
             c.arg("-drive")
                 .arg(format!(
-                    "file={},format=raw,id=agentos_blk,if=none,readonly=on",
-                    block_path.display()
+                    "file={},format=raw,id=agentos_blk,if=none,readonly={},cache=writeback",
+                    block_path.display(),
+                    if x86_block_write { "off" } else { "on" }
                 ))
                 .arg("-device")
                 .arg("virtio-blk-pci,drive=agentos_blk,addr=05.0,disable-legacy=on");

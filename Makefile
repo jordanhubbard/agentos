@@ -686,6 +686,10 @@ gate-x86_64-userspace:
 		--assert-vmx-exit --assert-firmware-reset --assert-x86-userspace \
 		--timeout-secs $(QEMU_TEST_TIMEOUT)
 
+.PHONY: gate-x86_64-storage
+gate-x86_64-storage:
+	@cargo xtask x86-storage --timeout-secs $(QEMU_TEST_TIMEOUT)
+
 .PHONY: gate-x86_64-guest-faults
 gate-x86_64-guest-faults:
 	@cargo xtask qemu-test --board x86_64_generic_vtx --guest-os none \

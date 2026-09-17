@@ -147,6 +147,11 @@ pub struct TestArgs {
         conflicts_with = "assert_guest_faults"
     )]
     pub assert_x86_userspace: bool,
+    /// Reuse a qualification disk; writable only with --x86-block-write.
+    #[arg(long, requires = "assert_x86_userspace")]
+    pub x86_block_image: Option<std::path::PathBuf>,
+    #[arg(long, requires = "x86_block_image")]
+    pub x86_block_write: bool,
     /// Start the profile-defined desktop and verify one raw RFB frame
     /// through a key-authenticated SSH tunnel.
     #[arg(long)]
