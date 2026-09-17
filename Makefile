@@ -727,7 +727,7 @@ test-framebuffer: test-framebuffer-host
 .PHONY: test-framebuffer-isolation
 test-framebuffer-isolation:
 	@mkdir -p build/evidence/framebuffer-isolation
-	@set -e; for mode in 1 2 3 4 5 6 7 8; do \
+	@set -e; for mode in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16; do \
 	    cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os none --assert-framebuffer \
 	        --framebuffer-isolation-probe $$mode --timeout-secs $(QEMU_TEST_TIMEOUT); \
 	    cp build/qemu_virt_aarch64/agentos.img build/evidence/framebuffer-isolation/mode-$$mode.img; \

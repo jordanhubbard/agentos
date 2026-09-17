@@ -57,13 +57,8 @@
 #include <platform/framebuffer.h>
 #include <platform/framebuffer_observer.h>
 #include <platform/framebuffer_isolation_probe.h>
-#ifdef AGENTOS_GUEST_GRAPHICS
 #define FB_PEERS (AOS_FB_CLIENTS + 1u)
 #define FB_ARENA_FRAMES (AOS_FB_ARENA_FRAMES + AOS_FB_SNAPSHOT_FRAMES)
-#else
-#define FB_PEERS AOS_FB_CLIENTS
-#define FB_ARENA_FRAMES AOS_FB_ARENA_FRAMES
-#endif
 static seL4_CPtr g_framebuffer_frames[FB_PEERS];
 static seL4_CPtr g_framebuffer_arena[FB_ARENA_FRAMES];
 /* Dedicated objects: a framebuffer wait must not consume a VMM's bound
@@ -1870,8 +1865,8 @@ void root_task_main(const seL4_BootInfo *bi)
         if (pd->self_svc_id == SVC_ID_FRAMEBUFFER_TEST1) fb_clients[1] = i;
 #else
         if (pd_is_guest_vmm(pd)) fb_clients[pd_is_secondary_guest_vmm(pd) ? 1u : 0u] = i;
-        if (pd->self_svc_id == SVC_ID_CC_PD) fb_clients[AOS_FB_OBSERVER_CLIENT] = i;
 #endif
+        if (pd->self_svc_id == SVC_ID_CC_PD) fb_clients[AOS_FB_OBSERVER_CLIENT] = i;
 #endif
         if (pd->irq_count || pd_is_guest_vmm(pd) ||
             pd->self_svc_id == SVC_ID_OPERATOR_SESSION ||

@@ -817,6 +817,15 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
         }
     };
 
+    if result.is_ok() && args.assert_framebuffer {
+        result = verify_native_frame_observer(
+            &cc_sock,
+            &log_path,
+            Duration::from_secs(args.timeout_secs),
+            &mut qemu,
+        );
+    }
+
     if result.is_ok() && args.assert_console_backpressure {
         result = verify_console_backpressure(
             &cc_sock,
@@ -2667,6 +2676,49 @@ fn wait_for_guest_console_login_on_cc(
         "CC console API saw {guest_os} handle {guest_handle} prompt {:?} and {proof}",
         prompt
     ))
+}
+
+fn verify_native_frame_observer(
+    socket: &Path,
+    log: &Path,
+    timeout: Duration,
+    qemu: &mut Child,
+) -> anyhow::Result<String> {
+    wait_for_all_markers(log, &["[cc_pd] VirtIO serial ready"], timeout, qemu)?;
+    let mut cc = connect_cc_client(socket, timeout, qemu)?;
+    let mut request = [0u8; 32];
+    wr32(&mut request, 0, 1);
+    wr32(&mut request, 4, 1);
+    let denied = cc.call(0x261d, 0, 0, 0, &request)?;
+    anyhow::ensure!(
+        denied.mr[0] == CC_ERR_BAD_HANDLE,
+        "native observer accepted an unknown handle"
+    );
+    wr32(&mut request, 12, 1); // callers cannot select a private raw client slot
+    let invalid = cc.call(0x261d, 0xfb000000, 0, 0, &request)?;
+    anyhow::ensure!(
+        invalid.mr[0] == 9,
+        "native observer accepted a raw client slot"
+    );
+    for client in 0..2u32 {
+        let artifact = socket.with_extension(format!("native-{client}.sock"));
+        capture_guest_frame(&mut cc, 0xfb000000 + client, &artifact)?;
+        let actual = std::fs::read(artifact.with_extension("frame.ppm"))?;
+        let mut expected = b"P6\n40 40\n255\n".to_vec();
+        for offset in (0..40u32 * 40 * 4).step_by(4) {
+            for channel in [2, 1, 0] {
+                expected.push(((offset + channel) * 37 + client * 83) as u8);
+            }
+        }
+        anyhow::ensure!(
+            actual == expected,
+            "native observer client {client} pixel mismatch"
+        );
+    }
+    Ok(
+        "native observer: exact isolated client frames exported through CC in multiple chunks"
+            .into(),
+    )
 }
 
 fn capture_guest_frame(cc: &mut CcClient, handle: u32, socket: &Path) -> anyhow::Result<String> {
