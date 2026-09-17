@@ -620,7 +620,7 @@ run:
 
 # run-fast: same as run, with TCG-mode performance knobs enabled.
 # On Apple Silicon (TCG-only because HVF is incompatible with seL4) this
-# adds -accel tcg,thread=multi and switches the CPU model to 'max', giving
+# adds -accel tcg,thread=multi while retaining the SDK-qualified CPU model, giving
 # a noticeable boot-time speedup for dev iteration.  On Linux/KVM hosts
 # QEMU_FAST is a no-op since hardware acceleration is already in use.
 run-fast:
@@ -1487,7 +1487,7 @@ help:
 	@echo "  make run GUEST_OS=buildroot"
 	@echo "                        Boot linux_vmm hosting buildroot Linux to a '#' prompt"
 	@echo "                        (no outer ISO; guest is packaged inside guest_vmm_primary.elf)"
-	@echo "  make run-fast         Same as run, plus TCG perf knobs (cpu max + multi-thread)"
+	@echo "  make run-fast         Same as run, plus multi-threaded TCG"
 	@echo "                        No-op on Linux/KVM hosts where HW accel is already on"
 	@echo "                        Recommended dev loop on Apple Silicon:"
 	@echo "                        make run-fast GUEST_OS=buildroot"
