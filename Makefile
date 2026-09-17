@@ -706,6 +706,18 @@ gate-guest-io:
 	@$(MAKE) test-guest-console BOARD=qemu_virt_aarch64
 
 gate: test-host test-virtio-backends-build gate-aarch64 gate-x86_64 gate-guest-io
+
+# Link the real firmware VMM, including its MMIO dispatcher and shared virtio
+# transport. This needs SDK 2.3 VMCS controls, but no guest blobs, and does
+# not claim Intel execution: make test-x86-firmware-build SEL4_SDK_VERSION=2.3.0
+.PHONY: test-x86-firmware-build
+test-x86-firmware-build:
+	$(MAKE) -C kernel/agentos-root-task \
+		BUILD_DIR=$(abspath $(BUILD_TMP_DIR)/x86-firmware-link) \
+		AGENTOS_ARCH=x86_64 AGENTOS_BOARD=x86_64_generic_vtx \
+		SEL4_SDK=$(SEL4_SDK) SEL4_SDK_VERSION=$(SEL4_SDK_VERSION) \
+		X86_FIRMWARE_RESET=1 \
+		$(abspath $(BUILD_TMP_DIR)/x86-firmware-link)/guest_vmm_primary.elf
 	@echo ""
 	@echo "╔══════════════════════════════════════════════════════════╗"
 	@echo "║  ✅ OS-CLAIM GATE PASSED                                  ║"
