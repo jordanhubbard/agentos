@@ -384,6 +384,10 @@ calendar, alarm and polled status state without a host RTC frame, port or IRQ.
 It grants no persistent-time or host wall-clock authority; RTC IRQ enables
 remain rejected. The [RTC receipt](evidence/2026-09-17-spark/ovmf-rtc.json)
 records continuation to the next unsupported ACPI PM control access.
+The subsequent [PM1 model](x86-pm.md) retains private mode/control and polled
+timer status, without additional caps or hardware authority. SCI enables,
+SMI and sleep requests are rejected; this is not a power-management lifecycle
+implementation or a proof of guest ACPI table installation.
 PIC unmasking and unsupported device accesses stop
 explicitly. This remains firmware bring-up; it does not prove UEFI boot,
 Linux, runtime resource management or persistent firmware variables.

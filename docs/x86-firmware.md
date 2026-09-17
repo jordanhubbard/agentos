@@ -61,6 +61,9 @@ and 12/24-hour reads, SET date transactions and polled alarm/status flags.
 It does not claim host wall-clock synchronization, persistent time or RTC IRQs.
 The legacy PICs accept mask-all only: unmasking and commands
 remain unsupported until interrupt routing and injection are implemented.
+The [private PM1 aperture](x86-pm.md) now supports control readback and polled
+timer status/W1C. Its legacy decode follows PMIOSE independently of PCI IOEN.
+SCI event enables, sleep and SMI requests remain explicitly rejected.
 No operation forwards a host port or grants a hardware I/O capability. CMOS
 shutdown status reports a cold boot; there is no S3 resume image.
 Firmware can acknowledge that cold boot by clearing the status. CPU discovery
@@ -129,6 +132,14 @@ records subsequent execution beyond RTC initialization: 178 preemption exits
 and 29 injection/EOI pairs before a 16-bit ACPI PM control read at port `0xb004`
 stops with reason `0x1e`, RIP `0x0006ff9e`, qualification `0xb0040009`.
 This is another incomplete firmware run, not a successful UEFI handoff.
+
+The later [PM receipt](evidence/2026-09-17-spark/ovmf-pm.json) records
+continuation beyond that access to the fixed 65,536-exit diagnostic limit.
+The repeat run reports 10,771 timer exits, 4,885 injections, 4,884 EOIs and
+4,613 HLT exits. The last observed RIP is `0x0018b0d1`, with VMX timer exit
+reason 52. The limit remains a failure result; these counters do not establish
+a completed UEFI boot, identify the waiting firmware component, or prove
+guest payload handoff. The bound has not been increased to hide the result.
 
 The [upstream EDK II transition](https://github.com/tianocore/edk2/blob/edk2-stable202402/UefiCpuPkg/ResetVector/Vtf0/Ia16/Real16ToFlat32.asm)
 provides the source context for this early execution path. The
