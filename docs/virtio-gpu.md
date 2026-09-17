@@ -32,7 +32,13 @@ The command engine retains guest resource IDs separately from private
 framebuffer handles. Backing lists are validated before replacement and copied
 into private state. Transfers read scatter lists through the platform GPA
 translator; backing addresses are never treated as host pointers. Rows are
-copied through a fixed private buffer to the framebuffer request queue.
+packed through a fixed private 64 KiB buffer to the framebuffer request queue,
+retaining the backing resource's row stride. A full 1024 by 768 transfer uses
+48 queue writes rather than 768 individual row exchanges. The framebuffer PD
+continues bounded pump passes while work exists and waits when idle; it does
+not forfeit its MCS budget after each response. The kernel's scheduling budget
+still bounds its CPU use. The full-frame host test checks every committed byte
+and the bounded number of queue transactions.
 Completion fences are echoed only after synchronous backend completion.
 Backend failures return errors and resource handles remain available for
 cleanup retries. Reset releases backend resources rather than merely clearing
