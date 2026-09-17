@@ -1256,6 +1256,11 @@ endif
 _BOARD_TOML := ../../boards/$(BOARD_NAME)/agentos.toml
 _BOARD_TOML_NONEMPTY := $(shell [ -s "$(_BOARD_TOML)" ] && printf '%s' "$(_BOARD_TOML)")
 SYSTEM_TOML := $(if $(_BOARD_TOML_NONEMPTY),$(_BOARD_TOML_NONEMPTY),$(SYSTEM_TOML_DEFAULT))
+ifeq ($(AGENTOS_BOARD),x86_64_generic_vtx)
+ifeq ($(X86_FIRMWARE_RESET),1)
+SYSTEM_TOML := $(REPO_ROOT_MK)/boards/qemu-x86_64-vtx/firmware.toml
+endif
+endif
 
 # Kernel ELF: pulled directly from the Microkit SDK release package
 KERNEL_ELF  := $(SEL4_SDK)/board/$(AGENTOS_BOARD)/$(SEL4_PROFILE)/elf/sel4.elf
