@@ -99,3 +99,13 @@ Artifacts are retained under `build/evidence/input-release-api-1a4bb38/`.
 Host tests qualify retained queue backpressure; this live proof qualifies
 normal guest consumption of server-generated releases. Abrupt socket loss,
 paused-guest backpressure on target, and reconnect cleanup remain unqualified.
+
+MAC accepted the signed executor evidence, but automatic review
+`review_0cc5a8f915024408aa9c9083deee3e61` could not run `make test-host`:
+its verifier image lacks Cargo. The rejected image digest was
+`sha256:1d4c5eb635c5fc53737b89949e22e04246870d57fa92f6b29547395716ea745d`.
+The repository contract now explicitly requires Cargo, rustc and rustfmt.
+The verifier-runtime repair is tracked by
+`task_c66efe1c0eb44ee5926250ebcd38e5e3`; declaring prerequisites does not install
+them or turn that rejected review into a pass. Policy and profile checks remain
+part of the unchanged `make test-host` contract.
