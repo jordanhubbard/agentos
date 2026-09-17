@@ -704,6 +704,8 @@ test-ramfb-host:
 	@mkdir -p $(BUILD_TMP_DIR)
 	$(CC) -std=c11 -Wall -Wextra -Werror -I platform/include tests/platform/test_ramfb.c platform/display/ramfb.c -o $(BUILD_TMP_DIR)/test_ramfb
 	$(BUILD_TMP_DIR)/test_ramfb
+	$(CC) -std=c11 -Wall -Wextra -Werror -I platform/include tests/platform/test_ramfb_mmio.c platform/display/ramfb_mmio.c -o $(BUILD_TMP_DIR)/test_ramfb_mmio
+	$(BUILD_TMP_DIR)/test_ramfb_mmio
 
 .PHONY: test-virtio-gpu-host
 test-virtio-gpu-host:
