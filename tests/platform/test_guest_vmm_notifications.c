@@ -1,6 +1,7 @@
 #include <platform/guest_vmm_loop.h>
 #include <contracts/serial_virt_contract.h>
 #include <contracts/blk_virt_contract.h>
+#include <contracts/net_virt_contract.h>
 #include <contracts/guest_contract.h>
 #include <setjmp.h>
 #include <stdio.h>
@@ -55,6 +56,15 @@ int main(void)
     check(notifications == 1 && !rpcs && !faults && !sends &&
           observed_badge == BLK_VIRT_VMM_WAKE_BADGE,
           "block wake cannot execute stale destroy RPC");
+    dispatch(NET_VIRT_VMM_WAKE_BADGE, MSG_GUEST_CREATE);
+    check(notifications == 1 && !rpcs && !faults && !sends &&
+          observed_badge == NET_VIRT_VMM_WAKE_BADGE,
+          "network wake reaches notification handler despite a stale IPC tag");
+    const uint64_t combined = NET_VIRT_VMM_WAKE_BADGE |
+        BLK_VIRT_VMM_WAKE_BADGE | SERIAL_VIRT_VMM_WAKE_BADGE;
+    dispatch(combined, 7);
+    check(notifications == 1 && !rpcs && !faults && !sends && observed_badge == combined,
+          "coalesced network, block and serial wake bits are retained");
     dispatch(BLK_VIRT_VMM_WAKE_BADGE | SERIAL_VIRT_VMM_WAKE_BADGE, 7);
     check(notifications == 1 && !rpcs && !faults && !sends &&
           observed_badge == (BLK_VIRT_VMM_WAKE_BADGE | SERIAL_VIRT_VMM_WAKE_BADGE),
