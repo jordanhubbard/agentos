@@ -141,6 +141,32 @@ reason 52. The limit remains a failure result; these counters do not establish
 a completed UEFI boot, identify the waiting firmware component, or prove
 guest payload handoff. The bound has not been increased to hide the result.
 
+The later [endpoint investigation](evidence/2026-09-17-spark/ovmf-endpoint.json)
+localizes this wait. Failure reports now carry bounded private-RAM code and
+stack snapshots for the returned budget exit and the most recent HLT, plus
+four checked frame-pointer links. The release SDK disables `DebugPutChar`, so
+these observations use the existing qualification IPC endpoint. Root copies
+all report words before diagnostic output. The VMM performs every translation;
+root only prints the report and gains no guest-memory inspection policy.
+Invalid, unaligned or non-increasing frame links stop the diagnostic chain.
+
+The Intel HLT bytes match `CpuDxe`'s `CpuSleep`. Its retained caller chain
+passes through DXE event dispatch and `CoreWaitForEvent` to return address
+`0x782c4`. In the exact pinned OVMF binary, that return matches `BdsDxe`
+RVA `0xa2c4`: a wait for `ConIn->WaitForKey` immediately following the
+no-bootable-option/device message. This identifies the boot-manager key wait
+as the next obstacle, rather than another unsupported register access.
+The receipt distinguishes exact code-byte matches from module bases inferred
+through consistent return sites; it is not a complete firmware unwind.
+
+The source context for the idle path is
+[DXE CoreWaitForEvent](https://github.com/tianocore/edk2/blob/edk2-stable202402/MdeModulePkg/Core/Dxe/Event/Event.c)
+and [CpuDxe IdleLoopEventCallback](https://github.com/tianocore/edk2/blob/edk2-stable202402/UefiCpuPkg/CpuDxe/CpuDxe.c).
+The next implementation must supply a bootable payload and establish actual
+UEFI handoff alongside generated ACPI and canonical guest I/O. Reaching the
+key wait is useful bring-up evidence but remains a failing firmware gate.
+The full Spark gate passed at runtime revision `7682937`.
+
 The [upstream EDK II transition](https://github.com/tianocore/edk2/blob/edk2-stable202402/UefiCpuPkg/ResetVector/Vtf0/Ia16/Real16ToFlat32.asm)
 provides the source context for this early execution path. The
 [qualification receipt](evidence/2026-09-17-spark/ovmf-reset.json) records the
