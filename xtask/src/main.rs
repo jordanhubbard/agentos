@@ -33,6 +33,8 @@ enum Cmd {
     Setup(SetupArgs),
     /// Execute a guest profile's bounded artifact acquisition recipe
     FetchGuest(FetchGuestArgs),
+    /// Build the deterministic Linux x86 userspace qualification initramfs.
+    BuildX86Initramfs,
     /// Automated release (version bump + git tag)
     Release(ReleaseArgs),
     /// Render the release presentation and its deterministic QA receipt.
@@ -88,6 +90,7 @@ fn main() -> anyhow::Result<()> {
         Cmd::FaultInject(a) => cmd_fault_inject::run(&a),
         Cmd::Setup(a) => cmd_setup::run(&a),
         Cmd::FetchGuest(a) => cmd_fetch_guest::run(&a),
+        Cmd::BuildX86Initramfs => cmd_fetch_guest::build_x86_initramfs(),
         Cmd::Release(a) => cmd_release::run(&a),
         Cmd::RenderDeck(a) => cmd_render_deck::run(&a),
         Cmd::CiMatrix(a) => cmd_ci_matrix::run(&a),

@@ -140,6 +140,9 @@ pub struct TestArgs {
         conflicts_with = "assert_firmware_modes"
     )]
     pub assert_firmware_reset: bool,
+    /// Require the Linux initramfs syscall proof from guest ring 3.
+    #[arg(long, requires = "assert_firmware_reset", conflicts_with = "assert_guest_faults")]
+    pub assert_x86_userspace: bool,
     /// Start the profile-defined desktop and verify one raw RFB frame
     /// through a key-authenticated SSH tunnel.
     #[arg(long)]

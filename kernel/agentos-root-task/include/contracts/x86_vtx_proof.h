@@ -17,6 +17,11 @@
 #define AOS_X86_VTX_FIRMWARE_LONG      5u
 #define AOS_X86_VTX_FIRMWARE_CONFIG    6u
 #define AOS_X86_VTX_GUEST_FAULTS_PASS  7u
+#define AOS_X86_VTX_USERSPACE_PASS     8u
+/* Qualification-only CPUID trap; absent from production device contracts. */
+#define AOS_X86_USERSPACE_LEAF  0x41554f53u
+#define AOS_X86_USERSPACE_INIT  0x494e4954u
+#define AOS_X86_USERSPACE_PASS  0x50415353u
 #define AOS_X86_FAULT_GUEST_ENTRY 0x1100u
 #define AOS_X86_FAULT_GUEST_GDT   0x1280u
 #define AOS_X86_FAULT_GUEST_IDT   0x1400u
