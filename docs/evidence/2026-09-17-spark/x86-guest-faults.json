@@ -29,7 +29,7 @@
       "rip": "0xffffffffb0bc47c2",
       "qualification": "0xcfb0000"
     },
-    "analysis": "Byte output to PCI configuration port0xcfb; Linux pci_check_type1 writes1 there before probing CF8/CFC. QEMU's pci_host_config_write ignores non-DWORD/address-register writes. No compatibility change is included here.",
+    "analysis": "Pinned kernel instruction ffffffff83fc47c2 is OUT DX,AL preceded by MOV AL,1 and MOV EDX,cfb; observed RIP differs by aligned relocation2cc00000. This is pci_check_type1 before probing CF8/CFC. QEMU's pci_host_config_write ignores non-DWORD/address-register writes. No compatibility change is included here.",
     "artifact_directory": "/tmp/agentos-v04-intel-discovery/build/evidence/faults-fa68e6f",
     "image_sha256": "4b6f10f212a54f5d622d0b250c22f68e7afae1290134108f3a0cc8cb56e3edb6",
     "root_task_sha256": "814116bbac4884e0dcc64f86a123913ff362e507b3d40fb634d9042d6c7cefda",
