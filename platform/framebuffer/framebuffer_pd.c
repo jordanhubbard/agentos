@@ -8,11 +8,20 @@ static aos_fb_observer_t observer;
 #ifdef AGENTOS_DISPLAY_RAMFB
 #include <platform/display_producer.h>
 #include <platform/display_layout.h>
+#include "serial_log.h"
+static void display_failure(const char *message)
+{
+    static serial_log_t channel={.ep=PD_CNODE_SLOT_SERIAL_EP};
+    serial_log_puts(&channel,message);
+}
 static int display_exchange(void *context,const aos_display_request_t *q,
                              aos_display_response_t *response)
 {
     aos_display_region_t *region=context;
-    if (aos_display_submit(region,q)!=0) return -1;
+    if (aos_display_submit(region,q)!=0) {
+        display_failure("[framebuffer] display FAIL: queue submission\n");
+        return -1;
+    }
     seL4_Signal(PD_CNODE_SLOT_DISPLAY_PEER_NOTIFY);
     for (unsigned attempt=0;attempt<100;++attempt) {
         if (aos_display_receive(region,response)==0) {
@@ -21,6 +30,7 @@ static int display_exchange(void *context,const aos_display_request_t *q,
         }
         seL4_Yield();
     }
+    display_failure("[framebuffer] display FAIL: bounded reply wait\n");
     return -1;
 }
 static aos_display_producer_t display={
@@ -56,7 +66,10 @@ void pd_main(seL4_CPtr endpoint, seL4_CPtr nameserver)
         /* Fixed primary-client focus. Guests can select only their own
          * surfaces. No pump runs during forwarding, so committed pixels
          * remain stable across the bounded sequence of queue exchanges. */
+        unsigned was_failed=display.failed;
         if (aos_display_forward(&display,&clients[0])>0) ++progress;
+        if (!was_failed && display.failed)
+            display_failure("[framebuffer] display disabled after uncertain or rejected transaction\n");
 #endif
         /* Each pump has a fixed request budget. Continue while work exists;
          * Yield on a periodic MCS context forfeits its remaining budget and

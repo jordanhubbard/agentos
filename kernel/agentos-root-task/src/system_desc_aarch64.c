@@ -559,6 +559,10 @@ const system_desc_t system_desc_aarch64 = {
             .cnode_size_bits = 8u,
             .priority = 215u,
             .self_svc_id = SVC_ID_FRAMEBUFFER_QUEUE,
+#ifdef AGENTOS_DISPLAY_RAMFB
+            .init_ep_count = 1u,
+            .init_eps = {{ SVC_ID_SERIAL, PD_CNODE_SLOT_SERIAL_EP }},
+#endif
         },
 #ifdef AGENTOS_DISPLAY_RAMFB
         {
