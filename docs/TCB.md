@@ -92,7 +92,11 @@ libvmm `src/virtio/block.c`) produces and consumes sDDF-shaped request and
 response queues in the 6 MB block region (`AOS_BLK_SHMEM_VA`). The root task
 maps the whole region into `blk_virt`, but only one separate 2 MB client page
 into each VMM. The first page holds the virtualizer's private RAM disk;
-neither VMM maps it or the other client's page. Control is one `BLK_VIRT_OP_ATTACH` Call per
+neither VMM maps it or the other client's page. The common root path allocates
+these pages only when `blk_virt` is present and checks the architecture's
+large-page size against the layout. Allocation failure aborts startup;
+mapping failure prevents the affected PD from starting. Device and DMA grants
+remain separate. Control is one `BLK_VIRT_OP_ATTACH` Call per
 client, during which `blk_virt` probes the media and fills the client's sDDF
 `storage_info`; after that the VMM signals the virtualizer's bound notification
 when its request queue is non-empty (and `blk_virt` asked for kicks through
