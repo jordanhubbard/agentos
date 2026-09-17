@@ -51,6 +51,8 @@ static uint32_t                 g_blk_virt_hw;
 static uint32_t                 g_media_id;
 static uint32_t                 g_resp_total;
 static uint32_t                 g_drain_count;
+static uintptr_t                g_guest_base;
+static unsigned                 g_virq;
 
 static uint32_t blk_rd32(const uint8_t *p, uint32_t off)
 {
@@ -451,14 +453,19 @@ bool aos_vmm_virtio_blk_load_iso_file(const char *path,
 
 /* ── device bring-up ────────────────────────────────────────────────────── */
 
-void aos_vmm_virtio_blk_init(uint32_t media_id)
+bool aos_vmm_virtio_blk_init_at(uint32_t media_id, uintptr_t guest_base,
+                               unsigned virq, void *shared_region)
 {
-    uint8_t *region = (uint8_t *)AOS_BLK_SHMEM_VA;
+    uint8_t *region = shared_region;
 
+    if (g_blk_virt_attached || g_aos_blk_ready || !region || !guest_base ||
+        ((uintptr_t)region & (AOS_BLK_TRANSFER_SIZE-1u)) ||
+        (uintptr_t)region > UINTPTR_MAX-AOS_BLK_SHMEM_SIZE ||
+        (guest_base & (AOS_VIRTIO_BLK_MMIO_SIZE-1u))) return false;
     if (media_id >= AOS_HOST_BLK_MEDIA_COUNT) {
         LOG_VMM_ERR("emulated virtio-blk: invalid host media %u\n",
                     (unsigned)media_id);
-        return;
+        return false;
     }
     g_media_id = media_id;
 
@@ -473,7 +480,7 @@ void aos_vmm_virtio_blk_init(uint32_t media_id)
     blk_virt_attach(media_id);
     if (!g_blk_virt_attached) {
         LOG_VMM_ERR("emulated virtio-blk: no virtualizer; device not created\n");
-        return;
+        return false;
     }
 
     blk_queue_init(&g_queue, (blk_req_queue_t *)g_aos_client.req,
@@ -485,9 +492,9 @@ void aos_vmm_virtio_blk_init(uint32_t media_id)
      * req_consumer_signalled rule after every guest exit.
      */
     if (!virtio_mmio_blk_init(&g_aos_blk,
-                              AOS_VIRTIO_BLK_GUEST_IPA,
+                              guest_base,
                               AOS_VIRTIO_BLK_MMIO_SIZE,
-                              AOS_VIRTIO_BLK_VIRQ,
+                              virq,
                               (uintptr_t)g_aos_client.data,
                               AOS_BLK_DATA_BYTES,
                               (blk_storage_info_t *)g_aos_client.info,
@@ -495,17 +502,26 @@ void aos_vmm_virtio_blk_init(uint32_t media_id)
                               AOS_BLK_QUEUE_CAPACITY,
                               0)) {
         LOG_VMM_ERR("emulated virtio-blk: virtio_mmio_blk_init failed\n");
-        return;
+        return false;
     }
     /* The extra transfer cell accommodates a maximum-size request beginning
      * at a non-4K sector; blk_virt chunks it through the driver's window. */
     g_aos_blk.config.size_max = AOS_BLK_GUEST_MAX_SEGMENT_SIZE;
 
     g_aos_blk_ready = 1;
+    g_guest_base = guest_base;
+    g_virq = virq;
     LOG_VMM("emulated virtio-blk IPA 0x%lx IRQ %u (sDDF queues to blk_virt, not QEMU; %s media)\n",
-            (unsigned long)AOS_VIRTIO_BLK_GUEST_IPA,
-            (unsigned)AOS_VIRTIO_BLK_VIRQ,
+            (unsigned long)g_guest_base,
+            g_virq,
             g_blk_virt_hw == BLK_VIRT_HW_VIRTIO_BLK ? "host" : "RAM");
+    return true;
+}
+
+void aos_vmm_virtio_blk_init(uint32_t media_id)
+{
+    (void)aos_vmm_virtio_blk_init_at(media_id,AOS_VIRTIO_BLK_GUEST_IPA,
+                                   AOS_VIRTIO_BLK_VIRQ,(void *)AOS_BLK_SHMEM_VA);
 }
 
 void aos_vmm_virtio_blk_after_fault(void)
@@ -520,12 +536,12 @@ void aos_vmm_virtio_blk_after_fault(void)
     if (!g_aos_blk_probed && (status & VIRTIO_CONFIG_S_ACKNOWLEDGE)) {
         g_aos_blk_probed = 1;
         LOG_VMM("emulated virtio-blk: guest probed IPA 0x%lx (status=0x%x)\n",
-                (unsigned long)AOS_VIRTIO_BLK_GUEST_IPA, (unsigned)status);
+                (unsigned long)g_guest_base, (unsigned)status);
     }
     if (!g_aos_blk_driver_ok && (status & VIRTIO_CONFIG_S_DRIVER_OK)) {
         g_aos_blk_driver_ok = 1;
         LOG_VMM("emulated virtio-blk: guest DRIVER_OK virq %u capacity %u blocks\n",
-                (unsigned)AOS_VIRTIO_BLK_VIRQ,
+                g_virq,
                 (unsigned)g_aos_client.info->capacity);
     }
 

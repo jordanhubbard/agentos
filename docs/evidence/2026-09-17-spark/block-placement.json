@@ -1,0 +1,28 @@
+{
+  "qualification": "Explicit block adapter placement and rebind preservation",
+  "runtime_revision": "85103199b752516b1f872c14620b626a14245c47",
+  "task": "task_ede60b058fc745d296bad77044a57420",
+  "focused": {
+    "command": "make test-x86-block-host test-virtio-backends-build SEL4_SDK_VERSION=2.3.0",
+    "result": "PASS exit 0",
+    "log_sha256": "c57906bea2c822324b12383834a2e9835d7e50210a1ba3fe7ee8729b9aa5ed38",
+    "scope": [
+      "Real libvmm block backend registers through the x86 MMIO/IOAPIC adapter at f0001000/GSI17",
+      "MMIO device ID and capacity reflect the attachment fixture's storage geometry",
+      "Invalid address, queue base and media inputs cause no attachment IPC",
+      "Repeated explicit or legacy initialization preserves queue cursors, signal word and payload",
+      "Production adapter compiles for ARM64 and x86_64 using the real SDK"
+    ]
+  },
+  "spark": {
+    "command": "make gate SEL4_SDK_VERSION=2.3.0",
+    "result": "PASS exit 0",
+    "log_sha256": "302f6345a4a5f3ccdcfe7904ef91e7a87da5ed7e60011d0263c5bd012c93a445"
+  },
+  "retained_directory": "build/evidence/block-placement-8510319",
+  "limitations": [
+    "The host test mocks attachment IPC and does not transfer block requests or prove target IPC.",
+    "Intel block composition, physical media I/O and persistence remain incomplete.",
+    "The full milestone and release have not been qualified or completed."
+  ]
+}
