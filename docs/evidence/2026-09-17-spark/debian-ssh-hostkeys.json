@@ -1,0 +1,33 @@
+{
+  "schema": "agentos.debian_ssh_hostkeys.v1",
+  "host": "sparky Linux aarch64",
+  "runtime_commit": "1194966ef9bec68fda0f21d320ed41443661aa6e",
+  "profile": "debian-stable-aarch64",
+  "command": "make run GUEST_OS=debian",
+  "os_image_sha256": "60d2967e8df8e0393ab9816d6b32fa8b28b21c359cb3719066a5cd766c44f9b1",
+  "preboot_configured_disk_sha256": "0759ffd52c6f63239773c12878ffa1bbb070b652eb6f10c76d15b2a682ddae8b",
+  "gui_binary_sha256": "d4aacbfc7d685896d6efbead3a4e82c44af0217bb519eb94c31858c40cf3190b",
+  "validation": {
+    "rust_unit_tests": 89,
+    "rust_integration_tests": 2,
+    "host_suite": "pass",
+    "os_gate": "make gate QEMU_TEST_SSH_PORT=12251: pass",
+    "gate_log_sha256": "dc04fc32df609c7a5655557c20057e993f442d0978908058658e07868ea97971",
+    "automatic_ssh_start": "active before any manual service start or key-generation command",
+    "journal": "guest-native ssh-keygen generated RSA, ECDSA and ED25519 host keys, then sshd listened on port 22",
+    "sshd_config_check": "sshd -t succeeded: SSH_CONFIG_OK",
+    "service_restart": "ssh.service active after restart",
+    "host_key_preservation": "ED25519 public-key SHA256 file checksum unchanged after service restart: SSH_HOSTKEY_PRESERVED"
+  },
+  "screenshots": {
+    "startup_sha256": "3d425d0759a8b530a4d5c0b397aa1f28b368c82867f78e03e71114c435eb608e",
+    "restart_and_key_preservation_sha256": "9a57bdcab822834dda700fd2cbd948135d89bb917766e108e7e4fafaeed363a4",
+    "network_gap_sha256": "1c09a9bf7993ed2932d8b4ae585f5f8d6e72c7af31b283d1d907d79c8a5b018b"
+  },
+  "limitations": [
+    "Interactive QEMU uses snapshot=on; key persistence was checked across service restart, not VM reboot",
+    "Host endpoint keyscan returned no key; guest eth0 was DOWN with no address or route",
+    "No SSH login, forwarded-endpoint reachability, or authentication-policy change is claimed",
+    "Interactive network provisioning is tracked by task_e49d0dda1dfe4585b39dcc02d4c76c21"
+  ]
+}
