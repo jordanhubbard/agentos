@@ -1,0 +1,41 @@
+{
+  "schema": "agentos.manual-qualification.v1",
+  "source_revision": "b0e232fd7b0e576324a1a1f426d45591f54a0119",
+  "source_clean": true,
+  "source_pull_request": 172,
+  "host": "sparky",
+  "host_architecture": "aarch64",
+  "board": "qemu_virt_aarch64",
+  "profile": "debian-input-aarch64",
+  "commands": [
+    "make gate QEMU_TEST_SSH_PORT=12233",
+    "make test-guest-input QEMU_TEST_TIMEOUT=1800 QEMU_TEST_SSH_PORT=12234"
+  ],
+  "result": "pass",
+  "ssh_authenticated_elapsed_ms": 617211,
+  "proven": [
+    "Full OS gate: host suite, AArch64 and x86 root-task boots, focused guest net/block/console I/O",
+    "Debian authenticated SSH through agentOS-owned VirtIO net, block and console",
+    "Public agentctl input-batch through CC and isolated input queues into Linux virtio-input",
+    "Exact F13 press/release and SYN_REPORT boundaries",
+    "Exact relative X=17, Y=-9, wheel=1, left-button press/release and SYN_REPORT boundaries",
+    "Guest evdev checker exited successfully after four complete batches and no trailing events"
+  ],
+  "not_proven": [
+    "Combined graphics/input qualification in one boot",
+    "Physical input or display ownership",
+    "Peer guest input isolation on target",
+    "Guest recreation or RAM/capability reclamation",
+    "Bare-metal Spark, x86 VMX Linux execution or final v0.4 release qualification"
+  ],
+  "retained_local_directory": "/tmp/agentos-v04-config-lanes/build/evidence/input-delivery-b0e232f",
+  "sha256": {
+    "agentos.img": "ea64e2883d93935f8c0553cda99fd2efdbb6d9b3c6514b518ed03cf3bec2ce9e",
+    "boot-timing.json": "d1557fae51d0f6fb84e612cdc4b6fd8b0d2fa1de30835eda6ea427c26e1d16c3",
+    "gate.log": "25900196a6bfe1b1d8d7ead24861ad838c497ba1f73e18e65439d80542fa9775",
+    "guest-input-probe-aarch64": "2ba0315a3bc89917f9bd4762fd54a25cb0d250635dd34830cf02c2c8b981e517",
+    "input.json": "10a26f621d412f5302817da2c9004e1cb508c802186418519ed19161ba6cad39",
+    "qualification.log": "4659b609a414793cfd5a4e6bb873fb4add3c9cea2c0df655c511d5193d0b5e6e",
+    "serial.log": "1756fe1a8e5460ab66a8f38bc527b3cbf205c485b5c492daf39908b5fca7d5a3"
+  }
+}
