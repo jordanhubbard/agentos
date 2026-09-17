@@ -1,0 +1,40 @@
+{
+  "qualification": "Intel guest ACPI virtio-console discovery and Linux hvc0 binding",
+  "runtime_revision": "f5eb008a7b765baf03144139b40ac33950453354",
+  "task": "task_ede60b058fc745d296bad77044a57420",
+  "intel": {
+    "host": "madmax Intel Linux nested KVM",
+    "command": "make gate-x86_64-userspace SEL4_SDK_VERSION=2.3.0 with firmware/kernel pins retained in x86-virtio-firmware.json and the initrd pin below",
+    "initrd_sha256": "2aa1509f24e47c1485cdd1330d0e0cece5325cb00b4cade99a37ac3894c774c2",
+    "initrd_build": "make x86-userspace-initramfs",
+    "result": "PASS exit 0",
+    "log_sha256": "b13c47428a2bac15f662599b3acc8f2b9fdb2e52a6840f90751842fb85fb7775",
+    "scope": [
+      "OVMF installs generated DSDT describing LNRO0005 with MMIO f0000000/4096 and GSI 16 level/high",
+      "Guest Linux mounts devtmpfs, opens and closes hvc0, then completes the PID 1 filesystem syscall roundtrip",
+      "VMM requires actual virtio-console DRIVER_OK status and a canonical serial-service wake before accepting success",
+      "No guest device command-line override, custom driver or host-device mapping is used"
+    ]
+  },
+  "spark": {
+    "command": "make gate SEL4_SDK_VERSION=2.3.0",
+    "result": "PASS exit 0",
+    "log_sha256": "83f85c780d931a12571591cf34c976a401ccd13b4e4c3647bf230dd26adc54ca"
+  },
+  "aml": {
+    "revision": "7aae24a5 (ACPI implementation unchanged in final runtime)",
+    "command": "make test-x86-acpi-aml test-x86-firmware-build x86-userspace-initramfs SEL4_SDK_VERSION=2.3.0 IASL=/tmp/agentos-acpica-tools/extracted/usr/bin/iasl ACPIEXEC=/tmp/agentos-acpica-tools/extracted/usr/bin/acpiexec",
+    "result": "PASS exit 0; generated DSDT disassembled and recompiled by ACPICA",
+    "log_sha256": "0f9049f6e61cbda6b380e54dd219fb0ce978bff9a1e762a3a9f4a02e9e30ce96"
+  },
+  "diagnostic": {
+    "revision": "d3747a55",
+    "result": "Explicit guest failure at stage 2 (mkdir /dev); harness exited nonzero after the parked test QEMU was terminated. Final probe permits EEXIST but still requires devtmpfs mount and hvc0 open.",
+    "log_sha256": "427ae87f823340b609d5731e628610c691af5cd741094e39b3c4d83320091e1a"
+  },
+  "retained_directory": "build/evidence/x86-console-discovery-f5eb008",
+  "limitations": [
+    "No frontend byte producer is configured: this proves discovery and binding, not Intel console TX/RX.",
+    "Canonical network/block, lifecycle reclamation, Debian parity, GUI integration and release qualification remain incomplete."
+  ]
+}
