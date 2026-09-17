@@ -1,0 +1,70 @@
+{
+  "qualification": "Common root network queue frame provisioning",
+  "runtime_revision": "a6af97bc52d76f49b972d057ea338a291093fc9b",
+  "sdk_version": "2.3.0",
+  "checks": [
+    {
+      "host": "Spark ARM64",
+      "command": "make gate SEL4_SDK_VERSION=2.3.0",
+      "result": "PASS",
+      "log": "build/evidence/network-frames-a6af97b/gate.log",
+      "sha256": "c6de4b2c488e0efe8c63912f6c3e9481b61969b077fd25d24d721344cd9085e2"
+    },
+    {
+      "host": "madmax Intel Linux via puck.local",
+      "command": "make gate-x86_64-storage SEL4_SDK_VERSION=2.3.0 X86_FIRMWARE_IMAGE=/tmp/agentos-ovmf-2024.02-2ubuntu0.9.fd X86_FIRMWARE_SHA256=101afad5f520753224b60b9555df60add435cf50c7a82b781d7d7d8c60db7eb5 X86_BOOT_KERNEL=/tmp/agentos-linux-7.0.0-30.efi X86_BOOT_KERNEL_SHA256=0ad39b13e289e1a5cf806d14541ac8f221eefe849017f5915e0846917ed67785",
+      "result": "PASS",
+      "log": "build/evidence/network-frames-a6af97b/intel.log",
+      "sha256": "7393e9e435b35dc9cc6950412819ef6517e9cec1af15d2473dda976da60a0840"
+    }
+  ],
+  "intel_receipt": {
+    "disk": "/tmp/agentos-v04-intel-discovery/build/tmp/x86-storage-Plub5c/disk.img",
+    "phases": [
+      {
+        "artifacts": {
+          "agentos.img": {
+            "path": "/tmp/agentos-v04-intel-discovery/build/tmp/x86-storage-Plub5c/write/agentos.img",
+            "sha256": "798e8d222b85f8f19ebe731d669c5874e4e09e1aea8dcd3a8971c8578460f6b0"
+          },
+          "root_task.elf": {
+            "path": "/tmp/agentos-v04-intel-discovery/build/tmp/x86-storage-Plub5c/write/root_task.elf",
+            "sha256": "989b00cc0d9fbe421133c5b883d032ff18dd0a1b03ade38e04607433c184e233"
+          }
+        },
+        "disk_sha256": "e5617c82288dc536b1b6d18642aa98b33546a26d53dd01626da22b8f6976865f",
+        "initrd_sha256": "1577b1858f3ec5e20588f7fedc148fb4b99f99cf6ec152a6fa8a7bcab548c420",
+        "phase": "write",
+        "result": "PASS"
+      },
+      {
+        "artifacts": {
+          "agentos.img": {
+            "path": "/tmp/agentos-v04-intel-discovery/build/tmp/x86-storage-Plub5c/verify/agentos.img",
+            "sha256": "61737a9d9e444b6dfc7991a5bbc84a59949f0ff02c1c4cf4a46393e04bb456cb"
+          },
+          "root_task.elf": {
+            "path": "/tmp/agentos-v04-intel-discovery/build/tmp/x86-storage-Plub5c/verify/root_task.elf",
+            "sha256": "a515f09157e3cd1ef9e5cb9bf19e25d0d208f786715dcf1893538358d80cde6a"
+          }
+        },
+        "disk_sha256": "e5617c82288dc536b1b6d18642aa98b33546a26d53dd01626da22b8f6976865f",
+        "initrd_sha256": "37a0e5fc68065d8bc3f630fa2d199e1188fe6cd9fdf39db7b73390fa39ba9703",
+        "phase": "verify",
+        "result": "PASS"
+      }
+    ],
+    "scope": "Single guest, two complete platform cold boots; no concurrent isolation or guest lifecycle reset claim"
+  },
+  "observations": [
+    "Network queue allocation and mapping are now in the common root path. The architecture large-page size is checked against the queue ABI.",
+    "The full Spark gate passed with the relocated allocations, including ARM guest network, block and console proofs.",
+    "The Intel regression passed guest userspace, bidirectional console and exact whole-disk persistence checks across two cold boots. That topology currently has no net_virt, so it allocates no network queue frames."
+  ],
+  "limitations": [
+    "This does not establish Intel network frame mapping at runtime: the Intel board still requires network PDs, wakeups and host NIC integration.",
+    "Allocation and mapping failure paths were not fault-injected.",
+    "No new concurrent-client isolation or resource reclamation qualification is claimed.",
+    "Canonical integration, Debian, GUI and v0.4 release remain incomplete."
+  ]
+}
