@@ -5,7 +5,8 @@ packs it into a deterministic newc archive at `build/x86-userspace/initrd.bin`.
 The Rust packer reuses the archive and ELF-normalization code used by the
 AArch64 guest probes. No host libraries or binaries enter the archive.
 
-The init program checks that `getpid` returns 1, creates a regular file on
+The init program checks that `getpid` returns 1, mounts devtmpfs, opens and
+closes `/dev/hvc0`, and creates a regular file on
 the guest initramfs, writes a fixed string, seeks, reads and compares every
 byte, closes the file, and checks its PID again. All these operations use
 Linux syscalls. Failure takes a distinct completion path.
@@ -13,7 +14,8 @@ Linux syscalls. Failure takes a distinct completion path.
 The dedicated completion CPUID leaf is a qualification trap, compiled into
 the VMM only with `X86_USERSPACE_PROOF=1`. The VMM checks the PID and marker
 registers, guest CS selector and descriptor privilege level 3, active long
-mode and paging, and consumption of kernel/initrd input. Root requires its
+mode and paging, consumption of kernel/initrd input, a serial-service wake,
+and the console driver's negotiated ready state. Root requires its
 separate status, CPUID exit reason, ring-3 detail and user-range instruction
 address. The harness requires the dedicated userspace marker and rejects
 VMM failure/root-fault output. Ordinary firmware and HLT markers do not pass.
@@ -23,6 +25,10 @@ On an Intel nested-KVM host, use `make gate-x86_64-userspace` with
 [boot payload delivery](x86-boot-payload.md), plus `X86_BOOT_INITRD` pointing
 to the generated archive and its explicit `X86_BOOT_INITRD_SHA256` digest.
 This runs Linux through the same OVMF reset and generated ACPI path.
+The generated DSDT advertises the VMM console as `LNRO0005` with a 4 KiB
+MMIO resource at `0xf0000000` and a level/high GSI 16 interrupt. The guest
+kernel must include virtio-mmio, virtio-console and devtmpfs support; no
+device command-line override or custom guest driver is used.
 
 The initramfs file roundtrip is guest memory-backed filesystem I/O. It does
 not qualify canonical console/network/block services, disk persistence,

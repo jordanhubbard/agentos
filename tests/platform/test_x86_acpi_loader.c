@@ -90,7 +90,7 @@ static void relocate(uint64_t base)
     assert(!memcmp(copy.rsdp,"RSD PTR ",8) && copy.rsdp[15]==2);
     unsigned rsdt=(unsigned)(read_le(copy.rsdp+16,4)-base);
     unsigned xsdt=(unsigned)(read_le(copy.rsdp+24,8)-base);
-    assert(rsdt==513 && xsdt==561);
+    assert(rsdt==587 && xsdt==635);
     assert(!sum(copy.tables+rsdt,48) && !sum(copy.tables+xsdt,60));
     const char *signatures[]={"FACP","APIC","SSDT"};
     unsigned fadt=0;
@@ -106,7 +106,13 @@ static void relocate(uint64_t base)
     assert(read_le(f+36,4)==base && read_le(f+132,8)==base);
     assert(read_le(f+40,4)==base+64 && read_le(f+140,8)==base+64);
     assert(!memcmp(copy.tables,"FACS",4) && read_le(copy.tables+4,4)==64);
-    assert(!memcmp(copy.tables+64,"DSDT",4) && !sum(copy.tables+64,36));
+    const uint8_t *dsdt=copy.tables+64;
+    assert(!memcmp(dsdt,"DSDT",4) && read_le(dsdt+4,4)==110 && !sum(dsdt,110));
+    assert(!memcmp(dsdt+57,"LNRO0005",9));
+    assert(dsdt[87]==0x86 && read_le(dsdt+88,2)==9 && dsdt[90]==1);
+    assert(read_le(dsdt+91,4)==0xf0000000 && read_le(dsdt+95,4)==4096);
+    assert(dsdt[99]==0x89 && read_le(dsdt+100,2)==6);
+    assert(dsdt[102]==1 && dsdt[103]==1 && read_le(dsdt+104,4)==16);
     assert(read_le(f+56,4)==0xb000 && read_le(f+64,4)==0xb004 && read_le(f+76,4)==0xb008);
     assert(f[88]==4 && f[89]==2 && f[91]==4 && read_le(f+112,4)==0x70);
     uint32_t v=0;
@@ -126,9 +132,17 @@ static void relocate(uint64_t base)
     fw(&c,0,dir,1); before=c;
     assert(!aos_x86_config_acpi(&c,&source) && !memcmp(&c,&before,sizeof(c)));
 }
-int main(void)
+int main(int argc, char **argv)
 {
+    if (argc>2) return 2;
     relocate(0x100000); relocate(0x12340000); relocate(0xfffe0000);
+    if (argc==2) {
+        aos_x86_acpi_bundle_t bundle;
+        assert(aos_x86_acpi_bundle_init(&bundle));
+        FILE *file=fopen(argv[1],"wb");
+        assert(file && fwrite(bundle.tables+64,1,110,file)==110);
+        assert(!fclose(file));
+    }
     puts("PASS: fw_cfg ACPI directory, bounded relocations, root/table checksums and PM contract");
     return 0;
 }

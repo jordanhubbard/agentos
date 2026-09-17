@@ -3,10 +3,46 @@
 .section .text
 .global _start
 _start:
+    mov $1, %r13d
     mov $39, %eax                 /* getpid */
     syscall
     cmp $1, %rax
     jne failed
+    mov $2, %r13d
+    mov $83, %eax                 /* mkdir /dev */
+    lea dev_path(%rip), %rdi
+    mov $0755, %esi
+    syscall
+    cmp $-17, %rax                /* Linux's built-in initramfs may supply /dev */
+    je dev_directory_ready
+    test %rax, %rax
+    jne failed
+dev_directory_ready:
+    mov $3, %r13d
+    mov $165, %eax                /* mount devtmpfs: native driver nodes */
+    lea devfs(%rip), %rdi
+    lea dev_path(%rip), %rsi
+    lea devfs(%rip), %rdx
+    xor %r10d, %r10d
+    xor %r8d, %r8d
+    syscall
+    test %rax, %rax
+    jne failed
+    mov $4, %r13d
+    mov $2, %eax                  /* hvc0 exists only after console binding */
+    lea console_path(%rip), %rdi
+    mov $0x802, %esi              /* O_RDWR | O_NONBLOCK */
+    xor %edx, %edx
+    syscall
+    test %rax, %rax
+    js failed
+    mov $5, %r13d
+    mov %rax, %rdi
+    mov $3, %eax
+    syscall
+    test %rax, %rax
+    jne failed
+    mov $6, %r13d
     mov $2, %eax                  /* open a file on the initramfs */
     lea path(%rip), %rdi
     mov $0x242, %esi              /* O_CREAT | O_TRUNC | O_RDWR */
@@ -60,11 +96,14 @@ failed:
     mov $0x41554f53, %eax
     xor %ebx, %ebx
     mov $0x494e4954, %ecx
-    xor %edx, %edx
+    mov %r13d, %edx
     cpuid
     jmp failed
 .section .rodata
 path: .asciz "/userspace-proof"
+dev_path: .asciz "/dev"
+devfs: .asciz "devtmpfs"
+console_path: .asciz "/dev/hvc0"
 data: .ascii "agentOS x86 Linux syscall roundtrip\n"
 data_end:
 .section .bss

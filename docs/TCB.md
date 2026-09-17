@@ -400,7 +400,10 @@ re-entry restores seL4's three saved input words without rewriting guest GPRs;
 pending console interrupts are routed on the next bounded VMX timer exit.
 The userspace qualification requires a wake from the actual serial service
 capability before accepting the PID 1 result. Unknown notifications remain
-fatal. Guest console discovery and a frontend byte producer remain absent;
+fatal. The generated DSDT describes this guest-only console through `LNRO0005`,
+with a coherent 4 KiB read/write MMIO resource and a level/high GSI 16.
+The userspace probe mounts devtmpfs and opens `hvc0`; the VMM also requires
+negotiated console readiness. A frontend byte producer remains absent;
 this does not yet qualify Intel guest console traffic or lifecycle support.
 The opt-in [EFI payload variant](x86-boot-payload.md) provisions 256 MiB
 private RAM and embeds SHA-256-pinned kernel/initrd/command-line blobs in the

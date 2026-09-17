@@ -2,6 +2,7 @@
 #include <string.h>
 #include <platform/x86_apic.h>
 #include <platform/x86_ioapic.h>
+#include <platform/x86_virtio.h>
 
 static void le32(uint8_t *p, uint32_t n)
 {
@@ -136,14 +137,31 @@ static void io_gas(uint8_t *p, unsigned width, unsigned access, unsigned port)
 bool aos_x86_acpi_bundle_init(aos_x86_acpi_bundle_t *bundle)
 {
     if (!bundle) return false;
-    enum { FACS=0, DSDT=64, FADT=100, MADT=376, SSDT=440, RSDT=513, XSDT=561 };
+    enum { FACS=0, DSDT=64, FADT=174, MADT=450, SSDT=514, RSDT=587, XSDT=635 };
     const aos_x86_acpi_topology_t t={.lapic_gpa=AOS_X86_APIC_BASE,
         .ioapic_gpa=AOS_X86_IOAPIC_BASE,.ioapic_id=1,.cpu_count=1,
         .cpus={{.uid=0,.apic_id=0}}};
     memset(bundle,0,sizeof(*bundle));
     uint8_t *b=bundle->tables;
     memcpy(b+FACS,"FACS",4); le32(b+FACS+4,64); b[FACS+32]=2;
-    header(b+DSDT,36,"DSDT",2,"AOSDSDT "); checksum(b+DSDT,36);
+    /* Scope(_SB) Device(VCON): LNRO0005, UID 0, coherent DMA, and a
+     * fixed read/write MMIO resource with one level/high exclusive GSI.
+     * These describe the VMM-emulated console, never a host device. */
+    static const uint8_t console_aml[] = {
+        0x10,0x49,0x04,'_','S','B','_',0x5b,0x82,0x41,0x04,'V','C','O','N',
+        0x08,'_','H','I','D',0x0d,'L','N','R','O','0','0','0','5',0,
+        0x08,'_','U','I','D',0,0x08,'_','C','C','A',1,
+        0x08,'_','C','R','S',0x11,0x1a,0x0a,0x17,
+        0x86,9,0,1,0,0,0,0,0,0,0,0,
+        0x89,6,0,1,1,0,0,0,0,0x79,0
+    };
+    _Static_assert(sizeof(console_aml)==74, "console DSDT AML size");
+    header(b+DSDT,110,"DSDT",2,"AOSDSDT ");
+    memcpy(b+DSDT+36,console_aml,sizeof(console_aml));
+    le32(b+DSDT+91,AOS_X86_VIRTIO_BASE);
+    le32(b+DSDT+95,AOS_X86_VIRTIO_STRIDE);
+    le32(b+DSDT+104,AOS_X86_VIRTIO_GSI_BASE);
+    checksum(b+DSDT,110);
     header(b+FADT,276,"FACP",6,"AOSFADT ");
     le32(b+FADT+36,FACS); le32(b+FADT+40,DSDT);
     b[FADT+46]=9; /* SCI GSI, currently no enabled event sources */
