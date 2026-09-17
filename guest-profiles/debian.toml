@@ -55,6 +55,12 @@ args = { source = "debian-13-generic-arm64-20260831-2587.qcow2", output = "debia
 action = "install-gpt-ext4-file"
 args = { source = "debian-13-generic-arm64-20260831-2587.raw", output = "debian-13-generic-arm64-20260831-2587.configured.raw", index = "1", path = "/etc/systemd/system/ssh.service.d/agentos-hostkeys.conf", content = "[Service]\nExecStartPre=\nExecStartPre=/usr/bin/ssh-keygen -A\nExecStartPre=/usr/sbin/sshd -t\n" }
 
+# Match the guest's canonical emulated VirtIO NIC, independent of interface
+# naming. The stock networkd service is already enabled in the pinned image.
+[[host.acquire]]
+action = "install-gpt-ext4-file"
+args = { source = "debian-13-generic-arm64-20260831-2587.configured.raw", output = "debian-13-generic-arm64-20260831-2587.networked.raw", index = "1", path = "/etc/systemd/network/10-agentos-virtio.network", content = "[Match]\nDriver=virtio_net\n\n[Network]\nDHCP=ipv4\nIPv6AcceptRA=no\n" }
+
 [[host.acquire]]
 action = "extract-gpt-partition"
 args = { source = "debian-13-generic-arm64-20260831-2587.raw", output = "debian-13-arm64-root.ext4", index = "1" }
@@ -99,7 +105,7 @@ args = { source = "debian-13-arm64-initrd.with-init-bottom-order", output = "deb
 memory = "3G"
 
 [[host.qemu.media]]
-path = "build/guest-images/debian-13-generic-arm64-20260831-2587.configured.raw"
+path = "build/guest-images/debian-13-generic-arm64-20260831-2587.networked.raw"
 drive_id = "primary_media"
 bus = 8
 writable = true
