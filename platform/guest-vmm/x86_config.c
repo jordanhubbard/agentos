@@ -1,0 +1,116 @@
+#include "platform/x86_config.h"
+
+static uint32_t load(const uint8_t *p, unsigned n)
+{
+    uint32_t v = 0; for (unsigned i = 0; i < n; i++) v |= (uint32_t)p[i] << (8u*i);
+    return v;
+}
+static void put(uint8_t *p, uint32_t v, unsigned n)
+{
+    for (unsigned i = 0; i < n; i++) p[i] = (uint8_t)(v >> (8u*i));
+}
+bool aos_x86_config_init(aos_x86_config_t *s, uint32_t ram_bytes)
+{
+    if (!s || ram_bytes < 32u*1024u*1024u || ram_bytes > 0x80000000u ||
+        (ram_bytes & 0xffffu)) return false;
+    *s = (aos_x86_config_t){.ram_bytes = ram_bytes};
+    put(s->host, 0x12378086u, 4); /* virtual i440FX host bridge */
+    s->host[8] = 2; s->host[11] = 6;
+    put(s->pm, 0x71138086u, 4); /* virtual PIIX4 PM, bus 0 slot 1 function 3 */
+    s->pm[8] = 3; s->pm[11] = 6; s->pm[10] = 0x80;
+    s->pm[0x40] = 1; /* PM base I/O indicator, decode initially disabled */
+    return true;
+}
+
+static uint8_t fw_byte(const aos_x86_config_t *s, uint32_t off)
+{
+    if (s->fw_selector == 0u) {
+        static const uint8_t sig[] = {'Q','E','M','U'};
+        return off < sizeof(sig) ? sig[off] : 0;
+    }
+    if (s->fw_selector == 1u) return off == 0u ? 1u : 0u; /* traditional PIO, no DMA */
+    if (s->fw_selector == 3u)
+        return off < 4u ? (uint8_t)(s->ram_bytes >> (8u*off)) : 0;
+    if (s->fw_selector == 5u || s->fw_selector == 0xfu) return off == 0u ? 1u : 0u;
+    if (s->fw_selector == 0x19u) {
+        /* One directory entry, big-endian size/select; all reserved/name tail zero. */
+        static const char name[] = "etc/e820";
+        if (off == 3u) return 1;
+        if (off == 7u) return 80;
+        if (off == 9u) return 0x20;
+        if (off >= 12u && off < 12u + sizeof(name)) return (uint8_t)name[off-12u];
+        return 0;
+    }
+    if (s->fw_selector == 0x20u && off < 80u) {
+        const uint64_t starts[] = {0, 0xa0000u, 0x100000u, 0xffc00000u};
+        const uint64_t sizes[] = {0xa0000u, 0x60000u, s->ram_bytes-0x100000u, 0x400000u};
+        unsigned row = off / 20u, col = off % 20u;
+        if (col < 8u) return (uint8_t)(starts[row] >> (8u*col));
+        if (col < 16u) return (uint8_t)(sizes[row] >> (8u*(col-8u)));
+        return col == 16u ? (row == 0u || row == 2u ? 1u : 2u) : 0u;
+    }
+    return 0;
+}
+
+bool aos_x86_config_io(aos_x86_config_t *s, uint16_t port, unsigned width,
+                       bool write, uint32_t *value, uint64_t timer_ticks)
+{
+    if (!s || !value || (width != 1u && width != 2u && width != 4u)) return false;
+    if (port == 0xcf8u && width == 4u) {
+        if (write) s->pci_address = *value & 0x80fffffcu;
+        else *value = s->pci_address;
+        return true;
+    }
+    if (port >= 0xcfcu && port <= 0xcffu && (port & (width-1u)) == 0u &&
+        (unsigned)(port - 0xcfcu) + width <= 4u) {
+        uint8_t *cfg = 0;
+        uint32_t bdf = s->pci_address & 0x00ffff00u;
+        if (s->pci_address & 0x80000000u) {
+            if (bdf == 0u) cfg = s->host;
+            if (bdf == 0xb00u) cfg = s->pm;
+        }
+        unsigned off = (s->pci_address & 0xfcu) + port - 0xcfcu;
+        if (!write) {
+            *value = cfg ? load(cfg+off, width) : width == 4u ? 0xffffffffu : (1u << (width*8u))-1u;
+            s->pci_reads++;
+        } else if (cfg) {
+            for (unsigned i = 0; i < width; i++) {
+                unsigned reg = off+i;
+                uint8_t mask = reg == 4u ? 7u : 0u;
+                if (cfg == s->pm && reg == 0x40u) mask = 0xc0u;
+                if (cfg == s->pm && reg == 0x41u) mask = 0xffu;
+                if (cfg == s->pm && reg == 0x80u) mask = 1u;
+                cfg[reg] = (cfg[reg] & ~mask) | ((uint8_t)(*value >> (8u*i)) & mask);
+            }
+        }
+        return true;
+    }
+    uint16_t pm_base = (uint16_t)load(s->pm+0x40u, 2) & 0xffc0u;
+    if (pm_base && (s->pm[4] & 1u) && (s->pm[0x80] & 1u) &&
+        (uint32_t)port == (uint32_t)pm_base + 8u && width == 4u && !write) {
+        *value = (uint32_t)timer_ticks & 0xffffffu;
+        s->timer_reads++;
+        return true;
+    }
+    if (port == 0x510u && width == 2u && write) {
+        s->fw_selector = (uint16_t)*value; s->fw_offset = 0; return true;
+    }
+    if (port == 0x511u && width == 1u && !write) {
+        *value = fw_byte(s, s->fw_offset);
+        if (s->fw_offset < 80u) s->fw_offset++;
+        s->fw_reads++;
+        return true;
+    }
+    if (port == 0x70u && width == 1u && write) {
+        s->cmos_index = (uint8_t)*value & 0x7fu; return true;
+    }
+    if (port == 0x71u && width == 1u && !write) {
+        uint32_t above16 = (s->ram_bytes - 0x1000000u) >> 16;
+        if (s->cmos_index == 0x34u) *value = above16 & 0xffu;
+        else if (s->cmos_index == 0x35u) *value = above16 >> 8;
+        else if (s->cmos_index >= 0x5bu && s->cmos_index <= 0x5du) *value = 0;
+        else return false; /* no pretend RTC clock */
+        return true;
+    }
+    return false;
+}

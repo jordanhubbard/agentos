@@ -708,6 +708,13 @@ gate: test-host gate-aarch64 gate-x86_64 gate-guest-io
 # but it is not counted among the host tests below.
 test-host: policy-check guest-profile-check lint-source test-integration test-operator-host test-log-ring-host test-framebuffer-host
 test-host: test-x86-cpu-host
+test-host: test-x86-config-host
+
+.PHONY: test-x86-config-host
+test-x86-config-host:
+	@mkdir -p $(BUILD_TMP_DIR)
+	$(CC) -std=c11 -Wall -Wextra -Werror -I platform/include tests/platform/test_x86_config.c platform/guest-vmm/x86_config.c -o $(BUILD_TMP_DIR)/test_x86_config
+	$(BUILD_TMP_DIR)/test_x86_config
 
 .PHONY: test-x86-cpu-host
 test-x86-cpu-host:

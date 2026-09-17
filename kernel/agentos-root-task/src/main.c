@@ -3200,9 +3200,10 @@ void root_task_main(const seL4_BootInfo *bi)
         if (seL4_MessageInfo_get_label(tag) == AOS_X86_VTX_PROOF_LABEL &&
             seL4_MessageInfo_get_length(tag) == 4u &&
 #ifdef AGENTOS_X86_FIRMWARE_RESET
-            status == AOS_X86_VTX_FIRMWARE_LONG &&
-            reason == 30u && rip <= 0xffffffffu) {
-            dbg_puts("[rt] x86 OVMF long-mode I/O exit verified\n");
+            status == AOS_X86_VTX_FIRMWARE_CONFIG &&
+            reason == 30u && rip <= 0xffffffffu &&
+            (instruction_len >> 16) == 0x511u && (instruction_len & (1u << 4))) {
+            dbg_puts("[rt] x86 OVMF PCI configuration and fw_cfg string exit verified\n");
             dbg_puts("[rt] firmware exit reason="); dbg_hex(reason);
             dbg_puts(" linear RIP="); dbg_hex(rip);
             dbg_puts(" qualification="); dbg_hex(instruction_len); dbg_puts("\n");

@@ -141,6 +141,10 @@ $(BUILD_DIR)/x86_cpu.o: $(REPO_ROOT_MK)/platform/guest-vmm/x86_cpu.c
 	@mkdir -p $(BUILD_DIR)
 	$(CC) -c $(CFLAGS) $< -o $@
 $(BUILD_DIR)/guest_vmm_primary.elf: $(BUILD_DIR)/x86_cpu.o
+$(BUILD_DIR)/x86_config.o: $(REPO_ROOT_MK)/platform/guest-vmm/x86_config.c
+	@mkdir -p $(BUILD_DIR)
+	$(CC) -c $(CFLAGS) $< -o $@
+$(BUILD_DIR)/guest_vmm_primary.elf: $(BUILD_DIR)/x86_config.o
 $(BUILD_DIR)/x86_firmware_vmm.o: $(REPO_ROOT_MK)/platform/guest-vmm/x86_firmware.c
 	@mkdir -p $(BUILD_DIR)
 	$(CC) -c $(CFLAGS) $< -o $@

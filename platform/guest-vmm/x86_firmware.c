@@ -5,6 +5,7 @@
 #include "contracts/guest_execution_caps.h"
 #include "contracts/x86_vtx_proof.h"
 #include "platform/x86_cpu.h"
+#include "platform/x86_config.h"
 
 #define VCPU AOS_GUEST_VCPU_CAP_BASE
 #define ENTRY 0x4012u
@@ -54,6 +55,13 @@ static aos_x86_cpuid_t host_id(uint32_t leaf)
     return r;
 }
 
+static uint64_t timestamp(void)
+{
+    uint32_t lo, hi;
+    __asm__ volatile("lfence; rdtsc" : "=a"(lo), "=d"(hi) :: "memory");
+    return ((uint64_t)hi << 32) | lo;
+}
+
 static seL4_VCPUContext save_registers(void)
 {
     return (seL4_VCPUContext){
@@ -92,7 +100,16 @@ void aos_x86_firmware_run(seL4_CPtr ep, seL4_Word result)
         stop(ep, AOS_X86_VTX_PROOF_FAIL, 0x435055u, 0, 0);
     }
     unsigned cpuid_count = 0;
-    for (unsigned exits = 0; exits < 1024u; exits++) {
+    aos_x86_config_t config;
+    if (!aos_x86_config_init(&config, AOS_X86_FIRMWARE_RAM))
+        stop(ep, AOS_X86_VTX_PROOF_FAIL, 0x434647u, 0, 0);
+    /* Use the architecturally reported TSC/crystal ratio only. A missing
+     * frequency cannot be replaced by invented elapsed time. */
+    aos_x86_cpuid_t clock = host_id(0).eax >= 0x15u ? host_id(0x15u) : (aos_x86_cpuid_t){0};
+    uint64_t hz = clock.eax ? (uint64_t)clock.ecx * clock.ebx / clock.eax : 0;
+    if (hz > 10000000000ull || !(host_id(0x80000007u).edx & (1u << 8))) hz = 0;
+    uint64_t started = timestamp();
+    for (unsigned exits = 0; exits < 65536u; exits++) {
         seL4_Word reason = seL4_GetMR(SEL4_VMENTER_FAULT_REASON_MR);
         seL4_Word rip = seL4_GetMR(SEL4_VMENTER_CALL_EIP_MR);
         seL4_Word len = seL4_GetMR(SEL4_VMENTER_FAULT_INSTRUCTION_LEN_MR);
@@ -136,12 +153,37 @@ void aos_x86_firmware_run(seL4_CPtr ep, seL4_Word result)
                     stop(ep, AOS_X86_VTX_PROOF_FAIL, reason, rip, value);
                 write_field(ep, EFER, (value & ~LMA) | (efer & LMA));
             }
+        } else if (reason == 30u && len && !(qual & ~0xffff007fu) &&
+                   !(qual & ((1u << 4) | (1u << 5))) && (qual & 7u) != 2u && (qual & 7u) <= 3u) {
+            unsigned width = (unsigned)(qual & 7u) + 1u;
+            bool write = !(qual & (1u << 3));
+            uint16_t port = (uint16_t)(qual >> 16);
+            uint32_t value = (uint32_t)regs.eax;
+            uint64_t ticks = 0;
+            if (hz) {
+                uint64_t delta = timestamp() - started;
+                ticks = (delta / hz) * 3579545u + ((delta % hz) * 3579545u) / hz;
+            }
+            /* PM timer reads require a known clock; other ports do not. */
+            uint16_t pm_base = ((uint16_t)config.pm[0x41] << 8) | (config.pm[0x40] & 0xc0u);
+            if (!hz && pm_base && port == (uint32_t)pm_base + 8u)
+                stop(ep, AOS_X86_VTX_PROOF_FAIL, 0x434c4bu, rip, port);
+            if (!aos_x86_config_io(&config, port, width, write, &value, ticks))
+                stop(ep, AOS_X86_VTX_PROOF_FAIL, reason, read_field(ep, CS_BASE) + rip, qual);
+            if (!write) {
+                if (width == 4u) regs.eax = value;
+                else {
+                    seL4_Word mask = ((seL4_Word)1u << (width * 8u)) - 1u;
+                    regs.eax = (regs.eax & ~mask) | (value & mask);
+                }
+            }
         } else {
             seL4_Word rights = read_field(ep, CS_RIGHTS);
             seL4_Word linear = read_field(ep, CS_BASE) + rip;
-            if (reason == 30u && cpuid_count && (rights & 0x6000u) == 0x2000u &&
+            if (reason == 30u && (qual & (1u << 4)) && (qual >> 16) == 0x511u &&
+                config.pci_reads && cpuid_count && (rights & 0x6000u) == 0x2000u &&
                 (read_field(ep, EFER) & LMA) && (read_field(ep, CR0) & PG)) {
-                stop(ep, AOS_X86_VTX_FIRMWARE_LONG, reason, linear, qual);
+                stop(ep, AOS_X86_VTX_FIRMWARE_CONFIG, reason, linear, qual);
             }
             stop(ep, AOS_X86_VTX_PROOF_FAIL, reason, linear, qual);
         }
@@ -152,5 +194,5 @@ void aos_x86_firmware_run(seL4_CPtr ep, seL4_Word result)
         seL4_SetMR(SEL4_VMENTER_CALL_INTERRUPT_INFO_MR, 0u);
         result = seL4_VMEnter(NULL);
     }
-    stop(ep, AOS_X86_VTX_PROOF_FAIL, 0x425544u, 0, 1024u);
+    stop(ep, AOS_X86_VTX_PROOF_FAIL, 0x425544u, 0, 65536u);
 }
