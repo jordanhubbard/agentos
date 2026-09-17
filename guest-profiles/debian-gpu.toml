@@ -13,10 +13,10 @@ command_line = "console=hvc0 loglevel=7 root=UUID=eeb673b7-002d-483a-ba22-a4b6ca
 [artifacts.dtb]
 source = "generated:linux.dts+profile-selected-virtio-gpu"
 cache = "build/qemu_virt_aarch64/debian-gpu-vm.dtb"
-sha256 = "79f82bcc3a81c4b72995fd72fabbce4e8ad81649905fcd3acc01df3d5ff669ab"
+sha256 = "c07ac18a210c24397188db7982c8b647adde8f83c56e22b0d0f0e47691ed7c1f"
 
 [placements.dual-primary]
-dtb_sha256 = "79f82bcc3a81c4b72995fd72fabbce4e8ad81649905fcd3acc01df3d5ff669ab"
+dtb_sha256 = "c07ac18a210c24397188db7982c8b647adde8f83c56e22b0d0f0e47691ed7c1f"
 
 [host.qemu.ssh]
 host_port = 12224

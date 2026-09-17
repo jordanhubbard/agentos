@@ -10,10 +10,10 @@ devices = ["net", "block", "console", "input"]
 [artifacts.dtb]
 source = "generated:linux.dts+profile-selected-virtio-input"
 cache = "build/qemu_virt_aarch64/debian-input-vm.dtb"
-sha256 = "fcbf15b6717e6b53ba243e6eab4f046f2496b64f4bb4e5916c0bb82e693023ec"
+sha256 = "1a65a57262dd1f453a5acb3a34eb5535df1862d209c932bb985012d170f0463d"
 
 [placements.dual-primary]
-dtb_sha256 = "fcbf15b6717e6b53ba243e6eab4f046f2496b64f4bb4e5916c0bb82e693023ec"
+dtb_sha256 = "1a65a57262dd1f453a5acb3a34eb5535df1862d209c932bb985012d170f0463d"
 
 [host.qemu.ssh]
 host_port = 12228
