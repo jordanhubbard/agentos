@@ -6,11 +6,12 @@
 #include <assert.h>
 #include <stdio.h>
 
-bool fault_is_read(uint64_t fsr) { return fsr==0; }
-uint64_t fault_get_data_mask(uint64_t offset,uint64_t fsr) { (void)offset;(void)fsr;return UINT32_MAX; }
+bool fault_is_read(uint64_t fsr) { return fsr==0 || fsr==2; }
+uint64_t fault_get_data_mask(uint64_t offset,uint64_t fsr)
+{ return (fsr>=2 ? UINT64_C(0xff) : UINT64_C(0xffffffff)) << ((offset&3u)*8u); }
 uint64_t fault_get_data(seL4_UserContext *r,uint64_t fsr) { (void)fsr;return r->x0; }
 void fault_emulate_write(seL4_UserContext *r,size_t offset,size_t fsr,size_t value)
-{ (void)offset;(void)fsr;r->x0=value; }
+{ (void)fsr;r->x0=value >> ((offset&3u)*8u); }
 bool fault_register_vm_exception_handler(uintptr_t base,size_t size,vm_exception_handler_t cb,void *data)
 { (void)base;(void)size;(void)cb;(void)data;return true; }
 static virq_ack_fn_t registered_ack;
@@ -24,10 +25,15 @@ bool virtio_queue_map_guest_rings(struct virtq *q) { (void)q;return true; }
 static uint32_t config_offset,config_value;
 static bool set_config(virtio_device_t *d,uint32_t offset,uint32_t value)
 { (void)d;config_offset=offset;config_value=value;return true; }
+static bool get_config(virtio_device_t *d,uint32_t offset,uint32_t *value)
+{ (void)d;config_offset=offset;*value=UINT32_C(0xaabbccdd);return true; }
+static unsigned reset_count;
+static void reset(virtio_device_t *d) { (void)d;++reset_count; }
 int main(void)
 {
     virtio_queue_handler_t queue={.virtq={.used=(void *)(uintptr_t)0x12340000}};
-    virtio_device_funs_t functions={.set_device_config=set_config};
+    virtio_device_funs_t functions={.set_device_config=set_config,.get_device_config=get_config,
+                                    .device_reset=reset};
     virtio_device_t device={.vqs=&queue,.num_vqs=1,.funs=&functions};
     seL4_UserContext regs={0};
     const uint32_t ids[]={0,1,UINT32_MAX};
@@ -43,6 +49,13 @@ int main(void)
     regs.x0=7;
     assert(virtio_mmio_fault_handle(0,REG_VIRTIO_MMIO_CONFIG+4,1,&regs,&device));
     assert(config_offset==4 && config_value==7);
+    for (unsigned byte=0;byte<4;++byte) {
+        regs.x0=0xab;
+        assert(virtio_mmio_fault_handle(0,REG_VIRTIO_MMIO_CONFIG+byte,3,&regs,&device));
+        assert(config_offset==byte && config_value==0xab);
+        assert(virtio_mmio_fault_handle(0,REG_VIRTIO_MMIO_CONFIG+byte,2,&regs,&device));
+        assert(config_offset==byte && regs.x0==0xdd);
+    }
     regs.x0=2;
     assert(virtio_mmio_fault_handle(0,REG_VIRTIO_MMIO_QUEUE_USED_HIGH,1,&regs,&device));
     assert((uintptr_t)queue.virtq.used==UINT64_C(0x212340000));
@@ -69,6 +82,12 @@ int main(void)
     assert(virtio_mmio_fault_handle(0,REG_VIRTIO_MMIO_INTERRUPT_ACK,1,&regs,&device));
     registered_ack(0,54,registered_cookie);
     assert(injected==2);
-    puts("PASS: shared-memory probes, relative config writes, persistent IRQ level and partial ACK");
+    device.regs.InterruptStatus=3;
+    regs.x0=0;
+    assert(virtio_mmio_fault_handle(0,REG_VIRTIO_MMIO_STATUS,1,&regs,&device));
+    assert(reset_count==1 && device.regs.InterruptStatus==0);
+    registered_ack(0,54,registered_cookie);
+    assert(injected==2);
+    puts("PASS: shared-memory probes, byte config accesses, persistent IRQ level, partial ACK and reset");
     return 0;
 }

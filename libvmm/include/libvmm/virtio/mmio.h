@@ -80,6 +80,9 @@ typedef struct virtio_emul_funs {
     bool (*set_driver_features)(struct virtio_device *dev, uint32_t features);
 
     // REG_VIRTIO_MMIO_CONFIG related operations
+    /* Config offsets are device-relative byte offsets. Values start at the
+     * requested byte, right-aligned; the transport handles MMIO byte lanes.
+     * Device backends validate supported fields and access alignment. */
     bool (*get_device_config)(struct virtio_device *dev, uint32_t offset, uint32_t *ret_val);
     bool (*set_device_config)(struct virtio_device *dev, uint32_t offset, uint32_t val);
     bool (*queue_notify)(struct virtio_device *dev);

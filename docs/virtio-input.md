@@ -25,6 +25,10 @@ whole-batch rejection, private authorization, full queues, response ownership,
 counter wrap and invalid occupancy. The service core is currently host-tested
 only. Root mappings, persistent notifications, the target input PD, CC routing,
 the virtio-input backend and guest enumeration/delivery proof remain required.
+The common MMIO dispatcher has host regression coverage for all four byte
+lanes of device configuration: input's selector and subselector are separate
+byte fields. Reset also clears interrupt status before invoking backend reset,
+so an old device interrupt cannot be reasserted after reset.
 Queue attachment must not clear live state; lifecycle reclamation will require
 coordinated quiescence before reset.
 
