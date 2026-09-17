@@ -102,6 +102,23 @@ int main(void)
     assert(io(&a,0xed,1,true,0x5a)==0x5a);
     assert(!memcmp(&a,&unchanged,sizeof(a)));
     uint32_t delay=0;
+    const unsigned dma_pages[]={0x81,0x82,0x83,0x87,0x89,0x8a,0x8b,0x8f};
+    for (unsigned i=0;i<sizeof(dma_pages)/sizeof(dma_pages[0]);i++) {
+        assert(io(&a,dma_pages[i],1,false,0)==0xff);
+        reject(&a,dma_pages[i],2,false);
+        reject(&a,dma_pages[i],1,true);
+    }
+    reject(&a,0x84,1,false);
+    const unsigned com_bases[]={0x3f8,0x2f8,0x3e8,0x2e8};
+    for (unsigned i=0;i<4;i++) {
+        for (unsigned reg=0;reg<8;reg++) {
+            io(&a,com_bases[i]+reg,1,true,0);
+            assert(io(&a,com_bases[i]+reg,1,false,0)==0xff);
+        }
+        reject(&a,com_bases[i],2,false);
+        reject(&a,com_bases[i],4,true);
+    }
+    assert(!memcmp(&a,&unchanged,sizeof(a)));
     assert(!aos_x86_config_io(&a,0xed,1,false,&delay,0));
     assert(!aos_x86_config_io(&a,0xed,2,true,&delay,0));
     assert(!aos_x86_config_io(&a,0xec,1,true,&delay,0));
@@ -145,6 +162,17 @@ int main(void)
     reject(&a, 0xa1, 2, false);
     assert(io(&a, 0xcfc, 4, false, 0) == 0xffffffff);
     select_pci(&a, 0x80000000);
+    aos_x86_config_t before_partial=a;
+    for (unsigned port=0xcf8;port<0xcfc;port++) {
+        io(&a,port,1,true,0xff);
+        if (!(port&1)) io(&a,port,2,true,0xffff);
+    }
+    io(&a,0xcfb,1,true,1); /* Linux pci_check_type1 */
+    assert(!memcmp(&a,&before_partial,sizeof(a)));
+    assert(io(&a,0xcf8,4,false,0)==0x80000000);
+    reject(&a,0xcfb,2,true); /* crossing the address/data boundary */
+    reject(&a,0xcf9,2,true); /* unaligned */
+    reject(&a,0xcfb,1,false); /* no invented partial read behavior */
     assert(io(&a, 0xcfc, 4, false, 0) == 0x12378086);
     assert(io(&a, 0xcfe, 2, false, 0) == 0x1237);
     io(&a, 0xcfc, 4, true, 0);
@@ -175,6 +203,14 @@ int main(void)
     assert(io(&a,0x4000,2,false,0)==0);
     assert(io(&a,0x4002,2,false,0)==0);
     io(&a,0x4002,2,true,0);
+    io(&a,0x4002,2,true,0x20); /* absent global-lock enable must not stick */
+    assert(io(&a,0x4002,2,false,0)==0);
+    io(&a,0x4002,1,true,0x20);
+    assert(io(&a,0x4002,1,false,0)==0);
+    io(&a,0x4002,2,true,0x420); /* no global-lock or RTC-wake SCI */
+    assert(io(&a,0x4002,2,false,0)==0);
+    io(&a,0x4003,1,true,4);
+    assert(io(&a,0x4003,1,false,0)==0);
     assert(io(&a,0x4004,2,false,0)==0);
     io(&a,0x4004,2,true,0x1c03);
     assert(io(&a,0x4004,1,false,0)==3 && io(&a,0x4005,1,false,0)==0x1c);
@@ -210,7 +246,7 @@ int main(void)
     reject(&a, 0x4008, 4, true);
     reject(&a, 0x4008, 2, false);
     reject(&a, 0xcfd, 2, false);
-    reject(&a, 0xcf8, 2, true);
+    reject(&a, 0xcf8, 2, false);
     reject(&a, 0x511, 4, false);
     reject(&a, 0x1234, 1, false);
     reject(&a, 0xcf8, 3, true);

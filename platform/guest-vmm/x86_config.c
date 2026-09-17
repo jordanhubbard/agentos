@@ -118,7 +118,10 @@ static bool pm_io(aos_x86_config_t *s, unsigned off, unsigned width,
         if (write) status&=~data; /* W1C; reserved status bits stay zero */
         else result=(status >> shift)&mask;
     } else if ((off&~1u)==2u) {
-        if (write && data) return false; /* SCI routing not implemented */
+        /* No firmware global-lock hardware or RTC wake source exists. Their
+         * enable bits do not stick, matching discovery and FADT FIX_RTC.
+         * Other nonzero enables still require real interrupt sources. */
+        if (write && (data & ~0x420u)) return false;
         if (!write) result=0;
     } else {
         if (write) {
@@ -142,6 +145,20 @@ bool aos_x86_config_io(aos_x86_config_t *s, uint16_t port, unsigned width,
     /* Legacy I/O-delay writes have no device state. All emulated register
      * operations complete synchronously before the guest resumes. */
     if (write && width==1u && (port==0x80u || port==0xedu)) return true;
+    /* Removed legacy DMA page registers read all ones. Linux probes 0x87
+     * before registering 8237A support. No DMA programming path is exposed. */
+    if (!write && width==1u && ((port>=0x81u && port<=0x83u) || port==0x87u ||
+        (port>=0x89u && port<=0x8bu) || port==0x8fu)) {
+        *value=0xffu; return true;
+    }
+    /* No ISA UART is provisioned. Legacy 8250 probing must see an absent
+     * device, not a writable interrupt-enable register or a host UART. */
+    if (width==1u && ((port>=0x3f8u && port<=0x3ffu) ||
+        (port>=0x2f8u && port<=0x2ffu) || (port>=0x3e8u && port<=0x3efu) ||
+        (port>=0x2e8u && port<=0x2efu))) {
+        if (!write) *value=0xffu;
+        return true;
+    }
     /* No PIT clock or IRQ0 source is advertised. Linux still writes its
      * channel-0 shutdown sequence after selecting the LAPIC clockevent.
      * Accept only mode-0 reset and its two zero count bytes; do not pretend
@@ -184,6 +201,11 @@ bool aos_x86_config_io(aos_x86_config_t *s, uint16_t port, unsigned width,
         *value = 0xffu;
         return true;
     }
+    /* The fixed mechanism-1 address register only accepts DWORD writes.
+     * Aligned byte/word writes are ignored, including Linux's CFB probe;
+     * they neither select mechanism 2 nor alter the current PCI address. */
+    if (write && port>=0xcf8u && port<0xcfcu && width<4u &&
+        !(port & (width-1u)) && width<=0xcfcu-port) return true;
     if (port == 0xcf8u && width == 4u) {
         if (write) s->pci_address = *value & 0x80fffffcu;
         else *value = s->pci_address;
