@@ -1,0 +1,31 @@
+{
+  "qualification": "Block virtualizer diagnostics without synchronous UART RPC",
+  "runtime_revision": "7a9d2c734a7d5b64b5fe38b5c82e793c18905e56",
+  "host": "Spark ARM64",
+  "sdk_version": "2.3.0",
+  "checks": [
+    {
+      "command": "make gate SEL4_SDK_VERSION=2.3.0",
+      "result": "PASS",
+      "log": "build/evidence/block-logging-7a9d2c7/gate.log",
+      "sha256": "03a0e4b489a79a7f1a572339f8397a73bdaf17eed45d2afc7dd683be3f88e7bc"
+    },
+    {
+      "command": "make test-x86-firmware-build SEL4_SDK_VERSION=2.3.0",
+      "result": "PASS",
+      "log": "build/evidence/block-logging-7a9d2c7/x86-link.log",
+      "sha256": "67909be8d4a5d74527b0b4a123f13243db716ea18e2b054c787063b0b3e0c821"
+    }
+  ],
+  "observations": [
+    "ARM UART output contains complete formatted READY, ATTACH, RAM disk and request-pump diagnostics after removing the virtualizer UART endpoint and transfer page.",
+    "The Ubuntu console gate serial log records host media 0 ready sectors=8127128 read-only, host-media read sector=0 count=8 client=0, and a request pumped via virtio_blk.",
+    "Retained host-media-serial.log SHA256: a11eeaf7cb82bf8e43872ceec5b8400a2097ed099f641fb69f32aae8e13455d4."
+  ],
+  "limitations": [
+    "The x86 check links the actual virtualizer ELF; the Intel composition does not yet start it or attach a host block device.",
+    "The common logger has a release-silent debug fallback on x86; this receipt does not claim visible Intel virtualizer diagnostics.",
+    "Nameserver registration and host block Calls remain; only synchronous diagnostic dependencies were removed.",
+    "Writable persistence, final integration and the v0.4 release remain incomplete."
+  ]
+}

@@ -718,8 +718,9 @@ test-x86-firmware-build:
 		SEL4_SDK=$(SEL4_SDK) SEL4_SDK_VERSION=$(SEL4_SDK_VERSION) \
 		X86_FIRMWARE_RESET=1 \
 		$(abspath $(BUILD_TMP_DIR)/x86-firmware-link)/guest_vmm_primary.elf \
-		$(abspath $(BUILD_TMP_DIR)/x86-firmware-link)/serial_pd.elf
-	@echo "PASS: x86 firmware VMM and serial driver link checks"
+		$(abspath $(BUILD_TMP_DIR)/x86-firmware-link)/serial_pd.elf \
+		$(abspath $(BUILD_TMP_DIR)/x86-firmware-link)/blk_virt.elf
+	@echo "PASS: x86 firmware VMM, serial driver and block virtualizer link checks"
 
 # test-host: alias for the host-only integration suite.  Named explicitly so
 # callers and CI cannot mistake host-only coverage for target/QEMU proof.

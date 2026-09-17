@@ -115,6 +115,13 @@ guest runs. When `virtio_blk` reports no media, `blk_virt` serves a
 per-client RAM disk instead. Contract: `include/contracts/blk_virt_contract.h`.
 Lint: `tests/platform/lint_source_invariants.c` (`inv2:` block checks).
 
+`blk_virt` emits bounded diagnostic messages through the common log ring and
+send-only drain notification. It has no UART endpoint, serial diagnostic
+transfer page or log-drain Call endpoint. Nameserver registration and block
+driver Calls remain separate from logging. Builds without provisioned log
+rings retain the common debug fallback, which is silent in release builds;
+linking the x86 virtualizer alone does not prove Intel block I/O.
+
 *Console*. `serial_virt` is a separate PD with four root-provisioned pages:
 one per VMM, one for the native operator client and a separate CC frontend
 page. Only the virtualizer maps all four. Root grants send-only notification capabilities for persistent wakeups
