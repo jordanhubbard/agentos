@@ -68,7 +68,9 @@ cloud-init is disabled, the guest runs its native `ssh-keygen -A` before the
 normal `sshd -t` check. Existing keys are retained; no private key is baked into
 the acquired image, and authentication policy is unchanged. A second configuration
 file gives the already-enabled networkd service a `virtio_net` driver match and
-IPv4 DHCP. The `.networked.raw` disk is the writable boot medium;
+IPv4 DHCP. The initramfs leaves the image's enabled systemd-resolved service
+available so its existing stub resolver link can use DHCP-provided DNS.
+The `.networked.raw` disk is the writable boot medium;
 `.configured.raw` is the SSH-configured intermediate, and the dated `.raw` disk
 remains the base for artifact extraction. No interface name or static guest IP
 is selected by the network configuration. Test-harness SSH account provisioning
