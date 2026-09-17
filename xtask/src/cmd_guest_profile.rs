@@ -845,6 +845,19 @@ fn render_profile_dtb(
         ("@GUEST_INITRD_START@", format!("0x{initrd_start:x}")),
         ("@GUEST_INITRD_END@", format!("0x{initrd_end:x}")),
         ("@GUEST_BOOTARGS@", command_line.to_string()),
+        (
+            "@GUEST_GPU_NODE@",
+            if profile
+                .target
+                .as_ref()
+                .and_then(|t| t.devices.as_ref())
+                .is_some_and(|devices| devices.iter().any(|d| d == "gpu"))
+            {
+                include_str!("../../kernel/agentos-root-task/virtio-gpu-guest.dts.inc").to_string()
+            } else {
+                String::new()
+            },
+        ),
     ];
     let template_path = confined_repo_path(repo_root, &build.template)?;
     let template = render_dts_template(&fs::read_to_string(&template_path)?, &substitutions)?;

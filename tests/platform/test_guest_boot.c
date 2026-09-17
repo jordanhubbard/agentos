@@ -11,6 +11,9 @@ static unsigned failures;
 static uint16_t net_client;
 static uint16_t block_media;
 static unsigned console_count;
+static unsigned gpu_count;
+static bool gpu_success;
+static bool gpu_init(void) { ++gpu_count; return gpu_success; }
 
 #define CHECK(name, condition) do { \
     tests++; \
@@ -110,6 +113,18 @@ int main(void)
     CHECK("device endpoints are selected entirely by profile",
           aos_guest_devices_init(&p, &ops) == AOS_GUEST_BOOT_OK &&
           net_client == 7u && block_media == 9u && console_count == 1u);
+    p.device_flags |= AOS_GUEST_DEVICE_GPU;
+    CHECK("GPU profile without a backend is rejected",
+          aos_guest_devices_init(&p, &ops) == AOS_GUEST_BOOT_ERR_ARGUMENT);
+    ops.gpu_init = gpu_init;
+    CHECK("GPU initialization failure prevents guest start",
+          aos_guest_devices_init(&p, &ops) == AOS_GUEST_BOOT_ERR_ARGUMENT && gpu_count == 1u);
+    gpu_success = true;
+    CHECK("GPU profile initializes its backend",
+          aos_guest_devices_init(&p, &ops) == AOS_GUEST_BOOT_OK && gpu_count == 2u);
+    p.device_flags &= ~AOS_GUEST_DEVICE_GPU;
+    CHECK("headless profile does not initialize GPU",
+          aos_guest_devices_init(&p, &ops) == AOS_GUEST_BOOT_OK && gpu_count == 2u);
     printf("1..%u\n", tests);
     return failures == 0u ? 0 : 1;
 }

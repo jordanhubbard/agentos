@@ -483,6 +483,12 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
         if args.assert_framebuffer {
             make_args.push(String::from("FRAMEBUFFER_TEST=1"));
         }
+        if profile_plan
+            .as_ref()
+            .is_some_and(|profile| profile.devices.iter().any(|d| d == "gpu"))
+        {
+            make_args.push(String::from("GUEST_GRAPHICS=1"));
+        }
         if let Some(mode) = args.framebuffer_isolation_probe {
             make_args.push(format!("FRAMEBUFFER_ISOLATION_PROBE={mode}"));
         }

@@ -124,6 +124,11 @@ static bool handle_virtio_mmio_reg_read(virtio_device_t *dev, size_t vcpu_id, si
     case REG_RANGE(REG_VIRTIO_MMIO_STATUS, REG_VIRTIO_MMIO_QUEUE_DESC_LOW):
         reg = dev->regs.Status;
         break;
+    case REG_RANGE(REG_VIRTIO_MMIO_SHM_LEN_LOW, REG_VIRTIO_MMIO_SHM_BASE_HIGH + 4):
+        /* No backend currently exposes VirtIO shared-memory regions.
+         * VirtIO 1.2 requires all-ones length and base for an absent ID. */
+        reg = UINT32_MAX;
+        break;
     case REG_RANGE(REG_VIRTIO_MMIO_CONFIG_GENERATION, REG_VIRTIO_MMIO_CONFIG):
         reg = dev->regs.ConfigGeneration;
         break;
@@ -282,7 +287,7 @@ static bool handle_virtio_mmio_reg_write(virtio_device_t *dev, size_t vcpu_id, s
         }
         break;
     }
-    case REG_RANGE(REG_VIRTIO_MMIO_QUEUE_USED_HIGH, REG_VIRTIO_MMIO_CONFIG_GENERATION): {
+    case REG_RANGE(REG_VIRTIO_MMIO_QUEUE_USED_HIGH, REG_VIRTIO_MMIO_QUEUE_USED_HIGH + 4): {
         if (dev->regs.QueueSel < dev->num_vqs) {
             struct virtq *virtq = get_current_virtq_by_handler(dev);
             uintptr_t ptr = (uintptr_t)virtq->used;
@@ -295,8 +300,11 @@ static bool handle_virtio_mmio_reg_write(virtio_device_t *dev, size_t vcpu_id, s
         }
         break;
     }
+    case REG_RANGE(REG_VIRTIO_MMIO_SHM_SEL, REG_VIRTIO_MMIO_SHM_LEN_LOW):
+        /* Every region ID is absent; selection has no queue side effects. */
+        break;
     case REG_RANGE(REG_VIRTIO_MMIO_CONFIG, REG_VIRTIO_MMIO_CONFIG + 0x100):
-        success = dev->funs->set_device_config(dev, offset, data);
+        success = dev->funs->set_device_config(dev, offset - REG_VIRTIO_MMIO_CONFIG, data);
         break;
     default:
         LOG_VMM_ERR("unknown virtIO MMIO register write at offset 0x%x\n", offset);
@@ -319,9 +327,15 @@ bool virtio_mmio_fault_handle(size_t vcpu_id, size_t offset, size_t fsr, seL4_Us
 
 static void virtio_virq_default_ack(size_t vcpu_id, int irq, void *cookie)
 {
-    (void)vcpu_id;
-    (void)irq;
-    (void)cookie;
+    virtio_device_t *dev = cookie;
+    /* VirtIO MMIO's interrupt signal remains asserted while any status bit
+     * is set (VirtIO 1.2, 4.2.3.4). A completion between InterruptACK and
+     * guest EOI can be coalesced into the still-pending virtual IRQ. vGIC
+     * clears that pending state before this callback; reassert the device
+     * level now so the new completion cannot lose its wakeup. */
+    if (dev->regs.InterruptStatus && !virq_inject_vcpu(vcpu_id, irq)) {
+        LOG_VMM_ERR("could not reassert virtio MMIO IRQ %d\n", irq);
+    }
 }
 
 bool virtio_mmio_register_device(virtio_device_t *dev,

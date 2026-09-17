@@ -45,6 +45,7 @@ typedef struct aos_guest_device_ops {
     void (*net_init)(uint32_t client);
     void (*block_init)(uint32_t media);
     void (*console_init)(void);
+    bool (*gpu_init)(void);
 } aos_guest_device_ops_t;
 
 enum aos_guest_boot_error aos_guest_boot_prepare(
