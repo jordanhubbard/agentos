@@ -27,6 +27,11 @@
 #define LMA (1u << 10)
 #define NXE (1u << 11)
 #define ENTRY_LONG (1u << 9)
+#define PIN_CONTROLS 0x4000u
+#define PREEMPTION_COUNTER 0x482eu
+#define INTERRUPTIBILITY 0x4824u
+#define ACTIVITY 0x4826u
+#define IDT_VECTORING 0x4408u
 
 static _Noreturn void stop(seL4_CPtr endpoint, seL4_Word status, seL4_Word reason,
                  seL4_Word rip, seL4_Word detail)
@@ -121,6 +126,7 @@ void aos_x86_firmware_run(seL4_CPtr ep, seL4_Word result)
     uint64_t started = timestamp();
     aos_x86_apic_t apic;
     aos_x86_apic_init(&apic, started);
+    uint32_t timer_quantum=0;
     const aos_x86_memory_t memory = {
         .ram=(const uint8_t *)AOS_X86_FIRMWARE_RAM_VA, .ram_size=AOS_X86_FIRMWARE_RAM,
         .rom=(const uint8_t *)AOS_X86_FIRMWARE_ROM_VA, .rom_base=AOS_X86_FIRMWARE_BASE,
@@ -135,13 +141,33 @@ void aos_x86_firmware_run(seL4_CPtr ep, seL4_Word result)
         seL4_Word guest_cr3 = seL4_GetMR(SEL4_VMENTER_FAULT_CR3_MR);
         seL4_Word guest_flags = seL4_GetMR(SEL4_VMENTER_FAULT_RFLAGS_MR);
         seL4_VCPUContext regs = save_registers();
+        /* Non-instruction exits do not define an instruction length. */
+        if (reason == 52u || reason == 7u) len=0;
         if (result != SEL4_VMENTER_RESULT_FAULT || len > 15u) {
             stop(ep, AOS_X86_VTX_PROOF_FAIL, reason, rip, len);
         }
+        if (read_field(ep, IDT_VECTORING) & (1u << 31))
+            stop(ep, AOS_X86_VTX_PROOF_FAIL, 0x564543u, rip, reason);
+        if (!timer_quantum) {
+            /* The rate is supplied by the kernel through the VCPU cap, not
+             * guessed from a CPU model or read with a privileged instruction. */
+            seL4_X86_VCPU_ReadMSR_t misc=seL4_X86_VCPU_ReadMSR(VCPU,0x485u);
+            uint64_t tick=UINT64_C(1) << (misc.value & 31u);
+            if (misc.error || !hz || tick > hz/1000u || !(misc.value & (1u << 6)))
+                stop(ep,AOS_X86_VTX_PROOF_FAIL,0x54494du,rip,misc.error ? (uint64_t)misc.error : misc.value);
+            timer_quantum=(uint32_t)((hz/1000u+tick-1u)/tick);
+            write_field(ep,PIN_CONTROLS,read_field(ep,PIN_CONTROLS) | (1u << 6));
+            if (!(read_field(ep,PIN_CONTROLS) & (1u << 6)))
+                stop(ep,AOS_X86_VTX_PROOF_FAIL,0x54494du,rip,0);
+        }
         uint64_t now = timestamp();
-        if (aos_x86_apic_interrupt_due(&apic, now))
-            stop(ep, AOS_X86_VTX_PROOF_FAIL, 0x495251u, rip, apic.lvt_timer);
-        if (reason == 10u && len == 2u) {
+        if (reason == 52u || reason == 7u) {
+            /* Timer and interrupt-window exits resume the same instruction. */
+        } else if (reason == 12u && len == 1u) {
+            /* Retain architectural halt until an eligible interrupt arrives.
+             * VMX's preemption timer still wakes this VMM from halted state. */
+            write_field(ep,ACTIVITY,1u);
+        } else if (reason == 10u && len == 2u) {
             aos_x86_cpuid_t r = aos_x86_cpu_id((uint32_t)regs.eax, (uint32_t)regs.ecx);
             regs.eax = r.eax; regs.ebx = r.ebx; regs.ecx = r.ecx; regs.edx = r.edx;
         } else if (reason == 28u && len == 3u && (qual & ~0xf0fu) == 0u &&
@@ -267,9 +293,20 @@ void aos_x86_firmware_run(seL4_CPtr ep, seL4_Word result)
         }
         seL4_Error err = seL4_X86_VCPU_WriteRegisters(VCPU, &regs);
         if (err) stop(ep, AOS_X86_VTX_PROOF_FAIL, reason, rip, err);
+        unsigned vector=aos_x86_apic_pending(&apic,timestamp());
+        seL4_Word controls=1u << 7, interrupt=0;
+        if (vector) {
+            if ((guest_flags & (1u << 9)) && !(read_field(ep,INTERRUPTIBILITY) & 3u)) {
+                if (!aos_x86_apic_accept(&apic,vector))
+                    stop(ep,AOS_X86_VTX_PROOF_FAIL,0x495251u,rip,vector);
+                interrupt=(1u << 31) | vector;
+                write_field(ep,ACTIVITY,0u);
+            } else controls |= 1u << 2; /* interrupt-window exiting */
+        }
+        write_field(ep,PREEMPTION_COUNTER,timer_quantum);
         seL4_SetMR(SEL4_VMENTER_CALL_EIP_MR, rip + len);
-        seL4_SetMR(SEL4_VMENTER_CALL_CONTROL_PPC_MR, 1u << 7);
-        seL4_SetMR(SEL4_VMENTER_CALL_INTERRUPT_INFO_MR, 0u);
+        seL4_SetMR(SEL4_VMENTER_CALL_CONTROL_PPC_MR, controls);
+        seL4_SetMR(SEL4_VMENTER_CALL_INTERRUPT_INFO_MR, interrupt);
         result = seL4_VMEnter(NULL);
     }
     stop(ep, AOS_X86_VTX_PROOF_FAIL, 0x425544u, 0, 65536u);

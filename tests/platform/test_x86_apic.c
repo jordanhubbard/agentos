@@ -46,7 +46,7 @@ int main(void)
     assert(!aos_x86_apic_interrupt_due(&a,1099));
     assert(aos_x86_apic_interrupt_due(&a,1100));
     assert(apic_io(&a,0x390,false,0,1100)==0);
-    assert(a.timer_pending);
+    assert(a.irr[2] == 1u);
     aos_x86_apic_init(&a,1100);
     apic_io(&a,0x3e0,true,0xb,1100);
     apic_io(&a,0x320,true,0x30040,1100); /* periodic, masked */
@@ -77,6 +77,41 @@ int main(void)
     apic_io(&b,0x320,true,0x20040,25); /* masked expiries do not become pending */
     assert(!aos_x86_apic_interrupt_due(&b,29));
     assert(aos_x86_apic_interrupt_due(&b,30));
+
+    /* Expiry captures its vector; priority gates delivery without losing it. */
+    assert(aos_x86_apic_pending(&b,30)==0x40);
+    apic_io(&b,0x320,true,0x20060,30);
+    assert(aos_x86_apic_pending(&b,30)==0x40);
+    apic_io(&b,0x80,true,0x4f,30);
+    assert(!aos_x86_apic_pending(&b,30));
+    assert(!aos_x86_apic_accept(&b,0x40));
+    apic_io(&b,0x80,true,0,30);
+    assert(aos_x86_apic_accept(&b,0x40));
+    assert(apic_io(&b,0x120,false,0,30)==1u); /* ISR */
+    assert(apic_io(&b,0x220,false,0,30)==0u); /* IRR */
+    assert(apic_io(&b,0xa0,false,0,30)==0x40);
+    assert(!aos_x86_apic_accept(&b,0x40));
+    assert(aos_x86_apic_pending(&b,40)==0x60); /* higher class nests */
+    assert(aos_x86_apic_accept(&b,0x60));
+    assert(!aos_x86_apic_pending(&b,100)); /* same class waits; expiries coalesce */
+    assert(apic_io(&b,0x230,false,0,100)==1u);
+    rejected(&b,0xb0,true,1,100);
+    rejected(&b,0xb0,false,0,100);
+    rejected(&b,0x120,true,0,100);
+    rejected(&b,0x320,true,0xf,100);
+    apic_io(&b,0xb0,true,0,100); /* pop only highest in-service vector */
+    assert(apic_io(&b,0x130,false,0,100)==0u);
+    assert(apic_io(&b,0x120,false,0,100)==1u);
+    assert(aos_x86_apic_pending(&b,100)==0x60);
+    apic_io(&b,0xf0,true,0xff,100);
+    assert(!aos_x86_apic_pending(&b,100));
+    apic_io(&b,0xf0,true,0x1ff,100);
+    assert(aos_x86_apic_accept(&b,0x60));
+    assert(!aos_x86_apic_pending(&b,100));
+    apic_io(&b,0xb0,true,0,100);
+    apic_io(&b,0xb0,true,0,100);
+    apic_io(&b,0xb0,true,0,100); /* idle EOI is harmless */
+    assert(apic_io(&b,0xa0,false,0,100)==0);
 
     aos_x86_memory_t m={.ram=ram,.ram_size=sizeof(ram),.rom=rom,.rom_base=0xffc00000,.rom_size=sizeof(rom)};
     pte(0x1000,0x2003); pte(0x2000,0x3003); pte(0x3000,0x4003); pte(0x4000,0x5003);
