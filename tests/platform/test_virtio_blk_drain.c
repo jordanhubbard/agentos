@@ -9,7 +9,7 @@
 
 static struct virtio_blk_device device;
 static blk_queue_handle_t queue;
-static uint8_t guest[65536], data[8192];
+static uint8_t guest[65536], data[16384];
 static struct virtq_desc descriptors[16];
 static blk_storage_info_t info;
 static unsigned interrupts, notifications;
@@ -36,7 +36,7 @@ static void *translate(uint64_t gpa, size_t size)
     return guest + gpa;
 }
 
-static void setup(void)
+static void setup(size_t cells)
 {
     memset(&device, 0, sizeof(device));
     memset(guest, 0xa5, sizeof(guest));
@@ -48,7 +48,7 @@ static void setup(void)
     assert(req && resp);
     blk_queue_init(&queue, req, resp, 8);
     assert(virtio_mmio_blk_init(&device, 0x1000, 0x1000, 52,
-        (uintptr_t)data, sizeof(data), &info, &queue, 8, 42));
+        (uintptr_t)data, cells * 4096u, &info, &queue, 8, 42));
     struct virtq *ring = &device.vqs[0].virtq;
     ring->num = 16;
     ring->desc = descriptors;
@@ -105,7 +105,7 @@ static void complete(blk_req_t req, blk_resp_status_t status)
 
 static void test_chunked_read(void)
 {
-    setup();
+    setup(2);
     submit(0, VIRTIO_BLK_T_IN, 8, 12288);
     virtio_blk_begin_quiesce(&device);
     assert(!virtio_blk_is_quiesced(&device));
@@ -137,7 +137,7 @@ static void test_chunked_read(void)
 
 static void test_overlapping_rmw(void)
 {
-    setup();
+    setup(2);
     memset(guest + sizeof(struct virtio_blk_outhdr), 0x31, 512);
     memset(guest + 16384u + sizeof(struct virtio_blk_outhdr), 0x62, 512);
     submit(0, VIRTIO_BLK_T_OUT, 1, 512);
@@ -164,7 +164,7 @@ static void test_overlapping_rmw(void)
 
 static void test_error_completion(void)
 {
-    setup();
+    setup(2);
     submit(0, VIRTIO_BLK_T_IN, 0, 512);
     virtio_blk_begin_quiesce(&device);
     complete(take(BLK_REQ_READ), BLK_RESP_ERR_UNSPEC);
@@ -177,7 +177,7 @@ static void test_error_completion(void)
 
 static void test_failed_predecessor(void)
 {
-    setup();
+    setup(2);
     memset(guest + sizeof(struct virtio_blk_outhdr), 0x31, 512);
     memset(guest + 16384u + sizeof(struct virtio_blk_outhdr), 0x62, 512);
     submit(0, VIRTIO_BLK_T_OUT, 1, 512);
@@ -199,11 +199,46 @@ static void test_failed_predecessor(void)
     cleanup();
 }
 
+static void test_disjoint_waiters(void)
+{
+    setup(4);
+    memset(guest + 16384u + sizeof(struct virtio_blk_outhdr), 0x31, 512);
+    memset(guest + 32768u + sizeof(struct virtio_blk_outhdr), 0x62, 512);
+    submit(0, VIRTIO_BLK_T_OUT, 0, 8192);
+    submit(1, VIRTIO_BLK_T_OUT, 1, 512);
+    submit(2, VIRTIO_BLK_T_OUT, 9, 512);
+    virtio_blk_begin_quiesce(&device);
+    blk_req_t first = take(BLK_REQ_WRITE);
+    assert(first.count == 2 && first.block_number == 0);
+    uint8_t disk[8192];
+    memcpy(disk, data + first.io_or_offset, sizeof(disk));
+    complete(first, BLK_RESP_OK);
+    for (unsigned step = 0; step < 2; step++) {
+        blk_req_t read = take(BLK_REQ_READ);
+        assert(read.count == 1 && read.block_number == step);
+        memcpy(data + read.io_or_offset, disk + step * 4096u, 4096);
+        complete(read, BLK_RESP_OK);
+        blk_req_t write = take(BLK_REQ_WRITE);
+        assert(write.count == 1 && write.block_number == step);
+        memcpy(disk + step * 4096u, data + write.io_or_offset, 4096);
+        complete(write, BLK_RESP_OK);
+    }
+    for (unsigned i = 0; i < sizeof(disk); i++) {
+        uint8_t expected = i >= 512 && i < 1024 ? 0x31 :
+            i >= 4608 && i < 5120 ? 0x62 : 0xa5;
+        assert(disk[i] == expected);
+    }
+    assert(virtio_blk_is_quiesced(&device));
+    assert(device.vqs[0].virtq.used->idx == 3 && interrupts == 0);
+    cleanup();
+}
+
 int main(void)
 {
     test_chunked_read();
     test_overlapping_rmw();
     test_error_completion();
     test_failed_predecessor();
+    test_disjoint_waiters();
     puts("PASS: production block drain, chunked reads, overlapping RMW, errors and stopped admission");
 }
