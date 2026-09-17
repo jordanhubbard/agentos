@@ -179,11 +179,20 @@ static uint32_t command(virtio_gpu_2d_t *g, const uint8_t *q, size_t n, uint8_t 
         uint64_t extent = (r.height - 1u) * stride + r.width * 4u;
         if (offset > s->backing_bytes || extent > s->backing_bytes - offset)
             return GPU_ERR_INVALID_PARAMETER;
-        for (uint32_t row = 0; row < r.height; ++row) {
-            if (!backing_read(g, s, offset + row * stride, g->row, r.width * 4u))
-                return GPU_ERR_INVALID_PARAMETER;
-            virtio_gpu_rect_t line = {r.x, r.y + row, r.width, 1};
-            if (!g->ops.write(g->context, s->handle, line, g->row)) return GPU_ERR_UNSPEC;
+        const uint32_t row_bytes = r.width * 4u;
+        const uint32_t batch_rows = sizeof(g->transfer) / row_bytes;
+        for (uint32_t row = 0; row < r.height;) {
+            uint32_t rows = r.height - row;
+            if (rows > batch_rows) rows = batch_rows;
+            /* Preserve backing stride while packing the destination payload.
+             * Batches stay within the canonical queue's fixed byte bound. */
+            for (uint32_t i = 0; i < rows; ++i)
+                if (!backing_read(g, s, offset + (row + i) * stride,
+                                  g->transfer + i * row_bytes, row_bytes))
+                    return GPU_ERR_INVALID_PARAMETER;
+            virtio_gpu_rect_t batch = {r.x, r.y + row, r.width, rows};
+            if (!g->ops.write(g->context, s->handle, batch, g->transfer)) return GPU_ERR_UNSPEC;
+            row += rows;
         }
         return GPU_OK_NODATA;
     }

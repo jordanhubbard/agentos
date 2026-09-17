@@ -12,6 +12,7 @@
 #define VIRTIO_GPU_2D_HEIGHT 768u
 #define VIRTIO_GPU_2D_REQUEST_BYTES (32u + 16u * VIRTIO_GPU_2D_BACKING_ENTRIES)
 #define VIRTIO_GPU_2D_RESPONSE_BYTES 408u
+#define VIRTIO_GPU_2D_TRANSFER_BYTES 65536u
 
 enum virtio_gpu_2d_command {
     GPU_GET_DISPLAY_INFO = 0x100, GPU_RESOURCE_CREATE_2D,
@@ -63,7 +64,7 @@ typedef struct {
     uint32_t scanout_resource, cursor_resource;
     uint32_t cursor_hot_x, cursor_hot_y;
     virtio_gpu_resource_t resources[VIRTIO_GPU_2D_RESOURCES];
-    uint8_t row[VIRTIO_GPU_2D_WIDTH * 4u];
+    uint8_t transfer[VIRTIO_GPU_2D_TRANSFER_BYTES];
 } virtio_gpu_2d_t;
 
 bool virtio_gpu_2d_init(virtio_gpu_2d_t *, const virtio_gpu_2d_ops_t *, void *context);
