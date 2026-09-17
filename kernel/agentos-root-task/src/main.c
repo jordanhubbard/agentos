@@ -3216,12 +3216,29 @@ void root_task_main(const seL4_BootInfo *bi)
             seL4_MessageInfo_get_length(tag) == AOS_X86_FIRMWARE_REPORT_WORDS) {
             seL4_Word counters[6];
             for (unsigned i=0; i<6; i++) counters[i]=seL4_GetMR(4+i);
+            seL4_Word snapshot[AOS_X86_FIRMWARE_SNAPSHOT_WORDS];
+            for (unsigned i=0; i<AOS_X86_FIRMWARE_SNAPSHOT_WORDS; i++)
+                snapshot[i]=seL4_GetMR(10+i);
             dbg_puts("[rt] firmware timer exits="); dbg_hex(counters[0]);
             dbg_puts(" injections="); dbg_hex(counters[1]);
             dbg_puts(" eois="); dbg_hex(counters[2]);
             dbg_puts(" rate_shift="); dbg_hex(counters[3]);
             dbg_puts(" tsc_hz="); dbg_hex(counters[4]);
             dbg_puts(" halt_exits="); dbg_hex(counters[5]); dbg_puts("\n");
+            if (status == AOS_X86_VTX_PROOF_FAIL && reason == 0x425544u) {
+                for (unsigned region=0; region<2; region++) {
+                    unsigned count=region ? AOS_X86_FIRMWARE_STACK_WORDS :
+                                            AOS_X86_FIRMWARE_CODE_WORDS;
+                    unsigned start=4+(region ? AOS_X86_FIRMWARE_CODE_WORDS : 0);
+                    dbg_puts(region ? "[rt] firmware stack snapshot\n" :
+                                      "[rt] firmware code snapshot\n");
+                    for (unsigned i=0; i<count; i++) {
+                        if (!(snapshot[2+region] & (UINT64_C(1) << i))) break;
+                        dbg_puts("[rt] snapshot "); dbg_hex(snapshot[region]+8u*i);
+                        dbg_puts(" = "); dbg_hex(snapshot[start+i]); dbg_puts("\n");
+                    }
+                }
+            }
         }
 #endif
         if (seL4_MessageInfo_get_label(tag) == AOS_X86_VTX_PROOF_LABEL &&

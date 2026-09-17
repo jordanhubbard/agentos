@@ -9,7 +9,6 @@
 #include "platform/x86_apic.h"
 #include "platform/x86_memory.h"
 #include "platform/x86_string.h"
-#include "agentos.h"
 
 #define VCPU AOS_GUEST_VCPU_CAP_BASE
 #define ENTRY 0x4012u
@@ -34,6 +33,7 @@
 #define ACTIVITY 0x4826u
 #define IDT_VECTORING 0x4408u
 static seL4_Word timer_exits, injections, eois, timer_shift, tsc_hz, halt_exits;
+static seL4_Word snapshot[AOS_X86_FIRMWARE_SNAPSHOT_WORDS];
 
 static _Noreturn void stop(seL4_CPtr endpoint, seL4_Word status, seL4_Word reason,
                  seL4_Word rip, seL4_Word detail)
@@ -42,6 +42,8 @@ static _Noreturn void stop(seL4_CPtr endpoint, seL4_Word status, seL4_Word reaso
     seL4_SetMR(2, rip); seL4_SetMR(3, detail);
     seL4_SetMR(4,timer_exits); seL4_SetMR(5,injections); seL4_SetMR(6,eois);
     seL4_SetMR(7,timer_shift); seL4_SetMR(8,tsc_hz); seL4_SetMR(9,halt_exits);
+    for (unsigned i=0; i<AOS_X86_FIRMWARE_SNAPSHOT_WORDS; i++)
+        seL4_SetMR(10+i,snapshot[i]);
     seL4_Send(endpoint, seL4_MessageInfo_new(AOS_X86_VTX_PROOF_LABEL, 0, 0, AOS_X86_FIRMWARE_REPORT_WORDS));
     for (;;) { seL4_Word badge; (void)seL4_Wait(endpoint, &badge); }
 }
@@ -112,16 +114,9 @@ static void assign(seL4_CPtr ep, seL4_VCPUContext *r, unsigned index, uint64_t v
 
 /* Failure-only observation of this guest's private RAM. Never dereference an
  * untranslated guest address or a device GPA, even for diagnostics. */
-static void diagnostic_hex(uint64_t value)
-{
-    char text[19]="0x0000000000000000";
-    const char digits[]="0123456789abcdef";
-    for (unsigned i=0; i<16; i++) text[17-i]=digits[(value >> (i*4)) & 15u];
-    sel4_dbg_puts(text);
-}
-
 static void diagnostic_words(const aos_x86_memory_t *m, uint64_t cr3,
-                              uint64_t address, unsigned words)
+                              uint64_t address, unsigned words,
+                              seL4_Word *values, seL4_Word *valid)
 {
     for (unsigned i=0; i<words; i++) {
         uint64_t value=0;
@@ -130,14 +125,12 @@ static void diagnostic_words(const aos_x86_memory_t *m, uint64_t cr3,
             uint64_t pa;
             if (!aos_x86_translate(m,cr3,address+byte,false,false,&pa) ||
                 pa >= m->ram_size) {
-                sel4_dbg_puts("[firmware diagnostic] unavailable at ");
-                diagnostic_hex(address+byte); sel4_dbg_puts("\n");
                 return;
             }
             value |= (uint64_t)m->ram[pa] << (byte*8);
         }
-        sel4_dbg_puts("[firmware diagnostic] "); diagnostic_hex(address);
-        sel4_dbg_puts(" = "); diagnostic_hex(value); sel4_dbg_puts("\n");
+        values[i]=value;
+        *valid |= UINT64_C(1) << i;
         if (address > UINT64_MAX-8u) break;
         address+=8;
     }
@@ -184,10 +177,13 @@ void aos_x86_firmware_run(seL4_CPtr ep, seL4_Word result)
             /* Observe the returned exit before any emulation or re-entry.
              * The processed-exit budget and its failure status are unchanged. */
             if ((read_field(ep,EFER) & LMA) && (read_field(ep,CR0) & PG)) {
-                sel4_dbg_puts("[firmware diagnostic] code around RIP\n");
-                diagnostic_words(&memory,guest_cr3,rip >= 32 ? rip-32 : rip,12);
-                sel4_dbg_puts("[firmware diagnostic] stack at RSP\n");
-                diagnostic_words(&memory,guest_cr3,read_field(ep,RSP),32);
+                snapshot[0]=rip >= 32 ? rip-32 : rip;
+                snapshot[1]=read_field(ep,RSP);
+                diagnostic_words(&memory,guest_cr3,snapshot[0],
+                    AOS_X86_FIRMWARE_CODE_WORDS,snapshot+4,snapshot+2);
+                diagnostic_words(&memory,guest_cr3,snapshot[1],
+                    AOS_X86_FIRMWARE_STACK_WORDS,
+                    snapshot+4+AOS_X86_FIRMWARE_CODE_WORDS,snapshot+3);
             }
             stop(ep,AOS_X86_VTX_PROOF_FAIL,0x425544u,rip,
                  (UINT64_C(65536) << 32) | (uint32_t)reason);
