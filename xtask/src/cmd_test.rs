@@ -483,18 +483,10 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
         if args.assert_framebuffer {
             make_args.push(String::from("FRAMEBUFFER_TEST=1"));
         }
-        if profile_plan
-            .as_ref()
-            .is_some_and(|profile| profile.devices.iter().any(|d| d == "gpu"))
-        {
-            make_args.push(String::from("GUEST_GRAPHICS=1"));
-        }
-        if profile_plan
-            .as_ref()
-            .is_some_and(|profile| profile.devices.iter().any(|d| d == "input"))
-        {
-            make_args.push(String::from("GUEST_INPUT=1"));
-        }
+        make_args.extend(profile_device_build_args(
+            profile_plan.as_ref(),
+            scenario_plan.as_ref(),
+        ));
         if let Some(mode) = args.framebuffer_isolation_probe {
             make_args.push(format!("FRAMEBUFFER_ISOLATION_PROBE={mode}"));
         }
@@ -1179,6 +1171,26 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
     }
 }
 
+fn profile_device_build_args(
+    profile: Option<&HostProfilePlan>,
+    scenario: Option<&HostScenarioPlan>,
+) -> Vec<String> {
+    let needs = |device: &str| {
+        profile.is_some_and(|p| p.devices.iter().any(|d| d == device))
+            || scenario.is_some_and(|s| {
+                s.guests
+                    .iter()
+                    .any(|g| g.profile.devices.iter().any(|d| d == device))
+            })
+    };
+    // Explicit empty values prevent inherited environment settings from silently
+    // adding devices to a profile which does not request them.
+    vec![
+        format!("GUEST_GRAPHICS={}", if needs("gpu") { "1" } else { "" }),
+        format!("GUEST_INPUT={}", if needs("input") { "1" } else { "" }),
+    ]
+}
+
 pub fn launch(args: &QemuLaunchArgs) -> anyhow::Result<()> {
     let repo_root = repo_root()?;
     let profile_root = repo_root.join("guest-profiles");
@@ -1223,6 +1235,10 @@ pub fn launch(args: &QemuLaunchArgs) -> anyhow::Result<()> {
     } else if let Some(alias) = &args.scenario {
         make_args.push(format!("GUEST_SCENARIO={alias}"));
     }
+    make_args.extend(profile_device_build_args(
+        profile_plan.as_ref(),
+        scenario_plan.as_ref(),
+    ));
     let make_arg_refs = make_args.iter().map(String::as_str).collect::<Vec<_>>();
     run_make(&make_arg_refs, &repo_root).context("profile-driven build step failed")?;
 
@@ -4253,6 +4269,42 @@ fn tail_chars(s: &str, max_chars: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn profile_build_enables_selected_devices_for_single_and_secondary_guests() {
+        let root = repo_root().unwrap();
+        let profiles = root.join("guest-profiles");
+        let load =
+            |name: &str| cmd_guest_profile::host_profile_plan(&profiles, Path::new(name)).unwrap();
+        let input = load("debian-input.toml");
+        let gpu = load("debian-gpu.toml");
+        let headless = load("debian.toml");
+        assert_eq!(
+            profile_device_build_args(None, None),
+            ["GUEST_GRAPHICS=", "GUEST_INPUT="]
+        );
+        assert_eq!(
+            profile_device_build_args(Some(&headless), None),
+            ["GUEST_GRAPHICS=", "GUEST_INPUT="]
+        );
+        assert_eq!(
+            profile_device_build_args(Some(&input), None),
+            ["GUEST_GRAPHICS=", "GUEST_INPUT=1"]
+        );
+        assert_eq!(
+            profile_device_build_args(Some(&gpu), None),
+            ["GUEST_GRAPHICS=1", "GUEST_INPUT="]
+        );
+        let mut scenario =
+            guest_scenario::resolve_alias(&root.join("guest-scenarios"), &profiles, "both")
+                .unwrap();
+        scenario.guests[0].profile = gpu;
+        scenario.guests[1].profile = input;
+        assert_eq!(
+            profile_device_build_args(None, Some(&scenario)),
+            ["GUEST_GRAPHICS=1", "GUEST_INPUT=1"]
+        );
+    }
 
     #[test]
     fn input_probe_output_is_bounded_and_requires_complete_utf8_lines() {
