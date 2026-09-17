@@ -12,6 +12,8 @@
 #include "platform/x86_memory.h"
 #include "platform/x86_string.h"
 #include "platform/x86_event.h"
+#include "serial_virt_client.h"
+#include <platform/serial_virt_layout.h>
 
 #define VCPU AOS_GUEST_VCPU_CAP_BASE
 const char vmm_pd_name[] = "guest_vmm_x86";
@@ -178,6 +180,21 @@ static void diagnostic_chain(const aos_x86_memory_t *m, uint64_t cr3, uint64_t r
 
 void aos_x86_firmware_run(seL4_CPtr ep, aos_x86_vmenter_return_t returned)
 {
+#ifdef AGENTOS_X86_USERSPACE_PROOF
+    if (serial_virt_client_attach(1u, SERIAL_VIRT_ROLE_VMM) ||
+        serial_virt_client_attach(0u, SERIAL_VIRT_ROLE_FRONTEND))
+        stop(ep, AOS_X86_VTX_PROOF_FAIL, 0x534552u, 0, 1u);
+#endif
+    if (!serial_virt_client_attach(0u, SERIAL_VIRT_ROLE_VMM))
+        stop(ep, AOS_X86_VTX_PROOF_FAIL, 0x534552u, 0, 2u);
+    /* Root gives this VMM only client zero's page. Check the newly retyped
+     * queue state before any producer can publish console bytes. */
+    aos_serial_channel_t serial = aos_serial_channel_at(AOS_SERIAL_SHMEM_VA);
+    if (__atomic_load_n(&serial.to_guest.queue->head, __ATOMIC_ACQUIRE) ||
+        __atomic_load_n(&serial.to_guest.queue->tail, __ATOMIC_ACQUIRE) ||
+        __atomic_load_n(&serial.from_guest.queue->head, __ATOMIC_ACQUIRE) ||
+        __atomic_load_n(&serial.from_guest.queue->tail, __ATOMIC_ACQUIRE))
+        stop(ep, AOS_X86_VTX_PROOF_FAIL, 0x534552u, 0, 3u);
     /* CPUID is unprivileged. Admit a fixed baseline, never pass host identity
      * or optional hardware facilities through to the guest. */
     if (host_id(0).eax < 1u || host_id(0x80000000u).eax < 0x80000008u ||
@@ -231,7 +248,7 @@ void aos_x86_firmware_run(seL4_CPtr ep, aos_x86_vmenter_return_t returned)
     };
     for (unsigned exits = 0; ; exits++) {
         seL4_Word rip = returned.words[SEL4_VMENTER_CALL_EIP_MR];
-        /* No service wake sources are provisioned in this topology yet.
+        /* The serial service has no frontend or byte producers yet.
          * Reject unexpected returns using defined metadata, never stale GPRs. */
         if (returned.result != SEL4_VMENTER_RESULT_FAULT)
             stop(ep, AOS_X86_VTX_PROOF_FAIL, 0x4e5446u, rip, returned.badge);

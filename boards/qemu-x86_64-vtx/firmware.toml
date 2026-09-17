@@ -1,0 +1,9 @@
+# Firmware composition: isolated serial queues and a VMM. The physical
+# frontend and guest console device are not wired by this composition yet.
+[[pd]]
+name = "serial_virt"
+priority = 203
+
+[[pd]]
+name = "guest_vmm_primary"
+priority = 250
