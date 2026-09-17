@@ -706,6 +706,8 @@ test-virtio-gpu-host:
 	$(BUILD_TMP_DIR)/test_virtio_gpu_2d
 	$(CC) -std=gnu11 -Wall -Wextra -Werror -Wno-unused-parameter -I tests/platform/mmio-stubs -I libvmm/include tests/platform/test_virtio_mmio.c libvmm/src/virtio/mmio.c -o $(BUILD_TMP_DIR)/test_virtio_mmio
 	$(BUILD_TMP_DIR)/test_virtio_mmio
+	$(CC) -std=gnu11 -Wall -Wextra -Werror -Wno-unused-parameter -Wno-sign-compare -ffunction-sections -fdata-sections -Wl,$(if $(filter Darwin,$(UNAME_S)),-dead_strip,--gc-sections) -I tests/platform/mmio-stubs -I libvmm/include -I libvmm/dep/sddf/include -I libvmm/dep/sddf/include/extern tests/platform/test_virtio_net_config.c libvmm/src/virtio/mmio.c -o $(BUILD_TMP_DIR)/test_virtio_net_config
+	$(BUILD_TMP_DIR)/test_virtio_net_config
 
 .PHONY: test-framebuffer-host
 .PHONY: test-input-host
