@@ -185,9 +185,10 @@ void aos_x86_firmware_run(seL4_CPtr ep, seL4_Word result)
                    fault_gpa < AOS_X86_APIC_BASE+4096 && (qual & 0x180u) == 0x180u &&
                    ((qual & 7u) == 1u || (qual & 7u) == 2u)) {
             if ((read_field(ep, CS_RIGHTS) & 0x6000u) != 0x2000u ||
-                !(read_field(ep, EFER) & LMA) || !(read_field(ep, CR0) & PG) ||
-                !(host_id(0x80000007u).edx & (1u << 8)))
+                !(read_field(ep, EFER) & LMA) || !(read_field(ep, CR0) & PG))
                 stop(ep, AOS_X86_VTX_PROOF_FAIL, reason, rip, 0x4d4f4445u);
+            if (!(host_id(0x80000007u).edx & (1u << 8)))
+                stop(ep, AOS_X86_VTX_PROOF_FAIL, 0x434c4bu, rip, 0x80000007u);
             uint64_t values[16];
             for (unsigned n=0; n<16; n++) values[n]=operand(ep, &regs, n);
             uint8_t code[15];

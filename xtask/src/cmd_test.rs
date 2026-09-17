@@ -1815,7 +1815,9 @@ pub(crate) fn spawn_qemu_with_guest(
                 .arg("q35")
                 .arg("-enable-kvm")
                 .arg("-cpu")
-                .arg("host")
+                // Qualification runs on this host and is never migrated.
+                // Keep invariant TSC visible for the VMM's virtual timers.
+                .arg("host,migratable=off")
                 .arg("-m")
                 .arg("2G")
                 .arg("-display")
