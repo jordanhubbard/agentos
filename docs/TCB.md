@@ -75,6 +75,15 @@ sDDF-shaped hub/loopback pump instead. Contract:
 `include/contracts/net_virt_contract.h`. Lint: `tests/platform/lint_source_invariants.c`
 (`inv2:` network checks).
 
+The VMM network adapter accepts an explicit emulated MMIO base, interrupt and
+mapped queue-region base. The ARM entrypoint keeps its existing defaults.
+Initialization refuses invalid alignment or a second binding before touching
+queues, and a failed virtualizer attachment does not register a guest device.
+The x86 host test exercises exact packet TX/RX through the real libvmm network
+backend, the canonical loopback pump and IOAPIC assertion/acknowledgment.
+Both architecture SDK builds compile the adapter; these checks do not prove an
+Intel host NIC, root network grants or a Linux x86 network interface.
+
 Network descriptors remain untrusted even within an isolated client page.
 The virtualizer validates fixed-buffer alignment, offset and packet length
 before constructing payload pointers in both hardware and fallback paths.
