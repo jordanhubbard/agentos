@@ -52,6 +52,7 @@
 #include <platform/blk_host_layout.h> /* host block MMIO/shared DMA layout       */
 #include <platform/blk_layout.h>      /* shared sDDF block region (VMMs + blk_virt) */
 #include <platform/serial_virt_layout.h>
+#include <platform/serial_uart.h>
 #ifdef AGENTOS_FRAMEBUFFER_TEST
 #include <platform/framebuffer.h>
 #include <platform/framebuffer_isolation_probe.h>
@@ -897,6 +898,15 @@ static int pd_is_guest_vmm(const pd_desc_t *pd)
 {
     return pd->self_svc_id == SVC_ID_GUEST_VMM_PRIMARY ||
            pd->self_svc_id == SVC_ID_GUEST_VMM_SECONDARY;
+}
+
+static int pd_is_serial_frontend(const pd_desc_t *pd)
+{
+#if defined(__x86_64__) && defined(AGENTOS_X86_FIRMWARE_RESET)
+    return pd->self_svc_id == SVC_ID_SERIAL;
+#else
+    return pd->self_svc_id == SVC_ID_CC_PD;
+#endif
 }
 
 static int pd_is_secondary_guest_vmm(const pd_desc_t *pd)
@@ -2280,6 +2290,15 @@ void root_task_main(const seL4_BootInfo *bi)
 
         dbg_puts("[rt] pd SC bound, starting\n");
 
+#if defined(__x86_64__) && defined(AGENTOS_X86_FIRMWARE_RESET)
+        if (pd->self_svc_id == SVC_ID_SERIAL &&
+            seL4_X86_IOPortControl_Issue(seL4_CapIOPortControl,
+                AOS_SERIAL_UART_PORT,AOS_SERIAL_UART_PORT+7u,pd_cnode,
+                AOS_SERIAL_UART_CAP_SLOT,pd->cnode_size_bits) != seL4_NoError) {
+            dbg_puts("[rt] serial UART port grant failed; refusing PD start\n");
+            continue;
+        }
+#endif
         seL4_CPtr pd_ntfn_cap = g_pd_notifications[i];
         if (pd_ntfn_cap != seL4_CapNull) {
             seL4_Error ntfn_err = seL4_TCB_BindNotification(tr.tcb_cap, pd_ntfn_cap);
@@ -2323,7 +2342,7 @@ void root_task_main(const seL4_BootInfo *bi)
 #endif
         if (serial_virt_index != SYSTEM_MAX_PDS) {
             seL4_Error signal_err = seL4_NoError;
-            if (pd_is_guest_vmm(pd) || pd->self_svc_id == SVC_ID_CC_PD ||
+            if (pd_is_guest_vmm(pd) || pd_is_serial_frontend(pd) ||
                 pd->self_svc_id == SVC_ID_OPERATOR_SESSION) {
                 seL4_Word badge = pd_is_guest_vmm(pd) ?
                     (1u << (pd_is_secondary_guest_vmm(pd) ? 1u : 0u)) :
@@ -2429,7 +2448,7 @@ void root_task_main(const seL4_BootInfo *bi)
             } else if (pd->self_svc_id == SVC_ID_NATIVE_RUST_PROBE &&
                        ep_spec->service_id == SVC_ID_NET_VIRT) {
                 badge = VIRT_NET_BADGE_NATIVE;
-            } else if (pd->self_svc_id == SVC_ID_CC_PD &&
+            } else if (pd_is_serial_frontend(pd) &&
                        ep_spec->service_id == SVC_ID_SERIAL_VIRT) {
                 badge = SERIAL_VIRT_FRONTEND_BADGE;
             } else if (pd->self_svc_id == SVC_ID_OPERATOR_SESSION &&
@@ -2580,14 +2599,14 @@ void root_task_main(const seL4_BootInfo *bi)
         /* Queue ownership is architecture-independent. Only serial_virt
          * sees every client page; no client receives another client's page. */
         if (serial_virt_index != SYSTEM_MAX_PDS &&
-            (pd_is_guest_vmm(pd) || pd->self_svc_id == SVC_ID_CC_PD ||
+            (pd_is_guest_vmm(pd) || pd_is_serial_frontend(pd) ||
              pd->self_svc_id == SVC_ID_OPERATOR_SESSION ||
              pd->self_svc_id == SVC_ID_SERIAL_VIRT)) {
             seL4_Error serial_err = seL4_NoError;
             for (uint32_t f = 0; f < AOS_SERIAL_FRAMES && serial_err == seL4_NoError; f++) {
                 if (pd_is_guest_vmm(pd) &&
                     f != (pd_is_secondary_guest_vmm(pd) ? 1u : 0u)) continue;
-                if (pd->self_svc_id == SVC_ID_CC_PD && f != AOS_SERIAL_FRONTEND_FRAME) continue;
+                if (pd_is_serial_frontend(pd) && f != AOS_SERIAL_FRONTEND_FRAME) continue;
                 if (pd->self_svc_id == SVC_ID_OPERATOR_SESSION && f != SERIAL_VIRT_OPERATOR_CLIENT) continue;
                 seL4_Word copy = ut_alloc_slot();
                 serial_err = seL4_NotEnoughMemory;

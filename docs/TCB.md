@@ -403,8 +403,16 @@ capability before accepting the PID 1 result. Unknown notifications remain
 fatal. The generated DSDT describes this guest-only console through `LNRO0005`,
 with a coherent 4 KiB read/write MMIO resource and a level/high GSI 16.
 The userspace probe mounts devtmpfs and opens `hvc0`; the VMM also requires
-negotiated console readiness. A frontend byte producer remains absent;
-this does not yet qualify Intel guest console traffic or lifecycle support.
+negotiated console readiness. The x86 composition starts `serial_pd` as the
+COM2 frontend: root grants only I/O ports `0x2f8..0x2ff`, the isolated frontend
+queue page and its role-bound serial attach/send capabilities. COM1 remains
+root's bootstrap diagnostic port. The driver disables UART interrupts and
+polls one byte per direction per yield, retaining bytes under backpressure.
+It owns no guest RAM, other I/O ports or device frames. The serial virtualizer
+remains the only component mapping both frontend and VMM queue pages.
+The Intel userspace gate exchanges exact request/reply bytes over QEMU COM2
+and the guest's raw `hvc0` before accepting its completion trap. This does not
+qualify sustained UART throughput, lifecycle support or the external CC API.
 The opt-in [EFI payload variant](x86-boot-payload.md) provisions 256 MiB
 private RAM and embeds SHA-256-pinned kernel/initrd/command-line blobs in the
 VMM's read-only ELF sections. These sources are not mapped into guest EPT;
