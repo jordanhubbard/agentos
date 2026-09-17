@@ -2,6 +2,7 @@
 #define AOS_PLATFORM_X86_ACPI_H
 #include <stddef.h>
 #include <stdint.h>
+#include <stdbool.h>
 
 #define AOS_X86_ACPI_MAX_CPUS 32u
 #define AOS_X86_MADT_MAX_BYTES (44u + 8u * AOS_X86_ACPI_MAX_CPUS + 12u)
@@ -36,4 +37,17 @@ size_t aos_x86_madt_write(void *output, size_t capacity,
  * in the DSDT. Returns zero without modifying output on invalid input. */
 size_t aos_x86_cpu_ssdt_write(void *output, size_t capacity,
                              const aos_x86_acpi_topology_t *topology);
+
+/* Immutable fw_cfg sources for the provisioned one-CPU firmware profile.
+ * OVMF allocates guest copies, relocates pointers and installs the tables.
+ * The PM register block is the VMM's private PIIX4 model at I/O 0xb000.
+ * No sleep state, hotplug, PCI endpoint or host resource is advertised. */
+#define AOS_X86_ACPI_TABLE_BYTES 621u
+#define AOS_X86_ACPI_LOADER_BYTES (19u * 128u)
+typedef struct {
+    uint8_t tables[AOS_X86_ACPI_TABLE_BYTES];
+    uint8_t rsdp[36];
+    uint8_t loader[AOS_X86_ACPI_LOADER_BYTES];
+} aos_x86_acpi_bundle_t;
+bool aos_x86_acpi_bundle_init(aos_x86_acpi_bundle_t *bundle);
 #endif

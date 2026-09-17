@@ -10,6 +10,7 @@ typedef struct {
     uint64_t now, phase;
     uint32_t counter;
     uint32_t irr[8], isr[8];
+    uint32_t irr_level[8], tmr[8];
     bool invalid_vector;
 } aos_x86_apic_t;
 /* One virtual APIC bus tick per invariant host TSC tick. Clock never advances
@@ -25,4 +26,10 @@ bool aos_x86_apic_interrupt_due(const aos_x86_apic_t *a, uint64_t ticks);
  * must separately check CPU interruptibility before accepting that vector. */
 unsigned aos_x86_apic_pending(aos_x86_apic_t *a, uint64_t ticks);
 bool aos_x86_apic_accept(aos_x86_apic_t *a, unsigned vector);
+/* Queue an I/O APIC route only when it addresses this enabled LAPIC.
+ * Returns false without mutation for a missing/disabled destination. */
+bool aos_x86_apic_route(aos_x86_apic_t *a, unsigned vector,
+                       unsigned destination, bool logical, bool level);
+/* Highest in-service level vector, or zero: broadcast its EOI to I/O APIC. */
+unsigned aos_x86_apic_eoi_vector(const aos_x86_apic_t *a);
 #endif

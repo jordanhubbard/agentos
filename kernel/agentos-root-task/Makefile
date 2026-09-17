@@ -199,6 +199,14 @@ $(BUILD_DIR)/x86_memory.o: $(REPO_ROOT_MK)/platform/guest-vmm/x86_memory.c
 	@mkdir -p $(BUILD_DIR)
 	$(CC) -c $(CFLAGS) $< -o $@
 $(BUILD_DIR)/guest_vmm_primary.elf: $(BUILD_DIR)/x86_apic.o $(BUILD_DIR)/x86_memory.o
+$(BUILD_DIR)/x86_ioapic.o: $(REPO_ROOT_MK)/platform/guest-vmm/x86_ioapic.c
+	@mkdir -p $(BUILD_DIR)
+	$(CC) -c $(CFLAGS) $< -o $@
+$(BUILD_DIR)/guest_vmm_primary.elf: $(BUILD_DIR)/x86_ioapic.o
+$(BUILD_DIR)/x86_acpi.o: $(REPO_ROOT_MK)/platform/guest-vmm/x86_acpi.c
+	@mkdir -p $(BUILD_DIR)
+	$(CC) -c $(CFLAGS) $< -o $@
+$(BUILD_DIR)/guest_vmm_primary.elf: $(BUILD_DIR)/x86_acpi.o
 $(BUILD_DIR)/x86_string.o: $(REPO_ROOT_MK)/platform/guest-vmm/x86_string.c
 	@mkdir -p $(BUILD_DIR)
 	$(CC) -c $(CFLAGS) $< -o $@

@@ -743,6 +743,20 @@ test-x86-cpu-host:
 	$(CC) -std=c11 -Wall -Wextra -Werror -I platform/include tests/platform/test_x86_cpu.c platform/guest-vmm/x86_cpu.c -o $(BUILD_TMP_DIR)/test_x86_cpu
 	$(BUILD_TMP_DIR)/test_x86_cpu
 test-host: test-x86-acpi-host
+test-host: test-x86-ioapic-host
+test-host: test-x86-acpi-loader-host
+
+.PHONY: test-x86-acpi-loader-host
+test-x86-acpi-loader-host:
+	@mkdir -p $(BUILD_TMP_DIR)
+	$(CC) -std=c11 -Wall -Wextra -Werror -I platform/include tests/platform/test_x86_acpi_loader.c platform/guest-vmm/x86_acpi.c platform/guest-vmm/x86_config.c platform/guest-vmm/x86_rtc.c -o $(BUILD_TMP_DIR)/test_x86_acpi_loader
+	$(BUILD_TMP_DIR)/test_x86_acpi_loader
+
+.PHONY: test-x86-ioapic-host
+test-x86-ioapic-host:
+	@mkdir -p $(BUILD_TMP_DIR)
+	$(CC) -std=c11 -Wall -Wextra -Werror -I platform/include tests/platform/test_x86_ioapic.c platform/guest-vmm/x86_ioapic.c platform/guest-vmm/x86_apic.c -o $(BUILD_TMP_DIR)/test_x86_ioapic
+	$(BUILD_TMP_DIR)/test_x86_ioapic
 
 .PHONY: test-x86-acpi-host
 test-x86-acpi-host:

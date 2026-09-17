@@ -60,7 +60,32 @@ bool aos_x86_apic_accept(aos_x86_apic_t *a, unsigned vector)
     if (!a || !vector || vector >= 256u || vector != aos_x86_apic_pending(a,a->now)) return false;
     a->irr[vector/32] &= ~(1u << (vector%32));
     a->isr[vector/32] |= 1u << (vector%32);
+    if (a->irr_level[vector/32] & (1u << (vector%32)))
+        a->tmr[vector/32] |= 1u << (vector%32);
+    else a->tmr[vector/32] &= ~(1u << (vector%32));
+    a->irr_level[vector/32] &= ~(1u << (vector%32));
     return true;
+}
+bool aos_x86_apic_route(aos_x86_apic_t *a, unsigned vector,
+                       unsigned destination, bool logical, bool level)
+{
+    if (!a || vector<16u || vector>255u || destination>255u || !(a->svr & 0x100u))
+        return false;
+    unsigned local=a->ldr >> 24;
+    bool target=destination==255u || (logical ?
+        (a->dfr==UINT32_MAX ? (destination & local)!=0 :
+         (destination >> 4)==(local >> 4) && (destination & local & 15u)!=0) :
+        destination==0u);
+    if (!target) return false;
+    a->irr[vector/32] |= 1u << (vector%32);
+    if (level) a->irr_level[vector/32] |= 1u << (vector%32);
+    return true;
+}
+unsigned aos_x86_apic_eoi_vector(const aos_x86_apic_t *a)
+{
+    if (!a) return 0;
+    unsigned vector=highest(a->isr);
+    return a->tmr[vector/32] & (1u << (vector%32)) ? vector : 0;
 }
 bool aos_x86_apic_interrupt_due(const aos_x86_apic_t *a, uint64_t ticks)
 {
@@ -90,7 +115,10 @@ bool aos_x86_apic_io(aos_x86_apic_t *a, unsigned off, bool write,
     case 0xa0: if (write) return false; *value=priority(&next); break;
     case 0xb0:
         if (!write || *value) return false;
-        { unsigned v=highest(next.isr); if (v) next.isr[v/32] &= ~(1u << (v%32)); }
+        { unsigned v=highest(next.isr); if (v) {
+            next.isr[v/32] &= ~(1u << (v%32));
+            next.tmr[v/32] &= ~(1u << (v%32));
+        } }
         break;
     /* Focus checking only affects lowest-priority arbitration, which this
      * single-CPU fixed-delivery profile does not implement. Retain bit9. */
@@ -106,16 +134,9 @@ bool aos_x86_apic_io(aos_x86_apic_t *a, unsigned off, bool write,
         if ((*value & ~0x000c48ffu) || (*value & 0xffu)<16u) return false;
         {
             unsigned shortcut=(*value >> 18)&3u, dest=next.icr_high >> 24;
-            unsigned logical=next.ldr >> 24;
-            bool target=shortcut==1u || shortcut==2u;
-            if (!shortcut) {
-                if (*value & 0x800u)
-                    target=dest==0xffu || (next.dfr==UINT32_MAX ? (dest & logical)!=0u :
-                        (dest >> 4)==(logical >> 4) && (dest & logical & 15u)!=0u);
-                else target=dest==0u || dest==0xffu;
-            }
-            if (target && (next.svr & 0x100u))
-                next.irr[(*value & 0xffu)/32] |= 1u << (*value & 31u);
+            if (shortcut!=3u)
+                (void)aos_x86_apic_route(&next,*value & 255u,
+                    shortcut ? 0u : dest,!shortcut && (*value & 0x800u),false);
             next.icr_low=*value; /* delivery completes synchronously */
         }
         break;
@@ -134,7 +155,7 @@ bool aos_x86_apic_io(aos_x86_apic_t *a, unsigned off, bool write,
     default:
         if (write || (off & 15u)) return false;
         if (off >= 0x100 && off <= 0x170) *value=next.isr[(off-0x100)/16];
-        else if (off >= 0x180 && off <= 0x1f0) *value=0; /* all sources edge-triggered */
+        else if (off >= 0x180 && off <= 0x1f0) *value=next.tmr[(off-0x180)/16];
         else if (off >= 0x200 && off <= 0x270) *value=next.irr[(off-0x200)/16];
         else return false;
         break;
