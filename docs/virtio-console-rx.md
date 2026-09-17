@@ -26,3 +26,7 @@ ownership, index wrap and rejection of mapped queue reconfiguration.
 `make gate` qualifies live guest console input through the canonical service
 path as well as the shared network/block register path. These checks do not
 claim an Intel console composition or complete v0.4 device qualification.
+
+The full Spark gate passed at `50b8930`, including live guest console input.
+The [receipt](evidence/2026-09-17-spark/virtio-console-rx.json) retains exact
+artifact hashes and verification limits.

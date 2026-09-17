@@ -1,0 +1,30 @@
+{
+  "qualification": "Canonical console receive validation and queue ownership",
+  "revision": "50b8930c450bda54370bae663380a6af87107eb7",
+  "command": "make gate SEL4_SDK_VERSION=2.3.0 QEMU_TEST_SSH_PORT=12266",
+  "result": "PASS exit 0: host suite, AArch64 and reduced x86 root boot, live canonical guest net/block/console",
+  "artifact_directory": "build/evidence/console-rx-50b8930",
+  "image_sha256": "b297e47ef1b5c58fa64676982d6acf8ab1441e6e049dbcf9401a38cbdb542951",
+  "libvmm_archive_sha256": "4a98fe0e57707ef3d15cca71759a5eb4942ea35a40902ca0561b45212263504a",
+  "gate_log_sha256": "35ef1ee979d119a7b2a6fa335c40037e3f2618f0bbf7b1e914e361fa9dde17b4",
+  "host_checks": {
+    "commands": "make test-virtio-console-rx-host test-virtio-mmio-core-host (also included in full gate)",
+    "result": "PASS under ASan/UBSan",
+    "coverage": [
+      "Chained writable receive buffers and exact delivered bytes",
+      "Input retained without available guest buffers",
+      "Descriptor metadata and complete buffer spans validated before consumption",
+      "Rejected heads leave their input and completion state unchanged",
+      "Earlier valid completions survive later batch rejection",
+      "Private used-index ownership and 16-bit wrap",
+      "Ready MMIO queue configuration remains immutable",
+      "Split-ring alignment checked before GPA mapping"
+    ]
+  },
+  "limitations": [
+    "Host validation tests do not establish multi-vCPU race qualification",
+    "Intel device composition and canonical Intel service traversal remain outstanding",
+    "Required GitHub checks remain queued; PR integration and full v0.4 acceptance remain outstanding"
+  ],
+  "mac_task": "task_5deadabd98604689b72a97ff3554264d"
+}
