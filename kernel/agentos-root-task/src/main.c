@@ -219,6 +219,11 @@ static seL4_Word g_cap_base;  /* set to bi->empty.start in root_task_main */
  */
 #define PD_DEFAULT_SC_BUDGET_US   10000u
 #define PD_DEFAULT_SC_PERIOD_US   1000000u
+/* Frame transfers repeatedly wake/preempt a service. A one-second period
+ * and minimum refill storage turn those short exchanges into long sleeps.
+ * Keep a finite 10% CPU ceiling with a short replenishment period. */
+#define FRAMEBUFFER_SC_BUDGET_US  1000u
+#define FRAMEBUFFER_SC_PERIOD_US  10000u
 /*
  * Each VMM gets one sched context for the VMM PD and one for the guest vCPU.
  * A 90% budget works for a single guest but overcommits the single-core QEMU
@@ -2119,8 +2124,10 @@ void root_task_main(const seL4_BootInfo *bi)
          */
 #ifdef CONFIG_KERNEL_MCS
         {
+            const bool frame_service=pd->self_svc_id==SVC_ID_FRAMEBUFFER_QUEUE;
+            const seL4_Word sc_bits=seL4_MinSchedContextBits+(frame_service ? 3u : 0u);
             seL4_Error sc_err = ut_alloc(seL4_SchedContextObject,
-                                          seL4_MinSchedContextBits,
+                                          sc_bits,
                                           seL4_CapInitThreadCNode,
                                           PD_SLOT_SC(i),
                                           64u);
@@ -2136,6 +2143,9 @@ void root_task_main(const seL4_BootInfo *bi)
             if (pd_is_guest_vmm(pd)) {
                 sc_budget = VMM_SC_BUDGET_US;
                 sc_period = VMM_SC_PERIOD_US;
+            } else if (frame_service) {
+                sc_budget = FRAMEBUFFER_SC_BUDGET_US;
+                sc_period = FRAMEBUFFER_SC_PERIOD_US;
             }
 
             sc_err = seL4_SchedControl_ConfigureFlags(
@@ -2143,7 +2153,7 @@ void root_task_main(const seL4_BootInfo *bi)
                          (seL4_SchedContext)PD_SLOT_SC(i),
                          sc_budget,
                          sc_period,
-                         0u,           /* extra_refills */
+                         frame_service ? seL4_MaxExtraRefills(sc_bits) : 0u,
                          0u,           /* badge */
                          0u);          /* flags */
             if (sc_err != seL4_NoError) {
