@@ -3237,7 +3237,7 @@ void root_task_main(const seL4_BootInfo *bi)
             if (status == AOS_X86_VTX_PROOF_FAIL && reason == 0x425544u) {
               for (unsigned set=0; set<2; set++) {
                 const seL4_Word *view=snapshot+set*AOS_X86_FIRMWARE_SNAPSHOT_SET_WORDS;
-                dbg_puts(set ? "[rt] firmware last HLT exit\n" :
+                dbg_puts(set ? "[rt] firmware last HLT or PM poll exit\n" :
                                "[rt] firmware budget exit\n");
                 for (unsigned region=0; region<2; region++) {
                     unsigned count=region ? AOS_X86_FIRMWARE_STACK_WORDS :
@@ -3254,8 +3254,7 @@ void root_task_main(const seL4_BootInfo *bi)
               }
               seL4_Word frame=chain[0];
               for (unsigned i=0; i<AOS_X86_FIRMWARE_CHAIN_FRAMES && i<chain[1]; i++) {
-                  dbg_puts(counters[5] ? "[rt] firmware HLT frame " :
-                                        "[rt] firmware budget frame "); dbg_hex(frame);
+                  dbg_puts("[rt] firmware observed frame "); dbg_hex(frame);
                   dbg_puts(" return "); dbg_hex(chain[3+2*i]);
                   dbg_puts(" next "); dbg_hex(chain[2+2*i]); dbg_puts("\n");
                   frame=chain[2+2*i];

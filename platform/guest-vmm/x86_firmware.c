@@ -36,6 +36,7 @@ static seL4_Word timer_exits, injections, eois, timer_shift, tsc_hz, halt_exits;
 static seL4_Word snapshot[AOS_X86_FIRMWARE_SNAPSHOT_WORDS];
 static seL4_Word halt_chain[AOS_X86_FIRMWARE_CHAIN_WORDS];
 static seL4_Word boot_reads[3], last_qualification;
+static bool have_wait_snapshot;
 #ifdef AGENTOS_X86_BOOT_KERNEL
 extern const uint8_t _binary_x86_boot_kernel_bin_start[], _binary_x86_boot_kernel_bin_end[];
 #ifdef AGENTOS_X86_BOOT_INITRD
@@ -240,7 +241,7 @@ void aos_x86_firmware_run(seL4_CPtr ep, seL4_Word result)
              * The processed-exit budget and its failure status are unchanged. */
             if ((read_field(ep,EFER) & LMA) && (read_field(ep,CR0) & PG)) {
                 diagnostic_snapshot(&memory,guest_cr3,rip,read_field(ep,RSP),snapshot);
-                if (!halt_exits) diagnostic_chain(&memory,guest_cr3,regs.ebp);
+                if (!have_wait_snapshot) diagnostic_chain(&memory,guest_cr3,regs.ebp);
             }
             stop(ep,AOS_X86_VTX_PROOF_FAIL,0x425544u,rip,
                  (UINT64_C(65536) << 32) | (uint32_t)reason);
@@ -277,6 +278,7 @@ void aos_x86_firmware_run(seL4_CPtr ep, seL4_Word result)
                 diagnostic_snapshot(&memory,guest_cr3,rip,read_field(ep,RSP),
                     snapshot+AOS_X86_FIRMWARE_SNAPSHOT_SET_WORDS);
                 diagnostic_chain(&memory,guest_cr3,regs.ebp);
+                have_wait_snapshot=true;
             }
             /* Retain architectural halt until an eligible interrupt arrives.
              * VMX's preemption timer still wakes this VMM from halted state. */
@@ -387,6 +389,16 @@ void aos_x86_firmware_run(seL4_CPtr ep, seL4_Word result)
             }
             /* PM timer reads require a known clock; other ports do not. */
             uint16_t pm_base = ((uint16_t)config.pm[0x41] << 8) | (config.pm[0x40] & 0xc0u);
+            /* A terminal interrupt may hide the caller of a firmware delay.
+             * Before the first HLT, retain the PM polling site's own stack. */
+            if (!halt_exits && pm_base && port==(uint32_t)pm_base+8u &&
+                width==4u && !write && (read_field(ep,EFER) & LMA) &&
+                (read_field(ep,CR0) & PG)) {
+                diagnostic_snapshot(&memory,guest_cr3,rip,read_field(ep,RSP),
+                    snapshot+AOS_X86_FIRMWARE_SNAPSHOT_SET_WORDS);
+                diagnostic_chain(&memory,guest_cr3,regs.ebp);
+                have_wait_snapshot=true;
+            }
             if (!hz && pm_base && port == (uint32_t)pm_base + 8u)
                 stop(ep, AOS_X86_VTX_PROOF_FAIL, 0x434c4bu, rip, port);
             if (!aos_x86_config_io(&config, port, width, write, &value, ticks)) {
