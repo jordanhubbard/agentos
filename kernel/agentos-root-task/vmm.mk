@@ -60,6 +60,10 @@ VMM_CFLAGS := \
     -MD -MP \
     -target aarch64-none-elf
 
+ifdef GUEST_RAM_RECYCLE_TEST
+VMM_CFLAGS += -DAGENTOS_GUEST_RAM_RECYCLE_TEST=1
+endif
+
 ifneq ($(filter dual-primary dual-secondary,$(GUEST_PLACEMENT)),)
 VMM_CFLAGS += -DAGENTOS_GUEST_DUAL=1
 endif

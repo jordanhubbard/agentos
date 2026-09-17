@@ -442,7 +442,7 @@ void pd_main(seL4_CPtr my_ep, seL4_CPtr ns_ep) { guest_vmm_main(my_ep, ns_ep); }
  *
  * VMM_TCB/VCPU slots intentionally keep the old Microkit offsets because
  * they are high enough to avoid service caps and IRQ caps in guest_vmm's
- * 1024-slot CNode, while letting libvmm keep a simple fixed-cap model.
+ * CNode, while letting libvmm keep a simple fixed-cap model.
  */
 #define AGENTOS_IRQ_CAP_BASE     64u
 #define AGENTOS_VMM_TCB_CAP_BASE AOS_GUEST_TCB_CAP_BASE
@@ -1291,6 +1291,15 @@ void init(void)
     vmm_register_vcpu(GUEST_BOOT_VCPU_ID,
                       AGENTOS_VMM_VCPU_CAP_BASE + GUEST_BOOT_VCPU_ID,
                       AGENTOS_VMM_TCB_CAP_BASE  + GUEST_BOOT_VCPU_ID);
+
+#ifdef AGENTOS_GUEST_RAM_RECYCLE_TEST
+    if (!aos_vmm_guest_ram_recycle_test(g_guest_profile->guest_gpa_base,
+            guest_ram_vaddr, g_guest_profile->ram_size)) {
+        LOG_VMM_ERR("guest RAM recycle: FAIL\n");
+        return;
+    }
+    microkit_dbg_puts("guest RAM recycle: PASS two full overwrite/revoke/rebuild/zero cycles\n");
+#endif
 
     /* Place guest images in RAM */
     size_t kernel_size = _guest_kernel_image_end - _guest_kernel_image;

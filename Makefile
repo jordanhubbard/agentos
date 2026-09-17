@@ -899,6 +899,10 @@ test-block-isolation:
 	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os freebsd --timeout-secs $(QEMU_TEST_TIMEOUT) --block-isolation-probe 7
 	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os freebsd --timeout-secs $(QEMU_TEST_TIMEOUT) --block-isolation-probe 8
 
+.PHONY: test-guest-ram-recycle
+test-guest-ram-recycle:
+	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os buildroot --timeout-secs $(QEMU_TEST_TIMEOUT) --assert-emulated-blk --assert-guest-ram-recycle --ssh-port $(QEMU_TEST_SSH_PORT)
+
 test-guest-blk:
 	@if [ "$(BOARD)" != "qemu_virt_aarch64" ]; then \
 		echo "test-guest-blk requires BOARD=qemu_virt_aarch64 (got BOARD=$(BOARD))"; \

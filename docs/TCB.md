@@ -11,6 +11,24 @@ manifest and the gate agree with it.
 
 ## Privilege
 
+AArch64 guest RAM is allocated from dedicated 2 MiB child untyped pools.
+Root installs the initial guest/VMM mappings, then moves each pool's sole
+capability to its owning VMM. That VMM also receives its own CNode and the
+two VSpaces needed to rebuild these mappings; it receives no peer VMM's
+pool, CNode or VSpace. Revocation removes the guest frame descendants,
+including root's initial mapping capabilities. Root remains a boot-only
+allocator and does not service later reclamation requests.
+
+The release/rebuild helpers require stopped vCPUs and drained device
+references. Production lifecycle callbacks are not yet connected to them.
+`make test-guest-ram-recycle` exercises two preboot overwrite/revoke/retype
+cycles, complete zero verification, stale capability rejection and guest
+block I/O. This test is not a claim of live destroy/recreate, execution-object
+reclamation, or peer continuity. The recycle test and full OS gate passed
+on Spark at `3581a277c598d49dce922ebd08ea29bc59722ae5`; the
+[qualification receipt](evidence/2026-09-16-spark/guest-ram-recycle.json)
+records the source, image and log hashes.
+
 | Level | What runs | Notes |
 |-------|-----------|--------|
 | EL2 / seL4 | seL4 microkernel only | Never modified. Caps, IPC, scheduling, VMX/VHE. |
