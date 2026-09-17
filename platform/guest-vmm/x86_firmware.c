@@ -234,8 +234,12 @@ void aos_x86_firmware_run(seL4_CPtr ep, seL4_Word result)
             uint16_t pm_base = ((uint16_t)config.pm[0x41] << 8) | (config.pm[0x40] & 0xc0u);
             if (!hz && pm_base && port == (uint32_t)pm_base + 8u)
                 stop(ep, AOS_X86_VTX_PROOF_FAIL, 0x434c4bu, rip, port);
-            if (!aos_x86_config_io(&config, port, width, write, &value, ticks))
+            if (!aos_x86_config_io(&config, port, width, write, &value, ticks)) {
+                if (port == 0x71u)
+                    stop(ep, AOS_X86_VTX_PROOF_FAIL, 0x434d4fu, rip,
+                         ((uint64_t)config.cmos_index << 32) | value);
                 stop(ep, AOS_X86_VTX_PROOF_FAIL, reason, read_field(ep, CS_BASE) + rip, qual);
+            }
             if (!write) {
                 if (width == 4u) regs.eax = value;
                 else {

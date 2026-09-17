@@ -111,6 +111,8 @@ bool aos_x86_config_io(aos_x86_config_t *s, uint16_t port, unsigned width,
     if (port == 0x70u && width == 1u && write) {
         s->cmos_index = (uint8_t)*value & 0x7fu; return true;
     }
+    if (port == 0x71u && width == 1u && write && s->cmos_index == 0x0fu)
+        return (*value & 0xffu) == 0; /* acknowledge cold boot; no S3 resume */
     if (port == 0x71u && width == 1u && !write) {
         uint32_t above16 = (s->ram_bytes - 0x1000000u) >> 16;
         if (s->cmos_index == 0x0fu) *value = 0; /* cold boot; no S3 resume state */
