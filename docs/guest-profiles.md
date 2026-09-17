@@ -44,7 +44,7 @@ consumes `host.test`. Neither path chooses single-guest machine, memory, media,
 SSH, console, or VirtIO proof policy by distribution name. Runtime acquisition
 supports a closed set of semantic operations (HTTPS staging, archive/ISO
 extraction, SHA-512 verification, qcow2-to-raw conversion, bounded GPT
-partition extraction, ext4 file extraction, arm64 image normalization,
+partition extraction, ext4 file extraction/configuration, arm64 image normalization,
 deterministic probe-initramfs construction, and confined initramfs file
 overlays). Unknown actions and arguments fail closed. The build executor
 renders a bounded FDT template, hashes all staged artifacts, and emits a
@@ -53,6 +53,22 @@ and `profile.bin`. `vmm.mk` packages only that bundle and has no
 distribution-specific artifact or DTB branches. The VMM validates the fixed
 wire representation and checks embedded artifact sizes before the
 guest-neutral boot executor copies anything into guest RAM.
+
+`install-gpt-ext4-file` installs one root-owned 0644 configuration file
+(1–65536 bytes) into an ext4 partition of a private GPT disk copy. Its arguments
+are `source`, `output`, `index`, `path`, `content`, and optional `sector_size`
+(512 or 4096). The Rust executor verifies the installed bytes before publishing
+the output and leaves the base disk unchanged. A matching cached recipe keeps
+the existing writable output, including guest changes. A different recipe or
+base image requires a new output path; preparation refuses to replace an
+existing configured disk. The host needs e2fsprogs `debugfs`.
+
+The Debian profile uses this operation to install an SSH service drop-in. Since
+cloud-init is disabled, the guest runs its native `ssh-keygen -A` before the
+normal `sshd -t` check. Existing keys are retained; no private key is baked into
+the acquired image, and authentication policy is unchanged. The `.configured.raw`
+disk is the writable boot medium; the dated `.raw` disk remains the base for
+artifact extraction. Test-harness SSH provisioning remains a separate operation.
 
 Legacy `--guest-os` and `GUEST_OS` spellings remain compatibility selectors.
 For a single guest, the value is resolved through the profile's `aliases`
