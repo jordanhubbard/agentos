@@ -39,7 +39,10 @@ int main(void)
     reject(&r,0xb,true,0x22,86400*h); /* AIE */
     reject(&r,0xb,true,0x12,86400*h); /* UIE */
     reject(&r,0xb,true,0x0a,86400*h); /* square wave */
-    reject(&r,0xc,true,0,86400*h);
+    io(&r,0xc,true,0,86400*h); /* read-only register writes are ignored */
+    assert(io(&r,0xc,false,0,86400*h)==0x50);
+    io(&r,0xd,true,0,86400*h);
+    assert(io(&r,0xd,false,0,86400*h)==0x80);
 
     init(&r);
     io(&r,0xb,true,0x82,0); /* SET, BCD */

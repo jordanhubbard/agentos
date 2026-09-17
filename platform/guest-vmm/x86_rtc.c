@@ -122,8 +122,11 @@ bool aos_x86_rtc_io(aos_x86_rtc_t *r, unsigned reg, bool write,
             }
             next.b=v;
         } else result=next.b;
-    } else if (reg==0xc && !write) { result=next.flags; next.flags=0; }
-    else if (reg==0xd && !write) result=0x80;
+    } else if (reg==0xc) {
+        if (!write) { result=next.flags; next.flags=0; }
+    } else if (reg==0xd) {
+        if (!write) result=0x80;
+    }
     else return false;
     *r=next; *value=result;
     return true;
