@@ -153,7 +153,10 @@ void aos_x86_firmware_run(seL4_CPtr ep, seL4_Word result)
              * guessed from a CPU model or read with a privileged instruction. */
             seL4_X86_VCPU_ReadMSR_t misc=seL4_X86_VCPU_ReadMSR(VCPU,0x485u);
             uint64_t tick=UINT64_C(1) << (misc.value & 31u);
-            if (misc.error || !hz || tick > hz/1000u || !(misc.value & (1u << 6)))
+            if (!hz)
+                stop(ep,AOS_X86_VTX_PROOF_FAIL,0x434c4bu,rip,
+                     ((uint64_t)clock.ecx << 32) | ((clock.eax & 0xffffu) << 16) | (clock.ebx & 0xffffu));
+            if (misc.error || tick > hz/1000u || !(misc.value & (1u << 6)))
                 stop(ep,AOS_X86_VTX_PROOF_FAIL,0x54494du,rip,misc.error ? (uint64_t)misc.error : misc.value);
             timer_quantum=(uint32_t)((hz/1000u+tick-1u)/tick);
             write_field(ep,PIN_CONTROLS,read_field(ep,PIN_CONTROLS) | (1u << 6));
