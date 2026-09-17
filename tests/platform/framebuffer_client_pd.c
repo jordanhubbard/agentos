@@ -62,6 +62,18 @@ void pd_main(seL4_CPtr endpoint, seL4_CPtr nameserver)
     if (call((aos_fb_request_t){ .operation = AOS_FB_DESTROY,
                                 .handle = handle }).status != AOS_FB_OK) fail();
     if (call(pixels).status != AOS_FB_BAD_HANDLE) fail();
+    /* Leave an independent selected frame for CC's external observer proof.
+     * It spans multiple CC replies and remains private to this service slot. */
+    p = call((aos_fb_request_t){ .operation=AOS_FB_CREATE, .width=40, .height=40 });
+    if (p.status != AOS_FB_OK || !p.handle || p.handle == handle) fail();
+    handle = p.handle;
+    for (unsigned i = 0; i < 40u * 40u * 4u; ++i)
+        region->data[i] = (uint8_t)(i * 37u + FB_TEST_CLIENT * 83u);
+    if (call((aos_fb_request_t){ .operation=AOS_FB_WRITE, .handle=handle,
+            .width=40, .height=40, .data_length=40u*40u*4u }).status != AOS_FB_OK) fail();
+    if (call((aos_fb_request_t){ .operation=AOS_FB_FLIP, .handle=handle }).status != AOS_FB_OK) fail();
+    if (call((aos_fb_request_t){ .operation=AOS_FB_SELECT, .handle=handle,
+            .width=40, .height=40 }).status != AOS_FB_OK) fail();
 #if FB_TEST_CLIENT == 0
     report("[framebuffer] PASS: client 0 create/write/flip/status/read/destroy exact pixels\n");
 #else

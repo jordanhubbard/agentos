@@ -1,0 +1,86 @@
+{
+  "schema": "agentos.manual-qualification.v1",
+  "source_revision": "3b00d93204c00f12b377171002e6f60e4d61cb89",
+  "host": "sparky",
+  "board": "qemu_virt_aarch64",
+  "command": "make test-framebuffer-isolation QEMU_TEST_TIMEOUT=120",
+  "result": "pass",
+  "cases": 16,
+  "proven": [
+    "Both native clients export exact 40x40 RGB frames through CC in multiple chunks",
+    "CC rejects unknown handles and externally supplied raw client slots",
+    "Root verifies each client's read/write faults on peer queue, private surface arena, observer queue and private snapshot arena"
+  ],
+  "not_proven": [
+    "Linux guest DRM/input or guest frame capture",
+    "Physical display scanout",
+    "Final v0.4 release revision qualification"
+  ],
+  "retained_local_directory": "/tmp/agentos-v04-observer-proof/build/evidence/framebuffer-isolation",
+  "images": [
+    {
+      "mode": 1,
+      "sha256": "ab8419880c1c4627432ed5dbb3356701666ddfc5ea04bc5a8c5369f33056dd69"
+    },
+    {
+      "mode": 2,
+      "sha256": "07bd58e40db0ffabcbb65b095b11a5a86ba4e9ae2e540438aa33080c8e15dc4d"
+    },
+    {
+      "mode": 3,
+      "sha256": "230291cef0fa1223f82d9d7663cd6aa272734828076e0de4815999d86d9a3e5f"
+    },
+    {
+      "mode": 4,
+      "sha256": "75785cc44d5af467cc0c9d8723553030f26cf76a0dce42abec23060ba03853e0"
+    },
+    {
+      "mode": 5,
+      "sha256": "d7b1497c2e7910647acc495ed71d4714976fcb66c191f02a5525b57d94044074"
+    },
+    {
+      "mode": 6,
+      "sha256": "d404cb6493dd294c97f432e5d984690af050fbd3f5120b054c80df668f64a9f7"
+    },
+    {
+      "mode": 7,
+      "sha256": "4be64336a7c8dd3bd46bec42ad9ef3ecf5766453600253f2d94f388d7dcb8fe7"
+    },
+    {
+      "mode": 8,
+      "sha256": "26aa6e86ff37959bea3a2393869bd6544f73c5a7d8970fe27a62cfd0ef11a02a"
+    },
+    {
+      "mode": 9,
+      "sha256": "ac33ac67739e9d0acb445403dc0b496c3f67800ec07f8a1184cad56329075bfb"
+    },
+    {
+      "mode": 10,
+      "sha256": "234bf666de6d2156203ba18f11b4a8d443b22a6fe83fd177f6bf663b8c40d5ea"
+    },
+    {
+      "mode": 11,
+      "sha256": "fd0573cfac38ff78077903d9c4aad288d0ac527ea8a665491d073a2f5495e72c"
+    },
+    {
+      "mode": 12,
+      "sha256": "f094f5274e55f0215d1179005ad05b61c6eb083935780c86d8d1cd49cd6df336"
+    },
+    {
+      "mode": 13,
+      "sha256": "bc3fdcb3fbfa3daae3ebedf053ffa0bd8cf0b6f7091fd602450cf3a909ba2e01"
+    },
+    {
+      "mode": 14,
+      "sha256": "a77ed0c1d41d1689459c47285970cc982cc1489d61eed30cd5adc30a23ac488e"
+    },
+    {
+      "mode": 15,
+      "sha256": "d3b872b243fbc72090d8316c82a04ec070ac3758bdd7a268a125e5fa818641fe"
+    },
+    {
+      "mode": 16,
+      "sha256": "d7c6293d53c91283d2775e185551b76beb504220d6b240d12e65041c7806fc1c"
+    }
+  ]
+}

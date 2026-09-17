@@ -72,7 +72,7 @@
  * the existing privileged CC transport, not a per-client credential system. */
 
 /* ─── Channel IDs ────────────────────────────────────────────────────────── */
-/* MSG_CC_FRAME_CAPTURE, graphics images only:
+/* MSG_CC_FRAME_CAPTURE, graphics images (and focused framebuffer tests) only:
  * MR1=public guest handle for CAPTURE, otherwise zero; MR2=MR3=0.
  * Shmem contains aos_fb_observer_request_t (framebuffer_observer.h), with
  * version=1, operation=CAPTURE/READ/RELEASE, id=client=0. CC resolves the guest
@@ -87,7 +87,10 @@
  * invalidates its cookie. Cookies do not confer any surface-write authority.
  * This is one serialized stream over the existing privileged CC transport.
  * No graphics service: CC_ERR_RELAY_FAULT. Invalid/dead handles:
- * CC_ERR_BAD_HANDLE. Other wire errors: CC_ERR_INVALID_ARG. */
+ * CC_ERR_BAD_HANDLE. Other wire errors: CC_ERR_INVALID_ARG.
+ * The GUEST_OS=none focused framebuffer test image alone substitutes native
+ * handles 0xfb000000 and 0xfb000001 for guest resolution. Production images
+ * never recognize these as native handles. */
 
 #define CC_PD_CH_CONTROLLER  CH_CC_PD
 

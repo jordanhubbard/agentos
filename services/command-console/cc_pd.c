@@ -1645,9 +1645,18 @@ static void handle_frame_capture(const cc_req_wire_t *req, cc_reply_wire_t *rep)
         rep->mr[0] = CC_ERR_INVALID_ARG;
         return;
     }
-#ifdef AGENTOS_GUEST_GRAPHICS
+#if defined(AGENTOS_GUEST_GRAPHICS) || defined(AGENTOS_FRAMEBUFFER_TEST)
     if (query.operation == AOS_FB_CAPTURE) {
         uint32_t handle = req->mr[0];
+#ifdef AGENTOS_FRAMEBUFFER_TEST
+        /* Native producers in the focused test image only. Never interpreted
+         * as guest handles, and compiled out of every production variant. */
+        if (handle < 0xfb000000u || handle >= 0xfb000000u + AOS_FB_CLIENTS) {
+            rep->mr[0] = CC_ERR_BAD_HANDLE;
+            return;
+        }
+        query.client = handle - 0xfb000000u;
+#else
         if (handle == CC_BOOT_GUEST_HANDLE) {
             if (!g_boot_guest_present || g_boot_guest_state == GUEST_STATE_DEAD) {
                 rep->mr[0] = CC_ERR_BAD_HANDLE;
@@ -1668,6 +1677,7 @@ static void handle_frame_capture(const cc_req_wire_t *req, cc_reply_wire_t *rep)
             }
             query.client = entry->slot;
         }
+#endif
     }
     static uint32_t next_id;
     query.id = ++next_id;

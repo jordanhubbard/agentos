@@ -53,6 +53,15 @@ observer service over CC frames: exact RGB conversion across chunks, snapshot
 stability after live pixels change, malformed replies and existing-file
 preservation. These host results do not substitute for the guest test.
 
+The focused `make test-framebuffer` image also exports exact 40 by 40 images
+from both native clients through the real observer service and CC transport.
+Only this test image recognizes native capture handles `0xfb000000` and
+`0xfb000001`; ordinary guest handles are rejected in that image. The isolation
+matrix additionally probes both native clients' read/write access to the
+observer page and private snapshot arena. The focused capture test passed on
+Spark, as did all sixteen mapping-isolation cases at `3b00d93`. This native proof does
+not establish guest DRM or physical scanout.
+
 `virtio_gpu_control_run` and `virtio_gpu_cursor_run` consume direct split
 virtqueues. They snapshot descriptors, bound chains and request sizes, require
 read buffers before write buffers, and validate writable response space before
