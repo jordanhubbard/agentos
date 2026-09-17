@@ -2781,6 +2781,8 @@ fn verify_native_frame_observer(
 fn capture_guest_frame(cc: &mut CcClient, handle: u32, socket: &Path) -> anyhow::Result<String> {
     const OPCODE: u32 = 0x261d;
     const HEADER: usize = 40;
+    let started = Instant::now();
+    println!("[xtask:test] requesting guest framebuffer snapshot for handle {handle}");
     let mut request = [0u8; 32];
     wr32(&mut request, 0, 1);
     wr32(&mut request, 4, 1); // CAPTURE
@@ -2793,7 +2795,9 @@ fn capture_guest_frame(cc: &mut CcClient, handle: u32, socket: &Path) -> anyhow:
     request[16..24].copy_from_slice(&cookie.to_le_bytes());
     let captured = (|| -> anyhow::Result<Vec<u8>> {
         let bytes = width as usize * height as usize * 4;
+        println!("[xtask:test] reading immutable framebuffer: {width}x{height}, sequence={sequence}, bytes={bytes}");
         let mut pixels = Vec::with_capacity(bytes);
+        let mut next_report = 0x40000;
         wr32(&mut request, 4, 2); // READ
         while pixels.len() < bytes {
             let length = (bytes - pixels.len()).min(CC_WIRE_SHMEM_SIZE - HEADER);
@@ -2805,6 +2809,14 @@ fn capture_guest_frame(cc: &mut CcClient, handle: u32, socket: &Path) -> anyhow:
                 "frame snapshot changed during chunked read"
             );
             pixels.extend_from_slice(&reply.shmem[HEADER..HEADER + length]);
+            if pixels.len() >= next_report || pixels.len() == bytes {
+                println!(
+                    "[xtask:test] framebuffer capture: {}/{bytes} bytes in {}s",
+                    pixels.len(),
+                    started.elapsed().as_secs()
+                );
+                next_report = pixels.len() + 0x40000;
+            }
         }
         anyhow::ensure!(
             pixels
@@ -3062,6 +3074,7 @@ fn verify_guest_console_input(
         .map(|(probe, marker)| (probe.as_str(), marker.as_str(), true))
         .unwrap_or(("~", "~", false));
     if line_mode {
+        println!("[xtask:test] sending console probe ({} bytes)", probe.len());
         cc_send_console_line(cc, guest_handle, probe.as_bytes())?;
     } else {
         cc_send_raw_bytes(cc, guest_handle, probe.as_bytes())?;
@@ -3069,6 +3082,8 @@ fn verify_guest_console_input(
 
     let mut echo = String::new();
     let start = Instant::now();
+    let mut last_report = start;
+    println!("[xtask:test] console probe sent; waiting for marker {marker:?}");
     while start.elapsed() < timeout {
         ensure_qemu_running(qemu, "waiting for guest console input echo via CC-PD API")?;
         let chunk = match cc_log_stream_for_handle(cc, guest_handle, profile) {
@@ -3089,6 +3104,15 @@ fn verify_guest_console_input(
                 }
                 return Ok(format!("guest completed console probe {marker:?}"));
             }
+        }
+        if last_report.elapsed() >= Duration::from_secs(30) {
+            println!(
+                "[xtask:test] console probe waiting {}s; received {} bytes; tail:\n{}",
+                start.elapsed().as_secs(),
+                echo.len(),
+                tail_chars(&echo, 800)
+            );
+            last_report = Instant::now();
         }
         std::thread::sleep(Duration::from_millis(500));
     }
