@@ -12,6 +12,7 @@
 #define AOS_X86_VTX_PROOF_LABEL       0x5856u /* "XV" */
 #define AOS_X86_VTX_PROOF_PASS         1u
 #define AOS_X86_VTX_PROOF_FAIL         2u
+#define AOS_X86_VTX_MODES_PASS         3u
 #define AOS_X86_VTX_GUEST_RIP       0x1000u
 #define AOS_X86_VTX_GUEST_PML4_GPA  0x2000u
 #define AOS_X86_VTX_GUEST_PDPT_GPA  0x3000u

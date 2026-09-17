@@ -125,6 +125,10 @@ ROOT_TASK_OBJS += $(BUILD_DIR)/rt_inspect_snapshot.o
 ifeq ($(AGENTOS_BOARD),x86_64_generic_vtx)
   CFLAGS += -DAGENTOS_X86_VTX=1
   CFLAGS_ROOT_TASK += -DAGENTOS_X86_VTX=1
+  ifeq ($(X86_FIRMWARE_MODES),1)
+    CFLAGS += -DAGENTOS_X86_FIRMWARE_MODES=1
+    CFLAGS_ROOT_TASK += -DAGENTOS_X86_FIRMWARE_MODES=1
+  endif
 endif
 
 $(BUILD_DIR)/rt_inspect_snapshot.o: $(REPO_ROOT_MK)/platform/inspect/inspect_snapshot.c
@@ -1020,7 +1024,7 @@ endif
 # only the narrow VMX/EPT HLT-exit proof, not a general guest VMM.
 ifeq ($(ARCH),x86_64)
 ifeq ($(AGENTOS_BOARD),x86_64_generic_vtx)
-$(BUILD_DIR)/guest_vmm_primary.o: $(REPO_ROOT_MK)/platform/guest-vmm/x86_vtx_proof.c
+$(BUILD_DIR)/guest_vmm_primary.o: $(REPO_ROOT_MK)/platform/guest-vmm/x86_vtx_proof.c $(GUEST_CONFIG_STAMP)
 	@mkdir -p $(BUILD_DIR)
 	$(CC) -c $(CFLAGS) -DARCH_X86_64 $< -o $@
 else

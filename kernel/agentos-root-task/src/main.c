@@ -3123,11 +3123,19 @@ void root_task_main(const seL4_BootInfo *bi)
         seL4_Word instruction_len = seL4_GetMR(3);
         if (seL4_MessageInfo_get_label(tag) == AOS_X86_VTX_PROOF_LABEL &&
             seL4_MessageInfo_get_length(tag) == 4u &&
+#ifdef AGENTOS_X86_FIRMWARE_MODES
+            status == AOS_X86_VTX_MODES_PASS &&
+#else
             status == AOS_X86_VTX_PROOF_PASS &&
+#endif
             (reason & 0xffffu) == AOS_X86_VTX_HLT_EXIT_REASON &&
             rip == AOS_X86_VTX_GUEST_RIP &&
             instruction_len == AOS_X86_VTX_HLT_INSTRUCTION_LEN) {
+#ifdef AGENTOS_X86_FIRMWARE_MODES
+            dbg_puts("[rt] x86 VMX real protected long entry modes verified\n");
+#else
             dbg_puts("[rt] x86 VMX EPT HLT exit verified\n");
+#endif
         } else {
             dbg_puts("[rt] x86 VMX EPT proof FAILED status=");
             dbg_hex(status);

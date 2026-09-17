@@ -127,6 +127,9 @@ pub struct TestArgs {
     /// Require the dedicated x86 VMX/EPT one-instruction HLT-exit proof.
     #[arg(long)]
     pub assert_vmx_exit: bool,
+    /// Also require real-address and unpaged protected VM-entry qualification.
+    #[arg(long, requires = "assert_vmx_exit")]
+    pub assert_firmware_modes: bool,
     /// Start the profile-defined desktop and verify one raw RFB frame
     /// through a key-authenticated SSH tunnel.
     #[arg(long)]
