@@ -1815,7 +1815,9 @@ pub(crate) fn spawn_qemu_with_guest(
                 .arg("q35")
                 .arg("-enable-kvm")
                 .arg("-cpu")
-                .arg("host")
+                // Qualification runs on this host and is never migrated.
+                // Keep invariant TSC visible for the VMM's virtual timers.
+                .arg("host,migratable=off")
                 .arg("-m")
                 .arg("2G")
                 .arg("-display")
@@ -2192,7 +2194,7 @@ fn wait_for_x86_vtx_proof(
     firmware_reset: bool,
 ) -> anyhow::Result<String> {
     let expected = if firmware_reset {
-        "[rt] x86 OVMF long-mode I/O exit verified"
+        "[rt] x86 OVMF PCI configuration and fw_cfg string exit verified"
     } else if firmware_modes {
         "[rt] x86 VMX real protected long entry modes verified"
     } else {

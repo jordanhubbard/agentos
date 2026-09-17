@@ -1355,7 +1355,8 @@ extern const uint8_t _binary_x86_firmware_bin_start[];
 extern const uint8_t _binary_x86_firmware_bin_end[];
 
 static seL4_Error setup_x86_firmware(const pd_desc_t *pd, uint32_t pd_index,
-                                    seL4_CPtr pd_cnode, seL4_CPtr vmm_tcb)
+                                    seL4_CPtr pd_cnode, seL4_CPtr vmm_tcb,
+                                    seL4_CPtr vmm_vspace)
 {
     if (!pd_is_guest_vmm(pd) || pd->self_svc_id != SVC_ID_GUEST_VMM_PRIMARY ||
         pd->cnode_size_bits < 10u ||
@@ -1405,6 +1406,18 @@ static seL4_Error setup_x86_firmware(const pd_desc_t *pd, uint32_t pd_index,
         AGENTOS_MEMORY_FENCE();
         err = seL4_X86_Page_Unmap(frame);
         if (err != seL4_NoError) return err;
+        /* VMM may inspect its own RAM/page tables and read-only ROM when
+         * decoding an emulated MMIO access. It gets no host-device mapping. */
+        seL4_CPtr copy = ut_alloc_slot();
+        if (copy == seL4_CapNull) return seL4_NotEnoughMemory;
+        err = seL4_CNode_Copy(seL4_CapInitThreadCNode, copy, 64u,
+                              seL4_CapInitThreadCNode, frame, 64u,
+                              seL4_CapRights_new(0u, 0u, 1u, 0u));
+        if (err != seL4_NoError) return err;
+        (void)cap_acct_record(frame, copy, seL4_X86_LargePageObject, pd_index, pd->name);
+        err = pd_vspace_map_device_frame(vmm_vspace, copy,
+                rom ? AOS_X86_FIRMWARE_ROM_VA + rom_offset : AOS_X86_FIRMWARE_RAM_VA + offset);
+        if (err != seL4_NoError) return err;
         err = seL4_X86_Page_MapEPT(frame, objects[1], gpa,
                                    rom ? seL4_CapRights_new(0u, 0u, 1u, 0u) : seL4_AllRights, attr);
         if (err != seL4_NoError) return err;
@@ -1424,10 +1437,11 @@ static seL4_Error setup_x86_firmware(const pd_desc_t *pd, uint32_t pd_index,
 #endif
 
 static seL4_Error setup_x86_vtx_proof(const pd_desc_t *pd, uint32_t pd_index,
-                                      seL4_CPtr pd_cnode, seL4_CPtr vmm_tcb)
+                                      seL4_CPtr pd_cnode, seL4_CPtr vmm_tcb,
+                                      seL4_CPtr vmm_vspace)
 {
 #ifdef AGENTOS_X86_FIRMWARE_RESET
-    return setup_x86_firmware(pd, pd_index, pd_cnode, vmm_tcb);
+    return setup_x86_firmware(pd, pd_index, pd_cnode, vmm_tcb, vmm_vspace);
 #endif
     seL4_CPtr vcpu = seL4_CapNull;
     seL4_CPtr ept_pml4 = seL4_CapNull;
@@ -3049,7 +3063,7 @@ void root_task_main(const seL4_BootInfo *bi)
 #if defined(__x86_64__) && defined(AGENTOS_X86_VTX)
         if (pd_is_guest_vmm(pd)) {
             seL4_Error vm_err = setup_x86_vtx_proof(pd, i, pd_cnode,
-                                                     tr.tcb_cap);
+                                                     tr.tcb_cap, vspace);
             if (vm_err != seL4_NoError) {
                 dbg_puts("[rt] x86 VMX EPT proof provisioning FAILED err=");
                 dbg_hex((seL4_Word)vm_err);
@@ -3200,9 +3214,10 @@ void root_task_main(const seL4_BootInfo *bi)
         if (seL4_MessageInfo_get_label(tag) == AOS_X86_VTX_PROOF_LABEL &&
             seL4_MessageInfo_get_length(tag) == 4u &&
 #ifdef AGENTOS_X86_FIRMWARE_RESET
-            status == AOS_X86_VTX_FIRMWARE_LONG &&
-            reason == 30u && rip <= 0xffffffffu) {
-            dbg_puts("[rt] x86 OVMF long-mode I/O exit verified\n");
+            status == AOS_X86_VTX_FIRMWARE_CONFIG &&
+            reason == 30u && rip <= 0xffffffffu &&
+            (instruction_len >> 16) == 0x511u && (instruction_len & (1u << 4))) {
+            dbg_puts("[rt] x86 OVMF PCI configuration and fw_cfg string exit verified\n");
             dbg_puts("[rt] firmware exit reason="); dbg_hex(reason);
             dbg_puts(" linear RIP="); dbg_hex(rip);
             dbg_puts(" qualification="); dbg_hex(instruction_len); dbg_puts("\n");

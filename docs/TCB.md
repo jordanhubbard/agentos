@@ -362,10 +362,13 @@ guest-memory authority remain the same as the narrow VTX proof above.
 The optional [OVMF reset variant](x86-firmware.md) replaces the five-page
 payload with 32 MiB private RAM and 4 MiB read-only firmware. Root initializes
 these frames through temporary mappings, installs EPT mappings and provides
-the single VMM's VCPU cap. No device frames, IRQs or host I/O capabilities
-are added. The current gate proves the firmware's reset-to-long-mode
-path up to a PCI configuration I/O exit; it does not prove UEFI boot, Linux, runtime resource
-management or persistent firmware variables.
+the single VMM's VCPU cap and read-only aliases of its own RAM and ROM for
+bounded page-table walks and MMIO instruction decoding. No device frames,
+IRQs or host I/O capabilities are added. The VMM emulates private PCI
+configuration, scalar firmware-data ports, and bootstrap xAPIC timer state.
+PIC unmasking, APIC interrupt delivery and unsupported device accesses stop
+explicitly. This remains firmware bring-up; it does not prove UEFI boot,
+Linux, runtime resource management or persistent firmware variables.
 
 ### Read-only boot inspection
 
