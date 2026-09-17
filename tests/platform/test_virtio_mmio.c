@@ -13,8 +13,13 @@ void fault_emulate_write(seL4_UserContext *r,size_t offset,size_t fsr,size_t val
 { (void)offset;(void)fsr;r->x0=value; }
 bool fault_register_vm_exception_handler(uintptr_t base,size_t size,vm_exception_handler_t cb,void *data)
 { (void)base;(void)size;(void)cb;(void)data;return true; }
+static virq_ack_fn_t registered_ack;
+static void *registered_cookie;
+static unsigned injected;
 bool virq_register(size_t cpu,size_t irq,virq_ack_fn_t ack,void *data)
-{ (void)cpu;(void)irq;(void)ack;(void)data;return true; }
+{ (void)cpu;(void)irq;registered_ack=ack;registered_cookie=data;return true; }
+bool virq_inject_vcpu(size_t cpu,int irq)
+{ assert(cpu==0 && irq==54);++injected;return true; }
 bool virtio_queue_map_guest_rings(struct virtq *q) { (void)q;return true; }
 static uint32_t config_offset,config_value;
 static bool set_config(virtio_device_t *d,uint32_t offset,uint32_t value)
@@ -41,6 +46,29 @@ int main(void)
     regs.x0=2;
     assert(virtio_mmio_fault_handle(0,REG_VIRTIO_MMIO_QUEUE_USED_HIGH,1,&regs,&device));
     assert((uintptr_t)queue.virtq.used==UINT64_C(0x212340000));
-    puts("PASS: absent shared-memory regions, unaffected queues and relative config writes");
+    device.transport_type=VIRTIO_TRANSPORT_MMIO;
+    device.virq=54;
+    assert(virtio_mmio_register_device(&device,0xa040000,0x1000,54));
+    assert(registered_ack && registered_cookie==&device);
+    device.regs.InterruptStatus=1;
+    regs.x0=1;
+    assert(virtio_mmio_fault_handle(0,REG_VIRTIO_MMIO_INTERRUPT_ACK,1,&regs,&device));
+    assert(device.regs.InterruptStatus==0);
+    /* A new completion arrives after device ACK but before GIC EOI. */
+    device.regs.InterruptStatus=1;
+    registered_ack(0,54,registered_cookie);
+    assert(injected==1 && device.regs.InterruptStatus==1);
+    assert(virtio_mmio_fault_handle(0,REG_VIRTIO_MMIO_INTERRUPT_ACK,1,&regs,&device));
+    registered_ack(0,54,registered_cookie);
+    assert(injected==1); /* Cleared device level must not storm. */
+    device.regs.InterruptStatus=3;
+    assert(virtio_mmio_fault_handle(0,REG_VIRTIO_MMIO_INTERRUPT_ACK,1,&regs,&device));
+    registered_ack(0,54,registered_cookie);
+    assert(injected==2 && device.regs.InterruptStatus==2);
+    regs.x0=2;
+    assert(virtio_mmio_fault_handle(0,REG_VIRTIO_MMIO_INTERRUPT_ACK,1,&regs,&device));
+    registered_ack(0,54,registered_cookie);
+    assert(injected==2);
+    puts("PASS: shared-memory probes, relative config writes, persistent IRQ level and partial ACK");
     return 0;
 }

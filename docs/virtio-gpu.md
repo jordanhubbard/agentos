@@ -12,6 +12,13 @@ nonblack frame captured through CC before its authenticated SSH proof.
 This boot qualification is in progress; captured guest frames are not yet proven.
 The MAC task remains `task_cefc0f77327d4245ab9feb132cd1eb57`.
 
+The GPU profile retains Linux boot messages and bounded command/response logs
+for qualification. The common MMIO transport reasserts uncleared interrupt
+status after virtual-GIC acknowledgement: a completion arriving between the
+driver's InterruptACK and GIC EOI must not lose its notification when vGIC
+coalesces a pending interrupt. Host regression covers this ordering, partial
+acknowledgement and stopping reinjection after all status bits are cleared.
+
 `virtio_gpu_2d_execute` consumes a private command snapshot. It supports
 display information, resource create/unref, attach/detach backing, rectangular
 transfers, scanout selection and flush. The initial bounds are four resources,

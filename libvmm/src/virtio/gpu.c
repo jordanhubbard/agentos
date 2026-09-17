@@ -73,8 +73,13 @@ static bool notify(virtio_device_t *d)
     if (!result.valid) d->regs.Status |= VIRTIO_CONFIG_S_NEEDS_RESET;
     static unsigned reported;
     if (reported < 16) {
-        LOG_VMM("emulated virtio-gpu: queue=%u completed=%u valid=%u\n",
-                queue, result.completed, result.valid);
+        uint32_t command = 0, response = 0;
+        if (result.completed) {
+            memcpy(&command, g->rings[queue].request, sizeof(command));
+            memcpy(&response, g->rings[queue].response, sizeof(response));
+        }
+        LOG_VMM("emulated virtio-gpu: queue=%u completed=%u valid=%u last-command=0x%x response=0x%x\n",
+                queue, result.completed, result.valid, command, response);
         ++reported;
     }
     if (result.completed || !result.valid) {
