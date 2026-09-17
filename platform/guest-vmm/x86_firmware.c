@@ -8,6 +8,7 @@
 #include "platform/x86_config.h"
 #include "platform/x86_apic.h"
 #include "platform/x86_memory.h"
+#include "platform/x86_string.h"
 
 #define VCPU AOS_GUEST_VCPU_CAP_BASE
 #define ENTRY 0x4012u
@@ -109,7 +110,6 @@ void aos_x86_firmware_run(seL4_CPtr ep, seL4_Word result)
                                host_id(0x80000008u).eax)) {
         stop(ep, AOS_X86_VTX_PROOF_FAIL, 0x435055u, 0, 0);
     }
-    unsigned cpuid_count = 0;
     aos_x86_config_t config;
     if (!aos_x86_config_init(&config, AOS_X86_FIRMWARE_RAM))
         stop(ep, AOS_X86_VTX_PROOF_FAIL, 0x434647u, 0, 0);
@@ -133,6 +133,7 @@ void aos_x86_firmware_run(seL4_CPtr ep, seL4_Word result)
         seL4_Word qual = seL4_GetMR(SEL4_VMENTER_FAULT_QUALIFICATION_MR);
         seL4_Word fault_gpa = seL4_GetMR(SEL4_VMENTER_FAULT_GUEST_PHYSICAL_MR);
         seL4_Word guest_cr3 = seL4_GetMR(SEL4_VMENTER_FAULT_CR3_MR);
+        seL4_Word guest_flags = seL4_GetMR(SEL4_VMENTER_FAULT_RFLAGS_MR);
         seL4_VCPUContext regs = save_registers();
         if (result != SEL4_VMENTER_RESULT_FAULT || len > 15u) {
             stop(ep, AOS_X86_VTX_PROOF_FAIL, reason, rip, len);
@@ -143,7 +144,6 @@ void aos_x86_firmware_run(seL4_CPtr ep, seL4_Word result)
         if (reason == 10u && len == 2u) {
             aos_x86_cpuid_t r = aos_x86_cpu_id((uint32_t)regs.eax, (uint32_t)regs.ecx);
             regs.eax = r.eax; regs.ebx = r.ebx; regs.ecx = r.ecx; regs.edx = r.edx;
-            cpuid_count++;
         } else if (reason == 28u && len == 3u && (qual & ~0xf0fu) == 0u &&
                    ((qual & 15u) == 0u || (qual & 15u) == 4u)) {
             /* MOV to CR0/CR4 only; other access types and reserved bits fail. */
@@ -205,6 +205,20 @@ void aos_x86_firmware_run(seL4_CPtr ep, seL4_Word result)
                 stop(ep, AOS_X86_VTX_PROOF_FAIL, reason, rip, physical);
             if (!op.write) assign(ep, &regs, op.reg, value);
             len=op.length;
+        } else if (reason == 30u && qual == 0x05110038u && len == 2u) {
+            uint8_t code[2];
+            if ((read_field(ep, CS_RIGHTS) & 0x6000u) != 0x2000u ||
+                !(read_field(ep, EFER) & LMA) || !(read_field(ep, CR0) & PG) ||
+                !aos_x86_fetch(&memory, guest_cr3, rip, code, sizeof(code)) ||
+                code[0] != 0xf3u || code[1] != 0x6cu)
+                stop(ep, AOS_X86_VTX_PROOF_FAIL, reason, rip, qual);
+            uint64_t address=regs.edi, count=regs.ecx;
+            if (!aos_x86_fw_insb(&memory, (uint8_t *)AOS_X86_FIRMWARE_RAM_VA,
+                                 guest_cr3, &config, &address, &count,
+                                 (guest_flags & (1u << 10)) != 0))
+                stop(ep, AOS_X86_VTX_PROOF_FAIL, reason, rip, regs.edi);
+            regs.edi=address; regs.ecx=count;
+            if (count) len=0; /* bounded continuation of this REP instruction */
         } else if (reason == 30u && len && !(qual & ~0xffff007fu) &&
                    !(qual & ((1u << 4) | (1u << 5))) && (qual & 7u) != 2u && (qual & 7u) <= 3u) {
             unsigned width = (unsigned)(qual & 7u) + 1u;
@@ -230,15 +244,9 @@ void aos_x86_firmware_run(seL4_CPtr ep, seL4_Word result)
                 }
             }
         } else {
-            seL4_Word rights = read_field(ep, CS_RIGHTS);
             seL4_Word linear = read_field(ep, CS_BASE) + rip;
-            if (reason == 30u && (qual & (1u << 4)) && (qual >> 16) == 0x511u &&
-                config.pci_reads && cpuid_count && (rights & 0x6000u) == 0x2000u &&
-                (read_field(ep, EFER) & LMA) && (read_field(ep, CR0) & PG)) {
-                stop(ep, AOS_X86_VTX_FIRMWARE_CONFIG, reason, linear, qual);
-            }
             stop(ep, AOS_X86_VTX_PROOF_FAIL, reason, linear,
-                 reason == 31u || reason == 32u ? (uint32_t)regs.ecx : qual);
+                 reason == 31u || reason == 32u ? (uint32_t)regs.ecx : reason == 48u ? fault_gpa : qual);
         }
         seL4_Error err = seL4_X86_VCPU_WriteRegisters(VCPU, &regs);
         if (err) stop(ep, AOS_X86_VTX_PROOF_FAIL, reason, rip, err);

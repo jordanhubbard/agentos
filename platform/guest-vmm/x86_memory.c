@@ -9,17 +9,19 @@ static uint64_t le(const uint8_t *p, unsigned n)
 static bool canonical(uint64_t va)
 { return (va >> 47) == 0 || (va >> 47) == 0x1ffffu; }
 
-bool aos_x86_translate(const aos_x86_memory_t *m, uint64_t cr3, uint64_t va,
-                       bool write, bool execute, uint64_t *gpa)
+bool aos_x86_walk(const aos_x86_memory_t *m, uint64_t cr3, uint64_t va,
+                  bool write, bool execute, aos_x86_walk_t *walk)
 {
-    if (!m || !m->ram || !gpa || !canonical(va) ||
+    if (!m || !m->ram || !walk || !canonical(va) ||
         (cr3 & ~UINT64_C(0xffffff018))) return false; /* PCID unsupported */
     uint64_t table = cr3 & UINT64_C(0xffffff000);
+    aos_x86_walk_t result = {0};
     for (unsigned level = 4; level; level--) {
         unsigned shift = 12 + 9*(level-1);
         uint64_t at = table + ((va >> shift) & 511u)*8;
         if (at > m->ram_size || m->ram_size-at < 8) return false;
         uint64_t e = le(m->ram + at, 8);
+        result.entries[result.levels++]=at;
         /* Bits 51:36 are reserved for this CPU's physical width. */
         if (!(e & 1) || (e & UINT64_C(0x000ffff000000000)) ||
             (write && !(e & 2)) || (execute && (e >> 63))) return false;
@@ -28,12 +30,22 @@ bool aos_x86_translate(const aos_x86_memory_t *m, uint64_t cr3, uint64_t va,
         if (level == 1 || large) {
             uint64_t mask = (UINT64_C(1) << shift)-1;
             if (large && (e & (mask & ~UINT64_C(0x1fff)))) return false;
-            *gpa = (e & UINT64_C(0xffffff000) & ~mask) | (va & mask);
+            result.physical = (e & UINT64_C(0xffffff000) & ~mask) | (va & mask);
+            *walk=result;
             return true;
         }
         table = e & UINT64_C(0xffffff000);
     }
     return false;
+}
+
+bool aos_x86_translate(const aos_x86_memory_t *m, uint64_t cr3, uint64_t va,
+                       bool write, bool execute, uint64_t *gpa)
+{
+    aos_x86_walk_t walk;
+    if (!gpa || !aos_x86_walk(m,cr3,va,write,execute,&walk)) return false;
+    *gpa=walk.physical;
+    return true;
 }
 
 bool aos_x86_fetch(const aos_x86_memory_t *m, uint64_t cr3, uint64_t va,

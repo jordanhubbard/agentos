@@ -1406,13 +1406,13 @@ static seL4_Error setup_x86_firmware(const pd_desc_t *pd, uint32_t pd_index,
         AGENTOS_MEMORY_FENCE();
         err = seL4_X86_Page_Unmap(frame);
         if (err != seL4_NoError) return err;
-        /* VMM may inspect its own RAM/page tables and read-only ROM when
-         * decoding an emulated MMIO access. It gets no host-device mapping. */
+        /* VMM owns private guest RAM for emulated I/O and may inspect ROM.
+         * ROM stays read-only. It gets no host-device mapping. */
         seL4_CPtr copy = ut_alloc_slot();
         if (copy == seL4_CapNull) return seL4_NotEnoughMemory;
         err = seL4_CNode_Copy(seL4_CapInitThreadCNode, copy, 64u,
                               seL4_CapInitThreadCNode, frame, 64u,
-                              seL4_CapRights_new(0u, 0u, 1u, 0u));
+                              seL4_CapRights_new(0u, 0u, 1u, !rom));
         if (err != seL4_NoError) return err;
         (void)cap_acct_record(frame, copy, seL4_X86_LargePageObject, pd_index, pd->name);
         err = pd_vspace_map_device_frame(vmm_vspace, copy,

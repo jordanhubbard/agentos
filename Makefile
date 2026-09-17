@@ -710,6 +710,13 @@ test-host: policy-check guest-profile-check lint-source test-integration test-op
 test-host: test-x86-cpu-host
 test-host: test-x86-config-host
 test-host: test-x86-apic-host
+test-host: test-x86-string-host
+
+.PHONY: test-x86-string-host
+test-x86-string-host:
+	@mkdir -p $(BUILD_TMP_DIR)
+	$(CC) -std=c11 -Wall -Wextra -Werror -I platform/include tests/platform/test_x86_string.c platform/guest-vmm/x86_string.c platform/guest-vmm/x86_memory.c platform/guest-vmm/x86_config.c -o $(BUILD_TMP_DIR)/test_x86_string
+	$(BUILD_TMP_DIR)/test_x86_string
 
 .PHONY: test-x86-apic-host
 test-x86-apic-host:

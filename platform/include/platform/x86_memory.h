@@ -9,6 +9,15 @@ typedef struct {
     uint64_t ram_size, rom_base, rom_size;
 } aos_x86_memory_t;
 
+typedef struct {
+    uint64_t physical, entries[4];
+    unsigned levels;
+} aos_x86_walk_t;
+/* Return validated RAM offsets of the page-table entries as well as the GPA.
+ * Emulators use these offsets to commit architectural accessed/dirty bits. */
+bool aos_x86_walk(const aos_x86_memory_t *m, uint64_t cr3, uint64_t va,
+                  bool write, bool execute, aos_x86_walk_t *walk);
+
 /* Long-mode, four-level paging with the advertised 36-bit physical width.
  * Translation never dereferences the resulting device GPA. Page tables must
  * reside in this guest's RAM. Outputs stay untouched on failure. */
