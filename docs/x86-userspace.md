@@ -5,8 +5,9 @@ packs it into a deterministic newc archive at `build/x86-userspace/initrd.bin`.
 The Rust packer reuses the archive and ELF-normalization code used by the
 AArch64 guest probes. No host libraries or binaries enter the archive.
 
-The init program checks that `getpid` returns 1, mounts devtmpfs, opens and
-closes `/dev/hvc0`, and creates a regular file on
+The init program checks that `getpid` returns 1, mounts devtmpfs, opens
+`/dev/hvc0`, configures raw mode and exchanges exact readiness, request and
+reply bytes with the host. It then closes the console and creates a regular file on
 the guest initramfs, writes a fixed string, seeks, reads and compares every
 byte, closes the file, and checks its PID again. All these operations use
 Linux syscalls. Failure takes a distinct completion path.
@@ -30,11 +31,23 @@ MMIO resource at `0xf0000000` and a level/high GSI 16 interrupt. The guest
 kernel must include virtio-mmio, virtio-console and devtmpfs support; no
 device command-line override or custom guest driver is used.
 
+The harness connects QEMU's second serial port to a Unix socket. The canonical
+`serial_pd` owns only COM2 ports `0x2f8..0x2ff` and the frontend queue page.
+`serial_virt` transfers bytes between that page and the VMM's separate client
+page; the VMM's libvmm console supplies Linux's ordinary `hvc0` driver.
+The host must receive `agentos-uart-ready\n`, send `agentos-uart-request\n`,
+and receive exactly `agentos-uart-reply\n` before checking the PID 1 marker.
+The driver disables hardware interrupts and polls bounded batches, with
+1 ms of scheduling budget per 10 ms period. COM1 remains boot diagnostics.
+
 The initramfs file roundtrip is guest memory-backed filesystem I/O. It does
-not qualify canonical console/network/block services, disk persistence,
+not qualify network/block services, disk persistence,
 multi-guest isolation, or desktop profiles. The completion trap is not a
 production console or other service ABI. Target success must be established
 by the gate; building the archive alone proves no guest execution.
+The console exchange qualifies this short bidirectional queue/UART path;
+sustained throughput, disconnect recovery and the external CC/GUI API remain
+separate qualifications.
 
 At `accaafe`, the Intel target gate passed. A second run with deliberately
 wrong PID assertions produced the explicit failure result from ring 3 and
