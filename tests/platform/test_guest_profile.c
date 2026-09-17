@@ -85,6 +85,30 @@ int main(int argc, char **argv)
     CHECK("wire layout is fixed", sizeof(p) == AOS_GUEST_PROFILE_SIZE);
     CHECK("valid bounded profile accepted",
           aos_guest_profile_validate(&p) == AOS_GUEST_PROFILE_OK);
+    p.architecture = AOS_GUEST_ARCH_X86_64;
+    p.boot_protocol = AOS_GUEST_BOOT_UEFI;
+    p.kernel_format = AOS_GUEST_KERNEL_UEFI;
+    p.flags &= ~AOS_GUEST_PROFILE_ENTRY_FROM_IMAGE;
+    p.kernel_entry_address = p.kernel_load_address;
+    CHECK("UEFI profile may retain a DTB",
+          aos_guest_profile_validate(&p) == AOS_GUEST_PROFILE_OK);
+    p.dtb_max_bytes = 0;
+    p.dtb_load_address = 0;
+    memset(p.dtb_sha256, 0, sizeof(p.dtb_sha256));
+    CHECK("UEFI profile may omit DTB with canonical zero fields",
+          aos_guest_profile_validate(&p) == AOS_GUEST_PROFILE_OK);
+    p.dtb_load_address = p.kernel_load_address;
+    CHECK("absent DTB rejects stale load address",
+          aos_guest_profile_validate(&p) == AOS_GUEST_PROFILE_ERR_ARTIFACT);
+    p.dtb_load_address = 0;
+    p.dtb_sha256[0] = 1;
+    CHECK("absent DTB rejects stale hash",
+          aos_guest_profile_validate(&p) == AOS_GUEST_PROFILE_ERR_ARTIFACT);
+    p.dtb_sha256[0] = 0;
+    p.boot_protocol = AOS_GUEST_BOOT_FDT_DIRECT;
+    CHECK("FDT boot still requires DTB",
+          aos_guest_profile_validate(&p) == AOS_GUEST_PROFILE_ERR_ARTIFACT);
+    p = valid_profile();
     CHECK("kernel window belongs to guest RAM",
           aos_guest_profile_region_contains(&p, p.kernel_load_address,
                                             p.kernel_max_bytes));

@@ -11,6 +11,11 @@ The source format has three states:
 - `abstract` supplies inherited defaults and cannot enter a target image;
 - `planned` describes a roadmap guest but cannot enter a target image;
 - `runtime` requires pinned kernel, DTB, and optional initrd SHA-256 identities.
+  UEFI profiles may omit the DTB; its manifest address, size, and hash are then
+  zero. Placement DTB hashes and nonzero addresses are rejected when the
+  artifact is absent. FDT boot continues to require a DTB. The existing build
+  bundle adapter accepts only `fdt-direct`; a valid UEFI manifest does not yet
+  imply that this adapter or the target VMM can execute the profile.
 
 `extends` is a root-relative profile path. The Rust compiler rejects absolute
 paths, `..`, cycles, inheritance deeper than eight files, unknown fields,

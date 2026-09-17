@@ -111,6 +111,7 @@ typedef struct __attribute__((packed)) aos_guest_profile_manifest {
     uint64_t ram_size;
     uint64_t kernel_load_address;
     uint64_t kernel_entry_address;
+    /* UEFI may omit DTB: address, maximum bytes and SHA-256 must all be zero. */
     uint64_t dtb_load_address;
     uint64_t initrd_load_address;
     uint64_t kernel_max_bytes;
