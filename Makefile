@@ -702,6 +702,8 @@ test-virtio-gpu-host:
 	@mkdir -p $(BUILD_TMP_DIR)
 	$(CC) -std=c11 -Wall -Wextra -Werror -I platform/include -I libvmm/include tests/platform/test_virtio_gpu_2d.c libvmm/src/virtio/gpu_2d.c libvmm/src/virtio/gpu_ring.c platform/gpu-virt/framebuffer_adapter.c platform/framebuffer/service.c -o $(BUILD_TMP_DIR)/test_virtio_gpu_2d
 	$(BUILD_TMP_DIR)/test_virtio_gpu_2d
+	$(CC) -std=gnu11 -Wall -Wextra -Werror -Wno-unused-parameter -I tests/platform/mmio-stubs -I libvmm/include tests/platform/test_virtio_mmio.c libvmm/src/virtio/mmio.c -o $(BUILD_TMP_DIR)/test_virtio_mmio
+	$(BUILD_TMP_DIR)/test_virtio_mmio
 
 .PHONY: test-framebuffer-host
 test-framebuffer-host:
