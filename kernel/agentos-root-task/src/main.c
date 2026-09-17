@@ -723,6 +723,7 @@ static seL4_CPtr g_host_blk_mmio_frame_cap = seL4_CapNull;
 static seL4_CPtr g_blk_shared_frame_cap = seL4_CapNull;
 #if defined(__x86_64__) && defined(AGENTOS_X86_FIRMWARE_RESET)
 static seL4_CPtr g_x86_blk_frames[AOS_VIRTIO_PCI_REGIONS];
+static seL4_CPtr g_x86_net_frames[AOS_VIRTIO_PCI_REGIONS];
 #endif
 
 static seL4_Error allocate_block_dma(const aos_blk_pci_info_t *pci)
@@ -807,6 +808,26 @@ static seL4_Error provision_log_config(const pd_desc_t *pd, uint32_t index,
 static seL4_CPtr g_host_net_mmio_frame_cap = seL4_CapNull;
 static seL4_CPtr g_net_shared_frame_caps[AOS_NET_SHMEM_FRAMES];
 static seL4_CPtr g_net_dma_frame_cap = seL4_CapNull;
+static seL4_Error allocate_network_dma(const aos_net_pci_info_t *pci)
+{
+    _Static_assert(AGENTOS_NET_HOST_DMA_SIZE == (1UL << seL4_ARCH_LargePageBits),
+                   "host network DMA layout must match the SDK large frame");
+    seL4_Error err = ut_alloc_cap(seL4_ARCH_LargePageObject, 0u, &g_net_dma_frame_cap);
+    if (err != seL4_NoError) return err;
+    seL4_ARCH_Page_GetAddress_t address = seL4_ARCH_Page_GetAddress(g_net_dma_frame_cap);
+    if (address.error != seL4_NoError) return address.error;
+    err = pd_vspace_map_device_frame(seL4_CapInitThreadVSpace,
+                                     g_net_dma_frame_cap, RT_BLK_SCRATCH_VA);
+    if (err != seL4_NoError) return err;
+    agentos_net_host_dma_meta_t *meta = (void *)RT_BLK_SCRATCH_VA;
+    *meta = (agentos_net_host_dma_meta_t){
+        .magic = AGENTOS_NET_HOST_DMA_MAGIC, .version = pci ? 2u : 1u,
+        .paddr = address.paddr, .size = AGENTOS_NET_HOST_DMA_SIZE,
+    };
+    if (pci) *(aos_net_pci_info_t *)(RT_BLK_SCRATCH_VA + AOS_NET_PCI_INFO_OFF) = *pci;
+    AGENTOS_MEMORY_FENCE();
+    return seL4_ARCH_Page_Unmap(g_net_dma_frame_cap);
+}
 static seL4_CPtr g_host_secondary_blk_mmio_frame_cap = seL4_CapNull;
 static seL4_CPtr g_gic_vcpu_frame_cap = seL4_CapNull;
 
@@ -1813,34 +1834,9 @@ void root_task_main(const seL4_BootInfo *bi)
         dbg_puts("\n");
     }
 
-    {
-        seL4_Error net_err =
-            ut_alloc_cap(seL4_ARM_LargePageObject, 0u,
-                         &g_net_dma_frame_cap);
-        seL4_Word net_dma_pa = 0u;
-        if (net_err == seL4_NoError) {
-            seL4_ARCH_Page_GetAddress_t r =
-                seL4_ARCH_Page_GetAddress(g_net_dma_frame_cap);
-            net_dma_pa = r.paddr;
-            net_err = pd_vspace_map_device_frame(
-                seL4_CapInitThreadVSpace, g_net_dma_frame_cap,
-                RT_BLK_SCRATCH_VA);
-        }
-        if (net_err == seL4_NoError) {
-            agentos_net_host_dma_meta_t *meta =
-                (agentos_net_host_dma_meta_t *)RT_BLK_SCRATCH_VA;
-            meta->magic = AGENTOS_NET_HOST_DMA_MAGIC;
-            meta->version = AGENTOS_NET_HOST_DMA_VERSION;
-            meta->paddr = (uint64_t)net_dma_pa;
-            meta->size = AGENTOS_NET_HOST_DMA_SIZE;
-            AGENTOS_MEMORY_FENCE();
-            seL4_ARCH_Page_Unmap(g_net_dma_frame_cap);
-        }
-        dbg_puts("[rt] net private DMA frame pa=");
-        dbg_hex(net_dma_pa);
-        dbg_puts(" err=");
-        dbg_hex((seL4_Word)net_err);
-        dbg_puts("\n");
+    if (allocate_network_dma(NULL) != seL4_NoError) {
+        dbg_puts("[rt] network DMA allocation failed; refusing startup\n");
+        return;
     }
 #endif
 
@@ -1889,12 +1885,22 @@ void root_task_main(const seL4_BootInfo *bi)
         dbg_puts("\n");
         return;
     }
+    aos_net_pci_info_t net_pci = {
+        .magic = AOS_NET_PCI_INFO_MAGIC, .version = 1u,
+        .notify_multiplier = host_net_layout.notify_multiplier,
+    };
     for (unsigned r = 0; r < AOS_VIRTIO_PCI_REGIONS; r++) {
         dbg_puts("[rt] x86 host network region pa=");
         dbg_hex(host_net_layout.region[r].paddr);
         dbg_puts(" length=");
         dbg_hex(host_net_layout.region[r].length);
         dbg_puts("\n");
+        net_pci.offset[r] = (uint32_t)(host_net_layout.region[r].paddr & 4095u);
+        net_pci.length[r] = host_net_layout.region[r].length;
+        if (net_pci.length[r] > 4096u - net_pci.offset[r]) {
+            dbg_puts("[rt] network PCI capability exceeds mapped page; refusing startup\n");
+            return;
+        }
     }
     dbg_puts("[rt] x86 host network PCI discovery verified\n");
     aos_virtio_pci_layout_t host_block_layout;
@@ -1922,26 +1928,38 @@ void root_task_main(const seL4_BootInfo *bi)
             return;
         }
     }
-    /* Device untyped watermarks advance monotonically. Allocate ascending
-     * physical pages, independently of PCI capability and driver VA order. */
-    for (unsigned allocation = 0; allocation < AOS_VIRTIO_PCI_REGIONS; allocation++) {
-        unsigned next = AOS_VIRTIO_PCI_REGIONS;
+    /* Device watermarks advance monotonically. Order all device pages across
+     * both drivers, while refusing any page shared between device classes. */
+    const aos_virtio_pci_layout_t *layouts[2] = {&host_block_layout, &host_net_layout};
+    seL4_CPtr *frames[2] = {g_x86_blk_frames, g_x86_net_frames};
+    for (unsigned a = 0; a < AOS_VIRTIO_PCI_REGIONS; a++)
+        for (unsigned b = 0; b < AOS_VIRTIO_PCI_REGIONS; b++)
+            if ((host_block_layout.region[a].paddr >> 12) ==
+                (host_net_layout.region[b].paddr >> 12)) {
+                dbg_puts("[rt] network and block PCI pages overlap; refusing startup\n");
+                return;
+            }
+    for (unsigned allocation = 0; allocation < 2u * AOS_VIRTIO_PCI_REGIONS; allocation++) {
+        unsigned next = AOS_VIRTIO_PCI_REGIONS, owner = 0;
         uint64_t page = UINT64_MAX;
-        for (unsigned r = 0; r < AOS_VIRTIO_PCI_REGIONS; r++) {
-            uint64_t candidate = host_block_layout.region[r].paddr & ~UINT64_C(4095);
-            if (!g_x86_blk_frames[r] && candidate < page) {
-                page = candidate;
-                next = r;
+        for (unsigned d = 0; d < 2u; d++) {
+            for (unsigned r = 0; r < AOS_VIRTIO_PCI_REGIONS; r++) {
+                uint64_t candidate = layouts[d]->region[r].paddr & ~UINT64_C(4095);
+                if (!frames[d][r] && candidate < page) {
+                    page = candidate;
+                    next = r;
+                    owner = d;
+                }
             }
         }
         if (next == AOS_VIRTIO_PCI_REGIONS) break;
-        if (ut_alloc_device_cap(page, &g_x86_blk_frames[next]) != seL4_NoError) {
-            dbg_puts("[rt] block PCI device frame grant failed; refusing startup\n");
+        if (ut_alloc_device_cap(page, &frames[owner][next]) != seL4_NoError) {
+            dbg_puts("[rt] PCI device frame grant failed; refusing startup\n");
             return;
         }
         for (unsigned r = 0; r < AOS_VIRTIO_PCI_REGIONS; r++) {
-            if ((host_block_layout.region[r].paddr & ~UINT64_C(4095)) == page)
-                g_x86_blk_frames[r] = g_x86_blk_frames[next];
+            if ((layouts[owner]->region[r].paddr & ~UINT64_C(4095)) == page)
+                frames[owner][r] = frames[owner][next];
         }
     }
     if (allocate_block_dma(&block_pci) != seL4_NoError) {
@@ -1949,6 +1967,10 @@ void root_task_main(const seL4_BootInfo *bi)
         return;
     }
     dbg_puts("[rt] x86 host block PCI resources verified\n");
+    if (allocate_network_dma(&net_pci) != seL4_NoError) {
+        dbg_puts("[rt] network DMA allocation failed; refusing startup\n");
+        return;
+    }
 #endif
     static aos_inspect_view_t inspect_view;
     seL4_CPtr inspect_cc_vspace = seL4_CapNull;
@@ -2283,9 +2305,9 @@ void root_task_main(const seL4_BootInfo *bi)
                 sc_period = VMM_SC_PERIOD_US;
             }
 #if defined(__x86_64__) && defined(AGENTOS_X86_FIRMWARE_RESET)
-            /* A polling UART must not wait the default one-second refill
-             * after Yield. Bound it to 1 ms of work per 10 ms period. */
-            if (pd->self_svc_id == SVC_ID_SERIAL) {
+            /* Polling device drivers must not wait the default one-second
+             * refill after Yield. Bound each to 1 ms per 10 ms period. */
+            if (pd->self_svc_id == SVC_ID_SERIAL || pd->self_svc_id == SVC_ID_NET_PD) {
                 sc_budget = 1000u;
                 sc_period = 10000u;
             }
@@ -2898,9 +2920,9 @@ void root_task_main(const seL4_BootInfo *bi)
             }
         }
 
-#if defined(__aarch64__)
         if (name_eq(pd->name, "net_pd")) {
             seL4_Error net_err = seL4_NotEnoughMemory;
+#if defined(__aarch64__)
             if (g_host_net_mmio_frame_cap != seL4_CapNull) {
                 seL4_Word net_mmio_copy = ut_alloc_slot();
                 if (net_mmio_copy != seL4_CapNull) {
@@ -2919,7 +2941,24 @@ void root_task_main(const seL4_BootInfo *bi)
             dbg_puts("[rt] net_pd host MMIO map err=");
             dbg_hex((seL4_Word)net_err);
             dbg_puts("\n");
-
+            if (net_err != seL4_NoError) continue;
+#elif defined(__x86_64__) && defined(AGENTOS_X86_FIRMWARE_RESET)
+            net_err = seL4_NoError;
+            for (unsigned r = 0; r < AOS_VIRTIO_PCI_REGIONS && net_err == seL4_NoError; r++) {
+                seL4_CPtr copy = ut_alloc_slot();
+                net_err = seL4_NotEnoughMemory;
+                if (copy) {
+                    net_err = seL4_CNode_Copy(seL4_CapInitThreadCNode, copy, 64u,
+                        seL4_CapInitThreadCNode, g_x86_net_frames[r], 64u, seL4_AllRights);
+                    if (net_err == seL4_NoError)
+                        net_err = pd_vspace_map_uncached_device_frame(vspace, copy,
+                                                                    AOS_NET_PCI_REGION_VA(r));
+                }
+            }
+            if (net_err != seL4_NoError) continue;
+#else
+            continue;
+#endif
             net_err = seL4_NotEnoughMemory;
             if (g_net_dma_frame_cap != seL4_CapNull) {
                 seL4_Word net_dma_copy = ut_alloc_slot();
@@ -2938,8 +2977,15 @@ void root_task_main(const seL4_BootInfo *bi)
             dbg_puts("[rt] net_pd private DMA map err=");
             dbg_hex((seL4_Word)net_err);
             dbg_puts("\n");
-        }
+            if (net_err != seL4_NoError) continue;
+#if defined(__x86_64__) && defined(AGENTOS_X86_FIRMWARE_RESET)
+            if (!aos_x86_host_pci_enable(AOS_X86_HOST_NET)) {
+                dbg_puts("[rt] network PCI enable failed; refusing driver start\n");
+                continue;
+            }
+            dbg_puts("[rt] x86 host network driver resources mapped\n");
 #endif
+        }
 
         /* ── 4g.4.7: Set up VirtIO serial transport for cc_pd ───────────────── */
         /*
@@ -3407,6 +3453,7 @@ void root_task_main(const seL4_BootInfo *bi)
             status == AOS_X86_VTX_USERSPACE_PASS && reason == 10u &&
             instruction_len == 3u && rip < 0x0000800000000000ull) {
             dbg_puts("[rt] x86 Linux ring3 initramfs syscall proof verified\n");
+            dbg_puts("[rt] x86 canonical host network attachment verified\n");
             dbg_puts("[rt] x86 host block queue read verified\n");
             dbg_puts("[rt] x86 Linux guest block read verified\n");
 #else
@@ -3414,6 +3461,7 @@ void root_task_main(const seL4_BootInfo *bi)
             reason == 30u && rip <= 0xffffffffu &&
             (instruction_len >> 16) == 0x511u && (instruction_len & (1u << 4))) {
             dbg_puts("[rt] x86 OVMF PCI configuration and fw_cfg string exit verified\n");
+            dbg_puts("[rt] x86 canonical host network attachment verified\n");
             dbg_puts("[rt] x86 host block queue read verified\n");
             dbg_puts("[rt] firmware exit reason="); dbg_hex(reason);
             dbg_puts(" linear RIP="); dbg_hex(rip);

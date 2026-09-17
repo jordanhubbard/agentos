@@ -44,6 +44,11 @@ static uint32_t                 g_rx_events;
 static uintptr_t                g_guest_base;
 static unsigned                 g_virq;
 
+bool aos_vmm_virtio_net_host_ready(void)
+{
+    return g_aos_net_ready && g_net_virt_attached && g_net_virt_hw == 1u;
+}
+
 static uint32_t net_rd32(const uint8_t *p, uint32_t off)
 {
     return (uint32_t)p[off] |

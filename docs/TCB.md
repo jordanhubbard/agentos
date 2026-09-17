@@ -93,20 +93,29 @@ Both architecture SDK builds compile the adapter; these checks do not prove an
 Intel host NIC, root network grants or a Linux x86 network interface.
 
 The NIC driver uses the shared host virtio transport for feature negotiation,
-status, configuration and independent RX/TX queue handles. Its current binding
-is still MMIO. MMIO interrupt status and acknowledgment also go through that
-transport; PCI bindings have no ISR mapping and require polling. The driver
+status, configuration and independent RX/TX queue handles. Root DMA metadata
+version 1 selects ARM MMIO; version 2 supplies bounded modern PCI spans.
+MMIO interrupt status and acknowledgment also go through that transport.
+PCI bindings have no ISR mapping: the driver polls RX and nonblocking IPC,
+with root limiting it to 1 ms of CPU per 10 ms period. The driver
 requires offered MAC and VERSION_1 features and waits for reset completion
-before configuring queues. The x86 link check includes the actual NIC driver,
-but PCI root grants and asynchronous receive service are still required before
-it can provide Intel networking.
+before configuring queues. The Intel composition includes `net_pd` and
+`net_virt`; the VMM attaches through the same contract and refuses to continue
+unless the virtualizer reports an initialized host NIC. A loopback attachment
+does not meet that condition. Pending network wakes share the VMM notification
+path with block and serial. This attachment proves driver initialization, not
+guest packet I/O or a Linux network interface.
 
 The Intel firmware qualification machine assigns modern virtio block to PCI
 00:05.0 and network to 00:06.0. Root discovers both through the same bounded
 configuration-port path: validate the device identity, disable decoding and
 bus mastering while sizing BARs, verify restoration, then delete the temporary
-port capability. The network discovery receipt proves capability spans only;
-root does not yet map or enable that NIC for a driver. The qualification NIC
+port capability. Root allocates pages in ascending physical order across both
+devices and rejects any page shared between device classes. Only `net_pd`
+receives uncached NIC registers and the private DMA frame; PCI bus mastering
+is enabled after both mappings succeed. The virtualizer and VMM receive only
+their existing queue grants. Allocation or mapping failures prevent startup.
+The qualification NIC
 uses a restricted user network with no forwarded host ports.
 
 `net_virt` emits complete bounded diagnostic messages through the common log

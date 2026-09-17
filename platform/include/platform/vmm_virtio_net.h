@@ -14,5 +14,7 @@ bool aos_vmm_virtio_net_init_at(uint32_t client_id, uintptr_t guest_base,
                               unsigned virq, void *shared_region);
 void aos_vmm_virtio_net_after_fault(void);
 void aos_vmm_virtio_net_rx_ready(void);
+/* The canonical virtualizer reported an initialized host NIC at attachment. */
+bool aos_vmm_virtio_net_host_ready(void);
 
 #endif /* AOS_PLATFORM_VMM_VIRTIO_NET_H */

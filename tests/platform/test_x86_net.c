@@ -73,6 +73,7 @@ int main(void)
     assert(!aos_x86_virtio_contains(base));
     reject_attach=false;
     assert(aos_vmm_virtio_net_init_at(0,base,18,region) && attachments==2);
+    assert(!aos_vmm_virtio_net_host_ready()); /* loopback is not host NIC proof */
     assert(read_reg(REG_VIRTIO_MMIO_DEVICE_ID)==VIRTIO_DEVICE_ID_NET);
     assert(read_reg(0x100)==2 && (read_reg(0x104)&0xffff)==0x100);
     write_reg(REG_VIRTIO_MMIO_STATUS,1); write_reg(REG_VIRTIO_MMIO_STATUS,3);

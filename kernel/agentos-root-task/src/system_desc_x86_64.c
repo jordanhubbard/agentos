@@ -4,8 +4,8 @@
  * The normal x86_64_generic board intentionally starts no PDs.  The separate
  * x86_64_generic_vtx board starts exactly one VMM PD for a one-instruction,
  * EPT-backed HLT-exit proof. The firmware composition starts the COM2 serial
- * driver and serial_virt, plus virtio_blk and blk_virt. Host register/DMA
- * mappings belong to storage PDs; the VMM maps only its own queue page.
+ * driver and serial_virt, plus block and network drivers and virtualizers.
+ * Host register/DMA mappings belong to drivers; the VMM maps its queue pages.
  */
 
 #include "system_desc.h"
@@ -13,12 +13,32 @@
 #if defined(AGENTOS_X86_VTX)
 const system_desc_t system_desc_x86_64 = {
 #ifdef AGENTOS_X86_FIRMWARE_RESET
-    .pd_count = 5u,
+    .pd_count = 7u,
 #else
     .pd_count = 1u,
 #endif
     .pds = {
 #ifdef AGENTOS_X86_FIRMWARE_RESET
+        {
+            .name = "net_pd",
+            .elf_path = "net_pd.elf",
+            .stack_size = 0x8000u,
+            .cnode_size_bits = 10u,
+            .priority = 215u,
+            .self_svc_id = SVC_ID_NET_PD,
+            .init_ep_count = 1u,
+            .init_eps = {{ SVC_ID_NET_VIRT, PD_CNODE_SLOT_NET_VIRT_EP }},
+        },
+        {
+            .name = "net_virt",
+            .elf_path = "net_virt.elf",
+            .stack_size = 0x8000u,
+            .cnode_size_bits = 10u,
+            .priority = 205u,
+            .self_svc_id = SVC_ID_NET_VIRT,
+            .init_ep_count = 1u,
+            .init_eps = {{ SVC_ID_NET_PD, PD_CNODE_SLOT_NET_PD_EP }},
+        },
         {
             .name = "virtio_blk",
             .elf_path = "virtio_blk.elf",
@@ -64,10 +84,11 @@ const system_desc_t system_desc_x86_64 = {
             .priority = 250u,
             .self_svc_id = SVC_ID_GUEST_VMM_PRIMARY,
 #ifdef AGENTOS_X86_FIRMWARE_RESET
-            .init_ep_count = 2u,
+            .init_ep_count = 3u,
             .init_eps = {
                 { SVC_ID_SERIAL_VIRT, PD_CNODE_SLOT_SERIAL_VIRT_EP },
                 { SVC_ID_BLK_VIRT, PD_CNODE_SLOT_BLK_VIRT_EP },
+                { SVC_ID_NET_VIRT, PD_CNODE_SLOT_NET_VIRT_EP },
             },
 #else
             .init_ep_count = 0u,

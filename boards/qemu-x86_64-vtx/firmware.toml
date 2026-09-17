@@ -1,4 +1,12 @@
-# Firmware composition: owned PCI block and COM2 drivers, queue muxes and VMM.
+# Firmware composition: PCI block/network and COM2 drivers, queue muxes and VMM.
+[[pd]]
+name = "net_pd"
+priority = 215
+
+[[pd]]
+name = "net_virt"
+priority = 205
+
 [[pd]]
 name = "virtio_blk"
 priority = 215
