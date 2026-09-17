@@ -46,6 +46,7 @@ static void virtio_console_features_print(uint32_t features)
 static void virtio_console_reset(struct virtio_device *dev)
 {
     device_state(dev)->tx_progress = (virtio_console_tx_state_t){0};
+    device_state(dev)->rx_progress = (virtio_console_rx_state_t){0};
     device_state(dev)->tx_backpressure_reported = false;
     LOG_CONSOLE("operation: reset device\n");
 
@@ -160,62 +161,44 @@ static bool virtio_console_handle_tx(struct virtio_device *dev)
     return virtio_console_handle_pending_tx(device_state(dev));
 }
 
+static void *console_rx_map(void *context, uint64_t address, uint32_t length)
+{
+    (void)context;
+    return virtio_gpa_to_hva(address,length);
+}
+
+static void console_rx_take(void *context, void *destination, uint32_t length)
+{
+    serial_queue_handle_t *queue=context;
+    uint8_t *out=destination;
+    /* Input count was snapshotted; this is the sole consumer. A concurrent
+     * producer can only append, so every dequeue in this bounded copy exists. */
+    for (uint32_t i=0;i<length;i++) {
+        char byte=0;
+        (void)serial_dequeue(queue,&byte);
+        out[i]=(uint8_t)byte;
+    }
+}
+
 bool virtio_console_handle_rx(struct virtio_console_device *console)
 {
-    LOG_CONSOLE("operation: handle rx\n");
-    assert(console->virtio_device.num_vqs > RX_QUEUE);
-
-    /* Used to know whether to set the IRQ status. */
-    bool transferred = false;
-
-    struct virtio_queue_handler *vq = &console->virtio_device.vqs[RX_QUEUE];
-    if (!vq->ready) {
-        /*
-         * It is valid for RX from the real device before the guest has
-         * started, so just dequeue all data and early return.
-         */
-        char c;
-        while (serial_dequeue(console->rxq, &c) == 0) {
-            /* discard bytes queued before the guest supplied RX buffers */
-        }
-        return true;
+    struct virtio_queue_handler *vq=&console->vqs[RX_QUEUE];
+    if (!vq->ready) return true; /* retain input until buffers are available */
+    uint32_t input=serial_queue_length_consumer(console->rxq);
+    if (input>console->rxq->capacity) {
+        console->rx_progress.failed=true;
+        return false;
     }
-
-    LOG_CONSOLE("processing available buffers from index [0x%lx..0x%lx)\n", vq->last_idx, vq->virtq.avail->idx);
-    while (vq->last_idx != vq->virtq.avail->idx && !serial_queue_empty(console->rxq, console->rxq->queue->head)) {
-        transferred = true;
-
-        uint16_t desc_head = vq->virtq.avail->ring[vq->last_idx % vq->virtq.num];
-        struct virtq_desc desc = vq->virtq.desc[desc_head];
-        LOG_CONSOLE("processing descriptor (0x%lx) with buffer [0x%lx..0x%lx)\n", desc_head, desc.addr, desc.addr + desc.len);
-        uint32_t bytes_written = 0;
-        char c;
-        while (bytes_written < desc.len && !serial_dequeue(console->rxq, &c)) {
-            if (virtio_copy_to_gpa(desc.addr, bytes_written, &c, 1u) != 0) {
-                LOG_CONSOLE_ERR("RX descriptor GPA is outside guest RAM\n");
-                return false;
-            }
-            bytes_written++;
-        }
-
-        struct virtq_used_elem used_elem = {desc_head, bytes_written};
-        vq->virtq.used->ring[vq->virtq.used->idx % vq->virtq.num] = used_elem;
-        vq->virtq.used->idx++;
-
-        vq->last_idx++;
+    const virtio_console_rx_ops_t ops={console_rx_map,console_rx_take,console->rxq};
+    virtio_console_rx_result_t result=virtio_console_rx_ring_run(
+        &vq->virtq,&vq->last_idx,&console->rx_progress,input,&ops);
+    bool irq=true;
+    if (result.completed) {
+        console->virtio_device.regs.InterruptStatus |= BIT_LOW(0);
+        irq=virq_inject(console->virtio_device.virq);
     }
-
-    /* While unlikely, it is possible that we could not consume any of the
-     * available data. In this case we do not set the IRQ status. */
-    if (transferred) {
-        console->virtio_device.regs.InterruptStatus = BIT_LOW(0);
-        bool success = virq_inject(console->virtio_device.virq);
-        assert(success);
-
-        return success;
-    }
-
-    return true;
+    if (!result.valid) LOG_CONSOLE_ERR("invalid receive descriptor chain or ring\n");
+    return result.valid && irq;
 }
 
 virtio_device_funs_t functions = {
@@ -245,6 +228,7 @@ static struct virtio_device *virtio_console_init(struct virtio_console_device *c
     console->txq = txq;
     console->tx_cap = tx_cap;
     console->tx_progress = (virtio_console_tx_state_t){0};
+    console->rx_progress = (virtio_console_rx_state_t){0};
     console->tx_backpressure_reported = false;
 
     return dev;
