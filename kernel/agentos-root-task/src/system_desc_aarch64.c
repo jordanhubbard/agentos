@@ -479,6 +479,10 @@ const system_desc_t system_desc_aarch64 = {
             .cnode_size_bits = 10u,
             .priority       = 164u,
             .self_svc_id    = SVC_ID_CC_PD,
+            .irq_count      = 1u,
+            .irqs = {
+                { .irq_number = 50u, .ntfn_badge = 1u, .name = "virtio-serial" },
+            },
             .init_ep_count  = AOS_CC_INIT_EP_COUNT
 #ifdef AGENTOS_NATIVE_RUST_TEST
                 + 1u

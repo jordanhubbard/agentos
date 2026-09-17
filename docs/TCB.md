@@ -39,7 +39,7 @@ seL4
   └── root task            untyped, CSpace, VSpace, spawn PDs, hand out caps,
       (~6 kLOC)            then parks in seL4_Wait; no post-spawn policy
         ├── serial_pd      owns the PL011 UART frame + IRQ
-        ├── cc_pd          owns QEMU virtio-serial (bus.2): the console the
+        ├── cc_pd          owns QEMU virtio-serial (bus.2, IRQ 50): the console the
         │                  test harness and agentctl drive; guest console TX/RX
         │                  relays through it; prints `agentOS boot complete`
         │                  as the lowest-priority PD in the image

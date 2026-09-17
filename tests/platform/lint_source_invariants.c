@@ -429,6 +429,9 @@ int main(void)
     ok(irq_owner_count(QEMU_VIRT_UART_IRQ, &owner) == 1u && owner &&
        strcmp(owner->name, "serial_pd") == 0,
        "inv1: the PL011 IRQ (33) is owned by serial_pd and no other PD");
+    ok(irq_owner_count(50u, &owner) == 1u && owner &&
+       strcmp(owner->name, "cc_pd") == 0,
+       "inv1: the virtio-serial IRQ (50) is owned by cc_pd and no other PD");
 
     /* ── TCB invariant 5: no guest host-device passthrough ────────────── */
 
