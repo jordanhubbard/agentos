@@ -92,7 +92,9 @@ bool aos_x86_apic_io(aos_x86_apic_t *a, unsigned off, bool write,
         if (!write || *value) return false;
         { unsigned v=highest(next.isr); if (v) next.isr[v/32] &= ~(1u << (v%32)); }
         break;
-    case 0xf0: reg=&next.svr; mask=0x1ff; break;
+    /* Focus checking only affects lowest-priority arbitration, which this
+     * single-CPU fixed-delivery profile does not implement. Retain bit9. */
+    case 0xf0: reg=&next.svr; mask=0x3ff; break;
     case 0x280:
         if (write && *value) return false;
         if (!write) *value=0; /* unsupported/error operations fail atomically */

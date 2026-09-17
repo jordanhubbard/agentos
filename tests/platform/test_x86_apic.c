@@ -125,6 +125,9 @@ int main(void)
     assert(apic_io(&a,0xe0,false,0,0)==UINT32_MAX);
     apic_io(&a,0xf0,true,0x1ff,0);
     assert(!aos_x86_apic_pending(&a,0));
+    apic_io(&a,0xf0,true,0x3ff,0); /* Linux disables legacy focus checking */
+    assert(apic_io(&a,0xf0,false,0,0)==0x3ff);
+    rejected(&a,0xf0,true,0x7ff,0); /* reserved bit10 */
     const unsigned lvts[]={0x330,0x340,0x370};
     for (unsigned i=0; i<3; i++) {
         assert(apic_io(&a,lvts[i],false,0,0)==0x10000);
