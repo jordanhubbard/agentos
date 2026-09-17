@@ -15,6 +15,7 @@
 
 #include "sel4_boot.h"
 #include <sel4/arch/vmenter.h>
+#include <platform/x86_vmenter.h>
 #include "contracts/guest_execution_caps.h"
 #include "contracts/x86_vtx_proof.h"
 #ifdef AGENTOS_X86_GUEST_FAULT_PROOF
@@ -350,15 +351,16 @@ static void qualify_firmware_modes(seL4_CPtr endpoint)
 #endif
         seL4_SetMR(SEL4_VMENTER_CALL_CONTROL_PPC_MR, VMX_CONTROL_PPC_HLT_EXITING);
         seL4_SetMR(AOS_VMENTER_INTERRUPT_INFO_MR, 0u);
-        seL4_Word result = seL4_VMEnter(NULL);
-        seL4_Word reason = seL4_GetMR(SEL4_VMENTER_FAULT_REASON_MR);
-        seL4_Word rip = seL4_GetMR(SEL4_VMENTER_CALL_EIP_MR);
-        seL4_Word length = seL4_GetMR(SEL4_VMENTER_FAULT_INSTRUCTION_LEN_MR);
+        aos_x86_vmenter_return_t returned = aos_x86_vm_enter();
+        seL4_Word rip = returned.words[SEL4_VMENTER_CALL_EIP_MR];
+        if (returned.result != SEL4_VMENTER_RESULT_FAULT)
+            report_and_wait(endpoint, AOS_X86_VTX_PROOF_FAIL, 0x4e5446u, rip, returned.badge);
+        seL4_Word reason = returned.words[SEL4_VMENTER_FAULT_REASON_MR];
+        seL4_Word length = returned.words[SEL4_VMENTER_FAULT_INSTRUCTION_LEN_MR];
 #ifdef AGENTOS_X86_FIRMWARE_RESET
-        aos_x86_firmware_run(endpoint, result);
+        aos_x86_firmware_run(endpoint, returned);
 #endif
-        if (result != SEL4_VMENTER_RESULT_FAULT ||
-            reason != AOS_X86_VTX_HLT_EXIT_REASON ||
+        if (reason != AOS_X86_VTX_HLT_EXIT_REASON ||
             rip != AOS_X86_VTX_GUEST_RIP || length != AOS_X86_VTX_HLT_INSTRUCTION_LEN) {
             report_and_wait(endpoint, AOS_X86_VTX_PROOF_FAIL, reason, rip, length);
         }
@@ -408,21 +410,21 @@ void pd_main(seL4_CPtr endpoint, seL4_CPtr nameserver_endpoint)
         seL4_SetMR(SEL4_VMENTER_CALL_EIP_MR,next_rip);
         seL4_SetMR(SEL4_VMENTER_CALL_CONTROL_PPC_MR,VMX_CONTROL_PPC_HLT_EXITING);
         seL4_SetMR(AOS_VMENTER_INTERRUPT_INFO_MR,info);
-        seL4_Word result=seL4_VMEnter(NULL);
-        seL4_Word reason=seL4_GetMR(SEL4_VMENTER_FAULT_REASON_MR);
-        seL4_Word rip=seL4_GetMR(SEL4_VMENTER_CALL_EIP_MR);
-        seL4_Word length=seL4_GetMR(SEL4_VMENTER_FAULT_INSTRUCTION_LEN_MR);
-        if (result!=SEL4_VMENTER_RESULT_FAULT)
-            report_and_wait(endpoint,AOS_X86_VTX_PROOF_FAIL,reason,rip,length);
+        aos_x86_vmenter_return_t returned=aos_x86_vm_enter();
+        seL4_Word rip=returned.words[SEL4_VMENTER_CALL_EIP_MR];
+        if (returned.result!=SEL4_VMENTER_RESULT_FAULT)
+            report_and_wait(endpoint,AOS_X86_VTX_PROOF_FAIL,0x4e5446u,rip,returned.badge);
+        seL4_Word reason=returned.words[SEL4_VMENTER_FAULT_REASON_MR];
+        seL4_Word length=returned.words[SEL4_VMENTER_FAULT_INSTRUCTION_LEN_MR];
         if (attempt==2) {
             if (reason==12u && rip==AOS_X86_VTX_GUEST_RIP && length==1u)
                 report_and_wait(endpoint,AOS_X86_VTX_GUEST_FAULTS_PASS,reason,rip,length);
             report_and_wait(endpoint,AOS_X86_VTX_PROOF_FAIL,reason,rip,length);
         }
         if (reason!=(attempt ? 32u : 31u) || length!=2u ||
-            seL4_GetMR(SEL4_VMENTER_FAULT_ECX)!=UINT32_MAX ||
-            seL4_GetMR(SEL4_VMENTER_FAULT_EAX)!=0x12345678u ||
-            seL4_GetMR(SEL4_VMENTER_FAULT_EDX)!=0x87654321u)
+            returned.words[SEL4_VMENTER_FAULT_ECX]!=UINT32_MAX ||
+            returned.words[SEL4_VMENTER_FAULT_EAX]!=0x12345678u ||
+            returned.words[SEL4_VMENTER_FAULT_EDX]!=0x87654321u)
             report_and_wait(endpoint,AOS_X86_VTX_PROOF_FAIL,reason,rip,length);
         aos_x86_entry_event_t event;
         if (!aos_x86_entry_event(&event,true,true,length,0,2,0))
@@ -442,13 +444,14 @@ void pd_main(seL4_CPtr endpoint, seL4_CPtr nameserver_endpoint)
     seL4_SetMR(SEL4_VMENTER_CALL_CONTROL_PPC_MR, VMX_CONTROL_PPC_HLT_EXITING);
     seL4_SetMR(AOS_VMENTER_INTERRUPT_INFO_MR, 0u);
 
-    seL4_Word result = seL4_VMEnter(NULL);
-    seL4_Word reason = seL4_GetMR(SEL4_VMENTER_FAULT_REASON_MR);
-    seL4_Word rip = seL4_GetMR(SEL4_VMENTER_CALL_EIP_MR);
+    aos_x86_vmenter_return_t returned = aos_x86_vm_enter();
+    seL4_Word rip = returned.words[SEL4_VMENTER_CALL_EIP_MR];
+    if (returned.result != SEL4_VMENTER_RESULT_FAULT)
+        report_and_wait(endpoint, AOS_X86_VTX_PROOF_FAIL, 0x4e5446u, rip, returned.badge);
+    seL4_Word reason = returned.words[SEL4_VMENTER_FAULT_REASON_MR];
     seL4_Word instruction_len =
-        seL4_GetMR(SEL4_VMENTER_FAULT_INSTRUCTION_LEN_MR);
-    if (result == SEL4_VMENTER_RESULT_FAULT &&
-        (reason & 0xffffu) == AOS_X86_VTX_HLT_EXIT_REASON &&
+        returned.words[SEL4_VMENTER_FAULT_INSTRUCTION_LEN_MR];
+    if ((reason & 0xffffu) == AOS_X86_VTX_HLT_EXIT_REASON &&
         rip == AOS_X86_VTX_GUEST_RIP &&
         instruction_len == AOS_X86_VTX_HLT_INSTRUCTION_LEN) {
         report_and_wait(endpoint, AOS_X86_VTX_PROOF_PASS, reason, rip,
