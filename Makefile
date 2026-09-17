@@ -695,7 +695,13 @@ gate: test-host gate-aarch64 gate-x86_64 gate-guest-io
 # lint-source is a source lint (policy-check's sibling), not a test; it is
 # listed here so the invariants it protects are checked on every host run,
 # but it is not counted among the host tests below.
-test-host: policy-check guest-profile-check lint-source test-integration test-operator-host test-log-ring-host test-framebuffer-host
+test-host: policy-check guest-profile-check lint-source test-integration test-operator-host test-log-ring-host test-framebuffer-host test-virtio-gpu-host
+
+.PHONY: test-virtio-gpu-host
+test-virtio-gpu-host:
+	@mkdir -p $(BUILD_TMP_DIR)
+	$(CC) -std=c11 -Wall -Wextra -Werror -I platform/include -I libvmm/include tests/platform/test_virtio_gpu_2d.c libvmm/src/virtio/gpu_2d.c libvmm/src/virtio/gpu_ring.c platform/gpu-virt/framebuffer_adapter.c platform/framebuffer/service.c -o $(BUILD_TMP_DIR)/test_virtio_gpu_2d
+	$(BUILD_TMP_DIR)/test_virtio_gpu_2d
 
 .PHONY: test-framebuffer-host
 test-framebuffer-host:

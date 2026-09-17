@@ -300,6 +300,16 @@ fault badge, address and access direction. Both focused tests passed locally
 on Spark. They do not establish hardware scanout, guest DRM/input or an
 external export client. Those remain required for the v0.4 graphics outcome.
 
+The in-progress libvmm GPU backend (`libvmm/src/virtio/gpu*.c`) implements
+bounded 2D resource commands and direct control/cursor virtqueues, with
+`platform/gpu-virt/framebuffer_adapter.c` translating backend operations to
+the framebuffer queue contract. It is compiled into libvmm but is not yet
+registered by the VMM boot path, advertised in a guest DTB, or granted a
+framebuffer queue by root. Host tests verify exact pixels through the real
+framebuffer queue implementation; cross-compilation is not a guest DRM proof.
+This code adds no physical display ownership. Root wiring, guest proof,
+input, hardware scanout and external export remain required.
+
 ### Generic PD logging
 
 On AArch64, root provisions a separate 4 KiB log ring for each client and a
