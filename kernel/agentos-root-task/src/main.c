@@ -3237,7 +3237,7 @@ void root_task_main(const seL4_BootInfo *bi)
             if (status == AOS_X86_VTX_PROOF_FAIL && reason == 0x425544u) {
               for (unsigned set=0; set<2; set++) {
                 const seL4_Word *view=snapshot+set*AOS_X86_FIRMWARE_SNAPSHOT_SET_WORDS;
-                dbg_puts(set ? "[rt] firmware last HLT or PM poll exit\n" :
+                dbg_puts(set ? "[rt] firmware observed wait exit\n" :
                                "[rt] firmware budget exit\n");
                 for (unsigned region=0; region<2; region++) {
                     unsigned count=region ? AOS_X86_FIRMWARE_STACK_WORDS :
