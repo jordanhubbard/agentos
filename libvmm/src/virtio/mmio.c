@@ -327,9 +327,15 @@ bool virtio_mmio_fault_handle(size_t vcpu_id, size_t offset, size_t fsr, seL4_Us
 
 static void virtio_virq_default_ack(size_t vcpu_id, int irq, void *cookie)
 {
-    (void)vcpu_id;
-    (void)irq;
-    (void)cookie;
+    virtio_device_t *dev = cookie;
+    /* VirtIO MMIO's interrupt signal remains asserted while any status bit
+     * is set (VirtIO 1.2, 4.2.3.4). A completion between InterruptACK and
+     * guest EOI can be coalesced into the still-pending virtual IRQ. vGIC
+     * clears that pending state before this callback; reassert the device
+     * level now so the new completion cannot lose its wakeup. */
+    if (dev->regs.InterruptStatus && !virq_inject_vcpu(vcpu_id, irq)) {
+        LOG_VMM_ERR("could not reassert virtio MMIO IRQ %d\n", irq);
+    }
 }
 
 bool virtio_mmio_register_device(virtio_device_t *dev,

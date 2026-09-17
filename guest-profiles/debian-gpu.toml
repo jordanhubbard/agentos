@@ -7,13 +7,16 @@ aliases = ["debian-gpu"]
 [target]
 devices = ["net", "block", "console", "gpu"]
 
+[boot]
+command_line = "console=hvc0 loglevel=7 root=UUID=eeb673b7-002d-483a-ba22-a4b6cad94540 rw rootwait systemd.unit=multi-user.target systemd.getty_auto=no cloud-init=disabled panic=0"
+
 [artifacts.dtb]
 source = "generated:linux.dts+profile-selected-virtio-gpu"
 cache = "build/qemu_virt_aarch64/debian-gpu-vm.dtb"
-sha256 = "e1efbd0e3fced7eb1785d4ef2a086e0c031d58881a3dbc001bb626f425ffa181"
+sha256 = "79f82bcc3a81c4b72995fd72fabbce4e8ad81649905fcd3acc01df3d5ff669ab"
 
 [placements.dual-primary]
-dtb_sha256 = "e1efbd0e3fced7eb1785d4ef2a086e0c031d58881a3dbc001bb626f425ffa181"
+dtb_sha256 = "79f82bcc3a81c4b72995fd72fabbce4e8ad81649905fcd3acc01df3d5ff669ab"
 
 [host.qemu.ssh]
 host_port = 12224
