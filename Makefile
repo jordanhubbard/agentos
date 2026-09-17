@@ -719,8 +719,9 @@ test-x86-firmware-build:
 		X86_FIRMWARE_RESET=1 \
 		$(abspath $(BUILD_TMP_DIR)/x86-firmware-link)/guest_vmm_primary.elf \
 		$(abspath $(BUILD_TMP_DIR)/x86-firmware-link)/serial_pd.elf \
-		$(abspath $(BUILD_TMP_DIR)/x86-firmware-link)/blk_virt.elf
-	@echo "PASS: x86 firmware VMM, serial driver and block virtualizer link checks"
+		$(abspath $(BUILD_TMP_DIR)/x86-firmware-link)/blk_virt.elf \
+		$(abspath $(BUILD_TMP_DIR)/x86-firmware-link)/virtio_blk.elf
+	@echo "PASS: x86 firmware VMM, serial driver, block driver and virtualizer link checks"
 
 # test-host: alias for the host-only integration suite.  Named explicitly so
 # callers and CI cannot mistake host-only coverage for target/QEMU proof.
@@ -729,6 +730,18 @@ test-x86-firmware-build:
 # but it is not counted among the host tests below.
 test-host: policy-check guest-profile-check lint-source test-integration test-operator-host test-log-ring-host test-framebuffer-host
 test-host: test-x86-cpu-host
+test-host: test-virtio-host-transport
+
+.PHONY: test-virtio-host-transport
+test-virtio-host-transport:
+	@mkdir -p $(BUILD_TMP_DIR)
+	$(CC) -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -g \
+		-I platform/include -I libvmm/dep/sddf/include \
+		-idirafter kernel/agentos-root-task/include \
+		tests/platform/test_virtio_host_transport.c services/block-driver/virtio_host_transport.c \
+		-o $(BUILD_TMP_DIR)/test_virtio_host_transport
+	$(BUILD_TMP_DIR)/test_virtio_host_transport
+
 test-host: test-x86-config-host
 test-host: test-x86-apic-host
 test-host: test-x86-string-host
