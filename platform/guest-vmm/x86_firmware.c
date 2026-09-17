@@ -35,6 +35,15 @@
 static seL4_Word timer_exits, injections, eois, timer_shift, tsc_hz, halt_exits;
 static seL4_Word snapshot[AOS_X86_FIRMWARE_SNAPSHOT_WORDS];
 static seL4_Word halt_chain[AOS_X86_FIRMWARE_CHAIN_WORDS];
+#ifdef AGENTOS_X86_BOOT_KERNEL
+extern const uint8_t _binary_x86_boot_kernel_bin_start[], _binary_x86_boot_kernel_bin_end[];
+#ifdef AGENTOS_X86_BOOT_INITRD
+extern const uint8_t _binary_x86_boot_initrd_bin_start[], _binary_x86_boot_initrd_bin_end[];
+#endif
+#ifdef AGENTOS_X86_BOOT_CMDLINE
+extern const uint8_t _binary_x86_boot_cmdline_bin_start[], _binary_x86_boot_cmdline_bin_end[];
+#endif
+#endif
 _Static_assert(AOS_X86_FIRMWARE_REPORT_WORDS <= seL4_MsgMaxLength,
                "firmware diagnostics must fit in one IPC message");
 
@@ -180,6 +189,22 @@ void aos_x86_firmware_run(seL4_CPtr ep, seL4_Word result)
     aos_x86_config_t config;
     if (!aos_x86_config_init(&config, AOS_X86_FIRMWARE_RAM))
         stop(ep, AOS_X86_VTX_PROOF_FAIL, 0x434647u, 0, 0);
+#ifdef AGENTOS_X86_BOOT_KERNEL
+    const aos_x86_boot_blobs_t boot={
+        .kernel=_binary_x86_boot_kernel_bin_start,
+        .kernel_size=(uint32_t)(_binary_x86_boot_kernel_bin_end-_binary_x86_boot_kernel_bin_start),
+#ifdef AGENTOS_X86_BOOT_INITRD
+        .initrd=_binary_x86_boot_initrd_bin_start,
+        .initrd_size=(uint32_t)(_binary_x86_boot_initrd_bin_end-_binary_x86_boot_initrd_bin_start),
+#endif
+#ifdef AGENTOS_X86_BOOT_CMDLINE
+        .cmdline=_binary_x86_boot_cmdline_bin_start,
+        .cmdline_size=(uint32_t)(_binary_x86_boot_cmdline_bin_end-_binary_x86_boot_cmdline_bin_start),
+#endif
+    };
+    if (!aos_x86_config_boot(&config,&boot))
+        stop(ep,AOS_X86_VTX_PROOF_FAIL,0x424f4fu,0,boot.kernel_size);
+#endif
     /* Admit the architectural ratio or an identified KVM board's explicit
      * clock leaf. A missing frequency cannot be replaced by invented time. */
     aos_x86_cpuid_t clock = host_id(0).eax >= 0x15u ? host_id(0x15u) : (aos_x86_cpuid_t){0};

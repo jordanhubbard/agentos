@@ -133,10 +133,53 @@ ifeq ($(AGENTOS_BOARD),x86_64_generic_vtx)
     CFLAGS += -DAGENTOS_X86_FIRMWARE_MODES=1 -DAGENTOS_X86_FIRMWARE_RESET=1
     CFLAGS_ROOT_TASK += -DAGENTOS_X86_FIRMWARE_RESET=1
     ROOT_TASK_OBJS += $(BUILD_DIR)/x86_firmware.o
+    ifneq ($(strip $(X86_BOOT_KERNEL)),)
+      CFLAGS += -DAGENTOS_X86_BOOT_KERNEL=1 -DAOS_X86_FIRMWARE_RAM=0x08000000u
+      CFLAGS_ROOT_TASK += -DAOS_X86_FIRMWARE_RAM=0x08000000u
+    endif
   endif
 endif
 
 ifeq ($(X86_FIRMWARE_RESET),1)
+ifneq ($(strip $(X86_BOOT_KERNEL)),)
+$(BUILD_DIR)/guest_vmm_primary.elf: $(BUILD_DIR)/x86_boot_kernel.o
+$(BUILD_DIR)/x86_boot_kernel.o: FORCE
+	@mkdir -p $(BUILD_DIR)
+	@test -n "$(X86_BOOT_KERNEL_SHA256)" || { echo 'Set X86_BOOT_KERNEL_SHA256'; exit 1; }
+	@cp "$(X86_BOOT_KERNEL)" "$(BUILD_DIR)/x86_boot_kernel.bin"
+	@test "$$(wc -c < "$(BUILD_DIR)/x86_boot_kernel.bin")" -gt 0 -a "$$(wc -c < "$(BUILD_DIR)/x86_boot_kernel.bin")" -le 67108864
+	@printf '%s  %s\n' '$(X86_BOOT_KERNEL_SHA256)' '$(BUILD_DIR)/x86_boot_kernel.bin' | sha256sum -c -
+	cd $(BUILD_DIR) && $(OBJCOPY) -I binary -O elf64-x86-64 -B i386:x86-64 \
+		--rename-section .data=.rodata,alloc,load,readonly,data,contents x86_boot_kernel.bin x86_boot_kernel.o
+ifneq ($(strip $(X86_BOOT_INITRD)),)
+  CFLAGS += -DAGENTOS_X86_BOOT_INITRD=1
+$(BUILD_DIR)/guest_vmm_primary.elf: $(BUILD_DIR)/x86_boot_initrd.o
+$(BUILD_DIR)/x86_boot_initrd.o: FORCE
+	@mkdir -p $(BUILD_DIR)
+	@test -n "$(X86_BOOT_INITRD_SHA256)" || { echo 'Set X86_BOOT_INITRD_SHA256'; exit 1; }
+	@cp "$(X86_BOOT_INITRD)" "$(BUILD_DIR)/x86_boot_initrd.bin"
+	@test "$$(wc -c < "$(BUILD_DIR)/x86_boot_initrd.bin")" -gt 0 -a "$$(wc -c < "$(BUILD_DIR)/x86_boot_initrd.bin")" -le 67108864
+	@printf '%s  %s\n' '$(X86_BOOT_INITRD_SHA256)' '$(BUILD_DIR)/x86_boot_initrd.bin' | sha256sum -c -
+	cd $(BUILD_DIR) && $(OBJCOPY) -I binary -O elf64-x86-64 -B i386:x86-64 \
+		--rename-section .data=.rodata,alloc,load,readonly,data,contents x86_boot_initrd.bin x86_boot_initrd.o
+endif
+ifneq ($(strip $(X86_BOOT_CMDLINE_FILE)),)
+  CFLAGS += -DAGENTOS_X86_BOOT_CMDLINE=1
+$(BUILD_DIR)/guest_vmm_primary.elf: $(BUILD_DIR)/x86_boot_cmdline.o
+$(BUILD_DIR)/x86_boot_cmdline.o: FORCE
+	@mkdir -p $(BUILD_DIR)
+	@test -n "$(X86_BOOT_CMDLINE_SHA256)" || { echo 'Set X86_BOOT_CMDLINE_SHA256'; exit 1; }
+	@cp "$(X86_BOOT_CMDLINE_FILE)" "$(BUILD_DIR)/x86_boot_cmdline.bin"
+	@test "$$(wc -c < "$(BUILD_DIR)/x86_boot_cmdline.bin")" -gt 0 -a "$$(wc -c < "$(BUILD_DIR)/x86_boot_cmdline.bin")" -le 4096
+	@printf '%s  %s\n' '$(X86_BOOT_CMDLINE_SHA256)' '$(BUILD_DIR)/x86_boot_cmdline.bin' | sha256sum -c -
+	cd $(BUILD_DIR) && $(OBJCOPY) -I binary -O elf64-x86-64 -B i386:x86-64 \
+		--rename-section .data=.rodata,alloc,load,readonly,data,contents x86_boot_cmdline.bin x86_boot_cmdline.o
+endif
+else
+ifneq ($(strip $(X86_BOOT_INITRD)$(X86_BOOT_CMDLINE_FILE)),)
+$(error X86_BOOT_INITRD and X86_BOOT_CMDLINE_FILE require X86_BOOT_KERNEL)
+endif
+endif
 $(BUILD_DIR)/x86_cpu.o: $(REPO_ROOT_MK)/platform/guest-vmm/x86_cpu.c
 	@mkdir -p $(BUILD_DIR)
 	$(CC) -c $(CFLAGS) $< -o $@
