@@ -50,6 +50,14 @@ int main(void)
     assert(out.region[1].paddr == 0xfebc3000 && out.region[1].length == 4096);
     assert(out.region[2].paddr == 0xfebc2000 && out.region[2].length == 4096);
     assert(out.notify_multiplier == 4);
+    put32(0, 0x10411af4);
+    assert(aos_virtio_pci_decode(config, sizes, 0x1041, &out));
+    assert(out.region[0].paddr == 0xfebc0000 && out.region[0].length == 4096);
+    assert(out.region[1].paddr == 0xfebc3000 && out.region[1].length == 4096);
+    assert(out.region[2].paddr == 0xfebc2000 && out.region[2].length == 4096);
+    assert(out.notify_multiplier == 4);
+    rejected(); /* A NIC must not bind as the block device. */
+    fixture();
     put32(0x24, 1);
     assert(aos_virtio_pci_decode(config, sizes, 0x1042, &out));
     assert(out.region[1].paddr == UINT64_C(0x1febc3000));

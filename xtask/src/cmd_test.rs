@@ -921,7 +921,10 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
             if args.assert_firmware_reset {
                 wait_for_all_markers(
                     &log_path,
-                    &["[rt] x86 host block PCI resources verified"],
+                    &[
+                        "[rt] x86 host network PCI discovery verified",
+                        "[rt] x86 host block PCI resources verified",
+                    ],
                     Duration::from_secs(args.timeout_secs),
                     &mut qemu,
                 )?;
@@ -2001,6 +2004,10 @@ pub(crate) fn spawn_qemu_with_guest(
                 ))
                 .arg("-device")
                 .arg("virtio-blk-pci,drive=agentos_blk,addr=05.0,disable-legacy=on");
+            c.arg("-netdev")
+                .arg("user,id=agentos_net,restrict=on")
+                .arg("-device")
+                .arg("virtio-net-pci,netdev=agentos_net,addr=06.0,disable-legacy=on,mac=52:54:00:12:34:56");
             c.arg("-chardev")
                 .arg(format!(
                     "socket,id=serial2,path={},server=on,wait=off",
