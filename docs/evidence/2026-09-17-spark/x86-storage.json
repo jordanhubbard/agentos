@@ -1,0 +1,70 @@
+{
+  "qualification": "Intel guest write, fsync and verification across full platform cold boots",
+  "runtime_revision": "9337e841792db6c4b14bc3929455310a89485cb7",
+  "sdk_version": "2.3.0",
+  "checks": [
+    {
+      "host": "Spark ARM64",
+      "command": "make gate SEL4_SDK_VERSION=2.3.0",
+      "result": "PASS",
+      "log": "build/evidence/x86-storage-9337e84/gate.log",
+      "sha256": "3e88da01fd4f999337e89b274ae768a3660ef00a1774acd154a42b236b485e39"
+    },
+    {
+      "host": "madmax Intel Linux via puck.local",
+      "command": "make gate-x86_64-storage SEL4_SDK_VERSION=2.3.0 X86_FIRMWARE_IMAGE=/tmp/agentos-ovmf-2024.02-2ubuntu0.9.fd X86_FIRMWARE_SHA256=101afad5f520753224b60b9555df60add435cf50c7a82b781d7d7d8c60db7eb5 X86_BOOT_KERNEL=/tmp/agentos-linux-7.0.0-30.efi X86_BOOT_KERNEL_SHA256=0ad39b13e289e1a5cf806d14541ac8f221eefe849017f5915e0846917ed67785",
+      "result": "PASS",
+      "log": "build/evidence/x86-storage-9337e84/intel.log",
+      "sha256": "35346a5bbf027ca8277aca83465f433ee2f6f91faf20d0e8368aafa301d831b8"
+    }
+  ],
+  "intel_receipt": {
+    "disk": "/tmp/agentos-v04-intel-discovery/build/tmp/x86-storage-KKXpd0/disk.img",
+    "phases": [
+      {
+        "artifacts": {
+          "agentos.img": {
+            "path": "/tmp/agentos-v04-intel-discovery/build/tmp/x86-storage-KKXpd0/write/agentos.img",
+            "sha256": "6debd645df04b7a695c63255dd1cd7c4e2c3fdba3ace83f56d02e8591e86acaf"
+          },
+          "root_task.elf": {
+            "path": "/tmp/agentos-v04-intel-discovery/build/tmp/x86-storage-KKXpd0/write/root_task.elf",
+            "sha256": "5dff238eb3a6f97c38911abd1f662fad1735b1de8234ff8ea72f67a80a9cdb83"
+          }
+        },
+        "disk_sha256": "e5617c82288dc536b1b6d18642aa98b33546a26d53dd01626da22b8f6976865f",
+        "initrd_sha256": "1577b1858f3ec5e20588f7fedc148fb4b99f99cf6ec152a6fa8a7bcab548c420",
+        "phase": "write",
+        "result": "PASS"
+      },
+      {
+        "artifacts": {
+          "agentos.img": {
+            "path": "/tmp/agentos-v04-intel-discovery/build/tmp/x86-storage-KKXpd0/verify/agentos.img",
+            "sha256": "d0e442f691ba2243aa586a7d7371b42b4e20b36a2eb5b63281e24499b4380707"
+          },
+          "root_task.elf": {
+            "path": "/tmp/agentos-v04-intel-discovery/build/tmp/x86-storage-KKXpd0/verify/root_task.elf",
+            "sha256": "35d8ff66b3cf6d5cae1b6aab229b758dae2b99db17a474c55abd244b7c987fc9"
+          }
+        },
+        "disk_sha256": "e5617c82288dc536b1b6d18642aa98b33546a26d53dd01626da22b8f6976865f",
+        "initrd_sha256": "37a0e5fc68065d8bc3f630fa2d199e1188fe6cd9fdf39db7b73390fa39ba9703",
+        "phase": "verify",
+        "result": "PASS"
+      }
+    ],
+    "scope": "Single guest, two complete platform cold boots; no concurrent isolation or guest lifecycle reset claim"
+  },
+  "observations": [
+    "The first Linux guest verified a zero-filled block at offset 8192, wrote 4096 bytes of 0x5a and required fsync success.",
+    "After each QEMU instance exited, the host compared all 32 MiB against the expected image, including both initial qualification markers and all untouched zero padding.",
+    "The second instance opened the same medium read-only, verified the persisted block and completed the userspace syscall and bidirectional console proof.",
+    "Writer and verifier initramfs hashes matched independent Spark builds. No Intel qualification QEMU remained after completion."
+  ],
+  "limitations": [
+    "One guest across full platform cold boots; guest lifecycle reset and concurrent-client isolation remain unqualified.",
+    "Successful Linux fsync and cold-boot persistence are observed; physical power-loss durability was not exercised.",
+    "Pinned Debian acceptance, canonical integration, GUI qualification and the v0.4 release remain incomplete."
+  ]
+}
