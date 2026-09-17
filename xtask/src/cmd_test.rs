@@ -503,6 +503,12 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
         } else if args.assert_vmx_exit {
             make_args.push(String::from("X86_FIRMWARE_MODES=0"));
         }
+        if args.assert_vmx_exit {
+            make_args.push(format!(
+                "X86_FIRMWARE_RESET={}",
+                u8::from(args.assert_firmware_reset)
+            ));
+        }
         let make_arg_refs = make_args.iter().map(String::as_str).collect::<Vec<_>>();
         run_make(&make_arg_refs, &repo_root).context("profile-driven build step failed")?;
     }
@@ -809,6 +815,7 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
                 Duration::from_secs(args.timeout_secs),
                 &mut qemu,
                 args.assert_firmware_modes,
+                args.assert_firmware_reset,
             )
         } else if args.board == "x86_64_generic" {
             wait_for_x86_reduced_smoke(&log_path, Duration::from_secs(args.timeout_secs))
@@ -2182,8 +2189,11 @@ fn wait_for_x86_vtx_proof(
     timeout: Duration,
     qemu: &mut Child,
     firmware_modes: bool,
+    firmware_reset: bool,
 ) -> anyhow::Result<String> {
-    let expected = if firmware_modes {
+    let expected = if firmware_reset {
+        "[rt] x86 OVMF reset execution verified"
+    } else if firmware_modes {
         "[rt] x86 VMX real protected long entry modes verified"
     } else {
         "[rt] x86 VMX EPT HLT exit verified"

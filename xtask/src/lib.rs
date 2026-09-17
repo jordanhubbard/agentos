@@ -130,6 +130,13 @@ pub struct TestArgs {
     /// Also require real-address and unpaged protected VM-entry qualification.
     #[arg(long, requires = "assert_vmx_exit")]
     pub assert_firmware_modes: bool,
+    /// Execute a hash-checked OVMF image from the architectural reset vector.
+    #[arg(
+        long,
+        requires = "assert_vmx_exit",
+        conflicts_with = "assert_firmware_modes"
+    )]
+    pub assert_firmware_reset: bool,
     /// Start the profile-defined desktop and verify one raw RFB frame
     /// through a key-authenticated SSH tunnel.
     #[arg(long)]
