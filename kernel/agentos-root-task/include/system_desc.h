@@ -230,6 +230,7 @@ typedef struct {
 #define SVC_ID_FRAMEBUFFER_TEST0 31u
 #define SVC_ID_FRAMEBUFFER_TEST1 32u
 #define SVC_ID_INPUT_VIRT 33u /* isolated keyboard/pointer queue service */
+#define SVC_ID_DISPLAY_RAMFB 34u /* QEMU fw_cfg display driver */
 
 /* Standard per-PD CNode slot assignments for well-known capabilities.
  * These are the slots at which each PD finds its initial endpoint caps. */
@@ -287,3 +288,5 @@ typedef struct {
 #define PD_CNODE_SLOT_FB_PEER_NOTIFY 33u /* service uses 33/34 for clients */
 #define PD_CNODE_SLOT_INPUT_WAIT 36u
 #define PD_CNODE_SLOT_INPUT_PEER_NOTIFY 37u /* service: two VMMs and CC */
+#define PD_CNODE_SLOT_DISPLAY_WAIT 40u
+#define PD_CNODE_SLOT_DISPLAY_PEER_NOTIFY 41u

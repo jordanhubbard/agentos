@@ -697,7 +697,34 @@ gate: test-host gate-aarch64 gate-x86_64 gate-guest-io
 # lint-source is a source lint (policy-check's sibling), not a test; it is
 # listed here so the invariants it protects are checked on every host run,
 # but it is not counted among the host tests below.
-test-host: policy-check guest-profile-check lint-source test-integration test-operator-host test-log-ring-host test-framebuffer-host test-virtio-gpu-host test-input-host test-agentctl-frame-host
+test-host: policy-check guest-profile-check lint-source test-integration test-operator-host test-log-ring-host test-framebuffer-host test-virtio-gpu-host test-input-host test-agentctl-frame-host test-ramfb-host test-display-host
+
+.PHONY: test-display-host
+.PHONY: test-display-init
+.PHONY: test-display
+test-display: test-display-host test-ramfb-host
+	cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os none --assert-framebuffer --assert-display --timeout-secs $(QEMU_TEST_TIMEOUT)
+
+test-display-init:
+	@mkdir -p $(BUILD_TMP_DIR)
+	$(MAKE) test-framebuffer DISPLAY_RAMFB=1 QEMU_TEST_TIMEOUT=$(QEMU_TEST_TIMEOUT) > $(BUILD_TMP_DIR)/display-init.log 2>&1 || { cat $(BUILD_TMP_DIR)/display-init.log; exit 1; }
+	rg -Fq '[display] private DMA and scanout banks ready' $(BUILD_TMP_DIR)/display-init.log
+	@echo 'Display driver initialized; native framebuffer clients and observer passed (scanout not tested)'
+
+test-display-host:
+	@mkdir -p $(BUILD_TMP_DIR)
+	$(CC) -std=c11 -Wall -Wextra -Werror -I platform/include tests/platform/test_display.c platform/display/service.c -o $(BUILD_TMP_DIR)/test_display
+	$(BUILD_TMP_DIR)/test_display
+	$(CC) -std=c11 -Wall -Wextra -Werror -I platform/include tests/platform/test_display_producer.c platform/display/producer.c platform/display/service.c -o $(BUILD_TMP_DIR)/test_display_producer
+	$(BUILD_TMP_DIR)/test_display_producer
+
+.PHONY: test-ramfb-host
+test-ramfb-host:
+	@mkdir -p $(BUILD_TMP_DIR)
+	$(CC) -std=c11 -Wall -Wextra -Werror -I platform/include tests/platform/test_ramfb.c platform/display/ramfb.c -o $(BUILD_TMP_DIR)/test_ramfb
+	$(BUILD_TMP_DIR)/test_ramfb
+	$(CC) -std=c11 -Wall -Wextra -Werror -I platform/include tests/platform/test_ramfb_mmio.c platform/display/ramfb_mmio.c -o $(BUILD_TMP_DIR)/test_ramfb_mmio
+	$(BUILD_TMP_DIR)/test_ramfb_mmio
 
 .PHONY: test-virtio-gpu-host
 test-virtio-gpu-host:
@@ -973,6 +1000,10 @@ test-ubuntu-virtio:
 .PHONY: test-guest-gpu
 .PHONY: test-guest-input
 .PHONY: test-guest-graphics-input
+.PHONY: test-guest-display
+test-guest-display:
+	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os debian-graphics-input --timeout-secs $(QEMU_TEST_TIMEOUT) --assert-live --assert-agentos-virtio --assert-guest-display --ssh-port $(QEMU_TEST_SSH_PORT)
+
 test-guest-graphics-input:
 	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os debian-graphics-input --timeout-secs $(QEMU_TEST_TIMEOUT) --assert-live --assert-agentos-virtio --ssh-port $(QEMU_TEST_SSH_PORT)
 

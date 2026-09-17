@@ -344,6 +344,13 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
     if let Some(profile) = &mut profile_plan {
         apply_profile_ssh_port(profile, args.ssh_port);
     }
+    anyhow::ensure!(
+        !args.assert_guest_display || (args.board == "qemu_virt_aarch64"
+            && !args.no_build && profile_plan.as_ref().is_some_and(|p|
+                p.devices.iter().any(|d| d == "gpu")
+                && p.test.iter().any(|s| s.action == "assert-frame-pixels"))),
+        "guest display qualification requires a fresh AArch64 graphics profile with pixel assertions"
+    );
     if let Some(profile) = &profile_plan {
         println!(
             "[xtask:test] resolved alias {:?} to {} ({}, architecture={}, control_type={}, guest_id={}, provision_steps={}, test_steps={})",
@@ -482,6 +489,9 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
         }
         if args.assert_framebuffer {
             make_args.push(String::from("FRAMEBUFFER_TEST=1"));
+        }
+        if args.assert_display || args.assert_guest_display {
+            make_args.push(String::from("DISPLAY_RAMFB=1"));
         }
         make_args.extend(profile_device_build_args(
             profile_plan.as_ref(),
@@ -662,6 +672,7 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
         (args.guest_os == "both" || args.assert_desktop) && !args.keep_running,
         false,
         false,
+        args.assert_display || args.assert_guest_display,
     )?);
     if needs_host_net_stimulus {
         wait_for_all_markers(
@@ -719,6 +730,10 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
         ];
         if args.framebuffer_isolation_probe.is_some() {
             markers.push("[rt] framebuffer isolation: expected client data fault verified");
+        }
+        if args.assert_display {
+            markers.push("[display] private DMA and scanout banks ready");
+            markers.push("[display] first frame configured");
         }
         wait_for_all_markers(
             &log_path,
@@ -822,6 +837,7 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
                 Some(profile),
                 Duration::from_secs(args.timeout_secs),
                 &mut qemu,
+                args.assert_guest_display.then_some(log_path.as_path()),
             )
         } else if args.assert_vmx_exit {
             wait_for_x86_vtx_proof(&log_path, Duration::from_secs(args.timeout_secs), &mut qemu)
@@ -843,6 +859,10 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
             Duration::from_secs(args.timeout_secs),
             &mut qemu,
         );
+    }
+
+    if result.is_ok() && args.assert_display {
+        result = verify_native_display(&log_path);
     }
 
     if result.is_ok() && args.assert_console_backpressure {
@@ -1286,6 +1306,7 @@ pub fn launch(args: &QemuLaunchArgs) -> anyhow::Result<()> {
         false,
         true,
         args.fast,
+        false,
     )?;
     let status = qemu.wait().context("failed to wait for QEMU")?;
     anyhow::ensure!(status.success(), "QEMU exited with {status}");
@@ -1678,7 +1699,12 @@ pub(crate) fn spawn_qemu_with_guest(
     capture_net: bool,
     interactive_serial: bool,
     fast: bool,
+    display: bool,
 ) -> anyhow::Result<std::process::Child> {
+    anyhow::ensure!(
+        !display || board == "qemu_virt_aarch64",
+        "ramfb requires AArch64"
+    );
     let log_file = std::fs::File::create(log_path).context("failed to create QEMU log file")?;
     let netdev = qemu_netdev_arg(ssh_port, profile, scenario)?;
 
@@ -1737,6 +1763,13 @@ pub(crate) fn spawn_qemu_with_guest(
                 format!("file:{}", log_path.display())
             };
             let mut c = std::process::Command::new("qemu-system-aarch64");
+            if display {
+                c.arg("-device").arg("ramfb,id=display0");
+                c.arg("-qmp").arg(format!(
+                    "unix:{},server=on,wait=off",
+                    log_path.with_extension("display.qmp.sock").display()
+                ));
+            }
             c.arg("-machine")
                 .arg(machine)
                 .arg("-cpu")
@@ -2579,6 +2612,7 @@ fn wait_for_guest_console_login_via_cc(
     profile: Option<&HostProfilePlan>,
     timeout: Duration,
     qemu: &mut Child,
+    display_log: Option<&Path>,
 ) -> anyhow::Result<String> {
     let mut cc = connect_cc_client(cc_sock, timeout.min(Duration::from_secs(30)), qemu)?;
     wait_for_guest_console_login_on_cc(
@@ -2589,6 +2623,7 @@ fn wait_for_guest_console_login_via_cc(
         profile,
         timeout,
         qemu,
+        display_log,
     )
 }
 
@@ -2600,6 +2635,7 @@ fn wait_for_guest_console_login_on_cc(
     profile: Option<&HostProfilePlan>,
     timeout: Duration,
     qemu: &mut Child,
+    display_log: Option<&Path>,
 ) -> anyhow::Result<String> {
     let start = Instant::now();
     let mut transcript = String::new();
@@ -2726,12 +2762,122 @@ fn wait_for_guest_console_login_on_cc(
         qemu,
     )?;
     if profile.is_some_and(|plan| plan.devices.iter().any(|device| device == "gpu")) {
-        let capture = capture_guest_frame(cc, guest_handle, cc_sock, profile)?;
+        if display_log.is_some() {
+            suspend_guest_via_cc(cc, guest_handle)?;
+            println!("[xtask:test] guest suspended for coherent framebuffer/scanout comparison");
+        }
+        let capture = (|| {
+            let capture = capture_guest_frame(cc, guest_handle, cc_sock, profile)?;
+            if let Some(log) = display_log {
+                let expected = std::fs::read(cc_sock.with_extension("frame.ppm"))?;
+                let receipt: serde_json::Value =
+                    serde_json::from_slice(&std::fs::read(cc_sock.with_extension("frame.json"))?)?;
+                let displayed = verify_display(
+                    log,
+                    &expected,
+                    receipt["width"].as_u64().context("missing frame width")?,
+                    receipt["height"].as_u64().context("missing frame height")?,
+                )?;
+                println!("[xtask:test] {displayed}");
+            }
+            Ok::<_, anyhow::Error>(capture)
+        })();
+        // Always attempt resume, including after a failed capture or comparison.
+        let resumed = if display_log.is_some() {
+            resume_guest_via_cc(cc, guest_handle).map(|_| ())
+        } else {
+            Ok(())
+        };
+        let capture = capture?;
+        resumed?;
         println!("[xtask:test] {capture}");
     }
     Ok(format!(
         "CC console API saw {guest_os} handle {guest_handle} prompt {:?} and {proof}",
         prompt
+    ))
+}
+
+fn verify_native_display(log: &Path) -> anyhow::Result<String> {
+    let mut expected = b"P6\n40 40\n255\n".to_vec();
+    for offset in (0..40u32 * 40 * 4).step_by(4) {
+        for channel in [2, 1, 0] {
+            expected.push(((offset + channel) * 37) as u8);
+        }
+    }
+    verify_display(log, &expected, 40, 40)
+}
+
+fn verify_display(log: &Path, expected: &[u8], width: u64, height: u64) -> anyhow::Result<String> {
+    anyhow::ensure!(
+        width > 0 && width <= 1024 && height > 0 && height <= 768,
+        "invalid display expectation dimensions"
+    );
+    let mut socket = UnixStream::connect(log.with_extension("display.qmp.sock"))?;
+    socket.set_read_timeout(Some(Duration::from_secs(10)))?;
+    socket.set_write_timeout(Some(Duration::from_secs(10)))?;
+    // Bound both message size and asynchronous events; a broken QMP peer must
+    // not turn a display assertion into an unbounded qualification wait.
+    fn receive(socket: &mut UnixStream) -> anyhow::Result<serde_json::Value> {
+        let mut bytes = Vec::new();
+        loop {
+            anyhow::ensure!(bytes.len() < 65536, "oversized QMP response");
+            let mut byte = [0u8];
+            socket.read_exact(&mut byte)?;
+            if byte[0] == b'\n' {
+                return Ok(serde_json::from_slice(&bytes)?);
+            }
+            bytes.push(byte[0]);
+        }
+    }
+    anyhow::ensure!(
+        receive(&mut socket)?.get("QMP").is_some(),
+        "missing QMP greeting"
+    );
+    let ppm = log.with_extension("display.ppm");
+    for (id, command) in [
+        serde_json::json!({"execute":"qmp_capabilities"}),
+        serde_json::json!({"execute":"screendump","arguments":{
+            "filename":ppm,"device":"display0"}}),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let mut command = command;
+        command["id"] = serde_json::json!(id);
+        socket.write_all(serde_json::to_string(&command)?.as_bytes())?;
+        socket.write_all(b"\n")?;
+        let mut completed = false;
+        for _ in 0..32 {
+            let reply = receive(&mut socket)?;
+            if reply.get("event").is_some() {
+                continue;
+            }
+            anyhow::ensure!(
+                reply["id"] == id && reply.get("return").is_some(),
+                "QMP command failed: {reply}"
+            );
+            completed = true;
+            break;
+        }
+        anyhow::ensure!(completed, "QMP event limit exceeded");
+    }
+    let actual = std::fs::read(&ppm)?;
+    anyhow::ensure!(
+        actual == expected,
+        "QEMU display pixels differ from primary client framebuffer"
+    );
+    std::fs::write(
+        log.with_extension("display.json"),
+        serde_json::to_vec_pretty(
+            &serde_json::json!({"width":width,"height":height,"client":0,
+            "asserted_pixels":width*height,"sha256":sha256_bytes(&actual),
+            "capture":"QMP screendump","path":ppm}),
+        )?,
+    )?;
+    Ok(format!(
+        "display: all {} QEMU scanout pixels match primary client",
+        width * height
     ))
 }
 
@@ -3940,6 +4086,7 @@ fn wait_for_dual_guest_consoles_via_cc(
         Some(&lead.profile),
         timeout.saturating_sub(start.elapsed()),
         qemu,
+        None,
     )?;
     let lead_provision = profile_provision_commands(&lead.profile, &ssh_key.public_key)?;
     run_guest_console_commands(
@@ -3993,6 +4140,7 @@ fn wait_for_dual_guest_consoles_via_cc(
         Some(&deferred.profile),
         timeout.saturating_sub(start.elapsed()),
         qemu,
+        None,
     )?;
     let deferred_provision = profile_provision_commands(&deferred.profile, &ssh_key.public_key)?;
     run_guest_console_commands(

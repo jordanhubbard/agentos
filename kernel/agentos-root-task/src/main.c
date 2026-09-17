@@ -76,6 +76,14 @@ static seL4_CPtr g_framebuffer_arena[FB_ARENA_FRAMES];
 static seL4_CPtr g_framebuffer_notify[FB_PEERS + 1u];
 #endif
 #include <contracts/serial_virt_contract.h>
+#ifdef AGENTOS_DISPLAY_RAMFB
+#include <platform/display_layout.h>
+static seL4_CPtr g_display_banks[4],g_display_dma,g_display_queue,g_display_mmio;
+static seL4_CPtr g_display_notify[2];
+_Static_assert(PD_CNODE_SLOT_DISPLAY_WAIT>PD_CNODE_SLOT_INPUT_PEER_NOTIFY+2u &&
+               PD_CNODE_SLOT_DISPLAY_PEER_NOTIFY<PD_IRQHANDLER_SLOT_BASE,
+               "display notification slots overlap existing capabilities");
+#endif
 #include <contracts/blk_virt_contract.h>
 #include <platform/vmm_isolation_probe.h>
 #include <platform/native_net_isolation_probe.h>
@@ -1023,6 +1031,73 @@ static seL4_Error map_guest_ram_reservation(
 }
 #endif
 
+#ifdef AGENTOS_DISPLAY_RAMFB
+static seL4_Error display_allocate(void)
+{
+    seL4_CPtr pool;
+    seL4_Error err=ut_alloc_cap(seL4_UntypedObject,23u,&pool);
+    if (err!=seL4_NoError) return err;
+    for (unsigned i=0;i<4;++i) {
+        g_display_banks[i]=ut_alloc_slot();
+        if (!g_display_banks[i] || (i && g_display_banks[i]!=g_display_banks[0]+i))
+            return seL4_NotEnoughMemory;
+    }
+    err=seL4_Untyped_Retype(pool,seL4_ARM_LargePageObject,0,
+        seL4_CapInitThreadCNode,0,0,g_display_banks[0],4);
+    if (err!=seL4_NoError) return err;
+    uint64_t bank_pa=0;
+    for (unsigned i=0;i<4;++i) {
+        seL4_ARCH_Page_GetAddress_t address=seL4_ARCH_Page_GetAddress(g_display_banks[i]);
+        if (address.error) return address.error;
+        if (!i) bank_pa=address.paddr;
+        if (address.paddr!=bank_pa+(uint64_t)i*0x200000u) return seL4_InvalidArgument;
+    }
+    err=ut_alloc_cap(seL4_ARM_LargePageObject,0,&g_display_dma);
+    if (err==seL4_NoError) err=ut_alloc_cap(seL4_ARM_LargePageObject,0,&g_display_queue);
+    if (err==seL4_NoError) err=ut_alloc_device_cap(AOS_DISPLAY_FWCFG_PA,&g_display_mmio);
+    for (unsigned i=0;i<2 && err==seL4_NoError;++i)
+        err=ut_alloc_cap(seL4_NotificationObject,seL4_NotificationBits,&g_display_notify[i]);
+    if (err!=seL4_NoError) return err;
+    seL4_ARCH_Page_GetAddress_t address=seL4_ARCH_Page_GetAddress(g_display_dma);
+    if (address.error) return address.error;
+    err=pd_vspace_map_device_frame(seL4_CapInitThreadVSpace,g_display_dma,RT_BLK_SCRATCH_VA);
+    if (err!=seL4_NoError) return err;
+    *(aos_display_meta_t *)RT_BLK_SCRATCH_VA=(aos_display_meta_t){
+        .magic=AOS_DISPLAY_META_MAGIC,.version=1,.dma_physical=address.paddr,
+        .bank_physical={bank_pa,bank_pa+AOS_DISPLAY_BANK_STRIDE},
+        .bank_bytes=AOS_DISPLAY_BANK_STRIDE};
+    __asm__ volatile("dsb sy" ::: "memory");
+    return seL4_ARCH_Page_Unmap(g_display_dma);
+}
+static seL4_Error display_map(seL4_CPtr vspace,seL4_CPtr frame,seL4_Word va)
+{
+    seL4_Word copy=ut_alloc_slot();
+    if (!copy) return seL4_NotEnoughMemory;
+    seL4_Error err=seL4_CNode_Copy(seL4_CapInitThreadCNode,copy,64,
+        seL4_CapInitThreadCNode,frame,64,seL4_AllRights);
+    return err==seL4_NoError ? pd_vspace_map_device_frame(vspace,copy,va) : err;
+}
+static seL4_Error display_grant(const pd_desc_t *pd,seL4_CPtr cnode,seL4_CPtr vspace)
+{
+    const unsigned driver=pd->self_svc_id==SVC_ID_DISPLAY_RAMFB;
+    const unsigned own=driver ? 0 : 1;
+    seL4_Error err=display_map(vspace,g_display_queue,AOS_DISPLAY_QUEUE_VA);
+    if (err==seL4_NoError) err=seL4_CNode_Copy(cnode,PD_CNODE_SLOT_DISPLAY_WAIT,
+        pd->cnode_size_bits,seL4_CapInitThreadCNode,g_display_notify[own],64,
+        seL4_CapRights_new(0,0,1,0));
+    if (err==seL4_NoError) err=seL4_CNode_Copy(cnode,PD_CNODE_SLOT_DISPLAY_PEER_NOTIFY,
+        pd->cnode_size_bits,seL4_CapInitThreadCNode,g_display_notify[1-own],64,
+        seL4_CapRights_new(0,0,0,1));
+    if (driver) {
+        if (err==seL4_NoError) err=display_map(vspace,g_display_dma,AOS_DISPLAY_DMA_VA);
+        if (err==seL4_NoError) err=display_map(vspace,g_display_mmio,AOS_DISPLAY_MMIO_VA);
+        for (unsigned i=0;i<4 && err==seL4_NoError;++i)
+            err=display_map(vspace,g_display_banks[i],AOS_DISPLAY_BANK_VA+i*0x200000u);
+    }
+    return err;
+}
+#endif
+
 /* True iff name starts with prefix. */
 static int name_has_prefix(const char *name, const char *prefix)
 {
@@ -1933,6 +2008,12 @@ void root_task_main(const seL4_BootInfo *bi)
             return;
         }
 #endif
+#ifdef AGENTOS_DISPLAY_RAMFB
+    if (display_allocate()!=seL4_NoError) {
+        dbg_puts("[rt] display allocation failed; refusing boot\n");
+        return;
+    }
+#endif
 #ifdef AGENTOS_FRAMEBUFFER_ENABLED
     if (fb_service == SYSTEM_MAX_PDS ||
         (fb_clients[0] == SYSTEM_MAX_PDS && fb_clients[1] == SYSTEM_MAX_PDS)) return;
@@ -2167,7 +2248,8 @@ void root_task_main(const seL4_BootInfo *bi)
          */
 #ifdef CONFIG_KERNEL_MCS
         {
-            const bool frame_service=pd->self_svc_id==SVC_ID_FRAMEBUFFER_QUEUE;
+            const bool frame_service=pd->self_svc_id==SVC_ID_FRAMEBUFFER_QUEUE ||
+                                     pd->self_svc_id==SVC_ID_DISPLAY_RAMFB;
             const bool cc_service=pd->self_svc_id==SVC_ID_CC_PD;
             const bool frequent_refills=frame_service || cc_service;
             const seL4_Word sc_bits=seL4_MinSchedContextBits+(frequent_refills ? 3u : 0u);
@@ -2302,6 +2384,13 @@ void root_task_main(const seL4_BootInfo *bi)
                 dbg_puts("[rt] input queue/capability grant failed; refusing PD start\n");
                 continue;
             }
+        }
+#endif
+#ifdef AGENTOS_DISPLAY_RAMFB
+        if ((pd->self_svc_id==SVC_ID_DISPLAY_RAMFB || pd->self_svc_id==SVC_ID_FRAMEBUFFER_QUEUE) &&
+            display_grant(pd,pd_cnode,vspace)!=seL4_NoError) {
+            dbg_puts("[rt] display mapping failed; refusing boot\n");
+            return;
         }
 #endif
 #ifdef AGENTOS_FRAMEBUFFER_ENABLED
@@ -2580,6 +2669,8 @@ void root_task_main(const seL4_BootInfo *bi)
              name_eq(pd->name, "native_rust_client") ||
              name_eq(pd->name, "framebuffer_client0") ||
              name_eq(pd->name, "framebuffer_client1") ||
+             name_eq(pd->name, "display_ramfb") ||
+             name_eq(pd->name, "framebuffer_queue") ||
              name_eq(pd->name, "test_runner"))) {
             seL4_Word serial_copy = ut_alloc_slot();
             seL4_Error serial_err = seL4_NotEnoughMemory;
