@@ -27,9 +27,9 @@ Root provisions 32 MiB of zeroed private guest RAM at GPA zero and 4 MiB
 of read-only firmware at `0xffc00000`. These are newly allocated frames,
 not host MMIO or passthrough devices. Root drops each temporary initialization
 mapping before installing its EPT mapping and gives the VMM its VCPU cap.
-The VMM also receives read-only aliases of its private RAM at `0x80000000`
-and ROM at `0x90000000`. These aliases permit instruction fetch and page-table
-inspection; they cannot modify guest memory. Mapping caps remain accounted to
+The VMM also receives writable private RAM at `0x80000000`
+and read-only ROM at `0x90000000`. These aliases permit instruction fetch,
+page-table inspection and validated emulated input writes. Mapping caps remain accounted to
 the VMM. No physical APIC page or I/O capability is delegated.
 The firmware variant uses the existing single-VMM qualification topology.
 Allocation failure aborts boot; this is not a runtime guest-create path and
@@ -59,6 +59,11 @@ RAM-size fields. The legacy PICs accept mask-all only: unmasking and commands
 remain unsupported until interrupt routing and injection are implemented.
 No operation forwards a host port or grants a hardware I/O capability. CMOS
 shutdown status reports a cold boot; there is no S3 resume image.
+Firmware can acknowledge that cold boot by clearing the status. CPU discovery
+reports one fixed BSP, matching fw_cfg, with no hotplug events. Port `0x92`
+reports A20 enabled and rejects reset/disable. Platform-ID and microcode
+signature MSRs return synthetic zero values; microcode update triggers remain
+unsupported and never reach the host.
 
 The bootstrap xAPIC has a fixed enabled BSP base at `0xfee00000`, APIC ID zero,
 SVR/TPR and timer registers. Timer counts derive from invariant host TSC ticks,
@@ -68,6 +73,8 @@ qualification uses `host,migratable=off` so QEMU does not hide `invtsc`; the
 VMM still checks that capability. A due unmasked timer stops explicitly:
 asynchronous timer scheduling, interrupt injection, IPIs, other LVT sources,
 base relocation, x2APIC and live divider changes are not implemented.
+LINT0/LINT1 configuration is private and retained for firmware virtual-wire
+setup, but no external pin sources are connected.
 
 APIC MMIO faults use the hardware-reported GPA and a bounded decoder for
 32-bit MOV register/immediate memory forms in a 64-bit code segment. A
@@ -77,13 +84,21 @@ from this guest's RAM or ROM; the decoded operand must translate to the fault
 GPA. Unknown instructions and other mappings stop without accessing host
 memory. This is not a general x86 instruction emulator.
 
-The configuration gate requires reaching a firmware-data string I/O exit
-after PCI reads, CPUID handling and the long-mode transition. **This narrow
-gate passes on Intel.** The pinned OVMF image reaches REP INSB from `0x511`
-at linear RIP `0x0082f9e0`, after its initial APIC setup and cold-boot check.
-The string transfer is observed, not emulated. It still needs bounded writable
-guest-memory access; scalar firmware
-data and PM timer tests alone do not prove firmware consumption on target.
+The earlier APIC gate stopped at REP INSB from `0x511`. The VMM now resumes
+that instruction, transferring at most 256 bytes per exit. It validates every
+destination page before advancing fw_cfg or modifying RAM, sets accessed/dirty
+bits, preserves forward/backward direction and zero-count semantics, and
+re-enters the same instruction when RCX remains nonzero. Only exact long-mode
+`F3 6C` is supported; other string widths/address modes stop explicitly.
+ROM and device GPAs cannot become writable input destinations.
+
+This continuation no longer reports success at the old string-exit checkpoint.
+The Intel gate remains incomplete while firmware executes beyond that point;
+host stream tests and an ordinary Spark gate do not prove complete UEFI boot.
+The current [string-input receipt](evidence/2026-09-17-spark/ovmf-string.json)
+records the next Intel stop: EPT fault at GPA `0xfed40000`, RIP `0x01f4e4fe`.
+This GPA matches the TPM register area; absent-device probing remains to be
+implemented for the current machine, which has no TPM.
 
 The [upstream EDK II transition](https://github.com/tianocore/edk2/blob/edk2-stable202402/UefiCpuPkg/ResetVector/Vtf0/Ia16/Real16ToFlat32.asm)
 provides the source context for this early execution path. The

@@ -1,0 +1,42 @@
+{
+  "qualification": "OVMF firmware-data string input continuation",
+  "date": "2026-09-17",
+  "task": "task_be21a3d5e7e54d13bf0cc597b55a9838",
+  "firmware_sha256": "101afad5f520753224b60b9555df60add435cf50c7a82b781d7d7d8c60db7eb5",
+  "firmware_provenance": "ovmf-reset.json",
+  "intel": {
+    "host": "madmax",
+    "runtime_revision": "01eb96ee4a63a4528e0f6d7fd6dfe2684157b13c",
+    "command": "make gate-x86_64-firmware-reset SEL4_SDK_VERSION=2.3.0 X86_FIRMWARE_IMAGE=/tmp/agentos-ovmf-2024.02-2ubuntu0.9.fd X86_FIRMWARE_SHA256=101afad5f520753224b60b9555df60add435cf50c7a82b781d7d7d8c60db7eb5",
+    "result": "FAIL: unsupported MMIO probe after firmware string input",
+    "exit_reason": 48,
+    "linear_rip": "0x01f4e4fe",
+    "guest_physical_address": "0xfed40000",
+    "finding": "The GPA matches the standard TPM register area. This VMM has no TPM device or absent-device MMIO handling yet.",
+    "observed_progress": "Execution resumes past the previous REP INSB checkpoint, CMOS cold-boot acknowledgment, fixed CPU discovery, CPU identity MSRs and LINT configuration",
+    "log_sha256": "ecc994d75e83c0a57bd2f54e6714b99b0aa38d23c71146c601c309a7ad1791a7",
+    "image_sha256": "879c0a34c288bce8ccd5d2df76964cb020236bd3ba02dc180254c30108cce17f",
+    "retained_directory": "/tmp/agentos-v04-intel-string/build/evidence/string-01eb96e",
+    "termination": "Owned QEMU PID 2327427 terminated after explicit failure and artifact retention; harness returned exit 2"
+  },
+  "spark": {
+    "runtime_revision": "118f9a2d3cfd81222f79224db49dc28117f814d3",
+    "command": "make gate SEL4_SDK_VERSION=2.3.0 QEMU_TEST_SSH_PORT=12264",
+    "result": "PASS",
+    "log_sha256": "272185e32353583ed6115e4b1fd37a4a2e20ef09585e71b53ae122eec6bb33bf",
+    "last_gate_image_sha256": "69cf31a74461bf31a8465a118829cf3b9ef4086fb0de276a82644b0b6bbe744d",
+    "retained_directory": "/tmp/agentos-v04-x86-string/build/evidence/string-118f9a2",
+    "host_tests": "REP stream bytes, forward/reverse and cross-page delivery, bounded continuation, zero count, accessed/dirty bits, E820 output, rejected destinations without memory/device/register mutation",
+    "additional_checks": ["REP host tests pass with ASan and UBSan", "Existing APIC/page-walk/MOV tests pass after walk refactor", "Subsequent CMOS, CPU discovery/A20, identity MSR and LINT tests pass"]
+  },
+  "revision_scope": "After 118f9a2, only opt-in x86 firmware behavior and its host tests changed. Ordinary gate target behavior is unchanged. Later documentation commits do not change runtime code.",
+  "limits": [
+    "Firmware gate is incomplete and no longer stops successfully at the old string-exit checkpoint",
+    "Only exact long-mode F3 6C REP INSB from fw_cfg is implemented",
+    "No CPU hotplug, suspend/resume or guest microcode updates",
+    "No TPM or absent-device MMIO probe behavior",
+    "No complete UEFI/ACPI/Linux or canonical x86 guest I/O qualification",
+    "No asynchronous timer scheduling, interrupt injection or connected external LINT sources",
+    "No persistent firmware variables or runtime capability reclamation"
+  ]
+}
