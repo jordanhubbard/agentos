@@ -218,6 +218,13 @@ exchange. PR #172 addresses the configuration-byte regression in this source.
 Input delivery, physical scanout, interactive latency and release integration
 remain outside that result.
 
+The [Spark input qualification](evidence/2026-09-16-spark/guest-input.json)
+passed at `b0e232f` after the MMIO configuration-byte correction: authenticated
+Debian SSH, exact keyboard/pointer events through the public CLI and Linux
+evdev, and the full OS gate. This is a separate input-only guest run;
+combined graphics/input, target peer isolation and physical device ownership
+still require their own evidence.
+
 MAC work:
 
 - `task_9cc7b9d4fbd14601b6b0851de4d300b8` — target-test the canonical
