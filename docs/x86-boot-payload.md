@@ -18,9 +18,10 @@ guest lifetime, and no descriptor comes from a guest address.
 
 The Make interface copies each supplied file into the build directory, checks
 its explicit SHA-256 and size, then embeds it in a read-only VMM ELF section.
-Root provisions 128 MiB of private RAM for this opt-in variant; firmware-only
+Root provisions 256 MiB of private RAM for this opt-in variant; firmware-only
 builds retain 32 MiB. These are fixed bring-up compositions, not runtime
-desktop resource profiles. Allocation failure aborts boot. Neither variant
+desktop resource profiles. A compile-time bound keeps RAM below the VMM's
+ROM mapping and requires whole 2 MiB pages. Allocation failure aborts boot. Neither variant
 qualifies teardown reclamation.
 
 No payload source has a direct guest EPT mapping. fw_cfg returns the standard

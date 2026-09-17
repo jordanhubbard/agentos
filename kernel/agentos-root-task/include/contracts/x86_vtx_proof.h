@@ -21,16 +21,15 @@
  * and HLT exits. Counters are diagnostics, not an aggregate success claim. */
 /* Failure snapshot: code and stack virtual bases, validity bitmaps, then
  * 10 code and 32 stack qwords. Invalid words are zero, never device reads.
- * Two sets describe the returned budget exit and the first PM timer poll
- * after complete kernel transfer, falling back to the most recent HLT or
- * (without a payload) PM timer poll before any HLT.
+ * Two sets describe the returned budget exit and the most recent HLT exit
+ * (or PM timer poll before any HLT).
  * Snapshots are present only on the diagnostic budget failure. */
 #define AOS_X86_FIRMWARE_CODE_WORDS 10u
 #define AOS_X86_FIRMWARE_STACK_WORDS 32u
 #define AOS_X86_FIRMWARE_SNAPSHOT_SET_WORDS 46u
 #define AOS_X86_FIRMWARE_SNAPSHOT_WORDS 92u
 /* MR102..115: RBP, valid frame count, six {previous RBP, return RIP}
- * pairs at the observed wait, or budget exit without a wait observation.
+ * pairs at last HLT/PM poll, or at budget exit without either observation.
  * Optional diagnostic chain only; no unwind/success guarantee. */
 #define AOS_X86_FIRMWARE_CHAIN_FRAMES 6u
 #define AOS_X86_FIRMWARE_CHAIN_WORDS 14u
@@ -44,6 +43,10 @@
 #endif
 #define AOS_X86_FIRMWARE_RAM_VA   0x80000000u
 #define AOS_X86_FIRMWARE_ROM_VA   0x90000000u
+#if (AOS_X86_FIRMWARE_RAM & 0x1fffffu) || \
+    AOS_X86_FIRMWARE_RAM > AOS_X86_FIRMWARE_ROM_VA - AOS_X86_FIRMWARE_RAM_VA
+#error "Firmware RAM must use whole 2MiB pages and fit below the VMM ROM mapping"
+#endif
 #define AOS_X86_VTX_GUEST_RIP       0x1000u
 #define AOS_X86_VTX_GUEST_PML4_GPA  0x2000u
 #define AOS_X86_VTX_GUEST_PDPT_GPA  0x3000u
