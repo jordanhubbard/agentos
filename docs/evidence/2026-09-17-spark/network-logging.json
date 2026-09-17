@@ -1,0 +1,36 @@
+{
+  "qualification": "Network virtualizer common logging and reduced diagnostic capabilities",
+  "runtime_revision": "c0489f58e00c2862806d0203fa8169cb6ab8c1ed",
+  "sdk_version": "2.3.0",
+  "checks": [
+    {
+      "host": "Spark ARM64",
+      "command": "make test-x86-firmware-build SEL4_SDK_VERSION=2.3.0",
+      "result": "PASS",
+      "log": "build/evidence/network-logging-c0489f5/x86-link.log",
+      "sha256": "f507150938293daf158d3c7f3443cf89e83e86978f0b7b589de08704f8dda0ee"
+    },
+    {
+      "host": "Spark ARM64",
+      "command": "make gate SEL4_SDK_VERSION=2.3.0",
+      "result": "PASS",
+      "log": "build/evidence/network-logging-c0489f5/gate.log",
+      "sha256": "84528f4d573c6c8171a0da7420b4b118a2e9de7311fb55f7022e3027485c8756"
+    }
+  ],
+  "x86_artifact": {
+    "path": "build/evidence/network-logging-c0489f5/net_virt.elf",
+    "sha256": "085df4ec59987ca1ffb34fbee9046cf76dade8fefbca0616fe87da3f0b961cd7"
+  },
+  "observations": [
+    "net_virt now emits bounded complete messages through the common log ring. Its serial endpoint, transfer-page mapping and log-drain Call endpoint were removed.",
+    "The actual x86 net_virt ELF links with the existing release-silent fallback; no UART service or transfer page is required for logging.",
+    "The Spark boot log includes a complete ATTACH client=0 vmm_slot=0 net_pd contract v5 hw=1 record and an RX delivered from net_pd record through the common logger.",
+    "ARM guest network, block and console proofs all passed in the full gate."
+  ],
+  "limitations": [
+    "The Intel firmware topology does not yet contain the network virtualizer or host NIC. Linking this ELF does not prove Intel network execution.",
+    "Network wakeups, Intel host NIC integration and Linux x86 network qualification remain outstanding.",
+    "Canonical integration, Debian acceptance, GUI qualification and the v0.4 release remain incomplete."
+  ]
+}
