@@ -51,6 +51,7 @@ bool aos_virtio_host_mmio(aos_virtio_host_t *t, uintptr_t base,
     t->registers = p;
     t->config = p + VIRTIO_MMIO_CONFIG;
     t->config_size = size - VIRTIO_MMIO_CONFIG;
+    t->queue_epoch = 1;
     return true;
 }
 
@@ -72,6 +73,7 @@ bool aos_virtio_host_pci(aos_virtio_host_t *t,
     t->notify_size = notify_size;
     t->notify_multiplier = notify_multiplier;
     t->pci = true;
+    t->queue_epoch = 1;
     return true;
 }
 
@@ -94,6 +96,7 @@ uint8_t aos_virtio_host_status(aos_virtio_host_t *t)
 }
 void aos_virtio_host_set_status(aos_virtio_host_t *t, uint8_t status)
 {
+    if (!status && ++t->queue_epoch == 0) ++t->queue_epoch;
     if (!status) t->queue_ready = false;
     if (t->pci) {
         t->registers[20] = status;
@@ -101,19 +104,20 @@ void aos_virtio_host_set_status(aos_virtio_host_t *t, uint8_t status)
     } else wr32(t->registers, VIRTIO_MMIO_STATUS, status);
 }
 
-bool aos_virtio_host_queue(aos_virtio_host_t *t, uint16_t queue, uint16_t count,
-                           uint64_t desc, uint64_t avail, uint64_t used)
+bool aos_virtio_host_queue_bind(aos_virtio_host_t *t, aos_virtio_host_queue_t *q,
+    uint16_t queue, uint16_t count, uint64_t desc, uint64_t avail, uint64_t used)
 {
-    if (!t || !t->registers || t->queue_ready || !count ||
+    if (!t || !t->registers || !q || !count ||
         (count & (count - 1u)) || !desc || (desc & 15u) ||
         !avail || (avail & 1u) || !used || (used & 3u)) return false;
+    uint32_t notify_offset = 0;
     if (t->pci) {
         if (queue >= rd16(t->registers, 18u)) return false;
         wr16(t->registers, 22u, queue);
         if (rd16(t->registers, 24u) < count || rd16(t->registers, 28u)) return false;
         uint64_t off = (uint64_t)rd16(t->registers, 30u) * t->notify_multiplier;
         if ((off & 1u) || off > UINT32_MAX || off > t->notify_size - 2u) return false;
-        t->notify_offset = (uint32_t)off;
+        notify_offset = (uint32_t)off;
         /* Polling transport: neither config nor queue uses an MSI-X vector. */
         wr16(t->registers, 16u, UINT16_MAX);
         wr16(t->registers, 26u, UINT16_MAX);
@@ -134,8 +138,28 @@ bool aos_virtio_host_queue(aos_virtio_host_t *t, uint16_t queue, uint16_t count,
         wr32(t->registers, VIRTIO_MMIO_QUEUE_READY, 1u);
         if (rd32(t->registers, VIRTIO_MMIO_QUEUE_READY) != 1u) return false;
     }
-    t->queue = queue;
-    t->queue_ready = true;
+    *q = (aos_virtio_host_queue_t){.owner=t, .epoch=t->queue_epoch,
+        .notify_offset=notify_offset, .index=queue};
+    return true;
+}
+bool aos_virtio_host_queue(aos_virtio_host_t *t, uint16_t queue, uint16_t count,
+                           uint64_t desc, uint64_t avail, uint64_t used)
+{
+    if (!t || t->queue_ready) return false;
+    aos_virtio_host_queue_t q;
+    if (!aos_virtio_host_queue_bind(t, &q, queue, count, desc, avail, used)) return false;
+    t->queue=queue;
+    t->notify_offset=q.notify_offset;
+    t->queue_ready=true;
+    return true;
+}
+bool aos_virtio_host_queue_notify(aos_virtio_host_t *t,
+                                 const aos_virtio_host_queue_t *q)
+{
+    if (!t || !t->registers || !q || q->owner != t || q->epoch != t->queue_epoch)
+        return false;
+    if (t->pci) wr16(t->notify, q->notify_offset, q->index);
+    else wr32(t->registers, VIRTIO_MMIO_QUEUE_NOTIFY, q->index);
     return true;
 }
 bool aos_virtio_host_notify(aos_virtio_host_t *t)

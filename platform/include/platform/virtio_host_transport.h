@@ -10,9 +10,10 @@
  * span and enable memory decoding before binding. DMA authority is separate.
  * No MSI-X, packed queues or notification-data feature is supported here.
  * Bind only a quiescent device; a binding never resets or revokes live DMA.
- * Feature/status operations require a successful binding. One queue is
- * configured per transport instance; multi-queue drivers need a wider API. */
-typedef struct {
+ * Feature/status operations require a successful binding. All register
+ * access is serialized by the owning driver. Discard queue handles when
+ * rebinding a transport; a status reset invalidates existing handles. */
+typedef struct aos_virtio_host {
     volatile uint8_t *registers;
     volatile uint8_t *config;
     volatile uint8_t *notify;
@@ -21,7 +22,15 @@ typedef struct {
     uint32_t notify_offset;
     uint16_t queue;
     bool pci, queue_ready;
+    uint64_t queue_epoch;
 } aos_virtio_host_t;
+
+typedef struct {
+    aos_virtio_host_t *owner;
+    uint64_t epoch;
+    uint32_t notify_offset;
+    uint16_t index;
+} aos_virtio_host_queue_t;
 
 bool aos_virtio_host_mmio(aos_virtio_host_t *t, uintptr_t base,
                           size_t size, uint32_t device_id);
@@ -37,6 +46,12 @@ void aos_virtio_host_set_status(aos_virtio_host_t *t, uint8_t status);
 bool aos_virtio_host_queue(aos_virtio_host_t *t, uint16_t queue, uint16_t count,
                            uint64_t desc, uint64_t avail, uint64_t used);
 bool aos_virtio_host_notify(aos_virtio_host_t *t);
+/* Independent queue handles for drivers such as virtio-net (RX and TX).
+ * On failure the output remains unchanged. A live queue cannot be rebound. */
+bool aos_virtio_host_queue_bind(aos_virtio_host_t *t, aos_virtio_host_queue_t *q,
+    uint16_t queue, uint16_t count, uint64_t desc, uint64_t avail, uint64_t used);
+bool aos_virtio_host_queue_notify(aos_virtio_host_t *t,
+                                 const aos_virtio_host_queue_t *q);
 bool aos_virtio_host_config32(aos_virtio_host_t *t, uint32_t offset, uint32_t *value);
 bool aos_virtio_host_config64(aos_virtio_host_t *t, uint32_t offset, uint64_t *value);
 
