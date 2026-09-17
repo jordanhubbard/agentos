@@ -346,7 +346,8 @@ void aos_x86_firmware_run(seL4_CPtr ep, aos_x86_vmenter_return_t returned)
 #ifdef AGENTOS_X86_USERSPACE_PROOF
             if ((uint32_t)regs.eax == AOS_X86_USERSPACE_LEAF) {
                 seL4_Word cs=read_field(ep,0x0802u);
-                bool passed=serial_wake_received && regs.ebx == 1u && regs.ecx == AOS_X86_USERSPACE_INIT &&
+                bool passed=serial_wake_received && aos_vmm_virtio_console_driver_ready() &&
+                    regs.ebx == 1u && regs.ecx == AOS_X86_USERSPACE_INIT &&
                     regs.edx == AOS_X86_USERSPACE_PASS && (cs & 3u) == 3u &&
                     ((read_field(ep,CS_RIGHTS) >> 5) & 3u) == 3u &&
                     (read_field(ep,EFER) & LMA) &&

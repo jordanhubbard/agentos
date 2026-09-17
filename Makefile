@@ -885,7 +885,10 @@ test-x86-acpi-host:
 IASL ?= iasl
 ACPIEXEC ?= acpiexec
 .PHONY: test-x86-acpi-aml
-test-x86-acpi-aml: test-x86-acpi-host
+test-x86-acpi-aml: test-x86-acpi-host test-x86-acpi-loader-host
+	$(BUILD_TMP_DIR)/test_x86_acpi_loader $(BUILD_TMP_DIR)/x86-console.aml
+	$(IASL) -p $(BUILD_TMP_DIR)/x86-console -d $(BUILD_TMP_DIR)/x86-console.aml
+	$(IASL) -p $(BUILD_TMP_DIR)/x86-console-roundtrip $(BUILD_TMP_DIR)/x86-console.dsl
 	$(BUILD_TMP_DIR)/test_x86_acpi $(BUILD_TMP_DIR)/x86-cpus.aml
 	$(IASL) -p $(BUILD_TMP_DIR)/x86-cpus -d $(BUILD_TMP_DIR)/x86-cpus.aml
 	$(IASL) -p $(BUILD_TMP_DIR)/x86-cpus-roundtrip $(BUILD_TMP_DIR)/x86-cpus.dsl

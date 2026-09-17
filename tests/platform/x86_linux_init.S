@@ -7,6 +7,33 @@ _start:
     syscall
     cmp $1, %rax
     jne failed
+    mov $83, %eax                 /* mkdir /dev */
+    lea dev_path(%rip), %rdi
+    mov $0755, %esi
+    syscall
+    test %rax, %rax
+    jne failed
+    mov $165, %eax                /* mount devtmpfs: native driver nodes */
+    lea devfs(%rip), %rdi
+    lea dev_path(%rip), %rsi
+    lea devfs(%rip), %rdx
+    xor %r10d, %r10d
+    xor %r8d, %r8d
+    syscall
+    test %rax, %rax
+    jne failed
+    mov $2, %eax                  /* hvc0 exists only after console binding */
+    lea console_path(%rip), %rdi
+    mov $0x802, %esi              /* O_RDWR | O_NONBLOCK */
+    xor %edx, %edx
+    syscall
+    test %rax, %rax
+    js failed
+    mov %rax, %rdi
+    mov $3, %eax
+    syscall
+    test %rax, %rax
+    jne failed
     mov $2, %eax                  /* open a file on the initramfs */
     lea path(%rip), %rdi
     mov $0x242, %esi              /* O_CREAT | O_TRUNC | O_RDWR */
@@ -65,6 +92,9 @@ failed:
     jmp failed
 .section .rodata
 path: .asciz "/userspace-proof"
+dev_path: .asciz "/dev"
+devfs: .asciz "devtmpfs"
+console_path: .asciz "/dev/hvc0"
 data: .ascii "agentOS x86 Linux syscall roundtrip\n"
 data_end:
 .section .bss
