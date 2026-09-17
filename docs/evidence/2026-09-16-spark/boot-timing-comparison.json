@@ -1,0 +1,31 @@
+{
+  "schema": "agentos.guest_boot_timing_comparison.v2",
+  "status": "recorded",
+  "boundary": "host QEMU launch request to completed authenticated SSH proof",
+  "comparison": "same recorded host platform: Ubuntu live versus pinned Debian authenticated boot timing",
+  "agentos_revision": "522bd024d934ce3688dfd75e03c5ded204807927",
+  "qemu_config_sha256": "9d088a39d3fa705c206d85a04db3819adcd126659d657a65ec7de59cb5dc5dc5",
+  "board": "qemu_virt_aarch64",
+  "host_os": "linux",
+  "host_arch": "aarch64",
+  "persistent_second_boot": false,
+  "ubuntu": {
+    "profile": "ubuntu-live-aarch64",
+    "elapsed_ms": 1124868,
+    "receipt_sha256": "1fd50fbeed0e0db011de5ff4f21049c6a4eb9bb3fab0a1254e5a7daee3bde1d4",
+    "agentos_image_sha256": "7adb98e77635a8f03418be20bdb7d262808db72ba7a4742820e3924025e9b4dc",
+    "guest_bundle_sha256": "b7eb216581fd3eb132b7a46db7d98d24b208b15ca6ab2b555749798ce6bc29aa"
+  },
+  "debian": {
+    "profile": "debian-stable-aarch64",
+    "elapsed_ms": 643015,
+    "receipt_sha256": "8237aa2f1af01702e7665cb5b593f7e4d9e9bb7e3637fa9fab343fbbe391ad7e",
+    "agentos_image_sha256": "330293e15a5a24bc53994195d60e00a16bd4dbe2afe4784abf958de033721ec7",
+    "guest_bundle_sha256": "337e64d60614ebdd6fc68f9dfc674d5c1e252cbbea371d456448222ae25f2fe6"
+  },
+  "relative_timing": {
+    "faster_profile": "debian",
+    "difference_ms": 481853
+  },
+  "performance_threshold": "none; this receipt records measurements and does not pass or fail a performance threshold"
+}
