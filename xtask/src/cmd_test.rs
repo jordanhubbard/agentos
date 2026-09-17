@@ -3741,6 +3741,21 @@ fn prove_profile_input(
     key: &SshTestKey,
     qemu: &mut Child,
 ) -> anyhow::Result<String> {
+    prove_profile_input_pass(repo, socket, log, helper, profile, key, qemu, false)?;
+    prove_profile_input_pass(repo, socket, log, helper, profile, key, qemu, true)?;
+    Ok("exact guest input batches and server-generated held-key/button releases passed".into())
+}
+
+fn prove_profile_input_pass(
+    repo: &Path,
+    socket: &Path,
+    log: &Path,
+    helper: &Path,
+    profile: &HostProfilePlan,
+    key: &SshTestKey,
+    qemu: &mut Child,
+    release: bool,
+) -> anyhow::Result<String> {
     let ssh = profile
         .qemu
         .as_ref()
@@ -3750,7 +3765,7 @@ fn prove_profile_input(
         ssh.account == "root",
         "input proof currently requires the root test account"
     );
-    let stderr_path = log.with_extension("input.stderr");
+    let stderr_path = log.with_extension(if release { "input-release.stderr" } else { "input.stderr" });
     let stderr = std::fs::File::create(&stderr_path)?;
     let command = |remote: &str| -> anyhow::Result<std::process::Command> {
         let mut cmd = std::process::Command::new("ssh");
@@ -3799,12 +3814,16 @@ fn prove_profile_input(
         ],
         &["pointer", "1", "272", "0"],
     ];
-    for batch in batches {
+    for (index, batch) in batches.iter().enumerate() {
+        // The same guest checker requires identical evdev output. In the
+        // release pass only the server knows which key/button must be released.
+        let releasing = release && (index == 1 || index == 3);
+        let args = if releasing { &batch[..1] } else { *batch };
         let mut submit = ChildGuard::new(
             std::process::Command::new(repo.join("tools/agentctl/agentctl"))
                 .env("CC_PD_SOCK", socket)
-                .args(["--batch", "input-batch", "0"])
-                .args(*batch)
+                .args(["--batch", if releasing { "input-release" } else { "input-batch" }, "0"])
+                .args(args)
                 .stdin(Stdio::null())
                 .stdout(Stdio::null())
                 .stderr(Stdio::from(stderr.try_clone()?))
@@ -3825,11 +3844,12 @@ fn prove_profile_input(
         "helper_sha256": sha256_bytes(&std::fs::read(helper)?),
         "keyboard_events": 4, "pointer_events": 7, "batches": 4,
         "scope": "public CLI through CC and virtio-input to exact Linux evdev packets",
+        "release_mode": if release { "server-held-state" } else { "explicit-events" },
         "excludes": ["physical input devices", "peer guest isolation", "guest recreation"],
         "stderr": stderr_path,
     });
     std::fs::write(
-        log.with_extension("input.json"),
+        log.with_extension(if release { "input-release.json" } else { "input.json" }),
         serde_json::to_vec_pretty(&receipt)?,
     )?;
     Ok("exact guest keyboard, pointer, button and packet-boundary delivery passed".into())

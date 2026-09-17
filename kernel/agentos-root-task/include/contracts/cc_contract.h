@@ -100,7 +100,9 @@
  * the public handle to a private client and assigns a request ID. The service
  * validates the complete keyboard/pointer batch and accepts all or none.
  * Reply MR0=CC_OK for a valid service response, MR1=16, MR2=input status,
- * MR3=version 1; shmem contains aos_input_response_t with id=0. WOULD_BLOCK
+ * Version 2 with count=0 requests retained release of all held keys/buttons
+ * for the selected device. Its acknowledgment does not mean guest consumption.
+ * MR3=request version; shmem contains aos_input_response_t with id=0. WOULD_BLOCK
  * accepts zero events and allows a retry. Transport failure is not an input
  * acknowledgment and must not be retried blindly (key transitions matter).
  * Absent service: CC_ERR_RELAY_FAULT; invalid/dead handle: CC_ERR_BAD_HANDLE.

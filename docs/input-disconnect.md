@@ -19,6 +19,18 @@ other clients and devices remain independent. Repeated release requests are
 idempotent. Guest consumption, rather than acceptance of the request, determines
 when applications observe the release.
 
+CC `MSG_CC_INPUT_SUBMIT` accepts this version-2 request after resolving the
+same public live guest handle used for ordinary input. The privileged CLI
+exposes it as `agentctl input-release GUEST_HANDLE keyboard|pointer`. Its
+zero accepted-event count acknowledges retained work, not completion in the
+guest. Existing GUI version-1 requests remain unchanged.
+
+`make test-guest-input QEMU_TEST_TIMEOUT=1800` runs the evdev checker twice:
+first with explicit release events, then with zero-event server release
+requests. Both passes require identical key, button, motion and SYN packets.
+Separate `.input.json` and `.input-release.json` receipts distinguish the two
+proofs. This does not simulate a lost connection.
+
 `make test-input-host` checks exact release events, unchanged queues under
 backpressure, keyboard/pointer isolation, repeats, and all 255 supported keys
 across a full queue. `make gate` checks canonical guest I/O for regressions;

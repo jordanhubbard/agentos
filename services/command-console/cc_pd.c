@@ -1662,9 +1662,10 @@ static void handle_input_submit(const cc_req_wire_t *req, cc_reply_wire_t *rep)
 {
     aos_input_request_t query;
     __builtin_memcpy(&query,req->shmem,sizeof(query));
-    if (req->mr[1] || req->mr[2] || query.version!=AOS_INPUT_VERSION ||
+    bool release=query.version==AOS_INPUT_RELEASE_VERSION && query.count==0;
+    if (req->mr[1] || req->mr[2] || (!release && query.version!=AOS_INPUT_VERSION) ||
         query.id || query.client || query.reserved[0] || query.reserved[1] || query.reserved[2] ||
-        query.device>=AOS_INPUT_DEVICES || !query.count || query.count>AOS_INPUT_BATCH_EVENTS) {
+        query.device>=AOS_INPUT_DEVICES || (!release && !query.count) || query.count>AOS_INPUT_BATCH_EVENTS) {
         rep->mr[0]=CC_ERR_INVALID_ARG;
         return;
     }
@@ -1698,7 +1699,7 @@ static void handle_input_submit(const cc_req_wire_t *req, cc_reply_wire_t *rep)
     while (aos_input_receive(frontend,&response)!=0) {
         seL4_Word badge; seL4_Wait(PD_CNODE_SLOT_INPUT_WAIT,&badge);
     }
-    if (response.version!=AOS_INPUT_VERSION || response.id!=query.id ||
+    if (response.version!=query.version || response.id!=query.id ||
         response.status>AOS_INPUT_WOULD_BLOCK ||
         response.accepted!=(response.status==AOS_INPUT_OK ? query.count : 0u)) {
         rep->mr[0]=CC_ERR_RELAY_FAULT;
