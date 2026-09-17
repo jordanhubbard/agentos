@@ -8,10 +8,12 @@
 #pragma once
 
 #include <sel4/sel4.h>
-#include <libvmm/vmm_caps.h>
 #include <stdint.h>
 #include <stddef.h>
 #include <libvmm/util/printf.h>
+
+/* Diagnostics do not require architecture-specific VCPU operations. */
+extern const char vmm_pd_name[];
 
 #define SEL4_USER_CONTEXT_SIZE (sizeof(seL4_UserContext) / sizeof(seL4_Word))
 

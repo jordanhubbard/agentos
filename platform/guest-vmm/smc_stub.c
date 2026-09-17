@@ -16,6 +16,7 @@
 #include <libvmm/arch/aarch64/smc.h>
 #include <libvmm/arch/aarch64/psci.h>
 #include <libvmm/vcpu.h>
+#include <libvmm/vmm_caps.h>
 #include <libvmm/util/util.h>
 
 /* SMC calling convention: service type in bits [30:24] of function ID. */

@@ -16,6 +16,7 @@ AARCH64_FILES := src/arch/aarch64/fault.c \
 		 src/arch/aarch64/tcb.c \
 		 src/arch/aarch64/vcpu.c \
 		 src/arch/aarch64/virq.c \
+		 src/arch/aarch64/virtio_mmio.c \
 		 src/arch/aarch64/vgic/vgic.c \
 		 src/arch/aarch64/vgic/vgic_v2.c \
 		 src/arch/aarch64/vgic/vgic_v3.c \
@@ -71,6 +72,7 @@ libvmm/arch/aarch64/vgic:
 	mkdir -p libvmm/virtio
 
 libvmm.a: ${OBJECTS}
+	rm -f $@
 	${AR} crv $@ $^
 
 ${OBJECTS}: ${SDDF}/include

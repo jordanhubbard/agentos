@@ -1,0 +1,30 @@
+{
+  "qualification": "Shared libvmm MMIO register implementation and AArch64 adapter regression",
+  "revision": "5d3a438cad08dd5eb3db5c2987feb420443b5918",
+  "spark": {
+    "command": "make gate SEL4_SDK_VERSION=2.3.0 QEMU_TEST_SSH_PORT=12266",
+    "result": "PASS exit 0: host suite, both root-task architectures, live guest net/block/console through canonical virtualizers",
+    "artifact_directory": "build/evidence/mmio-core-5d3a438",
+    "image_sha256": "d799075f1cbe742cbf4d1f30db6493bc128c7f9d32b346422dba01ef042b24af",
+    "libvmm_archive_sha256": "0738ffc770820b29660a1ea482996c20f748e18efdd345cb36f44be39f311844",
+    "gate_log_sha256": "606db4f40424c5603831f87136bb932527435b05b545b6981d3a1f42e3eb22ca",
+    "archive_members": "virtio_mmio.o (AArch64 adapter) and mmio.o (shared core); no stale mmio_fault.o"
+  },
+  "host": {
+    "command": "make test-virtio-mmio-core-host",
+    "result": "PASS ASan/UBSan against actual libvmm mmio.c and gpa.c",
+    "log_sha256": "c6c2b137d9d1d9ae1e22d5d41b7081f9214803deec07d979af95dd10f9b87baf",
+    "coverage": "Feature negotiation, readback and failed-read immutability, above-4GiB queue addresses, GPA mapping, notification selection, IRQ acknowledgement, queue reset, invalid queue and GPA rejection"
+  },
+  "x86_compile": {
+    "command": "clang -target x86_64-unknown-none-elf -c -nostdlib -ffreestanding -O2 -Wall -Wextra -Werror -Wno-unused-function -DCONFIG_KERNEL_MCS -I /home/jkh/.cache/agentos/microkit-sdk-2.3.0/board/x86_64_generic_vtx/release/include -I libvmm/include libvmm/src/virtio/mmio.c -o /tmp/agentos-mmio-core-x86.o",
+    "result": "PASS with real x86 seL4 headers; no architecture fault/VCPU symbols",
+    "object_sha256": "b8eee66fe875a0903502b3dadfff220955f90ad03b2822f4af35e2f33a3b19e3"
+  },
+  "limitations": [
+    "x86 compile is not Intel guest-device runtime qualification",
+    "Intel EPT adapter, guest device discovery, interrupt delivery and service queue/cap composition remain outstanding",
+    "Required GitHub checks and PR integration remain outstanding"
+  ],
+  "mac_task": "task_1a11fc20d25341f0b18cdf2202720507"
+}

@@ -760,6 +760,16 @@ test-host: test-x86-acpi-host
 test-host: test-x86-ioapic-host
 test-host: test-x86-acpi-loader-host
 test-host: test-x86-event-host
+test-host: test-virtio-mmio-core-host
+
+.PHONY: test-virtio-mmio-core-host
+test-virtio-mmio-core-host:
+	@mkdir -p $(BUILD_TMP_DIR)
+	gcc -std=gnu11 -Wall -Wextra -Werror -Wno-unused-function \
+		-fsanitize=address,undefined -g -I tests/platform/virtio-stubs -I libvmm/include \
+		tests/platform/test_virtio_mmio_core.c libvmm/src/virtio/mmio.c libvmm/src/virtio/gpa.c \
+		-o $(BUILD_TMP_DIR)/test_virtio_mmio_core
+	@$(BUILD_TMP_DIR)/test_virtio_mmio_core
 
 .PHONY: test-x86-event-host
 test-x86-event-host:
