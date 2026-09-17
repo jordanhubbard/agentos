@@ -151,6 +151,14 @@ bool aos_x86_config_io(aos_x86_config_t *s, uint16_t port, unsigned width,
         (port>=0x89u && port<=0x8bu) || port==0x8fu)) {
         *value=0xffu; return true;
     }
+    /* No ISA UART is provisioned. Legacy 8250 probing must see an absent
+     * device, not a writable interrupt-enable register or a host UART. */
+    if (width==1u && ((port>=0x3f8u && port<=0x3ffu) ||
+        (port>=0x2f8u && port<=0x2ffu) || (port>=0x3e8u && port<=0x3efu) ||
+        (port>=0x2e8u && port<=0x2efu))) {
+        if (!write) *value=0xffu;
+        return true;
+    }
     /* No PIT clock or IRQ0 source is advertised. Linux still writes its
      * channel-0 shutdown sequence after selecting the LAPIC clockevent.
      * Accept only mode-0 reset and its two zero count bytes; do not pretend

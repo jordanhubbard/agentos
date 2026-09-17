@@ -109,6 +109,15 @@ int main(void)
         reject(&a,dma_pages[i],1,true);
     }
     reject(&a,0x84,1,false);
+    const unsigned com_bases[]={0x3f8,0x2f8,0x3e8,0x2e8};
+    for (unsigned i=0;i<4;i++) {
+        for (unsigned reg=0;reg<8;reg++) {
+            io(&a,com_bases[i]+reg,1,true,0);
+            assert(io(&a,com_bases[i]+reg,1,false,0)==0xff);
+        }
+        reject(&a,com_bases[i],2,false);
+        reject(&a,com_bases[i],4,true);
+    }
     assert(!memcmp(&a,&unchanged,sizeof(a)));
     assert(!aos_x86_config_io(&a,0xed,1,false,&delay,0));
     assert(!aos_x86_config_io(&a,0xed,2,true,&delay,0));
