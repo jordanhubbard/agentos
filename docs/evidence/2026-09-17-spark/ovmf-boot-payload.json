@@ -1,0 +1,71 @@
+{
+  "qualification": "Immutable fw_cfg EFI kernel blob delivery",
+  "runtime_revision": "8895952e10e2fb15e76e2fcb6680c5c5d101244b",
+  "kernel": {
+    "source": "madmax /boot/vmlinuz-7.0.0-30-generic",
+    "package": "linux-image-7.0.0-30-generic",
+    "version": "7.0.0-30.30",
+    "bytes": 17295752,
+    "sha256": "0ad39b13e289e1a5cf806d14541ac8f221eefe849017f5915e0846917ed67785",
+    "pe_machine": "AMD64",
+    "pe_subsystem": "EFI application",
+    "entry_rva": "0x106ff48",
+    "size_of_image": 17735680
+  },
+  "intel": {
+    "host": "madmax Intel i9-14900KF Linux nested KVM",
+    "sdk": "Microkit 2.3.0",
+    "command": "make gate-x86_64-firmware-reset SEL4_SDK_VERSION=2.3.0 X86_FIRMWARE_IMAGE=/tmp/agentos-ovmf-2024.02-2ubuntu0.9.fd X86_FIRMWARE_SHA256=101afad5f520753224b60b9555df60add435cf50c7a82b781d7d7d8c60db7eb5 X86_BOOT_KERNEL=/tmp/agentos-linux-7.0.0-30.efi X86_BOOT_KERNEL_SHA256=0ad39b13e289e1a5cf806d14541ac8f221eefe849017f5915e0846917ed67785",
+    "guest_ram_bytes": 134217728,
+    "result": "FAIL: unchanged 65536 processed-exit limit, not Linux boot",
+    "kernel_bytes_consumed": 17295752,
+    "initrd_bytes_consumed": 0,
+    "cmdline_bytes_consumed": 0,
+    "timer_exits": 131,
+    "injections": 931,
+    "eois": 931,
+    "halt_exits": 0,
+    "stop": {
+      "reason": "0x425544",
+      "rip": "0x070ff31d",
+      "detail": "0x000100000000001e",
+      "last_qualification": "0xb008000b"
+    },
+    "analysis": "The code window matches OVMF Metronome GUID C8339973-A563-4561-B858-D8476F9DEFC4 (IN EAX,DX at RVA31d). Qualification identifies a 32-bit PM-timer read at b008. This localizes the stop but does not establish why the firmware delay was requested or whether EFI kernel entry occurred.",
+    "artifact_directory": "/tmp/agentos-v04-intel-discovery/build/evidence/linux-reads-8895952",
+    "image_sha256": "ba222caa9e272cdd42cc9c46cde459cac44f9723963af058fce44ec872a6380e",
+    "root_task_sha256": "9e396fdabdbeff7419e50ba483b1901b46e268e5b75707a9a424350fa6c1ec5f",
+    "serial_sha256": "e231d3ee39afc49537a74375e6583dec51985ddef541163269ff41d53ce21d25",
+    "termination": "Owned QEMU PID2853452 terminated after explicit failure and artifact retention; gate exit2"
+  },
+  "spark": {
+    "revision": "8895952e10e2fb15e76e2fcb6680c5c5d101244b",
+    "command": "make gate SEL4_SDK_VERSION=2.3.0 QEMU_TEST_SSH_PORT=12266",
+    "result": "PASS exit0",
+    "artifact_directory": "/tmp/agentos-v04-x86-boot/build/evidence/boot-8895952",
+    "image_sha256": "420728fa8be8407f51cd2907538720d883ddd5980950b887fd0266c4d979c9eb",
+    "gate_log_sha256": "60a80211bec8364dd0a24862f63f383389dfd59c0d84044342d6240e96a6a90a"
+  },
+  "host_checks": {
+    "focused": "make test-x86-config-host test-x86-string-host PASS",
+    "sanitizers": "ASan/UBSan config and string tests PASS at initial3114237 implementation",
+    "wrong_kernel_hash": "Rejected by Make SHA-256 check before ELF object generation; exit2, /tmp/agentos-x86-boot-bad-hash.log",
+    "cases": [
+      "exact size and data beyond80 bytes",
+      "reselect and EOF zero fill",
+      "isolated guest descriptors",
+      "invalid input leaves configuration unchanged",
+      "source offset and counter saturation",
+      "1KiB cross-page kernel transfer",
+      "unwritable destination consumes no blob data"
+    ]
+  },
+  "limitations": [
+    "Complete byte consumption is not EFI entry or Linux userspace execution",
+    "No initrd or command-line target qualification in this run",
+    "Guest ACPI and canonical x86 virtio I/O remain outstanding",
+    "128MiB fixed composition is not desktop-profile admission or capability reclamation",
+    "The exit limit and failure outcome are unchanged"
+  ],
+  "mac_task": "task_75911bb6a76445858108b916d8192b73"
+}

@@ -34,6 +34,8 @@ the VMM. No physical APIC page or I/O capability is delegated.
 The firmware variant uses the existing single-VMM qualification topology.
 Allocation failure aborts boot; this is not a runtime guest-create path and
 does not qualify capability reclamation or retry.
+Supplying an [EFI boot payload](x86-boot-payload.md) selects 128 MiB private
+guest RAM; the ordinary firmware-only variant retains 32 MiB.
 
 The VMM starts at architectural reset address `0xfffffff0`, using the special
 high CS cache and unrestricted real-address entry. It explicitly enables
@@ -99,7 +101,7 @@ GPA. Unknown instructions and other mappings stop without accessing host
 memory. This is not a general x86 instruction emulator.
 
 The earlier APIC gate stopped at REP INSB from `0x511`. The VMM now resumes
-that instruction, transferring at most 256 bytes per exit. It validates every
+that instruction, transferring at most 1024 bytes per exit. It validates every
 destination page before advancing fw_cfg or modifying RAM, sets accessed/dirty
 bits, preserves forward/backward direction and zero-count semantics, and
 re-enters the same instruction when RCX remains nonzero. Only exact long-mode
@@ -162,10 +164,18 @@ through consistent return sites; it is not a complete firmware unwind.
 The source context for the idle path is
 [DXE CoreWaitForEvent](https://github.com/tianocore/edk2/blob/edk2-stable202402/MdeModulePkg/Core/Dxe/Event/Event.c)
 and [CpuDxe IdleLoopEventCallback](https://github.com/tianocore/edk2/blob/edk2-stable202402/UefiCpuPkg/CpuDxe/CpuDxe.c).
-The next implementation must supply a bootable payload and establish actual
+The next implementation must establish actual
 UEFI handoff alongside generated ACPI and canonical guest I/O. Reaching the
 key wait is useful bring-up evidence but remains a failing firmware gate.
 The full Spark gate passed at runtime revision `7682937`.
+
+The later [payload receipt](evidence/2026-09-17-spark/ovmf-boot-payload.json)
+records full fw_cfg consumption of a pinned 17,295,752-byte EFI-stub Linux
+kernel. Firmware then exhausts the same exit budget in Metronome's PM-timer
+read at port `0xb008`. This proves blob delivery and a changed execution path,
+not kernel entry or successful boot. The [payload interface](x86-boot-payload.md)
+also supports bounded optional initrd and command-line inputs; neither was
+provided in that first Intel run.
 
 The [upstream EDK II transition](https://github.com/tianocore/edk2/blob/edk2-stable202402/UefiCpuPkg/ResetVector/Vtf0/Ia16/Real16ToFlat32.asm)
 provides the source context for this early execution path. The

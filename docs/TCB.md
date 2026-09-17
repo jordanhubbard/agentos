@@ -372,6 +372,14 @@ Bounded reads in the declared absent TPM aperture return all ones; writes
 are rejected. Validated firmware ROM stores are ignored without granting
 write authority or changing ROM bytes. Live APIC divider changes preserve
 the private countdown; no host APIC access or timer IRQ authority is added.
+The opt-in [EFI payload variant](x86-boot-payload.md) provisions 128 MiB
+private RAM and embeds SHA-256-pinned kernel/initrd/command-line blobs in the
+VMM's read-only ELF sections. These sources are not mapped into guest EPT;
+the guest receives bytes only through checked fw_cfg reads into its private
+RAM. Descriptors bind once before reads and each transfer validates at most
+1 KiB before committing. This is boot input, not a block-device backend or
+persistent storage. Allocation failure aborts the qualification image; runtime
+resource-profile admission and teardown reclamation remain unqualified.
 The optional firmware VMM now enables VMX preemption-timer exits through its
 existing VCPU cap and reads the timer rate through the kernel's restricted MSR
 interface. It maintains private IRR/ISR state, checks CPU interruptibility,
