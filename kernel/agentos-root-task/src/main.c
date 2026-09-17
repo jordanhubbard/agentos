@@ -1363,8 +1363,9 @@ static seL4_Error setup_x86_vtx_proof(const pd_desc_t *pd, uint32_t pd_index,
     seL4_CPtr guest_pdpt = seL4_CapNull;
     seL4_CPtr guest_pd = seL4_CapNull;
     seL4_CPtr guest_pt = seL4_CapNull;
-    const seL4_X86_VMAttributes ept_attr =
-        (seL4_X86_VMAttributes)seL4_X86_EPT_Default_VMAttributes;
+    /* The EPT wire value is unchanged; SDK 2.3 corrects the syscall's enum
+     * type from ordinary VM attributes to EPT attributes. */
+    const seL4_Word ept_attr = seL4_X86_EPT_Default_VMAttributes;
 
     if (!pd_is_guest_vmm(pd) || pd->self_svc_id != SVC_ID_GUEST_VMM_PRIMARY) {
         return seL4_InvalidArgument;
