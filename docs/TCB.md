@@ -297,9 +297,11 @@ boots sixteen images covering each client's read/write access to the other
 queue page, private surface arena, observer page and private snapshot arena.
 Each client first completes its authorized
 pixel transactions; only root emits the isolation marker after matching the
-fault badge, address and access direction. The original eight queue/arena
-isolation cases passed locally on Spark; the expanded sixteen-case matrix is
-pending. Hardware scanout and guest DRM/input remain required for v0.4.
+fault badge, address and access direction. All sixteen cases passed on Spark
+at `3b00d93`, including exact observer exports from both native clients in
+each image. [The qualification record](evidence/2026-09-16-spark/framebuffer-observer.json)
+identifies all sixteen retained images. Hardware scanout and guest DRM/input
+remain required for v0.4.
 
 The in-progress libvmm GPU backend (`libvmm/src/virtio/gpu*.c`) implements
 bounded 2D resource commands and direct control/cursor virtqueues, with

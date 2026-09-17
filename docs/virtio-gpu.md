@@ -59,7 +59,7 @@ Only this test image recognizes native capture handles `0xfb000000` and
 `0xfb000001`; ordinary guest handles are rejected in that image. The isolation
 matrix additionally probes both native clients' read/write access to the
 observer page and private snapshot arena. The focused capture test passed on
-Spark; the expanded isolation matrix is still pending. This native proof does
+Spark, as did all sixteen mapping-isolation cases at `3b00d93`. This native proof does
 not establish guest DRM or physical scanout.
 
 `virtio_gpu_control_run` and `virtio_gpu_cursor_run` consume direct split
