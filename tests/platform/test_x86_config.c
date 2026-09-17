@@ -38,6 +38,13 @@ int main(void)
     assert(!aos_x86_config_init(&a, 0x80010000));
     assert(aos_x86_config_init(&a, 0x2000000));
     assert(aos_x86_config_init(&b, 0x80000000));
+    io(&a, 0x21, 1, true, 0xff);
+    io(&a, 0xa1, 1, true, 0xff);
+    assert(io(&a, 0x21, 1, false, 0) == 0xff);
+    assert(io(&a, 0xa1, 1, false, 0) == 0xff);
+    reject(&a, 0x21, 1, true);
+    reject(&a, 0x20, 1, true);
+    reject(&a, 0xa1, 2, false);
     assert(io(&a, 0xcfc, 4, false, 0) == 0xffffffff);
     select_pci(&a, 0x80000000);
     assert(io(&a, 0xcfc, 4, false, 0) == 0x12378086);

@@ -56,6 +56,13 @@ bool aos_x86_config_io(aos_x86_config_t *s, uint16_t port, unsigned width,
                        bool write, uint32_t *value, uint64_t timer_ticks)
 {
     if (!s || !value || (width != 1u && width != 2u && width != 4u)) return false;
+    /* Bootstrap has no interrupt sources yet. Keep both legacy PICs fully
+     * masked; reject unmasking until routing and injection are implemented. */
+    if ((port == 0x21u || port == 0xa1u) && width == 1u) {
+        if (write) return (*value & 0xffu) == 0xffu;
+        *value = 0xffu;
+        return true;
+    }
     if (port == 0xcf8u && width == 4u) {
         if (write) s->pci_address = *value & 0x80fffffcu;
         else *value = s->pci_address;
