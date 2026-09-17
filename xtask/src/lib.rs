@@ -127,6 +127,9 @@ pub struct TestArgs {
     /// Require the dedicated x86 VMX/EPT one-instruction HLT-exit proof.
     #[arg(long)]
     pub assert_vmx_exit: bool,
+    /// Require guest RDMSR/WRMSR faults, handler assertions and IRET recovery.
+    #[arg(long, requires = "assert_vmx_exit", conflicts_with_all = ["assert_firmware_modes", "assert_firmware_reset"])]
+    pub assert_guest_faults: bool,
     /// Also require real-address and unpaged protected VM-entry qualification.
     #[arg(long, requires = "assert_vmx_exit")]
     pub assert_firmware_modes: bool,

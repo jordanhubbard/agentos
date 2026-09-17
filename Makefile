@@ -677,6 +677,11 @@ gate-x86_64-firmware-modes:
 		--assert-vmx-exit --assert-firmware-modes --timeout-secs $(QEMU_TEST_TIMEOUT)
 
 .PHONY: gate-x86_64-firmware-reset
+.PHONY: gate-x86_64-guest-faults
+gate-x86_64-guest-faults:
+	@cargo xtask qemu-test --board x86_64_generic_vtx --guest-os none \
+		--assert-vmx-exit --assert-guest-faults --timeout-secs $(QEMU_TEST_TIMEOUT)
+
 gate-x86_64-firmware-reset:
 	@cargo xtask qemu-test --board x86_64_generic_vtx --guest-os none \
 		--assert-vmx-exit --assert-firmware-reset --timeout-secs $(QEMU_TEST_TIMEOUT)
@@ -745,6 +750,13 @@ test-x86-cpu-host:
 test-host: test-x86-acpi-host
 test-host: test-x86-ioapic-host
 test-host: test-x86-acpi-loader-host
+test-host: test-x86-event-host
+
+.PHONY: test-x86-event-host
+test-x86-event-host:
+	@mkdir -p $(BUILD_TMP_DIR)
+	$(CC) -std=c11 -Wall -Wextra -Werror -I platform/include tests/platform/test_x86_event.c platform/guest-vmm/x86_event.c platform/guest-vmm/x86_apic.c -o $(BUILD_TMP_DIR)/test_x86_event
+	$(BUILD_TMP_DIR)/test_x86_event
 
 .PHONY: test-x86-acpi-loader-host
 test-x86-acpi-loader-host:

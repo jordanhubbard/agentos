@@ -1,0 +1,57 @@
+{
+  "qualification": "Guest GP delivery and handler recovery",
+  "runtime_revision": "fa68e6fb",
+  "target_proof_revision": "866b6a2424836204d9027662e4eb3dc6f523a756",
+  "intel_proof": {
+    "host": "madmax Intel i9-14900KF nested KVM",
+    "command": "make gate-x86_64-guest-faults SEL4_SDK_VERSION=2.3.0",
+    "result": "PASS distinct root-verified guest handler marker",
+    "artifact_directory": "/tmp/agentos-v04-intel-discovery/build/evidence/gp-proof-866b6a2",
+    "image_sha256": "8a4ce7c0845da70d31f82cc33aa1f1e69281f1218fdf5e7c9d736e269d65dd95",
+    "root_task_sha256": "14f867a413c9c04d45d65a69d27361921566f32e23ff2b2d3faaaafa995caab2",
+    "guest_payload_sha256": "e4c444fda44f51953ae4e8d96b7736358642eb7e901ac2f2c42dbb4b7d709a67",
+    "gate_log_sha256": "9b33a327e9fb2a238af4c7adccbe327c6b8bc328fc280ba8f0f73610fc8454a6",
+    "assertions": [
+      "Two ordered RDMSR/WRMSR exits with register canaries",
+      "Guest IDT handler checks zero error codes and exact saved RIPs",
+      "Guest changes saved RIP and returns via IRETQ",
+      "Guest-owned completion count equals two before success HLT",
+      "Root requires dedicated status 7, HLT reason 12, RIP 0x1000 and length 1",
+      "Harness requires distinct marker and rejects failure/root-fault reports"
+    ]
+  },
+  "linux_continuation": {
+    "revision": "fa68e6fb",
+    "inputs": "Same pinned OVMF/Linux and firmware-reset gate as ovmf-linux-acpi.json; 256MiB private RAM, no initrd/cmdline",
+    "result": "FAIL exit2 after recovery from earlier MSR probe",
+    "stop": {
+      "reason": "0x1e",
+      "rip": "0xffffffffb0bc47c2",
+      "qualification": "0xcfb0000"
+    },
+    "analysis": "Pinned kernel instruction ffffffff83fc47c2 is OUT DX,AL preceded by MOV AL,1 and MOV EDX,cfb; observed RIP differs by aligned relocation2cc00000. This is pci_check_type1 before probing CF8/CFC. QEMU's pci_host_config_write ignores non-DWORD/address-register writes. No compatibility change is included here.",
+    "artifact_directory": "/tmp/agentos-v04-intel-discovery/build/evidence/faults-fa68e6f",
+    "image_sha256": "4b6f10f212a54f5d622d0b250c22f68e7afae1290134108f3a0cc8cb56e3edb6",
+    "root_task_sha256": "814116bbac4884e0dcc64f86a123913ff362e507b3d40fb634d9042d6c7cefda",
+    "serial_sha256": "c39d642b87555b3749210b33490aeadd25c209c8c0319cdd1bb8464c47545cbd",
+    "termination": "Owned QEMU3243211 terminated after explicit failure and retention; original gate exit2"
+  },
+  "spark": {
+    "revision": "3a8f997b",
+    "command": "make gate SEL4_SDK_VERSION=2.3.0 QEMU_TEST_SSH_PORT=12266",
+    "result": "PASS exit0",
+    "artifact_directory": "/tmp/agentos-v04-x86-acpi-boot/build/evidence/gp-3a8f997",
+    "image_sha256": "cb39a0041ae5362d988148e084bdae28eddef526dc3eb5c6580513f174b706df",
+    "gate_log_sha256": "54efb8b90a10cf304c7d707b10236097e9734c586384d4f6714de47f09cef378",
+    "later_change": "866b6a2 only adds explicit image-base=0 when linking the separate Intel fault-proof guest; its target gate passed"
+  },
+  "host_checks": "Event planner and CPU Make targets PASS under ASan/UBSan; cargo check -p xtask and guest-proof cross-build PASS",
+  "limitations": [
+    "Linux userspace and complete Intel boot remain unqualified",
+    "Real-address event encoding host-tested only",
+    "No general IDT reinjection, double-fault or NMI qualification",
+    "No target proof of simultaneous GP plus LAPIC delivery; priority and IRR retention host-tested",
+    "Unsupported non-MSR exits remain fail-closed"
+  ],
+  "mac_task": "task_7e41df20f09846c0a4f5b0fb40e615f6"
+}

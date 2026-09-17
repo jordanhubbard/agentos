@@ -1493,6 +1493,12 @@ static seL4_Error setup_x86_vtx_proof(const pd_desc_t *pd, uint32_t pd_index,
         guest_code[i] = 0u;
     }
     guest_code[0] = 0xf4u; /* HLT */
+#ifdef AGENTOS_X86_GUEST_FAULT_PROOF
+    extern const uint8_t _binary_x86_fault_guest_bin_start[], _binary_x86_fault_guest_bin_end[];
+    size_t fault_bytes=(size_t)(_binary_x86_fault_guest_bin_end-_binary_x86_fault_guest_bin_start);
+    if (!fault_bytes || fault_bytes>4096u) return seL4_InvalidArgument;
+    for (size_t i=0;i<fault_bytes;i++) guest_code[i]=_binary_x86_fault_guest_bin_start[i];
+#endif
     AGENTOS_MEMORY_FENCE();
     err = seL4_X86_Page_Unmap((seL4_X86_Page)guest_page);
     if (err != seL4_NoError) return err;
@@ -3277,7 +3283,9 @@ void root_task_main(const seL4_BootInfo *bi)
             dbg_puts(" linear RIP="); dbg_hex(rip);
             dbg_puts(" qualification="); dbg_hex(instruction_len); dbg_puts("\n");
 #else
-#ifdef AGENTOS_X86_FIRMWARE_MODES
+#ifdef AGENTOS_X86_GUEST_FAULT_PROOF
+            status == AOS_X86_VTX_GUEST_FAULTS_PASS &&
+#elif defined(AGENTOS_X86_FIRMWARE_MODES)
             status == AOS_X86_VTX_MODES_PASS &&
 #else
             status == AOS_X86_VTX_PROOF_PASS &&
@@ -3285,7 +3293,9 @@ void root_task_main(const seL4_BootInfo *bi)
             (reason & 0xffffu) == AOS_X86_VTX_HLT_EXIT_REASON &&
             rip == AOS_X86_VTX_GUEST_RIP &&
             instruction_len == AOS_X86_VTX_HLT_INSTRUCTION_LEN) {
-#ifdef AGENTOS_X86_FIRMWARE_MODES
+#ifdef AGENTOS_X86_GUEST_FAULT_PROOF
+            dbg_puts("[rt] x86 guest GP read/write handlers and IRET recovery verified\n");
+#elif defined(AGENTOS_X86_FIRMWARE_MODES)
             dbg_puts("[rt] x86 VMX real protected long entry modes verified\n");
 #else
             dbg_puts("[rt] x86 VMX EPT HLT exit verified\n");

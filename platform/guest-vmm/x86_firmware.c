@@ -10,6 +10,7 @@
 #include "platform/x86_ioapic.h"
 #include "platform/x86_memory.h"
 #include "platform/x86_string.h"
+#include "platform/x86_event.h"
 
 #define VCPU AOS_GUEST_VCPU_CAP_BASE
 #define ENTRY 0x4012u
@@ -32,6 +33,7 @@
 #define INTERRUPTIBILITY 0x4824u
 #define ACTIVITY 0x4826u
 #define IDT_VECTORING 0x4408u
+#define ENTRY_EXCEPTION_ERROR_CODE 0x4018u
 static seL4_Word timer_exits, injections, eois, timer_shift, tsc_hz, halt_exits;
 static seL4_Word snapshot[AOS_X86_FIRMWARE_SNAPSHOT_WORDS];
 static seL4_Word halt_chain[AOS_X86_FIRMWARE_CHAIN_WORDS];
@@ -276,6 +278,7 @@ void aos_x86_firmware_run(seL4_CPtr ep, seL4_Word result)
                 stop(ep,AOS_X86_VTX_PROOF_FAIL,0x54494du,rip,0);
         }
         uint64_t now = timestamp();
+        bool gp=false;
         if (reason == 52u || reason == 7u) {
             /* Timer and interrupt-window exits resume the same instruction. */
             if (reason == 52u) timer_exits++;
@@ -317,14 +320,14 @@ void aos_x86_firmware_run(seL4_CPtr ep, seL4_Word result)
                    ((uint32_t)regs.ecx == 0x17u || (uint32_t)regs.ecx == 0x8bu)) {
             uint64_t value = ((uint64_t)(uint32_t)regs.edx << 32) | (uint32_t)regs.eax;
             if (!aos_x86_cpu_identity_msr((uint32_t)regs.ecx, reason == 32u, &value))
-                stop(ep, AOS_X86_VTX_PROOF_FAIL, reason, rip, regs.ecx);
-            if (reason == 31u) { regs.eax=(uint32_t)value; regs.edx=value >> 32; }
+                gp=true;
+            else if (reason == 31u) { regs.eax=(uint32_t)value; regs.edx=value >> 32; }
         } else if ((reason == 31u || reason == 32u) && len == 2u &&
                    (uint32_t)regs.ecx>=0xc0000081u && (uint32_t)regs.ecx<=0xc0000084u) {
             uint64_t value=((uint64_t)(uint32_t)regs.edx << 32) | (uint32_t)regs.eax;
             if (!aos_x86_cpu_syscall_msr((uint32_t)regs.ecx,reason==32u,value))
-                stop(ep,AOS_X86_VTX_PROOF_FAIL,reason,rip,regs.ecx);
-            if (reason==32u) {
+                gp=true;
+            else if (reason==32u) {
                 seL4_X86_VCPU_WriteMSR_t r=seL4_X86_VCPU_WriteMSR(VCPU,(uint32_t)regs.ecx,value);
                 if (r.error) stop(ep,AOS_X86_VTX_PROOF_FAIL,reason,rip,r.error);
             } else {
@@ -340,15 +343,19 @@ void aos_x86_firmware_run(seL4_CPtr ep, seL4_Word result)
                 uint64_t value = ((uint64_t)(uint32_t)regs.edx << 32) | (uint32_t)regs.eax;
                 uint64_t next;
                 if (!aos_x86_cpu_efer(efer,value,read_field(ep,CR0) & PG,&next))
-                    stop(ep, AOS_X86_VTX_PROOF_FAIL, reason, rip, value);
-                write_field(ep, EFER, next);
+                    gp=true;
+                else write_field(ep, EFER, next);
             }
         } else if ((reason == 31u || reason == 32u) && len == 2u &&
                    (uint32_t)regs.ecx == 0x1bu) {
             uint64_t value = ((uint64_t)(uint32_t)regs.edx << 32) | (uint32_t)regs.eax;
             if (!aos_x86_apic_msr(reason == 32u, &value))
-                stop(ep, AOS_X86_VTX_PROOF_FAIL, reason, rip, value);
-            if (reason == 31u) { regs.eax=(uint32_t)value; regs.edx=value >> 32; }
+                gp=true;
+            else if (reason == 31u) { regs.eax=(uint32_t)value; regs.edx=value >> 32; }
+        } else if ((reason == 31u || reason == 32u) && len == 2u) {
+            /* Absent MSRs raise #GP(0); do not read host state or fabricate
+             * a successful value. Linux's safe probes recover in its IDT. */
+            gp=true;
         } else if (reason == 48u &&
                    ((fault_gpa >= AOS_X86_APIC_BASE && fault_gpa < AOS_X86_APIC_BASE+4096) ||
                     (fault_gpa >= AOS_X86_IOAPIC_BASE && fault_gpa < AOS_X86_IOAPIC_BASE+4096) ||
@@ -458,20 +465,22 @@ void aos_x86_firmware_run(seL4_CPtr ep, seL4_Word result)
         unsigned vector=aos_x86_apic_pending(&apic,timestamp());
         if (vector == AOS_X86_APIC_INVALID_VECTOR)
             stop(ep,AOS_X86_VTX_PROOF_FAIL,0x495256u,rip,apic.lvt_timer);
-        seL4_Word controls=1u << 7, interrupt=0;
-        if (vector) {
-            if ((guest_flags & (1u << 9)) && !(read_field(ep,INTERRUPTIBILITY) & 3u)) {
-                if (!aos_x86_apic_accept(&apic,vector))
-                    stop(ep,AOS_X86_VTX_PROOF_FAIL,0x495251u,rip,vector);
-                interrupt=(1u << 31) | vector;
-                injections++;
-                write_field(ep,ACTIVITY,0u);
-            } else controls |= 1u << 2; /* interrupt-window exiting */
+        aos_x86_entry_event_t event;
+        if (!aos_x86_entry_event(&event,gp,read_field(ep,CR0) & PE,
+                                 len,vector,guest_flags,read_field(ep,INTERRUPTIBILITY)))
+            stop(ep,AOS_X86_VTX_PROOF_FAIL,0x45564eu,rip,vector);
+        seL4_Word controls=(1u << 7) | (event.interrupt_window ? 1u << 2 : 0u);
+        if (event.accept_irq) {
+            if (!aos_x86_apic_accept(&apic,vector))
+                stop(ep,AOS_X86_VTX_PROOF_FAIL,0x495251u,rip,vector);
+            injections++;
         }
+        if (event.interruption_info) write_field(ep,ACTIVITY,0u);
+        if (gp) write_field(ep,ENTRY_EXCEPTION_ERROR_CODE,event.error_code);
         write_field(ep,PREEMPTION_COUNTER,timer_quantum);
-        seL4_SetMR(SEL4_VMENTER_CALL_EIP_MR, rip + len);
+        seL4_SetMR(SEL4_VMENTER_CALL_EIP_MR, rip + event.advance);
         seL4_SetMR(SEL4_VMENTER_CALL_CONTROL_PPC_MR, controls);
-        seL4_SetMR(SEL4_VMENTER_CALL_INTERRUPT_INFO_MR, interrupt);
+        seL4_SetMR(SEL4_VMENTER_CALL_INTERRUPT_INFO_MR, event.interruption_info);
         result = seL4_VMEnter(NULL);
     }
 }

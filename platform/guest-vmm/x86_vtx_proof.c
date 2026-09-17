@@ -17,6 +17,12 @@
 #include <sel4/arch/vmenter.h>
 #include "contracts/guest_execution_caps.h"
 #include "contracts/x86_vtx_proof.h"
+#ifdef AGENTOS_X86_GUEST_FAULT_PROOF
+#include "platform/x86_event.h"
+#if defined(AGENTOS_X86_FIRMWARE_RESET) || defined(AGENTOS_X86_FIRMWARE_MODES)
+#error "Guest fault proof is a separate private-page composition"
+#endif
+#endif
 #ifdef AGENTOS_X86_FIRMWARE_RESET
 #include "x86_firmware.h"
 #endif
@@ -384,6 +390,49 @@ void pd_main(seL4_CPtr endpoint, seL4_CPtr nameserver_endpoint)
         report_and_wait(endpoint, AOS_X86_VTX_PROOF_FAIL, failed_field,
                         (seL4_Word)err, 0u);
     }
+
+#ifdef AGENTOS_X86_GUEST_FAULT_PROOF
+    const struct { seL4_Word field, value; } fault_fields[]={
+        {VMX_GUEST_GDTR_BASE,AOS_X86_FAULT_GUEST_GDT},
+        {VMX_GUEST_GDTR_LIMIT,23},
+        {VMX_GUEST_IDTR_BASE,AOS_X86_FAULT_GUEST_IDT},
+        {VMX_GUEST_IDTR_LIMIT,14*16-1},
+        {VMX_GUEST_RSP,AOS_X86_FAULT_GUEST_STACK},
+    };
+    for (unsigned i=0;i<sizeof(fault_fields)/sizeof(fault_fields[0]);i++) {
+        err=vmcs_write(AOS_GUEST_VCPU_CAP_BASE,fault_fields[i].field,fault_fields[i].value);
+        if (err) report_and_wait(endpoint,AOS_X86_VTX_PROOF_FAIL,fault_fields[i].field,err,0);
+    }
+    seL4_Word next_rip=AOS_X86_FAULT_GUEST_ENTRY, info=0;
+    for (unsigned attempt=0;attempt<3;attempt++) {
+        seL4_SetMR(SEL4_VMENTER_CALL_EIP_MR,next_rip);
+        seL4_SetMR(SEL4_VMENTER_CALL_CONTROL_PPC_MR,VMX_CONTROL_PPC_HLT_EXITING);
+        seL4_SetMR(AOS_VMENTER_INTERRUPT_INFO_MR,info);
+        seL4_Word result=seL4_VMEnter(NULL);
+        seL4_Word reason=seL4_GetMR(SEL4_VMENTER_FAULT_REASON_MR);
+        seL4_Word rip=seL4_GetMR(SEL4_VMENTER_CALL_EIP_MR);
+        seL4_Word length=seL4_GetMR(SEL4_VMENTER_FAULT_INSTRUCTION_LEN_MR);
+        if (result!=SEL4_VMENTER_RESULT_FAULT)
+            report_and_wait(endpoint,AOS_X86_VTX_PROOF_FAIL,reason,rip,length);
+        if (attempt==2) {
+            if (reason==12u && rip==AOS_X86_VTX_GUEST_RIP && length==1u)
+                report_and_wait(endpoint,AOS_X86_VTX_GUEST_FAULTS_PASS,reason,rip,length);
+            report_and_wait(endpoint,AOS_X86_VTX_PROOF_FAIL,reason,rip,length);
+        }
+        if (reason!=(attempt ? 32u : 31u) || length!=2u ||
+            seL4_GetMR(SEL4_VMENTER_FAULT_ECX)!=UINT32_MAX ||
+            seL4_GetMR(SEL4_VMENTER_FAULT_EAX)!=0x12345678u ||
+            seL4_GetMR(SEL4_VMENTER_FAULT_EDX)!=0x87654321u)
+            report_and_wait(endpoint,AOS_X86_VTX_PROOF_FAIL,reason,rip,length);
+        aos_x86_entry_event_t event;
+        if (!aos_x86_entry_event(&event,true,true,length,0,2,0))
+            report_and_wait(endpoint,AOS_X86_VTX_PROOF_FAIL,0x45564eu,rip,length);
+        err=vmcs_write(AOS_GUEST_VCPU_CAP_BASE,0x4018u,event.error_code);
+        if (err) report_and_wait(endpoint,AOS_X86_VTX_PROOF_FAIL,0x4018u,rip,err);
+        next_rip=rip+event.advance; info=event.interruption_info;
+    }
+    report_and_wait(endpoint,AOS_X86_VTX_PROOF_FAIL,0x4750u,0,0);
+#endif
 
     /*
      * SysVMEnter updates guest RIP, primary execution controls, and entry
