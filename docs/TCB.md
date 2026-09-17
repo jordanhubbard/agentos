@@ -324,6 +324,10 @@ flag selects VMM initialization and the faulting DTB window at `0x0a040000`,
 virtual INTID 54. No physical GPU frame or IRQ is granted to either VMM or the
 framebuffer service. The `debian-gpu` profile exercises this variant.
 Host tests verify exact pixels through the real framebuffer queue implementation;
+the framebuffer service receives a 1 ms budget per 10 ms period and a 1 KiB
+scheduling context with additional refill records. Short queue exchanges must
+not discard most of the available budget through refill coalescing. The kernel
+retains a 10% CPU ceiling; other PD and guest scheduling parameters are unchanged.
 guest DRM/frame-capture qualification is still pending. Input, a physical
 display driver and authorized external export remain required.
 
