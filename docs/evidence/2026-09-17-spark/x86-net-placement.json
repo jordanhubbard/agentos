@@ -1,0 +1,38 @@
+{
+  "qualification": "Portable canonical VMM network adapter and host-tested x86 packet path",
+  "runtime_revision": "66c61b87f4047123ffc854165552c61f3fa94288",
+  "checks": [
+    {
+      "host": "Spark ARM64",
+      "command": "make test-x86-net-host test-virtio-backends-build SEL4_SDK_VERSION=2.3.0",
+      "result": "PASS",
+      "log": "build/evidence/x86-net-placement-66c61b8/focused.log",
+      "sha256": "2d505181f2eaa8fc5d6fae8b55093398d0666063e53455979f8f939dfdee4b62"
+    },
+    {
+      "host": "Spark ARM64",
+      "command": "make test-virtio-backends-build SEL4_SDK_VERSION=2.1.0",
+      "result": "PASS",
+      "log": "build/evidence/x86-net-placement-66c61b8/sdk21.log",
+      "sha256": "5e0869f38cfb4602d1f12f1b79b749afffbd7c9164c63bd4369071a84d9d152c"
+    },
+    {
+      "host": "Spark ARM64",
+      "command": "make gate SEL4_SDK_VERSION=2.3.0",
+      "result": "PASS",
+      "log": "build/evidence/x86-net-placement-66c61b8/gate.log",
+      "sha256": "98dba2561f7194d9202d388619254aafbd14c33305c8724bbfb10f2f9250931f"
+    }
+  ],
+  "observations": [
+    "The production VMM adapter compiles with real SDK headers on aarch64 and x86_64, using an explicit MMIO base, IRQ and mapped queue region. The ARM wrapper retains its prior defaults.",
+    "ASan/UBSan host test verified exact packet bytes and used-ring lengths through the real libvmm net backend, GPA translator, canonical loopback pump and x86 IOAPIC. Both TX and RX asserted GSI 18 and acknowledgment lowered it.",
+    "Invalid initial placement performs no attachment. Failed attachment registers no guest device. Rebinding preserves a queued packet and does not attach again.",
+    "The full Spark gate retained the existing ARM guest network, block and console proofs."
+  ],
+  "limitations": [
+    "The x86 packet test mocks kernel IPC and uses the canonical loopback pump. It does not prove an Intel host NIC or Linux x86 networking.",
+    "Root network grants, persistent wakeups and host NIC integration remain outstanding for the Intel board.",
+    "Canonical integration, pinned Debian acceptance, GUI qualification and v0.4 release remain incomplete."
+  ]
+}
