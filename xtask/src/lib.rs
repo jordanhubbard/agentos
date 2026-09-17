@@ -76,6 +76,9 @@ pub struct TestArgs {
         conflicts_with = "framebuffer_isolation_probe"
     )]
     pub assert_display: bool,
+    /// Compare a graphics guest's exported frame against QEMU RAMFB scanout.
+    #[arg(long, requires = "assert_live", conflicts_with = "assert_display")]
+    pub assert_guest_display: bool,
     /// Verify framebuffer clients cannot access peer queues or private/observer storage.
     #[arg(long, requires = "assert_framebuffer", value_parser = clap::value_parser!(u8).range(1..=16))]
     pub framebuffer_isolation_probe: Option<u8>,

@@ -344,6 +344,13 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
     if let Some(profile) = &mut profile_plan {
         apply_profile_ssh_port(profile, args.ssh_port);
     }
+    anyhow::ensure!(
+        !args.assert_guest_display || (args.board == "qemu_virt_aarch64"
+            && !args.no_build && profile_plan.as_ref().is_some_and(|p|
+                p.devices.iter().any(|d| d == "gpu")
+                && p.test.iter().any(|s| s.action == "assert-frame-pixels"))),
+        "guest display qualification requires a fresh AArch64 graphics profile with pixel assertions"
+    );
     if let Some(profile) = &profile_plan {
         println!(
             "[xtask:test] resolved alias {:?} to {} ({}, architecture={}, control_type={}, guest_id={}, provision_steps={}, test_steps={})",
@@ -483,7 +490,7 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
         if args.assert_framebuffer {
             make_args.push(String::from("FRAMEBUFFER_TEST=1"));
         }
-        if args.assert_display {
+        if args.assert_display || args.assert_guest_display {
             make_args.push(String::from("DISPLAY_RAMFB=1"));
         }
         make_args.extend(profile_device_build_args(
@@ -665,7 +672,7 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
         (args.guest_os == "both" || args.assert_desktop) && !args.keep_running,
         false,
         false,
-        args.assert_display,
+        args.assert_display || args.assert_guest_display,
     )?);
     if needs_host_net_stimulus {
         wait_for_all_markers(
@@ -855,6 +862,26 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
 
     if result.is_ok() && args.assert_display {
         result = verify_native_display(&log_path);
+    }
+
+    if result.is_ok() && args.assert_guest_display {
+        result = (|| {
+            anyhow::ensure!(
+                profile_plan
+                    .as_ref()
+                    .is_some_and(|p| p.devices.iter().any(|d| d == "gpu")),
+                "display proof requires a graphics profile"
+            );
+            let expected = std::fs::read(cc_sock.with_extension("frame.ppm"))?;
+            let receipt: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(cc_sock.with_extension("frame.json"))?)?;
+            verify_display(
+                &log_path,
+                &expected,
+                receipt["width"].as_u64().context("missing frame width")?,
+                receipt["height"].as_u64().context("missing frame height")?,
+            )
+        })();
     }
 
     if result.is_ok() && args.assert_console_backpressure {
@@ -2761,6 +2788,20 @@ fn wait_for_guest_console_login_on_cc(
 }
 
 fn verify_native_display(log: &Path) -> anyhow::Result<String> {
+    let mut expected = b"P6\n40 40\n255\n".to_vec();
+    for offset in (0..40u32 * 40 * 4).step_by(4) {
+        for channel in [2, 1, 0] {
+            expected.push(((offset + channel) * 37) as u8);
+        }
+    }
+    verify_display(log, &expected, 40, 40)
+}
+
+fn verify_display(log: &Path, expected: &[u8], width: u64, height: u64) -> anyhow::Result<String> {
+    anyhow::ensure!(
+        width > 0 && width <= 1024 && height > 0 && height <= 768,
+        "invalid display expectation dimensions"
+    );
     let mut socket = UnixStream::connect(log.with_extension("display.qmp.sock"))?;
     socket.set_read_timeout(Some(Duration::from_secs(10)))?;
     socket.set_write_timeout(Some(Duration::from_secs(10)))?;
@@ -2811,23 +2852,22 @@ fn verify_native_display(log: &Path) -> anyhow::Result<String> {
         anyhow::ensure!(completed, "QMP event limit exceeded");
     }
     let actual = std::fs::read(&ppm)?;
-    let mut expected = b"P6\n40 40\n255\n".to_vec();
-    for offset in (0..40u32 * 40 * 4).step_by(4) {
-        for channel in [2, 1, 0] {
-            expected.push(((offset + channel) * 37) as u8);
-        }
-    }
     anyhow::ensure!(
         actual == expected,
-        "QEMU display pixels differ from primary native client"
+        "QEMU display pixels differ from primary client framebuffer"
     );
     std::fs::write(
         log.with_extension("display.json"),
-        serde_json::to_vec_pretty(&serde_json::json!({"width":40,"height":40,"client":0,
-            "asserted_pixels":1600,"sha256":sha256_bytes(&actual),
-            "capture":"QMP screendump","path":ppm}))?,
+        serde_json::to_vec_pretty(
+            &serde_json::json!({"width":width,"height":height,"client":0,
+            "asserted_pixels":width*height,"sha256":sha256_bytes(&actual),
+            "capture":"QMP screendump","path":ppm}),
+        )?,
     )?;
-    Ok("display: all 1600 QEMU scanout pixels match primary native client".into())
+    Ok(format!(
+        "display: all {} QEMU scanout pixels match primary client",
+        width * height
+    ))
 }
 
 fn verify_native_frame_observer(

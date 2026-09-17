@@ -1000,6 +1000,10 @@ test-ubuntu-virtio:
 .PHONY: test-guest-gpu
 .PHONY: test-guest-input
 .PHONY: test-guest-graphics-input
+.PHONY: test-guest-display
+test-guest-display:
+	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os debian-graphics-input --timeout-secs $(QEMU_TEST_TIMEOUT) --assert-live --assert-agentos-virtio --assert-guest-display --ssh-port $(QEMU_TEST_SSH_PORT)
+
 test-guest-graphics-input:
 	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os debian-graphics-input --timeout-secs $(QEMU_TEST_TIMEOUT) --assert-live --assert-agentos-virtio --ssh-port $(QEMU_TEST_SSH_PORT)
 
