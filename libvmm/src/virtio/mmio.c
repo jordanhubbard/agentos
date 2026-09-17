@@ -35,6 +35,8 @@ int handle_virtio_mmio_set_status_flag(virtio_device_t *dev, uint32_t reg)
     switch (reg) {
     case VIRTIO_CONFIG_S_RESET:
         dev->regs.Status = 0;
+        /* Virtio 1.2, 4.2.2.1: reset clears every InterruptStatus bit. */
+        dev->regs.InterruptStatus = 0;
         dev->funs->device_reset(dev);
         break;
 
