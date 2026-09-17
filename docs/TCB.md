@@ -332,9 +332,15 @@ Host tests verify exact pixels through the real framebuffer queue implementation
 the framebuffer service receives a 1 ms budget per 10 ms period and a 1 KiB
 scheduling context with additional refill records. Short queue exchanges must
 not discard most of the available budget through refill coalescing. The kernel
-retains a 10% CPU ceiling; other PD and guest scheduling parameters are unchanged.
-guest DRM/frame-capture qualification is still pending. Input, a physical
-display driver and authorized external export remain required.
+retains a 10% CPU ceiling. CC retains its existing 1% ceiling with a 100 us
+budget per 10 ms period and a 1 KiB scheduling context with extra refill
+records. Its host VirtIO polling yields must not defer each request or reply
+for the old one-second period. Other PD and guest scheduling parameters are
+unchanged. The shorter period needs target latency and integration qualification;
+it does not grant CC any additional device or guest-memory authority.
+Combined guest graphics/input qualification at this scheduling revision is
+pending. A physical display driver and target peer-input isolation also remain
+required; native observer exports do not establish either property.
 
 The graphics and focused framebuffer variants also grant CC a separate observer queue.
 Only CC and `framebuffer_queue` map that page; neither VMM receives it.
