@@ -294,6 +294,19 @@ void aos_x86_firmware_run(seL4_CPtr ep, seL4_Word result)
             write_field(ep,ACTIVITY,1u);
             halt_exits++;
         } else if (reason == 10u && len == 2u) {
+#ifdef AGENTOS_X86_USERSPACE_PROOF
+            if ((uint32_t)regs.eax == AOS_X86_USERSPACE_LEAF) {
+                seL4_Word cs=read_field(ep,0x0802u);
+                bool passed=regs.ebx == 1u && regs.ecx == AOS_X86_USERSPACE_INIT &&
+                    regs.edx == AOS_X86_USERSPACE_PASS && (cs & 3u) == 3u &&
+                    ((read_field(ep,CS_RIGHTS) >> 5) & 3u) == 3u &&
+                    (read_field(ep,EFER) & LMA) &&
+                    (read_field(ep,CR0) & (PE|PG)) == (PE|PG) &&
+                    boot_reads[0] && boot_reads[1];
+                stop(ep,passed ? AOS_X86_VTX_USERSPACE_PASS : AOS_X86_VTX_PROOF_FAIL,
+                     reason,rip,cs & 3u);
+            }
+#endif
             aos_x86_cpuid_t r = aos_x86_cpu_id((uint32_t)regs.eax, (uint32_t)regs.ecx,hz);
             regs.eax = r.eax; regs.ebx = r.ebx; regs.ecx = r.ecx; regs.edx = r.edx;
         } else if (reason == 28u && len == 3u && (qual & ~0xf0fu) == 0u &&

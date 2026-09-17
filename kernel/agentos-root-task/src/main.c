@@ -3275,6 +3275,11 @@ void root_task_main(const seL4_BootInfo *bi)
             seL4_MessageInfo_get_length(tag) == 4u &&
 #endif
 #ifdef AGENTOS_X86_FIRMWARE_RESET
+#ifdef AGENTOS_X86_USERSPACE_PROOF
+            status == AOS_X86_VTX_USERSPACE_PASS && reason == 10u &&
+            instruction_len == 3u && rip < 0x0000800000000000ull) {
+            dbg_puts("[rt] x86 Linux ring3 initramfs syscall proof verified\n");
+#else
             status == AOS_X86_VTX_FIRMWARE_CONFIG &&
             reason == 30u && rip <= 0xffffffffu &&
             (instruction_len >> 16) == 0x511u && (instruction_len & (1u << 4))) {
@@ -3282,6 +3287,7 @@ void root_task_main(const seL4_BootInfo *bi)
             dbg_puts("[rt] firmware exit reason="); dbg_hex(reason);
             dbg_puts(" linear RIP="); dbg_hex(rip);
             dbg_puts(" qualification="); dbg_hex(instruction_len); dbg_puts("\n");
+#endif
 #else
 #ifdef AGENTOS_X86_GUEST_FAULT_PROOF
             status == AOS_X86_VTX_GUEST_FAULTS_PASS &&

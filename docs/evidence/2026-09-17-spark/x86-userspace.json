@@ -1,0 +1,53 @@
+{
+  "qualification": "Linux x86_64 PID1 and filesystem syscalls under seL4",
+  "revision": "accaafe69360fc7856aa587cb779d3ece38ac5d1",
+  "intel": {
+    "host": "madmax Intel i9-14900KF nested KVM",
+    "command": "make gate-x86_64-userspace SEL4_SDK_VERSION=2.3.0 X86_FIRMWARE_IMAGE=/tmp/agentos-ovmf-2024.02-2ubuntu0.9.fd X86_FIRMWARE_SHA256=101afad5f520753224b60b9555df60add435cf50c7a82b781d7d7d8c60db7eb5 X86_BOOT_KERNEL=/tmp/agentos-linux-7.0.0-30.efi X86_BOOT_KERNEL_SHA256=0ad39b13e289e1a5cf806d14541ac8f221eefe849017f5915e0846917ed67785 X86_BOOT_INITRD=/tmp/agentos-v04-intel-discovery/build/x86-userspace/initrd.bin X86_BOOT_INITRD_SHA256=e066792747bf8baf4fe1516a2fbf6603726e87f4962bbdb444c10ae708a41232",
+    "result": "PASS exit 0; x86 Linux ring3 initramfs syscall proof verified",
+    "artifact_directory": "/tmp/agentos-v04-intel-discovery/build/evidence/userspace-accaafe",
+    "image_sha256": "85c6cbc0eaf7b334b22d5da9ba8f36ddf264ca2c61df171833645d0f24507cca",
+    "root_task_sha256": "3b346e1df777dfe9b062eb16bc373308b3fade23864470b25a9a703095e6849a",
+    "initrd_sha256": "e066792747bf8baf4fe1516a2fbf6603726e87f4962bbdb444c10ae708a41232",
+    "gate_log_sha256": "06d042ba48018c21697465a39e44986f8824773d4827bdbc51f9492b597fb72a",
+    "kernel_bytes_consumed": 17295752,
+    "initrd_bytes_consumed": 1328,
+    "timer_exits": 508,
+    "interrupt_injections": 910,
+    "interrupt_eois": 910,
+    "assertions": [
+      "Guest getpid syscall returns 1 before and after the filesystem roundtrip",
+      "Guest open, write, lseek, read and close syscalls return expected results",
+      "Guest compares every byte read against its written string",
+      "VMM checks CPUID result registers, CS RPL and DPL 3, long mode and paging",
+      "Root and harness require the dedicated userspace result"
+    ]
+  },
+  "negative_control": {
+    "method": "Replace both cmp $1, %rax PID assertions in tests/platform/x86_linux_init.S with cmp $2, %rax; cross-compile with the same static Clang/LLD flags and strip sections; pack init using reproducible newc cpio with uid/gid and timestamp zero. Run the same userspace gate with the alternate initrd and digest.",
+    "result": "Expected rejection: status 2, CPUID reason 10, RIP 0x201262, CPL detail 3; no success marker; original gate exit 2",
+    "termination": "Owned QEMU 3375790 terminated only after explicit failure report and artifact retention",
+    "artifact_directory": "/tmp/agentos-v04-intel-discovery/build/evidence/userspace-negative-accaafe",
+    "image_sha256": "de22e8e464303606e259046ca1e8b1cf90243523cc98dc4a1cd832128b7957ac",
+    "root_task_sha256": "e7693b061459894f97a7e4a5cdfc9f9441252fcd0e7ab47a08d371fc8eb83532",
+    "initrd_sha256": "bd7bc879ebde912fb863b53f0de40ed9beca4fd38a89f8c31170f5dc35065b40",
+    "init_source_sha256": "28b68b8f93f31ed6c4b7846bce82ec88dd3bccab59036e7f871428e530b532d2",
+    "serial_sha256": "e32418b6b206c561f882f1f2bc9ea80386241447e6bcd4ee961100c2dc7086ad"
+  },
+  "spark": {
+    "command": "make gate SEL4_SDK_VERSION=2.3.0 QEMU_TEST_SSH_PORT=12266",
+    "result": "PASS exit 0",
+    "artifact_directory": "build/evidence/userspace-accaafe",
+    "image_sha256": "068cba7d9f77eda094e6c9c8c9963d7c231ba5f0ee6947ad6ce68aa324503f67",
+    "gate_log_sha256": "53eecc73f51203480e33bc3efa6f150cd0b6203e25b8829211dbca9a47ae0e71"
+  },
+  "host_checks": "11 guest-fetch/initramfs tests passed; Spark and Intel independently generated identical initrd hashes",
+  "limitations": [
+    "Completion trap is qualification-only, not a production service ABI",
+    "Guest initramfs file I/O does not qualify canonical x86 console/network/block services",
+    "No persistent disk, desktop resource-profile, or concurrent guest isolation claim",
+    "Wrong-PID negative control tests assertion failure; not a dedicated ring-0 spoofing test",
+    "Required GitHub checks remain queued; this receipt is not release acceptance"
+  ],
+  "mac_task": "task_6b493c61f2be47ab8ea782332d79addf"
+}
