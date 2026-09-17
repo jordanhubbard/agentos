@@ -244,8 +244,9 @@ static seL4_Word g_cap_base;  /* set to bi->empty.start in root_task_main */
  */
 #define PD_IPC_BUF_VA    0x0000000010000000UL
 
+#include "contracts/guest_ram_caps.h"
 #define AOS_MAX_GUEST_RAM_REGIONS 4u
-#define AOS_MAX_GUEST_LARGE_FRAMES 1024u
+#define AOS_MAX_GUEST_LARGE_FRAMES AOS_GUEST_RAM_MAX_FRAMES
 
 typedef struct guest_ram_reservation {
     uint32_t pd_index;
@@ -255,6 +256,7 @@ typedef struct guest_ram_reservation {
 } guest_ram_reservation_t;
 
 static seL4_CPtr g_guest_large_frames[AOS_MAX_GUEST_LARGE_FRAMES];
+static seL4_CPtr g_guest_ram_pools[AOS_MAX_GUEST_LARGE_FRAMES];
 static seL4_CPtr g_guest_large_frame_aliases[AOS_MAX_GUEST_LARGE_FRAMES];
 static guest_ram_reservation_t
     g_guest_ram_reservations[AOS_MAX_GUEST_RAM_REGIONS];
@@ -938,9 +940,16 @@ static seL4_Error reserve_guest_ram_frames(const system_desc_t *sys)
             reservation->frame_count = (uint16_t)count;
             for (uint32_t frame = 0u; frame < count; frame++) {
                 seL4_Error err = ut_alloc_cap(
-                    (uint32_t)seL4_ARCH_LargePageObject, 0u,
-                    &g_guest_large_frames[next_frame]);
+                    seL4_UntypedObject, seL4_ARCH_LargePageBits,
+                    &g_guest_ram_pools[next_frame]);
                 if (err != seL4_NoError) return err;
+                seL4_Word frame_slot = ut_alloc_slot();
+                if (frame_slot == seL4_CapNull) return seL4_NotEnoughMemory;
+                err = seL4_Untyped_Retype(g_guest_ram_pools[next_frame],
+                    seL4_ARCH_LargePageObject, 0u,
+                    seL4_CapInitThreadCNode, 0u, 0u, frame_slot, 1u);
+                if (err != seL4_NoError) return err;
+                g_guest_large_frames[next_frame] = frame_slot;
                 next_frame++;
             }
             g_guest_ram_reservation_count++;
@@ -965,9 +974,13 @@ guest_ram_reservation_for(uint32_t pd_index, uint8_t mr_index)
 
 static seL4_Error map_guest_ram_reservation(
     const guest_ram_reservation_t *reservation,
+    seL4_CPtr vmm_cnode, seL4_Word cnode_bits,
     seL4_CPtr vmm_vspace, seL4_CPtr guest_vspace,
     seL4_Word hva_base, seL4_Word gpa_base, int writable)
 {
+    if (cnode_bits != AOS_GUEST_RAM_CNODE_BITS ||
+        reservation->frame_count > AOS_GUEST_RAM_MAX_FRAMES)
+        return seL4_InvalidArgument;
     seL4_Error err = pd_vspace_map_reserved_region(
         guest_vspace, gpa_base,
         &g_guest_large_frames[reservation->first_frame],
@@ -986,10 +999,28 @@ static seL4_Error map_guest_ram_reservation(
         g_guest_large_frame_aliases[reservation->first_frame + i] =
             (seL4_CPtr)alias_slot;
     }
-    return pd_vspace_map_reserved_region(
+    err = pd_vspace_map_reserved_region(
         vmm_vspace, hva_base,
         &g_guest_large_frame_aliases[reservation->first_frame],
         reservation->frame_count, writable);
+    if (err != seL4_NoError) return err;
+
+    const seL4_CPtr sources[] = {vmm_cnode, vmm_vspace, guest_vspace};
+    const seL4_Word slots[] = {AOS_GUEST_RAM_SELF_CNODE,
+        AOS_GUEST_RAM_VMM_VSPACE, AOS_GUEST_RAM_GUEST_VSPACE};
+    for (uint32_t i = 0u; i < 3u; i++) {
+        err = seL4_CNode_Copy(vmm_cnode, slots[i], cnode_bits,
+            seL4_CapInitThreadCNode, sources[i], 64u, seL4_AllRights);
+        if (err != seL4_NoError) return err;
+    }
+    for (uint32_t i = 0u; i < reservation->frame_count; i++) {
+        err = seL4_CNode_Move(vmm_cnode, AOS_GUEST_RAM_POOL_BASE + i,
+            cnode_bits, seL4_CapInitThreadCNode,
+            g_guest_ram_pools[reservation->first_frame + i], 64u);
+        if (err != seL4_NoError) return err;
+        g_guest_ram_pools[reservation->first_frame + i] = seL4_CapNull;
+    }
+    return seL4_NoError;
 }
 #endif
 
@@ -1829,6 +1860,7 @@ void root_task_main(const seL4_BootInfo *bi)
         dbg_puts("[rt] early guest RAM large-page reservation err=");
         dbg_hex((seL4_Word)reserve_err);
         dbg_puts("\n");
+        if (reserve_err != seL4_NoError) return;
     }
 #endif
 
@@ -2427,7 +2459,8 @@ void root_task_main(const seL4_BootInfo *bi)
                             ? AOS_PRIMARY_GUEST_GPA_BASE
                             : AOS_SECONDARY_GUEST_GPA_BASE;
                     mr_err = map_guest_ram_reservation(
-                        reservation, vspace, guest_vspace,
+                        reservation, pd_cnode, pd->cnode_size_bits,
+                        vspace, guest_vspace,
                         (seL4_Word)mr->vaddr, guest_gpa,
                         (int)mr->writable);
                 }
@@ -2447,6 +2480,10 @@ void root_task_main(const seL4_BootInfo *bi)
                 dbg_puts(" err=");
                 dbg_hex((seL4_Word)mr_err);
                 dbg_puts("\n");
+                /* Never start a VMM with partial mappings or missing pool
+                 * authority. Root provisioning is an all-or-stop boundary. */
+                if (pd_is_guest_vmm(pd) && name_eq(mr->name, "guest_ram"))
+                    return;
             }
         }
 

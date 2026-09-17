@@ -112,6 +112,9 @@ pub struct TestArgs {
     /// Require emulated virtio-blk probe + DRIVER_OK + a pumped request.
     #[arg(long)]
     pub assert_emulated_blk: bool,
+    /// Recycle all guest RAM twice before boot, then prove guest block I/O.
+    #[arg(long, requires = "assert_emulated_blk")]
+    pub assert_guest_ram_recycle: bool,
     /// Require Ubuntu login and bidirectional I/O through emulated virtio-console.
     #[arg(long)]
     pub assert_emulated_console: bool,
