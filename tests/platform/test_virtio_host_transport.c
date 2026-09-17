@@ -131,10 +131,63 @@ static void test_pci(void)
     assert(aos_virtio_host_notify(&t) && notify[0] == 0);
 }
 
+static void test_multiple_queues(void)
+{
+    aos_virtio_host_t t;
+    aos_virtio_host_queue_t rx = {0}, tx = {0};
+    memset(mmio, 0, sizeof(mmio));
+    MMIO(VIRTIO_MMIO_MAGIC_VALUE)=VIRTIO_MMIO_MAGIC;
+    MMIO(VIRTIO_MMIO_VERSION)=2;
+    MMIO(VIRTIO_MMIO_DEVICE_ID)=1;
+    MMIO(VIRTIO_MMIO_QUEUE_NUM_MAX)=8;
+    assert(aos_virtio_host_mmio(&t,(uintptr_t)mmio,sizeof(mmio),1));
+    assert(!aos_virtio_host_queue_notify(&t,&rx));
+    assert(aos_virtio_host_queue_bind(&t,&rx,0,8,0x1000,0x2000,0x3000));
+    assert(!aos_virtio_host_queue_bind(&t,&tx,0,8,0x4000,0x5000,0x6000));
+    assert(!tx.owner);
+    /* The fixture supplies the register bank selected for queue 1. */
+    MMIO(VIRTIO_MMIO_QUEUE_READY)=0;
+    assert(aos_virtio_host_queue_bind(&t,&tx,1,8,0x4000,0x5000,0x6000));
+    assert(MMIO(VIRTIO_MMIO_QUEUE_SEL)==1 && MMIO(VIRTIO_MMIO_QUEUE_DESC_LOW)==0x4000);
+    assert(aos_virtio_host_queue_notify(&t,&rx) && MMIO(VIRTIO_MMIO_QUEUE_NOTIFY)==0);
+    assert(aos_virtio_host_queue_notify(&t,&tx) && MMIO(VIRTIO_MMIO_QUEUE_NOTIFY)==1);
+    aos_virtio_host_t other=t;
+    assert(!aos_virtio_host_queue_notify(&other,&tx));
+    aos_virtio_host_set_status(&t,0);
+    assert(!aos_virtio_host_queue_notify(&t,&rx) && !aos_virtio_host_queue_notify(&t,&tx));
+
+    memset(common_mem,0,sizeof(common_mem));
+    virtio_pci_common_cfg_t *c=(virtio_pci_common_cfg_t *)common_mem;
+    c->num_queues=2; c->queue_size=8; c->queue_notify_off=3;
+    for (unsigned i=0; i<16; i++) notify[i]=0xa55a;
+    assert(bind_pci(&t,4));
+    assert(aos_virtio_host_queue_bind(&t,&rx,0,8,0x1000,0x2000,0x3000));
+    /* Supply queue 1's independent capability-bank values. */
+    c->queue_enable=0; c->queue_size=8; c->queue_notify_off=5;
+    assert(aos_virtio_host_queue_bind(&t,&tx,1,8,0x4000,0x5000,0x6000));
+    assert(c->queue_select==1 && c->queue_desc==0x4000);
+    assert(aos_virtio_host_queue_notify(&t,&tx) && notify[10]==1);
+    assert(aos_virtio_host_queue_notify(&t,&rx) && notify[6]==0);
+    for (unsigned i=0; i<16; i++) if (i!=6 && i!=10) assert(notify[i]==0xa55a);
+    aos_virtio_host_queue_t saved=rx;
+    assert(!aos_virtio_host_queue_bind(&t,&rx,2,8,0x7000,0x8000,0x9000));
+    assert(rx.owner==saved.owner && rx.epoch==saved.epoch &&
+           rx.index==saved.index && rx.notify_offset==saved.notify_offset);
+    assert(aos_virtio_host_queue_notify(&t,&rx));
+    aos_virtio_host_set_status(&t,0);
+    assert(!aos_virtio_host_queue_notify(&t,&rx) && !aos_virtio_host_queue_notify(&t,&tx));
+    /* Reset invalidates the old handle even after a new queue is enabled. */
+    c->queue_enable=0; c->queue_size=8;
+    assert(aos_virtio_host_queue_bind(&t,&rx,0,8,0x1000,0x2000,0x3000));
+    assert(aos_virtio_host_queue_notify(&t,&rx));
+    assert(!aos_virtio_host_queue_notify(&t,&saved));
+}
+
 int main(void)
 {
     test_mmio();
     test_pci();
+    test_multiple_queues();
     puts("PASS: host virtio MMIO/PCI registers, queue bounds, DMA addresses and notifications");
     return 0;
 }

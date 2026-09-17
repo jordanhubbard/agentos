@@ -158,6 +158,14 @@ after guest DRIVER_OK. It submits through the existing sDDF queue and copies
 data only after a matching successful response. A binding is not a device
 reset or DMA revocation operation.
 
+The shared host transport also supports independent queue handles for drivers
+with separate RX and TX queues. Each handle retains its owner, queue index and
+PCI notification offset; configuring another queue does not overwrite it.
+A status reset invalidates existing handles. Drivers must serialize register
+access and discard handles when rebinding a transport. The existing block
+driver keeps its single-queue interface. Multi-queue host register tests are
+not evidence of a live PCI NIC or DMA teardown.
+
 The x86 firmware qualification board places a modern virtio block device at
 PCI 00:05.0 with a fresh, read-only test medium. Root performs boot-time
 configuration discovery using a temporary CF8/CFC port capability. It disables
