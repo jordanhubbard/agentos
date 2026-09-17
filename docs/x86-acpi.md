@@ -59,6 +59,10 @@ complete interrupt/device path remain unqualified. Unsupported accesses
 still stop this bounded qualification profile; guest exception delivery needs
 its own implementation and target proof.
 
+The subsequent [guest-fault implementation](x86-guest-faults.md) adds that
+MSR fault path and qualifies long-mode handler recovery. Linux then reaches
+PCI mechanism discovery; the overall Intel Linux gate remains incomplete.
+
 `make test-x86-acpi-host` checks an independent exact two-vCPU wire fixture,
 the maximum topology, checksums, duplicate IDs, reserved broadcast IDs,
 address alignment, GSI overflow and unchanged output on rejection. It is
