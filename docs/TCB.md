@@ -130,9 +130,10 @@ step. It uses the specified byte/halfword/dword register widths, validates
 queue capacity and notification offsets before enabling the queue, and reads
 64-bit capacity with a bounded configuration-generation retry. The driver
 still owns all DMA and uses the same request chain for either transport.
-The PCI binding currently has host register-fixture and x86 ELF link evidence,
-not Intel device-execution evidence. A binding is not a device reset or DMA
-revocation operation.
+The boot-read API refuses RAM fallback, insufficient output space and reads
+after guest DRIVER_OK. It submits through the existing sDDF queue and copies
+data only after a matching successful response. A binding is not a device
+reset or DMA revocation operation.
 
 The x86 firmware qualification board places a modern virtio block device at
 PCI 00:05.0 with a fresh, read-only test medium. Root performs boot-time
@@ -140,8 +141,20 @@ configuration discovery using a temporary CF8/CFC port capability. It disables
 decode and bus mastering while measuring BARs, validates the common, notify
 and device capability spans, verifies BAR/command restoration, then deletes
 that port capability before starting PDs. Failed discovery refuses startup.
-This checkpoint discovers resources only: it does not yet map them into the
-block driver, enable a DMA queue or expose a block device to the Intel guest.
+Only `virtio_blk` receives uncached mappings of the PCI register pages. The
+driver and `blk_virt` share one coherent DMA frame; the VMM maps only its own
+block queue page. Root enables memory decoding and bus mastering, with INTx
+disabled, only after the driver mappings succeed. The canonical driver resets
+the device before configuring its polling split queue. Metadata version 2
+describes PCI spans; version 1 retains the ARM MMIO layout.
+
+The Intel firmware qualification first reads one 4096-byte block through the
+VMM queue, `blk_virt` and the PCI driver, requiring the test-medium prefix and
+zero padding exactly. It then continues the existing firmware/userspace proof.
+This preboot read does not establish guest Linux block enumeration, writable
+persistence or pinned Debian acceptance. Root passes a zero nameserver startup
+argument to PDs without that endpoint, so the standalone mux does not attempt
+registration through an ungranted capability.
 
 *Console*. `serial_virt` is a separate PD with four root-provisioned pages:
 one per VMM, one for the native operator client and a separate CC frontend

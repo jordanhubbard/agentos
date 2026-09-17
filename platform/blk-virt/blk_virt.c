@@ -292,7 +292,7 @@ static void bv_notify_vmm(const bv_client_t *c)
 
 static seL4_CPtr vmm_notify_for_slot(uint32_t vmm_slot)
 {
-#if defined(AGENTOS_GUEST_PRIMARY)
+#if defined(AGENTOS_GUEST_PRIMARY) || defined(AGENTOS_X86_FIRMWARE_RESET)
     if (vmm_slot == BLK_VIRT_VMM_SLOT_PRIMARY) {
         return (seL4_CPtr)PD_CNODE_SLOT_BLK_PRIMARY_NOTIFY;
     }

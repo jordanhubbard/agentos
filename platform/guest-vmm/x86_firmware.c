@@ -16,6 +16,9 @@
 #include <platform/serial_virt_layout.h>
 #include <platform/serial_endpoint.h>
 #include <platform/vmm_virtio_console.h>
+#include <platform/vmm_virtio_blk.h>
+#include <platform/blk_layout.h>
+#include <contracts/blk_virt_contract.h>
 
 #define VCPU AOS_GUEST_VCPU_CAP_BASE
 const char vmm_pd_name[] = "guest_vmm_x86";
@@ -46,6 +49,8 @@ static seL4_Word halt_chain[AOS_X86_FIRMWARE_CHAIN_WORDS];
 static seL4_Word boot_reads[3], last_qualification;
 static bool have_wait_snapshot;
 static bool serial_wake_received;
+static seL4_CPtr block_proof_ep;
+static uint8_t block_boot_data[AOS_BLK_TRANSFER_SIZE];
 
 static uint32_t serial_output(uint8_t *bytes, uint32_t capacity, void *context)
 {
@@ -92,6 +97,19 @@ static _Noreturn void stop(seL4_CPtr endpoint, seL4_Word status, seL4_Word reaso
     seL4_SetMR(119,last_qualification);
     seL4_Send(endpoint, seL4_MessageInfo_new(AOS_X86_VTX_PROOF_LABEL, 0, 0, AOS_X86_FIRMWARE_REPORT_WORDS));
     for (;;) { seL4_Word badge; (void)seL4_Wait(endpoint, &badge); }
+}
+
+static void block_wait(void)
+{
+    seL4_Word badge = 0;
+#ifdef CONFIG_KERNEL_MCS
+    (void)seL4_Recv(PD_CNODE_SLOT_SELF_EP, &badge, AGENTOS_IPC_REPLY_CAP);
+#else
+    (void)seL4_Recv(PD_CNODE_SLOT_SELF_EP, &badge);
+#endif
+    if (!badge || (badge & ~(BLK_VIRT_VMM_WAKE_BADGE | SERIAL_VIRT_VMM_WAKE_BADGE)))
+        stop(block_proof_ep, AOS_X86_VTX_PROOF_FAIL, 0x424c4bu, 0, badge);
+    if (badge & SERIAL_VIRT_VMM_WAKE_BADGE) serial_wake_received = true;
 }
 
 static seL4_Word read_field(seL4_CPtr ep, seL4_Word field)
@@ -264,6 +282,19 @@ void aos_x86_firmware_run(seL4_CPtr ep, aos_x86_vmenter_return_t returned)
         stop(ep, AOS_X86_VTX_PROOF_FAIL, 0x56495254u, 0, AOS_X86_FIRMWARE_RAM);
     if (!aos_vmm_virtio_console_init_at(AOS_X86_VIRTIO_BASE, AOS_X86_VIRTIO_GSI_BASE))
         stop(ep, AOS_X86_VTX_PROOF_FAIL, 0x534552u, 0, 4u);
+    if (!aos_vmm_virtio_blk_init_at(0u, AOS_X86_VIRTIO_BASE + AOS_X86_VIRTIO_STRIDE,
+                                   AOS_X86_VIRTIO_GSI_BASE + 1u, (void *)AOS_BLK_SHMEM_VA))
+        stop(ep, AOS_X86_VTX_PROOF_FAIL, 0x424c4bu, 0, 1u);
+    block_proof_ep = ep;
+    if (!aos_vmm_virtio_blk_read_boot(0u, 1u, block_boot_data,
+                                     sizeof(block_boot_data), block_wait))
+        stop(ep, AOS_X86_VTX_PROOF_FAIL, 0x424c4bu, 0, 2u);
+    static const char expected[] = "agentos-host-block-qualification-v1\n";
+    for (unsigned i = 0; i < sizeof(block_boot_data); i++) {
+        uint8_t want = i < sizeof(expected) - 1u ? (uint8_t)expected[i] : 0u;
+        if (block_boot_data[i] != want)
+            stop(ep, AOS_X86_VTX_PROOF_FAIL, 0x424c4bu, 0, 0x100u + i);
+    }
     uint32_t timer_quantum=0;
     const aos_x86_memory_t memory = {
         .ram=(const uint8_t *)AOS_X86_FIRMWARE_RAM_VA, .ram_size=AOS_X86_FIRMWARE_RAM,
@@ -273,10 +304,13 @@ void aos_x86_firmware_run(seL4_CPtr ep, aos_x86_vmenter_return_t returned)
     unsigned exits = 0;
     for (;;) {
         seL4_Word rip = returned.words[SEL4_VMENTER_CALL_EIP_MR];
-        if (returned.result == SEL4_VMENTER_RESULT_NOTIF &&
-            returned.badge == SERIAL_VIRT_VMM_WAKE_BADGE) {
-            service_serial(&serial_endpoint);
-            serial_wake_received = true;
+        if (returned.result == SEL4_VMENTER_RESULT_NOTIF && returned.badge &&
+            !(returned.badge & ~(SERIAL_VIRT_VMM_WAKE_BADGE | BLK_VIRT_VMM_WAKE_BADGE))) {
+            if (returned.badge & SERIAL_VIRT_VMM_WAKE_BADGE) {
+                service_serial(&serial_endpoint);
+                serial_wake_received = true;
+            }
+            if (returned.badge & BLK_VIRT_VMM_WAKE_BADGE) aos_vmm_virtio_blk_resp_ready();
             /* Queue completion leaves its IOAPIC line pending. The next
              * bounded VMX timer exit routes it through the common event path. */
             returned = aos_x86_vm_resume_notification(&returned);
@@ -522,6 +556,7 @@ void aos_x86_firmware_run(seL4_CPtr ep, aos_x86_vmenter_return_t returned)
                  reason == 31u || reason == 32u ? (uint32_t)regs.ecx : reason == 48u ? fault_gpa : qual);
         }
         service_serial(&serial_endpoint);
+        aos_vmm_virtio_blk_after_fault();
         seL4_Error err = seL4_X86_VCPU_WriteRegisters(VCPU, &regs);
         if (err) stop(ep, AOS_X86_VTX_PROOF_FAIL, reason, rip, err);
         /* Only VMM-owned emulated sources may assert these inputs. No host

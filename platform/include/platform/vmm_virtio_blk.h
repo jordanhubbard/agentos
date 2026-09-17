@@ -14,6 +14,14 @@
  */
 typedef void (*aos_vmm_blk_wait_fn)(void);
 
+/* Read host-backed media before guest queue ownership. Units are 4096-byte
+ * storage blocks. The destination must hold count blocks; one shared data
+ * window is the per-call maximum. Refuses RAM fallback and DRIVER_OK guests.
+ * wait must block until notification without consuming the response queue. */
+bool aos_vmm_virtio_blk_read_boot(uint64_t block, uint16_t count,
+                                  void *destination, size_t capacity,
+                                  aos_vmm_blk_wait_fn wait);
+
 /* libvmm virtio-mmio blk at AOS_VIRTIO_BLK_GUEST_IPA; sDDF queues in the
  * shared block region, serviced by the blk_virt PD. */
 void aos_vmm_virtio_blk_init(uint32_t media_id);

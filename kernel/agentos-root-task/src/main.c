@@ -721,6 +721,30 @@ static seL4_CPtr g_serial_shmem_frame_cap = seL4_CapNull;
 static seL4_CPtr g_virtio_mmio_frame_cap = seL4_CapNull;
 static seL4_CPtr g_host_blk_mmio_frame_cap = seL4_CapNull;
 static seL4_CPtr g_blk_shared_frame_cap = seL4_CapNull;
+#if defined(__x86_64__) && defined(AGENTOS_X86_FIRMWARE_RESET)
+static seL4_CPtr g_x86_blk_frames[AOS_VIRTIO_PCI_REGIONS];
+#endif
+
+static seL4_Error allocate_block_dma(const aos_blk_pci_info_t *pci)
+{
+    _Static_assert(AGENTOS_BLK_SHARED_SIZE == (1UL << seL4_ARCH_LargePageBits),
+                   "host block DMA layout must match the SDK large frame");
+    seL4_Error err = ut_alloc_cap(seL4_ARCH_LargePageObject, 0u, &g_blk_shared_frame_cap);
+    if (err != seL4_NoError) return err;
+    seL4_ARCH_Page_GetAddress_t address = seL4_ARCH_Page_GetAddress(g_blk_shared_frame_cap);
+    if (address.error != seL4_NoError) return address.error;
+    err = pd_vspace_map_device_frame(seL4_CapInitThreadVSpace,
+                                     g_blk_shared_frame_cap, RT_BLK_SCRATCH_VA);
+    if (err != seL4_NoError) return err;
+    agentos_blk_shared_meta_t *meta = (agentos_blk_shared_meta_t *)RT_BLK_SCRATCH_VA;
+    *meta = (agentos_blk_shared_meta_t){
+        .magic = AGENTOS_BLK_SHARED_MAGIC, .version = pci ? 2u : 1u,
+        .paddr = address.paddr, .size = AGENTOS_BLK_SHARED_SIZE,
+    };
+    if (pci) *(aos_blk_pci_info_t *)(RT_BLK_SCRATCH_VA + AOS_BLK_PCI_INFO_OFF) = *pci;
+    AGENTOS_MEMORY_FENCE();
+    return seL4_ARCH_Page_Unmap(g_blk_shared_frame_cap);
+}
 /* Shared sDDF block region: guest request/response queues and data cells,
  * mapped wholly into blk_virt, with one client frame mapped into each VMM. */
 static seL4_CPtr g_blk_virt_frame_caps[AOS_BLK_SHMEM_FRAMES];
@@ -1773,34 +1797,9 @@ void root_task_main(const seL4_BootInfo *bi)
         }
     }
 
-    {
-        seL4_Error blk_err =
-            ut_alloc_cap(seL4_ARM_LargePageObject, 0u,
-                         &g_blk_shared_frame_cap);
-        seL4_Word blk_shared_pa = 0u;
-        if (blk_err == seL4_NoError) {
-            seL4_ARCH_Page_GetAddress_t r =
-                seL4_ARCH_Page_GetAddress(g_blk_shared_frame_cap);
-            blk_shared_pa = r.paddr;
-            blk_err = pd_vspace_map_device_frame(
-                seL4_CapInitThreadVSpace, g_blk_shared_frame_cap,
-                RT_BLK_SCRATCH_VA);
-        }
-        if (blk_err == seL4_NoError) {
-            agentos_blk_shared_meta_t *meta =
-                (agentos_blk_shared_meta_t *)RT_BLK_SCRATCH_VA;
-            meta->magic = AGENTOS_BLK_SHARED_MAGIC;
-            meta->version = 1u;
-            meta->paddr = (uint64_t)blk_shared_pa;
-            meta->size = AGENTOS_BLK_SHARED_SIZE;
-            AGENTOS_MEMORY_FENCE();
-            seL4_ARCH_Page_Unmap(g_blk_shared_frame_cap);
-        }
-        dbg_puts("[rt] blk shared frame pa=");
-        dbg_hex(blk_shared_pa);
-        dbg_puts(" err=");
-        dbg_hex((seL4_Word)blk_err);
-        dbg_puts("\n");
+    if (allocate_block_dma(NULL) != seL4_NoError) {
+        dbg_puts("[rt] block DMA allocation failed; refusing startup\n");
+        return;
     }
 
     {
@@ -1906,12 +1905,48 @@ void root_task_main(const seL4_BootInfo *bi)
         dbg_puts("\n");
         return;
     }
+    aos_blk_pci_info_t block_pci = {
+        .magic = AOS_BLK_PCI_INFO_MAGIC, .version = 1u,
+        .notify_multiplier = host_block_layout.notify_multiplier,
+    };
     for (unsigned r = 0; r < AOS_VIRTIO_PCI_REGIONS; r++) {
         dbg_puts("[rt] x86 host block region pa=");
         dbg_hex(host_block_layout.region[r].paddr);
         dbg_puts(" length=");
         dbg_hex(host_block_layout.region[r].length);
         dbg_puts("\n");
+        block_pci.offset[r] = (uint32_t)(host_block_layout.region[r].paddr & 4095u);
+        block_pci.length[r] = host_block_layout.region[r].length;
+        if (block_pci.length[r] > 4096u - block_pci.offset[r]) {
+            dbg_puts("[rt] block PCI capability exceeds mapped page; refusing startup\n");
+            return;
+        }
+    }
+    /* Device untyped watermarks advance monotonically. Allocate ascending
+     * physical pages, independently of PCI capability and driver VA order. */
+    for (unsigned allocation = 0; allocation < AOS_VIRTIO_PCI_REGIONS; allocation++) {
+        unsigned next = AOS_VIRTIO_PCI_REGIONS;
+        uint64_t page = UINT64_MAX;
+        for (unsigned r = 0; r < AOS_VIRTIO_PCI_REGIONS; r++) {
+            uint64_t candidate = host_block_layout.region[r].paddr & ~UINT64_C(4095);
+            if (!g_x86_blk_frames[r] && candidate < page) {
+                page = candidate;
+                next = r;
+            }
+        }
+        if (next == AOS_VIRTIO_PCI_REGIONS) break;
+        if (ut_alloc_device_cap(page, &g_x86_blk_frames[next]) != seL4_NoError) {
+            dbg_puts("[rt] block PCI device frame grant failed; refusing startup\n");
+            return;
+        }
+        for (unsigned r = 0; r < AOS_VIRTIO_PCI_REGIONS; r++) {
+            if ((host_block_layout.region[r].paddr & ~UINT64_C(4095)) == page)
+                g_x86_blk_frames[r] = g_x86_blk_frames[next];
+        }
+    }
+    if (allocate_block_dma(&block_pci) != seL4_NoError) {
+        dbg_puts("[rt] block DMA allocation failed; refusing startup\n");
+        return;
     }
     dbg_puts("[rt] x86 host block PCI resources verified\n");
 #endif
@@ -2738,6 +2773,8 @@ void root_task_main(const seL4_BootInfo *bi)
             dbg_puts("\n");
         }
 
+#endif
+
         /* The driver DMA window is shared by virtio_blk and blk_virt only.
          * No VMM maps it: guest block data reaches the driver through the
          * blk_virt queues (docs/TCB.md invariant 2). */
@@ -2762,8 +2799,34 @@ void root_task_main(const seL4_BootInfo *bi)
             dbg_puts(" blk shared map err=");
             dbg_hex((seL4_Word)blk_err);
             dbg_puts("\n");
+            if (blk_err != seL4_NoError) {
+                dbg_puts("[rt] block DMA mapping failed; refusing PD start\n");
+                continue;
+            }
         }
 
+#if defined(__x86_64__) && defined(AGENTOS_X86_FIRMWARE_RESET)
+        if (pd->self_svc_id == SVC_ID_VIRTIO_BLK) {
+            seL4_Error err = seL4_NoError;
+            for (unsigned r = 0; r < AOS_VIRTIO_PCI_REGIONS && err == seL4_NoError; r++) {
+                seL4_CPtr copy = ut_alloc_slot();
+                err = seL4_NotEnoughMemory;
+                if (copy) {
+                    err = seL4_CNode_Copy(seL4_CapInitThreadCNode, copy, 64u,
+                        seL4_CapInitThreadCNode, g_x86_blk_frames[r], 64u, seL4_AllRights);
+                    if (err == seL4_NoError)
+                        err = pd_vspace_map_uncached_device_frame(vspace, copy, AOS_BLK_PCI_REGION_VA(r));
+                }
+            }
+            if (err != seL4_NoError || !aos_x86_host_block_enable()) {
+                dbg_puts("[rt] block PCI mapping/enable failed; refusing driver start\n");
+                continue;
+            }
+            dbg_puts("[rt] x86 host block driver resources mapped\n");
+        }
+#endif
+
+#if defined(__aarch64__)
         /* VMMs map their own queue page, the NIC driver maps its transfer
          * page, and only net_virt maps both tiers. */
         if (g_net_shared_frame_caps[0] != seL4_CapNull &&
@@ -3108,11 +3171,16 @@ void root_task_main(const seL4_BootInfo *bi)
             dbg_puts(" sp=");
             dbg_hex(vr.stack_top);
             dbg_puts("\n");
+            seL4_Word nameserver_slot = 0u;
+            for (unsigned e = 0; e < pd->init_ep_count; e++) {
+                if (pd->init_eps[e].service_id == SVC_ID_NAMESERVER)
+                    nameserver_slot = pd->init_eps[e].cnode_slot;
+            }
             seL4_Error reg_err = pd_tcb_set_regs(tr.tcb_cap,
                                                    vr.entry_point,
                                                    vr.stack_top,
                                                    self_ep_slot,
-                                                   (seL4_Word)PD_CNODE_SLOT_NAMESERVER_EP);
+                                                   nameserver_slot);
             if (reg_err != seL4_NoError) {
                 dbg_puts("[rt] pd set_regs fail err=");
                 dbg_hex((seL4_Word)reg_err);
@@ -3302,11 +3370,13 @@ void root_task_main(const seL4_BootInfo *bi)
             status == AOS_X86_VTX_USERSPACE_PASS && reason == 10u &&
             instruction_len == 3u && rip < 0x0000800000000000ull) {
             dbg_puts("[rt] x86 Linux ring3 initramfs syscall proof verified\n");
+            dbg_puts("[rt] x86 host block queue read verified\n");
 #else
             status == AOS_X86_VTX_FIRMWARE_CONFIG &&
             reason == 30u && rip <= 0xffffffffu &&
             (instruction_len >> 16) == 0x511u && (instruction_len & (1u << 4))) {
             dbg_puts("[rt] x86 OVMF PCI configuration and fw_cfg string exit verified\n");
+            dbg_puts("[rt] x86 host block queue read verified\n");
             dbg_puts("[rt] firmware exit reason="); dbg_hex(reason);
             dbg_puts(" linear RIP="); dbg_hex(rip);
             dbg_puts(" qualification="); dbg_hex(instruction_len); dbg_puts("\n");

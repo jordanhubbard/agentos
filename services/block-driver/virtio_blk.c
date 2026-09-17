@@ -266,7 +266,7 @@ static uint32_t virtio_blk_do_io(blk_device_t *device, uint32_t type,
  * Device initialisation — called once from init()
  * ──────────────────────────────────────────────────────────────────────────── */
 static void virtio_blk_device_init(blk_device_t *device, uint32_t media_id,
-                                   uintptr_t mmio_vaddr)
+                                   uintptr_t mmio_vaddr, const aos_blk_pci_info_t *pci)
 {
     device->initialized = false;
     device->error_count = 0;
@@ -276,13 +276,23 @@ static void virtio_blk_device_init(blk_device_t *device, uint32_t media_id,
     device->dma_off = AGENTOS_BLK_MEDIA_DMA_OFF(media_id);
     aos_virtio_host_t *transport = &device->transport;
 
-    if (mmio_vaddr == 0u) {
+    if (mmio_vaddr == 0u && !pci) {
         device->init_error = 2u;
         return;
     }
 
-    /* Each ARM virtio-MMIO slot is 512 bytes, including device config. */
-    if (!aos_virtio_host_mmio(transport, mmio_vaddr, 0x200u, 2u)) {
+    bool bound;
+    if (pci) {
+        bound = aos_virtio_host_pci(transport,
+            AOS_BLK_PCI_REGION_VA(0u) + pci->offset[0], pci->length[0],
+            AOS_BLK_PCI_REGION_VA(2u) + pci->offset[2], pci->length[2],
+            AOS_BLK_PCI_REGION_VA(1u) + pci->offset[1], pci->length[1],
+            pci->notify_multiplier);
+    } else {
+        /* Each ARM virtio-MMIO slot is 512 bytes, including device config. */
+        bound = aos_virtio_host_mmio(transport, mmio_vaddr, 0x200u, 2u);
+    }
+    if (!bound) {
         device->init_error = 3u;
         return;
     }
@@ -291,6 +301,14 @@ static void virtio_blk_device_init(blk_device_t *device, uint32_t media_id,
 
     /* Step 1 — Reset the device */
     aos_virtio_host_set_status(transport, 0);
+    unsigned reset_poll;
+    for (reset_poll = 0; reset_poll < 100000u; reset_poll++) {
+        if (!aos_virtio_host_status(transport)) break;
+    }
+    if (reset_poll == 100000u) {
+        device->init_error = 5u;
+        return;
+    }
 
     /* Step 2 — Acknowledge: guest has seen the device */
     uint32_t status = VIRTIO_STATUS_ACKNOWLEDGE;
@@ -410,22 +428,32 @@ static void virtio_blk_pd_init(void)
             AGENTOS_BLK_SHARED_VA + AGENTOS_BLK_SHARED_DMA_OFF;
 
     if (shared->magic != AGENTOS_BLK_SHARED_MAGIC ||
-        shared->version != 1u ||
+        (shared->version != 1u && shared->version != 2u) ||
         shared->size != AGENTOS_BLK_SHARED_SIZE) {
         log_drain_write(17, 17, "[virtio_blk] ERROR: shared DMA metadata invalid\n");
         return;
     }
     g_blk_shared_paddr = shared->paddr;
 
+    const aos_blk_pci_info_t *pci = NULL;
+    if (shared->version == 2u) {
+        pci = (const aos_blk_pci_info_t *)(AGENTOS_BLK_SHARED_VA + AOS_BLK_PCI_INFO_OFF);
+        if (pci->magic != AOS_BLK_PCI_INFO_MAGIC || pci->version != 1u) return;
+        for (unsigned r = 0; r < 3u; r++) {
+            if (pci->offset[r] >= 4096u || !pci->length[r] ||
+                pci->length[r] > 4096u - pci->offset[r]) return;
+        }
+    }
+
     virtio_blk_device_init(
         &dev[AOS_HOST_BLK_MEDIA_PRIMARY],
         AOS_HOST_BLK_MEDIA_PRIMARY,
-        blk_mmio_vaddr);
-    virtio_blk_device_init(
+        blk_mmio_vaddr, pci);
+    if (!pci) virtio_blk_device_init(
         &dev[AOS_HOST_BLK_MEDIA_SECONDARY],
         AOS_HOST_BLK_MEDIA_SECONDARY,
         AGENTOS_HOST_SECONDARY_BLK_PAGE_VA +
-            AGENTOS_HOST_SECONDARY_BLK_PAGE_OFF);
+            AGENTOS_HOST_SECONDARY_BLK_PAGE_OFF, NULL);
 
     if (dev[AOS_HOST_BLK_MEDIA_PRIMARY].initialized ||
         dev[AOS_HOST_BLK_MEDIA_SECONDARY].initialized) {

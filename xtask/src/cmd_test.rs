@@ -838,6 +838,17 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
                 args.assert_guest_faults,
                 args.assert_x86_userspace,
             )
+            .and_then(|proof| {
+                if args.assert_firmware_reset {
+                    wait_for_all_markers(
+                        &log_path,
+                        &["[rt] x86 host block queue read verified"],
+                        Duration::from_secs(args.timeout_secs),
+                        &mut qemu,
+                    )?;
+                }
+                Ok(proof)
+            })
         } else if args.board == "x86_64_generic" {
             wait_for_x86_reduced_smoke(&log_path, Duration::from_secs(args.timeout_secs))
         } else {

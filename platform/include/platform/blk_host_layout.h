@@ -44,6 +44,23 @@ typedef struct __attribute__((packed)) {
     uint64_t size;
 } agentos_blk_shared_meta_t;
 
+/* Metadata version 2 selects modern PCI for primary media. Version 1 keeps
+ * the ARM MMIO layout. Root alone provisions this boot description; both
+ * trusted storage PDs share the containing DMA frame. */
+#define AOS_BLK_PCI_INFO_OFF             0x40u
+#define AOS_BLK_PCI_INFO_MAGIC           0x50424f41u
+#define AOS_BLK_PCI_REGION_VA(index)     (0x06000000UL + (index) * 0x1000UL)
+typedef struct {
+    uint32_t magic;
+    uint32_t version;
+    uint32_t offset[3]; /* common, notification, device configuration */
+    uint32_t length[3];
+    uint32_t notify_multiplier;
+    uint32_t reserved;
+} aos_blk_pci_info_t;
+_Static_assert(AOS_BLK_PCI_INFO_OFF + sizeof(aos_blk_pci_info_t) < 0x1000u,
+               "PCI boot description precedes queue memory");
+
 #define AOS_HOST_BLK_SECTOR_SIZE         512u
 #define AOS_HOST_BLK_OP_READ             0xF0u
 #define AOS_HOST_BLK_OP_WRITE            0xF1u

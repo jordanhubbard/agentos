@@ -7,4 +7,7 @@
  * state is restored and the temporary PCI configuration-port cap is deleted.
  * Returns a stage number on failure, zero on success. No DMA is started. */
 unsigned aos_x86_host_block_discover(aos_virtio_pci_layout_t *layout);
+/* Called only after driver mappings succeed. Enables memory decoding and
+ * bus mastering, disables INTx for the polling driver, deletes its port cap. */
+bool aos_x86_host_block_enable(void);
 #endif
