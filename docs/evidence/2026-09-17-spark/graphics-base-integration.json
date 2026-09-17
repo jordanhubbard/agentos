@@ -1,0 +1,37 @@
+{
+  "schema": "agentos.graphics_base_integration.v1",
+  "host": "sparky Linux aarch64",
+  "runtime_commit": "8fb8ba1e8ba81e3ff905372670b2dedd3b326ae6",
+  "source_clean": true,
+  "profile": "debian-gpu-aarch64",
+  "commands": [
+    "make gate QEMU_TEST_SSH_PORT=12253",
+    "make test-guest-gpu QEMU_TEST_TIMEOUT=1800 QEMU_TEST_GPU_SSH_PORT=12254"
+  ],
+  "result": "pass",
+  "authenticated_ssh_elapsed_ms": 512816,
+  "proven": [
+    "Linux DRM card0 and framebuffer fb0 enumeration",
+    "Guest pixel writes exported through the CC immutable framebuffer observer",
+    "1024x768 RGB frame at sequence 5; RGB bytes 51,34,17,102,85,68 at PPM offset 614416 match the two profile-written pixels",
+    "Authenticated SSH and canonical host-backed net/block/console qualification",
+    "Full host suite and both architecture root boot gates"
+  ],
+  "not_proven": [
+    "Physical display scanout",
+    "Combined input event delivery in this base profile",
+    "Guest lifecycle capability reclamation or recreation",
+    "Bare-metal Spark or x86 Linux execution",
+    "Final merged release qualification"
+  ],
+  "retained_local_directory": "/tmp/agentos-v04-gpu-integration/build/evidence/gpu-integration-8fb8ba1",
+  "sha256": {
+    "os_image": "59b6a6ac3b98af74878637470566625811de74ed780bfdc58ee2f181f5dcacae",
+    "gate_log": "a367dc317780fe8ef8284897e1f5f6957beb46ddb1e3de3d671c63d5bf8ca6be",
+    "qualification_log": "f8af70aae76b7c89ed4744b3f6e55f63aa5687b811c8f0551da19135766a3b95",
+    "serial_log": "61f5cc5afb721e3f52b4ad5b73b97b0c0951ac40f1a5ebcc4e66811ed86fffd4",
+    "boot_timing": "ab179704c27ad28f8a050186f3aba9dee92d98710e5aaa5e503383c0611a8b77",
+    "frame_ppm": "cb9b1f94595564c62a17a1e987f5e8b3877467efcf4510191e78261c25de9643",
+    "frame_json": "ec2c8690c1091bc0cfdc67bc2d0334f578073bb7971807989a4c85b426dd4e69"
+  }
+}

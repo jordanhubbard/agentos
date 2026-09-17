@@ -9,7 +9,12 @@ window at `0x0a040000` with virtual INTID 54. `make test-guest-gpu` selects the
 inherited Debian GPU profile, enables this variant and requires a successful
 `modprobe virtio_gpu`, `/dev/dri/card0`, a write through `/dev/fb0`, and a
 nonblack frame captured through CC before its authenticated SSH proof.
-This boot qualification is in progress; captured guest frames are not yet proven.
+This boot qualification passed on Spark at `8fb8ba1`, including DRM/fb0,
+the exact two profile-written pixels in a 1024 by 768 CC capture, and
+authenticated SSH. The full OS gate also passed at that revision.
+[The receipt](evidence/2026-09-17-spark/graphics-base-integration.json)
+retains artifact identities and scope; physical scanout, combined input and
+final release qualification remain separate requirements.
 The MAC task remains `task_cefc0f77327d4245ab9feb132cd1eb57`.
 
 The GPU profile retains Linux boot messages and bounded command/response logs

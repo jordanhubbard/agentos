@@ -341,7 +341,11 @@ can capture, read and release immutable copies of selected committed frames;
 it cannot modify surfaces. Snapshot cookies are scoped to the existing
 privileged, serialized CC transport, not a new public authentication boundary.
 The focused target image exported exact 40 by 40 frames from both native
-clients through CC in multiple chunks on Spark. Guest capture remains pending.
+clients through CC in multiple chunks on Spark. Guest DRM, a 1024 by 768 CC
+capture with exact profile-written pixels, authenticated SSH and the full gate
+passed on Spark at `8fb8ba1`; see the
+[graphics base receipt](evidence/2026-09-17-spark/graphics-base-integration.json).
+Physical scanout and combined guest input remain separate qualifications.
 The focused framebuffer image uses two explicit test-only public handles for
 the native pixel producers; those handles are absent from production images.
 
