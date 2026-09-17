@@ -30,6 +30,17 @@ Backend failures return errors and resource handles remain available for
 cleanup retries. Reset releases backend resources rather than merely clearing
 the resource table.
 
+The framebuffer service now retains validated scanout selection, and
+`framebuffer_observer.h` defines a separate read-only capture queue. A capture
+copies the selected committed rectangle into observer-private storage and
+returns a fresh cookie; bounded reads retain a coherent image across later
+flips and surface destruction. A private client mask limits which guests an
+observer can capture. The pump permits only one outstanding response so read
+payloads cannot be overwritten before consumption. Host tests cover a complete
+1024 by 768 image, crop selection, chunk ownership, stale cookies and denied
+client selection. Observer root grants and CC/external API integration remain
+unfinished; this is not yet a target capture proof.
+
 `virtio_gpu_control_run` and `virtio_gpu_cursor_run` consume direct split
 virtqueues. They snapshot descriptors, bound chains and request sizes, require
 read buffers before write buffers, and validate writable response space before

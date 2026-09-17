@@ -708,6 +708,8 @@ test-framebuffer-host:
 	@mkdir -p $(ROOT_DIR)build/tmp
 	$(CC) -std=c11 -Wall -Wextra -Werror -I platform/include tests/platform/test_framebuffer_queue.c platform/framebuffer/service.c -o $(ROOT_DIR)build/tmp/test_framebuffer_queue
 	$(ROOT_DIR)build/tmp/test_framebuffer_queue
+	$(CC) -std=c11 -Wall -Wextra -Werror -I platform/include tests/platform/test_framebuffer_observer.c platform/framebuffer/service.c platform/framebuffer/observer.c -o $(ROOT_DIR)build/tmp/test_framebuffer_observer
+	$(ROOT_DIR)build/tmp/test_framebuffer_observer
 
 .PHONY: test-framebuffer
 test-framebuffer: test-framebuffer-host
