@@ -11,15 +11,22 @@ static aos_ramfb_io_t io;
 static aos_display_meta_t metadata;
 static void report(const char *text)
 {
-    serial_log_t channel={.ep=PD_CNODE_SLOT_SERIAL_EP};
+    static serial_log_t channel={.ep=PD_CNODE_SLOT_SERIAL_EP};
     serial_log_puts(&channel,text);
 }
 static int present(void *context,unsigned bank,uint32_t width,uint32_t height)
 {
     (void)context;
     if (bank>1) return -1;
-    return aos_ramfb_configure(&io,metadata.bank_physical[bank],
-        metadata.bank_bytes,width,height,width*4u)==AOS_RAMFB_OK ? 0 : -1;
+    int result=aos_ramfb_configure(&io,metadata.bank_physical[bank],
+        metadata.bank_bytes,width,height,width*4u);
+    static unsigned reported;
+    if (!reported) {
+        report(result==AOS_RAMFB_OK ? "[display] first frame configured\n" :
+                                    "[display] FAIL: frame configuration\n");
+        reported=1;
+    }
+    return result==AOS_RAMFB_OK ? 0 : -1;
 }
 void pd_main(seL4_CPtr endpoint,seL4_CPtr nameserver)
 {

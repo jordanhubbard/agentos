@@ -32,7 +32,9 @@ the framebuffer service and display driver; banks remain private to the driver.
 Both sides must signal persistent notifications after publishing work or freeing
 queue space. `make test-display-host` verifies a complete 1024x768 frame,
 unchanged front pixels during transfer, backpressure, wrap, stale cookies,
-abort and failed presentation. This contract is not yet mapped on target.
+abort and failed presentation. The producer tests additionally check cropped
+rows across chunk boundaries, exact full-frame bytes, unchanged-frame
+suppression and permanent failure after an uncertain reply.
 
 `DISPLAY_RAMFB=1` now adds a dedicated AArch64 `display_ramfb` PD to a
 framebuffer-test or guest-graphics composition. Root reserves an 8 MiB untyped
@@ -49,11 +51,29 @@ the driver initialized its root-provisioned transport, both native clients
 passed, and observer frames exported correctly. The Make target explicitly
 requires the driver's readiness marker, not just framebuffer-client success.
 The serial diagnostic endpoint and transfer page are both provisioned.
-An initial missing-PD-count
-failure was retained before correcting composition. This is not yet a working
-scanout path: the framebuffer producer and QEMU ramfb launch/capture harness
-remain to wire and qualify. The guest continues using emulated virtio-gpu and
-never receives the fw_cfg device or display DMA memory.
+An initial missing-PD-count failure was retained before correcting composition.
+
+`producer.c` forwards the primary client's committed surface between framebuffer
+pump passes. The service cannot mutate that private surface while the bounded
+synchronous transfer is in progress. It packs the selected rectangle into
+sequential chunks and remembers the source handle, sequence and rectangle only
+after successful presentation. Unsupported geometry is rejected; uncertain
+queue completion permanently disables the producer to avoid replaying writes.
+Focus is fixed to client zero; this is not a general window manager.
+
+`make test-display QEMU_TEST_TIMEOUT=120` launches QEMU with RAMFB, requires
+driver initialization and successful first configuration, checks both clients'
+isolated observer frames, then captures the actual display with
+[QMP screendump](https://www.qemu.org/docs/master/interop/qemu-qmp-ref.html#command-screendump).
+On Spark, all 1,600 RGB pixels of the 40x40 native primary-client frame matched
+exactly. The harness retains the PPM and a JSON receipt with its SHA-256 next
+to the serial log. The driver reuses one serial logging channel; opening a
+fresh channel for each diagnostic exhausted the shared serial slots and
+prevented control-console readiness in an earlier retained failed run.
+
+This proves the native QEMU scanout path. Guest scanout still requires its own
+qualification. The guest continues using emulated virtio-gpu and never receives
+the fw_cfg device or display DMA memory.
 
 `make test-ramfb-host` verifies the wire configuration, discovery bounds,
 MMIO endian layout, DMA descriptor, completion, timeout and retained-storage

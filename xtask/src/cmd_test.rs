@@ -483,6 +483,9 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
         if args.assert_framebuffer {
             make_args.push(String::from("FRAMEBUFFER_TEST=1"));
         }
+        if args.assert_display {
+            make_args.push(String::from("DISPLAY_RAMFB=1"));
+        }
         make_args.extend(profile_device_build_args(
             profile_plan.as_ref(),
             scenario_plan.as_ref(),
@@ -662,6 +665,7 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
         (args.guest_os == "both" || args.assert_desktop) && !args.keep_running,
         false,
         false,
+        args.assert_display,
     )?);
     if needs_host_net_stimulus {
         wait_for_all_markers(
@@ -719,6 +723,10 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
         ];
         if args.framebuffer_isolation_probe.is_some() {
             markers.push("[rt] framebuffer isolation: expected client data fault verified");
+        }
+        if args.assert_display {
+            markers.push("[display] private DMA and scanout banks ready");
+            markers.push("[display] first frame configured");
         }
         wait_for_all_markers(
             &log_path,
@@ -843,6 +851,10 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
             Duration::from_secs(args.timeout_secs),
             &mut qemu,
         );
+    }
+
+    if result.is_ok() && args.assert_display {
+        result = verify_native_display(&log_path);
     }
 
     if result.is_ok() && args.assert_console_backpressure {
@@ -1286,6 +1298,7 @@ pub fn launch(args: &QemuLaunchArgs) -> anyhow::Result<()> {
         false,
         true,
         args.fast,
+        false,
     )?;
     let status = qemu.wait().context("failed to wait for QEMU")?;
     anyhow::ensure!(status.success(), "QEMU exited with {status}");
@@ -1678,7 +1691,12 @@ pub(crate) fn spawn_qemu_with_guest(
     capture_net: bool,
     interactive_serial: bool,
     fast: bool,
+    display: bool,
 ) -> anyhow::Result<std::process::Child> {
+    anyhow::ensure!(
+        !display || board == "qemu_virt_aarch64",
+        "ramfb requires AArch64"
+    );
     let log_file = std::fs::File::create(log_path).context("failed to create QEMU log file")?;
     let netdev = qemu_netdev_arg(ssh_port, profile, scenario)?;
 
@@ -1737,6 +1755,13 @@ pub(crate) fn spawn_qemu_with_guest(
                 format!("file:{}", log_path.display())
             };
             let mut c = std::process::Command::new("qemu-system-aarch64");
+            if display {
+                c.arg("-device").arg("ramfb,id=display0");
+                c.arg("-qmp").arg(format!(
+                    "unix:{},server=on,wait=off",
+                    log_path.with_extension("display.qmp.sock").display()
+                ));
+            }
             c.arg("-machine")
                 .arg(machine)
                 .arg("-cpu")
@@ -2733,6 +2758,76 @@ fn wait_for_guest_console_login_on_cc(
         "CC console API saw {guest_os} handle {guest_handle} prompt {:?} and {proof}",
         prompt
     ))
+}
+
+fn verify_native_display(log: &Path) -> anyhow::Result<String> {
+    let mut socket = UnixStream::connect(log.with_extension("display.qmp.sock"))?;
+    socket.set_read_timeout(Some(Duration::from_secs(10)))?;
+    socket.set_write_timeout(Some(Duration::from_secs(10)))?;
+    // Bound both message size and asynchronous events; a broken QMP peer must
+    // not turn a display assertion into an unbounded qualification wait.
+    fn receive(socket: &mut UnixStream) -> anyhow::Result<serde_json::Value> {
+        let mut bytes = Vec::new();
+        loop {
+            anyhow::ensure!(bytes.len() < 65536, "oversized QMP response");
+            let mut byte = [0u8];
+            socket.read_exact(&mut byte)?;
+            if byte[0] == b'\n' {
+                return Ok(serde_json::from_slice(&bytes)?);
+            }
+            bytes.push(byte[0]);
+        }
+    }
+    anyhow::ensure!(
+        receive(&mut socket)?.get("QMP").is_some(),
+        "missing QMP greeting"
+    );
+    let ppm = log.with_extension("display.ppm");
+    for (id, command) in [
+        serde_json::json!({"execute":"qmp_capabilities"}),
+        serde_json::json!({"execute":"screendump","arguments":{
+            "filename":ppm,"device":"display0"}}),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let mut command = command;
+        command["id"] = serde_json::json!(id);
+        socket.write_all(serde_json::to_string(&command)?.as_bytes())?;
+        socket.write_all(b"\n")?;
+        let mut completed = false;
+        for _ in 0..32 {
+            let reply = receive(&mut socket)?;
+            if reply.get("event").is_some() {
+                continue;
+            }
+            anyhow::ensure!(
+                reply["id"] == id && reply.get("return").is_some(),
+                "QMP command failed: {reply}"
+            );
+            completed = true;
+            break;
+        }
+        anyhow::ensure!(completed, "QMP event limit exceeded");
+    }
+    let actual = std::fs::read(&ppm)?;
+    let mut expected = b"P6\n40 40\n255\n".to_vec();
+    for offset in (0..40u32 * 40 * 4).step_by(4) {
+        for channel in [2, 1, 0] {
+            expected.push(((offset + channel) * 37) as u8);
+        }
+    }
+    anyhow::ensure!(
+        actual == expected,
+        "QEMU display pixels differ from primary native client"
+    );
+    std::fs::write(
+        log.with_extension("display.json"),
+        serde_json::to_vec_pretty(&serde_json::json!({"width":40,"height":40,"client":0,
+            "asserted_pixels":1600,"sha256":sha256_bytes(&actual),
+            "capture":"QMP screendump","path":ppm}))?,
+    )?;
+    Ok("display: all 1600 QEMU scanout pixels match primary native client".into())
 }
 
 fn verify_native_frame_observer(

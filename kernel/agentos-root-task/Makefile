@@ -739,6 +739,8 @@ $(BUILD_DIR)/framebuffer_service.o: $(REPO_ROOT)/platform/framebuffer/service.c
 	$(CC) $(CFLAGS) -c $< -o $@
 $(BUILD_DIR)/display_service.o: $(REPO_ROOT)/platform/display/service.c
 	$(CC) $(CFLAGS) -c $< -o $@
+$(BUILD_DIR)/display_producer.o: $(REPO_ROOT)/platform/display/producer.c
+	$(CC) $(CFLAGS) -c $< -o $@
 $(BUILD_DIR)/ramfb.o: $(REPO_ROOT)/platform/display/ramfb.c
 	$(CC) $(CFLAGS) -c $< -o $@
 $(BUILD_DIR)/ramfb_mmio.o: $(REPO_ROOT)/platform/display/ramfb_mmio.c
@@ -758,7 +760,7 @@ $(BUILD_DIR)/framebuffer_queue.o: $(REPO_ROOT)/platform/framebuffer/framebuffer_
 $(BUILD_DIR)/framebuffer_observer.o: $(REPO_ROOT)/platform/framebuffer/observer.c
 	$(CC) $(CFLAGS) -c $< -o $@
 $(BUILD_DIR)/framebuffer_queue.o: $(GUEST_CONFIG_STAMP)
-$(BUILD_DIR)/framebuffer_queue.elf: $(BUILD_DIR)/framebuffer_queue.o $(BUILD_DIR)/framebuffer_service.o $(BUILD_DIR)/framebuffer_observer.o $(BUILD_DIR)/pd_entry.o $(BUILD_DIR)/sel4_crt.o $(BUILD_DIR)/rust_pd_memory.o
+$(BUILD_DIR)/framebuffer_queue.elf: $(BUILD_DIR)/framebuffer_queue.o $(BUILD_DIR)/framebuffer_service.o $(BUILD_DIR)/framebuffer_observer.o $(BUILD_DIR)/display_producer.o $(BUILD_DIR)/display_service.o $(BUILD_DIR)/pd_entry.o $(BUILD_DIR)/sel4_crt.o $(BUILD_DIR)/rust_pd_memory.o
 	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
 $(BUILD_DIR)/framebuffer_client0.o: $(REPO_ROOT)/tests/platform/framebuffer_client_pd.c $(GUEST_CONFIG_STAMP)
 	$(CC) $(CFLAGS) -DFB_TEST_CLIENT=0 -c $< -o $@

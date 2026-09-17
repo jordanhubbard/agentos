@@ -701,6 +701,10 @@ test-host: policy-check guest-profile-check lint-source test-integration test-op
 
 .PHONY: test-display-host
 .PHONY: test-display-init
+.PHONY: test-display
+test-display: test-display-host test-ramfb-host
+	cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os none --assert-framebuffer --assert-display --timeout-secs $(QEMU_TEST_TIMEOUT)
+
 test-display-init:
 	@mkdir -p $(BUILD_TMP_DIR)
 	$(MAKE) test-framebuffer DISPLAY_RAMFB=1 QEMU_TEST_TIMEOUT=$(QEMU_TEST_TIMEOUT) > $(BUILD_TMP_DIR)/display-init.log 2>&1 || { cat $(BUILD_TMP_DIR)/display-init.log; exit 1; }
@@ -711,6 +715,8 @@ test-display-host:
 	@mkdir -p $(BUILD_TMP_DIR)
 	$(CC) -std=c11 -Wall -Wextra -Werror -I platform/include tests/platform/test_display.c platform/display/service.c -o $(BUILD_TMP_DIR)/test_display
 	$(BUILD_TMP_DIR)/test_display
+	$(CC) -std=c11 -Wall -Wextra -Werror -I platform/include tests/platform/test_display_producer.c platform/display/producer.c platform/display/service.c -o $(BUILD_TMP_DIR)/test_display_producer
+	$(BUILD_TMP_DIR)/test_display_producer
 
 .PHONY: test-ramfb-host
 test-ramfb-host:
