@@ -3214,12 +3214,14 @@ void root_task_main(const seL4_BootInfo *bi)
 #ifdef AGENTOS_X86_FIRMWARE_RESET
         if (seL4_MessageInfo_get_label(tag) == AOS_X86_VTX_PROOF_LABEL &&
             seL4_MessageInfo_get_length(tag) == AOS_X86_FIRMWARE_REPORT_WORDS) {
-            dbg_puts("[rt] firmware timer exits="); dbg_hex(seL4_GetMR(4));
-            dbg_puts(" injections="); dbg_hex(seL4_GetMR(5));
-            dbg_puts(" eois="); dbg_hex(seL4_GetMR(6));
-            dbg_puts(" rate_shift="); dbg_hex(seL4_GetMR(7));
-            dbg_puts(" tsc_hz="); dbg_hex(seL4_GetMR(8));
-            dbg_puts(" halt_exits="); dbg_hex(seL4_GetMR(9)); dbg_puts("\n");
+            seL4_Word counters[6];
+            for (unsigned i=0; i<6; i++) counters[i]=seL4_GetMR(4+i);
+            dbg_puts("[rt] firmware timer exits="); dbg_hex(counters[0]);
+            dbg_puts(" injections="); dbg_hex(counters[1]);
+            dbg_puts(" eois="); dbg_hex(counters[2]);
+            dbg_puts(" rate_shift="); dbg_hex(counters[3]);
+            dbg_puts(" tsc_hz="); dbg_hex(counters[4]);
+            dbg_puts(" halt_exits="); dbg_hex(counters[5]); dbg_puts("\n");
         }
 #endif
         if (seL4_MessageInfo_get_label(tag) == AOS_X86_VTX_PROOF_LABEL &&
