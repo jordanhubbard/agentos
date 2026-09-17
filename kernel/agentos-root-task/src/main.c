@@ -3211,8 +3211,23 @@ void root_task_main(const seL4_BootInfo *bi)
         seL4_Word reason = seL4_GetMR(1);
         seL4_Word rip = seL4_GetMR(2);
         seL4_Word instruction_len = seL4_GetMR(3);
+#ifdef AGENTOS_X86_FIRMWARE_RESET
         if (seL4_MessageInfo_get_label(tag) == AOS_X86_VTX_PROOF_LABEL &&
+            seL4_MessageInfo_get_length(tag) == AOS_X86_FIRMWARE_REPORT_WORDS) {
+            dbg_puts("[rt] firmware timer exits="); dbg_hex(seL4_GetMR(4));
+            dbg_puts(" injections="); dbg_hex(seL4_GetMR(5));
+            dbg_puts(" eois="); dbg_hex(seL4_GetMR(6));
+            dbg_puts(" rate_shift="); dbg_hex(seL4_GetMR(7));
+            dbg_puts(" tsc_hz="); dbg_hex(seL4_GetMR(8));
+            dbg_puts(" halt_exits="); dbg_hex(seL4_GetMR(9)); dbg_puts("\n");
+        }
+#endif
+        if (seL4_MessageInfo_get_label(tag) == AOS_X86_VTX_PROOF_LABEL &&
+#ifdef AGENTOS_X86_FIRMWARE_RESET
+            seL4_MessageInfo_get_length(tag) == AOS_X86_FIRMWARE_REPORT_WORDS &&
+#else
             seL4_MessageInfo_get_length(tag) == 4u &&
+#endif
 #ifdef AGENTOS_X86_FIRMWARE_RESET
             status == AOS_X86_VTX_FIRMWARE_CONFIG &&
             reason == 30u && rip <= 0xffffffffu &&

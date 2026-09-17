@@ -32,13 +32,16 @@
 #define INTERRUPTIBILITY 0x4824u
 #define ACTIVITY 0x4826u
 #define IDT_VECTORING 0x4408u
+static seL4_Word timer_exits, injections, eois, timer_shift, tsc_hz, halt_exits;
 
 static _Noreturn void stop(seL4_CPtr endpoint, seL4_Word status, seL4_Word reason,
                  seL4_Word rip, seL4_Word detail)
 {
     seL4_SetMR(0, status); seL4_SetMR(1, reason);
     seL4_SetMR(2, rip); seL4_SetMR(3, detail);
-    seL4_Send(endpoint, seL4_MessageInfo_new(AOS_X86_VTX_PROOF_LABEL, 0, 0, 4));
+    seL4_SetMR(4,timer_exits); seL4_SetMR(5,injections); seL4_SetMR(6,eois);
+    seL4_SetMR(7,timer_shift); seL4_SetMR(8,tsc_hz); seL4_SetMR(9,halt_exits);
+    seL4_Send(endpoint, seL4_MessageInfo_new(AOS_X86_VTX_PROOF_LABEL, 0, 0, AOS_X86_FIRMWARE_REPORT_WORDS));
     for (;;) { seL4_Word badge; (void)seL4_Wait(endpoint, &badge); }
 }
 
@@ -124,6 +127,7 @@ void aos_x86_firmware_run(seL4_CPtr ep, seL4_Word result)
     aos_x86_cpuid_t hypervisor=(host_id(1).ecx & (1u << 31)) ? host_id(0x40000000u) : (aos_x86_cpuid_t){0};
     aos_x86_cpuid_t timing=hypervisor.eax >= 0x40000010u ? host_id(0x40000010u) : (aos_x86_cpuid_t){0};
     uint64_t hz=aos_x86_tsc_frequency(host_id(0x80000007u).edx & (1u << 8),clock,hypervisor,timing);
+    tsc_hz=hz;
     uint64_t started = timestamp();
     aos_x86_apic_t apic;
     aos_x86_apic_init(&apic, started);
@@ -154,6 +158,7 @@ void aos_x86_firmware_run(seL4_CPtr ep, seL4_Word result)
              * guessed from a CPU model or read with a privileged instruction. */
             seL4_X86_VCPU_ReadMSR_t misc=seL4_X86_VCPU_ReadMSR(VCPU,0x485u);
             uint64_t tick=UINT64_C(1) << (misc.value & 31u);
+            timer_shift=misc.value & 31u;
             if (!hz)
                 stop(ep,AOS_X86_VTX_PROOF_FAIL,0x434c4bu,rip,
                      ((uint64_t)clock.ecx << 32) | ((clock.eax & 0xffffu) << 16) | (clock.ebx & 0xffffu));
@@ -167,10 +172,12 @@ void aos_x86_firmware_run(seL4_CPtr ep, seL4_Word result)
         uint64_t now = timestamp();
         if (reason == 52u || reason == 7u) {
             /* Timer and interrupt-window exits resume the same instruction. */
+            if (reason == 52u) timer_exits++;
         } else if (reason == 12u && len == 1u) {
             /* Retain architectural halt until an eligible interrupt arrives.
              * VMX's preemption timer still wakes this VMM from halted state. */
             write_field(ep,ACTIVITY,1u);
+            halt_exits++;
         } else if (reason == 10u && len == 2u) {
             aos_x86_cpuid_t r = aos_x86_cpu_id((uint32_t)regs.eax, (uint32_t)regs.ecx);
             regs.eax = r.eax; regs.ebx = r.ebx; regs.ecx = r.ecx; regs.edx = r.edx;
@@ -246,6 +253,7 @@ void aos_x86_firmware_run(seL4_CPtr ep, seL4_Word result)
                 aos_x86_absent_mmio(physical, op.width, false, &value);
             if (!handled)
                 stop(ep, AOS_X86_VTX_PROOF_FAIL, reason, rip, physical);
+            if (physical == AOS_X86_APIC_BASE+0xb0u && op.write) eois++;
             if (!op.write) assign(ep, &regs, op.reg, aos_x86_mov_result(&op, values[op.reg], value));
             len=op.length;
         } else if (reason == 30u && qual == 0x05110038u && len == 2u) {
@@ -306,6 +314,7 @@ void aos_x86_firmware_run(seL4_CPtr ep, seL4_Word result)
                 if (!aos_x86_apic_accept(&apic,vector))
                     stop(ep,AOS_X86_VTX_PROOF_FAIL,0x495251u,rip,vector);
                 interrupt=(1u << 31) | vector;
+                injections++;
                 write_field(ep,ACTIVITY,0u);
             } else controls |= 1u << 2; /* interrupt-window exiting */
         }

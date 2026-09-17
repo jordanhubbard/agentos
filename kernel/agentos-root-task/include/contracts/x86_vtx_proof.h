@@ -16,6 +16,10 @@
 #define AOS_X86_VTX_RESET_EXIT         4u
 #define AOS_X86_VTX_FIRMWARE_LONG      5u
 #define AOS_X86_VTX_FIRMWARE_CONFIG    6u
+/* Firmware report: MR0..3 retain status/reason/RIP/detail; MR4..9 contain
+ * timer exits, interrupt injections, EOI writes, VMX rate shift, TSC Hz,
+ * and HLT exits. Counters are diagnostics, not an aggregate success claim. */
+#define AOS_X86_FIRMWARE_REPORT_WORDS 10u
 #define AOS_X86_FIRMWARE_BASE     0xffc00000u
 #define AOS_X86_FIRMWARE_BYTES    0x00400000u
 #define AOS_X86_FIRMWARE_RAM      0x02000000u
