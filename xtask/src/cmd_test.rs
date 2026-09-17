@@ -2726,7 +2726,7 @@ fn wait_for_guest_console_login_on_cc(
         qemu,
     )?;
     if profile.is_some_and(|plan| plan.devices.iter().any(|device| device == "gpu")) {
-        let capture = capture_guest_frame(cc, guest_handle, cc_sock)?;
+        let capture = capture_guest_frame(cc, guest_handle, cc_sock, profile)?;
         println!("[xtask:test] {capture}");
     }
     Ok(format!(
@@ -2759,7 +2759,7 @@ fn verify_native_frame_observer(
     );
     for client in 0..2u32 {
         let artifact = socket.with_extension(format!("native-{client}.sock"));
-        capture_guest_frame(&mut cc, 0xfb000000 + client, &artifact)?;
+        capture_guest_frame(&mut cc, 0xfb000000 + client, &artifact, None)?;
         let actual = std::fs::read(artifact.with_extension("frame.ppm"))?;
         let mut expected = b"P6\n40 40\n255\n".to_vec();
         for offset in (0..40u32 * 40 * 4).step_by(4) {
@@ -2778,7 +2778,50 @@ fn verify_native_frame_observer(
     )
 }
 
-fn capture_guest_frame(cc: &mut CcClient, handle: u32, socket: &Path) -> anyhow::Result<String> {
+fn verify_frame_pixels(
+    pixels: &[u8],
+    width: u32,
+    height: u32,
+    steps: &[cmd_guest_profile::RecipeStep],
+) -> anyhow::Result<usize> {
+    anyhow::ensure!(
+        width > 0
+            && width <= 1024
+            && height > 0
+            && height <= 768
+            && pixels.len() == width as usize * height as usize * 4,
+        "invalid captured frame buffer"
+    );
+    let mut checked = 0;
+    for step in steps.iter().filter(|s| s.action == "assert-frame-pixels") {
+        let (x, y, expected) = cmd_guest_profile::frame_pixel_expectation(step)?;
+        anyhow::ensure!(
+            y < height as usize && x + expected.len() <= width as usize,
+            "expected pixel span lies outside captured frame"
+        );
+        for (i, rgb) in expected.iter().enumerate() {
+            let offset = (y * width as usize + x + i) * 4;
+            let actual = [pixels[offset + 2], pixels[offset + 1], pixels[offset]];
+            anyhow::ensure!(
+                actual == *rgb,
+                "guest frame pixel ({}, {}) expected {:?}, got {:?}",
+                x + i,
+                y,
+                rgb,
+                actual
+            );
+            checked += 1;
+        }
+    }
+    Ok(checked)
+}
+
+fn capture_guest_frame(
+    cc: &mut CcClient,
+    handle: u32,
+    socket: &Path,
+    profile: Option<&HostProfilePlan>,
+) -> anyhow::Result<String> {
     const OPCODE: u32 = 0x261d;
     const HEADER: usize = 40;
     let started = Instant::now();
@@ -2835,6 +2878,12 @@ fn capture_guest_frame(cc: &mut CcClient, handle: u32, socket: &Path) -> anyhow:
         decode_frame_reply(&released?, 0)?.0 == 0,
         "snapshot release failed"
     );
+    let checked_pixels = verify_frame_pixels(
+        &pixels,
+        width,
+        height,
+        profile.map_or(&[], |p| p.test.as_slice()),
+    )?;
     let mut ppm = format!("P6\n{width} {height}\n255\n").into_bytes();
     for pixel in pixels.chunks_exact(4) {
         ppm.extend_from_slice(&[pixel[2], pixel[1], pixel[0]]);
@@ -2847,7 +2896,7 @@ fn capture_guest_frame(cc: &mut CcClient, handle: u32, socket: &Path) -> anyhow:
         serde_json::to_vec_pretty(
             &serde_json::json!({"version":1,"guest_handle":handle,"width":width,
             "height":height,"sequence":sequence,"format":"P6 RGB888",
-            "bytes":ppm.len(),"sha256":digest}),
+            "bytes":ppm.len(),"sha256":digest,"asserted_pixels":checked_pixels}),
         )?,
     )?;
     Ok(format!(
@@ -4293,6 +4342,34 @@ fn tail_chars(s: &str, max_chars: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn frame_pixel_proof_rejects_wrong_colors_bounds_and_malformed_expectations() {
+        let mut step = cmd_guest_profile::RecipeStep {
+            action: "assert-frame-pixels".into(),
+            args: [("x", "0"), ("y", "1"), ("rgb", "332211665544")]
+                .into_iter()
+                .map(|(k, v)| (k.into(), v.into()))
+                .collect(),
+        };
+        let mut pixels = vec![0; 16];
+        pixels[8..].copy_from_slice(&[17, 34, 51, 0, 68, 85, 102, 255]);
+        assert_eq!(
+            verify_frame_pixels(&pixels, 2, 2, &[step.clone()]).unwrap(),
+            2
+        );
+        pixels[8] = 18;
+        assert!(verify_frame_pixels(&pixels, 2, 2, &[step.clone()]).is_err());
+        pixels[8] = 17;
+        assert!(verify_frame_pixels(&pixels[..15], 2, 2, &[step.clone()]).is_err());
+        step.args.insert("x".into(), "1".into());
+        assert!(verify_frame_pixels(&pixels, 2, 2, &[step.clone()]).is_err());
+        step.args.insert("x".into(), "-1".into());
+        assert!(cmd_guest_profile::frame_pixel_expectation(&step).is_err());
+        step.args.insert("x".into(), "0".into());
+        step.args.insert("rgb".into(), "zz2211".into());
+        assert!(cmd_guest_profile::frame_pixel_expectation(&step).is_err());
+    }
 
     #[test]
     fn profile_build_enables_selected_devices_for_single_and_secondary_guests() {
