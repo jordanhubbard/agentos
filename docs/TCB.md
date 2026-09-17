@@ -89,6 +89,12 @@ backend, the canonical loopback pump and IOAPIC assertion/acknowledgment.
 Both architecture SDK builds compile the adapter; these checks do not prove an
 Intel host NIC, root network grants or a Linux x86 network interface.
 
+`net_virt` emits complete bounded diagnostic messages through the common log
+ring and send-only drain notification. It holds no serial service endpoint,
+serial transfer page or log-drain Call endpoint. Nameserver, NIC-driver and
+VMM notification endpoints remain separate from logging. Release builds
+without log provisioning retain the common silent debug fallback.
+
 Network descriptors remain untrusted even within an isolated client page.
 The virtualizer validates fixed-buffer alignment, offset and packet length
 before constructing payload pointers in both hardware and fallback paths.

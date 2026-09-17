@@ -724,11 +724,12 @@ test-x86-firmware-build:
 		$(abspath $(BUILD_TMP_DIR)/x86-firmware-link)/guest_vmm_primary.elf \
 		$(abspath $(BUILD_TMP_DIR)/x86-firmware-link)/serial_pd.elf \
 		$(abspath $(BUILD_TMP_DIR)/x86-firmware-link)/blk_virt.elf \
+		$(abspath $(BUILD_TMP_DIR)/x86-firmware-link)/net_virt.elf \
 		$(abspath $(BUILD_TMP_DIR)/x86-firmware-link)/virtio_blk.elf \
 		$(abspath $(BUILD_TMP_DIR)/x86-firmware-link)/rt_main.o \
 		$(abspath $(BUILD_TMP_DIR)/x86-firmware-link)/rt_x86_host_block.o \
 		$(abspath $(BUILD_TMP_DIR)/x86-firmware-link)/rt_virtio_pci_caps.o
-	@echo "PASS: x86 firmware VMM, serial driver, block driver and virtualizer link checks"
+	@echo "PASS: x86 firmware VMM, serial/block drivers and block/network virtualizer link checks"
 
 # test-host: alias for the host-only integration suite.  Named explicitly so
 # callers and CI cannot mistake host-only coverage for target/QEMU proof.

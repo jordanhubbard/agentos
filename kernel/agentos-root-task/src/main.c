@@ -2618,7 +2618,6 @@ void root_task_main(const seL4_BootInfo *bi)
              name_eq(pd->name, "log_drain") ||
              pd_is_guest_vmm(pd) ||
              name_eq(pd->name, "cc_pd") ||
-             name_eq(pd->name, "net_virt") ||
              name_eq(pd->name, "native_rust_client") ||
              name_eq(pd->name, "framebuffer_client0") ||
              name_eq(pd->name, "framebuffer_client1") ||
