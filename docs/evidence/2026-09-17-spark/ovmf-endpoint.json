@@ -1,0 +1,93 @@
+{
+  "qualification": "OVMF budget failure localized to the BDS no-bootable-option wait",
+  "runtime_revision": "7682937ecf6b28b12434546ee8aaa421c3603369",
+  "firmware_sha256": "101afad5f520753224b60b9555df60add435cf50c7a82b781d7d7d8c60db7eb5",
+  "intel": {
+    "host": "madmax, Intel i9-14900KF, nested KVM",
+    "sdk": "Microkit 2.3.0",
+    "command": "make gate-x86_64-firmware-reset SEL4_SDK_VERSION=2.3.0 X86_FIRMWARE_IMAGE=/tmp/agentos-ovmf-2024.02-2ubuntu0.9.fd X86_FIRMWARE_SHA256=101afad5f520753224b60b9555df60add435cf50c7a82b781d7d7d8c60db7eb5",
+    "result": "FAIL: unchanged 65536 processed-exit diagnostic limit",
+    "timer_exits": 10706,
+    "injections": 4892,
+    "guest_eoi_writes": 4891,
+    "halt_exits": 4661,
+    "stop": {
+      "reason": "0x425544",
+      "rip": "0x168bf5",
+      "detail": "0x000100000000000a",
+      "last_exit_reason": 10
+    },
+    "last_hlt_rip": "0x18b0d0",
+    "halt_frame_chain": [
+      {
+        "frame": "0x1f1e900",
+        "return": "0x1f1ffe5",
+        "next": "0x1f1e930"
+      },
+      {
+        "frame": "0x1f1e930",
+        "return": "0x1f2f2cb",
+        "next": "0x1f1e960"
+      },
+      {
+        "frame": "0x1f1e960",
+        "return": "0x1f2f6a9",
+        "next": "0x1f1e9c0"
+      },
+      {
+        "frame": "0x1f1e9c0",
+        "return": "0x782c4",
+        "next": "0x1f1ee40"
+      }
+    ],
+    "artifact_directory": "/tmp/agentos-v04-intel-discovery/build/evidence/chain-7682937",
+    "image_sha256": "2e17167fb0c484383e2deda256a393ab395c340ba8639379cb5ad14856dd83d5",
+    "root_task_sha256": "b3e9624d688227c5837473ef34ed77795ddec4d8c3ab21513ee889390d159e90",
+    "serial_sha256": "ca6963fc73a17d62372bf3b05e9b0610fc13682ac8a19cfe47f5627d1b22acd9",
+    "termination": "Owned QEMU PID2800794 terminated after explicit failure and artifact retention; gate exit2"
+  },
+  "analysis": {
+    "tools": "Ubuntu uefitool-cli 0.28.0+A66-1build2 extracted under /tmp; UEFIExtract/UEFIFind NE alpha66 and llvm-objdump",
+    "timer": {
+      "guid": "52FE8196-F9DE-4D07-B22F-51F77A0E7C41",
+      "name": "LocalApicTimerDxe",
+      "pe_sha256": "3f97fc7587fbb6a48ad9ecdff7106d6912773972eb34811fe3e8778e8419a714",
+      "match": "Preceding target run7f25a94 code at168647 matches RVA647 (RDMSR); exact longer byte pattern uniquely found in this firmware module"
+    },
+    "cpu": {
+      "guid": "1A1E4886-9517-440E-9FDE-3BE44CEE2136",
+      "name": "CpuDxe",
+      "pe_sha256": "39bafd4f916ac2399fdfb2159c13d6cee0bebb0636bdeb0a83ffa9fda0e53328",
+      "match": "HLT snapshot bytes match RVA c0d0; inferred load base17f000. IdleLoopEventCallback atc29 tail-jumps to this CpuSleep routine."
+    },
+    "dxe_core": {
+      "guid": "D6A2CB7F-6A18-4E2F-B43B-9920A733700A",
+      "pe_sha256": "9bddf958d66a818ef5141eecb6160b4a8dd3ad60769b8f2b68ba4311573e3a54",
+      "match": "Stack return addresses agree with event dispatch, event-group signaling, CoreSignalEvent, and CoreWaitForEvent using inferred base1f1f000; CoreWaitForEvent's call return is RVA106a9."
+    },
+    "bds": {
+      "guid": "6D33944A-EC75-4855-A54D-809C75241F6C",
+      "name": "BdsDxe",
+      "pe_sha256": "7867b3e201c0d80cb05a96d8722853e845edc8af997f8ad960ad7e53706a54ad",
+      "match": "Return782c4 matches RVAa2c4 at inferred base6e000. RVAa2c1 calls gBS->WaitForEvent(1,&gST->ConIn->WaitForKey,...). The immediately preceding print references the no-bootable-option message, followed by a key prompt and Boot Manager Menu path. This is the unique WaitForEvent call return ending2c4 in the extracted PE modules."
+    },
+    "conclusion": "The retained caller chain and binary layout identify the BDS key wait after no bootable option/device; provide boot payload/media instead of increasing exit budget.",
+    "qualification_limit": "Module bases for DxeCore/BdsDxe are inferred from consistent return sites and binary disassembly, not a separately validated live module list. No full firmware unwind, EFI payload entry, Linux boot or UEFI conformance pass is claimed."
+  },
+  "spark": {
+    "command": "make gate SEL4_SDK_VERSION=2.3.0 QEMU_TEST_SSH_PORT=12266",
+    "revision": "7682937ecf6b28b12434546ee8aaa421c3603369",
+    "result": "PASS, exit0",
+    "artifact_directory": "/tmp/agentos-v04-x86-string/build/evidence/chain-7682937",
+    "image_sha256": "55bcf4473f8d9e432b34c1f82c5e44e7e64d817afc9cdaeb380b90263c0e3a96",
+    "gate_log_sha256": "bb7b86110b2df9ef5dd3efef754801b7cc35989a0421f58af454d1df34af3138"
+  },
+  "remaining": [
+    "UEFI boot payload delivery and asserted payload entry",
+    "Generated guest ACPI and interrupt topology",
+    "x86 Linux userspace and canonical virtio net/block/console paths",
+    "Dedicated timer handler-payload and interrupt-window proofs",
+    "Persistence, resource profiles and teardown reclamation"
+  ],
+  "mac_task": "task_75911bb6a76445858108b916d8192b73"
+}

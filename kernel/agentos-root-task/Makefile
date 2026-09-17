@@ -145,6 +145,10 @@ $(BUILD_DIR)/x86_config.o: $(REPO_ROOT_MK)/platform/guest-vmm/x86_config.c
 	@mkdir -p $(BUILD_DIR)
 	$(CC) -c $(CFLAGS) $< -o $@
 $(BUILD_DIR)/guest_vmm_primary.elf: $(BUILD_DIR)/x86_config.o
+$(BUILD_DIR)/x86_rtc.o: $(REPO_ROOT_MK)/platform/guest-vmm/x86_rtc.c
+	@mkdir -p $(BUILD_DIR)
+	$(CC) -c $(CFLAGS) $< -o $@
+$(BUILD_DIR)/guest_vmm_primary.elf: $(BUILD_DIR)/x86_rtc.o
 $(BUILD_DIR)/x86_apic.o: $(REPO_ROOT_MK)/platform/guest-vmm/x86_apic.c
 	@mkdir -p $(BUILD_DIR)
 	$(CC) -c $(CFLAGS) $< -o $@
@@ -152,6 +156,10 @@ $(BUILD_DIR)/x86_memory.o: $(REPO_ROOT_MK)/platform/guest-vmm/x86_memory.c
 	@mkdir -p $(BUILD_DIR)
 	$(CC) -c $(CFLAGS) $< -o $@
 $(BUILD_DIR)/guest_vmm_primary.elf: $(BUILD_DIR)/x86_apic.o $(BUILD_DIR)/x86_memory.o
+$(BUILD_DIR)/x86_string.o: $(REPO_ROOT_MK)/platform/guest-vmm/x86_string.c
+	@mkdir -p $(BUILD_DIR)
+	$(CC) -c $(CFLAGS) $< -o $@
+$(BUILD_DIR)/guest_vmm_primary.elf: $(BUILD_DIR)/x86_string.o
 $(BUILD_DIR)/x86_firmware_vmm.o: $(REPO_ROOT_MK)/platform/guest-vmm/x86_firmware.c
 	@mkdir -p $(BUILD_DIR)
 	$(CC) -c $(CFLAGS) $< -o $@

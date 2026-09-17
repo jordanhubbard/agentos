@@ -26,7 +26,7 @@ static void reject(aos_x86_config_t *s, unsigned port, unsigned width, bool writ
 {
     aos_x86_config_t before = *s;
     uint32_t value = 0xabcdef01;
-    assert(!aos_x86_config_io(s, port, width, write, &value, 0));
+    assert(!aos_x86_config_io(s, port, width, write, &value, 0x12345678u));
     assert(value == 0xabcdef01 && !memcmp(s, &before, sizeof(before)));
 }
 int main(void)
@@ -38,6 +38,23 @@ int main(void)
     assert(!aos_x86_config_init(&a, 0x80010000));
     assert(aos_x86_config_init(&a, 0x2000000));
     assert(aos_x86_config_init(&b, 0x80000000));
+    io(&a, 0xaf00, 4, true, 0);
+    io(&a, 0xaf05, 1, true, 0);
+    assert(io(&a, 0xaf00, 4, false, 0) == 0);
+    assert(io(&a, 0xaf04, 1, false, 0) == 1);
+    assert(io(&a, 0xaf08, 4, false, 0) == 0);
+    io(&a, 0xaf00, 4, true, 1);
+    assert(io(&a, 0xaf04, 1, false, 0) == 0);
+    assert(io(&a, 0xaf08, 4, false, 0) == 0);
+    assert(io(&b, 0xaf04, 1, false, 0) == 1);
+    io(&a, 0xaf05, 1, true, 3);
+    assert(io(&a, 0xaf00, 4, false, 0) == 0);
+    reject(&a, 0xaf04, 1, true);
+    reject(&a, 0xaf00, 2, true);
+    reject(&a, 0xaf05, 1, true);
+    assert(io(&a, 0x92, 1, false, 0) == 2);
+    io(&a, 0x92, 1, true, 2);
+    reject(&a, 0x92, 1, true);
     io(&a, 0x21, 1, true, 0xff);
     io(&a, 0xa1, 1, true, 0xff);
     assert(io(&a, 0x21, 1, false, 0) == 0xff);
@@ -67,7 +84,48 @@ int main(void)
     select_pci(&a, 0x80000b80);
     io(&a, 0xcfc, 1, true, 0xff);
     assert(io(&a, 0x4008, 4, false, 0) == 0x345678);
+    select_pci(&a,0x80000b04); io(&a,0xcfc,2,true,0);
+    assert(io(&a,0x4008,4,false,0)==0x345678); /* legacy decode ignores PCI CMD */
+    select_pci(&a,0x80000b80); io(&a,0xcfc,1,true,0);
+    reject(&a,0x4004,2,false);
+    io(&a,0xcfc,1,true,1);
+    assert(io(&a,0x4000,2,false,0)==1); /* elapsed bit-23 transitions */
+    io(&a,0x4000,1,true,1);
+    assert(io(&a,0x4000,2,false,0)==0);
+    assert(io(&a,0x4002,2,false,0)==0);
+    io(&a,0x4002,2,true,0);
+    assert(io(&a,0x4004,2,false,0)==0);
+    io(&a,0x4004,2,true,0x1c03);
+    assert(io(&a,0x4004,1,false,0)==3 && io(&a,0x4005,1,false,0)==0x1c);
+    io(&a,0x4004,1,true,0);
+    assert(io(&a,0x4004,2,false,0)==0x1c00);
+    io(&a,0x4005,1,true,0);
+    assert(io(&a,0x4004,2,false,0)==0);
+    reject(&a,0x4001,2,false);
+    reject(&a,0x4004,4,false);
+    reject(&a,0x4006,2,false);
+    uint32_t pm_value=0x2000; aos_x86_config_t before=a;
+    assert(!aos_x86_config_io(&a,0x4004,2,true,&pm_value,0x12345678)); /* sleep */
+    assert(pm_value==0x2000 && !memcmp(&a,&before,sizeof(a)));
+    pm_value=4;
+    assert(!aos_x86_config_io(&a,0x4004,2,true,&pm_value,0x12345678)); /* SMI */
+    assert(!memcmp(&a,&before,sizeof(a)));
+    pm_value=1;
+    assert(!aos_x86_config_io(&a,0x4002,2,true,&pm_value,0x12345678)); /* SCI */
+    assert(!memcmp(&a,&before,sizeof(a)));
+    pm_value=0;
+    assert(!aos_x86_config_io(&a,0x4000,2,false,&pm_value,0)); /* reversal */
+    assert(!memcmp(&a,&before,sizeof(a)));
     reject(&b, 0x4008, 4, false);
+    aos_x86_config_t wrapped=a;
+    pm_value=0;
+    assert(aos_x86_config_io(&wrapped,0x4000,2,false,&pm_value,0x13345678));
+    assert(pm_value==1); /* two bit-23 transitions still latch status */
+    pm_value=1;
+    assert(aos_x86_config_io(&wrapped,0x4000,2,true,&pm_value,0x13345678));
+    pm_value=0;
+    assert(aos_x86_config_io(&wrapped,0x4000,2,false,&pm_value,0x13345678));
+    assert(pm_value==0 && a.pm_status==0);
     reject(&a, 0x4008, 4, true);
     reject(&a, 0x4008, 2, false);
     reject(&a, 0xcfd, 2, false);
@@ -100,8 +158,15 @@ int main(void)
     for (unsigned i = 0; i < 100; ++i) assert(data[i] == 0);
     io(&a, 0x70, 1, true, 0xb4); assert(io(&a, 0x71, 1, false, 0) == 0);
     io(&a, 0x70, 1, true, 0x35); assert(io(&a, 0x71, 1, false, 0) == 1);
+    assert(io(&a,0x70,1,false,0)==0xff);
+    assert(io(&a,0x71,1,false,0)==1); /* index read does not change selection */
     io(&a, 0x70, 1, true, 0xf); assert(io(&a, 0x71, 1, false, 0) == 0);
-    io(&a, 0x70, 1, true, 0); reject(&a, 0x71, 1, false);
+    io(&a, 0x71, 1, true, 0);
+    reject(&a, 0x71, 1, true);
+    io(&a,0x70,1,true,0xa); io(&a,0x71,1,true,0x26);
+    assert((io(&a,0x71,1,false,0)&0x7f)==0x26);
+    io(&a,0x70,1,true,1); assert(io(&a,0x71,1,false,0)==0);
+    io(&a, 0x70, 1, true, 0x33); reject(&a, 0x71, 1, false);
     puts("PASS: private PCI config, PM timer decoding, firmware directory/E820 and rejected I/O");
     return 0;
 }

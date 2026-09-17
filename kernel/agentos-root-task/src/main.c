@@ -1406,13 +1406,13 @@ static seL4_Error setup_x86_firmware(const pd_desc_t *pd, uint32_t pd_index,
         AGENTOS_MEMORY_FENCE();
         err = seL4_X86_Page_Unmap(frame);
         if (err != seL4_NoError) return err;
-        /* VMM may inspect its own RAM/page tables and read-only ROM when
-         * decoding an emulated MMIO access. It gets no host-device mapping. */
+        /* VMM owns private guest RAM for emulated I/O and may inspect ROM.
+         * ROM stays read-only. It gets no host-device mapping. */
         seL4_CPtr copy = ut_alloc_slot();
         if (copy == seL4_CapNull) return seL4_NotEnoughMemory;
         err = seL4_CNode_Copy(seL4_CapInitThreadCNode, copy, 64u,
                               seL4_CapInitThreadCNode, frame, 64u,
-                              seL4_CapRights_new(0u, 0u, 1u, 0u));
+                              seL4_CapRights_new(0u, 0u, 1u, !rom));
         if (err != seL4_NoError) return err;
         (void)cap_acct_record(frame, copy, seL4_X86_LargePageObject, pd_index, pd->name);
         err = pd_vspace_map_device_frame(vmm_vspace, copy,
@@ -3211,8 +3211,57 @@ void root_task_main(const seL4_BootInfo *bi)
         seL4_Word reason = seL4_GetMR(1);
         seL4_Word rip = seL4_GetMR(2);
         seL4_Word instruction_len = seL4_GetMR(3);
+#ifdef AGENTOS_X86_FIRMWARE_RESET
         if (seL4_MessageInfo_get_label(tag) == AOS_X86_VTX_PROOF_LABEL &&
+            seL4_MessageInfo_get_length(tag) == AOS_X86_FIRMWARE_REPORT_WORDS) {
+            seL4_Word counters[6];
+            for (unsigned i=0; i<6; i++) counters[i]=seL4_GetMR(4+i);
+            seL4_Word snapshot[AOS_X86_FIRMWARE_SNAPSHOT_WORDS];
+            for (unsigned i=0; i<AOS_X86_FIRMWARE_SNAPSHOT_WORDS; i++)
+                snapshot[i]=seL4_GetMR(10+i);
+            seL4_Word chain[AOS_X86_FIRMWARE_CHAIN_WORDS];
+            for (unsigned i=0; i<AOS_X86_FIRMWARE_CHAIN_WORDS; i++)
+                chain[i]=seL4_GetMR(10+AOS_X86_FIRMWARE_SNAPSHOT_WORDS+i);
+            dbg_puts("[rt] firmware timer exits="); dbg_hex(counters[0]);
+            dbg_puts(" injections="); dbg_hex(counters[1]);
+            dbg_puts(" eois="); dbg_hex(counters[2]);
+            dbg_puts(" rate_shift="); dbg_hex(counters[3]);
+            dbg_puts(" tsc_hz="); dbg_hex(counters[4]);
+            dbg_puts(" halt_exits="); dbg_hex(counters[5]); dbg_puts("\n");
+            if (status == AOS_X86_VTX_PROOF_FAIL && reason == 0x425544u) {
+              for (unsigned set=0; set<2; set++) {
+                const seL4_Word *view=snapshot+set*AOS_X86_FIRMWARE_SNAPSHOT_SET_WORDS;
+                dbg_puts(set ? "[rt] firmware last HLT exit\n" :
+                               "[rt] firmware budget exit\n");
+                for (unsigned region=0; region<2; region++) {
+                    unsigned count=region ? AOS_X86_FIRMWARE_STACK_WORDS :
+                                            AOS_X86_FIRMWARE_CODE_WORDS;
+                    unsigned start=4+(region ? AOS_X86_FIRMWARE_CODE_WORDS : 0);
+                    dbg_puts(region ? "[rt] firmware stack snapshot\n" :
+                                      "[rt] firmware code snapshot\n");
+                    for (unsigned i=0; i<count; i++) {
+                        if (!(view[2+region] & (UINT64_C(1) << i))) break;
+                        dbg_puts("[rt] snapshot "); dbg_hex(view[region]+8u*i);
+                        dbg_puts(" = "); dbg_hex(view[start+i]); dbg_puts("\n");
+                    }
+                }
+              }
+              seL4_Word frame=chain[0];
+              for (unsigned i=0; i<4 && i<chain[1]; i++) {
+                  dbg_puts("[rt] firmware HLT frame "); dbg_hex(frame);
+                  dbg_puts(" return "); dbg_hex(chain[3+2*i]);
+                  dbg_puts(" next "); dbg_hex(chain[2+2*i]); dbg_puts("\n");
+                  frame=chain[2+2*i];
+              }
+            }
+        }
+#endif
+        if (seL4_MessageInfo_get_label(tag) == AOS_X86_VTX_PROOF_LABEL &&
+#ifdef AGENTOS_X86_FIRMWARE_RESET
+            seL4_MessageInfo_get_length(tag) == AOS_X86_FIRMWARE_REPORT_WORDS &&
+#else
             seL4_MessageInfo_get_length(tag) == 4u &&
+#endif
 #ifdef AGENTOS_X86_FIRMWARE_RESET
             status == AOS_X86_VTX_FIRMWARE_CONFIG &&
             reason == 30u && rip <= 0xffffffffu &&

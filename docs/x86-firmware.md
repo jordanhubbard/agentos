@@ -27,9 +27,9 @@ Root provisions 32 MiB of zeroed private guest RAM at GPA zero and 4 MiB
 of read-only firmware at `0xffc00000`. These are newly allocated frames,
 not host MMIO or passthrough devices. Root drops each temporary initialization
 mapping before installing its EPT mapping and gives the VMM its VCPU cap.
-The VMM also receives read-only aliases of its private RAM at `0x80000000`
-and ROM at `0x90000000`. These aliases permit instruction fetch and page-table
-inspection; they cannot modify guest memory. Mapping caps remain accounted to
+The VMM also receives writable private RAM at `0x80000000`
+and read-only ROM at `0x90000000`. These aliases permit instruction fetch,
+page-table inspection and validated emulated input writes. Mapping caps remain accounted to
 the VMM. No physical APIC page or I/O capability is delegated.
 The firmware variant uses the existing single-VMM qualification topology.
 Allocation failure aborts boot; this is not a runtime guest-create path and
@@ -52,38 +52,120 @@ zero. This is a bootstrap policy, not a qualified desktop CPU profile.
 
 Scalar I/O now uses private PCI configuration state for an i440FX host bridge
 and PIIX4 power-management function. The PM timer requires enabled decode and
-an invariant TSC with a nonzero CPUID.15H frequency; no clock frequency is
-guessed. Host tests cover its wrap and enable semantics. The guest-owned
+an invariant TSC with an architectural ratio or identified KVM timing leaf;
+no clock frequency is guessed. Host tests cover its wrap and enable semantics. The guest-owned
 `fw_cfg` data supplies RAM/CPU counts and an E820 directory entry; CMOS supplies
-RAM-size fields. The legacy PICs accept mask-all only: unmasking and commands
+RAM-size fields and a [private RTC calendar](x86-rtc.md). Its explicit virtual
+boot date is 2000-01-01 UTC, advancing from the measured clock, with BCD/binary
+and 12/24-hour reads, SET date transactions and polled alarm/status flags.
+It does not claim host wall-clock synchronization, persistent time or RTC IRQs.
+The legacy PICs accept mask-all only: unmasking and commands
 remain unsupported until interrupt routing and injection are implemented.
+The [private PM1 aperture](x86-pm.md) now supports control readback and polled
+timer status/W1C. Its legacy decode follows PMIOSE independently of PCI IOEN.
+SCI event enables, sleep and SMI requests remain explicitly rejected.
 No operation forwards a host port or grants a hardware I/O capability. CMOS
 shutdown status reports a cold boot; there is no S3 resume image.
+Firmware can acknowledge that cold boot by clearing the status. CPU discovery
+reports one fixed BSP, matching fw_cfg, with no hotplug events. Port `0x92`
+reports A20 enabled and rejects reset/disable. Platform-ID and microcode
+signature MSRs return synthetic zero values; microcode update triggers remain
+unsupported and never reach the host.
 
 The bootstrap xAPIC has a fixed enabled BSP base at `0xfee00000`, APIC ID zero,
 SVR/TPR and timer registers. Timer counts derive from invariant host TSC ticks,
 with one virtual APIC bus tick per TSC tick and the programmed divider. Both
 one-shot and periodic counting are covered by host tests. The fixed-host KVM
 qualification uses `host,migratable=off` so QEMU does not hide `invtsc`; the
-VMM still checks that capability. A due unmasked timer stops explicitly:
-asynchronous timer scheduling, interrupt injection, IPIs, other LVT sources,
-base relocation, x2APIC and live divider changes are not implemented.
+VMM still checks that capability. The VMX preemption timer now supplies
+asynchronous wakeups, using the rate obtained through the VCPU capability.
+Private IRR/ISR state retains pending vectors, applies priority and handles
+EOI. Injection checks IF and STI/MOVSS blocking, requests interrupt-window
+exits when needed, and clears halt state only for an eligible interrupt.
+IPIs, other LVT sources, base relocation and x2APIC are not implemented.
+Live divider changes preserve
+the remaining countdown and restart the fractional prescaler phase. Expiries
+while masked do not create pending interrupts; unmasked expiries are retained.
+LINT0/LINT1 configuration is private and retained for firmware virtual-wire
+setup, but no external pin sources are connected.
 
-APIC MMIO faults use the hardware-reported GPA and a bounded decoder for
-32-bit MOV register/immediate memory forms in a 64-bit code segment. A
+MMIO faults use the hardware-reported GPA and a bounded decoder for
+byte and 32-bit MOV register/immediate forms and byte/word MOVZX in a
+64-bit code segment. APIC accesses still require 32-bit operands. A
 four-level guest page-table walk checks the advertised 36-bit physical width,
 permissions and supported 4 KiB/2 MiB leaves. Instruction bytes may come only
 from this guest's RAM or ROM; the decoded operand must translate to the fault
 GPA. Unknown instructions and other mappings stop without accessing host
 memory. This is not a general x86 instruction emulator.
 
-The configuration gate requires reaching a firmware-data string I/O exit
-after PCI reads, CPUID handling and the long-mode transition. **This narrow
-gate passes on Intel.** The pinned OVMF image reaches REP INSB from `0x511`
-at linear RIP `0x0082f9e0`, after its initial APIC setup and cold-boot check.
-The string transfer is observed, not emulated. It still needs bounded writable
-guest-memory access; scalar firmware
-data and PM timer tests alone do not prove firmware consumption on target.
+The earlier APIC gate stopped at REP INSB from `0x511`. The VMM now resumes
+that instruction, transferring at most 256 bytes per exit. It validates every
+destination page before advancing fw_cfg or modifying RAM, sets accessed/dirty
+bits, preserves forward/backward direction and zero-count semantics, and
+re-enters the same instruction when RCX remains nonzero. Only exact long-mode
+`F3 6C` is supported; other string widths/address modes stop explicitly.
+ROM and device GPAs cannot become writable input destinations.
+
+This continuation no longer reports success at the old string-exit checkpoint.
+The Intel gate remains incomplete while firmware executes beyond that point;
+host stream tests and an ordinary Spark gate do not prove complete UEFI boot.
+The historical [string-input receipt](evidence/2026-09-17-spark/ovmf-string.json)
+records the TPM probe stop. Bounded, naturally aligned reads of one, two or
+four bytes from `0xfed40000..0xfed44fff` now return all ones for this machine's
+absent TPM. Writes remain rejected; there is no TPM or measured-boot emulation.
+Validated stores within firmware ROM complete without changing its bytes,
+allowing firmware to distinguish ROM from writable flash. Both ROM mappings
+remain read-only; this does not implement persistent variables.
+
+The historical [discovery receipt](evidence/2026-09-17-spark/ovmf-discovery.json) records
+execution through these probes and APIC divider changes to the first unmasked
+periodic timer expiry, vector `0x20`. The VMM stops with reason `0x495251`
+at RIP `0x00168bf5`. The later
+[timer receipt](evidence/2026-09-17-spark/ovmf-timer.json) records 139 timer
+exits, three injections and three guest EOI writes before an unsupported
+RTC register-A write of `0x26`, at RIP `0x01acd70c`. The firmware gate still
+fails. Dedicated halt and interrupt-window target assertions remain required;
+these counters do not qualify all interrupt delivery cases or complete UEFI.
+
+The [RTC continuation receipt](evidence/2026-09-17-spark/ovmf-rtc.json)
+records subsequent execution beyond RTC initialization: 178 preemption exits
+and 29 injection/EOI pairs before a 16-bit ACPI PM control read at port `0xb004`
+stops with reason `0x1e`, RIP `0x0006ff9e`, qualification `0xb0040009`.
+This is another incomplete firmware run, not a successful UEFI handoff.
+
+The later [PM receipt](evidence/2026-09-17-spark/ovmf-pm.json) records
+continuation beyond that access to the fixed 65,536-exit diagnostic limit.
+The repeat run reports 10,771 timer exits, 4,885 injections, 4,884 EOIs and
+4,613 HLT exits. The last observed RIP is `0x0018b0d1`, with VMX timer exit
+reason 52. The limit remains a failure result; these counters do not establish
+a completed UEFI boot, identify the waiting firmware component, or prove
+guest payload handoff. The bound has not been increased to hide the result.
+
+The later [endpoint investigation](evidence/2026-09-17-spark/ovmf-endpoint.json)
+localizes this wait. Failure reports now carry bounded private-RAM code and
+stack snapshots for the returned budget exit and the most recent HLT, plus
+four checked frame-pointer links. The release SDK disables `DebugPutChar`, so
+these observations use the existing qualification IPC endpoint. Root copies
+all report words before diagnostic output. The VMM performs every translation;
+root only prints the report and gains no guest-memory inspection policy.
+Invalid, unaligned or non-increasing frame links stop the diagnostic chain.
+
+The Intel HLT bytes match `CpuDxe`'s `CpuSleep`. Its retained caller chain
+passes through DXE event dispatch and `CoreWaitForEvent` to return address
+`0x782c4`. In the exact pinned OVMF binary, that return matches `BdsDxe`
+RVA `0xa2c4`: a wait for `ConIn->WaitForKey` immediately following the
+no-bootable-option/device message. This identifies the boot-manager key wait
+as the next obstacle, rather than another unsupported register access.
+The receipt distinguishes exact code-byte matches from module bases inferred
+through consistent return sites; it is not a complete firmware unwind.
+
+The source context for the idle path is
+[DXE CoreWaitForEvent](https://github.com/tianocore/edk2/blob/edk2-stable202402/MdeModulePkg/Core/Dxe/Event/Event.c)
+and [CpuDxe IdleLoopEventCallback](https://github.com/tianocore/edk2/blob/edk2-stable202402/UefiCpuPkg/CpuDxe/CpuDxe.c).
+The next implementation must supply a bootable payload and establish actual
+UEFI handoff alongside generated ACPI and canonical guest I/O. Reaching the
+key wait is useful bring-up evidence but remains a failing firmware gate.
+The full Spark gate passed at runtime revision `7682937`.
 
 The [upstream EDK II transition](https://github.com/tianocore/edk2/blob/edk2-stable202402/UefiCpuPkg/ResetVector/Vtf0/Ia16/Real16ToFlat32.asm)
 provides the source context for this early execution path. The

@@ -1,5 +1,27 @@
 #include "platform/x86_cpu.h"
 
+uint64_t aos_x86_tsc_frequency(bool invariant, aos_x86_cpuid_t ratio,
+                              aos_x86_cpuid_t hypervisor, aos_x86_cpuid_t timing)
+{
+    if (!invariant) return 0;
+    uint64_t hz=ratio.eax ? (uint64_t)ratio.ecx*ratio.ebx/ratio.eax : 0;
+    /* QEMU publishes its KVM TSC rate in CPUID 0x40000010.EAX, in kHz.
+     * This clock discovery is for the host board, never guest CPUID passthrough. */
+    if (!hz && hypervisor.eax >= 0x40000010u && hypervisor.eax < 0x40000100u &&
+        hypervisor.ebx == 0x4b4d564bu && hypervisor.ecx == 0x564b4d56u &&
+        hypervisor.edx == 0x4du)
+        hz=(uint64_t)timing.eax*1000u;
+    return hz && hz <= UINT64_C(10000000000) ? hz : 0;
+}
+
+bool aos_x86_cpu_identity_msr(uint32_t msr, bool write, uint64_t *value)
+{
+    if (!value || (msr != 0x17u && msr != 0x8bu)) return false;
+    if (write) return msr == 0x8bu && *value == 0;
+    *value=0;
+    return true;
+}
+
 bool aos_x86_cpu_supported(uint32_t basic_edx, uint32_t ext_edx, uint32_t widths)
 {
     return (basic_edx & AOS_X86_BASIC_EDX) == AOS_X86_BASIC_EDX &&

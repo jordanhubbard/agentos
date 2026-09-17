@@ -1,0 +1,38 @@
+{
+  "qualification": "OVMF absent-device and timer discovery continuation",
+  "date": "2026-09-17",
+  "task": "task_1e9f1c0e87d944aaad837710037c0b06",
+  "firmware_sha256": "101afad5f520753224b60b9555df60add435cf50c7a82b781d7d7d8c60db7eb5",
+  "firmware_provenance": "ovmf-reset.json",
+  "intel": {
+    "host": "madmax",
+    "runtime_revision": "aac9887a936cd753ce8dd10556d5ea00674f0079",
+    "command": "make gate-x86_64-firmware-reset SEL4_SDK_VERSION=2.3.0 X86_FIRMWARE_IMAGE=/tmp/agentos-ovmf-2024.02-2ubuntu0.9.fd X86_FIRMWARE_SHA256=101afad5f520753224b60b9555df60add435cf50c7a82b781d7d7d8c60db7eb5",
+    "result": "FAIL: asynchronous timer delivery is not implemented",
+    "stop_reason": "0x495251",
+    "linear_rip": "0x00168bf5",
+    "lvt_timer": "0x00020020",
+    "observed_progress": "Absent TPM probe, ROM flash detection and live APIC divider changes complete; execution reaches an unmasked periodic timer expiry on vector 0x20",
+    "image_sha256": "e1a60c1654d1d59148b89a6ed0c46b25ba7dde3b2e420b23f6c5d43293c77e86",
+    "log_sha256": "5e64377f3fd215dafdeb0521c799918cd00b89e6d3865e78173a51563a129d8d",
+    "retained_directory": "/tmp/agentos-v04-intel-discovery/build/evidence/discovery-aac9887",
+    "termination": "Owned QEMU PID 2381460 terminated after explicit failure and artifact retention; harness returned exit 2"
+  },
+  "spark": {
+    "runtime_revision": "7bd4324cf6d75127e34aa582e71860d55ae2ee93",
+    "command": "make gate SEL4_SDK_VERSION=2.3.0 QEMU_TEST_SSH_PORT=12265",
+    "result": "PASS",
+    "last_gate_image_sha256": "c131b5441309b3244e85e111beea43f4d6ad0df5373c7e9441fe08700c700c54",
+    "log_sha256": "0607b0fdba3e2c20deaf3170fe6131663664105c834304e25a95ff0cc375840c",
+    "retained_directory": "/tmp/agentos-v04-x86-discovery/build/evidence/discovery-7bd4324",
+    "additional_checks": ["MMIO, ROM and timer output tests pass", "All eight APIC divider encodings and masked expiry behavior tested", "APIC/MMIO host tests pass with ASan and UBSan at aac9887"]
+  },
+  "revision_scope": "After the Spark gate revision, changes affect only opt-in x86 firmware ROM/timer behavior and host tests; ordinary gate runtime is unchanged.",
+  "limits": [
+    "Firmware continuation gate remains incomplete",
+    "No asynchronous timer source or VM-entry interrupt injection",
+    "No TPM emulation or persistent UEFI variables",
+    "No complete UEFI, installed ACPI, x86 Linux userspace or canonical x86 guest I/O proof",
+    "No runtime capability reclamation qualification"
+  ]
+}

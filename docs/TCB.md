@@ -362,11 +362,33 @@ guest-memory authority remain the same as the narrow VTX proof above.
 The optional [OVMF reset variant](x86-firmware.md) replaces the five-page
 payload with 32 MiB private RAM and 4 MiB read-only firmware. Root initializes
 these frames through temporary mappings, installs EPT mappings and provides
-the single VMM's VCPU cap and read-only aliases of its own RAM and ROM for
-bounded page-table walks and MMIO instruction decoding. No device frames,
+the single VMM's VCPU cap, writable private RAM and read-only ROM aliases for
+bounded page-table walks, MMIO decoding and firmware input writes. The REP
+input handler validates a bounded chunk before modifying RAM or fw_cfg state
+and commits page-table accessed/dirty bits. No device frames,
 IRQs or host I/O capabilities are added. The VMM emulates private PCI
 configuration, scalar firmware-data ports, and bootstrap xAPIC timer state.
-PIC unmasking, APIC interrupt delivery and unsupported device accesses stop
+Bounded reads in the declared absent TPM aperture return all ones; writes
+are rejected. Validated firmware ROM stores are ignored without granting
+write authority or changing ROM bytes. Live APIC divider changes preserve
+the private countdown; no host APIC access or timer IRQ authority is added.
+The optional firmware VMM now enables VMX preemption-timer exits through its
+existing VCPU cap and reads the timer rate through the kernel's restricted MSR
+interface. It maintains private IRR/ISR state, checks CPU interruptibility,
+injects eligible timer vectors and handles guest EOI. No new hardware authority
+is granted. The [timer receipt](evidence/2026-09-17-spark/ovmf-timer.json)
+records partial OVMF delivery evidence; halt/window qualification remains open.
+The firmware VMM also owns a [private RTC calendar](x86-rtc.md), advanced
+from its admitted clock with an explicit virtual boot epoch. It emulates
+calendar, alarm and polled status state without a host RTC frame, port or IRQ.
+It grants no persistent-time or host wall-clock authority; RTC IRQ enables
+remain rejected. The [RTC receipt](evidence/2026-09-17-spark/ovmf-rtc.json)
+records continuation to the next unsupported ACPI PM control access.
+The subsequent [PM1 model](x86-pm.md) retains private mode/control and polled
+timer status, without additional caps or hardware authority. SCI enables,
+SMI and sleep requests are rejected; this is not a power-management lifecycle
+implementation or a proof of guest ACPI table installation.
+PIC unmasking and unsupported device accesses stop
 explicitly. This remains firmware bring-up; it does not prove UEFI boot,
 Linux, runtime resource management or persistent firmware variables.
 

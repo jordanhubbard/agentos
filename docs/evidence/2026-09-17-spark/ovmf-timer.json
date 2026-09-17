@@ -1,0 +1,44 @@
+{
+  "qualification": "OVMF asynchronous VMX timer and initial APIC delivery",
+  "revision": "21f6a0a67f5bc8f84d6c070f2da01b88f4071c82",
+  "intel": {
+    "host": "madmax, Intel i9-14900KF, nested KVM",
+    "sdk": "Microkit 2.3.0",
+    "command": "make gate-x86_64-firmware-reset SEL4_SDK_VERSION=2.3.0 X86_FIRMWARE_IMAGE=/tmp/agentos-ovmf-2024.02-2ubuntu0.9.fd X86_FIRMWARE_SHA256=101afad5f520753224b60b9555df60add435cf50c7a82b781d7d7d8c60db7eb5",
+    "result": "FAIL: unsupported RTC register-A programming after initial timer delivery",
+    "timer_exits": 139,
+    "injections": 3,
+    "guest_eoi_writes": 3,
+    "halt_exits": 0,
+    "vmx_timer_rate_shift": 5,
+    "tsc_hz": 3187200000,
+    "stop": {"reason": "0x434d4f", "rip": "0x01acd70c", "detail": "0x0000000a00000026"},
+    "artifact_directory": "/tmp/agentos-v04-intel-discovery/build/evidence/timer-21f6a0a",
+    "image_sha256": "e137312ecebf16ff4fc082d00a6d52531719b3db1160751bfdb6b59b75f0d950",
+    "root_task_sha256": "59441dfbba972555e8e440f4ee4861d51613d401f5dd4d350f7e95318a824b8e",
+    "serial_sha256": "d5fa672d404bf49b1b87b36488a3fed6b14a31b889bbb97e8f9a423ee062a098",
+    "termination": "Owned QEMU PID 2651203 terminated after explicit failure and artifact retention; command exited 2"
+  },
+  "spark": {
+    "revision": "21f6a0a67f5bc8f84d6c070f2da01b88f4071c82",
+    "command": "make gate SEL4_SDK_VERSION=2.3.0 QEMU_TEST_SSH_PORT=12266",
+    "result": "PASS, exit 0",
+    "artifact_directory": "/tmp/agentos-v04-x86-string/build/evidence/timer-21f6a0a",
+    "image_sha256": "26ce34eca25c32751fe70170c15daa5b8fe5cf6953e6789dc4855b0b5876ddb1",
+    "gate_log_sha256": "744ba5c106c8d474b969b44b4e87f4fe4cb55b63a816d9551c270e5e4950a278"
+  },
+  "host_validation": {
+    "cpu_clock_admission": "PASS",
+    "apic_priority_irr_isr_eoi": "PASS",
+    "cmos_index_read": "PASS",
+    "apic_asan_ubsan": "PASS"
+  },
+  "limitations": [
+    "The OVMF gate remains incomplete; RTC, UEFI/ACPI and x86 Linux qualification are outstanding",
+    "Counters show initial injection and EOI progress, not an independently asserted handler payload",
+    "Dedicated guest-loop, HLT wakeup and interrupt-window target assertions remain outstanding",
+    "Illegal-vector expiry and interrupted event delivery fail explicitly; no general exception reinjection",
+    "No claim of persistent variables, canonical x86 device I/O or runtime capability reclamation"
+  ],
+  "mac_task": "task_aeec2ea4e28b4f1aa68657a1fce11218"
+}

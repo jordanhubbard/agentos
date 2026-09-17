@@ -28,6 +28,14 @@ int main(void)
     assert(apic_io(&a,0x20,false,0,100)==0);
     assert(apic_io(&a,0x30,false,0,100)==0x50014);
     assert(apic_io(&a,0x320,false,0,100)==0x10000);
+    assert(apic_io(&a,0x350,false,0,100)==0x10000);
+    assert(apic_io(&a,0x360,false,0,100)==0x10000);
+    apic_io(&a,0x350,true,0x700,100); /* ExtInt, no connected source */
+    apic_io(&a,0x360,true,0x400,100); /* NMI, no connected source */
+    assert(apic_io(&a,0x350,false,0,100)==0x700);
+    assert(apic_io(&a,0x360,false,0,100)==0x400);
+    assert(apic_io(&b,0x350,false,0,100)==0x10000);
+    rejected(&a,0x350,true,0x4000,100); /* remote IRR is read-only */
     apic_io(&a,0xf0,true,0x1ff,100);
     apic_io(&a,0x3e0,true,0xb,100); /* divide by 1 */
     apic_io(&a,0x380,true,1000,100);
@@ -38,16 +46,21 @@ int main(void)
     assert(!aos_x86_apic_interrupt_due(&a,1099));
     assert(aos_x86_apic_interrupt_due(&a,1100));
     assert(apic_io(&a,0x390,false,0,1100)==0);
+    assert(a.irr[2] == 1u);
+    aos_x86_apic_init(&a,1100);
+    apic_io(&a,0x3e0,true,0xb,1100);
     apic_io(&a,0x320,true,0x30040,1100); /* periodic, masked */
     apic_io(&a,0x380,true,10,1100);
     assert(apic_io(&a,0x390,false,0,1123)==7);
-    rejected(&a,0x3e0,true,0,1123); /* no live divider phase change */
-    rejected(&a,0x320,true,0x40040,1123); /* no deadline mode */
-    rejected(&a,0x390,true,1,1123);
-    rejected(&a,0x321,false,0,1123);
-    rejected(&a,0x300,true,0,1123); /* IPI delivery unsupported */
+    apic_io(&a,0x3e0,true,0,1123); /* preserve 7 ticks, now divide by 2 */
+    assert(apic_io(&a,0x390,false,0,1124)==7);
+    assert(apic_io(&a,0x390,false,0,1125)==6);
+    rejected(&a,0x320,true,0x40040,1125); /* no deadline mode */
+    rejected(&a,0x390,true,1,1125);
+    rejected(&a,0x321,false,0,1125);
+    rejected(&a,0x300,true,0,1125); /* IPI delivery unsupported */
     rejected(&a,0x390,false,0,1122); /* clock reversal */
-    apic_io(&a,0x380,true,0,1123);
+    apic_io(&a,0x380,true,0,1125);
     assert(!aos_x86_apic_interrupt_due(&a,UINT64_MAX));
     for (unsigned i=0; i<8; i++) {
         unsigned enc=(i&3)|((i&4)<<1), div=1u<<((i+1)&7);
@@ -56,6 +69,55 @@ int main(void)
         assert(apic_io(&a,0x390,false,0,1200+i*1000+div*2)==98);
         apic_io(&a,0x380,true,0,1200+i*1000+div*2);
     }
+    aos_x86_apic_init(&b,0);
+    apic_io(&b,0xf0,true,0x1ff,0);
+    apic_io(&b,0x3e0,true,0xb,0);
+    apic_io(&b,0x320,true,0x30040,0);
+    apic_io(&b,0x380,true,10,0);
+    apic_io(&b,0x320,true,0x20040,25); /* masked expiries do not become pending */
+    assert(!aos_x86_apic_interrupt_due(&b,29));
+    assert(aos_x86_apic_interrupt_due(&b,30));
+
+    /* Expiry captures its vector; priority gates delivery without losing it. */
+    assert(aos_x86_apic_pending(&b,30)==0x40);
+    apic_io(&b,0x320,true,0x20060,30);
+    assert(aos_x86_apic_pending(&b,30)==0x40);
+    apic_io(&b,0x80,true,0x4f,30);
+    assert(!aos_x86_apic_pending(&b,30));
+    assert(!aos_x86_apic_accept(&b,0x40));
+    apic_io(&b,0x80,true,0,30);
+    assert(aos_x86_apic_accept(&b,0x40));
+    assert(apic_io(&b,0x120,false,0,30)==1u); /* ISR */
+    assert(apic_io(&b,0x220,false,0,30)==0u); /* IRR */
+    assert(apic_io(&b,0xa0,false,0,30)==0x40);
+    assert(!aos_x86_apic_accept(&b,0x40));
+    assert(aos_x86_apic_pending(&b,40)==0x60); /* higher class nests */
+    assert(aos_x86_apic_accept(&b,0x60));
+    assert(!aos_x86_apic_pending(&b,100)); /* same class waits; expiries coalesce */
+    assert(apic_io(&b,0x230,false,0,100)==1u);
+    rejected(&b,0xb0,true,1,100);
+    rejected(&b,0xb0,false,0,100);
+    rejected(&b,0x120,true,0,100);
+    apic_io(&b,0xb0,true,0,100); /* pop only highest in-service vector */
+    assert(apic_io(&b,0x130,false,0,100)==0u);
+    assert(apic_io(&b,0x120,false,0,100)==1u);
+    assert(aos_x86_apic_pending(&b,100)==0x60);
+    apic_io(&b,0xf0,true,0xff,100);
+    assert(!aos_x86_apic_pending(&b,100));
+    apic_io(&b,0xf0,true,0x1ff,100);
+    assert(aos_x86_apic_accept(&b,0x60));
+    assert(!aos_x86_apic_pending(&b,100));
+    apic_io(&b,0xb0,true,0,100);
+    apic_io(&b,0xb0,true,0,100);
+    apic_io(&b,0xb0,true,0,100); /* idle EOI is harmless */
+    assert(apic_io(&b,0xa0,false,0,100)==0);
+    aos_x86_apic_init(&b,0);
+    apic_io(&b,0xf0,true,0x1ff,0);
+    apic_io(&b,0x320,true,0,0); /* valid programming while timer stopped */
+    assert(!aos_x86_apic_pending(&b,100));
+    apic_io(&b,0x380,true,1,100);
+    assert(aos_x86_apic_pending(&b,102)==AOS_X86_APIC_INVALID_VECTOR);
+    assert(!aos_x86_apic_accept(&b,AOS_X86_APIC_INVALID_VECTOR));
 
     aos_x86_memory_t m={.ram=ram,.ram_size=sizeof(ram),.rom=rom,.rom_base=0xffc00000,.rom_size=sizeof(rom)};
     pte(0x1000,0x2003); pte(0x2000,0x3003); pte(0x3000,0x4003); pte(0x4000,0x5003);
@@ -98,6 +160,39 @@ int main(void)
     assert(!aos_x86_decode_mov32(direct,2,0,regs,&op));
     assert(!aos_x86_decode_mov32(locked,3,0,regs,&op));
     for (unsigned i=1; i<sizeof(imm); i++) assert(!aos_x86_decode_mov32(imm,i,0,regs,&op));
+    const uint8_t al[]={0x8a,0x01}, ah[]={0x8a,0x21}, spl[]={0x40,0x8a,0x21};
+    const uint8_t r8b[]={0x44,0x8a,0x01}, zx8[]={0x0f,0xb6,0x01}, zx16[]={0x48,0x0f,0xb7,0x01};
+    assert(aos_x86_decode_mov(al,2,0,regs,&op) && op.width==1 && op.reg==0 && op.shift==0);
+    assert(aos_x86_mov_result(&op,UINT64_C(0x123456789abcdef0),0xff)==UINT64_C(0x123456789abcdeff));
+    assert(!aos_x86_decode_mov32(al,2,0,regs,&op));
+    assert(aos_x86_decode_mov(ah,2,0,regs,&op) && op.reg==0 && op.shift==8);
+    assert(aos_x86_mov_result(&op,UINT64_C(0x123456789abcdef0),0xff)==UINT64_C(0x123456789abcfff0));
+    assert(aos_x86_decode_mov(spl,3,0,regs,&op) && op.reg==4 && op.shift==0);
+    assert(aos_x86_decode_mov(r8b,3,0,regs,&op) && op.reg==8 && op.shift==0);
+    assert(aos_x86_decode_mov(zx8,3,0,regs,&op) && op.destination_bits==32 && op.length==3);
+    assert(aos_x86_mov_result(&op,UINT64_MAX,0x1234)==0x34);
+    assert(aos_x86_decode_mov(zx16,4,0,regs,&op) && op.width==2 && op.destination_bits==64);
+    assert(aos_x86_mov_result(&op,UINT64_MAX,0x12345678)==0x5678);
+    for (unsigned i=1; i<sizeof(zx16); i++) assert(!aos_x86_decode_mov(zx16,i,0,regs,&op));
+    const uint8_t imm8[]={0xc6,0x01,0xa5}, store_ah[]={0x88,0x21};
+    assert(aos_x86_decode_mov(imm8,3,0,regs,&op) && op.write && op.value==0xa5 && op.width==1);
+    regs[0]=0x1234;
+    assert(aos_x86_decode_mov(store_ah,2,0,regs,&op) && op.write && op.value==0x12);
+    uint32_t absent=0;
+    assert(aos_x86_absent_mmio(0xfed40000,1,false,&absent) && absent==0xff);
+    assert(aos_x86_absent_mmio(0xfed440fe,2,false,&absent) && absent==0xffff);
+    assert(aos_x86_absent_mmio(0xfed44ffc,4,false,&absent) && absent==UINT32_MAX);
+    absent=0x1234;
+    assert(!aos_x86_absent_mmio(0xfed44fff,2,false,&absent) && absent==0x1234);
+    assert(!aos_x86_absent_mmio(0xfed45000,1,false,&absent));
+    assert(!aos_x86_absent_mmio(0xfed40000,1,true,&absent));
+    assert(!aos_x86_absent_mmio(0xfee00000,4,false,&absent));
+    assert(aos_x86_rom_store(&m,0xffc00010,1));
+    assert(aos_x86_rom_store(&m,0xffc00ffc,4));
+    assert(!aos_x86_rom_store(&m,0xffc01000,1));
+    assert(!aos_x86_rom_store(&m,0xffc00fff,2));
+    assert(!aos_x86_rom_store(&m,0x5000,1));
+    assert(!aos_x86_rom_store(&m,UINT64_MAX,4));
     puts("PASS: private APIC timer, bounded page walks and 32-bit MMIO MOV decoding");
     return 0;
 }
