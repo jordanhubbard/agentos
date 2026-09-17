@@ -11,8 +11,7 @@
 #include <contracts/blk_virt_contract.h>
 #include "sel4_ipc.h"
 #include "system_desc.h"
-#include <libvmm/libvmm.h>
-#include <libvmm/arch/aarch64/vgic/vgic.h>
+#include <libvmm/util/util.h>
 #include <libvmm/virtio/config.h>
 #include <libvmm/virtio/block.h>
 #include <sddf/blk/queue.h>
@@ -136,8 +135,8 @@ static void blk_virt_kick_if_pending(void)
  *     into guest RAM through the GPA translation API and injects the virq);
  *   - kick blk_virt if the guest (or handle_resp's read-modify-write path)
  *     queued requests and blk_virt asked for kicks.
- * NBSend kicks are lossy; the word stays 0 until blk_virt drains, so a lost
- * kick is repeated on the next exit.
+ * Send-only notification capabilities retain pending kicks until received.
+ * The consumer-signalled word prevents unnecessary repeated notifications.
  */
 static void blk_virt_service(const char *how)
 {
