@@ -1915,21 +1915,33 @@ void root_task_main(const seL4_BootInfo *bi)
         dbg_puts(" length=");
         dbg_hex(host_block_layout.region[r].length);
         dbg_puts("\n");
-        uint64_t page = host_block_layout.region[r].paddr & ~UINT64_C(4095);
         block_pci.offset[r] = (uint32_t)(host_block_layout.region[r].paddr & 4095u);
         block_pci.length[r] = host_block_layout.region[r].length;
         if (block_pci.length[r] > 4096u - block_pci.offset[r]) {
             dbg_puts("[rt] block PCI capability exceeds mapped page; refusing startup\n");
             return;
         }
-        for (unsigned prior = 0; prior < r; prior++) {
-            if ((host_block_layout.region[prior].paddr & ~UINT64_C(4095)) == page)
-                g_x86_blk_frames[r] = g_x86_blk_frames[prior];
+    }
+    /* Device untyped watermarks advance monotonically. Allocate ascending
+     * physical pages, independently of PCI capability and driver VA order. */
+    for (unsigned allocation = 0; allocation < AOS_VIRTIO_PCI_REGIONS; allocation++) {
+        unsigned next = AOS_VIRTIO_PCI_REGIONS;
+        uint64_t page = UINT64_MAX;
+        for (unsigned r = 0; r < AOS_VIRTIO_PCI_REGIONS; r++) {
+            uint64_t candidate = host_block_layout.region[r].paddr & ~UINT64_C(4095);
+            if (!g_x86_blk_frames[r] && candidate < page) {
+                page = candidate;
+                next = r;
+            }
         }
-        if (!g_x86_blk_frames[r] &&
-            ut_alloc_device_cap(page, &g_x86_blk_frames[r]) != seL4_NoError) {
+        if (next == AOS_VIRTIO_PCI_REGIONS) break;
+        if (ut_alloc_device_cap(page, &g_x86_blk_frames[next]) != seL4_NoError) {
             dbg_puts("[rt] block PCI device frame grant failed; refusing startup\n");
             return;
+        }
+        for (unsigned r = 0; r < AOS_VIRTIO_PCI_REGIONS; r++) {
+            if ((host_block_layout.region[r].paddr & ~UINT64_C(4095)) == page)
+                g_x86_blk_frames[r] = g_x86_blk_frames[next];
         }
     }
     if (allocate_block_dma(&block_pci) != seL4_NoError) {
