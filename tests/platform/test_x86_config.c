@@ -186,6 +186,10 @@ int main(void)
     assert(io(&a,0x4000,2,false,0)==0);
     assert(io(&a,0x4002,2,false,0)==0);
     io(&a,0x4002,2,true,0);
+    io(&a,0x4002,2,true,0x20); /* absent global-lock enable must not stick */
+    assert(io(&a,0x4002,2,false,0)==0);
+    io(&a,0x4002,1,true,0x20);
+    assert(io(&a,0x4002,1,false,0)==0);
     assert(io(&a,0x4004,2,false,0)==0);
     io(&a,0x4004,2,true,0x1c03);
     assert(io(&a,0x4004,1,false,0)==3 && io(&a,0x4005,1,false,0)==0x1c);

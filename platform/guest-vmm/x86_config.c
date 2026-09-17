@@ -118,7 +118,10 @@ static bool pm_io(aos_x86_config_t *s, unsigned off, unsigned width,
         if (write) status&=~data; /* W1C; reserved status bits stay zero */
         else result=(status >> shift)&mask;
     } else if ((off&~1u)==2u) {
-        if (write && data) return false; /* SCI routing not implemented */
+        /* No firmware global-lock hardware exists. Its enable bit does not
+         * stick, allowing ACPICA to detect absence. Do not falsely enable
+         * a global-lock SCI; other nonzero enables still need real sources. */
+        if (write && (data & ~0x20u)) return false;
         if (!write) result=0;
     } else {
         if (write) {
