@@ -58,6 +58,14 @@ int main(void)
         CHECK(f.memory[0]==0 && f.memory[8]==0);
     }
     memset(available,0,sizeof(available)); memset(used_storage,0,sizeof(used_storage));
+    memset(&f,0,sizeof(f)); state=(virtio_console_rx_state_t){0}; last=0;
+    descriptors[0]=(struct virtq_desc){.addr=0,.len=2,.flags=2};
+    descriptors[1]=(struct virtq_desc){.addr=8,.len=2,.flags=0};
+    ring.avail->idx=2; ring.avail->ring[1]=1;
+    r=virtio_console_rx_ring_run(&ring,&last,&state,4,&ops);
+    CHECK(!r.valid && r.completed==1 && r.bytes==2 && f.consumed==2);
+    CHECK(last==1 && state.used==1 && ring.used->idx==1 && f.memory[8]==0);
+    memset(available,0,sizeof(available)); memset(used_storage,0,sizeof(used_storage));
     state=(virtio_console_rx_state_t){.used=UINT16_MAX}; last=UINT16_MAX;
     ring.used->idx=UINT16_MAX; ring.avail->idx=0; ring.avail->ring[3]=0;
     descriptors[0]=(struct virtq_desc){.addr=0,.len=2,.flags=2};
