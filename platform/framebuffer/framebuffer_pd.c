@@ -30,7 +30,10 @@ void pd_main(seL4_CPtr endpoint, seL4_CPtr nameserver)
         if (observed)
             seL4_Signal(PD_CNODE_SLOT_FB_PEER_NOTIFY + AOS_FB_OBSERVER_CLIENT);
         progress += observed;
-        if (progress) seL4_Yield();
-        else { seL4_Word badge; seL4_Wait(PD_CNODE_SLOT_FB_WAIT, &badge); }
+        /* Each pump has a fixed request budget. Continue while work exists;
+         * Yield on a periodic MCS context forfeits its remaining budget and
+         * would delay every GPU row until the next scheduling period. The
+         * kernel still enforces the service's configured CPU budget. */
+        if (!progress) { seL4_Word badge; seL4_Wait(PD_CNODE_SLOT_FB_WAIT, &badge); }
     }
 }

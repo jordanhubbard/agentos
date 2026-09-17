@@ -8,7 +8,7 @@
 static aos_fb_client_t service;
 static aos_gpu_framebuffer_t adapter;
 static virtio_gpu_2d_t gpu;
-static uint8_t guest[32768];
+static uint8_t guest[AOS_FB_SURFACE_BYTES];
 static uint8_t request[VIRTIO_GPU_2D_REQUEST_BYTES], response[VIRTIO_GPU_2D_RESPONSE_BYTES];
 static unsigned calls;
 static bool fail_exchange;
@@ -135,6 +135,32 @@ static void ring_test(void)
     assert(!adapter.cursor_handle && adapter.cursor_x==51 && adapter.cursor_y==67);
     free(state); free(ring.avail); free(ring.used);
 }
+static void full_frame_test(void)
+{
+    const unsigned width=1024, height=768;
+    begin(GPU_RESOURCE_CREATE_2D); put32(24,91); put32(28,2); put32(32,width); put32(36,height);
+    assert(run(40)==GPU_OK_NODATA);
+    begin(GPU_RESOURCE_ATTACH_BACKING); put32(24,91); put32(28,1);
+    put64(32,0x80000000); put32(40,sizeof(guest));
+    assert(run(48)==GPU_OK_NODATA);
+    for (unsigned i=0;i<sizeof(guest);++i) guest[i]=(uint8_t)(i*17u+(i/4096));
+    begin(GPU_SET_SCANOUT); put32(32,width); put32(36,height); put32(44,91);
+    assert(run(48)==GPU_OK_NODATA);
+    begin(GPU_TRANSFER_TO_HOST_2D); put32(32,width); put32(36,height); put32(48,91);
+    unsigned before=calls;
+    assert(run(56)==GPU_OK_NODATA && calls-before==48);
+    begin(GPU_RESOURCE_FLUSH); put32(32,width); put32(36,height); put32(40,91);
+    assert(run(48)==GPU_OK_NODATA);
+    for (unsigned row=0;row<height;row+=16) {
+        aos_fb_request_t q={.version=AOS_FB_VERSION,.operation=AOS_FB_READ,
+            .handle=adapter.scanout_handle,.y=row,.width=width,.height=16,
+            .data_length=65536};
+        aos_fb_response_t p;
+        assert(exchange(NULL,&q,&p) && p.status==AOS_FB_OK);
+        assert(!memcmp(service.region->data,guest+row*width*4u,65536));
+    }
+    assert(virtio_gpu_2d_reset(&gpu));
+}
 int main(void)
 {
     aos_fb_region_t *region=calloc(1,sizeof(*region));
@@ -225,6 +251,7 @@ int main(void)
     begin(GPU_RESOURCE_UNREF); put32(24,21);
     assert(run(32)==GPU_OK_NODATA && !adapter.cursor_handle);
     assert(virtio_gpu_2d_reset(&gpu));
+    full_frame_test();
     free(region); free(arena);
     puts("PASS: virtio GPU 2D commands produce exact committed framebuffer pixels; bounds, backing, fences, failure and reset");
     return 0;

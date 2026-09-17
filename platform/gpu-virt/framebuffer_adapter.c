@@ -2,6 +2,9 @@
 #include <platform/gpu_framebuffer.h>
 #include <string.h>
 
+_Static_assert(VIRTIO_GPU_2D_TRANSFER_BYTES <= AOS_FB_DATA_BYTES,
+               "GPU transfer batches must fit the framebuffer queue payload");
+
 static bool call(aos_gpu_framebuffer_t *a, aos_fb_request_t q, aos_fb_response_t *p)
 {
     q.version = AOS_FB_VERSION;
