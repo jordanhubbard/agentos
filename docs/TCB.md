@@ -293,12 +293,15 @@ stale-handle rejection and recovery after invalid bounds or ring occupancy.
 This is a new queue service, not an extension of the retired framebuffer PD.
 Its focused target test asserts real create/write/flip/status/read/destroy
 transactions from both native clients. `make test-framebuffer-isolation`
-boots eight images covering each client's read/write access to the other
-queue page and the private arena. Each client first completes its authorized
+boots sixteen images covering each client's read/write access to the other
+queue page, private surface arena, observer page and private snapshot arena.
+Each client first completes its authorized
 pixel transactions; only root emits the isolation marker after matching the
-fault badge, address and access direction. Both focused tests passed locally
-on Spark. They do not establish hardware scanout, guest DRM/input or an
-external export client. Those remain required for the v0.4 graphics outcome.
+fault badge, address and access direction. All sixteen cases passed on Spark
+at `3b00d93`, including exact observer exports from both native clients in
+each image. [The qualification record](evidence/2026-09-16-spark/framebuffer-observer.json)
+identifies all sixteen retained images. Hardware scanout and guest DRM/input
+remain required for v0.4.
 
 The in-progress libvmm GPU backend (`libvmm/src/virtio/gpu*.c`) implements
 bounded 2D resource commands and direct control/cursor virtqueues, with
@@ -314,6 +317,18 @@ framebuffer service. The `debian-gpu` profile exercises this variant.
 Host tests verify exact pixels through the real framebuffer queue implementation;
 guest DRM/frame-capture qualification is still pending. Input, a physical
 display driver and authorized external export remain required.
+
+The graphics and focused framebuffer variants also grant CC a separate observer queue.
+Only CC and `framebuffer_queue` map that page; neither VMM receives it.
+The framebuffer service alone maps the additional private snapshot arena.
+CC resolves public guest handles before requesting a capture. The observer
+can capture, read and release immutable copies of selected committed frames;
+it cannot modify surfaces. Snapshot cookies are scoped to the existing
+privileged, serialized CC transport, not a new public authentication boundary.
+The focused target image exported exact 40 by 40 frames from both native
+clients through CC in multiple chunks on Spark. Guest capture remains pending.
+The focused framebuffer image uses two explicit test-only public handles for
+the native pixel producers; those handles are absent from production images.
 
 The retired `services/legacy-pds/framebuffer_pd.c` rejects `HW_DIRECT`
 creation with `FB_ERR_BAD_BACKEND`. Its former MMIO probe and successful
