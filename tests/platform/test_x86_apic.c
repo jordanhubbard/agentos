@@ -215,6 +215,19 @@ int main(void)
     assert(aos_x86_mov_result(&op,UINT64_MAX,0x1234)==0x34);
     assert(aos_x86_decode_mov(zx16,4,0,regs,&op) && op.width==2 && op.destination_bits==64);
     assert(aos_x86_mov_result(&op,UINT64_MAX,0x12345678)==0x5678);
+    const uint8_t load16[]={0x66,0x8b,0x01}, store16[]={0x66,0x89,0x01};
+    const uint8_t imm16[]={0x66,0xc7,0x01,0x34,0x12};
+    const uint8_t r8w[]={0x66,0x44,0x8b,0x01};
+    assert(aos_x86_decode_mov(load16,sizeof(load16),0,regs,&op) &&
+           !op.write && op.width==2 && op.destination_bits==16 && op.length==3);
+    assert(aos_x86_mov_result(&op,UINT64_C(0x123456789abcdef0),0x11223344)==UINT64_C(0x123456789abc3344));
+    assert(aos_x86_decode_mov(store16,sizeof(store16),0,regs,&op) &&
+           op.write && op.width==2 && op.value==(regs[0]&0xffff));
+    assert(aos_x86_decode_mov(imm16,sizeof(imm16),0,regs,&op) &&
+           op.write && op.value==0x1234 && op.length==5);
+    for (unsigned i=1; i<sizeof(imm16); i++) assert(!aos_x86_decode_mov(imm16,i,0,regs,&op));
+    assert(aos_x86_decode_mov(r8w,sizeof(r8w),0,regs,&op) && op.reg==8 && op.width==2);
+    assert(!aos_x86_decode_mov32(load16,sizeof(load16),0,regs,&op));
     for (unsigned i=1; i<sizeof(zx16); i++) assert(!aos_x86_decode_mov(zx16,i,0,regs,&op));
     const uint8_t imm8[]={0xc6,0x01,0xa5}, store_ah[]={0x88,0x21};
     assert(aos_x86_decode_mov(imm8,3,0,regs,&op) && op.write && op.value==0xa5 && op.width==1);
