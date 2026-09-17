@@ -3765,7 +3765,11 @@ fn prove_profile_input_pass(
         ssh.account == "root",
         "input proof currently requires the root test account"
     );
-    let stderr_path = log.with_extension(if release { "input-release.stderr" } else { "input.stderr" });
+    let stderr_path = log.with_extension(if release {
+        "input-release.stderr"
+    } else {
+        "input.stderr"
+    });
     let stderr = std::fs::File::create(&stderr_path)?;
     let command = |remote: &str| -> anyhow::Result<std::process::Command> {
         let mut cmd = std::process::Command::new("ssh");
@@ -3822,7 +3826,15 @@ fn prove_profile_input_pass(
         let mut submit = ChildGuard::new(
             std::process::Command::new(repo.join("tools/agentctl/agentctl"))
                 .env("CC_PD_SOCK", socket)
-                .args(["--batch", if releasing { "input-release" } else { "input-batch" }, "0"])
+                .args([
+                    "--batch",
+                    if releasing {
+                        "input-release"
+                    } else {
+                        "input-batch"
+                    },
+                    "0",
+                ])
                 .args(args)
                 .stdin(Stdio::null())
                 .stdout(Stdio::null())
@@ -3849,7 +3861,11 @@ fn prove_profile_input_pass(
         "stderr": stderr_path,
     });
     std::fs::write(
-        log.with_extension(if release { "input-release.json" } else { "input.json" }),
+        log.with_extension(if release {
+            "input-release.json"
+        } else {
+            "input.json"
+        }),
         serde_json::to_vec_pretty(&receipt)?,
     )?;
     Ok("exact guest keyboard, pointer, button and packet-boundary delivery passed".into())
