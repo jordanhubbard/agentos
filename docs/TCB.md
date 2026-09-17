@@ -300,6 +300,13 @@ fault badge, address and access direction. Both focused tests passed locally
 on Spark. They do not establish hardware scanout, guest DRM/input or an
 external export client. Those remain required for the v0.4 graphics outcome.
 
+The retired `services/legacy-pds/framebuffer_pd.c` rejects `HW_DIRECT`
+creation with `FB_ERR_BAD_BACKEND`. Its former MMIO probe and successful
+no-op flips did not implement GPU queues, resources or scanout, and have
+been removed. It owns no display device and supplies no Spark GPU support.
+The host integration suite invokes its actual IPC handler to verify this
+rejection and that failed hardware requests consume no surface slots.
+
 ### Generic PD logging
 
 On AArch64, root provisions a separate 4 KiB log ring for each client and a
