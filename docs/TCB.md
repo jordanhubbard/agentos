@@ -121,6 +121,13 @@ resolving the public handle and checking lifecycle authority. Input remains
 queued while the guest is paused. Console bytes no longer travel through
 VMM or vm_manager IPC. Only attachment and lifecycle control use IPC.
 
+`serial_virt` emits diagnostics through its root-provisioned log ring and
+send-only drain notification. It has no UART service endpoint or serial
+diagnostic transfer-page mapping, and no nameserver or log-drain Call endpoint.
+Its queue pump therefore never waits for a diagnostic service reply. On builds
+without log rings, the common logger retains its existing debug-output fallback;
+this does not establish an x86 serial service topology.
+
 The shared virtio GPA layer requires an explicitly installed guest RAM
 translator. Before binding, translation, nonempty payload copies and queue
 activation fail; there is no identity-address fallback. Clearing the hook
