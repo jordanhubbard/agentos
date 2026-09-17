@@ -169,7 +169,7 @@ static void diagnostic_chain(const aos_x86_memory_t *m, uint64_t cr3, uint64_t r
 {
     for (unsigned i=0; i<AOS_X86_FIRMWARE_CHAIN_WORDS; i++) halt_chain[i]=0;
     halt_chain[0]=rbp;
-    for (unsigned i=0; i<4 && !(rbp & 7u); i++) {
+    for (unsigned i=0; i<AOS_X86_FIRMWARE_CHAIN_FRAMES && !(rbp & 7u); i++) {
         seL4_Word pair[2]={0}, valid=0;
         diagnostic_words(m,cr3,rbp,2,pair,&valid);
         if (valid != 3u) break;
@@ -240,6 +240,7 @@ void aos_x86_firmware_run(seL4_CPtr ep, seL4_Word result)
              * The processed-exit budget and its failure status are unchanged. */
             if ((read_field(ep,EFER) & LMA) && (read_field(ep,CR0) & PG)) {
                 diagnostic_snapshot(&memory,guest_cr3,rip,read_field(ep,RSP),snapshot);
+                if (!halt_exits) diagnostic_chain(&memory,guest_cr3,regs.ebp);
             }
             stop(ep,AOS_X86_VTX_PROOF_FAIL,0x425544u,rip,
                  (UINT64_C(65536) << 32) | (uint32_t)reason);

@@ -3253,8 +3253,9 @@ void root_task_main(const seL4_BootInfo *bi)
                 }
               }
               seL4_Word frame=chain[0];
-              for (unsigned i=0; i<4 && i<chain[1]; i++) {
-                  dbg_puts("[rt] firmware HLT frame "); dbg_hex(frame);
+              for (unsigned i=0; i<AOS_X86_FIRMWARE_CHAIN_FRAMES && i<chain[1]; i++) {
+                  dbg_puts(counters[5] ? "[rt] firmware HLT frame " :
+                                        "[rt] firmware budget frame "); dbg_hex(frame);
                   dbg_puts(" return "); dbg_hex(chain[3+2*i]);
                   dbg_puts(" next "); dbg_hex(chain[2+2*i]); dbg_puts("\n");
                   frame=chain[2+2*i];
