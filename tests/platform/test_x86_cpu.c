@@ -62,7 +62,8 @@ int main(void)
     assert(r.eax == 1u && r.ebx == 0x756e6547u && r.edx == 0x49656e69u && r.ecx == 0x6c65746eu);
     r = aos_x86_cpu_id(1, 0, 0);
     assert(r.ecx == 0x80000000u && r.ebx == 0x10000u);
-    assert((r.edx & ((1u<<9)|(1u<<12)|(1u<<16)|(1u<<28))) == 0u);
+    assert((r.edx & ((1u<<12)|(1u<<16)|(1u<<28))) == 0u);
+    assert(r.edx & (1u<<9)); /* VMM-owned local xAPIC */
     assert((r.edx & ((1u<<6)|(1u<<25)|(1u<<26))) == ((1u<<6)|(1u<<25)|(1u<<26)));
     r = aos_x86_cpu_id(0x80000001u, 0, 0);
     assert(r.edx == ((1u<<11)|(1u<<20)|(1u<<29)) && r.ecx == 0u);

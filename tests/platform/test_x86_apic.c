@@ -58,7 +58,7 @@ int main(void)
     rejected(&a,0x320,true,0x40040,1125); /* no deadline mode */
     rejected(&a,0x390,true,1,1125);
     rejected(&a,0x321,false,0,1125);
-    rejected(&a,0x300,true,0,1125); /* IPI delivery unsupported */
+    rejected(&a,0x300,true,0,1125); /* invalid fixed IPI vector */
     rejected(&a,0x390,false,0,1122); /* clock reversal */
     apic_io(&a,0x380,true,0,1125);
     assert(!aos_x86_apic_interrupt_due(&a,UINT64_MAX));
@@ -118,6 +118,45 @@ int main(void)
     apic_io(&b,0x380,true,1,100);
     assert(aos_x86_apic_pending(&b,102)==AOS_X86_APIC_INVALID_VECTOR);
     assert(!aos_x86_apic_accept(&b,AOS_X86_APIC_INVALID_VECTOR));
+
+    /* Fixed IPIs remain inside one independently provisioned LAPIC. */
+    aos_x86_apic_init(&a,0); aos_x86_apic_init(&b,0);
+    apic_io(&a,0x300,true,0x40040,0); /* software-disabled APIC drops fixed IPI */
+    assert(apic_io(&a,0xe0,false,0,0)==UINT32_MAX);
+    apic_io(&a,0xf0,true,0x1ff,0);
+    assert(!aos_x86_apic_pending(&a,0));
+    const unsigned lvts[]={0x330,0x340,0x370};
+    for (unsigned i=0; i<3; i++) {
+        assert(apic_io(&a,lvts[i],false,0,0)==0x10000);
+        apic_io(&a,lvts[i],true,0x100fe,0);
+        assert(apic_io(&a,lvts[i],false,0,0)==0x100fe);
+        assert(apic_io(&b,lvts[i],false,0,0)==0x10000);
+    }
+    apic_io(&a,0x280,true,0,0); assert(!apic_io(&a,0x280,false,0,0));
+    rejected(&a,0x280,true,1,0);
+    apic_io(&a,0x300,true,0x40040,0); /* self */
+    assert(apic_io(&a,0x300,false,0,0)==0x40040);
+    assert(aos_x86_apic_pending(&a,0)==0x40 && !aos_x86_apic_pending(&b,0));
+    assert(aos_x86_apic_accept(&a,0x40)); apic_io(&a,0xb0,true,0,0);
+    apic_io(&a,0x300,true,0xc0040,0); assert(!aos_x86_apic_pending(&a,0));
+    apic_io(&a,0x310,true,1u<<24,0); /* absent physical destination */
+    apic_io(&a,0x300,true,0x40,0); assert(!aos_x86_apic_pending(&a,0));
+    apic_io(&a,0xd0,true,2u<<24,0);
+    apic_io(&a,0x310,true,2u<<24,0);
+    apic_io(&a,0x300,true,0x840,0); /* flat logical destination */
+    assert(aos_x86_apic_accept(&a,0x40)); apic_io(&a,0xb0,true,0,0);
+    apic_io(&a,0xe0,true,0,0); assert(apic_io(&a,0xe0,false,0,0)==0x0fffffff);
+    apic_io(&a,0xd0,true,0x21u<<24,0);
+    apic_io(&a,0x310,true,0x11u<<24,0);
+    apic_io(&a,0x300,true,0x840,0); assert(!aos_x86_apic_pending(&a,0));
+    apic_io(&a,0x310,true,0x21u<<24,0);
+    apic_io(&a,0x300,true,0x840,0); assert(aos_x86_apic_pending(&a,0)==0x40);
+    rejected(&a,0x300,true,0x40440,0); /* NMI */
+    rejected(&a,0x300,true,0x40500,0); /* INIT */
+    rejected(&a,0x300,true,0x48040,0); /* level trigger */
+    rejected(&a,0x300,true,0x4000f,0); /* reserved vector */
+    rejected(&a,0x310,true,1,0); rejected(&a,0xd0,true,1,0);
+    rejected(&a,0xe0,true,0x1fffffff,0);
 
     aos_x86_memory_t m={.ram=ram,.ram_size=sizeof(ram),.rom=rom,.rom_base=0xffc00000,.rom_size=sizeof(rom)};
     pte(0x1000,0x2003); pte(0x2000,0x3003); pte(0x3000,0x4003); pte(0x4000,0x5003);
