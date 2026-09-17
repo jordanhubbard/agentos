@@ -837,6 +837,7 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
                 Some(profile),
                 Duration::from_secs(args.timeout_secs),
                 &mut qemu,
+                args.assert_guest_display.then_some(log_path.as_path()),
             )
         } else if args.assert_vmx_exit {
             wait_for_x86_vtx_proof(&log_path, Duration::from_secs(args.timeout_secs), &mut qemu)
@@ -862,26 +863,6 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
 
     if result.is_ok() && args.assert_display {
         result = verify_native_display(&log_path);
-    }
-
-    if result.is_ok() && args.assert_guest_display {
-        result = (|| {
-            anyhow::ensure!(
-                profile_plan
-                    .as_ref()
-                    .is_some_and(|p| p.devices.iter().any(|d| d == "gpu")),
-                "display proof requires a graphics profile"
-            );
-            let expected = std::fs::read(cc_sock.with_extension("frame.ppm"))?;
-            let receipt: serde_json::Value =
-                serde_json::from_slice(&std::fs::read(cc_sock.with_extension("frame.json"))?)?;
-            verify_display(
-                &log_path,
-                &expected,
-                receipt["width"].as_u64().context("missing frame width")?,
-                receipt["height"].as_u64().context("missing frame height")?,
-            )
-        })();
     }
 
     if result.is_ok() && args.assert_console_backpressure {
@@ -2631,6 +2612,7 @@ fn wait_for_guest_console_login_via_cc(
     profile: Option<&HostProfilePlan>,
     timeout: Duration,
     qemu: &mut Child,
+    display_log: Option<&Path>,
 ) -> anyhow::Result<String> {
     let mut cc = connect_cc_client(cc_sock, timeout.min(Duration::from_secs(30)), qemu)?;
     wait_for_guest_console_login_on_cc(
@@ -2641,6 +2623,7 @@ fn wait_for_guest_console_login_via_cc(
         profile,
         timeout,
         qemu,
+        display_log,
     )
 }
 
@@ -2652,6 +2635,7 @@ fn wait_for_guest_console_login_on_cc(
     profile: Option<&HostProfilePlan>,
     timeout: Duration,
     qemu: &mut Child,
+    display_log: Option<&Path>,
 ) -> anyhow::Result<String> {
     let start = Instant::now();
     let mut transcript = String::new();
@@ -2778,7 +2762,34 @@ fn wait_for_guest_console_login_on_cc(
         qemu,
     )?;
     if profile.is_some_and(|plan| plan.devices.iter().any(|device| device == "gpu")) {
-        let capture = capture_guest_frame(cc, guest_handle, cc_sock, profile)?;
+        if display_log.is_some() {
+            suspend_guest_via_cc(cc, guest_handle)?;
+            println!("[xtask:test] guest suspended for coherent framebuffer/scanout comparison");
+        }
+        let capture = (|| {
+            let capture = capture_guest_frame(cc, guest_handle, cc_sock, profile)?;
+            if let Some(log) = display_log {
+                let expected = std::fs::read(cc_sock.with_extension("frame.ppm"))?;
+                let receipt: serde_json::Value =
+                    serde_json::from_slice(&std::fs::read(cc_sock.with_extension("frame.json"))?)?;
+                let displayed = verify_display(
+                    log,
+                    &expected,
+                    receipt["width"].as_u64().context("missing frame width")?,
+                    receipt["height"].as_u64().context("missing frame height")?,
+                )?;
+                println!("[xtask:test] {displayed}");
+            }
+            Ok::<_, anyhow::Error>(capture)
+        })();
+        // Always attempt resume, including after a failed capture or comparison.
+        let resumed = if display_log.is_some() {
+            resume_guest_via_cc(cc, guest_handle).map(|_| ())
+        } else {
+            Ok(())
+        };
+        let capture = capture?;
+        resumed?;
         println!("[xtask:test] {capture}");
     }
     Ok(format!(
@@ -4075,6 +4086,7 @@ fn wait_for_dual_guest_consoles_via_cc(
         Some(&lead.profile),
         timeout.saturating_sub(start.elapsed()),
         qemu,
+        None,
     )?;
     let lead_provision = profile_provision_commands(&lead.profile, &ssh_key.public_key)?;
     run_guest_console_commands(
@@ -4128,6 +4140,7 @@ fn wait_for_dual_guest_consoles_via_cc(
         Some(&deferred.profile),
         timeout.saturating_sub(start.elapsed()),
         qemu,
+        None,
     )?;
     let deferred_provision = profile_provision_commands(&deferred.profile, &ssh_key.public_key)?;
     run_guest_console_commands(
