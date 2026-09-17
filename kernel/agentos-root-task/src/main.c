@@ -1814,22 +1814,6 @@ void root_task_main(const seL4_BootInfo *bi)
     }
 
     {
-        seL4_Error net_err = seL4_NoError;
-        for (uint32_t f = 0u; f < AOS_NET_SHMEM_FRAMES; ++f) {
-            net_err = ut_alloc_cap(seL4_ARM_LargePageObject, 0u,
-                                   &g_net_shared_frame_caps[f]);
-            if (net_err != seL4_NoError) {
-                for (uint32_t n = 0u; n < AOS_NET_SHMEM_FRAMES; ++n)
-                    g_net_shared_frame_caps[n] = seL4_CapNull;
-                break;
-            }
-        }
-        dbg_puts("[rt] net agentOS shared frame err=");
-        dbg_hex((seL4_Word)net_err);
-        dbg_puts("\n");
-    }
-
-    {
         seL4_Error net_err =
             ut_alloc_cap(seL4_ARM_LargePageObject, 0u,
                          &g_net_dma_frame_cap);
@@ -2037,6 +2021,17 @@ void root_task_main(const seL4_BootInfo *bi)
                    "serial queue pages must match the architecture large-page object");
     _Static_assert(AOS_BLK_SHMEM_FRAME_SIZE == (1UL << seL4_ARCH_LargePageBits),
                    "block queue pages must match the architecture large-page object");
+    _Static_assert(AOS_NET_SHMEM_FRAME_SIZE == (1UL << seL4_ARCH_LargePageBits),
+                   "network queue pages must match the architecture large-page object");
+    if (net_virt_index != SYSTEM_MAX_PDS) {
+        for (uint32_t f = 0; f < AOS_NET_SHMEM_FRAMES; f++) {
+            if (ut_alloc_cap(seL4_ARCH_LargePageObject, 0u,
+                             &g_net_shared_frame_caps[f]) != seL4_NoError) {
+                dbg_puts("[rt] network queue allocation failed; refusing partial boot\n");
+                return;
+            }
+        }
+    }
     if (blk_virt_index != SYSTEM_MAX_PDS) {
         for (uint32_t f = 0; f < AOS_BLK_SHMEM_FRAMES; f++) {
             if (ut_alloc_cap(seL4_ARCH_LargePageObject, 0u,
@@ -2826,7 +2821,6 @@ void root_task_main(const seL4_BootInfo *bi)
         }
 #endif
 
-#if defined(__aarch64__)
         /* VMMs map their own queue page, the NIC driver maps its transfer
          * page, and only net_virt maps both tiers. */
         if (g_net_shared_frame_caps[0] != seL4_CapNull &&
@@ -2859,9 +2853,13 @@ void root_task_main(const seL4_BootInfo *bi)
             dbg_puts(" agentOS net shared map err=");
             dbg_hex((seL4_Word)net_err);
             dbg_puts("\n");
-            if (net_err != seL4_NoError) continue;
+            if (net_err != seL4_NoError) {
+                dbg_puts("[rt] network queue mapping failed; refusing PD start\n");
+                continue;
+            }
         }
 
+#if defined(__aarch64__)
         if (name_eq(pd->name, "net_pd")) {
             seL4_Error net_err = seL4_NotEnoughMemory;
             if (g_host_net_mmio_frame_cap != seL4_CapNull) {

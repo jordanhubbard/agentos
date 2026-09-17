@@ -62,7 +62,12 @@ emulated virtio-net inside each `guest_vmm` (`platform/net-virt/vmm_virtio_net.c
 libvmm `src/virtio/net.c`) produces and consumes sDDF-shaped queues in the
 8 MB network region (`AGENTOS_NET_SHARED_VA`). Each VMM maps only its own
 2 MB client page. A third page is reserved for the native client; `net_pd`
-maps only the fourth, driver-transfer page, and `net_virt` maps all four. Control
+maps only the fourth, driver-transfer page, and `net_virt` maps all four. Queue
+allocation and mapping use the common root path on ARM and x86, with a
+compile-time check that queue pages match the architecture's large-page size.
+Root allocates the region only when `net_virt` is present. Allocation failure
+stops startup; mapping failure prevents the affected PD from starting. Device
+registers and driver DMA remain separate grants. Attachment
 is one `NET_VIRT_OP_ATTACH` Call per client; after that the VMM only
 `seL4_NBSend`s `NET_VIRT_EVENT_KICK` when `tx_active` is non-empty (and
 `net_virt` asked for kicks through the sDDF `consumer_signalled` flag), and
