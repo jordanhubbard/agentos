@@ -145,6 +145,17 @@ int main(void)
     reject(&a, 0xa1, 2, false);
     assert(io(&a, 0xcfc, 4, false, 0) == 0xffffffff);
     select_pci(&a, 0x80000000);
+    aos_x86_config_t before_partial=a;
+    for (unsigned port=0xcf8;port<0xcfc;port++) {
+        io(&a,port,1,true,0xff);
+        if (!(port&1)) io(&a,port,2,true,0xffff);
+    }
+    io(&a,0xcfb,1,true,1); /* Linux pci_check_type1 */
+    assert(!memcmp(&a,&before_partial,sizeof(a)));
+    assert(io(&a,0xcf8,4,false,0)==0x80000000);
+    reject(&a,0xcfb,2,true); /* crossing the address/data boundary */
+    reject(&a,0xcf9,2,true); /* unaligned */
+    reject(&a,0xcfb,1,false); /* no invented partial read behavior */
     assert(io(&a, 0xcfc, 4, false, 0) == 0x12378086);
     assert(io(&a, 0xcfe, 2, false, 0) == 0x1237);
     io(&a, 0xcfc, 4, true, 0);
@@ -210,7 +221,7 @@ int main(void)
     reject(&a, 0x4008, 4, true);
     reject(&a, 0x4008, 2, false);
     reject(&a, 0xcfd, 2, false);
-    reject(&a, 0xcf8, 2, true);
+    reject(&a, 0xcf8, 2, false);
     reject(&a, 0x511, 4, false);
     reject(&a, 0x1234, 1, false);
     reject(&a, 0xcf8, 3, true);

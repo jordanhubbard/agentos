@@ -184,6 +184,11 @@ bool aos_x86_config_io(aos_x86_config_t *s, uint16_t port, unsigned width,
         *value = 0xffu;
         return true;
     }
+    /* The fixed mechanism-1 address register only accepts DWORD writes.
+     * Aligned byte/word writes are ignored, including Linux's CFB probe;
+     * they neither select mechanism 2 nor alter the current PCI address. */
+    if (write && port>=0xcf8u && port<0xcfcu && width<4u &&
+        !(port & (width-1u)) && width<=0xcfcu-port) return true;
     if (port == 0xcf8u && width == 4u) {
         if (write) s->pci_address = *value & 0x80fffffcu;
         else *value = s->pci_address;
