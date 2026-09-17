@@ -93,12 +93,12 @@ static seL4_Word operand(seL4_CPtr ep, const seL4_VCPUContext *r, unsigned index
     return index == 4u ? read_field(ep, RSP) : values[index & 15u];
 }
 
-static void assign(seL4_CPtr ep, seL4_VCPUContext *r, unsigned index, uint32_t value)
+static void assign(seL4_CPtr ep, seL4_VCPUContext *r, unsigned index, uint64_t value)
 {
     seL4_Word *values[16] = {&r->eax, &r->ecx, &r->edx, &r->ebx, NULL, &r->ebp,
         &r->esi, &r->edi, &r->r8, &r->r9, &r->r10, &r->r11, &r->r12, &r->r13, &r->r14, &r->r15};
     if (index == 4u) write_field(ep, RSP, value);
-    else *values[index] = value; /* 32-bit destinations zero-extend in long mode */
+    else *values[index] = value;
 }
 
 void aos_x86_firmware_run(seL4_CPtr ep, seL4_Word result)
@@ -187,8 +187,10 @@ void aos_x86_firmware_run(seL4_CPtr ep, seL4_Word result)
             if (!aos_x86_apic_msr(reason == 32u, &value))
                 stop(ep, AOS_X86_VTX_PROOF_FAIL, reason, rip, value);
             if (reason == 31u) { regs.eax=(uint32_t)value; regs.edx=value >> 32; }
-        } else if (reason == 48u && fault_gpa >= AOS_X86_APIC_BASE &&
-                   fault_gpa < AOS_X86_APIC_BASE+4096 && (qual & 0x180u) == 0x180u &&
+        } else if (reason == 48u &&
+                   ((fault_gpa >= AOS_X86_APIC_BASE && fault_gpa < AOS_X86_APIC_BASE+4096) ||
+                    (fault_gpa >= 0xfed40000u && fault_gpa < 0xfed45000u)) &&
+                   (qual & 0x180u) == 0x180u &&
                    ((qual & 7u) == 1u || (qual & 7u) == 2u)) {
             if ((read_field(ep, CS_RIGHTS) & 0x6000u) != 0x2000u ||
                 !(read_field(ep, EFER) & LMA) || !(read_field(ep, CR0) & PG))
@@ -201,15 +203,18 @@ void aos_x86_firmware_run(seL4_CPtr ep, seL4_Word result)
             aos_x86_mov_t op;
             uint64_t physical;
             if (!aos_x86_fetch(&memory, guest_cr3, rip, code, sizeof(code)) ||
-                !aos_x86_decode_mov32(code, sizeof(code), rip, values, &op) ||
-                op.write != ((qual & 7u) == 2u) || (op.address & 3u) ||
+                !aos_x86_decode_mov(code, sizeof(code), rip, values, &op) ||
+                op.write != ((qual & 7u) == 2u) || (op.address & (op.width-1u)) ||
                 !aos_x86_translate(&memory, guest_cr3, op.address, op.write, false, &physical) ||
                 physical != fault_gpa)
                 stop(ep, AOS_X86_VTX_PROOF_FAIL, reason, rip, fault_gpa);
             uint32_t value=op.value;
-            if (!aos_x86_apic_io(&apic, (unsigned)(physical-AOS_X86_APIC_BASE), op.write, &value, now))
+            bool handled = physical >= AOS_X86_APIC_BASE && physical < AOS_X86_APIC_BASE+4096 ?
+                op.width == 4 && aos_x86_apic_io(&apic, (unsigned)(physical-AOS_X86_APIC_BASE), op.write, &value, now) :
+                aos_x86_absent_mmio(physical, op.width, op.write, &value);
+            if (!handled)
                 stop(ep, AOS_X86_VTX_PROOF_FAIL, reason, rip, physical);
-            if (!op.write) assign(ep, &regs, op.reg, value);
+            if (!op.write) assign(ep, &regs, op.reg, aos_x86_mov_result(&op, values[op.reg], value));
             len=op.length;
         } else if (reason == 30u && qual == 0x05110038u && len == 2u) {
             uint8_t code[2];

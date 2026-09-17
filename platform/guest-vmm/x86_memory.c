@@ -65,17 +65,27 @@ bool aos_x86_fetch(const aos_x86_memory_t *m, uint64_t cr3, uint64_t va,
     return true;
 }
 
-bool aos_x86_decode_mov32(const uint8_t *b, size_t n, uint64_t rip,
+bool aos_x86_decode_mov(const uint8_t *b, size_t n, uint64_t rip,
                           const uint64_t r[16], aos_x86_mov_t *op)
 {
     if (!b || !r || !op || !n || n > 15) return false;
     unsigned i = 0, rex = 0;
-    if ((b[i] & 0xf0) == 0x40) { rex = b[i++]; if ((rex & 8) || i == n) return false; }
+    if ((b[i] & 0xf0) == 0x40) { rex = b[i++]; if (i == n) return false; }
     unsigned opcode = b[i++];
-    if ((opcode != 0x89 && opcode != 0x8b && opcode != 0xc7) || i == n) return false;
+    unsigned width=4, destination_bits=32, shift=0;
+    bool write=opcode == 0x89 || opcode == 0x88 || opcode == 0xc7 || opcode == 0xc6;
+    if (opcode == 0x0f) {
+        if (i == n || (b[i] != 0xb6 && b[i] != 0xb7)) return false;
+        width=b[i++] == 0xb6 ? 1 : 2;
+        destination_bits=(rex & 8) ? 64 : 32;
+    } else if (opcode == 0x8a || opcode == 0x88 || opcode == 0xc6) {
+        width=1; destination_bits=8;
+    } else if ((opcode != 0x89 && opcode != 0x8b && opcode != 0xc7) || (rex & 8)) return false;
+    if (i == n) return false;
     unsigned modrm = b[i++], mod = modrm >> 6, rm = modrm & 7;
     unsigned reg = ((modrm >> 3) & 7) | ((rex & 4) ? 8 : 0);
-    if (mod == 3 || (opcode == 0xc7 && reg)) return false;
+    if (mod == 3 || ((opcode == 0xc7 || opcode == 0xc6) && reg)) return false;
+    if (destination_bits == 8 && !rex && reg >= 4) { reg-=4; shift=8; }
     bool relative = false, absent = false;
     uint64_t address = 0;
     if (rm == 4) {
@@ -92,14 +102,42 @@ bool aos_x86_decode_mov32(const uint8_t *b, size_t n, uint64_t rip,
     if (displacement == 1) address += (uint64_t)(int64_t)(int8_t)b[i];
     if (displacement == 4) address += (uint64_t)(int64_t)(int32_t)le(b+i, 4);
     i += displacement;
-    uint32_t value = (uint32_t)r[reg];
-    if (opcode == 0xc7) {
-        if (n-i < 4) return false;
-        value = (uint32_t)le(b+i, 4); i += 4;
+    uint32_t value = (uint32_t)(r[reg] >> shift);
+    if (width == 1) value &= 0xff;
+    if (opcode == 0xc7 || opcode == 0xc6) {
+        if (n-i < width) return false;
+        value = (uint32_t)le(b+i, width); i += width;
     }
     if (relative) address += rip+i;
     if (!canonical(address)) return false;
     *op = (aos_x86_mov_t){.address=address, .value=value, .length=i,
-                         .reg=reg, .write=opcode != 0x8b};
+                         .reg=reg, .write=write, .width=width,
+                         .destination_bits=destination_bits, .shift=shift};
+    return true;
+}
+
+bool aos_x86_decode_mov32(const uint8_t *b, size_t n, uint64_t rip,
+                          const uint64_t r[16], aos_x86_mov_t *op)
+{
+    aos_x86_mov_t decoded;
+    if (!op || !aos_x86_decode_mov(b,n,rip,r,&decoded) || decoded.width != 4) return false;
+    *op=decoded; return true;
+}
+
+uint64_t aos_x86_mov_result(const aos_x86_mov_t *op, uint64_t previous, uint32_t value)
+{
+    if (op->width == 1) value &= 0xff;
+    else if (op->width == 2) value &= 0xffff;
+    if (op->destination_bits != 8) return value;
+    uint64_t mask=UINT64_C(0xff) << op->shift;
+    return (previous & ~mask) | ((uint64_t)value << op->shift);
+}
+
+bool aos_x86_absent_mmio(uint64_t gpa, unsigned width, bool write, uint32_t *value)
+{
+    if (!value || write || (width != 1 && width != 2 && width != 4) ||
+        gpa < UINT64_C(0xfed40000) || gpa-UINT64_C(0xfed40000) > 0x5000u-width ||
+        (gpa & (width-1))) return false;
+    *value=width == 4 ? UINT32_MAX : (1u << (8*width))-1;
     return true;
 }
