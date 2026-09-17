@@ -126,7 +126,7 @@ send-only drain notification. It has no UART service endpoint or serial
 diagnostic transfer-page mapping, and no nameserver or log-drain Call endpoint.
 Its queue pump therefore never waits for a diagnostic service reply. On builds
 without log rings, the common logger retains its existing debug-output fallback;
-this does not establish an x86 serial service topology.
+the x86 firmware composition uses that fallback rather than a UART Call endpoint.
 
 The shared virtio GPA layer requires an explicitly installed guest RAM
 translator. Before binding, translation, nonempty payload copies and queue
@@ -388,6 +388,14 @@ Bounded reads in the declared absent TPM aperture return all ones; writes
 are rejected. Validated firmware ROM stores are ignored without granting
 write authority or changing ROM bytes. Live APIC divider changes preserve
 the private countdown; no host APIC access or timer IRQ authority is added.
+The firmware composition also starts the canonical `serial_virt` PD. Root
+allocates its four isolated queue pages, maps only client zero into the VMM,
+and supplies a role-bound attach endpoint and send-only wake capabilities.
+The VMM must attach successfully and observe empty fresh queues before boot
+continues. The userspace qualification also requires foreign-client and
+frontend attachment attempts to be rejected. There is no frontend byte
+producer or registered guest console yet, and unexpected notifications remain
+fatal; this is service attachment, not console traffic or lifecycle support.
 The opt-in [EFI payload variant](x86-boot-payload.md) provisions 256 MiB
 private RAM and embeds SHA-256-pinned kernel/initrd/command-line blobs in the
 VMM's read-only ELF sections. These sources are not mapped into guest EPT;
