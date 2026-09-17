@@ -58,9 +58,11 @@ validates the returned count/status, and reports whole-batch backpressure.
 The exact wire contract is in `contracts/cc_contract.h`. A failed transport
 must not cause blind retries of stateful key/button transitions.
 
-The target variant builds and the host tests pass. Target enumeration,
-event delivery through Linux evdev, and mapping-isolation proofs remain
-required; this implementation is not yet qualified as working guest input.
+The target variant, full OS gate, Linux keyboard/pointer enumeration and
+authenticated SSH passed on Spark at `f5b7561`.
+[The receipt](evidence/2026-09-17-spark/input-base-integration.json) records
+source and artifact identities. Exact event delivery through Linux evdev and
+target mapping-isolation proofs remain separate qualifications.
 The common MMIO dispatcher has host regression coverage for all four byte
 lanes of device configuration: input's selector and subselector are separate
 byte fields. Reset also clears interrupt status before invoking backend reset,

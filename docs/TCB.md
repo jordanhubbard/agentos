@@ -15,8 +15,10 @@ Root maps one event page per VMM and a separate CC frontend page; only the
 virtualizer maps all three. CC resolves public guest handles before submitting
 input batches. VMMs consume only their own keyboard/pointer queues and emulate
 two faulting virtio-input devices. Input notifications confer send-only wakeup
-authority, never access to another client's queues. Target enumeration,
-delivery and mapping-isolation qualification remain pending.
+authority, never access to another client's queues. Target keyboard/pointer
+enumeration, authenticated SSH and the full gate passed on Spark at `f5b7561`;
+see the [input base receipt](evidence/2026-09-17-spark/input-base-integration.json).
+Exact evdev delivery and peer mapping isolation remain separate qualifications.
 
 ## Privilege
 
