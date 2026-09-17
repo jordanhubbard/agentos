@@ -762,6 +762,17 @@ test-host: test-x86-acpi-loader-host
 test-host: test-x86-event-host
 test-host: test-virtio-mmio-core-host
 test-host: test-virtio-console-rx-host
+test-host: test-x86-virtio-host
+
+.PHONY: test-x86-virtio-host
+test-x86-virtio-host:
+	@mkdir -p $(BUILD_TMP_DIR)
+	gcc -std=gnu11 -Wall -Wextra -Werror -Wno-unused-function \
+		-fsanitize=address,undefined -g -I tests/platform/virtio-stubs -I libvmm/include -I platform/include \
+		tests/platform/test_x86_virtio.c platform/guest-vmm/x86_virtio.c \
+		platform/guest-vmm/x86_ioapic.c libvmm/src/virtio/mmio.c libvmm/src/virtio/gpa.c \
+		-o $(BUILD_TMP_DIR)/test_x86_virtio
+	$(BUILD_TMP_DIR)/test_x86_virtio
 
 .PHONY: test-virtio-console-rx-host
 test-virtio-console-rx-host:
@@ -797,6 +808,12 @@ test-virtio-backends-build:
 				-Ikernel/agentos-root-task/include \
 				-c libvmm/src/virtio/$$backend.c -o "$$out/$$backend.o"; \
 		done; \
+		if test "$$arch" = x86_64; then \
+			clang -target x86_64-unknown-elf -ffreestanding -O2 -Wall -Werror -Wno-unused-function \
+				-I"$(SEL4_SDK)/board/$$board/release/include" \
+				-Ilibvmm/include -Iplatform/include \
+				-c platform/guest-vmm/x86_virtio.c -o "$$out/x86_virtio.o"; \
+		fi; \
 		echo "PASS: production virtio console/net/block compile for $$arch"; \
 	done
 

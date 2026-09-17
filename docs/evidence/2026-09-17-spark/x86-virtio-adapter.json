@@ -1,0 +1,37 @@
+{
+  "qualification": "x86 virtio MMIO and private IOAPIC adapter component",
+  "date": "2026-09-17",
+  "task": "task_ede60b058fc745d296bad77044a57420",
+  "runtime_revision": "845fecc73c994c96a1cdefdb0d258595503a56f9",
+  "host": "sparky",
+  "host_architecture": "aarch64",
+  "tests": [
+    {
+      "command": "make test-x86-virtio-host test-virtio-backends-build SEL4_SDK_VERSION=2.1.0",
+      "result": "PASS",
+      "log_sha256": "bdff1e148e9ff66f01791c751938caa5983f7a312a0b266ef529ff2df2f0b4ad",
+      "assertions": [
+        "Bounded RAM binding and guest-only device aperture",
+        "Register width/alignment rejection and configuration subword extraction",
+        "Queue GPA mapping through the shared libvmm register core",
+        "IOAPIC level persistence through EOI until device acknowledgement",
+        "Device reset lowers its interrupt without lowering another device's line",
+        "Host ASan/UBSan execution and real x86 SDK adapter compilation"
+      ]
+    },
+    {
+      "command": "make gate SEL4_SDK_VERSION=2.3.0",
+      "result": "PASS",
+      "returncode": 0,
+      "log_sha256": "2e09153d05e207d50889edca04abf0a58b2b9b08d8a8fffd186ca418ed2698b7",
+      "scope": "Host suite including adapter, SDK backend/adapter compilation, both root-task boots, AArch64 guest net/block/bidirectional console",
+      "last_aarch64_image_sha256": "5177c799c0a48a4bebc9ed2d056e81c45b7cc700f9345e560117477aea4d17c8"
+    }
+  ],
+  "retained_directory": "/tmp/agentos-v04-x86-notifications/build/evidence/x86-virtio-845fecc",
+  "limitations": [
+    "The adapter is not yet linked into firmware VM-exit dispatch or advertised to an Intel guest.",
+    "Canonical service topology, notification handling and Intel target I/O remain unqualified.",
+    "This adapter admits one boot vCPU and contiguous GPA-zero RAM below the MMIO aperture; sparse high RAM and teardown/rebinding need separate integration."
+  ]
+}
