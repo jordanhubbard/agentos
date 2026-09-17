@@ -160,6 +160,16 @@ or pinned Debian acceptance. Root passes a zero nameserver startup
 argument to PDs without that endpoint, so the standalone mux does not attempt
 registration through an ungranted capability.
 
+`make gate-x86_64-storage` separately creates a disposable 32 MiB disk and
+boots two hash-checked initramfs variants. The first checks a pristine block,
+writes 4096 bytes and requires Linux `fsync` to succeed. After that platform
+instance exits, the host verifies the entire disk against the expected image.
+A fresh platform boot opens the same disk read-only and verifies the persisted
+block; the host checks the entire image again. The harness retains the disk,
+both root-task/image pairs and a receipt with their hashes. This qualifies a
+single guest across complete platform cold boots; concurrent-client isolation,
+guest lifecycle reset and pinned Debian acceptance remain separate requirements.
+
 *Console*. `serial_virt` is a separate PD with four root-provisioned pages:
 one per VMM, one for the native operator client and a separate CC frontend
 page. Only the virtualizer maps all four. Root grants send-only notification capabilities for persistent wakeups

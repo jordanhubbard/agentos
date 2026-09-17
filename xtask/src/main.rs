@@ -35,6 +35,11 @@ enum Cmd {
     FetchGuest(FetchGuestArgs),
     /// Build the deterministic Linux x86 userspace qualification initramfs.
     BuildX86Initramfs,
+    /// Write and fsync a fresh Intel qualification disk, then verify a cold boot.
+    X86Storage {
+        #[arg(long, default_value_t = 300)]
+        timeout_secs: u64,
+    },
     /// Automated release (version bump + git tag)
     Release(ReleaseArgs),
     /// Render the release presentation and its deterministic QA receipt.
@@ -91,6 +96,7 @@ fn main() -> anyhow::Result<()> {
         Cmd::Setup(a) => cmd_setup::run(&a),
         Cmd::FetchGuest(a) => cmd_fetch_guest::run(&a),
         Cmd::BuildX86Initramfs => cmd_fetch_guest::build_x86_initramfs(),
+        Cmd::X86Storage { timeout_secs } => cmd_test::run_x86_storage(timeout_secs),
         Cmd::Release(a) => cmd_release::run(&a),
         Cmd::RenderDeck(a) => cmd_render_deck::run(&a),
         Cmd::CiMatrix(a) => cmd_ci_matrix::run(&a),

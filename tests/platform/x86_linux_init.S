@@ -1,5 +1,8 @@
 /* Linux PID 1 qualification. All filesystem work uses guest Linux syscalls.
  * CPUID is solely a test completion trap; it is not a device transport. */
+.ifndef STORAGE_MODE
+.set STORAGE_MODE, 0
+.endif
 .section .text
 .global _start
 _start:
@@ -93,7 +96,11 @@ console_read:
     mov $10, %r13d
     mov $2, %eax                  /* open the in-tree virtio-blk device */
     lea disk_path(%rip), %rdi
-    xor %esi, %esi                /* O_RDONLY */
+.if STORAGE_MODE==1
+    mov $2, %esi                 /* O_RDWR */
+.else
+    xor %esi, %esi               /* O_RDONLY */
+.endif
     xor %edx, %edx
     syscall
     test %rax, %rax
@@ -142,6 +149,73 @@ disk_read:
     mov $4096-(disk_data_end-disk_data), %ecx
     repe scasb
     jne failed
+.if STORAGE_MODE
+    mov $16, %r13d
+    mov $8, %eax
+    mov %r12, %rdi
+    mov $8192, %esi
+    xor %edx, %edx
+    syscall
+    cmp $8192, %rax
+    jne failed
+    lea disk_buffer(%rip), %r15
+    mov $4096, %ebp
+storage_read:
+    xor %eax, %eax
+    mov %r12, %rdi
+    mov %r15, %rsi
+    mov %rbp, %rdx
+    syscall
+    test %rax, %rax
+    jle failed
+    add %rax, %r15
+    sub %rax, %rbp
+    jne storage_read
+    mov $17, %r13d
+    lea disk_buffer(%rip), %rdi
+    mov $4096, %ecx
+.if STORAGE_MODE==1
+    xor %eax, %eax                /* writer requires pristine media */
+.else
+    mov $0x5a, %eax               /* next cold boot must see the write */
+.endif
+    cld
+    repe scasb
+    jne failed
+.if STORAGE_MODE==1
+    lea disk_buffer(%rip), %rdi
+    mov $4096, %ecx
+    mov $0x5a, %eax
+    rep stosb
+    mov $18, %r13d
+    mov $8, %eax
+    mov %r12, %rdi
+    mov $8192, %esi
+    xor %edx, %edx
+    syscall
+    cmp $8192, %rax
+    jne failed
+    lea disk_buffer(%rip), %r15
+    mov $4096, %ebp
+storage_write:
+    mov $1, %eax
+    mov %r12, %rdi
+    mov %r15, %rsi
+    mov %rbp, %rdx
+    syscall
+    test %rax, %rax
+    jle failed
+    add %rax, %r15
+    sub %rax, %rbp
+    jne storage_write
+    mov $19, %r13d
+    mov $74, %eax                 /* fsync: wait for data and device flush */
+    mov %r12, %rdi
+    syscall
+    test %rax, %rax
+    jne failed
+.endif
+.endif
     mov $15, %r13d
     mov $3, %eax
     mov %r12, %rdi
