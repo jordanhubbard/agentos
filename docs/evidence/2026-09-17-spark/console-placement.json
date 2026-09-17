@@ -1,0 +1,34 @@
+{
+  "qualification": "Architecture-selected console MMIO binding and shared backend regression",
+  "runtime_revision": "b06840f38d710062fd75fee9f4eb095f550264de",
+  "host": "sparky aarch64 Linux",
+  "task": "task_ede60b058fc745d296bad77044a57420",
+  "tests": [
+    {
+      "command": "make test-x86-console-host test-virtio-backends-build SEL4_SDK_VERSION=2.1.0",
+      "result": "PASS exit 0",
+      "log_sha256": "21ee9735abd07b47bbe01b09b6ce5d60552032a26358950e9a48c96adf91aa8c",
+      "assertions": [
+        "Actual libvmm console and platform adapter transfer exact TX/RX bytes through x86 MMIO and bounded guest RAM",
+        "Used-ring completion and private IOAPIC assertion/ACK match traffic",
+        "Wrong alignment/IRQ binding is rejected; retry with the valid location succeeds",
+        "Rebinding cannot discard pending output",
+        "Guest reset clears readiness and subsequent ingress is rejected",
+        "ASan/UBSan host test and actual ARM64/x86 SDK compile of console adapter"
+      ]
+    },
+    {
+      "command": "make gate SEL4_SDK_VERSION=2.3.0",
+      "result": "PASS exit 0",
+      "log_sha256": "15170b94ccfe30f3e2af988b52ad862eb6c858fc840060abb8b09c2fec542b47",
+      "scope": "Full host suite, both SDK backend and console adapter builds, both root boots, AArch64 guest net/block/bidirectional console",
+      "note": "Runtime source matches the revision; afterward the host test linker option gained equivalent -Xlinker spelling and Darwin selection. The focused test was rerun on that final recipe."
+    }
+  ],
+  "retained_directory": "build/evidence/console-placement-b06840f",
+  "limitations": [
+    "The x86 TX/RX test executes real device and queue code on the host, not inside an Intel guest.",
+    "Firmware does not yet register this console; root service topology, notification handling and Intel target I/O remain incomplete.",
+    "The Darwin linker selection was not run on macOS in this qualification."
+  ]
+}

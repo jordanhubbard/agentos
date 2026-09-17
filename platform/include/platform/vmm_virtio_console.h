@@ -5,6 +5,10 @@
 #include <stdint.h>
 
 /* Guest virtio-console backed by sDDF serial queues inside the VMM. */
+/* Bind once to an architecture-selected guest MMIO page and virtual IRQ.
+ * Failure leaves the console unavailable; a live binding cannot be replaced. */
+bool aos_vmm_virtio_console_init_at(uintptr_t guest_base, unsigned virq);
+/* Compatibility entry for the AArch64 profile device-operations table. */
 void aos_vmm_virtio_console_init(void);
 void aos_vmm_virtio_console_after_fault(void);
 bool aos_vmm_virtio_console_driver_ready(void);
