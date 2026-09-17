@@ -14,6 +14,8 @@
 #include "platform/x86_event.h"
 #include "serial_virt_client.h"
 #include <platform/serial_virt_layout.h>
+#include <platform/serial_endpoint.h>
+#include <platform/vmm_virtio_console.h>
 
 #define VCPU AOS_GUEST_VCPU_CAP_BASE
 const char vmm_pd_name[] = "guest_vmm_x86";
@@ -43,6 +45,25 @@ static seL4_Word snapshot[AOS_X86_FIRMWARE_SNAPSHOT_WORDS];
 static seL4_Word halt_chain[AOS_X86_FIRMWARE_CHAIN_WORDS];
 static seL4_Word boot_reads[3], last_qualification;
 static bool have_wait_snapshot;
+static bool serial_wake_received;
+
+static uint32_t serial_output(uint8_t *bytes, uint32_t capacity, void *context)
+{
+    (void)context;
+    return aos_vmm_virtio_console_drain_tx(bytes, capacity);
+}
+static bool serial_input(const uint8_t *bytes, uint32_t length, void *context)
+{
+    (void)context;
+    return aos_vmm_virtio_console_push_rx_bytes(bytes, length);
+}
+static void service_serial(aos_serial_endpoint_t *endpoint)
+{
+    aos_vmm_virtio_console_after_fault();
+    const aos_serial_endpoint_ops_t ops = {.output=serial_output, .input=serial_input};
+    if (aos_serial_endpoint_step(endpoint, &ops, true))
+        seL4_Signal(PD_CNODE_SLOT_SERIAL_VIRT_NOTIFY);
+}
 #ifdef AGENTOS_X86_BOOT_KERNEL
 extern const uint8_t _binary_x86_boot_kernel_bin_start[], _binary_x86_boot_kernel_bin_end[];
 #ifdef AGENTOS_X86_BOOT_INITRD
@@ -190,6 +211,7 @@ void aos_x86_firmware_run(seL4_CPtr ep, aos_x86_vmenter_return_t returned)
     /* Root gives this VMM only client zero's page. Check the newly retyped
      * queue state before any producer can publish console bytes. */
     aos_serial_channel_t serial = aos_serial_channel_at(AOS_SERIAL_SHMEM_VA);
+    aos_serial_endpoint_t serial_endpoint = {.channel=serial};
     if (__atomic_load_n(&serial.to_guest.queue->head, __ATOMIC_ACQUIRE) ||
         __atomic_load_n(&serial.to_guest.queue->tail, __ATOMIC_ACQUIRE) ||
         __atomic_load_n(&serial.from_guest.queue->head, __ATOMIC_ACQUIRE) ||
@@ -240,16 +262,26 @@ void aos_x86_firmware_run(seL4_CPtr ep, aos_x86_vmenter_return_t returned)
     if (!aos_x86_virtio_init(&ioapic, (void *)AOS_X86_FIRMWARE_RAM_VA,
                             AOS_X86_FIRMWARE_RAM))
         stop(ep, AOS_X86_VTX_PROOF_FAIL, 0x56495254u, 0, AOS_X86_FIRMWARE_RAM);
+    if (!aos_vmm_virtio_console_init_at(AOS_X86_VIRTIO_BASE, AOS_X86_VIRTIO_GSI_BASE))
+        stop(ep, AOS_X86_VTX_PROOF_FAIL, 0x534552u, 0, 4u);
     uint32_t timer_quantum=0;
     const aos_x86_memory_t memory = {
         .ram=(const uint8_t *)AOS_X86_FIRMWARE_RAM_VA, .ram_size=AOS_X86_FIRMWARE_RAM,
         .rom=(const uint8_t *)AOS_X86_FIRMWARE_ROM_VA, .rom_base=AOS_X86_FIRMWARE_BASE,
         .rom_size=AOS_X86_FIRMWARE_BYTES,
     };
-    for (unsigned exits = 0; ; exits++) {
+    unsigned exits = 0;
+    for (;;) {
         seL4_Word rip = returned.words[SEL4_VMENTER_CALL_EIP_MR];
-        /* The serial service has no frontend or byte producers yet.
-         * Reject unexpected returns using defined metadata, never stale GPRs. */
+        if (returned.result == SEL4_VMENTER_RESULT_NOTIF &&
+            returned.badge == SERIAL_VIRT_VMM_WAKE_BADGE) {
+            service_serial(&serial_endpoint);
+            serial_wake_received = true;
+            /* Queue completion leaves its IOAPIC line pending. The next
+             * bounded VMX timer exit routes it through the common event path. */
+            returned = aos_x86_vm_resume_notification(&returned);
+            continue;
+        }
         if (returned.result != SEL4_VMENTER_RESULT_FAULT)
             stop(ep, AOS_X86_VTX_PROOF_FAIL, 0x4e5446u, rip, returned.badge);
         seL4_Word reason = returned.words[SEL4_VMENTER_FAULT_REASON_MR];
@@ -261,7 +293,7 @@ void aos_x86_firmware_run(seL4_CPtr ep, aos_x86_vmenter_return_t returned)
         seL4_VCPUContext regs = save_registers(&returned);
         for (unsigned i=0; i<3; i++) boot_reads[i]=config.boot_reads[i];
         last_qualification=qual;
-        if (exits == 65536u) {
+        if (exits++ == 65536u) {
             /* Observe the returned exit before any emulation or re-entry.
              * The processed-exit budget and its failure status are unchanged. */
             if ((read_field(ep,EFER) & LMA) && (read_field(ep,CR0) & PG)) {
@@ -314,7 +346,7 @@ void aos_x86_firmware_run(seL4_CPtr ep, aos_x86_vmenter_return_t returned)
 #ifdef AGENTOS_X86_USERSPACE_PROOF
             if ((uint32_t)regs.eax == AOS_X86_USERSPACE_LEAF) {
                 seL4_Word cs=read_field(ep,0x0802u);
-                bool passed=regs.ebx == 1u && regs.ecx == AOS_X86_USERSPACE_INIT &&
+                bool passed=serial_wake_received && regs.ebx == 1u && regs.ecx == AOS_X86_USERSPACE_INIT &&
                     regs.edx == AOS_X86_USERSPACE_PASS && (cs & 3u) == 3u &&
                     ((read_field(ep,CS_RIGHTS) >> 5) & 3u) == 3u &&
                     (read_field(ep,EFER) & LMA) &&
@@ -487,6 +519,7 @@ void aos_x86_firmware_run(seL4_CPtr ep, aos_x86_vmenter_return_t returned)
             stop(ep, AOS_X86_VTX_PROOF_FAIL, reason, linear,
                  reason == 31u || reason == 32u ? (uint32_t)regs.ecx : reason == 48u ? fault_gpa : qual);
         }
+        service_serial(&serial_endpoint);
         seL4_Error err = seL4_X86_VCPU_WriteRegisters(VCPU, &regs);
         if (err) stop(ep, AOS_X86_VTX_PROOF_FAIL, reason, rip, err);
         /* Only VMM-owned emulated sources may assert these inputs. No host

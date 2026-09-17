@@ -248,6 +248,22 @@ $(BUILD_DIR)/x86_virtio_gpa.o: $(REPO_ROOT_MK)/libvmm/src/virtio/gpa.c
 	$(CC) -c $(CFLAGS) -I$(REPO_ROOT_MK)/libvmm/include $< -o $@
 $(BUILD_DIR)/guest_vmm_primary.elf: $(BUILD_DIR)/x86_virtio.o $(BUILD_DIR)/x86_virtio_mmio.o $(BUILD_DIR)/x86_virtio_gpa.o
 $(BUILD_DIR)/guest_vmm_primary.elf: LDFLAGS += --defsym=printf_=printf
+# Keep the MMIO console path; unused PCI entry points are separate sections.
+X86_SERIAL_CFLAGS = $(CFLAGS) -Wno-sign-compare \
+    -I$(REPO_ROOT_MK)/libvmm/include \
+    -I$(REPO_ROOT_MK)/libvmm/dep/sddf/include \
+    -I$(REPO_ROOT_MK)/libvmm/dep/sddf/include/sddf/util/custom_libc
+$(BUILD_DIR)/x86_console_backend.o: $(REPO_ROOT_MK)/libvmm/src/virtio/console.c
+	@mkdir -p $(BUILD_DIR)
+	$(CC) -c $(X86_SERIAL_CFLAGS) -ffunction-sections -fdata-sections $< -o $@
+$(BUILD_DIR)/x86_vmm_console.o: $(REPO_ROOT_MK)/platform/serial-virt/vmm_virtio_console.c
+	@mkdir -p $(BUILD_DIR)
+	$(CC) -c $(X86_SERIAL_CFLAGS) $< -o $@
+$(BUILD_DIR)/x86_serial_endpoint.o: $(REPO_ROOT_MK)/platform/serial-virt/endpoint.c
+	@mkdir -p $(BUILD_DIR)
+	$(CC) -c $(CFLAGS) $< -o $@
+$(BUILD_DIR)/guest_vmm_primary.elf: $(BUILD_DIR)/x86_console_backend.o $(BUILD_DIR)/x86_vmm_console.o $(BUILD_DIR)/x86_serial_endpoint.o $(BUILD_DIR)/serial_pump.pd.o
+$(BUILD_DIR)/guest_vmm_primary.elf: LDFLAGS += --gc-sections
 $(BUILD_DIR)/x86_acpi.o: $(REPO_ROOT_MK)/platform/guest-vmm/x86_acpi.c
 	@mkdir -p $(BUILD_DIR)
 	$(CC) -c $(CFLAGS) $< -o $@

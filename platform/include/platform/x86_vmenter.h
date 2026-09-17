@@ -20,4 +20,15 @@ static inline aos_x86_vmenter_return_t aos_x86_vm_enter(void)
     for (unsigned i = 0; i < count; i++) returned.words[i] = seL4_GetMR(i);
     return returned;
 }
+
+/* Call only for an accepted notification. Service IPC may have clobbered
+ * MRs; restore all three seL4 re-entry words, including pending injection.
+ * Guest GPRs remain in the VCPU and must not be rewritten from a fault copy. */
+static inline aos_x86_vmenter_return_t aos_x86_vm_resume_notification(
+    const aos_x86_vmenter_return_t *returned)
+{
+    for (unsigned i = 0; i < SEL4_VMENTER_RESULT_NOTIF_LEN; i++)
+        seL4_SetMR(i, returned->words[i]);
+    return aos_x86_vm_enter();
+}
 #endif

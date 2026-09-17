@@ -393,9 +393,15 @@ allocates its four isolated queue pages, maps only client zero into the VMM,
 and supplies a role-bound attach endpoint and send-only wake capabilities.
 The VMM must attach successfully and observe empty fresh queues before boot
 continues. The userspace qualification also requires foreign-client and
-frontend attachment attempts to be rejected. There is no frontend byte
-producer or registered guest console yet, and unexpected notifications remain
-fatal; this is service attachment, not console traffic or lifecycle support.
+frontend attachment attempts to be rejected. The VMM registers the real libvmm
+console at guest MMIO address `0xf0000000`, GSI 16, and pumps its bounded
+serial endpoint after faults and serial-service notifications. Notification
+re-entry restores seL4's three saved input words without rewriting guest GPRs;
+pending console interrupts are routed on the next bounded VMX timer exit.
+The userspace qualification requires a wake from the actual serial service
+capability before accepting the PID 1 result. Unknown notifications remain
+fatal. Guest console discovery and a frontend byte producer remain absent;
+this does not yet qualify Intel guest console traffic or lifecycle support.
 The opt-in [EFI payload variant](x86-boot-payload.md) provisions 256 MiB
 private RAM and embeds SHA-256-pinned kernel/initrd/command-line blobs in the
 VMM's read-only ELF sections. These sources are not mapped into guest EPT;

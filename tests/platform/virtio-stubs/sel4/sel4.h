@@ -13,3 +13,4 @@ seL4_Error seL4_IRQHandler_Ack(seL4_CPtr cap);
 void seL4_Signal(seL4_CPtr cap);
 seL4_Word seL4_VMEnter(seL4_Word *badge);
 seL4_Word seL4_GetMR(int index);
+void seL4_SetMR(int index, seL4_Word value);

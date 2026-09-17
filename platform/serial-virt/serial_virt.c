@@ -35,7 +35,7 @@ static void service_queues(void)
         agentos_log_info("serial_virt", "malformed client queue rejected");
         fault_reported |= result.invalid_clients;
     }
-#if defined(AGENTOS_GUEST_PRIMARY)
+#if defined(AGENTOS_GUEST_PRIMARY) || defined(AGENTOS_X86_FIRMWARE_RESET)
     if (result.wake_vmm & 1u)
         seL4_Signal(PD_CNODE_SLOT_SERIAL_PRIMARY_NOTIFY);
 #endif
@@ -95,6 +95,12 @@ void pd_main(seL4_CPtr endpoint, seL4_CPtr nameserver)
         seL4_Send(AGENTOS_IPC_REPLY_CAP, result);
 #else
         seL4_Reply(result);
+#endif
+        /* Qualification-only wake from the real service capability. The
+         * Intel userspace result requires this notification to be handled. */
+#if defined(AGENTOS_X86_USERSPACE_PROOF)
+        if (status == SERIAL_VIRT_OK && attach.role == SERIAL_VIRT_ROLE_VMM && attach.client == 0)
+            seL4_Signal(PD_CNODE_SLOT_SERIAL_PRIMARY_NOTIFY);
 #endif
         if (status == SERIAL_VIRT_OK) service_queues();
     }
