@@ -118,10 +118,10 @@ static bool pm_io(aos_x86_config_t *s, unsigned off, unsigned width,
         if (write) status&=~data; /* W1C; reserved status bits stay zero */
         else result=(status >> shift)&mask;
     } else if ((off&~1u)==2u) {
-        /* No firmware global-lock hardware exists. Its enable bit does not
-         * stick, allowing ACPICA to detect absence. Do not falsely enable
-         * a global-lock SCI; other nonzero enables still need real sources. */
-        if (write && (data & ~0x20u)) return false;
+        /* No firmware global-lock hardware or RTC wake source exists. Their
+         * enable bits do not stick, matching discovery and FADT FIX_RTC.
+         * Other nonzero enables still require real interrupt sources. */
+        if (write && (data & ~0x420u)) return false;
         if (!write) result=0;
     } else {
         if (write) {
