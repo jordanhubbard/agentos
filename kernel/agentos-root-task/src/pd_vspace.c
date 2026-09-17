@@ -647,6 +647,18 @@ seL4_Error pd_vspace_map_device_frame(seL4_CPtr vspace,
                     seL4_ARM_Default_VMAttributes);
 }
 
+seL4_Error pd_vspace_map_uncached_device_frame(seL4_CPtr vspace,
+                                                seL4_CPtr frame_cap,
+                                                seL4_Word vaddr)
+{
+#if defined(__x86_64__)
+    seL4_ARCH_VMAttributes attributes = seL4_X86_Uncacheable;
+#else
+    seL4_ARCH_VMAttributes attributes = 0;
+#endif
+    return map_page(frame_cap, vspace, vaddr, seL4_AllRights, attributes);
+}
+
 #else /* AGENTOS_TEST_HOST ───────────────────────────────────────────────── */
 
 pd_vspace_result_t pd_vspace_create(seL4_CPtr pd_cnode, seL4_CPtr asid_pool)
@@ -690,6 +702,13 @@ seL4_Error pd_vspace_map_device_frame(seL4_CPtr vspace,
     (void)frame_cap;
     (void)vaddr;
     return seL4_IllegalOperation;
+}
+
+seL4_Error pd_vspace_map_uncached_device_frame(seL4_CPtr vspace,
+                                                seL4_CPtr frame_cap,
+                                                seL4_Word vaddr)
+{
+    return pd_vspace_map_device_frame(vspace, frame_cap, vaddr);
 }
 
 #endif /* AGENTOS_TEST_HOST */

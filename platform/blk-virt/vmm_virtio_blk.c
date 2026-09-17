@@ -220,6 +220,21 @@ static bool vmm_blk_read_blocks(uint64_t block, uint16_t count,
     return status == BLK_RESP_OK && success_count == count && id == 0u;
 }
 
+bool aos_vmm_virtio_blk_read_boot(uint64_t block, uint16_t count,
+                                  void *destination, size_t capacity,
+                                  aos_vmm_blk_wait_fn wait)
+{
+    size_t bytes = (size_t)count * AOS_BLK_TRANSFER_SIZE;
+    if (!g_aos_blk_ready || g_blk_virt_hw != BLK_VIRT_HW_VIRTIO_BLK ||
+        !destination || capacity < bytes || !count || count > AOS_BLK_DATA_CELLS ||
+        (g_aos_blk.virtio_device.regs.Status & VIRTIO_CONFIG_S_DRIVER_OK) ||
+        block > g_aos_client.info->capacity || count > g_aos_client.info->capacity - block)
+        return false;
+    if (!vmm_blk_read_blocks(block, count, wait)) return false;
+    aos_copy(destination, g_aos_client.data, (uint32_t)bytes);
+    return true;
+}
+
 #define ISO9660_SECTOR_SIZE 2048u
 
 static uint8_t g_iso_sector[ISO9660_SECTOR_SIZE];

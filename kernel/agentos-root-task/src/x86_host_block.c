@@ -87,4 +87,20 @@ out:
     if (status) *layout = (aos_virtio_pci_layout_t){0};
     return status;
 }
+
+bool aos_x86_host_block_enable(void)
+{
+    seL4_CPtr cap = ut_alloc_slot();
+    if (!cap || seL4_X86_IOPortControl_Issue(seL4_CapIOPortControl,
+            0xcf8u, 0xcffu, seL4_CapInitThreadCNode, cap, 64u) != seL4_NoError) return false;
+    uint32_t identity, current = 0, confirmed;
+    bool identified = read32(cap, 0u, &identity) && identity == UINT32_C(0x10421af4) &&
+                      read32(cap, 4u, &current);
+    bool ok = identified;
+    uint16_t wanted = ((uint16_t)current & ~1u) | 0x406u;
+    if (ok) ok = command(cap, wanted) && read32(cap, 4u, &confirmed) &&
+                 (uint16_t)confirmed == wanted;
+    if (!ok && identified) (void)command(cap, (uint16_t)current & ~7u);
+    return seL4_CNode_Delete(seL4_CapInitThreadCNode, cap, 64u) == seL4_NoError && ok;
+}
 #endif

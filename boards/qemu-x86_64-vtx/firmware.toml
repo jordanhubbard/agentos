@@ -1,4 +1,12 @@
-# Firmware composition: COM2 driver, serial mux and VMM-emulated console.
+# Firmware composition: owned PCI block and COM2 drivers, queue muxes and VMM.
+[[pd]]
+name = "virtio_blk"
+priority = 215
+
+[[pd]]
+name = "blk_virt"
+priority = 210
+
 [[pd]]
 name = "serial_pd"
 priority = 180

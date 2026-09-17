@@ -131,3 +131,9 @@ seL4_Error pd_vspace_map_reserved_region(seL4_CPtr vspace,
 seL4_Error pd_vspace_map_device_frame(seL4_CPtr vspace,
                                        seL4_CPtr frame_cap,
                                        seL4_Word vaddr);
+
+/* Explicit uncached MMIO mapping. Shared DMA RAM keeps the platform's
+ * ordinary coherent memory attributes. */
+seL4_Error pd_vspace_map_uncached_device_frame(seL4_CPtr vspace,
+                                                seL4_CPtr frame_cap,
+                                                seL4_Word vaddr);

@@ -814,6 +814,7 @@ test-x86-block-host:
 		-Itests/platform/block-stubs -Itests/platform/virtio-stubs -Ilibvmm/include \
 		-Ilibvmm/dep/sddf/include -Iplatform/include -idirafter kernel/agentos-root-task/include \
 		tests/platform/test_x86_block.c platform/blk-virt/vmm_virtio_blk.c \
+		platform/blk-virt/blk_virt_pump.c \
 		platform/guest-vmm/x86_virtio.c platform/guest-vmm/x86_ioapic.c \
 		libvmm/src/virtio/block.c libvmm/src/virtio/mmio.c libvmm/src/virtio/gpa.c \
 		libvmm/dep/sddf/util/fsmalloc.c libvmm/dep/sddf/util/bitarray.c \

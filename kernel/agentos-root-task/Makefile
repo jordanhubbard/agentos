@@ -266,6 +266,19 @@ $(BUILD_DIR)/x86_serial_endpoint.o: $(REPO_ROOT_MK)/platform/serial-virt/endpoin
 	@mkdir -p $(BUILD_DIR)
 	$(CC) -c $(CFLAGS) $< -o $@
 $(BUILD_DIR)/guest_vmm_primary.elf: $(BUILD_DIR)/x86_console_backend.o $(BUILD_DIR)/x86_vmm_console.o $(BUILD_DIR)/x86_serial_endpoint.o $(BUILD_DIR)/serial_pump.pd.o
+$(BUILD_DIR)/x86_block_backend.o: $(REPO_ROOT_MK)/libvmm/src/virtio/block.c
+	@mkdir -p $(BUILD_DIR)
+	$(CC) -c $(X86_SERIAL_CFLAGS) -ffunction-sections -fdata-sections $< -o $@
+$(BUILD_DIR)/x86_vmm_block.o: $(REPO_ROOT_MK)/platform/blk-virt/vmm_virtio_blk.c
+	@mkdir -p $(BUILD_DIR)
+	$(CC) -c $(X86_SERIAL_CFLAGS) -ffunction-sections -fdata-sections $< -o $@
+$(BUILD_DIR)/x86_fsmalloc.o: $(REPO_ROOT_MK)/libvmm/dep/sddf/util/fsmalloc.c
+	@mkdir -p $(BUILD_DIR)
+	$(CC) -c $(X86_SERIAL_CFLAGS) $< -o $@
+$(BUILD_DIR)/x86_bitarray.o: $(REPO_ROOT_MK)/libvmm/dep/sddf/util/bitarray.c
+	@mkdir -p $(BUILD_DIR)
+	$(CC) -c $(X86_SERIAL_CFLAGS) $< -o $@
+$(BUILD_DIR)/guest_vmm_primary.elf: $(BUILD_DIR)/x86_block_backend.o $(BUILD_DIR)/x86_vmm_block.o $(BUILD_DIR)/x86_fsmalloc.o $(BUILD_DIR)/x86_bitarray.o
 $(BUILD_DIR)/guest_vmm_primary.elf: LDFLAGS += --gc-sections
 $(BUILD_DIR)/x86_acpi.o: $(REPO_ROOT_MK)/platform/guest-vmm/x86_acpi.c
 	@mkdir -p $(BUILD_DIR)
