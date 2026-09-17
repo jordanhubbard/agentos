@@ -41,7 +41,7 @@
  * (0x22000000), net_pd's private DMA window (0x24000000) and the shared net
  * frame (0x26000000); see net_host_layout.h for the same rule.
  */
-#define AOS_BLK_SHMEM_FRAME_BITS     21u        /* seL4 AArch64 large page */
+#define AOS_BLK_SHMEM_FRAME_BITS     21u        /* 2 MiB architecture large page */
 #define AOS_BLK_SHMEM_FRAME_SIZE     (1u << AOS_BLK_SHMEM_FRAME_BITS)
 #define AOS_BLK_SHMEM_FRAMES         (1u + AOS_BLK_MAX_CLIENTS)
 #define AOS_BLK_SHMEM_SIZE           (AOS_BLK_SHMEM_FRAMES * AOS_BLK_SHMEM_FRAME_SIZE)

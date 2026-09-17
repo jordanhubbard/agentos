@@ -1803,29 +1803,6 @@ void root_task_main(const seL4_BootInfo *bi)
     }
 
     {
-        /* Shared sDDF block region (AOS_BLK_SHMEM_VA): one large page per
-         * AOS_BLK_SHMEM_FRAMES, zero-filled by retype, mapped below into the
-         * guest VMMs and blk_virt.  A failed frame leaves the whole array
-         * null so no PD gets a partial region. */
-        seL4_Error blk_err = seL4_NoError;
-        for (uint32_t f = 0u; f < AOS_BLK_SHMEM_FRAMES; f++) {
-            blk_err = ut_alloc_cap(seL4_ARM_LargePageObject, 0u,
-                                   &g_blk_virt_frame_caps[f]);
-            if (blk_err != seL4_NoError) {
-                for (uint32_t g = 0u; g < AOS_BLK_SHMEM_FRAMES; g++) {
-                    g_blk_virt_frame_caps[g] = seL4_CapNull;
-                }
-                break;
-            }
-        }
-        dbg_puts("[rt] blk_virt shared region frames=");
-        dbg_hex((seL4_Word)AOS_BLK_SHMEM_FRAMES);
-        dbg_puts(" err=");
-        dbg_hex((seL4_Word)blk_err);
-        dbg_puts("\n");
-    }
-
-    {
         seL4_Error net_err =
             ut_alloc_device_cap(AGENTOS_HOST_NET_MMIO_PA,
                                 &g_host_net_mmio_frame_cap);
@@ -2004,6 +1981,17 @@ void root_task_main(const seL4_BootInfo *bi)
 #endif
     _Static_assert(AOS_SERIAL_FRAME_SIZE == (1UL << seL4_ARCH_LargePageBits),
                    "serial queue pages must match the architecture large-page object");
+    _Static_assert(AOS_BLK_SHMEM_FRAME_SIZE == (1UL << seL4_ARCH_LargePageBits),
+                   "block queue pages must match the architecture large-page object");
+    if (blk_virt_index != SYSTEM_MAX_PDS) {
+        for (uint32_t f = 0; f < AOS_BLK_SHMEM_FRAMES; f++) {
+            if (ut_alloc_cap(seL4_ARCH_LargePageObject, 0u,
+                             &g_blk_virt_frame_caps[f]) != seL4_NoError) {
+                dbg_puts("[rt] block queue allocation failed; refusing partial boot\n");
+                return;
+            }
+        }
+    }
     if (serial_virt_index != SYSTEM_MAX_PDS) {
         for (uint32_t f = 0; f < AOS_SERIAL_FRAMES; f++) {
             if (ut_alloc_cap(seL4_ARCH_LargePageObject, 0u,
@@ -2632,6 +2620,31 @@ void root_task_main(const seL4_BootInfo *bi)
             }
         }
 
+        /* blk_virt maps all block pages; each VMM maps only its own client.
+         * No device DMA window, private disk page or peer page enters a VMM. */
+        if (blk_virt_index != SYSTEM_MAX_PDS &&
+            (pd->self_svc_id == SVC_ID_BLK_VIRT || pd_is_guest_vmm(pd))) {
+            seL4_Error blk_err = seL4_NoError;
+            for (uint32_t f = 0; f < AOS_BLK_SHMEM_FRAMES && blk_err == seL4_NoError; f++) {
+                if (pd_is_guest_vmm(pd) &&
+                    f != AOS_BLK_CLIENT_BASE / AOS_BLK_SHMEM_FRAME_SIZE +
+                        (pd_is_secondary_guest_vmm(pd) ? 1u : 0u)) continue;
+                seL4_Word copy = ut_alloc_slot();
+                blk_err = seL4_NotEnoughMemory;
+                if (copy != seL4_CapNull) {
+                    blk_err = seL4_CNode_Copy(seL4_CapInitThreadCNode, copy, 64u,
+                        seL4_CapInitThreadCNode, g_blk_virt_frame_caps[f], 64u, seL4_AllRights);
+                    if (blk_err == seL4_NoError)
+                        blk_err = pd_vspace_map_device_frame(vspace, copy,
+                            AOS_BLK_SHMEM_VA + (seL4_Word)f * AOS_BLK_SHMEM_FRAME_SIZE);
+                }
+            }
+            if (blk_err != seL4_NoError) {
+                dbg_puts("[rt] block queue mapping failed; refusing PD start\n");
+                continue;
+            }
+        }
+
         /* ── 4g.4.6b: Map GICv2 vCPU interface for VMM guests ───────────── */
 #if defined(__aarch64__)
         /*
@@ -2729,41 +2742,6 @@ void root_task_main(const seL4_BootInfo *bi)
             dbg_puts("[rt] ");
             dbg_puts(pd->name);
             dbg_puts(" blk shared map err=");
-            dbg_hex((seL4_Word)blk_err);
-            dbg_puts("\n");
-        }
-
-        /* blk_virt maps the region; each VMM maps only its client page.
-         * Keep the private RAM disk and other clients out of its VSpace.
-         * Each frame cap is copied because a frame cap maps exactly once. */
-        if (g_blk_virt_frame_caps[0] != seL4_CapNull &&
-            (name_eq(pd->name, "blk_virt") || pd_is_guest_vmm(pd))) {
-            seL4_Error blk_err = seL4_NoError;
-            for (uint32_t f = 0u; f < AOS_BLK_SHMEM_FRAMES &&
-                                  blk_err == seL4_NoError; f++) {
-                if (pd_is_guest_vmm(pd) &&
-                    f != AOS_BLK_CLIENT_BASE / AOS_BLK_SHMEM_FRAME_SIZE +
-                             (pd_is_secondary_guest_vmm(pd) ? 1u : 0u)) {
-                    continue;
-                }
-                seL4_Word frame_copy = ut_alloc_slot();
-                blk_err = seL4_NotEnoughMemory;
-                if (frame_copy != seL4_CapNull) {
-                    blk_err = seL4_CNode_Copy(
-                        seL4_CapInitThreadCNode, frame_copy, 64u,
-                        seL4_CapInitThreadCNode, g_blk_virt_frame_caps[f],
-                        64u, seL4_AllRights);
-                    if (blk_err == seL4_NoError) {
-                        blk_err = pd_vspace_map_device_frame(
-                            vspace, (seL4_CPtr)frame_copy,
-                            AOS_BLK_SHMEM_VA +
-                                (seL4_Word)f * AOS_BLK_SHMEM_FRAME_SIZE);
-                    }
-                }
-            }
-            dbg_puts("[rt] ");
-            dbg_puts(pd->name);
-            dbg_puts(" blk_virt shared region map err=");
             dbg_hex((seL4_Word)blk_err);
             dbg_puts("\n");
         }
