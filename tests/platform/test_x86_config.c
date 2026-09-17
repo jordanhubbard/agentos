@@ -124,7 +124,8 @@ int main(void)
     reject(&a, 0x71, 1, true);
     io(&a,0x70,1,true,0xa); io(&a,0x71,1,true,0x26);
     assert((io(&a,0x71,1,false,0)&0x7f)==0x26);
-    io(&a, 0x70, 1, true, 1); reject(&a, 0x71, 1, false);
+    io(&a,0x70,1,true,1); assert(io(&a,0x71,1,false,0)==0);
+    io(&a, 0x70, 1, true, 0x33); reject(&a, 0x71, 1, false);
     puts("PASS: private PCI config, PM timer decoding, firmware directory/E820 and rejected I/O");
     return 0;
 }

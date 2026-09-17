@@ -33,14 +33,14 @@ int main(void)
     assert(io(&other,7,false,0,0)==1); /* independent clock */
     reject(&r,0,false,0,0); /* reversed clock */
     reject(&r,0,true,1,86400*h); /* calendar writes need SET */
-    reject(&r,1,false,0,86400*h); /* alarm not implemented */
+    assert(io(&r,1,false,0,86400*h)==0);
     reject(&r,0xa,true,0x66,86400*h); /* divider-stop mode */
     reject(&r,0xb,true,0x42,86400*h); /* PIE */
     reject(&r,0xb,true,0x22,86400*h); /* AIE */
     reject(&r,0xb,true,0x12,86400*h); /* UIE */
     reject(&r,0xb,true,0x0a,86400*h); /* square wave */
     io(&r,0xc,true,0,86400*h); /* read-only register writes are ignored */
-    assert(io(&r,0xc,false,0,86400*h)==0x50);
+    assert(io(&r,0xc,false,0,86400*h)==0x70); /* midnight default alarm */
     io(&r,0xd,true,0,86400*h);
     assert(io(&r,0xd,false,0,86400*h)==0x80);
 
@@ -76,6 +76,17 @@ int main(void)
     io(&r,0xb,true,4,h);
     assert(io(&r,4,false,0,h)==0x8c);
     assert(io(&r,4,false,0,h+12*3600*h)==12);
+    init(&r);
+    io(&r,1,true,0x05,0); io(&r,3,true,0xc0,0); io(&r,5,true,0xff,0);
+    assert(io(&r,1,false,0,0)==5 && io(&r,5,false,0,0)==0xff);
+    assert((io(&r,0xc,false,0,4*h)&0x20)==0);
+    assert((io(&r,0xc,false,0,6*h)&0x20)==0x20);
+    assert(io(&r,0xc,false,0,6*h)==0);
+    assert((io(&r,0xc,false,0,86400*100*h)&0x20)==0x20);
+    reject(&r,1,true,0x6a,86400*100*h);
+    init(&r);
+    io(&r,0xb,true,0,0); io(&r,5,true,0x92,0); /* BCD 12-hour noon alarm */
+    assert((io(&r,0xc,false,0,12*3600*h)&0x20)==0x20);
     init(&r);
     reject(&r,0,false,0,UINT64_MAX);
     assert(!aos_x86_rtc_init(&r,UINT64_MAX,0));

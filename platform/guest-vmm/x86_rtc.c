@@ -40,6 +40,7 @@ static unsigned rate(uint8_t a)
 }
 static uint64_t periods(uint64_t ticks, unsigned hz)
 { return (ticks/AOS_X86_RTC_HZ)*hz+(ticks%AOS_X86_RTC_HZ)*hz/AOS_X86_RTC_HZ; }
+static bool alarm_value(const aos_x86_rtc_t *r, unsigned n, unsigned raw, int *v);
 static bool current(aos_x86_rtc_t *r, uint64_t ticks, uint8_t f[8])
 {
     if (ticks<r->last) return false;
@@ -50,7 +51,26 @@ static bool current(aos_x86_rtc_t *r, uint64_t ticks, uint8_t f[8])
     } else {
         uint64_t elapsed=(ticks-r->base)/AOS_X86_RTC_HZ;
         if (elapsed>=LIMIT-r->epoch) return false;
-        if (elapsed>(r->last-r->base)/AOS_X86_RTC_HZ) r->flags|=0x10;
+        uint64_t previous=(r->last-r->base)/AOS_X86_RTC_HZ;
+        if (elapsed>previous) {
+            r->flags|=0x10;
+            int a[3];
+            if (alarm_value(r,0,r->alarm[0],&a[0]) &&
+                alarm_value(r,1,r->alarm[1],&a[1]) &&
+                alarm_value(r,2,r->alarm[2],&a[2])) {
+                /* Every valid alarm matches within a day; cap large gaps. */
+                uint64_t count=elapsed-previous;
+                if (count>86400) count=86400;
+                for (uint64_t n=1; n<=count; n++) {
+                    uint64_t t=r->epoch+previous+n;
+                    if ((a[0]<0 || (unsigned)a[0]==t%60) &&
+                        (a[1]<0 || (unsigned)a[1]==(t/60)%60) &&
+                        (a[2]<0 || (unsigned)a[2]==(t/3600)%24)) {
+                        r->flags|=0x20; break;
+                    }
+                }
+            }
+        }
         decode(r->epoch+elapsed,f);
         f[3]=(f[3]-1+r->weekday_bias)%7+1;
     }
@@ -72,6 +92,19 @@ static bool input(unsigned v, bool binary, unsigned *out)
     if (!binary && ((v&15)>9 || (v>>4)>9)) return false;
     *out=binary ? v : (v>>4)*10+(v&15);
     return true;
+}
+static bool alarm_value(const aos_x86_rtc_t *r, unsigned n, unsigned raw, int *v)
+{
+    if ((raw&0xc0)==0xc0) { *v=-1; return true; }
+    bool twelve=n==2 && !(r->b&2);
+    unsigned d;
+    if (!input(twelve ? raw&0x7f : raw,r->b&4,&d)) return false;
+    if (twelve) {
+        if (!d || d>12) return false;
+        d=d%12+((raw&0x80) ? 12 : 0);
+    }
+    if (d>(n==2 ? 23u : 59u)) return false;
+    *v=(int)d; return true;
 }
 bool aos_x86_rtc_io(aos_x86_rtc_t *r, unsigned reg, bool write,
                     uint32_t *value, uint64_t ticks)
@@ -101,6 +134,13 @@ bool aos_x86_rtc_io(aos_x86_rtc_t *r, unsigned reg, bool write,
             if (twelve) { pm=d>=12 ? 0x80 : 0; d=d%12 ? d%12 : 12; }
             result=output(d,binary)|pm;
         }
+    } else if (reg==1 || reg==3 || reg==5) {
+        unsigned index=(reg-1)/2;
+        if (write) {
+            int parsed;
+            if (!alarm_value(&next,index,v,&parsed)) return false;
+            next.alarm[index]=v;
+        } else result=next.alarm[index];
     } else if (reg==0xa) {
         if (write) {
             if ((v&0x70)!=0x20) return false;
