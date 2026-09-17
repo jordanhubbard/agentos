@@ -67,4 +67,14 @@ reached `agentos-debian-init-validate-ok` and terminal initialization bytes.
 This is not a passing input qualification and does not establish whether the
 failure is caused by this change. Its log SHA-256 is
 `ee4faba67890b4b4dd43cbfc6a9f81ba88425e0992df470101c7c4bb33fffbbb`.
-Live input regression and actual disconnect release qualification remain open.
+That run did not complete live input regression; it provides no disconnect proof.
+
+The longer baseline run at `676186a4a1d792d122c38bcedfc9166055532623`
+passed ordinary input delivery with SDK 2.3 and `QEMU_TEST_TIMEOUT=1800`.
+Its boot-through-SSH time was 598,820 ms, consistent with the earlier recorded
+617,211 ms input qualification. This resolves the short-budget regression
+failure; it does not qualify the later CC release API or abrupt disconnect.
+The [input receipt](evidence/2026-09-17-spark/input-release-baseline.json)
+and [boot timing](evidence/2026-09-17-spark/input-release-baseline-timing.json)
+record the exact clean revision. The input Make targets now default to 1,800
+seconds while preserving explicit environment and command-line overrides.

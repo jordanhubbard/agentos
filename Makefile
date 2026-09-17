@@ -1001,6 +1001,11 @@ test-ubuntu-virtio:
 .PHONY: test-guest-input
 .PHONY: test-guest-graphics-input
 .PHONY: test-guest-display
+# Spark input qualification takes about ten minutes through Debian boot and
+# SSH provisioning. Preserve explicit environment/command-line timeout choices.
+ifeq ($(origin QEMU_TEST_TIMEOUT),file)
+test-guest-input test-guest-graphics-input: QEMU_TEST_TIMEOUT = 1800
+endif
 test-guest-display:
 	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os debian-graphics-input --timeout-secs $(QEMU_TEST_TIMEOUT) --assert-live --assert-agentos-virtio --assert-guest-display --ssh-port $(QEMU_TEST_SSH_PORT)
 
