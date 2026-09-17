@@ -150,9 +150,13 @@ describes PCI spans; version 1 retains the ARM MMIO layout.
 
 The Intel firmware qualification first reads one 4096-byte block through the
 VMM queue, `blk_virt` and the PCI driver, requiring the test-medium prefix and
-zero padding exactly. It then continues the existing firmware/userspace proof.
-This preboot read does not establish guest Linux block enumeration, writable
-persistence or pinned Debian acceptance. Root passes a zero nameserver startup
+zero padding exactly. Generated ACPI advertises the VMM's emulated block
+device separately from its console. The userspace qualification additionally
+requires Linux to open `/dev/vda`, check its 32 MiB capacity and read a distinct
+4096-byte block at offset 4096, verifying its prefix and zero padding. The VMM
+requires a completed guest queue request after DRIVER_OK before accepting the
+userspace result. These read-only checks do not establish writable persistence
+or pinned Debian acceptance. Root passes a zero nameserver startup
 argument to PDs without that endpoint, so the standalone mux does not attempt
 registration through an ungranted capability.
 
