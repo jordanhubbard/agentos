@@ -54,7 +54,7 @@ int main(void)
         assert(virtio_mmio_fault_handle(0,REG_VIRTIO_MMIO_CONFIG+byte,3,&regs,&device));
         assert(config_offset==byte && config_value==0xab);
         assert(virtio_mmio_fault_handle(0,REG_VIRTIO_MMIO_CONFIG+byte,2,&regs,&device));
-        assert(config_offset==byte && regs.x0==0xdd);
+        assert(config_offset==0 && regs.x0==((UINT32_C(0xaabbccdd)>>(byte*8u))&255u));
     }
     regs.x0=2;
     assert(virtio_mmio_fault_handle(0,REG_VIRTIO_MMIO_QUEUE_USED_HIGH,1,&regs,&device));

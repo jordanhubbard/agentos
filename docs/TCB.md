@@ -137,6 +137,11 @@ VMM maps the other VMM's page or CC's frontend page. The dual-guest test at
 concurrent Ubuntu/FreeBSD authenticated SSH, destruction and stale-handle
 rejection. Its retained image SHA-256 is
 `68cf76ce00bb5ff04c60a393973c4cd241a39f0fe1d73cd7f28cc0d0656cdbd5`.
+The same scenario passed again on Spark at clean revision `2fd71cde`, with
+image SHA-256 `d27a2a106c210b230dc47e2e9a6de3441e5b43828443431f1a2599f30c68f96b`.
+[The qualification record](evidence/2026-09-16-spark/dual-guest.json) identifies
+the retained image, serial log, network capture and test log. It does not
+qualify RAM/capability reclamation, guest recreation or concurrent Debian.
 The libvmm TX backend now
 retains a private descriptor snapshot and offset across full queues and retries
 when the adapter frees space. It acknowledges only complete chains; traversal
@@ -324,6 +329,10 @@ flag selects VMM initialization and the faulting DTB window at `0x0a040000`,
 virtual INTID 54. No physical GPU frame or IRQ is granted to either VMM or the
 framebuffer service. The `debian-gpu` profile exercises this variant.
 Host tests verify exact pixels through the real framebuffer queue implementation;
+the framebuffer service receives a 1 ms budget per 10 ms period and a 1 KiB
+scheduling context with additional refill records. Short queue exchanges must
+not discard most of the available budget through refill coalescing. The kernel
+retains a 10% CPU ceiling; other PD and guest scheduling parameters are unchanged.
 guest DRM/frame-capture qualification is still pending. Input, a physical
 display driver and authorized external export remain required.
 
