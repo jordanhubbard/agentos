@@ -2,7 +2,8 @@
 
 void aos_x86_apic_init(aos_x86_apic_t *a, uint64_t ticks)
 {
-    *a = (aos_x86_apic_t){.svr=0xff, .lvt_timer=0x10000, .start=ticks, .now=ticks};
+    *a = (aos_x86_apic_t){.svr=0xff, .lvt_timer=0x10000,
+        .lint0=0x10000, .lint1=0x10000, .start=ticks, .now=ticks};
 }
 bool aos_x86_apic_msr(bool write, uint64_t *value)
 {
@@ -39,6 +40,10 @@ bool aos_x86_apic_io(aos_x86_apic_t *a, unsigned off, bool write,
     case 0x80: reg=&a->tpr; mask=0xff; break;
     case 0xf0: reg=&a->svr; mask=0x1ff; break;
     case 0x320: reg=&a->lvt_timer; mask=0x300ff; break; /* no deadline mode */
+    /* No external LINT sources are connected during bootstrap. Retain their
+     * vector/mode/polarity/trigger/mask state; status and remote IRR stay zero. */
+    case 0x350: reg=&a->lint0; mask=0x1a7ff; break;
+    case 0x360: reg=&a->lint1; mask=0x1a7ff; break;
     case 0x380: reg=&a->initial; mask=UINT32_MAX; break;
     case 0x390: if (write) return false; *value=current(a,ticks); break;
     case 0x3e0: reg=&a->divide; mask=0xb; break;

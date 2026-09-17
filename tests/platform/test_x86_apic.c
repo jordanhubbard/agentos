@@ -28,6 +28,14 @@ int main(void)
     assert(apic_io(&a,0x20,false,0,100)==0);
     assert(apic_io(&a,0x30,false,0,100)==0x50014);
     assert(apic_io(&a,0x320,false,0,100)==0x10000);
+    assert(apic_io(&a,0x350,false,0,100)==0x10000);
+    assert(apic_io(&a,0x360,false,0,100)==0x10000);
+    apic_io(&a,0x350,true,0x700,100); /* ExtInt, no connected source */
+    apic_io(&a,0x360,true,0x400,100); /* NMI, no connected source */
+    assert(apic_io(&a,0x350,false,0,100)==0x700);
+    assert(apic_io(&a,0x360,false,0,100)==0x400);
+    assert(apic_io(&b,0x350,false,0,100)==0x10000);
+    rejected(&a,0x350,true,0x4000,100); /* remote IRR is read-only */
     apic_io(&a,0xf0,true,0x1ff,100);
     apic_io(&a,0x3e0,true,0xb,100); /* divide by 1 */
     apic_io(&a,0x380,true,1000,100);
