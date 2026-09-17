@@ -221,9 +221,17 @@ remain outside that result.
 The [Spark input qualification](evidence/2026-09-16-spark/guest-input.json)
 passed at `b0e232f` after the MMIO configuration-byte correction: authenticated
 Debian SSH, exact keyboard/pointer events through the public CLI and Linux
-evdev, and the full OS gate. This is a separate input-only guest run;
-combined graphics/input, target peer isolation and physical device ownership
-still require their own evidence.
+evdev, and the full OS gate. This is a separate input-only guest run.
+
+The subsequent [combined qualification](evidence/2026-09-16-spark/graphics-input.json)
+passed at `4f45ea1`: the same Debian guest exported a 1024x768 frame with two
+exact profile-declared pixels, authenticated SSH, and delivered all four
+keyboard/pointer batches with exact Linux evdev packet boundaries. The full
+local OS gate passed on that revision. With the shorter CC scheduling period,
+the 3 MiB frame transfer completed in 59 seconds. This is bulk capture
+throughput, not an interactive display latency result. Physical device
+ownership, target peer input isolation, guest resource reclamation/recreation,
+and final release integration remain unproven.
 
 MAC work:
 
