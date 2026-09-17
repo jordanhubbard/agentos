@@ -4,6 +4,20 @@
 
 int main(void)
 {
+    aos_x86_cpuid_t ratio={.eax=2,.ebx=192,.ecx=24000000}, zero={0};
+    aos_x86_cpuid_t kvm={.eax=0x40000010,.ebx=0x4b4d564b,.ecx=0x564b4d56,.edx=0x4d};
+    aos_x86_cpuid_t timing={.eax=2400000};
+    assert(aos_x86_tsc_frequency(true,ratio,zero,zero)==UINT64_C(2304000000));
+    assert(aos_x86_tsc_frequency(true,zero,kvm,timing)==UINT64_C(2400000000));
+    assert(aos_x86_tsc_frequency(true,ratio,kvm,timing)==UINT64_C(2304000000));
+    assert(!aos_x86_tsc_frequency(false,ratio,kvm,timing));
+    assert(!aos_x86_tsc_frequency(true,zero,zero,timing));
+    assert(!aos_x86_tsc_frequency(true,zero,kvm,zero));
+    kvm.edx++; assert(!aos_x86_tsc_frequency(true,zero,kvm,timing)); kvm.edx--;
+    kvm.eax--; assert(!aos_x86_tsc_frequency(true,zero,kvm,timing)); kvm.eax++;
+    timing.eax=UINT32_MAX; assert(!aos_x86_tsc_frequency(true,zero,kvm,timing));
+    ratio.ecx=UINT32_MAX; ratio.ebx=UINT32_MAX; ratio.eax=1;
+    assert(!aos_x86_tsc_frequency(true,ratio,zero,zero));
     uint64_t value=UINT64_MAX;
     assert(aos_x86_cpu_identity_msr(0x17,false,&value) && value==0);
     assert(!aos_x86_cpu_identity_msr(0x17,true,&value));

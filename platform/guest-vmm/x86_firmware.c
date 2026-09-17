@@ -118,11 +118,12 @@ void aos_x86_firmware_run(seL4_CPtr ep, seL4_Word result)
     aos_x86_config_t config;
     if (!aos_x86_config_init(&config, AOS_X86_FIRMWARE_RAM))
         stop(ep, AOS_X86_VTX_PROOF_FAIL, 0x434647u, 0, 0);
-    /* Use the architecturally reported TSC/crystal ratio only. A missing
-     * frequency cannot be replaced by invented elapsed time. */
+    /* Admit the architectural ratio or an identified KVM board's explicit
+     * clock leaf. A missing frequency cannot be replaced by invented time. */
     aos_x86_cpuid_t clock = host_id(0).eax >= 0x15u ? host_id(0x15u) : (aos_x86_cpuid_t){0};
-    uint64_t hz = clock.eax ? (uint64_t)clock.ecx * clock.ebx / clock.eax : 0;
-    if (hz > 10000000000ull || !(host_id(0x80000007u).edx & (1u << 8))) hz = 0;
+    aos_x86_cpuid_t hypervisor=(host_id(1).ecx & (1u << 31)) ? host_id(0x40000000u) : (aos_x86_cpuid_t){0};
+    aos_x86_cpuid_t timing=hypervisor.eax >= 0x40000010u ? host_id(0x40000010u) : (aos_x86_cpuid_t){0};
+    uint64_t hz=aos_x86_tsc_frequency(host_id(0x80000007u).edx & (1u << 8),clock,hypervisor,timing);
     uint64_t started = timestamp();
     aos_x86_apic_t apic;
     aos_x86_apic_init(&apic, started);
