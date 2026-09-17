@@ -1,0 +1,40 @@
+{
+  "qualification": "Partial OVMF configuration I/O bring-up",
+  "date": "2026-09-17",
+  "task": "task_8d1e0b3ff6774aa6a74e6adcada28ab8",
+  "firmware_sha256": "101afad5f520753224b60b9555df60add435cf50c7a82b781d7d7d8c60db7eb5",
+  "firmware_provenance": "ovmf-reset.json",
+  "intel": {
+    "host": "madmax",
+    "runtime_revision": "e8af9bb1930d9c12ae736d4f3bdca2d9a1e78a0f",
+    "command": "make gate-x86_64-firmware-reset SEL4_SDK_VERSION=2.3.0 X86_FIRMWARE_IMAGE=/tmp/agentos-ovmf-2024.02-2ubuntu0.9.fd X86_FIRMWARE_SHA256=101afad5f520753224b60b9555df60add435cf50c7a82b781d7d7d8c60db7eb5",
+    "result": "FAIL: unsupported IA32_APIC_BASE read",
+    "exit_reason": 31,
+    "linear_rip": "0xfffcc525",
+    "msr": "0x1b",
+    "observed_progress": "Firmware resumed past PCI I/O and both PIC mask-all writes",
+    "log_sha256": "e76fbc7b1114816b0901af693b2f4c7ad8a180a1dcb63cb7616329e34f6d35d7",
+    "image_sha256": "e6fd890b919fd21d7c81d1c4a7937e965e75944a0c09aa98b7edc0a4d3fde15c",
+    "retained_directory": "/tmp/agentos-v04-intel-config/build/evidence/config-e8af9bb",
+    "termination": "Owned QEMU PID 2234064 terminated only after explicit failure and artifact retention; command returned exit 2"
+  },
+  "spark": {
+    "runtime_revision": "db7928937dd98365090e37a4e39f6af0d09aaa99",
+    "command": "make gate SEL4_SDK_VERSION=2.3.0 QEMU_TEST_SSH_PORT=12262",
+    "result": "PASS",
+    "host_config_tests": "Private PCI identity/state, widths, absent functions, read-only fields, PM timer decode and wrap, fw_cfg counts/directory/E820/EOF, CMOS size fields, unsupported operations without mutation",
+    "log_sha256": "f9b66ee5b9f9185a67b9a031a194b5ac5f197cb22c5c0b3dce8677f8ef7c75b4",
+    "last_gate_image_sha256": "a695cb33a55a7d2d80f2be5eeb582d5859a2397bf6b81d90621fe4e237414b5e",
+    "retained_directory": "/tmp/agentos-v04-x86-config/build/evidence/config-db79289",
+    "additional_host_check": "make test-x86-config-host passed after adding PIC mask-all support and rejection tests in 4f25579"
+  },
+  "revision_scope": "After db79289, only the opt-in x86 firmware variant and its config host test changed. Ordinary gate target behavior is unchanged. Documentation follows the retained runtime revision.",
+  "limits": [
+    "Extended Intel firmware gate is incomplete, not passing",
+    "No target evidence yet for PM timer, CMOS RAM or fw_cfg consumption",
+    "No string-I/O memory translation or guest local APIC/timer model",
+    "No completed UEFI boot, installed ACPI, Linux userspace or canonical x86 guest I/O",
+    "No runtime capability reclamation or persistent UEFI variables",
+    "65536-exit budget bounds dispatch count, not guest execution time"
+  ]
+}

@@ -363,9 +363,11 @@ The optional [OVMF reset variant](x86-firmware.md) replaces the five-page
 payload with 32 MiB private RAM and 4 MiB read-only firmware. Root initializes
 these frames through temporary mappings, installs EPT mappings and provides
 the single VMM's VCPU cap. No device frames, IRQs or host I/O capabilities
-are added. The current gate proves the firmware's reset-to-long-mode
-path up to a PCI configuration I/O exit; it does not prove UEFI boot, Linux, runtime resource
-management or persistent firmware variables.
+are added. The VMM emulates private PCI configuration and scalar firmware-data
+ports. PIC mask-all is supported; unmasking is rejected. Intel execution reaches
+an unsupported MSR after PIC masking. The extended firmware gate remains
+incomplete; it does not prove UEFI boot, Linux, runtime resource management or
+persistent firmware variables.
 
 ### Read-only boot inspection
 
