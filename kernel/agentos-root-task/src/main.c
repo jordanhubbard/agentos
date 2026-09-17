@@ -3201,10 +3201,9 @@ void root_task_main(const seL4_BootInfo *bi)
             seL4_MessageInfo_get_length(tag) == 4u &&
 #ifdef AGENTOS_X86_FIRMWARE_RESET
             status == AOS_X86_VTX_RESET_EXIT &&
-            ((reason == 10u && instruction_len == 2u) ||
-             (reason == 28u && instruction_len == 3u)) &&
+            reason == 10u && instruction_len == 2u &&
             rip >= AOS_X86_FIRMWARE_BASE && rip <= 0xffffffffu) {
-            dbg_puts("[rt] x86 OVMF reset execution verified\n");
+            dbg_puts("[rt] x86 OVMF protected-mode execution verified\n");
             dbg_puts("[rt] firmware exit reason="); dbg_hex(reason);
             dbg_puts(" linear RIP="); dbg_hex(rip); dbg_puts("\n");
 #else
