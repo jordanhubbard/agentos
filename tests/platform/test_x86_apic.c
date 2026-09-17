@@ -98,7 +98,6 @@ int main(void)
     rejected(&b,0xb0,true,1,100);
     rejected(&b,0xb0,false,0,100);
     rejected(&b,0x120,true,0,100);
-    rejected(&b,0x320,true,0xf,100);
     apic_io(&b,0xb0,true,0,100); /* pop only highest in-service vector */
     assert(apic_io(&b,0x130,false,0,100)==0u);
     assert(apic_io(&b,0x120,false,0,100)==1u);
@@ -112,6 +111,13 @@ int main(void)
     apic_io(&b,0xb0,true,0,100);
     apic_io(&b,0xb0,true,0,100); /* idle EOI is harmless */
     assert(apic_io(&b,0xa0,false,0,100)==0);
+    aos_x86_apic_init(&b,0);
+    apic_io(&b,0xf0,true,0x1ff,0);
+    apic_io(&b,0x320,true,0,0); /* valid programming while timer stopped */
+    assert(!aos_x86_apic_pending(&b,100));
+    apic_io(&b,0x380,true,1,100);
+    assert(aos_x86_apic_pending(&b,102)==AOS_X86_APIC_INVALID_VECTOR);
+    assert(!aos_x86_apic_accept(&b,AOS_X86_APIC_INVALID_VECTOR));
 
     aos_x86_memory_t m={.ram=ram,.ram_size=sizeof(ram),.rom=rom,.rom_base=0xffc00000,.rom_size=sizeof(rom)};
     pte(0x1000,0x2003); pte(0x2000,0x3003); pte(0x3000,0x4003); pte(0x4000,0x5003);

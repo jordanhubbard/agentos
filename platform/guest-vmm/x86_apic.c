@@ -33,6 +33,7 @@ static void advance(aos_x86_apic_t *a, uint64_t ticks)
     if ((a->svr & 0x100u) && !(a->lvt_timer & 0x10000u)) {
         unsigned vector=a->lvt_timer & 0xffu;
         if (vector >= 16u) a->irr[vector/32] |= 1u << (vector%32);
+        else a->invalid_vector=true;
     }
 }
 static unsigned highest(const uint32_t bits[8])
@@ -49,12 +50,13 @@ unsigned aos_x86_apic_pending(aos_x86_apic_t *a, uint64_t ticks)
 {
     if (!a || ticks < a->now) return 0;
     advance(a,ticks);
+    if (a->invalid_vector) return AOS_X86_APIC_INVALID_VECTOR;
     unsigned v=highest(a->irr);
     return (a->svr & 0x100u) && (v >> 4) > (priority(a) >> 4) ? v : 0;
 }
 bool aos_x86_apic_accept(aos_x86_apic_t *a, unsigned vector)
 {
-    if (!a || !vector || vector != aos_x86_apic_pending(a,a->now)) return false;
+    if (!a || !vector || vector >= 256u || vector != aos_x86_apic_pending(a,a->now)) return false;
     a->irr[vector/32] &= ~(1u << (vector%32));
     a->isr[vector/32] |= 1u << (vector%32);
     return true;
@@ -102,8 +104,6 @@ bool aos_x86_apic_io(aos_x86_apic_t *a, unsigned off, bool write,
     if (reg) {
         if (write) {
             if (*value & ~mask) return false;
-            if (off == 0x320 && !(*value & 0x10000u) && (*value & 0xffu) < 16u)
-                return false;
             /* Preserve remaining count at a divider change; restart the
              * prescaler at this tick under the new divider. */
             if (off == 0x3e0 && *value != *reg) next.phase=0;

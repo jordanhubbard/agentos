@@ -298,6 +298,8 @@ void aos_x86_firmware_run(seL4_CPtr ep, seL4_Word result)
         seL4_Error err = seL4_X86_VCPU_WriteRegisters(VCPU, &regs);
         if (err) stop(ep, AOS_X86_VTX_PROOF_FAIL, reason, rip, err);
         unsigned vector=aos_x86_apic_pending(&apic,timestamp());
+        if (vector == AOS_X86_APIC_INVALID_VECTOR)
+            stop(ep,AOS_X86_VTX_PROOF_FAIL,0x495256u,rip,apic.lvt_timer);
         seL4_Word controls=1u << 7, interrupt=0;
         if (vector) {
             if ((guest_flags & (1u << 9)) && !(read_field(ep,INTERRUPTIBILITY) & 3u)) {
