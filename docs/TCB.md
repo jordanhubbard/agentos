@@ -69,9 +69,12 @@ Root allocates the region only when `net_virt` is present. Allocation failure
 stops startup; mapping failure prevents the affected PD from starting. Device
 registers and driver DMA remain separate grants. Attachment
 is one `NET_VIRT_OP_ATTACH` Call per client; after that the VMM only
-`seL4_NBSend`s `NET_VIRT_EVENT_KICK` when `tx_active` is non-empty (and
+signals `net_virt`'s bound notification when `tx_active` is non-empty (and
 `net_virt` asked for kicks through the sDDF `consumer_signalled` flag), and
-`net_virt` NBSends `NET_SVC_EVENT_RX_READY` when it filled `rx_active`.
+`net_virt` signals the owning VMM's bound notification when it fills
+`rx_active`. Root grants send-only notification capabilities in both
+directions; pending wakeups survive until received. Guest wake badges may
+combine with the native-client badge and are handled before IPC tags.
 `net_virt` alone speaks `net_pd`'s RAW contract (`RAW_SEND` / `RAW_RECV`
 over a per-client slot in the same frame); `net_pd` NBSends `RX_READY` to
 `net_virt`, never to a VMM, and no VMM holds a `net_pd` endpoint. When
@@ -92,7 +95,7 @@ Intel host NIC, root network grants or a Linux x86 network interface.
 `net_virt` emits complete bounded diagnostic messages through the common log
 ring and send-only drain notification. It holds no serial service endpoint,
 serial transfer page or log-drain Call endpoint. Nameserver, NIC-driver and
-VMM notification endpoints remain separate from logging. Release builds
+VMM notification capabilities remain separate from logging. Release builds
 without log provisioning retain the common silent debug fallback.
 
 Network descriptors remain untrusted even within an isolated client page.
