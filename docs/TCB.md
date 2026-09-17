@@ -279,6 +279,14 @@ DMA against those QEMU devices is an architecture regression.
 
 ## Proof
 
+The optional AArch64 `DISPLAY_RAMFB=1` composition adds `display_ramfb` as
+a display driver. It alone receives QEMU fw_cfg MMIO, its private uncached
+DMA allocation, and two private contiguous scanout banks. Its only client is
+`framebuffer_queue`, through a separate queue and dedicated notifications.
+No guest VMM receives these frames or caps. This variant is under development;
+target scanout qualification remains pending and it supplies no bare-metal
+Spark GPU support.
+
 ### Framebuffer queue qualification image
 
 `make test-framebuffer` adds `framebuffer_queue` and two native test clients

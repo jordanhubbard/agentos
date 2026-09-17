@@ -34,12 +34,23 @@ queue space. `make test-display-host` verifies a complete 1024x768 frame,
 unchanged front pixels during transfer, backpressure, wrap, stale cookies,
 abort and failed presentation. This contract is not yet mapped on target.
 
-This is a protocol component, not a working scanout path. No PD has been given
-fw_cfg or display DMA capabilities by this change. Target integration requires
-a dedicated TCB driver, root-provisioned contiguous scanout/DMA storage, a
-framebuffer-to-driver queue, bounded completion handling and actual QEMU display
-capture with exact pixel verification. The guest continues using emulated
-virtio-gpu and never receives the fw_cfg device or display DMA memory.
+`DISPLAY_RAMFB=1` now adds a dedicated AArch64 `display_ramfb` PD to a
+framebuffer-test or guest-graphics composition. Root reserves an 8 MiB untyped
+and retypes four contiguous large pages into two private 4 MiB scanout banks.
+It validates physical continuity, maps private DMA memory and fw_cfg only into
+the driver, and maps the separate display queue into driver and framebuffer
+service. Dedicated receive/send-only notifications use CNode slots 40/41.
+The driver has a 1 ms budget per 10 ms period with additional refill storage.
+Driver metadata occupies the first 64 bytes of its private DMA allocation;
+the transport descriptor and copied configuration follow it.
+
+`make test-framebuffer DISPLAY_RAMFB=1 QEMU_TEST_TIMEOUT=120` passed on Spark:
+the driver initialized its root-provisioned transport, both native clients
+passed, and observer frames exported correctly. An initial missing-PD-count
+failure was retained before correcting composition. This is not yet a working
+scanout path: the framebuffer producer and QEMU ramfb launch/capture harness
+remain to wire and qualify. The guest continues using emulated virtio-gpu and
+never receives the fw_cfg device or display DMA memory.
 
 `make test-ramfb-host` verifies the wire configuration, discovery bounds,
 MMIO endian layout, DMA descriptor, completion, timeout and retained-storage

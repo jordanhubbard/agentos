@@ -410,6 +410,18 @@ ifdef FRAMEBUFFER_TEST
   IMAGES += framebuffer_queue.elf framebuffer_client0.elf framebuffer_client1.elf
 endif
 
+ifdef DISPLAY_RAMFB
+  ifneq ($(ARCH),aarch64)
+    $(error DISPLAY_RAMFB requires aarch64)
+  endif
+  ifeq ($(strip $(FRAMEBUFFER_TEST)$(GUEST_GRAPHICS)),)
+    $(error DISPLAY_RAMFB requires FRAMEBUFFER_TEST or GUEST_GRAPHICS)
+  endif
+  CFLAGS_ROOT_TASK += -DAGENTOS_DISPLAY_RAMFB=1
+  CFLAGS += -DAGENTOS_DISPLAY_RAMFB=1
+  IMAGES += display_ramfb.elf
+endif
+
 ifdef NATIVE_RUST_TEST
   ifneq ($(ARCH),aarch64)
     $(error NATIVE_RUST_TEST currently requires aarch64)
@@ -725,6 +737,16 @@ $(BUILD_DIR)/rust_pd_memory.o: $(REPO_ROOT)/libs/rust-pd/runtime/memory.c
 
 $(BUILD_DIR)/framebuffer_service.o: $(REPO_ROOT)/platform/framebuffer/service.c
 	$(CC) $(CFLAGS) -c $< -o $@
+$(BUILD_DIR)/display_service.o: $(REPO_ROOT)/platform/display/service.c
+	$(CC) $(CFLAGS) -c $< -o $@
+$(BUILD_DIR)/ramfb.o: $(REPO_ROOT)/platform/display/ramfb.c
+	$(CC) $(CFLAGS) -c $< -o $@
+$(BUILD_DIR)/ramfb_mmio.o: $(REPO_ROOT)/platform/display/ramfb_mmio.c
+	$(CC) $(CFLAGS) -c $< -o $@
+$(BUILD_DIR)/ramfb_pd.o: $(REPO_ROOT)/platform/display/ramfb_pd.c $(GUEST_CONFIG_STAMP)
+	$(CC) $(CFLAGS) -c $< -o $@
+$(BUILD_DIR)/display_ramfb.elf: $(BUILD_DIR)/ramfb_pd.o $(BUILD_DIR)/ramfb.o $(BUILD_DIR)/ramfb_mmio.o $(BUILD_DIR)/display_service.o $(BUILD_DIR)/pd_entry.o $(BUILD_DIR)/sel4_crt.o $(BUILD_DIR)/rust_pd_memory.o
+	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
 $(BUILD_DIR)/input_service.o: $(REPO_ROOT)/platform/input-virt/service.c
 	$(CC) $(CFLAGS) -c $< -o $@
 $(BUILD_DIR)/input_virt.o: $(REPO_ROOT)/platform/input-virt/input_virt.c $(GUEST_CONFIG_STAMP)
@@ -1083,14 +1105,16 @@ endif
 SYSTEM_TOML_DEFAULT := $(abspath $(CURDIR)/agentos.toml)
 ifdef FRAMEBUFFER_TEST
 SYSTEM_TOML_DEFAULT := $(abspath $(BUILD_DIR)/agentos-framebuffer-test.toml)
-$(SYSTEM_TOML_DEFAULT): $(abspath $(CURDIR)/agentos.toml)
+$(SYSTEM_TOML_DEFAULT): $(abspath $(CURDIR)/agentos.toml) $(GUEST_CONFIG_STAMP)
 	@mkdir -p $(BUILD_DIR)
 	{ cat $<; printf '\n[[pd]]\nname = "framebuffer_queue"\npriority = 215\n'; printf '\n[[pd]]\nname = "framebuffer_client0"\npriority = 214\n'; printf '\n[[pd]]\nname = "framebuffer_client1"\npriority = 214\n'; } > $@
+	$(if $(strip $(DISPLAY_RAMFB)),printf '\n[[pd]]\nname = "display_ramfb"\npriority = 216\n' >> $@,true)
 else ifneq ($(strip $(GUEST_GRAPHICS)$(GUEST_INPUT)),)
 SYSTEM_TOML_DEFAULT := $(abspath $(BUILD_DIR)/agentos-guest-graphics.toml)
 $(SYSTEM_TOML_DEFAULT): $(abspath $(CURDIR)/agentos.toml) $(GUEST_CONFIG_STAMP)
 	@mkdir -p $(BUILD_DIR)
 	{ cat $<; $(if $(strip $(GUEST_GRAPHICS)),printf '\n[[pd]]\nname = "framebuffer_queue"\npriority = 215\n';,) $(if $(strip $(GUEST_INPUT)),printf '\n[[pd]]\nname = "input_virt"\npriority = 215\n';,) $(if $(strip $(GUEST_SECONDARY_PROFILE)),printf '\n[[pd]]\nname = "guest_vmm_secondary"\npriority = 250\n';,) } > $@
+	$(if $(strip $(DISPLAY_RAMFB)),printf '\n[[pd]]\nname = "display_ramfb"\npriority = 216\n' >> $@,true)
 else ifdef NATIVE_RUST_TEST
 SYSTEM_TOML_DEFAULT := $(abspath $(BUILD_DIR)/agentos-native-rust-test.toml)
 $(SYSTEM_TOML_DEFAULT): $(abspath $(CURDIR)/agentos.toml)
