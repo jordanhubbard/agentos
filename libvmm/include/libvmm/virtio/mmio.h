@@ -66,6 +66,12 @@ typedef struct virtio_queue_handler {
 
 struct virtio_device;
 
+/* Shared register operations. Architecture adapters validate the instruction,
+ * access width and region bounds, then mask/extract the register value.
+ * A failed read leaves *value unchanged. No guest CPU context is accessed. */
+bool virtio_mmio_reg_read(struct virtio_device *dev, size_t offset, uint32_t *value);
+bool virtio_mmio_reg_write(struct virtio_device *dev, size_t offset, uint32_t value);
+
 // functions provided by the emul (device) layer for the emul (mmio) layer
 typedef struct virtio_emul_funs {
     void (*device_reset)(struct virtio_device *dev);
