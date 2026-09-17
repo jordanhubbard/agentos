@@ -314,15 +314,28 @@ void aos_x86_firmware_run(seL4_CPtr ep, seL4_Word result)
                 stop(ep, AOS_X86_VTX_PROOF_FAIL, reason, rip, regs.ecx);
             if (reason == 31u) { regs.eax=(uint32_t)value; regs.edx=value >> 32; }
         } else if ((reason == 31u || reason == 32u) && len == 2u &&
+                   (uint32_t)regs.ecx>=0xc0000081u && (uint32_t)regs.ecx<=0xc0000084u) {
+            uint64_t value=((uint64_t)(uint32_t)regs.edx << 32) | (uint32_t)regs.eax;
+            if (!aos_x86_cpu_syscall_msr((uint32_t)regs.ecx,reason==32u,value))
+                stop(ep,AOS_X86_VTX_PROOF_FAIL,reason,rip,regs.ecx);
+            if (reason==32u) {
+                seL4_X86_VCPU_WriteMSR_t r=seL4_X86_VCPU_WriteMSR(VCPU,(uint32_t)regs.ecx,value);
+                if (r.error) stop(ep,AOS_X86_VTX_PROOF_FAIL,reason,rip,r.error);
+            } else {
+                seL4_X86_VCPU_ReadMSR_t r=seL4_X86_VCPU_ReadMSR(VCPU,(uint32_t)regs.ecx);
+                if (r.error) stop(ep,AOS_X86_VTX_PROOF_FAIL,reason,rip,r.error);
+                regs.eax=(uint32_t)r.value; regs.edx=r.value >> 32;
+            }
+        } else if ((reason == 31u || reason == 32u) && len == 2u &&
                    (uint32_t)regs.ecx == 0xc0000080u) {
             seL4_Word efer = read_field(ep, EFER);
             if (reason == 31u) { regs.eax = (uint32_t)efer; regs.edx = efer >> 32; }
             else {
                 uint64_t value = ((uint64_t)(uint32_t)regs.edx << 32) | (uint32_t)regs.eax;
-                if ((value & ~(uint64_t)(LME | LMA | NXE)) ||
-                    ((read_field(ep, CR0) & PG) && ((value ^ efer) & LME)))
+                uint64_t next;
+                if (!aos_x86_cpu_efer(efer,value,read_field(ep,CR0) & PG,&next))
                     stop(ep, AOS_X86_VTX_PROOF_FAIL, reason, rip, value);
-                write_field(ep, EFER, (value & ~LMA) | (efer & LMA));
+                write_field(ep, EFER, next);
             }
         } else if ((reason == 31u || reason == 32u) && len == 2u &&
                    (uint32_t)regs.ecx == 0x1bu) {

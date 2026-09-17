@@ -1,5 +1,24 @@
 #include "platform/x86_cpu.h"
 
+bool aos_x86_cpu_efer(uint64_t current, uint64_t requested, bool paging,
+                      uint64_t *next)
+{
+    const uint64_t lme=UINT64_C(1)<<8, lma=UINT64_C(1)<<10;
+    const uint64_t allowed=1u | lme | lma | (UINT64_C(1)<<11);
+    if (!next || (requested & ~allowed) ||
+        (paging && ((requested ^ current) & lme))) return false;
+    *next=(requested & ~lma) | (current & lma);
+    return true;
+}
+
+bool aos_x86_cpu_syscall_msr(uint32_t msr, bool write, uint64_t value)
+{
+    if (msr<0xc0000081u || msr>0xc0000084u) return false;
+    if (!write || msr==0xc0000081u) return true; /* STAR selectors */
+    if (msr==0xc0000084u) return value<=UINT32_MAX; /* FMASK */
+    return (value >> 48)==((value & (UINT64_C(1)<<47)) ? 0xffffu : 0u);
+}
+
 uint64_t aos_x86_tsc_frequency(bool invariant, aos_x86_cpuid_t ratio,
                               aos_x86_cpuid_t hypervisor, aos_x86_cpuid_t timing)
 {

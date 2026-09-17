@@ -4,6 +4,28 @@
 
 int main(void)
 {
+    uint64_t next=0xdead;
+    assert(aos_x86_cpu_efer(0xd00,0xd01,true,&next) && next==0xd01);
+    assert(aos_x86_cpu_efer(0xd01,0x900,true,&next) && next==0xd00);
+    assert(aos_x86_cpu_efer(0,0x501,false,&next) && next==0x101);
+    next=0xdead;
+    assert(!aos_x86_cpu_efer(0xd01,0x801,true,&next) && next==0xdead);
+    assert(!aos_x86_cpu_efer(0,UINT64_C(1)<<32,false,&next) && next==0xdead);
+    assert(!aos_x86_cpu_efer(0,2,false,&next) && next==0xdead);
+    assert(!aos_x86_cpu_efer(0,0,false,NULL));
+    assert(aos_x86_cpu_syscall_msr(0xc0000081,true,UINT64_MAX));
+    assert(aos_x86_cpu_syscall_msr(0xc0000084,true,0x47700));
+    assert(!aos_x86_cpu_syscall_msr(0xc0000084,true,UINT64_C(1)<<32));
+    for (uint32_t msr=0xc0000082; msr<=0xc0000083; msr++) {
+        assert(aos_x86_cpu_syscall_msr(msr,false,0));
+        assert(aos_x86_cpu_syscall_msr(msr,true,0x00007fffffffffff));
+        assert(aos_x86_cpu_syscall_msr(msr,true,UINT64_C(0xffff800000000000)));
+        assert(!aos_x86_cpu_syscall_msr(msr,true,0x0000800000000000));
+        assert(!aos_x86_cpu_syscall_msr(msr,true,UINT64_C(0xffff7fffffffffff)));
+    }
+    assert(!aos_x86_cpu_syscall_msr(0xc0000080,false,0));
+    assert(!aos_x86_cpu_syscall_msr(0xc0000085,true,0));
+    assert(!aos_x86_cpu_syscall_msr(0x79,true,0));
     aos_x86_cpuid_t ratio={.eax=2,.ebx=192,.ecx=24000000}, zero={0};
     aos_x86_cpuid_t kvm={.eax=0x40000010,.ebx=0x4b4d564b,.ecx=0x564b4d56,.edx=0x4d};
     aos_x86_cpuid_t timing={.eax=2400000};
@@ -43,7 +65,7 @@ int main(void)
     assert((r.edx & ((1u<<9)|(1u<<12)|(1u<<16)|(1u<<28))) == 0u);
     assert((r.edx & ((1u<<6)|(1u<<25)|(1u<<26))) == ((1u<<6)|(1u<<25)|(1u<<26)));
     r = aos_x86_cpu_id(0x80000001u, 0);
-    assert(r.edx == ((1u<<20)|(1u<<29)) && r.ecx == 0u);
+    assert(r.edx == ((1u<<11)|(1u<<20)|(1u<<29)) && r.ecx == 0u);
     r = aos_x86_cpu_id(0x80000008u, 0);
     assert(r.eax == 0x3024u && r.ebx == 0u && r.ecx == 0u && r.edx == 0u);
     const uint32_t absent[] = {2u, 7u, 0xdu, 0x21u, 0x40000001u, 0x8000001fu, 0xffffffffu};
