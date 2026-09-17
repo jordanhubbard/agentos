@@ -28,3 +28,8 @@ Physical hardware must remain owned by the driver PDs. The initramfs
 userspace proof and its CPUID completion trap do not satisfy these device
 requirements. Canonical device work is tracked by
 `task_3a5da27d553a475092d35a9fa1cb90e9`.
+
+The full Spark gate passed at `5d3a438`, including live guest console, network
+and block through the shared implementation. The core also compiled against
+the real x86 seL4 headers. The [receipt](evidence/2026-09-17-spark/virtio-mmio-core.json)
+records the commands, artifact hashes and limits of that evidence.
