@@ -213,7 +213,8 @@ The [Spark guest-frame checkpoint](evidence/2026-09-16-spark/guest-frame.json)
 records a 1024x768 frame captured from Debian at `9769cefb` on the pending
 graphics branch (PR #166). Two exact guest-written pixels survived the
 virtio-gpu, framebuffer and CC observer path. This is a revision-specific
-frame-transfer result; SSH qualification was still running at capture time.
+frame-transfer result; SSH qualification subsequently failed during banner
+exchange. PR #172 addresses the configuration-byte regression in this source.
 Input delivery, physical scanout, interactive latency and release integration
 remain outside that result.
 

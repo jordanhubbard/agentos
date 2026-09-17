@@ -11,6 +11,8 @@
   "command": "make test-guest-gpu QEMU_TEST_TIMEOUT=1800 QEMU_TEST_GPU_SSH_PORT=12226",
   "result": "frame_capture_pass",
   "overall_qualification_at_capture": "pending SSH provisioning and authentication",
+  "final_qualification_result": "fail: SSH banner exchange timed out after console provisioning",
+  "followup": "PR #172 corrects the MMIO configuration-byte regression; this captured revision predates that fix",
   "proven": [
     "Linux virtio_gpu loaded with DRM card0 and framebuffer fb0",
     "Guest framebuffer writes reached the canonical framebuffer through emulated virtio-gpu",
@@ -41,6 +43,8 @@
     "frame.json": "7d64e151ae33ec3814f353ee91620548e3efd3f7ab3b6e46b6fac9179340ab2e",
     "frame.ppm": "cb9b1f94595564c62a17a1e987f5e8b3877467efcf4510191e78261c25de9643",
     "qualification-at-capture.log": "415b043ab2034aa640259379439bc9f64924690f558f23cb11b94ea723086300",
-    "serial-at-capture.log": "0f914d0f0cdf548195cf226c3e830720837beb1701b6729a8d97e974e3461ecb"
+    "serial-at-capture.log": "0f914d0f0cdf548195cf226c3e830720837beb1701b6729a8d97e974e3461ecb",
+    "qualification-final.log": "42f2e1a139332d2165935ec3907318122ee003a0f4f4236224b5b4287d3feef4",
+    "serial-final.log": "5091771876d5a6540e34b5b42fd0056576f5a01ea27d3d24040f7896d3c8c41a"
   }
 }
