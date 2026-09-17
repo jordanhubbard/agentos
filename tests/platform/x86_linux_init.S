@@ -31,13 +31,61 @@ dev_directory_ready:
     mov $4, %r13d
     mov $2, %eax                  /* hvc0 exists only after console binding */
     lea console_path(%rip), %rdi
-    mov $0x802, %esi              /* O_RDWR | O_NONBLOCK */
+    mov $2, %esi                  /* O_RDWR; host gate bounds the exchange */
     xor %edx, %edx
     syscall
     test %rax, %rax
     js failed
     mov $5, %r13d
+    mov %rax, %r14
     mov %rax, %rdi
+    mov $16, %eax                 /* ioctl(TCGETS), kernel termios ABI */
+    mov $0x5401, %esi
+    lea termios(%rip), %rdx
+    syscall
+    test %rax, %rax
+    jne failed
+    movl $0, termios(%rip)        /* raw input/output, no echo or canonical mode */
+    movl $0, termios+4(%rip)
+    movl $0, termios+12(%rip)
+    movb $0, termios+22(%rip)     /* VTIME */
+    movb $1, termios+23(%rip)     /* VMIN */
+    mov $16, %eax
+    mov %r14, %rdi
+    mov $0x5402, %esi
+    lea termios(%rip), %rdx
+    syscall
+    test %rax, %rax
+    jne failed
+    mov $7, %r13d
+    lea ready(%rip), %rsi
+    mov $ready_end-ready, %edx
+    call console_write
+    mov $8, %r13d
+    lea console_buffer(%rip), %r15
+    mov $request_end-request, %ebp
+console_read:
+    xor %eax, %eax
+    mov %r14, %rdi
+    mov %r15, %rsi
+    mov %rbp, %rdx
+    syscall
+    test %rax, %rax
+    jle failed
+    add %rax, %r15
+    sub %rax, %rbp
+    jne console_read
+    lea request(%rip), %rsi
+    lea console_buffer(%rip), %rdi
+    mov $request_end-request, %ecx
+    cld
+    repe cmpsb
+    jne failed
+    mov $9, %r13d
+    lea reply(%rip), %rsi
+    mov $reply_end-reply, %edx
+    call console_write
+    mov %r14, %rdi
     mov $3, %eax
     syscall
     test %rax, %rax
@@ -99,14 +147,37 @@ failed:
     mov %r13d, %edx
     cpuid
     jmp failed
+console_write:
+    mov %rsi, %r15
+    mov %rdx, %rbp
+1:
+    mov $1, %eax
+    mov %r14, %rdi
+    mov %r15, %rsi
+    mov %rbp, %rdx
+    syscall
+    test %rax, %rax
+    jle failed
+    add %rax, %r15
+    sub %rax, %rbp
+    jne 1b
+    ret
 .section .rodata
 path: .asciz "/userspace-proof"
 dev_path: .asciz "/dev"
 devfs: .asciz "devtmpfs"
 console_path: .asciz "/dev/hvc0"
+ready: .ascii "agentos-uart-ready\n"
+ready_end:
+request: .ascii "agentos-uart-request\n"
+request_end:
+reply: .ascii "agentos-uart-reply\n"
+reply_end:
 data: .ascii "agentOS x86 Linux syscall roundtrip\n"
 data_end:
 .section .bss
 .balign 16
 buffer: .skip data_end-data
+termios: .skip 36
+console_buffer: .skip request_end-request
 .section .note.GNU-stack,"",@progbits

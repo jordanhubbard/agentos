@@ -1,5 +1,8 @@
-# Firmware composition: isolated serial queues and a VMM-emulated console.
-# A physical frontend is not wired by this composition yet.
+# Firmware composition: COM2 driver, serial mux and VMM-emulated console.
+[[pd]]
+name = "serial_pd"
+priority = 180
+
 [[pd]]
 name = "serial_virt"
 priority = 203

@@ -818,6 +818,9 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
                 &mut qemu,
             )
         } else if args.assert_vmx_exit {
+            if args.assert_x86_userspace {
+                x86_console_roundtrip(&cc_sock, Duration::from_secs(args.timeout_secs))?;
+            }
             wait_for_x86_vtx_proof(
                 &log_path,
                 Duration::from_secs(args.timeout_secs),
@@ -1821,6 +1824,7 @@ pub(crate) fn spawn_qemu_with_guest(
             let kernel = sel4_sdk_path()?.join("board/x86_64_generic_vtx/release/elf/sel4_32.elf");
             let root_task = repo_root.join("build/x86_64_generic_vtx/root_task.elf");
             let mut c = std::process::Command::new("qemu-system-x86_64");
+            let _ = std::fs::remove_file(&cc_sock);
             c.arg("-machine")
                 .arg("q35")
                 .arg("-enable-kvm")
@@ -1840,6 +1844,13 @@ pub(crate) fn spawn_qemu_with_guest(
                 .arg(kernel)
                 .arg("-initrd")
                 .arg(root_task);
+            c.arg("-chardev")
+                .arg(format!(
+                    "socket,id=serial2,path={},server=on,wait=off",
+                    cc_sock.display()
+                ))
+                .arg("-serial")
+                .arg("chardev:serial2");
             c
         }
         other => {
@@ -1888,6 +1899,38 @@ pub(crate) fn spawn_qemu_with_guest(
     };
     println!("[xtask:test] QEMU pid={}", child.id());
     Ok(child)
+}
+
+fn x86_console_roundtrip(socket: &Path, timeout: Duration) -> anyhow::Result<()> {
+    let deadline = Instant::now() + timeout;
+    let mut stream = loop {
+        match UnixStream::connect(socket) {
+            Ok(stream) => break stream,
+            Err(error) if Instant::now() >= deadline => return Err(error.into()),
+            Err(_) => std::thread::sleep(Duration::from_millis(20)),
+        }
+    };
+    stream.set_read_timeout(Some(deadline.saturating_duration_since(Instant::now())))?;
+    stream.set_write_timeout(Some(Duration::from_secs(5)))?;
+    let mut ready = [0; b"agentos-uart-ready\n".len()];
+    stream
+        .read_exact(&mut ready)
+        .context("Intel console readiness bytes")?;
+    anyhow::ensure!(
+        &ready == b"agentos-uart-ready\n",
+        "Intel console readiness mismatch: {ready:?}"
+    );
+    stream.write_all(b"agentos-uart-request\n")?;
+    let mut reply = [0; b"agentos-uart-reply\n".len()];
+    stream
+        .read_exact(&mut reply)
+        .context("Intel console reply bytes")?;
+    anyhow::ensure!(
+        &reply == b"agentos-uart-reply\n",
+        "Intel console reply mismatch: {reply:?}"
+    );
+    println!("PASS: Intel hvc0 console request/reply through COM2 and serial_virt queues");
+    Ok(())
 }
 
 fn host_kvm_available(board: &str) -> bool {

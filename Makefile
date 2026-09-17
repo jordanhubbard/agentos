@@ -717,15 +717,9 @@ test-x86-firmware-build:
 		AGENTOS_ARCH=x86_64 AGENTOS_BOARD=x86_64_generic_vtx \
 		SEL4_SDK=$(SEL4_SDK) SEL4_SDK_VERSION=$(SEL4_SDK_VERSION) \
 		X86_FIRMWARE_RESET=1 \
-		$(abspath $(BUILD_TMP_DIR)/x86-firmware-link)/guest_vmm_primary.elf
-	@echo ""
-	@echo "╔══════════════════════════════════════════════════════════╗"
-	@echo "║  ✅ OS-CLAIM GATE PASSED                                  ║"
-	@echo "║  Host suite + aarch64/x86_64 boot + guest net/blk/console ║"
-	@echo "║  proofs through the virtualizer path all OK.             ║"
-	@echo "║  OS-level completion claims are now permitted.           ║"
-	@echo "╚══════════════════════════════════════════════════════════╝"
-	@echo ""
+		$(abspath $(BUILD_TMP_DIR)/x86-firmware-link)/guest_vmm_primary.elf \
+		$(abspath $(BUILD_TMP_DIR)/x86-firmware-link)/serial_pd.elf
+	@echo "PASS: x86 firmware VMM and serial driver link checks"
 
 # test-host: alias for the host-only integration suite.  Named explicitly so
 # callers and CI cannot mistake host-only coverage for target/QEMU proof.
@@ -769,6 +763,13 @@ test-x86-cpu-host:
 	$(CC) -std=c11 -Wall -Wextra -Werror -I platform/include tests/platform/test_x86_cpu.c platform/guest-vmm/x86_cpu.c -o $(BUILD_TMP_DIR)/test_x86_cpu
 	$(BUILD_TMP_DIR)/test_x86_cpu
 test-host: test-x86-acpi-host
+test-host: test-serial-uart-host
+
+.PHONY: test-serial-uart-host
+test-serial-uart-host:
+	@mkdir -p $(BUILD_TMP_DIR)
+	$(CC) -std=c11 -Wall -Wextra -Werror -I platform/include tests/platform/test_serial_uart.c platform/serial-virt/uart.c platform/serial-virt/pump.c -o $(BUILD_TMP_DIR)/test_serial_uart
+	$(BUILD_TMP_DIR)/test_serial_uart
 test-host: test-x86-ioapic-host
 test-host: test-x86-acpi-loader-host
 test-host: test-x86-event-host

@@ -714,7 +714,15 @@ $(BUILD_DIR)/vibe_engine.o: $(SERVICES_DIR)/vibe-engine/vibe_engine.c
 	@mkdir -p $(BUILD_DIR)
 	$(CC) -c $(CFLAGS) $< -o $@
 
+ifeq ($(X86_FIRMWARE_RESET),1)
+$(BUILD_DIR)/serial_pd.elf: $(BUILD_DIR)/serial_uart.pd.o $(BUILD_DIR)/serial_pump.pd.o
+$(BUILD_DIR)/serial_uart.pd.o: $(REPO_ROOT_MK)/platform/serial-virt/uart.c
+	@mkdir -p $(BUILD_DIR)
+	$(CC) -c $(CFLAGS) $< -o $@
+$(BUILD_DIR)/serial_pd.o: $(SERVICES_DIR)/serial-mux/serial_x86.c
+else
 $(BUILD_DIR)/serial_pd.o: $(SERVICES_DIR)/serial-mux/serial_pd.c
+endif
 	@mkdir -p $(BUILD_DIR)
 	$(CC) -c $(CFLAGS) $< -o $@
 
