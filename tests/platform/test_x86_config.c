@@ -26,7 +26,7 @@ static void reject(aos_x86_config_t *s, unsigned port, unsigned width, bool writ
 {
     aos_x86_config_t before = *s;
     uint32_t value = 0xabcdef01;
-    assert(!aos_x86_config_io(s, port, width, write, &value, 0));
+    assert(!aos_x86_config_io(s, port, width, write, &value, 0x12345678u));
     assert(value == 0xabcdef01 && !memcmp(s, &before, sizeof(before)));
 }
 int main(void)
@@ -84,6 +84,11 @@ int main(void)
     select_pci(&a, 0x80000b80);
     io(&a, 0xcfc, 1, true, 0xff);
     assert(io(&a, 0x4008, 4, false, 0) == 0x345678);
+    select_pci(&a,0x80000b04); io(&a,0xcfc,2,true,0);
+    assert(io(&a,0x4008,4,false,0)==0x345678); /* legacy decode ignores PCI CMD */
+    select_pci(&a,0x80000b80); io(&a,0xcfc,1,true,0);
+    reject(&a,0x4004,2,false);
+    io(&a,0xcfc,1,true,1);
     assert(io(&a,0x4000,2,false,0)==1); /* elapsed bit-23 transitions */
     io(&a,0x4000,1,true,1);
     assert(io(&a,0x4000,2,false,0)==0);

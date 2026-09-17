@@ -151,7 +151,9 @@ bool aos_x86_config_io(aos_x86_config_t *s, uint16_t port, unsigned width,
         return true;
     }
     uint16_t pm_base = (uint16_t)load(s->pm+0x40u, 2) & 0xffc0u;
-    if (pm_base && (s->pm[4] & 1u) && (s->pm[0x80] & 1u) &&
+    /* PIIX4's legacy PM decode is controlled by PMIOSE, independently of
+     * the ordinary PCI command I/O-enable bit. */
+    if (pm_base && (s->pm[0x80] & 1u) &&
         port>=pm_base && (uint32_t)port-(uint32_t)pm_base<12u)
         return pm_io(s,(unsigned)(port-pm_base),width,write,value,timer_ticks);
     if (port == 0x510u && width == 2u && write) {
