@@ -15,7 +15,7 @@ sha256 = "9c37ace54ef7e1919411fd912e9f34d6982ddd7f4c8ef3c8aee56f4c4d70db67"
 [artifacts.initrd]
 source = "generated:debian-cloud-initrd+profile-overlay"
 cache = "build/guest-images/debian-13-arm64-initrd"
-sha256 = "7366300afc76d50b336cd87955caecdee6c3de96b9e757b1293c907cc0219704"
+sha256 = "909ad68f6ff313839860b225f41204c6456207081c7e5d5fcadde7f696a775a4"
 
 [artifacts.dtb]
 source = "generated:linux.dts+linux-virtio-overlay.dts.in"
@@ -87,7 +87,7 @@ args = { source = "debian-13-arm64-initrd.with-virtio", output = "debian-13-arm6
 
 [[host.acquire]]
 action = "append-initramfs-file"
-args = { source = "debian-13-arm64-initrd.with-virtio-order", output = "debian-13-arm64-initrd.with-console", path = "scripts/local-bottom/agentos-console", mode = "0755", compression = "zstd", content = "#!/bin/sh\nset -eu\nunit_dir=\"${rootmnt}/etc/systemd/system\"\nmkdir -p \"${unit_dir}/multi-user.target.wants\"\nln -sf /dev/null \"${unit_dir}/systemd-resolved.service\"\nln -sf /dev/null \"${unit_dir}/systemd-timesyncd.service\"\nln -sf /dev/null \"${unit_dir}/systemd-networkd-wait-online.service\"\ncat >\"${unit_dir}/agentos-console.service\" <<'EOF'\n[Unit]\nDescription=agentOS virtio console login\n\n[Service]\nExecStartPre=/bin/echo Debian GNU/Linux 13 agentOS console\nExecStart=/bin/sh -i\nStandardInput=tty-force\nStandardOutput=tty\nStandardError=tty\nTTYPath=/dev/hvc0\nRestart=always\n\n[Install]\nWantedBy=multi-user.target\nEOF\nln -sf ../agentos-console.service \"${unit_dir}/multi-user.target.wants/agentos-console.service\"\ncat >\"${rootmnt}/etc/fstab\" <<'EOF'\n# The profile initramfs mounts the writable root; no firmware partition is needed.\nEOF\necho agentos-debian-console-hook-ready >/dev/console\n" }
+args = { source = "debian-13-arm64-initrd.with-virtio-order", output = "debian-13-arm64-initrd.with-console", path = "scripts/local-bottom/agentos-console", mode = "0755", compression = "zstd", content = "#!/bin/sh\nset -eu\nunit_dir=\"${rootmnt}/etc/systemd/system\"\nmkdir -p \"${unit_dir}/multi-user.target.wants\"\nln -sf /dev/null \"${unit_dir}/systemd-timesyncd.service\"\nln -sf /dev/null \"${unit_dir}/systemd-networkd-wait-online.service\"\ncat >\"${unit_dir}/agentos-console.service\" <<'EOF'\n[Unit]\nDescription=agentOS virtio console login\n\n[Service]\nExecStartPre=/bin/echo Debian GNU/Linux 13 agentOS console\nExecStart=/bin/sh -i\nStandardInput=tty-force\nStandardOutput=tty\nStandardError=tty\nTTYPath=/dev/hvc0\nRestart=always\n\n[Install]\nWantedBy=multi-user.target\nEOF\nln -sf ../agentos-console.service \"${unit_dir}/multi-user.target.wants/agentos-console.service\"\ncat >\"${rootmnt}/etc/fstab\" <<'EOF'\n# The profile initramfs mounts the writable root; no firmware partition is needed.\nEOF\necho agentos-debian-console-hook-ready >/dev/console\n" }
 
 [[host.acquire]]
 action = "append-initramfs-file"
