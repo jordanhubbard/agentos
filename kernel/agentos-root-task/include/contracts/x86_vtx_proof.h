@@ -16,6 +16,11 @@
 #define AOS_X86_VTX_RESET_EXIT         4u
 #define AOS_X86_VTX_FIRMWARE_LONG      5u
 #define AOS_X86_VTX_FIRMWARE_CONFIG    6u
+#define AOS_X86_VTX_GUEST_FAULTS_PASS  7u
+#define AOS_X86_FAULT_GUEST_ENTRY 0x1100u
+#define AOS_X86_FAULT_GUEST_GDT   0x1280u
+#define AOS_X86_FAULT_GUEST_IDT   0x1400u
+#define AOS_X86_FAULT_GUEST_STACK 0x1ff0u
 /* Firmware report: MR0..3 retain status/reason/RIP/detail; MR4..9 contain
  * timer exits, interrupt injections, EOI writes, VMX rate shift, TSC Hz,
  * and HLT exits. Counters are diagnostics, not an aggregate success claim. */

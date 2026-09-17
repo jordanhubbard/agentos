@@ -125,6 +125,11 @@ ROOT_TASK_OBJS += $(BUILD_DIR)/rt_inspect_snapshot.o
 ifeq ($(AGENTOS_BOARD),x86_64_generic_vtx)
   CFLAGS += -DAGENTOS_X86_VTX=1
   CFLAGS_ROOT_TASK += -DAGENTOS_X86_VTX=1
+  ifeq ($(X86_GUEST_FAULT_PROOF),1)
+    CFLAGS += -DAGENTOS_X86_GUEST_FAULT_PROOF=1
+    CFLAGS_ROOT_TASK += -DAGENTOS_X86_GUEST_FAULT_PROOF=1
+    ROOT_TASK_OBJS += $(BUILD_DIR)/x86_fault_guest_blob.o
+  endif
   ifeq ($(X86_FIRMWARE_MODES),1)
     CFLAGS += -DAGENTOS_X86_FIRMWARE_MODES=1
     CFLAGS_ROOT_TASK += -DAGENTOS_X86_FIRMWARE_MODES=1
@@ -138,6 +143,20 @@ ifeq ($(AGENTOS_BOARD),x86_64_generic_vtx)
       CFLAGS_ROOT_TASK += -DAOS_X86_FIRMWARE_RAM=0x10000000u
     endif
   endif
+endif
+
+ifeq ($(X86_GUEST_FAULT_PROOF),1)
+$(BUILD_DIR)/guest_vmm_primary.elf: $(BUILD_DIR)/x86_event.o
+$(BUILD_DIR)/x86_event.o: $(REPO_ROOT_MK)/platform/guest-vmm/x86_event.c
+	@mkdir -p $(BUILD_DIR)
+	$(CC) -c $(CFLAGS) $< -o $@
+$(BUILD_DIR)/x86_fault_guest_code.o: $(REPO_ROOT_MK)/tests/platform/x86_fault_guest.S
+	@mkdir -p $(BUILD_DIR)
+	$(CC) -c -target x86_64-unknown-elf $< -o $@
+$(BUILD_DIR)/x86_fault_guest.bin: $(BUILD_DIR)/x86_fault_guest_code.o
+	$(LD) -Ttext=0x1000 --oformat=binary $< -o $@
+$(BUILD_DIR)/x86_fault_guest_blob.o: $(BUILD_DIR)/x86_fault_guest.bin
+	cd $(BUILD_DIR) && $(OBJCOPY) -I binary -O elf64-x86-64 -B i386:x86-64 --rename-section .data=.rodata,alloc,load,readonly,data,contents x86_fault_guest.bin x86_fault_guest_blob.o
 endif
 
 ifeq ($(X86_FIRMWARE_RESET),1)

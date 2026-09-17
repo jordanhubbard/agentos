@@ -505,6 +505,10 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
         }
         if args.assert_vmx_exit {
             make_args.push(format!(
+                "X86_GUEST_FAULT_PROOF={}",
+                u8::from(args.assert_guest_faults)
+            ));
+            make_args.push(format!(
                 "X86_FIRMWARE_RESET={}",
                 u8::from(args.assert_firmware_reset)
             ));
@@ -816,6 +820,7 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
                 &mut qemu,
                 args.assert_firmware_modes,
                 args.assert_firmware_reset,
+                args.assert_guest_faults,
             )
         } else if args.board == "x86_64_generic" {
             wait_for_x86_reduced_smoke(&log_path, Duration::from_secs(args.timeout_secs))
@@ -2192,8 +2197,11 @@ fn wait_for_x86_vtx_proof(
     qemu: &mut Child,
     firmware_modes: bool,
     firmware_reset: bool,
+    guest_faults: bool,
 ) -> anyhow::Result<String> {
-    let expected = if firmware_reset {
+    let expected = if guest_faults {
+        "[rt] x86 guest GP read/write handlers and IRET recovery verified"
+    } else if firmware_reset {
         "[rt] x86 OVMF PCI configuration and fw_cfg string exit verified"
     } else if firmware_modes {
         "[rt] x86 VMX real protected long entry modes verified"

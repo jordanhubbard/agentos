@@ -677,6 +677,11 @@ gate-x86_64-firmware-modes:
 		--assert-vmx-exit --assert-firmware-modes --timeout-secs $(QEMU_TEST_TIMEOUT)
 
 .PHONY: gate-x86_64-firmware-reset
+.PHONY: gate-x86_64-guest-faults
+gate-x86_64-guest-faults:
+	@cargo xtask qemu-test --board x86_64_generic_vtx --guest-os none \
+		--assert-vmx-exit --assert-guest-faults --timeout-secs $(QEMU_TEST_TIMEOUT)
+
 gate-x86_64-firmware-reset:
 	@cargo xtask qemu-test --board x86_64_generic_vtx --guest-os none \
 		--assert-vmx-exit --assert-firmware-reset --timeout-secs $(QEMU_TEST_TIMEOUT)
