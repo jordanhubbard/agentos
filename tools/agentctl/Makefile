@@ -22,7 +22,7 @@ SRC     := agentctl.c ../../platform/inspect/inspect_snapshot.c
 
 all: $(TARGET)
 
-$(TARGET): $(SRC) ../../platform/include/platform/inspect.h ../../platform/include/platform/operator_session.h ../../platform/include/platform/framebuffer_observer.h ../../platform/include/platform/framebuffer.h ../../kernel/agentos-root-task/include/contracts/cc_contract.h
+$(TARGET): $(SRC) ../../platform/include/platform/inspect.h ../../platform/include/platform/operator_session.h ../../platform/include/platform/framebuffer_observer.h ../../platform/include/platform/framebuffer.h ../../platform/include/platform/input.h ../../kernel/agentos-root-task/include/contracts/cc_contract.h
 	$(CC) $(CFLAGS) -o $@ $(SRC) $(LDFLAGS)
 	@echo "Built: $(TARGET)"
 

@@ -573,6 +573,27 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
             )?;
         }
     }
+    let input_helper = if args.assert_live
+        && profile_plan
+            .as_ref()
+            .is_some_and(|p| p.devices.iter().any(|d| d == "input"))
+    {
+        anyhow::ensure!(
+            args.board == "qemu_virt_aarch64",
+            "input probe requires AArch64 Linux"
+        );
+        run_make(&["guest-input-probe"], &repo_root)?;
+        run_make(&["-C", "tools/agentctl"], &repo_root)?;
+        let path = repo_root.join("build/tmp/guest-input-probe-aarch64");
+        let bytes = std::fs::read(&path)?;
+        anyhow::ensure!(
+            bytes.len() >= 20 && &bytes[..6] == b"\x7fELF\x02\x01" && bytes[18..20] == [183, 0],
+            "input probe is not little-endian AArch64 ELF64"
+        );
+        Some(path)
+    } else {
+        None
+    };
     let tmp_dir = qemu_tmp_dir(&repo_root);
     std::fs::create_dir_all(&tmp_dir)
         .with_context(|| format!("failed to create {}", tmp_dir.display()))?;
@@ -906,6 +927,20 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
                 ));
             }
             Err(error) => result = Err(error),
+        }
+    }
+
+    if result.is_ok() {
+        if let Some(helper) = &input_helper {
+            result = prove_profile_input(
+                &repo_root,
+                &cc_sock,
+                &log_path,
+                helper,
+                profile_plan.as_ref().context("input profile missing")?,
+                ssh_key.as_ref().context("input SSH key missing")?,
+                &mut qemu,
+            );
         }
     }
 
@@ -3377,6 +3412,141 @@ fn prove_profile_ssh(
     )
 }
 
+fn wait_input_child(child: &mut Child, qemu: &mut Child, seconds: u64) -> anyhow::Result<()> {
+    let deadline = Instant::now() + Duration::from_secs(seconds);
+    loop {
+        anyhow::ensure!(qemu.try_wait()?.is_none(), "QEMU exited during input proof");
+        if let Some(status) = child.try_wait()? {
+            anyhow::ensure!(status.success(), "input proof process failed: {status}");
+            return Ok(());
+        }
+        anyhow::ensure!(
+            Instant::now() < deadline,
+            "input proof process deadline expired"
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+// Bound both the number and length of guest-controlled output lines.
+fn input_probe_line(reader: &mut impl Read) -> anyhow::Result<String> {
+    let mut line = Vec::new();
+    for _ in 0..128 {
+        let mut byte = [0];
+        reader
+            .read_exact(&mut byte)
+            .context("input probe output ended early")?;
+        if byte[0] == b'\n' {
+            return String::from_utf8(line).context("input probe output is not UTF-8");
+        }
+        line.push(byte[0]);
+    }
+    anyhow::bail!("input probe output line exceeds 128 bytes")
+}
+
+fn prove_profile_input(
+    repo: &Path,
+    socket: &Path,
+    log: &Path,
+    helper: &Path,
+    profile: &HostProfilePlan,
+    key: &SshTestKey,
+    qemu: &mut Child,
+) -> anyhow::Result<String> {
+    let ssh = profile
+        .qemu
+        .as_ref()
+        .and_then(|q| q.ssh.as_ref())
+        .context("input proof needs SSH")?;
+    anyhow::ensure!(
+        ssh.account == "root",
+        "input proof currently requires the root test account"
+    );
+    let stderr_path = log.with_extension("input.stderr");
+    let stderr = std::fs::File::create(&stderr_path)?;
+    let command = |remote: &str| -> anyhow::Result<std::process::Command> {
+        let mut cmd = std::process::Command::new("ssh");
+        cmd.arg("-i")
+            .arg(&key.private_key)
+            .args(["-p", &ssh.host_port.to_string()])
+            .args(SSH_AUTH_OPTIONS)
+            .args(SSH_PROBE_LIVENESS_OPTIONS)
+            .arg(format!("{}@127.0.0.1", ssh.account))
+            .arg(remote)
+            .stderr(Stdio::from(stderr.try_clone()?));
+        Ok(cmd)
+    };
+    // The disposable qualification guest owns this fixed path. Remove it before
+    // creation so an existing symlink cannot redirect the upload.
+    let mut upload = ChildGuard::new(command(
+        "timeout 120 sh -c 'umask 077; rm -f /tmp/agentos-input-probe && cat > /tmp/agentos-input-probe && chmod 700 /tmp/agentos-input-probe'"
+    )?.stdin(Stdio::from(std::fs::File::open(helper)?)).stdout(Stdio::null()).spawn()?);
+    wait_input_child(&mut upload, qemu, 150)?;
+    let mut probe = ChildGuard::new(
+        command("exec timeout 130 /tmp/agentos-input-probe")?
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .spawn()?,
+    );
+    let mut output = probe.stdout.take().context("input probe stdout missing")?;
+    let (send, receive) = std::sync::mpsc::sync_channel(2);
+    std::thread::spawn(move || {
+        for _ in 0..2 {
+            let line = input_probe_line(&mut output);
+            let failed = line.is_err();
+            if send.send(line).is_err() || failed {
+                return;
+            }
+        }
+    });
+    anyhow::ensure!(
+        receive.recv_timeout(Duration::from_secs(60))?? == "AGENTOS_INPUT_READY",
+        "input probe did not become ready"
+    );
+    let batches: &[&[&str]] = &[
+        &["keyboard", "1", "183", "1"],
+        &["keyboard", "1", "183", "0"],
+        &[
+            "pointer", "2", "0", "17", "2", "1", "-9", "2", "8", "1", "1", "272", "1",
+        ],
+        &["pointer", "1", "272", "0"],
+    ];
+    for batch in batches {
+        let mut submit = ChildGuard::new(
+            std::process::Command::new(repo.join("tools/agentctl/agentctl"))
+                .env("CC_PD_SOCK", socket)
+                .args(["--batch", "input-batch", "0"])
+                .args(*batch)
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::from(stderr.try_clone()?))
+                .spawn()?,
+        );
+        // agentctl validates the exact response and never retries input batches.
+        wait_input_child(&mut submit, qemu, 30)?;
+    }
+    anyhow::ensure!(
+        receive.recv_timeout(Duration::from_secs(120))??
+            == "AGENTOS_INPUT_PASS keyboard=4 pointer=7",
+        "guest input event mismatch"
+    );
+    wait_input_child(&mut probe, qemu, 15)?;
+    let receipt = serde_json::json!({
+        "schema": "agentos.guest_input.v1", "status": "pass", "profile": profile.id,
+        "agentos_revision": agentos_revision(repo)?, "source_tree_clean": agentos_worktree_clean(repo)?,
+        "helper_sha256": sha256_bytes(&std::fs::read(helper)?),
+        "keyboard_events": 4, "pointer_events": 7, "batches": 4,
+        "scope": "public CLI through CC and virtio-input to exact Linux evdev packets",
+        "excludes": ["physical input devices", "peer guest isolation", "guest recreation"],
+        "stderr": stderr_path,
+    });
+    std::fs::write(
+        log.with_extension("input.json"),
+        serde_json::to_vec_pretty(&receipt)?,
+    )?;
+    Ok("exact guest keyboard, pointer, button and packet-boundary delivery passed".into())
+}
+
 fn desktop_tunnel_forward_spec(desktop: &DesktopPlan) -> String {
     if let Some(socket) = &desktop.guest_socket {
         format!("127.0.0.1:{}:{socket}", desktop.local_port)
@@ -4083,6 +4253,17 @@ fn tail_chars(s: &str, max_chars: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn input_probe_output_is_bounded_and_requires_complete_utf8_lines() {
+        assert_eq!(
+            input_probe_line(&mut &b"AGENTOS_INPUT_READY\n"[..]).unwrap(),
+            "AGENTOS_INPUT_READY"
+        );
+        assert!(input_probe_line(&mut &b"AGENTOS_INPUT_READY"[..]).is_err());
+        assert!(input_probe_line(&mut &[b'x'; 129][..]).is_err());
+        assert!(input_probe_line(&mut &b"\xff\n"[..]).is_err());
+    }
     use std::os::unix::net::UnixListener;
 
     fn console_stress_fixture(newline: &[u8]) -> Vec<u8> {
