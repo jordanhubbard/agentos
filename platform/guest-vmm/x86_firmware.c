@@ -27,7 +27,7 @@
 #define NXE (1u << 11)
 #define ENTRY_LONG (1u << 9)
 
-static void stop(seL4_CPtr endpoint, seL4_Word status, seL4_Word reason,
+static _Noreturn void stop(seL4_CPtr endpoint, seL4_Word status, seL4_Word reason,
                  seL4_Word rip, seL4_Word detail)
 {
     seL4_SetMR(0, status); seL4_SetMR(1, reason);
