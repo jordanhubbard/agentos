@@ -9,7 +9,7 @@
  * device page at AGENTOS_HOST_BLK_MMIO_VA and maps one shared large frame at
  * AGENTOS_BLK_SHARED_VA. Its physical base is carried in frame metadata.
  *
- * Queue and DMA memory live in a 2 MiB frame shared with the guest VMM. The root
+ * Queue and DMA memory live in a 2 MiB frame shared with blk_virt. The root
  * task records the frame's physical address in its metadata, so this driver
  * never assumes that a virtual address is also a DMA address.
  * ────────────────────────────────────────────────────────────────────────────
@@ -21,6 +21,7 @@
 #include "virtio_blk.h"
 #include "arch_barrier.h"
 #include <platform/blk_host_layout.h>
+#include <platform/virtio_host_transport.h>
 
 /* ─────────────────────────────────────────────────────────────────────────────
  * Microkit setvar_vaddr symbols — written by the Microkit runtime before init()
@@ -36,34 +37,12 @@ uintptr_t blk_dma_shmem_vaddr;
 uintptr_t log_drain_rings_vaddr;
 
 /* ─────────────────────────────────────────────────────────────────────────────
- * Convenience MMIO read/write helpers
- *
- * All virtio-MMIO registers are 32-bit, native-endian, and must be accessed
- * with 32-bit loads/stores.  We use volatile to prevent the compiler from
- * caching or reordering the accesses.
- * ──────────────────────────────────────────────────────────────────────────── */
-
-static inline uint32_t mmio_read(volatile uint32_t *base, uint32_t offset)
-{
-    return *(volatile uint32_t *)((uintptr_t)base + offset);
-}
-
-static inline void mmio_write(volatile uint32_t *base, uint32_t offset, uint32_t val)
-{
-    *(volatile uint32_t *)((uintptr_t)base + offset) = val;
-    /* Full memory barrier: ensure the store reaches the device before we
-     * proceed.  Without this, on weakly-ordered architectures (AArch64,
-     * RISC-V) a subsequent MMIO read might observe stale state. */
-    ARCH_MB();
-}
-
-/* ─────────────────────────────────────────────────────────────────────────────
  * Device state
  * ──────────────────────────────────────────────────────────────────────────── */
 
 typedef struct {
     bool               initialized;
-    volatile uint32_t *mmio;         /* MMIO base pointer (blk_mmio_vaddr) */
+    aos_virtio_host_t   transport;   /* driver-owned MMIO or modern PCI */
     uint32_t           media_id;      /* BLK_MEDIA_* */
     uint32_t           queue_off;     /* offset in shared large frame */
     uint32_t           dma_off;       /* offset in shared large frame */
@@ -247,7 +226,10 @@ static uint32_t virtio_blk_do_io(blk_device_t *device, uint32_t type,
     ARCH_WMB();
 
     /* ── Step 4: Kick the device ── */
-    mmio_write(device->mmio, VIRTIO_MMIO_QUEUE_NOTIFY, 0);
+    if (!aos_virtio_host_notify(&device->transport)) {
+        device->error_count++;
+        return BLK_ERR_IO;
+    }
 
     /* ── Step 5: Poll for completion ──
      *
@@ -292,90 +274,61 @@ static void virtio_blk_device_init(blk_device_t *device, uint32_t media_id,
     device->media_id = media_id;
     device->queue_off = AGENTOS_BLK_MEDIA_QUEUE_OFF(media_id);
     device->dma_off = AGENTOS_BLK_MEDIA_DMA_OFF(media_id);
-    device->mmio = (volatile uint32_t *)mmio_vaddr;
+    aos_virtio_host_t *transport = &device->transport;
 
     if (mmio_vaddr == 0u) {
         device->init_error = 2u;
         return;
     }
 
-    /* ── Probe: check magic, version, device ID ── */
-    uint32_t magic    = mmio_read(device->mmio, VIRTIO_MMIO_MAGIC_VALUE);
-    uint32_t version  = mmio_read(device->mmio, VIRTIO_MMIO_VERSION);
-    uint32_t devid    = mmio_read(device->mmio, VIRTIO_MMIO_DEVICE_ID);
-
-    if (magic != VIRTIO_MMIO_MAGIC) {
+    /* Each ARM virtio-MMIO slot is 512 bytes, including device config. */
+    if (!aos_virtio_host_mmio(transport, mmio_vaddr, 0x200u, 2u)) {
         device->init_error = 3u;
-        return;
-    }
-    if (version != 2) {
-        log_drain_write(17, 17, "[virtio_blk] ERROR: unsupported virtio-MMIO version (need v2)\n");
-        device->init_error = 4u;
-        return;
-    }
-    if (devid != 2) {
-        log_drain_write(17, 17, "[virtio_blk] ERROR: device ID is not 2 (not a block device)\n");
-        device->init_error = 5u;
         return;
     }
 
     /* ── Initialisation sequence (virtio spec §3.1.1) ── */
 
     /* Step 1 — Reset the device */
-    mmio_write(device->mmio, VIRTIO_MMIO_STATUS, 0);
+    aos_virtio_host_set_status(transport, 0);
 
     /* Step 2 — Acknowledge: guest has seen the device */
     uint32_t status = VIRTIO_STATUS_ACKNOWLEDGE;
-    mmio_write(device->mmio, VIRTIO_MMIO_STATUS, status);
+    aos_virtio_host_set_status(transport, status);
 
     /* Step 3 — Driver: guest knows how to drive this device */
     status |= VIRTIO_STATUS_DRIVER;
-    mmio_write(device->mmio, VIRTIO_MMIO_STATUS, status);
+    aos_virtio_host_set_status(transport, status);
 
     /* Step 4 — Feature negotiation
      * Select word 0 of device features, read them, mask to what we want */
-    mmio_write(device->mmio, VIRTIO_MMIO_DEVICE_FEATURES_SEL, 0);
-    uint32_t dev_features = mmio_read(device->mmio, VIRTIO_MMIO_DEVICE_FEATURES);
+    uint32_t dev_features = aos_virtio_host_features(transport, 0);
     uint32_t drv_features = dev_features & VIRTIO_BLK_FEATURES_WANTED;
     device->read_only = (dev_features & VIRTIO_BLK_F_RO) != 0u;
 
-    mmio_write(device->mmio, VIRTIO_MMIO_DRIVER_FEATURES_SEL, 0);
-    mmio_write(device->mmio, VIRTIO_MMIO_DRIVER_FEATURES, drv_features);
+    aos_virtio_host_set_features(transport, 0, drv_features);
 
     /* Feature word 1: virtio 1.x devices require VIRTIO_F_VERSION_1 (bit 32). */
-    mmio_write(device->mmio, VIRTIO_MMIO_DRIVER_FEATURES_SEL, 1);
-    mmio_write(device->mmio, VIRTIO_MMIO_DRIVER_FEATURES, 1u);
+    if (!(aos_virtio_host_features(transport, 1) & 1u)) {
+        device->init_error = 4u;
+        aos_virtio_host_set_status(transport, status | VIRTIO_STATUS_FAILED);
+        return;
+    }
+    aos_virtio_host_set_features(transport, 1, 1u);
 
     /* Step 5 — Set FEATURES_OK and confirm it sticks */
     status |= VIRTIO_STATUS_FEATURES_OK;
-    mmio_write(device->mmio, VIRTIO_MMIO_STATUS, status);
+    aos_virtio_host_set_status(transport, status);
 
-    uint32_t confirmed = mmio_read(device->mmio, VIRTIO_MMIO_STATUS);
+    uint32_t confirmed = aos_virtio_host_status(transport);
     if (!(confirmed & VIRTIO_STATUS_FEATURES_OK)) {
         log_drain_write(17, 17, "[virtio_blk] ERROR: device rejected feature set\n");
         device->init_error = 6u;
-        mmio_write(device->mmio, VIRTIO_MMIO_STATUS,
-                   mmio_read(device->mmio, VIRTIO_MMIO_STATUS) | VIRTIO_STATUS_FAILED);
+        aos_virtio_host_set_status(transport, confirmed | VIRTIO_STATUS_FAILED);
         return;
     }
 
     /* Step 6 — Setup virtqueue 0 */
-
-    /* Select queue 0 */
-    mmio_write(device->mmio, VIRTIO_MMIO_QUEUE_SEL, 0);
-
-    /* Check the max queue size the device supports */
-    uint32_t qnum_max = mmio_read(device->mmio, VIRTIO_MMIO_QUEUE_NUM_MAX);
-    if (qnum_max == 0) {
-        log_drain_write(17, 17, "[virtio_blk] ERROR: device reports queue 0 not available\n");
-        device->init_error = 7u;
-        mmio_write(device->mmio, VIRTIO_MMIO_STATUS,
-                   mmio_read(device->mmio, VIRTIO_MMIO_STATUS) | VIRTIO_STATUS_FAILED);
-        return;
-    }
-
-    /* Set the bounded queue size; one descriptor chain is in flight. */
-    mmio_write(device->mmio, VIRTIO_MMIO_QUEUE_NUM, VIRTIO_BLK_QUEUE_SIZE);
 
     /* Zero the queue memory so all fields start clean */
     volatile uint8_t *qm = queue_mem(device);
@@ -384,45 +337,45 @@ static void virtio_blk_device_init(blk_device_t *device, uint32_t media_id,
     }
     ARCH_WMB();
 
-    /* Write queue region physical addresses (split into low/high 32-bit words) */
+    /* Transport validates queue capacity, alignment and notification span
+     * before enabling DMA. Only one descriptor chain is in flight. */
     uint64_t qpa = queue_paddr(device);
-    mmio_write(device->mmio, VIRTIO_MMIO_QUEUE_DESC_LOW,
-               (uint32_t)((qpa + DESC_OFFSET) & 0xFFFFFFFFu));
-    mmio_write(device->mmio, VIRTIO_MMIO_QUEUE_DESC_HIGH,
-               (uint32_t)((qpa + DESC_OFFSET) >> 32));
-    mmio_write(device->mmio, VIRTIO_MMIO_QUEUE_AVAIL_LOW,
-               (uint32_t)((qpa + AVAIL_OFFSET) & 0xFFFFFFFFu));
-    mmio_write(device->mmio, VIRTIO_MMIO_QUEUE_AVAIL_HIGH,
-               (uint32_t)((qpa + AVAIL_OFFSET) >> 32));
-    mmio_write(device->mmio, VIRTIO_MMIO_QUEUE_USED_LOW,
-               (uint32_t)((qpa + USED_OFFSET) & 0xFFFFFFFFu));
-    mmio_write(device->mmio, VIRTIO_MMIO_QUEUE_USED_HIGH,
-               (uint32_t)((qpa + USED_OFFSET) >> 32));
-
-    /* Activate the queue */
-    mmio_write(device->mmio, VIRTIO_MMIO_QUEUE_READY, 1);
-
     /* Suppress used-ring interrupts: we poll instead */
     queue_avail(device)->flags = 1u;  /* VIRTQ_AVAIL_F_NO_INTERRUPT */
+    ARCH_WMB();
+    if (!aos_virtio_host_queue(transport, 0u, VIRTIO_BLK_QUEUE_SIZE,
+                               qpa + DESC_OFFSET, qpa + AVAIL_OFFSET,
+                               qpa + USED_OFFSET)) {
+        log_drain_write(17, 17, "[virtio_blk] ERROR: queue setup rejected\n");
+        device->init_error = 7u;
+        aos_virtio_host_set_status(transport, status | VIRTIO_STATUS_FAILED);
+        return;
+    }
 
     /* Step 7 — Signal DRIVER_OK */
     status |= VIRTIO_STATUS_DRIVER_OK;
-    mmio_write(device->mmio, VIRTIO_MMIO_STATUS, status);
+    aos_virtio_host_set_status(transport, status);
 
     /* ── Read device configuration ── */
     /*
      * Read capacity as two 32-bit LE words from the config space.
      * The virtio spec requires 32-bit-wide reads for config space on MMIO.
      */
-    uint32_t cap_lo = mmio_read(device->mmio, VIRTIO_MMIO_CONFIG + 0);
-    uint32_t cap_hi = mmio_read(device->mmio, VIRTIO_MMIO_CONFIG + 4);
-    device->capacity = ((uint64_t)cap_hi << 32) | (uint64_t)cap_lo;
+    if (!aos_virtio_host_config64(transport, 0u, &device->capacity)) {
+        device->init_error = 8u;
+        aos_virtio_host_set_status(transport, status | VIRTIO_STATUS_FAILED);
+        return;
+    }
 
     /* Block size: at offset 20 within config space (after capacity(8) +
      * size_max(4) + seg_max(4) + geometry(4)) */
     if (drv_features & VIRTIO_BLK_F_BLK_SIZE) {
         /* blk_size is at config offset 20 (0x14) */
-        device->block_size = mmio_read(device->mmio, VIRTIO_MMIO_CONFIG + 20);
+        if (!aos_virtio_host_config32(transport, 20u, &device->block_size)) {
+            device->init_error = 8u;
+            aos_virtio_host_set_status(transport, status | VIRTIO_STATUS_FAILED);
+            return;
+        }
         if (device->block_size == 0) {
             device->block_size = VIRTIO_BLK_DEFAULT_SECTOR_SIZE;
         }

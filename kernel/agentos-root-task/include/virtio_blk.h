@@ -41,7 +41,7 @@
 #define VIRTIO_MMIO_QUEUE_AVAIL_HIGH    0x094u  /* WO: high 32 bits of available ring paddr */
 #define VIRTIO_MMIO_QUEUE_USED_LOW      0x0a0u  /* WO: low 32 bits of used ring paddr */
 #define VIRTIO_MMIO_QUEUE_USED_HIGH     0x0a4u  /* WO: high 32 bits of used ring paddr */
-#define VIRTIO_MMIO_CONFIG_GENERATION   0x0acu  /* RO: configuration space generation counter */
+#define VIRTIO_MMIO_CONFIG_GENERATION   0x0fcu  /* RO: configuration space generation counter */
 #define VIRTIO_MMIO_CONFIG              0x100u  /* RO/RW: device-specific config space */
 
 /* virtio-MMIO magic value */

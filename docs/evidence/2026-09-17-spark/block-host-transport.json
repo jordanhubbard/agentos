@@ -1,0 +1,32 @@
+{
+  "qualification": "Canonical host block driver with MMIO and modern PCI register transports",
+  "runtime_revision": "ecc4852e72e6b2ac5d13a49130a7a97c089015c8",
+  "host": "Spark ARM64",
+  "sdk_version": "2.3.0",
+  "checks": [
+    {
+      "command": "make test-virtio-host-transport test-x86-firmware-build SEL4_SDK_VERSION=2.3.0",
+      "result": "PASS",
+      "log": "build/evidence/block-transport-ecc4852/focused.log",
+      "sha256": "d14a858ca30ba731c30ce5445c2093bb91225f9fa709bc3f71124b102231da0f"
+    },
+    {
+      "command": "make gate SEL4_SDK_VERSION=2.3.0",
+      "result": "PASS",
+      "log": "build/evidence/block-transport-ecc4852/gate.log",
+      "sha256": "3cc5d724108bfafcfc6ce5aa47e7308c56265b0d581fe6d8dc0103c128e4abfb"
+    }
+  ],
+  "observations": [
+    "The host tests use the upstream sDDF PCI common configuration structure to verify register layout and neighboring field preservation, and assert queue limits, high DMA address words, notification offsets and configuration read bounds under ASan/UBSan.",
+    "The x86 build links the actual virtio_blk driver with the transport layer, as well as the block virtualizer, VMM and serial driver.",
+    "The full ARM gate serial output records host media 0 ready sectors=8127128 read-only, host-media read sector=0 count=8 client=0, and a request pumped via virtio_blk."
+  ],
+  "limitations": [
+    "Intel PCI discovery, BAR grants, DMA mapping and device execution are not integrated yet. The PCI path currently has register-fixture and link evidence only.",
+    "Tests cover stable configuration reads; changing configuration generations and hardware refusing queue enable were not injected.",
+    "Binding assumes quiescent, already mapped device resources. It does not reset a live device or revoke DMA.",
+    "The transport supports one polling split queue per instance, without MSI-X or notification-data negotiation.",
+    "Writable persistence, final integration, GUI qualification and the v0.4 release remain incomplete."
+  ]
+}

@@ -122,6 +122,18 @@ driver Calls remain separate from logging. Builds without provisioned log
 rings retain the common debug fallback, which is silent in release builds;
 linking the x86 virtualizer alone does not prove Intel block I/O.
 
+The host block driver's register access goes through `virtio_host_transport`.
+Its live ARM binding uses virtio-MMIO v2. The modern PCI binding accepts only
+already mapped common, device-config and notification spans; PCI discovery,
+resource grants and bus-master enablement remain a separate boot integration
+step. It uses the specified byte/halfword/dword register widths, validates
+queue capacity and notification offsets before enabling the queue, and reads
+64-bit capacity with a bounded configuration-generation retry. The driver
+still owns all DMA and uses the same request chain for either transport.
+The PCI binding currently has host register-fixture and x86 ELF link evidence,
+not Intel device-execution evidence. A binding is not a device reset or DMA
+revocation operation.
+
 *Console*. `serial_virt` is a separate PD with four root-provisioned pages:
 one per VMM, one for the native operator client and a separate CC frontend
 page. Only the virtualizer maps all four. Root grants send-only notification capabilities for persistent wakeups
