@@ -137,6 +137,7 @@ void aos_x86_firmware_run(seL4_CPtr ep, seL4_Word result)
         .rom=(const uint8_t *)AOS_X86_FIRMWARE_ROM_VA, .rom_base=AOS_X86_FIRMWARE_BASE,
         .rom_size=AOS_X86_FIRMWARE_BYTES,
     };
+    seL4_Word last_rip=0, last_reason=0;
     for (unsigned exits = 0; exits < 65536u; exits++) {
         seL4_Word reason = seL4_GetMR(SEL4_VMENTER_FAULT_REASON_MR);
         seL4_Word rip = seL4_GetMR(SEL4_VMENTER_CALL_EIP_MR);
@@ -145,6 +146,7 @@ void aos_x86_firmware_run(seL4_CPtr ep, seL4_Word result)
         seL4_Word fault_gpa = seL4_GetMR(SEL4_VMENTER_FAULT_GUEST_PHYSICAL_MR);
         seL4_Word guest_cr3 = seL4_GetMR(SEL4_VMENTER_FAULT_CR3_MR);
         seL4_Word guest_flags = seL4_GetMR(SEL4_VMENTER_FAULT_RFLAGS_MR);
+        last_rip=rip; last_reason=reason;
         seL4_VCPUContext regs = save_registers();
         /* Non-instruction exits do not define an instruction length. */
         if (reason == 52u || reason == 7u) len=0;
@@ -324,5 +326,7 @@ void aos_x86_firmware_run(seL4_CPtr ep, seL4_Word result)
         seL4_SetMR(SEL4_VMENTER_CALL_INTERRUPT_INFO_MR, interrupt);
         result = seL4_VMEnter(NULL);
     }
-    stop(ep, AOS_X86_VTX_PROOF_FAIL, 0x425544u, 0, 65536u);
+    /* Preserve the last exit site when the fixed diagnostic budget expires. */
+    stop(ep, AOS_X86_VTX_PROOF_FAIL, 0x425544u, last_rip,
+         (UINT64_C(65536) << 32) | (uint32_t)last_reason);
 }
