@@ -5,6 +5,7 @@
 
 #define AOS_X86_ACPI_MAX_CPUS 32u
 #define AOS_X86_MADT_MAX_BYTES (44u + 8u * AOS_X86_ACPI_MAX_CPUS + 12u)
+#define AOS_X86_CPU_SSDT_MAX_BYTES (44u + 29u * AOS_X86_ACPI_MAX_CPUS)
 
 typedef struct aos_x86_acpi_cpu {
     uint8_t uid;
@@ -30,4 +31,9 @@ typedef struct aos_x86_acpi_topology {
  * serializes topology: it neither maps devices nor installs firmware tables. */
 size_t aos_x86_madt_write(void *output, size_t capacity,
                          const aos_x86_acpi_topology_t *topology);
+/* Matching ACPI0007 Device objects under \\_SB_, with integer _UIDs from
+ * the same topology. Install alongside MADT; do not duplicate these objects
+ * in the DSDT. Returns zero without modifying output on invalid input. */
+size_t aos_x86_cpu_ssdt_write(void *output, size_t capacity,
+                             const aos_x86_acpi_topology_t *topology);
 #endif
