@@ -125,6 +125,10 @@ ROOT_TASK_OBJS += $(BUILD_DIR)/rt_inspect_snapshot.o
 ifeq ($(AGENTOS_BOARD),x86_64_generic_vtx)
   CFLAGS += -DAGENTOS_X86_VTX=1
   CFLAGS_ROOT_TASK += -DAGENTOS_X86_VTX=1
+  ifeq ($(X86_FIRMWARE_MODES),1)
+    CFLAGS += -DAGENTOS_X86_FIRMWARE_MODES=1
+    CFLAGS_ROOT_TASK += -DAGENTOS_X86_FIRMWARE_MODES=1
+  endif
 endif
 
 $(BUILD_DIR)/rt_inspect_snapshot.o: $(REPO_ROOT_MK)/platform/inspect/inspect_snapshot.c
@@ -427,6 +431,13 @@ $(BUILD_DIR)/operator_protocol.o: $(REPO_ROOT_MK)/platform/operator-session/sess
 $(BUILD_DIR)/operator_session.elf: $(BUILD_DIR)/operator_session.o $(BUILD_DIR)/operator_protocol.o $(BUILD_DIR)/inspect_snapshot.pd.o $(BUILD_DIR)/serial_pump.pd.o $(BUILD_DIR)/sel4_crt.o $(BUILD_DIR)/pd_entry.o $(BUILD_DIR)/m3_bare_metal.o $(BUILD_DIR)/log.o
 	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
 GUEST_CONFIG_STAMP := $(BUILD_DIR)/guest_config.stamp
+# SDK paths and compile definitions are part of this stamp. Invalidate all
+# existing objects when they change; new objects already compile from source.
+# Otherwise an SDK switch can link old syscall/object-type definitions into
+# a new root task. EXTRA_PREREQS needs concrete targets, not a pattern binding.
+# EXTRA_PREREQS preserves recipes' $< / $^ source lists; private prevents the
+# dependency from being inherited by the stamp's own recipe.
+$(ROOT_TASK_OBJS) $(wildcard $(BUILD_DIR)/*.o): private .EXTRA_PREREQS = $(GUEST_CONFIG_STAMP)
 ifeq ($(LOG_RING_TEST),1)
   CFLAGS += -DAGENTOS_LOG_RING_TEST=1
 endif
@@ -1020,7 +1031,7 @@ endif
 # only the narrow VMX/EPT HLT-exit proof, not a general guest VMM.
 ifeq ($(ARCH),x86_64)
 ifeq ($(AGENTOS_BOARD),x86_64_generic_vtx)
-$(BUILD_DIR)/guest_vmm_primary.o: $(REPO_ROOT_MK)/platform/guest-vmm/x86_vtx_proof.c
+$(BUILD_DIR)/guest_vmm_primary.o: $(REPO_ROOT_MK)/platform/guest-vmm/x86_vtx_proof.c $(GUEST_CONFIG_STAMP)
 	@mkdir -p $(BUILD_DIR)
 	$(CC) -c $(CFLAGS) -DARCH_X86_64 $< -o $@
 else

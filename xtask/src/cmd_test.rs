@@ -498,6 +498,11 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
         if let Some(slot) = args.virtualizer_authority_probe {
             make_args.push(format!("VIRT_AUTHORITY_PROBE={slot}"));
         }
+        if args.assert_firmware_modes {
+            make_args.push(String::from("X86_FIRMWARE_MODES=1"));
+        } else if args.assert_vmx_exit {
+            make_args.push(String::from("X86_FIRMWARE_MODES=0"));
+        }
         let make_arg_refs = make_args.iter().map(String::as_str).collect::<Vec<_>>();
         run_make(&make_arg_refs, &repo_root).context("profile-driven build step failed")?;
     }
@@ -799,7 +804,12 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
                 &mut qemu,
             )
         } else if args.assert_vmx_exit {
-            wait_for_x86_vtx_proof(&log_path, Duration::from_secs(args.timeout_secs), &mut qemu)
+            wait_for_x86_vtx_proof(
+                &log_path,
+                Duration::from_secs(args.timeout_secs),
+                &mut qemu,
+                args.assert_firmware_modes,
+            )
         } else if args.board == "x86_64_generic" {
             wait_for_x86_reduced_smoke(&log_path, Duration::from_secs(args.timeout_secs))
         } else {
@@ -2171,13 +2181,16 @@ fn wait_for_x86_vtx_proof(
     log_path: &Path,
     timeout: Duration,
     qemu: &mut Child,
+    firmware_modes: bool,
 ) -> anyhow::Result<String> {
+    let expected = if firmware_modes {
+        "[rt] x86 VMX real protected long entry modes verified"
+    } else {
+        "[rt] x86 VMX EPT HLT exit verified"
+    };
     let marker = wait_for_all_markers(
         log_path,
-        &[
-            "[rt] x86 VMX EPT proof provisioned",
-            "[rt] x86 VMX EPT HLT exit verified",
-        ],
+        &["[rt] x86 VMX EPT proof provisioned", expected],
         timeout,
         qemu,
     )?;
@@ -2186,7 +2199,7 @@ fn wait_for_x86_vtx_proof(
         !output.contains("[rt] x86 VMX EPT proof FAILED") && !output.contains("[rt] FAULT"),
         "x86 VMX/EPT proof emitted a failure or root-task fault report"
     );
-    Ok(format!("{marker} (x86 VMX/EPT HLT exit proof)"))
+    Ok(format!("{marker} (x86 VMX/EPT entry qualification)"))
 }
 
 fn verify_inspect(socket: &Path, root: &Path) -> anyhow::Result<String> {

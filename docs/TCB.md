@@ -352,6 +352,13 @@ This proves only that VMX non-root entry, EPT translation, and one VM exit work
 on that host. It does not qualify x86 Linux, UEFI/ACPI, guest devices, guest
 I/O, persistence, lifecycle, desktop, or isolation.
 
+`make gate-x86_64-firmware-modes SEL4_SDK_VERSION=2.3.0` uses the same VCPU
+and five EPT pages to qualify real-address, unpaged protected and long-mode
+entry. It checks the relevant control readback and exact HLT exit in each
+mode before reporting a distinct aggregate result. It does not load firmware,
+execute a reset vector or prove guest-driven mode transitions. Device and
+guest-memory authority remain the same as the narrow VTX proof above.
+
 ### Read-only boot inspection
 
 Root publishes one 4 KiB observation page after starting the configured PDs
