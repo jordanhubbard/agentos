@@ -115,6 +115,9 @@ pub struct TestArgs {
     /// Recycle all guest RAM twice before boot, then prove guest block I/O.
     #[arg(long, requires = "assert_emulated_blk")]
     pub assert_guest_ram_recycle: bool,
+    /// Stop block admission with a pending response and require complete drain.
+    #[arg(long, requires = "assert_emulated_blk")]
+    pub assert_guest_block_drain: bool,
     /// Require Ubuntu login and bidirectional I/O through emulated virtio-console.
     #[arg(long)]
     pub assert_emulated_console: bool,

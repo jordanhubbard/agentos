@@ -119,6 +119,17 @@ bound notification when it queued responses. Both directions use send-only
 capabilities and retain pending wakeups until received. Preboot media staging
 therefore does not depend on a later guest exit to retry a dropped event.
 Receivers classify notification badges before interpreting IPC message tags.
+The VMM block backend has a one-way, nonblocking drain mode for lifecycle
+cleanup. It stops admitting new guest descriptor chains while finishing
+accepted chunks and read-modify-write requests against still-mapped guest
+RAM. Failed predecessors also release waiting requests; a waiter starts only
+when no active writer overlaps its transfer window. Drain completion requires
+empty request/response queues and no allocated request bookkeeping. Completion
+interrupts are suppressed during drain, and the VMM disables its response
+callbacks when the drain succeeds. This API is not yet connected to live RAM
+reclamation. Host tests execute the production backend; the dedicated
+`make test-guest-block-drain` target stops admission with a real pending guest
+block response and requires the drain and guest block completion markers.
 `blk_virt` alone holds
 the `virtio_blk` endpoint and alone (besides the driver) maps the driver's
 bounded DMA window, through which it chunks each request by Call; the VMM

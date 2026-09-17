@@ -27,4 +27,11 @@ void aos_vmm_virtio_blk_after_fault(void);
 /* On BLK_VIRT_EVENT_RESP_READY from blk_virt. */
 void aos_vmm_virtio_blk_resp_ready(void);
 
+/* Nonblocking lifecycle drain after vCPUs stop. Stops admission immediately,
+ * services available completions, and returns false while accepted work is
+ * still pending. Keep RAM mapped and service block notifications until true.
+ * Success disables further response callbacks; initialization is required
+ * before this backend can admit requests again. */
+bool aos_vmm_virtio_blk_quiesce(void);
+
 #endif /* AOS_PLATFORM_VMM_VIRTIO_BLK_H */

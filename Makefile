@@ -695,7 +695,7 @@ gate: test-host gate-aarch64 gate-x86_64 gate-guest-io
 # lint-source is a source lint (policy-check's sibling), not a test; it is
 # listed here so the invariants it protects are checked on every host run,
 # but it is not counted among the host tests below.
-test-host: policy-check guest-profile-check lint-source test-integration test-operator-host test-log-ring-host test-framebuffer-host
+test-host: policy-check guest-profile-check lint-source test-integration test-operator-host test-log-ring-host test-framebuffer-host test-guest-block-drain-host
 
 .PHONY: test-framebuffer-host
 test-framebuffer-host:
@@ -902,6 +902,16 @@ test-block-isolation:
 .PHONY: test-guest-ram-recycle
 test-guest-ram-recycle:
 	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os buildroot --timeout-secs $(QEMU_TEST_TIMEOUT) --assert-emulated-blk --assert-guest-ram-recycle --ssh-port $(QEMU_TEST_SSH_PORT)
+
+.PHONY: test-guest-block-drain-host
+.PHONY: test-guest-block-drain
+test-guest-block-drain: test-guest-block-drain-host
+	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os buildroot --timeout-secs $(QEMU_TEST_TIMEOUT) --assert-emulated-blk --assert-guest-block-drain --ssh-port $(QEMU_TEST_SSH_PORT)
+
+test-guest-block-drain-host:
+	@mkdir -p $(BUILD_TMP_DIR)
+	$(CC) -std=gnu11 -g -Wall -include assert.h -I tests/platform/block-stubs -I libvmm/include -I libvmm/dep/sddf/include tests/platform/test_virtio_blk_drain.c libvmm/src/virtio/block.c libvmm/src/virtio/gpa.c libvmm/dep/sddf/util/fsmalloc.c libvmm/dep/sddf/util/bitarray.c -o $(BUILD_TMP_DIR)/test_virtio_blk_drain
+	$(BUILD_TMP_DIR)/test_virtio_blk_drain
 
 test-guest-blk:
 	@if [ "$(BOARD)" != "qemu_virt_aarch64" ]; then \
