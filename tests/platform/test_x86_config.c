@@ -84,7 +84,43 @@ int main(void)
     select_pci(&a, 0x80000b80);
     io(&a, 0xcfc, 1, true, 0xff);
     assert(io(&a, 0x4008, 4, false, 0) == 0x345678);
+    assert(io(&a,0x4000,2,false,0)==1); /* elapsed bit-23 transitions */
+    io(&a,0x4000,1,true,1);
+    assert(io(&a,0x4000,2,false,0)==0);
+    assert(io(&a,0x4002,2,false,0)==0);
+    io(&a,0x4002,2,true,0);
+    assert(io(&a,0x4004,2,false,0)==0);
+    io(&a,0x4004,2,true,0x1c03);
+    assert(io(&a,0x4004,1,false,0)==3 && io(&a,0x4005,1,false,0)==0x1c);
+    io(&a,0x4004,1,true,0);
+    assert(io(&a,0x4004,2,false,0)==0x1c00);
+    io(&a,0x4005,1,true,0);
+    assert(io(&a,0x4004,2,false,0)==0);
+    reject(&a,0x4001,2,false);
+    reject(&a,0x4004,4,false);
+    reject(&a,0x4006,2,false);
+    uint32_t pm_value=0x2000; aos_x86_config_t before=a;
+    assert(!aos_x86_config_io(&a,0x4004,2,true,&pm_value,0x12345678)); /* sleep */
+    assert(pm_value==0x2000 && !memcmp(&a,&before,sizeof(a)));
+    pm_value=4;
+    assert(!aos_x86_config_io(&a,0x4004,2,true,&pm_value,0x12345678)); /* SMI */
+    assert(!memcmp(&a,&before,sizeof(a)));
+    pm_value=1;
+    assert(!aos_x86_config_io(&a,0x4002,2,true,&pm_value,0x12345678)); /* SCI */
+    assert(!memcmp(&a,&before,sizeof(a)));
+    pm_value=0;
+    assert(!aos_x86_config_io(&a,0x4000,2,false,&pm_value,0)); /* reversal */
+    assert(!memcmp(&a,&before,sizeof(a)));
     reject(&b, 0x4008, 4, false);
+    aos_x86_config_t wrapped=a;
+    pm_value=0;
+    assert(aos_x86_config_io(&wrapped,0x4000,2,false,&pm_value,0x13345678));
+    assert(pm_value==1); /* two bit-23 transitions still latch status */
+    pm_value=1;
+    assert(aos_x86_config_io(&wrapped,0x4000,2,true,&pm_value,0x13345678));
+    pm_value=0;
+    assert(aos_x86_config_io(&wrapped,0x4000,2,false,&pm_value,0x13345678));
+    assert(pm_value==0 && a.pm_status==0);
     reject(&a, 0x4008, 4, true);
     reject(&a, 0x4008, 2, false);
     reject(&a, 0xcfd, 2, false);

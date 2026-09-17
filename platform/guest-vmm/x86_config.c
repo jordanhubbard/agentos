@@ -53,6 +53,40 @@ static uint8_t fw_byte(const aos_x86_config_t *s, uint32_t off)
     return 0;
 }
 
+static bool pm_io(aos_x86_config_t *s, unsigned off, unsigned width,
+                  bool write, uint32_t *value, uint64_t ticks)
+{
+    bool timer=off==8u && width==4u && !write;
+    bool word=off<6u && (width==1u || (width==2u && !(off&1u)));
+    if ((!timer && !word) || ticks<s->pm_last_ticks) return false;
+    uint16_t status=s->pm_status, control=s->pm_control;
+    /* TMR_STS latches whenever bit 23 changes, including skipped wraps. */
+    if ((ticks >> 23)!=(s->pm_last_ticks >> 23)) status|=1u;
+    uint32_t result=*value;
+    unsigned shift=(off&1u)*8u, mask=width==1u ? 0xffu : 0xffffu;
+    unsigned data=(*value&mask)<<shift;
+    if (timer) result=(uint32_t)ticks & 0xffffffu;
+    else if ((off&~1u)==0u) {
+        if (write) status&=~data; /* W1C; reserved status bits stay zero */
+        else result=(status >> shift)&mask;
+    } else if ((off&~1u)==2u) {
+        if (write && data) return false; /* SCI routing not implemented */
+        if (!write) result=0;
+    } else {
+        if (write) {
+            unsigned next=(control & ~(mask<<shift)) | data;
+            /* SCI_EN/BM_RLD and sleep type are state, not a sleep request.
+             * SLP_EN, GBL_RLS and reserved control bits fail without mutation. */
+            if (next & ~0x1c03u) return false;
+            control=(uint16_t)next;
+        } else result=(control >> shift)&mask;
+    }
+    s->pm_status=status; s->pm_control=control; s->pm_last_ticks=ticks;
+    if (timer) s->timer_reads++;
+    *value=result;
+    return true;
+}
+
 bool aos_x86_config_io(aos_x86_config_t *s, uint16_t port, unsigned width,
                        bool write, uint32_t *value, uint64_t timer_ticks)
 {
@@ -118,11 +152,8 @@ bool aos_x86_config_io(aos_x86_config_t *s, uint16_t port, unsigned width,
     }
     uint16_t pm_base = (uint16_t)load(s->pm+0x40u, 2) & 0xffc0u;
     if (pm_base && (s->pm[4] & 1u) && (s->pm[0x80] & 1u) &&
-        (uint32_t)port == (uint32_t)pm_base + 8u && width == 4u && !write) {
-        *value = (uint32_t)timer_ticks & 0xffffffu;
-        s->timer_reads++;
-        return true;
-    }
+        port>=pm_base && (uint32_t)port-(uint32_t)pm_base<12u)
+        return pm_io(s,(unsigned)(port-pm_base),width,write,value,timer_ticks);
     if (port == 0x510u && width == 2u && write) {
         s->fw_selector = (uint16_t)*value; s->fw_offset = 0; return true;
     }

@@ -12,6 +12,10 @@ typedef struct {
     uint32_t cpu_selector;
     uint8_t cpu_command;
     aos_x86_rtc_t rtc;
+    /* Private ACPI PM1: polled TMR_STS/W1C, no enabled SCI sources; control
+     * retains SCI_EN, BM_RLD and SLP_TYP but rejects sleep/SMI requests. */
+    uint16_t pm_status, pm_control;
+    uint64_t pm_last_ticks;
 } aos_x86_config_t;
 
 /* One state per guest; timer_ticks is supplied by the VMM's virtual clock.
