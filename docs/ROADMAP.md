@@ -209,6 +209,30 @@ Acceptance evidence is a target-tested create/write/flip/read cycle followed
 by Linux DRM/KMS, keyboard, and pointer enumeration and a captured non-empty
 guest frame.
 
+The [Spark guest-frame checkpoint](evidence/2026-09-16-spark/guest-frame.json)
+records a 1024x768 frame captured from Debian at `9769cefb` on the pending
+graphics branch (PR #166). Two exact guest-written pixels survived the
+virtio-gpu, framebuffer and CC observer path. This is a revision-specific
+frame-transfer result; SSH qualification subsequently failed during banner
+exchange. PR #172 addresses the configuration-byte regression in this source.
+Input delivery, physical scanout, interactive latency and release integration
+remain outside that result.
+
+The [Spark input qualification](evidence/2026-09-16-spark/guest-input.json)
+passed at `b0e232f` after the MMIO configuration-byte correction: authenticated
+Debian SSH, exact keyboard/pointer events through the public CLI and Linux
+evdev, and the full OS gate. This is a separate input-only guest run.
+
+The subsequent [combined qualification](evidence/2026-09-16-spark/graphics-input.json)
+passed at `4f45ea1`: the same Debian guest exported a 1024x768 frame with two
+exact profile-declared pixels, authenticated SSH, and delivered all four
+keyboard/pointer batches with exact Linux evdev packet boundaries. The full
+local OS gate passed on that revision. With the shorter CC scheduling period,
+the 3 MiB frame transfer completed in 59 seconds. This is bulk capture
+throughput, not an interactive display latency result. Physical device
+ownership, target peer input isolation, guest resource reclamation/recreation,
+and final release integration remain unproven.
+
 MAC work:
 
 - `task_9cc7b9d4fbd14601b6b0851de4d300b8` — target-test the canonical
