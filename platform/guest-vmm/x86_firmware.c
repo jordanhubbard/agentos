@@ -258,7 +258,7 @@ void aos_x86_firmware_run(seL4_CPtr ep, seL4_Word result)
             seL4_X86_VCPU_ReadMSR_t misc=seL4_X86_VCPU_ReadMSR(VCPU,0x485u);
             uint64_t tick=UINT64_C(1) << (misc.value & 31u);
             timer_shift=misc.value & 31u;
-            if (!hz)
+            if (!aos_x86_cpu_clock_supported(hz))
                 stop(ep,AOS_X86_VTX_PROOF_FAIL,0x434c4bu,rip,
                      ((uint64_t)clock.ecx << 32) | ((clock.eax & 0xffffu) << 16) | (clock.ebx & 0xffffu));
             if (misc.error || tick > hz/1000u || !(misc.value & (1u << 6)))
@@ -284,7 +284,7 @@ void aos_x86_firmware_run(seL4_CPtr ep, seL4_Word result)
             write_field(ep,ACTIVITY,1u);
             halt_exits++;
         } else if (reason == 10u && len == 2u) {
-            aos_x86_cpuid_t r = aos_x86_cpu_id((uint32_t)regs.eax, (uint32_t)regs.ecx);
+            aos_x86_cpuid_t r = aos_x86_cpu_id((uint32_t)regs.eax, (uint32_t)regs.ecx,hz);
             regs.eax = r.eax; regs.ebx = r.ebx; regs.ecx = r.ecx; regs.edx = r.edx;
         } else if (reason == 28u && len == 3u && (qual & ~0xf0fu) == 0u &&
                    ((qual & 15u) == 0u || (qual & 15u) == 4u)) {

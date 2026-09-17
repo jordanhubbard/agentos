@@ -11,7 +11,11 @@ typedef struct { uint32_t eax, ebx, ecx, edx; } aos_x86_cpuid_t;
                          (1u<<8)|(1u<<13)|(1u<<15)|(1u<<23)|(1u<<24)|(1u<<25)|(1u<<26))
 #define AOS_X86_EXT_EDX ((1u<<11)|(1u<<20)|(1u<<29))
 bool aos_x86_cpu_supported(uint32_t basic_edx, uint32_t ext_edx, uint32_t widths);
-aos_x86_cpuid_t aos_x86_cpu_id(uint32_t leaf, uint32_t subleaf);
+/* Clock profile: the VMM must supply an admitted invariant TSC frequency.
+ * The virtual crystal and undivided APIC clock both equal that frequency.
+ * CPUID crystal Hz is 32-bit; reject clocks outside this explicit profile. */
+bool aos_x86_cpu_clock_supported(uint64_t tsc_hz);
+aos_x86_cpuid_t aos_x86_cpu_id(uint32_t leaf, uint32_t subleaf, uint64_t tsc_hz);
 /* Explicit clock discovery only: architectural ratio or QEMU/KVM's published
  * kHz leaf. Caller supplies zero leaves when their namespace is unavailable. */
 uint64_t aos_x86_tsc_frequency(bool invariant, aos_x86_cpuid_t ratio,

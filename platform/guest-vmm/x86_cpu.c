@@ -48,13 +48,19 @@ bool aos_x86_cpu_supported(uint32_t basic_edx, uint32_t ext_edx, uint32_t widths
            (widths & 0xffu) >= 36u && ((widths >> 8) & 0xffu) >= 48u;
 }
 
-aos_x86_cpuid_t aos_x86_cpu_id(uint32_t leaf, uint32_t subleaf)
+bool aos_x86_cpu_clock_supported(uint64_t tsc_hz)
+{
+    return tsc_hz>=1000000u && tsc_hz<=UINT32_MAX;
+}
+
+aos_x86_cpuid_t aos_x86_cpu_id(uint32_t leaf, uint32_t subleaf, uint64_t tsc_hz)
 {
     (void)subleaf; /* These legacy leaves do not use a subleaf index. */
     aos_x86_cpuid_t r = {0};
+    bool clock=aos_x86_cpu_clock_supported(tsc_hz);
     switch (leaf) {
     case 0u:
-        r.eax = 1u;
+        r.eax = clock ? 0x16u : 1u;
         r.ebx = 0x756e6547u; r.edx = 0x49656e69u; r.ecx = 0x6c65746eu;
         break; /* GenuineIntel, virtual model below; no host identity copied. */
     case 1u:
@@ -67,8 +73,15 @@ aos_x86_cpuid_t aos_x86_cpu_id(uint32_t leaf, uint32_t subleaf)
         r.eax = 0x40000000u;
         r.ebx = 0x6e656761u; r.ecx = 0x20534f74u; r.edx = 0x204d4d56u;
         break; /* "agentOS VMM " */
+    case 0x15u:
+        if (clock) { r.eax=1; r.ebx=1; r.ecx=(uint32_t)tsc_hz; }
+        break; /* virtual TSC:crystal ratio 1:1; also matches APIC bus ticks */
+    case 0x16u:
+        if (clock) r.eax=(uint32_t)(tsc_hz/1000000u);
+        break; /* nominal virtual CPU MHz; no maximum/bus-frequency claim */
     case 0x80000000u: r.eax = 0x80000008u; break;
     case 0x80000001u: r.edx = AOS_X86_EXT_EDX; break;
+    case 0x80000007u: if (clock) r.edx=1u << 8; break;
     case 0x80000008u: r.eax = 36u | (48u << 8); break;
     default: break;
     }
