@@ -1,0 +1,19 @@
+{
+  "schema": "agentos.debian_derived_dtb.v1",
+  "runtime_commit": "a1dcfb06e0d6519731cc5f99385f9682c8bfb6b1",
+  "finding": "The initramfs update in PR187 changed the generated initrd-end but left derived graphics and input DTB checksum pins stale; make run GUEST_OS=debian-graphics-input failed strict DTB verification.",
+  "decoded_diff": "For GPU, input and combined graphics/input DTBs, the only decoded difference from prior artifacts is linux,initrd-end: 0x52365312 -> 0x5236530a.",
+  "checksums": {
+    "debian-gpu": "c07ac18a210c24397188db7982c8b647adde8f83c56e22b0d0f0e47691ed7c1f",
+    "debian-input": "1a65a57262dd1f453a5acb3a34eb5535df1862d209c932bb985012d170f0463d",
+    "debian-graphics-input": "bd03c8361711a3f4318ff4a4125acef4ebef91b339ac5b68f33f45e98f863236"
+  },
+  "validation": {
+    "make_guest_profile_check": "PASS",
+    "strict_profile_preparation": "PASS: all three derived profiles, default and dual-primary placements",
+    "graphics_input_build": "PASS",
+    "graphics_input_boot": "seL4 boots and Debian reaches systemd startup; complete live GUI refresh validation remains pending",
+    "os_image_sha256": "1c7223c78837f8a04c13cc17b09271fab836c96f0e69183a58d1ae769aeae987"
+  },
+  "scope": "Checksum-only correction; no target implementation change. Does not establish complete guest startup, live display refresh, graphical input, persistence or release readiness. Earlier gate evidence is recorded separately in debian-network.json."
+}
