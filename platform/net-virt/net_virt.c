@@ -31,7 +31,7 @@
 
 #include "agentos.h"
 #include "sel4_ipc.h"
-#include "serial_log.h"
+#include <stdio.h>
 #include "system_desc.h"
 #include "nameserver.h"
 #include <contracts/net_virt_contract.h>
@@ -53,8 +53,7 @@ _Static_assert(sizeof(net_virt_attach_req_t) == 12u,
 _Static_assert(sizeof(net_virt_attach_reply_t) == 20u,
                "net_virt ATTACH reply wire size");
 
-/* Unmapped: log_drain_write falls back to the (release-silent) debug putc.
- * Visible diagnostics go through serial_pd via serial_log_t. */
+/* Root-provisioned log ring; the common debug fallback elsewhere. */
 uintptr_t log_drain_rings_vaddr;
 
 typedef struct {
@@ -75,29 +74,18 @@ typedef struct {
 static nv_client_t     g_clients[AOS_NET_QUEUE_CLIENTS];
 static aos_net_virt_t  g_hub;          /* loopback/hub pump for hw-less runs */
 static int             g_hub_marked;
-static serial_log_t    g_log = { .ep = PD_CNODE_SLOT_SERIAL_EP };
 
 /* ── diagnostics ────────────────────────────────────────────────────────── */
 
-static void nv_puts(const char *s)
+static void nv_log(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
+static void nv_log(const char *fmt, ...)
 {
-    serial_log_puts(&g_log, s);
-}
-
-static void nv_dec(uint32_t v)
-{
-    char buf[12];
-    int i = 11;
-
-    buf[i] = '\0';
-    if (v == 0u) {
-        buf[--i] = '0';
-    }
-    while (v > 0u && i > 0) {
-        buf[--i] = (char)('0' + (v % 10u));
-        v /= 10u;
-    }
-    nv_puts(&buf[i]);
+    char buf[160];
+    va_list args;
+    va_start(args, fmt);
+    (void)vsnprintf(buf, sizeof(buf), fmt, args);
+    va_end(args);
+    agentos_log_info("net_virt", buf);
 }
 
 static uint32_t rd32(const uint8_t *p, uint32_t off)
@@ -224,13 +212,11 @@ static uint32_t nv_tx_to_net_pd(nv_client_t *c)
                 c->tx_total++;
                 if (!c->tx_marked) {
                     c->tx_marked = 1u;
-                    nv_puts("[net_virt] TX accepted by net_pd\n");
-                    nv_puts("[net_pd] HOST_TX: QEMU bus.16 completion observed\n");
+                    nv_log("TX accepted by net_pd");
+                    nv_log("[net_pd] HOST_TX: QEMU bus.16 completion observed");
                 }
             } else if (!c->tx_marked) {
-                nv_puts("[net_virt] TX rejected by net_pd rc=");
-                nv_dec(rep.opcode);
-                nv_puts("\n");
+                nv_log("TX rejected by net_pd rc=%u", (unsigned)rep.opcode);
             }
         }
         buf.len = 0u;
@@ -285,7 +271,7 @@ static uint32_t nv_rx_from_net_pd(nv_client_t *c)
             len > AGENTOS_NET_SHARED_SIZE - off ||
             !aos_net_buffer_valid(buf.io_or_offset, len)) {
             (void)aos_net_queue_enqueue(c->q.rx_free, c->q.capacity, buf);
-            nv_puts("[net_virt] RX bounds invalid from net_pd\n");
+            nv_log("RX bounds invalid from net_pd");
             break;
         }
         nv_fence();
@@ -301,7 +287,7 @@ static uint32_t nv_rx_from_net_pd(nv_client_t *c)
         c->rx_total++;
         if (!c->rx_marked) {
             c->rx_marked = 1u;
-            nv_puts("[net_virt] RX delivered from net_pd\n");
+            nv_log("RX delivered from net_pd");
         }
     }
     return received;
@@ -366,9 +352,7 @@ static void nv_service(void)
 
             if (moved > 0u && !g_hub_marked) {
                 g_hub_marked = 1;
-                nv_puts("[net_virt] pumped ");
-                nv_dec(moved);
-                nv_puts(" frame(s) TX->RX (hub/loopback: net_pd reports no host NIC)\n");
+                nv_log("pumped %u frame(s) TX->RX (hub/loopback: net_pd reports no host NIC)", (unsigned)moved);
             }
             for (uint32_t i = 0u; i < AOS_NET_QUEUE_CLIENTS; i++) {
                 nv_client_t *c = &g_clients[i];
@@ -450,10 +434,10 @@ static void handle_attach(uint64_t badge, const sel4_msg_t *req, sel4_msg_t *rep
                     hw_state = NET_VIRT_HW_NET_PD;
                 }
             } else {
-                nv_puts("[net_virt] net_pd returned an invalid slot\n");
+                nv_log("net_pd returned an invalid slot");
             }
         } else {
-            nv_puts("[net_virt] net_pd RAW_OPEN failed\n");
+            nv_log("net_pd RAW_OPEN failed");
         }
 
         if (!c->hw) {
@@ -465,20 +449,15 @@ static void handle_attach(uint64_t badge, const sel4_msg_t *req, sel4_msg_t *rep
         nv_fence();
         c->attached = 1u;
 
-        nv_puts("[net_virt] ATTACH client=");
-        nv_dec(client_id);
-        nv_puts(" vmm_slot=");
-        nv_dec(vmm_slot);
-        nv_puts(" net_pd contract v");
-        nv_dec((uint32_t)NET_SVC_INTERFACE_VERSION);
-        nv_puts(c->hw ? " hw=1\n" : " hw=0 (hub/loopback pump)\n");
+        nv_log("ATTACH client=%u vmm_slot=%u net_pd contract v%u hw=%u%s",
+               (unsigned)client_id, (unsigned)vmm_slot,
+               (unsigned)NET_SVC_INTERFACE_VERSION, (unsigned)c->hw,
+               c->hw ? "" : " (hub/loopback pump)");
         if (c->hw) {
-            nv_puts("[net_pd] HOST_READY: virtio-net bus.16\n");
+            nv_log("[net_pd] HOST_READY: virtio-net bus.16");
         }
     } else {
-        nv_puts("[net_virt] ATTACH rejected status=");
-        nv_dec(status);
-        nv_puts("\n");
+        nv_log("ATTACH rejected status=%u", (unsigned)status);
     }
 
     wr32(rep->data, 0u, status);
@@ -536,6 +515,6 @@ void pd_main(seL4_CPtr my_ep, seL4_CPtr ns_ep)
     agentos_log_boot("net_virt");
     aos_net_virt_reset(&g_hub);
     register_with_nameserver(ns_ep);
-    nv_puts("[net_virt] READY: contract v4, isolated capability-bound clients, no device caps\n");
+    nv_log("READY: contract v4, isolated capability-bound clients, no device caps");
     net_virt_run(my_ep);
 }
