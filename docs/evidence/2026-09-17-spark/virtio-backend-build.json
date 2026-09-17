@@ -1,0 +1,48 @@
+{
+  "qualification": "Shared virtio backend architecture build boundary",
+  "date": "2026-09-17",
+  "task": "task_ede60b058fc745d296bad77044a57420",
+  "runtime_revision": "b4e60aa711a3428a32db1e48f0814a00e3ce9842",
+  "host": "sparky",
+  "host_architecture": "aarch64",
+  "tests": [
+    {
+      "command": "make test-host",
+      "result": "PASS",
+      "log_sha256": "c7262671cbac87217beac791273f4c81d8d18af044cc0fe13ae4bc8e30fedb31"
+    },
+    {
+      "command": "make test-virtio-backends-build SEL4_SDK_VERSION=2.1.0",
+      "result": "PASS",
+      "architectures": ["aarch64", "x86_64"],
+      "log_sha256": "98da7ba9f742fcb2aab985b1117c5a7e91d58fc15bc77bd77d022028eac3190b"
+    },
+    {
+      "command": "make test-virtio-backends-build SEL4_SDK_VERSION=2.3.0",
+      "result": "PASS",
+      "architectures": ["aarch64", "x86_64"],
+      "log_sha256": "b4211a46b51cfa1d1d1efca676649839c44bc98c70f7e60edd75fa71abfbe9bf"
+    },
+    {
+      "command": "make gate SEL4_SDK_VERSION=2.3.0",
+      "result": "PASS",
+      "returncode": 0,
+      "log_sha256": "8e5f8d10a4322716f11465362bed3033869246432ca04af399df35cb8a6bd772",
+      "assertions": [
+        "Host suite and production console/net/block compilation for both architectures",
+        "AArch64 root-task boot",
+        "x86_64 reduced root-task smoke boot",
+        "AArch64 guest emulated virtio-net negotiation and packet pump",
+        "AArch64 guest emulated virtio-block completed request",
+        "AArch64 guest console login prompt and bidirectional probe through CC API"
+      ],
+      "last_aarch64_image_sha256": "8f500646639c295993ccc91fe13ab827a5da64b8b7fd8ae9c6e58aa9ff50aa05"
+    }
+  ],
+  "retained_directory": "/tmp/agentos-v04-x86-notifications/build/evidence/virtio-backends-b4e60aa",
+  "limitations": [
+    "Backend compilation is not Intel guest I/O qualification.",
+    "This change does not add an x86 device topology, MMIO/IRQ adapter or notification handler.",
+    "Intel lifecycle, resource reclamation, persistent disks and concurrent guest isolation remain outside this receipt."
+  ]
+}
