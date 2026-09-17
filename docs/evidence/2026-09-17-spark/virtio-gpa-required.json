@@ -1,0 +1,37 @@
+{
+  "qualification": "Require explicit guest RAM translation for virtio",
+  "date": "2026-09-17",
+  "task": "task_ede60b058fc745d296bad77044a57420",
+  "runtime_revision": "b5a5a79a2f1634c50222b1e0233d734959cd9057",
+  "host": "sparky",
+  "host_architecture": "aarch64",
+  "tests": [
+    {
+      "command": "make test-virtio-mmio-core-host",
+      "result": "PASS",
+      "sanitizers": ["address", "undefined"],
+      "assertions": [
+        "Unbound GPA translation and nonempty copies fail",
+        "Unbound queue activation fails without changing GPA registers",
+        "Bounded translator enables queue activation and copies",
+        "Clearing the translator disables subsequent translation and copies",
+        "Rebinding restores bounded copies"
+      ],
+      "log_sha256": "13ab8cf1253e363aac98bc71a3136f69e161ea43810266ef326c441670ff4588"
+    },
+    {
+      "command": "make gate SEL4_SDK_VERSION=2.3.0",
+      "result": "PASS",
+      "returncode": 0,
+      "log_sha256": "db836219172d0eb7432971fe151d8c857e0c49e3b101d79efd82d79b70283df0",
+      "scope": "Host suite, ARM64/x86_64 backend compilation, both root-task boots, AArch64 guest net/block/bidirectional console proofs",
+      "last_aarch64_image_sha256": "204b9dd3542299ab9c07fa0fa808ad27ae019157c43344a6c1dd65dee91ca031"
+    }
+  ],
+  "retained_directory": "/tmp/agentos-v04-x86-notifications/build/evidence/virtio-gpa-required-b5a5a79",
+  "limitations": [
+    "Unconfigured-translator rejection is a host test, not an on-target isolation qualification.",
+    "Clearing the hook does not revoke cached ring aliases or guest RAM capabilities; teardown must quiesce devices and reset rings separately.",
+    "Intel guest-device integration and lifecycle remain incomplete."
+  ]
+}

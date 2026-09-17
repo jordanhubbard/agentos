@@ -75,12 +75,23 @@ int main(void)
     CHECK(!virtio_mmio_reg_read(&d,REG_VIRTIO_MMIO_CONFIG+4,&v) && v==0x12345678);
     CHECK(!virtio_mmio_reg_read(&d,0x200,&v) && v==0x12345678);
     CHECK(!virtio_mmio_reg_read(NULL,0,&v) && !virtio_mmio_reg_read(&d,0,NULL));
-    virtio_gpa_set_translate(translate);
+    /* An unconfigured backend must not interpret a GPA as a host pointer. */
+    uint8_t byte=0xa5;
+    CHECK(virtio_gpa_to_hva(GPA_BASE,1)==NULL);
+    CHECK(virtio_copy_from_gpa(GPA_BASE,0,&byte,1)!=0 && byte==0xa5);
+    CHECK(virtio_copy_to_gpa(GPA_BASE,0,&byte,1)!=0);
+    CHECK(virtio_copy_from_gpa(GPA_BASE,0,NULL,0)==0);
+    CHECK(virtio_copy_to_gpa(GPA_BASE,0,NULL,0)==0);
     CHECK(virtio_mmio_reg_write(&d,REG_VIRTIO_MMIO_QUEUE_SEL,0));
     CHECK(virtio_mmio_reg_write(&d,REG_VIRTIO_MMIO_QUEUE_NUM,8));
     address(&d,REG_VIRTIO_MMIO_QUEUE_DESC_LOW,GPA_BASE);
     address(&d,REG_VIRTIO_MMIO_QUEUE_AVAIL_LOW,GPA_BASE+512);
     address(&d,REG_VIRTIO_MMIO_QUEUE_USED_LOW,GPA_BASE+1024);
+    CHECK(!virtio_mmio_reg_write(&d,REG_VIRTIO_MMIO_QUEUE_READY,1));
+    CHECK(!queues[0].ready && (uintptr_t)queues[0].virtq.desc==GPA_BASE);
+    CHECK((uintptr_t)queues[0].virtq.avail==GPA_BASE+512);
+    CHECK((uintptr_t)queues[0].virtq.used==GPA_BASE+1024);
+    virtio_gpa_set_translate(translate);
     CHECK(virtio_mmio_reg_write(&d,REG_VIRTIO_MMIO_QUEUE_READY,1));
     CHECK(queues[0].virtq.desc==(void *)memory && queues[0].virtq.avail==(void *)(memory+512));
     CHECK(queues[0].virtq.used==(void *)(memory+1024));
@@ -111,6 +122,17 @@ int main(void)
     CHECK(!virtio_mmio_reg_write(&d,REG_VIRTIO_MMIO_QUEUE_READY,1) && !queues[1].ready);
     CHECK((uintptr_t)queues[1].virtq.desc==GPA_BASE+1);
     CHECK(!virtio_mmio_reg_write(&d,0x200,0));
-    puts("PASS: shared libvmm register negotiation, GPA mapping, IRQ ack, reset and rejection");
+    /* Disable only after resetting device-owned ring aliases. A later bind
+     * must restore bounded copies rather than a process-wide identity map. */
+    CHECK(virtio_mmio_reg_write(&d,REG_VIRTIO_MMIO_STATUS,0));
+    virtio_gpa_set_translate(NULL);
+    CHECK(virtio_gpa_to_hva(GPA_BASE,1)==NULL);
+    CHECK(virtio_copy_from_gpa(GPA_BASE,0,&byte,1)!=0 && byte==0xa5);
+    CHECK(virtio_copy_to_gpa(GPA_BASE,0,&byte,1)!=0);
+    virtio_gpa_set_translate(translate);
+    CHECK(virtio_copy_to_gpa(GPA_BASE,0,&byte,1)==0 && memory[0]==0xa5);
+    byte=0;
+    CHECK(virtio_copy_from_gpa(GPA_BASE,0,&byte,1)==0 && byte==0xa5);
+    puts("PASS: shared libvmm negotiation, required GPA binding, IRQ ack, reset and rejection");
     return 0;
 }
