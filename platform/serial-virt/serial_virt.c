@@ -2,13 +2,11 @@
  * Root mappings and client adapters must be present before this PD is booted. */
 #include "agentos.h"
 #include "sel4_ipc.h"
-#include "serial_log.h"
 #include "system_desc.h"
 #include <platform/serial_virt_service.h>
 
 uintptr_t log_drain_rings_vaddr;
 static aos_serial_virt_service_t service;
-static serial_log_t diagnostic = {.ep = PD_CNODE_SLOT_SERIAL_EP};
 static uint32_t fault_reported;
 static uint32_t input_reported, output_reported;
 
@@ -20,21 +18,21 @@ static void service_queues(void)
     aos_serial_virt_result_t result = aos_serial_virt_service_pump(
         &service, AOS_SERIAL_TX_CAPACITY);
     if (result.input_clients & 3u & ~input_reported) {
-        serial_log_puts(&diagnostic, "[serial_virt] frontend input delivered to VMM queue\n");
+        agentos_log_info("serial_virt", "frontend input delivered to VMM queue");
         input_reported |= result.input_clients;
     }
     if (result.output_clients & 3u & ~output_reported) {
-        serial_log_puts(&diagnostic, "[serial_virt] VMM output delivered to frontend queue\n");
+        agentos_log_info("serial_virt", "VMM output delivered to frontend queue");
         output_reported |= result.output_clients;
     }
     if (result.input_clients & 4u & ~input_reported)
-        serial_log_puts(&diagnostic, "[serial_virt] operator input transferred\n");
+        agentos_log_info("serial_virt", "operator input transferred");
     if (result.output_clients & 4u & ~output_reported)
-        serial_log_puts(&diagnostic, "[serial_virt] operator output transferred\n");
+        agentos_log_info("serial_virt", "operator output transferred");
     input_reported |= result.input_clients;
     output_reported |= result.output_clients;
     if (result.invalid_clients & ~fault_reported) {
-        serial_log_puts(&diagnostic, "[serial_virt] malformed client queue rejected\n");
+        agentos_log_info("serial_virt", "malformed client queue rejected");
         fault_reported |= result.invalid_clients;
     }
 #if defined(AGENTOS_GUEST_PRIMARY)
@@ -61,7 +59,7 @@ void pd_main(seL4_CPtr endpoint, seL4_CPtr nameserver)
             AOS_SERIAL_FRONTEND_FRAME * AOS_SERIAL_FRAME_SIZE +
             i * AOS_SERIAL_FRONTEND_STRIDE);
     }
-    serial_log_puts(&diagnostic, "[serial_virt] READY: isolated serial queue service v2\n");
+    agentos_log_info("serial_virt", "READY: isolated serial queue service v2");
     for (;;) {
         seL4_Word badge = 0;
 #ifdef CONFIG_KERNEL_MCS

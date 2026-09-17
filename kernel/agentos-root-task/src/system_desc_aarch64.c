@@ -318,12 +318,9 @@ const system_desc_t system_desc_aarch64 = {
             .cnode_size_bits = 10u,
             .priority = 203u,
             .self_svc_id = SVC_ID_SERIAL_VIRT,
-            .init_ep_count = 3u,
-            .init_eps = {
-                { SVC_ID_NAMESERVER, PD_CNODE_SLOT_NAMESERVER_EP },
-                { SVC_ID_LOG_DRAIN, PD_CNODE_SLOT_LOG_DRAIN_EP },
-                { SVC_ID_SERIAL, PD_CNODE_SLOT_SERIAL_EP },
-            },
+            /* Diagnostics use the root-provisioned log ring and send-only
+             * notification. The mux calls neither UART nor other services. */
+            .init_ep_count = 0u,
         },
 
         /* Guest VMM (prio 250; VM-exit latency is latency-critical).
