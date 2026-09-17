@@ -1,0 +1,50 @@
+{
+  "qualification": "Boot-time modern virtio block PCI resource discovery",
+  "runtime_revision": "8cb42bfd812dc95a3fe6d895d92820ac3c98c0ab",
+  "sdk_version": "2.3.0",
+  "checks": [
+    {
+      "host": "Spark ARM64",
+      "command": "make test-virtio-pci-caps test-x86-firmware-build SEL4_SDK_VERSION=2.3.0",
+      "result": "PASS",
+      "log": "build/evidence/x86-pci-8cb42bf/focused.log",
+      "sha256": "234ff4493dd79ae1f31b299739977998a487637ee0c5d1e7b070b9fd75148848"
+    },
+    {
+      "host": "Spark ARM64",
+      "command": "make gate SEL4_SDK_VERSION=2.3.0",
+      "result": "PASS",
+      "log": "build/evidence/x86-pci-8cb42bf/gate.log",
+      "sha256": "882eee0004b7cb2b3c13832d6c594a0a947f28adbe56d1be2ec38766093d2e9f"
+    },
+    {
+      "host": "madmax Intel Linux, accessed through puck.local",
+      "command": "make gate-x86_64-userspace SEL4_SDK_VERSION=2.3.0 X86_FIRMWARE_IMAGE=/tmp/agentos-ovmf-2024.02-2ubuntu0.9.fd X86_FIRMWARE_SHA256=101afad5f520753224b60b9555df60add435cf50c7a82b781d7d7d8c60db7eb5 X86_BOOT_KERNEL=/tmp/agentos-linux-7.0.0-30.efi X86_BOOT_KERNEL_SHA256=0ad39b13e289e1a5cf806d14541ac8f221eefe849017f5915e0846917ed67785 X86_BOOT_INITRD=/tmp/agentos-v04-intel-discovery/build/x86-userspace/initrd.bin X86_BOOT_INITRD_SHA256=4ca368d8cf181ba151f6e4cbc79ca312e14c9822970db0c3292a5c5d616f7745",
+      "result": "PASS",
+      "log": "build/evidence/x86-pci-8cb42bf/intel.log",
+      "sha256": "1bef9193e4dba2f55e31ebe323cb7e8c2468492b17b9ce01404090deeadd7295"
+    }
+  ],
+  "intel_image": {
+    "path": "/tmp/agentos-v04-intel-discovery/build/evidence/x86-pci-8cb42bf/agentos.img",
+    "sha256": "33a4a2c10a935ddd4dcd11b10c70c1943a97029d182077f3a29f38d6ee346c86"
+  },
+  "intel_test_medium": {
+    "path": "/tmp/agentos-v04-intel-discovery/build/tmp/agentos-qemu-GeZ0Oi.block.img",
+    "sha256": "c234615b45917cdbfe7f9d03b5d8e1ebfb42581633022e37edab9ec474a89467",
+    "bytes": 33554432,
+    "qemu_read_only": true
+  },
+  "observations": [
+    "Root validated modern virtio block identity at 00:05.0 and reported 4096-byte common, notification and device-config spans at physical addresses 0xfe000000, 0xfe003000 and 0xfe002000.",
+    "The required discovery marker is emitted only after verifying BAR/command restoration and deleting the temporary PCI configuration-port capability.",
+    "The Intel run also completed Linux ring3 initramfs syscalls and the bidirectional console exchange with the new PCI device present."
+  ],
+  "limitations": [
+    "No block device MMIO or DMA mapping is granted to an Intel driver yet, and this test does not complete a block request through the Intel device.",
+    "The board selects a fixed PCI function; enumeration of arbitrary bridges or hotplug devices is not implemented.",
+    "Host fixtures exercise malformed capability layouts and BAR bounds. Hardware I/O errors and failed BAR restoration were not injected.",
+    "The test medium is a disposable qualification fixture, not the pinned Debian baseline or writable persistence evidence.",
+    "Canonical integration, GUI qualification and the v0.4 release remain incomplete."
+  ]
+}

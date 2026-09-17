@@ -134,6 +134,15 @@ The PCI binding currently has host register-fixture and x86 ELF link evidence,
 not Intel device-execution evidence. A binding is not a device reset or DMA
 revocation operation.
 
+The x86 firmware qualification board places a modern virtio block device at
+PCI 00:05.0 with a fresh, read-only test medium. Root performs boot-time
+configuration discovery using a temporary CF8/CFC port capability. It disables
+decode and bus mastering while measuring BARs, validates the common, notify
+and device capability spans, verifies BAR/command restoration, then deletes
+that port capability before starting PDs. Failed discovery refuses startup.
+This checkpoint discovers resources only: it does not yet map them into the
+block driver, enable a DMA queue or expose a block device to the Intel guest.
+
 *Console*. `serial_virt` is a separate PD with four root-provisioned pages:
 one per VMM, one for the native operator client and a separate CC frontend
 page. Only the virtualizer maps all four. Root grants send-only notification capabilities for persistent wakeups

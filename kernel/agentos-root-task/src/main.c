@@ -50,6 +50,7 @@
 #include "agentos.h"         /* sel4_dbg_puts                                    */
 #include "contracts/cc_contract.h" /* cc_pd VirtIO startup ABI                    */
 #include <platform/blk_host_layout.h> /* host block MMIO/shared DMA layout       */
+#include "x86_host_block.h"
 #include <platform/blk_layout.h>      /* shared sDDF block region (VMMs + blk_virt) */
 #include <platform/serial_virt_layout.h>
 #include <platform/serial_uart.h>
@@ -1896,6 +1897,24 @@ void root_task_main(const seL4_BootInfo *bi)
     }
 
     const system_desc_t *sys = SYSTEM_DESC;
+#if defined(__x86_64__) && defined(AGENTOS_X86_FIRMWARE_RESET)
+    aos_virtio_pci_layout_t host_block_layout;
+    unsigned host_block_stage = aos_x86_host_block_discover(&host_block_layout);
+    if (host_block_stage) {
+        dbg_puts("[rt] x86 host block PCI discovery failed stage=");
+        dbg_hex(host_block_stage);
+        dbg_puts("\n");
+        return;
+    }
+    for (unsigned r = 0; r < AOS_VIRTIO_PCI_REGIONS; r++) {
+        dbg_puts("[rt] x86 host block region pa=");
+        dbg_hex(host_block_layout.region[r].paddr);
+        dbg_puts(" length=");
+        dbg_hex(host_block_layout.region[r].length);
+        dbg_puts("\n");
+    }
+    dbg_puts("[rt] x86 host block PCI resources verified\n");
+#endif
     static aos_inspect_view_t inspect_view;
     seL4_CPtr inspect_cc_vspace = seL4_CapNull;
     seL4_CPtr inspect_operator_vspace = seL4_CapNull;

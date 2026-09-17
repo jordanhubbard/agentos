@@ -720,7 +720,10 @@ test-x86-firmware-build:
 		$(abspath $(BUILD_TMP_DIR)/x86-firmware-link)/guest_vmm_primary.elf \
 		$(abspath $(BUILD_TMP_DIR)/x86-firmware-link)/serial_pd.elf \
 		$(abspath $(BUILD_TMP_DIR)/x86-firmware-link)/blk_virt.elf \
-		$(abspath $(BUILD_TMP_DIR)/x86-firmware-link)/virtio_blk.elf
+		$(abspath $(BUILD_TMP_DIR)/x86-firmware-link)/virtio_blk.elf \
+		$(abspath $(BUILD_TMP_DIR)/x86-firmware-link)/rt_main.o \
+		$(abspath $(BUILD_TMP_DIR)/x86-firmware-link)/rt_x86_host_block.o \
+		$(abspath $(BUILD_TMP_DIR)/x86-firmware-link)/rt_virtio_pci_caps.o
 	@echo "PASS: x86 firmware VMM, serial driver, block driver and virtualizer link checks"
 
 # test-host: alias for the host-only integration suite.  Named explicitly so
@@ -731,6 +734,15 @@ test-x86-firmware-build:
 test-host: policy-check guest-profile-check lint-source test-integration test-operator-host test-log-ring-host test-framebuffer-host
 test-host: test-x86-cpu-host
 test-host: test-virtio-host-transport
+test-host: test-virtio-pci-caps
+
+.PHONY: test-virtio-pci-caps
+test-virtio-pci-caps:
+	@mkdir -p $(BUILD_TMP_DIR)
+	$(CC) -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -g \
+		-I platform/include tests/platform/test_virtio_pci_caps.c \
+		platform/blk-virt/virtio_pci_caps.c -o $(BUILD_TMP_DIR)/test_virtio_pci_caps
+	$(BUILD_TMP_DIR)/test_virtio_pci_caps
 
 .PHONY: test-virtio-host-transport
 test-virtio-host-transport:

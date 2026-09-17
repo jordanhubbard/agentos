@@ -818,6 +818,14 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
                 &mut qemu,
             )
         } else if args.assert_vmx_exit {
+            if args.assert_firmware_reset {
+                wait_for_all_markers(
+                    &log_path,
+                    &["[rt] x86 host block PCI resources verified"],
+                    Duration::from_secs(args.timeout_secs),
+                    &mut qemu,
+                )?;
+            }
             if args.assert_x86_userspace {
                 x86_console_roundtrip(&cc_sock, Duration::from_secs(args.timeout_secs))?;
             }
@@ -1823,6 +1831,18 @@ pub(crate) fn spawn_qemu_with_guest(
             );
             let kernel = sel4_sdk_path()?.join("board/x86_64_generic_vtx/release/elf/sel4_32.elf");
             let root_task = repo_root.join("build/x86_64_generic_vtx/root_task.elf");
+            // A fresh, retained medium for this qualification run. Never
+            // open a user disk or reuse another run's writable image.
+            let block_path = log_path.with_extension("block.img");
+            let mut block = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&block_path)
+                .context("create Intel block qualification medium")?;
+            block.set_len(32 * 1024 * 1024)?;
+            block.write_all(b"agentos-host-block-qualification-v1\n")?;
+            block.sync_all()?;
+            println!("[xtask:test] Intel block medium: {}", block_path.display());
             let mut c = std::process::Command::new("qemu-system-x86_64");
             let _ = std::fs::remove_file(&cc_sock);
             c.arg("-machine")
@@ -1844,6 +1864,13 @@ pub(crate) fn spawn_qemu_with_guest(
                 .arg(kernel)
                 .arg("-initrd")
                 .arg(root_task);
+            c.arg("-drive")
+                .arg(format!(
+                    "file={},format=raw,id=agentos_blk,if=none,readonly=on",
+                    block_path.display()
+                ))
+                .arg("-device")
+                .arg("virtio-blk-pci,drive=agentos_blk,addr=05.0,disable-legacy=on");
             c.arg("-chardev")
                 .arg(format!(
                     "socket,id=serial2,path={},server=on,wait=off",
