@@ -27,7 +27,10 @@
 #define AOS_X86_FIRMWARE_STACK_WORDS 32u
 #define AOS_X86_FIRMWARE_SNAPSHOT_SET_WORDS 48u
 #define AOS_X86_FIRMWARE_SNAPSHOT_WORDS 96u
-#define AOS_X86_FIRMWARE_REPORT_WORDS 106u
+/* MR106..115: HLT RBP, valid frame count, four {previous RBP, return RIP}
+ * pairs. Optional diagnostic chain only; no unwind/success guarantee. */
+#define AOS_X86_FIRMWARE_CHAIN_WORDS 10u
+#define AOS_X86_FIRMWARE_REPORT_WORDS 116u
 #define AOS_X86_FIRMWARE_BASE     0xffc00000u
 #define AOS_X86_FIRMWARE_BYTES    0x00400000u
 #define AOS_X86_FIRMWARE_RAM      0x02000000u

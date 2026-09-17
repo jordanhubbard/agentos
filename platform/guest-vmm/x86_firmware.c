@@ -34,6 +34,9 @@
 #define IDT_VECTORING 0x4408u
 static seL4_Word timer_exits, injections, eois, timer_shift, tsc_hz, halt_exits;
 static seL4_Word snapshot[AOS_X86_FIRMWARE_SNAPSHOT_WORDS];
+static seL4_Word halt_chain[AOS_X86_FIRMWARE_CHAIN_WORDS];
+_Static_assert(AOS_X86_FIRMWARE_REPORT_WORDS <= seL4_MsgMaxLength,
+               "firmware diagnostics must fit in one IPC message");
 
 static _Noreturn void stop(seL4_CPtr endpoint, seL4_Word status, seL4_Word reason,
                  seL4_Word rip, seL4_Word detail)
@@ -44,6 +47,9 @@ static _Noreturn void stop(seL4_CPtr endpoint, seL4_Word status, seL4_Word reaso
     seL4_SetMR(7,timer_shift); seL4_SetMR(8,tsc_hz); seL4_SetMR(9,halt_exits);
     for (unsigned i=0; i<AOS_X86_FIRMWARE_SNAPSHOT_WORDS; i++)
         seL4_SetMR(10+i,reason == 0x425544u ? snapshot[i] : 0);
+    for (unsigned i=0; i<AOS_X86_FIRMWARE_CHAIN_WORDS; i++)
+        seL4_SetMR(10+AOS_X86_FIRMWARE_SNAPSHOT_WORDS+i,
+                   reason == 0x425544u ? halt_chain[i] : 0);
     seL4_Send(endpoint, seL4_MessageInfo_new(AOS_X86_VTX_PROOF_LABEL, 0, 0, AOS_X86_FIRMWARE_REPORT_WORDS));
     for (;;) { seL4_Word badge; (void)seL4_Wait(endpoint, &badge); }
 }
@@ -147,6 +153,21 @@ static void diagnostic_snapshot(const aos_x86_memory_t *m, uint64_t cr3,
                      out+4+AOS_X86_FIRMWARE_CODE_WORDS,out+3);
 }
 
+static void diagnostic_chain(const aos_x86_memory_t *m, uint64_t cr3, uint64_t rbp)
+{
+    for (unsigned i=0; i<AOS_X86_FIRMWARE_CHAIN_WORDS; i++) halt_chain[i]=0;
+    halt_chain[0]=rbp;
+    for (unsigned i=0; i<4 && !(rbp & 7u); i++) {
+        seL4_Word pair[2]={0}, valid=0;
+        diagnostic_words(m,cr3,rbp,2,pair,&valid);
+        if (valid != 3u) break;
+        halt_chain[2+2*i]=pair[0]; halt_chain[3+2*i]=pair[1];
+        halt_chain[1]++;
+        if (pair[0] <= rbp) break;
+        rbp=pair[0];
+    }
+}
+
 void aos_x86_firmware_run(seL4_CPtr ep, seL4_Word result)
 {
     /* CPUID is unprivileged. Admit a fixed baseline, never pass host identity
@@ -221,9 +242,11 @@ void aos_x86_firmware_run(seL4_CPtr ep, seL4_Word result)
             /* Timer and interrupt-window exits resume the same instruction. */
             if (reason == 52u) timer_exits++;
         } else if (reason == 12u && len == 1u) {
-            if ((read_field(ep,EFER) & LMA) && (read_field(ep,CR0) & PG))
+            if ((read_field(ep,EFER) & LMA) && (read_field(ep,CR0) & PG)) {
                 diagnostic_snapshot(&memory,guest_cr3,rip,read_field(ep,RSP),
                     snapshot+AOS_X86_FIRMWARE_SNAPSHOT_SET_WORDS);
+                diagnostic_chain(&memory,guest_cr3,regs.ebp);
+            }
             /* Retain architectural halt until an eligible interrupt arrives.
              * VMX's preemption timer still wakes this VMM from halted state. */
             write_field(ep,ACTIVITY,1u);

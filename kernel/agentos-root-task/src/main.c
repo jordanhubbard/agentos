@@ -3219,6 +3219,9 @@ void root_task_main(const seL4_BootInfo *bi)
             seL4_Word snapshot[AOS_X86_FIRMWARE_SNAPSHOT_WORDS];
             for (unsigned i=0; i<AOS_X86_FIRMWARE_SNAPSHOT_WORDS; i++)
                 snapshot[i]=seL4_GetMR(10+i);
+            seL4_Word chain[AOS_X86_FIRMWARE_CHAIN_WORDS];
+            for (unsigned i=0; i<AOS_X86_FIRMWARE_CHAIN_WORDS; i++)
+                chain[i]=seL4_GetMR(10+AOS_X86_FIRMWARE_SNAPSHOT_WORDS+i);
             dbg_puts("[rt] firmware timer exits="); dbg_hex(counters[0]);
             dbg_puts(" injections="); dbg_hex(counters[1]);
             dbg_puts(" eois="); dbg_hex(counters[2]);
@@ -3242,6 +3245,13 @@ void root_task_main(const seL4_BootInfo *bi)
                         dbg_puts(" = "); dbg_hex(view[start+i]); dbg_puts("\n");
                     }
                 }
+              }
+              seL4_Word frame=chain[0];
+              for (unsigned i=0; i<4 && i<chain[1]; i++) {
+                  dbg_puts("[rt] firmware HLT frame "); dbg_hex(frame);
+                  dbg_puts(" return "); dbg_hex(chain[3+2*i]);
+                  dbg_puts(" next "); dbg_hex(chain[2+2*i]); dbg_puts("\n");
+                  frame=chain[2+2*i];
               }
             }
         }
