@@ -72,6 +72,18 @@ their execution. The reason for this subsequent firmware delay remains to be
 resolved. EFI payload entry, Linux userspace, generated ACPI and the canonical
 x86 guest-device paths remain unqualified.
 
+The [subsequent caller receipt](evidence/2026-09-17-spark/ovmf-boot-caller.json)
+records runtime `9a144ae` progressing to 401 HLT exits within the same exit
+bound. Its retained chain reaches return `0x578b2bb`, matching the pinned
+OVMF Shell's `WaitForEvent` return at RVA `0x82bb`, followed by return
+`0x57a191d`, matching the same module at RVA `0x1e91d`. Both imply load
+base `0x5783000`. The first call waits on `ConIn->WaitForKey`.
+This identifies the observed endpoint as the firmware shell; it does not
+establish the earlier Linux loader result or whether the kernel briefly
+entered and returned. Diagnose that earlier result before changing boot
+inputs or treating a longer exit budget as progress. Spark's full gate also
+passed at this runtime revision.
+
 `make test-x86-config-host test-x86-string-host` checks exact blob sizes and
 bytes, data beyond the old 80-byte stream boundary, reselect/EOF behavior,
 per-guest isolation, invalid descriptor rollback, bounded cross-page transfers,

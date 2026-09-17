@@ -145,8 +145,8 @@ guest payload handoff. The bound has not been increased to hide the result.
 
 The later [endpoint investigation](evidence/2026-09-17-spark/ovmf-endpoint.json)
 localizes this wait. Failure reports now carry bounded private-RAM code and
-stack snapshots for the returned budget exit and the most recent HLT, plus
-four checked frame-pointer links. The release SDK disables `DebugPutChar`, so
+stack snapshots for the returned budget exit and the most recent HLT (or
+PM-timer poll before any HLT), plus six checked frame-pointer links. The release SDK disables `DebugPutChar`, so
 these observations use the existing qualification IPC endpoint. Root copies
 all report words before diagnostic output. The VMM performs every translation;
 root only prints the report and gains no guest-memory inspection policy.
