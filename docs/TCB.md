@@ -378,6 +378,12 @@ interface. It maintains private IRR/ISR state, checks CPU interruptibility,
 injects eligible timer vectors and handles guest EOI. No new hardware authority
 is granted. The [timer receipt](evidence/2026-09-17-spark/ovmf-timer.json)
 records partial OVMF delivery evidence; halt/window qualification remains open.
+The firmware VMM also owns a [private RTC calendar](x86-rtc.md), advanced
+from its admitted clock with an explicit virtual boot epoch. It emulates
+calendar, alarm and polled status state without a host RTC frame, port or IRQ.
+It grants no persistent-time or host wall-clock authority; RTC IRQ enables
+remain rejected. The [RTC receipt](evidence/2026-09-17-spark/ovmf-rtc.json)
+records continuation to the next unsupported ACPI PM control access.
 PIC unmasking and unsupported device accesses stop
 explicitly. This remains firmware bring-up; it does not prove UEFI boot,
 Linux, runtime resource management or persistent firmware variables.

@@ -55,7 +55,11 @@ and PIIX4 power-management function. The PM timer requires enabled decode and
 an invariant TSC with an architectural ratio or identified KVM timing leaf;
 no clock frequency is guessed. Host tests cover its wrap and enable semantics. The guest-owned
 `fw_cfg` data supplies RAM/CPU counts and an E820 directory entry; CMOS supplies
-RAM-size fields. The legacy PICs accept mask-all only: unmasking and commands
+RAM-size fields and a [private RTC calendar](x86-rtc.md). Its explicit virtual
+boot date is 2000-01-01 UTC, advancing from the measured clock, with BCD/binary
+and 12/24-hour reads, SET date transactions and polled alarm/status flags.
+It does not claim host wall-clock synchronization, persistent time or RTC IRQs.
+The legacy PICs accept mask-all only: unmasking and commands
 remain unsupported until interrupt routing and injection are implemented.
 No operation forwards a host port or grants a hardware I/O capability. CMOS
 shutdown status reports a cold boot; there is no S3 resume image.
@@ -119,6 +123,12 @@ exits, three injections and three guest EOI writes before an unsupported
 RTC register-A write of `0x26`, at RIP `0x01acd70c`. The firmware gate still
 fails. Dedicated halt and interrupt-window target assertions remain required;
 these counters do not qualify all interrupt delivery cases or complete UEFI.
+
+The [RTC continuation receipt](evidence/2026-09-17-spark/ovmf-rtc.json)
+records subsequent execution beyond RTC initialization: 178 preemption exits
+and 29 injection/EOI pairs before a 16-bit ACPI PM control read at port `0xb004`
+stops with reason `0x1e`, RIP `0x0006ff9e`, qualification `0xb0040009`.
+This is another incomplete firmware run, not a successful UEFI handoff.
 
 The [upstream EDK II transition](https://github.com/tianocore/edk2/blob/edk2-stable202402/UefiCpuPkg/ResetVector/Vtf0/Ia16/Real16ToFlat32.asm)
 provides the source context for this early execution path. The

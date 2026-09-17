@@ -1,0 +1,44 @@
+{
+  "qualification": "Private RTC calendar and OVMF continuation",
+  "runtime_revision": "52a5ae252b01d05837a0568c0d0b22c0ac21738c",
+  "intel": {
+    "host": "madmax, Intel i9-14900KF, nested KVM",
+    "sdk": "Microkit 2.3.0",
+    "command": "make gate-x86_64-firmware-reset SEL4_SDK_VERSION=2.3.0 X86_FIRMWARE_IMAGE=/tmp/agentos-ovmf-2024.02-2ubuntu0.9.fd X86_FIRMWARE_SHA256=101afad5f520753224b60b9555df60add435cf50c7a82b781d7d7d8c60db7eb5",
+    "result": "FAIL: unsupported 16-bit ACPI PM control read after RTC initialization",
+    "timer_exits": 178,
+    "injections": 29,
+    "guest_eoi_writes": 29,
+    "halt_exits": 0,
+    "vmx_timer_rate_shift": 5,
+    "tsc_hz": 3187200000,
+    "stop": {"reason": "0x1e", "rip": "0x0006ff9e", "qualification": "0xb0040009", "port": "0xb004"},
+    "artifact_directory": "/tmp/agentos-v04-intel-discovery/build/evidence/rtc-52a5ae2",
+    "image_sha256": "a69b7d8e8e2e4461d24d2a5b156de3fb487fcf831d3099d7e2c231817f145bde",
+    "root_task_sha256": "2518086409c9896395a78d72bc0c7038a9dde40777d1af5d579bc0b78f887e62",
+    "serial_sha256": "66c26d08c1a77aa3d8abf4d959cc55686d473318f233c6455825f258b2231346",
+    "termination": "Owned QEMU PID 2692214 terminated only after explicit failure and artifact retention; gate exited 2"
+  },
+  "spark": {
+    "revision": "10a3022a60587fa5592814c97238fae539265f22",
+    "command": "make gate SEL4_SDK_VERSION=2.3.0 QEMU_TEST_SSH_PORT=12266",
+    "result": "PASS, exit 0",
+    "artifact_directory": "/tmp/agentos-v04-x86-string/build/evidence/rtc-10a3022",
+    "image_sha256": "26ce34eca25c32751fe70170c15daa5b8fe5cf6953e6789dc4855b0b5876ddb1",
+    "gate_log_sha256": "d8e251b41142a8574284e52f5a502bdda74c75d8502aa09312c39f347b0c5621"
+  },
+  "host_tests": {
+    "revision": "10a3022a60587fa5592814c97238fae539265f22",
+    "rtc_config_string": "PASS",
+    "rtc_asan_ubsan": "PASS",
+    "cases": ["elapsed rollover", "SET freeze and atomic invalid-date rejection", "2000 and 2100 leap-century rules", "BCD/binary and 12/24-hour formats", "UIP and flags", "alarm wildcard and skipped matching seconds", "bounded long gaps", "calendar upper bound", "independent instances", "read-only writes"]
+  },
+  "limitations": [
+    "Virtual initial date is 2000-01-01 UTC; no host wall-clock synchronization or time persistence",
+    "RTC IRQ enables, square wave, divider-stop and DST modes are rejected",
+    "Calendar outputs have host coverage; this firmware run is not an independent guest date-readback assertion",
+    "Firmware gate remains incomplete; ACPI PM control, full UEFI/ACPI/Linux and canonical x86 I/O remain outstanding",
+    "Dedicated timer halt and interrupt-window qualification remains outstanding"
+  ],
+  "mac_task": "task_dce9e2bb5f494c0081a811520b478fd9"
+}
