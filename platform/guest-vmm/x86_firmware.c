@@ -43,7 +43,7 @@ static _Noreturn void stop(seL4_CPtr endpoint, seL4_Word status, seL4_Word reaso
     seL4_SetMR(4,timer_exits); seL4_SetMR(5,injections); seL4_SetMR(6,eois);
     seL4_SetMR(7,timer_shift); seL4_SetMR(8,tsc_hz); seL4_SetMR(9,halt_exits);
     for (unsigned i=0; i<AOS_X86_FIRMWARE_SNAPSHOT_WORDS; i++)
-        seL4_SetMR(10+i,snapshot[i]);
+        seL4_SetMR(10+i,reason == 0x425544u ? snapshot[i] : 0);
     seL4_Send(endpoint, seL4_MessageInfo_new(AOS_X86_VTX_PROOF_LABEL, 0, 0, AOS_X86_FIRMWARE_REPORT_WORDS));
     for (;;) { seL4_Word badge; (void)seL4_Wait(endpoint, &badge); }
 }
@@ -136,6 +136,17 @@ static void diagnostic_words(const aos_x86_memory_t *m, uint64_t cr3,
     }
 }
 
+static void diagnostic_snapshot(const aos_x86_memory_t *m, uint64_t cr3,
+                                 uint64_t rip, uint64_t rsp, seL4_Word *out)
+{
+    for (unsigned i=0; i<AOS_X86_FIRMWARE_SNAPSHOT_SET_WORDS; i++) out[i]=0;
+    out[0]=rip >= 32 ? rip-32 : rip;
+    out[1]=rsp;
+    diagnostic_words(m,cr3,out[0],AOS_X86_FIRMWARE_CODE_WORDS,out+4,out+2);
+    diagnostic_words(m,cr3,out[1],AOS_X86_FIRMWARE_STACK_WORDS,
+                     out+4+AOS_X86_FIRMWARE_CODE_WORDS,out+3);
+}
+
 void aos_x86_firmware_run(seL4_CPtr ep, seL4_Word result)
 {
     /* CPUID is unprivileged. Admit a fixed baseline, never pass host identity
@@ -177,13 +188,7 @@ void aos_x86_firmware_run(seL4_CPtr ep, seL4_Word result)
             /* Observe the returned exit before any emulation or re-entry.
              * The processed-exit budget and its failure status are unchanged. */
             if ((read_field(ep,EFER) & LMA) && (read_field(ep,CR0) & PG)) {
-                snapshot[0]=rip >= 32 ? rip-32 : rip;
-                snapshot[1]=read_field(ep,RSP);
-                diagnostic_words(&memory,guest_cr3,snapshot[0],
-                    AOS_X86_FIRMWARE_CODE_WORDS,snapshot+4,snapshot+2);
-                diagnostic_words(&memory,guest_cr3,snapshot[1],
-                    AOS_X86_FIRMWARE_STACK_WORDS,
-                    snapshot+4+AOS_X86_FIRMWARE_CODE_WORDS,snapshot+3);
+                diagnostic_snapshot(&memory,guest_cr3,rip,read_field(ep,RSP),snapshot);
             }
             stop(ep,AOS_X86_VTX_PROOF_FAIL,0x425544u,rip,
                  (UINT64_C(65536) << 32) | (uint32_t)reason);
@@ -216,6 +221,9 @@ void aos_x86_firmware_run(seL4_CPtr ep, seL4_Word result)
             /* Timer and interrupt-window exits resume the same instruction. */
             if (reason == 52u) timer_exits++;
         } else if (reason == 12u && len == 1u) {
+            if ((read_field(ep,EFER) & LMA) && (read_field(ep,CR0) & PG))
+                diagnostic_snapshot(&memory,guest_cr3,rip,read_field(ep,RSP),
+                    snapshot+AOS_X86_FIRMWARE_SNAPSHOT_SET_WORDS);
             /* Retain architectural halt until an eligible interrupt arrives.
              * VMX's preemption timer still wakes this VMM from halted state. */
             write_field(ep,ACTIVITY,1u);

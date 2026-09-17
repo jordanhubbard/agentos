@@ -21,11 +21,13 @@
  * and HLT exits. Counters are diagnostics, not an aggregate success claim. */
 /* Failure snapshot: code and stack virtual bases, validity bitmaps, then
  * 12 code and 32 stack qwords. Invalid words are zero, never device reads.
- * Snapshot is present only on the diagnostic budget failure. */
+ * Two sets describe the returned budget exit and the most recent HLT exit.
+ * Snapshots are present only on the diagnostic budget failure. */
 #define AOS_X86_FIRMWARE_CODE_WORDS 12u
 #define AOS_X86_FIRMWARE_STACK_WORDS 32u
-#define AOS_X86_FIRMWARE_SNAPSHOT_WORDS 48u
-#define AOS_X86_FIRMWARE_REPORT_WORDS 58u
+#define AOS_X86_FIRMWARE_SNAPSHOT_SET_WORDS 48u
+#define AOS_X86_FIRMWARE_SNAPSHOT_WORDS 96u
+#define AOS_X86_FIRMWARE_REPORT_WORDS 106u
 #define AOS_X86_FIRMWARE_BASE     0xffc00000u
 #define AOS_X86_FIRMWARE_BYTES    0x00400000u
 #define AOS_X86_FIRMWARE_RAM      0x02000000u
