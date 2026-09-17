@@ -12,6 +12,9 @@ static aos_gpu_framebuffer_t framebuffer;
 static bool exchange(void *context, const aos_fb_request_t *q, aos_fb_response_t *p)
 {
     (void)context;
+    const bool report = q->id <= 8 || (q->id & 127u) == 0;
+    if (report)
+        LOG_VMM("framebuffer exchange: submit id=%u op=%u row=%u\n", q->id, q->operation, q->y);
     if (aos_fb_submit(framebuffer.region,q) != 0) return false;
     seL4_Signal(PD_CNODE_SLOT_FB_PEER_NOTIFY);
     while (aos_fb_receive(framebuffer.region,p) != 0) {
@@ -20,6 +23,8 @@ static bool exchange(void *context, const aos_fb_request_t *q, aos_fb_response_t
     }
     /* Freeing a response slot must also wake a backpressured service. */
     seL4_Signal(PD_CNODE_SLOT_FB_PEER_NOTIFY);
+    if (report)
+        LOG_VMM("framebuffer exchange: response id=%u status=%u\n", p->id, p->status);
     return p->id == q->id;
 }
 static bool validate(void *context, uint64_t gpa, uint32_t length)

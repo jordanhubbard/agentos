@@ -51,6 +51,9 @@ static bool scanout(void *ctx, uint64_t handle, virtio_gpu_rect_t r)
             !r.width || !r.height || r.x >= p.width || r.y >= p.height ||
             r.width > p.width - r.x || r.height > p.height - r.y) return false;
     }
+    aos_fb_response_t selected;
+    if (!call(a, (aos_fb_request_t){.operation=AOS_FB_SELECT, .handle=handle,
+        .x=r.x, .y=r.y, .width=r.width, .height=r.height}, &selected)) return false;
     a->scanout_handle = handle;
     a->scanout_rect = r;
     return true;

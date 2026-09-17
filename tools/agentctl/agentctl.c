@@ -24,6 +24,7 @@
 #include "contracts/guest_contract.h"
 #include <platform/inspect.h>
 #include <platform/operator_session.h>
+#include <platform/framebuffer_observer.h>
 
 #define AGENTCTL_VERSION "0.2.0"
 #define DEFAULT_CC_SOCK "build/cc_pd.sock"
@@ -59,6 +60,7 @@ static void usage(FILE *out)
             "  polecats | list-polecats\n"
             "  log-stream SLOT PD_ID\n"
             "  fb-attach GUEST_HANDLE FB_HANDLE\n"
+            "  frame-capture GUEST_HANDLE OUTPUT.ppm\n"
             "  send-input GUEST_HANDLE KEYCODE\n"
             "  suspend GUEST_HANDLE\n"
             "  resume GUEST_HANDLE\n"
@@ -171,6 +173,77 @@ static void print_raw_reply(const cc_reply_wire_t *r)
 {
     printf("{\"mr\":[%" PRIu32 ",%" PRIu32 ",%" PRIu32 ",%" PRIu32 "]}\n",
            r->mr[0], r->mr[1], r->mr[2], r->mr[3]);
+}
+
+static bool frame_call(uint32_t handle, const aos_fb_observer_request_t *query,
+                       aos_fb_observer_response_t *response, uint8_t *pixels)
+{
+    cc_reply_wire_t reply;
+    if (!cc_call(MSG_CC_FRAME_CAPTURE, handle, 0, 0, query, sizeof(*query), &reply))
+        return false;
+    memcpy(response, reply.shmem, sizeof(*response));
+    if (reply.mr[0] != CC_OK || reply.mr[1] < sizeof(*response) ||
+        reply.mr[1] > sizeof(reply.shmem) || reply.mr[3] != AOS_FB_OBSERVER_VERSION ||
+        response->version != AOS_FB_OBSERVER_VERSION || response->id ||
+        response->status != AOS_FB_OBSERVER_OK || reply.mr[2] != response->status ||
+        response->length != reply.mr[1] - sizeof(*response) ||
+        response->length != (query->operation == AOS_FB_CAPTURE_READ ? query->length : 0)) {
+        fprintf(stderr, "agentctl: frame capture failed (CC=%u, observer=%u)\n",
+                reply.mr[0], response->status);
+        return false;
+    }
+    if (response->length) memcpy(pixels, reply.shmem + sizeof(*response), response->length);
+    return true;
+}
+
+static int cmd_frame_capture(uint32_t handle, const char *path)
+{
+    g_stream_fd = connect_cc();
+    if (g_stream_fd < 0) return 1;
+    aos_fb_observer_request_t query = {.version=AOS_FB_OBSERVER_VERSION,
+        .operation=AOS_FB_CAPTURE};
+    aos_fb_observer_response_t snapshot, response;
+    uint8_t *pixels = NULL;
+    int result = 1;
+    if (!frame_call(handle, &query, &snapshot, NULL)) goto done;
+    query.cookie = snapshot.cookie;
+    if (!snapshot.cookie || !snapshot.sequence || !snapshot.width || !snapshot.height ||
+        snapshot.width > AOS_FB_MAX_WIDTH || snapshot.height > AOS_FB_MAX_HEIGHT) goto release;
+    uint32_t bytes = snapshot.width * snapshot.height * AOS_FB_PIXEL_BYTES;
+    pixels = malloc(bytes);
+    if (!pixels) goto release;
+    query.operation = AOS_FB_CAPTURE_READ;
+    for (query.offset = 0; query.offset < bytes; query.offset += query.length) {
+        query.length = bytes - query.offset;
+        if (query.length > CC_WIRE_SHMEM_SIZE - sizeof(response))
+            query.length = CC_WIRE_SHMEM_SIZE - sizeof(response);
+        if (!frame_call(0, &query, &response, pixels + query.offset) ||
+            response.cookie != snapshot.cookie || response.sequence != snapshot.sequence ||
+            response.width != snapshot.width || response.height != snapshot.height) goto release;
+    }
+    /* PPM is a portable raster artifact, not an in-repository viewer. Refuse
+     * to overwrite an existing file; never leave a partial capture on error. */
+    FILE *file = fopen(path, "wx");
+    if (!file) { perror("agentctl: capture output"); goto release; }
+    bool written = fprintf(file, "P6\n%u %u\n255\n", snapshot.width, snapshot.height) > 0;
+    for (uint32_t offset = 0; written && offset < bytes; offset += 4) {
+        const uint8_t rgb[] = {pixels[offset+2], pixels[offset+1], pixels[offset]};
+        written = fwrite(rgb, 1, sizeof(rgb), file) == sizeof(rgb);
+    }
+    if (fclose(file) != 0) written = false;
+    if (!written) { unlink(path); goto release; }
+    printf("{\"width\":%u,\"height\":%u,\"sequence\":%" PRIu64 ",\"bytes\":%u}\n",
+           snapshot.width, snapshot.height, snapshot.sequence, bytes);
+    result = 0;
+release:
+    query.operation = AOS_FB_CAPTURE_RELEASE;
+    query.offset = query.length = 0;
+    if (query.cookie && !frame_call(0, &query, &response, NULL)) result = 1;
+done:
+    free(pixels);
+    close(g_stream_fd);
+    g_stream_fd = -1;
+    return result;
 }
 
 static int cmd_inspect(void)
@@ -410,6 +483,8 @@ int main(int argc, char **argv)
     char **args = &argv[i];
 
     if (strcmp(cmd, "inspect") == 0) return n == 0 ? cmd_inspect() : 2;
+    if (strcmp(cmd, "frame-capture") == 0)
+        return n == 2 ? cmd_frame_capture(parse_u32(args[0], "guest_handle"), args[1]) : 2;
     if (strcmp(cmd, "session-inspect") == 0) return n == 0 ? cmd_session_inspect() : 2;
     if (strcmp(cmd, "connect") == 0) return cmd_connect();
     if (strcmp(cmd, "status") == 0) return cmd_status(n, args);

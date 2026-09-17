@@ -44,6 +44,7 @@
 #include <platform/console_input.h>
 #include <platform/inspect.h>
 #include <platform/operator_session.h>
+#include <platform/framebuffer_observer.h>
 #include "system_desc.h"
 #include <stdint.h>
 #include <stdbool.h>
@@ -1629,6 +1630,88 @@ static void handle_operator(const cc_req_wire_t *req, cc_reply_wire_t *rep, bool
     if (count) seL4_Signal(PD_CNODE_SLOT_SERIAL_VIRT_NOTIFY);
 }
 
+static void handle_frame_capture(const cc_req_wire_t *req, cc_reply_wire_t *rep)
+{
+    aos_fb_observer_request_t query;
+    __builtin_memcpy(&query, req->shmem, sizeof(query));
+    if (req->mr[1] || req->mr[2] || query.version != AOS_FB_OBSERVER_VERSION ||
+        query.id || query.client || query.operation < AOS_FB_CAPTURE ||
+        query.operation > AOS_FB_CAPTURE_RELEASE ||
+        (query.operation == AOS_FB_CAPTURE && (query.cookie || query.offset || query.length)) ||
+        (query.operation != AOS_FB_CAPTURE && (req->mr[0] || !query.cookie)) ||
+        (query.operation == AOS_FB_CAPTURE_READ && (!query.length ||
+            query.length > CC_WIRE_SHMEM_SIZE - sizeof(aos_fb_observer_response_t))) ||
+        (query.operation == AOS_FB_CAPTURE_RELEASE && (query.offset || query.length))) {
+        rep->mr[0] = CC_ERR_INVALID_ARG;
+        return;
+    }
+#if defined(AGENTOS_GUEST_GRAPHICS) || defined(AGENTOS_FRAMEBUFFER_TEST)
+    if (query.operation == AOS_FB_CAPTURE) {
+        uint32_t handle = req->mr[0];
+#ifdef AGENTOS_FRAMEBUFFER_TEST
+        /* Native producers in the focused test image only. Never interpreted
+         * as guest handles, and compiled out of every production variant. */
+        if (handle < 0xfb000000u || handle >= 0xfb000000u + AOS_FB_CLIENTS) {
+            rep->mr[0] = CC_ERR_BAD_HANDLE;
+            return;
+        }
+        query.client = handle - 0xfb000000u;
+#else
+        if (handle == CC_BOOT_GUEST_HANDLE) {
+            if (!g_boot_guest_present || g_boot_guest_state == GUEST_STATE_DEAD) {
+                rep->mr[0] = CC_ERR_BAD_HANDLE;
+                return;
+            }
+            query.client = cc_boot_guest_os_type() == VIBEOS_PROFILE_SECONDARY ? 1u : 0u;
+        } else {
+            const cc_vm_entry_t *entry = NULL;
+            for (uint32_t i = 0; i < CC_VM_CLIENT_SLOTS; ++i)
+                if (g_vm_client.entries[i].active && g_vm_client.entries[i].handle == handle)
+                    entry = &g_vm_client.entries[i];
+            cc_guest_status_t status;
+            if (!entry || entry->slot >= AOS_FB_CLIENTS ||
+                cc_vm_status(&g_vm_client, handle, &status) != CC_OK ||
+                status.state == GUEST_STATE_DEAD) {
+                rep->mr[0] = CC_ERR_BAD_HANDLE;
+                return;
+            }
+            query.client = entry->slot;
+        }
+#endif
+    }
+    static uint32_t next_id;
+    query.id = ++next_id;
+    aos_fb_observer_region_t *region = (void *)AOS_FB_OBSERVER_VA;
+    if (aos_fb_observer_submit(region, &query) != 0) {
+        rep->mr[0] = CC_ERR_RELAY_FAULT;
+        return;
+    }
+    seL4_Signal(PD_CNODE_SLOT_FB_PEER_NOTIFY);
+    aos_fb_observer_response_t response;
+    while (aos_fb_observer_receive(region, &response) != 0) {
+        seL4_Word badge;
+        seL4_Wait(PD_CNODE_SLOT_FB_WAIT, &badge);
+    }
+    bool valid = response.version == AOS_FB_OBSERVER_VERSION && response.id == query.id &&
+        response.status <= AOS_FB_OBSERVER_EXHAUSTED &&
+        response.length <= CC_WIRE_SHMEM_SIZE - sizeof(response) &&
+        (response.length == 0 || (response.status == AOS_FB_OBSERVER_OK &&
+            query.operation == AOS_FB_CAPTURE_READ && response.length == query.length));
+    if (valid) {
+        response.id = 0;
+        __builtin_memcpy(rep->shmem, &response, sizeof(response));
+        __builtin_memcpy(rep->shmem + sizeof(response), region->data, response.length);
+        rep->mr[0] = CC_OK;
+        rep->mr[1] = sizeof(response) + response.length;
+        rep->mr[2] = response.status;
+        rep->mr[3] = response.version;
+    } else rep->mr[0] = CC_ERR_RELAY_FAULT;
+    seL4_Signal(PD_CNODE_SLOT_FB_PEER_NOTIFY);
+#else
+    rep->mr[0] = CC_ERR_RELAY_FAULT;
+#endif
+}
+
 static void cc_dispatch(const cc_req_wire_t *req, cc_reply_wire_t *rep)
 {
     /* Age active sessions before dispatch.  Handlers that touch a specific
@@ -1639,6 +1722,7 @@ static void cc_dispatch(const cc_req_wire_t *req, cc_reply_wire_t *rep)
     cc_age_sessions();
 
     switch (req->opcode) {
+    case MSG_CC_FRAME_CAPTURE: handle_frame_capture(req, rep); break;
 #ifdef AGENTOS_NATIVE_RUST_TEST
     case NATIVE_RUST_CC_NETWORK: handle_native_network(req, rep); break;
 #endif

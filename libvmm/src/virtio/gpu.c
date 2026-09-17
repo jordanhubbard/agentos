@@ -67,6 +67,11 @@ static bool notify(virtio_device_t *d)
     if (queue>=2 || g->reset_failed || !g->queues[queue].ready ||
         !(d->regs.Status & VIRTIO_CONFIG_S_DRIVER_OK)) return false;
     const virtio_gpu_ring_ops_t ops={validate,read_guest,write_guest,NULL};
+    static unsigned started;
+    if (started++ < 16)
+        LOG_VMM("emulated virtio-gpu: begin queue=%u avail=%u last=%u used=%u\n",
+                queue, g->queues[queue].virtq.avail->idx,
+                g->rings[queue].last_index, g->rings[queue].used_index);
     virtio_gpu_ring_result_t result=queue==0 ?
         virtio_gpu_control_run(&g->rings[queue],&g->queues[queue].virtq,&g->engine,&ops,VIRTIO_GPU_QUEUE_SIZE) :
         virtio_gpu_cursor_run(&g->rings[queue],&g->queues[queue].virtq,&g->engine,&ops,VIRTIO_GPU_QUEUE_SIZE);
