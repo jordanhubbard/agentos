@@ -118,8 +118,21 @@ int main(void)
     io(&a, 0xa1, 1, true, 0xff);
     assert(io(&a, 0x21, 1, false, 0) == 0xff);
     assert(io(&a, 0xa1, 1, false, 0) == 0xff);
-    reject(&a, 0x21, 1, true);
-    reject(&a, 0x20, 1, true);
+    /* Linux's presence probe must observe no PIC, not a writable mask. */
+    aos_x86_config_t before_pic=a;
+    io(&a, 0x21, 1, true, 0xfb);
+    assert(io(&a, 0x21, 1, false, 0) == 0xff);
+    const unsigned pic_ports[]={0x20,0x21,0xa0,0xa1};
+    for (unsigned p=0; p<4; p++) {
+        for (unsigned v=0; v<256; v++) {
+            io(&a,pic_ports[p],1,true,v);
+            assert(io(&a,pic_ports[p],1,false,0)==0xff);
+        }
+        reject(&a,pic_ports[p],2,true);
+        reject(&a,pic_ports[p],4,false);
+    }
+    assert(!memcmp(&a,&before_pic,sizeof(a))); /* no hidden IRQ/controller state */
+    reject(&a, 0x22, 1, true);
     reject(&a, 0xa1, 2, false);
     assert(io(&a, 0xcfc, 4, false, 0) == 0xffffffff);
     select_pci(&a, 0x80000000);

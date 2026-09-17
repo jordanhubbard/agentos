@@ -61,8 +61,10 @@ RAM-size fields and a [private RTC calendar](x86-rtc.md). Its explicit virtual
 boot date is 2000-01-01 UTC, advancing from the measured clock, with BCD/binary
 and 12/24-hour reads, SET date transactions and polled alarm/status flags.
 It does not claim host wall-clock synchronization, persistent time or RTC IRQs.
-The legacy PICs accept mask-all only: unmasking and commands
-remain unsupported until interrupt routing and injection are implemented.
+There is no legacy PIC or ISA interrupt source. The two absent command/mask
+port pairs read `0xff` and discard byte writes, so a mask-presence probe
+detects absence. Other widths and neighboring ports remain rejected. There
+is no mutable PIC state or interrupt routing hidden behind those ports.
 The [private PM1 aperture](x86-pm.md) now supports control readback and polled
 timer status/W1C. Its legacy decode follows PMIOSE independently of PCI IOEN.
 SCI event enables, sleep and SMI requests remain explicitly rejected.

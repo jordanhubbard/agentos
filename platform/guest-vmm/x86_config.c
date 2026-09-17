@@ -144,10 +144,12 @@ bool aos_x86_config_io(aos_x86_config_t *s, uint16_t port, unsigned width,
         if (write) return (*value & 0xffu) == 2u;
         *value=2; return true;
     }
-    /* Bootstrap has no interrupt sources yet. Keep both legacy PICs fully
-     * masked; reject unmasking until routing and injection are implemented. */
-    if ((port == 0x21u || port == 0xa1u) && width == 1u) {
-        if (write) return (*value & 0xffu) == 0xffu;
+    /* No legacy PIC or ISA interrupt sources exist in this machine.
+     * Absent command/mask ports read all ones and discard byte writes.
+     * In particular, a mask probe must not echo a writable PIC register. */
+    if ((port == 0x20u || port == 0x21u || port == 0xa0u || port == 0xa1u) &&
+        width == 1u) {
+        if (write) return true;
         *value = 0xffu;
         return true;
     }
