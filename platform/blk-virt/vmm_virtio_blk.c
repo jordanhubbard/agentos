@@ -174,11 +174,43 @@ static void blk_virt_service(const char *how)
     blk_virt_kick_if_pending();
 }
 
+bool aos_vmm_virtio_blk_quiesce(void)
+{
+    if (!g_aos_blk_ready) {
+        return !g_blk_virt_attached ||
+            (blk_queue_empty_req(&g_queue) && blk_queue_empty_resp(&g_queue));
+    }
+    virtio_blk_begin_quiesce(&g_aos_blk);
+    blk_virt_service("lifecycle drain");
+    if (!virtio_blk_is_quiesced(&g_aos_blk)) return false;
+    g_aos_blk_ready = 0;
+    return true;
+}
+
+#ifdef AGENTOS_GUEST_BLOCK_DRAIN_TEST
+static bool blk_test_drain(void)
+{
+    static bool started;
+    if (!started && blk_queue_empty_resp(&g_queue)) return false;
+    if (!started) {
+        started = true;
+        LOG_VMM("guest block drain: pending response before admission stop\n");
+    }
+    if (aos_vmm_virtio_blk_quiesce()) {
+        LOG_VMM("guest block drain: PASS accepted requests complete and queues empty\n");
+    }
+    return true;
+}
+#endif
+
 void aos_vmm_virtio_blk_resp_ready(void)
 {
     if (!g_aos_blk_ready) {
         return;
     }
+#ifdef AGENTOS_GUEST_BLOCK_DRAIN_TEST
+    if (blk_test_drain()) return;
+#endif
     blk_virt_service("RESP_READY");
 }
 
@@ -530,5 +562,8 @@ void aos_vmm_virtio_blk_after_fault(void)
                 (unsigned)g_aos_client.info->capacity);
     }
 
+#ifdef AGENTOS_GUEST_BLOCK_DRAIN_TEST
+    if (blk_test_drain()) return;
+#endif
     blk_virt_service("after guest exit");
 }

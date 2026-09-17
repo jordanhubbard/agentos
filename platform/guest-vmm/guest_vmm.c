@@ -1503,7 +1503,9 @@ void init(void)
 static void guest_vmm_notified(seL4_Word badge)
 {
     if (badge & BLK_VIRT_VMM_WAKE_BADGE) {
-        if (g_guest_state == GUEST_STATE_RUNNING) aos_vmm_virtio_blk_resp_ready();
+        if (g_guest_state == GUEST_STATE_RUNNING ||
+            g_guest_state == GUEST_STATE_DESTROYING)
+            aos_vmm_virtio_blk_resp_ready();
         badge &= ~BLK_VIRT_VMM_WAKE_BADGE;
         if (!badge) return;
     }

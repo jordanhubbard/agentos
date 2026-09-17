@@ -55,7 +55,8 @@ void aos_guest_vmm_loop(seL4_CPtr endpoint, seL4_CPtr reply_cap,
             info = seL4_Recv(endpoint, &badge);
 #endif
         } else if (label == BLK_VIRT_EVENT_RESP_READY) {
-            if (*ops->guest_state == GUEST_STATE_RUNNING &&
+            if ((*ops->guest_state == GUEST_STATE_RUNNING ||
+                 *ops->guest_state == GUEST_STATE_DESTROYING) &&
                 ops->blk_resp_ready != NULL) {
                 ops->blk_resp_ready();
             }
