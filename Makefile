@@ -676,6 +676,11 @@ gate-x86_64-firmware-modes:
 	@cargo xtask qemu-test --board x86_64_generic_vtx --guest-os none \
 		--assert-vmx-exit --assert-firmware-modes --timeout-secs $(QEMU_TEST_TIMEOUT)
 
+.PHONY: gate-x86_64-firmware-reset
+gate-x86_64-firmware-reset:
+	@cargo xtask qemu-test --board x86_64_generic_vtx --guest-os none \
+		--assert-vmx-exit --assert-firmware-reset --timeout-secs $(QEMU_TEST_TIMEOUT)
+
 # gate-guest-io: guest I/O proofs through the virtualizer path. GUEST_OS=none
 # is a stub VMM, so the boot gates above prove PD load and root-task parking
 # only; these three targets are what make "the OS does I/O" a true claim.

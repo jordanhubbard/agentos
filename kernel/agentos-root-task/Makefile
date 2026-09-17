@@ -129,6 +129,28 @@ ifeq ($(AGENTOS_BOARD),x86_64_generic_vtx)
     CFLAGS += -DAGENTOS_X86_FIRMWARE_MODES=1
     CFLAGS_ROOT_TASK += -DAGENTOS_X86_FIRMWARE_MODES=1
   endif
+  ifeq ($(X86_FIRMWARE_RESET),1)
+    CFLAGS += -DAGENTOS_X86_FIRMWARE_MODES=1 -DAGENTOS_X86_FIRMWARE_RESET=1
+    CFLAGS_ROOT_TASK += -DAGENTOS_X86_FIRMWARE_RESET=1
+    ROOT_TASK_OBJS += $(BUILD_DIR)/x86_firmware.o
+  endif
+endif
+
+ifeq ($(X86_FIRMWARE_RESET),1)
+.PHONY: verify-x86-firmware
+verify-x86-firmware:
+	@test -n "$(X86_FIRMWARE_IMAGE)" -a -n "$(X86_FIRMWARE_SHA256)" || \
+		{ echo 'Set X86_FIRMWARE_IMAGE and X86_FIRMWARE_SHA256'; exit 1; }
+	@test "$$(wc -c < "$(X86_FIRMWARE_IMAGE)")" -eq 4194304 || \
+		{ echo 'Firmware reset currently requires a full 4 MiB OVMF image'; exit 1; }
+	@printf '%s  %s\n' '$(X86_FIRMWARE_SHA256)' '$(X86_FIRMWARE_IMAGE)' | sha256sum -c -
+
+$(BUILD_DIR)/x86_firmware.o: verify-x86-firmware
+	@mkdir -p $(BUILD_DIR)
+	@cp "$(X86_FIRMWARE_IMAGE)" "$(BUILD_DIR)/x86_firmware.bin"
+	cd $(BUILD_DIR) && $(OBJCOPY) -I binary -O elf64-x86-64 -B i386:x86-64 \
+		--rename-section .data=.rodata,alloc,load,readonly,data,contents \
+		x86_firmware.bin x86_firmware.o
 endif
 
 $(BUILD_DIR)/rt_inspect_snapshot.o: $(REPO_ROOT_MK)/platform/inspect/inspect_snapshot.c

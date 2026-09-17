@@ -1350,9 +1350,85 @@ static seL4_Error setup_vmm_guest_vcpu(const pd_desc_t *pd,
  * four further frames form its long-mode guest page-table walk. Their EPT
  * mappings have no host-device capability or guest I/O authority.
  */
+#ifdef AGENTOS_X86_FIRMWARE_RESET
+extern const uint8_t _binary_x86_firmware_bin_start[];
+extern const uint8_t _binary_x86_firmware_bin_end[];
+
+static seL4_Error setup_x86_firmware(const pd_desc_t *pd, uint32_t pd_index,
+                                    seL4_CPtr pd_cnode, seL4_CPtr vmm_tcb)
+{
+    if (!pd_is_guest_vmm(pd) || pd->self_svc_id != SVC_ID_GUEST_VMM_PRIMARY ||
+        pd->cnode_size_bits < 10u ||
+        (uintptr_t)_binary_x86_firmware_bin_end -
+        (uintptr_t)_binary_x86_firmware_bin_start != AOS_X86_FIRMWARE_BYTES) {
+        return seL4_InvalidArgument;
+    }
+    seL4_CPtr objects[5] = {0};
+    const uint32_t types[5] = {
+        seL4_X86_VCPUObject, seL4_X86_EPTPML4Object,
+        seL4_X86_EPTPDPTObject, seL4_X86_EPTPDObject, seL4_X86_EPTPDObject,
+    };
+    seL4_Error err;
+    for (unsigned i = 0u; i < 5u; i++) {
+        err = ut_alloc_cap(types[i], 0u, &objects[i]);
+        if (err != seL4_NoError) return err;
+        (void)cap_acct_record(seL4_CapNull, objects[i], types[i], pd_index, pd->name);
+    }
+    const seL4_Word attr = seL4_X86_EPT_Default_VMAttributes;
+    err = seL4_X86_ASIDPool_Assign(seL4_CapInitThreadASIDPool, objects[1]);
+    if (err != seL4_NoError) return err;
+    err = seL4_X86_EPTPDPT_Map(objects[2], objects[1], 0u, attr);
+    if (err != seL4_NoError) return err;
+    err = seL4_X86_EPTPD_Map(objects[3], objects[1], 0u, attr);
+    if (err != seL4_NoError) return err;
+    err = seL4_X86_EPTPD_Map(objects[4], objects[1], 0xc0000000u, attr);
+    if (err != seL4_NoError) return err;
+
+    const seL4_Word page_bytes = 1u << 21;
+    /* Root initializes private guest frames through one temporary mapping.
+     * ROM has no guest write permission. No host device or MMIO is mapped. */
+    for (unsigned i = 0u; i < (AOS_X86_FIRMWARE_RAM + AOS_X86_FIRMWARE_BYTES) / page_bytes; i++) {
+        seL4_CPtr frame;
+        const seL4_Word offset = (seL4_Word)i * page_bytes;
+        const int rom = offset >= AOS_X86_FIRMWARE_RAM;
+        const seL4_Word rom_offset = rom ? offset - AOS_X86_FIRMWARE_RAM : 0u;
+        const seL4_Word gpa = rom ? AOS_X86_FIRMWARE_BASE + rom_offset : offset;
+        err = ut_alloc_cap(seL4_X86_LargePageObject, 0u, &frame);
+        if (err != seL4_NoError) return err;
+        (void)cap_acct_record(seL4_CapNull, frame, seL4_X86_LargePageObject, pd_index, pd->name);
+        err = pd_vspace_map_device_frame(seL4_CapInitThreadVSpace, frame, 0x70000000u);
+        if (err != seL4_NoError) return err;
+        volatile uint8_t *dst = (volatile uint8_t *)0x70000000u;
+        for (seL4_Word n = 0u; n < page_bytes; n++) {
+            dst[n] = rom ? _binary_x86_firmware_bin_start[rom_offset + n] : 0u;
+        }
+        AGENTOS_MEMORY_FENCE();
+        err = seL4_X86_Page_Unmap(frame);
+        if (err != seL4_NoError) return err;
+        err = seL4_X86_Page_MapEPT(frame, objects[1], gpa,
+                                   rom ? seL4_CapRights_new(0u, 0u, 1u, 0u) : seL4_AllRights, attr);
+        if (err != seL4_NoError) return err;
+    }
+    err = seL4_X86_VCPU_SetTCB(objects[0], vmm_tcb);
+    if (err != seL4_NoError) return err;
+    err = seL4_TCB_SetEPTRoot(vmm_tcb, objects[1]);
+    if (err != seL4_NoError) return err;
+    err = seL4_CNode_Copy(pd_cnode, AOS_GUEST_VCPU_CAP_BASE,
+                          (uint8_t)pd->cnode_size_bits, seL4_CapInitThreadCNode,
+                          objects[0], 64u, seL4_AllRights);
+    if (err != seL4_NoError) return err;
+    dbg_puts("[rt] x86 VMX EPT proof provisioned\n");
+    dbg_puts("[rt] x86 OVMF private RAM and read-only ROM provisioned\n");
+    return seL4_NoError;
+}
+#endif
+
 static seL4_Error setup_x86_vtx_proof(const pd_desc_t *pd, uint32_t pd_index,
                                       seL4_CPtr pd_cnode, seL4_CPtr vmm_tcb)
 {
+#ifdef AGENTOS_X86_FIRMWARE_RESET
+    return setup_x86_firmware(pd, pd_index, pd_cnode, vmm_tcb);
+#endif
     seL4_CPtr vcpu = seL4_CapNull;
     seL4_CPtr ept_pml4 = seL4_CapNull;
     seL4_CPtr ept_pdpt = seL4_CapNull;
@@ -3123,6 +3199,14 @@ void root_task_main(const seL4_BootInfo *bi)
         seL4_Word instruction_len = seL4_GetMR(3);
         if (seL4_MessageInfo_get_label(tag) == AOS_X86_VTX_PROOF_LABEL &&
             seL4_MessageInfo_get_length(tag) == 4u &&
+#ifdef AGENTOS_X86_FIRMWARE_RESET
+            status == AOS_X86_VTX_RESET_EXIT &&
+            reason == 10u && instruction_len == 2u &&
+            rip >= AOS_X86_FIRMWARE_BASE && rip <= 0xffffffffu) {
+            dbg_puts("[rt] x86 OVMF protected-mode execution verified\n");
+            dbg_puts("[rt] firmware exit reason="); dbg_hex(reason);
+            dbg_puts(" linear RIP="); dbg_hex(rip); dbg_puts("\n");
+#else
 #ifdef AGENTOS_X86_FIRMWARE_MODES
             status == AOS_X86_VTX_MODES_PASS &&
 #else
@@ -3135,6 +3219,7 @@ void root_task_main(const seL4_BootInfo *bi)
             dbg_puts("[rt] x86 VMX real protected long entry modes verified\n");
 #else
             dbg_puts("[rt] x86 VMX EPT HLT exit verified\n");
+#endif
 #endif
         } else {
             dbg_puts("[rt] x86 VMX EPT proof FAILED status=");
