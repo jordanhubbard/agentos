@@ -2010,6 +2010,12 @@ pub(crate) fn spawn_qemu_with_guest(
                 .arg("user,id=agentos_net,restrict=on")
                 .arg("-device")
                 .arg("virtio-net-pci,netdev=agentos_net,addr=06.0,disable-legacy=on,mac=52:54:00:12:34:56");
+            let capture = log_path.with_extension("pcap");
+            println!("[xtask:test] Intel NIC capture: {}", capture.display());
+            c.arg("-object").arg(format!(
+                "filter-dump,id=agentos_net_capture,netdev=agentos_net,file={}",
+                capture.display()
+            ));
             c.arg("-chardev")
                 .arg(format!(
                     "socket,id=serial2,path={},server=on,wait=off",
