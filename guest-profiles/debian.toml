@@ -20,7 +20,7 @@ sha256 = "909ad68f6ff313839860b225f41204c6456207081c7e5d5fcadde7f696a775a4"
 [artifacts.dtb]
 source = "generated:linux.dts+linux-virtio-overlay.dts.in"
 cache = "build/qemu_virt_aarch64/debian-vm.dtb"
-sha256 = "99efdfb5d3d043ab21012fb54d1cb6d157dd776faa96192aaf2bb5e0d3aded45"
+sha256 = "db7edd81cfef50acfc3a4d441f2a91b50e254dbc6ccaacbfce74b8e6050447fc"
 
 [placements.default]
 ram_size = 0x40000000
@@ -29,7 +29,7 @@ dtb_load_address = 0x7f000000
 [placements.dual-primary]
 ram_size = 0x40000000
 dtb_load_address = 0x7f000000
-dtb_sha256 = "99efdfb5d3d043ab21012fb54d1cb6d157dd776faa96192aaf2bb5e0d3aded45"
+dtb_sha256 = "db7edd81cfef50acfc3a4d441f2a91b50e254dbc6ccaacbfce74b8e6050447fc"
 
 [host.build]
 adapter = "linux-merge"
