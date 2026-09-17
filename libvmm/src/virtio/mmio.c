@@ -39,6 +39,7 @@ int handle_virtio_mmio_set_status_flag(virtio_device_t *dev, uint32_t reg)
     switch (reg) {
     case VIRTIO_CONFIG_S_RESET:
         dev->regs.Status = 0;
+        dev->regs.InterruptStatus = 0;
         dev->funs->device_reset(dev);
         break;
 
@@ -134,6 +135,9 @@ static bool handle_virtio_mmio_reg_read(virtio_device_t *dev, size_t vcpu_id, si
         break;
     case REG_RANGE(REG_VIRTIO_MMIO_CONFIG, REG_VIRTIO_MMIO_CONFIG + 0x100):
         success = dev->funs->get_device_config(dev, offset - REG_VIRTIO_MMIO_CONFIG, &reg);
+        /* Config callbacks return data beginning at the requested byte.
+         * The architecture helper extracts the addressed register lane. */
+        reg <<= (offset & 3u) * 8u;
         break;
     default:
         LOG_VMM_ERR("unknown virtIO MMIO register read at offset 0x%x\n", offset);
@@ -304,6 +308,9 @@ static bool handle_virtio_mmio_reg_write(virtio_device_t *dev, size_t vcpu_id, s
         /* Every region ID is absent; selection has no queue side effects. */
         break;
     case REG_RANGE(REG_VIRTIO_MMIO_CONFIG, REG_VIRTIO_MMIO_CONFIG + 0x100):
+        /* A byte/halfword store's operand is right-aligned, unlike mask.
+         * In particular input config select/subsel are separate byte fields. */
+        data = fault_get_data(regs, fsr) & (mask >> ((offset & 3u) * 8u));
         success = dev->funs->set_device_config(dev, offset - REG_VIRTIO_MMIO_CONFIG, data);
         break;
     default:
