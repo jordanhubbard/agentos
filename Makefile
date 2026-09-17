@@ -705,7 +705,7 @@ gate-guest-io:
 	@$(MAKE) test-guest-blk BOARD=qemu_virt_aarch64
 	@$(MAKE) test-guest-console BOARD=qemu_virt_aarch64
 
-gate: test-host gate-aarch64 gate-x86_64 gate-guest-io
+gate: test-host test-virtio-backends-build gate-aarch64 gate-x86_64 gate-guest-io
 	@echo ""
 	@echo "╔══════════════════════════════════════════════════════════╗"
 	@echo "║  ✅ OS-CLAIM GATE PASSED                                  ║"
@@ -779,6 +779,26 @@ test-virtio-mmio-core-host:
 		tests/platform/test_virtio_mmio_core.c libvmm/src/virtio/mmio.c libvmm/src/virtio/gpa.c \
 		-o $(BUILD_TMP_DIR)/test_virtio_mmio_core
 	@$(BUILD_TMP_DIR)/test_virtio_mmio_core
+
+# Compile the production virtio backends against real architecture-specific
+# seL4 headers. Host stubs cannot detect accidental ARM VCPU dependencies.
+# This is a build check, not a guest I/O qualification.
+.PHONY: test-virtio-backends-build
+test-virtio-backends-build:
+	@set -eu; for arch in aarch64 x86_64; do \
+		case $$arch in aarch64) board=qemu_virt_aarch64 ;; x86_64) board=x86_64_generic ;; esac; \
+		out="$(BUILD_TMP_DIR)/virtio-backends-$$arch"; mkdir -p "$$out"; \
+		for backend in console net block; do \
+			clang -target $$arch-unknown-elf -ffreestanding -O2 -Wall -Werror -Wno-unused-function \
+				-I"$(SEL4_SDK)/board/$$board/release/include" \
+				-Ilibvmm/include -Ilibvmm/dep/sddf/include \
+				-Ilibvmm/dep/sddf/include/sddf/util/custom_libc \
+				-Ilibvmm/dep/sddf/include/microkit \
+				-Ikernel/agentos-root-task/include \
+				-c libvmm/src/virtio/$$backend.c -o "$$out/$$backend.o"; \
+		done; \
+		echo "PASS: production virtio console/net/block compile for $$arch"; \
+	done
 
 .PHONY: test-x86-event-host
 test-x86-event-host:
