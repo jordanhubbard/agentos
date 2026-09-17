@@ -73,6 +73,8 @@ static void boot_tests(void)
     fw(&a,0x11,bytes,97); assert(!memcmp(bytes,kernel,97)); /* reselect resets */
     fw(&a,0x12,bytes,sizeof(initrd)); assert(!memcmp(bytes,initrd,sizeof(initrd)));
     fw(&a,0x15,bytes,sizeof(cmd)); assert(!memcmp(bytes,cmd,sizeof(cmd)));
+    assert(a.boot_reads[0]==sizeof(kernel)+97 && a.boot_reads[1]==sizeof(initrd) &&
+           a.boot_reads[2]==sizeof(cmd));
     fw(&a,0x17,bytes,8); assert(read_le(bytes,8)==0); /* EFI only, no setup */
     fw(&b,8,bytes,8); assert(read_le(bytes,8)==0); /* isolation */
     assert(!aos_x86_config_boot(&b,&blobs)); /* cannot bind after first read */

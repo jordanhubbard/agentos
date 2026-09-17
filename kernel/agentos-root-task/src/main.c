@@ -3222,12 +3222,18 @@ void root_task_main(const seL4_BootInfo *bi)
             seL4_Word chain[AOS_X86_FIRMWARE_CHAIN_WORDS];
             for (unsigned i=0; i<AOS_X86_FIRMWARE_CHAIN_WORDS; i++)
                 chain[i]=seL4_GetMR(10+AOS_X86_FIRMWARE_SNAPSHOT_WORDS+i);
+            seL4_Word boot[4];
+            for (unsigned i=0; i<4; i++) boot[i]=seL4_GetMR(116+i);
             dbg_puts("[rt] firmware timer exits="); dbg_hex(counters[0]);
             dbg_puts(" injections="); dbg_hex(counters[1]);
             dbg_puts(" eois="); dbg_hex(counters[2]);
             dbg_puts(" rate_shift="); dbg_hex(counters[3]);
             dbg_puts(" tsc_hz="); dbg_hex(counters[4]);
             dbg_puts(" halt_exits="); dbg_hex(counters[5]); dbg_puts("\n");
+            dbg_puts("[rt] firmware boot bytes kernel="); dbg_hex(boot[0]);
+            dbg_puts(" initrd="); dbg_hex(boot[1]);
+            dbg_puts(" cmdline="); dbg_hex(boot[2]);
+            dbg_puts(" last_qualification="); dbg_hex(boot[3]); dbg_puts("\n");
             if (status == AOS_X86_VTX_PROOF_FAIL && reason == 0x425544u) {
               for (unsigned set=0; set<2; set++) {
                 const seL4_Word *view=snapshot+set*AOS_X86_FIRMWARE_SNAPSHOT_SET_WORDS;

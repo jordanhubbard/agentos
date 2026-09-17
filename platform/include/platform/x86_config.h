@@ -27,6 +27,7 @@ typedef struct {
     uint16_t pm_status, pm_control;
     uint64_t pm_last_ticks;
     aos_x86_boot_blobs_t boot;
+    uint32_t boot_reads[3]; /* bytes consumed in kernel/initrd/cmdline, saturating */
 } aos_x86_config_t;
 
 /* One state per guest; timer_ticks is supplied by the VMM's virtual clock.

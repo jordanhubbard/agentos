@@ -191,6 +191,13 @@ bool aos_x86_config_io(aos_x86_config_t *s, uint16_t port, unsigned width,
     }
     if (port == 0x511u && width == 1u && !write) {
         *value = fw_byte(s, s->fw_offset);
+        unsigned blob=3;
+        uint32_t size=0;
+        if (s->fw_selector==0x11u) { blob=0; size=s->boot.kernel_size; }
+        if (s->fw_selector==0x12u) { blob=1; size=s->boot.initrd_size; }
+        if (s->fw_selector==0x15u) { blob=2; size=s->boot.cmdline_size; }
+        if (blob<3 && s->fw_offset<size && s->boot_reads[blob]<UINT32_MAX)
+            s->boot_reads[blob]++;
         if (s->fw_offset < UINT32_MAX) s->fw_offset++;
         if (s->fw_reads<UINT32_MAX) s->fw_reads++;
         return true;

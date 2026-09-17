@@ -35,6 +35,7 @@
 static seL4_Word timer_exits, injections, eois, timer_shift, tsc_hz, halt_exits;
 static seL4_Word snapshot[AOS_X86_FIRMWARE_SNAPSHOT_WORDS];
 static seL4_Word halt_chain[AOS_X86_FIRMWARE_CHAIN_WORDS];
+static seL4_Word boot_reads[3], last_qualification;
 #ifdef AGENTOS_X86_BOOT_KERNEL
 extern const uint8_t _binary_x86_boot_kernel_bin_start[], _binary_x86_boot_kernel_bin_end[];
 #ifdef AGENTOS_X86_BOOT_INITRD
@@ -59,6 +60,8 @@ static _Noreturn void stop(seL4_CPtr endpoint, seL4_Word status, seL4_Word reaso
     for (unsigned i=0; i<AOS_X86_FIRMWARE_CHAIN_WORDS; i++)
         seL4_SetMR(10+AOS_X86_FIRMWARE_SNAPSHOT_WORDS+i,
                    reason == 0x425544u ? halt_chain[i] : 0);
+    for (unsigned i=0; i<3; i++) seL4_SetMR(116+i,boot_reads[i]);
+    seL4_SetMR(119,last_qualification);
     seL4_Send(endpoint, seL4_MessageInfo_new(AOS_X86_VTX_PROOF_LABEL, 0, 0, AOS_X86_FIRMWARE_REPORT_WORDS));
     for (;;) { seL4_Word badge; (void)seL4_Wait(endpoint, &badge); }
 }
@@ -230,6 +233,8 @@ void aos_x86_firmware_run(seL4_CPtr ep, seL4_Word result)
         seL4_Word guest_cr3 = seL4_GetMR(SEL4_VMENTER_FAULT_CR3_MR);
         seL4_Word guest_flags = seL4_GetMR(SEL4_VMENTER_FAULT_RFLAGS_MR);
         seL4_VCPUContext regs = save_registers();
+        for (unsigned i=0; i<3; i++) boot_reads[i]=config.boot_reads[i];
+        last_qualification=qual;
         if (exits == 65536u) {
             /* Observe the returned exit before any emulation or re-entry.
              * The processed-exit budget and its failure status are unchanged. */

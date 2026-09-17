@@ -30,7 +30,9 @@
 /* MR106..115: HLT RBP, valid frame count, four {previous RBP, return RIP}
  * pairs. Optional diagnostic chain only; no unwind/success guarantee. */
 #define AOS_X86_FIRMWARE_CHAIN_WORDS 10u
-#define AOS_X86_FIRMWARE_REPORT_WORDS 116u
+/* MR116..119: bytes consumed from kernel/initrd/cmdline and last exit
+ * qualification. Transfer counters are not EFI entry or Linux boot proof. */
+#define AOS_X86_FIRMWARE_REPORT_WORDS 120u
 #define AOS_X86_FIRMWARE_BASE     0xffc00000u
 #define AOS_X86_FIRMWARE_BYTES    0x00400000u
 #ifndef AOS_X86_FIRMWARE_RAM
