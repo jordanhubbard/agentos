@@ -72,12 +72,15 @@ one-shot and periodic counting are covered by host tests. The fixed-host KVM
 qualification uses `host,migratable=off` so QEMU does not hide `invtsc`; the
 VMM still checks that capability. A due unmasked timer stops explicitly:
 asynchronous timer scheduling, interrupt injection, IPIs, other LVT sources,
-base relocation, x2APIC and live divider changes are not implemented.
+base relocation and x2APIC are not implemented. Live divider changes preserve
+the remaining countdown and restart the fractional prescaler phase. Expiries
+while masked do not create pending interrupts; unmasked expiries are retained.
 LINT0/LINT1 configuration is private and retained for firmware virtual-wire
 setup, but no external pin sources are connected.
 
-APIC MMIO faults use the hardware-reported GPA and a bounded decoder for
-32-bit MOV register/immediate memory forms in a 64-bit code segment. A
+MMIO faults use the hardware-reported GPA and a bounded decoder for
+byte and 32-bit MOV register/immediate forms and byte/word MOVZX in a
+64-bit code segment. APIC accesses still require 32-bit operands. A
 four-level guest page-table walk checks the advertised 36-bit physical width,
 permissions and supported 4 KiB/2 MiB leaves. Instruction bytes may come only
 from this guest's RAM or ROM; the decoded operand must translate to the fault
@@ -95,10 +98,19 @@ ROM and device GPAs cannot become writable input destinations.
 This continuation no longer reports success at the old string-exit checkpoint.
 The Intel gate remains incomplete while firmware executes beyond that point;
 host stream tests and an ordinary Spark gate do not prove complete UEFI boot.
-The current [string-input receipt](evidence/2026-09-17-spark/ovmf-string.json)
-records the next Intel stop: EPT fault at GPA `0xfed40000`, RIP `0x01f4e4fe`.
-This GPA matches the TPM register area; absent-device probing remains to be
-implemented for the current machine, which has no TPM.
+The historical [string-input receipt](evidence/2026-09-17-spark/ovmf-string.json)
+records the TPM probe stop. Bounded, naturally aligned reads of one, two or
+four bytes from `0xfed40000..0xfed44fff` now return all ones for this machine's
+absent TPM. Writes remain rejected; there is no TPM or measured-boot emulation.
+Validated stores within firmware ROM complete without changing its bytes,
+allowing firmware to distinguish ROM from writable flash. Both ROM mappings
+remain read-only; this does not implement persistent variables.
+
+The [discovery receipt](evidence/2026-09-17-spark/ovmf-discovery.json) records
+execution through these probes and APIC divider changes to the first unmasked
+periodic timer expiry, vector `0x20`. The VMM stops with reason `0x495251`
+at RIP `0x00168bf5`; asynchronous scheduling and interrupt injection remain
+required before firmware can continue.
 
 The [upstream EDK II transition](https://github.com/tianocore/edk2/blob/edk2-stable202402/UefiCpuPkg/ResetVector/Vtf0/Ia16/Real16ToFlat32.asm)
 provides the source context for this early execution path. The

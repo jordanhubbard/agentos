@@ -368,6 +368,10 @@ input handler validates a bounded chunk before modifying RAM or fw_cfg state
 and commits page-table accessed/dirty bits. No device frames,
 IRQs or host I/O capabilities are added. The VMM emulates private PCI
 configuration, scalar firmware-data ports, and bootstrap xAPIC timer state.
+Bounded reads in the declared absent TPM aperture return all ones; writes
+are rejected. Validated firmware ROM stores are ignored without granting
+write authority or changing ROM bytes. Live APIC divider changes preserve
+the private countdown; no host APIC access or timer IRQ authority is added.
 PIC unmasking, APIC interrupt delivery and unsupported device accesses stop
 explicitly. This remains firmware bring-up; it does not prove UEFI boot,
 Linux, runtime resource management or persistent firmware variables.
