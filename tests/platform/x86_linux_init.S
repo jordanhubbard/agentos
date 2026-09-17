@@ -3,16 +3,19 @@
 .section .text
 .global _start
 _start:
+    mov $1, %r13d
     mov $39, %eax                 /* getpid */
     syscall
     cmp $1, %rax
     jne failed
+    mov $2, %r13d
     mov $83, %eax                 /* mkdir /dev */
     lea dev_path(%rip), %rdi
     mov $0755, %esi
     syscall
     test %rax, %rax
     jne failed
+    mov $3, %r13d
     mov $165, %eax                /* mount devtmpfs: native driver nodes */
     lea devfs(%rip), %rdi
     lea dev_path(%rip), %rsi
@@ -22,6 +25,7 @@ _start:
     syscall
     test %rax, %rax
     jne failed
+    mov $4, %r13d
     mov $2, %eax                  /* hvc0 exists only after console binding */
     lea console_path(%rip), %rdi
     mov $0x802, %esi              /* O_RDWR | O_NONBLOCK */
@@ -29,11 +33,13 @@ _start:
     syscall
     test %rax, %rax
     js failed
+    mov $5, %r13d
     mov %rax, %rdi
     mov $3, %eax
     syscall
     test %rax, %rax
     jne failed
+    mov $6, %r13d
     mov $2, %eax                  /* open a file on the initramfs */
     lea path(%rip), %rdi
     mov $0x242, %esi              /* O_CREAT | O_TRUNC | O_RDWR */
@@ -87,7 +93,7 @@ failed:
     mov $0x41554f53, %eax
     xor %ebx, %ebx
     mov $0x494e4954, %ecx
-    xor %edx, %edx
+    mov %r13d, %edx
     cpuid
     jmp failed
 .section .rodata
