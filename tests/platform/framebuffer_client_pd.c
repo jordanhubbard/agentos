@@ -62,11 +62,37 @@ void pd_main(seL4_CPtr endpoint, seL4_CPtr nameserver)
     if (call((aos_fb_request_t){ .operation = AOS_FB_DESTROY,
                                 .handle = handle }).status != AOS_FB_OK) fail();
     if (call(pixels).status != AOS_FB_BAD_HANDLE) fail();
+#if defined(AGENTOS_DISPLAY_RAMFB) && FB_TEST_CLIENT == 0
+    /* Exercise bank reuse and full-size transfers before the externally
+     * checked final frame. A driver stranded on an earlier frame must fail
+     * the QMP comparison, even when its initial configuration succeeded. */
+    p = call((aos_fb_request_t){ .operation=AOS_FB_CREATE, .width=1024, .height=768 });
+    if (p.status != AOS_FB_OK || !p.handle) fail();
+    uint64_t large = p.handle;
+    if (call((aos_fb_request_t){ .operation=AOS_FB_SELECT, .handle=large,
+            .width=1024, .height=768 }).status != AOS_FB_OK) fail();
+    for (unsigned frame=0; frame<3; ++frame) {
+        for (unsigned row=0; row<768; row+=16) {
+            for (unsigned i=0; i<AOS_FB_DATA_BYTES; ++i)
+                region->data[i]=(uint8_t)(i*37u+row+frame*83u);
+            if (call((aos_fb_request_t){ .operation=AOS_FB_WRITE, .handle=large,
+                    .y=row, .width=1024, .height=16,
+                    .data_length=AOS_FB_DATA_BYTES }).status != AOS_FB_OK) fail();
+        }
+        p=call((aos_fb_request_t){ .operation=AOS_FB_FLIP, .handle=large });
+        if (p.status != AOS_FB_OK || p.sequence != frame+1u) fail();
+    }
+    if (call((aos_fb_request_t){ .operation=AOS_FB_DESTROY,
+            .handle=large }).status != AOS_FB_OK) fail();
+#endif
     /* Leave an independent selected frame for CC's external observer proof.
      * It spans multiple CC replies and remains private to this service slot. */
     p = call((aos_fb_request_t){ .operation=AOS_FB_CREATE, .width=40, .height=40 });
     if (p.status != AOS_FB_OK || !p.handle || p.handle == handle) fail();
     handle = p.handle;
+    if (call((aos_fb_request_t){ .operation=AOS_FB_SELECT, .handle=handle,
+            .width=40, .height=40 }).status != AOS_FB_OK) fail();
+    if (call((aos_fb_request_t){ .operation=AOS_FB_FLIP, .handle=handle }).status != AOS_FB_OK) fail();
     for (unsigned i = 0; i < 40u * 40u * 4u; ++i)
         region->data[i] = (uint8_t)(i * 37u + FB_TEST_CLIENT * 83u);
     if (call((aos_fb_request_t){ .operation=AOS_FB_WRITE, .handle=handle,
