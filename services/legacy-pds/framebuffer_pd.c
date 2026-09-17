@@ -5,7 +5,7 @@
  * Each guest selects a backend at MSG_FB_CREATE time:
  *
  *   FB_BACKEND_NULL       — frames discarded; for headless guests
- *   FB_BACKEND_HW_DIRECT  — virtio-gpu / gpu_sched (Phase 4a-hw, ag-1es)
+ *   FB_BACKEND_HW_DIRECT  — unsupported; creation returns FB_ERR_BAD_BACKEND
  *   FB_BACKEND_REMOTE_API — display server relay (Phase 4a-remote, ag-tz2)
  *
  * IPC protocol (sel4_server_t dispatch, opcode in req->opcode):
@@ -23,8 +23,6 @@
  * Bugs fixed in this migration (E5-S7):
  *   - log_drain channel-60 dispatch removed; log_drain is now resolved via
  *     nameserver (no #ifdef BOARD_qemu_virt_aarch64 workaround needed).
- *   - microkit_ppcall(ch=2/7, ...) to gpu_sched replaced with nameserver
- *     lookup for "gpu_sched" endpoint, then sel4_call.
  *   - EventBus publishing: microkit_ppcall(CH_FB_EVENTBUS, ...) replaced with
  *     nameserver-resolved event_bus endpoint + sel4_call.
  *   - microkit_notify for REMOTE_API subscribers replaced with seL4_Signal
@@ -151,10 +149,6 @@ static inline void seL4_DebugPutChar(char c) { (void)c; }
 #define EVENT_FB_FRAME_READY      0x40u
 #endif
 
-#ifndef MSG_GPU_SUBMIT
-#define OP_GPU_SUBMIT_CMD         0xE4u
-#endif
-
 /* FB error codes */
 #ifndef FB_OK
 #define FB_OK              0u
@@ -198,18 +192,6 @@ static inline void seL4_DebugPutChar(char c) { (void)c; }
 #define NS_NAME_MAX 32
 #endif
 
-/* virtio-gpu MMIO constants */
-#ifndef VIRTIO_MMIO_MAGIC_VALUE
-#define VIRTIO_MMIO_MAGIC_VALUE   0x000u
-#define VIRTIO_MMIO_VERSION       0x004u
-#define VIRTIO_MMIO_DEVICE_ID     0x008u
-#define VIRTIO_MMIO_STATUS        0x070u
-#define VIRTIO_MMIO_MAGIC         0x74726976u
-#define VIRTIO_GPU_DEVICE_ID      16u
-#define VIRTIO_STATUS_ACKNOWLEDGE (1u << 0)
-#define VIRTIO_STATUS_DRIVER      (1u << 1)
-#endif
-
 /* ── Limits ──────────────────────────────────────────────────────────────── */
 
 #define FB_MAX_SURFACES     8u
@@ -218,7 +200,7 @@ static inline void seL4_DebugPutChar(char c) { (void)c; }
 #define FB_MAX_HEIGHT       4320u
 #define FB_SHMEM_SIZE       (32u * 1024u * 1024u)  /* 32 MiB shared region */
 
-/* ── Shmem / MMIO addresses ──────────────────────────────────────────────── */
+/* ── Shmem addresses ─────────────────────────────────────────────────────── */
 
 /*
  * fb_shmem_vaddr — shared memory for framebuffer operations.
@@ -228,43 +210,13 @@ static inline void seL4_DebugPutChar(char c) { (void)c; }
 uintptr_t fb_shmem_vaddr;
 
 /*
- * virtio_gpu_mmio_vaddr — virtio-gpu MMIO base (QEMU HW_DIRECT path).
- * Set by the root task; 0 if no virtio-gpu hardware is present.
- */
-uintptr_t virtio_gpu_mmio_vaddr;
-
-/*
  * log_drain_rings_vaddr — log ring shmem (set by root task; 0 if unused).
  * Resolved via nameserver in production.
  */
 uintptr_t log_drain_rings_vaddr;
 
-/* ── HW_DIRECT mode selection ────────────────────────────────────────────── */
-
-typedef enum {
-    HW_MODE_NONE       = 0,  /* no hardware; HW_DIRECT behaves as stub */
-    HW_MODE_VIRTIO_GPU = 1,  /* QEMU: framebuffer_pd owns virtio-gpu MMIO directly */
-    HW_MODE_GPU_SCHED  = 2,  /* Sparky GB10 / NUC: IPC via gpu_sched OP_GPU_SUBMIT_CMD */
-} hw_direct_mode_t;
-
-static hw_direct_mode_t hw_mode = HW_MODE_NONE;
-
-/* Nameserver-resolved gpu_sched endpoint (0 = not yet connected) */
-static seL4_CPtr g_gpu_sched_ep  = 0;
 static seL4_CPtr g_eventbus_ep   = 0;
 static seL4_CPtr g_ns_ep         = 0;
-
-/* ── virtio-gpu MMIO helpers ─────────────────────────────────────────────── */
-
-static inline uint32_t fb_mmio_read32(uintptr_t base, uint32_t off)
-{
-    return *(volatile uint32_t *)(base + off);
-}
-
-static inline void fb_mmio_write32(uintptr_t base, uint32_t off, uint32_t val)
-{
-    *(volatile uint32_t *)(base + off) = val;
-}
 
 /* ── Data-field helpers ──────────────────────────────────────────────────── */
 
@@ -367,33 +319,6 @@ static seL4_CPtr fb_ns_lookup(const char *name)
     return 0;
 }
 
-/* ── HW_DIRECT backend probe ─────────────────────────────────────────────── */
-
-static void probe_hw_direct(void)
-{
-    if (virtio_gpu_mmio_vaddr) {
-        uint32_t magic  = fb_mmio_read32(virtio_gpu_mmio_vaddr, VIRTIO_MMIO_MAGIC_VALUE);
-        uint32_t ver    = fb_mmio_read32(virtio_gpu_mmio_vaddr, VIRTIO_MMIO_VERSION);
-        uint32_t dev_id = fb_mmio_read32(virtio_gpu_mmio_vaddr, VIRTIO_MMIO_DEVICE_ID);
-
-        if (magic == VIRTIO_MMIO_MAGIC && ver == 2u
-                && dev_id == VIRTIO_GPU_DEVICE_ID) {
-            fb_mmio_write32(virtio_gpu_mmio_vaddr, VIRTIO_MMIO_STATUS,
-                            VIRTIO_STATUS_ACKNOWLEDGE);
-            fb_mmio_write32(virtio_gpu_mmio_vaddr, VIRTIO_MMIO_STATUS,
-                            VIRTIO_STATUS_ACKNOWLEDGE | VIRTIO_STATUS_DRIVER);
-            hw_mode = HW_MODE_VIRTIO_GPU;
-            dbg_puts("[framebuffer_pd] HW_DIRECT: virtio-gpu detected (QEMU path)\n");
-            return;
-        }
-        dbg_puts("[framebuffer_pd] HW_DIRECT: virtio-gpu not at MMIO, trying gpu_sched\n");
-    }
-
-    /* No virtio-gpu — assume real GPU via gpu_sched (nameserver-resolved) */
-    hw_mode = HW_MODE_GPU_SCHED;
-    dbg_puts("[framebuffer_pd] HW_DIRECT: gpu_sched path active (Sparky/NUC)\n");
-}
-
 /* ── Surface allocation helpers ──────────────────────────────────────────── */
 
 static fb_surface_t *surface_find(uint32_t handle)
@@ -450,43 +375,6 @@ static void publish_frame_ready(uint32_t handle, uint32_t frame_seq,
     /* Ignore reply — EventBus publish is fire-and-forget */
 }
 
-/* ── HW_DIRECT flip via gpu_sched ────────────────────────────────────────── */
-
-static uint32_t hw_direct_flip(uint32_t fb_handle, uint32_t frame_seq)
-{
-    (void)fb_handle; (void)frame_seq;
-
-    if (hw_mode == HW_MODE_VIRTIO_GPU) {
-        /* virtio-gpu: framebuffer_pd owns MMIO directly — already written */
-        return FB_OK;
-    }
-
-    if (hw_mode == HW_MODE_GPU_SCHED) {
-        if (!g_gpu_sched_ep) {
-            /* Lazy resolve gpu_sched via nameserver */
-            g_gpu_sched_ep = fb_ns_lookup("gpu_sched");
-        }
-        if (!g_gpu_sched_ep) return FB_OK; /* stub: no hw available */
-
-        /*
-         * Forward FLIP to gpu_sched via OP_GPU_SUBMIT_CMD.
-         * Replaces the old microkit_ppcall(ch=2/7, ...) which used
-         * hard-coded Microkit channel numbers.
-         */
-        sel4_msg_t req, rep;
-        req.opcode = OP_GPU_SUBMIT_CMD;
-        data_wr32(req.data, 0, OP_GPU_SUBMIT_CMD);
-        data_wr32(req.data, 4, 0u);    /* slot_id = 0 (display command slot) */
-        data_wr32(req.data, 8, 0u);    /* cmd_offset = 0 */
-        data_wr32(req.data, 12, 64u);  /* cmd_len = 64 (virtio-gpu RESOURCE_FLUSH) */
-        req.length = 16;
-        sel4_call(g_gpu_sched_ep, &req, &rep);
-        /* Result in rep.opcode: GPU_ERR_OK = 0 */
-    }
-
-    return FB_OK;
-}
-
 /* ── IPC handlers ────────────────────────────────────────────────────────── */
 
 /*
@@ -530,6 +418,13 @@ static uint32_t handle_create(sel4_badge_t badge, const sel4_msg_t *req,
     }
 
     uint32_t backend = cr->backend;
+    /* This museum PD has no GPU queue, resource, or scanout implementation. */
+    if (backend == FB_BACKEND_HW_DIRECT) {
+        data_wr32(rep->data, 0, FB_ERR_BAD_BACKEND);
+        data_wr32(rep->data, 4, FB_HANDLE_INVALID);
+        rep->length = 8;
+        return SEL4_ERR_BAD_ARG;
+    }
     if (backend > FB_BACKEND_REMOTE_API) backend = FB_BACKEND_NULL;
 
     uint32_t stride       = cr->width * bpp;
@@ -633,17 +528,6 @@ static uint32_t handle_flip(sel4_badge_t badge, const sel4_msg_t *req,
     if (!s) {
         data_wr32(rep->data, 0, FB_ERR_BAD_HANDLE);
         data_wr32(rep->data, 4, 0u);
-        rep->length = 8;
-        return SEL4_ERR_BAD_ARG;
-    }
-
-    uint32_t result = FB_OK;
-    if (s->backend == FB_BACKEND_HW_DIRECT)
-        result = hw_direct_flip(s->handle, s->frame_seq + 1);
-
-    if (result != FB_OK) {
-        data_wr32(rep->data, 0, result);
-        data_wr32(rep->data, 4, s->frame_seq);
         rep->length = 8;
         return SEL4_ERR_BAD_ARG;
     }
@@ -909,9 +793,7 @@ static void register_with_nameserver(seL4_CPtr ns_ep)
 
 void framebuffer_pd_test_init(void)
 {
-    hw_mode        = HW_MODE_NONE;
     shmem_used     = 0;
-    g_gpu_sched_ep = 0;
     g_eventbus_ep  = 0;
     g_ns_ep        = 0;
 
@@ -953,16 +835,12 @@ void framebuffer_pd_main(seL4_CPtr my_ep, seL4_CPtr ns_ep)
     dbg_puts("[framebuffer_pd] starting — agentOS virtual framebuffer service\n");
 
     shmem_used     = 0;
-    g_gpu_sched_ep = 0;
     g_eventbus_ep  = 0;
 
     for (uint32_t i = 0; i < FB_MAX_SURFACES; i++)
         surfaces[i].in_use = false;
     for (uint32_t i = 0; i < FB_MAX_REMOTE_SUBS; i++)
         remote_subs[i].active = false;
-
-    /* Detect HW_DIRECT backend: virtio-gpu (QEMU) or gpu_sched (Sparky/NUC) */
-    probe_hw_direct();
 
     if (!fb_shmem_vaddr)
         dbg_puts("[framebuffer_pd] WARNING: fb_shmem_vaddr not mapped "

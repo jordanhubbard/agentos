@@ -1029,6 +1029,7 @@ test-integration:
 	    tests/test_proc_server.c \
 	    tests/test_serial_pd.c \
 	    tests/test_framebuffer_pd.c \
+	    tests/test_framebuffer_unsupported_hardware.c \
 	    tests/test_guest_contract.c \
 	    tests/test_vm_multi_guest.c \
 	    tests/test_e13_agent_boot.c \
