@@ -1079,7 +1079,7 @@ static uint32_t handle_net_send_nic(net_pd_client_t *c, uint32_t handle,
         rep->length = 4;
         return SEL4_ERR_BAD_ARG;
     }
-    if (hw_present && !net_host_transport.pci) {
+    if (hw_present) {
 #ifndef AGENTOS_TEST_HOST
         const uint8_t *frame = (const uint8_t *)(net_pd_shmem_vaddr + slot_off);
         if (!net_host_send(frame, frame_len)) {
@@ -1870,7 +1870,7 @@ void net_pd_main(seL4_CPtr my_ep, seL4_CPtr ns_ep)
     }
     net_pd_test_init();
     probe_virtio_net();
-    if (hw_present) {
+    if (hw_present && !net_host_transport.pci) {
         seL4_IRQHandler_Ack(
             (seL4_CPtr)(PD_IRQHANDLER_SLOT_BASE + 0u));
     }
