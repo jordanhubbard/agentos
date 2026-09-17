@@ -196,6 +196,12 @@
       "sequence": 429,
       "elapsed_seconds": 21.3,
       "screenshot_sha256": "5e9c05f5316a0c2e7f715e12891d7049e33375b9ffa8d164942f0e12aa0ec17c"
+    },
+    "later_process_exit": {
+      "code": 137,
+      "cause": "unresolved SIGKILL after captures and guest-console diagnosis",
+      "kernel_and_user_oom_log_entries": false,
+      "followup_task": "task_3bea4cc3256d495da091d83eda0d004a"
     }
   }
 }
