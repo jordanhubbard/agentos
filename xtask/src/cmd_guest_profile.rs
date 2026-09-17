@@ -858,6 +858,20 @@ fn render_profile_dtb(
                 String::new()
             },
         ),
+        (
+            "@GUEST_INPUT_NODE@",
+            if profile
+                .target
+                .as_ref()
+                .and_then(|t| t.devices.as_ref())
+                .is_some_and(|devices| devices.iter().any(|d| d == "input"))
+            {
+                include_str!("../../kernel/agentos-root-task/virtio-input-guest.dts.inc")
+                    .to_string()
+            } else {
+                String::new()
+            },
+        ),
     ];
     let template_path = confined_repo_path(repo_root, &build.template)?;
     let template = render_dts_template(&fs::read_to_string(&template_path)?, &substitutions)?;

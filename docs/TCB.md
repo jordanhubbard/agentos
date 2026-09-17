@@ -9,6 +9,17 @@ This page describes two things and keeps them apart: what **boots today**
 shape**. A claim that belongs to the target column is not an OS claim until the
 manifest and the gate agree with it.
 
+The optional `GUEST_INPUT` AArch64 variant adds `input_virt`, a bounded input
+queue virtualizer. It owns no hardware frame, IRQ, or guest execution cap.
+Root maps one event page per VMM and a separate CC frontend page; only the
+virtualizer maps all three. CC resolves public guest handles before submitting
+input batches. VMMs consume only their own keyboard/pointer queues and emulate
+two faulting virtio-input devices. Input notifications confer send-only wakeup
+authority, never access to another client's queues. Target keyboard/pointer
+enumeration, authenticated SSH and the full gate passed on Spark at `f5b7561`;
+see the [input base receipt](evidence/2026-09-17-spark/input-base-integration.json).
+Exact evdev delivery and peer mapping isolation remain separate qualifications.
+
 ## Privilege
 
 | Level | What runs | Notes |

@@ -117,5 +117,8 @@ enum aos_guest_boot_error aos_guest_devices_init(
     if ((profile->device_flags & AOS_GUEST_DEVICE_GPU) != 0u) {
         if (ops->gpu_init == NULL || !ops->gpu_init()) return AOS_GUEST_BOOT_ERR_ARGUMENT;
     }
+    if ((profile->device_flags & AOS_GUEST_DEVICE_INPUT) != 0u) {
+        if (ops->input_init == NULL || !ops->input_init()) return AOS_GUEST_BOOT_ERR_ARGUMENT;
+    }
     return AOS_GUEST_BOOT_OK;
 }

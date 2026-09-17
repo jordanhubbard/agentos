@@ -89,6 +89,14 @@ $(error VMM_SLOT must be primary or secondary, got '$(VMM_SLOT)')
 endif
 
 VMM_CONFIG_STAMP := $(BUILD_DIR)/vmm-$(VMM_SLOT).stamp
+ifdef GUEST_INPUT
+VMM_CFLAGS += -DAGENTOS_GUEST_INPUT=1
+GUEST_INPUT_OBJS := $(BUILD_DIR)/vmm_virtio_input.$(VMM_SLOT).o $(BUILD_DIR)/input_queue.$(VMM_SLOT).o
+endif
+$(BUILD_DIR)/vmm_virtio_input.$(VMM_SLOT).o: $(AGENTOS_ROOT)/platform/input-virt/vmm_virtio_input.c $(VMM_CONFIG_STAMP)
+	clang $(VMM_CFLAGS) -c $< -o $@
+$(BUILD_DIR)/input_queue.$(VMM_SLOT).o: $(AGENTOS_ROOT)/platform/input-virt/service.c $(VMM_CONFIG_STAMP)
+	clang $(VMM_CFLAGS) -c $< -o $@
 ifdef GUEST_GRAPHICS
 VMM_CFLAGS += -DAGENTOS_GUEST_GRAPHICS=1
 GUEST_GPU_OBJS := $(BUILD_DIR)/gpu_framebuffer.$(VMM_SLOT).o $(BUILD_DIR)/vmm_virtio_gpu.$(VMM_SLOT).o $(BUILD_DIR)/gpu_queue.$(VMM_SLOT).o
@@ -299,7 +307,7 @@ $(BUILD_DIR)/guest_vmm_primary.elf: FORCE \
 	                             $(VMM_VIRTIO_NET_OBJ) \
 	                             $(GPA_TRANSLATE_OBJ) \
 	                             $(VMM_GUEST_RAM_OBJ) \
-	                             $(GUEST_VMM_RUNTIME_OBJ) $(GUEST_SERIAL_OBJS) $(GUEST_GPU_OBJS) \
+	                             $(GUEST_VMM_RUNTIME_OBJ) $(GUEST_SERIAL_OBJS) $(GUEST_GPU_OBJS) $(GUEST_INPUT_OBJS) \
 	                             $(GUEST_VMM_LOOP_OBJ) \
 	                             $(GUEST_PROFILE_VALIDATE_OBJ) \
 	                             $(GUEST_BOOT_OBJ) \
@@ -314,7 +322,7 @@ $(BUILD_DIR)/guest_vmm_primary.elf: FORCE \
 		-L$(BOARD_DIR)/lib \
 		$(VMM_PD_ENTRY_OBJ) $(GUEST_VMM_PRIMARY_OBJ) $(GPU_SHMEM_FULL_OBJ) \
 		$(VMM_VIRTIO_NET_OBJ) $(GPA_TRANSLATE_OBJ) $(VMM_GUEST_RAM_OBJ) \
-		$(GUEST_VMM_RUNTIME_OBJ) $(GUEST_SERIAL_OBJS) $(GUEST_GPU_OBJS) \
+		$(GUEST_VMM_RUNTIME_OBJ) $(GUEST_SERIAL_OBJS) $(GUEST_GPU_OBJS) $(GUEST_INPUT_OBJS) \
 		$(GUEST_VMM_LOOP_OBJ) \
 		$(GUEST_PROFILE_VALIDATE_OBJ) \
 		$(GUEST_BOOT_OBJ) \
@@ -362,7 +370,7 @@ $(BUILD_DIR)/guest_vmm_secondary.elf: $(BUILD_DIR)/guest_vmm_secondary.o \
                                $(VMM_VIRTIO_NET_OBJ) \
                                $(GPA_TRANSLATE_OBJ) \
                                $(VMM_GUEST_RAM_OBJ) \
-                               $(GUEST_VMM_RUNTIME_OBJ) $(GUEST_SERIAL_OBJS) $(GUEST_GPU_OBJS) \
+                               $(GUEST_VMM_RUNTIME_OBJ) $(GUEST_SERIAL_OBJS) $(GUEST_GPU_OBJS) $(GUEST_INPUT_OBJS) \
                                $(GUEST_VMM_LOOP_OBJ) \
                                $(GUEST_PROFILE_VALIDATE_OBJ) \
                                $(GUEST_BOOT_OBJ) \
@@ -377,7 +385,7 @@ $(BUILD_DIR)/guest_vmm_secondary.elf: $(BUILD_DIR)/guest_vmm_secondary.o \
 		$(BUILD_DIR)/guest_secondary_images.o \
 		$(VMM_VIRTIO_NET_OBJ) \
 		$(GPA_TRANSLATE_OBJ) $(VMM_GUEST_RAM_OBJ) \
-		$(GUEST_VMM_RUNTIME_OBJ) $(GUEST_SERIAL_OBJS) $(GUEST_GPU_OBJS) \
+		$(GUEST_VMM_RUNTIME_OBJ) $(GUEST_SERIAL_OBJS) $(GUEST_GPU_OBJS) $(GUEST_INPUT_OBJS) \
 		$(GUEST_VMM_LOOP_OBJ) \
 		$(GUEST_PROFILE_VALIDATE_OBJ) $(BUILD_DIR)/guest_secondary_profile.o \
 		$(GUEST_BOOT_OBJ) \

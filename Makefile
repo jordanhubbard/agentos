@@ -696,7 +696,7 @@ gate: test-host gate-aarch64 gate-x86_64 gate-guest-io
 # lint-source is a source lint (policy-check's sibling), not a test; it is
 # listed here so the invariants it protects are checked on every host run,
 # but it is not counted among the host tests below.
-test-host: policy-check guest-profile-check lint-source test-integration test-operator-host test-log-ring-host test-framebuffer-host test-virtio-gpu-host test-agentctl-frame-host
+test-host: policy-check guest-profile-check lint-source test-integration test-operator-host test-log-ring-host test-framebuffer-host test-virtio-gpu-host test-input-host test-agentctl-frame-host
 
 .PHONY: test-virtio-gpu-host
 test-virtio-gpu-host:
@@ -709,6 +709,14 @@ test-virtio-gpu-host:
 	$(BUILD_TMP_DIR)/test_virtio_net_config
 
 .PHONY: test-framebuffer-host
+.PHONY: test-input-host
+test-input-host:
+	@mkdir -p $(ROOT_DIR)build/tmp
+	$(CC) -std=c11 -Wall -Wextra -Werror -I platform/include tests/platform/test_input_queue.c platform/input-virt/service.c -o $(ROOT_DIR)build/tmp/test_input_queue
+	$(ROOT_DIR)build/tmp/test_input_queue
+	$(CC) -std=gnu11 -Wall -Wextra -Werror -Wno-unused-parameter -I tests/platform/mmio-stubs -I platform/include -I libvmm/include tests/platform/test_virtio_input.c libvmm/src/virtio/input.c libvmm/src/virtio/mmio.c libvmm/src/virtio/gpa.c platform/input-virt/service.c -o $(BUILD_TMP_DIR)/test_virtio_input
+	$(BUILD_TMP_DIR)/test_virtio_input
+
 .PHONY: test-agentctl-frame-host
 test-agentctl-frame-host:
 	@mkdir -p $(ROOT_DIR)build/tmp
@@ -873,7 +881,7 @@ test-guest-net:
 		echo "test-guest-net requires BOARD=qemu_virt_aarch64 (got BOARD=$(BOARD))"; \
 		exit 1; \
 	fi
-	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os buildroot --timeout-secs $(QEMU_TEST_TIMEOUT) --assert-emulated-net
+	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os buildroot --timeout-secs $(QEMU_TEST_TIMEOUT) --assert-emulated-net --ssh-port $(QEMU_TEST_SSH_PORT)
 
 # Guest I/O proof: boot buildroot Linux under linux_vmm and require the
 # emulated virtio-blk (IPA 0x0A020000) to probe, reach DRIVER_OK, and pump
@@ -923,7 +931,7 @@ test-guest-blk:
 		echo "test-guest-blk requires BOARD=qemu_virt_aarch64 (got BOARD=$(BOARD))"; \
 		exit 1; \
 	fi
-	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os buildroot --timeout-secs $(QEMU_TEST_TIMEOUT) --assert-emulated-blk
+	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os buildroot --timeout-secs $(QEMU_TEST_TIMEOUT) --assert-emulated-blk --ssh-port $(QEMU_TEST_SSH_PORT)
 
 # Boot Ubuntu to its login prompt over agentOS's emulated virtio-console,
 # then inject input and require the guest to echo it back through sDDF queues.
@@ -951,6 +959,10 @@ test-ubuntu-virtio:
 # serial login while requiring real I/O through every agentOS VirtIO class.
 .PHONY: test-debian-live
 .PHONY: test-guest-gpu
+.PHONY: test-guest-input
+test-guest-input:
+	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os debian-input --timeout-secs $(QEMU_TEST_TIMEOUT) --assert-live --assert-agentos-virtio --ssh-port $(QEMU_TEST_SSH_PORT)
+
 test-guest-gpu:
 	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os debian-gpu --timeout-secs $(QEMU_TEST_TIMEOUT) --assert-live --assert-agentos-virtio --ssh-port $(QEMU_TEST_GPU_SSH_PORT)
 

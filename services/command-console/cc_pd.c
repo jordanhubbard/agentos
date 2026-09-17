@@ -42,6 +42,7 @@
 #include "serial_virt_client.h"
 #include <platform/serial_virt_layout.h>
 #include <platform/console_input.h>
+#include <platform/input.h>
 #include <platform/inspect.h>
 #include <platform/operator_session.h>
 #include <platform/framebuffer_observer.h>
@@ -1630,6 +1631,62 @@ static void handle_operator(const cc_req_wire_t *req, cc_reply_wire_t *rep, bool
     if (count) seL4_Signal(PD_CNODE_SLOT_SERIAL_VIRT_NOTIFY);
 }
 
+static void handle_input_submit(const cc_req_wire_t *req, cc_reply_wire_t *rep)
+{
+    aos_input_request_t query;
+    __builtin_memcpy(&query,req->shmem,sizeof(query));
+    if (req->mr[1] || req->mr[2] || query.version!=AOS_INPUT_VERSION ||
+        query.id || query.client || query.reserved[0] || query.reserved[1] || query.reserved[2] ||
+        query.device>=AOS_INPUT_DEVICES || !query.count || query.count>AOS_INPUT_BATCH_EVENTS) {
+        rep->mr[0]=CC_ERR_INVALID_ARG;
+        return;
+    }
+#ifdef AGENTOS_GUEST_INPUT
+    uint32_t handle=req->mr[0];
+    if (handle==CC_BOOT_GUEST_HANDLE) {
+        if (!g_boot_guest_present || g_boot_guest_state==GUEST_STATE_DEAD) {
+            rep->mr[0]=CC_ERR_BAD_HANDLE;
+            return;
+        }
+        query.client=cc_boot_guest_os_type()==VIBEOS_PROFILE_SECONDARY ? 1u : 0u;
+    } else {
+        const cc_vm_entry_t *entry=NULL;
+        for (uint32_t i=0;i<CC_VM_CLIENT_SLOTS;++i)
+            if (g_vm_client.entries[i].active && g_vm_client.entries[i].handle==handle)
+                entry=&g_vm_client.entries[i];
+        cc_guest_status_t status;
+        if (!entry || entry->slot>=AOS_INPUT_CLIENTS ||
+            cc_vm_status(&g_vm_client,handle,&status)!=CC_OK || status.state==GUEST_STATE_DEAD) {
+            rep->mr[0]=CC_ERR_BAD_HANDLE;
+            return;
+        }
+        query.client=entry->slot;
+    }
+    static uint32_t next_id;
+    query.id=++next_id;
+    aos_input_frontend_t *frontend=(void *)AOS_INPUT_FRONTEND_VA;
+    if (aos_input_submit(frontend,&query)!=0) { rep->mr[0]=CC_ERR_RELAY_FAULT; return; }
+    seL4_Signal(PD_CNODE_SLOT_INPUT_PEER_NOTIFY);
+    aos_input_response_t response;
+    while (aos_input_receive(frontend,&response)!=0) {
+        seL4_Word badge; seL4_Wait(PD_CNODE_SLOT_INPUT_WAIT,&badge);
+    }
+    if (response.version!=AOS_INPUT_VERSION || response.id!=query.id ||
+        response.status>AOS_INPUT_WOULD_BLOCK ||
+        response.accepted!=(response.status==AOS_INPUT_OK ? query.count : 0u)) {
+        rep->mr[0]=CC_ERR_RELAY_FAULT;
+    } else {
+        response.id=0;
+        __builtin_memcpy(rep->shmem,&response,sizeof(response));
+        rep->mr[0]=CC_OK; rep->mr[1]=sizeof(response);
+        rep->mr[2]=response.status; rep->mr[3]=response.version;
+    }
+    seL4_Signal(PD_CNODE_SLOT_INPUT_PEER_NOTIFY);
+#else
+    rep->mr[0]=CC_ERR_RELAY_FAULT;
+#endif
+}
+
 static void handle_frame_capture(const cc_req_wire_t *req, cc_reply_wire_t *rep)
 {
     aos_fb_observer_request_t query;
@@ -1723,6 +1780,7 @@ static void cc_dispatch(const cc_req_wire_t *req, cc_reply_wire_t *rep)
 
     switch (req->opcode) {
     case MSG_CC_FRAME_CAPTURE: handle_frame_capture(req, rep); break;
+    case MSG_CC_INPUT_SUBMIT: handle_input_submit(req, rep); break;
 #ifdef AGENTOS_NATIVE_RUST_TEST
     case NATIVE_RUST_CC_NETWORK: handle_native_network(req, rep); break;
 #endif

@@ -43,6 +43,7 @@ ARCH_INDEP_FILES := src/util/printf.c \
 		    src/virtio/gpu.c \
 		    src/virtio/gpu_2d.c \
 		    src/virtio/gpu_ring.c \
+		    src/virtio/input.c \
 		    src/virtio/mmio.c \
 		    src/virtio/pci.c \
 		    src/virtio/net.c \
