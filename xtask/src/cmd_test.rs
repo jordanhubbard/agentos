@@ -1183,11 +1183,11 @@ fn profile_device_build_args(
                     .any(|g| g.profile.devices.iter().any(|d| d == device))
             })
     };
-    // Explicit zeros prevent inherited environment settings from silently
+    // Explicit empty values prevent inherited environment settings from silently
     // adding devices to a profile which does not request them.
     vec![
-        format!("GUEST_GRAPHICS={}", u8::from(needs("gpu"))),
-        format!("GUEST_INPUT={}", u8::from(needs("input"))),
+        format!("GUEST_GRAPHICS={}", if needs("gpu") { "1" } else { "" }),
+        format!("GUEST_INPUT={}", if needs("input") { "1" } else { "" }),
     ]
 }
 
@@ -4305,19 +4305,19 @@ mod tests {
         let headless = load("debian.toml");
         assert_eq!(
             profile_device_build_args(None, None),
-            ["GUEST_GRAPHICS=0", "GUEST_INPUT=0"]
+            ["GUEST_GRAPHICS=", "GUEST_INPUT="]
         );
         assert_eq!(
             profile_device_build_args(Some(&headless), None),
-            ["GUEST_GRAPHICS=0", "GUEST_INPUT=0"]
+            ["GUEST_GRAPHICS=", "GUEST_INPUT="]
         );
         assert_eq!(
             profile_device_build_args(Some(&input), None),
-            ["GUEST_GRAPHICS=0", "GUEST_INPUT=1"]
+            ["GUEST_GRAPHICS=", "GUEST_INPUT=1"]
         );
         assert_eq!(
             profile_device_build_args(Some(&gpu), None),
-            ["GUEST_GRAPHICS=1", "GUEST_INPUT=0"]
+            ["GUEST_GRAPHICS=1", "GUEST_INPUT="]
         );
         let mut scenario =
             guest_scenario::resolve_alias(&root.join("guest-scenarios"), &profiles, "both")
