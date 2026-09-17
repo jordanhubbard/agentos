@@ -33,9 +33,13 @@ void pd_main(seL4_CPtr endpoint, seL4_CPtr nameserver)
     if (!aos_serial_uart_init(&io) ||
         !serial_virt_client_attach(0,SERIAL_VIRT_ROLE_FRONTEND)) goto failed;
     for (;;) {
-        bool changed;
-        if (!aos_serial_uart_step(&uart,&io,&changed)) goto failed;
-        if (changed) seL4_Signal(PD_CNODE_SLOT_SERIAL_VIRT_NOTIFY);
+        bool notify=false;
+        for (unsigned i=0;i<64;i++) {
+            bool changed;
+            if (!aos_serial_uart_step(&uart,&io,&changed)) goto failed;
+            notify |= changed;
+        }
+        if (notify) seL4_Signal(PD_CNODE_SLOT_SERIAL_VIRT_NOTIFY);
         seL4_Yield();
     }
 failed:

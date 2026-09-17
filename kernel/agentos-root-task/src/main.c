@@ -2229,6 +2229,14 @@ void root_task_main(const seL4_BootInfo *bi)
                 sc_budget = VMM_SC_BUDGET_US;
                 sc_period = VMM_SC_PERIOD_US;
             }
+#if defined(__x86_64__) && defined(AGENTOS_X86_FIRMWARE_RESET)
+            /* A polling UART must not wait the default one-second refill
+             * after Yield. Bound it to 1 ms of work per 10 ms period. */
+            if (pd->self_svc_id == SVC_ID_SERIAL) {
+                sc_budget = 1000u;
+                sc_period = 10000u;
+            }
+#endif
 
             sc_err = seL4_SchedControl_ConfigureFlags(
                          schedcontrol_for_node(bi, sched_node_for_pd(pd)),

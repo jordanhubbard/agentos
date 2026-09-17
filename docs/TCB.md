@@ -407,7 +407,9 @@ negotiated console readiness. The x86 composition starts `serial_pd` as the
 COM2 frontend: root grants only I/O ports `0x2f8..0x2ff`, the isolated frontend
 queue page and its role-bound serial attach/send capabilities. COM1 remains
 root's bootstrap diagnostic port. The driver disables UART interrupts and
-polls one byte per direction per yield, retaining bytes under backpressure.
+polls at most 64 bytes per direction per yield, retaining bytes under
+backpressure. Its scheduling context permits 1 ms of work per 10 ms period;
+the default one-second PD refill period is unsuitable for UART polling.
 It owns no guest RAM, other I/O ports or device frames. The serial virtualizer
 remains the only component mapping both frontend and VMM queue pages.
 The Intel userspace gate exchanges exact request/reply bytes over QEMU COM2
