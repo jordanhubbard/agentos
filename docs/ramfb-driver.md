@@ -71,9 +71,19 @@ to the serial log. The driver reuses one serial logging channel; opening a
 fresh channel for each diagnostic exhausted the shared serial slots and
 prevented control-console readiness in an earlier retained failed run.
 
-This proves the native QEMU scanout path. Guest scanout still requires its own
-qualification. The guest continues using emulated virtio-gpu and never receives
-the fw_cfg device or display DMA memory.
+`make test-guest-display QEMU_TEST_TIMEOUT=1800 QEMU_TEST_SSH_PORT=12241`
+passed at `00ef622` on Spark. All 786,432 pixels of the guest's 1024x768 frame
+matched QMP scanout. The test suspends the guest through its lifecycle API
+during both captures, then resumes it before checking authenticated SSH and
+exact keyboard/pointer delivery. Earlier comparisons of changing guest output
+failed; both mismatched captures and diagnostic logs are retained. The full
+`make gate` also passed at this source. The
+[qualification receipt](evidence/2026-09-16-spark/guest-display.json) records
+the boundaries, hashes and remaining limitations.
+
+This proves static guest scanout through the QEMU driver, not an interactive
+frame rate, peer guest isolation, or bare-metal GPU support. The guest uses
+emulated virtio-gpu and never receives fw_cfg or display DMA memory.
 
 `make test-ramfb-host` verifies the wire configuration, discovery bounds,
 MMIO endian layout, DMA descriptor, completion, timeout and retained-storage

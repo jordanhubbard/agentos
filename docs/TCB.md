@@ -285,8 +285,10 @@ DMA allocation, and two private contiguous scanout banks. Its only client is
 `framebuffer_queue`, through a separate queue and dedicated notifications.
 No guest VMM receives these frames or caps. The framebuffer service forwards
 only client zero's committed rectangle. `make test-display` verifies every
-pixel of its native test frame in a QEMU display capture. Guest scanout
-qualification remains pending and this supplies no bare-metal Spark GPU support.
+pixel of its native test frame in a QEMU display capture. `make test-guest-display`
+also checks every pixel of a 1024x768 Linux guest frame while the guest is
+suspended, then verifies resumed SSH and input delivery. This supplies no
+bare-metal Spark GPU support or peer guest display-isolation proof.
 
 ### Framebuffer queue qualification image
 
