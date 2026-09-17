@@ -718,7 +718,9 @@ fn build_linux_e2e_init(work_dir: &Path) -> anyhow::Result<Vec<u8>> {
 
 pub fn build_x86_initramfs() -> anyhow::Result<()> {
     let root = build_tmp_dir()?;
-    let tmp = tempfile::Builder::new().prefix("x86-init-").tempdir_in(root)?;
+    let tmp = tempfile::Builder::new()
+        .prefix("x86-init-")
+        .tempdir_in(root)?;
     let init = build_static_init(
         tmp.path(),
         include_str!("../../tests/platform/x86_linux_init.S"),
@@ -728,7 +730,10 @@ pub fn build_x86_initramfs() -> anyhow::Result<()> {
     append_newc_dir(&mut archive, ".", 1)?;
     append_newc_file(&mut archive, "init", 2, 0o755, &init)?;
     append_newc_trailer(&mut archive, 3)?;
-    write_output(&repo_root()?.join("build/x86-userspace/initrd.bin"), &archive)?;
+    write_output(
+        &repo_root()?.join("build/x86-userspace/initrd.bin"),
+        &archive,
+    )?;
     println!("[x86-userspace] Built build/x86-userspace/initrd.bin");
     Ok(())
 }
@@ -737,8 +742,7 @@ fn build_static_init(work_dir: &Path, source: &str, target: &str) -> anyhow::Res
     let init_s = work_dir.join("agentos-linux-e2e-init.S");
     let init_elf = work_dir.join("init");
     let normalized_elf = work_dir.join("init.normalized");
-    fs::write(&init_s, source)
-        .with_context(|| format!("failed to write {}", init_s.display()))?;
+    fs::write(&init_s, source).with_context(|| format!("failed to write {}", init_s.display()))?;
 
     let clang = find_tool(&[
         "clang",
