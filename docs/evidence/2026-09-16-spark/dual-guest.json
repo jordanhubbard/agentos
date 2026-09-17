@@ -1,0 +1,33 @@
+{
+  "schema": "agentos.manual-qualification.v1",
+  "source_revision": "2fd71cded27eefe91d09b4f8a568cfc0b6dfbff3",
+  "source_clean": true,
+  "host": "sparky",
+  "host_architecture": "aarch64",
+  "board": "qemu_virt_aarch64",
+  "command": "make demo-test QEMU_TEST_TIMEOUT=1800",
+  "scenario": "dual-release-aarch64",
+  "profiles": ["freebsd-15-aarch64", "ubuntu-live-aarch64"],
+  "result": "pass",
+  "proven": [
+    "CC profile creation and duplicate-profile rejection",
+    "FreeBSD authenticated SSH before suspend",
+    "FreeBSD immediate suspend/resume with authenticated SSH",
+    "FreeBSD remains suspended while Ubuntu boots, then resumes",
+    "Concurrent authenticated SSH for both profiles",
+    "Per-profile destruction and invalid/stale-handle rejection"
+  ],
+  "not_proven": [
+    "Guest RAM/capability reclamation or recreation",
+    "Concurrent Debian guests",
+    "Bare-metal Spark or x86 VMX support",
+    "Final v0.4 release revision qualification"
+  ],
+  "retained_local_directory": "build/evidence/v04-spark-dual-2fd71cde",
+  "sha256": {
+    "agentos.img": "d27a2a106c210b230dc47e2e9a6de3441e5b43828443431f1a2599f30c68f96b",
+    "serial.log": "19f447954fc154e8683025616ad0e1c93381ad1f4bd9b9c5a50e5b5fc3074381",
+    "network.pcap": "a4a63952383ebfb09b8297f2e7a64347592b4258b94c85c0f0cbc6ee78570273",
+    "qualification.log": "8cd107cb4f7a6b4a1a25d6769c1d7925738206317a61399b91bc12e60f381c1f"
+  }
+}

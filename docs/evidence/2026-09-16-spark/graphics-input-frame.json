@@ -1,0 +1,11 @@
+{
+  "asserted_pixels": 2,
+  "bytes": 2359312,
+  "format": "P6 RGB888",
+  "guest_handle": 0,
+  "height": 768,
+  "sequence": 87,
+  "sha256": "c4f6ce4a156cccf2c7eb65378744291b2361264c420351dfeb4b3e53d73874a8",
+  "version": 1,
+  "width": 1024
+}
