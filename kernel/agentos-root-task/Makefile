@@ -235,6 +235,19 @@ $(BUILD_DIR)/x86_ioapic.o: $(REPO_ROOT_MK)/platform/guest-vmm/x86_ioapic.c
 	@mkdir -p $(BUILD_DIR)
 	$(CC) -c $(CFLAGS) $< -o $@
 $(BUILD_DIR)/guest_vmm_primary.elf: $(BUILD_DIR)/x86_ioapic.o
+# The firmware VMM uses the shared transport core, with diagnostics routed
+# through the existing freestanding printf implementation in m3_bare_metal.
+$(BUILD_DIR)/x86_virtio.o: $(REPO_ROOT_MK)/platform/guest-vmm/x86_virtio.c
+	@mkdir -p $(BUILD_DIR)
+	$(CC) -c $(CFLAGS) -I$(REPO_ROOT_MK)/libvmm/include $< -o $@
+$(BUILD_DIR)/x86_virtio_mmio.o: $(REPO_ROOT_MK)/libvmm/src/virtio/mmio.c
+	@mkdir -p $(BUILD_DIR)
+	$(CC) -c $(CFLAGS) -I$(REPO_ROOT_MK)/libvmm/include $< -o $@
+$(BUILD_DIR)/x86_virtio_gpa.o: $(REPO_ROOT_MK)/libvmm/src/virtio/gpa.c
+	@mkdir -p $(BUILD_DIR)
+	$(CC) -c $(CFLAGS) -I$(REPO_ROOT_MK)/libvmm/include $< -o $@
+$(BUILD_DIR)/guest_vmm_primary.elf: $(BUILD_DIR)/x86_virtio.o $(BUILD_DIR)/x86_virtio_mmio.o $(BUILD_DIR)/x86_virtio_gpa.o
+$(BUILD_DIR)/guest_vmm_primary.elf: LDFLAGS += --defsym=printf_=printf
 $(BUILD_DIR)/x86_acpi.o: $(REPO_ROOT_MK)/platform/guest-vmm/x86_acpi.c
 	@mkdir -p $(BUILD_DIR)
 	$(CC) -c $(CFLAGS) $< -o $@

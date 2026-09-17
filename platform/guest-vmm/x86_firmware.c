@@ -8,11 +8,13 @@
 #include "platform/x86_config.h"
 #include "platform/x86_apic.h"
 #include "platform/x86_ioapic.h"
+#include "platform/x86_virtio.h"
 #include "platform/x86_memory.h"
 #include "platform/x86_string.h"
 #include "platform/x86_event.h"
 
 #define VCPU AOS_GUEST_VCPU_CAP_BASE
+const char vmm_pd_name[] = "guest_vmm_x86";
 #define ENTRY 0x4012u
 #define CR0 0x6800u
 #define CR4 0x6804u
@@ -227,6 +229,9 @@ void aos_x86_firmware_run(seL4_CPtr ep, seL4_Word result)
     aos_x86_ioapic_t ioapic;
     if (!aos_x86_ioapic_init(&ioapic, 1u))
         stop(ep, AOS_X86_VTX_PROOF_FAIL, 0x494f4150u, 0, 1u);
+    if (!aos_x86_virtio_init(&ioapic, (void *)AOS_X86_FIRMWARE_RAM_VA,
+                            AOS_X86_FIRMWARE_RAM))
+        stop(ep, AOS_X86_VTX_PROOF_FAIL, 0x56495254u, 0, AOS_X86_FIRMWARE_RAM);
     uint32_t timer_quantum=0;
     const aos_x86_memory_t memory = {
         .ram=(const uint8_t *)AOS_X86_FIRMWARE_RAM_VA, .ram_size=AOS_X86_FIRMWARE_RAM,
@@ -371,6 +376,7 @@ void aos_x86_firmware_run(seL4_CPtr ep, seL4_Word result)
             gp=true;
         } else if (reason == 48u &&
                    ((fault_gpa >= AOS_X86_APIC_BASE && fault_gpa < AOS_X86_APIC_BASE+4096) ||
+                    aos_x86_virtio_contains(fault_gpa) ||
                     (fault_gpa >= AOS_X86_IOAPIC_BASE && fault_gpa < AOS_X86_IOAPIC_BASE+4096) ||
                     (fault_gpa >= 0xfed40000u && fault_gpa < 0xfed45000u) ||
                     (fault_gpa >= memory.rom_base && fault_gpa-memory.rom_base < memory.rom_size)) &&
@@ -399,6 +405,8 @@ void aos_x86_firmware_run(seL4_CPtr ep, seL4_Word result)
                 op.width == 4 && aos_x86_apic_io(&apic, (unsigned)(physical-AOS_X86_APIC_BASE), op.write, &value, now) :
                 physical >= AOS_X86_IOAPIC_BASE && physical < AOS_X86_IOAPIC_BASE+4096 ?
                 op.width == 4 && aos_x86_ioapic_io(&ioapic, (unsigned)(physical-AOS_X86_IOAPIC_BASE), op.write, &value) :
+                aos_x86_virtio_contains(physical) ?
+                aos_x86_virtio_access(physical, op.width, op.write, &value) :
                 op.write ? aos_x86_rom_store(&memory, physical, op.width) :
                 aos_x86_absent_mmio(physical, op.width, false, &value);
             if (!handled)
