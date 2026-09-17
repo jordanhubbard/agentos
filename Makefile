@@ -709,6 +709,13 @@ gate: test-host gate-aarch64 gate-x86_64 gate-guest-io
 test-host: policy-check guest-profile-check lint-source test-integration test-operator-host test-log-ring-host test-framebuffer-host
 test-host: test-x86-cpu-host
 test-host: test-x86-config-host
+test-host: test-x86-apic-host
+
+.PHONY: test-x86-apic-host
+test-x86-apic-host:
+	@mkdir -p $(BUILD_TMP_DIR)
+	$(CC) -std=c11 -Wall -Wextra -Werror -I platform/include tests/platform/test_x86_apic.c platform/guest-vmm/x86_apic.c platform/guest-vmm/x86_memory.c -o $(BUILD_TMP_DIR)/test_x86_apic
+	$(BUILD_TMP_DIR)/test_x86_apic
 
 .PHONY: test-x86-config-host
 test-x86-config-host:
