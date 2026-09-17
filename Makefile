@@ -711,6 +711,8 @@ test-input-host:
 	@mkdir -p $(ROOT_DIR)build/tmp
 	$(CC) -std=c11 -Wall -Wextra -Werror -I platform/include tests/platform/test_input_queue.c platform/input-virt/service.c -o $(ROOT_DIR)build/tmp/test_input_queue
 	$(ROOT_DIR)build/tmp/test_input_queue
+	$(CC) -std=gnu11 -Wall -Wextra -Werror -Wno-unused-parameter -I tests/platform/mmio-stubs -I platform/include -I libvmm/include tests/platform/test_virtio_input.c libvmm/src/virtio/input.c libvmm/src/virtio/mmio.c libvmm/src/virtio/gpa.c platform/input-virt/service.c -o $(BUILD_TMP_DIR)/test_virtio_input
+	$(BUILD_TMP_DIR)/test_virtio_input
 
 test-framebuffer-host:
 	@mkdir -p $(ROOT_DIR)build/tmp
