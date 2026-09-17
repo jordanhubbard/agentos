@@ -695,9 +695,15 @@ gate: test-host gate-aarch64 gate-x86_64 gate-guest-io
 # lint-source is a source lint (policy-check's sibling), not a test; it is
 # listed here so the invariants it protects are checked on every host run,
 # but it is not counted among the host tests below.
-test-host: policy-check guest-profile-check lint-source test-integration test-operator-host test-log-ring-host test-framebuffer-host
+test-host: policy-check guest-profile-check lint-source test-integration test-operator-host test-log-ring-host test-framebuffer-host test-input-host
 
 .PHONY: test-framebuffer-host
+.PHONY: test-input-host
+test-input-host:
+	@mkdir -p $(ROOT_DIR)build/tmp
+	$(CC) -std=c11 -Wall -Wextra -Werror -I platform/include tests/platform/test_input_queue.c platform/input-virt/service.c -o $(ROOT_DIR)build/tmp/test_input_queue
+	$(ROOT_DIR)build/tmp/test_input_queue
+
 test-framebuffer-host:
 	@mkdir -p $(ROOT_DIR)build/tmp
 	$(CC) -std=c11 -Wall -Wextra -Werror -I platform/include tests/platform/test_framebuffer_queue.c platform/framebuffer/service.c -o $(ROOT_DIR)build/tmp/test_framebuffer_queue
