@@ -185,7 +185,8 @@ void aos_x86_firmware_run(seL4_CPtr ep, seL4_Word result)
                 (read_field(ep, EFER) & LMA) && (read_field(ep, CR0) & PG)) {
                 stop(ep, AOS_X86_VTX_FIRMWARE_CONFIG, reason, linear, qual);
             }
-            stop(ep, AOS_X86_VTX_PROOF_FAIL, reason, linear, qual);
+            stop(ep, AOS_X86_VTX_PROOF_FAIL, reason, linear,
+                 reason == 31u || reason == 32u ? (uint32_t)regs.ecx : qual);
         }
         seL4_Error err = seL4_X86_VCPU_WriteRegisters(VCPU, &regs);
         if (err) stop(ep, AOS_X86_VTX_PROOF_FAIL, reason, rip, err);
