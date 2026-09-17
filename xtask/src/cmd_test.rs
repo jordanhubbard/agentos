@@ -1750,13 +1750,10 @@ pub(crate) fn spawn_qemu_with_guest(
                 "1"
             };
             let use_kvm = interactive_serial && host_kvm_available(board);
-            let cpu = if use_kvm {
-                "host"
-            } else if fast {
-                "max"
-            } else {
-                "cortex-a57"
-            };
+            // Keep the SDK-qualified CPU model even in fast mode. QEMU's
+            // evolving "max" feature set can leave this seL4 image in idle
+            // before the root task starts. Fast mode changes TCG threading.
+            let cpu = if use_kvm { "host" } else { "cortex-a57" };
             let serial = if interactive_serial {
                 // Multiplex the monitor so the advertised Ctrl-A X exit works.
                 String::from("mon:stdio")
