@@ -328,6 +328,11 @@ static void qualify_firmware_modes(seL4_CPtr endpoint)
 #ifdef AGENTOS_X86_FIRMWARE_RESET
         /* Architectural reset starts with a special high CS cache. Keep
          * CR0 mode writes intercepted for later transition emulation. */
+        /* Load all guest EFER bits, not only IA-32e mode implied by entry
+         * controls. Otherwise host SCE can survive into the reset guest. */
+        mode_field(endpoint, VMX_CONTROL_ENTRY,
+                   (entry.value & ~VMX_ENTRY_IA32E) | (1u << 15),
+                   VMX_ENTRY_IA32E | (1u << 15));
         mode_field(endpoint, VMX_GUEST_CS_SELECTOR, 0xf000u, 0xffffu);
         mode_field(endpoint, VMX_GUEST_CS_BASE, 0xffff0000u, 0xffffffffu);
         mode_field(endpoint, VMX_GUEST_CR0, 0x60000010u,
