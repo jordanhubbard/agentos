@@ -7,7 +7,13 @@
 #include <platform/x86_vmenter.h>
 
 static seL4_Word result, badge, registers[SEL4_VMENTER_RESULT_FAULT_LEN];
-static unsigned reads, limit, enters;
+static unsigned reads, limit, enters, writes;
+void seL4_SetMR(int index, seL4_Word value)
+{
+    assert(index>=0 && (unsigned)index<SEL4_VMENTER_RESULT_NOTIF_LEN);
+    assert((unsigned)index==writes++);
+    registers[index]=value;
+}
 seL4_Word seL4_VMEnter(seL4_Word *out)
 {
     assert(out); *out=badge; enters++; return result;
@@ -41,7 +47,11 @@ int main(void)
     memset(registers,0,sizeof(registers));
     assert(fault.words[SEL4_VMENTER_FAULT_REASON_MR]==0xabc000+SEL4_VMENTER_FAULT_REASON_MR);
     assert(notification.words[SEL4_VMENTER_CALL_EIP_MR]==0xabc000+SEL4_VMENTER_CALL_EIP_MR);
+    result=SEL4_VMENTER_RESULT_NOTIF; reads=0; limit=SEL4_VMENTER_RESULT_NOTIF_LEN;
+    aos_x86_vmenter_return_t resumed=aos_x86_vm_resume_notification(&notification);
+    assert(writes==SEL4_VMENTER_RESULT_NOTIF_LEN);
+    assert(!memcmp(resumed.words,notification.words,sizeof(notification.words)));
     capture(99,0);
-    assert(enters==3);
+    assert(enters==4);
     puts("PASS: fault snapshot, notification read boundary, badge and IPC independence");
 }
