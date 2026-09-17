@@ -139,6 +139,9 @@ bool aos_x86_config_io(aos_x86_config_t *s, uint16_t port, unsigned width,
                        bool write, uint32_t *value, uint64_t timer_ticks)
 {
     if (!s || !value || (width != 1u && width != 2u && width != 4u)) return false;
+    /* Legacy I/O-delay writes have no device state. All emulated register
+     * operations complete synchronously before the guest resumes. */
+    if (write && width==1u && (port==0x80u || port==0xedu)) return true;
     /* No PIT clock or IRQ0 source is advertised. Linux still writes its
      * channel-0 shutdown sequence after selecting the LAPIC clockevent.
      * Accept only mode-0 reset and its two zero count bytes; do not pretend
