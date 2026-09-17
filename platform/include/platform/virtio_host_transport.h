@@ -43,6 +43,10 @@ uint32_t aos_virtio_host_features(aos_virtio_host_t *t, uint32_t word);
 void aos_virtio_host_set_features(aos_virtio_host_t *t, uint32_t word, uint32_t value);
 uint8_t aos_virtio_host_status(aos_virtio_host_t *t);
 void aos_virtio_host_set_status(aos_virtio_host_t *t, uint8_t status);
+/* MMIO interrupt status/acknowledgement. PCI bindings currently poll queues:
+ * no ISR capability is mapped, so these return zero / perform no access. */
+uint32_t aos_virtio_host_interrupt_status(aos_virtio_host_t *t);
+void aos_virtio_host_interrupt_ack(aos_virtio_host_t *t, uint32_t status);
 bool aos_virtio_host_queue(aos_virtio_host_t *t, uint16_t queue, uint16_t count,
                            uint64_t desc, uint64_t avail, uint64_t used);
 bool aos_virtio_host_notify(aos_virtio_host_t *t);

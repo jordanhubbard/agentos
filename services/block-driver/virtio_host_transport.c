@@ -104,6 +104,17 @@ void aos_virtio_host_set_status(aos_virtio_host_t *t, uint8_t status)
     } else wr32(t->registers, VIRTIO_MMIO_STATUS, status);
 }
 
+uint32_t aos_virtio_host_interrupt_status(aos_virtio_host_t *t)
+{
+    if (!t || !t->registers || t->pci) return 0;
+    return rd32(t->registers, VIRTIO_MMIO_INTERRUPT_STATUS);
+}
+void aos_virtio_host_interrupt_ack(aos_virtio_host_t *t, uint32_t status)
+{
+    if (!t || !t->registers || t->pci || !status) return;
+    wr32(t->registers, VIRTIO_MMIO_INTERRUPT_ACK, status);
+}
+
 bool aos_virtio_host_queue_bind(aos_virtio_host_t *t, aos_virtio_host_queue_t *q,
     uint16_t queue, uint16_t count, uint64_t desc, uint64_t avail, uint64_t used)
 {
