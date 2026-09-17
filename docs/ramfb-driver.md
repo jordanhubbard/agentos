@@ -44,9 +44,12 @@ The driver has a 1 ms budget per 10 ms period with additional refill storage.
 Driver metadata occupies the first 64 bytes of its private DMA allocation;
 the transport descriptor and copied configuration follow it.
 
-`make test-framebuffer DISPLAY_RAMFB=1 QEMU_TEST_TIMEOUT=120` passed on Spark:
+`make test-display-init QEMU_TEST_TIMEOUT=120` passed on Spark:
 the driver initialized its root-provisioned transport, both native clients
-passed, and observer frames exported correctly. An initial missing-PD-count
+passed, and observer frames exported correctly. The Make target explicitly
+requires the driver's readiness marker, not just framebuffer-client success.
+The serial diagnostic endpoint and transfer page are both provisioned.
+An initial missing-PD-count
 failure was retained before correcting composition. This is not yet a working
 scanout path: the framebuffer producer and QEMU ramfb launch/capture harness
 remain to wire and qualify. The guest continues using emulated virtio-gpu and

@@ -2669,6 +2669,7 @@ void root_task_main(const seL4_BootInfo *bi)
              name_eq(pd->name, "native_rust_client") ||
              name_eq(pd->name, "framebuffer_client0") ||
              name_eq(pd->name, "framebuffer_client1") ||
+             name_eq(pd->name, "display_ramfb") ||
              name_eq(pd->name, "test_runner"))) {
             seL4_Word serial_copy = ut_alloc_slot();
             seL4_Error serial_err = seL4_NotEnoughMemory;

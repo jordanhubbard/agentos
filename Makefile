@@ -700,6 +700,13 @@ gate: test-host gate-aarch64 gate-x86_64 gate-guest-io
 test-host: policy-check guest-profile-check lint-source test-integration test-operator-host test-log-ring-host test-framebuffer-host test-virtio-gpu-host test-input-host test-agentctl-frame-host test-ramfb-host test-display-host
 
 .PHONY: test-display-host
+.PHONY: test-display-init
+test-display-init:
+	@mkdir -p $(BUILD_TMP_DIR)
+	$(MAKE) test-framebuffer DISPLAY_RAMFB=1 QEMU_TEST_TIMEOUT=$(QEMU_TEST_TIMEOUT) > $(BUILD_TMP_DIR)/display-init.log 2>&1 || { cat $(BUILD_TMP_DIR)/display-init.log; exit 1; }
+	rg -Fq '[display] private DMA and scanout banks ready' $(BUILD_TMP_DIR)/display-init.log
+	@echo 'Display driver initialized; native framebuffer clients and observer passed (scanout not tested)'
+
 test-display-host:
 	@mkdir -p $(BUILD_TMP_DIR)
 	$(CC) -std=c11 -Wall -Wextra -Werror -I platform/include tests/platform/test_display.c platform/display/service.c -o $(BUILD_TMP_DIR)/test_display
