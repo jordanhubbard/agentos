@@ -840,6 +840,12 @@ test-virtio-backends-build: test-x86-vmenter-host
 			-Ilibvmm/include -Ilibvmm/dep/sddf/include \
 			-Ilibvmm/dep/sddf/include/sddf/util/custom_libc -Iplatform/include \
 			-c platform/serial-virt/vmm_virtio_console.c -o "$$out/vmm_virtio_console.o"; \
+		clang -target $$arch-unknown-elf -ffreestanding -O2 -Wall -Werror -Wno-unused-function \
+			-I"$(SEL4_SDK)/board/$$board/release/include" \
+			-Ilibvmm/include -Ilibvmm/dep/sddf/include \
+			-Ilibvmm/dep/sddf/include/sddf/util/custom_libc -Iplatform/include \
+			-Ikernel/agentos-root-task/include \
+			-c platform/blk-virt/vmm_virtio_blk.c -o "$$out/vmm_virtio_blk.o"; \
 		if test "$$arch" = x86_64; then \
 			clang -target x86_64-unknown-elf -ffreestanding -O2 -Wall -Werror -Wno-unused-function \
 				-I"$(SEL4_SDK)/board/$$board/release/include" \
