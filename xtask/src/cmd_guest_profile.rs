@@ -391,6 +391,7 @@ const HOST_ACTIONS: &[&str] = &[
     "convert-qcow2-raw",
     "extract-gpt-partition",
     "extract-ext4-file",
+    "install-gpt-ext4-file",
     "normalize-arm64-linux-image",
     "decompress-gzip",
     "copy",
@@ -430,6 +431,7 @@ pub(crate) fn acquire_recipe(root: &Path, path: &Path) -> Result<(String, Vec<Re
                     | "convert-qcow2-raw"
                     | "extract-gpt-partition"
                     | "extract-ext4-file"
+                    | "install-gpt-ext4-file"
                     | "normalize-arm64-linux-image"
                     | "build-linux-probe-initramfs"
             ),
@@ -2091,6 +2093,10 @@ fn validate_host_action(step: &RecipeStep) -> Result<()> {
         "convert-qcow2-raw" => (&["source", "output"], &[]),
         "extract-gpt-partition" => (&["source", "output", "index"], &["sector_size"]),
         "extract-ext4-file" => (&["source", "output", "path"], &[]),
+        "install-gpt-ext4-file" => (
+            &["source", "output", "index", "path", "content"],
+            &["sector_size"],
+        ),
         "normalize-arm64-linux-image" => (&["source", "output"], &[]),
         "build-linux-probe-initramfs" => (&["output"], &[]),
         "download" | "verify-sha256" => (&["artifact"], &[]),
@@ -2158,6 +2164,7 @@ fn validate_host_action(step: &RecipeStep) -> Result<()> {
             | "convert-qcow2-raw"
             | "extract-gpt-partition"
             | "extract-ext4-file"
+            | "install-gpt-ext4-file"
             | "normalize-arm64-linux-image"
     ) {
         let keys: &[&str] = match step.action.as_str() {
@@ -2214,7 +2221,10 @@ fn validate_host_action(step: &RecipeStep) -> Result<()> {
             enum_value(compression, &["none", "zstd"])?;
         }
     }
-    if step.action == "extract-gpt-partition" {
+    if matches!(
+        step.action.as_str(),
+        "extract-gpt-partition" | "install-gpt-ext4-file"
+    ) {
         ensure!(
             step.args["index"]
                 .parse::<u32>()
@@ -2225,7 +2235,10 @@ fn validate_host_action(step: &RecipeStep) -> Result<()> {
             enum_value(sector_size, &["512", "4096"])?;
         }
     }
-    if step.action == "extract-ext4-file" {
+    if matches!(
+        step.action.as_str(),
+        "extract-ext4-file" | "install-gpt-ext4-file"
+    ) {
         let path = Path::new(&step.args["path"]);
         ensure!(
             path.is_absolute()
@@ -2236,6 +2249,16 @@ fn validate_host_action(step: &RecipeStep) -> Result<()> {
                     .bytes()
                     .all(|byte| { byte.is_ascii_alphanumeric() || b"/_+.-".contains(&byte) }),
             "extract-ext4-file path must be confined and absolute"
+        );
+    }
+    if step.action == "install-gpt-ext4-file" {
+        ensure!(
+            !step.args["content"].is_empty() && step.args["content"].len() <= 65536,
+            "installed configuration must contain 1..65536 bytes"
+        );
+        ensure!(
+            step.args["source"] != step.args["output"],
+            "disk source and output must differ"
         );
     }
     if step.action == "assert-virtio" {
