@@ -24,7 +24,10 @@ references. Production lifecycle callbacks are not yet connected to them.
 `make test-guest-ram-recycle` exercises two preboot overwrite/revoke/retype
 cycles, complete zero verification, stale capability rejection and guest
 block I/O. This test is not a claim of live destroy/recreate, execution-object
-reclamation, or peer continuity.
+reclamation, or peer continuity. The recycle test and full OS gate passed
+on Spark at `3581a277c598d49dce922ebd08ea29bc59722ae5`; the
+[qualification receipt](evidence/2026-09-16-spark/guest-ram-recycle.json)
+records the source, image and log hashes.
 
 | Level | What runs | Notes |
 |-------|-----------|--------|
