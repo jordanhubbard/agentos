@@ -7,7 +7,8 @@ The `GUEST_GRAPHICS=1` AArch64 variant adds root queue grants and VMM
 initialization. A GPU device flag in the guest profile adds the faulting DTB
 window at `0x0a040000` with virtual INTID 54. `make test-guest-gpu` selects the
 inherited Debian GPU profile, enables this variant and requires a successful
-`modprobe virtio_gpu` plus `/dev/dri/card0` before its authenticated SSH proof.
+`modprobe virtio_gpu`, `/dev/dri/card0`, a write through `/dev/fb0`, and a
+nonblack frame captured through CC before its authenticated SSH proof.
 This boot qualification is in progress; captured guest frames are not yet proven.
 The MAC task remains `task_cefc0f77327d4245ab9feb132cd1eb57`.
 
@@ -38,8 +39,19 @@ flips and surface destruction. A private client mask limits which guests an
 observer can capture. The pump permits only one outstanding response so read
 payloads cannot be overwritten before consumption. Host tests cover a complete
 1024 by 768 image, crop selection, chunk ownership, stale cookies and denied
-client selection. Observer root grants and CC/external API integration remain
-unfinished; this is not yet a target capture proof.
+client selection. The graphics image maps a separate observer page into CC
+and the service, with a private snapshot arena mapped only into the service.
+`MSG_CC_FRAME_CAPTURE` resolves public guest handles and relays capture/read/
+release operations over that page. This is not yet a target capture proof.
+
+`agentctl frame-capture GUEST_HANDLE OUTPUT.ppm` exports one coherent PPM
+image over the existing privileged CC socket and prints JSON metadata. It
+refuses to overwrite an existing file. The guest GPU test retains `.frame.ppm`
+and `.frame.json` beside its serial log, including the captured artifact's
+SHA-256. `make test-agentctl-frame-host` exercises the real CLI against the
+observer service over CC frames: exact RGB conversion across chunks, snapshot
+stability after live pixels change, malformed replies and existing-file
+preservation. These host results do not substitute for the guest test.
 
 `virtio_gpu_control_run` and `virtio_gpu_cursor_run` consume direct split
 virtqueues. They snapshot descriptors, bound chains and request sizes, require
@@ -52,8 +64,8 @@ limits. Malformed chains stop the queue until reset. The MMIO adapter reports
 retain payload ownership until the matching response returns, using persistent
 notifications on target. Scanout and cursor selections are private virtual
 display metadata; they do not operate physical GPU hardware or compose a
-visible cursor. A physical driver and an authorized external export path still
-need to consume that state. No VMM receives a physical device frame or IRQ.
+visible cursor. A physical driver remains required. No VMM receives a physical
+device frame or IRQ.
 
 `make test-virtio-gpu-host` exercises the command engine, direct ring handling,
 the queue adapter and the actual framebuffer service together. It asserts

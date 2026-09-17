@@ -2659,9 +2659,111 @@ fn wait_for_guest_console_login_on_cc(
             )),
         qemu,
     )?;
+    if profile.is_some_and(|plan| plan.devices.iter().any(|device| device == "gpu")) {
+        let capture = capture_guest_frame(cc, guest_handle, cc_sock)?;
+        println!("[xtask:test] {capture}");
+    }
     Ok(format!(
         "CC console API saw {guest_os} handle {guest_handle} prompt {:?} and {proof}",
         prompt
+    ))
+}
+
+fn capture_guest_frame(cc: &mut CcClient, handle: u32, socket: &Path) -> anyhow::Result<String> {
+    const OPCODE: u32 = 0x261d;
+    const HEADER: usize = 40;
+    let mut request = [0u8; 32];
+    wr32(&mut request, 0, 1);
+    wr32(&mut request, 4, 1); // CAPTURE
+    let snapshot = cc.call(OPCODE, handle, 0, 0, &request)?;
+    let (cookie, sequence, width, height) = decode_frame_reply(&snapshot, 0)?;
+    anyhow::ensure!(
+        cookie != 0 && sequence != 0,
+        "frame has no committed snapshot"
+    );
+    request[16..24].copy_from_slice(&cookie.to_le_bytes());
+    let captured = (|| -> anyhow::Result<Vec<u8>> {
+        let bytes = width as usize * height as usize * 4;
+        let mut pixels = Vec::with_capacity(bytes);
+        wr32(&mut request, 4, 2); // READ
+        while pixels.len() < bytes {
+            let length = (bytes - pixels.len()).min(CC_WIRE_SHMEM_SIZE - HEADER);
+            wr32(&mut request, 24, pixels.len() as u32);
+            wr32(&mut request, 28, length as u32);
+            let reply = cc.call(OPCODE, 0, 0, 0, &request)?;
+            anyhow::ensure!(
+                decode_frame_reply(&reply, length)? == (cookie, sequence, width, height),
+                "frame snapshot changed during chunked read"
+            );
+            pixels.extend_from_slice(&reply.shmem[HEADER..HEADER + length]);
+        }
+        anyhow::ensure!(
+            pixels
+                .chunks_exact(4)
+                .any(|pixel| pixel[..3].iter().any(|byte| *byte != 0)),
+            "guest frame has no nonblack RGB pixels"
+        );
+        Ok(pixels)
+    })();
+    wr32(&mut request, 4, 3); // RELEASE, including after a failed read
+    wr32(&mut request, 24, 0);
+    wr32(&mut request, 28, 0);
+    let released = cc.call(OPCODE, 0, 0, 0, &request);
+    let pixels = captured?;
+    anyhow::ensure!(
+        decode_frame_reply(&released?, 0)?.0 == 0,
+        "snapshot release failed"
+    );
+    let mut ppm = format!("P6\n{width} {height}\n255\n").into_bytes();
+    for pixel in pixels.chunks_exact(4) {
+        ppm.extend_from_slice(&[pixel[2], pixel[1], pixel[0]]);
+    }
+    let path = socket.with_extension("frame.ppm");
+    std::fs::write(&path, &ppm)?;
+    let digest = format!("{:x}", Sha256::digest(&ppm));
+    std::fs::write(
+        socket.with_extension("frame.json"),
+        serde_json::to_vec_pretty(
+            &serde_json::json!({"version":1,"guest_handle":handle,"width":width,
+            "height":height,"sequence":sequence,"format":"P6 RGB888",
+            "bytes":ppm.len(),"sha256":digest}),
+        )?,
+    )?;
+    Ok(format!(
+        "guest framebuffer captured: {}x{}, sequence={}, sha256={}, path={}",
+        width,
+        height,
+        sequence,
+        digest,
+        path.display()
+    ))
+}
+
+fn decode_frame_reply(reply: &CcReply, length: usize) -> anyhow::Result<(u64, u64, u32, u32)> {
+    anyhow::ensure!(
+        length <= CC_WIRE_SHMEM_SIZE - 40 && reply.shmem.len() >= 40 + length,
+        "invalid framebuffer response length"
+    );
+    anyhow::ensure!(
+        reply.mr == [CC_OK, (40 + length) as u32, 0, 1]
+            && rd32(&reply.shmem, 0) == 1
+            && rd32(&reply.shmem, 4) == 0
+            && rd32(&reply.shmem, 8) == 0
+            && rd32(&reply.shmem, 12) == length as u32,
+        "framebuffer service rejected capture or returned a malformed response: {:?}",
+        reply.mr
+    );
+    let width = rd32(&reply.shmem, 32);
+    let height = rd32(&reply.shmem, 36);
+    anyhow::ensure!(
+        width > 0 && width <= 1024 && height > 0 && height <= 768,
+        "invalid framebuffer dimensions"
+    );
+    Ok((
+        u64::from_le_bytes(reply.shmem[16..24].try_into()?),
+        u64::from_le_bytes(reply.shmem[24..32].try_into()?),
+        width,
+        height,
     ))
 }
 
@@ -4000,6 +4102,30 @@ mod tests {
             netdev,
             format!("user,id=net0,hostfwd=tcp:127.0.0.1:{port}-10.0.2.16:22")
         );
+    }
+
+    #[test]
+    fn frame_reply_requires_exact_payload_and_bounded_geometry() {
+        let mut reply = CcReply {
+            mr: [CC_OK, 48, 0, 1],
+            shmem: vec![0; 4096],
+        };
+        wr32(&mut reply.shmem, 0, 1);
+        wr32(&mut reply.shmem, 12, 8);
+        reply.shmem[16..24].copy_from_slice(&5u64.to_le_bytes());
+        reply.shmem[24..32].copy_from_slice(&17u64.to_le_bytes());
+        wr32(&mut reply.shmem, 32, 1024);
+        wr32(&mut reply.shmem, 36, 768);
+        assert_eq!(decode_frame_reply(&reply, 8).unwrap(), (5, 17, 1024, 768));
+        assert!(decode_frame_reply(&reply, 4).is_err());
+        wr32(&mut reply.shmem, 32, u32::MAX);
+        assert!(decode_frame_reply(&reply, 8).is_err());
+        wr32(&mut reply.shmem, 32, 1024);
+        reply.shmem.truncate(47);
+        assert!(decode_frame_reply(&reply, 8).is_err());
+        reply.shmem.resize(4096, 0);
+        reply.mr[2] = 3;
+        assert!(decode_frame_reply(&reply, 8).is_err());
     }
 
     #[test]

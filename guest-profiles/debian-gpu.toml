@@ -19,6 +19,6 @@ dtb_sha256 = "e1efbd0e3fced7eb1785d4ef2a086e0c031d58881a3dbc001bb626f425ffa181"
 host_port = 12224
 
 [host.console]
-probe_line = "modprobe virtio_gpu && test -e /dev/dri/card0 && printf 'agentos-debian-gpu-%s\\n' ready"
+probe_line = "modprobe virtio_gpu && test -e /dev/dri/card0 && test -c /dev/fb0 && printf '\\021\\042\\063\\000\\104\\125\\146\\000' | dd of=/dev/fb0 bs=1 seek=819200 conv=notrunc status=none && sleep 1 && printf 'agentos-debian-gpu-%s\\n' ready"
 probe_marker = "agentos-debian-gpu-ready"
 probe_timeout_secs = 180

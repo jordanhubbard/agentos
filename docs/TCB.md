@@ -315,6 +315,15 @@ Host tests verify exact pixels through the real framebuffer queue implementation
 guest DRM/frame-capture qualification is still pending. Input, a physical
 display driver and authorized external export remain required.
 
+The graphics variant also grants CC a separate framebuffer observer queue.
+Only CC and `framebuffer_queue` map that page; neither VMM receives it.
+The framebuffer service alone maps the additional private snapshot arena.
+CC resolves public guest handles before requesting a capture. The observer
+can capture, read and release immutable copies of selected committed frames;
+it cannot modify surfaces. Snapshot cookies are scoped to the existing
+privileged, serialized CC transport, not a new public authentication boundary.
+These grants and the external export path still require target qualification.
+
 The retired `services/legacy-pds/framebuffer_pd.c` rejects `HW_DIRECT`
 creation with `FB_ERR_BAD_BACKEND`. Its former MMIO probe and successful
 no-op flips did not implement GPU queues, resources or scanout, and have

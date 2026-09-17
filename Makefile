@@ -105,6 +105,7 @@ QEMU_TEST_TIMEOUT ?= 300
 # Console and live-media proofs may run beside a retained guest instance.
 # Zero keeps the profile's normal forwarding port.
 QEMU_TEST_SSH_PORT ?= 0
+QEMU_TEST_GPU_SSH_PORT ?= 12224
 # Correct suspend accounting freezes each guest's architectural time while it
 # is stopped.  A full vendor-live-media dual proof can therefore take longer
 # than the old 90-minute bound that accidentally included a clock jump.
@@ -695,7 +696,7 @@ gate: test-host gate-aarch64 gate-x86_64 gate-guest-io
 # lint-source is a source lint (policy-check's sibling), not a test; it is
 # listed here so the invariants it protects are checked on every host run,
 # but it is not counted among the host tests below.
-test-host: policy-check guest-profile-check lint-source test-integration test-operator-host test-log-ring-host test-framebuffer-host test-virtio-gpu-host
+test-host: policy-check guest-profile-check lint-source test-integration test-operator-host test-log-ring-host test-framebuffer-host test-virtio-gpu-host test-agentctl-frame-host
 
 .PHONY: test-virtio-gpu-host
 test-virtio-gpu-host:
@@ -706,6 +707,12 @@ test-virtio-gpu-host:
 	$(BUILD_TMP_DIR)/test_virtio_mmio
 
 .PHONY: test-framebuffer-host
+.PHONY: test-agentctl-frame-host
+test-agentctl-frame-host:
+	@mkdir -p $(ROOT_DIR)build/tmp
+	$(CC) -std=c11 -Wall -Wextra -Werror -DAGENTOS_TEST_HOST -I platform/include -I kernel/agentos-root-task/include tests/platform/test_agentctl_frame_capture.c platform/framebuffer/observer.c platform/inspect/inspect_snapshot.c -o $(ROOT_DIR)build/tmp/test_agentctl_frame_capture
+	$(ROOT_DIR)build/tmp/test_agentctl_frame_capture
+
 test-framebuffer-host:
 	@mkdir -p $(ROOT_DIR)build/tmp
 	$(CC) -std=c11 -Wall -Wextra -Werror -I platform/include tests/platform/test_framebuffer_queue.c platform/framebuffer/service.c -o $(ROOT_DIR)build/tmp/test_framebuffer_queue
@@ -943,7 +950,7 @@ test-ubuntu-virtio:
 .PHONY: test-debian-live
 .PHONY: test-guest-gpu
 test-guest-gpu:
-	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os debian-gpu --timeout-secs $(QEMU_TEST_TIMEOUT) --assert-live --assert-agentos-virtio --ssh-port 12224
+	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os debian-gpu --timeout-secs $(QEMU_TEST_TIMEOUT) --assert-live --assert-agentos-virtio --ssh-port $(QEMU_TEST_GPU_SSH_PORT)
 
 test-debian-live:
 	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os debian --timeout-secs $(QEMU_TEST_TIMEOUT) --assert-live --assert-agentos-virtio --ssh-port $(QEMU_TEST_SSH_PORT)

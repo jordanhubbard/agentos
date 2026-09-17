@@ -712,7 +712,10 @@ $(BUILD_DIR)/framebuffer_service.o: $(REPO_ROOT)/platform/framebuffer/service.c
 	$(CC) $(CFLAGS) -c $< -o $@
 $(BUILD_DIR)/framebuffer_queue.o: $(REPO_ROOT)/platform/framebuffer/framebuffer_pd.c
 	$(CC) $(CFLAGS) -c $< -o $@
-$(BUILD_DIR)/framebuffer_queue.elf: $(BUILD_DIR)/framebuffer_queue.o $(BUILD_DIR)/framebuffer_service.o $(BUILD_DIR)/pd_entry.o $(BUILD_DIR)/sel4_crt.o $(BUILD_DIR)/rust_pd_memory.o
+$(BUILD_DIR)/framebuffer_observer.o: $(REPO_ROOT)/platform/framebuffer/observer.c
+	$(CC) $(CFLAGS) -c $< -o $@
+$(BUILD_DIR)/framebuffer_queue.o: $(GUEST_CONFIG_STAMP)
+$(BUILD_DIR)/framebuffer_queue.elf: $(BUILD_DIR)/framebuffer_queue.o $(BUILD_DIR)/framebuffer_service.o $(BUILD_DIR)/framebuffer_observer.o $(BUILD_DIR)/pd_entry.o $(BUILD_DIR)/sel4_crt.o $(BUILD_DIR)/rust_pd_memory.o
 	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
 $(BUILD_DIR)/framebuffer_client0.o: $(REPO_ROOT)/tests/platform/framebuffer_client_pd.c $(GUEST_CONFIG_STAMP)
 	$(CC) $(CFLAGS) -DFB_TEST_CLIENT=0 -c $< -o $@
@@ -916,7 +919,7 @@ $(BUILD_DIR)/framebuffer_pd.elf: $(FB_PD_OBJS)
 $(BUILD_DIR)/usb_pd.elf: $(USB_PD_OBJS)
 	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
 
-$(BUILD_DIR)/cc_pd.elf: $(CC_PD_OBJS) $(BUILD_DIR)/serial_pump.pd.o $(BUILD_DIR)/inspect_snapshot.pd.o
+$(BUILD_DIR)/cc_pd.elf: $(CC_PD_OBJS) $(BUILD_DIR)/serial_pump.pd.o $(BUILD_DIR)/inspect_snapshot.pd.o $(BUILD_DIR)/framebuffer_observer.o
 	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
 
 $(BUILD_DIR)/gpu_sched.elf: $(GPU_SCHED_OBJS)

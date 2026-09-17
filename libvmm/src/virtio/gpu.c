@@ -71,6 +71,12 @@ static bool notify(virtio_device_t *d)
         virtio_gpu_control_run(&g->rings[queue],&g->queues[queue].virtq,&g->engine,&ops,VIRTIO_GPU_QUEUE_SIZE) :
         virtio_gpu_cursor_run(&g->rings[queue],&g->queues[queue].virtq,&g->engine,&ops,VIRTIO_GPU_QUEUE_SIZE);
     if (!result.valid) d->regs.Status |= VIRTIO_CONFIG_S_NEEDS_RESET;
+    static unsigned reported;
+    if (reported < 16) {
+        LOG_VMM("emulated virtio-gpu: queue=%u completed=%u valid=%u\n",
+                queue, result.completed, result.valid);
+        ++reported;
+    }
     if (result.completed || !result.valid) {
         d->regs.InterruptStatus |= result.valid ? 1u : 3u;
         return virq_inject(d->virq);
