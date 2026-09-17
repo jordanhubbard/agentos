@@ -101,6 +101,14 @@ before configuring queues. The x86 link check includes the actual NIC driver,
 but PCI root grants and asynchronous receive service are still required before
 it can provide Intel networking.
 
+The Intel firmware qualification machine assigns modern virtio block to PCI
+00:05.0 and network to 00:06.0. Root discovers both through the same bounded
+configuration-port path: validate the device identity, disable decoding and
+bus mastering while sizing BARs, verify restoration, then delete the temporary
+port capability. The network discovery receipt proves capability spans only;
+root does not yet map or enable that NIC for a driver. The qualification NIC
+uses a restricted user network with no forwarded host ports.
+
 `net_virt` emits complete bounded diagnostic messages through the common log
 ring and send-only drain notification. It holds no serial service endpoint,
 serial transfer page or log-drain Call endpoint. Nameserver, NIC-driver and

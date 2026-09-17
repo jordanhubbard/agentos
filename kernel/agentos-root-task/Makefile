@@ -110,7 +110,7 @@ ROOT_TASK_SRCS += src/system_desc_aarch64.c
 CFLAGS_ROOT_TASK := $(CFLAGS) -DBOARD_$(AGENTOS_BOARD)
 ROOT_TASK_ASM_OBJS := $(BUILD_DIR)/rt_start_aarch64.o
 else ifeq ($(ARCH),x86_64)
-ROOT_TASK_SRCS += src/system_desc_x86_64.c src/x86_host_block.c
+ROOT_TASK_SRCS += src/system_desc_x86_64.c src/x86_host_pci.c
 CFLAGS_ROOT_TASK := $(CFLAGS)
 ROOT_TASK_ASM_OBJS := $(BUILD_DIR)/rt_start_x86_64.o
 else
