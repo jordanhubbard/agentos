@@ -199,8 +199,9 @@ static seL4_Error write_vmcs_guest_state(seL4_CPtr vcpu,
         { VMX_GUEST_SYSENTER_EIP, 0u },
 
         /*
-         * The seL4 x86_64 VTX kernel fixes IA-32e guest entry on. The root
-         * task supplies the four guest paging pages this state requires.
+         * Both supported SDKs initialize IA-32e guest entry on. This proof
+         * retains that mode; root supplies its four guest paging pages.
+         * Firmware entry modes require separate qualification.
          */
         { VMX_CONTROL_CR0_MASK, VMX_GUEST_CR0_PE | VMX_GUEST_CR0_PG },
         { VMX_CONTROL_CR0_READ_SHADOW, 0u },
