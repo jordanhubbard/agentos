@@ -78,3 +78,24 @@ The [input receipt](evidence/2026-09-17-spark/input-release-baseline.json)
 and [boot timing](evidence/2026-09-17-spark/input-release-baseline-timing.json)
 record the exact clean revision. The input Make targets now default to 1,800
 seconds while preserving explicit environment and command-line overrides.
+
+The CC release API passed both live input passes at clean runtime revision
+`1a4bb3821b31927b405c691d3ad42e5b54d9cd15` with SDK 2.3 on Spark.
+The [explicit-events receipt](evidence/2026-09-17-spark/input-release-api-events.json)
+and [server-held-state receipt](evidence/2026-09-17-spark/input-release-api-held.json)
+each require four keyboard and seven pointer events, including exact releases
+and packet boundaries. The second pass sends no explicit release events:
+the service derives them from accepted held state. The
+[timing receipt](evidence/2026-09-17-spark/input-release-api-timing.json)
+records 445,468 ms through authenticated SSH.
+
+At that revision, the complete SDK 2.3 `make gate` also passed. Its log SHA-256
+is `f65124df316b59d37b3d46d6a6d0dfdf60ee56c43032a9e23337135b15a1d4e8`;
+the two-pass live log SHA-256 is
+`31eb16371bc5ea21d524e86754db42d7f15409af0e8f98d89975257d860ad964`.
+The qualified image SHA-256 is
+`17af4812a75a39a1fdd9a7b48ae732c85209d23a5c64987b5f6ed2926e225f53`.
+Artifacts are retained under `build/evidence/input-release-api-1a4bb38/`.
+Host tests qualify retained queue backpressure; this live proof qualifies
+normal guest consumption of server-generated releases. Abrupt socket loss,
+paused-guest backpressure on target, and reconnect cleanup remain unqualified.
