@@ -777,6 +777,22 @@ test-host: test-virtio-mmio-core-host
 test-host: test-virtio-console-rx-host
 test-host: test-x86-virtio-host
 test-host: test-x86-console-host
+test-host: test-x86-block-host
+
+.PHONY: test-x86-block-host
+test-x86-block-host:
+	@mkdir -p $(BUILD_TMP_DIR)
+	$(CC) -std=c11 -Wall -Wextra -Werror -Wno-unused-function -Wno-unused-parameter -Wno-sign-compare \
+		-fsanitize=address,undefined -g -ffunction-sections \
+		-Xlinker $(if $(filter Darwin,$(UNAME_S)),-dead_strip,--gc-sections) \
+		-Itests/platform/block-stubs -Itests/platform/virtio-stubs -Ilibvmm/include \
+		-Ilibvmm/dep/sddf/include -Iplatform/include -idirafter kernel/agentos-root-task/include \
+		tests/platform/test_x86_block.c platform/blk-virt/vmm_virtio_blk.c \
+		platform/guest-vmm/x86_virtio.c platform/guest-vmm/x86_ioapic.c \
+		libvmm/src/virtio/block.c libvmm/src/virtio/mmio.c libvmm/src/virtio/gpa.c \
+		libvmm/dep/sddf/util/fsmalloc.c libvmm/dep/sddf/util/bitarray.c \
+		-o $(BUILD_TMP_DIR)/test_x86_block
+	$(BUILD_TMP_DIR)/test_x86_block
 
 .PHONY: test-x86-console-host
 test-x86-console-host:

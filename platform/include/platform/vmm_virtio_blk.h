@@ -17,6 +17,12 @@ typedef void (*aos_vmm_blk_wait_fn)(void);
 /* libvmm virtio-mmio blk at AOS_VIRTIO_BLK_GUEST_IPA; sDDF queues in the
  * shared block region, serviced by the blk_virt PD. */
 void aos_vmm_virtio_blk_init(uint32_t media_id);
+/* Bind once at an architecture-selected guest MMIO page and interrupt.
+ * shared_region is the 4 KiB-aligned root-provisioned layout's virtual base; only
+ * this VMM's client stride must be mapped. It does not grant memory authority.
+ * After attachment, retries are rejected without resetting live queues. */
+bool aos_vmm_virtio_blk_init_at(uint32_t media_id, uintptr_t guest_base,
+                               unsigned virq, void *shared_region);
 bool aos_vmm_virtio_blk_load_iso_file(const char *path,
                                       uintptr_t guest_dest,
                                       size_t guest_capacity,

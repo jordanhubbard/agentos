@@ -1,0 +1,70 @@
+#include <assert.h>
+#include <stdio.h>
+#include <stdarg.h>
+#include <string.h>
+#include <platform/x86_virtio.h>
+#include <platform/vmm_virtio_blk.h>
+#include <platform/blk_virt_pump.h>
+#include <contracts/blk_virt_contract.h>
+#include "sel4_ipc.h"
+#include "system_desc.h"
+#include <libvmm/virtio/config.h>
+#include <libvmm/virtio/virtio.h>
+#undef vprintf
+
+const char vmm_pd_name[]="x86-block-test";
+static unsigned attachments;
+static aos_blk_virt_client_t client;
+int printf_(const char *fmt, ...)
+{
+    va_list ap; va_start(ap,fmt); int n=vprintf(fmt,ap); va_end(ap); return n;
+}
+void seL4_Signal(seL4_CPtr cap) { (void)cap; assert(!"unexpected notification"); }
+void sel4_call(seL4_CPtr cap, const sel4_msg_t *request, sel4_msg_t *reply)
+{
+    assert(cap==PD_CNODE_SLOT_BLK_VIRT_EP && request->opcode==BLK_VIRT_OP_ATTACH);
+    assert(request->length==sizeof(blk_virt_attach_req_t));
+    blk_virt_attach_req_t attach;
+    memcpy(&attach,request->data,sizeof(attach));
+    assert(attach.version==BLK_VIRT_CONTRACT_VERSION);
+    assert(attach.client_id==0 && attach.vmm_slot==BLK_VIRT_VMM_SLOT_PRIMARY && attach.media_id==0);
+    attachments++;
+    client.info->capacity=256;
+    client.info->sector_size=512;
+    client.info->block_size=1;
+    client.info->ready=1;
+    memset(reply,0,sizeof(*reply));
+    reply->length=sizeof(blk_virt_attach_reply_t);
+    uint32_t words[]={BLK_VIRT_OK,BLK_VIRT_CONTRACT_VERSION,0};
+    memcpy(reply->data,words,sizeof(words));
+}
+static _Alignas(4096) uint8_t ram[0x20000];
+static _Alignas(4096) uint8_t region[AOS_BLK_SHMEM_SIZE];
+int main(void)
+{
+    uintptr_t base=AOS_X86_VIRTIO_BASE+AOS_X86_VIRTIO_STRIDE;
+    assert(!aos_vmm_virtio_blk_init_at(0,0,17,region));
+    assert(!aos_vmm_virtio_blk_init_at(0,base+1,17,region));
+    assert(!aos_vmm_virtio_blk_init_at(0,base,17,NULL));
+    assert(!aos_vmm_virtio_blk_init_at(0,base,17,region+1));
+    assert(!aos_vmm_virtio_blk_init_at(AOS_HOST_BLK_MEDIA_COUNT,base,17,region));
+    assert(!attachments);
+    aos_blk_client_bind(region,0,&client);
+    aos_x86_ioapic_t ioapic;
+    assert(aos_x86_ioapic_init(&ioapic,1));
+    assert(aos_x86_virtio_init(&ioapic,ram,sizeof(ram)));
+    assert(aos_vmm_virtio_blk_init_at(0,base,17,region) && attachments==1);
+    uint32_t value=0;
+    assert(aos_x86_virtio_access(base+REG_VIRTIO_MMIO_DEVICE_ID,4,false,&value) && value==2);
+    assert(aos_x86_virtio_access(base+0x100,4,false,&value) && value==2048);
+    client.signal->req_consumer_signalled=0x55;
+    client.req->head=3; client.req->tail=4;
+    client.resp->head=5; client.resp->tail=6;
+    client.data[0]=0xa5;
+    assert(!aos_vmm_virtio_blk_init_at(0,base,17,region));
+    assert(attachments==1 && client.signal->req_consumer_signalled==0x55 && client.data[0]==0xa5);
+    aos_vmm_virtio_blk_init(0);
+    assert(attachments==1 && client.signal->req_consumer_signalled==0x55);
+    assert(client.req->head==3 && client.req->tail==4 && client.resp->head==5 && client.resp->tail==6);
+    puts("PASS: block placement, real MMIO capacity, invalid arguments and rebind preservation");
+}
