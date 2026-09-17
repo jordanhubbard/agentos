@@ -1758,7 +1758,8 @@ pub(crate) fn spawn_qemu_with_guest(
                 "cortex-a57"
             };
             let serial = if interactive_serial {
-                String::from("stdio")
+                // Multiplex the monitor so the advertised Ctrl-A X exit works.
+                String::from("mon:stdio")
             } else {
                 format!("file:{}", log_path.display())
             };
@@ -1942,7 +1943,8 @@ pub(crate) fn spawn_qemu_with_guest(
         cmd.stdin(Stdio::inherit())
             .stdout(Stdio::inherit())
             .stderr(Stdio::inherit())
-            .process_group(0)
+            // Keep the controlling terminal's foreground process group.
+            // A new group receives SIGTTIN when QEMU reads inherited stdin.
             .spawn()
             .context("failed to spawn interactive QEMU")?
     } else if board == "qemu_virt_aarch64" {
@@ -1967,12 +1969,66 @@ pub(crate) fn spawn_qemu_with_guest(
 }
 
 fn host_kvm_available(board: &str) -> bool {
-    (cfg!(all(target_os = "linux", target_arch = "aarch64"))
-        && board == "qemu_virt_aarch64"
-        && Path::new("/dev/kvm").exists())
-        || (cfg!(all(target_os = "linux", target_arch = "x86_64"))
-            && board == "x86_64_generic_vtx"
-            && Path::new("/dev/kvm").exists())
+    if !Path::new("/dev/kvm").exists() {
+        return false;
+    }
+    if cfg!(all(target_os = "linux", target_arch = "aarch64")) && board == "qemu_virt_aarch64" {
+        // A device node alone does not prove KVM can expose EL2 to seL4.
+        // Probe the actual QEMU machine/CPU combination once, without booting
+        // any image or attaching storage/network devices.
+        static ARM_KVM: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        return *ARM_KVM.get_or_init(probe_arm_kvm);
+    }
+    cfg!(all(target_os = "linux", target_arch = "x86_64")) && board == "x86_64_generic_vtx"
+}
+
+fn probe_arm_kvm() -> bool {
+    let Ok(mut child) = std::process::Command::new("qemu-system-aarch64")
+        .args([
+            "-machine",
+            "virt,virtualization=on",
+            "-cpu",
+            "host",
+            "-accel",
+            "kvm",
+            "-m",
+            "128M",
+            "-S",
+            "-nodefaults",
+            "-display",
+            "none",
+            "-monitor",
+            "none",
+            "-serial",
+            "none",
+            "-qmp",
+            "stdio",
+        ])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+    else {
+        return false;
+    };
+    let sent = child.stdin.take().is_some_and(|mut input| {
+        input
+            .write_all(b"{\"execute\":\"qmp_capabilities\"}\n{\"execute\":\"quit\"}\n")
+            .is_ok()
+    });
+    let deadline = Instant::now() + Duration::from_secs(5);
+    if sent {
+        while Instant::now() < deadline {
+            match child.try_wait() {
+                Ok(Some(status)) => return status.success(),
+                Ok(None) => std::thread::sleep(Duration::from_millis(20)),
+                Err(_) => break,
+            }
+        }
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+    false
 }
 
 fn qemu_netdev_arg(
