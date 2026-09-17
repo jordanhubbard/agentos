@@ -840,9 +840,17 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
             )
             .and_then(|proof| {
                 if args.assert_firmware_reset {
+                    let required: &[&str] = if args.assert_x86_userspace {
+                        &[
+                            "[rt] x86 host block queue read verified",
+                            "[rt] x86 Linux guest block read verified",
+                        ]
+                    } else {
+                        &["[rt] x86 host block queue read verified"]
+                    };
                     wait_for_all_markers(
                         &log_path,
-                        &["[rt] x86 host block queue read verified"],
+                        required,
                         Duration::from_secs(args.timeout_secs),
                         &mut qemu,
                     )?;
@@ -1852,6 +1860,8 @@ pub(crate) fn spawn_qemu_with_guest(
                 .context("create Intel block qualification medium")?;
             block.set_len(32 * 1024 * 1024)?;
             block.write_all(b"agentos-host-block-qualification-v1\n")?;
+            block.seek(SeekFrom::Start(4096))?;
+            block.write_all(b"agentos-guest-block-qualification-v1\n")?;
             block.sync_all()?;
             println!("[xtask:test] Intel block medium: {}", block_path.display());
             let mut c = std::process::Command::new("qemu-system-x86_64");

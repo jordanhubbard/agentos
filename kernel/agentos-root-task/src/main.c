@@ -3371,6 +3371,7 @@ void root_task_main(const seL4_BootInfo *bi)
             instruction_len == 3u && rip < 0x0000800000000000ull) {
             dbg_puts("[rt] x86 Linux ring3 initramfs syscall proof verified\n");
             dbg_puts("[rt] x86 host block queue read verified\n");
+            dbg_puts("[rt] x86 Linux guest block read verified\n");
 #else
             status == AOS_X86_VTX_FIRMWARE_CONFIG &&
             reason == 30u && rip <= 0xffffffffu &&

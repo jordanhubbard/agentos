@@ -539,6 +539,13 @@ void aos_vmm_virtio_blk_init(uint32_t media_id)
                                    AOS_VIRTIO_BLK_VIRQ,(void *)AOS_BLK_SHMEM_VA);
 }
 
+bool aos_vmm_virtio_blk_guest_io_completed(void)
+{
+    return g_aos_blk_ready && g_blk_virt_hw == BLK_VIRT_HW_VIRTIO_BLK &&
+           (g_aos_blk.virtio_device.regs.Status & VIRTIO_CONFIG_S_DRIVER_OK) &&
+           g_resp_total != 0u;
+}
+
 void aos_vmm_virtio_blk_after_fault(void)
 {
     uint32_t status;

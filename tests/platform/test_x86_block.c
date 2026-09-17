@@ -63,6 +63,7 @@ int main(void)
     assert(aos_x86_ioapic_init(&ioapic,1));
     assert(aos_x86_virtio_init(&ioapic,ram,sizeof(ram)));
     assert(aos_vmm_virtio_blk_init_at(0,base,17,region) && attachments==1);
+    assert(!aos_vmm_virtio_blk_guest_io_completed());
     uint32_t value=0;
     assert(aos_x86_virtio_access(base+REG_VIRTIO_MMIO_DEVICE_ID,4,false,&value) && value==2);
     assert(aos_x86_virtio_access(base+0x100,4,false,&value) && value==2048);
@@ -86,6 +87,7 @@ int main(void)
     assert(aos_x86_virtio_access(base + REG_VIRTIO_MMIO_STATUS, 4, true, &value));
     assert(!aos_vmm_virtio_blk_read_boot(0, 1, boot_copy, sizeof(boot_copy), boot_wait));
     assert(kicks == 2u && waits == 2u);
+    assert(!aos_vmm_virtio_blk_guest_io_completed());
     client.signal->req_consumer_signalled=0x55;
     client.req->head=3; client.req->tail=4;
     client.resp->head=5; client.resp->tail=6;

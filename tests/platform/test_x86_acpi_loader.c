@@ -90,7 +90,7 @@ static void relocate(uint64_t base)
     assert(!memcmp(copy.rsdp,"RSD PTR ",8) && copy.rsdp[15]==2);
     unsigned rsdt=(unsigned)(read_le(copy.rsdp+16,4)-base);
     unsigned xsdt=(unsigned)(read_le(copy.rsdp+24,8)-base);
-    assert(rsdt==587 && xsdt==635);
+    assert(rsdt==661 && xsdt==709);
     assert(!sum(copy.tables+rsdt,48) && !sum(copy.tables+xsdt,60));
     const char *signatures[]={"FACP","APIC","SSDT"};
     unsigned fadt=0;
@@ -107,12 +107,17 @@ static void relocate(uint64_t base)
     assert(read_le(f+40,4)==base+64 && read_le(f+140,8)==base+64);
     assert(!memcmp(copy.tables,"FACS",4) && read_le(copy.tables+4,4)==64);
     const uint8_t *dsdt=copy.tables+64;
-    assert(!memcmp(dsdt,"DSDT",4) && read_le(dsdt+4,4)==110 && !sum(dsdt,110));
-    assert(!memcmp(dsdt+57,"LNRO0005",9));
-    assert(dsdt[87]==0x86 && read_le(dsdt+88,2)==9 && dsdt[90]==1);
-    assert(read_le(dsdt+91,4)==0xf0000000 && read_le(dsdt+95,4)==4096);
-    assert(dsdt[99]==0x89 && read_le(dsdt+100,2)==6);
-    assert(dsdt[102]==1 && dsdt[103]==1 && read_le(dsdt+104,4)==16);
+    assert(!memcmp(dsdt,"DSDT",4) && read_le(dsdt+4,4)==184 && !sum(dsdt,184));
+    const char *devices[] = {"VCON", "VBLK"};
+    for (unsigned i = 0; i < 2; i++) {
+        const uint8_t *d = dsdt + 36 + i * 74;
+        assert(!memcmp(d+11,devices[i],4) && d[35]==i);
+        assert(!memcmp(d+21,"LNRO0005",9));
+        assert(d[51]==0x86 && read_le(d+52,2)==9 && d[54]==1);
+        assert(read_le(d+55,4)==0xf0000000u+i*4096u && read_le(d+59,4)==4096);
+        assert(d[63]==0x89 && read_le(d+64,2)==6);
+        assert(d[66]==1 && d[67]==1 && read_le(d+68,4)==16+i);
+    }
     assert(read_le(f+56,4)==0xb000 && read_le(f+64,4)==0xb004 && read_le(f+76,4)==0xb008);
     assert(f[88]==4 && f[89]==2 && f[91]==4 && read_le(f+112,4)==0x70);
     uint32_t v=0;
@@ -140,7 +145,8 @@ int main(int argc, char **argv)
         aos_x86_acpi_bundle_t bundle;
         assert(aos_x86_acpi_bundle_init(&bundle));
         FILE *file=fopen(argv[1],"wb");
-        assert(file && fwrite(bundle.tables+64,1,110,file)==110);
+        unsigned length = (unsigned)read_le(bundle.tables+68,4);
+        assert(file && fwrite(bundle.tables+64,1,length,file)==length);
         assert(!fclose(file));
     }
     puts("PASS: fw_cfg ACPI directory, bounded relocations, root/table checksums and PM contract");

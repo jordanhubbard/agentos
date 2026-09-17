@@ -90,6 +90,64 @@ console_read:
     syscall
     test %rax, %rax
     jne failed
+    mov $10, %r13d
+    mov $2, %eax                  /* open the in-tree virtio-blk device */
+    lea disk_path(%rip), %rdi
+    xor %esi, %esi                /* O_RDONLY */
+    xor %edx, %edx
+    syscall
+    test %rax, %rax
+    js failed
+    mov %rax, %r12
+    mov $11, %r13d
+    mov $16, %eax                 /* ioctl(BLKGETSIZE64) */
+    mov %r12, %rdi
+    mov $0x80081272, %esi
+    lea disk_capacity(%rip), %rdx
+    syscall
+    test %rax, %rax
+    jne failed
+    cmpq $33554432, disk_capacity(%rip)
+    jne failed
+    mov $12, %r13d
+    mov $8, %eax                  /* read a different block from preboot */
+    mov %r12, %rdi
+    mov $4096, %esi
+    xor %edx, %edx
+    syscall
+    cmp $4096, %rax
+    jne failed
+    mov $13, %r13d
+    lea disk_buffer(%rip), %r15
+    mov $4096, %ebp
+disk_read:
+    xor %eax, %eax
+    mov %r12, %rdi
+    mov %r15, %rsi
+    mov %rbp, %rdx
+    syscall
+    test %rax, %rax
+    jle failed
+    add %rax, %r15
+    sub %rax, %rbp
+    jne disk_read
+    mov $14, %r13d
+    lea disk_data(%rip), %rsi
+    lea disk_buffer(%rip), %rdi
+    mov $disk_data_end-disk_data, %ecx
+    cld
+    repe cmpsb
+    jne failed
+    xor %eax, %eax
+    mov $4096-(disk_data_end-disk_data), %ecx
+    repe scasb
+    jne failed
+    mov $15, %r13d
+    mov $3, %eax
+    mov %r12, %rdi
+    syscall
+    test %rax, %rax
+    jne failed
     mov $6, %r13d
     mov $2, %eax                  /* open a file on the initramfs */
     lea path(%rip), %rdi
@@ -167,6 +225,9 @@ path: .asciz "/userspace-proof"
 dev_path: .asciz "/dev"
 devfs: .asciz "devtmpfs"
 console_path: .asciz "/dev/hvc0"
+disk_path: .asciz "/dev/vda"
+disk_data: .ascii "agentos-guest-block-qualification-v1\n"
+disk_data_end:
 ready: .ascii "agentos-uart-ready\n"
 ready_end:
 request: .ascii "agentos-uart-request\n"
@@ -180,4 +241,7 @@ data_end:
 buffer: .skip data_end-data
 termios: .skip 36
 console_buffer: .skip request_end-request
+.balign 8
+disk_capacity: .skip 8
+disk_buffer: .skip 4096
 .section .note.GNU-stack,"",@progbits

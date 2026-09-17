@@ -40,5 +40,8 @@ bool aos_vmm_virtio_blk_load_iso_file(const char *path,
 void aos_vmm_virtio_blk_after_fault(void);
 /* On BLK_VIRT_EVENT_RESP_READY from blk_virt. */
 void aos_vmm_virtio_blk_resp_ready(void);
+/* True only after a host-backed guest device reached DRIVER_OK and a guest
+ * request completed; synchronous preboot reads do not count. */
+bool aos_vmm_virtio_blk_guest_io_completed(void);
 
 #endif /* AOS_PLATFORM_VMM_VIRTIO_BLK_H */
