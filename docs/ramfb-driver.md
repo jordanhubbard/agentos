@@ -21,6 +21,19 @@ upper bound. Device errors and timeouts permanently disable that context;
 later calls cannot overwrite its DMA storage or change the active selector.
 The root/driver integration must retain that allocation until device shutdown.
 
+The framebuffer-to-driver contract is `platform/include/platform/display.h`.
+A one-entry SPSC request/reply queue transfers at most 64 KiB per request;
+the producer retains payload ownership until receiving its reply. BEGIN assigns
+a fresh cookie, WRITE requires sequential complete coverage, PRESENT switches
+the driver's private banks only after successful hardware configuration, and
+ABORT discards an unfinished transfer. A failed hardware presentation disables
+further transactions and retains both banks. Root must map the queue only into
+the framebuffer service and display driver; banks remain private to the driver.
+Both sides must signal persistent notifications after publishing work or freeing
+queue space. `make test-display-host` verifies a complete 1024x768 frame,
+unchanged front pixels during transfer, backpressure, wrap, stale cookies,
+abort and failed presentation. This contract is not yet mapped on target.
+
 This is a protocol component, not a working scanout path. No PD has been given
 fw_cfg or display DMA capabilities by this change. Target integration requires
 a dedicated TCB driver, root-provisioned contiguous scanout/DMA storage, a
