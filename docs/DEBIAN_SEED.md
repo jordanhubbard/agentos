@@ -35,14 +35,38 @@ Assembly copies the disk, checks alignment and bounds, and compares every byte
 of the original root image against that disk region before replacement. It
 requires the seeded root to retain exactly the original size and reads back
 the complete replacement before publication. The offset is explicit; this
-command does not discover or validate GPT metadata. QEMU launch and automated
-SSH qualification are not yet wired to this command.
+command does not discover or validate GPT metadata.
+
+The separate Intel SSH gate consumes the prepared full disk:
+
+```sh
+make gate-x86_64-debian-ssh \
+  SEL4_SDK_VERSION=2.3.0 \
+  X86_ROOT_DISK=/path/to/new-disk.raw \
+  X86_SSH_KEY=/path/to/test-identity \
+  X86_SSH_PORT=12224 QEMU_TEST_TIMEOUT=600 \
+  X86_FIRMWARE_IMAGE=/path/to/pinned-ovmf.fd \
+  X86_FIRMWARE_SHA256=<expected-sha256>
+```
+
+This requires an accessible Intel Linux KVM host. The private key must match
+the public key used to seed this disk. The gate forwards only a loopback port
+through the restricted test network. It waits for a login prompt and complete
+cloud-init host-key report, pins that Ed25519 key, then requires key-only SSH
+to return exactly `x86_64` and successfully sync the guest disk. It disables
+the SSH agent and system/user client configuration. Each attempt has a maximum
+90-second deadline within the overall gate timeout; stdout, stderr and pinned
+known-host data are retained beside the console log.
+
+The integrated SSH path is implemented but not yet qualified on Intel. The
+300-second native-media login experiment timed out during cloud-init startup;
+its receipt remains in `evidence/2026-09-17-spark/x86-native-seed-boot.json`.
 The earlier manual Intel boot evidence is retained in
 `evidence/2026-09-17-spark/x86-debian-ssh-seed.json`.
 
 Validation on Spark: the pinned Debian root was seeded successfully; malformed
 ext4 input produced no output; an existing output was rejected. `make test-host`
-and all 94 Rust library tests passed after disk assembly was added. The disk
+and all 95 Rust library tests passed after the SSH gate was added. The disk
 assembly test checks exact replacement, preserved surrounding bytes, unchanged
 source, wrong source region, unaligned offsets and out-of-bounds offsets.
 This host-tool validation does not establish

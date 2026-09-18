@@ -369,6 +369,11 @@ pub fn run_x86_storage(timeout_secs: u64) -> anyhow::Result<()> {
 
 pub fn run(args: &TestArgs) -> anyhow::Result<()> {
     anyhow::ensure!(
+        args.x86_ssh_key.is_none()
+            || (args.ssh_port != 0 && args.x86_ssh_key.as_ref().is_some_and(|p| p.is_file())),
+        "Intel SSH proof requires a private-key file and nonzero --ssh-port"
+    );
+    anyhow::ensure!(
         args.x86_block_image.is_none() || args.board == "x86_64_generic_vtx",
         "qualification block image requires the Intel VMX board"
     );
@@ -720,6 +725,7 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
         .as_ref()
         .is_some_and(|assertion| assertion.devices.iter().any(|device| device == "net"));
     let ssh_port = if needs_host_net_stimulus
+        || args.x86_ssh_key.is_some()
         || args.assert_live
         || args.assert_desktop
         || scenario_plan.is_some()
@@ -940,7 +946,12 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
                 )?;
             }
             if args.assert_x86_linux_login {
-                x86_linux_login(&cc_sock, &log_path, Duration::from_secs(args.timeout_secs))
+                x86_linux_login_probe(
+                    &cc_sock,
+                    &log_path,
+                    Duration::from_secs(args.timeout_secs),
+                    args.x86_ssh_key.as_deref().map(|key| (key, ssh_port)),
+                )
             } else {
                 if args.assert_x86_userspace {
                     x86_console_roundtrip(&cc_sock, Duration::from_secs(args.timeout_secs))?;
@@ -2020,7 +2031,7 @@ pub(crate) fn spawn_qemu_with_guest(
                 .arg("-device")
                 .arg("virtio-blk-pci,drive=agentos_blk,addr=05.0,disable-legacy=on");
             c.arg("-netdev")
-                .arg("user,id=agentos_net,restrict=on")
+                .arg(if ssh_port == 0 { "user,id=agentos_net,restrict=on".into() } else { format!("user,id=agentos_net,restrict=on,hostfwd=tcp:127.0.0.1:{ssh_port}-10.0.2.15:22") })
                 .arg("-device")
                 .arg("virtio-net-pci,netdev=agentos_net,addr=06.0,disable-legacy=on,mac=52:54:00:12:34:56");
             let capture = log_path.with_extension("pcap");
@@ -2086,7 +2097,135 @@ pub(crate) fn spawn_qemu_with_guest(
     Ok(child)
 }
 
+fn x86_console_host_key(text: &str) -> anyhow::Result<Option<String>> {
+    let Some((_, keys)) = text.split_once("-----BEGIN SSH HOST KEY KEYS-----") else {
+        return Ok(None);
+    };
+    let Some((keys, _)) = keys.split_once("-----END SSH HOST KEY KEYS-----") else {
+        return Ok(None);
+    };
+    let mut found = None;
+    for line in keys.lines() {
+        let fields: Vec<_> = line.split_whitespace().collect();
+        if fields.first() == Some(&"ssh-ed25519") {
+            anyhow::ensure!(
+                fields.len() >= 2
+                    && fields[1].len() <= 128
+                    && !fields[1].is_empty()
+                    && fields[1]
+                        .bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || b"+/=".contains(&b)),
+                "invalid console host-key encoding"
+            );
+            anyhow::ensure!(found.is_none(), "multiple Ed25519 console host keys");
+            found = Some(format!("ssh-ed25519 {}", fields[1]));
+        }
+    }
+    anyhow::ensure!(
+        found.is_some(),
+        "console host-key report has no Ed25519 key"
+    );
+    Ok(found)
+}
+
+fn x86_ssh_proof(
+    key: &Path,
+    port: u16,
+    host_key: &str,
+    log: &Path,
+    deadline: Instant,
+) -> anyhow::Result<String> {
+    let known = log.with_extension("known_hosts");
+    let mut known_file = std::fs::OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .open(&known)?;
+    writeln!(known_file, "[127.0.0.1]:{port} {host_key}")?;
+    let mut attempt = 0;
+    while Instant::now() < deadline {
+        attempt += 1;
+        let stdout_path = log.with_extension(format!("ssh-{attempt}.out"));
+        let stderr_path = log.with_extension(format!("ssh-{attempt}.err"));
+        let mut command = std::process::Command::new("ssh");
+        command
+            .args([
+                "-F",
+                "/dev/null",
+                "-o",
+                "BatchMode=yes",
+                "-o",
+                "IdentitiesOnly=yes",
+                "-o",
+                "IdentityAgent=none",
+                "-o",
+                "PreferredAuthentications=publickey",
+                "-o",
+                "PasswordAuthentication=no",
+                "-o",
+                "KbdInteractiveAuthentication=no",
+                "-o",
+                "StrictHostKeyChecking=yes",
+                "-o",
+                "GlobalKnownHostsFile=/dev/null",
+                "-o",
+                "HostKeyAlgorithms=ssh-ed25519",
+                "-o",
+                "ConnectTimeout=10",
+                "-o",
+                "ServerAliveInterval=5",
+                "-o",
+                "ServerAliveCountMax=2",
+            ])
+            .arg("-o")
+            .arg(format!("UserKnownHostsFile={}", known.display()))
+            .arg("-i")
+            .arg(key)
+            .arg("-p")
+            .arg(port.to_string())
+            .args(["debian@127.0.0.1", "uname -m && sudo -n sync"])
+            .stdin(Stdio::null())
+            .stdout(std::fs::File::create(&stdout_path)?)
+            .stderr(std::fs::File::create(&stderr_path)?);
+        let mut child = ChildGuard::new(command.spawn()?);
+        let attempt_deadline = deadline.min(Instant::now() + Duration::from_secs(90));
+        let status = loop {
+            if let Some(status) = child.try_wait()? {
+                break Some(status);
+            }
+            if Instant::now() >= attempt_deadline {
+                break None;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        };
+        drop(child);
+        if status.is_some_and(|s| s.success()) {
+            anyhow::ensure!(
+                std::fs::read(&stdout_path)? == b"x86_64\n",
+                "Intel SSH architecture output mismatch"
+            );
+            return Ok("Debian public-key SSH verified with console-pinned Ed25519 host key; x86_64 and sync succeeded".into());
+        }
+        if Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(500));
+        }
+    }
+    anyhow::bail!(
+        "Intel SSH proof timed out; retained attempts beside {}",
+        log.display()
+    )
+}
+
+#[cfg(test)]
 fn x86_linux_login(socket: &Path, log_path: &Path, timeout: Duration) -> anyhow::Result<String> {
+    x86_linux_login_probe(socket, log_path, timeout, None)
+}
+
+fn x86_linux_login_probe(
+    socket: &Path,
+    log_path: &Path,
+    timeout: Duration,
+    ssh: Option<(&Path, u16)>,
+) -> anyhow::Result<String> {
     let deadline = Instant::now() + timeout;
     let mut stream = loop {
         match UnixStream::connect(socket) {
@@ -2133,6 +2272,12 @@ fn x86_linux_login(socket: &Path, log_path: &Path, timeout: Duration) -> anyhow:
                     .lines()
                     .any(|line| line.trim_end().ends_with(" login:"))
                 {
+                    if let Some((key, port)) = ssh {
+                        let Some(host_key) = x86_console_host_key(&text)? else {
+                            continue;
+                        };
+                        return x86_ssh_proof(key, port, &host_key, log_path, deadline);
+                    }
                     return Ok(
                         "Linux login prompt through canonical virtio-console and serial_virt"
                             .into(),
@@ -4252,6 +4397,28 @@ fn tail_chars(s: &str, max_chars: usize) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn console_host_key_requires_complete_unambiguous_report() {
+        use super::x86_console_host_key;
+        assert_eq!(
+            x86_console_host_key("ssh-ed25519 AAAA unrelated").unwrap(),
+            None
+        );
+        assert_eq!(
+            x86_console_host_key("-----BEGIN SSH HOST KEY KEYS-----\nssh-ed25519 AAAA").unwrap(),
+            None
+        );
+        let report = "-----BEGIN SSH HOST KEY KEYS-----\r\nssh-ed25519 AAAA root@guest\r\n-----END SSH HOST KEY KEYS-----";
+        assert_eq!(
+            x86_console_host_key(report).unwrap(),
+            Some("ssh-ed25519 AAAA".into())
+        );
+        assert!(x86_console_host_key(&report.replace("AAAA", "AA;AA")).is_err());
+        assert!(x86_console_host_key(
+            &report.replace("root@guest", "root@guest\nssh-ed25519 BBBB")
+        )
+        .is_err());
+    }
     #[test]
     fn intel_login_requires_prompt_and_retains_console_failures() {
         use std::os::unix::net::UnixListener;

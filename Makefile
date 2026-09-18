@@ -716,6 +716,15 @@ gate-x86_64-linux-login:
 		--timeout-secs $(QEMU_TEST_TIMEOUT)
 
 .PHONY: gate-x86_64-storage
+.PHONY: gate-x86_64-debian-ssh
+gate-x86_64-debian-ssh:
+	@test -n "$(X86_ROOT_DISK)" -a -n "$(X86_SSH_KEY)" -a -n "$(X86_SSH_PORT)" || { echo 'Set X86_ROOT_DISK, X86_SSH_KEY and X86_SSH_PORT'; exit 1; }
+	@cargo xtask qemu-test --board x86_64_generic_vtx --guest-os none \
+		--assert-vmx-exit --assert-firmware-reset --assert-x86-linux-login \
+		--x86-boot-profile debian-amd64.toml --x86-ssh-key "$(X86_SSH_KEY)" \
+		--ssh-port "$(X86_SSH_PORT)" --x86-block-image "$(X86_ROOT_DISK)" \
+		--x86-block-write --timeout-secs $(QEMU_TEST_TIMEOUT)
+
 gate-x86_64-storage:
 	@cargo xtask x86-storage --timeout-secs $(QEMU_TEST_TIMEOUT)
 
