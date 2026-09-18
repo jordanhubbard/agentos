@@ -299,7 +299,7 @@ static seL4_Error allocate_guest_queue_frame(unsigned kind, unsigned client,
                                             seL4_CPtr *frame)
 {
 #if defined(__aarch64__)
-    _Static_assert(seL4_ARM_LargePageBits == AOS_GUEST_QUEUE_POOL_BITS,
+    _Static_assert(seL4_ARCH_LargePageBits == AOS_GUEST_QUEUE_POOL_BITS,
                    "one large queue frame per private pool");
     if (kind >= AOS_GUEST_QUEUE_POOL_COUNT) return seL4_InvalidArgument;
     if (client < 2u) {
