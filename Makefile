@@ -539,6 +539,10 @@ build-tools:
 # =============================================================================
 # fetch-guest: execute the bounded acquisition recipe for selected profiles
 # =============================================================================
+.PHONY: seed-guest-root
+seed-guest-root:
+	@cargo xtask seed-guest --root-ext4 "$(SEED_ROOT_EXT4)" --public-key "$(SEED_PUBLIC_KEY)" --output "$(SEED_OUTPUT)" --instance-id "$(SEED_INSTANCE_ID)"
+
 fetch-guest:
 ifneq ($(strip $(GUEST_PRIMARY_PROFILE)),)
 	@cargo xtask fetch-guest --profile $(GUEST_PRIMARY_PROFILE)

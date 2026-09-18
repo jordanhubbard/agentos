@@ -18,6 +18,7 @@ pub mod cmd_policy_check;
 pub mod cmd_release;
 pub mod cmd_render_deck;
 pub mod cmd_run_tests;
+pub mod cmd_seed_guest;
 pub mod cmd_setup;
 pub mod cmd_test;
 pub mod cmd_test_api;
