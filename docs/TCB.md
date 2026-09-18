@@ -59,6 +59,15 @@ references. The ARM production teardown callback stops device admission,
 drains accepted block and console work, releases graphics resources, then
 revokes the execution pool, RAM pools and paging pool. Failure remains non-resumable and
 retryable; completed stages are not re-entered after capability revocation.
+Before capability revocation it also requires a network contract-v6 detach
+acknowledgment. The single-threaded virtualizer drops that client's queue
+pointers, including any hub-pump entry, before replying. Subsequent wakeups
+cannot access the retired queues. Root-assigned badges authorize detach in
+the same way as attach; no new capability is granted. A retired client cannot
+reattach without a future generation/reset contract, so old driver RX data
+cannot be silently reused for a new guest. The driver vNIC, shared-page
+capabilities and other service attachments remain management resources;
+network detach alone does not prove their reclamation or guest recreation.
 Queued guest faults are not serviced during teardown. Initialization rejects
 lifecycle re-entry while media staging still holds guest RAM pointers.
 Service grants remain owned by the VMM; recreation is not yet implemented.

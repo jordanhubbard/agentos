@@ -1,0 +1,56 @@
+{
+  "qualification": "Acknowledged terminal network queue detach before ARM guest revocation",
+  "runtime_revision": "bab66033d5589b3a509a90a11232ab5f799fab3e",
+  "host": "Spark AArch64",
+  "source_clean_during_tests": true,
+  "gate": {
+    "command": "make gate QEMU_TEST_SSH_PORT=12229",
+    "result": "PASS, exit-0 gate and teardown pipeline",
+    "log": "/tmp/agentos-network-detach-gate.log",
+    "log_sha256": "54b13d2439debdde5dbdd1c1ce572d7ae84cff3f76d20ab07e3d52e9243fcf03"
+  },
+  "host_tests": {
+    "scope": [
+      "Real hub pump removes a client with queued TX, then survives PROT_NONE on retired client storage while delivering exact packet bytes for the remaining client",
+      "VMM adapter rejects truncated, wrong-version and failed detach acknowledgments, retries, and performs no duplicate detach after success",
+      "Teardown retains execution, RAM and paging capabilities until detach acknowledgment, and never repeats completed device callbacks during partial revoke retries"
+    ],
+    "focused_command": "make test-x86-net-host",
+    "focused_log_sha256": "e2acb0efab71d4f2ce8c86eb1459d980499e0227d53c590b836f8fdeb0cc4ec9"
+  },
+  "target_teardown": {
+    "command": "make test-guest-teardown QEMU_TEST_SSH_PORT=12229",
+    "result": "PASS: live Ubuntu console proof, CC destruction and stale public-handle rejection",
+    "observed_order": [
+      "net_virt DETACH client=0 queues released",
+      "guest teardown: execution and RAM revoked",
+      "guest teardown: private paging revoked",
+      "guest teardown: network queues detached"
+    ],
+    "qemu_pid": 208789,
+    "qemu_log_stem": "agentos-qemu-VGUBz9",
+    "log_sha256": "e517efcff83e2787cb0875524adb3c4bca14cf2bf9f0885d197cd777cb78b40d",
+    "serial_log_sha256": "b34f944d468986d7028fa8030cbe1bec6511dfe32cd6e525e8dc14b81f2383cd",
+    "image_sha256": "882db83c93f41c23301dda00c3ff7a6cba00a9c20131e02605520b9061f39053"
+  },
+  "intel_regression": {
+    "runtime_revision": "bab66033d5589b3a509a90a11232ab5f799fab3e",
+    "host": "Existing Intel Linux madmax via puck.local",
+    "command": "make gate-x86_64-debian-ssh SEL4_SDK_VERSION=2.3.0 QEMU_TEST_TIMEOUT=600",
+    "root_disk": "/tmp/agentos-debian-amd64/boot-24.raw",
+    "ssh": "Existing public-key identity and original pinned Ed25519 host key; loopback port 12224",
+    "firmware_sha256": "101afad5f520753224b60b9555df60add435cf50c7a82b781d7d7d8c60db7eb5",
+    "result": "PASS, exit 0: pinned-host-key SSH, x86_64 identity and sync",
+    "qemu_pid": 2524466,
+    "qemu_log_stem": "agentos-qemu-VgSxxn",
+    "log_sha256": "dfe70d611314b57b423ca8830d3fb0848418fe139b9729cc46db4bfb9ff817ed",
+    "source_clean_after_run": true
+  },
+  "limits": [
+    "Driver vNICs, shared-page capabilities and other service attachments remain allocated; this is not complete resource reclamation",
+    "Retired network clients cannot reattach until a generation/reset contract safely recycles driver state; guest recreation remains unavailable",
+    "Protected removed-client memory and surviving-client progress are host proofs, not on-target peer-continuity or shared-page-revocation proofs",
+    "Intel SSH proves boot and I/O compatibility with contract v6, not Intel guest teardown or recreation",
+    "Required GitHub checks and canonical integration remain pending"
+  ]
+}

@@ -46,6 +46,7 @@ static unsigned                 g_virq;
 static bool                     g_tx_consumed;
 static bool                     g_quiesced;
 static uint8_t                  g_host_mac[6];
+static uint32_t                 g_client_id;
 
 bool aos_vmm_virtio_net_host_ready(void)
 {
@@ -61,7 +62,7 @@ bool aos_vmm_virtio_net_guest_io_completed(void)
 
 uint32_t aos_vmm_virtio_net_diagnostic(void)
 {
-    if (!g_aos_net_ready) return 0;
+    if (!g_aos_net_ready || !g_net_virt_attached) return 0;
     return (g_aos_net.virtio_device.regs.Status & 255u) |
         ((net_queue_length(g_tx.active) & 255u) << 8) |
         ((uint32_t)g_tx_consumed << 16) | ((uint32_t)!!g_tx_kicked << 17) |
@@ -111,6 +112,7 @@ static void net_virt_attach(uint32_t client_id)
     g_net_virt_hw = net_rd32(rep.data, 8u);
     for (unsigned i = 0; i < sizeof(g_host_mac); i++) g_host_mac[i] = rep.data[12u + i];
     g_net_virt_attached = 1;
+    g_client_id = client_id;
     LOG_VMM("emulated virtio-net: attached to net_virt contract v%u client %u hw=%u\n",
             (unsigned)net_rd32(rep.data, 4u), (unsigned)client_id,
             (unsigned)g_net_virt_hw);
@@ -195,6 +197,29 @@ void aos_vmm_virtio_net_quiesce(void)
     virtio_net_quiesce(&g_aos_net);
 }
 
+bool aos_vmm_virtio_net_detach(void)
+{
+    aos_vmm_virtio_net_quiesce();
+    if (!g_net_virt_attached) return true;
+    g_quiesced = true;
+    sel4_msg_t req = {0}, rep = {0};
+    req.opcode = NET_VIRT_OP_DETACH;
+    req.length = sizeof(net_virt_attach_req_t);
+    net_wr32(req.data, 0u, NET_VIRT_CONTRACT_VERSION);
+    net_wr32(req.data, 4u, g_client_id);
+#if defined(AGENTOS_GUEST_SECONDARY)
+    net_wr32(req.data, 8u, NET_VIRT_VMM_SLOT_SECONDARY);
+#else
+    net_wr32(req.data, 8u, NET_VIRT_VMM_SLOT_PRIMARY);
+#endif
+    sel4_call((seL4_CPtr)PD_CNODE_SLOT_NET_VIRT_EP, &req, &rep);
+    if (rep.opcode != SEL4_ERR_OK || rep.length != sizeof(net_virt_attach_reply_t) ||
+        net_rd32(rep.data, 0u) != NET_VIRT_OK ||
+        net_rd32(rep.data, 4u) != NET_VIRT_CONTRACT_VERSION) return false;
+    g_net_virt_attached = 0;
+    return true;
+}
+
 bool aos_vmm_virtio_net_init_at(uint32_t client_id, uintptr_t guest_base,
                               unsigned virq, void *shared_region)
 {
@@ -202,7 +227,7 @@ bool aos_vmm_virtio_net_init_at(uint32_t client_id, uintptr_t guest_base,
     aos_net_virt_client_t client;
     uint8_t mac[VIRTIO_NET_CONFIG_MAC_SZ];
 
-    if (g_aos_net_ready || g_net_virt_attached || !region || !guest_base ||
+    if (g_aos_net_ready || g_net_virt_attached || g_quiesced || !region || !guest_base ||
         ((uintptr_t)region & (AOS_NET_QUEUE_BYTES-1u)) ||
         (uintptr_t)region > UINTPTR_MAX-AOS_NET_SHMEM_SIZE ||
         (guest_base & (AOS_VIRTIO_NET_MMIO_SIZE-1u))) return false;
