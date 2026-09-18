@@ -8,6 +8,7 @@
 
 static virtio_gpu_device_t gpu;
 static aos_gpu_framebuffer_t framebuffer;
+static bool attempted;
 
 static bool exchange(void *context, const aos_fb_request_t *q, aos_fb_response_t *p)
 {
@@ -39,6 +40,8 @@ static bool read_guest(void *context, uint64_t gpa, void *out, uint32_t length)
 }
 bool aos_vmm_virtio_gpu_init(void)
 {
+    if (attempted) return false;
+    attempted=true;
 #ifdef AGENTOS_GUEST_SECONDARY
     const unsigned client = 1;
 #else
@@ -54,4 +57,8 @@ bool aos_vmm_virtio_gpu_init(void)
     LOG_VMM("emulated virtio-gpu IPA 0x%lx IRQ %u (framebuffer client %u)\n",
         AOS_VIRTIO_GPU_GUEST_IPA,AOS_VIRTIO_GPU_VIRQ,client);
     return true;
+}
+bool aos_vmm_virtio_gpu_quiesce(void)
+{
+    return !gpu.device.funs || virtio_gpu_quiesce(&gpu);
 }

@@ -1,0 +1,16 @@
+{
+  "revision": "af51cd8",
+  "source_tree_clean": true,
+  "host": "Spark ARM64 Linux",
+  "command": "make gate",
+  "exit_code": 0,
+  "status": "passed",
+  "log": "/tmp/agentos-console-quiesce-full-gate.log",
+  "log_sha256": "bf26f5fc545bf5d2b5cd2f31784b0331f0a53d1721f5586f699c4224e9c6bd34",
+  "scope": "Host tests including backpressured console shutdown, both architecture backend builds, both root architectures, ARM canonical guest I/O",
+  "limits": [
+    "Console and network quiescence are not yet wired into production teardown.",
+    "Target guest destroy/recreate and complete capability reclamation remain unqualified.",
+    "Subsequent GPU/input quiescence changes are outside this receipt."
+  ]
+}

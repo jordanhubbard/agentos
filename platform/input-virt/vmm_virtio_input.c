@@ -7,6 +7,7 @@
 
 static virtio_input_device_t devices[AOS_INPUT_DEVICES];
 static bool initialized;
+static bool attempted;
 static bool receive(void *context,uint8_t out[8])
 {
     aos_input_event_t e;
@@ -19,6 +20,8 @@ static bool receive(void *context,uint8_t out[8])
 }
 bool aos_vmm_virtio_input_init(void)
 {
+    if (attempted) return false;
+    attempted=true;
 #ifdef AGENTOS_GUEST_SECONDARY
     const unsigned client=1;
 #else
@@ -38,4 +41,9 @@ void aos_vmm_virtio_input_drain(void)
 {
     if (!initialized) return;
     for (unsigned i=0;i<AOS_INPUT_DEVICES;++i) (void)virtio_input_drain(&devices[i]);
+}
+void aos_vmm_virtio_input_quiesce(void)
+{
+    for (unsigned i=0;i<AOS_INPUT_DEVICES;++i)
+        if (devices[i].device.funs) virtio_input_quiesce(&devices[i]);
 }

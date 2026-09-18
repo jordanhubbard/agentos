@@ -64,7 +64,7 @@ static bool notify(virtio_device_t *d)
 {
     virtio_gpu_device_t *g=state(d);
     unsigned queue=d->regs.QueueNotify;
-    if (queue>=2 || g->reset_failed || !g->queues[queue].ready ||
+    if (queue>=2 || g->quiescing || g->reset_failed || !g->queues[queue].ready ||
         !(d->regs.Status & VIRTIO_CONFIG_S_DRIVER_OK)) return false;
     const virtio_gpu_ring_ops_t ops={validate,read_guest,write_guest,NULL};
     static unsigned started;
@@ -95,6 +95,14 @@ static bool notify(virtio_device_t *d)
 }
 static virtio_device_funs_t functions={reset,features,accept_features,get_config,set_config,notify};
 
+bool virtio_gpu_quiesce(virtio_gpu_device_t *g)
+{
+    if (!g) return false;
+    g->quiescing=true;
+    reset(&g->device);
+    return !g->reset_failed;
+}
+
 bool virtio_mmio_gpu_init(virtio_gpu_device_t *g, uintptr_t base, uintptr_t size, size_t virq)
 {
     if (!g || !g->engine.ops.create || !g->engine.ops.read_gpa) return false;
@@ -104,6 +112,7 @@ bool virtio_mmio_gpu_init(virtio_gpu_device_t *g, uintptr_t base, uintptr_t size
     memset(g->rings,0,sizeof(g->rings));
     memset(g->accepted_features,0,sizeof(g->accepted_features));
     g->reset_failed=false;
+    g->quiescing=false;
     d->regs.DeviceID=16;
     d->regs.VendorID=VIRTIO_MMIO_DEV_VENDOR_ID;
     d->transport_type=VIRTIO_TRANSPORT_MMIO;

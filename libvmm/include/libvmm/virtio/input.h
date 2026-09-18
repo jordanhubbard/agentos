@@ -19,7 +19,7 @@ typedef struct {
     void *context;
     enum virtio_input_kind kind;
     uint8_t select, subsel, event[8];
-    bool held_event, failed;
+    bool held_event, failed, quiesced;
 } virtio_input_device_t;
 
 /* One device per keyboard or pointer, each at a faulting guest IPA/IRQ. */
@@ -28,3 +28,7 @@ bool virtio_mmio_input_init(virtio_input_device_t *, enum virtio_input_kind,
 /* Call on a source notification as well as on eventq kicks. A full guest
  * queue leaves events in the source, preserving complete input sequences. */
 bool virtio_input_drain(virtio_input_device_t *);
+/* Stop vCPUs and finish the current callback first. Retire guest rings and
+ * any held event; source queues remain owned by the input virtualizer.
+ * Later notifications and guest reset cannot resume delivery. */
+void virtio_input_quiesce(virtio_input_device_t *);

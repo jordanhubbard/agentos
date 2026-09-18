@@ -1,5 +1,7 @@
 #include <platform/gpu_framebuffer.h>
 #include <libvmm/virtio/gpu_ring.h>
+#include <libvmm/virtio/gpu.h>
+#include <libvmm/virtio/config.h>
 #include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -7,7 +9,12 @@
 
 static aos_fb_client_t service;
 static aos_gpu_framebuffer_t adapter;
-static virtio_gpu_2d_t gpu;
+static virtio_gpu_device_t device;
+#define gpu device.engine
+static unsigned interrupts;
+bool virtio_mmio_register_device(virtio_device_t *d,uintptr_t base,uintptr_t size,size_t irq)
+{ assert(d==&device.device && base && size && irq); return true; }
+bool virq_inject(int irq) { (void)irq; ++interrupts; return true; }
 static uint8_t guest[AOS_FB_SURFACE_BYTES];
 static uint8_t request[VIRTIO_GPU_2D_REQUEST_BYTES], response[VIRTIO_GPU_2D_RESPONSE_BYTES];
 static unsigned calls;
@@ -169,6 +176,7 @@ int main(void)
     adapter=(aos_gpu_framebuffer_t){.region=region,.exchange=exchange,
         .validate_gpa=validate,.read_gpa=read_guest};
     assert(aos_gpu_framebuffer_init(&adapter,&gpu));
+    assert(virtio_mmio_gpu_init(&device,0xa040000,0x1000,54));
 
     begin(GPU_GET_DISPLAY_INFO);
     assert(virtio_gpu_2d_execute(&gpu,request,24,response,sizeof(response))==408);
@@ -252,6 +260,25 @@ int main(void)
     assert(run(32)==GPU_OK_NODATA && !adapter.cursor_handle);
     assert(virtio_gpu_2d_reset(&gpu));
     full_frame_test();
+    create_resource(31);
+    fail_exchange=true;
+    assert(!virtio_gpu_quiesce(&device));
+    assert(device.quiescing && device.reset_failed);
+    device.device.regs.Status=VIRTIO_CONFIG_S_DRIVER_OK;
+    device.device.regs.QueueNotify=0;
+    device.queues[0].ready=true;
+    /* Null guest ring pointers would fault if cleanup reopened admission. */
+    assert(!device.device.funs->queue_notify(&device.device));
+    fail_exchange=false;
+    assert(virtio_gpu_quiesce(&device));
+    assert(virtio_gpu_quiesce(&device));
+    for (unsigned i=0;i<VIRTIO_GPU_2D_RESOURCES;i++) assert(!gpu.resources[i].id);
+    device.device.funs->device_reset(&device.device);
+    device.device.regs.Status=VIRTIO_CONFIG_S_DRIVER_OK;
+    device.queues[0].ready=true;
+    assert(!device.device.funs->queue_notify(&device.device) && !interrupts);
+    create_resource(32); /* independent engine request proves service capacity returned */
+    assert(virtio_gpu_2d_reset(&gpu));
     free(region); free(arena);
     puts("PASS: virtio GPU 2D commands produce exact committed framebuffer pixels; bounds, backing, fences, failure and reset");
     return 0;

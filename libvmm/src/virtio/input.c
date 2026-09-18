@@ -144,7 +144,7 @@ static bool run(virtio_input_device_t *s, unsigned queue, unsigned *completed)
 }
 bool virtio_input_drain(virtio_input_device_t *s)
 {
-    if (!s || s->failed) return false;
+    if (!s || s->quiesced || s->failed) return false;
     virtio_device_t *d=&s->device;
     if (!(d->regs.Status & VIRTIO_CONFIG_S_DRIVER_OK)) return true;
     unsigned completed=0;
@@ -156,6 +156,16 @@ bool virtio_input_drain(virtio_input_device_t *s)
     if (completed) d->regs.InterruptStatus |= 1;
     return (completed || s->failed) ? virq_inject(d->virq) : true;
 }
+void virtio_input_quiesce(virtio_input_device_t *s)
+{
+    if (!s || s->quiesced) return;
+    s->quiesced=true;
+    reset(&s->device);
+    s->held_event=false;
+    memset(s->event,0,sizeof(s->event));
+    memset(s->descriptors,0,sizeof(s->descriptors));
+}
+
 static bool notify(virtio_device_t *d)
 {
     if (d->regs.QueueNotify>=2) return false;

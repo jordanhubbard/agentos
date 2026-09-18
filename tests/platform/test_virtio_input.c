@@ -191,6 +191,23 @@ int main(void)
         assert(!s.failed && !s.queues[0].ready && !s.device.regs.InterruptStatus);
         assert(clients[0].devices[0].head==0 && clients[0].devices[0].tail==3);
     }
-    puts("PASS: actual virtio-input MMIO discovery, canonical keyboard/pointer events, guest isolation, split buffers, backpressure, wrap, status and reset");
+    fresh(&s,VIRTIO_INPUT_KEYBOARD);
+    submit(0,0,keys,3);
+    submit(1,0,keys,3);
+    s.held_event=true;
+    memset(s.event,0xab,sizeof(s.event));
+    virtio_input_quiesce(&s);
+    virtio_input_quiesce(&s);
+    assert(!s.held_event && !memcmp(s.event,(uint8_t[8]){0},8));
+    assert(!virtio_input_drain(&s));
+    write_reg(&s,REG_VIRTIO_MMIO_STATUS,1,0);
+    s.device.regs.Status=VIRTIO_CONFIG_S_DRIVER_OK;
+    s.queues[0].ready=true; /* ring pointers remain NULL after reset */
+    assert(!virtio_input_drain(&s));
+    seL4_UserContext late={.x0=0};
+    assert(!virtio_mmio_fault_handle(0,REG_VIRTIO_MMIO_QUEUE_NOTIFY,1,&late,&s.device));
+    assert(!received && !interrupts);
+    assert(clients[0].devices[0].head==0 && clients[1].devices[0].head==0);
+    puts("PASS: actual virtio-input discovery, exact events, isolation, backpressure, reset and quiescence");
     return 0;
 }
