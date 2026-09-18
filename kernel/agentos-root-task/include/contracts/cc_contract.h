@@ -389,6 +389,13 @@ struct cc_reply_restore {
 
 /* ─── MSG_CC_LOG_STREAM ──────────────────────────────────────────────────── */
 
+/* MR3 address mode. Legacy mode zero retains the slot API below. Mode one
+ * addresses an active public guest handle directly: MR1=handle, MR2=0.
+ * The reply echoes that handle in MR2 and never allocates a log slot. This
+ * avoids ambiguity when a public handle equals another stream's slot number.
+ * Unknown modes and nonzero reserved MR2 are rejected. */
+#define CC_LOG_ADDRESS_HANDLE 1u
+
 /*
  * Drain a guest's serial output as ASCII bytes (agentos-vsi).  cc_pd resolves
  * (slot, pd_id) to a concrete guest console and returns the drained bytes in

@@ -1332,6 +1332,22 @@ static void handle_log_stream(const cc_req_wire_t *req, cc_reply_wire_t *rep)
     uint32_t slot  = req->mr[0];
     uint32_t pd_id = req->mr[1];
 
+    if (req->mr[2] != 0u) {
+        if (req->mr[2] != CC_LOG_ADDRESS_HANDLE || pd_id != 0u) {
+            rep->mr[0] = CC_ERR_INVALID_ARG;
+            return;
+        }
+        uint32_t drained = 0u;
+        if (!cc_drain_vm_console(slot, rep->shmem, CC_WIRE_SHMEM_SIZE, &drained)) {
+            rep->mr[0] = CC_ERR_BAD_HANDLE;
+            return;
+        }
+        rep->mr[0] = CC_OK;
+        rep->mr[1] = drained;
+        rep->mr[2] = slot;
+        return;
+    }
+
     /* Slot 0 + controller tag: the boot guest's serial stream. */
     if (slot == CC_LOG_SLOT_BOOT && pd_id == TRACE_PD_CONTROLLER) {
         uint32_t drained = 0u;

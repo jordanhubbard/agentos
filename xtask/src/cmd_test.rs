@@ -3279,16 +3279,10 @@ fn x86_linux_login_reader(
 }
 
 fn x86_cc_console_bytes(cc: &mut CcClient, handle: u32) -> anyhow::Result<Vec<u8>> {
-    let reply = cc.call(
-        MSG_CC_LOG_STREAM,
-        handle,
-        TRACE_PD_GUEST_VMM_PRIMARY,
-        0,
-        &[],
-    )?;
+    let reply = cc.call(MSG_CC_LOG_STREAM, handle, 0, 1, &[])?;
     let len = reply.mr[1] as usize;
     anyhow::ensure!(
-        reply.mr[0] == CC_OK && len <= reply.shmem.len(),
+        reply.mr[0] == CC_OK && len <= reply.shmem.len() && reply.mr[2] == handle,
         "invalid Intel CC console reply: {:?}",
         reply.mr
     );
@@ -3308,6 +3302,17 @@ fn x86_cc_linux_probe(
         absent.mr[0] == CC_ERR_BAD_HANDLE,
         "CC image exposed an automatic guest"
     );
+    for (handle, pd, mode, expected) in [
+        (999, 0, 1, CC_ERR_BAD_HANDLE),
+        (999, 0, 2, 9),
+        (999, 41, 1, 9),
+    ] {
+        let reply = cc.call(MSG_CC_LOG_STREAM, handle, pd, mode, &[])?;
+        anyhow::ensure!(
+            reply.mr[0] == expected,
+            "invalid console addressing was accepted"
+        );
+    }
     // This exercises public admission against the image's boot-reserved RAM.
     let handle = create_guest_via_cc_wait(
         &mut cc,
@@ -3374,6 +3379,11 @@ fn x86_cc_linux_probe(
             "stale Intel handle accepted by {opcode:#x}"
         );
     }
+    let stale_console = cc.call(MSG_CC_LOG_STREAM, handle, 0, 1, &[])?;
+    anyhow::ensure!(
+        stale_console.mr[0] == CC_ERR_BAD_HANDLE,
+        "destroyed guest console remained accessible"
+    );
     Ok(format!("{proof}; binary CC CREATE, Linux console input echo, DESTROY and stale handle rejection verified"))
 }
 
@@ -6121,10 +6131,12 @@ mod tests {
                 stream.read_exact(&mut request).unwrap();
                 assert_eq!(rd32(&request, 0), MSG_CC_LOG_STREAM);
                 assert_eq!(rd32(&request, 4), 17);
-                assert_eq!(rd32(&request, 8), TRACE_PD_GUEST_VMM_PRIMARY);
+                assert_eq!(rd32(&request, 8), 0);
+                assert_eq!(rd32(&request, 12), 1);
                 let mut reply = [0u8; CC_REPLY_SIZE];
                 wr32(&mut reply, 0, status);
                 wr32(&mut reply, 4, length);
+                wr32(&mut reply, 8, 17);
                 reply[16..19].copy_from_slice(b"abc");
                 stream.write_all(&reply).unwrap();
             }
