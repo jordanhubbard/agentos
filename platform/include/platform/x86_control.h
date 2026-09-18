@@ -8,6 +8,10 @@
  * out of the IPC buffer. This call may overwrite every message register.
  * RUNNING permits re-entry; STOPPED requires another control step without
  * touching guest execution objects. ERROR is a malformed notification. */
+/* The native path from VCPU revocation through the first reply uses general
+ * registers only. SDK 2.3 can leave the retiring thread's FPU unavailable
+ * until a scheduling transition: scalar IPC must not depend on an incidental
+ * preemption or diagnostic Send to make compiler-generated SSE safe. */
 enum aos_x86_control_result {
     AOS_X86_CONTROL_ERROR,
     AOS_X86_CONTROL_STOPPED,

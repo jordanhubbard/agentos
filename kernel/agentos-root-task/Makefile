@@ -313,17 +313,17 @@ $(BUILD_DIR)/x86_virtio_gpa.o: $(REPO_ROOT_MK)/libvmm/src/virtio/gpa.c
 $(BUILD_DIR)/guest_vmm_primary.elf: $(BUILD_DIR)/x86_virtio.o $(BUILD_DIR)/x86_virtio_mmio.o $(BUILD_DIR)/x86_virtio_gpa.o
 $(BUILD_DIR)/x86_teardown.o: $(REPO_ROOT_MK)/platform/guest-vmm/teardown.c
 	@mkdir -p $(BUILD_DIR)
-	$(CC) -c $(X86_SERIAL_CFLAGS) $< -o $@
+	$(CC) -c $(X86_SERIAL_CFLAGS) -mgeneral-regs-only $< -o $@
 $(BUILD_DIR)/x86_release_memory.o: $(REPO_ROOT_MK)/platform/guest-vmm/x86_release_memory.c
 	@mkdir -p $(BUILD_DIR)
-	$(CC) -c $(X86_SERIAL_CFLAGS) $< -o $@
+	$(CC) -c $(X86_SERIAL_CFLAGS) -mgeneral-regs-only $< -o $@
 $(BUILD_DIR)/guest_vmm_primary.elf: $(BUILD_DIR)/x86_teardown.o $(BUILD_DIR)/x86_release_memory.o
 $(BUILD_DIR)/x86_control.o: $(REPO_ROOT_MK)/platform/guest-vmm/x86_control.c
 	@mkdir -p $(BUILD_DIR)
-	$(CC) -c $(CFLAGS) $< -o $@
+	$(CC) -c $(CFLAGS) -mgeneral-regs-only $< -o $@
 $(BUILD_DIR)/x86_runtime.o: $(REPO_ROOT_MK)/platform/guest-vmm/runtime.c
 	@mkdir -p $(BUILD_DIR)
-	$(CC) -c $(CFLAGS) $< -o $@
+	$(CC) -c $(CFLAGS) -mgeneral-regs-only $< -o $@
 $(BUILD_DIR)/guest_vmm_primary.elf: $(BUILD_DIR)/x86_control.o $(BUILD_DIR)/x86_runtime.o
 $(BUILD_DIR)/x86_lifecycle_probe.o: $(REPO_ROOT_MK)/tests/platform/x86_lifecycle_probe.c
 	@mkdir -p $(BUILD_DIR)
@@ -382,7 +382,7 @@ $(BUILD_DIR)/x86_string.o: $(REPO_ROOT_MK)/platform/guest-vmm/x86_string.c
 $(BUILD_DIR)/guest_vmm_primary.elf: $(BUILD_DIR)/x86_string.o
 $(BUILD_DIR)/x86_firmware_vmm.o: $(REPO_ROOT_MK)/platform/guest-vmm/x86_firmware.c
 	@mkdir -p $(BUILD_DIR)
-	$(CC) -c $(CFLAGS) -I$(REPO_ROOT_MK)/libvmm/include $< -o $@
+	$(CC) -c $(CFLAGS) -mgeneral-regs-only -I$(REPO_ROOT_MK)/libvmm/include $< -o $@
 $(BUILD_DIR)/guest_vmm_primary.elf: $(BUILD_DIR)/x86_firmware_vmm.o
 .PHONY: verify-x86-firmware
 verify-x86-firmware:
