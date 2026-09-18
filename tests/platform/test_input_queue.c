@@ -1,7 +1,9 @@
+#define _GNU_SOURCE
 #include <platform/input.h>
 #include <assert.h>
 #include <stdio.h>
 #include <string.h>
+#include <sys/mman.h>
 
 static aos_input_frontend_t frontend;
 static aos_input_client_region_t regions[AOS_INPUT_CLIENTS];
@@ -40,6 +42,53 @@ static void expect_batch(aos_input_request_t q)
     }
     assert(aos_input_event_receive(queue,&event)==-1);
 }
+static void test_terminal_detach(void)
+{
+    setup();
+    aos_input_client_region_t *retired=mmap(NULL,AOS_INPUT_FRAME_SIZE,
+        PROT_READ|PROT_WRITE,MAP_PRIVATE|MAP_ANONYMOUS,-1,0);
+    assert(retired!=MAP_FAILED);
+    service.clients[0]=retired;
+    aos_input_request_t press=key(0);
+    press.count=2;
+    press.events[1]=(aos_input_event_t){0,0,0};
+    submit(press,AOS_INPUT_OK);
+    retired->devices[0].tail=AOS_INPUT_EVENT_CAPACITY;
+    aos_input_request_t release={.version=AOS_INPUT_RELEASE_VERSION,.client=0,
+        .device=AOS_INPUT_KEYBOARD};
+    assert(aos_input_submit(&frontend,&release)==0);
+    uint32_t ready;
+    assert(aos_input_pump(&service,&ready)==1 && !ready);
+    aos_input_response_t response;
+    assert(aos_input_receive(&frontend,&response)==0 && response.status==AOS_INPUT_OK);
+    assert(service.releasing[0] && service.held[0][0][0]);
+    /* A full frontend response ring must not prevent control completion. */
+    frontend.resp_tail=frontend.resp_head+AOS_INPUT_REQUEST_CAPACITY;
+    aos_input_request_t pending=key(0);
+    assert(aos_input_submit(&frontend,&pending)==0);
+    retired->detach.version=AOS_INPUT_DETACH_VERSION+1;
+    retired->detach.request=1;
+    assert(aos_input_pump(&service,&ready)==0 && service.allowed_mask==3 && !retired->detach.ack);
+    retired->detach.version=AOS_INPUT_DETACH_VERSION;
+    retired->detach.request=2;
+    assert(aos_input_pump(&service,&ready)==0 && service.allowed_mask==3 && !retired->detach.ack);
+    retired->detach.request=1;
+    assert(aos_input_pump(&service,&ready)==1 && ready==1 && retired->detach.ack==1);
+    assert(service.allowed_mask==2 && !service.clients[0] && !service.releasing[0]);
+    for (unsigned d=0;d<AOS_INPUT_DEVICES;d++)
+        for (unsigned w=0;w<8;w++) assert(!service.held[0][d][w]);
+    assert(mprotect(retired,AOS_INPUT_FRAME_SIZE,PROT_NONE)==0);
+    frontend.resp_head=frontend.resp_tail;
+    aos_input_request_t peer=key(1);
+    assert(aos_input_submit(&frontend,&peer)==0);
+    assert(aos_input_pump(&service,&ready)==2 && ready==2);
+    assert(aos_input_receive(&frontend,&response)==0 && response.status==AOS_INPUT_DENIED && !response.accepted);
+    assert(aos_input_receive(&frontend,&response)==0 && response.status==AOS_INPUT_OK && response.accepted==3);
+    expect_batch(peer);
+    assert(aos_input_pump(&service,&ready)==0 && !ready);
+    assert(munmap(retired,AOS_INPUT_FRAME_SIZE)==0);
+}
+
 int main(void)
 {
     setup();
@@ -176,6 +225,7 @@ int main(void)
         else packets++;
     }
     assert(released==255 && packets==5 && aos_input_pump(&service,&ready)==0);
-    puts("PASS: isolated input batches, held-state release, retained backpressure, repeats and queue wrap");
+    test_terminal_detach();
+    puts("PASS: input isolation, release, backpressure, wrap and terminal detach with protected retired memory");
     return 0;
 }

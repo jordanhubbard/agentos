@@ -3,6 +3,9 @@
 /* Called after stopping guest execution; does not detach input_virt. */
 void aos_vmm_virtio_input_quiesce(void);
 #include <stdbool.h>
+/* Nonblocking terminal detach. False requires another call while the input
+ * page remains mapped. Success stops all local adapter callbacks. */
+bool aos_vmm_virtio_input_detach(void);
 #define AOS_VIRTIO_INPUT_KEYBOARD_IPA 0x0a050000UL
 #define AOS_VIRTIO_INPUT_POINTER_IPA 0x0a060000UL
 #define AOS_VIRTIO_INPUT_MMIO_SIZE 0x1000UL

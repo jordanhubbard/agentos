@@ -8,6 +8,7 @@
 static virtio_input_device_t devices[AOS_INPUT_DEVICES];
 static bool initialized;
 static bool attempted;
+static bool detached;
 static bool receive(void *context,uint8_t out[8])
 {
     aos_input_event_t e;
@@ -20,7 +21,7 @@ static bool receive(void *context,uint8_t out[8])
 }
 bool aos_vmm_virtio_input_init(void)
 {
-    if (attempted) return false;
+    if (attempted || detached) return false;
     attempted=true;
 #ifdef AGENTOS_GUEST_SECONDARY
     const unsigned client=1;
@@ -46,4 +47,23 @@ void aos_vmm_virtio_input_quiesce(void)
 {
     for (unsigned i=0;i<AOS_INPUT_DEVICES;++i)
         if (devices[i].device.funs) virtio_input_quiesce(&devices[i]);
+}
+
+bool aos_vmm_virtio_input_detach(void)
+{
+    if (detached) return true;
+    aos_vmm_virtio_input_quiesce();
+#ifdef AGENTOS_GUEST_SECONDARY
+    const unsigned client=1;
+#else
+    const unsigned client=0;
+#endif
+    aos_input_client_region_t *region=(void *)(AOS_INPUT_SHMEM_VA+client*AOS_INPUT_FRAME_SIZE);
+    __atomic_store_n(&region->detach.version,AOS_INPUT_DETACH_VERSION,__ATOMIC_RELAXED);
+    __atomic_store_n(&region->detach.request,1u,__ATOMIC_RELEASE);
+    seL4_Signal(PD_CNODE_SLOT_INPUT_PEER_NOTIFY);
+    if (__atomic_load_n(&region->detach.ack,__ATOMIC_ACQUIRE)!=1u) return false;
+    initialized=false;
+    detached=true;
+    return true;
 }

@@ -84,6 +84,17 @@ The VMM clears its local serial endpoint after acknowledgment; failed replies
 keep teardown retryable before capability revocation. Peer and operator
 channels retain their attachments. Serial queue-page capabilities remain
 allocated, and reattachment still requires an explicit generation/reset path.
+Input uses a one-shot detach handshake at the end of each existing VMM-owned
+event page. The stopped VMM publishes a versioned request and signals the
+service. Before acknowledging, `input_virt` removes that client from private
+admission, clears held-key/release state and drops its page pointer. The
+release-store acknowledgment is its final access to the retired page; later
+frontend requests for that client are denied. This control path progresses
+even when frontend response queues are full. Page ownership supplies authority
+without a new endpoint or peer-page grant. The VMM waits for acknowledgment
+before capability revocation; the input page itself remains allocated. Event
+wire layouts stay unchanged, and recreation still needs a generation/reset
+contract rather than reusing a retired acknowledgment.
 Queued guest faults are not serviced during teardown. Initialization rejects
 lifecycle re-entry while media staging still holds guest RAM pointers.
 Service grants remain owned by the VMM; recreation is not yet implemented.

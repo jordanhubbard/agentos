@@ -121,14 +121,37 @@ static unsigned release_pending(aos_input_service_t *s, uint32_t *ready)
     }
     return progress;
 }
+static unsigned detach_pending(aos_input_service_t *s, uint32_t *ready)
+{
+    unsigned detached=0;
+    for (unsigned i=0; i<AOS_INPUT_CLIENTS; i++) {
+        if (!(s->allowed_mask & (1u<<i))) continue;
+        aos_input_client_region_t *region=s->clients[i];
+        if (load(&region->detach.request)!=1u ||
+            load(&region->detach.version)!=AOS_INPUT_DETACH_VERSION) continue;
+        s->allowed_mask &= ~(1u<<i);
+        s->releasing[i]=0;
+        for (unsigned device=0; device<AOS_INPUT_DEVICES; device++)
+            for (unsigned word=0; word<8; word++) s->held[i][device][word]=0;
+        s->clients[i]=NULL;
+        /* This is the final access to the retired page. The producer may
+         * reclaim it as soon as an acquire load observes this release. */
+        publish(&region->detach.ack,1u);
+        if (ready) *ready |= 1u<<i;
+        detached++;
+    }
+    return detached;
+}
+
 unsigned aos_input_pump(aos_input_service_t *s, uint32_t *ready)
 {
     if (ready) *ready=0;
     if (!s || !s->frontend) return 0;
+    unsigned detached=detach_pending(s,ready);
     aos_input_frontend_t *f=s->frontend;
     uint32_t head=load(&f->req_head), tail=load(&f->req_tail);
     uint32_t pending=tail-head;
-    if (pending>AOS_INPUT_REQUEST_CAPACITY) return 0;
+    if (pending>AOS_INPUT_REQUEST_CAPACITY) return detached;
     unsigned processed=0;
     while (processed<pending) {
         uint32_t out=load(&f->resp_tail), consumed=load(&f->resp_head);
@@ -143,5 +166,5 @@ unsigned aos_input_pump(aos_input_service_t *s, uint32_t *ready)
         publish(&f->req_head,++head);
         ++processed;
     }
-    return processed+release_pending(s,ready);
+    return detached+processed+release_pending(s,ready);
 }
