@@ -209,16 +209,14 @@ static bool virtio_serial_init(void)
 {
     const volatile cc_virtio_startup_t *sp =
         (const volatile cc_virtio_startup_t *)CC_VIRTIO_STARTUP_VA;
-    if (sp->magic != CC_VIRTIO_STARTUP_MAGIC ||
-        sp->version != CC_VIRTIO_STARTUP_VERSION ||
-        sp->queue_pa == 0u || sp->tx_buffer_pa == 0u ||
-        sp->rx_buffer_pa == 0u) {
+    const cc_virtio_startup_t startup = *sp;
+    if (!cc_virtio_startup_valid(&startup, CC_VIRTIO_STARTUP_VERSION)) {
         cc_dbg_puts("[cc_pd] VirtIO init FAILED: bad startup record\n");
         return false;
     }
-    g_vq_pa[0] = (seL4_Word)sp->queue_pa;
-    g_vq_pa[1] = (seL4_Word)sp->tx_buffer_pa;
-    g_vq_pa[2] = (seL4_Word)sp->rx_buffer_pa;
+    g_vq_pa[0] = (seL4_Word)startup.queue_pa;
+    g_vq_pa[1] = (seL4_Word)startup.tx_buffer_pa;
+    g_vq_pa[2] = (seL4_Word)startup.rx_buffer_pa;
 
     g_virtio = (volatile uint32_t *)(CC_VIRTIO_MMIO_VA + VMMIO_SLOT_OFF);
 

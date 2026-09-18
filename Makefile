@@ -877,6 +877,15 @@ test-x86-profile-host:
 	@$(BUILD_TMP_DIR)/test_x86_profile
 test-host: test-virtio-host-transport
 test-host: test-virtio-pci-caps
+test-host: test-cc-transport-host
+
+.PHONY: test-cc-transport-host
+test-cc-transport-host:
+	@mkdir -p $(BUILD_TMP_DIR)
+	$(CC) -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -g \
+		-idirafter kernel/agentos-root-task/include tests/platform/test_cc_transport.c \
+		-o $(BUILD_TMP_DIR)/test_cc_transport
+	$(BUILD_TMP_DIR)/test_cc_transport
 
 .PHONY: test-virtio-pci-caps
 test-virtio-pci-caps:
