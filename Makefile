@@ -615,7 +615,7 @@ run-x86_64-cc:
 run-x86_64-cc-linux:
 	@test -n "$(X86_ROOT_DISK)" || { echo 'Set X86_ROOT_DISK to a disposable raw Debian root disk'; exit 1; }
 	@cargo xtask qemu-launch --board x86_64_generic_vtx --x86-cc \
-		--x86-boot-profile debian-amd64.toml --x86-block-image "$(X86_ROOT_DISK)" \
+		--x86-boot-profile $(if $(X86_BOOT_PROFILE),$(X86_BOOT_PROFILE),debian-amd64.toml) --x86-block-image "$(X86_ROOT_DISK)" \
 		--x86-block-write --ssh-port $(if $(X86_SSH_PORT),$(X86_SSH_PORT),12224)
 
 run:
@@ -757,7 +757,7 @@ gate-x86_64-cc-linux:
 	@test -n "$(X86_ROOT_DISK)" -a -n "$(X86_SSH_KEY)" -a -n "$(X86_SSH_PORT)" || { echo 'Set X86_ROOT_DISK, X86_SSH_KEY and X86_SSH_PORT'; exit 1; }
 	@cargo xtask qemu-test --board x86_64_generic_vtx --guest-os none \
 		--assert-vmx-exit --assert-firmware-reset --assert-x86-linux-login --assert-x86-cc \
-		--x86-boot-profile debian-amd64.toml --x86-ssh-key "$(X86_SSH_KEY)" \
+		--x86-boot-profile $(if $(X86_BOOT_PROFILE),$(X86_BOOT_PROFILE),debian-amd64.toml) --x86-ssh-key "$(X86_SSH_KEY)" \
 		$(if $(X86_SSH_KNOWN_HOSTS),--x86-ssh-known-hosts "$(X86_SSH_KNOWN_HOSTS)",) \
 		--ssh-port "$(X86_SSH_PORT)" --x86-block-image "$(X86_ROOT_DISK)" \
 		--x86-block-write --timeout-secs $(QEMU_TEST_TIMEOUT)
@@ -766,7 +766,7 @@ gate-x86_64-debian-ssh:
 	@test -n "$(X86_ROOT_DISK)" -a -n "$(X86_SSH_KEY)" -a -n "$(X86_SSH_PORT)" || { echo 'Set X86_ROOT_DISK, X86_SSH_KEY and X86_SSH_PORT'; exit 1; }
 	@cargo xtask qemu-test --board x86_64_generic_vtx --guest-os none \
 		--assert-vmx-exit --assert-firmware-reset --assert-x86-linux-login \
-		--x86-boot-profile debian-amd64.toml --x86-ssh-key "$(X86_SSH_KEY)" \
+		--x86-boot-profile $(if $(X86_BOOT_PROFILE),$(X86_BOOT_PROFILE),debian-amd64.toml) --x86-ssh-key "$(X86_SSH_KEY)" \
 		$(if $(X86_SSH_KNOWN_HOSTS),--x86-ssh-known-hosts "$(X86_SSH_KNOWN_HOSTS)",) \
 		--ssh-port "$(X86_SSH_PORT)" --x86-block-image "$(X86_ROOT_DISK)" \
 		--x86-block-write --timeout-secs $(QEMU_TEST_TIMEOUT)
@@ -826,6 +826,15 @@ test-host: test-x86-cpu-host
 test-host: test-guest-scheduling-host test-guest-gic-mapping-host test-guest-paging-host test-net-rx-accounting-host
 test-host: test-guest-execution-host
 test-host: test-x86-guest-objects-host
+test-host: test-untyped-host
+.PHONY: test-untyped-host
+test-untyped-host:
+	@mkdir -p $(BUILD_TMP_DIR)
+	$(CC) -std=c11 -Wall -Wextra -Werror -DAGENTOS_TEST_HOST \
+		-I kernel/agentos-root-task/include tests/api/test_ut_alloc.c \
+		-o $(BUILD_TMP_DIR)/test_ut_alloc
+	$(BUILD_TMP_DIR)/test_ut_alloc
+
 test-host: test-x86-memory-rebuild-host
 test-host: test-x86-recreate-host
 .PHONY: test-x86-recreate-host

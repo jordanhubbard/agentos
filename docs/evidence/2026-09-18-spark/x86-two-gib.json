@@ -1,0 +1,58 @@
+{
+  "schema": "agentos.x86_two_gib.v1",
+  "task": "task_0348a8c136ec474cacaac48481988013",
+  "accepted_for_v04_release": false,
+  "runtime_revision": "db6d53e021113f20d2ee29d9eb9e9c7bd0beb640",
+  "configuration": {
+    "guest_ram_bytes": 2147483648,
+    "qemu_ram_bytes": 4294967296,
+    "guest_ram_hva": "0x80000000..0x100000000",
+    "rom_hva": "0x100000000",
+    "profile": "debian-amd64-2g.toml"
+  },
+  "changes": [
+    "Second low EPT directory in the existing private execution pool covers guest RAM above 1 GiB.",
+    "Device untyped tables retain the complete BootInfo descriptor capacity.",
+    "Skipped PCI address ranges use aligned child device untypeds retained only in root CSpace, without mapping skipped MMIO or delegating it to a driver."
+  ],
+  "negative_control": {
+    "revision": "74b3105",
+    "result": "Intel root task refused startup at PCI device frame grant. Owned QEMU stopped after the explicit failure; Make returned 2.",
+    "target_log_sha256_before_cleanup": "6cbc7c8b4bff3a448482725720196c8f927245dfa59f62f29e0ecc6844c27ae1",
+    "finding": "BAR 0x7000000000 lies within the BootInfo device region starting 0x4000000000. The former page-at-a-time skip would require 50331648 dummy slots. Retaining all descriptors alone was insufficient."
+  },
+  "qualification": {
+    "host": {
+      "command": "make test-host test-x86-firmware-build SEL4_SDK_VERSION=2.3.0",
+      "exit_code": 0,
+      "log_sha256": "e5d2a8bca63bccbbfa1153ffb645841973134cb258f8d7cf7bc45e99f7934407",
+      "allocator_assertions": 66
+    },
+    "spark": {
+      "command": "make gate SEL4_SDK_VERSION=2.3.0",
+      "exit_code": 0,
+      "log_sha256": "daf39fa8b5ac627432c6bbdf4fbb8ff6ab9e015378c6a5d5b326bbbfd9894b3a"
+    },
+    "intel": {
+      "command": "make gate-x86_64-teardown SEL4_SDK_VERSION=2.3.0 X86_FIRMWARE_IMAGE=/tmp/agentos-ovmf-2024.02-2ubuntu0.9.fd X86_FIRMWARE_SHA256=101afad5f520753224b60b9555df60add435cf50c7a82b781d7d7d8c60db7eb5 X86_BOOT_KERNEL=/tmp/agentos-linux-7.0.0-30.efi X86_BOOT_KERNEL_SHA256=0ad39b13e289e1a5cf806d14541ac8f221eefe849017f5915e0846917ed67785 X86_BOOT_INITRD=/tmp/agentos-v04-intel-discovery/build/x86-userspace/initrd.bin X86_BOOT_INITRD_SHA256=43f3b0bb3e26a1e45438c421d8fecfa3a1cf613138fef7b3a5132420357f0bd4 X86_BOOT_RAM_BYTES=0x80000000u QEMU_TEST_TIMEOUT=300",
+      "exit_code": 0,
+      "full_log_sha256": "c0bf0064784a901de3b391ad15da9ec6a9f138121f545b5bfd0924fe8a8c6733",
+      "target_log_sha256": "163a08b17f048bd73adbc79894c1f2fb315f9e556652804efadf1330dfe0abc7",
+      "root_task_sha256": "a4f008f5c31641a67ee4ca5ef37ed51b6a493c9708f5b245ddb64a48a37e0128",
+      "proofs": [
+        "Linux ring-3 initramfs syscall",
+        "Canonical host network attachment",
+        "Host and guest block read",
+        "Guest network packet roundtrip",
+        "Terminal teardown and zeroed pool reuse",
+        "Lifecycle client suspend/resume/destroy"
+      ]
+    }
+  },
+  "artifact_directory": "/home/jkh/.local/share/agentos-evidence/2026-09-18-two-gib",
+  "limitations": [
+    "This fixture does not establish full Debian recreation at 2 GiB. That managed gate is tracked separately.",
+    "Multi-vCPU support, CPU feature policy, dynamic resource admission and concurrent guest isolation remain outside this capacity step.",
+    "Canonical integration, required GitHub checks and remaining v0.4 acceptance are pending."
+  ]
+}

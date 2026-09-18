@@ -81,15 +81,15 @@ extern volatile aos_x86_lifecycle_witness_t aos_x86_control_witness;
 #ifndef AOS_X86_FIRMWARE_RAM
 #define AOS_X86_FIRMWARE_RAM      0x02000000u
 #endif
-#define AOS_X86_FIRMWARE_RAM_VA   0x80000000u
+#define AOS_X86_FIRMWARE_RAM_VA   0x80000000ull
 #ifndef AOS_X86_FIRMWARE_ROM_VA
 #define AOS_X86_FIRMWARE_ROM_VA   0x90000000u
 #endif
 #if (AOS_X86_FIRMWARE_RAM & 0x1fffffu) || \
     AOS_X86_FIRMWARE_RAM < 0x02000000u || \
-    AOS_X86_FIRMWARE_RAM > 0x40000000u || \
+    AOS_X86_FIRMWARE_RAM > 0x80000000u || \
     AOS_X86_FIRMWARE_RAM > AOS_X86_FIRMWARE_ROM_VA - AOS_X86_FIRMWARE_RAM_VA
-#error "Firmware RAM must be 32MiB..1GiB in whole 2MiB pages and fit below the VMM ROM mapping"
+#error "Firmware RAM must be 32MiB..2GiB in whole 2MiB pages and fit below the VMM ROM mapping"
 #endif
 #define AOS_X86_VTX_GUEST_RIP       0x1000u
 #define AOS_X86_VTX_GUEST_PML4_GPA  0x2000u

@@ -69,6 +69,15 @@ seL4_Error seL4_Untyped_Retype(seL4_CPtr service,
     return g_default_retype_result;
 }
 
+/* Allocation-size model for the host-only BootInfo stub. Intermediate
+ * tables use a distinct model token; no seL4 ABI is claimed by this test. */
+#define seL4_TCBBits 11u
+#define seL4_UntypedObject 0u
+#define seL4_EndpointBits 4u
+#define seL4_NotificationObject 3u
+#define seL4_NotificationBits 5u
+#define seL4_PageTableBits 12u
+#define seL4_ARCH_IntermediatePTObject 9u
 #include "../../kernel/agentos-root-task/src/ut_alloc.c"
 
 static seL4_BootInfo make_bi(seL4_SlotPos empty_start,
@@ -172,17 +181,17 @@ static void test_alloc_retries_after_nomem(void)
     ASSERT_EQ(g_retype_calls[1].service, 501u, "ut_alloc: retry uses next cap");
 }
 
-static void test_alloc_stops_on_invalid(void)
+static void test_alloc_stops_on_invalid_capability(void)
 {
     retype_reset();
-    retype_push_result(seL4_InvalidArgument);
+    retype_push_result(seL4_InvalidCapability);
 
     seL4_BootInfo bi = make_bi(100u, 110u, 600u, 2u);
     bi.untypedList[0].sizeBits = 12u;
     bi.untypedList[1].sizeBits = 12u;
     ut_alloc_init(&bi);
 
-    ASSERT_EQ(ut_alloc(seL4_TCBObject, 0u, 2u, 9u, 64u), seL4_InvalidArgument,
+    ASSERT_EQ(ut_alloc(seL4_TCBObject, 0u, 2u, 9u, 64u), seL4_InvalidCapability,
               "ut_alloc: propagates non-memory retype error");
     ASSERT_EQ(g_retype_count, 1u, "ut_alloc: does not retry non-memory errors");
     ASSERT_EQ(g_retype_calls[0].service, 600u, "ut_alloc: first cap produced error");
@@ -284,9 +293,71 @@ static void test_device_cap_typed_validation(void)
               "ut_alloc_device_cap_typed: clears cap_out before validation");
 }
 
+static void test_device_caps_after_many_boot_regions(void)
+{
+    seL4_BootInfo bi = make_bi(1000u, 1100u, 200u, 41u);
+    for (unsigned i = 0; i < 40u; i++) {
+        bi.untypedList[i].isDevice = 1u;
+        bi.untypedList[i].sizeBits = 12u;
+        bi.untypedList[i].paddr = 0x10000000u + i * 0x2000u;
+    }
+    bi.untypedList[39].paddr = UINT64_C(0x7000000000);
+    bi.untypedList[40].sizeBits = 12u;
+    retype_reset();
+    ut_alloc_init(&bi);
+    seL4_CPtr cap = seL4_CapNull;
+    ASSERT_EQ(ut_alloc_device_cap(UINT64_C(0x7000000000), &cap), seL4_NoError,
+              "late high PCI page remains available after 39 device regions");
+    ASSERT_EQ(cap, 1000u, "late device page receives the first free slot");
+    ASSERT_EQ(g_retype_count, 1u, "late device page needs exactly one retype");
+    ASSERT_EQ(g_retype_calls[0].service, 239u, "retype uses the matching kernel device grant");
+    ASSERT_EQ(ut_alloc_cap(seL4_TCBObject, 0u, &cap), seL4_NoError,
+              "normal memory after all device descriptors remains available");
+    ASSERT_EQ(g_retype_calls[1].service, 240u, "normal allocation uses only the non-device grant");
+}
+
+static void test_sparse_device_gap(void)
+{
+    seL4_BootInfo bi = make_bi(1000u, 1010u, 200u, 1u);
+    bi.untypedList[0].isDevice = 1u;
+    bi.untypedList[0].paddr = UINT64_C(0x4000000000);
+    bi.untypedList[0].sizeBits = 38u;
+    retype_reset();
+    ut_alloc_init(&bi);
+    seL4_CPtr cap = 0u;
+    ASSERT_EQ(ut_alloc_device_cap(UINT64_C(0x7000000000), &cap), seL4_NoError,
+              "sparse PCI BAR fits in ten available capability slots");
+    ASSERT_EQ(g_retype_count, 3u, "192 GiB gap uses two children and one frame");
+    ASSERT_EQ(g_retype_calls[0].type, seL4_UntypedObject, "gap stays device untyped");
+    ASSERT_EQ(g_retype_calls[0].size_bits, 37u, "first child covers 128 GiB");
+    ASSERT_EQ(g_retype_calls[1].size_bits, 36u, "second child covers remaining 64 GiB");
+    ASSERT_EQ(g_retype_calls[2].type, seL4_ARM_SmallPageObject, "only final cap is a frame");
+    ASSERT_EQ(ut_alloc_device_cap(UINT64_C(0x7000000000), &cap), seL4_InvalidArgument,
+              "already consumed PCI page cannot be granted again");
+
+    retype_reset();
+    ut_alloc_init(&bi);
+    retype_push_result(seL4_NoError);
+    retype_push_result(seL4_InvalidCapability);
+    cap = 99u;
+    ASSERT_EQ(ut_alloc_device_cap(UINT64_C(0x7000000000), &cap), seL4_InvalidCapability,
+              "partial skip propagates capability failure");
+    ASSERT_EQ(cap, seL4_CapNull, "partial failure publishes no device frame");
+    retype_reset();
+    ASSERT_EQ(ut_alloc_device_cap_typed(UINT64_C(0x7000000000),
+              seL4_ARM_SmallPageObject, 12u, &cap), seL4_NoError,
+              "typed retry resumes after successful prefix");
+    ASSERT_EQ(g_retype_count, 2u, "retry creates only remaining child and frame");
+    ASSERT_EQ(g_retype_calls[0].size_bits, 36u, "failed skip did not advance watermark");
+    ASSERT_EQ(ut_alloc_device_cap(UINT64_C(0x7000001000), &cap), seL4_NoError,
+              "adjacent PCI BAR page remains available");
+    ASSERT_EQ(g_retype_count, 3u, "adjacent page requires no skip child");
+}
+
 int main(void)
 {
-    TAP_PLAN(46);
+    (void)_tap_todo;
+    TAP_PLAN(66);
 
     test_init_null();
     test_slot_cursor();
@@ -294,12 +365,14 @@ int main(void)
     test_alloc_uses_first_normal_untyped();
     test_alloc_skips_device_untyped();
     test_alloc_retries_after_nomem();
-    test_alloc_stops_on_invalid();
+    test_alloc_stops_on_invalid_capability();
     test_alloc_cap_success();
     test_alloc_cap_slot_exhausted();
     test_device_frame_success();
     test_device_frame_not_found();
     test_device_cap_typed_validation();
+    test_device_caps_after_many_boot_regions();
+    test_sparse_device_gap();
 
     return tap_exit();
 }

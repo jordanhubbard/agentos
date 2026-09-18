@@ -502,9 +502,9 @@ fn validate_x86_boot_profile(profile: &Profile) -> Result<()> {
     );
     ensure!(
         placement.guest_gpa_base == Some(0)
-            && (0x02000000..=0x40000000).contains(&ram)
+            && (0x02000000..=0x80000000).contains(&ram)
             && ram % 0x200000 == 0,
-        "x86 firmware RAM must start at zero and be 32 MiB..1 GiB in 2 MiB units"
+        "x86 firmware RAM must start at zero and be 32 MiB..2 GiB in 2 MiB units"
     );
     ensure!(
         profile
@@ -2409,7 +2409,7 @@ mod tests {
         bad.target.as_mut().unwrap().autostart = Some(false);
         assert!(validate_x86_boot_profile(&bad).is_err());
         let mut bad = profile.clone();
-        bad.placements.get_mut("default").unwrap().ram_size = Some(0x40200000);
+        bad.placements.get_mut("default").unwrap().ram_size = Some(0x80200000);
         assert!(validate_x86_boot_profile(&bad).is_err());
         let mut bad = profile.clone();
         bad.placements.get_mut("default").unwrap().vmm_hva_base = Some(0x40000000);
@@ -2423,6 +2423,22 @@ mod tests {
         let mut bad = profile;
         bad.target.as_mut().unwrap().network_client = Some(1);
         assert!(validate_x86_boot_profile(&bad).is_err());
+    }
+
+    #[test]
+    fn x86_boot_selection_accepts_second_ram_gib_and_rejects_misalignment() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../guest-profiles");
+        let (mut profile, _) =
+            resolve(&root, Path::new("debian-amd64-2g.toml"), &mut Vec::new()).unwrap();
+        assert_eq!(profile.placements["default"].ram_size, Some(0x80000000));
+        for ram in [0x40200000, 0x60000000, 0x80000000] {
+            profile.placements.get_mut("default").unwrap().ram_size = Some(ram);
+            validate_x86_boot_profile(&profile).unwrap();
+        }
+        profile.placements.get_mut("default").unwrap().ram_size = Some(0x80000001);
+        assert!(validate_x86_boot_profile(&profile).is_err());
+        profile.placements.get_mut("default").unwrap().ram_size = Some(0x60001000);
+        assert!(validate_x86_boot_profile(&profile).is_err());
     }
 
     #[test]
