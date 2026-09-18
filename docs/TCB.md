@@ -29,7 +29,8 @@ suspension. This board still auto-boots; managed CREATE/admission and external
 manager/CC/GUI integration are outstanding.
 
 The userspace qualification adds `x86_lifecycle_probe`, an ordinary client
-with only its VMM service endpoint. It receives no device, IRQ, guest memory
+with its VMM service endpoint and a send-only failure-report cap. Root rejects
+that cap's nonzero badge on the success path. It receives no device, IRQ, guest memory
 or execution caps. The VMM receives its rendezvous endpoint at slot 473.
 The client suspends/resumes during early boot, requires Linux to reach the
 ring-3 checkpoint, then destroys and verifies terminal-state rejection.

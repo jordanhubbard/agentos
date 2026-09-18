@@ -3826,6 +3826,21 @@ void root_task_main(const seL4_BootInfo *bi)
                 return;
             }
         }
+#ifdef AGENTOS_X86_USERSPACE_PROOF
+        if (pd->self_svc_id == SVC_ID_X86_LIFECYCLE_PROBE) {
+            /* The client can report failure without perturbing successful
+             * IPC scheduling. Its badge can never satisfy the success path. */
+            if (g_x86_vtx_proof_endpoint == seL4_CapNull ||
+                seL4_CNode_Mint(pd_cnode, AOS_X86_VTX_REPORT_CAP,
+                    pd->cnode_size_bits, seL4_CapInitThreadCNode,
+                    g_x86_vtx_proof_endpoint, 64u,
+                    seL4_CapRights_new(0u, 0u, 0u, 1u),
+                    AOS_X86_LIFECYCLE_FAILURE_BADGE) != seL4_NoError) {
+                dbg_puts("[rt] lifecycle failure reporter setup failed; stopping boot\n");
+                return;
+            }
+        }
+#endif
 #endif
         {
             dbg_puts("[rt] pd entry=");
@@ -3969,7 +3984,7 @@ void root_task_main(const seL4_BootInfo *bi)
             seL4_Wait(g_x86_vtx_proof_endpoint, &badge);
 #ifdef AGENTOS_X86_USERSPACE_PROOF
         unsigned lifecycle_traces = 0u;
-        while (seL4_MessageInfo_get_label(tag) == AOS_X86_LIFECYCLE_TRACE_LABEL &&
+        while (badge == 0u && seL4_MessageInfo_get_label(tag) == AOS_X86_LIFECYCLE_TRACE_LABEL &&
                seL4_MessageInfo_get_length(tag) == 4u && lifecycle_traces++ < 33u) {
             seL4_Word trace[4];
             for (unsigned i = 0; i < 4u; i++) trace[i] = seL4_GetMR(i);
@@ -4035,7 +4050,7 @@ void root_task_main(const seL4_BootInfo *bi)
             }
         }
 #endif
-        if (seL4_MessageInfo_get_label(tag) == AOS_X86_VTX_PROOF_LABEL &&
+        if (badge == 0u && seL4_MessageInfo_get_label(tag) == AOS_X86_VTX_PROOF_LABEL &&
 #ifdef AGENTOS_X86_FIRMWARE_RESET
             seL4_MessageInfo_get_length(tag) == AOS_X86_FIRMWARE_REPORT_WORDS &&
 #else
