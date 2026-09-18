@@ -1240,6 +1240,10 @@ static void handle_guest_status(const cc_req_wire_t *req, cc_reply_wire_t *rep)
     uint32_t handle = req->mr[0];
 #if defined(AGENTOS_GUEST_PRIMARY) || defined(AGENTOS_GUEST_SECONDARY)
     if (handle == CC_BOOT_GUEST_HANDLE) {
+        if (!g_boot_guest_present) {
+            rep->mr[0] = CC_ERR_BAD_HANDLE;
+            return;
+        }
         cc_fill_boot_guest_status((cc_guest_status_t *)rep->shmem);
         rep->mr[0] = CC_OK;
         return;
