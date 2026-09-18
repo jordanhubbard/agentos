@@ -371,13 +371,21 @@ static bool terminal_teardown_proof(void)
         sel4_msg_t serial_request = {.opcode = SERIAL_VIRT_OP_DETACH,
             .length = sizeof(serial_args)}, serial_reply = {0};
         __builtin_memcpy(serial_request.data, &serial_args, sizeof(serial_args));
-        sel4_call(PD_CNODE_SLOT_SERIAL_VIRT_EP, &serial_request, &serial_reply);
-        if (serial_reply.opcode != SEL4_ERR_OK ||
-            serial_reply.length != sizeof(serial_virt_attach_reply_t) ||
-            msg_u32(&serial_reply, 4u) != SERIAL_VIRT_CONTRACT_VERSION) return false;
-        if (msg_u32(&serial_reply, 0u) != SERIAL_VIRT_OK) {
-            teardown_proof_stage = 3200u + pass * 100u + msg_u32(&serial_reply, 0u);
-            return false;
+        for (unsigned attempt = 0u; ; attempt++) {
+            sel4_call(PD_CNODE_SLOT_SERIAL_VIRT_EP, &serial_request, &serial_reply);
+            if (serial_reply.opcode != SEL4_ERR_OK ||
+                serial_reply.length != sizeof(serial_virt_attach_reply_t) ||
+                msg_u32(&serial_reply, 4u) != SERIAL_VIRT_CONTRACT_VERSION) return false;
+            uint32_t status = msg_u32(&serial_reply, 0u);
+            if (status == SERIAL_VIRT_OK) break;
+            /* DETACH closes frontend admission but an already admitted
+             * operation may still own the queue. Retry only this contracted
+             * transient result; never revoke while access remains live. */
+            if (status != SERIAL_VIRT_ERR_BUSY || attempt == 63u) {
+                teardown_proof_stage = 3200u + pass * 100u + status;
+                return false;
+            }
+            seL4_Yield();
         }
         teardown_proof_stage = 124u + pass * 100u;
         if (seL4_CNode_Revoke(AOS_GUEST_RAM_SELF_CNODE,
