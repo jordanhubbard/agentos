@@ -149,6 +149,8 @@ ext4 input produced no output; an existing output was rejected. `make test-host`
 and all 97 Rust library tests passed after the interleaved login-prompt fix. The disk
 assembly test checks exact replacement, preserved surrounding bytes, unchanged
 source, wrong source region, unaligned offsets and out-of-bounds offsets.
-Full Spark `make gate` passed at `bff2e2c`. These results do not qualify
+Full Spark `make gate` passed at `bff2e2c` and again at `4456848` after the
+NoCloud timing harness changes; the latter receipt is retained in
+`evidence/2026-09-17-spark/nocloud-timing-full-gate.json`. These results do not qualify
 concurrent guest isolation, guest-slot resource reclamation, interactive GUI
 performance or the complete release milestone.
