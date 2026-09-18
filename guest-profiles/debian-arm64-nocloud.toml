@@ -116,7 +116,7 @@ guest_address = "10.0.2.15"
 adapter = "expect"
 success = ["login:"]
 require = ["Debian GNU/Linux 13"]
-reject = ["Kernel panic", "Initramfs unpacking failed", "emergency mode", "Emergency Shell", "Press Enter for maintenance", "System halted"]
+reject = ["Kernel panic", "Initramfs unpacking failed", "emergency mode", "Emergency Shell", "Press Enter for maintenance", "System halted", "Failed to start up manager.", "Freezing execution."]
 
 [[host.test]]
 action = "wait-console"
