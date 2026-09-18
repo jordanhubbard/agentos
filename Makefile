@@ -806,6 +806,23 @@ test-host: test-guest-scheduling-host test-guest-gic-mapping-host test-guest-pag
 test-host: test-guest-execution-host
 test-host: test-x86-guest-objects-host
 test-host: test-x86-teardown-host
+test-host: test-x86-control-host
+
+.PHONY: test-x86-control-host
+test-x86-control-host:
+	@mkdir -p $(BUILD_TMP_DIR)
+	gcc -std=c11 -Wall -Wextra -Werror -DCONFIG_KERNEL_MCS \
+		-I tests/platform/control-stubs -I platform/include \
+		-idirafter kernel/agentos-root-task/include tests/platform/test_x86_control.c \
+		platform/guest-vmm/x86_control.c platform/guest-vmm/runtime.c \
+		-o $(BUILD_TMP_DIR)/test_x86_control
+	$(BUILD_TMP_DIR)/test_x86_control
+	gcc -std=c11 -Wall -Wextra -Werror -DCONFIG_KERNEL_MCS -DAGENTOS_X86_USERSPACE_PROOF -DAGENTOS_X86_LIFECYCLE_TRACE \
+		-I tests/platform/control-stubs -I platform/include \
+		-idirafter kernel/agentos-root-task/include tests/platform/test_x86_control.c \
+		platform/guest-vmm/x86_control.c platform/guest-vmm/runtime.c \
+		-o $(BUILD_TMP_DIR)/test_x86_control_proof
+	$(BUILD_TMP_DIR)/test_x86_control_proof
 
 .PHONY: test-x86-teardown-host
 test-x86-teardown-host:

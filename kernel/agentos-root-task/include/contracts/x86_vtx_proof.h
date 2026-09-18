@@ -22,6 +22,32 @@
 #define AOS_X86_VTX_GUEST_FAULTS_PASS  7u
 #define AOS_X86_VTX_USERSPACE_PASS     8u
 #define AOS_X86_VTX_USERSPACE_TEARDOWN_PASS 9u
+#define AOS_X86_VTX_LIFECYCLE_PASS     10u
+/* Qualification client rendezvous; never a production lifecycle opcode. */
+#define AOS_X86_LIFECYCLE_PROBE_CAP   473u
+#define AOS_X86_LIFECYCLE_READY     0x584301u
+#define AOS_X86_LIFECYCLE_CHECKPOINT 0x584302u
+#define AOS_X86_LIFECYCLE_ACK       0x584303u
+#define AOS_X86_LIFECYCLE_TRACE_LABEL 0x584304u
+#define AOS_X86_LIFECYCLE_FAILURE_BADGE 1u
+#define AOS_X86_LIFECYCLE_FAULT_BADGE 2u
+#define AOS_X86_LIFECYCLE_BOOT_ACK  0x584305u
+#ifdef AGENTOS_X86_LIFECYCLE_WITNESS
+#include <stdint.h>
+/* Debugger observation in private native memory: no IPC or guest mapping. */
+typedef struct {
+    uint64_t magic, version;
+    uint64_t stage, opcode, status, state, badge, count;
+} aos_x86_lifecycle_witness_t;
+extern volatile aos_x86_lifecycle_witness_t aos_x86_control_witness;
+#define AOS_X86_CONTROL_STAGE(n) (aos_x86_control_witness.stage = (n))
+#else
+#define AOS_X86_CONTROL_STAGE(n) ((void)0)
+#endif
+/* Caller indices in the fixed userspace-proof topology. Badge high bits
+ * identify the destination service, not the caller's service identity. */
+#define AOS_X86_LIFECYCLE_VMM_INDEX    6u
+#define AOS_X86_LIFECYCLE_PROBE_INDEX  7u
 /* Qualification-only CPUID trap; absent from production device contracts. */
 #define AOS_X86_USERSPACE_LEAF  0x41554f53u
 #define AOS_X86_USERSPACE_INIT  0x494e4954u

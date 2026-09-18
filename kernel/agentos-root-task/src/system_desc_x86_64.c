@@ -10,11 +10,16 @@
 
 #include "system_desc.h"
 #include "contracts/guest_ram_caps.h"
+#include "contracts/x86_vtx_proof.h"
 
 #if defined(AGENTOS_X86_VTX)
 const system_desc_t system_desc_x86_64 = {
 #ifdef AGENTOS_X86_FIRMWARE_RESET
+#ifdef AGENTOS_X86_USERSPACE_PROOF
+    .pd_count = 8u,
+#else
     .pd_count = 7u,
+#endif
 #else
     .pd_count = 1u,
 #endif
@@ -90,11 +95,18 @@ const system_desc_t system_desc_x86_64 = {
             .priority = 250u,
             .self_svc_id = SVC_ID_GUEST_VMM_PRIMARY,
 #ifdef AGENTOS_X86_FIRMWARE_RESET
+#ifdef AGENTOS_X86_USERSPACE_PROOF
+            .init_ep_count = 4u,
+#else
             .init_ep_count = 3u,
+#endif
             .init_eps = {
                 { SVC_ID_SERIAL_VIRT, PD_CNODE_SLOT_SERIAL_VIRT_EP },
                 { SVC_ID_BLK_VIRT, PD_CNODE_SLOT_BLK_VIRT_EP },
                 { SVC_ID_NET_VIRT, PD_CNODE_SLOT_NET_VIRT_EP },
+#ifdef AGENTOS_X86_USERSPACE_PROOF
+                { SVC_ID_X86_LIFECYCLE_PROBE, AOS_X86_LIFECYCLE_PROBE_CAP },
+#endif
             },
 #else
             .init_ep_count = 0u,
@@ -103,6 +115,18 @@ const system_desc_t system_desc_x86_64 = {
             .device_frame_count = 0u,
             .mr_count = 0u,
         },
+#ifdef AGENTOS_X86_USERSPACE_PROOF
+        {
+            .name = "x86_lifecycle_probe",
+            .elf_path = "x86_lifecycle_probe.elf",
+            .stack_size = 0x4000u,
+            .cnode_size_bits = 10u,
+            .priority = 251u,
+            .self_svc_id = SVC_ID_X86_LIFECYCLE_PROBE,
+            .init_ep_count = 1u,
+            .init_eps = {{ SVC_ID_GUEST_VMM_PRIMARY, PD_CNODE_SLOT_GUEST_VMM_PRIMARY_EP }},
+        },
+#endif
     },
 };
 #else

@@ -20,6 +20,34 @@ delivery and mapping-isolation qualification remain pending.
 
 ## Privilege
 
+The x86 firmware VMM now polls its service endpoint between VM entries and
+uses the shared guest lifecycle state machine. SUSPEND keeps the native VMM
+thread in its IPC loop; RESUME permits VM entry again with the saved exit
+state. DESTROY drains/detaches devices and revokes private resources, with
+failed cleanup remaining non-resumable. The virtual clock continues during
+suspension. This board still auto-boots; managed CREATE/admission and external
+manager/CC/GUI integration are outstanding.
+
+The userspace qualification adds `x86_lifecycle_probe`, an ordinary client
+with its VMM service endpoint and a send-only failure-report cap. Root rejects
+that cap's nonzero badge on the success path. It receives no device, IRQ, guest memory
+or execution caps. The VMM receives its rendezvous endpoint at slot 473.
+The client suspends/resumes during early boot, requires Linux to reach the
+ring-3 checkpoint, then destroys and verifies terminal-state rejection.
+Only after its completion acknowledgement does the VMM check stale caps and
+zeroed pool reuse. Two Intel runs without tracing and the full Spark gate
+passed at `b6207de`; [the receipt](evidence/2026-09-18-spark/x86-lifecycle-control.json)
+records the scope. Qualification also routes native VMM faults to root's
+active evidence receiver so a fault cannot silently stall the test.
+
+The native lifecycle path uses general registers only. Intel SDK 2.3
+qualification exposed a native exception 7 on compiler-generated SSE while
+packing the reply after VCPU revocation. Diagnostic IPC could hide the fault
+by changing scheduling. The general-register build passes without that IPC;
+it adds no hardware authority or kernel change and does not claim to repair
+kernel FPU state. Optional phase traces and private-memory debugger witnesses
+are disabled in the acceptance runs.
+
 The x86 firmware composition now allocates its VCPU and four EPT paging
 objects from a dedicated 64 KiB non-device child untyped. Root moves the
 sole pool capability to the owning VMM after boot configuration, in the
@@ -29,7 +57,7 @@ to that thread, unlike ARM's separate guest TCB. Revocation must occur
 outside VMEnter after guest I/O is quiescent. Guest RAM, ROM, their VMM
 aliases and the ASID namespace remain separate resources. This establishes
 allocation authority only; the terminal teardown proof is described below.
-Public lifecycle control and reconstruction remain pending. Host tests check the allocation
+At that revision, lifecycle control and reconstruction remained pending. Host tests check the allocation
 source, destination slots and every retype failure. Intel Debian VMX/SSH and
 the full Spark gate passed at `115e1ba`; [the receipt](evidence/2026-09-18-spark/x86-private-objects.json)
 records allocation/boot/I/O qualification, not runtime revocation.
@@ -60,8 +88,8 @@ RAM and ROM pool twice while checking the entire fresh frame is zero. The
 fixture reports a distinct success status and the harness requires the new
 teardown marker. That Intel target and the full Spark gate passed at `9b73e34`;
 [the receipt](evidence/2026-09-18-spark/x86-terminal-teardown.json) records all
-133 frame pools and the stopped-scratch-frame scope. Public x86 lifecycle IPC,
-suspend/resume and guest recreation are not implemented by this probe.
+133 frame pools and the stopped-scratch-frame scope. That earlier probe did
+not implement lifecycle IPC or suspend/resume; recreation remains absent.
 
 VMX qualification reports now use a separate endpoint, with a send-only
 capability in VMM slot 472. Root no longer receives on the VMM service
@@ -72,7 +100,8 @@ nonblocking failure report on the service endpoint before its real terminal
 report; the old shared receive path would consume that failure. Basic Intel
 VMX, Intel teardown and the full Spark gate passed at `94f47a3`;
 [the receipt](evidence/2026-09-18-spark/x86-report-endpoint.json) records routing
-qualification. Lifecycle handlers and external control remain outstanding.
+qualification. The lifecycle handlers described above extend that work;
+external control remains outstanding.
 
 Each AArch64 guest's TCB, VCPU, IPC frame and MCS scheduling context now come
 from a dedicated 64 KiB non-device child untyped. After boot configuration,

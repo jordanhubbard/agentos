@@ -3825,7 +3825,37 @@ void root_task_main(const seL4_BootInfo *bi)
                 dbg_puts("[rt] private VMX report endpoint setup failed; stopping boot\n");
                 return;
             }
+#ifdef AGENTOS_X86_USERSPACE_PROOF
+            /* Root waits here during qualification, rather than on its
+             * normal fault endpoint. Fail immediately on a native VMM fault
+             * instead of silently blocking both the VMM and test client. */
+            seL4_CPtr fault_report = ut_alloc_slot();
+            if (fault_report == seL4_CapNull ||
+                seL4_CNode_Mint(seL4_CapInitThreadCNode, fault_report, 64u,
+                    seL4_CapInitThreadCNode, g_x86_vtx_proof_endpoint, 64u,
+                    seL4_AllRights, AOS_X86_LIFECYCLE_FAULT_BADGE) != seL4_NoError ||
+                seL4_TCB_SetSchedParams(tr.tcb_cap, seL4_CapInitThreadTCB,
+                    255u, pd->priority, PD_SLOT_SC(i), fault_report) != seL4_NoError) {
+                dbg_puts("[rt] lifecycle native fault reporter setup failed\n");
+                return;
+            }
+#endif
         }
+#ifdef AGENTOS_X86_USERSPACE_PROOF
+        if (pd->self_svc_id == SVC_ID_X86_LIFECYCLE_PROBE) {
+            /* The client can report failure without perturbing successful
+             * IPC scheduling. Its badge can never satisfy the success path. */
+            if (g_x86_vtx_proof_endpoint == seL4_CapNull ||
+                seL4_CNode_Mint(pd_cnode, AOS_X86_VTX_REPORT_CAP,
+                    pd->cnode_size_bits, seL4_CapInitThreadCNode,
+                    g_x86_vtx_proof_endpoint, 64u,
+                    seL4_CapRights_new(0u, 0u, 0u, 1u),
+                    AOS_X86_LIFECYCLE_FAILURE_BADGE) != seL4_NoError) {
+                dbg_puts("[rt] lifecycle failure reporter setup failed; stopping boot\n");
+                return;
+            }
+        }
+#endif
 #endif
         {
             dbg_puts("[rt] pd entry=");
@@ -3967,10 +3997,34 @@ void root_task_main(const seL4_BootInfo *bi)
         seL4_Word badge = 0u;
         seL4_MessageInfo_t tag =
             seL4_Wait(g_x86_vtx_proof_endpoint, &badge);
+#ifdef AGENTOS_X86_USERSPACE_PROOF
+        unsigned lifecycle_traces = 0u;
+        while (badge == 0u && seL4_MessageInfo_get_label(tag) == AOS_X86_LIFECYCLE_TRACE_LABEL &&
+               seL4_MessageInfo_get_length(tag) == 4u && lifecycle_traces++ < 33u) {
+            seL4_Word trace[4];
+            for (unsigned i = 0; i < 4u; i++) trace[i] = seL4_GetMR(i);
+            dbg_puts("[rt] x86 lifecycle opcode="); dbg_hex(trace[0]);
+            dbg_puts(" status="); dbg_hex(trace[1]);
+            dbg_puts(" state="); dbg_hex(trace[2]);
+            dbg_puts(" started="); dbg_hex(trace[3]); dbg_puts("\n");
+            tag = seL4_Wait(g_x86_vtx_proof_endpoint, &badge);
+        }
+#endif
         seL4_Word status = seL4_GetMR(0);
         seL4_Word reason = seL4_GetMR(1);
         seL4_Word rip = seL4_GetMR(2);
         seL4_Word instruction_len = seL4_GetMR(3);
+#ifdef AGENTOS_X86_USERSPACE_PROOF
+        if (badge == AOS_X86_LIFECYCLE_FAULT_BADGE) {
+            dbg_puts("[rt] x86 native VMM fault label=");
+            dbg_hex(seL4_MessageInfo_get_label(tag));
+            dbg_puts(" words="); dbg_hex(seL4_MessageInfo_get_length(tag));
+            dbg_puts(" mr0="); dbg_hex(status);
+            dbg_puts(" mr1="); dbg_hex(reason);
+            dbg_puts(" mr2="); dbg_hex(rip);
+            dbg_puts(" mr3="); dbg_hex(instruction_len); dbg_puts("\n");
+        }
+#endif
 #ifdef AGENTOS_X86_FIRMWARE_RESET
         if (seL4_MessageInfo_get_label(tag) == AOS_X86_VTX_PROOF_LABEL &&
             seL4_MessageInfo_get_length(tag) == AOS_X86_FIRMWARE_REPORT_WORDS) {
@@ -4022,7 +4076,7 @@ void root_task_main(const seL4_BootInfo *bi)
             }
         }
 #endif
-        if (seL4_MessageInfo_get_label(tag) == AOS_X86_VTX_PROOF_LABEL &&
+        if (badge == 0u && seL4_MessageInfo_get_label(tag) == AOS_X86_VTX_PROOF_LABEL &&
 #ifdef AGENTOS_X86_FIRMWARE_RESET
             seL4_MessageInfo_get_length(tag) == AOS_X86_FIRMWARE_REPORT_WORDS &&
 #else
@@ -4030,7 +4084,7 @@ void root_task_main(const seL4_BootInfo *bi)
 #endif
 #ifdef AGENTOS_X86_FIRMWARE_RESET
 #ifdef AGENTOS_X86_USERSPACE_PROOF
-            status == AOS_X86_VTX_USERSPACE_TEARDOWN_PASS && reason == 10u &&
+            status == AOS_X86_VTX_LIFECYCLE_PASS && reason == 10u &&
             instruction_len == 3u && rip < 0x0000800000000000ull) {
             dbg_puts("[rt] x86 Linux ring3 initramfs syscall proof verified\n");
             dbg_puts("[rt] x86 canonical host network attachment verified\n");
@@ -4038,6 +4092,7 @@ void root_task_main(const seL4_BootInfo *bi)
             dbg_puts("[rt] x86 Linux guest block read verified\n");
             dbg_puts("[rt] x86 Linux guest network packet roundtrip verified\n");
             dbg_puts("[rt] x86 terminal teardown and zeroed pool reuse verified\n");
+            dbg_puts("[rt] x86 lifecycle client suspend resume destroy verified\n");
 #else
             status == AOS_X86_VTX_FIRMWARE_CONFIG &&
             reason == 30u && rip <= 0xffffffffu &&

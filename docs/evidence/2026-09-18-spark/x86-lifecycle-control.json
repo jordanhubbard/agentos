@@ -1,0 +1,96 @@
+{
+  "qualification": "x86 lifecycle IPC with native execution stopped between VM entries",
+  "runtime_revision": "b6207de96452e58f5c390f99f524563d4076eedd",
+  "source_clean_during_tests": true,
+  "spark": {
+    "command": "make gate",
+    "result": "PASS, exit 0; host suite, both architecture boot checks and ARM guest net/block/console proofs",
+    "sdk": "2.1.0",
+    "log_sha256": "f09846a632e8e38e0360874f3fdd728f820302fceae67cd0df7e2e8606052074"
+  },
+  "intel": {
+    "host": "madmax Intel Linux via puck.local",
+    "sdk": "2.3.0",
+    "command": "make gate-x86_64-teardown SEL4_SDK_VERSION=2.3.0 QEMU_TEST_TIMEOUT=600 with pinned OVMF/kernel and generated userspace initrd",
+    "result": "Two successful runs with lifecycle tracing and debugger witnesses disabled",
+    "assertions": [
+      "Ordinary client rejects an invalid guest ID; suspends and repeats suspend; BOOT and CREATE reject suspended state; RESUME succeeds",
+      "Startup acknowledgement completes before further VM entry; Linux subsequently reaches the ring-3 userspace checkpoint with guest block/network and bidirectional console proofs",
+      "Client suspends at the terminal checkpoint, destroys, repeats destroy and rejects RESUME and CREATE after DEAD",
+      "VMM checks stale VCPU/EPT caps and two complete zeroed retype/revoke cycles for all 133 queue/RAM/ROM frame pools"
+    ],
+    "runs": [
+      {
+        "pid": 3544404,
+        "stem": "agentos-qemu-WMOEt5",
+        "serial_sha256": "6c2f29a09c88c176c5bffc76624d17ae6fbc09ecd40fe1c3ef0c46a9ed468225",
+        "command_log_sha256": "367803d590807141995b126abb2f50de25606acf5aa277390372162df08e0a13"
+      },
+      {
+        "pid": 3548030,
+        "stem": "agentos-qemu-6fwtER",
+        "serial_sha256": "714df5a5732bff184e09ad5a9701fce57cfc058bcb7c65ba7e566a44ec4944b4"
+      }
+    ],
+    "kernel_sha256": "0ad39b13e289e1a5cf806d14541ac8f221eefe849017f5915e0846917ed67785",
+    "initrd_sha256": "43f3b0bb3e26a1e45438c421d8fecfa3a1cf613138fef7b3a5132420357f0bd4",
+    "firmware_sha256": "101afad5f520753224b60b9555df60add435cf50c7a82b781d7d7d8c60db7eb5",
+    "artifacts": {
+      "directory": "build/evidence/x86-lifecycle-b6207de",
+      "image_sha256": "357c4864d0647263319941c340ebd3f5e631e9b89e3f4c40a4a17b213b59d0db",
+      "root_task_sha256": "918df465fff1511bf3fdd659d8a952f9377856bc1c8197ec16be6befd95e0e6b",
+      "vmm_sha256": "aa9e0fb0a850b6e0829ee1e2fd85a2798cca53182041f0d1eefac92fc101ed3a"
+    }
+  },
+  "diagnosis": {
+    "initial_build_failure": "d523661 omitted the probe ELF from bundle prerequisites; fixed before target launch",
+    "interrupted_untraced_revisions": [
+      "ec25408",
+      "92d112d",
+      "0c1546f",
+      "92a5f07"
+    ],
+    "instrumented_success": {
+      "revision": "2b81858",
+      "pid": 3458901,
+      "stem": "agentos-qemu-4gxpSY",
+      "log_sha256": "3ee223e453fd50cf38ff7dffdc7b1c1a7edcf42af8268e6b86713b22547b1f85",
+      "limit": "Diagnostic IPC changed scheduling; this was not accepted as untraced qualification"
+    },
+    "native_witnesses": "611079b and db3e483 were deliberately stopped after memory snapshots located the client blocked in DESTROY and VMM at the end of teardown; no IPC tracing was used",
+    "native_fault": {
+      "revision": "9b7d94d",
+      "pid": 3526173,
+      "stem": "agentos-qemu-JUmuq7",
+      "serial_sha256": "b237e7bcd34b42ba6cea1e49a25dbdee651f0a948ae8aae2df8612e32cf4fa61",
+      "log_sha256": "29d8464a1c6a2da5cce4233d3c620a518db1814bdd463ea75670007b8272e9cb",
+      "label": 3,
+      "exception": 7,
+      "rip": "0x408447",
+      "instruction": "movups -0x54(%rbp),%xmm0",
+      "location": "aos_x86_control_step, inlined _sel4_msg_to_mrs",
+      "result": "Root reported native VMM fault and qualification failure; VM then explicitly stopped"
+    },
+    "fix": "Compile the native control/runtime/teardown/memory-release/firmware path with -mgeneral-regs-only, and rebuild those objects when their Makefile flags change. No seL4 modification or scheduling-dependent diagnostic IPC is required.",
+    "witness_record_sha256": [
+      "843d45c799475377047b027c0192535a71ec4cafe51fcf1c6df6f7f8f8682bf3",
+      "f3348f39938fdcf6a93e64f688150a58b41e0f81b02a86510216e8a8aa8a7d89"
+    ]
+  },
+  "debian_regression": {
+    "command": "make gate-x86_64-debian-ssh SEL4_SDK_VERSION=2.3.0 QEMU_TEST_TIMEOUT=600 with retained pinned media, OVMF and Ed25519 host key",
+    "result": "PASS, exit 0; public-key SSH with pinned host key, x86_64 and sync verified",
+    "pid": 3551637,
+    "stem": "agentos-qemu-wP3EbL",
+    "serial_sha256": "abe33d01bfac890a08f16f4240594fa4de21e9cf4da43d131c4ef302f70362ae",
+    "console_sha256": "783fb5944abb87ef0c4b296f518acd5adf0fac2bbf2e8856f47edb1b8e1fe196",
+    "combined_repeat_and_debian_log_sha256": "074ccc778b1b4c50bd14b012ecc96e02dc5198d90b800558b5291d8453a64cac"
+  },
+  "limits": [
+    "The Intel board still auto-boots one statically provisioned guest; managed CREATE/admission and external vm_manager/CC/agentos_gui integration remain outstanding",
+    "This proves early-boot pause/resume followed by userspace execution and terminal checkpoint destruction, not desktop interaction or guest recreation",
+    "Actual target teardown completed without a forced service failure; failed detach/revoke retry boundaries are covered by host tests, not fault-injected Intel runs",
+    "General-register native execution avoids the observed SDK FPU fault; no claim of a kernel FPU repair or restored native SIMD state",
+    "Required GitHub CI, canonical integration and release remain pending"
+  ]
+}
