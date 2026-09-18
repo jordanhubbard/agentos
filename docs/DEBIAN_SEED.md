@@ -1,5 +1,15 @@
 # Debian test root provisioning
 
+The native udev wrappers share `guest-profiles/helpers/debian_init_hook.h`.
+It implements Linux syscall and stat layouts for x86_64 and AArch64, preserving
+stock udev execution, filling missing standard descriptors before startup and
+checking console nodes after shutdown. `make debian-aarch64-console-hook` builds
+the ARM wrappers. Their native Spark chroot checks cover closed standard
+descriptors, successful stock-hook execution, correct node creation/reuse,
+wrong-node rejection and unexpected `rootmnt` rejection. The x86 helper and
+initrd pins remain unchanged. The ARM profile still needs conversion to these
+wrappers and on-target NoCloud boot qualification.
+
 Prepare a disposable copy of the acquired Debian ext4 root with stock cloud-init
 NoCloud data:
 

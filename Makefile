@@ -692,6 +692,20 @@ gate-x86_64-userspace:
 
 .PHONY: gate-x86_64-linux-login
 .PHONY: debian-x86-console-hook
+.PHONY: debian-aarch64-console-hook
+debian-aarch64-console-hook:
+	@mkdir -p $(BUILD_TMP_DIR)/debian-aarch64/empty-toolchain
+	clang --gcc-toolchain=$(BUILD_TMP_DIR)/debian-aarch64/empty-toolchain -target aarch64-unknown-linux-gnu -ffreestanding -fno-builtin \
+		-fno-stack-protector -fno-pie -nostdlib -static -fuse-ld=lld -O2 \
+		-Wall -Wextra -Werror -Wl,--build-id=none -Wl,-e,_start \
+		guest-profiles/helpers/debian_init_bottom_aarch64.c -o $(BUILD_TMP_DIR)/debian-aarch64/udev
+	llvm-objcopy --strip-all --remove-section=.comment $(BUILD_TMP_DIR)/debian-aarch64/udev
+	clang --gcc-toolchain=$(BUILD_TMP_DIR)/debian-aarch64/empty-toolchain -target aarch64-unknown-linux-gnu -ffreestanding -fno-builtin \
+		-fno-stack-protector -fno-pie -nostdlib -static -fuse-ld=lld -O2 \
+		-Wall -Wextra -Werror -Wl,--build-id=none -Wl,-e,_start \
+		guest-profiles/helpers/debian_init_top_aarch64.c -o $(BUILD_TMP_DIR)/debian-aarch64/udev-top
+	llvm-objcopy --strip-all --remove-section=.comment $(BUILD_TMP_DIR)/debian-aarch64/udev-top
+
 debian-x86-console-hook:
 	@mkdir -p $(BUILD_TMP_DIR)/debian-x86
 	clang -target x86_64-unknown-linux-gnu -ffreestanding -fno-builtin \
