@@ -7,8 +7,15 @@ checking console nodes after shutdown. `make debian-aarch64-console-hook` builds
 the ARM wrappers. Their native Spark chroot checks cover closed standard
 descriptors, successful stock-hook execution, correct node creation/reuse,
 wrong-node rejection and unexpected `rootmnt` rejection. The x86 helper and
-initrd pins remain unchanged. The ARM profile still needs conversion to these
-wrappers and on-target NoCloud boot qualification.
+initrd pins remain unchanged. The opt-in ARM NoCloud profile uses these
+wrappers; on-target qualification remains pending.
+
+Make captures `AGENTOS_HOST_TOOL_PATH` before entering the kernel sub-make.
+Native guest-helper compilation and stripping use that path even when the
+kernel build selects another LLVM installation. This prevents nested builds
+from silently changing a pinned guest artifact's compiler. Direct xtask calls
+use their current PATH unless this variable is supplied explicitly. Artifact
+hash verification remains mandatory.
 
 Prepare a disposable copy of the acquired Debian ext4 root with stock cloud-init
 NoCloud data:

@@ -219,6 +219,11 @@ MICROKIT_SDK_URL := https://github.com/seL4/microkit/releases/download/$(SEL4_SD
 
 # ─── Rust toolchain ──────────────────────────────────────────────────────────
 export PATH := $(HOME)/.cargo/bin:$(PATH)
+# Native guest helpers must keep their acquisition toolchain when the kernel
+# sub-make prepends its own LLVM directory to PATH.
+ifndef AGENTOS_HOST_TOOL_PATH
+export AGENTOS_HOST_TOOL_PATH := $(PATH)
+endif
 
 # ─── Native arch / HW-accelerated QEMU ────────────────────────────────────
 # Normalise uname -m: macOS Apple Silicon reports "arm64", seL4 uses "aarch64"

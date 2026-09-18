@@ -580,7 +580,11 @@ fn build_static_linux_elf(step: &RecipeStep, root: &Path, output_dir: &Path) -> 
     // This freestanding build uses Clang resource headers and LLD, not a
     // discovered host GCC installation or its target runtime libraries.
     let empty_toolchain = tempfile::tempdir()?;
+    let tool_path = std::env::var_os("AGENTOS_HOST_TOOL_PATH")
+        .or_else(|| std::env::var_os("PATH"))
+        .context("native helper compiler search path is unavailable")?;
     let status = std::process::Command::new("clang")
+        .env("PATH", &tool_path)
         .arg(format!(
             "--gcc-toolchain={}",
             empty_toolchain.path().display()
@@ -609,6 +613,7 @@ fn build_static_linux_elf(step: &RecipeStep, root: &Path, output_dir: &Path) -> 
         .context("compile native Linux helper")?;
     anyhow::ensure!(status.success(), "native Linux helper compilation failed");
     let status = std::process::Command::new("llvm-objcopy")
+        .env("PATH", &tool_path)
         .args(["--strip-all", "--remove-section=.comment"])
         .arg(&temp)
         .status()
