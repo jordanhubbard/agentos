@@ -1,0 +1,59 @@
+{
+  "revision": "f0b3b46d027ace15e8948f0f0cef86f4ca14e22f",
+  "branch": "platform/v04-integration",
+  "host": "Spark ARM64 Linux",
+  "integrated_heads": {
+    "intel_and_nocloud": "71e563fd94fcf61bbb6817157c2ffc4c02161363",
+    "graphics_and_input_pr201": "0337b26be17c14d776a4816f938aea53ff096a89",
+    "guest_lifecycle_pr182": "cfe70c49f1a54a4547a9ef884a20c0776fbe1c65"
+  },
+  "results": [
+    {
+      "command": "cargo test -p xtask --lib",
+      "exit_code": 0,
+      "tests_passed": 103,
+      "log": "/tmp/agentos-v04-lifecycle-integration-rust.log",
+      "sha256": "44db047deb5c38572acf0be1c0515e59ff75c118ab45f5b78f196517cae8983f"
+    },
+    {
+      "command": "make test-host",
+      "exit_code": 0,
+      "log": "/tmp/agentos-v04-lifecycle-integration-host.log",
+      "sha256": "83b8f08f1aafd421f70f1e49120281b9fdfc2932777151a55a16e3359d61cb3e"
+    },
+    {
+      "command": "make test-virtio-backends-build",
+      "exit_code": 0,
+      "log": "/tmp/agentos-v04-integration-backends.log",
+      "sha256": "0aca2b0134fd3d3f6760bfa1aa0337e6979b09866d596502543ee95352f0d887"
+    },
+    {
+      "command": "make gate",
+      "exit_code": 0,
+      "scope": "Host suite, ARM and reduced x86 root boots, ARM guest net/block/bidirectional CC console",
+      "log": "/tmp/agentos-v04-integration-full-gate.log",
+      "sha256": "975f9793162def8a7aa6113603c951e59817341f377b1709fcfcb0ced04086d3"
+    },
+    {
+      "command": "make test-guest-ram-recycle",
+      "exit_code": 0,
+      "scope": "ARM Buildroot guest; two full overwrite/revoke/rebuild/zero cycles and emulated block assertion",
+      "log": "/tmp/agentos-v04-integration-ram-recycle.log",
+      "sha256": "3d7332140f3f4108f2aa09568f3fb8f4c523af7becb365f39493a6b1a1d68800"
+    },
+    {
+      "command": "make test-guest-block-drain",
+      "exit_code": 0,
+      "scope": "ARM Buildroot guest; pending response before admission stop, accepted request completion and empty queues",
+      "log": "/tmp/agentos-v04-integration-block-drain.log",
+      "sha256": "eb9ca89e0a2d9b66506ba44b5df8af0b2b78efb71a08dfd0ebe54ca20d9819de"
+    }
+  ],
+  "limitations": [
+    "These are combined-revision checks, not complete v0.4 release acceptance.",
+    "Intel VMX Linux must be requalified on an Intel host after integration.",
+    "Live guest graphics/input and agentos_gui still require combined-revision qualification.",
+    "The RAM and drain probes do not establish complete cross-architecture lifecycle or concurrent writable-disk isolation.",
+    "NoCloud baseline promotion, automated second boot, dual-guest demo and required GitHub checks remain outstanding."
+  ]
+}
