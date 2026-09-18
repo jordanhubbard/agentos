@@ -20,6 +20,15 @@
 #error "x86_vtx_proof.c requires a CONFIG_VTX seL4 SDK"
 #endif
 
+/* New seL4 names MR2 for its interruption-info payload. The old enum name
+ * becomes a deprecated macro there; avoid expanding its Clang-unknown pragma.
+ * Microkit 2.1 has the old enum directly, with the same wire slot. */
+#ifdef SEL4_VMENTER_CALL_CONTROL_ENTRY_MR
+#define AOS_VMENTER_INTERRUPT_INFO_MR SEL4_VMENTER_CALL_INTERRUPT_INFO_MR
+#else
+#define AOS_VMENTER_INTERRUPT_INFO_MR SEL4_VMENTER_CALL_CONTROL_ENTRY_MR
+#endif
+
 #define VTX_GUEST_CODE_SELECTOR       0x08u
 #define VTX_GUEST_DATA_SELECTOR       0x10u
 #define VTX_GUEST_TR_SELECTOR         0x18u
@@ -190,8 +199,9 @@ static seL4_Error write_vmcs_guest_state(seL4_CPtr vcpu,
         { VMX_GUEST_SYSENTER_EIP, 0u },
 
         /*
-         * The seL4 x86_64 VTX kernel fixes IA-32e guest entry on. The root
-         * task supplies the four guest paging pages this state requires.
+         * Both supported SDKs initialize IA-32e guest entry on. This proof
+         * retains that mode; root supplies its four guest paging pages.
+         * Firmware entry modes require separate qualification.
          */
         { VMX_CONTROL_CR0_MASK, VMX_GUEST_CR0_PE | VMX_GUEST_CR0_PG },
         { VMX_CONTROL_CR0_READ_SHADOW, 0u },
@@ -241,7 +251,7 @@ void pd_main(seL4_CPtr endpoint, seL4_CPtr nameserver_endpoint)
      */
     seL4_SetMR(SEL4_VMENTER_CALL_EIP_MR, AOS_X86_VTX_GUEST_RIP);
     seL4_SetMR(SEL4_VMENTER_CALL_CONTROL_PPC_MR, VMX_CONTROL_PPC_HLT_EXITING);
-    seL4_SetMR(SEL4_VMENTER_CALL_CONTROL_ENTRY_MR, 0u);
+    seL4_SetMR(AOS_VMENTER_INTERRUPT_INFO_MR, 0u);
 
     seL4_Word result = seL4_VMEnter(NULL);
     seL4_Word reason = seL4_GetMR(SEL4_VMENTER_FAULT_REASON_MR);

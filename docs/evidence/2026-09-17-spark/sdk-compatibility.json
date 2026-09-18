@@ -1,0 +1,54 @@
+{
+  "qualification": "Microkit 2.1.0 and 2.3.0 userspace API compatibility",
+  "date": "2026-09-17",
+  "task": "task_6551c1925f654bdb9a8518943accb74c",
+  "default_sdk": "2.1.0",
+  "candidate_sdk": "2.3.0",
+  "candidate_archives": {
+    "linux-aarch64": "98a18bd5d90386c7a72a541083a8e1a3129ae83bf27d71c65759b36344718841",
+    "linux-x86-64": "e12e507f72c87cbf5c514df9e9b0c66103b42298852f44c045d5729ea3de4f89"
+  },
+  "spark_full_gates": {
+    "revision": "678ad2326b5452424a8f9d6f7bbc1de05cc35ea6",
+    "command": "make gate SEL4_SDK_VERSION=<version> QEMU_TEST_SSH_PORT=<port>",
+    "2.1.0": {
+      "port": 12258,
+      "result": "PASS",
+      "log_sha256": "2076e5cc54109b3779678f46b2e8e485dc2d47106298ebe2024955ade6271225",
+      "last_gate_image_sha256": "b9ae34e2aa05e96a18c4871ccc54c0a309e3f0e6c91e990cdff96a129b448681",
+      "retained_directory": "/tmp/agentos-v04-sdk-compat21/build/evidence/sdk21-678ad23"
+    },
+    "2.3.0": {
+      "port": 12257,
+      "result": "PASS",
+      "log_sha256": "5d65239bb1d871069870dfafe3376b8bc22da6ad7ca284bf1aa8c440971c015d",
+      "last_gate_image_sha256": "439037e4809baa7d20bfa4ec7d5e99c5cb8ead84d6342a0b5d83925c925eb4ce",
+      "retained_directory": "/tmp/agentos-v04-x86-sdk/build/evidence/sdk23-678ad23"
+    }
+  },
+  "intel_vmx": {
+    "host": "madmax",
+    "revision": "3a5dfc785e4827909bcf98e3268b21be91ca7263",
+    "sdk": "2.3.0",
+    "command": "make gate-x86_64-vtx SEL4_SDK_VERSION=2.3.0",
+    "result": "PASS",
+    "assertion": "EPT-backed long-mode HLT exit, exact guest RIP and instruction length",
+    "log_sha256": "a8483350904d90ad92db2d9761ad5d174713bf122e98148c01971d63080e7a14",
+    "image_sha256": "0e99588c119d5b7892dd550067c6f89ef02964d1ad1734245591bf012d6383c1",
+    "retained_directory": "/tmp/agentos-v04-intel-sdk23/build/evidence/sdk23-3a5dfc7"
+  },
+  "default_sdk_vtx_build": {
+    "host": "sparky",
+    "revision": "3a5dfc785e4827909bcf98e3268b21be91ca7263",
+    "command": "make build BOARD=x86_64_generic_vtx GUEST_OS=none SEL4_SDK_VERSION=2.1.0",
+    "result": "PASS (cross-build only)",
+    "log_sha256": "08fa5befe65f070dbc10fe0692ffc3d1d8385e8ded9ee28119d939e779aedc16"
+  },
+  "revision_scope": "The two commits after 678ad23 change only CONFIG_VTX API compatibility. Ordinary AArch64 and reduced x86 boot code is unchanged. Later evidence/comment-only commits do not change executable behavior.",
+  "limitations": [
+    "No SDK default change or seL4 kernel source modification",
+    "No x86 Linux, UEFI, ACPI installation, canonical guest I/O or lifecycle qualification",
+    "No real-mode or protected-mode guest execution qualification",
+    "Gate image hashes identify the final guest-console image; full-gate logs cover the other build variants"
+  ]
+}
