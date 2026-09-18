@@ -74,8 +74,10 @@ the system-wide ASID controller remains with root. The bounded reconstruction
 helper can retype stopped VCPU/EPT objects and map their intermediate tables.
 Its caller must revoke partial objects before retrying. It does not bind a
 TCB, map guest RAM or start execution. The terminal qualification now exercises
-two reconstruction/revocation cycles; target acceptance of this extension is
-pending, and full guest recreation still needs memory, queues and boot reset.
+two reconstruction/revocation cycles; the
+[stopped-object receipt](evidence/2026-09-18-spark/x86-stopped-object-rebuild.json)
+records passing Intel qualification and the full Spark gate at `8714bd3`.
+Full guest recreation still needs memory, queues and boot reset.
 
 The userspace qualification adds `x86_lifecycle_probe`, an ordinary client
 with its VMM service endpoint and a send-only failure-report cap. Root rejects
