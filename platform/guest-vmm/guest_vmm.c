@@ -1053,6 +1053,7 @@ bool aos_vmm_serial_detach(void)
 #include "contracts/guest_paging_caps.h"
 #include "contracts/guest_gic_caps.h"
 #include <platform/guest_paging.h>
+#include <platform/guest_execution.h>
 static bool guest_paging_recycle_test(void)
 {
     uintptr_t va = AOS_NET_SHMEM_VA;
@@ -1083,18 +1084,34 @@ static bool guest_paging_recycle_test(void)
                 seL4_ARM_SmallPageObject, 0u, AOS_GUEST_RAM_SELF_CNODE,
                 0u, 0u, AOS_GUEST_IPC_FRAME_CAP, 1u) != seL4_NoError ||
             !aos_vmm_guest_page_map(AOS_GUEST_IPC_FRAME_CAP, AOS_GUEST_GIC_IPA)) return false;
+        if (!aos_vmm_guest_execution_release() || !aos_vmm_guest_execution_rebuild()) return false;
+        seL4_UserContext context = {0};
+        const unsigned registers = sizeof(context) / sizeof(seL4_Word);
+        if (seL4_TCB_ReadRegisters(AOS_GUEST_TCB_CAP_BASE, false, 0,
+                registers, &context) != seL4_NoError || context.pc || context.sp) return false;
+        context.pc = 0x40000000u + pass * 4u;
+        context.sp = 0x40100000u;
+        if (seL4_TCB_WriteRegisters(AOS_GUEST_TCB_CAP_BASE, false, 0,
+                registers, &context) != seL4_NoError) return false;
+        context = (seL4_UserContext){0};
+        if (seL4_TCB_ReadRegisters(AOS_GUEST_TCB_CAP_BASE, false, 0,
+                registers, &context) != seL4_NoError ||
+                context.pc != 0x40000000u + pass * 4u || context.sp != 0x40100000u) return false;
         if (seL4_CNode_Revoke(AOS_GUEST_RAM_SELF_CNODE, AOS_GUEST_QUEUE_POOL_BASE,
                 AOS_GUEST_RAM_CNODE_BITS) != seL4_NoError ||
             seL4_CNode_Revoke(AOS_GUEST_RAM_SELF_CNODE, AOS_GUEST_EXECUTION_POOL_CAP,
                 AOS_GUEST_RAM_CNODE_BITS) != seL4_NoError ||
             !aos_vmm_guest_paging_release()) return false;
-        const seL4_CPtr retired[] = {AOS_GUEST_RAM_GUEST_VSPACE, AOS_GUEST_PAGING_TABLE_BASE};
+        const seL4_CPtr retired[] = {AOS_GUEST_RAM_GUEST_VSPACE, AOS_GUEST_PAGING_TABLE_BASE,
+            AOS_GUEST_TCB_CAP_BASE, AOS_GUEST_VCPU_CAP_BASE, AOS_GUEST_SC_CAP_BASE,
+            AOS_GUEST_IPC_FRAME_CAP};
         for (unsigned i = 0; i < sizeof(retired) / sizeof(*retired); ++i)
             if (seL4_CNode_Copy(AOS_GUEST_RAM_SELF_CNODE,
                     AOS_GUEST_QUEUE_TEST_COPY, AOS_GUEST_RAM_CNODE_BITS,
                     AOS_GUEST_RAM_SELF_CNODE, retired[i], AOS_GUEST_RAM_CNODE_BITS,
                     seL4_AllRights) != seL4_FailedLookup) return false;
     }
+    microkit_dbg_puts("guest execution recycle: fresh stopped objects and registers verified\n");
     return true;
 }
 static bool guest_queue_recycle_test(void)

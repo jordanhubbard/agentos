@@ -1670,6 +1670,7 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
         let mut markers = vec![
             "guest queue recycle: zero pages and stale caps verified",
             "guest paging recycle: fresh VSpaces and page tables verified",
+            "guest execution recycle: fresh stopped objects and registers verified",
         ];
         if profile_plan
             .as_ref()

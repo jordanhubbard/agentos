@@ -62,6 +62,21 @@ gate passed on Spark at `dc109dc`; [the receipt](evidence/2026-09-18-spark/guest
 records the two-cycle component proof. This helper does not rebuild execution objects, service mappings
 or the guest image, and the production reset callback remains absent.
 
+The execution reconstruction helper retypes a stopped TCB, VCPU, scheduling
+context and IPC frame from the owning VMM's empty execution pool. It maps the
+IPC frame in the fresh guest VSpace, configures the TCB and binds its VCPU,
+then publishes replacement TCB/SC/VSpace caps in the private manager exchange.
+The existing fault endpoint is retained. It grants no scheduling authority and
+never makes a guest runnable; manager scheduling remains a separate step.
+Failed reconstruction requires execution and paging revocation before retry.
+Host tests cover every operation failure and recovery. The
+`test-guest-execution-recycle` target extends paging recycling with two sets of
+fresh objects, stopped register read/write checks and stale-cap rejection.
+The target and full gate passed on Spark at `b5c14e5`;
+[the receipt](evidence/2026-09-18-spark/guest-execution-rebuild.json) records
+the stopped-object scope. Service reattachment, image restoration and the
+production reset callback remain outstanding.
+
 ARM `vm_manager` now configures guest scheduling between the VMM's CREATE
 reply and its BOOT call. Root gives each VMM a private capability exchange
 CNode containing only its guest TCB, scheduling context, VMM fault endpoint
