@@ -424,7 +424,7 @@ _Noreturn void aos_x86_firmware_run(seL4_CPtr ep, aos_x86_vmenter_entry_t entry)
     if (!aos_vmm_virtio_blk_read_boot(0u, 1u, block_boot_data,
                                      sizeof(block_boot_data), block_wait))
         stop(ep, AOS_X86_VTX_PROOF_FAIL, 0x424c4bu, 0, 2u);
-#ifndef AGENTOS_X86_LINUX_LOGIN
+#if !defined(AGENTOS_X86_LINUX_LOGIN) && !defined(AGENTOS_X86_CC_PCI)
     /* Qualification gates retain their exact fixture check. A distribution
      * root disk has its own partition table and filesystem in this block. */
     static const char expected[] = "agentos-host-block-qualification-v1\n";
@@ -511,10 +511,9 @@ _Noreturn void aos_x86_firmware_run(seL4_CPtr ep, aos_x86_vmenter_entry_t entry)
         seL4_VCPUContext regs = save_registers(&returned);
         for (unsigned i=0; i<3; i++) boot_reads[i]=config.boot_reads[i];
         last_qualification=qual;
-#ifdef AGENTOS_X86_LINUX_LOGIN
-        /* A distribution boot transfers a full initrd and continues into an
-         * operating system. Its lifetime is controlled by the caller, not
-         * the small qualification fixture's instruction-exit budget. */
+#if defined(AGENTOS_X86_LINUX_LOGIN) || defined(AGENTOS_X86_CC_PCI)
+        /* Distribution and externally managed guests run until their caller
+         * stops them. The small fixture's exit budget is qualification-only. */
         if (exits != UINT32_MAX) exits++;
 #ifdef AOS_X86_BOOT_SNAPSHOT_SECONDS
         /* Explicit diagnostic runs stop with failure and retain the bounded
