@@ -265,6 +265,8 @@ static bool recreated_network_proof(uint32_t generation)
         AOS_GUEST_RAM_CNODE_BITS, seL4_AllRights) == seL4_FailedLookup;
 }
 
+/* Qualification diagnostics only: no IPC or scheduling until terminal report. */
+static uint32_t teardown_proof_stage;
 static bool terminal_teardown_proof(void)
 {
     /* Root is already waiting for the terminal report. A failed report on
@@ -277,9 +279,11 @@ static bool terminal_teardown_proof(void)
     seL4_SetMR(3, 0u);
     seL4_NBSend(PD_CNODE_SLOT_SELF_EP,
         seL4_MessageInfo_new(AOS_X86_VTX_PROOF_LABEL, 0u, 0u, 4u));
+    teardown_proof_stage = 1u;
     if (!teardown_state.paging_released || !aos_x86_lifecycle_ack) return false;
     if (virtio_gpa_to_hva(0u, 1u) != NULL) return false;
     for (unsigned slot = 0; slot < AOS_X86_VIRTIO_SLOTS; slot++) {
+        teardown_proof_stage = 10u + slot;
         uint64_t address = AOS_X86_VIRTIO_BASE + slot * AOS_X86_VIRTIO_STRIDE;
         uint32_t value = 0xaced1234u;
         if (aos_x86_virtio_contains(address) ||
@@ -287,6 +291,7 @@ static bool terminal_teardown_proof(void)
             return false;
     }
     aos_x86_virtio_retire();
+    teardown_proof_stage = 20u;
     const seL4_CPtr stale[] = {VCPU, AOS_GUEST_RAM_GUEST_VSPACE};
     for (unsigned i = 0; i < 2u; i++) {
         if (seL4_CNode_Copy(AOS_GUEST_RAM_SELF_CNODE, AOS_GUEST_QUEUE_TEST_COPY,
@@ -298,7 +303,9 @@ static bool terminal_teardown_proof(void)
      * the pool. Exercise every pool, including ROM and device queues, twice.
      * These are stopped scratch frames, never a recreated executing guest. */
     for (unsigned pass = 0; pass < 2u; pass++) {
+        teardown_proof_stage = 100u + pass * 100u;
         if (!recreated_network_proof(pass + 1u)) return false;
+        teardown_proof_stage = 110u + pass * 100u;
         if (!aos_blk_virt_rebind(0u, pass + 1u)) return false;
         aos_blk_virt_client_t rebuilt_block;
         aos_blk_client_bind((uint8_t *)AOS_BLK_SHMEM_VA, 0u, &rebuilt_block);
@@ -332,6 +339,7 @@ static bool terminal_teardown_proof(void)
                 AOS_GUEST_RAM_CNODE_BITS, AOS_GUEST_RAM_SELF_CNODE,
                 AOS_GUEST_QUEUE_FRAME_BASE + AOS_GUEST_QUEUE_BLOCK,
                 AOS_GUEST_RAM_CNODE_BITS, seL4_AllRights) != seL4_FailedLookup) return false;
+        teardown_proof_stage = 120u + pass * 100u;
         if (!aos_serial_virt_rebind(0u, pass + 1u)) return false;
         aos_serial_channel_t rebuilt_serial = aos_serial_channel_at(AOS_SERIAL_SHMEM_VA);
         static const uint8_t message[] = "x86-recreated-serial\n";
@@ -350,6 +358,7 @@ static bool terminal_teardown_proof(void)
                 AOS_GUEST_QUEUE_FRAME_BASE + AOS_GUEST_QUEUE_SERIAL,
                 AOS_GUEST_RAM_CNODE_BITS, seL4_AllRights) != seL4_FailedLookup) return false;
         for (unsigned group = 0; group < 3u; group++) {
+            teardown_proof_stage = 130u + pass * 100u + group;
             unsigned count = group == 0u ? AOS_GUEST_QUEUE_INPUT :
                 group == 1u ? AOS_X86_FIRMWARE_RAM >> AOS_GUEST_RAM_FRAME_BITS :
                 AOS_X86_GUEST_ROM_FRAMES;
@@ -381,6 +390,7 @@ static bool terminal_teardown_proof(void)
         /* Rebuild actual stopped VCPU/EPT objects after complete revocation.
          * This validates retained private allocation/ASID authority, not a
          * recreated executing guest: no TCB is bound and no VM entry occurs. */
+        teardown_proof_stage = 140u + pass * 100u;
         if (aos_x86_guest_objects_rebuild() != seL4_NoError) return false;
         if (!aos_x86_guest_memory_rebuild(_binary_x86_firmware_bin_start,
                 (size_t)(_binary_x86_firmware_bin_end - _binary_x86_firmware_bin_start),
@@ -765,7 +775,7 @@ _Noreturn void aos_x86_firmware_run(seL4_CPtr ep, aos_x86_vmenter_entry_t entry)
                     }
                 }
                 if (passed && !terminal_teardown_proof())
-                    stop(ep, AOS_X86_VTX_PROOF_FAIL, 0x544452u, rip, 0u);
+                    stop(ep, AOS_X86_VTX_PROOF_FAIL, 0x544452u, rip, teardown_proof_stage);
                 stop(ep,passed ? AOS_X86_VTX_LIFECYCLE_PASS : AOS_X86_VTX_PROOF_FAIL,
                      reason,rip,passed ? (cs & 3u) :
                          ((regs.edx == AOS_X86_USERSPACE_PASS ? 0x100u : regs.edx) |

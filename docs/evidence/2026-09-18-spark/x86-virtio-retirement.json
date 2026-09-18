@@ -1,0 +1,33 @@
+{
+  "schema": "agentos.x86_virtio_retirement.v1",
+  "runtime_commit": "a4c7f88c1",
+  "accepted": false,
+  "scope": "Private x86 bus retirement after successful guest teardown",
+  "spark": {
+    "host": "Sanitizer tests pass with inaccessible old devices, IOAPIC and RAM; two fresh registration cycles pass",
+    "host_and_link_log_sha256": "4b747fbdd4584b8274e1422b07ed2b94354d6a4879795e1bd241ab9dad021574",
+    "make_gate": "passed, terminal exit 0",
+    "gate_log_sha256": "0c384d93d0306c85bcfa12c10816ed226ccbe21ead98bdafd2e9bc15eeb015ac"
+  },
+  "intel": {
+    "initial_result": "Target reported teardown proof failure reason 0x544452, detail 0; fixture stopped after this explicit failure",
+    "initial_run_stem": "jTfUBr",
+    "initial_log_sha256": "a4a6db3d63d4fbe206ff2f6689d9dde663249d528c6635ed4d65e358f9862f42",
+    "diagnostic_reruns": "Two runs with private stage-number diagnostics and no intermediate IPC passed, terminal exit 0",
+    "diagnostic_log_sha256": [
+      "7727fa99e19d151763d3829f5d1b9abd3ee378f78864cc1aab3f0c1a8ecedb98",
+      "bd1fa5e91ce625efe481c8aa15d1a698aaecd7c32afa3d35a6829ef8c97ec5db"
+    ],
+    "original_repeat": "Original a4c7f88 without stage diagnostics also passed, terminal exit 0",
+    "original_repeat_log_sha256": "d0704e3dd9e2f8c5c92eab33ebcc9e5870c73089bff36d3cc3cb5b1f03c582ec"
+  },
+  "unresolved": {
+    "task": "task_8c6afd5682bc4b8ba858f4cdc5e44ef8",
+    "description": "Initial intermittent failure is unexplained; passing reruns do not establish a fix",
+    "stage_legend": "1 lifecycle/GPA; 10..17 retired bus slots; 20 stale execution caps; 100/200 network; 110/210 block; 120/220 serial; 130..132/230..232 pool reuse; 140/240 execution and RAM/ROM reconstruction"
+  },
+  "limitations": [
+    "Late IRQ rejection and fresh bus registrations are host tests; native proof checks retired MMIO slots and disabled GPA translation",
+    "Device-state adoption, firmware reset and second guest boot remain incomplete"
+  ]
+}
