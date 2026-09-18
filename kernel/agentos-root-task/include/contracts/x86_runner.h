@@ -10,6 +10,7 @@
  * wrap and a duplicate request must not execute the guest a second time. */
 #define AOS_X86_RUNNER_VERSION UINT64_C(1)
 #define AOS_X86_RUNNER_OWNER_BADGE UINT64_C(1)
+#define AOS_X86_RUNNER_ENDPOINT_CAP 474u
 #define AOS_X86_RUNNER_ENTER 1u
 #define AOS_X86_RUNNER_RETURN 2u
 #define AOS_X86_RUNNER_REJECT 3u

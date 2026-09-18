@@ -855,6 +855,9 @@ ifeq ($(ARCH),aarch64)
 else ifeq ($(ARCH),x86_64)
   # Include linux_vmm stub so the image can reference it
   IMAGES += guest_vmm_primary.elf
+  ifeq ($(X86_FIRMWARE_RESET),1)
+    IMAGES += x86_runner.elf
+  endif
   ifeq ($(X86_USERSPACE_PROOF),1)
     IMAGES += x86_lifecycle_probe.elf
   endif
@@ -1437,6 +1440,12 @@ $(BUILD_DIR)/x86_runner.pd.o: $(REPO_ROOT_MK)/platform/guest-vmm/x86_runner_pd.c
 $(BUILD_DIR)/x86_runner.o: $(REPO_ROOT_MK)/platform/guest-vmm/x86_runner.c $(REPO_ROOT_MK)/platform/include/platform/x86_runner.h $(REPO_ROOT_MK)/kernel/agentos-root-task/include/contracts/x86_runner.h Makefile
 	@mkdir -p $(BUILD_DIR)
 	$(CC) -c $(CFLAGS) -mgeneral-regs-only $< -o $@
+$(BUILD_DIR)/x86_runner_client.o: $(REPO_ROOT_MK)/platform/guest-vmm/x86_runner_client.c Makefile
+	@mkdir -p $(BUILD_DIR)
+	$(CC) -c $(CFLAGS) -mgeneral-regs-only $< -o $@
+ifeq ($(X86_FIRMWARE_RESET),1)
+$(BUILD_DIR)/guest_vmm_primary.elf: $(BUILD_DIR)/x86_runner_client.o $(BUILD_DIR)/x86_runner.o
+endif
 $(BUILD_DIR)/x86_runner.elf: $(BUILD_DIR)/x86_runner.pd.o $(BUILD_DIR)/x86_runner.o $(BUILD_DIR)/sel4_crt.o $(BUILD_DIR)/pd_entry.o $(BUILD_DIR)/m3_bare_metal.o $(BUILD_DIR)/log.o
 	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
 ifeq ($(AGENTOS_BOARD),x86_64_generic_vtx)

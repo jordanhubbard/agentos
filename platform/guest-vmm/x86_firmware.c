@@ -42,6 +42,29 @@ extern const uint8_t _binary_x86_boot_profile_bin_start[], _binary_x86_boot_prof
 #include <platform/blk_virt_pump.h>
 #include <platform/net_rebind.h>
 #include <platform/net_virt_pump.h>
+#include <platform/x86_runner_client.h>
+
+/* The executor's native state and sequence survive guest reconstruction. All
+ * device/lifecycle handling stays in this coordinator, between synchronous
+ * calls, so a completed reply also establishes that VMEnter has returned. */
+static aos_x86_runner_t runner={.next_sequence=1};
+static aos_x86_vmenter_return_t firmware_start(const aos_x86_vmenter_entry_t *entry)
+{
+    aos_x86_vmenter_return_t returned={.result=UINT64_MAX};
+    (void)aos_x86_runner_call(&runner,AOS_X86_RUNNER_ENDPOINT_CAP,entry,&returned);
+    return returned;
+}
+static aos_x86_vmenter_return_t firmware_enter(void)
+{
+    const aos_x86_vmenter_entry_t entry={seL4_GetMR(0),seL4_GetMR(1),seL4_GetMR(2)};
+    return firmware_start(&entry);
+}
+static aos_x86_vmenter_return_t firmware_resume_notification(
+    const aos_x86_vmenter_return_t *returned)
+{
+    const aos_x86_vmenter_entry_t entry={returned->words[0],returned->words[1],returned->words[2]};
+    return firmware_start(&entry);
+}
 
 #define VCPU AOS_GUEST_VCPU_CAP_BASE
 const char vmm_pd_name[] = "guest_vmm_x86";
@@ -1035,7 +1058,7 @@ _Noreturn void aos_x86_firmware_run(seL4_CPtr ep, aos_x86_vmenter_entry_t entry)
         service_serial(&serial_endpoint);
         if (lifecycle_state == GUEST_STATE_RUNNING) seL4_Yield();
     }
-    aos_x86_vmenter_return_t returned = aos_x86_vm_start(&entry);
+    aos_x86_vmenter_return_t returned = firmware_start(&entry);
     for (;;) {
         enum aos_x86_control_result control;
         do {
@@ -1050,7 +1073,7 @@ _Noreturn void aos_x86_firmware_run(seL4_CPtr ep, aos_x86_vmenter_entry_t entry)
 #if defined(AGENTOS_X86_MANAGED_START) && !defined(AGENTOS_X86_USERSPACE_PROOF)
         if (reset_entry_pending) {
             reset_entry_pending = false;
-            returned = aos_x86_vm_start(&entry);
+            returned = firmware_start(&entry);
             continue;
         }
 #endif
@@ -1066,7 +1089,7 @@ _Noreturn void aos_x86_firmware_run(seL4_CPtr ep, aos_x86_vmenter_entry_t entry)
             if (returned.badge & NET_VIRT_VMM_WAKE_BADGE) aos_vmm_virtio_net_rx_ready();
             /* Queue completion leaves its IOAPIC line pending. The next
              * bounded VMX timer exit routes it through the common event path. */
-            returned = aos_x86_vm_resume_notification(&returned);
+            returned = firmware_resume_notification(&returned);
             continue;
         }
         if (returned.result != SEL4_VMENTER_RESULT_FAULT)
@@ -1379,6 +1402,6 @@ _Noreturn void aos_x86_firmware_run(seL4_CPtr ep, aos_x86_vmenter_entry_t entry)
         seL4_SetMR(SEL4_VMENTER_CALL_EIP_MR, rip + event.advance);
         seL4_SetMR(SEL4_VMENTER_CALL_CONTROL_PPC_MR, controls);
         seL4_SetMR(SEL4_VMENTER_CALL_INTERRUPT_INFO_MR, event.interruption_info);
-        returned = aos_x86_vm_enter();
+        returned = firmware_enter();
     }
 }

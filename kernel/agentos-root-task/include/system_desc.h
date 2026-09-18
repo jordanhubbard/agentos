@@ -232,6 +232,7 @@ typedef struct {
 #define SVC_ID_INPUT_VIRT 33u /* isolated keyboard/pointer queue service */
 #define SVC_ID_DISPLAY_RAMFB 34u /* QEMU fw_cfg display driver */
 #define SVC_ID_X86_LIFECYCLE_PROBE 35u /* Qualification client; no device grants */
+#define SVC_ID_X86_RUNNER 36u /* Private VMM execution context */
 
 /* Standard per-PD CNode slot assignments for well-known capabilities.
  * These are the slots at which each PD finds its initial endpoint caps. */

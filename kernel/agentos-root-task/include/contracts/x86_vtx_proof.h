@@ -46,8 +46,8 @@ extern volatile aos_x86_lifecycle_witness_t aos_x86_control_witness;
 #endif
 /* Caller indices in the fixed userspace-proof topology. Badge high bits
  * identify the destination service, not the caller's service identity. */
-#define AOS_X86_LIFECYCLE_VMM_INDEX    6u
-#define AOS_X86_LIFECYCLE_PROBE_INDEX  7u
+#define AOS_X86_LIFECYCLE_VMM_INDEX    7u
+#define AOS_X86_LIFECYCLE_PROBE_INDEX  8u
 /* Qualification-only CPUID trap; absent from production device contracts. */
 #define AOS_X86_USERSPACE_LEAF  0x41554f53u
 #define AOS_X86_USERSPACE_INIT  0x494e4954u

@@ -13,6 +13,7 @@ static inline seL4_Word seL4_MessageInfo_get_length(seL4_MessageInfo_t m) { retu
 seL4_Word seL4_GetMR(int);
 void seL4_SetMR(int,seL4_Word);
 seL4_Word seL4_VMEnter(seL4_Word *);
+seL4_MessageInfo_t seL4_Call(seL4_CPtr,seL4_MessageInfo_t);
 #ifdef CONFIG_KERNEL_MCS
 seL4_MessageInfo_t seL4_Recv(seL4_CPtr,seL4_Word *,seL4_CPtr);
 void seL4_Send(seL4_CPtr,seL4_MessageInfo_t);

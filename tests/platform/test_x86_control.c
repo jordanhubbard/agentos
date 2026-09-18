@@ -8,8 +8,8 @@
 #include "contracts/serial_virt_contract.h"
 #include "contracts/blk_virt_contract.h"
 #include "contracts/net_virt_contract.h"
-#ifdef AGENTOS_X86_USERSPACE_PROOF
 #include "contracts/x86_vtx_proof.h"
+#ifdef AGENTOS_X86_USERSPACE_PROOF
 bool aos_x86_lifecycle_ack;
 bool aos_x86_lifecycle_boot_ack;
 #endif
@@ -70,7 +70,8 @@ static void request(uint32_t op, uint32_t id)
     sel4_msg_t req = {.opcode = op, .length = 4};
     rep_u32(&req, 0, id);
     _sel4_msg_to_mrs(&req);
-    incoming_badge = ((seL4_Word)SVC_ID_GUEST_VMM_PRIMARY << 48) | (UINT64_C(7) << 32);
+    incoming_badge = ((seL4_Word)SVC_ID_GUEST_VMM_PRIMARY << 48) |
+                     ((seL4_Word)AOS_X86_LIFECYCLE_PROBE_INDEX << 32);
     incoming_info = seL4_MessageInfo_new(op, 0, 0, _SEL4_MR_COUNT);
 }
 static void call(uint32_t op, uint32_t id, uint32_t status, uint32_t next)
@@ -146,7 +147,8 @@ int main(void)
     call(MSG_GUEST_CREATE, 0, GUEST_ERR_DEAD, GUEST_STATE_DEAD);
 #ifdef AGENTOS_X86_USERSPACE_PROOF
     request(AOS_X86_LIFECYCLE_ACK, AOS_X86_USERSPACE_PASS);
-    incoming_badge = ((seL4_Word)SVC_ID_GUEST_VMM_PRIMARY << 48) | (UINT64_C(6) << 32);
+    incoming_badge = ((seL4_Word)SVC_ID_GUEST_VMM_PRIMARY << 48) |
+                     ((seL4_Word)AOS_X86_LIFECYCLE_VMM_INDEX << 32);
     assert(aos_x86_control_step(&runtime, wake, &state) == AOS_X86_CONTROL_STOPPED);
     assert(!aos_x86_lifecycle_ack && received_reply.opcode == GUEST_ERR_PROTOCOL_VIOLATION);
     call(AOS_X86_LIFECYCLE_ACK, AOS_X86_USERSPACE_PASS, GUEST_OK, GUEST_STATE_DEAD);

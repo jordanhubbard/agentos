@@ -29,17 +29,20 @@ execution contexts, thread-safe IPC buffers, INIT/SIPI and lifecycle integration
 remain required before admitting multi-vCPU profiles; these host checks do
 not establish multi-CPU guest execution.
 
-The private x86 execution runner is an in-progress VMM component with a
+The private x86 execution runner is a VMM component with a
 versioned IPC contract in `contracts/x86_runner.h`. Its server executes one
 VMEnter per accepted sequence, snapshots the returned registers before reply
 IPC, rejects duplicate commands, and latches ambiguous execution failures.
-It is compiled as `x86_runner.elf` but is not yet in a boot manifest and owns
-no resources in the current composition. Root provisioning, coordinator
-calls, AP startup and lifecycle quiescence remain pending. Its intended
-authority is one bound VCPU and one private coordinator endpoint, with its
-own native TCB, VSpace and IPC buffer; no device frames, IRQs or guest RAM
-aliases are required. Host tests and target link checks do not prove IPC
-delivery or multi-vCPU execution.
+The firmware manifests now start `x86_runner.elf` before the coordinator.
+Root binds the existing bootstrap VCPU and EPT to this runner's native TCB,
+and grants only the coordinator a send/grant-reply endpoint cap with a fixed
+owner badge. The runner has its own native TCB, VSpace and IPC buffer, with
+no device frames, IRQs or guest RAM aliases. The coordinator retains the
+runner TCB capability for EPT/VCPU reconstruction. It makes synchronous entry
+calls and handles devices and lifecycle changes after their replies; runner
+sequence state persists across guest recreation. Additional CPUs and AP startup
+remain pending. Host tests and target link checks do not prove IPC delivery
+or multi-vCPU execution; target qualification of this integration is pending.
 
 The x86 firmware profile binder enforces CPU-feature requests against the
 synthetic CPUID model before VM entry. Its fixed baseline exposes x87 (FP)

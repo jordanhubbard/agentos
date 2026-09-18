@@ -980,6 +980,14 @@ test-x86-runner-host:
 		-idirafter kernel/agentos-root-task/include tests/platform/test_x86_runner.c \
 		platform/guest-vmm/x86_runner.c -o $(BUILD_TMP_DIR)/test_x86_runner
 	$(BUILD_TMP_DIR)/test_x86_runner
+	$(CC) -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -g \
+		-DCONFIG_VTX -DCONFIG_X86_64_VTX_64BIT_GUESTS \
+		-Itests/platform/runner-stubs -Iplatform/include \
+		-I$(SEL4_SDK)/board/x86_64_generic/release/include \
+		-idirafter kernel/agentos-root-task/include \
+		tests/platform/test_x86_runner_client.c platform/guest-vmm/x86_runner_client.c \
+		platform/guest-vmm/x86_runner.c -o $(BUILD_TMP_DIR)/test_x86_runner_client
+	$(BUILD_TMP_DIR)/test_x86_runner_client
 	@set -e; for mode in classic mcs; do \
 		flags=; if test "$$mode" = mcs; then flags=-DCONFIG_KERNEL_MCS; fi; \
 		$(CC) -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -g \

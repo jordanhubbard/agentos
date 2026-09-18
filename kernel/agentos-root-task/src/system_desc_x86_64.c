@@ -15,7 +15,7 @@
 #if defined(AGENTOS_X86_VTX)
 const system_desc_t system_desc_x86_64 = {
 #ifdef AGENTOS_X86_FIRMWARE_RESET
-    .pd_count = 7u
+    .pd_count = 8u
 #ifdef AGENTOS_X86_USERSPACE_PROOF
         + 1u
 #endif
@@ -85,6 +85,14 @@ const system_desc_t system_desc_x86_64 = {
             .cnode_size_bits = 10u,
             .priority = 203u,
             .self_svc_id = SVC_ID_SERIAL_VIRT,
+        },
+        {
+            .name = "x86_runner",
+            .elf_path = "x86_runner.elf",
+            .stack_size = 0x8000u,
+            .cnode_size_bits = 10u,
+            .priority = 250u,
+            .self_svc_id = SVC_ID_X86_RUNNER,
         },
 #endif
         {

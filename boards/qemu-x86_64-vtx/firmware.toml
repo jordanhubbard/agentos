@@ -24,5 +24,9 @@ name = "serial_virt"
 priority = 203
 
 [[pd]]
+name = "x86_runner"
+priority = 250
+
+[[pd]]
 name = "guest_vmm_primary"
 priority = 250

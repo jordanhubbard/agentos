@@ -925,6 +925,9 @@ static seL4_CPtr g_serial_virt_frames[AOS_SERIAL_FRAMES];
 static seL4_CPtr g_pd_notifications[SYSTEM_MAX_PDS];
 #if defined(__x86_64__) && defined(AGENTOS_X86_VTX)
 static seL4_CPtr g_x86_vtx_proof_endpoint = seL4_CapNull;
+#ifdef AGENTOS_X86_FIRMWARE_RESET
+static seL4_CPtr g_x86_runner_tcb = seL4_CapNull;
+#endif
 #endif
 #ifdef AGENTOS_LOG_RINGS
 static seL4_CPtr g_log_frames[AOS_LOG_CLIENTS];
@@ -1759,6 +1762,7 @@ static seL4_Error setup_vmm_guest_vcpu(const pd_desc_t *pd,
  * mappings have no host-device capability or guest I/O authority.
  */
 #ifdef AGENTOS_X86_FIRMWARE_RESET
+#include "contracts/x86_runner.h"
 extern const uint8_t _binary_x86_firmware_bin_start[];
 extern const uint8_t _binary_x86_firmware_bin_end[];
 
@@ -1766,6 +1770,16 @@ static seL4_Error setup_x86_firmware(const pd_desc_t *pd, uint32_t pd_index,
                                     seL4_CPtr pd_cnode, seL4_CPtr vmm_tcb,
                                     seL4_CPtr vmm_vspace)
 {
+    /* The runner is provisioned first with its own native address space and
+     * IPC buffer. Only its owning coordinator receives this invocation cap. */
+    if (g_x86_runner_tcb == seL4_CapNull) return seL4_InvalidCapability;
+    vmm_tcb = g_x86_runner_tcb;
+    seL4_CPtr runner_ep = ep_alloc_for_service(SVC_ID_X86_RUNNER);
+    if (runner_ep == seL4_CapNull) return seL4_NotEnoughMemory;
+    seL4_Error runner_err = seL4_CNode_Mint(pd_cnode,AOS_X86_RUNNER_ENDPOINT_CAP,
+        pd->cnode_size_bits,seL4_CapInitThreadCNode,runner_ep,64u,
+        seL4_CapRights_new(1u,0u,0u,1u),AOS_X86_RUNNER_OWNER_BADGE);
+    if (runner_err != seL4_NoError) return runner_err;
     if (!pd_is_guest_vmm(pd) || pd->self_svc_id != SVC_ID_GUEST_VMM_PRIMARY ||
         pd->cnode_size_bits != AOS_GUEST_RAM_CNODE_BITS ||
         (uintptr_t)_binary_x86_firmware_bin_end -
@@ -3996,6 +4010,10 @@ void root_task_main(const seL4_BootInfo *bi)
                 dbg_puts("\n");
             } else {
                 dbg_puts("[rt] pd started ok\n");
+#if defined(__x86_64__) && defined(AGENTOS_X86_FIRMWARE_RESET)
+                if (reg_err == seL4_NoError && pd->self_svc_id == SVC_ID_X86_RUNNER)
+                    g_x86_runner_tcb = tr.tcb_cap;
+#endif
                 if (reg_err == seL4_NoError && inspect_view.thread_count < AOS_INSPECT_MAX_THREADS) {
                     aos_inspect_thread_t *t = &inspect_view.threads[inspect_view.thread_count++];
                     t->pd_index = i;

@@ -3,7 +3,7 @@
 #define AGENTOS_X86_GUEST_OBJECT_CAPS_H
 
 /* Architecture-exclusive with ARM's execution pool at this slot. The x86
- * VCPU is bound to the VMM TCB; that TCB must never belong to this pool.
+ * VCPU is bound to the private execution runner TCB; that TCB must never belong to this pool.
  * Root moves the sole pool cap after setup. Revoke only outside VMEnter,
  * after guest I/O references have drained. RAM and its aliases are separate.
  * This grant alone does not implement suspend, destroy or reconstruction. */
@@ -18,7 +18,7 @@
 #define AOS_X86_GUEST_EPT_PDPT_CAP 498u
 #define AOS_X86_GUEST_EPT_LOW_PD_CAP 499u
 #define AOS_X86_GUEST_EPT_HIGH_PD_CAP 500u
-/* Retained capability to the owning native VMM thread, never a root/peer TCB.
+/* Retained capability to the owning private execution runner, never a root/peer TCB.
  * Required to attach a rebuilt EPT/VCPU. The native thread and this grant
  * remain outside the guest object pool's revocation tree. */
 #define AOS_X86_VMM_SELF_TCB_CAP 501u
