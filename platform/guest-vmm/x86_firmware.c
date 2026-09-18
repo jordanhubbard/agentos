@@ -159,13 +159,7 @@ static _Noreturn void stop(seL4_CPtr endpoint, seL4_Word status, seL4_Word reaso
 static void block_wait(void)
 {
     seL4_Word badge = 0;
-#ifdef CONFIG_KERNEL_MCS
-    (void)seL4_Recv(PD_CNODE_SLOT_SELF_EP, &badge, AGENTOS_IPC_REPLY_CAP);
-#else
-    (void)seL4_Recv(PD_CNODE_SLOT_SELF_EP, &badge);
-#endif
-    if (!badge || (badge & ~(BLK_VIRT_VMM_WAKE_BADGE | SERIAL_VIRT_VMM_WAKE_BADGE |
-                            NET_VIRT_VMM_WAKE_BADGE)))
+    if (!aos_x86_control_wait_initializing(&badge))
         stop(block_proof_ep, AOS_X86_VTX_PROOF_FAIL, 0x424c4bu, 0, badge);
     if (badge & SERIAL_VIRT_VMM_WAKE_BADGE) serial_wake_received = true;
     if (badge & NET_VIRT_VMM_WAKE_BADGE) aos_vmm_virtio_net_rx_ready();

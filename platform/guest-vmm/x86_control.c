@@ -16,6 +16,36 @@ extern bool aos_x86_lifecycle_ack;
 extern bool aos_x86_lifecycle_boot_ack;
 #endif
 
+bool aos_x86_control_wait_initializing(seL4_Word *wake_badge)
+{
+    if (!wake_badge) return false;
+    *wake_badge = 0;
+    seL4_Word badge = 0;
+#ifdef CONFIG_KERNEL_MCS
+    (void)seL4_Recv(PD_CNODE_SLOT_SELF_EP, &badge, AGENTOS_IPC_REPLY_CAP);
+#else
+    (void)seL4_Recv(PD_CNODE_SLOT_SELF_EP, &badge);
+#endif
+    const seL4_Word wakes = SERIAL_VIRT_VMM_WAKE_BADGE |
+                           BLK_VIRT_VMM_WAKE_BADGE | NET_VIRT_VMM_WAKE_BADGE;
+    if (badge & wakes) {
+        if (badge & ~wakes) return false;
+        *wake_badge = badge;
+    } else if (badge) {
+        /* Reject all calls before initialization completes, including malformed
+         * frames. Do not decode, mutate resources or leave a caller blocked. */
+        const sel4_msg_t reply = {.opcode = GUEST_ERR_NOT_READY};
+        _sel4_msg_to_mrs(&reply);
+        seL4_MessageInfo_t info = seL4_MessageInfo_new(reply.opcode, 0, 0, _SEL4_MR_COUNT);
+#ifdef CONFIG_KERNEL_MCS
+        seL4_Send(AGENTOS_IPC_REPLY_CAP, info);
+#else
+        seL4_Reply(info);
+#endif
+    } else return false;
+    return true;
+}
+
 enum aos_x86_control_result aos_x86_control_step(
     const aos_guest_vmm_runtime_t *runtime,
     void (*wake)(seL4_Word, void *), void *context)

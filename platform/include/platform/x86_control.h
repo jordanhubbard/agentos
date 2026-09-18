@@ -21,4 +21,9 @@ enum aos_x86_control_result aos_x86_control_step(
     const aos_guest_vmm_runtime_t *runtime,
     void (*wake)(seL4_Word badge, void *context), void *context);
 
+/* Wait during device initialization without consuming a lifecycle request as
+ * a notification. Early callers receive NOT_READY and can retry; no guest
+ * state changes. A valid device notification is returned in wake_badge. */
+bool aos_x86_control_wait_initializing(seL4_Word *wake_badge);
+
 #endif
