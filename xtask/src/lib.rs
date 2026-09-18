@@ -123,12 +123,14 @@ pub struct TestArgs {
     /// Create fresh NoCloud media and a retained SSH identity from host.seed.
     #[arg(long, conflicts_with_all = ["seeded_ssh_key", "seeded_directory", "seeded_ssh_known_hosts", "assert_live", "assert_desktop", "x86_ssh_key", "assert_persistent_boots", "no_build"])]
     pub seed_profile: bool,
-    /// Seed once, then authenticate two cold boots with the same disk and host key.
+    /// Seed once, then verify a flushed file and host identity across two cold boots.
     #[arg(long, requires = "seed_profile")]
     pub assert_seeded_cold_boots: bool,
     /// Recreate a managed seeded ARM guest and verify pinned SSH and disk persistence.
     #[arg(long, requires = "seed_profile", conflicts_with_all = ["assert_seeded_cold_boots", "assert_managed_guest", "assert_guest_teardown", "keep_running", "no_build", "assert_guest_display"])]
     pub assert_seeded_recreation: bool,
+    #[arg(skip)]
+    pub seeded_witness: Option<String>,
     #[arg(skip)]
     pub seeded_source: Option<std::path::PathBuf>,
     /// Pin the original host identity on a subsequent boot of the seeded disk.
