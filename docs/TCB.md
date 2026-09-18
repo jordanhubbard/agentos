@@ -55,8 +55,10 @@ remain bounded reconstruction authority; driver, native, operator and frontend
 frames are excluded. Graphics queues/surfaces and notifications remain separate.
 `make test-guest-queue-recycle` qualifies post-destruction retyping, complete
 zero checks, overwriting and stale-capability rejection for these pools.
-Target qualification of this change is pending; it does not implement guest
-recreation or establish peer continuity.
+The full gate and console-profile qualification passed at `abcaeda`;
+[the receipt](evidence/2026-09-18-spark/guest-queue-pools.json) records the
+three exercised pools. Optional input-pool qualification remains pending.
+This does not implement guest recreation or establish peer continuity.
 
 AArch64 guest RAM is allocated from dedicated 2 MiB child untyped pools.
 Root installs the initial guest/VMM mappings, then moves each pool's sole

@@ -1,0 +1,32 @@
+{
+  "qualification": "ARM terminal queue-page reclamation and post-destruction pool reuse",
+  "runtime_revision": "abcaedaf0db4e4f344972c8c68796ec90ce0d47a",
+  "host": "Spark AArch64",
+  "source_clean_during_tests": true,
+  "pipeline_result": "PASS, exit 0",
+  "gate": {
+    "command": "make gate QEMU_TEST_SSH_PORT=12231",
+    "log_sha256": "6c4984bf1766ea207b0b0d494742756a954bfe362622d4128c34d6ad1e6006a5"
+  },
+  "target": {
+    "command": "make test-guest-queue-recycle QEMU_TEST_SSH_PORT=12231",
+    "log_sha256": "78af9e57943488658209ee4a6ec4d4f0041339535e700777fae81eb0a293e405",
+    "serial_log_sha256": "d4566040222b1cd185ec946a5b50fb6675a247d7b20877ffaeec8530b2b575b1",
+    "image_sha256": "89251f96e1c289eef08bce5faa3874310045b35890fb9afa14a2014da452a7a5",
+    "qemu_pid": 697143,
+    "qemu_log_stem": "agentos-qemu-RiXpg5",
+    "result": "Running console-proof Ubuntu guest destroyed through CC; network/block/serial detach acknowledged; private queue, execution, RAM and paging pools revoked; stale public handle rejected",
+    "pool_reuse": "Each of the three queue pools retyped twice after destruction, mapped at the former VMM network queue address, fully checked for zero, overwritten, revoked and checked for absent frame capability using FailedLookup"
+  },
+  "host_tests": [
+    "All detach acknowledgments precede queue revocation",
+    "Injected second-pool failure retries only the incomplete stage and prevents execution/RAM revocation until all pools complete"
+  ],
+  "limits": [
+    "Optional input queue pool not exercised by this console profile",
+    "Empty untyped pools and private ASID namespace remain management authority",
+    "Graphics queues and surfaces, notification objects and driver vNICs are not reclaimed here",
+    "No guest recreation or concurrent target peer continuity claim",
+    "Required GitHub checks, canonical integration and full release qualification remain pending"
+  ]
+}
