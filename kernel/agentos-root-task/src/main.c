@@ -151,7 +151,7 @@ _Static_assert(PD_CNODE_SLOT_FB_WAIT != AOS_LOG_NOTIFY_CAP &&
 #define ROOT_PROBE_WRITE AOS_VMM_PROBE_WRITE
 #define ROOT_PROBE_MESSAGE AOS_VMM_PROBE_MESSAGE
 #endif
-#ifdef ROOT_FAULT_PROBE
+#if defined(ROOT_FAULT_PROBE) || defined(__aarch64__)
 #include "serial_log.h"
 #endif
 #include <platform/net_host_layout.h> /* host net MMIO/private DMA/shared bridge */
@@ -974,6 +974,31 @@ static void dbg_hex(seL4_Word v)
     buf[18] = '\0';
     dbg_puts(buf);
 }
+
+#if defined(__aarch64__)
+/* The UART has already moved to serial_pd when guest mappings are created.
+ * Failure diagnostics must use that driver, just like root fault probes. */
+static void report_guest_gic_failure(const char *message)
+{
+    serial_log_t log = {0};
+    seL4_CPtr frame = ut_alloc_slot();
+    if (frame == seL4_CapNull || g_serial_shmem_frame_cap == seL4_CapNull ||
+        seL4_CNode_Copy(seL4_CapInitThreadCNode, frame, 64u,
+            seL4_CapInitThreadCNode, g_serial_shmem_frame_cap,
+            64u, seL4_AllRights) != seL4_NoError ||
+        pd_vspace_map_device_frame(seL4_CapInitThreadVSpace, frame,
+            AGENTOS_SERIAL_SHMEM_VA) != seL4_NoError) return;
+    log.ep = ep_alloc_for_service(SVC_ID_SERIAL);
+#if AGENTOS_GUEST_GIC_FAILURE_PROBE == 1
+    serial_log_puts(&log, "[rt] GIC failure probe: missing frame\n");
+#elif AGENTOS_GUEST_GIC_FAILURE_PROBE == 2
+    serial_log_puts(&log, "[rt] GIC failure probe: page mapping\n");
+#elif AGENTOS_GUEST_GIC_FAILURE_PROBE == 3
+    serial_log_puts(&log, "[rt] GIC failure probe: capability copy\n");
+#endif
+    serial_log_puts(&log, message);
+}
+#endif
 
 static int name_eq(const char *a, const char *b)
 {
@@ -3060,27 +3085,45 @@ void root_task_main(const seL4_BootInfo *bi)
          * at 0x08040000. Without this pass-through mapping the guest faults as
          * soon as it writes GICC_PMR during IRQ setup.
          */
-        if (g_gic_vcpu_frame_cap != seL4_CapNull &&
-            pd_is_guest_vmm(pd)) {
+        if (pd_is_guest_vmm(pd)) {
+#if AGENTOS_GUEST_GIC_FAILURE_PROBE == 1
+            g_gic_vcpu_frame_cap = seL4_CapNull;
+#endif
+            if (g_gic_vcpu_frame_cap == seL4_CapNull) {
+                report_guest_gic_failure("[rt] missing guest GIC vCPU frame; refusing boot\n");
+                return;
+            }
             seL4_Word gic_copy = ut_alloc_slot();
             seL4_Error gic_err = seL4_NotEnoughMemory;
+            seL4_CPtr gic_source = g_gic_vcpu_frame_cap;
+#if AGENTOS_GUEST_GIC_FAILURE_PROBE == 3
+            gic_source = seL4_CapNull;
+#endif
             if (gic_copy != seL4_CapNull) {
                 gic_err = seL4_CNode_Copy(
                     seL4_CapInitThreadCNode, gic_copy,               64u,
-                    seL4_CapInitThreadCNode, g_gic_vcpu_frame_cap,   64u,
+                    seL4_CapInitThreadCNode, gic_source,            64u,
                     seL4_AllRights);
             }
             dbg_puts("[rt] VMM GIC vCPU CNode_Copy err=");
             dbg_hex((seL4_Word)gic_err);
             dbg_puts("\n");
             if (gic_err == seL4_NoError) {
-                gic_err = pd_vspace_map_device_frame(guest_vspace,
+                seL4_CPtr mapping_vspace = guest_vspace;
+#if AGENTOS_GUEST_GIC_FAILURE_PROBE == 2
+                mapping_vspace = seL4_CapNull;
+#endif
+                gic_err = pd_vspace_map_device_frame(mapping_vspace,
                                                       (seL4_CPtr)gic_copy,
                                                       GIC_VCPU_IF_VA);
             }
             dbg_puts("[rt] VMM GIC vCPU map err=");
             dbg_hex((seL4_Word)gic_err);
             dbg_puts("\n");
+            if (gic_err != seL4_NoError) {
+                report_guest_gic_failure("[rt] guest GIC vCPU mapping failed; refusing boot\n");
+                return;
+            }
         }
 #endif
 

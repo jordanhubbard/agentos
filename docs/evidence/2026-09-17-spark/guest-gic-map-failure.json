@@ -1,0 +1,25 @@
+{
+  "revision": "2230cc9121b52694dab875bc16c4612e99ba75b5",
+  "source_tree_clean": true,
+  "host": "Spark ARM64 Linux",
+  "status": "regression_gate_passed",
+  "checks": [
+    {
+      "command": "make test-host",
+      "exit_code": 0,
+      "log": "/tmp/agentos-gic-map-failure-host.log",
+      "log_sha256": "25fd16f6178640bc4f40081d829ddf6face0aa1fe6b785367bec3733b75cffec"
+    },
+    {
+      "command": "make gate QEMU_TEST_SSH_PORT=12228",
+      "exit_code": 0,
+      "log": "/tmp/agentos-gic-map-failure-gate.log",
+      "log_sha256": "1033c754fb91e2a3be28c7eabe350f56dd0797043cb90be047c81d950e5ee673",
+      "scope": "Host tests, both root-task architecture boots and ARM guest network/block/console proofs"
+    }
+  ],
+  "limits": [
+    "No injected target GIC frame-allocation, capability-copy or mapping failure was exercised.",
+    "No guest recreation or complete release qualification claim."
+  ]
+}

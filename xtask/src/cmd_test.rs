@@ -485,6 +485,14 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
         return run_persistent_boots(args);
     }
     anyhow::ensure!(
+        args.guest_gic_failure_probe.is_none()
+            || (args.board == "qemu_virt_aarch64"
+                && args.guest_os == "none"
+                && !args.no_build
+                && !args.keep_running),
+        "guest GIC failure qualification requires a fresh ARM boot-only image"
+    );
+    anyhow::ensure!(
         !(args.assert_inspect
             || args.inspect_write_probe
             || args.assert_operator_session
@@ -706,6 +714,9 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
         }
         if let Some(mode) = args.block_isolation_probe {
             make_args.push(format!("BLK_ISOLATION_PROBE={mode}"));
+        }
+        if let Some(mode) = args.guest_gic_failure_probe {
+            make_args.push(format!("GUEST_GIC_FAILURE_PROBE={mode}"));
         }
         if args.inspect_write_probe {
             make_args.push(String::from("INSPECT_WRITE_PROBE=1"));
@@ -1091,7 +1102,34 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
     }
 
     let mut timing_receipt = None;
-    let mut result = if args.log_isolation_probe.is_some() {
+    let mut result = if let Some(mode) = args.guest_gic_failure_probe {
+        let probe = match mode {
+            1 => "[rt] GIC failure probe: missing frame",
+            2 => "[rt] GIC failure probe: page mapping",
+            _ => "[rt] GIC failure probe: capability copy",
+        };
+        let refusal = if mode == 1 {
+            "[rt] missing guest GIC vCPU frame; refusing boot"
+        } else {
+            "[rt] guest GIC vCPU mapping failed; refusing boot"
+        };
+        wait_for_all_markers(
+            &log_path,
+            &[probe, refusal],
+            Duration::from_secs(args.timeout_secs),
+            &mut qemu,
+        )
+        .and_then(|proof| {
+            std::thread::sleep(Duration::from_millis(500));
+            let text = std::fs::read_to_string(&log_path)?;
+            anyhow::ensure!(
+                !text.contains("[rt] VMM guest caps installed")
+                    && !text.contains("agentOS boot complete"),
+                "root continued guest startup after GIC failure"
+            );
+            Ok(proof)
+        })
+    } else if args.log_isolation_probe.is_some() {
         wait_for_all_markers(
             &log_path,
             &["[rt] log isolation: expected client data fault verified"],
@@ -1492,7 +1530,8 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
     // Every AArch64 image includes log_drain and the serial driver. Require
     // actual driver-backed output even on release kernels with debug printing
     // disabled; PD load alone missed malformed serial requests in log_drain.
-    if result.is_ok() && args.board == "qemu_virt_aarch64" {
+    if result.is_ok() && args.board == "qemu_virt_aarch64" && args.guest_gic_failure_probe.is_none()
+    {
         if let Err(error) = wait_for_all_markers(
             &log_path,
             &["[log_drain] ready"],
