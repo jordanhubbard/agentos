@@ -146,6 +146,27 @@ source digest, resolved profile, agentOS image, serial logs and result under
 source disk, image or resolved profile between rounds. This is a cold-boot
 storage test, not proof of guest-slot recreation or orderly guest shutdown.
 
+`make test-debian-nocloud-cold-boots` applies the same fresh, flushed file
+witness to the automatically seeded guest. Both boots authenticate against
+the original SSH host identity; only the first writes the witness. The second
+fails on a missing or changed file and never repairs it. A failed or uncertain
+witness command is not retried. Evidence remains under
+`build/evidence/seeded-cold-boots-*`. The first target run at `e0d207f` wrote
+and flushed the witness, but systemd froze before login on the second boot.
+The [failure receipt](evidence/2026-09-18-spark/seeded-file-cold-boots.json)
+retains the exact scope and logs. A subsequent
+[two-boot qualification](evidence/2026-09-18-spark/seeded-file-cold-boots-completion.json)
+passed at `f5c636c` with the block-completion wake fix and original profile
+logging/deadlines. Both boots authenticated against the original SSH host key;
+the second read the exact first-boot witness without rewriting it. Host launch
+to authenticated SSH took 772,879 ms and 604,049 ms, respectively. This single
+trial qualifies that file-persistence path, not the cause of the earlier
+failure, concurrent disk isolation, guest recreation or full baseline parity.
+The profile rejects systemd's terminal `Failed to start up manager.` and
+`Freezing execution.` messages so subsequent runs report that failure without
+waiting for the authentication deadline. This changes only host-side failure
+detection; guest logging, sandboxing and the boot deadline remain unchanged.
+
 Successful single-profile live tests also write an
 `agentos-qemu-*.boot-timing.json` receipt beside the serial log. The monotonic
 host clock measures the QEMU launch request through completed authenticated

@@ -233,6 +233,54 @@ static void test_disjoint_waiters(void)
     cleanup();
 }
 
+static void test_partial_chunk_does_not_wake(void)
+{
+    setup(2);
+    submit(0, VIRTIO_BLK_T_IN, 0, 12288);
+    blk_req_t first = take(BLK_REQ_READ);
+    assert(first.count == 2u);
+    complete(first, BLK_RESP_OK);
+    assert(device.vqs[0].virtq.used->idx == 0u);
+    assert(interrupts == 0u);
+    blk_req_t last = take(BLK_REQ_READ);
+    assert(last.count == 1u);
+    complete(last, BLK_RESP_OK);
+    assert(device.vqs[0].virtq.used->idx == 1u);
+    assert(interrupts == 1u);
+    cleanup();
+}
+
+static void test_completion_wakes_with_queued_io(void)
+{
+    for (unsigned fail = 0u; fail < 2u; fail++) {
+        setup(2);
+        submit(0, VIRTIO_BLK_T_IN, 0, 512);
+        submit(1, VIRTIO_BLK_T_IN, 8, 512);
+        submit(2, VIRTIO_BLK_T_IN, 16, 512);
+        blk_req_t first = take(BLK_REQ_READ);
+        blk_req_t second = take(BLK_REQ_READ);
+        assert(blk_queue_empty_req(&queue));
+        assert(device.vqs[0].last_idx == 2u);
+        assert(device.vqs[0].virtq.used->idx == 0u);
+        unsigned before = interrupts;
+
+        /* The freed cell admits the third read. The first completion must
+         * still wake its guest, without waiting for either later read. */
+        complete(first, fail ? BLK_RESP_ERR_UNSPEC : BLK_RESP_OK);
+        assert(device.vqs[0].virtq.used->idx == 1u);
+        assert(device.vqs[0].virtq.used->ring[0].id == 0u);
+        assert(guest[sizeof(struct virtio_blk_outhdr) + 512u] ==
+               (fail ? VIRTIO_BLK_S_IOERR : VIRTIO_BLK_S_OK));
+        assert(device.vqs[0].last_idx == 3u);
+        assert(interrupts == before + 1u);
+        blk_req_t third = take(BLK_REQ_READ);
+        complete(second, BLK_RESP_OK);
+        complete(third, BLK_RESP_OK);
+        assert(device.vqs[0].virtq.used->idx == 3u);
+        cleanup();
+    }
+}
+
 int main(void)
 {
     test_chunked_read();
@@ -240,5 +288,7 @@ int main(void)
     test_error_completion();
     test_failed_predecessor();
     test_disjoint_waiters();
-    puts("PASS: production block drain, chunked reads, overlapping RMW, errors and stopped admission");
+    test_partial_chunk_does_not_wake();
+    test_completion_wakes_with_queued_io();
+    puts("PASS: block drain, chunked reads, overlapping RMW, errors, stopped admission and timely completion wakes");
 }

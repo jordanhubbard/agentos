@@ -1,0 +1,42 @@
+{
+  "qualification": "Seeded Debian file persistence across two authenticated cold boots",
+  "runtime_revision": "f5c636cf9fcc781b59e68b57df2a10c267e29566",
+  "host": "Spark AArch64",
+  "source_clean_during_and_after_run": true,
+  "command": "make test-debian-nocloud-cold-boots",
+  "result": "PASS, exit 0: first boot writes and syncs a fresh witness; second reads it exactly without rewriting; original SSH host identity retained",
+  "witness": "seeded-cold-boots-MLJzTq",
+  "evidence_directory": "build/evidence/seeded-cold-boots-MLJzTq",
+  "log_sha256": "2ecda501efbb37b7a8471143d5da0376c849e87bf6b2f389b6555dfb7f92ab61",
+  "gate": {
+    "command": "make gate QEMU_TEST_SSH_PORT=12227",
+    "result": "PASS on the same clean source revision",
+    "log_sha256": "c5039fbed11f7e9ad80404a55b3f7eb0a95630086c7a09dab8b8787e8dd79af2"
+  },
+  "shared_boot_inputs": {
+    "agentos_image_sha256": "a88a0b698de4d5c95b2ded8ca5c1d0cdd3fb73e76d689943e449b76b86d68959",
+    "guest_bundle_sha256": "a288c89412556855da2b5c3f78848cb79ea8b7209e567b7727190bc8b1f2fe07",
+    "qemu_config_sha256": "57f7f302b54baa5f4e5ed25d67f3877ada0e947b76445c72f978786a63f537a6",
+    "profile": "debian-nocloud-aarch64",
+    "host_backed_virtio": ["net", "block", "console"],
+    "deadline_seconds_per_boot": 1200,
+    "diagnostic_debug_logging": false
+  },
+  "first_boot": {
+    "qemu_log_stem": "agentos-qemu-Yhs4Kl",
+    "authenticated_boot_ms": 772879,
+    "serial_log_sha256": "e1cba793657c413fb79da93f1457c6e92c2319455ab4338fe04227809c50aec4"
+  },
+  "second_boot": {
+    "qemu_log_stem": "agentos-qemu-np12uO",
+    "authenticated_boot_ms": 604049,
+    "serial_log_sha256": "789783cef6cbffd7342ca9bf39b00b64b3f0e787c62bf1169070c9c5eee71296"
+  },
+  "limits": [
+    "One successful two-boot trial; not a reliability rate or proof of the earlier systemd freeze's cause",
+    "Timing spans host QEMU launch request through authenticated SSH, excluding build and media preparation; no controlled performance comparison",
+    "Combines the seeded witness baseline and block-completion wake fix; unrelated GIC-refusal and later queue-detach changes are absent",
+    "Not orderly shutdown, guest-slot recreation, concurrent writable-disk isolation or complete Debian-to-Ubuntu gate parity",
+    "Required CI, canonical integration and final release-revision qualification remain pending"
+  ]
+}

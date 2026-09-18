@@ -1,0 +1,46 @@
+{
+  "qualification": "Seeded Debian flushed file across cold boots",
+  "runtime_revision": "e0d207fdf96fa789359b44b54f0683b085e2e34d",
+  "host": "Spark AArch64, QEMU TCG",
+  "command": "make test-debian-nocloud-cold-boots",
+  "result": "FAIL, exit 2",
+  "first_boot": {
+    "result": "PASS",
+    "scope": "Pinned Ed25519 SSH, aarch64 identity, canonical host-backed net/block/console, fresh file written and synced",
+    "console_sha256": "bfd9cffd51483a4bfe71d9f556ebbb993f826e4410e5f603d740120b32d3e86a"
+  },
+  "second_boot": {
+    "result": "FAIL before login",
+    "guest_error": "systemd: Failed to fork off sandboxing environment for executing generators: Protocol error; Failed to start up manager; Freezing execution",
+    "guest_error_time_seconds": 352.253066,
+    "guest_freeze_time_seconds": 354.948344,
+    "console_sha256": "330997416cffd6b2389c5c541f62d15f65949e73a23b567b4c1f592b042160b1",
+    "serial_sha256": "3319af2d24b30b4a7169a9c9c4d2402d2cc038a2573fbf4a68c84186aef9e4f6",
+    "termination": "Owned QEMU PID 3794385 terminated after retaining the explicit fatal guest error. The harness then returned exit 2 for the closed CC transport; it did not independently classify the systemd failure.",
+    "witness_checked": false
+  },
+  "full_log": "/tmp/agentos-seeded-witness-cold-boots.log",
+  "full_log_sha256": "4a45c2a3f19ffee14fbbdafd523a586a0f17b1be55554758d14ca951b6754639",
+  "retained_directory": "/tmp/agentos-v04-seeded-witness/build/evidence/seeded-cold-boots-gMJl2A",
+  "witness": "seeded-cold-boots-gMJl2A",
+  "offline_disk_inspection": {
+    "directory": "/tmp/agentos-cold-boot-forensics",
+    "source_disk_sha256_before_and_after_extraction": "1681fd9bb7587b7dbb5f23ae7fb5bf47d068fb188636361349396677f3df361b",
+    "root_partition": { "start_sector": 262144, "sectors": 6027264, "sector_bytes": 512 },
+    "extracted_partition_sha256": "d122c0d392216c2587f803560637e985430fe2cb769b87176fccdf501775ba25",
+    "witness_read": "debugfs 1.47.0 read /var/lib/agentos/persistence-proof from the extracted partition: exactly seeded-cold-boots-gMJl2A followed by newline",
+    "tmp_directory": "Present, mode 01777",
+    "readonly_fsck": "e2fsck -fn exited 4: journal recovery skipped; orphan_present flag set with clean orphan file. No other errors reported by this check.",
+    "journal_replay": "Replayed only on a separate copy. Subsequent read-only check still exited 4 for orphan_present; retained source disk was not modified.",
+    "scope": "Confirms stored witness bytes on the disk left by the failed second boot. Does not establish successful guest-side readback, filesystem health after orderly shutdown, or the cause of the systemd failure."
+  },
+  "normal_gate": {
+    "result": "PASS before cold-boot test",
+    "log_sha256": "4a7a81f259f665db009af656f2c692c4e46cccdcef0cbc00ef83783de8ce2a23"
+  },
+  "limitations": [
+    "File persistence is not qualified: the second guest did not reach the read-only witness check.",
+    "The fatal generator error is observed; timeout, storage corruption and other causes have not been distinguished.",
+    "No concurrent writable-disk isolation, guest-slot recreation or release claim."
+  ]
+}
