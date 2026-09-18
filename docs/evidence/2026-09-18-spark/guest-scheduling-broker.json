@@ -1,0 +1,32 @@
+{
+  "qualification": "ARM primary guest scheduling through explicit manager CREATE and BOOT",
+  "runtime_revision": "9303460ebb6e94879c3c209ecc3bfc797146ebcb",
+  "host": "Spark AArch64",
+  "source_clean_during_tests": true,
+  "pipeline_result": "PASS, exit 0",
+  "target": {
+    "command": "make test-guest-scheduling QEMU_TEST_SSH_PORT=12237",
+    "log_sha256": "9b2d406a4f9c6704f93a03e64cfb36361130c064ef49f31c780a8db9c41500cc",
+    "serial_log_sha256": "fc54356c6d11a1f8fa6c8184c3b21417bb880cb8af7bc4e0c3971ab65e40d75e",
+    "qemu_pid": 954414,
+    "qemu_log_stem": "agentos-qemu-IRVete",
+    "result": "Managed-boot image rejected handle zero; explicit manager CREATE/BOOT returned handle 1; console input/output completed; destruction succeeded; STATUS, RESUME and SUSPEND rejected the retired handle"
+  },
+  "gate": {
+    "command": "make gate QEMU_TEST_SSH_PORT=12237",
+    "log_sha256": "00f4cd3a8739ce10281876a4c75e3b62c857116e7f1d25fb9cb4619a904e6072",
+    "result": "PASS after managed target"
+  },
+  "host_tests": [
+    "Both guest identities select their own exchange and scheduling controller",
+    "Fixed budget, period and priority arguments checked",
+    "Invalid identity rejected before invocation",
+    "Every copy, configuration and cleanup failure returns failure and attempts cleanup of all successfully copied caps"
+  ],
+  "limits": [
+    "Root still performs initial boot configuration; this exercises manager reconfiguration of existing primary execution objects",
+    "Secondary CPU placement and newly reconstructed execution objects remain unqualified",
+    "The ordinary single-guest gate bypasses manager CREATE and is regression evidence only",
+    "Guest reset callback, canonical integration, required CI and release remain incomplete"
+  ]
+}

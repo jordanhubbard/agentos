@@ -556,6 +556,21 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
         "guest teardown requires a fresh ARM console proof or authenticated seeded profile"
     );
     let repo_root = repo_root()?;
+    anyhow::ensure!(
+        !args.assert_managed_guest
+            || (args.board == "qemu_virt_aarch64"
+                && args.guest_os == "ubuntu"
+                && !args.no_build
+                && !args.keep_running
+                && !args.assert_guest_teardown
+                && !args.seed_profile
+                && args.seeded_ssh_key.is_none()
+                && !args.assert_console_backpressure
+                && !args.assert_guest_display
+                && !args.assert_live
+                && !args.assert_desktop),
+        "managed guest qualification requires a fresh standalone ARM Ubuntu console proof"
+    );
     let initial_agentos_revision = agentos_revision(&repo_root)?;
     let timing_source_tree_clean = agentos_worktree_clean(&repo_root)?;
     let profile_root = repo_root.join("guest-profiles");
@@ -751,6 +766,9 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
         }
         if args.assert_guest_queue_recycle {
             make_args.push(String::from("GUEST_QUEUE_RECYCLE_TEST=1"));
+        }
+        if args.assert_managed_guest {
+            make_args.push(String::from("GUEST_MANAGED_BOOT=1"));
         }
         if args.assert_guest_block_drain {
             make_args.push(String::from("GUEST_BLOCK_DRAIN_TEST=1"));
@@ -1293,15 +1311,58 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
                 &mut qemu,
             )
             .context("CC-PD did not become ready before guest console probing")?;
-            wait_for_guest_console_login_via_cc(
-                &cc_sock,
-                0,
-                args.guest_os.as_str(),
-                Some(profile),
-                Duration::from_secs(args.timeout_secs),
-                &mut qemu,
-                args.assert_guest_display.then_some(log_path.as_path()),
-            )
+            if args.assert_managed_guest {
+                let timeout = Duration::from_secs(args.timeout_secs);
+                let mut cc =
+                    connect_cc_client(&cc_sock, timeout.min(Duration::from_secs(30)), &mut qemu)?;
+                let absent = cc.call(MSG_CC_GUEST_STATUS, 0, 0, 0, &[])?;
+                anyhow::ensure!(
+                    absent.mr[0] == CC_ERR_BAD_HANDLE,
+                    "managed image exposed an automatic boot guest"
+                );
+                let handle = create_guest_via_cc_wait(
+                    &mut cc,
+                    profile.control_type as u8,
+                    64,
+                    &profile.id,
+                    timeout,
+                    &mut qemu,
+                )?;
+                anyhow::ensure!(handle != 0, "managed CREATE returned reserved boot handle");
+                let proof = wait_for_guest_console_login_on_cc(
+                    &cc_sock,
+                    &mut cc,
+                    handle,
+                    args.guest_os.as_str(),
+                    Some(profile),
+                    timeout,
+                    &mut qemu,
+                    None,
+                )?;
+                destroy_guest_via_cc(&mut cc, handle, Some(profile))?;
+                for opcode in [
+                    MSG_CC_GUEST_STATUS,
+                    MSG_CC_RESUME_GUEST,
+                    MSG_CC_SUSPEND_GUEST,
+                ] {
+                    let reply = cc.call(opcode, handle, 0, 0, &[])?;
+                    anyhow::ensure!(
+                        reply.mr[0] == CC_ERR_BAD_HANDLE,
+                        "destroyed managed guest opcode {opcode:#x} returned {}, expected bad handle", reply.mr[0]
+                    );
+                }
+                Ok(format!("{proof}; explicit manager CREATE/BOOT, console I/O, destruction and stale handle rejection passed"))
+            } else {
+                wait_for_guest_console_login_via_cc(
+                    &cc_sock,
+                    0,
+                    args.guest_os.as_str(),
+                    Some(profile),
+                    Duration::from_secs(args.timeout_secs),
+                    &mut qemu,
+                    args.assert_guest_display.then_some(log_path.as_path()),
+                )
+            }
         } else if args.assert_vmx_exit {
             if args.assert_firmware_reset {
                 wait_for_all_markers(

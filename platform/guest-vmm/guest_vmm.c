@@ -1604,7 +1604,7 @@ void init(void)
     }
     g_guest_kernel_pc = kernel_pc;
     g_guest_startable = true;
-#if defined(AGENTOS_GUEST_DUAL)
+#if defined(AGENTOS_GUEST_DUAL) || defined(AGENTOS_GUEST_MANAGED_BOOT)
     g_guest_state = GUEST_STATE_READY;
     LOG_VMM("  Profile guest ready; waiting for lifecycle BOOT\n");
 #else

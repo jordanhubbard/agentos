@@ -799,6 +799,12 @@ test-x86-firmware-build:
 # but it is not counted among the host tests below.
 test-host: policy-check guest-profile-check lint-source test-integration test-operator-host test-log-ring-host test-framebuffer-host
 test-host: test-x86-cpu-host
+test-host: test-guest-scheduling-host
+.PHONY: test-guest-scheduling-host
+test-guest-scheduling-host:
+	@mkdir -p $(BUILD_TMP_DIR)
+	$(CC) -std=c11 -Wall -Wextra -Werror -I tests/platform/scheduling-stubs -I platform/include -iquote kernel/agentos-root-task/include tests/platform/test_guest_scheduling.c -o $(BUILD_TMP_DIR)/test_guest_scheduling
+	@$(BUILD_TMP_DIR)/test_guest_scheduling
 test-host: test-x86-profile-host
 .PHONY: test-x86-profile-host
 test-x86-profile-host:
@@ -1348,6 +1354,10 @@ test-guest-console:
 
 .PHONY: test-console-backpressure
 .PHONY: test-guest-teardown
+.PHONY: test-guest-scheduling
+test-guest-scheduling:
+	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os ubuntu --timeout-secs $(QEMU_TEST_TIMEOUT) --assert-emulated-console --assert-managed-guest --ssh-port $(QEMU_TEST_SSH_PORT)
+
 test-guest-teardown:
 	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os ubuntu --timeout-secs $(QEMU_TEST_TIMEOUT) --assert-emulated-console --assert-guest-teardown --ssh-port $(QEMU_TEST_SSH_PORT)
 
