@@ -643,6 +643,54 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
         run_make(&make_arg_refs, &repo_root).context("profile-driven build step failed")?;
     }
 
+    if args.seeded_ssh_key.is_some() {
+        let directory = if let Some(directory) = &args.seeded_directory {
+            std::fs::create_dir_all(directory)?;
+            directory.clone()
+        } else {
+            let parent = repo_root.join("build/evidence");
+            std::fs::create_dir_all(&parent)?;
+            tempfile::Builder::new()
+                .prefix("seeded-boot-")
+                .tempdir_in(parent)?
+                .keep()
+        };
+        let profile = profile_plan
+            .as_mut()
+            .context("seeded SSH requires a runtime profile")?;
+        let media = &mut profile
+            .qemu
+            .as_mut()
+            .context("seeded profile has no QEMU plan")?
+            .media;
+        anyhow::ensure!(
+            media.iter().filter(|disk| disk.writable).count() == 1,
+            "seeded proof requires exactly one writable disk"
+        );
+        let disk = media.iter_mut().find(|disk| disk.writable).unwrap();
+        anyhow::ensure!(
+            disk.override_env
+                .iter()
+                .all(|key| std::env::var_os(key).is_none()),
+            "seeded proof rejects media overrides"
+        );
+        let copy = crate::persistent_media::prepare(
+            &repo_root.join(&disk.path),
+            &directory,
+            args.seeded_ssh_known_hosts.is_some(),
+        )?;
+        disk.path = copy
+            .to_str()
+            .context("seeded disk path is not UTF-8")?
+            .to_owned();
+        disk.override_env.clear();
+        disk.managed_persistent = true;
+        println!(
+            "[xtask:test] Seeded persistent evidence: {}",
+            directory.display()
+        );
+    }
+
     if let Some(directory) = &args.persistent_directory {
         let profile = profile_plan
             .as_mut()

@@ -102,8 +102,11 @@ pub struct TestArgs {
     #[arg(long, conflicts_with_all = ["assert_live", "assert_desktop", "x86_ssh_key"])]
     pub seeded_ssh_key: Option<std::path::PathBuf>,
     /// Pin the original host identity on a subsequent boot of the seeded disk.
-    #[arg(long, requires = "seeded_ssh_key")]
+    #[arg(long, requires_all = ["seeded_ssh_key", "seeded_directory"])]
     pub seeded_ssh_known_hosts: Option<std::path::PathBuf>,
+    /// Retain a managed writable disk copy and reuse it for the cold boot.
+    #[arg(long, requires = "seeded_ssh_key")]
+    pub seeded_directory: Option<std::path::PathBuf>,
     #[arg(long, default_value_t = 120)]
     pub timeout_secs: u64,
     #[arg(long)]

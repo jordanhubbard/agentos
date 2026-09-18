@@ -55,11 +55,16 @@ Target boot and authentication qualification remain pending. This profile does
 not replace the existing `debian` baseline until parity is demonstrated.
 
 The preseeded ARM authentication gate is
-`make test-debian-nocloud-ssh SEEDED_SSH_KEY=/path/to/identity QEMU_TEST_SSH_PORT=12222 QEMU_TEST_TIMEOUT=1200`.
+`make test-debian-nocloud-ssh SEEDED_SSH_KEY=/path/to/identity SEEDED_DIRECTORY=build/evidence/arm-seeded-boot QEMU_TEST_SSH_PORT=12222 QEMU_TEST_TIMEOUT=1200`.
 It drains and retains the console through CC-PD, requires the profile's login
 markers and host-key report, then uses the same strict bounded SSH probe as
-Intel with an exact `aarch64` result. For a later boot of the same disk, pass
-`SEEDED_SSH_KNOWN_HOSTS` pointing to the first successful run's receipt.
+Intel with an exact `aarch64` result. The gate creates a private writable disk
+copy in `SEEDED_DIRECTORY`, retaining guest writes even after failure. If the
+directory is omitted, it creates and prints a unique evidence directory.
+For a later boot of the same disk, pass that same `SEEDED_DIRECTORY` and
+`SEEDED_SSH_KNOWN_HOSTS` pointing to the first successful run's receipt. The
+source image must remain unchanged; a first boot refuses to overwrite an
+existing copy. No QEMU process may still be using the retained disk.
 This path is implemented but not target-qualified. The first ARM kernel boot
 reached systemd and then emergency mode after its EFI partition device wait
 timed out; the gate correctly rejected that result. The partition was visible
