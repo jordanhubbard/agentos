@@ -28,11 +28,24 @@
     "qemu_log_stem": "agentos-qemu-l6INzZ",
     "log_sha256": "311f1d0eadbf9b658419f7b40356ee044873c1b55cdb69de4577c2e1f2d1e456"
   },
+  "intel_regression": {
+    "runtime_revision": "82897ae2dc896ac9a8e57bfe9759b6be89b83711",
+    "host": "Existing Intel Linux madmax via puck.local",
+    "command": "make gate-x86_64-debian-ssh SEL4_SDK_VERSION=2.3.0 QEMU_TEST_TIMEOUT=600",
+    "root_disk": "/tmp/agentos-debian-amd64/boot-24.raw",
+    "ssh": "Original pinned Ed25519 host key and existing public-key identity; loopback port 12224",
+    "firmware_sha256": "101afad5f520753224b60b9555df60add435cf50c7a82b781d7d7d8c60db7eb5",
+    "result": "PASS, exit 0: pinned-host-key SSH, x86_64 identity and sync",
+    "qemu_pid": 2590654,
+    "qemu_log_stem": "agentos-qemu-Wu3BH1",
+    "log_sha256": "6a34e645cd43ff797d938bc6f4eca5dcd37cc6fe2fe7d7a7efa36006a14f7c34",
+    "source_clean_after_run": true
+  },
   "limits": [
     "Unread terminal bytes may be abandoned at destruction; no lossless viewer-drain claim",
     "Serial queue-page capabilities remain allocated and guest recreation remains unavailable",
     "Post-detach peer/operator continuity with protected former guest memory is a host proof, not a concurrent target proof",
-    "Intel Debian SSH regression is running separately; no result asserted here",
+    "Intel SSH proves boot and I/O compatibility with serial contract v3, not Intel teardown or recreation",
     "Required GitHub checks, canonical integration and release qualification remain pending"
   ]
 }
