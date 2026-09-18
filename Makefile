@@ -1366,6 +1366,13 @@ test-ubuntu-virtio:
 # End-state proof: boot Ubuntu's real Casper initrd and ISO filesystem to a
 # serial login while requiring real I/O through every agentOS VirtIO class.
 .PHONY: test-debian-live
+.PHONY: test-guest-gic-failure
+test-guest-gic-failure:
+	@for mode in 1 2 3; do \
+		cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os none \
+			--guest-gic-failure-probe $$mode --timeout-secs 120 || exit $$?; \
+	done
+
 .PHONY: test-debian-nocloud-ssh
 .PHONY: test-debian-nocloud-auto
 .PHONY: test-debian-nocloud-graphics

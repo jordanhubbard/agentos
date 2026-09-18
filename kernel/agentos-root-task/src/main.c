@@ -3061,23 +3061,37 @@ void root_task_main(const seL4_BootInfo *bi)
          * soon as it writes GICC_PMR during IRQ setup.
          */
         if (pd_is_guest_vmm(pd)) {
+#if AGENTOS_GUEST_GIC_FAILURE_PROBE == 1
+            dbg_puts("[rt] GIC failure probe: missing frame\n");
+            g_gic_vcpu_frame_cap = seL4_CapNull;
+#endif
             if (g_gic_vcpu_frame_cap == seL4_CapNull) {
                 dbg_puts("[rt] missing guest GIC vCPU frame; refusing boot\n");
                 return;
             }
             seL4_Word gic_copy = ut_alloc_slot();
             seL4_Error gic_err = seL4_NotEnoughMemory;
+            seL4_CPtr gic_source = g_gic_vcpu_frame_cap;
+#if AGENTOS_GUEST_GIC_FAILURE_PROBE == 3
+            dbg_puts("[rt] GIC failure probe: capability copy\n");
+            gic_source = seL4_CapNull;
+#endif
             if (gic_copy != seL4_CapNull) {
                 gic_err = seL4_CNode_Copy(
                     seL4_CapInitThreadCNode, gic_copy,               64u,
-                    seL4_CapInitThreadCNode, g_gic_vcpu_frame_cap,   64u,
+                    seL4_CapInitThreadCNode, gic_source,            64u,
                     seL4_AllRights);
             }
             dbg_puts("[rt] VMM GIC vCPU CNode_Copy err=");
             dbg_hex((seL4_Word)gic_err);
             dbg_puts("\n");
             if (gic_err == seL4_NoError) {
-                gic_err = pd_vspace_map_device_frame(guest_vspace,
+                seL4_CPtr mapping_vspace = guest_vspace;
+#if AGENTOS_GUEST_GIC_FAILURE_PROBE == 2
+                dbg_puts("[rt] GIC failure probe: page mapping\n");
+                mapping_vspace = seL4_CapNull;
+#endif
+                gic_err = pd_vspace_map_device_frame(mapping_vspace,
                                                       (seL4_CPtr)gic_copy,
                                                       GIC_VCPU_IF_VA);
             }
