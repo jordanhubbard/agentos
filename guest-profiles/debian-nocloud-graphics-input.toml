@@ -10,7 +10,7 @@ devices = ["net", "block", "console", "gpu", "input"]
 [artifacts.dtb]
 source = "generated:linux.dts+profile-selected-virtio-gpu+virtio-input"
 cache = "build/qemu_virt_aarch64/debian-nocloud-graphics-input-vm.dtb"
-sha256 = "95d736516c68684f0ea7e1ea975eaff3ff47468e78e965873fcad20df34cab2e"
+sha256 = "4fb213367f4380fc4bf6b9e5f19ff6c78a35722d9d39a3080b51825bdda93be8"
 
 [host.qemu.ssh]
 host_port = 12223
