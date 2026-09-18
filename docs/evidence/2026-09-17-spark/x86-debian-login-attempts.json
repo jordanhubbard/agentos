@@ -4,7 +4,7 @@
   "target_host": "madmax",
   "target_architecture": "Intel x86_64 nested VMX",
   "local_validation_host": "Spark ARM64",
-  "runtime_revision": "9b33a33911df567deb45d58b175337d95f8fe38f",
+  "runtime_revision": "235f981",
   "artifacts": {
     "image": "debian-13-generic-amd64-20260831-2587.qcow2",
     "image_sha512": "5a069019420fb9441ad4f8004c661fadb747edd5662ca54a17c8f923dee7d717e21dbdaa4ba72d6fce7f920e0217f0a9af382298a7d46ed4bc9dc33ac19181b6",
@@ -45,6 +45,30 @@
       "log_sha256": "3ada83b46d00bcc5b3efbaf5e23376898981cfbda1075a66e82727387cd5b703"
     }
   ],
+  "latest_diagnostic": {
+    "attempt": 11,
+    "revision": "235f981",
+    "ram_bytes": 1073741824,
+    "root_task_elf_sha256": "1d2180c4bc69a848cf10fc1f661150916f6bcd9922fdf0c361ffd3c14c5f30de",
+    "initrd_sha256": "a2a5856f96277b7297f9cc6b2facebf118754a79bef1462de5c176615f80d483",
+    "command_line_sha256": "94905bff2771e130909cbdc0172be3cf40a41d95b6b8582dda3ed7fcbb418347",
+    "initrd_changes": "Stock initrd plus conf/modules preloading virtio_mmio, virtio_blk and virtio_net, and native console hook preserving stock udev as udev.stock",
+    "command_line_changes": "panic=0 debug; all other arguments unchanged",
+    "console_sha256": "2c714ed6178dcef7543f92a18758329e5e9b772e937f1dabb10b3e03476ef7e7",
+    "outer_log_sha256": "72ddfd561c32e42e752907eca65c41f562f30c936572abc25fb11d24d949da93",
+    "observations": [
+      "virtio_blk identifies vda and GPT partitions vda1, vda14 and vda15",
+      "EXT4 root UUID df4df5bb-613a-4382-8cf9-653304605a1f mounted read-write at guest time 38.320102 seconds",
+      "Initramfs trace at outer memory dump offset 0x10f57000 invokes /scripts/init-bottom/udev, followed by Failed to send exit request: Connection refused",
+      "Stock udev hook uses sh -e: failed udevadm control --exit prevents its subsequent /dev move",
+      "run-init validation fails opening console: No such file or directory; guest halts at 44.222347 seconds"
+    ],
+    "retained_host": "madmax",
+    "retained_prefix": "/tmp/agentos-debian-amd64/boot-11",
+    "dump_bytes": 2164391936,
+    "shutdown": "Dump completion verified through query-dump; owned diagnostic QEMU stopped through QMP quit",
+    "scope": "Manual diagnostic QEMU with file console sink; not a passing login gate. Why udev stopped listening remains unresolved."
+  },
   "regressions": {
     "spark_gate_revision": "9b33a33911df567deb45d58b175337d95f8fe38f",
     "spark_gate_result": "PASS: full make gate including host tests, architecture smoke boots and guest net/block/console checks",
@@ -58,7 +82,7 @@
   },
   "retained_directory": "build/evidence/x86-debian-login",
   "limitations": [
-    "No Debian userspace, root mount, login, networking, SSH, or lifecycle success is established",
+    "Debian initramfs userspace and root mount are observed; login, networking, SSH and lifecycle qualification remain unproven",
     "The 1 GiB experiment did not establish that memory shortage caused the empty console",
     "The harness still accepts explicit artifact arguments; x86 guest-profile consumption is pending",
     "No release claim; the login gate remains failing"
