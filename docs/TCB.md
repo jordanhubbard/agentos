@@ -86,8 +86,11 @@ mapping, removes that mapping, then publishes read-only ROM aliases and EPT
 entries. GPA translation stays disabled until device initialization. The
 qualification VMM embeds the checksummed firmware in native read-only data so
 the source survives guest-ROM revocation. Failed restoration leaves the guest
-stopped and requires pool revocation before retry. Host failure tests pass;
-Intel restoration qualification is pending.
+stopped and requires pool revocation before retry. The
+[memory restoration receipt](evidence/2026-09-18-spark/x86-memory-rebuild.json)
+records passing host failure tests, full Spark gate and two Intel restoration
+cycles at `4748a19`. These resources remain stopped; a second guest boot is
+not yet qualified.
 
 The userspace qualification adds `x86_lifecycle_probe`, an ordinary client
 with its VMM service endpoint and a send-only failure-report cap. Root rejects
