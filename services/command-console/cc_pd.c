@@ -48,15 +48,17 @@
 #include <platform/inspect.h>
 #include <platform/operator_session.h>
 #include <platform/framebuffer_observer.h>
+#include <platform/virtio_host_transport.h>
 #include "system_desc.h"
 #include <stdint.h>
 #include <stdbool.h>
 #include <stddef.h>
 
-/* ─── VirtIO MMIO serial driver ──────────────────────────────────────────── */
+/* ─── VirtIO console driver ──────────────────────────────────────────────── */
 /*
  * Transport: virtio-serial-device on QEMU virtio-mmio-bus.2 (PA 0x0A000400).
- * QEMU bridges the virtconsole named "cc.0" to build/cc_pd.sock.
+ * QEMU bridges the virtconsole named "cc.0" to build/cc_pd.sock. A validated
+ * x86 PCI startup record selects the shared modern PCI transport instead.
  *
  * The root task allocates three 4K frames and maps them at fixed CPU virtual
  * addresses in cc_pd. A versioned startup record at CC_VIRTIO_STARTUP_VA
@@ -97,35 +99,11 @@ static void cc_dbg_hex(uint64_t v)
     }
 }
 
-/* VirtIO MMIO register offsets (relative to slot base) */
-#define VMMIO_MAGIC           0x000u
-#define VMMIO_VERSION         0x004u
-#define VMMIO_DEVICE_ID       0x008u
-#define VMMIO_DEV_FEAT        0x010u   /* DeviceFeatures (R): read current features word */
-#define VMMIO_DEV_FEAT_SEL    0x014u   /* DeviceFeaturesSel (W): select features word to read */
-#define VMMIO_DRV_FEAT        0x020u   /* DriverFeatures (W): write accepted features word */
-#define VMMIO_DRV_FEAT_SEL    0x024u   /* DriverFeaturesSel (W): select features word to write */
-#define VMMIO_QUEUE_SEL       0x030u
-#define VMMIO_QUEUE_NUM_MAX   0x034u
-#define VMMIO_QUEUE_NUM       0x038u
-#define VMMIO_QUEUE_READY     0x044u
-#define VMMIO_QUEUE_NOTIFY    0x050u
-#define VMMIO_INTERRUPT_STATUS 0x060u
-#define VMMIO_INTERRUPT_ACK    0x064u
-#define VMMIO_STATUS          0x070u
-#define VMMIO_Q_DESC_LO       0x080u
-#define VMMIO_Q_DESC_HI       0x084u
-#define VMMIO_Q_AVAIL_LO      0x090u
-#define VMMIO_Q_AVAIL_HI      0x094u
-#define VMMIO_Q_USED_LO       0x0A0u
-#define VMMIO_Q_USED_HI       0x0A4u
-
 #define VSTATUS_ACK       1u
 #define VSTATUS_DRIVER    2u
 #define VSTATUS_FEAT_OK   8u
 #define VSTATUS_DRIVER_OK 4u
 #define VSTATUS_FAILED    128u
-#define VIRTIO_MAGIC      0x74726976u
 #define VIRTIO_ID_CONSOLE 3u
 #define VQ_DEPTH          4u
 #define CC_VIRTIO_RX_WAIT_LIMIT 16384u
@@ -158,7 +136,9 @@ typedef struct { uint16_t flags; uint16_t idx; vq_used_elem_t ring[VQ_DEPTH]; ui
 #define VQ_DESC_F_WRITE 2u
 
 static seL4_Word          g_vq_pa[3];       /* [0]=structs, [1]=TX buf, [2]=RX buf */
-static volatile uint32_t *g_virtio;         /* VirtIO MMIO base at bus.2 slot */
+static aos_virtio_host_t g_transport;
+static aos_virtio_host_queue_t g_transport_queues[2];
+static bool g_transport_ready;
 static uint16_t           g_rx_used_last;   /* shadow of RX used ring consumer idx */
 
 #define QP       ((uintptr_t)CC_VIRTIO_QUEUE_VA)
@@ -173,14 +153,6 @@ static uint16_t           g_rx_used_last;   /* shadow of RX used ring consumer i
 #define RX_AVAIL ((volatile vq_avail_t *)(QP + RX_AVAIL_OFF))
 #define RX_USED  ((volatile vq_used_t  *)(QP + RX_USED_OFF))
 
-static inline uint32_t vio_rd(uint32_t off)
-{
-    return *(volatile uint32_t *)((uintptr_t)g_virtio + off);
-}
-static inline void vio_wr(uint32_t off, uint32_t val)
-{
-    *(volatile uint32_t *)((uintptr_t)g_virtio + off) = val;
-}
 #if defined(__aarch64__)
 #define VQ_MB() __asm__ volatile("dsb sy" ::: "memory")
 #elif defined(__riscv)
@@ -191,26 +163,42 @@ static inline void vio_wr(uint32_t off, uint32_t val)
 #define VQ_MB() __asm__ volatile("" ::: "memory")
 #endif
 
-static void vio_queue_setup(uint32_t qidx,
+static bool vio_queue_setup(uint32_t qidx,
                              seL4_Word desc_pa, seL4_Word avail_pa, seL4_Word used_pa)
 {
-    vio_wr(VMMIO_QUEUE_SEL,   qidx);
-    vio_wr(VMMIO_QUEUE_NUM,   VQ_DEPTH);
-    vio_wr(VMMIO_Q_DESC_LO,   (uint32_t)(desc_pa  & 0xFFFFFFFFu));
-    vio_wr(VMMIO_Q_DESC_HI,   (uint32_t)(desc_pa  >> 32u));
-    vio_wr(VMMIO_Q_AVAIL_LO,  (uint32_t)(avail_pa & 0xFFFFFFFFu));
-    vio_wr(VMMIO_Q_AVAIL_HI,  (uint32_t)(avail_pa >> 32u));
-    vio_wr(VMMIO_Q_USED_LO,   (uint32_t)(used_pa  & 0xFFFFFFFFu));
-    vio_wr(VMMIO_Q_USED_HI,   (uint32_t)(used_pa  >> 32u));
-    vio_wr(VMMIO_QUEUE_READY, 1u);
+    return qidx < 2u && aos_virtio_host_queue_bind(&g_transport,
+        &g_transport_queues[qidx], (uint16_t)qidx, VQ_DEPTH,
+        desc_pa, avail_pa, used_pa);
 }
 
 static bool virtio_serial_init(void)
 {
+    g_transport_ready = false;
+    __builtin_memset(g_transport_queues, 0, sizeof(g_transport_queues));
     const volatile cc_virtio_startup_t *sp =
         (const volatile cc_virtio_startup_t *)CC_VIRTIO_STARTUP_VA;
     const cc_virtio_startup_t startup = *sp;
-    if (!cc_virtio_startup_valid(&startup, CC_VIRTIO_STARTUP_VERSION)) {
+    bool bound = false;
+    if (cc_virtio_startup_valid(&startup, CC_VIRTIO_STARTUP_VERSION)) {
+        bound = aos_virtio_host_mmio(&g_transport,
+            CC_VIRTIO_MMIO_VA + VMMIO_SLOT_OFF, 0x200u, VIRTIO_ID_CONSOLE);
+    }
+#if defined(__x86_64__)
+    else if (startup.version == CC_VIRTIO_STARTUP_PCI_VERSION) {
+        const cc_virtio_pci_startup_t pci =
+            *(const volatile cc_virtio_pci_startup_t *)CC_VIRTIO_STARTUP_VA;
+        if (cc_virtio_pci_startup_valid(&pci)) {
+            bound = aos_virtio_host_pci(&g_transport,
+                CC_VIRTIO_PCI_VA + pci.offset[CC_VIRTIO_PCI_COMMON],
+                pci.length[CC_VIRTIO_PCI_COMMON],
+                CC_VIRTIO_PCI_VA + 2u * CC_VIRTIO_PAGE_BYTES + pci.offset[CC_VIRTIO_PCI_DEVICE],
+                pci.length[CC_VIRTIO_PCI_DEVICE],
+                CC_VIRTIO_PCI_VA + CC_VIRTIO_PAGE_BYTES + pci.offset[CC_VIRTIO_PCI_NOTIFY],
+                pci.length[CC_VIRTIO_PCI_NOTIFY], pci.notify_multiplier);
+        }
+    }
+#endif
+    if (!bound) {
         cc_dbg_puts("[cc_pd] VirtIO init FAILED: bad startup record\n");
         return false;
     }
@@ -218,44 +206,26 @@ static bool virtio_serial_init(void)
     g_vq_pa[1] = (seL4_Word)startup.tx_buffer_pa;
     g_vq_pa[2] = (seL4_Word)startup.rx_buffer_pa;
 
-    g_virtio = (volatile uint32_t *)(CC_VIRTIO_MMIO_VA + VMMIO_SLOT_OFF);
-
-    uint32_t magic   = vio_rd(VMMIO_MAGIC);
-    uint32_t version = vio_rd(VMMIO_VERSION);
-    uint32_t devid   = vio_rd(VMMIO_DEVICE_ID);
-    cc_dbg_puts("[cc_pd] VirtIO magic="); cc_dbg_hex(magic);
-    cc_dbg_puts(" ver="); cc_dbg_hex(version);
-    cc_dbg_puts(" devid="); cc_dbg_hex(devid);
-    cc_dbg_puts("\n");
-
-    if (magic != VIRTIO_MAGIC || devid != VIRTIO_ID_CONSOLE) {
-        cc_dbg_puts("[cc_pd] VirtIO init FAILED: bad magic/devid\n");
-        return false;
-    }
-
     /* VirtIO 1.0 initialisation sequence */
-    vio_wr(VMMIO_STATUS, 0u);
-    vio_wr(VMMIO_STATUS, VSTATUS_ACK);
-    vio_wr(VMMIO_STATUS, VSTATUS_ACK | VSTATUS_DRIVER);
+    aos_virtio_host_set_status(&g_transport, 0u);
+    aos_virtio_host_set_status(&g_transport, VSTATUS_ACK);
+    aos_virtio_host_set_status(&g_transport, VSTATUS_ACK | VSTATUS_DRIVER);
     /* Only VERSION_1 is implemented. In particular, EVENT_IDX requires
      * publishing used_event thresholds; accepting it with a fixed zero
      * threshold suppresses completion interrupts after the first event. */
-    vio_wr(VMMIO_DEV_FEAT_SEL, 1u);
-    uint32_t feat1 = vio_rd(VMMIO_DEV_FEAT);
+    uint32_t feat1 = aos_virtio_host_features(&g_transport, 1u);
     if (!(feat1 & 1u)) {
-        vio_wr(VMMIO_STATUS, VSTATUS_FAILED);
+        aos_virtio_host_set_status(&g_transport, VSTATUS_FAILED);
         return false;
     }
-    vio_wr(VMMIO_DRV_FEAT_SEL, 0u);
-    vio_wr(VMMIO_DRV_FEAT, 0u);
-    vio_wr(VMMIO_DRV_FEAT_SEL, 1u);
-    vio_wr(VMMIO_DRV_FEAT, 1u); /* VIRTIO_F_VERSION_1 */
-    vio_wr(VMMIO_STATUS, VSTATUS_ACK | VSTATUS_DRIVER | VSTATUS_FEAT_OK);
-    uint32_t s_after = vio_rd(VMMIO_STATUS);
+    aos_virtio_host_set_features(&g_transport, 0u, 0u);
+    aos_virtio_host_set_features(&g_transport, 1u, 1u); /* VERSION_1 */
+    aos_virtio_host_set_status(&g_transport, VSTATUS_ACK | VSTATUS_DRIVER | VSTATUS_FEAT_OK);
+    uint32_t s_after = aos_virtio_host_status(&g_transport);
     cc_dbg_puts("[cc_pd] STATUS after FEAT_OK write="); cc_dbg_hex(s_after); cc_dbg_puts("\n");
     if (!(s_after & VSTATUS_FEAT_OK)) {
         cc_dbg_puts("[cc_pd] VirtIO FEAT_OK not set\n");
-        vio_wr(VMMIO_STATUS, VSTATUS_FAILED);
+        aos_virtio_host_set_status(&g_transport, VSTATUS_FAILED);
         return false;
     }
 
@@ -263,12 +233,15 @@ static bool virtio_serial_init(void)
      * from a known epoch before making them ready again. */
     __builtin_memset((void *)QP, 0, 4096u);
     VQ_MB();
-    vio_queue_setup(0u,
-        g_vq_pa[0] + RX_DESC_OFF, g_vq_pa[0] + RX_AVAIL_OFF, g_vq_pa[0] + RX_USED_OFF);
-    vio_queue_setup(1u,
-        g_vq_pa[0] + TX_DESC_OFF, g_vq_pa[0] + TX_AVAIL_OFF, g_vq_pa[0] + TX_USED_OFF);
+    if (!vio_queue_setup(0u,
+            g_vq_pa[0] + RX_DESC_OFF, g_vq_pa[0] + RX_AVAIL_OFF, g_vq_pa[0] + RX_USED_OFF) ||
+        !vio_queue_setup(1u,
+            g_vq_pa[0] + TX_DESC_OFF, g_vq_pa[0] + TX_AVAIL_OFF, g_vq_pa[0] + TX_USED_OFF)) {
+        aos_virtio_host_set_status(&g_transport, VSTATUS_FAILED);
+        return false;
+    }
 
-    vio_wr(VMMIO_STATUS,
+    aos_virtio_host_set_status(&g_transport,
            VSTATUS_ACK | VSTATUS_DRIVER | VSTATUS_FEAT_OK | VSTATUS_DRIVER_OK);
 
     /*
@@ -290,8 +263,9 @@ static bool virtio_serial_init(void)
     VQ_MB();
     RX_AVAIL->idx = 1u;
     VQ_MB();
-    vio_wr(VMMIO_QUEUE_NOTIFY, 0u);
+    if (!aos_virtio_host_queue_notify(&g_transport, &g_transport_queues[0])) return false;
     g_rx_used_last = 0u;
+    g_transport_ready = true;
 
     cc_dbg_puts("[cc_pd] VirtIO serial ready\n");
     return true;
@@ -300,9 +274,10 @@ static bool virtio_serial_init(void)
 static void virtio_serial_recover_tx(void)
 {
     cc_dbg_puts("[cc_pd] resetting VirtIO serial after incomplete reply\n");
-    vio_wr(VMMIO_STATUS, VSTATUS_FAILED);
+    g_transport_ready = false;
+    aos_virtio_host_set_status(&g_transport, VSTATUS_FAILED);
     VQ_MB();
-    vio_wr(VMMIO_STATUS, 0u);
+    aos_virtio_host_set_status(&g_transport, 0u);
     VQ_MB();
     if (!virtio_serial_init()) {
         cc_dbg_puts("[cc_pd] VirtIO serial recovery failed\n");
@@ -311,6 +286,7 @@ static void virtio_serial_recover_tx(void)
 
 static bool vio_serial_write(const void *buf, uint32_t n)
 {
+    if (!g_transport_ready) return false;
     const uint8_t *p = (const uint8_t *)buf;
     while (n > 0u) {
         uint32_t frame = n;
@@ -345,7 +321,7 @@ static bool vio_serial_write(const void *buf, uint32_t n)
         cc_dbg_puts(" desc_addr="); cc_dbg_hex(TX_DESC[0].addr);
         cc_dbg_puts("\n");
 #endif
-        vio_wr(VMMIO_QUEUE_NOTIFY, 1u);
+        if (!aos_virtio_host_queue_notify(&g_transport, &g_transport_queues[1])) return false;
 #ifdef CC_PD_TRACE_TX
         uint16_t cur_used = TX_USED->idx;
         cc_dbg_puts("[cc_pd] TX post-notify used="); cc_dbg_hex(cur_used); cc_dbg_puts("\n");
@@ -366,7 +342,7 @@ static bool vio_serial_write(const void *buf, uint32_t n)
              * rescan it instead of leaving the caller blocked indefinitely.
              */
             if ((wait % CC_VIRTIO_RENOTIFY_INTERVAL) == 0u) {
-                vio_wr(VMMIO_QUEUE_NOTIFY, 1u);
+                if (!aos_virtio_host_queue_notify(&g_transport, &g_transport_queues[1])) return false;
             }
             if (wait >= CC_VIRTIO_TX_WAIT_LIMIT) {
                 cc_dbg_puts("[cc_pd] TX timeout waiting for used ring\n");
@@ -392,6 +368,7 @@ static bool vio_serial_write(const void *buf, uint32_t n)
 
 static bool vio_serial_read(void *buf, uint32_t n)
 {
+    if (!g_transport_ready) { seL4_Yield(); return false; }
     uint8_t *p = (uint8_t *)buf;
     const uint32_t total = n;
     while (n > 0u) {
@@ -408,8 +385,8 @@ static bool vio_serial_read(void *buf, uint32_t n)
                  * the device cause, unmask the IRQ, then recheck the ring;
                  * an arrival after that check leaves a pending notification.
                  * Partial frames retain the bounded polling recovery below. */
-                uint32_t irq = vio_rd(VMMIO_INTERRUPT_STATUS);
-                if (irq) vio_wr(VMMIO_INTERRUPT_ACK, irq);
+                uint32_t irq = aos_virtio_host_interrupt_status(&g_transport);
+                if (irq) aos_virtio_host_interrupt_ack(&g_transport, irq);
                 VQ_MB();
                 if (seL4_IRQHandler_Ack(PD_IRQHANDLER_SLOT_BASE) == seL4_NoError) {
                     VQ_MB();
@@ -461,7 +438,7 @@ static bool vio_serial_read(void *buf, uint32_t n)
         VQ_MB();
         RX_AVAIL->idx++;
         VQ_MB();
-        vio_wr(VMMIO_QUEUE_NOTIFY, 0u);
+        if (!aos_virtio_host_queue_notify(&g_transport, &g_transport_queues[0])) return false;
     }
     return true;
 }

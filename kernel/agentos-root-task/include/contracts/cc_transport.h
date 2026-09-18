@@ -75,19 +75,6 @@ static inline bool cc_virtio_pci_startup_valid(const cc_virtio_pci_startup_t *s)
     return true;
 }
 
-/* queue_notify_off is read from the selected queue's common configuration.
- * Validate its product before forming a pointer into the mapped notify page. */
-static inline bool cc_virtio_pci_notify_address(const cc_virtio_pci_startup_t *s,
-                                               uint16_t queue_notify_off,
-                                               uintptr_t *address)
-{
-    if (!address) return false;
-    *address = 0u;
-    if (!cc_virtio_pci_startup_valid(s)) return false;
-    uint64_t delta = (uint64_t)queue_notify_off * s->notify_multiplier;
-    if (delta > s->length[CC_VIRTIO_PCI_NOTIFY] - 2u) return false;
-    *address = CC_VIRTIO_PCI_VA + CC_VIRTIO_PAGE_BYTES * CC_VIRTIO_PCI_NOTIFY +
-               s->offset[CC_VIRTIO_PCI_NOTIFY] + (uintptr_t)delta;
-    return true;
-}
+/* The common virtio_host_transport queue binder validates the selected
+ * queue's notification offset against this admitted notification span. */
 #endif

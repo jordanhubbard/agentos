@@ -38,11 +38,6 @@ int main(void)
     }
     cc_virtio_pci_startup_t p = pci();
     assert(cc_virtio_pci_startup_valid(&p));
-    uintptr_t address = 0u;
-    assert(cc_virtio_pci_notify_address(&p, 1u, &address));
-    assert(address == CC_VIRTIO_PCI_VA + 4096u + 0x204u);
-    assert(!cc_virtio_pci_notify_address(&p, 2u, &address) && address == 0u);
-    assert(!cc_virtio_pci_notify_address(&p, 0u, NULL));
     for (unsigned region = 0; region < CC_VIRTIO_PCI_REGIONS; region++) {
         p = pci(); p.offset[region]++;
         assert(!cc_virtio_pci_startup_valid(&p));
@@ -63,9 +58,8 @@ int main(void)
     p = pci(); p.notify_multiplier = 3u;
     assert(!cc_virtio_pci_startup_valid(&p));
     p = pci(); p.notify_multiplier = 0u;
-    assert(cc_virtio_pci_notify_address(&p, UINT16_MAX, &address));
-    assert(address == CC_VIRTIO_PCI_VA + 4096u + 0x200u);
+    assert(cc_virtio_pci_startup_valid(&p));
     p.notify_multiplier = UINT32_MAX - 1u;
-    assert(!cc_virtio_pci_notify_address(&p, UINT16_MAX, &address) && address == 0u);
-    puts("PASS: CC startup ABI, DMA page isolation, PCI spans and notification bounds");
+    assert(cc_virtio_pci_startup_valid(&p));
+    puts("PASS: CC startup ABI, DMA page isolation and PCI mapped spans");
 }
