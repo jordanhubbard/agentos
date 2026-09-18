@@ -1,0 +1,32 @@
+{
+  "schema": "agentos.target-qualification.v1",
+  "source_commit": "2efbe1ef60f02f043690a799b0d2eb95dbd18c92",
+  "source_clean": true,
+  "host": "madmax",
+  "architecture": "x86_64",
+  "cpu": "Intel Core i9-14900KF",
+  "host_kernel": "Linux 7.0.0-30-generic",
+  "kvm_access": "read-write",
+  "kvm_intel_nested": "Y",
+  "qemu": "10.2.1 (Debian 1:10.2.1+ds-1ubuntu3.2)",
+  "command": "make gate-x86_64-vtx QEMU_TEST_TIMEOUT=180",
+  "exit_code": 0,
+  "root_task_elf_sha256": "57454472d105ea687c71a6e488ea260d6e2b1ffd26d62629b8b38bf4f5b84011",
+  "sel4_32_elf_sha256": "0ca5d8cafe7994a5084401919e7cc0fbc55da8643dccb397c4fbbd115420ea15",
+  "qualification_log_sha256": "a717445b243fff088c7a0a759ac465b792bc65e711ea3b15e8ce55a1cea1b869",
+  "retained_log": "/tmp/agentos-v04-intel-qualification/build/evidence/vmx-2efbe1e/qualification.log",
+  "assertions": [
+    "root provisioned isolated VMX/EPT proof resources",
+    "seL4 VMEnter returned a guest fault",
+    "exit reason was HLT",
+    "guest RIP and instruction length matched the provisioned HLT instruction"
+  ],
+  "not_proven": [
+    "Linux guest userspace",
+    "UEFI and ACPI boot",
+    "canonical guest net, block and console",
+    "multiple vCPUs",
+    "guest teardown and capability reclamation",
+    "v0.4 completion"
+  ]
+}
