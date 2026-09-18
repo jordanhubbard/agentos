@@ -518,7 +518,7 @@ static uint32_t rebind_queue(uint64_t badge, const blk_virt_rebind_req_t *req)
     if (seL4_Untyped_Retype(AOS_QUEUE_SERVICE_RECEIVE, seL4_ARCH_LargePageObject,
             0u, AOS_QUEUE_SERVICE_CNODE, 0u, 0u, frame, 1u) != seL4_NoError)
         return BLK_VIRT_ERR_RESOURCE;
-    uintptr_t va = AOS_BLK_SHMEM_VA + req->client * AOS_BLK_CLIENT_STRIDE;
+    uintptr_t va = aos_blk_rebind_queue_va(req->client);
     if (seL4_ARCH_Page_Map(frame, AOS_QUEUE_SERVICE_VSPACE, va, seL4_AllRights,
             seL4_ARM_Default_VMAttributes) != seL4_NoError) {
         status = BLK_VIRT_ERR_RESOURCE;

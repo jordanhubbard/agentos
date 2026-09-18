@@ -32,6 +32,6 @@ bool aos_blk_virt_rebind(uint32_t client, uint32_t generation)
     if (result.status != BLK_VIRT_OK || result.version != BLK_VIRT_REBIND_VERSION ||
         result.generation != generation) return false;
     return seL4_ARCH_Page_Map(frame, AOS_GUEST_RAM_VMM_VSPACE,
-        AOS_BLK_SHMEM_VA + client * AOS_BLK_CLIENT_STRIDE,
+        aos_blk_rebind_queue_va(client),
         seL4_AllRights, seL4_ARM_Default_VMAttributes) == seL4_NoError;
 }

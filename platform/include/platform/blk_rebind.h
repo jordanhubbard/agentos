@@ -2,8 +2,15 @@
 #define AGENTOS_BLK_REBIND_H
 #include <stdbool.h>
 #include <stddef.h>
+#include <platform/blk_layout.h>
 #include "contracts/blk_virt_contract.h"
 #include "contracts/virtualizer_authority.h"
+
+static inline uintptr_t aos_blk_rebind_queue_va(uint32_t client)
+{
+    return client < AOS_BLK_MAX_CLIENTS ?
+        AOS_BLK_SHMEM_VA + AOS_BLK_CLIENT_BASE + client * AOS_BLK_CLIENT_STRIDE : 0u;
+}
 
 /* Validation must precede all capability and queue access. Detach is the
  * only transition that can set retired after draining both old queues. */
