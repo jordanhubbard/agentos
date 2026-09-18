@@ -25,12 +25,25 @@ all three seed files must read back exactly through debugfs before the output
 is published without replacing an existing destination. An invalid filesystem
 or a conflicting existing seed fails the readback check.
 
-The output is an ext4 partition image, not a full boot disk. Disk assembly,
-QEMU launch and automated SSH qualification are not yet wired to this command.
+By default the output is an ext4 partition image. To produce a full raw disk,
+also supply `SEED_DISK_RAW` and `SEED_PARTITION_OFFSET`. For the pinned
+`debian-amd64.toml` image, use
+`SEED_DISK_RAW=build/guest-images/debian-amd64/disk.raw` and
+`SEED_PARTITION_OFFSET=134217728`. Set `SEED_OUTPUT` to a fresh raw disk path.
+
+Assembly copies the disk, checks alignment and bounds, and compares every byte
+of the original root image against that disk region before replacement. It
+requires the seeded root to retain exactly the original size and reads back
+the complete replacement before publication. The offset is explicit; this
+command does not discover or validate GPT metadata. QEMU launch and automated
+SSH qualification are not yet wired to this command.
 The earlier manual Intel boot evidence is retained in
 `evidence/2026-09-17-spark/x86-debian-ssh-seed.json`.
 
 Validation on Spark: the pinned Debian root was seeded successfully; malformed
 ext4 input produced no output; an existing output was rejected. `make test-host`
-and all 93 Rust library tests passed. This host-tool validation does not establish
+and all 94 Rust library tests passed after disk assembly was added. The disk
+assembly test checks exact replacement, preserved surrounding bytes, unchanged
+source, wrong source region, unaligned offsets and out-of-bounds offsets.
+This host-tool validation does not establish
 that the newly generated media has booted.
