@@ -1,23 +1,34 @@
 {
   "schema": "agentos.block_queue_rebuild.v1",
-  "runtime_commit": "f230994dc",
-  "accepted": false,
+  "runtime_commit": "7d5f9e3b9",
+  "accepted": true,
+  "scope": "Stopped block queue reconstruction and read completion; not guest recreation",
   "spark": {
-    "host_and_x86_link": "passed; 18 rebind admission checks",
-    "host_log_sha256": "cfb32629ee336698789709b8873e346f05224ded466a7f3ad9394de0b739e1f4",
+    "host_and_x86_link": "passed; 29 admission and canonical client mapping checks",
+    "host_log_sha256": "8fb003fe3f963ec8309a953d0ed737066180a79462710a00167a4ff9686d48e4",
     "make_gate": "passed, terminal exit 0",
-    "gate_log_sha256": "60413c85e15e1b45488e5161fac06d2290855a2be7d403e12877a7594a612312"
+    "gate_log_sha256": "d127e2839879ef9e50fc80ffa0c220d055d1d33504ac96de60c30760b5a6452f"
   },
   "intel": {
     "command": "make gate-x86_64-teardown SEL4_SDK_VERSION=2.3.0 with retained checksummed OVMF, kernel and initrd",
-    "result": "failed, terminal exit 2: 600-second timeout waiting for x86 Linux ring3 initramfs syscall proof marker",
-    "observed": "initial hvc0 console request/reply passed; no final qualification marker",
-    "run_stem": "RLrWMy",
-    "combined_log": "/tmp/agentos-blk-rebind-intel.log on sparky",
-    "combined_log_sha256": "4741427c76d51f88c95d42118c6983d2d1678d1407ffecb42809079bee46f6bf"
+    "result": "passed, terminal exit 0",
+    "observed": "Two fresh block frame transfers, read status/count/id completions, drained detach, pool revocation and stale returned-cap rejection; existing serial, memory, execution and lifecycle proofs also passed",
+    "source_verification": "Tested working tree diff against pushed 7d5f9e3 was empty; target checkout then cleaned and detached at that commit",
+    "run_stem": "BOjOdw",
+    "combined_log": "/tmp/agentos-blk-rebind-offset-intel.log on sparky",
+    "combined_log_sha256": "ae9be2eb48fe378812012c43a481a0348666434cd2ee73f7fb099d1fd06e97e4",
+    "serial_log_sha256": "3c8af3c5aabf3c91e00613e6bb10eda1f957bca1b31bd6551aaa0c36003dc5fd",
+    "root_task_elf_sha256": "85bab65e92784115929f07b80e46128c39160624e260e952effb63928291c82a"
+  },
+  "failed_attempt": {
+    "runtime_commit": "f230994dc",
+    "result": "600-second timeout, no final ring3 marker",
+    "combined_log_sha256": "4741427c76d51f88c95d42118c6983d2d1678d1407ffecb42809079bee46f6bf",
+    "isolation": "Network-only 41cfd6e passed native qualification. Temporary early-failure probes reached rebind entry and handler entry, but not the point after mapping and queue initialization. Disabling service SIMD did not resolve the stall; that candidate was removed.",
+    "correction": "Both fresh mappings omitted AOS_BLK_CLIENT_BASE, the reserved first 2 MiB page. The canonical binder accessed the still-unmapped client page. Shared mapping helper now includes the client base and host tests compare both client mappings with the binder. All diagnostic patches were removed."
   },
   "limitations": [
-    "Native block reconstruction is not accepted; isolate the network-close and block-rebind changes since the last passing run.",
+    "Qualification checks read completion status, count and identifier; it does not establish writable-disk persistence or second-guest boot.",
     "Host admission tests do not cover native capability-transfer failures.",
     "Network queue reconstruction, firmware reset and second guest boot remain incomplete."
   ]

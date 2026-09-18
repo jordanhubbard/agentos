@@ -70,8 +70,8 @@ static inline int blk_virt_service_notification(uint64_t badge)
  * same root-assigned client/slot/media authority. The producer must stop
  * admission and consume all responses first. BUSY preserves the attachment
  * while either queue is nonempty or invalid. OK retires all service queue
- * references. Repeated detach is idempotent; retired clients cannot attach
- * again without a future generation/reset contract. This is not a flush. */
+ * references. Repeated detach is idempotent; retired clients must use REBIND
+ * with a fresh pool and generation instead of ATTACH. This is not a flush. */
 #define BLK_VIRT_OP_DETACH              0x2C02u
 /* A retired guest supplies one private untyped capability. The service
  * retypes one large queue frame and returns it after binding the same media.
