@@ -799,7 +799,12 @@ test-x86-firmware-build:
 # but it is not counted among the host tests below.
 test-host: policy-check guest-profile-check lint-source test-integration test-operator-host test-log-ring-host test-framebuffer-host
 test-host: test-x86-cpu-host
-test-host: test-guest-scheduling-host test-guest-gic-mapping-host
+test-host: test-guest-scheduling-host test-guest-gic-mapping-host test-guest-paging-host
+.PHONY: test-guest-paging-host
+test-guest-paging-host:
+	@mkdir -p $(BUILD_TMP_DIR)
+	$(CC) -std=c11 -Wall -Wextra -Werror -I tests/platform/paging-stubs -I platform/include -iquote kernel/agentos-root-task/include tests/platform/test_guest_paging.c platform/guest-ram/vmm_guest_paging.c -o $(BUILD_TMP_DIR)/test_guest_paging
+	@$(BUILD_TMP_DIR)/test_guest_paging
 .PHONY: test-guest-gic-mapping-host
 test-guest-gic-mapping-host:
 	@mkdir -p $(BUILD_TMP_DIR)
@@ -1369,6 +1374,9 @@ test-guest-teardown:
 .PHONY: test-guest-queue-recycle
 test-guest-queue-recycle:
 	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os ubuntu --timeout-secs $(QEMU_TEST_TIMEOUT) --assert-emulated-console --assert-guest-teardown --assert-guest-queue-recycle --ssh-port $(QEMU_TEST_SSH_PORT)
+
+.PHONY: test-guest-paging-recycle
+test-guest-paging-recycle: test-guest-queue-recycle
 
 test-console-backpressure:
 	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os ubuntu --timeout-secs $(QEMU_TEST_TIMEOUT) --assert-emulated-console --assert-console-backpressure --ssh-port $(QEMU_TEST_SSH_PORT)

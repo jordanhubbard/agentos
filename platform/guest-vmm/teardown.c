@@ -1,5 +1,6 @@
 #include <platform/guest_teardown.h>
 #include <platform/guest_ram.h>
+#include <platform/guest_paging.h>
 #include <platform/vmm_virtio_net.h>
 #include <platform/vmm_virtio_blk.h>
 #include <platform/vmm_virtio_console.h>
@@ -88,9 +89,7 @@ bool aos_guest_teardown_step(aos_guest_teardown_t *state, size_t ram_size)
         state->ram_released = true;
     }
     if (!state->paging_released) {
-        if (seL4_CNode_Revoke(AOS_GUEST_RAM_SELF_CNODE,
-                AOS_GUEST_PAGING_POOL_CAP, AOS_GUEST_RAM_CNODE_BITS)
-                != seL4_NoError) return false;
+        if (!aos_vmm_guest_paging_release()) return false;
         state->paging_released = true;
     }
     return true;

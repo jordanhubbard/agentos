@@ -1645,7 +1645,10 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
         .map(|proof| format!("{}; {proof}", result.as_deref().unwrap()));
     }
     if result.is_ok() && args.assert_guest_queue_recycle {
-        let mut markers = vec!["guest queue recycle: zero pages and stale caps verified"];
+        let mut markers = vec![
+            "guest queue recycle: zero pages and stale caps verified",
+            "guest paging recycle: fresh VSpaces and page tables verified",
+        ];
         if profile_plan
             .as_ref()
             .is_some_and(|p| p.devices.iter().any(|d| d == "gpu"))

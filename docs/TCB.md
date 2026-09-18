@@ -46,6 +46,22 @@ Private paging revocation and the full OS gate passed at `d00759c`;
 records the console-proof target and retained management resources.
 Reconstruction remains pending.
 
+The VMM paging helper can now retype a guest VSpace from the empty private
+paging pool and assign it through the retained per-guest ASID namespace.
+Guest frame mapping creates missing intermediate tables in bounded slots
+3600 through 3853, with at most three table allocations per mapping and no
+fallback to root or another guest's pool. The 254-table limit reserves space
+for an 8 KiB VSpace on ARM configurations that require it. Paging revocation
+resets the allocation cursor; a partial rebuild must be revoked before retry.
+RAM rebuilding uses this mapper. Host tests cover ASID assignment, every
+failure stage, retry after release, lookup-depth bounds and table exhaustion.
+`make test-guest-paging-recycle` extends the queue-recycle target with two
+fresh-VSpace cycles, large/small frame mapping, whole-large-page zero checks
+and stale VSpace/table cap rejection after revocation. That target and the full
+gate passed on Spark at `dc109dc`; [the receipt](evidence/2026-09-18-spark/guest-paging-rebuild.json)
+records the two-cycle component proof. This helper does not rebuild execution objects, service mappings
+or the guest image, and the production reset callback remains absent.
+
 ARM `vm_manager` now configures guest scheduling between the VMM's CREATE
 reply and its BOOT call. Root gives each VMM a private capability exchange
 CNode containing only its guest TCB, scheduling context, VMM fault endpoint
