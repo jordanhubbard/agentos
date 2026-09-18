@@ -59,7 +59,7 @@ void pd_main(seL4_CPtr endpoint, seL4_CPtr nameserver)
             AOS_SERIAL_FRONTEND_FRAME * AOS_SERIAL_FRAME_SIZE +
             i * AOS_SERIAL_FRONTEND_STRIDE);
     }
-    agentos_log_info("serial_virt", "READY: isolated serial queue service v2");
+    agentos_log_info("serial_virt", "READY: isolated serial queue service v3");
     for (;;) {
         seL4_Word badge = 0;
 #ifdef CONFIG_KERNEL_MCS
@@ -75,14 +75,19 @@ void pd_main(seL4_CPtr endpoint, seL4_CPtr nameserver)
         sel4_msg_t request = {0}, reply = {0};
         /* A short IPC must not reuse stale message registers from an earlier
          * caller. The canonical sel4_call wrapper sends this exact size. */
-        if (label == SERIAL_VIRT_OP_ATTACH &&
+        if ((label == SERIAL_VIRT_OP_ATTACH || label == SERIAL_VIRT_OP_DETACH) &&
             seL4_MessageInfo_get_length(info) == _SEL4_MR_COUNT)
             _sel4_mrs_to_msg(&request);
         serial_virt_attach_req_t attach = {0};
         uint32_t status = SERIAL_VIRT_ERR_PROTOCOL;
-        if (label == SERIAL_VIRT_OP_ATTACH && request.length == sizeof(attach)) {
+        if ((label == SERIAL_VIRT_OP_ATTACH || label == SERIAL_VIRT_OP_DETACH) &&
+            request.length == sizeof(attach)) {
             __builtin_memcpy(&attach, request.data, sizeof(attach));
-            status = aos_serial_virt_attach(&service, badge, &attach, request.length);
+            status = label == SERIAL_VIRT_OP_ATTACH ?
+                aos_serial_virt_attach(&service, badge, &attach, request.length) :
+                aos_serial_virt_detach(&service, badge, &attach, request.length);
+            if (label == SERIAL_VIRT_OP_DETACH && status == SERIAL_VIRT_OK)
+                agentos_log_info("serial_virt", "DETACH guest queues released");
         }
         rep_u32(&reply, 0, status);
         rep_u32(&reply, 4, SERIAL_VIRT_CONTRACT_VERSION);
@@ -99,7 +104,8 @@ void pd_main(seL4_CPtr endpoint, seL4_CPtr nameserver)
         /* Qualification-only wake from the real service capability. The
          * Intel userspace result requires this notification to be handled. */
 #if defined(AGENTOS_X86_USERSPACE_PROOF)
-        if (status == SERIAL_VIRT_OK && attach.role == SERIAL_VIRT_ROLE_VMM && attach.client == 0)
+        if (label == SERIAL_VIRT_OP_ATTACH && status == SERIAL_VIRT_OK &&
+            attach.role == SERIAL_VIRT_ROLE_VMM && attach.client == 0)
             seL4_Signal(PD_CNODE_SLOT_SERIAL_PRIMARY_NOTIFY);
 #endif
         if (status == SERIAL_VIRT_OK) service_queues();

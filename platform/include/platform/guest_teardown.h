@@ -17,11 +17,14 @@ typedef struct aos_guest_teardown {
     bool devices_quiesced;
     bool network_detached;
     bool block_detached;
+    bool serial_detached;
     bool execution_released;
     bool ram_released;
     bool paging_released;
 } aos_guest_teardown_t;
 
 bool aos_guest_teardown_step(aos_guest_teardown_t *state, size_t ram_size);
+/* Owning VMM adapter: stop its serial endpoint and await service detach. */
+bool aos_vmm_serial_detach(void);
 
 #endif

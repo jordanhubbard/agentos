@@ -14,6 +14,8 @@ static bool detach_done;
 static unsigned detach_calls;
 static bool block_detach_done;
 static unsigned block_detach_calls;
+static bool serial_detach_done;
+static unsigned serial_detach_calls;
 static unsigned paging_revokes;
 static unsigned net_calls, input_calls, console_calls, block_calls, gpu_calls;
 static unsigned revokes, releases;
@@ -26,6 +28,8 @@ bool aos_vmm_virtio_net_detach(void)
 { device_access(); detach_calls++; return detach_done; }
 bool aos_vmm_virtio_blk_detach(void)
 { device_access(); block_detach_calls++; return block_detach_done; }
+bool aos_vmm_serial_detach(void)
+{ device_access(); serial_detach_calls++; return serial_detach_done; }
 void aos_vmm_virtio_input_quiesce(void) { device_access(); input_calls++; }
 bool aos_vmm_virtio_console_quiesce(void)
 { device_access(); console_calls++; return console_done; }
@@ -40,6 +44,7 @@ seL4_Error seL4_CNode_Revoke(seL4_CPtr root, seL4_Word slot, uint8_t depth)
     assert(console_done && block_done && graphics_done);
     assert(detach_done);
     assert(block_detach_done);
+    assert(serial_detach_done);
     if (slot == AOS_GUEST_PAGING_POOL_CAP) {
         assert(!caps_live && releases == 2 && !ram_fails);
         paging_revokes++;
@@ -85,6 +90,10 @@ int main(void)
     assert(state.network_detached && !state.block_detached && !revokes);
     assert(detach_calls == 2 && block_detach_calls == 1);
     block_detach_done = true;
+    assert(!aos_guest_teardown_step(&state, page_size));
+    assert(state.block_detached && !state.serial_detached && !revokes);
+    assert(block_detach_calls == 2 && serial_detach_calls == 1);
+    serial_detach_done = true;
     revoke_fails = true;
     assert(!aos_guest_teardown_step(&state, page_size));
     assert(state.devices_quiesced && !state.execution_released && !releases);
@@ -106,6 +115,7 @@ int main(void)
     assert(state.paging_released && paging_revokes == 2);
     assert(state.network_detached && detach_calls == 2);
     assert(state.block_detached && block_detach_calls == 2);
+    assert(state.serial_detached && serial_detach_calls == 2);
     assert(net_calls == device_calls && input_calls == device_calls &&
            console_calls == device_calls && block_calls == device_calls);
     assert(munmap((void *)ram, page_size) == 0);

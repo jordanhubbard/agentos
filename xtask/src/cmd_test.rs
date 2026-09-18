@@ -5718,6 +5718,7 @@ fn verify_guest_teardown(
             "guest teardown: private paging revoked",
             "guest teardown: network queues detached",
             "guest teardown: block queues detached",
+            "guest teardown: serial queues detached",
         ],
         Duration::from_secs(10),
         qemu,
