@@ -26,6 +26,7 @@ static int                          g_tx_pumped;
 static int                          g_rx_pumped;
 static uintptr_t                    g_guest_base;
 static unsigned                     g_virq;
+static bool                         g_recreate_pending;
 
 static void zero_bytes(void *ptr, uint32_t size)
 {
@@ -65,11 +66,22 @@ bool aos_vmm_virtio_console_init_at(uintptr_t guest_base, unsigned virq)
     }
 
     g_ready = 1;
+    g_recreate_pending = false;
     g_guest_base = guest_base;
     g_virq = virq;
     LOG_VMM("emulated virtio-console IPA 0x%lx IRQ %u (sDDF serial queues)\n",
             (unsigned long)g_guest_base, g_virq);
     return true;
+}
+
+bool aos_vmm_virtio_console_recreate(void)
+{
+    if (!g_guest_base || (!g_recreate_pending &&
+        (!g_ready || !g_aos_console.quiesced))) return false;
+    g_recreate_pending = true;
+    g_ready = 0;
+    g_probed = g_driver_ok = g_tx_pumped = g_rx_pumped = 0;
+    return aos_vmm_virtio_console_init_at(g_guest_base, g_virq);
 }
 
 void aos_vmm_virtio_console_init(void)

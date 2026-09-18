@@ -8,6 +8,11 @@
 /* Bind once to an architecture-selected guest MMIO page and virtual IRQ.
  * Failure leaves the console unavailable; a live binding cannot be replaced. */
 bool aos_vmm_virtio_console_init_at(uintptr_t guest_base, unsigned virq);
+/* Recreate only after successful quiescence, serial backend detach and bus
+ * retirement. Caller supplies a fresh bus/RAM/controller and separately binds
+ * its new serial endpoint. Clears private buffered bytes and guest state.
+ * Failed registration leaves callbacks disabled and permits a bounded caller retry. */
+bool aos_vmm_virtio_console_recreate(void);
 /* Compatibility entry for the AArch64 profile device-operations table. */
 void aos_vmm_virtio_console_init(void);
 void aos_vmm_virtio_console_after_fault(void);

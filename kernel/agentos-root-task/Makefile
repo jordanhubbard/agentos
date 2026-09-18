@@ -380,12 +380,12 @@ X86_SERIAL_CFLAGS = $(CFLAGS) -Wno-sign-compare \
     -I$(REPO_ROOT_MK)/libvmm/dep/sddf/include \
     -I$(REPO_ROOT_MK)/libvmm/dep/sddf/include/microkit \
     -I$(REPO_ROOT_MK)/libvmm/dep/sddf/include/sddf/util/custom_libc
-$(BUILD_DIR)/x86_console_backend.o: $(REPO_ROOT_MK)/libvmm/src/virtio/console.c
+$(BUILD_DIR)/x86_console_backend.o: $(REPO_ROOT_MK)/libvmm/src/virtio/console.c Makefile
 	@mkdir -p $(BUILD_DIR)
-	$(CC) -c $(X86_SERIAL_CFLAGS) -ffunction-sections -fdata-sections $< -o $@
-$(BUILD_DIR)/x86_vmm_console.o: $(REPO_ROOT_MK)/platform/serial-virt/vmm_virtio_console.c
+	$(CC) -c $(X86_SERIAL_CFLAGS) -mgeneral-regs-only -ffunction-sections -fdata-sections $< -o $@
+$(BUILD_DIR)/x86_vmm_console.o: $(REPO_ROOT_MK)/platform/serial-virt/vmm_virtio_console.c Makefile
 	@mkdir -p $(BUILD_DIR)
-	$(CC) -c $(X86_SERIAL_CFLAGS) $< -o $@
+	$(CC) -c $(X86_SERIAL_CFLAGS) -mgeneral-regs-only $< -o $@
 $(BUILD_DIR)/x86_serial_endpoint.o: $(REPO_ROOT_MK)/platform/serial-virt/endpoint.c
 	@mkdir -p $(BUILD_DIR)
 	$(CC) -c $(CFLAGS) $< -o $@

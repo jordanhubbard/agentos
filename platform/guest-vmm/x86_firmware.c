@@ -385,6 +385,33 @@ static bool recreated_block_device_proof(uint32_t generation)
         AOS_GUEST_RAM_CNODE_BITS, seL4_AllRights) == seL4_FailedLookup;
 }
 
+static bool recreated_console_device_proof(uint32_t generation)
+{
+    const uint32_t stage = 6000u + generation * 100u;
+    teardown_proof_stage = stage + 1u;
+    aos_x86_ioapic_t controller;
+    if (!aos_x86_ioapic_init(&controller, 1u) ||
+        !aos_x86_virtio_init(&controller, (void *)AOS_X86_FIRMWARE_RAM_VA,
+                            AOS_X86_FIRMWARE_RAM)) return false;
+    teardown_proof_stage = stage + 2u;
+    if (!aos_vmm_virtio_console_recreate() || aos_vmm_virtio_console_driver_ready() ||
+        aos_vmm_virtio_console_tx_active()) return false;
+    uint8_t bytes[16];
+    if (aos_vmm_virtio_console_drain_tx(bytes, sizeof(bytes)) != 0u) return false;
+    const uint32_t offsets[] = {0x08u, 0x70u, 0x44u};
+    const uint32_t expected[] = {3u, 0u, 0u};
+    for (unsigned i = 0; i < sizeof(offsets) / sizeof(offsets[0]); i++) {
+        teardown_proof_stage = stage + 10u + i;
+        uint32_t value = UINT32_MAX;
+        if (!aos_x86_virtio_access(AOS_X86_VIRTIO_BASE + offsets[i], 4u, false, &value) ||
+            value != expected[i]) return false;
+    }
+    teardown_proof_stage = stage + 20u;
+    if (!aos_vmm_virtio_console_quiesce()) return false;
+    aos_x86_virtio_retire();
+    return virtio_gpa_to_hva(0u, 1u) == NULL;
+}
+
 static bool terminal_teardown_proof(void)
 {
     /* Root is already waiting for the terminal report. A failed report on
@@ -551,6 +578,7 @@ static bool terminal_teardown_proof(void)
             if (restored_rom[n] != _binary_x86_firmware_bin_start[n]) return false;
         if (!recreated_network_device_proof(pass * 2u + 2u)) return false;
         if (!recreated_block_device_proof(pass * 2u + 2u)) return false;
+        if (!recreated_console_device_proof(pass + 1u)) return false;
         teardown_proof_stage = 140u + pass * 100u;
         if (!aos_vmm_guest_ram_release(AOS_X86_FIRMWARE_RAM)) return false;
         const seL4_CPtr retired_frames[] = {AOS_GUEST_RAM_FRAME_BASE,

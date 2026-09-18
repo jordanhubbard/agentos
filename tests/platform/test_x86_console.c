@@ -45,12 +45,14 @@ int main(void)
     ram=mmap(NULL,RAM_BYTES,PROT_READ|PROT_WRITE,MAP_PRIVATE|MAP_ANONYMOUS,-1,0);
     assert(ram!=MAP_FAILED);
     assert(aos_vmm_virtio_console_quiesce());
+    assert(!aos_vmm_virtio_console_recreate());
     aos_x86_ioapic_t ioapic;
     assert(aos_x86_ioapic_init(&ioapic,1));
     assert(aos_x86_virtio_init(&ioapic,ram,RAM_BYTES));
     assert(!aos_vmm_virtio_console_init_at(AOS_X86_VIRTIO_BASE+1,16));
     assert(!aos_vmm_virtio_console_init_at(AOS_X86_VIRTIO_BASE,17));
     assert(aos_vmm_virtio_console_init_at(AOS_X86_VIRTIO_BASE,16));
+    assert(!aos_vmm_virtio_console_recreate());
     assert(read_reg(REG_VIRTIO_MMIO_DEVICE_ID)==VIRTIO_DEVICE_ID_CONSOLE);
     write_reg(REG_VIRTIO_MMIO_STATUS,1);
     write_reg(REG_VIRTIO_MMIO_STATUS,3);
@@ -104,6 +106,7 @@ int main(void)
     write_reg(REG_VIRTIO_MMIO_QUEUE_NOTIFY,1);
     assert(tx_used->idx==1);
     assert(!aos_vmm_virtio_console_quiesce());
+    assert(!aos_vmm_virtio_console_recreate());
     /* Reset cannot discard the retained descriptor during shutdown. */
     write_reg(REG_VIRTIO_MMIO_STATUS,0);
     assert(!aos_vmm_virtio_console_driver_ready());
@@ -135,5 +138,60 @@ int main(void)
     assert(!ioapic.asserted);
     assert(!aos_vmm_virtio_console_init_at(AOS_X86_VIRTIO_BASE,16));
     assert(munmap(ram,RAM_BYTES)==0);
-    puts("PASS: console exact TX/RX, backpressured shutdown drain and inaccessible-RAM quiescence");
+    aos_x86_virtio_retire();
+    for (unsigned generation=0; generation<2; generation++) {
+        /* Registration without a new bus fails. Retrying must not revive old
+         * bytes or require access to the old, unmapped guest RAM. */
+        assert(!aos_vmm_virtio_console_recreate());
+        assert(!aos_vmm_virtio_console_driver_ready());
+        assert(!aos_vmm_virtio_console_drain_tx(actual,sizeof(actual)));
+        ram=mmap(NULL,RAM_BYTES,PROT_READ|PROT_WRITE,MAP_PRIVATE|MAP_ANONYMOUS,-1,0);
+        assert(ram!=MAP_FAILED);
+        assert(aos_x86_ioapic_init(&ioapic,1));
+        assert(aos_x86_virtio_init(&ioapic,ram,RAM_BYTES));
+        assert(aos_vmm_virtio_console_recreate());
+        assert(!aos_vmm_virtio_console_recreate());
+        assert(read_reg(REG_VIRTIO_MMIO_STATUS)==0);
+        assert(read_reg(REG_VIRTIO_MMIO_QUEUE_READY)==0);
+        assert(!aos_vmm_virtio_console_tx_active());
+        assert(!aos_vmm_virtio_console_drain_tx(actual,sizeof(actual)));
+        write_reg(REG_VIRTIO_MMIO_STATUS,1); write_reg(REG_VIRTIO_MMIO_STATUS,3);
+        write_reg(REG_VIRTIO_MMIO_DRIVER_FEATURES_SEL,1);
+        write_reg(REG_VIRTIO_MMIO_DRIVER_FEATURES,1);
+        write_reg(REG_VIRTIO_MMIO_STATUS,11);
+        queue(0,0); queue(1,0x8000);
+        write_reg(REG_VIRTIO_MMIO_STATUS,15);
+        const uint8_t fresh_output[]="replacement output";
+        const uint8_t fresh_input[]="replacement input";
+        memcpy(ram+0x10000,fresh_output,sizeof(fresh_output));
+        tx=(void *)(ram+0x8000);
+        tx[0]=(struct virtq_desc){.addr=0x10000,.len=sizeof(fresh_output)};
+        tx_avail=(void *)(ram+0xa000);
+        tx_avail->ring[0]=0; tx_avail->idx=1;
+        write_reg(REG_VIRTIO_MMIO_QUEUE_NOTIFY,1);
+        tx_used=(void *)(ram+0xb000);
+        assert(tx_used->idx==1 && tx_used->ring[0].id==0);
+        assert(aos_vmm_virtio_console_drain_tx(actual,sizeof(actual))==sizeof(fresh_output));
+        assert(!memcmp(actual,fresh_output,sizeof(fresh_output)));
+        rx=(void *)ram;
+        rx[0]=(struct virtq_desc){.addr=0x11000,.len=64,.flags=VIRTQ_DESC_F_WRITE};
+        rx_avail=(void *)(ram+0x2000);
+        rx_avail->ring[0]=0; rx_avail->idx=1;
+        assert(aos_vmm_virtio_console_push_rx_bytes(fresh_input,sizeof(fresh_input)));
+        rx_used=(void *)(ram+0x3000);
+        assert(rx_used->idx==1 && rx_used->ring[0].len==sizeof(fresh_input));
+        assert(!memcmp(ram+0x11000,fresh_input,sizeof(fresh_input)));
+        /* Leave old input and output buffered at retirement. Neither may
+         * appear in the next generation's descriptor or drain result. */
+        assert(aos_vmm_virtio_console_push_rx_bytes(input,sizeof(input)));
+        tx_avail->ring[1]=0; tx_avail->idx=2;
+        write_reg(REG_VIRTIO_MMIO_QUEUE_NOTIFY,1);
+        assert(aos_vmm_virtio_console_quiesce());
+        aos_x86_virtio_retire();
+        assert(mprotect(ram,RAM_BYTES,PROT_NONE)==0);
+        aos_vmm_virtio_console_after_fault();
+        assert(!aos_vmm_virtio_console_push_rx_bytes(input,sizeof(input)));
+        assert(munmap(ram,RAM_BYTES)==0);
+    }
+    puts("PASS: console drain safety, fresh TX/RX and isolation across recreated devices");
 }

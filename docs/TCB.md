@@ -370,6 +370,11 @@ Serial contract v4 retains terminal VMM-role detach under the existing guest
 badge authority. The service stops both transfer directions, clears its guest
 channel pointers and marks the frontend detached before acknowledging. It
 does not wait for unread terminal bytes, which may be abandoned at destruction.
+The VMM console device can be recreated only after full device quiescence and
+caller-managed backend detach and bus retirement. It clears private byte FIFOs,
+VirtIO state and activity counters, rejects reset during a retained TX drain,
+and leaves callbacks disabled if registration fails. The caller must separately
+bind a fresh serial endpoint; this helper does not reopen the virtualizer.
 The VMM clears its local serial endpoint after acknowledgment; failed replies
 keep teardown retryable before capability revocation. Peer and operator
 channels retain their attachments. Serial queue pages are revoked only after
