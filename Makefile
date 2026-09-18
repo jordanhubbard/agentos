@@ -764,6 +764,15 @@ test-x86-firmware-build:
 # but it is not counted among the host tests below.
 test-host: policy-check guest-profile-check lint-source test-integration test-operator-host test-log-ring-host test-framebuffer-host
 test-host: test-x86-cpu-host
+test-host: test-x86-profile-host
+.PHONY: test-x86-profile-host
+test-x86-profile-host:
+	@mkdir -p $(BUILD_TMP_DIR)
+	@gcc -std=c11 -Wall -Wextra -Werror -I platform/include -idirafter kernel/agentos-root-task/include \
+		tests/platform/test_x86_profile.c platform/guest-vmm/x86_profile.c \
+		platform/guest-vmm/profile.c libs/pd-support/sha256_mini.c \
+		-o $(BUILD_TMP_DIR)/test_x86_profile
+	@$(BUILD_TMP_DIR)/test_x86_profile
 test-host: test-virtio-host-transport
 test-host: test-virtio-pci-caps
 

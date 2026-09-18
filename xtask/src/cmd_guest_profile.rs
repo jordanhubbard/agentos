@@ -516,6 +516,8 @@ pub(crate) fn prepare_x86_boot_profile(repo: &Path, path: &Path) -> Result<Vec<S
         "X86_BOOT_CMDLINE_FILE",
         "X86_BOOT_CMDLINE_SHA256",
         "X86_BOOT_RAM_BYTES",
+        "X86_BOOT_PROFILE_BIN",
+        "X86_BOOT_PROFILE_SHA256",
     ] {
         ensure!(
             std::env::var_os(name).is_none(),
@@ -542,11 +544,12 @@ pub(crate) fn prepare_x86_boot_profile(repo: &Path, path: &Path) -> Result<Vec<S
     command_line.push(0);
     let command_path = directory.join("cmdline.bin");
     fs::write(&command_path, &command_line)?;
-    fs::write(
-        directory.join("profile.bin"),
-        compile(&profile, &canonical, "default")?,
-    )?;
+    let manifest = compile(&profile, &canonical, "default")?;
+    let manifest_path = directory.join("profile.bin");
+    fs::write(&manifest_path, &manifest)?;
     let mut args = vec![
+        format!("X86_BOOT_PROFILE_BIN={}", manifest_path.display()),
+        format!("X86_BOOT_PROFILE_SHA256={:x}", Sha256::digest(&manifest)),
         format!(
             "X86_BOOT_RAM_BYTES={:#x}u",
             profile.placements["default"].ram_size.unwrap()
@@ -1300,8 +1303,8 @@ fn validate(profile: &Profile, placement: Option<&str>) -> Result<()> {
         .and_then(|b| b.command_line.as_ref())
         .context("boot.command_line is required")?;
     ensure!(
-        cmdline.len() <= 255 && cmdline.is_ascii(),
-        "boot.command_line must be at most 255 ASCII bytes"
+        cmdline.len() <= 255 && cmdline.is_ascii() && !cmdline.contains('\0'),
+        "boot.command_line must be at most 255 ASCII bytes without NUL"
     );
     let media_initrd_path = profile.boot.as_ref().unwrap().media_initrd_path.as_deref();
     if let Some(path) = media_initrd_path {

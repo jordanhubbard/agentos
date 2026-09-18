@@ -87,10 +87,15 @@ usual; separate `X86_BOOT_KERNEL`, initrd, command-line and RAM overrides
 conflict with profile selection. The selector accepts only the currently
 supported single primary guest, one vCPU, fixed VMM RAM mapping, canonical
 net/block/console devices and no requested CPU-feature policy. The emitted
-`build/tmp/x86-boot-profile/profile.bin` is retained host evidence; the x86
-target does not yet consume that manifest, and UEFI still chooses image
-placement and entry. Target manifest enforcement and SSH provisioning remain
-separate integration work. The generated `disk.raw` is
+`build/tmp/x86-boot-profile/profile.bin` is embedded read-only in the x86 VMM
+after a build-time hash check. Before publishing boot blobs through fw_cfg,
+the VMM validates the manifest, compares its guest/device/RAM policy with the
+provisioned configuration, matches the complete command line, and recomputes
+kernel and initrd SHA-256 digests. Unsupported CPU-feature requests and
+artifact/resource mismatches stop the boot. UEFI still chooses image placement
+and entry; manifest artifact windows are resource bounds, not instructions to
+the EFI loader. This binding does not authenticate a release or replace secure
+boot. SSH provisioning remains separate integration work. The generated `disk.raw` is
 source media; use a disposable copy for writable boot tests.
 
 Legacy `--guest-os` and `GUEST_OS` spellings remain compatibility selectors.

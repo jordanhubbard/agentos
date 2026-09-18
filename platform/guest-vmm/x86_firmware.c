@@ -6,6 +6,10 @@
 #include "contracts/x86_vtx_proof.h"
 #include "platform/x86_cpu.h"
 #include "platform/x86_config.h"
+#ifdef AGENTOS_X86_BOOT_PROFILE
+#include <platform/x86_profile.h>
+extern const uint8_t _binary_x86_boot_profile_bin_start[], _binary_x86_boot_profile_bin_end[];
+#endif
 #include "platform/x86_apic.h"
 #include "platform/x86_ioapic.h"
 #include "platform/x86_virtio.h"
@@ -271,6 +275,12 @@ void aos_x86_firmware_run(seL4_CPtr ep, aos_x86_vmenter_return_t returned)
         .cmdline_size=(uint32_t)(_binary_x86_boot_cmdline_bin_end-_binary_x86_boot_cmdline_bin_start),
 #endif
     };
+#ifdef AGENTOS_X86_BOOT_PROFILE
+    if (!aos_x86_profile_bind(_binary_x86_boot_profile_bin_start,
+            (size_t)(_binary_x86_boot_profile_bin_end-_binary_x86_boot_profile_bin_start),
+            &boot, AOS_X86_FIRMWARE_RAM, AOS_X86_FIRMWARE_RAM_VA))
+        stop(ep,AOS_X86_VTX_PROOF_FAIL,0x505246u,0,0);
+#endif
     if (!aos_x86_config_boot(&config,&boot))
         stop(ep,AOS_X86_VTX_PROOF_FAIL,0x424f4fu,0,boot.kernel_size);
 #endif
