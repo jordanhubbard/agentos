@@ -41,8 +41,12 @@ no device frames, IRQs or guest RAM aliases. The coordinator retains the
 runner TCB capability for EPT/VCPU reconstruction. It makes synchronous entry
 calls and handles devices and lifecycle changes after their replies; runner
 sequence state persists across guest recreation. Additional CPUs and AP startup
-remain pending. Host tests and target link checks do not prove IPC delivery
-or multi-vCPU execution; target qualification of this integration is pending.
+remain pending. At `c9100fc`, the full Spark gate and Intel Linux userspace
+teardown qualification passed through runner IPC. Two managed Debian login,
+pinned SSH, console-input and destroy/recreate generations also passed, with
+stale handles rejected. The [runner receipt](evidence/2026-09-18-spark/x86-runner.json)
+records exact commands and artifact hashes. This qualifies the private runner
+for the existing bootstrap CPU; it does not establish multi-vCPU execution.
 
 The bounded `x86_smp` controller helper handles fixed edge IPIs, INIT and
 SIPI across up to 32 already-admitted contexts. It resolves physical, flat
