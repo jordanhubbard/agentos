@@ -48,7 +48,8 @@ Reconstruction remains pending.
 
 ARM `vm_manager` now configures guest scheduling between the VMM's CREATE
 reply and its BOOT call. Root gives each VMM a private capability exchange
-CNode containing only its guest TCB, scheduling context and VMM fault endpoint;
+CNode containing only its guest TCB, scheduling context, VMM fault endpoint
+and guest VSpace;
 the manager receives both exchanges and each guest's root-selected CPU
 SchedControl cap. An inert authority TCB bounds manager priority assignment
 to 150. VMMs receive neither SchedControl nor that authority TCB. The manager
@@ -67,6 +68,24 @@ guest, leaving no automatic handle-zero guest. It requires explicit manager
 CREATE/BOOT, bidirectional console proof, destruction and stale-handle
 rejection. Ordinary single-guest boot/teardown tests bypass manager CREATE
 and cannot qualify this scheduling bridge on their own.
+
+For the ARM GICv2 virtual CPU interface, root now moves each guest's initial
+mapped frame capability to `vm_manager`. The manager is the sole runtime
+mapping owner for this interface; VMMs receive no device-frame capability.
+After a successful stopped-READY CREATE, it copies that guest's VSpace from
+the private exchange, unmaps only that guest's retained frame cap and maps it
+at fixed guest IPA `0x08010000`, then deletes its temporary VSpace copy.
+Any lookup, unmap, map or cleanup error prevents BOOT. The other guest's
+mapping is never unmapped or revoked. This grants no physical GIC distributor
+access or IRQ-handler authority. `contracts/guest_gic_caps.h` defines the
+bounded slots and address. Future reconstruction must publish a fresh
+ASID-assigned VSpace with intermediate tables before CREATE returns; this
+change does not implement reconstruction. Host tests cover both identities,
+an initially present or absent mapping, peer preservation and each operation's
+failure. The full gate and explicit manager CREATE/BOOT target passed on Spark
+at `9e9862e`; [the receipt](evidence/2026-09-18-spark/guest-gic-broker.json)
+records primary existing-VSpace remapping, console I/O and teardown. Freshly
+reconstructed VSpaces and secondary guest mapping remain unqualified.
 
 ARM guest network, block, serial and optional input queue frames now each
 come from a private 2 MiB untyped pool. Root moves its sole pool capability
@@ -195,7 +214,7 @@ seL4
         │                  only blk mux (sDDF queues in the shared block
         │                  region + persistent notifications, chunked DMA-window
         │                  Calls into virtio_blk)
-        ├── vm_manager     guest lifecycle control (create, bind, status)
+        ├── vm_manager     guest lifecycle and per-guest GIC virtual-interface mapping
         ├── serial_virt    serial queue mux, no device frame or hardware IRQ;
         │                  isolated VMM pages and separate CC frontend page
         └── guest_vmm_*    vCPU, vGIC, emulated virtio-mmio net/blk/console,

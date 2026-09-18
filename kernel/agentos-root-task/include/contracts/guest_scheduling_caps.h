@@ -2,7 +2,8 @@
 #define AGENTOS_GUEST_SCHEDULING_CAPS_H
 
 /* Each ARM VMM shares one isolated capability exchange CNode with vm_manager.
- * Slots contain only that guest's TCB, scheduling context and VMM fault EP.
+ * Slots contain only that guest's TCB, scheduling context, VMM fault EP
+ * and VSpace (the fourth slot is defined by guest_gic_caps.h).
  * The VMM never receives SchedControl or manager/root TCB authority. Root
  * populates boot objects; reconstruction must publish replacements before
  * replying to CREATE. Manager configures them between CREATE and BOOT,
