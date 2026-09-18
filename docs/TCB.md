@@ -94,8 +94,16 @@ time. The [native GUI recreation receipt](evidence/2026-09-18-spark/x86-native-g
 retains binary hashes, screenshots and observed launch rough edges, including
 the separately tracked RAM-field editing defect. This proves the external
 console/lifecycle path, not graphical guest display or dynamic RAM allocation.
-Native transport fault injection is not claimed. The intermittent serial
-qualification failure remains outstanding; this is not v0.4 release acceptance.
+Native transport fault injection is not claimed. A replay of the earlier
+one-shot serial qualification reproduced a validated `BUSY` detach reply
+(detail `0x0c83`, first reconstruction cycle). The corrected caller retries
+only this contracted transient response and still requires successful detach
+before revocation. Three consecutive Intel runs of the corrected revision
+passed; the [race receipt](evidence/2026-09-18-spark/serial-detach-race.json)
+retains the failing replay, correction and successful regressions. Older coarse
+failure records remain retained without claiming an exact retroactive diagnosis.
+Canonical integration and remaining roadmap acceptance are still pending;
+this is not v0.4 release acceptance.
 
 The x86 firmware VMM receives a dedicated ASID pool for its EPT namespace at
 boot, retained outside the revocable VCPU/EPT object pool. Root assigns the

@@ -22,9 +22,9 @@
     "original_repeat": "Original a4c7f88 without stage diagnostics also passed, terminal exit 0",
     "original_repeat_log_sha256": "d0704e3dd9e2f8c5c92eab33ebcc9e5870c73089bff36d3cc3cb5b1f03c582ec"
   },
-  "unresolved": {
+  "historical_investigation": {
     "task": "task_8c6afd5682bc4b8ba858f4cdc5e44ef8",
-    "description": "Failure recurred on b5824a0 with terminal stage 120, identifying the first serial reconstruction sequence after successful network and block checks. Five runs with finer serial diagnostics passed; exact cause remains unknown. Passing reruns do not establish a fix",
+    "description": "Failure recurred on b5824a0 with terminal stage 120, identifying the first serial reconstruction sequence after successful network and block checks. The first five finer diagnostic runs passed without explaining it. A later replay of 7d39f5f reproduced validated BUSY at detach; serial-detach-race.json records that failure and corrected-revision regression. Older coarse failures remain retained without exact retroactive attribution",
     "localized_failure_log_sha256": "14ccfddc39a718c7cf46535fccdfe516ef5e842b3a35dbfbb6734f536f59f695",
     "localized_failure_run_stem": "5OXGZ3",
     "localized_failure_spark_gate": "b5824a0 full make gate passed, terminal exit 0",
@@ -55,6 +55,7 @@
   },
   "limitations": [
     "Late IRQ rejection and fresh bus registrations are host tests; native proof checks retired MMIO slots and disabled GPA translation",
-    "Device-state adoption, firmware reset and second guest boot remain incomplete"
+    "This receipt's stopped-resource scope does not qualify device adoption or a second guest boot; subsequent managed integration is recorded in x86-recreation-transaction.json",
+    "Required checks and canonical integration remain pending"
   ]
 }
