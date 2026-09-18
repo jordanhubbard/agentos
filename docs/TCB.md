@@ -173,7 +173,9 @@ Detach permanently sets CLOSED and returns BUSY until an admitted access
 finishes; ending that access cannot clear CLOSED. Late accesses change no
 queue cursor. The UART abandons pending local bytes after closure and does no
 further UART I/O. Host tests exercise this interleaving and preserve peer and
-operator progress; target qualification of this revision is pending.
+operator progress. ARM teardown/full gate and Intel Debian VMX/SSH passed at
+`6d9702f`; [the receipt](evidence/2026-09-18-spark/serial-frontend-retirement.json)
+separates host interleaving coverage from target regression evidence.
 This fence does not reopen channels or implement generation/reset semantics.
 Input uses a one-shot detach handshake at the end of each existing VMM-owned
 event page. The stopped VMM publishes a versioned request and signals the
