@@ -1,5 +1,6 @@
-/* Linux guest initramfs hook, not an agentOS PD. Preserve the stock udev
- * handoff, then provide the console nodes needed by run-init validation. */
+/* Linux guest initramfs hooks, not agentOS PDs. Reserve standard descriptors
+ * before stock udev starts, then preserve its shutdown and provide the
+ * console nodes needed by run-init validation. */
 #include <stdint.h>
 
 static long call4(long number, long a, long b, long c, long d)
@@ -18,6 +19,7 @@ static int equal(const char *a, const char *b)
     return *a == *b;
 }
 
+#ifndef AGENTOS_INIT_TOP
 static int node(const char *path, unsigned device)
 {
     /* x86_64 Linux mknodat and newfstatat. Refuse an existing symlink or a
@@ -29,10 +31,16 @@ static int node(const char *path, unsigned device)
     unsigned mode = (unsigned)status[3];
     return (mode & 0170000) == 0020000 && status[5] == device;
 }
+#endif
 
 static int stock(char **argv, char **environment)
 {
-    call4(59, (long)"/scripts/init-bottom/udev.stock",
+    call4(59,
+#ifdef AGENTOS_INIT_TOP
+          (long)"/scripts/init-top/udev.stock",
+#else
+          (long)"/scripts/init-bottom/udev.stock",
+#endif
           (long)argv, (long)environment, 0);
     return 111;
 }
@@ -46,6 +54,25 @@ int hook_main(long argc, char **argv)
         if (equal(*p, "rootmnt=/root")) root_ok = 1;
     /* The pinned initramfs uses /root. Fail if that contract changes. */
     if (!root_ok) return 111;
+#ifdef AGENTOS_INIT_TOP
+    /* Linux can start /init without stdio when no initial console exists.
+     * Reserve missing descriptors before udev allocates its control/event
+     * sockets: its later make_null_stdio() must not overwrite those sockets.
+     * Preserve the initramfs debug log if stdout/stderr already exist. */
+    for (long fd = 0; fd < 3; fd++) {
+        long result = call4(72, fd, 1, 0, 0); /* fcntl F_GETFD */
+        if (result >= 0) continue;
+        if (result != -9) return 111; /* EBADF */
+        long opened = call4(257, -100, (long)"/dev/null", 2, 0);
+        if (opened < 0) return 111;
+        if (opened != fd) {
+            long copied = call4(33, opened, fd, 0, 0); /* dup2 */
+            call4(3, opened, 0, 0, 0);
+            if (copied != fd) return 111;
+        }
+    }
+    return stock(argv, environment);
+#else
     long child = call4(57, 0, 0, 0, 0);
     if (child < 0) return 111;
     if (child == 0) return stock(argv, environment);
@@ -61,6 +88,7 @@ int hook_main(long argc, char **argv)
     static const char ready[] = "agentos: console nodes verified for run-init\n";
     call4(1, 2, (long)ready, sizeof(ready) - 1, 0);
     return 0;
+#endif
 }
 
 __asm__(".text\n.global _start\n_start:\n"
