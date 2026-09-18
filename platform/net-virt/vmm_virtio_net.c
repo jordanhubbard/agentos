@@ -22,6 +22,7 @@
 #include <platform/vmm_virtio_net.h>
 #include <platform/guest_ram.h>
 #include <platform/virtio_net_rx_accounting.h>
+#include <platform/net_rebind.h>
 
 _Static_assert(AOS_NET_BUFFER_SIZE == NET_BUFFER_SIZE,
                "platform net buffer size must match sDDF NET_BUFFER_SIZE");
@@ -48,6 +49,7 @@ static bool                     g_tx_consumed;
 static bool                     g_quiesced;
 static uint8_t                  g_host_mac[6];
 static uint32_t                 g_client_id;
+static uint32_t                 g_generation;
 
 bool aos_vmm_virtio_net_host_ready(void)
 {
@@ -287,6 +289,50 @@ void aos_vmm_virtio_net_init(uint32_t client_id)
 {
     (void)aos_vmm_virtio_net_init_at(client_id, AOS_VIRTIO_NET_GUEST_IPA,
                                    AOS_VIRTIO_NET_VIRQ, (void *)AOS_NET_SHMEM_VA);
+}
+
+bool aos_vmm_virtio_net_adopt(uint32_t client_id, void *shared_region,
+                            const net_virt_rebind_reply_t *attachment)
+{
+    if (!g_quiesced || g_net_virt_attached || !g_guest_base ||
+        client_id != g_client_id || client_id >= AOS_NET_GUEST_CLIENTS ||
+        !shared_region || ((uintptr_t)shared_region & (AOS_NET_QUEUE_BYTES - 1u)) ||
+        (uintptr_t)shared_region > UINTPTR_MAX - AOS_NET_SHMEM_SIZE ||
+        !attachment || attachment->generation <= g_generation ||
+        !aos_net_rebind_reply_valid(attachment, sizeof(*attachment), attachment->generation))
+        return false;
+
+    aos_net_virt_client_t client;
+    aos_net_client_bind(shared_region, client_id, &client);
+    /* Only private native state is reset. REBIND already initialized and
+     * published these queues; the service may have queued RX before this call. */
+    g_aos_net = (struct virtio_net_device){0};
+    net_queue_init(&g_rx, (net_queue_t *)client.rx_free,
+                   (net_queue_t *)client.rx_active, AOS_NET_CAPACITY);
+    net_queue_init(&g_tx, (net_queue_t *)client.tx_free,
+                   (net_queue_t *)client.tx_active, AOS_NET_CAPACITY);
+    g_aos_net_ready = 0;
+    g_aos_net_probed = g_aos_net_driver_ok = g_aos_net_pumped = 0;
+    g_tx_kicked = 0;
+    g_rx_events = 0;
+    g_tx_consumed = false;
+    g_net_virt_hw = attachment->hw_state;
+    g_generation = attachment->generation;
+    for (unsigned i = 0; i < sizeof(g_host_mac); i++) g_host_mac[i] = attachment->mac[i];
+    /* Preserve cleanup ownership even if registration fails. */
+    g_net_virt_attached = 1;
+    uint8_t mac[VIRTIO_NET_CONFIG_MAC_SZ] = {
+        AOS_VIRTIO_NET_MAC0, AOS_VIRTIO_NET_MAC1, AOS_VIRTIO_NET_MAC2,
+        AOS_VIRTIO_NET_MAC3, AOS_VIRTIO_NET_MAC4,
+        (uint8_t)(AOS_VIRTIO_NET_MAC5 + client_id)};
+    if (g_net_virt_hw == NET_VIRT_HW_NET_PD)
+        for (unsigned i = 0; i < sizeof(mac); i++) mac[i] = g_host_mac[i];
+    if (!virtio_mmio_net_init(&g_aos_net, g_guest_base, AOS_VIRTIO_NET_MMIO_SIZE,
+            g_virq, &g_rx, &g_tx, (uintptr_t)client.rx_data,
+            (uintptr_t)client.tx_data, 0, 0, mac)) return false;
+    g_aos_net_ready = 1;
+    g_quiesced = false;
+    return true;
 }
 
 void aos_vmm_virtio_net_after_fault(void)

@@ -30,6 +30,14 @@ bool aos_net_virt_rebind(uint32_t client, uint32_t generation);
  * Output is unchanged on failure, including a failed local frame mapping. */
 bool aos_net_virt_rebind_with_info(uint32_t client, uint32_t generation,
                                   net_virt_rebind_reply_t *attachment);
+/* Adopt a successful REBIND after stopped-device detach and bus retirement.
+ * Caller supplies newly mapped queues and a fresh bus/RAM/interrupt controller.
+ * Never clears service-owned queues or sends another ATTACH. The generation
+ * must be newer than the last adopted one (failed rebinds may consume others).
+ * On registration failure the new attachment remains owned;
+ * detach it before revoking its queue pool and trying the next generation. */
+bool aos_vmm_virtio_net_adopt(uint32_t client_id, void *shared_region,
+                            const net_virt_rebind_reply_t *attachment);
 static inline bool aos_net_rebind_reply_valid(const net_virt_rebind_reply_t *reply,
                                              size_t length, uint32_t generation)
 {

@@ -309,6 +309,14 @@ IOAPIC and RAM pointers without dereferencing them, so revoked mappings are
 not accessed. Late MMIO and IRQ activity is rejected until a new bus is
 initialized and devices are registered. Backend/device state and the new
 IOAPIC must still be reset separately before a subsequent boot.
+The network adapter has a separate adoption helper for a successful REBIND.
+It resets private VirtIO registers, guest-ring pointers and activity counters,
+binds the new shared queues without clearing pending packets, and uses the new
+attachment's backend and MAC. Stale generations and live-device replacement
+are rejected; failed registration retains backend ownership for detach before
+revocation. Host sanitizer tests exercise fresh TX/RX generations, pending RX,
+failed-registration cleanup and inaccessible retired mappings. This helper is
+not yet wired into the firmware reset path or qualified by a second guest boot.
 Before capability revocation it also requires a network contract-v6 detach
 acknowledgment. The single-threaded virtualizer drops that client's queue
 pointers, including any hub-pump entry, before replying. Subsequent wakeups
