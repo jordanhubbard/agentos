@@ -1,0 +1,32 @@
+{
+  "qualification": "Manager-owned primary guest GIC virtual-interface remapping",
+  "runtime_revision": "9e9862eb0461960cb741761ffca240be520ba84d",
+  "host": "Spark AArch64",
+  "source_clean_during_tests": true,
+  "pipeline_result": "PASS, exit 0",
+  "gate": {
+    "command": "make gate QEMU_TEST_SSH_PORT=12237",
+    "log_sha256": "05213d6365ef1fb2623fc2ae64d409ec4b42950ea53c999d0505f605d43650bb"
+  },
+  "target": {
+    "command": "make test-guest-scheduling QEMU_TEST_SSH_PORT=12237",
+    "log_sha256": "73b152bd1eb9a6902d15d2810474a656566c60529d05d2bca837d86c0454e0b4",
+    "serial_log_sha256": "a42d7b5fe026afd6c993c23f64bc10e5d26ff37c09d1d570683be1096f51919a",
+    "agentos_image_sha256": "59e07a6c813ecfce02f872e51493904c4386b7d77d077815ac9daabdd725c575",
+    "qemu_pid": 1479384,
+    "qemu_log_stem": "agentos-qemu-DBAtPL",
+    "result": "Explicit manager CREATE, GIC preparation, scheduling and BOOT; Linux console input/output; destruction and stale-handle rejection"
+  },
+  "host_tests": [
+    "Both guest identities use only their own frame and exchanged VSpace",
+    "Fixed guest IPA, rights and attributes",
+    "Initially present or absent mapping; peer mapping preserved",
+    "Invalid identity and copy/unmap/map/delete errors fail closed; scratch cleanup attempted after every successful copy"
+  ],
+  "limits": [
+    "Target remaps the existing primary VSpace; fresh reconstructed VSpaces and secondary guest mapping remain unqualified",
+    "No target mapping-failure injection or guest reconstruction qualification",
+    "Ordinary automatic single-guest startup bypasses manager preparation",
+    "Required CI, canonical integration and release remain pending"
+  ]
+}

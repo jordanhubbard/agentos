@@ -82,7 +82,10 @@ bounded slots and address. Future reconstruction must publish a fresh
 ASID-assigned VSpace with intermediate tables before CREATE returns; this
 change does not implement reconstruction. Host tests cover both identities,
 an initially present or absent mapping, peer preservation and each operation's
-failure. Target qualification of this mapping bridge is pending.
+failure. The full gate and explicit manager CREATE/BOOT target passed on Spark
+at `9e9862e`; [the receipt](evidence/2026-09-18-spark/guest-gic-broker.json)
+records primary existing-VSpace remapping, console I/O and teardown. Freshly
+reconstructed VSpaces and secondary guest mapping remain unqualified.
 
 ARM guest network, block, serial and optional input queue frames now each
 come from a private 2 MiB untyped pool. Root moves its sole pool capability
