@@ -8,6 +8,7 @@
 
 static seL4_Word result, badge, registers[SEL4_VMENTER_RESULT_FAULT_LEN];
 static unsigned reads, limit, enters, writes;
+static const aos_x86_vmenter_entry_t *expected_entry;
 void seL4_SetMR(int index, seL4_Word value)
 {
     assert(index>=0 && (unsigned)index<SEL4_VMENTER_RESULT_NOTIF_LEN);
@@ -16,6 +17,14 @@ void seL4_SetMR(int index, seL4_Word value)
 }
 seL4_Word seL4_VMEnter(seL4_Word *out)
 {
+    if (expected_entry) {
+        assert(writes == 3);
+        assert(registers[SEL4_VMENTER_CALL_EIP_MR] == expected_entry->ip);
+        assert(registers[SEL4_VMENTER_CALL_CONTROL_PPC_MR] == expected_entry->controls);
+        assert(registers[2] == expected_entry->interruption_info);
+        /* The kernel replaces entry inputs with exit state. */
+        for (unsigned i = 0; i < limit; i++) registers[i] = 0xdef000 + i;
+    }
     assert(out); *out=badge; enters++; return result;
 }
 seL4_Word seL4_GetMR(int index)
@@ -53,5 +62,24 @@ int main(void)
     assert(!memcmp(resumed.words,notification.words,sizeof(notification.words)));
     capture(99,0);
     assert(enters==4);
-    puts("PASS: fault snapshot, notification read boundary, badge and IPC independence");
+    const aos_x86_vmenter_entry_t entry = {
+        .ip = 0xfff0, .controls = 0x80, .interruption_info = 0x80000031,
+    };
+    expected_entry = &entry;
+    for (unsigned notification_exit = 0; notification_exit < 2; notification_exit++) {
+        /* Startup CREATE/BOOT IPC must not become VM entry inputs. */
+        memset(registers, 0xa5, sizeof(registers));
+        writes = reads = 0;
+        result = notification_exit ? SEL4_VMENTER_RESULT_NOTIF : SEL4_VMENTER_RESULT_FAULT;
+        limit = notification_exit ? SEL4_VMENTER_RESULT_NOTIF_LEN : SEL4_VMENTER_RESULT_FAULT_LEN;
+        badge = notification_exit ? 0x40 : 0;
+        aos_x86_vmenter_return_t started = aos_x86_vm_start(&entry);
+        assert(started.result == result && started.badge == badge && reads == limit);
+        for (unsigned i = 0; i < SEL4_VMENTER_RESULT_FAULT_LEN; i++)
+            assert(started.words[i] == (i < limit ? 0xdef000 + i : 0));
+        assert(entry.ip == 0xfff0 && entry.controls == 0x80 &&
+               entry.interruption_info == 0x80000031);
+    }
+    assert(enters == 6);
+    puts("PASS: entry inputs survive startup IPC; fault/notification snapshots and re-entry");
 }

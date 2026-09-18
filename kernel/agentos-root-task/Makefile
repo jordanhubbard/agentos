@@ -161,12 +161,20 @@ ifeq ($(AGENTOS_BOARD),x86_64_generic_vtx)
     endif
     CFLAGS += -DAGENTOS_X86_USERSPACE_PROOF=1
     CFLAGS_ROOT_TASK += -DAGENTOS_X86_USERSPACE_PROOF=1
+    X86_MANAGED_START := 1
     ifeq ($(X86_LIFECYCLE_TRACE),1)
       CFLAGS += -DAGENTOS_X86_LIFECYCLE_TRACE=1
     endif
     ifeq ($(X86_LIFECYCLE_WITNESS),1)
       CFLAGS += -DAGENTOS_X86_LIFECYCLE_WITNESS=1
     endif
+  endif
+  ifeq ($(X86_MANAGED_START),1)
+    ifneq ($(X86_FIRMWARE_RESET),1)
+      $(error X86_MANAGED_START requires X86_FIRMWARE_RESET=1)
+    endif
+    CFLAGS += -DAGENTOS_X86_MANAGED_START=1
+    CFLAGS_ROOT_TASK += -DAGENTOS_X86_MANAGED_START=1
   endif
   ifeq ($(X86_GUEST_FAULT_PROOF),1)
     CFLAGS += -DAGENTOS_X86_GUEST_FAULT_PROOF=1
@@ -1473,11 +1481,13 @@ SYSTEM_TOML := $(if $(_BOARD_TOML_NONEMPTY),$(_BOARD_TOML_NONEMPTY),$(SYSTEM_TOM
 ifeq ($(AGENTOS_BOARD),x86_64_generic_vtx)
 ifeq ($(X86_FIRMWARE_RESET),1)
 SYSTEM_TOML := $(REPO_ROOT_MK)/boards/qemu-x86_64-vtx/firmware.toml
-ifeq ($(X86_USERSPACE_PROOF),1)
-SYSTEM_TOML := $(abspath $(BUILD_DIR)/x86-lifecycle.toml)
-$(SYSTEM_TOML): $(REPO_ROOT_MK)/boards/qemu-x86_64-vtx/firmware.toml
+ifeq ($(X86_MANAGED_START),1)
+SYSTEM_TOML := $(abspath $(BUILD_DIR)/x86-managed-$(X86_USERSPACE_PROOF).toml)
+$(SYSTEM_TOML): $(REPO_ROOT_MK)/boards/qemu-x86_64-vtx/firmware.toml Makefile
 	@mkdir -p $(BUILD_DIR)
-	{ cat $<; printf '\n[[pd]]\nname = "x86_lifecycle_probe"\npriority = 251\n'; } > $@
+	{ cat $<; \
+	  $(if $(filter 1,$(X86_USERSPACE_PROOF)),printf '\n[[pd]]\nname = "x86_lifecycle_probe"\npriority = 251\n';) \
+	  printf '\n[[pd]]\nname = "vm_manager"\npriority = 220\n'; } > $@
 endif
 endif
 endif

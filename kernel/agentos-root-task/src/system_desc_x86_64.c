@@ -15,11 +15,14 @@
 #if defined(AGENTOS_X86_VTX)
 const system_desc_t system_desc_x86_64 = {
 #ifdef AGENTOS_X86_FIRMWARE_RESET
+    .pd_count = 7u
 #ifdef AGENTOS_X86_USERSPACE_PROOF
-    .pd_count = 8u,
-#else
-    .pd_count = 7u,
+        + 1u
 #endif
+#ifdef AGENTOS_X86_MANAGED_START
+        + 1u
+#endif
+        ,
 #else
     .pd_count = 1u,
 #endif
@@ -123,6 +126,21 @@ const system_desc_t system_desc_x86_64 = {
             .cnode_size_bits = 10u,
             .priority = 251u,
             .self_svc_id = SVC_ID_X86_LIFECYCLE_PROBE,
+            .init_ep_count = 2u,
+            .init_eps = {
+                { SVC_ID_GUEST_VMM_PRIMARY, PD_CNODE_SLOT_GUEST_VMM_PRIMARY_EP },
+                { SVC_ID_VM_MANAGER, PD_CNODE_SLOT_VM_MANAGER_EP },
+            },
+        },
+#endif
+#ifdef AGENTOS_X86_MANAGED_START
+        {
+            .name = "vm_manager",
+            .elf_path = "vm_manager.elf",
+            .stack_size = 0x8000u,
+            .cnode_size_bits = 10u,
+            .priority = 220u,
+            .self_svc_id = SVC_ID_VM_MANAGER,
             .init_ep_count = 1u,
             .init_eps = {{ SVC_ID_GUEST_VMM_PRIMARY, PD_CNODE_SLOT_GUEST_VMM_PRIMARY_EP }},
         },
