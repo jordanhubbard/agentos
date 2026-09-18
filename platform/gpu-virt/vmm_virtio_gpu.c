@@ -9,6 +9,7 @@
 static virtio_gpu_device_t gpu;
 static aos_gpu_framebuffer_t framebuffer;
 static bool attempted;
+static bool detached;
 
 static bool exchange(void *context, const aos_fb_request_t *q, aos_fb_response_t *p)
 {
@@ -61,4 +62,24 @@ bool aos_vmm_virtio_gpu_init(void)
 bool aos_vmm_virtio_gpu_quiesce(void)
 {
     return !gpu.device.funs || virtio_gpu_quiesce(&gpu);
+}
+
+bool aos_vmm_virtio_gpu_detach(void)
+{
+    if (detached) return true;
+    if (!aos_vmm_virtio_gpu_quiesce()) return false;
+    attempted = true;
+#ifdef AGENTOS_GUEST_SECONDARY
+    const unsigned client = 1;
+#else
+    const unsigned client = 0;
+#endif
+    aos_fb_region_t *region = (void *)(AOS_FB_SHMEM_VA + client * AOS_FB_CLIENT_STRIDE);
+    __atomic_store_n(&region->detach.version, AOS_FB_DETACH_VERSION, __ATOMIC_RELAXED);
+    __atomic_store_n(&region->detach.request, 1u, __ATOMIC_RELEASE);
+    seL4_Signal(PD_CNODE_SLOT_FB_PEER_NOTIFY);
+    if (__atomic_load_n(&region->detach.ack, __ATOMIC_ACQUIRE) != 1u) return false;
+    framebuffer.region = NULL;
+    detached = true;
+    return true;
 }

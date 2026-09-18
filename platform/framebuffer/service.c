@@ -140,6 +140,15 @@ unsigned aos_fb_pump(aos_fb_client_t *c)
 {
     if (!c || !c->region) return 0;
     aos_fb_region_t *r = c->region;
+    if (load(&r->detach.request) == 1u &&
+        load(&r->detach.version) == AOS_FB_DETACH_VERSION) {
+        /* Single-threaded with observer snapshots and display forwarding:
+         * neither can hold a surface pointer across this service iteration.
+         * Existing observer snapshots are separate service-owned copies. */
+        memset(c, 0, sizeof(*c));
+        publish(&r->detach.ack, 1u);
+        return 1;
+    }
     unsigned completed = 0;
     while (completed < AOS_FB_QUEUE_CAPACITY) {
         uint32_t head = load(&r->req_head), tail = load(&r->req_tail);

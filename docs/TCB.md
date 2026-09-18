@@ -108,6 +108,15 @@ without a new endpoint or peer-page grant. The VMM waits for acknowledgment
 before capability revocation, which then removes the input page. Event
 wire layouts stay unchanged, and recreation still needs a generation/reset
 contract rather than reusing a retired acknowledgment.
+Framebuffer queues now carry an independent one-shot detach handshake.
+After GPU quiescence, the VMM requests terminal retirement and waits for an
+acknowledgment. The single-threaded framebuffer service clears the client's
+selection and every queue/surface pointer before its final release-store to
+the queue page. Detach takes priority over full or malformed request/response
+rings. Observer capture and display forwarding cannot retain a source pointer
+across that service iteration; completed observer snapshots remain independent
+copies. The queue and surface arenas are still allocated in this change.
+Target qualification of framebuffer detach remains pending.
 Queued guest faults are not serviced during teardown. Initialization rejects
 lifecycle re-entry while media staging still holds guest RAM pointers.
 Service grants remain owned by the VMM; recreation is not yet implemented.

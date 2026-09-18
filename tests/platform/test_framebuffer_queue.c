@@ -1,8 +1,49 @@
+#define _GNU_SOURCE
 #include <platform/framebuffer.h>
 #include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/mman.h>
+
+static void terminal_detach(aos_fb_client_t *peer)
+{
+    aos_fb_region_t *r = mmap(NULL, AOS_FB_CLIENT_STRIDE, PROT_READ | PROT_WRITE,
+        MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    void *arena = mmap(NULL, AOS_FB_ARENA_BYTES, PROT_READ | PROT_WRITE,
+        MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    assert(r != MAP_FAILED && arena != MAP_FAILED);
+    aos_fb_client_t client;
+    assert(aos_fb_client_init(&client, r, arena, AOS_FB_ARENA_BYTES) == 0);
+    client.selected_handle = client.surfaces[0].handle = 17;
+    client.surfaces[0].sequence = 1;
+    /* Retirement must progress without consuming malformed requests or
+     * waiting for a full response ring, including a selected live surface. */
+    r->req_tail = AOS_FB_QUEUE_CAPACITY + 1;
+    r->resp_tail = AOS_FB_QUEUE_CAPACITY;
+    r->detach.version = AOS_FB_DETACH_VERSION + 1;
+    r->detach.request = 1;
+    assert(aos_fb_pump(&client) == 0 && !r->detach.ack && client.region == r);
+    r->detach.version = AOS_FB_DETACH_VERSION;
+    r->detach.request = 2;
+    assert(aos_fb_pump(&client) == 0 && !r->detach.ack && client.region == r);
+    __atomic_store_n(&r->detach.request, 1u, __ATOMIC_RELEASE);
+    assert(aos_fb_pump(&client) == 1);
+    assert(__atomic_load_n(&r->detach.ack, __ATOMIC_ACQUIRE) == 1);
+    assert(!client.region && !client.selected_handle && !client.next_handle);
+    for (unsigned i = 0; i < AOS_FB_MAX_SURFACES; i++)
+        assert(!client.surfaces[i].handle && !client.surfaces[i].staging &&
+               !client.surfaces[i].committed);
+    assert(r->req_head == 0 && r->resp_tail == AOS_FB_QUEUE_CAPACITY);
+    assert(mprotect(r, AOS_FB_CLIENT_STRIDE, PROT_NONE) == 0);
+    assert(mprotect(arena, AOS_FB_ARENA_BYTES, PROT_NONE) == 0);
+    for (unsigned i = 0; i < 8; i++) {
+        assert(aos_fb_pump(&client) == 0);
+        assert(aos_fb_pump(peer) == 0);
+    }
+    assert(munmap(r, AOS_FB_CLIENT_STRIDE) == 0);
+    assert(munmap(arena, AOS_FB_ARENA_BYTES) == 0);
+}
 
 static aos_fb_response_t call(aos_fb_client_t *c, aos_fb_request_t q)
 {
@@ -153,6 +194,18 @@ int main(void)
     exact_frame_and_clients(&clients[0], &clients[1]);
     queue_budget_backpressure_and_wrap(&clients[0]);
     capacity_and_protocol(&clients[0]);
+    terminal_detach(&clients[1]);
+    /* The unrelated client retains exact pixel I/O after retirement. */
+    aos_fb_client_t *peer = &clients[1];
+    uint64_t handle = peer->surfaces[0].handle;
+    memset(peer->region->data, 0x6d, 8 * 6 * 4);
+    assert(call(peer, (aos_fb_request_t){.operation=AOS_FB_WRITE, .handle=handle,
+        .width=8, .height=6, .data_length=8*6*4}).status == AOS_FB_OK);
+    assert(call(peer, (aos_fb_request_t){.operation=AOS_FB_FLIP, .handle=handle}).status == AOS_FB_OK);
+    memset(peer->region->data, 0, 8 * 6 * 4);
+    assert(call(peer, (aos_fb_request_t){.operation=AOS_FB_READ, .handle=handle,
+        .width=8, .height=6, .data_length=8*6*4}).status == AOS_FB_OK);
+    for (unsigned i=0; i<8*6*4; i++) assert(peer->region->data[i] == 0x6d);
     for (unsigned i = 0; i < 2; ++i) { free(regions[i]); free(arenas[i]); }
     puts("PASS: exact framebuffer pixels, committed snapshots, client separation, stale handles, queue backpressure/wrap/bounds");
     return 0;

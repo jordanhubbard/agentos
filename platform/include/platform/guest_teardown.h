@@ -20,6 +20,7 @@ typedef struct aos_guest_teardown {
     bool block_detached;
     bool serial_detached;
     bool input_detached;
+    bool graphics_detached;
     uint8_t queue_pools_released;
     bool execution_released;
     bool ram_released;
