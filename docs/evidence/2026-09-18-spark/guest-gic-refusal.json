@@ -1,0 +1,31 @@
+{
+  "revision": "ec87e410c0d93bad5a262bce4c32a739b274f63a",
+  "source_tree_clean": true,
+  "host": "Spark ARM64 Linux",
+  "status": "passed",
+  "checks": [
+    {
+      "command": "make test-guest-gic-failure",
+      "exit_code": 0,
+      "log": "/tmp/agentos-gic-failure-target-final.log",
+      "log_sha256": "983c78a7b9e528d31e20a7fdb23862af3ee3ba5d122309b4ee83bb33e8e535ec",
+      "cases": [
+        {"mode": 1, "failure": "missing frame", "qemu_log_stem": "build/tmp/agentos-qemu-Ga4f5s"},
+        {"mode": 2, "failure": "page mapping", "qemu_log_stem": "build/tmp/agentos-qemu-K5xIKh"},
+        {"mode": 3, "failure": "capability copy", "qemu_log_stem": "build/tmp/agentos-qemu-emfn0o"}
+      ],
+      "scope": "Each fresh image reports its injected failure and production boot refusal through serial_pd; guest capability setup and completed OS boot are not observed during the subsequent 500 ms check"
+    },
+    {
+      "command": "make gate QEMU_TEST_SSH_PORT=12228",
+      "exit_code": 0,
+      "log": "/tmp/agentos-gic-final-gate.log",
+      "log_sha256": "f51ab9675cb9b3be5b96df94119982e38cd16fce2af045cc8e0b7cdade511098",
+      "scope": "Normal images without fault injection: host tests, both root-task architectures, ARM guest network/block/console"
+    }
+  ],
+  "limits": [
+    "Fault injection covers absent frame, invalid mapping destination and empty source capability; not exhaustive allocator exhaustion.",
+    "No recreation, runtime recovery or complete release qualification claim."
+  ]
+}
