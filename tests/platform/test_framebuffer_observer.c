@@ -111,6 +111,22 @@ int main(void)
         for (unsigned i=0;i<AOS_FB_DATA_BYTES;++i) assert(r->data[i]==(uint8_t)((offset+i)*17u+3u));
     }
     assert(call(&observer,capture).status==AOS_FB_OBSERVER_EXHAUSTED);
+    aos_fb_region_t *retired = c->region;
+    retired->detach.version = AOS_FB_DETACH_VERSION;
+    __atomic_store_n(&retired->detach.request, 1u, __ATOMIC_RELEASE);
+    assert(aos_fb_pump(c) == 1 && retired->detach.ack == 1);
+    assert(!c->region && !c->selected_handle);
+    free(retired);
+    free(arenas[0]);
+    arenas[0] = NULL;
+    assert(aos_fb_pump(c) == 0);
+    assert(call(&observer,capture).status == AOS_FB_OBSERVER_NO_FRAME);
+    /* A completed snapshot is an independent service-owned copy and remains
+     * readable after the source queue and arena have been released. */
+    read.offset = 0;
+    assert(call(&observer,read).status == AOS_FB_OBSERVER_OK);
+    for (unsigned i = 0; i < AOS_FB_DATA_BYTES; i++)
+        assert(r->data[i] == (uint8_t)(i * 17u + 3u));
     for (unsigned i=0;i<AOS_FB_CLIENTS;++i) { free(clients[i].region); free(arenas[i]); }
     free(r);free(snapshot);
     puts("PASS: bounded immutable frame snapshots, selection, authorization, chunks, stale cookies and response ownership");

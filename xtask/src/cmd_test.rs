@@ -1571,8 +1571,17 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
         let input_detach_required = profile_plan
             .as_ref()
             .is_some_and(|p| p.devices.iter().any(|d| d == "input"));
-        result = verify_guest_teardown(&cc_sock, &log_path, &mut qemu, input_detach_required)
-            .map(|proof| format!("{}; {proof}", result.as_deref().unwrap()));
+        let graphics_detach_required = profile_plan
+            .as_ref()
+            .is_some_and(|p| p.devices.iter().any(|d| d == "gpu"));
+        result = verify_guest_teardown(
+            &cc_sock,
+            &log_path,
+            &mut qemu,
+            input_detach_required,
+            graphics_detach_required,
+        )
+        .map(|proof| format!("{}; {proof}", result.as_deref().unwrap()));
     }
     if result.is_ok() && args.assert_guest_queue_recycle {
         result = wait_for_all_markers(
@@ -5709,6 +5718,7 @@ fn verify_guest_teardown(
     log_path: &Path,
     qemu: &mut Child,
     input_detach_required: bool,
+    graphics_detach_required: bool,
 ) -> anyhow::Result<String> {
     let mut cc = CcClient::connect(cc_sock)?;
     let status = cc.call(MSG_CC_GUEST_STATUS, 0, 0, 0, &[])?;
@@ -5736,6 +5746,9 @@ fn verify_guest_teardown(
     ];
     if input_detach_required {
         markers.push("guest teardown: input queues detached");
+    }
+    if graphics_detach_required {
+        markers.push("guest teardown: framebuffer queues detached");
     }
     wait_for_all_markers(log_path, &markers, Duration::from_secs(10), qemu)?;
     Ok("running guest destroyed; execution/RAM revoked and stale lifecycle handle rejected".into())

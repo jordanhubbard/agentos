@@ -1114,6 +1114,9 @@ static bool guest_vmm_teardown(void)
     if (done) microkit_dbg_puts("guest teardown: block queues detached\n");
     if (done) microkit_dbg_puts("guest teardown: serial queues detached\n");
     if (done) microkit_dbg_puts("guest teardown: private queue pages revoked\n");
+#ifdef AGENTOS_GUEST_GRAPHICS
+    if (done) microkit_dbg_puts("guest teardown: framebuffer queues detached\n");
+#endif
 #ifdef AGENTOS_GUEST_INPUT
     if (done) microkit_dbg_puts("guest teardown: input queues detached\n");
 #endif

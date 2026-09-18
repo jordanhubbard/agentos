@@ -52,6 +52,12 @@ bool aos_guest_teardown_step(aos_guest_teardown_t *state, size_t ram_size)
 #endif
         state->input_detached = true;
     }
+    if (!state->graphics_detached) {
+#ifdef AGENTOS_GUEST_GRAPHICS
+        if (!aos_vmm_virtio_gpu_detach()) return false;
+#endif
+        state->graphics_detached = true;
+    }
     unsigned queue_count = AOS_GUEST_QUEUE_INPUT;
 #ifdef AGENTOS_GUEST_INPUT
     queue_count = AOS_GUEST_QUEUE_POOL_COUNT;

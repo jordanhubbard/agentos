@@ -11,6 +11,7 @@
 #include <stdint.h>
 
 #define AOS_FB_VERSION 1u
+#define AOS_FB_DETACH_VERSION 1u
 #define AOS_FB_QUEUE_CAPACITY 16u
 #define AOS_FB_DATA_BYTES 65536u
 #define AOS_FB_MAX_SURFACES 4u
@@ -61,6 +62,12 @@ typedef struct aos_fb_region {
     aos_fb_request_t requests[AOS_FB_QUEUE_CAPACITY];
     aos_fb_response_t responses[AOS_FB_QUEUE_CAPACITY];
     uint8_t data[AOS_FB_DATA_BYTES];
+    /* One-shot terminal detach, independent of ring capacity. A stopped VMM
+     * release-publishes version/request=1 and signals the service. The service
+     * drops all client queue/surface pointers before its final page access:
+     * release-store ack=1. Root initially clears these fields. A retired
+     * client requires an explicit future reconstruction/generation protocol. */
+    struct { uint32_t version, request, ack; } detach;
 } aos_fb_region_t;
 
 /* Private service state: never put these pointers or bounds in shared RAM. */
@@ -87,7 +94,10 @@ int aos_fb_client_init(aos_fb_client_t *client, aos_fb_region_t *region,
  * request without space for its response. Callers signal the peer after
  * submitting requests AND after draining responses: this resumes work after
  * response backpressure. Use persistent notifications; no dropped NBSends.
- * Return responses published; malformed ring occupancy makes no progress. */
+ * Return responses published, or one for a terminal detach acknowledgment.
+ * Detach takes priority even with full/malformed rings, abandons queued work,
+ * and clears private surface pointers. Malformed rings otherwise make no
+ * progress. Detached clients remain inert on subsequent pumps. */
 unsigned aos_fb_pump(aos_fb_client_t *client);
 int aos_fb_submit(aos_fb_region_t *region, const aos_fb_request_t *request);
 int aos_fb_receive(aos_fb_region_t *region, aos_fb_response_t *response);

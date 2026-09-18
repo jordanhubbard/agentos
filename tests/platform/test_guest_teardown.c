@@ -19,6 +19,8 @@ static bool serial_detach_done;
 static unsigned serial_detach_calls;
 static bool input_detach_done;
 static unsigned input_detach_calls;
+static bool graphics_detach_done;
+static unsigned graphics_detach_calls;
 static unsigned paging_revokes;
 static unsigned queue_revokes[AOS_GUEST_QUEUE_POOL_COUNT];
 static bool queue_fails;
@@ -37,6 +39,8 @@ bool aos_vmm_serial_detach(void)
 { device_access(); serial_detach_calls++; return serial_detach_done; }
 bool aos_vmm_virtio_input_detach(void)
 { device_access(); input_detach_calls++; return input_detach_done; }
+bool aos_vmm_virtio_gpu_detach(void)
+{ device_access(); graphics_detach_calls++; return graphics_detach_done; }
 void aos_vmm_virtio_input_quiesce(void) { device_access(); input_calls++; }
 bool aos_vmm_virtio_console_quiesce(void)
 { device_access(); console_calls++; return console_done; }
@@ -53,6 +57,7 @@ seL4_Error seL4_CNode_Revoke(seL4_CPtr root, seL4_Word slot, uint8_t depth)
     assert(block_detach_done);
     assert(serial_detach_done);
     assert(input_detach_done);
+    assert(graphics_detach_done);
     if (slot >= AOS_GUEST_QUEUE_POOL_BASE &&
         slot < AOS_GUEST_QUEUE_POOL_BASE + AOS_GUEST_QUEUE_POOL_COUNT) {
         unsigned index = slot - AOS_GUEST_QUEUE_POOL_BASE;
@@ -116,6 +121,10 @@ int main(void)
     assert(state.serial_detached && !state.input_detached && !revokes);
     assert(serial_detach_calls == 2 && input_detach_calls == 1);
     input_detach_done = true;
+    assert(!aos_guest_teardown_step(&state, page_size));
+    assert(state.input_detached && !state.graphics_detached && !revokes);
+    assert(graphics_detach_calls == 1 && !queue_revokes[0]);
+    graphics_detach_done = true;
     queue_fails = true;
     assert(!aos_guest_teardown_step(&state, page_size));
     assert(state.input_detached && state.queue_pools_released == 1);
@@ -145,6 +154,7 @@ int main(void)
     assert(state.block_detached && block_detach_calls == 2);
     assert(state.serial_detached && serial_detach_calls == 2);
     assert(state.input_detached && input_detach_calls == 2);
+    assert(state.graphics_detached && graphics_detach_calls == 2);
     assert(state.queue_pools_released == AOS_GUEST_QUEUE_POOL_COUNT);
     assert(net_calls == device_calls && input_calls == device_calls &&
            console_calls == device_calls && block_calls == device_calls);

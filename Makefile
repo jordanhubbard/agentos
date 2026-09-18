@@ -1385,7 +1385,7 @@ test-debian-nocloud-graphics-teardown: QEMU_TEST_TIMEOUT = 1800
 test-debian-nocloud-graphics-teardown: QEMU_TEST_SSH_PORT = 12223
 test-debian-nocloud-graphics-teardown:
 	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os debian-nocloud-graphics-input \
-		--seed-profile --assert-agentos-virtio --assert-guest-display --assert-guest-teardown \
+		--seed-profile --assert-agentos-virtio --assert-guest-display --assert-guest-teardown --assert-guest-queue-recycle \
 		--ssh-port $(QEMU_TEST_SSH_PORT) --timeout-secs $(QEMU_TEST_TIMEOUT)
 
 test-debian-nocloud-graphics: QEMU_TEST_TIMEOUT = 1800
