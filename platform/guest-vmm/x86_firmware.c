@@ -69,6 +69,7 @@ static seL4_Word boot_reads[3], last_qualification;
 static bool have_wait_snapshot;
 static bool serial_wake_received;
 static bool serial_attached;
+static bool lifecycle_started;
 static aos_guest_teardown_t teardown_state;
 static seL4_CPtr block_proof_ep;
 static uint8_t block_boot_data[AOS_BLK_TRANSFER_SIZE];
@@ -105,6 +106,11 @@ bool aos_vmm_serial_detach(void)
  * result and VMCS remain intact until RESUME; the virtual clock continues
  * advancing and overdue timers are handled by the normal exit path. */
 static bool control_transition(void) { return true; }
+static bool control_start(void)
+{
+    lifecycle_started = true;
+    return true;
+}
 static bool control_teardown(void)
 {
     return aos_guest_teardown_step(&teardown_state, AOS_X86_FIRMWARE_RAM);
@@ -334,7 +340,7 @@ static void diagnostic_chain(const aos_x86_memory_t *m, uint64_t cr3, uint64_t r
     }
 }
 
-void aos_x86_firmware_run(seL4_CPtr ep, aos_x86_vmenter_return_t returned)
+_Noreturn void aos_x86_firmware_run(seL4_CPtr ep, aos_x86_vmenter_entry_t entry)
 {
 #ifdef AGENTOS_X86_USERSPACE_PROOF
     if (serial_virt_client_attach(1u, SERIAL_VIRT_ROLE_VMM) ||
@@ -435,13 +441,12 @@ void aos_x86_firmware_run(seL4_CPtr ep, aos_x86_vmenter_return_t returned)
         .rom_size=AOS_X86_FIRMWARE_BYTES,
     };
     unsigned exits = 0;
-    /* This board auto-boots before entering the firmware adapter. Managed
-     * startup/profile admission is a separate composition requirement. */
-    uint32_t lifecycle_state = GUEST_STATE_RUNNING;
-    bool lifecycle_started = true;
+    uint32_t lifecycle_state = GUEST_STATE_READY;
+    lifecycle_started = false;
     const aos_guest_vmm_runtime_t runtime = {
         .os_type = VMM_PROFILE_PRIMARY, .guest_id = 0u,
         .state = &lifecycle_state, .started = &lifecycle_started,
+        .start = control_start,
         .suspend = control_transition, .resume = control_transition,
         .teardown = control_teardown,
     };
@@ -452,14 +457,26 @@ void aos_x86_firmware_run(seL4_CPtr ep, aos_x86_vmenter_return_t returned)
      * Calls. Sending CHECKPOINT while it is calling us would deadlock two
      * synchronous senders. Only boot after it explicitly completes the
      * suspend/resume sequence and commits to receiving the next phase. */
-    while (!aos_x86_lifecycle_boot_ack) {
+#endif
+#ifndef AGENTOS_X86_MANAGED_START
+    const sel4_msg_t boot_request = {.opcode = MSG_GUEST_BOOT, .length = 4u};
+    sel4_msg_t boot_reply = {0};
+    if (!aos_guest_vmm_lifecycle_rpc(&boot_request, &boot_reply, &runtime) ||
+        boot_reply.opcode != GUEST_OK || !lifecycle_started)
+        stop(ep, AOS_X86_VTX_PROOF_FAIL, 0x424f54u, 0u, boot_reply.opcode);
+#endif
+    while (lifecycle_state != GUEST_STATE_RUNNING
+#ifdef AGENTOS_X86_USERSPACE_PROOF
+           || !aos_x86_lifecycle_boot_ack
+#endif
+    ) {
         if (aos_x86_control_step(&runtime, control_wake,
                 &serial_endpoint) == AOS_X86_CONTROL_ERROR)
             stop(ep, AOS_X86_VTX_PROOF_FAIL, 0x435452u, 0u, lifecycle_state);
         service_serial(&serial_endpoint);
-        if (!aos_x86_lifecycle_boot_ack) seL4_Yield();
+        if (lifecycle_state == GUEST_STATE_RUNNING) seL4_Yield();
     }
-#endif
+    aos_x86_vmenter_return_t returned = aos_x86_vm_start(&entry);
     for (;;) {
         enum aos_x86_control_result control;
         do {

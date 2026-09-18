@@ -10,6 +10,11 @@ typedef struct {
     seL4_Word words[SEL4_VMENTER_RESULT_FAULT_LEN];
 } aos_x86_vmenter_return_t;
 
+/* Explicit entry input, retained in native memory while startup IPC runs. */
+typedef struct {
+    seL4_Word ip, controls, interruption_info;
+} aos_x86_vmenter_entry_t;
+
 static inline aos_x86_vmenter_return_t aos_x86_vm_enter(void)
 {
     aos_x86_vmenter_return_t returned = {0};
@@ -19,6 +24,17 @@ static inline aos_x86_vmenter_return_t aos_x86_vm_enter(void)
         SEL4_VMENTER_RESULT_NOTIF_LEN : 0;
     for (unsigned i = 0; i < count; i++) returned.words[i] = seL4_GetMR(i);
     return returned;
+}
+
+static inline aos_x86_vmenter_return_t aos_x86_vm_start(
+    const aos_x86_vmenter_entry_t *entry)
+{
+    seL4_SetMR(SEL4_VMENTER_CALL_EIP_MR, entry->ip);
+    seL4_SetMR(SEL4_VMENTER_CALL_CONTROL_PPC_MR, entry->controls);
+    /* MR2 is interruption info in both SDKs; 2.3 renamed its enum. */
+    _Static_assert(SEL4_VMENTER_RESULT_NOTIF_LEN == 3, "VMEnter input ABI");
+    seL4_SetMR(2, entry->interruption_info);
+    return aos_x86_vm_enter();
 }
 
 /* Call only for an accepted notification. Service IPC may have clobbered

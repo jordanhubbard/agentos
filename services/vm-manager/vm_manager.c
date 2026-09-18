@@ -44,6 +44,9 @@
 #include "contracts/vm_manager_contract.h"
 #include "system_desc.h"
 #include <platform/guest_memory_layout.h>
+#ifdef AGENTOS_X86_MANAGED_START
+#include "contracts/x86_vtx_proof.h"
+#endif
 #if defined(__aarch64__) && defined(CONFIG_KERNEL_MCS)
 #include <platform/guest_scheduling.h>
 #include <platform/guest_gic_mapping.h>
@@ -192,7 +195,11 @@ static uint32_t dedicated_vmm_os_type(uint32_t vm_type)
 
 static uintptr_t dedicated_ram_base(uint32_t vm_type, uint8_t slot_id)
 {
-#if defined(AGENTOS_GUEST_DUAL)
+#if defined(AGENTOS_X86_MANAGED_START)
+    (void)vm_type;
+    (void)slot_id;
+    return AOS_X86_FIRMWARE_RAM_VA;
+#elif defined(AGENTOS_GUEST_DUAL)
     if (vm_type == VM_PROFILE_SECONDARY)
         return AOS_SECONDARY_GUEST_RAM_BASE;
     if (vm_type == VM_PROFILE_PRIMARY)
@@ -205,9 +212,14 @@ static uintptr_t dedicated_ram_base(uint32_t vm_type, uint8_t slot_id)
 
 static uint32_t dedicated_ram_capacity_mb(uint32_t vm_type)
 {
+#ifdef AGENTOS_X86_MANAGED_START
+    (void)vm_type;
+    return AOS_X86_FIRMWARE_RAM >> 20;
+#else
     return vm_type == VM_PROFILE_SECONDARY
          ? AOS_SECONDARY_GUEST_RAM_MB
          : AOS_PRIMARY_GUEST_RAM_MB;
+#endif
 }
 
 static uint8_t dedicated_slot_for_type(uint32_t vm_type)
@@ -293,7 +305,11 @@ static int dedicated_create(uint32_t vm_type, uint32_t ram_mb,
     /* Dedicated VMM frames are provisioned by the root task before launch.
      * Report the actual mapped capacity, never an unfulfilled request size. */
     slot->ram_size = (size_t)capacity_mb << 20;
+#ifdef AGENTOS_X86_MANAGED_START
+    slot->ram_paddr = 0u;
+#else
     slot->ram_paddr = ram_base;
+#endif
     slot->vcpu_id = (uint32_t)slot_id;
     vm_label_copy(slot->label,
                   vm_type == VM_PROFILE_SECONDARY ? "secondary" : "primary",
@@ -962,7 +978,7 @@ void vm_manager_main(seL4_CPtr my_ep, seL4_CPtr ns_ep)
 {
     vmm_mux_init(&g_mux);
 
-#if defined(AGENTOS_GUEST_PRIMARY)
+#if defined(AGENTOS_GUEST_PRIMARY) || defined(AGENTOS_X86_MANAGED_START)
     g_primary_vmm_ep = (seL4_CPtr)PD_CNODE_SLOT_GUEST_VMM_PRIMARY_EP;
 #else
     g_primary_vmm_ep = 0u;

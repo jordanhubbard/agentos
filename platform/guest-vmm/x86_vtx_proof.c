@@ -346,7 +346,11 @@ static void qualify_firmware_modes(seL4_CPtr endpoint)
         mode_field(endpoint, VMX_GUEST_CR0, 0x60000010u,
                    VMX_GUEST_CR0_PE | VMX_GUEST_CR0_PG);
         mode_field(endpoint, VMX_CONTROL_CR0_READ_SHADOW, 0x60000010u, 0xffffffffu);
-        seL4_SetMR(SEL4_VMENTER_CALL_EIP_MR, 0xfff0u);
+        const aos_x86_vmenter_entry_t reset_entry = {
+            .ip = 0xfff0u, .controls = VMX_CONTROL_PPC_HLT_EXITING,
+            .interruption_info = 0u,
+        };
+        aos_x86_firmware_run(endpoint, reset_entry);
 #else
         seL4_SetMR(SEL4_VMENTER_CALL_EIP_MR, AOS_X86_VTX_GUEST_RIP);
 #endif
@@ -358,9 +362,6 @@ static void qualify_firmware_modes(seL4_CPtr endpoint)
             report_and_wait(endpoint, AOS_X86_VTX_PROOF_FAIL, 0x4e5446u, rip, returned.badge);
         seL4_Word reason = returned.words[SEL4_VMENTER_FAULT_REASON_MR];
         seL4_Word length = returned.words[SEL4_VMENTER_FAULT_INSTRUCTION_LEN_MR];
-#ifdef AGENTOS_X86_FIRMWARE_RESET
-        aos_x86_firmware_run(endpoint, returned);
-#endif
         if (reason != AOS_X86_VTX_HLT_EXIT_REASON ||
             rip != AOS_X86_VTX_GUEST_RIP || length != AOS_X86_VTX_HLT_INSTRUCTION_LEN) {
             report_and_wait(endpoint, AOS_X86_VTX_PROOF_FAIL, reason, rip, length);
