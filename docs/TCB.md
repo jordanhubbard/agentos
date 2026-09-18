@@ -95,6 +95,9 @@ without a new endpoint or peer-page grant. The VMM waits for acknowledgment
 before capability revocation; the input page itself remains allocated. Event
 wire layouts stay unchanged, and recreation still needs a generation/reset
 contract rather than reusing a retired acknowledgment.
+The full gate and combined seeded Debian graphics/input teardown passed at
+`f2277d3`; [the receipt](evidence/2026-09-18-spark/input-queue-detach.json)
+records exact framebuffer, scanout, input and terminal destruction coverage.
 Queued guest faults are not serviced during teardown. Initialization rejects
 lifecycle re-entry while media staging still holds guest RAM pointers.
 Service grants remain owned by the VMM; recreation is not yet implemented.
