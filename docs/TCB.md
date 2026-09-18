@@ -30,8 +30,9 @@ outside VMEnter after guest I/O is quiescent. Guest RAM, ROM, their VMM
 aliases and the ASID namespace remain separate resources. This establishes
 allocation authority only; x86 runtime suspend/destroy, full reclamation
 and reconstruction are not yet implemented. Host tests check the allocation
-source, destination slots and every retype failure. Target qualification of
-this pool change remains pending.
+source, destination slots and every retype failure. Intel Debian VMX/SSH and
+the full Spark gate passed at `115e1ba`; [the receipt](evidence/2026-09-18-spark/x86-private-objects.json)
+records allocation/boot/I/O qualification, not runtime revocation.
 
 Each AArch64 guest's TCB, VCPU, IPC frame and MCS scheduling context now come
 from a dedicated 64 KiB non-device child untyped. After boot configuration,
