@@ -1427,9 +1427,9 @@ endif
 # only the narrow VMX/EPT HLT-exit proof, not a general guest VMM.
 ifeq ($(ARCH),x86_64)
 ifeq ($(AGENTOS_BOARD),x86_64_generic_vtx)
-$(BUILD_DIR)/guest_vmm_primary.o: $(REPO_ROOT_MK)/platform/guest-vmm/x86_vtx_proof.c $(GUEST_CONFIG_STAMP)
+$(BUILD_DIR)/guest_vmm_primary.o: $(REPO_ROOT_MK)/platform/guest-vmm/x86_vtx_proof.c $(GUEST_CONFIG_STAMP) Makefile
 	@mkdir -p $(BUILD_DIR)
-	$(CC) -c $(CFLAGS) -DARCH_X86_64 $< -o $@
+	$(CC) -c $(CFLAGS) -mgeneral-regs-only -DARCH_X86_64 $< -o $@
 else
 $(BUILD_DIR)/guest_vmm_primary.o: $(REPO_ROOT_MK)/platform/guest-vmm/guest_vmm.c
 	@mkdir -p $(BUILD_DIR)

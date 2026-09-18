@@ -597,6 +597,32 @@ static bool terminal_teardown_proof(void)
         if (wrote.error || read.error || read.value != test_rip) return false;
         teardown_proof_stage = 150u + pass * 100u;
         if (aos_x86_guest_objects_bind() != seL4_NoError) return false;
+        teardown_proof_stage = 152u + pass * 100u;
+        aos_x86_vmenter_entry_t reset_entry = {0};
+        seL4_Word failed_field = 0u;
+        if (aos_x86_firmware_reset(&reset_entry, &failed_field) != seL4_NoError ||
+                failed_field || reset_entry.ip != 0xfff0u ||
+                reset_entry.controls != (1u << 7) || reset_entry.interruption_info)
+            return false;
+        /* Probe the architectural reset state independently of the helper's
+         * write/read checks. The stopped VCPU still has no guest memory. */
+        teardown_proof_stage = 153u + pass * 100u;
+        static const struct { seL4_Word field, value, mask; } reset_fields[] = {
+            {0x0802u, 0xf000u, 0xffffu},       /* CS selector */
+            {0x6808u, 0xffff0000u, 0xffffffffu}, /* CS base */
+            {0x4802u, 0xffffu, 0xffffffffu},  /* CS limit */
+            {0x4816u, 0x009bu, 0xffffu},      /* 16-bit code */
+            {0x2806u, 0u, 0xffffffffu},       /* EFER */
+            {0x6004u, 0x60000010u, 0xffffffffu}, /* CR0 shadow */
+            {0x6820u, 2u, 0xffffffffu},       /* RFLAGS */
+            {0x4012u, 1u << 15, (1u << 15) | (1u << 9)}, /* EFER load, no IA32e */
+        };
+        for (unsigned i = 0; i < sizeof(reset_fields) / sizeof(reset_fields[0]); i++) {
+            seL4_X86_VCPU_ReadVMCS_t value = seL4_X86_VCPU_ReadVMCS(VCPU,
+                reset_fields[i].field);
+            if (value.error || (value.value & reset_fields[i].mask) !=
+                    reset_fields[i].value) return false;
+        }
         if (seL4_CNode_Revoke(AOS_GUEST_RAM_SELF_CNODE,
                 AOS_X86_GUEST_OBJECT_POOL_CAP, AOS_GUEST_RAM_CNODE_BITS)
                 != seL4_NoError) return false;
@@ -613,6 +639,12 @@ static bool terminal_teardown_proof(void)
                 seL4_AllRights) != seL4_NoError ||
             seL4_CNode_Delete(AOS_GUEST_RAM_SELF_CNODE, AOS_GUEST_QUEUE_TEST_COPY,
                 AOS_GUEST_RAM_CNODE_BITS) != seL4_NoError) return false;
+        teardown_proof_stage = 154u + pass * 100u;
+        reset_entry = (aos_x86_vmenter_entry_t){0x11u, 0x22u, 0x33u};
+        if (aos_x86_firmware_reset(&reset_entry, &failed_field) == seL4_NoError ||
+                failed_field != 0x0800u || reset_entry.ip != 0x11u ||
+                reset_entry.controls != 0x22u || reset_entry.interruption_info != 0x33u)
+            return false;
     }
     return true;
 }
