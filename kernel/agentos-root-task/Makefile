@@ -145,6 +145,9 @@ ifeq ($(AGENTOS_BOARD),x86_64_generic_vtx)
       $(error X86_LINUX_LOGIN conflicts with X86_USERSPACE_PROOF)
     endif
     CFLAGS += -DAGENTOS_X86_LINUX_LOGIN=1
+    ifneq ($(strip $(X86_BOOT_SNAPSHOT_SECONDS)),)
+      CFLAGS += -DAOS_X86_BOOT_SNAPSHOT_SECONDS=$(X86_BOOT_SNAPSHOT_SECONDS)
+    endif
   endif
   ifeq ($(X86_USERSPACE_PROOF),1)
     ifneq ($(X86_FIRMWARE_RESET),1)

@@ -46,6 +46,11 @@ const char vmm_pd_name[] = "guest_vmm_x86";
 #define ACTIVITY 0x4826u
 #define IDT_VECTORING 0x4408u
 #define ENTRY_EXCEPTION_ERROR_CODE 0x4018u
+#ifdef AOS_X86_BOOT_SNAPSHOT_SECONDS
+#if AOS_X86_BOOT_SNAPSHOT_SECONDS < 1 || AOS_X86_BOOT_SNAPSHOT_SECONDS > 3600
+#error "Intel boot snapshot deadline must be 1..3600 seconds"
+#endif
+#endif
 static seL4_Word timer_exits, injections, eois, timer_shift, tsc_hz, halt_exits;
 static seL4_Word snapshot[AOS_X86_FIRMWARE_SNAPSHOT_WORDS];
 static seL4_Word halt_chain[AOS_X86_FIRMWARE_CHAIN_WORDS];
@@ -348,6 +353,18 @@ void aos_x86_firmware_run(seL4_CPtr ep, aos_x86_vmenter_return_t returned)
          * operating system. Its lifetime is controlled by the caller, not
          * the small qualification fixture's instruction-exit budget. */
         if (exits != UINT32_MAX) exits++;
+#ifdef AOS_X86_BOOT_SNAPSHOT_SECONDS
+        /* Explicit diagnostic runs stop with failure and retain the bounded
+         * code/stack snapshot. This is never a successful login assertion. */
+        if (hz && timestamp() - started >= hz * AOS_X86_BOOT_SNAPSHOT_SECONDS) {
+            if ((read_field(ep,EFER) & LMA) && (read_field(ep,CR0) & PG)) {
+                diagnostic_snapshot(&memory,guest_cr3,rip,read_field(ep,RSP),snapshot);
+                diagnostic_chain(&memory,guest_cr3,regs.ebp);
+            }
+            stop(ep,AOS_X86_VTX_PROOF_FAIL,0x425544u,rip,
+                 ((uint64_t)AOS_X86_BOOT_SNAPSHOT_SECONDS << 32) | (uint32_t)reason);
+        }
+#endif
 #else
         if (exits++ == 65536u) {
             /* Observe the returned exit before any emulation or re-entry.
