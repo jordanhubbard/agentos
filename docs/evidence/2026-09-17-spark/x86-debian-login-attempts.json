@@ -4,7 +4,7 @@
   "target_host": "madmax",
   "target_architecture": "Intel x86_64 nested VMX",
   "local_validation_host": "Spark ARM64",
-  "runtime_revision": "235f981",
+  "runtime_revision": "5a2dc27",
   "artifacts": {
     "image": "debian-13-generic-amd64-20260831-2587.qcow2",
     "image_sha512": "5a069019420fb9441ad4f8004c661fadb747edd5662ca54a17c8f923dee7d717e21dbdaa4ba72d6fce7f920e0217f0a9af382298a7d46ed4bc9dc33ac19181b6",
@@ -69,7 +69,50 @@
     "shutdown": "Dump completion verified through query-dump; owned diagnostic QEMU stopped through QMP quit",
     "scope": "Manual diagnostic QEMU with file console sink; not a passing login gate. Why udev stopped listening remains unresolved."
   },
+  "login_gate_results": [
+    {
+      "attempt": 13,
+      "runtime_revision": "235f981",
+      "result": "PASS: make gate-x86_64-linux-login, fresh stock-derived raw disk, 300-second timeout",
+      "initrd_sha256": "a2a5856f96277b7297f9cc6b2facebf118754a79bef1462de5c176615f80d483",
+      "command_line_sha256": "4bb53c7fd8355cc5818bb584edad287e896e73d061139e06e840a8b6ae806e12",
+      "condition": "panic=0 debug udev.log_level=debug; udev debug logging avoids its make_null_stdio path",
+      "gate_log_sha256": "2597174ef2fc853d74c6338c32d6e503dff40e9c5afed9ac1d7dd3353585d1c7",
+      "console_sha256": "2c74f26c5a1b041f323c73636b5d915f74b6ed50b4de03a4f02bd7f7ed094317"
+    },
+    {
+      "attempt": 14,
+      "runtime_revision": "235f981 with guest helper built from 5a2dc27",
+      "result": "PASS: make gate-x86_64-linux-login, fresh stock-derived raw disk, 300-second timeout",
+      "initrd_sha256": "b8fe1f2cf64fd4a968a0bfae9855b2c77a2c9010b22987322f151b593413550f",
+      "init_top_helper_sha256": "7be20109d05137cd7409c0ecf526817c0b5a38de917adb0532fec73485fda37f",
+      "command_line_sha256": "94905bff2771e130909cbdc0172be3cf40a41d95b6b8582dda3ed7fcbb418347",
+      "condition": "Same panic=0 debug command line as failed attempt 11; reserve missing stdio before stock init-top udev; no udev.log_level override",
+      "gate_log_sha256": "af7dfc7ac83d81a359d0267dc07f06aa43565e2358c8b9f164d5683899f886d9",
+      "console_sha256": "a2cce717f053573b2cfb0b877507e55743ce7984cb083455dd8f4e2119b2c9cf"
+    },
+    {
+      "attempt": 15,
+      "runtime_revision": "5a2dc2749",
+      "result": "PASS: make gate-x86_64-linux-login, fresh stock-derived raw disk, 300-second timeout",
+      "root_task_elf_sha256": "5b4ab5743fae643a2a17d70ec66eca9616eaac0e9e712a240163e6dce6ccc65e",
+      "initrd_sha256": "b8fe1f2cf64fd4a968a0bfae9855b2c77a2c9010b22987322f151b593413550f",
+      "command_line": "console=hvc0 root=UUID=df4df5bb-613a-4382-8cf9-653304605a1f rw rootwait net.ifnames=0 biosdevname=0 panic=0",
+      "command_line_sha256": "c03169c91e93f9abbbe31ba270cd69086fea2567f2b6b8e129ea36d22c2aaa00",
+      "condition": "Native stdio reservation and console hooks; no debug or udev.log_level override",
+      "gate_log_sha256": "b7401a4e95ca3cf5a976d2a252614d2e89d7dee8a10a2f5976cc7c22984c0b34",
+      "console_sha256": "7e11f4def128f3d4fda37800cd5c17a02787e51d82cd9a7475e56fdadd715585"
+    }
+  ],
+  "handoff_diagnosis": {
+    "upstream_source": "https://github.com/systemd/systemd/blob/v257/src/udev/udevd.c",
+    "finding": "When /init starts without an initial console, standard descriptors may be missing. Udev initializes manager sockets before make_null_stdio, which runs only below debug log level. Reserving missing stdio before invoking stock udev removes the observed handoff failure without skipping stock shutdown.",
+    "successful_trace": "Attempt 12 memory dump at 0xa10b000 records udev PING and EXIT, console nodes verified, successful run-init validation and exec of /sbin/init",
+    "ssh_failure": "Attempt 12 retained guest memory contains sshd: no hostkeys available -- exiting. Provisioning remains required."
+  },
   "regressions": {
+    "stdio_spark_gate_result": "PASS: full make gate with descriptor reservation helper source at 5a2dc27",
+    "stdio_spark_gate_log_sha256": "5d84cee1a3e1e8adbe3c93b48e76a461c4ffefb66ef8a90e5cc4f100a0832afc",
     "spark_gate_revision": "9b33a33911df567deb45d58b175337d95f8fe38f",
     "spark_gate_result": "PASS: full make gate including host tests, architecture smoke boots and guest net/block/console checks",
     "spark_gate_log_sha256": "727c7ca2d20b1bbe138dfc867a47f5c66af52fe42a2c99019e51ff524cd7cef0",
@@ -82,9 +125,9 @@
   },
   "retained_directory": "build/evidence/x86-debian-login",
   "limitations": [
-    "Debian initramfs userspace and root mount are observed; login, networking, SSH and lifecycle qualification remain unproven",
+    "Debian root mount and console login prompt are observed; networking, SSH and lifecycle qualification remain unproven",
     "The 1 GiB experiment did not establish that memory shortage caused the empty console",
     "The harness still accepts explicit artifact arguments; x86 guest-profile consumption is pending",
-    "No release claim; the login gate remains failing"
+    "No release claim; full profile acquisition, provisioning and release qualification remain incomplete"
   ]
 }
