@@ -1,0 +1,29 @@
+{
+  "qualification": "Notify published guest block completions while other I/O continues",
+  "runtime_revision": "f7f34c30105438bf63685f359ad3a8a14db152ca",
+  "host": "Spark AArch64",
+  "regression": {
+    "scenario": "Three ordinary reads with two transfer cells. Completing the first read frees a cell and admits the third; the first used entry must notify the guest before either later read completes.",
+    "before": "Production backend test failed the interrupt-count assertion",
+    "before_log_sha256": "8ca738bfaf30da26ff14feb362465726c63de207c9fe1b44d5dee49e9de19d9d",
+    "after": "PASS for successful and failed first reads; separate partial-chunk test proves no early interrupt and one final-completion interrupt",
+    "after_log_sha256": "66ed98c8467acbd0927a6fd6391faa3a30a2d4665d60cf92fa3a9ebe53246d46"
+  },
+  "gate": {
+    "command": "make gate QEMU_TEST_SSH_PORT=12229",
+    "result": "PASS, followed by target drain test in successful exit-0 pipeline",
+    "log_sha256": "37c34403580e987687ffdaaa08c6bdab8ae3ad0250bcf22acf6eb4df04a1974f"
+  },
+  "target_drain": {
+    "command": "make test-guest-block-drain",
+    "result": "PASS: accepted pending request completed with empty queues and interrupts suppressed during drain",
+    "qemu_log_stem": "agentos-qemu-z1nsXV",
+    "log_sha256": "4307c0ca5f719e2549d9ef6ba1eb8bbe998aa36528c416369eaea9a1727ce855"
+  },
+  "limits": [
+    "The three-request interrupt assertion is a host test of the production backend with interrupt injection mocked.",
+    "The OS gate and drain test prove target regressions pass, not an on-target interrupt-latency bound.",
+    "Intel Debian SSH regression is pending.",
+    "This is not yet established as the cause or fix of the seeded Debian second-boot failure; no persistence or performance improvement claim."
+  ]
+}
