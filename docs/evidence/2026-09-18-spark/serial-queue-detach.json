@@ -1,0 +1,38 @@
+{
+  "qualification": "Terminal serial guest queue detach before ARM capability revocation",
+  "runtime_revision": "82897ae2dc896ac9a8e57bfe9759b6be89b83711",
+  "host": "Spark AArch64",
+  "source_clean_during_tests": true,
+  "pipeline_result": "PASS, exit 0",
+  "gate": {
+    "command": "make gate QEMU_TEST_SSH_PORT=12229",
+    "log_sha256": "9be59c7183ae8e054a999b6ba0063b3996d2ab1de3968ade1bf9f9af0337247d"
+  },
+  "host_tests": [
+    "Production serial service rejects wrong owner, frontend/operator role, short request and wrong version without changing attachments",
+    "Terminal detach clears guest pointers and frontend attachment despite unread or malformed terminal queues",
+    "Repeated detach and late pumping survive PROT_NONE on retired guest memory while peer and operator bytes transfer exactly",
+    "Teardown waits for serial detach before any capability revocation and does not repeat completed detach stages"
+  ],
+  "target_teardown": {
+    "command": "make test-guest-teardown QEMU_TEST_SSH_PORT=12229",
+    "result": "PASS: live Ubuntu console, network/block/serial detach acknowledgments, execution/RAM/paging revocation and stale public-handle rejection",
+    "qemu_pid": 333024,
+    "qemu_log_stem": "agentos-qemu-x4sJ85",
+    "log_sha256": "6255729867399ce808d05c47b393986e35d9633ca261c555ab0c29ce6d5e94e3"
+  },
+  "operator_regression": {
+    "command": "make test-operator-session QEMU_TEST_SSH_PORT=12229",
+    "result": "PASS in a separate image: fragmented requests, error recovery, 128 exact reports after backpressure and public CLI",
+    "qemu_pid": 336044,
+    "qemu_log_stem": "agentos-qemu-l6INzZ",
+    "log_sha256": "311f1d0eadbf9b658419f7b40356ee044873c1b55cdb69de4577c2e1f2d1e456"
+  },
+  "limits": [
+    "Unread terminal bytes may be abandoned at destruction; no lossless viewer-drain claim",
+    "Serial queue-page capabilities remain allocated and guest recreation remains unavailable",
+    "Post-detach peer/operator continuity with protected former guest memory is a host proof, not a concurrent target proof",
+    "Intel Debian SSH regression is running separately; no result asserted here",
+    "Required GitHub checks, canonical integration and release qualification remain pending"
+  ]
+}
