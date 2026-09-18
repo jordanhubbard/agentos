@@ -1,15 +1,24 @@
 #include "platform/x86_apic.h"
 
-void aos_x86_apic_init(aos_x86_apic_t *a, uint64_t ticks)
+bool aos_x86_apic_init_cpu(aos_x86_apic_t *a, uint64_t ticks,
+                           unsigned id, bool bootstrap)
 {
+    if (!a || id >= 255u) return false;
     *a = (aos_x86_apic_t){.svr=0xff, .lvt_timer=0x10000,
         .lint0=0x10000, .lint1=0x10000, .dfr=UINT32_MAX,
-        .lvt_thermal=0x10000, .lvt_perf=0x10000, .lvt_error=0x10000, .now=ticks};
+        .lvt_thermal=0x10000, .lvt_perf=0x10000, .lvt_error=0x10000, .now=ticks,
+        .id=(uint8_t)id, .bootstrap=bootstrap};
+    return true;
 }
-bool aos_x86_apic_msr(bool write, uint64_t *value)
+void aos_x86_apic_init(aos_x86_apic_t *a, uint64_t ticks)
 {
-    if (!value) return false;
-    const uint64_t fixed = AOS_X86_APIC_BASE | 0x900u; /* enabled, BSP, xAPIC */
+    (void)aos_x86_apic_init_cpu(a,ticks,0u,true);
+}
+bool aos_x86_apic_msr(const aos_x86_apic_t *a, bool write, uint64_t *value)
+{
+    if (!a || !value) return false;
+    const uint64_t fixed = AOS_X86_APIC_BASE | 0x800u |
+        (a->bootstrap ? 0x100u : 0u); /* enabled, explicit BSP, xAPIC */
     if (write) return *value == fixed; /* no relocation or x2APIC transition */
     *value = fixed; return true;
 }
@@ -75,7 +84,7 @@ bool aos_x86_apic_route(aos_x86_apic_t *a, unsigned vector,
     bool target=destination==255u || (logical ?
         (a->dfr==UINT32_MAX ? (destination & local)!=0 :
          (destination >> 4)==(local >> 4) && (destination & local & 15u)!=0) :
-        destination==0u);
+        destination==a->id);
     if (!target) return false;
     a->irr[vector/32] |= 1u << (vector%32);
     if (level) a->irr_level[vector/32] |= 1u << (vector%32);
@@ -102,7 +111,7 @@ bool aos_x86_apic_io(aos_x86_apic_t *a, unsigned off, bool write,
     advance(&next,ticks);
     uint32_t *reg = 0, mask = 0;
     switch (off) {
-    case 0x20: if (write) return false; *value=0; break; /* APIC ID 0 */
+    case 0x20: if (write) return false; *value=(uint32_t)a->id << 24; break;
     case 0x30: if (write) return false; *value=0x00050014; break;
     case 0x80: reg=&next.tpr; mask=0xff; break;
     case 0xd0: reg=&next.ldr; mask=0xff000000u; break;
@@ -136,7 +145,7 @@ bool aos_x86_apic_io(aos_x86_apic_t *a, unsigned off, bool write,
             unsigned shortcut=(*value >> 18)&3u, dest=next.icr_high >> 24;
             if (shortcut!=3u)
                 (void)aos_x86_apic_route(&next,*value & 255u,
-                    shortcut ? 0u : dest,!shortcut && (*value & 0x800u),false);
+                    shortcut ? next.id : dest,!shortcut && (*value & 0x800u),false);
             next.icr_low=*value; /* delivery completes synchronously */
         }
         break;

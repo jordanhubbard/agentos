@@ -1238,7 +1238,7 @@ _Noreturn void aos_x86_firmware_run(seL4_CPtr ep, aos_x86_vmenter_entry_t entry)
         } else if ((reason == 31u || reason == 32u) && len == 2u &&
                    (uint32_t)regs.ecx == 0x1bu) {
             uint64_t value = ((uint64_t)(uint32_t)regs.edx << 32) | (uint32_t)regs.eax;
-            if (!aos_x86_apic_msr(reason == 32u, &value))
+            if (!aos_x86_apic_msr(&apic, reason == 32u, &value))
                 gp=true;
             else if (reason == 31u) { regs.eax=(uint32_t)value; regs.edx=value >> 32; }
         } else if ((reason == 31u || reason == 32u) && len == 2u) {

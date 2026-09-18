@@ -20,6 +20,15 @@ delivery and mapping-isolation qualification remain pending.
 
 ## Privilege
 
+LAPIC state now carries an immutable physical APIC ID and bootstrap flag.
+APIC ID reads, physical interrupt routing, self-IPIs and the APIC-base MSR
+use that context rather than assuming CPU zero. Host tests cover all usable
+xAPIC IDs, broadcast-ID rejection and isolation between destination contexts.
+The firmware runtime still provisions one bootstrap CPU. Additional native
+execution contexts, thread-safe IPC buffers, INIT/SIPI and lifecycle integration
+remain required before admitting multi-vCPU profiles; these host checks do
+not establish multi-CPU guest execution.
+
 The x86 firmware profile binder enforces CPU-feature requests against the
 synthetic CPUID model before VM entry. Its fixed baseline exposes x87 (FP)
 and SSE/SSE2 (SIMD); crypto (AES/PCLMUL), RNG (RDRAND/RDSEED), AVX-family

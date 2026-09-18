@@ -12,11 +12,17 @@ typedef struct {
     uint32_t irr[8], isr[8];
     uint32_t irr_level[8], tmr[8];
     bool invalid_vector;
+    uint8_t id;
+    bool bootstrap;
 } aos_x86_apic_t;
 /* One virtual APIC bus tick per invariant host TSC tick. Clock never advances
  * from exit counts. No external interrupt sources or host APIC access. */
 void aos_x86_apic_init(aos_x86_apic_t *a, uint64_t ticks);
-bool aos_x86_apic_msr(bool write, uint64_t *value);
+/* Identity belongs to an already provisioned CPU. ID 255 is broadcast-only.
+ * Invalid input leaves the object unchanged; callers enforce unique IDs. */
+bool aos_x86_apic_init_cpu(aos_x86_apic_t *a, uint64_t ticks,
+                           unsigned id, bool bootstrap);
+bool aos_x86_apic_msr(const aos_x86_apic_t *a, bool write, uint64_t *value);
 bool aos_x86_apic_io(aos_x86_apic_t *a, unsigned offset, bool write,
                      uint32_t *value, uint64_t ticks);
 /* Observational pending-interrupt check; does not advance state. */

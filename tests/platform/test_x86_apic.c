@@ -16,15 +16,55 @@ static void rejected(aos_x86_apic_t *a, unsigned off, bool write, uint32_t v, ui
     assert(!aos_x86_apic_io(a,off,write,&value,t));
     assert(value==v && !memcmp(a,&before,sizeof(before)));
 }
+static void cpu_identity_and_destination_isolation(void)
+{
+    for (unsigned id=0; id<255u; id++) {
+        aos_x86_apic_t cpu, peer;
+        assert(aos_x86_apic_init_cpu(&cpu,100u,id,false));
+        assert(aos_x86_apic_init_cpu(&peer,100u,(id+1u)%255u,false));
+        assert(apic_io(&cpu,0x20,false,0,100)==id<<24);
+        rejected(&cpu,0x20,true,0,100);
+        uint64_t msr=0;
+        assert(aos_x86_apic_msr(&cpu,false,&msr) && msr==0xfee00800);
+        assert(aos_x86_apic_msr(&cpu,true,&msr));
+        msr|=0x100;
+        assert(!aos_x86_apic_msr(&cpu,true,&msr) && msr==0xfee00900);
+        apic_io(&cpu,0xf0,true,0x1ff,100);
+        apic_io(&peer,0xf0,true,0x1ff,100);
+        aos_x86_apic_t before=peer;
+        assert(!aos_x86_apic_route(&peer,0x40,id,false,false));
+        assert(!memcmp(&peer,&before,sizeof(peer)));
+        assert(aos_x86_apic_route(&cpu,0x40,id,false,false));
+        assert(aos_x86_apic_pending(&cpu,100)==0x40);
+        assert(!aos_x86_apic_pending(&peer,100));
+        /* Self IPI uses this CPU's identity even when the high destination
+         * names a different CPU. No shared interrupt state is touched. */
+        apic_io(&cpu,0x310,true,(uint32_t)peer.id<<24,100);
+        apic_io(&cpu,0x300,true,(1u<<18)|0x41,100);
+        assert(aos_x86_apic_pending(&cpu,100)==0x41);
+        assert(!aos_x86_apic_pending(&peer,100));
+        assert(aos_x86_apic_route(&cpu,0x42,255u,false,false));
+        assert(aos_x86_apic_pending(&cpu,100)==0x42);
+        before=cpu;
+        assert(!aos_x86_apic_init_cpu(&cpu,0,255u,false));
+        assert(!aos_x86_apic_init_cpu(&cpu,0,256u,false));
+        assert(!memcmp(&cpu,&before,sizeof(cpu)));
+    }
+    assert(!aos_x86_apic_init_cpu(NULL,0,0,false));
+    uint64_t value=0;
+    assert(!aos_x86_apic_msr(NULL,false,&value));
+}
+
 int main(void)
 {
+    cpu_identity_and_destination_isolation();
     aos_x86_apic_t a,b;
     aos_x86_apic_init(&a, 100);
     aos_x86_apic_init(&b, 100);
     uint64_t msr=0;
-    assert(aos_x86_apic_msr(false,&msr) && msr==0xfee00900);
-    assert(aos_x86_apic_msr(true,&msr));
-    msr|=0x400; assert(!aos_x86_apic_msr(true,&msr));
+    assert(aos_x86_apic_msr(&a,false,&msr) && msr==0xfee00900);
+    assert(aos_x86_apic_msr(&a,true,&msr));
+    msr|=0x400; assert(!aos_x86_apic_msr(&a,true,&msr));
     assert(apic_io(&a,0x20,false,0,100)==0);
     assert(apic_io(&a,0x30,false,0,100)==0x50014);
     assert(apic_io(&a,0x320,false,0,100)==0x10000);
