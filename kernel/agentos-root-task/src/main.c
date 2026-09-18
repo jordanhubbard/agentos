@@ -226,7 +226,7 @@ static seL4_Word g_cap_base;  /* set to bi->empty.start in root_task_main */
  * the VMM thread's buffer — seL4 forbids two TCBs on one IPC page, and a
  * guest VMFault would clobber in-flight VMM syscalls. L1 for
  * [0x10000000, 0x11FFFFF] is already installed with the VMM IPC mapping. */
-#define VMM_GUEST_IPC_BUF_VA      0x0000000010002000UL
+#define VMM_GUEST_IPC_BUF_VA      AOS_GUEST_IPC_BUFFER_VA
 
 /* Active PD scheduling defaults.
  *

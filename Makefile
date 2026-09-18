@@ -800,6 +800,12 @@ test-x86-firmware-build:
 test-host: policy-check guest-profile-check lint-source test-integration test-operator-host test-log-ring-host test-framebuffer-host
 test-host: test-x86-cpu-host
 test-host: test-guest-scheduling-host test-guest-gic-mapping-host test-guest-paging-host test-net-rx-accounting-host
+test-host: test-guest-execution-host
+.PHONY: test-guest-execution-host
+test-guest-execution-host:
+	@mkdir -p $(BUILD_TMP_DIR)
+	$(CC) -std=c11 -Wall -Wextra -Werror -DAGENTOS_TEST_HOST -DCONFIG_KERNEL_MCS -I tests/platform/execution-stubs -I platform/include -I kernel/agentos-root-task/include tests/platform/test_guest_execution.c platform/guest-ram/vmm_guest_execution.c -o $(BUILD_TMP_DIR)/test_guest_execution
+	@$(BUILD_TMP_DIR)/test_guest_execution
 .PHONY: test-net-rx-accounting-host
 test-net-rx-accounting-host:
 	@mkdir -p $(BUILD_TMP_DIR)
@@ -1382,6 +1388,8 @@ test-guest-queue-recycle:
 
 .PHONY: test-guest-paging-recycle
 test-guest-paging-recycle: test-guest-queue-recycle
+.PHONY: test-guest-execution-recycle
+test-guest-execution-recycle: test-guest-queue-recycle
 
 test-console-backpressure:
 	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os ubuntu --timeout-secs $(QEMU_TEST_TIMEOUT) --assert-emulated-console --assert-console-backpressure --ssh-port $(QEMU_TEST_SSH_PORT)
