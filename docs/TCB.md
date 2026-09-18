@@ -25,8 +25,14 @@ uses the shared guest lifecycle state machine. SUSPEND keeps the native VMM
 thread in its IPC loop; RESUME permits VM entry again with the saved exit
 state. DESTROY drains/detaches devices and revokes private resources, with
 failed cleanup remaining non-resumable. The virtual clock continues during
-suspension. This board still auto-boots; managed CREATE/admission and external
-manager/CC/GUI integration are outstanding.
+suspension. The default firmware composition auto-boots through the lifecycle
+handler. The managed variant instead waits for CREATE/BOOT before its first
+VM entry, retaining reset-entry inputs in native memory across startup IPC.
+Its ordinary `vm_manager` PD receives only the VMM service endpoint, with no
+device, IRQ, guest-memory or execution capability. It rejects RAM requests
+above the provisioned capacity and reports the actual VMM alias and guest
+physical base. The qualification client exercises this manager before allowing
+Linux to run. External CC/GUI integration and guest recreation remain outstanding.
 
 The userspace qualification adds `x86_lifecycle_probe`, an ordinary client
 with its VMM service endpoint and a send-only failure-report cap. Root rejects

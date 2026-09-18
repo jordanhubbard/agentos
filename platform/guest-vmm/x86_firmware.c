@@ -459,9 +459,9 @@ _Noreturn void aos_x86_firmware_run(seL4_CPtr ep, aos_x86_vmenter_entry_t entry)
      * suspend/resume sequence and commits to receiving the next phase. */
 #endif
 #ifndef AGENTOS_X86_MANAGED_START
-    const sel4_msg_t boot = {.opcode = MSG_GUEST_BOOT, .length = 4u};
+    const sel4_msg_t boot_request = {.opcode = MSG_GUEST_BOOT, .length = 4u};
     sel4_msg_t boot_reply = {0};
-    if (!aos_guest_vmm_lifecycle_rpc(&boot, &boot_reply, &runtime) ||
+    if (!aos_guest_vmm_lifecycle_rpc(&boot_request, &boot_reply, &runtime) ||
         boot_reply.opcode != GUEST_OK || !lifecycle_started)
         stop(ep, AOS_X86_VTX_PROOF_FAIL, 0x424f54u, 0u, boot_reply.opcode);
 #endif
