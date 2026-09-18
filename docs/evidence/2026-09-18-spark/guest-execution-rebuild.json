@@ -1,0 +1,32 @@
+{
+  "qualification": "Private ARM guest execution object reconstruction",
+  "runtime_revision": "b5c14e57d15f478047c5d9194c9fcf971698b5c8",
+  "host": "Spark AArch64",
+  "source_clean_during_tests": true,
+  "pipeline_result": "PASS, exit 0",
+  "target": {
+    "command": "make test-guest-execution-recycle QEMU_TEST_SSH_PORT=12237",
+    "log_sha256": "95aa2cd6ef56be4602d15e22b142d47d6974893752759e011de8c52a095594fd",
+    "serial_log_sha256": "bb6c173c970a3b71aae20eec210e84fc8270090c3dfa0d46f22a125fc59ed031",
+    "agentos_image_sha256": "51dca9b26b3fd6fb9e12a1b4a1cac60dcf4c470b0981161b41d309ab785e7539",
+    "qemu_pid": 1906970,
+    "qemu_log_stem": "agentos-qemu-pcyDPE",
+    "result": "After guest console I/O and destruction, two fresh VSpace and execution-object cycles passed: IPC mapping, stopped TCB register zero/read/write checks, VCPU binding, manager capability publication and stale local capability rejection"
+  },
+  "gate": {
+    "command": "make gate QEMU_TEST_SSH_PORT=12237",
+    "result": "PASS after target test",
+    "log_sha256": "178833a2e4f8f141c96f97b2551725193d561663d27d73d274f150f55fdf9c8e"
+  },
+  "host_tests": [
+    "Exact private pool, CSpace, VSpace, IPC mapping and exchange authority",
+    "Fresh stopped object configuration and publication with retained fault endpoint",
+    "Every reconstruction operation failure, failed release and recovery after cleanup"
+  ],
+  "limits": [
+    "Reconstructed objects remain stopped; no recreated guest execution is claimed",
+    "Manager scheduling and GIC mapping into the recreated VSpace are not exercised by this probe",
+    "Service reattachment, guest image restoration and production reset remain outstanding",
+    "Secondary placement, Intel VMX reconstruction, required CI and canonical integration remain pending"
+  ]
+}

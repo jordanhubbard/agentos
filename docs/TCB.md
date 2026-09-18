@@ -72,8 +72,10 @@ Failed reconstruction requires execution and paging revocation before retry.
 Host tests cover every operation failure and recovery. The
 `test-guest-execution-recycle` target extends paging recycling with two sets of
 fresh objects, stopped register read/write checks and stale-cap rejection.
-Target qualification is pending; service reattachment, image restoration and
-the production reset callback remain outstanding.
+The target and full gate passed on Spark at `b5c14e5`;
+[the receipt](evidence/2026-09-18-spark/guest-execution-rebuild.json) records
+the stopped-object scope. Service reattachment, image restoration and the
+production reset callback remain outstanding.
 
 ARM `vm_manager` now configures guest scheduling between the VMM's CREATE
 reply and its BOOT call. Root gives each VMM a private capability exchange
