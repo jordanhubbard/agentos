@@ -2,6 +2,7 @@
 #include "contracts/guest_execution_caps.h"
 #include "contracts/guest_ram_caps.h"
 #include "contracts/guest_paging_caps.h"
+#include "contracts/guest_queue_caps.h"
 #include <sel4/sel4.h>
 #include <assert.h>
 #include <stdio.h>
@@ -19,6 +20,8 @@ static unsigned serial_detach_calls;
 static bool input_detach_done;
 static unsigned input_detach_calls;
 static unsigned paging_revokes;
+static unsigned queue_revokes[AOS_GUEST_QUEUE_POOL_COUNT];
+static bool queue_fails;
 static unsigned net_calls, input_calls, console_calls, block_calls, gpu_calls;
 static unsigned revokes, releases;
 static volatile unsigned char *ram;
@@ -50,6 +53,16 @@ seL4_Error seL4_CNode_Revoke(seL4_CPtr root, seL4_Word slot, uint8_t depth)
     assert(block_detach_done);
     assert(serial_detach_done);
     assert(input_detach_done);
+    if (slot >= AOS_GUEST_QUEUE_POOL_BASE &&
+        slot < AOS_GUEST_QUEUE_POOL_BASE + AOS_GUEST_QUEUE_POOL_COUNT) {
+        unsigned index = slot - AOS_GUEST_QUEUE_POOL_BASE;
+        assert(caps_live && !revokes && !releases);
+        for (unsigned i = 0; i < index; i++) assert(queue_revokes[i] > 0);
+        queue_revokes[index]++;
+        return queue_fails && index == AOS_GUEST_QUEUE_BLOCK ? 1 : seL4_NoError;
+    }
+    for (unsigned i = 0; i < AOS_GUEST_QUEUE_POOL_COUNT; i++)
+        assert(queue_revokes[i] == (i == AOS_GUEST_QUEUE_BLOCK ? 2u : 1u));
     if (slot == AOS_GUEST_PAGING_POOL_CAP) {
         assert(!caps_live && releases == 2 && !ram_fails);
         paging_revokes++;
@@ -103,6 +116,12 @@ int main(void)
     assert(state.serial_detached && !state.input_detached && !revokes);
     assert(serial_detach_calls == 2 && input_detach_calls == 1);
     input_detach_done = true;
+    queue_fails = true;
+    assert(!aos_guest_teardown_step(&state, page_size));
+    assert(state.input_detached && state.queue_pools_released == 1);
+    assert(queue_revokes[0] == 1 && queue_revokes[1] == 1);
+    assert(!queue_revokes[2] && !queue_revokes[3] && !revokes && !releases);
+    queue_fails = false;
     revoke_fails = true;
     assert(!aos_guest_teardown_step(&state, page_size));
     assert(state.devices_quiesced && !state.execution_released && !releases);
@@ -126,6 +145,7 @@ int main(void)
     assert(state.block_detached && block_detach_calls == 2);
     assert(state.serial_detached && serial_detach_calls == 2);
     assert(state.input_detached && input_detach_calls == 2);
+    assert(state.queue_pools_released == AOS_GUEST_QUEUE_POOL_COUNT);
     assert(net_calls == device_calls && input_calls == device_calls &&
            console_calls == device_calls && block_calls == device_calls);
     assert(munmap((void *)ram, page_size) == 0);

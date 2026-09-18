@@ -12,6 +12,7 @@
 #include "contracts/guest_execution_caps.h"
 #include "contracts/guest_ram_caps.h"
 #include "contracts/guest_paging_caps.h"
+#include "contracts/guest_queue_caps.h"
 #include <sel4/sel4.h>
 
 bool aos_guest_teardown_step(aos_guest_teardown_t *state, size_t ram_size)
@@ -50,6 +51,16 @@ bool aos_guest_teardown_step(aos_guest_teardown_t *state, size_t ram_size)
         if (!aos_vmm_virtio_input_detach()) return false;
 #endif
         state->input_detached = true;
+    }
+    unsigned queue_count = AOS_GUEST_QUEUE_INPUT;
+#ifdef AGENTOS_GUEST_INPUT
+    queue_count = AOS_GUEST_QUEUE_POOL_COUNT;
+#endif
+    while (state->queue_pools_released < queue_count) {
+        if (seL4_CNode_Revoke(AOS_GUEST_RAM_SELF_CNODE,
+                AOS_GUEST_QUEUE_POOL_BASE + state->queue_pools_released,
+                AOS_GUEST_RAM_CNODE_BITS) != seL4_NoError) return false;
+        state->queue_pools_released++;
     }
     if (!state->execution_released) {
         if (seL4_CNode_Revoke(AOS_GUEST_RAM_SELF_CNODE,

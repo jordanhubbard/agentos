@@ -749,6 +749,9 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
         if args.assert_guest_ram_recycle {
             make_args.push(String::from("GUEST_RAM_RECYCLE_TEST=1"));
         }
+        if args.assert_guest_queue_recycle {
+            make_args.push(String::from("GUEST_QUEUE_RECYCLE_TEST=1"));
+        }
         if args.assert_guest_block_drain {
             make_args.push(String::from("GUEST_BLOCK_DRAIN_TEST=1"));
         }
@@ -1570,6 +1573,14 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
             .is_some_and(|p| p.devices.iter().any(|d| d == "input"));
         result = verify_guest_teardown(&cc_sock, &log_path, &mut qemu, input_detach_required)
             .map(|proof| format!("{}; {proof}", result.as_deref().unwrap()));
+    }
+    if result.is_ok() && args.assert_guest_queue_recycle {
+        result = wait_for_all_markers(
+            &log_path,
+            &["guest queue recycle: zero pages and stale caps verified"],
+            Duration::from_secs(10),
+            &mut qemu,
+        );
     }
 
     let mut desktop_evidence = None;
@@ -5721,6 +5732,7 @@ fn verify_guest_teardown(
         "guest teardown: network queues detached",
         "guest teardown: block queues detached",
         "guest teardown: serial queues detached",
+        "guest teardown: private queue pages revoked",
     ];
     if input_detach_required {
         markers.push("guest teardown: input queues detached");

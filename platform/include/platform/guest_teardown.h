@@ -3,6 +3,7 @@
 
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdint.h>
 
 /* ARM terminal teardown. The caller must stop guest execution and enter
  * DESTROYING first. False requires another call while servicing device
@@ -19,6 +20,7 @@ typedef struct aos_guest_teardown {
     bool block_detached;
     bool serial_detached;
     bool input_detached;
+    uint8_t queue_pools_released;
     bool execution_released;
     bool ram_released;
     bool paging_released;
