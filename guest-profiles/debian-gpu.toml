@@ -25,3 +25,19 @@ host_port = 12224
 probe_line = "modprobe virtio_gpu && test -e /dev/dri/card0 && test -c /dev/fb0 && printf '\\021\\042\\063\\000\\104\\125\\146\\000' | dd of=/dev/fb0 bs=1 seek=819200 conv=notrunc status=none && sleep 1 && printf 'agentos-debian-gpu-%s\\n' ready"
 probe_marker = "agentos-debian-gpu-ready"
 probe_timeout_secs = 180
+
+[[host.test]]
+action = "wait-console"
+args = { marker = "# " }
+
+[[host.test]]
+action = "assert-virtio"
+args = { devices = "net,block,console", scope = "host-backed", console_io = "bidirectional" }
+
+[[host.test]]
+action = "wait-ssh"
+args = { account = "root", marker = "Linux" }
+
+[[host.test]]
+action = "assert-frame-pixels"
+args = { x = "0", y = "200", rgb = "332211665544" }

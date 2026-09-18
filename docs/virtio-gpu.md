@@ -1,5 +1,15 @@
 # Guest virtio-gpu backend
 
+Graphics profiles can require exact captured pixels with a `host.test` action
+`assert-frame-pixels`. Its `x` and `y` string arguments identify the first
+pixel, and `rgb` contains 1 through 16 contiguous RGB hex triples in that row.
+Coordinates and colors are validated before launch; frame dimensions and
+every expected color are checked after immutable capture. The Debian GPU
+profile requires the two colors written by its fb0 console probe at (0, 200),
+and the combined graphics/input profile inherits that assertion. A wrong
+pixel fails qualification even when the image is otherwise nonblack.
+Successful frame receipts include the number of asserted pixels.
+
 This work implements the unaccelerated 2D command engine and libvmm MMIO
 registration entry point for the v0.4 guest graphics path. The protocol is
 [VirtIO 1.2 section 5.7](https://docs.oasis-open.org/virtio/virtio/v1.2/virtio-v1.2.html).

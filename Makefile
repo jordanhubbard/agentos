@@ -106,6 +106,7 @@ QEMU_TEST_TIMEOUT ?= 300
 # Zero keeps the profile's normal forwarding port.
 QEMU_TEST_SSH_PORT ?= 0
 QEMU_TEST_GPU_SSH_PORT ?= 12224
+GUEST_LINUX_CC ?= aarch64-linux-gnu-gcc
 # Correct suspend accounting freezes each guest's architectural time while it
 # is stopped.  A full vendor-live-media dual proof can therefore take longer
 # than the old 90-minute bound that accidentally included a clock jump.
@@ -716,6 +717,17 @@ test-input-host:
 	$(ROOT_DIR)build/tmp/test_input_queue
 	$(CC) -std=gnu11 -Wall -Wextra -Werror -Wno-unused-parameter -I tests/platform/mmio-stubs -I platform/include -I libvmm/include tests/platform/test_virtio_input.c libvmm/src/virtio/input.c libvmm/src/virtio/mmio.c libvmm/src/virtio/gpa.c platform/input-virt/service.c -o $(BUILD_TMP_DIR)/test_virtio_input
 	$(BUILD_TMP_DIR)/test_virtio_input
+	$(CC) -std=c11 -Wall -Wextra -Werror -DAGENTOS_TEST_HOST -I platform/include -I kernel/agentos-root-task/include tests/platform/test_agentctl_input.c platform/input-virt/service.c platform/inspect/inspect_snapshot.c -o $(BUILD_TMP_DIR)/test_agentctl_input
+	$(BUILD_TMP_DIR)/test_agentctl_input
+ifeq ($(UNAME_S),Linux)
+	$(CC) -std=c11 -Wall -Wextra -Werror tests/platform/test_guest_input_probe.c -o $(BUILD_TMP_DIR)/test_guest_input_probe
+	$(BUILD_TMP_DIR)/test_guest_input_probe
+endif
+
+.PHONY: guest-input-probe
+guest-input-probe:
+	@mkdir -p $(BUILD_TMP_DIR)
+	$(GUEST_LINUX_CC) -static -O2 -std=c11 -Wall -Wextra -Werror tests/guest/input_probe.c -o $(BUILD_TMP_DIR)/guest-input-probe-aarch64
 
 .PHONY: test-agentctl-frame-host
 test-agentctl-frame-host:
@@ -960,6 +972,10 @@ test-ubuntu-virtio:
 .PHONY: test-debian-live
 .PHONY: test-guest-gpu
 .PHONY: test-guest-input
+.PHONY: test-guest-graphics-input
+test-guest-graphics-input:
+	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os debian-graphics-input --timeout-secs $(QEMU_TEST_TIMEOUT) --assert-live --assert-agentos-virtio --ssh-port $(QEMU_TEST_SSH_PORT)
+
 test-guest-input:
 	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os debian-input --timeout-secs $(QEMU_TEST_TIMEOUT) --assert-live --assert-agentos-virtio --ssh-port $(QEMU_TEST_SSH_PORT)
 

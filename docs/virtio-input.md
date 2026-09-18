@@ -52,6 +52,38 @@ fails closed if the backend is absent or fails. `debian-input.toml` selects
 this path independently of GPU support. `make test-guest-input` requires both
 Linux input device names as part of the live guest probe.
 
+The live test additionally builds `tests/guest/input_probe.c` with
+`make guest-input-probe` (override `GUEST_LINUX_CC` for the AArch64 Linux
+cross compiler). After authenticated SSH provisioning, it uploads the static
+helper to the disposable root-account guest. The helper discovers and grabs
+both evdev devices before announcing readiness. The host then sends four
+batches through the public `agentctl` command. The helper requires exact F13
+press/release, relative X/Y/wheel motion, left-button press/release and
+SYN_REPORT boundaries. Unexpected or trailing events fail the proof.
+Successful runs retain an `.input.json` receipt beside the serial log; host
+tests and compilation alone do not create a passing target receipt.
+
+`make test-guest-graphics-input QEMU_TEST_TIMEOUT=1800` selects
+`debian-graphics-input.toml` and requires graphics capture and exact evdev
+delivery in the same boot. It enables both canonical backends, loads both
+Linux drivers, writes the graphics probe pixels, captures an immutable frame,
+authenticates SSH and runs the keyboard/pointer helper. Its default SSH port
+is 12235; `QEMU_TEST_SSH_PORT` overrides it. This combined qualification is
+pending, and does not establish physical scanout or physical input ownership.
+
+External clients can submit a packet with:
+
+```text
+CC_PD_SOCK=/path/to/cc.sock tools/agentctl/agentctl --batch input-batch 0 keyboard 1 183 1
+CC_PD_SOCK=/path/to/cc.sock tools/agentctl/agentctl --batch input-batch 0 keyboard 1 183 0
+```
+
+Each command takes a public guest handle, `keyboard` or `pointer`, then one
+or more numeric TYPE/CODE/VALUE triples. The CLI appends SYN_REPORT and
+prints structured status and accepted-event count. Signed relative motion is
+supported. A nonzero exit signals invalid arguments, rejected input or a
+transport failure; the CLI never automatically retries stateful batches.
+
 `MSG_CC_INPUT_SUBMIT` accepts a public guest handle and a complete event batch.
 CC resolves the handle before passing a private client index to the service,
 validates the returned count/status, and reports whole-batch backpressure.

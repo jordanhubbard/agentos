@@ -25,6 +25,7 @@
 #include <platform/inspect.h>
 #include <platform/operator_session.h>
 #include <platform/framebuffer_observer.h>
+#include <platform/input.h>
 
 #define AGENTCTL_VERSION "0.2.0"
 #define DEFAULT_CC_SOCK "build/cc_pd.sock"
@@ -61,6 +62,7 @@ static void usage(FILE *out)
             "  log-stream SLOT PD_ID\n"
             "  fb-attach GUEST_HANDLE FB_HANDLE\n"
             "  frame-capture GUEST_HANDLE OUTPUT.ppm\n"
+            "  input-batch GUEST_HANDLE keyboard|pointer TYPE CODE VALUE [TYPE CODE VALUE ...]\n"
             "  send-input GUEST_HANDLE KEYCODE\n"
             "  suspend GUEST_HANDLE\n"
             "  resume GUEST_HANDLE\n"
@@ -407,6 +409,41 @@ static int cmd_simple(uint32_t opcode, uint32_t mr1, uint32_t mr2, uint32_t mr3)
     return r.mr[0] == CC_OK ? 0 : 1;
 }
 
+static int cmd_input_batch(int argc,char **argv)
+{
+    if (argc<5 || (argc-2)%3 || (unsigned)(argc-2)/3>=AOS_INPUT_BATCH_EVENTS) return 2;
+    aos_input_request_t query={.version=AOS_INPUT_VERSION};
+    uint32_t handle=parse_u32(argv[0],"guest_handle");
+    if (!strcmp(argv[1],"keyboard")) query.device=AOS_INPUT_KEYBOARD;
+    else if (!strcmp(argv[1],"pointer")) query.device=AOS_INPUT_POINTER;
+    else return 2;
+    for (int i=2;i<argc;i+=3) {
+        uint32_t type=parse_u32(argv[i],"event type"),code=parse_u32(argv[i+1],"event code");
+        char *end;
+        errno=0;
+        long long value=strtoll(argv[i+2],&end,0);
+        if (errno || end==argv[i+2] || *end || value<INT32_MIN || value>INT32_MAX ||
+            type>UINT16_MAX || code>UINT16_MAX || !type) return 2;
+        query.events[query.count++]=(aos_input_event_t){(uint16_t)type,(uint16_t)code,(int32_t)value};
+    }
+    ++query.count; /* zero-initialized final SYN_REPORT completes the batch */
+    cc_reply_wire_t reply;
+    if (!cc_call(MSG_CC_INPUT_SUBMIT,handle,0,0,&query,sizeof(query),&reply)) return 1;
+    aos_input_response_t response;
+    memcpy(&response,reply.shmem,sizeof(response));
+    if (reply.mr[0]!=CC_OK || reply.mr[1]!=sizeof(response) ||
+        reply.mr[3]!=AOS_INPUT_VERSION || response.version!=AOS_INPUT_VERSION ||
+        response.id || response.status>AOS_INPUT_WOULD_BLOCK ||
+        reply.mr[2]!=response.status ||
+        response.accepted!=(response.status==AOS_INPUT_OK ? query.count : 0u)) {
+        fprintf(stderr,"agentctl: invalid input response (CC=%u)\n",reply.mr[0]);
+        return 1;
+    }
+    printf("{\"status\":%u,\"accepted\":%u}\n",response.status,response.accepted);
+    /* No implicit retries: a transport failure gives no delivery guarantee. */
+    return response.status==AOS_INPUT_OK ? 0 : 1;
+}
+
 static int cmd_send_input(int argc, char **argv)
 {
     if (argc < 2) return 2;
@@ -485,6 +522,7 @@ int main(int argc, char **argv)
     if (strcmp(cmd, "inspect") == 0) return n == 0 ? cmd_inspect() : 2;
     if (strcmp(cmd, "frame-capture") == 0)
         return n == 2 ? cmd_frame_capture(parse_u32(args[0], "guest_handle"), args[1]) : 2;
+    if (strcmp(cmd,"input-batch")==0) return cmd_input_batch(n,args);
     if (strcmp(cmd, "session-inspect") == 0) return n == 0 ? cmd_session_inspect() : 2;
     if (strcmp(cmd, "connect") == 0) return cmd_connect();
     if (strcmp(cmd, "status") == 0) return cmd_status(n, args);

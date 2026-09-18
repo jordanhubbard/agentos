@@ -365,6 +365,7 @@ const HOST_ACTIONS: &[&str] = &[
     "run-ssh",
     "assert-console",
     "assert-virtio",
+    "assert-frame-pixels",
 ];
 
 pub(crate) fn acquire_recipe(root: &Path, path: &Path) -> Result<(String, Vec<RecipeStep>)> {
@@ -472,6 +473,14 @@ pub(crate) fn host_profile_plan(root: &Path, path: &Path) -> Result<HostProfileP
                 guest_address: ssh.guest_address.clone(),
             }),
         });
+    ensure!(
+        !host.is_some_and(|h| h.test.iter().any(|s| s.action == "assert-frame-pixels"))
+            || target
+                .devices
+                .as_ref()
+                .is_some_and(|ds| ds.iter().any(|d| d == "gpu")),
+        "frame pixel assertions require target.devices gpu"
+    );
     Ok(HostProfilePlan {
         path: path.to_path_buf(),
         id: profile.id.clone().context("id is required")?,
@@ -1722,6 +1731,32 @@ fn valid_env_name(value: &str) -> bool {
         })
 }
 
+pub(crate) fn frame_pixel_expectation(step: &RecipeStep) -> Result<(usize, usize, Vec<[u8; 3]>)> {
+    let x: usize = step.args.get("x").context("frame x missing")?.parse()?;
+    let y: usize = step.args.get("y").context("frame y missing")?.parse()?;
+    let hex = step.args.get("rgb").context("frame RGB missing")?;
+    ensure!(
+        x < 1024 && y < 768,
+        "frame coordinate exceeds supported bounds"
+    );
+    ensure!(
+        !hex.is_empty()
+            && hex.len() <= 96
+            && hex.len() % 6 == 0
+            && hex.bytes().all(|b| b.is_ascii_hexdigit()),
+        "frame RGB must contain 1..16 RGB hex triples"
+    );
+    let mut pixels = Vec::new();
+    for i in (0..hex.len()).step_by(6) {
+        pixels.push([
+            u8::from_str_radix(&hex[i..i + 2], 16)?,
+            u8::from_str_radix(&hex[i + 2..i + 4], 16)?,
+            u8::from_str_radix(&hex[i + 4..i + 6], 16)?,
+        ]);
+    }
+    Ok((x, y, pixels))
+}
+
 fn validate_host_action(step: &RecipeStep) -> Result<()> {
     let (required_args, optional_args): (&[&str], &[&str]) = match step.action.as_str() {
         "stage-url" => (
@@ -1752,6 +1787,7 @@ fn validate_host_action(step: &RecipeStep) -> Result<()> {
         "wait-ssh" => (&["account"], &["marker"]),
         "run-ssh" => (&["recipe"], &[]),
         "assert-virtio" => (&["devices"], &["scope", "console_io"]),
+        "assert-frame-pixels" => (&["x", "y", "rgb"], &[]),
         _ => return Ok(()),
     };
     for key in required_args {
@@ -1767,6 +1803,9 @@ fn validate_host_action(step: &RecipeStep) -> Result<()> {
             "host action {:?} has unknown argument {key:?}",
             step.action
         );
+    }
+    if step.action == "assert-frame-pixels" {
+        frame_pixel_expectation(step)?;
     }
     if matches!(step.action.as_str(), "stage-url" | "download-tar-member") {
         ensure!(
