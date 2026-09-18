@@ -57,8 +57,9 @@ RAM rebuilding uses this mapper. Host tests cover ASID assignment, every
 failure stage, retry after release, lookup-depth bounds and table exhaustion.
 `make test-guest-paging-recycle` extends the queue-recycle target with two
 fresh-VSpace cycles, large/small frame mapping, whole-large-page zero checks
-and stale VSpace/table cap rejection after revocation. Target qualification
-is pending. This helper does not rebuild execution objects, service mappings
+and stale VSpace/table cap rejection after revocation. That target and the full
+gate passed on Spark at `dc109dc`; [the receipt](evidence/2026-09-18-spark/guest-paging-rebuild.json)
+records the two-cycle component proof. This helper does not rebuild execution objects, service mappings
 or the guest image, and the production reset callback remains absent.
 
 ARM `vm_manager` now configures guest scheduling between the VMM's CREATE

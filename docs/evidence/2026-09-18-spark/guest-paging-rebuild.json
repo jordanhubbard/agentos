@@ -1,0 +1,33 @@
+{
+  "qualification": "Private guest VSpace and intermediate table reconstruction",
+  "runtime_revision": "dc109dce48d49317fbe76c2b3c8ad35692bf50f4",
+  "host": "Spark AArch64",
+  "source_clean_during_tests": true,
+  "pipeline_result": "PASS, exit 0",
+  "target": {
+    "command": "make test-guest-paging-recycle QEMU_TEST_SSH_PORT=12237",
+    "log_sha256": "90ece3745465f145545d8a7d63b67b37183509a35059e421751ccd4b9ed3f651",
+    "serial_log_sha256": "454704b791010b7ab2000abcc9f54f3f39875b7526595256e3864258c69011cd",
+    "agentos_image_sha256": "282fcf9fec1dc4891ce2cdaf0c267419dd6e2d3bf0cc0144cc081d4faaae15b7",
+    "qemu_pid": 1592586,
+    "qemu_log_stem": "agentos-qemu-mgA0Li",
+    "result": "After guest console I/O and destruction, queue recycling and two fresh VSpace/ASID cycles passed: large and small mappings, whole-large-page zero check and overwrite, private-pool revocation, stale VSpace and table cap rejection"
+  },
+  "gate": {
+    "command": "make gate QEMU_TEST_SSH_PORT=12237",
+    "result": "PASS after target test",
+    "log_sha256": "af870c6cb76a773596d6508fe09b06659d8e62145c285857414e7f02d72839ea"
+  },
+  "host_tests": [
+    "Private pool, CNode, guest VSpace and per-guest ASID authority arguments",
+    "Zero through three missing intermediate levels and bounded repeated lookup failure",
+    "Every syscall failure and successful recovery after release",
+    "254-table exhaustion fails closed while mappings needing no new table remain possible"
+  ],
+  "limits": [
+    "The recreated address spaces are component probes, not executing guests",
+    "Small mapping uses an ordinary test frame at the GIC IPA; no hardware GIC mapping into the fresh VSpace is claimed",
+    "Execution objects, service reattachment and guest image restoration remain outstanding",
+    "Required CI, canonical integration and release remain pending"
+  ]
+}
