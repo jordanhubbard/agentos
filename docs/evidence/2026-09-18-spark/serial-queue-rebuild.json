@@ -1,0 +1,39 @@
+{
+  "schema": "agentos.serial_queue_rebuild.v1",
+  "revision": "2a0948f14de8a767c40510263a5e5db878c842dc",
+  "result": "passed",
+  "spark_checks": ["make test-host", "make test-x86-firmware-build SEL4_SDK_VERSION=2.3.0", "make gate"],
+  "host_assertions": [
+    "Foreign badges, operator replacement, malformed requests and non-next generations rejected",
+    "Busy frontend prevents replacement; nonempty fresh channel is not published",
+    "Protected retired page remains inaccessible throughout replacement",
+    "Old frontend bytes/cursors cleared before admission reopens",
+    "Fresh bidirectional traffic succeeds; peers remain isolated",
+    "Repeated detach, replay rejection and generation exhaustion handled"
+  ],
+  "intel_gate": "make gate-x86_64-teardown; pinned arguments from x86-stopped-object-rebuild.json",
+  "intel_assertions": [
+    "After real Linux lifecycle teardown, two serial REBIND generations completed through capability IPC",
+    "Service allocated each fresh 2 MiB frame from the transferred private untyped and returned a frame capability",
+    "VMM mapped the returned frame and the real serial service consumed x86-recreated-serial output",
+    "Detach followed by VMM pool revocation removed the returned frame cap in both generations",
+    "Prior VCPU/EPT and RAM/ROM reconstruction checks still passed"
+  ],
+  "artifacts": {
+    "spark_gate_log": "/tmp/agentos-serial-rebind-gate.log",
+    "spark_gate_sha256": "9bc6590bfcf9e3f0b1724424f8404ece604724424802974bbf42dee02e01e461",
+    "host_log": "/tmp/agentos-serial-rebind-host.log",
+    "host_sha256": "56368fe09428bb74d9cd9def9aca93fa25eed35f5dc9398c45ec23106860fe9a",
+    "intel_combined_log": "/tmp/agentos-serial-rebind-intel.log on sparky",
+    "intel_combined_sha256": "7ade5c756758964b96a4d248ffec41e7c26252ec6938814c0a3a608eea5fa4dd",
+    "intel_serial_log": "build/tmp/agentos-qemu-ckaUcG.log",
+    "intel_serial_sha256": "6865bad846a3f7bbed8bd4349cd4dea33292d289361ad218531f67aa3d7793b6",
+    "intel_root_task_sha256": "c3ae0475d8bdbe981aaade6b684606d6a1a16a2f65d8825478192ff20b199943"
+  },
+  "limitations": [
+    "Native replacement checks prove service consumption, not a new guest boot or native frontend display",
+    "Bidirectional replacement and malformed-generation checks are host evidence; native negative-capability cases remain to extend",
+    "Block/network queue reconstruction, firmware reset and CREATE integration remain outstanding",
+    "Required CI, canonical integration and release remain pending"
+  ]
+}

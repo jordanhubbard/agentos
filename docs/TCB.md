@@ -99,8 +99,11 @@ VSpace and returns a frame capability to the VMM. Root supplies only the service
 own CNode/VSpace management caps at boot. The commit step requires a closed,
 idle frontend gate and a fresh empty guest queue, clears old frontend input and
 output, then reopens admission. Foreign, replayed, skipped and wrapped generations
-are rejected. Host service tests pass; target reconstruction qualification is
-pending. This does not yet reconstruct block/network queues or boot a new guest.
+are rejected. The
+[serial replacement receipt](evidence/2026-09-18-spark/serial-queue-rebuild.json)
+records host service tests, full Spark gate, and two real Intel capability-transfer,
+service-consumption and revocation cycles at `2a0948f`. This does not yet
+reconstruct block/network queues or boot a new guest.
 
 The userspace qualification adds `x86_lifecycle_probe`, an ordinary client
 with its VMM service endpoint and a send-only failure-report cap. Root rejects
