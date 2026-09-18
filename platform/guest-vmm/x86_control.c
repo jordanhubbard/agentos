@@ -54,7 +54,7 @@ enum aos_x86_control_result aos_x86_control_step(
 #endif
             (void)aos_guest_vmm_lifecycle_rpc(&request, &reply, runtime);
         }
-#ifdef AGENTOS_X86_USERSPACE_PROOF
+#ifdef AGENTOS_X86_LIFECYCLE_TRACE
         /* Bounded observation only; root never decides a lifecycle action.
          * Preserve the reply in native memory across this diagnostic IPC. */
         static unsigned traces;
