@@ -1,0 +1,18 @@
+{
+  "schema": 1,
+  "revision": "4a601f5",
+  "host": "madmax",
+  "attempt": 21,
+  "status": "login-timeout",
+  "provisioning": "make seed-guest-root succeeded on Intel using the pinned Debian source root and disk; complete original region comparison and seeded replacement readback passed",
+  "instance_id": "agentos-native-seed-21",
+  "disk": "/tmp/agentos-debian-amd64/boot-21.raw",
+  "gate": "make gate-x86_64-linux-login X86_BOOT_PROFILE=debian-amd64.toml QEMU_TEST_TIMEOUT=300",
+  "observation": "Debian reached systemd and cloud-init init-local at guest uptime 255 seconds; no login before timeout. This does not qualify native-generated media login or SSH.",
+  "gate_log": "/tmp/agentos-debian-amd64/boot-21.gate.log",
+  "gate_log_sha256": "9c082e24b28bcb80d2d630b4db7102280e223ea5eb9c83048173a459ac70809b",
+  "console_log": "/tmp/agentos-v04-intel-discovery/build/tmp/agentos-qemu-96bYTA.console.log",
+  "console_sha256": "5637ce66ecad128d84abd7c744aaba450e5cf6b6b4c83e49a3c5145f216a512d",
+  "lifecycle": "Gate exited 2; QEMU no longer running",
+  "next_experiment": "Fresh independently seeded disk and explicit 600-second diagnostic timeout; original failed disk and evidence retained"
+}
