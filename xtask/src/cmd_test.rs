@@ -1348,7 +1348,7 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
                     let reply = cc.call(opcode, handle, 0, 0, &[])?;
                     anyhow::ensure!(
                         reply.mr[0] == CC_ERR_BAD_HANDLE,
-                        "destroyed managed guest accepted opcode {opcode:#x}"
+                        "destroyed managed guest opcode {opcode:#x} returned {}, expected bad handle", reply.mr[0]
                     );
                 }
                 Ok(format!("{proof}; explicit manager CREATE/BOOT, console I/O, destruction and stale handle rejection passed"))

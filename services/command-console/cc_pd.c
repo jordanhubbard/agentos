@@ -928,12 +928,6 @@ static bool cc_lifecycle_boot_guest(uint32_t opcode, uint32_t reason,
 }
 #endif
 
-static bool cc_lifecycle_vm_guest(uint32_t opcode, uint32_t handle,
-                                      uint32_t *new_state)
-{
-    return cc_vm_lifecycle(&g_vm_client, opcode, handle, new_state) == CC_OK;
-}
-
 /* cc_pd has no EOF signal from the host-side socket — when a client process
  * dies ungracefully, qemu's chardev silently accepts a new connection but
  * the leaked session lingers.  Aging every other active session on each
@@ -1491,13 +1485,8 @@ static void handle_suspend_guest(const cc_req_wire_t *req, cc_reply_wire_t *rep)
 #endif
 
     uint32_t state = 0u;
-    if (!cc_lifecycle_vm_guest(VM_MANAGER_OP_STOP, handle, &state)) {
-        rep->mr[0] = CC_ERR_RELAY_FAULT;
-        rep->mr[1] = 0u;
-        return;
-    }
-    rep->mr[0] = CC_OK;
-    rep->mr[1] = state;
+    rep->mr[0] = cc_vm_lifecycle(&g_vm_client, VM_MANAGER_OP_STOP, handle, &state);
+    rep->mr[1] = rep->mr[0] == CC_OK ? state : 0u;
 }
 
 static void handle_resume_guest(const cc_req_wire_t *req, cc_reply_wire_t *rep)
@@ -1524,13 +1513,8 @@ static void handle_resume_guest(const cc_req_wire_t *req, cc_reply_wire_t *rep)
 #endif
 
     uint32_t state = 0u;
-    if (!cc_lifecycle_vm_guest(VM_MANAGER_OP_RESUME, handle, &state)) {
-        rep->mr[0] = CC_ERR_RELAY_FAULT;
-        rep->mr[1] = 0u;
-        return;
-    }
-    rep->mr[0] = CC_OK;
-    rep->mr[1] = state;
+    rep->mr[0] = cc_vm_lifecycle(&g_vm_client, VM_MANAGER_OP_RESUME, handle, &state);
+    rep->mr[1] = rep->mr[0] == CC_OK ? state : 0u;
 }
 
 static void handle_destroy_guest(const cc_req_wire_t *req, cc_reply_wire_t *rep)
