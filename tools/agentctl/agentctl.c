@@ -361,6 +361,10 @@ static int cmd_create(int argc, char **argv)
         return 2;
     }
     request.ram_mb = parse_u32(argv[2], "ram_mb");
+    if (request.ram_mb < 64u || request.ram_mb > 8192u || (request.ram_mb & 3u)) {
+        fprintf(stderr, "agentctl: RAM_MB must be a multiple of 4 between 64 and 8192\n");
+        return 2;
+    }
     request.device_flags = VIBEOS_DEV_SERIAL | VIBEOS_DEV_NET | VIBEOS_DEV_BLOCK;
     cc_reply_wire_t reply;
     if (!cc_call(MSG_CC_CREATE_GUEST, 0, 0, 0, &request, sizeof(request), &reply)) return 1;
