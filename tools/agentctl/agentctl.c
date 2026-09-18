@@ -22,6 +22,7 @@
 
 #include "contracts/cc_contract.h"
 #include "contracts/guest_contract.h"
+#include "contracts/vibeos_contract.h"
 #include <platform/inspect.h>
 #include <platform/operator_session.h>
 #include <platform/framebuffer_observer.h>
@@ -55,6 +56,7 @@ static void usage(FILE *out)
             "  inspect\n"
             "  session-inspect\n"
             "  list-guests\n"
+            "  create primary|secondary aarch64|x86_64 RAM_MB\n"
             "  guest-status HANDLE\n"
             "  list-devices TYPE [MAX]\n"
             "  device-status TYPE HANDLE\n"
@@ -341,6 +343,33 @@ static int cmd_status(int argc, char **argv)
     return r.mr[0] == CC_OK ? 0 : 1;
 }
 
+static int cmd_create(int argc, char **argv)
+{
+    if (argc != 3) return 2;
+    struct vibeos_create_req request = {0};
+    _Static_assert(sizeof(request) == 52u, "CC CREATE wire ABI");
+    if (!strcmp(argv[0], "primary")) request.os_type = VIBEOS_PROFILE_PRIMARY;
+    else if (!strcmp(argv[0], "secondary")) request.os_type = VIBEOS_PROFILE_SECONDARY;
+    else {
+        fprintf(stderr, "agentctl: profile must be primary or secondary\n");
+        return 2;
+    }
+    if (!strcmp(argv[1], "aarch64")) request.arch = VIBEOS_ARCH_AARCH64;
+    else if (!strcmp(argv[1], "x86_64")) request.arch = VIBEOS_ARCH_X86_64;
+    else {
+        fprintf(stderr, "agentctl: architecture must be aarch64 or x86_64\n");
+        return 2;
+    }
+    request.ram_mb = parse_u32(argv[2], "ram_mb");
+    request.device_flags = VIBEOS_DEV_SERIAL | VIBEOS_DEV_NET | VIBEOS_DEV_BLOCK;
+    cc_reply_wire_t reply;
+    if (!cc_call(MSG_CC_CREATE_GUEST, 0, 0, 0, &request, sizeof(request), &reply)) return 1;
+    printf("{\"ok\":%" PRIu32 ",\"guest_handle\":%" PRIu32
+           ",\"recovery_handle\":%" PRIu32 "}\n",
+           reply.mr[0], reply.mr[1], reply.mr[2]);
+    return reply.mr[0] == CC_OK ? 0 : 1;
+}
+
 static int cmd_list_guests(void)
 {
     cc_reply_wire_t r;
@@ -533,6 +562,7 @@ int main(int argc, char **argv)
     if (strcmp(cmd, "connect") == 0) return cmd_connect();
     if (strcmp(cmd, "status") == 0) return cmd_status(n, args);
     if (strcmp(cmd, "list-guests") == 0) return cmd_list_guests();
+    if (strcmp(cmd, "create") == 0) return cmd_create(n, args);
     if (strcmp(cmd, "guest-status") == 0) return cmd_guest_status(n, args);
     if (strcmp(cmd, "list-devices") == 0) return cmd_list_devices(n, args);
     if (strcmp(cmd, "device-status") == 0 && n >= 2) {

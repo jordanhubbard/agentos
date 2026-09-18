@@ -4023,6 +4023,9 @@ void root_task_main(const seL4_BootInfo *bi)
                 (uint64_t)g_guest_ram_reservations[i].frame_count << seL4_ARCH_LargePageBits;
 #elif defined(__x86_64__)
         inspect_view.arch = AOS_INSPECT_ARCH_X86_64;
+#ifdef AGENTOS_X86_FIRMWARE_RESET
+        inspect_view.guest_ram_bytes = AOS_X86_FIRMWARE_RAM;
+#endif
 #elif defined(__riscv)
         inspect_view.arch = AOS_INSPECT_ARCH_RISCV64;
 #endif
