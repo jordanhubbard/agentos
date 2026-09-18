@@ -28,7 +28,9 @@ objects and root's original descendant caps without revoking the VMM's own
 thread or any peer guest. Guest RAM uses separate per-frame pools below.
 The execution-pool contract is `contracts/guest_execution_caps.h`; production
 teardown now drains device references before revoking this pool and guest RAM.
-Reclamation target qualification and recreation remain pending. Guest VSpace/page
+Terminal execution/RAM revocation passed the console-proof target test at
+`7f1e1d8`; [the receipt](evidence/2026-09-17-spark/guest-teardown.json)
+records the exact scope and full gate. Recreation remains pending. Guest VSpace/page
 tables and service queue grants are separate resources, not part of this pool.
 
 AArch64 guest RAM is allocated from dedicated 2 MiB child untyped pools.
