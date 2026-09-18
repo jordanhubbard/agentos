@@ -51,8 +51,13 @@ Intel PCI transport, plus the full Spark gate. The subsequent
 [external lifecycle receipt](evidence/2026-09-18-spark/x86-cc-lifecycle.json)
 records CREATE/status/suspend/resume/destroy of the firmware guest and correct
 boot-reserved RAM reporting. CC mode defaults to 256 MiB and uses caller-controlled
-lifetime; native qualification retains its 65536-exit bound. Guest console,
-recreation and external GUI acceptance remain pending.
+lifetime; native qualification retains its 65536-exit bound. The
+[external Linux receipt](evidence/2026-09-18-spark/x86-cc-linux.json) qualifies
+explicit CC creation, Debian login and terminal input echo, pinned SSH,
+destruction and stale-handle rejection. An early manager call during the
+initial block read now receives `GUEST_ERR_NOT_READY` without changing guest
+state; the caller retries after initialization. This uses existing endpoint
+and notification authority. Recreation and external GUI acceptance remain pending.
 
 The userspace qualification adds `x86_lifecycle_probe`, an ordinary client
 with its VMM service endpoint and a send-only failure-report cap. Root rejects
