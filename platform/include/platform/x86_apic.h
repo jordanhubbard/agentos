@@ -36,6 +36,8 @@ bool aos_x86_apic_accept(aos_x86_apic_t *a, unsigned vector);
  * Returns false without mutation for a missing/disabled destination. */
 bool aos_x86_apic_route(aos_x86_apic_t *a, unsigned vector,
                        unsigned destination, bool logical, bool level);
+/* Destination matching also applies to INIT/SIPI while software-disabled. */
+bool aos_x86_apic_destination(const aos_x86_apic_t *, unsigned destination, bool logical);
 /* Highest in-service level vector, or zero: broadcast its EOI to I/O APIC. */
 unsigned aos_x86_apic_eoi_vector(const aos_x86_apic_t *a);
 #endif

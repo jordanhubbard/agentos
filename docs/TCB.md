@@ -44,6 +44,16 @@ sequence state persists across guest recreation. Additional CPUs and AP startup
 remain pending. Host tests and target link checks do not prove IPC delivery
 or multi-vCPU execution; target qualification of this integration is pending.
 
+The bounded `x86_smp` controller helper handles fixed edge IPIs, INIT and
+SIPI across up to 32 already-admitted contexts. It resolves physical, flat
+logical, cluster logical and shorthand destinations before mutation; invalid
+commands or topology leave all contexts unchanged. INIT records native reset
+work, and the first accepted SIPI records startup work without executing it.
+The coordinator must apply that work to the native VCPU before marking it
+runnable. This helper is host-tested but not yet connected to firmware ICR
+handling. INIT/reset behavior follows Intel SDM Volume 3A sections 10.4 and
+12.4.7; no runtime CPU creation or multi-CPU execution is established here.
+
 The x86 firmware profile binder enforces CPU-feature requests against the
 synthetic CPUID model before VM entry. Its fixed baseline exposes x87 (FP)
 and SSE/SSE2 (SIMD); crypto (AES/PCLMUL), RNG (RDRAND/RDSEED), AVX-family

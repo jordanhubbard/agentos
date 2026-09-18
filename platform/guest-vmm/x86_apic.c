@@ -75,17 +75,20 @@ bool aos_x86_apic_accept(aos_x86_apic_t *a, unsigned vector)
     a->irr_level[vector/32] &= ~(1u << (vector%32));
     return true;
 }
-bool aos_x86_apic_route(aos_x86_apic_t *a, unsigned vector,
-                       unsigned destination, bool logical, bool level)
+bool aos_x86_apic_destination(const aos_x86_apic_t *a, unsigned destination, bool logical)
 {
-    if (!a || vector<16u || vector>255u || destination>255u || !(a->svr & 0x100u))
-        return false;
+    if (!a || destination>255u) return false;
     unsigned local=a->ldr >> 24;
-    bool target=destination==255u || (logical ?
+    return destination==255u || (logical ?
         (a->dfr==UINT32_MAX ? (destination & local)!=0 :
          (destination >> 4)==(local >> 4) && (destination & local & 15u)!=0) :
         destination==a->id);
-    if (!target) return false;
+}
+bool aos_x86_apic_route(aos_x86_apic_t *a, unsigned vector,
+                       unsigned destination, bool logical, bool level)
+{
+    if (!a || vector<16u || vector>255u || !(a->svr & 0x100u) ||
+        !aos_x86_apic_destination(a,destination,logical)) return false;
     a->irr[vector/32] |= 1u << (vector%32);
     if (level) a->irr_level[vector/32] |= 1u << (vector%32);
     return true;

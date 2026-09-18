@@ -972,6 +972,15 @@ test-virtio-host-transport:
 
 test-host: test-x86-config-host
 test-host: test-x86-apic-host
+test-host: test-x86-smp-host
+.PHONY: test-x86-smp-host
+test-x86-smp-host:
+	@mkdir -p $(BUILD_TMP_DIR)
+	$(CC) -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -g \
+		-Iplatform/include tests/platform/test_x86_smp.c \
+		platform/guest-vmm/x86_smp.c platform/guest-vmm/x86_apic.c \
+		-o $(BUILD_TMP_DIR)/test_x86_smp
+	$(BUILD_TMP_DIR)/test_x86_smp
 test-host: test-x86-runner-host
 .PHONY: test-x86-runner-host
 test-x86-runner-host:
