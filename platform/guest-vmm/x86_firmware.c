@@ -343,6 +343,12 @@ void aos_x86_firmware_run(seL4_CPtr ep, aos_x86_vmenter_return_t returned)
         seL4_VCPUContext regs = save_registers(&returned);
         for (unsigned i=0; i<3; i++) boot_reads[i]=config.boot_reads[i];
         last_qualification=qual;
+#ifdef AGENTOS_X86_LINUX_LOGIN
+        /* A distribution boot transfers a full initrd and continues into an
+         * operating system. Its lifetime is controlled by the caller, not
+         * the small qualification fixture's instruction-exit budget. */
+        if (exits != UINT32_MAX) exits++;
+#else
         if (exits++ == 65536u) {
             /* Observe the returned exit before any emulation or re-entry.
              * The processed-exit budget and its failure status are unchanged. */
@@ -353,6 +359,7 @@ void aos_x86_firmware_run(seL4_CPtr ep, aos_x86_vmenter_return_t returned)
             stop(ep,AOS_X86_VTX_PROOF_FAIL,0x425544u,rip,
                  (UINT64_C(65536) << 32) | (uint32_t)reason);
         }
+#endif
         /* Non-instruction exits do not define an instruction length. */
         if (reason == 52u || reason == 7u) len=0;
         if (len > 15u) {

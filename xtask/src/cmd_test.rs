@@ -2099,6 +2099,12 @@ fn x86_linux_login(socket: &Path, log_path: &Path, timeout: Duration) -> anyhow:
     );
     let mut transcript = Vec::new();
     while Instant::now() < deadline {
+        let target_log = std::fs::read_to_string(log_path)?;
+        anyhow::ensure!(
+            !target_log.contains("x86 VMX EPT proof FAILED"),
+            "Intel VMM reported a target failure; see {}",
+            log_path.display()
+        );
         let mut chunk = [0u8; 4096];
         match stream.read(&mut chunk) {
             Ok(0) => anyhow::bail!("Intel Linux console closed before login"),
@@ -4259,6 +4265,7 @@ mod tests {
             let temp = tempfile::tempdir().unwrap();
             let socket = temp.path().join("console.sock");
             let log = temp.path().join("qemu.log");
+            std::fs::write(&log, "").unwrap();
             let listener = UnixListener::bind(&socket).unwrap();
             let sender = std::thread::spawn(move || {
                 let (mut stream, _) = listener.accept().unwrap();
