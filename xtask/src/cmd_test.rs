@@ -619,6 +619,11 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
                 u8::from(args.assert_firmware_reset)
             ));
         }
+        if let Some(path) = &args.x86_boot_profile {
+            make_args.extend(cmd_guest_profile::prepare_x86_boot_profile(
+                &repo_root, path,
+            )?);
+        }
         let make_arg_refs = make_args.iter().map(String::as_str).collect::<Vec<_>>();
         run_make(&make_arg_refs, &repo_root).context("profile-driven build step failed")?;
     }

@@ -33,7 +33,7 @@ max_bytes = 134217728
 
 [placements.default]
 guest_gpa_base = 0
-vmm_hva_base = 0x40000000
+vmm_hva_base = 0x80000000
 ram_size = 0x40000000
 kernel_load_address = 0x200000
 initrd_load_address = 0x8000000

@@ -151,6 +151,9 @@ pub struct TestArgs {
     #[arg(long, requires = "assert_firmware_reset", requires = "x86_block_image",
           conflicts_with_all = ["assert_x86_userspace", "assert_guest_faults"])]
     pub assert_x86_linux_login: bool,
+    /// Acquire and verify an x86 UEFI boot profile instead of separate artifact arguments.
+    #[arg(long, requires = "assert_x86_linux_login")]
+    pub x86_boot_profile: Option<std::path::PathBuf>,
     /// Reuse a root or qualification disk; writable only with --x86-block-write.
     #[arg(long, requires = "assert_firmware_reset")]
     pub x86_block_image: Option<std::path::PathBuf>,

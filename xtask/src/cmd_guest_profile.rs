@@ -438,6 +438,142 @@ pub(crate) fn resolve_alias(root: &Path, alias: &str) -> Result<PathBuf> {
     matched.with_context(|| format!("unknown guest profile alias {alias:?}"))
 }
 
+fn validate_x86_boot_profile(profile: &Profile) -> Result<()> {
+    validate(profile, Some("default"))?;
+    ensure!(
+        profile.status == Some(Status::Runtime),
+        "x86 boot requires a runtime profile"
+    );
+    let target = profile.target.as_ref().unwrap();
+    ensure!(
+        target.architecture.as_deref() == Some("x86-64")
+            && target.boot_protocol.as_deref() == Some("uefi")
+            && target.kernel_format.as_deref() == Some("uefi"),
+        "x86 boot requires an x86-64 UEFI kernel profile"
+    );
+    ensure!(
+        target.vcpus == Some(1)
+            && target.guest_id == Some(0)
+            && target.control_type == Some(1)
+            && target.autostart == Some(true),
+        "x86 boot currently supports one autostart primary guest with one vCPU"
+    );
+    ensure!(
+        target
+            .cpu_features
+            .as_ref()
+            .is_none_or(|f| f.required.is_empty() && f.prohibited.is_empty()),
+        "x86 firmware boot does not yet enforce profile CPU feature requests"
+    );
+    let devices = target.devices.as_ref().unwrap();
+    ensure!(
+        devices.len() == 3
+            && ["net", "block", "console"]
+                .iter()
+                .all(|d| devices.iter().any(|v| v == d))
+            && target.network_client == Some(0)
+            && target.block_media == Some(0),
+        "x86 boot requires primary canonical net, block and console devices"
+    );
+    ensure!(
+        !profile.artifacts.contains_key("dtb")
+            && profile.artifacts.contains_key("initrd")
+            && profile.boot.as_ref().unwrap().media_initrd_path.is_none(),
+        "x86 firmware boot requires a direct initrd and no DTB"
+    );
+    let placement = &profile.placements["default"];
+    let ram = placement.ram_size.unwrap();
+    ensure!(
+        placement.vmm_hva_base == Some(0x80000000) && placement.kernel_entry_address.is_none(),
+        "x86 firmware boot requires its fixed RAM mapping and firmware-selected kernel entry"
+    );
+    ensure!(
+        placement.guest_gpa_base == Some(0)
+            && (0x02000000..=0x40000000).contains(&ram)
+            && ram % 0x200000 == 0,
+        "x86 firmware RAM must start at zero and be 32 MiB..1 GiB in 2 MiB units"
+    );
+    ensure!(
+        profile
+            .host
+            .as_ref()
+            .and_then(|h| h.build.as_ref())
+            .is_some_and(|b| b.adapter == "uefi-artifacts"),
+        "x86 boot requires the uefi-artifacts acquisition adapter"
+    );
+    Ok(())
+}
+
+pub(crate) fn prepare_x86_boot_profile(repo: &Path, path: &Path) -> Result<Vec<String>> {
+    let root = repo.join("guest-profiles");
+    let (profile, canonical) = resolve(&root, path, &mut Vec::new())?;
+    validate_x86_boot_profile(&profile)?;
+    for name in [
+        "X86_BOOT_KERNEL",
+        "X86_BOOT_KERNEL_SHA256",
+        "X86_BOOT_INITRD",
+        "X86_BOOT_INITRD_SHA256",
+        "X86_BOOT_CMDLINE_FILE",
+        "X86_BOOT_CMDLINE_SHA256",
+        "X86_BOOT_RAM_BYTES",
+    ] {
+        ensure!(
+            std::env::var_os(name).is_none(),
+            "{name} conflicts with x86 boot profile selection"
+        );
+    }
+    crate::cmd_fetch_guest::run(&crate::FetchGuestArgs {
+        profile: path.to_path_buf(),
+        profile_root: root,
+        output_dir: None,
+    })?;
+    verify_artifacts(&profile, "default", repo)?;
+    let directory = repo.join("build/tmp/x86-boot-profile");
+    fs::create_dir_all(&directory)?;
+    let mut command_line = profile
+        .boot
+        .as_ref()
+        .unwrap()
+        .command_line
+        .as_ref()
+        .unwrap()
+        .as_bytes()
+        .to_vec();
+    command_line.push(0);
+    let command_path = directory.join("cmdline.bin");
+    fs::write(&command_path, &command_line)?;
+    fs::write(
+        directory.join("profile.bin"),
+        compile(&profile, &canonical, "default")?,
+    )?;
+    let mut args = vec![
+        format!(
+            "X86_BOOT_RAM_BYTES={:#x}u",
+            profile.placements["default"].ram_size.unwrap()
+        ),
+        format!("X86_BOOT_CMDLINE_FILE={}", command_path.display()),
+        format!(
+            "X86_BOOT_CMDLINE_SHA256={:x}",
+            Sha256::digest(&command_line)
+        ),
+    ];
+    for (name, variable) in [("kernel", "KERNEL"), ("initrd", "INITRD")] {
+        let artifact = &profile.artifacts[name];
+        let hash = artifact_hash(artifact, &profile.placements["default"], name)?;
+        let hex: String = hash.iter().map(|b| format!("{b:02x}")).collect();
+        args.push(format!(
+            "X86_BOOT_{variable}={}",
+            artifact_path(&profile, name, repo)?.display()
+        ));
+        args.push(format!("X86_BOOT_{variable}_SHA256={hex}"));
+    }
+    println!(
+        "[guest-profile] verified x86 boot profile {}",
+        profile.id.as_deref().unwrap()
+    );
+    Ok(args)
+}
+
 pub(crate) fn host_profile_plan(root: &Path, path: &Path) -> Result<HostProfilePlan> {
     let (profile, _) = resolve(root, path, &mut Vec::new())?;
     validate(&profile, None)?;
@@ -2134,6 +2270,37 @@ fn push_text(out: &mut Vec<u8>, value: &str, width: usize) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn x86_boot_selection_rejects_unsupported_resource_requests() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../guest-profiles");
+        let (profile, _) = resolve(&root, Path::new("debian-amd64.toml"), &mut Vec::new()).unwrap();
+        validate_x86_boot_profile(&profile).unwrap();
+        let mut bad = profile.clone();
+        bad.target.as_mut().unwrap().vcpus = Some(2);
+        assert!(validate_x86_boot_profile(&bad).is_err());
+        let mut bad = profile.clone();
+        bad.target.as_mut().unwrap().guest_id = Some(1);
+        assert!(validate_x86_boot_profile(&bad).is_err());
+        let mut bad = profile.clone();
+        bad.target.as_mut().unwrap().autostart = Some(false);
+        assert!(validate_x86_boot_profile(&bad).is_err());
+        let mut bad = profile.clone();
+        bad.placements.get_mut("default").unwrap().ram_size = Some(0x40200000);
+        assert!(validate_x86_boot_profile(&bad).is_err());
+        let mut bad = profile.clone();
+        bad.placements.get_mut("default").unwrap().vmm_hva_base = Some(0x40000000);
+        assert!(validate_x86_boot_profile(&bad).is_err());
+        let mut bad = profile.clone();
+        bad.placements
+            .get_mut("default")
+            .unwrap()
+            .kernel_entry_address = Some(0x200000);
+        assert!(validate_x86_boot_profile(&bad).is_err());
+        let mut bad = profile;
+        bad.target.as_mut().unwrap().network_client = Some(1);
+        assert!(validate_x86_boot_profile(&bad).is_err());
+    }
 
     #[test]
     fn uefi_acquisition_has_no_fdt_template() {

@@ -78,9 +78,19 @@ or shell commands. Subsequent binary overlay steps pin the resulting bytes.
 13 amd64 cloud image, extracts its kernel and initrd, preserves its stock udev
 hooks, and appends native hooks and virtio module configuration. Its
 `uefi-artifacts` build adapter provides an acquisition directory without FDT
-template fields. This is acquisition support: the FDT bundle executor still
-rejects UEFI profiles, and x86 firmware/profile consumption and SSH
-provisioning remain separate integration work. The generated `disk.raw` is
+template fields. The FDT bundle executor still rejects UEFI profiles.
+`make gate-x86_64-linux-login X86_BOOT_PROFILE=debian-amd64.toml` selects,
+acquires and verifies this profile's kernel and initrd, emits its NUL-terminated
+command line, and applies its RAM budget. Supply the independently pinned
+`X86_FIRMWARE_IMAGE`/`X86_FIRMWARE_SHA256` and a disposable `X86_ROOT_DISK` as
+usual; separate `X86_BOOT_KERNEL`, initrd, command-line and RAM overrides
+conflict with profile selection. The selector accepts only the currently
+supported single primary guest, one vCPU, fixed VMM RAM mapping, canonical
+net/block/console devices and no requested CPU-feature policy. The emitted
+`build/tmp/x86-boot-profile/profile.bin` is retained host evidence; the x86
+target does not yet consume that manifest, and UEFI still chooses image
+placement and entry. Target manifest enforcement and SSH provisioning remain
+separate integration work. The generated `disk.raw` is
 source media; use a disposable copy for writable boot tests.
 
 Legacy `--guest-os` and `GUEST_OS` spellings remain compatibility selectors.
