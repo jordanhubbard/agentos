@@ -35,6 +35,18 @@ all three seed files must read back exactly through debugfs before the output
 is published without replacing an existing destination. An invalid filesystem
 or a conflicting existing seed fails the readback check.
 
+The opt-in AArch64 profile is `debian-arm64-nocloud.toml` (alias
+`debian-arm64-nocloud`). Acquire it with
+`make fetch-guest GUEST_PROFILE=debian-arm64-nocloud.toml`. It uses the same
+dated Debian release, native hooks and NoCloud root seed as amd64, with stock
+cloud-init enabled and the default Debian account. Its canonical acquisition
+directory is `build/guest-images/debian-arm64-nocloud`; use `root.ext4` and
+`disk.raw` there as seed inputs and `seeded.raw` as output. The root partition
+offset is 134217728 bytes. Its initial console boot check is
+`make test BOARD=qemu_virt_aarch64 GUEST_OS=debian-arm64-nocloud QEMU_TEST_TIMEOUT=1200`.
+Target boot and authentication qualification remain pending. This profile does
+not replace the existing `debian` baseline until parity is demonstrated.
+
 By default the output is an ext4 partition image. To produce a full raw disk,
 also supply `SEED_DISK_RAW` and `SEED_PARTITION_OFFSET`. For the pinned
 `debian-amd64.toml` image, use
