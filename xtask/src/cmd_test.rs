@@ -800,19 +800,20 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
     };
     println!("[xtask:test] Launching QEMU for board={}...", args.board);
     let cc_sock = log_path.with_extension("cc_pd.sock");
-    let timing_artifact_digests = if args.assert_live && !args.assert_desktop {
-        Some((
-            sha256_file(
-                &repo_root
-                    .join("build")
-                    .join(&args.board)
-                    .join("agentos.img"),
-            )?,
-            guest_bundle_sha256(&repo_root, &args.board)?,
-        ))
-    } else {
-        None
-    };
+    let timing_artifact_digests =
+        if (args.assert_live && !args.assert_desktop) || args.seeded_ssh_key.is_some() {
+            Some((
+                sha256_file(
+                    &repo_root
+                        .join("build")
+                        .join(&args.board)
+                        .join("agentos.img"),
+                )?,
+                guest_bundle_sha256(&repo_root, &args.board)?,
+            ))
+        } else {
+            None
+        };
     // Measure the host-observed launch-to-authentication interval. Acquisition,
     // compilation and persistent-disk preparation have already completed.
     let boot_clock = Instant::now();
@@ -831,7 +832,11 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
         args.x86_block_image.as_deref(),
         args.x86_block_write,
     )?);
-    if needs_host_net_stimulus {
+    if needs_host_net_stimulus
+        && !args.assert_live
+        && !args.assert_desktop
+        && args.seeded_ssh_key.is_none()
+    {
         wait_for_all_markers(
             &log_path,
             &["emulated virtio-net: guest DRIVER_OK"],
@@ -1093,19 +1098,27 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
      * forwarded port before sshd exists leaves a stale user-net flow that can
      * accept later host sockets without ever completing an SSH banner.
      */
-    if result.is_ok() && args.assert_live && !args.assert_desktop {
-        let key = ssh_key
-            .as_ref()
-            .context("live-profile SSH key was not generated")?;
-        match prove_profile_ssh(
-            &cc_sock,
-            profile_plan
+    if result.is_ok()
+        && ((args.assert_live && !args.assert_desktop) || args.seeded_ssh_key.is_some())
+    {
+        let proof = if args.seeded_ssh_key.is_some() {
+            // The seeded result already includes authenticated SSH and sync.
+            Ok(())
+        } else {
+            let key = ssh_key
                 .as_ref()
-                .context("live test requires a resolved guest profile")?,
-            key,
-            Duration::from_secs(args.timeout_secs),
-            &mut qemu,
-        ) {
+                .context("live-profile SSH key was not generated")?;
+            prove_profile_ssh(
+                &cc_sock,
+                profile_plan
+                    .as_ref()
+                    .context("live test requires a resolved guest profile")?,
+                key,
+                Duration::from_secs(args.timeout_secs),
+                &mut qemu,
+            )
+        };
+        match proof {
             Ok(()) => {
                 let elapsed_ms = boot_clock.elapsed().as_millis();
                 let timing_path = log_path.with_extension("boot-timing.json");
@@ -1139,7 +1152,7 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
                         "host_backed_virtio": args.assert_agentos_virtio,
                         "host_os": std::env::consts::OS,
                         "host_arch": std::env::consts::ARCH,
-                        "persistent_second_boot": args.persistent_second_boot,
+                        "persistent_second_boot": args.persistent_second_boot || args.seeded_ssh_known_hosts.is_some(),
                         "serial_log": log_path,
                         "excludes": ["artifact acquisition", "build", "persistent media preparation"],
                         "includes": ["host scheduling", "QEMU startup", "agentOS boot", "guest boot", "console provisioning", "SSH authentication"],
@@ -1152,6 +1165,18 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
             }
             Err(error) => result = Err(error),
         }
+    }
+
+    if result.is_ok()
+        && args.seeded_ssh_key.is_some()
+        && virtio_assertion
+            .as_ref()
+            .is_some_and(|proof| proof.bidirectional_console)
+    {
+        // Submit an empty login line after timing authentication. The normal
+        // VirtIO proof below requires actual queue delivery in both directions.
+        let mut cc = connect_cc_client(&cc_sock, Duration::from_secs(30), &mut qemu)?;
+        cc_send_raw_byte(&mut cc, 0, b'\r')?;
     }
 
     // Live-profile provisioning above establishes the guest's network and
@@ -1753,8 +1778,8 @@ fn timing_qemu_config(args: &TestArgs, profile: &HostProfilePlan) -> anyhow::Res
         1
     };
     Ok(format!(
-        "board={}\nmachine={}\nmemory={}\ncpu=cortex-a57\nsmp={smp}\nsel4_profile={sel4_profile}\naccel=tcg\nvirtio_mmio_force_legacy=off\nassert_live={}\nassert_agentos_virtio={}\n",
-        args.board, qemu.machine, qemu.memory, args.assert_live, args.assert_agentos_virtio
+        "board={}\nmachine={}\nmemory={}\ncpu=cortex-a57\nsmp={smp}\nsel4_profile={sel4_profile}\naccel=tcg\nvirtio_mmio_force_legacy=off\nauthenticated_ssh={}\nassert_agentos_virtio={}\n",
+        args.board, qemu.machine, qemu.memory, args.assert_live || args.seeded_ssh_key.is_some(), args.assert_agentos_virtio
     ))
 }
 
@@ -4621,6 +4646,47 @@ fn tail_chars(s: &str, max_chars: usize) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn authenticated_timing_config_compares_provisioning_paths_but_rejects_resource_changes() {
+        use clap::Parser;
+        #[derive(Parser)]
+        struct Args {
+            #[command(flatten)]
+            test: crate::TestArgs,
+        }
+        let live = Args::parse_from([
+            "test",
+            "--board",
+            "qemu_virt_aarch64",
+            "--guest-os",
+            "ubuntu-live",
+            "--assert-live",
+            "--assert-agentos-virtio",
+        ])
+        .test;
+        let mut seeded = live.clone();
+        seeded.assert_live = false;
+        seeded.seeded_ssh_key = Some("identity".into());
+        seeded.guest_os = "debian-arm64-nocloud".into();
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../guest-profiles");
+        let plan = |alias| {
+            let path = crate::cmd_guest_profile::resolve_alias(&root, alias).unwrap();
+            crate::cmd_guest_profile::host_profile_plan(&root, &path).unwrap()
+        };
+        let ubuntu = plan("ubuntu-live");
+        let mut debian = plan("debian-arm64-nocloud");
+        let baseline = super::timing_qemu_config(&live, &ubuntu).unwrap();
+        assert_eq!(
+            baseline,
+            super::timing_qemu_config(&seeded, &debian).unwrap()
+        );
+        debian.qemu.as_mut().unwrap().memory = "4G".into();
+        assert_ne!(
+            baseline,
+            super::timing_qemu_config(&seeded, &debian).unwrap()
+        );
+    }
+
     #[test]
     fn intel_login_prompt_survives_interleaved_cloud_init_output() {
         assert!(super::x86_has_login_prompt(

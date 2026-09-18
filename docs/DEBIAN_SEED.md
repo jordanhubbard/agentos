@@ -77,8 +77,16 @@ Same-disk cold-boot authentication also passed using the original host-key
 receipt: the third SSH attempt succeeded after a banner timeout and a server
 response timeout. Both receipts were byte-identical. Journald replaced its
 unclean prior journal after the QEMU stop; this test syncs the disk but does
-not shut the guest down cleanly. Authenticated timing receipts and timing
-parity remain pending.
+not shut the guest down cleanly.
+
+The gate also records `*.boot-timing.json` from the host QEMU launch request
+through completed authenticated SSH. Acquisition, build and managed disk
+preparation are excluded. A receipt is marked passed only after the canonical
+host-backed net, block and bidirectional console checks succeed. Cold-boot
+receipts are marked separately. The timing comparison accepts both Debian
+profiles, requires matching revisions and QEMU configurations, and rejects
+dirty-tree receipts. Fresh Debian and Ubuntu measurements are needed after
+the timing harness change; older receipts remain historical evidence.
 
 By default the output is an ext4 partition image. To produce a full raw disk,
 also supply `SEED_DISK_RAW` and `SEED_PARTITION_OFFSET`. For the pinned

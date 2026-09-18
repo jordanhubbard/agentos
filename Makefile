@@ -1284,6 +1284,7 @@ test-ubuntu-virtio:
 test-debian-nocloud-ssh:
 	@test -n "$(SEEDED_SSH_KEY)" -a -n "$(QEMU_TEST_SSH_PORT)" || { echo 'Set SEEDED_SSH_KEY and QEMU_TEST_SSH_PORT'; exit 1; }
 	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os debian-arm64-nocloud \
+		--assert-agentos-virtio \
 		--seeded-ssh-key "$(SEEDED_SSH_KEY)" --ssh-port "$(QEMU_TEST_SSH_PORT)" \
 		$(if $(SEEDED_SSH_KNOWN_HOSTS),--seeded-ssh-known-hosts "$(SEEDED_SSH_KNOWN_HOSTS)",) \
 		$(if $(SEEDED_DIRECTORY),--seeded-directory "$(SEEDED_DIRECTORY)",) \
