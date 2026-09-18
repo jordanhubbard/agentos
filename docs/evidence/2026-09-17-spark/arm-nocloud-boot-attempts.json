@@ -1,0 +1,36 @@
+{
+  "schema": 1,
+  "host": "sparky",
+  "profile": "debian-arm64-nocloud.toml",
+  "status": "not-qualified",
+  "attempts": [
+    {
+      "attempt": 3,
+      "revision": "a44c704",
+      "status": "emergency-mode-rejected",
+      "gate": "make test-debian-nocloud-ssh SEEDED_SSH_KEY=build/evidence/native-seed/identity SEEDED_DIRECTORY=build/evidence/arm-seeded-boot3 QEMU_TEST_SSH_PORT=12222 QEMU_TEST_TIMEOUT=1200",
+      "disk": "build/evidence/arm-seeded-boot3/guest.raw",
+      "gate_log": "/tmp/agentos-arm-nocloud-boot3.log",
+      "gate_log_sha256": "9d644e3eecde121484d4e102ea30828180918a63d1069f77d68af923c3dbd1c0",
+      "console": "build/tmp/agentos-qemu-J75oDd.console.log",
+      "console_sha256": "f3d1c49aac0d5ccd73c35afc38c18fe163dc987083c11e0b4cdc72f857c338d6",
+      "journal": "build/evidence/arm-seeded-boot3/system-recovered.journal",
+      "journal_sha256": "2feca41ad410d7bc170a070ad8a732286f610dd889824973930e0452c1ae5ec9",
+      "journal_recovery": "After QEMU stopped, extracted the root partition into a separate file and replayed its ext4 journal with e2fsck. The retained guest.raw was not repaired or modified. The recovered system journal ends at the first persistent flush around guest time 180.94 seconds; the console retains the later failure.",
+      "observation": "Kernel enumerated vda1 and vda15 and mounted root read/write. Systemd started waiting for the EFI PARTUUID at guest time 137.566 seconds. The console shows static-device setup still starting near the device timeout, followed by failed boot-efi.mount and emergency mode. No SSH attempt occurred.",
+      "lifecycle": "Gate exited 2 and QEMU stopped",
+      "hypothesis": "Startup prerequisites delay udev beyond the device deadline; not yet established by a passing controlled experiment"
+    },
+    {
+      "attempt": 4,
+      "revision": "a44c704 with experimental command-line edit",
+      "status": "dtb-checksum-rejected-before-qemu",
+      "gate_log": "/tmp/agentos-arm-nocloud-boot4.log",
+      "gate_log_sha256": "164c6f3bd854115cb9b39a7188480f8d11dd033b692f831f1c7c282b801ba535",
+      "observation": "Adding systemd.default_device_timeout_sec=600 changed the generated DTB. Decompiled old and new DTBs differ only in that bootargs addition; the old pinned checksum correctly rejected the modified artifact.",
+      "experimental_dtb_sha256": "6813337fe174ba659170286dcbc345fda396277e2d8f40eaf401d7fee1184584",
+      "lifecycle": "Gate exited 2; QEMU was never launched"
+    }
+  ],
+  "limits": "These failures and diagnostics do not establish ARM NoCloud login, SSH, cold-boot identity, timing parity, or release readiness. A fresh-disk experiment with the updated DTB pin is pending."
+}
