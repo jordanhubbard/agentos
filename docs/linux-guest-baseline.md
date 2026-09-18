@@ -162,8 +162,14 @@ witness to the automatically seeded guest. Both boots authenticate against
 the original SSH host identity; only the first writes the witness. The second
 fails on a missing or changed file and never repairs it. A failed or uncertain
 witness command is not retried. Evidence remains under
-`build/evidence/seeded-cold-boots-*`. This extends the test contract; a new
-target run is required before claiming seeded file-persistence qualification.
+`build/evidence/seeded-cold-boots-*`. The first target run at `e0d207f` wrote
+and flushed the witness, but systemd froze before login on the second boot.
+The [failure receipt](evidence/2026-09-18-spark/seeded-file-cold-boots.json)
+retains the exact scope and logs. Seeded file persistence remains unqualified.
+The profile rejects systemd's terminal `Failed to start up manager.` and
+`Freezing execution.` messages so subsequent runs report that failure without
+waiting for the authentication deadline. This changes only host-side failure
+detection; guest logging, sandboxing and the boot deadline remain unchanged.
 
 Successful single-profile live tests also write an
 `agentos-qemu-*.boot-timing.json` receipt beside the serial log. The monotonic
