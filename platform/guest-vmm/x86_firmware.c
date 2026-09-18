@@ -6,6 +6,10 @@
 #include "contracts/x86_vtx_proof.h"
 #include "platform/x86_cpu.h"
 #include "platform/x86_config.h"
+#ifdef AGENTOS_X86_BOOT_PROFILE
+#include <platform/x86_profile.h>
+extern const uint8_t _binary_x86_boot_profile_bin_start[], _binary_x86_boot_profile_bin_end[];
+#endif
 #include "platform/x86_apic.h"
 #include "platform/x86_ioapic.h"
 #include "platform/x86_virtio.h"
@@ -46,6 +50,11 @@ const char vmm_pd_name[] = "guest_vmm_x86";
 #define ACTIVITY 0x4826u
 #define IDT_VECTORING 0x4408u
 #define ENTRY_EXCEPTION_ERROR_CODE 0x4018u
+#ifdef AOS_X86_BOOT_SNAPSHOT_SECONDS
+#if AOS_X86_BOOT_SNAPSHOT_SECONDS < 1 || AOS_X86_BOOT_SNAPSHOT_SECONDS > 3600
+#error "Intel boot snapshot deadline must be 1..3600 seconds"
+#endif
+#endif
 static seL4_Word timer_exits, injections, eois, timer_shift, tsc_hz, halt_exits;
 static seL4_Word snapshot[AOS_X86_FIRMWARE_SNAPSHOT_WORDS];
 static seL4_Word halt_chain[AOS_X86_FIRMWARE_CHAIN_WORDS];
@@ -266,6 +275,12 @@ void aos_x86_firmware_run(seL4_CPtr ep, aos_x86_vmenter_return_t returned)
         .cmdline_size=(uint32_t)(_binary_x86_boot_cmdline_bin_end-_binary_x86_boot_cmdline_bin_start),
 #endif
     };
+#ifdef AGENTOS_X86_BOOT_PROFILE
+    if (!aos_x86_profile_bind(_binary_x86_boot_profile_bin_start,
+            (size_t)(_binary_x86_boot_profile_bin_end-_binary_x86_boot_profile_bin_start),
+            &boot, AOS_X86_FIRMWARE_RAM, AOS_X86_FIRMWARE_RAM_VA))
+        stop(ep,AOS_X86_VTX_PROOF_FAIL,0x505246u,0,0);
+#endif
     if (!aos_x86_config_boot(&config,&boot))
         stop(ep,AOS_X86_VTX_PROOF_FAIL,0x424f4fu,0,boot.kernel_size);
 #endif
@@ -299,12 +314,16 @@ void aos_x86_firmware_run(seL4_CPtr ep, aos_x86_vmenter_return_t returned)
     if (!aos_vmm_virtio_blk_read_boot(0u, 1u, block_boot_data,
                                      sizeof(block_boot_data), block_wait))
         stop(ep, AOS_X86_VTX_PROOF_FAIL, 0x424c4bu, 0, 2u);
+#ifndef AGENTOS_X86_LINUX_LOGIN
+    /* Qualification gates retain their exact fixture check. A distribution
+     * root disk has its own partition table and filesystem in this block. */
     static const char expected[] = "agentos-host-block-qualification-v1\n";
     for (unsigned i = 0; i < sizeof(block_boot_data); i++) {
         uint8_t want = i < sizeof(expected) - 1u ? (uint8_t)expected[i] : 0u;
         if (block_boot_data[i] != want)
             stop(ep, AOS_X86_VTX_PROOF_FAIL, 0x424c4bu, 0, 0x100u + i);
     }
+#endif
     uint32_t timer_quantum=0;
     const aos_x86_memory_t memory = {
         .ram=(const uint8_t *)AOS_X86_FIRMWARE_RAM_VA, .ram_size=AOS_X86_FIRMWARE_RAM,
@@ -339,6 +358,24 @@ void aos_x86_firmware_run(seL4_CPtr ep, aos_x86_vmenter_return_t returned)
         seL4_VCPUContext regs = save_registers(&returned);
         for (unsigned i=0; i<3; i++) boot_reads[i]=config.boot_reads[i];
         last_qualification=qual;
+#ifdef AGENTOS_X86_LINUX_LOGIN
+        /* A distribution boot transfers a full initrd and continues into an
+         * operating system. Its lifetime is controlled by the caller, not
+         * the small qualification fixture's instruction-exit budget. */
+        if (exits != UINT32_MAX) exits++;
+#ifdef AOS_X86_BOOT_SNAPSHOT_SECONDS
+        /* Explicit diagnostic runs stop with failure and retain the bounded
+         * code/stack snapshot. This is never a successful login assertion. */
+        if (hz && timestamp() - started >= hz * AOS_X86_BOOT_SNAPSHOT_SECONDS) {
+            if ((read_field(ep,EFER) & LMA) && (read_field(ep,CR0) & PG)) {
+                diagnostic_snapshot(&memory,guest_cr3,rip,read_field(ep,RSP),snapshot);
+                diagnostic_chain(&memory,guest_cr3,regs.ebp);
+            }
+            stop(ep,AOS_X86_VTX_PROOF_FAIL,0x425544u,rip,
+                 ((uint64_t)AOS_X86_BOOT_SNAPSHOT_SECONDS << 32) | (uint32_t)reason);
+        }
+#endif
+#else
         if (exits++ == 65536u) {
             /* Observe the returned exit before any emulation or re-entry.
              * The processed-exit budget and its failure status are unchanged. */
@@ -349,6 +386,7 @@ void aos_x86_firmware_run(seL4_CPtr ep, aos_x86_vmenter_return_t returned)
             stop(ep,AOS_X86_VTX_PROOF_FAIL,0x425544u,rip,
                  (UINT64_C(65536) << 32) | (uint32_t)reason);
         }
+#endif
         /* Non-instruction exits do not define an instruction length. */
         if (reason == 52u || reason == 7u) len=0;
         if (len > 15u) {

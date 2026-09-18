@@ -59,6 +59,45 @@ distribution-specific artifact or DTB branches. The VMM validates the fixed
 wire representation and checks embedded artifact sizes before the
 guest-neutral boot executor copies anything into guest RAM.
 
+For `build-initramfs-file` and `append-initramfs-file`, specify exactly one of
+inline UTF-8 `content` or `content_file`. A file payload is relative to the
+profile's acquisition output directory and requires `content_sha256` (64 hex
+digits). The executor reads at most 16 MiB, verifies the bytes before changing
+the destination, and preserves arbitrary binary data, including native ELF
+helpers. `path` remains the relative path inside the CPIO archive; `mode` is
+octal and at most `0777`. Both payload forms support `compression = "none"`
+or `"zstd"`. Existing text overlays do not need a file checksum.
+
+`build-static-linux-elf` compiles a repository-relative C `source` to an
+acquisition-directory-relative `output`, with `architecture = "x86_64"` or
+`"aarch64"`. The executor uses fixed freestanding static Clang/LLD flags and
+strips build metadata with llvm-objcopy; recipes cannot supply compiler flags
+or shell commands. Subsequent binary overlay steps pin the resulting bytes.
+
+`make fetch-guest GUEST_PROFILE=debian-amd64.toml` acquires the pinned Debian
+13 amd64 cloud image, extracts its kernel and initrd, preserves its stock udev
+hooks, and appends native hooks and virtio module configuration. Its
+`uefi-artifacts` build adapter provides an acquisition directory without FDT
+template fields. The FDT bundle executor still rejects UEFI profiles.
+`make gate-x86_64-linux-login X86_BOOT_PROFILE=debian-amd64.toml` selects,
+acquires and verifies this profile's kernel and initrd, emits its NUL-terminated
+command line, and applies its RAM budget. Supply the independently pinned
+`X86_FIRMWARE_IMAGE`/`X86_FIRMWARE_SHA256` and a disposable `X86_ROOT_DISK` as
+usual; separate `X86_BOOT_KERNEL`, initrd, command-line and RAM overrides
+conflict with profile selection. The selector accepts only the currently
+supported single primary guest, one vCPU, fixed VMM RAM mapping, canonical
+net/block/console devices and no requested CPU-feature policy. The emitted
+`build/tmp/x86-boot-profile/profile.bin` is embedded read-only in the x86 VMM
+after a build-time hash check. Before publishing boot blobs through fw_cfg,
+the VMM validates the manifest, compares its guest/device/RAM policy with the
+provisioned configuration, matches the complete command line, and recomputes
+kernel and initrd SHA-256 digests. Unsupported CPU-feature requests and
+artifact/resource mismatches stop the boot. UEFI still chooses image placement
+and entry; manifest artifact windows are resource bounds, not instructions to
+the EFI loader. This binding does not authenticate a release or replace secure
+boot. SSH provisioning remains separate integration work. The generated `disk.raw` is
+source media; use a disposable copy for writable boot tests.
+
 Legacy `--guest-os` and `GUEST_OS` spellings remain compatibility selectors.
 For a single guest, the value is resolved through the profile's `aliases`
 array. Multi-guest tests resolve a separate bounded document under

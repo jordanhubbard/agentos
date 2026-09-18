@@ -1,0 +1,76 @@
+{
+  "schema": 1,
+  "platform_regression": {
+    "revision": "bff2e2c6bec5dfc439b9033944c06f9eb61d994f",
+    "host": "Spark",
+    "command": "make gate",
+    "exit_code": 0,
+    "log": "/tmp/agentos-native-ssh-full-gate.log",
+    "log_sha256": "5a2d910f7f9544518ab5c5cefa721a9acb3a5f17d7ca259899e549683c6fb85a",
+    "scope": "Existing full platform gate including host checks, both root-task architecture boots and ARM guest network/block/console proofs; does not replace Debian parity or live GUI qualification"
+  },
+  "attempts": [
+    {
+      "attempt": 25,
+      "revision": "3007751",
+      "host": "madmax",
+      "status": "integrated-cold-boot-ssh-passed",
+      "disk": "Same boot-24.raw; no reseeding; new QEMU process",
+      "gate": "make gate-x86_64-debian-ssh with first-boot known_hosts; 600-second timeout; first SSH attempt passed",
+      "result": "Original login key authenticated with strict original host-key verification; exact x86_64 newline output; guest sync succeeded; gate exit 0",
+      "gate_log_sha256": "ae3bf19ed94008eeb1aa3bfd2171dedd4408aa700892e9080415652147f8ef0a",
+      "console_sha256": "ada3510d82685c6df9c3e7cb910cc46c51820683c9d099fc6afe98fa9da374cd",
+      "known_hosts_sha256": "7dfd8ba6397a8a6c3f5e3ce7752dd45773358197ce117aa34272cd28420e6f39",
+      "ssh_stdout_sha256": "aaf631698ae5160ceb04a97681a14887fdcab47cd6e0f163c87485b3b1340b62",
+      "identity_verification": "First and second boot known_hosts receipts compare byte-for-byte equal",
+      "local_evidence": "build/evidence/x86-native-ssh/agentos-qemu-Yhyq55.*",
+      "lifecycle": "Guest sync completed before gate shutdown; no Intel test QEMU remains",
+      "limits": "Single guest platform cold boot; not guest-slot reclamation, concurrent isolation, performance, GUI or full release qualification"
+    },
+    {
+      "attempt": 24,
+      "revision": "3007751",
+      "host": "madmax",
+      "status": "integrated-ssh-passed",
+      "disk": "/tmp/agentos-debian-amd64/boot-24.raw",
+      "provisioning": "Native make seed-guest-root; fresh raw disk copy, exact seed readback and full partition replacement verification",
+      "gate": "make gate-x86_64-debian-ssh; 600-second overall timeout; first SSH attempt passed",
+      "authentication": "Public-key only, agent disabled, strict Ed25519 host verification against the guest console report",
+      "host_key_fingerprint": "SHA256:JBfGsZoGFzQnvtjAiDPdhijrw8hZiXUdjc85lC3CSz4",
+      "result": "Exact x86_64 newline output; sudo -n sync succeeded; gate exit 0",
+      "gate_log_sha256": "ed5541997e6c068860009265269004a09b15830bfe337d89a56b1e6c662c8c5b",
+      "console_sha256": "e08a4297c598fa45df3c270cdd97824c5a1125cc596992503d51a10ceeb299bb",
+      "known_hosts_sha256": "7dfd8ba6397a8a6c3f5e3ce7752dd45773358197ce117aa34272cd28420e6f39",
+      "ssh_stdout_sha256": "aaf631698ae5160ceb04a97681a14887fdcab47cd6e0f163c87485b3b1340b62",
+      "root_task_elf_sha256": "ed474da37bae5b19f2a4a7ce7ab14508be3f73dd013902ad098888b09518ee37",
+      "local_evidence": "build/evidence/x86-native-ssh/agentos-qemu-LxAV1n.*",
+      "lifecycle": "First QEMU stopped after successful gate; boot25 starts a new QEMU with the same disk, login key and retained host key",
+      "limits": "Cold-boot followup is attempt 25; no throughput, latency, concurrent isolation, GUI or full release qualification"
+    },
+    {
+      "attempt": 23,
+      "revision": "121f53e",
+      "host": "madmax",
+      "status": "harness-failure",
+      "observation": "Debian emitted its login prompt and complete host-key report, but cloud-init appended authorized-key output after the prompt on the same line. The end-of-line prompt predicate did not recognize login, so no SSH attempt started.",
+      "lifecycle": "Owned QEMU PID 1295001 terminated after confirming the parser defect; gate exited 2. Disk and logs retained.",
+      "gate_log_sha256": "7bfa5f0b37296feae2c9c8413bbc566e89d21ebee595c7e6c11d6a5a6583ba88",
+      "console_log": "/tmp/agentos-v04-intel-discovery/build/tmp/agentos-qemu-4GuL4V.console.log",
+      "console_sha256": "cd26ee809d8f8f6c2745125aefc28d115481b2d2d7ee0d0e46c7b75462df4a90",
+      "fix": "3007751 recognizes hostname login prefixes with interleaved output; host checks and 97 Rust tests passed",
+      "followup": "Fresh boot24 disk; integrated SSH gate at 3007751 with 600-second timeout"
+    }
+  ],
+  "gui_regression": {
+    "repository": "jordanhubbard/agentos_gui",
+    "revision": "bb70be5",
+    "host": "Spark",
+    "checks": "make check test-rust and make test passed; 9 Rust tests and 116 Playwright tests",
+    "check_log_sha256": "a3f6c1fdd3657a56cf4dc3371f7e8d8de5df9d53870084b50b5d83d51addc69d",
+    "playwright_log_sha256": "593ac0c01324f9fdce02e7170e1b698c347596e7f932f90cc7996f38ca9e1451",
+    "native_build": "make build passed; optimized ARM aarch64 Linux ELF executable produced on Spark",
+    "native_binary_sha256": "c0a590cf03bbb1ae9a51cdc89edb994e2069364f6638d8572663145f1867f593",
+    "native_build_log_sha256": "80563edaa9461dfad4dff69e9ab0a207e52f8d4417944d660ca0d0d3ec5924de",
+    "scope": "Clean existing GUI checkout regression checks and native executable build; no live CC-PD desktop or interaction latency qualification"
+  }
+}

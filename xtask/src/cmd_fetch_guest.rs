@@ -1,7 +1,7 @@
 use crate::cmd_guest_profile::{self, RecipeStep};
 use crate::FetchGuestArgs;
 use anyhow::Context;
-use sha2::{Digest, Sha512};
+use sha2::{Digest, Sha256, Sha512};
 use std::ffi::OsString;
 use std::fs::{self, OpenOptions};
 use std::io::{ErrorKind, Read, Seek, SeekFrom, Write};
@@ -189,6 +189,7 @@ fn recipe_path(output_dir: &Path, value: &str) -> anyhow::Result<PathBuf> {
 
 fn execute_acquire_step(step: &RecipeStep, output_dir: &Path) -> anyhow::Result<()> {
     match step.action.as_str() {
+        "build-static-linux-elf" => build_static_linux_elf(step, &repo_root()?, output_dir)?,
         "stage-url" => {
             let output = recipe_arg(step, "output")?;
             let dest = recipe_path(output_dir, output)?;
@@ -243,7 +244,7 @@ fn execute_acquire_step(step: &RecipeStep, output_dir: &Path) -> anyhow::Result<
             &recipe_path(output_dir, recipe_arg(step, "output")?)?,
             recipe_arg(step, "path")?,
             recipe_arg(step, "mode")?,
-            recipe_arg(step, "content")?.as_bytes(),
+            &initramfs_payload(step, output_dir)?,
             step.args.get("compression").map(String::as_str),
         )?,
         "append-initramfs-file" => append_initramfs_file(
@@ -251,7 +252,7 @@ fn execute_acquire_step(step: &RecipeStep, output_dir: &Path) -> anyhow::Result<
             &recipe_path(output_dir, recipe_arg(step, "output")?)?,
             recipe_arg(step, "path")?,
             recipe_arg(step, "mode")?,
-            recipe_arg(step, "content")?.as_bytes(),
+            &initramfs_payload(step, output_dir)?,
             step.args.get("compression").map(String::as_str),
         )?,
         "convert-qcow2-raw" => convert_qcow2_to_raw(
@@ -558,6 +559,109 @@ fn verify_sha512(path: &Path, expected: &str) -> anyhow::Result<()> {
     );
     println!("[fetch-guest] SHA-512 verified: {}", path.display());
     Ok(())
+}
+
+fn build_static_linux_elf(step: &RecipeStep, root: &Path, output_dir: &Path) -> anyhow::Result<()> {
+    let target = match recipe_arg(step, "architecture")? {
+        "x86_64" => "x86_64-unknown-linux-gnu",
+        "aarch64" => "aarch64-unknown-linux-gnu",
+        other => anyhow::bail!("unsupported native helper architecture {other:?}"),
+    };
+    let source = recipe_path(root, recipe_arg(step, "source")?)?;
+    anyhow::ensure!(
+        source.extension().is_some_and(|ext| ext == "c"),
+        "native helper source must be C"
+    );
+    let output = recipe_path(output_dir, recipe_arg(step, "output")?)?;
+    if let Some(parent) = output.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let temp = output.with_extension("elf.tmp");
+    // This freestanding build uses Clang resource headers and LLD, not a
+    // discovered host GCC installation or its target runtime libraries.
+    let empty_toolchain = tempfile::tempdir()?;
+    let tool_path = std::env::var_os("AGENTOS_HOST_TOOL_PATH")
+        .or_else(|| std::env::var_os("PATH"))
+        .context("native helper compiler search path is unavailable")?;
+    let status = std::process::Command::new("clang")
+        .env("PATH", &tool_path)
+        .arg(format!(
+            "--gcc-toolchain={}",
+            empty_toolchain.path().display()
+        ))
+        .args([
+            "-target",
+            target,
+            "-ffreestanding",
+            "-fno-builtin",
+            "-fno-stack-protector",
+            "-fno-pie",
+            "-nostdlib",
+            "-static",
+            "-fuse-ld=lld",
+            "-O2",
+            "-Wall",
+            "-Wextra",
+            "-Werror",
+            "-Wl,--build-id=none",
+            "-Wl,-e,_start",
+        ])
+        .arg(&source)
+        .arg("-o")
+        .arg(&temp)
+        .status()
+        .context("compile native Linux helper")?;
+    anyhow::ensure!(status.success(), "native Linux helper compilation failed");
+    let status = std::process::Command::new("llvm-objcopy")
+        .env("PATH", &tool_path)
+        .args(["--strip-all", "--remove-section=.comment"])
+        .arg(&temp)
+        .status()
+        .context("normalize native Linux helper")?;
+    anyhow::ensure!(status.success(), "native Linux helper normalization failed");
+    fs::rename(temp, output)?;
+    Ok(())
+}
+
+fn initramfs_payload(step: &RecipeStep, output_dir: &Path) -> anyhow::Result<Vec<u8>> {
+    match (step.args.get("content"), step.args.get("content_file")) {
+        (Some(content), None) => {
+            anyhow::ensure!(
+                !step.args.contains_key("content_sha256"),
+                "content_sha256 requires content_file"
+            );
+            Ok(content.as_bytes().to_vec())
+        }
+        (None, Some(path)) => {
+            let expected = recipe_arg(step, "content_sha256")?;
+            anyhow::ensure!(
+                expected.len() == 64 && expected.bytes().all(|b| b.is_ascii_hexdigit()),
+                "content_sha256 must contain 64 hexadecimal digits"
+            );
+            let path = recipe_path(output_dir, path)?;
+            let file = fs::File::open(&path)
+                .with_context(|| format!("open initramfs payload {}", path.display()))?;
+            anyhow::ensure!(
+                file.metadata()?.is_file(),
+                "initramfs payload must be a regular file"
+            );
+            const LIMIT: u64 = 16 * 1024 * 1024;
+            let mut bytes = Vec::new();
+            file.take(LIMIT + 1).read_to_end(&mut bytes)?;
+            anyhow::ensure!(
+                bytes.len() as u64 <= LIMIT,
+                "initramfs payload exceeds 16 MiB"
+            );
+            let actual = format!("{:x}", Sha256::digest(&bytes));
+            anyhow::ensure!(
+                actual.eq_ignore_ascii_case(expected),
+                "initramfs payload SHA-256 mismatch for {}",
+                path.display()
+            );
+            Ok(bytes)
+        }
+        _ => anyhow::bail!("initramfs requires exactly one of content or content_file"),
+    }
 }
 
 fn append_initramfs_file(
@@ -1374,6 +1478,91 @@ fn symlink_file(src: &Path, dest: &Path) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_helper_recipe_builds_reproducible_static_elf_for_both_architectures() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(
+            dir.path().join("helper.c"),
+            b"void _start(void) { for (;;) {} }\n",
+        )
+        .unwrap();
+        for (architecture, machine) in [("x86_64", 62u16), ("aarch64", 183u16)] {
+            let step = RecipeStep {
+                action: "build-static-linux-elf".into(),
+                args: [
+                    ("source", "helper.c"),
+                    ("output", "helper"),
+                    ("architecture", architecture),
+                ]
+                .into_iter()
+                .map(|(k, v)| (k.into(), v.into()))
+                .collect(),
+            };
+            build_static_linux_elf(&step, dir.path(), dir.path()).unwrap();
+            let first = fs::read(dir.path().join("helper")).unwrap();
+            assert_eq!(&first[..4], b"\x7fELF");
+            assert_eq!(first[4], 2); // ELF64
+            assert_eq!(u16::from_le_bytes([first[16], first[17]]), 2); // executable
+            assert_eq!(u16::from_le_bytes([first[18], first[19]]), machine);
+            build_static_linux_elf(&step, dir.path(), dir.path()).unwrap();
+            assert_eq!(fs::read(dir.path().join("helper")).unwrap(), first);
+            fs::write(
+                dir.path().join("helper.c"),
+                b"#error intentional build failure\n",
+            )
+            .unwrap();
+            assert!(build_static_linux_elf(&step, dir.path(), dir.path()).is_err());
+            assert_eq!(fs::read(dir.path().join("helper")).unwrap(), first);
+            fs::write(
+                dir.path().join("helper.c"),
+                b"void _start(void) { for (;;) {} }\n",
+            )
+            .unwrap();
+        }
+    }
+
+    #[test]
+    fn binary_initramfs_recipe_preserves_bytes_and_rejects_changed_payload() {
+        let dir = tempfile::tempdir().unwrap();
+        let payload = b"\x7fELF\0\xff\x80\n";
+        fs::write(dir.path().join("helper"), payload).unwrap();
+        fs::write(dir.path().join("base"), b"old").unwrap();
+        let mut step = RecipeStep {
+            action: "append-initramfs-file".into(),
+            args: [
+                ("source", "base".into()),
+                ("output", "ready".into()),
+                ("path", "init".into()),
+                ("mode", "0755".into()),
+                ("content_file", "helper".into()),
+                ("content_sha256", format!("{:x}", Sha256::digest(payload))),
+            ]
+            .into_iter()
+            .map(|(k, v)| (k.into(), v))
+            .collect(),
+        };
+        execute_acquire_step(&step, dir.path()).unwrap();
+        let bytes = fs::read(dir.path().join("ready")).unwrap();
+        assert_eq!(&bytes[..4], b"old\0");
+        let archive = &bytes[4..];
+        assert_eq!(&archive[..6], b"070701");
+        assert_eq!(&archive[14..22], b"000081ed");
+        assert_eq!(&archive[54..62], b"00000008");
+        assert_eq!(&archive[110..115], b"init\0");
+        assert_eq!(&archive[116..124], payload);
+        fs::write(dir.path().join("helper"), b"changed").unwrap();
+        assert!(execute_acquire_step(&step, dir.path()).is_err());
+        assert_eq!(fs::read(dir.path().join("ready")).unwrap(), bytes);
+        step.args.insert("content".into(), "ambiguous".into());
+        assert!(execute_acquire_step(&step, dir.path()).is_err());
+        step.args.remove("content");
+        step.args.remove("content_sha256");
+        assert!(execute_acquire_step(&step, dir.path()).is_err());
+        step.args.insert("content_sha256".into(), "00".repeat(32));
+        step.args.insert("content_file".into(), "../helper".into());
+        assert!(execute_acquire_step(&step, dir.path()).is_err());
+    }
 
     #[test]
     fn initramfs_overlay_is_aligned_bounded_newc() {

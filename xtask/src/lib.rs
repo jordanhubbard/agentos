@@ -18,6 +18,7 @@ pub mod cmd_policy_check;
 pub mod cmd_release;
 pub mod cmd_render_deck;
 pub mod cmd_run_tests;
+pub mod cmd_seed_guest;
 pub mod cmd_setup;
 pub mod cmd_test;
 pub mod cmd_test_api;
@@ -97,6 +98,23 @@ pub struct TestArgs {
     /// Host TCP port forwarded to guest SSH; 0 disables SSH forwarding.
     #[arg(long, env = "AGENTOS_TEST_SSH_PORT", default_value_t = 0)]
     pub ssh_port: u16,
+    /// Authenticate a preseeded ARM guest using a host key reported through CC-PD.
+    #[arg(long, conflicts_with_all = ["assert_live", "assert_desktop", "x86_ssh_key"])]
+    pub seeded_ssh_key: Option<std::path::PathBuf>,
+    /// Create fresh NoCloud media and a retained SSH identity from host.seed.
+    #[arg(long, conflicts_with_all = ["seeded_ssh_key", "seeded_directory", "seeded_ssh_known_hosts", "assert_live", "assert_desktop", "x86_ssh_key", "assert_persistent_boots", "no_build"])]
+    pub seed_profile: bool,
+    /// Seed once, then authenticate two cold boots with the same disk and host key.
+    #[arg(long, requires = "seed_profile")]
+    pub assert_seeded_cold_boots: bool,
+    #[arg(skip)]
+    pub seeded_source: Option<std::path::PathBuf>,
+    /// Pin the original host identity on a subsequent boot of the seeded disk.
+    #[arg(long, requires_all = ["seeded_ssh_key", "seeded_directory"])]
+    pub seeded_ssh_known_hosts: Option<std::path::PathBuf>,
+    /// Retain a managed writable disk copy and reuse it for the cold boot.
+    #[arg(long, requires = "seeded_ssh_key")]
+    pub seeded_directory: Option<std::path::PathBuf>,
     #[arg(long, default_value_t = 120)]
     pub timeout_secs: u64,
     #[arg(long)]
@@ -147,8 +165,21 @@ pub struct TestArgs {
         conflicts_with = "assert_guest_faults"
     )]
     pub assert_x86_userspace: bool,
-    /// Reuse a qualification disk; writable only with --x86-block-write.
-    #[arg(long, requires = "assert_x86_userspace")]
+    /// Require a Linux login prompt over the canonical Intel virtio console.
+    #[arg(long, requires = "assert_firmware_reset", requires = "x86_block_image",
+          conflicts_with_all = ["assert_x86_userspace", "assert_guest_faults"])]
+    pub assert_x86_linux_login: bool,
+    /// Acquire and verify an x86 UEFI boot profile instead of separate artifact arguments.
+    #[arg(long, requires = "assert_x86_linux_login")]
+    pub x86_boot_profile: Option<std::path::PathBuf>,
+    /// Prove Debian key-only SSH after login, pinning the host key from its console.
+    #[arg(long, requires = "assert_x86_linux_login")]
+    pub x86_ssh_key: Option<std::path::PathBuf>,
+    /// Reuse a first-boot gate's known_hosts receipt for a cold-boot identity check.
+    #[arg(long, requires = "x86_ssh_key")]
+    pub x86_ssh_known_hosts: Option<std::path::PathBuf>,
+    /// Reuse a root or qualification disk; writable only with --x86-block-write.
+    #[arg(long, requires = "assert_firmware_reset")]
     pub x86_block_image: Option<std::path::PathBuf>,
     #[arg(long, requires = "x86_block_image")]
     pub x86_block_write: bool,

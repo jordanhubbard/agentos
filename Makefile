@@ -219,6 +219,11 @@ MICROKIT_SDK_URL := https://github.com/seL4/microkit/releases/download/$(SEL4_SD
 
 # ─── Rust toolchain ──────────────────────────────────────────────────────────
 export PATH := $(HOME)/.cargo/bin:$(PATH)
+# Native guest helpers must keep their acquisition toolchain when the kernel
+# sub-make prepends its own LLVM directory to PATH.
+ifndef AGENTOS_HOST_TOOL_PATH
+export AGENTOS_HOST_TOOL_PATH := $(PATH)
+endif
 
 # ─── Native arch / HW-accelerated QEMU ────────────────────────────────────
 # Normalise uname -m: macOS Apple Silicon reports "arm64", seL4 uses "aarch64"
@@ -539,6 +544,10 @@ build-tools:
 # =============================================================================
 # fetch-guest: execute the bounded acquisition recipe for selected profiles
 # =============================================================================
+.PHONY: seed-guest-root
+seed-guest-root:
+	@cargo xtask seed-guest --root-ext4 "$(SEED_ROOT_EXT4)" --public-key "$(SEED_PUBLIC_KEY)" --output "$(SEED_OUTPUT)" --instance-id "$(SEED_INSTANCE_ID)" $(if $(SEED_DISK_RAW),--disk-raw "$(SEED_DISK_RAW)" --partition-offset "$(SEED_PARTITION_OFFSET)",)
+
 fetch-guest:
 ifneq ($(strip $(GUEST_PRIMARY_PROFILE)),)
 	@cargo xtask fetch-guest --profile $(GUEST_PRIMARY_PROFILE)
@@ -686,7 +695,56 @@ gate-x86_64-userspace:
 		--assert-vmx-exit --assert-firmware-reset --assert-x86-userspace \
 		--timeout-secs $(QEMU_TEST_TIMEOUT)
 
+.PHONY: gate-x86_64-linux-login
+.PHONY: debian-x86-console-hook
+.PHONY: debian-aarch64-console-hook
+debian-aarch64-console-hook:
+	@mkdir -p $(BUILD_TMP_DIR)/debian-aarch64/empty-toolchain
+	clang --gcc-toolchain=$(BUILD_TMP_DIR)/debian-aarch64/empty-toolchain -target aarch64-unknown-linux-gnu -ffreestanding -fno-builtin \
+		-fno-stack-protector -fno-pie -nostdlib -static -fuse-ld=lld -O2 \
+		-Wall -Wextra -Werror -Wl,--build-id=none -Wl,-e,_start \
+		guest-profiles/helpers/debian_init_bottom_aarch64.c -o $(BUILD_TMP_DIR)/debian-aarch64/udev
+	llvm-objcopy --strip-all --remove-section=.comment $(BUILD_TMP_DIR)/debian-aarch64/udev
+	clang --gcc-toolchain=$(BUILD_TMP_DIR)/debian-aarch64/empty-toolchain -target aarch64-unknown-linux-gnu -ffreestanding -fno-builtin \
+		-fno-stack-protector -fno-pie -nostdlib -static -fuse-ld=lld -O2 \
+		-Wall -Wextra -Werror -Wl,--build-id=none -Wl,-e,_start \
+		guest-profiles/helpers/debian_init_top_aarch64.c -o $(BUILD_TMP_DIR)/debian-aarch64/udev-top
+	llvm-objcopy --strip-all --remove-section=.comment $(BUILD_TMP_DIR)/debian-aarch64/udev-top
+
+debian-x86-console-hook:
+	@mkdir -p $(BUILD_TMP_DIR)/debian-x86
+	clang -target x86_64-unknown-linux-gnu -ffreestanding -fno-builtin \
+		-fno-stack-protector -fno-pie -nostdlib -static -fuse-ld=lld -O2 \
+		-Wall -Wextra -Werror -Wl,--build-id=none -Wl,-e,_start \
+		guest-profiles/helpers/debian_init_bottom_x86_64.c \
+		-o $(BUILD_TMP_DIR)/debian-x86/udev
+	llvm-objcopy --strip-all --remove-section=.comment $(BUILD_TMP_DIR)/debian-x86/udev
+	clang -target x86_64-unknown-linux-gnu -ffreestanding -fno-builtin \
+		-fno-stack-protector -fno-pie -nostdlib -static -fuse-ld=lld -O2 \
+		-Wall -Wextra -Werror -Wl,--build-id=none -Wl,-e,_start \
+		guest-profiles/helpers/debian_init_top_x86_64.c \
+		-o $(BUILD_TMP_DIR)/debian-x86/udev-top
+	llvm-objcopy --strip-all --remove-section=.comment $(BUILD_TMP_DIR)/debian-x86/udev-top
+
+gate-x86_64-linux-login:
+	@test -n "$(X86_ROOT_DISK)" || { echo 'Set X86_ROOT_DISK to a disposable raw root disk'; exit 1; }
+	@cargo xtask qemu-test --board x86_64_generic_vtx --guest-os none \
+		--assert-vmx-exit --assert-firmware-reset --assert-x86-linux-login \
+		$(if $(X86_BOOT_PROFILE),--x86-boot-profile $(X86_BOOT_PROFILE),) \
+		--x86-block-image "$(X86_ROOT_DISK)" --x86-block-write \
+		--timeout-secs $(QEMU_TEST_TIMEOUT)
+
 .PHONY: gate-x86_64-storage
+.PHONY: gate-x86_64-debian-ssh
+gate-x86_64-debian-ssh:
+	@test -n "$(X86_ROOT_DISK)" -a -n "$(X86_SSH_KEY)" -a -n "$(X86_SSH_PORT)" || { echo 'Set X86_ROOT_DISK, X86_SSH_KEY and X86_SSH_PORT'; exit 1; }
+	@cargo xtask qemu-test --board x86_64_generic_vtx --guest-os none \
+		--assert-vmx-exit --assert-firmware-reset --assert-x86-linux-login \
+		--x86-boot-profile debian-amd64.toml --x86-ssh-key "$(X86_SSH_KEY)" \
+		$(if $(X86_SSH_KNOWN_HOSTS),--x86-ssh-known-hosts "$(X86_SSH_KNOWN_HOSTS)",) \
+		--ssh-port "$(X86_SSH_PORT)" --x86-block-image "$(X86_ROOT_DISK)" \
+		--x86-block-write --timeout-secs $(QEMU_TEST_TIMEOUT)
+
 gate-x86_64-storage:
 	@cargo xtask x86-storage --timeout-secs $(QEMU_TEST_TIMEOUT)
 
@@ -739,6 +797,15 @@ test-x86-firmware-build:
 # but it is not counted among the host tests below.
 test-host: policy-check guest-profile-check lint-source test-integration test-operator-host test-log-ring-host test-framebuffer-host
 test-host: test-x86-cpu-host
+test-host: test-x86-profile-host
+.PHONY: test-x86-profile-host
+test-x86-profile-host:
+	@mkdir -p $(BUILD_TMP_DIR)
+	@gcc -std=c11 -Wall -Wextra -Werror -I platform/include -idirafter kernel/agentos-root-task/include \
+		tests/platform/test_x86_profile.c platform/guest-vmm/x86_profile.c \
+		platform/guest-vmm/profile.c libs/pd-support/sha256_mini.c \
+		-o $(BUILD_TMP_DIR)/test_x86_profile
+	@$(BUILD_TMP_DIR)/test_x86_profile
 test-host: test-virtio-host-transport
 test-host: test-virtio-pci-caps
 
@@ -1213,6 +1280,31 @@ test-ubuntu-virtio:
 # End-state proof: boot Ubuntu's real Casper initrd and ISO filesystem to a
 # serial login while requiring real I/O through every agentOS VirtIO class.
 .PHONY: test-debian-live
+.PHONY: test-debian-nocloud-ssh
+.PHONY: test-debian-nocloud-auto
+test-debian-nocloud-auto: QEMU_TEST_TIMEOUT = 1200
+test-debian-nocloud-auto: QEMU_TEST_SSH_PORT = 12222
+test-debian-nocloud-auto:
+	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os debian-arm64-nocloud \
+		--seed-profile --assert-agentos-virtio --ssh-port $(QEMU_TEST_SSH_PORT) --timeout-secs $(QEMU_TEST_TIMEOUT)
+
+.PHONY: test-debian-nocloud-cold-boots
+test-debian-nocloud-cold-boots: QEMU_TEST_TIMEOUT = 1200
+test-debian-nocloud-cold-boots: QEMU_TEST_SSH_PORT = 12222
+test-debian-nocloud-cold-boots:
+	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os debian-arm64-nocloud \
+		--seed-profile --assert-seeded-cold-boots --assert-agentos-virtio \
+		--ssh-port $(QEMU_TEST_SSH_PORT) --timeout-secs $(QEMU_TEST_TIMEOUT)
+
+test-debian-nocloud-ssh:
+	@test -n "$(SEEDED_SSH_KEY)" -a -n "$(QEMU_TEST_SSH_PORT)" || { echo 'Set SEEDED_SSH_KEY and QEMU_TEST_SSH_PORT'; exit 1; }
+	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os debian-arm64-nocloud \
+		--assert-agentos-virtio \
+		--seeded-ssh-key "$(SEEDED_SSH_KEY)" --ssh-port "$(QEMU_TEST_SSH_PORT)" \
+		$(if $(SEEDED_SSH_KNOWN_HOSTS),--seeded-ssh-known-hosts "$(SEEDED_SSH_KNOWN_HOSTS)",) \
+		$(if $(SEEDED_DIRECTORY),--seeded-directory "$(SEEDED_DIRECTORY)",) \
+		--timeout-secs $(QEMU_TEST_TIMEOUT)
+
 test-debian-live:
 	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os debian --timeout-secs $(QEMU_TEST_TIMEOUT) --assert-live --assert-agentos-virtio --ssh-port $(QEMU_TEST_SSH_PORT)
 

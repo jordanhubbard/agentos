@@ -1,0 +1,23 @@
+{
+  "revision": "445684821eea41df27ff8deb4c22b1790c3fcd0f",
+  "host": "Spark ARM64 Linux",
+  "command": "make gate",
+  "result": "passed",
+  "exit_code": 0,
+  "log": "/tmp/agentos-nocloud-timing-full-gate.log",
+  "log_sha256": "3a2b3dd90b0fba00c11b518ebf3afc670d5f56e5adb4f2694e7df4b485286344",
+  "checks": [
+    "Host suite",
+    "AArch64 root boot",
+    "x86_64 reduced root boot under emulation",
+    "AArch64 guest emulated virtio-net negotiation and queue traffic",
+    "AArch64 guest emulated virtio-blk negotiation and completed request",
+    "AArch64 guest bidirectional console through CC-PD"
+  ],
+  "limits": [
+    "The x86 root smoke test on Spark does not qualify Intel VMX guest execution.",
+    "This gate still uses the existing guest I/O profiles; it does not promote NoCloud Debian to the required baseline.",
+    "This revision does not include the complete graphics/input integration stack or live agentos_gui qualification.",
+    "This is revision-specific OS gate evidence, not complete v0.4 release acceptance."
+  ]
+}

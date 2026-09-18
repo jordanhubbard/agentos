@@ -128,6 +128,27 @@ endif
 ifeq ($(AGENTOS_BOARD),x86_64_generic_vtx)
   CFLAGS += -DAGENTOS_X86_VTX=1
   CFLAGS_ROOT_TASK += -DAGENTOS_X86_VTX=1
+  ifeq ($(X86_LINUX_LOGIN),1)
+    ifneq ($(X86_FIRMWARE_RESET),1)
+      $(error X86_LINUX_LOGIN requires X86_FIRMWARE_RESET=1)
+    endif
+    ifeq ($(strip $(X86_BOOT_KERNEL)),)
+      $(error X86_LINUX_LOGIN requires X86_BOOT_KERNEL)
+    endif
+    ifeq ($(strip $(X86_BOOT_INITRD)),)
+      $(error X86_LINUX_LOGIN requires X86_BOOT_INITRD)
+    endif
+    ifeq ($(strip $(X86_BOOT_CMDLINE_FILE)),)
+      $(error X86_LINUX_LOGIN requires X86_BOOT_CMDLINE_FILE)
+    endif
+    ifeq ($(X86_USERSPACE_PROOF),1)
+      $(error X86_LINUX_LOGIN conflicts with X86_USERSPACE_PROOF)
+    endif
+    CFLAGS += -DAGENTOS_X86_LINUX_LOGIN=1
+    ifneq ($(strip $(X86_BOOT_SNAPSHOT_SECONDS)),)
+      CFLAGS += -DAOS_X86_BOOT_SNAPSHOT_SECONDS=$(X86_BOOT_SNAPSHOT_SECONDS)
+    endif
+  endif
   ifeq ($(X86_USERSPACE_PROOF),1)
     ifneq ($(X86_FIRMWARE_RESET),1)
       $(error X86_USERSPACE_PROOF requires X86_FIRMWARE_RESET=1)
@@ -155,8 +176,13 @@ ifeq ($(AGENTOS_BOARD),x86_64_generic_vtx)
     CFLAGS_ROOT_TASK += -DAGENTOS_X86_FIRMWARE_RESET=1
     ROOT_TASK_OBJS += $(BUILD_DIR)/x86_firmware.o
     ifneq ($(strip $(X86_BOOT_KERNEL)),)
-      CFLAGS += -DAGENTOS_X86_BOOT_KERNEL=1 -DAOS_X86_FIRMWARE_RAM=0x10000000u
-      CFLAGS_ROOT_TASK += -DAOS_X86_FIRMWARE_RAM=0x10000000u
+      X86_BOOT_RAM_BYTES ?= 0x10000000u
+      CFLAGS += -DAGENTOS_X86_BOOT_KERNEL=1 -DAOS_X86_FIRMWARE_RAM=$(X86_BOOT_RAM_BYTES)
+      CFLAGS_ROOT_TASK += -DAOS_X86_FIRMWARE_RAM=$(X86_BOOT_RAM_BYTES)
+      ifneq ($(X86_BOOT_RAM_BYTES),0x10000000u)
+        CFLAGS += -DAOS_X86_FIRMWARE_ROM_VA=0xc0000000u
+        CFLAGS_ROOT_TASK += -DAOS_X86_FIRMWARE_ROM_VA=0xc0000000u
+      endif
     endif
   endif
 endif
@@ -176,6 +202,35 @@ $(BUILD_DIR)/x86_fault_guest_blob.o: $(BUILD_DIR)/x86_fault_guest.bin
 endif
 
 ifeq ($(X86_FIRMWARE_RESET),1)
+ifneq ($(strip $(X86_BOOT_PROFILE_BIN)),)
+ifeq ($(strip $(X86_BOOT_KERNEL)),)
+$(error X86_BOOT_PROFILE_BIN requires X86_BOOT_KERNEL)
+endif
+ifeq ($(strip $(X86_BOOT_INITRD)),)
+$(error X86_BOOT_PROFILE_BIN requires X86_BOOT_INITRD)
+endif
+ifeq ($(strip $(X86_BOOT_CMDLINE_FILE)),)
+$(error X86_BOOT_PROFILE_BIN requires X86_BOOT_CMDLINE_FILE)
+endif
+CFLAGS += -DAGENTOS_X86_BOOT_PROFILE=1
+$(BUILD_DIR)/guest_vmm_primary.elf: $(BUILD_DIR)/x86_boot_profile.o $(BUILD_DIR)/x86_profile.o $(BUILD_DIR)/x86_profile_validate.o $(BUILD_DIR)/x86_profile_sha256.o
+$(BUILD_DIR)/x86_boot_profile.o: FORCE
+	@mkdir -p $(BUILD_DIR)
+	@cp "$(X86_BOOT_PROFILE_BIN)" "$(BUILD_DIR)/x86_boot_profile.bin"
+	@test "$$(wc -c < "$(BUILD_DIR)/x86_boot_profile.bin")" -eq 640
+	@printf '%s  %s\n' '$(X86_BOOT_PROFILE_SHA256)' '$(BUILD_DIR)/x86_boot_profile.bin' | sha256sum -c -
+	cd $(BUILD_DIR) && $(OBJCOPY) -I binary -O elf64-x86-64 -B i386:x86-64 \
+		--rename-section .data=.rodata,alloc,load,readonly,data,contents x86_boot_profile.bin x86_boot_profile.o
+$(BUILD_DIR)/x86_profile.o: $(REPO_ROOT_MK)/platform/guest-vmm/x86_profile.c
+	@mkdir -p $(BUILD_DIR)
+	$(CC) -c $(CFLAGS) $< -o $@
+$(BUILD_DIR)/x86_profile_validate.o: $(REPO_ROOT_MK)/platform/guest-vmm/profile.c
+	@mkdir -p $(BUILD_DIR)
+	$(CC) -c $(CFLAGS) $< -o $@
+$(BUILD_DIR)/x86_profile_sha256.o: $(REPO_ROOT_MK)/libs/pd-support/sha256_mini.c
+	@mkdir -p $(BUILD_DIR)
+	$(CC) -c $(CFLAGS) $< -o $@
+endif
 ifneq ($(strip $(X86_BOOT_KERNEL)),)
 $(BUILD_DIR)/guest_vmm_primary.elf: $(BUILD_DIR)/x86_boot_kernel.o
 $(BUILD_DIR)/x86_boot_kernel.o: FORCE

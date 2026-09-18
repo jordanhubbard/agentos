@@ -367,7 +367,116 @@ pub fn run_x86_storage(timeout_secs: u64) -> anyhow::Result<()> {
     Ok(())
 }
 
+fn seeded_boot_guard(
+    directory: &Path,
+    plan: &str,
+    image: &Path,
+    second: bool,
+) -> anyhow::Result<()> {
+    let receipt = directory.join("seeded-profile.txt");
+    let retained_image = directory.join("seeded-agentos.img");
+    if second {
+        anyhow::ensure!(
+            std::fs::read_to_string(&receipt)? == plan,
+            "seeded profile changed between cold boots"
+        );
+        crate::persistent_media::require_same_image(&retained_image, image)?;
+    } else {
+        let mut record = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(receipt)?;
+        record.write_all(plan.as_bytes())?;
+        record.sync_all()?;
+        let mut output = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(retained_image)?;
+        std::io::copy(&mut std::fs::File::open(image)?, &mut output)?;
+        output.sync_all()?;
+    }
+    Ok(())
+}
+
+fn run_seeded_cold_boots(args: &TestArgs) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        args.seed_profile && args.seeded_directory.is_none(),
+        "two seeded cold boots require a fresh automatic seed"
+    );
+    let parent = repo_root()?.join("build/evidence");
+    std::fs::create_dir_all(&parent)?;
+    let directory = tempfile::Builder::new()
+        .prefix("seeded-cold-boots-")
+        .tempdir_in(parent)?
+        .keep();
+    println!(
+        "[xtask:test] Seeded cold-boot evidence: {}",
+        directory.display()
+    );
+    let receipt = directory.join("cold-boots.json");
+    let mut status = serde_json::json!({"schema":"agentos.seeded_cold_boots.v1",
+        "profile":args.guest_os, "status":"running", "first_boot":false, "second_boot":false,
+        "scope":"two authenticated QEMU cold boots with original host identity; sync followed by QEMU stop, not orderly shutdown or guest-slot recreation"});
+    std::fs::write(&receipt, serde_json::to_vec_pretty(&status)?)?;
+    let mut round = args.clone();
+    round.assert_seeded_cold_boots = false;
+    round.seeded_directory = Some(directory.clone());
+    for second in [false, true] {
+        if second {
+            round.seed_profile = false;
+            round.no_build = true;
+            round.seeded_ssh_key = Some(directory.join("identity"));
+            round.seeded_ssh_known_hosts = Some(directory.join("first-known_hosts"));
+            round.seeded_source = Some(directory.join("seeded.raw"));
+        }
+        if let Err(error) = run(&round) {
+            status["status"] = serde_json::json!("failed");
+            status["error"] = serde_json::json!(format!("{error:#}"));
+            std::fs::write(&receipt, serde_json::to_vec_pretty(&status)?)?;
+            return Err(error);
+        }
+        status[if second { "second_boot" } else { "first_boot" }] = serde_json::json!(true);
+        std::fs::write(&receipt, serde_json::to_vec_pretty(&status)?)?;
+    }
+    status["status"] = serde_json::json!("passed");
+    std::fs::write(receipt, serde_json::to_vec_pretty(&status)?)?;
+    println!("PASS: two seeded cold boots retained the disk and original SSH host identity");
+    Ok(())
+}
+
 pub fn run(args: &TestArgs) -> anyhow::Result<()> {
+    if args.assert_seeded_cold_boots {
+        return run_seeded_cold_boots(args);
+    }
+    let mut effective_args = args.clone();
+    let args = &mut effective_args;
+    anyhow::ensure!(
+        !args.seed_profile
+            || (args.board == "qemu_virt_aarch64"
+                && args.ssh_port != 0
+                && !args.no_build
+                && args.seeded_ssh_key.is_none()
+                && args.seeded_ssh_known_hosts.is_none()
+                && !args.assert_live
+                && !args.assert_desktop
+                && !args.assert_persistent_boots),
+        "automatic seed requires a fresh ARM profile boot and nonzero SSH port"
+    );
+    anyhow::ensure!(
+        args.seeded_ssh_key.is_none()
+            || (args.board == "qemu_virt_aarch64"
+                && args.ssh_port != 0
+                && args
+                    .seeded_ssh_key
+                    .as_ref()
+                    .is_some_and(|path| path.is_file())),
+        "seeded SSH proof requires an ARM profile, private-key file and nonzero --ssh-port"
+    );
+    anyhow::ensure!(
+        args.x86_ssh_key.is_none()
+            || (args.ssh_port != 0 && args.x86_ssh_key.as_ref().is_some_and(|p| p.is_file())),
+        "Intel SSH proof requires a private-key file and nonzero --ssh-port"
+    );
     anyhow::ensure!(
         args.x86_block_image.is_none() || args.board == "x86_64_generic_vtx",
         "qualification block image requires the Intel VMX board"
@@ -442,6 +551,10 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
     if let Some(profile) = &mut profile_plan {
         apply_profile_ssh_port(profile, args.ssh_port);
     }
+    anyhow::ensure!(
+        !args.seed_profile || profile_plan.as_ref().is_some_and(|p| p.seed.is_some()),
+        "automatic seed requires a host.seed profile contract"
+    );
     if let Some(profile) = &profile_plan {
         println!(
             "[xtask:test] resolved alias {:?} to {} ({}, architecture={}, control_type={}, guest_id={}, provision_steps={}, test_steps={})",
@@ -611,12 +724,136 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
                 u8::from(args.assert_x86_userspace)
             ));
             make_args.push(format!(
+                "X86_LINUX_LOGIN={}",
+                u8::from(args.assert_x86_linux_login)
+            ));
+            make_args.push(format!(
                 "X86_FIRMWARE_RESET={}",
                 u8::from(args.assert_firmware_reset)
             ));
         }
+        if let Some(path) = &args.x86_boot_profile {
+            make_args.extend(cmd_guest_profile::prepare_x86_boot_profile(
+                &repo_root, path,
+            )?);
+        }
         let make_arg_refs = make_args.iter().map(String::as_str).collect::<Vec<_>>();
         run_make(&make_arg_refs, &repo_root).context("profile-driven build step failed")?;
+    }
+
+    let seeded_plan = format!("{profile_plan:#?}\n");
+    if args.seed_profile {
+        let profile = profile_plan.as_mut().unwrap();
+        let seed = profile.seed.as_ref().unwrap();
+        let parent = repo_root.join("build/evidence");
+        std::fs::create_dir_all(&parent)?;
+        let directory = if let Some(directory) = &args.seeded_directory {
+            directory.clone()
+        } else {
+            tempfile::Builder::new()
+                .prefix("profile-seed-")
+                .tempdir_in(parent)?
+                .keep()
+        };
+        println!(
+            "[xtask:test] Automatic seed evidence: {}",
+            directory.display()
+        );
+        let key = directory.join("identity");
+        let status = std::process::Command::new("ssh-keygen")
+            .args(["-q", "-t", "ed25519", "-N", "", "-f"])
+            .arg(&key)
+            .status()?;
+        anyhow::ensure!(
+            status.success(),
+            "automatic seed ssh-keygen failed: {status}"
+        );
+        let output = directory.join("seeded.raw");
+        crate::cmd_seed_guest::run(&crate::cmd_seed_guest::SeedGuestArgs {
+            root_ext4: repo_root.join(&seed.root_ext4),
+            public_key: key.with_extension("pub"),
+            output: output.clone(),
+            instance_id: directory
+                .file_name()
+                .unwrap()
+                .to_str()
+                .context("seed directory is not UTF-8")?
+                .into(),
+            disk_raw: Some(repo_root.join(&seed.disk_raw)),
+            partition_offset: Some(seed.partition_offset),
+        })?;
+        let disk = profile
+            .qemu
+            .as_mut()
+            .unwrap()
+            .media
+            .iter_mut()
+            .find(|disk| disk.writable)
+            .unwrap();
+        disk.path = output.to_str().context("seed path is not UTF-8")?.into();
+        args.seeded_ssh_key = Some(key);
+        args.seeded_directory = Some(directory);
+    }
+
+    if args.seeded_ssh_key.is_some() {
+        let directory = if let Some(directory) = &args.seeded_directory {
+            std::fs::create_dir_all(directory)?;
+            directory.clone()
+        } else {
+            let parent = repo_root.join("build/evidence");
+            std::fs::create_dir_all(&parent)?;
+            tempfile::Builder::new()
+                .prefix("seeded-boot-")
+                .tempdir_in(parent)?
+                .keep()
+        };
+        let profile = profile_plan
+            .as_mut()
+            .context("seeded SSH requires a runtime profile")?;
+        let media = &mut profile
+            .qemu
+            .as_mut()
+            .context("seeded profile has no QEMU plan")?
+            .media;
+        anyhow::ensure!(
+            media.iter().filter(|disk| disk.writable).count() == 1,
+            "seeded proof requires exactly one writable disk"
+        );
+        let disk = media.iter_mut().find(|disk| disk.writable).unwrap();
+        anyhow::ensure!(
+            disk.override_env
+                .iter()
+                .all(|key| std::env::var_os(key).is_none()),
+            "seeded proof rejects media overrides"
+        );
+        let source = args
+            .seeded_source
+            .clone()
+            .unwrap_or_else(|| repo_root.join(&disk.path));
+        let copy = crate::persistent_media::prepare(
+            &source,
+            &directory,
+            args.seeded_ssh_known_hosts.is_some(),
+        )?;
+        seeded_boot_guard(
+            &directory,
+            &seeded_plan,
+            &repo_root
+                .join("build")
+                .join(&args.board)
+                .join("agentos.img"),
+            args.seeded_ssh_known_hosts.is_some(),
+        )?;
+        disk.path = copy
+            .to_str()
+            .context("seeded disk path is not UTF-8")?
+            .to_owned();
+        disk.override_env.clear();
+        disk.managed_persistent = true;
+        println!(
+            "[xtask:test] Seeded persistent evidence: {}",
+            directory.display()
+        );
     }
 
     if let Some(directory) = &args.persistent_directory {
@@ -711,6 +948,8 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
         .as_ref()
         .is_some_and(|assertion| assertion.devices.iter().any(|device| device == "net"));
     let ssh_port = if needs_host_net_stimulus
+        || args.x86_ssh_key.is_some()
+        || args.seeded_ssh_key.is_some()
         || args.assert_live
         || args.assert_desktop
         || scenario_plan.is_some()
@@ -726,19 +965,20 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
     };
     println!("[xtask:test] Launching QEMU for board={}...", args.board);
     let cc_sock = log_path.with_extension("cc_pd.sock");
-    let timing_artifact_digests = if args.assert_live && !args.assert_desktop {
-        Some((
-            sha256_file(
-                &repo_root
-                    .join("build")
-                    .join(&args.board)
-                    .join("agentos.img"),
-            )?,
-            guest_bundle_sha256(&repo_root, &args.board)?,
-        ))
-    } else {
-        None
-    };
+    let timing_artifact_digests =
+        if (args.assert_live && !args.assert_desktop) || args.seeded_ssh_key.is_some() {
+            Some((
+                sha256_file(
+                    &repo_root
+                        .join("build")
+                        .join(&args.board)
+                        .join("agentos.img"),
+                )?,
+                guest_bundle_sha256(&repo_root, &args.board)?,
+            ))
+        } else {
+            None
+        };
     // Measure the host-observed launch-to-authentication interval. Acquisition,
     // compilation and persistent-disk preparation have already completed.
     let boot_clock = Instant::now();
@@ -757,7 +997,11 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
         args.x86_block_image.as_deref(),
         args.x86_block_write,
     )?);
-    if needs_host_net_stimulus {
+    if needs_host_net_stimulus
+        && !args.assert_live
+        && !args.assert_desktop
+        && args.seeded_ssh_key.is_none()
+    {
         wait_for_all_markers(
             &log_path,
             &["emulated virtio-net: guest DRIVER_OK"],
@@ -892,6 +1136,25 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
                 ssh_key.as_ref().context("dual SSH key was not generated")?,
                 args.keep_running,
             )
+        } else if let Some(key) = &args.seeded_ssh_key {
+            wait_for_all_markers(
+                &log_path,
+                &["[cc_pd] VirtIO serial ready"],
+                Duration::from_secs(args.timeout_secs),
+                &mut qemu,
+            )?;
+            seeded_ssh_via_cc(
+                &cc_sock,
+                &log_path,
+                profile_plan
+                    .as_ref()
+                    .context("seeded SSH requires a runtime profile")?,
+                key,
+                args.seeded_ssh_known_hosts.as_deref(),
+                ssh_port,
+                Duration::from_secs(args.timeout_secs),
+                &mut qemu,
+            )
         } else if profile_plan
             .as_ref()
             .is_some_and(|profile| !profile_console_markers(profile).is_empty())
@@ -930,38 +1193,49 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
                     &mut qemu,
                 )?;
             }
-            if args.assert_x86_userspace {
-                x86_console_roundtrip(&cc_sock, Duration::from_secs(args.timeout_secs))?;
-            }
-            wait_for_x86_vtx_proof(
-                &log_path,
-                Duration::from_secs(args.timeout_secs),
-                &mut qemu,
-                args.assert_firmware_modes,
-                args.assert_firmware_reset,
-                args.assert_guest_faults,
-                args.assert_x86_userspace,
-            )
-            .and_then(|proof| {
-                if args.assert_firmware_reset {
-                    let required: &[&str] = if args.assert_x86_userspace {
-                        &[
-                            "[rt] x86 host block queue read verified",
-                            "[rt] x86 Linux guest block read verified",
-                            "[rt] x86 Linux guest network packet roundtrip verified",
-                        ]
-                    } else {
-                        &["[rt] x86 host block queue read verified"]
-                    };
-                    wait_for_all_markers(
-                        &log_path,
-                        required,
-                        Duration::from_secs(args.timeout_secs),
-                        &mut qemu,
-                    )?;
+            if args.assert_x86_linux_login {
+                x86_linux_login_probe(
+                    &cc_sock,
+                    &log_path,
+                    Duration::from_secs(args.timeout_secs),
+                    args.x86_ssh_key
+                        .as_deref()
+                        .map(|key| (key, ssh_port, args.x86_ssh_known_hosts.as_deref())),
+                )
+            } else {
+                if args.assert_x86_userspace {
+                    x86_console_roundtrip(&cc_sock, Duration::from_secs(args.timeout_secs))?;
                 }
-                Ok(proof)
-            })
+                wait_for_x86_vtx_proof(
+                    &log_path,
+                    Duration::from_secs(args.timeout_secs),
+                    &mut qemu,
+                    args.assert_firmware_modes,
+                    args.assert_firmware_reset,
+                    args.assert_guest_faults,
+                    args.assert_x86_userspace,
+                )
+                .and_then(|proof| {
+                    if args.assert_firmware_reset {
+                        let required: &[&str] = if args.assert_x86_userspace {
+                            &[
+                                "[rt] x86 host block queue read verified",
+                                "[rt] x86 Linux guest block read verified",
+                                "[rt] x86 Linux guest network packet roundtrip verified",
+                            ]
+                        } else {
+                            &["[rt] x86 host block queue read verified"]
+                        };
+                        wait_for_all_markers(
+                            &log_path,
+                            required,
+                            Duration::from_secs(args.timeout_secs),
+                            &mut qemu,
+                        )?;
+                    }
+                    Ok(proof)
+                })
+            }
         } else if args.board == "x86_64_generic" {
             wait_for_x86_reduced_smoke(&log_path, Duration::from_secs(args.timeout_secs))
         } else {
@@ -989,19 +1263,27 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
      * forwarded port before sshd exists leaves a stale user-net flow that can
      * accept later host sockets without ever completing an SSH banner.
      */
-    if result.is_ok() && args.assert_live && !args.assert_desktop {
-        let key = ssh_key
-            .as_ref()
-            .context("live-profile SSH key was not generated")?;
-        match prove_profile_ssh(
-            &cc_sock,
-            profile_plan
+    if result.is_ok()
+        && ((args.assert_live && !args.assert_desktop) || args.seeded_ssh_key.is_some())
+    {
+        let proof = if args.seeded_ssh_key.is_some() {
+            // The seeded result already includes authenticated SSH and sync.
+            Ok(())
+        } else {
+            let key = ssh_key
                 .as_ref()
-                .context("live test requires a resolved guest profile")?,
-            key,
-            Duration::from_secs(args.timeout_secs),
-            &mut qemu,
-        ) {
+                .context("live-profile SSH key was not generated")?;
+            prove_profile_ssh(
+                &cc_sock,
+                profile_plan
+                    .as_ref()
+                    .context("live test requires a resolved guest profile")?,
+                key,
+                Duration::from_secs(args.timeout_secs),
+                &mut qemu,
+            )
+        };
+        match proof {
             Ok(()) => {
                 let elapsed_ms = boot_clock.elapsed().as_millis();
                 let timing_path = log_path.with_extension("boot-timing.json");
@@ -1035,7 +1317,7 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
                         "host_backed_virtio": args.assert_agentos_virtio,
                         "host_os": std::env::consts::OS,
                         "host_arch": std::env::consts::ARCH,
-                        "persistent_second_boot": args.persistent_second_boot,
+                        "persistent_second_boot": args.persistent_second_boot || args.seeded_ssh_known_hosts.is_some(),
                         "serial_log": log_path,
                         "excludes": ["artifact acquisition", "build", "persistent media preparation"],
                         "includes": ["host scheduling", "QEMU startup", "agentOS boot", "guest boot", "console provisioning", "SSH authentication"],
@@ -1048,6 +1330,18 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
             }
             Err(error) => result = Err(error),
         }
+    }
+
+    if result.is_ok()
+        && args.seeded_ssh_key.is_some()
+        && virtio_assertion
+            .as_ref()
+            .is_some_and(|proof| proof.bidirectional_console)
+    {
+        // Submit an empty login line after timing authentication. The normal
+        // VirtIO proof below requires actual queue delivery in both directions.
+        let mut cc = connect_cc_client(&cc_sock, Duration::from_secs(30), &mut qemu)?;
+        cc_send_raw_byte(&mut cc, 0, b'\r')?;
     }
 
     // Live-profile provisioning above establishes the guest's network and
@@ -1240,6 +1534,34 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
     }
     let _ = qemu.kill();
     let _ = qemu.wait();
+
+    if args.seeded_ssh_key.is_some() {
+        if let Some(directory) = &args.seeded_directory {
+            let phase = if args.seeded_ssh_known_hosts.is_some() {
+                "second"
+            } else {
+                "first"
+            };
+            for (extension, name) in [
+                ("log", "serial.log"),
+                ("console.log", "console.log"),
+                ("known_hosts", "known_hosts"),
+                ("boot-timing.json", "boot-timing.json"),
+            ] {
+                let source = log_path.with_extension(extension);
+                if source.is_file() {
+                    std::fs::copy(source, directory.join(format!("{phase}-{name}")))?;
+                }
+            }
+            std::fs::write(
+                directory.join(format!("{phase}-result.txt")),
+                match &result {
+                    Ok(value) => format!("pass: {value}\n"),
+                    Err(error) => format!("fail: {error:#}\n"),
+                },
+            )?;
+        }
+    }
 
     if let Some(directory) = &args.persistent_directory {
         let phase = if args.persistent_second_boot {
@@ -1649,8 +1971,8 @@ fn timing_qemu_config(args: &TestArgs, profile: &HostProfilePlan) -> anyhow::Res
         1
     };
     Ok(format!(
-        "board={}\nmachine={}\nmemory={}\ncpu=cortex-a57\nsmp={smp}\nsel4_profile={sel4_profile}\naccel=tcg\nvirtio_mmio_force_legacy=off\nassert_live={}\nassert_agentos_virtio={}\n",
-        args.board, qemu.machine, qemu.memory, args.assert_live, args.assert_agentos_virtio
+        "board={}\nmachine={}\nmemory={}\ncpu=cortex-a57\nsmp={smp}\nsel4_profile={sel4_profile}\naccel=tcg\nvirtio_mmio_force_legacy=off\nauthenticated_ssh={}\nassert_agentos_virtio={}\n",
+        args.board, qemu.machine, qemu.memory, args.assert_live || args.seeded_ssh_key.is_some(), args.assert_agentos_virtio
     ))
 }
 
@@ -2007,7 +2329,7 @@ pub(crate) fn spawn_qemu_with_guest(
                 .arg("-device")
                 .arg("virtio-blk-pci,drive=agentos_blk,addr=05.0,disable-legacy=on");
             c.arg("-netdev")
-                .arg("user,id=agentos_net,restrict=on")
+                .arg(if ssh_port == 0 { "user,id=agentos_net,restrict=on".into() } else { format!("user,id=agentos_net,restrict=on,hostfwd=tcp:127.0.0.1:{ssh_port}-10.0.2.15:22") })
                 .arg("-device")
                 .arg("virtio-net-pci,netdev=agentos_net,addr=06.0,disable-legacy=on,mac=52:54:00:12:34:56");
             let capture = log_path.with_extension("pcap");
@@ -2071,6 +2393,351 @@ pub(crate) fn spawn_qemu_with_guest(
     };
     println!("[xtask:test] QEMU pid={}", child.id());
     Ok(child)
+}
+
+fn x86_console_host_key(text: &str) -> anyhow::Result<Option<String>> {
+    let Some((_, keys)) = text.split_once("-----BEGIN SSH HOST KEY KEYS-----") else {
+        return Ok(None);
+    };
+    let Some((keys, _)) = keys.split_once("-----END SSH HOST KEY KEYS-----") else {
+        return Ok(None);
+    };
+    let mut found = None;
+    for line in keys.lines() {
+        let fields: Vec<_> = line.split_whitespace().collect();
+        if fields.first() == Some(&"ssh-ed25519") {
+            anyhow::ensure!(
+                fields.len() >= 2
+                    && fields[1].len() <= 128
+                    && !fields[1].is_empty()
+                    && fields[1]
+                        .bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || b"+/=".contains(&b)),
+                "invalid console host-key encoding"
+            );
+            anyhow::ensure!(found.is_none(), "multiple Ed25519 console host keys");
+            found = Some(format!("ssh-ed25519 {}", fields[1]));
+        }
+    }
+    anyhow::ensure!(
+        found.is_some(),
+        "console host-key report has no Ed25519 key"
+    );
+    Ok(found)
+}
+
+fn seeded_ssh_via_cc(
+    socket: &Path,
+    log: &Path,
+    profile: &HostProfilePlan,
+    key: &Path,
+    known: Option<&Path>,
+    port: u16,
+    timeout: Duration,
+    qemu: &mut Child,
+) -> anyhow::Result<String> {
+    anyhow::ensure!(
+        profile.architecture == "aarch64"
+            && profile.provision.is_empty()
+            && profile.console.interaction.is_empty(),
+        "seeded SSH requires an ARM profile without console provisioning or interactions"
+    );
+    let ssh = profile
+        .qemu
+        .as_ref()
+        .and_then(|q| q.ssh.as_ref())
+        .context("seeded profile requires host.qemu.ssh")?;
+    let deadline = Instant::now() + timeout;
+    let retained = known
+        .map(|path| x86_retained_host_key(path, port))
+        .transpose()?;
+    let mut cc = connect_cc_client(socket, timeout.min(Duration::from_secs(30)), qemu)?;
+    let mut transcript = String::new();
+    let mut output = std::fs::File::create(log.with_extension("console.log"))?;
+    let mut progress = Instant::now();
+    let markers = profile_console_markers(profile);
+    anyhow::ensure!(
+        !markers.is_empty(),
+        "seeded profile requires console login markers"
+    );
+    while Instant::now() < deadline {
+        ensure_qemu_running(qemu, "waiting for seeded guest console identity")?;
+        let chunk = match cc_log_stream_for_handle(&mut cc, 0, Some(profile)) {
+            Ok(chunk) => chunk,
+            Err(error) if cc.is_closed() => {
+                return Err(error).context("seeded CC transport closed")
+            }
+            Err(_) => {
+                std::thread::sleep(Duration::from_millis(250));
+                continue;
+            }
+        };
+        output.write_all(chunk.as_bytes())?;
+        transcript.push_str(&chunk);
+        anyhow::ensure!(
+            transcript.len() <= 1024 * 1024,
+            "seeded console exceeds 1 MiB"
+        );
+        reject_profile_console(Some(&profile.console), &transcript)?;
+        let login = profile
+            .console
+            .require
+            .iter()
+            .all(|marker| transcript.contains(marker))
+            && markers.iter().any(|marker| transcript.contains(marker));
+        if login {
+            let host_key = match &retained {
+                Some(value) => Some(value.clone()),
+                None => x86_console_host_key(&transcript)?,
+            };
+            if let Some(host_key) = host_key {
+                return seeded_ssh_proof(
+                    key,
+                    port,
+                    &host_key,
+                    log,
+                    deadline,
+                    &ssh.account,
+                    "aarch64",
+                );
+            }
+        }
+        if progress.elapsed() >= Duration::from_secs(30) {
+            println!(
+                "[xtask:test] seeded console: {} bytes; login={login}; tail:\n{}",
+                transcript.len(),
+                tail_chars(&transcript, 800)
+            );
+            progress = Instant::now();
+        }
+        std::thread::sleep(Duration::from_millis(if chunk.is_empty() {
+            250
+        } else {
+            10
+        }));
+    }
+    anyhow::bail!(
+        "seeded guest console identity timed out; see {}",
+        log.with_extension("console.log").display()
+    )
+}
+
+fn x86_retained_host_key(path: &Path, port: u16) -> anyhow::Result<String> {
+    anyhow::ensure!(
+        std::fs::metadata(path)?.len() <= 4096,
+        "known_hosts receipt exceeds 4096 bytes"
+    );
+    let text = std::fs::read_to_string(path)?;
+    let fields: Vec<_> = text.split_whitespace().collect();
+    anyhow::ensure!(
+        fields.len() == 3
+            && fields[0] == format!("[127.0.0.1]:{port}")
+            && fields[1] == "ssh-ed25519",
+        "expected one loopback Ed25519 known_hosts receipt for the selected port"
+    );
+    anyhow::ensure!(
+        !fields[2].is_empty()
+            && fields[2].len() <= 128
+            && fields[2]
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b"+/=".contains(&b)),
+        "invalid retained host-key encoding"
+    );
+    Ok(format!("ssh-ed25519 {}", fields[2]))
+}
+
+fn seeded_ssh_proof(
+    key: &Path,
+    port: u16,
+    host_key: &str,
+    log: &Path,
+    deadline: Instant,
+    account: &str,
+    expected_arch: &str,
+) -> anyhow::Result<String> {
+    let known = log.with_extension("known_hosts");
+    let mut known_file = std::fs::OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .open(&known)?;
+    writeln!(known_file, "[127.0.0.1]:{port} {host_key}")?;
+    let mut attempt = 0;
+    while Instant::now() < deadline {
+        attempt += 1;
+        let stdout_path = log.with_extension(format!("ssh-{attempt}.out"));
+        let stderr_path = log.with_extension(format!("ssh-{attempt}.err"));
+        let mut command = std::process::Command::new("ssh");
+        command
+            .args([
+                "-F",
+                "/dev/null",
+                "-o",
+                "BatchMode=yes",
+                "-o",
+                "IdentitiesOnly=yes",
+                "-o",
+                "IdentityAgent=none",
+                "-o",
+                "PreferredAuthentications=publickey",
+                "-o",
+                "PasswordAuthentication=no",
+                "-o",
+                "KbdInteractiveAuthentication=no",
+                "-o",
+                "StrictHostKeyChecking=yes",
+                "-o",
+                "GlobalKnownHostsFile=/dev/null",
+                "-o",
+                "HostKeyAlgorithms=ssh-ed25519",
+                "-o",
+                "ConnectTimeout=10",
+                "-o",
+                "ServerAliveInterval=5",
+                "-o",
+                "ServerAliveCountMax=2",
+            ])
+            .arg("-o")
+            .arg(format!("UserKnownHostsFile={}", known.display()))
+            .arg("-i")
+            .arg(key)
+            .arg("-p")
+            .arg(port.to_string())
+            .arg(format!("{account}@127.0.0.1"))
+            .arg("uname -m && sudo -n sync")
+            .stdin(Stdio::null())
+            .stdout(std::fs::File::create(&stdout_path)?)
+            .stderr(std::fs::File::create(&stderr_path)?);
+        let mut child = ChildGuard::new(command.spawn()?);
+        let attempt_deadline = deadline.min(Instant::now() + Duration::from_secs(90));
+        let status = loop {
+            if let Some(status) = child.try_wait()? {
+                break Some(status);
+            }
+            if Instant::now() >= attempt_deadline {
+                break None;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        };
+        drop(child);
+        if status.is_some_and(|s| s.success()) {
+            anyhow::ensure!(
+                std::fs::read(&stdout_path)? == format!("{expected_arch}\n").as_bytes(),
+                "seeded SSH architecture output mismatch"
+            );
+            return Ok(format!("Public-key SSH verified with pinned Ed25519 host key; {expected_arch} and sync succeeded"));
+        }
+        if Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(500));
+        }
+    }
+    anyhow::bail!(
+        "Seeded SSH proof timed out; retained attempts beside {}",
+        log.display()
+    )
+}
+
+#[cfg(test)]
+fn x86_linux_login(socket: &Path, log_path: &Path, timeout: Duration) -> anyhow::Result<String> {
+    x86_linux_login_probe(socket, log_path, timeout, None)
+}
+
+fn x86_has_login_prompt(text: &str) -> bool {
+    text.lines().any(|line| {
+        let Some((hostname, _)) = line.split_once(" login:") else {
+            return false;
+        };
+        let hostname = hostname.trim();
+        !hostname.is_empty()
+            && hostname.len() <= 253
+            && hostname
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b".-_".contains(&b))
+    })
+}
+
+fn x86_linux_login_probe(
+    socket: &Path,
+    log_path: &Path,
+    timeout: Duration,
+    ssh: Option<(&Path, u16, Option<&Path>)>,
+) -> anyhow::Result<String> {
+    let retained_key = ssh
+        .and_then(|(_, port, known)| known.map(|path| x86_retained_host_key(path, port)))
+        .transpose()?;
+    let deadline = Instant::now() + timeout;
+    let mut stream = loop {
+        match UnixStream::connect(socket) {
+            Ok(stream) => break stream,
+            Err(error) if Instant::now() >= deadline => return Err(error.into()),
+            Err(_) => std::thread::sleep(Duration::from_millis(20)),
+        }
+    };
+    stream.set_read_timeout(Some(Duration::from_millis(200)))?;
+    let transcript_path = log_path.with_extension("console.log");
+    let mut transcript_file = std::fs::File::create(&transcript_path)?;
+    println!(
+        "[xtask:test] Intel Linux console transcript: {}",
+        transcript_path.display()
+    );
+    let mut transcript = Vec::new();
+    while Instant::now() < deadline {
+        let target_log = std::fs::read_to_string(log_path)?;
+        anyhow::ensure!(
+            !target_log.contains("x86 VMX EPT proof FAILED"),
+            "Intel VMM reported a target failure; see {}",
+            log_path.display()
+        );
+        let mut chunk = [0u8; 4096];
+        match stream.read(&mut chunk) {
+            Ok(0) => anyhow::bail!("Intel Linux console closed before login"),
+            Ok(count) => {
+                transcript_file.write_all(&chunk[..count])?;
+                transcript.extend_from_slice(&chunk[..count]);
+                anyhow::ensure!(
+                    transcript.len() <= 1024 * 1024,
+                    "Intel Linux console exceeds 1 MiB"
+                );
+                let text = String::from_utf8_lossy(&transcript);
+                anyhow::ensure!(
+                    !text.contains("Kernel panic")
+                        && !text.contains("Entering emergency mode")
+                        && !text.contains("reboot: Restarting system")
+                        && !text.contains("reboot: System halted"),
+                    "Intel Linux boot failed; see {}",
+                    transcript_path.display()
+                );
+                if x86_has_login_prompt(&text) {
+                    if let Some((key, port, _)) = ssh {
+                        let host_key = if let Some(key) = &retained_key {
+                            Some(key.clone())
+                        } else {
+                            x86_console_host_key(&text)?
+                        };
+                        let Some(host_key) = host_key else {
+                            continue;
+                        };
+                        return seeded_ssh_proof(
+                            key, port, &host_key, log_path, deadline, "debian", "x86_64",
+                        );
+                    }
+                    return Ok(
+                        "Linux login prompt through canonical virtio-console and serial_virt"
+                            .into(),
+                    );
+                }
+            }
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                ) => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
+    anyhow::bail!(
+        "Intel Linux login timed out; see {}",
+        transcript_path.display()
+    )
 }
 
 fn x86_console_roundtrip(socket: &Path, timeout: Duration) -> anyhow::Result<()> {
@@ -4172,6 +4839,164 @@ fn tail_chars(s: &str, max_chars: usize) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn seeded_cold_boot_rejects_changed_profile_image_and_reinitialization() {
+        let directory = tempfile::tempdir().unwrap();
+        let image = directory.path().join("current.img");
+        std::fs::write(&image, b"boot image").unwrap();
+        super::seeded_boot_guard(directory.path(), "resolved profile", &image, false).unwrap();
+        super::seeded_boot_guard(directory.path(), "resolved profile", &image, true).unwrap();
+        assert!(super::seeded_boot_guard(directory.path(), "other profile", &image, true).is_err());
+        assert!(
+            super::seeded_boot_guard(directory.path(), "resolved profile", &image, false).is_err()
+        );
+        std::fs::write(&image, b"new! image").unwrap();
+        assert!(
+            super::seeded_boot_guard(directory.path(), "resolved profile", &image, true).is_err()
+        );
+        assert_eq!(
+            std::fs::read(directory.path().join("seeded-agentos.img")).unwrap(),
+            b"boot image"
+        );
+        assert_eq!(
+            std::fs::read_to_string(directory.path().join("seeded-profile.txt")).unwrap(),
+            "resolved profile"
+        );
+    }
+
+    #[test]
+    fn authenticated_timing_config_compares_provisioning_paths_but_rejects_resource_changes() {
+        use clap::Parser;
+        #[derive(Parser)]
+        struct Args {
+            #[command(flatten)]
+            test: crate::TestArgs,
+        }
+        let live = Args::parse_from([
+            "test",
+            "--board",
+            "qemu_virt_aarch64",
+            "--guest-os",
+            "ubuntu-live",
+            "--assert-live",
+            "--assert-agentos-virtio",
+        ])
+        .test;
+        let mut seeded = live.clone();
+        seeded.assert_live = false;
+        seeded.seeded_ssh_key = Some("identity".into());
+        seeded.guest_os = "debian-arm64-nocloud".into();
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../guest-profiles");
+        let plan = |alias| {
+            let path = crate::cmd_guest_profile::resolve_alias(&root, alias).unwrap();
+            crate::cmd_guest_profile::host_profile_plan(&root, &path).unwrap()
+        };
+        let ubuntu = plan("ubuntu-live");
+        let mut debian = plan("debian-arm64-nocloud");
+        let baseline = super::timing_qemu_config(&live, &ubuntu).unwrap();
+        assert_eq!(
+            baseline,
+            super::timing_qemu_config(&seeded, &debian).unwrap()
+        );
+        debian.qemu.as_mut().unwrap().memory = "4G".into();
+        assert_ne!(
+            baseline,
+            super::timing_qemu_config(&seeded, &debian).unwrap()
+        );
+    }
+
+    #[test]
+    fn intel_login_prompt_survives_interleaved_cloud_init_output() {
+        assert!(super::x86_has_login_prompt(
+            "agentos-debian login: ci-info: Authorized keys\r\n"
+        ));
+        assert!(super::x86_has_login_prompt("debian login:"));
+        assert!(!super::x86_has_login_prompt(
+            "[1.0] service awaiting login:"
+        ));
+        assert!(!super::x86_has_login_prompt(" login:"));
+        assert!(!super::x86_has_login_prompt("agentos-debian logi"));
+    }
+    #[test]
+    fn retained_host_key_binds_the_original_loopback_endpoint() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("known_hosts");
+        std::fs::write(&file, "[127.0.0.1]:12224 ssh-ed25519 AAAA\n").unwrap();
+        assert_eq!(
+            super::x86_retained_host_key(&file, 12224).unwrap(),
+            "ssh-ed25519 AAAA"
+        );
+        assert!(super::x86_retained_host_key(&file, 12225).is_err());
+        std::fs::write(&file, "* ssh-ed25519 AAAA\n").unwrap();
+        assert!(super::x86_retained_host_key(&file, 12224).is_err());
+        std::fs::write(
+            &file,
+            "[127.0.0.1]:12224 ssh-ed25519 AAAA\n[127.0.0.1]:12224 ssh-ed25519 BBBB\n",
+        )
+        .unwrap();
+        assert!(super::x86_retained_host_key(&file, 12224).is_err());
+    }
+    #[test]
+    fn console_host_key_requires_complete_unambiguous_report() {
+        use super::x86_console_host_key;
+        assert_eq!(
+            x86_console_host_key("ssh-ed25519 AAAA unrelated").unwrap(),
+            None
+        );
+        assert_eq!(
+            x86_console_host_key("-----BEGIN SSH HOST KEY KEYS-----\nssh-ed25519 AAAA").unwrap(),
+            None
+        );
+        let report = "-----BEGIN SSH HOST KEY KEYS-----\r\nssh-ed25519 AAAA root@guest\r\n-----END SSH HOST KEY KEYS-----";
+        assert_eq!(
+            x86_console_host_key(report).unwrap(),
+            Some("ssh-ed25519 AAAA".into())
+        );
+        assert!(x86_console_host_key(&report.replace("AAAA", "AA;AA")).is_err());
+        assert!(x86_console_host_key(
+            &report.replace("root@guest", "root@guest\nssh-ed25519 BBBB")
+        )
+        .is_err());
+    }
+    #[test]
+    fn intel_login_requires_prompt_and_retains_console_failures() {
+        use std::os::unix::net::UnixListener;
+        for (bytes, expected) in [
+            (
+                b"Debian GNU/Linux 13 debian hvc0\r\ndebian login: ".as_slice(),
+                true,
+            ),
+            (b"Debian GNU/Linux 13\r\ndebian log".as_slice(), false),
+            (
+                b"Kernel panic - not syncing\r\ndebian login: ".as_slice(),
+                false,
+            ),
+            (
+                b"Entering emergency mode\r\ndebian login: ".as_slice(),
+                false,
+            ),
+            (b"reboot: Restarting system\r\n".as_slice(), false),
+            (b"reboot: System halted\r\n".as_slice(), false),
+        ] {
+            let temp = tempfile::tempdir().unwrap();
+            let socket = temp.path().join("console.sock");
+            let log = temp.path().join("qemu.log");
+            std::fs::write(&log, "").unwrap();
+            let listener = UnixListener::bind(&socket).unwrap();
+            let sender = std::thread::spawn(move || {
+                let (mut stream, _) = listener.accept().unwrap();
+                std::io::Write::write_all(&mut stream, bytes).unwrap();
+            });
+            let result = super::x86_linux_login(&socket, &log, std::time::Duration::from_secs(2));
+            sender.join().unwrap();
+            assert_eq!(result.is_ok(), expected, "{result:?}");
+            assert_eq!(
+                std::fs::read(log.with_extension("console.log")).unwrap(),
+                bytes
+            );
+        }
+    }
+
     use super::*;
     use std::os::unix::net::UnixListener;
 

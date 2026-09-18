@@ -151,6 +151,13 @@ bool aos_x86_config_io(aos_x86_config_t *s, uint16_t port, unsigned width,
         (port>=0x89u && port<=0x8bu) || port==0x8fu)) {
         *value=0xffu; return true;
     }
+    /* No PS/2 controller is provisioned. Undecoded byte I/O reads all ones;
+     * writes have no effect. Linux's bounded i8042 flush detects absence.
+     * This creates neither keyboard data nor an interrupt source. */
+    if (width==1u && (port==0x60u || port==0x64u)) {
+        if (!write) *value=0xffu;
+        return true;
+    }
     /* No ISA UART is provisioned. Legacy 8250 probing must see an absent
      * device, not a writable interrupt-enable register or a host UART. */
     if (width==1u && ((port>=0x3f8u && port<=0x3ffu) ||

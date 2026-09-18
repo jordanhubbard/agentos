@@ -1,0 +1,99 @@
+schema = 2
+id = "debian-stable-x86-64"
+status = "runtime"
+aliases = ["debian-amd64"]
+
+[target]
+architecture = "x86-64"
+boot_protocol = "uefi"
+kernel_format = "uefi"
+control_type = 1
+guest_id = 0
+vcpus = 1
+devices = ["net", "block", "console"]
+network_client = 0
+block_media = 0
+autostart = true
+entry_from_image = false
+
+[boot]
+command_line = "console=hvc0 root=UUID=df4df5bb-613a-4382-8cf9-653304605a1f rw rootwait net.ifnames=0 biosdevname=0 panic=0"
+
+[artifacts.kernel]
+source = "debian-cloud:13/20260831-2587:/boot/vmlinuz-6.12.107+deb13-amd64"
+cache = "build/guest-images/debian-amd64/vmlinuz"
+sha256 = "2b2358b37674d2505350528875bb17afae2a36522a9e8a9417eaca65a7da0e08"
+max_bytes = 33554432
+
+[artifacts.initrd]
+source = "generated:debian-cloud-initrd+native-udev-hooks"
+cache = "build/guest-images/debian-amd64/initrd.img"
+sha256 = "abd60fc57af0f02f62c119b149b7aaae0f978023fd7517ab3bc0a2535e839884"
+max_bytes = 134217728
+
+[placements.default]
+guest_gpa_base = 0
+vmm_hva_base = 0x80000000
+ram_size = 0x40000000
+kernel_load_address = 0x200000
+initrd_load_address = 0x8000000
+
+[host.build]
+adapter = "uefi-artifacts"
+acquire_dir = "build/guest-images/debian-amd64"
+
+[[host.acquire]]
+action = "stage-url"
+args = { cache_name = "debian-13-generic-amd64-20260831-2587.qcow2", output = "disk.qcow2", url = "https://cdimage.debian.org/cdimage/cloud/trixie/20260831-2587/debian-13-generic-amd64-20260831-2587.qcow2", sha512 = "5a069019420fb9441ad4f8004c661fadb747edd5662ca54a17c8f923dee7d717e21dbdaa4ba72d6fce7f920e0217f0a9af382298a7d46ed4bc9dc33ac19181b6" }
+
+[[host.acquire]]
+action = "convert-qcow2-raw"
+args = { source = "disk.qcow2", output = "disk.raw" }
+
+[[host.acquire]]
+action = "extract-gpt-partition"
+args = { source = "disk.raw", output = "root.ext4", index = "1" }
+
+[[host.acquire]]
+action = "extract-ext4-file"
+args = { source = "root.ext4", output = "vmlinuz", path = "/boot/vmlinuz-6.12.107+deb13-amd64" }
+
+[[host.acquire]]
+action = "extract-ext4-file"
+args = { source = "root.ext4", output = "initrd.base", path = "/boot/initrd.img-6.12.107+deb13-amd64" }
+
+[[host.acquire]]
+action = "extract-ext4-file"
+args = { source = "root.ext4", output = "udev-top.stock", path = "/usr/share/initramfs-tools/scripts/init-top/udev" }
+
+[[host.acquire]]
+action = "extract-ext4-file"
+args = { source = "root.ext4", output = "udev-bottom.stock", path = "/usr/share/initramfs-tools/scripts/init-bottom/udev" }
+
+[[host.acquire]]
+action = "build-static-linux-elf"
+args = { source = "guest-profiles/helpers/debian_init_top_x86_64.c", output = "udev-top", architecture = "x86_64" }
+
+[[host.acquire]]
+action = "build-static-linux-elf"
+args = { source = "guest-profiles/helpers/debian_init_bottom_x86_64.c", output = "udev-bottom", architecture = "x86_64" }
+
+[[host.acquire]]
+action = "append-initramfs-file"
+args = { source = "initrd.base", output = "initrd.modules", path = "conf/modules", mode = "0644", content = "virtio_mmio\nvirtio_blk\nvirtio_net\n" }
+
+[[host.acquire]]
+action = "append-initramfs-file"
+args = { source = "initrd.modules", output = "initrd.top-stock", path = "scripts/init-top/udev.stock", mode = "0755", content_file = "udev-top.stock", content_sha256 = "5893d2c4c9426b2d6166586cb5bd1852be8fa22ba2984b9e1b2ca15f8b9cca5f" }
+
+[[host.acquire]]
+action = "append-initramfs-file"
+args = { source = "initrd.top-stock", output = "initrd.top", path = "scripts/init-top/udev", mode = "0755", content_file = "udev-top", content_sha256 = "7be20109d05137cd7409c0ecf526817c0b5a38de917adb0532fec73485fda37f" }
+
+[[host.acquire]]
+action = "append-initramfs-file"
+args = { source = "initrd.top", output = "initrd.bottom-stock", path = "scripts/init-bottom/udev.stock", mode = "0755", content_file = "udev-bottom.stock", content_sha256 = "5a7595d79328000420c9f641362af1ef15aa5b1bf6ce0114588b49e13f7949a6" }
+
+[[host.acquire]]
+action = "append-initramfs-file"
+args = { source = "initrd.bottom-stock", output = "initrd.img", path = "scripts/init-bottom/udev", mode = "0755", content_file = "udev-bottom", content_sha256 = "fb97766d383aab75ecc57e484f56e7f621c5cedb3a2ffc97e8a01a54bc22c8e7" }

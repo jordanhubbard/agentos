@@ -145,6 +145,7 @@ struct Placement {
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Host {
+    seed: Option<SeedPlan>,
     qemu: Option<Qemu>,
     console: Option<HostConsole>,
     desktop: Option<HostDesktop>,
@@ -155,6 +156,15 @@ struct Host {
     provision: Vec<RecipeStep>,
     #[serde(default)]
     test: Vec<RecipeStep>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct SeedPlan {
+    pub(crate) adapter: String,
+    pub(crate) root_ext4: String,
+    pub(crate) disk_raw: String,
+    pub(crate) partition_offset: u64,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -174,7 +184,7 @@ struct HostDesktop {
 #[serde(deny_unknown_fields)]
 struct HostBuild {
     adapter: String,
-    template: String,
+    template: Option<String>,
     base: Option<String>,
     bootargs: Option<String>,
     initrd_total_bytes: Option<u64>,
@@ -255,6 +265,7 @@ pub(crate) struct RecipeStep {
 
 #[derive(Clone, Debug)]
 pub(crate) struct HostProfilePlan {
+    pub(crate) seed: Option<SeedPlan>,
     pub(crate) path: PathBuf,
     pub(crate) id: String,
     pub(crate) architecture: String,
@@ -350,6 +361,7 @@ const HOST_ACTIONS: &[&str] = &[
     "extract-arm64-linux-image",
     "extract-arm64-elf-image",
     "build-initramfs-file",
+    "build-static-linux-elf",
     "append-initramfs-file",
     "convert-qcow2-raw",
     "extract-gpt-partition",
@@ -386,6 +398,7 @@ pub(crate) fn acquire_recipe(root: &Path, path: &Path) -> Result<(String, Vec<Re
                     | "extract-arm64-linux-image"
                     | "extract-arm64-elf-image"
                     | "build-initramfs-file"
+                    | "build-static-linux-elf"
                     | "append-initramfs-file"
                     | "convert-qcow2-raw"
                     | "extract-gpt-partition"
@@ -436,6 +449,145 @@ pub(crate) fn resolve_alias(root: &Path, alias: &str) -> Result<PathBuf> {
     matched.with_context(|| format!("unknown guest profile alias {alias:?}"))
 }
 
+fn validate_x86_boot_profile(profile: &Profile) -> Result<()> {
+    validate(profile, Some("default"))?;
+    ensure!(
+        profile.status == Some(Status::Runtime),
+        "x86 boot requires a runtime profile"
+    );
+    let target = profile.target.as_ref().unwrap();
+    ensure!(
+        target.architecture.as_deref() == Some("x86-64")
+            && target.boot_protocol.as_deref() == Some("uefi")
+            && target.kernel_format.as_deref() == Some("uefi"),
+        "x86 boot requires an x86-64 UEFI kernel profile"
+    );
+    ensure!(
+        target.vcpus == Some(1)
+            && target.guest_id == Some(0)
+            && target.control_type == Some(1)
+            && target.autostart == Some(true),
+        "x86 boot currently supports one autostart primary guest with one vCPU"
+    );
+    ensure!(
+        target
+            .cpu_features
+            .as_ref()
+            .is_none_or(|f| f.required.is_empty() && f.prohibited.is_empty()),
+        "x86 firmware boot does not yet enforce profile CPU feature requests"
+    );
+    let devices = target.devices.as_ref().unwrap();
+    ensure!(
+        devices.len() == 3
+            && ["net", "block", "console"]
+                .iter()
+                .all(|d| devices.iter().any(|v| v == d))
+            && target.network_client == Some(0)
+            && target.block_media == Some(0),
+        "x86 boot requires primary canonical net, block and console devices"
+    );
+    ensure!(
+        !profile.artifacts.contains_key("dtb")
+            && profile.artifacts.contains_key("initrd")
+            && profile.boot.as_ref().unwrap().media_initrd_path.is_none(),
+        "x86 firmware boot requires a direct initrd and no DTB"
+    );
+    let placement = &profile.placements["default"];
+    let ram = placement.ram_size.unwrap();
+    ensure!(
+        placement.vmm_hva_base == Some(0x80000000) && placement.kernel_entry_address.is_none(),
+        "x86 firmware boot requires its fixed RAM mapping and firmware-selected kernel entry"
+    );
+    ensure!(
+        placement.guest_gpa_base == Some(0)
+            && (0x02000000..=0x40000000).contains(&ram)
+            && ram % 0x200000 == 0,
+        "x86 firmware RAM must start at zero and be 32 MiB..1 GiB in 2 MiB units"
+    );
+    ensure!(
+        profile
+            .host
+            .as_ref()
+            .and_then(|h| h.build.as_ref())
+            .is_some_and(|b| b.adapter == "uefi-artifacts"),
+        "x86 boot requires the uefi-artifacts acquisition adapter"
+    );
+    Ok(())
+}
+
+pub(crate) fn prepare_x86_boot_profile(repo: &Path, path: &Path) -> Result<Vec<String>> {
+    let root = repo.join("guest-profiles");
+    let (profile, canonical) = resolve(&root, path, &mut Vec::new())?;
+    validate_x86_boot_profile(&profile)?;
+    for name in [
+        "X86_BOOT_KERNEL",
+        "X86_BOOT_KERNEL_SHA256",
+        "X86_BOOT_INITRD",
+        "X86_BOOT_INITRD_SHA256",
+        "X86_BOOT_CMDLINE_FILE",
+        "X86_BOOT_CMDLINE_SHA256",
+        "X86_BOOT_RAM_BYTES",
+        "X86_BOOT_PROFILE_BIN",
+        "X86_BOOT_PROFILE_SHA256",
+    ] {
+        ensure!(
+            std::env::var_os(name).is_none(),
+            "{name} conflicts with x86 boot profile selection"
+        );
+    }
+    crate::cmd_fetch_guest::run(&crate::FetchGuestArgs {
+        profile: path.to_path_buf(),
+        profile_root: root,
+        output_dir: None,
+    })?;
+    verify_artifacts(&profile, "default", repo)?;
+    let directory = repo.join("build/tmp/x86-boot-profile");
+    fs::create_dir_all(&directory)?;
+    let mut command_line = profile
+        .boot
+        .as_ref()
+        .unwrap()
+        .command_line
+        .as_ref()
+        .unwrap()
+        .as_bytes()
+        .to_vec();
+    command_line.push(0);
+    let command_path = directory.join("cmdline.bin");
+    fs::write(&command_path, &command_line)?;
+    let manifest = compile(&profile, &canonical, "default")?;
+    let manifest_path = directory.join("profile.bin");
+    fs::write(&manifest_path, &manifest)?;
+    let mut args = vec![
+        format!("X86_BOOT_PROFILE_BIN={}", manifest_path.display()),
+        format!("X86_BOOT_PROFILE_SHA256={:x}", Sha256::digest(&manifest)),
+        format!(
+            "X86_BOOT_RAM_BYTES={:#x}u",
+            profile.placements["default"].ram_size.unwrap()
+        ),
+        format!("X86_BOOT_CMDLINE_FILE={}", command_path.display()),
+        format!(
+            "X86_BOOT_CMDLINE_SHA256={:x}",
+            Sha256::digest(&command_line)
+        ),
+    ];
+    for (name, variable) in [("kernel", "KERNEL"), ("initrd", "INITRD")] {
+        let artifact = &profile.artifacts[name];
+        let hash = artifact_hash(artifact, &profile.placements["default"], name)?;
+        let hex: String = hash.iter().map(|b| format!("{b:02x}")).collect();
+        args.push(format!(
+            "X86_BOOT_{variable}={}",
+            artifact_path(&profile, name, repo)?.display()
+        ));
+        args.push(format!("X86_BOOT_{variable}_SHA256={hex}"));
+    }
+    println!(
+        "[guest-profile] verified x86 boot profile {}",
+        profile.id.as_deref().unwrap()
+    );
+    Ok(args)
+}
+
 pub(crate) fn host_profile_plan(root: &Path, path: &Path) -> Result<HostProfilePlan> {
     let (profile, _) = resolve(root, path, &mut Vec::new())?;
     validate(&profile, None)?;
@@ -473,6 +625,7 @@ pub(crate) fn host_profile_plan(root: &Path, path: &Path) -> Result<HostProfileP
             }),
         });
     Ok(HostProfilePlan {
+        seed: host.and_then(|value| value.seed.clone()),
         path: path.to_path_buf(),
         id: profile.id.clone().context("id is required")?,
         architecture: target
@@ -850,7 +1003,13 @@ fn render_profile_dtb(
         ("@GUEST_INITRD_END@", format!("0x{initrd_end:x}")),
         ("@GUEST_BOOTARGS@", command_line.to_string()),
     ];
-    let template_path = confined_repo_path(repo_root, &build.template)?;
+    let template_path = confined_repo_path(
+        repo_root,
+        build
+            .template
+            .as_deref()
+            .context("FDT adapter requires template")?,
+    )?;
     let template = render_dts_template(&fs::read_to_string(&template_path)?, &substitutions)?;
     let overlay_path = output_dir.join("guest-overlay.dts");
     fs::write(&overlay_path, template)?;
@@ -1090,6 +1249,17 @@ fn validate(profile: &Profile, placement: Option<&str>) -> Result<()> {
         required(&target.boot_protocol, "target.boot_protocol")?,
         &["fdt-direct", "uefi", "process"],
     )?;
+    if profile
+        .host
+        .as_ref()
+        .and_then(|h| h.build.as_ref())
+        .is_some_and(|b| b.adapter == "uefi-artifacts")
+    {
+        ensure!(
+            target.boot_protocol.as_deref() == Some("uefi"),
+            "uefi-artifacts requires the uefi boot protocol"
+        );
+    }
     enum_value(
         required(&target.kernel_format, "target.kernel_format")?,
         &["linux-image", "raw", "elf", "uefi"],
@@ -1145,8 +1315,8 @@ fn validate(profile: &Profile, placement: Option<&str>) -> Result<()> {
         .and_then(|b| b.command_line.as_ref())
         .context("boot.command_line is required")?;
     ensure!(
-        cmdline.len() <= 255 && cmdline.is_ascii(),
-        "boot.command_line must be at most 255 ASCII bytes"
+        cmdline.len() <= 255 && cmdline.is_ascii() && !cmdline.contains('\0'),
+        "boot.command_line must be at most 255 ASCII bytes without NUL"
     );
     let media_initrd_path = profile.boot.as_ref().unwrap().media_initrd_path.as_deref();
     if let Some(path) = media_initrd_path {
@@ -1413,6 +1583,38 @@ fn validate_placement(name: &str, p: &Placement, has_dtb: bool) -> Result<()> {
 
 fn validate_host(host: Option<&Host>) -> Result<()> {
     let Some(host) = host else { return Ok(()) };
+    if let Some(seed) = &host.seed {
+        enum_value(&seed.adapter, &["nocloud-debian-v1"])?;
+        for path in [&seed.root_ext4, &seed.disk_raw] {
+            ensure!(
+                !path.is_empty() && path.len() <= 255,
+                "invalid seed source path"
+            );
+            confined_repo_path(Path::new("."), path)?;
+        }
+        ensure!(
+            seed.root_ext4 != seed.disk_raw,
+            "seed sources must be distinct"
+        );
+        ensure!(
+            seed.partition_offset > 0 && seed.partition_offset % 512 == 0,
+            "seed partition offset must be positive and sector aligned"
+        );
+        let qemu = host.qemu.as_ref().context("seed requires host.qemu")?;
+        ensure!(
+            qemu.media.iter().filter(|media| media.writable).count() == 1,
+            "seed requires exactly one writable disk"
+        );
+        let ssh = qemu.ssh.as_ref().context("seed requires host.qemu.ssh")?;
+        ensure!(
+            ssh.account == "debian" && ssh.guest_address.as_deref() == Some("10.0.2.15"),
+            "NoCloud adapter requires the Debian account and seeded network address"
+        );
+        ensure!(
+            host.provision.is_empty(),
+            "NoCloud seed cannot also use console provisioning"
+        );
+    }
     if let Some(qemu) = &host.qemu {
         validate_qemu(qemu)?;
     }
@@ -1546,8 +1748,28 @@ fn validate_host(host: Option<&Host>) -> Result<()> {
         );
     }
     if let Some(build) = &host.build {
-        enum_value(&build.adapter, &["linux-merge", "fdt-template"])?;
-        validate_repo_relative(&build.template, "host.build.template")?;
+        enum_value(
+            &build.adapter,
+            &["linux-merge", "fdt-template", "uefi-artifacts"],
+        )?;
+        if build.adapter == "uefi-artifacts" {
+            ensure!(
+                build.template.is_none()
+                    && build.base.is_none()
+                    && build.bootargs.is_none()
+                    && build.initrd_total_bytes.is_none()
+                    && build.media_initrd_cache.is_none(),
+                "uefi-artifacts does not accept FDT template fields"
+            );
+        } else {
+            validate_repo_relative(
+                build
+                    .template
+                    .as_deref()
+                    .context("FDT adapter requires template")?,
+                "host.build.template",
+            )?;
+        }
         validate_repo_relative(&build.acquire_dir, "host.build.acquire_dir")?;
         match (build.adapter.as_str(), build.base.as_deref()) {
             ("linux-merge", Some(base)) => {
@@ -1555,6 +1777,7 @@ fn validate_host(host: Option<&Host>) -> Result<()> {
             }
             ("linux-merge", None) => anyhow::bail!("linux-merge requires host.build.base"),
             ("fdt-template", None) => {}
+            ("uefi-artifacts", None) => {}
             ("fdt-template", Some(_)) => {
                 anyhow::bail!("fdt-template does not accept host.build.base")
             }
@@ -1721,14 +1944,18 @@ fn validate_host_action(step: &RecipeStep) -> Result<()> {
             &["override_env", "sha512"],
         ),
         "download-tar-member" => (&["url", "member", "output"], &[]),
+        "build-static-linux-elf" => (&["source", "output", "architecture"], &[]),
         "extract-iso-file" => (&["source", "member", "output"], &["min_bytes"]),
         "extract-arm64-linux-image" | "extract-arm64-elf-image" => {
             (&["source", "member", "output"], &[])
         }
-        "build-initramfs-file" => (&["output", "path", "mode", "content"], &["compression"]),
+        "build-initramfs-file" => (
+            &["output", "path", "mode"],
+            &["compression", "content", "content_file", "content_sha256"],
+        ),
         "append-initramfs-file" => (
-            &["source", "output", "path", "mode", "content"],
-            &["compression"],
+            &["source", "output", "path", "mode"],
+            &["compression", "content", "content_file", "content_sha256"],
         ),
         "convert-qcow2-raw" => (&["source", "output"], &[]),
         "extract-gpt-partition" => (&["source", "output", "index"], &["sector_size"]),
@@ -1802,10 +2029,39 @@ fn validate_host_action(step: &RecipeStep) -> Result<()> {
             )?;
         }
     }
+    if step.action == "build-static-linux-elf" {
+        validate_repo_relative(&step.args["source"], "native helper source")?;
+        validate_repo_relative(&step.args["output"], "native helper output")?;
+        ensure!(
+            step.args["source"].ends_with(".c"),
+            "native helper source must be C"
+        );
+        enum_value(&step.args["architecture"], &["x86_64", "aarch64"])?;
+    }
     if matches!(
         step.action.as_str(),
         "build-initramfs-file" | "append-initramfs-file"
     ) {
+        ensure!(
+            step.args.contains_key("content") != step.args.contains_key("content_file"),
+            "initramfs requires exactly one of content or content_file"
+        );
+        if let Some(path) = step.args.get("content_file") {
+            validate_repo_relative(path, "initramfs content_file")?;
+            let hash = step
+                .args
+                .get("content_sha256")
+                .context("content_file requires content_sha256")?;
+            ensure!(
+                hash.len() == 64 && hash.bytes().all(|b| b.is_ascii_hexdigit()),
+                "content_sha256 must contain 64 hexadecimal digits"
+            );
+        } else {
+            ensure!(
+                !step.args.contains_key("content_sha256"),
+                "content_sha256 requires content_file"
+            );
+        }
         ensure!(
             u32::from_str_radix(&step.args["mode"], 8).is_ok_and(|mode| mode <= 0o777),
             "initramfs file mode must be octal and at most 0777"
@@ -2063,6 +2319,67 @@ mod tests {
     use super::*;
 
     #[test]
+    fn x86_boot_selection_rejects_unsupported_resource_requests() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../guest-profiles");
+        let (profile, _) = resolve(&root, Path::new("debian-amd64.toml"), &mut Vec::new()).unwrap();
+        validate_x86_boot_profile(&profile).unwrap();
+        let mut bad = profile.clone();
+        bad.target.as_mut().unwrap().vcpus = Some(2);
+        assert!(validate_x86_boot_profile(&bad).is_err());
+        let mut bad = profile.clone();
+        bad.target.as_mut().unwrap().guest_id = Some(1);
+        assert!(validate_x86_boot_profile(&bad).is_err());
+        let mut bad = profile.clone();
+        bad.target.as_mut().unwrap().autostart = Some(false);
+        assert!(validate_x86_boot_profile(&bad).is_err());
+        let mut bad = profile.clone();
+        bad.placements.get_mut("default").unwrap().ram_size = Some(0x40200000);
+        assert!(validate_x86_boot_profile(&bad).is_err());
+        let mut bad = profile.clone();
+        bad.placements.get_mut("default").unwrap().vmm_hva_base = Some(0x40000000);
+        assert!(validate_x86_boot_profile(&bad).is_err());
+        let mut bad = profile.clone();
+        bad.placements
+            .get_mut("default")
+            .unwrap()
+            .kernel_entry_address = Some(0x200000);
+        assert!(validate_x86_boot_profile(&bad).is_err());
+        let mut bad = profile;
+        bad.target.as_mut().unwrap().network_client = Some(1);
+        assert!(validate_x86_boot_profile(&bad).is_err());
+    }
+
+    #[test]
+    fn uefi_acquisition_has_no_fdt_template() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../guest-profiles");
+        let (mut profile, _) =
+            resolve(&root, Path::new("debian-amd64.toml"), &mut Vec::new()).unwrap();
+        validate(&profile, None).unwrap();
+        profile
+            .host
+            .as_mut()
+            .unwrap()
+            .build
+            .as_mut()
+            .unwrap()
+            .template = Some("fake.dts".into());
+        assert!(validate(&profile, None).is_err());
+        profile
+            .host
+            .as_mut()
+            .unwrap()
+            .build
+            .as_mut()
+            .unwrap()
+            .template = None;
+        profile.target.as_mut().unwrap().boot_protocol = Some("fdt-direct".into());
+        assert!(validate(&profile, None)
+            .unwrap_err()
+            .to_string()
+            .contains("uefi-artifacts requires"));
+    }
+
+    #[test]
     fn uefi_is_not_silently_prepared_as_an_fdt_bundle() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../guest-profiles");
         let (_, canonical) =
@@ -2238,6 +2555,47 @@ mod tests {
     }
 
     #[test]
+    fn nocloud_seed_contract_binds_sources_and_provisioning() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .join("guest-profiles");
+        let path = Path::new("debian-arm64-nocloud.toml");
+        let (profile, _) = resolve(&root, path, &mut Vec::new()).unwrap();
+        let host = profile.host.unwrap();
+        assert!(validate_host(Some(&host)).is_ok());
+        let seed = host_profile_plan(&root, path).unwrap().seed.unwrap();
+        assert_eq!(seed.partition_offset, 134217728);
+        assert_eq!(
+            seed.root_ext4,
+            "build/guest-images/debian-arm64-nocloud/root.ext4"
+        );
+        for bad_path in ["", "/tmp/root.ext4", "../root.ext4", "build/../root.ext4"] {
+            let mut invalid = host.clone();
+            invalid.seed.as_mut().unwrap().root_ext4 = bad_path.into();
+            assert!(validate_host(Some(&invalid)).is_err(), "{bad_path}");
+        }
+        let mut invalid = host.clone();
+        invalid.seed.as_mut().unwrap().partition_offset = 513;
+        assert!(validate_host(Some(&invalid)).is_err());
+        let mut invalid = host.clone();
+        invalid.seed.as_mut().unwrap().adapter = "unknown".into();
+        assert!(validate_host(Some(&invalid)).is_err());
+        let mut invalid = host.clone();
+        invalid.qemu.as_mut().unwrap().ssh.as_mut().unwrap().account = "root".into();
+        assert!(validate_host(Some(&invalid)).is_err());
+        let mut invalid = host.clone();
+        invalid.qemu.as_mut().unwrap().media.clear();
+        assert!(validate_host(Some(&invalid)).is_err());
+        let mut invalid = host;
+        invalid.provision.push(RecipeStep {
+            action: "write-console".into(),
+            args: BTreeMap::new(),
+        });
+        assert!(validate_host(Some(&invalid)).is_err());
+    }
+
+    #[test]
     fn host_recipes_are_bounded() {
         let steps = (0..=MAX_RECIPE_STEPS)
             .map(|_| RecipeStep {
@@ -2250,6 +2608,7 @@ mod tests {
             id: Some("bounded".to_string()),
             status: Some(Status::Abstract),
             host: Some(Host {
+                seed: None,
                 qemu: None,
                 console: None,
                 desktop: None,
@@ -2261,6 +2620,41 @@ mod tests {
             ..Profile::default()
         };
         assert!(validate(&profile, None).is_err());
+    }
+
+    #[test]
+    fn initramfs_binary_recipe_requires_one_payload_and_a_pin() {
+        for action in ["build-initramfs-file", "append-initramfs-file"] {
+            let mut step = RecipeStep {
+                action: action.into(),
+                args: BTreeMap::from([
+                    ("output".into(), "initrd".into()),
+                    ("path".into(), "init".into()),
+                    ("mode".into(), "0755".into()),
+                    ("content_file".into(), "helper".into()),
+                    ("content_sha256".into(), "ab".repeat(32)),
+                ]),
+            };
+            if action == "append-initramfs-file" {
+                step.args.insert("source".into(), "base".into());
+            }
+            assert!(validate_host_action(&step).is_ok());
+            step.args.insert("content_file".into(), "../helper".into());
+            assert!(validate_host_action(&step).is_err());
+            step.args.insert("content_file".into(), "helper".into());
+            step.args.insert("content".into(), "text".into());
+            assert!(validate_host_action(&step).is_err());
+            step.args.remove("content");
+            step.args.remove("content_sha256");
+            assert!(validate_host_action(&step).is_err());
+            step.args.insert("content_sha256".into(), "invalid".into());
+            assert!(validate_host_action(&step).is_err());
+            step.args.remove("content_file");
+            step.args.insert("content".into(), "text".into());
+            assert!(validate_host_action(&step).is_err());
+            step.args.remove("content_sha256");
+            assert!(validate_host_action(&step).is_ok());
+        }
     }
 
     #[test]
@@ -2309,6 +2703,7 @@ mod tests {
             probe_timeout_secs: Some(30),
         };
         let host = Host {
+            seed: None,
             qemu: None,
             console: Some(console.clone()),
             desktop: None,
