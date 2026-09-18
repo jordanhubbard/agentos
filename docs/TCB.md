@@ -185,8 +185,11 @@ terminal teardown and zeroed pool reuse. The
 earlier PCI grant failure and correction: root now keeps every BootInfo device
 descriptor and advances sparse ranges with aligned child device untypeds.
 Skipped ranges remain unmapped, with capabilities retained only by root.
-Full Debian recreation at this capacity remains pending; this does not
-establish multi-vCPU support or dynamic resource allocation. Root moves the
+At `a882bc4`, the [managed capacity receipt](evidence/2026-09-18-spark/x86-two-gib-managed.json)
+records two Debian login/SSH/input/destroy cycles with distinct handles in one
+agentOS boot. The recreated guest reported 2017468 KiB total memory and one
+online CPU over pinned SSH. This does not establish multi-vCPU support or
+dynamic resource allocation. Root moves the
 sole pool capability to the owning VMM after boot configuration, in the
 architecture-exclusive slot defined by `contracts/x86_guest_object_caps.h`.
 The VMM's own TCB is outside this pool: x86 VMEnter executes the VCPU bound

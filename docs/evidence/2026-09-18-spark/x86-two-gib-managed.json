@@ -1,0 +1,42 @@
+{
+  "schema": "agentos.x86_two_gib_managed.v1",
+  "task": "task_0348a8c136ec474cacaac48481988013",
+  "accepted_for_v04_release": false,
+  "revision": "a882bc47d2bdf47e4bfa9a13577fd38530d3287d",
+  "command": "make gate-x86_64-cc-linux SEL4_SDK_VERSION=2.3.0 X86_BOOT_PROFILE=debian-amd64-2g.toml X86_ROOT_DISK=/tmp/agentos-debian-amd64/recreate-3ea3554.raw X86_SSH_KEY=/tmp/agentos-debian-amd64/ssh-seed-19/identity X86_SSH_PORT=12224 X86_SSH_KNOWN_HOSTS=/tmp/agentos-v04-intel-discovery/build/tmp/agentos-qemu-LxAV1n.known_hosts X86_FIRMWARE_IMAGE=/tmp/agentos-ovmf-2024.02-2ubuntu0.9.fd X86_FIRMWARE_SHA256=101afad5f520753224b60b9555df60add435cf50c7a82b781d7d7d8c60db7eb5 QEMU_TEST_TIMEOUT=600",
+  "result": {
+    "exit_code": 0,
+    "handles": [
+      1,
+      2
+    ],
+    "cycles": 2,
+    "proofs": [
+      "Debian 13 login through canonical console",
+      "Pinned Ed25519 public-key SSH, uname x86_64 and sync in both generations",
+      "Exact console input echo in both generations",
+      "Destroy and recreate without restarting agentOS",
+      "Stale handle rejection"
+    ],
+    "guest_witness": {
+      "method": "Read-only pinned SSH in the recreated guest: cat /proc/meminfo; getconf _NPROCESSORS_ONLN",
+      "mem_total_kib": 2017468,
+      "online_cpus": 1,
+      "exit_code": 0,
+      "log_sha256": "582cc5d65ef8c5bde2e424b073bf012a1e8daa9616841c2130c5686418f24c90"
+    }
+  },
+  "root_task_sha256": "462fe443c1bcd65857f099b43aca27b310b83a9bbede699a5da81d1e2abd119b",
+  "artifacts": {
+    "directory": "/home/jkh/.local/share/agentos-evidence/2026-09-18-two-gib",
+    "full_log_sha256": "c34bf38c631b84a541e917b3491de2312b1cf764b39b9b46100c7b33fdae81d1",
+    "target_log_sha256": "5e80a6b1ed6345d134ff11a9f01f8e0c82a66670479795be80ec2dc883c6d0a5",
+    "first_console_sha256": "5fcb70453f8ea6cf8ce55d57ddb2ec22cf72c95c1f2f1e8dc81b51d918313c9d",
+    "second_console_sha256": "5cfacd6013735336aae1456c607296a5f2c77bb3546da2a890c4f7e2a2571ba7"
+  },
+  "limitations": [
+    "Capacity is boot-reserved; no dynamic RAM allocation or multi-vCPU execution is claimed.",
+    "No graphical guest acceptance, concurrent guest isolation or persistent-storage milestone completion is established by this test.",
+    "Required GitHub checks, canonical integration and remaining roadmap requirements are pending."
+  ]
+}
