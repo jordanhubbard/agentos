@@ -9,4 +9,14 @@
 #define AOS_GUEST_VCPU_CAP_BASE 330u
 #define AOS_GUEST_SC_CAP_BASE 394u
 
+/* ARM owns one dedicated non-device child untyped containing guest TCB,
+ * VCPU, IPC frame and (MCS) scheduling context. Root moves its sole pool
+ * capability after configuration. Revocation removes every descendant,
+ * including root's original object caps, without affecting the VMM itself.
+ * Stop guest execution and quiesce all device references before revoking.
+ * These slots follow the three guest-RAM CNode/VSpace grants. */
+#define AOS_GUEST_EXECUTION_POOL_CAP 461u
+#define AOS_GUEST_EXECUTION_POOL_BITS 16u
+#define AOS_GUEST_IPC_FRAME_CAP 462u
+
 #endif

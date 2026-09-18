@@ -20,6 +20,16 @@ delivery and mapping-isolation qualification remain pending.
 
 ## Privilege
 
+Each AArch64 guest's TCB, VCPU, IPC frame and MCS scheduling context now come
+from a dedicated 64 KiB non-device child untyped. After boot configuration,
+root moves the pool's sole capability to that guest's VMM, alongside the
+existing execution-capability slots. Revoking this pool can remove the guest
+objects and root's original descendant caps without revoking the VMM's own
+thread or any peer guest. Guest RAM uses separate per-frame pools below.
+The execution-pool contract is `contracts/guest_execution_caps.h`; production
+reclamation and recreation qualification are still pending. Guest VSpace/page
+tables and service queue grants are separate resources, not part of this pool.
+
 AArch64 guest RAM is allocated from dedicated 2 MiB child untyped pools.
 Root installs the initial guest/VMM mappings, then moves each pool's sole
 capability to its owning VMM. That VMM also receives its own CNode and the

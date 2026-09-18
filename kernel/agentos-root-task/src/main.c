@@ -1336,6 +1336,24 @@ static seL4_Error setup_vmm_guest_vcpu(const pd_desc_t *pd,
         return seL4_InvalidCapability;
     }
 
+    _Static_assert(AOS_GUEST_EXECUTION_POOL_CAP > AOS_GUEST_RAM_GUEST_VSPACE &&
+                   AOS_GUEST_IPC_FRAME_CAP < AOS_GUEST_RAM_POOL_BASE,
+                   "execution authority must not overlap guest RAM slots");
+    _Static_assert(seL4_TCBBits <= AOS_GUEST_EXECUTION_POOL_BITS - 2u &&
+                   seL4_ARM_VCPUBits <= AOS_GUEST_EXECUTION_POOL_BITS - 2u &&
+                   seL4_PageBits <= AOS_GUEST_EXECUTION_POOL_BITS - 2u,
+                   "guest execution objects must fit their private pool");
+#ifdef CONFIG_KERNEL_MCS
+    _Static_assert(seL4_MinSchedContextBits <= AOS_GUEST_EXECUTION_POOL_BITS - 2u,
+                   "guest scheduling context must fit its private pool");
+#endif
+    if (pd->cnode_size_bits != AOS_GUEST_RAM_CNODE_BITS)
+        return seL4_InvalidArgument;
+    seL4_CPtr execution_pool = seL4_CapNull;
+    seL4_Error err = ut_alloc_cap(seL4_UntypedObject,
+        AOS_GUEST_EXECUTION_POOL_BITS, &execution_pool);
+    if (err != seL4_NoError) return err;
+
     seL4_Word guest_tcb_slot = ut_alloc_slot();
     seL4_Word guest_vcpu_slot = ut_alloc_slot();
     if (guest_tcb_slot == seL4_CapNull ||
@@ -1344,11 +1362,8 @@ static seL4_Error setup_vmm_guest_vcpu(const pd_desc_t *pd,
         return seL4_NotEnoughMemory;
     }
 
-    seL4_Error err = ut_alloc(seL4_TCBObject,
-                               0u,
-                               seL4_CapInitThreadCNode,
-                               guest_tcb_slot,
-                               64u);
+    err = seL4_Untyped_Retype(execution_pool, seL4_TCBObject, 0u,
+        seL4_CapInitThreadCNode, 0u, 0u, guest_tcb_slot, 1u);
     if (err != seL4_NoError) {
         dbg_puts("[rt] VMM guest TCB alloc err=");
         dbg_hex((seL4_Word)err);
@@ -1356,11 +1371,8 @@ static seL4_Error setup_vmm_guest_vcpu(const pd_desc_t *pd,
         return err;
     }
 
-    err = ut_alloc(seL4_ARM_VCPUObject,
-                   0u,
-                   seL4_CapInitThreadCNode,
-                   guest_vcpu_slot,
-                   64u);
+    err = seL4_Untyped_Retype(execution_pool, seL4_ARM_VCPUObject, 0u,
+        seL4_CapInitThreadCNode, 0u, 0u, guest_vcpu_slot, 1u);
     if (err != seL4_NoError) {
         dbg_puts("[rt] VMM guest VCPU alloc err=");
         dbg_hex((seL4_Word)err);
@@ -1368,8 +1380,10 @@ static seL4_Error setup_vmm_guest_vcpu(const pd_desc_t *pd,
         return err;
     }
 
-    seL4_CPtr guest_ipc_cap = seL4_CapNull;
-    err = ut_alloc_cap(seL4_ARM_SmallPageObject, 0u, &guest_ipc_cap);
+    seL4_CPtr guest_ipc_cap = ut_alloc_slot();
+    if (guest_ipc_cap == seL4_CapNull) return seL4_NotEnoughMemory;
+    err = seL4_Untyped_Retype(execution_pool, seL4_ARM_SmallPageObject, 0u,
+        seL4_CapInitThreadCNode, 0u, 0u, guest_ipc_cap, 1u);
     if (err != seL4_NoError) {
         dbg_puts("[rt] VMM guest IPC frame alloc err=");
         dbg_hex((seL4_Word)err);
@@ -1410,11 +1424,9 @@ static seL4_Error setup_vmm_guest_vcpu(const pd_desc_t *pd,
         return seL4_NotEnoughMemory;
     }
 
-    err = ut_alloc(seL4_SchedContextObject,
-                   seL4_MinSchedContextBits,
-                   seL4_CapInitThreadCNode,
-                   guest_sc_slot,
-                   64u);
+    err = seL4_Untyped_Retype(execution_pool, seL4_SchedContextObject,
+        seL4_MinSchedContextBits, seL4_CapInitThreadCNode, 0u, 0u,
+        guest_sc_slot, 1u);
     if (err != seL4_NoError) {
         dbg_puts("[rt] VMM guest SC alloc err=");
         dbg_hex((seL4_Word)err);
@@ -1522,6 +1534,16 @@ static seL4_Error setup_vmm_guest_vcpu(const pd_desc_t *pd,
     cap_acct_record(seL4_CapNull, (seL4_CPtr)guest_sc_slot,
                     seL4_SchedContextObject, pd_index, pd->name);
 #endif
+
+    err = seL4_CNode_Copy(pd_cnode, AOS_GUEST_IPC_FRAME_CAP,
+        (uint8_t)pd->cnode_size_bits, seL4_CapInitThreadCNode,
+        guest_ipc_cap, 64u, seL4_AllRights);
+    if (err != seL4_NoError) return err;
+    err = seL4_CNode_Move(pd_cnode, AOS_GUEST_EXECUTION_POOL_CAP,
+        (uint8_t)pd->cnode_size_bits, seL4_CapInitThreadCNode,
+        execution_pool, 64u);
+    if (err != seL4_NoError) return err;
+    dbg_puts("[rt] private guest execution pool delegated to owning VMM\n");
 
     dbg_puts("[rt] VMM guest caps installed tcb=");
     dbg_hex((seL4_Word)guest_tcb_slot);
