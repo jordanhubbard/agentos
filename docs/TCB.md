@@ -20,6 +20,20 @@ delivery and mapping-isolation qualification remain pending.
 
 ## Privilege
 
+The x86 firmware composition now allocates its VCPU and four EPT paging
+objects from a dedicated 64 KiB non-device child untyped. Root moves the
+sole pool capability to the owning VMM after boot configuration, in the
+architecture-exclusive slot defined by `contracts/x86_guest_object_caps.h`.
+The VMM's own TCB is outside this pool: x86 VMEnter executes the VCPU bound
+to that thread, unlike ARM's separate guest TCB. Revocation must occur
+outside VMEnter after guest I/O is quiescent. Guest RAM, ROM, their VMM
+aliases and the ASID namespace remain separate resources. This establishes
+allocation authority only; x86 runtime suspend/destroy, full reclamation
+and reconstruction are not yet implemented. Host tests check the allocation
+source, destination slots and every retype failure. Intel Debian VMX/SSH and
+the full Spark gate passed at `115e1ba`; [the receipt](evidence/2026-09-18-spark/x86-private-objects.json)
+records allocation/boot/I/O qualification, not runtime revocation.
+
 Each AArch64 guest's TCB, VCPU, IPC frame and MCS scheduling context now come
 from a dedicated 64 KiB non-device child untyped. After boot configuration,
 root moves the pool's sole capability to that guest's VMM, alongside the

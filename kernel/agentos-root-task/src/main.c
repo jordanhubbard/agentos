@@ -35,6 +35,9 @@
 
 #include "boot_info.h"       /* seL4_BootInfo, seL4_Yield, object type constants */
 #include "contracts/guest_execution_caps.h"
+#if defined(__x86_64__) && defined(AGENTOS_X86_FIRMWARE_RESET)
+#include "x86_guest_objects.h"
+#endif
 #if defined(__x86_64__) && defined(AGENTOS_X86_VTX)
 #include "contracts/x86_vtx_proof.h"
 #endif
@@ -1709,17 +1712,20 @@ static seL4_Error setup_x86_firmware(const pd_desc_t *pd, uint32_t pd_index,
         (uintptr_t)_binary_x86_firmware_bin_start != AOS_X86_FIRMWARE_BYTES) {
         return seL4_InvalidArgument;
     }
-    seL4_CPtr objects[5] = {0};
-    const uint32_t types[5] = {
-        seL4_X86_VCPUObject, seL4_X86_EPTPML4Object,
-        seL4_X86_EPTPDPTObject, seL4_X86_EPTPDObject, seL4_X86_EPTPDObject,
-    };
-    seL4_Error err;
-    for (unsigned i = 0u; i < 5u; i++) {
-        err = ut_alloc_cap(types[i], 0u, &objects[i]);
-        if (err != seL4_NoError) return err;
-        (void)cap_acct_record(seL4_CapNull, objects[i], types[i], pd_index, pd->name);
+    seL4_CPtr objects[AOS_X86_GUEST_OBJECT_COUNT] = {0};
+    seL4_CPtr object_pool = seL4_CapNull;
+    seL4_Error err = ut_alloc_cap(seL4_UntypedObject,
+        AOS_X86_GUEST_OBJECT_POOL_BITS, &object_pool);
+    if (err != seL4_NoError) return err;
+    for (unsigned i = 0u; i < AOS_X86_GUEST_OBJECT_COUNT; i++) {
+        objects[i] = ut_alloc_slot();
+        if (objects[i] == seL4_CapNull) return seL4_NotEnoughMemory;
     }
+    err = aos_x86_guest_objects_retype(object_pool, seL4_CapInitThreadCNode, objects);
+    if (err != seL4_NoError) return err;
+    for (unsigned i = 0u; i < AOS_X86_GUEST_OBJECT_COUNT; i++)
+        (void)cap_acct_record(object_pool, objects[i],
+            aos_x86_guest_object_type(i), pd_index, pd->name);
     const seL4_Word attr = seL4_X86_EPT_Default_VMAttributes;
     err = seL4_X86_ASIDPool_Assign(seL4_CapInitThreadASIDPool, objects[1]);
     if (err != seL4_NoError) return err;
@@ -1775,6 +1781,10 @@ static seL4_Error setup_x86_firmware(const pd_desc_t *pd, uint32_t pd_index,
                           (uint8_t)pd->cnode_size_bits, seL4_CapInitThreadCNode,
                           objects[0], 64u, seL4_AllRights);
     if (err != seL4_NoError) return err;
+    err = seL4_CNode_Move(pd_cnode, AOS_X86_GUEST_OBJECT_POOL_CAP,
+        (uint8_t)pd->cnode_size_bits, seL4_CapInitThreadCNode, object_pool, 64u);
+    if (err != seL4_NoError) return err;
+    dbg_puts("[rt] x86 private VCPU and EPT pool delegated to owning VMM\n");
     dbg_puts("[rt] x86 VMX EPT proof provisioned\n");
     dbg_puts("[rt] x86 OVMF private RAM and read-only ROM provisioned\n");
     return seL4_NoError;

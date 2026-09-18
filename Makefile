@@ -801,6 +801,15 @@ test-host: policy-check guest-profile-check lint-source test-integration test-op
 test-host: test-x86-cpu-host
 test-host: test-guest-scheduling-host test-guest-gic-mapping-host test-guest-paging-host test-net-rx-accounting-host
 test-host: test-guest-execution-host
+test-host: test-x86-guest-objects-host
+
+.PHONY: test-x86-guest-objects-host
+test-x86-guest-objects-host:
+	@mkdir -p $(BUILD_TMP_DIR)
+	$(CC) -std=c11 -Wall -Wextra -Werror -DAGENTOS_TEST_HOST \
+		-Itests/platform/x86-objects-stubs -Ikernel/agentos-root-task/include \
+		tests/platform/test_x86_guest_objects.c -o $(BUILD_TMP_DIR)/test_x86_guest_objects
+	$(BUILD_TMP_DIR)/test_x86_guest_objects
 .PHONY: test-guest-execution-host
 test-guest-execution-host:
 	@mkdir -p $(BUILD_TMP_DIR)
