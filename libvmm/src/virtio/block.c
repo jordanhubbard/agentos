@@ -845,7 +845,7 @@ bool virtio_blk_handle_resp(struct virtio_blk_device *state)
     uint32_t sddf_ret_id;
 
     bool virt_notify = false;
-    bool resp_handled = false;
+    bool guest_completion_published = false;
     bool read_write_modify_inflight = false;
     while (!blk_queue_empty_resp(&state->queue_h)) {
         err = blk_dequeue_resp(&state->queue_h, &sddf_ret_status, &sddf_ret_success_count, &sddf_ret_id);
@@ -932,7 +932,6 @@ bool virtio_blk_handle_resp(struct virtio_blk_device *state)
                     }
                     if (virtio_blk_start_waiter(state)) virt_notify = true;
                     read_write_modify_inflight = true;
-                    resp_handled = true;
                     continue;
                 }
             }
@@ -945,6 +944,7 @@ bool virtio_blk_handle_resp(struct virtio_blk_device *state)
                     reqbk->total_req_size);
         }
         virtio_virtq_add_used(vq, reqbk->virtio_desc_head, used_len);
+        guest_completion_published = true;
 
         reqbk->state = VIRTIO_BLK_REQ_STATE_INVALID;
         err = ialloc_free(&state->ialloc, sddf_ret_id);
@@ -955,7 +955,6 @@ bool virtio_blk_handle_resp(struct virtio_blk_device *state)
             read_write_modify_inflight = true;
         }
 
-        resp_handled = true;
     }
 
     int nums_pending_cmds_consumed = 0;
@@ -968,12 +967,12 @@ bool virtio_blk_handle_resp(struct virtio_blk_device *state)
         }
     }
 
-    /* We need to know if we've finished handling all the requests in the previous cycle, if we did, we inject an
-     * interrupt, if we didn't we don't inject.
-     */
+    /* A published completion belongs to the guest even when freed cells let
+     * us admit more work or continue another request's RMW/chunk sequence.
+     * Do not make the guest wait for unrelated I/O to finish. Partial chunks
+     * have not published a used entry and must not signal completion. */
     bool virq_inject_success = true;
-    if (resp_handled && !read_write_modify_inflight && !virt_notify &&
-        !state->quiescing) {
+    if (guest_completion_published && !state->quiescing) {
         virtio_blk_set_interrupt_status(dev, true, false);
         virq_inject_success = virtio_blk_virq_inject(dev);
     }
