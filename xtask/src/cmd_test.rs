@@ -1408,9 +1408,9 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
                     &cc_sock,
                     &log_path,
                     Duration::from_secs(args.timeout_secs),
-                    args.x86_ssh_key.as_deref().map(|key| {
-                        (key, ssh_port, args.x86_ssh_known_hosts.as_deref())
-                    }),
+                    args.x86_ssh_key
+                        .as_deref()
+                        .map(|key| (key, ssh_port, args.x86_ssh_known_hosts.as_deref())),
                     &mut qemu,
                 )
             } else if args.assert_x86_linux_login {
@@ -3259,10 +3259,19 @@ fn x86_linux_login_reader(
 }
 
 fn x86_cc_console_bytes(cc: &mut CcClient, handle: u32) -> anyhow::Result<Vec<u8>> {
-    let reply = cc.call(MSG_CC_LOG_STREAM, handle, TRACE_PD_GUEST_VMM_PRIMARY, 0, &[])?;
+    let reply = cc.call(
+        MSG_CC_LOG_STREAM,
+        handle,
+        TRACE_PD_GUEST_VMM_PRIMARY,
+        0,
+        &[],
+    )?;
     let len = reply.mr[1] as usize;
-    anyhow::ensure!(reply.mr[0] == CC_OK && len <= reply.shmem.len(),
-        "invalid Intel CC console reply: {:?}", reply.mr);
+    anyhow::ensure!(
+        reply.mr[0] == CC_OK && len <= reply.shmem.len(),
+        "invalid Intel CC console reply: {:?}",
+        reply.mr
+    );
     Ok(reply.shmem[..len].to_vec())
 }
 
@@ -3275,23 +3284,38 @@ fn x86_cc_linux_probe(
 ) -> anyhow::Result<String> {
     let mut cc = connect_cc_client(socket, timeout.min(Duration::from_secs(30)), qemu)?;
     let absent = cc.call(MSG_CC_GUEST_STATUS, 0, 0, 0, &[])?;
-    anyhow::ensure!(absent.mr[0] == CC_ERR_BAD_HANDLE, "CC image exposed an automatic guest");
+    anyhow::ensure!(
+        absent.mr[0] == CC_ERR_BAD_HANDLE,
+        "CC image exposed an automatic guest"
+    );
     // This exercises public admission against the image's boot-reserved RAM.
-    let handle = create_guest_via_cc_wait(&mut cc, 1, VIBEOS_ARCH_X86_64, 64,
-        "Intel Linux", timeout, qemu)?;
+    let handle = create_guest_via_cc_wait(
+        &mut cc,
+        1,
+        VIBEOS_ARCH_X86_64,
+        64,
+        "Intel Linux",
+        timeout,
+        qemu,
+    )?;
     anyhow::ensure!(handle != 0, "CREATE returned reserved boot handle");
-    let proof = x86_linux_login_reader(|chunk| {
-        let bytes = x86_cc_console_bytes(&mut cc, handle).map_err(std::io::Error::other)?;
-        if bytes.is_empty() {
-            std::thread::sleep(Duration::from_millis(100));
-            return Err(std::io::ErrorKind::WouldBlock.into());
-        }
-        if bytes.len() > chunk.len() {
-            return Err(std::io::Error::other("CC console read buffer too small"));
-        }
-        chunk[..bytes.len()].copy_from_slice(&bytes);
-        Ok(bytes.len())
-    }, log_path, Instant::now() + timeout, ssh)?;
+    let proof = x86_linux_login_reader(
+        |chunk| {
+            let bytes = x86_cc_console_bytes(&mut cc, handle).map_err(std::io::Error::other)?;
+            if bytes.is_empty() {
+                std::thread::sleep(Duration::from_millis(100));
+                return Err(std::io::ErrorKind::WouldBlock.into());
+            }
+            if bytes.len() > chunk.len() {
+                return Err(std::io::Error::other("CC console read buffer too small"));
+            }
+            chunk[..bytes.len()].copy_from_slice(&bytes);
+            Ok(bytes.len())
+        },
+        log_path,
+        Instant::now() + timeout,
+        ssh,
+    )?;
 
     // Exercise real guest input after login readiness, without requiring a
     // password or changing the guest. The terminal must echo these exact bytes.
@@ -3302,16 +3326,33 @@ fn x86_cc_linux_probe(
     while Instant::now() < deadline && !echoed.windows(marker.len()).any(|w| w == marker) {
         ensure_qemu_running(qemu, "checking Intel CC input echo")?;
         echoed.extend(x86_cc_console_bytes(&mut cc, handle)?);
-        anyhow::ensure!(echoed.len() <= 1024 * 1024, "CC input transcript exceeds 1 MiB");
+        anyhow::ensure!(
+            echoed.len() <= 1024 * 1024,
+            "CC input transcript exceeds 1 MiB"
+        );
         std::thread::sleep(Duration::from_millis(100));
     }
     std::fs::write(log_path.with_extension("cc-input.log"), &echoed)?;
-    anyhow::ensure!(echoed.windows(marker.len()).any(|w| w == marker), "Intel CC input was not echoed by Linux");
+    anyhow::ensure!(
+        echoed.windows(marker.len()).any(|w| w == marker),
+        "Intel CC input was not echoed by Linux"
+    );
     let destroyed = cc.call(MSG_CC_DESTROY_GUEST, handle, GUEST_DESTROY_NORMAL, 0, &[])?;
-    anyhow::ensure!(destroyed.mr[0] == CC_OK, "Intel Linux destroy failed: {:?}", destroyed.mr);
-    for opcode in [MSG_CC_GUEST_STATUS, MSG_CC_SUSPEND_GUEST, MSG_CC_RESUME_GUEST] {
+    anyhow::ensure!(
+        destroyed.mr[0] == CC_OK,
+        "Intel Linux destroy failed: {:?}",
+        destroyed.mr
+    );
+    for opcode in [
+        MSG_CC_GUEST_STATUS,
+        MSG_CC_SUSPEND_GUEST,
+        MSG_CC_RESUME_GUEST,
+    ] {
         let reply = cc.call(opcode, handle, 0, 0, &[])?;
-        anyhow::ensure!(reply.mr[0] == CC_ERR_BAD_HANDLE, "stale Intel handle accepted by {opcode:#x}");
+        anyhow::ensure!(
+            reply.mr[0] == CC_ERR_BAD_HANDLE,
+            "stale Intel handle accepted by {opcode:#x}"
+        );
     }
     Ok(format!("{proof}; binary CC CREATE, Linux console input echo, DESTROY and stale handle rejection verified"))
 }
@@ -5550,8 +5591,12 @@ fn wait_for_dual_guest_consoles_via_cc(
      * media boot cannot lose the single emulated CPU to a busier guest.
      */
     for guest in [lead, deferred] {
-        let result =
-            try_create_guest_via_cc(&mut boot_cc, guest.profile.control_type as u8, VIBEOS_ARCH_AARCH64, guest.ram_mb)?;
+        let result = try_create_guest_via_cc(
+            &mut boot_cc,
+            guest.profile.control_type as u8,
+            VIBEOS_ARCH_AARCH64,
+            guest.ram_mb,
+        )?;
         anyhow::ensure!(
             matches!(result, Err((CC_ERR_RELAY_FAULT, _))),
             "duplicate profile {} creation was not rejected: {result:?}",
@@ -6032,6 +6077,51 @@ fn tail_chars(s: &str, max_chars: usize) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn managed_cc_create_preserves_architecture_and_console_rejects_bad_lengths() {
+        use std::os::unix::net::UnixListener;
+        let directory = tempfile::tempdir().unwrap();
+        let socket = directory.path().join("cc.sock");
+        let listener = UnixListener::bind(&socket).unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            for arch in [VIBEOS_ARCH_AARCH64, VIBEOS_ARCH_X86_64] {
+                let mut request = [0u8; CC_REQ_SIZE];
+                stream.read_exact(&mut request).unwrap();
+                assert_eq!(rd32(&request, 0), MSG_CC_CREATE_GUEST);
+                assert_eq!(&request[16..18], &[1, arch]);
+                assert_eq!(rd32(&request, 20), 64);
+                assert_eq!(rd32(&request, 32), 7);
+                let mut reply = [0u8; CC_REPLY_SIZE];
+                wr32(&mut reply, 4, 17);
+                stream.write_all(&reply).unwrap();
+            }
+            for (status, length) in [(0, 3), (0, 4097), (CC_ERR_BAD_HANDLE, 0)] {
+                let mut request = [0u8; CC_REQ_SIZE];
+                stream.read_exact(&mut request).unwrap();
+                assert_eq!(rd32(&request, 0), MSG_CC_LOG_STREAM);
+                assert_eq!(rd32(&request, 4), 17);
+                assert_eq!(rd32(&request, 8), TRACE_PD_GUEST_VMM_PRIMARY);
+                let mut reply = [0u8; CC_REPLY_SIZE];
+                wr32(&mut reply, 0, status);
+                wr32(&mut reply, 4, length);
+                reply[16..19].copy_from_slice(b"abc");
+                stream.write_all(&reply).unwrap();
+            }
+        });
+        let mut cc = CcClient::connect(&socket).unwrap();
+        for arch in [VIBEOS_ARCH_AARCH64, VIBEOS_ARCH_X86_64] {
+            assert_eq!(
+                try_create_guest_via_cc(&mut cc, 1, arch, 64).unwrap(),
+                Ok(17)
+            );
+        }
+        assert_eq!(x86_cc_console_bytes(&mut cc, 17).unwrap(), b"abc");
+        assert!(x86_cc_console_bytes(&mut cc, 17).is_err());
+        assert!(x86_cc_console_bytes(&mut cc, 17).is_err());
+        server.join().unwrap();
+    }
+
     #[test]
     fn seeded_cold_boot_rejects_changed_profile_image_and_reinitialization() {
         let directory = tempfile::tempdir().unwrap();
