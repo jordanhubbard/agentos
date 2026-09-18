@@ -65,9 +65,22 @@
  * badge authorization as ATTACH. Stop the producer before calling. An OK
  * reply guarantees that net_virt holds no queue pointers for this client;
  * queued packets may be discarded. Repeated detach is idempotent. This does
- * not close the driver's private vNIC or permit reattachment: a retired
- * client stays BUSY until a future explicit generation/reset contract. */
+ * close the raw driver handle before retiring the queue. Reattachment uses
+ * REBIND; legacy ATTACH cannot revive a retired client. */
 #define NET_VIRT_OP_DETACH              0x2202u
+/* Guest-only control: one private untyped capability in, one fresh queue
+ * frame capability out on success. The VMM retains pool revocation authority.
+ * Client N implies VMM slot N. Only the next nonzero generation is accepted.
+ * On failure revoke the pool before retrying; detach a committed generation
+ * first if receiving or mapping the returned frame fails. */
+#define NET_VIRT_OP_REBIND              0x2203u
+#define NET_VIRT_REBIND_VERSION         1u
+typedef struct __attribute__((packed)) {
+    uint32_t version, client, generation;
+} net_virt_rebind_req_t;
+typedef struct __attribute__((packed)) {
+    uint32_t status, version, generation;
+} net_virt_rebind_reply_t;
 /* NBSend, VMM -> net_virt: guest queues changed (see header comment). */
 #define NET_VIRT_EVENT_KICK             0x2210u
 
@@ -77,6 +90,7 @@
 #define NET_VIRT_ERR_BAD_CLIENT         2u   /* client_id out of range / no EP */
 #define NET_VIRT_ERR_BUSY               3u   /* client already attached */
 #define NET_VIRT_ERR_UNAVAILABLE        4u   /* virtualizer not bridging yet */
+#define NET_VIRT_ERR_RESOURCE           5u
 
 /* ── Hardware state reported by ATTACH (net_virt_attach_reply_t.hw_state) */
 #define NET_VIRT_HW_NONE                0u   /* no host NIC: hub/loopback pump */

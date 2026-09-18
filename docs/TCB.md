@@ -312,6 +312,14 @@ reattach without a future generation/reset contract. Detach closes the raw
 driver handle, including a handle opened before a link-down fallback, before
 retiring the guest queue. A failed close retains ownership for retry. Driver
 slot reuse resets RX indices; network detach alone does not prove guest recreation.
+Network REBIND v1 is restricted to guest slots 0/1 and the next nonzero
+generation after retirement. It uses the same private-untyped/frame-return
+scheme as block and serial reconstruction. net_virt receives only its own
+CNode/VSpace management authority; native-client and driver pages are not
+replaced. Fresh queues are initialized before the same guest identity opens
+a new raw driver session. Legacy ATTACH cannot revive a retired slot.
+Failed reconstruction requires pool revocation before retry, with detach
+first if the service already committed the generation.
 Block contract v5 likewise retires service queue pointers only after both
 request and response queues are valid and empty. The virtualizer serializes
 detach with its synchronous driver transfers, so an acknowledgment cannot

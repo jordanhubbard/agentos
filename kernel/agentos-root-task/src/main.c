@@ -3112,6 +3112,7 @@ void root_task_main(const seL4_BootInfo *bi)
         }
 
         if (pd->self_svc_id == SVC_ID_SERIAL_VIRT ||
+            pd->self_svc_id == SVC_ID_NET_VIRT ||
             pd->self_svc_id == SVC_ID_BLK_VIRT) {
             if (pd->cnode_size_bits != AOS_QUEUE_SERVICE_CNODE_BITS ||
                 seL4_CNode_Copy(pd_cnode, AOS_QUEUE_SERVICE_CNODE, pd->cnode_size_bits,

@@ -39,6 +39,8 @@ extern const uint8_t _binary_x86_boot_profile_bin_start[], _binary_x86_boot_prof
 #include <platform/serial_rebind.h>
 #include <platform/blk_rebind.h>
 #include <platform/blk_virt_pump.h>
+#include <platform/net_rebind.h>
+#include <platform/net_virt_pump.h>
 
 #define VCPU AOS_GUEST_VCPU_CAP_BASE
 const char vmm_pd_name[] = "guest_vmm_x86";
@@ -205,6 +207,56 @@ bool aos_x86_lifecycle_boot_ack;
 extern const uint8_t _binary_x86_firmware_bin_start[], _binary_x86_firmware_bin_end[];
 /* Run only after the independent client has destroyed the guest and checked
  * terminal-state rejections. Never enter VMX or reuse a retired queue. */
+static bool recreated_network_proof(uint32_t generation)
+{
+    if (!aos_net_virt_rebind(0u, generation)) return false;
+    aos_net_virt_client_t q;
+    aos_net_client_bind((uint8_t *)AOS_NET_SHMEM_VA, 0u, &q);
+    if (q.tx_free->head || q.rx_free->head || q.tx_active->head ||
+        q.tx_active->tail || q.rx_active->head || q.rx_active->tail ||
+        q.tx_free->tail != AOS_NET_CAPACITY || q.rx_free->tail != AOS_NET_CAPACITY)
+        return false;
+    static const uint8_t arp[] = {
+        255,255,255,255,255,255, 0x52,0x54,0,0x12,0x34,0x56, 8,6,
+        0,1,8,0,6,4,0,1, 0x52,0x54,0,0x12,0x34,0x56, 10,0,2,15,
+        0,0,0,0,0,0, 10,0,2,2
+    };
+    for (unsigned i = 0; i < sizeof(arp); i++) q.tx_data[i] = arp[i];
+    q.tx_active->buffers[0] = (aos_net_buff_desc_t){.len = sizeof(arp)};
+    __atomic_store_n(&q.tx_free->head, 1u, __ATOMIC_RELEASE);
+    __atomic_store_n(&q.tx_active->tail, 1u, __ATOMIC_RELEASE);
+    seL4_Signal(PD_CNODE_SLOT_NET_VIRT_NOTIFY);
+    unsigned waits = 0u;
+    while ((__atomic_load_n(&q.tx_free->tail, __ATOMIC_ACQUIRE) != AOS_NET_CAPACITY + 1u ||
+            __atomic_load_n(&q.rx_active->tail, __ATOMIC_ACQUIRE) == 0u) &&
+           waits++ < 100000u) seL4_Yield();
+    if (waits >= 100000u || q.tx_active->head != 1u) return false;
+    aos_net_buff_desc_t received = q.rx_active->buffers[0];
+    if (!aos_net_buffer_valid(received.io_or_offset, received.len) || received.len < 42u)
+        return false;
+    const uint8_t *reply = q.rx_data + received.io_or_offset;
+    if (reply[12] != 8u || reply[13] != 6u || reply[20] != 0u || reply[21] != 2u ||
+        reply[28] != 10u || reply[29] != 0u || reply[30] != 2u || reply[31] != 2u ||
+        reply[38] != 10u || reply[39] != 0u || reply[40] != 2u || reply[41] != 15u)
+        return false;
+    for (unsigned i = 0; i < 6u; i++)
+        if (reply[i] != arp[6u + i] || reply[32u + i] != arp[6u + i]) return false;
+    sel4_msg_t detach = {.opcode = NET_VIRT_OP_DETACH,
+        .length = sizeof(net_virt_attach_req_t)}, result = {0};
+    const net_virt_attach_req_t args = {NET_VIRT_CONTRACT_VERSION, 0u, 0u};
+    __builtin_memcpy(detach.data, &args, sizeof(args));
+    sel4_call(PD_CNODE_SLOT_NET_VIRT_EP, &detach, &result);
+    if (result.opcode != SEL4_ERR_OK || result.length != sizeof(net_virt_attach_reply_t) ||
+        msg_u32(&result, 0u) != NET_VIRT_OK) return false;
+    if (seL4_CNode_Revoke(AOS_GUEST_RAM_SELF_CNODE,
+            AOS_GUEST_QUEUE_POOL_BASE + AOS_GUEST_QUEUE_NET,
+            AOS_GUEST_RAM_CNODE_BITS) != seL4_NoError) return false;
+    return seL4_CNode_Copy(AOS_GUEST_RAM_SELF_CNODE, AOS_GUEST_QUEUE_TEST_COPY,
+        AOS_GUEST_RAM_CNODE_BITS, AOS_GUEST_RAM_SELF_CNODE,
+        AOS_GUEST_QUEUE_FRAME_BASE + AOS_GUEST_QUEUE_NET,
+        AOS_GUEST_RAM_CNODE_BITS, seL4_AllRights) == seL4_FailedLookup;
+}
+
 static bool terminal_teardown_proof(void)
 {
     /* Root is already waiting for the terminal report. A failed report on
@@ -230,6 +282,7 @@ static bool terminal_teardown_proof(void)
      * the pool. Exercise every pool, including ROM and device queues, twice.
      * These are stopped scratch frames, never a recreated executing guest. */
     for (unsigned pass = 0; pass < 2u; pass++) {
+        if (!recreated_network_proof(pass + 1u)) return false;
         if (!aos_blk_virt_rebind(0u, pass + 1u)) return false;
         aos_blk_virt_client_t rebuilt_block;
         aos_blk_client_bind((uint8_t *)AOS_BLK_SHMEM_VA, 0u, &rebuilt_block);

@@ -828,6 +828,14 @@ test-host: test-guest-execution-host
 test-host: test-x86-guest-objects-host
 test-host: test-x86-memory-rebuild-host
 test-host: test-blk-rebind-host
+test-host: test-net-rebind-host
+.PHONY: test-net-rebind-host
+test-net-rebind-host:
+	@mkdir -p $(BUILD_TMP_DIR)
+	$(CC) -std=gnu11 -Wall -Wextra -Werror -I platform/include \
+		-idirafter kernel/agentos-root-task/include tests/platform/test_net_rebind.c \
+		-o $(BUILD_TMP_DIR)/test_net_rebind
+	$(BUILD_TMP_DIR)/test_net_rebind
 .PHONY: test-blk-rebind-host
 test-blk-rebind-host:
 	@mkdir -p $(BUILD_TMP_DIR)

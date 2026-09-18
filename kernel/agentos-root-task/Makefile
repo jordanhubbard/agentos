@@ -354,6 +354,10 @@ $(BUILD_DIR)/x86_blk_rebind.o: $(REPO_ROOT_MK)/platform/blk-virt/rebind_client.c
 	@mkdir -p $(BUILD_DIR)
 	$(CC) -c $(X86_SERIAL_CFLAGS) -mgeneral-regs-only $< -o $@
 $(BUILD_DIR)/guest_vmm_primary.elf: $(BUILD_DIR)/x86_blk_rebind.o
+$(BUILD_DIR)/x86_net_rebind.o: $(REPO_ROOT_MK)/platform/net-virt/rebind_client.c Makefile
+	@mkdir -p $(BUILD_DIR)
+	$(CC) -c $(X86_SERIAL_CFLAGS) -mgeneral-regs-only $< -o $@
+$(BUILD_DIR)/guest_vmm_primary.elf: $(BUILD_DIR)/x86_net_rebind.o
 ifeq ($(X86_USERSPACE_PROOF),1)
 $(BUILD_DIR)/guest_vmm_primary.elf: $(BUILD_DIR)/x86_firmware.o
 endif
