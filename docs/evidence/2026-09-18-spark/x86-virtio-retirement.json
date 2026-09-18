@@ -25,7 +25,8 @@
   "unresolved": {
     "task": "task_8c6afd5682bc4b8ba858f4cdc5e44ef8",
     "description": "Initial intermittent failure is unexplained; passing reruns do not establish a fix",
-    "stage_legend": "1 lifecycle/GPA; 10..17 retired bus slots; 20 stale execution caps; 100/200 network; 110/210 block; 120/220 serial; 130..132/230..232 pool reuse; 140/240 execution and RAM/ROM reconstruction"
+    "stage_legend": "1 lifecycle/GPA; 10..17 retired bus slots; 20 stale execution caps; 100/200 network entry; 110/210 block; 120/220 serial; 130..132/230..232 pool reuse; 140/240 execution and RAM/ROM reconstruction",
+    "network_stage_legend": "Base 1000 + generation * 100, plus: 1 rebind; 2 hardware backend; 3 initial queues; 4 completion polling exhausted; 5 TX consumption; 6 RX descriptor; 7 ARP type and IP addresses; 8 destination MACs; 9 detach; 10 revoke; 11 stale frame capability"
   },
   "limitations": [
     "Late IRQ rejection and fresh bus registrations are host tests; native proof checks retired MMIO slots and disabled GPA translation",

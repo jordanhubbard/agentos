@@ -207,15 +207,21 @@ static uint64_t timestamp(void)
 bool aos_x86_lifecycle_ack;
 bool aos_x86_lifecycle_boot_ack;
 extern const uint8_t _binary_x86_firmware_bin_start[], _binary_x86_firmware_bin_end[];
+/* Qualification diagnostics only: no IPC or scheduling until terminal report. */
+static uint32_t teardown_proof_stage;
 /* Run only after the independent client has destroyed the guest and checked
  * terminal-state rejections. Never enter VMX or reuse a retired queue. */
 static bool recreated_network_proof(uint32_t generation)
 {
+    const uint32_t stage = 1000u + generation * 100u;
+    teardown_proof_stage = stage + 1u;
     net_virt_rebind_reply_t attachment;
-    if (!aos_net_virt_rebind_with_info(0u, generation, &attachment) ||
-        attachment.hw_state != NET_VIRT_HW_NET_PD) return false;
+    if (!aos_net_virt_rebind_with_info(0u, generation, &attachment)) return false;
+    teardown_proof_stage = stage + 2u;
+    if (attachment.hw_state != NET_VIRT_HW_NET_PD) return false;
     aos_net_virt_client_t q;
     aos_net_client_bind((uint8_t *)AOS_NET_SHMEM_VA, 0u, &q);
+    teardown_proof_stage = stage + 3u;
     if (q.tx_free->head || q.rx_free->head || q.tx_active->head ||
         q.tx_active->tail || q.rx_active->head || q.rx_active->tail ||
         q.tx_free->tail != AOS_NET_CAPACITY || q.rx_free->tail != AOS_NET_CAPACITY)
@@ -238,17 +244,24 @@ static bool recreated_network_proof(uint32_t generation)
     while ((__atomic_load_n(&q.tx_free->tail, __ATOMIC_ACQUIRE) != AOS_NET_CAPACITY + 1u ||
             __atomic_load_n(&q.rx_active->tail, __ATOMIC_ACQUIRE) == 0u) &&
            waits++ < 100000u) seL4_Yield();
-    if (waits >= 100000u || q.tx_active->head != 1u) return false;
+    teardown_proof_stage = stage + 4u;
+    if (waits >= 100000u) return false;
+    teardown_proof_stage = stage + 5u;
+    if (q.tx_active->head != 1u) return false;
+    teardown_proof_stage = stage + 6u;
     aos_net_buff_desc_t received = q.rx_active->buffers[0];
     if (!aos_net_buffer_valid(received.io_or_offset, received.len) || received.len < 42u)
         return false;
     const uint8_t *reply = q.rx_data + received.io_or_offset;
+    teardown_proof_stage = stage + 7u;
     if (reply[12] != 8u || reply[13] != 6u || reply[20] != 0u || reply[21] != 2u ||
         reply[28] != 10u || reply[29] != 0u || reply[30] != 2u || reply[31] != 2u ||
         reply[38] != 10u || reply[39] != 0u || reply[40] != 2u || reply[41] != 15u)
         return false;
+    teardown_proof_stage = stage + 8u;
     for (unsigned i = 0; i < 6u; i++)
         if (reply[i] != attachment.mac[i] || reply[32u + i] != attachment.mac[i]) return false;
+    teardown_proof_stage = stage + 9u;
     sel4_msg_t detach = {.opcode = NET_VIRT_OP_DETACH,
         .length = sizeof(net_virt_attach_req_t)}, result = {0};
     const net_virt_attach_req_t args = {NET_VIRT_CONTRACT_VERSION, 0u, 0u};
@@ -256,17 +269,17 @@ static bool recreated_network_proof(uint32_t generation)
     sel4_call(PD_CNODE_SLOT_NET_VIRT_EP, &detach, &result);
     if (result.opcode != SEL4_ERR_OK || result.length != sizeof(net_virt_attach_reply_t) ||
         msg_u32(&result, 0u) != NET_VIRT_OK) return false;
+    teardown_proof_stage = stage + 10u;
     if (seL4_CNode_Revoke(AOS_GUEST_RAM_SELF_CNODE,
             AOS_GUEST_QUEUE_POOL_BASE + AOS_GUEST_QUEUE_NET,
             AOS_GUEST_RAM_CNODE_BITS) != seL4_NoError) return false;
+    teardown_proof_stage = stage + 11u;
     return seL4_CNode_Copy(AOS_GUEST_RAM_SELF_CNODE, AOS_GUEST_QUEUE_TEST_COPY,
         AOS_GUEST_RAM_CNODE_BITS, AOS_GUEST_RAM_SELF_CNODE,
         AOS_GUEST_QUEUE_FRAME_BASE + AOS_GUEST_QUEUE_NET,
         AOS_GUEST_RAM_CNODE_BITS, seL4_AllRights) == seL4_FailedLookup;
 }
 
-/* Qualification diagnostics only: no IPC or scheduling until terminal report. */
-static uint32_t teardown_proof_stage;
 static bool terminal_teardown_proof(void)
 {
     /* Root is already waiting for the terminal report. A failed report on
