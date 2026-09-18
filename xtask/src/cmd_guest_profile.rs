@@ -1725,10 +1725,13 @@ fn validate_host_action(step: &RecipeStep) -> Result<()> {
         "extract-arm64-linux-image" | "extract-arm64-elf-image" => {
             (&["source", "member", "output"], &[])
         }
-        "build-initramfs-file" => (&["output", "path", "mode", "content"], &["compression"]),
+        "build-initramfs-file" => (
+            &["output", "path", "mode"],
+            &["compression", "content", "content_file", "content_sha256"],
+        ),
         "append-initramfs-file" => (
-            &["source", "output", "path", "mode", "content"],
-            &["compression"],
+            &["source", "output", "path", "mode"],
+            &["compression", "content", "content_file", "content_sha256"],
         ),
         "convert-qcow2-raw" => (&["source", "output"], &[]),
         "extract-gpt-partition" => (&["source", "output", "index"], &["sector_size"]),
@@ -1806,6 +1809,26 @@ fn validate_host_action(step: &RecipeStep) -> Result<()> {
         step.action.as_str(),
         "build-initramfs-file" | "append-initramfs-file"
     ) {
+        ensure!(
+            step.args.contains_key("content") != step.args.contains_key("content_file"),
+            "initramfs requires exactly one of content or content_file"
+        );
+        if let Some(path) = step.args.get("content_file") {
+            validate_repo_relative(path, "initramfs content_file")?;
+            let hash = step
+                .args
+                .get("content_sha256")
+                .context("content_file requires content_sha256")?;
+            ensure!(
+                hash.len() == 64 && hash.bytes().all(|b| b.is_ascii_hexdigit()),
+                "content_sha256 must contain 64 hexadecimal digits"
+            );
+        } else {
+            ensure!(
+                !step.args.contains_key("content_sha256"),
+                "content_sha256 requires content_file"
+            );
+        }
         ensure!(
             u32::from_str_radix(&step.args["mode"], 8).is_ok_and(|mode| mode <= 0o777),
             "initramfs file mode must be octal and at most 0777"
@@ -2261,6 +2284,41 @@ mod tests {
             ..Profile::default()
         };
         assert!(validate(&profile, None).is_err());
+    }
+
+    #[test]
+    fn initramfs_binary_recipe_requires_one_payload_and_a_pin() {
+        for action in ["build-initramfs-file", "append-initramfs-file"] {
+            let mut step = RecipeStep {
+                action: action.into(),
+                args: BTreeMap::from([
+                    ("output".into(), "initrd".into()),
+                    ("path".into(), "init".into()),
+                    ("mode".into(), "0755".into()),
+                    ("content_file".into(), "helper".into()),
+                    ("content_sha256".into(), "ab".repeat(32)),
+                ]),
+            };
+            if action == "append-initramfs-file" {
+                step.args.insert("source".into(), "base".into());
+            }
+            assert!(validate_host_action(&step).is_ok());
+            step.args.insert("content_file".into(), "../helper".into());
+            assert!(validate_host_action(&step).is_err());
+            step.args.insert("content_file".into(), "helper".into());
+            step.args.insert("content".into(), "text".into());
+            assert!(validate_host_action(&step).is_err());
+            step.args.remove("content");
+            step.args.remove("content_sha256");
+            assert!(validate_host_action(&step).is_err());
+            step.args.insert("content_sha256".into(), "invalid".into());
+            assert!(validate_host_action(&step).is_err());
+            step.args.remove("content_file");
+            step.args.insert("content".into(), "text".into());
+            assert!(validate_host_action(&step).is_err());
+            step.args.remove("content_sha256");
+            assert!(validate_host_action(&step).is_ok());
+        }
     }
 
     #[test]

@@ -59,6 +59,15 @@ distribution-specific artifact or DTB branches. The VMM validates the fixed
 wire representation and checks embedded artifact sizes before the
 guest-neutral boot executor copies anything into guest RAM.
 
+For `build-initramfs-file` and `append-initramfs-file`, specify exactly one of
+inline UTF-8 `content` or `content_file`. A file payload is relative to the
+profile's acquisition output directory and requires `content_sha256` (64 hex
+digits). The executor reads at most 16 MiB, verifies the bytes before changing
+the destination, and preserves arbitrary binary data, including native ELF
+helpers. `path` remains the relative path inside the CPIO archive; `mode` is
+octal and at most `0777`. Both payload forms support `compression = "none"`
+or `"zstd"`. Existing text overlays do not need a file checksum.
+
 Legacy `--guest-os` and `GUEST_OS` spellings remain compatibility selectors.
 For a single guest, the value is resolved through the profile's `aliases`
 array. Multi-guest tests resolve a separate bounded document under
