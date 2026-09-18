@@ -722,6 +722,7 @@ gate-x86_64-debian-ssh:
 	@cargo xtask qemu-test --board x86_64_generic_vtx --guest-os none \
 		--assert-vmx-exit --assert-firmware-reset --assert-x86-linux-login \
 		--x86-boot-profile debian-amd64.toml --x86-ssh-key "$(X86_SSH_KEY)" \
+		$(if $(X86_SSH_KNOWN_HOSTS),--x86-ssh-known-hosts "$(X86_SSH_KNOWN_HOSTS)",) \
 		--ssh-port "$(X86_SSH_PORT)" --x86-block-image "$(X86_ROOT_DISK)" \
 		--x86-block-write --timeout-secs $(QEMU_TEST_TIMEOUT)
 

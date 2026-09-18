@@ -950,7 +950,9 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
                     &cc_sock,
                     &log_path,
                     Duration::from_secs(args.timeout_secs),
-                    args.x86_ssh_key.as_deref().map(|key| (key, ssh_port)),
+                    args.x86_ssh_key
+                        .as_deref()
+                        .map(|key| (key, ssh_port, args.x86_ssh_known_hosts.as_deref())),
                 )
             } else {
                 if args.assert_x86_userspace {
@@ -2128,6 +2130,30 @@ fn x86_console_host_key(text: &str) -> anyhow::Result<Option<String>> {
     Ok(found)
 }
 
+fn x86_retained_host_key(path: &Path, port: u16) -> anyhow::Result<String> {
+    anyhow::ensure!(
+        std::fs::metadata(path)?.len() <= 4096,
+        "known_hosts receipt exceeds 4096 bytes"
+    );
+    let text = std::fs::read_to_string(path)?;
+    let fields: Vec<_> = text.split_whitespace().collect();
+    anyhow::ensure!(
+        fields.len() == 3
+            && fields[0] == format!("[127.0.0.1]:{port}")
+            && fields[1] == "ssh-ed25519",
+        "expected one loopback Ed25519 known_hosts receipt for the selected port"
+    );
+    anyhow::ensure!(
+        !fields[2].is_empty()
+            && fields[2].len() <= 128
+            && fields[2]
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b"+/=".contains(&b)),
+        "invalid retained host-key encoding"
+    );
+    Ok(format!("ssh-ed25519 {}", fields[2]))
+}
+
 fn x86_ssh_proof(
     key: &Path,
     port: u16,
@@ -2224,8 +2250,11 @@ fn x86_linux_login_probe(
     socket: &Path,
     log_path: &Path,
     timeout: Duration,
-    ssh: Option<(&Path, u16)>,
+    ssh: Option<(&Path, u16, Option<&Path>)>,
 ) -> anyhow::Result<String> {
+    let retained_key = ssh
+        .and_then(|(_, port, known)| known.map(|path| x86_retained_host_key(path, port)))
+        .transpose()?;
     let deadline = Instant::now() + timeout;
     let mut stream = loop {
         match UnixStream::connect(socket) {
@@ -2272,8 +2301,13 @@ fn x86_linux_login_probe(
                     .lines()
                     .any(|line| line.trim_end().ends_with(" login:"))
                 {
-                    if let Some((key, port)) = ssh {
-                        let Some(host_key) = x86_console_host_key(&text)? else {
+                    if let Some((key, port, _)) = ssh {
+                        let host_key = if let Some(key) = &retained_key {
+                            Some(key.clone())
+                        } else {
+                            x86_console_host_key(&text)?
+                        };
+                        let Some(host_key) = host_key else {
                             continue;
                         };
                         return x86_ssh_proof(key, port, &host_key, log_path, deadline);
@@ -4397,6 +4431,25 @@ fn tail_chars(s: &str, max_chars: usize) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn retained_host_key_binds_the_original_loopback_endpoint() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("known_hosts");
+        std::fs::write(&file, "[127.0.0.1]:12224 ssh-ed25519 AAAA\n").unwrap();
+        assert_eq!(
+            super::x86_retained_host_key(&file, 12224).unwrap(),
+            "ssh-ed25519 AAAA"
+        );
+        assert!(super::x86_retained_host_key(&file, 12225).is_err());
+        std::fs::write(&file, "* ssh-ed25519 AAAA\n").unwrap();
+        assert!(super::x86_retained_host_key(&file, 12224).is_err());
+        std::fs::write(
+            &file,
+            "[127.0.0.1]:12224 ssh-ed25519 AAAA\n[127.0.0.1]:12224 ssh-ed25519 BBBB\n",
+        )
+        .unwrap();
+        assert!(super::x86_retained_host_key(&file, 12224).is_err());
+    }
     #[test]
     fn console_host_key_requires_complete_unambiguous_report() {
         use super::x86_console_host_key;

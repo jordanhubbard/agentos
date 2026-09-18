@@ -58,6 +58,14 @@ the SSH agent and system/user client configuration. Each attempt has a maximum
 90-second deadline within the overall gate timeout; stdout, stderr and pinned
 known-host data are retained beside the console log.
 
+For a second cold boot of the same disk, also pass
+`X86_SSH_KNOWN_HOSTS=/path/to/first-run.known_hosts`, using the first successful
+gate's receipt and the same port and login key. Do not reseed the disk. The
+gate accepts exactly one Ed25519 key bound to that loopback endpoint and uses
+strict host verification. This preserves the first boot's identity when
+cloud-init no longer emits its first-instance host-key report. Cold-boot
+qualification of this option remains pending.
+
 The integrated SSH path is implemented but not yet qualified on Intel. The
 300-second native-media login experiment timed out during cloud-init startup;
 its receipt remains in `evidence/2026-09-17-spark/x86-native-seed-boot.json`.
@@ -66,7 +74,7 @@ The earlier manual Intel boot evidence is retained in
 
 Validation on Spark: the pinned Debian root was seeded successfully; malformed
 ext4 input produced no output; an existing output was rejected. `make test-host`
-and all 95 Rust library tests passed after the SSH gate was added. The disk
+and all 96 Rust library tests passed after retained-key support was added. The disk
 assembly test checks exact replacement, preserved surrounding bytes, unchanged
 source, wrong source region, unaligned offsets and out-of-bounds offsets.
 This host-tool validation does not establish
