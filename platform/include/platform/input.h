@@ -36,7 +36,19 @@ typedef struct {
 /* One separately root-granted page per VMM; no VMM maps its peer or frontend.
  * The input virtualizer alone produces events. The VMM consumes them into
  * its guest's emulated virtio-input event queue after GPA validation. */
-typedef struct { aos_input_event_queue_t devices[AOS_INPUT_DEVICES]; } aos_input_client_region_t;
+/* One-shot terminal detach on the existing per-VMM page. Root initializes
+ * all words to zero. The stopped VMM publishes version then request=1 and
+ * signals input_virt. The service clears private admission, held/release
+ * state and pointers before publishing ack=1 and waking that VMM. No service
+ * access to this page follows the acknowledgment. Pending events may be
+ * abandoned; a new generation requires a separate reset contract. Event and
+ * frontend wire layouts are unchanged. Page ownership authorizes detach. */
+#define AOS_INPUT_DETACH_VERSION 1u
+typedef struct { uint32_t version, request, ack; } aos_input_detach_t;
+typedef struct {
+    aos_input_event_queue_t devices[AOS_INPUT_DEVICES];
+    aos_input_detach_t detach;
+} aos_input_client_region_t;
 typedef struct {
     uint32_t version, id, client, device, count, reserved[3];
     aos_input_event_t events[AOS_INPUT_BATCH_EVENTS];
@@ -62,7 +74,7 @@ int aos_input_submit(aos_input_frontend_t *, const aos_input_request_t *);
 int aos_input_receive(aos_input_frontend_t *, aos_input_response_t *);
 int aos_input_event_receive(aos_input_event_queue_t *, aos_input_event_t *);
 /* One bounded pass. Return activity count and a bitmask of clients receiving
- * events. Signal frontend after responses, corresponding VMMs after events,
+ * events or detach acknowledgments. Signal frontend after responses, VMMs after events,
  * and service after submitting requests or draining responses/events.
  * A full event queue accepts none of the batch (WOULD_BLOCK); no partial
  * keyboard/pointer state is published. Full response queues defer work.

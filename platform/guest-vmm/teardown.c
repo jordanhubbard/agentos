@@ -45,6 +45,12 @@ bool aos_guest_teardown_step(aos_guest_teardown_t *state, size_t ram_size)
         if (!aos_vmm_serial_detach()) return false;
         state->serial_detached = true;
     }
+    if (!state->input_detached) {
+#ifdef AGENTOS_GUEST_INPUT
+        if (!aos_vmm_virtio_input_detach()) return false;
+#endif
+        state->input_detached = true;
+    }
     if (!state->execution_released) {
         if (seL4_CNode_Revoke(AOS_GUEST_RAM_SELF_CNODE,
                 AOS_GUEST_EXECUTION_POOL_CAP, AOS_GUEST_RAM_CNODE_BITS)

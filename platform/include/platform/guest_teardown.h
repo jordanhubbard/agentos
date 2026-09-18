@@ -18,6 +18,7 @@ typedef struct aos_guest_teardown {
     bool network_detached;
     bool block_detached;
     bool serial_detached;
+    bool input_detached;
     bool execution_released;
     bool ram_released;
     bool paging_released;
