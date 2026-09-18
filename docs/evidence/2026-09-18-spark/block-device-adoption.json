@@ -1,0 +1,34 @@
+{
+  "schema": "agentos.block_device_adoption.v1",
+  "runtime_commit": "4580c86",
+  "accepted_for_guest_recreation": false,
+  "scope": "REBIND v2 backend metadata and stopped VMM block-device adoption helper",
+  "host": {
+    "result": "39 reply/admission checks, sanitizer adoption tests, full host suite and firmware link passed, terminal exit 0",
+    "checks": [
+      "Reject old reply versions, invalid size/status/backend/generation and unready storage",
+      "Preserve service queue cursors, packet data, geometry and backend policy without another ATTACH",
+      "Two replacement devices return exact bytes and successful status through fresh guest descriptor chains",
+      "Fresh MMIO status, capacity and segment-size configuration match the new device",
+      "Failed registration retains detach ownership; stale generations and live replacement are rejected",
+      "Protected old RAM and queues are not accessed during adoption or late callbacks"
+    ],
+    "log_sha256": "a84f2bb4d455459974b9136ef11d045c9a0ec38ea37d1eb49a0e2917387175ce"
+  },
+  "spark": {
+    "command": "make gate",
+    "result": "passed, terminal exit 0",
+    "log_sha256": "7f1f5a987e7bf56e65188ecb20f1cb30d2e24116af281cc30939601392095db5"
+  },
+  "intel": {
+    "command": "make gate-x86_64-teardown SEL4_SDK_VERSION=2.3.0 with pinned firmware, kernel and initrd",
+    "result": "passed, terminal exit 0",
+    "scope": "REBIND v2 capability IPC, current host-backend metadata, fresh block queue reads and existing native reconstruction checks; does not execute block-device adoption",
+    "log_sha256": "d6a1e24150bc056e140cafa593b232260a045990aa3f13a4fea2c11cd0eb4aa1"
+  },
+  "limitations": [
+    "Native block-device adoption remains pending",
+    "Serial device reset, firmware reset and actual second guest boot remain required",
+    "The intermittent serial reconstruction failure remains unresolved"
+  ]
+}
