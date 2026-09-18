@@ -45,8 +45,10 @@ and rejects pages shared across device classes. CC receives three private DMA
 pages and a read-only startup record; bus mastering is enabled only after all
 mappings succeed. CC replaces the COM2 frontend driver in this composition
 and owns the serial virtualizer's frontend page. Guests retain only their own
-serial queues. This wiring is under qualification: no Intel socket or external
-GUI acceptance is implied by the source or host build.
+serial queues. The [initial socket receipt](evidence/2026-09-18-spark/x86-cc-inventory.json)
+records successful empty-inventory and boot-inspection requests through the
+Intel PCI transport, plus the full Spark gate. External lifecycle, guest console
+and GUI acceptance remain pending; inspection's x86 RAM accounting is incomplete.
 
 The userspace qualification adds `x86_lifecycle_probe`, an ordinary client
 with its VMM service endpoint and a send-only failure-report cap. Root rejects
