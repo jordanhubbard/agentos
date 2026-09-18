@@ -801,6 +801,9 @@ ifeq ($(ARCH),aarch64)
 else ifeq ($(ARCH),x86_64)
   # Include linux_vmm stub so the image can reference it
   IMAGES += guest_vmm_primary.elf
+  ifeq ($(X86_USERSPACE_PROOF),1)
+    IMAGES += x86_lifecycle_probe.elf
+  endif
 else ifeq ($(ARCH),riscv64)
   # RISC-V 64: process-in-PD VMMs (no hypervisor extension)
   IMAGES += guest_vmm_primary.elf guest_vmm_secondary.elf

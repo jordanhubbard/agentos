@@ -28,6 +28,10 @@
 #define AOS_X86_LIFECYCLE_READY     0x584301u
 #define AOS_X86_LIFECYCLE_CHECKPOINT 0x584302u
 #define AOS_X86_LIFECYCLE_ACK       0x584303u
+/* Caller indices in the fixed userspace-proof topology. Badge high bits
+ * identify the destination service, not the caller's service identity. */
+#define AOS_X86_LIFECYCLE_VMM_INDEX    6u
+#define AOS_X86_LIFECYCLE_PROBE_INDEX  7u
 /* Qualification-only CPUID trap; absent from production device contracts. */
 #define AOS_X86_USERSPACE_LEAF  0x41554f53u
 #define AOS_X86_USERSPACE_INIT  0x494e4954u

@@ -13,7 +13,8 @@ static void phase(uint32_t expected)
 {
     seL4_Word badge;
     seL4_MessageInfo_t info = seL4_Recv(PD_CNODE_SLOT_SELF_EP, &badge, AGENTOS_IPC_REPLY_CAP);
-    if ((badge >> 48) != SVC_ID_GUEST_VMM_PRIMARY ||
+    if (badge != (((seL4_Word)SVC_ID_X86_LIFECYCLE_PROBE << 48) |
+                  ((seL4_Word)AOS_X86_LIFECYCLE_VMM_INDEX << 32)) ||
         seL4_MessageInfo_get_label(info) != expected ||
         seL4_MessageInfo_get_length(info) != 0u) fail();
 }

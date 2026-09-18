@@ -44,7 +44,8 @@ enum aos_x86_control_result aos_x86_control_step(
             _sel4_mrs_to_msg(&request);
 #ifdef AGENTOS_X86_USERSPACE_PROOF
             if (request.opcode == AOS_X86_LIFECYCLE_ACK &&
-                (badge >> 48) == SVC_ID_X86_LIFECYCLE_PROBE &&
+                badge == (((seL4_Word)SVC_ID_GUEST_VMM_PRIMARY << 48) |
+                          ((seL4_Word)AOS_X86_LIFECYCLE_PROBE_INDEX << 32)) &&
                 *runtime->state == GUEST_STATE_DEAD &&
                 request.length == 4u && msg_u32(&request, 0u) == AOS_X86_USERSPACE_PASS) {
                 aos_x86_lifecycle_ack = true;
