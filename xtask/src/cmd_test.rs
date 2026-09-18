@@ -1316,9 +1316,10 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
                 Duration::from_secs(args.timeout_secs),
                 &mut qemu,
             )
-        } else if profile_plan
-            .as_ref()
-            .is_some_and(|profile| !profile_console_markers(profile).is_empty())
+        } else if args.assert_emulated_console
+            || profile_plan
+                .as_ref()
+                .is_some_and(|profile| !profile_console_markers(profile).is_empty())
         {
             let profile = profile_plan.as_ref().unwrap();
             println!(
