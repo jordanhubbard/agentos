@@ -325,6 +325,66 @@ static bool recreated_network_device_proof(uint32_t generation)
         AOS_GUEST_RAM_CNODE_BITS, seL4_AllRights) == seL4_FailedLookup;
 }
 
+static unsigned rebuilt_block_waits;
+static void rebuilt_block_wait(void)
+{
+    if (++rebuilt_block_waits >= 100000u)
+        stop(block_proof_ep, AOS_X86_VTX_PROOF_FAIL, 0x544452u, 0u,
+             teardown_proof_stage);
+    seL4_Yield();
+}
+
+static bool recreated_block_device_proof(uint32_t generation)
+{
+    const uint32_t stage = 5000u + generation * 100u;
+    teardown_proof_stage = stage + 1u;
+    blk_virt_rebind_reply_t attachment;
+    if (!aos_blk_virt_rebind_with_info(0u, generation, &attachment) ||
+        attachment.hw_state != BLK_VIRT_HW_VIRTIO_BLK) return false;
+    aos_x86_ioapic_t controller;
+    teardown_proof_stage = stage + 2u;
+    if (!aos_x86_ioapic_init(&controller, 1u) ||
+        !aos_x86_virtio_init(&controller, (void *)AOS_X86_FIRMWARE_RAM_VA,
+                            AOS_X86_FIRMWARE_RAM)) return false;
+    teardown_proof_stage = stage + 3u;
+    if (!aos_vmm_virtio_blk_adopt(0u, (void *)AOS_BLK_SHMEM_VA, &attachment) ||
+        aos_vmm_virtio_blk_guest_io_completed()) return false;
+    aos_blk_virt_client_t queue;
+    aos_blk_client_bind((uint8_t *)AOS_BLK_SHMEM_VA, 0u, &queue);
+    uint64_t sectors = queue.info->capacity * (AOS_BLK_TRANSFER_SIZE / 512u);
+    const uintptr_t base = AOS_X86_VIRTIO_BASE + AOS_X86_VIRTIO_STRIDE;
+    const uint32_t offsets[] = {0x08u, 0x70u, 0x44u, 0x100u, 0x104u, 0x108u};
+    const uint32_t expected[] = {2u, 0u, 0u, (uint32_t)sectors,
+        (uint32_t)(sectors >> 32), AOS_BLK_GUEST_MAX_SEGMENT_SIZE};
+    for (unsigned i = 0; i < sizeof(offsets) / sizeof(offsets[0]); i++) {
+        teardown_proof_stage = stage + 10u + i;
+        uint32_t value = UINT32_MAX;
+        if (!aos_x86_virtio_access(base + offsets[i], 4u, false, &value) ||
+            value != expected[i]) return false;
+    }
+    teardown_proof_stage = stage + 16u;
+    rebuilt_block_waits = 0;
+    static uint8_t rebuilt_data[AOS_BLK_TRANSFER_SIZE];
+    if (!aos_vmm_virtio_blk_read_boot(0u, 1u, rebuilt_data,
+            sizeof(rebuilt_data), rebuilt_block_wait)) return false;
+    teardown_proof_stage = stage + 17u;
+    for (unsigned i = 0; i < sizeof(rebuilt_data); i++)
+        if (rebuilt_data[i] != block_boot_data[i]) return false;
+    teardown_proof_stage = stage + 20u;
+    if (!aos_vmm_virtio_blk_detach()) return false;
+    aos_x86_virtio_retire();
+    if (virtio_gpa_to_hva(0u, 1u) != NULL) return false;
+    teardown_proof_stage = stage + 21u;
+    if (seL4_CNode_Revoke(AOS_GUEST_RAM_SELF_CNODE,
+            AOS_GUEST_QUEUE_POOL_BASE + AOS_GUEST_QUEUE_BLOCK,
+            AOS_GUEST_RAM_CNODE_BITS) != seL4_NoError) return false;
+    teardown_proof_stage = stage + 22u;
+    return seL4_CNode_Copy(AOS_GUEST_RAM_SELF_CNODE, AOS_GUEST_QUEUE_TEST_COPY,
+        AOS_GUEST_RAM_CNODE_BITS, AOS_GUEST_RAM_SELF_CNODE,
+        AOS_GUEST_QUEUE_FRAME_BASE + AOS_GUEST_QUEUE_BLOCK,
+        AOS_GUEST_RAM_CNODE_BITS, seL4_AllRights) == seL4_FailedLookup;
+}
+
 static bool terminal_teardown_proof(void)
 {
     /* Root is already waiting for the terminal report. A failed report on
@@ -365,7 +425,7 @@ static bool terminal_teardown_proof(void)
         if (!recreated_network_proof(pass * 2u + 1u)) return false;
         teardown_proof_stage = 110u + pass * 100u;
         blk_virt_rebind_reply_t block_attachment;
-        if (!aos_blk_virt_rebind_with_info(0u, pass + 1u, &block_attachment) ||
+        if (!aos_blk_virt_rebind_with_info(0u, pass * 2u + 1u, &block_attachment) ||
             block_attachment.hw_state != BLK_VIRT_HW_VIRTIO_BLK) return false;
         aos_blk_virt_client_t rebuilt_block;
         aos_blk_client_bind((uint8_t *)AOS_BLK_SHMEM_VA, 0u, &rebuilt_block);
@@ -490,6 +550,7 @@ static bool terminal_teardown_proof(void)
         for (size_t n = 0; n < AOS_X86_FIRMWARE_BYTES; n++)
             if (restored_rom[n] != _binary_x86_firmware_bin_start[n]) return false;
         if (!recreated_network_device_proof(pass * 2u + 2u)) return false;
+        if (!recreated_block_device_proof(pass * 2u + 2u)) return false;
         teardown_proof_stage = 140u + pass * 100u;
         if (!aos_vmm_guest_ram_release(AOS_X86_FIRMWARE_RAM)) return false;
         const seL4_CPtr retired_frames[] = {AOS_GUEST_RAM_FRAME_BASE,
