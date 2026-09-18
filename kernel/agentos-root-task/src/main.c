@@ -927,6 +927,7 @@ static seL4_CPtr g_pd_notifications[SYSTEM_MAX_PDS];
 static seL4_CPtr g_x86_vtx_proof_endpoint = seL4_CapNull;
 #ifdef AGENTOS_X86_FIRMWARE_RESET
 static seL4_CPtr g_x86_runner_tcb = seL4_CapNull;
+static uint32_t g_x86_runner_index;
 #endif
 #endif
 #ifdef AGENTOS_LOG_RINGS
@@ -3958,7 +3959,9 @@ void root_task_main(const seL4_BootInfo *bi)
                     seL4_CapInitThreadCNode, g_x86_vtx_proof_endpoint, 64u,
                     seL4_AllRights, AOS_X86_LIFECYCLE_FAULT_BADGE) != seL4_NoError ||
                 seL4_TCB_SetSchedParams(tr.tcb_cap, seL4_CapInitThreadTCB,
-                    255u, pd->priority, PD_SLOT_SC(i), fault_report) != seL4_NoError) {
+                    255u, pd->priority, PD_SLOT_SC(i), fault_report) != seL4_NoError ||
+                seL4_TCB_SetSchedParams(g_x86_runner_tcb, seL4_CapInitThreadTCB,
+                    255u, 250u, PD_SLOT_SC(g_x86_runner_index), fault_report) != seL4_NoError) {
                 dbg_puts("[rt] lifecycle native fault reporter setup failed\n");
                 return;
             }
@@ -4011,8 +4014,10 @@ void root_task_main(const seL4_BootInfo *bi)
             } else {
                 dbg_puts("[rt] pd started ok\n");
 #if defined(__x86_64__) && defined(AGENTOS_X86_FIRMWARE_RESET)
-                if (reg_err == seL4_NoError && pd->self_svc_id == SVC_ID_X86_RUNNER)
+                if (reg_err == seL4_NoError && pd->self_svc_id == SVC_ID_X86_RUNNER) {
                     g_x86_runner_tcb = tr.tcb_cap;
+                    g_x86_runner_index = i;
+                }
 #endif
                 if (reg_err == seL4_NoError && inspect_view.thread_count < AOS_INSPECT_MAX_THREADS) {
                     aos_inspect_thread_t *t = &inspect_view.threads[inspect_view.thread_count++];
