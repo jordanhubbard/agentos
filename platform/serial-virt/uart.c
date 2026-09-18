@@ -1,4 +1,5 @@
 #include <platform/serial_uart.h>
+#include <platform/serial_frontend.h>
 
 bool aos_serial_uart_init(const aos_serial_uart_io_t *io)
 {
@@ -10,7 +11,7 @@ bool aos_serial_uart_init(const aos_serial_uart_io_t *io)
     return true;
 }
 
-bool aos_serial_uart_step(aos_serial_uart_t *uart,
+static bool uart_step_admitted(aos_serial_uart_t *uart,
                           const aos_serial_uart_io_t *io, bool *changed)
 {
     if (!uart || !io || !io->read || !io->write || !changed) return false;
@@ -42,4 +43,22 @@ bool aos_serial_uart_step(aos_serial_uart_t *uart,
         }
     }
     return true;
+}
+
+bool aos_serial_uart_step(aos_serial_uart_t *uart,
+                          const aos_serial_uart_io_t *io, bool *changed)
+{
+    if (!uart || !uart->channel.meta || !io || !io->read || !io->write || !changed)
+        return false;
+    *changed = false;
+    aos_serial_pump_status_t admission = aos_serial_frontend_begin(&uart->channel);
+    if (admission != AOS_SERIAL_PUMP_OK) {
+        if (__atomic_load_n(&uart->channel.meta->frontend_gate, __ATOMIC_ACQUIRE) &
+                AOS_SERIAL_FRONTEND_CLOSED)
+            uart->tx_pending = uart->rx_pending = false;
+        return true; /* Closed or busy channels perform no queue or UART I/O. */
+    }
+    bool result = uart_step_admitted(uart, io, changed);
+    aos_serial_frontend_end(&uart->channel);
+    return result;
 }
