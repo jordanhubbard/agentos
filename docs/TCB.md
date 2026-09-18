@@ -79,6 +79,16 @@ two reconstruction/revocation cycles; the
 records passing Intel qualification and the full Spark gate at `8714bd3`.
 Full guest recreation still needs memory, queues and boot reset.
 
+The memory reconstruction helper accepts only the configured RAM reservation
+and a complete retained firmware image outside the guest aliases. It retypes
+private RAM/ROM pools, restores firmware through a temporary writable native
+mapping, removes that mapping, then publishes read-only ROM aliases and EPT
+entries. GPA translation stays disabled until device initialization. The
+qualification VMM embeds the checksummed firmware in native read-only data so
+the source survives guest-ROM revocation. Failed restoration leaves the guest
+stopped and requires pool revocation before retry. Host failure tests pass;
+Intel restoration qualification is pending.
+
 The userspace qualification adds `x86_lifecycle_probe`, an ordinary client
 with its VMM service endpoint and a send-only failure-report cap. Root rejects
 that cap's nonzero badge on the success path. It receives no device, IRQ, guest memory

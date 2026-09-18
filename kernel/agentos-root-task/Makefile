@@ -342,6 +342,13 @@ $(BUILD_DIR)/x86_release_memory.o: $(REPO_ROOT_MK)/platform/guest-vmm/x86_releas
 	@mkdir -p $(BUILD_DIR)
 	$(CC) -c $(X86_SERIAL_CFLAGS) -mgeneral-regs-only $< -o $@
 $(BUILD_DIR)/guest_vmm_primary.elf: $(BUILD_DIR)/x86_teardown.o $(BUILD_DIR)/x86_release_memory.o
+$(BUILD_DIR)/x86_rebuild_memory.o: $(REPO_ROOT_MK)/platform/guest-vmm/x86_rebuild_memory.c Makefile
+	@mkdir -p $(BUILD_DIR)
+	$(CC) -c $(X86_SERIAL_CFLAGS) -mgeneral-regs-only $< -o $@
+$(BUILD_DIR)/guest_vmm_primary.elf: $(BUILD_DIR)/x86_rebuild_memory.o
+ifeq ($(X86_USERSPACE_PROOF),1)
+$(BUILD_DIR)/guest_vmm_primary.elf: $(BUILD_DIR)/x86_firmware.o
+endif
 $(BUILD_DIR)/x86_control.o: $(REPO_ROOT_MK)/platform/guest-vmm/x86_control.c Makefile
 	@mkdir -p $(BUILD_DIR)
 	$(CC) -c $(CFLAGS) -mgeneral-regs-only $< -o $@

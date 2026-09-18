@@ -8,6 +8,8 @@
  * the maximum RAM reservation cannot spill into frame/alias slots. */
 #define AOS_X86_GUEST_ROM_POOL_BASE 496u
 #define AOS_X86_GUEST_ROM_FRAMES 2u
+#define AOS_X86_GUEST_ROM_FRAME_BASE 502u
+#define AOS_X86_GUEST_ROM_ALIAS_BASE 504u
 
 /* Each RAM or ROM frame and all its aliases descend from one private
  * non-device 2 MiB child untyped. Root moves its sole pool cap after mapping.

@@ -826,6 +826,16 @@ test-host: test-x86-cpu-host
 test-host: test-guest-scheduling-host test-guest-gic-mapping-host test-guest-paging-host test-net-rx-accounting-host
 test-host: test-guest-execution-host
 test-host: test-x86-guest-objects-host
+test-host: test-x86-memory-rebuild-host
+
+.PHONY: test-x86-memory-rebuild-host
+test-x86-memory-rebuild-host:
+	@mkdir -p $(BUILD_TMP_DIR)
+	$(CC) -std=gnu11 -Wall -Wextra -Werror -Itests/platform/x86-objects-stubs \
+		-Iplatform/include -Ilibvmm/include -iquote kernel/agentos-root-task/include \
+		tests/platform/test_x86_memory_rebuild.c platform/guest-vmm/x86_rebuild_memory.c \
+		-o $(BUILD_TMP_DIR)/test_x86_memory_rebuild
+	$(BUILD_TMP_DIR)/test_x86_memory_rebuild
 test-host: test-x86-teardown-host
 test-host: test-x86-control-host
 

@@ -34,6 +34,8 @@ extern const uint8_t _binary_x86_boot_profile_bin_start[], _binary_x86_boot_prof
 #include "contracts/x86_guest_memory_caps.h"
 #include "contracts/guest_queue_caps.h"
 #include "x86_guest_objects.h"
+#include <platform/x86_memory_rebuild.h>
+#include <platform/guest_ram.h>
 
 #define VCPU AOS_GUEST_VCPU_CAP_BASE
 const char vmm_pd_name[] = "guest_vmm_x86";
@@ -197,6 +199,7 @@ static uint64_t timestamp(void)
 #ifdef AGENTOS_X86_USERSPACE_PROOF
 bool aos_x86_lifecycle_ack;
 bool aos_x86_lifecycle_boot_ack;
+extern const uint8_t _binary_x86_firmware_bin_start[], _binary_x86_firmware_bin_end[];
 /* Run only after the independent client has destroyed the guest and checked
  * terminal-state rejections. Never enter VMX or reuse a retired queue. */
 static bool terminal_teardown_proof(void)
@@ -255,8 +258,28 @@ static bool terminal_teardown_proof(void)
         }
         /* Rebuild actual stopped VCPU/EPT objects after complete revocation.
          * This validates retained private allocation/ASID authority, not a
-         * recreated executing guest: no TCB is bound and no RAM is mapped. */
+         * recreated executing guest: no TCB is bound and no VM entry occurs. */
         if (aos_x86_guest_objects_rebuild() != seL4_NoError) return false;
+        if (!aos_x86_guest_memory_rebuild(_binary_x86_firmware_bin_start,
+                (size_t)(_binary_x86_firmware_bin_end - _binary_x86_firmware_bin_start),
+                AOS_X86_FIRMWARE_RAM)) return false;
+        volatile uint64_t *restored_ram = (volatile uint64_t *)AOS_X86_FIRMWARE_RAM_VA;
+        for (size_t n = 0; n < AOS_X86_FIRMWARE_RAM / sizeof(*restored_ram); n++) {
+            if (restored_ram[n] != 0u) return false;
+            restored_ram[n] = UINT64_C(0x1234cafe00000000) ^ n ^ pass;
+        }
+        const volatile uint8_t *restored_rom = (const volatile uint8_t *)AOS_X86_FIRMWARE_ROM_VA;
+        for (size_t n = 0; n < AOS_X86_FIRMWARE_BYTES; n++)
+            if (restored_rom[n] != _binary_x86_firmware_bin_start[n]) return false;
+        if (!aos_vmm_guest_ram_release(AOS_X86_FIRMWARE_RAM)) return false;
+        const seL4_CPtr retired_frames[] = {AOS_GUEST_RAM_FRAME_BASE,
+            AOS_GUEST_RAM_ALIAS_BASE, AOS_X86_GUEST_ROM_FRAME_BASE, AOS_X86_GUEST_ROM_ALIAS_BASE};
+        for (unsigned i = 0; i < sizeof(retired_frames) / sizeof(retired_frames[0]); i++) {
+            if (seL4_CNode_Copy(AOS_GUEST_RAM_SELF_CNODE, AOS_GUEST_QUEUE_TEST_COPY,
+                    AOS_GUEST_RAM_CNODE_BITS, AOS_GUEST_RAM_SELF_CNODE,
+                    retired_frames[i], AOS_GUEST_RAM_CNODE_BITS, seL4_AllRights)
+                    != seL4_FailedLookup) return false;
+        }
         const seL4_Word test_rip = 0x123400u + pass;
         seL4_X86_VCPU_WriteVMCS_t wrote =
             seL4_X86_VCPU_WriteVMCS(VCPU, 0x681eu, test_rip);
