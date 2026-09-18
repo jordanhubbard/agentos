@@ -311,17 +311,20 @@ $(BUILD_DIR)/x86_virtio_gpa.o: $(REPO_ROOT_MK)/libvmm/src/virtio/gpa.c
 	@mkdir -p $(BUILD_DIR)
 	$(CC) -c $(CFLAGS) -I$(REPO_ROOT_MK)/libvmm/include $< -o $@
 $(BUILD_DIR)/guest_vmm_primary.elf: $(BUILD_DIR)/x86_virtio.o $(BUILD_DIR)/x86_virtio_mmio.o $(BUILD_DIR)/x86_virtio_gpa.o
-$(BUILD_DIR)/x86_teardown.o: $(REPO_ROOT_MK)/platform/guest-vmm/teardown.c
+# The VCPU can be revoked while this native thread continues serving IPC.
+# Do not emit FPU/SIMD instructions in that path, even for integer copies.
+# Track this Makefile so changes to these per-object flags rebuild the code.
+$(BUILD_DIR)/x86_teardown.o: $(REPO_ROOT_MK)/platform/guest-vmm/teardown.c Makefile
 	@mkdir -p $(BUILD_DIR)
 	$(CC) -c $(X86_SERIAL_CFLAGS) -mgeneral-regs-only $< -o $@
-$(BUILD_DIR)/x86_release_memory.o: $(REPO_ROOT_MK)/platform/guest-vmm/x86_release_memory.c
+$(BUILD_DIR)/x86_release_memory.o: $(REPO_ROOT_MK)/platform/guest-vmm/x86_release_memory.c Makefile
 	@mkdir -p $(BUILD_DIR)
 	$(CC) -c $(X86_SERIAL_CFLAGS) -mgeneral-regs-only $< -o $@
 $(BUILD_DIR)/guest_vmm_primary.elf: $(BUILD_DIR)/x86_teardown.o $(BUILD_DIR)/x86_release_memory.o
-$(BUILD_DIR)/x86_control.o: $(REPO_ROOT_MK)/platform/guest-vmm/x86_control.c
+$(BUILD_DIR)/x86_control.o: $(REPO_ROOT_MK)/platform/guest-vmm/x86_control.c Makefile
 	@mkdir -p $(BUILD_DIR)
 	$(CC) -c $(CFLAGS) -mgeneral-regs-only $< -o $@
-$(BUILD_DIR)/x86_runtime.o: $(REPO_ROOT_MK)/platform/guest-vmm/runtime.c
+$(BUILD_DIR)/x86_runtime.o: $(REPO_ROOT_MK)/platform/guest-vmm/runtime.c Makefile
 	@mkdir -p $(BUILD_DIR)
 	$(CC) -c $(CFLAGS) -mgeneral-regs-only $< -o $@
 $(BUILD_DIR)/guest_vmm_primary.elf: $(BUILD_DIR)/x86_control.o $(BUILD_DIR)/x86_runtime.o
@@ -380,7 +383,7 @@ $(BUILD_DIR)/x86_string.o: $(REPO_ROOT_MK)/platform/guest-vmm/x86_string.c
 	@mkdir -p $(BUILD_DIR)
 	$(CC) -c $(CFLAGS) $< -o $@
 $(BUILD_DIR)/guest_vmm_primary.elf: $(BUILD_DIR)/x86_string.o
-$(BUILD_DIR)/x86_firmware_vmm.o: $(REPO_ROOT_MK)/platform/guest-vmm/x86_firmware.c
+$(BUILD_DIR)/x86_firmware_vmm.o: $(REPO_ROOT_MK)/platform/guest-vmm/x86_firmware.c Makefile
 	@mkdir -p $(BUILD_DIR)
 	$(CC) -c $(CFLAGS) -mgeneral-regs-only -I$(REPO_ROOT_MK)/libvmm/include $< -o $@
 $(BUILD_DIR)/guest_vmm_primary.elf: $(BUILD_DIR)/x86_firmware_vmm.o
