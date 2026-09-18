@@ -1,0 +1,33 @@
+{
+  "revision": "71e563fd94fcf61bbb6817157c2ffc4c02161363",
+  "command": "make test-debian-nocloud-auto",
+  "host": "Spark ARM64 Linux",
+  "exit_code": 0,
+  "result": "passed",
+  "log": "/tmp/agentos-nocloud-auto-boot1.log",
+  "log_sha256": "69ed5082296b300f3ab35dec076329b954ad0bc53d54171482f97fe4c985e77d",
+  "console_sha256": "4fdf19eb22da958121588d286bb30f59484d2df3cc5cbd27b848acb088aed88d",
+  "known_hosts_sha256": "753c439cf0c91a7f5c0b4cebfb51a601b7f125635b0c0c7cb10962babe13173d",
+  "ssh_stdout_sha256": "5121ae59314a84da7b4d9587374398f1afa2000b243b3e54f491adefaac54f92",
+  "ssh_stdout": "aarch64\n",
+  "ssh_successful_attempt": 5,
+  "evidence_directory": "build/evidence/profile-seed-rfYiec",
+  "qemu_log_stem": "build/tmp/agentos-qemu-msf4sv",
+  "launch_to_authenticated_ssh_ms": 995211,
+  "agentos_image_sha256": "30fadfcd3b388ba9c88e08c2119b9ff42f18b21a3a766ea027fb93ad15278f27",
+  "guest_bundle_sha256": "a288c89412556855da2b5c3f78848cb79ea8b7209e567b7727190bc8b1f2fe07",
+  "assertions": [
+    "Pinned profile acquisition and build completed without a manually staged seed or identity",
+    "Native NoCloud seeding and verified managed disk copy completed",
+    "Console-reported Ed25519 host identity pinned for key-only SSH",
+    "Guest architecture output exact and sudo sync succeeded",
+    "Host-backed canonical virtio net, block and bidirectional console checks passed"
+  ],
+  "limits": [
+    "Fresh boot only; automatic same-disk second boot is not yet qualified.",
+    "Individual timing includes host scheduling and other local tests; no performance threshold or matched benchmark claim.",
+    "Artifact acquisition, build and persistent media preparation are outside this timing.",
+    "This revision precedes the combined graphics and lifecycle integration branch.",
+    "Required-baseline promotion and complete v0.4 release acceptance remain open."
+  ]
+}

@@ -367,7 +367,87 @@ pub fn run_x86_storage(timeout_secs: u64) -> anyhow::Result<()> {
     Ok(())
 }
 
+fn seeded_boot_guard(
+    directory: &Path,
+    plan: &str,
+    image: &Path,
+    second: bool,
+) -> anyhow::Result<()> {
+    let receipt = directory.join("seeded-profile.txt");
+    let retained_image = directory.join("seeded-agentos.img");
+    if second {
+        anyhow::ensure!(
+            std::fs::read_to_string(&receipt)? == plan,
+            "seeded profile changed between cold boots"
+        );
+        crate::persistent_media::require_same_image(&retained_image, image)?;
+    } else {
+        let mut record = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(receipt)?;
+        record.write_all(plan.as_bytes())?;
+        record.sync_all()?;
+        let mut output = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(retained_image)?;
+        std::io::copy(&mut std::fs::File::open(image)?, &mut output)?;
+        output.sync_all()?;
+    }
+    Ok(())
+}
+
+fn run_seeded_cold_boots(args: &TestArgs) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        args.seed_profile && args.seeded_directory.is_none(),
+        "two seeded cold boots require a fresh automatic seed"
+    );
+    let parent = repo_root()?.join("build/evidence");
+    std::fs::create_dir_all(&parent)?;
+    let directory = tempfile::Builder::new()
+        .prefix("seeded-cold-boots-")
+        .tempdir_in(parent)?
+        .keep();
+    println!(
+        "[xtask:test] Seeded cold-boot evidence: {}",
+        directory.display()
+    );
+    let receipt = directory.join("cold-boots.json");
+    let mut status = serde_json::json!({"schema":"agentos.seeded_cold_boots.v1",
+        "profile":args.guest_os, "status":"running", "first_boot":false, "second_boot":false,
+        "scope":"two authenticated QEMU cold boots with original host identity; sync followed by QEMU stop, not orderly shutdown or guest-slot recreation"});
+    std::fs::write(&receipt, serde_json::to_vec_pretty(&status)?)?;
+    let mut round = args.clone();
+    round.assert_seeded_cold_boots = false;
+    round.seeded_directory = Some(directory.clone());
+    for second in [false, true] {
+        if second {
+            round.seed_profile = false;
+            round.no_build = true;
+            round.seeded_ssh_key = Some(directory.join("identity"));
+            round.seeded_ssh_known_hosts = Some(directory.join("first-known_hosts"));
+            round.seeded_source = Some(directory.join("seeded.raw"));
+        }
+        if let Err(error) = run(&round) {
+            status["status"] = serde_json::json!("failed");
+            status["error"] = serde_json::json!(format!("{error:#}"));
+            std::fs::write(&receipt, serde_json::to_vec_pretty(&status)?)?;
+            return Err(error);
+        }
+        status[if second { "second_boot" } else { "first_boot" }] = serde_json::json!(true);
+        std::fs::write(&receipt, serde_json::to_vec_pretty(&status)?)?;
+    }
+    status["status"] = serde_json::json!("passed");
+    std::fs::write(receipt, serde_json::to_vec_pretty(&status)?)?;
+    println!("PASS: two seeded cold boots retained the disk and original SSH host identity");
+    Ok(())
+}
+
 pub fn run(args: &TestArgs) -> anyhow::Result<()> {
+    if args.assert_seeded_cold_boots {
+        return run_seeded_cold_boots(args);
+    }
     let mut effective_args = args.clone();
     let args = &mut effective_args;
     anyhow::ensure!(
@@ -376,7 +456,6 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
                 && args.ssh_port != 0
                 && !args.no_build
                 && args.seeded_ssh_key.is_none()
-                && args.seeded_directory.is_none()
                 && args.seeded_ssh_known_hosts.is_none()
                 && !args.assert_live
                 && !args.assert_desktop
@@ -544,8 +623,8 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
     }
 
     anyhow::ensure!(
-        !args.keep_running || args.guest_os == "both" || args.assert_desktop,
-        "--keep-running requires --guest-os both or --assert-desktop"
+        !args.keep_running || args.guest_os == "both" || args.assert_desktop || args.assert_live,
+        "--keep-running requires a dual guest, desktop or authenticated live profile"
     );
     if args.assert_emulated_net
         || args.assert_emulated_blk
@@ -690,15 +769,20 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
         run_make(&make_arg_refs, &repo_root).context("profile-driven build step failed")?;
     }
 
+    let seeded_plan = format!("{profile_plan:#?}\n");
     if args.seed_profile {
         let profile = profile_plan.as_mut().unwrap();
         let seed = profile.seed.as_ref().unwrap();
         let parent = repo_root.join("build/evidence");
         std::fs::create_dir_all(&parent)?;
-        let directory = tempfile::Builder::new()
-            .prefix("profile-seed-")
-            .tempdir_in(parent)?
-            .keep();
+        let directory = if let Some(directory) = &args.seeded_directory {
+            directory.clone()
+        } else {
+            tempfile::Builder::new()
+                .prefix("profile-seed-")
+                .tempdir_in(parent)?
+                .keep()
+        };
         println!(
             "[xtask:test] Automatic seed evidence: {}",
             directory.display()
@@ -770,9 +854,22 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
                 .all(|key| std::env::var_os(key).is_none()),
             "seeded proof rejects media overrides"
         );
+        let source = args
+            .seeded_source
+            .clone()
+            .unwrap_or_else(|| repo_root.join(&disk.path));
         let copy = crate::persistent_media::prepare(
-            &repo_root.join(&disk.path),
+            &source,
             &directory,
+            args.seeded_ssh_known_hosts.is_some(),
+        )?;
+        seeded_boot_guard(
+            &directory,
+            &seeded_plan,
+            &repo_root
+                .join("build")
+                .join(&args.board)
+                .join("agentos.img"),
             args.seeded_ssh_known_hosts.is_some(),
         )?;
         disk.path = copy
@@ -1505,15 +1602,13 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
                 &mut qemu,
             )
             .map(|()| String::from("manual profile desktop session completed"))
+        } else if let Some(scenario) = scenario_plan.as_ref() {
+            wait_for_manual_dual_ssh(key, scenario, &mut qemu)
+                .map(|()| String::from("manual dual SSH session completed"))
         } else {
-            wait_for_manual_dual_ssh(
-                key,
-                scenario_plan
-                    .as_ref()
-                    .context("manual scenario requires a resolved plan")?,
-                &mut qemu,
-            )
-            .map(|()| String::from("manual dual SSH session completed"))
+            wait_for_manual_cc_client(&cc_sock, &mut qemu).map(|()| {
+                String::from("qualified live guest retained for manual CC client session")
+            })
         };
     }
 
@@ -1539,6 +1634,34 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
     }
     let _ = qemu.kill();
     let _ = qemu.wait();
+
+    if args.seeded_ssh_key.is_some() {
+        if let Some(directory) = &args.seeded_directory {
+            let phase = if args.seeded_ssh_known_hosts.is_some() {
+                "second"
+            } else {
+                "first"
+            };
+            for (extension, name) in [
+                ("log", "serial.log"),
+                ("console.log", "console.log"),
+                ("known_hosts", "known_hosts"),
+                ("boot-timing.json", "boot-timing.json"),
+            ] {
+                let source = log_path.with_extension(extension);
+                if source.is_file() {
+                    std::fs::copy(source, directory.join(format!("{phase}-{name}")))?;
+                }
+            }
+            std::fs::write(
+                directory.join(format!("{phase}-result.txt")),
+                match &result {
+                    Ok(value) => format!("pass: {value}\n"),
+                    Err(error) => format!("fail: {error:#}\n"),
+                },
+            )?;
+        }
+    }
 
     if let Some(directory) = &args.persistent_directory {
         let phase = if args.persistent_second_boot {
@@ -1706,6 +1829,22 @@ pub fn launch(args: &QemuLaunchArgs) -> anyhow::Result<()> {
     let status = qemu.wait().context("failed to wait for QEMU")?;
     anyhow::ensure!(status.success(), "QEMU exited with {status}");
     Ok(())
+}
+
+fn wait_for_manual_cc_client(socket: &Path, qemu: &mut Child) -> anyhow::Result<()> {
+    ensure_qemu_running(qemu, "entering manual CC client mode")?;
+    println!("\n[xtask:test] Qualified guest retained for native CC clients");
+    println!("CC_PD_SOCK={}", socket.display());
+    println!("Close the external client, then press Enter here to stop QEMU.");
+    let mut line = String::new();
+    let bytes = std::io::stdin()
+        .read_line(&mut line)
+        .context("failed to wait for manual CC client shutdown input")?;
+    anyhow::ensure!(
+        bytes != 0,
+        "manual CC client mode requires an interactive stdin"
+    );
+    ensure_qemu_running(qemu, "leaving manual CC client mode")
 }
 
 fn wait_for_manual_dual_ssh(
@@ -5410,6 +5549,31 @@ fn tail_chars(s: &str, max_chars: usize) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn seeded_cold_boot_rejects_changed_profile_image_and_reinitialization() {
+        let directory = tempfile::tempdir().unwrap();
+        let image = directory.path().join("current.img");
+        std::fs::write(&image, b"boot image").unwrap();
+        super::seeded_boot_guard(directory.path(), "resolved profile", &image, false).unwrap();
+        super::seeded_boot_guard(directory.path(), "resolved profile", &image, true).unwrap();
+        assert!(super::seeded_boot_guard(directory.path(), "other profile", &image, true).is_err());
+        assert!(
+            super::seeded_boot_guard(directory.path(), "resolved profile", &image, false).is_err()
+        );
+        std::fs::write(&image, b"new! image").unwrap();
+        assert!(
+            super::seeded_boot_guard(directory.path(), "resolved profile", &image, true).is_err()
+        );
+        assert_eq!(
+            std::fs::read(directory.path().join("seeded-agentos.img")).unwrap(),
+            b"boot image"
+        );
+        assert_eq!(
+            std::fs::read_to_string(directory.path().join("seeded-profile.txt")).unwrap(),
+            "resolved profile"
+        );
+    }
+
     #[test]
     fn authenticated_timing_config_compares_provisioning_paths_but_rejects_resource_changes() {
         use clap::Parser;

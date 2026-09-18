@@ -114,6 +114,11 @@ pub struct TestArgs {
     /// Create fresh NoCloud media and a retained SSH identity from host.seed.
     #[arg(long, conflicts_with_all = ["seeded_ssh_key", "seeded_directory", "seeded_ssh_known_hosts", "assert_live", "assert_desktop", "x86_ssh_key", "assert_persistent_boots", "no_build"])]
     pub seed_profile: bool,
+    /// Seed once, then authenticate two cold boots with the same disk and host key.
+    #[arg(long, requires = "seed_profile")]
+    pub assert_seeded_cold_boots: bool,
+    #[arg(skip)]
+    pub seeded_source: Option<std::path::PathBuf>,
     /// Pin the original host identity on a subsequent boot of the seeded disk.
     #[arg(long, requires_all = ["seeded_ssh_key", "seeded_directory"])]
     pub seeded_ssh_known_hosts: Option<std::path::PathBuf>,
@@ -124,7 +129,7 @@ pub struct TestArgs {
     pub timeout_secs: u64,
     #[arg(long)]
     pub no_build: bool,
-    /// After a successful dual-guest SSH gate, print manual SSH commands and
+    /// After successful live-guest qualification, print client connection details and
     /// keep QEMU running until Enter is pressed.
     #[arg(long)]
     pub keep_running: bool,

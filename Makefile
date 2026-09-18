@@ -1370,6 +1370,14 @@ test-debian-nocloud-auto:
 	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os debian-arm64-nocloud \
 		--seed-profile --assert-agentos-virtio --ssh-port $(QEMU_TEST_SSH_PORT) --timeout-secs $(QEMU_TEST_TIMEOUT)
 
+.PHONY: test-debian-nocloud-cold-boots
+test-debian-nocloud-cold-boots: QEMU_TEST_TIMEOUT = 1200
+test-debian-nocloud-cold-boots: QEMU_TEST_SSH_PORT = 12222
+test-debian-nocloud-cold-boots:
+	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os debian-arm64-nocloud \
+		--seed-profile --assert-seeded-cold-boots --assert-agentos-virtio \
+		--ssh-port $(QEMU_TEST_SSH_PORT) --timeout-secs $(QEMU_TEST_TIMEOUT)
+
 test-debian-nocloud-ssh:
 	@test -n "$(SEEDED_SSH_KEY)" -a -n "$(QEMU_TEST_SSH_PORT)" || { echo 'Set SEEDED_SSH_KEY and QEMU_TEST_SSH_PORT'; exit 1; }
 	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os debian-arm64-nocloud \
@@ -1382,13 +1390,17 @@ test-debian-nocloud-ssh:
 .PHONY: test-guest-input
 .PHONY: test-guest-graphics-input
 .PHONY: test-guest-display
+.PHONY: demo-guest-display
 # Spark input qualification takes about ten minutes through Debian boot and
 # SSH provisioning. Preserve explicit environment/command-line timeout choices.
 ifeq ($(origin QEMU_TEST_TIMEOUT),file)
-test-guest-input test-guest-graphics-input: QEMU_TEST_TIMEOUT = 1800
+test-guest-input test-guest-graphics-input demo-guest-display: QEMU_TEST_TIMEOUT = 1800
 endif
 test-guest-display:
 	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os debian-graphics-input --timeout-secs $(QEMU_TEST_TIMEOUT) --assert-live --assert-agentos-virtio --assert-guest-display --ssh-port $(QEMU_TEST_SSH_PORT)
+
+demo-guest-display:
+	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os debian-graphics-input --timeout-secs $(QEMU_TEST_TIMEOUT) --assert-live --assert-agentos-virtio --assert-guest-display --ssh-port $(QEMU_TEST_SSH_PORT) --keep-running
 
 test-guest-graphics-input:
 	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os debian-graphics-input --timeout-secs $(QEMU_TEST_TIMEOUT) --assert-live --assert-agentos-virtio --ssh-port $(QEMU_TEST_SSH_PORT)

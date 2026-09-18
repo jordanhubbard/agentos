@@ -90,14 +90,25 @@ validates the returned count/status, and reports whole-batch backpressure.
 The exact wire contract is in `contracts/cc_contract.h`. A failed transport
 must not cause blind retries of stateful key/button transitions.
 
-The target variant builds and the host tests pass. Target enumeration,
-event delivery through Linux evdev, and mapping-isolation proofs remain
-required; this implementation is not yet qualified as working guest input.
+The combined Spark qualification at `03c1aa8` passed exact Linux evdev keyboard
+and pointer batches, including server-generated held-state releases, alongside
+authenticated guest I/O and exact framebuffer/scanout equality. The receipt is
+in `evidence/2026-09-17-spark/combined-graphics-input-display.json`. This does not
+qualify physical input, peer-guest isolation, or input across guest recreation.
 The common MMIO dispatcher has host regression coverage for all four byte
 lanes of device configuration: input's selector and subselector are separate
 byte fields. Reset also clears interrupt status before invoking backend reset,
 so an old device interrupt cannot be reasserted after reset.
 Queue attachment must not clear live state; lifecycle reclamation will require
 coordinated quiescence before reset.
+
+For native external-client validation, run
+`make demo-guest-display QEMU_TEST_SSH_PORT=12223` in an interactive terminal.
+After the graphics, input and display checks pass, the harness prints
+`CC_PD_SOCK` and keeps the qualified guest running. In the sibling
+`agentos_gui` repository, run `make run CC_PD_SOCK=<printed-path>`.
+Close that client before pressing Enter in the harness to stop QEMU. Only one
+consumer should drive this CC transport at a time. This handoff does not add
+a viewer or a browser bridge to agentOS.
 
 Refs: `task_cefc0f77327d4245ab9feb132cd1eb57`.
