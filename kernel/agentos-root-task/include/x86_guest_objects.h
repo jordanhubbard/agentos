@@ -23,6 +23,9 @@ _Static_assert(AOS_X86_GUEST_ASID_POOL_CAP > AOS_X86_GUEST_OBJECT_POOL_CAP &&
                AOS_X86_GUEST_EPT_PDPT_CAP >= AOS_X86_GUEST_ROM_POOL_BASE + AOS_X86_GUEST_ROM_FRAMES &&
                AOS_X86_GUEST_EPT_HIGH_PD_CAP < AOS_GUEST_RAM_POOL_BASE,
                "retained ASID and reconstructed EPT slots must exclude all memory pools");
+_Static_assert(AOS_X86_VMM_SELF_TCB_CAP > AOS_X86_GUEST_EPT_HIGH_PD_CAP &&
+               AOS_X86_VMM_SELF_TCB_CAP < AOS_X86_GUEST_ROM_FRAME_BASE,
+               "native VMM TCB grant must exclude reconstructed object and memory slots");
 
 static inline seL4_Word aos_x86_guest_object_type(unsigned index)
 {
@@ -76,6 +79,17 @@ static inline seL4_Error aos_x86_guest_objects_rebuild(void)
         AOS_GUEST_RAM_SELF_CNODE, slots);
     if (err != seL4_NoError) return err;
     return aos_x86_guest_objects_map(AOS_X86_GUEST_ASID_POOL_CAP, slots);
+}
+
+/* Only call while guest execution is stopped. Configure firmware/VMCS before
+ * explicit VM entry. On failure revoke partial guest objects before retry;
+ * the native TCB remains outside that pool and no peer thread is affected. */
+static inline seL4_Error aos_x86_guest_objects_bind(void)
+{
+    seL4_Error err = seL4_TCB_SetEPTRoot(AOS_X86_VMM_SELF_TCB_CAP,
+                                      AOS_GUEST_RAM_GUEST_VSPACE);
+    if (err != seL4_NoError) return err;
+    return seL4_X86_VCPU_SetTCB(AOS_GUEST_VCPU_CAP_BASE, AOS_X86_VMM_SELF_TCB_CAP);
 }
 
 /* Zero denotes an invalid reservation/index, never an allocation slot. */

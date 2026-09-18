@@ -1845,10 +1845,10 @@ static seL4_Error setup_x86_firmware(const pd_desc_t *pd, uint32_t pd_index,
             seL4_CapInitThreadCNode, pool, 64u);
         if (err != seL4_NoError) return err;
     }
-    const seL4_CPtr sources[] = {pd_cnode, vmm_vspace, objects[1]};
+    const seL4_CPtr sources[] = {pd_cnode, vmm_vspace, objects[1], vmm_tcb};
     const seL4_Word slots[] = {AOS_GUEST_RAM_SELF_CNODE,
-        AOS_GUEST_RAM_VMM_VSPACE, AOS_GUEST_RAM_GUEST_VSPACE};
-    for (unsigned i = 0; i < 3u; i++) {
+        AOS_GUEST_RAM_VMM_VSPACE, AOS_GUEST_RAM_GUEST_VSPACE, AOS_X86_VMM_SELF_TCB_CAP};
+    for (unsigned i = 0; i < sizeof(sources) / sizeof(sources[0]); i++) {
         err = seL4_CNode_Copy(pd_cnode, slots[i], pd->cnode_size_bits,
             seL4_CapInitThreadCNode, sources[i], 64u, seL4_AllRights);
         if (err != seL4_NoError) return err;

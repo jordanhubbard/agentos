@@ -55,6 +55,20 @@ seL4_Error seL4_X86_EPTPD_Map(seL4_CPtr table, seL4_CPtr ept,
     return ++calls == fail_at ? 19 : seL4_NoError;
 }
 
+static unsigned bind_calls, bind_failure;
+seL4_Error seL4_TCB_SetEPTRoot(seL4_CPtr tcb, seL4_CPtr ept)
+{
+    assert(bind_calls == 0u && tcb == AOS_X86_VMM_SELF_TCB_CAP &&
+           ept == AOS_GUEST_RAM_GUEST_VSPACE);
+    return ++bind_calls == bind_failure ? 19 : seL4_NoError;
+}
+seL4_Error seL4_X86_VCPU_SetTCB(seL4_CPtr vcpu, seL4_CPtr tcb)
+{
+    assert(bind_calls == 1u && tcb == AOS_X86_VMM_SELF_TCB_CAP &&
+           vcpu == AOS_GUEST_VCPU_CAP_BASE);
+    return ++bind_calls == bind_failure ? 19 : seL4_NoError;
+}
+
 int main(void)
 {
     /* Each VMM's supplied pool is the only permitted allocation source.
@@ -101,5 +115,10 @@ int main(void)
         assert(aos_x86_guest_objects_rebuild() == (fail_at ? 19 : seL4_NoError));
         assert(calls == (fail_at ? fail_at : 9u));
     }
-    puts("PASS: x86 private objects, EPT reconstruction failure propagation and bounded RAM/ROM grants");
+    for (bind_failure = 0; bind_failure <= 2; bind_failure++) {
+        bind_calls = 0;
+        assert(aos_x86_guest_objects_bind() == (bind_failure ? 19 : seL4_NoError));
+        assert(bind_calls == (bind_failure ? bind_failure : 2u));
+    }
+    puts("PASS: x86 private objects, EPT reconstruction/binding failure propagation and bounded RAM/ROM grants");
 }

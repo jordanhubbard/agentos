@@ -562,7 +562,8 @@ static bool terminal_teardown_proof(void)
         }
         /* Rebuild actual stopped VCPU/EPT objects after complete revocation.
          * This validates retained private allocation/ASID authority, not a
-         * recreated executing guest: no TCB is bound and no VM entry occurs. */
+         * recreated executing guest. Binding is checked separately below
+         * after restored memory is released; no VM entry occurs. */
         teardown_proof_stage = 140u + pass * 100u;
         if (aos_x86_guest_objects_rebuild() != seL4_NoError) return false;
         if (!aos_x86_guest_memory_rebuild(_binary_x86_firmware_bin_start,
@@ -594,6 +595,8 @@ static bool terminal_teardown_proof(void)
             seL4_X86_VCPU_WriteVMCS(VCPU, 0x681eu, test_rip);
         seL4_X86_VCPU_ReadVMCS_t read = seL4_X86_VCPU_ReadVMCS(VCPU, 0x681eu);
         if (wrote.error || read.error || read.value != test_rip) return false;
+        teardown_proof_stage = 150u + pass * 100u;
+        if (aos_x86_guest_objects_bind() != seL4_NoError) return false;
         if (seL4_CNode_Revoke(AOS_GUEST_RAM_SELF_CNODE,
                 AOS_X86_GUEST_OBJECT_POOL_CAP, AOS_GUEST_RAM_CNODE_BITS)
                 != seL4_NoError) return false;
@@ -603,6 +606,13 @@ static bool terminal_teardown_proof(void)
                     stale[i], AOS_GUEST_RAM_CNODE_BITS, seL4_AllRights)
                     != seL4_FailedLookup) return false;
         }
+        teardown_proof_stage = 151u + pass * 100u;
+        if (seL4_CNode_Copy(AOS_GUEST_RAM_SELF_CNODE, AOS_GUEST_QUEUE_TEST_COPY,
+                AOS_GUEST_RAM_CNODE_BITS, AOS_GUEST_RAM_SELF_CNODE,
+                AOS_X86_VMM_SELF_TCB_CAP, AOS_GUEST_RAM_CNODE_BITS,
+                seL4_AllRights) != seL4_NoError ||
+            seL4_CNode_Delete(AOS_GUEST_RAM_SELF_CNODE, AOS_GUEST_QUEUE_TEST_COPY,
+                AOS_GUEST_RAM_CNODE_BITS) != seL4_NoError) return false;
     }
     return true;
 }

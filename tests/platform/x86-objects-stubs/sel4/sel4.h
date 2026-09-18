@@ -31,4 +31,6 @@ seL4_Error seL4_CNode_Copy(seL4_CPtr, seL4_Word, uint8_t,
 seL4_Error seL4_X86_Page_Map(seL4_CPtr, seL4_CPtr, seL4_Word, seL4_CapRights_t, seL4_Word);
 seL4_Error seL4_X86_Page_MapEPT(seL4_CPtr, seL4_CPtr, seL4_Word, seL4_CapRights_t, seL4_Word);
 seL4_Error seL4_X86_Page_Unmap(seL4_CPtr);
+seL4_Error seL4_TCB_SetEPTRoot(seL4_CPtr, seL4_CPtr);
+seL4_Error seL4_X86_VCPU_SetTCB(seL4_CPtr, seL4_CPtr);
 #endif

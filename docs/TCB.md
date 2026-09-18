@@ -78,6 +78,12 @@ two reconstruction/revocation cycles; the
 [stopped-object receipt](evidence/2026-09-18-spark/x86-stopped-object-rebuild.json)
 records passing Intel qualification and the full Spark gate at `8714bd3`.
 Full guest recreation still needs memory, queues and boot reset.
+Root also grants the firmware VMM a capability to its own native TCB in a
+separate retained slot. This grants no root or peer thread capability. The
+VMM can attach a rebuilt EPT and VCPU to that thread while execution remains
+stopped; the native thread is outside the guest object pool's revocation tree.
+Both binding failures propagate without starting execution. Firmware state
+initialization and actual second boot remain separate requirements.
 
 The memory reconstruction helper accepts only the configured RAM reservation
 and a complete retained firmware image outside the guest aliases. It retypes
