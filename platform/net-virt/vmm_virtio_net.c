@@ -152,6 +152,9 @@ static void net_virt_service(void)
         return;
     }
 
+    /* Dropped packets also return backend buffers. Preserve the wake path
+     * independently of how many guest descriptor chains were completed. */
+    const bool had_rx = !net_queue_empty_active(&g_rx);
     rx_n = aos_virtio_net_rx_completed(&g_aos_net);
     if (rx_n > 0u) {
         net_mark_pumped(rx_n, "RX delivered to guest");
@@ -172,7 +175,7 @@ static void net_virt_service(void)
         g_tx_consumed = true;
         net_mark_pumped(1u, "TX consumed");
     }
-    if (rx_n > 0u && net_require_signal_free(&g_rx) &&
+    if (had_rx && net_require_signal_free(&g_rx) &&
         !net_queue_empty_free(&g_rx)) {
         kick = 1;
     }
