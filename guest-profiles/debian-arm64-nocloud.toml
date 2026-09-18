@@ -5,7 +5,7 @@ extends = "linux-base.toml"
 aliases = ["debian-arm64-nocloud"]
 
 [boot]
-command_line = "console=hvc0 root=UUID=eeb673b7-002d-483a-ba22-a4b6cad94540 rw rootwait net.ifnames=0 biosdevname=0 panic=0 systemd.default_device_timeout_sec=600"
+command_line = "console=hvc0 root=UUID=eeb673b7-002d-483a-ba22-a4b6cad94540 rw rootwait net.ifnames=0 biosdevname=0 panic=0 systemd.default_device_timeout_sec=600 systemd.log_level=debug systemd.log_target=console"
 
 [artifacts.kernel]
 source = "debian-cloud:13/20260831-2587:/boot/vmlinuz-6.12.107+deb13-arm64"
@@ -116,7 +116,7 @@ guest_address = "10.0.2.15"
 adapter = "expect"
 success = ["login:"]
 require = ["Debian GNU/Linux 13"]
-reject = ["Kernel panic", "Initramfs unpacking failed", "emergency mode", "Emergency Shell", "Press Enter for maintenance", "System halted"]
+reject = ["Kernel panic", "Initramfs unpacking failed", "emergency mode", "Emergency Shell", "Press Enter for maintenance", "System halted", "Failed to start up manager.", "Freezing execution."]
 
 [[host.test]]
 action = "wait-console"
