@@ -22,6 +22,9 @@
     "checks": "make check test-rust and make test passed; 9 Rust tests and 116 Playwright tests",
     "check_log_sha256": "a3f6c1fdd3657a56cf4dc3371f7e8d8de5df9d53870084b50b5d83d51addc69d",
     "playwright_log_sha256": "593ac0c01324f9fdce02e7170e1b698c347596e7f932f90cc7996f38ca9e1451",
-    "scope": "Clean existing GUI checkout regression checks; no live CC-PD desktop, release build or interaction latency qualification"
+    "native_build": "make build passed; optimized ARM aarch64 Linux ELF executable produced on Spark",
+    "native_binary_sha256": "c0a590cf03bbb1ae9a51cdc89edb994e2069364f6638d8572663145f1867f593",
+    "native_build_log_sha256": "80563edaa9461dfad4dff69e9ab0a207e52f8d4417944d660ca0d0d3ec5924de",
+    "scope": "Clean existing GUI checkout regression checks and native executable build; no live CC-PD desktop or interaction latency qualification"
   }
 }
