@@ -69,8 +69,10 @@ endpoint, which must remain available for lifecycle requests. Terminal VMM
 parking also uses the service endpoint rather than attempting to receive
 through the send-only reporting cap. The userspace teardown probe sends a
 nonblocking failure report on the service endpoint before its real terminal
-report; the old shared receive path would consume that failure. Target
-qualification of this routing change remains pending.
+report; the old shared receive path would consume that failure. Basic Intel
+VMX, Intel teardown and the full Spark gate passed at `94f47a3`;
+[the receipt](evidence/2026-09-18-spark/x86-report-endpoint.json) records routing
+qualification. Lifecycle handlers and external control remain outstanding.
 
 Each AArch64 guest's TCB, VCPU, IPC frame and MCS scheduling context now come
 from a dedicated 64 KiB non-device child untyped. After boot configuration,
