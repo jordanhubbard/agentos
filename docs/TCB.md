@@ -47,8 +47,12 @@ mappings succeed. CC replaces the COM2 frontend driver in this composition
 and owns the serial virtualizer's frontend page. Guests retain only their own
 serial queues. The [initial socket receipt](evidence/2026-09-18-spark/x86-cc-inventory.json)
 records successful empty-inventory and boot-inspection requests through the
-Intel PCI transport, plus the full Spark gate. External lifecycle, guest console
-and GUI acceptance remain pending; inspection's x86 RAM accounting is incomplete.
+Intel PCI transport, plus the full Spark gate. The subsequent
+[external lifecycle receipt](evidence/2026-09-18-spark/x86-cc-lifecycle.json)
+records CREATE/status/suspend/resume/destroy of the firmware guest and correct
+boot-reserved RAM reporting. CC mode defaults to 256 MiB and uses caller-controlled
+lifetime; native qualification retains its 65536-exit bound. Guest console,
+recreation and external GUI acceptance remain pending.
 
 The userspace qualification adds `x86_lifecycle_probe`, an ordinary client
 with its VMM service endpoint and a send-only failure-report cap. Root rejects
