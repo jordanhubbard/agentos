@@ -41,7 +41,10 @@ VMM. Each VMM also receives its own newly created ASID pool, never the global
 ASID controller or another VMM's namespace. Teardown revokes the paging pool
 after execution and RAM; the empty ASID namespace remains management authority
 for future VSpaces. The contract is `contracts/guest_paging_caps.h`.
-Paging revocation target qualification and reconstruction remain pending.
+Private paging revocation and the full OS gate passed at `d00759c`;
+[the receipt](evidence/2026-09-17-spark/guest-paging-teardown.json)
+records the console-proof target and retained management resources.
+Reconstruction remains pending.
 
 AArch64 guest RAM is allocated from dedicated 2 MiB child untyped pools.
 Root installs the initial guest/VMM mappings, then moves each pool's sole
@@ -62,6 +65,10 @@ Service grants remain owned by the VMM; recreation is not yet implemented.
 `make test-guest-teardown` exercises terminal destruction
 through CC after a live guest console proof, but does not prove recreation or
 complete service-grant reclamation.
+The provisioned Debian graphics/input guest also passed execution/RAM teardown
+at `7e8ebaa`, after authenticated SSH and exact display/input checks;
+[that receipt](evidence/2026-09-17-spark/seeded-graphics-teardown.json)
+predates private paging revocation and does not qualify recreation.
 `make test-guest-ram-recycle` exercises two preboot overwrite/revoke/retype
 cycles, complete zero verification, stale capability rejection and guest
 block I/O. This test is not a claim of live destroy/recreate, execution-object
