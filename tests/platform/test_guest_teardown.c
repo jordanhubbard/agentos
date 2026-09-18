@@ -92,6 +92,11 @@ seL4_Error seL4_CNode_Revoke(seL4_CPtr root, seL4_Word slot, uint8_t depth)
     caps_live = false;
     return seL4_NoError;
 }
+bool aos_vmm_guest_paging_release(void)
+{
+    return seL4_CNode_Revoke(AOS_GUEST_RAM_SELF_CNODE,
+        AOS_GUEST_PAGING_POOL_CAP, AOS_GUEST_RAM_CNODE_BITS) == seL4_NoError;
+}
 bool aos_vmm_guest_ram_release(size_t size)
 {
     assert(size == page_size && !caps_live);

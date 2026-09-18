@@ -1050,6 +1050,53 @@ bool aos_vmm_serial_detach(void)
 #include "contracts/guest_queue_caps.h"
 #include "contracts/guest_ram_caps.h"
 #include "contracts/guest_graphics_caps.h"
+#include "contracts/guest_paging_caps.h"
+#include "contracts/guest_gic_caps.h"
+#include <platform/guest_paging.h>
+static bool guest_paging_recycle_test(void)
+{
+    uintptr_t va = AOS_NET_SHMEM_VA;
+#ifdef AGENTOS_GUEST_SECONDARY
+    va += AOS_NET_CLIENT_STRIDE;
+#endif
+    volatile uint64_t *memory = (volatile uint64_t *)va;
+    const size_t bytes = (size_t)1u << AOS_GUEST_QUEUE_POOL_BITS;
+    for (unsigned pass = 0; pass < 2; ++pass) {
+        if (!aos_vmm_guest_paging_release() || !aos_vmm_guest_paging_rebuild()) return false;
+        if (seL4_Untyped_Retype(AOS_GUEST_QUEUE_POOL_BASE,
+                seL4_ARM_LargePageObject, 0u, AOS_GUEST_RAM_SELF_CNODE,
+                0u, 0u, AOS_GUEST_QUEUE_TEST_FRAME, 1u) != seL4_NoError) return false;
+        if (!aos_vmm_guest_page_map(AOS_GUEST_QUEUE_TEST_FRAME, 0x40000000u)) return false;
+        if (seL4_CNode_Copy(AOS_GUEST_RAM_SELF_CNODE,
+                AOS_GUEST_QUEUE_TEST_COPY, AOS_GUEST_RAM_CNODE_BITS,
+                AOS_GUEST_RAM_SELF_CNODE, AOS_GUEST_QUEUE_TEST_FRAME,
+                AOS_GUEST_RAM_CNODE_BITS, seL4_AllRights) != seL4_NoError) return false;
+        if (seL4_ARM_Page_Map(AOS_GUEST_QUEUE_TEST_COPY, AOS_GUEST_RAM_VMM_VSPACE,
+                va, seL4_AllRights, seL4_ARM_Default_VMAttributes) != seL4_NoError) return false;
+        for (size_t i = 0; i < bytes / sizeof(*memory); ++i) {
+            if (memory[i]) return false;
+            memory[i] = UINT64_C(0x504147494e470001) ^ i ^ pass;
+        }
+        /* An ordinary small test frame at the GIC IPA exercises the deeper
+         * table hierarchy, without granting a hardware device capability. */
+        if (seL4_Untyped_Retype(AOS_GUEST_EXECUTION_POOL_CAP,
+                seL4_ARM_SmallPageObject, 0u, AOS_GUEST_RAM_SELF_CNODE,
+                0u, 0u, AOS_GUEST_IPC_FRAME_CAP, 1u) != seL4_NoError ||
+            !aos_vmm_guest_page_map(AOS_GUEST_IPC_FRAME_CAP, AOS_GUEST_GIC_IPA)) return false;
+        if (seL4_CNode_Revoke(AOS_GUEST_RAM_SELF_CNODE, AOS_GUEST_QUEUE_POOL_BASE,
+                AOS_GUEST_RAM_CNODE_BITS) != seL4_NoError ||
+            seL4_CNode_Revoke(AOS_GUEST_RAM_SELF_CNODE, AOS_GUEST_EXECUTION_POOL_CAP,
+                AOS_GUEST_RAM_CNODE_BITS) != seL4_NoError ||
+            !aos_vmm_guest_paging_release()) return false;
+        const seL4_CPtr retired[] = {AOS_GUEST_RAM_GUEST_VSPACE, AOS_GUEST_PAGING_TABLE_BASE};
+        for (unsigned i = 0; i < sizeof(retired) / sizeof(*retired); ++i)
+            if (seL4_CNode_Copy(AOS_GUEST_RAM_SELF_CNODE,
+                    AOS_GUEST_QUEUE_TEST_COPY, AOS_GUEST_RAM_CNODE_BITS,
+                    AOS_GUEST_RAM_SELF_CNODE, retired[i], AOS_GUEST_RAM_CNODE_BITS,
+                    seL4_AllRights) != seL4_FailedLookup) return false;
+    }
+    return true;
+}
 static bool guest_queue_recycle_test(void)
 {
     const size_t bytes = (size_t)1u << AOS_GUEST_QUEUE_POOL_BITS;
@@ -1119,7 +1166,15 @@ static bool guest_vmm_teardown(void)
             microkit_dbg_puts("guest graphics recycle: queue and arena pools verified\n");
 #endif
     }
-    if (done && !probe_passed) return false;
+    static bool paging_attempted, paging_passed;
+    if (done && probe_passed && !paging_attempted) {
+        paging_attempted = true;
+        paging_passed = guest_paging_recycle_test();
+        microkit_dbg_puts(paging_passed
+            ? "guest paging recycle: fresh VSpaces and page tables verified\n"
+            : "guest paging recycle: FAILED\n");
+    }
+    if (done && (!probe_passed || !paging_passed)) return false;
 #endif
     if (done) microkit_dbg_puts("guest teardown: execution and RAM revoked\n");
     if (done) microkit_dbg_puts("guest teardown: private paging revoked\n");

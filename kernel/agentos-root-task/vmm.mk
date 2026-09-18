@@ -201,6 +201,7 @@ VMM_PD_ENTRY_OBJ   := $(BUILD_DIR)/pd_entry.$(VMM_SLOT).vmm.o
 VMM_VIRTIO_NET_OBJ := $(BUILD_DIR)/vmm_virtio_net.$(VMM_SLOT).o
 GPA_TRANSLATE_OBJ  := $(BUILD_DIR)/gpa_translate.$(VMM_SLOT).o
 VMM_GUEST_RAM_OBJ  := $(BUILD_DIR)/vmm_guest_ram.$(VMM_SLOT).o
+VMM_GUEST_PAGING_OBJ := $(BUILD_DIR)/vmm_guest_paging.$(VMM_SLOT).o
 GUEST_VMM_RUNTIME_OBJ := $(BUILD_DIR)/guest_vmm_runtime.$(VMM_SLOT).o $(BUILD_DIR)/guest_teardown.$(VMM_SLOT).o
 GUEST_SERIAL_OBJS := $(BUILD_DIR)/serial_pump.$(VMM_SLOT).o $(BUILD_DIR)/serial_endpoint.$(VMM_SLOT).o
 GUEST_VMM_LOOP_OBJ := $(BUILD_DIR)/guest_vmm_loop.$(VMM_SLOT).o
@@ -253,6 +254,10 @@ $(GPA_TRANSLATE_OBJ): $(AGENTOS_ROOT)/platform/guest-ram/gpa_translate.c $(VMM_C
                       $(AGENTOS_ROOT)/platform/include/platform/guest_ram.h
 	@mkdir -p $(BUILD_DIR)
 	@echo "[VMM] Compiling gpa_translate.c..."
+	clang $(VMM_CFLAGS) -c -o $@ $<
+
+$(VMM_GUEST_PAGING_OBJ): $(AGENTOS_ROOT)/platform/guest-ram/vmm_guest_paging.c $(VMM_CONFIG_STAMP)
+	@mkdir -p $(BUILD_DIR)
 	clang $(VMM_CFLAGS) -c -o $@ $<
 
 $(VMM_GUEST_RAM_OBJ): $(AGENTOS_ROOT)/platform/guest-ram/vmm_guest_ram.c $(VMM_CONFIG_STAMP) \
@@ -325,7 +330,7 @@ $(BUILD_DIR)/guest_vmm_primary.elf: FORCE \
 	                             $(VMM_PD_ENTRY_OBJ) \
 	                             $(VMM_VIRTIO_NET_OBJ) \
 	                             $(GPA_TRANSLATE_OBJ) \
-	                             $(VMM_GUEST_RAM_OBJ) \
+	                             $(VMM_GUEST_RAM_OBJ) $(VMM_GUEST_PAGING_OBJ) \
 	                             $(GUEST_VMM_RUNTIME_OBJ) $(GUEST_SERIAL_OBJS) $(GUEST_GPU_OBJS) $(GUEST_INPUT_OBJS) \
 	                             $(GUEST_VMM_LOOP_OBJ) \
 	                             $(GUEST_PROFILE_VALIDATE_OBJ) \
@@ -340,7 +345,7 @@ $(BUILD_DIR)/guest_vmm_primary.elf: FORCE \
 	ld.lld -T$(BOARD_DIR)/lib/microkit.ld \
 		-L$(BOARD_DIR)/lib \
 		$(VMM_PD_ENTRY_OBJ) $(GUEST_VMM_PRIMARY_OBJ) $(GPU_SHMEM_FULL_OBJ) \
-		$(VMM_VIRTIO_NET_OBJ) $(GPA_TRANSLATE_OBJ) $(VMM_GUEST_RAM_OBJ) \
+		$(VMM_VIRTIO_NET_OBJ) $(GPA_TRANSLATE_OBJ) $(VMM_GUEST_RAM_OBJ) $(VMM_GUEST_PAGING_OBJ) \
 		$(GUEST_VMM_RUNTIME_OBJ) $(GUEST_SERIAL_OBJS) $(GUEST_GPU_OBJS) $(GUEST_INPUT_OBJS) \
 		$(GUEST_VMM_LOOP_OBJ) \
 		$(GUEST_PROFILE_VALIDATE_OBJ) \
@@ -388,7 +393,7 @@ $(BUILD_DIR)/guest_vmm_secondary.elf: $(BUILD_DIR)/guest_vmm_secondary.o \
                                $(BUILD_DIR)/guest_secondary_profile.o \
                                $(VMM_VIRTIO_NET_OBJ) \
                                $(GPA_TRANSLATE_OBJ) \
-                               $(VMM_GUEST_RAM_OBJ) \
+                               $(VMM_GUEST_RAM_OBJ) $(VMM_GUEST_PAGING_OBJ) \
                                $(GUEST_VMM_RUNTIME_OBJ) $(GUEST_SERIAL_OBJS) $(GUEST_GPU_OBJS) $(GUEST_INPUT_OBJS) \
                                $(GUEST_VMM_LOOP_OBJ) \
                                $(GUEST_PROFILE_VALIDATE_OBJ) \
@@ -403,7 +408,7 @@ $(BUILD_DIR)/guest_vmm_secondary.elf: $(BUILD_DIR)/guest_vmm_secondary.o \
 		$(VMM_PD_ENTRY_OBJ) $(BUILD_DIR)/guest_vmm_secondary.o $(GPU_SHMEM_FULL_OBJ) \
 		$(BUILD_DIR)/guest_secondary_images.o \
 		$(VMM_VIRTIO_NET_OBJ) \
-		$(GPA_TRANSLATE_OBJ) $(VMM_GUEST_RAM_OBJ) \
+		$(GPA_TRANSLATE_OBJ) $(VMM_GUEST_RAM_OBJ) $(VMM_GUEST_PAGING_OBJ) \
 		$(GUEST_VMM_RUNTIME_OBJ) $(GUEST_SERIAL_OBJS) $(GUEST_GPU_OBJS) $(GUEST_INPUT_OBJS) \
 		$(GUEST_VMM_LOOP_OBJ) \
 		$(GUEST_PROFILE_VALIDATE_OBJ) $(BUILD_DIR)/guest_secondary_profile.o \
@@ -422,6 +427,7 @@ vmm-clean:
 	rm -f $(BUILD_DIR)/net_virt_pump.o $(BUILD_DIR)/net_virt_pump.*.o $(BUILD_DIR)/vmm_virtio_net.o $(BUILD_DIR)/vmm_virtio_net.*.o
 	rm -f $(BUILD_DIR)/gpa_translate.o $(BUILD_DIR)/gpa_translate.*.o
 	rm -f $(BUILD_DIR)/vmm_guest_ram.o $(BUILD_DIR)/vmm_guest_ram.*.o
+	rm -f $(BUILD_DIR)/vmm_guest_paging.o $(BUILD_DIR)/vmm_guest_paging.*.o
 	rm -f $(BUILD_DIR)/guest_vmm_runtime.o $(BUILD_DIR)/guest_vmm_runtime.*.o $(BUILD_DIR)/guest_vmm_loop.*.o
 	rm -f $(BUILD_DIR)/guest_profile_validate.*.o $(BUILD_DIR)/*guest_profile.o
 	rm -f $(BUILD_DIR)/guest_profile_validate.o $(BUILD_DIR)/guest_boot.o $(BUILD_DIR)/guest_boot.*.o

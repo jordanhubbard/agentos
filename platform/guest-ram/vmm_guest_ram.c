@@ -1,5 +1,6 @@
 #include <libvmm/virtio/gpa.h>
 #include <platform/guest_ram.h>
+#include <platform/guest_paging.h>
 #include <contracts/guest_ram_caps.h>
 #include <sel4/sel4.h>
 
@@ -49,9 +50,7 @@ bool aos_vmm_guest_ram_rebuild(uint64_t gpa, uintptr_t hva, size_t size)
                 AOS_GUEST_RAM_CNODE_BITS, AOS_GUEST_RAM_SELF_CNODE,
                 frame, AOS_GUEST_RAM_CNODE_BITS, seL4_AllRights)
                 != seL4_NoError) return false;
-        if (seL4_ARM_Page_Map(frame, AOS_GUEST_RAM_GUEST_VSPACE,
-                gpa + i * frame_size, seL4_AllRights,
-                seL4_ARM_Default_VMAttributes) != seL4_NoError) return false;
+        if (!aos_vmm_guest_page_map(frame, gpa + i * frame_size)) return false;
         if (seL4_ARM_Page_Map(alias, AOS_GUEST_RAM_VMM_VSPACE,
                 hva + i * frame_size, seL4_AllRights,
                 seL4_ARM_Default_VMAttributes) != seL4_NoError) return false;
