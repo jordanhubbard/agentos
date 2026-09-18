@@ -3825,6 +3825,21 @@ void root_task_main(const seL4_BootInfo *bi)
                 dbg_puts("[rt] private VMX report endpoint setup failed; stopping boot\n");
                 return;
             }
+#ifdef AGENTOS_X86_USERSPACE_PROOF
+            /* Root waits here during qualification, rather than on its
+             * normal fault endpoint. Fail immediately on a native VMM fault
+             * instead of silently blocking both the VMM and test client. */
+            seL4_CPtr fault_report = ut_alloc_slot();
+            if (fault_report == seL4_CapNull ||
+                seL4_CNode_Mint(seL4_CapInitThreadCNode, fault_report, 64u,
+                    seL4_CapInitThreadCNode, g_x86_vtx_proof_endpoint, 64u,
+                    seL4_AllRights, AOS_X86_LIFECYCLE_FAULT_BADGE) != seL4_NoError ||
+                seL4_TCB_SetSchedParams(tr.tcb_cap, seL4_CapInitThreadTCB,
+                    255u, pd->priority, PD_SLOT_SC(i), fault_report) != seL4_NoError) {
+                dbg_puts("[rt] lifecycle native fault reporter setup failed\n");
+                return;
+            }
+#endif
         }
 #ifdef AGENTOS_X86_USERSPACE_PROOF
         if (pd->self_svc_id == SVC_ID_X86_LIFECYCLE_PROBE) {
@@ -3999,6 +4014,17 @@ void root_task_main(const seL4_BootInfo *bi)
         seL4_Word reason = seL4_GetMR(1);
         seL4_Word rip = seL4_GetMR(2);
         seL4_Word instruction_len = seL4_GetMR(3);
+#ifdef AGENTOS_X86_USERSPACE_PROOF
+        if (badge == AOS_X86_LIFECYCLE_FAULT_BADGE) {
+            dbg_puts("[rt] x86 native VMM fault label=");
+            dbg_hex(seL4_MessageInfo_get_label(tag));
+            dbg_puts(" words="); dbg_hex(seL4_MessageInfo_get_length(tag));
+            dbg_puts(" mr0="); dbg_hex(status);
+            dbg_puts(" mr1="); dbg_hex(reason);
+            dbg_puts(" mr2="); dbg_hex(rip);
+            dbg_puts(" mr3="); dbg_hex(instruction_len); dbg_puts("\n");
+        }
+#endif
 #ifdef AGENTOS_X86_FIRMWARE_RESET
         if (seL4_MessageInfo_get_label(tag) == AOS_X86_VTX_PROOF_LABEL &&
             seL4_MessageInfo_get_length(tag) == AOS_X86_FIRMWARE_REPORT_WORDS) {
