@@ -26,12 +26,21 @@ _Static_assert(AOS_X86_GUEST_ASID_POOL_CAP > AOS_X86_GUEST_OBJECT_POOL_CAP &&
 _Static_assert(AOS_X86_VMM_SELF_TCB_CAP > AOS_X86_GUEST_EPT_HIGH_PD_CAP &&
                AOS_X86_VMM_SELF_TCB_CAP < AOS_X86_GUEST_ROM_FRAME_BASE,
                "native VMM TCB grant must exclude reconstructed object and memory slots");
+_Static_assert(AOS_X86_GUEST_EPT_SECOND_RAM_PD_CAP >=
+                   AOS_X86_GUEST_ROM_ALIAS_BASE + AOS_X86_GUEST_ROM_FRAMES &&
+               AOS_X86_GUEST_EPT_SECOND_RAM_PD_CAP < AOS_GUEST_RAM_POOL_BASE,
+               "second RAM directory must exclude ROM aliases and RAM pools");
+_Static_assert((1u << seL4_X86_VCPUBits) +
+               (1u << seL4_X86_EPTPML4Bits) + (1u << seL4_X86_EPTPDPTBits) +
+               3u * (1u << seL4_X86_EPTPDBits) <= (1u << AOS_X86_GUEST_OBJECT_POOL_BITS),
+               "all execution and EPT objects must fit the private pool");
 
 static inline seL4_Word aos_x86_guest_object_type(unsigned index)
 {
     const seL4_Word types[AOS_X86_GUEST_OBJECT_COUNT] = {
         seL4_X86_VCPUObject, seL4_X86_EPTPML4Object,
         seL4_X86_EPTPDPTObject, seL4_X86_EPTPDObject, seL4_X86_EPTPDObject,
+        seL4_X86_EPTPDObject,
     };
     return types[index];
 }
@@ -62,7 +71,9 @@ static inline seL4_Error aos_x86_guest_objects_map(seL4_CPtr asid_pool,
     if (err != seL4_NoError) return err;
     err = seL4_X86_EPTPD_Map(slots[3], slots[1], 0u, attr);
     if (err != seL4_NoError) return err;
-    return seL4_X86_EPTPD_Map(slots[4], slots[1], 0xc0000000u, attr);
+    err = seL4_X86_EPTPD_Map(slots[4], slots[1], 0xc0000000u, attr);
+    if (err != seL4_NoError) return err;
+    return seL4_X86_EPTPD_Map(slots[5], slots[1], 0x40000000u, attr);
 }
 
 /* Preconditions: terminal teardown completed, all object destinations empty.
@@ -74,6 +85,7 @@ static inline seL4_Error aos_x86_guest_objects_rebuild(void)
         AOS_GUEST_VCPU_CAP_BASE, AOS_GUEST_RAM_GUEST_VSPACE,
         AOS_X86_GUEST_EPT_PDPT_CAP, AOS_X86_GUEST_EPT_LOW_PD_CAP,
         AOS_X86_GUEST_EPT_HIGH_PD_CAP,
+        AOS_X86_GUEST_EPT_SECOND_RAM_PD_CAP,
     };
     seL4_Error err = aos_x86_guest_objects_retype(AOS_X86_GUEST_OBJECT_POOL_CAP,
         AOS_GUEST_RAM_SELF_CNODE, slots);

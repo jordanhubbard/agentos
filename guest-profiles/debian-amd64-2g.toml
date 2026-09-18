@@ -1,0 +1,8 @@
+schema = 2
+id = "debian-stable-x86-64-2g"
+status = "runtime"
+extends = "debian-amd64.toml"
+aliases = ["debian-amd64-2g"]
+
+[placements.default]
+ram_size = 0x80000000

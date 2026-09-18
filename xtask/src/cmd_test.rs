@@ -2698,7 +2698,8 @@ pub(crate) fn spawn_qemu_with_guest(
                 // Keep invariant TSC visible for the VMM's virtual timers.
                 .arg("host,migratable=off")
                 .arg("-m")
-                .arg("2G")
+                // Reserve room for the bounded 2 GiB guest plus native PDs.
+                .arg("4G")
                 .arg("-display")
                 .arg("none")
                 .arg("-monitor")

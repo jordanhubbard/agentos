@@ -170,8 +170,17 @@ it adds no hardware authority or kernel change and does not claim to repair
 kernel FPU state. Optional phase traces and private-memory debugger witnesses
 are disabled in the acceptance runs.
 
-The x86 firmware composition now allocates its VCPU and four EPT paging
-objects from a dedicated 64 KiB non-device child untyped. Root moves the
+The x86 firmware composition now allocates its VCPU and five EPT paging
+objects from a dedicated 64 KiB non-device child untyped. The additional
+directory covers guest RAM from 1 to 2 GiB; the separate high directory covers
+firmware ROM. A 2 GiB reservation uses the existing maximum 1024 private RAM
+pools. Its native RAM aliases span `0x80000000..0x100000000`, with ROM mapped
+at `0x100000000` in non-default RAM configurations. Address arithmetic uses
+64-bit constants so the end of that RAM window cannot wrap to zero. The
+`debian-amd64-2g` profile selects this bound; the Intel QEMU test board reserves
+4 GiB for the guest and native PDs. Target qualification of the larger
+reservation is pending; this does not establish multi-vCPU support or dynamic
+resource allocation. Root moves the
 sole pool capability to the owning VMM after boot configuration, in the
 architecture-exclusive slot defined by `contracts/x86_guest_object_caps.h`.
 The VMM's own TCB is outside this pool: x86 VMEnter executes the VCPU bound

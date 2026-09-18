@@ -9,7 +9,7 @@
  * This grant alone does not implement suspend, destroy or reconstruction. */
 #define AOS_X86_GUEST_OBJECT_POOL_CAP 461u
 #define AOS_X86_GUEST_OBJECT_POOL_BITS 16u
-#define AOS_X86_GUEST_OBJECT_COUNT 5u
+#define AOS_X86_GUEST_OBJECT_COUNT 6u
 
 /* Retained private ASID namespace, architecture-exclusive with ARM's ASID
  * grant. No global ASID controller is delegated. Intermediate EPT caps are
@@ -22,5 +22,7 @@
  * Required to attach a rebuilt EPT/VCPU. The native thread and this grant
  * remain outside the guest object pool's revocation tree. */
 #define AOS_X86_VMM_SELF_TCB_CAP 501u
+/* Second RAM GiB; disjoint from ROM frame/alias slots 502..505. */
+#define AOS_X86_GUEST_EPT_SECOND_RAM_PD_CAP 506u
 
 #endif

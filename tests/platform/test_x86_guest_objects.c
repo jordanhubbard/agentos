@@ -5,15 +5,17 @@
 static unsigned calls, fail_at;
 static seL4_CPtr pool;
 static int frame_test, rebuild_test;
-static const seL4_CPtr slots[] = {80u, 91u, 102u, 117u, 133u};
+static const seL4_CPtr slots[] = {80u, 91u, 102u, 117u, 133u, 149u};
 static const seL4_CPtr rebuild_slots[] = {
     AOS_GUEST_VCPU_CAP_BASE, AOS_GUEST_RAM_GUEST_VSPACE,
     AOS_X86_GUEST_EPT_PDPT_CAP, AOS_X86_GUEST_EPT_LOW_PD_CAP,
     AOS_X86_GUEST_EPT_HIGH_PD_CAP,
+    AOS_X86_GUEST_EPT_SECOND_RAM_PD_CAP,
 };
 static const seL4_Word expected_types[] = {
     seL4_X86_VCPUObject, seL4_X86_EPTPML4Object,
     seL4_X86_EPTPDPTObject, seL4_X86_EPTPDObject, seL4_X86_EPTPDObject,
+    seL4_X86_EPTPDObject,
 };
 
 seL4_Error seL4_Untyped_Retype(seL4_CPtr source, seL4_Word type,
@@ -31,7 +33,7 @@ seL4_Error seL4_Untyped_Retype(seL4_CPtr source, seL4_Word type,
 
 seL4_Error seL4_X86_ASIDPool_Assign(seL4_CPtr asid, seL4_CPtr ept)
 {
-    assert(rebuild_test && calls == 5u);
+    assert(rebuild_test && calls == 6u);
     assert(asid == AOS_X86_GUEST_ASID_POOL_CAP);
     assert(ept == AOS_GUEST_RAM_GUEST_VSPACE);
     return ++calls == fail_at ? 19 : seL4_NoError;
@@ -39,7 +41,7 @@ seL4_Error seL4_X86_ASIDPool_Assign(seL4_CPtr asid, seL4_CPtr ept)
 seL4_Error seL4_X86_EPTPDPT_Map(seL4_CPtr table, seL4_CPtr ept,
                               seL4_Word gpa, seL4_Word attr)
 {
-    assert(calls == 6u && table == AOS_X86_GUEST_EPT_PDPT_CAP);
+    assert(calls == 7u && table == AOS_X86_GUEST_EPT_PDPT_CAP);
     assert(ept == AOS_GUEST_RAM_GUEST_VSPACE && gpa == 0u);
     assert(attr == seL4_X86_EPT_Default_VMAttributes);
     return ++calls == fail_at ? 19 : seL4_NoError;
@@ -47,9 +49,12 @@ seL4_Error seL4_X86_EPTPDPT_Map(seL4_CPtr table, seL4_CPtr ept,
 seL4_Error seL4_X86_EPTPD_Map(seL4_CPtr table, seL4_CPtr ept,
                             seL4_Word gpa, seL4_Word attr)
 {
-    assert(calls == 7u || calls == 8u);
-    assert(table == (calls == 7u ? AOS_X86_GUEST_EPT_LOW_PD_CAP : AOS_X86_GUEST_EPT_HIGH_PD_CAP));
-    assert(gpa == (calls == 7u ? 0u : 0xc0000000u));
+    assert(calls >= 8u && calls <= 10u);
+    const seL4_CPtr directories[] = {AOS_X86_GUEST_EPT_LOW_PD_CAP,
+        AOS_X86_GUEST_EPT_HIGH_PD_CAP, AOS_X86_GUEST_EPT_SECOND_RAM_PD_CAP};
+    const seL4_Word addresses[] = {0u, 0xc0000000u, 0x40000000u};
+    assert(table == directories[calls - 8u]);
+    assert(gpa == addresses[calls - 8u]);
     assert(ept == AOS_GUEST_RAM_GUEST_VSPACE);
     assert(attr == seL4_X86_EPT_Default_VMAttributes);
     return ++calls == fail_at ? 19 : seL4_NoError;
@@ -110,10 +115,10 @@ int main(void)
     frame_test = 0;
     rebuild_test = 1;
     pool = AOS_X86_GUEST_OBJECT_POOL_CAP;
-    for (fail_at = 0; fail_at <= 9u; fail_at++) {
+    for (fail_at = 0; fail_at <= 11u; fail_at++) {
         calls = 0;
         assert(aos_x86_guest_objects_rebuild() == (fail_at ? 19 : seL4_NoError));
-        assert(calls == (fail_at ? fail_at : 9u));
+        assert(calls == (fail_at ? fail_at : 11u));
     }
     for (bind_failure = 0; bind_failure <= 2; bind_failure++) {
         bind_calls = 0;
