@@ -1431,6 +1431,14 @@ endif
 # The regular board retains its passive stub. The distinct VTX board builds
 # only the narrow VMX/EPT HLT-exit proof, not a general guest VMM.
 ifeq ($(ARCH),x86_64)
+$(BUILD_DIR)/x86_runner.pd.o: $(REPO_ROOT_MK)/platform/guest-vmm/x86_runner_pd.c $(REPO_ROOT_MK)/platform/include/platform/x86_runner_native.h $(REPO_ROOT_MK)/platform/include/platform/x86_runner.h $(REPO_ROOT_MK)/kernel/agentos-root-task/include/contracts/x86_runner.h Makefile
+	@mkdir -p $(BUILD_DIR)
+	$(CC) -c $(CFLAGS) -mgeneral-regs-only $< -o $@
+$(BUILD_DIR)/x86_runner.o: $(REPO_ROOT_MK)/platform/guest-vmm/x86_runner.c $(REPO_ROOT_MK)/platform/include/platform/x86_runner.h $(REPO_ROOT_MK)/kernel/agentos-root-task/include/contracts/x86_runner.h Makefile
+	@mkdir -p $(BUILD_DIR)
+	$(CC) -c $(CFLAGS) -mgeneral-regs-only $< -o $@
+$(BUILD_DIR)/x86_runner.elf: $(BUILD_DIR)/x86_runner.pd.o $(BUILD_DIR)/x86_runner.o $(BUILD_DIR)/sel4_crt.o $(BUILD_DIR)/pd_entry.o $(BUILD_DIR)/m3_bare_metal.o $(BUILD_DIR)/log.o
+	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
 ifeq ($(AGENTOS_BOARD),x86_64_generic_vtx)
 $(BUILD_DIR)/guest_vmm_primary.o: $(REPO_ROOT_MK)/platform/guest-vmm/x86_vtx_proof.c $(GUEST_CONFIG_STAMP) Makefile
 	@mkdir -p $(BUILD_DIR)

@@ -806,6 +806,7 @@ test-x86-firmware-build:
 		SEL4_SDK=$(SEL4_SDK) SEL4_SDK_VERSION=$(SEL4_SDK_VERSION) \
 		X86_FIRMWARE_RESET=1 \
 		$(abspath $(BUILD_TMP_DIR)/x86-firmware-link)/guest_vmm_primary.elf \
+		$(abspath $(BUILD_TMP_DIR)/x86-firmware-link)/x86_runner.elf \
 		$(abspath $(BUILD_TMP_DIR)/x86-firmware-link)/serial_pd.elf \
 		$(abspath $(BUILD_TMP_DIR)/x86-firmware-link)/blk_virt.elf \
 		$(abspath $(BUILD_TMP_DIR)/x86-firmware-link)/net_virt.elf \
@@ -971,6 +972,25 @@ test-virtio-host-transport:
 
 test-host: test-x86-config-host
 test-host: test-x86-apic-host
+test-host: test-x86-runner-host
+.PHONY: test-x86-runner-host
+test-x86-runner-host:
+	@mkdir -p $(BUILD_TMP_DIR)
+	$(CC) -std=c11 -Wall -Wextra -Werror -I platform/include \
+		-idirafter kernel/agentos-root-task/include tests/platform/test_x86_runner.c \
+		platform/guest-vmm/x86_runner.c -o $(BUILD_TMP_DIR)/test_x86_runner
+	$(BUILD_TMP_DIR)/test_x86_runner
+	@set -e; for mode in classic mcs; do \
+		flags=; if test "$$mode" = mcs; then flags=-DCONFIG_KERNEL_MCS; fi; \
+		$(CC) -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -g \
+			-DCONFIG_VTX -DCONFIG_X86_64_VTX_64BIT_GUESTS $$flags \
+			-Itests/platform/runner-stubs -Iplatform/include \
+			-I$(SEL4_SDK)/board/x86_64_generic/release/include \
+			-idirafter kernel/agentos-root-task/include \
+			tests/platform/test_x86_runner_pd.c platform/guest-vmm/x86_runner_pd.c \
+			platform/guest-vmm/x86_runner.c -o $(BUILD_TMP_DIR)/test_x86_runner_$$mode; \
+		$(BUILD_TMP_DIR)/test_x86_runner_$$mode; \
+	done
 test-host: test-x86-string-host
 test-host: test-x86-rtc-host
 
@@ -1144,7 +1164,9 @@ test-x86-vmenter-host:
 	$(CC) -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -g \
 		-Itests/platform/virtio-stubs -Iplatform/include \
 		-I$(SEL4_SDK)/board/x86_64_generic/release/include \
-		tests/platform/test_x86_vmenter.c -o $(BUILD_TMP_DIR)/test_x86_vmenter
+		-idirafter kernel/agentos-root-task/include \
+		tests/platform/test_x86_vmenter.c platform/guest-vmm/x86_runner.c \
+		-o $(BUILD_TMP_DIR)/test_x86_vmenter
 	$(BUILD_TMP_DIR)/test_x86_vmenter
 
 .PHONY: test-x86-event-host
