@@ -113,8 +113,14 @@ selection and every queue/surface pointer before its final release-store to
 the queue page. Detach takes priority over full or malformed request/response
 rings. Observer capture and display forwarding cannot retain a source pointer
 across that service iteration; completed observer snapshots remain independent
-copies. The queue and surface arenas are still allocated in this change.
-Target qualification of framebuffer detach remains pending.
+copies. ARM guest graphics queue and surface-arena frames now use thirteen
+private 2 MiB pools per guest, delegated to the owning VMM. After all service
+detach acknowledgments, teardown revokes these pools and their descendant
+mappings before execution/RAM/paging reclamation. The observer snapshot and
+physical display buffers remain separate, service-owned allocations. Empty
+pools remain bounded reconstruction authority. The graphics teardown target
+now requires pool retyping, complete zero checks, overwrite and stale-cap
+rejection after destruction. Target qualification of this change is pending.
 Queued guest faults are not serviced during teardown. Initialization rejects
 lifecycle re-entry while media staging still holds guest RAM pointers.
 Service grants remain owned by the VMM; recreation is not yet implemented.

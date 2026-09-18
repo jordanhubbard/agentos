@@ -1049,6 +1049,7 @@ bool aos_vmm_serial_detach(void)
 #ifdef AGENTOS_GUEST_QUEUE_RECYCLE_TEST
 #include "contracts/guest_queue_caps.h"
 #include "contracts/guest_ram_caps.h"
+#include "contracts/guest_graphics_caps.h"
 static bool guest_queue_recycle_test(void)
 {
     const size_t bytes = (size_t)1u << AOS_GUEST_QUEUE_POOL_BITS;
@@ -1061,11 +1062,19 @@ static bool guest_queue_recycle_test(void)
 #ifdef AGENTOS_GUEST_INPUT
     count = AOS_GUEST_QUEUE_POOL_COUNT;
 #endif
+    unsigned total = count;
+#ifdef AGENTOS_GUEST_GRAPHICS
+    total += AOS_GUEST_GRAPHICS_POOL_COUNT;
+    _Static_assert(AOS_GUEST_GRAPHICS_POOL_BITS == AOS_GUEST_QUEUE_POOL_BITS,
+                   "recycle probe frame sizes agree");
+#endif
     /* The old network mapping is gone, but the VMM's own page tables remain.
      * Reuse that address only after all service detach acknowledgments. */
-    for (unsigned kind = 0; kind < count; kind++) {
+    for (unsigned kind = 0; kind < total; kind++) {
+        seL4_CPtr pool = kind < count ? AOS_GUEST_QUEUE_POOL_BASE + kind
+            : AOS_GUEST_GRAPHICS_POOL_BASE + kind - count;
         for (unsigned pass = 0; pass < 2; pass++) {
-            if (seL4_Untyped_Retype(AOS_GUEST_QUEUE_POOL_BASE + kind,
+            if (seL4_Untyped_Retype(pool,
                     seL4_ARM_LargePageObject, 0u, AOS_GUEST_RAM_SELF_CNODE,
                     0u, 0u, AOS_GUEST_QUEUE_TEST_FRAME, 1u) != seL4_NoError)
                 return false;
@@ -1077,7 +1086,7 @@ static bool guest_queue_recycle_test(void)
                 memory[i] = UINT64_C(0xcafe001100000001) ^ (i << 1u) ^ kind;
             }
             if (seL4_CNode_Revoke(AOS_GUEST_RAM_SELF_CNODE,
-                    AOS_GUEST_QUEUE_POOL_BASE + kind,
+                    pool,
                     AOS_GUEST_RAM_CNODE_BITS) != seL4_NoError) return false;
             if (seL4_CNode_Copy(AOS_GUEST_RAM_SELF_CNODE,
                     AOS_GUEST_QUEUE_TEST_COPY, AOS_GUEST_RAM_CNODE_BITS,
@@ -1105,6 +1114,10 @@ static bool guest_vmm_teardown(void)
         microkit_dbg_puts(probe_passed
             ? "guest queue recycle: zero pages and stale caps verified\n"
             : "guest queue recycle: FAILED\n");
+#ifdef AGENTOS_GUEST_GRAPHICS
+        if (probe_passed)
+            microkit_dbg_puts("guest graphics recycle: queue and arena pools verified\n");
+#endif
     }
     if (done && !probe_passed) return false;
 #endif
@@ -1116,6 +1129,7 @@ static bool guest_vmm_teardown(void)
     if (done) microkit_dbg_puts("guest teardown: private queue pages revoked\n");
 #ifdef AGENTOS_GUEST_GRAPHICS
     if (done) microkit_dbg_puts("guest teardown: framebuffer queues detached\n");
+    if (done) microkit_dbg_puts("guest teardown: private graphics pages revoked\n");
 #endif
 #ifdef AGENTOS_GUEST_INPUT
     if (done) microkit_dbg_puts("guest teardown: input queues detached\n");

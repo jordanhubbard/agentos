@@ -1,0 +1,27 @@
+{
+  "kind": "diagnostic, not qualification",
+  "runtime_revision": "3b0f16f5df288701b46b270cd6997da2637fe026",
+  "agentos_image_sha256": "0ed59afda67d13dc899e19c9578d618ca7ac085d0ffb443738d0754885962864",
+  "host": "Spark AArch64",
+  "qemu_pid": 1689322,
+  "directory": "/tmp/agentos-ssh-diagnostic-NVp9xt",
+  "media": "failed trial profile-seed-i9mIpY/guest.raw with QEMU snapshot=on",
+  "observations": [
+    "Authenticated SSH readiness completed at 2026-09-18T12:19:29Z",
+    "Original 5s/1 SSH keepalive helper upload failed exit255 before any suspend/resume operation",
+    "Read-only diagnostic probes with longer liveness settings completed; guest CPU pressure avg10 was99.47 then69.70 on one vCPU",
+    "Helper upload over a reused SSH master completed in about11s; the master used30s/3 keepalives, so this does not qualify original liveness requirements",
+    "Master explicitly stopped; QEMU deliberately stopped after diagnosis, session exit0"
+  ],
+  "artifacts": {
+    "serial_log_sha256": "edea95c8d3dc961283ceccacc4924e26c911b330ae587f47f233472428a90a67",
+    "network_pcap_sha256": "79b82ddb4ac5b2671a4c21b37cbc40d99b1e6242e48b8bc4a69208236905d03c",
+    "scheduling_probe_stdout_sha256": "ecd10d4a1792f3b4d41c2db5a52e6043dae3c8c1da1bcddc1f53f99160dc6548",
+    "input_helper_sha256": "2ba0315a3bc89917f9bd4762fd54a25cb0d250635dd34830cf02c2c8b981e517"
+  },
+  "conclusions": [
+    "Suspend/resume is not a necessary trigger for the observed upload timeout",
+    "CPU pressure and per-connection overhead remain investigation leads, not established root causes",
+    "No graphics reclamation pass, fresh-boot qualification or timeout-policy change is claimed"
+  ]
+}

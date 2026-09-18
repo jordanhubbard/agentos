@@ -287,12 +287,32 @@ _Static_assert(CC_SC_BUDGET_US * 10u == CC_SC_PERIOD_US,
 #include "contracts/guest_ram_caps.h"
 #include "contracts/guest_paging_caps.h"
 #include "contracts/guest_queue_caps.h"
+#include "contracts/guest_graphics_caps.h"
+_Static_assert(AOS_GUEST_GRAPHICS_POOL_BASE > AOS_GUEST_QUEUE_TEST_COPY &&
+               AOS_GUEST_GRAPHICS_POOL_BASE + AOS_GUEST_GRAPHICS_POOL_COUNT <= AOS_GUEST_RAM_POOL_BASE,
+               "graphics pool caps must not overlap queue test slots or RAM pools");
+#ifdef AGENTOS_GUEST_GRAPHICS
+static seL4_CPtr g_guest_graphics_pools[2][AOS_GUEST_GRAPHICS_POOL_COUNT];
+_Static_assert(AOS_FB_ARENA_BYTES ==
+               AOS_GUEST_GRAPHICS_ARENA_FRAMES * AOS_FB_CLIENT_STRIDE,
+               "private graphics pools must cover exactly one guest arena");
+#endif
 _Static_assert(AOS_GUEST_QUEUE_POOL_BASE > AOS_GUEST_ASID_POOL_CAP &&
                AOS_GUEST_QUEUE_POOL_BASE + AOS_GUEST_QUEUE_POOL_COUNT <= AOS_GUEST_QUEUE_TEST_FRAME &&
                AOS_GUEST_QUEUE_TEST_COPY < AOS_GUEST_RAM_POOL_BASE,
                "guest queue pool and test slots must not overlap other grants");
 #if defined(__aarch64__)
 static seL4_CPtr g_guest_queue_pools[2][AOS_GUEST_QUEUE_POOL_COUNT];
+
+static seL4_Error allocate_private_guest_frame(seL4_CPtr *pool, seL4_CPtr *frame)
+{
+    seL4_Error err = ut_alloc_cap(seL4_UntypedObject, seL4_ARCH_LargePageBits, pool);
+    if (err != seL4_NoError) return err;
+    *frame = ut_alloc_slot();
+    if (*frame == seL4_CapNull) return seL4_NotEnoughMemory;
+    return seL4_Untyped_Retype(*pool, seL4_ARM_LargePageObject, 0u,
+        seL4_CapInitThreadCNode, 0u, 0u, *frame, 1u);
+}
 #endif
 
 static seL4_Error allocate_guest_queue_frame(unsigned kind, unsigned client,
@@ -303,18 +323,24 @@ static seL4_Error allocate_guest_queue_frame(unsigned kind, unsigned client,
                    "one large queue frame per private pool");
     if (kind >= AOS_GUEST_QUEUE_POOL_COUNT) return seL4_InvalidArgument;
     if (client < 2u) {
-        seL4_CPtr *pool = &g_guest_queue_pools[client][kind];
-        seL4_Error err = ut_alloc_cap(seL4_UntypedObject,
-                                      AOS_GUEST_QUEUE_POOL_BITS, pool);
-        if (err != seL4_NoError) return err;
-        *frame = ut_alloc_slot();
-        if (*frame == seL4_CapNull) return seL4_NotEnoughMemory;
-        return seL4_Untyped_Retype(*pool, seL4_ARM_LargePageObject, 0u,
-            seL4_CapInitThreadCNode, 0u, 0u, *frame, 1u);
+        return allocate_private_guest_frame(&g_guest_queue_pools[client][kind], frame);
     }
 #else
     (void)kind;
     (void)client;
+#endif
+    return ut_alloc_cap(seL4_ARCH_LargePageObject, 0u, frame);
+}
+
+static seL4_Error allocate_guest_graphics_frame(unsigned client, unsigned index,
+                                                seL4_CPtr *frame)
+{
+#if defined(__aarch64__) && defined(AGENTOS_GUEST_GRAPHICS)
+    _Static_assert(seL4_ARCH_LargePageBits == AOS_GUEST_GRAPHICS_POOL_BITS,
+                   "one large graphics frame per private pool");
+    if (index >= AOS_GUEST_GRAPHICS_POOL_COUNT) return seL4_InvalidArgument;
+    if (client < 2u)
+        return allocate_private_guest_frame(&g_guest_graphics_pools[client][index], frame);
 #endif
     return ut_alloc_cap(seL4_ARCH_LargePageObject, 0u, frame);
 }
@@ -2309,14 +2335,15 @@ void root_task_main(const seL4_BootInfo *bi)
         }
     }
     for (uint32_t f = 0; f < FB_ARENA_FRAMES; ++f) {
-        if (ut_alloc_cap(seL4_ARM_LargePageObject, 0u,
+        if (allocate_guest_graphics_frame(f / AOS_GUEST_GRAPHICS_ARENA_FRAMES,
+                         AOS_GUEST_GRAPHICS_ARENA_INDEX + f % AOS_GUEST_GRAPHICS_ARENA_FRAMES,
                          &g_framebuffer_arena[f]) != seL4_NoError) {
             dbg_puts("[rt] framebuffer arena allocation failed; refusing boot\n");
             return;
         }
     }
     for (uint32_t f = 0; f < FB_PEERS; ++f) {
-        if (ut_alloc_cap(seL4_ARM_LargePageObject, 0u,
+        if (allocate_guest_graphics_frame(f, AOS_GUEST_GRAPHICS_QUEUE_INDEX,
                          &g_framebuffer_frames[f]) != seL4_NoError) {
             dbg_puts("[rt] framebuffer queue allocation failed; refusing boot\n");
             return;
@@ -3639,6 +3666,19 @@ void root_task_main(const seL4_BootInfo *bi)
                 *pool = seL4_CapNull;
             }
             dbg_puts("[rt] private guest queue pools delegated to owning VMM\n");
+#ifdef AGENTOS_GUEST_GRAPHICS
+            for (unsigned index = 0; index < AOS_GUEST_GRAPHICS_POOL_COUNT; index++) {
+                seL4_CPtr *pool = &g_guest_graphics_pools[owner][index];
+                if (*pool == seL4_CapNull ||
+                    seL4_CNode_Move(pd_cnode, AOS_GUEST_GRAPHICS_POOL_BASE + index,
+                        (uint8_t)pd->cnode_size_bits, seL4_CapInitThreadCNode,
+                        *pool, 64u) != seL4_NoError) {
+                    dbg_puts("[rt] private guest graphics delegation failed; stopping boot\n");
+                    return;
+                }
+                *pool = seL4_CapNull;
+            }
+#endif
         }
 #endif
 #if defined(__x86_64__) && defined(AGENTOS_X86_VTX)
