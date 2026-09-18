@@ -29,8 +29,10 @@
  * Version zero with an all-zero payload is accepted solely for v2 manifests
  * produced before this field was assigned.  New compilers emit version one.
  *
- * The VMM currently validates this envelope but does not negotiate or expose
- * a CPU feature mask to a guest; that requires a target-side implementation.
+ * Architecture-specific binding must enforce requests before guest execution.
+ * The x86 firmware binder checks the fixed synthetic CPUID exposure (FP/SIMD),
+ * rejecting unsupported requirements and prohibitions of mandatory features.
+ * Envelope validation alone does not establish target support.
  */
 #define AOS_GUEST_CPU_FEATURES_VERSION 1u
 

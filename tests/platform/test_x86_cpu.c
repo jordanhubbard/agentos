@@ -62,6 +62,18 @@ int main(void)
     assert(r.eax == 1u && r.ebx == 0x756e6547u && r.edx == 0x49656e69u && r.ecx == 0x6c65746eu);
     r = aos_x86_cpu_id(1, 0, 0);
     assert(r.ecx == 0x80000000u && r.ebx == 0x10000u);
+    uint16_t exposed=0;
+    if (r.edx & 1u) exposed |= AOS_GUEST_CPU_FEATURE_FP;
+    if ((r.edx & ((1u<<25)|(1u<<26))) == ((1u<<25)|(1u<<26)))
+        exposed |= AOS_GUEST_CPU_FEATURE_SIMD;
+    if (r.ecx & ((1u<<1)|(1u<<25))) exposed |= AOS_GUEST_CPU_FEATURE_CRYPTO;
+    if (r.ecx & (1u<<30)) exposed |= AOS_GUEST_CPU_FEATURE_RNG;
+    if (r.ecx & (1u<<28)) exposed |= AOS_GUEST_CPU_FEATURE_VECTOR;
+    if (r.ecx & (1u<<5)) exposed |= AOS_GUEST_CPU_FEATURE_NESTED_VIRT;
+    aos_x86_cpuid_t structured=aos_x86_cpu_id(7u,0,3187200000u);
+    if (structured.ebx & (1u<<18)) exposed |= AOS_GUEST_CPU_FEATURE_RNG;
+    if (structured.ebx & ((1u<<5)|(1u<<16))) exposed |= AOS_GUEST_CPU_FEATURE_VECTOR;
+    assert(exposed == AOS_X86_CPU_PROFILE_FEATURES);
     assert((r.edx & ((1u<<12)|(1u<<16)|(1u<<28))) == 0u);
     assert(r.edx & (1u<<9)); /* VMM-owned local xAPIC */
     assert((r.edx & ((1u<<6)|(1u<<25)|(1u<<26))) == ((1u<<6)|(1u<<25)|(1u<<26)));

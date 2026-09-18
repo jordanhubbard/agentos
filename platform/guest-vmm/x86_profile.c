@@ -1,4 +1,5 @@
 #include <platform/x86_profile.h>
+#include <platform/x86_cpu.h>
 #include "sha256_mini.h"
 
 static bool equal(const uint8_t *a, const uint8_t *b, size_t length)
@@ -24,7 +25,8 @@ bool aos_x86_profile_bind(const void *manifest, size_t manifest_bytes,
         p->guest_id != 0 || p->control_type != 1 || p->vcpu_count != 1 ||
         p->device_flags != (AOS_GUEST_DEVICE_NET | AOS_GUEST_DEVICE_BLOCK | AOS_GUEST_DEVICE_CONSOLE) ||
         p->network_client != 0 || p->block_media != 0 ||
-        p->cpu_features.required != 0 || p->cpu_features.prohibited != 0 ||
+        (p->cpu_features.required & ~AOS_X86_CPU_PROFILE_FEATURES) != 0 ||
+        (p->cpu_features.prohibited & AOS_X86_CPU_PROFILE_FEATURES) != 0 ||
         p->guest_gpa_base != 0 || p->ram_size != ram_bytes || p->vmm_hva_base != ram_hva ||
         p->kernel_entry_address != 0 || p->dtb_max_bytes != 0 ||
         !boot->kernel || !boot->kernel_size || boot->kernel_size > p->kernel_max_bytes ||
