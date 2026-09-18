@@ -13,6 +13,11 @@ void aos_vmm_virtio_console_init(void);
 void aos_vmm_virtio_console_after_fault(void);
 bool aos_vmm_virtio_console_driver_ready(void);
 bool aos_vmm_virtio_console_tx_active(void);
+/* Stop vCPUs before calling. Returns false until published TX has been
+ * copied out of guest RAM; continue drain_tx while retrying. Success leaves
+ * copied TX available to drain without guest memory. New RX is rejected.
+ * This does not detach serial_virt queues or flush them to an observer. */
+bool aos_vmm_virtio_console_quiesce(void);
 
 /* CC-PD / serial_virt bridge used by the guest lifecycle contract. */
 uint32_t aos_vmm_virtio_console_drain_tx(uint8_t *dst, uint32_t max);

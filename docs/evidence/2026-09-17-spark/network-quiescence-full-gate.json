@@ -1,0 +1,16 @@
+{
+  "revision": "69586d4",
+  "source_tree_clean": true,
+  "host": "Spark ARM64 Linux",
+  "command": "make gate",
+  "exit_code": 0,
+  "status": "passed",
+  "log": "/tmp/agentos-network-quiesce-full-gate.log",
+  "log_sha256": "3a8a6d23941a2efd8824860051202fc99379f482230f4a9f3b46a49aac22dfc2",
+  "scope": "Host tests including inaccessible-RAM network quiescence, both architecture backend builds, both root architectures, ARM canonical guest I/O",
+  "limits": [
+    "Network quiescence is not yet wired into production teardown.",
+    "Target guest destroy/recreate and complete capability reclamation remain unqualified.",
+    "Subsequent console-quiescence changes are outside this receipt."
+  ]
+}

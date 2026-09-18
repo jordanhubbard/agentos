@@ -45,6 +45,7 @@ static void virtio_console_features_print(uint32_t features)
 
 static void virtio_console_reset(struct virtio_device *dev)
 {
+    if (device_state(dev)->quiescing && !device_state(dev)->quiesced) return;
     device_state(dev)->tx_progress = (virtio_console_tx_state_t){0};
     device_state(dev)->rx_progress = (virtio_console_rx_state_t){0};
     device_state(dev)->tx_backpressure_reported = false;
@@ -132,6 +133,7 @@ static uint32_t console_tx_copy(void *ctx, uint64_t address, uint32_t offset, ui
 
 bool virtio_console_handle_pending_tx(struct virtio_console_device *console)
 {
+    if (console->quiesced) return true;
     struct virtio_device *dev = &console->virtio_device;
     struct virtio_queue_handler *vq = &console->vqs[TX_QUEUE];
     if (!vq->ready) return true;
@@ -158,7 +160,22 @@ bool virtio_console_handle_pending_tx(struct virtio_console_device *console)
 
 static bool virtio_console_handle_tx(struct virtio_device *dev)
 {
+    if (device_state(dev)->quiescing) return false;
     return virtio_console_handle_pending_tx(device_state(dev));
+}
+
+bool virtio_console_quiesce(struct virtio_console_device *console)
+{
+    if (console->quiesced) return true;
+    console->quiescing = true;
+    if (!virtio_console_handle_pending_tx(console)) return false;
+    struct virtio_queue_handler *vq = &console->vqs[TX_QUEUE];
+    if (vq->ready && (console->tx_progress.active ||
+        vq->last_idx != __atomic_load_n(&vq->virtq.avail->idx, __ATOMIC_ACQUIRE)))
+        return false;
+    console->quiesced = true;
+    virtio_console_reset(&console->virtio_device);
+    return true;
 }
 
 static void *console_rx_map(void *context, uint64_t address, uint32_t length)
@@ -182,6 +199,7 @@ static void console_rx_take(void *context, void *destination, uint32_t length)
 
 bool virtio_console_handle_rx(struct virtio_console_device *console)
 {
+    if (console->quiescing) return false;
     struct virtio_queue_handler *vq=&console->vqs[RX_QUEUE];
     if (!vq->ready) return true; /* retain input until buffers are available */
     uint32_t input=serial_queue_length_consumer(console->rxq);
@@ -231,6 +249,8 @@ static struct virtio_device *virtio_console_init(struct virtio_console_device *c
     console->rx_progress = (virtio_console_rx_state_t){0};
     console->tx_backpressure_reported = false;
 
+    console->quiescing = false;
+    console->quiesced = false;
     return dev;
 }
 

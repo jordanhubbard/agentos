@@ -104,13 +104,18 @@ void aos_vmm_virtio_console_after_fault(void)
 
 bool aos_vmm_virtio_console_driver_ready(void)
 {
-    return g_ready &&
+    return g_ready && !g_aos_console.quiescing &&
         (g_aos_console.virtio_device.regs.Status & VIRTIO_CONFIG_S_DRIVER_OK) != 0;
 }
 
 bool aos_vmm_virtio_console_tx_active(void)
 {
     return aos_vmm_virtio_console_driver_ready() && g_tx_pumped;
+}
+
+bool aos_vmm_virtio_console_quiesce(void)
+{
+    return !g_ready || virtio_console_quiesce(&g_aos_console);
 }
 
 uint32_t aos_vmm_virtio_console_drain_tx(uint8_t *dst, uint32_t max)

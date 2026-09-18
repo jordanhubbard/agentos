@@ -2,6 +2,8 @@
 #include <stdio.h>
 #include <stdarg.h>
 #include <string.h>
+#include <sys/mman.h>
+#include <platform/serial_layout.h>
 #include <platform/x86_virtio.h>
 #include <platform/vmm_virtio_console.h>
 #include <libvmm/virtio/virtio.h>
@@ -17,7 +19,8 @@ int printf_(const char *fmt, ...)
 }
 /* This configuration uses local device queues, not a notification cap. */
 void seL4_Signal(seL4_CPtr cap) { (void)cap; assert(!"unexpected kernel notification"); }
-static _Alignas(4096) unsigned char ram[0x20000];
+static unsigned char *ram;
+enum { RAM_BYTES = 0x40000 };
 static void write_reg(unsigned offset, uint32_t value)
 {
     assert(aos_x86_virtio_access(AOS_X86_VIRTIO_BASE+offset,4,true,&value));
@@ -39,9 +42,12 @@ static void queue(unsigned index, unsigned base)
 }
 int main(void)
 {
+    ram=mmap(NULL,RAM_BYTES,PROT_READ|PROT_WRITE,MAP_PRIVATE|MAP_ANONYMOUS,-1,0);
+    assert(ram!=MAP_FAILED);
+    assert(aos_vmm_virtio_console_quiesce());
     aos_x86_ioapic_t ioapic;
     assert(aos_x86_ioapic_init(&ioapic,1));
-    assert(aos_x86_virtio_init(&ioapic,ram,sizeof(ram)));
+    assert(aos_x86_virtio_init(&ioapic,ram,RAM_BYTES));
     assert(!aos_vmm_virtio_console_init_at(AOS_X86_VIRTIO_BASE+1,16));
     assert(!aos_vmm_virtio_console_init_at(AOS_X86_VIRTIO_BASE,17));
     assert(aos_vmm_virtio_console_init_at(AOS_X86_VIRTIO_BASE,16));
@@ -87,8 +93,47 @@ int main(void)
     assert(ioapic.asserted==(1u<<16));
     write_reg(REG_VIRTIO_MMIO_INTERRUPT_ACK,1);
     assert(!ioapic.asserted);
+    /* A transmit larger than the local FIFO must survive quiescence,
+     * retaining guest RAM until the final bytes have been copied. */
+    enum { OUTPUT_BYTES = AOS_SERIAL_TX_CAPACITY + 2048 };
+    unsigned char expected[OUTPUT_BYTES], drained[OUTPUT_BYTES];
+    for (unsigned i=0;i<OUTPUT_BYTES;i++) expected[i]=(uint8_t)(i*17u+3u);
+    memcpy(ram+0x18000,expected,OUTPUT_BYTES);
+    tx[1]=(struct virtq_desc){.addr=0x18000,.len=OUTPUT_BYTES};
+    tx_avail->ring[1]=1; tx_avail->idx=2;
+    write_reg(REG_VIRTIO_MMIO_QUEUE_NOTIFY,1);
+    assert(tx_used->idx==1);
+    assert(!aos_vmm_virtio_console_quiesce());
+    /* Reset cannot discard the retained descriptor during shutdown. */
     write_reg(REG_VIRTIO_MMIO_STATUS,0);
     assert(!aos_vmm_virtio_console_driver_ready());
     assert(!aos_vmm_virtio_console_push_rx_bytes(input,sizeof(input)));
-    puts("PASS: shared console backend TX/RX through x86 MMIO and IOAPIC");
+    uint32_t notify=1;
+    assert(!aos_x86_virtio_access(AOS_X86_VIRTIO_BASE+REG_VIRTIO_MMIO_QUEUE_NOTIFY,4,true,&notify));
+    uint32_t count=aos_vmm_virtio_console_drain_tx(drained,sizeof(drained));
+    assert(count==AOS_SERIAL_TX_CAPACITY && tx_used->idx==2);
+    assert(aos_vmm_virtio_console_quiesce());
+    assert(aos_vmm_virtio_console_quiesce());
+    write_reg(REG_VIRTIO_MMIO_INTERRUPT_ACK,1);
+    assert(mprotect(ram,RAM_BYTES,PROT_NONE)==0);
+    count+=aos_vmm_virtio_console_drain_tx(drained+count,sizeof(drained)-count);
+    assert(count==OUTPUT_BYTES && !memcmp(drained,expected,OUTPUT_BYTES));
+    assert(!aos_vmm_virtio_console_drain_tx(drained,sizeof(drained)));
+    aos_vmm_virtio_console_after_fault();
+    assert(!aos_vmm_virtio_console_push_rx_bytes(input,sizeof(input)));
+    write_reg(REG_VIRTIO_MMIO_STATUS,0);
+    write_reg(REG_VIRTIO_MMIO_STATUS,1);
+    write_reg(REG_VIRTIO_MMIO_STATUS,3);
+    write_reg(REG_VIRTIO_MMIO_DRIVER_FEATURES_SEL,1);
+    write_reg(REG_VIRTIO_MMIO_DRIVER_FEATURES,1);
+    write_reg(REG_VIRTIO_MMIO_STATUS,11);
+    queue(0,0); queue(1,0x8000);
+    write_reg(REG_VIRTIO_MMIO_STATUS,15);
+    assert(!aos_vmm_virtio_console_driver_ready());
+    assert(!aos_vmm_virtio_console_push_rx_bytes(input,sizeof(input)));
+    assert(!aos_x86_virtio_access(AOS_X86_VIRTIO_BASE+REG_VIRTIO_MMIO_QUEUE_NOTIFY,4,true,&notify));
+    assert(!ioapic.asserted);
+    assert(!aos_vmm_virtio_console_init_at(AOS_X86_VIRTIO_BASE,16));
+    assert(munmap(ram,RAM_BYTES)==0);
+    puts("PASS: console exact TX/RX, backpressured shutdown drain and inaccessible-RAM quiescence");
 }

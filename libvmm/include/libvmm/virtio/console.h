@@ -102,6 +102,8 @@ struct virtio_console_device {
     virtio_console_rx_state_t rx_progress;
     uint16_t tx_head;
     bool tx_backpressure_reported;
+    bool quiescing;
+    bool quiesced;
 };
 
 bool virtio_mmio_console_init(struct virtio_console_device *console,
@@ -115,6 +117,11 @@ bool virtio_mmio_console_init(struct virtio_console_device *console,
 bool virtio_console_handle_rx(struct virtio_console_device *console);
 /* Retry pending transmit data after the backend consumer frees queue space. */
 bool virtio_console_handle_pending_tx(struct virtio_console_device *console);
+/* Stop vCPUs first. Reject new queue notifications and RX delivery, but
+ * retain published TX until it has been copied to device-local storage.
+ * Retry while false, draining the local TX queue between calls. Success
+ * retires guest ring references and survives guest reset. */
+bool virtio_console_quiesce(struct virtio_console_device *console);
 
 bool virtio_pci_console_init(struct virtio_console_device *console, uint32_t dev_slot, size_t virq,
                              serial_queue_handle_t *rxq, serial_queue_handle_t *txq, seL4_CPtr tx_cap);
