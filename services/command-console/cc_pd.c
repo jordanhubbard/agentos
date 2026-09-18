@@ -80,7 +80,12 @@
 /* ─── Diagnostics through the generic serial driver ────────────────────── */
 
 static serial_log_t g_cc_log = {
+#ifdef AGENTOS_X86_CC_PCI
+    /* No UART RPC server in this composition; never Call an absent endpoint. */
+    .ep = seL4_CapNull,
+#else
     .ep = PD_CNODE_SLOT_SERIAL_EP,
+#endif
 };
 static void cc_dbg_putc(char c)
 {
@@ -1842,7 +1847,7 @@ void cc_pd_main(seL4_CPtr my_ep, seL4_CPtr ns_ep)
     static cc_retry_cache_t g_retry;
     cc_retry_cache_init(&g_retry);
     cc_vm_client_init(&g_vm_client, cc_vm_rpc, NULL);
-#if defined(__aarch64__)
+#if defined(__aarch64__) || defined(AGENTOS_X86_CC_PCI)
     cc_serial_init();
 #endif
 

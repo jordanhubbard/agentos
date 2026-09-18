@@ -169,6 +169,16 @@ ifeq ($(AGENTOS_BOARD),x86_64_generic_vtx)
       CFLAGS += -DAGENTOS_X86_LIFECYCLE_WITNESS=1
     endif
   endif
+  ifeq ($(X86_CC_PCI),1)
+    X86_MANAGED_START := 1
+    ifeq ($(X86_USERSPACE_PROOF),1)
+      $(error X86_CC_PCI conflicts with the native X86_USERSPACE_PROOF client)
+    endif
+    CFLAGS += -DAGENTOS_X86_CC_PCI=1
+    CFLAGS_ROOT_TASK += -DAGENTOS_X86_CC_PCI=1
+    # CC exposes a dynamically created primary guest, never an auto-boot entry.
+    $(BUILD_DIR)/cc_pd.o: CFLAGS += -DAGENTOS_GUEST_PRIMARY=1 -DAGENTOS_GUEST_MANAGED_BOOT=1
+  endif
   ifeq ($(X86_MANAGED_START),1)
     ifneq ($(X86_FIRMWARE_RESET),1)
       $(error X86_MANAGED_START requires X86_FIRMWARE_RESET=1)
@@ -1481,7 +1491,9 @@ SYSTEM_TOML := $(if $(_BOARD_TOML_NONEMPTY),$(_BOARD_TOML_NONEMPTY),$(SYSTEM_TOM
 ifeq ($(AGENTOS_BOARD),x86_64_generic_vtx)
 ifeq ($(X86_FIRMWARE_RESET),1)
 SYSTEM_TOML := $(REPO_ROOT_MK)/boards/qemu-x86_64-vtx/firmware.toml
-ifeq ($(X86_MANAGED_START),1)
+ifeq ($(X86_CC_PCI),1)
+SYSTEM_TOML := $(REPO_ROOT_MK)/boards/qemu-x86_64-vtx/cc.toml
+else ifeq ($(X86_MANAGED_START),1)
 SYSTEM_TOML := $(abspath $(BUILD_DIR)/x86-managed-$(X86_USERSPACE_PROOF).toml)
 $(SYSTEM_TOML): $(REPO_ROOT_MK)/boards/qemu-x86_64-vtx/firmware.toml Makefile
 	@mkdir -p $(BUILD_DIR)

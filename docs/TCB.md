@@ -38,6 +38,16 @@ records Intel manager/lifecycle qualification and the full Spark gate at
 `8ebb8ed`, plus the default Debian boot/SSH regression at `d563b67` after
 correcting an automatic-start-only variable declaration collision.
 
+The opt-in `X86_CC_PCI` composition assigns the modern VirtIO console function
+at PCI 00:07.0 to CC, extending its existing host-console device ownership to
+x86. Root orders its device-page reservations with block/network reservations
+and rejects pages shared across device classes. CC receives three private DMA
+pages and a read-only startup record; bus mastering is enabled only after all
+mappings succeed. CC replaces the COM2 frontend driver in this composition
+and owns the serial virtualizer's frontend page. Guests retain only their own
+serial queues. This wiring is under qualification: no Intel socket or external
+GUI acceptance is implied by the source or host build.
+
 The userspace qualification adds `x86_lifecycle_probe`, an ordinary client
 with its VMM service endpoint and a send-only failure-report cap. Root rejects
 that cap's nonzero badge on the success path. It receives no device, IRQ, guest memory

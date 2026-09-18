@@ -607,6 +607,10 @@ _RUN_SELECTION_ARGS = $(if $(_SELECTED_GUEST_SCENARIO),--scenario $(_SELECTED_GU
 
 # run (default): build native → QEMU with serial on stdout and a Unix guest
 # =============================================================================
+.PHONY: run-x86_64-cc
+run-x86_64-cc:
+	@X86_CC_PCI=1 X86_FIRMWARE_RESET=1 cargo xtask qemu-launch --board x86_64_generic_vtx
+
 run:
 	@if [ -z "$(_SELECTED_GUEST_SCENARIO)" ] && [ -n "$(GUEST_PRIMARY_PROFILE)" ] && [ -n "$(GUEST_SECONDARY_PROFILE)" ]; then \
 		echo "ERROR: interactive two-slot launch requires GUEST_SCENARIO=<alias>"; \

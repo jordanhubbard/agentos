@@ -1,0 +1,32 @@
+# Managed firmware with PCI CC transport. CC owns the serial queue frontend.
+[[pd]]
+name = "net_pd"
+priority = 215
+
+[[pd]]
+name = "net_virt"
+priority = 205
+
+[[pd]]
+name = "virtio_blk"
+priority = 215
+
+[[pd]]
+name = "blk_virt"
+priority = 210
+
+[[pd]]
+name = "serial_virt"
+priority = 203
+
+[[pd]]
+name = "guest_vmm_primary"
+priority = 250
+
+[[pd]]
+name = "vm_manager"
+priority = 220
+
+[[pd]]
+name = "cc_pd"
+priority = 200

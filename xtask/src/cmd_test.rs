@@ -2691,13 +2691,25 @@ pub(crate) fn spawn_qemu_with_guest(
                 "filter-dump,id=agentos_net_capture,netdev=agentos_net,file={}",
                 capture.display()
             ));
-            c.arg("-chardev")
-                .arg(format!(
-                    "socket,id=serial2,path={},server=on,wait=off",
-                    cc_sock.display()
-                ))
-                .arg("-serial")
-                .arg("chardev:serial2");
+            if std::env::var("X86_CC_PCI").as_deref() == Ok("1") {
+                c.arg("-chardev")
+                    .arg(format!(
+                        "socket,id=cc_pd_char,path={},server=on,wait=off",
+                        cc_sock.display()
+                    ))
+                    .arg("-device")
+                    .arg("virtio-serial-pci,id=cc_serial,addr=07.0,disable-legacy=on")
+                    .arg("-device")
+                    .arg("virtconsole,bus=cc_serial.0,chardev=cc_pd_char,name=cc.0");
+            } else {
+                c.arg("-chardev")
+                    .arg(format!(
+                        "socket,id=serial2,path={},server=on,wait=off",
+                        cc_sock.display()
+                    ))
+                    .arg("-serial")
+                    .arg("chardev:serial2");
+            }
             c
         }
         other => {
