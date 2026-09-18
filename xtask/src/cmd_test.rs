@@ -2117,7 +2117,10 @@ fn x86_linux_login(socket: &Path, log_path: &Path, timeout: Duration) -> anyhow:
                 );
                 let text = String::from_utf8_lossy(&transcript);
                 anyhow::ensure!(
-                    !text.contains("Kernel panic") && !text.contains("Entering emergency mode"),
+                    !text.contains("Kernel panic")
+                        && !text.contains("Entering emergency mode")
+                        && !text.contains("reboot: Restarting system")
+                        && !text.contains("reboot: System halted"),
                     "Intel Linux boot failed; see {}",
                     transcript_path.display()
                 );
@@ -4261,6 +4264,8 @@ mod tests {
                 b"Entering emergency mode\r\ndebian login: ".as_slice(),
                 false,
             ),
+            (b"reboot: Restarting system\r\n".as_slice(), false),
+            (b"reboot: System halted\r\n".as_slice(), false),
         ] {
             let temp = tempfile::tempdir().unwrap();
             let socket = temp.path().join("console.sock");

@@ -687,6 +687,16 @@ gate-x86_64-userspace:
 		--timeout-secs $(QEMU_TEST_TIMEOUT)
 
 .PHONY: gate-x86_64-linux-login
+.PHONY: debian-x86-console-hook
+debian-x86-console-hook:
+	@mkdir -p $(BUILD_TMP_DIR)/debian-x86
+	clang -target x86_64-unknown-linux-gnu -ffreestanding -fno-builtin \
+		-fno-stack-protector -fno-pie -nostdlib -static -fuse-ld=lld -O2 \
+		-Wall -Wextra -Werror -Wl,--build-id=none -Wl,-e,_start \
+		guest-profiles/helpers/debian_init_bottom_x86_64.c \
+		-o $(BUILD_TMP_DIR)/debian-x86/udev
+	llvm-objcopy --strip-all --remove-section=.comment $(BUILD_TMP_DIR)/debian-x86/udev
+
 gate-x86_64-linux-login:
 	@test -n "$(X86_ROOT_DISK)" || { echo 'Set X86_ROOT_DISK to a disposable raw root disk'; exit 1; }
 	@cargo xtask qemu-test --board x86_64_generic_vtx --guest-os none \
