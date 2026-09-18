@@ -30,6 +30,7 @@
 #define AOS_X86_LIFECYCLE_ACK       0x584303u
 #define AOS_X86_LIFECYCLE_TRACE_LABEL 0x584304u
 #define AOS_X86_LIFECYCLE_FAILURE_BADGE 1u
+#define AOS_X86_LIFECYCLE_BOOT_ACK  0x584305u
 /* Caller indices in the fixed userspace-proof topology. Badge high bits
  * identify the destination service, not the caller's service identity. */
 #define AOS_X86_LIFECYCLE_VMM_INDEX    6u

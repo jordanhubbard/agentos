@@ -52,6 +52,7 @@ void pd_main(seL4_CPtr endpoint, seL4_CPtr nameserver)
     expect(MSG_GUEST_BOOT, 0u, GUEST_ERR_BAD_STATE);
     expect(MSG_GUEST_CREATE, 0u, GUEST_ERR_BAD_STATE);
     expect(MSG_GUEST_RESUME, 0u, GUEST_OK);
+    expect(AOS_X86_LIFECYCLE_BOOT_ACK, AOS_X86_USERSPACE_PASS, GUEST_OK);
     phase(AOS_X86_LIFECYCLE_CHECKPOINT);
     expect(MSG_GUEST_SUSPEND, 0u, GUEST_OK);
     bool done = false;

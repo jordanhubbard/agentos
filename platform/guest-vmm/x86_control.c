@@ -8,6 +8,7 @@
 #ifdef AGENTOS_X86_USERSPACE_PROOF
 #include "contracts/x86_vtx_proof.h"
 extern bool aos_x86_lifecycle_ack;
+extern bool aos_x86_lifecycle_boot_ack;
 #endif
 
 enum aos_x86_control_result aos_x86_control_step(
@@ -49,6 +50,13 @@ enum aos_x86_control_result aos_x86_control_step(
                 *runtime->state == GUEST_STATE_DEAD &&
                 request.length == 4u && msg_u32(&request, 0u) == AOS_X86_USERSPACE_PASS) {
                 aos_x86_lifecycle_ack = true;
+                reply.opcode = GUEST_OK;
+            } else if (request.opcode == AOS_X86_LIFECYCLE_BOOT_ACK &&
+                badge == (((seL4_Word)SVC_ID_GUEST_VMM_PRIMARY << 48) |
+                          ((seL4_Word)AOS_X86_LIFECYCLE_PROBE_INDEX << 32)) &&
+                *runtime->state == GUEST_STATE_RUNNING &&
+                request.length == 4u && msg_u32(&request, 0u) == AOS_X86_USERSPACE_PASS) {
+                aos_x86_lifecycle_boot_ack = true;
                 reply.opcode = GUEST_OK;
             } else
 #endif

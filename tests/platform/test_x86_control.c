@@ -11,6 +11,7 @@
 #ifdef AGENTOS_X86_USERSPACE_PROOF
 #include "contracts/x86_vtx_proof.h"
 bool aos_x86_lifecycle_ack;
+bool aos_x86_lifecycle_boot_ack;
 #endif
 
 static seL4_Word mrs[120], incoming_badge;
@@ -99,6 +100,11 @@ int main(void)
     call(MSG_GUEST_SUSPEND, 0, GUEST_OK, GUEST_STATE_SUSPENDED);
     assert(suspends == old);
     call(MSG_GUEST_BOOT, 0, GUEST_ERR_BAD_STATE, GUEST_STATE_SUSPENDED);
+#ifdef AGENTOS_X86_USERSPACE_PROOF
+    call(AOS_X86_LIFECYCLE_BOOT_ACK, AOS_X86_USERSPACE_PASS,
+         GUEST_ERR_PROTOCOL_VIOLATION, GUEST_STATE_SUSPENDED);
+    assert(!aos_x86_lifecycle_boot_ack);
+#endif
     incoming_badge = SERIAL_VIRT_VMM_WAKE_BADGE | BLK_VIRT_VMM_WAKE_BADGE | NET_VIRT_VMM_WAKE_BADGE;
     old = replies;
     assert(aos_x86_control_step(&runtime, wake, &state) == AOS_X86_CONTROL_STOPPED);
@@ -108,6 +114,10 @@ int main(void)
     transition_ok = true;
     call(MSG_GUEST_RESUME, 0, GUEST_OK, GUEST_STATE_RUNNING);
     assert(resumes == 2);
+#ifdef AGENTOS_X86_USERSPACE_PROOF
+    call(AOS_X86_LIFECYCLE_BOOT_ACK, AOS_X86_USERSPACE_PASS, GUEST_OK, GUEST_STATE_RUNNING);
+    assert(aos_x86_lifecycle_boot_ack);
+#endif
     /* Malformed frames must not execute the otherwise valid DESTROY. */
     for (unsigned variant = 0; variant < 7; variant++) {
         request(MSG_GUEST_DESTROY, 0);

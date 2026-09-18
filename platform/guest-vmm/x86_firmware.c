@@ -195,6 +195,7 @@ static uint64_t timestamp(void)
 
 #ifdef AGENTOS_X86_USERSPACE_PROOF
 bool aos_x86_lifecycle_ack;
+bool aos_x86_lifecycle_boot_ack;
 /* Run only after the independent client has destroyed the guest and checked
  * terminal-state rejections. Never enter VMX or reuse a retired queue. */
 static bool terminal_teardown_proof(void)
@@ -447,6 +448,17 @@ void aos_x86_firmware_run(seL4_CPtr ep, aos_x86_vmenter_return_t returned)
 #ifdef AGENTOS_X86_USERSPACE_PROOF
     seL4_Send(AOS_X86_LIFECYCLE_PROBE_CAP,
         seL4_MessageInfo_new(AOS_X86_LIFECYCLE_READY, 0u, 0u, 0u));
+    /* Do not race guest completion against the client's remaining startup
+     * Calls. Sending CHECKPOINT while it is calling us would deadlock two
+     * synchronous senders. Only boot after it explicitly completes the
+     * suspend/resume sequence and commits to receiving the next phase. */
+    while (!aos_x86_lifecycle_boot_ack) {
+        if (aos_x86_control_step(&runtime, control_wake,
+                &serial_endpoint) == AOS_X86_CONTROL_ERROR)
+            stop(ep, AOS_X86_VTX_PROOF_FAIL, 0x435452u, 0u, lifecycle_state);
+        service_serial(&serial_endpoint);
+        if (!aos_x86_lifecycle_boot_ack) seL4_Yield();
+    }
 #endif
     for (;;) {
         enum aos_x86_control_result control;
