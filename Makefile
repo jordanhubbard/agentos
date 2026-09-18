@@ -827,6 +827,14 @@ test-host: test-guest-scheduling-host test-guest-gic-mapping-host test-guest-pag
 test-host: test-guest-execution-host
 test-host: test-x86-guest-objects-host
 test-host: test-x86-memory-rebuild-host
+test-host: test-x86-recreate-host
+.PHONY: test-x86-recreate-host
+test-x86-recreate-host:
+	@mkdir -p $(BUILD_TMP_DIR)
+	$(CC) -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined \
+		-Iplatform/include tests/platform/test_x86_recreate.c \
+		platform/guest-vmm/x86_recreate.c -o $(BUILD_TMP_DIR)/test_x86_recreate
+	$(BUILD_TMP_DIR)/test_x86_recreate
 test-host: test-blk-rebind-host
 test-host: test-net-rebind-host
 .PHONY: test-net-rebind-host

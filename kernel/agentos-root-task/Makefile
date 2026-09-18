@@ -346,6 +346,10 @@ $(BUILD_DIR)/x86_rebuild_memory.o: $(REPO_ROOT_MK)/platform/guest-vmm/x86_rebuil
 	@mkdir -p $(BUILD_DIR)
 	$(CC) -c $(X86_SERIAL_CFLAGS) -mgeneral-regs-only $< -o $@
 $(BUILD_DIR)/guest_vmm_primary.elf: $(BUILD_DIR)/x86_rebuild_memory.o
+$(BUILD_DIR)/x86_recreate.o: $(REPO_ROOT_MK)/platform/guest-vmm/x86_recreate.c Makefile
+	@mkdir -p $(BUILD_DIR)
+	$(CC) -c $(CFLAGS) -mgeneral-regs-only $< -o $@
+$(BUILD_DIR)/guest_vmm_primary.elf: $(BUILD_DIR)/x86_recreate.o
 $(BUILD_DIR)/x86_serial_rebind.o: $(REPO_ROOT_MK)/platform/serial-virt/rebind_client.c Makefile
 	@mkdir -p $(BUILD_DIR)
 	$(CC) -c $(X86_SERIAL_CFLAGS) -mgeneral-regs-only $< -o $@

@@ -35,6 +35,7 @@ extern const uint8_t _binary_x86_boot_profile_bin_start[], _binary_x86_boot_prof
 #include "contracts/guest_queue_caps.h"
 #include "x86_guest_objects.h"
 #include <platform/x86_memory_rebuild.h>
+#include <platform/x86_recreate.h>
 #include <platform/guest_ram.h>
 #include <platform/serial_rebind.h>
 #include <platform/blk_rebind.h>
@@ -92,9 +93,11 @@ static struct {
     uint64_t *started;
     uint32_t *timer_quantum;
     unsigned *exits;
+    net_virt_rebind_reply_t net;
+    blk_virt_rebind_reply_t block;
 } reset_context;
-static uint32_t reset_generation, reset_backend_attempts;
-static bool reset_failed, reset_cleanup_pending, reset_entry_pending;
+static aos_x86_recreate_t reset_transaction;
+static bool reset_entry_pending;
 static bool control_reset(void);
 static void reset_abort(void);
 #endif
@@ -235,70 +238,99 @@ static bool reset_detach(seL4_CPtr ep, uint32_t opcode, uint32_t version,
         msg_u32(&rep, 0u) == 0u && msg_u32(&rep, 4u) == version;
 }
 
-static void reset_abort(void)
+_Static_assert(AOS_GUEST_QUEUE_INPUT == AOS_X86_RECREATE_BACKENDS &&
+               AOS_GUEST_QUEUE_NET == AOS_X86_RECREATE_NET &&
+               AOS_GUEST_QUEUE_BLOCK == AOS_X86_RECREATE_BLK &&
+               AOS_GUEST_QUEUE_SERIAL == AOS_X86_RECREATE_SERIAL,
+               "reconstruction cleanup must cover every canonical queue");
+
+static void reset_retire(void *context)
 {
+    (void)context;
     serial_attached = false;
     aos_x86_virtio_retire();
-    if ((reset_backend_attempts & 1u) &&
-        !reset_detach(PD_CNODE_SLOT_NET_VIRT_EP, NET_VIRT_OP_DETACH,
-            NET_VIRT_CONTRACT_VERSION, sizeof(net_virt_attach_req_t),
-            sizeof(net_virt_attach_reply_t))) return;
-    reset_backend_attempts &= ~1u;
-    if ((reset_backend_attempts & 2u) &&
-        !reset_detach(PD_CNODE_SLOT_BLK_VIRT_EP, BLK_VIRT_OP_DETACH,
-            BLK_VIRT_CONTRACT_VERSION, sizeof(blk_virt_attach_req_t),
-            sizeof(blk_virt_attach_reply_t))) return;
-    reset_backend_attempts &= ~2u;
-    if ((reset_backend_attempts & 4u) &&
-        !reset_detach(PD_CNODE_SLOT_SERIAL_VIRT_EP, SERIAL_VIRT_OP_DETACH,
-            SERIAL_VIRT_CONTRACT_VERSION, sizeof(serial_virt_attach_req_t),
-            sizeof(serial_virt_attach_reply_t))) return;
-    reset_backend_attempts &= ~4u;
-    for (unsigned i = 0; i < AOS_GUEST_QUEUE_INPUT; i++) {
-        if (seL4_CNode_Revoke(AOS_GUEST_RAM_SELF_CNODE,
-                AOS_GUEST_QUEUE_POOL_BASE + i, AOS_GUEST_RAM_CNODE_BITS)
-                != seL4_NoError) return;
-    }
-    if (seL4_CNode_Revoke(AOS_GUEST_RAM_SELF_CNODE,
-            AOS_X86_GUEST_OBJECT_POOL_CAP, AOS_GUEST_RAM_CNODE_BITS)
-            != seL4_NoError || !aos_vmm_guest_ram_release(AOS_X86_FIRMWARE_RAM)) return;
-    reset_cleanup_pending = false;
 }
 
-static bool control_reset(void)
+static bool reset_backend_detach(void *context, unsigned backend)
 {
-    if (reset_failed || !reset_context.config || reset_generation == UINT32_MAX ||
-            !teardown_state.execution_released || !teardown_state.ram_released ||
-            !teardown_state.paging_released) return false;
-    const uint32_t generation = ++reset_generation;
-    net_virt_rebind_reply_t net;
-    blk_virt_rebind_reply_t block;
+    (void)context;
+    switch (backend) {
+    case AOS_X86_RECREATE_NET:
+        return reset_detach(PD_CNODE_SLOT_NET_VIRT_EP, NET_VIRT_OP_DETACH,
+            NET_VIRT_CONTRACT_VERSION, sizeof(net_virt_attach_req_t),
+            sizeof(net_virt_attach_reply_t));
+    case AOS_X86_RECREATE_BLK:
+        return reset_detach(PD_CNODE_SLOT_BLK_VIRT_EP, BLK_VIRT_OP_DETACH,
+            BLK_VIRT_CONTRACT_VERSION, sizeof(blk_virt_attach_req_t),
+            sizeof(blk_virt_attach_reply_t));
+    case AOS_X86_RECREATE_SERIAL:
+        return reset_detach(PD_CNODE_SLOT_SERIAL_VIRT_EP, SERIAL_VIRT_OP_DETACH,
+            SERIAL_VIRT_CONTRACT_VERSION, sizeof(serial_virt_attach_req_t),
+            sizeof(serial_virt_attach_reply_t));
+    default:
+        return false;
+    }
+}
+
+static bool reset_release(void *context, unsigned resource)
+{
+    (void)context;
+    if (resource < AOS_X86_RECREATE_BACKENDS)
+        return seL4_CNode_Revoke(AOS_GUEST_RAM_SELF_CNODE,
+            AOS_GUEST_QUEUE_POOL_BASE + resource, AOS_GUEST_RAM_CNODE_BITS) == seL4_NoError;
+    if (resource == AOS_X86_RECREATE_EXECUTION)
+        return seL4_CNode_Revoke(AOS_GUEST_RAM_SELF_CNODE,
+            AOS_X86_GUEST_OBJECT_POOL_CAP, AOS_GUEST_RAM_CNODE_BITS) == seL4_NoError;
+    return resource == AOS_X86_RECREATE_RAM &&
+        aos_vmm_guest_ram_release(AOS_X86_FIRMWARE_RAM);
+}
+
+static bool reset_step(void *context, aos_x86_recreate_step_t step, uint32_t generation)
+{
+    (void)context;
     seL4_Word failed_field = 0u;
-    if (aos_x86_guest_objects_rebuild() != seL4_NoError ||
-        !aos_x86_guest_memory_rebuild(_binary_x86_firmware_bin_start,
+    switch (step) {
+    case AOS_X86_RECREATE_OBJECTS:
+        return aos_x86_guest_objects_rebuild() == seL4_NoError;
+    case AOS_X86_RECREATE_MEMORY:
+        return aos_x86_guest_memory_rebuild(_binary_x86_firmware_bin_start,
             (size_t)(_binary_x86_firmware_bin_end - _binary_x86_firmware_bin_start),
-            AOS_X86_FIRMWARE_RAM)) goto failed;
-    *reset_context.config = reset_context.initial_config;
-    *reset_context.started = timestamp();
-    aos_x86_apic_init(reset_context.apic, *reset_context.started);
-    if (!aos_x86_ioapic_init(reset_context.ioapic, 1u) ||
-        !aos_x86_virtio_init(reset_context.ioapic, (void *)AOS_X86_FIRMWARE_RAM_VA,
-            AOS_X86_FIRMWARE_RAM)) goto failed;
-    reset_backend_attempts |= 1u;
-    if (!aos_net_virt_rebind_with_info(0u, generation, &net) ||
-        !aos_vmm_virtio_net_adopt(0u, (void *)AOS_NET_SHMEM_VA, &net) ||
-        !aos_vmm_virtio_net_host_ready()) goto failed;
-    reset_backend_attempts |= 2u;
-    if (!aos_blk_virt_rebind_with_info(0u, generation, &block) ||
-        !aos_vmm_virtio_blk_adopt(0u, (void *)AOS_BLK_SHMEM_VA, &block)) goto failed;
-    reset_backend_attempts |= 4u;
-    if (!aos_serial_virt_rebind(0u, generation) ||
-        !aos_vmm_virtio_console_recreate()) goto failed;
-    *reset_context.serial = (aos_serial_endpoint_t){
-        .channel = aos_serial_channel_at(AOS_SERIAL_SHMEM_VA)};
-    if (aos_x86_guest_objects_bind() != seL4_NoError ||
-        aos_x86_firmware_reset(reset_context.entry, &failed_field) != seL4_NoError)
-        goto failed;
+            AOS_X86_FIRMWARE_RAM);
+    case AOS_X86_RECREATE_NATIVE_STATE:
+        *reset_context.config = reset_context.initial_config;
+        *reset_context.started = timestamp();
+        aos_x86_apic_init(reset_context.apic, *reset_context.started);
+        return aos_x86_ioapic_init(reset_context.ioapic, 1u) &&
+            aos_x86_virtio_init(reset_context.ioapic, (void *)AOS_X86_FIRMWARE_RAM_VA,
+                AOS_X86_FIRMWARE_RAM);
+    case AOS_X86_RECREATE_NET_REBIND:
+        return aos_net_virt_rebind_with_info(0u, generation, &reset_context.net);
+    case AOS_X86_RECREATE_NET_ADOPT:
+        return aos_vmm_virtio_net_adopt(0u, (void *)AOS_NET_SHMEM_VA,
+            &reset_context.net) && aos_vmm_virtio_net_host_ready();
+    case AOS_X86_RECREATE_BLK_REBIND:
+        return aos_blk_virt_rebind_with_info(0u, generation, &reset_context.block);
+    case AOS_X86_RECREATE_BLK_ADOPT:
+        return aos_vmm_virtio_blk_adopt(0u, (void *)AOS_BLK_SHMEM_VA, &reset_context.block);
+    case AOS_X86_RECREATE_SERIAL_REBIND:
+        return aos_serial_virt_rebind(0u, generation);
+    case AOS_X86_RECREATE_CONSOLE:
+        if (!aos_vmm_virtio_console_recreate()) return false;
+        *reset_context.serial = (aos_serial_endpoint_t){
+            .channel = aos_serial_channel_at(AOS_SERIAL_SHMEM_VA)};
+        return true;
+    case AOS_X86_RECREATE_BIND:
+        return aos_x86_guest_objects_bind() == seL4_NoError;
+    case AOS_X86_RECREATE_CPU:
+        return aos_x86_firmware_reset(reset_context.entry, &failed_field) == seL4_NoError;
+    default:
+        return false;
+    }
+}
+
+static void reset_publish(void *context)
+{
+    (void)context;
     *reset_context.timer_quantum = 0u;
     *reset_context.exits = 0u;
     timer_exits = injections = eois = timer_shift = halt_exits = 0u;
@@ -308,14 +340,25 @@ static bool control_reset(void)
     last_qualification = 0u;
     have_wait_snapshot = serial_wake_received = false;
     teardown_state = (aos_guest_teardown_t){0};
-    reset_backend_attempts = 0u;
     serial_attached = true;
     reset_entry_pending = true;
-    return true;
-failed:
-    reset_failed = reset_cleanup_pending = true;
-    reset_abort();
-    return false;
+}
+
+static const aos_x86_recreate_ops_t reset_ops = {
+    .step = reset_step, .publish = reset_publish, .retire = reset_retire,
+    .detach = reset_backend_detach, .release = reset_release,
+};
+
+static void reset_abort(void)
+{
+    (void)aos_x86_recreate_cleanup(&reset_transaction, &reset_ops, NULL);
+}
+
+static bool control_reset(void)
+{
+    if (!reset_context.config || !teardown_state.execution_released ||
+            !teardown_state.ram_released || !teardown_state.paging_released) return false;
+    return aos_x86_recreate_run(&reset_transaction, &reset_ops, NULL);
 }
 #endif
 
@@ -997,7 +1040,7 @@ _Noreturn void aos_x86_firmware_run(seL4_CPtr ep, aos_x86_vmenter_entry_t entry)
         enum aos_x86_control_result control;
         do {
 #if defined(AGENTOS_X86_MANAGED_START) && !defined(AGENTOS_X86_USERSPACE_PROOF)
-            if (reset_cleanup_pending) reset_abort();
+            if (reset_transaction.cleanup_pending) reset_abort();
 #endif
             control = aos_x86_control_step(&runtime, control_wake, &serial_endpoint);
             if (control == AOS_X86_CONTROL_ERROR)
