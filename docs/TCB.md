@@ -178,9 +178,15 @@ pools. Its native RAM aliases span `0x80000000..0x100000000`, with ROM mapped
 at `0x100000000` in non-default RAM configurations. Address arithmetic uses
 64-bit constants so the end of that RAM window cannot wrap to zero. The
 `debian-amd64-2g` profile selects this bound; the Intel QEMU test board reserves
-4 GiB for the guest and native PDs. Target qualification of the larger
-reservation is pending; this does not establish multi-vCPU support or dynamic
-resource allocation. Root moves the
+4 GiB for the guest and native PDs. At `db6d53e`, the full Spark gate and Intel
+2 GiB Linux fixture passed, including canonical block/network I/O, lifecycle,
+terminal teardown and zeroed pool reuse. The
+[capacity receipt](evidence/2026-09-18-spark/x86-two-gib.json) retains the
+earlier PCI grant failure and correction: root now keeps every BootInfo device
+descriptor and advances sparse ranges with aligned child device untypeds.
+Skipped ranges remain unmapped, with capabilities retained only by root.
+Full Debian recreation at this capacity remains pending; this does not
+establish multi-vCPU support or dynamic resource allocation. Root moves the
 sole pool capability to the owning VMM after boot configuration, in the
 architecture-exclusive slot defined by `contracts/x86_guest_object_caps.h`.
 The VMM's own TCB is outside this pool: x86 VMEnter executes the VCPU bound
