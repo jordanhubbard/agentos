@@ -50,6 +50,7 @@ pub fn run(args: &FaultInjectArgs) -> Result<()> {
         None,
         false,
         false,
+        false,
     )?;
 
     let result = run_fault_inject_via_cc(&cc_sock, args.timeout_secs, &mut qemu);

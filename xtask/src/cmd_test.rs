@@ -78,6 +78,7 @@ const CC_INPUT_KEY_DOWN: u32 = 0x01;
 const CC_INPUT_RAW_BYTE_BASE: u32 = 0x100;
 const GUEST_DESTROY_NORMAL: u32 = 0;
 const VIBEOS_ARCH_AARCH64: u8 = 0x01;
+const VIBEOS_ARCH_X86_64: u8 = 0x02;
 const VIBEOS_DEV_SERIAL: u32 = 1 << 0;
 const VIBEOS_DEV_NET: u32 = 1 << 1;
 const VIBEOS_DEV_BLOCK: u32 = 1 << 2;
@@ -806,6 +807,7 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
                 "X86_LINUX_LOGIN={}",
                 u8::from(args.assert_x86_linux_login)
             ));
+            make_args.push(format!("X86_CC_PCI={}", u8::from(args.assert_x86_cc)));
             make_args.push(format!(
                 "X86_FIRMWARE_RESET={}",
                 u8::from(args.assert_firmware_reset)
@@ -1104,6 +1106,7 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
         args.x86_block_image.as_deref(),
         args.x86_block_write,
         args.assert_display || args.assert_guest_display,
+        args.assert_x86_cc,
     )?);
     if needs_host_net_stimulus
         && !args.assert_live
@@ -1346,6 +1349,7 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
                 let handle = create_guest_via_cc_wait(
                     &mut cc,
                     profile.control_type as u8,
+                    VIBEOS_ARCH_AARCH64,
                     64,
                     &profile.id,
                     timeout,
@@ -1399,7 +1403,17 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
                     &mut qemu,
                 )?;
             }
-            if args.assert_x86_linux_login {
+            if args.assert_x86_cc {
+                x86_cc_linux_probe(
+                    &cc_sock,
+                    &log_path,
+                    Duration::from_secs(args.timeout_secs),
+                    args.x86_ssh_key.as_deref().map(|key| {
+                        (key, ssh_port, args.x86_ssh_known_hosts.as_deref())
+                    }),
+                    &mut qemu,
+                )
+            } else if args.assert_x86_linux_login {
                 x86_linux_login_probe(
                     &cc_sock,
                     &log_path,
@@ -2025,6 +2039,7 @@ pub fn launch(args: &QemuLaunchArgs) -> anyhow::Result<()> {
         None,
         false,
         false,
+        std::env::var("X86_CC_PCI").as_deref() == Ok("1"),
     )?;
     let status = qemu.wait().context("failed to wait for QEMU")?;
     anyhow::ensure!(status.success(), "QEMU exited with {status}");
@@ -2438,6 +2453,7 @@ pub(crate) fn spawn_qemu_with_guest(
     x86_block_image: Option<&Path>,
     x86_block_write: bool,
     display: bool,
+    x86_cc: bool,
 ) -> anyhow::Result<std::process::Child> {
     anyhow::ensure!(
         !display || board == "qemu_virt_aarch64",
@@ -2691,7 +2707,7 @@ pub(crate) fn spawn_qemu_with_guest(
                 "filter-dump,id=agentos_net_capture,netdev=agentos_net,file={}",
                 capture.display()
             ));
-            if std::env::var("X86_CC_PCI").as_deref() == Ok("1") {
+            if x86_cc {
                 c.arg("-chardev")
                     .arg(format!(
                         "socket,id=cc_pd_char,path={},server=on,wait=off",
@@ -3154,9 +3170,6 @@ fn x86_linux_login_probe(
     timeout: Duration,
     ssh: Option<(&Path, u16, Option<&Path>)>,
 ) -> anyhow::Result<String> {
-    let retained_key = ssh
-        .and_then(|(_, port, known)| known.map(|path| x86_retained_host_key(path, port)))
-        .transpose()?;
     let deadline = Instant::now() + timeout;
     let mut stream = loop {
         match UnixStream::connect(socket) {
@@ -3166,6 +3179,18 @@ fn x86_linux_login_probe(
         }
     };
     stream.set_read_timeout(Some(Duration::from_millis(200)))?;
+    x86_linux_login_reader(|chunk| stream.read(chunk), log_path, deadline, ssh)
+}
+
+fn x86_linux_login_reader(
+    mut read: impl FnMut(&mut [u8]) -> std::io::Result<usize>,
+    log_path: &Path,
+    deadline: Instant,
+    ssh: Option<(&Path, u16, Option<&Path>)>,
+) -> anyhow::Result<String> {
+    let retained_key = ssh
+        .and_then(|(_, port, known)| known.map(|path| x86_retained_host_key(path, port)))
+        .transpose()?;
     let transcript_path = log_path.with_extension("console.log");
     let mut transcript_file = std::fs::File::create(&transcript_path)?;
     println!(
@@ -3181,7 +3206,7 @@ fn x86_linux_login_probe(
             log_path.display()
         );
         let mut chunk = [0u8; 4096];
-        match stream.read(&mut chunk) {
+        match read(&mut chunk) {
             Ok(0) => anyhow::bail!("Intel Linux console closed before login"),
             Ok(count) => {
                 transcript_file.write_all(&chunk[..count])?;
@@ -3231,6 +3256,64 @@ fn x86_linux_login_probe(
         "Intel Linux login timed out; see {}",
         transcript_path.display()
     )
+}
+
+fn x86_cc_console_bytes(cc: &mut CcClient, handle: u32) -> anyhow::Result<Vec<u8>> {
+    let reply = cc.call(MSG_CC_LOG_STREAM, handle, TRACE_PD_GUEST_VMM_PRIMARY, 0, &[])?;
+    let len = reply.mr[1] as usize;
+    anyhow::ensure!(reply.mr[0] == CC_OK && len <= reply.shmem.len(),
+        "invalid Intel CC console reply: {:?}", reply.mr);
+    Ok(reply.shmem[..len].to_vec())
+}
+
+fn x86_cc_linux_probe(
+    socket: &Path,
+    log_path: &Path,
+    timeout: Duration,
+    ssh: Option<(&Path, u16, Option<&Path>)>,
+    qemu: &mut Child,
+) -> anyhow::Result<String> {
+    let mut cc = connect_cc_client(socket, timeout.min(Duration::from_secs(30)), qemu)?;
+    let absent = cc.call(MSG_CC_GUEST_STATUS, 0, 0, 0, &[])?;
+    anyhow::ensure!(absent.mr[0] == CC_ERR_BAD_HANDLE, "CC image exposed an automatic guest");
+    // This exercises public admission against the image's boot-reserved RAM.
+    let handle = create_guest_via_cc_wait(&mut cc, 1, VIBEOS_ARCH_X86_64, 64,
+        "Intel Linux", timeout, qemu)?;
+    anyhow::ensure!(handle != 0, "CREATE returned reserved boot handle");
+    let proof = x86_linux_login_reader(|chunk| {
+        let bytes = x86_cc_console_bytes(&mut cc, handle).map_err(std::io::Error::other)?;
+        if bytes.is_empty() {
+            std::thread::sleep(Duration::from_millis(100));
+            return Err(std::io::ErrorKind::WouldBlock.into());
+        }
+        if bytes.len() > chunk.len() {
+            return Err(std::io::Error::other("CC console read buffer too small"));
+        }
+        chunk[..bytes.len()].copy_from_slice(&bytes);
+        Ok(bytes.len())
+    }, log_path, Instant::now() + timeout, ssh)?;
+
+    // Exercise real guest input after login readiness, without requiring a
+    // password or changing the guest. The terminal must echo these exact bytes.
+    let marker = b"agentos-cc-input-probe";
+    cc_send_raw_bytes(&mut cc, handle, marker)?;
+    let mut echoed = Vec::new();
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while Instant::now() < deadline && !echoed.windows(marker.len()).any(|w| w == marker) {
+        ensure_qemu_running(qemu, "checking Intel CC input echo")?;
+        echoed.extend(x86_cc_console_bytes(&mut cc, handle)?);
+        anyhow::ensure!(echoed.len() <= 1024 * 1024, "CC input transcript exceeds 1 MiB");
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    std::fs::write(log_path.with_extension("cc-input.log"), &echoed)?;
+    anyhow::ensure!(echoed.windows(marker.len()).any(|w| w == marker), "Intel CC input was not echoed by Linux");
+    let destroyed = cc.call(MSG_CC_DESTROY_GUEST, handle, GUEST_DESTROY_NORMAL, 0, &[])?;
+    anyhow::ensure!(destroyed.mr[0] == CC_OK, "Intel Linux destroy failed: {:?}", destroyed.mr);
+    for opcode in [MSG_CC_GUEST_STATUS, MSG_CC_SUSPEND_GUEST, MSG_CC_RESUME_GUEST] {
+        let reply = cc.call(opcode, handle, 0, 0, &[])?;
+        anyhow::ensure!(reply.mr[0] == CC_ERR_BAD_HANDLE, "stale Intel handle accepted by {opcode:#x}");
+    }
+    Ok(format!("{proof}; binary CC CREATE, Linux console input echo, DESTROY and stale handle rejection verified"))
 }
 
 fn x86_console_roundtrip(socket: &Path, timeout: Duration) -> anyhow::Result<()> {
@@ -4688,11 +4771,12 @@ fn verify_guest_console_input(
 fn try_create_guest_via_cc(
     cc: &mut CcClient,
     os_type: u8,
+    arch: u8,
     ram_mb: u32,
 ) -> anyhow::Result<Result<u32, (u32, u32)>> {
     let mut shmem = [0u8; 52];
     shmem[0] = os_type;
-    shmem[1] = VIBEOS_ARCH_AARCH64;
+    shmem[1] = arch;
     wr32(&mut shmem, 4, ram_mb);
     wr32(
         &mut shmem,
@@ -4713,6 +4797,7 @@ fn try_create_guest_via_cc(
 fn create_guest_via_cc_wait(
     cc: &mut CcClient,
     os_type: u8,
+    arch: u8,
     ram_mb: u32,
     label: &str,
     timeout: Duration,
@@ -4726,7 +4811,7 @@ fn create_guest_via_cc_wait(
         attempts += 1;
         ensure_qemu_running(qemu, &format!("creating {label} guest through CC-PD"))?;
 
-        match try_create_guest_via_cc(cc, os_type, ram_mb) {
+        match try_create_guest_via_cc(cc, os_type, arch, ram_mb) {
             Ok(Ok(handle)) => {
                 println!(
                     "[xtask:test] created {label} guest handle={handle} after {attempts} attempt(s)"
@@ -5435,6 +5520,7 @@ fn wait_for_dual_guest_consoles_via_cc(
     let lead_handle = create_guest_via_cc_wait(
         &mut boot_cc,
         lead.profile.control_type as u8,
+        VIBEOS_ARCH_AARCH64,
         lead.ram_mb,
         &lead.profile.id,
         create_timeout,
@@ -5445,6 +5531,7 @@ fn wait_for_dual_guest_consoles_via_cc(
     let deferred_handle = create_guest_via_cc_wait(
         &mut boot_cc,
         deferred.profile.control_type as u8,
+        VIBEOS_ARCH_AARCH64,
         deferred.ram_mb,
         &deferred.profile.id,
         create_timeout,
@@ -5464,7 +5551,7 @@ fn wait_for_dual_guest_consoles_via_cc(
      */
     for guest in [lead, deferred] {
         let result =
-            try_create_guest_via_cc(&mut boot_cc, guest.profile.control_type as u8, guest.ram_mb)?;
+            try_create_guest_via_cc(&mut boot_cc, guest.profile.control_type as u8, VIBEOS_ARCH_AARCH64, guest.ram_mb)?;
         anyhow::ensure!(
             matches!(result, Err((CC_ERR_RELAY_FAULT, _))),
             "duplicate profile {} creation was not rejected: {result:?}",

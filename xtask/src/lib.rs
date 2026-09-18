@@ -197,6 +197,9 @@ pub struct TestArgs {
     #[arg(long, requires = "assert_firmware_reset", requires = "x86_block_image",
           conflicts_with_all = ["assert_x86_userspace", "assert_guest_faults"])]
     pub assert_x86_linux_login: bool,
+    /// Create Linux through binary CC and qualify its console and destruction.
+    #[arg(long, requires = "assert_x86_linux_login")]
+    pub assert_x86_cc: bool,
     /// Acquire and verify an x86 UEFI boot profile instead of separate artifact arguments.
     #[arg(long, requires = "assert_x86_linux_login")]
     pub x86_boot_profile: Option<std::path::PathBuf>,
