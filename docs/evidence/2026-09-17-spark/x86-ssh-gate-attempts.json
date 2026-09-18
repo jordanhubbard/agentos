@@ -2,6 +2,26 @@
   "schema": 1,
   "attempts": [
     {
+      "attempt": 24,
+      "revision": "3007751",
+      "host": "madmax",
+      "status": "integrated-ssh-passed",
+      "disk": "/tmp/agentos-debian-amd64/boot-24.raw",
+      "provisioning": "Native make seed-guest-root; fresh raw disk copy, exact seed readback and full partition replacement verification",
+      "gate": "make gate-x86_64-debian-ssh; 600-second overall timeout; first SSH attempt passed",
+      "authentication": "Public-key only, agent disabled, strict Ed25519 host verification against the guest console report",
+      "host_key_fingerprint": "SHA256:JBfGsZoGFzQnvtjAiDPdhijrw8hZiXUdjc85lC3CSz4",
+      "result": "Exact x86_64 newline output; sudo -n sync succeeded; gate exit 0",
+      "gate_log_sha256": "ed5541997e6c068860009265269004a09b15830bfe337d89a56b1e6c662c8c5b",
+      "console_sha256": "e08a4297c598fa45df3c270cdd97824c5a1125cc596992503d51a10ceeb299bb",
+      "known_hosts_sha256": "7dfd8ba6397a8a6c3f5e3ce7752dd45773358197ce117aa34272cd28420e6f39",
+      "ssh_stdout_sha256": "aaf631698ae5160ceb04a97681a14887fdcab47cd6e0f163c87485b3b1340b62",
+      "root_task_elf_sha256": "ed474da37bae5b19f2a4a7ce7ab14508be3f73dd013902ad098888b09518ee37",
+      "local_evidence": "build/evidence/x86-native-ssh/agentos-qemu-LxAV1n.*",
+      "lifecycle": "First QEMU stopped after successful gate; boot25 starts a new QEMU with the same disk, login key and retained host key",
+      "limits": "Cold-boot gate pending; no throughput, latency, concurrent isolation, GUI or full release qualification"
+    },
+    {
       "attempt": 23,
       "revision": "121f53e",
       "host": "madmax",
