@@ -8,6 +8,12 @@ on:
   # security checks.
   pull_request: {}
 
+# A new revision supersedes the same PR's queued/running checks. Keep other
+# PRs and every main/master push independent, including stacked PR bases.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 env:
   CARGO_TERM_COLOR: always
   # runner.* contexts are not available at workflow scope. GitHub-hosted
