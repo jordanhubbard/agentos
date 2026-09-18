@@ -5,13 +5,14 @@
 #include <stddef.h>
 #include <stdint.h>
 
-/* ARM terminal teardown. The caller must stop guest execution and enter
+/* Terminal teardown. The caller must stop guest execution and enter
  * DESTROYING first. False requires another call while servicing device
  * completions; execution must never resume. Retains RAM until every backend
  * has relinquished its references. Acknowledged network detach retires the
  * virtualizer's queue pointers before execution revocation. Block detach
- * additionally requires valid, empty request and response queues. Releases paging
- * after RAM; service
+ * additionally requires valid, empty request and response queues. ARM releases
+ * paging after RAM; x86 EPT is part of its VCPU object pool, and its RAM release
+ * includes read-only firmware ROM. Service
  * grants and the VMM's private ASID namespace remain management resources.
  * Reconstruction must explicitly reset this state before admitting a guest. */
 typedef struct aos_guest_teardown {

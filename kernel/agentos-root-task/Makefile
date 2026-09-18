@@ -305,6 +305,13 @@ $(BUILD_DIR)/x86_virtio_gpa.o: $(REPO_ROOT_MK)/libvmm/src/virtio/gpa.c
 	@mkdir -p $(BUILD_DIR)
 	$(CC) -c $(CFLAGS) -I$(REPO_ROOT_MK)/libvmm/include $< -o $@
 $(BUILD_DIR)/guest_vmm_primary.elf: $(BUILD_DIR)/x86_virtio.o $(BUILD_DIR)/x86_virtio_mmio.o $(BUILD_DIR)/x86_virtio_gpa.o
+$(BUILD_DIR)/x86_teardown.o: $(REPO_ROOT_MK)/platform/guest-vmm/teardown.c
+	@mkdir -p $(BUILD_DIR)
+	$(CC) -c $(X86_SERIAL_CFLAGS) $< -o $@
+$(BUILD_DIR)/x86_release_memory.o: $(REPO_ROOT_MK)/platform/guest-vmm/x86_release_memory.c
+	@mkdir -p $(BUILD_DIR)
+	$(CC) -c $(X86_SERIAL_CFLAGS) $< -o $@
+$(BUILD_DIR)/guest_vmm_primary.elf: $(BUILD_DIR)/x86_teardown.o $(BUILD_DIR)/x86_release_memory.o
 $(BUILD_DIR)/guest_vmm_primary.elf: LDFLAGS += --defsym=printf_=printf
 # Keep the MMIO console path; unused PCI entry points are separate sections.
 X86_SERIAL_CFLAGS = $(CFLAGS) -Wno-sign-compare \

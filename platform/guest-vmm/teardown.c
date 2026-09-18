@@ -89,7 +89,9 @@ bool aos_guest_teardown_step(aos_guest_teardown_t *state, size_t ram_size)
         state->ram_released = true;
     }
     if (!state->paging_released) {
+#ifndef AGENTOS_X86_FIRMWARE_RESET
         if (!aos_vmm_guest_paging_release()) return false;
+#endif
         state->paging_released = true;
     }
     return true;

@@ -318,7 +318,7 @@ _Static_assert(AOS_GUEST_QUEUE_POOL_BASE > AOS_GUEST_ASID_POOL_CAP &&
                AOS_GUEST_QUEUE_POOL_BASE + AOS_GUEST_QUEUE_POOL_COUNT <= AOS_GUEST_QUEUE_TEST_FRAME &&
                AOS_GUEST_QUEUE_TEST_COPY < AOS_GUEST_RAM_POOL_BASE,
                "guest queue pool and test slots must not overlap other grants");
-#if defined(__aarch64__)
+#if defined(__aarch64__) || (defined(__x86_64__) && defined(AGENTOS_X86_FIRMWARE_RESET))
 static seL4_CPtr g_guest_queue_pools[2][AOS_GUEST_QUEUE_POOL_COUNT];
 
 static seL4_Error allocate_private_guest_frame(seL4_CPtr *pool, seL4_CPtr *frame)
@@ -327,7 +327,7 @@ static seL4_Error allocate_private_guest_frame(seL4_CPtr *pool, seL4_CPtr *frame
     if (err != seL4_NoError) return err;
     *frame = ut_alloc_slot();
     if (*frame == seL4_CapNull) return seL4_NotEnoughMemory;
-    return seL4_Untyped_Retype(*pool, seL4_ARM_LargePageObject, 0u,
+    return seL4_Untyped_Retype(*pool, seL4_ARCH_LargePageObject, 0u,
         seL4_CapInitThreadCNode, 0u, 0u, *frame, 1u);
 }
 #endif
@@ -335,7 +335,7 @@ static seL4_Error allocate_private_guest_frame(seL4_CPtr *pool, seL4_CPtr *frame
 static seL4_Error allocate_guest_queue_frame(unsigned kind, unsigned client,
                                             seL4_CPtr *frame)
 {
-#if defined(__aarch64__)
+#if defined(__aarch64__) || (defined(__x86_64__) && defined(AGENTOS_X86_FIRMWARE_RESET))
     _Static_assert(seL4_ARCH_LargePageBits == AOS_GUEST_QUEUE_POOL_BITS,
                    "one large queue frame per private pool");
     if (kind >= AOS_GUEST_QUEUE_POOL_COUNT) return seL4_InvalidArgument;
@@ -1797,6 +1797,15 @@ static seL4_Error setup_x86_firmware(const pd_desc_t *pd, uint32_t pd_index,
         if (err != seL4_NoError) return err;
     }
     dbg_puts("[rt] x86 private RAM and ROM pools delegated to owning VMM\n");
+    for (unsigned kind = 0; kind < AOS_GUEST_QUEUE_INPUT; kind++) {
+        seL4_CPtr *pool = &g_guest_queue_pools[0][kind];
+        if (*pool == seL4_CapNull) return seL4_InvalidCapability;
+        err = seL4_CNode_Move(pd_cnode, AOS_GUEST_QUEUE_POOL_BASE + kind,
+            pd->cnode_size_bits, seL4_CapInitThreadCNode, *pool, 64u);
+        if (err != seL4_NoError) return err;
+        *pool = seL4_CapNull;
+    }
+    dbg_puts("[rt] x86 private device queue pools delegated to owning VMM\n");
     err = seL4_X86_VCPU_SetTCB(objects[0], vmm_tcb);
     if (err != seL4_NoError) return err;
     err = seL4_TCB_SetEPTRoot(vmm_tcb, objects[1]);
@@ -4006,13 +4015,14 @@ void root_task_main(const seL4_BootInfo *bi)
 #endif
 #ifdef AGENTOS_X86_FIRMWARE_RESET
 #ifdef AGENTOS_X86_USERSPACE_PROOF
-            status == AOS_X86_VTX_USERSPACE_PASS && reason == 10u &&
+            status == AOS_X86_VTX_USERSPACE_TEARDOWN_PASS && reason == 10u &&
             instruction_len == 3u && rip < 0x0000800000000000ull) {
             dbg_puts("[rt] x86 Linux ring3 initramfs syscall proof verified\n");
             dbg_puts("[rt] x86 canonical host network attachment verified\n");
             dbg_puts("[rt] x86 host block queue read verified\n");
             dbg_puts("[rt] x86 Linux guest block read verified\n");
             dbg_puts("[rt] x86 Linux guest network packet roundtrip verified\n");
+            dbg_puts("[rt] x86 terminal teardown and zeroed pool reuse verified\n");
 #else
             status == AOS_X86_VTX_FIRMWARE_CONFIG &&
             reason == 30u && rip <= 0xffffffffu &&

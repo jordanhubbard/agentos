@@ -1,7 +1,7 @@
 #ifndef AGENTOS_GUEST_QUEUE_CAPS_H
 #define AGENTOS_GUEST_QUEUE_CAPS_H
 
-/* ARM VMM-private non-device untyped pools, one existing 2 MiB client frame
+/* VMM-private non-device untyped pools, one existing 2 MiB client frame
  * each. Root moves the only pool cap after mapping the frame into its owning
  * VMM and service. Revocation removes all descendant frame capabilities and
  * mappings, including root's originals. No driver, native/operator, frontend

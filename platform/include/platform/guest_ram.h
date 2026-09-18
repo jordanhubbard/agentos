@@ -37,11 +37,12 @@ void *aos_gpa_to_hva_configured(uint64_t gpa, size_t len);
 /* Configure the window and install it as libvmm's process-wide GPA hook. */
 void aos_vmm_guest_ram_bind(uint64_t gpa_base, uintptr_t hva_base, size_t size);
 
-/* AArch64 target authority from guest_ram_caps.h. Caller must first stop
+/* Target authority from guest_ram_caps.h. Caller must first stop
  * every vCPU and drain every device reference to guest RAM. Release is
  * retryable after partial failure. Rebuild requires a successful release;
  * on failure release again before retrying. No execution state is changed. */
 bool aos_vmm_guest_ram_release(size_t size);
+/* Reconstruction is currently ARM-only. x86 release also revokes ROM. */
 bool aos_vmm_guest_ram_rebuild(uint64_t gpa_base, uintptr_t hva_base, size_t size);
 
 #ifdef AGENTOS_GUEST_RAM_RECYCLE_TEST

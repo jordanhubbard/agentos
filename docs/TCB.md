@@ -47,6 +47,20 @@ Spark gate passed at `c36b4a8`; [the receipt](evidence/2026-09-18-spark/x86-priv
 records the allocation change's boot/I/O scope. Runtime revocation, device
 quiescence and lifecycle control remain outstanding.
 
+The x86 firmware composition now also delegates private network, block and
+serial queue pools. Its teardown adapter uses the shared device drain/detach
+sequence, then revokes queue pools, the VCPU/EPT pool, RAM and ROM. GPA
+translation is disabled before memory revocation. Every failed stage retains
+terminal state and can be retried without resuming execution or accessing
+retired device mappings. Host tests protect retired memory and exercise all
+revocation failures and retry paths. `make gate-x86_64-teardown` extends the
+minimal Linux userspace fixture: after its ring-3 checkpoint, it never enters
+VMX again, tears down, rejects stale VCPU/EPT caps, and retypes every queue,
+RAM and ROM pool twice while checking the entire fresh frame is zero. The
+fixture reports a distinct success status and the harness requires the new
+teardown marker. Target qualification is pending. Public x86 lifecycle IPC,
+suspend/resume and guest recreation are not implemented by this probe.
+
 Each AArch64 guest's TCB, VCPU, IPC frame and MCS scheduling context now come
 from a dedicated 64 KiB non-device child untyped. After boot configuration,
 root moves the pool's sole capability to that guest's VMM, alongside the
