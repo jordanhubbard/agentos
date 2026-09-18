@@ -697,6 +697,9 @@ gate-x86_64-userspace:
 		--assert-vmx-exit --assert-firmware-reset --assert-x86-userspace \
 		--timeout-secs $(QEMU_TEST_TIMEOUT)
 
+.PHONY: gate-x86_64-teardown
+gate-x86_64-teardown: gate-x86_64-userspace
+
 .PHONY: gate-x86_64-linux-login
 .PHONY: debian-x86-console-hook
 .PHONY: debian-aarch64-console-hook
@@ -802,6 +805,17 @@ test-host: test-x86-cpu-host
 test-host: test-guest-scheduling-host test-guest-gic-mapping-host test-guest-paging-host test-net-rx-accounting-host
 test-host: test-guest-execution-host
 test-host: test-x86-guest-objects-host
+test-host: test-x86-teardown-host
+
+.PHONY: test-x86-teardown-host
+test-x86-teardown-host:
+	@mkdir -p $(BUILD_TMP_DIR)
+	$(CC) -std=gnu11 -Wall -Wextra -Werror -DAGENTOS_X86_FIRMWARE_RESET \
+		-Itests/platform/teardown-stubs -Iplatform/include -Ilibvmm/include \
+		-iquote kernel/agentos-root-task/include tests/platform/test_x86_teardown.c \
+		platform/guest-vmm/teardown.c platform/guest-vmm/x86_release_memory.c \
+		-o $(BUILD_TMP_DIR)/test_x86_teardown
+	$(BUILD_TMP_DIR)/test_x86_teardown
 
 .PHONY: test-x86-guest-objects-host
 test-x86-guest-objects-host:

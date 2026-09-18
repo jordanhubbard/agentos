@@ -26,6 +26,10 @@ extern const uint8_t _binary_x86_boot_profile_bin_start[], _binary_x86_boot_prof
 #include <contracts/net_virt_contract.h>
 #include <platform/vmm_virtio_net.h>
 #include <platform/net_host_layout.h>
+#include <platform/guest_teardown.h>
+#include <libvmm/virtio/gpa.h>
+#include "contracts/x86_guest_memory_caps.h"
+#include "contracts/guest_queue_caps.h"
 
 #define VCPU AOS_GUEST_VCPU_CAP_BASE
 const char vmm_pd_name[] = "guest_vmm_x86";
@@ -61,6 +65,7 @@ static seL4_Word halt_chain[AOS_X86_FIRMWARE_CHAIN_WORDS];
 static seL4_Word boot_reads[3], last_qualification;
 static bool have_wait_snapshot;
 static bool serial_wake_received;
+static bool serial_attached;
 static seL4_CPtr block_proof_ep;
 static uint8_t block_boot_data[AOS_BLK_TRANSFER_SIZE];
 
@@ -76,10 +81,19 @@ static bool serial_input(const uint8_t *bytes, uint32_t length, void *context)
 }
 static void service_serial(aos_serial_endpoint_t *endpoint)
 {
+    if (!serial_attached) return;
     aos_vmm_virtio_console_after_fault();
     const aos_serial_endpoint_ops_t ops = {.output=serial_output, .input=serial_input};
     if (aos_serial_endpoint_step(endpoint, &ops, true))
         seL4_Signal(PD_CNODE_SLOT_SERIAL_VIRT_NOTIFY);
+}
+
+bool aos_vmm_serial_detach(void)
+{
+    if (!serial_attached) return true;
+    if (!serial_virt_client_detach(0u)) return false;
+    serial_attached = false;
+    return true;
 }
 #ifdef AGENTOS_X86_BOOT_KERNEL
 extern const uint8_t _binary_x86_boot_kernel_bin_start[], _binary_x86_boot_kernel_bin_end[];
@@ -153,6 +167,66 @@ static uint64_t timestamp(void)
     __asm__ volatile("lfence; rdtsc" : "=a"(lo), "=d"(hi) :: "memory");
     return ((uint64_t)hi << 32) | lo;
 }
+
+#ifdef AGENTOS_X86_USERSPACE_PROOF
+/* The ring-3 checkpoint has already exited VMX. Never enter the guest again.
+ * Driver work may need further scheduling, but no queue is touched after its
+ * service acknowledges detach. A failed step leaves the guest stopped. */
+static bool terminal_teardown_proof(aos_serial_endpoint_t *endpoint, uint64_t hz)
+{
+    if (!hz || hz > UINT64_MAX / 30u) return false;
+    uint64_t started = timestamp();
+    aos_guest_teardown_t state = {0};
+    while (!aos_guest_teardown_step(&state, AOS_X86_FIRMWARE_RAM)) {
+        if (!state.serial_detached) service_serial(endpoint);
+        if (timestamp() - started > hz * 30u) return false;
+        seL4_Yield();
+    }
+    if (virtio_gpa_to_hva(0u, 1u) != NULL) return false;
+    const seL4_CPtr stale[] = {VCPU, AOS_GUEST_RAM_GUEST_VSPACE};
+    for (unsigned i = 0; i < 2u; i++) {
+        if (seL4_CNode_Copy(AOS_GUEST_RAM_SELF_CNODE, AOS_GUEST_QUEUE_TEST_COPY,
+                AOS_GUEST_RAM_CNODE_BITS, AOS_GUEST_RAM_SELF_CNODE,
+                stale[i], AOS_GUEST_RAM_CNODE_BITS, seL4_AllRights)
+                != seL4_FailedLookup) return false;
+    }
+    /* Successful retyping proves that no original frame/alias survives below
+     * the pool. Exercise every pool, including ROM and device queues, twice.
+     * These are stopped scratch frames, never a recreated executing guest. */
+    for (unsigned pass = 0; pass < 2u; pass++) {
+        for (unsigned group = 0; group < 3u; group++) {
+            unsigned count = group == 0u ? AOS_GUEST_QUEUE_INPUT :
+                group == 1u ? AOS_X86_FIRMWARE_RAM >> AOS_GUEST_RAM_FRAME_BITS :
+                AOS_X86_GUEST_ROM_FRAMES;
+            seL4_CPtr base = group == 0u ? AOS_GUEST_QUEUE_POOL_BASE :
+                group == 1u ? AOS_GUEST_RAM_POOL_BASE : AOS_X86_GUEST_ROM_POOL_BASE;
+            for (unsigned i = 0; i < count; i++) {
+                seL4_CPtr pool = base + i;
+                if (seL4_Untyped_Retype(pool, seL4_X86_LargePageObject, 0u,
+                        AOS_GUEST_RAM_SELF_CNODE, 0u, 0u,
+                        AOS_GUEST_QUEUE_TEST_FRAME, 1u) != seL4_NoError) return false;
+                if (seL4_X86_Page_Map(AOS_GUEST_QUEUE_TEST_FRAME,
+                        AOS_GUEST_RAM_VMM_VSPACE, AOS_X86_FIRMWARE_RAM_VA,
+                        seL4_AllRights, seL4_X86_Default_VMAttributes)
+                        != seL4_NoError) return false;
+                volatile uint64_t *frame = (volatile uint64_t *)AOS_X86_FIRMWARE_RAM_VA;
+                size_t words = ((size_t)1u << AOS_GUEST_RAM_FRAME_BITS) / sizeof(*frame);
+                for (size_t n = 0; n < words; n++) {
+                    if (frame[n] != 0u) return false;
+                    frame[n] = UINT64_C(0xcafe123400000001) ^ n ^ pass;
+                }
+                if (seL4_CNode_Revoke(AOS_GUEST_RAM_SELF_CNODE, pool,
+                        AOS_GUEST_RAM_CNODE_BITS) != seL4_NoError) return false;
+                if (seL4_CNode_Copy(AOS_GUEST_RAM_SELF_CNODE, AOS_GUEST_QUEUE_TEST_COPY,
+                        AOS_GUEST_RAM_CNODE_BITS, AOS_GUEST_RAM_SELF_CNODE,
+                        AOS_GUEST_QUEUE_TEST_FRAME, AOS_GUEST_RAM_CNODE_BITS,
+                        seL4_AllRights) != seL4_FailedLookup) return false;
+            }
+        }
+    }
+    return true;
+}
+#endif
 
 static seL4_VCPUContext save_registers(const aos_x86_vmenter_return_t *returned)
 {
@@ -240,6 +314,7 @@ void aos_x86_firmware_run(seL4_CPtr ep, aos_x86_vmenter_return_t returned)
 #endif
     if (!serial_virt_client_attach(0u, SERIAL_VIRT_ROLE_VMM))
         stop(ep, AOS_X86_VTX_PROOF_FAIL, 0x534552u, 0, 2u);
+    serial_attached = true;
     /* Root gives this VMM only client zero's page. Check the newly retyped
      * queue state before any producer can publish console bytes. */
     aos_serial_channel_t serial = aos_serial_channel_at(AOS_SERIAL_SHMEM_VA);
@@ -439,7 +514,9 @@ void aos_x86_firmware_run(seL4_CPtr ep, aos_x86_vmenter_return_t returned)
                     (read_field(ep,EFER) & LMA) &&
                     (read_field(ep,CR0) & (PE|PG)) == (PE|PG) &&
                     boot_reads[0] && boot_reads[1];
-                stop(ep,passed ? AOS_X86_VTX_USERSPACE_PASS : AOS_X86_VTX_PROOF_FAIL,
+                if (passed && !terminal_teardown_proof(&serial_endpoint, hz))
+                    stop(ep, AOS_X86_VTX_PROOF_FAIL, 0x544452u, rip, 0u);
+                stop(ep,passed ? AOS_X86_VTX_USERSPACE_TEARDOWN_PASS : AOS_X86_VTX_PROOF_FAIL,
                      reason,rip,passed ? (cs & 3u) :
                          ((regs.edx == AOS_X86_USERSPACE_PASS ? 0x100u : regs.edx) |
                           ((uint64_t)aos_vmm_virtio_net_diagnostic() << 32)));

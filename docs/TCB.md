@@ -28,8 +28,8 @@ The VMM's own TCB is outside this pool: x86 VMEnter executes the VCPU bound
 to that thread, unlike ARM's separate guest TCB. Revocation must occur
 outside VMEnter after guest I/O is quiescent. Guest RAM, ROM, their VMM
 aliases and the ASID namespace remain separate resources. This establishes
-allocation authority only; x86 runtime suspend/destroy, full reclamation
-and reconstruction are not yet implemented. Host tests check the allocation
+allocation authority only; the terminal teardown proof is described below.
+Public lifecycle control and reconstruction remain pending. Host tests check the allocation
 source, destination slots and every retype failure. Intel Debian VMX/SSH and
 the full Spark gate passed at `115e1ba`; [the receipt](evidence/2026-09-18-spark/x86-private-objects.json)
 records allocation/boot/I/O qualification, not runtime revocation.
@@ -44,8 +44,24 @@ the common guest RAM layout; the two ROM pools occupy separate slots 496/497.
 all supported reservation sizes, overflow/out-of-range indices, disjoint pool
 slots and frame retype failure propagation. Intel Debian VMX/SSH and the full
 Spark gate passed at `c36b4a8`; [the receipt](evidence/2026-09-18-spark/x86-private-memory.json)
-records the allocation change's boot/I/O scope. Runtime revocation, device
-quiescence and lifecycle control remain outstanding.
+records the allocation change's boot/I/O scope. The terminal proof below
+separately covers device quiescence and runtime revocation.
+
+The x86 firmware composition now also delegates private network, block and
+serial queue pools. Its teardown adapter uses the shared device drain/detach
+sequence, then revokes queue pools, the VCPU/EPT pool, RAM and ROM. GPA
+translation is disabled before memory revocation. Every failed stage retains
+terminal state and can be retried without resuming execution or accessing
+retired device mappings. Host tests protect retired memory and exercise all
+revocation failures and retry paths. `make gate-x86_64-teardown` extends the
+minimal Linux userspace fixture: after its ring-3 checkpoint, it never enters
+VMX again, tears down, rejects stale VCPU/EPT caps, and retypes every queue,
+RAM and ROM pool twice while checking the entire fresh frame is zero. The
+fixture reports a distinct success status and the harness requires the new
+teardown marker. That Intel target and the full Spark gate passed at `9b73e34`;
+[the receipt](evidence/2026-09-18-spark/x86-terminal-teardown.json) records all
+133 frame pools and the stopped-scratch-frame scope. Public x86 lifecycle IPC,
+suspend/resume and guest recreation are not implemented by this probe.
 
 Each AArch64 guest's TCB, VCPU, IPC frame and MCS scheduling context now come
 from a dedicated 64 KiB non-device child untyped. After boot configuration,

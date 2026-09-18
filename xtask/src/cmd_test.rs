@@ -1428,6 +1428,7 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
                                 "[rt] x86 host block queue read verified",
                                 "[rt] x86 Linux guest block read verified",
                                 "[rt] x86 Linux guest network packet roundtrip verified",
+                                "[rt] x86 terminal teardown and zeroed pool reuse verified",
                             ]
                         } else {
                             &["[rt] x86 host block queue read verified"]
