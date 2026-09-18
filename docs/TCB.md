@@ -68,6 +68,14 @@ reattach without a future generation/reset contract, so old driver RX data
 cannot be silently reused for a new guest. The driver vNIC, shared-page
 capabilities and other service attachments remain management resources;
 network detach alone does not prove their reclamation or guest recreation.
+Block contract v5 likewise retires service queue pointers only after both
+request and response queues are valid and empty. The virtualizer serializes
+detach with its synchronous driver transfers, so an acknowledgment cannot
+race an outstanding driver copy. The VMM drains accepted requests before
+asking for detach; BUSY or malformed replies keep teardown retryable and
+prevent capability revocation. Detach does not issue a flush or establish
+durability. Media ownership, queue-frame capabilities and the per-client RAM
+fallback disk remain allocated; retired clients cannot silently reattach.
 Queued guest faults are not serviced during teardown. Initialization rejects
 lifecycle re-entry while media staging still holds guest RAM pointers.
 Service grants remain owned by the VMM; recreation is not yet implemented.

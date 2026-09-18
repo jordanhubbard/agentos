@@ -50,5 +50,8 @@ bool aos_vmm_virtio_blk_guest_io_completed(void);
  * Success disables further response callbacks; initialization is required
  * before this backend can admit requests again. */
 bool aos_vmm_virtio_blk_quiesce(void);
+/* Drain first, then await the virtualizer's terminal queue detach. False is
+ * retryable while RAM/queue pages remain mapped; success is idempotent. */
+bool aos_vmm_virtio_blk_detach(void);
 
 #endif /* AOS_PLATFORM_VMM_VIRTIO_BLK_H */

@@ -15,6 +15,10 @@ int aos_blk_queue_req_valid(const aos_blk_req_queue_t *q, uint32_t capacity);
 int aos_blk_queue_resp_valid(const aos_blk_resp_queue_t *q, uint32_t capacity);
 
 void aos_blk_virt_reset(aos_blk_virt_t *v);
+/* Serialized with pumping and a stopped producer. Refuses invalid/nonempty
+ * request or response queues, without changing them. Success forgets all
+ * client and backend references; a detached pump is idempotently empty. */
+bool aos_blk_virt_detach(aos_blk_virt_t *v);
 
 /*
  * Client-side helpers, header-only so a queue client (the VMM's emulated

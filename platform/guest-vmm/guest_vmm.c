@@ -1041,6 +1041,7 @@ static bool guest_vmm_teardown(void)
     if (done) microkit_dbg_puts("guest teardown: execution and RAM revoked\n");
     if (done) microkit_dbg_puts("guest teardown: private paging revoked\n");
     if (done) microkit_dbg_puts("guest teardown: network queues detached\n");
+    if (done) microkit_dbg_puts("guest teardown: block queues detached\n");
     return done;
 }
 

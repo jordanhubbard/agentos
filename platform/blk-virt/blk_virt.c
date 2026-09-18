@@ -53,6 +53,7 @@ uintptr_t log_drain_rings_vaddr;
 
 typedef struct {
     uint8_t               attached;
+    uint8_t               retired;
     uint8_t               hw;           /* requests go to virtio_blk (else RAM) */
     uint8_t               pumped_marked;
     uint8_t               read_marked;
@@ -387,7 +388,7 @@ static void handle_attach(uint64_t badge, const sel4_msg_t *req, sel4_msg_t *rep
                client_id >= AOS_BLK_MAX_CLIENTS ||
                media_id >= AOS_HOST_BLK_MEDIA_COUNT || vmm_notify == 0u) {
         status = BLK_VIRT_ERR_BAD_CLIENT;
-    } else if (g_clients[client_id].attached) {
+    } else if (g_clients[client_id].attached || g_clients[client_id].retired) {
         status = BLK_VIRT_ERR_BUSY;
     }
 
@@ -467,6 +468,34 @@ static void handle_attach(uint64_t badge, const sel4_msg_t *req, sel4_msg_t *rep
     rep->opcode = SEL4_ERR_OK;
 }
 
+static void handle_detach(uint64_t badge, const sel4_msg_t *req, sel4_msg_t *rep)
+{
+    uint32_t client = rd32(req->data, 4u), slot = rd32(req->data, 8u);
+    uint32_t media = rd32(req->data, 12u), status = BLK_VIRT_OK;
+    if (req->length != sizeof(blk_virt_attach_req_t) ||
+        rd32(req->data, 0u) != BLK_VIRT_CONTRACT_VERSION) {
+        status = BLK_VIRT_ERR_VERSION;
+    } else if (!virt_media_authorized(badge, client, slot, media) ||
+               client >= AOS_BLK_MAX_CLIENTS ||
+               media >= AOS_HOST_BLK_MEDIA_COUNT || !vmm_notify_for_slot(slot)) {
+        status = BLK_VIRT_ERR_BAD_CLIENT;
+    } else {
+        bv_client_t *c = &g_clients[client];
+        /* Driver transfers are synchronous; serialized control cannot run
+         * inside one. Both queues must be empty before discarding pointers. */
+        if (c->attached && !aos_blk_virt_detach(&c->virt)) {
+            status = BLK_VIRT_ERR_BUSY;
+        } else {
+            *c = (bv_client_t){ .retired = 1u };
+            bv_log("DETACH client=%u queues released", client);
+        }
+    }
+    wr32(rep->data, 0u, status);
+    wr32(rep->data, 4u, BLK_VIRT_CONTRACT_VERSION);
+    rep->length = sizeof(blk_virt_attach_reply_t);
+    rep->opcode = SEL4_ERR_OK;
+}
+
 /* ── main loop ──────────────────────────────────────────────────────────── */
 
 static void blk_virt_run(seL4_CPtr ep)
@@ -487,9 +516,10 @@ static void blk_virt_run(seL4_CPtr ep)
         seL4_Word label = seL4_MessageInfo_get_label(info);
         (void)badge;
 
-        if (label == BLK_VIRT_OP_ATTACH) {
+        if (label == BLK_VIRT_OP_ATTACH || label == BLK_VIRT_OP_DETACH) {
             _sel4_mrs_to_msg(&req);
-            handle_attach(badge, &req, &rep);
+            if (label == BLK_VIRT_OP_ATTACH) handle_attach(badge, &req, &rep);
+            else handle_detach(badge, &req, &rep);
             _sel4_msg_to_mrs(&rep);
             seL4_MessageInfo_t reply = seL4_MessageInfo_new(
                 (seL4_Word)rep.opcode, 0u, 0u, (seL4_Word)_SEL4_MR_COUNT);
@@ -515,6 +545,6 @@ void pd_main(seL4_CPtr my_ep, seL4_CPtr ns_ep)
 {
     agentos_log_boot("blk_virt");
     register_with_nameserver(ns_ep);
-    bv_log("READY: contract v4, persistent wakeups, capability-bound clients/media, no device caps");
+    bv_log("READY: contract v5, persistent wakeups, capability-bound clients/media, no device caps");
     blk_virt_run(my_ep);
 }

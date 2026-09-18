@@ -49,7 +49,7 @@
 /* Version 4 uses persistent queue notifications in both directions.
  * Version 3 binds client/media assignment to virtualizer_authority.h badges;
  * version 2 introduced separately mapped large-page client strides. */
-#define BLK_VIRT_CONTRACT_VERSION       4u
+#define BLK_VIRT_CONTRACT_VERSION       5u
 
 /* Persistent notification caps; only queue ownership conveys data authority.
  * Client bits coalesce at the virtualizer, which scans all attached queues.
@@ -66,6 +66,13 @@ static inline int blk_virt_service_notification(uint64_t badge)
  * host media `media_id`; `vmm_slot` names the caller so blk_virt knows which
  * notification receives RESP_READY. */
 #define BLK_VIRT_OP_ATTACH              0x2C01u
+/* Version 5 terminal detach uses the attach request/reply layouts and the
+ * same root-assigned client/slot/media authority. The producer must stop
+ * admission and consume all responses first. BUSY preserves the attachment
+ * while either queue is nonempty or invalid. OK retires all service queue
+ * references. Repeated detach is idempotent; retired clients cannot attach
+ * again without a future generation/reset contract. This is not a flush. */
+#define BLK_VIRT_OP_DETACH              0x2C02u
 /* Legacy endpoint labels retained for diagnostics/compatibility; version 4
  * clients use the notification capabilities, not these labels. */
 /* VMM -> blk_virt: request queue is non-empty. */

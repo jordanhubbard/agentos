@@ -1557,6 +1557,7 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
             &[
                 "guest block drain: pending response before admission stop",
                 "guest block drain: PASS accepted requests complete and queues empty",
+                "guest block drain: queue detach acknowledged",
             ],
             Duration::from_secs(10),
             &mut qemu,
@@ -5716,6 +5717,7 @@ fn verify_guest_teardown(
             "guest teardown: execution and RAM revoked",
             "guest teardown: private paging revoked",
             "guest teardown: network queues detached",
+            "guest teardown: block queues detached",
         ],
         Duration::from_secs(10),
         qemu,

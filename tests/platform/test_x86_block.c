@@ -14,6 +14,7 @@
 
 const char vmm_pd_name[]="x86-block-test";
 static unsigned attachments;
+static unsigned detachments, detach_failure;
 static aos_blk_virt_client_t client;
 static aos_blk_virt_t server;
 static unsigned kicks, waits;
@@ -31,13 +32,15 @@ static void boot_wait(void)
 }
 void sel4_call(seL4_CPtr cap, const sel4_msg_t *request, sel4_msg_t *reply)
 {
-    assert(cap==PD_CNODE_SLOT_BLK_VIRT_EP && request->opcode==BLK_VIRT_OP_ATTACH);
+    assert(cap==PD_CNODE_SLOT_BLK_VIRT_EP);
+    assert(request->opcode==BLK_VIRT_OP_ATTACH || request->opcode==BLK_VIRT_OP_DETACH);
     assert(request->length==sizeof(blk_virt_attach_req_t));
     blk_virt_attach_req_t attach;
     memcpy(&attach,request->data,sizeof(attach));
     assert(attach.version==BLK_VIRT_CONTRACT_VERSION);
     assert(attach.client_id==0 && attach.vmm_slot==BLK_VIRT_VMM_SLOT_PRIMARY && attach.media_id==0);
-    attachments++;
+    if (request->opcode==BLK_VIRT_OP_ATTACH) attachments++;
+    else detachments++;
     client.info->capacity=256;
     client.info->sector_size=512;
     client.info->block_size=1;
@@ -46,6 +49,11 @@ void sel4_call(seL4_CPtr cap, const sel4_msg_t *request, sel4_msg_t *reply)
     reply->length=sizeof(blk_virt_attach_reply_t);
     uint32_t words[]={BLK_VIRT_OK,BLK_VIRT_CONTRACT_VERSION,BLK_VIRT_HW_VIRTIO_BLK};
     memcpy(reply->data,words,sizeof(words));
+    if (request->opcode==BLK_VIRT_OP_DETACH) {
+        if (detach_failure==1) reply->length=0;
+        if (detach_failure==2) reply->data[4]++;
+        if (detach_failure==3) reply->data[0]=BLK_VIRT_ERR_BUSY;
+    }
 }
 static _Alignas(4096) uint8_t ram[0x20000];
 static _Alignas(4096) uint8_t region[AOS_BLK_SHMEM_SIZE];
@@ -97,5 +105,16 @@ int main(void)
     aos_vmm_virtio_blk_init(0);
     assert(attachments==1 && client.signal->req_consumer_signalled==0x55);
     assert(client.req->head==3 && client.req->tail==4 && client.resp->head==5 && client.resp->tail==6);
+    /* Restore the deliberate rebind-preservation fixture, then drain. */
+    client.req->head=client.req->tail=0;
+    client.resp->head=client.resp->tail=0;
+    for (detach_failure=1; detach_failure<=3; detach_failure++)
+        assert(!aos_vmm_virtio_blk_detach());
+    detach_failure=0;
+    assert(aos_vmm_virtio_blk_detach() && detachments==4);
+    assert(aos_vmm_virtio_blk_detach() && detachments==4);
+    aos_vmm_virtio_blk_resp_ready();
+    aos_vmm_virtio_blk_after_fault();
+    assert(!aos_vmm_virtio_blk_init_at(0,base,17,region) && attachments==1);
     puts("PASS: block placement, real MMIO capacity, boot queue read and rebind preservation");
 }
