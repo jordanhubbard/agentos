@@ -10,6 +10,9 @@
 #define AGENTOS_X86_VTX_PROOF_H
 
 #define AOS_X86_VTX_PROOF_LABEL       0x5856u /* "XV" */
+/* Send-only VMM capability. Root alone receives qualification reports;
+ * the ordinary VMM service endpoint belongs to the VMM's control loop. */
+#define AOS_X86_VTX_REPORT_CAP        472u
 #define AOS_X86_VTX_PROOF_PASS         1u
 #define AOS_X86_VTX_PROOF_FAIL         2u
 #define AOS_X86_VTX_MODES_PASS         3u

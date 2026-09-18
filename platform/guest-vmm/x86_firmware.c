@@ -122,7 +122,7 @@ static _Noreturn void stop(seL4_CPtr endpoint, seL4_Word status, seL4_Word reaso
     for (unsigned i=0; i<3; i++) seL4_SetMR(116+i,boot_reads[i]);
     seL4_SetMR(119,last_qualification);
     seL4_Send(endpoint, seL4_MessageInfo_new(AOS_X86_VTX_PROOF_LABEL, 0, 0, AOS_X86_FIRMWARE_REPORT_WORDS));
-    for (;;) { seL4_Word badge; (void)seL4_Wait(endpoint, &badge); }
+    for (;;) { seL4_Word badge; (void)seL4_Wait(PD_CNODE_SLOT_SELF_EP, &badge); }
 }
 
 static void block_wait(void)
@@ -175,6 +175,16 @@ static uint64_t timestamp(void)
 static bool terminal_teardown_proof(aos_serial_endpoint_t *endpoint, uint64_t hz)
 {
     if (!hz || hz > UINT64_MAX / 30u) return false;
+    /* Root is already waiting for the terminal report. A failed report on
+     * the ordinary service endpoint must not reach that receiver. NBSend
+     * drops it when no service receiver is waiting; it cannot block this
+     * VMM. The former shared-endpoint wiring would consume and reject it. */
+    seL4_SetMR(0, AOS_X86_VTX_PROOF_FAIL);
+    seL4_SetMR(1, 0x455052u);
+    seL4_SetMR(2, 0u);
+    seL4_SetMR(3, 0u);
+    seL4_NBSend(PD_CNODE_SLOT_SELF_EP,
+        seL4_MessageInfo_new(AOS_X86_VTX_PROOF_LABEL, 0u, 0u, 4u));
     uint64_t started = timestamp();
     aos_guest_teardown_t state = {0};
     while (!aos_guest_teardown_step(&state, AOS_X86_FIRMWARE_RAM)) {

@@ -63,6 +63,17 @@ teardown marker. That Intel target and the full Spark gate passed at `9b73e34`;
 133 frame pools and the stopped-scratch-frame scope. Public x86 lifecycle IPC,
 suspend/resume and guest recreation are not implemented by this probe.
 
+VMX qualification reports now use a separate endpoint, with a send-only
+capability in VMM slot 472. Root no longer receives on the VMM service
+endpoint, which must remain available for lifecycle requests. Terminal VMM
+parking also uses the service endpoint rather than attempting to receive
+through the send-only reporting cap. The userspace teardown probe sends a
+nonblocking failure report on the service endpoint before its real terminal
+report; the old shared receive path would consume that failure. Basic Intel
+VMX, Intel teardown and the full Spark gate passed at `94f47a3`;
+[the receipt](evidence/2026-09-18-spark/x86-report-endpoint.json) records routing
+qualification. Lifecycle handlers and external control remain outstanding.
+
 Each AArch64 guest's TCB, VCPU, IPC frame and MCS scheduling context now come
 from a dedicated 64 KiB non-device child untyped. After boot configuration,
 root moves the pool's sole capability to that guest's VMM, alongside the

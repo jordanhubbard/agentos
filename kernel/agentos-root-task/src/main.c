@@ -3810,7 +3810,21 @@ void root_task_main(const seL4_BootInfo *bi)
                 dbg_puts("\n");
                 return;
             }
-            g_x86_vtx_proof_endpoint = self_ep;
+            /* Qualification reports must not compete with the VMM for
+             * lifecycle calls on its service endpoint. The reporter gets
+             * send authority only, without receive or capability transfer. */
+            vm_err = ut_alloc_cap(seL4_EndpointObject, 0u,
+                                  &g_x86_vtx_proof_endpoint);
+            if (vm_err == seL4_NoError) {
+                vm_err = seL4_CNode_Copy(pd_cnode, AOS_X86_VTX_REPORT_CAP,
+                    pd->cnode_size_bits, seL4_CapInitThreadCNode,
+                    g_x86_vtx_proof_endpoint, 64u,
+                    seL4_CapRights_new(0u, 0u, 0u, 1u));
+            }
+            if (vm_err != seL4_NoError) {
+                dbg_puts("[rt] private VMX report endpoint setup failed; stopping boot\n");
+                return;
+            }
         }
 #endif
         {
@@ -3940,8 +3954,9 @@ void root_task_main(const seL4_BootInfo *bi)
 
 #if defined(__x86_64__) && defined(AGENTOS_X86_VTX)
     /*
-     * The VMM uses its self endpoint to report the exact exit observed after
-     * VM entry.  Validate the complete small protocol before emitting the
+     * The VMM uses its private report endpoint for the exact exit observed
+     * after VM entry. Never receive on its lifecycle service endpoint.
+     * Validate the complete small protocol before emitting the
      * qualification marker, then resume normal root fault handling.
      */
     if (g_x86_vtx_proof_endpoint == seL4_CapNull) {
