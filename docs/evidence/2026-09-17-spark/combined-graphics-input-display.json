@@ -1,0 +1,74 @@
+{
+  "revision": "03c1aa86ca9fd93cef5d00a8c76baef152f33b3b",
+  "command": "make test-guest-display QEMU_TEST_SSH_PORT=12223 QEMU_TEST_TIMEOUT=1800",
+  "host": "Spark ARM64 Linux",
+  "exit_code": 0,
+  "status": "passed",
+  "log": "/tmp/agentos-v04-integration-graphics-input.log",
+  "log_sha256": "833cd27a747b34d2099e3b749d35b21f29ae6f74a4387b56885a0dabb8144d2e",
+  "frame": {
+    "asserted_pixels": 2,
+    "bytes": 2359312,
+    "format": "P6 RGB888",
+    "guest_handle": 0,
+    "height": 768,
+    "sequence": 6,
+    "sha256": "cb9b1f94595564c62a17a1e987f5e8b3877467efcf4510191e78261c25de9643",
+    "version": 1,
+    "width": 1024
+  },
+  "display": {
+    "asserted_pixels": 786432,
+    "capture": "QMP screendump",
+    "client": 0,
+    "height": 768,
+    "path": "/tmp/agentos-v04-integration/build/tmp/agentos-qemu-ZDxwCJ.display.ppm",
+    "sha256": "cb9b1f94595564c62a17a1e987f5e8b3877467efcf4510191e78261c25de9643",
+    "width": 1024
+  },
+  "input": {
+    "agentos_revision": "03c1aa86ca9fd93cef5d00a8c76baef152f33b3b",
+    "batches": 4,
+    "excludes": [
+      "physical input devices",
+      "peer guest isolation",
+      "guest recreation"
+    ],
+    "helper_sha256": "2ba0315a3bc89917f9bd4762fd54a25cb0d250635dd34830cf02c2c8b981e517",
+    "keyboard_events": 4,
+    "pointer_events": 7,
+    "profile": "debian-graphics-input-aarch64",
+    "release_mode": "explicit-events",
+    "schema": "agentos.guest_input.v1",
+    "scope": "public CLI through CC and virtio-input to exact Linux evdev packets",
+    "source_tree_clean": true,
+    "status": "pass",
+    "stderr": "/tmp/agentos-v04-integration/build/tmp/agentos-qemu-ZDxwCJ.input.stderr"
+  },
+  "held_state_release": {
+    "agentos_revision": "03c1aa86ca9fd93cef5d00a8c76baef152f33b3b",
+    "batches": 4,
+    "excludes": [
+      "physical input devices",
+      "peer guest isolation",
+      "guest recreation"
+    ],
+    "helper_sha256": "2ba0315a3bc89917f9bd4762fd54a25cb0d250635dd34830cf02c2c8b981e517",
+    "keyboard_events": 4,
+    "pointer_events": 7,
+    "profile": "debian-graphics-input-aarch64",
+    "release_mode": "server-held-state",
+    "schema": "agentos.guest_input.v1",
+    "scope": "public CLI through CC and virtio-input to exact Linux evdev packets",
+    "source_tree_clean": true,
+    "status": "pass",
+    "stderr": "/tmp/agentos-v04-integration/build/tmp/agentos-qemu-ZDxwCJ.input-release.stderr"
+  },
+  "observed_frame_transfer_seconds": 12,
+  "limits": [
+    "Frame comparison suspends the guest for a coherent snapshot; this is not interactive latency qualification.",
+    "The native agentos_gui application was not part of this test.",
+    "This uses the existing console-provisioned Debian graphics profile, not the NoCloud baseline.",
+    "Intel graphics, peer input isolation, guest recreation and complete release acceptance remain unqualified."
+  ]
+}
