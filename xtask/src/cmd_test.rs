@@ -564,7 +564,16 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
         "automatic seed requires a host.seed profile contract"
     );
     anyhow::ensure!(
+        !profile_plan
+            .as_ref()
+            .is_some_and(|p| p.test.iter().any(|s| s.action == "assert-ssh-output"))
+            || args.seed_profile
+            || args.seeded_ssh_key.is_some(),
+        "profile SSH output assertions require seeded authentication"
+    );
+    anyhow::ensure!(
         !args.assert_guest_display || (args.board == "qemu_virt_aarch64"
+            && (args.assert_live || args.seed_profile || args.seeded_ssh_key.is_some())
             && !args.no_build && profile_plan.as_ref().is_some_and(|p|
                 p.devices.iter().any(|d| d == "gpu")
                 && p.test.iter().any(|s| s.action == "assert-frame-pixels"))),
@@ -943,7 +952,7 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
             )?;
         }
     }
-    let input_helper = if args.assert_live
+    let input_helper = if (args.assert_live || args.seeded_ssh_key.is_some())
         && profile_plan
             .as_ref()
             .is_some_and(|p| p.devices.iter().any(|d| d == "input"))
@@ -983,7 +992,14 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
         };
         std::fs::write(directory.join(name), format!("{}\n", log_path.display()))?;
     }
-    let ssh_key = if scenario_plan.is_some() || args.assert_live || args.assert_desktop {
+    let ssh_key = if let Some(key) = &args.seeded_ssh_key {
+        Some(SshTestKey {
+            _temporary_dir: None,
+            private_key: key.clone(),
+            public_key: String::new(),
+            known_hosts: Some(log_path.with_extension("known_hosts")),
+        })
+    } else if scenario_plan.is_some() || args.assert_live || args.assert_desktop {
         Some(generate_ssh_test_key(&repo_root, args.keep_running)?)
     } else {
         None
@@ -1400,6 +1416,17 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
         }
     }
 
+    if result.is_ok() && args.seeded_ssh_key.is_some() {
+        result = prove_seeded_profile_steps(
+            &cc_sock,
+            &log_path,
+            profile_plan.as_ref().context("seeded profile missing")?,
+            ssh_key.as_ref().context("seeded SSH identity missing")?,
+            args.assert_guest_display,
+            &mut qemu,
+        )
+        .map(|()| result.as_ref().unwrap().clone());
+    }
     if result.is_ok()
         && args.seeded_ssh_key.is_some()
         && virtio_assertion
@@ -1955,6 +1982,7 @@ struct SshTestKey {
     _temporary_dir: Option<tempfile::TempDir>,
     private_key: PathBuf,
     public_key: String,
+    known_hosts: Option<PathBuf>,
 }
 
 struct ChildGuard {
@@ -2029,6 +2057,7 @@ fn generate_ssh_test_key(repo_root: &Path, persistent: bool) -> anyhow::Result<S
         _temporary_dir: temporary_dir,
         private_key,
         public_key,
+        known_hosts: None,
     })
 }
 
@@ -2672,6 +2701,133 @@ fn seeded_ssh_via_cc(
         "seeded guest console identity timed out; see {}",
         log.with_extension("console.log").display()
     )
+}
+
+fn apply_test_ssh_identity(command: &mut std::process::Command, key: &SshTestKey) {
+    if let Some(known) = &key.known_hosts {
+        command
+            .args([
+                "-F",
+                "/dev/null",
+                "-o",
+                "BatchMode=yes",
+                "-o",
+                "IdentitiesOnly=yes",
+                "-o",
+                "IdentityAgent=none",
+                "-o",
+                "PreferredAuthentications=publickey",
+                "-o",
+                "PasswordAuthentication=no",
+                "-o",
+                "KbdInteractiveAuthentication=no",
+                "-o",
+                "StrictHostKeyChecking=yes",
+                "-o",
+                "GlobalKnownHostsFile=/dev/null",
+                "-o",
+                "HostKeyAlgorithms=ssh-ed25519",
+            ])
+            .arg("-o")
+            .arg(format!("UserKnownHostsFile={}", known.display()));
+    } else {
+        command.args(SSH_AUTH_OPTIONS);
+    }
+}
+
+fn prove_seeded_profile_steps(
+    socket: &Path,
+    log: &Path,
+    profile: &HostProfilePlan,
+    key: &SshTestKey,
+    display: bool,
+    qemu: &mut Child,
+) -> anyhow::Result<()> {
+    let ssh = profile
+        .qemu
+        .as_ref()
+        .and_then(|q| q.ssh.as_ref())
+        .context("seeded test steps require SSH")?;
+    for (index, step) in profile
+        .test
+        .iter()
+        .enumerate()
+        .filter(|(_, step)| step.action == "assert-ssh-output")
+    {
+        let stdout = log.with_extension(format!("profile-step-{index}.stdout"));
+        let stderr = log.with_extension(format!("profile-step-{index}.stderr"));
+        let mut command = std::process::Command::new("ssh");
+        command
+            .arg("-i")
+            .arg(&key.private_key)
+            .args(["-p", &ssh.host_port.to_string()])
+            .args(SSH_PROBE_LIVENESS_OPTIONS);
+        apply_test_ssh_identity(&mut command, key);
+        command
+            .arg(format!("{}@127.0.0.1", ssh.account))
+            .arg(format!(
+                "sudo -n timeout 180 sh -c '{}'",
+                step.args["command"].replace('\'', "'\\''")
+            ))
+            .stdin(Stdio::null())
+            .stdout(std::fs::File::create(&stdout)?)
+            .stderr(std::fs::File::create(&stderr)?);
+        let mut child = ChildGuard::new(command.spawn()?);
+        wait_input_child(&mut child, qemu, 200)?;
+        anyhow::ensure!(
+            std::fs::metadata(&stdout)?.len() <= 4096,
+            "profile SSH output exceeds 4096 bytes; see {}",
+            stdout.display()
+        );
+        anyhow::ensure!(
+            std::fs::read(&stdout)? == step.args["stdout"].as_bytes(),
+            "profile SSH output mismatch; see {}",
+            stdout.display()
+        );
+    }
+    if profile.devices.iter().any(|device| device == "gpu") {
+        anyhow::ensure!(
+            profile.test.iter().any(|s| s.action == "assert-ssh-output")
+                && profile
+                    .test
+                    .iter()
+                    .any(|s| s.action == "assert-frame-pixels"),
+            "seeded graphics requires SSH preparation and exact frame assertions"
+        );
+        let mut cc = connect_cc_client(socket, Duration::from_secs(30), qemu)?;
+        if display {
+            suspend_guest_via_cc(&mut cc, 0)?;
+        }
+        let proof = (|| -> anyhow::Result<()> {
+            println!(
+                "[xtask:test] {}",
+                capture_guest_frame(&mut cc, 0, socket, Some(profile))?
+            );
+            if display {
+                let expected = std::fs::read(socket.with_extension("frame.ppm"))?;
+                let receipt: serde_json::Value =
+                    serde_json::from_slice(&std::fs::read(socket.with_extension("frame.json"))?)?;
+                println!(
+                    "[xtask:test] {}",
+                    verify_display(
+                        log,
+                        &expected,
+                        receipt["width"].as_u64().context("missing frame width")?,
+                        receipt["height"].as_u64().context("missing frame height")?
+                    )?
+                );
+            }
+            Ok(())
+        })();
+        let resumed = if display {
+            resume_guest_via_cc(&mut cc, 0).map(|_| ())
+        } else {
+            Ok(())
+        };
+        proof?;
+        resumed?;
+    }
+    Ok(())
 }
 
 fn x86_retained_host_key(path: &Path, port: u16) -> anyhow::Result<String> {
@@ -4732,10 +4888,6 @@ fn prove_profile_input_pass(
         .as_ref()
         .and_then(|q| q.ssh.as_ref())
         .context("input proof needs SSH")?;
-    anyhow::ensure!(
-        ssh.account == "root",
-        "input proof currently requires the root test account"
-    );
     let stderr_path = log.with_extension(if release {
         "input-release.stderr"
     } else {
@@ -4747,10 +4899,14 @@ fn prove_profile_input_pass(
         cmd.arg("-i")
             .arg(&key.private_key)
             .args(["-p", &ssh.host_port.to_string()])
-            .args(SSH_AUTH_OPTIONS)
-            .args(SSH_PROBE_LIVENESS_OPTIONS)
-            .arg(format!("{}@127.0.0.1", ssh.account))
-            .arg(remote)
+            .args(SSH_PROBE_LIVENESS_OPTIONS);
+        apply_test_ssh_identity(&mut cmd, key);
+        cmd.arg(format!("{}@127.0.0.1", ssh.account))
+            .arg(if ssh.account == "root" {
+                remote.to_string()
+            } else {
+                format!("sudo -n {remote}")
+            })
             .stderr(Stdio::from(stderr.try_clone()?));
         Ok(cmd)
     };
@@ -4761,7 +4917,7 @@ fn prove_profile_input_pass(
     )?.stdin(Stdio::from(std::fs::File::open(helper)?)).stdout(Stdio::null()).spawn()?);
     wait_input_child(&mut upload, qemu, 150)?;
     let mut probe = ChildGuard::new(
-        command("exec timeout 130 /tmp/agentos-input-probe")?
+        command("timeout 130 /tmp/agentos-input-probe")?
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .spawn()?,
@@ -5967,6 +6123,30 @@ mod tests {
         let netdev = scenario_qemu_netdev_arg(&scenario);
         assert!(netdev.contains("127.0.0.1:12222-10.0.2.15:22"));
         assert!(netdev.contains("127.0.0.1:12223-10.0.2.16:22"));
+    }
+
+    #[test]
+    fn seeded_followup_commands_keep_strict_host_identity() {
+        let key = SshTestKey {
+            _temporary_dir: None,
+            private_key: "identity".into(),
+            public_key: String::new(),
+            known_hosts: Some("retained known_hosts".into()),
+        };
+        let mut command = std::process::Command::new("ssh");
+        apply_test_ssh_identity(&mut command, &key);
+        let args: Vec<_> = command.get_args().map(|s| s.to_str().unwrap()).collect();
+        for option in [
+            "StrictHostKeyChecking=yes",
+            "IdentityAgent=none",
+            "UserKnownHostsFile=retained known_hosts",
+            "GlobalKnownHostsFile=/dev/null",
+            "PasswordAuthentication=no",
+            "KbdInteractiveAuthentication=no",
+        ] {
+            assert!(args.contains(&option));
+        }
+        assert!(!args.contains(&"StrictHostKeyChecking=no"));
     }
 
     #[test]

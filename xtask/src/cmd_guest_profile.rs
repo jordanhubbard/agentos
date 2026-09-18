@@ -378,6 +378,7 @@ const HOST_ACTIONS: &[&str] = &[
     "assert-console",
     "assert-virtio",
     "assert-frame-pixels",
+    "assert-ssh-output",
 ];
 
 pub(crate) fn acquire_recipe(root: &Path, path: &Path) -> Result<(String, Vec<RecipeStep>)> {
@@ -2034,6 +2035,7 @@ fn validate_host_action(step: &RecipeStep) -> Result<()> {
         "run-ssh" => (&["recipe"], &[]),
         "assert-virtio" => (&["devices"], &["scope", "console_io"]),
         "assert-frame-pixels" => (&["x", "y", "rgb"], &[]),
+        "assert-ssh-output" => (&["command", "stdout"], &[]),
         _ => return Ok(()),
     };
     for key in required_args {
@@ -2052,6 +2054,14 @@ fn validate_host_action(step: &RecipeStep) -> Result<()> {
     }
     if step.action == "assert-frame-pixels" {
         frame_pixel_expectation(step)?;
+    }
+    if step.action == "assert-ssh-output" {
+        ensure!(
+            step.args["command"].len() <= 4096
+                && !step.args["command"].contains('\0')
+                && step.args["stdout"].len() <= 4096,
+            "SSH assertion command and expected output must be bounded text"
+        );
     }
     if matches!(step.action.as_str(), "stage-url" | "download-tar-member") {
         ensure!(
@@ -2811,6 +2821,35 @@ mod tests {
             .iter()
             .any(|step| step.action == "build-initramfs-file"));
         assert_eq!(acquire.last().unwrap().action, "extract-arm64-linux-image");
+    }
+
+    #[test]
+    fn seeded_graphics_inherits_provisioning_and_bounds_ssh_assertions() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../guest-profiles");
+        let path = resolve_alias(&root, "debian-nocloud-graphics-input").unwrap();
+        let plan = host_profile_plan(&root, &path).unwrap();
+        assert!(plan.seed.is_some());
+        assert!(plan.provision.is_empty());
+        assert!(plan.console.interaction.is_empty());
+        assert_eq!(
+            plan.qemu.as_ref().unwrap().ssh.as_ref().unwrap().account,
+            "debian"
+        );
+        let mut assertion = plan
+            .test
+            .iter()
+            .find(|s| s.action == "assert-ssh-output")
+            .unwrap()
+            .clone();
+        assert!(validate_host_action(&assertion).is_ok());
+        assertion.args.insert("command".into(), "x".repeat(4097));
+        assert!(validate_host_action(&assertion).is_err());
+        assertion
+            .args
+            .insert("command".into(), "bad\0command".into());
+        assert!(validate_host_action(&assertion).is_err());
+        assertion.args.remove("stdout");
+        assert!(validate_host_action(&assertion).is_err());
     }
 
     #[test]

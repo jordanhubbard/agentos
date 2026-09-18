@@ -1,0 +1,32 @@
+schema = 2
+id = "debian-nocloud-graphics-input-aarch64"
+status = "runtime"
+extends = "debian-arm64-nocloud.toml"
+aliases = ["debian-nocloud-graphics-input"]
+
+[target]
+devices = ["net", "block", "console", "gpu", "input"]
+
+[artifacts.dtb]
+source = "generated:linux.dts+profile-selected-virtio-gpu+virtio-input"
+cache = "build/qemu_virt_aarch64/debian-nocloud-graphics-input-vm.dtb"
+sha256 = "95d736516c68684f0ea7e1ea975eaff3ff47468e78e965873fcad20df34cab2e"
+
+[host.qemu.ssh]
+host_port = 12223
+
+[[host.test]]
+action = "wait-console"
+args = { marker = "login:" }
+
+[[host.test]]
+action = "assert-virtio"
+args = { devices = "net,block,console", scope = "host-backed", console_io = "bidirectional" }
+
+[[host.test]]
+action = "assert-ssh-output"
+args = { command = "modprobe virtio_input && modprobe virtio_gpu && test -e /dev/dri/card0 && test -c /dev/fb0 && printf '\\021\\042\\063\\000\\104\\125\\146\\000' | dd of=/dev/fb0 bs=1 seek=819200 conv=notrunc status=none && sleep 1 && printf 'agentos-seeded-graphics-ready\\n'", stdout = "agentos-seeded-graphics-ready\n" }
+
+[[host.test]]
+action = "assert-frame-pixels"
+args = { x = "0", y = "200", rgb = "332211665544" }

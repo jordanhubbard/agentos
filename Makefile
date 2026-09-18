@@ -1364,6 +1364,14 @@ test-ubuntu-virtio:
 .PHONY: test-debian-live
 .PHONY: test-debian-nocloud-ssh
 .PHONY: test-debian-nocloud-auto
+.PHONY: test-debian-nocloud-graphics
+test-debian-nocloud-graphics: QEMU_TEST_TIMEOUT = 1800
+test-debian-nocloud-graphics: QEMU_TEST_SSH_PORT = 12223
+test-debian-nocloud-graphics:
+	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os debian-nocloud-graphics-input \
+		--seed-profile --assert-agentos-virtio --assert-guest-display \
+		--ssh-port $(QEMU_TEST_SSH_PORT) --timeout-secs $(QEMU_TEST_TIMEOUT)
+
 test-debian-nocloud-auto: QEMU_TEST_TIMEOUT = 1200
 test-debian-nocloud-auto: QEMU_TEST_SSH_PORT = 12222
 test-debian-nocloud-auto:

@@ -1,0 +1,32 @@
+{
+  "schema": "agentos.seeded_cold_boots_qualification.v1",
+  "revision": "b8457032e2f8e089cd31268f991a91bdd09bb520",
+  "source_tree_clean": true,
+  "host": "Spark ARM64 Linux",
+  "command": "make test-debian-nocloud-cold-boots",
+  "exit_code": 0,
+  "status": "passed",
+  "first_boot": true,
+  "second_boot": true,
+  "evidence_directory": "/tmp/agentos-v04-x86-notifications/build/evidence/seeded-cold-boots-R5oJ1F",
+  "log": "/tmp/agentos-nocloud-cold-boots.log",
+  "log_sha256": "6680793a0d4bb3670adbb697b8648da48b0bd5bda8fe10511e03ce5df4ebd0f4",
+  "first_known_hosts_sha256": "1eceb78dfa5a0ddc6241d58dccdacec36aa84d36c1f74241ebca3e9cc43a1d45",
+  "second_known_hosts_sha256": "1eceb78dfa5a0ddc6241d58dccdacec36aa84d36c1f74241ebca3e9cc43a1d45",
+  "agentos_image_sha256": "30fadfcd3b388ba9c88e08c2119b9ff42f18b21a3a766ea027fb93ad15278f27",
+  "guest_bundle_sha256": "a288c89412556855da2b5c3f78848cb79ea8b7209e567b7727190bc8b1f2fe07",
+  "first_ssh_elapsed_ms": 689366,
+  "second_ssh_elapsed_ms": 589635,
+  "qemu_config_sha256": "57f7f302b54baa5f4e5ed25d67f3877ada0e947b76445c72f978786a63f537a6",
+  "assertions": [
+    "Fresh SSH client identity and NoCloud seed generated automatically from the profile contract.",
+    "Both boots authenticated with the original guest host key and exact aarch64 plus sync output.",
+    "The second boot required the same managed writable disk, resolved profile and byte-identical agentOS image.",
+    "Host-backed net, block and bidirectional console passed on both boots."
+  ],
+  "limits": [
+    "sync followed by QEMU stop, not orderly shutdown or guest-slot recreation.",
+    "No separate application write-witness or concurrent writable disk isolation assertion.",
+    "Graphics and native GUI are separate qualifications."
+  ]
+}

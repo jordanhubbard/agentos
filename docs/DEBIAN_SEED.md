@@ -1,5 +1,20 @@
 # Debian test root provisioning
 
+The automatic two-cold-boot gate passed on Spark at `b845703` with the same
+managed disk, byte-identical agentOS image and original pinned SSH host key.
+The [receipt](evidence/2026-09-17-spark/nocloud-automatic-cold-boots.json)
+retains both timing results and qualification limits.
+
+`make test-debian-nocloud-graphics` adds graphics and input to that same
+NoCloud source/provisioning contract. Its first target qualification is pending.
+The derived profile prepares the GPU over pinned-key SSH as `debian` using
+noninteractive sudo, checks exact command output, compares exported frame pixels
+with QEMU RAMFB scanout, and runs both Linux evdev input/release probes.
+The `assert-ssh-output` host test action accepts a command and exact stdout,
+each bounded to 4096 bytes; execution has guest and host deadlines and retains
+stdout/stderr. It is supported only with seeded authentication. No console
+login or provisioning recipe is added to this profile.
+
 The native udev wrappers share `guest-profiles/helpers/debian_init_hook.h`.
 It implements Linux syscall and stat layouts for x86_64 and AArch64, preserving
 stock udev execution, filling missing standard descriptors before startup and
@@ -8,7 +23,7 @@ the ARM wrappers. Their native Spark chroot checks cover closed standard
 descriptors, successful stock-hook execution, correct node creation/reuse,
 wrong-node rejection and unexpected `rootmnt` rejection. The x86 helper and
 initrd pins remain unchanged. The opt-in ARM NoCloud profile uses these
-wrappers; on-target qualification remains pending.
+wrappers; the automatic boot receipt above records their target qualification.
 
 Make captures `AGENTOS_HOST_TOOL_PATH` before entering the kernel sub-make.
 Native guest-helper compilation and stripping use that path even when the
