@@ -17,8 +17,11 @@
 #include "ut_alloc.h"
 #include "boot_info.h"
 
-#define UT_MAX_CAPS    230u
-#define DEV_UT_MAX     32u
+/* Either class may occupy every descriptor supplied by the kernel. Keeping
+ * a smaller device table silently loses valid grants on fragmented boards. */
+#define UT_MAX_CAPS \
+    (sizeof(((seL4_BootInfo *)0)->untypedList) / sizeof(seL4_UntypedDesc))
+#define DEV_UT_MAX UT_MAX_CAPS
 
 typedef struct {
     seL4_CPtr cap;

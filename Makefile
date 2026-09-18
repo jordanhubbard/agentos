@@ -826,6 +826,15 @@ test-host: test-x86-cpu-host
 test-host: test-guest-scheduling-host test-guest-gic-mapping-host test-guest-paging-host test-net-rx-accounting-host
 test-host: test-guest-execution-host
 test-host: test-x86-guest-objects-host
+test-host: test-untyped-host
+.PHONY: test-untyped-host
+test-untyped-host:
+	@mkdir -p $(BUILD_TMP_DIR)
+	$(CC) -std=c11 -Wall -Wextra -Werror -DAGENTOS_TEST_HOST \
+		-I kernel/agentos-root-task/include tests/api/test_ut_alloc.c \
+		-o $(BUILD_TMP_DIR)/test_ut_alloc
+	$(BUILD_TMP_DIR)/test_ut_alloc
+
 test-host: test-x86-memory-rebuild-host
 test-host: test-x86-recreate-host
 .PHONY: test-x86-recreate-host
