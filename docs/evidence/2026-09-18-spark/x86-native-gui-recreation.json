@@ -1,0 +1,79 @@
+{
+  "schema": "agentos.native_gui_recreation.v1",
+  "accepted_for_v04_release": false,
+  "scope": "Native external GUI create, Debian login-prompt/input echo, destroy and recreation in one Intel seL4 boot",
+  "core_revision": "3ea3554b67d34b0aab7e5a51a24c0a6c457dc363",
+  "gui_revision": "93c47238024aab0519e8b5d7a48d3a026f2996c1",
+  "root_task_sha256": "25343374c7905a7c94d3ab48efeac43dd4d5d1f2402f1a9c73beaeee1db6d03d",
+  "gui_binary_sha256": "132f60ef7b9d61933b7b626ebfbc25afc3279db7862dd0ef718a86e771513542",
+  "gui_build_log_sha256": "90b890157ef1a9bf308545cc70685df5ff9efcc22df557f0964b0526d4ee7fed",
+  "transport": "Native Tauri on Spark, Xvfb :89; binary CC Unix socket forwarded via puck to Intel madmax using SSH stream-local forwarding",
+  "target_command": "make run-x86_64-cc-linux SEL4_SDK_VERSION=2.3.0 X86_ROOT_DISK=/tmp/agentos-debian-amd64/recreate-3ea3554.raw X86_SSH_PORT=12224 X86_FIRMWARE_IMAGE=/tmp/agentos-ovmf-2024.02-2ubuntu0.9.fd X86_FIRMWARE_SHA256=101afad5f520753224b60b9555df60add435cf50c7a82b781d7d7d8c60db7eb5",
+  "gui_command": "DISPLAY=:89 LIBGL_ALWAYS_SOFTWARE=1 WEBKIT_DISABLE_DMABUF_RENDERER=1 make run APP_BIN=/home/jkh/Src/agentos_gui/src-tauri/target/release/agentos-gui CC_PD_SOCK=/tmp/agentos-gui-recreate-3ea.sock",
+  "first_guest": {
+    "handle": 1,
+    "input_marker": "agentos-native-first-recreation",
+    "result": "Debian GNU/Linux 13 login prompt rendered; exact typed marker echoed through guest console; Destroy returned empty inventory"
+  },
+  "second_guest": {
+    "handle": 2,
+    "input_marker": "agentos-native-second-recreation",
+    "result": "Fresh Linux boot and Debian GNU/Linux 13 login prompt rendered; exact second marker echoed; Destroy returned empty inventory"
+  },
+  "observed_rough_edges": [
+    "Autoconnect before target readiness returned failed to fill whole buffer; Connect succeeded after root boot completion.",
+    "Replacing RAM 512 by typing 1024 produced 128024 due to per-keystroke clamping. The first Start returned create_guest err 8 and inventory remained empty. No causal attribution to RAM versus readiness is established.",
+    "Native number spinner set RAM to 1024 before successful creation; RAM edit bug is tracked as task_c0e001b8901a4a2fad3ffd2fd15722e7."
+  ],
+  "limitations": [
+    "Input markers are echoed at the guest login prompt; interactive authenticated shell login is not claimed by this GUI run.",
+    "The 1024 MiB launch field records the request, not proof of dynamically allocated or guest-visible RAM.",
+    "Graphical guest framebuffer, concurrent guest streams, abrupt-disconnect/input-release behavior and resource/storage acceptance are outside this run.",
+    "The separate intermittent serial qualification failure and required GitHub checks remain unresolved; canonical integration and release are pending."
+  ],
+  "result": "Passed both native GUI lifecycle cycles in one seL4 boot",
+  "cleanup": "Destroyed both guests through the GUI before stopping the owned app, QEMU, SSH forwards and Xvfb. GUI Make exited 2 after intentional SIGTERM; target Make exited 0 after intentional QEMU SIGTERM. These launcher exits are cleanup outcomes, not automated test verdicts.",
+  "artifact_directory": "/home/jkh/.local/share/agentos-evidence/2026-09-18-native-gui-recreation",
+  "artifacts": [
+    {
+      "file": "agentos-gui-recreate-first-input-settled.png",
+      "sha256": "dc692f3bf413ce97bc8f0a5a0289572285685526bd616e7d8daf4e34de77b8e5"
+    },
+    {
+      "file": "agentos-gui-recreate-first-destroyed.png",
+      "sha256": "b6cb06d3bfa694b79306562294da0bea378fb0b06e14b66131eac601ee515c80"
+    },
+    {
+      "file": "agentos-gui-recreate-second-created.png",
+      "sha256": "b1f0057f18c9049468994a3e3021f6dee0afbb016373b2d8a4d97a688d23b0a7"
+    },
+    {
+      "file": "agentos-gui-recreate-second-boot.png",
+      "sha256": "9c75f56977c1a1a9f4d2aee81b60a6860345797e68a1406e59912792a598940d"
+    },
+    {
+      "file": "agentos-gui-recreate-second-input.png",
+      "sha256": "3fd61150383287521042e1a850358e3e8e41bbab15efb1546b9f35b79c098f55"
+    },
+    {
+      "file": "agentos-gui-recreate-second-destroyed.png",
+      "sha256": "15bb7f4354109e0466b3edcbdbf193dd2b2c1c405226f18de030be1a6a65382d"
+    },
+    {
+      "file": "agentos-gui-recreate-first-start.png",
+      "sha256": "af64be67ac9ed20e2357fa7096aaeb7c7062049b073a9ec1529ec6cf6dc9dd9b"
+    },
+    {
+      "file": "agentos-gui-recreate-ram-spinner.png",
+      "sha256": "099cbaccf35fc55742bfe685cd5903de73367752d4353965ea59ed86e98dd67b"
+    },
+    {
+      "file": "agentos-gui-recreate-target.log",
+      "sha256": "7b88ee6099a928a36b700bb350743a404ae3896b0f7c92c69cc5dccf7d9a7dad"
+    },
+    {
+      "file": "agentos-gui-recreate-native.log",
+      "sha256": "48ae764caaf52ecd1101bf015c7f1dfadc19b5c0e87caf8deeaba34515939087"
+    }
+  ]
+}

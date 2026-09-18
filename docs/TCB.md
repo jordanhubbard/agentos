@@ -32,7 +32,8 @@ Its ordinary `vm_manager` PD receives only the VMM service endpoint, with no
 device, IRQ, guest-memory or execution capability. It rejects RAM requests
 above the provisioned capacity and reports the actual VMM alias and guest
 physical base. The qualification client exercises this manager before allowing
-Linux to run. External CC/GUI integration and guest recreation remain outstanding.
+Linux to run. External CC/GUI integration and managed recreation are qualified
+separately below.
 The [managed-start receipt](evidence/2026-09-18-spark/x86-managed-start.json)
 records Intel manager/lifecycle qualification and the full Spark gate at
 `8ebb8ed`, plus the default Debian boot/SSH regression at `d563b67` after
@@ -64,8 +65,9 @@ and destruction on Intel at `3fcdf58`; the
 records exact binaries and screenshots. `MSG_CC_LOG_STREAM` mode one addresses
 active public guest handles directly, avoiding the legacy slot-number ambiguity.
 It uses the same frontend queues and guest registry, with no new capabilities.
-Legacy slot mode remains supported. Recreation, concurrent native GUI streams,
-long-session transcript rollover and graphical Intel GUI acceptance remain pending.
+Legacy slot mode remains supported. The managed recreation qualification below
+extends this single-guest lifecycle path. Concurrent native GUI streams and
+graphical Intel GUI acceptance remain pending.
 
 Managed x86 CREATE after complete DESTROY now reconstructs private execution,
 RAM/ROM and service queues, clears retained device/serial/clock state, restores
@@ -84,9 +86,16 @@ boundaries. It retains ambiguous REBIND ownership and resumes partial cleanup
 at the failed release without publishing readiness. At `3ea3554`, the full
 host/Spark gates and managed Intel two-boot regression passed again; see the
 [transaction receipt](evidence/2026-09-18-spark/x86-recreation-transaction.json).
+The native external GUI at `93c4723`, running on Spark through SSH Unix-socket
+forwarding to the same Intel runtime, also completed two create/login-prompt/
+input-echo/destroy cycles in one seL4 boot. Handles 1 and 2 had fresh console
+output and distinct input markers; destruction returned empty inventory each
+time. The [native GUI recreation receipt](evidence/2026-09-18-spark/x86-native-gui-recreation.json)
+retains binary hashes, screenshots and observed launch rough edges, including
+the separately tracked RAM-field editing defect. This proves the external
+console/lifecycle path, not graphical guest display or dynamic RAM allocation.
 Native transport fault injection is not claimed. The intermittent serial
-qualification failure and native GUI recreation acceptance remain outstanding;
-this is not v0.4 release acceptance.
+qualification failure remains outstanding; this is not v0.4 release acceptance.
 
 The x86 firmware VMM receives a dedicated ASID pool for its EPT namespace at
 boot, retained outside the revocable VCPU/EPT object pool. Root assigns the
@@ -116,8 +125,8 @@ the source survives guest-ROM revocation. Failed restoration leaves the guest
 stopped and requires pool revocation before retry. The
 [memory restoration receipt](evidence/2026-09-18-spark/x86-memory-rebuild.json)
 records passing host failure tests, full Spark gate and two Intel restoration
-cycles at `4748a19`. These resources remain stopped; a second guest boot is
-not yet qualified.
+cycles at `4748a19`. That receipt covers stopped resources only; the managed
+recreation qualification above separately establishes the second guest boot.
 
 Serial queue reconstruction uses capability IPC with a monotonically increasing
 generation. After terminal detach and VMM pool revocation, `serial_virt` receives
@@ -129,8 +138,9 @@ output, then reopens admission. Foreign, replayed, skipped and wrapped generatio
 are rejected. The
 [serial replacement receipt](evidence/2026-09-18-spark/serial-queue-rebuild.json)
 records host service tests, full Spark gate, and two real Intel capability-transfer,
-service-consumption and revocation cycles at `2a0948f`. This does not yet
-reconstruct block/network queues or boot a new guest.
+service-consumption and revocation cycles at `2a0948f`. That receipt covers
+serial queues only; the managed integration above adds block/network queues
+and a second guest boot.
 
 The userspace qualification adds `x86_lifecycle_probe`, an ordinary client
 with its VMM service endpoint and a send-only failure-report cap. Root rejects
@@ -193,7 +203,8 @@ fixture reports a distinct success status and the harness requires the new
 teardown marker. That Intel target and the full Spark gate passed at `9b73e34`;
 [the receipt](evidence/2026-09-18-spark/x86-terminal-teardown.json) records all
 133 frame pools and the stopped-scratch-frame scope. That earlier probe did
-not implement lifecycle IPC or suspend/resume; recreation remains absent.
+not implement lifecycle IPC, suspend/resume or recreation; those paths are
+qualified separately above.
 
 VMX qualification reports now use a separate endpoint, with a send-only
 capability in VMM slot 472. Root no longer receives on the VMM service
@@ -204,8 +215,8 @@ nonblocking failure report on the service endpoint before its real terminal
 report; the old shared receive path would consume that failure. Basic Intel
 VMX, Intel teardown and the full Spark gate passed at `94f47a3`;
 [the receipt](evidence/2026-09-18-spark/x86-report-endpoint.json) records routing
-qualification. The lifecycle handlers described above extend that work;
-external control remains outstanding.
+qualification. The lifecycle handlers and external CC control described above
+extend that work.
 
 Each AArch64 guest's TCB, VCPU, IPC frame and MCS scheduling context now come
 from a dedicated 64 KiB non-device child untyped. After boot configuration,
