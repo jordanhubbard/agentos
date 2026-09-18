@@ -109,6 +109,16 @@ int main(void)
         reject(&a,dma_pages[i],1,true);
     }
     reject(&a,0x84,1,false);
+    const unsigned ps2_ports[]={0x60,0x64};
+    for (unsigned i=0;i<2;i++) {
+        assert(io(&a,ps2_ports[i],1,false,0)==0xff);
+        io(&a,ps2_ports[i],1,true,0xaa);
+        assert(io(&a,ps2_ports[i],1,false,0)==0xff);
+        reject(&a,ps2_ports[i],2,false);
+        reject(&a,ps2_ports[i],4,true);
+    }
+    reject(&a,0x63,1,false);
+    reject(&a,0x65,1,true);
     const unsigned com_bases[]={0x3f8,0x2f8,0x3e8,0x2e8};
     for (unsigned i=0;i<4;i++) {
         for (unsigned reg=0;reg<8;reg++) {
