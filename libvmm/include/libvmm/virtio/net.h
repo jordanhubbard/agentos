@@ -225,6 +225,7 @@ struct virtio_net_device {
     void *tx_data;
     seL4_CPtr tx_cap;
     seL4_CPtr rx_cap;
+    bool quiesced;
 };
 
 bool virtio_mmio_net_init(struct virtio_net_device *dev,
@@ -240,6 +241,12 @@ bool virtio_mmio_net_init(struct virtio_net_device *dev,
                           uint8_t mac[VIRTIO_NET_CONFIG_MAC_SZ]);
 
 bool virtio_net_handle_rx(struct virtio_net_device *dev);
+
+/* Call after vCPUs stop and the current device callback returns. TX copies
+ * are complete before notification returns; RX holds no guest reference
+ * between calls. Prevent future queue processing, including after guest
+ * reset. This does not detach the service queues or reinitialize a device. */
+void virtio_net_quiesce(struct virtio_net_device *dev);
 
 bool virtio_pci_net_init(struct virtio_net_device *net_dev, uint32_t pci_dev_slot, size_t virq, net_queue_handle_t *rx,
                          net_queue_handle_t *tx, uintptr_t rx_data, uintptr_t tx_data, seL4_CPtr rx_cap,

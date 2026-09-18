@@ -42,7 +42,8 @@ static void virtio_net_reset(struct virtio_device *dev)
 
 static bool driver_ok(struct virtio_device *dev)
 {
-    return (dev->regs.Status & VIRTIO_CONFIG_S_DRIVER_OK) &&
+    return !device_state(dev)->quiesced &&
+           (dev->regs.Status & VIRTIO_CONFIG_S_DRIVER_OK) &&
            (dev->regs.Status & VIRTIO_CONFIG_S_FEATURES_OK);
 }
 
@@ -343,6 +344,12 @@ static void handle_rx_buffer(struct virtio_device *dev,
     *respond_to_guest = true;
 }
 
+void virtio_net_quiesce(struct virtio_net_device *state)
+{
+    state->quiesced = true;
+    virtio_net_reset(&state->virtio_device);
+}
+
 bool virtio_net_handle_rx(struct virtio_net_device *state)
 {
     struct virtio_device *dev = &state->virtio_device;
@@ -400,6 +407,7 @@ static struct virtio_device *virtio_net_init(struct virtio_net_device *net_dev, 
 {
     struct virtio_device *dev = &net_dev->virtio_device;
 
+    net_dev->quiesced = false;
     dev->regs.DeviceID = VIRTIO_DEVICE_ID_NET;
     dev->regs.VendorID = VIRTIO_MMIO_DEV_VENDOR_ID;
     dev->transport_type = type;

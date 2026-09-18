@@ -2,6 +2,7 @@
 #include <stdio.h>
 #include <stdarg.h>
 #include <string.h>
+#include <sys/mman.h>
 #include <platform/x86_virtio.h>
 #include <platform/vmm_virtio_net.h>
 #include <platform/net_virt_pump.h>
@@ -18,7 +19,8 @@ static unsigned attachments, kicks;
 static bool reject_attach = true;
 static bool host_fixture;
 static const uintptr_t base = AOS_X86_VIRTIO_BASE + 2u*AOS_X86_VIRTIO_STRIDE;
-static _Alignas(4096) unsigned char ram[0x20000];
+static unsigned char *ram;
+enum { RAM_BYTES = 0x20000 };
 static _Alignas(4096) unsigned char region[AOS_NET_SHMEM_SIZE];
 int printf_(const char *fmt, ...)
 {
@@ -66,9 +68,12 @@ int main(int argc, char **argv)
 {
     assert(argc==1 || (argc==2 && !strcmp(argv[1],"host-fixture")));
     host_fixture=argc==2;
+    ram=mmap(NULL,RAM_BYTES,PROT_READ|PROT_WRITE,MAP_PRIVATE|MAP_ANONYMOUS,-1,0);
+    assert(ram!=MAP_FAILED);
     aos_x86_ioapic_t ioapic;
     assert(aos_x86_ioapic_init(&ioapic,1));
-    assert(aos_x86_virtio_init(&ioapic,ram,sizeof(ram)));
+    assert(aos_x86_virtio_init(&ioapic,ram,RAM_BYTES));
+    aos_vmm_virtio_net_quiesce(); /* An absent device remains initializable. */
     assert(!aos_vmm_virtio_net_init_at(0,0,18,region));
     assert(!aos_vmm_virtio_net_init_at(0,base+1,18,region));
     assert(!aos_vmm_virtio_net_init_at(0,base,18,NULL));
@@ -133,5 +138,47 @@ int main(int argc, char **argv)
     assert(aos_vmm_virtio_net_guest_io_completed()==host_fixture);
     write_reg(REG_VIRTIO_MMIO_INTERRUPT_ACK,1);
     assert(!ioapic.asserted);
-    puts("PASS: network adapter placement and exact TX/RX through x86 MMIO, canonical queues and IOAPIC");
+    /* Leave a second packet waiting on the canonical RX queue when guest
+     * execution stops. After quiescence, even mapped-but-inaccessible guest
+     * RAM must not be touched by late RX notifications or guest queue kicks. */
+    tx_avail->ring[1]=0; tx_avail->idx=2;
+    write_reg(REG_VIRTIO_MMIO_QUEUE_NOTIFY,1);
+    aos_vmm_virtio_net_after_fault();
+    assert(aos_net_virt_pump(&server)==1);
+    assert(aos_net_queue_length(client.rx_active)==1);
+    tx_avail->ring[2]=0; tx_avail->idx=3;
+    write_reg(REG_VIRTIO_MMIO_QUEUE_NOTIFY,1);
+    assert(aos_net_queue_length(client.tx_active)==1);
+    write_reg(REG_VIRTIO_MMIO_INTERRUPT_ACK,1);
+    aos_vmm_virtio_net_quiesce();
+    aos_vmm_virtio_net_quiesce();
+    assert(!aos_vmm_virtio_net_host_ready());
+    assert(!aos_vmm_virtio_net_guest_io_completed());
+    unsigned old_kicks=kicks;
+    assert(mprotect(ram,RAM_BYTES,PROT_NONE)==0);
+    /* Accepted TX owns a packet copy, so its service completion does not
+     * depend on the now inaccessible guest pages. */
+    assert(aos_net_virt_pump(&server)==1);
+    aos_vmm_virtio_net_rx_ready();
+    aos_vmm_virtio_net_after_fault();
+    uint32_t notify=1;
+    assert(!aos_x86_virtio_access(base+REG_VIRTIO_MMIO_QUEUE_NOTIFY,4,true,&notify));
+    write_reg(REG_VIRTIO_MMIO_STATUS,0);
+    write_reg(REG_VIRTIO_MMIO_STATUS,1);
+    write_reg(REG_VIRTIO_MMIO_STATUS,3);
+    write_reg(REG_VIRTIO_MMIO_DRIVER_FEATURES_SEL,0);
+    write_reg(REG_VIRTIO_MMIO_DRIVER_FEATURES,(1u<<5)|(1u<<15));
+    write_reg(REG_VIRTIO_MMIO_DRIVER_FEATURES_SEL,1);
+    write_reg(REG_VIRTIO_MMIO_DRIVER_FEATURES,1);
+    write_reg(REG_VIRTIO_MMIO_STATUS,11);
+    queue(0,0); queue(1,0x8000);
+    write_reg(REG_VIRTIO_MMIO_STATUS,15);
+    assert(!aos_x86_virtio_access(base+REG_VIRTIO_MMIO_QUEUE_NOTIFY,4,true,&notify));
+    aos_vmm_virtio_net_rx_ready();
+    assert(kicks==old_kicks && !ioapic.asserted);
+    assert(aos_net_queue_length(client.rx_active)==2);
+    assert(aos_net_queue_length(client.tx_active)==0);
+    assert(!aos_vmm_virtio_net_init_at(0,base,18,region) && attachments==2);
+    assert(munmap(ram,RAM_BYTES)==0);
+    puts("PASS: exact network TX/RX and late-wakeup quiescence with inaccessible guest RAM");
 }

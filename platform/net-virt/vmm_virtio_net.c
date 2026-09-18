@@ -44,11 +44,12 @@ static uint32_t                 g_rx_events;
 static uintptr_t                g_guest_base;
 static unsigned                 g_virq;
 static bool                     g_tx_consumed;
+static bool                     g_quiesced;
 static uint8_t                  g_host_mac[6];
 
 bool aos_vmm_virtio_net_host_ready(void)
 {
-    return g_aos_net_ready && g_net_virt_attached && g_net_virt_hw == 1u;
+    return !g_quiesced && g_aos_net_ready && g_net_virt_attached && g_net_virt_hw == 1u;
 }
 
 bool aos_vmm_virtio_net_guest_io_completed(void)
@@ -144,7 +145,7 @@ static void net_virt_service(void)
     uint32_t rx_n;
     int kick = 0;
 
-    if (!g_net_virt_attached) {
+    if (g_quiesced || !g_net_virt_attached) {
         return;
     }
 
@@ -185,6 +186,13 @@ void aos_vmm_virtio_net_rx_ready(void)
         return;
     }
     net_virt_service();
+}
+
+void aos_vmm_virtio_net_quiesce(void)
+{
+    if (!g_aos_net_ready || g_quiesced) return;
+    g_quiesced = true;
+    virtio_net_quiesce(&g_aos_net);
 }
 
 bool aos_vmm_virtio_net_init_at(uint32_t client_id, uintptr_t guest_base,
@@ -258,7 +266,7 @@ void aos_vmm_virtio_net_after_fault(void)
 {
     uint32_t status;
 
-    if (!g_aos_net_ready) {
+    if (!g_aos_net_ready || g_quiesced) {
         return;
     }
 
