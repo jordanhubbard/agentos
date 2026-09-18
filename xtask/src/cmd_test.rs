@@ -2246,6 +2246,20 @@ fn x86_linux_login(socket: &Path, log_path: &Path, timeout: Duration) -> anyhow:
     x86_linux_login_probe(socket, log_path, timeout, None)
 }
 
+fn x86_has_login_prompt(text: &str) -> bool {
+    text.lines().any(|line| {
+        let Some((hostname, _)) = line.split_once(" login:") else {
+            return false;
+        };
+        let hostname = hostname.trim();
+        !hostname.is_empty()
+            && hostname.len() <= 253
+            && hostname
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b".-_".contains(&b))
+    })
+}
+
 fn x86_linux_login_probe(
     socket: &Path,
     log_path: &Path,
@@ -2297,10 +2311,7 @@ fn x86_linux_login_probe(
                     "Intel Linux boot failed; see {}",
                     transcript_path.display()
                 );
-                if text
-                    .lines()
-                    .any(|line| line.trim_end().ends_with(" login:"))
-                {
+                if x86_has_login_prompt(&text) {
                     if let Some((key, port, _)) = ssh {
                         let host_key = if let Some(key) = &retained_key {
                             Some(key.clone())
@@ -4431,6 +4442,18 @@ fn tail_chars(s: &str, max_chars: usize) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn intel_login_prompt_survives_interleaved_cloud_init_output() {
+        assert!(super::x86_has_login_prompt(
+            "agentos-debian login: ci-info: Authorized keys\r\n"
+        ));
+        assert!(super::x86_has_login_prompt("debian login:"));
+        assert!(!super::x86_has_login_prompt(
+            "[1.0] service awaiting login:"
+        ));
+        assert!(!super::x86_has_login_prompt(" login:"));
+        assert!(!super::x86_has_login_prompt("agentos-debian logi"));
+    }
     #[test]
     fn retained_host_key_binds_the_original_loopback_endpoint() {
         let dir = tempfile::tempdir().unwrap();
