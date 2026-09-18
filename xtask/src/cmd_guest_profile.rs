@@ -174,7 +174,7 @@ struct HostDesktop {
 #[serde(deny_unknown_fields)]
 struct HostBuild {
     adapter: String,
-    template: String,
+    template: Option<String>,
     base: Option<String>,
     bootargs: Option<String>,
     initrd_total_bytes: Option<u64>,
@@ -350,6 +350,7 @@ const HOST_ACTIONS: &[&str] = &[
     "extract-arm64-linux-image",
     "extract-arm64-elf-image",
     "build-initramfs-file",
+    "build-static-linux-elf",
     "append-initramfs-file",
     "convert-qcow2-raw",
     "extract-gpt-partition",
@@ -386,6 +387,7 @@ pub(crate) fn acquire_recipe(root: &Path, path: &Path) -> Result<(String, Vec<Re
                     | "extract-arm64-linux-image"
                     | "extract-arm64-elf-image"
                     | "build-initramfs-file"
+                    | "build-static-linux-elf"
                     | "append-initramfs-file"
                     | "convert-qcow2-raw"
                     | "extract-gpt-partition"
@@ -850,7 +852,13 @@ fn render_profile_dtb(
         ("@GUEST_INITRD_END@", format!("0x{initrd_end:x}")),
         ("@GUEST_BOOTARGS@", command_line.to_string()),
     ];
-    let template_path = confined_repo_path(repo_root, &build.template)?;
+    let template_path = confined_repo_path(
+        repo_root,
+        build
+            .template
+            .as_deref()
+            .context("FDT adapter requires template")?,
+    )?;
     let template = render_dts_template(&fs::read_to_string(&template_path)?, &substitutions)?;
     let overlay_path = output_dir.join("guest-overlay.dts");
     fs::write(&overlay_path, template)?;
@@ -1090,6 +1098,17 @@ fn validate(profile: &Profile, placement: Option<&str>) -> Result<()> {
         required(&target.boot_protocol, "target.boot_protocol")?,
         &["fdt-direct", "uefi", "process"],
     )?;
+    if profile
+        .host
+        .as_ref()
+        .and_then(|h| h.build.as_ref())
+        .is_some_and(|b| b.adapter == "uefi-artifacts")
+    {
+        ensure!(
+            target.boot_protocol.as_deref() == Some("uefi"),
+            "uefi-artifacts requires the uefi boot protocol"
+        );
+    }
     enum_value(
         required(&target.kernel_format, "target.kernel_format")?,
         &["linux-image", "raw", "elf", "uefi"],
@@ -1546,8 +1565,28 @@ fn validate_host(host: Option<&Host>) -> Result<()> {
         );
     }
     if let Some(build) = &host.build {
-        enum_value(&build.adapter, &["linux-merge", "fdt-template"])?;
-        validate_repo_relative(&build.template, "host.build.template")?;
+        enum_value(
+            &build.adapter,
+            &["linux-merge", "fdt-template", "uefi-artifacts"],
+        )?;
+        if build.adapter == "uefi-artifacts" {
+            ensure!(
+                build.template.is_none()
+                    && build.base.is_none()
+                    && build.bootargs.is_none()
+                    && build.initrd_total_bytes.is_none()
+                    && build.media_initrd_cache.is_none(),
+                "uefi-artifacts does not accept FDT template fields"
+            );
+        } else {
+            validate_repo_relative(
+                build
+                    .template
+                    .as_deref()
+                    .context("FDT adapter requires template")?,
+                "host.build.template",
+            )?;
+        }
         validate_repo_relative(&build.acquire_dir, "host.build.acquire_dir")?;
         match (build.adapter.as_str(), build.base.as_deref()) {
             ("linux-merge", Some(base)) => {
@@ -1555,6 +1594,7 @@ fn validate_host(host: Option<&Host>) -> Result<()> {
             }
             ("linux-merge", None) => anyhow::bail!("linux-merge requires host.build.base"),
             ("fdt-template", None) => {}
+            ("uefi-artifacts", None) => {}
             ("fdt-template", Some(_)) => {
                 anyhow::bail!("fdt-template does not accept host.build.base")
             }
@@ -1721,6 +1761,7 @@ fn validate_host_action(step: &RecipeStep) -> Result<()> {
             &["override_env", "sha512"],
         ),
         "download-tar-member" => (&["url", "member", "output"], &[]),
+        "build-static-linux-elf" => (&["source", "output", "architecture"], &[]),
         "extract-iso-file" => (&["source", "member", "output"], &["min_bytes"]),
         "extract-arm64-linux-image" | "extract-arm64-elf-image" => {
             (&["source", "member", "output"], &[])
@@ -1804,6 +1845,15 @@ fn validate_host_action(step: &RecipeStep) -> Result<()> {
                 &format!("host action {:?} argument {key:?}", step.action),
             )?;
         }
+    }
+    if step.action == "build-static-linux-elf" {
+        validate_repo_relative(&step.args["source"], "native helper source")?;
+        validate_repo_relative(&step.args["output"], "native helper output")?;
+        ensure!(
+            step.args["source"].ends_with(".c"),
+            "native helper source must be C"
+        );
+        enum_value(&step.args["architecture"], &["x86_64", "aarch64"])?;
     }
     if matches!(
         step.action.as_str(),
@@ -2084,6 +2134,36 @@ fn push_text(out: &mut Vec<u8>, value: &str, width: usize) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn uefi_acquisition_has_no_fdt_template() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../guest-profiles");
+        let (mut profile, _) =
+            resolve(&root, Path::new("debian-amd64.toml"), &mut Vec::new()).unwrap();
+        validate(&profile, None).unwrap();
+        profile
+            .host
+            .as_mut()
+            .unwrap()
+            .build
+            .as_mut()
+            .unwrap()
+            .template = Some("fake.dts".into());
+        assert!(validate(&profile, None).is_err());
+        profile
+            .host
+            .as_mut()
+            .unwrap()
+            .build
+            .as_mut()
+            .unwrap()
+            .template = None;
+        profile.target.as_mut().unwrap().boot_protocol = Some("fdt-direct".into());
+        assert!(validate(&profile, None)
+            .unwrap_err()
+            .to_string()
+            .contains("uefi-artifacts requires"));
+    }
 
     #[test]
     fn uefi_is_not_silently_prepared_as_an_fdt_bundle() {

@@ -699,7 +699,7 @@ debian-x86-console-hook:
 	clang -target x86_64-unknown-linux-gnu -ffreestanding -fno-builtin \
 		-fno-stack-protector -fno-pie -nostdlib -static -fuse-ld=lld -O2 \
 		-Wall -Wextra -Werror -Wl,--build-id=none -Wl,-e,_start \
-		-DAGENTOS_INIT_TOP guest-profiles/helpers/debian_init_bottom_x86_64.c \
+		guest-profiles/helpers/debian_init_top_x86_64.c \
 		-o $(BUILD_TMP_DIR)/debian-x86/udev-top
 	llvm-objcopy --strip-all --remove-section=.comment $(BUILD_TMP_DIR)/debian-x86/udev-top
 

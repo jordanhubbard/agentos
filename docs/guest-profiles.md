@@ -68,6 +68,21 @@ helpers. `path` remains the relative path inside the CPIO archive; `mode` is
 octal and at most `0777`. Both payload forms support `compression = "none"`
 or `"zstd"`. Existing text overlays do not need a file checksum.
 
+`build-static-linux-elf` compiles a repository-relative C `source` to an
+acquisition-directory-relative `output`, with `architecture = "x86_64"` or
+`"aarch64"`. The executor uses fixed freestanding static Clang/LLD flags and
+strips build metadata with llvm-objcopy; recipes cannot supply compiler flags
+or shell commands. Subsequent binary overlay steps pin the resulting bytes.
+
+`make fetch-guest GUEST_PROFILE=debian-amd64.toml` acquires the pinned Debian
+13 amd64 cloud image, extracts its kernel and initrd, preserves its stock udev
+hooks, and appends native hooks and virtio module configuration. Its
+`uefi-artifacts` build adapter provides an acquisition directory without FDT
+template fields. This is acquisition support: the FDT bundle executor still
+rejects UEFI profiles, and x86 firmware/profile consumption and SSH
+provisioning remain separate integration work. The generated `disk.raw` is
+source media; use a disposable copy for writable boot tests.
+
 Legacy `--guest-os` and `GUEST_OS` spellings remain compatibility selectors.
 For a single guest, the value is resolved through the profile's `aliases`
 array. Multi-guest tests resolve a separate bounded document under

@@ -189,6 +189,7 @@ fn recipe_path(output_dir: &Path, value: &str) -> anyhow::Result<PathBuf> {
 
 fn execute_acquire_step(step: &RecipeStep, output_dir: &Path) -> anyhow::Result<()> {
     match step.action.as_str() {
+        "build-static-linux-elf" => build_static_linux_elf(step, &repo_root()?, output_dir)?,
         "stage-url" => {
             let output = recipe_arg(step, "output")?;
             let dest = recipe_path(output_dir, output)?;
@@ -557,6 +558,63 @@ fn verify_sha512(path: &Path, expected: &str) -> anyhow::Result<()> {
         actual
     );
     println!("[fetch-guest] SHA-512 verified: {}", path.display());
+    Ok(())
+}
+
+fn build_static_linux_elf(step: &RecipeStep, root: &Path, output_dir: &Path) -> anyhow::Result<()> {
+    let target = match recipe_arg(step, "architecture")? {
+        "x86_64" => "x86_64-unknown-linux-gnu",
+        "aarch64" => "aarch64-unknown-linux-gnu",
+        other => anyhow::bail!("unsupported native helper architecture {other:?}"),
+    };
+    let source = recipe_path(root, recipe_arg(step, "source")?)?;
+    anyhow::ensure!(
+        source.extension().is_some_and(|ext| ext == "c"),
+        "native helper source must be C"
+    );
+    let output = recipe_path(output_dir, recipe_arg(step, "output")?)?;
+    if let Some(parent) = output.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let temp = output.with_extension("elf.tmp");
+    // This freestanding build uses Clang resource headers and LLD, not a
+    // discovered host GCC installation or its target runtime libraries.
+    let empty_toolchain = tempfile::tempdir()?;
+    let status = std::process::Command::new("clang")
+        .arg(format!(
+            "--gcc-toolchain={}",
+            empty_toolchain.path().display()
+        ))
+        .args([
+            "-target",
+            target,
+            "-ffreestanding",
+            "-fno-builtin",
+            "-fno-stack-protector",
+            "-fno-pie",
+            "-nostdlib",
+            "-static",
+            "-fuse-ld=lld",
+            "-O2",
+            "-Wall",
+            "-Wextra",
+            "-Werror",
+            "-Wl,--build-id=none",
+            "-Wl,-e,_start",
+        ])
+        .arg(&source)
+        .arg("-o")
+        .arg(&temp)
+        .status()
+        .context("compile native Linux helper")?;
+    anyhow::ensure!(status.success(), "native Linux helper compilation failed");
+    let status = std::process::Command::new("llvm-objcopy")
+        .args(["--strip-all", "--remove-section=.comment"])
+        .arg(&temp)
+        .status()
+        .context("normalize native Linux helper")?;
+    anyhow::ensure!(status.success(), "native Linux helper normalization failed");
+    fs::rename(temp, output)?;
     Ok(())
 }
 
@@ -1415,6 +1473,49 @@ fn symlink_file(src: &Path, dest: &Path) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_helper_recipe_builds_reproducible_static_elf_for_both_architectures() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(
+            dir.path().join("helper.c"),
+            b"void _start(void) { for (;;) {} }\n",
+        )
+        .unwrap();
+        for (architecture, machine) in [("x86_64", 62u16), ("aarch64", 183u16)] {
+            let step = RecipeStep {
+                action: "build-static-linux-elf".into(),
+                args: [
+                    ("source", "helper.c"),
+                    ("output", "helper"),
+                    ("architecture", architecture),
+                ]
+                .into_iter()
+                .map(|(k, v)| (k.into(), v.into()))
+                .collect(),
+            };
+            build_static_linux_elf(&step, dir.path(), dir.path()).unwrap();
+            let first = fs::read(dir.path().join("helper")).unwrap();
+            assert_eq!(&first[..4], b"\x7fELF");
+            assert_eq!(first[4], 2); // ELF64
+            assert_eq!(u16::from_le_bytes([first[16], first[17]]), 2); // executable
+            assert_eq!(u16::from_le_bytes([first[18], first[19]]), machine);
+            build_static_linux_elf(&step, dir.path(), dir.path()).unwrap();
+            assert_eq!(fs::read(dir.path().join("helper")).unwrap(), first);
+            fs::write(
+                dir.path().join("helper.c"),
+                b"#error intentional build failure\n",
+            )
+            .unwrap();
+            assert!(build_static_linux_elf(&step, dir.path(), dir.path()).is_err());
+            assert_eq!(fs::read(dir.path().join("helper")).unwrap(), first);
+            fs::write(
+                dir.path().join("helper.c"),
+                b"void _start(void) { for (;;) {} }\n",
+            )
+            .unwrap();
+        }
+    }
 
     #[test]
     fn binary_initramfs_recipe_preserves_bytes_and_rejects_changed_payload() {
