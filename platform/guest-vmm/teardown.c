@@ -13,6 +13,7 @@
 #include "contracts/guest_ram_caps.h"
 #include "contracts/guest_paging_caps.h"
 #include "contracts/guest_queue_caps.h"
+#include "contracts/guest_graphics_caps.h"
 #include <sel4/sel4.h>
 
 bool aos_guest_teardown_step(aos_guest_teardown_t *state, size_t ram_size)
@@ -68,6 +69,14 @@ bool aos_guest_teardown_step(aos_guest_teardown_t *state, size_t ram_size)
                 AOS_GUEST_RAM_CNODE_BITS) != seL4_NoError) return false;
         state->queue_pools_released++;
     }
+#ifdef AGENTOS_GUEST_GRAPHICS
+    while (state->graphics_pools_released < AOS_GUEST_GRAPHICS_POOL_COUNT) {
+        if (seL4_CNode_Revoke(AOS_GUEST_RAM_SELF_CNODE,
+                AOS_GUEST_GRAPHICS_POOL_BASE + state->graphics_pools_released,
+                AOS_GUEST_RAM_CNODE_BITS) != seL4_NoError) return false;
+        state->graphics_pools_released++;
+    }
+#endif
     if (!state->execution_released) {
         if (seL4_CNode_Revoke(AOS_GUEST_RAM_SELF_CNODE,
                 AOS_GUEST_EXECUTION_POOL_CAP, AOS_GUEST_RAM_CNODE_BITS)

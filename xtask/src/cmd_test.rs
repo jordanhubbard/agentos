@@ -1584,12 +1584,14 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
         .map(|proof| format!("{}; {proof}", result.as_deref().unwrap()));
     }
     if result.is_ok() && args.assert_guest_queue_recycle {
-        result = wait_for_all_markers(
-            &log_path,
-            &["guest queue recycle: zero pages and stale caps verified"],
-            Duration::from_secs(10),
-            &mut qemu,
-        );
+        let mut markers = vec!["guest queue recycle: zero pages and stale caps verified"];
+        if profile_plan
+            .as_ref()
+            .is_some_and(|p| p.devices.iter().any(|d| d == "gpu"))
+        {
+            markers.push("guest graphics recycle: queue and arena pools verified");
+        }
+        result = wait_for_all_markers(&log_path, &markers, Duration::from_secs(10), &mut qemu);
     }
 
     let mut desktop_evidence = None;
@@ -5749,6 +5751,7 @@ fn verify_guest_teardown(
     }
     if graphics_detach_required {
         markers.push("guest teardown: framebuffer queues detached");
+        markers.push("guest teardown: private graphics pages revoked");
     }
     wait_for_all_markers(log_path, &markers, Duration::from_secs(10), qemu)?;
     Ok("running guest destroyed; execution/RAM revoked and stale lifecycle handle rejected".into())
