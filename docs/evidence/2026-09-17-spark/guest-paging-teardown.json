@@ -1,0 +1,29 @@
+{
+  "revision": "d00759c7e00855f3949642f414b682643924796b",
+  "source_tree_clean": true,
+  "host": "Spark ARM64 Linux",
+  "status": "passed",
+  "checks": [
+    {
+      "command": "make test-guest-teardown QEMU_TEST_SSH_PORT=12226",
+      "exit_code": 0,
+      "log": "/tmp/agentos-paging-pool-target.log",
+      "log_sha256": "9666e73642e755f3c2e7ddd7484e67ed815542e7bafcc64e56e6f82b9a9c1bb8",
+      "qemu_log_stem": "build/tmp/agentos-qemu-oGBK6S",
+      "scope": "Live console proof followed by CC destroy; execution, RAM and private paging revocation markers; stale lifecycle handle rejected"
+    },
+    {
+      "command": "make gate QEMU_TEST_SSH_PORT=12226",
+      "exit_code": 0,
+      "log": "/tmp/agentos-paging-pool-full-gate.log",
+      "log_sha256": "e3741df6a52e0dd204b835d220634ec326413540a5b97e17f9907b348102df49",
+      "scope": "Host suite, both root-task architecture boots, ARM guest network/block/console proofs"
+    }
+  ],
+  "limits": [
+    "ASID namespace and untyped pools remain management resources; service grants remain allocated.",
+    "No guest recreation, peer-continuity or Intel lifecycle qualification.",
+    "This target is the console-proof profile, not a Debian graphics guest.",
+    "Partial-revocation failures and retries are host-tested, not forced in this target run."
+  ]
+}

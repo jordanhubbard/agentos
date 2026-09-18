@@ -30,8 +30,21 @@ The execution-pool contract is `contracts/guest_execution_caps.h`; production
 teardown now drains device references before revoking this pool and guest RAM.
 Terminal execution/RAM revocation passed the console-proof target test at
 `7f1e1d8`; [the receipt](evidence/2026-09-17-spark/guest-teardown.json)
-records the exact scope and full gate. Recreation remains pending. Guest VSpace/page
-tables and service queue grants are separate resources, not part of this pool.
+records the exact scope and full gate. Recreation remains pending. Guest paging
+and service queue grants are separate resources, not part of this pool.
+
+ARM guest VSpaces and their intermediate page tables now come from a separate
+1 MiB child untyped. Root tracks that allocation source for all later guest
+mappings and refuses to fall back to its general pool if it is exhausted.
+After the final guest IPC mapping, root moves the sole paging-pool cap to the
+VMM. Each VMM also receives its own newly created ASID pool, never the global
+ASID controller or another VMM's namespace. Teardown revokes the paging pool
+after execution and RAM; the empty ASID namespace remains management authority
+for future VSpaces. The contract is `contracts/guest_paging_caps.h`.
+Private paging revocation and the full OS gate passed at `d00759c`;
+[the receipt](evidence/2026-09-17-spark/guest-paging-teardown.json)
+records the console-proof target and retained management resources.
+Reconstruction remains pending.
 
 AArch64 guest RAM is allocated from dedicated 2 MiB child untyped pools.
 Root installs the initial guest/VMM mappings, then moves each pool's sole
@@ -44,14 +57,23 @@ allocator and does not service later reclamation requests.
 The release/rebuild helpers require stopped vCPUs and drained device
 references. The ARM production teardown callback stops device admission,
 drains accepted block and console work, releases graphics resources, then
-revokes the execution pool and RAM pools. Failure remains non-resumable and
+revokes the execution pool, RAM pools and paging pool. Failure remains non-resumable and
 retryable; completed stages are not re-entered after capability revocation.
 Queued guest faults are not serviced during teardown. Initialization rejects
 lifecycle re-entry while media staging still holds guest RAM pointers.
-VSpace/page-table and service grants remain owned by the VMM; recreation is
-not yet implemented. `make test-guest-teardown` exercises terminal destruction
+Service grants remain owned by the VMM; recreation is not yet implemented.
+`make test-guest-teardown` exercises terminal destruction
 through CC after a live guest console proof, but does not prove recreation or
 complete service-grant reclamation.
+The provisioned Debian graphics/input guest also passed execution/RAM teardown
+at `7e8ebaa`, after authenticated SSH and exact display/input checks;
+[that receipt](evidence/2026-09-17-spark/seeded-graphics-teardown.json)
+predates private paging revocation and does not qualify recreation.
+The same seeded graphics/input qualification passed with private paging
+revocation at `3bd3b94`; [the combined receipt](evidence/2026-09-18-spark/seeded-paging-teardown.json)
+records exact display/input checks followed by execution, RAM and paging
+teardown. Service-grant reclamation, recreation and peer continuity remain
+unqualified.
 `make test-guest-ram-recycle` exercises two preboot overwrite/revoke/retype
 cycles, complete zero verification, stale capability rejection and guest
 block I/O. This test is not a claim of live destroy/recreate, execution-object

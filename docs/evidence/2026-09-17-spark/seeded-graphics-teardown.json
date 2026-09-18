@@ -1,0 +1,28 @@
+{
+  "revision": "7e8ebaaf049569b2d2a7696c96dfb68710eb5386",
+  "source_tree_clean": true,
+  "host": "Spark ARM64 Linux",
+  "status": "passed",
+  "checks": [
+    {
+      "command": "make test-debian-nocloud-graphics-teardown",
+      "exit_code": 0,
+      "log": "/tmp/agentos-seeded-graphics-teardown.log",
+      "log_sha256": "a89b2151efe11e1ee74825a528f415f52169c4189eaec0f6e0eefa1ad9cac36d",
+      "qemu_log_stem": "build/tmp/agentos-qemu-6X5SNU",
+      "scope": "NoCloud-provisioned Debian authenticated SSH, exact guest display and input including held-input release, followed by execution/RAM teardown and stale-handle rejection"
+    },
+    {
+      "command": "make gate",
+      "exit_code": 0,
+      "log": "/tmp/agentos-seeded-teardown-full-gate.log",
+      "log_sha256": "8c978965366073d103bc7e75bab1b5f2b3ae8e49986ebe5ba91aaa1ed24fe900",
+      "scope": "Host suite, both root-task architecture boots, ARM guest network/block/console proofs"
+    }
+  ],
+  "limits": [
+    "This revision predates private paging revocation; VSpace, page tables and service grants remain allocated.",
+    "No recreation, peer continuity or Intel lifecycle qualification.",
+    "Display comparison uses a suspended guest and does not establish interactive GUI performance."
+  ]
+}

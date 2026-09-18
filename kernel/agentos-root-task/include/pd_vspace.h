@@ -53,6 +53,12 @@ typedef struct {
 pd_vspace_result_t pd_vspace_create(seL4_CPtr pd_cnode,
                                      seL4_CPtr asid_pool);
 
+/* ARM guest paging: every paging object, including intermediate tables added
+ * by later mapping calls, comes from paging_pool. No global-pool fallback.
+ * Root must retain paging_pool until its final mapping call for this VSpace. */
+pd_vspace_result_t pd_vspace_create_private(seL4_CPtr asid_pool,
+                                             seL4_CPtr paging_pool);
+
 /*
  * pd_vspace_load_elf — load an ELF image into a VSpace and map a stack.
  *

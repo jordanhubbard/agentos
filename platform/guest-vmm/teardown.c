@@ -11,6 +11,7 @@
 #endif
 #include "contracts/guest_execution_caps.h"
 #include "contracts/guest_ram_caps.h"
+#include "contracts/guest_paging_caps.h"
 #include <sel4/sel4.h>
 
 bool aos_guest_teardown_step(aos_guest_teardown_t *state, size_t ram_size)
@@ -41,6 +42,12 @@ bool aos_guest_teardown_step(aos_guest_teardown_t *state, size_t ram_size)
     if (!state->ram_released) {
         if (!aos_vmm_guest_ram_release(ram_size)) return false;
         state->ram_released = true;
+    }
+    if (!state->paging_released) {
+        if (seL4_CNode_Revoke(AOS_GUEST_RAM_SELF_CNODE,
+                AOS_GUEST_PAGING_POOL_CAP, AOS_GUEST_RAM_CNODE_BITS)
+                != seL4_NoError) return false;
+        state->paging_released = true;
     }
     return true;
 }

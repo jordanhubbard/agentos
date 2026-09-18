@@ -7,12 +7,14 @@
 /* ARM terminal teardown. The caller must stop guest execution and enter
  * DESTROYING first. False requires another call while servicing device
  * completions; execution must never resume. Retains RAM until every backend
- * has relinquished its references. Does not release VSpace or service grants.
+ * has relinquished its references. Releases guest paging after RAM; service
+ * grants and the VMM's private ASID namespace remain management resources.
  * Reconstruction must explicitly reset this state before admitting a guest. */
 typedef struct aos_guest_teardown {
     bool devices_quiesced;
     bool execution_released;
     bool ram_released;
+    bool paging_released;
 } aos_guest_teardown_t;
 
 bool aos_guest_teardown_step(aos_guest_teardown_t *state, size_t ram_size);

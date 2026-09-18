@@ -5673,7 +5673,10 @@ fn verify_guest_teardown(
     }
     wait_for_all_markers(
         log_path,
-        &["guest teardown: execution and RAM revoked"],
+        &[
+            "guest teardown: execution and RAM revoked",
+            "guest teardown: private paging revoked",
+        ],
         Duration::from_secs(10),
         qemu,
     )?;
