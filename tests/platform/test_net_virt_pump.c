@@ -8,6 +8,7 @@
 #include <stdio.h>
 #include <stdint.h>
 #include <string.h>
+#include <sys/mman.h>
 
 #include <platform/net_layout.h>
 #include <platform/net_virt_pump.h>
@@ -218,6 +219,41 @@ static int test_corrupt_queue_and_wrap(void)
     PASS("test_corrupt_queue_and_wrap");
 }
 
+static int test_detach_keeps_peer_live(void)
+{
+    uint8_t *retired = mmap(NULL, AOS_NET_CLIENT_STRIDE,
+        PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    CHECK(retired != MAP_FAILED);
+    aos_net_virt_t v;
+    aos_net_virt_client_t a, b;
+    aos_net_virt_reset(&v);
+    aos_net_client_bind(retired, 0, &a);
+    aos_net_client_bind(g_region, 0, &b);
+    aos_net_client_init_buffers(&a);
+    aos_net_client_init_buffers(&b);
+    CHECK(aos_net_virt_add_client(&v, &a) == 0);
+    CHECK(aos_net_virt_add_client(&v, &b) == 0);
+    const uint8_t packet[] = {1, 3, 5, 7};
+    CHECK(enqueue_tx(&a, packet, sizeof(packet)) == 0);
+    CHECK(enqueue_tx(&b, packet, sizeof(packet)) == 0);
+    CHECK(aos_net_virt_remove_client(&v, &a) == 0);
+    CHECK(v.num_clients == 1);
+    CHECK(mprotect(retired, AOS_NET_CLIENT_STRIDE, PROT_NONE) == 0);
+    CHECK(aos_net_virt_remove_client(&v, &a) == 0);
+    CHECK(aos_net_virt_pump(&v) == 1);
+    aos_net_buff_desc_t rx;
+    CHECK(aos_net_queue_dequeue(b.rx_active, b.capacity, &rx) == 0);
+    CHECK(rx.len == sizeof(packet));
+    CHECK(!memcmp(b.rx_data + rx.io_or_offset, packet, sizeof(packet)));
+    CHECK(aos_net_virt_remove_client(&v, &b) == 0);
+    CHECK(v.num_clients == 0 && aos_net_virt_pump(&v) == 0);
+    aos_net_virt_client_t zero = {0};
+    for (unsigned i = 0; i < AOS_NET_MAX_CLIENTS; i++)
+        CHECK(!memcmp(&v.clients[i], &zero, sizeof(zero)));
+    CHECK(munmap(retired, AOS_NET_CLIENT_STRIDE) == 0);
+    PASS("test_detach_keeps_peer_live");
+}
+
 int main(void)
 {
     int failed = 0;
@@ -230,6 +266,7 @@ int main(void)
     failed += test_drop_when_rx_full();
     failed += test_untrusted_descriptors();
     failed += test_corrupt_queue_and_wrap();
+    failed += test_detach_keeps_peer_live();
     if (failed) {
         printf("%d test(s) failed\n", failed);
         return 1;

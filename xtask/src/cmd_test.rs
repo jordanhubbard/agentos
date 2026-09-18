@@ -5715,6 +5715,7 @@ fn verify_guest_teardown(
         &[
             "guest teardown: execution and RAM revoked",
             "guest teardown: private paging revoked",
+            "guest teardown: network queues detached",
         ],
         Duration::from_secs(10),
         qemu,

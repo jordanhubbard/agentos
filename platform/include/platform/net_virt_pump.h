@@ -78,6 +78,9 @@ static inline void aos_net_client_init_buffers(aos_net_virt_client_t *c)
 }
 
 int aos_net_virt_add_client(aos_net_virt_t *v, const aos_net_virt_client_t *c);
+/* Forget a stopped client's queue references without accessing its memory.
+ * The pump and control caller must be serialized. Missing clients are OK. */
+int aos_net_virt_remove_client(aos_net_virt_t *v, const aos_net_virt_client_t *c);
 
 /*
  * Move every pending TX active buffer to a destination RX:

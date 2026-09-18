@@ -16,6 +16,7 @@
 
 const char vmm_pd_name[] = "x86-net-test";
 static unsigned attachments, kicks;
+static unsigned detachments, detach_failure;
 static bool reject_attach = true;
 static bool host_fixture;
 static const uintptr_t base = AOS_X86_VIRTIO_BASE + 2u*AOS_X86_VIRTIO_STRIDE;
@@ -33,13 +34,15 @@ void seL4_Signal(seL4_CPtr cap)
 }
 void sel4_call(seL4_CPtr cap, const sel4_msg_t *request, sel4_msg_t *reply)
 {
-    assert(cap==PD_CNODE_SLOT_NET_VIRT_EP && request->opcode==NET_VIRT_OP_ATTACH);
+    assert(cap==PD_CNODE_SLOT_NET_VIRT_EP);
+    assert(request->opcode==NET_VIRT_OP_ATTACH || request->opcode==NET_VIRT_OP_DETACH);
     assert(request->length==sizeof(net_virt_attach_req_t));
     net_virt_attach_req_t attach;
     memcpy(&attach,request->data,sizeof(attach));
     assert(attach.version==NET_VIRT_CONTRACT_VERSION && attach.client_id==0 &&
            attach.vmm_slot==NET_VIRT_VMM_SLOT_PRIMARY);
-    attachments++;
+    if (request->opcode==NET_VIRT_OP_ATTACH) attachments++;
+    else detachments++;
     net_virt_attach_reply_t result={.status=reject_attach ? NET_VIRT_ERR_UNAVAILABLE : NET_VIRT_OK,
         .version=NET_VIRT_CONTRACT_VERSION,
         .hw_state=host_fixture ? NET_VIRT_HW_NET_PD : NET_VIRT_HW_NONE};
@@ -48,6 +51,11 @@ void sel4_call(seL4_CPtr cap, const sel4_msg_t *request, sel4_msg_t *reply)
     memcpy(reply->data,&result,sizeof(result));
     const uint8_t assigned_mac[6] = {0x52,0x54,0,0x12,0x34,0x56};
     memcpy(reply->data+12,assigned_mac,sizeof(assigned_mac));
+    if (request->opcode==NET_VIRT_OP_DETACH) {
+        if (detach_failure==1) reply->length=0;
+        if (detach_failure==2) reply->data[4]++;
+        if (detach_failure==3) reply->data[0]=NET_VIRT_ERR_UNAVAILABLE;
+    }
 }
 static void write_reg(unsigned offset, uint32_t value)
 { assert(aos_x86_virtio_access(base+offset,4,true,&value)); }
@@ -180,5 +188,14 @@ int main(int argc, char **argv)
     assert(aos_net_queue_length(client.tx_active)==0);
     assert(!aos_vmm_virtio_net_init_at(0,base,18,region) && attachments==2);
     assert(munmap(ram,RAM_BYTES)==0);
+    for (detach_failure=1; detach_failure<=3; detach_failure++)
+        assert(!aos_vmm_virtio_net_detach());
+    detach_failure=0;
+    assert(aos_vmm_virtio_net_detach() && detachments==4);
+    assert(aos_vmm_virtio_net_detach() && detachments==4);
+    assert(aos_vmm_virtio_net_diagnostic()==0);
+    aos_vmm_virtio_net_rx_ready();
+    aos_vmm_virtio_net_after_fault();
+    assert(kicks==old_kicks);
     puts("PASS: exact network TX/RX and late-wakeup quiescence with inaccessible guest RAM");
 }

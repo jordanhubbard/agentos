@@ -46,7 +46,7 @@
 
 /* Version 3 isolates queue clients and driver transfers on separate pages.
  * Version 2 requires root-minted virtualizer_authority.h badges. */
-#define NET_VIRT_CONTRACT_VERSION       5u
+#define NET_VIRT_CONTRACT_VERSION       6u
 /* Version 4 adds an isolated native client page before the driver page.
  * The native lane uses root-provisioned persistent notifications, not
  * dropped endpoint events. A wake badge takes precedence over message info. */
@@ -61,6 +61,13 @@
  * `vmm_slot` selects its root-granted notification; `client_id` selects the
  * queue stride (profile network_client). */
 #define NET_VIRT_OP_ATTACH              0x2201u
+/* Version 6: terminal queue detach, with the same request/reply layout and
+ * badge authorization as ATTACH. Stop the producer before calling. An OK
+ * reply guarantees that net_virt holds no queue pointers for this client;
+ * queued packets may be discarded. Repeated detach is idempotent. This does
+ * not close the driver's private vNIC or permit reattachment: a retired
+ * client stays BUSY until a future explicit generation/reset contract. */
+#define NET_VIRT_OP_DETACH              0x2202u
 /* NBSend, VMM -> net_virt: guest queues changed (see header comment). */
 #define NET_VIRT_EVENT_KICK             0x2210u
 

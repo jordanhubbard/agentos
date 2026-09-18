@@ -18,6 +18,10 @@ void aos_vmm_virtio_net_rx_ready(void);
  * references and ignore late network wakeups. Idempotent. Shared packet
  * storage remains owned by the virtualizer; this is not a detach/rebind. */
 void aos_vmm_virtio_net_quiesce(void);
+/* Stop guest admission and synchronously retire the virtualizer's queue
+ * references. False is retryable; shared pages must remain mapped until OK.
+ * Terminal: no device reinitialization or driver-vNIC recycling is implied. */
+bool aos_vmm_virtio_net_detach(void);
 /* The canonical virtualizer reported an initialized host NIC at attachment. */
 bool aos_vmm_virtio_net_host_ready(void);
 /* Qualification requires a host NIC, guest DRIVER_OK, and TX/RX activity. */
