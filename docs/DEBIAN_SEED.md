@@ -6,7 +6,11 @@ The [receipt](evidence/2026-09-17-spark/nocloud-automatic-cold-boots.json)
 retains both timing results and qualification limits.
 
 `make test-debian-nocloud-graphics` adds graphics and input to that same
-NoCloud source/provisioning contract. Its first target qualification is pending.
+NoCloud source/provisioning contract. Its target qualification passed on Spark
+at `65940ec`; the [receipt](evidence/2026-09-17-spark/nocloud-graphics-input-display.json)
+retains authenticated SSH, exact frame/scanout equality and both input-release
+proofs. The coherent 3 MiB snapshot transfer took eight seconds, with the guest
+suspended for comparison; this is not an interactive display latency result.
 The derived profile prepares the GPU over pinned-key SSH as `debian` using
 noninteractive sudo, checks exact command output, compares exported frame pixels
 with QEMU RAMFB scanout, and runs both Linux evdev input/release probes.
