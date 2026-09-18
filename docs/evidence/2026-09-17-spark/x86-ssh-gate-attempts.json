@@ -1,0 +1,27 @@
+{
+  "schema": 1,
+  "attempts": [
+    {
+      "attempt": 23,
+      "revision": "121f53e",
+      "host": "madmax",
+      "status": "harness-failure",
+      "observation": "Debian emitted its login prompt and complete host-key report, but cloud-init appended authorized-key output after the prompt on the same line. The end-of-line prompt predicate did not recognize login, so no SSH attempt started.",
+      "lifecycle": "Owned QEMU PID 1295001 terminated after confirming the parser defect; gate exited 2. Disk and logs retained.",
+      "gate_log_sha256": "7bfa5f0b37296feae2c9c8413bbc566e89d21ebee595c7e6c11d6a5a6583ba88",
+      "console_log": "/tmp/agentos-v04-intel-discovery/build/tmp/agentos-qemu-4GuL4V.console.log",
+      "console_sha256": "cd26ee809d8f8f6c2745125aefc28d115481b2d2d7ee0d0e46c7b75462df4a90",
+      "fix": "3007751 recognizes hostname login prefixes with interleaved output; host checks and 97 Rust tests passed",
+      "followup": "Fresh boot24 disk; integrated SSH gate at 3007751 with 600-second timeout"
+    }
+  ],
+  "gui_regression": {
+    "repository": "jordanhubbard/agentos_gui",
+    "revision": "bb70be5",
+    "host": "Spark",
+    "checks": "make check test-rust and make test passed; 9 Rust tests and 116 Playwright tests",
+    "check_log_sha256": "a3f6c1fdd3657a56cf4dc3371f7e8d8de5df9d53870084b50b5d83d51addc69d",
+    "playwright_log_sha256": "593ac0c01324f9fdce02e7170e1b698c347596e7f932f90cc7996f38ca9e1451",
+    "scope": "Clean existing GUI checkout regression checks; no live CC-PD desktop, release build or interaction latency qualification"
+  }
+}
