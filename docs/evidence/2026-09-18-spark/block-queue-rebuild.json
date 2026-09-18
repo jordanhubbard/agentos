@@ -1,0 +1,24 @@
+{
+  "schema": "agentos.block_queue_rebuild.v1",
+  "runtime_commit": "f230994dc",
+  "accepted": false,
+  "spark": {
+    "host_and_x86_link": "passed; 18 rebind admission checks",
+    "host_log_sha256": "cfb32629ee336698789709b8873e346f05224ded466a7f3ad9394de0b739e1f4",
+    "make_gate": "passed, terminal exit 0",
+    "gate_log_sha256": "60413c85e15e1b45488e5161fac06d2290855a2be7d403e12877a7594a612312"
+  },
+  "intel": {
+    "command": "make gate-x86_64-teardown SEL4_SDK_VERSION=2.3.0 with retained checksummed OVMF, kernel and initrd",
+    "result": "failed, terminal exit 2: 600-second timeout waiting for x86 Linux ring3 initramfs syscall proof marker",
+    "observed": "initial hvc0 console request/reply passed; no final qualification marker",
+    "run_stem": "RLrWMy",
+    "combined_log": "/tmp/agentos-blk-rebind-intel.log on sparky",
+    "combined_log_sha256": "4741427c76d51f88c95d42118c6983d2d1678d1407ffecb42809079bee46f6bf"
+  },
+  "limitations": [
+    "Native block reconstruction is not accepted; isolate the network-close and block-rebind changes since the last passing run.",
+    "Host admission tests do not cover native capability-transfer failures.",
+    "Network queue reconstruction, firmware reset and second guest boot remain incomplete."
+  ]
+}
