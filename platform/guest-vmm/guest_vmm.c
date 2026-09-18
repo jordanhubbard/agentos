@@ -1038,7 +1038,7 @@ static bool guest_vmm_teardown(void)
         guest_started = false;
         g_guest_startable = false;
     }
-    if (done) LOG_VMM("guest teardown: execution and RAM revoked\n");
+    if (done) microkit_dbg_puts("guest teardown: execution and RAM revoked\n");
     return done;
 }
 
