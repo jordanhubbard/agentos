@@ -4030,7 +4030,7 @@ void root_task_main(const seL4_BootInfo *bi)
 #endif
 #ifdef AGENTOS_X86_FIRMWARE_RESET
 #ifdef AGENTOS_X86_USERSPACE_PROOF
-            status == AOS_X86_VTX_USERSPACE_TEARDOWN_PASS && reason == 10u &&
+            status == AOS_X86_VTX_LIFECYCLE_PASS && reason == 10u &&
             instruction_len == 3u && rip < 0x0000800000000000ull) {
             dbg_puts("[rt] x86 Linux ring3 initramfs syscall proof verified\n");
             dbg_puts("[rt] x86 canonical host network attachment verified\n");
@@ -4038,6 +4038,7 @@ void root_task_main(const seL4_BootInfo *bi)
             dbg_puts("[rt] x86 Linux guest block read verified\n");
             dbg_puts("[rt] x86 Linux guest network packet roundtrip verified\n");
             dbg_puts("[rt] x86 terminal teardown and zeroed pool reuse verified\n");
+            dbg_puts("[rt] x86 lifecycle client suspend resume destroy verified\n");
 #else
             status == AOS_X86_VTX_FIRMWARE_CONFIG &&
             reason == 30u && rip <= 0xffffffffu &&

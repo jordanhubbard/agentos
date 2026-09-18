@@ -20,6 +20,23 @@ delivery and mapping-isolation qualification remain pending.
 
 ## Privilege
 
+The x86 firmware VMM now polls its service endpoint between VM entries and
+uses the shared guest lifecycle state machine. SUSPEND keeps the native VMM
+thread in its IPC loop; RESUME permits VM entry again with the saved exit
+state. DESTROY drains/detaches devices and revokes private resources, with
+failed cleanup remaining non-resumable. The virtual clock continues during
+suspension. This board still auto-boots; managed CREATE/admission and external
+manager/CC/GUI integration are outstanding.
+
+The userspace qualification adds `x86_lifecycle_probe`, an ordinary client
+with only its VMM service endpoint. It receives no device, IRQ, guest memory
+or execution caps. The VMM receives its rendezvous endpoint at slot 473.
+The client suspends/resumes during early boot, requires Linux to reach the
+ring-3 checkpoint, then destroys and verifies terminal-state rejection.
+Only after its completion acknowledgement does the VMM check stale caps and
+zeroed pool reuse. This target sequence and the full gate require fresh
+qualification; host tests alone do not prove the new IPC path.
+
 The x86 firmware composition now allocates its VCPU and four EPT paging
 objects from a dedicated 64 KiB non-device child untyped. Root moves the
 sole pool capability to the owning VMM after boot configuration, in the

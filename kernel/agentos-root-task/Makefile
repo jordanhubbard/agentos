@@ -312,6 +312,18 @@ $(BUILD_DIR)/x86_release_memory.o: $(REPO_ROOT_MK)/platform/guest-vmm/x86_releas
 	@mkdir -p $(BUILD_DIR)
 	$(CC) -c $(X86_SERIAL_CFLAGS) $< -o $@
 $(BUILD_DIR)/guest_vmm_primary.elf: $(BUILD_DIR)/x86_teardown.o $(BUILD_DIR)/x86_release_memory.o
+$(BUILD_DIR)/x86_control.o: $(REPO_ROOT_MK)/platform/guest-vmm/x86_control.c
+	@mkdir -p $(BUILD_DIR)
+	$(CC) -c $(CFLAGS) $< -o $@
+$(BUILD_DIR)/x86_runtime.o: $(REPO_ROOT_MK)/platform/guest-vmm/runtime.c
+	@mkdir -p $(BUILD_DIR)
+	$(CC) -c $(CFLAGS) $< -o $@
+$(BUILD_DIR)/guest_vmm_primary.elf: $(BUILD_DIR)/x86_control.o $(BUILD_DIR)/x86_runtime.o
+$(BUILD_DIR)/x86_lifecycle_probe.o: $(REPO_ROOT_MK)/tests/platform/x86_lifecycle_probe.c
+	@mkdir -p $(BUILD_DIR)
+	$(CC) -c $(CFLAGS) $< -o $@
+$(BUILD_DIR)/x86_lifecycle_probe.elf: $(BUILD_DIR)/x86_lifecycle_probe.o $(BUILD_DIR)/sel4_crt.o $(BUILD_DIR)/pd_entry.o $(BUILD_DIR)/m3_bare_metal.o $(BUILD_DIR)/log.o
+	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
 $(BUILD_DIR)/guest_vmm_primary.elf: LDFLAGS += --defsym=printf_=printf
 # Keep the MMIO console path; unused PCI entry points are separate sections.
 X86_SERIAL_CFLAGS = $(CFLAGS) -Wno-sign-compare \
@@ -1449,6 +1461,12 @@ SYSTEM_TOML := $(if $(_BOARD_TOML_NONEMPTY),$(_BOARD_TOML_NONEMPTY),$(SYSTEM_TOM
 ifeq ($(AGENTOS_BOARD),x86_64_generic_vtx)
 ifeq ($(X86_FIRMWARE_RESET),1)
 SYSTEM_TOML := $(REPO_ROOT_MK)/boards/qemu-x86_64-vtx/firmware.toml
+ifeq ($(X86_USERSPACE_PROOF),1)
+SYSTEM_TOML := $(abspath $(BUILD_DIR)/x86-lifecycle.toml)
+$(SYSTEM_TOML): $(REPO_ROOT_MK)/boards/qemu-x86_64-vtx/firmware.toml
+	@mkdir -p $(BUILD_DIR)
+	{ cat $<; printf '\n[[pd]]\nname = "x86_lifecycle_probe"\npriority = 251\n'; } > $@
+endif
 endif
 endif
 

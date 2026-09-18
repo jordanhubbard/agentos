@@ -27,6 +27,9 @@ extern const uint8_t _binary_x86_boot_profile_bin_start[], _binary_x86_boot_prof
 #include <platform/vmm_virtio_net.h>
 #include <platform/net_host_layout.h>
 #include <platform/guest_teardown.h>
+#include <platform/x86_control.h>
+#include "contracts/guest_contract.h"
+#include "contracts/vmm_contract.h"
 #include <libvmm/virtio/gpa.h>
 #include "contracts/x86_guest_memory_caps.h"
 #include "contracts/guest_queue_caps.h"
@@ -66,6 +69,7 @@ static seL4_Word boot_reads[3], last_qualification;
 static bool have_wait_snapshot;
 static bool serial_wake_received;
 static bool serial_attached;
+static aos_guest_teardown_t teardown_state;
 static seL4_CPtr block_proof_ep;
 static uint8_t block_boot_data[AOS_BLK_TRANSFER_SIZE];
 
@@ -94,6 +98,27 @@ bool aos_vmm_serial_detach(void)
     if (!serial_virt_client_detach(0u)) return false;
     serial_attached = false;
     return true;
+}
+
+/* The guest VCPU is bound to this native VMM thread. Pausing means keeping
+ * the thread in its control loop, not suspending its TCB. The saved VMEnter
+ * result and VMCS remain intact until RESUME; the virtual clock continues
+ * advancing and overdue timers are handled by the normal exit path. */
+static bool control_transition(void) { return true; }
+static bool control_teardown(void)
+{
+    return aos_guest_teardown_step(&teardown_state, AOS_X86_FIRMWARE_RAM);
+}
+static void control_wake(seL4_Word badge, void *context)
+{
+    if (badge & SERIAL_VIRT_VMM_WAKE_BADGE) {
+        service_serial(context);
+        serial_wake_received = true;
+    }
+    if ((badge & BLK_VIRT_VMM_WAKE_BADGE) && !teardown_state.block_detached)
+        aos_vmm_virtio_blk_resp_ready();
+    if ((badge & NET_VIRT_VMM_WAKE_BADGE) && !teardown_state.network_detached)
+        aos_vmm_virtio_net_rx_ready();
 }
 #ifdef AGENTOS_X86_BOOT_KERNEL
 extern const uint8_t _binary_x86_boot_kernel_bin_start[], _binary_x86_boot_kernel_bin_end[];
@@ -169,12 +194,11 @@ static uint64_t timestamp(void)
 }
 
 #ifdef AGENTOS_X86_USERSPACE_PROOF
-/* The ring-3 checkpoint has already exited VMX. Never enter the guest again.
- * Driver work may need further scheduling, but no queue is touched after its
- * service acknowledges detach. A failed step leaves the guest stopped. */
-static bool terminal_teardown_proof(aos_serial_endpoint_t *endpoint, uint64_t hz)
+bool aos_x86_lifecycle_ack;
+/* Run only after the independent client has destroyed the guest and checked
+ * terminal-state rejections. Never enter VMX or reuse a retired queue. */
+static bool terminal_teardown_proof(void)
 {
-    if (!hz || hz > UINT64_MAX / 30u) return false;
     /* Root is already waiting for the terminal report. A failed report on
      * the ordinary service endpoint must not reach that receiver. NBSend
      * drops it when no service receiver is waiting; it cannot block this
@@ -185,13 +209,7 @@ static bool terminal_teardown_proof(aos_serial_endpoint_t *endpoint, uint64_t hz
     seL4_SetMR(3, 0u);
     seL4_NBSend(PD_CNODE_SLOT_SELF_EP,
         seL4_MessageInfo_new(AOS_X86_VTX_PROOF_LABEL, 0u, 0u, 4u));
-    uint64_t started = timestamp();
-    aos_guest_teardown_t state = {0};
-    while (!aos_guest_teardown_step(&state, AOS_X86_FIRMWARE_RAM)) {
-        if (!state.serial_detached) service_serial(endpoint);
-        if (timestamp() - started > hz * 30u) return false;
-        seL4_Yield();
-    }
+    if (!teardown_state.paging_released || !aos_x86_lifecycle_ack) return false;
     if (virtio_gpa_to_hva(0u, 1u) != NULL) return false;
     const seL4_CPtr stale[] = {VCPU, AOS_GUEST_RAM_GUEST_VSPACE};
     for (unsigned i = 0; i < 2u; i++) {
@@ -416,7 +434,28 @@ void aos_x86_firmware_run(seL4_CPtr ep, aos_x86_vmenter_return_t returned)
         .rom_size=AOS_X86_FIRMWARE_BYTES,
     };
     unsigned exits = 0;
+    /* This board auto-boots before entering the firmware adapter. Managed
+     * startup/profile admission is a separate composition requirement. */
+    uint32_t lifecycle_state = GUEST_STATE_RUNNING;
+    bool lifecycle_started = true;
+    const aos_guest_vmm_runtime_t runtime = {
+        .os_type = VMM_PROFILE_PRIMARY, .guest_id = 0u,
+        .state = &lifecycle_state, .started = &lifecycle_started,
+        .suspend = control_transition, .resume = control_transition,
+        .teardown = control_teardown,
+    };
+#ifdef AGENTOS_X86_USERSPACE_PROOF
+    seL4_Send(AOS_X86_LIFECYCLE_PROBE_CAP,
+        seL4_MessageInfo_new(AOS_X86_LIFECYCLE_READY, 0u, 0u, 0u));
+#endif
     for (;;) {
+        enum aos_x86_control_result control;
+        do {
+            control = aos_x86_control_step(&runtime, control_wake, &serial_endpoint);
+            if (control == AOS_X86_CONTROL_ERROR)
+                stop(ep, AOS_X86_VTX_PROOF_FAIL, 0x435452u, 0u, lifecycle_state);
+            if (control == AOS_X86_CONTROL_STOPPED) service_serial(&serial_endpoint);
+        } while (control != AOS_X86_CONTROL_RUNNING);
         seL4_Word rip = returned.words[SEL4_VMENTER_CALL_EIP_MR];
         if (returned.result == SEL4_VMENTER_RESULT_NOTIF && returned.badge &&
             !(returned.badge & ~(SERIAL_VIRT_VMM_WAKE_BADGE | BLK_VIRT_VMM_WAKE_BADGE |
@@ -524,9 +563,22 @@ void aos_x86_firmware_run(seL4_CPtr ep, aos_x86_vmenter_return_t returned)
                     (read_field(ep,EFER) & LMA) &&
                     (read_field(ep,CR0) & (PE|PG)) == (PE|PG) &&
                     boot_reads[0] && boot_reads[1];
-                if (passed && !terminal_teardown_proof(&serial_endpoint, hz))
+                if (passed) {
+                    seL4_Send(AOS_X86_LIFECYCLE_PROBE_CAP,
+                        seL4_MessageInfo_new(AOS_X86_LIFECYCLE_CHECKPOINT, 0u, 0u, 0u));
+                    /* The ring-3 trap is terminal for this fixture. Service
+                     * the client's destroy/rejection checks without another
+                     * VM entry, even before SUSPEND arrives. */
+                    while (!aos_x86_lifecycle_ack) {
+                        if (aos_x86_control_step(&runtime, control_wake,
+                                &serial_endpoint) == AOS_X86_CONTROL_ERROR)
+                            stop(ep, AOS_X86_VTX_PROOF_FAIL, 0x435452u, rip, lifecycle_state);
+                        service_serial(&serial_endpoint);
+                    }
+                }
+                if (passed && !terminal_teardown_proof())
                     stop(ep, AOS_X86_VTX_PROOF_FAIL, 0x544452u, rip, 0u);
-                stop(ep,passed ? AOS_X86_VTX_USERSPACE_TEARDOWN_PASS : AOS_X86_VTX_PROOF_FAIL,
+                stop(ep,passed ? AOS_X86_VTX_LIFECYCLE_PASS : AOS_X86_VTX_PROOF_FAIL,
                      reason,rip,passed ? (cs & 3u) :
                          ((regs.edx == AOS_X86_USERSPACE_PASS ? 0x100u : regs.edx) |
                           ((uint64_t)aos_vmm_virtio_net_diagnostic() << 32)));

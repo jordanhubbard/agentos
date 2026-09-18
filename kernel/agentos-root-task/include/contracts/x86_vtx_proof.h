@@ -22,6 +22,12 @@
 #define AOS_X86_VTX_GUEST_FAULTS_PASS  7u
 #define AOS_X86_VTX_USERSPACE_PASS     8u
 #define AOS_X86_VTX_USERSPACE_TEARDOWN_PASS 9u
+#define AOS_X86_VTX_LIFECYCLE_PASS     10u
+/* Qualification client rendezvous; never a production lifecycle opcode. */
+#define AOS_X86_LIFECYCLE_PROBE_CAP   473u
+#define AOS_X86_LIFECYCLE_READY     0x584301u
+#define AOS_X86_LIFECYCLE_CHECKPOINT 0x584302u
+#define AOS_X86_LIFECYCLE_ACK       0x584303u
 /* Qualification-only CPUID trap; absent from production device contracts. */
 #define AOS_X86_USERSPACE_LEAF  0x41554f53u
 #define AOS_X86_USERSPACE_INIT  0x494e4954u
