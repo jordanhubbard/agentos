@@ -33,6 +33,10 @@ device, IRQ, guest-memory or execution capability. It rejects RAM requests
 above the provisioned capacity and reports the actual VMM alias and guest
 physical base. The qualification client exercises this manager before allowing
 Linux to run. External CC/GUI integration and guest recreation remain outstanding.
+The [managed-start receipt](evidence/2026-09-18-spark/x86-managed-start.json)
+records Intel manager/lifecycle qualification and the full Spark gate at
+`8ebb8ed`, plus the default Debian boot/SSH regression at `d563b67` after
+correcting an automatic-start-only variable declaration collision.
 
 The userspace qualification adds `x86_lifecycle_probe`, an ordinary client
 with its VMM service endpoint and a send-only failure-report cap. Root rejects
