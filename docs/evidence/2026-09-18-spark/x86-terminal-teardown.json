@@ -27,13 +27,21 @@
     "initrd_sha256": "43f3b0bb3e26a1e45438c421d8fecfa3a1cf613138fef7b3a5132420357f0bd4",
     "firmware_sha256": "101afad5f520753224b60b9555df60add435cf50c7a82b781d7d7d8c60db7eb5"
   },
+  "debian_regression": {
+    "command": "make gate-x86_64-debian-ssh SEL4_SDK_VERSION=2.3.0 QEMU_TEST_TIMEOUT=600 with retained pinned media/host key/OVMF",
+    "result": "PASS, exit0; pinned Ed25519 public-key SSH, x86_64 and sync",
+    "log_sha256": "2079bafd2b09be2b39211eeddad72edfd7700e56e57e4555f77a7de327f511ac",
+    "serial_log_sha256": "a4399ba413831cebec1e88365400bc179ff8336835c9dd3e4b609de53b21e53c",
+    "console_log_sha256": "8abb2be5a1ecf30befa7d5cd77928573ff471dc3a1bf7d3917a935e87d3eb3b8",
+    "qemu_pid": 3318234,
+    "qemu_log_stem": "agentos-qemu-Zdg3aj"
+  },
   "earlier_attempt": "3b9bb7c passed Spark gate but Intel compilation failed before QEMU: firmware VMM lacked the libvmm include path. 9b73e34 fixes that rule; both gates then passed.",
   "limits": [
     "Probe begins after the qualification-only ring3 checkpoint, not a public lifecycle request",
     "Scratch frame reuse does not recreate an executing guest",
     "Management pool/CNode/VSpace authority and VMM thread remain live",
     "No suspend/resume, concurrent-guest, persistent-close or public lifecycle IPC acceptance claim",
-    "Pinned Debian SSH regression at this runtime is still running",
     "Required CI, canonical integration and release remain pending"
   ]
 }
