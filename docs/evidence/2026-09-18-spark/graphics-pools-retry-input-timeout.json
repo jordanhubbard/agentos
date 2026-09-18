@@ -1,0 +1,25 @@
+{
+  "qualification": "Private graphics-pool reclamation retry",
+  "runtime_revision": "3b0f16f5df288701b46b270cd6997da2637fe026",
+  "host": "Spark AArch64",
+  "source_clean_during_tests": true,
+  "gate": {"result": "PASS", "log_sha256": "9e82acf7bb5e9def9bfa34f7abaeeafdd550fc558b1d7c5b314720f11c20784b"},
+  "target": {
+    "command": "make test-debian-nocloud-graphics-teardown QEMU_TEST_SSH_PORT=12235",
+    "result": "FAIL before teardown: explicit-input helper upload lost SSH",
+    "log_sha256": "e5a18d0fc48e7833a06b6d5c639628fa75b82da873e5ea232abc75706338ca74",
+    "serial_log_sha256": "394a9902b601d87857dbb068cc7cdc2d599b6ca27b2249d93a830c801522d7fc",
+    "qemu_pid": 1350672,
+    "qemu_log_stem": "agentos-qemu-dleq0H",
+    "stderr": "Timeout, server 127.0.0.1 not responding.",
+    "stderr_sha256": "38d19e0c81605f8cb5c3537c3b5ce8cce2cfa8fd1187deac15dff10f28a4bece",
+    "prior_progress": "Authenticated Debian SSH; full 1024x768 framebuffer capture and all 786432 physical scanout pixels matched",
+    "frame_sequence": 1233,
+    "frame_sha256": "ad15c2d7ae529b74289668f9e50594cb4f02ca2a48be57b5de82da248d581065"
+  },
+  "limits": [
+    "Neither input pass completed; teardown and graphics-pool recycling were not reached",
+    "Cause of SSH liveness failure remains unconfirmed",
+    "No graphics reclamation, reconstruction or release qualification claim"
+  ]
+}
