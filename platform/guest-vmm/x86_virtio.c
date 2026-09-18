@@ -9,6 +9,15 @@ static uint8_t *guest_ram;
 static size_t guest_ram_size;
 static virtio_device_t *devices[AOS_X86_VIRTIO_SLOTS];
 
+void aos_x86_virtio_retire(void)
+{
+    virtio_gpa_set_translate(NULL);
+    controller = NULL;
+    guest_ram = NULL;
+    guest_ram_size = 0u;
+    for (unsigned i = 0; i < AOS_X86_VIRTIO_SLOTS; i++) devices[i] = NULL;
+}
+
 static void *translate(uint64_t gpa, size_t length)
 {
     if (!guest_ram || gpa > guest_ram_size || length > guest_ram_size-gpa)

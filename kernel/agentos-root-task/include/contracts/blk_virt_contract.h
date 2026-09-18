@@ -70,9 +70,17 @@ static inline int blk_virt_service_notification(uint64_t badge)
  * same root-assigned client/slot/media authority. The producer must stop
  * admission and consume all responses first. BUSY preserves the attachment
  * while either queue is nonempty or invalid. OK retires all service queue
- * references. Repeated detach is idempotent; retired clients cannot attach
- * again without a future generation/reset contract. This is not a flush. */
+ * references. Repeated detach is idempotent; retired clients must use REBIND
+ * with a fresh pool and generation instead of ATTACH. This is not a flush. */
 #define BLK_VIRT_OP_DETACH              0x2C02u
+/* A retired guest supplies one private untyped capability. The service
+ * retypes one large queue frame and returns it after binding the same media.
+ * The caller retains the pool and must revoke it after detach, or after an
+ * unsuccessful reconstruction. ATTACH cannot revive a retired client.
+ * Client N implies VMM slot/media N. Generation starts at 1 and increments
+ * once per successful rebind; exhaustion fails closed. */
+#define BLK_VIRT_OP_REBIND              0x2C03u
+#define BLK_VIRT_REBIND_VERSION         2u
 /* Legacy endpoint labels retained for diagnostics/compatibility; version 4
  * clients use the notification capabilities, not these labels. */
 /* VMM -> blk_virt: request queue is non-empty. */
@@ -90,6 +98,23 @@ static inline int blk_virt_service_notification(uint64_t badge)
 #define BLK_VIRT_ERR_BAD_CLIENT         2u   /* client/vmm_slot/media out of range */
 #define BLK_VIRT_ERR_BUSY               3u   /* client already attached */
 #define BLK_VIRT_ERR_UNAVAILABLE        4u   /* virtualizer not serving yet */
+#define BLK_VIRT_ERR_RESOURCE           5u
+
+typedef struct __attribute__((packed)) {
+    uint32_t version;
+    uint32_t client;
+    uint32_t generation;
+} blk_virt_rebind_req_t;
+
+/* One frame capability accompanies successful replies only. Storage info
+ * in the new frame carries backend geometry and write policy. Version 2
+ * also returns the current backend kind for fresh VMM device adoption. */
+typedef struct __attribute__((packed)) {
+    uint32_t status;
+    uint32_t version;
+    uint32_t generation;
+    uint32_t hw_state;
+} blk_virt_rebind_reply_t;
 
 /* ── Backend reported by ATTACH (blk_virt_attach_reply_t.hw_state) ────── */
 #define BLK_VIRT_HW_NONE                0u   /* no host media: RAM disk backend */

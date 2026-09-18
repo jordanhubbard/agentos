@@ -32,7 +32,8 @@ Its ordinary `vm_manager` PD receives only the VMM service endpoint, with no
 device, IRQ, guest-memory or execution capability. It rejects RAM requests
 above the provisioned capacity and reports the actual VMM alias and guest
 physical base. The qualification client exercises this manager before allowing
-Linux to run. External CC/GUI integration and guest recreation remain outstanding.
+Linux to run. External CC/GUI integration and managed recreation are qualified
+separately below.
 The [managed-start receipt](evidence/2026-09-18-spark/x86-managed-start.json)
 records Intel manager/lifecycle qualification and the full Spark gate at
 `8ebb8ed`, plus the default Debian boot/SSH regression at `d563b67` after
@@ -64,8 +65,90 @@ and destruction on Intel at `3fcdf58`; the
 records exact binaries and screenshots. `MSG_CC_LOG_STREAM` mode one addresses
 active public guest handles directly, avoiding the legacy slot-number ambiguity.
 It uses the same frontend queues and guest registry, with no new capabilities.
-Legacy slot mode remains supported. Recreation, concurrent native GUI streams,
-long-session transcript rollover and graphical Intel GUI acceptance remain pending.
+Legacy slot mode remains supported. The managed recreation qualification below
+extends this single-guest lifecycle path. Concurrent native GUI streams and
+graphical Intel GUI acceptance remain pending.
+
+Managed x86 CREATE after complete DESTROY now reconstructs private execution,
+RAM/ROM and service queues, clears retained device/serial/clock state, restores
+firmware CPU state and uses a fresh VM entry. Root delegates authority only at
+boot. A reconstruction error latches the slot DEAD; cleanup requires validated
+backend detach replies before revoking partial resources. Ambiguous REBIND
+failures do not permit guessing a generation for automatic retry. At `8d1c319`,
+the binary CC gate passed two pinned Debian login/SSH/input/destroy cycles in
+one seL4 boot with distinct public handles and stale-handle rejection; full
+Spark and host gates also passed. The
+[managed recreation receipt](evidence/2026-09-18-spark/x86-managed-recreation.json)
+records the test-harness failure and correction. The production reconstruction
+coordinator now has sanitizer-backed host failure injection at all eleven
+construction stages, three detach boundaries and five resource-release
+boundaries. It retains ambiguous REBIND ownership and resumes partial cleanup
+at the failed release without publishing readiness. At `3ea3554`, the full
+host/Spark gates and managed Intel two-boot regression passed again; see the
+[transaction receipt](evidence/2026-09-18-spark/x86-recreation-transaction.json).
+The native external GUI at `93c4723`, running on Spark through SSH Unix-socket
+forwarding to the same Intel runtime, also completed two create/login-prompt/
+input-echo/destroy cycles in one seL4 boot. Handles 1 and 2 had fresh console
+output and distinct input markers; destruction returned empty inventory each
+time. The [native GUI recreation receipt](evidence/2026-09-18-spark/x86-native-gui-recreation.json)
+retains binary hashes, screenshots and observed launch rough edges, including
+the separately tracked RAM-field editing defect. This proves the external
+console/lifecycle path, not graphical guest display or dynamic RAM allocation.
+Native transport fault injection is not claimed. A replay of the earlier
+one-shot serial qualification reproduced a validated `BUSY` detach reply
+(detail `0x0c83`, first reconstruction cycle). The corrected caller retries
+only this contracted transient response and still requires successful detach
+before revocation. Three consecutive Intel runs of the corrected revision
+passed; the [race receipt](evidence/2026-09-18-spark/serial-detach-race.json)
+retains the failing replay, correction and successful regressions. Older coarse
+failure records remain retained without claiming an exact retroactive diagnosis.
+Canonical integration and remaining roadmap acceptance are still pending;
+this is not v0.4 release acceptance.
+
+The x86 firmware VMM receives a dedicated ASID pool for its EPT namespace at
+boot, retained outside the revocable VCPU/EPT object pool. Root assigns the
+initial EPT through that private pool and moves its capability to the VMM;
+the system-wide ASID controller remains with root. The bounded reconstruction
+helper can retype stopped VCPU/EPT objects and map their intermediate tables.
+Its caller must revoke partial objects before retrying. It does not bind a
+TCB, map guest RAM or start execution. The terminal qualification now exercises
+two reconstruction/revocation cycles; the
+[stopped-object receipt](evidence/2026-09-18-spark/x86-stopped-object-rebuild.json)
+records passing Intel qualification and the full Spark gate at `8714bd3`.
+Those stopped checks alone did not establish guest recreation.
+Root also grants the firmware VMM a capability to its own native TCB in a
+separate retained slot. This grants no root or peer thread capability. The
+VMM can attach a rebuilt EPT and VCPU to that thread while execution remains
+stopped; the native thread is outside the guest object pool's revocation tree.
+Both binding failures propagate without starting execution. The managed
+integration above adds firmware initialization and second-boot qualification.
+
+The memory reconstruction helper accepts only the configured RAM reservation
+and a complete retained firmware image outside the guest aliases. It retypes
+private RAM/ROM pools, restores firmware through a temporary writable native
+mapping, removes that mapping, then publishes read-only ROM aliases and EPT
+entries. GPA translation stays disabled until device initialization. The
+qualification VMM embeds the checksummed firmware in native read-only data so
+the source survives guest-ROM revocation. Failed restoration leaves the guest
+stopped and requires pool revocation before retry. The
+[memory restoration receipt](evidence/2026-09-18-spark/x86-memory-rebuild.json)
+records passing host failure tests, full Spark gate and two Intel restoration
+cycles at `4748a19`. That receipt covers stopped resources only; the managed
+recreation qualification above separately establishes the second guest boot.
+
+Serial queue reconstruction uses capability IPC with a monotonically increasing
+generation. After terminal detach and VMM pool revocation, `serial_virt` receives
+the VMM's private untyped, retypes one large queue frame, maps it into its own
+VSpace and returns a frame capability to the VMM. Root supplies only the service's
+own CNode/VSpace management caps at boot. The commit step requires a closed,
+idle frontend gate and a fresh empty guest queue, clears old frontend input and
+output, then reopens admission. Foreign, replayed, skipped and wrapped generations
+are rejected. The
+[serial replacement receipt](evidence/2026-09-18-spark/serial-queue-rebuild.json)
+records host service tests, full Spark gate, and two real Intel capability-transfer,
+service-consumption and revocation cycles at `2a0948f`. That receipt covers
+serial queues only; the managed integration above adds block/network queues
+and a second guest boot.
 
 The userspace qualification adds `x86_lifecycle_probe`, an ordinary client
 with its VMM service endpoint and a send-only failure-report cap. Root rejects
@@ -128,7 +211,8 @@ fixture reports a distinct success status and the harness requires the new
 teardown marker. That Intel target and the full Spark gate passed at `9b73e34`;
 [the receipt](evidence/2026-09-18-spark/x86-terminal-teardown.json) records all
 133 frame pools and the stopped-scratch-frame scope. That earlier probe did
-not implement lifecycle IPC or suspend/resume; recreation remains absent.
+not implement lifecycle IPC, suspend/resume or recreation; those paths are
+qualified separately above.
 
 VMX qualification reports now use a separate endpoint, with a send-only
 capability in VMM slot 472. Root no longer receives on the VMM service
@@ -139,8 +223,8 @@ nonblocking failure report on the service endpoint before its real terminal
 report; the old shared receive path would consume that failure. Basic Intel
 VMX, Intel teardown and the full Spark gate passed at `94f47a3`;
 [the receipt](evidence/2026-09-18-spark/x86-report-endpoint.json) records routing
-qualification. The lifecycle handlers described above extend that work;
-external control remains outstanding.
+qualification. The lifecycle handlers and external CC control described above
+extend that work.
 
 Each AArch64 guest's TCB, VCPU, IPC frame and MCS scheduling context now come
 from a dedicated 64 KiB non-device child untyped. After boot configuration,
@@ -265,14 +349,42 @@ references. The ARM production teardown callback stops device admission,
 drains accepted block and console work, releases graphics resources, then
 revokes the execution pool, RAM pools and paging pool. Failure remains non-resumable and
 retryable; completed stages are not re-entered after capability revocation.
+The x86 teardown callback also retires its private VirtIO bus after complete
+resource release. Retirement disables GPA translation and forgets device,
+IOAPIC and RAM pointers without dereferencing them, so revoked mappings are
+not accessed. Late MMIO and IRQ activity is rejected until a new bus is
+initialized and devices are registered. Backend/device state and the new
+IOAPIC must still be reset separately before a subsequent boot.
+The network adapter has a separate adoption helper for a successful REBIND.
+It resets private VirtIO registers, guest-ring pointers and activity counters,
+binds the new shared queues without clearing pending packets, and uses the new
+attachment's backend and MAC. Stale generations and live-device replacement
+are rejected; failed registration retains backend ownership for detach before
+revocation. Host sanitizer tests exercise fresh TX/RX generations, pending RX,
+failed-registration cleanup and inaccessible retired mappings. This helper is
+not yet wired into the firmware reset path or qualified by a second guest boot.
+The [adoption receipt](evidence/2026-09-18-spark/network-device-adoption.json)
+also records two native stopped adoption cycles at `f2980ad`: fresh buses over
+restored RAM, MMIO identity/reset-state/MAC probes, detach, bus retirement and
+stale queue-capability rejection. Native adoption does not yet exercise fresh
+guest TX/RX descriptors; those remain host-tested.
 Before capability revocation it also requires a network contract-v6 detach
 acknowledgment. The single-threaded virtualizer drops that client's queue
 pointers, including any hub-pump entry, before replying. Subsequent wakeups
 cannot access the retired queues. Root-assigned badges authorize detach in
 the same way as attach; no new capability is granted. A retired client cannot
-reattach without a future generation/reset contract, so old driver RX data
-cannot be silently reused for a new guest. The driver vNIC remains allocated;
-network detach alone does not prove its reclamation or guest recreation.
+reattach without a future generation/reset contract. Detach closes the raw
+driver handle, including a handle opened before a link-down fallback, before
+retiring the guest queue. A failed close retains ownership for retry. Driver
+slot reuse resets RX indices; network detach alone does not prove guest recreation.
+Network REBIND v1 is restricted to guest slots 0/1 and the next nonzero
+generation after retirement. It uses the same private-untyped/frame-return
+scheme as block and serial reconstruction. net_virt receives only its own
+CNode/VSpace management authority; native-client and driver pages are not
+replaced. Fresh queues are initialized before the same guest identity opens
+a new raw driver session. Legacy ATTACH cannot revive a retired slot.
+Failed reconstruction requires pool revocation before retry, with detach
+first if the service already committed the generation.
 Block contract v5 likewise retires service queue pointers only after both
 request and response queues are valid and empty. The virtualizer serializes
 detach with its synchronous driver transfers, so an acknowledgment cannot
@@ -281,10 +393,38 @@ asking for detach; BUSY or malformed replies keep teardown retryable and
 prevent capability revocation. Detach does not issue a flush or establish
 durability. Media ownership and the per-client RAM
 fallback disk remain allocated; retired clients cannot silently reattach.
+Block REBIND v2 requires a retired client and its next nonzero generation.
+Root grants blk_virt only its own CNode/VSpace management capabilities. The
+owning VMM transfers its private queue untyped; blk_virt allocates one 2 MiB
+frame, initializes fresh queues, restores the same root-assigned media and
+returns the frame capability and current backend kind in a 16-byte reply.
+The VMM retains pool revocation authority. Its device-adoption helper binds
+the ready storage metadata and existing queues without clearing them or issuing
+ATTACH, resets private VirtIO registers and request bookkeeping, and preserves
+cleanup ownership if registration fails. Host sanitizer tests cover replacement
+descriptor reads, capacity/backend changes, queue preservation and inaccessible
+retired mappings. The [block adoption receipt](evidence/2026-09-18-spark/block-device-adoption.json)
+records two native stopped adoption cycles at `587793b`, including reset-state
+and geometry MMIO probes, exact 4 KiB readback against a pre-teardown copy,
+detach and capability revocation. Native reads use the VMM boot-read path;
+fresh guest descriptors remain host-tested and a second guest boot is pending.
+An unsuccessful allocation/map requires pool revocation before retry; a
+committed rebind must be detached before revocation, including if the caller
+fails to receive or map the returned frame. The old detach drain rule remains
+mandatory. This does not reset firmware or admit a recreated guest by itself.
 Serial contract v4 retains terminal VMM-role detach under the existing guest
 badge authority. The service stops both transfer directions, clears its guest
 channel pointers and marks the frontend detached before acknowledging. It
 does not wait for unread terminal bytes, which may be abandoned at destruction.
+The VMM console device can be recreated only after full device quiescence and
+caller-managed backend detach and bus retirement. It clears private byte FIFOs,
+VirtIO state and activity counters, rejects reset during a retained TX drain,
+and leaves callbacks disabled if registration fails. The caller must separately
+bind a fresh serial endpoint; this helper does not reopen the virtualizer.
+The [console recreation receipt](evidence/2026-09-18-spark/console-device-recreation.json)
+records host tests for fresh descriptor TX/RX and isolation of buffered bytes,
+plus two native stopped MMIO reset/probe/retirement cycles at `0bb06f3` and the
+full Spark gate. Native replacement descriptor I/O and second boot remain pending.
 The VMM clears its local serial endpoint after acknowledgment; failed replies
 keep teardown retryable before capability revocation. Peer and operator
 channels retain their attachments. Serial queue pages are revoked only after

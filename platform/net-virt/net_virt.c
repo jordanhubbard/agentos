@@ -37,6 +37,9 @@
 #include <platform/net_layout.h>
 #include <platform/net_host_layout.h>
 #include <platform/net_virt_pump.h>
+#include <platform/net_rebind.h>
+#include "contracts/queue_rebind_caps.h"
+#include "boot_info.h"
 
 _Static_assert(AOS_NET_SHMEM_VA == AGENTOS_NET_SHARED_VA,
                "guest net queues and net_pd slots share one frame");
@@ -57,6 +60,7 @@ typedef struct {
     uint8_t               attached;
     uint8_t               retired;
     uint8_t               hw;          /* frames go to net_pd (else hub pump) */
+    uint8_t               raw_open;    /* driver handle exists even if link is down */
     uint8_t               rx_pending;  /* probe net_pd for RX on next service */
     uint8_t               tx_marked;
     uint8_t               rx_marked;
@@ -70,6 +74,7 @@ typedef struct {
 } nv_client_t;
 
 static nv_client_t     g_clients[AOS_NET_QUEUE_CLIENTS];
+static uint32_t        g_generation[AOS_NET_GUEST_CLIENTS];
 static aos_net_virt_t  g_hub;          /* loopback/hub pump for hw-less runs */
 static int             g_hub_marked;
 
@@ -126,7 +131,7 @@ static int net_pd_call(uint32_t opcode, uint32_t arg0, uint32_t arg1,
     wr32(req.data, 0u, arg0);
     wr32(req.data, 4u, arg1);
     sel4_call((seL4_CPtr)PD_CNODE_SLOT_NET_PD_EP, &req, rep);
-    return rep->opcode == SEL4_ERR_OK &&
+    return rep->length >= sizeof(uint32_t) && rep->opcode == SEL4_ERR_OK &&
            rd32(rep->data, 0u) == NET_SVC_RAW_OK;
 }
 
@@ -415,9 +420,11 @@ static void handle_attach(uint64_t badge, const sel4_msg_t *req, sel4_msg_t *rep
             nrep.length >= 18u) {
             uint32_t slot = rd32(nrep.data, 8u);
 
+            c->handle = rd32(nrep.data, 4u);
+            c->raw_open = 1u;
+
             if (slot >= NET_SVC_SLOT_BASE &&
                 slot + NET_SVC_SLOT_SIZE <= AGENTOS_NET_SHARED_SIZE) {
-                c->handle = rd32(nrep.data, 4u);
                 c->slot_off = slot;
                 for (uint32_t i = 0u; i < 6u; i++) {
                     mac[i] = nrep.data[12u + i];
@@ -478,10 +485,18 @@ static void handle_detach(uint64_t badge, const sel4_msg_t *req, sel4_msg_t *rep
         status = NET_VIRT_ERR_BAD_CLIENT;
     } else {
         nv_client_t *c = &g_clients[client_id];
+        sel4_msg_t close_rep = {0};
         /* This PD serializes control and pumping. RAW_SEND/RECV are
          * synchronous copies into the driver's separate transfer page, so
          * none can retain a client-page reference after returning here. */
-        if (c->attached && !c->hw && aos_net_virt_remove_client(&g_hub, &c->q)) {
+        if (c->attached && c->raw_open &&
+            !net_pd_call(NET_SVC_OP_RAW_CLOSE, c->handle, 0u, &close_rep)) {
+            /* Retain ownership and the queue for a retry. Never report
+             * retirement while the driver still owns this raw session. */
+            status = NET_VIRT_ERR_UNAVAILABLE;
+        } else if (c->attached && !c->hw &&
+                   aos_net_virt_remove_client(&g_hub, &c->q)) {
+            c->raw_open = 0u;
             status = NET_VIRT_ERR_UNAVAILABLE;
         } else {
             *c = (nv_client_t){ .retired = 1u };
@@ -496,12 +511,63 @@ static void handle_detach(uint64_t badge, const sel4_msg_t *req, sel4_msg_t *rep
 
 /* ── main loop ──────────────────────────────────────────────────────────── */
 
+static uint32_t rebind_queue(uint64_t badge, const net_virt_rebind_req_t *req,
+                             net_virt_rebind_reply_t *attachment)
+{
+    if (!virt_client_authorized(badge, req->client, req->client))
+        return NET_VIRT_ERR_BAD_CLIENT;
+    nv_client_t *c = &g_clients[req->client];
+    uint32_t status = aos_net_rebind_validate(badge, req, sizeof(*req),
+        c->attached, c->retired, g_generation[req->client]);
+    if (status != NET_VIRT_OK) return status;
+    /* A successful detach closes the driver session before retiring c. */
+    if (c->raw_open) return NET_VIRT_ERR_BUSY;
+    seL4_CPtr frame = AOS_QUEUE_SERVICE_FRAME_BASE + req->client;
+    if (seL4_CNode_Delete(AOS_QUEUE_SERVICE_CNODE, frame,
+            AOS_QUEUE_SERVICE_CNODE_BITS) != seL4_NoError)
+        return NET_VIRT_ERR_RESOURCE;
+    if (seL4_Untyped_Retype(AOS_QUEUE_SERVICE_RECEIVE, seL4_ARCH_LargePageObject,
+            0u, AOS_QUEUE_SERVICE_CNODE, 0u, 0u, frame, 1u) != seL4_NoError)
+        return NET_VIRT_ERR_RESOURCE;
+    if (seL4_ARCH_Page_Map(frame, AOS_QUEUE_SERVICE_VSPACE,
+            aos_net_rebind_queue_va(req->client), seL4_AllRights,
+            seL4_ARM_Default_VMAttributes) != seL4_NoError) {
+        status = NET_VIRT_ERR_RESOURCE;
+    } else {
+        aos_net_virt_client_t fresh;
+        aos_net_client_bind((uint8_t *)AOS_NET_SHMEM_VA, req->client, &fresh);
+        aos_net_client_init_buffers(&fresh);
+        sel4_msg_t attach = {.length = sizeof(net_virt_attach_req_t)}, reply = {0};
+        wr32(attach.data, 0u, NET_VIRT_CONTRACT_VERSION);
+        wr32(attach.data, 4u, req->client);
+        wr32(attach.data, 8u, req->client);
+        c->retired = 0u;
+        handle_attach(badge, &attach, &reply);
+        status = rd32(reply.data, 0u);
+        if (status == NET_VIRT_OK) {
+            g_generation[req->client] = req->generation;
+            attachment->hw_state = rd32(reply.data, 8u);
+            for (unsigned i = 0; i < sizeof(attachment->mac); i++)
+                attachment->mac[i] = reply.data[12u + i];
+        }
+        else *c = (nv_client_t){.retired = 1u};
+    }
+    if (status != NET_VIRT_OK)
+        (void)seL4_CNode_Delete(AOS_QUEUE_SERVICE_CNODE, frame,
+            AOS_QUEUE_SERVICE_CNODE_BITS);
+    return status;
+}
+
 static void net_virt_run(seL4_CPtr ep)
 {
     for (;;) {
         seL4_Word badge = 0u;
         sel4_msg_t req = {0};
         sel4_msg_t rep = {0};
+        (void)seL4_CNode_Delete(AOS_QUEUE_SERVICE_CNODE, AOS_QUEUE_SERVICE_RECEIVE,
+            AOS_QUEUE_SERVICE_CNODE_BITS);
+        seL4_SetCapReceivePath(AOS_QUEUE_SERVICE_CNODE, AOS_QUEUE_SERVICE_RECEIVE,
+            AOS_QUEUE_SERVICE_CNODE_BITS);
 #ifdef CONFIG_KERNEL_MCS
         seL4_MessageInfo_t info = seL4_Recv(ep, &badge, AGENTOS_IPC_REPLY_CAP);
 #else
@@ -513,18 +579,49 @@ static void net_virt_run(seL4_CPtr ep)
             continue;
         }
 
-        if (label == NET_VIRT_OP_ATTACH || label == NET_VIRT_OP_DETACH) {
+        if (label == NET_VIRT_OP_ATTACH || label == NET_VIRT_OP_DETACH ||
+            label == NET_VIRT_OP_REBIND) {
             _sel4_mrs_to_msg(&req);
-            if (label == NET_VIRT_OP_ATTACH) handle_attach(badge, &req, &rep);
-            else handle_detach(badge, &req, &rep);
+            bool rebound = false;
+            uint32_t status = NET_VIRT_ERR_VERSION;
+            bool valid = seL4_MessageInfo_get_length(info) == _SEL4_MR_COUNT &&
+                req.opcode == label && req.length <= sizeof(req.data);
+            if (label == NET_VIRT_OP_REBIND) {
+                net_virt_rebind_req_t rebind = {0};
+                net_virt_rebind_reply_t attachment = {0};
+                if (valid && req.length == sizeof(rebind) &&
+                    seL4_MessageInfo_get_extraCaps(info) == 1u &&
+                    seL4_MessageInfo_get_capsUnwrapped(info) == 0u) {
+                    __builtin_memcpy(&rebind, req.data, sizeof(rebind));
+                    status = rebind_queue(badge, &rebind, &attachment);
+                }
+                rebound = status == NET_VIRT_OK;
+                attachment.status = status;
+                attachment.version = NET_VIRT_REBIND_VERSION;
+                attachment.generation = rebind.generation;
+                __builtin_memcpy(rep.data, &attachment, sizeof(attachment));
+                rep.length = sizeof(net_virt_rebind_reply_t);
+                rep.opcode = SEL4_ERR_OK;
+                if (rebound) seL4_SetCap(0, AOS_QUEUE_SERVICE_FRAME_BASE + rebind.client);
+            } else if (valid && seL4_MessageInfo_get_extraCaps(info) == 0u &&
+                       req.length == sizeof(net_virt_attach_req_t)) {
+                if (label == NET_VIRT_OP_ATTACH) handle_attach(badge, &req, &rep);
+                else handle_detach(badge, &req, &rep);
+            } else {
+                wr32(rep.data, 0u, status);
+                wr32(rep.data, 4u, NET_VIRT_CONTRACT_VERSION);
+                rep.length = sizeof(net_virt_attach_reply_t);
+                rep.opcode = SEL4_ERR_OK;
+            }
             _sel4_msg_to_mrs(&rep);
             seL4_MessageInfo_t reply = seL4_MessageInfo_new(
-                (seL4_Word)rep.opcode, 0u, 0u, (seL4_Word)_SEL4_MR_COUNT);
+                (seL4_Word)rep.opcode, 0u, rebound ? 1u : 0u, (seL4_Word)_SEL4_MR_COUNT);
 #ifdef CONFIG_KERNEL_MCS
             seL4_Send(AGENTOS_IPC_REPLY_CAP, reply);
 #else
             seL4_Reply(reply);
 #endif
+            seL4_SetCap(0, seL4_CapNull);
             continue;
         }
         if (label == NET_VIRT_EVENT_KICK || label == NET_SVC_EVENT_RX_READY) {

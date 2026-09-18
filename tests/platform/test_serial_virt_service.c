@@ -151,6 +151,77 @@ int main(void)
           service.frontend[1].from_guest.data[3] == '!' &&
           service.frontend[2].from_guest.data[5] == '?',
           "peer and operator bytes survive late wake with retired memory protected");
+    serial_virt_rebind_req_t rebind = {SERIAL_VIRT_REBIND_VERSION, 0, 1};
+    aos_serial_channel_t fresh = aos_serial_channel_at((uintptr_t)pages[0]);
+    aos_serial_virt_service_t before = service;
+    check(aos_serial_virt_rebind_validate(&service, VIRT_CLIENT_BADGE_SECONDARY,
+        &rebind, sizeof(rebind)) == SERIAL_VIRT_ERR_AUTHORITY &&
+        !memcmp(&before, &service, sizeof(service)), "peer cannot authorize queue replacement");
+    rebind.client = 2;
+    check(aos_serial_virt_rebind_validate(&service, SERIAL_VIRT_OPERATOR_BADGE,
+        &rebind, sizeof(rebind)) == SERIAL_VIRT_ERR_AUTHORITY,
+        "replacement excludes the operator channel");
+    rebind.client = 0;
+    check(aos_serial_virt_rebind_validate(&service, VIRT_CLIENT_BADGE_PRIMARY,
+        &rebind, sizeof(rebind)-1) == SERIAL_VIRT_ERR_PROTOCOL,
+        "short replacement rejected");
+    rebind.version++;
+    check(aos_serial_virt_rebind_validate(&service, VIRT_CLIENT_BADGE_PRIMARY,
+        &rebind, sizeof(rebind)) == SERIAL_VIRT_ERR_VERSION, "wrong replacement version rejected");
+    rebind.version = SERIAL_VIRT_REBIND_VERSION;
+    rebind.generation = 0;
+    check(aos_serial_virt_rebind_validate(&service, VIRT_CLIENT_BADGE_PRIMARY,
+        &rebind, sizeof(rebind)) == SERIAL_VIRT_ERR_PROTOCOL, "zero generation rejected");
+    rebind.generation = 2;
+    check(aos_serial_virt_rebind_validate(&service, VIRT_CLIENT_BADGE_PRIMARY,
+        &rebind, sizeof(rebind)) == SERIAL_VIRT_ERR_PROTOCOL, "skipped generation rejected");
+    rebind.generation = 1;
+    service.frontend[0].meta->frontend_gate |= AOS_SERIAL_FRONTEND_BUSY;
+    check(aos_serial_virt_rebind_validate(&service, VIRT_CLIENT_BADGE_PRIMARY,
+        &rebind, sizeof(rebind)) == SERIAL_VIRT_ERR_BUSY, "replacement waits for frontend quiescence");
+    service.frontend[0].meta->frontend_gate = AOS_SERIAL_FRONTEND_CLOSED;
+    fresh.to_guest.queue->tail = 1;
+    check(aos_serial_virt_rebind_commit(&service, VIRT_CLIENT_BADGE_PRIMARY,
+        &rebind, sizeof(rebind), fresh) == SERIAL_VIRT_ERR_PROTOCOL &&
+        service.guest_retired[0] && !service.guest[0].meta,
+        "nonempty replacement never publishes a queue");
+    fresh.to_guest.queue->tail = 0;
+    memset(service.frontend[0].to_guest.data, 0x5a, AOS_SERIAL_RX_CAPACITY);
+    memset(service.frontend[0].from_guest.data, 0xa5, AOS_SERIAL_TX_CAPACITY);
+    check(aos_serial_virt_rebind_commit(&service, VIRT_CLIENT_BADGE_PRIMARY,
+        &rebind, sizeof(rebind), fresh) == SERIAL_VIRT_OK &&
+        service.guest_attached[0] && !service.guest_retired[0] &&
+        service.guest_generation[0] == 1 && service.guest[0].meta == fresh.meta,
+        "replacement binds fresh queue without touching protected retired memory");
+    unsigned nonzero = 0;
+    for (unsigned i = 0; i < AOS_SERIAL_RX_CAPACITY; i++) nonzero |= service.frontend[0].to_guest.data[i];
+    for (unsigned i = 0; i < AOS_SERIAL_TX_CAPACITY; i++) nonzero |= service.frontend[0].from_guest.data[i];
+    check(!nonzero && !service.frontend[0].to_guest.queue->tail &&
+        !service.frontend[0].from_guest.queue->head && !service.frontend[0].meta->frontend_gate,
+        "old frontend bytes and cursors are cleared before reopening admission");
+    const uint8_t input[] = "new-input", output[] = "new-output";
+    check(aos_serial_frontend_write(&service.frontend[0], input, sizeof(input)) == AOS_SERIAL_PUMP_OK,
+        "frontend admits input for the replacement generation");
+    memcpy(fresh.from_guest.data, output, sizeof(output));
+    fresh.from_guest.queue->tail = sizeof(output);
+    result = aos_serial_virt_service_pump(&service, 64);
+    check(result.bytes == sizeof(input) + sizeof(output) && result.wake_vmm == 1 &&
+        !memcmp(fresh.to_guest.data, input, sizeof(input)) &&
+        !memcmp(service.frontend[0].from_guest.data, output, sizeof(output)),
+        "replacement carries fresh bidirectional bytes and leaves peers untouched");
+    req.client = 0; req.role = SERIAL_VIRT_ROLE_VMM;
+    check(aos_serial_virt_detach(&service, VIRT_CLIENT_BADGE_PRIMARY, &req, sizeof(req)) == SERIAL_VIRT_OK,
+        "replacement generation can retire again");
+    check(aos_serial_virt_rebind_validate(&service, VIRT_CLIENT_BADGE_PRIMARY,
+        &rebind, sizeof(rebind)) == SERIAL_VIRT_ERR_PROTOCOL,
+        "replayed generation cannot reopen a retired replacement");
+    rebind.generation = 2;
+    check(aos_serial_virt_rebind_validate(&service, VIRT_CLIENT_BADGE_PRIMARY,
+        &rebind, sizeof(rebind)) == SERIAL_VIRT_OK, "next generation can prepare replacement");
+    service.guest_generation[0] = UINT32_MAX;
+    rebind.generation = 0;
+    check(aos_serial_virt_rebind_validate(&service, VIRT_CLIENT_BADGE_PRIMARY,
+        &rebind, sizeof(rebind)) == SERIAL_VIRT_ERR_PROTOCOL, "generation exhaustion fails closed");
     check(munmap(retired_page, AOS_SERIAL_FRAME_SIZE) == 0, "release test mapping");
     printf("1..%u\n", checks);
     return failures ? 1 : 0;

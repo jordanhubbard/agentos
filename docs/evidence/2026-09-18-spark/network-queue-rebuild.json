@@ -1,0 +1,37 @@
+{
+  "schema": "agentos.network_queue_rebuild.v1",
+  "runtime_commit": "0aa500b88",
+  "accepted": true,
+  "scope": "Stopped guest network queue reconstruction, ARP exchange, detach and revocation; not guest recreation",
+  "spark": {
+    "host": "make test-host passed; 40 network admission, canonical-layout and attachment-reply checks",
+    "host_log_sha256": "ffffcd1ef29b8baaf0887a7f0f4104bce88428b14a791b7e655c88181adec8ad",
+    "firmware_link": "make test-x86-firmware-build SEL4_SDK_VERSION=2.3.0 passed",
+    "link_log_sha256": "ffffcd1ef29b8baaf0887a7f0f4104bce88428b14a791b7e655c88181adec8ad",
+    "make_gate": "passed, terminal exit 0",
+    "gate_log_sha256": "31228f88a8047824ee98cbc4699d2bf62c5d7c8a257d2d76c2f3fe0b3c2608a8"
+  },
+  "intel": {
+    "command": "make gate-x86_64-teardown SEL4_SDK_VERSION=2.3.0 with retained checksummed OVMF, kernel and initrd",
+    "result": "passed, terminal exit 0",
+    "run_stem": "jDl4JM",
+    "checks": [
+      "Two generations receive fresh frame capabilities with canonical free queues",
+      "Rebind returns backend state and MAC; the client validates the 24-byte reply and uses its supplied identity",
+      "Each generation sends an ARP request to the QEMU gateway through net_virt and net_pd",
+      "Each reply has ARP response opcode, gateway sender IP, guest target IP and guest destination/target MAC",
+      "TX buffer is returned, then detach closes the raw session and retires queues",
+      "Pool revocation removes the returned frame capability, verified by failed lookup",
+      "Existing block, serial, memory, execution and lifecycle proofs also pass"
+    ],
+    "combined_log_sha256": "5061b768c004c5f63ed748eb575e7591d2cd716d21075b0665b298c7960fc52d",
+    "serial_log_sha256": "42af742e36b34c5ca64e20155cf9c9fd467de7b922136d0b84abe37bbf2b9fbd",
+    "pcap_sha256": "15a182720e067d0a99a0fca9f6ce8cafec2b638c57ba43e45661a96978cb7ef6",
+    "root_task_elf_sha256": "15f220678befd582ef2afe502637b0460d3710b914e4c057a8c5a218a3e94cc2"
+  },
+  "limitations": [
+    "Native malformed-capability and allocation-failure cases remain incomplete",
+    "VMM device-state adoption/reset and firmware reset are not wired into CREATE",
+    "No second guest boot or complete v0.4 release acceptance is claimed"
+  ]
+}

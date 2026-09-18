@@ -11,4 +11,16 @@
 #define AOS_X86_GUEST_OBJECT_POOL_BITS 16u
 #define AOS_X86_GUEST_OBJECT_COUNT 5u
 
+/* Retained private ASID namespace, architecture-exclusive with ARM's ASID
+ * grant. No global ASID controller is delegated. Intermediate EPT caps are
+ * reconstructed only after the object pool has been completely revoked. */
+#define AOS_X86_GUEST_ASID_POOL_CAP 464u
+#define AOS_X86_GUEST_EPT_PDPT_CAP 498u
+#define AOS_X86_GUEST_EPT_LOW_PD_CAP 499u
+#define AOS_X86_GUEST_EPT_HIGH_PD_CAP 500u
+/* Retained capability to the owning native VMM thread, never a root/peer TCB.
+ * Required to attach a rebuilt EPT/VCPU. The native thread and this grant
+ * remain outside the guest object pool's revocation tree. */
+#define AOS_X86_VMM_SELF_TCB_CAP 501u
+
 #endif

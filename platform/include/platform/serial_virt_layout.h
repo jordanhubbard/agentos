@@ -30,7 +30,7 @@ typedef struct {
     uint32_t guest_state;
     uint32_t attached;
     /* Frontend page only. CC owns BUSY during queue access; serial_virt
-     * permanently sets CLOSED on detach. Retyping starts with an open gate. */
+     * sets CLOSED on detach. Only a committed fresh generation reopens it. */
     uint32_t frontend_gate;
 } aos_serial_channel_meta_t;
 #define AOS_SERIAL_FRONTEND_CLOSED 1u

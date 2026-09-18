@@ -11,6 +11,7 @@
  */
 
 #include <stddef.h>
+#include <stdbool.h>
 #include <stdint.h>
 
 #include "sel4_boot.h"
@@ -252,108 +253,138 @@ static seL4_Error write_vmcs_guest_state(seL4_CPtr vcpu,
 #define VMX_SECONDARY_EPT              (1u << 1)
 #define VMX_SECONDARY_UNRESTRICTED     (1u << 7)
 
-static void mode_field(seL4_CPtr endpoint, seL4_Word field,
-                       seL4_Word value, seL4_Word mask)
+/* Read back each mode-changing field before permitting entry. Errors return
+ * to the lifecycle caller so it can revoke partial reconstruction. */
+static seL4_Error mode_field(seL4_Word field, seL4_Word value, seL4_Word mask)
 {
     seL4_Error err = vmcs_write(AOS_GUEST_VCPU_CAP_BASE, field, value);
-    if (err != seL4_NoError) {
-        report_and_wait(endpoint, AOS_X86_VTX_PROOF_FAIL, field, err, 0u);
-    }
+    if (err != seL4_NoError) return err;
     seL4_X86_VCPU_ReadVMCS_t read =
         seL4_X86_VCPU_ReadVMCS(AOS_GUEST_VCPU_CAP_BASE, field);
-    if (read.error != seL4_NoError || (read.value & mask) != (value & mask)) {
-        report_and_wait(endpoint, AOS_X86_VTX_PROOF_FAIL, field,
-                        read.value, read.error);
-    }
+    if (read.error != seL4_NoError) return (seL4_Error)read.error;
+    return (read.value & mask) == (value & mask)
+        ? seL4_NoError : seL4_IllegalOperation;
 }
 
-static void qualify_firmware_modes(seL4_CPtr endpoint)
+static seL4_Error configure_firmware_mode(unsigned mode, bool reset,
+                                          seL4_Word *failed_field)
 {
-    /* VMM-selected entry states, not a firmware payload or guest-driven
-     * transition test. The same EPT-owned HLT byte is valid in all modes. */
-    for (unsigned mode = 0u; mode < 3u; mode++) {
-        seL4_Word failed_field = 0u;
-        seL4_Error err = write_vmcs_guest_state(AOS_GUEST_VCPU_CAP_BASE,
-                                               &failed_field);
-        if (err != seL4_NoError) {
-            report_and_wait(endpoint, AOS_X86_VTX_PROOF_FAIL, failed_field,
-                            err, mode);
+    seL4_Error err = write_vmcs_guest_state(AOS_GUEST_VCPU_CAP_BASE, failed_field);
+    if (err != seL4_NoError) return err;
+    seL4_X86_VCPU_ReadVMCS_t secondary =
+        seL4_X86_VCPU_ReadVMCS(AOS_GUEST_VCPU_CAP_BASE, VMX_CONTROL_SECONDARY);
+    if (secondary.error != seL4_NoError) {
+        *failed_field = VMX_CONTROL_SECONDARY;
+        return (seL4_Error)secondary.error;
+    }
+    seL4_X86_VCPU_ReadVMCS_t entry =
+        seL4_X86_VCPU_ReadVMCS(AOS_GUEST_VCPU_CAP_BASE, VMX_CONTROL_ENTRY);
+    if (entry.error != seL4_NoError) {
+        *failed_field = VMX_CONTROL_ENTRY;
+        return (seL4_Error)entry.error;
+    }
+#define FIELD(field, value, mask) do { \
+    *failed_field = (field); \
+    err = mode_field((field), (value), (mask)); \
+    if (err != seL4_NoError) return err; \
+} while (0)
+    FIELD(VMX_CONTROL_SECONDARY,
+               secondary.value | VMX_SECONDARY_UNRESTRICTED | VMX_SECONDARY_EPT,
+               VMX_SECONDARY_UNRESTRICTED | VMX_SECONDARY_EPT);
+    FIELD(VMX_CONTROL_ENTRY,
+               mode == 2u ? entry.value | VMX_ENTRY_IA32E
+                          : entry.value & ~VMX_ENTRY_IA32E,
+               VMX_ENTRY_IA32E);
+    FIELD(VMX_GUEST_EFER,
+               mode == 2u ? VMX_GUEST_EFER_LME | VMX_GUEST_EFER_LMA : 0u,
+               VMX_GUEST_EFER_LME | VMX_GUEST_EFER_LMA);
+    FIELD(VMX_GUEST_CR0,
+               mode == 0u ? 0u : mode == 1u ? VMX_GUEST_CR0_PE
+                                           : VMX_GUEST_CR0_PE | VMX_GUEST_CR0_PG,
+               VMX_GUEST_CR0_PE | VMX_GUEST_CR0_PG);
+    FIELD(VMX_GUEST_CR4,
+               mode == 2u ? VMX_GUEST_CR4_PAE : 0u, VMX_GUEST_CR4_PAE);
+    if (mode != 2u) {
+        FIELD(VMX_GUEST_CS_ACCESS_RIGHTS,
+                   mode == 0u ? 0x009bu : 0xc09bu, 0xffffu);
+    }
+    if (mode == 0u) {
+        /* Real-address segment caches: selector/base zero, 64 KiB limit,
+         * byte granularity, 16-bit default operand/address size. */
+        static const seL4_Word selectors[] = {
+            VMX_GUEST_ES_SELECTOR, VMX_GUEST_CS_SELECTOR,
+            VMX_GUEST_SS_SELECTOR, VMX_GUEST_DS_SELECTOR,
+            VMX_GUEST_FS_SELECTOR, VMX_GUEST_GS_SELECTOR,
+        };
+        static const seL4_Word limits[] = {
+            VMX_GUEST_ES_LIMIT, VMX_GUEST_CS_LIMIT, VMX_GUEST_SS_LIMIT,
+            VMX_GUEST_DS_LIMIT, VMX_GUEST_FS_LIMIT, VMX_GUEST_GS_LIMIT,
+        };
+        static const seL4_Word rights[] = {
+            VMX_GUEST_ES_ACCESS_RIGHTS, VMX_GUEST_SS_ACCESS_RIGHTS,
+            VMX_GUEST_DS_ACCESS_RIGHTS, VMX_GUEST_FS_ACCESS_RIGHTS,
+            VMX_GUEST_GS_ACCESS_RIGHTS,
+        };
+        for (unsigned i = 0u; i < sizeof(selectors) / sizeof(selectors[0]); i++) {
+            FIELD(selectors[i], 0u, 0xffffu);
+            FIELD(limits[i], 0xffffu, 0xffffffffu);
         }
-        seL4_X86_VCPU_ReadVMCS_t secondary =
-            seL4_X86_VCPU_ReadVMCS(AOS_GUEST_VCPU_CAP_BASE, VMX_CONTROL_SECONDARY);
-        seL4_X86_VCPU_ReadVMCS_t entry =
-            seL4_X86_VCPU_ReadVMCS(AOS_GUEST_VCPU_CAP_BASE, VMX_CONTROL_ENTRY);
-        if (secondary.error != seL4_NoError || entry.error != seL4_NoError) {
-            report_and_wait(endpoint, AOS_X86_VTX_PROOF_FAIL,
-                            VMX_CONTROL_ENTRY, entry.error, secondary.error);
+        for (unsigned i = 0u; i < sizeof(rights) / sizeof(rights[0]); i++) {
+            FIELD(rights[i], 0x0093u, 0x1ffffu);
         }
-        mode_field(endpoint, VMX_CONTROL_SECONDARY,
-                   secondary.value | VMX_SECONDARY_UNRESTRICTED | VMX_SECONDARY_EPT,
-                   VMX_SECONDARY_UNRESTRICTED | VMX_SECONDARY_EPT);
-        mode_field(endpoint, VMX_CONTROL_ENTRY,
-                   mode == 2u ? entry.value | VMX_ENTRY_IA32E
-                              : entry.value & ~VMX_ENTRY_IA32E,
-                   VMX_ENTRY_IA32E);
-        mode_field(endpoint, VMX_GUEST_EFER,
-                   mode == 2u ? VMX_GUEST_EFER_LME | VMX_GUEST_EFER_LMA : 0u,
-                   VMX_GUEST_EFER_LME | VMX_GUEST_EFER_LMA);
-        mode_field(endpoint, VMX_GUEST_CR0,
-                   mode == 0u ? 0u : mode == 1u ? VMX_GUEST_CR0_PE
-                                               : VMX_GUEST_CR0_PE | VMX_GUEST_CR0_PG,
-                   VMX_GUEST_CR0_PE | VMX_GUEST_CR0_PG);
-        mode_field(endpoint, VMX_GUEST_CR4,
-                   mode == 2u ? VMX_GUEST_CR4_PAE : 0u, VMX_GUEST_CR4_PAE);
-        if (mode != 2u) {
-            mode_field(endpoint, VMX_GUEST_CS_ACCESS_RIGHTS,
-                       mode == 0u ? 0x009bu : 0xc09bu, 0xffffu);
-        }
-        if (mode == 0u) {
-            /* Real-address segment caches: selector/base zero, 64 KiB limit,
-             * byte granularity, 16-bit default operand/address size. */
-            static const seL4_Word selectors[] = {
-                VMX_GUEST_ES_SELECTOR, VMX_GUEST_CS_SELECTOR,
-                VMX_GUEST_SS_SELECTOR, VMX_GUEST_DS_SELECTOR,
-                VMX_GUEST_FS_SELECTOR, VMX_GUEST_GS_SELECTOR,
-            };
-            static const seL4_Word limits[] = {
-                VMX_GUEST_ES_LIMIT, VMX_GUEST_CS_LIMIT, VMX_GUEST_SS_LIMIT,
-                VMX_GUEST_DS_LIMIT, VMX_GUEST_FS_LIMIT, VMX_GUEST_GS_LIMIT,
-            };
-            static const seL4_Word rights[] = {
-                VMX_GUEST_ES_ACCESS_RIGHTS, VMX_GUEST_SS_ACCESS_RIGHTS,
-                VMX_GUEST_DS_ACCESS_RIGHTS, VMX_GUEST_FS_ACCESS_RIGHTS,
-                VMX_GUEST_GS_ACCESS_RIGHTS,
-            };
-            for (unsigned i = 0u; i < sizeof(selectors) / sizeof(selectors[0]); i++) {
-                mode_field(endpoint, selectors[i], 0u, 0xffffu);
-                mode_field(endpoint, limits[i], 0xffffu, 0xffffffffu);
-            }
-            for (unsigned i = 0u; i < sizeof(rights) / sizeof(rights[0]); i++) {
-                mode_field(endpoint, rights[i], 0x0093u, 0x1ffffu);
-            }
-        }
+    }
 
-#ifdef AGENTOS_X86_FIRMWARE_RESET
+    if (reset) {
         /* Architectural reset starts with a special high CS cache. Keep
          * CR0 mode writes intercepted for later transition emulation. */
         /* Load all guest EFER bits, not only IA-32e mode implied by entry
          * controls. Otherwise host SCE can survive into the reset guest. */
-        mode_field(endpoint, VMX_CONTROL_ENTRY,
+        FIELD(VMX_CONTROL_ENTRY,
                    (entry.value & ~VMX_ENTRY_IA32E) | (1u << 15),
                    VMX_ENTRY_IA32E | (1u << 15));
-        mode_field(endpoint, VMX_GUEST_CS_SELECTOR, 0xf000u, 0xffffu);
-        mode_field(endpoint, VMX_GUEST_CS_BASE, 0xffff0000u, 0xffffffffu);
-        mode_field(endpoint, VMX_GUEST_CR0, 0x60000010u,
+        FIELD(VMX_GUEST_CS_SELECTOR, 0xf000u, 0xffffu);
+        FIELD(VMX_GUEST_CS_BASE, 0xffff0000u, 0xffffffffu);
+        FIELD(VMX_GUEST_CR0, 0x60000010u,
                    VMX_GUEST_CR0_PE | VMX_GUEST_CR0_PG);
-        mode_field(endpoint, VMX_CONTROL_CR0_READ_SHADOW, 0x60000010u, 0xffffffffu);
-        const aos_x86_vmenter_entry_t reset_entry = {
-            .ip = 0xfff0u, .controls = VMX_CONTROL_PPC_HLT_EXITING,
-            .interruption_info = 0u,
-        };
-        aos_x86_firmware_run(endpoint, reset_entry);
-#else
-        seL4_SetMR(SEL4_VMENTER_CALL_EIP_MR, AOS_X86_VTX_GUEST_RIP);
+        FIELD(VMX_CONTROL_CR0_READ_SHADOW, 0x60000010u, 0xffffffffu);
+    }
+#undef FIELD
+    *failed_field = 0u;
+    return seL4_NoError;
+}
+
+#ifdef AGENTOS_X86_FIRMWARE_RESET
+seL4_Error aos_x86_firmware_reset(aos_x86_vmenter_entry_t *reset_entry,
+                                  seL4_Word *failed_field)
+{
+    if (!reset_entry || !failed_field) return seL4_InvalidArgument;
+    seL4_Error err = configure_firmware_mode(0u, true, failed_field);
+    if (err != seL4_NoError) return err;
+    *reset_entry = (aos_x86_vmenter_entry_t){
+        .ip = 0xfff0u, .controls = VMX_CONTROL_PPC_HLT_EXITING,
+        .interruption_info = 0u,
+    };
+    return seL4_NoError;
+}
 #endif
+
+static void qualify_firmware_modes(seL4_CPtr endpoint)
+{
+#ifdef AGENTOS_X86_FIRMWARE_RESET
+    seL4_Word failed_field = 0u;
+    aos_x86_vmenter_entry_t reset_entry;
+    seL4_Error err = aos_x86_firmware_reset(&reset_entry, &failed_field);
+    if (err != seL4_NoError)
+        report_and_wait(endpoint, AOS_X86_VTX_PROOF_FAIL, failed_field, err, 0u);
+    aos_x86_firmware_run(endpoint, reset_entry);
+#endif
+    /* VMM-selected modes on the same EPT-owned HLT instruction. */
+    for (unsigned mode = 0u; mode < 3u; mode++) {
+        seL4_Word failed_field = 0u;
+        seL4_Error err = configure_firmware_mode(mode, false, &failed_field);
+        if (err != seL4_NoError)
+            report_and_wait(endpoint, AOS_X86_VTX_PROOF_FAIL, failed_field, err, mode);
+        seL4_SetMR(SEL4_VMENTER_CALL_EIP_MR, AOS_X86_VTX_GUEST_RIP);
         seL4_SetMR(SEL4_VMENTER_CALL_CONTROL_PPC_MR, VMX_CONTROL_PPC_HLT_EXITING);
         seL4_SetMR(AOS_VMENTER_INTERRUPT_INFO_MR, 0u);
         aos_x86_vmenter_return_t returned = aos_x86_vm_enter();

@@ -1,0 +1,65 @@
+{
+  "schema": "agentos.serial_detach_race.v1",
+  "task": "task_8c6afd5682bc4b8ba858f4cdc5e44ef8",
+  "accepted_for_v04_release": false,
+  "finding": "The one-shot serial reconstruction proof rejects a valid transient BUSY detach response while frontend access remains admitted.",
+  "negative_control": {
+    "revision": "7d39f5f7396fd7825023cba8399fe25a8479eea2",
+    "result": "First replay failed on target; planned remaining two attempts were not run. QEMU was stopped only after the explicit failure, and Make returned exit 2.",
+    "artifact_prefix": "/tmp/agentos-v04-intel-discovery/build/tmp/agentos-qemu-y878yn",
+    "root_task_sha256": "81f5e71a9ba47dad6451a81afbeda1072c1aed7dbdd5917ba080dacda846cde6",
+    "reported_reason": "0x544452",
+    "reported_detail": "0x0c83 (3203)",
+    "interpretation": "3200 + pass 0 * 100 + SERIAL_VIRT_ERR_BUSY (3). Reply opcode, length and version were validated first; rebind, enqueue and queue-consumption checks had already passed.",
+    "target_log_sha256_before_cleanup": "b0d0ff0ed4e25f98ff19a4712719d406a2ae7f6d0bdcdc60275bd6a1eea13fce"
+  },
+  "correction": {
+    "revision": "cd96e6590884209ab119edf5e7a2cc63d3731186",
+    "behavior": "Retry only well-formed BUSY responses, at most 64 attempts with Yield between attempts. Require OK before capability revocation. Malformed replies, other errors and exhaustion still fail.",
+    "host_evidence": "Existing tests/platform/test_serial_virt_service.c admits frontend access, observes BUSY without retirement, ends access while preserving CLOSED, rejects late I/O and then requires successful detach. Host, firmware link and full Spark gates at the correction are retained in x86-virtio-retirement.json."
+  },
+  "verification": {
+    "revision": "f92a970f9b7a4e0f4fa6d932a0ec3dbfa8e45da9",
+    "command": "make gate-x86_64-teardown SEL4_SDK_VERSION=2.3.0 X86_FIRMWARE_IMAGE=/tmp/agentos-ovmf-2024.02-2ubuntu0.9.fd X86_FIRMWARE_SHA256=101afad5f520753224b60b9555df60add435cf50c7a82b781d7d7d8c60db7eb5 X86_BOOT_KERNEL=/tmp/agentos-linux-7.0.0-30.efi X86_BOOT_KERNEL_SHA256=0ad39b13e289e1a5cf806d14541ac8f221eefe849017f5915e0846917ed67785 X86_BOOT_INITRD=/tmp/agentos-v04-intel-discovery/build/x86-userspace/initrd.bin X86_BOOT_INITRD_SHA256=43f3b0bb3e26a1e45438c421d8fecfa3a1cf613138fef7b3a5132420357f0bd4 QEMU_TEST_TIMEOUT=120",
+    "result": "One current-revision Intel pass before negative control, then three consecutive corrected-revision runs after it; all terminal exit 0.",
+    "root_task_sha256": "5d42c55b2df7f9d177ed5a61aa10d66d9957751a0df0d715eaf81c9b859b23ed",
+    "repeat_artifact_stems": [
+      "v6E3mb",
+      "8OsZUy",
+      "Ku2o7T"
+    ],
+    "managed_regression": "The corrected code is also present in runtime 3ea3554, whose host/Spark gates, two pinned Debian SSH/input/destroy cycles and native GUI two-boot cycles are retained in x86-recreation-transaction.json and x86-native-gui-recreation.json."
+  },
+  "artifact_directory": "/home/jkh/.local/share/agentos-evidence/2026-09-18-serial-detach-race",
+  "artifacts": [
+    {
+      "file": "agentos-serial-pre-retry-1-full.log",
+      "sha256": "e9c2e88ffcf5e15c7a5417db4c96d5c6281f38ab2be30b0274df1fb90c99695b"
+    },
+    {
+      "file": "agentos-serial-pre-retry-1-target.log",
+      "sha256": "768a3ed29d4caea8125527b44166dcf8c12f2f9933d705a20ddb915af79d6a86"
+    },
+    {
+      "file": "agentos-serial-current-intel.log",
+      "sha256": "428df69eee029b329e50868777fb99c0dda2eca82ac86378774314d161691162"
+    },
+    {
+      "file": "agentos-serial-corrected-1.log",
+      "sha256": "3ee8db966c612b71089ff3a5df1982a5b9f1e706d58ac1ada3b346398ac29cd9"
+    },
+    {
+      "file": "agentos-serial-corrected-2.log",
+      "sha256": "ad5e8960e9931a5c15a8e8df13c1ab765dbe2e749491b7041ca6c54752503866"
+    },
+    {
+      "file": "agentos-serial-corrected-3.log",
+      "sha256": "57cbcbdb3043cb781d8e0084373ad363aca481b362f733d8666ffda2c63a295a"
+    }
+  ],
+  "limitations": [
+    "The older detail-0 and coarse stage-120 logs cannot identify their exact suboperation retroactively; they remain retained. This replay establishes a concrete serial qualification failure and its correction.",
+    "The corrected successful runs do not count observed BUSY replies; successful teardown and revocation are asserted, not a particular retry count.",
+    "Required GitHub checks, canonical integration and remaining v0.4 roadmap acceptance are pending."
+  ]
+}

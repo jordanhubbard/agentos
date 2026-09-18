@@ -2,6 +2,7 @@
 #include <stdio.h>
 #include <stdarg.h>
 #include <string.h>
+#include <sys/mman.h>
 #include <platform/x86_virtio.h>
 #include <libvmm/virtio/virtio.h>
 #include <libvmm/virtio/gpa.h>
@@ -125,6 +126,46 @@ int main(void)
     write_at(REG_VIRTIO_MMIO_STATUS,0);
     assert(!(controller.asserted & (1u<<16)) && (controller.asserted & (1u<<17)));
     assert(!queues[0].ready && !memcmp(&other,&pristine,sizeof(other)));
+    aos_x86_virtio_retire();
+    assert(!virtio_gpa_to_hva(0u, 1u));
+    assert(!virq_inject(16) && !virq_inject(17));
+    reject(AOS_X86_VIRTIO_BASE, 4u, false);
+    reject(AOS_X86_VIRTIO_BASE + AOS_X86_VIRTIO_STRIDE, 4u, true);
+
+    struct generation {
+        aos_x86_ioapic_t controller;
+        virtio_device_t device;
+        virtio_queue_handler_t queues[2];
+    };
+    _Static_assert(sizeof(struct generation) <= 4096u, "fixture metadata fits one page");
+    uint8_t *mapping = mmap(NULL, 8192u, PROT_READ | PROT_WRITE,
+        MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    assert(mapping != MAP_FAILED);
+    for (unsigned generation = 0; generation < 2u; generation++) {
+        memset(mapping, 0, 8192u);
+        struct generation *fresh = (void *)mapping;
+        assert(aos_x86_ioapic_init(&fresh->controller, 1u));
+        fresh->device = (virtio_device_t){.transport_type = VIRTIO_TRANSPORT_MMIO,
+            .funs = &ops, .vqs = fresh->queues, .num_vqs = 2u, .virq = 16u};
+        fresh->device.regs.DeviceID = generation ? VIRTIO_DEVICE_ID_NET : VIRTIO_DEVICE_ID_BLOCK;
+        assert(aos_x86_virtio_init(&fresh->controller, mapping + 4096u, 4096u));
+        assert(!aos_x86_virtio_contains(AOS_X86_VIRTIO_BASE));
+        assert(virtio_mmio_register_device(&fresh->device, AOS_X86_VIRTIO_BASE, 4096u, 16u));
+        assert(read_at(REG_VIRTIO_MMIO_DEVICE_ID, 4u) == fresh->device.regs.DeviceID);
+        assert(virtio_gpa_to_hva(0u, 1u) == mapping + 4096u);
+        unsigned previous_notifications = notifications;
+        assert(mprotect(mapping, 8192u, PROT_NONE) == 0);
+        aos_x86_virtio_retire();
+        aos_x86_virtio_retire();
+        assert(!virtio_gpa_to_hva(0u, 1u));
+        assert(!virq_inject(16) && !virq_inject_vcpu(0u, 16));
+        reject(AOS_X86_VIRTIO_BASE, 4u, false);
+        reject(AOS_X86_VIRTIO_BASE + REG_VIRTIO_MMIO_QUEUE_NOTIFY, 4u, true);
+        assert(notifications == previous_notifications);
+        assert(mprotect(mapping, 8192u, PROT_READ | PROT_WRITE) == 0);
+    }
+    assert(munmap(mapping, 8192u) == 0);
     puts("PASS: x86 virtio aperture, subword config, GPA mapping and IOAPIC level/ACK/reset");
+    puts("PASS: bus retirement ignores inaccessible old devices/controller/RAM and admits fresh registrations");
     return 0;
 }

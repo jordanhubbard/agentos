@@ -18,4 +18,6 @@
 /* Qualification-only retype destination; empty in normal images. */
 #define AOS_GUEST_QUEUE_TEST_FRAME 469u
 #define AOS_GUEST_QUEUE_TEST_COPY 470u
+/* Outside RAM aliases and ARM's bounded paging-table range. */
+#define AOS_GUEST_QUEUE_FRAME_BASE 3860u
 #endif

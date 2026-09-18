@@ -1,0 +1,53 @@
+{
+  "schema": "agentos.x86_recreation_transaction.v1",
+  "revision": "3ea3554b67d34b0aab7e5a51a24c0a6c457dc363",
+  "accepted_for_v04_release": false,
+  "scope": "Production reconstruction coordinator, partial-failure ownership and resumable cleanup; managed Intel two-boot regression",
+  "host": {
+    "command": "make test-host test-x86-firmware-build SEL4_SDK_VERSION=2.3.0",
+    "result": "passed, terminal exit 0",
+    "checks": [
+      "ASan/UBSan failure injection at all 11 construction stages, both before and after simulated service commitment",
+      "All three backend detach failures retain cleanup responsibility until acknowledgement",
+      "All five release boundaries resume at the rejected operation, including already committed operations with failed acknowledgement",
+      "No resource release before bus retirement and backend detach acknowledgement; execution released before RAM",
+      "No readiness publication on failure; failed state permanently rejects new runs without advancing generation",
+      "Two successful generations; generation overflow and invalid operations rejected without side effects"
+    ],
+    "log_sha256": "93577bd2999acfb21ab635ab2de85dc2f07a9dd89a81ec830fa255de1265acda"
+  },
+  "spark": {
+    "command": "make gate SEL4_SDK_VERSION=2.3.0",
+    "result": "passed, terminal exit 0",
+    "log_sha256": "efbee72bc9b0667124e4dd7253936058f914968cdcef47762848b432a9a79b90"
+  },
+  "intel": {
+    "command": "cd /tmp/agentos-v04-intel-discovery && if pgrep -f '[q]emu-system-x86_64'; then exit 3; fi && git fetch origin platform/x86-guest-recreation && git checkout --detach 3ea3554 && cp --reflink=auto --sparse=always --no-clobber /tmp/agentos-debian-amd64/boot-24.raw /tmp/agentos-debian-amd64/recreate-3ea3554.raw && make gate-x86_64-cc-linux SEL4_SDK_VERSION=2.3.0 X86_ROOT_DISK=/tmp/agentos-debian-amd64/recreate-3ea3554.raw X86_SSH_KEY=/tmp/agentos-debian-amd64/ssh-seed-19/identity X86_SSH_PORT=12224 X86_SSH_KNOWN_HOSTS=/tmp/agentos-v04-intel-discovery/build/tmp/agentos-qemu-LxAV1n.known_hosts X86_FIRMWARE_IMAGE=/tmp/agentos-ovmf-2024.02-2ubuntu0.9.fd X86_FIRMWARE_SHA256=101afad5f520753224b60b9555df60add435cf50c7a82b781d7d7d8c60db7eb5 QEMU_TEST_TIMEOUT=600",
+    "result": "passed, terminal exit 0",
+    "checks": [
+      "Managed handles 1 and 2 reached pinned Debian login, strict pinned-key SSH with exact x86_64 output and sync",
+      "Distinct console input markers echoed in both generations",
+      "Both generations destroyed; status, suspend, resume and console calls rejected their retired handles"
+    ],
+    "run_log_sha256": "a9ecbbfc73686a5af3c9435fa802989ef51d0b0eface65d7bbb20cd868775cc5",
+    "root_task_sha256": "25343374c7905a7c94d3ab48efeac43dd4d5d1f2402f1a9c73beaeee1db6d03d",
+    "artifact_prefix": "/tmp/agentos-v04-intel-discovery/build/tmp/agentos-qemu-1rv4Es",
+    "target_log_sha256": "5db9f768d15dcec1b11ed8e68fc1c0587add16d3667ece088f17ea7df2d051f6",
+    "first_console_sha256": "15edea5c54925ce761d5abeb2ff08944cd63f46368e4e1d093832e48329f897a",
+    "second_console_sha256": "d52f58ae1542216bcf9e73625c94d8c4ae85986d798268fa7b9940d38895bd4a",
+    "first_input_sha256": "973ff0263222c0221920a339e280e31ed279b2dbc8de953bfae1956e0cf794c1",
+    "second_input_sha256": "f76f89cb1b416dbbd74c1b4fd4948a19864c0fd5c1b1edb2a229d87688b94f5e",
+    "ssh_output_sha256_each": "aaf631698ae5160ceb04a97681a14887fdcab47cd6e0f163c87485b3b1340b62"
+  },
+  "prelaunch_retry": {
+    "reason": "Disposable disk copy hit the Intel host quota before QEMU launch",
+    "action": "Removed only the failed 7ce017c disposable disk and incomplete 3ea3554 copy, then recopied the original seed disk",
+    "log_sha256": "a4adc6b6c2401af4726ae5e0368089b4b15f453d0f506517e1f2ab07f409d5e2"
+  },
+  "limitations": [
+    "Failure injection exercises the production coordinator with host resource models; native syscall and transport fault injection are not claimed",
+    "The separate intermittent serial reconstruction qualification failure remains unresolved",
+    "Native GUI recreation and remaining v0.4 resource, storage and graphical requirements remain outstanding",
+    "Required GitHub checks and canonical integration remain pending"
+  ]
+}

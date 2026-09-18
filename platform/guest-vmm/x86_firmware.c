@@ -33,6 +33,15 @@ extern const uint8_t _binary_x86_boot_profile_bin_start[], _binary_x86_boot_prof
 #include <libvmm/virtio/gpa.h>
 #include "contracts/x86_guest_memory_caps.h"
 #include "contracts/guest_queue_caps.h"
+#include "x86_guest_objects.h"
+#include <platform/x86_memory_rebuild.h>
+#include <platform/x86_recreate.h>
+#include <platform/guest_ram.h>
+#include <platform/serial_rebind.h>
+#include <platform/blk_rebind.h>
+#include <platform/blk_virt_pump.h>
+#include <platform/net_rebind.h>
+#include <platform/net_virt_pump.h>
 
 #define VCPU AOS_GUEST_VCPU_CAP_BASE
 const char vmm_pd_name[] = "guest_vmm_x86";
@@ -73,6 +82,25 @@ static bool lifecycle_started;
 static aos_guest_teardown_t teardown_state;
 static seL4_CPtr block_proof_ep;
 static uint8_t block_boot_data[AOS_BLK_TRANSFER_SIZE];
+extern const uint8_t _binary_x86_firmware_bin_start[], _binary_x86_firmware_bin_end[];
+#if defined(AGENTOS_X86_MANAGED_START) && !defined(AGENTOS_X86_USERSPACE_PROOF)
+static struct {
+    aos_x86_config_t *config, initial_config;
+    aos_x86_apic_t *apic;
+    aos_x86_ioapic_t *ioapic;
+    aos_serial_endpoint_t *serial;
+    aos_x86_vmenter_entry_t *entry;
+    uint64_t *started;
+    uint32_t *timer_quantum;
+    unsigned *exits;
+    net_virt_rebind_reply_t net;
+    blk_virt_rebind_reply_t block;
+} reset_context;
+static aos_x86_recreate_t reset_transaction;
+static bool reset_entry_pending;
+static bool control_reset(void);
+static void reset_abort(void);
+#endif
 
 static uint32_t serial_output(uint8_t *bytes, uint32_t capacity, void *context)
 {
@@ -113,7 +141,9 @@ static bool control_start(void)
 }
 static bool control_teardown(void)
 {
-    return aos_guest_teardown_step(&teardown_state, AOS_X86_FIRMWARE_RAM);
+    if (!aos_guest_teardown_step(&teardown_state, AOS_X86_FIRMWARE_RAM)) return false;
+    aos_x86_virtio_retire();
+    return true;
 }
 static void control_wake(seL4_Word badge, void *context)
 {
@@ -193,11 +223,353 @@ static uint64_t timestamp(void)
     return ((uint64_t)hi << 32) | lo;
 }
 
+#if defined(AGENTOS_X86_MANAGED_START) && !defined(AGENTOS_X86_USERSPACE_PROOF)
+/* A failed REBIND reply can be ambiguous: the service may already own the
+ * transferred pool. Keep that ownership until a validated DETACH reply. Do
+ * not guess its generation or allow another CREATE after an internal error. */
+static bool reset_detach(seL4_CPtr ep, uint32_t opcode, uint32_t version,
+                          uint32_t request_bytes, uint32_t reply_bytes)
+{
+    const uint32_t args[4] = {version, 0u, 0u, 0u};
+    sel4_msg_t req = {.opcode = opcode, .length = request_bytes}, rep = {0};
+    __builtin_memcpy(req.data, args, request_bytes);
+    sel4_call(ep, &req, &rep);
+    return rep.opcode == SEL4_ERR_OK && rep.length == reply_bytes &&
+        msg_u32(&rep, 0u) == 0u && msg_u32(&rep, 4u) == version;
+}
+
+_Static_assert(AOS_GUEST_QUEUE_INPUT == AOS_X86_RECREATE_BACKENDS &&
+               AOS_GUEST_QUEUE_NET == AOS_X86_RECREATE_NET &&
+               AOS_GUEST_QUEUE_BLOCK == AOS_X86_RECREATE_BLK &&
+               AOS_GUEST_QUEUE_SERIAL == AOS_X86_RECREATE_SERIAL,
+               "reconstruction cleanup must cover every canonical queue");
+
+static void reset_retire(void *context)
+{
+    (void)context;
+    serial_attached = false;
+    aos_x86_virtio_retire();
+}
+
+static bool reset_backend_detach(void *context, unsigned backend)
+{
+    (void)context;
+    switch (backend) {
+    case AOS_X86_RECREATE_NET:
+        return reset_detach(PD_CNODE_SLOT_NET_VIRT_EP, NET_VIRT_OP_DETACH,
+            NET_VIRT_CONTRACT_VERSION, sizeof(net_virt_attach_req_t),
+            sizeof(net_virt_attach_reply_t));
+    case AOS_X86_RECREATE_BLK:
+        return reset_detach(PD_CNODE_SLOT_BLK_VIRT_EP, BLK_VIRT_OP_DETACH,
+            BLK_VIRT_CONTRACT_VERSION, sizeof(blk_virt_attach_req_t),
+            sizeof(blk_virt_attach_reply_t));
+    case AOS_X86_RECREATE_SERIAL:
+        return reset_detach(PD_CNODE_SLOT_SERIAL_VIRT_EP, SERIAL_VIRT_OP_DETACH,
+            SERIAL_VIRT_CONTRACT_VERSION, sizeof(serial_virt_attach_req_t),
+            sizeof(serial_virt_attach_reply_t));
+    default:
+        return false;
+    }
+}
+
+static bool reset_release(void *context, unsigned resource)
+{
+    (void)context;
+    if (resource < AOS_X86_RECREATE_BACKENDS)
+        return seL4_CNode_Revoke(AOS_GUEST_RAM_SELF_CNODE,
+            AOS_GUEST_QUEUE_POOL_BASE + resource, AOS_GUEST_RAM_CNODE_BITS) == seL4_NoError;
+    if (resource == AOS_X86_RECREATE_EXECUTION)
+        return seL4_CNode_Revoke(AOS_GUEST_RAM_SELF_CNODE,
+            AOS_X86_GUEST_OBJECT_POOL_CAP, AOS_GUEST_RAM_CNODE_BITS) == seL4_NoError;
+    return resource == AOS_X86_RECREATE_RAM &&
+        aos_vmm_guest_ram_release(AOS_X86_FIRMWARE_RAM);
+}
+
+static bool reset_step(void *context, aos_x86_recreate_step_t step, uint32_t generation)
+{
+    (void)context;
+    seL4_Word failed_field = 0u;
+    switch (step) {
+    case AOS_X86_RECREATE_OBJECTS:
+        return aos_x86_guest_objects_rebuild() == seL4_NoError;
+    case AOS_X86_RECREATE_MEMORY:
+        return aos_x86_guest_memory_rebuild(_binary_x86_firmware_bin_start,
+            (size_t)(_binary_x86_firmware_bin_end - _binary_x86_firmware_bin_start),
+            AOS_X86_FIRMWARE_RAM);
+    case AOS_X86_RECREATE_NATIVE_STATE:
+        *reset_context.config = reset_context.initial_config;
+        *reset_context.started = timestamp();
+        aos_x86_apic_init(reset_context.apic, *reset_context.started);
+        return aos_x86_ioapic_init(reset_context.ioapic, 1u) &&
+            aos_x86_virtio_init(reset_context.ioapic, (void *)AOS_X86_FIRMWARE_RAM_VA,
+                AOS_X86_FIRMWARE_RAM);
+    case AOS_X86_RECREATE_NET_REBIND:
+        return aos_net_virt_rebind_with_info(0u, generation, &reset_context.net);
+    case AOS_X86_RECREATE_NET_ADOPT:
+        return aos_vmm_virtio_net_adopt(0u, (void *)AOS_NET_SHMEM_VA,
+            &reset_context.net) && aos_vmm_virtio_net_host_ready();
+    case AOS_X86_RECREATE_BLK_REBIND:
+        return aos_blk_virt_rebind_with_info(0u, generation, &reset_context.block);
+    case AOS_X86_RECREATE_BLK_ADOPT:
+        return aos_vmm_virtio_blk_adopt(0u, (void *)AOS_BLK_SHMEM_VA, &reset_context.block);
+    case AOS_X86_RECREATE_SERIAL_REBIND:
+        return aos_serial_virt_rebind(0u, generation);
+    case AOS_X86_RECREATE_CONSOLE:
+        if (!aos_vmm_virtio_console_recreate()) return false;
+        *reset_context.serial = (aos_serial_endpoint_t){
+            .channel = aos_serial_channel_at(AOS_SERIAL_SHMEM_VA)};
+        return true;
+    case AOS_X86_RECREATE_BIND:
+        return aos_x86_guest_objects_bind() == seL4_NoError;
+    case AOS_X86_RECREATE_CPU:
+        return aos_x86_firmware_reset(reset_context.entry, &failed_field) == seL4_NoError;
+    default:
+        return false;
+    }
+}
+
+static void reset_publish(void *context)
+{
+    (void)context;
+    *reset_context.timer_quantum = 0u;
+    *reset_context.exits = 0u;
+    timer_exits = injections = eois = timer_shift = halt_exits = 0u;
+    for (unsigned i = 0; i < AOS_X86_FIRMWARE_SNAPSHOT_WORDS; i++) snapshot[i] = 0u;
+    for (unsigned i = 0; i < AOS_X86_FIRMWARE_CHAIN_WORDS; i++) halt_chain[i] = 0u;
+    for (unsigned i = 0; i < 3u; i++) boot_reads[i] = 0u;
+    last_qualification = 0u;
+    have_wait_snapshot = serial_wake_received = false;
+    teardown_state = (aos_guest_teardown_t){0};
+    serial_attached = true;
+    reset_entry_pending = true;
+}
+
+static const aos_x86_recreate_ops_t reset_ops = {
+    .step = reset_step, .publish = reset_publish, .retire = reset_retire,
+    .detach = reset_backend_detach, .release = reset_release,
+};
+
+static void reset_abort(void)
+{
+    (void)aos_x86_recreate_cleanup(&reset_transaction, &reset_ops, NULL);
+}
+
+static bool control_reset(void)
+{
+    if (!reset_context.config || !teardown_state.execution_released ||
+            !teardown_state.ram_released || !teardown_state.paging_released) return false;
+    return aos_x86_recreate_run(&reset_transaction, &reset_ops, NULL);
+}
+#endif
+
 #ifdef AGENTOS_X86_USERSPACE_PROOF
 bool aos_x86_lifecycle_ack;
 bool aos_x86_lifecycle_boot_ack;
+/* Qualification diagnostics only: no IPC or scheduling until terminal report. */
+static uint32_t teardown_proof_stage;
 /* Run only after the independent client has destroyed the guest and checked
  * terminal-state rejections. Never enter VMX or reuse a retired queue. */
+static bool recreated_network_proof(uint32_t generation)
+{
+    const uint32_t stage = 1000u + generation * 100u;
+    teardown_proof_stage = stage + 1u;
+    net_virt_rebind_reply_t attachment;
+    if (!aos_net_virt_rebind_with_info(0u, generation, &attachment)) return false;
+    teardown_proof_stage = stage + 2u;
+    if (attachment.hw_state != NET_VIRT_HW_NET_PD) return false;
+    aos_net_virt_client_t q;
+    aos_net_client_bind((uint8_t *)AOS_NET_SHMEM_VA, 0u, &q);
+    teardown_proof_stage = stage + 3u;
+    if (q.tx_free->head || q.rx_free->head || q.tx_active->head ||
+        q.tx_active->tail || q.rx_active->head || q.rx_active->tail ||
+        q.tx_free->tail != AOS_NET_CAPACITY || q.rx_free->tail != AOS_NET_CAPACITY)
+        return false;
+    static const uint8_t arp[] = {
+        255,255,255,255,255,255, 0x52,0x54,0,0x12,0x34,0x56, 8,6,
+        0,1,8,0,6,4,0,1, 0x52,0x54,0,0x12,0x34,0x56, 10,0,2,15,
+        0,0,0,0,0,0, 10,0,2,2
+    };
+    for (unsigned i = 0; i < sizeof(arp); i++) q.tx_data[i] = arp[i];
+    for (unsigned i = 0; i < sizeof(attachment.mac); i++) {
+        q.tx_data[6u + i] = attachment.mac[i];
+        q.tx_data[22u + i] = attachment.mac[i];
+    }
+    q.tx_active->buffers[0] = (aos_net_buff_desc_t){.len = sizeof(arp)};
+    __atomic_store_n(&q.tx_free->head, 1u, __ATOMIC_RELEASE);
+    __atomic_store_n(&q.tx_active->tail, 1u, __ATOMIC_RELEASE);
+    seL4_Signal(PD_CNODE_SLOT_NET_VIRT_NOTIFY);
+    unsigned waits = 0u;
+    while ((__atomic_load_n(&q.tx_free->tail, __ATOMIC_ACQUIRE) != AOS_NET_CAPACITY + 1u ||
+            __atomic_load_n(&q.rx_active->tail, __ATOMIC_ACQUIRE) == 0u) &&
+           waits++ < 100000u) seL4_Yield();
+    teardown_proof_stage = stage + 4u;
+    if (waits >= 100000u) return false;
+    teardown_proof_stage = stage + 5u;
+    if (q.tx_active->head != 1u) return false;
+    teardown_proof_stage = stage + 6u;
+    aos_net_buff_desc_t received = q.rx_active->buffers[0];
+    if (!aos_net_buffer_valid(received.io_or_offset, received.len) || received.len < 42u)
+        return false;
+    const uint8_t *reply = q.rx_data + received.io_or_offset;
+    teardown_proof_stage = stage + 7u;
+    if (reply[12] != 8u || reply[13] != 6u || reply[20] != 0u || reply[21] != 2u ||
+        reply[28] != 10u || reply[29] != 0u || reply[30] != 2u || reply[31] != 2u ||
+        reply[38] != 10u || reply[39] != 0u || reply[40] != 2u || reply[41] != 15u)
+        return false;
+    teardown_proof_stage = stage + 8u;
+    for (unsigned i = 0; i < 6u; i++)
+        if (reply[i] != attachment.mac[i] || reply[32u + i] != attachment.mac[i]) return false;
+    teardown_proof_stage = stage + 9u;
+    sel4_msg_t detach = {.opcode = NET_VIRT_OP_DETACH,
+        .length = sizeof(net_virt_attach_req_t)}, result = {0};
+    const net_virt_attach_req_t args = {NET_VIRT_CONTRACT_VERSION, 0u, 0u};
+    __builtin_memcpy(detach.data, &args, sizeof(args));
+    sel4_call(PD_CNODE_SLOT_NET_VIRT_EP, &detach, &result);
+    if (result.opcode != SEL4_ERR_OK || result.length != sizeof(net_virt_attach_reply_t) ||
+        msg_u32(&result, 0u) != NET_VIRT_OK) return false;
+    teardown_proof_stage = stage + 10u;
+    if (seL4_CNode_Revoke(AOS_GUEST_RAM_SELF_CNODE,
+            AOS_GUEST_QUEUE_POOL_BASE + AOS_GUEST_QUEUE_NET,
+            AOS_GUEST_RAM_CNODE_BITS) != seL4_NoError) return false;
+    teardown_proof_stage = stage + 11u;
+    return seL4_CNode_Copy(AOS_GUEST_RAM_SELF_CNODE, AOS_GUEST_QUEUE_TEST_COPY,
+        AOS_GUEST_RAM_CNODE_BITS, AOS_GUEST_RAM_SELF_CNODE,
+        AOS_GUEST_QUEUE_FRAME_BASE + AOS_GUEST_QUEUE_NET,
+        AOS_GUEST_RAM_CNODE_BITS, seL4_AllRights) == seL4_FailedLookup;
+}
+
+/* Probe adoption through the same MMIO dispatcher used for guest faults.
+ * RAM has been reconstructed, but no VCPU is bound or entered here. */
+static bool recreated_network_device_proof(uint32_t generation)
+{
+    const uint32_t stage = 4000u + generation * 100u;
+    teardown_proof_stage = stage + 1u;
+    net_virt_rebind_reply_t attachment;
+    if (!aos_net_virt_rebind_with_info(0u, generation, &attachment) ||
+        attachment.hw_state != NET_VIRT_HW_NET_PD) return false;
+    aos_x86_ioapic_t controller;
+    teardown_proof_stage = stage + 2u;
+    if (!aos_x86_ioapic_init(&controller, 1u) ||
+        !aos_x86_virtio_init(&controller, (void *)AOS_X86_FIRMWARE_RAM_VA,
+                            AOS_X86_FIRMWARE_RAM)) return false;
+    teardown_proof_stage = stage + 3u;
+    if (!aos_vmm_virtio_net_adopt(0u, (void *)AOS_NET_SHMEM_VA, &attachment) ||
+        !aos_vmm_virtio_net_host_ready() || aos_vmm_virtio_net_guest_io_completed())
+        return false;
+    const uintptr_t base = AOS_X86_VIRTIO_BASE + 2u * AOS_X86_VIRTIO_STRIDE;
+    const uint32_t offsets[] = {0x08u, 0x70u, 0x44u, 0x100u, 0x104u};
+    const uint32_t expected[] = {1u, 0u, 0u,
+        (uint32_t)attachment.mac[0] | (uint32_t)attachment.mac[1] << 8 |
+        (uint32_t)attachment.mac[2] << 16 | (uint32_t)attachment.mac[3] << 24,
+        (uint32_t)attachment.mac[4] | (uint32_t)attachment.mac[5] << 8};
+    for (unsigned i = 0; i < sizeof(offsets) / sizeof(offsets[0]); i++) {
+        teardown_proof_stage = stage + 10u + i;
+        uint32_t value = UINT32_MAX;
+        if (!aos_x86_virtio_access(base + offsets[i], 4u, false, &value) ||
+            (i == 4u ? value & 0xffffu : value) != expected[i]) return false;
+    }
+    teardown_proof_stage = stage + 20u;
+    if (!aos_vmm_virtio_net_detach()) return false;
+    aos_x86_virtio_retire();
+    if (virtio_gpa_to_hva(0u, 1u) != NULL) return false;
+    teardown_proof_stage = stage + 21u;
+    if (seL4_CNode_Revoke(AOS_GUEST_RAM_SELF_CNODE,
+            AOS_GUEST_QUEUE_POOL_BASE + AOS_GUEST_QUEUE_NET,
+            AOS_GUEST_RAM_CNODE_BITS) != seL4_NoError) return false;
+    teardown_proof_stage = stage + 22u;
+    return seL4_CNode_Copy(AOS_GUEST_RAM_SELF_CNODE, AOS_GUEST_QUEUE_TEST_COPY,
+        AOS_GUEST_RAM_CNODE_BITS, AOS_GUEST_RAM_SELF_CNODE,
+        AOS_GUEST_QUEUE_FRAME_BASE + AOS_GUEST_QUEUE_NET,
+        AOS_GUEST_RAM_CNODE_BITS, seL4_AllRights) == seL4_FailedLookup;
+}
+
+static unsigned rebuilt_block_waits;
+static void rebuilt_block_wait(void)
+{
+    if (++rebuilt_block_waits >= 100000u)
+        stop(block_proof_ep, AOS_X86_VTX_PROOF_FAIL, 0x544452u, 0u,
+             teardown_proof_stage);
+    seL4_Yield();
+}
+
+static bool recreated_block_device_proof(uint32_t generation)
+{
+    const uint32_t stage = 5000u + generation * 100u;
+    teardown_proof_stage = stage + 1u;
+    blk_virt_rebind_reply_t attachment;
+    if (!aos_blk_virt_rebind_with_info(0u, generation, &attachment) ||
+        attachment.hw_state != BLK_VIRT_HW_VIRTIO_BLK) return false;
+    aos_x86_ioapic_t controller;
+    teardown_proof_stage = stage + 2u;
+    if (!aos_x86_ioapic_init(&controller, 1u) ||
+        !aos_x86_virtio_init(&controller, (void *)AOS_X86_FIRMWARE_RAM_VA,
+                            AOS_X86_FIRMWARE_RAM)) return false;
+    teardown_proof_stage = stage + 3u;
+    if (!aos_vmm_virtio_blk_adopt(0u, (void *)AOS_BLK_SHMEM_VA, &attachment) ||
+        aos_vmm_virtio_blk_guest_io_completed()) return false;
+    aos_blk_virt_client_t queue;
+    aos_blk_client_bind((uint8_t *)AOS_BLK_SHMEM_VA, 0u, &queue);
+    uint64_t sectors = queue.info->capacity * (AOS_BLK_TRANSFER_SIZE / 512u);
+    const uintptr_t base = AOS_X86_VIRTIO_BASE + AOS_X86_VIRTIO_STRIDE;
+    const uint32_t offsets[] = {0x08u, 0x70u, 0x44u, 0x100u, 0x104u, 0x108u};
+    const uint32_t expected[] = {2u, 0u, 0u, (uint32_t)sectors,
+        (uint32_t)(sectors >> 32), AOS_BLK_GUEST_MAX_SEGMENT_SIZE};
+    for (unsigned i = 0; i < sizeof(offsets) / sizeof(offsets[0]); i++) {
+        teardown_proof_stage = stage + 10u + i;
+        uint32_t value = UINT32_MAX;
+        if (!aos_x86_virtio_access(base + offsets[i], 4u, false, &value) ||
+            value != expected[i]) return false;
+    }
+    teardown_proof_stage = stage + 16u;
+    rebuilt_block_waits = 0;
+    static uint8_t rebuilt_data[AOS_BLK_TRANSFER_SIZE];
+    if (!aos_vmm_virtio_blk_read_boot(0u, 1u, rebuilt_data,
+            sizeof(rebuilt_data), rebuilt_block_wait)) return false;
+    teardown_proof_stage = stage + 17u;
+    for (unsigned i = 0; i < sizeof(rebuilt_data); i++)
+        if (rebuilt_data[i] != block_boot_data[i]) return false;
+    teardown_proof_stage = stage + 20u;
+    if (!aos_vmm_virtio_blk_detach()) return false;
+    aos_x86_virtio_retire();
+    if (virtio_gpa_to_hva(0u, 1u) != NULL) return false;
+    teardown_proof_stage = stage + 21u;
+    if (seL4_CNode_Revoke(AOS_GUEST_RAM_SELF_CNODE,
+            AOS_GUEST_QUEUE_POOL_BASE + AOS_GUEST_QUEUE_BLOCK,
+            AOS_GUEST_RAM_CNODE_BITS) != seL4_NoError) return false;
+    teardown_proof_stage = stage + 22u;
+    return seL4_CNode_Copy(AOS_GUEST_RAM_SELF_CNODE, AOS_GUEST_QUEUE_TEST_COPY,
+        AOS_GUEST_RAM_CNODE_BITS, AOS_GUEST_RAM_SELF_CNODE,
+        AOS_GUEST_QUEUE_FRAME_BASE + AOS_GUEST_QUEUE_BLOCK,
+        AOS_GUEST_RAM_CNODE_BITS, seL4_AllRights) == seL4_FailedLookup;
+}
+
+static bool recreated_console_device_proof(uint32_t generation)
+{
+    const uint32_t stage = 6000u + generation * 100u;
+    teardown_proof_stage = stage + 1u;
+    aos_x86_ioapic_t controller;
+    if (!aos_x86_ioapic_init(&controller, 1u) ||
+        !aos_x86_virtio_init(&controller, (void *)AOS_X86_FIRMWARE_RAM_VA,
+                            AOS_X86_FIRMWARE_RAM)) return false;
+    teardown_proof_stage = stage + 2u;
+    if (!aos_vmm_virtio_console_recreate() || aos_vmm_virtio_console_driver_ready() ||
+        aos_vmm_virtio_console_tx_active()) return false;
+    uint8_t bytes[16];
+    if (aos_vmm_virtio_console_drain_tx(bytes, sizeof(bytes)) != 0u) return false;
+    const uint32_t offsets[] = {0x08u, 0x70u, 0x44u};
+    const uint32_t expected[] = {3u, 0u, 0u};
+    for (unsigned i = 0; i < sizeof(offsets) / sizeof(offsets[0]); i++) {
+        teardown_proof_stage = stage + 10u + i;
+        uint32_t value = UINT32_MAX;
+        if (!aos_x86_virtio_access(AOS_X86_VIRTIO_BASE + offsets[i], 4u, false, &value) ||
+            value != expected[i]) return false;
+    }
+    teardown_proof_stage = stage + 20u;
+    if (!aos_vmm_virtio_console_quiesce()) return false;
+    aos_x86_virtio_retire();
+    return virtio_gpa_to_hva(0u, 1u) == NULL;
+}
+
 static bool terminal_teardown_proof(void)
 {
     /* Root is already waiting for the terminal report. A failed report on
@@ -210,8 +582,19 @@ static bool terminal_teardown_proof(void)
     seL4_SetMR(3, 0u);
     seL4_NBSend(PD_CNODE_SLOT_SELF_EP,
         seL4_MessageInfo_new(AOS_X86_VTX_PROOF_LABEL, 0u, 0u, 4u));
+    teardown_proof_stage = 1u;
     if (!teardown_state.paging_released || !aos_x86_lifecycle_ack) return false;
     if (virtio_gpa_to_hva(0u, 1u) != NULL) return false;
+    for (unsigned slot = 0; slot < AOS_X86_VIRTIO_SLOTS; slot++) {
+        teardown_proof_stage = 10u + slot;
+        uint64_t address = AOS_X86_VIRTIO_BASE + slot * AOS_X86_VIRTIO_STRIDE;
+        uint32_t value = 0xaced1234u;
+        if (aos_x86_virtio_contains(address) ||
+            aos_x86_virtio_access(address, 4u, false, &value) || value != 0xaced1234u)
+            return false;
+    }
+    aos_x86_virtio_retire();
+    teardown_proof_stage = 20u;
     const seL4_CPtr stale[] = {VCPU, AOS_GUEST_RAM_GUEST_VSPACE};
     for (unsigned i = 0; i < 2u; i++) {
         if (seL4_CNode_Copy(AOS_GUEST_RAM_SELF_CNODE, AOS_GUEST_QUEUE_TEST_COPY,
@@ -223,7 +606,90 @@ static bool terminal_teardown_proof(void)
      * the pool. Exercise every pool, including ROM and device queues, twice.
      * These are stopped scratch frames, never a recreated executing guest. */
     for (unsigned pass = 0; pass < 2u; pass++) {
+        teardown_proof_stage = 100u + pass * 100u;
+        if (!recreated_network_proof(pass * 2u + 1u)) return false;
+        teardown_proof_stage = 110u + pass * 100u;
+        blk_virt_rebind_reply_t block_attachment;
+        if (!aos_blk_virt_rebind_with_info(0u, pass * 2u + 1u, &block_attachment) ||
+            block_attachment.hw_state != BLK_VIRT_HW_VIRTIO_BLK) return false;
+        aos_blk_virt_client_t rebuilt_block;
+        aos_blk_client_bind((uint8_t *)AOS_BLK_SHMEM_VA, 0u, &rebuilt_block);
+        if (!rebuilt_block.info->ready || !rebuilt_block.info->capacity ||
+            rebuilt_block.req->head || rebuilt_block.req->tail ||
+            rebuilt_block.resp->head || rebuilt_block.resp->tail) return false;
+        rebuilt_block.req->buffers[0] = (aos_blk_req_t){
+            .code = AOS_BLK_REQ_READ, .count = 1u, .id = 0xb10cu + pass};
+        __atomic_store_n(&rebuilt_block.req->tail, 1u, __ATOMIC_RELEASE);
+        seL4_Signal(PD_CNODE_SLOT_BLK_VIRT_NOTIFY);
+        unsigned block_waits = 0;
+        while (__atomic_load_n(&rebuilt_block.resp->tail, __ATOMIC_ACQUIRE) != 1u &&
+               block_waits++ < 100000u) seL4_Yield();
+        if (block_waits >= 100000u || rebuilt_block.req->head != 1u ||
+            rebuilt_block.resp->buffers[0].status != AOS_BLK_RESP_OK ||
+            rebuilt_block.resp->buffers[0].success_count != 1u ||
+            rebuilt_block.resp->buffers[0].id != 0xb10cu + pass) return false;
+        __atomic_store_n(&rebuilt_block.resp->head, 1u, __ATOMIC_RELEASE);
+        sel4_msg_t block_detach = {.opcode = BLK_VIRT_OP_DETACH,
+            .length = sizeof(blk_virt_attach_req_t)}, block_reply = {0};
+        const blk_virt_attach_req_t detach_args = {BLK_VIRT_CONTRACT_VERSION, 0u, 0u, 0u};
+        __builtin_memcpy(block_detach.data, &detach_args, sizeof(detach_args));
+        sel4_call(PD_CNODE_SLOT_BLK_VIRT_EP, &block_detach, &block_reply);
+        if (block_reply.opcode != SEL4_ERR_OK ||
+            block_reply.length != sizeof(blk_virt_attach_reply_t) ||
+            msg_u32(&block_reply, 0u) != BLK_VIRT_OK) return false;
+        if (seL4_CNode_Revoke(AOS_GUEST_RAM_SELF_CNODE,
+                AOS_GUEST_QUEUE_POOL_BASE + AOS_GUEST_QUEUE_BLOCK,
+                AOS_GUEST_RAM_CNODE_BITS) != seL4_NoError) return false;
+        if (seL4_CNode_Copy(AOS_GUEST_RAM_SELF_CNODE, AOS_GUEST_QUEUE_TEST_COPY,
+                AOS_GUEST_RAM_CNODE_BITS, AOS_GUEST_RAM_SELF_CNODE,
+                AOS_GUEST_QUEUE_FRAME_BASE + AOS_GUEST_QUEUE_BLOCK,
+                AOS_GUEST_RAM_CNODE_BITS, seL4_AllRights) != seL4_FailedLookup) return false;
+        teardown_proof_stage = 120u + pass * 100u;
+        if (!aos_serial_virt_rebind(0u, pass + 1u)) return false;
+        aos_serial_channel_t rebuilt_serial = aos_serial_channel_at(AOS_SERIAL_SHMEM_VA);
+        static const uint8_t message[] = "x86-recreated-serial\n";
+        teardown_proof_stage = 121u + pass * 100u;
+        if (aos_serial_queue_write(&rebuilt_serial.from_guest, message,
+                sizeof(message) - 1u) != AOS_SERIAL_PUMP_OK) return false;
+        seL4_Signal(PD_CNODE_SLOT_SERIAL_VIRT_NOTIFY);
+        teardown_proof_stage = 122u + pass * 100u;
+        unsigned waits = 0;
+        while (__atomic_load_n(&rebuilt_serial.from_guest.queue->head, __ATOMIC_ACQUIRE)
+                != sizeof(message) - 1u && waits++ < 100000u) seL4_Yield();
+        if (waits >= 100000u) return false;
+        teardown_proof_stage = 123u + pass * 100u;
+        serial_virt_attach_req_t serial_args = {
+            SERIAL_VIRT_CONTRACT_VERSION, 0u, SERIAL_VIRT_ROLE_VMM};
+        sel4_msg_t serial_request = {.opcode = SERIAL_VIRT_OP_DETACH,
+            .length = sizeof(serial_args)}, serial_reply = {0};
+        __builtin_memcpy(serial_request.data, &serial_args, sizeof(serial_args));
+        for (unsigned attempt = 0u; ; attempt++) {
+            sel4_call(PD_CNODE_SLOT_SERIAL_VIRT_EP, &serial_request, &serial_reply);
+            if (serial_reply.opcode != SEL4_ERR_OK ||
+                serial_reply.length != sizeof(serial_virt_attach_reply_t) ||
+                msg_u32(&serial_reply, 4u) != SERIAL_VIRT_CONTRACT_VERSION) return false;
+            uint32_t status = msg_u32(&serial_reply, 0u);
+            if (status == SERIAL_VIRT_OK) break;
+            /* DETACH closes frontend admission but an already admitted
+             * operation may still own the queue. Retry only this contracted
+             * transient result; never revoke while access remains live. */
+            if (status != SERIAL_VIRT_ERR_BUSY || attempt == 63u) {
+                teardown_proof_stage = 3200u + pass * 100u + status;
+                return false;
+            }
+            seL4_Yield();
+        }
+        teardown_proof_stage = 124u + pass * 100u;
+        if (seL4_CNode_Revoke(AOS_GUEST_RAM_SELF_CNODE,
+                AOS_GUEST_QUEUE_POOL_BASE + AOS_GUEST_QUEUE_SERIAL,
+                AOS_GUEST_RAM_CNODE_BITS) != seL4_NoError) return false;
+        teardown_proof_stage = 125u + pass * 100u;
+        if (seL4_CNode_Copy(AOS_GUEST_RAM_SELF_CNODE, AOS_GUEST_QUEUE_TEST_COPY,
+                AOS_GUEST_RAM_CNODE_BITS, AOS_GUEST_RAM_SELF_CNODE,
+                AOS_GUEST_QUEUE_FRAME_BASE + AOS_GUEST_QUEUE_SERIAL,
+                AOS_GUEST_RAM_CNODE_BITS, seL4_AllRights) != seL4_FailedLookup) return false;
         for (unsigned group = 0; group < 3u; group++) {
+            teardown_proof_stage = 130u + pass * 100u + group;
             unsigned count = group == 0u ? AOS_GUEST_QUEUE_INPUT :
                 group == 1u ? AOS_X86_FIRMWARE_RAM >> AOS_GUEST_RAM_FRAME_BITS :
                 AOS_X86_GUEST_ROM_FRAMES;
@@ -252,6 +718,91 @@ static bool terminal_teardown_proof(void)
                         seL4_AllRights) != seL4_FailedLookup) return false;
             }
         }
+        /* Rebuild actual stopped VCPU/EPT objects after complete revocation.
+         * This validates retained private allocation/ASID authority, not a
+         * recreated executing guest. Binding is checked separately below
+         * after restored memory is released; no VM entry occurs. */
+        teardown_proof_stage = 140u + pass * 100u;
+        if (aos_x86_guest_objects_rebuild() != seL4_NoError) return false;
+        if (!aos_x86_guest_memory_rebuild(_binary_x86_firmware_bin_start,
+                (size_t)(_binary_x86_firmware_bin_end - _binary_x86_firmware_bin_start),
+                AOS_X86_FIRMWARE_RAM)) return false;
+        volatile uint64_t *restored_ram = (volatile uint64_t *)AOS_X86_FIRMWARE_RAM_VA;
+        for (size_t n = 0; n < AOS_X86_FIRMWARE_RAM / sizeof(*restored_ram); n++) {
+            if (restored_ram[n] != 0u) return false;
+            restored_ram[n] = UINT64_C(0x1234cafe00000000) ^ n ^ pass;
+        }
+        const volatile uint8_t *restored_rom = (const volatile uint8_t *)AOS_X86_FIRMWARE_ROM_VA;
+        for (size_t n = 0; n < AOS_X86_FIRMWARE_BYTES; n++)
+            if (restored_rom[n] != _binary_x86_firmware_bin_start[n]) return false;
+        if (!recreated_network_device_proof(pass * 2u + 2u)) return false;
+        if (!recreated_block_device_proof(pass * 2u + 2u)) return false;
+        if (!recreated_console_device_proof(pass + 1u)) return false;
+        teardown_proof_stage = 140u + pass * 100u;
+        if (!aos_vmm_guest_ram_release(AOS_X86_FIRMWARE_RAM)) return false;
+        const seL4_CPtr retired_frames[] = {AOS_GUEST_RAM_FRAME_BASE,
+            AOS_GUEST_RAM_ALIAS_BASE, AOS_X86_GUEST_ROM_FRAME_BASE, AOS_X86_GUEST_ROM_ALIAS_BASE};
+        for (unsigned i = 0; i < sizeof(retired_frames) / sizeof(retired_frames[0]); i++) {
+            if (seL4_CNode_Copy(AOS_GUEST_RAM_SELF_CNODE, AOS_GUEST_QUEUE_TEST_COPY,
+                    AOS_GUEST_RAM_CNODE_BITS, AOS_GUEST_RAM_SELF_CNODE,
+                    retired_frames[i], AOS_GUEST_RAM_CNODE_BITS, seL4_AllRights)
+                    != seL4_FailedLookup) return false;
+        }
+        const seL4_Word test_rip = 0x123400u + pass;
+        seL4_X86_VCPU_WriteVMCS_t wrote =
+            seL4_X86_VCPU_WriteVMCS(VCPU, 0x681eu, test_rip);
+        seL4_X86_VCPU_ReadVMCS_t read = seL4_X86_VCPU_ReadVMCS(VCPU, 0x681eu);
+        if (wrote.error || read.error || read.value != test_rip) return false;
+        teardown_proof_stage = 150u + pass * 100u;
+        if (aos_x86_guest_objects_bind() != seL4_NoError) return false;
+        teardown_proof_stage = 152u + pass * 100u;
+        aos_x86_vmenter_entry_t reset_entry = {0};
+        seL4_Word failed_field = 0u;
+        if (aos_x86_firmware_reset(&reset_entry, &failed_field) != seL4_NoError ||
+                failed_field || reset_entry.ip != 0xfff0u ||
+                reset_entry.controls != (1u << 7) || reset_entry.interruption_info)
+            return false;
+        /* Probe the architectural reset state independently of the helper's
+         * write/read checks. The stopped VCPU still has no guest memory. */
+        teardown_proof_stage = 153u + pass * 100u;
+        static const struct { seL4_Word field, value, mask; } reset_fields[] = {
+            {0x0802u, 0xf000u, 0xffffu},       /* CS selector */
+            {0x6808u, 0xffff0000u, 0xffffffffu}, /* CS base */
+            {0x4802u, 0xffffu, 0xffffffffu},  /* CS limit */
+            {0x4816u, 0x009bu, 0xffffu},      /* 16-bit code */
+            {0x2806u, 0u, 0xffffffffu},       /* EFER */
+            {0x6004u, 0x60000010u, 0xffffffffu}, /* CR0 shadow */
+            {0x6820u, 2u, 0xffffffffu},       /* RFLAGS */
+            {0x4012u, 1u << 15, (1u << 15) | (1u << 9)}, /* EFER load, no IA32e */
+        };
+        for (unsigned i = 0; i < sizeof(reset_fields) / sizeof(reset_fields[0]); i++) {
+            seL4_X86_VCPU_ReadVMCS_t value = seL4_X86_VCPU_ReadVMCS(VCPU,
+                reset_fields[i].field);
+            if (value.error || (value.value & reset_fields[i].mask) !=
+                    reset_fields[i].value) return false;
+        }
+        if (seL4_CNode_Revoke(AOS_GUEST_RAM_SELF_CNODE,
+                AOS_X86_GUEST_OBJECT_POOL_CAP, AOS_GUEST_RAM_CNODE_BITS)
+                != seL4_NoError) return false;
+        for (unsigned i = 0; i < 2u; i++) {
+            if (seL4_CNode_Copy(AOS_GUEST_RAM_SELF_CNODE, AOS_GUEST_QUEUE_TEST_COPY,
+                    AOS_GUEST_RAM_CNODE_BITS, AOS_GUEST_RAM_SELF_CNODE,
+                    stale[i], AOS_GUEST_RAM_CNODE_BITS, seL4_AllRights)
+                    != seL4_FailedLookup) return false;
+        }
+        teardown_proof_stage = 151u + pass * 100u;
+        if (seL4_CNode_Copy(AOS_GUEST_RAM_SELF_CNODE, AOS_GUEST_QUEUE_TEST_COPY,
+                AOS_GUEST_RAM_CNODE_BITS, AOS_GUEST_RAM_SELF_CNODE,
+                AOS_X86_VMM_SELF_TCB_CAP, AOS_GUEST_RAM_CNODE_BITS,
+                seL4_AllRights) != seL4_NoError ||
+            seL4_CNode_Delete(AOS_GUEST_RAM_SELF_CNODE, AOS_GUEST_QUEUE_TEST_COPY,
+                AOS_GUEST_RAM_CNODE_BITS) != seL4_NoError) return false;
+        teardown_proof_stage = 154u + pass * 100u;
+        reset_entry = (aos_x86_vmenter_entry_t){0x11u, 0x22u, 0x33u};
+        if (aos_x86_firmware_reset(&reset_entry, &failed_field) == seL4_NoError ||
+                failed_field != 0x0800u || reset_entry.ip != 0x11u ||
+                reset_entry.controls != 0x22u || reset_entry.interruption_info != 0x33u)
+            return false;
     }
     return true;
 }
@@ -435,6 +986,17 @@ _Noreturn void aos_x86_firmware_run(seL4_CPtr ep, aos_x86_vmenter_entry_t entry)
         .rom_size=AOS_X86_FIRMWARE_BYTES,
     };
     unsigned exits = 0;
+#if defined(AGENTOS_X86_MANAGED_START) && !defined(AGENTOS_X86_USERSPACE_PROOF)
+    reset_context.config = &config;
+    reset_context.initial_config = config;
+    reset_context.apic = &apic;
+    reset_context.ioapic = &ioapic;
+    reset_context.serial = &serial_endpoint;
+    reset_context.entry = &entry;
+    reset_context.started = &started;
+    reset_context.timer_quantum = &timer_quantum;
+    reset_context.exits = &exits;
+#endif
     uint32_t lifecycle_state = GUEST_STATE_READY;
     lifecycle_started = false;
     const aos_guest_vmm_runtime_t runtime = {
@@ -443,6 +1005,9 @@ _Noreturn void aos_x86_firmware_run(seL4_CPtr ep, aos_x86_vmenter_entry_t entry)
         .start = control_start,
         .suspend = control_transition, .resume = control_transition,
         .teardown = control_teardown,
+#if defined(AGENTOS_X86_MANAGED_START) && !defined(AGENTOS_X86_USERSPACE_PROOF)
+        .reset = control_reset,
+#endif
     };
 #ifdef AGENTOS_X86_USERSPACE_PROOF
     seL4_Send(AOS_X86_LIFECYCLE_PROBE_CAP,
@@ -474,11 +1039,21 @@ _Noreturn void aos_x86_firmware_run(seL4_CPtr ep, aos_x86_vmenter_entry_t entry)
     for (;;) {
         enum aos_x86_control_result control;
         do {
+#if defined(AGENTOS_X86_MANAGED_START) && !defined(AGENTOS_X86_USERSPACE_PROOF)
+            if (reset_transaction.cleanup_pending) reset_abort();
+#endif
             control = aos_x86_control_step(&runtime, control_wake, &serial_endpoint);
             if (control == AOS_X86_CONTROL_ERROR)
                 stop(ep, AOS_X86_VTX_PROOF_FAIL, 0x435452u, 0u, lifecycle_state);
             if (control == AOS_X86_CONTROL_STOPPED) service_serial(&serial_endpoint);
         } while (control != AOS_X86_CONTROL_RUNNING);
+#if defined(AGENTOS_X86_MANAGED_START) && !defined(AGENTOS_X86_USERSPACE_PROOF)
+        if (reset_entry_pending) {
+            reset_entry_pending = false;
+            returned = aos_x86_vm_start(&entry);
+            continue;
+        }
+#endif
         seL4_Word rip = returned.words[SEL4_VMENTER_CALL_EIP_MR];
         if (returned.result == SEL4_VMENTER_RESULT_NOTIF && returned.badge &&
             !(returned.badge & ~(SERIAL_VIRT_VMM_WAKE_BADGE | BLK_VIRT_VMM_WAKE_BADGE |
@@ -601,7 +1176,7 @@ _Noreturn void aos_x86_firmware_run(seL4_CPtr ep, aos_x86_vmenter_entry_t entry)
                     }
                 }
                 if (passed && !terminal_teardown_proof())
-                    stop(ep, AOS_X86_VTX_PROOF_FAIL, 0x544452u, rip, 0u);
+                    stop(ep, AOS_X86_VTX_PROOF_FAIL, 0x544452u, rip, teardown_proof_stage);
                 stop(ep,passed ? AOS_X86_VTX_LIFECYCLE_PASS : AOS_X86_VTX_PROOF_FAIL,
                      reason,rip,passed ? (cs & 3u) :
                          ((regs.edx == AOS_X86_USERSPACE_PASS ? 0x100u : regs.edx) |

@@ -3203,7 +3203,17 @@ fn x86_linux_login_probe(
 }
 
 fn x86_linux_login_reader(
+    read: impl FnMut(&mut [u8]) -> std::io::Result<usize>,
+    log_path: &Path,
+    deadline: Instant,
+    ssh: Option<(&Path, u16, Option<&Path>)>,
+) -> anyhow::Result<String> {
+    x86_linux_login_reader_with_artifacts(read, log_path, log_path, deadline, ssh)
+}
+
+fn x86_linux_login_reader_with_artifacts(
     mut read: impl FnMut(&mut [u8]) -> std::io::Result<usize>,
+    target_log_path: &Path,
     log_path: &Path,
     deadline: Instant,
     ssh: Option<(&Path, u16, Option<&Path>)>,
@@ -3219,11 +3229,11 @@ fn x86_linux_login_reader(
     );
     let mut transcript = Vec::new();
     while Instant::now() < deadline {
-        let target_log = std::fs::read_to_string(log_path)?;
+        let target_log = std::fs::read_to_string(target_log_path)?;
         anyhow::ensure!(
             !target_log.contains("x86 VMX EPT proof FAILED"),
             "Intel VMM reported a target failure; see {}",
-            log_path.display()
+            target_log_path.display()
         );
         let mut chunk = [0u8; 4096];
         match read(&mut chunk) {
@@ -3313,78 +3323,99 @@ fn x86_cc_linux_probe(
             "invalid console addressing was accepted"
         );
     }
-    // This exercises public admission against the image's boot-reserved RAM.
-    let handle = create_guest_via_cc_wait(
-        &mut cc,
-        1,
-        VIBEOS_ARCH_X86_64,
-        64,
-        "Intel Linux",
-        timeout,
-        qemu,
-    )?;
-    anyhow::ensure!(handle != 0, "CREATE returned reserved boot handle");
-    let proof = x86_linux_login_reader(
-        |chunk| {
-            let bytes = x86_cc_console_bytes(&mut cc, handle).map_err(std::io::Error::other)?;
-            if bytes.is_empty() {
-                std::thread::sleep(Duration::from_millis(100));
-                return Err(std::io::ErrorKind::WouldBlock.into());
-            }
-            if bytes.len() > chunk.len() {
-                return Err(std::io::Error::other("CC console read buffer too small"));
-            }
-            chunk[..bytes.len()].copy_from_slice(&bytes);
-            Ok(bytes.len())
-        },
-        log_path,
-        Instant::now() + timeout,
-        ssh,
-    )?;
+    let mut proofs = Vec::new();
+    let mut previous_handle = None;
+    for generation in 0..2 {
+        let generation_log = if generation == 0 {
+            log_path.to_path_buf()
+        } else {
+            log_path.with_extension("recreated.log")
+        };
+        // This exercises public admission against the image's boot-reserved RAM.
+        let handle = create_guest_via_cc_wait(
+            &mut cc,
+            1,
+            VIBEOS_ARCH_X86_64,
+            64,
+            "Intel Linux",
+            timeout,
+            qemu,
+        )?;
+        anyhow::ensure!(handle != 0, "CREATE returned reserved boot handle");
+        let proof = x86_linux_login_reader_with_artifacts(
+            |chunk| {
+                let bytes = x86_cc_console_bytes(&mut cc, handle).map_err(std::io::Error::other)?;
+                if bytes.is_empty() {
+                    std::thread::sleep(Duration::from_millis(100));
+                    return Err(std::io::ErrorKind::WouldBlock.into());
+                }
+                if bytes.len() > chunk.len() {
+                    return Err(std::io::Error::other("CC console read buffer too small"));
+                }
+                chunk[..bytes.len()].copy_from_slice(&bytes);
+                Ok(bytes.len())
+            },
+            log_path,
+            &generation_log,
+            Instant::now() + timeout,
+            ssh,
+        )?;
 
-    // Exercise real guest input after login readiness, without requiring a
-    // password or changing the guest. The terminal must echo these exact bytes.
-    let marker = b"agentos-cc-input-probe";
-    cc_send_raw_bytes(&mut cc, handle, marker)?;
-    let mut echoed = Vec::new();
-    let deadline = Instant::now() + Duration::from_secs(30);
-    while Instant::now() < deadline && !echoed.windows(marker.len()).any(|w| w == marker) {
-        ensure_qemu_running(qemu, "checking Intel CC input echo")?;
-        echoed.extend(x86_cc_console_bytes(&mut cc, handle)?);
+        // Exercise real guest input after login readiness, without requiring a
+        // password or changing the guest. The terminal must echo these exact bytes.
+        let marker: &[u8] = if generation == 0 {
+            b"agentos-cc-input-probe"
+        } else {
+            b"agentos-cc-recreated-probe"
+        };
+        cc_send_raw_bytes(&mut cc, handle, marker)?;
+        let mut echoed = Vec::new();
+        let deadline = Instant::now() + Duration::from_secs(30);
+        while Instant::now() < deadline && !echoed.windows(marker.len()).any(|w| w == marker) {
+            ensure_qemu_running(qemu, "checking Intel CC input echo")?;
+            echoed.extend(x86_cc_console_bytes(&mut cc, handle)?);
+            anyhow::ensure!(
+                echoed.len() <= 1024 * 1024,
+                "CC input transcript exceeds 1 MiB"
+            );
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        std::fs::write(generation_log.with_extension("cc-input.log"), &echoed)?;
         anyhow::ensure!(
-            echoed.len() <= 1024 * 1024,
-            "CC input transcript exceeds 1 MiB"
+            echoed.windows(marker.len()).any(|w| w == marker),
+            "Intel CC input was not echoed by Linux"
         );
-        std::thread::sleep(Duration::from_millis(100));
-    }
-    std::fs::write(log_path.with_extension("cc-input.log"), &echoed)?;
-    anyhow::ensure!(
-        echoed.windows(marker.len()).any(|w| w == marker),
-        "Intel CC input was not echoed by Linux"
-    );
-    let destroyed = cc.call(MSG_CC_DESTROY_GUEST, handle, GUEST_DESTROY_NORMAL, 0, &[])?;
-    anyhow::ensure!(
-        destroyed.mr[0] == CC_OK,
-        "Intel Linux destroy failed: {:?}",
-        destroyed.mr
-    );
-    for opcode in [
-        MSG_CC_GUEST_STATUS,
-        MSG_CC_SUSPEND_GUEST,
-        MSG_CC_RESUME_GUEST,
-    ] {
-        let reply = cc.call(opcode, handle, 0, 0, &[])?;
+        let destroyed = cc.call(MSG_CC_DESTROY_GUEST, handle, GUEST_DESTROY_NORMAL, 0, &[])?;
         anyhow::ensure!(
-            reply.mr[0] == CC_ERR_BAD_HANDLE,
-            "stale Intel handle accepted by {opcode:#x}"
+            destroyed.mr[0] == CC_OK,
+            "Intel Linux destroy failed: {:?}",
+            destroyed.mr
         );
+        for opcode in [
+            MSG_CC_GUEST_STATUS,
+            MSG_CC_SUSPEND_GUEST,
+            MSG_CC_RESUME_GUEST,
+        ] {
+            let reply = cc.call(opcode, handle, 0, 0, &[])?;
+            anyhow::ensure!(
+                reply.mr[0] == CC_ERR_BAD_HANDLE,
+                "stale Intel handle accepted by {opcode:#x}"
+            );
+        }
+        let stale_console = cc.call(MSG_CC_LOG_STREAM, handle, 0, 1, &[])?;
+        anyhow::ensure!(
+            stale_console.mr[0] == CC_ERR_BAD_HANDLE,
+            "destroyed guest console remained accessible"
+        );
+
+        anyhow::ensure!(
+            previous_handle != Some(handle),
+            "recreation reused a stale public handle"
+        );
+        previous_handle = Some(handle);
+        proofs.push(proof);
     }
-    let stale_console = cc.call(MSG_CC_LOG_STREAM, handle, 0, 1, &[])?;
-    anyhow::ensure!(
-        stale_console.mr[0] == CC_ERR_BAD_HANDLE,
-        "destroyed guest console remained accessible"
-    );
-    Ok(format!("{proof}; binary CC CREATE, Linux console input echo, DESTROY and stale handle rejection verified"))
+    Ok(format!("{}; binary CC CREATE, input echo, DESTROY, recreate and second boot verified with stale handle rejection", proofs.join("; ")))
 }
 
 fn x86_console_roundtrip(socket: &Path, timeout: Duration) -> anyhow::Result<()> {
@@ -6310,6 +6341,48 @@ mod tests {
                 bytes
             );
         }
+    }
+
+    #[test]
+    fn intel_recreated_console_keeps_original_target_log() {
+        let temp = tempfile::tempdir().unwrap();
+        let target = temp.path().join("qemu.log");
+        let recreated = temp.path().join("qemu.recreated.log");
+        std::fs::write(&target, "target running\n").unwrap();
+        for (artifact, bytes) in [
+            (&target, b"first-guest login: ".as_slice()),
+            (&recreated, b"second-guest login: ".as_slice()),
+        ] {
+            super::x86_linux_login_reader_with_artifacts(
+                |out| {
+                    out[..bytes.len()].copy_from_slice(bytes);
+                    Ok(bytes.len())
+                },
+                &target,
+                artifact,
+                std::time::Instant::now() + std::time::Duration::from_secs(2),
+                None,
+            )
+            .unwrap();
+            assert_eq!(
+                std::fs::read(artifact.with_extension("console.log")).unwrap(),
+                bytes
+            );
+        }
+        assert!(!recreated.exists());
+        assert_eq!(
+            std::fs::read_to_string(&target).unwrap(),
+            "target running\n"
+        );
+        std::fs::write(&target, "x86 VMX EPT proof FAILED\n").unwrap();
+        assert!(super::x86_linux_login_reader_with_artifacts(
+            |_| panic!("must reject target failure before accepting new console bytes"),
+            &target,
+            &temp.path().join("failed.log"),
+            std::time::Instant::now() + std::time::Duration::from_secs(2),
+            None,
+        )
+        .is_err());
     }
 
     use super::*;

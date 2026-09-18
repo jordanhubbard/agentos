@@ -1,0 +1,36 @@
+{
+  "schema": "agentos.x86_memory_rebuild.v1",
+  "revision": "4748a194a20b30e49444c66bee6d6b47e7238b50",
+  "result": "passed",
+  "spark_checks": ["make test-x86-memory-rebuild-host", "make test-x86-guest-objects-host", "make gate"],
+  "host_assertions": [
+    "Invalid size, null image, source overflow and source overlap rejected before allocation",
+    "Every allocation, copy, unmap and mapping failure stops later operations",
+    "Fresh RAM reads zero and restored ROM matches every source byte",
+    "Writable initialization mapping is removed before read-only ROM aliases and EPT publication"
+  ],
+  "intel_gate": "make gate-x86_64-teardown; exact pinned firmware/kernel/initrd arguments from x86-stopped-object-rebuild.json",
+  "intel_assertions": [
+    "Linux ring3, lifecycle and terminal teardown passed",
+    "Two stopped-object and memory reconstruction cycles completed",
+    "Each cycle verified zeroed 256 MiB RAM, wrote a pattern, and compared all 4 MiB of restored OVMF",
+    "Memory release removed reconstructed RAM and ROM frame/alias capabilities",
+    "VCPU/EPT revocation and fresh VMCS access checks passed"
+  ],
+  "artifacts": {
+    "spark_gate_log": "/tmp/agentos-x86-memory-gate.log",
+    "spark_gate_sha256": "d5cac8d4114420f9c56260096c7d9d979252df73009be42c4acd2a31ddad8522",
+    "host_test_binary_sha256": "cf84af4ea146878d314985c4e58ecd03b4ddc2e6da2c689a9d90f24ff5249d3e",
+    "intel_combined_log": "/tmp/agentos-x86-memory-intel.log on sparky",
+    "intel_combined_sha256": "8743e94687bf49e33477de641e95600e7106c9c1f610d2597577eb81bc5af0ea",
+    "intel_serial_log": "build/tmp/agentos-qemu-1nDrN0.log",
+    "intel_serial_sha256": "88f5f19a848429675fa38383bda05ef08d50b367613dc079e7ff7982fd3eb419",
+    "intel_root_task_sha256": "04ed0171f2171eea780c38738bbcb62df544651e01ef5f0683cb3b364127a6c8"
+  },
+  "limitations": [
+    "Reconstructed resources remain stopped; this is not a second guest boot",
+    "Read-only rights are asserted at the mapping API; no deliberate target write-fault probe is performed",
+    "Fresh queue sharing, device reattachment, firmware reset and CREATE integration remain outstanding",
+    "Desktop resource profiles, concurrent persistent storage, required CI and release remain incomplete"
+  ]
+}

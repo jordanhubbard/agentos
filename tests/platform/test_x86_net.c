@@ -6,6 +6,7 @@
 #include <platform/x86_virtio.h>
 #include <platform/vmm_virtio_net.h>
 #include <platform/net_virt_pump.h>
+#include <platform/net_rebind.h>
 #include <contracts/net_virt_contract.h>
 #include "sel4_ipc.h"
 #include "system_desc.h"
@@ -197,5 +198,97 @@ int main(int argc, char **argv)
     aos_vmm_virtio_net_rx_ready();
     aos_vmm_virtio_net_after_fault();
     assert(kicks==old_kicks);
-    puts("PASS: exact network TX/RX and late-wakeup quiescence with inaccessible guest RAM");
+    aos_x86_virtio_retire();
+    assert(mprotect(region,sizeof(region),PROT_NONE)==0);
+    unsigned char *fresh=mmap(NULL,AOS_NET_SHMEM_SIZE,PROT_READ|PROT_WRITE,
+        MAP_PRIVATE|MAP_ANONYMOUS,-1,0);
+    assert(fresh!=MAP_FAILED);
+    aos_net_client_bind(fresh,0,&client);
+    aos_net_client_init_buffers(&client);
+    net_virt_rebind_reply_t attachment={.status=NET_VIRT_OK,
+        .version=NET_VIRT_REBIND_VERSION,.generation=1,
+        .hw_state=host_fixture ? NET_VIRT_HW_NET_PD : NET_VIRT_HW_NONE,
+        .mac={0x52,0x54,0,0x98,0x76,0x54}};
+    assert(!aos_vmm_virtio_net_adopt(0,fresh,NULL));
+    assert(!aos_vmm_virtio_net_adopt(1,fresh,&attachment));
+    assert(!aos_vmm_virtio_net_adopt(0,fresh+1,&attachment));
+    attachment.generation=0;
+    assert(!aos_vmm_virtio_net_adopt(0,fresh,&attachment));
+    attachment.generation=1;
+    /* No fresh bus: registration fails, but DETACH must still release the
+     * newly adopted backend. No second ATTACH is sent and old queues are gone. */
+    assert(!aos_vmm_virtio_net_adopt(0,fresh,&attachment));
+    assert(!aos_vmm_virtio_net_host_ready() && attachments==2);
+    assert(aos_vmm_virtio_net_detach() && detachments==5);
+    assert(munmap(fresh,AOS_NET_SHMEM_SIZE)==0);
+
+    /* Service generation 2 could have been consumed by a failed local frame
+     * mapping before adoption. Newer generations remain recoverable. */
+    for (unsigned generation=3; generation<=4; generation++) {
+        ram=mmap(NULL,RAM_BYTES,PROT_READ|PROT_WRITE,MAP_PRIVATE|MAP_ANONYMOUS,-1,0);
+        fresh=mmap(NULL,AOS_NET_SHMEM_SIZE,PROT_READ|PROT_WRITE,
+            MAP_PRIVATE|MAP_ANONYMOUS,-1,0);
+        assert(ram!=MAP_FAILED && fresh!=MAP_FAILED);
+        assert(aos_x86_ioapic_init(&ioapic,1));
+        assert(aos_x86_virtio_init(&ioapic,ram,RAM_BYTES));
+        aos_net_client_bind(fresh,0,&client);
+        aos_net_client_init_buffers(&client);
+        /* A real service may deliver RX between REBIND and adoption. */
+        memcpy(client.rx_data,packet,sizeof(packet));
+        client.rx_active->buffers[0]=(aos_net_buff_desc_t){.len=sizeof(packet)};
+        client.rx_active->tail=1;
+        client.rx_free->head=1;
+        attachment.generation=generation==3 ? 1u : 3u;
+        assert(!aos_vmm_virtio_net_adopt(0,fresh,&attachment));
+        attachment.generation=generation;
+        assert(aos_vmm_virtio_net_adopt(0,fresh,&attachment));
+        assert(attachments==2 && !aos_vmm_virtio_net_guest_io_completed());
+        assert(client.rx_active->tail==1 && client.rx_free->head==1);
+        assert(!memcmp(client.rx_data,packet,sizeof(packet)));
+        assert(read_reg(REG_VIRTIO_MMIO_STATUS)==0);
+        assert(read_reg(REG_VIRTIO_MMIO_QUEUE_READY)==0);
+        assert(read_reg(0x100)==(host_fixture ? 0x98005452u : 2u));
+        assert((read_reg(0x104)&0xffff)==(host_fixture ? 0x5476u : 0x100u));
+        assert(!aos_vmm_virtio_net_adopt(0,fresh,&attachment));
+        write_reg(REG_VIRTIO_MMIO_STATUS,1); write_reg(REG_VIRTIO_MMIO_STATUS,3);
+        write_reg(REG_VIRTIO_MMIO_DRIVER_FEATURES_SEL,0);
+        write_reg(REG_VIRTIO_MMIO_DRIVER_FEATURES,(1u<<5)|(1u<<15));
+        write_reg(REG_VIRTIO_MMIO_DRIVER_FEATURES_SEL,1);
+        write_reg(REG_VIRTIO_MMIO_DRIVER_FEATURES,1);
+        write_reg(REG_VIRTIO_MMIO_STATUS,11);
+        queue(0,0); queue(1,0x8000);
+        write_reg(REG_VIRTIO_MMIO_STATUS,15);
+        rx=(void *)ram;
+        rx[0]=(struct virtq_desc){.addr=0x11000,.len=128,.flags=VIRTQ_DESC_F_WRITE};
+        rx_avail=(void *)(ram+0x2000);
+        rx_avail->ring[0]=0; rx_avail->idx=1;
+        aos_vmm_virtio_net_rx_ready();
+        rx_used=(void *)(ram+0x3000);
+        assert(rx_used->idx==1 && rx_used->ring[0].len==12+sizeof(packet));
+        assert(!memcmp(ram+0x1100c,packet,sizeof(packet)));
+        memcpy(ram+0x10000,packet,sizeof(packet));
+        tx=(void *)(ram+0x8000);
+        tx[0]=(struct virtq_desc){.addr=0x12000,.len=12,.flags=VIRTQ_DESC_F_NEXT,.next=1};
+        tx[1]=(struct virtq_desc){.addr=0x10000,.len=sizeof(packet)};
+        tx_avail=(void *)(ram+0xa000);
+        tx_avail->ring[0]=0; tx_avail->idx=1;
+        write_reg(REG_VIRTIO_MMIO_QUEUE_NOTIFY,1);
+        aos_vmm_virtio_net_after_fault();
+        tx_used=(void *)(ram+0xb000);
+        assert(tx_used->idx==1 && tx_used->ring[0].len==sizeof(packet));
+        assert(aos_net_queue_length(client.tx_active)==1);
+        assert(!memcmp(client.tx_data,packet,sizeof(packet)));
+        assert(aos_vmm_virtio_net_detach());
+        aos_x86_virtio_retire();
+        old_kicks=kicks;
+        assert(mprotect(ram,RAM_BYTES,PROT_NONE)==0);
+        assert(mprotect(fresh,AOS_NET_SHMEM_SIZE,PROT_NONE)==0);
+        aos_vmm_virtio_net_rx_ready();
+        aos_vmm_virtio_net_after_fault();
+        assert(kicks==old_kicks);
+        assert(munmap(ram,RAM_BYTES)==0);
+        assert(munmap(fresh,AOS_NET_SHMEM_SIZE)==0);
+    }
+    assert(mprotect(region,sizeof(region),PROT_READ|PROT_WRITE)==0);
+    puts("PASS: network TX/RX, retirement, failed adoption cleanup and fresh device generations");
 }
