@@ -4,10 +4,17 @@
 #include <stdint.h>
 #include "virtualizer_authority.h"
 
-/* Only ATTACH uses IPC. Console bytes use the shared sDDF byte queues.
+/* Only attachment control uses IPC. Console bytes use shared sDDF byte queues.
  * Notifications are persistent seL4 Signals, not endpoint NBSends. */
-#define SERIAL_VIRT_CONTRACT_VERSION 2u
+#define SERIAL_VIRT_CONTRACT_VERSION 3u
 #define SERIAL_VIRT_OP_ATTACH 0x2d01u
+/* Version 3 terminal guest detach: same layouts as attach, VMM role only.
+ * The producer must stop before calling. OK retires the service's pointers
+ * to this guest page and marks its frontend detached. Pending terminal bytes
+ * may be abandoned; no viewer drain is required. Repeated detach is OK;
+ * reattachment requires a future generation/reset contract. Other guest and
+ * operator channels are unaffected. This does not revoke page capabilities. */
+#define SERIAL_VIRT_OP_DETACH 0x2d02u
 #define SERIAL_VIRT_ROLE_VMM 0u
 #define SERIAL_VIRT_ROLE_FRONTEND 1u
 #define SERIAL_VIRT_ROLE_OPERATOR 2u

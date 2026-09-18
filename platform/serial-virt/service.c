@@ -12,9 +12,30 @@ uint32_t aos_serial_virt_attach(aos_serial_virt_service_t *service,
     uint8_t *attached = request->role != SERIAL_VIRT_ROLE_FRONTEND ?
         &service->guest_attached[request->client] :
         &service->frontend_attached[request->client];
-    if (*attached) return SERIAL_VIRT_ERR_BUSY;
+    if (*attached || service->guest_retired[request->client])
+        return SERIAL_VIRT_ERR_BUSY;
     *attached = 1;
     /* ATTACH grants service access; it never clears a live queue. */
+    return SERIAL_VIRT_OK;
+}
+
+uint32_t aos_serial_virt_detach(aos_serial_virt_service_t *service,
+    uint64_t badge, const serial_virt_attach_req_t *request, uint32_t length)
+{
+    if (!service || !request || length != sizeof(*request))
+        return SERIAL_VIRT_ERR_PROTOCOL;
+    if (request->version != SERIAL_VIRT_CONTRACT_VERSION)
+        return SERIAL_VIRT_ERR_VERSION;
+    if (request->role != SERIAL_VIRT_ROLE_VMM ||
+        !serial_virt_authorized(badge, request->client, request->role))
+        return SERIAL_VIRT_ERR_AUTHORITY;
+    const uint32_t client = request->client;
+    if (service->guest_retired[client]) return SERIAL_VIRT_OK;
+    if (service->frontend_attached[client])
+        __atomic_store_n(&service->frontend[client].meta->attached, 0u, __ATOMIC_RELEASE);
+    service->guest_attached[client] = 0;
+    service->guest[client] = (aos_serial_channel_t){0};
+    service->guest_retired[client] = 1;
     return SERIAL_VIRT_OK;
 }
 

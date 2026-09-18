@@ -1,6 +1,8 @@
+#define _GNU_SOURCE
 #include <platform/serial_virt_service.h>
 #include <stdio.h>
 #include <string.h>
+#include <sys/mman.h>
 
 _Alignas(8) static uint8_t pages[2 * AOS_SERIAL_CLIENTS][AOS_SERIAL_FRONTEND_STRIDE];
 static unsigned checks, failures;
@@ -12,9 +14,13 @@ static void check(int result, const char *name)
 
 int main(void)
 {
+    void *retired_page = mmap(NULL, AOS_SERIAL_FRAME_SIZE,
+        PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (retired_page == MAP_FAILED) return 1;
     aos_serial_virt_service_t service = {0};
     for (unsigned i = 0; i < AOS_SERIAL_CLIENTS; i++) {
         service.guest[i] = aos_serial_channel_at((uintptr_t)pages[i]);
+        if (i == 0) service.guest[i] = aos_serial_channel_at((uintptr_t)retired_page);
         service.frontend[i] = aos_serial_channel_at((uintptr_t)pages[i + AOS_SERIAL_CLIENTS]);
         if (i >= 2) continue;
         memcpy(service.guest[i].from_guest.data, i ? "XYZ" : "abc", 3);
@@ -89,6 +95,48 @@ int main(void)
           !memcmp(service.frontend[2].from_guest.data, "reply", 5) &&
           !memcmp(service.guest[2].to_guest.data, "insp", 4),
           "operator exchange is isolated and survives a malformed guest queue");
+    req.client = 1; req.role = SERIAL_VIRT_ROLE_VMM;
+    check(aos_serial_virt_detach(&service, VIRT_CLIENT_BADGE_PRIMARY, &req, sizeof(req)) ==
+          SERIAL_VIRT_ERR_AUTHORITY && service.guest_attached[1],
+          "foreign detach preserves peer attachment");
+    req.client = 0; req.role = SERIAL_VIRT_ROLE_FRONTEND;
+    check(aos_serial_virt_detach(&service, SERIAL_VIRT_FRONTEND_BADGE, &req, sizeof(req)) ==
+          SERIAL_VIRT_ERR_AUTHORITY && service.guest_attached[0],
+          "frontend cannot retire guest queues");
+    req.client = 2; req.role = SERIAL_VIRT_ROLE_OPERATOR;
+    check(aos_serial_virt_detach(&service, SERIAL_VIRT_OPERATOR_BADGE, &req, sizeof(req)) ==
+          SERIAL_VIRT_ERR_AUTHORITY && service.guest_attached[2],
+          "guest detach contract excludes operator channel");
+    req.client = 0; req.role = SERIAL_VIRT_ROLE_VMM;
+    check(aos_serial_virt_detach(&service, VIRT_CLIENT_BADGE_PRIMARY, &req, sizeof(req)-1) ==
+          SERIAL_VIRT_ERR_PROTOCOL && service.guest_attached[0],
+          "short detach preserves attachment");
+    req.version++;
+    check(aos_serial_virt_detach(&service, VIRT_CLIENT_BADGE_PRIMARY, &req, sizeof(req)) ==
+          SERIAL_VIRT_ERR_VERSION && service.guest_attached[0],
+          "wrong detach version preserves attachment");
+    req.version = SERIAL_VIRT_CONTRACT_VERSION;
+    check(aos_serial_virt_detach(&service, VIRT_CLIENT_BADGE_PRIMARY, &req, sizeof(req)) ==
+          SERIAL_VIRT_OK && !service.guest_attached[0] && service.guest_retired[0] &&
+          !service.guest[0].meta && !service.guest[0].from_guest.queue &&
+          !service.frontend[0].meta->attached,
+          "terminal detach forgets guest pointers without waiting for unread bytes");
+    check(mprotect(retired_page, AOS_SERIAL_FRAME_SIZE, PROT_NONE) == 0,
+          "retired guest page becomes inaccessible");
+    check(aos_serial_virt_detach(&service, VIRT_CLIENT_BADGE_PRIMARY, &req, sizeof(req)) ==
+          SERIAL_VIRT_OK && aos_serial_virt_attach(&service, VIRT_CLIENT_BADGE_PRIMARY,
+              &req, sizeof(req)) == SERIAL_VIRT_ERR_BUSY,
+          "detach is idempotent and reattachment is refused");
+    service.guest[1].from_guest.data[3] = '!';
+    service.guest[1].from_guest.queue->tail = 4;
+    service.guest[2].from_guest.data[5] = '?';
+    service.guest[2].from_guest.queue->tail = 6;
+    result = aos_serial_virt_service_pump(&service, 8);
+    check(result.bytes == 2 && result.wake_vmm == 6 && !result.invalid_clients &&
+          service.frontend[1].from_guest.data[3] == '!' &&
+          service.frontend[2].from_guest.data[5] == '?',
+          "peer and operator bytes survive late wake with retired memory protected");
+    check(munmap(retired_page, AOS_SERIAL_FRAME_SIZE) == 0, "release test mapping");
     printf("1..%u\n", checks);
     return failures ? 1 : 0;
 }

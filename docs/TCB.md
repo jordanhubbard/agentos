@@ -76,6 +76,14 @@ asking for detach; BUSY or malformed replies keep teardown retryable and
 prevent capability revocation. Detach does not issue a flush or establish
 durability. Media ownership, queue-frame capabilities and the per-client RAM
 fallback disk remain allocated; retired clients cannot silently reattach.
+Serial contract v3 adds terminal VMM-role detach under the existing guest
+badge authority. The service stops both transfer directions, clears its guest
+channel pointers and marks the frontend detached before acknowledging. It
+does not wait for unread terminal bytes, which may be abandoned at destruction.
+The VMM clears its local serial endpoint after acknowledgment; failed replies
+keep teardown retryable before capability revocation. Peer and operator
+channels retain their attachments. Serial queue-page capabilities remain
+allocated, and reattachment still requires an explicit generation/reset path.
 Queued guest faults are not serviced during teardown. Initialization rejects
 lifecycle re-entry while media staging still holds guest RAM pointers.
 Service grants remain owned by the VMM; recreation is not yet implemented.
@@ -751,7 +759,7 @@ live scheduler inspection.
 The separate `operator_session` PD is a native client, outside the TCB. It has
 one serial queue page, serial-virtualizer attach/send capabilities, its own
 receive-only notification and the read-only boot snapshot. It has no driver,
-guest lifecycle, guest-memory or CC frontend authority. Serial contract v2
+guest lifecycle, guest-memory or CC frontend authority. Serial contract v3
 binds operator role/client 2 to its own badge, independently of the two VMM
 identities and CC's frontend identity.
 

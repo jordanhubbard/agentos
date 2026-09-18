@@ -1031,6 +1031,21 @@ static void guest_vmm_quiesce_timer(void)
     vmm_vcpu_arm_ack_vppi(GUEST_BOOT_VCPU_ID, GUEST_VTIMER_IRQ);
 }
 
+bool aos_vmm_serial_detach(void)
+{
+    if (!serial_attached) return true;
+    const uint32_t slot =
+#if defined(AGENTOS_GUEST_SECONDARY)
+        1u;
+#else
+        0u;
+#endif
+    if (!serial_virt_client_detach(slot)) return false;
+    serial_attached = false;
+    serial_endpoint = (aos_serial_endpoint_t){0};
+    return true;
+}
+
 static bool guest_vmm_teardown(void)
 {
     bool done = aos_guest_teardown_step(&guest_teardown, g_guest_profile->ram_size);
@@ -1042,6 +1057,7 @@ static bool guest_vmm_teardown(void)
     if (done) microkit_dbg_puts("guest teardown: private paging revoked\n");
     if (done) microkit_dbg_puts("guest teardown: network queues detached\n");
     if (done) microkit_dbg_puts("guest teardown: block queues detached\n");
+    if (done) microkit_dbg_puts("guest teardown: serial queues detached\n");
     return done;
 }
 
