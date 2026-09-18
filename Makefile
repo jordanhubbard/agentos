@@ -799,7 +799,12 @@ test-x86-firmware-build:
 # but it is not counted among the host tests below.
 test-host: policy-check guest-profile-check lint-source test-integration test-operator-host test-log-ring-host test-framebuffer-host
 test-host: test-x86-cpu-host
-test-host: test-guest-scheduling-host test-guest-gic-mapping-host test-guest-paging-host
+test-host: test-guest-scheduling-host test-guest-gic-mapping-host test-guest-paging-host test-net-rx-accounting-host
+.PHONY: test-net-rx-accounting-host
+test-net-rx-accounting-host:
+	@mkdir -p $(BUILD_TMP_DIR)
+	$(CC) -std=gnu11 -Wall -Wextra -Werror -Wno-unused-parameter -Wno-sign-compare -include assert.h -ffunction-sections -fdata-sections -Wl,$(if $(filter Darwin,$(UNAME_S)),-dead_strip,--gc-sections) -I tests/platform/mmio-stubs -I platform/include -I libvmm/include -I libvmm/dep/sddf/include -I libvmm/dep/sddf/include/extern tests/platform/test_virtio_net_rx_accounting.c libvmm/src/virtio/net.c libvmm/src/virtio/gpa.c -o $(BUILD_TMP_DIR)/test_virtio_net_rx_accounting
+	@$(BUILD_TMP_DIR)/test_virtio_net_rx_accounting
 .PHONY: test-guest-paging-host
 test-guest-paging-host:
 	@mkdir -p $(BUILD_TMP_DIR)
