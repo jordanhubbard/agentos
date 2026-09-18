@@ -1,0 +1,42 @@
+{
+  "qualification": "Drained block queue detach before ARM guest revocation",
+  "runtime_revision": "38b7925bb56f0e29b416b3e8c7e9962109797720",
+  "host": "Spark AArch64",
+  "source_clean_during_tests": true,
+  "pipeline_result": "PASS, exit 0",
+  "gate": {
+    "command": "make gate QEMU_TEST_SSH_PORT=12229",
+    "log_sha256": "23d00b76229a05ca5596306b662939d78319c206e61ef535c0dfc23269274331"
+  },
+  "host_tests": [
+    "Production pump refuses invalid or nonempty request/response queues without changing their indices",
+    "Queued write completes with exact disk bytes and matching response before detach succeeds",
+    "Detached pump remains empty and idempotent with former queue memory protected PROT_NONE",
+    "VMM adapter rejects truncated, wrong-version and BUSY replies, retries and suppresses duplicate detach",
+    "Teardown retains capabilities until both network and block detach succeed"
+  ],
+  "target_teardown": {
+    "command": "make test-guest-teardown QEMU_TEST_SSH_PORT=12229",
+    "result": "PASS: Ubuntu console proof, network then block service detach, execution/RAM/paging revocation and stale public-handle rejection",
+    "qemu_pid": 272100,
+    "qemu_log_stem": "agentos-qemu-LctPu2",
+    "log_sha256": "372d618f6d80ccdd67d7d0edb1bdd3cfae06623107edf4a9b06a381eb617a077",
+    "serial_log_sha256": "f4218a19050b21956ae0401c5ef4583d1de46d72a873ca67782468bf6a84a0c8"
+  },
+  "target_pending_drain": {
+    "command": "make test-guest-block-drain QEMU_TEST_SSH_PORT=12229",
+    "result": "PASS: accepted response pending before admission stop; completion leaves queues empty and irq=0; blk_virt then acknowledges detach",
+    "backend": "Emulated-scope per-client RAM disk",
+    "qemu_pid": 276053,
+    "qemu_log_stem": "agentos-qemu-4ulsXR",
+    "log_sha256": "b08dc4c8885a3cd0c985a3bed6abf021d72336c922f4f2f686c6751ba50a72bd",
+    "serial_log_sha256": "735cf7c4b3715e7dad4589d9beb3b1f8ab1858b772db3a343431c43e4adf6571"
+  },
+  "limits": [
+    "Detach does not flush media or prove durability",
+    "Shared-page capabilities, media resources and fallback RAM disks remain allocated",
+    "Guest recreation, generation reset, actual shared-page revocation and target peer continuity remain unqualified",
+    "Intel Debian SSH regression is running separately; no result is asserted here",
+    "Required GitHub checks and canonical integration remain pending"
+  ]
+}
