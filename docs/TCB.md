@@ -42,9 +42,10 @@ root caps; none conveys a peer's memory or a host device. RAM pool slots reuse
 the common guest RAM layout; the two ROM pools occupy separate slots 496/497.
 `contracts/x86_guest_memory_caps.h` defines this boundary. Host tests cover
 all supported reservation sizes, overflow/out-of-range indices, disjoint pool
-slots and frame retype failure propagation. Target qualification of this
-allocation change is pending. Runtime revocation, device quiescence and
-lifecycle control remain outstanding.
+slots and frame retype failure propagation. Intel Debian VMX/SSH and the full
+Spark gate passed at `c36b4a8`; [the receipt](evidence/2026-09-18-spark/x86-private-memory.json)
+records the allocation change's boot/I/O scope. Runtime revocation, device
+quiescence and lifecycle control remain outstanding.
 
 Each AArch64 guest's TCB, VCPU, IPC frame and MCS scheduling context now come
 from a dedicated 64 KiB non-device child untyped. After boot configuration,
