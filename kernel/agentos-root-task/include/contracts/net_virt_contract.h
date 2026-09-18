@@ -80,6 +80,9 @@ typedef struct __attribute__((packed)) {
 } net_virt_rebind_req_t;
 typedef struct __attribute__((packed)) {
     uint32_t status, version, generation;
+    uint32_t hw_state;
+    uint8_t mac[6];
+    uint8_t _pad[2];
 } net_virt_rebind_reply_t;
 /* NBSend, VMM -> net_virt: guest queues changed (see header comment). */
 #define NET_VIRT_EVENT_KICK             0x2210u

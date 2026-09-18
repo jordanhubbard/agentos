@@ -26,4 +26,17 @@ static inline uint32_t aos_net_rebind_validate(uint64_t badge,
     return NET_VIRT_OK;
 }
 bool aos_net_virt_rebind(uint32_t client, uint32_t generation);
+/* On success return the new session's backend and MAC for device adoption.
+ * Output is unchanged on failure, including a failed local frame mapping. */
+bool aos_net_virt_rebind_with_info(uint32_t client, uint32_t generation,
+                                  net_virt_rebind_reply_t *attachment);
+static inline bool aos_net_rebind_reply_valid(const net_virt_rebind_reply_t *reply,
+                                             size_t length, uint32_t generation)
+{
+    return reply && length == sizeof(*reply) && generation != 0u &&
+        reply->status == NET_VIRT_OK && reply->version == NET_VIRT_REBIND_VERSION &&
+        reply->generation == generation &&
+        (reply->hw_state == NET_VIRT_HW_NONE || reply->hw_state == NET_VIRT_HW_NET_PD) &&
+        reply->_pad[0] == 0u && reply->_pad[1] == 0u;
+}
 #endif

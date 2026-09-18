@@ -511,7 +511,8 @@ static void handle_detach(uint64_t badge, const sel4_msg_t *req, sel4_msg_t *rep
 
 /* ── main loop ──────────────────────────────────────────────────────────── */
 
-static uint32_t rebind_queue(uint64_t badge, const net_virt_rebind_req_t *req)
+static uint32_t rebind_queue(uint64_t badge, const net_virt_rebind_req_t *req,
+                             net_virt_rebind_reply_t *attachment)
 {
     if (!virt_client_authorized(badge, req->client, req->client))
         return NET_VIRT_ERR_BAD_CLIENT;
@@ -543,7 +544,12 @@ static uint32_t rebind_queue(uint64_t badge, const net_virt_rebind_req_t *req)
         c->retired = 0u;
         handle_attach(badge, &attach, &reply);
         status = rd32(reply.data, 0u);
-        if (status == NET_VIRT_OK) g_generation[req->client] = req->generation;
+        if (status == NET_VIRT_OK) {
+            g_generation[req->client] = req->generation;
+            attachment->hw_state = rd32(reply.data, 8u);
+            for (unsigned i = 0; i < sizeof(attachment->mac); i++)
+                attachment->mac[i] = reply.data[12u + i];
+        }
         else *c = (nv_client_t){.retired = 1u};
     }
     if (status != NET_VIRT_OK)
@@ -582,16 +588,18 @@ static void net_virt_run(seL4_CPtr ep)
                 req.opcode == label && req.length <= sizeof(req.data);
             if (label == NET_VIRT_OP_REBIND) {
                 net_virt_rebind_req_t rebind = {0};
+                net_virt_rebind_reply_t attachment = {0};
                 if (valid && req.length == sizeof(rebind) &&
                     seL4_MessageInfo_get_extraCaps(info) == 1u &&
                     seL4_MessageInfo_get_capsUnwrapped(info) == 0u) {
                     __builtin_memcpy(&rebind, req.data, sizeof(rebind));
-                    status = rebind_queue(badge, &rebind);
+                    status = rebind_queue(badge, &rebind, &attachment);
                 }
                 rebound = status == NET_VIRT_OK;
-                wr32(rep.data, 0u, status);
-                wr32(rep.data, 4u, NET_VIRT_REBIND_VERSION);
-                wr32(rep.data, 8u, rebind.generation);
+                attachment.status = status;
+                attachment.version = NET_VIRT_REBIND_VERSION;
+                attachment.generation = rebind.generation;
+                __builtin_memcpy(rep.data, &attachment, sizeof(attachment));
                 rep.length = sizeof(net_virt_rebind_reply_t);
                 rep.opcode = SEL4_ERR_OK;
                 if (rebound) seL4_SetCap(0, AOS_QUEUE_SERVICE_FRAME_BASE + rebind.client);

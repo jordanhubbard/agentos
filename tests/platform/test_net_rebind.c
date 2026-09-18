@@ -38,6 +38,33 @@ int main(void)
     req.version++;
     CHECK(aos_net_rebind_validate(badge, &req, sizeof(req), false, true, 0u) == NET_VIRT_ERR_VERSION);
     CHECK(aos_net_rebind_validate(badge, NULL, 0u, false, true, 0u) == NET_VIRT_ERR_VERSION);
+    net_virt_rebind_reply_t reply = {
+        .status = NET_VIRT_OK, .version = NET_VIRT_REBIND_VERSION,
+        .generation = 3u, .hw_state = NET_VIRT_HW_NET_PD,
+        .mac = {0x52, 0x54, 0, 0x12, 0x34, 0x57}
+    };
+    CHECK(sizeof(reply) == 24u);
+    CHECK(aos_net_rebind_reply_valid(&reply, sizeof(reply), 3u));
+    CHECK(!aos_net_rebind_reply_valid(NULL, sizeof(reply), 3u));
+    CHECK(!aos_net_rebind_reply_valid(&reply, 12u, 3u));
+    CHECK(!aos_net_rebind_reply_valid(&reply, sizeof(reply) + 1u, 3u));
+    CHECK(!aos_net_rebind_reply_valid(&reply, sizeof(reply), 2u));
+    CHECK(!aos_net_rebind_reply_valid(&reply, sizeof(reply), 0u));
+    reply.status = NET_VIRT_ERR_RESOURCE;
+    CHECK(!aos_net_rebind_reply_valid(&reply, sizeof(reply), 3u));
+    reply.status = NET_VIRT_OK;
+    reply.version++;
+    CHECK(!aos_net_rebind_reply_valid(&reply, sizeof(reply), 3u));
+    reply.version = NET_VIRT_REBIND_VERSION;
+    reply.hw_state = UINT32_MAX;
+    CHECK(!aos_net_rebind_reply_valid(&reply, sizeof(reply), 3u));
+    reply.hw_state = NET_VIRT_HW_NONE;
+    CHECK(aos_net_rebind_reply_valid(&reply, sizeof(reply), 3u));
+    reply._pad[0] = 1u;
+    CHECK(!aos_net_rebind_reply_valid(&reply, sizeof(reply), 3u));
+    reply._pad[0] = 0u;
+    reply._pad[1] = 1u;
+    CHECK(!aos_net_rebind_reply_valid(&reply, sizeof(reply), 3u));
     printf("%u network rebind checks, %u failures\n", checks, failures);
     return failures != 0u;
 }

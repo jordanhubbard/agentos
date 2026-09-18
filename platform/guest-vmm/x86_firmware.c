@@ -209,7 +209,9 @@ extern const uint8_t _binary_x86_firmware_bin_start[], _binary_x86_firmware_bin_
  * terminal-state rejections. Never enter VMX or reuse a retired queue. */
 static bool recreated_network_proof(uint32_t generation)
 {
-    if (!aos_net_virt_rebind(0u, generation)) return false;
+    net_virt_rebind_reply_t attachment;
+    if (!aos_net_virt_rebind_with_info(0u, generation, &attachment) ||
+        attachment.hw_state != NET_VIRT_HW_NET_PD) return false;
     aos_net_virt_client_t q;
     aos_net_client_bind((uint8_t *)AOS_NET_SHMEM_VA, 0u, &q);
     if (q.tx_free->head || q.rx_free->head || q.tx_active->head ||
@@ -222,6 +224,10 @@ static bool recreated_network_proof(uint32_t generation)
         0,0,0,0,0,0, 10,0,2,2
     };
     for (unsigned i = 0; i < sizeof(arp); i++) q.tx_data[i] = arp[i];
+    for (unsigned i = 0; i < sizeof(attachment.mac); i++) {
+        q.tx_data[6u + i] = attachment.mac[i];
+        q.tx_data[22u + i] = attachment.mac[i];
+    }
     q.tx_active->buffers[0] = (aos_net_buff_desc_t){.len = sizeof(arp)};
     __atomic_store_n(&q.tx_free->head, 1u, __ATOMIC_RELEASE);
     __atomic_store_n(&q.tx_active->tail, 1u, __ATOMIC_RELEASE);
@@ -240,7 +246,7 @@ static bool recreated_network_proof(uint32_t generation)
         reply[38] != 10u || reply[39] != 0u || reply[40] != 2u || reply[41] != 15u)
         return false;
     for (unsigned i = 0; i < 6u; i++)
-        if (reply[i] != arp[6u + i] || reply[32u + i] != arp[6u + i]) return false;
+        if (reply[i] != attachment.mac[i] || reply[32u + i] != attachment.mac[i]) return false;
     sel4_msg_t detach = {.opcode = NET_VIRT_OP_DETACH,
         .length = sizeof(net_virt_attach_req_t)}, result = {0};
     const net_virt_attach_req_t args = {NET_VIRT_CONTRACT_VERSION, 0u, 0u};
