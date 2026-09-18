@@ -285,6 +285,7 @@ _Static_assert(CC_SC_BUDGET_US * 10u == CC_SC_PERIOD_US,
 #define PD_IPC_BUF_VA    0x0000000010000000UL
 
 #include "contracts/guest_ram_caps.h"
+#include "contracts/guest_paging_caps.h"
 #define AOS_MAX_GUEST_RAM_REGIONS 4u
 #define AOS_MAX_GUEST_LARGE_FRAMES AOS_GUEST_RAM_MAX_FRAMES
 
@@ -1318,6 +1319,17 @@ static seL4_CPtr schedcontrol_for_node(const seL4_BootInfo *bi, seL4_Word node)
 #endif
 
 #if defined(__aarch64__)
+static seL4_Error create_guest_asid_pool(seL4_CPtr *asid_pool)
+{
+    seL4_CPtr backing = seL4_CapNull;
+    seL4_Error err = ut_alloc_cap(seL4_UntypedObject, seL4_ASIDPoolBits, &backing);
+    if (err != seL4_NoError) return err;
+    *asid_pool = ut_alloc_slot();
+    if (*asid_pool == seL4_CapNull) return seL4_NotEnoughMemory;
+    return seL4_ARM_ASIDControl_MakePool(seL4_CapASIDControl, backing,
+        seL4_CapInitThreadCNode, *asid_pool, 64u);
+}
+
 static seL4_Error setup_vmm_guest_vcpu(const pd_desc_t *pd,
                                         uint32_t         pd_index,
                                         seL4_CPtr        pd_cnode,
@@ -2353,15 +2365,25 @@ void root_task_main(const seL4_BootInfo *bi)
         seL4_CPtr vspace = vr_create.vspace_cap;
 #if defined(__aarch64__)
         seL4_CPtr guest_vspace = seL4_CapNull;
+        seL4_CPtr guest_paging_pool = seL4_CapNull;
+        seL4_CPtr guest_asid_pool = seL4_CapNull;
         if (pd_is_guest_vmm(pd)) {
+            _Static_assert(AOS_GUEST_PAGING_POOL_CAP > AOS_GUEST_IPC_FRAME_CAP &&
+                AOS_GUEST_ASID_POOL_CAP < AOS_GUEST_RAM_POOL_BASE,
+                "paging grants must not overlap execution or RAM slots");
+            if (ut_alloc_cap(seL4_UntypedObject, AOS_GUEST_PAGING_POOL_BITS,
+                    &guest_paging_pool) != seL4_NoError ||
+                create_guest_asid_pool(&guest_asid_pool) != seL4_NoError) {
+                dbg_puts("[rt] private guest paging allocation failed; stopping boot\n");
+                return;
+            }
             pd_vspace_result_t guest_vr =
-                pd_vspace_create(seL4_CapInitThreadCNode,
-                                 seL4_CapInitThreadASIDPool);
+                pd_vspace_create_private(guest_asid_pool, guest_paging_pool);
             if (guest_vr.error != 0) {
                 dbg_puts("[rt] guest vspace_create fail err=");
                 dbg_hex((seL4_Word)guest_vr.error);
                 dbg_puts("\n");
-                continue;
+                return;
             }
             guest_vspace = guest_vr.vspace_cap;
         }
@@ -3503,11 +3525,24 @@ void root_task_main(const seL4_BootInfo *bi)
                                                       self_ep,
                                                       bi);
             if (vm_err != seL4_NoError) {
-                dbg_puts("[rt] WARN: VMM guest cap setup failed for ");
+                dbg_puts("[rt] VMM guest cap setup failed for ");
                 dbg_puts(pd->name);
                 dbg_puts(" err=");
                 dbg_hex((seL4_Word)vm_err);
                 dbg_puts("\n");
+                return;
+            }
+            /* Guest IPC mapping is the final root paging operation. Moving
+             * these sole management caps now preserves the private allocator
+             * until all page tables have been created. */
+            if (seL4_CNode_Move(pd_cnode, AOS_GUEST_PAGING_POOL_CAP,
+                    (uint8_t)pd->cnode_size_bits, seL4_CapInitThreadCNode,
+                    guest_paging_pool, 64u) != seL4_NoError ||
+                seL4_CNode_Move(pd_cnode, AOS_GUEST_ASID_POOL_CAP,
+                    (uint8_t)pd->cnode_size_bits, seL4_CapInitThreadCNode,
+                    guest_asid_pool, 64u) != seL4_NoError) {
+                dbg_puts("[rt] private guest paging delegation failed; stopping boot\n");
+                return;
             }
         }
 #endif

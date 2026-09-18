@@ -17,6 +17,7 @@
  * pool removes both mappings and all frame descendants, including root's
  * original caps. The pool itself survives for zeroed reallocation.
  * Reclamation requires stopped vCPUs and drained device work first.
- * VSpace caps retain the preallocated page tables needed for rebuilding.
+ * RAM-only recycling retains page tables. Full teardown also revokes the
+ * separate guest paging pool; recreation must rebuild the VSpace first.
  */
 #endif

@@ -1,6 +1,7 @@
 #include <platform/guest_teardown.h>
 #include "contracts/guest_execution_caps.h"
 #include "contracts/guest_ram_caps.h"
+#include "contracts/guest_paging_caps.h"
 #include <sel4/sel4.h>
 #include <assert.h>
 #include <stdio.h>
@@ -8,6 +9,8 @@
 #include <unistd.h>
 
 static bool console_done, block_done, graphics_done, revoke_fails, ram_fails;
+static bool paging_fails;
+static unsigned paging_revokes;
 static unsigned net_calls, input_calls, console_calls, block_calls, gpu_calls;
 static unsigned revokes, releases;
 static volatile unsigned char *ram;
@@ -25,9 +28,14 @@ bool aos_vmm_virtio_gpu_quiesce(void)
 seL4_Error seL4_CNode_Revoke(seL4_CPtr root, seL4_Word slot, uint8_t depth)
 {
     assert(root == AOS_GUEST_RAM_SELF_CNODE);
-    assert(slot == AOS_GUEST_EXECUTION_POOL_CAP);
     assert(depth == AOS_GUEST_RAM_CNODE_BITS);
     assert(console_done && block_done && graphics_done);
+    if (slot == AOS_GUEST_PAGING_POOL_CAP) {
+        assert(!caps_live && releases == 2 && !ram_fails);
+        paging_revokes++;
+        return paging_fails ? 1 : seL4_NoError;
+    }
+    assert(slot == AOS_GUEST_EXECUTION_POOL_CAP);
     revokes++;
     if (revoke_fails) return 1;
     caps_live = false;
@@ -70,9 +78,14 @@ int main(void)
     assert(revokes == 2 && releases == 1 && gpu_calls == device_calls);
     /* Retrying partial RAM release must invoke no device or execution API. */
     ram_fails = false;
+    paging_fails = true;
+    assert(!aos_guest_teardown_step(&state, page_size));
+    assert(state.ram_released && !state.paging_released && paging_revokes == 1);
+    paging_fails = false;
     assert(aos_guest_teardown_step(&state, page_size));
     assert(aos_guest_teardown_step(&state, page_size));
     assert(state.ram_released && revokes == 2 && releases == 2);
+    assert(state.paging_released && paging_revokes == 2);
     assert(net_calls == device_calls && input_calls == device_calls &&
            console_calls == device_calls && block_calls == device_calls);
     assert(munmap((void *)ram, page_size) == 0);
