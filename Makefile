@@ -695,7 +695,27 @@ gate: test-host gate-aarch64 gate-x86_64 gate-guest-io
 # lint-source is a source lint (policy-check's sibling), not a test; it is
 # listed here so the invariants it protects are checked on every host run,
 # but it is not counted among the host tests below.
-test-host: policy-check guest-profile-check lint-source test-integration test-operator-host test-log-ring-host test-framebuffer-host
+test-host: policy-check guest-profile-check lint-source test-integration test-operator-host test-log-ring-host test-framebuffer-host test-x86-acpi-host
+
+.PHONY: test-x86-acpi-host
+test-x86-acpi-host:
+	@mkdir -p $(BUILD_TMP_DIR)
+	$(CC) -std=c11 -Wall -Wextra -Werror -I platform/include tests/platform/test_x86_acpi.c platform/guest-vmm/x86_acpi.c -o $(BUILD_TMP_DIR)/test_x86_acpi
+	$(BUILD_TMP_DIR)/test_x86_acpi
+
+# Optional independent AML parser/interpreter qualification (ACPICA tools).
+IASL ?= iasl
+ACPIEXEC ?= acpiexec
+.PHONY: test-x86-acpi-aml
+test-x86-acpi-aml: test-x86-acpi-host
+	$(BUILD_TMP_DIR)/test_x86_acpi $(BUILD_TMP_DIR)/x86-cpus.aml
+	$(IASL) -p $(BUILD_TMP_DIR)/x86-cpus -d $(BUILD_TMP_DIR)/x86-cpus.aml
+	$(IASL) -p $(BUILD_TMP_DIR)/x86-cpus-roundtrip $(BUILD_TMP_DIR)/x86-cpus.dsl
+	$(ACPIEXEC) -b 'execute \_SB.C000._UID; execute \_SB.C010._UID; execute \_SB.C01F._UID; execute \_SB.C01F._HID' $(BUILD_TMP_DIR)/x86-cpus.aml > $(BUILD_TMP_DIR)/x86-cpus-eval.log 2>&1
+	@rg -q '\[Integer\] = 0000000000000000' $(BUILD_TMP_DIR)/x86-cpus-eval.log
+	@rg -q '\[Integer\] = 0000000000000010' $(BUILD_TMP_DIR)/x86-cpus-eval.log
+	@rg -q '\[Integer\] = 000000000000001F' $(BUILD_TMP_DIR)/x86-cpus-eval.log
+	@rg -q '"ACPI0007"' $(BUILD_TMP_DIR)/x86-cpus-eval.log
 
 .PHONY: test-framebuffer-host
 test-framebuffer-host:
