@@ -233,6 +233,20 @@ pub struct QemuLaunchArgs {
     /// Use the faster multi-threaded TCG development configuration.
     #[arg(long)]
     pub fast: bool,
+    /// Use the managed Intel binary CC composition.
+    #[arg(long, conflicts_with_all = ["profile", "scenario"])]
+    pub x86_cc: bool,
+    /// Pinned Intel boot profile, prepared through the same path as qualification.
+    #[arg(long, requires = "x86_cc", requires = "x86_block_image")]
+    pub x86_boot_profile: Option<std::path::PathBuf>,
+    /// Existing raw disk for the Intel guest.
+    #[arg(long, requires = "x86_cc")]
+    pub x86_block_image: Option<std::path::PathBuf>,
+    #[arg(long, requires = "x86_block_image")]
+    pub x86_block_write: bool,
+    /// Loopback SSH forwarding port for the Intel guest (zero disables it).
+    #[arg(long, requires = "x86_cc")]
+    pub ssh_port: Option<u16>,
 }
 
 #[derive(clap::Args)]

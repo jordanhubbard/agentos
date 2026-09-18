@@ -1942,6 +1942,10 @@ fn profile_device_build_args(
 }
 
 pub fn launch(args: &QemuLaunchArgs) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        !args.x86_cc || args.board == "x86_64_generic_vtx",
+        "binary Intel CC launch requires --board x86_64_generic_vtx"
+    );
     let repo_root = repo_root()?;
     let profile_root = repo_root.join("guest-profiles");
     let profile_plan = args
@@ -1957,7 +1961,9 @@ pub fn launch(args: &QemuLaunchArgs) -> anyhow::Result<()> {
         })
         .transpose()?;
 
-    let selection = if let Some(profile) = &profile_plan {
+    let selection = if let Some(path) = &args.x86_boot_profile {
+        format!("managed Intel profile {}", path.display())
+    } else if let Some(profile) = &profile_plan {
         format!("profile {}", profile.id)
     } else if let Some(scenario) = &scenario_plan {
         format!("scenario {}", scenario.id)
@@ -1989,6 +1995,18 @@ pub fn launch(args: &QemuLaunchArgs) -> anyhow::Result<()> {
         profile_plan.as_ref(),
         scenario_plan.as_ref(),
     ));
+    if args.x86_cc {
+        make_args.extend([
+            String::from("X86_CC_PCI=1"),
+            String::from("X86_FIRMWARE_RESET=1"),
+        ]);
+    }
+    if let Some(path) = &args.x86_boot_profile {
+        make_args.extend(cmd_guest_profile::prepare_x86_boot_profile(
+            &repo_root, path,
+        )?);
+        make_args.push(String::from("X86_LINUX_LOGIN=1"));
+    }
     let make_arg_refs = make_args.iter().map(String::as_str).collect::<Vec<_>>();
     run_make(&make_arg_refs, &repo_root).context("profile-driven build step failed")?;
 
@@ -1997,12 +2015,14 @@ pub fn launch(args: &QemuLaunchArgs) -> anyhow::Result<()> {
         .with_context(|| format!("failed to create {}", tmp_dir.display()))?;
     let log_path = tmp_dir.join("agentos-run.log");
     let cc_sock = repo_root.join("build/cc_pd.sock");
-    let ssh_port = profile_plan
-        .as_ref()
-        .and_then(|profile| profile.qemu.as_ref())
-        .and_then(|qemu| qemu.ssh.as_ref())
-        .map(|ssh| ssh.host_port)
-        .unwrap_or(0);
+    let ssh_port = args.ssh_port.unwrap_or_else(|| {
+        profile_plan
+            .as_ref()
+            .and_then(|profile| profile.qemu.as_ref())
+            .and_then(|qemu| qemu.ssh.as_ref())
+            .map(|ssh| ssh.host_port)
+            .unwrap_or(0)
+    });
     let large_guest = profile_plan
         .as_ref()
         .is_some_and(|profile| profile.media_initrd_path.is_some())
@@ -2036,10 +2056,10 @@ pub fn launch(args: &QemuLaunchArgs) -> anyhow::Result<()> {
         false,
         true,
         args.fast,
-        None,
+        args.x86_block_image.as_deref(),
+        args.x86_block_write,
         false,
-        false,
-        std::env::var("X86_CC_PCI").as_deref() == Ok("1"),
+        args.x86_cc,
     )?;
     let status = qemu.wait().context("failed to wait for QEMU")?;
     anyhow::ensure!(status.success(), "QEMU exited with {status}");
