@@ -317,6 +317,11 @@ are rejected; failed registration retains backend ownership for detach before
 revocation. Host sanitizer tests exercise fresh TX/RX generations, pending RX,
 failed-registration cleanup and inaccessible retired mappings. This helper is
 not yet wired into the firmware reset path or qualified by a second guest boot.
+The [adoption receipt](evidence/2026-09-18-spark/network-device-adoption.json)
+also records two native stopped adoption cycles at `f2980ad`: fresh buses over
+restored RAM, MMIO identity/reset-state/MAC probes, detach, bus retirement and
+stale queue-capability rejection. Native adoption does not yet exercise fresh
+guest TX/RX descriptors; those remain host-tested.
 Before capability revocation it also requires a network contract-v6 detach
 acknowledgment. The single-threaded virtualizer drops that client's queue
 pointers, including any hub-pump entry, before replying. Subsequent wakeups
