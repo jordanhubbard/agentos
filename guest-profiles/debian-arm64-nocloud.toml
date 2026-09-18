@@ -95,6 +95,12 @@ args = { source = "initrd.bottom-stock", output = "initrd.img", path = "scripts/
 [host.qemu]
 memory = "3G"
 
+[host.seed]
+adapter = "nocloud-debian-v1"
+root_ext4 = "build/guest-images/debian-arm64-nocloud/root.ext4"
+disk_raw = "build/guest-images/debian-arm64-nocloud/disk.raw"
+partition_offset = 134217728
+
 [[host.qemu.media]]
 path = "build/guest-images/debian-arm64-nocloud/seeded.raw"
 drive_id = "primary_media"

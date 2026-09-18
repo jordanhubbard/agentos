@@ -93,6 +93,25 @@ threshold qualification. Receipts are retained in
 receipts remain historical evidence. Ubuntu's boot warnings and failed
 Debian attempts remain recorded alongside the successful measurements.
 
+For unattended fresh-media ARM qualification, run `make test-debian-nocloud-auto`.
+It builds and acquires the pinned profile artifacts, generates an Ed25519 test
+identity, seeds a new full disk from `[host.seed]`, and uses the strict SSH and
+canonical I/O gate. The default forwarding port is 12222 and timeout is 1200
+seconds; `QEMU_TEST_SSH_PORT` and `QEMU_TEST_TIMEOUT` override them. Preparation
+is outside the launch-to-authentication timing boundary.
+
+The printed private `build/evidence/profile-seed-*` directory retains the
+identity, immutable seeded source and managed writable guest disk. Shared
+acquisition caches and the manually staged `seeded.raw` are not modified.
+This target currently qualifies a fresh boot; it does not automatically run
+the second cold boot or replace the required Debian baseline gates.
+
+The host-only seed adapter `nocloud-debian-v1` declares repository-relative
+root and full-disk sources plus the root partition byte offset. Validation
+requires one writable disk, the seeded Debian SSH account/network contract,
+and no competing console provisioning recipe. The existing native seeder
+verifies the complete original partition region before replacing it.
+
 By default the output is an ext4 partition image. To produce a full raw disk,
 also supply `SEED_DISK_RAW` and `SEED_PARTITION_OFFSET`. For the pinned
 `debian-amd64.toml` image, use

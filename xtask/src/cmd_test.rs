@@ -368,6 +368,21 @@ pub fn run_x86_storage(timeout_secs: u64) -> anyhow::Result<()> {
 }
 
 pub fn run(args: &TestArgs) -> anyhow::Result<()> {
+    let mut effective_args = args.clone();
+    let args = &mut effective_args;
+    anyhow::ensure!(
+        !args.seed_profile
+            || (args.board == "qemu_virt_aarch64"
+                && args.ssh_port != 0
+                && !args.no_build
+                && args.seeded_ssh_key.is_none()
+                && args.seeded_directory.is_none()
+                && args.seeded_ssh_known_hosts.is_none()
+                && !args.assert_live
+                && !args.assert_desktop
+                && !args.assert_persistent_boots),
+        "automatic seed requires a fresh ARM profile boot and nonzero SSH port"
+    );
     anyhow::ensure!(
         args.seeded_ssh_key.is_none()
             || (args.board == "qemu_virt_aarch64"
@@ -457,6 +472,10 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
     if let Some(profile) = &mut profile_plan {
         apply_profile_ssh_port(profile, args.ssh_port);
     }
+    anyhow::ensure!(
+        !args.seed_profile || profile_plan.as_ref().is_some_and(|p| p.seed.is_some()),
+        "automatic seed requires a host.seed profile contract"
+    );
     if let Some(profile) = &profile_plan {
         println!(
             "[xtask:test] resolved alias {:?} to {} ({}, architecture={}, control_type={}, guest_id={}, provision_steps={}, test_steps={})",
@@ -641,6 +660,55 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
         }
         let make_arg_refs = make_args.iter().map(String::as_str).collect::<Vec<_>>();
         run_make(&make_arg_refs, &repo_root).context("profile-driven build step failed")?;
+    }
+
+    if args.seed_profile {
+        let profile = profile_plan.as_mut().unwrap();
+        let seed = profile.seed.as_ref().unwrap();
+        let parent = repo_root.join("build/evidence");
+        std::fs::create_dir_all(&parent)?;
+        let directory = tempfile::Builder::new()
+            .prefix("profile-seed-")
+            .tempdir_in(parent)?
+            .keep();
+        println!(
+            "[xtask:test] Automatic seed evidence: {}",
+            directory.display()
+        );
+        let key = directory.join("identity");
+        let status = std::process::Command::new("ssh-keygen")
+            .args(["-q", "-t", "ed25519", "-N", "", "-f"])
+            .arg(&key)
+            .status()?;
+        anyhow::ensure!(
+            status.success(),
+            "automatic seed ssh-keygen failed: {status}"
+        );
+        let output = directory.join("seeded.raw");
+        crate::cmd_seed_guest::run(&crate::cmd_seed_guest::SeedGuestArgs {
+            root_ext4: repo_root.join(&seed.root_ext4),
+            public_key: key.with_extension("pub"),
+            output: output.clone(),
+            instance_id: directory
+                .file_name()
+                .unwrap()
+                .to_str()
+                .context("seed directory is not UTF-8")?
+                .into(),
+            disk_raw: Some(repo_root.join(&seed.disk_raw)),
+            partition_offset: Some(seed.partition_offset),
+        })?;
+        let disk = profile
+            .qemu
+            .as_mut()
+            .unwrap()
+            .media
+            .iter_mut()
+            .find(|disk| disk.writable)
+            .unwrap();
+        disk.path = output.to_str().context("seed path is not UTF-8")?.into();
+        args.seeded_ssh_key = Some(key);
+        args.seeded_directory = Some(directory);
     }
 
     if args.seeded_ssh_key.is_some() {

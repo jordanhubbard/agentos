@@ -145,6 +145,7 @@ struct Placement {
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Host {
+    seed: Option<SeedPlan>,
     qemu: Option<Qemu>,
     console: Option<HostConsole>,
     desktop: Option<HostDesktop>,
@@ -155,6 +156,15 @@ struct Host {
     provision: Vec<RecipeStep>,
     #[serde(default)]
     test: Vec<RecipeStep>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct SeedPlan {
+    pub(crate) adapter: String,
+    pub(crate) root_ext4: String,
+    pub(crate) disk_raw: String,
+    pub(crate) partition_offset: u64,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -255,6 +265,7 @@ pub(crate) struct RecipeStep {
 
 #[derive(Clone, Debug)]
 pub(crate) struct HostProfilePlan {
+    pub(crate) seed: Option<SeedPlan>,
     pub(crate) path: PathBuf,
     pub(crate) id: String,
     pub(crate) architecture: String,
@@ -614,6 +625,7 @@ pub(crate) fn host_profile_plan(root: &Path, path: &Path) -> Result<HostProfileP
             }),
         });
     Ok(HostProfilePlan {
+        seed: host.and_then(|value| value.seed.clone()),
         path: path.to_path_buf(),
         id: profile.id.clone().context("id is required")?,
         architecture: target
@@ -1571,6 +1583,38 @@ fn validate_placement(name: &str, p: &Placement, has_dtb: bool) -> Result<()> {
 
 fn validate_host(host: Option<&Host>) -> Result<()> {
     let Some(host) = host else { return Ok(()) };
+    if let Some(seed) = &host.seed {
+        enum_value(&seed.adapter, &["nocloud-debian-v1"])?;
+        for path in [&seed.root_ext4, &seed.disk_raw] {
+            ensure!(
+                !path.is_empty() && path.len() <= 255,
+                "invalid seed source path"
+            );
+            confined_repo_path(Path::new("."), path)?;
+        }
+        ensure!(
+            seed.root_ext4 != seed.disk_raw,
+            "seed sources must be distinct"
+        );
+        ensure!(
+            seed.partition_offset > 0 && seed.partition_offset % 512 == 0,
+            "seed partition offset must be positive and sector aligned"
+        );
+        let qemu = host.qemu.as_ref().context("seed requires host.qemu")?;
+        ensure!(
+            qemu.media.iter().filter(|media| media.writable).count() == 1,
+            "seed requires exactly one writable disk"
+        );
+        let ssh = qemu.ssh.as_ref().context("seed requires host.qemu.ssh")?;
+        ensure!(
+            ssh.account == "debian" && ssh.guest_address.as_deref() == Some("10.0.2.15"),
+            "NoCloud adapter requires the Debian account and seeded network address"
+        );
+        ensure!(
+            host.provision.is_empty(),
+            "NoCloud seed cannot also use console provisioning"
+        );
+    }
     if let Some(qemu) = &host.qemu {
         validate_qemu(qemu)?;
     }
@@ -2511,6 +2555,47 @@ mod tests {
     }
 
     #[test]
+    fn nocloud_seed_contract_binds_sources_and_provisioning() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .join("guest-profiles");
+        let path = Path::new("debian-arm64-nocloud.toml");
+        let (profile, _) = resolve(&root, path, &mut Vec::new()).unwrap();
+        let host = profile.host.unwrap();
+        assert!(validate_host(Some(&host)).is_ok());
+        let seed = host_profile_plan(&root, path).unwrap().seed.unwrap();
+        assert_eq!(seed.partition_offset, 134217728);
+        assert_eq!(
+            seed.root_ext4,
+            "build/guest-images/debian-arm64-nocloud/root.ext4"
+        );
+        for bad_path in ["", "/tmp/root.ext4", "../root.ext4", "build/../root.ext4"] {
+            let mut invalid = host.clone();
+            invalid.seed.as_mut().unwrap().root_ext4 = bad_path.into();
+            assert!(validate_host(Some(&invalid)).is_err(), "{bad_path}");
+        }
+        let mut invalid = host.clone();
+        invalid.seed.as_mut().unwrap().partition_offset = 513;
+        assert!(validate_host(Some(&invalid)).is_err());
+        let mut invalid = host.clone();
+        invalid.seed.as_mut().unwrap().adapter = "unknown".into();
+        assert!(validate_host(Some(&invalid)).is_err());
+        let mut invalid = host.clone();
+        invalid.qemu.as_mut().unwrap().ssh.as_mut().unwrap().account = "root".into();
+        assert!(validate_host(Some(&invalid)).is_err());
+        let mut invalid = host.clone();
+        invalid.qemu.as_mut().unwrap().media.clear();
+        assert!(validate_host(Some(&invalid)).is_err());
+        let mut invalid = host;
+        invalid.provision.push(RecipeStep {
+            action: "write-console".into(),
+            args: BTreeMap::new(),
+        });
+        assert!(validate_host(Some(&invalid)).is_err());
+    }
+
+    #[test]
     fn host_recipes_are_bounded() {
         let steps = (0..=MAX_RECIPE_STEPS)
             .map(|_| RecipeStep {
@@ -2523,6 +2608,7 @@ mod tests {
             id: Some("bounded".to_string()),
             status: Some(Status::Abstract),
             host: Some(Host {
+                seed: None,
                 qemu: None,
                 console: None,
                 desktop: None,
@@ -2617,6 +2703,7 @@ mod tests {
             probe_timeout_secs: Some(30),
         };
         let host = Host {
+            seed: None,
             qemu: None,
             console: Some(console.clone()),
             desktop: None,

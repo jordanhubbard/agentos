@@ -101,6 +101,9 @@ pub struct TestArgs {
     /// Authenticate a preseeded ARM guest using a host key reported through CC-PD.
     #[arg(long, conflicts_with_all = ["assert_live", "assert_desktop", "x86_ssh_key"])]
     pub seeded_ssh_key: Option<std::path::PathBuf>,
+    /// Create fresh NoCloud media and a retained SSH identity from host.seed.
+    #[arg(long, conflicts_with_all = ["seeded_ssh_key", "seeded_directory", "seeded_ssh_known_hosts", "assert_live", "assert_desktop", "x86_ssh_key", "assert_persistent_boots", "no_build"])]
+    pub seed_profile: bool,
     /// Pin the original host identity on a subsequent boot of the seeded disk.
     #[arg(long, requires_all = ["seeded_ssh_key", "seeded_directory"])]
     pub seeded_ssh_known_hosts: Option<std::path::PathBuf>,
