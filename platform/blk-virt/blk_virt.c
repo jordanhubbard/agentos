@@ -38,6 +38,9 @@
 #include <platform/blk_layout.h>
 #include <platform/blk_host_layout.h>
 #include <platform/blk_virt_pump.h>
+#include <platform/blk_rebind.h>
+#include "contracts/queue_rebind_caps.h"
+#include "boot_info.h"
 
 _Static_assert(sizeof(blk_virt_attach_req_t) == 16u,
                "blk_virt ATTACH request wire size");
@@ -67,6 +70,7 @@ typedef struct {
 } bv_client_t;
 
 static bv_client_t  g_clients[AOS_BLK_MAX_CLIENTS];
+static uint32_t     g_generation[AOS_BLK_MAX_CLIENTS];
 static uint8_t      g_ram_disk[AOS_BLK_MAX_CLIENTS][AOS_BLK_DISK_BYTES]
                         __attribute__((aligned(4096)));
 
@@ -498,12 +502,57 @@ static void handle_detach(uint64_t badge, const sel4_msg_t *req, sel4_msg_t *rep
 
 /* ── main loop ──────────────────────────────────────────────────────────── */
 
+static uint32_t rebind_queue(uint64_t badge, const blk_virt_rebind_req_t *req)
+{
+    /* Validate client authority before indexing or touching retired mappings. */
+    if (!virt_media_authorized(badge, req->client, req->client, req->client))
+        return BLK_VIRT_ERR_BAD_CLIENT;
+    bv_client_t *c = &g_clients[req->client];
+    uint32_t status = aos_blk_rebind_validate(badge, req, sizeof(*req), c->attached,
+        c->retired, g_generation[req->client]);
+    if (status != BLK_VIRT_OK) return status;
+    seL4_CPtr frame = AOS_QUEUE_SERVICE_FRAME_BASE + req->client;
+    if (seL4_CNode_Delete(AOS_QUEUE_SERVICE_CNODE, frame,
+            AOS_QUEUE_SERVICE_CNODE_BITS) != seL4_NoError)
+        return BLK_VIRT_ERR_RESOURCE;
+    if (seL4_Untyped_Retype(AOS_QUEUE_SERVICE_RECEIVE, seL4_ARCH_LargePageObject,
+            0u, AOS_QUEUE_SERVICE_CNODE, 0u, 0u, frame, 1u) != seL4_NoError)
+        return BLK_VIRT_ERR_RESOURCE;
+    uintptr_t va = AOS_BLK_SHMEM_VA + req->client * AOS_BLK_CLIENT_STRIDE;
+    if (seL4_ARCH_Page_Map(frame, AOS_QUEUE_SERVICE_VSPACE, va, seL4_AllRights,
+            seL4_ARM_Default_VMAttributes) != seL4_NoError) {
+        status = BLK_VIRT_ERR_RESOURCE;
+    } else {
+        aos_blk_virt_client_t fresh;
+        aos_blk_client_bind((uint8_t *)AOS_BLK_SHMEM_VA, req->client, &fresh);
+        aos_blk_client_init_queues(&fresh);
+        sel4_msg_t attach = {.length = sizeof(blk_virt_attach_req_t)}, reply = {0};
+        wr32(attach.data, 0u, BLK_VIRT_CONTRACT_VERSION);
+        wr32(attach.data, 4u, req->client);
+        wr32(attach.data, 8u, req->client);
+        wr32(attach.data, 12u, req->client);
+        c->retired = 0u;
+        handle_attach(badge, &attach, &reply);
+        status = rd32(reply.data, 0u);
+        if (status == BLK_VIRT_OK) g_generation[req->client] = req->generation;
+        else *c = (bv_client_t){.retired = 1u};
+    }
+    if (status != BLK_VIRT_OK)
+        (void)seL4_CNode_Delete(AOS_QUEUE_SERVICE_CNODE, frame,
+            AOS_QUEUE_SERVICE_CNODE_BITS);
+    return status;
+}
+
 static void blk_virt_run(seL4_CPtr ep)
 {
     for (;;) {
         seL4_Word badge = 0u;
         sel4_msg_t req = {0};
         sel4_msg_t rep = {0};
+        (void)seL4_CNode_Delete(AOS_QUEUE_SERVICE_CNODE, AOS_QUEUE_SERVICE_RECEIVE,
+            AOS_QUEUE_SERVICE_CNODE_BITS);
+        seL4_SetCapReceivePath(AOS_QUEUE_SERVICE_CNODE, AOS_QUEUE_SERVICE_RECEIVE,
+            AOS_QUEUE_SERVICE_CNODE_BITS);
 #ifdef CONFIG_KERNEL_MCS
         seL4_MessageInfo_t info = seL4_Recv(ep, &badge, AGENTOS_IPC_REPLY_CAP);
 #else
@@ -516,18 +565,47 @@ static void blk_virt_run(seL4_CPtr ep)
         seL4_Word label = seL4_MessageInfo_get_label(info);
         (void)badge;
 
-        if (label == BLK_VIRT_OP_ATTACH || label == BLK_VIRT_OP_DETACH) {
+        if (label == BLK_VIRT_OP_ATTACH || label == BLK_VIRT_OP_DETACH ||
+            label == BLK_VIRT_OP_REBIND) {
             _sel4_mrs_to_msg(&req);
-            if (label == BLK_VIRT_OP_ATTACH) handle_attach(badge, &req, &rep);
-            else handle_detach(badge, &req, &rep);
+            bool rebound = false;
+            uint32_t status = BLK_VIRT_ERR_VERSION;
+            bool valid = seL4_MessageInfo_get_length(info) == _SEL4_MR_COUNT &&
+                req.opcode == label && req.length <= sizeof(req.data);
+            if (label == BLK_VIRT_OP_REBIND) {
+                blk_virt_rebind_req_t rebind = {0};
+                if (valid && req.length == sizeof(rebind) &&
+                    seL4_MessageInfo_get_extraCaps(info) == 1u &&
+                    seL4_MessageInfo_get_capsUnwrapped(info) == 0u) {
+                    __builtin_memcpy(&rebind, req.data, sizeof(rebind));
+                    status = rebind_queue(badge, &rebind);
+                }
+                rebound = status == BLK_VIRT_OK;
+                wr32(rep.data, 0u, status);
+                wr32(rep.data, 4u, BLK_VIRT_REBIND_VERSION);
+                wr32(rep.data, 8u, rebind.generation);
+                rep.length = sizeof(blk_virt_rebind_reply_t);
+                rep.opcode = SEL4_ERR_OK;
+                if (rebound) seL4_SetCap(0, AOS_QUEUE_SERVICE_FRAME_BASE + rebind.client);
+            } else if (valid && seL4_MessageInfo_get_extraCaps(info) == 0u &&
+                       req.length == sizeof(blk_virt_attach_req_t)) {
+                if (label == BLK_VIRT_OP_ATTACH) handle_attach(badge, &req, &rep);
+                else handle_detach(badge, &req, &rep);
+            } else {
+                wr32(rep.data, 0u, status);
+                wr32(rep.data, 4u, BLK_VIRT_CONTRACT_VERSION);
+                rep.length = sizeof(blk_virt_attach_reply_t);
+                rep.opcode = SEL4_ERR_OK;
+            }
             _sel4_msg_to_mrs(&rep);
             seL4_MessageInfo_t reply = seL4_MessageInfo_new(
-                (seL4_Word)rep.opcode, 0u, 0u, (seL4_Word)_SEL4_MR_COUNT);
+                (seL4_Word)rep.opcode, 0u, rebound ? 1u : 0u, (seL4_Word)_SEL4_MR_COUNT);
 #ifdef CONFIG_KERNEL_MCS
             seL4_Send(AGENTOS_IPC_REPLY_CAP, reply);
 #else
             seL4_Reply(reply);
 #endif
+            seL4_SetCap(0, seL4_CapNull);
             /* A client may have queued requests before its ATTACH reply
              * landed; serve them without waiting for a kick. */
             bv_service();

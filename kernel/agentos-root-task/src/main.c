@@ -3111,13 +3111,14 @@ void root_task_main(const seL4_BootInfo *bi)
                            pd->cnode_size_bits);
         }
 
-        if (pd->self_svc_id == SVC_ID_SERIAL_VIRT) {
+        if (pd->self_svc_id == SVC_ID_SERIAL_VIRT ||
+            pd->self_svc_id == SVC_ID_BLK_VIRT) {
             if (pd->cnode_size_bits != AOS_QUEUE_SERVICE_CNODE_BITS ||
                 seL4_CNode_Copy(pd_cnode, AOS_QUEUE_SERVICE_CNODE, pd->cnode_size_bits,
                     seL4_CapInitThreadCNode, pd_cnode, 64u, seL4_AllRights) != seL4_NoError ||
                 seL4_CNode_Copy(pd_cnode, AOS_QUEUE_SERVICE_VSPACE, pd->cnode_size_bits,
                     seL4_CapInitThreadCNode, vspace, 64u, seL4_AllRights) != seL4_NoError) {
-                dbg_puts("[rt] serial queue reconstruction authority failed\n");
+                dbg_puts("[rt] queue reconstruction authority failed\n");
                 return;
             }
         }

@@ -308,9 +308,10 @@ acknowledgment. The single-threaded virtualizer drops that client's queue
 pointers, including any hub-pump entry, before replying. Subsequent wakeups
 cannot access the retired queues. Root-assigned badges authorize detach in
 the same way as attach; no new capability is granted. A retired client cannot
-reattach without a future generation/reset contract, so old driver RX data
-cannot be silently reused for a new guest. The driver vNIC remains allocated;
-network detach alone does not prove its reclamation or guest recreation.
+reattach without a future generation/reset contract. Detach closes the raw
+driver handle, including a handle opened before a link-down fallback, before
+retiring the guest queue. A failed close retains ownership for retry. Driver
+slot reuse resets RX indices; network detach alone does not prove guest recreation.
 Block contract v5 likewise retires service queue pointers only after both
 request and response queues are valid and empty. The virtualizer serializes
 detach with its synchronous driver transfers, so an acknowledgment cannot
@@ -319,6 +320,15 @@ asking for detach; BUSY or malformed replies keep teardown retryable and
 prevent capability revocation. Detach does not issue a flush or establish
 durability. Media ownership and the per-client RAM
 fallback disk remain allocated; retired clients cannot silently reattach.
+Block REBIND v1 requires a retired client and its next nonzero generation.
+Root grants blk_virt only its own CNode/VSpace management capabilities. The
+owning VMM transfers its private queue untyped; blk_virt allocates one 2 MiB
+frame, initializes fresh queues, restores the same root-assigned media and
+returns the frame capability. The VMM retains pool revocation authority.
+An unsuccessful allocation/map requires pool revocation before retry; a
+committed rebind must be detached before revocation, including if the caller
+fails to receive or map the returned frame. The old detach drain rule remains
+mandatory. This does not reset firmware or admit a recreated guest by itself.
 Serial contract v4 retains terminal VMM-role detach under the existing guest
 badge authority. The service stops both transfer directions, clears its guest
 channel pointers and marks the frontend detached before acknowledging. It

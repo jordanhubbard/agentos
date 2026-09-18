@@ -37,6 +37,8 @@ extern const uint8_t _binary_x86_boot_profile_bin_start[], _binary_x86_boot_prof
 #include <platform/x86_memory_rebuild.h>
 #include <platform/guest_ram.h>
 #include <platform/serial_rebind.h>
+#include <platform/blk_rebind.h>
+#include <platform/blk_virt_pump.h>
 
 #define VCPU AOS_GUEST_VCPU_CAP_BASE
 const char vmm_pd_name[] = "guest_vmm_x86";
@@ -228,6 +230,39 @@ static bool terminal_teardown_proof(void)
      * the pool. Exercise every pool, including ROM and device queues, twice.
      * These are stopped scratch frames, never a recreated executing guest. */
     for (unsigned pass = 0; pass < 2u; pass++) {
+        if (!aos_blk_virt_rebind(0u, pass + 1u)) return false;
+        aos_blk_virt_client_t rebuilt_block;
+        aos_blk_client_bind((uint8_t *)AOS_BLK_SHMEM_VA, 0u, &rebuilt_block);
+        if (!rebuilt_block.info->ready || !rebuilt_block.info->capacity ||
+            rebuilt_block.req->head || rebuilt_block.req->tail ||
+            rebuilt_block.resp->head || rebuilt_block.resp->tail) return false;
+        rebuilt_block.req->buffers[0] = (aos_blk_req_t){
+            .code = AOS_BLK_REQ_READ, .count = 1u, .id = 0xb10cu + pass};
+        __atomic_store_n(&rebuilt_block.req->tail, 1u, __ATOMIC_RELEASE);
+        seL4_Signal(PD_CNODE_SLOT_BLK_VIRT_NOTIFY);
+        unsigned block_waits = 0;
+        while (__atomic_load_n(&rebuilt_block.resp->tail, __ATOMIC_ACQUIRE) != 1u &&
+               block_waits++ < 100000u) seL4_Yield();
+        if (block_waits >= 100000u || rebuilt_block.req->head != 1u ||
+            rebuilt_block.resp->buffers[0].status != AOS_BLK_RESP_OK ||
+            rebuilt_block.resp->buffers[0].success_count != 1u ||
+            rebuilt_block.resp->buffers[0].id != 0xb10cu + pass) return false;
+        __atomic_store_n(&rebuilt_block.resp->head, 1u, __ATOMIC_RELEASE);
+        sel4_msg_t block_detach = {.opcode = BLK_VIRT_OP_DETACH,
+            .length = sizeof(blk_virt_attach_req_t)}, block_reply = {0};
+        const blk_virt_attach_req_t detach_args = {BLK_VIRT_CONTRACT_VERSION, 0u, 0u, 0u};
+        __builtin_memcpy(block_detach.data, &detach_args, sizeof(detach_args));
+        sel4_call(PD_CNODE_SLOT_BLK_VIRT_EP, &block_detach, &block_reply);
+        if (block_reply.opcode != SEL4_ERR_OK ||
+            block_reply.length != sizeof(blk_virt_attach_reply_t) ||
+            msg_u32(&block_reply, 0u) != BLK_VIRT_OK) return false;
+        if (seL4_CNode_Revoke(AOS_GUEST_RAM_SELF_CNODE,
+                AOS_GUEST_QUEUE_POOL_BASE + AOS_GUEST_QUEUE_BLOCK,
+                AOS_GUEST_RAM_CNODE_BITS) != seL4_NoError) return false;
+        if (seL4_CNode_Copy(AOS_GUEST_RAM_SELF_CNODE, AOS_GUEST_QUEUE_TEST_COPY,
+                AOS_GUEST_RAM_CNODE_BITS, AOS_GUEST_RAM_SELF_CNODE,
+                AOS_GUEST_QUEUE_FRAME_BASE + AOS_GUEST_QUEUE_BLOCK,
+                AOS_GUEST_RAM_CNODE_BITS, seL4_AllRights) != seL4_FailedLookup) return false;
         if (!aos_serial_virt_rebind(0u, pass + 1u)) return false;
         aos_serial_channel_t rebuilt_serial = aos_serial_channel_at(AOS_SERIAL_SHMEM_VA);
         static const uint8_t message[] = "x86-recreated-serial\n";
