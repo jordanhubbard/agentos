@@ -69,6 +69,11 @@ The provisioned Debian graphics/input guest also passed execution/RAM teardown
 at `7e8ebaa`, after authenticated SSH and exact display/input checks;
 [that receipt](evidence/2026-09-17-spark/seeded-graphics-teardown.json)
 predates private paging revocation and does not qualify recreation.
+The same seeded graphics/input qualification passed with private paging
+revocation at `3bd3b94`; [the combined receipt](evidence/2026-09-18-spark/seeded-paging-teardown.json)
+records exact display/input checks followed by execution, RAM and paging
+teardown. Service-grant reclamation, recreation and peer continuity remain
+unqualified.
 `make test-guest-ram-recycle` exercises two preboot overwrite/revoke/retype
 cycles, complete zero verification, stale capability rejection and guest
 block I/O. This test is not a claim of live destroy/recreate, execution-object
