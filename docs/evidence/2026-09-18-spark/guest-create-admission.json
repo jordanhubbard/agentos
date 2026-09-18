@@ -1,0 +1,31 @@
+{
+  "qualification": "Stopped READY admission for guest CREATE",
+  "runtime_revision": "54975da528aef96e8e3a872d2c6f9b5d7368ffe2",
+  "host": "Spark AArch64",
+  "source_clean_during_tests": true,
+  "host_regression": {
+    "before": "Seven invalid-state cases failed with the prior runtime implementation",
+    "before_log_sha256": "35556582460c90a0c7c0df9a8eb9d31fe17d653a94f50b24f0302308f4899739",
+    "after": "make test-host passed, including invalid-state rejection without mutation and safe unstarted READY retry",
+    "after_log_sha256": "470bda774830820c34980ef142e6a586d8c2b2ccf1eeacde4c4025593389ae02"
+  },
+  "gate": {
+    "command": "make gate QEMU_TEST_SSH_PORT=12237",
+    "result": "PASS",
+    "log_sha256": "b69fac2a7d0fb02e9983397a3be3eed2c37d95704c6bc4726d11505d26cd1eaa"
+  },
+  "target": {
+    "command": "make test-guest-scheduling QEMU_TEST_SSH_PORT=12237",
+    "result": "PASS: explicit manager CREATE/BOOT, console I/O, destruction and stale-handle rejection",
+    "log_sha256": "69af76d65870e058b97bf407ecd722b475f96027b8bdb805054d6c005a3fb76f",
+    "serial_log_sha256": "f1fc69d91a5c24e1e9283cc35e1566b3f2e04366c0d28aae1cf49780a84b1230",
+    "agentos_image_sha256": "29652409fb6834aafeef076fc6d7474212809d8b3e862527af9dd92638d392ba",
+    "qemu_pid": 1350003,
+    "qemu_log_stem": "agentos-qemu-jyeRlf"
+  },
+  "limits": [
+    "Invalid CREATE states are covered by host execution of the production state machine; the target trial verifies valid managed startup and teardown",
+    "Primary preallocated execution objects only; no guest reconstruction or secondary placement qualification",
+    "Required CI, canonical integration and release remain pending"
+  ]
+}
