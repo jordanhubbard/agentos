@@ -103,8 +103,17 @@ is outside the launch-to-authentication timing boundary.
 The printed private `build/evidence/profile-seed-*` directory retains the
 identity, immutable seeded source and managed writable guest disk. Shared
 acquisition caches and the manually staged `seeded.raw` are not modified.
-This target currently qualifies a fresh boot; it does not automatically run
-the second cold boot or replace the required Debian baseline gates.
+This target qualifies a fresh boot. `make test-debian-nocloud-cold-boots`
+performs automatic seeding once and then two QEMU boots. It retains the first
+host-key receipt and requires that identity on the second boot, reuses the
+same writable disk, and refuses a changed source disk, resolved profile or
+agentOS image. Per-boot logs, host keys, timing and results, plus an aggregate
+`cold-boots.json`, remain in the printed evidence directory. A failed first
+boot prevents the second; a failed second boot prevents aggregate success.
+Both boots sync the guest before QEMU stops. This is not orderly guest shutdown,
+guest-slot recreation or concurrent-disk isolation, and does not itself promote
+the profile to the required baseline. The automatic second-boot path still
+requires live qualification.
 
 The host-only seed adapter `nocloud-debian-v1` declares repository-relative
 root and full-disk sources plus the root partition byte offset. Validation

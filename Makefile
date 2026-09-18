@@ -1288,6 +1288,14 @@ test-debian-nocloud-auto:
 	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os debian-arm64-nocloud \
 		--seed-profile --assert-agentos-virtio --ssh-port $(QEMU_TEST_SSH_PORT) --timeout-secs $(QEMU_TEST_TIMEOUT)
 
+.PHONY: test-debian-nocloud-cold-boots
+test-debian-nocloud-cold-boots: QEMU_TEST_TIMEOUT = 1200
+test-debian-nocloud-cold-boots: QEMU_TEST_SSH_PORT = 12222
+test-debian-nocloud-cold-boots:
+	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os debian-arm64-nocloud \
+		--seed-profile --assert-seeded-cold-boots --assert-agentos-virtio \
+		--ssh-port $(QEMU_TEST_SSH_PORT) --timeout-secs $(QEMU_TEST_TIMEOUT)
+
 test-debian-nocloud-ssh:
 	@test -n "$(SEEDED_SSH_KEY)" -a -n "$(QEMU_TEST_SSH_PORT)" || { echo 'Set SEEDED_SSH_KEY and QEMU_TEST_SSH_PORT'; exit 1; }
 	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os debian-arm64-nocloud \
