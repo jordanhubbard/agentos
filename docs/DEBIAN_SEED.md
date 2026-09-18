@@ -54,6 +54,18 @@ offset is 134217728 bytes. Its initial console boot check is
 Target boot and authentication qualification remain pending. This profile does
 not replace the existing `debian` baseline until parity is demonstrated.
 
+The preseeded ARM authentication gate is
+`make test-debian-nocloud-ssh SEEDED_SSH_KEY=/path/to/identity QEMU_TEST_SSH_PORT=12222 QEMU_TEST_TIMEOUT=1200`.
+It drains and retains the console through CC-PD, requires the profile's login
+markers and host-key report, then uses the same strict bounded SSH probe as
+Intel with an exact `aarch64` result. For a later boot of the same disk, pass
+`SEEDED_SSH_KNOWN_HOSTS` pointing to the first successful run's receipt.
+This path is implemented but not target-qualified. The first ARM kernel boot
+reached systemd and then emergency mode after its EFI partition device wait
+timed out; the gate correctly rejected that result. The partition was visible
+as `vda15`, so its systemd/udev readiness needs diagnosis before parity can be
+claimed.
+
 By default the output is an ext4 partition image. To produce a full raw disk,
 also supply `SEED_DISK_RAW` and `SEED_PARTITION_OFFSET`. For the pinned
 `debian-amd64.toml` image, use

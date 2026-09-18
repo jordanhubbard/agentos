@@ -369,6 +369,16 @@ pub fn run_x86_storage(timeout_secs: u64) -> anyhow::Result<()> {
 
 pub fn run(args: &TestArgs) -> anyhow::Result<()> {
     anyhow::ensure!(
+        args.seeded_ssh_key.is_none()
+            || (args.board == "qemu_virt_aarch64"
+                && args.ssh_port != 0
+                && args
+                    .seeded_ssh_key
+                    .as_ref()
+                    .is_some_and(|path| path.is_file())),
+        "seeded SSH proof requires an ARM profile, private-key file and nonzero --ssh-port"
+    );
+    anyhow::ensure!(
         args.x86_ssh_key.is_none()
             || (args.ssh_port != 0 && args.x86_ssh_key.as_ref().is_some_and(|p| p.is_file())),
         "Intel SSH proof requires a private-key file and nonzero --ssh-port"
@@ -726,6 +736,7 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
         .is_some_and(|assertion| assertion.devices.iter().any(|device| device == "net"));
     let ssh_port = if needs_host_net_stimulus
         || args.x86_ssh_key.is_some()
+        || args.seeded_ssh_key.is_some()
         || args.assert_live
         || args.assert_desktop
         || scenario_plan.is_some()
@@ -906,6 +917,25 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
                 &mut qemu,
                 ssh_key.as_ref().context("dual SSH key was not generated")?,
                 args.keep_running,
+            )
+        } else if let Some(key) = &args.seeded_ssh_key {
+            wait_for_all_markers(
+                &log_path,
+                &["[cc_pd] VirtIO serial ready"],
+                Duration::from_secs(args.timeout_secs),
+                &mut qemu,
+            )?;
+            seeded_ssh_via_cc(
+                &cc_sock,
+                &log_path,
+                profile_plan
+                    .as_ref()
+                    .context("seeded SSH requires a runtime profile")?,
+                key,
+                args.seeded_ssh_known_hosts.as_deref(),
+                ssh_port,
+                Duration::from_secs(args.timeout_secs),
+                &mut qemu,
             )
         } else if profile_plan
             .as_ref()
@@ -2130,6 +2160,102 @@ fn x86_console_host_key(text: &str) -> anyhow::Result<Option<String>> {
     Ok(found)
 }
 
+fn seeded_ssh_via_cc(
+    socket: &Path,
+    log: &Path,
+    profile: &HostProfilePlan,
+    key: &Path,
+    known: Option<&Path>,
+    port: u16,
+    timeout: Duration,
+    qemu: &mut Child,
+) -> anyhow::Result<String> {
+    anyhow::ensure!(
+        profile.architecture == "aarch64"
+            && profile.provision.is_empty()
+            && profile.console.interaction.is_empty(),
+        "seeded SSH requires an ARM profile without console provisioning or interactions"
+    );
+    let ssh = profile
+        .qemu
+        .as_ref()
+        .and_then(|q| q.ssh.as_ref())
+        .context("seeded profile requires host.qemu.ssh")?;
+    let deadline = Instant::now() + timeout;
+    let retained = known
+        .map(|path| x86_retained_host_key(path, port))
+        .transpose()?;
+    let mut cc = connect_cc_client(socket, timeout.min(Duration::from_secs(30)), qemu)?;
+    let mut transcript = String::new();
+    let mut output = std::fs::File::create(log.with_extension("console.log"))?;
+    let mut progress = Instant::now();
+    let markers = profile_console_markers(profile);
+    anyhow::ensure!(
+        !markers.is_empty(),
+        "seeded profile requires console login markers"
+    );
+    while Instant::now() < deadline {
+        ensure_qemu_running(qemu, "waiting for seeded guest console identity")?;
+        let chunk = match cc_log_stream_for_handle(&mut cc, 0, Some(profile)) {
+            Ok(chunk) => chunk,
+            Err(error) if cc.is_closed() => {
+                return Err(error).context("seeded CC transport closed")
+            }
+            Err(_) => {
+                std::thread::sleep(Duration::from_millis(250));
+                continue;
+            }
+        };
+        output.write_all(chunk.as_bytes())?;
+        transcript.push_str(&chunk);
+        anyhow::ensure!(
+            transcript.len() <= 1024 * 1024,
+            "seeded console exceeds 1 MiB"
+        );
+        reject_profile_console(Some(&profile.console), &transcript)?;
+        let login = profile
+            .console
+            .require
+            .iter()
+            .all(|marker| transcript.contains(marker))
+            && markers.iter().any(|marker| transcript.contains(marker));
+        if login {
+            let host_key = match &retained {
+                Some(value) => Some(value.clone()),
+                None => x86_console_host_key(&transcript)?,
+            };
+            if let Some(host_key) = host_key {
+                return seeded_ssh_proof(
+                    key,
+                    port,
+                    &host_key,
+                    log,
+                    deadline,
+                    &ssh.account,
+                    "aarch64",
+                );
+            }
+        }
+        if progress.elapsed() >= Duration::from_secs(30) {
+            println!(
+                "[xtask:test] seeded console: {} bytes; login={login}; tail:\n{}",
+                transcript.len(),
+                tail_chars(&transcript, 800)
+            );
+            progress = Instant::now();
+        }
+        std::thread::sleep(Duration::from_millis(if chunk.is_empty() {
+            250
+        } else {
+            10
+        }));
+    }
+    anyhow::bail!(
+        "seeded guest console identity timed out; see {}",
+        log.with_extension("console.log").display()
+    )
+}
+
 fn x86_retained_host_key(path: &Path, port: u16) -> anyhow::Result<String> {
     anyhow::ensure!(
         std::fs::metadata(path)?.len() <= 4096,
@@ -2154,12 +2280,14 @@ fn x86_retained_host_key(path: &Path, port: u16) -> anyhow::Result<String> {
     Ok(format!("ssh-ed25519 {}", fields[2]))
 }
 
-fn x86_ssh_proof(
+fn seeded_ssh_proof(
     key: &Path,
     port: u16,
     host_key: &str,
     log: &Path,
     deadline: Instant,
+    account: &str,
+    expected_arch: &str,
 ) -> anyhow::Result<String> {
     let known = log.with_extension("known_hosts");
     let mut known_file = std::fs::OpenOptions::new()
@@ -2208,7 +2336,8 @@ fn x86_ssh_proof(
             .arg(key)
             .arg("-p")
             .arg(port.to_string())
-            .args(["debian@127.0.0.1", "uname -m && sudo -n sync"])
+            .arg(format!("{account}@127.0.0.1"))
+            .arg("uname -m && sudo -n sync")
             .stdin(Stdio::null())
             .stdout(std::fs::File::create(&stdout_path)?)
             .stderr(std::fs::File::create(&stderr_path)?);
@@ -2226,17 +2355,17 @@ fn x86_ssh_proof(
         drop(child);
         if status.is_some_and(|s| s.success()) {
             anyhow::ensure!(
-                std::fs::read(&stdout_path)? == b"x86_64\n",
-                "Intel SSH architecture output mismatch"
+                std::fs::read(&stdout_path)? == format!("{expected_arch}\n").as_bytes(),
+                "seeded SSH architecture output mismatch"
             );
-            return Ok("Debian public-key SSH verified with console-pinned Ed25519 host key; x86_64 and sync succeeded".into());
+            return Ok(format!("Public-key SSH verified with pinned Ed25519 host key; {expected_arch} and sync succeeded"));
         }
         if Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(500));
         }
     }
     anyhow::bail!(
-        "Intel SSH proof timed out; retained attempts beside {}",
+        "Seeded SSH proof timed out; retained attempts beside {}",
         log.display()
     )
 }
@@ -2321,7 +2450,9 @@ fn x86_linux_login_probe(
                         let Some(host_key) = host_key else {
                             continue;
                         };
-                        return x86_ssh_proof(key, port, &host_key, log_path, deadline);
+                        return seeded_ssh_proof(
+                            key, port, &host_key, log_path, deadline, "debian", "x86_64",
+                        );
                     }
                     return Ok(
                         "Linux login prompt through canonical virtio-console and serial_virt"

@@ -98,6 +98,12 @@ pub struct TestArgs {
     /// Host TCP port forwarded to guest SSH; 0 disables SSH forwarding.
     #[arg(long, env = "AGENTOS_TEST_SSH_PORT", default_value_t = 0)]
     pub ssh_port: u16,
+    /// Authenticate a preseeded ARM guest using a host key reported through CC-PD.
+    #[arg(long, conflicts_with_all = ["assert_live", "assert_desktop", "x86_ssh_key"])]
+    pub seeded_ssh_key: Option<std::path::PathBuf>,
+    /// Pin the original host identity on a subsequent boot of the seeded disk.
+    #[arg(long, requires = "seeded_ssh_key")]
+    pub seeded_ssh_known_hosts: Option<std::path::PathBuf>,
     #[arg(long, default_value_t = 120)]
     pub timeout_secs: u64,
     #[arg(long)]
