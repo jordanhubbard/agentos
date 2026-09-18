@@ -1046,6 +1046,50 @@ bool aos_vmm_serial_detach(void)
     return true;
 }
 
+#ifdef AGENTOS_GUEST_QUEUE_RECYCLE_TEST
+#include "contracts/guest_queue_caps.h"
+#include "contracts/guest_ram_caps.h"
+static bool guest_queue_recycle_test(void)
+{
+    const size_t bytes = (size_t)1u << AOS_GUEST_QUEUE_POOL_BITS;
+    uintptr_t va = AOS_NET_SHMEM_VA;
+#ifdef AGENTOS_GUEST_SECONDARY
+    va += AOS_NET_CLIENT_STRIDE;
+#endif
+    volatile uint64_t *memory = (volatile uint64_t *)va;
+    unsigned count = AOS_GUEST_QUEUE_INPUT;
+#ifdef AGENTOS_GUEST_INPUT
+    count = AOS_GUEST_QUEUE_POOL_COUNT;
+#endif
+    /* The old network mapping is gone, but the VMM's own page tables remain.
+     * Reuse that address only after all service detach acknowledgments. */
+    for (unsigned kind = 0; kind < count; kind++) {
+        for (unsigned pass = 0; pass < 2; pass++) {
+            if (seL4_Untyped_Retype(AOS_GUEST_QUEUE_POOL_BASE + kind,
+                    seL4_ARM_LargePageObject, 0u, AOS_GUEST_RAM_SELF_CNODE,
+                    0u, 0u, AOS_GUEST_QUEUE_TEST_FRAME, 1u) != seL4_NoError)
+                return false;
+            if (seL4_ARM_Page_Map(AOS_GUEST_QUEUE_TEST_FRAME,
+                    AOS_GUEST_RAM_VMM_VSPACE, va, seL4_AllRights,
+                    seL4_ARM_Default_VMAttributes) != seL4_NoError) return false;
+            for (size_t i = 0; i < bytes / sizeof(*memory); i++) {
+                if (memory[i] != 0u) return false;
+                memory[i] = UINT64_C(0xcafe001100000001) ^ (i << 1u) ^ kind;
+            }
+            if (seL4_CNode_Revoke(AOS_GUEST_RAM_SELF_CNODE,
+                    AOS_GUEST_QUEUE_POOL_BASE + kind,
+                    AOS_GUEST_RAM_CNODE_BITS) != seL4_NoError) return false;
+            if (seL4_CNode_Copy(AOS_GUEST_RAM_SELF_CNODE,
+                    AOS_GUEST_QUEUE_TEST_COPY, AOS_GUEST_RAM_CNODE_BITS,
+                    AOS_GUEST_RAM_SELF_CNODE, AOS_GUEST_QUEUE_TEST_FRAME,
+                    AOS_GUEST_RAM_CNODE_BITS, seL4_AllRights) != seL4_FailedLookup)
+                return false;
+        }
+    }
+    return true;
+}
+#endif
+
 static bool guest_vmm_teardown(void)
 {
     bool done = aos_guest_teardown_step(&guest_teardown, g_guest_profile->ram_size);
@@ -1053,11 +1097,23 @@ static bool guest_vmm_teardown(void)
         guest_started = false;
         g_guest_startable = false;
     }
+#ifdef AGENTOS_GUEST_QUEUE_RECYCLE_TEST
+    static bool probe_attempted, probe_passed;
+    if (done && !probe_attempted) {
+        probe_attempted = true;
+        probe_passed = guest_queue_recycle_test();
+        microkit_dbg_puts(probe_passed
+            ? "guest queue recycle: zero pages and stale caps verified\n"
+            : "guest queue recycle: FAILED\n");
+    }
+    if (done && !probe_passed) return false;
+#endif
     if (done) microkit_dbg_puts("guest teardown: execution and RAM revoked\n");
     if (done) microkit_dbg_puts("guest teardown: private paging revoked\n");
     if (done) microkit_dbg_puts("guest teardown: network queues detached\n");
     if (done) microkit_dbg_puts("guest teardown: block queues detached\n");
     if (done) microkit_dbg_puts("guest teardown: serial queues detached\n");
+    if (done) microkit_dbg_puts("guest teardown: private queue pages revoked\n");
 #ifdef AGENTOS_GUEST_INPUT
     if (done) microkit_dbg_puts("guest teardown: input queues detached\n");
 #endif

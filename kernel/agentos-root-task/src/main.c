@@ -286,6 +286,39 @@ _Static_assert(CC_SC_BUDGET_US * 10u == CC_SC_PERIOD_US,
 
 #include "contracts/guest_ram_caps.h"
 #include "contracts/guest_paging_caps.h"
+#include "contracts/guest_queue_caps.h"
+_Static_assert(AOS_GUEST_QUEUE_POOL_BASE > AOS_GUEST_ASID_POOL_CAP &&
+               AOS_GUEST_QUEUE_POOL_BASE + AOS_GUEST_QUEUE_POOL_COUNT <= AOS_GUEST_QUEUE_TEST_FRAME &&
+               AOS_GUEST_QUEUE_TEST_COPY < AOS_GUEST_RAM_POOL_BASE,
+               "guest queue pool and test slots must not overlap other grants");
+#if defined(__aarch64__)
+static seL4_CPtr g_guest_queue_pools[2][AOS_GUEST_QUEUE_POOL_COUNT];
+#endif
+
+static seL4_Error allocate_guest_queue_frame(unsigned kind, unsigned client,
+                                            seL4_CPtr *frame)
+{
+#if defined(__aarch64__)
+    _Static_assert(seL4_ARCH_LargePageBits == AOS_GUEST_QUEUE_POOL_BITS,
+                   "one large queue frame per private pool");
+    if (kind >= AOS_GUEST_QUEUE_POOL_COUNT) return seL4_InvalidArgument;
+    if (client < 2u) {
+        seL4_CPtr *pool = &g_guest_queue_pools[client][kind];
+        seL4_Error err = ut_alloc_cap(seL4_UntypedObject,
+                                      AOS_GUEST_QUEUE_POOL_BITS, pool);
+        if (err != seL4_NoError) return err;
+        *frame = ut_alloc_slot();
+        if (*frame == seL4_CapNull) return seL4_NotEnoughMemory;
+        return seL4_Untyped_Retype(*pool, seL4_ARM_LargePageObject, 0u,
+            seL4_CapInitThreadCNode, 0u, 0u, *frame, 1u);
+    }
+#else
+    (void)kind;
+    (void)client;
+#endif
+    return ut_alloc_cap(seL4_ARCH_LargePageObject, 0u, frame);
+}
+
 #define AOS_MAX_GUEST_RAM_REGIONS 4u
 #define AOS_MAX_GUEST_LARGE_FRAMES AOS_GUEST_RAM_MAX_FRAMES
 
@@ -2254,7 +2287,7 @@ void root_task_main(const seL4_BootInfo *bi)
             return;
         }
     for (uint32_t f=0;f<INPUT_PEERS;++f)
-        if (ut_alloc_cap(seL4_ARM_LargePageObject,0u,&g_input_frames[f])!=seL4_NoError) {
+        if (allocate_guest_queue_frame(AOS_GUEST_QUEUE_INPUT,f,&g_input_frames[f])!=seL4_NoError) {
             dbg_puts("[rt] input queue allocation failed; refusing boot\n");
             return;
         }
@@ -2298,7 +2331,7 @@ void root_task_main(const seL4_BootInfo *bi)
                    "network queue pages must match the architecture large-page object");
     if (net_virt_index != SYSTEM_MAX_PDS) {
         for (uint32_t f = 0; f < AOS_NET_SHMEM_FRAMES; f++) {
-            if (ut_alloc_cap(seL4_ARCH_LargePageObject, 0u,
+            if (allocate_guest_queue_frame(AOS_GUEST_QUEUE_NET, f,
                              &g_net_shared_frame_caps[f]) != seL4_NoError) {
                 dbg_puts("[rt] network queue allocation failed; refusing partial boot\n");
                 return;
@@ -2307,7 +2340,9 @@ void root_task_main(const seL4_BootInfo *bi)
     }
     if (blk_virt_index != SYSTEM_MAX_PDS) {
         for (uint32_t f = 0; f < AOS_BLK_SHMEM_FRAMES; f++) {
-            if (ut_alloc_cap(seL4_ARCH_LargePageObject, 0u,
+            const uint32_t first = AOS_BLK_CLIENT_BASE / AOS_BLK_SHMEM_FRAME_SIZE;
+            if (allocate_guest_queue_frame(AOS_GUEST_QUEUE_BLOCK,
+                             f >= first ? f - first : 2u,
                              &g_blk_virt_frame_caps[f]) != seL4_NoError) {
                 dbg_puts("[rt] block queue allocation failed; refusing partial boot\n");
                 return;
@@ -2316,7 +2351,7 @@ void root_task_main(const seL4_BootInfo *bi)
     }
     if (serial_virt_index != SYSTEM_MAX_PDS) {
         for (uint32_t f = 0; f < AOS_SERIAL_FRAMES; f++) {
-            if (ut_alloc_cap(seL4_ARCH_LargePageObject, 0u,
+            if (allocate_guest_queue_frame(AOS_GUEST_QUEUE_SERIAL, f,
                              &g_serial_virt_frames[f]) != seL4_NoError) {
                 dbg_puts("[rt] serial queue allocation failed; refusing partial boot\n");
                 return;
@@ -3587,6 +3622,23 @@ void root_task_main(const seL4_BootInfo *bi)
                 dbg_puts("[rt] private guest paging delegation failed; stopping boot\n");
                 return;
             }
+            unsigned owner = pd_is_secondary_guest_vmm(pd) ? 1u : 0u;
+            unsigned queue_count = AOS_GUEST_QUEUE_INPUT;
+#ifdef AGENTOS_GUEST_INPUT
+            queue_count = AOS_GUEST_QUEUE_POOL_COUNT;
+#endif
+            for (unsigned kind = 0; kind < queue_count; kind++) {
+                seL4_CPtr *pool = &g_guest_queue_pools[owner][kind];
+                if (*pool == seL4_CapNull ||
+                    seL4_CNode_Move(pd_cnode, AOS_GUEST_QUEUE_POOL_BASE + kind,
+                        (uint8_t)pd->cnode_size_bits, seL4_CapInitThreadCNode,
+                        *pool, 64u) != seL4_NoError) {
+                    dbg_puts("[rt] private guest queue delegation failed; stopping boot\n");
+                    return;
+                }
+                *pool = seL4_CapNull;
+            }
+            dbg_puts("[rt] private guest queue pools delegated to owning VMM\n");
         }
 #endif
 #if defined(__x86_64__) && defined(AGENTOS_X86_VTX)

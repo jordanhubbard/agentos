@@ -46,6 +46,20 @@ Private paging revocation and the full OS gate passed at `d00759c`;
 records the console-proof target and retained management resources.
 Reconstruction remains pending.
 
+ARM guest network, block, serial and optional input queue frames now each
+come from a private 2 MiB untyped pool. Root moves its sole pool capability
+to the owning VMM. Once every service acknowledges detach, teardown revokes
+these pools before execution/RAM/paging revocation, removing all descendant
+frame capabilities and mappings, including root's originals. Empty pools
+remain bounded reconstruction authority; driver, native, operator and frontend
+frames are excluded. Graphics queues/surfaces and notifications remain separate.
+`make test-guest-queue-recycle` qualifies post-destruction retyping, complete
+zero checks, overwriting and stale-capability rejection for these pools.
+The full gate and console-profile qualification passed at `abcaeda`;
+[the receipt](evidence/2026-09-18-spark/guest-queue-pools.json) records the
+three exercised pools. Optional input-pool qualification remains pending.
+This does not implement guest recreation or establish peer continuity.
+
 AArch64 guest RAM is allocated from dedicated 2 MiB child untyped pools.
 Root installs the initial guest/VMM mappings, then moves each pool's sole
 capability to its owning VMM. That VMM also receives its own CNode and the
@@ -65,16 +79,15 @@ pointers, including any hub-pump entry, before replying. Subsequent wakeups
 cannot access the retired queues. Root-assigned badges authorize detach in
 the same way as attach; no new capability is granted. A retired client cannot
 reattach without a future generation/reset contract, so old driver RX data
-cannot be silently reused for a new guest. The driver vNIC, shared-page
-capabilities and other service attachments remain management resources;
-network detach alone does not prove their reclamation or guest recreation.
+cannot be silently reused for a new guest. The driver vNIC remains allocated;
+network detach alone does not prove its reclamation or guest recreation.
 Block contract v5 likewise retires service queue pointers only after both
 request and response queues are valid and empty. The virtualizer serializes
 detach with its synchronous driver transfers, so an acknowledgment cannot
 race an outstanding driver copy. The VMM drains accepted requests before
 asking for detach; BUSY or malformed replies keep teardown retryable and
 prevent capability revocation. Detach does not issue a flush or establish
-durability. Media ownership, queue-frame capabilities and the per-client RAM
+durability. Media ownership and the per-client RAM
 fallback disk remain allocated; retired clients cannot silently reattach.
 Serial contract v3 adds terminal VMM-role detach under the existing guest
 badge authority. The service stops both transfer directions, clears its guest
@@ -82,8 +95,8 @@ channel pointers and marks the frontend detached before acknowledging. It
 does not wait for unread terminal bytes, which may be abandoned at destruction.
 The VMM clears its local serial endpoint after acknowledgment; failed replies
 keep teardown retryable before capability revocation. Peer and operator
-channels retain their attachments. Serial queue-page capabilities remain
-allocated, and reattachment still requires an explicit generation/reset path.
+channels retain their attachments. Serial queue pages are revoked only after
+all services detach; reattachment requires an explicit generation/reset path.
 Input uses a one-shot detach handshake at the end of each existing VMM-owned
 event page. The stopped VMM publishes a versioned request and signals the
 service. Before acknowledging, `input_virt` removes that client from private
@@ -92,7 +105,7 @@ release-store acknowledgment is its final access to the retired page; later
 frontend requests for that client are denied. This control path progresses
 even when frontend response queues are full. Page ownership supplies authority
 without a new endpoint or peer-page grant. The VMM waits for acknowledgment
-before capability revocation; the input page itself remains allocated. Event
+before capability revocation, which then removes the input page. Event
 wire layouts stay unchanged, and recreation still needs a generation/reset
 contract rather than reusing a retired acknowledgment.
 Queued guest faults are not serviced during teardown. Initialization rejects

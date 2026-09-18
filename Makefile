@@ -1351,6 +1351,10 @@ test-guest-console:
 test-guest-teardown:
 	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os ubuntu --timeout-secs $(QEMU_TEST_TIMEOUT) --assert-emulated-console --assert-guest-teardown --ssh-port $(QEMU_TEST_SSH_PORT)
 
+.PHONY: test-guest-queue-recycle
+test-guest-queue-recycle:
+	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os ubuntu --timeout-secs $(QEMU_TEST_TIMEOUT) --assert-emulated-console --assert-guest-teardown --assert-guest-queue-recycle --ssh-port $(QEMU_TEST_SSH_PORT)
+
 test-console-backpressure:
 	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os ubuntu --timeout-secs $(QEMU_TEST_TIMEOUT) --assert-emulated-console --assert-console-backpressure --ssh-port $(QEMU_TEST_SSH_PORT)
 

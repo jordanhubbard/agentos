@@ -146,6 +146,9 @@ pub struct TestArgs {
     /// Recycle all guest RAM twice before boot, then prove guest block I/O.
     #[arg(long, requires = "assert_emulated_blk")]
     pub assert_guest_ram_recycle: bool,
+    /// After destruction, retype private queue pools and verify zero pages and deleted caps.
+    #[arg(long, requires = "assert_guest_teardown")]
+    pub assert_guest_queue_recycle: bool,
     /// Stop block admission with a pending response and require complete drain.
     #[arg(long, requires = "assert_emulated_blk")]
     pub assert_guest_block_drain: bool,
