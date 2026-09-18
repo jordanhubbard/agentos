@@ -4,7 +4,7 @@
   "target_host": "madmax",
   "target_architecture": "Intel x86_64 nested VMX",
   "local_validation_host": "Spark ARM64",
-  "runtime_revision": "1c034a8",
+  "runtime_revision": "bb19f81",
   "artifacts": {
     "image": "debian-13-generic-amd64-20260831-2587.qcow2",
     "image_sha512": "5a069019420fb9441ad4f8004c661fadb747edd5662ca54a17c8f923dee7d717e21dbdaa4ba72d6fce7f920e0217f0a9af382298a7d46ed4bc9dc33ac19181b6",
@@ -128,6 +128,18 @@
       "gate_log_sha256": "c76678f4f9ac189389a1aaccac7ad4d58ca198da6e4b97306d642df2cc987e83",
       "console_sha256": "2bc4aaa4b03f65f393faa6519d6b695d1222478c265a7ac405bb30b13b23d068",
       "scope": "Intel independently acquired and verified profile artifacts and supplied the command line and RAM; no explicit boot artifact or RAM overrides. Compiled manifest is host evidence, not target-enforced policy."
+    },
+    {
+      "attempt": 18,
+      "runtime_revision": "bb19f81",
+      "result": "PASS: profile-selected Intel login with embedded manifest binding enabled",
+      "root_task_elf_sha256": "ed474da37bae5b19f2a4a7ce7ab14508be3f73dd013902ad098888b09518ee37",
+      "manifest_sha256": "017349c0828e75becb96bff72161682f7100b8b04f1c3233c77d19cd2f846b88",
+      "initrd_sha256": "abd60fc57af0f02f62c119b149b7aaae0f978023fd7517ab3bc0a2535e839884",
+      "command_line_sha256": "c03169c91e93f9abbbe31ba270cd69086fea2567f2b6b8e129ea36d22c2aaa00",
+      "gate_log_sha256": "cc1fae8b82491d0d27f46a8f574998ee9e235faf7ede74b7ec0218b7b8725733",
+      "console_sha256": "5a29082515c5ccbf2d8382e5a67acf76d523e91e9f662edbfe4a2f390426fe0c",
+      "scope": "VMM validates manifest policy against provisioned resources, matches complete command line and recomputes kernel/initrd hashes before fw_cfg publication. Firmware owns image relocation. This is not SSH, lifecycle or secure-boot qualification."
     }
   ],
   "handoff_diagnosis": {
@@ -137,6 +149,12 @@
     "ssh_failure": "Attempt 12 retained guest memory contains sshd: no hostkeys available -- exiting. Provisioning remains required."
   },
   "regressions": {
+    "profile_binding_intel_storage_revision": "bb19f81",
+    "profile_binding_intel_storage_result": "PASS: existing fixture console/network/block checks and full disk write/fsync persistence over two platform cold boots",
+    "profile_binding_intel_storage_log_sha256": "3c917dc8ed2745285eeb68d3935f95e04d6452eaa4278893b3f97a6d398012e4",
+    "profile_binding_spark_gate_revision": "bb19f81",
+    "profile_binding_spark_gate_result": "PASS: full make gate, including golden SHA-256 binding test and rejection of mutated resources, boot bytes and hashes",
+    "profile_binding_spark_gate_log_sha256": "35c686ae520313377e5d08b38abdea7dadc6429f9e6ec8dc9dde2ed11c32eb8c",
     "profile_selector_spark_gate_revision": "1c034a8",
     "profile_selector_spark_gate_result": "PASS: full make gate, including 92 Rust tests and existing ARM guest I/O gates",
     "profile_selector_spark_gate_log_sha256": "f4969b3b56dc27f6c0c3c43c31829167db447213cca90a8caeaca01a277f9549",
@@ -159,7 +177,7 @@
   "limitations": [
     "Debian root mount and console login prompt are observed; networking, SSH and lifecycle qualification remain unproven",
     "The 1 GiB experiment did not establish that memory shortage caused the empty console",
-    "The harness selects verified profile boot artifacts; target-side manifest enforcement is still pending",
-    "No release claim; x86 target profile consumption, provisioning and release qualification remain incomplete"
+    "UEFI owns artifact relocation; profile binding checks resource bounds and boot input identities, not secure-boot authenticity",
+    "No release claim; provisioning and full v0.4 release qualification remain incomplete"
   ]
 }
