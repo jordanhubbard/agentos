@@ -4992,10 +4992,17 @@ fn prove_profile_input_pass(
     };
     // The disposable qualification guest owns this fixed path. Remove it before
     // creation so an existing symlink cannot redirect the upload.
+    println!("[xtask:test] input proof: uploading helper; release_mode={release}");
     let mut upload = ChildGuard::new(command(
         "timeout 120 sh -c 'umask 077; rm -f /tmp/agentos-input-probe && cat > /tmp/agentos-input-probe && chmod 700 /tmp/agentos-input-probe'"
     )?.stdin(Stdio::from(std::fs::File::open(helper)?)).stdout(Stdio::null()).spawn()?);
-    wait_input_child(&mut upload, qemu, 150)?;
+    wait_input_child(&mut upload, qemu, 150).with_context(|| {
+        format!(
+            "input helper upload failed; stderr={}",
+            stderr_path.display()
+        )
+    })?;
+    println!("[xtask:test] input proof: helper upload complete; starting guest checker");
     let mut probe = ChildGuard::new(
         command("timeout 130 /tmp/agentos-input-probe")?
             .stdin(Stdio::null())
@@ -5017,6 +5024,7 @@ fn prove_profile_input_pass(
         receive.recv_timeout(Duration::from_secs(60))?? == "AGENTOS_INPUT_READY",
         "input probe did not become ready"
     );
+    println!("[xtask:test] input proof: guest checker ready");
     let batches: &[&[&str]] = &[
         &["keyboard", "1", "183", "1"],
         &["keyboard", "1", "183", "0"],
@@ -5049,14 +5057,25 @@ fn prove_profile_input_pass(
                 .spawn()?,
         );
         // agentctl validates the exact response and never retries input batches.
-        wait_input_child(&mut submit, qemu, 30)?;
+        wait_input_child(&mut submit, qemu, 30).with_context(|| {
+            format!(
+                "input batch {index} failed; stderr={}",
+                stderr_path.display()
+            )
+        })?;
     }
     anyhow::ensure!(
         receive.recv_timeout(Duration::from_secs(120))??
             == "AGENTOS_INPUT_PASS keyboard=4 pointer=7",
         "guest input event mismatch"
     );
-    wait_input_child(&mut probe, qemu, 15)?;
+    println!("[xtask:test] input proof: exact guest event sequence matched");
+    wait_input_child(&mut probe, qemu, 15).with_context(|| {
+        format!(
+            "input checker exit failed; stderr={}",
+            stderr_path.display()
+        )
+    })?;
     let receipt = serde_json::json!({
         "schema": "agentos.guest_input.v1", "status": "pass", "profile": profile.id,
         "agentos_revision": agentos_revision(repo)?, "source_tree_clean": agentos_worktree_clean(repo)?,
