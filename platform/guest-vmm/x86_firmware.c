@@ -81,6 +81,23 @@ static bool lifecycle_started;
 static aos_guest_teardown_t teardown_state;
 static seL4_CPtr block_proof_ep;
 static uint8_t block_boot_data[AOS_BLK_TRANSFER_SIZE];
+extern const uint8_t _binary_x86_firmware_bin_start[], _binary_x86_firmware_bin_end[];
+#if defined(AGENTOS_X86_MANAGED_START) && !defined(AGENTOS_X86_USERSPACE_PROOF)
+static struct {
+    aos_x86_config_t *config, initial_config;
+    aos_x86_apic_t *apic;
+    aos_x86_ioapic_t *ioapic;
+    aos_serial_endpoint_t *serial;
+    aos_x86_vmenter_entry_t *entry;
+    uint64_t *started;
+    uint32_t *timer_quantum;
+    unsigned *exits;
+} reset_context;
+static uint32_t reset_generation, reset_backend_attempts;
+static bool reset_failed, reset_cleanup_pending, reset_entry_pending;
+static bool control_reset(void);
+static void reset_abort(void);
+#endif
 
 static uint32_t serial_output(uint8_t *bytes, uint32_t capacity, void *context)
 {
@@ -203,10 +220,108 @@ static uint64_t timestamp(void)
     return ((uint64_t)hi << 32) | lo;
 }
 
+#if defined(AGENTOS_X86_MANAGED_START) && !defined(AGENTOS_X86_USERSPACE_PROOF)
+/* A failed REBIND reply can be ambiguous: the service may already own the
+ * transferred pool. Keep that ownership until a validated DETACH reply. Do
+ * not guess its generation or allow another CREATE after an internal error. */
+static bool reset_detach(seL4_CPtr ep, uint32_t opcode, uint32_t version,
+                          uint32_t request_bytes, uint32_t reply_bytes)
+{
+    const uint32_t args[4] = {version, 0u, 0u, 0u};
+    sel4_msg_t req = {.opcode = opcode, .length = request_bytes}, rep = {0};
+    __builtin_memcpy(req.data, args, request_bytes);
+    sel4_call(ep, &req, &rep);
+    return rep.opcode == SEL4_ERR_OK && rep.length == reply_bytes &&
+        msg_u32(&rep, 0u) == 0u && msg_u32(&rep, 4u) == version;
+}
+
+static void reset_abort(void)
+{
+    serial_attached = false;
+    aos_x86_virtio_retire();
+    if ((reset_backend_attempts & 1u) &&
+        !reset_detach(PD_CNODE_SLOT_NET_VIRT_EP, NET_VIRT_OP_DETACH,
+            NET_VIRT_CONTRACT_VERSION, sizeof(net_virt_attach_req_t),
+            sizeof(net_virt_attach_reply_t))) return;
+    reset_backend_attempts &= ~1u;
+    if ((reset_backend_attempts & 2u) &&
+        !reset_detach(PD_CNODE_SLOT_BLK_VIRT_EP, BLK_VIRT_OP_DETACH,
+            BLK_VIRT_CONTRACT_VERSION, sizeof(blk_virt_attach_req_t),
+            sizeof(blk_virt_attach_reply_t))) return;
+    reset_backend_attempts &= ~2u;
+    if ((reset_backend_attempts & 4u) &&
+        !reset_detach(PD_CNODE_SLOT_SERIAL_VIRT_EP, SERIAL_VIRT_OP_DETACH,
+            SERIAL_VIRT_CONTRACT_VERSION, sizeof(serial_virt_attach_req_t),
+            sizeof(serial_virt_attach_reply_t))) return;
+    reset_backend_attempts &= ~4u;
+    for (unsigned i = 0; i < AOS_GUEST_QUEUE_INPUT; i++) {
+        if (seL4_CNode_Revoke(AOS_GUEST_RAM_SELF_CNODE,
+                AOS_GUEST_QUEUE_POOL_BASE + i, AOS_GUEST_RAM_CNODE_BITS)
+                != seL4_NoError) return;
+    }
+    if (seL4_CNode_Revoke(AOS_GUEST_RAM_SELF_CNODE,
+            AOS_X86_GUEST_OBJECT_POOL_CAP, AOS_GUEST_RAM_CNODE_BITS)
+            != seL4_NoError || !aos_vmm_guest_ram_release(AOS_X86_FIRMWARE_RAM)) return;
+    reset_cleanup_pending = false;
+}
+
+static bool control_reset(void)
+{
+    if (reset_failed || !reset_context.config || reset_generation == UINT32_MAX ||
+            !teardown_state.execution_released || !teardown_state.ram_released ||
+            !teardown_state.paging_released) return false;
+    const uint32_t generation = ++reset_generation;
+    net_virt_rebind_reply_t net;
+    blk_virt_rebind_reply_t block;
+    seL4_Word failed_field = 0u;
+    if (aos_x86_guest_objects_rebuild() != seL4_NoError ||
+        !aos_x86_guest_memory_rebuild(_binary_x86_firmware_bin_start,
+            (size_t)(_binary_x86_firmware_bin_end - _binary_x86_firmware_bin_start),
+            AOS_X86_FIRMWARE_RAM)) goto failed;
+    *reset_context.config = reset_context.initial_config;
+    *reset_context.started = timestamp();
+    aos_x86_apic_init(reset_context.apic, *reset_context.started);
+    if (!aos_x86_ioapic_init(reset_context.ioapic, 1u) ||
+        !aos_x86_virtio_init(reset_context.ioapic, (void *)AOS_X86_FIRMWARE_RAM_VA,
+            AOS_X86_FIRMWARE_RAM)) goto failed;
+    reset_backend_attempts |= 1u;
+    if (!aos_net_virt_rebind_with_info(0u, generation, &net) ||
+        !aos_vmm_virtio_net_adopt(0u, (void *)AOS_NET_SHMEM_VA, &net) ||
+        !aos_vmm_virtio_net_host_ready()) goto failed;
+    reset_backend_attempts |= 2u;
+    if (!aos_blk_virt_rebind_with_info(0u, generation, &block) ||
+        !aos_vmm_virtio_blk_adopt(0u, (void *)AOS_BLK_SHMEM_VA, &block)) goto failed;
+    reset_backend_attempts |= 4u;
+    if (!aos_serial_virt_rebind(0u, generation) ||
+        !aos_vmm_virtio_console_recreate()) goto failed;
+    *reset_context.serial = (aos_serial_endpoint_t){
+        .channel = aos_serial_channel_at(AOS_SERIAL_SHMEM_VA)};
+    if (aos_x86_guest_objects_bind() != seL4_NoError ||
+        aos_x86_firmware_reset(reset_context.entry, &failed_field) != seL4_NoError)
+        goto failed;
+    *reset_context.timer_quantum = 0u;
+    *reset_context.exits = 0u;
+    timer_exits = injections = eois = timer_shift = halt_exits = 0u;
+    for (unsigned i = 0; i < AOS_X86_FIRMWARE_SNAPSHOT_WORDS; i++) snapshot[i] = 0u;
+    for (unsigned i = 0; i < AOS_X86_FIRMWARE_CHAIN_WORDS; i++) halt_chain[i] = 0u;
+    for (unsigned i = 0; i < 3u; i++) boot_reads[i] = 0u;
+    last_qualification = 0u;
+    have_wait_snapshot = serial_wake_received = false;
+    teardown_state = (aos_guest_teardown_t){0};
+    reset_backend_attempts = 0u;
+    serial_attached = true;
+    reset_entry_pending = true;
+    return true;
+failed:
+    reset_failed = reset_cleanup_pending = true;
+    reset_abort();
+    return false;
+}
+#endif
+
 #ifdef AGENTOS_X86_USERSPACE_PROOF
 bool aos_x86_lifecycle_ack;
 bool aos_x86_lifecycle_boot_ack;
-extern const uint8_t _binary_x86_firmware_bin_start[], _binary_x86_firmware_bin_end[];
 /* Qualification diagnostics only: no IPC or scheduling until terminal report. */
 static uint32_t teardown_proof_stage;
 /* Run only after the independent client has destroyed the guest and checked
@@ -828,6 +943,17 @@ _Noreturn void aos_x86_firmware_run(seL4_CPtr ep, aos_x86_vmenter_entry_t entry)
         .rom_size=AOS_X86_FIRMWARE_BYTES,
     };
     unsigned exits = 0;
+#if defined(AGENTOS_X86_MANAGED_START) && !defined(AGENTOS_X86_USERSPACE_PROOF)
+    reset_context.config = &config;
+    reset_context.initial_config = config;
+    reset_context.apic = &apic;
+    reset_context.ioapic = &ioapic;
+    reset_context.serial = &serial_endpoint;
+    reset_context.entry = &entry;
+    reset_context.started = &started;
+    reset_context.timer_quantum = &timer_quantum;
+    reset_context.exits = &exits;
+#endif
     uint32_t lifecycle_state = GUEST_STATE_READY;
     lifecycle_started = false;
     const aos_guest_vmm_runtime_t runtime = {
@@ -836,6 +962,9 @@ _Noreturn void aos_x86_firmware_run(seL4_CPtr ep, aos_x86_vmenter_entry_t entry)
         .start = control_start,
         .suspend = control_transition, .resume = control_transition,
         .teardown = control_teardown,
+#if defined(AGENTOS_X86_MANAGED_START) && !defined(AGENTOS_X86_USERSPACE_PROOF)
+        .reset = control_reset,
+#endif
     };
 #ifdef AGENTOS_X86_USERSPACE_PROOF
     seL4_Send(AOS_X86_LIFECYCLE_PROBE_CAP,
@@ -867,11 +996,21 @@ _Noreturn void aos_x86_firmware_run(seL4_CPtr ep, aos_x86_vmenter_entry_t entry)
     for (;;) {
         enum aos_x86_control_result control;
         do {
+#if defined(AGENTOS_X86_MANAGED_START) && !defined(AGENTOS_X86_USERSPACE_PROOF)
+            if (reset_cleanup_pending) reset_abort();
+#endif
             control = aos_x86_control_step(&runtime, control_wake, &serial_endpoint);
             if (control == AOS_X86_CONTROL_ERROR)
                 stop(ep, AOS_X86_VTX_PROOF_FAIL, 0x435452u, 0u, lifecycle_state);
             if (control == AOS_X86_CONTROL_STOPPED) service_serial(&serial_endpoint);
         } while (control != AOS_X86_CONTROL_RUNNING);
+#if defined(AGENTOS_X86_MANAGED_START) && !defined(AGENTOS_X86_USERSPACE_PROOF)
+        if (reset_entry_pending) {
+            reset_entry_pending = false;
+            returned = aos_x86_vm_start(&entry);
+            continue;
+        }
+#endif
         seL4_Word rip = returned.words[SEL4_VMENTER_CALL_EIP_MR];
         if (returned.result == SEL4_VMENTER_RESULT_NOTIF && returned.badge &&
             !(returned.badge & ~(SERIAL_VIRT_VMM_WAKE_BADGE | BLK_VIRT_VMM_WAKE_BADGE |

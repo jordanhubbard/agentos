@@ -309,9 +309,9 @@ $(BUILD_DIR)/x86_rtc.o: $(REPO_ROOT_MK)/platform/guest-vmm/x86_rtc.c
 	@mkdir -p $(BUILD_DIR)
 	$(CC) -c $(CFLAGS) $< -o $@
 $(BUILD_DIR)/guest_vmm_primary.elf: $(BUILD_DIR)/x86_rtc.o
-$(BUILD_DIR)/x86_apic.o: $(REPO_ROOT_MK)/platform/guest-vmm/x86_apic.c
+$(BUILD_DIR)/x86_apic.o: $(REPO_ROOT_MK)/platform/guest-vmm/x86_apic.c Makefile
 	@mkdir -p $(BUILD_DIR)
-	$(CC) -c $(CFLAGS) $< -o $@
+	$(CC) -c $(CFLAGS) -mgeneral-regs-only $< -o $@
 $(BUILD_DIR)/x86_memory.o: $(REPO_ROOT_MK)/platform/guest-vmm/x86_memory.c
 	@mkdir -p $(BUILD_DIR)
 	$(CC) -c $(CFLAGS) $< -o $@
@@ -358,7 +358,8 @@ $(BUILD_DIR)/x86_net_rebind.o: $(REPO_ROOT_MK)/platform/net-virt/rebind_client.c
 	@mkdir -p $(BUILD_DIR)
 	$(CC) -c $(X86_SERIAL_CFLAGS) -mgeneral-regs-only $< -o $@
 $(BUILD_DIR)/guest_vmm_primary.elf: $(BUILD_DIR)/x86_net_rebind.o
-ifeq ($(X86_USERSPACE_PROOF),1)
+# Retain the verified native firmware source for managed guest reconstruction.
+ifeq ($(X86_MANAGED_START),1)
 $(BUILD_DIR)/guest_vmm_primary.elf: $(BUILD_DIR)/x86_firmware.o
 endif
 $(BUILD_DIR)/x86_control.o: $(REPO_ROOT_MK)/platform/guest-vmm/x86_control.c Makefile
@@ -386,9 +387,9 @@ $(BUILD_DIR)/x86_console_backend.o: $(REPO_ROOT_MK)/libvmm/src/virtio/console.c 
 $(BUILD_DIR)/x86_vmm_console.o: $(REPO_ROOT_MK)/platform/serial-virt/vmm_virtio_console.c Makefile
 	@mkdir -p $(BUILD_DIR)
 	$(CC) -c $(X86_SERIAL_CFLAGS) -mgeneral-regs-only $< -o $@
-$(BUILD_DIR)/x86_serial_endpoint.o: $(REPO_ROOT_MK)/platform/serial-virt/endpoint.c
+$(BUILD_DIR)/x86_serial_endpoint.o: $(REPO_ROOT_MK)/platform/serial-virt/endpoint.c Makefile
 	@mkdir -p $(BUILD_DIR)
-	$(CC) -c $(CFLAGS) $< -o $@
+	$(CC) -c $(CFLAGS) -mgeneral-regs-only $< -o $@
 $(BUILD_DIR)/guest_vmm_primary.elf: $(BUILD_DIR)/x86_console_backend.o $(BUILD_DIR)/x86_vmm_console.o $(BUILD_DIR)/x86_serial_endpoint.o $(BUILD_DIR)/serial_pump.pd.o
 $(BUILD_DIR)/x86_block_backend.o: $(REPO_ROOT_MK)/libvmm/src/virtio/block.c Makefile
 	@mkdir -p $(BUILD_DIR)
