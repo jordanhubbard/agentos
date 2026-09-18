@@ -356,16 +356,34 @@ static bool terminal_teardown_proof(void)
         if (!aos_serial_virt_rebind(0u, pass + 1u)) return false;
         aos_serial_channel_t rebuilt_serial = aos_serial_channel_at(AOS_SERIAL_SHMEM_VA);
         static const uint8_t message[] = "x86-recreated-serial\n";
+        teardown_proof_stage = 121u + pass * 100u;
         if (aos_serial_queue_write(&rebuilt_serial.from_guest, message,
                 sizeof(message) - 1u) != AOS_SERIAL_PUMP_OK) return false;
         seL4_Signal(PD_CNODE_SLOT_SERIAL_VIRT_NOTIFY);
+        teardown_proof_stage = 122u + pass * 100u;
         unsigned waits = 0;
         while (__atomic_load_n(&rebuilt_serial.from_guest.queue->head, __ATOMIC_ACQUIRE)
                 != sizeof(message) - 1u && waits++ < 100000u) seL4_Yield();
-        if (waits >= 100000u || !serial_virt_client_detach(0u)) return false;
+        if (waits >= 100000u) return false;
+        teardown_proof_stage = 123u + pass * 100u;
+        serial_virt_attach_req_t serial_args = {
+            SERIAL_VIRT_CONTRACT_VERSION, 0u, SERIAL_VIRT_ROLE_VMM};
+        sel4_msg_t serial_request = {.opcode = SERIAL_VIRT_OP_DETACH,
+            .length = sizeof(serial_args)}, serial_reply = {0};
+        __builtin_memcpy(serial_request.data, &serial_args, sizeof(serial_args));
+        sel4_call(PD_CNODE_SLOT_SERIAL_VIRT_EP, &serial_request, &serial_reply);
+        if (serial_reply.opcode != SEL4_ERR_OK ||
+            serial_reply.length != sizeof(serial_virt_attach_reply_t) ||
+            msg_u32(&serial_reply, 4u) != SERIAL_VIRT_CONTRACT_VERSION) return false;
+        if (msg_u32(&serial_reply, 0u) != SERIAL_VIRT_OK) {
+            teardown_proof_stage = 3200u + pass * 100u + msg_u32(&serial_reply, 0u);
+            return false;
+        }
+        teardown_proof_stage = 124u + pass * 100u;
         if (seL4_CNode_Revoke(AOS_GUEST_RAM_SELF_CNODE,
                 AOS_GUEST_QUEUE_POOL_BASE + AOS_GUEST_QUEUE_SERIAL,
                 AOS_GUEST_RAM_CNODE_BITS) != seL4_NoError) return false;
+        teardown_proof_stage = 125u + pass * 100u;
         if (seL4_CNode_Copy(AOS_GUEST_RAM_SELF_CNODE, AOS_GUEST_QUEUE_TEST_COPY,
                 AOS_GUEST_RAM_CNODE_BITS, AOS_GUEST_RAM_SELF_CNODE,
                 AOS_GUEST_QUEUE_FRAME_BASE + AOS_GUEST_QUEUE_SERIAL,
