@@ -57,8 +57,11 @@ budget and priority, then deletes every temporary copy, failing closed on
 lookup, configuration or cleanup errors. Root's initial configuration remains
 in place. Reconstruction must publish fresh objects before replying to CREATE;
 calling back into the synchronously waiting manager would deadlock. The
-contract is `contracts/guest_scheduling_caps.h`. Target qualification of this
-runtime scheduling path remains pending; the VMM reset callback is still absent.
+contract is `contracts/guest_scheduling_caps.h`. Primary managed-boot scheduling
+and the full regression gate passed at `9303460`;
+[the receipt](evidence/2026-09-18-spark/guest-scheduling-broker.json) records the
+existing-object scope. Secondary CPU placement and reconstructed objects remain
+unqualified; the VMM reset callback is still absent.
 `make test-guest-scheduling` uses `GUEST_MANAGED_BOOT=1` to defer the single
 guest, leaving no automatic handle-zero guest. It requires explicit manager
 CREATE/BOOT, bidirectional console proof, destruction and stale-handle
