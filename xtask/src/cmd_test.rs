@@ -1243,11 +1243,33 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
             &mut qemu,
         )
     } else if args.assert_emulated_net {
+        let start = Instant::now();
+        let timeout = Duration::from_secs(args.timeout_secs);
+        let profile = profile_plan
+            .as_ref()
+            .context("network proof requires a guest profile")?;
+        anyhow::ensure!(
+            profile.console.probe_line.is_some() && profile.console.probe_marker.is_some(),
+            "network proof requires an explicit guest console probe"
+        );
+        wait_for_guest_console_login_via_cc(
+            &cc_sock,
+            0,
+            &profile.id,
+            Some(profile),
+            timeout,
+            &mut qemu,
+            None,
+        )?;
         println!(
             "[xtask:test] Waiting for emulated virtio-net guest proof in {}...",
             log_path.display()
         );
-        wait_for_emulated_net(&log_path, Duration::from_secs(args.timeout_secs), &mut qemu)
+        wait_for_emulated_net(
+            &log_path,
+            timeout.saturating_sub(start.elapsed()),
+            &mut qemu,
+        )
     } else if args.assert_emulated_blk {
         println!(
             "[xtask:test] Waiting for emulated virtio-blk guest proof in {}...",
@@ -6406,6 +6428,31 @@ mod tests {
             profile.console.probe_marker.as_deref(),
             Some("agentos-live-net-proof")
         );
+    }
+
+    #[test]
+    fn buildroot_network_probe_requires_successful_roundtrip() {
+        let profile = test_profile("buildroot");
+        let command = profile.console.probe_line.as_deref().unwrap();
+        let marker = profile.console.probe_marker.as_deref().unwrap();
+        assert!(
+            !command.contains(marker),
+            "command echo must not satisfy the proof"
+        );
+        for (configure, ping, success) in [(0, 0, true), (1, 0, false), (0, 1, false)] {
+            let script = format!(
+                "ifconfig() {{ return {configure}; }}; ping() {{ return {ping}; }}; {command}"
+            );
+            let output = std::process::Command::new("sh")
+                .args(["-c", &script])
+                .output()
+                .unwrap();
+            assert_eq!(output.status.success(), success);
+            assert_eq!(
+                String::from_utf8(output.stdout).unwrap().contains(marker),
+                success
+            );
+        }
     }
 
     #[test]

@@ -1,0 +1,35 @@
+{
+  "qualification": "Completed guest RX accounting and unassisted guest network roundtrip",
+  "runtime_revision": "13a5c282df812bc0b23d29ebc336a43d0a9eb4f3",
+  "host": "Spark AArch64",
+  "source_clean_during_tests": true,
+  "target": {
+    "command": "make test-guest-net",
+    "result": "PASS, exit 0; CC login, eth0 configuration and successful guest ping required before device markers",
+    "log_sha256": "2b106c0b1e2e16ad408a4112d6a4bb0308f4a7864b48afb416d76f9ad916ad65",
+    "serial_log_sha256": "3bbc7bb75db2caefb698c5fa40c2e6fc14207c268c9431e0f54704d6d484362d",
+    "qemu_pid": 1862445,
+    "qemu_log_stem": "agentos-qemu-lK5uFj"
+  },
+  "gate": {
+    "command": "make gate",
+    "result": "PASS, exit 0; host suite, aarch64 boot, x86 reduced boot, guest net/block/console I/O",
+    "log_sha256": "40d97dcd054616ebda0228225a40bf321c6a7ebb2846fa52a9ba30e945b31974"
+  },
+  "regressions": [
+    "Production virtio-net backend: exact guest payload and used ring, absent buffers, drops, quiescence, repeated calls and index wrap",
+    "Guest probe success marker absent from command echo; failed interface configuration or ping prevents success"
+  ],
+  "diagnosis": [
+    "Old RX counter counted pending backend packets repeatedly even without a guest receive descriptor",
+    "Buildroot left eth0 down; manual configuration let the c4e5de5 diagnostic gate proceed",
+    "That manually assisted gate is not qualification; both tests above ran unassisted"
+  ],
+  "limits": [
+    "RX completion counts publication to the guest ring, not application consumption",
+    "Ping supplies separate guest-observed roundtrip evidence",
+    "No resolution of the separate graphics SSH timeout is claimed",
+    "The x86 check is reduced boot, not Intel VMX qualification",
+    "Required CI, canonical integration and v0.4 release remain pending"
+  ]
+}
