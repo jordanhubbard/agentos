@@ -51,8 +51,8 @@ directory is `build/guest-images/debian-arm64-nocloud`; use `root.ext4` and
 `disk.raw` there as seed inputs and `seeded.raw` as output. The root partition
 offset is 134217728 bytes. Its initial console boot check is
 `make test BOARD=qemu_virt_aarch64 GUEST_OS=debian-arm64-nocloud QEMU_TEST_TIMEOUT=1200`.
-Target boot and authentication qualification remain pending. This profile does
-not replace the existing `debian` baseline until parity is demonstrated.
+Fresh-disk boot and key-only authentication passed on Spark. This profile does
+not replace the existing `debian` baseline until full parity is demonstrated.
 
 The preseeded ARM authentication gate is
 `make test-debian-nocloud-ssh SEEDED_SSH_KEY=/path/to/identity SEEDED_DIRECTORY=build/evidence/arm-seeded-boot QEMU_TEST_SSH_PORT=12222 QEMU_TEST_TIMEOUT=1200`.
@@ -65,11 +65,15 @@ For a later boot of the same disk, pass that same `SEEDED_DIRECTORY` and
 `SEEDED_SSH_KNOWN_HOSTS` pointing to the first successful run's receipt. The
 source image must remain unchanged; a first boot refuses to overwrite an
 existing copy. No QEMU process may still be using the retained disk.
-This path is implemented but not target-qualified. The first ARM kernel boot
-reached systemd and then emergency mode after its EFI partition device wait
-timed out; the gate correctly rejected that result. The partition was visible
-as `vda15`, so its systemd/udev readiness needs diagnosis before parity can be
-claimed.
+The ARM profile gives device discovery a bounded 600-second wait under TCG.
+With the stock deadline, systemd entered emergency mode before udev's startup
+prerequisites completed. The longer wait preserved the stock EFI mount: the
+partition was discovered, checked and mounted, then Debian reached login and
+passed pinned-key SSH with exact `aarch64` output and a successful disk sync.
+The first SSH attempt timed out; the second succeeded. Failed attempts and
+the successful boot are recorded in
+`docs/evidence/2026-09-17-spark/arm-nocloud-boot-attempts.json`.
+Same-disk cold-boot identity and timing parity remain pending.
 
 By default the output is an ext4 partition image. To produce a full raw disk,
 also supply `SEED_DISK_RAW` and `SEED_PARTITION_OFFSET`. For the pinned

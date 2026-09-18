@@ -2,7 +2,7 @@
   "schema": 1,
   "host": "sparky",
   "profile": "debian-arm64-nocloud.toml",
-  "status": "not-qualified",
+  "status": "fresh-disk-ssh-passed-cold-boot-pending",
   "attempts": [
     {
       "attempt": 3,
@@ -30,7 +30,21 @@
       "observation": "Adding systemd.default_device_timeout_sec=600 changed the generated DTB. Decompiled old and new DTBs differ only in that bootargs addition; the old pinned checksum correctly rejected the modified artifact.",
       "experimental_dtb_sha256": "6813337fe174ba659170286dcbc345fda396277e2d8f40eaf401d7fee1184584",
       "lifecycle": "Gate exited 2; QEMU was never launched"
+    },
+    {
+      "attempt": 5,
+      "revision": "a44c704 runtime with 600-second device timeout and updated DTB pin; 7a7b6f9 adds evidence only",
+      "status": "fresh-disk-ssh-passed",
+      "disk": "build/evidence/arm-seeded-boot5/guest.raw",
+      "gate_log": "/tmp/agentos-arm-nocloud-boot5.log",
+      "gate_log_sha256": "16cd3f3def24aa831c5147b60ccc4dbe0ae6dcc3c3b031dadaed0deba378bc8c",
+      "console": "build/tmp/agentos-qemu-dvqzXe.console.log",
+      "console_sha256": "6f4207f92f79cf35b8a6fdfc7acd21e468a226642ec7c37912a58969022b07e1",
+      "known_hosts_sha256": "aa9e8c7bf9a6db3eaeb7be2f13c35f4f6aa1ef430d407fab361c08201a465697",
+      "ssh_stdout_sha256": "5121ae59314a84da7b4d9587374398f1afa2000b243b3e54f491adefaac54f92",
+      "observation": "Udev started, EFI partition was discovered, checked and mounted, and local-fs.target was reached. Stock cloud-init configured networking and Debian reached login. First SSH attempt timed out; second passed using the console-pinned Ed25519 host key, returned exact aarch64 newline and completed sudo -n sync.",
+      "lifecycle": "Gate exited 0 and QEMU stopped"
     }
   ],
-  "limits": "These failures and diagnostics do not establish ARM NoCloud login, SSH, cold-boot identity, timing parity, or release readiness. A fresh-disk experiment with the updated DTB pin is pending."
+  "limits": "Fresh-disk login and key-only SSH are established for this profile on Spark. Same-disk cold-boot identity, timing parity, graphics integration and release readiness remain unproven."
 }
