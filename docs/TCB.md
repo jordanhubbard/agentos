@@ -67,6 +67,16 @@ It uses the same frontend queues and guest registry, with no new capabilities.
 Legacy slot mode remains supported. Recreation, concurrent native GUI streams,
 long-session transcript rollover and graphical Intel GUI acceptance remain pending.
 
+The x86 firmware VMM receives a dedicated ASID pool for its EPT namespace at
+boot, retained outside the revocable VCPU/EPT object pool. Root assigns the
+initial EPT through that private pool and moves its capability to the VMM;
+the system-wide ASID controller remains with root. The bounded reconstruction
+helper can retype stopped VCPU/EPT objects and map their intermediate tables.
+Its caller must revoke partial objects before retrying. It does not bind a
+TCB, map guest RAM or start execution. The terminal qualification now exercises
+two reconstruction/revocation cycles; target acceptance of this extension is
+pending, and full guest recreation still needs memory, queues and boot reset.
+
 The userspace qualification adds `x86_lifecycle_probe`, an ordinary client
 with its VMM service endpoint and a send-only failure-report cap. Root rejects
 that cap's nonzero badge on the success path. It receives no device, IRQ, guest memory

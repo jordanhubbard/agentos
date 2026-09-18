@@ -33,6 +33,7 @@ extern const uint8_t _binary_x86_boot_profile_bin_start[], _binary_x86_boot_prof
 #include <libvmm/virtio/gpa.h>
 #include "contracts/x86_guest_memory_caps.h"
 #include "contracts/guest_queue_caps.h"
+#include "x86_guest_objects.h"
 
 #define VCPU AOS_GUEST_VCPU_CAP_BASE
 const char vmm_pd_name[] = "guest_vmm_x86";
@@ -251,6 +252,24 @@ static bool terminal_teardown_proof(void)
                         AOS_GUEST_QUEUE_TEST_FRAME, AOS_GUEST_RAM_CNODE_BITS,
                         seL4_AllRights) != seL4_FailedLookup) return false;
             }
+        }
+        /* Rebuild actual stopped VCPU/EPT objects after complete revocation.
+         * This validates retained private allocation/ASID authority, not a
+         * recreated executing guest: no TCB is bound and no RAM is mapped. */
+        if (aos_x86_guest_objects_rebuild() != seL4_NoError) return false;
+        const seL4_Word test_rip = 0x123400u + pass;
+        seL4_X86_VCPU_WriteVMCS_t wrote =
+            seL4_X86_VCPU_WriteVMCS(VCPU, 0x681eu, test_rip);
+        seL4_X86_VCPU_ReadVMCS_t read = seL4_X86_VCPU_ReadVMCS(VCPU, 0x681eu);
+        if (wrote.error || read.error || read.value != test_rip) return false;
+        if (seL4_CNode_Revoke(AOS_GUEST_RAM_SELF_CNODE,
+                AOS_X86_GUEST_OBJECT_POOL_CAP, AOS_GUEST_RAM_CNODE_BITS)
+                != seL4_NoError) return false;
+        for (unsigned i = 0; i < 2u; i++) {
+            if (seL4_CNode_Copy(AOS_GUEST_RAM_SELF_CNODE, AOS_GUEST_QUEUE_TEST_COPY,
+                    AOS_GUEST_RAM_CNODE_BITS, AOS_GUEST_RAM_SELF_CNODE,
+                    stale[i], AOS_GUEST_RAM_CNODE_BITS, seL4_AllRights)
+                    != seL4_FailedLookup) return false;
         }
     }
     return true;

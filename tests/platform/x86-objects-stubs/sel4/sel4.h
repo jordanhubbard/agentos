@@ -14,6 +14,10 @@ typedef int seL4_Error;
 #define seL4_X86_EPTPDPTObject 12u
 #define seL4_X86_EPTPDObject 13u
 #define seL4_X86_LargePageObject 14u
+#define seL4_X86_EPT_Default_VMAttributes 6u
 seL4_Error seL4_Untyped_Retype(seL4_CPtr, seL4_Word, seL4_Word,
     seL4_CPtr, seL4_Word, seL4_Word, seL4_Word, seL4_Word);
+seL4_Error seL4_X86_ASIDPool_Assign(seL4_CPtr, seL4_CPtr);
+seL4_Error seL4_X86_EPTPDPT_Map(seL4_CPtr, seL4_CPtr, seL4_Word, seL4_Word);
+seL4_Error seL4_X86_EPTPD_Map(seL4_CPtr, seL4_CPtr, seL4_Word, seL4_Word);
 #endif

@@ -1473,7 +1473,7 @@ static seL4_CPtr schedcontrol_for_node(const seL4_BootInfo *bi, seL4_Word node)
 }
 #endif
 
-#if defined(__aarch64__)
+#if defined(__aarch64__) || defined(AGENTOS_X86_FIRMWARE_RESET)
 static seL4_Error create_guest_asid_pool(seL4_CPtr *asid_pool)
 {
     seL4_CPtr backing = seL4_CapNull;
@@ -1481,10 +1481,17 @@ static seL4_Error create_guest_asid_pool(seL4_CPtr *asid_pool)
     if (err != seL4_NoError) return err;
     *asid_pool = ut_alloc_slot();
     if (*asid_pool == seL4_CapNull) return seL4_NotEnoughMemory;
+#if defined(__aarch64__)
     return seL4_ARM_ASIDControl_MakePool(seL4_CapASIDControl, backing,
         seL4_CapInitThreadCNode, *asid_pool, 64u);
+#else
+    return seL4_X86_ASIDControl_MakePool(seL4_CapASIDControl, backing,
+        seL4_CapInitThreadCNode, *asid_pool, 64u);
+#endif
 }
+#endif
 
+#if defined(__aarch64__)
 static seL4_Error setup_vmm_guest_vcpu(const pd_desc_t *pd,
                                         uint32_t         pd_index,
                                         seL4_CPtr        pd_cnode,
@@ -1779,13 +1786,10 @@ static seL4_Error setup_x86_firmware(const pd_desc_t *pd, uint32_t pd_index,
         (void)cap_acct_record(object_pool, objects[i],
             aos_x86_guest_object_type(i), pd_index, pd->name);
     const seL4_Word attr = seL4_X86_EPT_Default_VMAttributes;
-    err = seL4_X86_ASIDPool_Assign(seL4_CapInitThreadASIDPool, objects[1]);
+    seL4_CPtr guest_asid_pool = seL4_CapNull;
+    err = create_guest_asid_pool(&guest_asid_pool);
     if (err != seL4_NoError) return err;
-    err = seL4_X86_EPTPDPT_Map(objects[2], objects[1], 0u, attr);
-    if (err != seL4_NoError) return err;
-    err = seL4_X86_EPTPD_Map(objects[3], objects[1], 0u, attr);
-    if (err != seL4_NoError) return err;
-    err = seL4_X86_EPTPD_Map(objects[4], objects[1], 0xc0000000u, attr);
+    err = aos_x86_guest_objects_map(guest_asid_pool, objects);
     if (err != seL4_NoError) return err;
 
     _Static_assert(seL4_ARCH_LargePageBits == AOS_GUEST_RAM_FRAME_BITS,
@@ -1858,6 +1862,9 @@ static seL4_Error setup_x86_firmware(const pd_desc_t *pd, uint32_t pd_index,
         *pool = seL4_CapNull;
     }
     dbg_puts("[rt] x86 private device queue pools delegated to owning VMM\n");
+    err = seL4_CNode_Move(pd_cnode, AOS_X86_GUEST_ASID_POOL_CAP,
+        (uint8_t)pd->cnode_size_bits, seL4_CapInitThreadCNode, guest_asid_pool, 64u);
+    if (err != seL4_NoError) return err;
     err = seL4_X86_VCPU_SetTCB(objects[0], vmm_tcb);
     if (err != seL4_NoError) return err;
     err = seL4_TCB_SetEPTRoot(vmm_tcb, objects[1]);
