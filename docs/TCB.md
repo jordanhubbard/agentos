@@ -77,9 +77,16 @@ the binary CC gate passed two pinned Debian login/SSH/input/destroy cycles in
 one seL4 boot with distinct public handles and stale-handle rejection; full
 Spark and host gates also passed. The
 [managed recreation receipt](evidence/2026-09-18-spark/x86-managed-recreation.json)
-records the test-harness failure and correction. Integrated failure injection,
-the intermittent serial qualification failure and native GUI recreation
-acceptance remain outstanding; this is not v0.4 release acceptance.
+records the test-harness failure and correction. The production reconstruction
+coordinator now has sanitizer-backed host failure injection at all eleven
+construction stages, three detach boundaries and five resource-release
+boundaries. It retains ambiguous REBIND ownership and resumes partial cleanup
+at the failed release without publishing readiness. At `3ea3554`, the full
+host/Spark gates and managed Intel two-boot regression passed again; see the
+[transaction receipt](evidence/2026-09-18-spark/x86-recreation-transaction.json).
+Native transport fault injection is not claimed. The intermittent serial
+qualification failure and native GUI recreation acceptance remain outstanding;
+this is not v0.4 release acceptance.
 
 The x86 firmware VMM receives a dedicated ASID pool for its EPT namespace at
 boot, retained outside the revocable VCPU/EPT object pool. Root assigns the
