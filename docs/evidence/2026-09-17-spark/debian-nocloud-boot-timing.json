@@ -1,0 +1,32 @@
+{
+  "agentos_image_sha256": "4050f7274f47eff8a19f4b943caad885b1ea2c14608c7c048679edc4ddb576b4",
+  "agentos_revision": "22a22b392e263d12ec485ddb094d97136083e2b7",
+  "board": "qemu_virt_aarch64",
+  "boundary": "host QEMU launch request to completed authenticated SSH proof",
+  "elapsed_ms": 787025,
+  "excludes": [
+    "artifact acquisition",
+    "build",
+    "persistent media preparation"
+  ],
+  "guest_bundle_sha256": "d29b97d44173ce93d8dacce6b9e464185fe1856e9ea521cd89a9c06b5db24458",
+  "host_arch": "aarch64",
+  "host_backed_virtio": true,
+  "host_os": "linux",
+  "includes": [
+    "host scheduling",
+    "QEMU startup",
+    "agentOS boot",
+    "guest boot",
+    "console provisioning",
+    "SSH authentication"
+  ],
+  "persistent_second_boot": false,
+  "profile": "debian-nocloud-aarch64",
+  "qemu_config_sha256": "57f7f302b54baa5f4e5ed25d67f3877ada0e947b76445c72f978786a63f537a6",
+  "qualification_status": "passed",
+  "schema": "agentos.guest_boot_timing.v2",
+  "serial_log": "/tmp/agentos-v04-x86-notifications/build/tmp/agentos-qemu-mHMpvC.log",
+  "source_tree_clean": true,
+  "status": "ssh_authenticated"
+}

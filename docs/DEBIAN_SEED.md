@@ -85,8 +85,13 @@ preparation are excluded. A receipt is marked passed only after the canonical
 host-backed net, block and bidirectional console checks succeed. Cold-boot
 receipts are marked separately. The timing comparison accepts both Debian
 profiles, requires matching revisions and QEMU configurations, and rejects
-dirty-tree receipts. Fresh Debian and Ubuntu measurements are needed after
-the timing harness change; older receipts remain historical evidence.
+dirty-tree receipts. Matched measurements at clean revision `22a22b3` passed:
+Debian took 787.025 seconds and Ubuntu took 1478.667 seconds. Both passed the
+canonical I/O assertions; these are individual runs, not a performance
+threshold qualification. Receipts are retained in
+`docs/evidence/2026-09-17-spark/nocloud-boot-timing-comparison.json`; older
+receipts remain historical evidence. Ubuntu's boot warnings and failed
+Debian attempts remain recorded alongside the successful measurements.
 
 By default the output is an ext4 partition image. To produce a full raw disk,
 also supply `SEED_DISK_RAW` and `SEED_PARTITION_OFFSET`. For the pinned

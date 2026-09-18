@@ -61,5 +61,25 @@
       "lifecycle": "Gate exited 0 and QEMU stopped"
     }
   ],
-  "limits": "Fresh-disk and same-disk cold-boot login and key-only SSH with retained host identity are established for this profile on Spark. Authenticated timing receipts, timing parity, graphics integration and release readiness remain unproven."
+  "measured_followup": {
+    "attempt": 7,
+    "revision": "22a22b392e263d12ec485ddb094d97136083e2b7",
+    "status": "authenticated-timing-and-canonical-io-passed",
+    "disk": "build/evidence/arm-seeded-boot7/guest.raw",
+    "timing_receipt": "debian-nocloud-boot-timing.json",
+    "gate_log": "/tmp/agentos-arm-nocloud-boot7.log",
+    "gate_log_sha256": "3328918e0df16d4bdaa4fedf123f13dc06644d679246f62353d4dae31f4e60e3",
+    "console_sha256": "a1e3d2df3e7dd7de211341522c398de2aaf6131899815c0b826f8f49d914efcb",
+    "known_hosts_sha256": "a130c9e4b523fbee7a3568c71edf643ce4d170b68682058c485415272e6761a6",
+    "observation": "SSH attempt two passed after attempt one timed out. Exact aarch64 output and sync succeeded. Canonical host-backed network, block and bidirectional console assertions passed. Launch-to-authentication was 787025ms; preparation excluded. Gate exited0 and QEMU stopped."
+  },
+  "ubuntu_comparison": {
+    "receipt": "nocloud-boot-timing-comparison.json",
+    "ubuntu_timing_receipt": "ubuntu-boot-timing.json",
+    "gate_log": "/tmp/agentos-ubuntu-timing-22a22b3.log",
+    "gate_log_sha256": "fd8d7428452b22434848565ac19d54ff47fcdabd06900f1e50e82c31053e854f",
+    "observation": "Ubuntu passed console probing, eight provisioning steps, authenticated SSH and canonical host-backed net/block/console checks. Launch-to-authentication was 1478667ms. The comparator accepted matching clean revision, QEMU configuration, phase and timing boundary. Gate exited0 and QEMU stopped.",
+    "diagnostics": "The Ubuntu log retains a udev queue timeout, hostname/certificate warnings, stream-fd errors and a missing FUSE-device warning before reaching its console hook. The measurement includes those delays."
+  },
+  "limits": "Fresh-disk and same-disk cold-boot login and key-only SSH with retained host identity are established for this profile on Spark. Matched first-boot timing and canonical I/O receipts are retained; these are individual runs with no performance threshold claim. Integrated graphics, lifecycle/resource isolation and release readiness remain unproven."
 }
