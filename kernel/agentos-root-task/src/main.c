@@ -3060,8 +3060,11 @@ void root_task_main(const seL4_BootInfo *bi)
          * at 0x08040000. Without this pass-through mapping the guest faults as
          * soon as it writes GICC_PMR during IRQ setup.
          */
-        if (g_gic_vcpu_frame_cap != seL4_CapNull &&
-            pd_is_guest_vmm(pd)) {
+        if (pd_is_guest_vmm(pd)) {
+            if (g_gic_vcpu_frame_cap == seL4_CapNull) {
+                dbg_puts("[rt] missing guest GIC vCPU frame; refusing boot\n");
+                return;
+            }
             seL4_Word gic_copy = ut_alloc_slot();
             seL4_Error gic_err = seL4_NotEnoughMemory;
             if (gic_copy != seL4_CapNull) {
@@ -3081,6 +3084,10 @@ void root_task_main(const seL4_BootInfo *bi)
             dbg_puts("[rt] VMM GIC vCPU map err=");
             dbg_hex((seL4_Word)gic_err);
             dbg_puts("\n");
+            if (gic_err != seL4_NoError) {
+                dbg_puts("[rt] guest GIC vCPU mapping failed; refusing boot\n");
+                return;
+            }
         }
 #endif
 
