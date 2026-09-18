@@ -76,6 +76,16 @@ void aos_guest_vmm_loop(seL4_CPtr endpoint, seL4_CPtr reply_cap,
 #else
             info = seL4_Recv(endpoint, &badge);
 #endif
+        } else if (*ops->guest_state == GUEST_STATE_DESTROYING ||
+                   *ops->guest_state == GUEST_STATE_DEAD) {
+            /* A fault queued before suspension cannot restart MMIO work
+             * after backend quiescence or touch revoked execution caps.
+             * Leave its sender blocked; teardown revokes the stopped TCB. */
+#ifdef CONFIG_KERNEL_MCS
+            info = seL4_Recv(endpoint, &badge, reply_cap);
+#else
+            info = seL4_Recv(endpoint, &badge);
+#endif
         } else {
             seL4_MessageInfo_t reply = ops->fault(badge, info);
 #ifdef CONFIG_KERNEL_MCS

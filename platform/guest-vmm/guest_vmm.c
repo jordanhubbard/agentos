@@ -418,6 +418,7 @@ void pd_main(seL4_CPtr my_ep, seL4_CPtr ns_ep) { guest_vmm_main(my_ep, ns_ep); }
 #include <platform/guest_profile.h>
 #include <platform/guest_vmm_loop.h>
 #include <platform/guest_vmm_runtime.h>
+#include <platform/guest_teardown.h>
 #include <platform/vmm_virtio_net.h>
 #include <platform/net_layout.h>
 #include <platform/vmm_virtio_blk.h>
@@ -593,6 +594,8 @@ uintptr_t gpu_tensor_buf_vaddr     __attribute__((weak));
 static aos_serial_endpoint_t serial_endpoint;
 static bool serial_attached;
 static bool     guest_started      = false;
+static bool guest_initializing = true;
+static aos_guest_teardown_t guest_teardown;
 static const aos_guest_profile_manifest_t *g_guest_profile;
 static aos_guest_boot_plan_t g_guest_boot_plan;
 static vcpu_time_state_t g_guest_time_state;
@@ -1028,6 +1031,17 @@ static void guest_vmm_quiesce_timer(void)
     vmm_vcpu_arm_ack_vppi(GUEST_BOOT_VCPU_ID, GUEST_VTIMER_IRQ);
 }
 
+static bool guest_vmm_teardown(void)
+{
+    bool done = aos_guest_teardown_step(&guest_teardown, g_guest_profile->ram_size);
+    if (guest_teardown.execution_released) {
+        guest_started = false;
+        g_guest_startable = false;
+    }
+    if (done) LOG_VMM("guest teardown: execution and RAM revoked\n");
+    return done;
+}
+
 static bool guest_vmm_push_input(uint32_t event_type, const uint8_t *bytes,
                                  uint32_t length)
 {
@@ -1108,6 +1122,15 @@ static seL4_MessageInfo_t guest_vmm_rpc(seL4_MessageInfo_t info)
     sel4_msg_t rep = {0};
     _sel4_mrs_to_msg(&req);
 
+    /* Media staging can receive lifecycle IPC while init still holds RAM
+     * pointers. Do not allow teardown or boot to re-enter initialization. */
+    if (guest_initializing || g_guest_profile == NULL) {
+        rep.opcode = GUEST_ERR_NOT_READY;
+        _sel4_msg_to_mrs(&rep);
+        return seL4_MessageInfo_new((seL4_Word)rep.opcode, 0, 0,
+                                    (seL4_Word)_SEL4_MR_COUNT);
+    }
+
     const aos_guest_vmm_runtime_t runtime = {
         .os_type = g_guest_profile->control_type,
         .guest_id = 0u,
@@ -1117,6 +1140,7 @@ static seL4_MessageInfo_t guest_vmm_rpc(seL4_MessageInfo_t info)
         .suspend = guest_vmm_suspend_guest_tcb,
         .resume = guest_vmm_resume_guest_tcb,
         .quiesce_timer = guest_vmm_quiesce_timer,
+        .teardown = guest_vmm_teardown,
         .push_input = guest_vmm_push_input,
         .drain_console = guest_vmm_drain_console,
     };
@@ -1738,6 +1762,7 @@ void guest_vmm_main(seL4_CPtr ep, seL4_CPtr reply_cap)
     g_vmm_listen_ep = ep;
     /* Run init() — sets up guest images, GIC, virtio IRQs, starts guest */
     init();
+    guest_initializing = false;
 
     const aos_guest_vmm_loop_ops_t loop_ops = {
         .guest_state = &g_guest_state,

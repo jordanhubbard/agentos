@@ -195,7 +195,7 @@ VMM_PD_ENTRY_OBJ   := $(BUILD_DIR)/pd_entry.$(VMM_SLOT).vmm.o
 VMM_VIRTIO_NET_OBJ := $(BUILD_DIR)/vmm_virtio_net.$(VMM_SLOT).o
 GPA_TRANSLATE_OBJ  := $(BUILD_DIR)/gpa_translate.$(VMM_SLOT).o
 VMM_GUEST_RAM_OBJ  := $(BUILD_DIR)/vmm_guest_ram.$(VMM_SLOT).o
-GUEST_VMM_RUNTIME_OBJ := $(BUILD_DIR)/guest_vmm_runtime.$(VMM_SLOT).o
+GUEST_VMM_RUNTIME_OBJ := $(BUILD_DIR)/guest_vmm_runtime.$(VMM_SLOT).o $(BUILD_DIR)/guest_teardown.$(VMM_SLOT).o
 GUEST_SERIAL_OBJS := $(BUILD_DIR)/serial_pump.$(VMM_SLOT).o $(BUILD_DIR)/serial_endpoint.$(VMM_SLOT).o
 GUEST_VMM_LOOP_OBJ := $(BUILD_DIR)/guest_vmm_loop.$(VMM_SLOT).o
 GUEST_PROFILE_VALIDATE_OBJ := $(BUILD_DIR)/guest_profile_validate.$(VMM_SLOT).o
@@ -256,10 +256,16 @@ $(VMM_GUEST_RAM_OBJ): $(AGENTOS_ROOT)/platform/guest-ram/vmm_guest_ram.c $(VMM_C
 	@echo "[VMM] Compiling vmm_guest_ram.c..."
 	clang $(VMM_CFLAGS) -c -o $@ $<
 
-$(GUEST_VMM_RUNTIME_OBJ): $(AGENTOS_ROOT)/platform/guest-vmm/runtime.c $(VMM_CONFIG_STAMP) \
+$(BUILD_DIR)/guest_vmm_runtime.$(VMM_SLOT).o: $(AGENTOS_ROOT)/platform/guest-vmm/runtime.c $(VMM_CONFIG_STAMP) \
                          $(AGENTOS_ROOT)/platform/include/platform/guest_vmm_runtime.h
 	@mkdir -p $(BUILD_DIR)
 	@echo "[VMM] Compiling shared guest VMM runtime..."
+	clang $(VMM_CFLAGS) -c -o $@ $<
+
+$(BUILD_DIR)/guest_teardown.$(VMM_SLOT).o: $(AGENTOS_ROOT)/platform/guest-vmm/teardown.c $(VMM_CONFIG_STAMP) \
+                         $(AGENTOS_ROOT)/platform/include/platform/guest_teardown.h \
+                         $(KERNEL_SRC_DIR)/include/contracts/guest_execution_caps.h
+	@mkdir -p $(BUILD_DIR)
 	clang $(VMM_CFLAGS) -c -o $@ $<
 
 $(BUILD_DIR)/serial_pump.$(VMM_SLOT).o: $(AGENTOS_ROOT)/platform/serial-virt/pump.c $(VMM_CONFIG_STAMP)

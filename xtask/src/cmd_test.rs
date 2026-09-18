@@ -1514,6 +1514,10 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
         );
     }
 
+    if result.is_ok() && args.assert_guest_teardown {
+        result = verify_guest_teardown(&cc_sock, &log_path, &mut qemu);
+    }
+
     let mut desktop_evidence = None;
     let mut desktop_tunnel = None;
     if result.is_ok() && args.assert_desktop {
@@ -5374,9 +5378,9 @@ fn wait_for_dual_guest_consoles_via_cc(
     let ssh = wait_for_scenario_ssh(scenario, ssh_key, Duration::from_secs(600), qemu)?;
 
     if !keep_running {
-        destroy_guest_via_cc(&mut boot_cc, deferred_handle)
+        destroy_guest_via_cc(&mut boot_cc, deferred_handle, Some(&deferred.profile))
             .with_context(|| format!("failed to destroy {}", deferred.profile.id))?;
-        destroy_guest_via_cc(&mut boot_cc, lead_handle)
+        destroy_guest_via_cc(&mut boot_cc, lead_handle, Some(&lead.profile))
             .with_context(|| format!("failed to destroy {}", lead.profile.id))?;
         for handle in [lead_handle, deferred_handle, u32::MAX] {
             let reply = boot_cc.call(MSG_CC_GUEST_STATUS, handle, 0, 0, &[])?;
@@ -5635,22 +5639,65 @@ fn cc_send_input_frame(
     }
 }
 
-fn destroy_guest_via_cc(cc: &mut CcClient, guest_handle: u32) -> anyhow::Result<()> {
-    let reply = cc
-        .call(
-            MSG_CC_DESTROY_GUEST,
-            guest_handle,
-            GUEST_DESTROY_NORMAL,
-            0,
-            &[],
-        )
-        .context("MSG_CC_DESTROY_GUEST failed")?;
-    anyhow::ensure!(
-        reply.mr[0] == CC_OK,
-        "MSG_CC_DESTROY_GUEST returned ok={}",
-        reply.mr[0]
-    );
-    Ok(())
+fn verify_guest_teardown(
+    cc_sock: &Path,
+    log_path: &Path,
+    qemu: &mut Child,
+) -> anyhow::Result<String> {
+    let mut cc = CcClient::connect(cc_sock)?;
+    let status = cc.call(MSG_CC_GUEST_STATUS, 0, 0, 0, &[])?;
+    anyhow::ensure!(status.mr[0] == CC_OK, "boot guest absent before teardown");
+    destroy_guest_via_cc(&mut cc, 0, None)?;
+    for opcode in [
+        MSG_CC_GUEST_STATUS,
+        MSG_CC_RESUME_GUEST,
+        MSG_CC_SUSPEND_GUEST,
+    ] {
+        let reply = cc.call(opcode, 0, 0, 0, &[])?;
+        anyhow::ensure!(
+            reply.mr[0] == CC_ERR_BAD_HANDLE,
+            "destroyed guest accepted opcode {opcode:#x}: {}",
+            reply.mr[0]
+        );
+    }
+    wait_for_all_markers(
+        log_path,
+        &["guest teardown: execution and RAM revoked"],
+        Duration::from_secs(10),
+        qemu,
+    )?;
+    Ok("running guest destroyed; execution/RAM revoked and stale lifecycle handle rejected".into())
+}
+
+fn destroy_guest_via_cc(
+    cc: &mut CcClient,
+    guest_handle: u32,
+    profile: Option<&HostProfilePlan>,
+) -> anyhow::Result<()> {
+    let deadline = Instant::now() + Duration::from_secs(120);
+    loop {
+        let reply = cc
+            .call(
+                MSG_CC_DESTROY_GUEST,
+                guest_handle,
+                GUEST_DESTROY_NORMAL,
+                0,
+                &[],
+            )
+            .context("MSG_CC_DESTROY_GUEST failed")?;
+        if reply.mr[0] == CC_OK {
+            return Ok(());
+        }
+        anyhow::ensure!(
+            reply.mr[0] == CC_ERR_RELAY_FAULT && Instant::now() < deadline,
+            "MSG_CC_DESTROY_GUEST returned ok={} before drain completed",
+            reply.mr[0]
+        );
+        // Consume copied output so a partially drained console can finish.
+        // This also separates retries from CC's identical-request replay cache.
+        let _ = cc_log_stream_for_handle(cc, guest_handle, profile)?;
+        std::thread::sleep(Duration::from_millis(100));
+    }
 }
 
 fn lifecycle_guest_via_cc(

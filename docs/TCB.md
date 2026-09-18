@@ -27,7 +27,8 @@ existing execution-capability slots. Revoking this pool can remove the guest
 objects and root's original descendant caps without revoking the VMM's own
 thread or any peer guest. Guest RAM uses separate per-frame pools below.
 The execution-pool contract is `contracts/guest_execution_caps.h`; production
-reclamation and recreation qualification are still pending. Guest VSpace/page
+teardown now drains device references before revoking this pool and guest RAM.
+Reclamation target qualification and recreation remain pending. Guest VSpace/page
 tables and service queue grants are separate resources, not part of this pool.
 
 AArch64 guest RAM is allocated from dedicated 2 MiB child untyped pools.
@@ -39,7 +40,16 @@ including root's initial mapping capabilities. Root remains a boot-only
 allocator and does not service later reclamation requests.
 
 The release/rebuild helpers require stopped vCPUs and drained device
-references. Production lifecycle callbacks are not yet connected to them.
+references. The ARM production teardown callback stops device admission,
+drains accepted block and console work, releases graphics resources, then
+revokes the execution pool and RAM pools. Failure remains non-resumable and
+retryable; completed stages are not re-entered after capability revocation.
+Queued guest faults are not serviced during teardown. Initialization rejects
+lifecycle re-entry while media staging still holds guest RAM pointers.
+VSpace/page-table and service grants remain owned by the VMM; recreation is
+not yet implemented. `make test-guest-teardown` exercises terminal destruction
+through CC after a live guest console proof, but does not prove recreation or
+complete service-grant reclamation.
 `make test-guest-ram-recycle` exercises two preboot overwrite/revoke/retype
 cycles, complete zero verification, stale capability rejection and guest
 block I/O. This test is not a claim of live destroy/recreate, execution-object

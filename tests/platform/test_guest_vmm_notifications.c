@@ -55,7 +55,13 @@ int main(void)
     dispatch(0, BLK_VIRT_EVENT_RESP_READY);
     check(ready_calls == 1 && !faults && !rpcs && !sends,
           "cleanup state continues draining accepted block responses");
+    dispatch(UINT64_C(1) << 62, 7);
+    check(!faults && !sends && !rpcs,
+          "queued VCPU fault cannot restart MMIO during teardown");
     state = GUEST_STATE_DEAD;
+    dispatch(UINT64_C(1) << 62, 7);
+    check(!faults && !sends && !rpcs,
+          "late VCPU fault cannot touch revoked guest resources");
     dispatch(0, BLK_VIRT_EVENT_RESP_READY);
     check(ready_calls == 0, "dead guest cannot process old block responses");
     state = GUEST_STATE_SUSPENDED;

@@ -1347,6 +1347,10 @@ test-guest-console:
 	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os ubuntu --timeout-secs $(QEMU_TEST_TIMEOUT) --assert-emulated-console --ssh-port $(QEMU_TEST_SSH_PORT)
 
 .PHONY: test-console-backpressure
+.PHONY: test-guest-teardown
+test-guest-teardown:
+	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os ubuntu --timeout-secs $(QEMU_TEST_TIMEOUT) --assert-emulated-console --assert-guest-teardown --ssh-port $(QEMU_TEST_SSH_PORT)
+
 test-console-backpressure:
 	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os ubuntu --timeout-secs $(QEMU_TEST_TIMEOUT) --assert-emulated-console --assert-console-backpressure --ssh-port $(QEMU_TEST_SSH_PORT)
 
@@ -1650,6 +1654,14 @@ test-integration:
 	        tests/platform/test_guest_vmm_notifications.c platform/guest-vmm/loop.c \
 	        -o $(BUILD_TMP_DIR)/test_guest_vmm_notifications \
 	    && $(BUILD_TMP_DIR)/test_guest_vmm_notifications; then :; \
+	else status=1; fi; \
+	if gcc -std=gnu11 -Wall -Wextra -Werror \
+	        -DAGENTOS_GUEST_GRAPHICS -DAGENTOS_GUEST_INPUT \
+	        -I tests/platform/teardown-stubs -I platform/include \
+	        -iquote kernel/agentos-root-task/include \
+	        tests/platform/test_guest_teardown.c platform/guest-vmm/teardown.c \
+	        -o $(BUILD_TMP_DIR)/test_guest_teardown \
+	    && $(BUILD_TMP_DIR)/test_guest_teardown; then :; \
 	else status=1; fi; \
 	if gcc -std=c11 -Wall -Wextra -Werror -I libvmm/include \
 	        tests/platform/test_virtio_console_tx.c -o $(BUILD_TMP_DIR)/test_virtio_console_tx \

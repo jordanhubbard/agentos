@@ -152,6 +152,9 @@ pub struct TestArgs {
     /// Stall console consumption, then verify the deterministic probe stream.
     #[arg(long, requires = "assert_emulated_console")]
     pub assert_console_backpressure: bool,
+    /// Destroy the running console-proof guest and require resource revocation.
+    #[arg(long, requires = "assert_emulated_console", conflicts_with_all = ["keep_running", "assert_live", "assert_desktop", "no_build"])]
+    pub assert_guest_teardown: bool,
     /// Require Ubuntu login plus real I/O through agentOS net, blk, and console.
     #[arg(long)]
     pub assert_agentos_virtio: bool,
