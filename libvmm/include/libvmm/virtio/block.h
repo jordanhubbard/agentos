@@ -197,6 +197,8 @@ struct virtio_blk_device {
     uint16_t data_region_cells;
     /* Cap to notify sDDF server serving this client */
     seL4_CPtr server_ch;
+    /* Lifecycle stop: complete accepted work without admitting new chains. */
+    bool quiescing;
 };
 
 bool virtio_mmio_blk_init(struct virtio_blk_device *blk_dev, uintptr_t region_base, uintptr_t region_size, size_t virq,
@@ -204,6 +206,12 @@ bool virtio_mmio_blk_init(struct virtio_blk_device *blk_dev, uintptr_t region_ba
                           blk_queue_handle_t *queue_h, uint32_t queue_capacity, seL4_CPtr server_ch);
 
 bool virtio_blk_handle_resp(struct virtio_blk_device *blk_dev);
+
+/* The caller stops guest execution first and retains guest RAM while
+ * accepted requests complete. Continue servicing responses until drained.
+ * Only a fresh device initialization clears this one-way admission stop. */
+void virtio_blk_begin_quiesce(struct virtio_blk_device *blk_dev);
+bool virtio_blk_is_quiesced(struct virtio_blk_device *blk_dev);
 
 bool virtio_pci_blk_init(struct virtio_blk_device *blk_dev, uint32_t dev_slot, size_t virq, uintptr_t data_region,
                          size_t data_region_size, blk_storage_info_t *storage_info, blk_queue_handle_t *queue_h,

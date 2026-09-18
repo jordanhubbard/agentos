@@ -1085,6 +1085,7 @@ test-virtio-gpu-host:
 	$(BUILD_TMP_DIR)/test_virtio_mmio
 	$(CC) -std=gnu11 -Wall -Wextra -Werror -Wno-unused-parameter -Wno-sign-compare -ffunction-sections -fdata-sections -Wl,$(if $(filter Darwin,$(UNAME_S)),-dead_strip,--gc-sections) -I tests/platform/mmio-stubs -I libvmm/include -I libvmm/dep/sddf/include -I libvmm/dep/sddf/include/extern tests/platform/test_virtio_net_config.c libvmm/src/virtio/mmio.c libvmm/src/arch/aarch64/virtio_mmio.c -o $(BUILD_TMP_DIR)/test_virtio_net_config
 	$(BUILD_TMP_DIR)/test_virtio_net_config
+test-host: policy-check guest-profile-check lint-source test-integration test-operator-host test-log-ring-host test-framebuffer-host test-guest-block-drain-host
 
 .PHONY: test-framebuffer-host
 .PHONY: test-input-host
@@ -1314,6 +1315,20 @@ test-block-isolation:
 	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os freebsd --timeout-secs $(QEMU_TEST_TIMEOUT) --block-isolation-probe 6
 	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os freebsd --timeout-secs $(QEMU_TEST_TIMEOUT) --block-isolation-probe 7
 	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os freebsd --timeout-secs $(QEMU_TEST_TIMEOUT) --block-isolation-probe 8
+
+.PHONY: test-guest-ram-recycle
+test-guest-ram-recycle:
+	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os buildroot --timeout-secs $(QEMU_TEST_TIMEOUT) --assert-emulated-blk --assert-guest-ram-recycle --ssh-port $(QEMU_TEST_SSH_PORT)
+
+.PHONY: test-guest-block-drain-host
+.PHONY: test-guest-block-drain
+test-guest-block-drain: test-guest-block-drain-host
+	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os buildroot --timeout-secs $(QEMU_TEST_TIMEOUT) --assert-emulated-blk --assert-guest-block-drain --ssh-port $(QEMU_TEST_SSH_PORT)
+
+test-guest-block-drain-host:
+	@mkdir -p $(BUILD_TMP_DIR)
+	$(CC) -std=gnu11 -g -Wall -include assert.h -I tests/platform/block-drain-stubs -I libvmm/include -I libvmm/dep/sddf/include tests/platform/test_virtio_blk_drain.c libvmm/src/virtio/block.c libvmm/src/virtio/gpa.c libvmm/dep/sddf/util/fsmalloc.c libvmm/dep/sddf/util/bitarray.c -o $(BUILD_TMP_DIR)/test_virtio_blk_drain
+	$(BUILD_TMP_DIR)/test_virtio_blk_drain
 
 test-guest-blk:
 	@if [ "$(BOARD)" != "qemu_virt_aarch64" ]; then \

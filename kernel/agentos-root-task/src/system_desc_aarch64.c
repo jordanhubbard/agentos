@@ -325,7 +325,7 @@ const system_desc_t system_desc_aarch64 = {
             .name           = "guest_vmm_secondary",
             .elf_path       = "guest_vmm_secondary.elf",
             .stack_size     = 0x10000u,
-            .cnode_size_bits = 10u,
+            .cnode_size_bits = 12u,
             .priority       = 250u,
             .self_svc_id    = SVC_ID_GUEST_VMM_SECONDARY,
             /* No net_pd or virtio_blk EP: the VMM reaches the network only
@@ -353,7 +353,7 @@ const system_desc_t system_desc_aarch64 = {
             .name           = "guest_vmm_primary",
             .elf_path       = "guest_vmm_primary.elf",
             .stack_size     = 0x10000u,
-            .cnode_size_bits = 10u,  /* 1024 slots — IRQ handler caps + microkit layout */
+            .cnode_size_bits = 12u,  /* guest RAM pools and rebuild slots */
             .priority       = 250u,
             .self_svc_id    = SVC_ID_GUEST_VMM_PRIMARY,
             /* No net_pd or virtio_blk EP: the VMM reaches the network only
@@ -392,7 +392,7 @@ const system_desc_t system_desc_aarch64 = {
             .name           = "guest_vmm_secondary",
             .elf_path       = "guest_vmm_secondary.elf",
             .stack_size     = 0x10000u,
-            .cnode_size_bits = 10u,
+            .cnode_size_bits = 12u,
             .priority       = 250u,
             .self_svc_id    = SVC_ID_GUEST_VMM_SECONDARY,
             /* No net_pd or virtio_blk EP: the VMM reaches the network only

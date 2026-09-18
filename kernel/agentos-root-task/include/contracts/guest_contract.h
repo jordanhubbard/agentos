@@ -36,6 +36,7 @@
  *   - MSG_GUEST_BOOT is irreversible; only SUSPEND/RESUME/DESTROY are valid after.
  *   - MSG_GUEST_DESTROY releases ALL capability tokens and device handles.
  *   - A guest in GUEST_STATE_DEAD may not be resumed; destroy and recreate.
+ *   - DESTROYING permits only teardown retries, never execution or guest I/O.
  *   - A guest OS may not submit IPC to a device PD without a valid cap_token.
  */
 
@@ -66,6 +67,7 @@ typedef uint32_t guest_cap_token_t;
 #define GUEST_STATE_RUNNING    4u  /* guest OS executing */
 #define GUEST_STATE_SUSPENDED  5u  /* suspended by MSG_GUEST_SUSPEND */
 #define GUEST_STATE_DEAD       6u  /* terminated; no restart */
+#define GUEST_STATE_DESTROYING 7u  /* execution stopped; cleanup may be partial */
 
 /* Live profile VMM lifecycle: BOOT accepts READY (or an already RUNNING
  * guest); a SUSPENDED guest must use RESUME. SUSPEND/RESUME require a booted

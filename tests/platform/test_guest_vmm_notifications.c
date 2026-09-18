@@ -10,6 +10,8 @@
 static jmp_buf complete;
 static seL4_Word incoming_badge, incoming_label, observed_badge;
 static unsigned receives, notifications, rpcs, faults, sends, checks, failures;
+static unsigned ready_calls;
+static uint32_t state = GUEST_STATE_RUNNING;
 seL4_MessageInfo_t seL4_Recv(seL4_CPtr endpoint, seL4_Word *badge, seL4_CPtr reply)
 {
     (void)endpoint; (void)reply;
@@ -27,7 +29,7 @@ static seL4_MessageInfo_t fault(seL4_Word badge, seL4_MessageInfo_t info)
 {
     faults++; observed_badge = badge; return info;
 }
-static void ready(void) {}
+static void ready(void) { ready_calls++; }
 static void check(int condition, const char *name)
 {
     printf("%s %u - %s\n", condition ? "ok" : "not ok", ++checks, name);
@@ -37,7 +39,7 @@ static void dispatch(seL4_Word badge, seL4_Word label)
 {
     incoming_badge = badge; incoming_label = label;
     receives = notifications = rpcs = faults = sends = 0;
-    uint32_t state = GUEST_STATE_RUNNING;
+    ready_calls = 0;
     const aos_guest_vmm_loop_ops_t ops = {&state, rpc, fault, notified, ready, ready};
     if (!setjmp(complete)) aos_guest_vmm_loop(1, 9, &ops);
 }
@@ -49,6 +51,17 @@ int main(void)
         for (unsigned j = i + 1; j < 4; j++)
             check((wake_bits[i] & wake_bits[j]) == 0,
                   "independent device notifications have disjoint badge bits");
+    state = GUEST_STATE_DESTROYING;
+    dispatch(0, BLK_VIRT_EVENT_RESP_READY);
+    check(ready_calls == 1 && !faults && !rpcs && !sends,
+          "cleanup state continues draining accepted block responses");
+    state = GUEST_STATE_DEAD;
+    dispatch(0, BLK_VIRT_EVENT_RESP_READY);
+    check(ready_calls == 0, "dead guest cannot process old block responses");
+    state = GUEST_STATE_SUSPENDED;
+    dispatch(0, BLK_VIRT_EVENT_RESP_READY);
+    check(ready_calls == 0, "ordinary suspend retains responses for resume");
+    state = GUEST_STATE_RUNNING;
     dispatch(SERIAL_VIRT_VMM_WAKE_BADGE, 0x3ffffdf);
     check(notifications == 1 && !rpcs && !faults && !sends &&
           observed_badge == SERIAL_VIRT_VMM_WAKE_BADGE,

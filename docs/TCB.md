@@ -20,6 +20,24 @@ delivery and mapping-isolation qualification remain pending.
 
 ## Privilege
 
+AArch64 guest RAM is allocated from dedicated 2 MiB child untyped pools.
+Root installs the initial guest/VMM mappings, then moves each pool's sole
+capability to its owning VMM. That VMM also receives its own CNode and the
+two VSpaces needed to rebuild these mappings; it receives no peer VMM's
+pool, CNode or VSpace. Revocation removes the guest frame descendants,
+including root's initial mapping capabilities. Root remains a boot-only
+allocator and does not service later reclamation requests.
+
+The release/rebuild helpers require stopped vCPUs and drained device
+references. Production lifecycle callbacks are not yet connected to them.
+`make test-guest-ram-recycle` exercises two preboot overwrite/revoke/retype
+cycles, complete zero verification, stale capability rejection and guest
+block I/O. This test is not a claim of live destroy/recreate, execution-object
+reclamation, or peer continuity. The recycle test and full OS gate passed
+on Spark at `3581a277c598d49dce922ebd08ea29bc59722ae5`; the
+[qualification receipt](evidence/2026-09-16-spark/guest-ram-recycle.json)
+records the source, image and log hashes.
+
 | Level | What runs | Notes |
 |-------|-----------|--------|
 | EL2 / seL4 | seL4 microkernel only | Never modified. Caps, IPC, scheduling, VMX/VHE. |
@@ -175,6 +193,17 @@ bound notification when it queued responses. Both directions use send-only
 capabilities and retain pending wakeups until received. Preboot media staging
 therefore does not depend on a later guest exit to retry a dropped event.
 Receivers classify notification badges before interpreting IPC message tags.
+The VMM block backend has a one-way, nonblocking drain mode for lifecycle
+cleanup. It stops admitting new guest descriptor chains while finishing
+accepted chunks and read-modify-write requests against still-mapped guest
+RAM. Failed predecessors also release waiting requests; a waiter starts only
+when no active writer overlaps its transfer window. Drain completion requires
+empty request/response queues and no allocated request bookkeeping. Completion
+interrupts are suppressed during drain, and the VMM disables its response
+callbacks when the drain succeeds. This API is not yet connected to live RAM
+reclamation. Host tests execute the production backend; the dedicated
+`make test-guest-block-drain` target stops admission with a real pending guest
+block response and requires the drain and guest block completion markers.
 `blk_virt` alone holds
 the `virtio_blk` endpoint and alone (besides the driver) maps the driver's
 bounded DMA window, through which it chunks each request by Call; the VMM

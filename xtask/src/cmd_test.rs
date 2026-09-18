@@ -438,6 +438,14 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
         "--assert-vmx-exit requires a fresh x86_64_generic_vtx GUEST_OS=none image"
     );
     anyhow::ensure!(
+        !(args.assert_guest_ram_recycle || args.assert_guest_block_drain)
+            || (args.board == "qemu_virt_aarch64"
+                && args.guest_os == "buildroot"
+                && !args.no_build
+                && !args.keep_running),
+        "guest RAM recycle/block drain requires a fresh AArch64 buildroot image"
+    );
+    anyhow::ensure!(
         !args.assert_console_backpressure
             || (args.board == "qemu_virt_aarch64"
                 && args.guest_os == "ubuntu"
@@ -629,6 +637,12 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
             profile_plan.as_ref(),
             scenario_plan.as_ref(),
         ));
+        if args.assert_guest_ram_recycle {
+            make_args.push(String::from("GUEST_RAM_RECYCLE_TEST=1"));
+        }
+        if args.assert_guest_block_drain {
+            make_args.push(String::from("GUEST_BLOCK_DRAIN_TEST=1"));
+        }
         if let Some(mode) = args.framebuffer_isolation_probe {
             make_args.push(format!("FRAMEBUFFER_ISOLATION_PROBE={mode}"));
         }
@@ -1353,6 +1367,27 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
         ) {
             result = Err(error.context("log_drain did not emit through serial_pd"));
         }
+    }
+
+    if result.is_ok() && args.assert_guest_ram_recycle {
+        result = wait_for_all_markers(
+            &log_path,
+            &["guest RAM recycle: PASS two full overwrite/revoke/rebuild/zero cycles"],
+            Duration::from_secs(10),
+            &mut qemu,
+        );
+    }
+
+    if result.is_ok() && args.assert_guest_block_drain {
+        result = wait_for_all_markers(
+            &log_path,
+            &[
+                "guest block drain: pending response before admission stop",
+                "guest block drain: PASS accepted requests complete and queues empty",
+            ],
+            Duration::from_secs(10),
+            &mut qemu,
+        );
     }
 
     let mut desktop_evidence = None;
