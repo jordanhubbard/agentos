@@ -99,6 +99,37 @@ int main(void)
                     rep.opcode == GUEST_OK && msg_u32(&rep, 4u) == 0u,
                     "matching flavor creates guest zero");
 
+    const uint32_t unprepared[] = {
+        GUEST_STATE_CREATING, GUEST_STATE_BINDING, GUEST_STATE_BOOTING,
+        GUEST_STATE_RUNNING, GUEST_STATE_SUSPENDED, UINT32_MAX
+    };
+    for (unsigned i = 0; i < sizeof(unprepared) / sizeof(*unprepared); ++i) {
+        state = unprepared[i];
+        started = state == GUEST_STATE_RUNNING || state == GUEST_STATE_SUSPENDED;
+        bool was_started = started;
+        rep = (sel4_msg_t){0};
+        failed += check(aos_guest_vmm_lifecycle_rpc(&req, &rep, &runtime) &&
+                        rep.opcode == GUEST_ERR_BAD_STATE && rep.length == 0u &&
+                        state == unprepared[i] && started == was_started &&
+                        starts == 0u && resets == 0u,
+                        "create rejects unprepared or active guest without side effects");
+    }
+    state = GUEST_STATE_READY;
+    started = true;
+    rep = (sel4_msg_t){0};
+    failed += check(aos_guest_vmm_lifecycle_rpc(&req, &rep, &runtime) &&
+                    rep.opcode == GUEST_ERR_BAD_STATE && rep.length == 0u &&
+                    state == GUEST_STATE_READY && started && starts == 0u && resets == 0u,
+                    "create rejects inconsistent ready-but-started guest");
+    started = false;
+
+    rep = (sel4_msg_t){0};
+    failed += check(aos_guest_vmm_lifecycle_rpc(&req, &rep, &runtime) &&
+                    rep.opcode == GUEST_OK && rep.length == 8u &&
+                    msg_u32(&rep, 4u) == 0u && state == GUEST_STATE_READY &&
+                    !started && starts == 0u && resets == 0u,
+                    "create retry preserves an unstarted ready guest");
+
     rep = (sel4_msg_t){0};
     request(&req, MSG_GUEST_BOOT, 0u);
     failed += check(aos_guest_vmm_lifecycle_rpc(&req, &rep, &runtime) &&

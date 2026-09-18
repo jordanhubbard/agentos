@@ -69,7 +69,12 @@ typedef uint32_t guest_cap_token_t;
 #define GUEST_STATE_DEAD       6u  /* terminated; no restart */
 #define GUEST_STATE_DESTROYING 7u  /* execution stopped; cleanup may be partial */
 
-/* Live profile VMM lifecycle: BOOT accepts READY (or an already RUNNING
+/* Live profile VMM lifecycle: CREATE succeeds only for an unstarted READY
+ * guest, including after an explicitly supported reset from DEAD. Repeating
+ * CREATE in that state is safe; active, suspended, partially initialized or
+ * destroying guests reject it with BAD_STATE. A successful CREATE therefore
+ * permits manager preparation of stopped objects before BOOT.
+ * BOOT accepts READY (or an already RUNNING
  * guest); a SUSPENDED guest must use RESUME. SUSPEND/RESUME require a booted
  * guest in RUNNING/SUSPENDED state. Invalid transitions return BAD_STATE;
  * failed execution callbacks return NOT_READY without advancing the state. */

@@ -53,6 +53,12 @@ bool aos_guest_vmm_lifecycle_rpc(const sel4_msg_t *req, sel4_msg_t *rep,
             *runtime->started = false;
             *runtime->state = GUEST_STATE_READY;
         }
+        /* CREATE hands stopped objects to the manager for preparation before
+         * BOOT. Never let a retry reconfigure a live or suspended guest. */
+        if (*runtime->state != GUEST_STATE_READY || *runtime->started) {
+            rep->opcode = GUEST_ERR_BAD_STATE;
+            return true;
+        }
         rep_u32(rep, 0u, GUEST_OK);
         rep_u32(rep, 4u, runtime->guest_id);
         rep->length = 8u;
